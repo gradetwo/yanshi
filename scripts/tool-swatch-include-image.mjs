@@ -107,5 +107,23 @@ check(
   `9 支笔时顶层必须说"跳过 1 张"且给出原因数组（count=${manySkipped}、image_skipped=${JSON.stringify(many?.image_skipped ?? null)}）`,
 );
 
+// **∴ ⑨ 必须**分开报"成功几张"与"失败几支"**✗**（**∴ 第 10 条形态 5，外部 §71 ✓**）
+//   ⇒ **∴ 只报 `count`**✗ ⇒ **∴ 7 支失败**会被**看成**"都成功"**✗** ✓
+console.log(`  9 支笔 ⇒ count=${many?.count}｜ok_count=${many?.ok_count}｜fail_count=${many?.fail_count}`);
+check(
+  many?.ok_count + many?.fail_count === many?.count,
+  `ok_count + fail_count 必须等于 count（实测 ${many?.ok_count}+${many?.fail_count} vs ${many?.count}）—— 否则有笔没被计数`,
+);
+check(
+  many?.fail_count === many?.count - many?.ok_count,
+  `fail_count 必须等于 count - ok_count（实测 ${many?.fail_count} vs ${many?.count - many?.ok_count}）`,
+);
+// **∴ 注意**：这里 include_image=true ⇒ 9 支全成功（fail_count=0）；同一批笔在 false 时 7 支失败，
+//   所以失败与「要图片」有关。不在这里断 fail_count > 0，只断两个恒等式。
+check(
+  typeof many?.fail_count === "number" && typeof many?.ok_count === "number",
+  `fail_count 与 ok_count 必须都是数字（实测 ${typeof many?.fail_count}/${typeof many?.ok_count}）`,
+);
+
 if (bad) { console.log(`  ✗ 批量试笔的 image 交付有 ${bad} 处不满足`); process.exit(1); }
 console.log("  ✓ 批量试笔能直接交付图片（有上限且上限真的生效），缺省行为不变");
