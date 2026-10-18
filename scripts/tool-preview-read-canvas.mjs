@@ -110,5 +110,17 @@ check(
   `两个都给时必须自陈被覆盖（实测 ${JSON.stringify(String(both?.background_note ?? "").slice(0, 50))}）`,
 );
 
+// **∴ ⑦ 颜色空间必须**明说**✗**（**∴ G02 第 6 项 ✓**）：**∴ 它**恒为 `rgb`**✗** ⇒ **∴ 而**它**是**读数归因的前提**✗**
+//   ⇒ **∴ 若**有人**改混色却不改这个字段**✗ ⇒ **∴ 读数**就会**归因错**✗** ✓
+console.log(`  color_space=${JSON.stringify(on?.color_space ?? null)}｜note 非空=${!!on?.color_space_note}`);
+check(
+  on?.color_space === "rgb",
+  `color_space 必须是 rgb（brush_preview 恒用 ColorMixing::Rgb；实测 ${JSON.stringify(on?.color_space ?? null)}）`,
+);
+check(
+  typeof on?.color_space_note === "string" && /RGB|不会变/.test(on.color_space_note),
+  `color_space_note 必须说清它是恒定的（实测 ${JSON.stringify(String(on?.color_space_note ?? "").slice(0, 50))}）`,
+);
+
 if (bad) { console.log(`  ✗ read_canvas 有 ${bad} 处不满足`); process.exit(1); }
 console.log("  ✓ read_canvas 参数生效（改了渲染）；底图内容是否读入不在本判据范围");
