@@ -18833,6 +18833,7 @@ fn object_type_name(object_type: ObjectType) -> &'static str {
 /// 其余工具按同一模式补齐（每加一个，测试自动替它把关）。
 pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("sample_colors", r#"{"points": [[120, 64], [200, 80]]}"#),
+    ("describe_canvas", r#"{}"#),
     ("undo_last", r#"{}"#),
     // 只读查询 ⇒ 不需要任何参数 ✓（落笔之后问一次，界面据此刷新按钮 ✓）。
     ("get_undo_status", r#"{}"#),
