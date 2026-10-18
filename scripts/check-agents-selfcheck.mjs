@@ -1,0 +1,38 @@
+#!/usr/bin/env node
+// **∴ 「规矩要能自检」的第一个实现**✗（`AGENTS.md` 内核 ② ✓）
+//   ⇒ **∴ 它**验**三条**能被机器验的规矩**✗** ⇒ **∴ 而**其余**靠**人**✗** ✓
+import { readFileSync } from "node:fs";
+
+const fail = [];
+const ok = (m) => console.log(`  ✓ ${m}`);
+const check = (cond, m) => { if (cond) ok(m); else { console.log(`  ✗ ${m}`); fail.push(m); } };
+
+const agents = readFileSync("AGENTS.md", "utf8");
+const handoff = readFileSync("docs/design/HANDOFF.md", "utf8");
+
+// ① AGENTS.md 不许有「N 条规矩」这类快照（内核 ②·别写会过期的数字）
+const badCount = agents.match(/（\d+ 条规矩/g);
+check(!badCount, `AGENTS.md 不许写「N 条规矩」（实测 ${badCount ? badCount.join(",") : "无"}）`);
+
+// ② 已知红只在一处：HANDOFF.md 不许有已知红表格行（内核 ②·同一事实只写一处）
+const dup = (handoff.match(/^\| .*(tool-dwell|brush parity|browser-\*)/gm) || []).length;
+check(dup === 0, `已知红名单只许在 AGENTS.md（HANDOFF.md 实测 ${dup} 行）`);
+
+// ③ **可机检的那几段**必须有自检或命令（内核 ②·规矩要能自检）
+//    **∴ 只查能机检的**✗ ⇒ **∴ 其余**靠人**✗** ⇒ **∴ 而**这一点**必须**写清**✗** ✓
+const MACHINE_CHECKABLE = [
+  /## 判据里的 CDP/,
+  /## 中文文本里一律用/,
+  /## 新增代码的插入位置/,
+  /## 改代码用字符串替换时/,
+];
+const ruled = agents.split(/^## /m).slice(1);
+const targets = ruled.filter((s) => MACHINE_CHECKABLE.some((re) => re.test("## " + s)));
+check(targets.length >= 3, `可机检的规矩段至少找到 3 段（实测 ${targets.length}）`);
+const noCheck = targets.filter((s) => !/自检|grep|assert|check\(|node --check|fmt/i.test(s));
+check(noCheck.length === 0, `可机检的规矩段都要有自检或命令（实测 ${noCheck.length} 段没有：${noCheck.map((s) => s.split("\n")[0]).join("｜")}）`);
+//    **∴ 而**下面这句**是**诚实的边界**✗**：**∴ 9 段**里**只有 4 段**能机检**✗** ✓
+console.log(`  可机检 ${targets.length} 段／全部 ${ruled.length} 段 ⇒ 其余靠人（内核 ②·自检）`);
+
+console.log(`\n  ${fail.length ? "✗" : "✓"} 自检 ${fail.length ? "红了" : "绿了"}（${fail.length} 处不满足）`);
+process.exit(fail.length ? 1 : 0);

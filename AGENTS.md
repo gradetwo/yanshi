@@ -110,6 +110,8 @@ CDP 会**静默返回一个空对象 `{}`**。那看起来像"页面返回了空
 "落笔事件没有进入笔画状态机（tool=undefined）"，而**产品完全正常**。
 补上后同一判据立刻拿到真结果（`pointsAtDown: 1`、`draggingAtDown: true`、墨 `0 => 220`）。
 
+**自检**：`grep -rn 'awaitPromise' scripts/*.mjs | wc -l`（**∴ 有 CDP 求值的判据**都该在 `grep` 里）
+
 **两条配套纪律**：
 1. **普查，不要只改一处**：本仓库曾有 **13 处**同类缺口（第 403 轮逐处查出的）。
 2. **判据必须能说"我自己坏了"**：求值返回空对象时，要用**与产品失败不同的退出码**报出来
@@ -436,6 +438,8 @@ assert not resp.get("image_skipped"), f"有图被跳过: {resp['image_skipped']}
 2. `crates/yanshi-render/src/filter.rs` 的 `apply_filter`；
 3. `crates/yanshi-render/src/alloc_probe.rs` 的 `mod tests`（`items after a test module`）；
 4. `crates/yanshi-render/src/buffer.rs` 的 `to_rgba8`。
+
+**自检**：`cargo clippy --workspace --all-targets -- -D warnings || exit 1`
 
 **配套纪律**：提交前先跑 `cargo clippy --workspace --all-targets -- -D warnings`，
 **并且让提交命令依赖它的结果**（`cargo clippy … || exit 1` 之后再 `git commit`）——
