@@ -47,7 +47,7 @@ await call("brush_stroke", { layer_id: "sc_L", brush: "100%_Opaque", color: { r:
 
 // 50 个**聚集**在 40×40 内的点
 const points = [];
-for (let i = 0; i < 100; i += 1) points.push([100 + (i % 10) * 4, 100 + Math.floor(i / 10) * 4]);
+for (let i = 0; i < 400; i += 1) points.push([100 + (i % 20) * 3, 100 + Math.floor(i / 20) * 3]);
 
 const median = (xs) => {
   const sorted = [...xs].sort((a, b) => a - b);
@@ -89,15 +89,15 @@ for (let round = 0; round < ROUNDS; round += 1) {
 const batchMs = median(batchTimes);
 const smallMs = median(smallTimes);
 const scale = batchMs / smallMs;
-console.log(`  25 点 ⇒ **${smallMs.toFixed(1)} ms**｜100 点 ⇒ **${batchMs.toFixed(1)} ms**｜**规模比 = ${scale.toFixed(2)}×**（线性会是 4×）`);
+console.log(`  25 点 ⇒ **${smallMs.toFixed(1)} ms**｜400 点 ⇒ **${batchMs.toFixed(1)} ms**｜**规模比 = ${scale.toFixed(2)}×**（线性会是 16×）`);
 const singleMs = median(singleTimes);
 const ratio = batchMs / singleMs;
 console.log(`  ${ROUNDS} 轮交替，取中位数 ✓`);
 console.log(`  sample_colors（50 点，一次）  ⇒ **${batchMs.toFixed(1)} ms**`);
 console.log(`  50 次 sample_color            ⇒ **${singleMs.toFixed(1)} ms**`);
 console.log(`  比值 = ${ratio.toFixed(3)}×（< 0.5 才算"真的省了" ✓）`);
-if (scale >= 3.0) {
-  console.log("  ✗ 耗时随点数线性增长（100点/25点 ≈ 4×）⇒ sample_colors 内部应该是逐点渲染了，等于没省");
+if (scale >= 8.0) {
+  console.log("  ✗ 耗时随点数线性增长（400点/25点 ≈ 16×）⇒ sample_colors 内部应该是逐点渲染了，等于没省");
   process.exit(1);
 }
 if (!(ratio < 0.5)) {
