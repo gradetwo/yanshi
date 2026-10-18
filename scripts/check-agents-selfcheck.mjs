@@ -44,5 +44,14 @@ check(
   `不许循环引用（AGENTS→HANDOFF=${aPointsToH}｜HANDOFF→AGENTS=${hPointsToA}）`,
 );
 
+// ⑤ **表格类事实只许一份**：问句表 / 已知红表不许在两份文档里各写一遍
+//    **∴ 第 303 轮实测**✗：**∴ AGENTS.md** 有 6 问句**✗ 而** HANDOFF.md 有 5 个**✗** ✓
+const agentsRows = (agents.match(/^\| 「/gm) || []).length;
+const handoffRows = (handoff.match(/^\| 「/gm) || []).length;
+check(
+  handoffRows === 0,
+  `问句表只许在 AGENTS.md（HANDOFF.md 实测 ${handoffRows} 行）`,
+);
+
 console.log(`\n  ${fail.length ? "✗" : "✓"} 自检 ${fail.length ? "红了" : "绿了"}（${fail.length} 处不满足）`);
 process.exit(fail.length ? 1 : 0);
