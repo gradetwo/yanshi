@@ -18,12 +18,14 @@ import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+// **∴ 仓库约定 ✗**：**造临时目录的脚本**必须 import 清理模块**✗**（`scripts_clean_their_temp_dirs.rs` 守着 ✓）
+import { trackTemp } from "./lib/temp-dirs.mjs";
 
 const [bin] = process.argv.slice(2);
 if (!bin) { console.error("用法: node scripts/tool-stroke-log-color-legacy.mjs <path-to-yanshi-serve>"); process.exit(3); }
 if (!existsSync(bin)) { console.error(`✗ 找不到 ${bin}（先 cargo build --release -p yanshi-http）`); process.exit(3); }
 
-const root = mkdtempSync(join(tmpdir(), "legacycolor-"));
+const root = trackTemp(mkdtempSync(join(tmpdir(), "legacycolor-")));
 const port = 18000 + Math.floor(Math.random() * 1000);
 const base = `http://127.0.0.1:${port}`;
 let server = null;
