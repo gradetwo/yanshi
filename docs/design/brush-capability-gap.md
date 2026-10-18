@@ -3179,3 +3179,52 @@ pub masks: BTreeMap<MaskId, Selection>,
 **∴ `other_ms`：0.306 → **0.734**（2.4×）✓** ⇒ **∴ 只占 4.4% ✓ ⇒ **∴ 不是黑盒问题 ✓**
 **∴ 已量之和 / total = **95.6%** ✓** ⇒ **∴ 计量覆盖是够的 ✓，不需要新细分 ✓**
 ```
+
+## 六十五、★★ `preview: false` 为什么还有 66% 的 `preview_ms` ✓ —— **不是 bug，是契约** ✗
+
+### 65.1 源码 ✓（`tools.rs` 的 `brush_stroke` ✓）
+
+```rust
+if ctx.preview && !ctx.silent {
+    let rendered = ctx.workspace.render_region(&ctx.doc_id, region)?;   // 要图
+    ctx.time(Phase::Preview, preview_started);
+    preview = Some(PreviewInfo::Fresh(Box::new(rendered)));
+} else {
+    ctx.workspace.render_region_complete_jobs(&ctx.doc_id, region)?;    // ★ 不要图，但仍跑完 job ★
+    ctx.time(Phase::Preview, preview_started);
+    // 明确不产出预览 ✓
+}
+```
+
+### 65.2 ∴ 结论 ✓
+
+```
+**∴ `preview: false` 时"不产出预览"✗ **≠** "不渲染"✗** ⇒ **∴ 它**把该区域的渲染 job 跑完**✗**
+   ⇒ **∴ 保证**返回时状态已落盘**✗** ⇒ **∴ 这是**契约**✓，不是 bug ✓**
+**∴ 而对象越多 ⇒ 渲染 job 越重 ⇒ `preview_ms` 越大 ✗**
+   ⇒ **∴ 实测 ✓**：**1.167（20 对象）→ **11.001**（500 对象）✗ ⇒ **∴ 占 `total` 的 **65.7%**✗**
+   ⇒ **∴ 所以 §30 的 313ms ✗ 主要是**这一条**✗** ✓
+```
+
+### 65.3 ★ 而**能力缺口**在这里 ✗
+
+```
+**∴ `ToolContext.wait_for_render: bool`** ✓（`tools.rs:304`，**缺省 `true`** ✓，setter `:387` ✓）
+**∴ 而 `grep 'param!("wait_for_render"'` ⇒ **零命中** ✗**
+   ⇒ **∴ 所以**请求层**没有任何工具**能把它设成 false ✗ ⇒ **∴ 内部有开关 ✗、API 没暴露 ✓**
+**∴ 于是 ✓**：**∴ 报告方**关不掉那 66%**✗** ⇒ **∴ 他们只能**自己减少对象数**✗ 或**接受 300ms**✗** ✓
+```
+
+### 65.4 ∴ 下一步（**在边界内 ✓**）
+
+```
+**∴ 给 `brush_stroke` 加可选 `wait_for_render` 参数 ✗**
+   ⇒ **∴ `false` 时 ⇒ **不跑 `render_region_complete_jobs` ✗** ⇒ **∴ 省掉那 66% ✓**
+   ⇒ **∴ 而契约要写清 ✓**：**∴ `false` 时**返回可能早于落盘**✗** ⇒ **∴ 调用方自己决定何时等 ✓**
+   ⇒ **∴ 而它**不改渲染数学**✗（**∴ 只改"等不等"✓**）⇒ **∴ 在边界内 ✓**
+**∴ 判据 ✓**：**∴ 同一笔 `wait_for_render: false` 的 `preview_ms` 应远小于 `true` 时 ✗**
+   ⇒ **∴ 而**更强的语义断言 ✓：**∴ `false` 时 `preview_ms` ≈ 0 ✓**（**∴ 因为整块跳过 ✓**）✓
+```
+
+**∴ 本轮产出的那个数字 ✓**：**`preview_ms` 占 `total` 的 **65.7%** ✗**；**根因是 `render_region_complete_jobs`** ✓；
+**而 `wait_for_render` **有开关没 API** ✗** ✓
