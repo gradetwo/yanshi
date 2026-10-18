@@ -38,6 +38,11 @@ const startServer = async () => {
   throw new Error("server 没起来");
 };
 const stopServer = async () => { if (server) { server.kill("SIGKILL"); server = null; await sleep(400); } };
+// **∴ 兜底 ✗**：**∴ 任何退出路径都要收掉那个 serve ✓**
+//   ⇒ **∴ 因为**`stopServer` 只在**正常路径**被调 ✗ ⇒ **∴ 判据中途抛错时会漏进程 ✓**
+//   ⇒ **∴ 实测 ✓**：**∴ 卫生检查发现一个 **3 小时 56 分**的残留 ✗**（**∴ `--root /tmp/legacycolor-*` ✓**）
+//     ⇒ **∴ 而**它正是这个判据起的 ✓ ⇒ **∴ 所以**加这一条 ✓
+process.on("exit", () => { try { server?.kill("SIGKILL"); } catch { /* 已经没了 */ } });
 
 try {
   await startServer();
