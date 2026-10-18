@@ -389,6 +389,15 @@ impl<'a> ToolContext<'a> {
         self
     }
 
+    /// 就地设置「是否等到渲染落盘再返回」✓
+    ///
+    /// **∴ 与 `with_wait_for_render` 的分工 ✗**：那个是**构造期**（`mut self` ✓），只能在建
+    /// `ToolContext` 时用 ✓；而**工具 handler** 拿到的是 `&mut ToolContext` ✓
+    /// ⇒ **∴ 所以参数化必须走这个就地版本 ✓**。
+    pub fn set_wait_for_render(&mut self, wait: bool) {
+        self.wait_for_render = wait;
+    }
+
     /// **带上诊断采集要的面特有事实** ✓（构建标识 / 生效配置 / 机密 / 附加计数 ✓）。
     pub fn with_diagnostics_facts(mut self, facts: crate::diagnostics::SurfaceFacts) -> Self {
         self.diagnostics_facts = Some(facts);
@@ -3073,6 +3082,12 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "覆盖 .myb 字段：{规范名: 数值}，如 {\"smudge\":1.0,\"opaque\":0.2}；字段名就是 .myb 的 JSON 键**也可直接用四组语义别名**：hand_jitter／speed_gain／color_variance／smudge_amount ✓（一个词管一组 .myb 项 ✓）；，拼错会报错并给候选。**常见字段与合理范围**（多为 0..1，除注明外）：`opaque`／`smudge`／`smudge_length`（0..5）／`dabs_per_radius`（1..20，越大越密；>20 明显变慢）／**`dabs_per_second`（0..500；>0 才会按时间出 dab ⇒ 它决定 `time_ms` 有没有用）**／`speed1_slowness`／`speed1_gamma`（速度映射的形状）／`hardness`／`elliptical_dab_angle`（度）。**`radius` 是对数**（想改笔尖大小请用 `size`）✓"
             ),
             param!("preview", Boolean, false, "缺省 true = 产出这一笔的预览图；false = 不产出（连续作画提速；预览仍可由 export_png / get_document 取）"),
+            param!(
+                "wait_for_render",
+                Boolean,
+                false,
+                "缺省 true = 等到这一笔的渲染落盘再返回（状态与图都是最新的）；**false = 不等** ⇒ 立刻返回、渲染留到后面做。**何时该设 false**：连续作画（每笔都不看图）时等渲染是**纯浪费** —— 实测它占单笔耗时的 **66%**（500 对象时 preview_ms 11.0 / total 16.8 ms）。**代价**：紧接着读像素（get_pixels／analyze_region）或导图时可能读到**上一笔**的状态。"
+            ),
             param!("layer_id", String, true, "目标图层"),
             // **★ 对称模式 ✗ ★**（**第 251 轮 ✓）：**画一笔同时在**镜像位置**再画一遍** ✓
             //   ＋ **∴ 借鉴 ✗**：**Krita／Procreate 的对称是**工具态**✗ 不写进笔迹数据**
@@ -16579,6 +16594,12 @@ fn apply_brush_style(
 }
 
 fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // ★ **`wait_for_render` 参数 ✗**：**∴ 缺省不给 ⇒ 保持 true（现有行为 ✓）**
+    //   ⇒ **∴ 给了就就地改 ✓ ⇒ **∴ 不等渲染时省掉那 66% ✓**
+    if let Some(wait) = args.get("wait_for_render").and_then(Value::as_bool) {
+        ctx.set_wait_for_render(wait);
+    }
+
     // **预览开关** ✓（第 5 轮 ✓）：只影响"要不要编这张 PNG" ✓，不影响 job ✓。
     if !optional_bool(args, "preview").unwrap_or(true) {
         ctx.preview = false;
