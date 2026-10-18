@@ -79,12 +79,12 @@ CI 已知红         = criteria shard 4/6（tool-dwell，归引擎，AGENTS.md �
 3. 若都没事 ⇒ 报"没有新数字"，不造活
 ```
 
-## 六、环境红线（别追）
+## 六、环境红线（**单一来源已移到 `AGENTS.md`**）
 
-- `tool-dwell`（本机 +1／CI −5，方向相反，归引擎）
-- `brush parity`（`continue-on-error`）
-- `background_stroke_cost::other_ms`（CI 486 vs 本机 7.3）
-- `browser-*` 判据在 CI 无 chromium ⇒ `exit(3)` 计为 skipped
+**∴ 名单不再写在这里** ✗ ⇒ **∴ 见** `AGENTS.md` 的「**已知红**」节（**∴ 全仓库唯一来源 ✓**）
+
+**∴ 为什么移走**（**∴ 第 277 轮实测 ✓**）：**∴ 这里**曾列 **4 条**而 `AGENTS.md` 只列 **1 条** ⇒
+**∴ 于是**读者**看错的那个**会**得出**错的结论**✗** ⇒ **∴ 所以**「同一事实只写一处」✓
 
 ## 七、这份文件**自己会过期**（第 8 条规矩，§70 提醒）
 
