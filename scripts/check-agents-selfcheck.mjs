@@ -53,5 +53,14 @@ check(
   `问句表只许在 AGENTS.md（HANDOFF.md 实测 ${handoffRows} 行）`,
 );
 
+// ⑥ **问句 ②「它下次还是同一个吗」**：不许写**会变的位置**（分片号／shard N/M）
+//    **∴ 第 285 轮**✗ 我看到 shard 4/6 变 5/6 就猜"大概新红"✗ 而实测还是 tool-dwell**✗** ✓
+const shardRefs = agents.match(/shard \d+\/\d+/g) || [];
+const shardRefsH = handoff.match(/shard \d+\/\d+/g) || [];
+check(
+  shardRefs.length === 0 && shardRefsH.length === 0,
+  `不许把分片号当身份（AGENTS=${shardRefs.length} 处｜HANDOFF=${shardRefsH.length} 处；它下次会变）`,
+);
+
 console.log(`\n  ${fail.length ? "✗" : "✓"} 自检 ${fail.length ? "红了" : "绿了"}（${fail.length} 处不满足）`);
 process.exit(fail.length ? 1 : 0);

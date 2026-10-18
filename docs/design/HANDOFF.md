@@ -15,7 +15,7 @@ HEAD              = b39c341f（main == l4-sync）
                     **条数用命令数**：`grep -cE '^ *check\(' scripts/tool-*-*.mjs`
                     每条四层齐：实现／输入能触发／断言／变异
 AGENTS.md         = 行为规矩（**数它用命令**：`grep -c '^## ' AGENTS.md`，别信硬编码的数字）
-CI 已知红         = criteria shard 4/6（tool-dwell，归引擎，AGENTS.md 有记录）
+CI 已知红         = criteria 某一片（tool-dwell，归引擎；AGENTS.md 有记录）
 ```
 
 ## 二、外部复测 8 项的定案（都在 `docs/design/brush-capability-gap.md`）
