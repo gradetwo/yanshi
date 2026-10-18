@@ -17660,9 +17660,17 @@ fn write_swatch_brush_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result
         .filter_map(|entry| entry.get("image_skipped"))
         .filter(|reason| !reason.is_null())
         .collect();
+    // **∴ 形态 5：不能只报"做了几张"✗**（外部 §71 ✓）：**∴ 9 支里 7 支失败 ✗ ⇒ **∴ 顶层**只有 `count=9`**✗**
+    //   ⇒ **∴ 看起来**"都成功但没图"**✗** ⇒ **∴ 所以**必须**分开报** `ok_count` 与 `fail_count`**✗** ✓
+    let ok_n = swatches
+        .iter()
+        .filter(|s| s.get("ok") == Some(&Value::Bool(true)))
+        .count();
     Ok(json!({
         "swatches": swatches,
         "count": count,
+        "ok_count": ok_n,
+        "fail_count": count - ok_n,
         "image_skipped_count": skipped_reasons.len(),
         "image_skipped": if skipped_reasons.is_empty() {
             Value::Null
