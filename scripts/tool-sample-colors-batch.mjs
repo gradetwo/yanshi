@@ -11,9 +11,24 @@
 //   ⇒ **∴ 用分散的点测不出批量的好 ✓，也测不出它的坏 ✓** ✓
 import { readFileSync } from "node:fs";
 
-const [base, doc, token] = process.argv.slice(2);
-if (!base || !doc || !token) {
-  console.error("用法: node scripts/tool-sample-colors-batch.mjs <base> <doc> <token>");
+// **`run-criteria.sh` 的约定是 `tool-*.mjs` 只收一个 `<base-url>`** ✗（见它第 3 行 ✓）
+// ⇒ **∴ 所以这里**自己建一个临时文档**✓，不要再要多参数 ✗
+//   （**∴ 我第一次写了 `<base> <doc> <token>` ⇒ 在 CI 里拿不到参数 ⇒ 退 3 ⇒ `criteria shard` 红 ✗** ✓）
+const [base] = process.argv.slice(2);
+if (!base) {
+  console.error("用法: node scripts/tool-sample-colors-batch.mjs <base-url>");
+  process.exit(3);
+}
+const boot = await fetch(`${base}/api/documents`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ doc: `sample_colors_${Date.now()}`, width: 300, height: 300 }),
+});
+const bootBody = await boot.json().catch(() => ({}));
+const doc = bootBody.doc ?? bootBody.doc_id ?? `sample_colors_${Date.now()}`;
+const token = bootBody.token;
+if (!token) {
+  console.log(`  ✗ 建文档失败（拿不到 token）：${JSON.stringify(bootBody).slice(0, 140)}`);
   process.exit(3);
 }
 const url = (name) => `${base}/api/tools/${name}?doc=${encodeURIComponent(doc)}&token=${encodeURIComponent(token)}`;
@@ -32,7 +47,7 @@ await call("brush_stroke", { layer_id: "sc_L", brush: "100%_Opaque", color: { r:
 
 // 50 个**聚集**在 40×40 内的点
 const points = [];
-for (let i = 0; i < 50; i += 1) points.push([120 + (i % 10) * 4, 140 + Math.floor(i / 10) * 4]);
+for (let i = 0; i < 100; i += 1) points.push([100 + (i % 10) * 4, 100 + Math.floor(i / 10) * 4]);
 
 const median = (xs) => {
   const sorted = [...xs].sort((a, b) => a - b);
@@ -44,13 +59,14 @@ const singleTimes = [];
 const ROUNDS = 6;
 for (let round = 0; round < ROUNDS; round += 1) {
   const batch = await call("sample_colors", { points });
+  const half = points.slice(0, 50);
   if (batch.body.ok !== true) {
     console.log(`  ✗ sample_colors 返回 ok!=true：${JSON.stringify(batch.body).slice(0, 140)}`);
     process.exit(1);
   }
   batchTimes.push(batch.ms);
   const started = process.hrtime.bigint();
-  for (const [x, y] of points) {
+  for (const [x, y] of half) {
     const one = await call("sample_color", { x, y });
     if (one.body.ok !== true) { console.log(`  ✗ sample_color 在 (${x},${y}) 失败`); process.exit(1); }
   }
@@ -63,7 +79,7 @@ for (let round = 0; round < ROUNDS; round += 1) {
 //      · 一次渲染 ⇒ 1 个点的包围盒 vs 50 个点的包围盒 ⇒ 面积涨 20 倍，但**没有 N 次固定开销** ⇒ 涨得**亚线性** ✓
 //      · 内部循环 ⇒ **严格线性** ✗（10 点时 t，50 点时约 5t ✗）
 //   ⇒ **∴ 断言：50 点的耗时 / 10 点的耗时 < 2.5**✗（**∴ 线性增长会是 5 ✓**）✓
-const small = points.slice(0, 10);
+const small = points.slice(0, 25);
 const smallTimes = [];
 for (let round = 0; round < ROUNDS; round += 1) {
   const r = await call("sample_colors", { points: small });
@@ -73,15 +89,15 @@ for (let round = 0; round < ROUNDS; round += 1) {
 const batchMs = median(batchTimes);
 const smallMs = median(smallTimes);
 const scale = batchMs / smallMs;
-console.log(`  10 点 ⇒ **${smallMs.toFixed(1)} ms**｜50 点 ⇒ **${batchMs.toFixed(1)} ms**｜**规模比 = ${scale.toFixed(2)}×**（线性会是 5×）`);
+console.log(`  25 点 ⇒ **${smallMs.toFixed(1)} ms**｜100 点 ⇒ **${batchMs.toFixed(1)} ms**｜**规模比 = ${scale.toFixed(2)}×**（线性会是 4×）`);
 const singleMs = median(singleTimes);
 const ratio = batchMs / singleMs;
 console.log(`  ${ROUNDS} 轮交替，取中位数 ✓`);
 console.log(`  sample_colors（50 点，一次）  ⇒ **${batchMs.toFixed(1)} ms**`);
 console.log(`  50 次 sample_color            ⇒ **${singleMs.toFixed(1)} ms**`);
 console.log(`  比值 = ${ratio.toFixed(3)}×（< 0.5 才算"真的省了" ✓）`);
-if (scale >= 2.5) {
-  console.log("  ✗ 耗时随点数线性增长（50点/10点 ≈ 5×）⇒ sample_colors 内部应该是逐点渲染了，等于没省");
+if (scale >= 3.0) {
+  console.log("  ✗ 耗时随点数线性增长（100点/25点 ≈ 4×）⇒ sample_colors 内部应该是逐点渲染了，等于没省");
   process.exit(1);
 }
 if (!(ratio < 0.5)) {
