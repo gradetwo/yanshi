@@ -66,3 +66,35 @@ CI 已知红         = criteria shard 4/6（tool-dwell，归引擎，AGENTS.md �
 - `brush parity`（`continue-on-error`）
 - `background_stroke_cost::other_ms`（CI 486 vs 本机 7.3）
 - `browser-*` 判据在 CI 无 chromium ⇒ `exit(3)` 计为 skipped
+
+## 七、这份文件**自己会过期**（第 8 条规矩，§70 提醒）
+
+`§70` 里对方说过一句更准的话：过期的表格会变成「**看起来权威的过期数据**」——
+它不会让人忽略它，而会让人**信它**。
+
+所以这份文件里的**四张表**（状态、8 项定案、G02 的 7 项、9 条规矩）都有同一个义务：
+
+```
+**∴ 任何一项变了 ⇒ 必须**回头改这张表**✗**
+   ⇒ **∴ 而**不是**在后面**追加一句"更新：…"**✗**（**∴ 那**会让表与更新**打架**✗**）
+```
+
+**触发条件**（照做即可，不需要判断）：
+
+| 我改了什么 | 必须改哪张表 |
+|---|---|
+| 判据的断言数 | **一、状态** 里的「10/10 / 8/8」 |
+| `AGENTS.md` 加/改规矩 | **四、9 条规矩** ＋ **一、状态** 里的「9 条」 |
+| 外部复测某一项有进展 | **二、8 项定案** 对应行 |
+| G02 某个子项变了 | **三、G02 的 7 项** 对应行 |
+| `HEAD` 前进 | **一、状态** 里的 `HEAD` |
+
+**自检**（一条命令，能在几秒内看出表是否过期）：
+
+```bash
+cd /home/crow/yanshi
+echo "HEAD=$(git rev-parse --short HEAD)"
+grep -c 'check(' scripts/tool-preview-read-canvas.mjs   # 应为 10
+grep -c 'check(' scripts/tool-swatch-include-image.mjs   # 应为 8
+grep -c '^## [^判]' AGENTS.md                            # 规矩段数
+```
