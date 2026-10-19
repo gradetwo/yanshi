@@ -16669,7 +16669,7 @@ fn paint_brush(
     }
 
     let mut state = hokusai::BrushState::default();
-    prime_stroke_total_length(&mut state, &points);
+    prime_stroke_total_length(&mut state, points);
     let mut surface = hokusai::tile_mem::MemSurface::new();
     // **区域要在落笔之前就算出来** ✗ —— 先在下面算了一遍 ✓，才能把**底图**喂进 surface ✓。
     // **同一个公式只写一份** ✓（抽成 `brush_stroke_region` ✓）：落笔前喂底图用它 ✓、
