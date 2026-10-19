@@ -4,6 +4,8 @@
 import { readdirSync, readFileSync } from "node:fs";
 
 const fail = [];
+// **∴ 末行要**带关键数**✗**（`run-criteria.sh` 的 `↳` **只**留末行 ✓）
+let tail = "";
 const ok = (m) => console.log(`  ✓ ${m}`);
 const check = (cond, m) => { if (cond) ok(m); else { console.log(`  ✗ ${m}`); fail.push(m); } };
 
@@ -105,6 +107,8 @@ try {
   }
   const ratio = total ? Math.round((withRecord / total) * 100) : 0;
   console.log(`  判据 ${total} 条｜注释里记录变异的 ${withRecord} 条（${ratio}%）｜基线 ${baseline.with_mutation_record}/${baseline.criteria}`);
+  // **∴ 再**重复一次**✗** ⇒ **∴ 让**它在**摘要末行**✗ 也**可见**✗** ✓
+  tail = `判据 ${total} 条｜记录变异 ${withRecord} 条（${ratio}%）｜基线 ${baseline.with_mutation_record}`;
   check(
     withRecord >= baseline.with_mutation_record,
     `判据的变异记录数不许低于基线 ${baseline.with_mutation_record}（实测 ${withRecord}）⇒ 新判据要写清它怎么红 ✗`,
@@ -113,5 +117,8 @@ try {
   console.log(`  （跳过第 9 条：${error.message}）`);
 }
 
-console.log(`\n  ${fail.length ? "✗" : "✓"} 自检 ${fail.length ? "红了" : "绿了"}（${fail.length} 处不满足）`);
+console.log(
+  `\n  ${fail.length ? "✗" : "✓"} 自检 ${fail.length ? "红了" : "绿了"}（${fail.length} 处不满足）`
+    + (tail ? `｜${tail}` : ""),
+);
 process.exit(fail.length ? 1 : 0);
