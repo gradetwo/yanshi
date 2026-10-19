@@ -53,6 +53,26 @@ bash scripts/watch-ci.sh
 | `exit(3)` 说明覆盖 | **194/194** |
 | `trackTemp` 覆盖 | **62/62** |
 
+## 代码库健康指标（第 992 轮实测，可复核）
+
+```bash
+# 遗留标记：应为 0
+for k in TODO FIXME XXX HACK; do
+  echo "$k = $(grep -rnE "\b$k\b" --include=*.rs --include=*.mjs crates/*/src scripts/ | wc -l)"
+done
+# 乱码：应为 0
+grep -rlP '\x{FFFD}' --include=*.rs --include=*.mjs --include=*.md --include=*.sh . | wc -l
+```
+
+| 项 | 实测 |
+|---|---|
+| `TODO` / `FIXME` / `XXX` / `HACK` | **0 / 0 / 0 / 0** |
+| U+FFFD 乱码文件 | **0** |
+| `待修` | 1（引用台账的注释，**不是**遗留标记）|
+| `未实现` | 90（全是**正式的能力披露**，如「一般仿射与嵌套组尚未实现」）|
+
+**⇒ 所以「未实现 90」不是债，是**诚实的边界说明** —— 与内核 1「静默降级是唯一对手」一致。**
+
 ## 还没做完的
 
 - **`fill` / `fill_region` 加 `blend_mode` 参数**（功能已有，走 `set_property`；缺方便入口）
