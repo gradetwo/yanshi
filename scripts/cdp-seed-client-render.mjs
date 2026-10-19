@@ -70,7 +70,12 @@ for (const t of targets) {
     //   **∴ 先导航到 about:blank 之外的页面才有效 ✗**：**`about:blank` **没有** localStorage** ✓
     //     ⇒ **∴ 所以**这一步**在**空页面**上**会失败**✗ ⇒ **∴ 用 try 包住** ＋ **不报错** ✓
     try {
-      await send("Runtime.evaluate", { expression: source, returnByValue: true });
+      // **两个开关都带上**（第 996 轮补）：`awaitPromise` 在这里**不是必需**
+      //   （`source` 是同步的 localStorage 种子，不是 async 表达式），
+      //   但**加上无害** ⇒ 且防将来 `source` 变成 async 时静默返回 `{}` ✗
+      await send("Runtime.evaluate", {
+        expression: source, returnByValue: true, awaitPromise: true,
+      });
     } catch (error) {
       // **∴ 当前页面没有 localStorage（**如 about:blank ✓）⇒ **∴ 无害** ✓
     }
