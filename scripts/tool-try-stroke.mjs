@@ -52,10 +52,24 @@ if (before.count == null || after.count == null) {
 }
 if (q1 !== q2) failures.push(`试画后最大 seq 从 ${q1} 变成 ${q2} ⇒ 它落笔了 ✗`);
 
-// ③ pixels_touched > 0（这一笔确实算出了东西 ⇒ 防"恒 0 也能过"）
+// ③ want_image：缺省必须出图、false 必须不出图（外部 §113 称"不出图"是第一阻塞项 ⇒ 这条路径以前没验过）
+const withImg = await call("try_stroke", {
+  layer_id: "p", brush: "100%_Opaque", points: [[40, 120, 1], [120, 160, 1]], size: 12,
+  color: { r: 0, g: 128, b: 255, a: 255 },
+});
+const noImg = await call("try_stroke", {
+  layer_id: "p", brush: "100%_Opaque", points: [[40, 160, 1], [120, 200, 1]], size: 12,
+  color: { r: 0, g: 128, b: 255, a: 255 }, want_image: false,
+});
+console.log(`  缺省 want_image ⇒ 有图=${!!withImg.image}（长度 ${String(withImg.image || "").length}）｜false ⇒ 有图=${!!noImg.image}`);
+if (!withImg.image) failures.push("缺省（want_image 应为 true）却没返回 image ⇒ 试画退化成只看 bbox ✗");
+if (String(withImg.image || "").length < 100) failures.push(`缺省返回的 image 太短（${String(withImg.image || "").length} 字符）⇒ 可能是空图 ✗`);
+if (noImg.image) failures.push("want_image=false 却仍返回 image ⇒ 开关没生效 ✗");
+
+// ④ pixels_touched > 0（这一笔确实算出了东西 ⇒ 防"恒 0 也能过"）
 if (!(Number(r.pixels_touched) > 0)) failures.push(`pixels_touched=${r.pixels_touched}，应大于 0 ⇒ 试画没真的算 ✗`);
 
-// ④ bbox 四元组且宽高为正
+// ⑤ bbox 四元组且宽高为正
 if (!Array.isArray(r.bbox) || r.bbox.length !== 4) failures.push(`bbox 不是 4 元组：${JSON.stringify(r.bbox)} ✗`);
 
 if (failures.length) { console.log("  ✗ " + failures.join("；")); process.exit(1); }
