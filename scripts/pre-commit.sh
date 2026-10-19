@@ -28,7 +28,28 @@ else
   echo "     ✓"
 fi
 
-# ③ **磁盘卫生提醒**（第 1038 轮加）—— **只提醒，不阻塞** ✓
+# ③ **脚本卫生测试**（第 1059 轮加）—— **只在 scripts/*.sh 有改动时跑** ✓
+#   **∴ 为什么**：本仓已有两组测试专门查脚本卫生：
+#     · shell_scripts        —— \$VAR 被引用但没赋值（1057 轮抓到我的 watch-ci.sh）
+#     · script_portability   —— \$VAR 紧跟非 ASCII（1014）+ bash 4+ 写法（1018）
+#   ⇒ 前三次（1014/1018/1057）都是 **CI 先发现**我在脚本里犯错 ✗
+#   ⇒ **∴ 所以**把它们挪到提交前，让「脚本卫生」和 fmt/clippy 一样**不可绕过** ✓
+#   **∴ 为什么加条件**：`cargo test` 属「重计算」（AGENTS.md 说交给 CI）
+#     ⇒ 但这两个文件很小、且只在改脚本时才需要
+#     ⇒ **∴ 所以**用 `git diff --name-only` 判断，**没改脚本就跳过** ✓
+if git diff --name-only HEAD 2>/dev/null | grep -q '^scripts/.*\.sh$' \
+   || git diff --name-only --cached 2>/dev/null | grep -q '^scripts/.*\.sh$'; then
+  echo "  ③ cargo test --test shell_scripts --test script_portability"
+  if cargo test -p yanshi-server --test shell_scripts --test script_portability > /tmp/pre-commit-shell.log 2>&1; then
+    echo "     ✓"
+  else
+    echo "     ✗（详见 /tmp/pre-commit-shell.log）"
+    grep -aE "被引用但从未赋值|紧跟非 ASCII|不支持的写法|panicked" /tmp/pre-commit-shell.log | head -3 | sed 's/^/       /'
+    fail=1
+  fi
+fi
+
+# ④ **磁盘卫生提醒**（第 1038 轮加）—— **只提醒，不阻塞** ✓
 #   **∴ 为什么**：`AGENTS.md` 里有「build 后清 target/debug/{deps,build,incremental}」那条，
 #     而本场我**读了但没做** ⇒ `target/debug` 涨到 **9.5 G**、磁盘 **63%** ✗
 #     ⇒ 清完 **614 M**、磁盘 **60%** ✓（省 8.9 G）
