@@ -151,16 +151,9 @@ impl Default for HttpOptions {
             //
             // **`Semantic` 故意不在其中** ✓：语义工具需要外部模型服务 ✓，
             // 按既定裁定"**先预留设计、先不开发**" ✓ ⇒ 这里**不启用** ✓（不是漏了 ✓）。
-            profiles: vec![
-                Profile::Core,
-                Profile::History,
-                Profile::Changeset,
-                Profile::Annotation,
-                Profile::Collab,
-                Profile::Structure,
-                Profile::Retouch,
-                Profile::Conflict,
-            ],
+            // **缺省 = `all`** ✓（用户裁定 ✓）：**∴ 一个词**就能**开全** ⇒ **∴ 而不**是**只**开 core ✓。
+            // ⇒ **∴ 与** `--profile all` **同**一份名单**✗** = `Profile::IMPLEMENTED` ✓。
+            profiles: Profile::IMPLEMENTED.to_vec(),
             max_connections: 64,
             push_interval_ms: 25,
             // **默认关** ✗（用户裁定 ✓）—— serve 侧判据 `serve-watch-ws.mjs` 的**负对照**靠它 ✓。

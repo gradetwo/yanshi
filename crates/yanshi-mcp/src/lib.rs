@@ -97,7 +97,8 @@ impl Default for McpOptions {
             doc_id: "default".to_owned(),
             width: 1024,
             height: 1024,
-            profiles: vec![Profile::Core],
+            // **缺省 = `all`** ✓（用户裁定 ✓）：与 `--profile all` 同一份名单 ✓。
+            profiles: Profile::IMPLEMENTED.to_vec(),
             wait_for_render: true,
             wait_budget_ms: 500,
             inline_images: true,
@@ -693,11 +694,15 @@ mod tests {
         // **不要硬编码工具数量** ✗ —— 本轮新增 `replace_object_data` 时，
         // 这里写死的 27 直接让测试变红 ✓，而它真正想守的是"MCP 暴露的工具与注册表一致" ✓。
         // 因此改成两条**真正的**断言：与注册表逐一对应 ✓，以及一个宽松的下界（防止空列表假过 ✓）。
-        let registry: Vec<String> = yanshi_server::ToolRegistry::core()
-            .tools()
-            .iter()
-            .map(|tool| tool.name.to_owned())
-            .collect();
+        // **默认 profile = `all`** ✓（用户裁定 ✓）⇒ **∴ 对照基准**也要**是** IMPLEMENTED**✗**
+        //   ⇒ **∴ 否则**它**守**的**是**「**MCP 只有 core**」**✗** ⇒ **∴ 而**那**不**再**成立**✗** ✓
+        let registry: Vec<String> = yanshi_server::ToolRegistry::with_profiles(
+            yanshi_server::Profile::IMPLEMENTED.as_ref(),
+        )
+        .tools()
+        .iter()
+        .map(|tool| tool.name.to_owned())
+        .collect();
         assert_eq!(
             tools.len(),
             registry.len(),
