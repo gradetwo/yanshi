@@ -18,9 +18,15 @@ cd "$(dirname "$0")/.."
 # **不要有假参数**（第 988 轮实测）：原来这里有个 `LIMIT`，只赋值**从未使用**
 # ⇒ `--limit 3` 会被接受而**毫无效果** ⇒ 那是「静默降级」（用户以为改了行为，其实没有）✗
 # ⇒ 所以删掉它，只留一个**真的会生效**的参数：轮询间隔。
+# **`--once`**（第 1035 轮加）：查一次就退出，**不阻塞** ✓
+#   **∴ 为什么**：这个脚本原本是**阻塞式**（run 完成才退出）✗
+#     ⇒ 适合 `nohup ... &` 后台跑，**不适合每轮前台调**（会挂住一轮）✗
+#     ⇒ 而我 1034 轮正因此又回到「每轮手查 CI」⇒ 违反 883 轮那条 ✓
+ONCE=0
+if [ "${1:-}" = "--once" ]; then ONCE=1; shift; fi
 INTERVAL="${1:-60}"
 case "$INTERVAL" in
-  ''|*[!0-9]*) echo "  ⊘ 用法：$0 [轮询间隔秒数，缺省 60]" >&2; exit 2 ;;
+  ''|*[!0-9]*) echo "  ⊘ 用法：$0 [--once] [轮询间隔秒数，缺省 60]" >&2; exit 2 ;;
 esac
 [ "$INTERVAL" -lt 5 ] && { echo "  ⊘ 间隔至少 5 秒（别把 API 打爆）" >&2; exit 2; }
 
@@ -60,5 +66,7 @@ while :; do
   case "$STATE" in
     completed:*) echo "  ⇒ run 完成：${STATE#completed:}"; exit 0 ;;
   esac
+  # `--once`：打印完当前各 job 状态就退出（不阻塞）
+  [ "$ONCE" = "1" ] && { echo "  ⇒ run 仍在 ${STATE%%:*}$([ "$ONCE" = "1" ] && echo "（--once，不等待）")"; exit 0; }
   sleep "$INTERVAL"
 done
