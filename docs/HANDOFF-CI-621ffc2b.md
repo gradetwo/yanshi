@@ -234,8 +234,8 @@ done                                                                            
   | `tool-engine-capabilities` | **0** ✓ |
   | `tool-brush-params-doc` | **0** ✓ |
   | **`tool-brush-tag-filter`** | **0** ✓（第 1003 轮补）|
-  | **`tool-param-parity`** | 未手动跑（`exit 2`=用法错）|
-  | `tool-collect-diagnostics` | 未手动跑（`exit 2`）|
+  | **`tool-param-parity`** | **0** ✓（第 1023 轮补）|
+  | `tool-collect-diagnostics` | **0** ✓（第 1023 轮补）|
   | `tool-example-acceptance` | **1**（已知红）|
 
   **⇒ 所以「需 3 参数」不是缺陷，是**判据的参数形态不统一**（本仓的真实特征）✓
