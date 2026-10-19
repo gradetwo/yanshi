@@ -12251,7 +12251,7 @@ fn write_update_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind
 /// 未规定其对落笔的作用，这一语义是用户拍板的，已记入 implementation-notes ✓。
 fn write_create_selection(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let selection_id = require_str(args, "selection_id")?;
-    let shape = require_object(args, "shape")?.clone();
+    let mut shape = require_object(args, "shape")?.clone();
     if shape.get("kind").and_then(Value::as_str).is_none() {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
@@ -12290,18 +12290,40 @@ fn write_create_selection(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
     // ⇒ 所以这里**明确拒绝**，而不是让他以为合并成功了。
     //   （真正的布尔合并见 docs/design/brush-capability-gap.md 三百二十七节的 4 步清单，
     //     第 1、4 步已完成，第 2、3 步待做。）
+    // **`mode != "new"` 时做位图布尔合并**（第 825 轮，台账三百二十七节第 2、3 步）。
+    // 三条 mode **同一条路线**（不许分叉）：光栅化旧形状 → 光栅化新形状 → 按 mode 合成 →
+    // L8 PNG → 注册 → 把 payload 的 shape 换成 `{kind:"bitmap", bbox, blob}`。
+    // ⇒ 为什么必须位图：`subtract` 的结果是「带洞的矩形」、`add` 是「两个分离矩形」，
+    //   都不是矩形 ⇒ 解析式只能覆盖 `intersect` 的 1/3（见台账三百二十七节的补充）。
     if mode != "new" {
         let state = document_state(ctx)?;
-        if state.selections.contains_key(&selection_id) {
-            return Err(YanshiError::new(
-                ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!(
-                    "mode={mode} 的布尔合并尚未实现（当前只会覆盖旧选区，那比报错更危险）\
-                     ⇒ 请改用两步：① smart_select 取要减掉/加上的区域；\
-                     ② paint_mask(mode=…) 在目标选区的蒙版上擦/画，再用 set_property 挂回图层。\
-                     见 docs/design/brush-capability-gap.md 三百二十七节。"
-                )),
-            ));
+        if let Some(existing) = state.selections.get(&selection_id) {
+            if existing.is_deleted() {
+                return Err(YanshiError::new(
+                    ErrorCode::PreconditionFailed,
+                    ErrorContext::detail(format!("选区 {selection_id} 已删除，无法 mode={mode}")),
+                ));
+            }
+            let old_json = existing.shape.clone();
+            let new_json = shape.clone();
+            if let Some((bbox, blob_hash, png_len)) =
+                merge_selection_shapes(ctx, &old_json, &new_json, &mode)?
+            {
+                shape = json!({"kind": "bitmap", "bbox": [bbox[0], bbox[1], bbox[2], bbox[3]],
+                               "blob": blob_hash});
+                payload["shape"] = shape.clone();
+                payload["merged_from"] = json!(mode);
+                payload["merged_bytes"] = json!(png_len);
+            } else {
+                // 两者都空 ⇒ 合成之后也是空。**明说**，不要留一个空位图让人误读。
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "mode={mode} 的合并结果是**空选区**（两个形状没有重叠或都是空的）\
+                         ⇒ 没有可提交的选区。若你要的是清空，请用 delete_selection。"
+                    )),
+                ));
+            }
         }
     }
     let result = ctx.commit(AtomKind::CreateSelection, payload)?;
@@ -12335,6 +12357,102 @@ fn selection_area_px(shape: &Value) -> (f64, bool) {
         ),
         _ => (0.0, false),
     }
+}
+
+/// 从**落盘 JSON** 估一个包围盒（`rect`/`ellipse` 用 x/y/w/h，`polygon` 取点集极值）。
+fn shape_json_bbox(shape: &Value) -> Option<(f64, f64, f64, f64)> {
+    match shape.get("kind").and_then(Value::as_str).unwrap_or("") {
+        "rect" | "ellipse" => {
+            let n = |k: &str| shape.get(k).and_then(Value::as_f64).unwrap_or(0.0);
+            let (x, y, w, h) = (n("x"), n("y"), n("w"), n("h"));
+            if w <= 0.0 || h <= 0.0 {
+                return None;
+            }
+            Some((x, y, x + w, y + h))
+        }
+        "polygon" => {
+            let pts = shape.get("points").and_then(Value::as_array)?;
+            let mut bb = (
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            );
+            for p in pts {
+                let Some(a) = p.as_array() else { continue };
+                let x = a.first().and_then(Value::as_f64)?;
+                let y = a.get(1).and_then(Value::as_f64)?;
+                bb = (bb.0.min(x), bb.1.min(y), bb.2.max(x), bb.3.max(y));
+            }
+            (bb.2 > bb.0 && bb.3 > bb.1).then_some(bb)
+        }
+        _ => None,
+    }
+}
+
+/// 把两个选区形状按 `mode` 合成为一张位图：写 blob、注册掩膜、返回 `(bbox, blob_hash, png_len)`。
+///
+/// **三条 mode 同一条路线**（第 825 轮，台账三百二十七节）：光栅化 → 布尔 → L8 PNG。
+/// 为什么不能解析式算：`subtract` 的结果是「带洞的矩形」、`add` 是「两个分离矩形」，
+/// 都不是矩形 ⇒ 只有 `intersect` 能解析式覆盖，那会让三条走两条不同的路（必然漂移）。
+///
+/// 采样用 `coverage(x+0.5, y+0.5)`（像素中心）。全空时返回 `Ok(None)`。
+fn merge_selection_shapes(
+    ctx: &mut ToolContext<'_>,
+    old_json: &Value,
+    new_json: &Value,
+    mode: &str,
+) -> Result<Option<([i32; 4], String, usize)>> {
+    let old = yanshi_render::selection::SelectionShape::from_value(old_json);
+    let new = yanshi_render::selection::SelectionShape::from_value(new_json);
+    let (Some(ob), Some(nb)) = (shape_json_bbox(old_json), shape_json_bbox(new_json)) else {
+        return Ok(None);
+    };
+    let x0 = ob.0.min(nb.0).floor() as i32;
+    let y0 = ob.1.min(nb.1).floor() as i32;
+    let x1 = ob.2.max(nb.2).ceil() as i32;
+    let y1 = ob.3.max(nb.3).ceil() as i32;
+    let (w, h) = ((x1 - x0).max(0) as usize, (y1 - y0).max(0) as usize);
+    if w == 0 || h == 0 {
+        return Ok(None);
+    }
+    let mut out = vec![0u8; w * h];
+    let mut any = false;
+    for y in 0..h {
+        for x in 0..w {
+            let px = f64::from(x0) + x as f64 + 0.5;
+            let py = f64::from(y0) + y as f64 + 0.5;
+            let a = f64::from(old.coverage(px, py)).clamp(0.0, 1.0);
+            let b = f64::from(new.coverage(px, py)).clamp(0.0, 1.0);
+            let v = match mode {
+                "add" => a.max(b),
+                "subtract" => (a - b).max(0.0),
+                "intersect" => a.min(b),
+                _ => a,
+            };
+            let q = (v * 255.0).round() as u8;
+            if q > 0 {
+                any = true;
+            }
+            out[y * w + x] = q;
+        }
+    }
+    if !any {
+        return Ok(None);
+    }
+    let png =
+        yanshi_render::png::encode_png_l8(w as u32, h as u32, &out).expect("内存 PNG 编码不会失败");
+    let png_len = png.len();
+    let hash_str = ctx.workspace.store().put(&png)?.to_string();
+    yanshi_render::selection::register_bitmap_mask(
+        hash_str.clone(),
+        std::sync::Arc::new(yanshi_render::selection::DecodedBitmapMask {
+            width: w as u32,
+            height: h as u32,
+            data: out,
+        }),
+    );
+    Ok(Some(([x0, y0, w as i32, h as i32], hash_str, png_len)))
 }
 
 fn read_list_selections(ctx: &mut ToolContext<'_>) -> Result<Value> {
@@ -12709,7 +12827,7 @@ fn write_delete_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 
 fn write_create_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let mask_id = require_str(args, "mask_id")?;
-    let shape = require_object(args, "shape")?.clone();
+    let mut shape = require_object(args, "shape")?.clone();
     if shape.get("kind").and_then(Value::as_str).is_none() {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
