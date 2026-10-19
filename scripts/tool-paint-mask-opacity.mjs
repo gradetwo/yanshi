@@ -4,6 +4,13 @@
 //  直接 paint 到 1.0 三档看不出差别（我第 751 轮就是这么误判成「opacity 可疑」的）。
 //  实测（擦到 0 后，同一位置）：
 //    opacity 0.2 → 211,89,159｜0.5 → 240,89,99｜1.0 → 243,89,89   ⇒ R 单调递增
+//
+//  **变异已验证能红**（第 754 轮）：把 `opacity` 的解析改成恒为 1.0
+//  （锚点 `.unwrap_or(1.0)\n.clamp(0.0, 1.0);\n    let flow = args` —— 加 `let flow` 才唯一）⇒
+//    opacity 0.2/0.5/1 ⇒ R 243/243/243
+//    ✗ opacity 0.2→0.5 的 R 没增加（243→243）⇒ opacity 静默失效
+//    ✗ opacity 0.5→1 的 R 没增加（243→243）⇒ opacity 静默失效
+//  退出码 1；恢复后回绿（R 211/240/243）。⇒ 四层齐。
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
