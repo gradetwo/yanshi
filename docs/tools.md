@@ -21,7 +21,7 @@ canvas. Two stale claims were corrected rather than left to mislead: draw_text's
 item while it renders Chinese today, and this file said convert_to_shape, convert_to_path, split, merge and boolean
 were refused because no path model existed, which stopped being true when the path object model landed.
 
-The tool layer registers **91 core tools**, and with every implemented group enabled there are **147 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
+The tool layer registers **92 core tools**, and with every implemented group enabled there are **148 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
 
 > **完整工具列表**：本文档是散文式概述，不逐个列出全部工具。完整、实时的工具目录（含参数表）由注册表生成，见 `GET /api/tools` 或 MCP 的 `tools/list`。
 

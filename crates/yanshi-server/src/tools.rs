@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 91 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 92 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -32,7 +32,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（91 个）。
+    /// 核心层：默认注册（92 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -563,7 +563,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，91 个）。
+    /// 核心层（默认注册，92 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1405,7 +1405,7 @@ fn region_of(result: &CommitResult) -> Option<Bbox> {
 const ID_ARGS: &[ParamSpec] = &[param!("object_id", String, true, "对象 id")];
 const LAYER_ID: &[ParamSpec] = &[param!("layer_id", String, true, "图层 id")];
 
-/// 核心层 91 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 92 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -3374,6 +3374,16 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("hardness", Number, false, "笔尖硬度 0..1"),
             param!("want_image", Boolean, false, "缺省 true = 返回区域图（base64 PNG）；false = 只返回包围盒与像素数"),
             param!("margin", Integer, false, "区域图在包围盒外扩的像素数（缺省 16）"),
+            param!("label", String, false, "笔迹标签 ⇒ 提交时写进原子，供 list_atoms(label=…) 筛"),
+        ],
+    },
+    ToolSpec {
+        name: "commit_stroke",
+        profile: Profile::Core,
+        summary: "把某次 try_stroke 的试画原样贴回文档（位图方案 ⇒ 与试画逐像素一致）",
+        mutating: true,
+        params: &[
+            param!("attempt_id", String, true, "try_stroke 返回的尝试编号"),
         ],
     },
     ToolSpec {
@@ -3759,6 +3769,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "export_png" => write_export_png(ctx, args),
         "export_book_pngs" => write_export_book_pngs(ctx, args),
         "try_stroke" => write_try_stroke(ctx, args),
+        "commit_stroke" => write_commit_stroke(ctx, args),
         "list_atoms" => read_list_atoms(ctx, args),
         "get_atom" => read_get_atom(ctx, args),
         "list_comments" => read_list_comments(ctx, args),
@@ -16233,6 +16244,28 @@ type ExportResultMap = std::collections::HashMap<ExportResultKey, ExportResultVa
 static EXPORT_RESULT_CACHE: std::sync::OnceLock<std::sync::Mutex<ExportResultMap>> =
     std::sync::OnceLock::new();
 
+/// **一次"试画"的存档**：提交时要原样贴回去（方案 B：存位图）。
+struct AttemptRecord {
+    doc_id: String,
+    layer_id: String,
+    brush: String,
+    x0: i32,
+    y0: i32,
+    width: usize,
+    height: usize,
+    rgba: Vec<u8>,
+    painted: usize,
+    label: Option<String>,
+    status: &'static str,
+}
+
+type AttemptMap = std::collections::HashMap<String, AttemptRecord>;
+static ATTEMPTS: std::sync::OnceLock<std::sync::Mutex<AttemptMap>> = std::sync::OnceLock::new();
+
+fn attempts() -> &'static std::sync::Mutex<AttemptMap> {
+    ATTEMPTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
 fn export_result_cache() -> &'static std::sync::Mutex<ExportResultMap> {
     EXPORT_RESULT_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
@@ -18716,6 +18749,91 @@ fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 /// **为什么新加而不是改 `get_diff`** ✓：`get_diff`（设计 776 ✓）是"**两个序号之间的差分**" ✓，
 /// 改它的响应会动到既有调用方 ✗；而"**按 id 取一条**"是另一个正交的需要 ✓（点开历史里某一条 ✓）。
 /// **内核里本来就有** ✓：`Log::get(id)` ✓ ⇒ 这里只是把它**放行到工具面** ✓。
+/// **`commit_stroke`**：把某次试画**原样贴回**文档（方案 B：存位图 ⇒ `committed_as=bitmap`）。
+///
+/// **为什么是位图而不是重放 dab**：重放要固化 dab 列表或 RNG seed（方案 A），
+/// 那需要改引擎内部；位图方案先让"试了能要"闭环，且逐像素与试画**必然一致** ✓。
+fn write_commit_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let attempt_id = require_str(args, "attempt_id")?;
+    let record = {
+        let mut map = attempts().lock().map_err(|_| {
+            YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail("尝试表锁失败"),
+            )
+        })?;
+        let known: Vec<String> = map.keys().take(5).cloned().collect();
+        let Some(record) = map.get_mut(&attempt_id) else {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!(
+                    "找不到尝试 {attempt_id} ⇒ 现有：{known:?}（先 try_stroke 再 commit_stroke）"
+                )),
+            ));
+        };
+        if record.status != "pending" {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "尝试 {attempt_id} 已经是 {} ⇒ 同一次只能提交一次",
+                    record.status
+                )),
+            ));
+        }
+        record.status = "committed";
+        AttemptRecord {
+            doc_id: record.doc_id.clone(),
+            layer_id: record.layer_id.clone(),
+            brush: record.brush.clone(),
+            x0: record.x0,
+            y0: record.y0,
+            width: record.width,
+            height: record.height,
+            rgba: record.rgba.clone(),
+            painted: record.painted,
+            label: record.label.clone(),
+            status: "committed",
+        }
+    };
+    if record.doc_id != ctx.doc_id {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "尝试 {attempt_id} 属于文档 {}，当前文档是 {}",
+                record.doc_id, ctx.doc_id
+            )),
+        ));
+    }
+    let blob = ctx.workspace.store().put(&record.rgba)?;
+    let mut import_args = json!({
+        "layer_id": record.layer_id,
+        "bitmap": {
+            "blob_hash": blob,
+            "size": record.rgba.len(),
+            "mime_type": "image/x-yanshi-raw",
+        },
+        "region": {
+            "x": record.x0 as f64,
+            "y": record.y0 as f64,
+            "w": record.width as f64,
+            "h": record.height as f64,
+        },
+        "source": {"kind": "brush", "brush": record.brush},
+    });
+    // **标签走 ** ✓： **不读** **✗**
+    //   ⇒ **∴ 它**只认  取的 **✗** ⇒ **∴ 设错了**就丢**✗**（实测：按 label 查 0 条）
+    ctx.pending_label = record.label.clone();
+    let value = write_import_image(ctx, &import_args)?;
+    Ok(json!({
+        "ok": true,
+        "attempt_id": attempt_id,
+        "atom_id": value.get("atom_id").cloned().unwrap_or(Value::Null),
+        "pixels_touched": record.painted,
+        "committed_as": "bitmap",
+        "note": "以位图贴回（方案 B）⇒ 与试画逐像素一致；撤销后重建不保证一致",
+    }))
+}
+
 /// **`try_stroke`**：算一笔但**不落笔**（需求 v2 §二）。
 ///
 /// **为什么能做到「不落笔」**：`paint_brush` 是纯计算 —— 它不调用 `commit` 也不调用
@@ -18756,8 +18874,42 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         paint.x0 + paint.width as i32,
         paint.y0 + paint.height as i32,
     ];
+    let attempt_id = format!(
+        "at{:x}{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0),
+        std::process::id()
+    );
+    {
+        let label = optional_str(args, "label");
+        let mut map = attempts().lock().map_err(|_| {
+            YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail("尝试表锁失败"),
+            )
+        })?;
+        map.insert(
+            attempt_id.clone(),
+            AttemptRecord {
+                doc_id: ctx.doc_id.clone(),
+                layer_id: layer_id.clone(),
+                brush: brush.clone(),
+                x0: paint.x0,
+                y0: paint.y0,
+                width: paint.width,
+                height: paint.height,
+                rgba: paint.rgba.clone(),
+                painted: paint.painted,
+                label,
+                status: "pending",
+            },
+        );
+    }
     let mut out = json!({
         "ok": true,
+        "attempt_id": attempt_id,
         "bbox": bbox,
         "margin": margin,
         "pixels_touched": paint.painted,
@@ -20058,6 +20210,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "try_stroke",
         r#"{"layer_id":"L1","brush":"2B_pencil","points":[[10,10],[40,40]],"size":8}"#,
     ),
+    ("commit_stroke", r#"{"attempt_id":"abc123"}"#),
     ("list_atoms", r#"{"limit":10,"label":"nose"}"#),
     ("get_atom", r#"{"atom_id":"atom1"}"#),
     // **一批"纯 id / 无参数"的工具**（第 293 轮）：这些的必填参数都是 id 或什么都不需要，
