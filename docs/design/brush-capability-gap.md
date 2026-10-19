@@ -13205,3 +13205,39 @@ panicked at crates/yanshi-http/src/server.rs:3640:9:
 **⇒ 这一条我不会用「已知红」掩盖**：它是**产品回归**，不是环境差异。
 `test` 测试红 ⇒ 主干现在是坏的 ⇒ 优先级高于我手上任何别的活。
 
+### 三百二十四节的第一轮排查（第 756 轮）：`decode_png` 与 `unfilter_png` **都看不出问题**
+
+**先本机复现**（CI 与本机一致，是同一个红）：
+
+```
+cargo test -p yanshi-http --lib uploading_a_png_stores_normalised_raw_pixels
+⇒ test result: FAILED. 0 passed; 1 failed
+```
+
+**⇒ 排除两处**：
+
+1. **`png.rs` 里没有缓存代码**（`grep -nE "MaskCache|cache|Cache"` 零命中）——
+   我上一节猜的「补丁为缓存加了层」**错了**，`MaskCache` 不在 `png.rs` 里。
+2. **`decode_png`（`png.rs:452-477`）逻辑正确**：
+   - `color_type == 6`（RGBA）⇒ 直接返回 `unfilter_png` 的 `raw`（长度应为 `w*h*4`）
+   - `color_type == 2`（RGB）⇒ `chunks_exact(3)` 逐像素补 alpha
+3. **`unfilter_png`（`png.rs:357`）用 `ZlibDecoder` 解 `idat`**，头两条是 RFC 1950 的显式检查，
+   然后交给 zlib-rs ⇒ 坏数据会 `Err` ⇒ `None`，不会"成功但长度错"。
+
+**⇒ 补丁对 `png.rs` 的实质改动是**：
+- `write_chunk(&mut out, b"IHDR", &ihdr(width, height, 6))` —— `ihdr` 多了 `color_type` 参数（默认值仍是 6）
+- 抽出 `struct ParsedPng { width, height, bit_depth, color_type, interlace, idat }`，`decode_png` 与
+  新增的 `decode_png_l8` 共用块解析
+
+**⇒ 所以 21844 这个长度要么来自**：
+- **A. `parse_png_chunks` 把多个 `IDAT` 拼错了**（`png.rs:336` `idat.extend_from_slice(payload)` 看着对，
+  但可能漏了某个块的边界检查）；
+- **B. 测试断言的对象变了**：`server.rs:3640` 断言的那个 `blob` 长度可能不再是"像素字节数"，
+  而是"blob 里的某个复合结构"。**⇒ 21844 = 16384 + 5460，而 5460 = 16380/3 —— 这个 1/3 关系可疑。**
+
+**⇒ 下一轮**：打印测试里那个 PNG 的 `idat.len()`、`parse_png_chunks` 的返回、以及
+`decode_png` 的输出长度。三个数字一比就知道是哪一步。
+
+**⇒ 注意**：这条我不会再用「猜」推进。前两轮的猜测（缓存层、`decode_png` 逻辑）**都错了**，
+所以我改为「打印三个中间量」这种**不依赖猜测**的做法。
+
