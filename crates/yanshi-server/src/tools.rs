@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 93 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 94 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -32,7 +32,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（93 个）。
+    /// 核心层：默认注册（94 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -563,7 +563,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，93 个）。
+    /// 核心层（默认注册，94 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1405,7 +1405,7 @@ fn region_of(result: &CommitResult) -> Option<Bbox> {
 const ID_ARGS: &[ParamSpec] = &[param!("object_id", String, true, "对象 id")];
 const LAYER_ID: &[ParamSpec] = &[param!("layer_id", String, true, "图层 id")];
 
-/// 核心层 93 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 94 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -3389,6 +3389,15 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "discard_stroke",
+        profile: Profile::Core,
+        summary: "丢掉某次试画（状态转 discarded，之后不可再提交）⇒ 「试了不要」",
+        mutating: false,
+        params: &[
+            param!("attempt_id", String, true, "try_stroke 返回的尝试编号"),
+        ],
+    },
+    ToolSpec {
         name: "commit_stroke",
         profile: Profile::Core,
         summary: "把某次 try_stroke 的试画原样贴回文档（位图方案 ⇒ 与试画逐像素一致）",
@@ -3781,6 +3790,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "export_book_pngs" => write_export_book_pngs(ctx, args),
         "try_stroke" => write_try_stroke(ctx, args),
         "commit_stroke" => write_commit_stroke(ctx, args),
+        "discard_stroke" => write_discard_stroke(ctx, args),
         "list_attempts" => read_list_attempts(ctx, args),
         "list_atoms" => read_list_atoms(ctx, args),
         "get_atom" => read_get_atom(ctx, args),
@@ -18761,6 +18771,66 @@ fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 /// **为什么新加而不是改 `get_diff`** ✓：`get_diff`（设计 776 ✓）是"**两个序号之间的差分**" ✓，
 /// 改它的响应会动到既有调用方 ✗；而"**按 id 取一条**"是另一个正交的需要 ✓（点开历史里某一条 ✓）。
 /// **内核里本来就有** ✓：`Log::get(id)` ✓ ⇒ 这里只是把它**放行到工具面** ✓。
+/// **`discard_stroke`**：把某次试画标成 discarded —— **不写文档**，之后也不能再提交。
+fn write_discard_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let attempt_id = require_str(args, "attempt_id")?;
+    let mut map = attempts().lock().map_err(|_| {
+        YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail("尝试表锁失败"),
+        )
+    })?;
+    let known: Vec<String> = map.keys().take(5).cloned().collect();
+    let Some(record) = map.get_mut(&attempt_id) else {
+        return Err(YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!(
+                "找不到尝试 {attempt_id} ⇒ 现有：{known:?}（先 try_stroke 再 discard_stroke）"
+            )),
+        ));
+    };
+    if record.status != "pending" {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "尝试 {attempt_id} 已经是 {} ⇒ 只有 pending 的能丢弃",
+                record.status
+            )),
+        ));
+    }
+    record.status = "discarded";
+    let meta = json!({
+        "attempt_id": attempt_id,
+        "doc_id": record.doc_id,
+        "layer_id": record.layer_id,
+        "brush": record.brush,
+        "bbox": [record.x0, record.y0, record.x0 + record.width as i32, record.y0 + record.height as i32],
+        "width": record.width,
+        "height": record.height,
+        "painted": record.painted,
+        "label": record.label,
+        "status": "discarded",
+    });
+    let dir = std::env::temp_dir()
+        .join("yanshi-attempts")
+        .join(&ctx.doc_id);
+    std::fs::create_dir_all(&dir).ok();
+    if let Ok(mut log) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("log.jsonl"))
+    {
+        use std::io::Write as _;
+        let _ = writeln!(log, "{meta}");
+    }
+    Ok(json!({
+        "ok": true,
+        "attempt_id": attempt_id,
+        "status": "discarded",
+        "note": "已丢弃：文档没被改动，之后 commit_stroke 会拒绝这个编号",
+    }))
+}
+
 /// **`list_attempts`**：读落盘的 `log.jsonl`，按 label／status 筛，新的在前。
 fn read_list_attempts(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let limit = optional_u64(args, "limit").unwrap_or(20).min(500) as usize;
@@ -20299,6 +20369,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "try_stroke",
         r#"{"layer_id":"L1","brush":"2B_pencil","points":[[10,10],[40,40]],"size":8}"#,
     ),
+    ("discard_stroke", r#"{"attempt_id":"abc123"}"#),
     ("list_attempts", r#"{"limit":10,"status":"pending"}"#),
     ("commit_stroke", r#"{"attempt_id":"abc123"}"#),
     ("list_atoms", r#"{"limit":10,"label":"nose"}"#),
