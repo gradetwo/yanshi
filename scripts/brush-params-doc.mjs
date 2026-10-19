@@ -37,7 +37,10 @@ const medium = caps?.medium_params?.names ?? [];
 const src = readFileSync(new URL("../crates/yanshi-server/src/tools.rs", import.meta.url), "utf8");
 const aliases = [...src.matchAll(/"([a-z_]+)"\s*=>\s*Some\(&\[([^\]]*)\]\)/g)]
   .map((m) => ({ alias: m[1], expands: m[2].split(",").map((x) => x.trim().replace(/^"|"$/g, "")).filter(Boolean) }));
-if (aliases.length !== 4) { console.log(`  ✗ 源码里别名组 ${aliases.length} 个（应为 4）⇒ 判据无法判定`); process.exit(3); }
+// **同一个坑第二次**（第 812 轮）：上一轮我修了 `!== 63`，但这里还有 `!== 4`
+// ⇒ mask-texture / smart-select 补丁加了别名组（4 → 9）⇒ 判据再次 `exit(3)`「无法判定」。
+// ⇒ 同样改成**下界检查**：≥4 就继续，真正的比对在下面与 docs 逐名对。
+if (aliases.length < 4) { console.log(`  ✗ 源码里别名组只有 ${aliases.length} 个（至少应有 4）⇒ 判据无法判定`); process.exit(3); }
 
 const lines = [];
 lines.push("# 笔刷参数清单");
