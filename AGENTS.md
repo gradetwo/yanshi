@@ -632,9 +632,15 @@ assert not resp.get("image_skipped"), f"有图被跳过: {resp['image_skipped']}
 
 **∴ 自检**：`cargo clippy --workspace --all-targets -- -D warnings || exit 1`
 
-**配套纪律**：提交前先跑 `cargo clippy --workspace --all-targets -- -D warnings`，
-**并且让提交命令依赖它的结果**（`cargo clippy … || exit 1` 之后再 `git commit`）——
-第 254 轮我有两次"clippy 报错但提交照样发出去了"，都是因为命令链里没有设门。
+**配套纪律**：提交前先跑 `bash scripts/pre-commit.sh && git commit -m "…"`。
+那个脚本跑 `fmt --check` 与 `clippy -D warnings`，**任一失败就 exit 1** ⇒ `&&` 后面的 commit 不执行。
+
+**为什么做成脚本而不是「记住写 `|| exit 1`」**（第 834 轮）：本场我在 clippy 红着时照样提交了
+**3 次**（第 254 轮两次、第 833 轮两次），每次都是因为命令链写成
+`cargo clippy … ; echo 退出码=$?` ⇒ `;` 不传递失败 ⇒ commit 无条件执行。
+
+**⇒ 「靠记得」失败了 3 次，所以换成「靠脚本」。**
+（这与「规矩要能自检」同源：能机检的就别靠人。）
 
 ## 判据里的「数字」分两类，只有一类可以写死（第 798／812／813 轮实测）
 
