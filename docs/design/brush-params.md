@@ -16,6 +16,11 @@
 
 | 别名 | 展开成 |
 |---|---|
+| `oil` | `oil-` ＋ `oil_` ＋ `flat` ＋ `mop` ＋ `knife` ＋ `smudge` ＋ `smear` ＋ `detail_brush` ＋ `imp_details` ＋ `classic-knife` |
+| `watercolor` | `watercolor` ＋ `water-` ＋ `water_` ＋ `wet_` ＋ `wet-` ＋ `thin_watercolor` ＋ `wateryflat` ＋ `acrylic` |
+| `sketch` | `pencil` ＋ `2b` ＋ `4h` ＋ `8b` ＋ `charcoal` ＋ `sketch` ＋ `chalk` |
+| `ink` | `calligraphy` ＋ `ink` ＋ `textured_ink` ＋ `sumi` ＋ `dip-pen` ＋ `brushpen` ＋ `kabura` ＋ `penbrush` |
+| `pastel` | `pastel` ＋ `chalk` ＋ `smudge` ＋ `smear` ＋ `charcoal-blur` |
 | `hand_jitter` | `slow_tracking` ＋ `tracking_noise` ＋ `offset_by_random` |
 | `speed_gain` | `speed1_gamma` ＋ `speed2_gamma` ＋ `speed1_slowness` ＋ `speed2_slowness` |
 | `color_variance` | `change_color_h` ＋ `change_color_v` ＋ `change_color_hsl_s` |
@@ -37,6 +42,9 @@
 - `speed2_slowness`
 - `speed1_gamma`
 - `speed2_gamma`
+- `speed_ink`
+- `pressure_shape`
+- `stroke_taper`
 - `offset_by_random`
 - `offset_by_speed`
 - `offset_by_speed_slowness`
