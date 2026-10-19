@@ -756,6 +756,26 @@ concurrency:
 **规则**：`gh run list --limit 1 --json status` 若已有 `in_progress`／`pending`，
 **不要再派发** —— 等它完成。
 
+**★★ 但「limit 1」这个判据是错的两个**（第 893 轮实测）：
+
+```
+**∴ 我** 892 轮看到 `39296336171` 是 `completed:failure` ✗ ⇒ **∴ 于是**认为「组空了」✗ ⇒ **∴ 派发** ✗
+**∴ 而**实际**还有一个** `39298481197`（**f3448a82**）在 `in_progress` ✓（**∴ 871 轮 push 自动触发的 ✓**）
+   ⇒ **∴ 我**又排了一个 ✗ ⇒ **∴ 而**这正是**861 轮那条规矩禁止的**✗ ✓
+```
+
+**⇒ 错在判据**：我看的是「**我刚看的那个 run 完成了**」，而不是「**组里没有活跃的 run**」。
+
+**正确判据**（现算，不靠眼看）：
+
+```bash
+gh run list --limit 3 --json status \
+  --jq '[.[] | select(.status=="in_progress" or .status=="pending")] | length'
+# ⇒ 返回 0 才派发
+```
+
+**⇒ 「一个 run 完了」≠「组空了」** —— 可能有别的 run 从别的入口（push／schedule）进来。
+
 **自检**：`gh run list --limit 3 --json status,conclusion --jq '.[] | "\(.status)/\(.conclusion // "-")"'`
 ⇒ 若同时有 `in_progress` 和 `pending`，那个 `pending` 是我多派的。
 
