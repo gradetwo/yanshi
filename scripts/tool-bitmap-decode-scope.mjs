@@ -298,6 +298,21 @@ const docId = `bitmap_scope_fixture_src_${Date.now().toString(36)}`;
 let selfBuilt = false;
 if (!existsSync(localProject)) {
   await buildFixture(buildBase, localProject);
+  // **现造的 fixture 必须足够大**（第 1012 轮修）：
+  //   **∴ 症状**：缺 fixture 时现造的小工程**不触发「整幅预解」** ⇒ 判据**意外通过（exit 0）** ✗
+  //     ⇒ 实测：1010 轮（fixture 存在 14336 B）⇒ exit **1**（预期红）；
+  //            1090 轮（fixture 不存在 ⇒ 现造小的）⇒ exit **0**（**假绿**）✗
+  //   **∴ 所以**：现造之后量一下大小，**太小就 exit(3)（不可判）**，不要假绿 ✓
+  //     （100 KB 是保守下限：真 4K 工程至少几百 KB）
+  {
+    const sz = existsSync(localProject) ? readFileSync(localProject).length : 0;
+    if (sz < 100 * 1024) {
+      console.error(`  ⊘ 不可判：现造的 fixture 只有 ${sz} 字节（< 100 KB）`);
+      console.error(`     ⇒ 太小的工程**不触发整幅预解** ⇒ 判据会**假绿** ✗`);
+      console.error(`     ⇒ 请提供真实的 4K 工程：node ${process.argv[1]} <base> <工程.yanshi>`);
+      process.exit(3);
+    }
+  }
   if (buildBase !== base) {
     console.log("  · 造包用的是另一个服务 ⇒ 判据这边的位图缓存是冷的 ✓");
   } else {
