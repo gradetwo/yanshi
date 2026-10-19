@@ -18351,8 +18351,14 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
                         // ⇒ **∴ 于是 clip 报"找不到选区 ⇒ 现有：（一个都没有）"** ✗（Muse 的 §13「幽灵选区」✓）
                         // ⇒ **∴ 这里先把 rect／ellipse 的矩形算出来 ✓，再退回 points ✓**。
                         let num = |k: &str| selection.shape.get(k).and_then(Value::as_f64);
+                        // ★ **`create_selection` 存的是 `w`/`h`，不是 `width`/`height`** ★
+                        //   ⇒ 原来只读 `width`/`height` ⇒ **永远 None** ⇒ rect 选区被 filter_map 丢掉 ✗
+                        //   ⇒ 于是 `brush_stroke(clip_to_selection="<rect 选区>")` 报
+                        //     「找不到可裁剪的选区 ⇒ 现有：（一个都没有）」✗（第 901 轮实测）
+                        //   ⇒ 修：**先读 `w`/`h`（实际格式 ✓），再退回 `width`/`height`（兼容旧写法 ✓）**
+                        let wh = |k1: &str, k2: &str| num(k1).or_else(|| num(k2));
                         if let (Some(x), Some(y), Some(w), Some(h)) =
-                            (num("x"), num("y"), num("width"), num("height"))
+                            (num("x"), num("y"), wh("w", "width"), wh("h", "height"))
                         {
                             owned_bbox = json!({"x": x, "y": y, "w": w, "h": h});
                             &owned_bbox
