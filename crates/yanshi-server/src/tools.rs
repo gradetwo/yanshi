@@ -18338,9 +18338,14 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         let state = document_state(ctx)?;
         let alive: Vec<(String, yanshi_core::Bbox)> = state
             .selections
-            .values()
-            .filter(|selection| !selection.is_deleted())
-            .filter_map(|selection| {
+            // ★ **必须用 map 的 key（= `selection_id`），不能用 `selection.id`** ★
+            //   `fold.rs:1146` 是 `insert(selection_id, selection)` ⇒ key 是 `selection_id`
+            //   而 `selection.id` 是**另一个值** ⇒ 拿它去 `state.selections.get()` **必然 None**
+            //   ⇒ 于是 `sel=None` ⇒ `shape_kind` 退回 `"rect"` ⇒ `rect_coverage_clipped`
+            //     ⇒ **bbox 内全选 ⇒ 位图选区的洞也被涂** ✗（第 911 轮，外部 §142 的现象）
+            .iter()
+            .filter(|(_, selection)| !selection.is_deleted())
+            .filter_map(|(selection_id, selection)| {
                 // 第一层：缺 bbox 的选区（纯点列多边形 ✓）不许被丢掉 ✓
                 let owned_bbox;
                 let bbox = match selection.shape.get("bbox") {
@@ -18391,7 +18396,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
                 };
                 let number = |key: &str| bbox.get(key).and_then(Value::as_f64).unwrap_or(0.0);
                 Some((
-                    selection.id.clone(),
+                    selection_id.clone(),
                     yanshi_core::Bbox::new(number("x"), number("y"), number("w"), number("h")),
                 ))
             })
