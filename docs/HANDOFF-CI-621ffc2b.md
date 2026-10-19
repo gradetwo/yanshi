@@ -86,7 +86,7 @@ bash scripts/watch-ci.sh
 
 ## ✅ 本场第一个**全绿的 run**（第 1136 轮实测）
 
-**`4f81a594`（第 1079 轮的提交）= `completed:success`**
+**第 1079 轮那个提交（`run-criteria-local.sh` 的 `exit(3)` 修复）= `completed:success`**
 
 | 状态 | 数 |
 |---|---|
@@ -108,10 +108,10 @@ bash scripts/watch-ci.sh
 **⇒ 所以「3 红 → 0 红 → success」的完整链是**实测**的：**
 
 ```
-916335fd（1043）⇒ 3 红（test 双红 + criteria shard 1）
-  ⇒ 1057 修 test 双红（变量赋值）
-  ⇒ 1045 回滚 + 1049 修 shard 1（3 个臂）
-    ⇒ 4f81a594（1079）⇒ **12 绿 / 0 红 / success** ✓
+第 1043 轮的提交 ⇒ 3 红（test 双红 + criteria shard 1）
+  ⇒ 第 1057 轮修 test 双红（变量赋值）
+  ⇒ 第 1045 轮回滚 + 第 1049 轮修 shard 1（3 个臂）
+    ⇒ 第 1079 轮的提交 ⇒ **12 绿 / 0 红 / success** ✓
 ```
 
 **⇒ 三个红各自的修复都被 CI 证实有效 ✓**
