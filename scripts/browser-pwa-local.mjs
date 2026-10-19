@@ -98,7 +98,7 @@ for (let i = 0; i < 60; i++) {
   await sleep(300);
   try { targets = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json(); if (targets.length) break; } catch {}
 }
-if (!targets || !targets.length) { console.error("❌ chromium 未就绪 ⇒ 判据无效"); chrome.kill(); server.close(); process.exit(1); }
+if (!targets || !targets.length) { console.error("  ⊘ 不可判：chromium 未就绪（判据前提不成立，不是产品问题）"); chrome.kill(); server.close(); process.exit(3); }
 const page = targets.find((t) => t.type === "page") || targets[0];
 
 // **③ CDP 会话 ✓**
