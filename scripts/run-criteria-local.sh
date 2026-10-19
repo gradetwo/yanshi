@@ -38,7 +38,14 @@ fi
 # 起一个临时服务（判据自己建文档）
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/yanshi-crit-XXXXXX")
 PORT=$(( 23000 + RANDOM % 2000 ))
-# 起服务：**判据会自己建文档**（实测 164/164 都调 /api/documents��，
+# **两类判据都适用**（第 990 轮实测）：
+#   ① 自建文档的（164 个）⇒ 忽略 --doc，自己调 /api/documents
+#   ② 自建**服务**的（tool-sample-color.mjs / tool-paint-memory.mjs）
+#      ⇒ spawn 自己的服务（随机端口 158xx）⇒ 与这里起的**不冲突**
+#      ⇒ 实测 tool-sample-color.mjs 经本脚本跑：退出码 0 ✓
+#
+# **137 轮那次把这一行的括号写坏了**（`/api/documents` 后面跟了两个 U+FFFD 替换字符）
+# ⇒ 一并修正（不影响执行，因为它在注释里，但文件是坏的）
 # 所以这里的 --doc/--width/--height 只是**服务的初始文档**，判据不会用它。
 # ⇒ 不要以为判据跑在 400x400 上（第 987 轮实测：0 个判据用 doc=g）。
 "$BIN" --root "$ROOT" --doc _bootstrap --width 64 --height 64 --bind "127.0.0.1:$PORT" > "$ROOT/s.log" 2>&1 &
