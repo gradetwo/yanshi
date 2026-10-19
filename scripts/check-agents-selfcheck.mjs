@@ -42,7 +42,9 @@ console.log(`  可机检 ${targets.length} 段／全部 ${ruled.length} 段 ⇒ 
 {
   const handoff = (() => { try { return readFileSync("docs/HANDOFF-CI-621ffc2b.md", "utf8"); } catch { return ""; } })();
   // 7–40 位纯十六进制，且**前面不是** `或 `（排除命令里的占位）
-  const hashes = [...handoff.matchAll(/(?<![`\w-])([0-9a-f]{7,40})(?![`\w-])/g)]
+  // **★ 第 1113 轮修盲区**：原来负向断言里有反引号 ⇒ `` `4f81a594` `` 逃过检测 ✗
+  //   ⇒ 实测：反引号包裹 ⇒ []；裸写 ⇒ ["4f81a594"] ⇒ 所以去掉反引号 ✓
+  const hashes = [...handoff.matchAll(/(?<![\w-])([0-9a-f]{7,40})(?![\w-])/g)]
     .map((m) => m[1])
     // 排除明显不是 hash 的（例如 `0` 或 `30`）
     .filter((h) => h.length >= 7);
