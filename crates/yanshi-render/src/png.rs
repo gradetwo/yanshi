@@ -459,17 +459,11 @@ pub fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
         2 => 3usize,
         _ => return None,
     };
+    // **`unfilter_png` 已经按通道数把 RGB 补成 RGBA 了**（见它里面 `channels == 3` 那个分支）
+    // ⇒ **这里不许再转一次**：再转会把 16384 字节的 RGBA 当成 RGB 重新分组
+    //   ⇒ `chunks_exact(3)` 得 5461 块 ⇒ 5461×4 = 21844 字节（第 758 轮实测）
     let raw = unfilter_png(&parsed.idat, parsed.width, parsed.height, channels)?;
-    if channels == 4 {
-        Some((parsed.width, parsed.height, raw))
-    } else {
-        // RGB → RGBA（alpha 补 255）
-        let mut pixels = Vec::with_capacity(parsed.width as usize * parsed.height as usize * 4);
-        for chunk in raw.chunks_exact(3) {
-            pixels.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
-        }
-        Some((parsed.width, parsed.height, pixels))
-    }
+    Some((parsed.width, parsed.height, raw))
 }
 
 /// 解码 8 位灰度 PNG（color type 0），返回 (宽, 高, 灰度字节)。
