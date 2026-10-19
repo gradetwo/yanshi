@@ -1776,7 +1776,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         // `selection.rs:14` ✓ 里记的 `rect | ellipse | polygon | lasso`）⇒ **不另写绘制** ✗。
         // **`texture` 明确不支持** ✓：**厚涂肌理是独立的活** ✓（需要笔触合成/高度场 ✓，我已分诊另排 ✓）
         // ⇒ 给了非缺省值就**报错说清** ✗，**绝不静默忽略** ✗（那是本仓库的头号病症 ✓）。
-        summary: "按形状填充一块区域（rect/ellipse/polygon；opacity 乘进颜色的 a）；texture 暂不支持会明确报错",
+        summary: "按形状填充一块区域（rect/ellipse/polygon；opacity 乘进颜色的 a）；texture 暂不支持会明确报错。**要『整体压暗/提亮但保住对比度』请用图层混合模式**（不在这里）：建一层灰再 set_property(key=blend_mode, value=multiply) —— multiply 在 sRGB 空间做 new=old×k，均值和 std 同时按 k 缩；而 fill 的 opacity 是叠加式 new=old×(1−a)+c×a，std 会按 (1−a) 被压扁（第 833 轮，外部 §139）",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
