@@ -71,6 +71,21 @@ grep -rlP '\x{FFFD}' --include=*.rs --include=*.mjs --include=*.md --include=*.s
 | `待修` | 1（引用台账的注释，**不是**遗留标记）|
 | `未实现` | 90（全是**正式的能力披露**，如「一般仿射与嵌套组尚未实现」）|
 | `tools.rs` 的 `unwrap/expect` | 20，**全部带文案且都是不变量**（如 `expect("data 已是对象")`）|
+| `trackTemp` 覆盖 | **按口径报**（见下），实测缺 **0** |
+
+**`trackTemp` 的三种口径**（第 994 轮查清，别再混报）：
+
+```bash
+grep -lE 'mkdtempSync|mkdtemp\(' scripts/tool-*.mjs | wc -l                    # 58
+grep -lE 'mkdtempSync|mkdtemp\(' scripts/tool-*.mjs scripts/mcp-*.mjs | wc -l   # 60
+grep -lE 'mkdtempSync|mkdtemp\(' scripts/*.mjs scripts/lib/*.mjs | wc -l        # 65
+for f in $(grep -lE 'mkdtempSync|mkdtemp\(' scripts/tool-*.mjs scripts/mcp-*.mjs); do
+  grep -q trackTemp "$f" || echo "缺：$f"
+done                                                                             # 缺 0
+```
+
+**⇒ 本场曾报「62/62」—— **那个数对不上任何一种口径**（58／60／61／65）。**
+**⇒ 正确说法是：**60 个判据造临时目录，全部有 `trackTemp`（缺 0）**。**
 | `src` 里裸 `panic!`/`todo!` | 0（`panic!` 只在测试模块或 `unwrap_or_else` 里带文案）|
 
 **⇒ 所以「未实现 90」不是债，是**诚实的边界说明** —— 与内核 1「静默降级是唯一对手」一致。**
