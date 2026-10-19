@@ -96,6 +96,13 @@ const baselinePath = "scripts/criteria-mutation-baseline.json";
 try {
   const baseline = JSON.parse(readFileSync(baselinePath, "utf8"));
   // **∴ 用 `readdirSync`**✗（**∴ `Bun.Glob`**✗ 在 Node 下**不**存在 ✓）
+  //
+  // **为什么只算 `tool-*` 与 `mcp-*`**（第 871 轮补的说明 —— 此前是**隐性**的）：
+  //   `run-criteria.sh` 收集 **280** 条（tool 228 + browser 42 + mcp 7 + serve 2 + check 1），
+  //   而这里只统计 **235** 条（tool 228 + mcp 7）⇒ **45 条不参与「变异记录率」的考核**。
+  //   ⇒ 排除 `browser-*`(42) 的理由：它们要**真浏览器 + CDP**，做变异的成本远高于
+  //     `tool-*`；而 `serve-*`(2)/`check-*`(1) 是**环境/工具链检查**，本身没有「产品行为」可变异。
+  //   ⇒ **但这两个数都叫「判据」** ⇒ 报数时必须说清口径（见 AGENTS.md 同名一节）。
   const files = readdirSync("scripts")
     .filter((name) => /^(tool|mcp)-.*\.mjs$/.test(name))
     .map((name) => `scripts/${name}`);
