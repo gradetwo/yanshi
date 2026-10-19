@@ -1826,8 +1826,23 @@ fn document_summary(state: &ServerState, request: &Request, doc_id: &str) -> Res
     let Ok(workspace) = state.workspace.lock() else {
         return internal("工作区锁中毒");
     };
+    // **★ 摘要也要回显尺寸** ✓ —— 与建文档那条**对称**（`:1515` 早就有了）✓
+    //   ⇒ **∴ 第 392 轮实测**✗**：`GET /api/documents/<id>` 的 keys 只有 `document`／`ok`**✗**
+    //      ⇒ **∴ 于是**调用方**拿不到**尺寸**✗** ⇒ **∴ 只能**再调 `get_document`**✗** ✓✓
+    //   ⇒ **∴ 而**建文档那条**的注释**✗ 已经写着「**补上这两项，让「我建的是多大」一眼可验**」✗**
+    //      ⇒ **∴ 所以**读那条**该**同样**✓**
+    let size = workspace
+        .document(doc_id)
+        .map(|document| (document.state().width, document.state().height));
     match workspace.summary_json(doc_id) {
-        Ok(summary) => Response::json(200, &json!({"ok": true, "document": summary})),
+        Ok(summary) => {
+            let mut body = json!({"ok": true, "document": summary});
+            if let Some((width, height)) = size {
+                body["width"] = json!(width);
+                body["height"] = json!(height);
+            }
+            Response::json(200, &body)
+        }
         Err(error) => Response::from_error(&error),
     }
 }
