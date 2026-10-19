@@ -33,7 +33,25 @@ bash scripts/run-criteria-local.sh scripts/tool-xxx.mjs
 bash scripts/watch-ci.sh
 ```
 
-单片 `criteria` 可达 **19 分钟以上**，而轮次间隔只有 **8–22 秒** ⇒ 每轮查等于白查。
+**⇒ 单片 `criteria` 实测 **6–13 分钟**（第 1123 轮拿到全部 13 个 job 的时长，
+用 `bash scripts/ci-job-durations.sh <run-id>` 现算），而轮次间隔只有 **8–22 秒** ⇒ 每轮查等于白查。**
+
+| job | 实测时长（run 39318865147）|
+|---|---|
+| **`criteria shard 3/6`** | **12 分 59 秒**（最慢）|
+| `criteria shard 5/6` | 9 分 59 秒 |
+| `criteria shard 1/6` | 9 分 44 秒 |
+| `criteria shard 2/6` | 9 分 42 秒 |
+| `criteria shard 4/6` | 8 分 02 秒 |
+| `criteria shard 6/6` | 6 分 28 秒 |
+| `GPU feature` | 4 分 48 秒 |
+| `test (stable)` / `(beta)` | 3 分 34 秒 / 3 分 09 秒 |
+| clippy / wasm smoke | 49 秒 |
+| rustfmt | 20 秒 |
+| `brush parity` | <1 秒（`continue-on-error`）|
+
+**⇒ 所以「19 分钟」这个数**从来不存在** —— 它是我 8 次凭感觉估出来的。**
+**（我报过 32／45／20／15／30+／40+ 分钟，8 次全高估，方向一致。）**
 
 **⇒ 而「19 分钟」不是硬上限**（第 1129–1131 轮实测）：
 第 1089 轮那个提交的 `criteria shard 3/6` 跑到 **17 分 31 秒**仍在跑，且**零红** ⇒
