@@ -13,11 +13,19 @@ const base = process.argv[2];
 if (!base) { console.error("用法: node scripts/tool-color-array-domain.mjs <base-url>"); process.exit(2); }
 const doc = `dom-${process.pid}-${Date.now() % 100000}`;
 trackTemp(mkdtempSync(join(tmpdir(), "color-domain-")));
-const created = await (await fetch(`${base}/api/documents`, {
-  method: "POST", headers: { "content-type": "application/json" },
-  body: JSON.stringify({ doc_id: doc, width: 100, height: 100 }),
-})).json();
-if (!created.token) { console.error("  ⊘ 不可判：建文档失败（判据前提不成立）"); process.exit(3); }
+// **前提失败必须 exit(3)**（第 1079 轮修，同 tool-medium-filter-covers-all）：
+//   无服务时 `fetch` 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗（336 轮那条要求 3）
+let created;
+try {
+  created = await (await fetch(`${base}/api/documents`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: doc, width: 100, height: 100 }),
+  })).json();
+} catch (error) {
+  console.error(`  ⊘ 不可判：连不上服务（判据前提不成立，不是产品问题）：${String(error).slice(0, 80)}`);
+  process.exit(3);
+}
+if (!created?.token) { console.error("  ⊘ 不可判：建文档失败（判据前提不成立）"); process.exit(3); }
 const call = (tool, args) => fetch(`${base}/api/tools?doc=${doc}&token=${created.token}`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ tool, arguments: args }),

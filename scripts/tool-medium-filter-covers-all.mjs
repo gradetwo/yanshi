@@ -24,11 +24,21 @@ const base = process.argv[2];
 if (!base) { console.error("用法: node scripts/tool-medium-filter-covers-all.mjs <base-url>"); process.exit(2); }
 const doc = `medf-${process.pid}-${Date.now() % 100000}`;
 trackTemp(mkdtempSync(join(tmpdir(), "medium-filter-")));
-const created = await (await fetch(`${base}/api/documents`, {
-  method: "POST", headers: { "content-type": "application/json" },
-  body: JSON.stringify({ doc_id: doc, width: 64, height: 64 }),
-})).json();
-if (!created.token) { console.error("  ⊘ 不可判：建文档失败（判据前提不成立）"); process.exit(3); }
+// **前提失败必须 exit(3)，不是 exit(1)**（第 1079 轮修）：
+//   无服务时 `fetch` 会**抛异常** ⇒ uncaught ⇒ node 退出码 **1** ✗
+//   而按 336 轮那条：条件不满足应 `exit(3)`（不可判），不是 `exit(1)`（产品失败）✗
+//   ⇒ 所以整段包 try/catch ✓
+let created;
+try {
+  created = await (await fetch(`${base}/api/documents`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: doc, width: 64, height: 64 }),
+  })).json();
+} catch (error) {
+  console.error(`  ⊘ 不可判：连不上服务（判据前提不成立，不是产品问题）：${String(error).slice(0, 80)}`);
+  process.exit(3);
+}
+if (!created?.token) { console.error("  ⊘ 不可判：建文档失败（判据前提不成立）"); process.exit(3); }
 const call = (tool, args) => fetch(`${base}/api/tools/${tool}?doc=${doc}&token=${created.token}`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify(args),
