@@ -28157,3 +28157,11 @@ browser-layout.mjs  第 742 轮核实：判据要求「400% 缩放时画布溢�
 tool-dwell.mjs  断的是「dwell:1 后拐角邻域墨变多」这类像素数：本机 +1（1234→1235）、CI −5（1227→1222）⇒ **方向相反**⇒ 跨不了机器。第 830 轮补登记（此前只写在 AGENTS.md 表格里、没进这个机检名单；与 browser-layout 同一个漂移）
 tool-zero-dab-hint.mjs  同一提交两个环境相反：CI painted=73673、本机 painted=0（precondition_failed）⇒ 环境差异，改断言会掩盖。第 830 轮补登记
 tool-sample-colors-batch.mjs  环境敏感（采样跨机器的像素数不稳）；第 830 轮补登记，此前只在目标说明里写过
+
+check-criteria-have-exit3.mjs	# 第 1082 轮登记（判据先行，63 处未修）
+#   判据：用了 fetch( 的 tool-*/mcp-* 判据必须有 process.exit(3)
+#   依据：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ⇒ 「前提不成立」被报成「产品失败」（336 轮那条）
+#   实测：191 个用 fetch( 的可能里，63 个缺 exit(3)
+#   我本轮只修了 2 个（tool-medium-filter-covers-all、tool-color-array-domain）
+#   其余 61 个没修：每个都要单独看它怎么说清前提失败，批量改会掩盖差异
+#   修法：逐个包 try/catch + process.exit(3)（或统一改用 lib/ 里的 helper）
