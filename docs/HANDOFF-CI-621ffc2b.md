@@ -27,7 +27,14 @@ bash scripts/run-criteria-local.sh scripts/tool-xxx.mjs
 
 **判别信号**：一个 bug 在本机稳定复现、而 CI 上任何一片都不红 ⇒ 先怀疑本机二进制陈旧。
 
-**② 不要每轮查 CI** —— 单片 `criteria` 可达 **19 分钟**，而轮次间隔只有 **12–80 秒**。
+**② 用 `scripts/watch-ci.sh` 等 CI，别每轮查**
+
+```bash
+bash scripts/watch-ci.sh
+```
+
+单片 `criteria` 可达 **19 分钟**，而轮次间隔只有 **12–80 秒** ⇒ 每轮查等于白查。
+这个脚本只在**某个 job 的结论变化时**打印一行，其余时间静默。
 
 **③ 提交前跑 `bash scripts/pre-commit.sh && git commit …`**
 （本场我在 clippy 红着时提交过 3 次，都因为命令链用了 `;` 而非 `&&`。）

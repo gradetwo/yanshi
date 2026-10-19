@@ -856,6 +856,15 @@ gh run list --limit 3 --json status \
 我在 871／873 轮又 push 了 `f3448a82`／`21fd39c3`，每次 push 触发新 run 进同 group
 ⇒ **更旧的 `pending` 被顶掉**（即使 `cancel-in-progress: false`）。
 
+**★ 用脚本，不要每轮查**（第 975 轮）：
+
+```bash
+bash scripts/watch-ci.sh        # 等 HEAD 的 run 跑完，只在状态变化时打印一行
+```
+
+它只在**某个 job 的结论变化时**打印（✓／✗／⊘／⏳），其余时间静默；run 完成即退出。
+HEAD 还没有 run 时 `exit(3)`（不可判 ≠ 失败）。
+
 **⇒ 所以我 push 得越勤，越没有一次能跑完。**
 **⇒ 要么少 push（攒几处一起提交），要么等一个跑完再 push。**
 
