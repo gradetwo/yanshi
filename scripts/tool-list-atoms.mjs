@@ -29,6 +29,15 @@ await call("brush_stroke", { layer_id: "p", brush: "100%_Opaque", points: [[100,
 
 const failures = [];
 
+
+// ⑤ 按 brush 筛 ⇒ 命中（外部 §109 实测它曾恒 0 条：笔刷名在 payload.source 里，不在顶层）
+const byBrush = await call("list_atoms", { brush: "100%_Opaque" });
+const listBrush = byBrush.atoms ?? [];
+console.log(`  brush=100%_Opaque ⇒ ${listBrush.length} 条｜brush=${JSON.stringify(listBrush[0]?.brush)}`);
+if (listBrush.length < 1) failures.push(`按 brush 筛应至少 1 条，实测 ${listBrush.length} 条 ⇒ 笔刷名没被读到 ✗`);
+const noBrush = await call("list_atoms", { brush: "nonexistent-xyz" });
+if ((noBrush.atoms ?? []).length !== 0) failures.push(`不存在的 brush 应得 0 条，实测 ${(noBrush.atoms ?? []).length} 条 ✗`);
+
 // ① 按 label 筛 ⇒ 只 1 条，且标签对
 const byA = await call("list_atoms", { label: A });
 const listA = byA.atoms ?? [];

@@ -18686,9 +18686,20 @@ fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 /// **为什么新加而不是改 `get_diff`** ✓：`get_diff`（设计 776 ✓）是"**两个序号之间的差分**" ✓，
 /// 改它的响应会动到既有调用方 ✗；而"**按 id 取一条**"是另一个正交的需要 ✓（点开历史里某一条 ✓）。
 /// **内核里本来就有** ✓：`Log::get(id)` ✓ ⇒ 这里只是把它**放行到工具面** ✓。
-/// 从原子净荷里取一个字符串字段（笔迹的层与笔刷都在这里）。
+/// 从原子净荷里取一个字符串字段（笔迹的层在顶层，笔刷名在 `source` 里）。
+///
+/// **为什么 `brush` 要往下找一层** ✗（外部 §109 实测：`list_atoms(brush=…)` 恒 0 条）：
+/// 笔迹是**渲染成 PNG 再当 `raster_patch` 导入**的 ✓ ⇒ 净荷顶层只有 `type`／`bitmap`／`region`／
+/// `layer_id` 这一批 ✗，而**笔刷名**记在 `payload.source.brush` ✓（`update_stroke` 重跑要靠它 ✓）。
 fn payload_str(atom: &yanshi_core::Atom, key: &str) -> Option<String> {
-    atom.payload.get(key).and_then(Value::as_str).map(str::to_owned)
+    if let Some(value) = atom.payload.get(key).and_then(Value::as_str) {
+        return Some(value.to_owned());
+    }
+    atom.payload
+        .get("source")
+        .and_then(|source| source.get(key))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 
 /// **`list_atoms`**：按 label／layer_id／brush／since_seq 筛原子，按 seq 倒序（新在前）。
