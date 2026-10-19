@@ -28,6 +28,18 @@ else
   echo "     ✓"
 fi
 
+# ③ **磁盘卫生提醒**（第 1038 轮加）—— **只提醒，不阻塞** ✓
+#   **∴ 为什么**：`AGENTS.md` 里有「build 后清 target/debug/{deps,build,incremental}」那条，
+#     而本场我**读了但没做** ⇒ `target/debug` 涨到 **9.5 G**、磁盘 **63%** ✗
+#     ⇒ 清完 **614 M**、磁盘 **60%** ✓（省 8.9 G）
+#   ⇒ **∴ 而**它**没有脚本** ⇒ 没人执行（包括我）⇒ **∴ 所以**加在这里 ✓
+DBG_KB=$(du -sk target/debug 2>/dev/null | awk '{print $1}')
+if [ -n "$DBG_KB" ] && [ "$DBG_KB" -gt 5242880 ]; then   # > 5 GiB
+  echo "  ⚠ target/debug 已 $(du -sh target/debug 2>/dev/null | awk '{print $1}')（> 5 G）"
+  echo "     建议：rm -rf target/debug/{deps,build,incremental}"
+  echo "     （release 保留；本场实测 9.5 G → 614 M、磁盘 63% → 60%）"
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "  ⇒ **不许提交**（上面有红）"
   exit 1
