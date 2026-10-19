@@ -91,7 +91,16 @@ fi
 #   ⇒ 所以本脚本也要设，否则**本机与 CI 不一致** ✗
 export YANSHI_WORKSPACE="$ROOT"
 export YANSHI_EXPORT_DIR="$ROOT"
-node "$CRIT" "$BASE_URL" _bootstrap "$CRIT_TOKEN" "$@"
+# **只传 `<base>`**（第 1089 轮回退 1076 轮的决定）：
+#   1076 轮我改成「总传 `<base> <doc> <token>`」⇒ 想让 3-参数判据也能跑 ✓
+#   **∴ 而** 1089 轮量出来它**净效果为负** ✗：
+#     · 受益：把 `argv[3]` 当 doc 的判据 = **3 个**
+#     · 受害：把 `argv[3]` 当别的（`.yanshi` 路径等）= **5 个**
+#       （实测 `tool-bitmap-decode-scope` 把 token 当 base ⇒ JSON 里显示
+#        「Failed to parse URL from <token>/api/documents」⇒ exit 3）
+#   ⇒ **∴ 所以**回退：只传 `<base>`，需要额外参数的**手动跑** ✓
+#   ⇒ 判据数量：用 `argv[3]`/`argv[4]` 的共 **31 个**（`grep -lE 'argv\[3\]'`）
+node "$CRIT" "$BASE_URL" "$@"
 RC=$?
 echo "  ⇒ 判据退出码=$RC"
 exit $RC
