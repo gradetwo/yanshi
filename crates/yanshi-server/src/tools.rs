@@ -3376,6 +3376,12 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 false,
                 "只列笔迹区域与该框相交的原子：[x, y, w, h]（文档像素）⇒ 「在画面这个区域里」怎么查"
             ),
+            param!(
+                "include_non_stroke",
+                Boolean,
+                false,
+                "缺省 false = 只列笔迹（有 source 的原子）；true = 连建文档／建图层等一起列（它们没有笔刷名，brush 会是 null）"
+            ),
         ],
     },
     ToolSpec {
@@ -18722,6 +18728,10 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let want_brush = optional_str(args, "brush").map(|value| value.to_lowercase());
     let since_seq = optional_u64(args, "since_seq");
     // 区域筛选：`[x, y, w, h]`（文档像素）⇒ 只保留与该框相交的笔迹
+    let include_non_stroke = args
+        .get("include_non_stroke")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let want_bbox = args.get("bbox").and_then(Value::as_array).and_then(|items| {
         if items.len() != 4 {
             return None;
@@ -18749,6 +18759,11 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             if payload_str(atom, "layer_id").as_ref() != Some(layer) {
                 continue;
             }
+        }
+        // **缺省只列笔迹** ✓（外部 §110 实测：`seq=2` 是 `create_layer`，没有笔刷名 ⇒ 让人误以为
+        // 同一支笔有一笔记不上 brush ✗）⇒ **∴ 非笔迹原子**要**显式要**才列**✗** ✓
+        if !include_non_stroke && atom.payload.get("source").is_none() {
+            continue;
         }
         if let Some((bx, by, bw, bh)) = want_bbox {
             let region = atom.payload.get("region");

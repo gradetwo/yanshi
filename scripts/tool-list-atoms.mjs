@@ -30,6 +30,15 @@ await call("brush_stroke", { layer_id: "p", brush: "100%_Opaque", points: [[100,
 const failures = [];
 
 
+// ⑦ 缺省只列笔迹（外部 §110：seq=2 是 create_layer，没有笔刷名，会被误当成"同一支笔有一笔记不上"）
+const def = await call("list_atoms", { limit: 50 });
+const defKinds = [...new Set((def.atoms ?? []).map((a) => a.kind))];
+const withNon = await call("list_atoms", { limit: 50, include_non_stroke: true });
+console.log(`  缺省种类=${defKinds.join(",")}｜含非笔迹=${(withNon.atoms ?? []).length} 条`);
+if (defKinds.some((k) => k !== "import_image")) failures.push(`缺省应只列笔迹，实测含 ${defKinds.join(",")} ✗`);
+if ((def.atoms ?? []).some((a) => a.brush == null)) failures.push(`缺省的笔迹里出现了 brush 为空的项 ⇒ 非笔迹混进来了 ✗`);
+if ((withNon.atoms ?? []).length <= (def.atoms ?? []).length) failures.push(`include_non_stroke=true 应比缺省多，实测 ${(withNon.atoms ?? []).length} 不大于 ${(def.atoms ?? []).length} ✗`);
+
 // ⑥ 按 bbox 筛 ⇒ 只保留与该框相交的笔迹（外部 §109 要求的"在画面这个区域里"）
 const nearBox = await call("list_atoms", { bbox: [0, 0, 60, 60] });
 const farBox = await call("list_atoms", { bbox: [150, 150, 40, 40] });
