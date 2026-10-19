@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 89 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 90 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -32,7 +32,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（89 个）。
+    /// 核心层：默认注册（90 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -563,7 +563,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，89 个）。
+    /// 核心层（默认注册，90 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1405,7 +1405,7 @@ fn region_of(result: &CommitResult) -> Option<Bbox> {
 const ID_ARGS: &[ParamSpec] = &[param!("object_id", String, true, "对象 id")];
 const LAYER_ID: &[ParamSpec] = &[param!("layer_id", String, true, "图层 id")];
 
-/// 核心层 89 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 90 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -3360,6 +3360,19 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "list_atoms",
+        profile: Profile::Core,
+        summary: "按 label／layer_id／brush／since_seq 筛出笔迹原子（带 seq 与 label）⇒ 先找到「哪一笔坏了」，再 revert",
+        mutating: false,
+        params: &[
+            param!("limit", Integer, false, "最多返回几条（缺省 20，上限 500）"),
+            param!("label", String, false, "只列该标签的原子（brush_stroke 的 label 参数写入）"),
+            param!("layer_id", String, false, "只列该图层的原子"),
+            param!("brush", String, false, "只列该笔刷画的原子（名字含该子串）"),
+            param!("since_seq", Integer, false, "只列 seq 大于该值的原子"),
+        ],
+    },
+    ToolSpec {
         name: "get_atom",
         profile: Profile::Core,
         summary: "读取一条原子的完整记录（含净荷）",
@@ -3716,6 +3729,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "import_asset" => write_import_asset(ctx, args),
         "export_png" => write_export_png(ctx, args),
         "export_book_pngs" => write_export_book_pngs(ctx, args),
+        "list_atoms" => read_list_atoms(ctx, args),
         "get_atom" => read_get_atom(ctx, args),
         "list_comments" => read_list_comments(ctx, args),
         "list_suggestions" => read_list_suggestions(ctx, args),
@@ -18672,6 +18686,69 @@ fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 /// **为什么新加而不是改 `get_diff`** ✓：`get_diff`（设计 776 ✓）是"**两个序号之间的差分**" ✓，
 /// 改它的响应会动到既有调用方 ✗；而"**按 id 取一条**"是另一个正交的需要 ✓（点开历史里某一条 ✓）。
 /// **内核里本来就有** ✓：`Log::get(id)` ✓ ⇒ 这里只是把它**放行到工具面** ✓。
+/// 从原子净荷里取一个字符串字段（笔迹的层与笔刷都在这里）。
+fn payload_str(atom: &yanshi_core::Atom, key: &str) -> Option<String> {
+    atom.payload.get(key).and_then(Value::as_str).map(str::to_owned)
+}
+
+/// **`list_atoms`**：按 label／layer_id／brush／since_seq 筛原子，按 seq 倒序（新在前）。
+fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+        )
+    })?;
+    let limit = optional_u64(args, "limit").unwrap_or(20).min(500) as usize;
+    let want_label = optional_str(args, "label");
+    let want_layer = optional_str(args, "layer_id");
+    let want_brush = optional_str(args, "brush").map(|value| value.to_lowercase());
+    let since_seq = optional_u64(args, "since_seq");
+
+    let mut hits: Vec<Value> = Vec::new();
+    for atom in document.log().atoms().iter().rev() {
+        if hits.len() >= limit {
+            break;
+        }
+        if let Some(min) = since_seq {
+            if (atom.seq as u64) <= min {
+                continue;
+            }
+        }
+        if let Some(label) = want_label.as_ref() {
+            if atom.label.as_ref() != Some(label) {
+                continue;
+            }
+        }
+        if let Some(layer) = want_layer.as_ref() {
+            if payload_str(atom, "layer_id").as_ref() != Some(layer) {
+                continue;
+            }
+        }
+        if let Some(needle) = want_brush.as_ref() {
+            let brush = payload_str(atom, "brush").unwrap_or_default().to_lowercase();
+            if !brush.contains(needle.as_str()) {
+                continue;
+            }
+        }
+        hits.push(json!({
+            "atom_id": atom.id.to_string(),
+            "seq": atom.seq,
+            "kind": kind_label(&atom.kind),
+            "label": atom.label,
+            "layer_id": payload_str(atom, "layer_id"),
+            "brush": payload_str(atom, "brush"),
+            "timestamp": atom.timestamp,
+        }));
+    }
+    Ok(json!({
+        "atoms": hits,
+        "count": hits.len(),
+        "limit": limit,
+        "note": "按 seq 倒序（新的在前）；没给任何筛选就是最近 limit 条",
+    }))
+}
+
 fn read_get_atom(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let atom_id = require_str(args, "atom_id")?;
     let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
@@ -19837,6 +19914,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ),
     ("declare_head", r#"{"base_type":"atom","base_id":"atom1"}"#),
     ("detach_instance", r#"{"instance_id":"inst1"}"#),
+    ("list_atoms", r#"{"limit":10,"label":"nose"}"#),
     ("get_atom", r#"{"atom_id":"atom1"}"#),
     // **一批"纯 id / 无参数"的工具**（第 293 轮）：这些的必填参数都是 id 或什么都不需要，
     // 取值不需要猜 ⇒ 一次补齐。（`add_adjustment`/`add_filter`/`set_property` 等仍不写：取值说明不足。）
