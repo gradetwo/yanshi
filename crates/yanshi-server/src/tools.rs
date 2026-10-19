@@ -5821,6 +5821,15 @@ fn medium_brush_keywords(medium: &str) -> Option<&'static [&'static str]> {
             "penbrush",
         ]),
         "pastel" => Some(&["pastel", "chalk", "smudge", "smear", "charcoal-blur"]),
+        // **第 1049 轮补这 3 个臂**：`medium_stroke` 接受它们，但 match 里没有
+        //   ⇒ 走 `_ => None` ⇒ `:5837` 的 `.and_then` 透传 ⇒ `:5849` 的 `if let Some` 不进入
+        //   ⇒ **不筛选 ⇒ 返回全部 201 支** ✗（Agent 以为筛过）
+        // **∴ 依据**（不必猜）：`assets/brushes/*.myb` 里
+        //   `marker` 5 支、`pencil` 11 支、`pixel` 3 支 ⇒ 名字含这些词就是对应的笔刷 ✓
+        // **∴ 而** `example` **0 支** ⇒ 它**不该**筛选（没有对应笔刷）⇒ 判据里要排除 ✓
+        "marker" => Some(&["marker", "felt", "chisel", "brushpen"]),
+        "pencil" => Some(&["pencil", "graphite", "charcoal", "crayon", "2b", "4h", "8b"]),
+        "pixel" => Some(&["pixel", "block", "hard-edge", "square"]),
         _ => None,
     }
 }

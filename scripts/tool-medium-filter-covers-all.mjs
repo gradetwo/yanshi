@@ -35,7 +35,10 @@ const call = (tool, args) => fetch(`${base}/api/tools/${tool}?doc=${doc}&token=$
 }).then((r) => r.json());
 
 const caps = await call("list_engine_capabilities", {});
-const names = [...(caps?.mediums ?? []), ...(caps?.example_mediums ?? [])];
+// **∴ 只查 `mediums`，不查 `example_mediums`**（第 1049 轮）：
+//   `example` 在 `assets/brushes/*.myb` 里**一个笔刷都没有**（实测 0 支）
+//   ⇒ 它**不该**筛选 ⇒ 把它算进判据会**假红** ✗
+const names = [...(caps?.mediums ?? [])];
 if (!names.length) { console.error("  ⊘ 不可判：拿不到 mediums（判据前提不成立）"); process.exit(3); }
 const all = await call("list_brushes", {});
 const total = (all.brushes ?? []).length;
