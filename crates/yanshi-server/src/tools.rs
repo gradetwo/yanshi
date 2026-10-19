@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 96 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 98 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -32,7 +32,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（96 个）。
+    /// 核心层：默认注册（98 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -563,7 +563,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，96 个）。
+    /// 核心层（默认注册，98 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1405,7 +1405,7 @@ fn region_of(result: &CommitResult) -> Option<Bbox> {
 const ID_ARGS: &[ParamSpec] = &[param!("object_id", String, true, "对象 id")];
 const LAYER_ID: &[ParamSpec] = &[param!("layer_id", String, true, "图层 id")];
 
-/// 核心层 96 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 98 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -3412,6 +3412,24 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "try_batch",
+        profile: Profile::Core,
+        summary: "试一组笔（一个部位通常 5~8 笔）⇒ 逐笔算、不落笔，返回每笔的 bbox 与像素数",
+        mutating: false,
+        params: &[
+            param!("layer_id", String, true, "落在哪个图层（只取上下文，不写入）"),
+            param!("strokes", Any, true, "笔数组：每项 {brush, points, size?, color?, opacity?, hardness?}"),
+            param!("label", String, false, "整组的标签 ⇒ 提交时每笔都带上"),
+        ],
+    },
+    ToolSpec {
+        name: "commit_batch",
+        profile: Profile::Core,
+        summary: "把 try_batch 的一组试画按顺序贴回文档 ⇒ 返回 atom_ids，可整组撤销",
+        mutating: true,
+        params: &[param!("attempt_ids", Any, true, "try_batch 返回的 attempt_ids 数组")],
+    },
+    ToolSpec {
         name: "commit_stroke",
         profile: Profile::Core,
         summary: "把某次 try_stroke 的试画原样贴回文档（位图方案 ⇒ 与试画逐像素一致）",
@@ -3811,6 +3829,8 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "export_png" => write_export_png(ctx, args),
         "export_book_pngs" => write_export_book_pngs(ctx, args),
         "try_stroke" => write_try_stroke(ctx, args),
+        "try_batch" => write_try_batch(ctx, args),
+        "commit_batch" => write_commit_batch(ctx, args),
         "commit_stroke" => write_commit_stroke(ctx, args),
         "discard_stroke" => write_discard_stroke(ctx, args),
         "list_attempts" => read_list_attempts(ctx, args),
@@ -18919,6 +18939,113 @@ fn write_revert_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     }))
 }
 
+/// **`try_batch`**：逐笔试算，不落笔（需求 v2 §三：一个部位通常 5~8 笔）。
+///
+/// **为什么逐笔而不是合成一张**：合成要自己拼区域、算叠加顺序，等于重写一遍合成器 ✗；
+/// 逐笔复用 `try_stroke` 的同一条路（`paint_brush`）⇒ **∴ 每笔的结果**与单笔试画**逐字节一致** ✓。
+/// **代价**：返回的是**每笔**的 bbox/pixels（不是合成后的），`commit_batch` 再按顺序贴回。
+fn write_try_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let label = optional_str(args, "label");
+    let strokes = args
+        .get("strokes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("strokes 必须是数组（每项一笔）"),
+            )
+        })?
+        .clone();
+    if strokes.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("strokes 不能为空"),
+        ));
+    }
+    let mut results: Vec<Value> = Vec::new();
+    let mut attempt_ids: Vec<String> = Vec::new();
+    let mut total_pixels = 0u64;
+    for (index, stroke) in strokes.iter().enumerate() {
+        let mut single = stroke.clone();
+        single["layer_id"] = json!(layer_id);
+        if let Some(label) = label.as_ref() {
+            single["label"] = json!(label);
+        }
+        single["want_image"] = json!(false);
+        match write_try_stroke(ctx, &single) {
+            Ok(value) => {
+                if let Some(id) = value.get("attempt_id").and_then(Value::as_str) {
+                    attempt_ids.push(id.to_owned());
+                }
+                total_pixels += value
+                    .get("pixels_touched")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                results.push(value);
+            }
+            Err(error) => {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("第 {index} 笔试画失败：{error}")),
+                ))
+            }
+        }
+    }
+    Ok(json!({
+        "ok": true,
+        "attempt_ids": attempt_ids,
+        "count": results.len(),
+        "per_stroke": results,
+        "pixels_touched_total": total_pixels,
+        "note": "逐笔试算、不落笔；commit_batch(attempt_ids) 按同样顺序贴回",
+    }))
+}
+
+/// **`commit_batch`**：按顺序把一组试画贴回（需求 v2 §3.2，必须返回 atom_ids 以便整组撤销）。
+fn write_commit_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let ids: Vec<String> = match args.get("attempt_ids").and_then(Value::as_array) {
+        Some(list) => list
+            .iter()
+            .map(|value| {
+                value.as_str().map(str::to_owned).ok_or_else(|| {
+                    YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail("attempt_ids 里每一项都要是字符串"),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+        None => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("attempt_ids 必须是数组"),
+            ))
+        }
+    };
+    if ids.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("attempt_ids 不能为空"),
+        ));
+    }
+    let mut atom_ids: Vec<String> = Vec::new();
+    for id in &ids {
+        let single = json!({ "attempt_id": id });
+        let value = write_commit_stroke(ctx, &single)?;
+        if let Some(atom) = value.get("atom_id").and_then(Value::as_str) {
+            atom_ids.push(atom.to_owned());
+        }
+    }
+    Ok(json!({
+        "ok": true,
+        "atom_ids": atom_ids,
+        "count": atom_ids.len(),
+        "committed_as": "bitmap",
+        "note": "按传入顺序贴回；atom_ids 可直接交给 revert_atoms 整组撤销",
+    }))
+}
+
 /// **`discard_stroke`**：把某次试画标成 discarded —— **不写文档**，之后也不能再提交。
 fn write_discard_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let attempt_id = require_str(args, "attempt_id")?;
@@ -20575,6 +20702,11 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ),
     ("revert_to_seq", r#"{"seq":100}"#),
     ("revert_atoms", r#"{"atom_ids":["a1","a2"]}"#),
+    (
+        "try_batch",
+        r#"{"layer_id":"L1","strokes":[{"brush":"2B_pencil","points":[[10,10],[40,40]]}]}"#,
+    ),
+    ("commit_batch", r#"{"attempt_ids":["a1","a2"]}"#),
     ("discard_stroke", r#"{"attempt_id":"abc123"}"#),
     ("list_attempts", r#"{"limit":10,"status":"pending"}"#),
     ("commit_stroke", r#"{"attempt_id":"abc123"}"#),
