@@ -45,9 +45,17 @@ const byLabel = await call("list_atoms", { label: LABEL });
 console.log(`  按 label 查 ⇒ ${(byLabel.atoms ?? []).length} 条`);
 if ((byLabel.atoms ?? []).length !== 1) failures.push(`提交后按 label 应查到 1 条，实测 ${(byLabel.atoms ?? []).length} ⇒ 标签没跟着提交 ✗`);
 
-// 尝试必须落盘（需求 §5.2：会话被打断时内存日志会丢）
-const persisted = await call("list_atoms", { limit: 1 });
-if (persisted.ok === false) failures.push("list_atoms 在本判据里不可用 ⇒ 无法继续验证落盘 ✗");
+// ⑥ list_attempts 能回看（需求 §4.3 的"试过哪几版"）
+const attempt2 = await call("try_stroke", {
+  layer_id: "p", brush: "100%_Opaque", points: [[100, 100, 1], [140, 140, 1]], size: 10,
+  color: { r: 0, g: 0, b: 255, a: 255 }, want_image: false, label: "SECOND",
+});
+const listed = await call("list_attempts", { limit: 20 });
+const byLabel2 = await call("list_attempts", { label: "SECOND" });
+console.log(`  list_attempts ⇒ ${listed.count} 条｜按 SECOND 筛 ⇒ ${byLabel2.count} 条`);
+if (!attempt2.attempt_id) failures.push("第二次 try_stroke 没返回 attempt_id ✗");
+if (Number(listed.count) < 2) failures.push(`list_attempts 应至少 2 条，实测 ${listed.count} ⇒ 记录没落盘或没读回 ✗`);
+if (Number(byLabel2.count) !== 1) failures.push(`按 label 筛应得 1 条，实测 ${byLabel2.count} ⇒ 标签筛选失效 ✗`);
 
 // 同一尝试不能提交两次
 const again = await call("commit_stroke", { attempt_id: t.attempt_id });

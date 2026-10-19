@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 92 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 93 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -32,7 +32,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（92 个）。
+    /// 核心层：默认注册（93 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -563,7 +563,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，92 个）。
+    /// 核心层（默认注册，93 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1405,7 +1405,7 @@ fn region_of(result: &CommitResult) -> Option<Bbox> {
 const ID_ARGS: &[ParamSpec] = &[param!("object_id", String, true, "对象 id")];
 const LAYER_ID: &[ParamSpec] = &[param!("layer_id", String, true, "图层 id")];
 
-/// 核心层 92 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 93 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -3378,6 +3378,17 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "list_attempts",
+        profile: Profile::Core,
+        summary: "列出试画记录（按 label／状态筛，新的在前）⇒ 回看「我试过哪几版」",
+        mutating: false,
+        params: &[
+            param!("limit", Integer, false, "最多返回几条（缺省 20）"),
+            param!("label", String, false, "只列该标签的尝试"),
+            param!("status", String, false, "只列该状态的尝试：pending／committed／discarded"),
+        ],
+    },
+    ToolSpec {
         name: "commit_stroke",
         profile: Profile::Core,
         summary: "把某次 try_stroke 的试画原样贴回文档（位图方案 ⇒ 与试画逐像素一致）",
@@ -3770,6 +3781,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "export_book_pngs" => write_export_book_pngs(ctx, args),
         "try_stroke" => write_try_stroke(ctx, args),
         "commit_stroke" => write_commit_stroke(ctx, args),
+        "list_attempts" => read_list_attempts(ctx, args),
         "list_atoms" => read_list_atoms(ctx, args),
         "get_atom" => read_get_atom(ctx, args),
         "list_comments" => read_list_comments(ctx, args),
@@ -18749,6 +18761,44 @@ fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 /// **为什么新加而不是改 `get_diff`** ✓：`get_diff`（设计 776 ✓）是"**两个序号之间的差分**" ✓，
 /// 改它的响应会动到既有调用方 ✗；而"**按 id 取一条**"是另一个正交的需要 ✓（点开历史里某一条 ✓）。
 /// **内核里本来就有** ✓：`Log::get(id)` ✓ ⇒ 这里只是把它**放行到工具面** ✓。
+/// **`list_attempts`**：读落盘的 `log.jsonl`，按 label／status 筛，新的在前。
+fn read_list_attempts(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let limit = optional_u64(args, "limit").unwrap_or(20).min(500) as usize;
+    let want_label = optional_str(args, "label");
+    let want_status = optional_str(args, "status");
+    let dir = std::env::temp_dir()
+        .join("yanshi-attempts")
+        .join(&ctx.doc_id);
+    let text = std::fs::read_to_string(dir.join("log.jsonl")).unwrap_or_default();
+    let mut hits: Vec<Value> = Vec::new();
+    for line in text.lines().rev() {
+        if hits.len() >= limit {
+            break;
+        }
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if let Some(label) = want_label.as_ref() {
+            if entry.get("label").and_then(Value::as_str) != Some(label.as_str()) {
+                continue;
+            }
+        }
+        if let Some(status) = want_status.as_ref() {
+            if entry.get("status").and_then(Value::as_str) != Some(status.as_str()) {
+                continue;
+            }
+        }
+        hits.push(entry);
+    }
+    Ok(json!({
+        "attempts": hits,
+        "count": hits.len(),
+        "limit": limit,
+        "dir": dir.display().to_string(),
+        "note": "按写入顺序倒序（新的在前）；记录落在系统临时目录，跨进程重启仍在",
+    }))
+}
+
 /// **`commit_stroke`**：把某次试画**原样贴回**文档（方案 B：存位图 ⇒ `committed_as=bitmap`）。
 ///
 /// **为什么是位图而不是重放 dab**：重放要固化 dab 列表或 RNG seed（方案 A），
@@ -20249,6 +20299,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "try_stroke",
         r#"{"layer_id":"L1","brush":"2B_pencil","points":[[10,10],[40,40]],"size":8}"#,
     ),
+    ("list_attempts", r#"{"limit":10,"status":"pending"}"#),
     ("commit_stroke", r#"{"attempt_id":"abc123"}"#),
     ("list_atoms", r#"{"limit":10,"label":"nose"}"#),
     ("get_atom", r#"{"atom_id":"atom1"}"#),
