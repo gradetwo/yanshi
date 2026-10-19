@@ -12213,3 +12213,39 @@ value["read_canvas_effective"] = json!(false);
 
 **判据**：`scripts/tool-batch.mjs` 的第 ④ 条（整组标签查到 3 条）已经是这件事的守卫。
 
+## 三百一十一、`pressure_shape` / `stroke_taper` 为什么不生效：`stroke_total_length` 从未赋值（第 612–613 轮）
+
+**现象**：`brush_params{pressure_shape: ±0.8}` 与 `{stroke_taper: 0.8}` 四种取值，`painted_pixels`
+**全是 2438**。而 `brush_params` 是逃生舱，`apply_brush_params` 里直接
+`brush.get_mut(*setting).base_value = number` ⇒ 值确实写进了笔刷。
+
+**根因**（有源码行号）：`vendor/hokusai-core/src/state.rs:90` 声明了 `stroke_total_length: f32`，
+但**全仓库没有任何赋值语句** ⇒ 它恒为 `0.0`，而引擎里两处启用条件都要求它 `> 1.0`：
+
+| 位置 | 条件 | 后果 |
+|---|---|---|
+| `stroke.rs:462` | `> 1e-3` | `stroke_progress` 恒为 0.5 |
+| `stroke.rs:471` | `pressure_shape.abs() > 1e-4 && stroke_total_length > 1.0` | **`pressure_shape` 整段不执行** |
+| `stroke.rs:925` | `stroke_total_length > 1.0 && (...)` | **`stroke_taper` 整段不执行** |
+
+**修法**（`32e5aa55`）：加 `prime_stroke_total_length()`，在两处创建 `BrushState` 之后立刻写入
+整笔弧长（`brush_deposit_mask` 与 `paint_brush`）。
+
+**修后数字**（判据 `tool-stroke-shape-params.mjs`，400×400，calligraphy size 20，三点水平笔画）：
+
+| 取值 | `painted_pixels` |
+|---|---|
+| 基线 | **2438** |
+| `stroke_taper: 0.8` | **2207** |
+| `pressure_shape: +0.8` | **2210** |
+| `pressure_shape: -0.8` | **2032** |
+
+**⇒ 变异**（不赋值）⇒ 四条断言同时红，数字**退化成全部 2438**，与修前完全一致 —— 这就是根因的判据。
+
+**为什么查了这么多轮**：这段赋值本该来自补丁包，我第一次没应用成功；它的说明书
+（`crates/yanshi-server/src/tools.rs.rej`，7553 字节）在源码目录里躺了很多轮，而我第 608 轮把它
+当成"残留"删掉了。**⇒ 教训：`.rej` 是失败补丁的说明书，要先读完再删。**
+
+**⇒ 接成意图参数**（`036626ab`）：`brush_stroke` 现在也收顶层 `pressure_shape` / `stroke_taper`，
+走 `merge_intent_brush_params`。判据第 ⑤ 条要求两条路给出**完全相同**的像素数（2207 vs 2207）。
+
