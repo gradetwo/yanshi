@@ -109,7 +109,7 @@ fn annotation_to_ai_suggestion_to_acceptance() {
         registry.call(
             &mut ctx,
             "get_annotation",
-            &json!({"annotation_id": annotation_id}),
+            &json!({ "annotation_id": annotation_id }),
         )
     };
     let annotation_value = linked
@@ -129,7 +129,7 @@ fn annotation_to_ai_suggestion_to_acceptance() {
         registry.call(
             &mut ctx,
             "accept_suggestion",
-            &json!({"suggestion_id": suggestion_id}),
+            &json!({ "suggestion_id": suggestion_id }),
         )
     };
     assert_eq!(accepted["ok"], json!(true), "接受建议应成功：{accepted}");
@@ -145,7 +145,7 @@ fn annotation_to_ai_suggestion_to_acceptance() {
         registry.call(
             &mut ctx,
             "get_annotation",
-            &json!({"annotation_id": annotation_id}),
+            &json!({ "annotation_id": annotation_id }),
         )
     };
     let resolved_value = resolved
@@ -225,7 +225,7 @@ fn rejecting_a_suggestion_marks_the_annotation_rejected() {
         registry.call(
             &mut ctx,
             "get_annotation",
-            &json!({"annotation_id": annotation_id}),
+            &json!({ "annotation_id": annotation_id }),
         )
     };
     let value = after

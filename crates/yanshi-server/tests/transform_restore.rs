@@ -271,7 +271,7 @@ fn restoring_a_deleted_object_brings_back_its_pixels() {
         registry.call(
             &mut ctx,
             "revert_changeset",
-            &json!({"changeset_id": changeset}),
+            &json!({ "changeset_id": changeset }),
         )
     };
     assert_eq!(undone["ok"], json!(true), "{undone}");
@@ -301,7 +301,7 @@ fn restoring_a_deleted_object_brings_back_its_pixels() {
         registry.call(
             &mut ctx,
             "revert_changeset",
-            &json!({"changeset_id": revert_changeset}),
+            &json!({ "changeset_id": revert_changeset }),
         )
     };
     assert_eq!(again["ok"], json!(true), "{again}");

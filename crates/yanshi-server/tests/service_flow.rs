@@ -325,7 +325,7 @@ fn annotations_stay_out_of_the_atom_log() {
     let resolved = registry.call(
         &mut context,
         "resolve_annotation",
-        &json!({"annotation_id": annotation_id}),
+        &json!({ "annotation_id": annotation_id }),
     );
     assert_eq!(resolved["annotation"]["status"], json!("resolved"));
 
@@ -711,7 +711,7 @@ fn adjustment_and_filter_tools_change_pixels_and_are_reversible() {
     let deleted = registry.call(
         &mut context,
         "delete_object",
-        &json!({"object_id": filter_object}),
+        &json!({ "object_id": filter_object }),
     );
     assert_eq!(deleted["ok"], json!(true), "{deleted}");
     let restored = sample(&mut context, 8, 8);
@@ -1013,7 +1013,7 @@ fn clone_stamp_copies_content_and_is_reversible() {
     let deleted = registry.call(
         &mut context,
         "delete_object",
-        &json!({"object_id": object_id}),
+        &json!({ "object_id": object_id }),
     );
     assert_eq!(deleted["ok"], json!(true), "{deleted}");
     let restored = sample(&mut context, 60, 60);
@@ -1683,7 +1683,7 @@ fn accept_suggestion_replays_the_patch_and_resolves_annotations() {
     let refused = registry.call(
         &mut context,
         "accept_suggestion",
-        &json!({"suggestion_id": read_only_id}),
+        &json!({ "suggestion_id": read_only_id }),
     );
     assert_eq!(
         refused["error_code"],
@@ -1695,7 +1695,7 @@ fn accept_suggestion_replays_the_patch_and_resolves_annotations() {
     let accepted = registry.call(
         &mut context,
         "accept_suggestion",
-        &json!({"suggestion_id": suggestion_id}),
+        &json!({ "suggestion_id": suggestion_id }),
     );
     assert_eq!(accepted["ok"], json!(true), "{accepted}");
     assert_eq!(
@@ -1867,7 +1867,7 @@ fn preview_suggestion_validates_without_applying() {
     let by_id = registry.call(
         &mut context,
         "preview_suggestion",
-        &json!({"suggestion_id": suggestion_id}),
+        &json!({ "suggestion_id": suggestion_id }),
     );
     assert_eq!(by_id["applicable"], json!(true), "{by_id}");
     assert_eq!(by_id["suggestion_id"], json!(suggestion_id));
@@ -1947,7 +1947,7 @@ fn batch_accept_and_suggestion_paging() {
     let accepted = registry.call(
         &mut context,
         "accept_suggestions",
-        &json!({"suggestion_ids": batch}),
+        &json!({ "suggestion_ids": batch }),
     );
     assert_eq!(accepted["accepted"], json!(3), "{accepted}");
     assert_eq!(accepted["failed"], json!(1), "{accepted}");
@@ -2313,7 +2313,7 @@ fn accept_preflights_the_whole_patch_before_writing() {
     let rejected = registry.call(
         &mut context,
         "accept_suggestion",
-        &json!({"suggestion_id": suggestion_id}),
+        &json!({ "suggestion_id": suggestion_id }),
     );
     assert_eq!(rejected["ok"], json!(false), "{rejected}");
     assert_eq!(
@@ -2356,7 +2356,7 @@ fn accept_preflights_the_whole_patch_before_writing() {
     let accepted = registry.call(
         &mut context,
         "accept_suggestion",
-        &json!({"suggestion_id": good_id}),
+        &json!({ "suggestion_id": good_id }),
     );
     assert_eq!(accepted["ok"], json!(true), "{accepted}");
     assert_eq!(
@@ -2419,14 +2419,14 @@ fn patch_can_create_and_use_a_layer_within_one_suggestion() {
     let preview = registry.call(
         &mut context,
         "preview_suggestion",
-        &json!({"suggestion_id": suggestion_id}),
+        &json!({ "suggestion_id": suggestion_id }),
     );
     assert_eq!(preview["applicable"], json!(true), "{preview}");
 
     let accepted = registry.call(
         &mut context,
         "accept_suggestion",
-        &json!({"suggestion_id": suggestion_id}),
+        &json!({ "suggestion_id": suggestion_id }),
     );
     assert_eq!(accepted["ok"], json!(true), "{accepted}");
     assert_eq!(
@@ -2518,7 +2518,7 @@ fn accept_is_not_reapplied_and_rejected_suggestions_cannot_be_accepted() {
     let first = registry.call(
         &mut context,
         "accept_suggestion",
-        &json!({"suggestion_id": suggestion_id}),
+        &json!({ "suggestion_id": suggestion_id }),
     );
     assert_eq!(first["ok"], json!(true), "{first}");
     assert_eq!(
@@ -2532,7 +2532,7 @@ fn accept_is_not_reapplied_and_rejected_suggestions_cannot_be_accepted() {
     let second = registry.call(
         &mut context,
         "accept_suggestion",
-        &json!({"suggestion_id": suggestion_id}),
+        &json!({ "suggestion_id": suggestion_id }),
     );
     assert_eq!(second["ok"], json!(true), "{second}");
     assert_eq!(second["already_accepted"], json!(true), "{second}");
@@ -2563,7 +2563,7 @@ fn accept_is_not_reapplied_and_rejected_suggestions_cannot_be_accepted() {
     let refused = registry.call(
         &mut context,
         "accept_suggestion",
-        &json!({"suggestion_id": rejected_id}),
+        &json!({ "suggestion_id": rejected_id }),
     );
     assert_eq!(refused["ok"], json!(false), "{refused}");
     assert_eq!(
@@ -2685,14 +2685,14 @@ fn annotation_lifecycle_rules_are_enforced() {
     let resolved = registry.call(
         &mut context,
         "resolve_annotation",
-        &json!({"annotation_id": first}),
+        &json!({ "annotation_id": first }),
     );
     assert_eq!(resolved["ok"], json!(true), "{resolved}");
     let revision = resolved["annotation"]["revision"].clone();
     let again = registry.call(
         &mut context,
         "resolve_annotation",
-        &json!({"annotation_id": first}),
+        &json!({ "annotation_id": first }),
     );
     assert_eq!(again["ok"], json!(true), "{again}");
     assert_eq!(
@@ -2704,7 +2704,7 @@ fn annotation_lifecycle_rules_are_enforced() {
     let flipped = registry.call(
         &mut context,
         "reject_annotation",
-        &json!({"annotation_id": first}),
+        &json!({ "annotation_id": first }),
     );
     assert_eq!(
         flipped["error_code"],
@@ -2755,12 +2755,12 @@ fn annotation_lifecycle_rules_are_enforced() {
     registry.call(
         &mut context,
         "resolve_annotation",
-        &json!({"annotation_id": second}),
+        &json!({ "annotation_id": second }),
     );
     let deleted = registry.call(
         &mut context,
         "delete_annotation",
-        &json!({"annotation_id": second}),
+        &json!({ "annotation_id": second }),
     );
     assert_eq!(
         deleted["ok"],
@@ -2770,7 +2770,7 @@ fn annotation_lifecycle_rules_are_enforced() {
     let fetched = registry.call(
         &mut context,
         "get_annotation",
-        &json!({"annotation_id": second}),
+        &json!({ "annotation_id": second }),
     );
     assert_eq!(fetched["ok"], json!(true), "软删除后仍应可取回：{fetched}");
     assert_eq!(fetched["annotation"]["status"], json!("rejected"));
@@ -2908,7 +2908,7 @@ fn annotations_can_be_filtered_by_suggestion() {
     let linked = registry.call(
         &mut context,
         "list_annotations",
-        &json!({"suggestion_id": suggestion_id}),
+        &json!({ "suggestion_id": suggestion_id }),
     );
     assert_eq!(
         linked["count"],
@@ -2929,7 +2929,7 @@ fn annotations_can_be_filtered_by_suggestion() {
     registry.call(
         &mut context,
         "accept_suggestion",
-        &json!({"suggestion_id": suggestion_id}),
+        &json!({ "suggestion_id": suggestion_id }),
     );
     let after = registry.call(
         &mut context,
@@ -3110,7 +3110,7 @@ fn multi_step_undo_and_redo_restore_pixels_in_order() {
 
     // 撤销第二笔 → 只剩第一笔。
     assert_eq!(
-        call(&mut ctx, "revert", json!({"atom_id": atom_b}))["ok"],
+        call(&mut ctx, "revert", json!({ "atom_id": atom_b }))["ok"],
         json!(true)
     );
     assert!(ink(&mut ctx, 60.0, 60.0) > 0, "撤销第二笔后第一笔仍在");
@@ -3118,7 +3118,7 @@ fn multi_step_undo_and_redo_restore_pixels_in_order() {
 
     // 再撤销第一笔 → 两笔都消失（多级撤销）。
     assert_eq!(
-        call(&mut ctx, "revert", json!({"atom_id": atom_a}))["ok"],
+        call(&mut ctx, "revert", json!({ "atom_id": atom_a }))["ok"],
         json!(true)
     );
     assert_eq!(ink(&mut ctx, 60.0, 60.0), 0, "多级撤销后第一笔也消失");
@@ -3126,7 +3126,7 @@ fn multi_step_undo_and_redo_restore_pixels_in_order() {
 
     // 重做第一笔（reapply 目标是**原始原子**）→ 只有第一笔回来。
     assert_eq!(
-        call(&mut ctx, "reapply", json!({"atom_id": atom_a}))["ok"],
+        call(&mut ctx, "reapply", json!({ "atom_id": atom_a }))["ok"],
         json!(true)
     );
     assert!(ink(&mut ctx, 60.0, 60.0) > 0, "重做后第一笔恢复");
@@ -3176,7 +3176,7 @@ fn revert_to_restores_the_state_at_that_atom() {
 
     // 回到「刚创建图层」那一刻：笔画还未提交，画布应为空。
     assert_eq!(
-        call(&mut ctx, "revert_to", json!({"atom_id": layer_atom}))["ok"],
+        call(&mut ctx, "revert_to", json!({ "atom_id": layer_atom }))["ok"],
         json!(true)
     );
     assert_eq!(ink(&mut ctx), 0, "回到该时刻后笔画应消失");

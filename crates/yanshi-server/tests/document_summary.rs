@@ -90,7 +90,7 @@ fn the_document_summary_counts_live_entities_only() {
             let removed = registry.call(
                 &mut ctx,
                 "delete_layer",
-                &json!({"layer_id": format!("L{index}")}),
+                &json!({ "layer_id": format!("L{index}") }),
             );
             assert_eq!(removed["ok"], json!(true), "{removed}");
             expected_layers -= 1;
@@ -247,7 +247,7 @@ fn list_and_summary_agree_on_live_counts_for_open_and_closed_documents() {
             registry.call(
                 &mut ctx,
                 "delete_object",
-                &json!({"object_id": format!("b{slot}")}),
+                &json!({ "object_id": format!("b{slot}") }),
             );
         }
     }

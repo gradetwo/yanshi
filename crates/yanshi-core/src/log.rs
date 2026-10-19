@@ -1183,7 +1183,7 @@ mod tests {
             AtomKind::Revert,
             "human:1",
             "session:a",
-            json!({"target": comment_id}),
+            json!({ "target": comment_id }),
         );
         assert_eq!(
             log.append_validated(revert_comment, &ctx).unwrap_err().code,

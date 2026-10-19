@@ -168,7 +168,7 @@ fn reverting_a_fill_restores_the_previous_pixels() {
 
     let reverted = {
         let mut ctx = context(&mut workspace);
-        registry.call(&mut ctx, "revert", &json!({"atom_id": atom_id}))
+        registry.call(&mut ctx, "revert", &json!({ "atom_id": atom_id }))
     };
     assert_eq!(reverted["ok"], json!(true), "{reverted}");
     assert_eq!(

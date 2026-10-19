@@ -689,7 +689,7 @@ fn wait_for_render_true_still_returns_after_the_render_is_complete() {
         &mut workspace,
         "doc",
         "get_job",
-        json!({"job_id": job_id}),
+        json!({ "job_id": job_id }),
         true,
         false,
     );

@@ -1114,30 +1114,17 @@ function availableArea() {
   const padding = styles ? parseFloat(styles.paddingLeft || "12") * 2 : 24;
   const asideWidth = aside ? aside.getBoundingClientRect().width : 320;
   const width = (main ? main.clientWidth : window.innerWidth) - asideWidth - gap - padding;
-  // ★ **高度必须来自**真实画布宿主的可见高度**✗** ★**（外部复测 QY-D04 ✓）
-  //
-  // **∴ 原来 ✗**：`window.innerHeight - 96` ✗** ⇒ **∴ 那个 96 是**猜的**✗**
-  //   ⇒ **∴ 而**工具栏**换行**✗ 或**面板／状态栏**出现时**✗ ⇒ **∴ 真实可用高度**更小**✗**
-  //   ⇒ **∴ 于是**"适配"**把画面缩到**溢出的容器**里**✗** ⇒ **∴ 底部色条**看不见**✗**
-  //     （**∴ 他们实测 ✓**：**∴ 约 13% ✗、顶见底不见 ✓；而全屏模式同 13% 两个都见 ✓**）
-  //
-  // **∴ 现在 ✓**：**∴ 先用**含 `canvas` 的宿主**✗ 的 `clientHeight`** ✓
-  //   ⇒ **∴ 取不到才**退回 ✓**：**∴ `main.clientHeight` ✗（**∴ 比 `innerHeight` 准 ✓**）
-  //     ⇒ **∴ 再退回 ✓**：**∴ `window.innerHeight − 96` ✗（**∴ 最终兜底 ✓**）
-  const height = (() => {
-    // **∴ ① 真实画布宿主 ✓**（**∴ 它**通常就是舞台容器 ✓**）
-    const host = document.querySelector("main canvas")?.parentElement;
-    if (host) {
-      const rect = host.getBoundingClientRect();
-      // **∴ 只要它**有高度且**不是整页**✗**（**∴ 避免选到 `body` 之类 ✓**）
-      if (rect.height > 240 && rect.height < window.innerHeight) return rect.height;
-    }
-    // **∴ ② `main` 的可见高度 ✓**（**∴ 已经去掉了页面级头尾 ✓**）
-    if (main && main.clientHeight > 240) return main.clientHeight;
-    // **∴ ③ 兜底 ✓**
-    return Math.max(240, window.innerHeight - 96);
-  })();
-  return { w: Math.max(160, Math.floor(width)), h: Math.floor(Math.max(240, height)) };
+  // The stage must fit inside main's content box, rather than grow from canvas size.
+  const host = document.querySelector("main canvas")?.parentElement;
+  const paddingY = styles
+    ? (parseFloat(styles.paddingTop) || 0) + (parseFloat(styles.paddingBottom) || 0)
+    : 0;
+  const contentHeight = main ? Math.max(1, main.clientHeight - paddingY) : window.innerHeight;
+  const height = Math.min(host?.clientHeight || contentHeight, contentHeight);
+  return {
+    w: Math.max(32, Math.floor(host?.clientWidth || width)),
+    h: Math.max(32, Math.floor(height)),
+  };
 }
 
 /// 按当前缩放与文档尺寸重新计算视口（以 `center` 为中心，缺省用视口中心）。
@@ -2379,6 +2366,8 @@ const unionBox = (left, right) => {
   return [x0, y0, x1 - x0, y1 - y0];
 };
 function queueServerBlit(bbox = null) {
+  // Document loading requests its first frame once the capability is available.
+  if (!state.token) return Promise.resolve();
   // **整视口请求会"顶掉"脏区** ✓：宁可多画一点 ✓，也不能因为只画了脏区而留下空白 ✗。
   if (bbox) serverBlitBox = unionBox(serverBlitBox, bbox);
   else serverBlitWhole = true;
@@ -4174,6 +4163,8 @@ async function loadDocumentData() {
   url.searchParams.set("token", state.token);
   history.replaceState(null, "", url);
   $("identity").textContent = state.docId + " · " + state.token.slice(0, 8) + "…";
+  window.dispatchEvent(new Event("yanshi:document-ready"));
+  void refreshUndoStatusFromServer();
   await refreshLayers();
   await refreshThumb();
   // 6.2「打开即图片」：先用服务端渲染（含 HEAD 渲染缓存）出像素，
@@ -4334,6 +4325,7 @@ async function redoOnce() {
 /// 为什么要它 ✗：`state.remainingUndo` 只在"用户点撤销/重做"之后才更新 ✓ ⇒ 落笔之后它**过时** ✗
 /// ⇒ 按钮停在禁用 ✓。这个函数**补上**那次刷新 ✓（**而空栈仍报 0 ⇒ 仍禁用** ✓ —— 判据要的正是这条 ✓）。
 async function refreshUndoStatusFromServer() {
+  if (!state.token) return;
   try {
     const value = await callTool("get_undo_status", {}, { refresh: false });
     if (!value || value.ok === false) return;
@@ -9349,6 +9341,7 @@ if (serverRenderPreferred()) {
 /// 所以这里是**独立的 DOM 层** ✓：`pointer-events: none` ✓（不吃鼠标 ✓）、`z-index` 高于画布 ✓、
 /// 位置取**画布当前的屏幕矩形** ✓（不掺进视口变换 ⇒ 换实现也不会算错 ✓）。
 async function refreshReferenceOverlay() {
+  if (!state.token) return;
   try {
     const value = await callTool("get_preferences", { keys: ["reference.blob_hash", "reference.opacity", "reference.position"] });
     const prefs = (value && (value.preferences || (value.data || {}).preferences)) || {};
@@ -9385,6 +9378,7 @@ async function refreshReferenceOverlay() {
   }
 }
 void refreshReferenceOverlay();
+window.addEventListener("yanshi:document-ready", () => { void refreshReferenceOverlay(); });
 window.addEventListener("resize", () => { void refreshReferenceOverlay(); });
 }
 }
@@ -10054,6 +10048,10 @@ for (const button of document.querySelectorAll("button[data-tool]")) {
     if (tool === "check") { await checkBitExact(); return; }
     state.tool = tool;
     for (const other of document.querySelectorAll("button[data-tool]")) {
+      if (["undo", "redo", "refresh", "check"].includes(other.dataset.tool)) {
+        other.removeAttribute("aria-pressed");
+        continue;
+      }
       other.setAttribute("aria-pressed", String(other === button));
     }
     // 工具切换后刷新光标 ✓（否则抓手会留在画笔上 ✓），并收起手形拖动状态 ✓。
@@ -10178,10 +10176,7 @@ void setupLayerPanel();
 //         ⇒ **∴ 于是**按钮**一直禁用** ✓ ★★
 //   ＋ **∴ 修法 ✗**：**用的就是**已有的只读工具 `get_undo_status`**✗
 //     （`refreshUndoStatusFromServer()` ✓ —— **∴ 不新造轮子 ✓）✗
-//     ＋ **∴ 放在顶层 ✗**：**它**只依赖 URL 里的 doc/token**✓（**服务端此刻**已经知道这份文档 ✓）
-//       ⇒ **∴ 不必**等客户端的图层加载 ✓ ★
-//     ＋ **∴ 失败也安全 ✗**：**函数内部**catch 静默 ✓ ⇒ **∴ 最坏**维持原样（**禁用 ✓）★
-void refreshUndoStatusFromServer();
+// 等文档令牌就绪后，由装载流程查询撤销状态；空令牌启动不发送授权请求。
 // 首次同步撤销/重做按钮的可用状态 ✓（HTML 里已先禁用 ✓，这里再按真实栈同步一次 ✓）——
 // 子 agent 报："没有撤销栈时按钮仍可点" ✗（点了只打印一句提示 ✓，看起来像坏了 ✓）。
 updateUndoStatus();
@@ -10737,6 +10732,8 @@ $("importFile").addEventListener("change", async (event) => {
     await ensureDocument();
   } else {
     $("identity").textContent = state.docId;
+    window.dispatchEvent(new Event("yanshi:document-ready"));
+    void refreshUndoStatusFromServer();
       (window.__appMarks = window.__appMarks || []).push("boot:before-refreshLayers");
       try { await refreshLayers(); (window.__appMarks = window.__appMarks || []).push("boot:refreshLayers-ok"); }
       catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshLayers!" + String(error && error.message || error).slice(0, 40)); }

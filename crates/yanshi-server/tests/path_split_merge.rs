@@ -188,7 +188,7 @@ fn splitting_a_path_keeps_the_total_ink() {
         let undone = registry.call(
             &mut ctx,
             "revert_changeset",
-            &json!({"changeset_id": changeset}),
+            &json!({ "changeset_id": changeset }),
         );
         assert_eq!(undone["ok"], json!(true), "{undone}");
     }

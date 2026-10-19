@@ -616,7 +616,7 @@ fn build_atom(
                 AtomKind::ReorderLayers,
                 actor,
                 session,
-                json!({"order": order}),
+                json!({ "order": order }),
             )
         }
         Op::CreateStyle => Atom::new(
@@ -668,7 +668,7 @@ fn build_atom(
                 AtomKind::Tombstone,
                 actor,
                 session,
-                json!({"object_id": object_id}),
+                json!({ "object_id": object_id }),
             )
         }
         Op::TombstoneLayer => {
@@ -677,7 +677,7 @@ fn build_atom(
                 AtomKind::Tombstone,
                 actor,
                 session,
-                json!({"layer_id": layer_id}),
+                json!({ "layer_id": layer_id }),
             )
         }
         Op::CreateCheckpoint => {
@@ -747,11 +747,21 @@ fn build_atom(
                 .pick(&model.revertable)
                 .map(|(id, _)| id)
                 .unwrap_or_default();
-            Atom::new(AtomKind::Revert, actor, session, json!({"target": target}))
+            Atom::new(
+                AtomKind::Revert,
+                actor,
+                session,
+                json!({ "target": target }),
+            )
         }
         Op::Reapply => {
             let target = rng.pick(&model.suppressed).unwrap_or_default();
-            Atom::new(AtomKind::Reapply, actor, session, json!({"target": target}))
+            Atom::new(
+                AtomKind::Reapply,
+                actor,
+                session,
+                json!({ "target": target }),
+            )
         }
         Op::RevertStaleTarget => {
             // 刻意构造一个指向很旧原子的 revert：覆盖跨求值起点 / 已出窗口的拒绝路径。
@@ -760,7 +770,12 @@ fn build_atom(
                 .first()
                 .map(|(id, _)| id.clone())
                 .unwrap_or_default();
-            Atom::new(AtomKind::Revert, actor, session, json!({"target": target}))
+            Atom::new(
+                AtomKind::Revert,
+                actor,
+                session,
+                json!({ "target": target }),
+            )
         }
         Op::InvalidReference => {
             let object_id = format!("obj_missing_{step}");

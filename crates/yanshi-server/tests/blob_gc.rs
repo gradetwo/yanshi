@@ -44,7 +44,7 @@ fn setup(workspace: &mut Workspace) {
 
 fn report(workspace: &mut Workspace, ttl_days: u64) -> serde_json::Value {
     let mut ctx = context(workspace);
-    let value = registry().call(&mut ctx, "blob_gc", &json!({"ttl_days": ttl_days}));
+    let value = registry().call(&mut ctx, "blob_gc", &json!({ "ttl_days": ttl_days }));
     assert_eq!(value["ok"], json!(true), "{value}");
     value
 }
@@ -113,7 +113,7 @@ fn a_blob_referenced_only_by_the_log_is_history_and_never_collectible() {
     assert!(!atom.is_empty(), "{imported}");
     {
         let mut ctx = context(&mut workspace);
-        let undone = registry().call(&mut ctx, "revert", &json!({"atom_id": atom}));
+        let undone = registry().call(&mut ctx, "revert", &json!({ "atom_id": atom }));
         assert_eq!(undone["ok"], json!(true), "{undone}");
     }
     // TTL 给 0 ✓：若它被当成孤儿 ✓，就会"立即可回收" ✓ ⇒ 那样断言会立刻失败 ✓。

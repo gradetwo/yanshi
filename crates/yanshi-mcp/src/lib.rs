@@ -878,7 +878,7 @@ mod tests {
         let resolved = text_of(&tool(
             &mut server,
             "resolve_annotation",
-            json!({"annotation_id": annotation_id}),
+            json!({ "annotation_id": annotation_id }),
         ));
         assert_eq!(resolved["annotation"]["status"], json!("resolved"));
         assert_eq!(resolved["pending"], json!(0));
@@ -939,7 +939,7 @@ mod tests {
         let head = text_of(&tool(
             &mut server,
             "revert_to",
-            json!({"atom_id": first_atom}),
+            json!({ "atom_id": first_atom }),
         ));
         let job_id = head["job_id"]
             .as_str()
@@ -947,7 +947,7 @@ mod tests {
             .to_owned();
         assert_eq!(head["job_status"], json!("submitted"));
 
-        let job = text_of(&tool(&mut server, "get_job", json!({"job_id": job_id})));
+        let job = text_of(&tool(&mut server, "get_job", json!({ "job_id": job_id })));
         assert_eq!(job["status"], json!("submitted"));
         assert_eq!(job["terminal"], json!(false));
 

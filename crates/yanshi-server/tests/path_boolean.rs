@@ -206,7 +206,7 @@ fn the_boolean_is_withdrawn_in_one_action() {
         let undone = registry.call(
             &mut ctx,
             "revert_changeset",
-            &json!({"changeset_id": changeset}),
+            &json!({ "changeset_id": changeset }),
         );
         assert_eq!(undone["ok"], json!(true), "{undone}");
     }

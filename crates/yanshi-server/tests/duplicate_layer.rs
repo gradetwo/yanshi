@@ -144,7 +144,7 @@ fn duplicating_a_layer_copies_its_objects_and_sits_directly_above() {
         let undone = registry.call(
             &mut ctx,
             "revert_changeset",
-            &json!({"changeset_id": changeset}),
+            &json!({ "changeset_id": changeset }),
         );
         assert_eq!(undone["ok"], json!(true), "{undone}");
     }

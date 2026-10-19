@@ -168,7 +168,7 @@ fn converting_a_stroke_to_a_path_keeps_the_picture_identical() {
         let undone = registry.call(
             &mut ctx,
             "revert_changeset",
-            &json!({"changeset_id": changeset}),
+            &json!({ "changeset_id": changeset }),
         );
         assert_eq!(undone["ok"], json!(true), "{undone}");
     }

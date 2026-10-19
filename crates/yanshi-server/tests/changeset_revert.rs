@@ -123,7 +123,7 @@ fn reverting_the_detach_changeset_restores_the_instance() {
         registry.call(
             &mut ctx,
             "revert_changeset",
-            &json!({"changeset_id": changeset}),
+            &json!({ "changeset_id": changeset }),
         )
     };
     assert_eq!(reverted["ok"], json!(true), "{reverted}");
@@ -164,7 +164,7 @@ fn reverting_the_detach_changeset_restores_the_instance() {
         registry.call(
             &mut ctx,
             "revert_changeset",
-            &json!({"changeset_id": revert_changeset}),
+            &json!({ "changeset_id": revert_changeset }),
         )
     };
     assert_eq!(again["ok"], json!(true), "{again}");
@@ -240,7 +240,7 @@ fn reverting_the_join_changeset_brings_both_strokes_back() {
         let reverted = registry.call(
             &mut ctx,
             "revert_changeset",
-            &json!({"changeset_id": changeset}),
+            &json!({ "changeset_id": changeset }),
         );
         assert_eq!(reverted["ok"], json!(true), "{reverted}");
     }

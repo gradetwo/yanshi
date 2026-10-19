@@ -217,7 +217,7 @@ fn get_diff_reports_the_atoms_and_what_they_touch() {
     // **空区间**：from == head ⇒ 没有原子 ✓（这也是"什么都没发生"的正确表达 ✓）。
     let empty = {
         let mut ctx = context(&mut workspace);
-        registry.call(&mut ctx, "get_diff", &json!({"from_seq": head}))
+        registry.call(&mut ctx, "get_diff", &json!({ "from_seq": head }))
     };
     assert_eq!(empty["atom_count"], json!(0), "{empty}");
     // **区间反向要报错** ✓，而不是给一个空结果 ✓。

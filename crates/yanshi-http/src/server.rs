@@ -1492,7 +1492,7 @@ fn create_document(state: &ServerState, request: &Request) -> Response {
     };
     let summary = workspace
         .summary_json(&doc_id)
-        .unwrap_or_else(|_| json!({"doc_id": doc_id}));
+        .unwrap_or_else(|_| json!({ "doc_id": doc_id }));
     Response::json(
         200,
         &json!({

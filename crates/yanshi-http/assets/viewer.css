@@ -69,7 +69,7 @@
   /* 第一列用 minmax(0,1fr)：`1fr` 的最小尺寸是 auto ⇒ 左列被内容撑开后整个页面横向溢出，
      画布被挤到屏幕外（用户截图里的「排版都出去了」）。
      `body { overflow-x: hidden }` 只是掩盖症状，真正要允许列收缩。 */
-  main { display: grid; grid-template-columns: 56px minmax(0, 1fr) 320px; gap: 12px; padding: 12px; align-items: start; max-width: 100vw;
+  main { display: grid; grid-template-columns: 56px minmax(0, 1fr) 320px; grid-template-rows: minmax(0, 1fr); gap: 12px; padding: 12px; align-items: start; max-width: 100vw;
           /* 兜底：实测 main 自身的 scrollWidth 会达到 2007（其子元素的 rect 都在 1265 内，
              溢出源未定位到具体节点），于是整个页面可横向滚动、画布被推出屏幕。
              所有可见元素都在边界内，因此 clip 不影响显示，只阻止页面被撑宽。 */
@@ -100,7 +100,7 @@
        * 画布外的区域**不响应绘制** ✓ —— 事件监听挂在 `#board` 上 ✓，
          所以点在空白区根本不会进入绘制分支 ✓（检查里有专门的断言 ✓）。 */
   .stage { justify-self: stretch; display: flex; align-items: center; justify-content: center;
-           min-height: 240px; background: var(--surface); }
+           height: 100%; min-height: 0; max-height: 100%; background: var(--surface); }
   /* **画布舞台自己滚** ✓：放大到超出可视区时，它内部上下左右滚 ✓（而不是把整页顶开 ✗）。 */
   .stage { position: relative; border: 1px solid var(--line); border-radius: 6px;
            overflow: auto; background: #f5f5f5; }
@@ -182,14 +182,14 @@
      换行时不会出现"某一行只有一个按钮、宽度还不同"的参差 ✓。 */
   #tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 8px;
            min-width: 0; background: var(--surface); border-right: 1px solid var(--line);
-           align-content: start; overflow-y: auto; max-height: calc(100vh - 150px); }
+           height: 100%; min-height: 0; align-content: start; overflow-y: auto; max-height: 100%; }
   /* **★ 右侧面板必须可滚 ✓**（用户报告 2026-10-09 ✓："面板有些内容看不全，然后又不能滚动"✗）：
      面板容器是 `aside`（`viewer-app.js:4969` 把 `.tab-pane` append 进去 ✓），而它此前
      **没有** `height`／`max-height`／`overflow-y` ✗ ⇒ 内容一多（`素材` 页 132 色块 ＋ 纹理 ✓）
      就把它撑高到**超出视口** ✗ ⇒ 被 `html, body { height:100%; overflow:hidden }`（第 24 行 ✓）
      裁掉 ⇒ **既看不全、也不可能出现滚动条** ✗ —— **∴ 正是用户看到的症状 ✓**。
      **∴ 常数与画布一致（96px ＝ 工具条 ＋ 标签页 ✓）⇒ 不引入新魔数 ✓**。 */
-  aside { overflow-y: auto; max-height: calc(100vh - 96px); }
+  aside { height: 100%; min-height: 0; overflow-y: auto; max-height: 100%; }
   #tools button { padding: 8px 0; width: 100%; min-width: 0; display: flex; justify-content: center;
                   align-items: center; }
   /* **面板开关** ✓（用户要求：左右都要能隐藏，并能进全屏画布 ✓）。

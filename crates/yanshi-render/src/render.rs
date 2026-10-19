@@ -1661,6 +1661,7 @@ impl Renderer {
         let probe_below_on = std::env::var_os("YANSHI_RENDER_PROBE").is_some();
         let t_below = crate::probe::ProbeClock::now();
         let mut partial_below: Option<yanshi_core::Bbox> = None;
+        let mut partial_below_regions: Vec<yanshi_core::Bbox> = Vec::new();
         // **★ 临时文件探针 ✓**（第 463 轮 ✓，**查明后删 ✓**）：**`below_reuse` 恒 0 而缓存已实现 ✗**
         // ⇒ **∴ 必须先确认这条函数**真的被走**✗**（"改了不执行的代码"是本会话反复的坑 ✓）。
         let want = accumulation.bbox();
@@ -1859,6 +1860,20 @@ impl Renderer {
                 None
             };
             if partial_below.is_some() {
+                // Missing tiles can surround a cached tile. Their bounding rectangle
+                // is useful for rasterization, but compositing that rectangle would
+                // blend the already cached tile a second time.
+                partial_below_regions = missing_tiles
+                    .iter()
+                    .map(|(x, y)| {
+                        yanshi_core::Bbox::new(
+                            *x as f64,
+                            *y as f64,
+                            BELOW_TILE as f64,
+                            BELOW_TILE as f64,
+                        )
+                    })
+                    .collect();
                 // **∴ 预填：**把已有的格**原样铺进 `accumulation`** ✓**（**纯像素搬运 ✓）** ✓✓
                 let acc_box = accumulation.bbox();
                 let acc_box_w = acc_box.w as usize;
@@ -2335,8 +2350,10 @@ impl Renderer {
                 );
             }
             match partial_below.as_ref().filter(|_| index_here < split) {
-                Some(area) => {
-                    composite_within(&mut accumulation, &layer_buffer, mode, opacity, area);
+                Some(_) => {
+                    for area in &partial_below_regions {
+                        composite_within(&mut accumulation, &layer_buffer, mode, opacity, area);
+                    }
                 }
                 None => accumulation.composite_with_layer(&layer_buffer, mode, opacity),
             }

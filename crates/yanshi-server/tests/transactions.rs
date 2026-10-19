@@ -142,7 +142,7 @@ fn a_committed_transaction_keeps_its_atoms_as_one_changeset() {
         let undone = registry.call(
             &mut ctx,
             "revert_changeset",
-            &json!({"changeset_id": changeset}),
+            &json!({ "changeset_id": changeset }),
         );
         assert_eq!(undone["ok"], json!(true), "{undone}");
         assert_eq!(undone["reverted"], json!(2), "两笔都该被撤销：{undone}");

@@ -294,13 +294,13 @@ fn archive_contains_no_tokens_secrets_or_home_paths() {
     let ws = workspace(&root, doc, 64, 64);
     let facts = SurfaceFacts {
         surface: "test".to_owned(),
-        build: json!({"api_key": secret}),
+        build: json!({ "api_key": secret }),
         config: json!({
             "root": home,
             "note": format!("token={secret}"),
             "nested": {"password": secret, "safe": "this is fine"},
         }),
-        extra: json!({"authorization": format!("Bearer {secret}")}),
+        extra: json!({ "authorization": format!("Bearer {secret}") }),
         secrets: vec![secret.to_owned()],
     };
     let bundle = diagnostics::collect(&ws, &request(doc, facts)).expect("采集应当成功");
@@ -521,7 +521,7 @@ fn oversized_content_is_trimmed_and_metadata_stays_consistent() {
             &mut ws,
             doc,
             "create_layer",
-            json!({"layer_id": format!("L{index}")}),
+            json!({ "layer_id": format!("L{index}") }),
         );
         assert_eq!(made["ok"], json!(true), "{made}");
     }

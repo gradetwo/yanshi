@@ -273,6 +273,10 @@ pub fn snapshot_decision(
 #[derive(Debug)]
 pub struct SnapshotStore {
     snapshots: BTreeMap<SnapshotId, Snapshot>,
+    // Stored snapshots have no mutable accessor. Verify once on insertion,
+    // including replacement/import, rather than serializing every state on
+    // each latest/nearest lookup in the drawing hot path.
+    verified_ids: BTreeSet<SnapshotId>,
     lru: VecDeque<SnapshotId>,
     pinned: BTreeSet<SnapshotId>,
     max_entries: usize,
@@ -284,6 +288,7 @@ impl SnapshotStore {
     pub fn new(max_entries: usize) -> Self {
         Self {
             snapshots: BTreeMap::new(),
+            verified_ids: BTreeSet::new(),
             lru: VecDeque::new(),
             pinned: BTreeSet::new(),
             max_entries,
@@ -303,6 +308,11 @@ impl SnapshotStore {
 
     /// 写入快照并执行清理。
     pub fn insert(&mut self, snapshot: Snapshot) -> Vec<SnapshotId> {
+        if snapshot.verify() {
+            self.verified_ids.insert(snapshot.id.clone());
+        } else {
+            self.verified_ids.remove(&snapshot.id);
+        }
         self.lru.push_back(snapshot.id.clone());
         self.snapshots.insert(snapshot.id.clone(), snapshot);
         self.evict_to_fit()
@@ -317,7 +327,7 @@ impl SnapshotStore {
     pub fn latest_usable(&self) -> Option<&Snapshot> {
         self.snapshots
             .values()
-            .filter(|snapshot| snapshot.verify())
+            .filter(|snapshot| self.verified_ids.contains(&snapshot.id))
             .max_by_key(|snapshot| snapshot.seq_at)
     }
 
@@ -325,7 +335,7 @@ impl SnapshotStore {
     pub fn nearest_usable_at_or_before(&self, seq: Seq) -> Option<&Snapshot> {
         self.snapshots
             .values()
-            .filter(|snapshot| snapshot.seq_at <= seq && snapshot.verify())
+            .filter(|snapshot| snapshot.seq_at <= seq && self.verified_ids.contains(&snapshot.id))
             .max_by_key(|snapshot| snapshot.seq_at)
     }
 
@@ -367,6 +377,7 @@ impl SnapshotStore {
             }
             pinned_streak = 0;
             if self.snapshots.remove(&candidate).is_some() {
+                self.verified_ids.remove(&candidate);
                 evicted.push(candidate);
             }
         }
@@ -559,7 +570,7 @@ mod tests {
             log.append(atom(
                 AtomKind::CreateLayer,
                 &format!("a_layer_{index}"),
-                json!({"layer_id": format!("layer_{index}")}),
+                json!({ "layer_id": format!("layer_{index}") }),
             ))
             .unwrap();
         }

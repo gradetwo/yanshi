@@ -1213,7 +1213,7 @@ mod tests {
                     atom(
                         AtomKind::Revert,
                         &format!("a_rev_{i}"),
-                        json!({"target": target}),
+                        json!({ "target": target }),
                     ),
                 );
             }
@@ -1256,7 +1256,7 @@ mod tests {
                 atom(
                     AtomKind::Revert,
                     &format!("a_late_revert_{i}"),
-                    json!({"target": target}),
+                    json!({ "target": target }),
                 ),
             );
             reverts += 1;
@@ -1414,7 +1414,7 @@ mod tests {
         let doc_id = log.by_seq(1).unwrap().id.clone();
         push(
             &mut log,
-            atom(AtomKind::Revert, "a_rev_doc", json!({"target": doc_id})),
+            atom(AtomKind::Revert, "a_rev_doc", json!({ "target": doc_id })),
         );
         let after_first = folder.fold_head(&log).unwrap();
         assert!(
@@ -1431,7 +1431,11 @@ mod tests {
             .clone();
         push(
             &mut log,
-            atom(AtomKind::Revert, "a_rev_middle", json!({"target": middle})),
+            atom(
+                AtomKind::Revert,
+                "a_rev_middle",
+                json!({ "target": middle }),
+            ),
         );
         let incremental = folder.fold_head(&log).unwrap();
         let full = state_at(&log, log.head_seq(), &mut StateAtCache::new()).unwrap();

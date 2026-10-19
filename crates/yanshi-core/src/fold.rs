@@ -1347,7 +1347,7 @@ fn resolve_master_snapshot(
         let master_ref = cursor.data.get("master_ref")?;
         let master_id = master_ref.get("object_id").and_then(Value::as_str)?;
         if let Some(local) = master_ref.get("local_transform") {
-            let local = transform_from_payload(&serde_json::json!({"transform": local}));
+            let local = transform_from_payload(&serde_json::json!({ "transform": local }));
             composed = compose(&local, &composed);
         }
         let master = state.objects.get(master_id)?;

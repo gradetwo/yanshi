@@ -216,7 +216,7 @@ fn apply_stash_replays_and_keeps_the_stash_when_it_still_fails() {
     // ① 世界**还没**修好 ⇒ 重放失败 ✓，但**必须原样保留** ✓。
     let still_failing = {
         let mut ctx = context(&mut workspace);
-        registry.call(&mut ctx, "apply_stash", &json!({"stash_id": stash_id}))
+        registry.call(&mut ctx, "apply_stash", &json!({ "stash_id": stash_id }))
     };
     assert_eq!(still_failing["ok"], json!(false), "{still_failing}");
     assert_eq!(
@@ -241,7 +241,7 @@ fn apply_stash_replays_and_keeps_the_stash_when_it_still_fails() {
     let before = head(&mut workspace);
     let applied = {
         let mut ctx = context(&mut workspace);
-        registry.call(&mut ctx, "apply_stash", &json!({"stash_id": stash_id}))
+        registry.call(&mut ctx, "apply_stash", &json!({ "stash_id": stash_id }))
     };
     assert_eq!(applied["ok"], json!(true), "{applied}");
     assert_eq!(applied["applied"], json!(2), "{applied}");
@@ -288,7 +288,7 @@ fn discarding_a_stash_keeps_its_blobs() {
     };
     let discarded = {
         let mut ctx = context(&mut workspace);
-        registry.call(&mut ctx, "discard_stash", &json!({"stash_id": stash_id}))
+        registry.call(&mut ctx, "discard_stash", &json!({ "stash_id": stash_id }))
     };
     assert_eq!(discarded["ok"], json!(true), "{discarded}");
     assert_eq!(discarded["discarded"], json!(true), "{discarded}");

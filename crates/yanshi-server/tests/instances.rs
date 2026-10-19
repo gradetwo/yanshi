@@ -771,7 +771,7 @@ fn detaching_twice_in_one_document_works() {
         let detached = registry.call(
             &mut ctx,
             "detach_instance",
-            &json!({"instance_id": format!("mirror{index}")}),
+            &json!({ "instance_id": format!("mirror{index}") }),
         );
         assert_eq!(
             detached["ok"],

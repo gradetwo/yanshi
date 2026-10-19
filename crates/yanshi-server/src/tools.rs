@@ -2176,7 +2176,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "笔迹路径编辑（设计 792；**支持哪些操作见 op 参数** ✓ —— 不在摘要里枚举 ✓，避免随实现漂移 ✗）",
         mutating: true,
         params: &[
-            param!("op", String, true, "reverse | close | join | merge | split"),
+            param!("op", String, true, "reverse | close | join | merge | split | convert_to_path | convert_to_shape | boolean"),
             param!("object_id", String, true, "目标对象 id（笔迹或路径）"),
             param!("other_id", String, false, "join / merge 的第二个对象"),
             param!("at", Integer, false, "split 的切口节点下标（仅开放路径）"),
@@ -4239,7 +4239,7 @@ fn write_delete_anchor(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
             ));
         }
     }
-    let result = ctx.commit(AtomKind::DeleteAnchor, json!({"name": name}))?;
+    let result = ctx.commit(AtomKind::DeleteAnchor, json!({ "name": name }))?;
     finish_mutation(ctx, &result, None)
 }
 
@@ -4433,7 +4433,7 @@ fn write_calibrate(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         for atom_id in targets.iter().rev() {
             let undone_result = write_history_atom(
                 ctx,
-                &json!({"atom_id": atom_id}),
+                &json!({ "atom_id": atom_id }),
                 AtomKind::Revert,
                 "atom_id",
             )?;
@@ -6145,7 +6145,7 @@ fn write_update_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
 
 fn write_delete_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
-    let result = ctx.commit(AtomKind::Tombstone, json!({"layer_id": layer_id}))?;
+    let result = ctx.commit(AtomKind::Tombstone, json!({ "layer_id": layer_id }))?;
     let region = region_of(&result);
     finish_mutation(ctx, &result, region)
 }
@@ -6295,7 +6295,7 @@ fn write_duplicate_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
         }
     }
     if failure.is_none() {
-        match ctx.commit(AtomKind::ReorderLayers, json!({"order": target_order})) {
+        match ctx.commit(AtomKind::ReorderLayers, json!({ "order": target_order })) {
             Ok(result) => head = head.max(result.head_seq),
             Err(error) => failure = Some(error),
         }
@@ -6348,7 +6348,7 @@ fn write_reorder_layers(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
             )),
         ));
     }
-    let result = ctx.commit(AtomKind::ReorderLayers, json!({"order": ids}))?;
+    let result = ctx.commit(AtomKind::ReorderLayers, json!({ "order": ids }))?;
     finish_mutation(ctx, &result, None)
 }
 
@@ -7359,7 +7359,7 @@ fn write_update_override(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
         }
     }
     let value = match args.get("transform") {
-        Some(transform) if !transform.is_null() => json!({"transform": transform}),
+        Some(transform) if !transform.is_null() => json!({ "transform": transform }),
         // 清除覆盖 ✓：置空对象即可 ✓（渲染端取不到 `override.transform` ⇒ 不施加 ✓）。
         _ => json!(null),
     };
@@ -7464,7 +7464,7 @@ fn write_detach_instance(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
     let removed = created
         .as_ref()
         .ok()
-        .map(|_| ctx.commit(AtomKind::Tombstone, json!({"object_id": instance_id})));
+        .map(|_| ctx.commit(AtomKind::Tombstone, json!({ "object_id": instance_id })));
     ctx.changeset = previous_changeset;
     let created = created?;
     let removed = removed.expect("创建成功后才提交 tombstone")?;
@@ -8131,7 +8131,7 @@ fn write_path_boolean(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     }
     if failure.is_none() {
         for source in [object_id.clone(), other_id.clone()] {
-            match ctx.commit(AtomKind::Tombstone, json!({"object_id": source})) {
+            match ctx.commit(AtomKind::Tombstone, json!({ "object_id": source })) {
                 Ok(result) => head = head.max(result.head_seq),
                 Err(error) => {
                     failure = Some(error);
@@ -8248,7 +8248,7 @@ fn write_convert_to_shape(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
     let removed = created
         .as_ref()
         .ok()
-        .map(|_| ctx.commit(AtomKind::Tombstone, json!({"object_id": object_id})));
+        .map(|_| ctx.commit(AtomKind::Tombstone, json!({ "object_id": object_id })));
     ctx.changeset = previous;
     let created = created?;
     let removed = removed.expect("建好形状后才 tombstone 原对象")?;
@@ -8337,7 +8337,7 @@ fn write_convert_to_path(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
     let removed = created
         .as_ref()
         .ok()
-        .map(|_| ctx.commit(AtomKind::Tombstone, json!({"object_id": object_id})));
+        .map(|_| ctx.commit(AtomKind::Tombstone, json!({ "object_id": object_id })));
     ctx.changeset = previous;
     let created = created?;
     let removed = removed.expect("建好路径后才 tombstone 原笔迹")?;
@@ -8560,7 +8560,7 @@ fn write_restore_object(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
     let mut reverted: Vec<String> = Vec::new();
     let mut failure: Option<YanshiError> = None;
     for tombstone in &tombstones {
-        match ctx.commit(AtomKind::Revert, json!({"target": tombstone})) {
+        match ctx.commit(AtomKind::Revert, json!({ "target": tombstone })) {
             Ok(_) => reverted.push(tombstone.clone()),
             Err(error) => {
                 failure = Some(error);
@@ -8748,6 +8748,11 @@ fn read_get_stroke_log(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         let source = match atom.payload.get("source").filter(|value| value.is_object()) {
             Some(source) => source,
             None => {
+                // Shapes/fills also carry payload.data, but are not strokes.
+                // Only native point-based drawing/erasing belongs in this log.
+                if !matches!(atom.kind, AtomKind::DrawStroke | AtomKind::Erase) {
+                    continue;
+                }
                 let Some(data) = atom.payload.get("data").filter(|value| value.is_object()) else {
                     continue;
                 };
@@ -9001,7 +9006,7 @@ fn read_get_ancestors(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             chain.push(json!({"object_id": master, "cycle": true}));
             break;
         }
-        chain.push(json!({"object_id": master}));
+        chain.push(json!({ "object_id": master }));
         cursor = master;
     }
     Ok(json!({"ok": true, "object_id": object_id, "ancestors": chain, "count": chain.len()}))
@@ -10571,14 +10576,14 @@ fn write_resolve_conflict(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
     if resolution == "keep_theirs" || resolution == "discard" {
         // 让**我方的每一步提交**失效 ✓（对象型的先墓碑化它的对象 ✓，再对所有我方原子发 `Revert` ✓）。
         for object_id in &our_objects {
-            if let Err(error) = ctx.commit(AtomKind::Tombstone, json!({"object_id": object_id})) {
+            if let Err(error) = ctx.commit(AtomKind::Tombstone, json!({ "object_id": object_id })) {
                 failure = Some(error);
                 break;
             }
         }
         if failure.is_none() {
             for (atom_id, _, _) in &ours {
-                match ctx.commit(AtomKind::Revert, json!({"target": atom_id})) {
+                match ctx.commit(AtomKind::Revert, json!({ "target": atom_id })) {
                     Ok(_) => tombstoned += 1,
                     Err(error) => {
                         failure = Some(error);
@@ -10625,7 +10630,8 @@ fn write_resolve_conflict(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
                     Ok(_) => {
                         moved += 1;
                         // 原地的那一份要失效 ✓，否则同一笔会在两个图层上各生效一次 ✗。
-                        if let Err(error) = ctx.commit(AtomKind::Revert, json!({"target": atom_id}))
+                        if let Err(error) =
+                            ctx.commit(AtomKind::Revert, json!({ "target": atom_id }))
                         {
                             failure = Some(error);
                             break;
@@ -10642,7 +10648,7 @@ fn write_resolve_conflict(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
     // ② 对方那一侧 ✓（`keep_ours`/`discard` ⇒ 让对方的原子失效 ✓；`tombstone(对方原子)` 的实现见上面的说明 ✓）。
     if failure.is_none() && matches!(resolution.as_str(), "keep_ours" | "discard") {
         if let Some(target) = opponent.clone() {
-            match ctx.commit(AtomKind::Revert, json!({"target": target})) {
+            match ctx.commit(AtomKind::Revert, json!({ "target": target })) {
                 Ok(_) => reverted_opponent = true,
                 Err(error) => failure = Some(error),
             }
@@ -10650,7 +10656,10 @@ fn write_resolve_conflict(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
     }
     // ③ **关闭冲突：墓碑化冲突图层** ✓（元数据保留供审计 ✓，设计原话 ✓）。
     if failure.is_none() {
-        match ctx.commit(AtomKind::Tombstone, json!({"layer_id": conflict_layer_id})) {
+        match ctx.commit(
+            AtomKind::Tombstone,
+            json!({ "layer_id": conflict_layer_id }),
+        ) {
             Ok(_) => {}
             Err(error) => failure = Some(error),
         }
@@ -10788,7 +10797,7 @@ fn revert_changeset_atoms(
     let mut reverted = 0usize;
     let mut failure: Option<YanshiError> = None;
     for target in &targets {
-        match ctx.commit(AtomKind::Revert, json!({"target": target})) {
+        match ctx.commit(AtomKind::Revert, json!({ "target": target })) {
             Ok(_) => reverted += 1,
             Err(error) => {
                 failure = Some(error);
@@ -10848,7 +10857,7 @@ fn write_path_edit(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 ErrorCode::InvalidArgument,
                 ErrorContext::detail(format!(
                     "未知的 path_edit 算子 {other}\
-                     （已实现：reverse / close / join / merge / split / convert_to_shape / boolean）"
+                     （已实现：reverse / close / join / merge / split / convert_to_path / convert_to_shape / boolean）"
                 )),
             ));
         }
@@ -11152,7 +11161,7 @@ fn write_path_edit(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let removed = updated
         .as_ref()
         .ok()
-        .map(|_| ctx.commit(AtomKind::Tombstone, json!({"object_id": other_id})));
+        .map(|_| ctx.commit(AtomKind::Tombstone, json!({ "object_id": other_id })));
     ctx.changeset = previous_changeset;
     let updated = updated?;
     let removed = removed.expect("接上成功后才 tombstone 第二条")?;
@@ -11167,7 +11176,7 @@ fn write_path_edit(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 
 fn write_move_object(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let object_id = require_str(args, "object_id")?;
-    let mut payload = json!({"object_id": object_id});
+    let mut payload = json!({ "object_id": object_id });
     if let Some(delta) = args.get("delta") {
         // **`delta` 是增量** ✓ —— 原样交给折叠层 **复合** ✓（只有它知道对象当前的变换 ✓）。
         // 此前这里把 dx/dy 编成**绝对矩阵** ✗ ⇒ 连续移动会**丢掉前面几步** ✓
@@ -11209,7 +11218,7 @@ fn write_history_atom(
     key: &str,
 ) -> Result<Value> {
     let target = require_str(args, key)?;
-    let result = ctx.commit(kind, json!({"target": target}))?;
+    let result = ctx.commit(kind, json!({ "target": target }))?;
     let region = region_of(&result);
     finish_mutation(ctx, &result, region)
 }
@@ -12219,7 +12228,7 @@ fn write_create_selection(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
 
 fn write_delete_selection(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let selection_id = require_str(args, "selection_id")?;
-    let result = ctx.commit(AtomKind::Tombstone, json!({"selection_id": selection_id}))?;
+    let result = ctx.commit(AtomKind::Tombstone, json!({ "selection_id": selection_id }))?;
     let region = region_of(&result);
     finish_mutation(ctx, &result, region)
 }
@@ -17470,6 +17479,17 @@ fn box_blur_coverage(coverage: &mut yanshi_render::geometry::Coverage, radius: u
 }
 
 fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // Validate output options before rasterization or committing a stroke.
+    let anchor_mode = optional_str(args, "anchor_mode").unwrap_or_else(|| "data".to_owned());
+    if anchor_mode != "data" {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "anchor_mode 只支持 data（缺省）—— {anchor_mode} 还没实现：\
+                 dual（两张图：干净 ＋ 带 Overlay）需要额外的缩略图合成通道，已记录在需求文档 P1 #12"
+            )),
+        ));
+    }
     // **笔迹标签**：`brush_stroke` 最终走 `write_import_image` 的 `ctx.commit` ⇒ 那里会取走它 ✓。
     ctx.pending_label = optional_str(args, "label");
     ctx.pending_group_id = optional_str(args, "group_id");
@@ -18042,39 +18062,27 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     }
     // **★ 视觉锚点（P1 ⑫）★**：`data`（缺省）＝ 一张干净图 ＋ 结构化锚点；
     //   `dual`（两张图：干净 ＋ 带 Overlay）**本版未实现** => 明确报错，不静默当 data。
-    let anchor_mode = optional_str(args, "anchor_mode").unwrap_or_else(|| "data".to_owned());
-    match anchor_mode.as_str() {
-        "data" => {
-            let spacing = args
-                .get("grid_spacing")
-                .and_then(Value::as_f64)
-                .unwrap_or(200.0);
-            let (canvas_w, canvas_h) = ctx
-                .workspace
-                .document_mut(&ctx.doc_id)
-                .map(|document| (document.state().width, document.state().height))
-                .unwrap_or((0, 0));
-            value["anchors"] = json!({
-                "mode": "data",
-                "last_stroke": {
-                    "start": points.first().map(|(x, y, _)| json!([x, y])).unwrap_or(Value::Null),
-                    "end": points.last().map(|(x, y, _)| json!([x, y])).unwrap_or(Value::Null),
-                    "bbox": [x0, y0, width, height],
-                },
-                "grid": {"spacing": spacing, "origin": [0, 0]},
-                "canvas": {"width": canvas_w, "height": canvas_h},
-                "note": "锚点是**画布坐标**；缩略图与画布等比缩放，按 canvas 尺寸换算即可",
-            });
-        }
-        other => {
-            return Err(YanshiError::new(
-                ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!(
-                    "anchor_mode 只支持 data（缺省）—— {other} 还没实现：\
-                     dual（两张图：干净 ＋ 带 Overlay）需要额外的缩略图合成通道，已记录在需求文档 P1 #12"
-                )),
-            ));
-        }
+    {
+        let spacing = args
+            .get("grid_spacing")
+            .and_then(Value::as_f64)
+            .unwrap_or(200.0);
+        let (canvas_w, canvas_h) = ctx
+            .workspace
+            .document_mut(&ctx.doc_id)
+            .map(|document| (document.state().width, document.state().height))
+            .unwrap_or((0, 0));
+        value["anchors"] = json!({
+            "mode": "data",
+            "last_stroke": {
+                "start": points.first().map(|(x, y, _)| json!([x, y])).unwrap_or(Value::Null),
+                "end": points.last().map(|(x, y, _)| json!([x, y])).unwrap_or(Value::Null),
+                "bbox": [x0, y0, width, height],
+            },
+            "grid": {"spacing": spacing, "origin": [0, 0]},
+            "canvas": {"width": canvas_w, "height": canvas_h},
+            "note": "锚点是**画布坐标**；缩略图与画布等比缩放，按 canvas 尺寸换算即可",
+        });
     }
     // **再报出这一笔是否吃了底图**（第 215 轮）：判据据此分类比对 ✓
     //（吃了 ⇒ 比"喂同样底图"；没吃 ⇒ 比"空表面"✓），不再自己猜名单 ✓。
@@ -22303,7 +22311,7 @@ fn read_list_suggestions(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
 
 fn write_comment(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let text = require_str(args, "text")?;
-    let mut payload = json!({"text": text});
+    let mut payload = json!({ "text": text });
     if let Some(target) = optional_str(args, "target_atom") {
         payload["target_atom"] = json!(target);
     }
@@ -22726,7 +22734,7 @@ fn write_delete_annotation(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
     let id = require_str(args, "annotation_id")?;
     let document = ctx.workspace.document_mut(&ctx.doc_id)?;
     let annotation = document.annotations_mut().delete(&id, ctx.now)?;
-    Ok(json!({"annotation": annotation}))
+    Ok(json!({ "annotation": annotation }))
 }
 
 fn write_resolve_annotation(
