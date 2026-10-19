@@ -121,6 +121,30 @@ done                                                                            
 
 ## 还没做完的
 
+- **`list_brushes(medium=marker|pencil|pixel)` 静默返回全部 201 支**（第 1047 轮查清，**是真缺陷**）：
+  `medium_stroke` 接受 6 个介质名（`oil`/`watercolor`/`marker`/`pencil`/`pixel`/`example`），
+  而 `medium_brush_keywords` 的 `match` **只有 5 个臂**（`oil`/`watercolor`/`sketch`/`ink`/`pastel`）
+  ⇒ 其余走 `_ => None`
+  ⇒ 而 `:5837` 是 `.and_then(...)`，`:5849` 是 `if let Some(keywords) = medium_keywords`
+  ⇒ **`None` 时不筛选 ⇒ 返回全部** ✗
+
+  **实测**（`list_brushes(medium=X)` 的支数，全部 = 201）：
+  `oil 28`｜`watercolor 25`｜`sketch 19`｜`ink 15`｜`pastel 10` ⇒ **真筛选** ✓
+  `marker 201`｜`pencil 201`｜`pixel 201` ⇒ **没筛选（等于全部）** ✗
+
+  **⇒ 所以 Agent 用 `marker` 会静默拿到全部 201 支（以为筛过）⇒ 典型「静默降级」。**
+
+  **为什么不本轮修**：
+  ① **1005 轮我已因「两个机制名字相似」改错过一次**（把 `mediums` 改成 `medium_brush_keywords` 的名字，
+     破坏了 `medium_stroke` 候选的一致性，被 `tool-engine-capabilities` 判据抓住，已回滚）
+  ② 「哪些笔刷算 marker」需要**设计输入**：
+     `BRUSH_TAG_HINTS` 里有 `("marker", ["marker","felt","chisel","brushpen"])` 与
+     `("pencil", ["pencil","graphite","charcoal","crayon"])` —— 可复用，但 **`pixel` 无对应数据**
+  ③ 加臂会**改行为**（`marker` 从 201 变子集），需判据先行
+
+  **⇒ 修法（有依据的部分）**：给 `marker`/`pencil` 加臂（复用 `BRUSH_TAG_HINTS` 的关键字）；
+  `pixel` 需先定「pixel 笔刷」的判据（可能是「硬边/方块」）。
+
 - **`liquify_needing_params` / `retouch_needing_params` 缺失**（第 1012 轮发现，**不是 bug**）：
   `filters_needing_params` 存在（`{"dehaze":["air"]}`），但同类字段**只有这一个**。
   实测还需参数的：
