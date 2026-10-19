@@ -27,8 +27,8 @@ The tool layer registers **108 core tools**, and with every implemented group en
 
 > **注意这里有两套口径，别混**：上面那两个数字（108 / 166）是**工具注册表**里的条目数，由
 > `tool_inventory.rs` 断言。而 **HTTP 面**（`GET /api/tools`）会按启用的 profile 展开，实测是
-> **175 个**（**第 1171 轮实测** `GET /api/tools`；`scripts/tool-surface-coverage.mjs` 对账 `docs/guide.md` 用的就是这个数）。
-> 一个工具可能同时在多个 profile 里注册，所以 175 > 166 不是重复注册的 bug ✓。
+> **178 个**（**第 1186 轮实测** `GET /api/tools`（补丁 +3 工具后）；`scripts/tool-surface-coverage.mjs` 对账 `docs/guide.md` 用的就是这个数）。
+> 一个工具可能同时在多个 profile 里注册，所以 178 > 166 不是重复注册的 bug ✓。
 (`analyze_image`, `inpaint_region`, `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke`,
 `apply_style_transfer`) is **reserved but not implemented** by the project owner's decision - the provider
 seam and the guarantees it owes are written down in [semantic-tools.md](semantic-tools.md), and no code,
