@@ -519,8 +519,6 @@ dependencies = [
 [[package]]
 name = "hokusai-core"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d0fdc01003e0256eb9bed701ce25b12f9af19bb33bf2340b77babc56960dce9"
 dependencies = [
  "thiserror 2.0.21",
 ]

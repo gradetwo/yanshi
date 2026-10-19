@@ -3161,7 +3161,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "speed_ink",
                 Number,
                 false,
-                "笔速感应 0..1（缺省 0 = 不启用）：慢笔多墨、快笔飞白。≡ brush_params 的 speed_gain"
+                "笔速感应 0..1（缺省 0 = 不启用）：慢笔多墨、快笔飞白。增量语义（在笔刷原生基础上叠加，不覆盖）。需 points 带 time_ms 才有速度信号，无时间数据时 warning 提醒"
             ),
             param!(
                 "color_breath",
@@ -3173,7 +3173,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "paint_push",
                 Number,
                 false,
-                "推颜料 0..1（缺省 0 = 不启用）：厚涂感。≡ brush_params 的 smudge_amount"
+                "推颜料 0..1（缺省 0 = 不启用）：笔过之处拖带底色混色（湿画法）。空画布上无影响。实测校准：日常 0.06–0.12，清晰自然 0.18–0.28，艺术夸张 0.4–0.6，0.75+ 为刮刀"
             ),
             param!("preview", Boolean, false, "缺省 true = 产出这一笔的预览图；false = 不产出（连续作画提速；预览仍可由 export_png / get_document 取）"),
             param!(
@@ -17065,19 +17065,43 @@ fn apply_brush_style(
 
 /// 意图级笔刷参数 → `brush_params` 别名，与显式 `brush_params` 合并（显式优先）。
 fn merge_intent_brush_params(args: &Value) -> Option<Value> {
-    const INTENTS: [(&str, &str); 4] = [
+    // **意图参数 → brush_params 的映射**：
+    // - hand_tremor → hand_jitter 别名（语义组展开）
+    // - speed_ink → 直接传 speed_ink（hokusai 原生 setting，增量语义，不再走 speed_gain 别名）
+    // - color_breath → color_variance 别名（语义组展开）
+    // - paint_push → 非线性解耦映射（见下，不再走 smudge_amount 别名）
+    const INTENT_ALIASES: [(&str, &str); 2] = [
         ("hand_tremor", "hand_jitter"),
-        ("speed_ink", "speed_gain"),
         ("color_breath", "color_variance"),
-        ("paint_push", "smudge_amount"),
     ];
     let mut map = Map::new();
-    for (intent, alias) in INTENTS {
+    for (intent, alias) in INTENT_ALIASES {
         if let Some(v) = args.get(intent).and_then(Value::as_f64) {
             let v = v.clamp(0.0, 1.0);
             if v > 0.0 {
                 map.insert(alias.to_string(), json!(v));
             }
+        }
+    }
+    // **speed_ink 增量语义**：直接作为 hokusai 的 speed_ink setting 传入，
+    //   引擎在 stroke.rs 里用 norm_speed1/2 直接作用于 radius/opaque。
+    //   不再映射到 speed_gain 别名（那会覆盖笔刷原生的 speed1_gamma）。
+    if let Some(v) = args.get("speed_ink").and_then(Value::as_f64) {
+        let v = v.clamp(0.0, 1.0);
+        if v > 0.0 {
+            map.insert("speed_ink".to_string(), json!(v));
+        }
+    }
+    // **paint_push 非线性解耦映射**（专家方案）：
+    // - smudge（混色比）= p^0.85 * 0.85，最高 0.85 保留 15% 笔刷色
+    // - smudge_length（拖尾留存）= 0.35 + 0.55 * p，必须从 0.35 起步才能拖动
+    // - smudge_transparency 固定 0.0，绝不随 p 增大（防空画布变橡皮擦）
+    if let Some(v) = args.get("paint_push").and_then(Value::as_f64) {
+        let p = v.clamp(0.0, 1.0);
+        if p > 0.0 {
+            map.insert("smudge".to_string(), json!(p.powf(0.85) * 0.85));
+            map.insert("smudge_length".to_string(), json!(0.35 + 0.55 * p));
+            map.insert("smudge_transparency".to_string(), json!(0.0));
         }
     }
     if let Some(obj) = args.get("brush_params").and_then(Value::as_object) {
