@@ -34,14 +34,19 @@ if [ -z "$RUN" ]; then
 fi
 echo "  监视 run ${RUN}（HEAD ${SHA:0:8}）"
 
-declare -A PREV
+# **不用 `declare -A`**（第 1017 轮）：那是 **bash 4+** 的特性 ✗
+# ⇒ macOS 自带 bash 3.2 ⇒ 会直接报 `declare: -A: invalid option` ✗
+# ⇒ 而 `script_portability` 测试**只查**「$VAR 紧跟非 ASCII」⇒ 抓不到这一条 ✗
+# ⇒ 所以改用**临时文件**存「name<TAB>concl」对（bash 3.2 兼容）
+PREV_FILE="$(mktemp "${TMPDIR:-/tmp}/watch-ci-prev.XXXXXX")"
+trap 'rm -f "$PREV_FILE"' EXIT
 while :; do
   STATE=$(gh api "repos/gradetwo/yanshi/actions/runs/$RUN" --jq '.status + ":" + (.conclusion // "-")' 2>/dev/null)
   # 逐 job 比对结论
   while IFS=$'\t' read -r name concl; do
     key="$name"
-    [ "${PREV[$key]:-}" = "$concl" ] && continue
-    PREV[$key]="$concl"
+    grep -qxF "${key}	${concl}" "$PREV_FILE" 2>/dev/null && continue
+    printf '%s\t%s\n' "$key" "$concl" >> "$PREV_FILE"
     case "$concl" in
       success)   echo "  ✓ $name" ;;
       failure)   echo "  ✗ $name" ;;
