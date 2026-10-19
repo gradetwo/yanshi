@@ -120,3 +120,7 @@ assets/textures/Paper*.png
 # cargo 的本地状态文件（与源码无关，不该进版本控制）
 vendor/**/.cargo-ok
 vendor/**/.cargo_vcs_info.json
+
+# patch / cargo 的中间产物（第 608 轮：tools.rs.rej 与 .orig 曾残留在 src/ 下）
+*.rej
+*.orig
