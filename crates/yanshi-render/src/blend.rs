@@ -222,6 +222,45 @@ mod tests {
     /// **∴ 这条测试**用 `names()` 的项数**当权威**（因为 `names()` 是
     /// 「受支持的全部混合模式名」，UI／校验都用它）✓
     /// ⇒ **∴ 所以**若 `ALL` 与 `names()` 不等长 ⇒ 就是漏了变体 ✗
+    /// **★ `NAMES` 与 `ALL` 的关系必须成立**（第 1002 轮加的恒等式）
+    ///
+    /// **∴ 事实**（第 1002 轮实测）：
+    ///   `ALL`   = 10 项（每个变体一个）
+    ///   `NAMES` = 11 项（= `ALL` 的 `as_str()` ＋ `linear_dodge` 这个**别名**）
+    ///
+    /// **∴ 为什么要断言关系，不只断言两个数**（内核 ②·恒等式优于单点）：
+    ///   单点断言「NAMES.len() == 11」在**新增变体**时也会红，但那是对的；
+    ///   而**关系**断言能一次说清「差的那一个必须是别名」✓
+    #[test]
+    fn names_is_all_plus_aliases() {
+        use std::collections::HashSet;
+        let from_all: HashSet<&str> = crate::blend::BlendMode::ALL
+            .iter()
+            .map(|m| m.as_str())
+            .collect();
+        let names: HashSet<&str> = crate::blend::BlendMode::NAMES.iter().copied().collect();
+        // `ALL` 的每个名字都必须在 `NAMES` 里
+        for name in &from_all {
+            assert!(names.contains(name), "NAMES 漏了 ALL 里的 {name}");
+        }
+        // 差集必须**只有别名**（每个别名都必须能 parse 成 ALL 里已有的某个变体）
+        let extras: Vec<&&str> = names.difference(&from_all).collect();
+        for extra in &extras {
+            let parsed = crate::blend::BlendMode::parse(extra);
+            assert!(parsed.is_some(), "NAMES 里的 {extra} 无法被 parse");
+            let parsed = parsed.unwrap();
+            assert!(
+                crate::blend::BlendMode::ALL.contains(&parsed),
+                "NAMES 里的 {extra} 解析成 {parsed:?}，但它不在 ALL 里"
+            );
+        }
+        // 已知的那个别名必须真的在差集里（否则说明 NAMES 与 ALL 的关系变了）
+        assert!(
+            extras.iter().any(|e| **e == "linear_dodge"),
+            "差集里应有 linear_dodge（实测差集 = {extras:?}）"
+        );
+    }
+
     #[test]
     fn all_covers_every_variant() {
         // **手工清单**（判据自己造的 ⇒ 可以写死 ✓）⇒ 每个变体的规范名。
