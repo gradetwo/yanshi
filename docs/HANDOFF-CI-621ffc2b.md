@@ -73,6 +73,20 @@ grep -rlP '\x{FFFD}' --include=*.rs --include=*.mjs --include=*.md --include=*.s
 | `tools.rs` 的 `unwrap/expect` | 20，**全部带文案且都是不变量**（如 `expect("data 已是对象")`）|
 | `trackTemp` 覆盖 | **按口径报**（见下），实测缺 **0** |
 | 已知红条数 | **30**，且与 `run-criteria.sh` 的运行时判据**一致**（见下）|
+| **能力列表的名字有效性** | `mediums` 5 ✓（1005 修）｜`filters` 14 ✓｜`retouch_kinds` 4 ✓｜`liquify_kinds` 3 ✓ |
+
+**能力列表的「名字有效」是什么意思**（第 1010 轮查齐）：
+
+```bash
+# 对每个报出来的名字，用它对应的工具调一次；「缺参数」算有效，「名字不认识」算无效
+# mediums   ⇒ list_brushes(medium=X) 的支数必须**严格小于**全部（否则没筛选 = 无效）
+# filters   ⇒ add_filter(filter_name=X) ⇒ 14/14 通过（dehaze 需 air，另有 filters_needing_params 说清）
+# retouch   ⇒ retouch_kind_tools 的映射（heal → heal_stamp）⇒ 4/4 有效
+# liquify   ⇒ liquify_<kind> 三个工具 ⇒ 3/3 有效（push 需 direction）
+```
+
+**⇒ 唯一真缺陷在 `mediums`**（1005 已修：3 个无效名 + 漏 3 个有效名）。
+**⇒ 其余三个列表都准确。**
 
 **已知红条数**（第 997 轮核实，两种口径零差异）：
 
