@@ -21,7 +21,7 @@
 | `color_variance` | `change_color_h` ＋ `change_color_v` ＋ `change_color_hsl_s` |
 | `smudge_amount` | `smudge` ＋ `smudge_length` ＋ `smudge_transparency` |
 
-## 63 个规范名（`BrushSetting::ALL`，按字母序）
+## 66 个规范名（`BrushSetting::ALL`，按字母序）
 
 - `opaque`
 - `opaque_multiply`
