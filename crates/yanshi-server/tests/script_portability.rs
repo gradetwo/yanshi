@@ -103,6 +103,62 @@ fn dollar_variables_never_touch_non_ascii_text() {
     );
 }
 
+/// **`scripts/*.sh` 与 `Makefile` 不许用 bash 4+ 独有特性**（第 1018 轮新加）
+///
+/// **∴ 起因**：第 1017 轮我发现 `watch-ci.sh` 里写了 `declare -A` ✗
+///   ⇒ 那是 **bash 4+** 的关联数组 ⇒ macOS 自带的 bash **3.2** 会直接报
+///     `declare: -A: invalid option` ⇒ 脚本**跑不起来** ✗
+///   ⇒ 而这条测试**当时只查**「`$VAR` 紧跟非 ASCII」⇒ **抓不到它** ✗
+///
+/// **∴ 所以**补上这张表：凡是 macOS bash 3.2 不支持／行为不同的写法，一律禁止 ✓
+#[test]
+fn scripts_avoid_bash4_only_features() {
+    // (子串, 人话) —— 用**纯子串**匹配（不引 regex 依赖）
+    let forbidden: &[(&str, &str)] = &[
+        (
+            "declare -A",
+            "`declare -A` 关联数组（bash 4+；改用临时文件）",
+        ),
+        ("mapfile ", "`mapfile`（bash 4+；改用 while read）"),
+        ("readarray ", "`readarray`（bash 4+；改用 while read）"),
+        ("declare -n", "`declare -n` nameref（bash 4.3+）"),
+        ("grep -P", "`grep -P`（macOS 的 BSD grep 不支持）"),
+        ("grep -oP", "`grep -oP`（同上）"),
+        ("sed -i ", "`sed -i` 无后缀（macOS 要求 `sed -i ''`）"),
+        ("^^}", "${VAR^^} 大小写转换（bash 4+）"),
+        (",,}", "${VAR,,} 大小写转换（bash 4+）"),
+    ];
+    let mut violations = Vec::new();
+    let mut files = scripts();
+    let makefile = repo_root().join("Makefile");
+    if makefile.is_file() {
+        files.push(makefile);
+    }
+    for path in files {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (lineno, line) in text.lines().enumerate() {
+            // 跳过注释行（注释里提到这些词是**说明**，不是用法）
+            if line.trim_start().starts_with('#') {
+                continue;
+            }
+            for (needle, what) in forbidden {
+                if line.contains(needle) {
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    violations.push(format!("{name}:{}: {what}", lineno + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "脚本用了 macOS bash 3.2 不支持的写法（共 {} 处）：\n  {}",
+        violations.len(),
+        violations.join("\n  ")
+    );
+}
+
 #[test]
 fn scripts_parse_and_have_shebangs() {
     for path in scripts() {

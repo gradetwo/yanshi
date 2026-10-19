@@ -44,11 +44,17 @@ echo ""
 echo "== ② 变异：拿掉创建那一步 ⇒ **同一判据应当红**（**∴ 证明有牙**）=="
 # **∴ 用 sed 做一处**最小**变异 ✗** ⇒ **∴ 并**打印它到底改了没有** ✓
 #   （**∴ 若**模式没匹配上 ✗ ⇒ **∴ 变异**没发生**✗ ⇒ **∴ 那**一次的"绿"**毫无意义** ✓）★★
-if ! sed -i 's/if !crate::buffer::ensure_quantizer(crate::color::srgb_encode_table()) {/if false {/' \
-  crates/yanshi-render/src/filter.rs; then
+# **不用 `sed -i`**（第 1018 轮）：macOS 的 BSD sed 要求 `sed -i ''`，
+#   而 GNU sed 要求 `sed -i`（无后缀）⇒ **两边不兼容** ✗
+# ⇒ 所以改用「写临时文件再 mv」（两边都行）✓
+_tmp="$(mktemp)"
+if ! sed 's/if !crate::buffer::ensure_quantizer(crate::color::srgb_encode_table()) {/if false {/' \
+  crates/yanshi-render/src/filter.rs > "$_tmp"; then
   echo "  ✗ sed 失败" >&2
+  rm -f "$_tmp"
   exit 1
 fi
+mv "$_tmp" crates/yanshi-render/src/filter.rs
 if grep -q "if false {" crates/yanshi-render/src/filter.rs; then
   echo "  ✓ 变异已落地（源码里现在有 'if false {'）"
 else
