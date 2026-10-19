@@ -32,7 +32,7 @@ if [ -z "$RUN" ]; then
   echo "  ⊘ 不可判：HEAD 还没有对应的 CI run（刚 push？等 GitHub 创建）"
   exit 3
 fi
-echo "  监视 run $RUN（HEAD ${SHA:0:8}）"
+echo "  监视 run ${RUN}（HEAD ${SHA:0:8}）"
 
 declare -A PREV
 while :; do
@@ -45,9 +45,9 @@ while :; do
     case "$concl" in
       success)   echo "  ✓ $name" ;;
       failure)   echo "  ✗ $name" ;;
-      cancelled) echo "  ⊘ $name（取消）" ;;
-      skipped)   echo "  － $name（跳过）" ;;
-      *)         echo "  ⏳ $name（$concl）" ;;
+      cancelled) echo "  ⊘ ${name}（取消）" ;;
+      skipped)   echo "  － ${name}（跳过）" ;;
+      *)         echo "  ⏳ ${name}（${concl}）" ;;
     esac
   done < <(gh api "repos/gradetwo/yanshi/actions/runs/$RUN/jobs" \
             --jq '.jobs[] | "\(.name)\t\(.conclusion // .status)"' 2>/dev/null)
