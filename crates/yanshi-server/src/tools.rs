@@ -12284,6 +12284,26 @@ fn write_create_selection(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
     if let Some(linked) = optional_str(args, "linked_layer") {
         payload["linked_layer"] = json!(linked);
     }
+    // **`mode != "new"` 时合并尚未实现**（第 807 轮，外部 §136 反馈）：
+    // 落盘是 `state.selections.insert(…)`（覆盖式），而 spec 承诺的是「组合」。
+    // ⇒ 外部原话：「它现在会『静默不生效』（比报错更危险）」。
+    // ⇒ 所以这里**明确拒绝**，而不是让他以为合并成功了。
+    //   （真正的布尔合并见 docs/design/brush-capability-gap.md 三百二十七节的 4 步清单，
+    //     第 1、4 步已完成，第 2、3 步待做。）
+    if mode != "new" {
+        let state = document_state(ctx)?;
+        if state.selections.contains_key(&selection_id) {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "mode={mode} 的布尔合并尚未实现（当前只会覆盖旧选区，那比报错更危险）\
+                     ⇒ 请改用两步：① smart_select 取要减掉/加上的区域；\
+                     ② paint_mask(mode=…) 在目标选区的蒙版上擦/画，再用 set_property 挂回图层。\
+                     见 docs/design/brush-capability-gap.md 三百二十七节。"
+                )),
+            ));
+        }
+    }
     let result = ctx.commit(AtomKind::CreateSelection, payload)?;
     let region = region_of(&result);
     finish_mutation(ctx, &result, region)
