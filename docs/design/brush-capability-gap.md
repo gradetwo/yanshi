@@ -13241,3 +13241,44 @@ cargo test -p yanshi-http --lib uploading_a_png_stores_normalised_raw_pixels
 **⇒ 注意**：这条我不会再用「猜」推进。前两轮的猜测（缓存层、`decode_png` 逻辑）**都错了**，
 所以我改为「打印三个中间量」这种**不依赖猜测**的做法。
 
+### 三百二十四节的第二轮：夹具是 **64×64 RGB**，而入库长度对应 **85 行**（第 757 轮）
+
+**测试用的夹具**（`crates/yanshi-http/src/server.rs:3618`）：
+
+```rust
+let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    .join("../yanshi-render/tests/fixtures/large_rgb.png");
+```
+
+**直接读它的 IHDR**：
+
+```
+IHDR: width=64 height=64 bit_depth=8 color_type=2 interlace=0
+```
+
+⇒ **`color_type = 2` = RGB（3 通道）**，不是 RGBA。
+
+**⇒ 所以正确的路径应当走 `decode_png` 的 `else` 分支**（RGB → RGBA 补 255）：
+`64 × 64 × 3 = 12288` 字节的 `raw` ⇒ `chunks_exact(3)` 4096 块 ⇒ `4096 × 4 = 16384` ✓
+
+**⇒ 而实测入库 21844。三个算式都对不上「正确的 16384」，但都对得上一个东西**：
+
+| 算式 | 结果 |
+|---|---|
+| `21844 / 4` | **5461**（整数，所以它**是**按 4 字节一组存的）|
+| `21844 / (1 + 64×4)` | **85.00 行**（每行 `1 个 filter 字节 + 64 个 RGBA`）|
+| `21844 / (1 + 64×3)` | **113.2 行**（不是整数）|
+
+**⇒ 所以 `unfilter_png` 是按 `channels = 4`（RGBA 行宽）解了 **85 行**，
+而 IHDR 说 `channels = 3`、`height = 64`。**
+
+**⇒ 两个数同时错**（通道数 4 而非 3、行数 85 而非 64）说明**不是**「某一处算错」，
+而是「`unfilter_png` 收到了一份**与 IHDR 不匹配的流**，它按自己的假定解出了 85 行」。
+
+**⇒ 85 这个数从哪来**：`21844 = 85 × 257 − 1`。而 `85 = 64 + 21`？
+**更可能是**：`unfilter_png` 的循环按「剩余字节够一行就继续」走（`while`），而不是严格 `height` 次 ——
+于是它把 **zlib 流里剩下的字节**也当成行解了出来。⇒ **这解释了为什么行数会比 `height` 多**。
+
+**⇒ 下一轮只需看一处**：`unfilter_png` 的行循环是 `for _ in 0..height` 还是 `while`。
+若补丁把它从 `for` 改成了 `while`（或改成了按 `raw.len()` 判断），那就是根因。
+
