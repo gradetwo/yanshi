@@ -105,4 +105,34 @@ if (unexpected.length > 0) {
   process.exit(1);
 }
 
-console.log(`结论：仓库顶层 ${entries.length} 个条目都在白名单内或被忽略 ✓（无判据产物残留 ✓）`);
+// **全仓库不许有 `.rej` / `.orig`**（第 618 轮）：
+//   为什么加这条：`patch` 失败时在**源码目录**留下 `tools.rs.rej`（7553 字节）与 `.orig`，它们
+//   **不被 git 跟踪** ⇒ `git status` 看不见 ⇒ 但 `grep` 会被污染。第 608 轮我就是靠 grep 撞上它才发现；
+//   更糟的是那次的 `.rej` 里正好躺着 `stroke_total_length` 的赋值代码，我把它当"残留"删了，
+//   结果 `pressure_shape`／`stroke_taper` 白查了好几轮。
+//   ⇒ **所以 `.rej` 不只是脏东西，它是失败补丁的说明书** ⇒ 判据只负责"提醒它存在"，
+//   要不要删由人判断（本判据只报数量，不删）。
+const stray = [];
+const walk = (dir) => {
+  for (const name of readdirSync(dir)) {
+    if (name === ".git" || name === "target" || name === "node_modules") continue;
+    const full = join(dir, name);
+    let st;
+    try {
+      st = statSync(full);
+    } catch {
+      continue;
+    }
+    if (st.isDirectory()) walk(full);
+    else if (name.endsWith(".rej") || name.endsWith(".orig")) stray.push(full.slice(root.length + 1));
+  }
+};
+walk(root);
+if (stray.length > 0) {
+  console.error(`✗ 全仓库有 ${stray.length} 个 patch 中间产物（.rej / .orig）：`);
+  for (const p of stray) console.error(`  · ${p}`);
+  console.error("⇒ 先读一遍再删——.rej 里可能是**没应用成功的补丁片段**，不是垃圾。");
+  process.exit(1);
+}
+
+console.log(`结论：仓库顶层 ${entries.length} 个条目都在白名单内或被忽略 ✓（无判据产物残留 ✓，无 .rej/.orig ✓）`);
