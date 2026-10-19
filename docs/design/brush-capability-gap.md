@@ -12963,3 +12963,63 @@ dab 间距公式（`spacing = 1 / (dpar * radius)` 那类）分母趋零 ⇒ 间
 **⇒ 下一轮**：给这条写判据（`size=3` 的 `calligraphy` 必须落墨，或者必须给出**可执行**的替代建议，
 而不是只说"dab 间距趋于无穷"）。前半句是产品行为，后半句是错误信息质量 —— 两者都可以断。
 
+### 三百二十一节的更正：**错误信息的诊断是错的**，真根因是抗锯齿把 hardness 变负（第 731 轮）
+
+我上一节照抄了错误信息里的解释（"`dabs_per_basic_radius` 是 0 ⇒ dab 间距趋于无穷"）。
+**读源码后确认那句话是错的。**
+
+**依据（`vendor/hokusai-core/src/stroke.rs:1267-1271`）**：
+
+```rust
+let mut dabs_per_pixel = (dpar + dpbr) * 2.0;
+if dabs_per_pixel < 1.0 {
+    dabs_per_pixel = 1.0;      // ← 下限 1.0
+}
+```
+
+⇒ `dpar == 0 && dpbr == 0` 时 `dabs_per_pixel` **被钳到 1.0**（每像素一个 dab），
+**不是"趋于无穷"** ⇒ 那一条不可能导致"一个 dab 都不发"。
+
+**⇒ 真根因在 `stroke.rs:1291-1300` 的抗锯齿分支**：
+
+```rust
+let current_fadeout = radius * (1.0 - hardness);
+if current_fadeout < aa_min {
+    let optical = radius - (1.0 - hardness) * radius * 0.5;
+    let hardness_new = (optical - aa_min * 0.5) / (optical + aa_min * 0.5);
+    // 源码注释原文：sub-pixel dabs end up with negative hardness,
+    // which `draw_dab_default` rejects to match the upstream
+    // `op->hardness == 0` early-out.
+}
+```
+
+而 `brushmodes.rs:155` 的守卫是：
+
+```rust
+if dab.radius < 0.1 || dab.hardness <= 0.0 || dab.opaque <= 0.0 {
+    return false;      // ← 一个像素都不画
+}
+```
+
+**⇒ 链条是**：`size=3` ⇒ `radius ≈ 1.5` ⇒ `current_fadeout = radius * (1 - hardness)` 很小 ⇒
+`hardness_new` 变**负数** ⇒ `draw_dab_default` 的 `hardness <= 0` 守卫直接 `return false`
+⇒ `painted_pixels = 0` ⇒ `brush_stroke` 报"这一笔没落下任何像素"。
+
+**⇒ 而 `size=4` 起就好了**：`radius ≈ 2.0` ⇒ `current_fadeout` 够大 ⇒ 不走那个分支 ⇒ hardness 保持正。
+
+**⇒ 所以三件事要分清**：
+
+| 谁说的 | 说的什么 | 对不对 |
+|---|---|---|
+| 错误信息 | `dpar == 0` ⇒ 间距趋于无穷 | **错**（会被钳到 1.0）|
+| 我上一节 | 照抄了错误信息 | 跟着错了一节 |
+| **本轮读码** | **AA 把 hardness 变负 ⇒ `draw_dab_default` 拒画** | **这才是根因** |
+
+**⇒ 这条给外部/上游的价值**：错误信息**误诊**。用户看到"dab 间距趋于无穷"会去查 `dpar`，
+而真正该改的是 AA 分支对 sub-pixel 半径的处理（或者 `draw_dab_default` 那个 `hardness <= 0` 守卫
+对小半径放宽）。
+
+**⇒ 我该做的两件小事**（下一轮）：
+1. 改 `tools.rs` 里那条错误文案，不要再指向 `dpar`；
+2. 给这条写判据：`size=3` 的 `calligraphy` 要么落墨、要么报错文案**指向 AA/hardness**。
+
