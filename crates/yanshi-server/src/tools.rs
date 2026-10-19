@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 94 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 95 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -32,7 +32,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（94 个）。
+    /// 核心层：默认注册（95 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -563,7 +563,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，94 个）。
+    /// 核心层（默认注册，95 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1405,7 +1405,7 @@ fn region_of(result: &CommitResult) -> Option<Bbox> {
 const ID_ARGS: &[ParamSpec] = &[param!("object_id", String, true, "对象 id")];
 const LAYER_ID: &[ParamSpec] = &[param!("layer_id", String, true, "图层 id")];
 
-/// 核心层 94 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 95 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -2317,6 +2317,13 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: ID_ARGS,
     },
     // ---- 撤销 ----
+    ToolSpec {
+        name: "revert_atoms",
+        profile: Profile::Core,
+        summary: "一次撤销多个原子（配合 list_atoms 找到的坏笔 ⇒ 精准挖掉，不必整层重画）",
+        mutating: true,
+        params: &[param!("atom_ids", Any, true, "要撤销的原子 id 数组")],
+    },
     ToolSpec {
         name: "revert",
         profile: Profile::Core,
@@ -3716,6 +3723,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "set_group_transform" => write_set_group_transform(ctx, args),
         "move_object" => write_move_object(ctx, args),
         "delete_object" => write_tombstone(ctx, args, "object_id"),
+        "revert_atoms" => write_revert_atoms(ctx, args),
         "revert" => write_history_atom(ctx, args, AtomKind::Revert, "atom_id"),
         "undo_last" => write_undo_last(ctx, args),
         "get_undo_status" => read_get_undo_status(ctx, args),
@@ -18771,6 +18779,55 @@ fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 /// **为什么新加而不是改 `get_diff`** ✓：`get_diff`（设计 776 ✓）是"**两个序号之间的差分**" ✓，
 /// 改它的响应会动到既有调用方 ✗；而"**按 id 取一条**"是另一个正交的需要 ✓（点开历史里某一条 ✓）。
 /// **内核里本来就有** ✓：`Log::get(id)` ✓ ⇒ 这里只是把它**放行到工具面** ✓。
+/// **`revert_atoms`**：逐个撤销一组原子（需求 v2 §4.4：「找到坏笔 ⇒ 精准挖掉」）。
+///
+/// **为什么逐个而不是一条批量原子**：`revert` 的语义是"标记某个原子失效"，
+/// 一次一条；批量只是一层循环 ✗ ⇒ **∴ 不**引入新语义**✗**，也**不**让折叠器变复杂**✗**。
+fn write_revert_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let ids: Vec<String> = match args.get("atom_ids").and_then(Value::as_array) {
+        Some(list) => list
+            .iter()
+            .map(|value| {
+                value.as_str().map(str::to_owned).ok_or_else(|| {
+                    YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail("atom_ids 里每一项都要是字符串（原子 id）"),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+        None => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("atom_ids 必须是数组（原子 id 列表）"),
+            ))
+        }
+    };
+    if ids.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("atom_ids 不能为空"),
+        ));
+    }
+    let mut reverted: Vec<String> = Vec::new();
+    let mut failed: Vec<Value> = Vec::new();
+    for id in ids {
+        let single = json!({"atom_id": id});
+        match write_history_atom(ctx, &single, AtomKind::Revert, "atom_id") {
+            Ok(_) => reverted.push(id),
+            Err(error) => failed.push(json!({"atom_id": id, "error": error.to_string()})),
+        }
+    }
+    Ok(json!({
+        "ok": failed.is_empty(),
+        "reverted": reverted,
+        "reverted_count": reverted.len(),
+        "failed": failed,
+        "failed_count": failed.len(),
+        "note": "逐个撤销；有一条失败也照实报 failed，不假称全部成功",
+    }))
+}
+
 /// **`discard_stroke`**：把某次试画标成 discarded —— **不写文档**，之后也不能再提交。
 fn write_discard_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let attempt_id = require_str(args, "attempt_id")?;
@@ -20369,6 +20426,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "try_stroke",
         r#"{"layer_id":"L1","brush":"2B_pencil","points":[[10,10],[40,40]],"size":8}"#,
     ),
+    ("revert_atoms", r#"{"atom_ids":["a1","a2"]}"#),
     ("discard_stroke", r#"{"attempt_id":"abc123"}"#),
     ("list_attempts", r#"{"limit":10,"status":"pending"}"#),
     ("commit_stroke", r#"{"attempt_id":"abc123"}"#),
