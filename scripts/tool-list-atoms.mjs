@@ -30,6 +30,18 @@ await call("brush_stroke", { layer_id: "p", brush: "100%_Opaque", points: [[100,
 const failures = [];
 
 
+// ⑩ layer_id：按图层筛（唯一还没测过的维度）。用**恒等式**验：L1 + L2 = 全部
+const allForLayer = await call("list_atoms", { limit: 50 });
+const byL1 = await call("list_atoms", { limit: 50, layer_id: "p" });
+const byNope = await call("list_atoms", { limit: 50, layer_id: "NOPE-LAYER" });
+console.log(`  layer_id=p ⇒ ${byL1.count} 条｜NOPE ⇒ ${byNope.count} 条｜全部 ⇒ ${allForLayer.count} 条`);
+if ((byL1.atoms ?? []).some((a) => a.layer_id !== "p")) failures.push("layer_id=p 返回了别的图层的原子 ✗");
+if (Number(byNope.count) !== 0) failures.push(`不存在的图层应得 0 条，实测 ${byNope.count} ✗`);
+// 恒等式：该图层的条数 ≤ 全部条数（不能凭空多出来）
+if (Number(byL1.count) > Number(allForLayer.count)) {
+  failures.push(`layer_id=p 得 ${byL1.count} 条，比全部 ${allForLayer.count} 条还多 ⇒ 筛选没生效 ✗`);
+}
+
 // ⑨ since_seq：按「严格大于」筛（自上次之后 ⇒ 不含边界本身；边界给最大 seq 时得 0 条）
 const allSeqs = (await call("list_atoms", { limit: 50 })).atoms ?? [];
 const sorted = allSeqs.map((a) => Number(a.seq)).sort((x, y) => x - y);
