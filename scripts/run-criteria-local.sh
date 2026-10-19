@@ -48,7 +48,14 @@ PORT=$(( 23000 + RANDOM % 2000 ))
 # ⇒ 一并修正（不影响执行，因为它在注释里，但文件是坏的）
 # 所以这里的 --doc/--width/--height 只是**服务的初始文档**，判据不会用它。
 # ⇒ 不要以为判据跑在 400x400 上（第 987 轮实测：0 个判据用 doc=g）。
-"$BIN" --root "$ROOT" --doc _bootstrap --width 64 --height 64 --bind "127.0.0.1:$PORT" > "$ROOT/s.log" 2>&1 &
+# **服务端也要设 `YANSHI_EXPORT_DIR`**（第 1088 轮查清）：
+#   `guarded_output_path`（`tools.rs:23184-23187`）里
+#     `YANSHI_EXPORT_DIR` 未设 ⇒ 缺省是 `"exports"` ⇒ **相对服务端进程的 CWD** ✗
+#     ⇒ 而 CWD 是仓库根 ⇒ 导出文件落到 `<仓库>/exports/`，**不在 `--root` 下** ✗
+#     ⇒ 判据按 `YANSHI_WORKSPACE/exports` 找 ⇒ **找不到** ⇒ 抛错 ⇒ exit 3 ✗
+#   ⇒ 所以**启动服务时**就要设（只在 node 前 export 是没用的：那不影响已在跑的服务）✓
+YANSHI_EXPORT_DIR="$ROOT/exports" \
+  "$BIN" --root "$ROOT" --doc _bootstrap --width 64 --height 64 --bind "127.0.0.1:$PORT" > "$ROOT/s.log" 2>&1 &
 PID=$!
 trap 'kill "$PID" 2>/dev/null; rm -rf "$ROOT"' EXIT
 
@@ -76,6 +83,14 @@ if [ -z "$CRIT_TOKEN" ]; then
   echo "  ⊘ 不可判：拿不到 token（判据前提不成立，不是产品问题）" >&2
   exit 3
 fi
+# **补 CI 会设的环境变量**（第 1088 轮）：有些判据靠它们找导出文件
+#   ⇒ `tool-cjk-text` 的候选目录是
+#       [YANSHI_EXPORT_DIR, $YANSHI_WORKSPACE/exports, $YANSHI_WORKSPACE, exportDir, "."]
+#   ⇒ **不设时只剩 `"."`** ⇒ 找不到 `<doc>.png` ⇒ 抛错 ⇒ exit 3（假「判据自身出错」）✗
+#   ⇒ 而 CI 的 runner **会**导出 `YANSHI_WORKSPACE` ⇒ 所以 CI 上它能跑 ✓
+#   ⇒ 所以本脚本也要设，否则**本机与 CI 不一致** ✗
+export YANSHI_WORKSPACE="$ROOT"
+export YANSHI_EXPORT_DIR="$ROOT"
 node "$CRIT" "$BASE_URL" _bootstrap "$CRIT_TOKEN" "$@"
 RC=$?
 echo "  ⇒ 判据退出码=$RC"
