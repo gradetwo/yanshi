@@ -12741,3 +12741,46 @@ hok#2: (63.6628, 200.0000) r=5.65974 hard=0.37630 opaq=1.00000 aspect=5.4600 ang
 `taper_factor` 也应参与**间距**的计算（`dabs_per_actual_radius` 的输入），
 让「半径 × 密度」的乘积保持不变，而不是只缩半径。
 
+### 修 `stroke_taper` 的第一次尝试：**无效，已回滚**（第 714 轮）
+
+按上一节的推断，在 `stroke.rs:966`（`draw_radius = (draw_radius * combined_radius_factor)…` 之后）
+加一行密度守恒：
+
+```rust
+if stroke_taper > 1e-4 {
+    state.dabs_per_actual_radius *= taper_factor;
+}
+```
+
+**结果：墨面积仍是 1369，比 1.087 —— 一点没变。** 已回滚。
+
+**⇒ 原因（这是本轮真正的收获）**：`state.dabs_per_actual_radius` 在**每次迭代的 `:405` 行被重设**：
+
+```rust
+state.dabs_per_actual_radius =
+    state.prev_settings.get(BrushSetting::DabsPerActualRadius);
+```
+
+我插在 `:966` 的乘法，**在下一次迭代就被 `:405` 覆盖** ⇒ 我改的那个值只活了一次迭代，
+而 `count_dabs_to` 用的不是它。
+
+**⇒ 所以修法要改位置，而位置受一个顺序约束卡住**：
+
+| 行 | 做什么 |
+|---|---|
+| `:405` | 设 `dpar`（每迭代覆盖）|
+| `:930` | **才**算出 `taper_factor` |
+| `:966` | 乘 `dpar` ⇒ **下一次迭代被 `:405` 冲掉** |
+
+⇒ **同一个迭代内 `dpar` 先设、`taper_factor` 后算，所以"在同一迭代里乘"做不到。**
+⇒ 真正可行的两条路：
+1. **加一个 state 字段**（如 `last_taper_factor`），让 `:405` 那次赋值**带上上一个 dab 的因子**；
+2. 或者直接改 `prev_settings` 里的 `DabsPerActualRadius`，让它在**源头**带因子。
+
+**⇒ 两条都不是一行能做完的**（要动 state 结构或 settings 生命周期），风险与收益比明显下降。
+**⇒ 决定：停在这里**。缺陷已有判据守着（`tool-taper-shrinks-ink`，登记在 `AGENTS.md` 已知红里），
+修法方向与卡点都写清了，留给上游更合适。
+
+**⇒ 本轮的否定结果本身有价值**：它排除了"最直觉的那个位置"，并给出了**为什么**（顺序约束），
+下一个人不必再试这一处。
+
