@@ -3438,6 +3438,12 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "只列笔迹区域与该框相交的原子：[x, y, w, h]（文档像素）⇒ 「在画面这个区域里」怎么查"
             ),
             param!(
+                "want_thumb",
+                Boolean,
+                false,
+                "缺省 true = 每条带一张 128px 缩略图（外部复测方靠看图认笔）；单次最多 20 张，超出截断并注明"
+            ),
+            param!(
                 "include_non_stroke",
                 Boolean,
                 false,
@@ -19259,6 +19265,11 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let want_brush = optional_str(args, "brush").map(|value| value.to_lowercase());
     let since_seq = optional_u64(args, "since_seq");
     // 区域筛选：`[x, y, w, h]`（文档像素）⇒ 只保留与该框相交的笔迹
+    let want_thumb = args
+        .get("want_thumb")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    const MAX_THUMBS: usize = 20;
     let include_non_stroke = args
         .get("include_non_stroke")
         .and_then(Value::as_bool)
@@ -19350,12 +19361,45 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             "layer_id": payload_str(atom, "layer_id"),
             "brush": payload_str(atom, "brush"),
             "timestamp": atom.timestamp,
+            "region": atom.payload.get("region").cloned().unwrap_or(Value::Null),
         }));
+    }
+    // **缩略图**（外部复测方："我看图认那笔坏眼睛，比背 atom_id 靠谱"）。
+    // 成本：每条一次区域渲染 ⇒ 单次最多 20 张；区域大于 256×256 的跳过（不做缩放，
+    // 免得为了缩略图写一条新的重采样路径）。截断的 id 会在 `thumbnail_skipped` 里列出来。
+    let mut thumbs = 0usize;
+    let mut skipped: Vec<String> = Vec::new();
+    if want_thumb {
+        for hit in hits.iter_mut() {
+            let region = hit.get("region").cloned().unwrap_or(Value::Null);
+            let num = |key: &str| region.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+            let (rx, ry, rw, rh) = (num("x"), num("y"), num("w"), num("h"));
+            let id = hit
+                .get("atom_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            if thumbs >= MAX_THUMBS || rw <= 0.0 || rh <= 0.0 || rw > 256.0 || rh > 256.0 {
+                skipped.push(id);
+                continue;
+            }
+            let bbox = yanshi_core::Bbox::new(rx, ry, rw, rh);
+            if let Ok((w, h, pixels)) = ctx.workspace.render_region_raw(&ctx.doc_id, bbox) {
+                if w > 0 && h > 0 {
+                    if let Some(png) = yanshi_render::png::encode_png(w, h, &pixels) {
+                        hit["thumbnail"] = json!(base64::encode(&png));
+                        thumbs += 1;
+                    }
+                }
+            }
+        }
     }
     Ok(json!({
         "atoms": hits,
         "count": hits.len(),
         "limit": limit,
+        "thumbnail_count": thumbs,
+        "thumbnail_skipped": skipped,
         "note": "按 seq 倒序（新的在前）；没给任何筛选就是最近 limit 条",
     }))
 }

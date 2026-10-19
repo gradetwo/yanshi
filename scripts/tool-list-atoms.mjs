@@ -30,6 +30,16 @@ await call("brush_stroke", { layer_id: "p", brush: "100%_Opaque", points: [[100,
 const failures = [];
 
 
+// ⑧ 缩略图：缺省每条带一张，want_thumb=false 时一张都不带（外部复测方靠看图认笔）
+const withThumb = await call("list_atoms", { limit: 10 });
+const noThumb = await call("list_atoms", { limit: 10, want_thumb: false });
+console.log(`  缩略图 ⇒ 缺省 ${withThumb.thumbnail_count} 张｜want_thumb=false ⇒ ${noThumb.thumbnail_count} 张`);
+if (Number(withThumb.thumbnail_count) !== Number(withThumb.count)) {
+  failures.push(`缺省应每条都带缩略图（${withThumb.count} 条），实测 ${withThumb.thumbnail_count} 张 ✗`);
+}
+if ((withThumb.atoms ?? []).some((a) => !a.thumbnail)) failures.push("缺省时有条目没有 thumbnail ⇒ 说了给却不给 ✗");
+if (Number(noThumb.thumbnail_count) !== 0) failures.push(`want_thumb=false 时仍有 ${noThumb.thumbnail_count} 张缩略图 ⇒ 开关没生效 ✗`);
+
 // ⑦ 缺省只列笔迹（外部 §110：seq=2 是 create_layer，没有笔刷名，会被误当成"同一支笔有一笔记不上"）
 const def = await call("list_atoms", { limit: 50 });
 const defKinds = [...new Set((def.atoms ?? []).map((a) => a.kind))];
