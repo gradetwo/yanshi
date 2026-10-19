@@ -6,7 +6,7 @@
 
 | 项 | 值 |
 |---|---|
-| `main` 与 `l4-sync` | `d8b3324d`（同步）|
+| `main` 与 `l4-sync` | **看命令**：`git rev-parse --short HEAD`（两分支应相同；本文件末次更新时是 `0d2a7b9b`）|
 | 工作区 | 干净 |
 | `cargo clippy --workspace --all-targets` | **0**（`scripts/pre-commit.sh` 保证）|
 | 判据（CI 收集口径）| **282** |
