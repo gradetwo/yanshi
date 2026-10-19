@@ -24,25 +24,70 @@ const call = (tool, args) => fetch(`${base}/api/tools?doc=${doc}&token=${created
   body: JSON.stringify({ tool, arguments: args }),
 }).then((r) => r.json());
 
-await call("create_layer", { layer_id: "a", name: "a" });
-const sel = await call("create_selection", {
-  selection_id: "s", shape: { kind: "rect", x: 10, y: 10, w: 50, h: 50 },
-});
-if (sel.ok !== true) { console.error("  ⊘ 不可判：建不了 rect 选区（判据前提不成立）"); process.exit(3); }
-
-const r = await call("brush_stroke", {
-  layer_id: "a", brush: "100%_Opaque.myb", size: 30,
-  points: [[20, 20], [50, 50]], clip_to_selection: "s", color: [1, 0, 0, 1],
-});
 const failures = [];
-if (r.ok !== true) {
-  failures.push(`brush_stroke(clip_to_selection="s") 被拒 ⇒ ${JSON.stringify(r.context ?? {}).slice(0, 120)}`);
+
+// **四种形状都要能被裁剪**（第 905 轮扩：原来只测 rect）
+//   每个用「内点 / 外点」两个采样；内点必须红、外点必须白。
+const cases = [
+  // [名字, 形状, 内点, 外点]
+  ["rect", { kind: "rect", x: 10, y: 10, w: 50, h: 50 }, [30, 30], [80, 80]],
+  ["ellipse", { kind: "ellipse", cx: 50, cy: 50, rx: 30, ry: 30 }, [50, 50], [5, 5]],
+  ["polygon", { kind: "polygon", points: [[10, 10], [80, 10], [80, 80], [10, 80]] }, [40, 40], [95, 95]],
+];
+for (const [name, shape, insidePt, outsidePt] of cases) {
+  const id = `s-${name}`;
+  const layer = `l-${name}`;
+  const sel = await call("create_selection", { selection_id: id, shape });
+  if (sel.ok !== true) {
+    console.error(`  ⊘ 不可判：建不了 ${name} 选区（判据前提不成立）`);
+    process.exit(3);
+  }
+  await call("create_layer", { layer_id: layer, name: layer });
+  const r = await call("brush_stroke", {
+    layer_id: layer, brush: "100%_Opaque.myb", size: 30,
+    points: [[15, 15], [85, 85]], clip_to_selection: id, color: [1, 0, 0, 1],
+  });
+  if (r.ok !== true) {
+    failures.push(`${name}: brush_stroke(clip=${id}) 被拒 ⇒ ${JSON.stringify(r.context ?? {}).slice(0, 100)}`);
+    continue;
+  }
+  const px = await call("sample_colors", { points: [insidePt, outsidePt] });
+  const [ins, out] = (px.samples ?? []).map((s) => (s.rgba ?? []).slice(0, 3).join(","));
+  console.log(`  ${name.padEnd(8)} ok=true｜内${JSON.stringify(insidePt)}=${ins}｜外${JSON.stringify(outsidePt)}=${out}`);
+  if (ins !== "255,0,0") failures.push(`${name}: 内点没落墨（${ins}）⇒ clip 没生效`);
+  if (out === "255,0,0") failures.push(`${name}: 外点也落墨（${out}）⇒ clip 没裁住`);
 }
-const px = await call("sample_colors", { points: [[30, 30], [85, 85]] });
-const [inside, outside] = (px.samples ?? []).map((s) => (s.rgba ?? []).slice(0, 3).join(","));
-console.log(`  ok=${r.ok}｜选区内(30,30)=${inside}｜选区外(85,85)=${outside}`);
-if (inside !== "255,0,0") failures.push(`选区内没落墨（${inside}）⇒ clip 没生效`);
-if (outside === "255,0,0") failures.push(`选区外也落墨了（${outside}）⇒ clip 没裁住`);
+
+// **bitmap**：用 subtract 产生（矩形 − 内部小矩形），洞与外都要被排除
+{
+  const selA = await call("create_selection", { selection_id: "s-bm", shape: { kind: "rect", x: 10, y: 10, w: 70, h: 70 } });
+  const selB = await call("create_selection", { selection_id: "s-bm", mode: "subtract", shape: { kind: "rect", x: 35, y: 35, w: 20, h: 20 } });
+  if (selA.ok !== true || selB.ok !== true) {
+    console.error("  ⊘ 不可判：建不了 bitmap 选区（判据前提不成立）");
+    process.exit(3);
+  }
+  const listed = await call("list_selections", {});
+  const bm = (listed.selections ?? []).find((x) => x.selection_id === "s-bm");
+  if (!bm || bm.shape?.kind !== "bitmap") {
+    console.error(`  ⊘ 不可判：subtract 之后不是 bitmap（kind=${bm?.shape?.kind}）`);
+    process.exit(3);
+  }
+  await call("create_layer", { layer_id: "l-bm", name: "l-bm" });
+  const r = await call("brush_stroke", {
+    layer_id: "l-bm", brush: "100%_Opaque.myb", size: 30,
+    points: [[15, 15], [75, 75]], clip_to_selection: "s-bm", color: [1, 0, 0, 1],
+  });
+  if (r.ok !== true) {
+    failures.push(`bitmap: brush_stroke 被拒 ⇒ ${JSON.stringify(r.context ?? {}).slice(0, 100)}`);
+  } else {
+    const px = await call("sample_colors", { points: [[20, 20], [45, 45], [95, 95]] });
+    const [body, hole, out] = (px.samples ?? []).map((s) => (s.rgba ?? []).slice(0, 3).join(","));
+    console.log(`  bitmap   ok=true｜裙身(20,20)=${body}｜洞里(45,45)=${hole}｜真外侧(95,95)=${out}`);
+    if (body !== "255,0,0") failures.push(`bitmap: 裙身没落墨（${body}）`);
+    if (hole === "255,0,0") failures.push(`bitmap: 洞里被涂（${hole}）⇒ 减法没进裁剪`);
+    if (out === "255,0,0") failures.push(`bitmap: 真外侧被涂（${out}）⇒ bbox 没裁住`);
+  }
+}
 
 if (failures.length) { console.log("  ✗ " + failures.join("；")); process.exit(1); }
-console.log("  ✓ rect 选区能被 clip_to_selection 正确裁剪（内红、外白）");
+console.log("  ✓ 四种形状（rect/ellipse/polygon/bitmap）的 clip_to_selection 全部正确");
