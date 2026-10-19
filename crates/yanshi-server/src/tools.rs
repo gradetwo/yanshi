@@ -12489,7 +12489,7 @@ fn read_list_selections(ctx: &mut ToolContext<'_>) -> Result<Value> {
                     selection.mode.clone(),
                     selection.invert,
                     selection.linked_layer.clone(),
-                    selection.refined_edges.clone(),
+                    selection.refined_edges,
                     false,
                 )
             })
@@ -12859,7 +12859,7 @@ fn write_delete_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 
 fn write_create_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let mask_id = require_str(args, "mask_id")?;
-    let mut shape = require_object(args, "shape")?.clone();
+    let shape = require_object(args, "shape")?.clone();
     if shape.get("kind").and_then(Value::as_str).is_none() {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
