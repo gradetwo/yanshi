@@ -516,6 +516,55 @@ pub fn tool_result(value: Value, inline_images: bool) -> Value {
                 map.remove("image");
             }
         }
+        // **★ 每项里的图也要交出去** ✓（外部复测 `QX-G01` ✓）★
+        //   ⇒ **∴ 他们实测**✗**：`swatch_brush_strokes` 在 stdio 下**3 个 URL、0 个 image 块**✗**
+        //      ⇒ **∴ 而**单刷 `brush_preview(include_image=true)` **返回 1 个 image 块**✓**
+        //   ⇒ **∴ 根因**✗**：**∴ 这里**只从**顶层**✗ 取图**✗** ⇒ **∴ 而** `swatch` 的图在**每项**✗ 里**✗** ✓✓
+        //   ⇒ **∴ 那**正是**「**跨层级**」**✗（**∴ 第 10 条 ✓**）：**∴ 顶层**没有**✗** ≠ **每项**没有**✗**
+        //   ⇒ **∴ 所以**：**∴ 顶层取不到**✗ 时**✗** ⇒ **∴ 再看**每项**✗** ⇒ **∴ 有上限**✗（**∴ 不塞爆响应 ✓**）
+        if content.is_empty() {
+            const MAX_ITEM_IMAGES: usize = 8;
+            for item in text_value
+                .get("swatches")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .take(MAX_ITEM_IMAGES)
+            {
+                let Some(image) = item.get("image") else {
+                    continue;
+                };
+                let data = image
+                    .get("data")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if data.is_empty() {
+                    continue;
+                }
+                let mime = image
+                    .get("mime_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("image/png");
+                content.push(json!({"type": "image", "data": data, "mimeType": mime}));
+            }
+            // **∴ 交出去了就要**说清**✗**：**∴ 每项**的 `image` **移走**✗（**∴ 不然体积翻倍 ✓**）
+            if !content.is_empty() {
+                if let Some(list) = text_value.get_mut("swatches").and_then(Value::as_array_mut) {
+                    for item in list.iter_mut() {
+                        if let Value::Object(map) = item {
+                            map.remove("image");
+                        }
+                    }
+                }
+                if let Value::Object(map) = &mut text_value {
+                    map.insert(
+                        "inline_images".to_owned(),
+                        json!({"count": content.len(), "max": MAX_ITEM_IMAGES}),
+                    );
+                }
+            }
+        }
     }
     // **诊断包要作为 MCP 的二进制内容块交出去** ✓（与 `image` 同一条规矩 ✓）：
     // `archive_base64` 是 zip 的全部字节 ✓ ⇒ 转成 `resource` 内容块 ✓（`blob` 就是 base64 ✓），
