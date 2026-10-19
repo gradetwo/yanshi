@@ -430,17 +430,9 @@ fn unfilter_png(idat: &[u8], width: u32, height: u32, channels: usize) -> Option
             }
             _ => return None,
         }
-        if channels == 4 {
-            pixels.extend_from_slice(&line);
-        } else if channels == 3 {
-            for column in 0..width as usize {
-                let base = column * channels;
-                pixels.extend_from_slice(&[line[base], line[base + 1], line[base + 2], 255]);
-            }
-        } else {
-            // 灰度（channels == 1）：原样返回单通道字节
-            pixels.extend_from_slice(&line);
-        }
+        // 原样返回**原始通道字节**；RGB→RGBA 的扩展由调用方（`decode_png`）统一做一次。
+        // ⇒ **这里不许扩展**：否则 RGB 会被展开两次（第 755 轮实测，21844 = 16384//3×4）。
+        pixels.extend_from_slice(&line);
         previous.copy_from_slice(&line);
     }
     Some(pixels)
@@ -459,11 +451,18 @@ pub fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
         2 => 3usize,
         _ => return None,
     };
-    // **`unfilter_png` 已经按通道数把 RGB 补成 RGBA 了**（见它里面 `channels == 3` 那个分支）
-    // ⇒ **这里不许再转一次**：再转会把 16384 字节的 RGBA 当成 RGB 重新分组
-    //   ⇒ `chunks_exact(3)` 得 5461 块 ⇒ 5461×4 = 21844 字节（第 758 轮实测）
+    // **`unfilter_png` 只做反滤波、不做通道扩展**（与它的文档一致）⇒ 扩展在这里做**一次**。
     let raw = unfilter_png(&parsed.idat, parsed.width, parsed.height, channels)?;
-    Some((parsed.width, parsed.height, raw))
+    if channels == 4 {
+        Some((parsed.width, parsed.height, raw))
+    } else {
+        // RGB → RGBA（alpha 补 255）
+        let mut pixels = Vec::with_capacity(parsed.width as usize * parsed.height as usize * 4);
+        for chunk in raw.chunks_exact(3) {
+            pixels.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
+        }
+        Some((parsed.width, parsed.height, pixels))
+    }
 }
 
 /// 解码 8 位灰度 PNG（color type 0），返回 (宽, 高, 灰度字节)。
