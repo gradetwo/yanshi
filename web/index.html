@@ -97,7 +97,7 @@
     //         ⇒ **∴ 于是**：**离线重载**后页面**变成** Chrome 的**错误页**✗
     //           （**标题 `127.0.0.1`／`yanshi: "undefined"`／`appJsLoaded: false` ✓）** ✓✓
     //     **∴ ②** `viewer-app.js:8255` 注册 `/service-worker.js`**✗
-    //       ⇒ **∴ 它**的缓存名**是** `yanshi-shell-4440016787806`**✗
+    //       ⇒ **∴ 它**的缓存名**是** `yanshi-shell-2862543062329`**✗
     //         ＋ **它**是 **Rust** 内嵌的那个**✗（**2717 字节 ✓）** ✓✓
     //     ⇒ **★ 所以**：**产品是** `service-worker.js`**✗
     //       ⇒ **∴ 而** `sw.js` **是**一个**平行的、**更旧或更简的**实现** ✓ ★**** ✓✓
@@ -187,7 +187,7 @@
   /* 第一列用 minmax(0,1fr)：`1fr` 的最小尺寸是 auto ⇒ 左列被内容撑开后整个页面横向溢出，
      画布被挤到屏幕外（用户截图里的「排版都出去了」）。
      `body { overflow-x: hidden }` 只是掩盖症状，真正要允许列收缩。 */
-  main { display: grid; grid-template-columns: 56px minmax(0, 1fr) 320px; gap: 12px; padding: 12px; align-items: start; max-width: 100vw;
+  main { display: grid; grid-template-columns: 56px minmax(0, 1fr) 320px; grid-template-rows: minmax(0, 1fr); gap: 12px; padding: 12px; align-items: start; max-width: 100vw;
           /* 兜底：实测 main 自身的 scrollWidth 会达到 2007（其子元素的 rect 都在 1265 内，
              溢出源未定位到具体节点），于是整个页面可横向滚动、画布被推出屏幕。
              所有可见元素都在边界内，因此 clip 不影响显示，只阻止页面被撑宽。 */
@@ -218,7 +218,7 @@
        * 画布外的区域**不响应绘制** ✓ —— 事件监听挂在 `#board` 上 ✓，
          所以点在空白区根本不会进入绘制分支 ✓（检查里有专门的断言 ✓）。 */
   .stage { justify-self: stretch; display: flex; align-items: center; justify-content: center;
-           min-height: 240px; background: var(--surface); }
+           height: 100%; min-height: 0; max-height: 100%; background: var(--surface); }
   /* **画布舞台自己滚** ✓：放大到超出可视区时，它内部上下左右滚 ✓（而不是把整页顶开 ✗）。 */
   .stage { position: relative; border: 1px solid var(--line); border-radius: 6px;
            overflow: auto; background: #f5f5f5; }
@@ -300,14 +300,14 @@
      换行时不会出现"某一行只有一个按钮、宽度还不同"的参差 ✓。 */
   #tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 8px;
            min-width: 0; background: var(--surface); border-right: 1px solid var(--line);
-           align-content: start; overflow-y: auto; max-height: calc(100vh - 150px); }
+           height: 100%; min-height: 0; align-content: start; overflow-y: auto; max-height: 100%; }
   /* **★ 右侧面板必须可滚 ✓**（用户报告 2026-10-09 ✓："面板有些内容看不全，然后又不能滚动"✗）：
      面板容器是 `aside`（`viewer-app.js:4969` 把 `.tab-pane` append 进去 ✓），而它此前
      **没有** `height`／`max-height`／`overflow-y` ✗ ⇒ 内容一多（`素材` 页 132 色块 ＋ 纹理 ✓）
      就把它撑高到**超出视口** ✗ ⇒ 被 `html, body { height:100%; overflow:hidden }`（第 24 行 ✓）
      裁掉 ⇒ **既看不全、也不可能出现滚动条** ✗ —— **∴ 正是用户看到的症状 ✓**。
      **∴ 常数与画布一致（96px ＝ 工具条 ＋ 标签页 ✓）⇒ 不引入新魔数 ✓**。 */
-  aside { overflow-y: auto; max-height: calc(100vh - 96px); }
+  aside { height: 100%; min-height: 0; overflow-y: auto; max-height: 100%; }
   #tools button { padding: 8px 0; width: 100%; min-width: 0; display: flex; justify-content: center;
                   align-items: center; }
   /* **面板开关** ✓（用户要求：左右都要能隐藏，并能进全屏画布 ✓）。
@@ -2520,9 +2520,9 @@ const LOCAL_JSON = ["/api/tools/get_document", "/api/tools/list_layers", "/api/a
 // 我第一版把字面量 `api("/api/effects")` 当成了它 ✓ ⇒ 又一次"凭字面量猜"栽了 ✓）。
 /// **从规格生成** ✓（第 176 轮记下的改进 ✓）：仓库里 `ToolSpec.mutating` **本来就是权威清单** ✓
 /// ⇒ 不必再靠"逐条点名"补 ✗（我那样补了 **7 次** ✓，每次都靠一次失败才发现 ✓）。
-/// 服务端发页面时会把 `"get_document", "get_anchors", "sample_color", "get_state", "list_documents", "list_layers", "list_objects", "get_object", "render_region", "collect_diagnostics", "list_selections", "list_fonts", "get_object_history", "get_stroke_log", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "estimate_dehaze", "preview_suggestion", "export_project", "save_palette", "analyze_region", "list_palette_colors", "swatch_brush_strokes", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "list_brushes"` 换成**所有只读工具名** ✓（见 `page_with_read_tools` ✓）。
+/// 服务端发页面时会把 `"get_document", "get_anchors", "sample_color", "sample_colors", "get_state", "list_documents", "list_layers", "describe_canvas", "list_objects", "get_object", "render_region", "collect_diagnostics", "list_selections", "list_fonts", "get_object_history", "get_stroke_log", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "estimate_dehaze", "preview_suggestion", "export_project", "save_palette", "analyze_region", "list_palette_colors", "swatch_brush_strokes", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "export_book_pngs", "try_stroke", "list_attempts", "discard_stroke", "try_batch", "list_atoms", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "list_engine_capabilities", "get_brush_settings", "set_brush_setting", "list_brushes"` 换成**所有只读工具名** ✓（见 `page_with_read_tools` ✓）。
 /// 该 crate 要求常量也有文档注释 ✓（我第一次写成 `//` ✓ ⇒ `clippy -D warnings` 当场红 ✓）。
-const LOCAL_READ_TOOLS = ["get_document", "get_anchors", "sample_color", "get_state", "list_documents", "list_layers", "list_objects", "get_object", "render_region", "collect_diagnostics", "list_selections", "list_fonts", "get_object_history", "get_stroke_log", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "estimate_dehaze", "preview_suggestion", "export_project", "save_palette", "analyze_region", "list_palette_colors", "swatch_brush_strokes", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "list_brushes"];
+const LOCAL_READ_TOOLS = ["get_document", "get_anchors", "sample_color", "sample_colors", "get_state", "list_documents", "list_layers", "describe_canvas", "list_objects", "get_object", "render_region", "collect_diagnostics", "list_selections", "list_fonts", "get_object_history", "get_stroke_log", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "estimate_dehaze", "preview_suggestion", "export_project", "save_palette", "analyze_region", "list_palette_colors", "swatch_brush_strokes", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "export_book_pngs", "try_stroke", "list_attempts", "discard_stroke", "try_batch", "list_atoms", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "list_engine_capabilities", "get_brush_settings", "set_brush_setting", "list_brushes"];
 
 /// **缓存键必须带上请求参数** ✗ —— 实测（第 1130 轮）：`list_assets {kind:"brush"}` 与
 /// `{kind:"texture"}` 是**同一个 URL** ✓（`/api/tools/list_assets` ✓）
@@ -3277,8 +3277,17 @@ function availableArea() {
   const padding = styles ? parseFloat(styles.paddingLeft || "12") * 2 : 24;
   const asideWidth = aside ? aside.getBoundingClientRect().width : 320;
   const width = (main ? main.clientWidth : window.innerWidth) - asideWidth - gap - padding;
-  const height = Math.max(240, window.innerHeight - 96);
-  return { w: Math.max(160, Math.floor(width)), h: Math.floor(height) };
+  // The stage must fit inside main's content box, rather than grow from canvas size.
+  const host = document.querySelector("main canvas")?.parentElement;
+  const paddingY = styles
+    ? (parseFloat(styles.paddingTop) || 0) + (parseFloat(styles.paddingBottom) || 0)
+    : 0;
+  const contentHeight = main ? Math.max(1, main.clientHeight - paddingY) : window.innerHeight;
+  const height = Math.min(host?.clientHeight || contentHeight, contentHeight);
+  return {
+    w: Math.max(32, Math.floor(host?.clientWidth || width)),
+    h: Math.max(32, Math.floor(height)),
+  };
 }
 
 /// 按当前缩放与文档尺寸重新计算视口（以 `center` 为中心，缺省用视口中心）。
@@ -4520,6 +4529,8 @@ const unionBox = (left, right) => {
   return [x0, y0, x1 - x0, y1 - y0];
 };
 function queueServerBlit(bbox = null) {
+  // Document loading requests its first frame once the capability is available.
+  if (!state.token) return Promise.resolve();
   // **整视口请求会"顶掉"脏区** ✓：宁可多画一点 ✓，也不能因为只画了脏区而留下空白 ✗。
   if (bbox) serverBlitBox = unionBox(serverBlitBox, bbox);
   else serverBlitWhole = true;
@@ -6315,6 +6326,8 @@ async function loadDocumentData() {
   url.searchParams.set("token", state.token);
   history.replaceState(null, "", url);
   $("identity").textContent = state.docId + " · " + state.token.slice(0, 8) + "…";
+  window.dispatchEvent(new Event("yanshi:document-ready"));
+  void refreshUndoStatusFromServer();
   await refreshLayers();
   await refreshThumb();
   // 6.2「打开即图片」：先用服务端渲染（含 HEAD 渲染缓存）出像素，
@@ -6475,6 +6488,7 @@ async function redoOnce() {
 /// 为什么要它 ✗：`state.remainingUndo` 只在"用户点撤销/重做"之后才更新 ✓ ⇒ 落笔之后它**过时** ✗
 /// ⇒ 按钮停在禁用 ✓。这个函数**补上**那次刷新 ✓（**而空栈仍报 0 ⇒ 仍禁用** ✓ —— 判据要的正是这条 ✓）。
 async function refreshUndoStatusFromServer() {
+  if (!state.token) return;
   try {
     const value = await callTool("get_undo_status", {}, { refresh: false });
     if (!value || value.ok === false) return;
@@ -10006,7 +10020,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-4440016787806irty-da7bf8ef")
+      caches.open("yanshi-shell-2862543062329irty-0647d4e7")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));
@@ -11490,6 +11504,7 @@ if (serverRenderPreferred()) {
 /// 所以这里是**独立的 DOM 层** ✓：`pointer-events: none` ✓（不吃鼠标 ✓）、`z-index` 高于画布 ✓、
 /// 位置取**画布当前的屏幕矩形** ✓（不掺进视口变换 ⇒ 换实现也不会算错 ✓）。
 async function refreshReferenceOverlay() {
+  if (!state.token) return;
   try {
     const value = await callTool("get_preferences", { keys: ["reference.blob_hash", "reference.opacity", "reference.position"] });
     const prefs = (value && (value.preferences || (value.data || {}).preferences)) || {};
@@ -11526,6 +11541,7 @@ async function refreshReferenceOverlay() {
   }
 }
 void refreshReferenceOverlay();
+window.addEventListener("yanshi:document-ready", () => { void refreshReferenceOverlay(); });
 window.addEventListener("resize", () => { void refreshReferenceOverlay(); });
 }
 }
@@ -12195,6 +12211,10 @@ for (const button of document.querySelectorAll("button[data-tool]")) {
     if (tool === "check") { await checkBitExact(); return; }
     state.tool = tool;
     for (const other of document.querySelectorAll("button[data-tool]")) {
+      if (["undo", "redo", "refresh", "check"].includes(other.dataset.tool)) {
+        other.removeAttribute("aria-pressed");
+        continue;
+      }
       other.setAttribute("aria-pressed", String(other === button));
     }
     // 工具切换后刷新光标 ✓（否则抓手会留在画笔上 ✓），并收起手形拖动状态 ✓。
@@ -12319,10 +12339,7 @@ void setupLayerPanel();
 //         ⇒ **∴ 于是**按钮**一直禁用** ✓ ★★
 //   ＋ **∴ 修法 ✗**：**用的就是**已有的只读工具 `get_undo_status`**✗
 //     （`refreshUndoStatusFromServer()` ✓ —— **∴ 不新造轮子 ✓）✗
-//     ＋ **∴ 放在顶层 ✗**：**它**只依赖 URL 里的 doc/token**✓（**服务端此刻**已经知道这份文档 ✓）
-//       ⇒ **∴ 不必**等客户端的图层加载 ✓ ★
-//     ＋ **∴ 失败也安全 ✗**：**函数内部**catch 静默 ✓ ⇒ **∴ 最坏**维持原样（**禁用 ✓）★
-void refreshUndoStatusFromServer();
+// 等文档令牌就绪后，由装载流程查询撤销状态；空令牌启动不发送授权请求。
 // 首次同步撤销/重做按钮的可用状态 ✓（HTML 里已先禁用 ✓，这里再按真实栈同步一次 ✓）——
 // 子 agent 报："没有撤销栈时按钮仍可点" ✗（点了只打印一句提示 ✓，看起来像坏了 ✓）。
 updateUndoStatus();
@@ -12878,6 +12895,8 @@ $("importFile").addEventListener("change", async (event) => {
     await ensureDocument();
   } else {
     $("identity").textContent = state.docId;
+    window.dispatchEvent(new Event("yanshi:document-ready"));
+    void refreshUndoStatusFromServer();
       (window.__appMarks = window.__appMarks || []).push("boot:before-refreshLayers");
       try { await refreshLayers(); (window.__appMarks = window.__appMarks || []).push("boot:refreshLayers-ok"); }
       catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshLayers!" + String(error && error.message || error).slice(0, 40)); }
