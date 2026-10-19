@@ -642,6 +642,38 @@ assert not resp.get("image_skipped"), f"有图被跳过: {resp['image_skipped']}
 **⇒ 「靠记得」失败了 3 次，所以换成「靠脚本」。**
 （这与「规矩要能自检」同源：能机检的就别靠人。）
 
+## 别用「只看状态」的过滤条件去取消 CI（第 840 轮：白等 6 轮）
+
+**规则**：取消 CI run 时，过滤条件**必须同时看提交**，不能只看 `pending`／`queued`。
+更安全的做法：**不取消**，让最新的那个自然跑完。
+
+**为什么**（第 840 轮实测）：我每轮派发前都跑
+
+```bash
+for id in $(gh run list … | 过滤 pending/queued); do gh run cancel "$id"; done
+gh workflow run CI
+```
+
+这个循环会把**我刚派发的那个**也取消（因为它是 `pending`）。
+结果最近 5 个 run **全部 `cancelled`**：
+
+```
+39296307482  56d05261  cancelled
+39296224925  773d2219  cancelled
+39295866347  735957d6  cancelled
+39295469721  434ad9d5  cancelled
+39294573311  cab4ccf9  cancelled
+```
+
+**⇒ 我从 `cab4ccf9` 起一次都没真正跑完 CI，而我一直用「CI 排队慢」解释它。**
+**⇒ 白等 6 轮（835–840）。**
+
+**自检**：`gh run list --limit 5 --json conclusion --jq '.[].conclusion' | sort | uniq -c`
+⇒ 若连续多个是 `cancelled`，先怀疑自己。
+
+**这是「用未确认的对象做操作」的第 2 次**（第 836 轮是把旧 run id 当新的用）。
+两次都不是技术问题，是**没确认操作对象**。
+
 ## 判据里的「数字」分两类，只有一类可以写死（第 798／812／813 轮实测）
 
 **规则**：写 `length !== N` 之前先问：**这个 N 是判据自己造的，还是被测系统决定的？**
