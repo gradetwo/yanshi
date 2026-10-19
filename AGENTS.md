@@ -221,8 +221,14 @@
 
 ### 例外：**合并外部补丁**时，本机跑一次 `cargo test --workspace`
 
-**规则**：合并别人给的补丁（`.patch`／`.tar.gz`／`.zip` 里的补丁）之后，**本机**跑一次
-`cargo test --workspace`，**跑完清 `target/debug/{deps,build,incremental}`**。
+**规则**：合并别人给的补丁（`.patch`／`.tar.gz`／`.zip` 里的补丁）之后，**本机**依次跑
+`cargo clippy --workspace --all-targets -- -D warnings` **和** `cargo test --workspace`，
+**跑完清 `target/debug/{deps,build,incremental}`**。
+
+**⇒ 两个都要跑，不能只跑一个**（第 769 轮实测）：smart-select 补丁我第一次只跑了
+`cargo test --workspace`（全过），**漏了 clippy** ⇒ 它带来 3 个 lint 错（`empty line after doc comment`
+＋ 3 处 `float has excessive precision`，OKLab 矩阵系数写了 10 位而 `f32` 只有 ~7 位有效数字）。
+⇒ **`cargo build` 不算 lint**：补丁能编过，clippy 照样报。
 
 **为什么开这个例外**（第 755–759 轮实测，代价约 4 轮）：
 
