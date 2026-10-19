@@ -41,6 +41,17 @@ const one = await call("revert_atoms", { atom_ids: [ids[1]] });
 console.log(`  单个 ⇒ ok=${one.ok}｜reverted=${one.reverted_count}｜failed=${one.failed_count}`);
 if (Number(one.reverted_count) !== 1 || Number(one.failed_count) !== 0) failures.push(`单个撤销应 reverted=1/failed=0，实测 ${one.reverted_count}/${one.failed_count} ✗`);
 
+// ⑤ 撤销后该原子必须从 list_atoms 消失（否则调用方会看到"撤销了却还在"）
+const listedBefore = await call("list_atoms", { limit: 50 });
+await call("revert_atoms", { atom_ids: [ids[0]] });
+const listedAfter = await call("list_atoms", { limit: 50 });
+const stillThere = (listedAfter.atoms ?? []).some((a) => a.atom_id === ids[0]);
+console.log(`  列表 ${listedBefore.count} ⇒ ${listedAfter.count}｜被撤销那笔还在=${stillThere}`);
+if (stillThere) failures.push("撤销后那个原子仍在 list_atoms 里 ⇒ 调用方会以为没撤销成功 ✗");
+if (Number(listedAfter.count) !== Number(listedBefore.count) - 1) {
+  failures.push(`撤销一笔后列表应从 ${listedBefore.count} 变成 ${listedBefore.count - 1}，实测 ${listedAfter.count} ✗`);
+}
+
 // ② 无效 id
 const bad = await call("revert_atoms", { atom_ids: ["nope-xyz"] });
 const badFailed = bad.failed ?? [];

@@ -19189,6 +19189,20 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             (nums.len() == 4).then(|| (nums[0], nums[1], nums[2], nums[3]))
         });
 
+    // **已撤销的原子要排除**（外部复测方的链路是"找到坏笔 → revert ⇒ 它该从列表里消失"）。
+    // `Revert` 原子的净荷是 `{"target": "<被撤销的 id>"}`（实测）⇒ 扫一遍收集失活集合。
+    let reverted: std::collections::HashSet<String> = document
+        .log()
+        .atoms()
+        .iter()
+        .filter(|atom| atom.kind == AtomKind::Revert)
+        .filter_map(|atom| {
+            atom.payload
+                .get("target")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect();
     let mut hits: Vec<Value> = Vec::new();
     for atom in document.log().atoms().iter().rev() {
         if hits.len() >= limit {
@@ -19212,6 +19226,10 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         // **缺省只列笔迹** ✓（外部 §110 实测：`seq=2` 是 `create_layer`，没有笔刷名 ⇒ 让人误以为
         // 同一支笔有一笔记不上 brush ✗）⇒ **∴ 非笔迹原子**要**显式要**才列**✗** ✓
         if !include_non_stroke && atom.payload.get("source").is_none() {
+            continue;
+        }
+        // 已撤销的不列（缺省行为；调用方找到坏笔后 revert，它就该消失）
+        if reverted.contains(&atom.id.to_string()) {
             continue;
         }
         if let Some((bx, by, bw, bh)) = want_bbox {
