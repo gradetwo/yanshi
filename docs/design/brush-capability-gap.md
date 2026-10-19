@@ -12558,3 +12558,41 @@ zone = (0.05 + 0.10 * stroke_taper).min(max_zone_ratio.max(0.08))
 **起锋区的细是真的没有**（三个点一个像素都没变）。所以他们 `E937`/`E938` 说的「几何收锋」目前**不可用**，
 要等这条修好。
 
+### 三百一十八节的诊断结果：`taper_factor` 确实生效，问题在下游（第 704 轮）
+
+在 `vendor/hokusai-core/src/stroke.rs` 的 `combined_radius_factor` 之前插了一段**临时打印**（测完已撤），
+打 `t`、`taper_factor`、`shape_factor`、`draw_radius`、`stroke_total_length`、`stroke_current_length`。
+
+**实测（`taper=0.8`，`calligraphy` size 30，`[60,200] → [340,200]`）**：
+
+```
+[TAPER] dab=0 t=0.0103 taper=0.800 tf=0.2772 sf=1.0000 r=15.00 total=280.0 cur=2.9
+[TAPER] dab=1 t=0.0164 taper=0.800 tf=0.2963 sf=1.0000 r=15.00 total=280.0 cur=4.6
+[TAPER] dab=2 t=0.0225 taper=0.800 tf=0.3227 sf=1.0000 r=15.00 total=280.0 cur=6.3
+[TAPER] dab=3 t=0.0287 taper=0.800 tf=0.3555 sf=1.0000 r=15.00 total=280.0 cur=8.0
+[TAPER] dab=4 t=0.0348 taper=0.800 tf=0.3938 sf=1.0000 r=15.00 total=280.0 cur=9.7
+[TAPER] dab=5 t=0.0409 taper=0.800 tf=0.4366 sf=1.0000 r=15.00 total=280.0 cur=11.4
+```
+
+**⇒ 三个结论，前两个把我上一节的两个嫌疑全部排除**：
+
+1. **`t` 是 0 附近的真值**（dab 0 时 `t=0.0103`，即 2.9px／280px）—— 不是因为「第一个 dab 之前已推进一段」；
+2. **`taper_factor` 真的算出来了**：`0.2772`，与按 `zone=0.13`、`min_tip=0.264` 手算的 **0.27 完全吻合**；
+3. **`stroke_taper` 被读到了**（`taper=0.800`），`shape_factor` 是 1.0（没传 `pressure_shape`，正确）。
+
+**⇒ 所以问题在乘完之后的下游**。按 `stroke.rs:965`，`draw_radius` 应变成 `15.00 × 0.2772 = 4.16px`
+（直径 8.3px）。而实测 x=62 处的墨宽是 **12px**。
+
+**⇒ 数量级分析**：6 个 dab 走了 8.6px ⇒ **dab 间距 1.71px**（很密）；
+单个 dab 直径只有 8.3px，但实测 12px ⇒ **差 1.4 倍**。
+
+**⇒ 这 1.4 倍有两种可能，下一轮分开**：
+
+- **A. 相邻 dab 叠加**：间距 1.71px、直径 8.3px 时重叠很多，但**叠加不会让宽度变大**（同半径的圆叠加，
+  宽度仍是直径）⇒ 这一条**解释不了** 1.4 倍；
+- **B. `build_dab` 之后半径被别的东西放大**：例如笔刷设置里的 `radius_logarithmic`（`calligraphy.myb`
+  的 `base_value = 2.02`）在 `build_dab` 内部再乘一次，把 4.16 抬回去。**这一条的嫌疑最大**。
+
+⇒ **下一轮的动作**：在 `build_dab` 里打 `dab.radius`（而不是 `draw_radius`），看进到 dab 的是 4.16 还是 12 的一半。
+**这一步能把"引擎算对了但没传下去"和"算对了也传了但渲染放大"分开。**
+
