@@ -144,6 +144,32 @@ done                                                                            
 
 ## 还没做完的
 
+- **本机判据普查结论（第 1088–1092 轮，抽了 37 个）**：
+  只有 `tool-cjk-text` 是真问题（exit 3，因 `YANSHI_EXPORT_DIR` 没传给服务端，**已修**）。
+  其余：35 绿、4 个需 3 个参数（手动跑**都是 0**）、1 个已知红（`tool-example-acceptance`）。
+
+  **「需 3 个参数」的判据必须手动跑**（`run-criteria-local.sh` 只传 `<base>`）：
+  ```bash
+  R=$(mktemp -d); YANSHI_EXPORT_DIR="$R/exports" \
+    target/release/yanshi-serve --root "$R" --doc _b --width 64 --height 64 \
+    --bind 127.0.0.1:23641 > "$R/s.log" 2>&1 &
+  # 等 /health 就绪后：
+  T=$(curl -s -X POST http://127.0.0.1:23641/api/documents \
+      -H 'content-type: application/json' -d '{"doc_id":"_b","width":64,"height":64}' \
+      | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+  node scripts/tool-export-path-doc.mjs http://127.0.0.1:23641 _b "$T"
+  ```
+  **⇒ 已知需 3 个参数的**：`tool-export-path-doc`（=0）、`tool-preview-image-contract`（=0）、
+  `tool-collect-diagnostics`、`tool-brush-settings`（=0）、`tool-engine-capabilities`（=0）、
+  `tool-brush-params-doc`（=0）、`tool-example-acceptance`（=1，已知红）。
+
+  **⇒ 注意 `export_png` 的 `exports` 相对服务端 CWD**（`tools.rs:23184-23187`）⇒
+  必须传 `YANSHI_EXPORT_DIR`，否则读导出文件的判据假得 exit 3。
+
+- **`run-criteria-local.sh` 传参的取舍（第 1089 轮量出）**：
+  1076 轮我改成「总传 `<base> <doc> <token>`」⇒ **净效果为负** ✗
+  （受益 3 个 vs 受害 5 个）⇒ 已回退到只传 `<base>` ✓
+
 - **63 个判据缺 `exit(3)` 前提失败路径**（第 1080 轮量出，**系统性，非个别**）：
   ```bash
   F=$(grep -ln "fetch(" scripts/tool-*.mjs scripts/mcp-*.mjs)
