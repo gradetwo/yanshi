@@ -27,7 +27,11 @@ const call = async (name, args) => {
 };
 const caps = await call("list_engine_capabilities", {});
 const names = caps?.brush_settings ?? [];
-if (names.length !== 63) { console.log(`  ✗ brush_settings 有 ${names.length} 个（应为 63）⇒ 判据无法判定`); process.exit(3); }
+// **别把数写死**（第 798 轮）：这里原来是 `!== 63`，而 mask-texture 补丁给
+// `BrushSetting::ALL` 加了 3 个 ⇒ 实际 66 ⇒ 判据一直 `exit(3)`「无法判定」。
+// ⇒ 改成**下界检查**：只要 ≥ 63 就继续（真正的比对在下面与 `docs/brush-params.md` 逐名对，
+//   名字对不上才是产品问题）。这样以后再加设置不会再让这条判据整体失效。
+if (names.length < 63) { console.log(`  ✗ brush_settings 只有 ${names.length} 个（至少应有 63）⇒ 判据无法判定`); process.exit(3); }
 const medium = caps?.medium_params?.names ?? [];
 // 别名与展开：读源码
 const src = readFileSync(new URL("../crates/yanshi-server/src/tools.rs", import.meta.url), "utf8");
