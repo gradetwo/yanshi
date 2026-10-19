@@ -17,7 +17,7 @@
 | **形状（Shape）** | 矩形／椭圆／多边形 | `tools.rs:1682`（`draw_shape` summary） |
 | **介质（medium）** | **6 个 wasm**：oil／watercolor／marker／pencil／pixel／**example-dab** | `web/mediums/` |
 | **笔刷库** | **199 支 `.myb`**（MyPaint） | `web/brushes/` |
-| **★ 笔刷动力学** | **63 项**（`hokusai-core::BrushSetting` 全表 ✓） | `hokusai-core-0.3.0/src/setting.rs:46` |
+| **★ 笔刷动力学** | **66 项**（`hokusai-core::BrushSetting` 全表 ✓；第 859 轮核对：mask-texture 补丁加了 3 项，原 63） | `hokusai-core-0.3.0/src/setting.rs:46` |
 
 ## 二、MCP 暴露面（**实测 ✓**）
 
