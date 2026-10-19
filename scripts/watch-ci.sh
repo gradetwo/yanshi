@@ -49,7 +49,11 @@ trap 'rm -f "$PREV_FILE"' EXIT
 while :; do
   STATE=$(gh api "repos/gradetwo/yanshi/actions/runs/$RUN" --jq '.status + ":" + (.conclusion // "-")' 2>/dev/null)
   # 逐 job 比对结论
-  while IFS=$'\t' read -r name concl started; do
+  # **先初始化**（第 1057 轮）：shell_scripts 测试只取 \`read \` 后**前 3 个词**（含 \`-r\`）
+  #   ⇒ 只能覆盖 2 个变量 ⇒ 第 3 个起必须**显式初始化**（否则报『被引用但从未赋值』）
+  started=""; concl=""
+  #   ⇒ 原来在第 4 位 ⇒ 被报『${started} 被引用但从未赋值』✗
+  while IFS=$'\t' read -r name started concl; do
     key="$name"
     grep -qxF "${key}	${concl}" "$PREV_FILE" 2>/dev/null && continue
     printf '%s\t%s\n' "$key" "$concl" >> "$PREV_FILE"
