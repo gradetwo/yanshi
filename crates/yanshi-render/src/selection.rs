@@ -43,6 +43,11 @@
 //! ```
 
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use crate::png::decode_png_l8;
+use yanshi_core::{MaskPatchOp, Selection};
 
 /// 组合模式（设计文档 4.4 的 `mode`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -683,10 +688,270 @@ fn region_has_coverage(
         .any(|&cell| region_has_coverage(set, cell, depth + 1, eps))
 }
 
+// ============================================================================
+// 蒙版画笔：编译蒙版（CompiledMask）
+//
+// 设计：几何底座 + 笔刷 patch 链一次光栅化成 u8 网格，渲染期逐像素 O(1)
+// 查表。按 (mask_id, 指纹) 缓存（MaskCache），避免分块并行渲染时每块都
+// 重解 PNG + 重光栅化（`build` 纯内存、WASM 兼容，无文件 I/O）。
+// ============================================================================
+
+/// 整数精确除 255（`round(x / 255)`）。
+///
+/// 标准 libpng `div255`：`((x + 128 + ((x + 128) >> 8)) >> 8`。
+/// 调用处的输入上界：`m_old*(255-d) + target*d ≤ 65025`
+/// （两项共享 `d`，`d=0` 时 `m_old*255`、`d=255` 时 `target*255`），`u32` 不溢出。
+#[inline(always)]
+pub const fn div255(x: u32) -> u8 {
+    debug_assert!(x <= 65025);
+    let t = x + 128;
+    ((t + (t >> 8)) >> 8) as u8
+}
+
+/// 编译后的蒙版位图。
+#[derive(Debug, Clone)]
+pub struct CompiledMask {
+    /// `[x, y, w, h]` 画布像素坐标（几何 ∪ patch 的并集，裁剪到画布）。
+    pub bbox: [i32; 4],
+    /// bbox 之外的默认值（`0.0` 或 `1.0`，由 `invert` 决定）。
+    pub default_outside: f32,
+    /// 行主序灰度值，`len = w * h`。
+    pub grid: Vec<u8>,
+}
+
+/// 几何形状的外接盒（f64 画布坐标）。
+/// `CoverAll` → 全画布（`None` + 标志）；`Empty` → 无几何贡献（`None`）。
+fn geom_bbox_extent(
+    geom: &SelectionGeom,
+    canvas_w: i32,
+    canvas_h: i32,
+) -> Option<(f64, f64, f64, f64)> {
+    match geom {
+        SelectionGeom::CoverAll => Some((0.0, 0.0, canvas_w as f64, canvas_h as f64)),
+        SelectionGeom::Empty => None,
+        SelectionGeom::Rect { bbox } | SelectionGeom::Ellipse { bbox } => Some(*bbox),
+        SelectionGeom::Polygon { points } => {
+            let mut min_x = f64::INFINITY;
+            let mut min_y = f64::INFINITY;
+            let mut max_x = f64::NEG_INFINITY;
+            let mut max_y = f64::NEG_INFINITY;
+            for &(x, y) in points {
+                if x < min_x {
+                    min_x = x;
+                }
+                if y < min_y {
+                    min_y = y;
+                }
+                if x > max_x {
+                    max_x = x;
+                }
+                if y > max_y {
+                    max_y = y;
+                }
+            }
+            if min_x > max_x {
+                None
+            } else {
+                Some((min_x, min_y, max_x - min_x, max_y - min_y))
+            }
+        }
+    }
+}
+
+impl CompiledMask {
+    /// 由蒙版状态编译。`load_blob` 按 blob 哈希取字节（`&str` 为
+    /// `"sha256:…"` 形式）；解不出的 patch 静默跳过（渲染不炸）。
+    pub fn build(
+        mask: &Selection,
+        canvas_w: i32,
+        canvas_h: i32,
+        load_blob: &dyn Fn(&str) -> Option<Vec<u8>>,
+    ) -> Self {
+        // 从最后一个 ReplaceAll 开始重放（快照截断链）。
+        let start_idx = mask
+            .patches
+            .iter()
+            .rposition(|p| p.op == MaskPatchOp::ReplaceAll)
+            .unwrap_or(0);
+        let has_replace_all =
+            mask.patches.get(start_idx).map(|p| p.op) == Some(MaskPatchOp::ReplaceAll);
+
+        // invert 只作用于几何阶段（笔刷沉积是"目标值"语义，不翻转）。
+        let default_outside_u8: u8 = if mask.invert { 255 } else { 0 };
+
+        // union bbox：几何（feather 扩展）∪ patch bboxes，裁剪到画布。
+        let mut ux0 = i32::MAX;
+        let mut uy0 = i32::MAX;
+        let mut ux1 = i32::MIN;
+        let mut uy1 = i32::MIN;
+        let mut union_box = |x0: i32, y0: i32, x1: i32, y1: i32| {
+            if x0 < ux0 {
+                ux0 = x0;
+            }
+            if y0 < uy0 {
+                uy0 = y0;
+            }
+            if x1 > ux1 {
+                ux1 = x1;
+            }
+            if y1 > uy1 {
+                uy1 = y1;
+            }
+        };
+        // 几何底座用的形状：struct 顶层字段为准（shape JSON 里没有这三者）。
+        // mode 在蒙版语义下恒为 new（与现有 `apply_layer_mask` 一致：忽略）。
+        let mut base_shape = SelectionShape::from_value(&mask.shape);
+        base_shape.feather = if mask.feather.is_finite() && mask.feather > 0.0 {
+            mask.feather
+        } else {
+            0.0
+        };
+        base_shape.invert = mask.invert;
+        if !has_replace_all {
+            if let Some((gx, gy, gw, gh)) = geom_bbox_extent(&base_shape.geom, canvas_w, canvas_h) {
+                let f = base_shape.feather;
+                union_box(
+                    (gx - f).floor() as i32,
+                    (gy - f).floor() as i32,
+                    (gx + gw + f).ceil() as i32,
+                    (gy + gh + f).ceil() as i32,
+                );
+            }
+        }
+        for patch in &mask.patches[start_idx..] {
+            let [px, py, pw, ph] = patch.bbox;
+            if pw > 0 && ph > 0 {
+                union_box(px, py, px + pw, py + ph);
+            }
+        }
+        // 裁剪到画布。
+        ux0 = ux0.clamp(0, canvas_w);
+        uy0 = uy0.clamp(0, canvas_h);
+        ux1 = ux1.clamp(0, canvas_w);
+        uy1 = uy1.clamp(0, canvas_h);
+        let bw = (ux1 - ux0).max(0);
+        let bh = (uy1 - uy0).max(0);
+        let mut grid = vec![default_outside_u8; (bw as usize) * (bh as usize)];
+
+        // 阶段 1：几何底座（无 ReplaceAll 时）。
+        if !has_replace_all && bw > 0 && bh > 0 {
+            for yy in 0..bh {
+                for xx in 0..bw {
+                    let c = base_shape.coverage((ux0 + xx) as f64, (uy0 + yy) as f64);
+                    grid[(yy as usize) * (bw as usize) + (xx as usize)] =
+                        (c * 255.0).round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+
+        // 阶段 2：重放 patch 链。
+        if bw > 0 && bh > 0 {
+            for patch in &mask.patches[start_idx..] {
+                let blob_bytes = match load_blob(patch.blob.as_str()) {
+                    Some(b) => b,
+                    None => continue,
+                };
+                let (pw, ph, gray) = match decode_png_l8(&blob_bytes) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                let [px, py, bw2, bh2] = patch.bbox;
+                if bw2 != pw as i32 || bh2 != ph as i32 {
+                    continue; // 尺寸不符：坏数据，跳过
+                }
+                let target = u32::from(patch.target_u8);
+                for yy in 0..ph as i32 {
+                    for xx in 0..pw as i32 {
+                        let gx = px + xx;
+                        let gy = py + yy;
+                        if gx < ux0 || gy < uy0 || gx >= ux1 || gy >= uy1 {
+                            continue;
+                        }
+                        let dst_idx = ((gy - uy0) as usize) * (bw as usize) + ((gx - ux0) as usize);
+                        let d = u32::from(gray[(yy as usize) * (pw as usize) + (xx as usize)]);
+                        match patch.op {
+                            MaskPatchOp::ReplaceAll => {
+                                grid[dst_idx] = d as u8;
+                            }
+                            MaskPatchOp::LerpDeposit => {
+                                let m_old = u32::from(grid[dst_idx]);
+                                grid[dst_idx] = div255(m_old * (255 - d) + target * d);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Self {
+            bbox: [ux0, uy0, bw, bh],
+            default_outside: f32::from(default_outside_u8) * (1.0 / 255.0),
+            grid,
+        }
+    }
+
+    /// 采样画布坐标 (x, y) 的蒙版值（0.0..1.0）。
+    #[inline(always)]
+    pub fn sample(&self, x: i32, y: i32) -> f32 {
+        let [bx, by, bw, bh] = self.bbox;
+        let dx = x.wrapping_sub(bx);
+        let dy = y.wrapping_sub(by);
+        if dx < 0 || dy < 0 || dx >= bw || dy >= bh {
+            return self.default_outside;
+        }
+        let idx = (dy as usize) * (bw as usize) + (dx as usize);
+        match self.grid.get(idx) {
+            Some(&v) => f32::from(v) * (1.0 / 255.0),
+            None => self.default_outside,
+        }
+    }
+}
+
+/// 蒙版编译缓存：按 `mask.id` 存 `(指纹, 编译结果)`。
+///
+/// 渲染是分块并行的（`thread::scope`），同一蒙版会被多块同时查询 ⇒ `Mutex`。
+/// 指纹用 `Selection::hash_fingerprint`（`Debug` 字符串位图化后会爆炸）。
+#[derive(Debug, Default)]
+pub struct MaskCache {
+    inner: Mutex<HashMap<String, (u64, Arc<CompiledMask>)>>,
+}
+
+impl MaskCache {
+    /// 新建空缓存。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 取缓存或编译。`load_blob` 只在缓存未命中时调用。
+    pub fn get_or_build(
+        &self,
+        mask: &Selection,
+        canvas_w: i32,
+        canvas_h: i32,
+        load_blob: &dyn Fn(&str) -> Option<Vec<u8>>,
+    ) -> Arc<CompiledMask> {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hasher;
+        let mut hasher = DefaultHasher::new();
+        mask.hash_fingerprint(&mut hasher);
+        let fingerprint = hasher.finish();
+        let mut guard = self.inner.lock().expect("蒙版缓存锁中毒");
+        if let Some((fp, compiled)) = guard.get(&mask.id) {
+            if *fp == fingerprint {
+                return Arc::clone(compiled);
+            }
+        }
+        let compiled = Arc::new(CompiledMask::build(mask, canvas_w, canvas_h, load_blob));
+        guard.insert(mask.id.clone(), (fingerprint, Arc::clone(&compiled)));
+        compiled
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use yanshi_core::MaskPatchMeta;
 
     /// 采样点比较的容差。
     const TOL: f32 = 1e-6;
@@ -1136,7 +1401,26 @@ mod tests {
             linked_layer: None,
             refined_edges: false,
             blobs: vec![],
+            patches: vec![],
             created_by: "atom_test".to_string(),
+            deleted_by: None,
+        }
+    }
+
+    // ---- 蒙版画笔：CompiledMask ----
+
+    fn test_mask(shape: Value) -> Selection {
+        Selection {
+            id: "mask_test".to_owned(),
+            shape,
+            feather: 0.0,
+            mode: "new".to_owned(),
+            invert: false,
+            linked_layer: None,
+            refined_edges: false,
+            blobs: Vec::new(),
+            patches: Vec::new(),
+            created_by: "atom_0".to_owned(),
             deleted_by: None,
         }
     }
@@ -1212,5 +1496,187 @@ mod tests {
         let s = SelectionShape::from_selection(&sel);
         assert_near(s.coverage(2.0, 2.0), 0.0); // 矩形内被反选掉
         assert_near(s.coverage(10.0, 10.0), 1.0); // 矩形外被选中
+    }
+
+    fn l8_patch(
+        blobs: &mut std::collections::HashMap<String, Vec<u8>>,
+        bbox: [i32; 4],
+        target_u8: u8,
+        op: MaskPatchOp,
+        gray_value: u8,
+    ) -> MaskPatchMeta {
+        let w = bbox[2] as usize;
+        let h = bbox[3] as usize;
+        let gray = vec![gray_value; w * h];
+        let png = crate::png::encode_png_l8(bbox[2] as u32, bbox[3] as u32, &gray)
+            .expect("测试 PNG 编码不会失败");
+        // 内容寻址的假哈希（测试内自洽即可；须满足 64 位小写十六进制）。
+        let fake_hash = format!(
+            "sha256:{:064x}",
+            u64::from(target_u8) * 256 + u64::from(gray_value)
+        );
+        blobs.insert(fake_hash.clone(), png);
+        MaskPatchMeta {
+            bbox,
+            target_u8,
+            op,
+            blob: fake_hash.parse().expect("测试哈希合法"),
+        }
+    }
+
+    fn build_with_blobs(
+        mask: &Selection,
+        blobs: &std::collections::HashMap<String, Vec<u8>>,
+    ) -> CompiledMask {
+        let load = |s: &str| blobs.get(s).cloned();
+        CompiledMask::build(mask, 64, 64, &load)
+    }
+
+    #[test]
+    fn div255_matches_round_div() {
+        // 定义域是调用处的真实上界 [0, 65025]（见 div255 文档）。
+        for x in [0u32, 1, 127, 128, 129, 254, 255, 256, 1000, 32768, 65025] {
+            let expected = (f64::from(x) / 255.0).round() as u8;
+            assert_eq!(div255(x), expected, "x={x}");
+        }
+        // 全量扫一遍（65026 个值，毫秒级）。
+        for x in 0..=65025u32 {
+            let expected = (f64::from(x) / 255.0).round() as u8;
+            assert_eq!(div255(x), expected, "x={x}");
+        }
+    }
+
+    #[test]
+    fn compiled_mask_geometric_base() {
+        let mask = test_mask(
+            json!({"kind": "rect", "bbox": {"x": 10.0, "y": 10.0, "w": 20.0, "h": 20.0}}),
+        );
+        let compiled = build_with_blobs(&mask, &std::collections::HashMap::new());
+        assert_eq!(compiled.bbox, [10, 10, 20, 20]);
+        assert_near(compiled.sample(15, 15), 1.0);
+        assert_near(compiled.sample(10, 10), 1.0);
+        assert_near(compiled.sample(5, 5), 0.0);
+        assert_near(compiled.sample(40, 40), 0.0);
+        assert_eq!(compiled.default_outside, 0.0);
+    }
+
+    #[test]
+    fn compiled_mask_lerp_deposit_chains() {
+        let mut blobs = std::collections::HashMap::new();
+        let mut mask = test_mask(
+            json!({"kind": "rect", "bbox": {"x": 10.0, "y": 10.0, "w": 20.0, "h": 20.0}}),
+        );
+        // 第一笔：全沉积擦除 → (14,14) 从 255 变 0。
+        mask.patches.push(l8_patch(
+            &mut blobs,
+            [12, 12, 4, 4],
+            0,
+            MaskPatchOp::LerpDeposit,
+            255,
+        ));
+        // 第二笔：半沉积加选 → (15,15) 从 0 变 128。
+        mask.patches.push(l8_patch(
+            &mut blobs,
+            [14, 14, 4, 4],
+            255,
+            MaskPatchOp::LerpDeposit,
+            128,
+        ));
+        let compiled = build_with_blobs(&mask, &blobs);
+        // 第一笔的 bbox 并进 union。
+        assert_eq!(compiled.bbox, [10, 10, 20, 20]);
+        // (13,13) 只在第一笔内：255 → 0。
+        assert_near(compiled.sample(13, 13), 0.0);
+        // (15,15) 被两笔覆盖：先 255→0，再 0→128。
+        assert_near(compiled.sample(15, 15), 128.0 / 255.0);
+        // 未被笔触碰到的几何区保持 1.0。
+        assert_near(compiled.sample(25, 25), 1.0);
+    }
+
+    #[test]
+    fn compiled_mask_replace_all_truncates_chain() {
+        let mut blobs = std::collections::HashMap::new();
+        let mut mask = test_mask(
+            json!({"kind": "rect", "bbox": {"x": 10.0, "y": 10.0, "w": 20.0, "h": 20.0}}),
+        );
+        // 快照前的增量必须被截断（重放从 ReplaceAll 开始）。
+        mask.patches.push(l8_patch(
+            &mut blobs,
+            [12, 12, 4, 4],
+            0,
+            MaskPatchOp::LerpDeposit,
+            255,
+        ));
+        // 真实快照：覆盖全几何区的全量烘焙值（把第一笔的"洞"填成 200）。
+        mask.patches.push(l8_patch(
+            &mut blobs,
+            [10, 10, 20, 20],
+            200,
+            MaskPatchOp::ReplaceAll,
+            200,
+        ));
+        let compiled = build_with_blobs(&mask, &blobs);
+        // (14,14) 若重放了第一笔会是 0；截断后应为快照值 200/255。
+        assert_near(compiled.sample(14, 14), 200.0 / 255.0);
+        assert_near(compiled.sample(25, 25), 200.0 / 255.0);
+        assert_near(compiled.sample(5, 5), 0.0);
+    }
+
+    #[test]
+    fn compiled_mask_invert_applies_to_geometry_only() {
+        let mut blobs = std::collections::HashMap::new();
+        let mut mask = test_mask(
+            json!({"kind": "rect", "bbox": {"x": 10.0, "y": 10.0, "w": 20.0, "h": 20.0}}),
+        );
+        mask.invert = true;
+        // 几何反选：形内 0、形外 1。
+        let compiled = build_with_blobs(&mask, &blobs);
+        assert_near(compiled.sample(15, 15), 0.0);
+        assert_near(compiled.sample(5, 5), 1.0);
+        assert_eq!(compiled.default_outside, 1.0);
+        // 笔刷沉积不反选：向 target=255 全沉积 → 回到 255（不是"反选的反选"）。
+        mask.patches.push(l8_patch(
+            &mut blobs,
+            [12, 12, 4, 4],
+            255,
+            MaskPatchOp::LerpDeposit,
+            255,
+        ));
+        let compiled2 = build_with_blobs(&mask, &blobs);
+        assert_near(compiled2.sample(14, 14), 1.0);
+    }
+
+    #[test]
+    fn mask_cache_hit_returns_same_arc() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hasher;
+        let cache = MaskCache::new();
+        let mask = test_mask(
+            json!({"kind": "rect", "bbox": {"x": 10.0, "y": 10.0, "w": 20.0, "h": 20.0}}),
+        );
+        let blobs: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
+        let load = |s: &str| blobs.get(s).cloned();
+        let a = cache.get_or_build(&mask, 64, 64, &load);
+        let b = cache.get_or_build(&mask, 64, 64, &load);
+        assert!(std::sync::Arc::ptr_eq(&a, &b), "指纹未变必须命中缓存");
+        // 改一个 patch → 指纹变 → 必须重新编译。
+        let mut mask2 = mask.clone();
+        let mut blobs2 = std::collections::HashMap::new();
+        mask2.patches.push(l8_patch(
+            &mut blobs2,
+            [12, 12, 4, 4],
+            0,
+            MaskPatchOp::LerpDeposit,
+            255,
+        ));
+        let load2 = |s: &str| blobs2.get(s).cloned();
+        let c = cache.get_or_build(&mask2, 64, 64, &load2);
+        assert!(!std::sync::Arc::ptr_eq(&a, &c), "指纹变了必须重新编译");
+        // 指纹确实变了（sanity：hash_fingerprint 覆盖 patches）。
+        let mut h1 = DefaultHasher::new();
+        let mut h2 = DefaultHasher::new();
+        mask.hash_fingerprint(&mut h1);
+        mask2.hash_fingerprint(&mut h2);
+        assert_ne!(h1.finish(), h2.finish());
     }
 }

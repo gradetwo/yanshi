@@ -261,6 +261,7 @@ fn stress_document(size: u32, feathered_mask: bool) -> DocumentState {
     state.masks.insert(
         "mask_1".to_owned(),
         Selection {
+            patches: Default::default(),
             id: "mask_1".to_owned(),
             shape: json!({"kind": "ellipse",
                           "bbox": {"x": s * 0.05, "y": s * 0.05, "w": s * 0.9, "h": s * 0.9}}),

@@ -114,6 +114,7 @@ fn document(with_selection: bool) -> DocumentState {
             linked_layer: None,
             refined_edges: false,
             blobs: Vec::new(),
+            patches: Vec::new(),
             created_by: "01CCCCCCCCCCCCCCCCCCCCCCCCCC".to_owned(),
             deleted_by: None,
         };

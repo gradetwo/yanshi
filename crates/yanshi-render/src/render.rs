@@ -973,6 +973,13 @@ pub struct Renderer {
     /// **每一笔都把整幅背景重新解压一遍** ✗（见 [`BitmapCache`] 的实测数字 ✓）。
     bitmaps: BitmapCache,
 
+    /// **编译后的蒙版位图缓存**（挂在这里 ⇒ 跨渲染复用 ✓）。
+    /// 蒙版一旦带上画笔 patch，每次渲染都要解 PNG + 光栅化；
+    /// 没有它，同一个蒙版会在**每一块**里被重新编译一遍 ✗
+    ///（分块并行渲染时是 N 块 × M 图层的爆炸 ✗）。
+    /// 指纹见 [`yanshi_core::Selection::hash_fingerprint`]。
+    masks: crate::selection::MaskCache,
+
     /// **below 缓存** ✓（见 [`BelowCache`] ✓）：**最上层以外**的合成结果 ✓。
     below: std::sync::Mutex<Option<BelowTiles>>,
     /// **★ `above` 缓存 ✓ ★**（第 682 轮 ✓）：**只在**当前层半透明**时才有值 ✓**
@@ -1045,6 +1052,7 @@ impl Renderer {
             buffer_pool: crate::buffer_pool::BufferPool::new(),
 
             bitmaps: BitmapCache::default(),
+            masks: crate::selection::MaskCache::new(),
             below: std::sync::Mutex::new(None),
             above: std::sync::Mutex::new(None),
         }
@@ -1062,6 +1070,7 @@ impl Renderer {
             buffer_pool: crate::buffer_pool::BufferPool::new(),
 
             bitmaps: BitmapCache::default(),
+            masks: crate::selection::MaskCache::new(),
             below: std::sync::Mutex::new(None),
             above: std::sync::Mutex::new(None),
         };
@@ -2267,7 +2276,14 @@ impl Renderer {
 
             let d_objects = t_objects.elapsed();
             let t_mask = crate::probe::ProbeClock::now();
-            apply_layer_mask_warn(state, layer, &mut layer_buffer, &mut track.unsupported);
+            apply_layer_mask_warn(
+                state,
+                layer,
+                &mut layer_buffer,
+                &mut track.unsupported,
+                store,
+                &self.masks,
+            );
 
             let d_mask = t_mask.elapsed();
             if std::env::var_os("YANSHI_RENDER_PROBE").is_some() {
@@ -5193,16 +5209,28 @@ pub fn apply_layer_mask(
     layer: &Layer,
     layer_buffer: &mut Buffer,
     stats: &mut RenderStats,
+    store: &dyn BlobStore,
+    masks: &crate::selection::MaskCache,
 ) {
-    apply_layer_mask_warn(state, layer, layer_buffer, &mut stats.unsupported);
+    apply_layer_mask_warn(
+        state,
+        layer,
+        layer_buffer,
+        &mut stats.unsupported,
+        store,
+        masks,
+    );
 }
 
 /// 同 [`apply_layer_mask`]，但告警写进调用方给的列表（并行分块按块去重合并用）。
+#[allow(clippy::too_many_arguments)]
 fn apply_layer_mask_warn(
     state: &DocumentState,
     layer: &Layer,
     layer_buffer: &mut Buffer,
     warnings: &mut Vec<String>,
+    store: &dyn BlobStore,
+    masks: &crate::selection::MaskCache,
 ) {
     let Some(mask_id) = &layer.mask_id else {
         return;
@@ -5212,6 +5240,32 @@ fn apply_layer_mask_warn(
         warnings.push(format!("蒙版不存在: {mask_id}（图层 {}）", layer.id));
         return;
     };
+    if mask.is_deleted() {
+        return;
+    }
+    if !mask.patches.is_empty() {
+        // 蒙版画笔：走 CompiledMask 查表（指纹缓存，跨块复用）。
+        // 语义与 `multiply_alpha_by` 快路径一致：RGBA 四通道同乘蒙版值。
+        let load_blob = |s: &str| {
+            s.parse::<yanshi_core::BlobHash>()
+                .ok()
+                .and_then(|hash| store.get(&hash).ok())
+        };
+        let compiled =
+            masks.get_or_build(mask, state.width as i32, state.height as i32, &load_blob);
+        let (origin_x, origin_y) = layer_buffer.origin();
+        let width = layer_buffer.width() as usize;
+        let data = layer_buffer.pixels_mut();
+        for (index, pixel) in data.chunks_exact_mut(4).enumerate() {
+            let x = (index % width) as i32;
+            let y = (index / width) as i32;
+            let alpha = compiled.sample(origin_x as i32 + x, origin_y as i32 + y);
+            for value in pixel.iter_mut() {
+                *value *= alpha;
+            }
+        }
+        return;
+    }
     if mask.is_deleted() {
         return;
     }
@@ -6085,6 +6139,7 @@ mod tests {
                     linked_layer: Some("layer_1".to_owned()),
                     refined_edges: false,
                     blobs: Vec::new(),
+                    patches: Vec::new(),
                     created_by: "human:1".to_owned(),
                     deleted_by: None,
                 },
@@ -6935,6 +6990,7 @@ mod tests {
                 linked_layer: None,
                 refined_edges: false,
                 blobs: Vec::new(),
+                patches: Vec::new(),
                 created_by: "a1".to_owned(),
                 deleted_by: None,
             },

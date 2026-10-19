@@ -298,6 +298,10 @@ pub enum AtomKind {
     CreateSelection,
     /// 创建蒙版。
     CreateMask,
+    /// 蒙版画笔/擦除增量更新（位图 patch）。
+    UpdateMask,
+    /// 删除蒙版（tombstone）。
+    DeleteMask,
     /// 创建风格。
     CreateStyle,
     /// 创建检查点。
@@ -373,6 +377,8 @@ impl AtomKind {
             Self::CreateObject => "create_object",
             Self::CreateSelection => "create_selection",
             Self::CreateMask => "create_mask",
+            Self::UpdateMask => "update_mask",
+            Self::DeleteMask => "delete_mask",
             Self::CreateStyle => "create_style",
             Self::CreateCheckpoint => "create_checkpoint",
             Self::ImportImage => "import_image",
@@ -444,6 +450,8 @@ impl AtomKind {
                 | Self::CreateObject
                 | Self::CreateSelection
                 | Self::CreateMask
+                | Self::UpdateMask
+                | Self::DeleteMask
                 | Self::CreateStyle
                 | Self::CreateCheckpoint
                 | Self::ImportImage
@@ -477,6 +485,8 @@ impl AtomKind {
                 | Self::CreateLayer
                 | Self::CreateObject
                 | Self::CreateMask
+                | Self::UpdateMask
+                | Self::DeleteMask
                 | Self::CreateSelection
         )
     }
@@ -504,12 +514,14 @@ impl AtomKind {
     }
 
     /// 全部原子类型，便于穷举测试。
-    pub const ALL: [AtomKind; 30] = [
+    pub const ALL: [AtomKind; 32] = [
         Self::CreateDocument,
         Self::CreateLayer,
         Self::CreateObject,
         Self::CreateSelection,
         Self::CreateMask,
+        Self::UpdateMask,
+        Self::DeleteMask,
         Self::CreateStyle,
         Self::CreateCheckpoint,
         Self::ImportImage,

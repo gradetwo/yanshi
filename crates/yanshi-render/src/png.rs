@@ -81,7 +81,7 @@ pub fn encode_png(width: u32, height: u32, rgba8: &[u8]) -> Option<Vec<u8>> {
 
     let mut out = Vec::with_capacity(expected / 4 + 128);
     out.extend_from_slice(&SIGNATURE);
-    write_chunk(&mut out, b"IHDR", &ihdr(width, height));
+    write_chunk(&mut out, b"IHDR", &ihdr(width, height, 6));
     // 流式写入：逐行喂 filter_byte + scanline 给 zlib 编码器，不构建完整 raw。
     // 与 `zlib_compress` 同级别（DEFLATE_LEVEL）、同策略 ⇒ 逐位一致。
     let idat = {
@@ -118,12 +118,12 @@ pub fn write_png_file(
     file.flush()
 }
 
-fn ihdr(width: u32, height: u32) -> [u8; 13] {
+fn ihdr(width: u32, height: u32, color_type: u8) -> [u8; 13] {
     let mut header = [0u8; 13];
     header[0..4].copy_from_slice(&width.to_be_bytes());
     header[4..8].copy_from_slice(&height.to_be_bytes());
     header[8] = 8; // bit depth
-    header[9] = 6; // color type: RGBA
+    header[9] = color_type;
     header[10] = 0; // compression
     header[11] = 0; // filter
     header[12] = 0; // interlace
@@ -264,7 +264,19 @@ pub fn adler32(bytes: &[u8]) -> u32 {
 /// 而不是画出半张图 ✗（"静默错误"是本项目反复吃亏的地方 ✓）。
 ///
 /// 返回 `(宽, 高, RGBA8)` ✓。
-pub fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+/// PNG 块解析结果（`decode_png` 与 `decode_png_l8` 共用）。
+struct ParsedPng {
+    width: u32,
+    height: u32,
+    bit_depth: u8,
+    color_type: u8,
+    interlace: u8,
+    idat: Vec<u8>,
+}
+
+/// 走查 PNG 块结构并逐块校验 CRC，返回 IHDR 与拼接后的 IDAT。
+/// 不解释像素格式（由调用方按 `color_type` 分派）。
+fn parse_png_chunks(bytes: &[u8]) -> Option<ParsedPng> {
     if bytes.len() < 8 || bytes[..8] != SIGNATURE {
         return None;
     }
@@ -330,15 +342,19 @@ pub fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     if !seen_header || idat.is_empty() {
         return None;
     }
-    // **只支持 8 位、无隔行、RGB/RGBA** ✓（其余显式拒绝 ✓）。
-    if bit_depth != 8 || interlace != 0 {
-        return None;
-    }
-    let channels = match color_type {
-        6 => 4usize,
-        2 => 3usize,
-        _ => return None,
-    };
+    Some(ParsedPng {
+        width,
+        height,
+        bit_depth,
+        color_type,
+        interlace,
+        idat,
+    })
+}
+
+/// zlib 解码 + 逐扫描线反 filter（RFC 2083 §6），返回原始通道字节
+///（`宽*高*channels` 字节，不做 RGB→RGBA 扩展）。
+fn unfilter_png(idat: &[u8], width: u32, height: u32, channels: usize) -> Option<Vec<u8>> {
     // **`IDAT` 里是 zlib 流** ✓（RFC 1950 ✓：2 字节头 + deflate + 4 字节 adler32 ✓）。
     // 这两条显式检查保留 ✓：它们给出的是**明确的拒绝理由** ✓，
     // 而不是"交给 inflate 碰运气" ✓（FDICT 位 0x20 表示需要预设字典 ✓ —— 不支持 ✓）。
@@ -348,7 +364,7 @@ pub fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     if idat[1] & 0x20 != 0 {
         return None;
     }
-    let mut decoder = ZlibDecoder::new(idat.as_slice());
+    let mut decoder = ZlibDecoder::new(idat);
     let mut raw = Vec::new();
     // **adler32 由 `zlib-rs` 在流结束处校验** ✓ ⇒ 坏数据在这里变成 `Err` ⇒ `None` ✓
     //（与旧的"自己算 adler32 再比对"对外等价 ✓，连**截断**的流也一样拒绝 ✓）。
@@ -361,7 +377,7 @@ pub fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
         return None;
     }
     // 逐扫描线反 filter ✓（RFC 2083 §6 ✓）。
-    let mut pixels: Vec<u8> = Vec::with_capacity(width as usize * height as usize * 4);
+    let mut pixels: Vec<u8> = Vec::with_capacity(width as usize * height as usize * channels);
     let mut previous: Vec<u8> = vec![0u8; stride];
     let mut line: Vec<u8> = vec![0u8; stride];
     for row in 0..height as usize {
@@ -416,15 +432,88 @@ pub fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
         }
         if channels == 4 {
             pixels.extend_from_slice(&line);
-        } else {
+        } else if channels == 3 {
             for column in 0..width as usize {
                 let base = column * channels;
                 pixels.extend_from_slice(&[line[base], line[base + 1], line[base + 2], 255]);
             }
+        } else {
+            // 灰度（channels == 1）：原样返回单通道字节
+            pixels.extend_from_slice(&line);
         }
         previous.copy_from_slice(&line);
     }
-    Some((width, height, pixels))
+    Some(pixels)
+}
+
+/// 解码 PNG（8 位 RGB/RGBA），返回 (宽, 高, RGBA 字节)。
+///
+/// **只支持 8 位、无隔行、RGB/RGBA** ✓（其余显式拒绝 ✓）。
+pub fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let parsed = parse_png_chunks(bytes)?;
+    if parsed.bit_depth != 8 || parsed.interlace != 0 {
+        return None;
+    }
+    let channels = match parsed.color_type {
+        6 => 4usize,
+        2 => 3usize,
+        _ => return None,
+    };
+    let raw = unfilter_png(&parsed.idat, parsed.width, parsed.height, channels)?;
+    if channels == 4 {
+        Some((parsed.width, parsed.height, raw))
+    } else {
+        // RGB → RGBA（alpha 补 255）
+        let mut pixels = Vec::with_capacity(parsed.width as usize * parsed.height as usize * 4);
+        for chunk in raw.chunks_exact(3) {
+            pixels.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
+        }
+        Some((parsed.width, parsed.height, pixels))
+    }
+}
+
+/// 解码 8 位灰度 PNG（color type 0），返回 (宽, 高, 灰度字节)。
+/// 其他颜色类型显式拒绝（用 `decode_png`）。
+pub fn decode_png_l8(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let parsed = parse_png_chunks(bytes)?;
+    if parsed.bit_depth != 8 || parsed.interlace != 0 || parsed.color_type != 0 {
+        return None;
+    }
+    let raw = unfilter_png(&parsed.idat, parsed.width, parsed.height, 1)?;
+    Some((parsed.width, parsed.height, raw))
+}
+
+/// 编码 8 位灰度 PNG（color type 0、无隔行、filter 0）。
+/// 与 `encode_png` 同压缩级别、同策略 ⇒ 同一份输入永远得到同一串字节 ✓。
+pub fn encode_png_l8(width: u32, height: u32, gray8: &[u8]) -> Option<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let expected = (width as usize) * (height as usize);
+    if gray8.len() != expected {
+        return None;
+    }
+
+    let mut out = Vec::with_capacity(expected + 128);
+    out.extend_from_slice(&SIGNATURE);
+    write_chunk(&mut out, b"IHDR", &ihdr(width, height, 0));
+    let idat = {
+        let reserve = (expected + 64).min(DEFLATE_RESERVE_MAX);
+        let mut encoder =
+            ZlibEncoder::new(Vec::with_capacity(reserve), Compression::new(DEFLATE_LEVEL));
+        let row_bytes = width as usize;
+        let filter_zero: [u8; 1] = [0];
+        for row in 0..height as usize {
+            encoder.write_all(&filter_zero).expect("内存编码不会失败");
+            encoder
+                .write_all(&gray8[row * row_bytes..(row + 1) * row_bytes])
+                .expect("内存编码不会失败");
+        }
+        encoder.finish().expect("结束 zlib 流不会失败")
+    };
+    write_chunk(&mut out, b"IDAT", &idat);
+    write_chunk(&mut out, b"IEND", &[]);
+    Some(out)
 }
 
 #[cfg(test)]
@@ -658,6 +747,34 @@ mod tests {
                 .unwrap_or_else(|| panic!("自己压的必须能解回来（原始 {} 字节）", raw.len()));
             assert_eq!(restored, raw, "往返不一致（原始 {} 字节）", raw.len());
         }
+    }
+
+    #[test]
+    fn l8_png_round_trips() {
+        // 含 0/255 边界与渐变的灰度图。
+        let gray: Vec<u8> = (0..64)
+            .flat_map(|y| (0..48).map(move |x| ((x + y * 3) % 256) as u8))
+            .collect();
+        let png = encode_png_l8(48, 64, &gray).expect("L8 编码不会失败");
+        let (w, h, back) = decode_png_l8(&png).expect("自己编的 L8 必须能解回来");
+        assert_eq!((w, h), (48, 64));
+        assert_eq!(back, gray);
+        // 颜色类型拒绝：RGBA 的 PNG 不能被 L8 解码器接受。
+        let rgba_png = encode_png(
+            2,
+            2,
+            &[
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+            ],
+        )
+        .expect("RGBA 编码不会失败");
+        assert!(
+            decode_png_l8(&rgba_png).is_none(),
+            "color type 6 必须被拒绝"
+        );
+        // 尺寸不符拒绝。
+        assert!(encode_png_l8(4, 4, &[0u8; 15]).is_none());
+        assert!(encode_png_l8(0, 4, &[]).is_none());
     }
 
     /// **必须真的压缩** ✓ —— 子 agent 报的 G4：导出 2,458,493 字节 ≈ 原始 RGBA ✗（约 20× 膨胀 ✓）。

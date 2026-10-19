@@ -274,6 +274,31 @@ impl Object {
     }
 }
 
+/// 蒙版位图 patch 的合成操作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaskPatchOp {
+    /// 笔刷沉积插值：`m_new = div255(m_old * (255 - d) + target * d)`，
+    /// 其中 `d` 为该像素的笔刷沉积度（0..255，存在 blob 里）。
+    LerpDeposit,
+    /// 阈值压缩快照：直接用 blob 里的灰度值替换该 bbox 内的蒙版值。
+    ReplaceAll,
+}
+
+/// 蒙版的一块位图增量（`paint_mask` 产生，存在原子 payload 的 `patch` 里）。
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct MaskPatchMeta {
+    /// `[x, y, w, h]` 画布像素坐标（裁剪后的紧致包围盒）。
+    pub bbox: [i32; 4],
+    /// 目标灰度值 0..255（0 = 隐藏，255 = 显示；paint/erase 之外可取中间值）。
+    pub target_u8: u8,
+    /// 合成操作。
+    pub op: MaskPatchOp,
+    /// 8 位灰度（L8）PNG 的 blob 哈希。
+    /// `LerpDeposit` 时存的是笔刷沉积度 `d`，`ReplaceAll` 时存的是绝对蒙版值。
+    pub blob: BlobHash,
+}
+
 /// 选区 / 蒙版（设计文档 4.4）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Selection {
@@ -300,6 +325,10 @@ pub struct Selection {
     /// 引用的 blob。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blobs: Vec<BlobHash>,
+    /// 蒙版画笔的位图增量链（`paint_mask` 追加；`fold` 只做元数据折叠，不解码）。
+    /// 为空表示纯几何蒙版，走原有几何渲染路径。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patches: Vec<MaskPatchMeta>,
     /// 创建它的原子。
     pub created_by: AtomId,
     /// 删除它的原子。
@@ -311,6 +340,35 @@ impl Selection {
     /// 是否已被 tombstone。
     pub fn is_deleted(&self) -> bool {
         self.deleted_by.is_some()
+    }
+
+    /// 蒙版/选区的结构化指纹（渲染缓存用）。
+    ///
+    /// 代替 `format!("{self:?}")` —— Debug 字符串含全部字段且分配内存，
+    /// 位图化后会爆炸。只哈希影响渲染的字段；`deleted_by` 必须进指纹
+    /// （tombstone 后缓存须失效）。
+    pub fn hash_fingerprint<H: std::hash::Hasher>(&self, h: &mut H) {
+        use std::hash::Hash;
+        self.id.hash(h);
+        self.deleted_by.hash(h);
+        if self.is_deleted() {
+            return;
+        }
+        self.invert.hash(h);
+        self.feather.to_bits().hash(h);
+        self.mode.hash(h);
+        self.linked_layer.hash(h);
+        self.refined_edges.hash(h);
+        // 几何底座指纹（canonical JSON 字符串）。
+        self.shape.to_string().hash(h);
+        // 位图笔迹指纹：内容寻址的 blob 哈希 + patch 元数据，O(patches) 极小。
+        self.blobs.hash(h);
+        for patch in &self.patches {
+            patch.bbox.hash(h);
+            patch.target_u8.hash(h);
+            patch.op.hash(h);
+            patch.blob.hash(h);
+        }
     }
 }
 

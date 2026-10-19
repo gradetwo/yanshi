@@ -83,6 +83,6 @@ pub use snapshot::{
     SnapshotStore, SnapshotTrigger,
 };
 pub use state::{
-    Checkpoint, DeclareHead, DocumentState, HeadBase, Layer, LayerType, Mask, Object, ObjectRef,
-    ObjectType, Selection, Style, Transform, Violation,
+    Checkpoint, DeclareHead, DocumentState, HeadBase, Layer, LayerType, Mask, MaskPatchMeta,
+    MaskPatchOp, Object, ObjectRef, ObjectType, Selection, Style, Transform, Violation,
 };

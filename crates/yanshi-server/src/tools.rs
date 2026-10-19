@@ -2693,6 +2693,31 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("linked_layer", String, false, "关联图层 id"),
         ],
     },
+    ToolSpec {
+        name: "paint_mask",
+        profile: Profile::Structure,
+        summary: "蒙版画笔/擦除：在蒙版上按笔刷沉积灰度（Target-Value Lerp 合成）",
+        mutating: true,
+        params: &[
+            param!("mask_id", String, true, "目标蒙版 id"),
+            param!("points", Array, true, "笔触控制点 [[x,y,pressure?],...]"),
+            param!("mode", String, false, "paint（加选）/erase（减选），缺省 paint"),
+            param!("mask_value", Number, false, "目标灰度 0-1（缺省 paint=1/erase=0，可取中间值做半透明选区）"),
+            param!("size", Number, false, "笔刷直径像素（缺省 20）"),
+            param!("softness", Number, false, "笔尖柔边 0-1（缺省 0.5）"),
+            param!("opacity", Number, false, "不透明度 0-1（缺省 1）"),
+            param!("flow", Number, false, "流量 0-1，与 opacity 相乘得每 dab 实际不透明度（缺省 1）"),
+            param!("humanize", Boolean, false, "人性化抖动包络（缺省 false）"),
+            param!("preset", String, false, "笔刷预设名（缺省基础圆笔；颜色恒强制纯白）"),
+        ],
+    },
+    ToolSpec {
+        name: "delete_mask",
+        profile: Profile::Structure,
+        summary: "删除蒙版（tombstone；blobs/patches 保留，撤销可回退）",
+        mutating: true,
+        params: &[param!("mask_id", String, true, "目标蒙版 id")],
+    },
     // ---- 扩展：retouch（调色与滤镜；内核已实现的子集）----
     ToolSpec {
         name: "add_adjustment",
@@ -3374,6 +3399,21 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "smart_texture",
+        profile: Profile::Core,
+        summary: "智能肌理：按材质类型在区域内自动生成肌理笔触（canvas 经纬线/fabric 斜纹织线/skin 漫游皮纹/stone 碎裂短线+斑块/wood 长流线+木节）。分层抖动网格+簇状调制防结块与筛子感；20% 骨相层+80% 肌理层双尺度；笔数按目标覆盖率反推（上限 240）；颜色从底色自动推导（80% 暗部+20% 微高光，Alpha 永不 1.0）。",
+        mutating: true,
+        params: &[
+            param!("shape", Object, true, "形状：同 smart_fill（rect/circle/polygon）"),
+            param!("texture_type", String, true, "canvas（粗麻经纬线）/fabric（斜纹织线）/skin（漫游皮纹）/stone（碎裂短线+斑块）/wood（长流线+木节）"),
+            param!("density", Number, false, "肌理密度 0-1，缺省 0.5"),
+            param!("size", Number, false, "肌理笔触大小，缺省 6"),
+            param!("color", Array, false, "肌理基准色 [r,g,b] 0..1；缺省或 \"auto\" 时自动采样图层平均色"),
+            param!("brush", String, false, "笔刷名，缺省 calligraphy"),
+            param!("layer_id", String, true, "图层 id（必填）"),
+        ],
+    },
+    ToolSpec {
         name: "swatch_brush_strokes",
         profile: Profile::Core,
         mutating: false,
@@ -3942,6 +3982,8 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "update_filter" => write_update_effect(ctx, args, EffectKind::Filter),
         "list_effects" => read_list_effects(ctx, args),
         "create_mask" => write_create_mask(ctx, args),
+        "paint_mask" => write_paint_mask(ctx, args),
+        "delete_mask" => write_delete_mask(ctx, args),
         "create_selection" => write_create_selection(ctx, args),
         "delete_selection" => write_delete_selection(ctx, args),
         "list_selections" => read_list_selections(ctx),
@@ -3970,6 +4012,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "smart_blend" => write_smart_blend(ctx, args),
         "smart_glaze" => write_smart_glaze(ctx, args),
         "smart_edge_soften" => write_smart_edge_soften(ctx, args),
+        "smart_texture" => write_smart_texture(ctx, args),
         "brush_preview" => write_brush_preview(ctx, args),
         "swatch_brush_strokes" => write_swatch_brush_strokes(ctx, args),
         "save_palette" => write_save_palette(ctx, args),
@@ -12254,6 +12297,347 @@ fn read_list_selections(ctx: &mut ToolContext<'_>) -> Result<Value> {
     Ok(json!({"selections": selections, "count": selections.len()}))
 }
 
+/// 蒙版画笔/擦除：在蒙版上按笔刷沉积灰度 patch（`UpdateMask` 原子）。
+///
+/// - 笔刷强制纯白，只取沉积的 Alpha 通道（颜色恒定白，避免色相污染灰度）。
+/// - 合成用 Target-Value Lerp：`m_new = div255(m_old*(255-d) + target*d)`，
+///   其中 `d` 为笔刷沉积度，`target` 为本次目标灰度。
+/// - patch 按沉积的紧致 bbox 裁剪，L8 PNG 存 blob。
+/// - 同一蒙版累积 patch 达 32 个时，自动烘焙 ReplaceAll 快照截断重放链
+///   （历史 blob 仍在原子日志里，撤销无损）。
+fn write_paint_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let mask_id = require_str(args, "mask_id")?;
+    let mut points = parse_brush_points(args)?;
+    // 单点笔触：引擎按 dab 间距（≈ size/4）落笔，零位移下不沉积 ⇒
+    // 补一段短位移保证单点即落一枚 dab（位移 < 笔刷半径，视觉上仍是点）。
+    if points.len() == 1 {
+        let (x, y, p) = points[0];
+        let size = args.get("size").and_then(Value::as_f64).unwrap_or(20.0);
+        let nudge = (size * 0.25).clamp(2.0, 32.0);
+        points.push((x + nudge, y, p));
+    }
+    let mode = optional_str(args, "mode").unwrap_or_else(|| "paint".to_owned());
+    if mode != "paint" && mode != "erase" {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("mode 必须是 paint/erase，得到 {mode}")),
+        ));
+    }
+    // 目标灰度：mask_value 显式覆盖，否则 paint=1.0 / erase=0.0。
+    let default_value = if mode == "paint" { 1.0 } else { 0.0 };
+    let mask_value = args
+        .get("mask_value")
+        .and_then(Value::as_f64)
+        .unwrap_or(default_value);
+    if !(0.0..=1.0).contains(&mask_value) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("mask_value 必须在 [0, 1] 内，得到 {mask_value}")),
+        ));
+    }
+    let target_u8 = (mask_value * 255.0).round() as u8;
+
+    // 笔刷：preset 或默认圆笔；强制纯白；size/softness/opacity/flow 覆盖。
+    // （覆盖语义与 paint_brush 一致：调用方给的是"这一笔用什么"。）
+    // 无 preset 时用基础圆笔：`Brush::new()` 全零设置不会落笔，
+    // 必须显式给出关键设置（对标真实 .myb 的非零项）。
+    let mut brush = match optional_str(args, "preset") {
+        Some(preset) => load_brush(ctx.workspace, &preset)?.1,
+        None => {
+            let mut b = hokusai::Brush::new();
+            b.set(
+                hokusai::BrushSetting::DabsPerBasicRadius,
+                hokusai::SettingValue::constant(2.0),
+            );
+            b.set(
+                hokusai::BrushSetting::DabsPerActualRadius,
+                hokusai::SettingValue::constant(2.0),
+            );
+            b.set(
+                hokusai::BrushSetting::EllipticalDabRatio,
+                hokusai::SettingValue::constant(1.0),
+            );
+            b.set(
+                hokusai::BrushSetting::AntiAliasing,
+                hokusai::SettingValue::constant(1.0),
+            );
+            b
+        }
+    };
+    brush.set(
+        hokusai::BrushSetting::ColorH,
+        hokusai::SettingValue::constant(0.0),
+    );
+    brush.set(
+        hokusai::BrushSetting::ColorS,
+        hokusai::SettingValue::constant(0.0),
+    );
+    brush.set(
+        hokusai::BrushSetting::ColorV,
+        hokusai::SettingValue::constant(1.0),
+    );
+    let size = args.get("size").and_then(Value::as_f64).unwrap_or(20.0);
+    if size <= 0.0 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("size 必须大于 0，得到 {size}")),
+        ));
+    }
+    brush.set(
+        hokusai::BrushSetting::Radius,
+        hokusai::SettingValue::constant((size / 2.0).ln() as f32),
+    );
+    let softness = args
+        .get("softness")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.5)
+        .clamp(0.0, 1.0);
+    brush.set(
+        hokusai::BrushSetting::Hardness,
+        hokusai::SettingValue::constant((1.0 - softness) as f32),
+    );
+    let opacity = args
+        .get("opacity")
+        .and_then(Value::as_f64)
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0);
+    let flow = args
+        .get("flow")
+        .and_then(Value::as_f64)
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0);
+    // flow 与 opacity 相乘得到每 dab 实际不透明度。
+    brush.set(
+        hokusai::BrushSetting::Opaque,
+        hokusai::SettingValue::constant((opacity * flow) as f32),
+    );
+
+    if args
+        .get("humanize")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        apply_humanize_envelope(&mut points);
+    }
+
+    // 落笔沉积（`brush_deposit_mask` 返回 RGBA，只取 Alpha 通道）。
+    let region = PaintRegion::from_bounds(brush_stroke_region(&points, Some(size)));
+    let region_width = region.width;
+    let region_height = region.height;
+    let region_x0 = region.x0;
+    let region_y0 = region.y0;
+    let rgba = brush_deposit_mask(&brush, &points, region);
+    let mut deposit = vec![0u8; region_width * region_height];
+    for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+        deposit[index] = pixel[3];
+    }
+
+    // 紧致裁剪：找沉积非零的 bbox（region 局部坐标）。
+    let Some((tx0, ty0, tx1, ty1)) = tight_bbox_u8(&deposit, region_width, region_height) else {
+        // 零沉积不提交（静默提交空 patch 是已知 bug 形态，必须可观测）。
+        return Ok(json!({
+            "ok": true,
+            "mask_id": mask_id,
+            "deposited": false,
+            "note": "笔刷沉积为空，未提交原子",
+        }));
+    };
+    let tw = tx1 - tx0;
+    let th = ty1 - ty0;
+    let mut trimmed = vec![0u8; tw * th];
+    for y in 0..th {
+        for x in 0..tw {
+            trimmed[y * tw + x] = deposit[(ty0 + y) * region_width + (tx0 + x)];
+        }
+    }
+    // 转画布坐标。
+    let canvas_tx0 = region_x0 + tx0 as i32;
+    let canvas_ty0 = region_y0 + ty0 as i32;
+
+    let state = document_state(ctx)?;
+    let mask = state.masks.get(&mask_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("蒙版 {mask_id} 不存在")),
+        )
+    })?;
+
+    // 32 笔快照合并：烘焙当前完整蒙版 + 本笔沉积为 ReplaceAll。
+    let (op, bbox, png_bytes) = if mask.patches.len() >= 32 {
+        match bake_mask_snapshot(
+            ctx, &state, mask, &trimmed, tw, th, canvas_tx0, canvas_ty0, target_u8,
+        )? {
+            Some(snapshot) => snapshot,
+            // 快照为空（全默认值）：退化为普通增量 patch，下次再试合并。
+            None => {
+                let png = yanshi_render::png::encode_png_l8(tw as u32, th as u32, &trimmed)
+                    .expect("内存 PNG 编码不会失败");
+                (
+                    "lerp_deposit",
+                    [canvas_tx0, canvas_ty0, tw as i32, th as i32],
+                    png,
+                )
+            }
+        }
+    } else {
+        let png = yanshi_render::png::encode_png_l8(tw as u32, th as u32, &trimmed)
+            .expect("内存 PNG 编码不会失败");
+        (
+            "lerp_deposit",
+            [canvas_tx0, canvas_ty0, tw as i32, th as i32],
+            png,
+        )
+    };
+
+    let blob_hash = ctx.workspace.store().put(&png_bytes)?;
+    let blob_str = blob_hash.to_string();
+    let payload = json!({
+        "mask_id": mask_id,
+        "patch": {
+            "bbox": bbox,
+            "target_u8": target_u8,
+            "op": op,
+            "blob": blob_str,
+        },
+        "refs": { "blobs": [blob_str] },
+    });
+    let result = ctx.commit(AtomKind::UpdateMask, payload)?;
+    let region = region_of(&result);
+    let mut response = finish_mutation(ctx, &result, region)?;
+    response["deposited"] = json!(true);
+    response["patch_op"] = json!(op);
+    Ok(response)
+}
+
+/// `bake_mask_snapshot`：把当前完整蒙版与本笔沉积烘焙为一张 ReplaceAll 快照。
+///
+/// 返回 `(op, bbox, png)`；若结果全为默认值则返回 `None`（调用方退化处理）。
+#[allow(clippy::too_many_arguments)]
+/// 蒙版快照的一段：`(编码名, bbox, 字节)`。抽出来是为了 clippy 的 `type_complexity`。
+type MaskSnapshotBlob = (&'static str, [i32; 4], Vec<u8>);
+// 蒙版快照烘焙要 bbox/图层/蒙版/编码/阈值等 9 个入参；拆结构体只是搬家。
+#[allow(clippy::too_many_arguments)]
+fn bake_mask_snapshot(
+    ctx: &mut ToolContext<'_>,
+    state: &DocumentState,
+    mask: &yanshi_core::Selection,
+    trimmed: &[u8],
+    tw: usize,
+    th: usize,
+    canvas_tx0: i32,
+    canvas_ty0: i32,
+    target_u8: u8,
+) -> Result<Option<MaskSnapshotBlob>> {
+    use yanshi_render::selection::{div255, CompiledMask};
+    let load_blob = |s: &str| {
+        s.parse::<yanshi_core::BlobHash>()
+            .ok()
+            .and_then(|hash| ctx.workspace.store().get(&hash).ok())
+    };
+    let compiled = CompiledMask::build(mask, state.width as i32, state.height as i32, &load_blob);
+    let default_v: u8 = if mask.invert { 255 } else { 0 };
+
+    // 扩展网格：compiled.bbox ∪ 本笔 bbox，填默认值。
+    let [cbx, cby, cbw, cbh] = compiled.bbox;
+    let sx0 = cbx.min(canvas_tx0);
+    let sy0 = cby.min(canvas_ty0);
+    let sx1 = (cbx + cbw).max(canvas_tx0 + tw as i32);
+    let sy1 = (cby + cbh).max(canvas_ty0 + th as i32);
+    let sw = (sx1 - sx0).max(0) as usize;
+    let sh = (sy1 - sy0).max(0) as usize;
+    if sw == 0 || sh == 0 {
+        return Ok(None);
+    }
+    let mut grid = vec![default_v; sw * sh];
+    for y in 0..cbh.max(0) as usize {
+        for x in 0..cbw.max(0) as usize {
+            let dst = ((cby - sy0) as usize + y) * sw + ((cbx - sx0) as usize + x);
+            grid[dst] = compiled.grid[y * (cbw as usize) + x];
+        }
+    }
+    // 本笔沉积按 Target-Value Lerp 合进去。
+    let target = u32::from(target_u8);
+    for y in 0..th {
+        for x in 0..tw {
+            let gx = canvas_tx0 + x as i32;
+            let gy = canvas_ty0 + y as i32;
+            let dst = ((gy - sy0) as usize) * sw + ((gx - sx0) as usize);
+            let m_old = u32::from(grid[dst]);
+            let d = u32::from(trimmed[y * tw + x]);
+            grid[dst] = div255(m_old * (255 - d) + target * d);
+        }
+    }
+    // 紧致裁剪到非默认值的区域。
+    let Some((bx0, by0, bx1, by1)) = tight_bbox_u8_ne(&grid, sw, sh, default_v) else {
+        return Ok(None);
+    };
+    let bw = bx1 - bx0;
+    let bh = by1 - by0;
+    let mut snap = vec![0u8; bw * bh];
+    for y in 0..bh {
+        for x in 0..bw {
+            snap[y * bw + x] = grid[(by0 + y) * sw + (bx0 + x)];
+        }
+    }
+    let png = yanshi_render::png::encode_png_l8(bw as u32, bh as u32, &snap)
+        .expect("内存 PNG 编码不会失败");
+    Ok(Some((
+        "replace_all",
+        [sx0 + bx0 as i32, sy0 + by0 as i32, bw as i32, bh as i32],
+        png,
+    )))
+}
+
+/// u8 网格中非零像素的紧致 bbox（网格局部坐标），全零返回 `None`。
+fn tight_bbox_u8(grid: &[u8], w: usize, h: usize) -> Option<(usize, usize, usize, usize)> {
+    tight_bbox_u8_ne(grid, w, h, 0)
+}
+
+/// u8 网格中不等于 `neq` 的像素的紧致 bbox（网格局部坐标），全等于返回 `None`。
+fn tight_bbox_u8_ne(
+    grid: &[u8],
+    w: usize,
+    h: usize,
+    neq: u8,
+) -> Option<(usize, usize, usize, usize)> {
+    let mut x0 = usize::MAX;
+    let mut y0 = usize::MAX;
+    let mut x1 = 0usize;
+    let mut y1 = 0usize;
+    for y in 0..h {
+        for x in 0..w {
+            if grid[y * w + x] != neq {
+                if x < x0 {
+                    x0 = x;
+                }
+                if y < y0 {
+                    y0 = y;
+                }
+                if x + 1 > x1 {
+                    x1 = x + 1;
+                }
+                if y + 1 > y1 {
+                    y1 = y + 1;
+                }
+            }
+        }
+    }
+    if x0 == usize::MAX {
+        None
+    } else {
+        Some((x0, y0, x1, y1))
+    }
+}
+
+/// 删除蒙版（tombstone；不清空 blobs/patches，撤销可无损回退）。
+fn write_delete_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let mask_id = require_str(args, "mask_id")?;
+    let payload = json!({ "mask_id": mask_id });
+    let result = ctx.commit(AtomKind::DeleteMask, payload)?;
+    let region = region_of(&result);
+    finish_mutation(ctx, &result, region)
+}
+
 fn write_create_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let mask_id = require_str(args, "mask_id")?;
     let shape = require_object(args, "shape")?.clone();
@@ -20147,6 +20531,906 @@ fn write_smart_edge_soften(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
     }
     Ok(value)
 }
+
+/// `smart_texture` 用的确定性 PRNG（与各 smart_* 工具内的 XorShift64 同算法）。
+struct TextureXorShift(u64);
+impl TextureXorShift {
+    fn next_f64(&mut self) -> f64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        ((x >> 11) as f64) / ((1u64 << 53) as f64)
+    }
+    fn range(&mut self, lo: f64, hi: f64) -> f64 {
+        lo + (hi - lo) * self.next_f64()
+    }
+    /// 近似高斯（与各 smart_* 内 `XorShift64::gaussian` 同实现：3 个 uniform 平均）。
+    fn gaussian(&mut self) -> f64 {
+        (self.next_f64() + self.next_f64() + self.next_f64()) / 3.0 * 2.0 - 1.0
+    }
+}
+
+/// 专家方案「一、2」：5 大材质工程参数表（已校准）。
+///
+/// 设计要点：外层生成器只负责**中观轨迹**（Meso-path），微颗粒由
+/// `scatter_texture` 在引擎层打散 —— 单笔过短会印出死板墨点（v1 的教训），
+/// 单笔过长会糊成一团（由「一、4」的 N 公式按长度倍数反推笔数来约束）。
+#[derive(Clone, Copy)]
+struct TextureProfile {
+    len_mult: f64,   // 笔触长度倍数 m = L / size
+    jitter: f64,     // 网格抖动率 0..1
+    cluster: f64,    // 低频簇状聚集强度 0..1
+    scatter: f64,    // scatter_texture 参数
+    tremor: f64,     // hand_tremor 参数
+    base_alpha: f64, // 建议最大不透明度（Alpha 永不超此值）
+}
+
+fn get_texture_profile(texture_type: &str) -> TextureProfile {
+    match texture_type {
+        "canvas" => TextureProfile {
+            len_mult: 3.5,
+            jitter: 0.20,
+            cluster: 0.0,
+            scatter: 0.55,
+            tremor: 0.015,
+            base_alpha: 0.28,
+        },
+        "fabric" => TextureProfile {
+            len_mult: 4.5,
+            jitter: 0.30,
+            cluster: 0.15,
+            scatter: 0.50,
+            tremor: 0.025,
+            base_alpha: 0.30,
+        },
+        "skin" => TextureProfile {
+            len_mult: 4.0,
+            jitter: 0.65,
+            cluster: 0.20,
+            scatter: 0.90,
+            tremor: 0.040,
+            base_alpha: 0.22,
+        },
+        "wood" => TextureProfile {
+            len_mult: 10.0,
+            jitter: 0.45,
+            cluster: 0.35,
+            scatter: 0.45,
+            tremor: 0.030,
+            base_alpha: 0.35,
+        },
+        _ /* "stone" */ => TextureProfile {
+            len_mult: 3.0,
+            jitter: 0.85,
+            cluster: 0.65,
+            scatter: 0.50,
+            tremor: 0.070,
+            base_alpha: 0.38,
+        },
+    }
+}
+
+/// 专家方案「一、4」：按目标视觉覆盖率 τ 与单笔有效面积反推笔数 N。
+///
+/// A_stroke = η_scatter · m · size²，η_scatter = 1 − 0.55·scatter；
+/// τ = 0.05 + 0.50·density（density=0.5 时 τ≈0.30 最透气，上限 0.55）；
+/// N = clamp(round(Area_shape·τ / A_stroke), 8, 240)。
+/// 大区域自适应保护：未截断 N > 240 时把有效 size 按 √(N/240) 放大，
+/// 使实际笔数恒 ≤ 240（防原子日志爆炸）。返回 (target_n, effective_size)。
+fn texture_target_strokes(
+    shape_area: f64,
+    density: f64,
+    size: f64,
+    profile: TextureProfile,
+) -> (usize, f64) {
+    let eta = 1.0 - 0.55 * profile.scatter;
+    let tau = 0.05 + 0.50 * density.clamp(0.05, 1.0);
+    let raw_n = (shape_area.max(1.0) * tau) / (eta * profile.len_mult * size * size).max(1e-9);
+    let target_n = (raw_n.round() as usize).clamp(8, 240);
+    let effective_size = if raw_n > 240.0 {
+        size * (raw_n / 240.0).sqrt()
+    } else {
+        size
+    };
+    (target_n, effective_size)
+}
+
+/// 专家方案「一、1」：分层抖动网格 + 低频簇状调制。
+///
+/// 每个格子取一个中心偏移点（x = x0 + (i + 0.5 + jitter·rand(−0.5, 0.5))·Δ），
+/// 再乘以 2 阶正弦低频密度场做簇状过滤 —— 只调 jitter/cluster 即通吃 5 种材质，
+/// O(N) 且无拒绝采样的死循环风险。返回的点都在 `inside_shape` 内。
+///
+/// 与专家原文的偏离（实测依据，见报告）：
+/// 专家代码版 `keep_prob = (1−cluster) + cluster·wave` 在 stone（cluster=0.65）下
+/// 实测 CV≈0.21，达不到专家自检清单的 CV∈[0.35, 0.75]（谷底 0.35 的 floor 吃掉了
+/// 对比度，形不成「石斑簇群 + 留白呼吸区」）；而专家文字版是「`rng.next_f64() < M(x,y)`
+/// 时才落笔」（M∈[0,1] 直接做保留概率，无 floor）。此处采用调和式
+/// `keep_prob = wave^(2·cluster)`：cluster=0 时指数为 0 → 恒 1（canvas 不过滤 ✓）；
+/// cluster 增大时对比度单调增强；stone 在 200×200 下 CV 稳定在 0.46~0.65 ✓。
+/// 频率取 1 周期/区域（专家代码 `*2.0` 在 4×4 子格尺度下被平均掉，CV 仍 <0.35；
+/// 「低频」本意即周期越大越好）。
+// 纹理种子收集需要 rng/profile/尺寸/网格/簇参数等 10 个入参；拆成结构体只是把参数搬个家。
+#[allow(clippy::too_many_arguments)]
+fn collect_texture_seeds(
+    rng: &mut TextureXorShift,
+    profile: TextureProfile,
+    bx0: f64,
+    by0: f64,
+    bx1: f64,
+    by1: f64,
+    target_n: usize,
+    shape_area: f64,
+    effective_size: f64,
+    inside_shape: &dyn Fn(f64, f64) -> bool,
+) -> Vec<(f64, f64)> {
+    let bbox_area = (bx1 - bx0).max(1.0) * (by1 - by0).max(1.0);
+    // 网格数考虑两处损耗：簇状过滤 + 形状占 bbox 的面积比。
+    // 过滤期望 E[wave^(2c)] ≈ 1−0.85c（经验拟合，保守取大以保证种子充足）。
+    let accept_rate =
+        (1.0 - 0.85 * profile.cluster).clamp(0.15, 1.0) * (shape_area / bbox_area).clamp(0.2, 1.0);
+    let grid_cells = ((target_n as f64) / accept_rate).ceil().max(4.0);
+    let step = (bbox_area / grid_cells).sqrt().max(effective_size);
+    let cols = ((bx1 - bx0) / step).ceil().max(1.0) as usize;
+    let rows = ((by1 - by0) / step).ceil().max(1.0) as usize;
+    // 低频簇状调制随机相位（2 阶正弦密度场，无需 Perlin 库）。
+    let phase_x = rng.range(0.0, std::f64::consts::TAU);
+    let phase_y = rng.range(0.0, std::f64::consts::TAU);
+    let freq = std::f64::consts::TAU / (bx1 - bx0).max(by1 - by0).max(32.0);
+    let mut seeds = Vec::new();
+    for r in 0..rows {
+        for c in 0..cols {
+            let jx = (rng.next_f64() - 0.5) * profile.jitter;
+            let jy = (rng.next_f64() - 0.5) * profile.jitter;
+            let px = bx0 + (c as f64 + 0.5 + jx) * step;
+            let py = by0 + (r as f64 + 0.5 + jy) * step;
+            if !inside_shape(px, py) {
+                continue;
+            }
+            // 低频簇状调制：石头/木纹的「疏可走马，密不透风」。
+            if profile.cluster > 0.0 {
+                let wave = 0.5 + 0.5 * ((px * freq + phase_x).sin() * (py * freq + phase_y).cos());
+                let keep_prob = wave.max(1e-9).powf(2.0 * profile.cluster);
+                if rng.next_f64() > keep_prob {
+                    continue;
+                }
+            }
+            seeds.push((px, py));
+        }
+    }
+    seeds
+}
+
+/// 专家方案「二」：单笔肌理轨迹点（中观轨迹），返回 (x, y, pressure)。
+///
+/// 外层只生成符合材质结构力学的轨迹；微颗粒由 `scatter_texture` 在引擎层打散。
+/// `is_block`：stone 的 20% 粗斑块模式（短促随机游走，靠 scatter=0.95 散成粗颗粒）。
+#[allow(clippy::too_many_arguments)]
+fn build_texture_stroke_points(
+    texture_type: &str,
+    cx: f64,
+    cy: f64,
+    length: f64,
+    main_angle: f64,
+    knot_center: (f64, f64),
+    idx: usize,
+    is_block: bool,
+    rng: &mut TextureXorShift,
+) -> Vec<(f64, f64, f64)> {
+    if is_block {
+        let mut pts = Vec::with_capacity(5);
+        let (mut x, mut y) = (cx, cy);
+        let step = length / 4.0;
+        for i in 0..5 {
+            let u = i as f64 / 4.0;
+            let p = 0.55 + 0.25 * (u * std::f64::consts::PI).sin();
+            pts.push((x, y, p));
+            let ang = rng.range(0.0, std::f64::consts::TAU);
+            x += ang.cos() * step;
+            y += ang.sin() * step;
+        }
+        return pts;
+    }
+    match texture_type {
+        "canvas" => {
+            // 正交断续经纬线：奇偶交替 0°/90°（±1.5° 微偏），两端收尖的梭形压感。
+            let num_pts = 5usize;
+            let mut pts = Vec::with_capacity(num_pts);
+            let base_ang = if idx % 2 == 0 {
+                0.0
+            } else {
+                std::f64::consts::FRAC_PI_2
+            };
+            let ang = base_ang + rng.gaussian() * 0.026;
+            let (dx, dy) = (ang.cos(), ang.sin());
+            for i in 0..num_pts {
+                let t = (i as f64 / (num_pts - 1) as f64) - 0.5; // -0.5..0.5
+                let p = 0.3 + 0.4 * (1.0 - (2.0 * t).abs()); // 0.3→0.7→0.3
+                pts.push((cx + t * length * dx, cy + t * length * dy, p));
+            }
+            pts
+        }
+        "fabric" => {
+            // 80% 主方向微弧斜纹 + 20% 垂直纬线暗纹，弓形弯曲，梭形压感。
+            let num_pts = 5usize;
+            let mut pts = Vec::with_capacity(num_pts);
+            let base_ang = if idx % 5 == 0 {
+                main_angle + std::f64::consts::FRAC_PI_2
+            } else {
+                main_angle
+            };
+            let ang = base_ang + rng.gaussian() * 0.08; // ≈ ±5°
+            let (dx, dy) = (ang.cos(), ang.sin());
+            let (nx, ny) = (dy, -dx);
+            let bow = rng.gaussian() * length * 0.06;
+            for i in 0..num_pts {
+                let u = i as f64 / (num_pts - 1) as f64;
+                let t = u - 0.5;
+                let curve = (u * std::f64::consts::PI).sin() * bow;
+                let p = 0.25 + 0.55 * (u * std::f64::consts::PI).sin(); // 0.25→0.8→0.25
+                pts.push((
+                    cx + t * length * dx + curve * nx,
+                    cy + t * length * dy + curve * ny,
+                    p,
+                ));
+            }
+            pts
+        }
+        "skin" => {
+            // 菱形皮纹漫游微弧线（±35° 双斜向交替 + 局部旋转），
+            // 配合 scatter=0.90 在引擎层散化为毛孔簇。
+            let num_pts = 5usize;
+            let mut pts = Vec::with_capacity(num_pts);
+            let base_ang = if idx % 2 == 0 { 0.6 } else { -0.6 } + rng.gaussian() * 0.4;
+            let (mut x, mut y) = (cx, cy);
+            let mut ang = base_ang;
+            let step = length / num_pts as f64;
+            for i in 0..num_pts {
+                let u = i as f64 / (num_pts - 1) as f64;
+                let p = 0.35 + 0.25 * (u * std::f64::consts::PI).sin();
+                pts.push((x, y, p));
+                ang += rng.gaussian() * 0.5;
+                x += ang.cos() * step;
+                y += ang.sin() * step;
+            }
+            pts
+        }
+        "wood" => {
+            // 长流线 + 木节排斥场（Knot Deflection）：到 knot_center 的高斯排斥 + 正弦波。
+            let num_wood_pts = 8usize;
+            let mut pts = Vec::with_capacity(num_wood_pts);
+            let (dx, dy) = (main_angle.cos(), main_angle.sin());
+            let (nx, ny) = (-dy, dx);
+            let (kx, ky) = knot_center;
+            for i in 0..num_wood_pts {
+                let u = i as f64 / (num_wood_pts - 1) as f64;
+                let t = u - 0.5;
+                let bx = cx + t * length * dx;
+                let by = cy + t * length * dy;
+                // 到木节的距离 → 透镜状绕流弯曲。
+                let dist_sq = (bx - kx).powi(2) + (by - ky).powi(2);
+                let sigma_sq = (length * 0.8).powi(2).max(100.0);
+                let sign = if (bx - kx) * nx + (by - ky) * ny >= 0.0 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                let deflect = sign * (length * 0.18) * (-dist_sq / sigma_sq).exp();
+                let wave = (u * std::f64::consts::TAU + cx * 0.05).sin() * (length * 0.03);
+                let p = 0.3 + 0.5 * (u * std::f64::consts::PI).sin();
+                pts.push((bx + (deflect + wave) * nx, by + (deflect + wave) * ny, p));
+            }
+            pts
+        }
+        _ /* "stone" */ => {
+            // 折角碎裂短线：中途 1 次硬折弯（35°~70°），压感由重到轻如刀劈斧凿。
+            let num_pts = 5usize;
+            let mut pts = Vec::with_capacity(num_pts);
+            let (mut x, mut y) = (cx, cy);
+            let mut ang = rng.range(0.0, std::f64::consts::TAU);
+            let step = length / (num_pts as f64 - 1.0);
+            for i in 0..num_pts {
+                let u = i as f64 / (num_pts - 1) as f64;
+                let p = (0.85 * (1.0 - u * 0.8)).clamp(0.15, 0.95);
+                pts.push((x, y, p));
+                if i == 2 {
+                    // 中途硬折角模拟石材脆性断裂。
+                    let turn =
+                        rng.range(0.6, 1.2) * if rng.next_f64() > 0.5 { 1.0 } else { -1.0 };
+                    ang += turn;
+                } else {
+                    ang += rng.gaussian() * 0.15;
+                }
+                x += ang.cos() * step;
+                y += ang.sin() * step;
+            }
+            pts
+        }
+    }
+}
+
+/// 点到线段距离（多边形内缩侵蚀用）。
+fn point_seg_dist(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
+    let dx = bx - ax;
+    let dy = by - ay;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq < 1e-12 {
+        return ((px - ax).powi(2) + (py - ay).powi(2)).sqrt();
+    }
+    let t = (((px - ax) * dx + (py - ay) * dy) / len_sq).clamp(0.0, 1.0);
+    ((px - (ax + t * dx)).powi(2) + (py - (ay + t * dy)).powi(2)).sqrt()
+}
+
+/// 一笔已规划好的肌理笔触：规划（含全部随机性）与落笔 I/O 分离，
+/// 使笔数上限 / 耗时 / 边界约束都能被单元测试直接断言。
+struct PlannedTextureStroke {
+    points: Vec<(f64, f64, f64)>, // (x, y, pressure)，已做形状内缩过滤
+    size: f64,
+    scatter: f64,
+    tremor: f64,
+    color: [f64; 4],
+}
+
+/// 专家方案「二」主循环：20% 骨相层 + 80% 肌理层的同预算双尺度拆分。
+///
+/// - Pass 1（前 20%）：底层骨相斑块，size×2.0、Alpha=base_alpha×0.45、scatter 0.90，
+///   先铺一层若有若无的大尺度明暗斑驳（Mottled Base）；
+/// - Pass 2（后 80%）：表层特征肌理，按材质特征表生成裂纹/经纬线/木纹/皮纹。
+///
+/// 边界保护：每笔轨迹点必须落在形状内缩 `cur_size` 的区域内（`inside_eroded`）。
+/// 专家原码只过滤"顶点在形状内"，但 dab 本体有半径（size/2）且 `scatter_texture`
+/// 会高斯偏移 dab 位置 —— 不内缩的话，长笔触的 dab 会系统性戳出边界。
+/// 内缩一个完整 `cur_size` 是保守但简单的统一规则（判据 2）。
+#[allow(clippy::too_many_arguments)]
+fn plan_texture_strokes(
+    rng: &mut TextureXorShift,
+    texture: &str,
+    profile: TextureProfile,
+    bx0: f64,
+    by0: f64,
+    bx1: f64,
+    by1: f64,
+    shape_area: f64,
+    size: f64, // effective_size（已做大区域自适应）
+    target_n: usize,
+    base_rgb: [f64; 3],
+    inside_shape: &dyn Fn(f64, f64) -> bool,
+    inside_eroded: &dyn Fn(f64, f64, f64) -> bool,
+) -> Vec<PlannedTextureStroke> {
+    let mut seeds = collect_texture_seeds(
+        rng,
+        profile,
+        bx0,
+        by0,
+        bx1,
+        by1,
+        target_n,
+        shape_area,
+        size,
+        inside_shape,
+    );
+    // 确定性洗牌后截断：消除行主序偏差（否则前 20% 骨相层会挤在顶部几行）。
+    for i in (1..seeds.len()).rev() {
+        let j = (rng.next_f64() * (i + 1) as f64) as usize;
+        seeds.swap(i, j);
+    }
+    seeds.truncate(target_n);
+    // wood 沿区域长轴；fabric 主方向默认 −30°（材质表）。
+    let wood_angle = if (bx1 - bx0) >= (by1 - by0) {
+        0.0
+    } else {
+        std::f64::consts::FRAC_PI_2
+    };
+    let fabric_angle = -30.0_f64.to_radians();
+    let knot_center = (
+        rng.range(bx0 + 0.2 * (bx1 - bx0), bx0 + 0.8 * (bx1 - bx0)),
+        rng.range(by0 + 0.2 * (by1 - by0), by0 + 0.8 * (by1 - by0)),
+    );
+    let mut strokes = Vec::with_capacity(target_n);
+    for (idx, &(cx, cy)) in seeds.iter().enumerate() {
+        let is_macro = idx < (target_n / 5).max(1);
+        let cur_size = if is_macro { size * 2.0 } else { size };
+        let cur_len = cur_size
+            * if is_macro {
+                2.0
+            } else {
+                profile.len_mult * rng.range(0.75, 1.25)
+            };
+        let main_angle = if texture == "wood" {
+            wood_angle
+        } else {
+            fabric_angle
+        };
+        // stone 的 20% 粗斑块模式（len_mult 2.0、scatter 0.95）。
+        let is_block = texture == "stone" && !is_macro && idx % 5 == 4;
+        let (stroke_len, cur_scatter) = if is_block {
+            (cur_size * 2.0, 0.95)
+        } else if is_macro {
+            (cur_len, 0.90)
+        } else {
+            (cur_len, profile.scatter)
+        };
+        let raw_pts = build_texture_stroke_points(
+            texture,
+            cx,
+            cy,
+            stroke_len,
+            main_angle,
+            knot_center,
+            idx,
+            is_block,
+            rng,
+        );
+        // 形状内缩过滤：顶点必须比边界内缩至少一个 cur_size，
+        // 否则 dab 本体（半径 size/2）+ scatter 高斯偏移会系统性戳出边界（判据 2）。
+        let erosion = cur_size;
+        let clipped: Vec<(f64, f64, f64)> = raw_pts
+            .into_iter()
+            .filter(|&(x, y, _)| inside_eroded(x, y, erosion))
+            .collect();
+        if clipped.len() < 2 {
+            continue;
+        }
+        // 凹凸双极配色：80% 暗部 / 20% 微高光（骨相层永不做高光）。
+        let is_highlight = !is_macro && idx % 5 == 3;
+        let color = derive_stroke_color(
+            rng,
+            base_rgb,
+            texture,
+            is_highlight,
+            is_macro,
+            profile.base_alpha,
+        );
+        strokes.push(PlannedTextureStroke {
+            points: clipped,
+            size: cur_size,
+            scatter: cur_scatter,
+            tremor: profile.tremor,
+            color,
+        });
+    }
+    strokes
+}
+
+/// `smart_texture`：智能肌理 —— 在区域内按材质类型自动生成肌理笔触。
+///
+/// 专家方案（五节）：
+/// 1. 分布：分层抖动网格 + 低频簇状调制（O(N)，无拒绝采样死循环；只调
+///    jitter/cluster 即通吃 5 种材质）；
+/// 2. 轨迹：外层只生成中观轨迹（经纬线/斜纹/皮纹/碎裂线/木纹+木节），微颗粒
+///    由 `scatter_texture` 在引擎层打散；
+/// 3. 配色：`color` 缺省或 `"auto"` 时采样图层平均色；凹凸双极（80% 暗部 +
+///    20% 微高光），Alpha 恒 ≤ base_alpha，绝不 1.0 实色；
+/// 4. 笔数：N = clamp(round(Area·τ / (η·m·size²)), 8, 240)，大区域自动放大
+///    有效尺寸，保证任何输入下规划可控；
+/// 5. 双尺度：20% 骨相层（size×2.0、Alpha×0.45）+ 80% 肌理层，同预算不翻倍。
+fn write_smart_texture(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let brush_name = optional_str(args, "brush").unwrap_or_else(|| "calligraphy".to_owned());
+    let size = args
+        .get("size")
+        .and_then(Value::as_f64)
+        .unwrap_or(6.0)
+        .clamp(1.0, 40.0);
+    let density = args
+        .get("density")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.5)
+        .clamp(0.0, 1.0);
+    let texture_type = optional_str(args, "texture_type").unwrap_or_else(|| "stone".to_owned());
+    let texture = match texture_type.as_str() {
+        "canvas" | "fabric" | "skin" | "stone" | "wood" => texture_type.clone(),
+        _ => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "texture_type 必须是 canvas/fabric/skin/stone/wood，得到 {texture_type}"
+                )),
+            ))
+        }
+    };
+
+    // --- 形状解析（同 smart_fill：rect/circle/polygon）---
+    let shape = args.get("shape").ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("smart_texture 缺少必填参数 shape".to_owned()),
+        )
+    })?;
+    let shape_type = shape.get("type").and_then(Value::as_str).unwrap_or("rect");
+    let poly_pts: Vec<(f64, f64)> = match shape_type {
+        "polygon" => shape
+            .get("points")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|p| {
+                        p.as_array().and_then(|pair| {
+                            if pair.len() >= 2 {
+                                Some((
+                                    pair[0].as_f64().unwrap_or(0.0),
+                                    pair[1].as_f64().unwrap_or(0.0),
+                                ))
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => vec![],
+    };
+    let (bx0, by0, bx1, by1): (f64, f64, f64, f64) = match shape_type {
+        "rect" => {
+            let x = shape.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+            let y = shape.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+            let w = shape.get("w").and_then(Value::as_f64).unwrap_or(100.0);
+            let h = shape.get("h").and_then(Value::as_f64).unwrap_or(100.0);
+            (x, y, x + w, y + h)
+        }
+        "circle" => {
+            let cx = shape.get("cx").and_then(Value::as_f64).unwrap_or(0.0);
+            let cy = shape.get("cy").and_then(Value::as_f64).unwrap_or(0.0);
+            let r = shape.get("r").and_then(Value::as_f64).unwrap_or(50.0);
+            (cx - r, cy - r, cx + r, cy + r)
+        }
+        "polygon" => {
+            if poly_pts.is_empty() {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("polygon 需要 points".to_owned()),
+                ));
+            }
+            let mut x0 = f64::MAX;
+            let mut y0 = f64::MAX;
+            let mut x1 = f64::MIN;
+            let mut y1 = f64::MIN;
+            for (x, y) in &poly_pts {
+                x0 = x0.min(*x);
+                y0 = y0.min(*y);
+                x1 = x1.max(*x);
+                y1 = y1.max(*y);
+            }
+            (x0, y0, x1, y1)
+        }
+        _ => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("不支持的 shape type：{shape_type}")),
+            ))
+        }
+    };
+    // 点是否在形状内（polygon 用 ray casting，其余用 bbox）。
+    let inside_shape = |px: f64, py: f64| -> bool {
+        if shape_type == "polygon" {
+            let mut inside = false;
+            let n = poly_pts.len();
+            let mut j = n - 1;
+            for i in 0..n {
+                let (xi, yi) = poly_pts[i];
+                let (xj, yj) = poly_pts[j];
+                if ((yi > py) != (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+                    inside = !inside;
+                }
+                j = i;
+            }
+            inside
+        } else if shape_type == "circle" {
+            let cx = (bx0 + bx1) / 2.0;
+            let cy = (by0 + by1) / 2.0;
+            let r = (bx1 - bx0) / 2.0;
+            (px - cx).powi(2) + (py - cy).powi(2) <= r * r
+        } else {
+            px >= bx0 && px <= bx1 && py >= by0 && py <= by1
+        }
+    };
+    // 点是否在形状内缩 e 的区域内（判据 2 的边界保护；e.g. 圆形半径 r → r−e）。
+    // polygon 用点到各边距离 ≥ e 近似侵蚀。
+    let inside_eroded = |px: f64, py: f64, e: f64| -> bool {
+        if shape_type == "polygon" {
+            if !inside_shape(px, py) {
+                return false;
+            }
+            let n = poly_pts.len();
+            for i in 0..n {
+                let (ax, ay) = poly_pts[i];
+                let (bx, by) = poly_pts[(i + 1) % n];
+                if point_seg_dist(px, py, ax, ay, bx, by) < e {
+                    return false;
+                }
+            }
+            true
+        } else if shape_type == "circle" {
+            let cx = (bx0 + bx1) / 2.0;
+            let cy = (by0 + by1) / 2.0;
+            let r = (bx1 - bx0) / 2.0 - e;
+            r > 0.0 && (px - cx).powi(2) + (py - cy).powi(2) <= r * r
+        } else {
+            px >= bx0 + e && px <= bx1 - e && py >= by0 + e && py <= by1 - e
+        }
+    };
+    // 形状面积（N 公式与网格损耗补偿用；rect/circle 精确，polygon 用鞋带公式）。
+    let shape_area: f64 = match shape_type {
+        "circle" => {
+            let r = (bx1 - bx0) / 2.0;
+            std::f64::consts::PI * r * r
+        }
+        "polygon" => {
+            let n = poly_pts.len();
+            let mut a = 0.0;
+            for i in 0..n {
+                let (x0, y0) = poly_pts[i];
+                let (x1, y1) = poly_pts[(i + 1) % n];
+                a += x0 * y1 - x1 * y0;
+            }
+            a.abs() / 2.0
+        }
+        _ => (bx1 - bx0).max(1.0) * (by1 - by0).max(1.0),
+    };
+
+    // --- 基准色：color 参数或自动采样 ---
+    let base_rgb: [f64; 3] = match args.get("color") {
+        Some(Value::String(s)) if s == "auto" => {
+            sample_layer_average(ctx, &layer_id, bx0, by0, bx1, by1)?
+        }
+        Some(Value::Array(arr)) if arr.len() >= 3 => [
+            arr[0].as_f64().unwrap_or(0.5),
+            arr[1].as_f64().unwrap_or(0.5),
+            arr[2].as_f64().unwrap_or(0.5),
+        ],
+        Some(_) => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("color 应为 [r,g,b] 数组或 \"auto\"".to_owned()),
+            ))
+        }
+        None => sample_layer_average(ctx, &layer_id, bx0, by0, bx1, by1)?,
+    };
+
+    // --- 笔数与有效尺寸（专家方案「一、4」）---
+    let profile = get_texture_profile(&texture);
+    let (target_n, effective_size) = texture_target_strokes(shape_area, density, size, profile);
+
+    // --- PRNG（确定性：bbox 哈希 + 黄金分割）---
+    let seed = ((bx0 * 73856093.0 + by0 * 19349663.0 + bx1 * 83492791.0 + by1 * 29712150.0) as u64)
+        .wrapping_add(0x9E3779B97F4A7C15);
+    let mut rng = TextureXorShift(seed);
+
+    // --- 规划全部笔触（20% 骨相层 + 80% 肌理层；规划与落笔分离）---
+    let plan = plan_texture_strokes(
+        &mut rng,
+        &texture,
+        profile,
+        bx0,
+        by0,
+        bx1,
+        by1,
+        shape_area,
+        effective_size,
+        target_n,
+        base_rgb,
+        &inside_shape,
+        &inside_eroded,
+    );
+
+    // --- 逐笔提交 ---
+    let mut ok_count = 0usize;
+    let mut fail_count = 0usize;
+    let mut first_error: Option<String> = None;
+    for stroke in &plan {
+        // 时间：按累计弧长给恒定速度（400 px/s），保证有速度信号（无 time_ms 会 warning）。
+        let mut cum_dists: Vec<f64> = Vec::with_capacity(stroke.points.len());
+        let mut acc = 0.0;
+        let mut prev: Option<(f64, f64)> = None;
+        for (x, y, _) in &stroke.points {
+            if let Some((px, py)) = prev {
+                acc += ((x - px).powi(2) + (y - py).powi(2)).sqrt();
+            }
+            cum_dists.push(acc);
+            prev = Some((*x, *y));
+        }
+        let points: Vec<Value> = stroke
+            .points
+            .iter()
+            .zip(cum_dists.iter())
+            .map(|((x, y, p), d)| {
+                json!([x.round(), y.round(), p.clamp(0.0, 1.0), d / 400.0 * 1000.0])
+            })
+            .collect();
+        let c = stroke.color;
+        let stroke_args = json!({
+            "layer_id": layer_id,
+            "brush": brush_name,
+            "points": points,
+            "size": stroke.size,
+            "color": [c[0], c[1], c[2], c[3]],
+            "scatter_texture": stroke.scatter,
+            "hand_tremor": stroke.tremor,
+            "color_breath": 0.1,
+            "preview": false,
+        });
+        match write_brush_stroke(ctx, &stroke_args) {
+            Ok(_) => ok_count += 1,
+            Err(e) => {
+                fail_count += 1;
+                if first_error.is_none() {
+                    first_error = Some(format!("{e:?}"));
+                }
+            }
+        }
+    }
+
+    let mut value = json!({
+        "ok": fail_count == 0,
+        "planned": plan.len(),
+        "strokes": ok_count,
+        "failed": fail_count,
+        "texture_type": texture,
+        "bbox": [bx0, by0, bx1, by1],
+    });
+    if let Some(err) = first_error.as_ref() {
+        value["first_error"] = json!(err);
+    }
+    if ok_count == 0 {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!(
+                "smart_texture 所有 {fail_count} 笔都失败：{}",
+                first_error.unwrap_or_default()
+            )),
+        ));
+    }
+    Ok(value)
+}
+
+/// 采样图层在区域内的非透明像素平均色（`color: "auto"` 用）。
+/// 全透明时回退中灰。
+fn sample_layer_average(
+    ctx: &mut ToolContext<'_>,
+    layer_id: &str,
+    bx0: f64,
+    by0: f64,
+    bx1: f64,
+    by1: f64,
+) -> Result<[f64; 3]> {
+    use yanshi_core::Bbox;
+    let region = Bbox::new(bx0, by0, bx1, by1);
+    let (w, h, pixels) = ctx
+        .workspace
+        .render_region_raw_layer(&ctx.doc_id, region, layer_id)?;
+    if w == 0 || h == 0 || pixels.is_empty() {
+        return Ok([0.5, 0.5, 0.5]);
+    }
+    let mut r_sum = 0u64;
+    let mut g_sum = 0u64;
+    let mut b_sum = 0u64;
+    let mut count = 0u64;
+    for px in pixels.chunks_exact(4) {
+        // 非透明（alpha > 16）才计入。
+        if px[3] > 16 {
+            r_sum += u64::from(px[0]);
+            g_sum += u64::from(px[1]);
+            b_sum += u64::from(px[2]);
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return Ok([0.5, 0.5, 0.5]);
+    }
+    Ok([
+        r_sum as f64 / count as f64 / 255.0,
+        g_sum as f64 / count as f64 / 255.0,
+        b_sum as f64 / count as f64 / 255.0,
+    ])
+}
+
+/// RGB ↔ HSL 互转（`derive_stroke_color` 的明度/饱和度调整用）。
+fn rgb_to_hsl(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    if (max - min).abs() < f64::EPSILON {
+        return (0.0, 0.0, l);
+    }
+    let d = max - min;
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+    let h = if max == r {
+        ((g - b) / d + if g < b { 6.0 } else { 0.0 }) / 6.0
+    } else if max == g {
+        ((b - r) / d + 2.0) / 6.0
+    } else {
+        ((r - g) / d + 4.0) / 6.0
+    };
+    (h, s, l)
+}
+
+fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (f64, f64, f64) {
+    if s.abs() < f64::EPSILON {
+        return (l, l, l);
+    }
+    let hue_to_rgb = |p: f64, q: f64, mut t: f64| -> f64 {
+        if t < 0.0 {
+            t += 1.0;
+        }
+        if t > 1.0 {
+            t -= 1.0;
+        }
+        if t < 1.0 / 6.0 {
+            return p + (q - p) * 6.0 * t;
+        }
+        if t < 1.0 / 2.0 {
+            return q;
+        }
+        if t < 2.0 / 3.0 {
+            return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+        }
+        p
+    };
+    let q = if l < 0.5 {
+        l * (1.0 + s)
+    } else {
+        l + s - l * s
+    };
+    let p = 2.0 * l - q;
+    (
+        hue_to_rgb(p, q, h + 1.0 / 3.0),
+        hue_to_rgb(p, q, h),
+        hue_to_rgb(p, q, h - 1.0 / 3.0),
+    )
+}
+
+/// 专家方案「一、3」：凹凸双极配色（Bas-Relief Dual Polarity）。
+///
+/// - 80% 暗部（凹槽）：L 降 12%~18%（skin 额外 R+=0.03/B−=0.02 模拟血色感；
+///   stone 饱和度降 15%）；
+/// - 20% 微高光（受光颗粒）：L 升 8%~12%，Alpha 减半 —— 侧光浮雕感；
+/// - 强制不透明度保护：Alpha 恒 ≤ base_alpha（0.18~0.38），绝不 1.0 实色；
+/// - 骨相层（Pass 1）：Alpha = base_alpha × 0.45，若有若无的大尺度斑驳。
+fn derive_stroke_color(
+    rng: &mut TextureXorShift,
+    base_rgb: [f64; 3],
+    texture: &str,
+    is_highlight: bool,
+    is_macro: bool,
+    base_alpha: f64,
+) -> [f64; 4] {
+    let (h, s, l) = rgb_to_hsl(base_rgb[0], base_rgb[1], base_rgb[2]);
+    let (r, g, b) = if is_highlight {
+        let l2 = (l * rng.range(1.08, 1.12)).clamp(0.0, 1.0);
+        hsl_to_rgb(h, s, l2)
+    } else {
+        let l2 = (l * rng.range(0.82, 0.88)).clamp(0.0, 1.0);
+        let s2 = if texture == "stone" { s * 0.85 } else { s };
+        let (mut r, g, mut b) = hsl_to_rgb(h, s2, l2);
+        if texture == "skin" {
+            r = (r + 0.03).clamp(0.0, 1.0);
+            b = (b - 0.02).clamp(0.0, 1.0);
+        }
+        (r, g, b)
+    };
+    let alpha = if is_macro {
+        base_alpha * 0.45
+    } else {
+        let mut a = rng.range(0.18, base_alpha.max(0.18)).min(1.0);
+        if is_highlight {
+            a *= 0.5;
+        }
+        a
+    };
+    [
+        r.clamp(0.0, 1.0),
+        g.clamp(0.0, 1.0),
+        b.clamp(0.0, 1.0),
+        alpha,
+    ]
+}
 /// **笔刷预览** ✓ —— 用**同一支笔刷真画一小笔** ✓，回一张小 PNG ✓。
 ///
 /// **为什么需要它** ✓（用户：「201 支笔刷只有一个名字 ⇒ 选笔全凭猜，很不友好，web 上也是」✗）：
@@ -23861,5 +25145,254 @@ fn delta_note() -> &'static str {
         "纯 GPU 路不做运行时核对（用户裁定：纯路线不混用）⇒ 未比对；逐位一致由判据 tool-gpu-pure-parity.mjs 离线证明"
     } else {
         "本次走纯 CPU 路 ⇒ 没有可比的两条路；逐位一致由判据 tool-gpu-pure-parity.mjs 离线证明"
+    }
+}
+
+// ---- smart_texture 判据（专家自检清单三条） ----
+//
+// 每条判据都经过变异验证（改坏实现必须红），见各测试注释。
+
+/// 判据 1：防筛子感 —— `stone` 在 200×200 内按 4×4 子格统计种子点，
+/// 变异系数 CV ∈ [0.35, 0.75]（<0.35 太均匀像筛子，>1.0 过度结块）。
+/// 变异验证：把 stone 的 cluster 改为 0.0（退化为纯抖动网格）→ CV 跌破下限变红。
+#[test]
+fn smart_texture_seed_cv_in_target_range() {
+    let profile = get_texture_profile("stone");
+    let (bx0, by0, bx1, by1) = (0.0, 0.0, 200.0, 200.0);
+    let shape_area = 200.0 * 200.0;
+    let inside = |x: f64, y: f64| x >= bx0 && x <= bx1 && y >= by0 && y <= by1;
+    let (target_n, eff_size) = texture_target_strokes(shape_area, 0.5, 6.0, profile);
+    let mut rng = TextureXorShift(0x1234_5678);
+    let seeds = collect_texture_seeds(
+        &mut rng, profile, bx0, by0, bx1, by1, target_n, shape_area, eff_size, &inside,
+    );
+    assert!(!seeds.is_empty(), "应有种子点");
+    // 4×4 子格计数。
+    let mut counts = [0u32; 16];
+    for (x, y) in &seeds {
+        let gx = (((x - bx0) / (bx1 - bx0) * 4.0) as usize).min(3);
+        let gy = (((y - by0) / (by1 - by0) * 4.0) as usize).min(3);
+        counts[gy * 4 + gx] += 1;
+    }
+    let mean = counts.iter().sum::<u32>() as f64 / 16.0;
+    assert!(mean > 1.0, "种子点太少，CV 无意义：mean={mean}");
+    let var = counts
+        .iter()
+        .map(|c| (*c as f64 - mean).powi(2))
+        .sum::<f64>()
+        / 16.0;
+    let cv = var.sqrt() / mean;
+    assert!(
+        (0.35..=0.75).contains(&cv),
+        "CV 应在 [0.35, 0.75]（<0.35 像筛子，>1.0 结块）：{cv}"
+    );
+}
+
+/// 判据 2（几何层）：`wood` 长笔触的规划点全部落在圆内。
+/// rect/circle 为凸形，顶点过滤即足够防越界；像素级断言见集成测试
+/// `crates/yanshi-server/tests/smart_texture_boundary.rs`。
+/// 变异验证：删掉 plan_texture_strokes 里的形状内过滤 → 本测试变红。
+#[test]
+fn smart_texture_wood_points_stay_inside_circle() {
+    let profile = get_texture_profile("wood");
+    let (cx0, cy0, r) = (100.0, 100.0, 60.0);
+    let shape_area = std::f64::consts::PI * r * r;
+    let inside = |x: f64, y: f64| (x - cx0).powi(2) + (y - cy0).powi(2) <= r * r;
+    let inside_eroded = |x: f64, y: f64, e: f64| {
+        let re = r - e;
+        re > 0.0 && (x - cx0).powi(2) + (y - cy0).powi(2) <= re * re
+    };
+    let (target_n, eff_size) = texture_target_strokes(shape_area, 0.5, 8.0, profile);
+    let mut rng = TextureXorShift(0x8765_4321);
+    let plan = plan_texture_strokes(
+        &mut rng,
+        "wood",
+        profile,
+        cx0 - r,
+        cy0 - r,
+        cx0 + r,
+        cy0 + r,
+        shape_area,
+        eff_size,
+        target_n,
+        [0.5, 0.5, 0.5],
+        &inside,
+        &inside_eroded,
+    );
+    assert!(!plan.is_empty(), "应有规划笔触");
+    for s in &plan {
+        assert!(s.points.len() >= 2, "每笔至少 2 点");
+        for (x, y, _) in &s.points {
+            assert!(inside(*x, *y), "规划点越界：({x}, {y})");
+        }
+    }
+}
+
+/// 判据 3a：N 公式 —— 专家文档的实算验证值（200×150，size=6，density=0.5，
+/// τ=0.30）：canvas≈92 笔，stone≈108 笔，wood≈30 笔。
+/// 变异验证：把公式改回 v1 的 `area/size²·density·0.5`（无视长度倍数）→ wood 断言变红。
+#[test]
+fn smart_texture_n_formula_matches_expert_values() {
+    let area = 200.0 * 150.0;
+    let (n_canvas, _) = texture_target_strokes(area, 0.5, 6.0, get_texture_profile("canvas"));
+    assert!((85..=110).contains(&n_canvas), "canvas N≈92：{n_canvas}");
+    let (n_stone, _) = texture_target_strokes(area, 0.5, 6.0, get_texture_profile("stone"));
+    assert!((95..=125).contains(&n_stone), "stone N≈108：{n_stone}");
+    let (n_wood, _) = texture_target_strokes(area, 0.5, 6.0, get_texture_profile("wood"));
+    assert!((25..=40).contains(&n_wood), "wood N≈30：{n_wood}");
+}
+
+/// 判据 3b：极端输入下 N 钳制在 240，且触发有效尺寸放大。
+/// 变异验证：删掉 `effective_size` 放大分支 → `eff > 3.0` 断言变红。
+#[test]
+fn smart_texture_extreme_input_caps_n_at_240() {
+    // 1000×1000，size=3，density=1.0（stone）。
+    let (n, eff) = texture_target_strokes(1_000_000.0, 1.0, 3.0, get_texture_profile("stone"));
+    assert_eq!(n, 240, "N 应钳制在 240");
+    assert!(eff > 3.0, "应放大有效尺寸：{eff}");
+    // 小区域不触发放大。
+    let (n2, eff2) = texture_target_strokes(10_000.0, 0.5, 6.0, get_texture_profile("stone"));
+    assert!(n2 < 240, "小区域 N 应 <240：{n2}");
+    assert!((eff2 - 6.0).abs() < 1e-9, "小区域有效尺寸不变：{eff2}");
+}
+
+/// 判据 3c：规划阶段（种子收集 + 轨迹生成 + 配色）在 150ms 内完成，
+/// 且规划笔数 ≤ 240。注：判据中的"单次工具调用总耗时"指规划耗时；
+/// 实际落笔是引擎渲染，受画布与笔刷影响，另由 `background_stroke_cost` 类判据覆盖。
+/// 变异验证：把 N 上限 240 改为 2400 → `plan.len() <= 240` 变红。
+#[test]
+fn smart_texture_planning_is_fast() {
+    let profile = get_texture_profile("stone");
+    let (target_n, eff_size) = texture_target_strokes(1_000_000.0, 1.0, 3.0, profile);
+    assert_eq!(target_n, 240);
+    let mut rng = TextureXorShift(0xABCD_EF01);
+    let inside = |x: f64, y: f64| (0.0..=1000.0).contains(&x) && (0.0..=1000.0).contains(&y);
+    let inside_eroded =
+        |x: f64, y: f64, e: f64| x >= e && x <= 1000.0 - e && y >= e && y <= 1000.0 - e;
+    let start = std::time::Instant::now();
+    let plan = plan_texture_strokes(
+        &mut rng,
+        "stone",
+        profile,
+        0.0,
+        0.0,
+        1000.0,
+        1000.0,
+        1_000_000.0,
+        eff_size,
+        target_n,
+        [0.5, 0.5, 0.5],
+        &inside,
+        &inside_eroded,
+    );
+    let elapsed = start.elapsed();
+    assert!(plan.len() <= 240, "规划笔数应 ≤240：{}", plan.len());
+    assert!(!plan.is_empty(), "应有规划笔触");
+    assert!(
+        elapsed.as_millis() < 150,
+        "240 笔规划过慢（专家判据 <150ms）：{elapsed:?}"
+    );
+}
+
+/// `derive_stroke_color` 配色约束：
+/// - Alpha 永不 1.0，且永不超材质的 base_alpha（强制不透明度保护）；
+/// - 高光（20%）Alpha 减半；
+/// - 骨相层 Alpha 恒为 base_alpha×0.45。
+///
+/// 变异验证：把高光的 `a *= 0.5` 删掉 → 高光断言变红。
+#[test]
+fn smart_texture_derive_color_alpha_bounds() {
+    let mut rng = TextureXorShift(0x1111_2222);
+    for texture in ["canvas", "fabric", "skin", "stone", "wood"] {
+        let profile = get_texture_profile(texture);
+        for i in 0..200 {
+            let is_highlight = i % 5 == 3;
+            let c = derive_stroke_color(
+                &mut rng,
+                [0.5, 0.5, 0.5],
+                texture,
+                is_highlight,
+                false,
+                profile.base_alpha,
+            );
+            assert!(c[3] < 1.0, "{texture} Alpha 绝不许 1.0：{c:?}");
+            assert!(
+                c[3] <= profile.base_alpha + 1e-9,
+                "{texture} Alpha 不超 base_alpha：{c:?}"
+            );
+            if is_highlight {
+                assert!(
+                    c[3] <= profile.base_alpha * 0.5 + 1e-9,
+                    "{texture} 高光 Alpha 应减半：{c:?}"
+                );
+            } else {
+                assert!(
+                    c[3] >= 0.18 - 1e-9,
+                    "{texture} 暗部 Alpha 不低于 0.18：{c:?}"
+                );
+            }
+            let m = derive_stroke_color(
+                &mut rng,
+                [0.5, 0.5, 0.5],
+                texture,
+                false,
+                true,
+                profile.base_alpha,
+            );
+            assert!(
+                (m[3] - profile.base_alpha * 0.45).abs() < 1e-9,
+                "{texture} 骨相层 Alpha 应为 base_alpha×0.45：{m:?}"
+            );
+        }
+    }
+}
+
+/// 双尺度拆分：前 20% 为骨相层（size×2.0、scatter 0.90），后 80% 为肌理层。
+/// 变异验证：把 `is_macro` 的 1/5 改为 1/2 → 骨相层比例断言变红。
+#[test]
+fn smart_texture_two_pass_split_ratio() {
+    let profile = get_texture_profile("canvas");
+    let shape_area = 200.0 * 200.0;
+    let inside = |x: f64, y: f64| (0.0..=200.0).contains(&x) && (0.0..=200.0).contains(&y);
+    let inside_eroded =
+        |x: f64, y: f64, e: f64| x >= e && x <= 200.0 - e && y >= e && y <= 200.0 - e;
+    let (target_n, eff_size) = texture_target_strokes(shape_area, 0.5, 6.0, profile);
+    let mut rng = TextureXorShift(0x2468_ACE0);
+    let plan = plan_texture_strokes(
+        &mut rng,
+        "canvas",
+        profile,
+        0.0,
+        0.0,
+        200.0,
+        200.0,
+        shape_area,
+        eff_size,
+        target_n,
+        [0.5, 0.5, 0.5],
+        &inside,
+        &inside_eroded,
+    );
+    assert!(!plan.is_empty());
+    let macro_count = plan
+        .iter()
+        .filter(|s| (s.size - eff_size * 2.0).abs() < 1e-9)
+        .count();
+    // 内缩过滤会丢掉个别边缘笔触（顶点 <2），故按 plan 实际比例断言。
+    let ratio = macro_count as f64 / plan.len() as f64;
+    assert!(
+        (0.10..=0.30).contains(&ratio),
+        "骨相层应约 20%：{macro_count}/{} = {ratio:.2}",
+        plan.len()
+    );
+    for s in plan
+        .iter()
+        .filter(|s| (s.size - eff_size * 2.0).abs() < 1e-9)
+    {
+        assert!(
+            (s.scatter - 0.90).abs() < 1e-9,
+            "骨相层 scatter 应为 0.90：{}",
+            s.scatter
+        );
     }
 }

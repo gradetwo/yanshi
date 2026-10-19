@@ -506,6 +506,7 @@ fn effects_document(with_effects: bool) -> DocumentState {
     state.masks.insert(
         "mk".to_owned(),
         yanshi_core::Selection {
+            patches: Default::default(),
             id: "mk".to_owned(),
             shape: json!({"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 1024, "h": 900}}),
             feather: 30.0,

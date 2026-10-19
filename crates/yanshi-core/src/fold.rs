@@ -33,8 +33,8 @@ use crate::error::{ErrorCode, ErrorContext, Result, YanshiError};
 use crate::ids::Seq;
 use crate::log::AtomLog;
 use crate::state::{
-    Checkpoint, DeclareHead, DocumentState, HeadBase, Layer, LayerType, Object, ObjectType,
-    Selection, Style, Transform,
+    Checkpoint, DeclareHead, DocumentState, HeadBase, Layer, LayerType, MaskPatchMeta, MaskPatchOp,
+    Object, ObjectType, Selection, Style, Transform,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -688,6 +688,10 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
                 ));
             }
         }
+        AtomKind::UpdateMask | AtomKind::DeleteMask => {
+            // mask_id 必填；存在性由 `check_auxiliary_refs` 统一检查（无孤儿引用）。
+            required(atom, "mask_id")?;
+        }
         AtomKind::CreateStyle => {
             let style_id = required(atom, "style_id")?;
             if state.styles.contains_key(style_id) {
@@ -1139,6 +1143,35 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
             let mask = parse_selection(atom, mask_id.clone(), blobs);
             state.masks.insert(mask_id, mask);
         }
+        AtomKind::UpdateMask => {
+            let mask_id = required(atom, "mask_id")?.to_owned();
+            let Some(mask) = state.masks.get_mut(&mask_id) else {
+                return Err(missing_error("蒙版", &mask_id, state.masks.keys()));
+            };
+            if mask.is_deleted() {
+                return Err(tombstone_error("蒙版", &mask_id));
+            }
+            let patch = parse_mask_patch(atom.payload.get("patch").unwrap_or(&Value::Null))?;
+            if patch.op == MaskPatchOp::ReplaceAll {
+                // 快照截断：之前的增量链不再需要重放（blob 仍留在原子日志里供撤销）。
+                mask.patches.clear();
+            }
+            // blob 进生命周期引用（导出/GC 可见）；patches 里另有合成元数据。
+            for blob in &blobs {
+                if !mask.blobs.contains(blob) {
+                    mask.blobs.push(blob.clone());
+                }
+            }
+            mask.patches.push(patch);
+        }
+        AtomKind::DeleteMask => {
+            let mask_id = required(atom, "mask_id")?.to_owned();
+            let Some(mask) = state.masks.get_mut(&mask_id) else {
+                return Err(missing_error("蒙版", &mask_id, state.masks.keys()));
+            };
+            // Tombstone：不清空 blobs/patches，撤销时可无损回退。
+            mask.deleted_by = Some(atom.id.clone());
+        }
         AtomKind::CreateStyle => {
             let style_id = required(atom, "style_id")?.to_owned();
             let style = Style {
@@ -1463,9 +1496,51 @@ fn parse_selection(atom: &Atom, id: String, blobs: Vec<crate::atom::BlobHash>) -
         linked_layer: payload_str(&atom.payload, "linked_layer").map(str::to_owned),
         refined_edges: payload_bool(&atom.payload, "refined_edges").unwrap_or(false),
         blobs,
+        patches: Vec::new(),
         created_by: atom.id.clone(),
         deleted_by: None,
     }
+}
+
+/// 解析 `UpdateMask` 原子 payload 里的 `patch` 对象。
+///
+/// 缺字段/非法值直接报错（不静默降级：坏 patch 进链会导致渲染期跳过，
+/// 调用方应立刻知道）。
+fn parse_mask_patch(value: &Value) -> Result<MaskPatchMeta> {
+    let bad =
+        |detail: &str| YanshiError::new(ErrorCode::InvalidArgument, ErrorContext::detail(detail));
+    let bbox_array = value
+        .get("bbox")
+        .and_then(Value::as_array)
+        .ok_or_else(|| bad("UpdateMask 的 patch 缺少 bbox（[x, y, w, h]）"))?;
+    if bbox_array.len() != 4 {
+        return Err(bad("UpdateMask 的 patch.bbox 必须是 4 元组"));
+    }
+    let mut bbox = [0i32; 4];
+    for (i, item) in bbox_array.iter().enumerate() {
+        bbox[i] =
+            item.as_i64()
+                .ok_or_else(|| bad("UpdateMask 的 patch.bbox 元素必须是整数"))? as i32;
+    }
+    let target_u8 = value
+        .get("target_u8")
+        .and_then(Value::as_u64)
+        .and_then(|v| u8::try_from(v).ok())
+        .ok_or_else(|| bad("UpdateMask 的 patch 缺少 target_u8（0..255）"))?;
+    let op: MaskPatchOp =
+        serde_json::from_value(value.get("op").cloned().unwrap_or(Value::Null))
+            .map_err(|_| bad("UpdateMask 的 patch.op 非法（lerp_deposit / replace_all）"))?;
+    let blob: crate::atom::BlobHash = value
+        .get("blob")
+        .and_then(Value::as_str)
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| bad("UpdateMask 的 patch 缺少合法 blob 哈希"))?;
+    Ok(MaskPatchMeta {
+        bbox,
+        target_u8,
+        op,
+        blob,
+    })
 }
 
 fn supersede_object(

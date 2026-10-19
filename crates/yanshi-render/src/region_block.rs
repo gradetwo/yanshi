@@ -280,7 +280,8 @@ pub fn region_fingerprint(state: &yanshi_core::DocumentState) -> u64 {
         l.clipping_mask.hash(&mut h);
         l.mask_id.hash(&mut h);
         if let Some(mask) = l.mask_id.as_deref().and_then(|m| state.masks.get(m)) {
-            format!("{mask:?}").hash(&mut h);
+            // 蒙版位图化后 `Debug` 字符串会爆炸 ⇒ 用结构化指纹。
+            mask.hash_fingerprint(&mut h);
         }
         let mut objs: Vec<String> = state
             .objects
