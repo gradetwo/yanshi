@@ -186,8 +186,16 @@ impl SelectionShape {
     }
 
     /// 解析几何部分。
+    ///
+    /// Q2 schema 统一：`kind` 与 `type` 兼容读取（`smart_*` 用 `type`），
+    /// `circle` 与 `ellipse` 视为同义词。
     fn parse_geom(value: &Value) -> SelectionGeom {
-        let Some(kind) = value.get("kind").and_then(Value::as_str) else {
+        let Some(kind) = value
+            .get("kind")
+            .or_else(|| value.get("type"))
+            .and_then(Value::as_str)
+            .map(|k| if k == "circle" { "ellipse" } else { k })
+        else {
             return SelectionGeom::CoverAll;
         };
         match kind {
@@ -1953,5 +1961,37 @@ mod tests {
         let after = SelectionShape::from_value(&shape);
         let c = after.coverage(10.0, 10.0);
         assert!((c - 200.0 / 255.0).abs() < 1e-6, "注册后应查到表，实际 {c}");
+    }
+    // ========== Q2：shape schema 统一 ==========
+
+    #[test]
+    fn q2_kind_type_compat() {
+        // `type` 应与 `kind` 等价（smart_* 用 type）。
+        let via_kind = SelectionShape::from_value(
+            &json!({"kind": "rect", "x": 0.0, "y": 0.0, "w": 10.0, "h": 10.0}),
+        );
+        let via_type = SelectionShape::from_value(
+            &json!({"type": "rect", "x": 0.0, "y": 0.0, "w": 10.0, "h": 10.0}),
+        );
+        // 两者都应解析为 Rect（coverage 在中心为 1）。
+        assert!((via_kind.coverage(5.0, 5.0) - 1.0).abs() < 1e-6);
+        assert!((via_type.coverage(5.0, 5.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn q2_circle_ellipse_synonym() {
+        // `circle` 应视为 `ellipse` 同义词。
+        let circle = SelectionShape::from_value(
+            &json!({"kind": "circle", "x": 0.0, "y": 0.0, "w": 10.0, "h": 10.0}),
+        );
+        let ellipse = SelectionShape::from_value(
+            &json!({"kind": "ellipse", "x": 0.0, "y": 0.0, "w": 10.0, "h": 10.0}),
+        );
+        // 中心覆盖率应一致。
+        let c1 = circle.coverage(5.0, 5.0);
+        let c2 = ellipse.coverage(5.0, 5.0);
+        assert!((c1 - c2).abs() < 1e-6, "circle={c1} ellipse={c2}");
+        // 中心都应为 1。
+        assert!((c1 - 1.0).abs() < 1e-6);
     }
 }

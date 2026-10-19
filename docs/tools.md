@@ -21,14 +21,14 @@ canvas. Two stale claims were corrected rather than left to mislead: draw_text's
 item while it renders Chinese today, and this file said convert_to_shape, convert_to_path, split, merge and boolean
 were refused because no path model existed, which stopped being true when the path object model landed.
 
-The tool layer registers **108 core tools**, and with every implemented group enabled there are **166 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
+The tool layer registers **108 core tools**, and with every implemented group enabled there are **168 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
 
 > **完整工具列表**：本文档是散文式概述，不逐个列出全部工具。完整、实时的工具目录（含参数表）由注册表生成，见 `GET /api/tools` 或 MCP 的 `tools/list`。
 
-> **注意这里有两套口径，别混**：上面那两个数字（108 / 166）是**工具注册表**里的条目数，由
+> **注意这里有两套口径，别混**：上面那两个数字（108 / 168）是**工具注册表**里的条目数，由
 > `tool_inventory.rs` 断言。而 **HTTP 面**（`GET /api/tools`）会按启用的 profile 展开，实测是
-> **178 个**（**第 1186 轮实测** `GET /api/tools`（补丁 +3 工具后）；`scripts/tool-surface-coverage.mjs` 对账 `docs/guide.md` 用的就是这个数）。
-> 一个工具可能同时在多个 profile 里注册，所以 178 > 166 不是重复注册的 bug ✓。
+> **180 个**（**第 1188 轮实测** `GET /api/tools`（yanshi-gaps 补丁 +2 工具后）；`scripts/tool-surface-coverage.mjs` 对账 `docs/guide.md` 用的就是这个数）。
+> 一个工具可能同时在多个 profile 里注册，所以 180 > 168 不是重复注册的 bug ✓。
 (`analyze_image`, `inpaint_region`, `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke`,
 `apply_style_transfer`) is **reserved but not implemented** by the project owner's decision - the provider
 seam and the guarantees it owes are written down in [semantic-tools.md](semantic-tools.md), and no code,
@@ -544,6 +544,12 @@ liquify_pinch (contracts; a negative strength expands).
 
 Masks take a `shape` of `rect`, `ellipse` or `polygon`, with `feather`.
 
+**Q2 互通**：`create_mask` 新增可选 `from_selection`（从选区建蒙版），`create_selection`
+新增可选 `from_mask`（从蒙版建选区）；`paint_mask` 的 `mask_id` 可接受选区 ID（双表寻址）；
+shape 解析时 `kind`/`type` 兼容、`circle`/`ellipse` 视为同义词。
+
+**Q4**：全部 smart_* 工具新增可选 `clip_to_selection` 参数（选区 ID），落笔前先与选区求交。
+
 ## Storage maintenance
 
 `collect_garbage` runs the design's orphan collection (6.3): the root set is the whole log's
@@ -585,6 +591,8 @@ abort on a single failure), `reject_suggestion` (records the reason) and `list_s
 | `create_selection` | 创建选区（`shape` + `feather` + `invert` + `mode`：`new`/`add`/`subtract`/`intersect`），**约束之后新落笔的像素范围**；`linked_layer` 可只约束某图层 |
 | `delete_selection` | 删除选区（tombstone）：删除后落笔不再受约束，**已画内容保持不变** |
 | `list_selections` | 列出选区（设计 4.4 的 `shape/feather/mode/invert/linked_layer/refined_edges`）|
+| `transform_selection` | **Q1 新增**：变换选区（`translate`/`scale`/`rotate_deg`/`pivot`）。纯几何选区在 JSON 几何层精确变换（旋转时 rect/ellipse 转 polygon）；位图选区用逆矩阵双线性重采样 |
+| `select_opaque_pixels` | **Q1 新增**：从图层不透明像素创建选区（`layer_id` + `min_alpha` + `binarize` + `close_pinholes`），复用 smart_select 的针孔闭合 |
 
 设计只给了选区的**数据模型**与类型清单 ✓、未规定它对落笔的作用 ✗；用户确认采用
 **路线 A「约束落笔」**（只影响新落笔、不改写已有内容、可撤销 ✓），已记入 implementation-notes。

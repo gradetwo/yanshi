@@ -296,6 +296,8 @@ pub enum AtomKind {
     CreateObject,
     /// 创建选区。
     CreateSelection,
+    /// 更新选区（`transform_selection`：原地改 shape/feather/invert，不改 id 与 mode）。
+    UpdateSelection,
     /// 创建蒙版。
     CreateMask,
     /// 蒙版画笔/擦除增量更新（位图 patch）。
@@ -376,6 +378,7 @@ impl AtomKind {
             Self::CreateLayer => "create_layer",
             Self::CreateObject => "create_object",
             Self::CreateSelection => "create_selection",
+            Self::UpdateSelection => "update_selection",
             Self::CreateMask => "create_mask",
             Self::UpdateMask => "update_mask",
             Self::DeleteMask => "delete_mask",

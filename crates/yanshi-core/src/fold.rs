@@ -700,6 +700,10 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
             // mask_id 必填；存在性由 `check_auxiliary_refs` 统一检查（无孤儿引用）。
             required(atom, "mask_id")?;
         }
+        AtomKind::UpdateSelection => {
+            // selection_id 必填；存在性由 `check_auxiliary_refs` 统一检查（无孤儿引用）。
+            required(atom, "selection_id")?;
+        }
         AtomKind::CreateStyle => {
             let style_id = required(atom, "style_id")?;
             if state.styles.contains_key(style_id) {
@@ -777,6 +781,11 @@ fn check_auxiliary_refs(state: &DocumentState, atom: &Atom) -> Result<()> {
     for (key, id) in checks {
         let alive = match key {
             "style_id" => state.styles.get(id).is_some_and(|s| !s.is_deleted()),
+            // Q2 双表：`UpdateMask` 的 mask_id 允许指向选区（paint_mask 修整选区）。
+            "mask_id" if atom.kind == AtomKind::UpdateMask => {
+                state.masks.get(id).is_some_and(|m| !m.is_deleted())
+                    || state.selections.get(id).is_some_and(|s| !s.is_deleted())
+            }
             "mask_id" => state.masks.get(id).is_some_and(|m| !m.is_deleted()),
             "parent_id" | "layer_id" => state.layer_alive(id),
             _ => true,
@@ -1151,9 +1160,43 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
             let mask = parse_selection(atom, mask_id.clone(), blobs);
             state.masks.insert(mask_id, mask);
         }
+        AtomKind::UpdateSelection => {
+            // Q1 `transform_selection`：原地更新 shape/feather/invert，不改 id/mode/patches。
+            let selection_id = required(atom, "selection_id")?.to_owned();
+            let Some(sel) = state.selections.get_mut(&selection_id) else {
+                return Err(missing_error(
+                    "选区",
+                    &selection_id,
+                    state.selections.keys(),
+                ));
+            };
+            if sel.is_deleted() {
+                return Err(tombstone_error("选区", &selection_id));
+            }
+            if let Some(shape) = atom.payload.get("shape") {
+                sel.shape = shape.clone();
+            }
+            if let Some(feather) = atom.payload.get("feather").and_then(Value::as_f64) {
+                sel.feather = feather;
+            }
+            if let Some(invert) = atom.payload.get("invert").and_then(Value::as_bool) {
+                sel.invert = invert;
+            }
+            for blob in &blobs {
+                if !sel.blobs.contains(blob) {
+                    sel.blobs.push(blob.clone());
+                }
+            }
+        }
         AtomKind::UpdateMask => {
             let mask_id = required(atom, "mask_id")?.to_owned();
-            let Some(mask) = state.masks.get_mut(&mask_id) else {
+            // Q2 双表寻址：蒙版表优先，选区表次之（`paint_mask` 可直接修整选区边缘，
+            // 即 Photoshop 的「快速蒙版」语义；`Mask = Selection` 同构体故可复用）。
+            let mask = if let Some(m) = state.masks.get_mut(&mask_id) {
+                m
+            } else if let Some(s) = state.selections.get_mut(&mask_id) {
+                s
+            } else {
                 return Err(missing_error("蒙版", &mask_id, state.masks.keys()));
             };
             if mask.is_deleted() {
@@ -1504,7 +1547,13 @@ fn parse_selection(atom: &Atom, id: String, blobs: Vec<crate::atom::BlobHash>) -
         linked_layer: payload_str(&atom.payload, "linked_layer").map(str::to_owned),
         refined_edges: payload_bool(&atom.payload, "refined_edges").unwrap_or(false),
         blobs,
-        patches: Vec::new(),
+        // Q2：`create_mask(from_selection)` / `create_selection(from_mask)` 互转时
+        // 携带位图增量链（`paint_mask` 的 patches）。
+        patches: atom
+            .payload
+            .get("patches")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default(),
         created_by: atom.id.clone(),
         deleted_by: None,
     }
