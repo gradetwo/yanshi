@@ -672,10 +672,18 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
         }
         AtomKind::CreateSelection => {
             let selection_id = required(atom, "selection_id")?;
-            if state.selections.contains_key(selection_id) {
+            // **`mode != "new"` 时允许已存在**（外部 `E1027`，第 773 轮）：`add`/`subtract`/`intersect`
+            // 的语义就是「改一个已有的选区」⇒ 若这里一律拒绝，那三个值永远不可达（死参数）。
+            // ⇒ 只有 `new`（缺省）才要求 id 未占用。
+            let mode = atom
+                .payload
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("new");
+            if mode == "new" && state.selections.contains_key(selection_id) {
                 return Err(err(
                     ErrorCode::PreconditionFailed,
-                    format!("选区 {selection_id} 已存在"),
+                    format!("选区 {selection_id} 已存在（要改它请传 mode=add/subtract/intersect）"),
                 ));
             }
         }

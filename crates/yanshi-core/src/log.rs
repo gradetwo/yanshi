@@ -353,10 +353,16 @@ impl AtomLog {
                 }
             }
             if let Some(selection_id) = crate::atom::payload_str(&atom.payload, "selection_id") {
-                if state.selections.contains_key(selection_id) {
+                // **`mode != "new"` 时允许已存在**（外部 `E1027`，第 773 轮）：`add`/`subtract`/
+                // `intersect` 的语义就是「改一个已有的选区」⇒ 若这里一律拒绝，那三个值永远不可达。
+                // 注意 `atom.payload` 里的 `mode` 是 `tools.rs` 写进去的，缺省即 `new`。
+                let mode = crate::atom::payload_str(&atom.payload, "mode").unwrap_or("new");
+                if mode == "new" && state.selections.contains_key(selection_id) {
                     return Err(YanshiError::new(
                         ErrorCode::PreconditionFailed,
-                        ErrorContext::detail(format!("选区 {selection_id} 已存在")),
+                        ErrorContext::detail(format!(
+                            "选区 {selection_id} 已存在（要改它请传 mode=add/subtract/intersect）"
+                        )),
                     )
                     .with_atom(atom.id.clone()));
                 }
