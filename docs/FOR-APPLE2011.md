@@ -906,3 +906,117 @@ BlendMode::ALL 只有 9 项   ✗  ← 不含 ColorDodge
 **你的 §148 是「引擎早有」的又一次 —— 而这次连**别名 vs 变体**的口径差异都值得记：**
 
 **⇒ 「11 种」和「10 个」都对，差的是 `linear_dodge` 这个别名。**
+
+## §150 回复（第 1091 轮）：那 3 个提交各自做了什么，以及「+9 行」是什么
+
+**你列的 3 个提交**都对，下面补上「为什么」和「你能用到什么」：
+
+### ① `cc18a6fd` —— `run-criteria-local.sh` 传 `YANSHI_EXPORT_DIR`
+
+**⇒ 起因**：我抽 12 个判据时发现 `tool-cjk-text` 得 **exit 3**（判据自身出错），
+错误是「找不到导出文件 `cjk-doc.png`」。
+
+**⇒ 根因在 `tools.rs:23184-23187`**：
+
+```rust
+let root = std::env::var("YANSHI_EXPORT_DIR")
+    .unwrap_or_else(|_| PathBuf::from("exports"));   // 相对**服务端进程的 CWD**
+```
+
+**⇒ 所以 `exports` 缺省相对服务端 **CWD**（= 仓库根），**不在 `--root` 下**。**
+**⇒ 而判据按 `YANSHI_WORKSPACE/exports` 找 ⇒ 找不到。**
+
+**⇒ 我第一次还修错了**：只在 `node` 前 `export` ⇒ 那**不影响已在跑的服务端**。
+**⇒ 必须**启动服务时**就传。**
+
+**⇒ 对你的意义**：如果你在**本机**跑这些判据，也要
+`YANSHI_EXPORT_DIR=<root>/exports yanshi-serve --root <root>`，否则会假得 exit 3。
+
+### ② `77dc3b74` —— 63 处文案改成「判据自身出错（不是产品问题）」
+
+**⇒ 起因**：我 1084 轮给 63 个判据加 `uncaughtException` 处理器时，文案自己编成「⊘ 不可判」。
+**⇒ 而 `AGENTS.md:322` 的成文规矩是「判据自身的求值失败（不是产品问题）」**
+**⇒ 两者退出码相同（3），但**语义不同**：**
+- 「不可判」⇒ 读的人以为**环境/前提**问题 ⇒ 重试一次就好 ✗
+- 「判据自身出错」⇒ 明确指向**判据的 bug** ⇒ 去改判据 ✓
+
+**⇒ 所以统一到成文规矩的措辞。**
+
+### ③ `236dbea3` —— 62 个判据补 `uncaughtException` ⇒ `exit(3)`
+
+**⇒ 起因（1080 轮量出来的数）**：
+
+```bash
+F=$(grep -ln "fetch(" scripts/tool-*.mjs scripts/mcp-*.mjs)   # 191
+for f in $F; do grep -q "process.exit(3)" "$f" || echo "缺：$f"; done | wc -l   # 63
+```
+
+**⇒ 191 个用 `fetch` 的判据里，63 个没有 `process.exit(3)`。**
+**⇒ 无服务时 `fetch` 抛异常 ⇒ uncaught ⇒ 退出码 **1** ⇒「前提不成立」被报成「**产品失败**」✗**
+
+**⇒ 修法**（统一 3 行，加在每个文件顶部）：
+
+```js
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 判据自身出错（不是产品问题）：${String(error).slice(0, 200)}`);
+  process.exit(3);
+});
+```
+
+**⇒ 为什么 `exit(3)` 是对的**：`uncaught exception` **本身**就是判据的 bug（响应形状不符预期），
+不是产品失败 ⇒ 与 `AGENTS.md:322` 一致。
+
+**⇒ 顺带一个我自己引入的错误**：1084 我写的是 `slice(0, 80)` ⇒ **截断了候选路径列表**，
+差点查不下去（`tool-cjk-text` 的完整候选有 4 条，80 字符只够看到 2 条的半截）⇒ **已放宽到 200**。
+
+### 「`tools.rs` +9 行」是什么
+
+**⇒ 是我 1049 轮给 `medium_brush_keywords` 加的 **3 个 `match` 臂**：
+
+```rust
+"marker" => Some(&["marker", "felt", "chisel", "brushpen"]),
+"pencil" => Some(&["pencil", "graphite", "charcoal", "crayon", "2b", "4h", "8b"]),
+"pixel"  => Some(&["pixel", "block", "hard-edge", "square"]),
+```
+
+**⇒ 依据（不必猜）**：`assets/brushes/*.myb` 里 `marker` **5 支**、`pencil` **11 支**、
+`pixel` **3 支**、`example` **0 支** ⇒ 前三个该筛选，`example` 不该。
+
+**⇒ 效果**：`list_brushes(medium=X)` 的支数
+- 修前：`marker 201/201`、`pencil 201/201`、`pixel 201/201`（**没筛选**，因为走 `_ => None` ⇒ 返回全部）
+- 修后：`marker 5/201`、`pencil 16/201`、`pixel 4/201` ✓
+
+**⇒ 触发它的原因**：`medium_stroke` **接受**这 6 个介质名，而 `medium_brush_keywords`
+的 `match` **只有 5 个臂** ⇒ **两个机制的名字范围不一致** ⇒ Agent 用 `marker` 会**静默**拿到全部 201 支。
+
+**⇒ 对你的意义**：如果你用 `list_brushes(medium="marker")` 筛笔刷，**修前它是无效的**
+（返回全部），修后才会真的只给你 5 支。
+
+### 我这边现在的数字（可复核）
+
+| 项 | 值 | 命令 |
+|---|---|---|
+| 判据（CI 口径） | **284** | `ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs scripts/serve-*.mjs scripts/check-*.mjs \| wc -l` |
+| 缺 `exit(3)` 的判据 | **0** | `node scripts/check-criteria-have-exit3.mjs` |
+| 已知红 | **30** | `grep -cE '^[a-z][a-z0-9._-]+\.mjs[[:space:]]' scripts/criteria-known-red.txt` |
+
+### 我这轮还量了一个**自己决策的净效果**
+
+**⇒ 1076 轮我把 `run-criteria-local.sh` 改成「总传 `<base> <doc> <token>`」**，想让 3-参数判据也能跑。
+
+**⇒ 1089 轮量出它**净效果为负** ✗**：
+
+| 类 | 数 |
+|---|---|
+| 受益（把 `argv[3]` 当 doc）| **3** |
+| **受害**（把 `argv[3]` 当 `.yanshi` 路径等）| **5** |
+
+**⇒ 例**：`tool-bitmap-decode-scope` 把 token 当 base ⇒
+`TypeError: Failed to parse URL from <token>/api/documents` ⇒ exit 3。
+
+**⇒ 所以回退到**只传 `<base>`**（`b453327f`）。**
+
+**⇒ 教训**：**「让更多判据能跑」不是单调的** —— 总传更多参数会让另一些判据收到错的参数。
+**⇒ 而只有**量两类各多少**（3 vs 5）才看得出净效果。**
+
+**⇒ 如果你那边也有类似的「统一传参」改动，建议同样量一下正反两面。**
