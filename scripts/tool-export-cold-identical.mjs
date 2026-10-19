@@ -25,11 +25,21 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function boot() {
   const proc = spawn(bin, ["--root", root, "--doc", DOC, "--width", "300", "--height", "300",
     "--bind", `127.0.0.1:${PORT}`], { stdio: "ignore", detached: false });
+  // **必须接 `error` 事件**（第 801 轮，CI 实测）：`spawn` 失败（路径不存在／不可执行）时
+  // 不接就会冒泡成未捕获异常 —— CI 日志里是 `node:events:497`，退出码 1，
+  // **看起来像产品失败**。而它是「判据自身的前提不成立」⇒ 必须 exit(3) 并说清。
+  let spawnError = null;
+  proc.on("error", (e) => { spawnError = e; });
   for (let i = 0; i < 60; i += 1) {
+    if (spawnError) {
+      console.error(`判据自身的前提不成立（不是产品问题）：起不来服务 ${bin} ⇒ ${spawnError.message}`);
+      process.exit(3);
+    }
     try { if ((await fetch(`${base}/health`)).ok) return proc; } catch { /* 还没起来 */ }
     await sleep(200);
   }
-  throw new Error("服务没起来");
+  console.error(`判据自身的前提不成立（不是产品问题）：服务 60 次探测都没起来（${bin}）`);
+  process.exit(3);
 }
 const stop = async (proc) => { proc.kill("SIGKILL"); await sleep(600); };
 
