@@ -1744,6 +1744,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "**纯几何矢量笔迹**（几何插值、实心、**无笔刷物理** ✗）：data.color 支持 [r,g,b,a] 0-1 线性 / 0-255 字节、{r,g,b,a}、#RRGGBB。                  想要笔毛 / 干湿 / 压感的笔触 ⇒ 用 brush_stroke（.myb）或 medium_stroke（介质插件）。                  **每条笔触只作用于它自己的图层** ✓：跨图层只是普通叠加；介质的湿搅 / 混色**不跨图层** ✓（先把底下那层画完，或用同一层叠 ✓）。",
         mutating: true,
         params: &[
+            param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
             param!("layer_id", String, true, "目标图层"),
             param!(
                 "data",
@@ -1789,6 +1790,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "绘制形状（矩形/椭圆/多边形，可描边）",
         mutating: true,
         params: &[
+            param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
             param!("layer_id", String, true, "目标图层"),
             param!(
                 "data",
@@ -1817,6 +1819,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "绘制文本对象（内核用内置位图字体光栅化；ASCII 与常用 CJK 都能画）",
         mutating: true,
         params: &[
+            param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
             param!("layer_id", String, true, "目标图层"),
             param!(
                 "data",
@@ -1836,6 +1839,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "用纯色填充：颜色与区域**都放在 `data` 里** ⇒ `data:{color, region:{x,y,w,h}}`，或 `data:{color, object_id}` 只填某个对象；要画纯色矩形也可以用 `draw_shape`（kind=rect）✓",
         mutating: true,
         params: &[
+            param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
             param!("layer_id", String, true, "目标图层"),
             param!("data", Object, true, "{color,region|object_id}"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
@@ -1847,6 +1851,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "擦除（对象新版本或区域擦除）",
         mutating: true,
         params: &[
+            param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
             param!("layer_id", String, true, "目标图层"),
             param!("data", Object, true, "{region,hardness,opacity}"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
@@ -6630,6 +6635,9 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 }
 
 fn write_draw(ctx: &mut ToolContext<'_>, args: &Value, kind: AtomKind) -> Result<Value> {
+    // **笔迹标签**（外部 §113 清单第 2 项：`fill` 出错同样难查）⇒ 这条路（画/填/擦）都收 `label`，
+    // 由 `commit` 取走写进原子 ✓。`brush_stroke` 走 `write_import_image`，在那边单独设。
+    ctx.pending_label = optional_str(args, "label");
     let layer_id = require_str(args, "layer_id")?;
     // 空点列会提交一个无意义的原子（审计发现的静默接受）。
     require_non_empty_points(args)?;
