@@ -30,6 +30,25 @@ const TOOLS_RS = "crates/yanshi-server/src/tools.rs";
 let bad = 0;
 const fail = (message) => { bad += 1; console.log("  ✗ " + message); };
 
+// **二进制新鲜度检查** ✓（第 514 轮实测）：判据用 `--list-tools` 读的是 **已编好的** 二进制，
+// 若它比 `tools.rs` 旧，判据会读到**过期**的工具清单 —— 我为此连续误判三轮（89 vs 90）。
+// ⇒ 过期就用**退出码 3** 报出来（与"产品失败"区分开 ✓）。
+{
+  const { statSync } = await import("node:fs");
+  try {
+    const binMs = statSync(MCP_BIN).mtimeMs;
+    const srcMs = statSync(TOOLS_RS).mtimeMs;
+    if (binMs < srcMs) {
+      console.error(`  ✗ 判据自身的二进制过期（不是产品问题）：${MCP_BIN} 比 ${TOOLS_RS} 旧`);
+      console.error(`  ⇒ 先 cargo build -p yanshi-mcp 再跑本判据`);
+      process.exit(3);
+    }
+  } catch (error) {
+    console.error(`  ✗ 判据自身的前提不成立（找不到二进制或源码）：${error.message}`);
+    process.exit(3);
+  }
+}
+
 const toolsFor = (profiles) => {
   const out = execFileSync(MCP_BIN, ["--list-tools", "--profiles", profiles.join(",")],
     { encoding: "utf8", timeout: 120000 });
