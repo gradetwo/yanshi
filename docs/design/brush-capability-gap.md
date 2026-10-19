@@ -11293,3 +11293,53 @@ value["read_canvas_effective"] = json!(false);
 | **③ 不同源** ✓ | **∴ `GET /api/documents` vs `paint_brush`** ✓ |
 
 **∴ 本轮产出的那个数字 ✓**：**§89** 给出**一条**通用原则**✗**：**∴ 「**测量工具要先被测量**」**✗** ⇒ **∴ 而**它**在**我**这侧**✗ 的**三个**实例**✗**（**∴ 写死／抛错不说／不同源 ✓**）⇒ **∴ 已**进 `AGENTS.md` ✗** ✓
+
+## 二百七十九、★★★ 《青溪借火》复测包（`QX-*`）逐项核实 ✓
+
+### 279.1 包的性质与基线 ✓
+
+```
+**∴ 包**✗**：`Yanshi-Qingxi-Jiehuo-Storybook-20261018.zip`（**∴ 38.6 MB ✓**）
+**∴ 内容**✗：**21 页连环画**✗（**∴ 20 页正文 ＋ 1 封面 ✓**）⇒ **∴ 而**问题清单在 `issues/`**✗**
+**∴ 基线**✗**：`f5dd9a7c`**✗（**∴ 0.2.2 ✓**）｜**∴ `counts`**✗：`confirmed_defects 2｜feature_gaps 2｜creator_requests 2｜confirmed_fixed_this_scope 0` ✓
+**∴ 环境**✗**：**macOS arm64**✗／CPU／**156 个工具**✗／`test_policy: No repo test/criteria scripts used` ✓
+```
+
+### 279.2 ★★ `QX-D01` —— **已在 `f5dd9a7c` 之后修掉** ✓
+
+```
+**∴ `git show f5dd9a7c:tools.rs`**✗ ⇒ **∴ 有**✗**：`"ignored_settings": ["elliptical_dab_ratio", "elliptical_dab_angle"]`**✓**
+⇒ **∴ 所以**：**∴ 他们**报得**对**✗**（**∴ 那个版本**确实声明 `ignored` ✓**）
+**∴ 而**修**✗ 是 `52608def`**✗ 加 `734af10d`**✗ 之后**✗** ⇒ **∴ 现在**✗**：
+   `"supported": ["circle","ellipse"]` ＋ `"verified_settings": ["elliptical_dab_ratio","elliptical_dab_angle"]`
+   ＋ `"unverified_settings": []`**✓**
+**∴ 而** `f5dd9a7c` 之后**已有 176 笔**✗** ⇒ **∴ 所以**他们**测的是**旧版**✗** ✓✓
+```
+
+### 279.3 ★★ `QX-D02` —— **同上，已修** ✓
+
+```
+**∴ `git show f5dd9a7c:viewer-app.js`**✗ ⇒ **∴ `innerHeight - 96` 出现 1 次**✗｜`真实画布宿主` 出现 **0 次**✗
+⇒ **∴ 而**修是 `734af10d`**✗**：**`fix(viewer): 适配的可用高度改用真实画布宿主，而不是 innerHeight-96（外部复测 QY-D04）`**✓
+**∴ 现在**✗ 三级回退**✗**：① 画布宿主 `clientHeight` ② `main.clientHeight` ③ `innerHeight-96`（**最终兜底 ✓**）✓
+```
+
+### 279.4 两项真缺口 ＋ 两项需求 ✓
+
+| ID | 判定 |
+|---|---|
+| **`QX-G01`** 批量试笔不给 stdio Agent 图片 ✓ | **∴ 真缺口**✗（**∴ `swatch` 只给 URL／`resources/read` 返回 `-32601` ✓**）|
+| **`QX-G02`** 多页书册编排＋整册 PDF ✓ | **∴ 真缺口**✗（**∴ 体量大，需先设计 ✓**）|
+| **`QX-R01`** 整册文字版式预检 | **∴ 需求**，**非缺陷** |
+| **`QX-R02`** 角色连续性校对视图 | **∴ 需求**，**非缺陷** |
+
+### 279.5 ∴ 而**他们方法论上值得记的两点** ✓
+
+```
+**∴ ①** 他们**明确写**✗**：`confirmed_fixed_this_scope: 0`**✗ ＋「**本批未确认修复项，不表示此前所有问题均未修**」**
+   ⇒ **∴ 那是**防我误读**✗** ✓
+**∴ ②** `test_policy: No repo test/criteria scripts used`**✗** ⇒ **∴ 他们**只用**真实创作流程**✗ 验证**✗**
+   ⇒ **∴ 所以**他们**的**发现**✗ 不**依赖**我的**判据**✗** ✓✓
+```
+
+**∴ 本轮产出的数字 ✓**：**`QX-D01`／`QX-D02`** 在 `f5dd9a7c` **里**确实**是坏的**✗（**∴ `git show` 逐字命中 ✓**）⇒ **∴ 而**修**✗ 在**之后**（**∴ 176 笔 ✓**）⇒ **∴ 所以**两项**已修**✗**；**∴ 剩** 2 项真缺口**✗ ＋ 2 项需求**✗** ✓
