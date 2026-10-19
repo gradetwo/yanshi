@@ -575,3 +575,29 @@ node scripts/tool-stroke-log-color-legacy.mjs target/release/yanshi-serve
 | **需额外参数**（exit 2/3，非缺陷）| 16 | 见「10 种形态」 |
 
 **⇒ 所以「判据的健康度」现在有一个**分母 270** 的测量，而不是感觉。**
+
+## 新增工具的「8 处清单」实际只有 **5 处**（第 1172 轮查清）
+
+**⇒ AGENTS.md 写的 8 处：spec／handler／dispatch／`TOOL_EXAMPLES`／`docs/tools.md` 两个数字／
+`tools.rs` 注释 ＋ 两份 guide／`docs/design/tool-examples.md`（重新生成）。**
+
+**⇒ 而第 1172 轮逐个核对（用补丁的 3 个新工具 `smart_sample`/`smart_erase_shape`/`smart_hatch_follow`）：**
+
+| 处 | 实际需要吗 | 证据 |
+|---|---|---|
+| spec／handler／dispatch | **✓ 需要** | 补丁已做（各 4 次出现）|
+| `TOOL_EXAMPLES` | **✓ 需要** | 3 个 × 4 = 12 次 ✓ |
+| `docs/tools.md` 两个数字 | **✓ 需要** | 108/166（补丁已改 :24）|
+| `docs/tools.md` **另外 3 处** | **✓ 需要** | **补丁漏了**（76/132、146、146>132）⇒ 第 1171 轮修 |
+| `tools.rs` 注释 | ✓ | — |
+| **两份 guide** | **✗ 不需要** | **所有 `smart_*`（含既有 `smart_fill`）在 guide 里 0 次** |
+| `docs/design/tool-examples.md` | **✓ 但由判据守** | `tool-examples-doc` = **0** ⇒ 不需要重生成 |
+
+**⇒ 所以「两份 guide」这一项**本来就不适用于这些工具** ⇒ 不是漏做。**
+
+**⇒ 根因**：`docs/tools.md:25` 明确写「本文档是散文式概述，不逐个列出全部工具」
+⇒ 所以**工具清单的权威来源是 `GET /api/tools`**，不是 guide／tools.md 的正文。
+
+**⇒ 所以「8 处清单」这条规矩**本身**需要修**：它把「散文式概述」和「逐个列出」混在一起了。**
+
+**⇒ 判别信号：若某个 `*_*` 系列的工具在 guide 里**全部 0 次** ⇒ 那个系列**不适用**这条清单的 guide 项。**

@@ -3,7 +3,7 @@
 **这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，
 所以它不会与实现漂移；`--check` 模式会在文档过期时失败。
 
-当前共 175 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
+当前共 178 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
 
 ## `abort_changeset`
 
@@ -1534,6 +1534,31 @@
 }
 ```
 
+## `smart_erase_shape`
+
+```json
+{
+  "layer_id": "L1",
+  "shape": {
+    "points": [
+      [
+        100,
+        100
+      ],
+      [
+        200,
+        100
+      ],
+      [
+        150,
+        180
+      ]
+    ],
+    "type": "polygon"
+  }
+}
+```
+
 ## `smart_fill`
 
 ```json
@@ -1573,6 +1598,53 @@
     "w": 100,
     "x": 60,
     "y": 60
+  }
+}
+```
+
+## `smart_hatch_follow`
+
+```json
+{
+  "color": [
+    0.2,
+    0.15,
+    0.1,
+    1
+  ],
+  "guides": [
+    [
+      [
+        40,
+        200
+      ],
+      [
+        120,
+        160
+      ],
+      [
+        200,
+        200
+      ]
+    ]
+  ],
+  "layer_id": "L1"
+}
+```
+
+## `smart_sample`
+
+```json
+{
+  "layer_id": "L1",
+  "ref": "L_ref",
+  "samples": 8,
+  "shape": {
+    "h": 120,
+    "type": "rect",
+    "w": 180,
+    "x": 40,
+    "y": 40
   }
 }
 ```
