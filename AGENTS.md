@@ -536,7 +536,17 @@ assert not resp.get("image_skipped"), f"有图被跳过: {resp['image_skipped']}
 3. `crates/yanshi-render/src/alloc_probe.rs` 的 `mod tests`（`items after a test module`）；
 4. `crates/yanshi-render/src/buffer.rs` 的 `to_rgba8`。
 
-**自检**：`cargo clippy --workspace --all-targets -- -D warnings || exit 1`
+**★★ 判据的诚实**不在**断言**，而在**退出码**（第 336／337 轮实测）
+
+```
+**∴ 一条**判据**✗** 面对「**条件不满足**」✗ 时**只有**三种**诚实**✗ 的**回应**✗**：
+   · **∴ 通过**✗（**∴ 假称**查过**✗**）⇒ **∴ 最坏**✗**
+   · **∴ 跳过并**说出来**✗**（**∴ 本仓用**「**跳过第 N 条：没给轮号**」✓**）⇒ **∴ 可接受** ✓
+   · **∴ 用**不同**退出码**✗**（**∴ `exit(3)` ✓**）⇒ **∴ 最好** ✓✓
+**∴ 而**「**默认通过**」✗ 是**第四种**✗** ⇒ **∴ 它**看起来**像**查了**✗** ⇒ **∴ 所以**它**最危险**✗** ✓
+```
+
+**∴ 自检**：`cargo clippy --workspace --all-targets -- -D warnings || exit 1`
 
 **配套纪律**：提交前先跑 `cargo clippy --workspace --all-targets -- -D warnings`，
 **并且让提交命令依赖它的结果**（`cargo clippy … || exit 1` 之后再 `git commit`）——
