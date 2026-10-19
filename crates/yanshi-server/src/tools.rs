@@ -3180,6 +3180,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 false,
                 "推颜料 0..1（缺省 0 = 不启用）：笔过之处拖带底色混色（湿画法）。空画布上无影响。实测校准：日常 0.06–0.12，清晰自然 0.18–0.28，艺术夸张 0.4–0.6，0.75+ 为刮刀"
             ),
+            param!("pressure_shape", Number, false, "压力曲线 -1..1（缺省 0 = 不启用）：一笔内压力自动变化。正值中间粗两头细（通用），负值起笔粗收笔细（书法顿笔出锋）"),
+            param!("stroke_taper", Number, false, "起收锋 0..1（缺省 0 = 不启用）：笔画两头几何收细，中段不受影响。模拟锋利笔尖"),
             param!("preview", Boolean, false, "缺省 true = 产出这一笔的预览图；false = 不产出（连续作画提速；预览仍可由 export_png / get_document 取）"),
             param!(
                 "wait_for_render",
@@ -17150,6 +17152,20 @@ fn merge_intent_brush_params(args: &Value) -> Option<Value> {
         let v = v.clamp(0.0, 1.0);
         if v > 0.0 {
             map.insert("speed_ink".to_string(), json!(v));
+        }
+    }
+    // **pressure_shape 是 -1..1（负值有效）** ⇒ 不能用 `> 0.0` 当"启用"判据，要用 `!= 0.0`。
+    // 引擎侧读 `self.get(PressureShape).base_value`，而 `brush_params` 正是写 `base_value` ⇒ 这条路通。
+    if let Some(v) = args.get("pressure_shape").and_then(Value::as_f64) {
+        let v = v.clamp(-1.0, 1.0);
+        if v != 0.0 {
+            map.insert("pressure_shape".to_string(), json!(v));
+        }
+    }
+    if let Some(v) = args.get("stroke_taper").and_then(Value::as_f64) {
+        let v = v.clamp(0.0, 1.0);
+        if v > 0.0 {
+            map.insert("stroke_taper".to_string(), json!(v));
         }
     }
     // **paint_push 非线性解耦映射**（专家方案）：

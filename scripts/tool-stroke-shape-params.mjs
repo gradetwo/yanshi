@@ -53,5 +53,15 @@ if (Number(pos.painted_pixels) === Number(neg.painted_pixels)) {
   failures.push(`pressure_shape 正负给出相同结果（都是 ${pos.painted_pixels}）⇒ 符号没起作用 ✗`);
 }
 
+// ⑤ 意图参数（顶层 stroke_taper / pressure_shape）与 brush_params 两条路必须等价
+// **两笔必须同一条路径**（第 613 轮：第一次我用了 y=400 与 y=80 两个位置，y=400 在画布边缘被裁，
+// 于是"两条路不同"是假的——那是我自己的测试写错，不是产品问题）
+const tIntent = await stroke(120, { stroke_taper: 0.8 });
+const tParam = await stroke(120, { brush_params: { stroke_taper: 0.8 } });
+console.log(`  意图 stroke_taper ${tIntent.painted_pixels}｜brush_params stroke_taper ${tParam.painted_pixels}`);
+if (Number(tIntent.painted_pixels) !== Number(tParam.painted_pixels)) {
+  failures.push(`两条路结果不同（${tIntent.painted_pixels} vs ${tParam.painted_pixels}）⇒ 意图参数没走同一条映射 ✗`);
+}
+
 if (failures.length) { console.log("  ✗ " + failures.join("；")); process.exit(1); }
 console.log("  ✓ 收锋与压力曲线都真的改变了输出，且正负压力给出不同结果");
