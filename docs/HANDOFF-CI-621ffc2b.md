@@ -457,3 +457,39 @@ node scripts/tool-stroke-log-color-legacy.mjs target/release/yanshi-serve
 | §144 | 我的 §142 观察救了真 bug | 已答复 |
 | §145 | `add_adjustment(levels)` 只在单层生效 | **他们自己找到正确用法**（挂到有内容的那一层）|
 | §146 | 颜色混合域 | 已答复；**我的 `color.rs` 修复是真的有效**（完整链路验过）|
+
+## 判据的 **10 种参数形态**（第 1144 轮汇总，逐个实测）
+
+**⇒ 背景**：`run-criteria-local.sh` 只传 `<base>` ⇒ 所以「形态 ① 以外」的判据
+**都会 exit 2 或 3** ⇒ 而 exited 3 看起来像「环境问题」⇒ **容易误判成产品缺陷**。
+
+| # | 形态 | 例子 | 本机（runner）| 手动跑 |
+|---|---|---|---|---|
+| ① | `<base>` | 多数判据 | **✓ 绿** | — |
+| ② | `<base> <doc> <token>` | `tool-export-path-doc`、`tool-brush-settings`、`tool-engine-capabilities`、`tool-brush-params-doc`、`tool-preview-image-contract`、`tool-brush-tag-filter`、`tool-param-parity`、`tool-collect-diagnostics`、`tool-example-acceptance`（9 个）| **2** | **全 = 0**（除已知红）|
+| ③ | `<base> [<local.yanshi>]` | `tool-bitmap-decode-scope` | **1**（预期红）| 已知红 |
+| ④ | `<port> [<web-dir>]` | `serve-web` 类（2 个）| **2** | **0** |
+| ⑤ | `<base>` + 环境变量 | `tool-cjk-text` | **0**（已修 1088）| — |
+| ⑥ | 无参 | `check-*`（2 个）| **✓** | — |
+| ⑦ | `<base>` + 自造工程 | 多数 `tool-*` | **✓ 绿** | — |
+| ⑧ | ~~写死端口~~ | （已并入 ④）| — | — |
+| ⑨ | **`<binary-path>`** | `tool-stroke-log-color-legacy`、`tool-export-cold-identical`、`tool-help-syntax-matches-parser`（**3 个**）| **3** | **全 = 0** |
+| **⑩** | **`<base> --pid <pid>`** | `tool-psd-cost-accounts`（1 个）| **3** | **0**（给 `yanshi-serve` 的 PID）|
+
+### 三个可复用的判别信号
+
+**⇒ ① 若 `exit 3` 且用法提示里写的是**路径**（不是 URL）⇒ 形态 ⑨ ⇒ 传二进制路径。**
+
+**⇒ ② 若 `exit 3` 且用法里有 `--pid` ⇒ 形态 ⑩ ⇒ 先起服务、拿 PID、再传。**
+
+**⇒ ③ 若 `exit 2` ⇒ 它要多参数（形态 ②④）⇒ 手动补 `doc`/`token`/`port`。**
+
+### 而「形态 ⑨」是**我自己差点误判**的一次
+
+**⇒ 1140 轮我看到 `tool-stroke-log-color-legacy` exit 3 ⇒ 第一反应是「判据坏了」。**
+
+**⇒ 而读了 `:25` 才发现：**它要的是二进制路径，而 runner 传了 URL。** ✗
+
+**⇒ 更糟的是：我只发现了 1 个 ⇒ 用 `grep -lE "用法.*yanshi-serve"` 一次就找出 **3** 个。**
+
+**⇒ 教训：发现一个特例后，**立刻 grep 同类的其他实例**，别只记录这一个。**
