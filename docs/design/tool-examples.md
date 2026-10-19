@@ -3,7 +3,7 @@
 **这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，
 所以它不会与实现漂移；`--check` 模式会在文档过期时失败。
 
-当前共 171 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
+当前共 175 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
 
 ## `abort_changeset`
 
@@ -352,13 +352,11 @@
 {
   "mask_id": "m1",
   "shape": {
-    "bbox": {
-      "h": 60,
-      "w": 60,
-      "x": 10,
-      "y": 10
-    },
-    "kind": "rect"
+    "h": 300,
+    "kind": "rect",
+    "w": 100,
+    "x": 100,
+    "y": 0
   }
 }
 ```
@@ -418,6 +416,14 @@
 ```json
 {
   "layer_id": "L1"
+}
+```
+
+## `delete_mask`
+
+```json
+{
+  "mask_id": "m1"
 }
 ```
 
@@ -1079,6 +1085,28 @@
 }
 ```
 
+## `paint_mask`
+
+```json
+{
+  "mask_id": "m1",
+  "mode": "paint",
+  "points": [
+    [
+      150,
+      20,
+      1
+    ],
+    [
+      150,
+      280,
+      1
+    ]
+  ],
+  "size": 60
+}
+```
+
 ## `patch`
 
 ```json
@@ -1546,6 +1574,36 @@
     "x": 60,
     "y": 60
   }
+}
+```
+
+## `smart_select`
+
+```json
+{
+  "mode": "new",
+  "seed": [
+    320,
+    240
+  ],
+  "tolerance": 0.2
+}
+```
+
+## `smart_texture`
+
+```json
+{
+  "density": 0.5,
+  "layer_id": "L1",
+  "shape": {
+    "h": 360,
+    "kind": "rect",
+    "w": 360,
+    "x": 20,
+    "y": 20
+  },
+  "texture_type": "stone"
 }
 ```
 
