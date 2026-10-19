@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 95 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 96 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -32,7 +32,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（95 个）。
+    /// 核心层：默认注册（96 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -563,7 +563,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，95 个）。
+    /// 核心层（默认注册，96 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1405,7 +1405,7 @@ fn region_of(result: &CommitResult) -> Option<Bbox> {
 const ID_ARGS: &[ParamSpec] = &[param!("object_id", String, true, "对象 id")];
 const LAYER_ID: &[ParamSpec] = &[param!("layer_id", String, true, "图层 id")];
 
-/// 核心层 95 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 96 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -2317,6 +2317,13 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: ID_ARGS,
     },
     // ---- 撤销 ----
+    ToolSpec {
+        name: "revert_to_seq",
+        profile: Profile::Core,
+        summary: "回到「第 n 笔之后」的文档状态（撤销所有 seq 大于 n 的笔迹）⇒ 阶段回退不需要循环 undo",
+        mutating: true,
+        params: &[param!("seq", Integer, true, "目标序号：撤销 seq 大于它的笔迹原子")],
+    },
     ToolSpec {
         name: "revert_atoms",
         profile: Profile::Core,
@@ -3723,6 +3730,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "set_group_transform" => write_set_group_transform(ctx, args),
         "move_object" => write_move_object(ctx, args),
         "delete_object" => write_tombstone(ctx, args, "object_id"),
+        "revert_to_seq" => write_revert_to_seq(ctx, args),
         "revert_atoms" => write_revert_atoms(ctx, args),
         "revert" => write_history_atom(ctx, args, AtomKind::Revert, "atom_id"),
         "undo_last" => write_undo_last(ctx, args),
@@ -18779,6 +18787,60 @@ fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 /// **为什么新加而不是改 `get_diff`** ✓：`get_diff`（设计 776 ✓）是"**两个序号之间的差分**" ✓，
 /// 改它的响应会动到既有调用方 ✗；而"**按 id 取一条**"是另一个正交的需要 ✓（点开历史里某一条 ✓）。
 /// **内核里本来就有** ✓：`Log::get(id)` ✓ ⇒ 这里只是把它**放行到工具面** ✓。
+/// **`revert_to_seq`**：撤销所有 `seq > n` 的笔迹原子（需求 v2 §4.4：阶段回退）。
+///
+/// **为什么不用循环 undo**：外部复测方的快照不恢复图层（`E765`/`E767`）⇒ 阶段回退没有可靠手段；
+/// 一句 `revert_to_seq` 比循环稳 ✓。
+fn write_revert_to_seq(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let target = optional_u64(args, "seq").ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("seq 必填（撤销 seq 大于它的笔迹）"),
+        )
+    })?;
+    let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+        )
+    })?;
+    let reverted: std::collections::HashSet<String> = document
+        .log()
+        .atoms()
+        .iter()
+        .filter(|atom| atom.kind == AtomKind::Revert)
+        .filter_map(|atom| {
+            atom.payload
+                .get("target")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect();
+    let ids: Vec<String> = document
+        .log()
+        .atoms()
+        .iter()
+        .filter(|atom| (atom.seq as u64) > target)
+        .filter(|atom| atom.payload.get("source").is_some())
+        .filter(|atom| !reverted.contains(&atom.id.to_string()))
+        .map(|atom| atom.id.to_string())
+        .collect();
+    drop(document);
+    if ids.is_empty() {
+        return Ok(json!({
+            "ok": true,
+            "seq": target,
+            "reverted_count": 0,
+            "failed_count": 0,
+            "note": "没有需要撤销的笔迹（seq 大于它的一笔都没有）",
+        }));
+    }
+    let inner = json!({"atom_ids": ids});
+    let mut out = write_revert_atoms(ctx, &inner)?;
+    out["seq"] = json!(target);
+    Ok(out)
+}
+
 /// **`revert_atoms`**：逐个撤销一组原子（需求 v2 §4.4：「找到坏笔 ⇒ 精准挖掉」）。
 ///
 /// **为什么逐个而不是一条批量原子**：`revert` 的语义是"标记某个原子失效"，
@@ -20444,6 +20506,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "try_stroke",
         r#"{"layer_id":"L1","brush":"2B_pencil","points":[[10,10],[40,40]],"size":8}"#,
     ),
+    ("revert_to_seq", r#"{"seq":100}"#),
     ("revert_atoms", r#"{"atom_ids":["a1","a2"]}"#),
     ("discard_stroke", r#"{"attempt_id":"abc123"}"#),
     ("list_attempts", r#"{"limit":10,"status":"pending"}"#),
