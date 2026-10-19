@@ -3,7 +3,7 @@
 **这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，
 所以它不会与实现漂移；`--check` 模式会在文档过期时失败。
 
-当前共 166 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
+当前共 170 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
 
 ## `abort_changeset`
 
@@ -1453,6 +1453,91 @@
 ```json
 {
   "blob_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}
+```
+
+## `smart_blend`
+
+```json
+{
+  "color_a": [
+    0.86,
+    0.24,
+    0.16,
+    1
+  ],
+  "color_b": [
+    0.16,
+    0.24,
+    0.86,
+    1
+  ],
+  "layer_id": "L1",
+  "shape": {
+    "h": 80,
+    "type": "rect",
+    "w": 120,
+    "x": 40,
+    "y": 40
+  }
+}
+```
+
+## `smart_edge_soften`
+
+```json
+{
+  "layer_id": "L1",
+  "shape": {
+    "h": 100,
+    "type": "rect",
+    "w": 120,
+    "x": 30,
+    "y": 30
+  }
+}
+```
+
+## `smart_fill`
+
+```json
+{
+  "brush": "2B_pencil",
+  "color": [
+    0.86,
+    0.24,
+    0.16,
+    1
+  ],
+  "layer_id": "L1",
+  "shape": {
+    "h": 120,
+    "type": "rect",
+    "w": 180,
+    "x": 40,
+    "y": 40
+  }
+}
+```
+
+## `smart_glaze`
+
+```json
+{
+  "color": [
+    0.86,
+    0.24,
+    0.16,
+    1
+  ],
+  "layer_id": "L1",
+  "shape": {
+    "h": 60,
+    "type": "rect",
+    "w": 100,
+    "x": 60,
+    "y": 60
+  }
 }
 ```
 

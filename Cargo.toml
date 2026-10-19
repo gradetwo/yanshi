@@ -77,9 +77,7 @@ codegen-units = 1
 [profile.bench]
 lto = "thin"
 
-# **hokusai-core 本地修复版**（vendored）：
-# 0.3.0 原版每 dab 给 change_color_* 加固定值 ⇒ 系统性色相/明度漂移（"变色"而不是"呼吸"）。
-# vendor/hokusai-core 里已打 engine 修复：非公度多频正弦（1 : 1.618 : 2.414）+ 弧长驱动 ⇒ 无条纹、
-# 均值严格 0；另加 SpeedInk 设置，让 speed_ink 变成"快则锋瘦"而不是"墨散"。
+# 本地修复版 hokusai-core：change_color_* 改为 per-dab 随机漂移（均值 0），
+# 修复原版每 dab 加固定值导致的系统性色相/明度偏移。见 ~/workspace/hokusai-core-fixed/
 [patch.crates-io]
 hokusai-core = { path = "vendor/hokusai-core" }

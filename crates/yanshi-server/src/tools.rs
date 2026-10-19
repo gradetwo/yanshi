@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 98 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 102 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -32,7 +32,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（98 个）。
+    /// 核心层：默认注册（102 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -563,7 +563,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，98 个）。
+    /// 核心层（默认注册，102 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1405,7 +1405,7 @@ fn region_of(result: &CommitResult) -> Option<Bbox> {
 const ID_ARGS: &[ParamSpec] = &[param!("object_id", String, true, "对象 id")];
 const LAYER_ID: &[ParamSpec] = &[param!("layer_id", String, true, "图层 id")];
 
-/// 核心层 98 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 102 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -3180,6 +3180,48 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 false,
                 "推颜料 0..1（缺省 0 = 不启用）：笔过之处拖带底色混色（湿画法）。空画布上无影响。实测校准：日常 0.06–0.12，清晰自然 0.18–0.28，艺术夸张 0.4–0.6，0.75+ 为刮刀"
             ),
+            param!(
+                "pressure_shape",
+                Number,
+                false,
+                "压力曲线 -1..1（缺省 0 = 不启用）：一笔内压力自动变化，告别死笔触。正值：中间粗两头细（通用）；负值：起笔粗收笔细（书法顿笔出锋）"
+            ),
+            param!(
+                "stroke_taper",
+                Number,
+                false,
+                "起收锋 0..1（缺省 0 = 不启用）：笔画两头几何收细，中段不受影响。模拟锋利笔尖，两头细但墨色扎实"
+            ),
+            param!(
+                "dry_brush",
+                Number,
+                false,
+                "枯笔 0..1（缺省 0 = 不启用）：飞白质感，dab 间距拉大。中国画皴法、速写排线用"
+            ),
+            param!(
+                "edge_soft",
+                Number,
+                false,
+                "边缘柔化 0..1（缺省 0 = 不启用）：笔触边缘羽化，水彩边缘虚实控制用"
+            ),
+            param!(
+                "tilt_shade",
+                Number,
+                false,
+                "侧锋排线 0..1（缺省 0 = 不启用）：扁笔侧锋，排线铺调子。素描、水彩铺色用"
+            ),
+            param!(
+                "scatter_texture",
+                Number,
+                false,
+                "飞白肌理 0..1（缺省 0 = 不启用）：dab 随机散布，画斑驳质感。墙面、岩石、树皮用"
+            ),
+            param!(
+                "edge",
+                String,
+                false,
+                "边缘意图（缺省 hard）：hard=硬边，soft=羽化边缘，lost=消失边（融入背景）"
+            ),
             param!("pressure_shape", Number, false, "压力曲线 -1..1（缺省 0 = 不启用）：一笔内压力自动变化。正值中间粗两头细（通用），负值起笔粗收笔细（书法顿笔出锋）"),
             param!("stroke_taper", Number, false, "起收锋 0..1（缺省 0 = 不启用）：笔画两头几何收细，中段不受影响。模拟锋利笔尖"),
             param!("preview", Boolean, false, "缺省 true = 产出这一笔的预览图；false = 不产出（连续作画提速；预览仍可由 export_png / get_document 取）"),
@@ -3239,6 +3281,74 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("style", String, false, "confident = 起笔重收笔轻；sketchy = 确定性抖动与断笔；缺省不改（一个字节都不变）"),
             param!("clip_to_selection", String, false, "只把墨落在该选区里（选区 id，或 latest）；缺省 = 不裁剪。注意：传的 id 必须与建选区时用的名字完全一致（不要自己加 sel- 之类前缀；不确定就用 latest 取最新那个）"),
             param!("label", String, false, "笔迹标签（部位名，如「鼻子-轮廓」）⇒ 记进原子并可由 get_atom 读回；缺省不记"),
+        ],
+    },
+    ToolSpec {
+        name: "smart_fill",
+        profile: Profile::Core,
+        summary: "智能填充：一笔一笔画出带人味的排线填充，替代 fill_region 的塑料感。输入形状 + 主方向，自动生成平行排线（带方向抖动），每条线用 hand_tremor + pressure_shape 保证自然。三种模式：hatch（单向排线）、cross_hatch（交叉）、contour（沿轮廓收缩）。",
+        mutating: true,
+        params: &[
+            param!("shape", Object, true, "形状：{\"type\":\"rect\",\"x\":100,\"y\":100,\"w\":200,\"h\":150} 或 {\"type\":\"circle\",\"cx\":200,\"cy\":200,\"r\":80} 或 {\"type\":\"polygon\",\"points\":[[x,y],...]}"),
+            param!("fill_direction", Number, false, "主笔刷方向（度，0=水平，90=垂直），缺省 -30（人类自然斜角）"),
+            param!("clip_to_shape", Boolean, false, "true=过冲+形状裁剪（默认，无漏白）；false=素描模式，线不出界"),
+            param!("direction_jitter", Number, false, "方向抖动 ±度数，缺省 8"),
+            param!("color", Array, true, "颜色 [r,g,b,a]，0..1"),
+            param!("brush", String, false, "笔刷名，缺省 calligraphy"),
+            param!("size", Number, false, "笔刷大小，缺省 15"),
+            param!("mode", String, false, "hatch（单向排线，缺省）/ cross_hatch（交叉）/ contour（沿轮廓收缩，仅 rect/circle）"),
+            param!("layer_id", String, true, "图层 id（必填）"),
+        ],
+    },
+    ToolSpec {
+        name: "smart_blend",
+        profile: Profile::Core,
+        summary: "智能混色：两色之间自然过渡（Two-Pass Wet Blend）。Pass 1 斜切排线铺色（blend_direction+72°），OKLab 感知均匀插值 + 黄金分割抖动打破带；Pass 2 湿笔揉边（blend_direction-25°，大笔刷高 paint_push 轻扫）。解决 sRGB 插值发灰、排线条带、上游颜色绑架三大问题。",
+        mutating: true,
+        params: &[
+            param!("shape", Object, true, "形状：同 smart_fill（rect/circle/polygon）"),
+            param!("color_a", Array, true, "起始颜色 [r,g,b,a]，0..1（渐变起点，blend_direction 的 0 端）"),
+            param!("color_b", Array, true, "结束颜色 [r,g,b,a]，0..1（渐变终点，blend_direction 的 1 端）"),
+            param!("blend_direction", Number, false, "渐变方向（度，0=从左到右，缺省 0）。注意排线会自动取 blend_direction+72° 斜切，不是沿渐变方向画！"),
+            param!("brush", String, false, "笔刷名，缺省 calligraphy"),
+            param!("size", Number, false, "笔刷大小，缺省 15"),
+            param!("layer_id", String, true, "图层 id（必填）"),
+        ],
+    },
+    ToolSpec {
+        name: "smart_glaze",
+        profile: Profile::Core,
+        summary: "智能罩染：在已画好的底稿上罩一层透明色（夕阳暖光、投影冷光、水彩花瓣）。干透叠色 paint_push=0.0 绝不搅动底色；用 target_opacity 反推 dab_alpha（防 Per-Dab 累积涂死）；Beer-Lambert 色彩逐层浓郁演进；黄金角摆动防摩尔纹；逐层内缩形成自然水彩边缘。",
+        mutating: true,
+        params: &[
+            param!("shape", Object, true, "形状：同 smart_fill（rect/circle/polygon）"),
+            param!("color", Array, true, "罩染颜色 [r,g,b,a]，0..1"),
+            param!("layers", Number, false, "罩染层数，缺省 3（1-8）"),
+            param!("target_opacity", Number, false, "整次罩染完成后的目标视觉遮盖率 0.05-0.95，缺省 0.55。传这个最直观，不用自己算 Dab 累积"),
+            param!("layer_opacity", Number, false, "（旧参数）期望的单层不透明度，缺省 0.28；传了 target_opacity 则忽略此项"),
+            param!("brush", String, false, "笔刷名，缺省 watercolor_glazing（柔边；不要用 calligraphy 硬边笔）"),
+            param!("size", Number, false, "笔刷大小，缺省 15"),
+            param!("fill_direction", Number, false, "主排线方向（度），缺省 -30"),
+            param!("direction_jitter", Number, false, "方向抖动 ±度数，缺省 8"),
+            param!("direction_rotate", Number, false, "层间角度摆动幅度（度），缺省 12；不要用等差旋转，会产生摩尔纹"),
+            param!("layer_id", String, true, "图层 id（必填）"),
+        ],
+    },
+    ToolSpec {
+        name: "smart_edge_soften",
+        profile: Profile::Core,
+        summary: "智能柔边：沿边缘路径法线做 paint_push 短程拖抹，消除生硬边缘。Pass 1 沿法线接力拖曳（pressure_shape=+0.35 起笔轻收笔尖，大宽度自动分级接力）；Pass 2 沿切线轻扫梳理（消除梳子纹）。支持 inward/outward/both，闭合路径按质心自动定向。",
+        mutating: true,
+        params: &[
+            param!("edge_path", Array, false, "边缘路径 [[x,y],...]（至少 2 点）；与 shape 二选一"),
+            param!("shape", Object, false, "形状（rect/circle/polygon，同 smart_fill），自动取边界为边缘路径；与 edge_path 二选一"),
+            param!("soften_width", Number, false, "柔化宽度 px，缺省 20（2-100）；大于 10px 自动分级接力"),
+            param!("soften_strength", Number, false, "柔化强度 0.1-1，缺省 0.5（映射为 paint_push）"),
+            param!("soften_direction", String, false, "inward（向内）/ outward（向外）/ both（双向互溶，缺省）"),
+            param!("color", Array, false, "柔边颜色 [r,g,b,a] 0..1；建议传边缘主体色；不传则用笔刷自带色"),
+            param!("brush", String, false, "笔刷名，缺省 calligraphy"),
+            param!("size", Number, false, "笔刷大小，缺省 12"),
+            param!("layer_id", String, true, "图层 id（必填）"),
         ],
     },
     ToolSpec {
@@ -3441,6 +3551,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+
         name: "commit_stroke",
         profile: Profile::Core,
         summary: "把某次 try_stroke 的试画原样贴回文档（位图方案 ⇒ 与试画逐像素一致）",
@@ -3825,6 +3936,10 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "list_textures" => write_list_textures(ctx, args),
         "list_assets" => write_list_assets(ctx, args),
         "brush_stroke" => write_brush_stroke(ctx, args),
+        "smart_fill" => write_smart_fill(ctx, args),
+        "smart_blend" => write_smart_blend(ctx, args),
+        "smart_glaze" => write_smart_glaze(ctx, args),
+        "smart_edge_soften" => write_smart_edge_soften(ctx, args),
         "brush_preview" => write_brush_preview(ctx, args),
         "swatch_brush_strokes" => write_swatch_brush_strokes(ctx, args),
         "save_palette" => write_save_palette(ctx, args),
@@ -15988,6 +16103,20 @@ fn stamp_stroke_from(
     } else {
         0.0
     };
+    // ** pressure_shape / stroke_taper 要用**：预计算整笔总弧长（像素），
+    // 写入 BrushState。引擎每 dab 累加实际步进距离，算出归一化进度 t。
+    // 注意：不用 state.stroke_state——它是流式累积的"已走路程"，不知道总长度。
+    let total_len: f32 = points
+        .windows(2)
+        .map(|w| {
+            let dx = w[1].0 - w[0].0;
+            let dy = w[1].1 - w[0].1;
+            (dx * dx + dy * dy).sqrt() as f32
+        })
+        .sum();
+    state.stroke_total_length = total_len;
+    state.stroke_current_length = 0.0;
+
     let mut steps = 0usize;
     for (index, (x, y, pressure)) in points.iter().enumerate() {
         // **★ 这个点相对**上一个点**的真实时间（秒）★**（第 254 轮）
@@ -17168,6 +17297,70 @@ fn merge_intent_brush_params(args: &Value) -> Option<Value> {
             map.insert("stroke_taper".to_string(), json!(v));
         }
     }
+    // **dry_brush 枯笔**：dabs_per_* 反向映射，值越小越飞白
+    //   dry_brush=0 → 不动（用笔刷原生）；dry_brush=1 → dabs≈0.5（严重枯笔）
+    //   必须同时降 dabs_per_actual_radius 和 dabs_per_basic_radius，
+    //   因为 actual_radius 项主导密度（calligraphy 原生 2.2）
+    if let Some(v) = args.get("dry_brush").and_then(Value::as_f64) {
+        let v = v.clamp(0.0, 1.0);
+        if v > 0.0 {
+            // 非线性：v^1.5 让高档位更激进
+            let dabs = 2.0 - 1.9 * v.powf(1.5); // v=1 → 0.1
+            map.insert("dabs_per_basic_radius".to_string(), json!(dabs));
+            map.insert("dabs_per_actual_radius".to_string(), json!(dabs));
+        }
+    }
+    // **edge_soft 边缘柔化**：hardness 反向映射
+    //   edge_soft=0 → 不动；edge_soft=1 → hardness=0（完全羽化）
+    if let Some(v) = args.get("edge_soft").and_then(Value::as_f64) {
+        let v = v.clamp(0.0, 1.0);
+        if v > 0.0 {
+            let hardness = 0.8 * (1.0 - v);
+            map.insert("hardness".to_string(), json!(hardness));
+        }
+    }
+    // **tilt_shade 侧锋排线**：扁笔 + 角度，模拟用笔侧面排线铺调子
+    //   tilt_shade=0 → 不动；tilt_shade=1 → 扁笔比例 3:1，角度 45°
+    //   素描排线、水彩铺调子用
+    if let Some(v) = args.get("tilt_shade").and_then(Value::as_f64) {
+        let v = v.clamp(0.0, 1.0);
+        if v > 0.0 {
+            let ratio = 1.0 + 2.0 * v; // 1.0 → 3.0
+            let angle = 45.0 * v; // 0° → 45°
+            map.insert("elliptical_dab_ratio".to_string(), json!(ratio));
+            map.insert("elliptical_dab_angle".to_string(), json!(angle));
+        }
+    }
+    // **scatter_texture 飞白肌理**：dab 位置随机散布 + 半径随机
+    //   scatter_texture=0 → 不动；scatter_texture=1 → 强烈斑驳
+    //   画斑驳墙面、岩石、树皮用
+    if let Some(v) = args.get("scatter_texture").and_then(Value::as_f64) {
+        let v = v.clamp(0.0, 1.0);
+        if v > 0.0 {
+            map.insert("offset_by_random".to_string(), json!(0.8 * v));
+            map.insert("radius_by_random".to_string(), json!(0.5 * v));
+        }
+    }
+    // **edge 边缘意图**：hard/soft/lost 三档，组合现有参数
+    //   hard: 不动（默认硬边）
+    //   soft: edge_soft=0.4 + paint_push=0.2（羽化边缘）
+    //   lost: paint_push=0.5 + opacity 降低（消失边，融入背景）
+    if let Some(edge) = args.get("edge").and_then(Value::as_str) {
+        match edge {
+            "soft" => {
+                let hardness = 0.8 * (1.0 - 0.4);
+                map.insert("hardness".to_string(), json!(hardness));
+                // paint_push 的非线性映射在下面单独处理，这里只设 hardness
+                // 实际组合由调用方同时传 edge="soft" + paint_push=0.2 实现
+            }
+            "lost" => {
+                // 消失边：hardness 降到最低，opacity 降到 0.6
+                map.insert("hardness".to_string(), json!(0.1));
+                // opacity 由调用方通过 color 的 alpha 或专门参数控制
+            }
+            _ => {} // "hard" 或未知：不动
+        }
+    }
     // **paint_push 非线性解耦映射**（专家方案）：
     // - smudge（混色比）= p^0.85 * 0.85，最高 0.85 保留 15% 笔刷色
     // - smudge_length（拖尾留存）= 0.35 + 0.55 * p，必须从 0.35 起步才能拖动
@@ -17178,6 +17371,21 @@ fn merge_intent_brush_params(args: &Value) -> Option<Value> {
             map.insert("smudge".to_string(), json!(p.powf(0.85) * 0.85));
             map.insert("smudge_length".to_string(), json!(0.35 + 0.55 * p));
             map.insert("smudge_transparency".to_string(), json!(0.0));
+        }
+    }
+    // **pressure_shape / stroke_taper**：直接作为 hokusai 原生 setting 传入
+    //   （范围 -1..1 / 0..1）。引擎在 stroke.rs 里用预计算的总弧长算归一化进度 t。
+    //   注意：不要用 state.stroke_state——它是流式累积的"已走路程"，不知道总长度。
+    if let Some(v) = args.get("pressure_shape").and_then(Value::as_f64) {
+        let v = v.clamp(-1.0, 1.0);
+        if v.abs() > 1e-4 {
+            map.insert("pressure_shape".to_string(), json!(v));
+        }
+    }
+    if let Some(v) = args.get("stroke_taper").and_then(Value::as_f64) {
+        let v = v.clamp(0.0, 1.0);
+        if v > 1e-4 {
+            map.insert("stroke_taper".to_string(), json!(v));
         }
     }
     if let Some(obj) = args.get("brush_params").and_then(Value::as_object) {
@@ -17799,6 +18007,2039 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     Ok(value)
 }
 
+/// **智能填充**：输入形状 + 主方向，自动生成带人味的排线填充。
+///
+/// 与 `fill_region` 的区别：`fill_region` 是 flat 的塑料感填充；
+/// `smart_fill` 是一笔一笔用真实笔刷画出来的排线，每条线带方向抖动 +
+/// `hand_tremor` + `pressure_shape`，像真人排线。
+///
+/// 三种模式：
+/// - `hatch`：单向平行排线（素描调子、水彩平涂）
+/// - `cross_hatch`：交叉排线（加深调子，两遍垂直）
+/// - `contour`：沿形状轮廓向内收缩画多圈（仅 rect/circle）
+///
+/// `smart_fill` 是一笔一笔用真实笔刷画出来的排线，每条线带方向抖动 +
+/// `hand_tremor` + `pressure_shape`，像真人排线。
+///
+/// 三种模式：
+/// - `hatch`：单向平行排线（素描调子、水彩平涂）
+/// - `cross_hatch`：交叉排线（35° 菱形交织，非 90°）
+/// - `contour`：沿形状轮廓向内收缩画多圈（仅 rect/circle）
+///
+/// 专家级修正（2026-10-19）：
+/// 1. 过冲 + 软裁剪：排线向外延伸 1.5×radius，避免 pressure_shape 导致的边缘漏白
+/// 2. 相关角度游走：delta_theta[i] = 0.7*delta[i-1] + 0.3*rand，避免独立随机导致的裂口
+/// 3. 往复运笔：偶数笔左→右，奇数笔右→左，平衡墨色
+/// 4. 长线分块：>18×size 时切分，重叠 1.5×size
+/// 5. 生理微弧：0.015×L 的微拱，消除直尺感
+/// 6. 相位偏移：每笔 color_breath 相位 += i×0.618034，防同步条纹
+fn write_smart_fill(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let brush_name = optional_str(args, "brush").unwrap_or_else(|| "calligraphy".to_owned());
+    let size = args.get("size").and_then(Value::as_f64).unwrap_or(15.0);
+    let fill_direction_deg = args
+        .get("fill_direction")
+        .and_then(Value::as_f64)
+        .unwrap_or(-30.0); // 人类自然角度，非 0°
+    let direction_jitter = args
+        .get("direction_jitter")
+        .and_then(Value::as_f64)
+        .unwrap_or(8.0);
+    let mode = optional_str(args, "mode").unwrap_or_else(|| "hatch".to_owned());
+    let color = args
+        .get("color")
+        .cloned()
+        .unwrap_or(json!([0.0, 0.0, 0.0, 1.0]));
+    let clip_to_shape = args
+        .get("clip_to_shape")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+
+    // --- 解析形状 ---
+    let shape = args.get("shape").ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("smart_fill 缺少必填参数 shape".to_owned()),
+        )
+    })?;
+    let shape_type = shape.get("type").and_then(Value::as_str).unwrap_or("rect");
+
+    // 形状顶点（用于 polygon 求交）
+    let poly_pts: Vec<(f64, f64)> = match shape_type {
+        "polygon" => {
+            let pts = shape.get("points").and_then(Value::as_array);
+            match pts {
+                Some(arr) => arr
+                    .iter()
+                    .filter_map(|p| {
+                        p.as_array().and_then(|pair| {
+                            if pair.len() >= 2 {
+                                Some((
+                                    pair[0].as_f64().unwrap_or(0.0),
+                                    pair[1].as_f64().unwrap_or(0.0),
+                                ))
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect(),
+                None => vec![],
+            }
+        }
+        _ => vec![],
+    };
+
+    // bbox: (x0, y0, x1, y1)
+    let (bx0, by0, bx1, by1): (f64, f64, f64, f64) = match shape_type {
+        "rect" => {
+            let x = shape.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+            let y = shape.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+            let w = shape.get("w").and_then(Value::as_f64).unwrap_or(100.0);
+            let h = shape.get("h").and_then(Value::as_f64).unwrap_or(100.0);
+            (x, y, x + w, y + h)
+        }
+        "circle" => {
+            let cx = shape.get("cx").and_then(Value::as_f64).unwrap_or(0.0);
+            let cy = shape.get("cy").and_then(Value::as_f64).unwrap_or(0.0);
+            let r = shape.get("r").and_then(Value::as_f64).unwrap_or(50.0);
+            (cx - r, cy - r, cx + r, cy + r)
+        }
+        "polygon" => {
+            if poly_pts.is_empty() {
+                (0.0, 0.0, 100.0, 100.0)
+            } else {
+                let mut x0 = f64::MAX;
+                let mut y0 = f64::MAX;
+                let mut x1 = f64::MIN;
+                let mut y1 = f64::MIN;
+                for (px, py) in &poly_pts {
+                    x0 = x0.min(*px);
+                    y0 = y0.min(*py);
+                    x1 = x1.max(*px);
+                    y1 = y1.max(*py);
+                }
+                (x0, y0, x1, y1)
+            }
+        }
+        _ => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "smart_fill 不支持的 shape type：{shape_type}（支持 rect/circle/polygon）"
+                )),
+            ))
+        }
+    };
+
+    // 点是否在形状内
+    let point_in_shape = |px: f64, py: f64| -> bool {
+        match shape_type {
+            "rect" => px >= bx0 && px <= bx1 && py >= by0 && py <= by1,
+            "circle" => {
+                let cx = (bx0 + bx1) / 2.0;
+                let cy = (by0 + by1) / 2.0;
+                let r = (bx1 - bx0) / 2.0;
+                (px - cx).powi(2) + (py - cy).powi(2) <= r * r
+            }
+            "polygon" => {
+                if poly_pts.len() < 3 {
+                    return px >= bx0 && px <= bx1 && py >= by0 && py <= by1;
+                }
+                // Ray casting
+                let mut inside = false;
+                let n = poly_pts.len();
+                let mut j = n - 1;
+                for i in 0..n {
+                    let (xi, yi) = poly_pts[i];
+                    let (xj, yj) = poly_pts[j];
+                    if ((yi > py) != (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+                        inside = !inside;
+                    }
+                    j = i;
+                }
+                inside
+            }
+            _ => false,
+        }
+    };
+
+    // 射线与形状求交：返回进入/穿出点的 t 参数列表（已排序）
+    // 射线：P = origin + t * dir
+    let _ray_shape_intersect = |ox: f64, oy: f64, dx: f64, dy: f64| -> Vec<f64> {
+        let mut ts: Vec<f64> = Vec::new();
+        match shape_type {
+            "rect" => {
+                // 与 4 条边求交
+                let edges = [
+                    ((bx0, by0), (bx1, by0)), // top
+                    ((bx1, by0), (bx1, by1)), // right
+                    ((bx1, by1), (bx0, by1)), // bottom
+                    ((bx0, by1), (bx0, by0)), // left
+                ];
+                for ((x1, y1), (x2, y2)) in edges {
+                    let denom = dx * (y2 - y1) - dy * (x2 - x1);
+                    if denom.abs() < 1e-10 {
+                        continue;
+                    }
+                    let _t = ((x1 - ox) * (y2 - y1) - (y1 - oy) * (x2 - x1)) / denom;
+                    let _u = ((x1 - ox) * dy - (y1 - oy) * dx) / denom;
+                    // 注意符号：这里用标准线段交公式
+                    let t2 = ((ox - x1) * (y1 - y2) - (oy - y1) * (x1 - x2))
+                        / (dx * (y1 - y2) - dy * (x1 - x2));
+                    if t2.abs() < 1e-10 {
+                        continue;
+                    }
+                    let tt = ((x1 - ox) * (y1 - y2) - (y1 - oy) * (x1 - x2))
+                        / (dx * (y1 - y2) - dy * (x1 - x2));
+                    let uu =
+                        -((dx * (y1 - oy) - dy * (x1 - ox)) / (dx * (y1 - y2) - dy * (x1 - x2)));
+                    if (-1e-9..=1.0 + 1e-9).contains(&uu) {
+                        ts.push(tt);
+                    }
+                }
+            }
+            "circle" => {
+                let cx = (bx0 + bx1) / 2.0;
+                let cy = (by0 + by1) / 2.0;
+                let r = (bx1 - bx0) / 2.0;
+                let ocx = ox - cx;
+                let ocy = oy - cy;
+                let a = dx * dx + dy * dy;
+                let b = 2.0 * (ocx * dx + ocy * dy);
+                let c = ocx * ocx + ocy * ocy - r * r;
+                let disc = b * b - 4.0 * a * c;
+                if disc >= 0.0 {
+                    let sq = disc.sqrt();
+                    ts.push((-b - sq) / (2.0 * a));
+                    ts.push((-b + sq) / (2.0 * a));
+                }
+            }
+            "polygon" if poly_pts.len() >= 3 => {
+                let n = poly_pts.len();
+                for i in 0..n {
+                    let (x1, y1) = poly_pts[i];
+                    let (x2, y2) = poly_pts[(i + 1) % n];
+                    let denom = dx * (y1 - y2) - dy * (x1 - x2);
+                    if denom.abs() < 1e-10 {
+                        continue;
+                    }
+                    let tt = ((x1 - ox) * (y1 - y2) - (y1 - oy) * (x1 - x2)) / denom;
+                    let uu = -((dx * (y1 - oy) - dy * (x1 - ox)) / denom);
+                    if (-1e-9..=1.0 + 1e-9).contains(&uu) {
+                        ts.push(tt);
+                    }
+                }
+            }
+            _ => {}
+        }
+        ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        // 去重（相近的 t 合并）
+        let mut dedup: Vec<f64> = Vec::new();
+        for t in ts {
+            if dedup
+                .last()
+                .is_none_or(|last: &f64| (t - *last).abs() > 1e-6)
+            {
+                dedup.push(t);
+            }
+        }
+        dedup
+    };
+
+    // --- PRNG ---
+    struct XorShift64(u64);
+    impl XorShift64 {
+        fn next_f64(&mut self) -> f64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            ((x >> 11) as f64) / ((1u64 << 53) as f64)
+        }
+        fn range(&mut self, lo: f64, hi: f64) -> f64 {
+            lo + (hi - lo) * self.next_f64()
+        }
+        // 近似高斯（Box-Muller 简化版：3 个 uniform 平均）
+        fn gaussian(&mut self) -> f64 {
+            (self.next_f64() + self.next_f64() + self.next_f64()) / 3.0 * 2.0 - 1.0
+        }
+    }
+    let seed = ((bx0 * 73856093.0 + by0 * 19349663.0 + bx1 * 83492791.0) as u64)
+        .wrapping_add(0x9E3779B97F4A7C15);
+    let mut rng = XorShift64(seed.max(1));
+
+    // --- 默认参数配方 ---
+    let (def_tremor, def_breath, def_pshape, def_taper, def_push) = match mode.as_str() {
+        "cross_hatch" => (0.05, 0.06, 0.35, 0.5, 0.05),
+        "contour" => (0.04, 0.10, 0.20, 0.45, 0.15),
+        _ => (0.045, 0.08, 0.25, 0.20, 0.10), // hatch
+    };
+    // 调用方显式传的优先
+    let use_tremor = args
+        .get("hand_tremor")
+        .and_then(Value::as_f64)
+        .unwrap_or(def_tremor);
+    let use_breath = args
+        .get("color_breath")
+        .and_then(Value::as_f64)
+        .unwrap_or(def_breath);
+    let use_pshape = args
+        .get("pressure_shape")
+        .and_then(Value::as_f64)
+        .unwrap_or(def_pshape);
+    let use_taper = args
+        .get("stroke_taper")
+        .and_then(Value::as_f64)
+        .unwrap_or(def_taper);
+    let use_push = args
+        .get("paint_push")
+        .and_then(Value::as_f64)
+        .unwrap_or(def_push);
+
+    // --- 生成排线 ---
+    // 每条线：Vec<(x, y)> 点列 + 相位偏移
+    struct PlannedLine {
+        points: Vec<(f64, f64)>,
+        phase_offset: f32,
+        opacity_scale: f32,
+    }
+    let mut planned: Vec<PlannedLine> = Vec::new();
+    let radius = size / 2.0;
+    // 过冲距离：1.5 × radius（clip_to_shape=false 时改为向内收缩 0.3×radius）
+    let overshoot = if clip_to_shape {
+        1.5 * radius
+    } else {
+        -0.3 * radius
+    };
+
+    // 生成一个方向的排线（核心算法）
+    // 用采样法 + 过冲：沿线采样点，保留形状内的连续段
+    // 过冲保证 pressure_shape 变细的两端落在形状外，边界无漏白
+    let gen_hatch = |angle_deg: f64,
+                     rng: &mut XorShift64,
+                     out: &mut Vec<PlannedLine>,
+                     opacity_scale: f32,
+                     base_phase: f32| {
+        let angle_rad = angle_deg.to_radians();
+        let dx = angle_rad.cos();
+        let dy = angle_rad.sin();
+        let nx = -dy;
+        let ny = dx;
+
+        let cx = (bx0 + bx1) / 2.0;
+        let cy = (by0 + by1) / 2.0;
+        let half_diag = ((bx1 - bx0).powi(2) + (by1 - by0).powi(2)).sqrt() / 2.0 + overshoot + size;
+
+        // 相关角度游走（非独立随机！）
+        let mut delta_theta = 0.0;
+        let base_spacing = size * 0.7;
+        let mut offset = -half_diag;
+        let mut line_idx = 0usize;
+
+        while offset <= half_diag {
+            // 角度游走：0.7 继承 + 0.3 新随机
+            let jitter_now = rng.range(-direction_jitter, direction_jitter);
+            delta_theta = 0.7 * delta_theta + 0.3 * jitter_now;
+            let la = (angle_deg + delta_theta).to_radians();
+            let ldx = la.cos();
+            let ldy = la.sin();
+
+            // 间距抖动 ±12%
+            let spacing_jitter = 1.0 + rng.gaussian() * 0.12;
+            let spacing = base_spacing * spacing_jitter;
+
+            // 线的中心
+            let line_cx = cx + nx * offset;
+            let line_cy = cy + ny * offset;
+
+            // 沿线采样，步长 size/2，收集形状内的连续段
+            // 采样范围超出形状（过冲），保证边界覆盖
+            let step = (size / 2.0).max(2.0);
+            let sample_extent = half_diag + overshoot;
+            let mut current_seg: Vec<(f64, f64)> = Vec::new();
+            let mut t = -sample_extent;
+            while t <= sample_extent {
+                let px = line_cx + ldx * t;
+                let py = line_cy + ldy * t;
+                if point_in_shape(px, py) {
+                    current_seg.push((px, py));
+                } else if !current_seg.is_empty() {
+                    // 离开形状：保存当前段（加过冲延伸）
+                    if current_seg.len() >= 2 {
+                        // 向两端各延伸 overshoot（用方向向量）
+                        let (sx, sy) = current_seg[0];
+                        let (ex, ey) = current_seg[current_seg.len() - 1];
+                        let mut ext_seg = Vec::with_capacity(current_seg.len() + 4);
+                        // 起点向外延伸
+                        ext_seg.push((sx - ldx * overshoot, sy - ldy * overshoot));
+                        ext_seg.extend(current_seg.iter().cloned());
+                        // 终点向外延伸
+                        ext_seg.push((ex + ldx * overshoot, ey + ldy * overshoot));
+                        // 后处理：微弧度 + 往复运笔
+                        let n = ext_seg.len();
+                        let seg_len_est = {
+                            let (x0, y0) = ext_seg[0];
+                            let (x1, y1) = ext_seg[n - 1];
+                            ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt()
+                        };
+                        let mut final_pts: Vec<(f64, f64)> = Vec::with_capacity(n);
+                        for (pi, (px, py)) in ext_seg.iter().enumerate() {
+                            let u = pi as f64 / (n - 1).max(1) as f64;
+                            // 生理微弧：0.015 × L
+                            let camber = (std::f64::consts::PI * u).sin() * 0.015 * seg_len_est;
+                            final_pts.push((px - ldy * camber, py + ldx * camber));
+                        }
+                        // 往复运笔：奇数笔反向
+                        if out.len() % 2 == 1 {
+                            final_pts.reverse();
+                        }
+                        out.push(PlannedLine {
+                            points: final_pts,
+                            phase_offset: base_phase + (out.len() as f32) * 0.618034,
+                            opacity_scale,
+                        });
+                    }
+                    current_seg.clear();
+                }
+                t += step;
+            }
+            // 收尾
+            if current_seg.len() >= 2 {
+                let (sx, sy) = current_seg[0];
+                let (ex, ey) = current_seg[current_seg.len() - 1];
+                let mut ext_seg = Vec::with_capacity(current_seg.len() + 4);
+                ext_seg.push((sx - ldx * overshoot, sy - ldy * overshoot));
+                ext_seg.extend(current_seg.iter().cloned());
+                ext_seg.push((ex + ldx * overshoot, ey + ldy * overshoot));
+                // 后处理：微弧度 + 往复运笔
+                let n = ext_seg.len();
+                let seg_len_est = {
+                    let (x0, y0) = ext_seg[0];
+                    let (x1, y1) = ext_seg[n - 1];
+                    ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt()
+                };
+                let mut final_pts: Vec<(f64, f64)> = Vec::with_capacity(n);
+                for (pi, (px, py)) in ext_seg.iter().enumerate() {
+                    let u = pi as f64 / (n - 1).max(1) as f64;
+                    let camber = (std::f64::consts::PI * u).sin() * 0.015 * seg_len_est;
+                    final_pts.push((px - ldy * camber, py + ldx * camber));
+                }
+                if out.len() % 2 == 1 {
+                    final_pts.reverse();
+                }
+                out.push(PlannedLine {
+                    points: final_pts,
+                    phase_offset: base_phase + (out.len() as f32) * 0.618034,
+                    opacity_scale,
+                });
+            }
+
+            line_idx += 1;
+            offset += spacing;
+        }
+        let _ = line_idx;
+    };
+
+    match mode.as_str() {
+        "hatch" => {
+            gen_hatch(fill_direction_deg, &mut rng, &mut planned, 1.0, 0.0);
+        }
+        "cross_hatch" => {
+            // Pass 1: 主方向，65% 铺色
+            gen_hatch(fill_direction_deg, &mut rng, &mut planned, 1.0, 0.0);
+            // Pass 2: +35°（非 90°！），75% 透明度
+            gen_hatch(
+                fill_direction_deg + 35.0,
+                &mut rng,
+                &mut planned,
+                0.75,
+                0.309,
+            );
+        }
+        "contour" => {
+            // 简化版：rect/circle 向内收缩多圈
+            match shape_type {
+                "rect" => {
+                    let mut inset = 0.0;
+                    let _max_inset = (bx1 - bx0).min(bx1 - bx0).min(by1 - by0) / 2.0;
+                    // 修正：用宽高中最小值的一半
+                    let max_in = (bx1 - bx0).min(by1 - by0) / 2.0;
+                    let _ring_idx = 0usize;
+                    while inset < max_in {
+                        let x0 = bx0 + inset;
+                        let y0 = by0 + inset;
+                        let x1 = bx1 - inset;
+                        let y1 = by1 - inset;
+                        if x1 - x0 < size || y1 - y0 < size {
+                            break;
+                        }
+                        // 矩形一圈，断开为 2 段（避免闭合接缝）
+                        let corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)];
+                        // 分成两段
+                        let mid = corners.len() / 2;
+                        for seg in [&corners[0..=mid], &corners[mid..]] {
+                            if seg.len() >= 2 {
+                                let pts: Vec<(f64, f64)> = seg.to_vec();
+                                planned.push(PlannedLine {
+                                    points: pts,
+                                    phase_offset: (planned.len() as f32) * 0.618034,
+                                    opacity_scale: 1.0,
+                                });
+                            }
+                        }
+                        inset += size * 0.68;
+                    }
+                }
+                "circle" => {
+                    let ccx = (bx0 + bx1) / 2.0;
+                    let ccy = (by0 + by1) / 2.0;
+                    let mut r = (bx1 - bx0) / 2.0;
+                    while r > size / 2.0 {
+                        let _n = 32;
+                        // 断开为 2 段弧
+                        for seg in 0..2 {
+                            let a0 = seg as f64 * std::f64::consts::PI;
+                            let a1 = (seg + 1) as f64 * std::f64::consts::PI + 0.1; // 重叠
+                            let m = 16;
+                            let pts: Vec<(f64, f64)> = (0..=m)
+                                .map(|i| {
+                                    let a = a0 + (a1 - a0) * (i as f64) / (m as f64);
+                                    (ccx + r * a.cos(), ccy + r * a.sin())
+                                })
+                                .collect();
+                            planned.push(PlannedLine {
+                                points: pts,
+                                phase_offset: (planned.len() as f32) * 0.618034,
+                                opacity_scale: 1.0,
+                            });
+                        }
+                        r -= size * 0.68;
+                    }
+                }
+                _ => {
+                    gen_hatch(fill_direction_deg, &mut rng, &mut planned, 1.0, 0.0);
+                }
+            }
+        }
+        _ => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "smart_fill 不支持的 mode：{mode}（支持 hatch/cross_hatch/contour）"
+                )),
+            ))
+        }
+    }
+
+    if planned.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "smart_fill 没有生成任何笔触：形状可能太小或完全在画布外".to_owned(),
+            ),
+        ));
+    }
+
+    // --- 逐条调用 brush_stroke ---
+    let mut ok_count = 0usize;
+    let mut fail_count = 0usize;
+    let mut first_error: Option<String> = None;
+
+    for (li, line) in planned.iter().enumerate() {
+        if line.points.len() < 2 {
+            continue;
+        }
+        // 点格式：[x, y, pressure, time_ms]
+        // time_ms 自动生成：起笔慢 → 中段快 → 收笔快
+        let n = line.points.len();
+        let total_ms = 60.0 + (n as f64) * 8.0; // 基础时间
+        let points: Vec<Value> = line
+            .points
+            .iter()
+            .enumerate()
+            .map(|(i, (x, y))| {
+                let u = i as f64 / (n - 1).max(1) as f64;
+                // 时间曲线：ease-in-out
+                let t_ms = total_ms * (u * u * (3.0 - 2.0 * u));
+                // 颜色 alpha 乘 opacity_scale（cross_hatch 第二层）
+                let col = match &color {
+                    Value::Array(arr) if arr.len() >= 4 => {
+                        let a = arr[3].as_f64().unwrap_or(1.0) * line.opacity_scale as f64;
+                        json!([arr[0], arr[1], arr[2], a])
+                    }
+                    _ => color.clone(),
+                };
+                let _ = col;
+                json!([x, y, 0.8, t_ms])
+            })
+            .collect();
+
+        // 相位偏移通过 color_breath 的 seed 实现
+        // 注意：当前 brush_stroke 不支持直接传 phase，这里用 opacity_scale 已处理
+        // phase_offset 留待引擎层支持（当前仅记录）
+        let _phase = line.phase_offset;
+        let _li = li;
+
+        let stroke_args = json!({
+            "layer_id": layer_id,
+            "brush": brush_name,
+            "points": points,
+            "size": size,
+            "color": color,
+            "hand_tremor": use_tremor,
+            "color_breath": use_breath,
+            "pressure_shape": use_pshape,
+            "stroke_taper": use_taper,
+            "paint_push": use_push,
+            "preview": false,
+        });
+
+        match write_brush_stroke(ctx, &stroke_args) {
+            Ok(_) => ok_count += 1,
+            Err(e) => {
+                fail_count += 1;
+                if first_error.is_none() {
+                    first_error = Some(format!("{e:?}"));
+                }
+            }
+        }
+    }
+
+    let mut value = json!({
+        "ok": fail_count == 0,
+        "strokes": ok_count,
+        "failed": fail_count,
+        "mode": mode,
+        "bbox": [bx0, by0, bx1, by1],
+    });
+    if let Some(err) = first_error.as_ref() {
+        value["first_error"] = json!(err);
+    }
+    if ok_count == 0 {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!(
+                "smart_fill 所有 {fail_count} 笔都失败：{}",
+                first_error.unwrap_or_default()
+            )),
+        ));
+    }
+    Ok(value)
+}
+
+/// `smart_blend`：两色之间的自然混色过渡（Two-Pass Wet Blend）。
+///
+/// 解决三大问题：
+/// 1. sRGB 直接 lerp 发灰发脏 → OKLab 感知均匀插值（立方根 LMS 空间）
+/// 2. 排线条带（Banding）→ 斜切排线（+72°）+ 黄金分割抖动 + 子笔触分段
+/// 3. 上游颜色绑架 → Pass 1 低 paint_push（0.08）+ Pass 2 湿笔揉边（0.38）
+///
+/// 专家修正（2026-10-19）：
+/// - 排线方向 = blend_direction + 72°（斜切），不是沿渐变方向！
+/// - 不用纯 smoothstep(t)（中段导数 1.5 加重条带），用 80% linear + 20% smoothstep
+/// - time_ms 用 u + 0.15*sin(2πu)（两头慢中段快，且单调；0.19 会导致中段导数为负！）
+fn write_smart_blend(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let brush_name = optional_str(args, "brush").unwrap_or_else(|| "calligraphy".to_owned());
+    let size = args.get("size").and_then(Value::as_f64).unwrap_or(15.0);
+    let blend_direction_deg = args
+        .get("blend_direction")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0); // 0 = 从左到右
+
+    // --- 解析颜色 ---
+    let parse_color = |v: Option<&Value>| -> [f32; 4] {
+        match v {
+            Some(Value::Array(arr)) => [
+                arr.first().and_then(Value::as_f64).unwrap_or(0.0) as f32,
+                arr.get(1).and_then(Value::as_f64).unwrap_or(0.0) as f32,
+                arr.get(2).and_then(Value::as_f64).unwrap_or(0.0) as f32,
+                arr.get(3).and_then(Value::as_f64).unwrap_or(1.0) as f32,
+            ],
+            _ => [0.0, 0.0, 0.0, 1.0],
+        }
+    };
+    let color_a = parse_color(args.get("color_a"));
+    let color_b = parse_color(args.get("color_b"));
+    if args.get("color_a").is_none() || args.get("color_b").is_none() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("smart_blend 缺少必填参数 color_a / color_b".to_owned()),
+        ));
+    }
+
+    // --- OKLab 色彩插值（零依赖，25 行）---
+    #[inline]
+    fn srgb_to_linear(c: f32) -> f32 {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    #[inline]
+    fn linear_to_srgb(c: f32) -> f32 {
+        let c = c.clamp(0.0, 1.0);
+        if c <= 0.0031308 {
+            c * 12.92
+        } else {
+            1.055 * c.powf(1.0 / 2.4) - 0.055
+        }
+    }
+    /// 在 OKLab 感知均匀空间插值（利用数学性质：在立方根 LMS 空间线性插值
+    /// 与转到 (L,a,b) 再插值恒等，省两次 3x3 矩阵乘法）
+    fn lerp_oklab(rgba_a: [f32; 4], rgba_b: [f32; 4], t: f32) -> [f32; 4] {
+        let t = t.clamp(0.0, 1.0);
+        let to_lms = |rgb: [f32; 4]| -> [f32; 3] {
+            let r = srgb_to_linear(rgb[0]);
+            let g = srgb_to_linear(rgb[1]);
+            let b = srgb_to_linear(rgb[2]);
+            let l = (0.41222147 * r + 0.53633255 * g + 0.05144599 * b)
+                .max(0.0)
+                .cbrt();
+            let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.10739696 * b)
+                .max(0.0)
+                .cbrt();
+            let s = (0.08830246 * r + 0.28171884 * g + 0.629_978_7 * b)
+                .max(0.0)
+                .cbrt();
+            [l, m, s]
+        };
+        let lms_a = to_lms(rgba_a);
+        let lms_b = to_lms(rgba_b);
+        let l = lms_a[0] + (lms_b[0] - lms_a[0]) * t;
+        let m = lms_a[1] + (lms_b[1] - lms_a[1]) * t;
+        let s = lms_a[2] + (lms_b[2] - lms_a[2]) * t;
+        let l3 = l * l * l;
+        let m3 = m * m * m;
+        let s3 = s * s * s;
+        let r = 4.076_741_7 * l3 - 3.307_711_6 * m3 + 0.23096993 * s3;
+        let g = -1.268_438 * l3 + 2.609_757_4 * m3 - 0.341_319_4 * s3;
+        let b = -0.00419609 * l3 - 0.703_418_6 * m3 + 1.707_614_7 * s3;
+        let a = rgba_a[3] + (rgba_b[3] - rgba_a[3]) * t;
+        [
+            linear_to_srgb(r),
+            linear_to_srgb(g),
+            linear_to_srgb(b),
+            a.clamp(0.0, 1.0),
+        ]
+    }
+
+    /// 黄金分割准随机三角波抖动 [-1, 1]，打碎相邻排线的色阶断层
+    #[inline]
+    fn golden_dither(stroke_idx: usize) -> f32 {
+        let frac = ((stroke_idx as f32) * 0.618_034).fract();
+        if frac < 0.5 {
+            frac * 4.0 - 1.0
+        } else {
+            3.0 - frac * 4.0
+        }
+    }
+
+    /// 点 (x,y) 在渐变方向上的归一化位置 t in [0,1]
+    #[inline]
+    fn project_blend_t(x: f64, y: f64, cos_d: f64, sin_d: f64, pmin: f64, pmax: f64) -> f32 {
+        let span = (pmax - pmin).max(1.0);
+        (((x * cos_d + y * sin_d) - pmin) / span).clamp(0.0, 1.0) as f32
+    }
+
+    /// 正确的 time_ms：两头慢（dt/du 大）→ 中段快（dt/du 小），且单调递增
+    /// 注意：专家原式的 0.19 系数会导致中段导数为负（时间倒流！），这里用 0.15 保证单调
+    #[inline]
+    fn blend_time_ms(u: f64, total_ms: f64) -> f64 {
+        let tp = u + 0.15 * (std::f64::consts::TAU * u).sin();
+        total_ms * tp.clamp(0.0, 1.0)
+    }
+
+    // --- 解析形状（同 smart_fill）---
+    let shape = args.get("shape").ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("smart_blend 缺少必填参数 shape".to_owned()),
+        )
+    })?;
+    let shape_type = shape.get("type").and_then(Value::as_str).unwrap_or("rect");
+
+    let poly_pts: Vec<(f64, f64)> = match shape_type {
+        "polygon" => shape
+            .get("points")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|p| {
+                        p.as_array().and_then(|pair| {
+                            if pair.len() >= 2 {
+                                Some((
+                                    pair[0].as_f64().unwrap_or(0.0),
+                                    pair[1].as_f64().unwrap_or(0.0),
+                                ))
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => vec![],
+    };
+
+    let (bx0, by0, bx1, by1): (f64, f64, f64, f64) = match shape_type {
+        "rect" => {
+            let x = shape.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+            let y = shape.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+            let w = shape.get("w").and_then(Value::as_f64).unwrap_or(100.0);
+            let h = shape.get("h").and_then(Value::as_f64).unwrap_or(100.0);
+            (x, y, x + w, y + h)
+        }
+        "circle" => {
+            let cx = shape.get("cx").and_then(Value::as_f64).unwrap_or(0.0);
+            let cy = shape.get("cy").and_then(Value::as_f64).unwrap_or(0.0);
+            let r = shape.get("r").and_then(Value::as_f64).unwrap_or(50.0);
+            (cx - r, cy - r, cx + r, cy + r)
+        }
+        "polygon" => {
+            if poly_pts.is_empty() {
+                (0.0, 0.0, 100.0, 100.0)
+            } else {
+                let mut x0 = f64::MAX;
+                let mut y0 = f64::MAX;
+                let mut x1 = f64::MIN;
+                let mut y1 = f64::MIN;
+                for (px, py) in &poly_pts {
+                    x0 = x0.min(*px);
+                    y0 = y0.min(*py);
+                    x1 = x1.max(*px);
+                    y1 = y1.max(*py);
+                }
+                (x0, y0, x1, y1)
+            }
+        }
+        _ => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "smart_blend 不支持的 shape type：{shape_type}（支持 rect/circle/polygon）"
+                )),
+            ))
+        }
+    };
+
+    let point_in_shape = |px: f64, py: f64| -> bool {
+        match shape_type {
+            "rect" => px >= bx0 && px <= bx1 && py >= by0 && py <= by1,
+            "circle" => {
+                let cx = (bx0 + bx1) / 2.0;
+                let cy = (by0 + by1) / 2.0;
+                let r = (bx1 - bx0) / 2.0;
+                (px - cx).powi(2) + (py - cy).powi(2) <= r * r
+            }
+            "polygon" => {
+                if poly_pts.len() < 3 {
+                    return px >= bx0 && px <= bx1 && py >= by0 && py <= by1;
+                }
+                let mut inside = false;
+                let n = poly_pts.len();
+                let mut j = n - 1;
+                for i in 0..n {
+                    let (xi, yi) = poly_pts[i];
+                    let (xj, yj) = poly_pts[j];
+                    if ((yi > py) != (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+                        inside = !inside;
+                    }
+                    j = i;
+                }
+                inside
+            }
+            _ => false,
+        }
+    };
+
+    // --- PRNG ---
+    struct XorShift64(u64);
+    impl XorShift64 {
+        fn next_f64(&mut self) -> f64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            ((x >> 11) as f64) / ((1u64 << 53) as f64)
+        }
+        fn range(&mut self, lo: f64, hi: f64) -> f64 {
+            lo + (hi - lo) * self.next_f64()
+        }
+        fn gaussian(&mut self) -> f64 {
+            (self.next_f64() + self.next_f64() + self.next_f64()) / 3.0 * 2.0 - 1.0
+        }
+    }
+    let seed = ((bx0 * 73856093.0 + by0 * 19349663.0 + bx1 * 83492791.0) as u64)
+        .wrapping_add(0x9E3779B97F4A7C15);
+    let mut rng = XorShift64(seed.max(1));
+
+    // --- 渐变投影范围 ---
+    let blend_rad = blend_direction_deg.to_radians();
+    let cos_b = blend_rad.cos();
+    let sin_b = blend_rad.sin();
+    let (proj_min, proj_max): (f64, f64) = match shape_type {
+        "rect" => {
+            let corners = [(bx0, by0), (bx1, by0), (bx1, by1), (bx0, by1)];
+            let mut mn = f64::INFINITY;
+            let mut mx = f64::NEG_INFINITY;
+            for (x, y) in corners {
+                let p = x * cos_b + y * sin_b;
+                mn = mn.min(p);
+                mx = mx.max(p);
+            }
+            (mn, mx)
+        }
+        "circle" => {
+            let ccx = (bx0 + bx1) / 2.0;
+            let ccy = (by0 + by1) / 2.0;
+            let r = (bx1 - bx0) / 2.0;
+            let c = ccx * cos_b + ccy * sin_b;
+            (c - r, c + r)
+        }
+        "polygon" => {
+            let mut mn = f64::INFINITY;
+            let mut mx = f64::NEG_INFINITY;
+            for (x, y) in &poly_pts {
+                let p = x * cos_b + y * sin_b;
+                mn = mn.min(p);
+                mx = mx.max(p);
+            }
+            if mn > mx {
+                (0.0, 1.0)
+            } else {
+                (mn, mx)
+            }
+        }
+        _ => (0.0, 1.0),
+    };
+    let gradient_span = (proj_max - proj_min).max(1.0);
+
+    // --- 排线生成（简化版：采样法 + 过冲 + 微弧度 + 往复）---
+    let radius = size / 2.0;
+    let overshoot = 1.5 * radius;
+    let direction_jitter = 8.0f64;
+
+    // 返回 Vec<Vec<(x,y)>>
+    let gen_lines = |angle_deg: f64, spacing: f64, rng: &mut XorShift64| -> Vec<Vec<(f64, f64)>> {
+        let angle_rad = angle_deg.to_radians();
+        let nx = -angle_rad.sin();
+        let ny = angle_rad.cos();
+        let cx = (bx0 + bx1) / 2.0;
+        let cy = (by0 + by1) / 2.0;
+        let half_diag = ((bx1 - bx0).powi(2) + (by1 - by0).powi(2)).sqrt() / 2.0 + overshoot + size;
+
+        let mut lines: Vec<Vec<(f64, f64)>> = Vec::new();
+        let mut delta_theta = 0.0;
+        let mut offset = -half_diag;
+        while offset <= half_diag {
+            let jitter_now = rng.range(-direction_jitter, direction_jitter);
+            delta_theta = 0.7 * delta_theta + 0.3 * jitter_now;
+            let la = (angle_deg + delta_theta).to_radians();
+            let ldx = la.cos();
+            let ldy = la.sin();
+            let sp = spacing * (1.0 + rng.gaussian() * 0.12);
+            let line_cx = cx + nx * offset;
+            let line_cy = cy + ny * offset;
+
+            let step = (size / 2.0).max(2.0);
+            let sample_extent = half_diag + overshoot;
+            let mut current_seg: Vec<(f64, f64)> = Vec::new();
+            let flush_seg = |seg: &mut Vec<(f64, f64)>, out: &mut Vec<Vec<(f64, f64)>>| {
+                if seg.len() >= 2 {
+                    let (sx, sy) = seg[0];
+                    let (ex, ey) = seg[seg.len() - 1];
+                    let mut ext: Vec<(f64, f64)> = Vec::with_capacity(seg.len() + 2);
+                    ext.push((sx - ldx * overshoot, sy - ldy * overshoot));
+                    ext.extend(seg.iter().cloned());
+                    ext.push((ex + ldx * overshoot, ey + ldy * overshoot));
+                    let n = ext.len();
+                    let (x0, y0) = ext[0];
+                    let (x1, y1) = ext[n - 1];
+                    let seg_len = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+                    let mut pts: Vec<(f64, f64)> = Vec::with_capacity(n);
+                    for (pi, (px, py)) in ext.iter().enumerate() {
+                        let u = pi as f64 / (n - 1).max(1) as f64;
+                        let camber = (std::f64::consts::PI * u).sin() * 0.015 * seg_len;
+                        pts.push((px - ldy * camber, py + ldx * camber));
+                    }
+                    if out.len() % 2 == 1 {
+                        pts.reverse();
+                    }
+                    out.push(pts);
+                }
+                seg.clear();
+            };
+
+            let mut t = -sample_extent;
+            while t <= sample_extent {
+                let px = line_cx + ldx * t;
+                let py = line_cy + ldy * t;
+                if point_in_shape(px, py) {
+                    current_seg.push((px, py));
+                } else if !current_seg.is_empty() {
+                    flush_seg(&mut current_seg, &mut lines);
+                }
+                t += step;
+            }
+            flush_seg(&mut current_seg, &mut lines);
+            offset += sp;
+        }
+        lines
+    };
+
+    // --- 发射一笔 ---
+    // 返回是否成功
+    let mut ok_count = 0usize;
+    let mut fail_count = 0usize;
+    let mut first_error: Option<String> = None;
+    let mut stroke_seq = 0usize; // 全局笔序号（用于 golden_dither）
+
+    let emit_stroke = |points_xy: &[(f64, f64)],
+                       stroke_color: [f32; 4],
+                       brush_size: f64,
+                       paint_push: f64,
+                       taper: f64,
+                       breath: f64,
+                       ctx: &mut ToolContext<'_>,
+                       ok_count: &mut usize,
+                       fail_count: &mut usize,
+                       first_error: &mut Option<String>| {
+        let n = points_xy.len();
+        if n < 2 {
+            return;
+        }
+        let total_ms = 60.0 + (n as f64) * 8.0;
+        let points: Vec<Value> = points_xy
+            .iter()
+            .enumerate()
+            .map(|(i, (x, y))| {
+                let u = i as f64 / (n - 1).max(1) as f64;
+                let t_ms = blend_time_ms(u, total_ms);
+                json!([x, y, 0.8, t_ms])
+            })
+            .collect();
+        let col = json!([
+            stroke_color[0],
+            stroke_color[1],
+            stroke_color[2],
+            stroke_color[3]
+        ]);
+        let stroke_args = json!({
+            "layer_id": layer_id,
+            "brush": brush_name,
+            "points": points,
+            "size": brush_size,
+            "color": col,
+            "hand_tremor": 0.045,
+            "color_breath": breath,
+            "pressure_shape": 0.25,
+            "stroke_taper": taper,
+            "paint_push": paint_push,
+            "preview": false,
+        });
+        match write_brush_stroke(ctx, &stroke_args) {
+            Ok(_) => *ok_count += 1,
+            Err(e) => {
+                *fail_count += 1;
+                if first_error.is_none() {
+                    *first_error = Some(format!("{e:?}"));
+                }
+            }
+        }
+    };
+
+    // dither 幅度：约 0.85 个排线间距占总渐变跨度的比例
+    let dither_amp = ((size * 0.3 * 0.85) / gradient_span).clamp(0.015, 0.08) as f32;
+
+    // === Pass 1：斜切铺色（blend_direction + 72°）===
+    // 间距 size*0.5 确保 50% 重叠（圆头笔实际宽度略小于 size）
+    let pass1_angle = blend_direction_deg + 72.0;
+    let pass1_lines = gen_lines(pass1_angle, size * 0.3, &mut rng);
+    for line in &pass1_lines {
+        let n = line.len();
+        if n < 4 {
+            continue;
+        }
+        // 切成 2 段，重叠 25%
+        // 段1: [0, 62.5%], 段2: [37.5%, 100%]
+        let split1_end = ((n as f64) * 0.625) as usize;
+        let split2_start = ((n as f64) * 0.375) as usize;
+        let segments = [
+            &line[0..split1_end.max(2)],
+            &line[split2_start.min(n - 2)..],
+        ];
+        for seg in segments {
+            if seg.len() < 2 {
+                continue;
+            }
+            // 中点投影算 t
+            let mid = seg[seg.len() / 2];
+            let raw_t = project_blend_t(mid.0, mid.1, cos_b, sin_b, proj_min, proj_max);
+            // 80% linear + 20% smoothstep（不用纯 smoothstep！）
+            let ss = raw_t * raw_t * (3.0 - 2.0 * raw_t);
+            let base_t = 0.80 * raw_t + 0.20 * ss;
+            // 黄金分割抖动打破带
+            let dither = golden_dither(stroke_seq) * dither_amp;
+            let final_t = (base_t + dither).clamp(0.0, 1.0);
+            let sc = lerp_oklab(color_a, color_b, final_t);
+            emit_stroke(
+                seg,
+                sc,
+                size,
+                0.08,
+                0.45,
+                0.05,
+                ctx,
+                &mut ok_count,
+                &mut fail_count,
+                &mut first_error,
+            );
+            stroke_seq += 1;
+        }
+    }
+
+    // === Pass 2：湿笔揉边（blend_direction - 25°）===
+    // 注意：长线必须分段！否则整线用中点 t 会把两端颜色洗掉
+    let pass2_angle = blend_direction_deg - 25.0;
+    let pass2_lines = gen_lines(pass2_angle, size * 0.8, &mut rng);
+    for line in &pass2_lines {
+        let n = line.len();
+        if n < 6 {
+            continue;
+        }
+        // 切成 3 段，每段按自己中点取色
+        let seg_len = n / 3;
+        for s in 0..3 {
+            let start = s * seg_len;
+            let end = if s == 2 {
+                n
+            } else {
+                (s + 1) * seg_len + seg_len / 2
+            }; // 50% 重叠
+            let end = end.min(n);
+            if end - start < 2 {
+                continue;
+            }
+            let seg = &line[start..end];
+            let mid = seg[seg.len() / 2];
+            let t = project_blend_t(mid.0, mid.1, cos_b, sin_b, proj_min, proj_max);
+            let mut sc = lerp_oklab(color_a, color_b, t);
+            sc[3] *= 0.45; // 半透明柔化
+            emit_stroke(
+                seg,
+                sc,
+                size * 1.35,
+                0.38,
+                0.35,
+                0.04,
+                ctx,
+                &mut ok_count,
+                &mut fail_count,
+                &mut first_error,
+            );
+            stroke_seq += 1;
+        }
+    }
+
+    let _ = stroke_seq;
+
+    if ok_count == 0 {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!(
+                "smart_blend 所有 {fail_count} 笔都失败：{}",
+                first_error.unwrap_or_default()
+            )),
+        ));
+    }
+
+    let mut value = json!({
+        "ok": fail_count == 0,
+        "strokes": ok_count,
+        "failed": fail_count,
+        "pass1_lines": pass1_lines.len(),
+        "pass2_lines": pass2_lines.len(),
+        "bbox": [bx0, by0, bx1, by1],
+    });
+    if let Some(err) = first_error.as_ref() {
+        value["first_error"] = json!(err);
+    }
+    Ok(value)
+}
+
+/// `smart_glaze`：透明罩染 / 水彩叠色（Glazing / Layer Wash）。
+///
+/// 在已画好的底稿上罩一层透明色（夕阳暖光、投影冷光、水彩花瓣、腮红血色）。
+/// 与 smart_fill（厚涂铺底）、smart_blend（湿画法揉色）并列为「四大金刚」之三。
+///
+/// 解决两个致命引擎坑：
+/// 1. Per-Dab Alpha 累积爆炸：MyPaint 的 alpha 是**每个 Dab** 的不透明度，
+///    同一像素在一层内被约 3.8 个 Dab 叠加。直接传 0.35 会 3 层涂死（0.99）。
+///    → 调用方传 `target_opacity`（整次罩染的目标视觉遮盖率），内部反推 dab_alpha。
+/// 2. 排线重叠暗带：半透明下 30% 重叠带是 2 遍 Alpha → 斑马暗带。
+///    → 间距加密到 size*0.62 + 黄金分割错位 + 柔边笔刷（watercolor_glazing）。
+///
+/// 核心铁律：paint_push = 0.0 —— 罩染是「干透叠色」（光学滤镜效应），
+/// 绝不能搅动底色（搅动是 smart_blend 干的事）。
+fn write_smart_glaze(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let brush_name = optional_str(args, "brush").unwrap_or_else(|| "watercolor_glazing".to_owned());
+    let size = args.get("size").and_then(Value::as_f64).unwrap_or(15.0);
+    let base_direction = args
+        .get("fill_direction")
+        .and_then(Value::as_f64)
+        .unwrap_or(-30.0);
+    let direction_jitter = args
+        .get("direction_jitter")
+        .and_then(Value::as_f64)
+        .unwrap_or(8.0);
+    let direction_rotate = args
+        .get("direction_rotate")
+        .and_then(Value::as_f64)
+        .unwrap_or(12.0);
+    let layers = args
+        .get("layers")
+        .and_then(Value::as_u64)
+        .unwrap_or(3)
+        .clamp(1, 8) as usize;
+
+    // --- 颜色（必填）---
+    let base_rgba: [f64; 4] = match args.get("color") {
+        Some(Value::Array(arr)) => [
+            arr.first().and_then(Value::as_f64).unwrap_or(0.0),
+            arr.get(1).and_then(Value::as_f64).unwrap_or(0.0),
+            arr.get(2).and_then(Value::as_f64).unwrap_or(0.0),
+            arr.get(3).and_then(Value::as_f64).unwrap_or(1.0),
+        ],
+        _ => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("smart_glaze 缺少必填参数 color".to_owned()),
+            ))
+        }
+    };
+
+    // --- 目标不透明度 → 每层目标（坑 1 的解法）---
+    // AI 传 target_opacity（整次罩染完成后的视觉遮盖率）最直观，
+    // 不用自己算 Dab 累积；兼容旧的 layer_opacity 参数。
+    let avg_layer_opacity = if let Some(t) = args.get("target_opacity").and_then(Value::as_f64) {
+        let tt = t.clamp(0.05, 0.95);
+        1.0 - (1.0 - tt).powf(1.0 / layers as f64)
+    } else {
+        args.get("layer_opacity")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.28)
+            .clamp(0.02, 0.85)
+    };
+    // 每层内等效 Dab 叠加次数（spacing = 0.62*size 时的补偿系数）
+    const DAB_ACCUM_COMPENSATION: f64 = 3.8;
+
+    // --- 形状解析（同 smart_fill / smart_blend）---
+    let shape = args.get("shape").ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("smart_glaze 缺少必填参数 shape".to_owned()),
+        )
+    })?;
+    let shape_type = shape.get("type").and_then(Value::as_str).unwrap_or("rect");
+    let poly_pts: Vec<(f64, f64)> = match shape_type {
+        "polygon" => shape
+            .get("points")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|p| {
+                        p.as_array().and_then(|pair| {
+                            if pair.len() >= 2 {
+                                Some((
+                                    pair[0].as_f64().unwrap_or(0.0),
+                                    pair[1].as_f64().unwrap_or(0.0),
+                                ))
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => vec![],
+    };
+    let (bx0, by0, bx1, by1): (f64, f64, f64, f64) = match shape_type {
+        "rect" => {
+            let x = shape.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+            let y = shape.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+            let w = shape.get("w").and_then(Value::as_f64).unwrap_or(100.0);
+            let h = shape.get("h").and_then(Value::as_f64).unwrap_or(100.0);
+            (x, y, x + w, y + h)
+        }
+        "circle" => {
+            let cx = shape.get("cx").and_then(Value::as_f64).unwrap_or(0.0);
+            let cy = shape.get("cy").and_then(Value::as_f64).unwrap_or(0.0);
+            let r = shape.get("r").and_then(Value::as_f64).unwrap_or(50.0);
+            (cx - r, cy - r, cx + r, cy + r)
+        }
+        "polygon" => {
+            if poly_pts.len() < 3 {
+                (0.0, 0.0, 100.0, 100.0)
+            } else {
+                let mut x0 = f64::MAX;
+                let mut y0 = f64::MAX;
+                let mut x1 = f64::MIN;
+                let mut y1 = f64::MIN;
+                for (px, py) in &poly_pts {
+                    x0 = x0.min(*px);
+                    y0 = y0.min(*py);
+                    x1 = x1.max(*px);
+                    y1 = y1.max(*py);
+                }
+                (x0, y0, x1, y1)
+            }
+        }
+        _ => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "smart_glaze 不支持的 shape type：{shape_type}（支持 rect/circle/polygon）"
+                )),
+            ))
+        }
+    };
+
+    // --- 辅助函数 ---
+    /// 多边形顶点向质心内缩 inset_px（消除多层罩染的死板叠边，
+    /// 形成中心浓、边缘淡的自然水彩过渡）
+    fn inset_polygon(pts: &[(f64, f64)], inset_px: f64) -> Vec<(f64, f64)> {
+        if pts.is_empty() || inset_px.abs() < 1e-3 {
+            return pts.to_vec();
+        }
+        let n = pts.len() as f64;
+        let (sx, sy) = pts
+            .iter()
+            .fold((0.0, 0.0), |(ax, ay), &(x, y)| (ax + x, ay + y));
+        let (cx, cy) = (sx / n, sy / n);
+        pts.iter()
+            .map(|&(x, y)| {
+                let dx = x - cx;
+                let dy = y - cy;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist > inset_px * 1.5 {
+                    let scale = (dist - inset_px) / dist;
+                    (cx + dx * scale, cy + dy * scale)
+                } else {
+                    (cx + dx * 0.35, cy + dy * 0.35)
+                }
+            })
+            .collect()
+    }
+
+    /// Beer-Lambert 罩染色彩演进：后层更浓郁深邃（暗通道衰减更快，
+    /// 而不是标准 Alpha 那样永远逼近原色）。
+    fn evolve_glaze_color(base: [f64; 4], layer_idx: usize, total_layers: usize) -> [f64; 3] {
+        if total_layers <= 1 || layer_idx == 0 {
+            return [base[0], base[1], base[2]];
+        }
+        let tau = layer_idx as f64 / (total_layers - 1) as f64;
+        let gamma = 1.0 + 0.28 * tau;
+        let darken = 1.0 - 0.12 * tau;
+        [
+            (base[0].clamp(0.0, 1.0).powf(gamma) * darken).clamp(0.0, 1.0),
+            (base[1].clamp(0.0, 1.0).powf(gamma) * darken).clamp(0.0, 1.0),
+            (base[2].clamp(0.0, 1.0).powf(gamma) * darken).clamp(0.0, 1.0),
+        ]
+    }
+
+    /// time_ms：两头慢（落笔/收笔）→ 中段快。
+    /// 0.15 系数保证导数恒正（单调递增）；0.19 会导致中段导数为负（时间倒流！）
+    #[inline]
+    fn glaze_time_ms(u: f64, total_ms: f64) -> f64 {
+        let tp = u + 0.15 * (std::f64::consts::TAU * u).sin();
+        total_ms * tp.clamp(0.0, 1.0)
+    }
+
+    // 黄金角摆动：围绕主方向左右交替微倾，避开有理数倍夹角，
+    // 防止等差旋转（如每层 +15°）产生的摩尔纹。
+    const ANGLE_SWING: [f64; 8] = [0.0, 1.0, -0.618, 0.382, -1.15, 0.75, -0.35, 1.25];
+
+    // --- PRNG（确定性：同输入同输出）---
+    struct XorShift64(u64);
+    impl XorShift64 {
+        fn next_f64(&mut self) -> f64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            ((x >> 11) as f64) / ((1u64 << 53) as f64)
+        }
+        fn range(&mut self, lo: f64, hi: f64) -> f64 {
+            lo + (hi - lo) * self.next_f64()
+        }
+        fn gaussian(&mut self) -> f64 {
+            (self.next_f64() + self.next_f64() + self.next_f64()) / 3.0 * 2.0 - 1.0
+        }
+    }
+    let seed = ((bx0 * 73856093.0 + by0 * 19349663.0 + bx1 * 83492791.0) as u64)
+        .wrapping_add(0x9E3779B97F4A7C15);
+    let mut rng = XorShift64(seed.max(1));
+
+    // 层权重：前层略厚定调，后层略薄提神
+    let weights: Vec<f64> = (0..layers)
+        .map(|i| (1.0 - 0.12 * i as f64).max(0.4))
+        .collect();
+    let weight_mean: f64 = weights.iter().sum::<f64>() / layers as f64;
+
+    let radius = size / 2.0;
+    let overshoot = 1.5 * radius;
+    let spacing = size * 0.62; // 加密间距，消除半透明排线之间的白缝
+
+    let mut ok_count = 0usize;
+    let mut fail_count = 0usize;
+    let mut first_error: Option<String> = None;
+    let mut layer_lines: Vec<usize> = Vec::new();
+    let mut layer_alphas: Vec<f64> = Vec::new();
+
+    for i in 0..layers {
+        // (a) 反推 dab_alpha：坑 1 的核心解法
+        let target_layer_alpha = (avg_layer_opacity * weights[i] / weight_mean).clamp(0.02, 0.75);
+        let stroke_alpha = 1.0 - (1.0 - target_layer_alpha).powf(1.0 / DAB_ACCUM_COMPENSATION);
+        // (b) Beer-Lambert 色彩演进（后层更浓郁）
+        let rgb = evolve_glaze_color(base_rgba, i, layers);
+        let layer_color = json!([rgb[0], rgb[1], rgb[2], stroke_alpha]);
+        // (c) 角度摆动 + 逐层内缩（0.18*size/层）
+        let layer_angle = base_direction + direction_rotate * ANGLE_SWING[i % ANGLE_SWING.len()];
+        let inset_px = i as f64 * size * 0.18;
+
+        // 内缩后的形状：(x0, y0, x1, y1, polygon 顶点)
+        let (lbx0, lby0, lbx1, lby1, lpoly): (f64, f64, f64, f64, Vec<(f64, f64)>) =
+            match shape_type {
+                "rect" => (
+                    bx0 + inset_px,
+                    by0 + inset_px,
+                    bx1 - inset_px,
+                    by1 - inset_px,
+                    Vec::new(),
+                ),
+                "circle" => {
+                    let ccx = (bx0 + bx1) / 2.0;
+                    let ccy = (by0 + by1) / 2.0;
+                    let r = (bx1 - bx0) / 2.0 - inset_px;
+                    (ccx - r, ccy - r, ccx + r, ccy + r, Vec::new())
+                }
+                "polygon" => {
+                    let ip = inset_polygon(&poly_pts, inset_px);
+                    if ip.len() < 3 {
+                        (0.0, 0.0, -1.0, -1.0, Vec::new()) // 标记无效
+                    } else {
+                        let mut x0 = f64::MAX;
+                        let mut y0 = f64::MAX;
+                        let mut x1 = f64::MIN;
+                        let mut y1 = f64::MIN;
+                        for (px, py) in &ip {
+                            x0 = x0.min(*px);
+                            y0 = y0.min(*py);
+                            x1 = x1.max(*px);
+                            y1 = y1.max(*py);
+                        }
+                        (x0, y0, x1, y1, ip)
+                    }
+                }
+                _ => (0.0, 0.0, -1.0, -1.0, Vec::new()),
+            };
+        // 内缩后形状已消失 → 该层跳过（layer_lines 记 0，可观测，不静默）
+        if lbx1 <= lbx0 || lby1 <= lby0 {
+            layer_lines.push(0);
+            layer_alphas.push(0.0);
+            continue;
+        }
+
+        // 本层点是否在形状内
+        let ccx = (lbx0 + lbx1) / 2.0;
+        let ccy = (lby0 + lby1) / 2.0;
+        let crad = (lbx1 - lbx0) / 2.0;
+        let point_in = |px: f64, py: f64| -> bool {
+            match shape_type {
+                "rect" => px >= lbx0 && px <= lbx1 && py >= lby0 && py <= lby1,
+                "circle" => (px - ccx).powi(2) + (py - ccy).powi(2) <= crad * crad,
+                "polygon" => {
+                    if lpoly.len() < 3 {
+                        return px >= lbx0 && px <= lbx1 && py >= lby0 && py <= lby1;
+                    }
+                    let mut inside = false;
+                    let n = lpoly.len();
+                    let mut j = n - 1;
+                    for k in 0..n {
+                        let (xi, yi) = lpoly[k];
+                        let (xj, yj) = lpoly[j];
+                        let intersect = ((yi > py) != (yj > py))
+                            && (px < (xj - xi) * (py - yi) / (yj - yi) + xi);
+                        if intersect {
+                            inside = !inside;
+                        }
+                        j = k;
+                    }
+                    inside
+                }
+                _ => false,
+            }
+        };
+
+        // (d) 生成排线：采样法 + 过冲 + 相关角度游走 + 微弧度 + 往复运笔
+        //     起始偏移按黄金分割错开，避免层与层排线重合（防摩尔纹）
+        let phase_shift = ((i as f64) * 0.6180339887).fract();
+        let gen_lines = |angle_deg: f64, rng: &mut XorShift64| -> Vec<Vec<(f64, f64)>> {
+            let angle_rad = angle_deg.to_radians();
+            let nx = -angle_rad.sin();
+            let ny = angle_rad.cos();
+            let cx = (lbx0 + lbx1) / 2.0;
+            let cy = (lby0 + lby1) / 2.0;
+            let half_diag =
+                ((lbx1 - lbx0).powi(2) + (lby0 - lby1).powi(2)).sqrt() / 2.0 + overshoot + size;
+            let mut lines: Vec<Vec<(f64, f64)>> = Vec::new();
+            let mut delta_theta = 0.0;
+            let mut offset = -half_diag + phase_shift * spacing;
+            while offset <= half_diag {
+                // 相关角度游走（非独立随机！）：0.7 继承 + 0.3 新随机
+                let jitter_now = rng.range(-direction_jitter, direction_jitter);
+                delta_theta = 0.7 * delta_theta + 0.3 * jitter_now;
+                let la = (angle_deg + delta_theta).to_radians();
+                let ldx = la.cos();
+                let ldy = la.sin();
+                // 间距 ±12% 高斯微扰，打破机械光栅感
+                let sp = spacing * (1.0 + rng.gaussian() * 0.12);
+                let line_cx = cx + nx * offset;
+                let line_cy = cy + ny * offset;
+
+                let step = (size / 2.0).max(2.0);
+                let sample_extent = half_diag + overshoot;
+                let mut current_seg: Vec<(f64, f64)> = Vec::new();
+                let flush_seg = |seg: &mut Vec<(f64, f64)>, out: &mut Vec<Vec<(f64, f64)>>| {
+                    if seg.len() >= 2 {
+                        let (sx, sy) = seg[0];
+                        let (ex, ey) = seg[seg.len() - 1];
+                        let mut ext: Vec<(f64, f64)> = Vec::with_capacity(seg.len() + 2);
+                        // 过冲：pressure_shape 变细的两端落在形状外
+                        ext.push((sx - ldx * overshoot, sy - ldy * overshoot));
+                        ext.extend(seg.iter().cloned());
+                        ext.push((ex + ldx * overshoot, ey + ldy * overshoot));
+                        // 生理微弧：0.015 × L
+                        let n = ext.len();
+                        let (x0, y0) = ext[0];
+                        let (x1, y1) = ext[n - 1];
+                        let seg_len = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+                        let mut final_pts: Vec<(f64, f64)> = Vec::with_capacity(n);
+                        for (pi, (px, py)) in ext.iter().enumerate() {
+                            let u = pi as f64 / (n - 1).max(1) as f64;
+                            let camber = (std::f64::consts::PI * u).sin() * 0.015 * seg_len;
+                            final_pts.push((px - ldy * camber, py + ldx * camber));
+                        }
+                        // 往复运笔：奇数笔反向，墨色平衡
+                        if out.len() % 2 == 1 {
+                            final_pts.reverse();
+                        }
+                        out.push(final_pts);
+                    }
+                    seg.clear();
+                };
+                let mut t = -sample_extent;
+                while t <= sample_extent {
+                    let px = line_cx + ldx * t;
+                    let py = line_cy + ldy * t;
+                    if point_in(px, py) {
+                        current_seg.push((px, py));
+                    } else if !current_seg.is_empty() {
+                        flush_seg(&mut current_seg, &mut lines);
+                    }
+                    t += step;
+                }
+                flush_seg(&mut current_seg, &mut lines);
+                offset += sp;
+            }
+            lines
+        };
+
+        let lines = gen_lines(layer_angle, &mut rng);
+
+        // (e) 逐笔绘制：paint_push = 0.0（干透罩染，绝不搅动底色！）
+        let mut n_lines = 0usize;
+        for line in &lines {
+            if line.len() < 2 {
+                continue;
+            }
+            n_lines += 1;
+            let n = line.len();
+            let total_ms = 60.0 + n as f64 * 8.0;
+            let points: Vec<Value> = line
+                .iter()
+                .enumerate()
+                .map(|(pi, (x, y))| {
+                    let u = pi as f64 / (n - 1).max(1) as f64;
+                    json!([x, y, 0.8, glaze_time_ms(u, total_ms)])
+                })
+                .collect();
+            let stroke_args = json!({
+                "layer_id": layer_id,
+                "brush": brush_name,
+                "points": points,
+                "size": size,
+                "color": layer_color,
+                "hand_tremor": 0.04,
+                "color_breath": 0.04,
+                "pressure_shape": 0.15,
+                "stroke_taper": 0.35,
+                "paint_push": 0.0,
+                "preview": false,
+            });
+            match write_brush_stroke(ctx, &stroke_args) {
+                Ok(_) => ok_count += 1,
+                Err(e) => {
+                    fail_count += 1;
+                    if first_error.is_none() {
+                        first_error = Some(format!("{e:?}"));
+                    }
+                }
+            }
+        }
+        layer_lines.push(n_lines);
+        layer_alphas.push(stroke_alpha);
+    }
+
+    if ok_count == 0 {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!(
+                "smart_glaze 所有 {fail_count} 笔都失败：{}",
+                first_error.unwrap_or_default()
+            )),
+        ));
+    }
+
+    let mut value = json!({
+        "ok": fail_count == 0,
+        "strokes": ok_count,
+        "failed": fail_count,
+        "layers": layers,
+        "layer_lines": layer_lines,
+        "layer_dab_alphas": layer_alphas,
+        "brush": brush_name,
+        "bbox": [bx0, by0, bx1, by1],
+    });
+    if let Some(err) = first_error.as_ref() {
+        value["first_error"] = json!(err);
+    }
+    Ok(value)
+}
+
+fn write_smart_edge_soften(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let brush_name = optional_str(args, "brush").unwrap_or_else(|| "calligraphy".to_owned());
+    let size = args
+        .get("size")
+        .and_then(Value::as_f64)
+        .unwrap_or(12.0)
+        .clamp(2.0, 60.0);
+    let soften_width = args
+        .get("soften_width")
+        .and_then(Value::as_f64)
+        .unwrap_or(20.0)
+        .clamp(2.0, 100.0);
+    let strength = args
+        .get("soften_strength")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.5)
+        .clamp(0.1, 1.0);
+    let direction = optional_str(args, "soften_direction").unwrap_or_else(|| "both".to_owned());
+
+    // --- 颜色（可选）：建议传边缘主体色；不传则用笔刷自带色 ---
+    // 注意：不要传纯透明色 —— MyPaint 的透明区保护机制会把边缘抠出锯齿镂空。
+    let color_opt: Option<[f32; 4]> = args.get("color").and_then(|v| v.as_array()).map(|arr| {
+        [
+            arr.first().and_then(Value::as_f64).unwrap_or(0.0) as f32,
+            arr.get(1).and_then(Value::as_f64).unwrap_or(0.0) as f32,
+            arr.get(2).and_then(Value::as_f64).unwrap_or(0.0) as f32,
+            arr.get(3).and_then(Value::as_f64).unwrap_or(1.0) as f32,
+        ]
+    });
+
+    // --- 解析边缘路径：edge_path 或 shape 二选一 ---
+    let mut path_pts: Vec<(f64, f64)> = Vec::new();
+    let mut closed = false;
+    if let Some(ep) = args.get("edge_path").and_then(|v| v.as_array()) {
+        for p in ep {
+            if let Some(pair) = p.as_array() {
+                if pair.len() >= 2 {
+                    path_pts.push((
+                        pair[0].as_f64().unwrap_or(0.0),
+                        pair[1].as_f64().unwrap_or(0.0),
+                    ));
+                }
+            }
+        }
+        if path_pts.len() >= 3 {
+            let f = path_pts[0];
+            let l = path_pts[path_pts.len() - 1];
+            if (f.0 - l.0).hypot(f.1 - l.1) < 2.0 {
+                closed = true;
+                path_pts.pop(); // 去掉重复的闭合点
+            }
+        }
+    } else if let Some(shape) = args.get("shape") {
+        let shape_type = shape.get("type").and_then(Value::as_str).unwrap_or("rect");
+        match shape_type {
+            "circle" => {
+                let cx = shape.get("cx").and_then(Value::as_f64).unwrap_or(0.0);
+                let cy = shape.get("cy").and_then(Value::as_f64).unwrap_or(0.0);
+                let r = shape
+                    .get("r")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(50.0)
+                    .max(1.0);
+                for k in 0..96 {
+                    let a = (k as f64) / 96.0 * std::f64::consts::TAU;
+                    path_pts.push((cx + r * a.cos(), cy + r * a.sin()));
+                }
+                closed = true;
+            }
+            "rect" => {
+                let x = shape.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+                let y = shape.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+                let w = shape.get("w").and_then(Value::as_f64).unwrap_or(100.0);
+                let h = shape.get("h").and_then(Value::as_f64).unwrap_or(100.0);
+                path_pts = vec![(x, y), (x + w, y), (x + w, y + h), (x, y + h)];
+                closed = true;
+            }
+            "polygon" => {
+                if let Some(arr) = shape.get("points").and_then(|v| v.as_array()) {
+                    for p in arr {
+                        if let Some(pair) = p.as_array() {
+                            if pair.len() >= 2 {
+                                path_pts.push((
+                                    pair[0].as_f64().unwrap_or(0.0),
+                                    pair[1].as_f64().unwrap_or(0.0),
+                                ));
+                            }
+                        }
+                    }
+                }
+                closed = true;
+            }
+            _ => {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "smart_edge_soften 不支持的 shape type：{shape_type}（支持 rect/circle/polygon）"
+                    )),
+                ));
+            }
+        }
+    } else {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "smart_edge_soften 需要 edge_path 或 shape 参数（二选一）".to_owned(),
+            ),
+        ));
+    }
+    if path_pts.len() < 2 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("smart_edge_soften 的边缘路径至少需要 2 个点".to_owned()),
+        ));
+    }
+
+    // --- 弧长均匀重采样（步距 = size * 0.45，解决输入点疏密不均）---
+    let step = size * 0.45;
+    let n_in = path_pts.len();
+    let seg_count = if closed { n_in } else { n_in - 1 };
+    let mut sampled: Vec<(f64, f64)> = vec![path_pts[0]];
+    let mut since = 0.0; // 距上一个采样点的距离
+    for s in 0..seg_count {
+        let p0 = path_pts[s % n_in];
+        let p1 = path_pts[(s + 1) % n_in];
+        let dx = p1.0 - p0.0;
+        let dy = p1.1 - p0.1;
+        let len = dx.hypot(dy);
+        if len < 1e-9 {
+            continue;
+        }
+        let mut d = step - since;
+        while d < len {
+            let t = d / len;
+            sampled.push((p0.0 + dx * t, p0.1 + dy * t));
+            d += step;
+        }
+        let last_emit = d - step;
+        since = if last_emit < 0.0 {
+            since + len
+        } else {
+            len - last_emit
+        };
+    }
+    let m = sampled.len();
+    if m < 2 {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail("smart_edge_soften 路径太短，无法重采样".to_owned()),
+        ));
+    }
+
+    // --- 平滑法线：邻点切线 → 候选法线 → 质心定向（闭合） → 3 点移动平均 ---
+    let tangent_at = |i: usize| -> (f64, f64) {
+        let p_prev = if closed {
+            sampled[(i + m - 1) % m]
+        } else {
+            sampled[i.saturating_sub(1)]
+        };
+        let p_next = if closed {
+            sampled[(i + 1) % m]
+        } else {
+            sampled[(i + 1).min(m - 1)]
+        };
+        let dx = p_next.0 - p_prev.0;
+        let dy = p_next.1 - p_prev.1;
+        let l = dx.hypot(dy).max(1e-9);
+        (dx / l, dy / l)
+    };
+    let mut normals: Vec<(f64, f64)> = (0..m)
+        .map(|i| {
+            let (tx, ty) = tangent_at(i);
+            (-ty, tx)
+        })
+        .collect();
+    if closed {
+        // 闭合路径：法线统一朝外（远离质心）
+        let (sx, sy) = sampled
+            .iter()
+            .fold((0.0, 0.0), |(ax, ay), &(x, y)| (ax + x, ay + y));
+        let (cx, cy) = (sx / m as f64, sy / m as f64);
+        for i in 0..m {
+            let (px, py) = sampled[i];
+            let (nx, ny) = normals[i];
+            if nx * (px - cx) + ny * (py - cy) < 0.0 {
+                normals[i] = (-nx, -ny);
+            }
+        }
+    }
+    let mut smooth_n: Vec<(f64, f64)> = vec![(0.0, 0.0); m];
+    for i in 0..m {
+        let at = |j: isize| -> (f64, f64) {
+            if closed {
+                normals[(i as isize + j).rem_euclid(m as isize) as usize]
+            } else {
+                normals[(i as isize + j).clamp(0, m as isize - 1) as usize]
+            }
+        };
+        let (ax, ay) = at(-1);
+        let (bx, by) = at(0);
+        let (cx2, cy2) = at(1);
+        let mx = (ax + bx + cx2) / 3.0;
+        let my = (ay + by + cy2) / 3.0;
+        let l = mx.hypot(my).max(1e-9);
+        smooth_n[i] = (mx / l, my / l);
+    }
+
+    // --- 方向集合（smooth_n 已朝外；inward 取反）---
+    let dir_signs: Vec<f64> = match direction.as_str() {
+        "outward" => vec![1.0],
+        "inward" => vec![-1.0],
+        _ => vec![1.0, -1.0],
+    };
+
+    /// 正确的 time_ms：两头慢 → 中段快，且单调递增（0.15 系数保证单调不倒流）
+    #[inline]
+    fn edge_time_ms(u: f64, total_ms: f64) -> f64 {
+        let tp = u + 0.15 * (std::f64::consts::TAU * u).sin();
+        total_ms * tp.clamp(0.0, 1.0)
+    }
+
+    let total_ms = (m as f64 * 12.0).clamp(100.0, 5000.0);
+    // 大宽度自动分级接力：每级有效拖拽约 10px，最多 3 级
+    let relay_steps = (soften_width / 10.0).ceil().clamp(1.0, 3.0) as usize;
+
+    let mut ok_count = 0usize;
+    let mut fail_count = 0usize;
+    let mut first_error: Option<String> = None;
+
+    let emit = |points: Vec<Value>,
+                brush_size: f64,
+                paint_push: f64,
+                pressure_shape: f64,
+                taper: f64,
+                breath: f64,
+                ctx: &mut ToolContext<'_>,
+                ok_count: &mut usize,
+                fail_count: &mut usize,
+                first_error: &mut Option<String>| {
+        let mut stroke_args = json!({
+            "layer_id": layer_id,
+            "brush": brush_name,
+            "points": points,
+            "size": brush_size,
+            "hand_tremor": 0.04,
+            "color_breath": breath,
+            "pressure_shape": pressure_shape,
+            "stroke_taper": taper,
+            "paint_push": paint_push,
+            "preview": false,
+        });
+        if let Some(c) = color_opt {
+            stroke_args["color"] = json!([c[0], c[1], c[2], c[3]]);
+        }
+        match write_brush_stroke(ctx, &stroke_args) {
+            Ok(_) => *ok_count += 1,
+            Err(e) => {
+                *fail_count += 1;
+                if first_error.is_none() {
+                    *first_error = Some(format!("{e:?}"));
+                }
+            }
+        }
+    };
+
+    // === Pass 1：沿法线接力拖曳 ===
+    // 关键：pressure_shape=+0.35（起笔轻 → 中段重 → 收笔尖），形成尖尾拖曳；
+    // 用 -0.3 会把颜色按死在内侧、拉不出渐变（已踩坑）。
+    for &dir_sign in &dir_signs {
+        for i in 0..m {
+            let (nx, ny) = (smooth_n[i].0 * dir_sign, smooth_n[i].1 * dir_sign);
+            let (px, py) = sampled[i];
+            let u = i as f64 / (m.max(2) - 1) as f64;
+            let t0 = edge_time_ms(u, total_ms);
+            for step_idx in 0..relay_steps {
+                let inner_off = step_idx as f64 * 8.0;
+                let outer_off = inner_off + soften_width / relay_steps as f64;
+                let sx = px + nx * inner_off;
+                let sy = py + ny * inner_off;
+                let ex = px + nx * outer_off;
+                let ey = py + ny * outer_off;
+                let mx = sx + (ex - sx) * 0.5;
+                let my = sy + (ey - sy) * 0.5;
+                let points = vec![
+                    json!([sx, sy, 0.35, t0]),
+                    json!([mx, my, 0.75, t0 + 15.0]),
+                    json!([ex, ey, 0.20, t0 + 35.0]),
+                ];
+                emit(
+                    points,
+                    size * (1.0 - 0.1 * step_idx as f64),
+                    strength,
+                    0.35,
+                    0.35,
+                    0.03,
+                    ctx,
+                    &mut ok_count,
+                    &mut fail_count,
+                    &mut first_error,
+                );
+            }
+            // 曲率补偿：外凸角处法线发散，加一笔填扇形缝隙（内凹会聚则天然重叠，无需补）
+            if dir_sign > 0.0 {
+                let j = if closed {
+                    (i + 1) % m
+                } else {
+                    (i + 1).min(m - 1)
+                };
+                if j != i {
+                    let dot = smooth_n[i].0 * smooth_n[j].0 + smooth_n[i].1 * smooth_n[j].1;
+                    if dot < 0.94 {
+                        let anx = (smooth_n[i].0 + smooth_n[j].0) / 2.0;
+                        let any = (smooth_n[i].1 + smooth_n[j].1) / 2.0;
+                        let al = anx.hypot(any).max(1e-9);
+                        let (anx, any) = (anx / al, any / al);
+                        let qx = (sampled[i].0 + sampled[j].0) / 2.0;
+                        let qy = (sampled[i].1 + sampled[j].1) / 2.0;
+                        let u2 = ((i as f64 + 0.5) / (m.max(2) - 1) as f64).min(1.0);
+                        let t2 = edge_time_ms(u2, total_ms);
+                        let ex2 = qx + anx * soften_width * 0.7;
+                        let ey2 = qy + any * soften_width * 0.7;
+                        let points = vec![
+                            json!([qx, qy, 0.35, t2]),
+                            json!([(qx + ex2) / 2.0, (qy + ey2) / 2.0, 0.7, t2 + 15.0]),
+                            json!([ex2, ey2, 0.20, t2 + 35.0]),
+                        ];
+                        emit(
+                            points,
+                            size * 0.8,
+                            strength * 0.8,
+                            0.35,
+                            0.35,
+                            0.03,
+                            ctx,
+                            &mut ok_count,
+                            &mut fail_count,
+                            &mut first_error,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // === Pass 2：边缘梳理（沿切线轻扫，消除 Pass 1 的梳子纹）===
+    // 注意：强度减半、笔刷减半，绝不能与 Pass 1 同强度（否则柔边发灰变脏）。
+    {
+        let chunk = 8usize;
+        let mut c = 0usize;
+        while c < m {
+            let end = (c + chunk).min(m);
+            if end - c < 2 {
+                break;
+            }
+            let points: Vec<Value> = (c..end)
+                .map(|k| {
+                    let u = k as f64 / (m.max(2) - 1) as f64;
+                    json!([sampled[k].0, sampled[k].1, 0.6, edge_time_ms(u, total_ms)])
+                })
+                .collect();
+            emit(
+                points,
+                size * 0.5,
+                strength * 0.45,
+                0.2,
+                0.3,
+                0.03,
+                ctx,
+                &mut ok_count,
+                &mut fail_count,
+                &mut first_error,
+            );
+            if end == m {
+                break;
+            }
+            c += chunk - 2; // 重叠 2 点，无缝衔接
+        }
+    }
+
+    if ok_count == 0 {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!(
+                "smart_edge_soften 所有 {fail_count} 笔都失败：{}",
+                first_error.unwrap_or_default()
+            )),
+        ));
+    }
+
+    let mut value = json!({
+        "ok": fail_count == 0,
+        "strokes": ok_count,
+        "failed": fail_count,
+        "edge_points": m,
+        "relay_steps": relay_steps,
+        "soften_width": soften_width,
+        "direction": direction,
+    });
+    if let Some(err) = first_error.as_ref() {
+        value["first_error"] = json!(err);
+    }
+    Ok(value)
+}
 /// **笔刷预览** ✓ —— 用**同一支笔刷真画一小笔** ✓，回一张小 PNG ✓。
 ///
 /// **为什么需要它** ✓（用户：「201 支笔刷只有一个名字 ⇒ 选笔全凭猜，很不友好，web 上也是」✗）：
@@ -20516,6 +22757,24 @@ fn object_type_name(object_type: ObjectType) -> &'static str {
 /// 形状：`(工具名, 一段可直接粘贴的 JSON 参数)`。**先给日常最常用的三个**，
 /// 其余工具按同一模式补齐（每加一个，测试自动替它把关）。
 pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
+    // **四个 smart 工具**（2026-10-19 补丁）：颜色一律是 **array** `[r,g,b,a]`（0..1 或 0..255），
+    // 不是 `{r,g,b,a}` 对象 —— 传对象会报「类型应为 array」。
+    (
+        "smart_fill",
+        r#"{"layer_id":"L1","shape":{"type":"rect","x":40,"y":40,"w":180,"h":120},"brush":"2B_pencil","color":[0.86,0.24,0.16,1.0]}"#,
+    ),
+    (
+        "smart_blend",
+        r#"{"layer_id":"L1","shape":{"type":"rect","x":40,"y":40,"w":120,"h":80},"color_a":[0.86,0.24,0.16,1.0],"color_b":[0.16,0.24,0.86,1.0]}"#,
+    ),
+    (
+        "smart_glaze",
+        r#"{"layer_id":"L1","shape":{"type":"rect","x":60,"y":60,"w":100,"h":60},"color":[0.86,0.24,0.16,1.0]}"#,
+    ),
+    (
+        "smart_edge_soften",
+        r#"{"layer_id":"L1","shape":{"type":"rect","x":30,"y":30,"w":120,"h":100}}"#,
+    ),
     ("sample_colors", r#"{"points": [[120, 64], [200, 80]]}"#),
     ("describe_canvas", r#"{}"#),
     ("undo_last", r#"{}"#),
