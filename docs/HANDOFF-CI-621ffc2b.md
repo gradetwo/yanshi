@@ -72,6 +72,21 @@ grep -rlP '\x{FFFD}' --include=*.rs --include=*.mjs --include=*.md --include=*.s
 | `未实现` | 90（全是**正式的能力披露**，如「一般仿射与嵌套组尚未实现」）|
 | `tools.rs` 的 `unwrap/expect` | 20，**全部带文案且都是不变量**（如 `expect("data 已是对象")`）|
 | `trackTemp` 覆盖 | **按口径报**（见下），实测缺 **0** |
+| 已知红条数 | **30**，且与 `run-criteria.sh` 的运行时判据**一致**（见下）|
+
+**已知红条数**（第 997 轮核实，两种口径零差异）：
+
+```bash
+# ① 只看『行首是判据名』
+grep -cE '^[a-z][a-z0-9._-]+\.mjs' scripts/criteria-known-red.txt              # 30
+# ② run-criteria.sh 的**运行时**判据（见 :17 的 is_known_red）
+grep -cE '^[a-z][a-z0-9._-]+\.mjs[[:space:]]' scripts/criteria-known-red.txt   # 30
+```
+
+**⇒ 两口径都是 30、无差异行 ⇒ 「已知红 30 条」**准确**。**
+
+**⇒ 注意文件有 **28159 行**（大部分是逐条解释），但只有 **30 行**是判据名**
+⇒ 所以**别用 `wc -l`**，要用上面两个 `grep`。
 
 **`trackTemp` 的三种口径**（第 994 轮查清，别再混报）：
 
