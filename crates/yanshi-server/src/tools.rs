@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 90 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 91 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -32,7 +32,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（90 个）。
+    /// 核心层：默认注册（91 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -563,7 +563,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，90 个）。
+    /// 核心层（默认注册，91 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1405,7 +1405,7 @@ fn region_of(result: &CommitResult) -> Option<Bbox> {
 const ID_ARGS: &[ParamSpec] = &[param!("object_id", String, true, "对象 id")];
 const LAYER_ID: &[ParamSpec] = &[param!("layer_id", String, true, "图层 id")];
 
-/// 核心层 90 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 91 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -3360,6 +3360,23 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "try_stroke",
+        profile: Profile::Core,
+        summary: "试一笔：算出这一笔的效果但**不写入文档**（不产生原子、不改 seq、不改文件）⇒ 看一眼满意再 commit",
+        mutating: false,
+        params: &[
+            param!("layer_id", String, true, "落在哪个图层（只用于取该图的上下文，不写入）"),
+            param!("brush", String, true, "笔刷名"),
+            param!("points", Any, true, "控制点 [[x, y, pressure?], …]（文档像素）"),
+            param!("size", Number, false, "笔尖直径（像素；缺省用 .myb 自带）"),
+            param!("color", Any, false, "笔尖颜色 {r,g,b,a} 或 [r,g,b,(a)]"),
+            param!("opacity", Number, false, "整笔不透明度 0..1"),
+            param!("hardness", Number, false, "笔尖硬度 0..1"),
+            param!("want_image", Boolean, false, "缺省 true = 返回区域图（base64 PNG）；false = 只返回包围盒与像素数"),
+            param!("margin", Integer, false, "区域图在包围盒外扩的像素数（缺省 16）"),
+        ],
+    },
+    ToolSpec {
         name: "list_atoms",
         profile: Profile::Core,
         summary: "按 label／layer_id／brush／since_seq 筛出笔迹原子（带 seq 与 label）⇒ 先找到「哪一笔坏了」，再 revert",
@@ -3741,6 +3758,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "import_asset" => write_import_asset(ctx, args),
         "export_png" => write_export_png(ctx, args),
         "export_book_pngs" => write_export_book_pngs(ctx, args),
+        "try_stroke" => write_try_stroke(ctx, args),
         "list_atoms" => read_list_atoms(ctx, args),
         "get_atom" => read_get_atom(ctx, args),
         "list_comments" => read_list_comments(ctx, args),
@@ -18698,6 +18716,68 @@ fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 /// **为什么新加而不是改 `get_diff`** ✓：`get_diff`（设计 776 ✓）是"**两个序号之间的差分**" ✓，
 /// 改它的响应会动到既有调用方 ✗；而"**按 id 取一条**"是另一个正交的需要 ✓（点开历史里某一条 ✓）。
 /// **内核里本来就有** ✓：`Log::get(id)` ✓ ⇒ 这里只是把它**放行到工具面** ✓。
+/// **`try_stroke`**：算一笔但**不落笔**（需求 v2 §二）。
+///
+/// **为什么能做到「不落笔」**：`paint_brush` 是纯计算 —— 它不调用 `commit` 也不调用
+/// `write_import_image`（实测函数体内这两类调用 0 次）。所以试画只需取它的返回，
+/// 不需要给引擎加开关。
+fn write_try_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let brush = require_str(args, "brush")?;
+    let points = parse_brush_points(args)?;
+    let size = args.get("size").and_then(Value::as_f64);
+    let color = args.get("color");
+    let opacity = args.get("opacity").and_then(Value::as_f64);
+    let hardness = args.get("hardness").and_then(Value::as_f64);
+    let want_image = args
+        .get("want_image")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let margin = optional_u64(args, "margin").unwrap_or(16) as i64;
+    let _ = layer_id;
+    let paint = paint_brush(
+        ctx,
+        &brush,
+        &points,
+        size,
+        color,
+        None,
+        opacity,
+        hardness,
+        true,
+        None,
+        yanshi_render::color::ColorMixing::Rgb,
+        &[],
+        None,
+    )?;
+    let bbox = [
+        paint.x0,
+        paint.y0,
+        paint.x0 + paint.width as i32,
+        paint.y0 + paint.height as i32,
+    ];
+    let mut out = json!({
+        "ok": true,
+        "bbox": bbox,
+        "margin": margin,
+        "pixels_touched": paint.painted,
+        "dab_steps": paint.steps,
+        "width": paint.width,
+        "height": paint.height,
+        "note": "试画不写入文档：没有原子、seq 不变、文件字节数不变",
+    });
+    if want_image {
+        if let Some(bytes) = yanshi_render::png::encode_png(
+            paint.width as u32,
+            paint.height as u32,
+            &paint.rgba,
+        ) {
+            out["image"] = json!(base64::encode(&bytes));
+        }
+    }
+    Ok(out)
+}
+
 /// 从原子净荷里取一个字符串字段（笔迹的层在顶层，笔刷名在 `source` 里）。
 ///
 /// **为什么 `brush` 要往下找一层** ✗（外部 §109 实测：`list_atoms(brush=…)` 恒 0 条）：
@@ -19971,6 +20051,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ),
     ("declare_head", r#"{"base_type":"atom","base_id":"atom1"}"#),
     ("detach_instance", r#"{"instance_id":"inst1"}"#),
+    ("try_stroke", r#"{"layer_id":"L1","brush":"2B_pencil","points":[[10,10],[40,40]],"size":8}"#),
     ("list_atoms", r#"{"limit":10,"label":"nose"}"#),
     ("get_atom", r#"{"atom_id":"atom1"}"#),
     // **一批"纯 id / 无参数"的工具**（第 293 轮）：这些的必填参数都是 id 或什么都不需要，
