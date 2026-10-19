@@ -219,6 +219,27 @@
 
 **自检**：`gh run list --limit 1 --json headSha --jq '.[0].headSha'` 该等于 `git rev-parse HEAD`。
 
+### 例外：**合并外部补丁**时，本机跑一次 `cargo test --workspace`
+
+**规则**：合并别人给的补丁（`.patch`／`.tar.gz`／`.zip` 里的补丁）之后，**本机**跑一次
+`cargo test --workspace`，**跑完清 `target/debug/{deps,build,incremental}`**。
+
+**为什么开这个例外**（第 755–759 轮实测，代价约 4 轮）：
+
+mask-texture 补丁把 `RGB→RGBA` 的展开**做进了 `unfilter_png`**，而 `decode_png` 的旧分支**又做了一次**
+⇒ PNG 上传后入库 21844 字节（应 16384）⇒ **`test (stable)` 与 `test (beta)` 双双红在主干上**。
+
+而**唯一抓住它的测试在 `yanshi-http`**（`uploading_a_png_stores_normalised_raw_pixels`），
+被改的文件 `png.rs` 却在 **`yanshi-render`** ⇒ **「按被改文件的 crate 跑测试」抓不到它**。
+
+⇒ 所以规则是：**合并补丁后按整个 workspace 跑**，不只按被改的 crate。
+补丁作者自己写了并跑过 `mask_paint` 单测，也没抓到 —— **外部补丁的测试覆盖不等于本仓的测试覆盖**。
+
+**为什么不违反「重计算交给 CI」**：合并补丁是**低频高风险**操作（本场 6 次合并里 2 次带回归），
+而 CI 排队经常 30+ 分钟（第 645 轮诊断）⇒ 等 CI 发现回归的代价比本机跑一次更高。
+
+**自检**：合并补丁的那个提交信息里，必须写明 `cargo test --workspace` 的结果（passed/failed 数）。
+
 ## 依赖与库的选择原则
 
 1. 结论：本仓库**不设"只允许某个依赖"的规则**。旧规则已取消。
