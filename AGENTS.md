@@ -194,6 +194,26 @@
 | 代码插入位置（`///` 之前）／中文用「」 | **编译器报错** |
 
 
+## 重的验证交给 GitHub CI，本机只做轻量活（用户裁定，第 500 轮）
+
+**规则**：`cargo build`／`cargo clippy`／`cargo test` 这类**重**计算**不在本机跑** ⇒ **推到 GitHub 让 CI 跑**。
+
+**为什么**：本机反复全量构建把磁盘推到 **63%**（`target` 16 G，其中 `deps`／`build` 占大头），
+而 CI 是 4 核 EPYC 且**本来就空着** ⇒ 用本机跑等于**双输**（本机变慢 ＋ CI 闲置）。
+
+| 活 | 在哪做 |
+|---|---|
+| 读码、写码、`grep`／`sed`／`node` 判据、`curl` 探测 | **本机** ✓ |
+| `cargo fmt` / `clippy` / `test` / `build --release` | **CI** ✓ |
+
+**配套**：
+1. 提交后**立刻** push ＋ `gh workflow run CI` ⇒ 从 CI 日志取结论（`curl -sL` ＋ `gh auth token`）。
+2. 本机只在**必须**要二进制时（跑 `tool-*.mjs` 判据）才 `cargo build --release -p yanshi-http`，
+   且**每次清** `target/debug/{deps,build,incremental}`。
+3. **不自称"本机绿了"**：没在 CI 上跑过的，就说「已提交，等 CI」。
+
+**自检**：`gh run list --limit 1 --json headSha --jq '.[0].headSha'` 该等于 `git rev-parse HEAD`。
+
 ## 依赖与库的选择原则
 
 1. 结论：本仓库**不设"只允许某个依赖"的规则**。旧规则已取消。
