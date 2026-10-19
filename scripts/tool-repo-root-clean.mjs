@@ -33,6 +33,12 @@ const ALLOWED = new Set([
   //     ＋ **两版 README 都已指向它** ✓（`skills/yanshi-painting/SKILL.md` ✓）。
   //   **∴ 代价 ✗**：**白名单多一项**✗ ⇒ **∴ 而它**有明确理由 ✓（**与上面 `package-lock.json` 同一处理 ✓**）。
   "skills",
+  // **★ `vendor` 加进白名单 ★**（第 584 轮 CI 报出来的）：
+  //   它装的是 **vendored 的 hokusai-core 0.3.0**（`vendor/hokusai-core/`）⇒ `[patch.crates-io]`
+  //   指向它。为什么不用 crates.io 原版：原版每 dab 给 `change_color_*` 加固定值 ⇒ 系统性色相／
+  //   明度漂移（"变色"而不是"呼吸"），必须改引擎源码才能修 ⇒ 于是 vendor 进来。
+  //   代价：顶层多一个目录，且 `cargo` 要重新编译它。
+  "vendor",
     // **★ PWA 部署的四件套 ✗ ★**（第 66 轮 ✓；**∴ 它们都是**有意提交的 ✓）：
     //   **∴ `wrangler.toml`／`worker/`**✗：**638025e2 feat(pwa): add the workers configuration…** ✓
     //   **∴ `package.json`**✗：**a29d7ede chore(pwa): check for wrangler before deploying…** ✓

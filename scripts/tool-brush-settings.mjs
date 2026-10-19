@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // **笔刷动力学读写判据** ✓（第 1000+ 轮）：`get_brush_settings` / `set_brush_setting`。
 //
-// **为什么必须有这条** ✗：引擎（`hokusai`）实现了 **63 项** MyPaint 动力学 ✓，而 MCP 侧此前只有
+// **为什么必须有这条** ✗：引擎（`hokusai`）实现了 **66 项** MyPaint 动力学 ✓，而 MCP 侧此前只有
 // `size`/`opacity`/`hardness`/`color` 四个旋钮 ✗。这两个工具是"agent 能不能控制笔速、手抖、
 // 一笔内变色、厚涂涂抹"的唯一入口 ✓ ⇒ **它坏了，等于那 59 项又回到不可控** ✗。
 //
 // **四条断言**（每条都能红 ✓）：
-//   ① `count` 必须等于引擎的权威项数 **63** ✓（**∴ 遍历写错、或硬编码成 43 ⇒ 红** ✓）；
+//   ① `count` 必须等于引擎的权威项数 **66** ✓（**∴ 遍历写错、或硬编码成 43 ⇒ 红** ✓）；
 //   ② 已知项必须读得到（`smudge` 的 `base_value` 是数字 ✓）；
 //   ③ **设一项 ⇒ 读回一致** ✓，且**另一项不变** ✓（**∴ setter 写错键 ⇒ 红** ✓）；
 //   ④ **未知设置名必须报错** ✓（**∴ 静默成功 ⇒ 红** ✓）。
@@ -44,13 +44,13 @@ const check = (ok, why) => {
   console.log(`  ${ok ? "✓" : "✗"} ${why}`);
   if (!ok) bad += 1;
 };
-// ① 项数必须是 63
+// ① 项数必须是 66（原版 63 ＋ vendored 补丁新增 SpeedInk／PressureShape／StrokeTaper）
 const before = await call("get_brush_settings", { brush });
 if (before.status !== 200) {
   console.log(`  ✗ get_brush_settings 失败（HTTP ${before.status}）：${JSON.stringify(before.body).slice(0, 200)}`);
   process.exit(1);
 }
-check(before.body.count === 63, `项数 = ${before.body.count}（引擎权威项数是 63）`);
+check(before.body.count === 66, `项数 = ${before.body.count}（引擎权威项数是 66：原版 63 ＋ 补丁新增 3）`);
 // ② 已知项读得到
 const smudge = before.body.settings?.smudge?.base_value;
 check(typeof smudge === "number", `smudge 的 base_value 是数字（读到 ${smudge}）`);
@@ -75,4 +75,4 @@ if (bad) {
   console.log(`  ✗ 笔刷动力学读写有 ${bad} 处问题`);
   process.exit(1);
 }
-console.log("  ✓ 笔刷动力学读写：63 项可读、单项可写且读回一致、其它项不受牵连、未知名被拒");
+console.log("  ✓ 笔刷动力学读写：66 项可读、单项可写且读回一致、其它项不受牵连、未知名被拒");
