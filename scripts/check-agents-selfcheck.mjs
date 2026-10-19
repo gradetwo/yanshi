@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // **∴ 「规矩要能自检」的第一个实现**✗（`AGENTS.md` 内核 ② ✓）
 //   ⇒ **∴ 它**验**三条**能被机器验的规矩**✗** ⇒ **∴ 而**其余**靠**人**✗** ✓
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 const fail = [];
 const ok = (m) => console.log(`  ✓ ${m}`);
@@ -83,6 +83,34 @@ if (curRound > 0) {
   console.log(`  台账轮次引用 ${nums.length} 处／最大 ${Math.max(...nums)}／当前 ${curRound}`);
 } else {
   console.log("  （跳过第 8 条：没给当前轮号）");
+}
+
+// ⑨ **判据的变异记录率只许升** ✓（外部 §94 的「比例自检」✓）
+//   ⇒ **∴ 第 410 轮实测**✗**：208 条判据里**只有 89 条**✗ 注释里记录了变异**✗** ⇒ **∴ **43%**✗**
+//   ⇒ **∴ 而**那个数**不**是**「**57% 是安慰剂**」✗** ⇒ **∴ 而是**「**57% 无法**从源码看出它怎么红**」✗**
+//   ⇒ **∴ 所以**：**∴ 它**是**可追溯性**✗ 的**指标**✗** ⇒ **∴ 用**棘轮**✗**（**∴ 基线**在**一个**数据文件里 ✓**）
+//   ⇒ **∴ 不**批量补注释**✗**（**∴ 那**是**造假**✗**）** ⇒ **∴ 只**让**新判据**✗ 的**比例**升**✗** ✓
+const baselinePath = "scripts/criteria-mutation-baseline.json";
+try {
+  const baseline = JSON.parse(readFileSync(baselinePath, "utf8"));
+  // **∴ 用 `readdirSync`**✗（**∴ `Bun.Glob`**✗ 在 Node 下**不**存在 ✓）
+  const files = readdirSync("scripts")
+    .filter((name) => /^(tool|mcp)-.*\.mjs$/.test(name))
+    .map((name) => `scripts/${name}`);
+  const total = files.length;
+  let withRecord = 0;
+  for (const file of files) {
+    const text = readFileSync(file, "utf8");
+    if (text.includes("变异") || text.includes("mutation")) withRecord++;
+  }
+  const ratio = total ? Math.round((withRecord / total) * 100) : 0;
+  console.log(`  判据 ${total} 条｜注释里记录变异的 ${withRecord} 条（${ratio}%）｜基线 ${baseline.with_mutation_record}/${baseline.criteria}`);
+  check(
+    withRecord >= baseline.with_mutation_record,
+    `判据的变异记录数不许低于基线 ${baseline.with_mutation_record}（实测 ${withRecord}）⇒ 新判据要写清它怎么红 ✗`,
+  );
+} catch (error) {
+  console.log(`  （跳过第 9 条：${error.message}）`);
 }
 
 console.log(`\n  ${fail.length ? "✗" : "✓"} 自检 ${fail.length ? "红了" : "绿了"}（${fail.length} 处不满足）`);
