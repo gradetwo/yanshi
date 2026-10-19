@@ -62,5 +62,12 @@ check(
   `不许把分片号当身份（AGENTS=${shardRefs.length} 处｜HANDOFF=${shardRefsH.length} 处；它下次会变）`,
 );
 
+// ⑦ **不许在文档里写具体 HEAD**（内核 ②·别写会变的东西；第 331 轮实测 b39c341f 已过期）
+const headLiterals = (agents + handoff).match(/HEAD\s*=\s*[0-9a-f]{7,8}/g) || [];
+check(
+  headLiterals.length === 0,
+  `不许写具体 HEAD 的哈希（实测 ${headLiterals.length} 处：${headLiterals.join("｜")}）——它每次提交都会变`,
+);
+
 console.log(`\n  ${fail.length ? "✗" : "✓"} 自检 ${fail.length ? "红了" : "绿了"}（${fail.length} 处不满足）`);
 process.exit(fail.length ? 1 : 0);

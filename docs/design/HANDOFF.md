@@ -9,7 +9,7 @@
 ## 一、当前状态
 
 ```
-HEAD              = b39c341f（main == l4-sync）
+HEAD              = **数它用命令**：`git rev-parse --short HEAD`（以及 `git rev-parse main l4-sync` 看是否同一）
 外部复测 8 项      = 7 个四件齐 ＋ G02 5/7（第 3 项已自陈且被验）
 判据              = tool-preview-read-canvas 与 tool-swatch-include-image
                     **条数用命令数**：`grep -cE '^ *check\(' scripts/tool-*-*.mjs`
