@@ -28156,7 +28156,6 @@ tool-taper-shrinks-ink.mjs            stroke_taper 让墨面积反而大 8.7%（
 browser-layout.mjs  第 742 轮核实：判据要求「400% 缩放时画布溢出舞台 > 10px」，而 CI 视口 854px、400% 时画布 852px（溢出 −2）⇒ 视口刚好塞满 ⇒ 依赖视口尺寸的环境红，不是产品缺陷。第 830 轮登记（此前只写在 AGENTS.md 表格里、没进这个机检名单 ⇒ shard 3 一直报「意外失败 1」）
 tool-dwell.mjs  断的是「dwell:1 后拐角邻域墨变多」这类像素数：本机 +1（1234→1235）、CI −5（1227→1222）⇒ **方向相反**⇒ 跨不了机器。第 830 轮补登记（此前只写在 AGENTS.md 表格里、没进这个机检名单；与 browser-layout 同一个漂移）
 tool-zero-dab-hint.mjs  同一提交两个环境相反：CI painted=73673、本机 painted=0（precondition_failed）⇒ 环境差异，改断言会掩盖。第 830 轮补登记
-tool-sample-colors-batch.mjs  环境敏感（采样跨机器的像素数不稳）；第 830 轮补登记，此前只在目标说明里写过
 tool-stamp-parity.mjs	# 第 1037 轮登记（flaky，约 10%）——⚠ 与第 503 轮的期望冲突
 #   第 503 轮的注释（本文件 :604-642）说：「红线判据 tool-stamp-parity 跑 30 次应全绿」
 #   而实测（CI，criteria shard 1/6）：

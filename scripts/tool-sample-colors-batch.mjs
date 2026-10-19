@@ -22,7 +22,7 @@ if (!base) {
 const boot = await fetch(`${base}/api/documents`, {
   method: "POST",
   headers: { "content-type": "application/json" },
-  body: JSON.stringify({ doc: `sample_colors_${Date.now()}`, width: 300, height: 300 }),
+  body: JSON.stringify({ doc_id: `sample_colors_${Date.now()}`, width: 300, height: 300 }),
 });
 const bootBody = await boot.json().catch(() => ({}));
 const doc = bootBody.doc ?? bootBody.doc_id ?? `sample_colors_${Date.now()}`;

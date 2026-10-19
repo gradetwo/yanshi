@@ -16,7 +16,7 @@ if (!base) { console.error("用法: node scripts/tool-ellipse-clip.mjs <base-url
 
 const boot = await fetch(`${base}/api/documents`, {
   method: "POST", headers: { "content-type": "application/json" },
-  body: JSON.stringify({ doc: `ellipse_clip_${Date.now()}`, width: 200, height: 200 }),
+  body: JSON.stringify({ doc_id: `ellipse_clip_${Date.now()}`, width: 200, height: 200 }),
 });
 const bootBody = await boot.json().catch(() => ({}));
 const token = bootBody.token;

@@ -17,7 +17,7 @@ if (!base) { console.error("用法: node scripts/tool-retouch-outside.mjs <base-
 const boot = await fetch(`${base}/api/documents`, {
   method: "POST",
   headers: { "content-type": "application/json" },
-  body: JSON.stringify({ doc: `retouch_oob_${Date.now()}`, width: 200, height: 200 }),
+  body: JSON.stringify({ doc_id: `retouch_oob_${Date.now()}`, width: 200, height: 200 }),
 });
 const bootBody = await boot.json().catch(() => ({}));
 const token = bootBody.token;

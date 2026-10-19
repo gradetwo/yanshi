@@ -28,7 +28,7 @@ if (!base) { console.error("用法: node scripts/tool-stroke-log-color.mjs <base
 
 const boot = await fetch(`${base}/api/documents`, {
   method: "POST", headers: { "content-type": "application/json" },
-  body: JSON.stringify({ doc: `stroke_log_color_${Date.now()}`, width: 200, height: 200 }),
+  body: JSON.stringify({ doc_id: `stroke_log_color_${Date.now()}`, width: 200, height: 200 }),
 });
 const bootBody = await boot.json().catch(() => ({}));
 const token = bootBody.token;
