@@ -13164,3 +13164,44 @@ await send("Emulation.setDeviceMetricsOverride", {
 **⇒ 三轮里我错了两次**（先说真红、再说视口依赖），**同一个判据让我撤回两次**。
 根因是同一个：**我没读判据自己的源码就下结论**。
 
+## 三百二十四、mask-texture 补丁引入一处**真回归**：PNG 上传解出的字节数不对（第 755 轮）
+
+**CI 的 `test (stable)` 与 `test (beta)` 都红了**（这是新增的红，不是环境红）。
+
+```
+test server::tests::uploading_a_png_stores_normalised_raw_pixels ... FAILED
+panicked at crates/yanshi-http/src/server.rs:3640:9:
+  assertion `left == right` failed: 入库的应是解好的 RGBA：
+  {"blob_hash":"sha256:09b3...","decoded_from":{"format":"png","height":64,"width":64},
+   "mime_type":"image/x-yanshi-raw","ok":true...
+  left: Number(21844)
+ right: Number(16384)
+```
+
+**⇒ 三个事实放在一起就够了**：
+
+| 事实 | 值 |
+|---|---|
+| 解出来的宽高 | **64 × 64**（`decoded_from` 里写着，正确）|
+| 应有的字节数 | `64 × 64 × 4` = **16384** |
+| 实际入库的字节数 | **21844** |
+
+`21844` **不是 4 的倍数**（`21844 / 4 = 5461`）⇒ 它**不可能是** 64×64 的 RGBA 像素缓冲。
+
+**⇒ 嫌疑指向 `crates/yanshi-render/src/png.rs`** —— mask-texture 补丁的 diff 列表里有它
+（`diff --git a/crates/yanshi-render/src/png.rs b/crates/yanshi-render/src/png.rs`）。
+补丁同时改了 `region_block.rs`、`render.rs`、`selection.rs`，但那几个与本测试无关。
+
+**⇒ 更可疑的一处**：补丁说明自己写着
+
+> 新增 `MaskCache`（分块并行渲染不缓存会每块重解 PNG）
+
+—— 它为了缓存 PNG 解码结果，在 `png.rs` 里加了**缓存层**。若缓存键或返回尺寸算错，
+就会出现"宽高对、字节数不对"这种形态。
+
+**⇒ 我还缺什么才能定位**：要读 `png.rs` 里那段新增的缓存代码，看它是否按 `(w,h)` 算长度、
+或者是否把**多块**的结果拼在了一起（5461 这个数看着像"某一块的偏移"而不是 4 的倍数）。
+
+**⇒ 这一条我不会用「已知红」掩盖**：它是**产品回归**，不是环境差异。
+`test` 测试红 ⇒ 主干现在是坏的 ⇒ 优先级高于我手上任何别的活。
+
