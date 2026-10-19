@@ -622,6 +622,16 @@ impl Atom {
         self
     }
 
+    /// **记上笔迹标签** ✓（外部需求 `try_stroke` v2 §4.2 ✓）。
+    ///
+    /// **为什么是链式而不是构造器参数** ✗：构造器**已有多个调用点** ✓，
+    /// 改签名要**全部**动 ✗ ⇒ **∴ 而**链式**零破坏** ✓（**∴ 与 `with_id` 同一写法 ✓**）。
+    #[must_use]
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
     /// 指定因果父原子。
     pub fn with_parents<I, S>(mut self, parents: I) -> Self
     where
