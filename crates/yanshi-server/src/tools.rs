@@ -17207,13 +17207,17 @@ fn paint_brush(
                 .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
                 .sum();
             format!(
-                "这一笔没落下任何像素（`painted_pixels=0`）⇒ 笔刷「{name}」的 `dabs_per_basic_radius` 是 0 \
-                 ⇒ dab 间距按基本半径算、趋于无穷 ⇒ **本次路径撑不满一枚印章**。\
+                "这一笔没落下任何像素（`painted_pixels=0`）⇒ **几乎都是 size 太小**：\
+                 `size={size:?}` ⇒ 半径约 size/2 px ⇒ 笔刷的抗锯齿分支（`stroke.rs` 的 `current_fadeout < aa_min`）\
+                 会把 `hardness` 调成**负数** ⇒ `draw_dab_default` 在 `hardness <= 0` 时整 dab 拒画。\
+                 **已实测**（第 731 轮）：`calligraphy` 在 `size=1/2/3` 全不落墨、`size=4` 起正常；\
+                 同一 size=3 下 `2B_pencil`／`100%_Opaque`／`Round_Bl` 都能落墨 ⇒ **不是 size 本身的问题**，\
+                 是那支笔的 `hardness`／抗锯齿参数在小半径下被推到负值。\
                  **这不代表整支笔刷不可用** ✗：同一支笔在**更大的 size 或更长路径**上通常能落墨 \
-                 （本次 `size={size:?}`、{n} 个点、路径总长 {path_len:.1}px）。\
-                 **怎么改（按省事排序）**：① **加大 size** ✓；② **加长路径** ✓；③ 换一支能画的笔刷 \
+                 （本次 {n} 个点、路径总长 {path_len:.1}px）。\
+                 **怎么改（按省事排序）**：① **加大 size 到 4 以上** ✓；② 加长路径 ✓；③ 换一支能画的笔刷 \
                  （`assets/brushes` 里绝大多数都能画 ✓）—— **换笔会改变风格，先试 ①②** ✓。\
-                 注：本次未产生像素的**确切机制尚未定位**（`dabs_per_basic_radius=0` 只是必要条件之一 ✓）。"
+                 注：`dabs_per_basic_radius=0` **不是**原因 —— `stroke.rs` 把间距钳在下限 1.0，不会趋于无穷。"
             )
         } else {
             let n = points.len();
