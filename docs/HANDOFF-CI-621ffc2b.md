@@ -163,6 +163,26 @@ done                                                                            
   `tool-collect-diagnostics`、`tool-brush-settings`（=0）、`tool-engine-capabilities`（=0）、
   `tool-brush-params-doc`（=0）、`tool-example-acceptance`（=1，已知红）。
 
+  **⇒ 判据的参数形态有 7 类**（`run-criteria-local.sh` 只适配第 ① 类）：
+
+| # | 形态 | 例 | 本脚本 |
+|---|---|---|---|
+| ① | `<base>` | 大多数 `tool-*` | **✓ 适用** |
+| ② | `<base> <doc> <token>` | `tool-export-path-doc`、`tool-brush-settings`、`tool-engine-capabilities`、`tool-brush-params-doc`、`tool-preview-image-contract`、`tool-collect-diagnostics`、`tool-example-acceptance` | ✗ 手动 |
+| ③ | `<base> [<local.yanshi>]` | `tool-bitmap-decode-scope` | ✗ 手动（1090 轮发现它把 token 当 base）|
+| ④ | **`<端口> [<web目录>]`** | **`serve-web`**（`serve-*.mjs` 只有一个）| ✗ 手动（传 URL ⇒ `ERR_SOCKET_BAD_PORT`）|
+| ⑤ | `<base>` + **环境变量** | `tool-cjk-text`（读 `YANSHI_WORKSPACE`/`YANSHI_EXPORT_DIR`）| ✓ 适用（1088 轮修了 export dir）|
+| ⑥ | 无参数 | `check-agents-selfcheck`、`check-criteria-have-exit3` | ✓ 适用 |
+| ⑦ | `<base>` + 自造文档 | 大多数 `tool-*` | ✓ 适用 |
+
+  **⇒ ④ 的正确调用**：
+  ```bash
+  node scripts/serve-web.mjs 23701 &     # 第一个参数是**端口**
+  sleep 4
+  curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:23701/            # 200
+  curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:23701/favicon.ico # 200
+  ```
+
   **⇒ 注意 `export_png` 的 `exports` 相对服务端 CWD**（`tools.rs:23184-23187`）⇒
   必须传 `YANSHI_EXPORT_DIR`，否则读导出文件的判据假得 exit 3。
 
