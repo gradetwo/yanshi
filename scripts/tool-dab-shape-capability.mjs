@@ -33,7 +33,7 @@ const check = (ok, why) => {
 const mainDoc = `ds_main_${stamp}`;
 const created = await post("/api/documents", { doc_id: mainDoc, width: 400, height: 400 });
 if (!created?.token) {
-  console.log("  ✗ 建文档失败");
+  console.log("  ⊘ 不可判：建文档失败（判据前提不成立，不是产品问题）");
   process.exit(3);
 }
 const caps = await post("/api/tools/list_engine_capabilities", {}, mainDoc, created.token);
@@ -49,7 +49,7 @@ const pixels = [];
 for (const ratio of [1, 8]) {
   const doc = `ds_r${ratio}_${stamp}`;
   const c = await post("/api/documents", { doc_id: doc, width: 400, height: 400 });
-  if (!c?.token) { console.log(`  ✗ ratio=${ratio} 建文档失败`); process.exit(3); }
+  if (!c?.token) { console.log(`  ⊘ 不可判：ratio=${ratio} 建文档失败（判据前提不成立）`); process.exit(3); }
   await post("/api/tools/create_layer", { layer_id: "L", name: "L" }, doc, c.token);
   const r = await post(
     "/api/tools/brush_stroke",

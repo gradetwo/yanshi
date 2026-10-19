@@ -87,7 +87,7 @@ if (argv.includes("--self-test")) {
   process.exit(ok ? 0 : 3);
 }
 if (argv.length === 0) {
-  console.error("  用法：node scripts/tool-which-source.mjs <路径>｜--self-test");
+  console.error("  ⊘ 不可判：缺参数（判据前提不成立）｜用法：node scripts/tool-which-source.mjs <路径>｜--self-test");
   process.exit(3);
 }
 let bad = false;
