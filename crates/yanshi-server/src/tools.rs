@@ -3384,9 +3384,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "试一笔：算出这一笔的效果但**不写入文档**（不产生原子、不改 seq、不改文件）⇒ 看一眼满意再 commit",
         mutating: false,
         params: &[
-            param!("layer_id", String, true, "落在哪个图层（只用于取该图的上下文，不写入）"),
-            param!("brush", String, true, "笔刷名"),
-            param!("points", Any, true, "控制点 [[x, y, pressure?], …]（文档像素）"),
+            param!("layer_id", String, false, "落在哪个图层（只用于取该图的上下文，不写入）"),
+            param!("brush", String, false, "笔刷名"),
+            param!("points", Any, false, "控制点 [[x, y, pressure?], …]（文档像素）"),
             param!("size", Number, false, "笔尖直径（像素；缺省用 .myb 自带）"),
             param!("color", Any, false, "笔尖颜色 {r,g,b,a} 或 [r,g,b,(a)]"),
             param!("opacity", Number, false, "整笔不透明度 0..1"),
@@ -3394,6 +3394,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("want_image", Boolean, false, "缺省 true = 返回区域图（base64 PNG）；false = 只返回包围盒与像素数"),
             param!("margin", Integer, false, "区域图在包围盒外扩的像素数（缺省 16）"),
             param!("label", String, false, "笔迹标签 ⇒ 提交时写进原子，供 list_atoms(label=…) 筛"),
+            param!("based_on", String, false, "基于某次试画：只覆盖本次传入的字段，其余全部继承"),
         ],
     },
     ToolSpec {
@@ -16332,6 +16333,8 @@ struct AttemptRecord {
     painted: usize,
     label: Option<String>,
     status: &'static str,
+    /// **原始参数**：`based_on` 靠它继承（第 602 轮：这个字段曾加失败，导致四次误判）。
+    params: Value,
 }
 
 type AttemptMap = std::collections::HashMap<String, AttemptRecord>;
@@ -19235,6 +19238,7 @@ fn write_commit_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
             painted: record.painted,
             label: record.label.clone(),
             status: "committed",
+            params: record.params.clone(),
         }
     };
     if record.doc_id != ctx.doc_id {
@@ -19281,7 +19285,53 @@ fn write_commit_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 /// **为什么能做到「不落笔」**：`paint_brush` 是纯计算 —— 它不调用 `commit` 也不调用
 /// `write_import_image`（实测函数体内这两类调用 0 次）。所以试画只需取它的返回，
 /// 不需要给引擎加开关。
-fn write_try_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value> {
+    // **`layer_id` 在 spec 里非必填**：否则框架会在合并之前拒掉只给 `based_on` 的调用
+    // （第 595 轮实测：错误来自框架校验，handler 根本没执行）。
+    if optional_str(raw_args, "based_on").is_none() {
+        for key in ["layer_id", "brush", "points"] {
+            if raw_args.get(key).is_none() {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("缺少必填参数 {key}（或给 based_on 从上次继承）")),
+                ));
+            }
+        }
+    }
+    let mut merged_owned: Option<Value> = None;
+    if let Some(base_id) = optional_str(raw_args, "based_on") {
+        let base_params = {
+            let map = attempts().lock().map_err(|_| {
+                YanshiError::new(
+                    ErrorCode::PreconditionFailed,
+                    ErrorContext::detail("尝试表锁失败"),
+                )
+            })?;
+            match map.get(&base_id) {
+                Some(record) => record.params.clone(),
+                None => {
+                    let known: Vec<String> = map.keys().take(5).cloned().collect();
+                    return Err(YanshiError::new(
+                        ErrorCode::ReferenceNotFound,
+                        ErrorContext::detail(format!(
+                            "找不到 based_on 的尝试 {base_id} ⇒ 现有：{known:?}（先 try_stroke 再继承）"
+                        )),
+                    ));
+                }
+            }
+        };
+        let mut base = base_params.as_object().cloned().unwrap_or_default();
+        if let Some(over) = raw_args.as_object() {
+            for (key, value) in over {
+                if key == "based_on" {
+                    continue;
+                }
+                base.insert(key.clone(), value.clone());
+            }
+        }
+        merged_owned = Some(Value::Object(base));
+    }
+    let args: &Value = merged_owned.as_ref().unwrap_or(raw_args);
     let layer_id = require_str(args, "layer_id")?;
     let brush = require_str(args, "brush")?;
     let points = parse_brush_points(args)?;
@@ -19355,6 +19405,7 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 painted: paint.painted,
                 label,
                 status: "pending",
+                params: args.clone(),
             },
         );
     }
