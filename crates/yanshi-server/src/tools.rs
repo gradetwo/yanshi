@@ -3370,6 +3370,12 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("layer_id", String, false, "只列该图层的原子"),
             param!("brush", String, false, "只列该笔刷画的原子（名字含该子串）"),
             param!("since_seq", Integer, false, "只列 seq 大于该值的原子"),
+            param!(
+                "bbox",
+                Any,
+                false,
+                "只列笔迹区域与该框相交的原子：[x, y, w, h]（文档像素）⇒ 「在画面这个区域里」怎么查"
+            ),
         ],
     },
     ToolSpec {
@@ -18715,6 +18721,14 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let want_layer = optional_str(args, "layer_id");
     let want_brush = optional_str(args, "brush").map(|value| value.to_lowercase());
     let since_seq = optional_u64(args, "since_seq");
+    // 区域筛选：`[x, y, w, h]`（文档像素）⇒ 只保留与该框相交的笔迹
+    let want_bbox = args.get("bbox").and_then(Value::as_array).and_then(|items| {
+        if items.len() != 4 {
+            return None;
+        }
+        let nums: Vec<f64> = items.iter().filter_map(Value::as_f64).collect();
+        (nums.len() == 4).then(|| (nums[0], nums[1], nums[2], nums[3]))
+    });
 
     let mut hits: Vec<Value> = Vec::new();
     for atom in document.log().atoms().iter().rev() {
@@ -18733,6 +18747,23 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         }
         if let Some(layer) = want_layer.as_ref() {
             if payload_str(atom, "layer_id").as_ref() != Some(layer) {
+                continue;
+            }
+        }
+        if let Some((bx, by, bw, bh)) = want_bbox {
+            let region = atom.payload.get("region");
+            let num = |key: &str| {
+                region
+                    .and_then(|value| value.get(key))
+                    .and_then(Value::as_f64)
+                    .unwrap_or(f64::NAN)
+            };
+            let (rx, ry, rw, rh) = (num("x"), num("y"), num("w"), num("h"));
+            if !rx.is_finite() || !ry.is_finite() || !rw.is_finite() || !rh.is_finite() {
+                continue;
+            }
+            let apart = rx + rw < bx || bx + bw < rx || ry + rh < by || by + bh < ry;
+            if apart {
                 continue;
             }
         }

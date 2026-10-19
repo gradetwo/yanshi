@@ -30,6 +30,14 @@ await call("brush_stroke", { layer_id: "p", brush: "100%_Opaque", points: [[100,
 const failures = [];
 
 
+// ⑥ 按 bbox 筛 ⇒ 只保留与该框相交的笔迹（外部 §109 要求的"在画面这个区域里"）
+const nearBox = await call("list_atoms", { bbox: [0, 0, 60, 60] });
+const farBox = await call("list_atoms", { bbox: [150, 150, 40, 40] });
+const emptyBox = await call("list_atoms", { bbox: [0, 0, 3, 3] });
+console.log(`  bbox=[0,0,60,60]⇒ ${(nearBox.atoms ?? []).length}｜bbox=[150,150,40,40]⇒ ${(farBox.atoms ?? []).length}｜bbox=[0,0,3,3]⇒ ${(emptyBox.atoms ?? []).length}`);
+if ((nearBox.atoms ?? []).length < 1) failures.push(`bbox 覆盖第一笔，应至少 1 条，实测 ${(nearBox.atoms ?? []).length} 条 ✗`);
+if ((emptyBox.atoms ?? []).length !== 0) failures.push(`bbox 与任何笔迹都不相交，应 0 条，实测 ${(emptyBox.atoms ?? []).length} 条 ⇒ 区域筛选退化成全返回 ✗`);
+
 // ⑤ 按 brush 筛 ⇒ 命中（外部 §109 实测它曾恒 0 条：笔刷名在 payload.source 里，不在顶层）
 const byBrush = await call("list_atoms", { brush: "100%_Opaque" });
 const listBrush = byBrush.atoms ?? [];
