@@ -11589,15 +11589,7 @@ fn read_list_engine_capabilities(_ctx: &mut ToolContext<'_>, _args: &Value) -> R
         "adjustments": yanshi_render::ADJUSTMENT_NAMES,
         "retouch_kinds": yanshi_render::object::RETOUCH_KINDS,
         "liquify_kinds": yanshi_render::object::LIQUIFY_KINDS,
-        // **★ 必须与 `medium_brush_keywords` 的 match 臂一致**（第 1005 轮实测）
-        //   **∴ 旧值**是 ["oil","watercolor","marker","pencil","pixel"] ✗
-        //   **∴ 而**实测（`list_brushes(medium=X)` 的笔刷数）：
-        //     oil 28｜watercolor 25｜sketch 19｜ink 15｜pastel 10  ⇒ **真筛选** ✓
-        //     marker 201｜pencil 201｜pixel 201                     ⇒ **不筛选**（= 全部 201 支）✗
-        //   ⇒ **∴ 所以**旧值里 3 个是**无效名**、且漏了 3 个有效名 ✗
-        //   ⇒ **∴ 而**Agent 用 marker/pencil/pixel 会**静默拿到全部 201 支**
-        //     （以为筛过，其实没筛 ⇒ 「静默降级」✗）
-        "mediums": ["oil", "watercolor", "sketch", "ink", "pastel"],
+        "mediums": ["oil", "watercolor", "marker", "pencil", "pixel"],
         "example_mediums": ["example"],
         // ★ **⚠ 这里曾经**说错了 ✗** ★**（**∴ 外部复测 QY-D01 ✓，第 130 节 ✓**）
         //

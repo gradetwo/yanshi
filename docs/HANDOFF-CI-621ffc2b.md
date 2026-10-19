@@ -73,7 +73,7 @@ grep -rlP '\x{FFFD}' --include=*.rs --include=*.mjs --include=*.md --include=*.s
 | `tools.rs` 的 `unwrap/expect` | 20，**全部带文案且都是不变量**（如 `expect("data 已是对象")`）|
 | `trackTemp` 覆盖 | **按口径报**（见下），实测缺 **0** |
 | 已知红条数 | **30**，且与 `run-criteria.sh` 的运行时判据**一致**（见下）|
-| **能力列表的名字有效性** | `mediums` 5 ✓（1005 修）｜`filters` 14 ✓｜`retouch_kinds` 4 ✓｜`liquify_kinds` 3 ✓｜**`adjustments` 12/12 ✓** |
+| **能力列表的名字有效性** | `mediums` **6 ✓（原值就对，1005 改错已回滚）**｜`filters` 14 ✓｜`retouch_kinds` 4 ✓｜`liquify_kinds` 3 ✓｜`adjustments` 12/12 ✓ |
 
 **能力列表的「名字有效」是什么意思**（第 1010 轮查齐）：
 
