@@ -16176,6 +16176,24 @@ pub fn brush_reads_the_canvas(brush: &hokusai::Brush) -> bool {
 ///（实测：`Flat2#1` / `ramon-Knife` 的对象里那 3 行绿条**一个不少** ✗）。
 /// **用真实笔刷** ✓ 就绕开了这个陷阱：它只标记"这支笔真的落过颜料"的地方 ✓。
 ///
+/// **把整笔总弧长写进 `BrushState`** ✓ —— `pressure_shape`／`stroke_taper` 的**前置条件**。
+///
+/// **为什么必须有这一步**：引擎里两处启用条件都要求 `state.stroke_total_length > 1.0`
+/// （`vendor/hokusai-core/src/stroke.rs:471` 与 `:925`），而这个字段**只在 `state.rs:90` 声明过，
+/// 从来没被赋值** ⇒ 它恒为 0 ⇒ 两个参数**传了也完全不生效**（第 611 轮实测：四种取值像素数
+/// 全是 2438）。补丁包里的这段本该在 yanshi 侧，我第一次没应用成功，`.rej` 里躺了很多轮。
+fn prime_stroke_total_length(state: &mut hokusai::BrushState, points: &[(f64, f64, f64)]) {
+    let total: f32 = points
+        .windows(2)
+        .map(|w| {
+            let dx = (w[1].0 - w[0].0) as f32;
+            let dy = (w[1].1 - w[0].1) as f32;
+            (dx * dx + dy * dy).sqrt()
+        })
+        .sum();
+    state.stroke_total_length = total;
+}
+
 /// **纯涂抹笔刷（opaque = 0 ✓）在这里是空的** ✓ —— 那没关系 ✓：
 /// 它的成果是"**把已有的颜色抹开**" ✓ ⇒ 由"落笔前后有可见差异"那条判据接住 ✓（见调用处 ✓）。
 fn brush_deposit_mask(
@@ -16184,6 +16202,7 @@ fn brush_deposit_mask(
     region: PaintRegion,
 ) -> Vec<u8> {
     let mut state = hokusai::BrushState::default();
+    prime_stroke_total_length(&mut state, points);
     let mut surface = hokusai::tile_mem::MemSurface::new();
     let _ = stamp_stroke(brush, &mut state, &mut surface, points);
     read_surface_region(&surface, region).0
@@ -16650,6 +16669,7 @@ fn paint_brush(
     }
 
     let mut state = hokusai::BrushState::default();
+    prime_stroke_total_length(&mut state, &points);
     let mut surface = hokusai::tile_mem::MemSurface::new();
     // **区域要在落笔之前就算出来** ✗ —— 先在下面算了一遍 ✓，才能把**底图**喂进 surface ✓。
     // **同一个公式只写一份** ✓（抽成 `brush_stroke_region` ✓）：落笔前喂底图用它 ✓、
