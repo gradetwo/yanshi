@@ -121,6 +121,14 @@ done                                                                            
 
 ## 还没做完的
 
+- **`liquify_needing_params` / `retouch_needing_params` 缺失**（第 1012 轮发现，**不是 bug**）：
+  `filters_needing_params` 存在（`{"dehaze":["air"]}`），但同类字段**只有这一个**。
+  实测还需参数的：
+  - `liquify_push` ⇒ 缺 `direction`
+  - `clone_stamp` / `heal_stamp` ⇒ 缺 `source_offset`
+  **⇒ 但错误信息**说清了**（「缺少必填参数 direction」）⇒ **不是静默降级** ✓
+  ⇒ 所以这只是**「提前告知」的可用性缺口**（Agent 要先失败一次才知道），不是缺陷。
+
 - **`fill` / `fill_region` 加 `blend_mode` 参数**（功能已有，走 `set_property`；缺方便入口）
 - **`adjust_levels` / `tone_curve` 工具**（外部改用 `add_adjustment(levels)` 自行绕过，优先级降低）
 - **等外部回答**：他们 `cv.fill` 的实现（解释 `193/49` vs `226/154` 的差）
