@@ -36,6 +36,22 @@ check(noCheck.length === 0, `可机检的规矩段都要有自检或命令（实
 //    **∴ 而**下面这句**是**诚实的边界**✗**：**∴ 9 段**里**只有 4 段**能机检**✗** ✓
 console.log(`  可机检 ${targets.length} 段／全部 ${ruled.length} 段 ⇒ 其余靠人（内核 ②·自检）`);
 
+// ③b **交接文档里不许写死 commit hash**（内核 ②·别写会过期的数字）
+//     **∴ 第 971 轮实测**✗：**∴ 我**在 HANDOFF 里写了 `d8b3324d`，**随后**又提交 `0d2a7b9b`
+//     ⇒ **立刻过期** ✗ ⇒ **∴ 所以**改成命令 `git rev-parse --short HEAD` ✓
+{
+  const handoff = (() => { try { return readFileSync("docs/HANDOFF-CI-621ffc2b.md", "utf8"); } catch { return ""; } })();
+  // 7–40 位纯十六进制，且**前面不是** `或 `（排除命令里的占位）
+  const hashes = [...handoff.matchAll(/(?<![`\w-])([0-9a-f]{7,40})(?![`\w-])/g)]
+    .map((m) => m[1])
+    // 排除明显不是 hash 的（例如 `0` 或 `30`）
+    .filter((h) => h.length >= 7);
+  check(
+    hashes.length === 0,
+    `交接文档里不许写死 commit hash（实测 ${hashes.length} 个：${hashes.slice(0, 4).join(",")}）⇒ 改成 \`git rev-parse --short HEAD\``
+  );
+}
+
 // ④ **循环引用**：A 指向 B 而 B 又指回 A（内核 ②·消除重复要连元信息一起消除）
 //    **∴ 第 300 轮实测**✗：**∴ AGENTS.md** 说「与 HANDOFF 第六节必须一致」✗
 //    ⇒ **∴ 而** HANDOFF 说「见 AGENTS.md」✗ ⇒ **∴ 于是**成了**循环**✗** ✓
