@@ -213,6 +213,50 @@ pub fn scale_alpha(pixel: LinearRgba, opacity: f32) -> LinearRgba {
 
 #[cfg(test)]
 mod tests {
+    /// **★ `ALL` 必须含**每一个变体 ✗**（第 1000 轮加的不变量）
+    ///
+    /// **∴ 来历**：第 999 轮实测 —— `ColorDodge` 是变体、`parse` 支持它、
+    /// `set_property` 也接受它 ⇒ **唯独不在 `ALL` 里** ✗
+    /// ⇒ **∴ 于是**遍历 `ALL` 的 5 个测试**从没测过它** ✓
+    ///
+    /// **∴ 这条测试**用 `names()` 的项数**当权威**（因为 `names()` 是
+    /// 「受支持的全部混合模式名」，UI／校验都用它）✓
+    /// ⇒ **∴ 所以**若 `ALL` 与 `names()` 不等长 ⇒ 就是漏了变体 ✗
+    #[test]
+    fn all_covers_every_variant() {
+        // **手工清单**（判据自己造的 ⇒ 可以写死 ✓）⇒ 每个变体的规范名。
+        // **∴ 局限**：若**新增变体**而忘加进 `ALL`，这条测试**抓不到** ✗
+        //   ⇒ 但它**能抓住**「已列出的变体漏进 ALL」这一类（第 999 轮的 `ColorDodge` ✓）。
+        const EXPECTED: [&str; 10] = [
+            "normal",
+            "multiply",
+            "screen",
+            "overlay",
+            "darken",
+            "lighten",
+            "add",
+            "subtract",
+            "difference",
+            "color_dodge",
+        ];
+        let got: Vec<&str> = crate::blend::BlendMode::ALL
+            .iter()
+            .map(|m| m.as_str())
+            .collect();
+        for name in EXPECTED {
+            assert!(got.contains(&name), "ALL 漏了 {name}（实测 ALL = {got:?}）");
+        }
+        // **往返**：ALL 里每个名字都必须能被 parse 还原（防 as_str 与 parse 漂移）
+        for mode in crate::blend::BlendMode::ALL {
+            assert_eq!(
+                crate::blend::BlendMode::parse(mode.as_str()),
+                Some(mode),
+                "{} 无法被 parse 还原",
+                mode.as_str()
+            );
+        }
+    }
+
     use super::*;
 
     fn px(r: f32, g: f32, b: f32, a: f32) -> LinearRgba {
