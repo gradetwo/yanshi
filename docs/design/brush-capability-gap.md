@@ -13413,3 +13413,41 @@ AtomKind::CreateSelection => {
 
 **⇒ 这条的价值**：它把外部两个抱怨（`E1027` 死参数 + `E1028` 自交）连成一个修法。
 
+## 三百二十七、`create_selection` 的布尔合并：**可执行实现清单**（第 778 轮）
+
+**现状**（别误读）：`d3b30ea2` 只让 `mode` **可达**，落盘仍是 `log.rs` 的
+`state.selections.insert(...)` ⇒ **覆盖**，不是合并。⇒ 外部「裙 − 口」会得到「口」。
+已在 `docs/FOR-APPLE2011.md` 里写了紧急警告。
+
+**已具备的零件**（都不必新写）：
+
+| 零件 | 位置 |
+|---|---|
+| `SelectionShape::coverage(x, y) -> f32` | `crates/yanshi-render/src/selection.rs:319`（`SelectionGeom` 那层在 `:246`）|
+| `SelectionGeom::Bitmap { bbox, mask }` | `selection.rs:123-127` |
+| L8 位图编码 | `yanshi_render::png::encode_png_l8(w, h, &bytes)` |
+| 位图注册表 | `yanshi_render::selection::register_bitmap_mask(hash, Arc<DecodedBitmapMask>)` |
+| 现成的用法样板 | `tools.rs:22343-22362`（`smart_select` 裁剪 → L8 PNG → blob → 注册）|
+
+**实现步骤**（4 步，每步都能单独验证）：
+
+1. **给 `create_selection` 与 `list_selections` 加 `area`**（现在两处都没有，而 `smart_select`
+   有 `selected_area_px` ⇒ 不一致）。面积用 `coverage` 在像素中心采样后求和：
+   `for y in 0..h { for x in 0..w { area += shape.coverage(x+0.5, y+0.5) as f64 } }`。
+   ⇒ 300×300 是 9 万次调用（毫秒级），4K 会很慢 ⇒ **必须加一个上限**：
+   超过 `w*h > 4_000_000` 时按步长 4 采样并报 `area_sampled: true`（不让它静默变慢）。
+2. **在 `write_create_selection` 里做合并**：当 `mode != "new"` 且 id 已存在时，
+   取旧 `SelectionShape` 与新形状，各自按步骤 1 的采样得到 `Vec<u8>`（0..255 覆盖率），
+   按 mode 做 `max`／`min(旧,新)`／`min` 得到新 mask。
+3. **存成 Bitmap**：走 `selection.rs:123` 的 `SelectionGeom::Bitmap` + `register_bitmap_mask`
+   （照 `tools.rs:22343` 那段抄）。`bbox` 用两者的并集。
+4. **判据升级**：`tool-selection-mode-merge.mjs` 改成断 `area`：
+   `subtract` 后 `area < 40000`、`add` 后 `> 40000`、`intersect` 后 `≤ 6400`。
+
+**代价（必须写进提交说明）**：合并后 `shape.kind` 从 `rect`/`polygon` 变成 `bitmap`
+⇒ 读回形状的调用方会看到不同结构。这是**已知取舍**，因为位图布尔没有自交问题
+（外部的 `E1028` 手描多边形自交成「Y 形空洞」正是矢量布尔的老毛病）。
+
+**为什么这一轮没做完**：上下文用尽。零件都齐、步骤都写清了，下一轮直接照做。
+不硬写半成品，是因为上一轮已经证明「半成品比不修更危险」。
+
