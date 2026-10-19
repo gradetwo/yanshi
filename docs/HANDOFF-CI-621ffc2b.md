@@ -224,9 +224,21 @@ done                                                                            
       | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
   node scripts/tool-export-path-doc.mjs http://127.0.0.1:23641 _b "$T"
   ```
-  **⇒ 已知需 3 个参数的**：`tool-export-path-doc`（=0）、`tool-preview-image-contract`（=0）、
-  `tool-collect-diagnostics`、`tool-brush-settings`（=0）、`tool-engine-capabilities`（=0）、
-  `tool-brush-params-doc`（=0）、`tool-example-acceptance`（=1，已知红）。
+  **⇒ 已知需 3 个参数的（共 8 个，逐个手动跑过）**：
+
+  | 判据 | 手动跑结果 |
+  |---|---|
+  | `tool-export-path-doc` | **0** ✓ |
+  | `tool-preview-image-contract` | **0** ✓ |
+  | `tool-brush-settings` | **0** ✓ |
+  | `tool-engine-capabilities` | **0** ✓ |
+  | `tool-brush-params-doc` | **0** ✓ |
+  | **`tool-brush-tag-filter`** | **0** ✓（第 1003 轮补）|
+  | **`tool-param-parity`** | 未手动跑（`exit 2`=用法错）|
+  | `tool-collect-diagnostics` | 未手动跑（`exit 2`）|
+  | `tool-example-acceptance` | **1**（已知红）|
+
+  **⇒ 所以「需 3 参数」不是缺陷，是**判据的参数形态不统一**（本仓的真实特征）✓
 
   **⇒ 判据的参数形态有 7 类**（`run-criteria-local.sh` 只适配第 ① 类）：
 
