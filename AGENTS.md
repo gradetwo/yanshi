@@ -674,6 +674,31 @@ gh workflow run CI
 **这是「用未确认的对象做操作」的第 2 次**（第 836 轮是把旧 run id 当新的用）。
 两次都不是技术问题，是**没确认操作对象**。
 
+### 更根本的一条：**同 `concurrency group` 只跑一个 ⇒ 一个在跑时别派发**
+
+`ci.yml:98-100`：
+
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+```
+
+- `main` 上 `cancel-in-progress: **false**` ⇒ 新 run **不会取消**旧的 ✓
+- **但同一个 group 只跑一个** ⇒ 新 run **排队**，它的 `jobs` 数是 **0**
+
+**⇒ 所以我每派发一次，就在队尾排一个，而排队期间它的提交已经过期了。**
+（第 861 轮实测：`39297992563` 排队时 `jobs` 数为 0，前一个 `39296336171` 还在 `in_progress`。）
+
+**规则**：`gh run list --limit 1 --json status` 若已有 `in_progress`／`pending`，
+**不要再派发** —— 等它完成。
+
+**自检**：`gh run list --limit 3 --json status,conclusion --jq '.[] | "\(.status)/\(.conclusion // "-")"'`
+⇒ 若同时有 `in_progress` 和 `pending`，那个 `pending` 是我多派的。
+
+**⇒ 「pending 永远不动」的三重原因**（840／853／861 三轮才查清）：
+① 我人工取消过（840）② 我的轮次间隔 20 秒 << CI 周期（853）③ **我每轮派发 ⇒ 越排越长**（861）。
+
 ## 判据里的「数字」分两类，只有一类可以写死（第 798／812／813 轮实测）
 
 **规则**：写 `length !== N` 之前先问：**这个 N 是判据自己造的，还是被测系统决定的？**
