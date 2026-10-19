@@ -3432,7 +3432,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         profile: Profile::Core,
         summary: "把 try_batch 的一组试画按顺序贴回文档 ⇒ 返回 atom_ids，可整组撤销",
         mutating: true,
-        params: &[param!("attempt_ids", Any, true, "try_batch 返回的 attempt_ids 数组")],
+        params: &[
+            param!("attempt_ids", Any, false, "try_batch 返回的 attempt_ids 数组（批量）"),
+            param!("attempt_id", String, false, "单笔模式：只提交这一笔"),
+        ],
     },
     ToolSpec {
         name: "commit_stroke",
@@ -19000,18 +19003,54 @@ fn write_try_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             }
         }
     }
+    // **顶层也要给 bbox 与 pixels_touched**（外部 §117）：他们按顶层字段取值，
+    //   而我只放在 `per_stroke` 每项里 ⇒ 他们看到 `bbox: None`、`pixels_touched: None`。
+    //   ⇒ **∴ 跨层级**是最常见的"字段放错地方"（AGENTS.md 第 3 条）⇒ **∴ 两层都给** ✓。
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for r in &results {
+        if let Some(bbox) = r.get("bbox").and_then(Value::as_array) {
+            if bbox.len() == 4 {
+                let v: Vec<f64> = bbox.iter().filter_map(Value::as_f64).collect();
+                if v.len() == 4 {
+                    min_x = min_x.min(v[0]);
+                    min_y = min_y.min(v[1]);
+                    max_x = max_x.max(v[0] + v[2]);
+                    max_y = max_y.max(v[1] + v[3]);
+                }
+            }
+        }
+    }
+    let merged_bbox = if min_x <= max_x && min_y <= max_y {
+        json!([min_x, min_y, max_x - min_x, max_y - min_y])
+    } else {
+        Value::Null
+    };
     Ok(json!({
         "ok": true,
         "attempt_ids": attempt_ids,
+        "attempt_id": attempt_ids.first().cloned(),
         "count": results.len(),
         "per_stroke": results,
+        "bbox": merged_bbox,
+        "pixels_touched": total_pixels,
         "pixels_touched_total": total_pixels,
-        "note": "逐笔试算、不落笔；commit_batch(attempt_ids) 按同样顺序贴回",
+        "note": "逐笔试算、不落笔；顶层 bbox 是各笔的合并包围盒，pixels_touched 是合计；commit_batch(attempt_ids) 按同样顺序贴回",
     }))
 }
 
 /// **`commit_batch`**：按顺序把一组试画贴回（需求 v2 §3.2，必须返回 atom_ids 以便整组撤销）。
 fn write_commit_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **也接受单数 `attempt_id`**（外部 §117 是按单数调的）⇒ **∴ 两种形状都收**，免得他们改调用方式 ✓。
+    if let Some(single) = args.get("attempt_id").and_then(Value::as_str) {
+        let value = write_commit_stroke(ctx, &json!({ "attempt_id": single }))?;
+        return Ok(json!({
+            "ok": true,
+            "atom_ids": value.get("atom_id").cloned().into_iter().collect::<Vec<_>>(),
+            "count": 1,
+            "committed_as": "bitmap",
+            "note": "按单数 attempt_id 提交；批量请传 attempt_ids 数组",
+        }));
+    }
     let ids: Vec<String> = match args.get("attempt_ids").and_then(Value::as_array) {
         Some(list) => list
             .iter()

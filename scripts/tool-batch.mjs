@@ -39,6 +39,21 @@ if (tb.ok !== true) failures.push(`try_batch 失败 ⇒ ${JSON.stringify(tb).sli
 if (Number(tb.count) !== 3 || (tb.attempt_ids ?? []).length !== 3) failures.push(`应返回 3 笔 3 个 attempt_ids，实测 ${tb.count}/${(tb.attempt_ids ?? []).length} ✗`);
 if (!(Number(tb.pixels_touched_total) > 0)) failures.push(`pixels_touched_total=${tb.pixels_touched_total}，应大于 0 ✗`);
 
+// ⑤ 顶层必须有 attempt_id / bbox / pixels_touched（外部 §117 的痛点：这些只放在 per_stroke 里，
+//    他们按顶层取值 ⇒ 看到 None ⇒ 说"闭环断了"）
+console.log(`  顶层字段 ⇒ attempt_id=${String(tb.attempt_id).slice(-6)}｜bbox=${JSON.stringify(tb.bbox)}｜pixels_touched=${tb.pixels_touched}`);
+if (!tb.attempt_id) failures.push("顶层没有 attempt_id ⇒ 调用方无从调用 commit_batch ✗");
+const topBbox = tb.bbox;
+if (!Array.isArray(topBbox) || topBbox.length !== 4) failures.push(`顶层 bbox 应是 4 元组，实测 ${JSON.stringify(topBbox)} ✗`);
+if (!(Number(tb.pixels_touched) > 0)) failures.push(`顶层 pixels_touched=${tb.pixels_touched}，应大于 0 ✗`);
+// 恒等式：顶层像素数 ≥ 每一笔的像素数（合计不小于单笔）
+for (const one of tb.per_stroke ?? []) {
+  if (Number(tb.pixels_touched) < Number(one.pixels_touched)) {
+    failures.push(`顶层 pixels_touched=${tb.pixels_touched} 小于单笔 ${one.pixels_touched} ⇒ 合计算错了 ✗`);
+    break;
+  }
+}
+
 const mid = await call("list_atoms", { limit: 50 });
 console.log(`  试画后笔迹数 ${before.count} ⇒ ${mid.count}`);
 if (Number(mid.count) !== Number(before.count)) failures.push(`try_batch 落笔了：笔迹数从 ${before.count} 变成 ${mid.count} ✗`);
