@@ -39,7 +39,12 @@ pub enum BlendMode {
 
 impl BlendMode {
     /// 全部模式。
-    pub const ALL: [BlendMode; 9] = [
+    // **★ `ALL` 必须含**每一个变体 ✗（第 999 轮实测：`ColorDodge` 曾是变体、
+    //   `parse` 也支持它、`set_property` 也接受它 ⇒ **唯独不在 `ALL` 里** ✗）✓
+    //   ⇒ **∴ 于是**任何遍历 `ALL` 的地方（UI 下拉／文档生成／校验）都**漏掉它** ✓
+    //   ⇒ **∴ 而**`list_engine_capabilities` 报 **11** 项（9 + `linear_dodge` 别名 + `color_dodge`）
+    //     而 `ALL` 只有 **9** ⇒ **∴ 所以**两边对不上 ✓
+    pub const ALL: [BlendMode; 10] = [
         Self::Normal,
         Self::Multiply,
         Self::Screen,
@@ -49,6 +54,7 @@ impl BlendMode {
         Self::Add,
         Self::Subtract,
         Self::Difference,
+        Self::ColorDodge,
     ];
 
     /// **受支持的全部混合模式名** ✓（真实用户报告里"非法值被静默写入" ✓ ⇒ 校验需要一份权威清单 ✓）。
