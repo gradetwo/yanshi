@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 88 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 89 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -32,7 +32,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（88 个）。
+    /// 核心层：默认注册（89 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -50,11 +50,21 @@ pub enum Profile {
     Collab,
     /// 结构修改（属性、路径、笔刷）。
     Structure,
+    /// 油画 workflow 预设：Core + History + Retouch，笔刷限油画相关。
+    Oil,
+    /// 水彩 workflow 预设：Core + History，笔刷限水彩相关。
+    Watercolor,
+    /// 素描 workflow 预设：Core + History，笔刷限铅笔/炭笔相关。
+    Sketch,
+    /// 水墨 workflow 预设：Core + History，笔刷限书法/墨相关。
+    Ink,
+    /// 粉彩 workflow 预设：Core + History + Retouch，笔刷限粉彩/粉笔相关。
+    Pastel,
 }
 
 impl Profile {
     /// 全部 profile。
-    pub const ALL: [Profile; 9] = [
+    pub const ALL: [Profile; 14] = [
         Self::Core,
         Self::History,
         Self::Changeset,
@@ -64,6 +74,11 @@ impl Profile {
         Self::Annotation,
         Self::Collab,
         Self::Structure,
+        Self::Oil,
+        Self::Watercolor,
+        Self::Sketch,
+        Self::Ink,
+        Self::Pastel,
     ];
 
     /// 字符串名（MCP/HTTP/WS 会话的 `profile` 参数取值）。
@@ -78,6 +93,11 @@ impl Profile {
             Self::Annotation => "annotation",
             Self::Collab => "collab",
             Self::Structure => "structure",
+            Self::Oil => "oil",
+            Self::Watercolor => "watercolor",
+            Self::Sketch => "sketch",
+            Self::Ink => "ink",
+            Self::Pastel => "pastel",
         }
     }
 
@@ -93,6 +113,11 @@ impl Profile {
             "annotation" => Self::Annotation,
             "collab" => Self::Collab,
             "structure" => Self::Structure,
+            "oil" => Self::Oil,
+            "watercolor" => Self::Watercolor,
+            "sketch" => Self::Sketch,
+            "ink" => Self::Ink,
+            "pastel" => Self::Pastel,
             other => {
                 return Err(YanshiError::new(
                     ErrorCode::InvalidArgument,
@@ -108,7 +133,7 @@ impl Profile {
     /// ⇒ **后期调色、滤镜、蒙版、修复类工具全都"看不见"** ✗；
     /// 而 CLI 又没有简写 ✓ ⇒ 得手敲几十个字符的完整列表才能激活全部工具 ✗
     /// ⇒ `--profile all` 就是他给的解法 ✓。
-    pub const IMPLEMENTED: [Profile; 8] = [
+    pub const IMPLEMENTED: [Profile; 13] = [
         Profile::Core,
         Profile::History,
         Profile::Changeset,
@@ -117,6 +142,11 @@ impl Profile {
         Profile::Annotation,
         Profile::Collab,
         Profile::Structure,
+        Profile::Oil,
+        Profile::Watercolor,
+        Profile::Sketch,
+        Profile::Ink,
+        Profile::Pastel,
     ];
 
     /// **解析逗号分隔的 profile 列表** ✓，支持 `all` 简写 ✓。
@@ -533,14 +563,30 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，88 个）。
+    /// 核心层（默认注册，89 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
 
     /// 按 profile 启用工具集。
+    ///
+    /// 介质 profile（Oil/Watercolor/Sketch/Ink/Pastel）是 workflow 预设：
+    /// 传了就自动展开成对应的功能组组合。
     pub fn with_profiles(profiles: &[Profile]) -> Self {
-        let mut enabled: BTreeSet<Profile> = profiles.iter().copied().collect();
+        let mut enabled: BTreeSet<Profile> = BTreeSet::new();
+        for profile in profiles.iter().copied() {
+            enabled.insert(profile);
+            match profile {
+                Profile::Oil | Profile::Pastel => {
+                    enabled.insert(Profile::History);
+                    enabled.insert(Profile::Retouch);
+                }
+                Profile::Watercolor | Profile::Sketch | Profile::Ink => {
+                    enabled.insert(Profile::History);
+                }
+                _ => {}
+            }
+        }
         enabled.insert(Profile::Core);
         let mut tools: Vec<ToolSpec> = ALL_TOOLS
             .iter()
@@ -1359,7 +1405,7 @@ fn region_of(result: &CommitResult) -> Option<Bbox> {
 const ID_ARGS: &[ParamSpec] = &[param!("object_id", String, true, "对象 id")];
 const LAYER_ID: &[ParamSpec] = &[param!("layer_id", String, true, "图层 id")];
 
-/// 核心层 88 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 89 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -3091,6 +3137,30 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 false,
                 "覆盖 .myb 字段：{规范名: 数值}，如 {\"smudge\":1.0,\"opaque\":0.2}；字段名就是 .myb 的 JSON 键**也可直接用四组语义别名**：hand_jitter／speed_gain／color_variance／smudge_amount ✓（一个词管一组 .myb 项 ✓）；，拼错会报错并给候选。**常见字段与合理范围**（多为 0..1，除注明外）：`opaque`／`smudge`／`smudge_length`（0..5）／`dabs_per_radius`（1..20，越大越密；>20 明显变慢）／**`dabs_per_second`（0..500；>0 才会按时间出 dab ⇒ 它决定 `time_ms` 有没有用）**／`speed1_slowness`／`speed1_gamma`（速度映射的形状）／`hardness`／`elliptical_dab_angle`（度）。**`radius` 是对数**（想改笔尖大小请用 `size`）✓"
             ),
+            param!(
+                "hand_tremor",
+                Number,
+                false,
+                "手抖 0..1（缺省 0 = 不启用）：线条别那么直。≡ brush_params 的 hand_jitter"
+            ),
+            param!(
+                "speed_ink",
+                Number,
+                false,
+                "笔速感应 0..1（缺省 0 = 不启用）：慢笔多墨、快笔飞白。≡ brush_params 的 speed_gain"
+            ),
+            param!(
+                "color_breath",
+                Number,
+                false,
+                "色彩呼吸 0..1（缺省 0 = 不启用）：一笔内颜色微妙变化。≡ brush_params 的 color_variance"
+            ),
+            param!(
+                "paint_push",
+                Number,
+                false,
+                "推颜料 0..1（缺省 0 = 不启用）：厚涂感。≡ brush_params 的 smudge_amount"
+            ),
             param!("preview", Boolean, false, "缺省 true = 产出这一笔的预览图；false = 不产出（连续作画提速；预览仍可由 export_png / get_document 取）"),
             param!(
                 "wait_for_render",
@@ -3435,18 +3505,26 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "list_brushes",
-        profile: Profile::Structure,
+        profile: Profile::Core,
         // **P1 #9（第 254 轮）**：原来写死 4 支内置笔刷、而且看不到工作区 => AI 不知道有哪 201 支
         // `.myb` 可挑，也不知道 `brush_params` 的字段叫什么。现在枚举走仓库已有的资产枚举，
         // 并附上**规范字段名全表**（与 P0 #4 的 `brush_params` 配对）。
         summary: "列出可用 .myb 笔刷（含各自参数摘要 ＋ 规范字段名全表）=> 先看有哪些笔刷，再决定 brush 与 brush_params",
         mutating: false,
-        params: &[param!(
-            "filter",
-            String,
-            false,
-            "只列名字里含该子串的笔刷（如 oil／watercolor／pencil／Clouds）"
-        )],
+        params: &[
+            param!(
+                "filter",
+                String,
+                false,
+                "只列名字里含该子串的笔刷（如 oil／watercolor／pencil／Clouds）"
+            ),
+            param!(
+                "medium",
+                String,
+                false,
+                "按介质过滤：oil／watercolor／sketch／ink／pastel ⇒ 只返回该画法常用的笔刷白名单（与 filter 可叠加）"
+            ),
+        ],
     },
 ];
 
@@ -5368,17 +5446,69 @@ fn read_get_checkpoints(ctx: &mut ToolContext<'_>) -> Result<Value> {
 /// `brush_params` 能覆盖任意 `.myb` 字段，但 AI 得先知道字段的**规范名**（= `BrushSetting::cname()`
 /// = `.myb` 的 JSON 键）=> 这里把全表一并给出。
 /// **`filter`**：201 支一次全塞进上下文并不便宜 => 支持按名字子串过滤（oil/watercolor/pencil/…）。
+/// 介质 profile 的笔刷白名单：名字小写匹配，任一子串命中即保留。
+fn medium_brush_keywords(medium: &str) -> Option<&'static [&'static str]> {
+    match medium {
+        "oil" => Some(&[
+            "oil-",
+            "oil_",
+            "flat",
+            "mop",
+            "knife",
+            "smudge",
+            "smear",
+            "detail_brush",
+            "imp_details",
+            "classic-knife",
+        ]),
+        "watercolor" => Some(&[
+            "watercolor",
+            "water-",
+            "water_",
+            "wet_",
+            "wet-",
+            "thin_watercolor",
+            "wateryflat",
+            "acrylic",
+        ]),
+        "sketch" => Some(&["pencil", "2b", "4h", "8b", "charcoal", "sketch", "chalk"]),
+        "ink" => Some(&[
+            "calligraphy",
+            "ink",
+            "textured_ink",
+            "sumi",
+            "dip-pen",
+            "brushpen",
+            "kabura",
+            "penbrush",
+        ]),
+        "pastel" => Some(&["pastel", "chalk", "smudge", "smear", "charcoal-blur"]),
+        _ => None,
+    }
+}
+
 fn read_list_brushes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let filter = args
         .get("filter")
         .and_then(Value::as_str)
         .map(|value| value.to_lowercase());
+    // 介质白名单：medium 参数命中任一关键词即保留
+    let medium_keywords = args
+        .get("medium")
+        .and_then(Value::as_str)
+        .and_then(|m| medium_brush_keywords(&m.to_lowercase()));
     let entries = ctx.workspace.list_assets("brush").unwrap_or_default();
     let mut brushes: Vec<Value> = Vec::new();
     for entry in entries {
         let name = entry.name.clone();
+        let name_lower = name.to_lowercase();
         if let Some(needle) = filter.as_ref() {
-            if !name.to_lowercase().contains(needle.as_str()) {
+            if !name_lower.contains(needle.as_str()) {
+                continue;
+            }
+        }
+        if let Some(keywords) = medium_keywords {
+            if !keywords.iter().any(|kw| name_lower.contains(kw)) {
                 continue;
             }
         }
@@ -16818,6 +16948,35 @@ fn apply_brush_style(
     }
 }
 
+/// 意图级笔刷参数 → `brush_params` 别名，与显式 `brush_params` 合并（显式优先）。
+fn merge_intent_brush_params(args: &Value) -> Option<Value> {
+    const INTENTS: [(&str, &str); 4] = [
+        ("hand_tremor", "hand_jitter"),
+        ("speed_ink", "speed_gain"),
+        ("color_breath", "color_variance"),
+        ("paint_push", "smudge_amount"),
+    ];
+    let mut map = Map::new();
+    for (intent, alias) in INTENTS {
+        if let Some(v) = args.get(intent).and_then(Value::as_f64) {
+            let v = v.clamp(0.0, 1.0);
+            if v > 0.0 {
+                map.insert(alias.to_string(), json!(v));
+            }
+        }
+    }
+    if let Some(obj) = args.get("brush_params").and_then(Value::as_object) {
+        for (k, v) in obj {
+            map.insert(k.clone(), v.clone());
+        }
+    }
+    if map.is_empty() {
+        None
+    } else {
+        Some(Value::Object(map))
+    }
+}
+
 fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **笔迹标签**：`brush_stroke` 最终走 `write_import_image` 的 `ctx.commit` ⇒ 那里会取走它 ✓。
     ctx.pending_label = optional_str(args, "label");
@@ -17015,6 +17174,8 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         .get("opacity")
         .and_then(Value::as_f64)
         .map(|value| value / glaze_passes as f64);
+    // 意图参数（hand_tremor 等）展开成 brush_params 别名，与显式 brush_params 合并（显式优先）
+    let merged_brush_params = merge_intent_brush_params(args);
     // **落笔走唯一的实现** ✓（`paint_brush` ✓，与 `brush_preview` 共用 ✓）。
     let paint = paint_brush(
         ctx,
@@ -17028,7 +17189,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         // **文档里必须喂底图** ✓ —— 涂抹类笔刷靠它工作 ✓。
         true,
         // **★ P0 #4：把调用方给的字段覆盖传进去 ✗ ★**（**∴ 我第一版补成了 `None` ✗ ⇒ ①② 假绿 ✓）★
-        args.get("brush_params"),
+        merged_brush_params.as_ref(),
         color_mixing,
         &dtimes,
         None,
@@ -17355,7 +17516,7 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             //   这时**不该**再警告 ✓（用户最想骂的就是这条误报 ✓）。
             //   覆盖失败（字段名拼错之类）就按原值判断 —— 真正的报错由落笔那条路给出 ✓。
             .map(|(_, mut brush)| {
-                if let Some(params) = args.get("brush_params") {
+                if let Some(params) = merged_brush_params.as_ref() {
                     let _ = apply_brush_params(&mut brush, params);
                 }
                 brush.get(hokusai::BrushSetting::DabsPerSecond).base_value > 0.0

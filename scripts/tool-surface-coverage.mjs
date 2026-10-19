@@ -63,7 +63,12 @@ for (const profile of declaredProfiles) {
 }
 
 // ④ 声明 profile 集合 vs 判据覆盖的集合 ✓（避免新 profile 静默不被对账 ✗）
-const KNOWN_PROFILES = ["core", "history", "changeset", "retouch", "conflict", "annotation", "collab", "structure"];
+// 介质 workflow 预设（oil/watercolor/sketch/ink/pastel）也会出现在 /api/tools 里，
+// 且它们会自动展开成功能组（见 with_profiles），所以也要被对账 ✓。
+const KNOWN_PROFILES = [
+  "core", "history", "changeset", "retouch", "conflict", "annotation", "collab", "structure",
+  "oil", "watercolor", "sketch", "ink", "pastel",
+];
 const unaccounted = declaredProfiles.filter((p) => !KNOWN_PROFILES.includes(p));
 if (unaccounted.length > 0) {
   fail(`/api/tools 声明了本判据未覆盖的 profile：${unaccounted.join("、")} ⇒ 请把它加进 KNOWN_PROFILES 并给出判据` +
