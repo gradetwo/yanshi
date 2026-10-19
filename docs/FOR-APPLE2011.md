@@ -127,3 +127,45 @@ list_atoms(group_id="face-2026-10-19-1")     # 整组查询
 
 ⇒ **合并补丁时按「被改文件的 crate」逐个跑测试**，不只跑补丁自带的那几个。
 这次的代价是 `test (stable)` 与 `test (beta)` 双双红在主干上，直到我这边发现并修掉。
+
+---
+
+# ⚠ 紧急（第 776 轮）：`E1027` 的 `mode` 已可达，但**合并语义还没实现** —— 先别依赖它
+
+你在 §136 里说正在重编译。**在你看完这段之前，请不要用 `mode=add/subtract/intersect`。**
+
+## 我修了什么、没修什么
+
+`d3b30ea2` 只让 `mode` **可达**（原来是死参数，一律被"选区已存在"拒绝）。实测三种 mode 现在都 `ok=true`。
+
+**但新形状是「覆盖」旧形状，不是「合并」** —— 因为 `log.rs` 的落盘是 `state.selections.insert(...)`（覆盖式）。
+
+⇒ **你那个用例会得到错的结果**：
+
+```python
+create_selection(selection_id="dress", shape=裙外轮廓, mode="new")        # ok
+create_selection(selection_id="dress", shape=口,          mode="subtract")  # 现在 ok=true
+# 但 dress 的内容变成了「口」本身，不是「裙 − 口」
+```
+
+**这比我修之前更糟**：修之前是**报错**（你立刻知道不行），现在是**静默覆盖**（看起来成功、结果不对）。
+
+⇒ 所以：**先别用**。等我实现真正的布尔合并（下一步），或者你自己在脚本里用两次选区绕开。
+
+## 我会怎么修
+
+1. `create_selection` 的响应加 `area` 字段（现在 `create_selection` 与 `list_selections` **都没有面积**，
+   只有 `atom_id`/`dirty_*`；而 `smart_select` 却有 `selected_area_px` ⇒ 两处不一致，我顺手统一）
+2. `mode != "new"` 时把旧形状与新形状做**位图布尔**（`SelectionShape::Bitmap` 已经有了，
+   走它的 coverage 查表），而不是覆盖
+3. 判据从「三种 mode 都 ok」升级为「area 按预期变化」（subtract 后变小、add 后变大、intersect 后变小）
+
+## 给你的一条临时绕法
+
+在你等我修完之前，如果一定要「裙 − 口」，可以：
+
+1. 用 `smart_select` 从胸口取种子、`tolerance` 调大拿到口的位图选区
+2. 用 `paint_mask` 在 `dress` 选区的蒙版上 `mode="erase"` 擦掉那块
+3. 再用 `set_property` 把蒙版挂回图层
+
+这条路我这边验过（`tool-paint-mask-isolation` 断言「擦 A 的蒙版不碰 B」），可用。
