@@ -4,9 +4,14 @@
 //   **∴ 消息里有**画布尺寸**✗ 与**笔迹范围**✗ 与**「**别去换笔刷**」**✗** ✓
 //   ⇒ **∴ 而**不能**只说**「**路径撑不满 dab 间距**」✗**（**∴ 那是**合理但非真因**✗** ✓
 const base = process.argv[2];
-const docId = process.argv[3] || "oob1";
+// **∴ doc id 要唯一**✗（**∴ 与别的判据撞车 ⇒ 建文档失败 ⇒ 假红 ✓**）
+const docId = process.argv[3] || `oob-${process.pid}-${Date.now() % 100000}`;
 if (!base) { console.error("用法: node scripts/tool-stroke-outside-bbox.mjs <base-url> [docId]"); process.exit(2); }
 const failures = [];
+// **∴ 任何异常都必须**说出来**✗**（**∴ 第 336 轮：判据的诚实在于退出码与输出 ✓**）
+//   ⇒ **∴ CI 上实测**✗**：输出停在**「画布外 ⇒ …」**✗ 而**退出码 1**✗** ⇒ **∴ 看不到原因**✗** ✓
+process.on("uncaughtException", (e) => { console.log(`  ✗ 判据自身抛错（不是产品问题）：${e && e.message}`); process.exit(3); });
+process.on("unhandledRejection", (e) => { console.log(`  ✗ 判据自身被拒（不是产品问题）：${e && e.message}`); process.exit(3); });
 const created = await (await fetch(`${base}/api/documents`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ doc_id: docId, width: 400, height: 400 }),
