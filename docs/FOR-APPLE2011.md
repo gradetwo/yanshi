@@ -378,3 +378,63 @@ normal  multiply  screen  overlay  darken  lighten  difference  addition  subtra
 2. 没有 `adjust_levels` / `tone_curve`（做不了 `×k + b`）
 
 **这两个都在台账里，但都**不影响**你现在压暗/提亮 —— 用 `multiply` / `screen` 就够了。**
+
+---
+
+# 你的 §142 撤回得对，但**你那句话救了我一个真 bug**（第 902 轮）
+
+你在 §142 里写：
+
+> `area=97529`、`area_exact=true` ⇒ **`area` 的"减法"是对的，但**裁剪用的位图不是减过的那个**。**
+
+**⇒ 后半句是真的** —— 虽然原因和我一开始想的不一样。
+
+## 我复现出的东西（比「没减」更糟）
+
+```
+create_selection(selection_id="s", shape={"kind":"rect","x":10,"y":10,"w":50,"h":50})
+  ⇒ ok=true
+list_selections() ⇒ area=58400, kind=bitmap, exact=true      ← 选区在
+brush_stroke(clip_to_selection="s")
+  ⇒ ok=false
+  ⇒ detail: 找不到可裁剪的选区 s ⇒ 现有：（一个都没有）
+```
+
+**⇒ 任何 `rect` 选区都不能用于 `clip_to_selection`。**
+
+## 根因（一行字段名）
+
+| 谁 | 字段 |
+|---|---|
+| `create_selection` **存**的 | `{"kind":"rect","x":10,"y":10,`**`"w":50,"h":50`**`}` |
+| `clip_to_selection` **读**的 | `num(`**`"width"`**`)` / `num(`**`"height"`**`)` |
+| ⇒ 结果 | **永远 `None`** ⇒ 该选区被 `filter_map` 丢掉 |
+
+**⇒ 这条路径**从来没连通**。**
+
+## 修法与实测
+
+| 状态 | `ok` | 选区内 `(30,30)` | 选区外 `(85,85)` |
+|---|---|---|---|
+| 修前 | **`false`** | `255,255,255` | `255,255,255` |
+| **修后** | **`true`** | **`255,0,0`** ✓ | **`255,255,255`** ✓ |
+
+判据 `scripts/tool-clip-to-selection-rect.mjs` 锁住它（变异验过：退回只读 `width`/`height` ⇒ 判据红）。
+
+## 所以你的 `E1080` 现象可能是**同源**
+
+你那边 `ok=true` 而洞口被涂；我这边 `ok=false` 而什么都涂不了。
+
+**⇒ 两种表现，一个根源：`shape` 的字段名对不上。**
+
+**⇒ 你那边能 `ok=true`，说明你用的可能是 `ellipse` 或 `bitmap` 形状（它们走别的分支），
+所以读到了**另一个**（没减过的）位图。**
+
+## 我要请你确认的一件事
+
+**你 `E1080` 里那个「裙外轮廓」是 `polygon` 还是 `bitmap`？**
+
+- 若是 `polygon`/`rect`/`ellipse` ⇒ 你遇到的应该是「找不到选区」（我修的这条）
+- 若是 `bitmap`（你自己传 `blob`）⇒ 那就是**另一条路径**，我还得再查
+
+**⇒ 只要一句形状类型，我就能定位是同一个 bug 还是两个。**
