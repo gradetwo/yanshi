@@ -767,7 +767,7 @@ node scripts/browser-no-stale-read.mjs "http://127.0.0.1:$P/?doc=$DOC&token=$TOK
 
 ### 三十一、✅ **`browser-no-stale-read` 正确用法下**通过**** ✓（第 333 轮 ✓）—— Y-01 路径上的又一条独立证据
 
-#### 一、实测（**含 heavy 的工程 ✓ ＋ 退�码不接管道 ✓**）
+#### 一、实测（**含 heavy 的工程 ✓ ＋ 退出码不接管道 ✓**）
 ```bash
 node scripts/browser-no-stale-read.mjs "http://127.0.0.1:$P/?doc=$DOC&token=$TOK"   # CDP_PORT=9333 ✓
 ```
