@@ -42,6 +42,18 @@ if (Number(byL1.count) > Number(allForLayer.count)) {
   failures.push(`layer_id=p 得 ${byL1.count} 条，比全部 ${allForLayer.count} 条还多 ⇒ 筛选没生效 ✗`);
 }
 
+// ⑪ thumb_size：给了就把缩略图缩小（传输量是面积的函数 ⇒ 长边减半应显著变小）
+const full = await call("list_atoms", { limit: 5 });
+// **用 16 而不是 64**：判据里画的笔画区域可能小于 64px，那样缩放条件不触发（是我第一次写错的原因）
+const small = await call("list_atoms", { limit: 5, thumb_size: 16 });
+const fullLen = ((full.atoms ?? [])[0]?.thumbnail ?? "").length;
+const smallLen = ((small.atoms ?? [])[0]?.thumbnail ?? "").length;
+console.log(`  thumb_size ⇒ 缺省 ${fullLen} 字符｜64px ${smallLen} 字符`);
+if (fullLen > 0) {
+  if (!(smallLen > 0)) failures.push("给了 thumb_size 却拿不到缩小后的缩略图 ✗");
+  else if (!(smallLen < fullLen)) failures.push(`thumb_size=64 的 base64（${smallLen}）不比缺省的（${fullLen}）小 ⇒ 缩放没生效 ✗`);
+}
+
 // ⑨ since_seq：按「严格大于」筛（自上次之后 ⇒ 不含边界本身；边界给最大 seq 时得 0 条）
 const allSeqs = (await call("list_atoms", { limit: 50 })).atoms ?? [];
 const sorted = allSeqs.map((a) => Number(a.seq)).sort((x, y) => x - y);

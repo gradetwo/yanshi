@@ -3579,6 +3579,12 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "只列笔迹区域与该框相交的原子：[x, y, w, h]（文档像素）⇒ 「在画面这个区域里」怎么查"
             ),
             param!(
+                "thumb_size",
+                Integer,
+                false,
+                "缩略图长边像素：缺省 0 = 保持 1:1；给 128 则**最近邻**缩小 ⇒ 传输量按边长平方下降"
+            ),
+            param!(
                 "want_thumb",
                 Boolean,
                 false,
@@ -21785,6 +21791,7 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         .and_then(Value::as_bool)
         .unwrap_or(true);
     const MAX_THUMBS: usize = 20;
+    let thumb_size = optional_u64(args, "thumb_size").unwrap_or(0) as u32;
     let include_non_stroke = args
         .get("include_non_stroke")
         .and_then(Value::as_bool)
@@ -21901,7 +21908,29 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             let bbox = yanshi_core::Bbox::new(rx, ry, rw, rh);
             if let Ok((w, h, pixels)) = ctx.workspace.render_region_raw(&ctx.doc_id, bbox) {
                 if w > 0 && h > 0 {
-                    if let Some(png) = yanshi_render::png::encode_png(w, h, &pixels) {
+                    // **`thumb_size > 0` 时最近邻缩小**（第 690 轮：前两次都栽在类型与所有权上——
+                    // `w`/`h` 是 `u32`，而缩放循环里要 `usize`；且不能重绑定 `pixels` 的两条分支）。
+                    let (ew, eh, ebytes): (u32, u32, Vec<u8>) =
+                        if thumb_size > 0 && (w > thumb_size || h > thumb_size) {
+                            let (wu, hu) = (w as usize, h as usize);
+                            let long = wu.max(hu);
+                            let nw = (wu * thumb_size as usize / long).max(1);
+                            let nh = (hu * thumb_size as usize / long).max(1);
+                            let mut small = vec![0u8; nw * nh * 4];
+                            for yy in 0..nh {
+                                let sy = (yy * hu / nh).min(hu - 1);
+                                for xx in 0..nw {
+                                    let sx = (xx * wu / nw).min(wu - 1);
+                                    let si = (sy * wu + sx) * 4;
+                                    let di = (yy * nw + xx) * 4;
+                                    small[di..di + 4].copy_from_slice(&pixels[si..si + 4]);
+                                }
+                            }
+                            (nw as u32, nh as u32, small)
+                        } else {
+                            (w, h, pixels.clone())
+                        };
+                    if let Some(png) = yanshi_render::png::encode_png(ew, eh, &ebytes) {
                         hit["thumbnail"] = json!(base64::encode(&png));
                         thumbs += 1;
                     }
