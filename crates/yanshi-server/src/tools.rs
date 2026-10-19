@@ -269,6 +269,9 @@ pub struct ToolContext<'a> {
     pub session: String,
     /// 是否拥有 owner 权限（跨 actor revert，12.5）。
     pub owner: bool,
+
+    /// **这一次提交要带的笔迹标签**（外部需求 `try_stroke` v2 §4.2）。
+    pub pending_label: Option<String>,
     /// **调用者的角色** ✓（Phase 5 ✓）—— **工具层强制**要用的就是它 ✓。
     ///
     /// **为什么必须带进上下文** ✓（本轮抓到的**第二个**授权漏洞 ✗）：
@@ -356,6 +359,7 @@ impl<'a> ToolContext<'a> {
             actor: actor.into(),
             session: session.into(),
             owner: false,
+            pending_label: None,
             // **缺省 owner** ✓：本地进程/测试就是 owner ✓；网络入口必须显式改 ✓（见字段说明 ✓）。
             role: crate::token::Role::Owner,
             wait_for_render: true,
@@ -410,7 +414,13 @@ impl<'a> ToolContext<'a> {
     }
 
     fn commit(&mut self, kind: AtomKind, payload: Value) -> Result<CommitResult> {
-        let atom = Atom::new(kind, self.actor.clone(), self.session.clone(), payload);
+        // **笔迹标签只对**这一笔**生效** ⇒ **∴ 读完立刻清** ✓
+        let atom = match self.pending_label.take() {
+            Some(label) => {
+                Atom::new(kind, self.actor.clone(), self.session.clone(), payload).with_label(label)
+            }
+            None => Atom::new(kind, self.actor.clone(), self.session.clone(), payload),
+        };
         // **`begin_changeset` 打开的那个变更集，在这里自动生效** ✓ ——
         // 这是"调用方自己把多步操作归成一个变更集"的**唯一**收口点 ✓：
         // 普通笔 ✓、形状 ✓、填充 ✓、效果 ✓、图层 ✓……**所有**提交都经过这里 ✓
@@ -3137,6 +3147,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
             param!("style", String, false, "confident = 起笔重收笔轻；sketchy = 确定性抖动与断笔；缺省不改（一个字节都不变）"),
             param!("clip_to_selection", String, false, "只把墨落在该选区里（选区 id，或 latest）；缺省 = 不裁剪。注意：传的 id 必须与建选区时用的名字完全一致（不要自己加 sel- 之类前缀；不确定就用 latest 取最新那个）"),
+            param!("label", String, false, "笔迹标签（部位名，如「鼻子-轮廓」）⇒ 记进原子并可由 get_atom 读回；缺省不记"),
         ],
     },
     ToolSpec {
@@ -16808,6 +16819,8 @@ fn apply_brush_style(
 }
 
 fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **笔迹标签**：`brush_stroke` 最终走 `write_import_image` 的 `ctx.commit` ⇒ 那里会取走它 ✓。
+    ctx.pending_label = optional_str(args, "label");
     // ★ **`wait_for_render` 参数 ✗**：**∴ 缺省不给 ⇒ 保持 true（现有行为 ✓）**
     //   ⇒ **∴ 给了就就地改 ✓ ⇒ **∴ 不等渲染时省掉那 66% ✓**
     if let Some(wait) = args.get("wait_for_render").and_then(Value::as_bool) {
@@ -18520,6 +18533,9 @@ fn read_get_atom(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         "session": atom.session.to_string(),
         "timestamp": atom.timestamp,
         "message": atom.message,
+        // **笔迹标签** ✓（外部需求 v2 §4.2）：**写进原子**还要**读得回来** ✓
+        // ⇒ **∴ 否则**字段存在**✗** 而**调用方看不见**✗（**∴ 等于没写 ✓**）。
+        "label": atom.label,
         "changeset_id": atom.changeset_id.as_ref().map(|id| id.to_string()),
         "parents": atom.parents.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
         // **净荷就是这一条的全部意义所在** ✓（界面拿它显示"改了什么" ✓）。
