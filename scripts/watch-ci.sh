@@ -49,7 +49,7 @@ trap 'rm -f "$PREV_FILE"' EXIT
 while :; do
   STATE=$(gh api "repos/gradetwo/yanshi/actions/runs/$RUN" --jq '.status + ":" + (.conclusion // "-")' 2>/dev/null)
   # 逐 job 比对结论
-  while IFS=$'\t' read -r name concl; do
+  while IFS=$'\t' read -r name concl started; do
     key="$name"
     grep -qxF "${key}	${concl}" "$PREV_FILE" 2>/dev/null && continue
     printf '%s\t%s\n' "$key" "$concl" >> "$PREV_FILE"
@@ -58,10 +58,13 @@ while :; do
       failure)   echo "  ✗ $name" ;;
       cancelled) echo "  ⊘ ${name}（取消）" ;;
       skipped)   echo "  － ${name}（跳过）" ;;
-      *)         echo "  ⏳ ${name}（${concl}）" ;;
+      *)         echo "  ⏳ ${name}（${concl}${started:+，起于 ${started}}）" ;;
     esac
+  # **带上已跑时长**（第 1043 轮加）：**∴ 为什么** —— 第 1042 轮我凭「轮次数」估
+  #   `shard 3/6` 跑了 32 分钟，而用 `date` 对照 `started_at` 实际只有 **14 分钟** ✗
+  #   ⇒ 轮次间隔不固定（12–80 秒）⇒ 凭轮次估时长**必然不准** ✗
   done < <(gh api "repos/gradetwo/yanshi/actions/runs/$RUN/jobs" \
-            --jq '.jobs[] | "\(.name)\t\(.conclusion // .status)"' 2>/dev/null)
+            --jq '.jobs[] | "\(.name)\t\(.conclusion // .status)\t\(.started_at // "-")"' 2>/dev/null)
 
   case "$STATE" in
     completed:*) echo "  ⇒ run 完成：${STATE#completed:}"; exit 0 ;;
