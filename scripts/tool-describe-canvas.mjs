@@ -18,7 +18,11 @@ const W = 200, H = 150;
 const boot = await fetch(`${base}/api/documents`, {
   method: "POST",
   headers: { "content-type": "application/json" },
-  body: JSON.stringify({ doc: `describe_canvas_${Date.now()}`, width: W, height: H }),
+  // **★ 第 1164 轮修**：建文档 API 认 **`doc_id`**，**不认 `doc`** ✗
+  //   ⇒ 原来写 `doc:` ⇒ API 忽略它 ⇒ 返回**已有的** `_b`（runner 起的 64×64）
+  //   ⇒ 于是判据描述的是 `_b` ⇒ 报「width = 64（期望 200）」⇒ **假红** ✗
+  //   实测：`{"doc_id":"dc_x","width":200,"height":150}` ⇒ doc_id=dc_x｜w=200｜h=150 ✓
+  body: JSON.stringify({ doc_id: `describe_canvas_${Date.now()}`, width: W, height: H }),
 });
 const bootBody = await boot.json().catch(() => ({}));
 const token = bootBody.token;
