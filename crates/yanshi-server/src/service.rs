@@ -2214,6 +2214,22 @@ impl Workspace {
             .lines()
             .filter(|line| !line.trim().is_empty())
             .count();
+        // **★ 把「实际恢复了什么」放进返回值** ✗（外部 §84 ✓）★
+        //   ⇒ **∴ 他们实测**✗**：`import_project` 返回 `ok=true` ✗ 而 `list_layers` 返回 `[]`**✗**
+        //   ⇒ **∴ 于是**每一笔都报「图层 paint 不存在」✗ 而**笔数 0**✗**
+        //   ⇒ **∴ 所以**：**∴ `ok=true`**✗ **只表示**调用成功**✗** ⇒ **∴ 不表示**图层可用**✗** ✓✓
+        //   ⇒ **∴ 而**这与 §64（`read_canvas_effective`）／§70（`target_layer_supported`）**同一个模式**✗** ✓
+        let restored_layers: Vec<String> = self
+            .document(&doc_id)
+            .map(|document| {
+                document
+                    .state()
+                    .layers
+                    .keys()
+                    .map(|id| id.as_str().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
         Ok(json!({
             "doc_id": doc_id,
             "atoms": atom_count,
@@ -2222,6 +2238,9 @@ impl Workspace {
             "blobs_unreplayable": unreplayable,
             "entries": entries.len(),
             "had_render": render.is_some(),
+            "layers": restored_layers,
+            "layers_count": restored_layers.len(),
+            "note": "`layers` 是**实际恢复**的图层名（不是包里有几个）⇒ 若它为空或少于预期，说明结构没恢复全 ✗",
             "hint": "已导入并打开 ⇒ 可用 get_document / render_region 核对；原文档未被触碰 ✓",
         }))
     }
