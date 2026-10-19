@@ -28153,4 +28153,4 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
 tool-export-idempotent.mjs  CI 上 3 笔 100%_Opaque 全都没记可重放 recipe（kept_no_recipe 本机 0 / CI 3 ⇒ omitted 0），属引擎侧可重放构造；最小构型见台账第九十三节。转绿条件：kept_no_recipe 回到 0。
 tool-single-point-rejected.mjs  CI 上「两点 5px + size 400」会落墨（应报错），4/6 次出现；与 tool-zero-dab-hint 同根——极短路径落墨判定在 CI(AMD EPYC 7763) 与本机(i5-4250U) 相反。最小构型见台账第九十七节。转绿条件：两点 5px + size 400 在 CI 上也返回 ok=false。
 tool-taper-shrinks-ink.mjs            stroke_taper 让墨面积反而大 8.7%（基线 1259 vs 1369）；根因是 dab 密度按半径倒数增加、半径×密度不守恒。真缺陷，等引擎修（见 brush-capability-gap.md 三百一十八节）
-tool-selection-mode-merge.mjs  mode 已可达但语义仍是覆盖不是合并（第 780 轮）；area 断言精确抓出 s_add 应 41600 实 1600
+tool-selection-mode-merge.mjs  布尔合并未实现 ⇒ mode=add/subtract/intersect 现在**明确报错**（第 807 轮改的：原来是静默覆盖，外部 §136 说『比报错更危险』）⇒ 判据仍红是**预期**，它守的是『合并做出来之前不许静默通过』。真正实现在 brush-capability-gap 三百二十七节第 2-3 步
