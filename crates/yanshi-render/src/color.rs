@@ -387,7 +387,16 @@ pub fn parse_spec_color(value: &serde_json::Value) -> Option<LinearRgba> {
                     }
                     Some(raw.round() as u8)
                 };
-                let bytes = [byte(0, 0)?, byte(1, 0)?, byte(2, 0)?, byte(3, 255)?];
+                // ★ **混合域的陷阱**（第 948 轮实测）：`[200,200,200,1]`
+                //   前三个通道是**字节域**（200）⇒ 走本分支；
+                //   而第 4 个 `1` 是**线性域**（用户想表达「不透明」）⇒
+                //   若直接按字节解释 ⇒ alpha = 1/255 ⇒ **几乎全透明** ⇒
+                //   合成后只剩背景 ⇒ 采样恒为 (255,255,255) ✗
+                //   ⇒ 于是 `[200,…]` 与 `[100,…]` **给出同一个结果** ⇒ 外部 §145 的整组测试失效。
+                //   ⇒ 修：**RGB 走字节分支、且 a 恰好是 1.0 时，按「不透明」= 255 处理** ✓
+                let alpha_raw = numbers.get(3).copied().unwrap_or(255.0);
+                let alpha_byte = if alpha_raw == 1.0 { 255 } else { byte(3, 255)? };
+                let bytes = [byte(0, 0)?, byte(1, 0)?, byte(2, 0)?, alpha_byte];
                 Some(straight_linear_from_bytes(bytes))
             } else {
                 let channel = |index: usize, default: f32| {
