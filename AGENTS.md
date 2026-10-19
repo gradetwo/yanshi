@@ -665,6 +665,35 @@ assert not resp.get("image_skipped"), f"有图被跳过: {resp['image_skipped']}
 **∴ 所以**：**∴ 三次**都**是**「**我的**判据**」**✗ 错**✗** ⇒ **∴ 而**不**是**被测对象**✗** ✓✓
 ```
 
+**★★★★★ 跑判据前必须确认 `target/release/yanshi-serve` 是新的（第 956 轮，代价 10 轮）**
+
+```
+**∴ 实测**（第 947–956 轮）：我改了 `tools.rs` 与 `color.rs` 后**没有重新 build**，
+   就复用 `target/release/yanshi-serve` 跑判据 ⇒ 测出「`[200,…]` 与 `[100,…]` 都给 255」✗
+   ⇒ 于是「修」了一处**死代码**（`alpha_raw == 1.0 ⇒ 255`），并宣布「四层齐」✗
+   ⇒ 第 956 轮探针证明：**修好版与变异版的 alpha 完全相同**（都是 1）⇒ 那行改动**不影响任何行为** ✗
+   ⇒ 而撤掉它之后 JS 判据**仍然全绿**（188 / 200 / 100 / 40,120,60）✓
+**∴ 所以**：**那个「bug」多半根本不存在** —— 是**陈旧二进制**测出来的假象。
+```
+
+**规则**：本机跑任何 `scripts/tool-*.mjs` / `browser-*.mjs` 之前，**先确认二进制比源码新**：
+
+```bash
+# 方案 ①（最稳）：强制重建再跑
+cargo build --release -p yanshi-http 2>&1 | tail -1
+# 方案 ②（快）：比对 mtime
+[ target/release/yanshi-serve -nt crates/yanshi-server/src/tools.rs ] || cargo build --release -p yanshi-http
+```
+
+**自检**：`ls -l --time-style=+%H:%M:%S target/release/yanshi-serve` 与
+`ls -l --time-style=+%H:%M:%S crates/yanshi-server/src/tools.rs` —— **后者不该更新**。
+
+**⇒ 这与「重计算交给 CI」不冲突**：CI 里永远是从源码 build 的，所以 **CI 上的数字是可信的**；
+**不可信的只有「本机复用旧二进制」这一种情况**。
+
+**⇒ 判别信号**：若一个「bug」在本机**稳定复现**而 CI 上**任何一片都不红**，
+先怀疑**本机二进制陈旧**，而不是「CI 环境不同」。
+
 **★★★★ 「我的测量比被测对象更容易错」——本场三次，全是判据自己错（第 888／904／916 轮）**
 
 | 轮 | 我的测量 | 错在哪 | 代价 |
