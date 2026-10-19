@@ -13282,3 +13282,53 @@ IHDR: width=64 height=64 bit_depth=8 color_type=2 interlace=0
 **⇒ 下一轮只需看一处**：`unfilter_png` 的行循环是 `for _ in 0..height` 还是 `while`。
 若补丁把它从 `for` 改成了 `while`（或改成了按 `raw.len()` 判断），那就是根因。
 
+### 三百二十四节的第三轮：**`5461 = 4096 + 1365`**，两次写入叠在同一个缓冲里（第 758 轮）
+
+**直接向运行中的服务器上传那个夹具**，拿到完整响应：
+
+```
+{"blob_hash":"sha256:09b3...","decoded_from":{"format":"png","height":64,"width":64},
+ "mime_type":"image/x-yanshi-raw","ok":true,"size":21844}
+png 字节 = 2343｜size 字段 = 21844｜差 = 5460
+```
+
+**⇒ 先把 21844 拆干净**：
+
+| 算式 | 结果 |
+|---|---|
+| `21844 / 4` | **5461**（个 RGBA 像素）|
+| 正确像素数 | **4096**（= 64 × 64）|
+| `5461 − 4096` | **1365** |
+| `4096 / 3` | 1365.33 ⇒ **1365 = 4096 // 3** |
+
+**⇒ 所以 `5461 = 4096 + 1365 = 4096 + (4096 // 3)`。**
+
+**⇒ 这个形状只对应一件事**：`pixels` 这个缓冲被**写了两次**：
+1. 先按「灰度 1 通道」解出 `4096` 个字节（`64 × 64 × 1`）；
+2. 再按「RGB 3 通道」把某个 **4096 字节**的缓冲转成 RGBA ⇒ `chunks_exact(3)` ⇒ **1365** 块 ⇒ 追加 1365 个像素。
+
+⇒ 合起来 `4096 + 1365 = 5461` 个 1 字节写 + … 不对，是把「字节数」和「像素数」混了。
+**⇒ 更准确的说法**：`pixels` 最终有 **5461 × 4 = 21844** 字节，
+而其中前 `4096 // 4` 与后 `1365` 的来源不同 ⇒ **同一次调用里两个分支都跑了**。
+
+**⇒ 而源码里这两个分支是互斥的**：
+
+```rust
+if channels == 4 {
+    Some((parsed.width, parsed.height, raw))
+} else {
+    let mut pixels = Vec::with_capacity(parsed.width as usize * parsed.height as usize * 4);
+    for chunk in raw.chunks_exact(3) { pixels.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]); }
+    Some((parsed.width, parsed.height, pixels))
+}
+```
+
+**⇒ 所以只剩一种解释**：`decode_png` **被调用了两次、结果被拼在一起**，
+或者 `unfilter_png` 内部的 `pixels` 缓冲（`Vec::with_capacity`）在**两次调用之间被复用**。
+
+**⇒ 补丁正好加了一个共用结构 `ParsedPng`** —— 若它带一个可变的 `pixels` 字段并被复用，
+形状就完全对上。**下一轮要看 `ParsedPng` 有没有缓冲字段、`unfilter_png` 的 `pixels` 是不是每次新建。**
+
+**⇒ 这轮的产出是一个恒等式**：`size == 4 × (4096 + 4096//3)` ⇒ `21844`。
+任何修法只要让 `size == 16384`，这个恒等式就不再成立 ⇒ **可当判据**。
+
