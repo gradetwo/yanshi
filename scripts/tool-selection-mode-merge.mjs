@@ -38,14 +38,21 @@ async function scenario(id, mode, shape, expect) {
   const detail = (r.context ?? {}).detail;
   console.log(`  ${id} mode=${mode} ⇒ ok=${r.ok}${r.ok ? "" : "｜" + detail}`);
   if (r.ok !== true) { failures.push(`${id} 的 mode=${mode} 被拒（${detail}）⇒ 死参数 ✗`); return; }
-  // **面积从 `list_selections` 读不到、从 `create_selection` 也读不到**
-  // （两者的响应都没有 `area` 字段，只有 `atom_id`/`dirty_*`；而 `smart_select` 却返回
-  //  `selected_area_px` ⇒ 不一致，已记进台账三百二十七节）。
-  // ⇒ 所以这里只断**能验证的**：三种 mode 都必须 ok=true（修前全部被拒），且选区仍在。
   const list = await call("list_selections", {});
   const still = (list.selections ?? []).find((x) => x.selection_id === id);
   if (!still) { failures.push(`${id} mode=${mode} 之后选区消失了 ✗`); return; }
-  console.log(`    ${id} 仍在，shape.kind=${still.shape?.kind ?? "?"}`);
+  // **`area` 是第 779 轮加的**（`area_exact` 标出「这个数能不能信」）。
+  // ⇒ 只有 `area_exact === true` 时才能断言数值；否则必须**明说算不出来**，不许当成空选区。
+  const got = Number(still.area);
+  const exact = still.area_exact === true;
+  console.log(`    ${id} 仍在，kind=${still.shape?.kind ?? "?"}｜area=${got}｜area_exact=${exact}`);
+  if (exact) {
+    // rect 情况可以精确验：subtract 必须变小、add 必须变大、intersect 必须 ≤ 小矩形面积
+    if (!expect(got)) failures.push(`${id} mode=${mode} 的 area=${got} 不符预期（精确值）✗`);
+  } else if (!(got === 0)) {
+    // 声称不精确却给了非零面积 ⇒ 两个字段互相矛盾
+    failures.push(`${id} area_exact=false 但 area=${got} ⇒ 两个字段矛盾 ✗`);
+  }
 }
 
 const BIG = 200 * 200;                                   // 40000
