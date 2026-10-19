@@ -676,6 +676,15 @@ assert not resp.get("image_skipped"), f"有图被跳过: {resp['image_skipped']}
 **∴ 所以**：**那个「bug」多半根本不存在** —— 是**陈旧二进制**测出来的假象。
 ```
 
+**★ 用脚本，不要靠记得**（第 973 轮）：
+
+```bash
+bash scripts/run-criteria-local.sh scripts/tool-xxx.mjs
+```
+
+它替你做四件事：**验新鲜度 → 自动重建 → 起临时服务 → `trap` 清理**；
+服务起不来就 `exit(3)`（判据前提不成立 ≠ 产品失败）。
+
 **规则**：本机跑任何 `scripts/tool-*.mjs` / `browser-*.mjs` 之前，**先确认二进制比源码新**：
 
 ```bash

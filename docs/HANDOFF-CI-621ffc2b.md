@@ -14,13 +14,13 @@
 
 ## ⚠ 三条**必须先读**的流程陷阱（都是本场血债）
 
-**① 本机跑判据前，确认 `target/release/yanshi-serve` 比源码新**
+**① 本机跑判据：用 `scripts/run-criteria-local.sh`，别手搓**
 
 ```bash
-cargo build --release -p yanshi-http 2>&1 | tail -1
-# 或
-[ target/release/yanshi-serve -nt crates/yanshi-server/src/tools.rs ] || cargo build --release -p yanshi-http
+bash scripts/run-criteria-local.sh scripts/tool-xxx.mjs
 ```
+
+它替你验二进制新鲜度 → 自动重建 → 起临时服务 → `trap` 清理；服务起不来就 `exit(3)`。
 
 **代价 10 轮**：我用陈旧二进制测出「`[200,…]` 与 `[100,…]` 都给 255」的假现象，
 然后花 947–956 去追一个**不存在的 bug**，期间对同一处代码给出过**三个互相矛盾的结论**。
