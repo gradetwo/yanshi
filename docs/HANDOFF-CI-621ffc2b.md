@@ -601,3 +601,55 @@ node scripts/tool-stroke-log-color-legacy.mjs target/release/yanshi-serve
 **⇒ 所以「8 处清单」这条规矩**本身**需要修**：它把「散文式概述」和「逐个列出」混在一起了。**
 
 **⇒ 判别信号：若某个 `*_*` 系列的工具在 guide 里**全部 0 次** ⇒ 那个系列**不适用**这条清单的 guide 项。**
+
+## ⚠ 「查会变的数字」要按**数字**查，不是按**名字**查（第 1185 轮实测）
+
+**⇒ 第 1172 轮我判断「补丁的两份 guide 不需要改」，依据是：**
+
+```bash
+grep -c "smart_sample" docs/guide.md      # ⇒ 0
+grep -c "smart_fill"   docs/guide.md      # ⇒ 0（既有工具也是 0）
+```
+
+**⇒ 于是我推断「guide 里不列这些工具 ⇒ 不需要改」✗ —— 而这是**错的**。**
+
+**⇒ 因为 `guide.md:7` 写的是：**
+```
+`--profile all` enables every implemented group in one word, which is 175 tools
+against the 105 that core alone gives
+```
+
+**⇒ 它写的是**工具数 175/105**，不是**工具名** ⇒ 所以 `grep smart_*` **永远查不到** ✗**
+
+### 正确的查法
+
+**⇒ 问「这个文件里有没有**会变的数字**」⇒ 按**数字**查：**
+
+```bash
+# 补丁前工具数是 175 / core 105 ⇒ 补丁后 178 / 108
+grep -rn "105\b" docs/guide.md docs/guide.zh-CN.md crates/yanshi-server/src/tools.rs
+grep -rn "175\b" docs/guide.md docs/guide.zh-CN.md docs/tools.md
+```
+
+**⇒ 而 `tool-surface-coverage.mjs` **正是**这么做的 ⇒ 它一次抓到全部 6 处。**
+
+### 而「6 处」的分布很有教育意义
+
+| 文件 | 处数 | 写法 |
+|---|---|---|
+| `tools.rs` | **4** | 「核心层 105 个」（4 种不同的上下文）|
+| `docs/guide.md` | 1 | 英文句 |
+| `docs/guide.zh-CN.md` | 1 | 中文句 |
+
+**⇒ 所以同一个数字在**6 个地方**各写一遍 ⇒ 而补丁只改了 `docs/tools.md` 的 2 处 ⇒ 留 6 处。**
+
+**⇒ 这与 855/856 轮「同一个 `63` 改了 4 次」**完全同型**：**
+- 798 轮：判据里 `!== 63`
+- 812 轮：判据里 `!== 4`
+- 855 轮：docs 表格的 63
+- 856 轮：docs 标题的 63
+- **1185 轮：`tools.rs` 4 处 + 两份 guide 各 1 处**
+
+**⇒ 所以「改一个数字前先 `grep -rn` 全仓」这条规矩（AGENTS.md 已有），本轮**第 2 次**被验证。**
+
+**⇒ 而这次的教训**更细**：`grep` 要按**那个数字**，不是按**相关的名字**。**
