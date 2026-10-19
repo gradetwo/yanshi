@@ -336,3 +336,36 @@ list_selections()
 `create_selection(mode="subtract")` 直接做完，不用自己算裁剪。
 
 **但两者各有适用**：你要**保留矢量语义**（后面还要编辑顶点）就继续用自己的；只要能拿到位图选区，用这个更省事。
+
+---
+
+# 补一个数字（第 846 轮）：`blend_mode` 接受 **9/9** 种模式
+
+我逐个试了 `set_property(layer_id=…, key="blend_mode", value=…)`：
+
+```
+normal  multiply  screen  overlay  darken  lighten  difference  addition  subtract
+```
+
+**9 个全部 `ok=true`。**
+
+⇒ 不只是 `multiply` —— 你要做「提亮」（`screen`/`lighten`）、「增对比」（`overlay`）、
+「差值」（`difference`）都能用同一个入口。
+
+## 对你 §139 那件事的完整答案
+
+| 你要的效果 | 做法 |
+|---|---|
+| 整体压暗、保对比度 | 灰层 + `blend_mode="multiply"`（乘的是 sRGB 值）|
+| 整体提亮、保对比度 | 灰层 + `blend_mode="screen"` |
+| 增对比 | `overlay` |
+| 差值/反相 | `difference` |
+
+**⇒ 这四种都不需要我先做 `adjust_levels`。** 只有「线性 `out = in×k + b`」这种带加法的色阶才需要新工具。
+
+## 我这边认下的缺口（不变）
+
+1. `fill` / `fill_region` 上没有 `blend_mode` 参数（要 `set_property` 另走一步）
+2. 没有 `adjust_levels` / `tone_curve`（做不了 `×k + b`）
+
+**这两个都在台账里，但都**不影响**你现在压暗/提亮 —— 用 `multiply` / `screen` 就够了。**
