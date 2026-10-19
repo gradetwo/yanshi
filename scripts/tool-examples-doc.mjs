@@ -52,6 +52,20 @@ if (check) {
   const current = (() => { try { return readFileSync(path, "utf8"); } catch { return ""; } })();
   if (current !== text) {
     console.error("❌ docs/design/tool-examples.md 与运行中的目录不一致（文档过期）⇒ 重新生成它");
+    // **★ 第 1180 轮加诊断**：原来只说一句话，而 CI 日志里那就是 6 行重复
+    //   ⇒ 于是**不知道差什么** ⇒ 只能猜（我 1177-1179 轮猜了 3 轮）✗
+    //   ⇒ 而现在打印**第一处差异**（行号 + 两侧内容）⇒ 可诊断 ✓
+    const a = current.split("\n"), b = text.split("\n");
+    const n = Math.max(a.length, b.length);
+    let shown = 0;
+    for (let i = 0; i < n && shown < 3; i += 1) {
+      if (a[i] !== b[i]) {
+        console.error(`   第 ${i + 1} 行：文档 ${JSON.stringify((a[i] ?? "<缺>").slice(0, 90))}`);
+        console.error(`   第 ${i + 1} 行：应为 ${JSON.stringify((b[i] ?? "<缺>").slice(0, 90))}`);
+        shown += 1;
+      }
+    }
+    console.error(`   文档 ${a.length} 行｜应为 ${b.length} 行`);
     process.exit(1);
   }
   // **README 必须链到它** —— 否则文档生成了却没人找得到（那是另一种"静默"）。
