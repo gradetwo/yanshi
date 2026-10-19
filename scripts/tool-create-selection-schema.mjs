@@ -27,6 +27,18 @@ const call = async (tool, args) => {
   return { status: res.status, body };
 };
 
+// **★ 先打印**构建/版本号**✗ ★**（外部 §97 的建议 ✓）
+//   ⇒ **∴ 他们**说**✗**：**「**在判据脚本里把构建/版本号一并打印，否则这种分歧无法归因」**✗** ✓✓
+//   ⇒ **∴ 第 423 轮**✗ 就是**因为**这一点**✗ 而**与他们对不上**✗（**∴ 他们**用 `clip_to_selection` 验到 schema A 真生效 ✓**）
+const { execFileSync } = await import("node:child_process");
+let build = "unknown";
+try {
+  build = execFileSync(process.env.YANSHI_SERVE_BIN || "target/release/yanshi-serve", ["--version"], {
+    encoding: "utf8", timeout: 10000,
+  }).trim();
+} catch { /* 拿不到就报 unknown，不假装 */ }
+console.log(`  build ⇒ ${build}`);
+
 const pts = [[50, 50], [200, 50], [200, 200]];
 const failures = [];
 
