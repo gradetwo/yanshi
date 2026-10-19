@@ -724,8 +724,25 @@ concurrency:
 **自检**：`gh run list --limit 3 --json status,conclusion --jq '.[] | "\(.status)/\(.conclusion // "-")"'`
 ⇒ 若同时有 `in_progress` 和 `pending`，那个 `pending` 是我多派的。
 
-**⇒ 「pending 永远不动」的三重原因**（840／853／861 三轮才查清）：
-① 我人工取消过（840）② 我的轮次间隔 20 秒 << CI 周期（853）③ **我每轮派发 ⇒ 越排越长**（861）。
+**⇒ 「pending 永远不动」的四重原因**（840／853／861／875 四轮才查清）：
+
+| 轮 | 原因 |
+|---|---|
+| 840 | 我**人工取消**过 |
+| 853 | 我的轮次间隔 20 秒 << CI 周期（查了看不出变化）|
+| 861 | 我**每轮派发** ⇒ 队伍越排越长 |
+| **875** | **我连续 push** ⇒ 排队的 run 被顶掉（变成 `cancelled`）|
+
+**第 875 轮实测**：`39297992563`（`4b497932`）从 `pending` 变成 **`cancelled`**，
+而**我没发取消命令**。原因：`concurrency group` 的排队位**只有一个** ——
+我在 871／873 轮又 push 了 `f3448a82`／`21fd39c3`，每次 push 触发新 run 进同 group
+⇒ **更旧的 `pending` 被顶掉**（即使 `cancel-in-progress: false`）。
+
+**⇒ 所以我 push 得越勤，越没有一次能跑完。**
+**⇒ 要么少 push（攒几处一起提交），要么等一个跑完再 push。**
+
+**自检**：`gh run list --limit 5 --json conclusion --jq '.[].conclusion' | sort | uniq -c`
+⇒ 若 `cancelled` 多于 `success`，先减频率。
 
 ## 判据里的「数字」分两类，只有一类可以写死（第 798／812／813 轮实测）
 
