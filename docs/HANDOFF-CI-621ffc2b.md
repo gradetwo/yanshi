@@ -349,7 +349,30 @@ done                                                                            
 | # | 形态 | 例 | 本脚本 |
 |---|---|---|---|
 | ① | `<base>` | 大多数 `tool-*` | **✓ 适用** |
-| ② | `<base> <doc> <token>` | `tool-export-path-doc`、`tool-brush-settings`、`tool-engine-capabilities`、`tool-brush-params-doc`、`tool-preview-image-contract`、`tool-collect-diagnostics`、`tool-example-acceptance` | ✗ 手动 |
+| ② | `<base> <doc> <token>` | `tool-export-path-doc`、`tool-brush-settings`、`tool-engine-capabilities`、`tool-brush-params-doc`、`tool-preview-image-contract`、`tool-collect-diagnostics`、`tool-example-acceptance`
+
+**⚠ 第 9 种形态（第 1140 轮发现）：`<binary-path>`**
+
+**⇒ `tool-stroke-log-color-legacy.mjs:25` 要求第一个参数是**二进制路径**：**
+
+```js
+if (!bin) { console.error("用法: node scripts/tool-stroke-log-color-legacy.mjs <path-to-yanshi-serve>"); process.exit(3); }
+```
+
+**⇒ 而 `run-criteria-local.sh` 传的是 **base URL** ⇒ `bin` = URL ⇒ `spawn` 失败 ⇒ **exit 3** ✗**
+
+**⇒ 而它**自己起 server**（`:33` `spawn(bin, ["--root", …])`）⇒ 所以它在 CI 上能跑（CI 不起共享 server 也一样）。**
+
+**⇒ 手动跑（第 1140 轮）：**
+```
+node scripts/tool-stroke-log-color-legacy.mjs target/release/yanshi-serve
+⇒ 退出码 **0** ✓（三条断言全过）
+```
+
+**⇒ 所以「它 exit 3」**不是产品问题、也不是判据坏了** ⇒ 是**参数形态不匹配**。**
+
+**⇒ 判别信号：若一个判据在 CI 上绿、本机 exit 3、且它的用法提示里写着**路径**而不是 URL
+⇒ 那么它是第 9 种形态，**手动传二进制路径**。** | ✗ 手动 |
 | ③ | `<base> [<local.yanshi>]` | `tool-bitmap-decode-scope` | ✗ 手动（1090 轮发现它把 token 当 base）|
 | ④ | **`<端口> [<web目录>]`** | **`serve-web`**（`serve-*.mjs` 只有一个）| ✗ 手动（传 URL ⇒ `ERR_SOCKET_BAD_PORT`）|
 | ⑤ | `<base>` + **环境变量** | `tool-cjk-text`（读 `YANSHI_WORKSPACE`/`YANSHI_EXPORT_DIR`）| ✓ 适用（1088 轮修了 export dir）|
