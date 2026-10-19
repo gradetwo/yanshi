@@ -852,3 +852,39 @@ mod medium_gradient_mixing_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod mixed_domain_probe {
+    use super::parse_spec_color;
+    use serde_json::json;
+
+    // ★ 字节数组的**契约**（第 954 轮探针转成断言）：
+    //   a=1 ⇒ 不透明；200 与 100 必须反解成不同的线性值（同值 = 幅度被吃）。
+    //   注意：这条测不出「下游那处 alpha 修复」的变异 —— 那个修复影响不在这层。
+    #[test]
+    fn byte_array_alpha_and_magnitude_are_sane() {
+        let a = parse_spec_color(&json!([200, 200, 200, 1])).unwrap();
+        let b = parse_spec_color(&json!([100, 100, 100, 1])).unwrap();
+        let c = parse_spec_color(&json!([40, 120, 60, 255])).unwrap();
+        // 字节数组：alpha=1 应视为**不透明**
+        assert_eq!(a[3], 1.0, "a=1 在字节数组里必须是不透明");
+        // 200 与 100 必须反解成**不同**的线性值（同值 = alpha/幅度被吃了）
+        assert!(
+            (a[0] - b[0]).abs() > 0.1,
+            "200 与 100 必须不同：{:?} vs {:?}",
+            a[0],
+            b[0]
+        );
+        assert!(
+            (a[0] - 0.5776).abs() < 0.02,
+            "字节 200 反解 ≈ 0.5776，实测 {}",
+            a[0]
+        );
+        assert!(
+            (b[0] - 0.1274).abs() < 0.02,
+            "字节 100 反解 ≈ 0.1274，实测 {}",
+            b[0]
+        );
+        assert_eq!(c[3], 1.0, "a=255 必须不透明");
+    }
+}
