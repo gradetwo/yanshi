@@ -6,6 +6,12 @@
 # 而我**一直每轮查** ⇒ 违反了自己写的规矩。
 # ⇒ 按 971 轮的观察：能被脚本强制的才会生效 ⇒ 做成这个脚本。
 #
+# **∴ 已知局限（第 1067 轮记）**：
+#   ① 只监视 **HEAD** 的 run ⇒ 想看**别的提交**的 run 要手动：
+#        gh api "repos/gradetwo/yanshi/actions/runs/<id>/jobs" \
+#          --jq '.jobs[] | select(.status=="in_progress") | "\(.name) 起于 \(.started_at)"'
+#   ② `--once` 对 **pending** 的 run 只打印一行（pending 的 run **没有 job**，看不到 started_at）
+#
 # 用法：
 #   bash scripts/watch-ci.sh            # 等当前 HEAD 的那个 run 跑完
 #   bash scripts/watch-ci.sh 15         # 15 秒轮询（缺省 60）
