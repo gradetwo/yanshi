@@ -30,6 +30,25 @@ await call("brush_stroke", { layer_id: "p", brush: "100%_Opaque", points: [[100,
 const failures = [];
 
 
+// ⑨ since_seq：按「严格大于」筛（自上次之后 ⇒ 不含边界本身；边界给最大 seq 时得 0 条）
+const allSeqs = (await call("list_atoms", { limit: 50 })).atoms ?? [];
+const sorted = allSeqs.map((a) => Number(a.seq)).sort((x, y) => x - y);
+if (sorted.length >= 2) {
+  // **用 sorted[0] 当切点**：结果一定非空 ⇒ 断言不会在空数组上恒真（第 665 轮的教训）
+  const cut = sorted[0];
+  const after = await call("list_atoms", { limit: 50, since_seq: cut });
+  const afterSeqs = (after.atoms ?? []).map((a) => Number(a.seq));
+  console.log(`  since_seq=${cut} ⇒ ${after.count} 条｜seq=${afterSeqs.sort((x, y) => x - y).join(",")}`);
+  if (!afterSeqs.every((v) => v > cut)) failures.push(`since_seq=${cut} 返回了 ≤ ${cut} 的原子 ⇒ 边界含进结果里了 ✗`);
+  if (Number(after.count) !== sorted.filter((v) => v > cut).length) {
+    failures.push(`since_seq 应返回 ${sorted.filter((v) => v > cut).length} 条，实测 ${after.count} ✗`);
+  }
+  const last = sorted[sorted.length - 1];
+  const none = await call("list_atoms", { limit: 50, since_seq: last });
+  console.log(`  since_seq=${last}（最大）⇒ ${none.count} 条（应 0）`);
+  if (Number(none.count) !== 0) failures.push(`since_seq 给最大 seq 应得 0 条，实测 ${none.count} ✗`);
+}
+
 // ⑧ 缩略图：缺省每条带一张，want_thumb=false 时一张都不带（外部复测方靠看图认笔）
 const withThumb = await call("list_atoms", { limit: 10 });
 const noThumb = await call("list_atoms", { limit: 10, want_thumb: false });
