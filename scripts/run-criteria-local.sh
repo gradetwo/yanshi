@@ -62,7 +62,21 @@ if ! curl -s -m 1 -o /dev/null "http://127.0.0.1:$PORT/health"; then
   exit 3
 fi
 
-node "$CRIT" "http://127.0.0.1:$PORT" "$@"
+# **总是传 `<base> <doc> <token>`**（第 1076 轮）：有两类判据
+#   ① 只吃 `<base>`（大多数）     ⇒ 多传两个参数会被**忽略** ✓（实测 node 不报错）
+#   ② 吃 `<base> <doc> <token>`（`tool-engine-capabilities` / `tool-brush-settings` /
+#      `tool-brush-params-doc`）⇒ 以前用本脚本跑会得 **exit 3**（不可判）✗
+#   ⇒ 所以统一传三个，两类都能跑 ✓
+BASE_URL="http://127.0.0.1:$PORT"
+CRIT_TOKEN=$(curl -s -X POST "$BASE_URL/api/documents" \
+  -H 'content-type: application/json' \
+  -d '{"doc_id":"_bootstrap","width":64,"height":64}' \
+  | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+if [ -z "$CRIT_TOKEN" ]; then
+  echo "  ⊘ 不可判：拿不到 token（判据前提不成立，不是产品问题）" >&2
+  exit 3
+fi
+node "$CRIT" "$BASE_URL" _bootstrap "$CRIT_TOKEN" "$@"
 RC=$?
 echo "  ⇒ 判据退出码=$RC"
 exit $RC
