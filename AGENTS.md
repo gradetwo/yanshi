@@ -157,6 +157,7 @@
 | **`brush parity`**（arm64 vs wasm32）✓ | **∴ `continue-on-error`** ⇒ **∴ 数据收集**，不阻塞 |
 | **`background_stroke_cost::other_ms`** ✓ | CI **486** vs 本机 **7.3** ⇒ **∴ 环境差异** ⇒ **∴ 改断言会掩盖** |
 | **`browser-*` 判据** ✓ | CI **无 chromium** ⇒ `exit(3)` ⇒ **∴ 计为 skipped** |
+| **`tool-zero-dab-hint`** ✓ | **同一提交两个环境相反**：CI `painted=73673`、本机 `painted=0`（`precondition_failed`）⇒ **∴ 是**环境差异** ⇒ **∴ 改断言会掩盖** |
 
 **★ 认红要认**判据名**，不要认**分片号**（第 286 轮实测）
 
