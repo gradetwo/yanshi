@@ -12346,7 +12346,7 @@ fn write_delete_selection(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
 /// - `ellipse`：`π * (w/2) * (h/2)`，**精确**（相对解析式）
 /// - 其余（`polygon`／`bitmap`）：**算不出来** ⇒ 返回 `(0.0, false)`
 ///   ⇒ 调用方必须看第二个返回值，不许把 0 当成「空选区」（**静默降级**那条规矩）。
-fn selection_area_px(shape: &Value) -> (f64, bool) {
+fn selection_area_px(ctx: &mut ToolContext<'_>, shape: &Value) -> (f64, bool) {
     let kind = shape.get("kind").and_then(Value::as_str).unwrap_or("");
     let num = |key: &str| shape.get(key).and_then(Value::as_f64).unwrap_or(0.0);
     match kind {
@@ -12355,6 +12355,22 @@ fn selection_area_px(shape: &Value) -> (f64, bool) {
             std::f64::consts::PI * (num("w") / 2.0) * (num("h") / 2.0),
             true,
         ),
+        "bitmap" => {
+            // 位图选区（布尔合并 / smart_select 产出）：解 L8 blob，数非零像素。
+            let Some(text) = shape.get("blob").and_then(Value::as_str) else {
+                return (0.0, false);
+            };
+            let Ok(hash) = text.parse::<yanshi_core::BlobHash>() else {
+                return (0.0, false);
+            };
+            let Ok(bytes) = ctx.workspace.store().get(&hash) else {
+                return (0.0, false);
+            };
+            match yanshi_render::png::decode_png_l8(&bytes) {
+                Some((_, _, data)) => (data.iter().filter(|&&v| v > 0).count() as f64, true),
+                None => (0.0, false),
+            }
+        }
         _ => (0.0, false),
     }
 }
@@ -12456,31 +12472,47 @@ fn merge_selection_shapes(
 }
 
 fn read_list_selections(ctx: &mut ToolContext<'_>) -> Result<Value> {
-    let state = document_state(ctx)?;
-    let selections: Vec<Value> = state
-        .selections
-        .values()
-        .filter(|selection| !selection.is_deleted())
-        .map(|selection| {
-            json!({
-                "selection_id": selection.id,
-                "shape": selection.shape,
-                // **面积**（第 779 轮加）：之前 `list_selections` 与 `create_selection` 都**没有**
-                // 面积，而 `smart_select` 有 `selected_area_px` ⇒ 同一概念两处不一致，
-                // 调用方因此无法验证「subtract 之后真的变小了」。
-                // ⇒ 用 `coverage` 在像素中心采样求和（形状可以是 rect/polygon/bitmap 任意一种）。
-                "area": selection_area_px(&selection.shape).0,
-                // **面积算不出来时说清楚**（polygon/bitmap 无法从 JSON 直接算）
-                // ⇒ 不许让调用方把 `area: 0` 读成「空选区」。
-                "area_exact": selection_area_px(&selection.shape).1,
-                "feather": selection.feather,
-                "mode": selection.mode,
-                "invert": selection.invert,
-                "linked_layer": selection.linked_layer,
-                "refined_edges": selection.refined_edges,
+    // **两趟**（第 827 轮）：先把要输出的字段**克隆出来**并放掉 `state` 的借用，
+    // 再拿 `ctx` 去 store 里读 bitmap blob 算面积。一趟做不了 —— `document_state(ctx)`
+    // 借着 `ctx`，而 `selection_area_px` 也要借 `ctx`（读 blob）⇒ 双重借用。
+    let rows: Vec<_> = {
+        let state = document_state(ctx)?;
+        state
+            .selections
+            .values()
+            .filter(|selection| !selection.is_deleted())
+            .map(|selection| {
+                (
+                    selection.id.clone(),
+                    selection.shape.clone(),
+                    selection.feather,
+                    selection.mode.clone(),
+                    selection.invert,
+                    selection.linked_layer.clone(),
+                    selection.refined_edges.clone(),
+                    false,
+                )
             })
-        })
-        .collect();
+            .collect()
+    };
+    let mut selections: Vec<Value> = Vec::with_capacity(rows.len());
+    for (id, shape, feather, mode, invert, linked_layer, refined_edges, _) in rows {
+        // **面积**（第 779 轮加；第 826 轮补 bitmap 支持）：`rect`/`ellipse` 走解析式，
+        // `bitmap` 解 L8 blob 数非零像素，`polygon` 明说算不出来。
+        let (area, area_exact) = selection_area_px(ctx, &shape);
+        selections.push(json!({
+            "selection_id": id,
+            "shape": shape,
+            "area": area,
+            // 不许让调用方把 `area: 0` 读成「空选区」（静默降级那条规矩）。
+            "area_exact": area_exact,
+            "feather": feather,
+            "mode": mode,
+            "invert": invert,
+            "linked_layer": linked_layer,
+            "refined_edges": refined_edges,
+        }));
+    }
     Ok(json!({"selections": selections, "count": selections.len()}))
 }
 
