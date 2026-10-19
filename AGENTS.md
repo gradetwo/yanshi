@@ -158,7 +158,7 @@
 | `criteria` 某一片 ⇒ **`tool-dwell`** ✓（**∴ 分片号会变**✗：**∴ 见过 4/6 与 5/6 ✓**） | 本机 **+1**／CI **−5**（**∴ 方向相反**）⇒ **∴ 断的是**像素数** ⇒ **∴ 跨不了机器** |
 | **`brush parity`**（arm64 vs wasm32）✓ | **∴ `continue-on-error`** ⇒ **∴ 数据收集**，不阻塞 |
 | **`background_stroke_cost::other_ms`** ✓ | CI **486** vs 本机 **7.3** ⇒ **∴ 环境差异** ⇒ **∴ 改断言会掩盖** |
-| **`browser-*` 判据** ✓ | CI **无 chromium** ⇒ `exit(3)` ⇒ **∴ 计为 skipped** |
+| **`browser-*` 判据** ✓（**第 742 轮已失效，见下**）| ~~CI 无 chromium ⇒ `exit(3)` ⇒ 计为 skipped~~ ⇒ **∴ 现在 CI 上 chromium 真的装了**（`Chromium 158.0.8112.0`，日志 `setup-chrome` 那段），所以 `browser-layout` 返回 **`EXIT=1`** 而不是 `3` ⇒ **它是真红，不是环境红** |
 | **`tool-taper-shrinks-ink`** ✓（第 710 轮新增） | **`stroke_taper` 让墨面积反而大 8.7%**：基线 1259 → taper 1369（7446 格网格）。根因是 `dab.radius` 从 15.00 降到 6.01、而 **dab 密度按半径倒数增加** ⇒ 半径 × 密度不守恒 ⇒ 收锋变成变粗。**这是真缺陷、不是环境差异** ⇒ 判据留着红，等引擎修 |
 | **`tool-zero-dab-hint`** ✓ | **同一提交两个环境相反**：CI `painted=73673`、本机 `painted=0`（`precondition_failed`）⇒ **∴ 是**环境差异** ⇒ **∴ 改断言会掩盖** |
 

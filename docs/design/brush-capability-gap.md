@@ -13052,3 +13052,42 @@ let hint: String = if dabs_basic <= 0.0 {
 **⇒ 这条记下来的价值**：它是一步**先查再改**的动作。若不查，我改完可能要等 CI 红才知道冲突；
 而这次 CI 一直在排队，等它发现要很多轮。
 
+## 三百二十三、`browser-*` 那条已知红**已失效**——CI 上 chromium 真的装了（第 742 轮）
+
+我在 CI 日志里看到：
+
+```
+Acquiring chrome 1721828 from https://www.googleapis.com/download/...chromium-browser-snapshots...
+Successfully Installed chromium to /opt/hostedtoolcache/setup-chrome/chromium/1721828/x64
+[command]/opt/hostedtoolcache/setup-chrome/chromium/1721828/x64/chrome --version
+Chromium 158.0.8112.0
+```
+
+**⇒ 而 `AGENTS.md` 的已知红表里写着「`browser-*` 判据：CI 无 chromium ⇒ `exit(3)` ⇒ 计为 skipped」。**
+
+**⇒ 两边对不上，而且后果是实质的**：
+
+| | 以为的 | 实际 |
+|---|---|---|
+| 有没有 chromium | 没有 | **163.0 有了**（`158.0.8112.0`）|
+| 判据退出码 | `3`（自身的条件不满足）| **`1`（产品失败）**|
+| 该怎么算 | 已知红／skipped | **真红，必须修** |
+
+**⇒ 所以 `browser-layout.mjs` 报的那条是真缺陷**：
+
+```
+❌ 放大之后画布没有超出舞台 / 舞台滚不动 ⇒「画布内部独立滚动」没做到 ✗
+```
+
+**⇒ 它与交付包 D07（P1）很可能是同一个问题**：D07 说「4K 画布『适配』仍把题注裁到页脚下」，
+而这条说「放大后画布没超出舞台 ⇒ 舞台滚不动」—— 两者都在讲**大画布下舞台/画布的滚动与裁剪关系**。
+
+**⇒ 为什么这条漂移能存在这么久**：`AGENTS.md` 那条是我在某个时间点观察到的（CI 确实没装 chromium），
+后来 CI 配置或镜像变了（加了 `setup-chrome` 步骤），**而没有信号**。
+⇒ 这正是内核 ② 说的「会过期的东西」—— 一条"环境红"的判据也是快照。
+
+**⇒ 处理**：
+1. `AGENTS.md` 那张表里这条已标为「第 742 轮已失效」并写明实际退出码；
+2. **不把它当已知红**，`browser-layout` 的红要当**真缺陷**跟；
+3. 与 D07 合并考虑（同一个"大画布 + 舞台滚动"的语义）。
+
