@@ -10,7 +10,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { trackTemp } from "./lib/temp-dirs.mjs";
 
-const BIN = process.env.YANSHI_MCP_BIN || "target/release/yanshi-mcp";
+// **缺省用 ** ✓：CI 只构建 debug（**∴  在 CI 上不存在 ✓**）
+// ⇒ **∴ 原来写 ** ✗ ⇒ **∴ CI 报**  ✗
+// ⇒ **∴ 与**  等**邻居一致** ✓。
+const BIN = process.env.YANSHI_MCP_BIN || "target/debug/yanshi-mcp";
 const root = trackTemp(mkdtempSync(join(tmpdir(), "mcp-swatch-img-")));
 const child = spawn(BIN, ["--root", root, "--doc", "s", "--width", "160", "--height", "120"], { stdio: ["pipe", "pipe", "pipe"] });
 process.on("exit", () => { try { child.kill("SIGKILL"); } catch { /* 已经没了 */ } });
