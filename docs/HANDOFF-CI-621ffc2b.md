@@ -144,6 +144,24 @@ done                                                                            
 
 ## 还没做完的
 
+- **63 个判据缺 `exit(3)` 前提失败路径**（第 1080 轮量出，**系统性，非个别**）：
+  ```bash
+  F=$(grep -ln "fetch(" scripts/tool-*.mjs scripts/mcp-*.mjs)
+  echo "用 fetch 的 $(echo "$F" | grep -c .) 个"          # 191
+  for f in $F; do grep -q "process.exit(3)" "$f" || echo "缺：$f"; done | wc -l   # 63
+  ```
+  **⇒ 191 个用 `fetch` 的判据里，63 个没有 `process.exit(3)`** ✗
+  ⇒ 无服务时 `fetch` 抛异常 ⇒ uncaught ⇒ 退出码 **1**（应为 **3**，336 轮那条）
+  ⇒ 即：**「判据前提不成立」被报成「产品失败」** ✗
+
+  **本轮只修了我自己加的 2 个**（`tool-medium-filter-covers-all`、`tool-color-array-domain`）。
+  其余 61 个**没修**，因为每个都要单独看它的前提失败路径
+  （有的用 `try/catch` + `exit(4)`、有的用别的方式说清）。
+
+  **⇒ 修法（可脚本化）**：加一个测试，对每个 `tool-*.mjs` **无服务跑一次**，
+  断言退出码是 **3** —— 这会把 336 轮那条真正变成机制。
+  **⇒ 代价**：191 个 × node 启动约 1 秒 ≈ **3 分钟** ⇒ 适合 CI，不适合 pre-commit。
+
 - **`list_brushes(medium=marker|pencil|pixel)` 静默返回全部 201 支**（第 1047 轮查清，**是真缺陷**）：
   `medium_stroke` 接受 6 个介质名（`oil`/`watercolor`/`marker`/`pencil`/`pixel`/`example`），
   而 `medium_brush_keywords` 的 `match` **只有 5 个臂**（`oil`/`watercolor`/`sketch`/`ink`/`pastel`）
