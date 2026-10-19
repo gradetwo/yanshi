@@ -13373,3 +13373,43 @@ if channels == 4 {
 **⇒ 给判据库的教训**：**合并补丁时要按「被改文件的 crate」逐个跑测试**，
 不能只跑补丁自带的那几个。`png.rs` 属于 `yanshi-render`，但它的消费者在 `yanshi-http`。
 
+## 三百二十六、外部 `E1027` 是**我们这边的真缺陷**：`create_selection` 的 `mode` 是死参数（第 771 轮）
+
+**外部原话**（§135）：
+
+> ② `E1027`：`create_selection` 的 `mode="subtract"` 不能对已存在的 id 用
+
+**实测复现**（300×300，先建 `s1` 再改它）：
+
+| 调用 | 结果 |
+|---|---|
+| `create_selection(selection_id="s1", shape=rect)` | **ok=true** |
+| `create_selection(selection_id="s1", mode="subtract", shape=小矩形)` | **ok=false｜选区 s1 已存在** |
+| `create_selection(selection_id="s1", mode="add", shape=小矩形)` | **ok=false｜选区 s1 已存在** |
+
+**⇒ 所以 `mode` 的三个非 `new` 值（`add`/`subtract`/`intersect`）永远用不了**：
+要改一个选区就必须用它的 id，而用了它的 id 就被"已存在"拒绝。
+⇒ **这不是"参数被忽略"，是"参数完全不可达"** —— 比静默降级更彻底的死代码。
+
+**⇒ 根因在 `crates/yanshi-core/src/fold.rs:673-681`**：
+
+```rust
+AtomKind::CreateSelection => {
+    let selection_id = required(atom, "selection_id")?;
+    if state.selections.contains_key(selection_id) {
+        return Err(err(ErrorCode::PreconditionFailed, format!("选区 {selection_id} 已存在")));
+    }
+}
+```
+
+**⇒ 它无条件拒绝，完全不看 payload 里那个 `mode` 字段。**
+而 `tools.rs:12268` 认真解析并校验了 `mode`（`new`/`add`/`subtract`/`intersect`），
+`read_list_selections` 还把它读出来显示 ⇒ **整条链路都在假装支持它**。
+
+**⇒ 修法（下一轮）**：`mode != "new"` 时**允许已存在**，并把新形状与该 id 的旧形状按模式合并。
+难点是"合并"要做布尔运算 —— 而 `SelectionShape` 现在**有 `Bitmap` 变体**（smart-select 补丁加的），
+所以合并其实可以走位图：旧选区光栅化成位图 → 与新形状的位图求并/差/交 → 存新位图。
+⇒ **这正是外部最需要的**（他们 `E1028` 手描多边形自交成「Y 形空洞」，而位图布尔不会有自交问题）。
+
+**⇒ 这条的价值**：它把外部两个抱怨（`E1027` 死参数 + `E1028` 自交）连成一个修法。
+
