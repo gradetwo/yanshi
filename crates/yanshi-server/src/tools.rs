@@ -18844,12 +18844,11 @@ fn write_revert_to_seq(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         .log()
         .atoms()
         .iter()
-        .filter(|atom| (atom.seq as u64) > target)
+        .filter(|atom| (atom.seq) > target)
         .filter(|atom| atom.payload.get("source").is_some())
         .filter(|atom| !reverted.contains(&atom.id.to_string()))
         .map(|atom| atom.id.to_string())
         .collect();
-    drop(document);
     if ids.is_empty() {
         return Ok(json!({
             "ok": true,
@@ -19068,7 +19067,7 @@ fn write_commit_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         ));
     }
     let blob = ctx.workspace.store().put(&record.rgba)?;
-    let mut import_args = json!({
+    let import_args = json!({
         "layer_id": record.layer_id,
         "bitmap": {
             "blob_hash": blob,
@@ -19295,7 +19294,7 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             break;
         }
         if let Some(min) = since_seq {
-            if (atom.seq as u64) <= min {
+            if (atom.seq) <= min {
                 continue;
             }
         }
