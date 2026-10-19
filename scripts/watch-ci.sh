@@ -8,15 +8,21 @@
 #
 # 用法：
 #   bash scripts/watch-ci.sh            # 等当前 HEAD 的那个 run 跑完
-#   bash scripts/watch-ci.sh --limit 3  # 看最近 3 个
+#   bash scripts/watch-ci.sh 15         # 15 秒轮询（缺省 60）
 #
 # 行为：**只在某 job 的结论变化时打印一行**，其余时间静默；全部完成后退出。
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-LIMIT=1
-[ "${1:-}" = "--limit" ] && LIMIT="${2:-3}"
+# **不要有假参数**（第 988 轮实测）：原来这里有个 `LIMIT`，只赋值**从未使用**
+# ⇒ `--limit 3` 会被接受而**毫无效果** ⇒ 那是「静默降级」（用户以为改了行为，其实没有）✗
+# ⇒ 所以删掉它，只留一个**真的会生效**的参数：轮询间隔。
+INTERVAL="${1:-60}"
+case "$INTERVAL" in
+  ''|*[!0-9]*) echo "  ⊘ 用法：$0 [轮询间隔秒数，缺省 60]" >&2; exit 2 ;;
+esac
+[ "$INTERVAL" -lt 5 ] && { echo "  ⊘ 间隔至少 5 秒（别把 API 打爆）" >&2; exit 2; }
 
 SHA=$(git rev-parse HEAD)
 RUN=$(gh run list --limit 20 --json databaseId,headSha --jq \
@@ -49,5 +55,5 @@ while :; do
   case "$STATE" in
     completed:*) echo "  ⇒ run 完成：${STATE#completed:}"; exit 0 ;;
   esac
-  sleep 60
+  sleep "$INTERVAL"
 done
