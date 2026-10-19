@@ -18767,11 +18767,9 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         "note": "试画不写入文档：没有原子、seq 不变、文件字节数不变",
     });
     if want_image {
-        if let Some(bytes) = yanshi_render::png::encode_png(
-            paint.width as u32,
-            paint.height as u32,
-            &paint.rgba,
-        ) {
+        if let Some(bytes) =
+            yanshi_render::png::encode_png(paint.width as u32, paint.height as u32, &paint.rgba)
+        {
             out["image"] = json!(base64::encode(&bytes));
         }
     }
@@ -18812,13 +18810,16 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         .get("include_non_stroke")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let want_bbox = args.get("bbox").and_then(Value::as_array).and_then(|items| {
-        if items.len() != 4 {
-            return None;
-        }
-        let nums: Vec<f64> = items.iter().filter_map(Value::as_f64).collect();
-        (nums.len() == 4).then(|| (nums[0], nums[1], nums[2], nums[3]))
-    });
+    let want_bbox = args
+        .get("bbox")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            if items.len() != 4 {
+                return None;
+            }
+            let nums: Vec<f64> = items.iter().filter_map(Value::as_f64).collect();
+            (nums.len() == 4).then(|| (nums[0], nums[1], nums[2], nums[3]))
+        });
 
     let mut hits: Vec<Value> = Vec::new();
     for atom in document.log().atoms().iter().rev() {
@@ -18863,7 +18864,9 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             }
         }
         if let Some(needle) = want_brush.as_ref() {
-            let brush = payload_str(atom, "brush").unwrap_or_default().to_lowercase();
+            let brush = payload_str(atom, "brush")
+                .unwrap_or_default()
+                .to_lowercase();
             if !brush.contains(needle.as_str()) {
                 continue;
             }
@@ -20051,7 +20054,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ),
     ("declare_head", r#"{"base_type":"atom","base_id":"atom1"}"#),
     ("detach_instance", r#"{"instance_id":"inst1"}"#),
-    ("try_stroke", r#"{"layer_id":"L1","brush":"2B_pencil","points":[[10,10],[40,40]],"size":8}"#),
+    (
+        "try_stroke",
+        r#"{"layer_id":"L1","brush":"2B_pencil","points":[[10,10],[40,40]],"size":8}"#,
+    ),
     ("list_atoms", r#"{"limit":10,"label":"nose"}"#),
     ("get_atom", r#"{"atom_id":"atom1"}"#),
     // **一批"纯 id / 无参数"的工具**（第 293 轮）：这些的必填参数都是 id 或什么都不需要，
