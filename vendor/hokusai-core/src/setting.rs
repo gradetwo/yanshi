@@ -59,6 +59,8 @@ define_settings! {
     Speed1Gamma                  => "speed1_gamma",
     Speed2Gamma                  => "speed2_gamma",
     SpeedInk                     => "speed_ink",
+    PressureShape                => "pressure_shape",
+    StrokeTaper                  => "stroke_taper",
     OffsetByRandom               => "offset_by_random",
     OffsetBySpeed                => "offset_by_speed",
     OffsetBySpeedSlowness        => "offset_by_speed_slowness",

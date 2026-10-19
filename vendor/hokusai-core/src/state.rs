@@ -83,6 +83,13 @@ pub struct BrushState {
     /// `1 + stroke_holdtime`; once stroke_holdtime > 9.9 the value
     /// saturates at 1.0 until the stroke ends.
     pub stroke_state: f32,
+    /// 整笔预计总像素长度（由 yanshi 在落笔前预计算 points 折线总长写入）。
+    /// pressure_shape / stroke_taper 用它算归一化进度 t = current / total。
+    /// 注意：不要用 stroke_state 做首尾包络——它是流式累积的"已走路程"，
+    /// 不知道总长度，短笔会只有起笔细、长笔会中段突然收细。
+    pub stroke_total_length: f32,
+    /// 当前已走像素长度（每 dab 累加 step_dx.hypot(step_dy)）。
+    pub stroke_current_length: f32,
     /// libmypaint's `STATE.STROKE_STARTED`. Flips on when `pressure`
     /// crosses above `stroke_threshold`, and off when it drops back below
     /// `stroke_threshold * 0.9`. On the rising edge the next dab resets
@@ -209,6 +216,8 @@ impl BrushState {
             stroke_total_painting_time: 0.0,
             stroke_current_idling_time: 0.0,
             stroke_state: 0.0,
+            stroke_total_length: 0.0,
+            stroke_current_length: 0.0,
             stroke_started: false,
             dabs_per_actual_radius: 0.0,
             dabs_per_basic_radius: 0.0,

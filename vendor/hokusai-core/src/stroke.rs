@@ -454,7 +454,50 @@ impl Brush {
             // SETTING(STROKE_DURATION_LOGARITHMIC). Mirror that: feed the
             // current state.stroke_state into dab_inputs, evaluate dab_sv,
             // then advance below using dab_sv's per-dab values.
-            dab_inputs.set(BrushInput::Pressure, cur_pressure * pressure_gain);
+            // ** pressure_shape 意图参数 **：一笔内压力包络（提按）。
+            // 累加真实像素弧长，算归一化进度 t = current / total。
+            // 注意：不用 state.stroke_state——它是流式累积的"已走路程"，
+            // 不知道总长度，短笔会只有起笔细、长笔会中段突然收细。
+            state.stroke_current_length += step_dx.hypot(step_dy);
+            let stroke_progress = if state.stroke_total_length > 1e-3 {
+                (state.stroke_current_length / state.stroke_total_length).clamp(0.0, 1.0)
+            } else {
+                0.5 // 单点点击（dot）时处于中段饱满状态
+            };
+
+            let pressure_shape = self.get(BrushSetting::PressureShape).base_value.clamp(-1.0, 1.0);
+            let mut shape_radius_boost = 1.0_f32;
+
+            let effective_pressure = if pressure_shape.abs() > 1e-4 && state.stroke_total_length > 1.0 {
+                let t = stroke_progress;
+                let env = if pressure_shape > 0.0 {
+                    // 正值：中间粗两头细（带均值补偿的 sin^2 包络）。
+                    // sin^2 在 t=0/1 处导数为 0，起收笔有柔和触纸过渡。
+                    let s = pressure_shape;
+                    let bell = (std::f32::consts::PI * t).sin().powi(2);
+                    (1.0 - 0.80 * s) + (1.05 * s) * bell
+                } else {
+                    // 负值：书法顿笔出锋（前 8% 藏锋顿笔，后 92% 幂次出锋）。
+                    // 入笔：逆锋轻入 → 顿笔按压达峰值；行笔：平滑加速出锋。
+                    let s = -pressure_shape;
+                    let attack = 0.08;
+                    let curve = if t < attack {
+                        let u = t / attack;
+                        0.5 + 0.5 * (u * u * (3.0 - 2.0 * u)) // smoothstep
+                    } else {
+                        let u = (t - attack) / (1.0 - attack);
+                        (1.0 - u).powf(1.6) // 幂指数 1.6：前中段有肉，后半段收尖
+                    };
+                    (1.0 - s) + s * (0.08 + 1.07 * curve)
+                };
+                // 记录几何保底因子（防止某些笔刷原生无压感→半径映射时看不到粗细变化）
+                shape_radius_boost = env;
+                (cur_pressure * env).clamp(0.01, 1.0)
+            } else {
+                cur_pressure
+            };
+
+            dab_inputs.set(BrushInput::Pressure, effective_pressure * pressure_gain);
             dab_inputs.set(BrushInput::Stroke, state.stroke_state.min(1.0));
             // AttackAngle is event-level (depends on raw direction, not the
             // per-dab interpolated state) so inheriting from `inputs` is
@@ -872,6 +915,54 @@ impl Brush {
                 // 快则锋瘦但墨不散：只收半径，不降不透明度（避免退化成铅笔）
                 let radius_factor = (-0.6 * speed_ink * s1).exp();
                 draw_radius = (draw_radius * radius_factor).clamp(0.2, 1000.0);
+            }
+            // ** stroke_taper 意图参数 **：起收锋（几何收细）。
+            // 与 pressure_shape 的本质区别：
+            // - pressure_shape：全局（0%~100%），调 cur_pressure（粗细+浓淡+飞白+软硬）
+            // - stroke_taper：仅首尾两端，中段严格为 1.0 纯几何裁剪，不降 opaque
+            //   （模拟锋利笔尖：两头细如发丝但墨色扎实，不会变半透明虚影）
+            let stroke_taper = dab_sv.get(BrushSetting::StrokeTaper).clamp(0.0, 1.0);
+            if state.stroke_total_length > 1.0
+                && (pressure_shape.abs() > 1e-4 || stroke_taper > 1e-4)
+            {
+                let t = stroke_progress;
+
+                let taper_factor = if stroke_taper > 1e-4 {
+                    // 物理距离与比例双重约束：收锋区不超过总长的 15%，
+                    // 也不超过 6 个基础半径（长线不收太长）
+                    let max_zone_ratio =
+                        (6.0 * draw_radius / state.stroke_total_length).clamp(0.03, 0.15);
+                    let zone = (0.05 + 0.10 * stroke_taper).min(max_zone_ratio.max(0.08));
+
+                    let raw = if t < zone {
+                        t / zone
+                    } else if t > 1.0 - zone {
+                        (1.0 - t) / zone
+                    } else {
+                        1.0
+                    };
+                    // smoothstep：C1 连续，消除线性在 zone 交界处的导数折角
+                    let smooth = raw * raw * (3.0 - 2.0 * raw);
+                    // 最小尖端半径保护（保留 8% 笔尖，防 radius→0 除零或漏画）
+                    let min_tip = 1.0 - 0.92 * stroke_taper;
+                    min_tip + (1.0 - min_tip) * smooth
+                } else {
+                    1.0
+                };
+
+                // pressure_shape 的纯半径保底因子（45% 几何直乘权重，
+                // 其余由 effective_pressure 经原生压感联动自然驱动）
+                let shape_factor = 1.0 + 0.45 * (shape_radius_boost - 1.0);
+
+                // 防打架合并：两者都 <1 时取软最小值，避免两端双重连乘
+                // 导致断头断尾；否则正常相乘
+                let combined_radius_factor = if shape_factor < 1.0 && taper_factor < 1.0 {
+                    shape_factor.min(taper_factor)
+                } else {
+                    shape_factor * taper_factor
+                };
+
+                draw_radius = (draw_radius * combined_radius_factor).clamp(0.2, 1000.0);
             }
             let dab = build_dab(
                 self,
