@@ -302,6 +302,8 @@ pub struct ToolContext<'a> {
 
     /// **这一次提交要带的笔迹标签**（外部需求 `try_stroke` v2 §4.2）。
     pub pending_label: Option<String>,
+    /// **组标识**（用户 2026-10-19 裁定）：一组笔共享一个 id ⇒ `revert_group` 整组撤销。
+    pub pending_group_id: Option<String>,
     /// **调用者的角色** ✓（Phase 5 ✓）—— **工具层强制**要用的就是它 ✓。
     ///
     /// **为什么必须带进上下文** ✓（本轮抓到的**第二个**授权漏洞 ✗）：
@@ -390,6 +392,7 @@ impl<'a> ToolContext<'a> {
             session: session.into(),
             owner: false,
             pending_label: None,
+            pending_group_id: None,
             // **缺省 owner** ✓：本地进程/测试就是 owner ✓；网络入口必须显式改 ✓（见字段说明 ✓）。
             role: crate::token::Role::Owner,
             wait_for_render: true,
@@ -445,12 +448,16 @@ impl<'a> ToolContext<'a> {
 
     fn commit(&mut self, kind: AtomKind, payload: Value) -> Result<CommitResult> {
         // **笔迹标签只对**这一笔**生效** ⇒ **∴ 读完立刻清** ✓
-        let atom = match self.pending_label.take() {
+        let mut atom = match self.pending_label.take() {
             Some(label) => {
                 Atom::new(kind, self.actor.clone(), self.session.clone(), payload).with_label(label)
             }
             None => Atom::new(kind, self.actor.clone(), self.session.clone(), payload),
         };
+        // **组标识**：与 label 同一条收口点 ⇒ 所有提交路径都自动带上（不再"只改一条路径"）。
+        if let Some(group_id) = self.pending_group_id.take() {
+            atom = atom.with_group_id(group_id);
+        }
         // **`begin_changeset` 打开的那个变更集，在这里自动生效** ✓ ——
         // 这是"调用方自己把多步操作归成一个变更集"的**唯一**收口点 ✓：
         // 普通笔 ✓、形状 ✓、填充 ✓、效果 ✓、图层 ✓……**所有**提交都经过这里 ✓
@@ -1745,6 +1752,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
+            param!("group_id", String, false, "组标识：一组笔共享一个 id ⇒ 用 revert_group 整组撤销（不给则不成组）"),
             param!("layer_id", String, true, "目标图层"),
             param!(
                 "data",
@@ -1791,6 +1799,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
+            param!("group_id", String, false, "组标识：一组笔共享一个 id ⇒ 用 revert_group 整组撤销（不给则不成组）"),
             param!("layer_id", String, true, "目标图层"),
             param!(
                 "data",
@@ -1820,6 +1829,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
+            param!("group_id", String, false, "组标识：一组笔共享一个 id ⇒ 用 revert_group 整组撤销（不给则不成组）"),
             param!("layer_id", String, true, "目标图层"),
             param!(
                 "data",
@@ -1840,6 +1850,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
+            param!("group_id", String, false, "组标识：一组笔共享一个 id ⇒ 用 revert_group 整组撤销（不给则不成组）"),
             param!("layer_id", String, true, "目标图层"),
             param!("data", Object, true, "{color,region|object_id}"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
@@ -1852,6 +1863,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
+            param!("group_id", String, false, "组标识：一组笔共享一个 id ⇒ 用 revert_group 整组撤销（不给则不成组）"),
             param!("layer_id", String, true, "目标图层"),
             param!("data", Object, true, "{region,hardness,opacity}"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
@@ -1953,6 +1965,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("limit", Number, false, "返回条数（缺省 50 ✓，上限 500 ✓）"),
             param!("offset", Number, false, "偏移（缺省 0 ✓，配 `next_offset` 翻页 ✓）"),
             param!("since_seq", Number, false, "只看序号大于它的原子（缺省 0 ✓）"),
+            param!("group_id", String, false, "只看该组的原子（配合 revert_group 与 brush_stroke 的 group_id）"),
             param!("layer_id", String, false, "只看某图层 ✓"),
             param!("object_id", String, false, "只看某个对象 ✓"),
             param!(
@@ -2322,6 +2335,13 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: ID_ARGS,
     },
     // ---- 撤销 ----
+    ToolSpec {
+        name: "revert_group",
+        profile: Profile::Core,
+        summary: "整组撤销：把同一次操作产生的所有笔（共享一个 group_id）一次挖掉",
+        mutating: true,
+        params: &[param!("group_id", String, true, "要撤销的组标识")],
+    },
     ToolSpec {
         name: "revert_to_seq",
         profile: Profile::Core,
@@ -3281,6 +3301,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("style", String, false, "confident = 起笔重收笔轻；sketchy = 确定性抖动与断笔；缺省不改（一个字节都不变）"),
             param!("clip_to_selection", String, false, "只把墨落在该选区里（选区 id，或 latest）；缺省 = 不裁剪。注意：传的 id 必须与建选区时用的名字完全一致（不要自己加 sel- 之类前缀；不确定就用 latest 取最新那个）"),
             param!("label", String, false, "笔迹标签（部位名，如「鼻子-轮廓」）⇒ 记进原子并可由 get_atom 读回；缺省不记"),
+            param!("group_id", String, false, "组标识：一组笔共享一个 id ⇒ 用 revert_group 整组撤销（不给则不成组）"),
         ],
     },
     ToolSpec {
@@ -3572,6 +3593,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("layer_id", String, false, "只列该图层的原子"),
             param!("brush", String, false, "只列该笔刷画的原子（名字含该子串）"),
             param!("since_seq", Integer, false, "只列 seq 大于该值的原子"),
+            param!("group_id", String, false, "只列该组的原子（配合 revert_group 与 brush_stroke 的 group_id）"),
             param!(
                 "bbox",
                 Any,
@@ -3883,6 +3905,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "set_group_transform" => write_set_group_transform(ctx, args),
         "move_object" => write_move_object(ctx, args),
         "delete_object" => write_tombstone(ctx, args, "object_id"),
+        "revert_group" => write_revert_group(ctx, args),
         "revert_to_seq" => write_revert_to_seq(ctx, args),
         "revert_atoms" => write_revert_atoms(ctx, args),
         "revert" => write_history_atom(ctx, args, AtomKind::Revert, "atom_id"),
@@ -6766,6 +6789,7 @@ fn write_draw(ctx: &mut ToolContext<'_>, args: &Value, kind: AtomKind) -> Result
     // **笔迹标签**（外部 §113 清单第 2 项：`fill` 出错同样难查）⇒ 这条路（画/填/擦）都收 `label`，
     // 由 `commit` 取走写进原子 ✓。`brush_stroke` 走 `write_import_image`，在那边单独设。
     ctx.pending_label = optional_str(args, "label");
+    ctx.pending_group_id = optional_str(args, "group_id");
     let layer_id = require_str(args, "layer_id")?;
     // 空点列会提交一个无意义的原子（审计发现的静默接受）。
     require_non_empty_points(args)?;
@@ -17410,6 +17434,7 @@ fn merge_intent_brush_params(args: &Value) -> Option<Value> {
 fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **笔迹标签**：`brush_stroke` 最终走 `write_import_image` 的 `ctx.commit` ⇒ 那里会取走它 ✓。
     ctx.pending_label = optional_str(args, "label");
+    ctx.pending_group_id = optional_str(args, "group_id");
     // ★ **`wait_for_render` 参数 ✗**：**∴ 缺省不给 ⇒ 保持 true（现有行为 ✓）**
     //   ⇒ **∴ 给了就就地改 ✓ ⇒ **∴ 不等渲染时省掉那 66% ✓**
     if let Some(wait) = args.get("wait_for_render").and_then(Value::as_bool) {
@@ -21147,6 +21172,54 @@ fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 /// **为什么新加而不是改 `get_diff`** ✓：`get_diff`（设计 776 ✓）是"**两个序号之间的差分**" ✓，
 /// 改它的响应会动到既有调用方 ✗；而"**按 id 取一条**"是另一个正交的需要 ✓（点开历史里某一条 ✓）。
 /// **内核里本来就有** ✓：`Log::get(id)` ✓ ⇒ 这里只是把它**放行到工具面** ✓。
+/// **`revert_group`**：按组标识整组撤销。
+///
+/// **与 `revert_atoms` 的分工**：那个要调用方先自己 `list_atoms` 拿 id 列表；
+/// 这个只要一个 `group_id` ⇒ 一次操作（比如 `smart_fill` 产生的 14 笔）可以用一个 id 收回，
+/// 不必先查再撤。
+fn write_revert_group(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let group_id = require_str(args, "group_id")?;
+    let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+        )
+    })?;
+    let reverted: std::collections::HashSet<String> = document
+        .log()
+        .atoms()
+        .iter()
+        .filter(|atom| atom.kind == AtomKind::Revert)
+        .filter_map(|atom| {
+            atom.payload
+                .get("target")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect();
+    let ids: Vec<String> = document
+        .log()
+        .atoms()
+        .iter()
+        .filter(|atom| atom.group_id.as_deref() == Some(group_id.as_str()))
+        .filter(|atom| !reverted.contains(&atom.id.to_string()))
+        .map(|atom| atom.id.to_string())
+        .collect();
+    if ids.is_empty() {
+        return Ok(json!({
+            "ok": true,
+            "group_id": group_id,
+            "reverted_count": 0,
+            "failed_count": 0,
+            "note": "该组没有可撤销的原子（可能已撤过，或这个 group_id 从未用过）",
+        }));
+    }
+    let inner = json!({ "atom_ids": ids });
+    let mut out = write_revert_atoms(ctx, &inner)?;
+    out["group_id"] = json!(group_id);
+    Ok(out)
+}
+
 /// **`revert_to_seq`**：撤销所有 `seq > n` 的笔迹原子（需求 v2 §4.4：阶段回退）。
 ///
 /// **为什么不用循环 undo**：外部复测方的快照不恢复图层（`E765`/`E767`）⇒ 阶段回退没有可靠手段；
@@ -21785,6 +21858,7 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let want_layer = optional_str(args, "layer_id");
     let want_brush = optional_str(args, "brush").map(|value| value.to_lowercase());
     let since_seq = optional_u64(args, "since_seq");
+    let want_group = optional_str(args, "group_id");
     // 区域筛选：`[x, y, w, h]`（文档像素）⇒ 只保留与该框相交的笔迹
     let want_thumb = args
         .get("want_thumb")
@@ -21828,6 +21902,11 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         }
         if let Some(min) = since_seq {
             if (atom.seq) <= min {
+                continue;
+            }
+        }
+        if let Some(group) = want_group.as_ref() {
+            if atom.group_id.as_ref() != Some(group) {
                 continue;
             }
         }
@@ -21880,6 +21959,7 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             "seq": atom.seq,
             "kind": kind_label(&atom.kind),
             "label": atom.label,
+            "group_id": atom.group_id,
             "layer_id": payload_str(atom, "layer_id"),
             "brush": payload_str(atom, "brush"),
             "timestamp": atom.timestamp,
@@ -23135,6 +23215,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "try_stroke",
         r#"{"layer_id":"L1","brush":"2B_pencil","points":[[10,10],[40,40]],"size":8}"#,
     ),
+    ("revert_group", r#"{"group_id":"g-2026-10-19-1"}"#),
     ("revert_to_seq", r#"{"seq":100}"#),
     ("revert_atoms", r#"{"atom_ids":["a1","a2"]}"#),
     (

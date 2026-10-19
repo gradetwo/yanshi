@@ -569,6 +569,13 @@ pub struct Atom {
     /// 笔迹标签（外部需求 try_stroke v2 §4.2）：部位名，如「鼻子-轮廓」。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// **组标识**（用户 2026-10-19 裁定要做）：一组笔共享一个 id，可整组撤销。
+    ///
+    /// **与 `label` 的区别**：`label` 是**名字**（人读，可重复，靠它筛的是"同名的笔"）；
+    /// `group_id` 是**身份**（机器读，默认取一个 ULID，一个组可以跨多个 label）。
+    /// ⇒ 「按部位找笔」用 `label`；「一次撤销同一次操作产生的所有笔」用 `group_id`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
     /// 所属变更集。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changeset_id: Option<ChangesetId>,
@@ -608,6 +615,7 @@ impl Atom {
             timestamp: now_ms(),
             message: None,
             label: None,
+            group_id: None,
             changeset_id: None,
             schema_version: SCHEMA_VERSION,
             plugin: None,
@@ -629,6 +637,13 @@ impl Atom {
     #[must_use]
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
+        self
+    }
+
+    /// **记上组标识**（同一组笔共享一个 id ⇒ 可整组撤销）。
+    #[must_use]
+    pub fn with_group_id(mut self, group_id: impl Into<String>) -> Self {
+        self.group_id = Some(group_id.into());
         self
     }
 
