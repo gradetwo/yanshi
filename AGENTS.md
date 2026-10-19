@@ -23,6 +23,34 @@
    ⇒ **∴ 例如**加问句**✗** ⇒ **∴ 要**看自检**✗ 能不能**机检**✗ 它**✗**
 ```
 
+### ⚠ 两个「判据数」：**235** 与 **280** 不是一回事（第 866 轮查清）
+
+| 口径 | 数 | 怎么来的 |
+|---|---|---|
+| **`run-criteria.sh` 收集的判据文件** | **280** | `tool-*(228) + browser-*(42) + mcp-*(7) + serve-*(2) + check-*(1)` |
+| **`check-agents-selfcheck` 统计变异率的** | **235** | 只算 `tool-*` 与 `mcp-*`（`228 + 7`）|
+
+**差距 45 = `browser-*`(42) + `serve-*`(2) + `check-*`(1)** ——
+来源是 `check-agents-selfcheck.mjs:99` 的这一行：
+
+```js
+.filter((name) => /^(tool|mcp)-.*\.mjs$/.test(name))
+```
+
+**⇒ 所以 45 条判据（含 42 条 `browser-*`）不参与「变异记录率」的考核。**
+排除 `browser-*` 大概是合理的（要真浏览器，做变异成本高），**但两个数都叫「判据」是我混报的根源**。
+
+**规则**：报「判据 N 条」时必须说清是**哪个口径** ——
+- 「CI 跑 280 条」
+- 「235 条参与变异率考核」
+- 「45 条豁免（browser/serve/check）」
+
+**自检**：
+```bash
+ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs scripts/serve-*.mjs scripts/check-*.mjs | wc -l   # 280
+ls scripts/tool-*.mjs scripts/mcp-*.mjs | wc -l                                                              # 235
+```
+
 **★ 覆盖**要报**两个数**，不是一个**（第 326 轮实测）
 
 ```
