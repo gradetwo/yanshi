@@ -114,6 +114,18 @@ pub enum SelectionGeom {
         /// 顶点序列，按输入顺序，隐式闭合。
         points: Vec<(f64, f64)>,
     },
+    /// 位图选区（`smart_select` 魔棒生成）：`kind == "bitmap"`。
+    ///
+    /// 覆盖率走 O(1) 查表（`coverage` 内零锁、零解码）；`feather` 已烘焙进位图
+    /// （`shape` 标记 `"feather_baked": true`），渲染期不再重复羽化。
+    /// `mask` 为 `None` 表示 blob 未注册成功，覆盖率退化为 0
+    /// （宁可不选、不可错选）。
+    Bitmap {
+        /// 位图在文档坐标中的紧致外接盒 `[bx, by, bw, bh]`（像素）。
+        bbox: [i32; 4],
+        /// 已解码的位图（`from_value` 构造时由注册表单次绑定）。
+        mask: Option<Arc<DecodedBitmapMask>>,
+    },
 }
 
 impl SelectionShape {
@@ -202,6 +214,26 @@ impl SelectionShape {
                     SelectionGeom::Polygon { points }
                 }
             }
+            "bitmap" => {
+                // 位图选区：紧致 bbox + blob 哈希；掩膜由全局注册表单次绑定。
+                // 注意：绝不能复用 "magic_wand" 这个 kind（现有单测断言它退化全选）。
+                let bbox = value
+                    .get("bbox")
+                    .and_then(Value::as_array)
+                    .map(|arr| {
+                        let n = |i: usize| arr.get(i).and_then(Value::as_i64).unwrap_or(0) as i32;
+                        [n(0), n(1), n(2).max(0), n(3).max(0)]
+                    })
+                    .unwrap_or([0, 0, 0, 0]);
+                if bbox[2] <= 0 || bbox[3] <= 0 {
+                    return SelectionGeom::Empty;
+                }
+                let mask = value
+                    .get("blob")
+                    .and_then(Value::as_str)
+                    .and_then(get_bitmap_mask);
+                SelectionGeom::Bitmap { bbox, mask }
+            }
             // 未知 kind（例如魔棒 / 按颜色需要外部解析）：安全侧退化为覆盖全部。
             _ => SelectionGeom::CoverAll,
         }
@@ -215,6 +247,13 @@ impl SelectionShape {
         if x.is_nan() || y.is_nan() {
             // 无法定位的采样点：视为未覆盖（反选后为全覆盖）。
             return if self.invert { 1.0 } else { 0.0 };
+        }
+        // 位图选区：O(1) 查表（2 次整数比较 + 1 次数组下标），零锁、零解码。
+        // `feather` 已烘焙进位图（`feather_baked`），这里不再重复羽化。
+        if let SelectionGeom::Bitmap { bbox, mask } = &self.geom {
+            let base = bitmap_coverage(bbox, mask.as_deref(), x, y);
+            let value = if self.invert { 1.0 - base } else { base };
+            return clamp01(value);
         }
         let base = match &self.geom {
             SelectionGeom::CoverAll => 1.0,
@@ -237,6 +276,9 @@ impl SelectionShape {
             SelectionGeom::Rect { bbox } => rect_signed_distance(*bbox, x, y),
             SelectionGeom::Ellipse { bbox } => ellipse_signed_distance(*bbox, x, y),
             SelectionGeom::Polygon { points } => polygon_signed_distance(points, x, y),
+            // 位图选区不走有符号距离（`coverage` 直接查表）；这里返回 +∞
+            // 表示「无穷远外部」，避免任何调用方误算出覆盖。
+            SelectionGeom::Bitmap { .. } => f64::INFINITY,
         }
     }
 }
@@ -362,6 +404,12 @@ impl SelectionGeom {
             }
             SelectionGeom::Empty => Some((0.0, 0.0, 0.0, 0.0)),
             SelectionGeom::CoverAll => None,
+            SelectionGeom::Bitmap { bbox, .. } => Some((
+                bbox[0] as f64,
+                bbox[1] as f64,
+                bbox[2] as f64,
+                bbox[3] as f64,
+            )),
         }
     }
 }
@@ -570,6 +618,31 @@ fn clamp01(value: f32) -> f32 {
     }
 }
 
+/// 位图选区的 O(1) 覆盖率采样：包围盒整数快速剔除 + 一维数组下标。
+///
+/// `mask` 为 `None`（blob 未注册）时返回 0.0（宁可不选、不可错选）。
+fn bitmap_coverage(bbox: &[i32; 4], mask: Option<&DecodedBitmapMask>, x: f64, y: f64) -> f32 {
+    let ix = x.floor() as i32;
+    let iy = y.floor() as i32;
+    if ix < bbox[0] || iy < bbox[1] || ix >= bbox[0] + bbox[2] || iy >= bbox[1] + bbox[3] {
+        return 0.0;
+    }
+    let Some(m) = mask else {
+        return 0.0;
+    };
+    let dx = (ix - bbox[0]) as usize;
+    let dy = (iy - bbox[1]) as usize;
+    // 防御：位图尺寸与 bbox 不一致时（脏数据）按位图实际尺寸钳制，绝不越界。
+    if dx >= m.width as usize || dy >= m.height as usize {
+        return 0.0;
+    }
+    let idx = dy * (m.width as usize) + dx;
+    match m.data.get(idx) {
+        Some(&v) => f32::from(v) * (1.0 / 255.0),
+        None => 0.0,
+    }
+}
+
 /// 两个 bbox 的并集。
 fn union_bbox(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
     let x0 = a.0.min(b.0);
@@ -755,6 +828,12 @@ fn geom_bbox_extent(
                 Some((min_x, min_y, max_x - min_x, max_y - min_y))
             }
         }
+        SelectionGeom::Bitmap { bbox, .. } => Some((
+            bbox[0] as f64,
+            bbox[1] as f64,
+            bbox[2] as f64,
+            bbox[3] as f64,
+        )),
     }
 }
 
@@ -903,6 +982,78 @@ impl CompiledMask {
         match self.grid.get(idx) {
             Some(&v) => f32::from(v) * (1.0 / 255.0),
             None => self.default_outside,
+        }
+    }
+}
+
+/// 解码后的位图选区掩膜（`smart_select` 生成，L8 灰度）。
+///
+/// `data` 为行主序 `u8` 覆盖率，长度恒为 `width * height`。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecodedBitmapMask {
+    /// 位图宽（像素）。
+    pub width: u32,
+    /// 位图高（像素）。
+    pub height: u32,
+    /// 行主序覆盖率（0~255）。
+    pub data: Vec<u8>,
+}
+
+/// 已解码位图选区的全局注册表：`blob_hash -> DecodedBitmapMask`。
+///
+/// `SelectionShape::from_value` 是纯函数、拿不到 blob 存储，只能在这里做一次
+/// 查表绑定（`coverage(x,y)` 内零锁、零哈希、零解码）。写入侧（`write_smart_select`）
+/// 在生成位图时注册；渲染准备阶段（`ensure_bitmap_masks_registered`）对 fold
+/// 重放 / 跨进程的情形从存储按需解码注册，保证重载后不静默退化为空选区。
+/// 渲染是分块并行的 ⇒ `Mutex`（与 `MaskCache` 同一口径）。
+static BITMAP_MASK_REGISTRY: std::sync::LazyLock<Mutex<HashMap<String, Arc<DecodedBitmapMask>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// 把解码后的位图掩膜注册进全局表（写时 / 渲染准备阶段调用）。
+pub fn register_bitmap_mask(blob_hash: String, mask: Arc<DecodedBitmapMask>) {
+    let mut guard = BITMAP_MASK_REGISTRY.lock().expect("位图选区注册表锁中毒");
+    guard.insert(blob_hash, mask);
+}
+
+/// 查已注册的位图掩膜（`from_value` 构造时单次绑定用）。
+pub fn get_bitmap_mask(blob_hash: &str) -> Option<Arc<DecodedBitmapMask>> {
+    BITMAP_MASK_REGISTRY
+        .lock()
+        .expect("位图选区注册表锁中毒")
+        .get(blob_hash)
+        .map(Arc::clone)
+}
+
+/// 渲染准备阶段：确保给定形状里引用的位图 blob 都已解码注册。
+///
+/// `load` 只在注册表未命中时调用（通常是 `store.get(&hash)`）。已注册的直接跳过，
+/// 解码失败的也跳过（`from_value` 会把 `mask` 置 `None`，覆盖率退化为 0，
+/// 调用方按「宁可不选、不可错选」处理）。
+pub fn ensure_bitmap_masks_registered(shapes: &[&Value], load: &dyn Fn(&str) -> Option<Vec<u8>>) {
+    for shape in shapes {
+        if shape.get("kind").and_then(Value::as_str) != Some("bitmap") {
+            continue;
+        }
+        let Some(blob) = shape.get("blob").and_then(Value::as_str) else {
+            continue;
+        };
+        {
+            let guard = BITMAP_MASK_REGISTRY.lock().expect("位图选区注册表锁中毒");
+            if guard.contains_key(blob) {
+                continue;
+            }
+        }
+        if let Some(bytes) = load(blob) {
+            if let Some((w, h, data)) = decode_png_l8(&bytes) {
+                register_bitmap_mask(
+                    blob.to_owned(),
+                    Arc::new(DecodedBitmapMask {
+                        width: w,
+                        height: h,
+                        data,
+                    }),
+                );
+            }
         }
     }
 }
@@ -1678,5 +1829,129 @@ mod tests {
         mask.hash_fingerprint(&mut h1);
         mask2.hash_fingerprint(&mut h2);
         assert_ne!(h1.finish(), h2.finish());
+    }
+
+    // ---- smart_select 位图选区 ----
+
+    fn register_test_bitmap(name: &str, w: u32, h: u32, value: u8) {
+        let data = vec![value; (w * h) as usize];
+        register_bitmap_mask(
+            name.to_owned(),
+            Arc::new(DecodedBitmapMask {
+                width: w,
+                height: h,
+                data,
+            }),
+        );
+    }
+
+    fn bitmap_shape(bbox: [i32; 4], blob: &str, mode: &str) -> SelectionShape {
+        SelectionShape::from_value(&json!({
+            "kind": "bitmap",
+            "bbox": bbox,
+            "blob": blob,
+            "mode": mode,
+        }))
+    }
+
+    #[test]
+    fn bitmap_coverage_samples_registered_mask() {
+        register_test_bitmap("sel_test_bm1", 40, 40, 255);
+        let s = bitmap_shape([20, 20, 40, 40], "sel_test_bm1", "new");
+        // 内点满选。
+        assert_eq!(s.coverage(30.0, 30.0), 1.0);
+        assert_eq!(s.coverage(59.0, 59.0), 1.0);
+        // 外点为 0（包围盒快速剔除）。
+        assert_eq!(s.coverage(10.0, 10.0), 0.0);
+        assert_eq!(s.coverage(70.0, 70.0), 0.0);
+        // 未注册的 blob 退化为 0（宁可不选）。
+        let missing = bitmap_shape([20, 20, 40, 40], "sel_test_no_such_blob", "new");
+        assert_eq!(missing.coverage(30.0, 30.0), 0.0);
+    }
+
+    #[test]
+    fn bitmap_half_coverage_interpolates() {
+        register_test_bitmap("sel_test_bm_half", 10, 10, 128);
+        let s = bitmap_shape([0, 0, 10, 10], "sel_test_bm_half", "new");
+        let c = s.coverage(5.0, 5.0);
+        assert!(
+            (c - 128.0 / 255.0).abs() < 1e-6,
+            "半覆盖应为 128/255，实际 {c}"
+        );
+    }
+
+    /// 判据 3：几何 + 位图、位图 + 位图的布尔组合。
+    #[test]
+    fn bitmap_boolean_ops_with_geometry() {
+        register_test_bitmap("sel_test_b1", 40, 40, 255);
+        register_test_bitmap("sel_test_b2", 40, 40, 255);
+        // B1 = [20,20,40,40] new，B2 = [100,100,40,40] add。
+        let mut set = SelectionSet::new();
+        set.push(bitmap_shape([20, 20, 40, 40], "sel_test_b1", "new"));
+        set.push(bitmap_shape([100, 100, 40, 40], "sel_test_b2", "add"));
+        assert_eq!(set.coverage(30.0, 30.0), 1.0); // B1 内
+        assert_eq!(set.coverage(110.0, 110.0), 1.0); // B2 内
+        assert_eq!(set.coverage(70.0, 70.0), 0.0); // 中间空白
+
+        // 几何矩形与位图相交。
+        let mut set2 = SelectionSet::new();
+        set2.push(SelectionShape::from_value(&json!({
+            "kind": "rect",
+            "bbox": {"x": 0.0, "y": 0.0, "w": 50.0, "h": 50.0},
+            "mode": "new",
+        })));
+        set2.push(bitmap_shape([20, 20, 40, 40], "sel_test_b1", "intersect"));
+        assert_eq!(set2.coverage(30.0, 30.0), 1.0); // 交集内
+        assert_eq!(set2.coverage(10.0, 10.0), 0.0); // 矩形内但位图外
+        assert_eq!(set2.coverage(70.0, 70.0), 0.0); // 都在外
+
+        // subtract 减去 B1 后仅 B2 保持。
+        let mut set3 = SelectionSet::new();
+        set3.push(bitmap_shape([20, 20, 40, 40], "sel_test_b1", "new"));
+        set3.push(bitmap_shape([100, 100, 40, 40], "sel_test_b2", "add"));
+        set3.push(bitmap_shape([20, 20, 40, 40], "sel_test_b1", "subtract"));
+        assert_eq!(set3.coverage(30.0, 30.0), 0.0); // B1 被减掉
+        assert_eq!(set3.coverage(110.0, 110.0), 1.0); // B2 保留
+
+        // invert 照常用。
+        let inv = SelectionShape {
+            geom: SelectionGeom::Bitmap {
+                bbox: [20, 20, 40, 40],
+                mask: get_bitmap_mask("sel_test_b1"),
+            },
+            feather: 0.0,
+            invert: true,
+            mode: SelectionMode::New,
+        };
+        assert_eq!(inv.coverage(30.0, 30.0), 0.0); // 内点被反选掉
+        assert_eq!(inv.coverage(70.0, 70.0), 1.0); // 外点被选中
+    }
+
+    #[test]
+    fn ensure_bitmap_masks_registered_loads_from_store() {
+        // 模拟存储：L8 PNG 字节。
+        let data = vec![200u8; 16 * 16];
+        let png = decode_png_l8(&crate::png::encode_png_l8(16, 16, &data).expect("编码不会失败"))
+            .expect("自己编的必须能解");
+        assert_eq!(png.2.len(), 16 * 16);
+        let shape = json!({
+            "kind": "bitmap",
+            "bbox": [5, 5, 16, 16],
+            "blob": "sel_test_ensure_blob",
+        });
+        // 未注册前 from_value 拿不到掩膜。
+        let before = SelectionShape::from_value(&shape);
+        assert_eq!(before.coverage(10.0, 10.0), 0.0);
+        // 注册后绑定成功。
+        ensure_bitmap_masks_registered(&[&shape], &|h| {
+            if h == "sel_test_ensure_blob" {
+                crate::png::encode_png_l8(16, 16, &data)
+            } else {
+                None
+            }
+        });
+        let after = SelectionShape::from_value(&shape);
+        let c = after.coverage(10.0, 10.0);
+        assert!((c - 200.0 / 255.0).abs() < 1e-6, "注册后应查到表，实际 {c}");
     }
 }

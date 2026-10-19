@@ -12,6 +12,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use yanshi_core::{
     Atom, AtomKind, Bbox, Changeset, ChangesetId, DocumentState, ErrorCode, ErrorContext, HeadBase,
     ObjectType, Result, YanshiError,
@@ -3414,6 +3415,24 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "smart_select",
+        profile: Profile::Core,
+        summary: "智能选取（魔棒）：点种子像素，按 4D 预乘 OKLabA 感知距离做 Scanline 连通泛洪（contiguous=false 时为全图色彩范围选取），1px 抗锯齿软边烘焙进位图，微孔自动闭合，可选磁力边缘细化。选区以 L8 位图 blob 存储，add/subtract/intersect/invert 照常用。返回诊断指标（面积/覆盖率/漏出告警）与可选 Quick-Mask 预览。",
+        mutating: true,
+        params: &[
+            param!("selection_id", String, false, "选区 id；不传自动生成 sel_wand_N"),
+            param!("seed", Array, false, "种子点 [x, y]（与 seeds 二选一）"),
+            param!("seeds", Array, false, "多个种子点 [[x1, y1], ...]，取并集"),
+            param!("tolerance", Number, false, "容差 0-1，缺省 0.2；二次感知标定，0.1 吃平涂+AA 边，0.45 吃体积过渡"),
+            param!("contiguous", Boolean, false, "true（缺省）连通泛洪；false 全图按色选取"),
+            param!("refine_edges", Boolean, false, "磁力边缘细化（缺省 true）：法向 Sobel 吸附 + 联合双边滤波"),
+            param!("layer_id", String, false, "只在该图层取色；不传则取合成后像素"),
+            param!("mode", String, false, "new（缺省）/add/subtract/intersect"),
+            param!("feather", Number, false, "羽化半径像素，缺省 0；>0 时高斯烘焙进位图"),
+            param!("preview", Boolean, false, "true 则返回 Quick-Mask 预览缩略图 blob"),
+        ],
+    },
+    ToolSpec {
         name: "swatch_brush_strokes",
         profile: Profile::Core,
         mutating: false,
@@ -4013,6 +4032,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "smart_glaze" => write_smart_glaze(ctx, args),
         "smart_edge_soften" => write_smart_edge_soften(ctx, args),
         "smart_texture" => write_smart_texture(ctx, args),
+        "smart_select" => write_smart_select(ctx, args),
         "brush_preview" => write_brush_preview(ctx, args),
         "swatch_brush_strokes" => write_swatch_brush_strokes(ctx, args),
         "save_palette" => write_save_palette(ctx, args),
@@ -18219,6 +18239,32 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
                 yanshi_render::geometry::polygon_coverage_clipped(&shape_points, 4, &clip)
             }
             "ellipse" => yanshi_render::geometry::ellipse_coverage_clipped(bbox, 4, &clip),
+            "bitmap" => {
+                // 位图选区（`smart_select`）：先确保 blob 已解码注册，再逐像素查表。
+                // 未注册成功时覆盖率全 0（宁可不落笔，不可错落笔）。
+                let gw = width.max(1) as u32;
+                let gh = height.max(1) as u32;
+                let mut data = vec![0.0f32; (gw * gh) as usize];
+                if let Some(sel) = sel {
+                    yanshi_render::selection::ensure_bitmap_masks_registered(&[&sel.shape], &|h| {
+                        h.parse::<yanshi_core::BlobHash>()
+                            .ok()
+                            .and_then(|hash| ctx.workspace.store().get(&hash).ok())
+                    });
+                    let shape = yanshi_render::selection::SelectionShape::from_selection(sel);
+                    for (i, v) in data.iter_mut().enumerate() {
+                        let px = x0 as f64 + (i % gw as usize) as f64;
+                        let py = y0 as f64 + (i / gw as usize) as f64;
+                        *v = shape.coverage(px, py);
+                    }
+                }
+                yanshi_render::geometry::Coverage {
+                    bbox: clip,
+                    width: gw,
+                    height: gh,
+                    data,
+                }
+            }
             _ => yanshi_render::geometry::rect_coverage_clipped(bbox, &clip),
         };
         // ★ 应用之前被静默丢弃的 invert/feather（与蒙版路径 render.rs apply_layer_mask 一致：
@@ -21431,6 +21477,971 @@ fn derive_stroke_color(
         alpha,
     ]
 }
+/// ============================================================================
+/// `smart_select`：OKLab 魔棒智能选取（连通泛洪 + 抗锯齿软边 + 磁力边缘细化）
+/// ============================================================================
+
+/// sRGB `u8` → OKLab `(L, a, b)`（`f32`）。
+///
+/// 复用 `smart_blend` 的"立方根 LMS"数学（零依赖）：线性化 sRGB → 3×3 矩阵到
+/// LMS 并取立方根 → 线性组合到 Lab。
+#[inline]
+fn srgb_u8_to_oklab(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+    #[inline]
+    fn to_linear(c: f32) -> f32 {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    let r = to_linear(r as f32 / 255.0);
+    let g = to_linear(g as f32 / 255.0);
+    let b = to_linear(b as f32 / 255.0);
+    let l = (0.41222147 * r + 0.53633255 * g + 0.05144599 * b)
+        .max(0.0)
+        .cbrt();
+    let m = (0.2119035 * r + 0.6806995 * g + 0.10739696 * b)
+        .max(0.0)
+        .cbrt();
+    let s = (0.08830246 * r + 0.28171884 * g + 0.6299787 * b)
+        .max(0.0)
+        .cbrt();
+    let l_out = 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s;
+    let a_out = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
+    let b_out = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
+    (l_out, a_out, b_out)
+}
+
+/// RGBA → Alpha 预乘的 4D 感知向量 `(αL, 2αa, 2αb, α)`。
+///
+/// 全透明像素（`α = 0`）恒为零向量 ⇒ 任意两个全透明像素的距离恒为 0，
+/// 点空白背景不会只选出一半（naive 灾难 #2）。
+#[inline]
+fn rgba_to_oklaba(r: u8, g: u8, b: u8, a: u8) -> [f32; 4] {
+    if a == 0 {
+        return [0.0, 0.0, 0.0, 0.0];
+    }
+    let alpha = a as f32 * (1.0 / 255.0);
+    let (l, oa, ob) = srgb_u8_to_oklab(r, g, b);
+    [alpha * l, alpha * 2.0 * oa, alpha * 2.0 * ob, alpha]
+}
+
+/// 4D 预乘 OKLabA 向量的平方距离。
+#[inline]
+fn oklaba_dist_sq(c1: [f32; 4], c2: [f32; 4]) -> f32 {
+    let d0 = c1[0] - c2[0];
+    let d1 = c1[1] - c2[1];
+    let d2 = c1[2] - c2[2];
+    let d3 = c1[3] - c2[3];
+    d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3
+}
+
+/// 距离 → `u8` 覆盖率：`[0, de_in]` 内严格 255，`[de_out, ∞)` 为 0，
+/// 过渡带按颜色混合比例给亚像素软边（naive 灾难 #4 的解药）。
+#[inline]
+fn coverage_u8_from_dist(dist: f32, de_in: f32, de_out: f32) -> u8 {
+    if dist <= de_in {
+        255
+    } else if dist >= de_out {
+        0
+    } else {
+        let t = (de_out - dist) / (de_out - de_in).max(1e-5);
+        (t * 255.0 + 0.5) as u8
+    }
+}
+
+/// `tolerance ∈ [0, 1]` → `(ΔE_max, ΔE_in, ΔE_out, ΔE_max²)`：二次感知标定曲线。
+///
+/// 人眼对低容差区极敏感，线性映射会让前半段跨度太大；二次曲线让 `t = 0.2`
+/// （默认）恰好吃下 `color_breath = 0.08` 的手绘色块且不穿线稿。
+fn wand_thresholds(tolerance: f64) -> (f32, f32, f32, f32) {
+    let t = tolerance.clamp(0.0, 1.0) as f32;
+    let de_max = 0.005 + 0.35 * t + 0.85 * t * t;
+    let sigma_aa = (0.20 * de_max).max(0.025);
+    let de_in = (de_max - sigma_aa).max(0.0);
+    let de_out = de_max + sigma_aa;
+    (de_max, de_in, de_out, de_max * de_max)
+}
+
+/// 扫描线区间泛洪（Scanline Span Flood Fill）+ 1px 抗锯齿边界环。
+///
+/// - `contiguous = true`：从种子做 4-连通泛洪；`false`：全区域线性扫描
+///   （"色彩范围选取"）。
+/// - 绝不降采样：1~2px 的线稿缝降采样后会被冲淡，导致漏墨穿出（致命）。
+/// - 按需 OKLab 求值：只在访问像素时转色，不全图转 `f32`（4K 下省 132MB）。
+/// - 返回 `(mask, bbox)`：`mask` 为 `w*h` 的 `u8` 覆盖率，`bbox` 为
+///   `coverage > 0` 的紧致 `[x, y, w, h]`（无选中时 `[0, 0, 0, 0]`）。
+fn magic_wand_scanline(
+    raw: &[u8],
+    w: usize,
+    h: usize,
+    seed_x: usize,
+    seed_y: usize,
+    tolerance: f64,
+    contiguous: bool,
+) -> (Vec<u8>, [i32; 4]) {
+    let (_de_max, de_in, de_out, de_max_sq) = wand_thresholds(tolerance);
+    let de_out_sq = de_out * de_out;
+
+    let seed_off = (seed_y * w + seed_x) * 4;
+    let c_seed = rgba_to_oklaba(
+        raw[seed_off],
+        raw[seed_off + 1],
+        raw[seed_off + 2],
+        raw[seed_off + 3],
+    );
+
+    let mut mask = vec![0u8; w * h];
+    let (mut min_x, mut min_y) = (w as i32, h as i32);
+    let (mut max_x, mut max_y) = (-1i32, -1i32);
+    macro_rules! put {
+        ($x:expr, $y:expr, $cov:expr) => {{
+            let _i = ($y) * w + ($x);
+            if $cov > mask[_i] {
+                mask[_i] = $cov;
+            }
+            let _x = ($x) as i32;
+            let _y = ($y) as i32;
+            if _x < min_x {
+                min_x = _x;
+            }
+            if _x > max_x {
+                max_x = _x;
+            }
+            if _y < min_y {
+                min_y = _y;
+            }
+            if _y > max_y {
+                max_y = _y;
+            }
+        }};
+    }
+
+    // 单像素求值：(是否连通核, 覆盖率)。连通核继续生长；边界环只记覆盖率。
+    let eval_px = |x: usize, y: usize| -> (bool, u8) {
+        let p = (y * w + x) * 4;
+        let c = rgba_to_oklaba(raw[p], raw[p + 1], raw[p + 2], raw[p + 3]);
+        let d_sq = oklaba_dist_sq(c, c_seed);
+        if d_sq <= de_max_sq {
+            (
+                true,
+                coverage_u8_from_dist(d_sq.sqrt(), de_in, de_out).max(1),
+            )
+        } else if d_sq < de_out_sq {
+            (false, coverage_u8_from_dist(d_sq.sqrt(), de_in, de_out))
+        } else {
+            (false, 0)
+        }
+    };
+
+    if !contiguous {
+        for y in 0..h {
+            for x in 0..w {
+                let (core, cov) = eval_px(x, y);
+                let _ = core;
+                if cov > 0 {
+                    put!(x, y, cov);
+                }
+            }
+        }
+    } else {
+        // visited: 0 = 未访问，1 = 连通核，2 = 边界环。
+        let mut visited = vec![0u8; w * h];
+        let mut stack: Vec<(usize, usize)> = Vec::with_capacity(256);
+        visited[seed_y * w + seed_x] = 1;
+        stack.push((seed_y, seed_x));
+        // 种子即参考色，距离恒 0，覆盖率恒 255。
+        put!(seed_x, seed_y, 255);
+
+        while let Some((y, sx)) = stack.pop() {
+            // 本行向左右扩展核心区间。
+            let mut xl = sx;
+            while xl > 0 {
+                let nx = xl - 1;
+                let idx = y * w + nx;
+                if visited[idx] != 0 {
+                    break;
+                }
+                let (is_core, cov) = eval_px(nx, y);
+                if cov > 0 {
+                    put!(nx, y, cov);
+                }
+                if is_core {
+                    visited[idx] = 1;
+                    xl = nx;
+                } else {
+                    visited[idx] = 2;
+                    break;
+                }
+            }
+            let mut xr = sx;
+            while xr + 1 < w {
+                let nx = xr + 1;
+                let idx = y * w + nx;
+                if visited[idx] != 0 {
+                    break;
+                }
+                let (is_core, cov) = eval_px(nx, y);
+                if cov > 0 {
+                    put!(nx, y, cov);
+                }
+                if is_core {
+                    visited[idx] = 1;
+                    xr = nx;
+                } else {
+                    visited[idx] = 2;
+                    break;
+                }
+            }
+            // 上下行：在 [xl-1, xr+1] 内找新核心区间（一次只压一个种子，
+            // 区间内其余像素向前吞掉并标记，避免栈膨胀）。
+            for ny in [y.wrapping_sub(1), y + 1] {
+                if ny >= h {
+                    continue;
+                }
+                let mut x = xl.saturating_sub(1);
+                let end = (xr + 1).min(w - 1);
+                while x <= end {
+                    let idx = ny * w + x;
+                    if visited[idx] != 0 {
+                        x += 1;
+                        continue;
+                    }
+                    let (is_core, cov) = eval_px(x, ny);
+                    if cov > 0 {
+                        put!(x, ny, cov);
+                    }
+                    if !is_core {
+                        visited[idx] = 2;
+                        x += 1;
+                        continue;
+                    }
+                    // 找到游程起点：向右探测游程终点（只求值记覆盖率，
+                    // 不预标记——游程内部留给种子弹出后的左右扩展自然覆盖，
+                    // 否则扩展会被 visited=1 截断、洪水退化成梳子形状）。
+                    let run_l = x;
+                    let mut x2 = x + 1;
+                    while x2 <= end {
+                        let idx2 = ny * w + x2;
+                        if visited[idx2] != 0 {
+                            break;
+                        }
+                        let (c2, cov2) = eval_px(x2, ny);
+                        if cov2 > 0 {
+                            put!(x2, ny, cov2);
+                        }
+                        if !c2 {
+                            visited[idx2] = 2;
+                            x2 += 1;
+                            break;
+                        }
+                        x2 += 1;
+                    }
+                    visited[ny * w + run_l] = 1;
+                    stack.push((ny, run_l));
+                    x = x2;
+                }
+            }
+        }
+    }
+
+    if max_x < min_x {
+        return (mask, [0, 0, 0, 0]);
+    }
+    let bbox = [min_x, min_y, max_x - min_x + 1, max_y - min_y + 1];
+    (mask, bbox)
+}
+
+/// 微孔闭合（Pinhole Closing）：填平选区内部面积 ≤ 8px² 的 4-连通暗孔。
+///
+/// 专治 `smart_fill` / `scatter_texture` 飞白与 `color_breath` 留下的筛子眼。
+/// 从边界 flood fill 背景，剩下的 `mask == 0` 连通域即内部孔。
+fn pinhole_close(mask: &mut [u8], w: usize, h: usize) {
+    if w == 0 || h == 0 {
+        return;
+    }
+    // 从四边 flood fill 可达背景。
+    let mut bg = vec![false; w * h];
+    let mut stack = Vec::with_capacity(w + h);
+    for x in 0..w {
+        stack.push((x, 0));
+        stack.push((x, h - 1));
+    }
+    for y in 0..h {
+        stack.push((0, y));
+        stack.push((w - 1, y));
+    }
+    while let Some((x, y)) = stack.pop() {
+        let idx = y * w + x;
+        if bg[idx] || mask[idx] > 0 {
+            continue;
+        }
+        bg[idx] = true;
+        if x > 0 {
+            stack.push((x - 1, y));
+        }
+        if x + 1 < w {
+            stack.push((x + 1, y));
+        }
+        if y > 0 {
+            stack.push((x, y - 1));
+        }
+        if y + 1 < h {
+            stack.push((x, y + 1));
+        }
+    }
+    // 内部孔按连通域填 ≤ 8px² 的。
+    let mut seen = vec![false; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let idx = y * w + x;
+            if mask[idx] > 0 || bg[idx] || seen[idx] {
+                continue;
+            }
+            let mut comp = Vec::new();
+            let mut st = vec![(x, y)];
+            seen[idx] = true;
+            while let Some((cx, cy)) = st.pop() {
+                comp.push((cx, cy));
+                if comp.len() > 8 {
+                    // 超限：继续标记 seen 但不填（避免重复 BFS）。
+                    // 为简单起见仍走完 BFS。
+                }
+                let neighbors = [
+                    (cx.wrapping_sub(1), cy),
+                    (cx + 1, cy),
+                    (cx, cy.wrapping_sub(1)),
+                    (cx, cy + 1),
+                ];
+                for (nx, ny) in neighbors {
+                    if nx >= w || ny >= h {
+                        continue;
+                    }
+                    let nidx = ny * w + nx;
+                    if mask[nidx] > 0 || bg[nidx] || seen[nidx] {
+                        continue;
+                    }
+                    seen[nidx] = true;
+                    st.push((nx, ny));
+                }
+            }
+            if comp.len() <= 8 {
+                for (cx, cy) in comp {
+                    mask[cy * w + cx] = 255;
+                }
+            }
+        }
+    }
+}
+
+/// `u8` 灰度的双线性采样（越界钳制到边缘）。
+fn bilinear_sample_u8(data: &[u8], w: usize, h: usize, x: f32, y: f32) -> u8 {
+    let x0 = x.floor() as i32;
+    let y0 = y.floor() as i32;
+    let fx = x - x0 as f32;
+    let fy = y - y0 as f32;
+    let at = |ix: i32, iy: i32| -> f32 {
+        let cx = ix.clamp(0, w as i32 - 1) as usize;
+        let cy = iy.clamp(0, h as i32 - 1) as usize;
+        data[cy * w + cx] as f32
+    };
+    let v = at(x0, y0) * (1.0 - fx) * (1.0 - fy)
+        + at(x0 + 1, y0) * fx * (1.0 - fy)
+        + at(x0, y0 + 1) * (1.0 - fx) * fy
+        + at(x0 + 1, y0 + 1) * fx * fy;
+    v.round().clamp(0.0, 255.0) as u8
+}
+
+/// 可分离高斯模糊（`u8` 灰度，`sigma` 像素）：`feather` 烘焙用。
+fn separable_gaussian_blur_u8(data: &[u8], w: usize, h: usize, sigma: f32) -> Vec<u8> {
+    if sigma <= 0.0 || w == 0 || h == 0 {
+        return data.to_vec();
+    }
+    let radius = (sigma * 3.0).ceil() as i32;
+    let mut kernel = Vec::new();
+    let mut sum = 0f32;
+    for i in -radius..=radius {
+        let v = (-(i as f32) * (i as f32) / (2.0 * sigma * sigma)).exp();
+        kernel.push(v);
+        sum += v;
+    }
+    for v in kernel.iter_mut() {
+        *v /= sum;
+    }
+    // 横向。
+    let mut tmp = vec![0f32; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let mut acc = 0f32;
+            for (ki, &kv) in kernel.iter().enumerate() {
+                let sx = (x as i32 + ki as i32 - radius).clamp(0, w as i32 - 1) as usize;
+                acc += kv * data[y * w + sx] as f32;
+            }
+            tmp[y * w + x] = acc;
+        }
+    }
+    // 纵向。
+    let mut out = vec![0u8; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let mut acc = 0f32;
+            for (ki, &kv) in kernel.iter().enumerate() {
+                let sy = (y as i32 + ki as i32 - radius).clamp(0, h as i32 - 1) as usize;
+                acc += kv * tmp[sy * w + x];
+            }
+            out[y * w + x] = acc.round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
+/// 窄带边缘细化（Q6）：法向 Sobel 磁力吸附 + 联合双边滤波。
+///
+/// 只在掩膜 `bbox`（外扩 8px）内运行：
+///
+/// 1. **磁力吸附**：对轮廓窄带像素，用掩膜梯度估外法线，沿法线 ±6px 找
+///    带距离衰减的最大图像梯度响应（`G > 0.08` 才吸附），把边界推/收到真实
+///    物象边缘（双线性重采样实现位移）。
+/// 2. **联合双边滤波**：2 轮 5×5（`σs = 1.5px`，`σc = 0.06`），以原图 OKLabA
+///    颜色为引导权重，让过渡带覆盖率对齐前景/背景混合率，消灭 1px 灰白边。
+fn refine_mask_edges(raw: &[u8], w: usize, h: usize, mask: &mut [u8], bbox: [i32; 4]) {
+    const R: i32 = 6;
+    let bx0 = (bbox[0] - R - 2).max(0) as usize;
+    let by0 = (bbox[1] - R - 2).max(0) as usize;
+    let bx1 = (bbox[0] + bbox[2] + R + 2).min(w as i32) as usize;
+    let by1 = (bbox[1] + bbox[3] + R + 2).min(h as i32) as usize;
+    if bx1 <= bx0 + 2 || by1 <= by0 + 2 {
+        return;
+    }
+    let rw = bx1 - bx0;
+    let rh = by1 - by0;
+
+    // 裁剪区掩膜快照。
+    let mut sub = vec![0u8; rw * rh];
+    for y in 0..rh {
+        let src_off = (by0 + y) * w + bx0;
+        sub[y * rw..(y + 1) * rw].copy_from_slice(&mask[src_off..src_off + rw]);
+    }
+
+    // --- 1. 图像梯度幅值（4D OKLabA 中心差分，L1 近似）---
+    let mut grad = vec![0f32; rw * rh];
+    for y in 1..rh - 1 {
+        for x in 1..rw - 1 {
+            let c_at = |dx: i32, dy: i32| -> [f32; 4] {
+                let cx = ((bx0 + x) as i32 + dx).clamp(0, w as i32 - 1) as usize;
+                let cy = ((by0 + y) as i32 + dy).clamp(0, h as i32 - 1) as usize;
+                let p = (cy * w + cx) * 4;
+                rgba_to_oklaba(raw[p], raw[p + 1], raw[p + 2], raw[p + 3])
+            };
+            let cl = c_at(-1, 0);
+            let cr = c_at(1, 0);
+            let cu = c_at(0, -1);
+            let cd = c_at(0, 1);
+            let mut g = 0f32;
+            for k in 0..4 {
+                g += (cr[k] - cl[k]).abs() + (cd[k] - cu[k]).abs();
+            }
+            grad[y * rw + x] = g * 0.25;
+        }
+    }
+
+    // --- 2. 轮廓窄带（mask ∈ (0,255) 外扩 2px）---
+    let mut band = vec![false; rw * rh];
+    for y in 0..rh {
+        for x in 0..rw {
+            let v = sub[y * rw + x];
+            if v > 0 && v < 255 {
+                for dy in -2..=2 {
+                    for dx in -2..=2 {
+                        let nx = x as i32 + dx;
+                        let ny = y as i32 + dy;
+                        if nx >= 0 && ny >= 0 && nx < rw as i32 && ny < rh as i32 {
+                            band[ny as usize * rw + nx as usize] = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- 3. 磁力吸附：对外法线方向找最强边缘 ---
+    let m_at = |gx: i32, gy: i32| -> f32 {
+        let cx = (gx - bx0 as i32).clamp(0, rw as i32 - 1) as usize;
+        let cy = (gy - by0 as i32).clamp(0, rh as i32 - 1) as usize;
+        sub[cy * rw + cx] as f32 / 255.0
+    };
+    let mut snapped = sub.clone();
+    for y in 0..rh {
+        for x in 0..rw {
+            if !band[y * rw + x] {
+                continue;
+            }
+            let gx = (bx0 + x) as i32;
+            let gy = (by0 + y) as i32;
+            // 外法线 = -∇M/|∇M|（M 内高外低，梯度指向内）。
+            let dx = m_at(gx + 1, gy) - m_at(gx - 1, gy);
+            let dy = m_at(gx, gy + 1) - m_at(gx, gy - 1);
+            let len = (dx * dx + dy * dy).sqrt();
+            if len < 1e-6 {
+                continue;
+            }
+            let (nx, ny) = (-dx / len, -dy / len);
+            let mut best_t = 0f32;
+            let mut best_g = 0f32;
+            let mut t = -(R as f32);
+            while t <= R as f32 {
+                let sx = (x as f32 + t * nx).round() as i32;
+                let sy = (y as f32 + t * ny).round() as i32;
+                let cx = sx.clamp(0, rw as i32 - 1) as usize;
+                let cy = sy.clamp(0, rh as i32 - 1) as usize;
+                let g = grad[cy * rw + cx] * (-t * t / 18.0).exp();
+                if g > best_g {
+                    best_g = g;
+                    best_t = t;
+                }
+                t += 1.0;
+            }
+            if best_g > 0.08 && best_t.abs() > 0.5 {
+                snapped[y * rw + x] = bilinear_sample_u8(
+                    &sub,
+                    rw,
+                    rh,
+                    x as f32 - best_t * nx,
+                    y as f32 - best_t * ny,
+                );
+            }
+        }
+    }
+
+    // --- 4. 联合双边滤波（2 轮）---
+    let mut cur = snapped;
+    for _ in 0..2 {
+        let src = cur.clone();
+        for y in 0..rh {
+            for x in 0..rw {
+                if !band[y * rw + x] {
+                    continue;
+                }
+                let cp = {
+                    let p = ((by0 + y) * w + (bx0 + x)) * 4;
+                    rgba_to_oklaba(raw[p], raw[p + 1], raw[p + 2], raw[p + 3])
+                };
+                let mut num = 0f32;
+                let mut den = 0f32;
+                for dy in -2..=2 {
+                    for dx in -2..=2 {
+                        let nx = x as i32 + dx;
+                        let ny = y as i32 + dy;
+                        if nx < 0 || ny < 0 || nx >= rw as i32 || ny >= rh as i32 {
+                            continue;
+                        }
+                        let (nx, ny) = (nx as usize, ny as usize);
+                        let ws = (-((dx * dx + dy * dy) as f32) / 4.5).exp();
+                        let cq = {
+                            let p = ((by0 + ny) * w + (bx0 + nx)) * 4;
+                            rgba_to_oklaba(raw[p], raw[p + 1], raw[p + 2], raw[p + 3])
+                        };
+                        let mut dc2 = 0f32;
+                        for k in 0..4 {
+                            let d = cq[k] - cp[k];
+                            dc2 += d * d;
+                        }
+                        let wc = (-dc2 / 0.0072).exp();
+                        let wt = ws * wc;
+                        num += wt * src[ny * rw + nx] as f32;
+                        den += wt;
+                    }
+                }
+                cur[y * rw + x] = (num / den.max(1e-6)).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+
+    // 写回。
+    for y in 0..rh {
+        let dst_off = (by0 + y) * w + bx0;
+        mask[dst_off..dst_off + rw].copy_from_slice(&cur[y * rw..(y + 1) * rw]);
+    }
+}
+
+/// Quick-Mask 预览缩略图（`preview: true` 用）：长边 ≤ 384px。
+///
+/// 未选中区压暗 + 40% 品红遮罩，选区边缘描 1px 亮青色轮廓线。
+/// 返回 PNG 字节（RGBA）。
+fn quick_mask_preview(
+    raw: &[u8],
+    w: usize,
+    _h: usize,
+    mask: &[u8],
+    bbox: [i32; 4],
+) -> Option<Vec<u8>> {
+    let (bx, by, bw, bh) = (bbox[0], bbox[1], bbox[2], bbox[3]);
+    if bw <= 0 || bh <= 0 {
+        return None;
+    }
+    let scale = 384.0 / (bw.max(bh) as f32);
+    let tw = ((bw as f32 * scale).round() as usize).max(1);
+    let th = ((bh as f32 * scale).round() as usize).max(1);
+    let mut thumb = vec![0u8; tw * th * 4];
+    let cov_at = |tx: usize, ty: usize| -> f32 {
+        let sx = ((tx as f32 / scale).floor() as i32).clamp(0, bw - 1) as usize;
+        let sy = ((ty as f32 / scale).floor() as i32).clamp(0, bh - 1) as usize;
+        mask[sy * (bw as usize) + sx] as f32 / 255.0
+    };
+    let src_at = |tx: usize, ty: usize| -> [u8; 4] {
+        let sx = ((tx as f32 / scale).floor() as i32).clamp(0, bw - 1) as usize;
+        let sy = ((ty as f32 / scale).floor() as i32).clamp(0, bh - 1) as usize;
+        let p = ((by as usize + sy) * w + (bx as usize + sx)) * 4;
+        [raw[p], raw[p + 1], raw[p + 2], raw[p + 3]]
+    };
+    for ty in 0..th {
+        for tx in 0..tw {
+            let c = cov_at(tx, ty);
+            let s = src_at(tx, ty);
+            // 边缘检测：任一 4-邻域跨过 0.5 即轮廓。
+            let mut edge = false;
+            for (dx, dy) in [(1i32, 0i32), (0, 1)] {
+                let nx = (tx as i32 + dx).clamp(0, tw as i32 - 1) as usize;
+                let ny = (ty as i32 + dy).clamp(0, th as i32 - 1) as usize;
+                let nc = cov_at(nx, ny);
+                if (c >= 0.5) != (nc >= 0.5) {
+                    edge = true;
+                    break;
+                }
+            }
+            let o = (ty * tw + tx) * 4;
+            if edge {
+                thumb[o..o + 4].copy_from_slice(&[0, 255, 255, 255]);
+            } else if c >= 0.5 {
+                thumb[o..o + 4].copy_from_slice(&[s[0], s[1], s[2], 255]);
+            } else {
+                // 压暗 55% + 40% 品红。
+                let r = (s[0] as f32 * 0.45 * 0.6 + 255.0 * 0.4) as u8;
+                let g = (s[1] as f32 * 0.45 * 0.6) as u8;
+                let b = (s[2] as f32 * 0.45 * 0.6 + 255.0 * 0.4) as u8;
+                thumb[o..o + 4].copy_from_slice(&[r, g, b, 255]);
+            }
+        }
+    }
+    yanshi_render::png::encode_png(tw as u32, th as u32, &thumb)
+}
+
+/// 智能选取（`smart_select`）：OKLab 魔棒 + 抗锯齿软边 + 磁力边缘细化。
+///
+/// 流程：安全裁剪 → 读像素（`render_region_raw[_layer]`，严格用返回的
+/// `(rw, rh)` 算 stride，见 tools.rs:4049 大坑）→ Scanline 泛洪 → 微孔闭合 →
+/// 边缘细化（可选）→ 羽化烘焙（可选）→ 紧致 BBox → L8 PNG blob →
+/// `CreateSelection` 原子（`kind: "bitmap"`）→ 诊断 JSON。
+///
+/// `"kind"` 必须用 `"bitmap"`：`"magic_wand"` 有现成单测断言退化全选，
+/// 复用它会直接变红。
+fn write_smart_select(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // ---- 参数 ----
+    let selection_id = optional_str(args, "selection_id").unwrap_or_else(|| {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(1);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("sel_wand_{n}")
+    });
+    // seed: [x, y] 或 seeds: [[x1, y1], ...]。
+    let mut seeds: Vec<(f64, f64)> = Vec::new();
+    if let Some(pair) = args.get("seed").and_then(Value::as_array) {
+        if let (Some(x), Some(y)) = (
+            pair.first().and_then(Value::as_f64),
+            pair.get(1).and_then(Value::as_f64),
+        ) {
+            seeds.push((x, y));
+        }
+    }
+    if let Some(list) = args.get("seeds").and_then(Value::as_array) {
+        for item in list {
+            if let Some(pair) = item.as_array() {
+                if let (Some(x), Some(y)) = (
+                    pair.first().and_then(Value::as_f64),
+                    pair.get(1).and_then(Value::as_f64),
+                ) {
+                    seeds.push((x, y));
+                }
+            }
+        }
+    }
+    if seeds.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "smart_select 需要 seed: [x, y]（或 seeds: [[x, y], ...]）".to_owned(),
+            ),
+        ));
+    }
+    let tolerance = args.get("tolerance").and_then(Value::as_f64).unwrap_or(0.2);
+    if !(0.0..=1.0).contains(&tolerance) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("tolerance 必须在 [0, 1] 内，得到 {tolerance}")),
+        ));
+    }
+    let contiguous = args
+        .get("contiguous")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let refine_edges = args
+        .get("refine_edges")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let layer_id = optional_str(args, "layer_id");
+    let mode = optional_str(args, "mode").unwrap_or_else(|| "new".to_owned());
+    if !["new", "add", "subtract", "intersect"].contains(&mode.as_str()) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "mode 必须是 new/add/subtract/intersect，得到 {mode}"
+            )),
+        ));
+    }
+    let feather = args.get("feather").and_then(Value::as_f64).unwrap_or(0.0);
+    if !(0.0..=512.0).contains(&feather) || !feather.is_finite() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("feather 必须在 [0, 512] 内，得到 {feather}")),
+        ));
+    }
+    let want_preview = args
+        .get("preview")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    // ---- 画布尺寸与安全裁剪（tools.rs:4049 大坑）----
+    let state = document_state(ctx)?;
+    let (canvas_w, canvas_h) = (state.width as usize, state.height as usize);
+    if canvas_w == 0 || canvas_h == 0 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("画布尺寸为 0，无法选取".to_owned()),
+        ));
+    }
+    // seed 必须在画布内（不静默钳制：点错位置要让调用方知道）。
+    for (sx, sy) in &seeds {
+        if !(0.0 <= *sx && *sx < canvas_w as f64 && 0.0 <= *sy && *sy < canvas_h as f64) {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "seed [{sx}, {sy}] 不在画布 [0, 0, {canvas_w}, {canvas_h}] 内"
+                )),
+            ));
+        }
+    }
+    // region 先裁到画布内；严格用返回的 (rw, rh) 算 stride。
+    let region = Bbox::new(0.0, 0.0, canvas_w as f64, canvas_h as f64);
+    let (rw, rh, raw) = match &layer_id {
+        Some(lid) => ctx
+            .workspace
+            .render_region_raw_layer(&ctx.doc_id, region, lid)?,
+        None => ctx.workspace.render_region_raw(&ctx.doc_id, region)?,
+    };
+    let (rw, rh) = (rw as usize, rh as usize);
+    if raw.len() < rw * rh * 4 {
+        return Err(YanshiError::new(
+            ErrorCode::Degraded,
+            ErrorContext::detail(format!(
+                "render_region_raw 返回字节不足：{rw}×{rh} 需要 {}，实际 {}",
+                rw * rh * 4,
+                raw.len()
+            )),
+        ));
+    }
+    // seed 颜色（诊断用，取第一个种子）。
+    let (s0x, s0y) = (seeds[0].0.floor() as usize, seeds[0].1.floor() as usize);
+    let s0p = (s0y.min(rh - 1) * rw + s0x.min(rw - 1)) * 4;
+    let seed_rgba = [raw[s0p], raw[s0p + 1], raw[s0p + 2], raw[s0p + 3]];
+
+    // ---- 泛洪（多种子取并集）----
+    let mut mask = vec![0u8; rw * rh];
+    let mut union_bbox = [0i32, 0i32, 0i32, 0i32];
+    let mut any = false;
+    for (sx, sy) in &seeds {
+        let ix = (sx.floor() as usize).min(rw - 1);
+        let iy = (sy.floor() as usize).min(rh - 1);
+        let (m, b) = magic_wand_scanline(&raw, rw, rh, ix, iy, tolerance, contiguous);
+        if b[2] > 0 && b[3] > 0 {
+            for (dst, src) in mask.iter_mut().zip(m.iter()) {
+                if *src > *dst {
+                    *dst = *src;
+                }
+            }
+            if !any {
+                union_bbox = b;
+                any = true;
+            } else {
+                union_bbox[0] = union_bbox[0].min(b[0]);
+                union_bbox[1] = union_bbox[1].min(b[1]);
+                let x1 = (union_bbox[0] + union_bbox[2]).max(b[0] + b[2]);
+                let y1 = (union_bbox[1] + union_bbox[3]).max(b[1] + b[3]);
+                union_bbox[2] = x1 - union_bbox[0];
+                union_bbox[3] = y1 - union_bbox[1];
+            }
+        }
+    }
+    if !any {
+        // 零选中：仍提交一个空位图选区（调用方可据诊断判断），不报错。
+        // （与"静默降级"纪律的平衡：diagnostic_warning 会明确提示。）
+    }
+
+    // ---- 微孔闭合 ----
+    pinhole_close(&mut mask, rw, rh);
+
+    // ---- 边缘细化（可选）----
+    if refine_edges && any {
+        refine_mask_edges(&raw, rw, rh, &mut mask, union_bbox);
+    }
+
+    // ---- 紧致 bbox（细化后重算：磁力吸附可能轻微移动边界）----
+    let mut tb = [rw as i32, rh as i32, -1i32, -1i32];
+    for y in 0..rh {
+        for x in 0..rw {
+            if mask[y * rw + x] > 0 {
+                let (ix, iy) = (x as i32, y as i32);
+                tb[0] = tb[0].min(ix);
+                tb[1] = tb[1].min(iy);
+                tb[2] = tb[2].max(ix);
+                tb[3] = tb[3].max(iy);
+            }
+        }
+    }
+    let (mut bx, mut by, mut bw, mut bh) = if tb[2] < tb[0] {
+        (0, 0, 0, 0)
+    } else {
+        (tb[0], tb[1], tb[2] - tb[0] + 1, tb[3] - tb[1] + 1)
+    };
+
+    // ---- 羽化烘焙（可选）：外扩 ceil(feather) 后做可分离高斯模糊 ----
+    let feather_baked = feather > 0.0;
+    if feather_baked && bw > 0 {
+        let pad = feather.ceil() as i32;
+        let ex0 = (bx - pad).max(0);
+        let ey0 = (by - pad).max(0);
+        let ex1 = (bx + bw + pad).min(rw as i32);
+        let ey1 = (by + bh + pad).min(rh as i32);
+        let (ew, eh) = ((ex1 - ex0) as usize, (ey1 - ey0) as usize);
+        let mut expanded = vec![0u8; ew * eh];
+        for y in 0..eh {
+            let src_off = ((ey0 as usize) + y) * rw + (ex0 as usize);
+            expanded[y * ew..(y + 1) * ew].copy_from_slice(&mask[src_off..src_off + ew]);
+        }
+        let blurred = separable_gaussian_blur_u8(&expanded, ew, eh, (feather / 2.0) as f32);
+        // 写回全图掩膜（供诊断统计），blob 用裁剪后的模糊块。
+        for y in 0..eh {
+            let dst_off = ((ey0 as usize) + y) * rw + (ex0 as usize);
+            mask[dst_off..dst_off + ew].copy_from_slice(&blurred[y * ew..(y + 1) * ew]);
+        }
+        bx = ex0;
+        by = ey0;
+        bw = ex1 - ex0;
+        bh = ey1 - ey0;
+    }
+
+    // ---- 裁剪 → L8 PNG → blob → 注册 ----
+    let (blob_str, png_len) = if bw > 0 && bh > 0 {
+        let mut cropped = vec![0u8; (bw * bh) as usize];
+        for y in 0..bh as usize {
+            let src_off = ((by as usize) + y) * rw + (bx as usize);
+            cropped[y * (bw as usize)..(y + 1) * (bw as usize)]
+                .copy_from_slice(&mask[src_off..src_off + (bw as usize)]);
+        }
+        let png = yanshi_render::png::encode_png_l8(bw as u32, bh as u32, &cropped)
+            .expect("内存 PNG 编码不会失败");
+        let png_len = png.len();
+        let blob_hash = ctx.workspace.store().put(&png)?;
+        let blob_str = blob_hash.to_string();
+        yanshi_render::selection::register_bitmap_mask(
+            blob_str.clone(),
+            Arc::new(yanshi_render::selection::DecodedBitmapMask {
+                width: bw as u32,
+                height: bh as u32,
+                data: cropped,
+            }),
+        );
+        (blob_str, png_len)
+    } else {
+        (String::new(), 0)
+    };
+
+    // ---- 诊断指标 ----
+    let mut selected_area = 0f64;
+    for &v in &mask {
+        selected_area += f64::from(v) / 255.0;
+    }
+    let bbox_area = (bw.max(0) * bh.max(0)) as f64;
+    let bbox_fill_ratio = if bbox_area > 0.0 {
+        selected_area / bbox_area
+    } else {
+        0.0
+    };
+    let canvas_coverage_ratio = selected_area / (canvas_w * canvas_h) as f64;
+    let (_, de_max, _, _) = wand_thresholds(tolerance);
+    let mut diagnostic_warning: Option<String> = None;
+    if !any {
+        diagnostic_warning = Some(
+            "选区面积为 0：种子点颜色在容差内无连通区域，可能 tolerance 过低或点中了孤立像素"
+                .to_owned(),
+        );
+    } else if canvas_coverage_ratio > 0.85 {
+        diagnostic_warning = Some(
+            "选区覆盖了超过 85% 的画布，可能发生了边缘漏出（leak），建议降低 tolerance 或检查线稿缺口".to_owned(),
+        );
+    } else if selected_area < 16.0 {
+        diagnostic_warning = Some(
+            "选区面积不足 16 像素，可能点中了孤立噪点或 tolerance 过低，建议调高 tolerance 至 0.20~0.35".to_owned(),
+        );
+    }
+
+    // ---- 预览缩略图（可选）----
+    let mut preview_blob: Option<String> = None;
+    if want_preview && bw > 0 && bh > 0 {
+        if let Some(png) = quick_mask_preview(&raw, rw, rh, &mask, [bx, by, bw, bh]) {
+            if let Ok(hash) = ctx.workspace.store().put(&png) {
+                preview_blob = Some(hash.to_string());
+            }
+        }
+    }
+
+    // ---- 提交 CreateSelection 原子 ----
+    // shape 的 feather_baked 标记防渲染期重复羽化；顶层 feather 置 0
+    //（`SelectionShape::from_selection` 会并入，但 Bitmap 的 coverage 本就跳过羽化）。
+    let payload = json!({
+        "selection_id": selection_id,
+        "shape": {
+            "kind": "bitmap",
+            "bbox": [bx, by, bw, bh],
+            "blob": blob_str,
+            "feather_baked": feather_baked,
+        },
+        "feather": 0.0,
+        "mode": mode,
+        "invert": false,
+        "refined_edges": refine_edges,
+        "blobs": [blob_str],
+        "refs": { "blobs": [blob_str] },
+    });
+    let result = ctx.commit(AtomKind::CreateSelection, payload)?;
+
+    Ok(json!({
+        "ok": true,
+        "selection_id": selection_id,
+        "bbox": [bx, by, bw, bh],
+        "selected_area_px": selected_area,
+        "bbox_fill_ratio": bbox_fill_ratio,
+        "canvas_coverage_ratio": canvas_coverage_ratio,
+        "seed_color_rgba": seed_rgba,
+        "effective_delta_e": de_max,
+        "refined_edges": refine_edges,
+        "blob_bytes": png_len,
+        "diagnostic_warning": diagnostic_warning,
+        "preview_blob": preview_blob,
+        "atom_seq": result.seq,
+    }))
+}
+
 /// **笔刷预览** ✓ —— 用**同一支笔刷真画一小笔** ✓，回一张小 PNG ✓。
 ///
 /// **为什么需要它** ✓（用户：「201 支笔刷只有一个名字 ⇒ 选笔全凭猜，很不友好，web 上也是」✗）：
@@ -24226,6 +25237,24 @@ fn object_type_name(object_type: ObjectType) -> &'static str {
 /// 形状：`(工具名, 一段可直接粘贴的 JSON 参数)`。**先给日常最常用的三个**，
 /// 其余工具按同一模式补齐（每加一个，测试自动替它把关）。
 pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
+    // **蒙版画笔/擦除 + 智能肌理**（mask-texture 补丁遗留的三个缺口，第 765 轮补齐；
+    // smart-select 补丁的说明里主动指出『paint_mask/delete_mask/smart_texture 缺示例，
+    // 剩余 3 个需 gradetwo 补』）。
+    // **蒙版要先 `create_mask` 建**：`create_selection` 建的 selection 不被 `paint_mask` 认。
+    (
+        "create_mask",
+        r#"{"mask_id":"m1","shape":{"kind":"rect","x":100,"y":0,"w":100,"h":300}}"#,
+    ),
+    (
+        "paint_mask",
+        r#"{"mask_id":"m1","mode":"paint","size":60,"points":[[150,20,1],[150,280,1]]}"#,
+    ),
+    ("delete_mask", r#"{"mask_id":"m1"}"#),
+    // `texture_type` 不是 `texture`；`density` 严格单调（第 750 轮实测 10/21/28/37/41）。
+    (
+        "smart_texture",
+        r#"{"layer_id":"L1","shape":{"kind":"rect","x":20,"y":20,"w":360,"h":360},"texture_type":"stone","density":0.5}"#,
+    ),
     // **四个 smart 工具**（2026-10-19 补丁）：颜色一律是 **array** `[r,g,b,a]`（0..1 或 0..255），
     // 不是 `{r,g,b,a}` 对象 —— 传对象会报「类型应为 array」。
     (
@@ -24243,6 +25272,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     (
         "smart_edge_soften",
         r#"{"layer_id":"L1","shape":{"type":"rect","x":30,"y":30,"w":120,"h":100}}"#,
+    ),
+    (
+        "smart_select",
+        r#"{"seed":[320,240],"tolerance":0.2,"mode":"new"}"#,
     ),
     ("sample_colors", r#"{"points": [[120, 64], [200, 80]]}"#),
     ("describe_canvas", r#"{}"#),
@@ -25394,5 +26427,194 @@ fn smart_texture_two_pass_split_ratio() {
             "骨相层 scatter 应为 0.90：{}",
             s.scatter
         );
+    }
+}
+
+#[cfg(test)]
+mod smart_select_tests {
+    use super::*;
+
+    /// 判据 1：纯色块 + 手绘呼吸噪点全选无漏（含防筛子孔验证）。
+    #[test]
+    fn wand_fills_solid_block_and_closes_pinholes() {
+        let (w, h) = (200usize, 200usize);
+        let mut raw = vec![0u8; w * h * 4];
+        for px in raw.chunks_exact_mut(4) {
+            px.copy_from_slice(&[30, 60, 180, 255]); // 背景深蓝
+        }
+        for y in 50..150 {
+            for x in 50..150 {
+                let p = (y * w + x) * 4;
+                raw[p..p + 4].copy_from_slice(&[230, 140, 60, 255]); // 暖橙色块
+            }
+        }
+        // 10 个孤立单像素噪点（微偏色，模拟 color_breath / 飞白）。
+        let noise = [
+            (60, 60),
+            (70, 80),
+            (90, 90),
+            (110, 100),
+            (120, 120),
+            (130, 60),
+            (60, 130),
+            (140, 140),
+            (80, 120),
+            (100, 70),
+        ];
+        for (x, y) in noise {
+            let p = (y * w + x) * 4;
+            raw[p..p + 4].copy_from_slice(&[200, 120, 50, 255]);
+        }
+        let (mut mask, bbox) = magic_wand_scanline(&raw, w, h, 100, 55, 0.2, true);
+        pinhole_close(&mut mask, w, h);
+        // bbox 应为 [50,50,100,100]（允许 1px AA 环外扩）。
+        assert!(
+            bbox[0] <= 50 && bbox[1] <= 50,
+            "bbox 左上不应内缩：{bbox:?}"
+        );
+        assert!(
+            bbox[0] + bbox[2] >= 150 && bbox[1] + bbox[3] >= 150,
+            "bbox 右下应覆盖色块：{bbox:?}"
+        );
+        assert!(
+            bbox[0] >= 48 && bbox[1] >= 48,
+            "bbox 不应过度外扩（漏出）：{bbox:?}"
+        );
+        // 内部全满选（含噪点孔被填平）。
+        for y in 52..148 {
+            for x in 52..148 {
+                assert_eq!(mask[y * w + x], 255, "内部 ({x},{y}) 应满选");
+            }
+        }
+        // 外部零漏出。
+        for y in 0..48 {
+            for x in 0..48 {
+                assert_eq!(mask[y * w + x], 0, "外部 ({x},{y}) 应为 0");
+            }
+        }
+    }
+
+    /// 判据 2：渐变图容差单调性 + 抗锯齿软边连续性。
+    #[test]
+    fn wand_tolerance_is_monotonic_with_soft_edge() {
+        let (w, h) = (256usize, 64usize);
+        let mut raw = vec![0u8; w * h * 4];
+        for y in 0..h {
+            for x in 0..w {
+                let v = x as u8;
+                let p = (y * w + x) * 4;
+                raw[p..p + 4].copy_from_slice(&[v, v, v, 255]);
+            }
+        }
+        let area = |tol: f64| -> f64 {
+            let (mask, _) = magic_wand_scanline(&raw, w, h, 0, 32, tol, true);
+            mask.iter().map(|&v| f64::from(v) / 255.0).sum()
+        };
+        let a01 = area(0.1);
+        let a03 = area(0.3);
+        let a06 = area(0.6);
+        assert!(a01 > 0.0, "tolerance=0.1 至少选中种子");
+        assert!(a01 < a03, "面积应单调递增：{a01} < {a03}");
+        assert!(a03 < a06, "面积应单调递增：{a03} < {a06}");
+        assert!(a06 < (w * h) as f64, "tolerance=0.6 不应选中全图");
+        // 右边界过渡带至少 2 列为连续软边（非二值阶跃）。
+        let (mask, _) = magic_wand_scanline(&raw, w, h, 0, 32, 0.3, true);
+        let mut soft_cols = 0;
+        for x in 0..w {
+            let mut has_soft = false;
+            for y in 0..h {
+                let c = f64::from(mask[y * w + x]) / 255.0;
+                if c > 0.05 && c < 0.95 {
+                    has_soft = true;
+                    break;
+                }
+            }
+            if has_soft {
+                soft_cols += 1;
+            }
+        }
+        assert!(soft_cols >= 2, "应有连续软边过渡列，实际 {soft_cols}");
+    }
+
+    /// 容差标定曲线：专家给定的 5 个锚点。
+    #[test]
+    fn wand_threshold_calibration() {
+        let (de_max, _, _, _) = wand_thresholds(0.0);
+        assert!((de_max - 0.005).abs() < 1e-6, "t=0 → 0.005，实际 {de_max}");
+        let (de_max, _, _, _) = wand_thresholds(0.1);
+        assert!(
+            (de_max - 0.048).abs() < 1e-3,
+            "t=0.1 → 0.048，实际 {de_max}"
+        );
+        let (de_max, _, _, _) = wand_thresholds(0.2);
+        assert!(
+            (de_max - 0.109).abs() < 1e-3,
+            "t=0.2 → 0.109，实际 {de_max}"
+        );
+        let (de_max, _, _, _) = wand_thresholds(0.45);
+        assert!(
+            (de_max - 0.335).abs() < 1e-3,
+            "t=0.45 → 0.335，实际 {de_max}"
+        );
+        let (de_max, _, _, _) = wand_thresholds(1.0);
+        assert!(
+            (de_max - 1.205).abs() < 1e-3,
+            "t=1.0 → 1.205，实际 {de_max}"
+        );
+    }
+
+    /// 透明像素：任意两个全透明像素距离恒为 0（naive 灾难 #2）。
+    #[test]
+    fn wand_transparent_pixels_have_zero_distance() {
+        let c1 = rgba_to_oklaba(0, 0, 0, 0);
+        let c2 = rgba_to_oklaba(255, 255, 255, 0);
+        assert_eq!(oklaba_dist_sq(c1, c2), 0.0, "全透明像素距离必须为 0");
+        // 非透明像素距离非零。
+        let c3 = rgba_to_oklaba(255, 0, 0, 255);
+        let c4 = rgba_to_oklaba(0, 0, 255, 255);
+        assert!(oklaba_dist_sq(c3, c4) > 0.1, "红蓝距离应显著非零");
+    }
+
+    /// 判据 4：边界种子不 panic（stride 裁剪保护的算法侧）。
+    ///
+    /// `write_smart_select` 里用 `render_region_raw` 返回的 `(rw, rh)` 算 stride；
+    /// 这里验证泛洪本身在四个角种子下不越界。
+    #[test]
+    fn wand_corner_seeds_do_not_panic() {
+        let (w, h) = (64usize, 64usize);
+        let mut raw = vec![0u8; w * h * 4];
+        for px in raw.chunks_exact_mut(4) {
+            px.copy_from_slice(&[128, 128, 128, 255]);
+        }
+        for (sx, sy) in [(0, 0), (63, 0), (0, 63), (63, 63)] {
+            let (mask, bbox) = magic_wand_scanline(&raw, w, h, sx, sy, 0.5, true);
+            assert_eq!(mask.len(), w * h);
+            // 纯色整图：应全选。
+            assert!(bbox == [0, 0, 64, 64], "纯色图角种子应全选，实际 {bbox:?}");
+        }
+    }
+
+    /// 非连通模式：全图按色选取（"色彩范围"）。
+    #[test]
+    fn wand_noncontiguous_selects_by_color() {
+        let (w, h) = (100usize, 100usize);
+        let mut raw = vec![0u8; w * h * 4];
+        for px in raw.chunks_exact_mut(4) {
+            px.copy_from_slice(&[30, 60, 180, 255]);
+        }
+        // 两个分离的同色块。
+        for (ox, oy) in [(10, 10), (60, 60)] {
+            for y in oy..oy + 20 {
+                for x in ox..ox + 20 {
+                    let p = (y * w + x) * 4;
+                    raw[p..p + 4].copy_from_slice(&[230, 140, 60, 255]);
+                }
+            }
+        }
+        let (mask, _) = magic_wand_scanline(&raw, w, h, 15, 15, 0.2, false);
+        // 两个块都应被选中（尽管不连通）。
+        assert_eq!(mask[15 * w + 15], 255);
+        assert_eq!(mask[70 * w + 70], 255);
+        assert_eq!(mask[50 * w + 50], 0);
     }
 }

@@ -1236,6 +1236,27 @@ impl Renderer {
             on: probe_on_reg,
         };
         let region = clamp_region(state, &bbox)?;
+        // 位图选区（`smart_select`）：渲染准备阶段确保 blob 已解码注册。
+        // `SelectionShape::from_value` 是纯函数、拿不到存储；这里统一预热一次，
+        // fold 重放 / 跨进程重载后也不静默退化为空选区。无位图选区时零开销。
+        {
+            let shapes: Vec<&serde_json::Value> = state
+                .selections
+                .values()
+                .filter(|s| !s.is_deleted())
+                .filter(|s| {
+                    s.shape.get("kind").and_then(serde_json::Value::as_str) == Some("bitmap")
+                })
+                .map(|s| &s.shape)
+                .collect();
+            if !shapes.is_empty() {
+                crate::selection::ensure_bitmap_masks_registered(&shapes, &|h| {
+                    h.parse::<yanshi_core::BlobHash>()
+                        .ok()
+                        .and_then(|hash| store.get(&hash).ok())
+                });
+            }
+        }
         stage_probe::enter((
             region.x as i64,
             region.y as i64,
