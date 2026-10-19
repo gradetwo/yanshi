@@ -204,7 +204,8 @@
 | 活 | 在哪做 |
 |---|---|
 | 读码、写码、`grep`／`sed`／`node` 判据、`curl` 探测 | **本机** ✓ |
-| `cargo fmt` / `clippy` / `test` / `build --release` | **CI** ✓ |
+| `cargo fmt`（**只改空白，不编译**） | **本机** ✓ |
+| `cargo clippy` / `test` / `build --release`（**真编译**） | **CI** ✓ |
 
 **配套**：
 1. 提交后**立刻** push ＋ `gh workflow run CI` ⇒ 从 CI 日志取结论（`curl -sL` ＋ `gh auth token`）。
