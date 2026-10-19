@@ -3259,6 +3259,26 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "export_book_pngs",
+        profile: Profile::Core,
+        summary: "把多个文档**按给定顺序**各导出一页 PNG（书册／连环画的一步出口；PDF 由它拼）",
+        mutating: false,
+        params: &[
+            param!(
+                "doc_ids",
+                Any,
+                true,
+                "页序：文档 id 的数组（**顺序就是页序** ✓）⇒ 按它逐页导出"
+            ),
+            param!(
+                "dir",
+                String,
+                true,
+                "输出目录（**只能写进导出目录或系统临时目录** ✓）；文件名是 p00.png／p01.png…"
+            ),
+        ],
+    },
+    ToolSpec {
         name: "get_atom",
         profile: Profile::Core,
         summary: "读取一条原子的完整记录（含净荷）",
@@ -3606,6 +3626,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "delete_document" => write_delete_document(ctx, args),
         "import_asset" => write_import_asset(ctx, args),
         "export_png" => write_export_png(ctx, args),
+        "export_book_pngs" => write_export_book_pngs(ctx, args),
         "get_atom" => read_get_atom(ctx, args),
         "list_comments" => read_list_comments(ctx, args),
         "list_suggestions" => read_list_suggestions(ctx, args),
@@ -18224,6 +18245,95 @@ fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
 ///
 /// **语义** ✓：`mutating: false` ✓ —— 它**不改文档** ✓；但**它会写文件** ✓
 /// ⇒ 这一点写进了 tools.md ✓，不假装它"只是读" ✗。
+/// **`export_book_pngs`** ✓：把多个文档**按顺序**各导出一页 PNG ✓（外部复测 `QX-G02` ✓）。
+///
+/// **为什么先做 PNG 序列、不直接做 PDF** ✗（第 426 轮的决定 ✓）：
+/// PDF 要新依赖（`printpdf` 或手写嵌入器 ✓），而「多页」这件事的**判据**只要
+/// 「**文件数 = 文档数** ＋ **命名有序** ＋ **每页尺寸 = 文档尺寸**」✓ ⇒
+/// **∴ 它**零依赖、可先判 ✓ ⇒ **∴ 而** PDF **由**这串 PNG **拼**出来 ✓。
+///
+/// **顺序就是页序** ✓：`doc_ids` 的**下标**决定文件名（`p00`／`p01`… ✓），不排序 ✗
+/// ⇒ **∴ 于是**调用方**能**用数组表达「封面 → 第 1 页 → …」✓。
+///
+/// **每页用**该文档自己的**全幅** ✓（不是调用方 `ctx.doc_id` 的尺寸 ✗）⇒
+/// **∴ 所以**不同尺寸的页面**各自**原尺寸导出 ✓（书页可以不一致 ✓）。
+fn write_export_book_pngs(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let doc_ids: Vec<String> = match args.get("doc_ids").and_then(Value::as_array) {
+        Some(list) => list
+            .iter()
+            .map(|value| {
+                value.as_str().map(str::to_owned).ok_or_else(|| {
+                    YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail("doc_ids 里每一项都要是字符串（文档 id）"),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+        None => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("doc_ids 必须是数组（顺序就是页序）"),
+            ))
+        }
+    };
+    if doc_ids.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("doc_ids 不能为空 ⇒ 一本书至少一页"),
+        ));
+    }
+    let dir = guarded_output_path(&require_str(args, "dir")?)?;
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!("建不了输出目录 {}：{error}", dir.display())),
+        )
+    })?;
+    let mut pages: Vec<Value> = Vec::new();
+    for (index, doc_id) in doc_ids.iter().enumerate() {
+        let (width, height, pixels) = {
+            let document = ctx.workspace.document(doc_id).ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::ReferenceNotFound,
+                    ErrorContext::detail(format!("第 {index} 页的文档 {doc_id} 未打开")),
+                )
+            })?;
+            let state = document.state();
+            let region = yanshi_core::Bbox::new(0.0, 0.0, state.width as f64, state.height as f64);
+            ctx.workspace.render_region_raw(doc_id, region)?
+        };
+        let png = yanshi_render::png::encode_png(width, height, &pixels).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("第 {index} 页尺寸不可用（{width}×{height}）")),
+            )
+        })?;
+        let path = dir.join(format!("p{index:02}.png"));
+        std::fs::write(&path, &png).map_err(|error| {
+            YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!("写不进 {}：{error}", path.display())),
+            )
+        })?;
+        pages.push(json!({
+            "index": index,
+            "doc_id": doc_id,
+            "path": path.display().to_string(),
+            "width": width,
+            "height": height,
+            "bytes": png.len(),
+        }));
+    }
+    Ok(json!({
+        "ok": true,
+        "dir": dir.display().to_string(),
+        "pages": pages,
+        "count": doc_ids.len(),
+        "note": "文件名的序号就是页序（p00 是第一页）⇒ 拼 PDF 时按这个顺序",
+    }))
+}
+
 fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let path = guarded_output_path(&require_str(args, "path")?)?;
     // 缺省整幅 ✓：区域没给就用文档尺寸 ✓。
@@ -19480,6 +19590,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     (
         "export_png",
         r#"{"path": "example-export.png", "layer_id": "L1", "max_edge": 512}"#,
+    ),
+    (
+        "export_book_pngs",
+        r#"{"doc_ids": ["page-01", "page-02"], "dir": "book-pages"}"#,
     ),
     (
         "get_object",
