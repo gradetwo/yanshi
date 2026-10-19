@@ -69,5 +69,21 @@ check(
   `不许写具体 HEAD 的哈希（实测 ${headLiterals.length} 处：${headLiterals.join("｜")}）——它每次提交都会变`,
 );
 
+// ⑧ **引用编号要先确认目标存在**（外部 §80）—— 台账里的「第 N 轮」不许超过当前轮
+//    **∴ 那个**上限**✗ 用 `git log --oneline | wc -l` 数不出**✗** ⇒ **∴ 所以**用**本次**的**轮号参数**✗**
+const ledger = readFileSync("docs/design/brush-capability-gap.md", "utf8");
+const curRound = Number(process.env.DSH_ROUND || process.argv[3] || 0);
+if (curRound > 0) {
+  const nums = [...ledger.matchAll(/第 (\d+) 轮/g)].map((m) => Number(m[1]));
+  const over = nums.filter((n) => n > curRound);
+  check(
+    over.length === 0,
+    `台账里的「第 N 轮」不许超过当前轮 ${curRound}（实测 ${over.length} 处越界：${over.slice(0, 5).join(",")}）`,
+  );
+  console.log(`  台账轮次引用 ${nums.length} 处／最大 ${Math.max(...nums)}／当前 ${curRound}`);
+} else {
+  console.log("  （跳过第 8 条：没给当前轮号）");
+}
+
 console.log(`\n  ${fail.length ? "✗" : "✓"} 自检 ${fail.length ? "红了" : "绿了"}（${fail.length} 处不满足）`);
 process.exit(fail.length ? 1 : 0);
