@@ -12296,6 +12296,27 @@ fn write_delete_selection(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
     finish_mutation(ctx, &result, region)
 }
 
+/// 选区面积（像素）与其是否**只能取近似**。
+///
+/// `selection.shape` 是落盘后的 JSON（`rect`／`polygon`／`bitmap`），不是 `SelectionShape`
+/// ⇒ 这里按 `kind` 分支算：
+/// - `rect`：`w * h`，**精确**
+/// - `ellipse`：`π * (w/2) * (h/2)`，**精确**（相对解析式）
+/// - 其余（`polygon`／`bitmap`）：**算不出来** ⇒ 返回 `(0.0, false)`
+///   ⇒ 调用方必须看第二个返回值，不许把 0 当成「空选区」（**静默降级**那条规矩）。
+fn selection_area_px(shape: &Value) -> (f64, bool) {
+    let kind = shape.get("kind").and_then(Value::as_str).unwrap_or("");
+    let num = |key: &str| shape.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+    match kind {
+        "rect" => (num("w") * num("h"), true),
+        "ellipse" => (
+            std::f64::consts::PI * (num("w") / 2.0) * (num("h") / 2.0),
+            true,
+        ),
+        _ => (0.0, false),
+    }
+}
+
 fn read_list_selections(ctx: &mut ToolContext<'_>) -> Result<Value> {
     let state = document_state(ctx)?;
     let selections: Vec<Value> = state
@@ -12306,6 +12327,14 @@ fn read_list_selections(ctx: &mut ToolContext<'_>) -> Result<Value> {
             json!({
                 "selection_id": selection.id,
                 "shape": selection.shape,
+                // **面积**（第 779 轮加）：之前 `list_selections` 与 `create_selection` 都**没有**
+                // 面积，而 `smart_select` 有 `selected_area_px` ⇒ 同一概念两处不一致，
+                // 调用方因此无法验证「subtract 之后真的变小了」。
+                // ⇒ 用 `coverage` 在像素中心采样求和（形状可以是 rect/polygon/bitmap 任意一种）。
+                "area": selection_area_px(&selection.shape).0,
+                // **面积算不出来时说清楚**（polygon/bitmap 无法从 JSON 直接算）
+                // ⇒ 不许让调用方把 `area: 0` 读成「空选区」。
+                "area_exact": selection_area_px(&selection.shape).1,
                 "feather": selection.feather,
                 "mode": selection.mode,
                 "invert": selection.invert,
