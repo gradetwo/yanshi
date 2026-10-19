@@ -17431,6 +17431,44 @@ fn merge_intent_brush_params(args: &Value) -> Option<Value> {
     }
 }
 
+/// 对选区覆盖率做方框模糊（`clip_to_selection` 的 feather 用）。
+/// 与蒙版路径（render.rs `apply_layer_mask`）一致：半径取 feather/2，边缘 clamp。
+/// 朴素 O(w*h*r) 实现；clip 区域是单笔包围盒，feather 半径通常很小，够用。
+fn box_blur_coverage(coverage: &mut yanshi_render::geometry::Coverage, radius: u32) {
+    let (w, h) = (coverage.width as usize, coverage.height as usize);
+    if w == 0 || h == 0 || radius == 0 || coverage.data.len() < w * h {
+        return;
+    }
+    let r = radius as usize;
+    let mut tmp = vec![0.0f32; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let xl = x.saturating_sub(r);
+            let xr = (x + r).min(w - 1);
+            let mut sum = 0.0f32;
+            let mut n = 0usize;
+            for xi in xl..=xr {
+                sum += coverage.data[y * w + xi];
+                n += 1;
+            }
+            tmp[y * w + x] = sum / n as f32;
+        }
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let yt = y.saturating_sub(r);
+            let yb = (y + r).min(h - 1);
+            let mut sum = 0.0f32;
+            let mut n = 0usize;
+            for yi in yt..=yb {
+                sum += tmp[yi * w + x];
+                n += 1;
+            }
+            coverage.data[y * w + x] = sum / n as f32;
+        }
+    }
+}
+
 fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **笔迹标签**：`brush_stroke` 最终走 `write_import_image` 的 `ctx.commit` ⇒ 那里会取走它 ✓。
     ctx.pending_label = optional_str(args, "label");
@@ -17750,11 +17788,10 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         };
         let clip = yanshi_core::Bbox::new(x0 as f64, y0 as f64, width as f64, height as f64);
         // 第二层：覆盖度按形状分派 ✓（原来硬编码矩形 ✗）
-        let shape = state
-            .selections
-            .get(&name)
-            .map(|s| s.shape.clone())
-            .unwrap_or(Value::Null);
+        // ★ 取完整 Selection：shape 只有几何，feather/invert 在 struct 顶层字段；
+        // 只读 shape 会静默丢弃二者（mode 对单个选区裁剪无意义，故不处理）。
+        let sel = state.selections.get(&name);
+        let shape = sel.map(|s| s.shape.clone()).unwrap_or(Value::Null);
         let shape_kind = shape.get("kind").and_then(Value::as_str).unwrap_or("rect");
         let shape_points: Vec<(f64, f64)> = shape
             .get("points")
@@ -17776,6 +17813,20 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             "ellipse" => yanshi_render::geometry::ellipse_coverage_clipped(bbox, 4, &clip),
             _ => yanshi_render::geometry::rect_coverage_clipped(bbox, &clip),
         };
+        // ★ 应用之前被静默丢弃的 invert/feather（与蒙版路径 render.rs apply_layer_mask 一致：
+        // 反选逐像素取反；羽化对方框模糊，半径取 feather/2）。
+        let mut coverage = coverage;
+        if let Some(sel) = sel {
+            if sel.invert {
+                for v in coverage.data.iter_mut() {
+                    *v = 1.0 - *v;
+                }
+            }
+            if sel.feather > 0.0 {
+                let radius = (sel.feather / 2.0).round().max(1.0) as u32;
+                box_blur_coverage(&mut coverage, radius);
+            }
+        }
         let mut dropped = 0usize;
         for index in (0..rgba.len()).step_by(4) {
             let pixel = index / 4;

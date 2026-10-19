@@ -5391,7 +5391,9 @@ pub fn layer_selections(
         }
         out.push((
             selection.created_by.clone(),
-            crate::selection::SelectionShape::from_value(&selection.shape),
+            // ★ 必须用 from_selection：Selection.shape 只有几何，
+            // feather/mode/invert 在 struct 顶层字段；from_value(&shape) 会静默丢弃三者。
+            crate::selection::SelectionShape::from_selection(selection),
         ));
     }
     out

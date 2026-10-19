@@ -123,6 +123,24 @@ impl SelectionShape {
         Self::from_value_with_default(value, SelectionMode::New)
     }
 
+    /// 由完整的 `yanshi_core::Selection` 构造（推荐渲染路径使用）。
+    ///
+    /// 背景：`create_selection` 把 `feather`/`mode`/`invert` 存在原子 payload
+    /// **顶层**，`fold` 存进 `Selection` struct 的同名字段，而 `Selection.shape`
+    /// 只有几何。直接调 `from_value(&sel.shape)` 会静默丢弃三者
+    /// （退化为 feather=0 硬边、mode=new 替换、invert=false），
+    /// 即"选区合并/排除/相交/反选/羽化参数收了但渲染时不生效"。
+    /// 本函数先把三者并入 JSON 再解析。
+    pub fn from_selection(sel: &yanshi_core::Selection) -> Self {
+        let mut v = sel.shape.clone();
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("feather".to_owned(), serde_json::json!(sel.feather));
+            obj.insert("mode".to_owned(), serde_json::json!(sel.mode));
+            obj.insert("invert".to_owned(), serde_json::json!(sel.invert));
+        }
+        Self::from_value(&v)
+    }
+
     /// 同 [`SelectionShape::from_value`]，但可以指定 `mode` 缺失时的缺省模式。
     ///
     /// 用于把同一份形状描述直接压入某个组合语境（例如缺省按 `add` 叠加）。
@@ -1099,5 +1117,100 @@ mod tests {
         for &(x, y) in &[(0.0, 0.0), (2.0, 2.0), (4.0, 4.0), (4.5, 2.0), (-1.0, 2.0)] {
             assert_eq!(hard.coverage(x, y), soft_zero.coverage(x, y));
         }
+    }
+
+    /// 构造"fold 之后"的 Selection：shape 只有几何，
+    /// feather/mode/invert 在 struct 顶层字段（与真实原子日志一致）。
+    fn struct_selection(
+        shape: Value,
+        mode: &str,
+        feather: f64,
+        invert: bool,
+    ) -> yanshi_core::Selection {
+        yanshi_core::Selection {
+            id: "sel_test".to_string(),
+            shape,
+            feather,
+            mode: mode.to_string(),
+            invert,
+            linked_layer: None,
+            refined_edges: false,
+            blobs: vec![],
+            created_by: "atom_test".to_string(),
+            deleted_by: None,
+        }
+    }
+
+    #[test]
+    fn from_selection_keeps_struct_fields() {
+        // 回归：from_value(&sel.shape) 会静默丢弃 feather/mode/invert
+        //（退化为 new/0.0/false），from_selection 必须保留。
+        let sel = struct_selection(
+            json!({"kind": "rect", "bbox": {"x": 0.0, "y": 0.0, "w": 4.0, "h": 4.0}}),
+            "add",
+            8.0,
+            true,
+        );
+        let s = SelectionShape::from_selection(&sel);
+        assert_eq!(s.mode, SelectionMode::Add);
+        assert!(
+            (s.feather - 8.0).abs() < 1e-9,
+            "feather 应为 8.0，实际 {}",
+            s.feather
+        );
+        assert!(s.invert, "invert 应为 true");
+        // 对照：旧路径确实会丢（三者全退化），证明这条测试不是安慰剂
+        let dropped = SelectionShape::from_value(&sel.shape);
+        assert_eq!(dropped.mode, SelectionMode::New);
+        assert_eq!(dropped.feather, 0.0);
+        assert!(!dropped.invert);
+    }
+
+    #[test]
+    fn from_selection_modes_combine_end_to_end() {
+        // 两个选区经 from_selection 进 SelectionSet：add/subtract 真生效
+        let base = struct_selection(
+            json!({"kind": "rect", "bbox": {"x": 0.0, "y": 0.0, "w": 4.0, "h": 4.0}}),
+            "new",
+            0.0,
+            false,
+        );
+        let add = struct_selection(
+            json!({"kind": "rect", "bbox": {"x": 10.0, "y": 10.0, "w": 4.0, "h": 4.0}}),
+            "add",
+            0.0,
+            false,
+        );
+        let mut set = SelectionSet::new();
+        set.push(SelectionShape::from_selection(&base));
+        set.push(SelectionShape::from_selection(&add));
+        assert_near(set.coverage(11.0, 11.0), 1.0); // 只在 add 区
+        assert_near(set.coverage(2.0, 2.0), 1.0); // base 区
+        assert_near(set.coverage(7.0, 7.0), 0.0); // 都不在
+
+        let sub = struct_selection(
+            json!({"kind": "rect", "bbox": {"x": 1.0, "y": 1.0, "w": 2.0, "h": 2.0}}),
+            "subtract",
+            0.0,
+            false,
+        );
+        let mut set2 = SelectionSet::new();
+        set2.push(SelectionShape::from_selection(&base));
+        set2.push(SelectionShape::from_selection(&sub));
+        assert_near(set2.coverage(2.0, 2.0), 0.0); // 被挖掉
+        assert_near(set2.coverage(0.5, 0.5), 1.0); // base 剩余
+    }
+
+    #[test]
+    fn from_selection_invert_flips_coverage() {
+        let sel = struct_selection(
+            json!({"kind": "rect", "bbox": {"x": 0.0, "y": 0.0, "w": 4.0, "h": 4.0}}),
+            "new",
+            0.0,
+            true,
+        );
+        let s = SelectionShape::from_selection(&sel);
+        assert_near(s.coverage(2.0, 2.0), 0.0); // 矩形内被反选掉
+        assert_near(s.coverage(10.0, 10.0), 1.0); // 矩形外被选中
     }
 }
