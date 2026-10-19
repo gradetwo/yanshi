@@ -21,6 +21,9 @@
 | `sketch` | `pencil` ＋ `2b` ＋ `4h` ＋ `8b` ＋ `charcoal` ＋ `sketch` ＋ `chalk` |
 | `ink` | `calligraphy` ＋ `ink` ＋ `textured_ink` ＋ `sumi` ＋ `dip-pen` ＋ `brushpen` ＋ `kabura` ＋ `penbrush` |
 | `pastel` | `pastel` ＋ `chalk` ＋ `smudge` ＋ `smear` ＋ `charcoal-blur` |
+| `marker` | `marker` ＋ `felt` ＋ `chisel` ＋ `brushpen` |
+| `pencil` | `pencil` ＋ `graphite` ＋ `charcoal` ＋ `crayon` ＋ `2b` ＋ `4h` ＋ `8b` |
+| `pixel` | `pixel` ＋ `block` ＋ `hard-edge` ＋ `square` |
 | `hand_jitter` | `slow_tracking` ＋ `tracking_noise` ＋ `offset_by_random` |
 | `speed_gain` | `speed1_gamma` ＋ `speed2_gamma` ＋ `speed1_slowness` ＋ `speed2_slowness` |
 | `color_variance` | `change_color_h` ＋ `change_color_v` ＋ `change_color_hsl_s` |
