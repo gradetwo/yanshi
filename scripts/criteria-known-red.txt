@@ -28157,4 +28157,3 @@ browser-layout.mjs  第 742 轮核实：判据要求「400% 缩放时画布溢�
 tool-dwell.mjs  断的是「dwell:1 后拐角邻域墨变多」这类像素数：本机 +1（1234→1235）、CI −5（1227→1222）⇒ **方向相反**⇒ 跨不了机器。第 830 轮补登记（此前只写在 AGENTS.md 表格里、没进这个机检名单；与 browser-layout 同一个漂移）
 tool-zero-dab-hint.mjs  同一提交两个环境相反：CI painted=73673、本机 painted=0（precondition_failed）⇒ 环境差异，改断言会掩盖。第 830 轮补登记
 tool-sample-colors-batch.mjs  环境敏感（采样跨机器的像素数不稳）；第 830 轮补登记，此前只在目标说明里写过
-tool-clip-to-selection-rect.mjs  第 909 轮：**rect/ellipse/polygon 三条分支都对（已修 rect 的 w/h 字段 bug）**，但 **bitmap 分支不对**：`subtract` 之后 `kind=bitmap`、`area=8400`（`area_exact=true`，减法正确），而 `brush_stroke(clip_to_selection=…)` 的洞**里仍被涂** ⇒ 洞没进 coverage。这是**真缺陷、不是环境差异**：`shape={"bbox":[10,10,70,70],"blob":"sha256:…","kind":"bitmap"}` 三个字段都对，`bitmap_coverage` 的索引映射也已排除 ⇒ 只剩「注册的 mask 与 area 读的 blob 不是同一份」这一种可能（下一步：导出 blob PNG 看洞里是不是 0）。**外部 §142 的「area 对、裁剪用的位图不是减过的那个」说的就是这件事。**
