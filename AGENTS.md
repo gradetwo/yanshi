@@ -23,33 +23,41 @@
    ⇒ **∴ 例如**加问句**✗** ⇒ **∴ 要**看自检**✗ 能不能**机检**✗ 它**✗**
 ```
 
-### ⚠ 两个「判据数」：**235** 与 **280** 不是一回事（第 866 轮查清）
+### ⚠ 两个「判据数」不是一回事（第 866 轮查清 · 第 1121 轮改成命令）
 
-| 口径 | 数 | 怎么来的 |
+**⇒ 这两个数**都会变**（判据一直在加）⇒ 所以**不写死数字，写命令** ✓**
+
+| 口径 | 怎么算 | 怎么来的 |
 |---|---|---|
-| **`run-criteria.sh` 收集的判据文件** | **280** | `tool-*(228) + browser-*(42) + mcp-*(7) + serve-*(2) + check-*(1)` |
-| **`check-agents-selfcheck` 统计变异率的** | **235** | 只算 `tool-*` 与 `mcp-*`（`228 + 7`）|
+| **`run-criteria.sh` 收集的判据文件** | `ls scripts/{tool,browser,mcp,serve,check}-*.mjs \| wc -l` | `tool-* + browser-* + mcp-* + serve-* + check-*` |
+| **`check-agents-selfcheck` 统计变异率的** | `ls scripts/{tool,mcp}-*.mjs \| wc -l` | 只算 `tool-*` 与 `mcp-*` |
 
-**差距 45 = `browser-*`(42) + `serve-*`(2) + `check-*`(1)** ——
+**⇒ 差距 = `browser-*` + `serve-*` + `check-*`** ——
 来源是 `check-agents-selfcheck.mjs:99` 的这一行：
 
 ```js
 .filter((name) => /^(tool|mcp)-.*\.mjs$/.test(name))
 ```
 
-**⇒ 所以 45 条判据（含 42 条 `browser-*`）不参与「变异记录率」的考核。**
+**⇒ 所以 `browser-*`/`serve-*`/`check-*` 不参与「变异记录率」的考核。**
 排除 `browser-*` 大概是合理的（要真浏览器，做变异成本高），**但两个数都叫「判据」是我混报的根源**。
 
 **规则**：报「判据 N 条」时必须说清是**哪个口径** ——
-- 「CI 跑 280 条」
-- 「235 条参与变异率考核」
-- 「45 条豁免（browser/serve/check）」
+- 「CI 跑 N 条」（第一个命令）
+- 「N 条参与变异率考核」（第二个命令）
+- 「N 条豁免（browser/serve/check）」（两者之差）
 
-**自检**：
+**自检**（**三个数当场算，并断言自洽**）：
 ```bash
-ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs scripts/serve-*.mjs scripts/check-*.mjs | wc -l   # 280
-ls scripts/tool-*.mjs scripts/mcp-*.mjs | wc -l                                                              # 235
+ALL=$(ls scripts/{tool,browser,mcp,serve,check}-*.mjs 2>/dev/null | wc -l)
+SELF=$(ls scripts/{tool,mcp}-*.mjs 2>/dev/null | wc -l)
+EXEMPT=$(ls scripts/{browser,serve,check}-*.mjs 2>/dev/null | wc -l)
+echo "CI 口径=$ALL｜自检口径=$SELF｜豁免=$EXEMPT"
+[ "$((SELF + EXEMPT))" -eq "$ALL" ] && echo "✓ 自洽（自检 + 豁免 = CI）" || echo "✗ 不自洽"
 ```
+
+**⇒ 1121 轮实测：`CI 口径=284｜自检口径=238｜豁免=46` ⇒ `238 + 46 = 284` ✓ 自洽**
+**⇒ 而本节原来写死「235 与 280」**已过期**（现 238/284）✗ ⇒ 所以改成命令 ✓**
 
 **★ 覆盖**要报**两个数**，不是一个**（第 326 轮实测）
 
