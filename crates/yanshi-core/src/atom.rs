@@ -566,6 +566,9 @@ pub struct Atom {
     /// 可选说明。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// 笔迹标签（外部需求 try_stroke v2 §4.2）：部位名，如「鼻子-轮廓」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// 所属变更集。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changeset_id: Option<ChangesetId>,
@@ -604,6 +607,7 @@ impl Atom {
             session: session.into(),
             timestamp: now_ms(),
             message: None,
+            label: None,
             changeset_id: None,
             schema_version: SCHEMA_VERSION,
             plugin: None,
