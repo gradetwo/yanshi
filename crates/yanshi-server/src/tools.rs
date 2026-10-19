@@ -19065,9 +19065,9 @@ fn write_smart_blend(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let dither_amp = ((size * 0.3 * 0.85) / gradient_span).clamp(0.015, 0.08) as f32;
 
     // === Pass 1：斜切铺色（blend_direction + 72°）===
-    // 间距 size*0.5 确保 50% 重叠（圆头笔实际宽度略小于 size）
+    // 间距 size*0.25：实测笔触实际宽度约 0.6*size，0.25 确保 ~2.4x 重叠无漏白且纹理适中
     let pass1_angle = blend_direction_deg + 72.0;
-    let pass1_lines = gen_lines(pass1_angle, size * 0.3, &mut rng);
+    let pass1_lines = gen_lines(pass1_angle, size * 0.25, &mut rng);
     for line in &pass1_lines {
         let n = line.len();
         if n < 4 {
@@ -19114,7 +19114,7 @@ fn write_smart_blend(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // === Pass 2：湿笔揉边（blend_direction - 25°）===
     // 注意：长线必须分段！否则整线用中点 t 会把两端颜色洗掉
     let pass2_angle = blend_direction_deg - 25.0;
-    let pass2_lines = gen_lines(pass2_angle, size * 0.8, &mut rng);
+    let pass2_lines = gen_lines(pass2_angle, size * 0.7, &mut rng);
     for line in &pass2_lines {
         let n = line.len();
         if n < 6 {
