@@ -3344,6 +3344,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("shape", Object, false, "形状（rect/circle/polygon，同 smart_fill），自动取边界为边缘路径；与 edge_path 二选一"),
             param!("soften_width", Number, false, "柔化宽度 px，缺省 20（2-100）；大于 10px 自动分级接力"),
             param!("soften_strength", Number, false, "柔化强度 0.1-1，缺省 0.5（映射为 paint_push）"),
+            param!("max_steps", Integer, false, "边缘采样点上限，缺省 400 ⇒ 超出时**等距抽稀**（防大形状生成上千个原子）"),
             param!("soften_direction", String, false, "inward（向内）/ outward（向外）/ both（双向互溶，缺省）"),
             param!("color", Array, false, "柔边颜色 [r,g,b,a] 0..1；建议传边缘主体色；不传则用笔刷自带色"),
             param!("brush", String, false, "笔刷名，缺省 calligraphy"),
@@ -19781,6 +19782,18 @@ fn write_smart_edge_soften(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
             len - last_emit
         };
     }
+    // **按 `max_steps` 抽稀**（第 682 轮：矩形 1000px 时会有 ~740 个原子 ⇒ 每次落笔 740 次渲染）。
+    // 注意是**等距抽稀**而不是砍尾巴 —— 砍尾巴会让边缘的后半段完全不被柔化，
+    // 那是"看起来对了但一半没做"的静默降级。
+    let max_steps = optional_u64(args, "max_steps").unwrap_or(400) as usize;
+    let sampled: Vec<(f64, f64)> = if sampled.len() > max_steps && max_steps >= 2 {
+        let stride = (sampled.len() as f64) / (max_steps as f64);
+        (0..max_steps)
+            .map(|k| sampled[((k as f64 * stride) as usize).min(sampled.len() - 1)])
+            .collect()
+    } else {
+        sampled
+    };
     let m = sampled.len();
     if m < 2 {
         return Err(YanshiError::new(
