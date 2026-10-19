@@ -9,6 +9,12 @@
 //  ① **白名单内 ⇒ 画面必须**不变****（建空层 ✓）：`render_region` 的 `blob_hash` 前后**相同** ✓；
 //  ② **白名单外且真影响画面 ⇒ 画面必须**变****（逐层隐藏 ✓）：**至少有一层**能改变 `blob_hash` ✓。
 // **变异** ✗：把"可见性"塞进白名单 ⇒ ② 必红 ✓；把白名单**取消** ⇒ ① 仍需成立（不红，但**性能**判据会红 ✓）。
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 import { readFileSync, existsSync } from "node:fs";
 // **★★★ 契约不匹配 ⇒ **回退到仓库里的 fixture** ✗ ★★★**（**第 771 轮修；**CI 实测 ✓）
 //   **∴ 症状 ✗**（**CI ✓）★**：

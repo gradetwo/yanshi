@@ -4,6 +4,12 @@
 //   ② 三角形**外、但仍在 bbox 内**的一角必须**完全无色** ✓（这一条才是判 §二.3 的）；
 //   ③ 响应里的 `strokes` 是**真正落下的笔数** ✓（放不下会小于 count ✓，不许假装 ✓）。
 // 能红：去掉"点在多边形内"的判定 ⇒ ② 立刻有色 ✓。
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 const base = process.argv[2];
 if (!base) { console.error("用法: node scripts/tool-scatter-polygon.mjs <base-url>"); process.exit(2); }
 const call = async (doc, token, tool, args) => {

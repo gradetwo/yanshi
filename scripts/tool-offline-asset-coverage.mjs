@@ -35,6 +35,12 @@
 //
 // 用法：node scripts/tool-offline-asset-coverage.mjs
 //      （不消费 `<base-url>` ✓ —— 只为与 `tool-*.mjs` 的调用约定一致 ✓）
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createContext, runInNewContext } from "node:vm";

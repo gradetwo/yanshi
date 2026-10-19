@@ -15,6 +15,12 @@
 //   ① 薄涂笔：`painted_pixels > 0` ✗ 但 `max_channel_delta <= 16` ✗（**∴ 画了、看不见 ✓**）
 //   ② 实心笔：`max_channel_delta >= 200` ✓（**∴ 画了、也看得见 ✓**）
 //   ⇒ **∴ 两条一起才说明这个字段**有区分力**✗**；**∴ 只断一条 ⇒ **∴ 恒 0 也能过 ✓**
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 const base = process.argv[2] ?? "http://127.0.0.1:0";
 // **∴ 自己建文档 ✗**：**∴ 这样运行器只传 base ✓**，不依赖外部令牌 ✓
 //   ⇒ **∴ 因为**这个判据要**换笔刷画两笔**✗，用别人的文档会污染它 ✓

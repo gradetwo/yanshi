@@ -3,6 +3,12 @@
 //   **∴ 我**的浏览器脚本**每个**都建**chromium profile ＋ 临时 root**✗
 //     ⇒ **∴ 而**以前**从不删除**✗ ⇒ **∴ 跑几十次就**把 /tmp 塞满 ✓**** ✓✓
 //   **∴ 现在**：**注册 ＋ 退出时递归删除**✗ ⇒ **∴ 于是**：**跑多少次都**不积累 ✓**** ✓✓
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 import { rmSync } from "node:fs";
 
 const __tempPaths = [];

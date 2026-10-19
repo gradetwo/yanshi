@@ -4,6 +4,12 @@
 // 契约：① 不带 tag ⇒ 每支笔刷都有 `tags` 数组 ✓；② 带 tag ⇒ **只**返回带该标签的 ✓ 且**非空** ✓；
 //       ③ 谎言检查：返回的每一项都必须**真的**含该标签 ✓（不能"筛了却给别的" ✗）。
 // 用法：node scripts/tool-brush-tag-filter.mjs <server-base> <doc-id> <token>
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 const [base, doc, token] = process.argv.slice(2);
 if (!base || !doc || !token) { console.error("用法: node scripts/tool-brush-tag-filter.mjs <base> <doc> <token>"); process.exit(2); }
 const call = async (args) => (await (await fetch(`${base}/api/tools?doc=${doc}&token=${token}`, {

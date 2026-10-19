@@ -4,6 +4,12 @@
 // 判据（可计数 ⇒ 确定性 ✓）：① 每 4 个放行 ⇒ 12 个调用里应恰好 3 个子结果带预览；
 //                          ② `silent: true` ⇒ 0 个带预览（对照组，证明计数不是恒真）；
 //                          ③ 给了工作区路径时，顺便量 `render.png` 是否真的被写过（可选，跳过会打印）。
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 const base = process.argv[2];
 if (!base) { console.error("用法: node scripts/tool-batch-preview.mjs <base-url>"); process.exit(2); }
 import { statSync } from "node:fs";

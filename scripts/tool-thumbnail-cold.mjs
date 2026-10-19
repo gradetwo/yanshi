@@ -13,6 +13,12 @@
 //
 // **为什么用"第一次"而不是"平均"** ✗：本会话已**三次**被平均值骗过（含我自己上一轮 ✓）
 //   ⇒ 首冷与稳态必须**分开报** ✓ ⇒ 所以这条判据**只判第一次** ✗，并把第二次作为对照打印 ✓。
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 const base = process.argv[2];
 if (!base) { console.error("用法: node scripts/tool-thumbnail-cold.mjs <base-url>"); process.exit(2); }
 // **按构建 profile 分档** ✗（第 1363 轮 ✓）—— **∴ 这是本判据**过去一直红**✗ 的原因 ✓**：

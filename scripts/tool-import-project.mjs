@@ -26,6 +26,12 @@
 //   * `GET /api/documents/import` ⇒ 405（证明这条路由**没有被 `/api/documents/` 前缀吃掉**）。
 //
 // 用法：node scripts/tool-import-project.mjs <base-url> [docId] [token]
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { join, isAbsolute } from "node:path";

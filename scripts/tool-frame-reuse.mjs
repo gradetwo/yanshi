@@ -4,6 +4,12 @@
 //     ＋ **两次的 `below_reused` 都为假 ✗**（**∴ 记录**分层事实：**整幅命中的路上**不进 tile 层 ✓）
 //   **∴ 变异（**手工 ✓）**：**去掉 `self.full_frame_hits += 1;` ✗**
 //     ⇒ **∴ 第二次**会是假 ⇒ **∴ 本脚本**必红 ✓**（**已验证 ✓）**。
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 

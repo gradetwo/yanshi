@@ -11,6 +11,12 @@
 //   ② `wait_for_render: false` ⇒ `preview_calls === 0`（**∴ 跳过了预览 ✓**）
 //   ③ 不给参数 ⇒ `preview_calls === 1`（**∴ 缺省 = true，现有行为不变 ✓**）
 //   ④ 三笔都真的落过笔 ⇒ 每笔 `raster_calls > 0`（**∴ 否则"跳过预览"可能只是"没画"✓**）
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 const base = process.argv[2] ?? "http://127.0.0.1:0";
 const doc = `waitr_${Date.now()}`;
 

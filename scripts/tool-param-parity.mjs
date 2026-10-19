@@ -8,6 +8,12 @@
 // 工具层会把"可用参数"列出来（实测过：`不接受参数 hardness（拼写错误？）；可用参数：brush, si…`）；
 // ③ 两边的**集合**必须相等。
 // 若某个工具先报别的错（缺必填项等）⇒ 记为"未能对账"（**如实计数**，不算通过）。
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 const base = process.argv[2];
 const token = process.argv[3];
 if (!base || !token) { console.error("用法: node scripts/tool-param-parity.mjs <server-base> <token>"); process.exit(2); }

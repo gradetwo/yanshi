@@ -5,6 +5,12 @@
 //   若回的是「不接受参数 …」或「类型/形状不对」一类 ⇒ **红** ✗（说明抄走会被拒）；
 //   其它错误（缺前置对象、文档状态、值域…）⇒ 记为「参数被接受，另有原因」✓ 并打印出来。
 // 这样"可复制示例"就有了实质判据，而不只是"名字出现在参数面里"。
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 const base = process.argv[2];
 if (!base) { console.error("用法: node scripts/tool-example-acceptance.mjs <server-base>"); process.exit(2); }
 // **`doc_id` 必须每次唯一** ✗ —— 原先写死 `"ea1"` ⇒ **第一次跑会新建它 ✓**，

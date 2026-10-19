@@ -9,6 +9,12 @@
 //   **∴ 白 ⇒ 0 ✓／`#fefefe` ⇒ 1 ✓／`#e0e0e0` ⇒ 31 ✓／`#343832` ⇒ 205 ✓**
 //   ⇒ **∴ 容差 ±1**✗（**∴ 抗锯齿受路径采样影响 ✓**）⇒ **∴ 而**白必须是 **0**（**∴ 严格 ✓**）
 // **∴ 变异 ✓**：**∴ 去掉合成 ✗（**回退成按 255 直接比 ✓**）⇒ **∴ 四色全 254 ✗ ⇒ **∴ 全部必红 ✓**
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 const base = process.argv[2] ?? "http://127.0.0.1:0";
 const stamp = Date.now();
 

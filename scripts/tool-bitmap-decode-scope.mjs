@@ -20,6 +20,12 @@
 // `bitmap_cache.misses` **恒 0** ⇒ 判据**永远 PASS** ✗ ⇒ **∴ 那样它守不住任何东西** ✓。
 // ⇒ **∴ 默认加载磁盘上的真实工程**（带位图 ✓），否则**明确报错退出**（**不许静默跳过** ✗）。
 
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 
 // **★ 临时目录必须**自己收拾 ✗ ★**（第 53 轮 ✓；**∴ 用户报告 /tmp 被塞满 ✓）：

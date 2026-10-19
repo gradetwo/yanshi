@@ -12,6 +12,12 @@
 //   ⑦ **未实现端点 ⇒ 501 ＋ 端点名 ＋ 原因 ✗**（**∴ 不静默失败 ✓**）** ✓✓
 //
 // **变异** ✗：**去掉 501 分支 ⇒ ⑦ 报红 ✓**（**已实测 ✓**）。
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 import { pathToFileURL } from "node:url";
 
 // **★ 最小 IndexedDB 桩 ✓ ★**：**够用即可 ✗**（**只支持本层用到的 put／get／getAll ✓**）。

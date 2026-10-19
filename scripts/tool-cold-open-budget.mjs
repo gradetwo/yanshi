@@ -1,4 +1,10 @@
 #!/usr/bin/env node
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";

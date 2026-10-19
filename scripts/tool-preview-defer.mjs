@@ -9,6 +9,12 @@
 // **变异** ✗：**恢复"首次就同步渲染"** ⇒ **∴ ① 的墙钟回到 >1000 ms ⇒ 必红 ✓**。
 //
 // 用法：node scripts/tool-preview-defer.mjs <base-url> [宽限等待毫秒=500]
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 const base = process.argv[2];
 // **★ 数字参数必须**校验** ✗ ★**（第 88 轮 ✓；**CI 的崩溃换来的 ✓）：
 //   **∴ 为什么 ✗**：编排（`run-criteria.sh:228` ✓）给 `tool-*` 的 `argv[3]` 是**文档名**✗

@@ -23,6 +23,12 @@
 //     ⇒ **∴ `base` ＝ `"--spawn"`**✗ ⇒ **∴ 于是**：**URL**解析失败 ⇒ **`ERR_INVALID_URL` ✓**** ✓✓
 //   **∴ 修法**：**跳过**以 `--` 开头的参数**✗
 //     ⇒ **∴ 取**第一个**看起来像 URL** 的参数 ✓**** ✓✓
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 const __urlArg = process.argv.slice(2).find((a) => /^https?:\/\//.test(a));
 const base = __urlArg ?? "http://127.0.0.1:8471";
 const CANVAS = 4096;

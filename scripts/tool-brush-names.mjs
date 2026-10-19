@@ -3,6 +3,12 @@
 //
 // 判据：同一个笔刷用**四种写法**都应当命中同一个 `.myb`；而**错名**的报错必须给出可行动的建议。
 // 用法：node scripts/tool-brush-names.mjs <server-base>
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 const base = process.argv[2];
 if (!base) { console.error("用法: node scripts/tool-brush-names.mjs <server-base>"); process.exit(2); }
 const post = async (path, payload) => (await fetch(base + path, {

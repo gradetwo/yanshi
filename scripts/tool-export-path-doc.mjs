@@ -2,6 +2,12 @@
 // **`export_png` 必须把写盘约束写在描述里**判据（来源：第三方 MCP 报告 P1-3 ✓ ——
 // 测试者的建议原话就是「或**文档里明确说明限制**」✓）。它踩的坑：拒绝写任意目录 ✗ 却**没在描述里说** ✓。
 // 用法：node scripts/tool-export-path-doc.mjs <server-base> <doc-id> <token>
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 const [base, doc, token] = process.argv.slice(2);
 if (!base || !doc || !token) { console.error("用法: node scripts/tool-export-path-doc.mjs <base> <doc> <token>"); process.exit(2); }
 const catalogue = await (await fetch(`${base}/api/tools?doc=${doc}&token=${token}`)).json();

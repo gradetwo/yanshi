@@ -3,6 +3,12 @@
 // ⇒ **体积随"覆盖次数"线性增长** ✗ ⇒ 与**只画一次**的对照组一比就看得出来 ✓。
 // 期望（修好之后）✓：12 次覆盖与 1 次覆盖的体积**同量级** ✓（差异 < 1.5× 之类 ✓）；
 // 今天预期**红** ✓ —— 这正是它能证明修复有效的原因 ✓。
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 const base = process.argv[2];
 if (!base) { console.error("用法: node scripts/tool-archive-bloat.mjs <base-url>"); process.exit(2); }
 

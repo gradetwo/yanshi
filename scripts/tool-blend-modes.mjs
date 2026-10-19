@@ -5,6 +5,12 @@
 //   ② `difference` 必须被接受 ✓（**它一直能解析、却不在工具白名单里** ✗ —— 这条守的正是"漂移" ✓）；
 //   ③ 对照组：一个真正不存在的模式**必须报错** ✓（否则 ① ② 就可能是"什么都不校验" ✓）。
 // 能红：把工具的 ALLOWED 改回硬编码 7 个 ⇒ ① ② 立刻红 ✓。
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 const base = process.argv[2];
 if (!base) { console.error("用法: node scripts/tool-blend-modes.mjs <base-url>"); process.exit(2); }
 const call = async (doc, token, tool, args) => {

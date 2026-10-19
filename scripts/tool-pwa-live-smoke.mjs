@@ -18,6 +18,12 @@
 // **∴ 为什么**不接进 `run-criteria.sh` ✗**：**它需要**外网 ✗**（**CI 里**网络不可靠 ✓）
 //   ⇒ **∴ 所以**在 `tool-criteria-coverage.mjs` 的 `NOT_WIRED` 里**写明这个原因 ✓**，
 //     **∴ 而**它**仍然可以**手工一条命令跑到 ✗**（`node scripts/tool-pwa-live-smoke.mjs` ✓）**。
+// **前提失败必须 exit(3)**（第 1084 轮）：无服务时 fetch 抛异常 ⇒ uncaught ⇒ 退出码 1 ✗
+// ⇒ 按 336 轮那条：条件不满足应 exit(3)（不可判），不是 exit(1)（产品失败）
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 不可判：${String(error).slice(0, 80)}`);
+  process.exit(3);
+});
 const BASE = process.env.YANSHI_PWA_BASE ?? "https://yanshi-online.wangda.today";
 const bust = "?t=" + Date.now();
 const fails = [];
