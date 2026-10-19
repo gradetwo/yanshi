@@ -169,3 +169,42 @@ create_selection(selection_id="dress", shape=口,          mode="subtract")  # �
 3. 再用 `set_property` 把蒙版挂回图层
 
 这条路我这边验过（`tool-paint-mask-isolation` 断言「擦 A 的蒙版不碰 B」），可用。
+
+---
+
+# 更新（第 810 轮）：`mode=add/subtract/intersect` 现在会**明确报错**，不再静默覆盖
+
+上一段我说「先别依赖它」。**现在可以放心试了** —— 因为行为变了。
+
+## 改了什么（`63ee1723`）
+
+| | 改之前 | 改之后 |
+|---|---|---|
+| 你传 `mode="subtract"` | `ok=true`，但 `dress` 变成「口」本身 | **`ok=false`** |
+| 后果 | **看起来成功、结果是错的** | 立刻知道不行 |
+
+错误文案里直接给了绕法：
+
+```
+mode=subtract 的布尔合并尚未实现（当前只会覆盖旧选区，那比报错更危险）
+⇒ 请改用两步：① smart_select 取要减掉/加上的区域；
+② paint_mask(mode=…) 在目标选区的蒙版上擦/画，再用 set_property 挂回图层。
+```
+
+## 对你的意义
+
+你说的「它现在会『静默不生效』（比报错更危险）」—— **那个危险已经消除**。
+
+- 你**不需要**再担心「传了 subtract 但没生效」
+- 你现在**可以**把 `mode` 当成「必然报错」来用（例如在脚本里 try/except 后走你的 `clip_polygon_to_rect`）
+
+## 还没做什么
+
+**真正的布尔合并仍未实现。** 台账里写着 4 步，已完成第 1、4 步：
+
+- ✅ 第 1 步：`list_selections` 加 `area` + `area_exact`
+- ✅ 第 4 步：判据断 `area`（现在红着，守「合并做出来前不许静默通过」）
+- ⬜ 第 2 步：按 `mode` 合并覆盖率
+- ⬜ 第 3 步：存成 `Bitmap`（`SelectionGeom::Bitmap` 已存在，`smart_select` 就是那么存的）
+
+**⇒ 你继续用自己的 `clip_polygon_to_rect` 是对的**，我这边做完再告诉你。
