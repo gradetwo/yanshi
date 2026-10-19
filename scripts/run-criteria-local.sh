@@ -38,7 +38,10 @@ fi
 # 起一个临时服务（判据自己建文档）
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/yanshi-crit-XXXXXX")
 PORT=$(( 23000 + RANDOM % 2000 ))
-"$BIN" --root "$ROOT" --doc g --width 400 --height 400 --bind "127.0.0.1:$PORT" > "$ROOT/s.log" 2>&1 &
+# 起服务：**判据会自己建文档**（实测 164/164 都调 /api/documents��，
+# 所以这里的 --doc/--width/--height 只是**服务的初始文档**，判据不会用它。
+# ⇒ 不要以为判据跑在 400x400 上（第 987 轮实测：0 个判据用 doc=g）。
+"$BIN" --root "$ROOT" --doc _bootstrap --width 64 --height 64 --bind "127.0.0.1:$PORT" > "$ROOT/s.log" 2>&1 &
 PID=$!
 trap 'kill "$PID" 2>/dev/null; rm -rf "$ROOT"' EXIT
 
