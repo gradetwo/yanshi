@@ -28157,3 +28157,12 @@ browser-layout.mjs  第 742 轮核实：判据要求「400% 缩放时画布溢�
 tool-dwell.mjs  断的是「dwell:1 后拐角邻域墨变多」这类像素数：本机 +1（1234→1235）、CI −5（1227→1222）⇒ **方向相反**⇒ 跨不了机器。第 830 轮补登记（此前只写在 AGENTS.md 表格里、没进这个机检名单；与 browser-layout 同一个漂移）
 tool-zero-dab-hint.mjs  同一提交两个环境相反：CI painted=73673、本机 painted=0（precondition_failed）⇒ 环境差异，改断言会掩盖。第 830 轮补登记
 tool-sample-colors-batch.mjs  环境敏感（采样跨机器的像素数不稳）；第 830 轮补登记，此前只在目标说明里写过
+
+tool-medium-filter-covers-all.mjs	# 第 1048 轮登记（判据先行，代码未修）
+#   缺陷：medium_stroke 接受 6 个介质名，而 medium_brush_keywords 的 match 只有 5 个臂
+#   ⇒ 其余走 _ => None ⇒ :5837 的 .and_then 透传 ⇒ :5849 的 if let Some 不进入
+#   ⇒ 不筛选 ⇒ 返回全部 201 支
+#   实测：oil 28 / watercolor 25 是真筛选；marker / pencil / pixel / example 都返回 201/201
+#   ⇒ 静默降级（Agent 以为筛过，实际拿到全部）
+#   修它需要：① marker/pencil 的臂（可复用 BRUSH_TAG_HINTS 的关键字）
+#             ② pixel 的判据（需定「什么算 pixel 笔刷」）③ example 是否该筛选
