@@ -35,8 +35,13 @@ const outText = JSON.stringify(out);
 console.log(`  画布外 ⇒ ok=${out.ok}｜code=${out.error_code}｜${outText.slice(0, 200)}`);
 if (out.ok !== false) failures.push("整条笔迹在画布外却成功了 ⇒ 不该落墨 ✗");
 if (out.error_code !== "invalid_argument") failures.push(`错误码该是 invalid_argument（实测 ${out.error_code}）✗`);
-if (!outText.includes("400×400")) failures.push("消息里没写画布尺寸 ⇒ 调用方不知道边界 ✗（§81）");
+// **∴ 画布尺寸不能写死**✗（**∴ CI 的缺省是 320×240 ✓，本机 400×400 ✓**）⇒ **∴ 要去问**✗**
+//   ⇒ **∴ 我第一次写死** `400×400`**✗** ⇒ **∴ CI 上假红**✗**（**∴ 第 383 轮实测 ✓**）✓
+const got = await (await fetch(`${base}/api/documents/${docId}?token=${token}`)).json().catch(() => ({}));
+const canvas = `${got.width ?? created.width}×${got.height ?? created.height}`;
+if (!outText.includes(canvas)) failures.push(`消息里没写画布尺寸 ⇒ 调用方不知道边界 ✗（§81；期望 ${canvas}）`);
 if (!/x \d+\.\.\d+/.test(outText)) failures.push("消息里没写笔迹范围 ⇒ 调用方不知道差多远 ✗（§81）");
+console.log(`  画布尺寸=${canvas}`);
 if (!outText.includes("别去换笔刷")) failures.push("消息里没排除笔刷原因 ⇒ 会被引去换笔刷 ✗（§81）");
 if (outText.includes("撑不满")) failures.push("消息里仍在说 dab 间距 ⇒ 那是非真因 ✗（§81）");
 
