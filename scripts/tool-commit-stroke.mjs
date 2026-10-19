@@ -45,6 +45,10 @@ const byLabel = await call("list_atoms", { label: LABEL });
 console.log(`  按 label 查 ⇒ ${(byLabel.atoms ?? []).length} 条`);
 if ((byLabel.atoms ?? []).length !== 1) failures.push(`提交后按 label 应查到 1 条，实测 ${(byLabel.atoms ?? []).length} ⇒ 标签没跟着提交 ✗`);
 
+// 尝试必须落盘（需求 §5.2：会话被打断时内存日志会丢）
+const persisted = await call("list_atoms", { limit: 1 });
+if (persisted.ok === false) failures.push("list_atoms 在本判据里不可用 ⇒ 无法继续验证落盘 ✗");
+
 // 同一尝试不能提交两次
 const again = await call("commit_stroke", { attempt_id: t.attempt_id });
 console.log(`  重复提交 ⇒ ok=${again.ok}`);

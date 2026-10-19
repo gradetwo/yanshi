@@ -18874,6 +18874,15 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         paint.x0 + paint.width as i32,
         paint.y0 + paint.height as i32,
     ];
+    // **尝试要落盘**（需求 v2 §5.2：会话常被打断，内存日志恰好在最需要时丢）。
+    //
+    // **为什么用系统临时目录**：`asset_dir` 只认 brush／texture／palette 三种（实测报
+    // 「未知资产种类 attempts」）⇒ 拿不到工作区根下的自定义目录。临时目录能跨进程重启，
+    // 但不随工作区走 —— 这是**已知债**，等有工作区路径访问器再搬家。
+    let attempt_dir = std::env::temp_dir()
+        .join("yanshi-attempts")
+        .join(&ctx.doc_id);
+    std::fs::create_dir_all(&attempt_dir).ok();
     let attempt_id = format!(
         "at{:x}{:x}",
         std::time::SystemTime::now()
@@ -18906,6 +18915,36 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 status: "pending",
             },
         );
+    }
+    // 落盘：位图与元数据各一个文件；日志追加一行（超 100 条由 list_attempts 负责淘汰）
+    if let Ok(map_guard) = attempts().lock() {
+        if let Some(rec) = map_guard.get(&attempt_id) {
+            let _ = std::fs::write(attempt_dir.join(format!("{attempt_id}.rgba")), &rec.rgba);
+            let meta = json!({
+                "attempt_id": attempt_id,
+                "doc_id": rec.doc_id,
+                "layer_id": rec.layer_id,
+                "brush": rec.brush,
+                "bbox": [rec.x0, rec.y0, rec.x0 + rec.width as i32, rec.y0 + rec.height as i32],
+                "width": rec.width,
+                "height": rec.height,
+                "painted": rec.painted,
+                "label": rec.label,
+                "status": "pending",
+            });
+            let _ = std::fs::write(
+                attempt_dir.join(format!("{attempt_id}.json")),
+                meta.to_string(),
+            );
+            if let Ok(mut log) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(attempt_dir.join("log.jsonl"))
+            {
+                use std::io::Write as _;
+                let _ = writeln!(log, "{meta}");
+            }
+        }
     }
     let mut out = json!({
         "ok": true,
