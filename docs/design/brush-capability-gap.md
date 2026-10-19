@@ -12191,3 +12191,25 @@ value["read_canvas_effective"] = json!(false);
 
 **∴ 本轮产出的数字 ✓**：**笔迹原子 payload 键数 = 9**✗**（**∴ 无 `brush` ✓**）**｜`type = "raster_patch"`**✗**
 ⇒ **∴ 所以** `list_atoms(brush=…)` **恒 0**✗** ⇒ **∴ 修法**：**把笔刷名**写进 payload**✗** ✓
+
+## 三百一十、`group_id` 不做：它与 `label` 是同一件事（第 606 轮）
+
+**外部 §113 清单的最后一项是 `group_id` / `based_on`。**`based_on` 已在 `55a7d9a9` 做了。
+`group_id` 我判定为**重复功能**，不做。
+
+**理由（可验证的事实，不是判断）**：
+
+| 能力 | `label` 现状 |
+|---|---|
+| 一个部位的多笔共享一个名字 | `try_batch(strokes, label="左眼")` ⇒ 三笔都带这个 label |
+| 按名字把它们找回来 | `list_atoms(label="左眼")` ⇒ 实测查到 3 条（`scripts/tool-batch.mjs` ④）|
+| 一次撤销整组 | `list_atoms(label=…)` 取 `atom_id` ⇒ 交给 `revert_atoms` |
+| 非笔迹也能带 | `fill` / `draw_stroke` / `draw_shape` / `draw_text` / `erase` 都收（`836b83f7`）|
+
+**⇒ 所以「把同一部位的几笔归为一组」用 `label` 已经能做到**，加一个 `group_id` 只会多一个要维护的字段。
+
+**⇒ 若将来需要两种语义同时存在**（例如「一组可以有多个 label」或「组可以嵌套」），
+那才需要 `group_id`——那时的语义必须先写清，否则又是一个「收了不生效」的字段。
+
+**判据**：`scripts/tool-batch.mjs` 的第 ④ 条（整组标签查到 3 条）已经是这件事的守卫。
+
