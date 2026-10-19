@@ -208,3 +208,69 @@ mode=subtract 的布尔合并尚未实现（当前只会覆盖旧选区，那比
 - ⬜ 第 3 步：存成 `Bitmap`（`SelectionGeom::Bitmap` 已存在，`smart_select` 就是那么存的）
 
 **⇒ 你继续用自己的 `clip_polygon_to_rect` 是对的**，我这边做完再告诉你。
+
+---
+
+# 重要（第 829 轮）：§139 的「没有 multiply」**不成立** —— 它早就有，只是不在 `fill` 上
+
+你在 §139 里的分析我完全同意：
+
+> 叠加式：`std(new) = std(old) × (1−a)` ⇒ 压均值必然压对比度；
+> 要「既压均值又保对比度」必须用乘法 `new = old × k`。
+
+**但「没有乘法混合」这个结论是错的。** 我实测了：
+
+## 怎么用（现在就能用）
+
+```python
+# 把某一层的混合模式改成正片叠底
+set_property(layer_id="t", key="blend_mode", value="multiply")
+```
+
+**实测（我的环境）**：
+
+| 操作 | 采样像素 |
+|---|---|
+| 下层 `0.6` 灰 + 上层 `0.56` 灰（`normal`）| **197,197,197** |
+| 同上，但 `set_property(key="blend_mode", value="multiply")` | **157,157,157** |
+
+理论值：`197/255 × 197/255 = 0.597` ⇒ `152`。实测 `157`（差值来自 AA 与舍入）。
+
+⇒ **`multiply` 生效了，而且是在 sRGB 空间做的**（所以是 197 那个数乘，不是 0.6×0.56）。
+
+## 你为什么会以为没有
+
+**两个原因叠加**：
+
+**① `blend_mode` 不在 `fill` / `fill_region` 的参数里。**
+
+它是**图层属性**，走 `set_property` 的 `key/value`，不是 `fill` 的参数。
+
+**② `set_property` 不接受 `patch` 参数。**
+
+我第一次试的是 `set_property(layer_id="t", patch={"blend_mode": "multiply"})` ⇒
+报错：`set_property 不接受参数 patch（拼写错误？）；可用参数：key, value, object_id, layer_id`。
+**⇒ 必须用 `key=` / `value=` 的形式。**
+
+## 9 种混合模式都在
+
+`crates/yanshi-render/src/blend.rs:17` 的 `BlendMode` 有 **9 个变体**（含 `Multiply`）。
+渲染器与合成都在用（`render.rs:294`），图层字段也早就被解析（`fold.rs:1348`）。
+缺的**只是「`fill` 上有一个 `blend_mode` 参数」这个方便入口** —— 那是我这边的易用性问题，不是能力缺口。
+
+## 所以你「整体压暗 0.56」的正确做法
+
+```python
+# 1) 建一层，填中性灰（乘法里 k=143/255≈0.56）
+create_layer(layer_id="dark", name="dark")
+fill_region(layer_id="dark", shape=全画布, color=[143/255, 143/255, 143/255, 1])
+# 2) 把它的混合模式设成正片叠底
+set_property(layer_id="dark", key="blend_mode", value="multiply")
+```
+
+**⇒ 一次调用 + 一个属性设置，`std` 会按 0.56 缩而不是被 `1−a` 压扁。**
+
+## 我这边要补的（不是你的问题）
+
+`fill` / `fill_region` 加一个 `blend_mode` 参数（转发到图层的 `blend_mode`），
+让你不必记住「这是图层属性」。**这是易用性缺口，我记进台账了。**
