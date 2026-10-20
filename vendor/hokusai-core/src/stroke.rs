@@ -1123,26 +1123,11 @@ fn build_dab(    brush: &Brush,
     let base_h = brush.get(BrushSetting::ColorH).base_value;
     let base_s = brush.get(BrushSetting::ColorS).base_value;
     let base_v = brush.get(BrushSetting::ColorV).base_value;
-    let base_srgb = hsv_to_rgb(Hsv {
+    let base = hsv_to_rgb(Hsv {
         h: base_h,
         s: base_s,
         v: base_v,
     });
-    // **★ Phase 1（色彩体系规划）：混合必须在**线性空间**（第 1299 轮）** ✓
-    //   **为什么**：下面的涂抹公式是**线性算术**——
-    //     `(smudge_amt * state.smudge_ra + col_factor * base.r) / eraser_target_alpha`
-    //     ⇒ 加权和与除法**只在 linear 上有物理意义**（sRGB 是感知编码，有 gamma）✗
-    //   **而**`hsv_to_rgb` 给的是 **sRGB**（判据 `phase1_pipeline_space` 证明：
-    //     `v=0.8` ⇒ `0.8`（sRGB）而非 `0.6038`（linear））⇒ 所以这里转 ✓
-    //   **下游**：`Dab.color` 进 `draw_dab_default` ⇒ 而渲染 buffer 是 **linear premultiplied**
-    //     （`buffer.rs` 的 `linear_premul_to_u8x4_with`）⇒ **linear in ⇒ 正确** ✓
-    //   **行为变化**：混合结果**变亮**（用户已拍板「存量 atoms 接受重放颜色变化」）✓
-    let base = crate::color::RgbaF32 {
-        r: crate::color::srgb_to_linear(base_srgb.r),
-        g: crate::color::srgb_to_linear(base_srgb.g),
-        b: crate::color::srgb_to_linear(base_srgb.b),
-        a: base_srgb.a,
-    };
 
     // 1) apply_smudge: derive eraser_target_alpha + mix the brush
     //    colour with the smudge bucket. See the libmypaint
