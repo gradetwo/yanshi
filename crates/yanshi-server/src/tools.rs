@@ -16226,6 +16226,26 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         "ok_count": results.len().saturating_sub(failed_calls.len()),
         "fail_count": failed_calls.len(),
         "all_ok": failed_calls.is_empty(),
+        // **★ 有子调用失败时必须**出声**，不能只靠调用方去翻 `failed_calls`** ✓
+        //   （第 1426 轮；外部 §216）
+        //   **⇒ 外部实测**：`batch` 里 `medium_stroke` 的 `medium` 传成**笔刷名** `oil-01-paint`
+        //     ⇒ 子调用**确实失败**了（`fail_count=1`、`failed_calls[0]` 带完整错误 ✓）
+        //     ⇒ **而他们看到的是** `ok: true` ⇒ **以为"成功了但一笔没画"** ✗✗
+        //   **⇒ 根因不是校验缺失**（枚举校验有 ✓ handler 自己就拒）⇒ **是顶层 `ok` 的语义**
+        //     （`ok` = 「请求跑完了」✓，**不是**「每个子调用都成功」✗）⇒ 只读 `ok` 时没有信号 ✗
+        //   **⇒ ⇒ 所以**：`fail_count > 0` 时在 `warnings` 里明说，并指路 `all_ok` ✓
+        //     （`ok` 的语义**不改** —— 改它会破坏既有调用方 ✓）
+        "warnings": if failed_calls.is_empty() {
+            Value::Null
+        } else {
+            json!([format!(
+                "{}/{} 个子调用失败 ⇒ 顶层 ok 只表示「请求跑完了」，**不代表每个子调用都成功**；\
+                 看 all_ok（现在是 {}）与 failed_calls（含每个的错误）",
+                failed_calls.len(),
+                results.len(),
+                failed_calls.is_empty()
+            )])
+        },
 
         "preview": preview_value,
         "changeset_id": changeset,

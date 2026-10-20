@@ -64,6 +64,17 @@ if (fc.length === 1) {
   const detail = JSON.stringify(fc[0]);
   if (/preview/.test(detail)) ok("① 未知参数被拒并留痕（failed_calls 1 条，提到 preview）");
   else bad(`① failed_calls 里应提到 preview ⇒ 实测 ${detail.slice(0, 120)}`);
+
+// **①b 有子调用失败时必须给 `warnings`** ✓（第 1426 轮；外部 §216）
+//   **⇒ 为什么**：外部看到 `ok: true` 就以为成功（而 `fail_count=1`）⇒ 因为顶层 `ok` 的语义是
+//     「请求跑完了」✗ 而**只读 `ok` 的人拿不到任何失败信号** ✗ ⇒ 所以要在 `warnings` 里出声 ✓
+{
+  const w = r1?.warnings;
+  const isList = Array.isArray(w) && w.length > 0;
+  const mentions = isList && w.some((x) => /子调用失败/.test(String(x)));
+  if (mentions) ok(`①b 部分失败时给出 warnings（${String(w[0]).slice(0, 50)}…）`);
+  else bad(`①b 有子调用失败 ⇒ warnings 必须非空且提到「子调用失败」⇒ 实测 ${JSON.stringify(w)}`);
+}
 } else {
   bad(`① 带未知参数的子调用必须失败 ⇒ 实测 failed_calls=${fc.length}（0 ⇒ 又被静默忽略了）`);
 }
