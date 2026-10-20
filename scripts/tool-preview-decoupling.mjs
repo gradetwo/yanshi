@@ -41,7 +41,12 @@ function check(ok, label, detail) {
 const doc = "preview-decouple-" + Date.now().toString(36);
 const created = await (await fetch(`${base}/api/documents`, {
   method: "POST", headers: { "content-type": "application/json" },
-  body: JSON.stringify({ doc_id: doc, width: 4096, height: 3072 }),
+  // **★ 画布必须小到能在 180 秒内跑完** ✓（第 1348 轮；CI 实测 **EXIT=124 超时**）
+  //   **⇒ 原先 4096×3072**：CI 上单笔 `preview_ms=860` ⇒ 两笔 ＋ 建文档 ⇒ **超过 180 s** ✗
+  //     ⇒ 判据被 `timeout` **杀掉**（124）⇒ 看起来「红」但其实**根本没跑完** ✗
+  //   **⇒ 现在 1024×768**：预览仍要编码一张真图（可测 ✓）⇒ 而代价约 **1/16** ✓
+  //   **⇒ 为什么不是更小**：太小（如 64）时预览编码的耗时可能落进噪声 ⇒ 差值不可测 ✗
+  body: JSON.stringify({ doc_id: doc, width: 1024, height: 768 }),
 })).json();
 if (!created.token) {
   console.error("✗ 前置不成立：建不出 4K 文档 ⇒ " + JSON.stringify(created).slice(0, 160));
@@ -61,11 +66,13 @@ if (layer.ok !== true) {
 }
 
 const stroke = (index, extra) => {
-  const y = 1200 + index * 40;
+  // **⇒ 也按 1/4 缩**（原先 1200 起 ⇒ 在 768 高的画布上直接出界）
+  const y = 300 + index * 40;
   const args = {
     layer_id: "L1", object_id: "s" + index, brush: "Clouds.myb", size: 180,
     color: { r: 175, g: 148, b: 140, a: 180 }, smooth: true,
-    points: [[450, y, 0.45], [980, y + 40, 0.85], [1650, y + 10, 0.9], [2400, y + 60, 0.8], [3150, y + 20, 0.35]],
+    // **⇒ 笔迹也按 1/4 缩** ✓（原先是 4096 宽的坐标 ⇒ 在 1024 画布上会全在右边）
+    points: [[110, y, 0.45], [245, y + 40, 0.85], [410, y + 10, 0.9], [600, y + 60, 0.8], [790, y + 20, 0.35]],
   };
   return Object.assign(args, extra || {});
 };
