@@ -23438,8 +23438,26 @@ impl GuideTable {
         if total < 1.0 {
             return None;
         }
+        // **★ N3D-02（第三轮复审 P1）：三重上界** ✓
+        //   **问题**：`total` 是 guide 的**总弧长**，**无上界** ⇒
+        //   `n = ceil(total / 2px)` ⇒ `Vec::with_capacity(n)` **直接按调用方的曲线长度分配**
+        //   ⇒ 一条很长的 guide + 2px 步长 = 巨表；随后 `for k in 0..n` 又是**持锁长循环** ✗
+        //   **修法**：弧长、表大小、点数**各设上限**，超限返回 `None`
+        //   （调用方 `write_smart_hatch_follow` 会把「无可行引导线」报出去，不是静默）
+        const MAX_GUIDE_POINTS: usize = 10_000;
+        const MAX_GUIDE_ARC: f64 = 400_000.0; // 400k px 弧长
+        const MAX_GUIDE_ROWS: usize = 200_001; // 400k / 2px + 1
+        if pts.len() > MAX_GUIDE_POINTS {
+            return None;
+        }
+        if total > MAX_GUIDE_ARC {
+            return None;
+        }
         let step = 2.0;
         let n = (total / step).ceil() as usize + 1;
+        if n > MAX_GUIDE_ROWS {
+            return None;
+        }
         let mut rows = Vec::with_capacity(n);
         let mut di = 0usize;
         for k in 0..n {
