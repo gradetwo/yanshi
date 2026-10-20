@@ -1083,3 +1083,38 @@ if (src.length < 10000) { console.error("⊘ 不可判"); process.exit(3) }
 **⇒ 而我这边**八次**（同样的判据）⇒ **两个仓库、十二次独立运行、同一结论。**
 
 **⇒ 那证明的不是「测试通过」，是**「搬家是恒等的」** ⇒ 比测试强。**
+
+## ★ 第三轮复审的四条 P0：**3 条已修，1 条按用户裁定暂不做**（第 1285 轮实测）
+
+**⇒ 那份复审（`偃师Yanshi第三轮复审-0e9003e.zip`）写「四条 P0 现状（**全部未修复**）」⇒ **它测的是 `0e9003e`，而那之后我修了 3 条** ⇒ 所以那份状态**过期**。**
+
+| ID | 问题 | 现在的状态 | 证据 |
+|---|---|---|---|
+| **C-01** | GC 根集只覆盖已打开文档 ⇒ viewer 令牌可误删未打开文档的 blob | **未修**（**用户裁定「安全类放后面」**）| — |
+| **C-02** | `doc_id` 路径穿越 ⇒ 创建/导入可任意目录写 | **✓ 已修** | `persist.rs:138` `validate_doc_id`（空／长度 > 128／…）+ 调用点 `persist.rs:173`、`persist.rs:741`、**`service.rs:1244`** |
+| **D-01** | 前端 `putAtom` 三段独立事务 ⇒ 同 seq 相撞丢笔触 | **✓ 已修** | `web/store.js`：`await done` 2 处；判据 `check-putatom-single-transaction.mjs` **3/3 绿** |
+| **K-01** | `stroke_total_length` 只在 native 算 | **✓ 已修** | `yanshi-wasm/src/brush.rs:167` 调 `yanshi_core::stroke_length::total_length`；判据 `check-k01-both-hosts.mjs` **4/4 绿** |
+
+### 判据实测输出（第 1285 轮）
+
+```
+$ node scripts/check-putatom-single-transaction.mjs
+✓ ① putAtom 里 db.transaction 调用恰好 1 次（实测 1 次）
+✓ ② 那个事务必须同时列 ["docs","atoms"]（跨 store 才原子）
+✓ ③ 必须 await 事务完成（不能「发出去了」冒充「写进去了」）
+⇒ 退出码 0
+
+$ node scripts/check-k01-both-hosts.mjs
+✓ ① 服务端的 prime_stroke_total_length 必须调 yanshi_core::stroke_length::total_length
+✓ ② wasm 的 stamp 里必须有 state.stroke_total_length 赋值
+✓ ③ wasm 的赋值也必须来自同一个共享函数
+✓ 两个宿主都算 stroke_total_length，且调同一个共享函数
+⇒ 退出码 0
+```
+
+### ⇒ 所以**复审报告的「全部未修复」是过期的**，而**C-01 是唯一真缺口**（且是用户明确裁定的）
+
+**⇒ 那 3 条的状态**我早就该更新**（它们是 P0，而 P0 的状态比什么都重要）⇒
+**这是「台账漂移」的又一次**：修了代码但没回去改「状态表」✗
+
+**⇒ ⇒ 所以规矩再加一条：**修 P0 时，**同一笔提交里**必须同时改那份复审报告的状态表**（或 HANDOFF 的对应行）。**
