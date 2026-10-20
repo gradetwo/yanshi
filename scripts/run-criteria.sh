@@ -147,10 +147,14 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs sc
   #   **⇒ 我第一版的 bug** ✗：直接拿「整张名单 − 本片失败的」⇒ 而**每片只跑 1/6 的判据**
   #     ⇒ **于是每片把别片的 27 条全报成「未失败」** ⇒ 六片并起来 = 32 条（全名单）⇒ **无用** ✗
   #   **⇒ 正确**：只在**本片真跑过的**里面比 ⇒ 那才是「跑过但没失败」✓
-  ALL_RAN="${ALL_RAN} $(basename "$script")"
   if [ "$SHARDS" -gt 1 ] && [ $(( (shard_index - 1) % SHARDS + 1 )) -ne "$SHARD" ]; then
     continue
   fi
+  # **★ `ALL_RAN` 必须在**分片判断之后**追加** ✓（第 1366 轮修）
+  #   **⇒ 原错** ✗：我把它放在 `continue` **之前** ⇒ 于是它收集了**所有**脚本（含被分片跳过的）
+  #     ⇒ 「名单里未失败」并起来 = **29 条 = 全名单** ✗（与第 45 轮那个 bug 同型，只是更隐蔽）
+  #   **⇒ 实测**：六片并起来 29 条，而正确答案应是 29 − 19 = **10 条**
+  ALL_RAN="${ALL_RAN} $(basename "$script")"
   name="$(basename "$script")"
   # **★ `serve-web.mjs` 是**辅助服务**，不是判据 ✗✓（2026-10-15 ✓）★**
   #   **∴ 为什么** ✗：它在第 48 行被**后台起起来** ✓（`node scripts/serve-web.mjs "$STATIC_PORT" web` ✓）；
