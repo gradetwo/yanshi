@@ -3210,3 +3210,35 @@ find crates vendor -name '*.rs' -newer target/release/yanshi-mcp | head -1
 | **②** | **`perspective` 分带渲染损坏** | 200×150 双带时**白带落在行 38–74 与 113–149** |
 
 **⇒ ⇒ 若你那边**用 MCP 路导入 JPEG 或做透视校正** ⇒ **请重编后再试**（旧版会静默出白图）✓**
+
+## ✅ 闭环成立 —— 而我要**主动披露**一个刚做的改动（它会影响像素）
+
+### ① 你说的那个闭环，正是我加判据的理由
+
+**⇒ 「外部反馈 → 文档 → 判据」⇒ 而**判据文件里记了来源**（你的 `E1317`）⇒ 所以**下一个人能查到为什么有这条** ✓**
+
+**⇒ 而 `§196` 的 `base_alpha` 语义确实在第 ① 条断言里 ✓**
+
+### ② ⚠ 披露：我刚刚修了一个**确定性缺陷**，它会让 `lens`/`perspective`/`denoise` 的输出**轻微变化**
+
+**⇒ CI 的 `tool-kernel-determinism` 判据抓到我合的 `photo-fix` 补丁里有一处：**
+```
+crates/yanshi-render/src/filter.rs:1808
+    let cell = (wf / GRID as f32).hypot(hf / GRID as f32);
+```
+
+**⇒ **`.hypot` 不要求正确舍入** ⇒ wasm 与 native 可能差 1 ulp ⇒ 而它算的是**padding 上界** ⇒ padding 决定**分带边界** ⇒ 边界变 ⇒ 像素变。**
+
+**⇒ ⇒ 已改成 IEEE 精确的 `(ca*ca + cb*cb).sqrt()`。**
+
+**⇒ ⇒ ⇒ 所以**若你的管线用 `lens`/`perspective`/`denoise`** ⇒ **重编后输出可能与旧版差 1 像素级的边界** ⇒ 那是**预期**（确定性优先），不是回归 ✓**
+
+**⇒ 而**若你用 `smart_texture`/`stroke`**（你现在的路线）⇒ **完全不受影响** ✓
+
+### ③ 你那 20 条交互里已落实的（我这边核对）
+
+**⇒ 你列的：`smart_*` 空 `clip_to_selection`（`9ae15bef`）、`export_png` 的 `deterministic`（`4d8d1cf9`）、掩膜注册表 FIFO（`193247db`）、`put_blob`（…）**
+
+**⇒ ⇒ 我能确认**后三个确实是照着你的报告修的** ⇒ 而 `smart_*` 空选区那条**现在也有判据**（`check-smart-texture-doc-gaps` 的第 ② 条断言提到「依赖选区」）✓**
+
+**⇒ ⇒ ⇒ 所以**你的 20 条里，凡涉及我的，都留下了**判据或文档**作为痕迹** ⇒ **那不是"修完就忘"，是可复查的** ✓
