@@ -112,8 +112,11 @@ for f in $CHANGED; do
     docs/*)                                      add_all 'check-*.mjs'; add_all 'tool-*-doc.mjs' ;;
     # **★ `vendor/hokusai-core` 是**笔刷引擎本身** ⇒ 改它影响**所有**笔刷判据** ✓（第 1299 轮实测漏过）
     #   **当时的错**：改了 `stroke.rs`/`color.rs` ⇒ 本工具报「0 个」⇒ 而那是**最重要的一类改动** ✗
-    vendor/hokusai-core/src/*)                   add_all 'tool-brush-*.mjs'; add_all 'tool-stroke-*.mjs'; add_all 'tool-taper-*.mjs'; add_all 'tool-color-*.mjs' ;;
-    vendor/*)                                    add_all 'tool-*.mjs' ;;
+    vendor/hokusai-core/src/*)                   add_all 'tool-brush-*.mjs'; add_all 'tool-stroke-*.mjs'; add_all 'tool-taper-*.mjs'; add_all 'tool-color-*.mjs'; add_all 'check-vendor-determinism-ratchet.mjs' ;;
+    vendor/*)                                    add_all 'tool-*.mjs'; add_all 'check-vendor-determinism-ratchet.mjs' ;;
+    # **⇒ `service.rs` 管工程包的读写** ✓（第 1352 轮补）：包格式判据必须跟着跑
+    #   **⇒ 为什么之前漏了** ✗：`service.rs` 原来**没有任何规则** ⇒ 改它时报「0 个」✗
+    crates/yanshi-server/src/service.rs)         add_all 'tool-import-*.mjs'; add_all 'tool-export-*.mjs'; add_all 'check-project-package-blob-naming.mjs' ;;
   esac
 done
 
