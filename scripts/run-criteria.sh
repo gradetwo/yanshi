@@ -118,6 +118,7 @@ except Exception:
 
 pass=0; fail=0; expected_red=0; skipped=0
 KNOWN_RED_HIT=""
+ALL_RAN=""
 FAIL_SUMMARY=""      # **末尾汇总** ✓：GitHub 的 --log-failed 只给"步骤日志尾部" ✗
 # **分片** ✓（`SHARD`/`SHARDS` 由 CI 的矩阵传入 ✓）：按**文件名排序后取模** ✓
 # ⇒ 分片是**确定性**的 ✓（同一份代码每次落进同一片 ✓），也**不重不漏** ✓。
@@ -142,6 +143,11 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs sc
   #   而它是**全局变量**✗ ⇒ 不清就会**泄漏给后面的每一条**✗（我第一次就漏了 ✓，`tool-time-ms` 因此红 ✗）
   ARG1=""
   shard_index=$((shard_index + 1))
+  # **★ 记下**本片迭代过**的判据名** ✓（第 1336 轮修）
+  #   **⇒ 我第一版的 bug** ✗：直接拿「整张名单 − 本片失败的」⇒ 而**每片只跑 1/6 的判据**
+  #     ⇒ **于是每片把别片的 27 条全报成「未失败」** ⇒ 六片并起来 = 32 条（全名单）⇒ **无用** ✗
+  #   **⇒ 正确**：只在**本片真跑过的**里面比 ⇒ 那才是「跑过但没失败」✓
+  ALL_RAN="${ALL_RAN} $(basename "$script")"
   if [ "$SHARDS" -gt 1 ] && [ $(( (shard_index - 1) % SHARDS + 1 )) -ne "$SHARD" ]; then
     continue
   fi
@@ -500,6 +506,11 @@ KR_FILE="$(cd "$(dirname "$0")" && pwd)/criteria-known-red.txt"
 if [ -f "$KR_FILE" ]; then
   STALE=""
   for kr in $(grep -oE "^[a-z][a-z0-9._-]+\.mjs" "$KR_FILE"); do
+    # **只比本片真跑过的** ✓（否则别片的条目会被误报）
+    case " ${ALL_RAN} " in
+      *" ${kr} "*) : ;;
+      *) continue ;;
+    esac
     case " ${KNOWN_RED_HIT} " in
       *" ${kr} "*) : ;;
       *) STALE="${STALE} ${kr}" ;;
