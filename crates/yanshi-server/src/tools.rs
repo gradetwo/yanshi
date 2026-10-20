@@ -17283,15 +17283,13 @@ pub fn brush_reads_the_canvas(brush: &hokusai::Brush) -> bool {
 /// 从来没被赋值** ⇒ 它恒为 0 ⇒ 两个参数**传了也完全不生效**（第 611 轮实测：四种取值像素数
 /// 全是 2438）。补丁包里的这段本该在 yanshi 侧，我第一次没应用成功，`.rej` 里躺了很多轮。
 fn prime_stroke_total_length(state: &mut hokusai::BrushState, points: &[(f64, f64, f64)]) {
-    let total: f32 = points
-        .windows(2)
-        .map(|w| {
-            let dx = (w[1].0 - w[0].0) as f32;
-            let dy = (w[1].1 - w[0].1) as f32;
-            (dx * dx + dy * dy).sqrt()
-        })
-        .sum();
-    state.stroke_total_length = total;
+    // **★ K-01（第三轮复审 P0）：算法已抽到 yanshi-core** ✓
+    //   ⇒ 为什么：原来它只在这里（**native 侧**），而 **wasm 侧没有对应调用** ✗
+    //     ⇒ `hokusai::BrushState::stroke_total_length` 在 wasm 里恒 `0.0`
+    //     ⇒ `stroke.rs:462` 的 `if state.stroke_total_length > 1e-…` 不成立
+    //     ⇒ **`pressure_shape` / `stroke_taper` 在 wasm 里不生效** ⇒ 双宿主输出不一致 ✗
+    //   ⇒ 现在两宿主都调 `yanshi_core::stroke_length::total_length` ⇒ 同一事实只写一处 ✓
+    state.stroke_total_length = yanshi_core::stroke_length::total_length(points);
 }
 
 /// **纯涂抹笔刷（opaque = 0 ✓）在这里是空的** ✓ —— 那没关系 ✓：

@@ -151,6 +151,17 @@ pub(crate) fn stamp(
     surface: &mut hokusai::tile_mem::MemSurface,
     points: &[[f64; 3]],
 ) -> usize {
+    // **★ K-01（第三轮复审 P0）：这里必须算 `stroke_total_length`** ✓
+    //   **问题**：原来只有服务端的 `prime_stroke_total_length` 算它，**wasm 侧没有**
+    //     ⇒ `hokusai::BrushState::stroke_total_length` 在 wasm 里恒 `0.0`
+    //     ⇒ `hokusai-core/src/stroke.rs:462` 的 `if state.stroke_total_length > 1e-…` 不成立
+    //     ⇒ **`pressure_shape` / `stroke_taper` 在 wasm 里不生效** ⇒ 双宿主输出不一致 ✗
+    //   **修法**：调 `yanshi_core::stroke_length::total_length`（与服务端**同一个函数**）
+    //     ⇒ 同一事实只写一处 ⇒ 两宿主不可能再漂移 ✓
+    //   **注意**：`points` 是 `&[[f64; 3]]`（wasm 侧的数组形式，不是元组）⇒ 先转成元组切片。
+    //     转换不可避免（两个 crate 的签名不同），但**算法只有一份** ✓
+    let tuple_points: Vec<(f64, f64, f64)> = points.iter().map(|p| (p[0], p[1], p[2])).collect();
+    state.stroke_total_length = yanshi_core::stroke_length::total_length(&tuple_points);
     const STEP_SECONDS: f64 = 0.01;
     // **运行时输入 dump**（第 249 轮）：把"我读代码得出的输入清单"换成"实际输入" ✓。
     // 受已有开关控制 ⇒ 默认不打 ✓。
