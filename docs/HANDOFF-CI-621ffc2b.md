@@ -770,3 +770,41 @@ grep -rn "175\b" docs/guide.md docs/guide.zh-CN.md docs/tools.md
 ⇒ 而**继续追**的代价不小（这一轮已 6 次尝试）⇒ 所以**记录在案**，等有更多上下文时再查。
 
 **⇒ 而判据本身**不是安慰剂**：它的红由**修 Bug ② 之前**证明过（修前墨 0 / 红块 0，修后 64）✓
+
+## ⚠ 一个我**撤销**了的改进（第 1234 轮：`import_image` 的 `blob_decodable`）
+
+**⇒ 动机（正当）**：外部用户 5 次失败，而唯一能看见原因的地方是 `export_png` 的
+`render_warnings`（「位图补丁缺少 blob ⇒ 这一块没有画」）⇒ 而调用方只看 `import_image` 的返回
+⇒ 于是把「原子提交成功」误读成「位图导入成功」✗
+⇒ 所以我想在 `import_image` 的返回里加一个 `blob_decodable` 布尔。
+
+### 但我实测的结果与读码**不符**，所以我撤销了
+
+**⇒ 第一次实现**：`blob_decodable = BlobStore::get(&store, &hash).is_ok()`
+```
+① 裸 PNG（首字节 0x89，应解不开）⇒ **blob_decodable = true** ✗
+② 包了头的（\x00\x00 + PNG，应能解）⇒ **true** ✓
+```
+**⇒ ① 错 ⇒ 原因是 `RenderCodec::decode` 的兜底分支 `_ => zlib_decompress(stored)`**
+（为旧格式保留）⇒ 而 zlib 解析器可能**跳过前导垃圾** ⇒ 裸 PNG 也解出东西 ⇒ `get` 返回 `Ok`。
+
+**⇒ 第二次实现**：`blob_decodable = get(...) 解出的字节以 \x89PNG 开头`
+```
+① 裸 PNG ⇒ **true** ✗（应 false）
+② 包了头的 ⇒ **false** ✗（应 true）
+```
+**⇒ 两个**都反了** ⇒ 所以我对 `get`/`decode` 的**实际行为**仍然理解错了。**
+
+### 为什么撤销而不是「先凑合」
+
+**⇒ 因为一个**会撒谎的信号**比**没有信号**更糟** —— 那正是 AGENTS.md 说的
+「静默降级是唯一对手」的反面：**错误信号会让调用方更自信地做错事** ✗
+
+### 下一步该做什么（下一轮的入口）
+
+1. **先写一个探针**：对同一个 blob，分别打印
+   `get()` 的 `Ok/Err`、`Ok` 时的**长度**与**前 8 字节**（hex）⇒ 那能一次看清 `decode` 到底做了什么
+2. **再决定判据**：若「裸 PNG 也能解出非空字节」是真的 ⇒ 那 `blob_decodable` 的定义要改成
+   「解出的字节**是合法 PNG**」（用真正的 PNG 结构校验，如 `IHDR` 在偏移 12 处）
+3. **或者更简单**：`import_image` 直接**在写入后自己试解码一次**（它已经有 blob 访问）
+   ⇒ 若失败 ⇒ 在返回里带 `blob_decodable: false` + note ⇒ 那与导出路径**同源**，不会撒谎
