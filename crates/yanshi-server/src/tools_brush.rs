@@ -939,3 +939,542 @@ impl PrimShape {
         }
     }
 }
+
+// ===== 同族追加（第 1270 轮）：paint_brush + apply_brush_style =====
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn paint_brush(
+    ctx: &mut ToolContext<'_>,
+    brush_name: &str,
+    points: &[(f64, f64, f64)],
+    size: Option<f64>,
+    color: Option<&Value>,
+    // **末端颜色** ✓（给了 ⇒ 沿笔迹从 `color` 渐变到它 ✓ = Loaded Brush ✓）。
+    color_to: Option<&Value>,
+    // **这一笔的不透明度** ✓（`0..1`；`None` = 用 `.myb` 自带的 ✓）—— 落到 MyPaint 的 `opaque` ✓。
+    opacity: Option<f64>,
+    // **笔尖硬度** ✓（`0..1`；`None` = 用 `.myb` 自带的 ✓）—— 落到 MyPaint 的 `hardness` ✓。
+    hardness: Option<f64>,
+    feed_base: bool,
+    brush_params: Option<&Value>,
+    // **★ P2 #16：`color_to` 渐变的混色模式 ★**（缺省 `Rgb` ⇒ 与今天逐字节相同）
+    color_mixing: yanshi_render::color::ColorMixing,
+    // **★ P0 #3：每个点的真实时间步长（秒）★**（空切片 ⇒ 老行为不变）
+    dtimes: &[f64],
+    background: Option<[u8; 4]>,
+) -> Result<BrushPaint> {
+    let (name, mut brush) = load_brush(ctx.workspace, brush_name)?;
+    if let Some(opacity) = opacity {
+        brush.set(
+            hokusai::BrushSetting::Opaque,
+            hokusai::SettingValue::constant(opacity.clamp(0.0, 1.0) as f32),
+        );
+    }
+    if let Some(hardness) = hardness {
+        brush.set(
+            hokusai::BrushSetting::Hardness,
+            hokusai::SettingValue::constant(hardness.clamp(0.0, 1.0) as f32),
+        );
+    }
+    // **`size` 是"直径像素"** ✓，而 MyPaint 的设置叫 `radius_logarithmic` ✓（存的是 ln(半径) ✓）。
+    // **颜色与 `size` 相互独立** ✓（本轮修的「ok 却没有效果」✗ 之一：
+    // 颜色覆盖此前**嵌在 `if let Some(diameter)` 里面** ✓ ⇒ 只给 `color` 不给 `size` 时
+    // **颜色被静默丢掉** ✗，而描述明明写着"可带 color 画彩色" ✓ ⇒ 现在两者独立 ✓，
+    // 判据 `brush_stroke_colours_without_a_size` ✓）。
+    // **为什么颜色用 `constant` 是对的** ✓（与半径那处不同 ✗）：调用方给的是"**这一笔用什么颜色**" ✓
+    // ⇒ 它就是**恒定色** ✓ ⇒ 覆盖 `.myb` 里可能有的"颜色随压力变化"曲线 ✓ **正是本意** ✓
+    //（而半径那处不该清曲线 ✓ —— 两者语义不同 ✓）。
+    if let Some(value) = color {
+        if !value.is_null() {
+            let (hue, sat, value) = brush_color_to_hsv(value)?;
+            brush.set(
+                hokusai::BrushSetting::ColorH,
+                hokusai::SettingValue::constant(hue),
+            );
+            brush.set(
+                hokusai::BrushSetting::ColorS,
+                hokusai::SettingValue::constant(sat),
+            );
+            brush.set(
+                hokusai::BrushSetting::ColorV,
+                hokusai::SettingValue::constant(value),
+            );
+        }
+    }
+    if let Some(diameter) = size {
+        if diameter <= 0.0 {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("size 必须大于 0"),
+            ));
+        }
+        // **`SettingValue` 是个结构体，不是枚举** ✗ —— 构造器是 `constant(f32)` ✓
+        //（我第一版猜了 `Float(..)` ✓ ⇒ 编译器当场指出 ✓）。
+        brush.set(
+            hokusai::BrushSetting::Radius,
+            // **必须用 `libm::log`，不能用 `.ln()`**（第 200 轮）：
+            // `.ln()` 落到系统 libm（glibc）⇒ 与内核的 `libm::log` **差最后一位** ⇒
+            // 半径差一位 ⇒ 每枚 dab 形状不同 ⇒ 全量判据 389/796 次不同。
+            // 内核注释早记过这条教训（"这一层里也曾有 `.ln(` 与 `.powi(2)`"）。
+            hokusai::SettingValue::constant(libm::log(diameter / 2.0) as f32),
+        );
+    }
+
+    let mut state = hokusai::BrushState::default();
+    prime_stroke_total_length(&mut state, points);
+    let mut surface = hokusai::tile_mem::MemSurface::new();
+    // **区域要在落笔之前就算出来** ✗ —— 先在下面算了一遍 ✓，才能把**底图**喂进 surface ✓。
+    // **同一个公式只写一份** ✓（抽成 `brush_stroke_region` ✓）：落笔前喂底图用它 ✓、
+    // 落笔后读回像素也用它 ✓ ⇒ **两处不可能算出不同的区域** ✗（那会让底图与结果错位 ✓）。
+    // **先裁到画布内** ✓ —— 否则底图会因为"尺寸对不上"被整块跳过 ✓
+    // ⇒ 靠近边缘的涂抹会**静默退化成没东西可抹** ✗（第 33 轮实测 ✓）。
+    let (canvas_width, canvas_height) = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| (document.state().width, document.state().height))
+        .unwrap_or((0, 0));
+    let seed_region = PaintRegion::from_bounds(brush_stroke_region(points, size))
+        .clamped(canvas_width, canvas_height);
+    // **预览的底色 ✗**（外部复测 QY-G02）：给了就先把 seed_region 铺满它
+    // ⇒ 预览能反映"落在深色底上是什么样"，而不是永远白底
+    if let Some([r, g, b, a]) = background {
+        let (w, h) = (seed_region.width as i32, seed_region.height as i32);
+        if w > 0 && h > 0 {
+            let mut flat = Vec::with_capacity(w as usize * h as usize * 4);
+            for _ in 0..(w * h) {
+                flat.extend_from_slice(&[r, g, b, a]);
+            }
+            yanshi_render::brush::feed_base(
+                &mut surface,
+                seed_region.x0,
+                seed_region.y0,
+                w,
+                h,
+                &flat,
+            );
+        }
+    }
+    // **先把图层现有的像素喂进 surface** ✓ —— 这是**涂抹类笔刷**能不能工作的关键 ✓。
+    //
+    // **实测诊断** ✓：`ramon-Knife` 一直"画不出东西" ✗，我先前以为是坏笔刷 ✗、还写了"换一支笔刷" ✗。
+    // 与能画的 `classic-knife` **逐字段对比**之后才看清 ✓：**唯一的实质差异是 `smudge = 1.0`** ✓
+    // ⇒ 它靠"**抹开画布上已有的颜色**"工作 ✓ ⇒ **空白画布上它本来就该什么都不出** ✗ ✓ ——
+    // **那是正确行为** ✓，而我的实现给它一块**全新的空 surface** ✗ ⇒ 它**永远**没东西可抹 ✓。
+    // **做法与介质那条路完全一致** ✓：`render_region_raw` 取底图 ✓（那边叫 `base` ✓），
+    // 再写进 surface ✓ ⇒ **两条引擎共用同一种"有底图"的语义** ✓。
+    // **`render_region_raw` 回的是 `(宽, 高, rgba)`** ✗（不是裸像素 ✓）⇒ 解构 ✓，
+    // 并且**尺寸对不上就跳过** ✓ —— 宁可"这次没有底图" ✓，也不要**错位**地抹 ✓
+    //（错位的涂抹会**悄悄改坏画面** ✓，比不生效难查得多 ✓）。
+    // **喂进去的底图要留着** ✓ —— 读回时用它把"笔刷没碰过的像素"剔掉 ✓
+    //（否则会把**笔触的包围矩形**原样复制成一个新对象 ✗，见下面读回那一段的说明 ✓）。
+    // **只有会读画布的笔刷才喂底图** ✓ —— 其余笔刷喂了反而要额外剔掉"没碰过的底图" ✓
+    //（见 `brush_reads_the_canvas` ✓，以及 `paint_brush` 里读回时对"笔刷没碰过的像素"的剔除 ✓）。
+    // **★ P0 #4：`brush_params` **最后**应用 ⇒ **它优先** ✗ ★**（**第 254 轮自查修 ✓）
+    //   ＋ **∴ 为什么必须在最后 ✗**：**判据实测抓到的 ✓**——**我第一版放在 `load_brush` 之后 ✓
+    //     而 `size`／`color`／`opacity`／`hardness` 这几个**专用参数**是**之后**才写进笔刷的**✗
+    //     ⇒ **∴ 于是** `brush_params{opaque:0.15}` 被调用方传的 `opacity:1.0` **覆盖掉** ✓
+    //       ⇒ **∴ 判据里"传了却没变化" ✗ 看着像功能没做** ✓ ★★
+    //   ＋ **∴ 语义 ✗**：**`brush_params` 是**逃生舱**（覆盖 `.myb` 任意字段 ✓）
+    //     ⇒ **∴ 它**优先于那几个顺手参数**✓（**要通用覆盖就得说了算 ✓）★★
+    //   ＋ **∴ 顺序也影响**读画布判定**（`brush_reads_the_canvas` 读的就是这些字段 ✓）
+    //     ⇒ **∴ 放这里 ⇒ 判定看到的也是覆盖后的值 ✓ ★★★
+    if let Some(params) = brush_params {
+        let applied = apply_brush_params(&mut brush, params)?;
+        let _ = applied;
+    }
+    let reads_canvas = feed_base && brush_reads_the_canvas(&brush);
+    // **光栅阶段之一：喂底图** ✓（P2）—— `render_region_raw` 是真正的渲染，
+    // 涂抹类笔刷每次落笔都要付这份钱 ✓；测试方原先只能从外部猜它占多少 ✓。
+    let base_started = std::time::Instant::now();
+    if reads_canvas {
+        if let Ok((base_width, base_height, base)) = ctx.workspace.render_region_raw(
+            &ctx.doc_id,
+            yanshi_core::Bbox::new(
+                seed_region.x0 as f64,
+                seed_region.y0 as f64,
+                seed_region.width as f64,
+                seed_region.height as f64,
+            ),
+        ) {
+            let base_ok = base_width as usize == seed_region.width
+                && base_height as usize == seed_region.height
+                && base.len() >= seed_region.width * seed_region.height * 4;
+            if !base_ok {
+                // 说清为什么没喂 ✓（静默跳过会让"涂抹没用"这个问题**又变回谜** ✗）。
+                eprintln!(
+                    "  底图尺寸不符（要 {}×{}，拿到 {}×{}）⇒ 这次不喂底图（涂抹类笔刷将没有东西可抹）",
+                    seed_region.width, seed_region.height, base_width, base_height
+                );
+            }
+            if base_ok {
+                // **调共享实现**（第 243 轮）：这段循环原先在这里与内核各有一份 ✗
+                // ⇒ 而"两份实现必然漂移"是本项目记录过的头号病 ✓。
+                // 内核那一份已在第 245 轮改成调 yanshi_render::brush::feed_base ✓。
+                let fed = yanshi_render::brush::feed_base(
+                    &mut surface,
+                    seed_region.x0,
+                    seed_region.y0,
+                    seed_region.width as i32,
+                    seed_region.height as i32,
+                    &base,
+                );
+                if !fed {
+                    eprintln!("  底图尺寸不符 ⇒ 这次不喂底图（涂抹类笔刷将没有东西可抹）");
+                }
+            }
+        }
+    }
+    ctx.time(Phase::Raster, base_started);
+    // **落笔前的快照** ✓（只在喂了底图时需要 ✓）：用来判断"引擎有没有把这一像素**挪动**过" ✓。
+    // **为什么不能只看"和底图逐字节相等"** ✗：引擎盖 dab 时会把同一 tile 里**没碰过的像素**
+    // 重新量化 ±1..3 个台阶 ✓（喂进去的纯白 255 读回来是 254 ✓）⇒ 必须留一个小容差 ✓；
+    // 而**很淡的笔刷**（`2B_pencil` 在白底上）本来就只差几个台阶 ✓
+    // ⇒ 单靠容差会把**真的落下的墨**剔掉 ✗（实测：5467 个改动像素只剩 47 ✓）
+    // ⇒ 所以**落墨掩膜与"挪动过"是"或"的关系** ✓：这支笔放了颜料的像素**一律保留** ✓。
+    let before_pixels = if reads_canvas {
+        Some(read_surface_region(&surface, seed_region).0)
+    } else {
+        None
+    };
+    // **光栅阶段之二：dab 生成** ✓（P2）—— `stamp_stroke` 是 Hokusai 内部的落墨循环 ✓，
+    // 它不可中断 ✗（见 `crate::inflight` ✓）⇒ 取消的安全点只能落在**段之间** ✓。
+    let stamp_started = std::time::Instant::now();
+    let steps = match color_to {
+        // **一笔多色（Loaded Brush）** ✓：把路径按弧长切段 ✓、**每段换一次笔刷颜色** ✓，
+        // 但 `surface` 与 `BrushState` **一路共用** ✓ ⇒ 落下来的还是**一条笔迹** ✓
+        //（dab 间距连续 ✓、不会在换色点重复播种 ✓ —— 那正是 `stamp_stroke_from` 存在的理由 ✓）。
+        //
+        // **为什么要求两个颜色都给** ✓：只给末端色的话，"起点色"只能猜 `.myb` 自带色 ✓
+        // ⇒ 猜错就是"界面里看到的和画出来的不一样" ✗ ⇒ 明确要求 ✓（错误里说清 ✓）。
+        Some(color_to) => {
+            let Some(from) = color else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(
+                        "要给 color_to（一笔多色）就必须同时给 color ✓：起点色不猜 —— \
+                         不给的话只能拿 .myb 自带色当起点 ✗，画面会与调用方以为的不一样 ✓",
+                    ),
+                ));
+            };
+            let from_bytes = brush_color_to_srgb_bytes(from)?;
+            let to_bytes = brush_color_to_srgb_bytes(color_to)?;
+            // 每段约 4px ✓、最多 128 段 ✓（再多也看不出来 ✓，却白花时间 ✗）。
+            let dense = densify_for_ramp(points, 4.0, 128);
+            let seats = dense.len().saturating_sub(1);
+            let mut previous: Option<(f64, f64, f64)> = None;
+            let mut steps = 0usize;
+            let mut cursor = 0usize;
+            while cursor < seats {
+                // **取消安全点** ✓（P1）：一笔多色会切成最多 128 段 ✓ ⇒ 段与段之间可停 ✓。
+                ctx.check_cancelled()?;
+                let t = if seats == 0 {
+                    0.0
+                } else {
+                    cursor as f64 / seats as f64
+                };
+                // **P2 #16**：`Rgb` => 与仓库既有的 `lerp_srgb` 同口径（逐字节相同）；
+                // `Pigment` => 光谱 K/S 混色（黄+蓝=绿，而不是灰）。
+                let bytes =
+                    yanshi_render::color::mix_colors(color_mixing, from_bytes, to_bytes, t as f32);
+                let (hue, saturation, value) =
+                    yanshi_render::color::rgb_to_hsv(bytes[0], bytes[1], bytes[2]);
+                brush.set(
+                    hokusai::BrushSetting::ColorH,
+                    hokusai::SettingValue::constant(hue),
+                );
+                brush.set(
+                    hokusai::BrushSetting::ColorS,
+                    hokusai::SettingValue::constant(saturation),
+                );
+                brush.set(
+                    hokusai::BrushSetting::ColorV,
+                    hokusai::SettingValue::constant(value),
+                );
+                steps += stamp_stroke_from(
+                    &brush,
+                    &mut state,
+                    &mut surface,
+                    &dense[cursor..=cursor + 1],
+                    &mut previous,
+                    dtimes,
+                );
+                cursor += 1;
+            }
+            steps
+        }
+        None => {
+            if std::env::var_os("YANSHI_OPEN_TIMING").is_some() {
+                let radius = brush.get(hokusai::BrushSetting::Radius).base_value;
+                let opaque = brush.get(hokusai::BrushSetting::Opaque).base_value;
+                let hard = brush.get(hokusai::BrushSetting::Hardness).base_value;
+                let dabs_basic = brush
+                    .get(hokusai::BrushSetting::DabsPerBasicRadius)
+                    .base_value;
+                let dabs_actual = brush
+                    .get(hokusai::BrushSetting::DabsPerActualRadius)
+                    .base_value;
+                eprintln!(
+                    "stamp_input side=server radius={radius:?} opaque={opaque:?} hardness={hard:?} dabs_basic={dabs_basic:?} dabs_actual={dabs_actual:?} points={points:?}"
+                );
+            }
+            {
+                // **★ 第二条落笔路也要吃到真实时间（P0 #3）★**（第 254 轮实测修）
+                //   之前这里调的是 `stamp_stroke(...)`，那个包装内部固定传 `&[]`
+                //   => 走这条分支时 `time_ms` 白传了（判据实测：几何相同、只改间隔，画面
+                //   逐字节相同）。改成显式走 `stamp_stroke_from(..., dtimes)`，用局部
+                //   `previous` 保持「每次调用从头开始」的语义（与 `stamp_stroke` 一致）。
+                let mut previous_here = None;
+                let steps = stamp_stroke_from(
+                    &brush,
+                    &mut state,
+                    &mut surface,
+                    points,
+                    &mut previous_here,
+                    dtimes,
+                );
+                if std::env::var_os("YANSHI_OPEN_TIMING").is_some() {
+                    eprintln!("stamp_steps side=server steps={steps}");
+                }
+                steps
+            }
+        }
+    };
+    ctx.time(Phase::Raster, stamp_started);
+
+    // **Hokusai 的 tile 是 fix15（u16, 0..32767）** ✓ ⇒ 转成我们用的 RGBA8 ✓（`>> 7` 正好 0..255 ✓）。
+    // **同一个区域公式** ✓（落笔前喂底图用的就是它 ✓）。
+    // **同一份（已裁的）区域** ✓ —— 读回与掩膜都必须与喂底图用的那个完全一致 ✗。
+    let region = seed_region;
+    // **光栅阶段之三：读回与掩膜** ✓（P2）。
+    let read_started = std::time::Instant::now();
+    let (mut rgba, mut painted) = read_surface_region(&surface, region);
+    // ★ **`max_channel_delta` ✗**（第 20 轮 ✓；**∴ 用户报的薄涂笔零落笔 ✓**）
+    //
+    // **∴ 为什么需要它 ✗**：`painted_pixels` 只数"字节变了"✗ ⇒ **∴ 差 1 LSB 也算 ✓**
+    //   ⇒ **∴ 实测 `thin_watercolor` 在 size=20 下 `painted_pixels=146` ✗ 而**最大单通道只差 6**✗、
+    //      中位差 **1**✗ ⇒ **∴ 肉眼全白 ✗，而 `ok=true` ＋ `painted_pixels>0` ⇒ **∴ 静默失败 ✓**
+    //   ⇒ **∴ 而现在下一行那段 `CANVAS_DRIFT_TOLERANCE = 3` ✗ 的闸门**正好把差 1 的真落墨清零**✗
+    //      ⇒ **∴ 所以这一项不仅是诊断 ✓，它也是**识别"薄涂笔"**✗ 的依据 ✓**。
+    //
+    // **∴ 算法 ✓**：**不碰 `rgba` ✗**（**∴ 纯读 ✓**）⇒ **∴ 在清零点之前量，才是**原始**落墨幅度 ✓**
+    //   ⇒ **∴ 于是**它报的是"引擎到底改了多少"✗，与后续掩膜无关 ✓
+    let max_delta = {
+        let mut max_delta: u8 = 0;
+        let before = before_pixels.as_deref();
+        for index in (0..rgba.len()).step_by(4) {
+            // ★ **无基准时必须跳过**未触碰的透明像素 ✗** ★**（第 118 轮 ✓；**∴ 外部复测 QY-D03 ✓**）
+            //
+            // **∴ 报告实测 ✓**：**∴ `fed_base=false` ✗ 的白色笔 ✗ ⇒ **∴ 本字段返回 **255**✗
+            //   而**合成后的真实最大 RGB 差是 **0**✗** ⇒ **∴ 灰笔真实差 31 ✗ 也报 255 ✗**
+            // **∴ 根因 ✓**：**∴ 引擎缓冲里的空白像素是 **RGBA(0,0,0,0)**✗
+            //   ⇒ **∴ 而我逐通道按**白底 255**✗ 比较** ⇒ **∴ 差恒 255 ✗ ⇒ **∴ 饱和 ✓**
+            // **∴ 所以 ✓**：**∴ 无基准时 ✗ 只让**有 alpha**✗ 的像素参与 ✓
+            //   ⇒ **∴ 于是**白笔（255 vs 255）⇒ **0** ✓／近白 ⇒ **1** ✓／灰 ⇒ **31** ✓／深 ⇒ **205** ✓** ✓
+            // **∴ 而有基准时 ✗ **不改**✗**（**∴ base 是真实像素 ✓ ⇒ **∴ 逐通道比较本来就对 ✓**）✓
+            if before.is_none() && rgba[index + 3] == 0 {
+                continue;
+            }
+            // ★ **无基准时必须**先合成到白底**✗ 再比 ✗** ★**（**∴ 外部复测 QY-D03 的第二层 ✓**）
+            //
+            // **∴ 为什么还要合成 ✗**：**∴ 只跳过 `alpha == 0` ✗ 不够 ✓**
+            //   ⇒ **∴ 实测 ✓**：**∴ 白笔仍报 **254**✗** ⇒ **∴ 因为**抗锯齿**边缘半透明**✗
+            //     （**∴ RGB 接近 0 ✗ 而 alpha 很低 ✓**）⇒ **∴ 与 255 差 **254**✗ 但它**肉眼不可见**✗** ✓
+            // **∴ 所以 ✓**：**∴ 按 alpha 合成到白底 ✗ ⇒ **∴ 得**可见 RGB**✗ ⇒ **∴ 再比 ✓**
+            //   ⇒ **∴ 公式 ✓**：`c = rgb·a + 255·(1−a)` ✗（**∴ a 归一化 ✓**）
+            //   ⇒ **∴ 于是**白笔（a=1）⇒ **c=255 ⇒ delta=0** ✓；半透明边缘 ⇒ **c 靠近 255 ⇒ 差小** ✓
+            let mut delta: u8 = 0;
+            for channel in 0..4 {
+                // **∴ 没有基准时按**白底**✗**（**∴ 不读画布的笔直接写色 ✓ ⇒ **∴ 与白底比才是真实幅度 ✓**）
+                //   ⇒ **∴ 否则**这类笔会报 0 ✗**（**∴ `pointy_ink` 实测就是 0 ✗ ⇒ **∴ 那会误导 ✓**）
+                let old_byte = before
+                    .and_then(|pixels| pixels.get(index + channel))
+                    .copied()
+                    .unwrap_or(255);
+                // **∴ 有基准 ⇒ 直接比 ✓；无基准 ⇒ 先把该通道合成到白底 ✓**（**∴ 后者才等于"肉眼看到"✓**）
+                let current = if before.is_some() {
+                    i32::from(rgba[index + channel])
+                } else if channel == 3 {
+                    // **∴ alpha 通道不与白底比 ✗**（**∴ 它不是可见颜色 ✓**）
+                    continue;
+                } else {
+                    let alpha = i32::from(rgba[index + 3]);
+                    (i32::from(rgba[index + channel]) * alpha + 255 * (255 - alpha)) / 255
+                };
+                let diff = current - i32::from(old_byte);
+                let diff = u8::try_from(diff.unsigned_abs().min(255)).unwrap_or(255);
+                delta = delta.max(diff);
+            }
+            max_delta = max_delta.max(delta);
+        }
+        max_delta
+    };
+    // **只保留"这一笔真的碰到过"的像素** ✗ —— 绝不能把喂进去的底图**原样复制**出来 ✓：
+    // 那会把**笔触的包围矩形**烘成一个新对象 ✗ ⇒ 删掉底下的东西之后，
+    // 画面里会留下一块**直角矩形幽灵** ✓ —— 这正是用户报的「`Flat2#1` 画叶子出矩形 artifact」✓
+    //（实测复现 ✓：半透明绿矩形 + 一条 2B_pencil ✓ ⇒ 删掉绿矩形 ✓ ⇒ 矩形区域里**还剩 1076 个绿像素** ✗）。
+    if reads_canvas {
+        let deposit = brush_deposit_mask(&brush, points, region);
+        let before = before_pixels.unwrap_or_default();
+        // 引擎在"没碰过的像素"上的量化漂移上限 ✓（见快照处的说明 ✓）。
+        const CANVAS_DRIFT_TOLERANCE: i32 = 3;
+        for index in (0..rgba.len()).step_by(4) {
+            // **留着它** ⟺ 这支笔在这里**落过颜料** ✓，或者这一像素被**明显挪动/覆盖**过 ✓。
+            let deposited = deposit.get(index + 3).copied().unwrap_or(0) > 0;
+            let moved = before.len() >= index + 4
+                && (0..4).any(|channel| {
+                    (i32::from(rgba[index + channel]) - i32::from(before[index + channel])).abs()
+                        > CANVAS_DRIFT_TOLERANCE
+                });
+            if !(deposited || moved) {
+                if rgba[index] != 0
+                    || rgba[index + 1] != 0
+                    || rgba[index + 2] != 0
+                    || rgba[index + 3] != 0
+                {
+                    painted -= 1;
+                }
+                rgba[index] = 0;
+                rgba[index + 1] = 0;
+                rgba[index + 2] = 0;
+                rgba[index + 3] = 0;
+            }
+        }
+    }
+    ctx.time(Phase::Raster, read_started);
+    if painted == 0 {
+        // **说清原因，并给出路** ✓（"错误里要能照着改" 是本项目的既定规矩 ✓）。
+        //
+        // **实测过的事** ✓：`ramon-Knife.myb` **无论给不给 `size` 都不出墨** ✗ ——
+        // 它的 `dabs_per_basic_radius` 是 **0** ✓ ⇒ 按基本半径算间距时**间距趋于无穷** ✓
+        // ⇒ **一枚印章都不落** ✗（`dabs_per_actual_radius` 那一套没被用上 ✓）。
+        // ⇒ 这类笔刷**在当前引擎下画不出来** ✓ ⇒ 与其只报"没有墨" ✗，不如**指出来** ✓
+        //（否则调用方会以为是自己参数给错 ✓ —— 我第一版的消息正是这样误导的 ✗）。
+        // **先看它是不是"涂抹类"** ✓ —— 那类笔刷靠**抹开画布上已有的颜色**工作 ✓
+        // ⇒ 空白区域上它**本来就该什么都不出** ✓（`ramon-Knife` 正是这一类 ✓：
+        // 与能画的 `classic-knife` 逐字段对比 ✓ ⇒ **唯一实质差异是 `smudge = 1.0`** ✓）。
+        // **我此前那条"换一支笔刷"是误导** ✗ ⇒ 现在按真实原因分三种说 ✓。
+        let smudge = brush.get(hokusai::BrushSetting::Smudge).base_value;
+        if smudge > 0.0 {
+            return Err(YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!(
+                    "这一笔没落下任何像素 ⇒ 笔刷「{name}」是**涂抹类**（smudge={smudge}）✓：\
+                     它靠**抹开画布上已有的颜色**工作 ⇒ 这块区域上大概**还没有颜色**可抹 ✓。\
+                     **怎么改（三条，按省事排序）**：\
+                     ① **先铺底色再抹** —— 用一支不透明的笔刷（如 `100%_Opaque`）在这块地方画一笔，\
+                        然后再用这支涂抹笔刷抹 ✓（湿画法里「先铺后揉」就是这个顺序 ✓）；\
+                     ② **用 `swatch_brush_strokes` 试它之前，也先铺一层底色** ✓（swatch 不写文档 ⇒ 铺底色那笔可以随便画 ✓）；\
+                     ③ 换一块**已经有颜色**的区域试，或换一支 **非涂抹**（`smudge = 0`）的笔刷 ✓。"
+                )),
+            ));
+        }
+        let dabs_basic = brush
+            .get(hokusai::BrushSetting::DabsPerBasicRadius)
+            .base_value;
+        // **兜底消息要落在真实根因上**（外部独立测试 DEF-04）：调用方**往往已经给了 size**，
+        // "试试给 size" 会把人引向已经试过的路。真实机制是：dab 间距随 size 增大
+        // （间距 ≈ 半径 / dabs_per_basic_radius），路径总长撑不满一枚 dab 间距时就是 0 dab。
+        // ★ **`dabs_basic <= 0` 不等于「整支笔刷不可用」✗** ★**（外部复测 QY-D02 ✓）
+        //
+        // **∴ 他们实测 ✓**：**∴ 同一支 `calligraphy` ✗ ⇒ **∴ `size=3.456` ＋ 33 点 ⇒ **3/3 无像素**✗
+        //   而 `size=8／16` **都成功**✗** ⇒ **∴ 所以**我原来那句「它在当前引擎下画不出来，**换一支**」✗
+        //   ⇒ **∴ 是**把"本笔条件不满足"✗ 说成了**"整支笔刷不可用"**✗** ⇒ **∴ 会误导创作者换笔 ✓**
+        // ⇒ **∴ 所以 ✓**：**∴ 只描述**本次笔触未产生像素**✗ ＋ **摆出本笔参数**✗ ＋
+        //   **明确说**"同刷换参数通常能画"✗ ⇒ **∴ 而**换笔**只作为**条件性出路**✗** ✓
+        let hint: String = if dabs_basic <= 0.0 {
+            let n = points.len();
+            let path_len: f64 = points
+                .windows(2)
+                .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
+                .sum();
+            format!(
+                "这一笔没落下任何像素（`painted_pixels=0`）⇒ **几乎都是 size 太小**：\
+                 `size={size:?}` ⇒ 半径约 size/2 px ⇒ 笔刷的抗锯齿分支（`stroke.rs` 的 `current_fadeout < aa_min`）\
+                 会把 `hardness` 调成**负数** ⇒ `draw_dab_default` 在 `hardness <= 0` 时整 dab 拒画。\
+                 **已实测**（第 731 轮）：`calligraphy` 在 `size=1/2/3` 全不落墨、`size=4` 起正常；\
+                 同一 size=3 下 `2B_pencil`／`100%_Opaque`／`Round_Bl` 都能落墨 ⇒ **不是 size 本身的问题**，\
+                 是那支笔的 `hardness`／抗锯齿参数在小半径下被推到负值。\
+                 **这不代表整支笔刷不可用** ✗：同一支笔在**更大的 size 或更长路径**上通常能落墨 \
+                 （本次 {n} 个点、路径总长 {path_len:.1}px）。\
+                 **怎么改（按省事排序）**：① **加大 size 到 4 以上** ✓；② 加长路径 ✓；③ 换一支能画的笔刷 \
+                 （`assets/brushes` 里绝大多数都能画 ✓）—— **换笔会改变风格，先试 ①②** ✓。\
+                 注：`dabs_per_basic_radius=0` **不是**原因 —— `stroke.rs` 把间距钳在下限 1.0，不会趋于无穷。"
+            )
+        } else {
+            let n = points.len();
+            let path_len: f64 = points
+                .windows(2)
+                .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
+                .sum();
+            match size {
+                Some(sz) => format!(
+                    "size 已经是 {sz}px ⇒ 问题不在缺参数，而在**路径撑不满 dab 间距**：\
+                     本笔 {n} 个点、路径总长 {:.0}px；dab 间距随 size 增大 \
+                     （≈ 笔刷半径 / dabs_per_basic_radius）⇒ 两条出路：\
+                     ① 加长路径 / 加密点数（让总长达到间距的数倍）；\
+                     ② 减小 size 或换 dab 更密的笔刷 ✓",
+                    path_len.max(0.0)
+                ),
+                None => "试试给 size，或换一支笔刷 ✓".to_owned(),
+            }
+        };
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!("这一笔没落下任何像素 ⇒ 笔刷「{name}」{hint}")),
+        ));
+    }
+    Ok(BrushPaint {
+        name,
+        x0: region.x0,
+        y0: region.y0,
+        width: region.width,
+        height: region.height,
+        rgba,
+        steps,
+        painted,
+        max_delta,
+        fed_base: reads_canvas,
+    })
+}
+
+/// **笔触风格** ✓（AI 画家需求 P2-8）：**只改压感/位置，不碰渲染** ✓。
+/// **缺省（没给 `style`）⇒ 原样返回** ⇒ 老行为**逐字节不变** ✓（本仓库的老规矩 ✓）。
+/// `sketchy` 的抖动由**确定性 PRNG** 生成 ✓（同输入 ⇒ 同结果 ✓，否则与本仓库底线冲突 ✗）。
+pub(super) fn apply_brush_style(
+    mut points: Vec<(f64, f64, f64)>,
+    args: &Value,
+) -> Result<Vec<(f64, f64, f64)>> {
+    let Some(style) = optional_str(args, "style") else {
+        return Ok(points);
+    };
+    match style.as_str() {
+        "confident" => {
+            // **起笔重、收笔轻** ✓：沿笔画把压力从 1.15 线性收到 0.55 ✓（**位置不动** ✓）。
+            let last = points.len().max(2) - 1;
+            for (index, point) in points.iter_mut().enumerate() {
+                let t = index as f64 / last as f64;
+                point.2 = (point.2 * (1.15 - 0.60 * t)).clamp(0.0, 1.0);
+            }
+            Ok(points)
+        }
+        "sketchy" => {
+            // **抖动与断笔** ✓：幅度取"笔尖的百分之几"这个量级 ✓；种子由点数派生 ⇒ 可复现 ✓。
+            let mut state = 0x5DEE_CE66_D000_0000_u64 ^ (points.len() as u64);
+            for point in points.iter_mut() {
+                let jitter_x = (scatter_next(&mut state) - 0.5) * 2.5;
+                let jitter_y = (scatter_next(&mut state) - 0.5) * 2.5;
+                point.0 += jitter_x;
+                point.1 += jitter_y;
+                // **断笔**：压力乘一个 0.55~1.05 的系数 ✓（轻的地方更像"擦过"✓）。
+                point.2 = (point.2 * (0.55 + 0.50 * scatter_next(&mut state))).clamp(0.0, 1.0);
+            }
+            Ok(points)
+        }
+        other => Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "未知笔触风格 {other} ⇒ 可用：confident / sketchy（不给 = 原样 ✓）"
+            )),
+        )),
+    }
+}
