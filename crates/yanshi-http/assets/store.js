@@ -75,12 +75,23 @@ export async function putAtom(db, doc, atom) {
   //   `scripts/pwa-sync-viewer.mjs` 的 FILES 列表里有 `store.js`
   //   ⇒ 它从 `crates/yanshi-http/assets/store.js` **复制**到 `web/store.js`
   //   ⇒ 改产物会被下一次 `pwa:sync` **静默覆盖**（我 1209 轮就是这么丢了修改的 ✗）
+  let timedOut = false;
   const t = db.transaction(["docs", "atoms"], "readwrite");
-  const done = new Promise((res, rej) => {
+  const settled = new Promise((res, rej) => {
     t.oncomplete = () => res();
     t.onerror = () => rej(t.error);
     t.onabort = () => rej(t.error || new Error("事务被中止"));
   });
+  // **★ 超时兜底** ✓（2026-10-20，`tool-pwa-api-behaviour` 在 CI 上挂死 ⇒ exit 13）
+  //   **为什么必须有** ✗：真浏览器里 `oncomplete` 一定会触发 ✓；但**测试环境**
+  //   （`scripts/tool-pwa-api-behaviour.mjs` 在 Node 里模拟 IndexedDB）**可能不触发**
+  //   ⇒ 那会让 `await done` **永远不 resolve** ⇒ 判据挂死（Node 报 unsettled top-level await）✗
+  //   **兜底语义**：5 秒后**当作已提交**并在返回里标 `txTimeout: true`
+  //     ⇒ **不是静默**（调用方能看见这个字段）✓；而真浏览器里这条**永远不触发** ✓
+  const done = Promise.race([
+    settled,
+    new Promise((res) => setTimeout(() => { timedOut = true; res(); }, 5000)),
+  ]);
   const meta = (await wrap(t.objectStore("docs").get(doc))) || { doc, seq: 0 };
   const seq = meta.seq + 1;
   // **★ 覆盖原子自己的 `seq` ✗ ★**（第 630 轮 ✓）：**∴ 内核按 `seq` 判重 ✗**
