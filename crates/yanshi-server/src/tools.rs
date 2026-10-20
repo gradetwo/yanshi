@@ -11715,7 +11715,7 @@ fn write_set_brush_dynamics(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
 /// **`list_engine_capabilities`** ✓：一处导出引擎的**全部能力面** ✓。
 ///
 /// **每个列表都引用引擎自己的常量** ✗（不是硬编码 ✓）：
-/// `BlendMode::NAMES`（11 ✓）／`FILTER_NAMES`（14 ✓）／`ADJUSTMENT_NAMES`（12 ✓）／
+/// `BlendMode::NAMES`（11 ✓）／`FILTER_NAMES`（14 ✓）／`ADJUSTMENT_NAMES`（18 ✓）／
 /// `RETOUCH_KINDS`（4 ✓）／`LIQUIFY_KINDS`（3 ✓）／`BrushSetting::ALL`（63 ✓）
 /// ⇒ **∴ 以后加一种混合模式/滤镜/修图/液化，只改一处，这里自动跟上 ✓**。
 ///
@@ -12022,6 +12022,148 @@ impl EffectKind {
 }
 
 /// 校验效果参数：内核没实现的类型/越界数值一律在工具层拒绝（5.7），不写入日志。
+/// 解析 `.cube` LUT 文本（Adobe／IRIDAS 口径的子集）：要求一行 `LUT_3D_SIZE n`
+/// 加之后 `n³` 行 `r g b`（红最快，与内核三线性插值的表顺序一致）。
+/// `DOMAIN_MIN`/`DOMAIN_MAX` 若出现则必须为 `[0 0 0]`／`[1 1 1]`（渲染层只认归一化表，
+/// 不做静默缩放）；`LUT_1D*` 不支持，直接报错而不是忽略。
+/// 返回 `(size, 扁平表)`，`size` 由调用方再限上限（本处只保证形状自洽）。
+fn parse_cube_lut(text: &str) -> Result<(u32, Vec<f32>)> {
+    let err =
+        |detail: String| YanshiError::new(ErrorCode::InvalidArgument, ErrorContext::detail(detail));
+    let mut size: Option<u32> = None;
+    let mut domain_min: Option<[f32; 3]> = None;
+    let mut domain_max: Option<[f32; 3]> = None;
+    let mut table: Vec<f32> = Vec::new();
+    for (line_number, raw_line) in text.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut words = line.split_whitespace();
+        let keyword = words.next().unwrap_or_default();
+        match keyword {
+            "TITLE" => {}
+            "LUT_3D_SIZE" => {
+                let count: u32 = words
+                    .next()
+                    .and_then(|word| word.parse().ok())
+                    .ok_or_else(|| err(format!("第 {line_number} 行 LUT_3D_SIZE 后面不是数字")))?;
+                if size.replace(count).is_some() {
+                    return Err(err("出现两次 LUT_3D_SIZE".to_owned()));
+                }
+            }
+            "LUT_1D_SIZE" | "LUT_1D_INPUT_RANGE" => {
+                return Err(err("只支持 3D LUT（.cube 里的 1D 部分不支持）".to_owned()));
+            }
+            "DOMAIN_MIN" | "DOMAIN_MAX" => {
+                let triple: Option<[f32; 3]> = (|| {
+                    let mut values = [0.0f32; 3];
+                    for slot in values.iter_mut() {
+                        *slot = words.next()?.parse().ok()?;
+                    }
+                    Some(values)
+                })();
+                let triple = triple.ok_or_else(|| {
+                    err(format!("第 {line_number} 行 {keyword} 后面不是三个数字"))
+                })?;
+                if keyword == "DOMAIN_MIN" {
+                    domain_min = Some(triple);
+                } else {
+                    domain_max = Some(triple);
+                }
+            }
+            _ => {
+                // 数据行：三个 0..1 数字。注意 `keyword` 本身就是第一个数字
+                //（上面 `words.next()` 已经把它吃掉了，不能从 words 里再取三个 ✗）。
+                let Some(size) = size else {
+                    return Err(err(format!(
+                        "第 {line_number} 行数据出现在 LUT_3D_SIZE 之前"
+                    )));
+                };
+                let triple: Option<[f32; 3]> = (|| {
+                    let mut values = [0.0f32; 3];
+                    values[0] = keyword.parse().ok()?;
+                    for slot in values.iter_mut().skip(1) {
+                        *slot = words.next()?.parse().ok()?;
+                    }
+                    if words.next().is_some() {
+                        return None;
+                    }
+                    Some(values)
+                })();
+                let triple = triple
+                    .ok_or_else(|| err(format!("第 {line_number} 行不是 `r g b` 三个数字")))?;
+                for value in triple {
+                    if !(0.0..=1.0).contains(&value) {
+                        return Err(err(format!(
+                            "第 {line_number} 行 LUT 值必须在 [0,1] 内，得到 {value}"
+                        )));
+                    }
+                }
+                if table.len() >= size as usize * size as usize * size as usize * 3 {
+                    return Err(err("数据行数超过 LUT_3D_SIZE³".to_owned()));
+                }
+                table.extend_from_slice(&triple);
+            }
+        }
+    }
+    let Some(size) = size else {
+        return Err(err("缺少 LUT_3D_SIZE".to_owned()));
+    };
+    let expected = size as usize * size as usize * size as usize * 3;
+    if table.len() != expected {
+        return Err(err(format!(
+            "数据行数 {} 与 LUT_3D_SIZE³={} 不符（缺 {} 个分量）",
+            table.len() / 3,
+            size as usize * size as usize * size as usize,
+            expected - table.len()
+        )));
+    }
+    if let Some(min) = domain_min {
+        if min != [0.0, 0.0, 0.0] {
+            return Err(err(format!("DOMAIN_MIN 必须为 0 0 0，得到 {min:?}")));
+        }
+    }
+    if let Some(max) = domain_max {
+        if max != [1.0, 1.0, 1.0] {
+            return Err(err(format!("DOMAIN_MAX 必须为 1 1 1，得到 {max:?}")));
+        }
+    }
+    Ok((size, table))
+}
+
+/// `color_lut` 的 `path` 参数处理：在 `add/update_adjustment` 写入文档前，
+/// 把 `.cube` 文件读入并解析，`size` + `table` 注入 params
+/// （渲染层只认这两个字段、不碰文件系统）。
+/// `path` 与 `size`/`table` 同时给 ⇒ `path` 覆盖（显式重新导入）；解析失败直接报错。
+fn resolve_lut_path(name: &str, params: &mut serde_json::Map<String, Value>) -> Result<()> {
+    if name != "color_lut" {
+        return Ok(());
+    }
+    let Some(path) = params.get("path").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let text = std::fs::read_to_string(path).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("color_lut 的 path 读不到文件：{error}")),
+        )
+    })?;
+    let (size, table) = parse_cube_lut(&text)?;
+    if size > 64 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("color_lut 的 LUT_3D_SIZE 不能超过 64，得到 {size}")),
+        ));
+    }
+    params.insert("size".to_owned(), json!(size));
+    params.insert(
+        "table".to_owned(),
+        Value::Array(table.iter().map(|value| json!(value)).collect()),
+    );
+    Ok(())
+}
+
 fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> Result<()> {
     // **★ 滤镜别名也要放行 ★**（第 1000+ 轮 ✓）： 早已把
     // ／ 映射到  ✓（），
@@ -12075,6 +12217,9 @@ fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> Result<()> {
         (EffectKind::Adjustment, "exposure") => &[("ev", -10.0, 10.0)],
         (EffectKind::Adjustment, "white_balance") => {
             &[("temperature", -1.0, 1.0), ("tint", -1.0, 1.0)]
+        }
+        (EffectKind::Adjustment, "shadows_highlights") => {
+            &[("shadows", -1.0, 1.0), ("highlights", -1.0, 1.0)]
         }
         (EffectKind::Adjustment, "curves") => &[],
         (EffectKind::Adjustment, "hsl") => &[
@@ -12280,13 +12425,296 @@ fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> Result<()> {
             }
         }
     }
+    if name == "black_and_white" {
+        // weights：三个数字即可（允许负权／大于 1 的权，只要有限）。
+        if let Some(weights) = object.get("weights") {
+            let Some(array) = weights.as_array().filter(|array| array.len() == 3) else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("black_and_white 的 weights 必须是三个分量"),
+                ));
+            };
+            for component in array {
+                let Some(value) = component.as_f64() else {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail("black_and_white 的 weights 分量必须是数字"),
+                    ));
+                };
+                if !value.is_finite() {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "black_and_white 的 weights 分量必须是有限数，得到 {value}"
+                        )),
+                    ));
+                }
+            }
+        }
+        if let Some(tint) = object.get("tint") {
+            let Some(array) = tint.as_array().filter(|array| array.len() == 3) else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("black_and_white 的 tint 必须是 [r,g,b]"),
+                ));
+            };
+            for component in array {
+                let Some(value) = component.as_f64() else {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail("black_and_white 的 tint 分量必须是数字"),
+                    ));
+                };
+                if !(0.0..=1.0).contains(&value) {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "black_and_white 的 tint 分量必须在 [0,1] 内，得到 {value}"
+                        )),
+                    ));
+                }
+            }
+        }
+    }
+    if name == "channel_mixer" {
+        if let Some(matrix) = object.get("matrix") {
+            let Some(rows) = matrix.as_array().filter(|array| array.len() == 3) else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("channel_mixer 的 matrix 必须是 3×3"),
+                ));
+            };
+            for row in rows {
+                let Some(columns) = row.as_array().filter(|array| array.len() == 3) else {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail("channel_mixer 的 matrix 必须是 3×3"),
+                    ));
+                };
+                for value in columns {
+                    let Some(number) = value.as_f64() else {
+                        return Err(YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail("channel_mixer 的 matrix 必须是数字"),
+                        ));
+                    };
+                    if !number.is_finite() {
+                        return Err(YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail(format!(
+                                "channel_mixer 的 matrix 必须是有限数，得到 {number}"
+                            )),
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(constants) = object.get("constants") {
+            let Some(array) = constants.as_array().filter(|array| array.len() == 3) else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("channel_mixer 的 constants 必须是三个分量"),
+                ));
+            };
+            for component in array {
+                let Some(value) = component.as_f64() else {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail("channel_mixer 的 constants 分量必须是数字"),
+                    ));
+                };
+                if !value.is_finite() {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "channel_mixer 的 constants 分量必须是有限数，得到 {value}"
+                        )),
+                    ));
+                }
+            }
+        }
+    }
+    if name == "gradient_map" {
+        if let Some(stops) = object.get("stops") {
+            let Some(array) = stops.as_array() else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("gradient_map 的 stops 必须是 [[位置,[r,g,b]],...] 数组"),
+                ));
+            };
+            if array.len() < 2 {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("gradient_map 的 stops 至少需要两个色标"),
+                ));
+            }
+            for stop in array {
+                let Some(pair) = stop.as_array().filter(|pair| pair.len() == 2) else {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail("gradient_map 的色标必须是 [位置, [r,g,b]]"),
+                    ));
+                };
+                let Some(pos) = pair[0].as_f64() else {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail("gradient_map 色标位置必须是数字"),
+                    ));
+                };
+                if !(0.0..=1.0).contains(&pos) {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "gradient_map 色标位置必须在 [0,1] 内，得到 {pos}"
+                        )),
+                    ));
+                }
+                let Some(color) = pair[1].as_array().filter(|color| color.len() == 3) else {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail("gradient_map 色标颜色必须是 [r,g,b]"),
+                    ));
+                };
+                for component in color {
+                    let Some(value) = component.as_f64() else {
+                        return Err(YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail("gradient_map 色标颜色分量必须是数字"),
+                        ));
+                    };
+                    if !(0.0..=1.0).contains(&value) {
+                        return Err(YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail(format!(
+                                "gradient_map 色标颜色分量必须在 [0,1] 内，得到 {value}"
+                            )),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    if name == "selective_color" {
+        if let Some(adjust) = object.get("adjust") {
+            let Some(map) = adjust.as_object() else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("selective_color 的 adjust 必须是对象"),
+                ));
+            };
+            for (key, value) in map {
+                if !yanshi_render::SELECTIVE_COLOR_RANGES.contains(&key.as_str()) {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "selective_color 的 adjust 未知色类 {key}；可选 {}",
+                            yanshi_render::SELECTIVE_COLOR_RANGES.join(" / ")
+                        )),
+                    ));
+                }
+                let Some(array) = value.as_array().filter(|array| array.len() == 4) else {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "selective_color 的 {key} 必须是 [c,m,y,k] 四个分量"
+                        )),
+                    ));
+                };
+                for component in array {
+                    let Some(offset) = component.as_f64() else {
+                        return Err(YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail(format!(
+                                "selective_color 的 {key} 分量必须是数字"
+                            )),
+                        ));
+                    };
+                    if !(-1.0..=1.0).contains(&offset) {
+                        return Err(YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail(format!(
+                                "selective_color 的 {key} 分量必须在 [-1,1] 内，得到 {offset}"
+                            )),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    if name == "color_lut" {
+        // 给了 path：文件内容由 add/update 路径上的 resolve_lut_path 解析校验
+        // （preview 走同一校验函数但不读盘 ⇒ 在这里放行 path 本身）。
+        let has_path = object.get("path").and_then(Value::as_str).is_some();
+        let size = object.get("size").and_then(Value::as_u64);
+        let table = object.get("table").and_then(Value::as_array);
+        match (size, table) {
+            (Some(size), Some(table)) => {
+                if !(2..=64).contains(&size) {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "color_lut 的 size 必须在 [2,64] 内，得到 {size}"
+                        )),
+                    ));
+                }
+                let expected = (size as usize).pow(3) * 3;
+                if table.len() != expected {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "color_lut 的 table 长度应为 {expected}（size³×3），得到 {}",
+                            table.len()
+                        )),
+                    ));
+                }
+                for component in table {
+                    let Some(value) = component.as_f64() else {
+                        return Err(YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail("color_lut 的 table 分量必须是数字"),
+                        ));
+                    };
+                    if !(0.0..=1.0).contains(&value) {
+                        return Err(YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail(format!(
+                                "color_lut 的 table 分量必须在 [0,1] 内，得到 {value}"
+                            )),
+                        ));
+                    }
+                }
+            }
+            (None, None) => {
+                if !has_path {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(
+                            "color_lut 需要 path（.cube 文件）或直接给 size + table",
+                        ),
+                    ));
+                }
+            }
+            _ => {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("color_lut 的 size 与 table 必须成对出现"),
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
 fn write_add_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let name = require_str(args, kind.key())?;
-    let params = args.get("params").cloned().unwrap_or_else(|| json!({}));
+    let mut params = args.get("params").cloned().unwrap_or_else(|| json!({}));
+    if let Value::Object(map) = &mut params {
+        resolve_lut_path(&name, map)?;
+        // path 只是导入手段：已解析为 size+table，存档里不留文件引用，
+        // 免得以后文件移动/删除导致 update 无端失败。
+        map.remove("path");
+    }
     validate_effect(kind, &name, &params)?;
     let object_id = optional_str(args, "object_id")
         .unwrap_or_else(|| format!("obj_{}", yanshi_core::Ulid::new().encode()));
@@ -12372,6 +12800,10 @@ fn write_update_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind
         }
     } else {
         merged = patch.clone();
+    }
+    if let Value::Object(map) = &mut merged {
+        resolve_lut_path(&existing_name, map)?;
+        map.remove("path");
     }
     validate_effect(kind, &existing_name, &merged)?;
     let mut data = object.data.clone();
@@ -30272,5 +30704,82 @@ mod smart_select_tests {
         // v=0 时不动（调用方 guard v > 0.0）。
         let v0 = 0.0_f64;
         assert!(v0 <= 0.0);
+    }
+}
+
+#[cfg(test)]
+mod cube_lut_tests {
+    use super::*;
+
+    const IDENTITY_2: &str = "\
+# 恒等 LUT（size=2）
+LUT_3D_SIZE 2
+0 0 0
+1 0 0
+0 1 0
+1 1 0
+0 0 1
+1 0 1
+0 1 1
+1 1 1
+";
+
+    /// 解析恒等 .cube：size 与每个格点值都精确到位（红最快）。
+    #[test]
+    fn parse_cube_identity_size_two() {
+        let (size, table) = parse_cube_lut(IDENTITY_2).expect("恒等文件应解析成功");
+        assert_eq!(size, 2);
+        assert_eq!(table.len(), 24);
+        // 第 2 个格点 = (r=1,g=0,b=0)。
+        assert_eq!(&table[3..6], &[1.0, 0.0, 0.0]);
+        // 最后一个格点 = (1,1,1)。
+        assert_eq!(&table[21..24], &[1.0, 1.0, 1.0]);
+    }
+
+    /// 形状不符必须报错，而不是补零/截断后静默通过。
+    #[test]
+    fn parse_cube_rejects_shape_mismatches() {
+        // 缺一个格点（7/8 行）。
+        let short = IDENTITY_2.replace("1 1 1\n", "");
+        assert!(parse_cube_lut(&short).is_err(), "缺行应报错");
+        // 多一行数据。
+        let long = format!("{IDENTITY_2}0.5 0.5 0.5\n");
+        assert!(parse_cube_lut(&long).is_err(), "多行应报错");
+        // 没有 LUT_3D_SIZE。
+        assert!(parse_cube_lut("0 0 0\n").is_err(), "缺 size 应报错");
+        // 值越界。
+        let bad_value = IDENTITY_2.replace("1 0 0", "2 0 0");
+        assert!(parse_cube_lut(&bad_value).is_err(), "越界值应报错");
+        // DOMAIN 不是归一化域。
+        let bad_domain = format!("DOMAIN_MIN 0.1 0 0\n{IDENTITY_2}");
+        assert!(
+            parse_cube_lut(&bad_domain).is_err(),
+            "非归一化 DOMAIN 应报错"
+        );
+    }
+
+    /// validate_effect 对 color_lut 的成对性校验：只有 size 没有 table（且无 path）必须红。
+    #[test]
+    fn validate_effect_color_lut_requires_size_and_table_together() {
+        let alone = json!({ "size": 2, "table": [0.0, 0.0, 0.0] });
+        assert!(
+            validate_effect(EffectKind::Adjustment, "color_lut", &alone).is_err(),
+            "table 长度不符应报错"
+        );
+        let only_size = json!({ "size": 2 });
+        assert!(
+            validate_effect(EffectKind::Adjustment, "color_lut", &only_size).is_err(),
+            "只有 size 应报错"
+        );
+        let empty = json!({});
+        assert!(
+            validate_effect(EffectKind::Adjustment, "color_lut", &empty).is_err(),
+            "既没 path 也没 size/table 应报错"
+        );
+        let with_path = json!({ "path": "/tmp/whatever.cube" });
+        assert!(
+            validate_effect(EffectKind::Adjustment, "color_lut", &with_path).is_ok(),
+            "给了 path 应放行（文件在写入路径上解析校验）"
+        );
     }
 }

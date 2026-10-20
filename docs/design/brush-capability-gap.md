@@ -156,7 +156,7 @@
 
 ### 9.1 新增 `list_engine_capabilities` ✓（`82d1a93b`，工具数 153 → 154）
 
-一次返回：`blend_modes`（11）／`filters`（14）／`adjustments`（12）／`retouch_kinds`（4）／
+一次返回：`blend_modes`（11）／`filters`（14）／`adjustments`（18）／`retouch_kinds`（4）／
 `liquify_kinds`（3）／`mediums`（5）／`example_mediums`（`example-dab` ✓）／`brush_settings`（63 个 cname）／`counts`。
 
 **每个列表都引用引擎自己的常量** ✓：`BlendMode::NAMES`／`FILTER_NAMES`／`ADJUSTMENT_NAMES`／

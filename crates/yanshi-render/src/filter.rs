@@ -39,6 +39,18 @@ pub enum AdjustmentKind {
     SplitToning,
     /// 自然饱和度。
     Vibrance,
+    /// 黑白转换（加权灰阶 + 可选着色）。
+    BlackAndWhite,
+    /// 通道混合器（3×3 矩阵 + 常数）。
+    ChannelMixer,
+    /// 渐变映射（按明度在色带间插值）。
+    GradientMap,
+    /// 阴影/高光恢复。
+    ShadowsHighlights,
+    /// 可选颜色（PS 相对模式简化版）。
+    SelectiveColor,
+    /// LUT（.cube 三线性插值）。
+    ColorLut,
 }
 
 impl AdjustmentKind {
@@ -58,6 +70,12 @@ impl AdjustmentKind {
             "split_toning" => Some(Self::SplitToning),
             // `saturation` 的同义词之一，保持向后兼容。
             "vibrance_natural" => Some(Self::Vibrance),
+            "black_and_white" => Some(Self::BlackAndWhite),
+            "channel_mixer" => Some(Self::ChannelMixer),
+            "gradient_map" => Some(Self::GradientMap),
+            "shadows_highlights" => Some(Self::ShadowsHighlights),
+            "selective_color" => Some(Self::SelectiveColor),
+            "color_lut" => Some(Self::ColorLut),
             _ => None,
         }
     }
@@ -77,11 +95,17 @@ impl AdjustmentKind {
             Self::ColorBalance => "color_balance",
             Self::SplitToning => "split_toning",
             Self::Vibrance => "vibrance",
+            Self::BlackAndWhite => "black_and_white",
+            Self::ChannelMixer => "channel_mixer",
+            Self::GradientMap => "gradient_map",
+            Self::ShadowsHighlights => "shadows_highlights",
+            Self::SelectiveColor => "selective_color",
+            Self::ColorLut => "color_lut",
         }
     }
 
     /// 全部类型。
-    pub const ALL: [AdjustmentKind; 12] = [
+    pub const ALL: [AdjustmentKind; 18] = [
         Self::BrightnessContrast,
         Self::Saturation,
         Self::Invert,
@@ -94,6 +118,12 @@ impl AdjustmentKind {
         Self::ColorBalance,
         Self::SplitToning,
         Self::Vibrance,
+        Self::BlackAndWhite,
+        Self::ChannelMixer,
+        Self::GradientMap,
+        Self::ShadowsHighlights,
+        Self::SelectiveColor,
+        Self::ColorLut,
     ];
 }
 
@@ -209,6 +239,263 @@ impl FilterKind {
             Self::FilmGrain => 0,
             _ => 0,
         }
+    }
+}
+
+/// **黑白转换**：`gray = Σ w·c`（权重由参数给、缺省 Rec709），可选 `tint` 着色
+/// （输出 `gray × tint`），无 `tint` 时三通道同值。
+///
+/// 断言应写**关系**而不是单点 ✓：灰像素（r=g=b）且 `Σw = 1` 时原样返回；
+/// 纯红配 `weights=[1,0,0]` ⇒ 输出 = 红通道值 ✓。
+pub fn black_and_white(buffer: &mut Buffer, weights: [f32; 3], tint: Option<[f32; 3]>) {
+    for_each_straight_color(buffer, |color| {
+        let gray = weights[0] * color[0] + weights[1] * color[1] + weights[2] * color[2];
+        match tint {
+            Some(tint) => {
+                color[0] = (gray * tint[0]).clamp(0.0, 1.0);
+                color[1] = (gray * tint[1]).clamp(0.0, 1.0);
+                color[2] = (gray * tint[2]).clamp(0.0, 1.0);
+            }
+            None => {
+                let gray = gray.clamp(0.0, 1.0);
+                *color = [gray, gray, gray];
+            }
+        }
+    });
+}
+
+/// **通道混合器**：`out_i = Σ_j M[i][j]·in_j + K[i]`，输出钳制 [0,1]。
+///
+/// 单位阵 + 零常数 ⇔ 恒等 ✓（这一条同时封住「行列写反」与「常数漏加」两类错 ✓）。
+pub fn channel_mixer(buffer: &mut Buffer, matrix: [[f32; 3]; 3], constants: [f32; 3]) {
+    for_each_straight_color(buffer, |color| {
+        let input = *color;
+        for (index, slot) in color.iter_mut().enumerate() {
+            *slot = (matrix[index][0] * input[0]
+                + matrix[index][1] * input[1]
+                + matrix[index][2] * input[2]
+                + constants[index])
+                .clamp(0.0, 1.0);
+        }
+    });
+}
+
+/// **渐变映射**：以线性 Rec709 明度为横坐标，在 `stops`（[位置, 颜色]，位置 0..1）
+/// 之间线性插值。`stops` 少于 2 个时退化为黑白渐变（等同 Rec709 灰阶）——
+/// 形状校验在工具层做 ✓，渲染层与 `curves` 控制点不足时同口径（不报错、不假装生效）✓。
+pub fn gradient_map(buffer: &mut Buffer, stops: &[(f32, [f32; 3])]) {
+    const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
+    let fallback = [(0.0, [0.0, 0.0, 0.0]), (1.0, [1.0, 1.0, 1.0])];
+    let stops: &[(f32, [f32; 3])] = if stops.len() >= 2 { stops } else { &fallback };
+    for_each_straight_color(buffer, |color| {
+        let luma = (LUMA[0] * color[0] + LUMA[1] * color[1] + LUMA[2] * color[2]).clamp(0.0, 1.0);
+        *color = gradient_sample(stops, luma);
+    });
+}
+
+/// 色带取样：`stops` 须按位置升序、至少 2 个；区间外钳制到端点色
+/// ⇒ 横坐标恰为 0／1 时**精确**命中端点 stop ✓。
+fn gradient_sample(stops: &[(f32, [f32; 3])], x: f32) -> [f32; 3] {
+    let first = stops[0];
+    if x <= first.0 {
+        return first.1;
+    }
+    for window in stops.windows(2) {
+        let (p0, c0) = window[0];
+        let (p1, c1) = window[1];
+        if x <= p1 {
+            let span = (p1 - p0).max(f32::EPSILON);
+            let t = ((x - p0) / span).clamp(0.0, 1.0);
+            return [
+                c0[0] + (c1[0] - c0[0]) * t,
+                c0[1] + (c1[1] - c0[1]) * t,
+                c0[2] + (c1[2] - c0[2]) * t,
+            ];
+        }
+    }
+    stops[stops.len() - 1].1
+}
+
+/// **阴影/高光恢复**：`shadows`／`highlights` 各 -1..1，0 = 不动（恒等 ✓）。
+///
+/// 掩码按线性明度：暗部权重 `(1−L)²`、高光权重 `L²` ⇒ 白色处暗部权重**恰好 0**、
+/// 黑色处高光权重**恰好 0**（不是近似 ✓）⇒
+/// 「shadows>0 只提暗部」「highlights<0 只压高光」两条性质精确成立 ✓。
+/// 每通道朝目标端移动 `参数 × 权重 × 剩余距离 × 0.5` ⇒ 移动量不超过半程、永不越界 ✓。
+pub fn shadows_highlights(buffer: &mut Buffer, shadows: f32, highlights: f32) {
+    const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
+    let shadows = shadows.clamp(-1.0, 1.0);
+    let highlights = highlights.clamp(-1.0, 1.0);
+    if shadows == 0.0 && highlights == 0.0 {
+        return;
+    }
+    for_each_straight_color(buffer, |color| {
+        let luma = (LUMA[0] * color[0] + LUMA[1] * color[1] + LUMA[2] * color[2]).clamp(0.0, 1.0);
+        let shadow_weight = (1.0 - luma) * (1.0 - luma);
+        let highlight_weight = luma * luma;
+        for value in color.iter_mut() {
+            let current = *value;
+            let mut next = current + toward(shadows, shadow_weight, current);
+            next += toward(highlights, highlight_weight, current);
+            *value = next.clamp(0.0, 1.0);
+        }
+    });
+}
+
+/// 朝向移动量：正参数朝 1、负参数朝 0，幅度 = `参数 × 权重 × 到该端的距离 × 0.5`
+/// （参数自带符号 ⇒ 负参数的结果自然为负 ✓）。
+fn toward(amount: f32, weight: f32, value: f32) -> f32 {
+    let room = if amount >= 0.0 { 1.0 - value } else { value };
+    amount * weight * room * 0.5
+}
+
+/// **可选颜色**的 9 个色类名（参数 `adjust` 的键；工具层校验与渲染层共用 ⇒ 只此一处 ✓）。
+pub const SELECTIVE_COLOR_RANGES: [&str; 9] = [
+    "reds", "yellows", "greens", "cyans", "blues", "magentas", "whites", "neutrals", "blacks",
+];
+
+/// **可选颜色**（PS 相对模式的简化版）：RGB → CMYK 后，按像素色类取出**唯一**一档的
+/// `[c,m,y,k]` 偏移（下标见 [`SELECTIVE_COLOR_RANGES`]）施加，再转回 RGB。
+///
+/// 色类判定（硬扇区、不羽化）：低饱和（色度 < 0.08）按 HSL 明度分
+/// whites（> 0.75）／blacks（< 0.25）／neutrals；否则按色相 60° 扇区
+/// （扇区中心对齐红/黄/绿/青/蓝/品红）。
+///
+/// **相对模式的口径**：偏移 δ 加到分量 v 上时按「到目标端的剩余量」缩放——
+/// `v' = v + δ·(δ ≥ 0 ? 1 − v : v)`。若按 PS 字面 `δ·v` 算，纯红的 c 恒为 0 ⇒
+/// reds 的 cyan 滑杆永远无效（静默失效 ✗）；剩余量口径下它生效，
+/// 且结果天然落在 [0,1]。全零偏移 ⇒ CMYK 往返恒等 ✓。
+pub fn selective_color(buffer: &mut Buffer, ranges: &[[f32; 4]; 9]) {
+    for_each_straight_color(buffer, |color| {
+        let offset = ranges[selective_range_index(color)];
+        if offset == [0.0; 4] {
+            return;
+        }
+        let mut cmyk = rgb_to_cmyk(*color);
+        for (slot, delta) in cmyk.iter_mut().zip(offset.iter()) {
+            let value = *slot;
+            let room = if *delta >= 0.0 { 1.0 - value } else { value };
+            *slot = (value + delta * room).clamp(0.0, 1.0);
+        }
+        *color = cmyk_to_rgb(cmyk);
+    });
+}
+
+/// 色类下标：规则见 [`selective_color`] 的文档。
+fn selective_range_index(color: &[f32; 3]) -> usize {
+    let (r, g, b) = (color[0], color[1], color[2]);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let chroma = max - min;
+    if chroma < 0.08 {
+        let lightness = (max + min) / 2.0;
+        return if lightness > 0.75 {
+            6 // whites
+        } else if lightness < 0.25 {
+            8 // blacks
+        } else {
+            7 // neutrals
+        };
+    }
+    // 色相（0..6，整数位对齐红/黄/绿/青/蓝/品红）。
+    let hue = if max == r {
+        ((g - b) / chroma).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / chroma + 2.0
+    } else {
+        (r - g) / chroma + 4.0
+    };
+    // 扇区以原色为中心 ⇒ 把色相平移半格再取整。
+    ((hue + 0.5) % 6.0) as usize
+}
+
+/// RGB → CMYK（朴素减色模型）：`k = 1 − max`，其余 `(1 − c − k)/(1 − k)`；
+/// 纯黑（k = 1）时 c/m/y 取 0 防除零。
+fn rgb_to_cmyk(color: [f32; 3]) -> [f32; 4] {
+    let max = color[0].max(color[1]).max(color[2]);
+    let k = 1.0 - max;
+    if k >= 1.0 {
+        return [0.0, 0.0, 0.0, 1.0];
+    }
+    let denom = 1.0 - k;
+    [
+        (1.0 - color[0] - k) / denom,
+        (1.0 - color[1] - k) / denom,
+        (1.0 - color[2] - k) / denom,
+        k,
+    ]
+}
+
+/// CMYK → RGB：[`rgb_to_cmyk`] 的逆（`(1 − c)(1 − k)`）⇒ 无偏移时往返恒等 ✓。
+fn cmyk_to_rgb(cmyk: [f32; 4]) -> [f32; 3] {
+    let keep = 1.0 - cmyk[3];
+    [
+        ((1.0 - cmyk[0]) * keep).clamp(0.0, 1.0),
+        ((1.0 - cmyk[1]) * keep).clamp(0.0, 1.0),
+        ((1.0 - cmyk[2]) * keep).clamp(0.0, 1.0),
+    ]
+}
+
+/// **颜色 LUT**（纯函数 ✓，不碰文件系统）：`table` 为 `size³ × 3` 扁平表、
+/// **红最快**（与 `.cube` 的 `LUT_3D_SIZE` 数据顺序一致 ✓），逐像素三线性插值。
+/// 表的解析与形状校验在工具层完成（参数写入文档前）；
+/// 形状不符（`size < 2` 或长度不对）时原样返回——渲染层对历史文档不许炸，
+/// 与 `curves` 控制点不足时同口径 ✓。
+pub fn color_lut(buffer: &mut Buffer, size: u32, table: &[f32]) {
+    let size = size as usize;
+    if size < 2 || table.len() != size * size * size * 3 {
+        return;
+    }
+    for_each_straight_color(buffer, |color| {
+        *color = lut_sample(size, table, *color);
+    });
+}
+
+/// 三线性取样：坐标 = `通道值 × (size − 1)`；落在格点上时权重全给该格点 ⇒ 精确命中 ✓。
+fn lut_sample(size: usize, table: &[f32], color: [f32; 3]) -> [f32; 3] {
+    let scale = (size - 1) as f32;
+    let mut lo = [0usize; 3];
+    let mut frac = [0.0f32; 3];
+    for axis in 0..3 {
+        let pos = color[axis].clamp(0.0, 1.0) * scale;
+        let base = pos.floor() as usize;
+        if base >= size - 1 {
+            lo[axis] = size - 2;
+            frac[axis] = 1.0;
+        } else {
+            lo[axis] = base;
+            frac[axis] = pos - base as f32;
+        }
+    }
+    let mut out = [0.0f32; 3];
+    for dz in 0..2usize {
+        for dy in 0..2usize {
+            for dx in 0..2usize {
+                let weight = corner_weight(dx, frac[0])
+                    * corner_weight(dy, frac[1])
+                    * corner_weight(dz, frac[2]);
+                if weight == 0.0 {
+                    continue;
+                }
+                let index = (((lo[2] + dz) * size + (lo[1] + dy)) * size + (lo[0] + dx)) * 3;
+                for (channel, slot) in out.iter_mut().enumerate() {
+                    *slot += weight * table[index + channel];
+                }
+            }
+        }
+    }
+    [
+        out[0].clamp(0.0, 1.0),
+        out[1].clamp(0.0, 1.0),
+        out[2].clamp(0.0, 1.0),
+    ]
+}
+
+fn corner_weight(offset: usize, frac: f32) -> f32 {
+    if offset == 1 {
+        frac
+    } else {
+        1.0 - frac
     }
 }
 
@@ -1188,7 +1475,7 @@ fn for_each_straight_color(buffer: &mut Buffer, mut transform: impl FnMut(&mut [
 }
 
 /// 内核支持的调整类型名（工具层据此校验参数，避免造出无法渲染的对象）。
-pub const ADJUSTMENT_NAMES: [&str; 12] = [
+pub const ADJUSTMENT_NAMES: [&str; 18] = [
     "brightness_contrast",
     "saturation",
     "invert",
@@ -1201,6 +1488,12 @@ pub const ADJUSTMENT_NAMES: [&str; 12] = [
     "color_balance",
     "split_toning",
     "vibrance",
+    "black_and_white",
+    "channel_mixer",
+    "gradient_map",
+    "shadows_highlights",
+    "selective_color",
+    "color_lut",
 ];
 
 /// 内核支持的滤镜名。
@@ -1233,6 +1526,73 @@ fn triple(value: Option<&Value>) -> [f32; 3] {
         *slot = array.get(index).and_then(Value::as_f64).unwrap_or(0.0) as f32;
     }
     out
+}
+
+/// 解析定长数值数组（长度不符或含非数字 ⇒ `None`，由调用方决定默认值）。
+fn fixed_floats(value: Option<&Value>, len: usize) -> Option<Vec<f32>> {
+    let array = value?.as_array()?;
+    if array.len() != len {
+        return None;
+    }
+    array
+        .iter()
+        .map(|item| item.as_f64().map(|number| number as f32))
+        .collect()
+}
+
+/// 黑白转换的权重：缺省 Rec709（与内核多处 `LUMA` 同一组数 ✓）。
+fn bw_weights(params: &Value) -> [f32; 3] {
+    match fixed_floats(params.get("weights"), 3) {
+        Some(values) => [values[0], values[1], values[2]],
+        None => [0.2126, 0.7152, 0.0722],
+    }
+}
+
+/// 混合器的 3×3 矩阵：缺省单位阵。
+fn mixer_matrix(params: &Value) -> [[f32; 3]; 3] {
+    let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let Some(rows) = params.get("matrix").and_then(Value::as_array) else {
+        return identity;
+    };
+    let mut matrix = identity;
+    for (index, row) in rows.iter().take(3).enumerate() {
+        if let Some(values) = fixed_floats(Some(row), 3) {
+            matrix[index] = [values[0], values[1], values[2]];
+        }
+    }
+    matrix
+}
+
+/// 渐变映射的色带：`[[pos, [r,g,b]], ...]`，按 pos 升序排好（调用方不必预先排序）。
+fn gradient_stops(params: &Value) -> Vec<(f32, [f32; 3])> {
+    let Some(array) = params.get("stops").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut stops: Vec<(f32, [f32; 3])> = array
+        .iter()
+        .filter_map(|entry| {
+            let pair = entry.as_array()?;
+            let pos = pair.first()?.as_f64()? as f32;
+            let color = fixed_floats(pair.get(1), 3)?;
+            Some((pos, [color[0], color[1], color[2]]))
+        })
+        .collect();
+    stops.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    stops
+}
+
+/// 可选颜色的 9 档偏移：缺省全零（恒等）。
+fn selective_ranges(params: &Value) -> [[f32; 4]; 9] {
+    let mut ranges = [[0.0f32; 4]; 9];
+    let Some(adjust) = params.get("adjust") else {
+        return ranges;
+    };
+    for (index, name) in SELECTIVE_COLOR_RANGES.iter().enumerate() {
+        if let Some(values) = fixed_floats(adjust.get(name), 4) {
+            ranges[index] = [values[0], values[1], values[2], values[3]];
+        }
+    }
+    ranges
 }
 
 /// 解析曲线控制点（`[[x,y], ...]`，0..1 归一化）；非法输入退回恒等曲线。
@@ -1353,6 +1713,43 @@ pub fn apply_adjustment(
                 .and_then(Value::as_str)
                 .unwrap_or("rgb"),
         ),
+        AdjustmentKind::BlackAndWhite => {
+            let tint =
+                fixed_floats(params.get("tint"), 3).map(|values| [values[0], values[1], values[2]]);
+            black_and_white(&mut adjusted, bw_weights(params), tint)
+        }
+        AdjustmentKind::ChannelMixer => {
+            let constants = match fixed_floats(params.get("constants"), 3) {
+                Some(values) => [values[0], values[1], values[2]],
+                None => [0.0, 0.0, 0.0],
+            };
+            channel_mixer(&mut adjusted, mixer_matrix(params), constants)
+        }
+        AdjustmentKind::GradientMap => gradient_map(&mut adjusted, &gradient_stops(params)),
+        AdjustmentKind::ShadowsHighlights => shadows_highlights(
+            &mut adjusted,
+            params.get("shadows").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+            params
+                .get("highlights")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0) as f32,
+        ),
+        AdjustmentKind::SelectiveColor => selective_color(&mut adjusted, &selective_ranges(params)),
+        AdjustmentKind::ColorLut => {
+            let size = params.get("size").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let table: Vec<f32> = params
+                .get("table")
+                .and_then(Value::as_array)
+                .map(|array| {
+                    array
+                        .iter()
+                        .filter_map(Value::as_f64)
+                        .map(|number| number as f32)
+                        .collect()
+                })
+                .unwrap_or_default();
+            color_lut(&mut adjusted, size, &table)
+        }
     }
     if (opacity - 1.0).abs() < f32::EPSILON {
         *buffer = adjusted;
@@ -3210,5 +3607,400 @@ mod relief_ambient_tests {
             strong_sd > base_sd,
             "`strength = 5` 之后**对比没有增长**（标准差 {base_sd:.4} ⇒ {strong_sd:.4}）             —— 浮雕应当**增强**局部明暗（修复后实测 +1.4）✗"
         );
+    }
+}
+
+#[cfg(test)]
+mod coloradj_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn filled(color: [f32; 4]) -> Buffer {
+        let mut buffer = Buffer::new(0, 0, 4, 4);
+        buffer.fill(color);
+        buffer
+    }
+
+    fn px(buffer: &Buffer) -> [f32; 3] {
+        let pixel = buffer.pixel(0, 0);
+        [pixel[0], pixel[1], pixel[2]]
+    }
+
+    fn assert_rgb_close(actual: [f32; 3], expected: [f32; 3], label: &str) {
+        for channel in 0..3 {
+            assert!(
+                (actual[channel] - expected[channel]).abs() < 1e-5,
+                "{label} 通道 {channel}：期望 {}，实得 {}",
+                expected[channel],
+                actual[channel]
+            );
+        }
+    }
+
+    // ── black_and_white ─────────────────────────────────────────────
+
+    /// 权重 [1,0,0] ⇒ 输出是红通道值的灰阶（三通道同值且等于输入红通道）。
+    #[test]
+    fn black_and_white_red_only_weights_extract_the_red_channel() {
+        let mut buffer = filled([0.7, 0.2, 0.1, 1.0]);
+        black_and_white(&mut buffer, [1.0, 0.0, 0.0], None);
+        let out = px(&buffer);
+        assert_eq!(out[0], out[1], "输出必须三通道同值");
+        assert_eq!(out[1], out[2], "输出必须三通道同值");
+        assert!(
+            (out[0] - 0.7).abs() < 1e-6,
+            "输出应等于红通道值，实得 {out:?}"
+        );
+    }
+
+    /// 恒等式：灰像素在**任意**权重（和为 1）下不变——含默认 Rec709。
+    #[test]
+    fn black_and_white_gray_pixels_are_fixed_points_for_any_unit_sum_weights() {
+        for weights in [[0.2126, 0.7152, 0.0722], [1.0, 0.0, 0.0], [0.5, 0.25, 0.25]] {
+            let mut buffer = filled([0.42, 0.42, 0.42, 1.0]);
+            black_and_white(&mut buffer, weights, None);
+            assert_rgb_close(px(&buffer), [0.42, 0.42, 0.42], "灰像素应不变");
+        }
+    }
+
+    /// tint 把灰阶按比例着色：白（灰阶 1）配 tint ⇒ 输出 = tint 本身。
+    #[test]
+    fn black_and_white_tint_scales_the_gray() {
+        let mut buffer = filled([1.0, 1.0, 1.0, 1.0]);
+        black_and_white(
+            &mut buffer,
+            [0.2126, 0.7152, 0.0722],
+            Some([0.5, 0.25, 0.0]),
+        );
+        assert_rgb_close(px(&buffer), [0.5, 0.25, 0.0], "白经 tint 后应等于 tint");
+    }
+
+    // ── channel_mixer ───────────────────────────────────────────────
+
+    /// 单位阵 + 零常数 ⇔ 恒等（封住行列写反／漏加常数两类错）。
+    #[test]
+    fn channel_mixer_identity_matrix_is_a_fixed_point() {
+        let mut buffer = filled([0.31, 0.57, 0.83, 1.0]);
+        channel_mixer(
+            &mut buffer,
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            [0.0, 0.0, 0.0],
+        );
+        assert_rgb_close(px(&buffer), [0.31, 0.57, 0.83], "单位阵应恒等");
+    }
+
+    /// 交换 r/b 两行 ⇒ 红蓝互换、绿不动。
+    #[test]
+    fn channel_mixer_swapping_rows_swaps_channels() {
+        let mut buffer = filled([0.2, 0.5, 0.9, 1.0]);
+        channel_mixer(
+            &mut buffer,
+            [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+            [0.0, 0.0, 0.0],
+        );
+        assert_rgb_close(px(&buffer), [0.9, 0.5, 0.2], "红蓝应互换");
+    }
+
+    /// 零矩阵 + 常数 ⇒ 每个像素都等于常数（与输入无关）。
+    #[test]
+    fn channel_mixer_zero_matrix_yields_the_constants() {
+        let mut buffer = filled([0.77, 0.11, 0.55, 1.0]);
+        channel_mixer(&mut buffer, [[0.0; 3]; 3], [0.2, 0.3, 0.4]);
+        assert_rgb_close(px(&buffer), [0.2, 0.3, 0.4], "零矩阵输出应等于常数");
+    }
+
+    // ── gradient_map ────────────────────────────────────────────────
+
+    /// 黑白两 stop：输出 = Rec709 明度的灰（纯红 ⇒ 0.2126 的灰，三通道同值）。
+    #[test]
+    fn gradient_map_black_white_stops_reduce_to_luma() {
+        let stops = [(0.0, [0.0, 0.0, 0.0]), (1.0, [1.0, 1.0, 1.0])];
+        let mut buffer = filled([1.0, 0.0, 0.0, 1.0]);
+        gradient_map(&mut buffer, &stops);
+        let out = px(&buffer);
+        assert!(
+            (out[0] - 0.2126).abs() < 1e-5,
+            "纯红的明度应为 0.2126，实得 {out:?}"
+        );
+        assert_eq!(out[0], out[1]);
+        assert_eq!(out[1], out[2]);
+    }
+
+    /// 端点精确：明度 0 的像素精确命中第一个 stop 色、明度 1 的精确命中最后一个。
+    #[test]
+    fn gradient_map_endpoints_hit_the_stop_colours_exactly() {
+        let stops = [(0.0, [0.1, 0.2, 0.3]), (1.0, [0.9, 0.8, 0.7])];
+        let mut dark = filled([0.0, 0.0, 0.0, 1.0]);
+        gradient_map(&mut dark, &stops);
+        assert_eq!(px(&dark), [0.1, 0.2, 0.3], "黑应精确等于首色标");
+        let mut bright = filled([1.0, 1.0, 1.0, 1.0]);
+        gradient_map(&mut bright, &stops);
+        assert_eq!(px(&bright), [0.9, 0.8, 0.7], "白应精确等于末色标");
+    }
+
+    /// 中点 stop 也精确：灰 0.5 三段色带 ⇒ 精确命中中间 stop。
+    #[test]
+    fn gradient_map_middle_stop_is_hit_exactly_at_its_position() {
+        let stops = [
+            (0.0, [0.0, 0.0, 0.0]),
+            (0.5, [0.25, 0.5, 0.75]),
+            (1.0, [1.0, 1.0, 1.0]),
+        ];
+        let mut buffer = filled([0.5, 0.5, 0.5, 1.0]);
+        gradient_map(&mut buffer, &stops);
+        assert_eq!(px(&buffer), [0.25, 0.5, 0.75], "明度 0.5 应命中中间色标");
+    }
+
+    // ── shadows_highlights ──────────────────────────────────────────
+
+    /// 0/0 ⇒ 恒等（任意像素）。
+    #[test]
+    fn shadows_highlights_zero_is_identity() {
+        let mut buffer = filled([0.23, 0.61, 0.05, 1.0]);
+        shadows_highlights(&mut buffer, 0.0, 0.0);
+        assert_rgb_close(px(&buffer), [0.23, 0.61, 0.05], "0/0 应恒等");
+    }
+
+    /// shadows>0：白色**恰好**不动（权重为 0）、暗部被提亮；
+    /// 且暗部提升量 > 亮部提升量（掩码单调）。
+    #[test]
+    fn shadows_lift_shadows_only() {
+        let mut white = filled([1.0, 1.0, 1.0, 1.0]);
+        shadows_highlights(&mut white, 1.0, 0.0);
+        assert_eq!(px(&white), [1.0, 1.0, 1.0], "白色在 shadows 下必须恰好不动");
+
+        let mut dark = filled([0.1, 0.1, 0.1, 1.0]);
+        shadows_highlights(&mut dark, 1.0, 0.0);
+        let dark_out = px(&dark)[0];
+        assert!(dark_out > 0.1, "暗部应被提亮，实得 {dark_out}");
+
+        let mut bright = filled([0.9, 0.9, 0.9, 1.0]);
+        shadows_highlights(&mut bright, 1.0, 0.0);
+        let bright_lift = px(&bright)[0] - 0.9;
+        assert!(
+            dark_out - 0.1 > bright_lift,
+            "暗部提升量（{}）应大于亮部（{bright_lift}）",
+            dark_out - 0.1
+        );
+    }
+
+    /// highlights<0：黑色**恰好**不动、高光被压暗。
+    #[test]
+    fn highlights_press_highlights_only() {
+        let mut black = filled([0.0, 0.0, 0.0, 1.0]);
+        shadows_highlights(&mut black, 0.0, -1.0);
+        assert_eq!(
+            px(&black),
+            [0.0, 0.0, 0.0],
+            "黑色在 highlights 下必须恰好不动"
+        );
+
+        let mut bright = filled([0.9, 0.9, 0.9, 1.0]);
+        shadows_highlights(&mut bright, 0.0, -1.0);
+        assert!(px(&bright)[0] < 0.9, "高光应被压暗，实得 {:?}", px(&bright));
+    }
+
+    // ── selective_color ─────────────────────────────────────────────
+
+    fn ranges_with(index: usize, offset: [f32; 4]) -> [[f32; 4]; 9] {
+        let mut ranges = [[0.0f32; 4]; 9];
+        ranges[index] = offset;
+        ranges
+    }
+
+    /// 全零偏移 ⇒ CMYK 往返恒等（含黑/白/灰/纯色）。
+    #[test]
+    fn selective_color_zero_offsets_are_identity() {
+        for color in [
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [0.5, 0.5, 0.5, 1.0],
+            [1.0, 0.0, 0.0, 1.0],
+            [0.13, 0.47, 0.91, 1.0],
+        ] {
+            let mut buffer = filled(color);
+            selective_color(&mut buffer, &[[0.0; 4]; 9]);
+            assert_rgb_close(
+                px(&buffer),
+                [color[0], color[1], color[2]],
+                "全零偏移应恒等",
+            );
+        }
+    }
+
+    /// reds 加 cyan ⇒ 纯红的 c 从 0 涨上来（红通道被吃掉、变出青）；
+    /// 纯绿不属于 reds ⇒ 恰好不动。
+    #[test]
+    fn selective_color_reds_cyan_affects_red_not_green() {
+        // SELECTIVE_COLOR_RANGES 的 reds 下标是 0。
+        let ranges = ranges_with(0, [1.0, 0.0, 0.0, 0.0]);
+        let mut red = filled([1.0, 0.0, 0.0, 1.0]);
+        selective_color(&mut red, &ranges);
+        let out = px(&red);
+        assert!(
+            out[0] < 0.01,
+            "纯红加满 cyan 后红通道应被吃光（c=1），实得 {out:?}"
+        );
+        let mut green = filled([0.0, 1.0, 0.0, 1.0]);
+        selective_color(&mut green, &ranges);
+        assert_eq!(px(&green), [0.0, 1.0, 0.0], "纯绿不属于 reds，必须恰好不动");
+    }
+
+    /// 色类路由：中间灰属 neutrals——动 neutrals 有效、动 whites 无效。
+    #[test]
+    fn selective_color_gray_routes_to_neutrals_not_whites() {
+        let mut via_neutrals = filled([0.5, 0.5, 0.5, 1.0]);
+        selective_color(&mut via_neutrals, &ranges_with(7, [0.0, 0.0, 0.0, 1.0]));
+        assert_eq!(px(&via_neutrals), [0.0, 0.0, 0.0], "中间灰加满 k 应变黑");
+
+        let mut via_whites = filled([0.5, 0.5, 0.5, 1.0]);
+        selective_color(&mut via_whites, &ranges_with(6, [0.0, 0.0, 0.0, 1.0]));
+        assert_eq!(px(&via_whites), [0.5, 0.5, 0.5], "中间灰不动 whites 档");
+    }
+
+    // ── color_lut ───────────────────────────────────────────────────
+
+    /// 恒等 LUT（size=2）：格点值 = 格点坐标 ⇒ 任意颜色原样返回（含中点三线性）。
+    fn identity_table(size: usize) -> Vec<f32> {
+        let mut table = Vec::new();
+        for b in 0..size {
+            for g in 0..size {
+                for r in 0..size {
+                    let denom = (size - 1) as f32;
+                    table.extend_from_slice(&[
+                        r as f32 / denom,
+                        g as f32 / denom,
+                        b as f32 / denom,
+                    ]);
+                }
+            }
+        }
+        table
+    }
+
+    #[test]
+    fn color_lut_identity_table_is_a_fixed_point() {
+        let table = identity_table(2);
+        for color in [
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [0.5, 0.5, 0.5, 1.0],
+            [0.25, 0.6, 0.9, 1.0],
+        ] {
+            let mut buffer = filled(color);
+            color_lut(&mut buffer, 2, &table);
+            assert_rgb_close(
+                px(&buffer),
+                [color[0], color[1], color[2]],
+                "恒等 LUT 应不动颜色",
+            );
+        }
+    }
+
+    /// 角点精确：反相 LUT 下输入纯红（格点）⇒ 精确输出该格点值 (0,1,1)。
+    #[test]
+    fn color_lut_corner_values_are_hit_exactly() {
+        let mut table = identity_table(2);
+        // 把每个格点改成反相（1 − 格点）。
+        for value in table.iter_mut() {
+            *value = 1.0 - *value;
+        }
+        let mut buffer = filled([1.0, 0.0, 0.0, 1.0]);
+        color_lut(&mut buffer, 2, &table);
+        assert_eq!(px(&buffer), [0.0, 1.0, 1.0], "角点输入应精确命中角点输出");
+    }
+
+    /// 表形状不符 ⇒ 原样返回（渲染层对坏参数不许动像素）。
+    #[test]
+    fn color_lut_malformed_table_leaves_pixels_untouched() {
+        let mut buffer = filled([0.3, 0.4, 0.5, 1.0]);
+        color_lut(&mut buffer, 2, &[0.0, 0.0, 0.0]);
+        assert_rgb_close(px(&buffer), [0.3, 0.4, 0.5], "坏表不应改像素");
+    }
+
+    // ── 接线（apply_adjustment + 名字往返）────────────────────────────
+
+    /// 6 个新名字都能被 apply_adjustment 认出来（返回 true），且空参数不改像素的期望：
+    /// black_and_white 例外——它空参数 = 默认 Rec709 转灰阶，断言输出三通道同值。
+    #[test]
+    fn apply_adjustment_recognises_the_six_new_names() {
+        for name in [
+            "black_and_white",
+            "channel_mixer",
+            "gradient_map",
+            "shadows_highlights",
+            "selective_color",
+            "color_lut",
+        ] {
+            let mut buffer = filled([0.5, 0.3, 0.1, 1.0]);
+            assert!(
+                apply_adjustment(&mut buffer, name, &json!({}), 1.0),
+                "{name} 未被 apply_adjustment 识别"
+            );
+        }
+        // 默认参数下各调整的恒等/确定行为：
+        let mut buffer = filled([0.5, 0.3, 0.1, 1.0]);
+        assert!(apply_adjustment(
+            &mut buffer,
+            "channel_mixer",
+            &json!({}),
+            1.0
+        ));
+        assert_rgb_close(px(&buffer), [0.5, 0.3, 0.1], "channel_mixer 缺省应恒等");
+        let mut buffer = filled([0.5, 0.3, 0.1, 1.0]);
+        assert!(apply_adjustment(
+            &mut buffer,
+            "shadows_highlights",
+            &json!({}),
+            1.0
+        ));
+        assert_rgb_close(
+            px(&buffer),
+            [0.5, 0.3, 0.1],
+            "shadows_highlights 缺省应恒等",
+        );
+        let mut buffer = filled([0.5, 0.3, 0.1, 1.0]);
+        assert!(apply_adjustment(
+            &mut buffer,
+            "black_and_white",
+            &json!({}),
+            1.0
+        ));
+        let out = px(&buffer);
+        assert_eq!(out[0], out[1], "black_and_white 缺省输出应为灰阶");
+        assert_eq!(out[1], out[2], "black_and_white 缺省输出应为灰阶");
+    }
+
+    /// 名字往返：ALL 与 ADJUSTMENT_NAMES 恰好同长且一一对应（两张清单不许漂移）。
+    #[test]
+    fn adjustment_kind_names_roundtrip() {
+        assert_eq!(
+            AdjustmentKind::ALL.len(),
+            ADJUSTMENT_NAMES.len(),
+            "AdjustmentKind::ALL 与 ADJUSTMENT_NAMES 长度必须一致"
+        );
+        for kind in AdjustmentKind::ALL {
+            if kind == AdjustmentKind::Vibrance {
+                // **`vibrance` 是 `saturation` 的向后兼容别名**（from_name 里并入 Saturation ✓），
+                // 往返本就不成立——这是既有口径，不是新增 6 种引入的 ✓。
+                assert_eq!(
+                    AdjustmentKind::from_name("vibrance"),
+                    Some(AdjustmentKind::Saturation),
+                    "vibrance 应仍是 saturation 的别名"
+                );
+                continue;
+            }
+            assert_eq!(
+                AdjustmentKind::from_name(kind.as_str()),
+                Some(kind),
+                "{} 的 from_name/as_str 不往返",
+                kind.as_str()
+            );
+            assert!(
+                ADJUSTMENT_NAMES.contains(&kind.as_str()),
+                "{} 不在 ADJUSTMENT_NAMES 里",
+                kind.as_str()
+            );
+        }
     }
 }

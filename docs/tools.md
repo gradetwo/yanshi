@@ -517,15 +517,23 @@ This file is checked by `crates/yanshi-render/tests/doc_consistency.rs` (every a
 filter name) and `crates/yanshi-server/tests/tool_inventory.rs` (the counts), so it cannot drift
 from the kernel and registry silently.
 
-## Adjustments (12)
+## Adjustments (18)
 
 brightness_contrast, saturation, invert, levels, exposure, white_balance, curves, hsl, posterize,
-color_balance, split_toning, vibrance.
+color_balance, split_toning, vibrance, black_and_white, channel_mixer, gradient_map,
+shadows_highlights, selective_color, color_lut.
 
 `levels` takes an optional per-channel `channel` (`rgb` / `r` / `g` / `b`). `posterize` takes
 `levels` 2..64. `color_balance` takes `shadows` / `midtones` / `highlights` as `[r,g,b]` triples.
 `split_toning` takes `shadows` / `highlights` triples plus `balance` and `amount`. `vibrance`
-boosts low-saturation pixels more than saturated ones.
+boosts low-saturation pixels more than saturated ones. `black_and_white` takes optional `weights`
+`[wr,wg,wb]` (default Rec709) and optional `tint` `[r,g,b]` (0..1) for toning. `channel_mixer`
+takes `matrix` 3×3 (default identity) and `constants` `[k,k,k]` (default 0).
+`gradient_map` takes `stops` as `[[position, [r,g,b]], ...]` (position 0..1, at least two stops).
+`shadows_highlights` takes `shadows` / `highlights` in -1..1 (0 = no-op). `selective_color`
+takes `adjust` mapping any of reds/yellows/greens/cyans/blues/magentas/whites/neutrals/blacks to
+`[c,m,y,k]` offsets (-1..1). `color_lut` takes `path` to a `.cube` file (resolved into `size` +
+`table` at write time) or `size` + `table` directly (`size` 2..64, table length `size³×3`).
 
 ## Filters (13)
 

@@ -660,6 +660,12 @@ tile 丢掉场景内容（症状：`(36,15)` 处场景笔迹变成背景白；�
 | 调整 `levels`（扩展） | 增加 `channel`（rgb/r/g/b） | 分通道色阶，通道命名与 `curves` 的 RGB 部分一致 |
 | 调整 `posterize` | `levels` 2..64 | 直通通道量化到 N 个台阶（如 3 级 → 0/0.5/1） |
 | 调整 `color_balance` | `shadows`/`midtones`/`highlights` 各 `[r,g,b]`（−1..1） | 按线性亮度分档加权偏移：`shadows=(1-luma)²`、`highlights=luma²`、中间调为余量 |
+| 调整 `black_and_white` | `weights` [r,g,b]（默认 Rec709）、可选 `tint` [r,g,b] | 加权转灰：`gray=Σw·c`，tint 乘色染调 |
+| 调整 `channel_mixer` | `matrix` 3×3（默认单位阵）、`constants` [k,k,k] | 输出=矩阵×输入+常数，通道任意线性重组 |
+| 调整 `gradient_map` | `stops` [[pos,[r,g,b]],...]（≥2） | 按 luma 查渐变条插值（颜色映射） |
+| 调整 `shadows_highlights` | `shadows`/`highlights` −1..1 | luma 掩码分区：暗部权重 (1−L)²、高光 L²，互不串扰 |
+| 调整 `selective_color` | `adjust` {色类: [c,m,y,k] −1..1}（9 色类） | PS 可选颜色：相对模式，按色相扇区/明度路由 |
+| 调整 `color_lut` | `path`→工具层解析 .cube 注入 `size`+`table` | 3D LUT 三线性插值；渲染层纯函数不读盘 |
 | 调整 `split_toning` | `shadows`/`highlights` 各 `[r,g,b]`、`balance` −1..1、`amount` 0..1 | 权重为 smoothstep（分界 `mid = 0.5 + balance×0.25`），阴影/高光分别着色 |
 | 滤镜 `motion_blur` | `angle`/`distance`/`samples` | 沿角度平均 |
 | 滤镜 `sharpen` | `amount`/`radius` | 非锐化掩模 |
@@ -978,7 +984,7 @@ patch 内先建对象再更新（合法）、更新不存在的对象（非法�
 
 ## 二之五之三、效果算子清单与文档一致性（自动校验）
 
-调整 **12 种** / 滤镜 **14 种**（本行由 `crates/yanshi-render/tests/doc_consistency.rs` 校验，
+调整 **18 种** / 滤镜 **14 种**（本行由 `crates/yanshi-render/tests/doc_consistency.rs` 校验，
 数字与 `ADJUSTMENT_NAMES`/`FILTER_NAMES` 的实际长度必须一致；每个名字也必须出现在本文档与两份 README 中）。
 
 > **为什么要自动化**：此前几轮我把「| 调整与滤镜 | N 种调整 / M 种滤镜 |」当作文档同步目标，
