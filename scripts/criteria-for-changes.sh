@@ -101,6 +101,11 @@ for f in $CHANGED; do
     crates/yanshi-server/src/tools.rs)           add_all 'tool-*.mjs'; add_all 'serve-*.mjs'; add_all 'mcp-*.mjs' ;;
     crates/yanshi-server/src/*)                  add_all 'serve-*.mjs'; add_all 'mcp-*.mjs' ;;
     crates/yanshi-render/src/color.rs)           add_all 'tool-color-*.mjs'; add_all 'tool-*-color-*.mjs'; add_all 'tool-vermeer-*.mjs' ;;
+    # **★ `brush.rs` 是**落笔实现**（含净室揉合）⇒ 只影响笔刷族，不是全部** ✓（第 1313 轮实测：
+    #   原来落到 `render/*` ⇒ **288 个（≈ 全量）** ⇒ 等于没分）
+    crates/yanshi-render/src/brush.rs)           add_all 'tool-brush-*.mjs'; add_all 'tool-stroke-*.mjs'; add_all 'tool-taper-*.mjs'; add_all 'tool-bristle-*.mjs'; add_all 'tool-visible-delta.mjs' ;;
+    crates/yanshi-render/src/buffer.rs)          add_all 'tool-*.mjs' ;;
+    crates/yanshi-render/src/tile.rs)            add_all 'tool-*.mjs' ;;
     crates/yanshi-render/src/*)                  add_all 'tool-*.mjs'; add_all 'browser-*.mjs' ;;
     crates/yanshi-core/src/*)                    add_all 'tool-*.mjs' ;;
     web/*|assets/*)                              add_all 'browser-*.mjs'; add_all 'tool-pwa-*.mjs' ;;
