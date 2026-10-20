@@ -15,7 +15,7 @@
 const [base, doc, token] = process.argv.slice(2);
 if (!base || !doc || !token) {
   console.error("用法: node scripts/tool-guide-arc-bound.mjs <base> <doc> <token>");
-  process.exit(2);
+  process.exit(3);  // ⊘ 不可判：用法/前提不成立（不是产品失败）
 }
 
 const call = async (name, args, timeoutMs = 20_000) => {
