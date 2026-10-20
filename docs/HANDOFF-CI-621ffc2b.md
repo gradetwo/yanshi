@@ -920,3 +920,43 @@ run 完成即退出 ⇒ 一次调用就够，不消耗多次限额。**
 **⇒ 而**若限额已耗尽** ⇒ 等一小时（GitHub 的窗口是滚动小时）或换 `gh auth token` 的另一个 token。**
 
 **⇒ ⇒ 判断限额是否恢复：`gh api rate_limit --jq '.rate.remaining'` ⇒ 返回 > 0 即可。**
+
+## ★ 限额问题的**真正原因**与绕过（第 1277 轮查清）
+
+**⇒ 我上一条写「限额耗尽」是**错的**（我自己测量错，第 7 次）：**
+
+```
+gh api rate_limit
+  core: 3806/5000        ← 没耗尽
+  search: 30/30          ← 没耗尽
+```
+
+**⇒ 而 `gh run list` 仍报 403 ⇒ 因为它内部请求的是**
+```
+https://api.github.com/repos/gradetwo/yanshi/actions/workflows?page=1&per_page=100
+```
+**⇒ 而**这个端点有独立的（更低的）次级限额** ⇒ 所以 `core` 还有 3806 也没用。**
+
+### ★ 绕过：直接打 `/actions/runs`
+
+```bash
+gh api "repos/gradetwo/yanshi/actions/runs?per_page=3" \
+  --jq '.workflow_runs[] | "\(.head_sha[0:8]) \(.status) \(.conclusion // "-")"'
+```
+
+**⇒ 实测它**可用**（同一时刻 `gh run list` 403 而它返回 200）✓**
+
+**⇒ 而 `gh run view <id> --json jobs` 也可能受同样限制 ⇒ 替代：**
+```bash
+gh api "repos/gradetwo/yanshi/actions/runs/<run_id>/jobs" \
+  --jq '.jobs[] | select(.conclusion=="failure") | .name'
+```
+
+**⇒ 所以规矩改成：**
+| 想做的事 | 用哪个 |
+|---|---|
+| 看最近 run | **`gh api .../actions/runs`**（不要 `gh run list`）|
+| 看某 run 的 job | **`gh api .../actions/runs/<id>/jobs`**（不要 `gh run view`）|
+| 取日志 | `curl` + `gh auth token`（那条一直可用）|
+
+**⇒ ⇒ 而 `scripts/watch-ci.sh` 若用 `gh run list` ⇒ **它也会 403** ⇒ 所以那个脚本要改（下一轮）。**
