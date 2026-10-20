@@ -18793,7 +18793,13 @@ fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     // **落笔路径的最后一段光栅工作** ✓（P2）：选区裁剪 ＋ blob 落库（CAS 写入 ✓）——
     // 报告里的模型把这段与"dab 生成"混在一起 ✓，现在分开算 ✓。
     let composite_started = std::time::Instant::now();
-    if let Some(id) = optional_str(args, "clip_to_selection") {
+    // **★ 统一实现（第 1195 轮，外部 §164 问题②）**：
+    //   「`clip_to_selection` 缺省或空串 ⇒ 不裁剪」必须**一处改、全部受益** ✓
+    //   ⇒ 原来 `optional_str` 对 **空串**返回 `Some("")`（不是 None）⇒
+    //     任何调用者传了空串（`unwrap_or_default()` 的常见写法）都会去找 `id=""` 的选区
+    //     ⇒ 抛 `ReferenceNotFound` ⇒ **整批笔触全失败** ✗（7 个 smart_* 都中过）
+    //   ⇒ 所以在**唯一入口**过滤空串 ⇒ 调用者不必各自记得 ✓
+    if let Some(id) = optional_str(args, "clip_to_selection").filter(|s| !s.trim().is_empty()) {
         let state = document_state(ctx)?;
         // Q4 快路径：`smart_*` 预热的缓存命中时，直接从缓存网格采样，
         // 跳过下面的慢速光栅化（document_state 拉取 + 形状光栅化 + 羽化模糊）。
