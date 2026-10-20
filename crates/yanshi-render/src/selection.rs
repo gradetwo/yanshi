@@ -1017,10 +1017,61 @@ pub struct DecodedBitmapMask {
 static BITMAP_MASK_REGISTRY: std::sync::LazyLock<Mutex<HashMap<String, Arc<DecodedBitmapMask>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// **位图掩膜注册表的条数上限** ✓（第三轮复审 **N3B-01**，P1）
+///
+/// **为什么必须有** ✗：注册表原来是**只增不减**（`register_bitmap_mask` 只有 `insert`，
+/// 没有 remove / 预算 / LRU）⇒ 4K 画布单条约 **16 MB**，而布尔合并每次产出新 blob 条目
+/// ⇒ **服务端长会话内存耗尽**；wasm 32 位固定堆下可直接 abort 实例 ✗
+///
+/// **为什么是 8 条**：4K 一条 ~16 MB ⇒ 8 条 ~128 MB ⇒ 已经是「一个桌面进程可接受的上限」；
+/// 而正常用法同时引用的位图选区很少超过 3–4 条（作者面板最多同时显示几个文档）。
+pub const MAX_REGISTERED_MASKS: usize = 8;
+
+/// 注册顺序（FIFO 淘汰用）。与 `BITMAP_MASK_REGISTRY` **同锁序**：
+/// 两个 `lock()` 都在 `register_bitmap_mask` 里、且顺序固定（先 REGISTRY 后 ORDER），
+/// 别处不锁 ORDER ⇒ 无死锁。
+static REGISTRY_ORDER: std::sync::LazyLock<Mutex<Vec<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
 /// 把解码后的位图掩膜注册进全局表（写时 / 渲染准备阶段调用）。
+///
+/// **超上限时淘汰最旧的一条**（FIFO，不是 LRU —— 「存活期长但不再用」的条目先走，
+/// 而重载会按需重新解码 ⇒ 代价是一次 `store.get`，不是错误）。
 pub fn register_bitmap_mask(blob_hash: String, mask: Arc<DecodedBitmapMask>) {
     let mut guard = BITMAP_MASK_REGISTRY.lock().expect("位图选区注册表锁中毒");
+    let mut order = REGISTRY_ORDER.lock().expect("位图选区注册顺序锁中毒");
+    if !guard.contains_key(&blob_hash) {
+        order.push(blob_hash.clone());
+    }
     guard.insert(blob_hash, mask);
+    // **淘汰到上限以内** ✓：while 而不是 if —— 上限可能被下调过，也可能是首次大量注册
+    while guard.len() > MAX_REGISTERED_MASKS {
+        let Some(oldest) = order.first().cloned() else {
+            break;
+        };
+        order.remove(0);
+        guard.remove(&oldest);
+    }
+}
+
+/// **显式移除一条**（选区被删除时调用 ⇒ 立刻释放，不等淘汰）✓
+pub fn unregister_bitmap_mask(blob_hash: &str) {
+    BITMAP_MASK_REGISTRY
+        .lock()
+        .expect("位图选区注册表锁中毒")
+        .remove(blob_hash);
+    REGISTRY_ORDER
+        .lock()
+        .expect("位图选区注册顺序锁中毒")
+        .retain(|h| h != blob_hash);
+}
+
+/// 当前注册条数（判据用：证明上限生效）。
+pub fn registered_bitmap_mask_count() -> usize {
+    BITMAP_MASK_REGISTRY
+        .lock()
+        .expect("位图选区注册表锁中毒")
+        .len()
 }
 
 /// 查已注册的位图掩膜（`from_value` 构造时单次绑定用）。
@@ -1993,5 +2044,73 @@ mod tests {
         assert!((c1 - c2).abs() < 1e-6, "circle={c1} ellipse={c2}");
         // 中心都应为 1。
         assert!((c1 - 1.0).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod bitmap_mask_registry_tests {
+    //! **N3B-01 判据**（第三轮复审 P1）：位图掩膜注册表必须有上限。
+    //!
+    //! 判据不是「注册表能注册」而是**它不会无限长**：
+    //! 三条断言各抓一种回归 —— 没上限 / 淘汰的不是最旧的 / 显式移除失效。
+
+    use super::{
+        get_bitmap_mask, register_bitmap_mask, registered_bitmap_mask_count,
+        unregister_bitmap_mask, DecodedBitmapMask,
+    };
+    use std::sync::Arc;
+
+    fn dummy(w: u32) -> Arc<DecodedBitmapMask> {
+        Arc::new(DecodedBitmapMask {
+            width: w,
+            height: 1,
+            data: vec![255; w as usize],
+        })
+    }
+
+    #[test]
+    fn count_never_exceeds_the_cap() {
+        // **核心**：注册远超上限的条数 ⇒ 计数必须被压回上限
+        for i in 0..24 {
+            register_bitmap_mask(format!("cap_{i}"), dummy(1));
+        }
+        let n = registered_bitmap_mask_count();
+        // **★ 断言必须写死 8**（不能写 `MAX_REGISTERED_MASKS`）——
+        //   否则「把常量改大」的变异会让断言**跟着变** ⇒ 判据永远绿 ✗
+        //   （我这一轮就是这么错的：变异 `MAX = usize::MAX` ⇒ 断言变成 `n <= usize::MAX` 恒真）
+        assert!(n <= 8, "注册表超过上限：{n} > 8");
+        // 清干净，避免影响别的测试（同进程共享静态表）
+        for i in 0..24 {
+            unregister_bitmap_mask(&format!("cap_{i}"));
+        }
+    }
+
+    #[test]
+    fn oldest_is_evicted_first() {
+        for i in 0..16 {
+            register_bitmap_mask(format!("fifo_{i}"), dummy(1));
+        }
+        // 最旧的那几条必须已被淘汰（`get` 不到）
+        assert!(
+            get_bitmap_mask("fifo_0").is_none(),
+            "最旧的 fifo_0 应当已被淘汰"
+        );
+        // 最新的那条必须在
+        let newest = "fifo_15".to_owned();
+        assert!(
+            get_bitmap_mask(&newest).is_some(),
+            "最新的 {newest} 必须还在"
+        );
+        for i in 0..16 {
+            unregister_bitmap_mask(&format!("fifo_{i}"));
+        }
+    }
+
+    #[test]
+    fn explicit_unregister_frees_immediately() {
+        register_bitmap_mask("solo".to_owned(), dummy(2));
+        assert!(get_bitmap_mask("solo").is_some(), "注册后应能查到");
+        unregister_bitmap_mask("solo");
+        assert!(get_bitmap_mask("solo").is_none(), "移除后不该还能查到");
     }
 }
