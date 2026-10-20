@@ -511,3 +511,28 @@ background 必须是对象 {r,g,b,a}（0..255；缺省不透明白）
 
 **⇒ `medium_stroke` **不接受** `preview`／`wait_for_render`**（它没有这两个参数）⇒
 **⇒ 传了会 `invalid_argument`：**「medium_stroke 不接受参数 preview（拼写错误？）；可用参数：layer_id, medium, points, size, color, color_to, color_mixing, smooth, symmetry, load, …」** ✓
+
+## 7.5 定位边界（第 1401 轮）：**再往下需要加计时切分**，本轮到此为止
+
+**⇒ 又排除了两个：**
+
+| 嫌疑 | 依据 | 结论 |
+|---|---|---|
+| `state.objects` 的操作 | 它是 **`BTreeMap<ObjectId, Object>`** ⇒ `get`/`insert` 都是 **O(log n)** | **排除** ✓ |
+| `grid_for_state()` | 只按 `width/height` 建 `TileGrid` | **O(1)** ⇒ 排除 ✓ |
+
+**⇒ ⇒ 所以剩下的候选**都在 `IncrementalFolder::fold` 的**记账**里（不在折叠算法本身）：**
+1. **`self.actions.extend(slice, log, origin)`**（有效集推进）
+2. **`self.stride`**（还原点阶梯）
+3. **`self.cache`**（`discard_from` / 缓存查找）
+4. **`document.rs` 里 `self.state = folded.state`** 会**丢弃旧状态**（O(对象数) 的 drop）
+
+**⇒ ⇒ ⇒ 而**本轮**没有修法** ✗ ⇒ 所以**唯一可用的是「分文档」绕过**（§7.3，实测 5.3×）✓
+
+### ⇒ 下一步（明确、可执行）
+
+**⇒ 在 `IncrementalFolder::fold` 里加**四段计时**（`extend`／`stride`／`cache`／`fold_atoms`）⇒ 打到一个临时响应字段里
+⇒ 跑 2000 笔 ⇒ **看是哪一段线性涨** ⇒ 然后只改那一段 ✓
+
+**⇒ 而**不要**在没有这组数字前动折叠代码** ✗：它牵动撤销、时间旅行、快照三条语义，
+⇒ 盲改的代价远大于「分文档」这个绕过 ✓
