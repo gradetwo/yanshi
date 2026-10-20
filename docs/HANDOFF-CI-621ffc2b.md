@@ -1740,3 +1740,31 @@ pub fn mix_smudge_linear(smudge: [f32;3], brush: [f32;3], amt: f32, alpha: f32) 
 - 第 1308 轮：新鲜度检查**必须扫 `vendor/`**
 
 **⇒ 现在第三条：**手动调研也不许绕过脚本** ⇒ 要查任何工具响应，用 `run-criteria-local.sh`（它会重建）或**先 `cargo build --release`。**
+
+## ✅ 两个补丁合并**全绿**（第 1318 轮）
+
+**⇒ 补丁：**`yanshi-redeye-jpeg` + `yanshi-photoretouch`（按序应用）⇒ **CI 全绿**：**
+
+| Job | 结果 |
+|---|---|
+| `test (stable)` / `test (beta)` | **✓ success** |
+| `clippy` / `rustfmt` | **✓ success** |
+| `wasm smoke (node)` | **✓ success** |
+| `GPU feature` | **✓ success** |
+| `criteria` 六片 | **✓ success** |
+| `brush parity` | ⊘ skipped（已知）|
+
+**⇒ ⇒ 所以**补丁合并是干净的**：**11 个 clippy err 是我修完之后才绿的**（那正是 AGENTS.md 说的「补丁能编过、clippy 照样报」）✓**
+
+### ★ 补丁带来的新增能力（已核）
+
+| 能力 | 位置 | 测试覆盖 |
+|---|---|---|
+| **`red_eye`** 调整 | `filter.rs` | 我的新判据 `tool-photo-adjustments`（220→20）|
+| **`denoise`**（引导滤波）| `filter.rs` | 同上（std 84.9→81.6）|
+| **`lens`**（k1/k2/TCA/暗角）| `filter.rs` | 同上（608 像素变化）|
+| **`perspective`**（quad 闭式解）| `filter.rs` | 同上（1214 像素变化）|
+| **JPEG 导入**（EXIF 方向）| `jpeg.rs`（442 行）| **8 个单测**（含真 fixture）|
+| 几何底座 | `filter.rs`（+509 行）| `filter.rs` 68 个单测 |
+
+**⇒ 调整总数 19 → 22**（代码 + `docs/tools.md` 一致）✓
