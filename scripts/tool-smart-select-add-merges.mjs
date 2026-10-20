@@ -15,7 +15,9 @@
 //   （判据优先断结构量/相对量，不断绝对像素数）。
 import { existsSync } from "node:fs";
 
-const [base, doc, token] = process.argv.slice(2);
+const [base, passedDoc, passedToken] = process.argv.slice(2);
+let doc = passedDoc;
+let token = passedToken;
 if (!base || !doc || !token) {
   console.error("用法: node scripts/tool-smart-select-add-merges.mjs <base> <doc> <token>");
   process.exit(3);
@@ -35,9 +37,27 @@ const call = async (name, args) => {
 const fails = [];
 const check = (ok, msg) => { if (!ok) fails.push(msg); console.log(`  ${ok ? "✓" : "✗"} ${msg}`); };
 
-// 先铺两块**离得很远**的纯色 ⇒ 用 `smart_select` 的魔棒各选一块
-const docInfo = await call("get_document", {});
-const W = Number(docInfo.width ?? 200), H = Number(docInfo.height ?? 150);
+// **★ 必须**自建文档**（第 1384 轮修）★**
+//   **⇒ 原错** ✗：它读「传进来的那个 doc」的尺寸 ⇒ 而运行器传的是 **64×64 的 `_bootstrap`**
+//     ⇒ 于是 `W=H=64` ⇒ 两块（`x 10..50` 与 `x W-50..W-10` = `14..54`）**重叠** ✗
+//     ⇒ 第二次 add 选到的是**同一团** ⇒ `area` 恒 1600 ⇒ **比值 1.00 ⇒ 恒红** ✗
+//   **⇒ ⇒ 而 CI 上碰巧过**（CI 的运行器给的是更大的文档）⇒ **典型「本机红 / CI 绿」** ✓
+//   **⇒ 所以**判据自己建一个 **200×150** 的文档 ⇒ 与运行器无关 ✓
+{
+  const stamp = Date.now();
+  const mine = `add_merges_${stamp}`;
+  const made = await (await fetch(`${base}/api/documents`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: mine, width: 200, height: 150 }),
+  })).json();
+  if (!made.token) {
+    console.error("  ⊘ 不可判：建不出自己的文档（不是产品问题）");
+    process.exit(3);
+  }
+  doc = mine;
+  token = made.token;
+}
+const W = 200, H = 150;
 const layer = await call("create_layer", { layer_id: "L_add", name: "ADD", if_exists: "reuse" });
 if (layer.ok !== true) {
   console.error("  ⊘ 不可判：建层失败");
