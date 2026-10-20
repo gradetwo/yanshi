@@ -2726,3 +2726,30 @@ for i in 1 2 3 4 5 6; do
     --jq ".jobs[] | select(.name | contains(\"criteria shard $i/\")) | .id"
 done   # 再用 curl 取每个 job 的 logs，grep "—— 通过"
 ```
+
+## ★ 「我推了但没起 CI」是**设计如此**（第 1400 轮查清，别再当异常）
+
+**⇒ 现象** ✗：我连推 8 笔，`gh api .../runs` 里**一个新 run 都没有** ⇒ 我一度以为「流水线坏了」✗
+
+**⇒ 根因**（`.github/workflows/ci.yml:63-65`）：
+```yaml
+paths-ignore:
+  - '**/*.md'
+```
+**⇒ ⇒ 所以**只改文档的推送**不触发流水线**（这是第 398 轮为「文档提交占住并发位」加的）✓
+
+**⇒ ⇒ ⇒ 而实测：最近 8 笔提交**每一笔的非 `.md` 文件数都是 0** ⇒ **所以没有新 run 是**预期** ✓**
+
+### ⇒ 怎么一眼判断「该不该有 run」
+
+```bash
+git show --name-only --format= <commit> | grep -vc '\.md$'   # 若为 0 ⇒ 不该有 run
+```
+
+**⇒ 而**代码改动的验证链**（本段）是完整的：**
+| 改动 | 起 run 的那一笔 | 结果 |
+|---|---|---|
+| `neutral` 参数 ＋ 提亮判据 | （`neutral` 落在的提交的**后代**）| **✓ success** |
+| `add-merges` 判据修复 ＋ 指针判据 | **含 `scripts/*.mjs` 的那一笔** | **✓ success** |
+
+**⇒ ⇒ 所以「没有新 run」≠「没验证」⇒ **要看那一笔有没有非 md 文件** ✓**
