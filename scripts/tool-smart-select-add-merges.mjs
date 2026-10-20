@@ -61,7 +61,17 @@ const first = await call("smart_select", {
   tolerance: 0.15, feather: 0,
 });
 check(first.ok === true, `③ 第一次 smart_select(mode=add, 红) ⇒ ok=${first.ok}｜${JSON.stringify(first.context?.detail ?? "").slice(0, 80)}`);
-const r1 = Number(first.canvas_coverage_ratio ?? 0);
+// **★ 必须读 `list_selections` 的 `area`，不能读 `canvas_coverage_ratio`** ✓（第 1301 轮实测）
+//   **为什么**：`canvas_coverage_ratio` 反映的是**本次** mask 的覆盖比
+//     ⇒ 而**合并后的选区**在**已存储的状态**里 ⇒ 所以那个比值第二次仍等于第一次
+//     ⇒ 于是判据**永远红**（而产品其实是对的：`area 1600 → 3200`）✗
+//   ⇒ **测量比被测对象更容易错**（AGENTS.md 那条）
+const areaOf = async () => {
+  const r = await call("list_selections", {});
+  const hit = (r.selections ?? []).find((s) => s.selection_id === "S_add");
+  return Number(hit?.area ?? 0);
+};
+const r1 = await areaOf();
 
 // 第二次 add：选蓝块（**不相交** ⇒ 正确时应累加）
 const second = await call("smart_select", {
@@ -69,7 +79,7 @@ const second = await call("smart_select", {
   tolerance: 0.15, feather: 0,
 });
 check(second.ok === true, `④ 第二次 smart_select(mode=add, 蓝) ⇒ ok=${second.ok}`);
-const r2 = Number(second.canvas_coverage_ratio ?? 0);
+const r2 = await areaOf();
 
 // **核心断言**：第二次之后应 ≈ 两次之和（≈ 2×r1，因为两块面积相同）
 //   若 bug 复发（覆盖）⇒ r2 ≈ r1 ⇒ 比值 ≈ 1.0 ⇒ 红
@@ -77,7 +87,7 @@ const ratio = r1 > 0 ? r2 / r1 : 0;
 check(
   ratio > 1.5,
   `⑤ mode=add 必须**累加**（第二次/第一次 = ${ratio.toFixed(2)}，应 > 1.5；` +
-  `若 ≈ 1.0 ⇒ 覆盖 bug 复发）｜r1=${r1.toFixed(4)} r2=${r2.toFixed(4)}`,
+  `若 ≈ 1.0 ⇒ 覆盖 bug 复发）｜area1=${r1} area2=${r2}`,
 );
 
 if (fails.length) {

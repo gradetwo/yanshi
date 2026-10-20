@@ -8538,17 +8538,25 @@ fn shape_json_bbox(shape: &Value) -> Option<(f64, f64, f64, f64)> {
         //     ⇒ 于是 `mode=add/subtract/intersect` **永远不合并**（静默覆盖）✗
         //   **判据抓到它**：`tool-smart-select-add-merges.mjs` ⇒ `r1 == r2`、`merged_from=None`
         //   **格式**：`bbox` 是**数组** `[x, y, w, h]`（`commit_bitmap_selection` 写的就是这个）
-        "bitmap" => {
-            let a = shape.get("bbox").and_then(Value::as_array)?;
-            let n = |i: usize| a.get(i).and_then(Value::as_f64);
-            let (x, y, w, h) = (n(0)?, n(1)?, n(2)?, n(3)?);
-            if w <= 0.0 || h <= 0.0 {
-                return None;
-            }
-            Some((x, y, x + w, y + h))
-        }
-        _ => None,
+        "bitmap" => bitmap_bbox(shape),
+        // **★ 没有 `kind` 但**有 `bbox` 数组** ⇒ 也是位图选区** ✓（第 1301 轮实测，根因）
+        //   **实测**：`list_selections` 里存储的 shape 是
+        //     `{"bbox":[10,10,40,40],"blob":"sha256:…"}` ⇒ **没有 `kind`** ✗
+        //   ⇒ 所以上面 `shape.get("kind").unwrap_or("")` 给空串 ⇒ 落到这里
+        //   ⇒ 而原来这里是 `_ => None` ⇒ **bBox 恒 None ⇒ 合并永不发生** ✗
+        _ => bitmap_bbox(shape),
     }
+}
+
+/// **位图选区的 bbox**：`bbox` 是**数组** `[x, y, w, h]`（`commit_bitmap_selection` 与折叠层都用这个）
+fn bitmap_bbox(shape: &Value) -> Option<(f64, f64, f64, f64)> {
+    let a = shape.get("bbox").and_then(Value::as_array)?;
+    let n = |i: usize| a.get(i).and_then(Value::as_f64);
+    let (x, y, w, h) = (n(0)?, n(1)?, n(2)?, n(3)?);
+    if w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    Some((x, y, x + w, y + h))
 }
 
 /// 把两个选区形状按 `mode` 合成为一张位图：写 blob、注册掩膜、返回 `(bbox, blob_hash, png_len)`。
