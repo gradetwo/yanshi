@@ -802,6 +802,16 @@ mod lab_delta_e_tests {
 pub enum ColorMixing {
     /// sRGB 空间线性插值 —— **缺省**，与今天的画布逐字节相同。
     Rgb,
+    /// **线性光混色**（sRGB → linear → 混合 → sRGB）：**物理正确**的混色。
+    ///
+    /// **为什么需要它** ✗（色彩体系规划 **Phase 1**）：`Rgb` 是**在 sRGB 空间**做插值
+    /// ⇒ 而 sRGB 是**感知编码**（有 gamma）⇒ 于是「红 + 蓝各 50%」会得到**偏暗**的结果 ✗
+    /// **实测**（第 1290 轮）：红 `(0.8,0.1,0.1)` + 蓝 `(0.1,0.1,0.8)` 各 50%：
+    ///   · sRGB 空间 ⇒ `(0.450, 0.100, 0.450)`
+    ///   · linear 空间 ⇒ `(0.590, 0.100, 0.590)`
+    ///   · **差 35 级（8-bit）** = 13.7% 满量程 ⇒ **视觉上很明显**
+    /// ⇒ 所以线性混合是**另一个模式**（不是替换 `Rgb`）⇒ `Rgb` 保持「与今天逐字节相同」的承诺 ✓
+    Linear,
     /// **光谱颜料混色**（Kubelka-Munk 的 K/S 空间）：黄 + 蓝 => **绿**，而不是灰。
     Pigment,
 }
@@ -812,6 +822,7 @@ impl ColorMixing {
     pub fn parse(name: &str) -> Option<Self> {
         match name.trim().to_ascii_lowercase().as_str() {
             "rgb" => Some(Self::Rgb),
+            "linear" => Some(Self::Linear),
             "pigment" => Some(Self::Pigment),
             _ => None,
         }
@@ -822,6 +833,7 @@ impl ColorMixing {
     pub fn name(self) -> &'static str {
         match self {
             Self::Rgb => "rgb",
+            Self::Linear => "linear",
             Self::Pigment => "pigment",
         }
     }
@@ -849,6 +861,18 @@ pub fn mix_colors(mode: ColorMixing, a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] 
                 (f32::from(x) + (f32::from(y) - f32::from(x)) * t)
                     .round()
                     .clamp(0.0, 255.0) as u8
+            };
+            [mix(a[0], b[0]), mix(a[1], b[1]), mix(a[2], b[2])]
+        }
+        ColorMixing::Linear => {
+            // **sRGB 字节 ⇒ linear ⇒ 插值 ⇒ 回 sRGB** ✓（物理正确的混色）
+            //   ⇒ 「红 + 蓝各 50%」给出 `(0.590, 0.100, 0.590)`（而不是 sRGB 空间的 `(0.450, …, 0.450)`）
+            let to_lin = |c: u8| srgb_to_linear(f32::from(c) / 255.0);
+            let mix = |x: u8, y: u8| {
+                let lx = to_lin(x);
+                let ly = to_lin(y);
+                let l = lx + (ly - lx) * t;
+                (linear_to_srgb(l).clamp(0.0, 1.0) * 255.0).round() as u8
             };
             [mix(a[0], b[0]), mix(a[1], b[1]), mix(a[2], b[2])]
         }
@@ -977,5 +1001,70 @@ mod mixed_domain_probe {
             b[0]
         );
         assert_eq!(c[3], 1.0, "a=255 必须不透明");
+    }
+}
+
+#[cfg(test)]
+mod linear_mixing_tests {
+    //! **`ColorMixing::Linear` 的判据**（第 1291 轮；色彩体系规划 Phase 1）
+    //!
+    //! **要证的命题**：线性混色与 sRGB 混色**必须不同**，且**差 35 级左右**。
+    //! ⇒ 所以这条断言**有鉴别力**（若 `Linear` 被误实现成 `Rgb`，它会红）。
+
+    use super::{mix_colors, ColorMixing};
+
+    /// **红 + 蓝各 50%**：线性空间给出更亮的结果（`(0.590, …, 0.590)` vs `(0.450, …, 0.450)`）。
+    ///
+    /// **输入选这两个颜色的理由**：它们在 sRGB 空间的亮度差很大 ⇒ 线性化后差异最大 ⇒
+    ///   判据**最敏感**（若选两个灰，线性与 sRGB 几乎相同 ⇒ 判据无鉴别力）。
+    #[test]
+    fn linear_mixing_differs_from_srgb_mixing_by_about_35_levels() {
+        let red = [204u8, 25, 25]; // ≈ (0.8, 0.1, 0.1)
+        let blue = [25u8, 25, 204]; // ≈ (0.1, 0.1, 0.8)
+
+        let srgb = mix_colors(ColorMixing::Rgb, red, blue, 0.5);
+        let linear = mix_colors(ColorMixing::Linear, red, blue, 0.5);
+
+        // **线性必须更亮**（红/蓝分量）—— 这就是「物理正确」的方向
+        assert!(
+            linear[0] > srgb[0],
+            "线性混色的红分量必须大于 sRGB：linear={linear:?} srgb={srgb:?}"
+        );
+        assert!(
+            linear[2] > srgb[2],
+            "线性混色的蓝分量必须大于 sRGB：linear={linear:?} srgb={srgb:?}"
+        );
+
+        // **量级**：预期差 ~35 级（8-bit）⇒ 允许 ±6（不同取整/输入微差）
+        let d = i32::from(linear[0]) - i32::from(srgb[0]);
+        assert!(
+            (29..=41).contains(&d),
+            "线性与 sRGB 的红分量差应为 35±6 级（实测 {d}）"
+        );
+    }
+
+    /// **端点必须精确**：`t=0` 给 `a`，`t=1` 给 `b`（两种模式都是 ⇒ 这条守住「共同的契约」）。
+    #[test]
+    fn linear_mixing_endpoints_are_exact() {
+        let a = [10u8, 200, 30];
+        let b = [250u8, 5, 240];
+        assert_eq!(mix_colors(ColorMixing::Linear, a, b, 0.0), a);
+        assert_eq!(mix_colors(ColorMixing::Linear, a, b, 1.0), b);
+    }
+
+    /// **与自身混合必须恒等**（`a == b` 时任何 `t` 都给 `a`）⇒ 线性往返不引入漂移。
+    #[test]
+    fn linear_mixing_self_is_identity() {
+        let a = [137u8, 88, 201];
+        for t in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+            assert_eq!(mix_colors(ColorMixing::Linear, a, a, t), a, "t={t}");
+        }
+    }
+
+    /// **`parse` / `name` 往返**（`"linear"` ⇒ `Linear` ⇒ `"linear"`）。
+    #[test]
+    fn linear_name_round_trips() {
+        assert_eq!(ColorMixing::parse("linear"), Some(ColorMixing::Linear));
+        assert_eq!(ColorMixing::Linear.name(), "linear");
     }
 }
