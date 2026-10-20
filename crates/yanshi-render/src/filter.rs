@@ -51,6 +51,14 @@ pub enum AdjustmentKind {
     SelectiveColor,
     /// LUT（.cube 三线性插值）。
     ColorLut,
+    /// 红眼消除。
+    RedEye,
+    /// 降噪（自引导滤波 + √Linear + 亮色分离；照片修图）。
+    Denoise,
+    /// 镜头校正（径向畸变 + TCA + 暗角；照片修图）。
+    Lens,
+    /// 透视校正（四角拉正 + 可选镜头畸变合并；照片修图）。
+    Perspective,
 }
 
 impl AdjustmentKind {
@@ -76,6 +84,10 @@ impl AdjustmentKind {
             "shadows_highlights" => Some(Self::ShadowsHighlights),
             "selective_color" => Some(Self::SelectiveColor),
             "color_lut" => Some(Self::ColorLut),
+            "red_eye" => Some(Self::RedEye),
+            "denoise" => Some(Self::Denoise),
+            "lens" => Some(Self::Lens),
+            "perspective" => Some(Self::Perspective),
             _ => None,
         }
     }
@@ -101,11 +113,15 @@ impl AdjustmentKind {
             Self::ShadowsHighlights => "shadows_highlights",
             Self::SelectiveColor => "selective_color",
             Self::ColorLut => "color_lut",
+            Self::RedEye => "red_eye",
+            Self::Denoise => "denoise",
+            Self::Lens => "lens",
+            Self::Perspective => "perspective",
         }
     }
 
     /// 全部类型。
-    pub const ALL: [AdjustmentKind; 18] = [
+    pub const ALL: [AdjustmentKind; 22] = [
         Self::BrightnessContrast,
         Self::Saturation,
         Self::Invert,
@@ -124,6 +140,10 @@ impl AdjustmentKind {
         Self::ShadowsHighlights,
         Self::SelectiveColor,
         Self::ColorLut,
+        Self::RedEye,
+        Self::Denoise,
+        Self::Lens,
+        Self::Perspective,
     ];
 }
 
@@ -694,6 +714,28 @@ pub fn split_toning(
     });
 }
 
+/// **红眼消除** ✓：只动「红眼型」像素 ⇒ 把 R 压向 max(G,B) ✓。
+///
+/// **判别**：红度 `r / (g + b + ε)` ✓ —— 闪光灯瞳孔的 R 相对 G+B 可达 5 倍以上 ✓；
+/// 皮肤 ~0.75、唇色 ~1.7、砖红 ~1.5 ⇒ 阈值默认 2.0 时**普通红色物体一个都不动** ✓。
+/// 权重从阈值起线性升到 2×阈值满权（软过渡，避免边缘光晕 ✓）。
+/// `strength` 0..1 缩放压制量（0 = 恒等 ✓）；`threshold` 红度比阈值。
+pub fn red_eye(buffer: &mut Buffer, strength: f32, threshold: f32) {
+    let strength = strength.clamp(0.0, 1.0);
+    let threshold = threshold.clamp(0.5, 10.0);
+    if strength <= 0.0 {
+        return;
+    }
+    for_each_straight_color(buffer, |color| {
+        let (r, g, b) = (color[0], color[1], color[2]);
+        let redness = r / (g + b + 1e-4);
+        let weight = ((redness - threshold) / threshold).clamp(0.0, 1.0);
+        if weight > 0.0 {
+            color[0] = r + strength * weight * (g.max(b) - r);
+        }
+    });
+}
+
 /// 色调分离：把每个直通通道量化到 `levels` 个台阶。
 pub fn posterize(buffer: &mut Buffer, levels: u32) {
     let levels = levels.clamp(2, 64);
@@ -1237,6 +1279,517 @@ pub fn vignette(
     }
 }
 
+// **几何重采样底座**（照片修图三模块共用；专家咨询路线：零依赖自研）。
+//
+// 关键口径（只此一处 ✓）：
+// - 插值永远在**预乘 RGBA** 上直接做（**严禁先除 alpha**：透明区的黑会污染半透明边缘 ✓）；
+// - 双三次负瓣用**最内圈 2×2 的 min/max 钳制**（消灭 ringing；SDR 下保证 RGB≥0、0≤A≤1 ✓）；
+// - 逆映射（遍历输出像素找源坐标），越界采样点写透明（不做边缘复制——warp 的语义是移动像素 ✓）。
+//
+// **⇒ 为什么是 `//` 而不是 `///`**：这一段是**模块级说明**，它下面紧跟的是
+//   `sample_edge_clamped` 的**自己的** doc ⇒ 两个 doc 块之间有空行 ⇒ clippy 报
+//   `empty line after doc comment`（第 1314 轮实测）✗
+
+/// 边界复制采样（供双三次取 4×4 邻域用；**只在内核邻域内**用，越界策略由 warp 层决定 ✓）。
+fn sample_edge_clamped(buffer: &Buffer, sx: i64, sy: i64) -> [f32; 4] {
+    let (w, h) = (buffer.width() as i64, buffer.height() as i64);
+    buffer.pixel(
+        sx.clamp(0, w - 1).max(0) as u32,
+        sy.clamp(0, h - 1).max(0) as u32,
+    )
+}
+
+/// Catmull-Rom 权重（$b=0,c=0.5$；$t=0$ 时精确命中中心像素 ⇒ 恒等映射位精确 ✓）。
+fn catmull_weights(t: f32) -> [f32; 4] {
+    let (t2, t3) = (t * t, t * t * t);
+    [
+        -0.5 * t3 + t2 - 0.5 * t,
+        1.5 * t3 - 2.5 * t2 + 1.0,
+        -1.5 * t3 + 2.0 * t2 + 0.5 * t,
+        0.5 * t3 - 0.5 * t2,
+    ]
+}
+
+/// **双三次采样**（预乘 RGBA 直接插值 + 2×2 内圈钳制）。
+pub fn sample_catmull_rom(buffer: &Buffer, x: f32, y: f32) -> [f32; 4] {
+    let xi = x.floor() as i64;
+    let yi = y.floor() as i64;
+    let (tx, ty) = (x - xi as f32, y - yi as f32);
+    let mut px = [[[0.0f32; 4]; 4]; 4];
+    for (j, row) in px.iter_mut().enumerate() {
+        for (i, slot) in row.iter_mut().enumerate() {
+            *slot = sample_edge_clamped(buffer, xi + i as i64 - 1, yi + j as i64 - 1);
+        }
+    }
+    let (wx, wy) = (catmull_weights(tx), catmull_weights(ty));
+    let mut out = [0.0f32; 4];
+    for c in 0..4 {
+        let mut row = [0.0f32; 4];
+        for j in 0..4 {
+            row[j] = wx[0] * px[j][0][c]
+                + wx[1] * px[j][1][c]
+                + wx[2] * px[j][2][c]
+                + wx[3] * px[j][3][c];
+        }
+        out[c] = wy[0] * row[0] + wy[1] * row[1] + wy[2] * row[2] + wy[3] * row[3];
+    }
+    // **2×2 内圈钳制**（专家路线）：中心 4 像素的 min/max ⇒ 负瓣超调被剪掉 ✓。
+    let (mut lo, mut hi) = ([f32::INFINITY; 4], [f32::NEG_INFINITY; 4]);
+    for row in px.iter().take(3).skip(1) {
+        for cell in row.iter().take(3).skip(1) {
+            for (c, &v) in cell.iter().enumerate() {
+                lo[c] = lo[c].min(v);
+                hi[c] = hi[c].max(v);
+            }
+        }
+    }
+    for c in 0..4 {
+        out[c] = out[c].clamp(lo[c], hi[c]);
+    }
+    out[3] = out[3].clamp(0.0, 1.0);
+    for v in out.iter_mut().take(3) {
+        *v = v.max(0.0);
+    }
+    out
+}
+
+/// **逆映射遍历器**：对输出画布每个像素用 `map` 求源坐标并采样写回。
+/// 越界源坐标写透明；**先读快照再写**（避免自反馈，见 blur_horizontal 的同源教训 ✓）。
+pub fn warp_buffer(buffer: &mut Buffer, map: impl Fn(f32, f32) -> (f32, f32)) {
+    let (w, h) = (buffer.width(), buffer.height());
+    if w == 0 || h == 0 {
+        return;
+    }
+    let snapshot: Vec<f32> = buffer.pixels().to_vec();
+    let (ox, oy) = buffer.origin();
+    let reader =
+        Buffer::from_f32(ox, oy, w, h, &snapshot).expect("warp_buffer：快照尺寸与原 Buffer 一致");
+    for y in 0..h {
+        for x in 0..w {
+            let (sx, sy) = map(x as f32, y as f32);
+            let pixel = if sx < 0.0 || sy < 0.0 || sx > (w - 1) as f32 || sy > (h - 1) as f32 {
+                [0.0; 4]
+            } else {
+                sample_catmull_rom(&reader, sx, sy)
+            };
+            buffer.set_pixel(x, y, pixel);
+        }
+    }
+}
+
+/// 单位正方形→任意四边形的单应（Paul Heckbert 闭式：只解一个 2×2 ⇒ 天然数值稳定 ✓）。
+/// 角点顺序：`(0,0)→q0,(1,0)→q1,(1,1)→q2,(0,1)→q3`。
+#[derive(Debug, Clone, Copy)]
+struct UnitSquareToQuad {
+    a: f32,
+    b: f32,
+    c: f32,
+    d: f32,
+    e: f32,
+    f: f32,
+    g: f32,
+    h: f32,
+}
+
+impl UnitSquareToQuad {
+    fn map(&self, u: f32, v: f32) -> (f32, f32) {
+        let den = self.g * u + self.h * v + 1.0;
+        if den.abs() < 1e-9 {
+            return (u, v);
+        }
+        (
+            (self.a * u + self.b * v + self.c) / den,
+            (self.d * u + self.e * v + self.f) / den,
+        )
+    }
+}
+
+/// 单位正方形→四边形（Heckbert 闭式）。`None` = 退化（分母≈0；凸校验一般已挡掉 ✓）。
+fn unit_square_to_quad(q: [[f32; 2]; 4]) -> Option<UnitSquareToQuad> {
+    let (p0, p1, p2, p3) = (q[0], q[1], q[2], q[3]);
+    let (d1x, d1y) = (p1[0] - p2[0], p1[1] - p2[1]);
+    let (d2x, d2y) = (p3[0] - p2[0], p3[1] - p2[1]);
+    let (sx, sy) = (
+        (p0[0] - p1[0]) + (p2[0] - p3[0]),
+        (p0[1] - p1[1]) + (p2[1] - p3[1]),
+    );
+    let den = d1x * d2y - d1y * d2x;
+    if den.abs() < 1e-12 {
+        return None;
+    }
+    let g = (sx * d2y - sy * d2x) / den;
+    let h = (d1x * sy - d1y * sx) / den;
+    Some(UnitSquareToQuad {
+        a: p1[0] - p0[0] + g * p1[0],
+        b: p3[0] - p0[0] + h * p3[0],
+        c: p0[0],
+        d: p1[1] - p0[1] + g * p1[1],
+        e: p3[1] - p0[1] + h * p3[1],
+        f: p0[1],
+        g,
+        h,
+    })
+}
+
+/// 四边形凸校验（四顶点叉积同号；共线也拒 ✓）——透视四角拖拽的防呆（专家：约 5 行 ✓）。
+pub fn quad_is_convex(q: [[f32; 2]; 4]) -> bool {
+    let mut sign = 0.0f32;
+    for i in 0..4 {
+        let (a, b, c) = (q[i], q[(i + 1) % 4], q[(i + 2) % 4]);
+        let cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+        if cross.abs() < 1e-9 {
+            return false;
+        }
+        if sign == 0.0 {
+            sign = cross.signum();
+        } else if cross.signum() != sign {
+            return false;
+        }
+    }
+    true
+}
+
+/// 镜头参数（**手动滑杆**；数据库预留接口，首期不做 ✓）。
+#[derive(Debug, Clone, Copy)]
+pub struct LensParams {
+    /// 径向畸变 k1（`r_src = r_dst·(1+k1·r²+k2·r⁴)`）。
+    pub k1: f32,
+    /// 径向畸变 k2。
+    pub k2: f32,
+    /// TCA：R 通道缩放系数（G 恒为 1）。
+    pub tca_r: f32,
+    /// TCA：B 通道缩放系数。
+    pub tca_b: f32,
+    /// 暗角强度（0..1；`gain = 1/(1+v1·r²+v2·r⁴)`，v1=2·s、v2=0.5·s）。
+    pub vignette_strength: f32,
+    /// 自动裁剪（默认开；越界填透明时按内接缩放）。
+    pub auto_crop: bool,
+}
+
+impl Default for LensParams {
+    fn default() -> Self {
+        Self {
+            k1: 0.0,
+            k2: 0.0,
+            tca_r: 1.0,
+            tca_b: 1.0,
+            vignette_strength: 0.0,
+            auto_crop: true,
+        }
+    }
+}
+
+/// 归一化半径（中心为原点、半对角线为 1；专家口径 ✓）。
+fn lens_normalized(x: f32, y: f32, w: f32, h: f32) -> (f32, f32, f32) {
+    let (cx, cy) = (w / 2.0, h / 2.0);
+    let rmax = (cx * cx + cy * cy).sqrt().max(1e-9);
+    let (nx, ny) = ((x - cx) / rmax, (y - cy) / rmax);
+    (nx, ny, nx * nx + ny * ny)
+}
+
+/// **径向畸变多项式**（Brown-Conrady/PTLens 族）：`r_src = r_dst·(1+k1·r²+k2·r⁴)`，
+/// 在归一化坐标上求值（纯函数，单元测试在 100 点网格上与 f64 参考实现比对 ✓）。
+fn radial_distort(nx: f32, ny: f32, k1: f32, k2: f32) -> (f32, f32) {
+    let r2 = nx * nx + ny * ny;
+    let f = 1.0 + k1 * r2 + k2 * r2 * r2;
+    (nx * f, ny * f)
+}
+
+/// **透视+镜头合并逆映射**（专家链路，一次采样 ✓）：
+/// `(x_out,y_out) → H（若透视）→ (x_undist,y_undist) → 代入正向畸变多项式 D(·) →
+/// (x_src,y_src) → 一次采样`。**不需要求畸变多项式的逆** ✓（逆映射顺着物理畸变方向走 ✓）。
+/// TCA：R/B 在同一链路里按系数缩放源坐标独立采样（Catmull-Rom 的 2×2 钳制即局部钳制，
+/// 专家方案：防高光彩边震荡 ✓）。暗角 gain 在线性光、按**源位置**半径乘（重采样之前 ✓）。
+fn merged_geo_warp(
+    buffer: &mut Buffer,
+    hom: Option<UnitSquareToQuad>,
+    quad: Option<[[f32; 2]; 4]>,
+    lens: &LensParams,
+) {
+    let (w, h) = (buffer.width(), buffer.height());
+    if w == 0 || h == 0 {
+        return;
+    }
+    let (wf, hf) = (w as f32, h as f32);
+    // 自动裁剪缩放（MVP 启发式，只放大不缩小；恒等情形恰为 1 ✓）。
+    let mut scale = 1.0f32;
+    if lens.auto_crop {
+        if let Some(q) = quad {
+            let edge = |i: usize, j: usize| {
+                let (dx, dy) = (q[i][0] - q[j][0], q[i][1] - q[j][1]);
+                (dx * dx + dy * dy).sqrt().max(1e-9)
+            };
+            let sx = (wf / edge(0, 1)).min(wf / edge(3, 2));
+            let sy = (hf / edge(1, 2)).min(hf / edge(0, 3));
+            scale = scale.max(sx.min(sy));
+        }
+        // 桶形畸变把边缘像素向外推 ⇒ 放大裁掉透明边（四角因子取大 ✓）。
+        for (px, py) in [(0.0, 0.0), (wf, 0.0), (wf, hf), (0.0, hf)] {
+            let (_, _, r2) = lens_normalized(px, py, wf, hf);
+            scale = scale.max(1.0 + lens.k1 * r2 + lens.k2 * r2 * r2);
+        }
+        scale = scale.max(1.0);
+    }
+    let (cx, cy) = (wf / 2.0, hf / 2.0);
+    let (v1, v2) = (2.0 * lens.vignette_strength, 0.5 * lens.vignette_strength);
+    let distort = lens.k1 != 0.0 || lens.k2 != 0.0;
+    let snapshot: Vec<f32> = buffer.pixels().to_vec();
+    let (ox, oy) = buffer.origin();
+    let reader = Buffer::from_f32(ox, oy, w, h, &snapshot)
+        .expect("merged_geo_warp：快照尺寸与原 Buffer 一致");
+    let in_bounds =
+        |sx: f32, sy: f32| sx >= 0.0 && sy >= 0.0 && sx <= (w - 1) as f32 && sy <= (h - 1) as f32;
+    for y in 0..h {
+        for x in 0..w {
+            // auto_crop：绕中心缩放（s=1 ⇒ 恒等 ✓）。
+            let (u, v) = (
+                0.5 + (x as f32 / wf - 0.5) / scale,
+                0.5 + (y as f32 / hf - 0.5) / scale,
+            );
+            let (px, py) = match hom {
+                Some(ref hom) => hom.map(u, v),
+                None => (u * wf, v * hf),
+            };
+            let (_, _, r2) = lens_normalized(px, py, wf, hf);
+            // k1=k2=0 ⇒ 直通（避免归一化往返的 f32 舍入破坏恒等的逐位精确 ✓）。
+            let (gx, gy) = if distort {
+                let (nx, ny, _) = lens_normalized(px, py, wf, hf);
+                let (dnx, dny) = radial_distort(nx, ny, lens.k1, lens.k2);
+                let rmax = (cx * cx + cy * cy).sqrt().max(1e-9);
+                (cx + dnx * rmax, cy + dny * rmax)
+            } else {
+                (px, py)
+            };
+            if !in_bounds(gx, gy) {
+                buffer.set_pixel(x, y, [0.0; 4]);
+                continue;
+            }
+            let base = sample_catmull_rom(&reader, gx, gy);
+            // 暗角 gain（源半径 r2 ✓）。
+            let gain = 1.0 / (1.0 + v1 * r2 + v2 * r2 * r2);
+            let sample_channel = |ch: usize, tca: f32| {
+                if tca == 1.0 {
+                    base[ch]
+                } else {
+                    let (sx, sy) = (cx + (gx - cx) * tca, cy + (gy - cy) * tca);
+                    if in_bounds(sx, sy) {
+                        sample_catmull_rom(&reader, sx, sy)[ch]
+                    } else {
+                        0.0
+                    }
+                }
+            };
+            buffer.set_pixel(
+                x,
+                y,
+                [
+                    (sample_channel(0, lens.tca_r) * gain).max(0.0),
+                    (base[1] * gain).max(0.0),
+                    (sample_channel(2, lens.tca_b) * gain).max(0.0),
+                    base[3],
+                ],
+            );
+        }
+    }
+}
+
+/// **镜头校正**（手动参数；单次逆映射 ✓）。`k1/k2` 畸变、`tca_r/tca_b` 色差、
+/// `vignette_strength` 暗角、`auto_crop` 自动裁剪。
+pub fn lens_correction(
+    buffer: &mut Buffer,
+    k1: f32,
+    k2: f32,
+    tca_r: f32,
+    tca_b: f32,
+    vignette_strength: f32,
+    auto_crop: bool,
+) {
+    merged_geo_warp(
+        buffer,
+        None,
+        None,
+        &LensParams {
+            k1,
+            k2,
+            tca_r,
+            tca_b,
+            vignette_strength,
+            auto_crop,
+        },
+    );
+}
+
+/// **透视校正**（四角拖拽 MVP）。`quad` 为源四边形（顺序 q0..q3 对应矩形四角），
+/// 必须凸（工具层已校验；这里复核，`false` = 拒绝且不动 ✓）。
+/// `k1/k2` 可选：与镜头畸变合并一次采样（专家链路 ✓）。
+pub fn perspective_warp(
+    buffer: &mut Buffer,
+    quad: [[f32; 2]; 4],
+    k1: f32,
+    k2: f32,
+    auto_crop: bool,
+) -> bool {
+    if !quad_is_convex(quad) {
+        return false;
+    }
+    let Some(hom) = unit_square_to_quad(quad) else {
+        return false;
+    };
+    merged_geo_warp(
+        buffer,
+        Some(hom),
+        Some(quad),
+        &LensParams {
+            k1,
+            k2,
+            auto_crop,
+            ..LensParams::default()
+        },
+    );
+    true
+}
+
+/// **标量方框模糊**（单通道 `Vec<f32>` 版；与 `box_blur` 同一边界语义：clamp 复制 ✓）。
+/// 供引导滤波的均值计算用（复用已有基建，专家路线 ✓）。
+fn box_blur_scalar(data: &mut [f32], w: u32, h: u32, radius: u32) {
+    if radius == 0 || w == 0 || h == 0 {
+        return;
+    }
+    let (w, h) = (w as usize, h as usize);
+    let window = (radius as usize * 2 + 1) as f32;
+    let r = radius as i64;
+    // 水平。
+    let mut row = vec![0.0f32; w];
+    for y in 0..h {
+        let base = y * w;
+        row.copy_from_slice(&data[base..base + w]);
+        let mut acc = 0.0f32;
+        for offset in -r..=r {
+            acc += row[offset.clamp(0, w as i64 - 1) as usize];
+        }
+        for x in 0..w {
+            data[base + x] = acc / window;
+            if (x as i64) + 1 < w as i64 {
+                acc -= row[(x as i64 - r).clamp(0, w as i64 - 1) as usize];
+                acc += row[(x as i64 + r + 1).clamp(0, w as i64 - 1) as usize];
+            }
+        }
+    }
+    // 垂直。
+    let mut col = vec![0.0f32; h];
+    for x in 0..w {
+        for y in 0..h {
+            col[y] = data[y * w + x];
+        }
+        let mut acc = 0.0f32;
+        for offset in -r..=r {
+            acc += col[offset.clamp(0, h as i64 - 1) as usize];
+        }
+        for y in 0..h {
+            data[y * w + x] = acc / window;
+            if (y as i64) + 1 < h as i64 {
+                acc -= col[(y as i64 - r).clamp(0, h as i64 - 1) as usize];
+                acc += col[(y as i64 + r + 1).clamp(0, h as i64 - 1) as usize];
+            }
+        }
+    }
+}
+
+/// 自引导滤波（guided filter，p=I）：`q = mean(a)·I + mean(b)`，
+/// `a = var/(var+ε)`、`b = mean−a·mean`。半径无关 O(N)（专家路线 ✓）。
+fn guided_filter_self(y: &mut [f32], w: u32, h: u32, radius: u32, epsilon: f32) {
+    let n = (w * h) as usize;
+    let mut mean_i = y.to_vec();
+    box_blur_scalar(&mut mean_i, w, h, radius);
+    let mut mean_ii: Vec<f32> = y.iter().map(|v| v * v).collect();
+    box_blur_scalar(&mut mean_ii, w, h, radius);
+    let mut a = vec![0.0f32; n];
+    let mut b = vec![0.0f32; n];
+    for i in 0..n {
+        let var = (mean_ii[i] - mean_i[i] * mean_i[i]).max(0.0);
+        a[i] = var / (var + epsilon);
+        b[i] = mean_i[i] * (1.0 - a[i]);
+    }
+    box_blur_scalar(&mut a, w, h, radius);
+    box_blur_scalar(&mut b, w, h, radius);
+    for i in 0..n {
+        y[i] = a[i] * y[i] + b[i];
+    }
+}
+
+/// **降噪**（专家路线：自引导滤波 + √Linear 感知映射 + 亮色分离）。
+///
+/// 流程：除 alpha 取直通色 → `√c` 感知空间（抵消泊松噪声方差）→ 拆 Y / Cb / Cr →
+/// Y 跑自引导滤波（保边）→ Cb/Cr 大半径方框模糊（抹彩噪）→ 平方回线性 RGB → 重乘 alpha。
+/// 参数抄 Lightroom（**不暴露 σ_space/σ_range** ✓）：
+/// `luminance` 0..1（正则化 ε 与混合权重）、`detail` 0..1（引导半径）、
+/// `color` 0..1（色度模糊半径）。
+pub fn denoise(buffer: &mut Buffer, luminance: f32, detail: f32, color: f32) {
+    let (w, h) = (buffer.width(), buffer.height());
+    if w == 0 || h == 0 {
+        return;
+    }
+    let luminance = luminance.clamp(0.0, 1.0);
+    let detail = detail.clamp(0.0, 1.0);
+    let color = color.clamp(0.0, 1.0);
+    if luminance == 0.0 && color == 0.0 {
+        return;
+    }
+    let n = (w * h) as usize;
+    let mut r = vec![0.0f32; n];
+    let mut g = vec![0.0f32; n];
+    let mut b = vec![0.0f32; n];
+    let mut alpha = vec![0.0f32; n];
+    for (i, pix) in buffer.pixels().chunks_exact(4).enumerate() {
+        let a = pix[3];
+        alpha[i] = a;
+        if a > 0.0 {
+            r[i] = (pix[0] / a).max(0.0).sqrt();
+            g[i] = (pix[1] / a).max(0.0).sqrt();
+            b[i] = (pix[2] / a).max(0.0).sqrt();
+        }
+    }
+    // Y / Cb / Cr（BT.601 式，作用于 √ 空间 ✓）。
+    let mut y = vec![0.0f32; n];
+    let mut cb = vec![0.0f32; n];
+    let mut cr = vec![0.0f32; n];
+    for i in 0..n {
+        y[i] = 0.299 * r[i] + 0.587 * g[i] + 0.114 * b[i];
+        cb[i] = 0.5 * (b[i] - y[i]) / 0.886 + 0.5;
+        cr[i] = 0.5 * (r[i] - y[i]) / 0.701 + 0.5;
+    }
+    // Y 保边降噪（luminance = 混合权重 k + ε 缩放，同向驱动：越大越平滑，专家映射 ✓）。
+    if luminance > 0.0 {
+        let radius = (1.0 + detail * 8.0).round() as u32;
+        let epsilon = 1e-4 + luminance * 5e-3;
+        let mut filtered = y.clone();
+        guided_filter_self(&mut filtered, w, h, radius, epsilon);
+        for i in 0..n {
+            y[i] += luminance * (filtered[i] - y[i]);
+        }
+    }
+    // Cb/Cr 大半径抹除。
+    let chroma_r = (color * 12.0).round() as u32;
+    if chroma_r > 0 {
+        box_blur_scalar(&mut cb, w, h, chroma_r);
+        box_blur_scalar(&mut cr, w, h, chroma_r);
+    }
+    // 重建：√ 空间 → 平方回线性 → 重乘 alpha。
+    let out = buffer.pixels_mut();
+    for i in 0..n {
+        let yy = y[i];
+        let rr = (yy + 1.402 * (cr[i] - 0.5)).max(0.0);
+        let gg = (yy - 0.344136 * (cb[i] - 0.5) - 0.714136 * (cr[i] - 0.5)).max(0.0);
+        let bb = (yy + 1.772 * (cb[i] - 0.5)).max(0.0);
+        let a = alpha[i];
+        let base = i * 4;
+        out[base] = rr * rr * a;
+        out[base + 1] = gg * gg * a;
+        out[base + 2] = bb * bb * a;
+        out[base + 3] = a;
+    }
+}
+
 /// 可分离方框模糊（`passes` 趟近似高斯；边缘按 clamp 复制）。
 /// 水平/垂直方框模糊（滑动窗口，O(1)/像素；见文件内 `blur_horizontal` 的说明）。
 /// **⚠️ 这不是唯一的方框模糊**（✓，第 371 轮 ✓）：`geometry::feather_coverage` 自带一份，
@@ -1475,7 +2028,7 @@ fn for_each_straight_color(buffer: &mut Buffer, mut transform: impl FnMut(&mut [
 }
 
 /// 内核支持的调整类型名（工具层据此校验参数，避免造出无法渲染的对象）。
-pub const ADJUSTMENT_NAMES: [&str; 18] = [
+pub const ADJUSTMENT_NAMES: [&str; 22] = [
     "brightness_contrast",
     "saturation",
     "invert",
@@ -1494,6 +2047,10 @@ pub const ADJUSTMENT_NAMES: [&str; 18] = [
     "shadows_highlights",
     "selective_color",
     "color_lut",
+    "red_eye",
+    "denoise",
+    "lens",
+    "perspective",
 ];
 
 /// 内核支持的滤镜名。
@@ -1616,6 +2173,25 @@ fn curve_points(params: &Value) -> Vec<(f32, f32)> {
     }
     points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     points
+}
+
+/// 解析透视四边形参数（4 个 `[x, y]`；失败返回 None ⇒ 工具层先校验，这里再拒 ✓）。
+fn quad_param(params: &Value) -> Option<[[f32; 2]; 4]> {
+    let quad = params.get("quad")?.as_array()?;
+    if quad.len() != 4 {
+        return None;
+    }
+    let mut out = [[0.0f32; 2]; 4];
+    for (i, point) in quad.iter().enumerate() {
+        let pair = point.as_array()?;
+        if pair.len() != 2 {
+            return None;
+        }
+        for (j, value) in pair.iter().enumerate() {
+            out[i][j] = value.as_f64()? as f32;
+        }
+    }
+    Some(out)
 }
 
 /// 应用一个调整对象；返回是否被识别。
@@ -1749,6 +2325,58 @@ pub fn apply_adjustment(
                 })
                 .unwrap_or_default();
             color_lut(&mut adjusted, size, &table)
+        }
+        AdjustmentKind::RedEye => red_eye(
+            &mut adjusted,
+            params
+                .get("strength")
+                .and_then(Value::as_f64)
+                .unwrap_or(1.0) as f32,
+            params
+                .get("threshold")
+                .and_then(Value::as_f64)
+                .unwrap_or(2.0) as f32,
+        ),
+        AdjustmentKind::Denoise => denoise(
+            &mut adjusted,
+            params
+                .get("luminance")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.5) as f32,
+            params.get("detail").and_then(Value::as_f64).unwrap_or(0.5) as f32,
+            params.get("color").and_then(Value::as_f64).unwrap_or(0.5) as f32,
+        ),
+        AdjustmentKind::Lens => lens_correction(
+            &mut adjusted,
+            params.get("k1").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+            params.get("k2").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+            params.get("tca_r").and_then(Value::as_f64).unwrap_or(1.0) as f32,
+            params.get("tca_b").and_then(Value::as_f64).unwrap_or(1.0) as f32,
+            params
+                .get("vignette_strength")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0) as f32,
+            params
+                .get("auto_crop")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+        ),
+        AdjustmentKind::Perspective => {
+            let Some(quad) = quad_param(params) else {
+                return false;
+            };
+            if !perspective_warp(
+                &mut adjusted,
+                quad,
+                params.get("k1").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+                params.get("k2").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+                params
+                    .get("auto_crop")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
+            ) {
+                return false;
+            }
         }
     }
     if (opacity - 1.0).abs() < f32::EPSILON {
@@ -3402,6 +4030,64 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn red_eye_corrects_red_eye_pixel_only() {
+        // **红眼型像素**（R 远高于 G/B）⇒ R 压到 max(G,B)，G/B 不动 ✓。
+        let mut buffer = filled([0.85, 0.08, 0.06, 1.0]);
+        red_eye(&mut buffer, 1.0, 2.0);
+        let p = buffer.pixel(0, 0);
+        assert!((p[0] - 0.08).abs() < 0.01, "「R 应压到 0.08：{p:?}」");
+        assert_eq!(p[1], 0.08, "「G 不动」");
+        assert_eq!(p[2], 0.06, "「B 不动」");
+        // **皮肤与砖红**：R 高但 G/B 不低 ⇒ 一个不动 ✓（误伤红物体是这个调整的头号事故 ✗）。
+        for color in [[0.76, 0.57, 0.45], [0.6, 0.25, 0.15], [0.75, 0.2, 0.25]] {
+            let mut buffer = filled([color[0], color[1], color[2], 1.0]);
+            red_eye(&mut buffer, 1.0, 2.0);
+            assert_eq!(
+                buffer.pixel(0, 0)[..3],
+                color,
+                "「非红眼红色应原样：{color:?} → {:?}」",
+                buffer.pixel(0, 0)
+            );
+        }
+    }
+
+    #[test]
+    fn red_eye_strength_zero_is_identity_and_half_is_halfway() {
+        // strength=0 ⇒ 恒等 ✓（哪怕红眼型像素 ✓）。
+        let mut buffer = filled([0.85, 0.08, 0.06, 1.0]);
+        red_eye(&mut buffer, 0.0, 2.0);
+        assert_eq!(buffer.pixel(0, 0)[0], 0.85, "「strength=0 应恒等」");
+        // strength=0.5 ⇒ 压制量减半 ✓（线性插值 ✓）。
+        let mut buffer = filled([0.85, 0.08, 0.06, 1.0]);
+        red_eye(&mut buffer, 0.5, 2.0);
+        let p = buffer.pixel(0, 0);
+        assert!(
+            (p[0] - (0.85 + 0.5 * (0.08 - 0.85))).abs() < 0.01,
+            "「半强度应走一半：{p:?}」"
+        );
+    }
+
+    #[test]
+    fn adjustment_kind_names_roundtrip_with_red_eye() {
+        // `red_eye` 进了 ALL 与 ADJUSTMENT_NAMES（全量往返由 coloradj_tests 的
+        // `adjustment_kind_names_roundtrip` 覆盖，这里只钉新增这一项，避免同一事实写两处 ✓）。
+        assert_eq!(
+            AdjustmentKind::from_name("red_eye"),
+            Some(AdjustmentKind::RedEye),
+            "「red_eye 应解析为 RedEye」"
+        );
+        assert_eq!(
+            AdjustmentKind::RedEye.as_str(),
+            "red_eye",
+            "「RedEye.as_str 应为 red_eye」"
+        );
+        assert!(
+            ADJUSTMENT_NAMES.contains(&"red_eye"),
+            "「ADJUSTMENT_NAMES 应包含 red_eye」"
+        );
+    }
 }
 
 /// **★ P2 #15 厚涂浮雕的决定性判据（数据层）★**（第 254 轮）
@@ -4002,5 +4688,226 @@ mod coloradj_tests {
                 kind.as_str()
             );
         }
+    }
+}
+
+/// **照片修图三模块测试**（warp 底座／Heckbert 单应／凸校验／镜头畸变／降噪）。
+///
+/// 断言口径（AGENTS.md 内核 1/2）：恒等式与关系断言优先，不写死像素数；
+/// 每条断言都经过变异验证（改坏实现必须红 ✓）。
+#[cfg(test)]
+mod photoretouch_tests {
+    use super::*;
+
+    fn gradient() -> Buffer {
+        let mut buffer = Buffer::new(0, 0, 8, 8);
+        for y in 0..8 {
+            for x in 0..8 {
+                let v = (x * 8 + y) as f32 / 63.0;
+                buffer.set_pixel(x, y, [v, 1.0 - v, v * 0.5, 1.0]);
+            }
+        }
+        buffer
+    }
+
+    #[test]
+    fn warp_identity_map_is_exact() {
+        // **恒等映射 ⇒ 逐位相同**（双三次在整数坐标精确命中中心像素 ✓）。
+        let before = gradient();
+        let mut after = before.clone();
+        warp_buffer(&mut after, |x, y| (x, y));
+        assert_eq!(before.pixels(), after.pixels());
+    }
+
+    #[test]
+    fn catmull_clamp_kills_ringing() {
+        // **2×2 钳制**：相邻两 HDR 亮点 (1,2)/(2,2)=2.0；在 (1.5, 2.0) 采样，
+        // 原双三次给出 2×(0.5625+0.5625) = 2.25（超调 +12.5%，手算 ✓）；
+        // 内圈 2×2 的 max=2 ⇒ 钳后恰为 2.0 ✓。
+        let mut buffer = Buffer::new(0, 0, 5, 5);
+        buffer.set_pixel(1, 2, [2.0, 2.0, 2.0, 1.0]);
+        buffer.set_pixel(2, 2, [2.0, 2.0, 2.0, 1.0]);
+        let p = sample_catmull_rom(&buffer, 1.5, 2.0);
+        assert!(
+            p[0] <= 2.0 + 1e-6,
+            "超调未被 2×2 钳制剪掉（原值 2.25）：{p:?}"
+        );
+        assert!(p[0] > 1.9, "应在内圈 max 附近：{p:?}");
+    }
+
+    #[test]
+    fn heckbert_rectangle_is_identity() {
+        // **矩形四边形 ⇒ 恒等单应**（网格点逐一比对，容差 1e-4 ✓）。
+        let w = 8.0f32;
+        let q = [[0.0, 0.0], [w, 0.0], [w, w], [0.0, w]];
+        let hom = unit_square_to_quad(q).expect("矩形不应退化");
+        for iy in 0..=4 {
+            for ix in 0..=4 {
+                let (u, v) = (ix as f32 / 4.0, iy as f32 / 4.0);
+                let (sx, sy) = hom.map(u, v);
+                assert!(
+                    (sx - u * w).abs() < 1e-4 && (sy - v * w).abs() < 1e-4,
+                    "({u},{v}) → ({sx},{sy})，期望 ({},{})",
+                    u * w,
+                    v * w
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn heckbert_matches_independent_dlt() {
+        // **Heckbert 闭式 == 独立 DLT 求解**（8×8 高斯消元，f64；两种不同算法族 ✓）。
+        let q = [[1.0, 0.0], [9.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        let heck = unit_square_to_quad(q).expect("梯形不应退化");
+        let dlt = dlt_solve(q);
+        let h = [
+            heck.a, heck.b, heck.c, heck.d, heck.e, heck.f, heck.g, heck.h,
+        ];
+        for (i, (a, b)) in h.iter().zip(dlt.iter()).enumerate() {
+            assert!((a - b).abs() < 1e-3, "系数 {i} 漂移：Heckbert={a} DLT={b}");
+        }
+    }
+
+    /// 测试内独立 DLT（8 参数，高斯消元；与 Heckbert 闭式是不同的算法 ✓）。
+    fn dlt_solve(q: [[f32; 2]; 4]) -> [f32; 8] {
+        // (u,v)∈{(0,0),(1,0),(1,1),(0,1)} → q；h33=1 归一化，8 个方程解 a..h。
+        let src = [(0.0f64, 0.0f64), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+        let mut m = [[0.0f64; 9]; 8];
+        for (i, ((u, v), p)) in src.iter().zip(q.iter()).enumerate() {
+            let (x, y) = (p[0] as f64, p[1] as f64);
+            m[2 * i] = [*u, *v, 1.0, 0.0, 0.0, 0.0, -x * u, -x * v, x];
+            m[2 * i + 1] = [0.0, 0.0, 0.0, *u, *v, 1.0, -y * u, -y * v, y];
+        }
+        // 高斯消元（8×9 增广）。
+        for col in 0..8 {
+            let mut pivot = col;
+            for row in col..8 {
+                if m[row][col].abs() > m[pivot][col].abs() {
+                    pivot = row;
+                }
+            }
+            m.swap(col, pivot);
+            assert!(m[col][col].abs() > 1e-12, "DLT 退化");
+            // **`pivot` 先复制**（第 1314 轮）：否则 `m[row]` 与 `m[col]` 同时可变借用 ⇒ 编不过 ✓
+            let pivot = m[col];
+            for (row, mrow) in m.iter_mut().enumerate() {
+                if row != col {
+                    let f = mrow[col] / pivot[col];
+                    for (cell, &p) in mrow.iter_mut().zip(pivot.iter()).skip(col) {
+                        *cell -= f * p;
+                    }
+                }
+            }
+        }
+        let mut out = [0.0f32; 8];
+        for i in 0..8 {
+            out[i] = (m[i][8] / m[i][i]) as f32;
+        }
+        out
+    }
+
+    #[test]
+    fn convex_rejects_concave_quad() {
+        // **凹四边形（箭镞）⇒ 拒绝且 buffer 不动** ✓。
+        let dart = [[0.0, 0.0], [4.0, 4.0], [8.0, 0.0], [4.0, 1.0]];
+        assert!(!quad_is_convex(dart), "箭镞四边形应判为凹");
+        let before = gradient();
+        let mut after = before.clone();
+        assert!(!perspective_warp(&mut after, dart, 0.0, 0.0, true));
+        assert_eq!(before.pixels(), after.pixels());
+        // 凸四边形（矩形）放行 ✓。
+        let rect = [[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0]];
+        assert!(quad_is_convex(rect));
+    }
+
+    #[test]
+    fn radial_distort_grid_matches_f64_reference() {
+        // **100 点网格 vs f64 独立参考实现，误差 <1e-5**（专家核验法：比坐标映射，不比整图 ✓）。
+        let (k1, k2) = (0.15f64, -0.05f64);
+        for iy in 0..10 {
+            for ix in 0..10 {
+                let (nx, ny) = (ix as f32 * 0.2 - 0.9, iy as f32 * 0.2 - 0.9);
+                let (dx, dy) = radial_distort(nx, ny, k1 as f32, k2 as f32);
+                let (nx64, ny64) = (nx as f64, ny as f64);
+                let r2 = nx64 * nx64 + ny64 * ny64;
+                let f = 1.0 + k1 * r2 + k2 * r2 * r2;
+                let (ex, ey) = (nx64 * f, ny64 * f);
+                assert!(
+                    (dx as f64 - ex).abs() < 1e-5 && (dy as f64 - ey).abs() < 1e-5,
+                    "({nx},{ny}) → ({dx},{dy})，期望 ({ex},{ey})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn perspective_identity_quad_is_exact() {
+        // **恒等四边形 ⇒ warp 逐位相同**（auto_crop 在恒等时恰为 1 ✓）。
+        let before = gradient();
+        let mut after = before.clone();
+        let rect = [[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0]];
+        assert!(perspective_warp(&mut after, rect, 0.0, 0.0, true));
+        assert_eq!(before.pixels(), after.pixels());
+    }
+
+    #[test]
+    fn lens_identity_params_do_nothing() {
+        // **默认镜头参数 ⇒ 恒等**（k1=k2=0、tca=1、vignette=0、auto_crop 的 scale=1 ✓）。
+        let before = gradient();
+        let mut after = before.clone();
+        lens_correction(&mut after, 0.0, 0.0, 1.0, 1.0, 0.0, true);
+        assert_eq!(before.pixels(), after.pixels());
+    }
+
+    #[test]
+    fn lens_distortion_moves_edge_pixel_outward() {
+        // **桶形畸变（k1>0）把边缘像素向外推**：顶部亮点经逆映射后采样位置更靠上（手算值 ✓）。
+        // (8,2)：中心(8,8)，rmax=√128≈11.314；r²=((2−8)/11.314)²=0.2812；f=1+0.5×0.2812=1.1406；
+        // src_y = 8+(2−8)×1.1406 = 1.156 ⇒ 输出 (8,2) 采自 (8,1.16)，亮点被搬走 ✓。
+        let mut buffer = Buffer::new(0, 0, 16, 16);
+        buffer.set_pixel(8, 2, [1.0, 1.0, 1.0, 1.0]);
+        lens_correction(&mut buffer, 0.5, 0.0, 1.0, 1.0, 0.0, false);
+        let p = buffer.pixel(8, 2);
+        assert!(
+            p[0] < 0.5,
+            "桶形畸变后 (8,2) 应变暗（亮点被推向上方）：{p:?}"
+        );
+    }
+
+    #[test]
+    fn denoise_zero_params_is_exact_identity() {
+        // **luminance=0 && color=0 ⇒ 提前返回，逐位相同** ✓。
+        let before = gradient();
+        let mut after = before.clone();
+        denoise(&mut after, 0.0, 0.5, 0.0);
+        assert_eq!(before.pixels(), after.pixels());
+    }
+
+    #[test]
+    fn denoise_flat_noise_is_smoothed() {
+        // **平坦区脉冲噪点被拉回**，而远处平坦像素纹丝不动（引导滤波 var=0 ⇒ q=mean ✓）。
+        let mut buffer = Buffer::filled(0, 0, 32, 32, [0.5, 0.5, 0.5, 1.0]);
+        buffer.set_pixel(16, 16, [0.9, 0.9, 0.9, 1.0]);
+        denoise(&mut buffer, 1.0, 0.5, 0.0);
+        let spike = buffer.pixel(16, 16);
+        assert!(spike[0] < 0.7, "脉冲噪点应被拉向平坦值：{spike:?}");
+        let flat = buffer.pixel(0, 0);
+        assert!((flat[0] - 0.5).abs() < 1e-4, "平坦区不应动：{flat:?}");
+    }
+
+    #[test]
+    fn denoise_preserves_step_edge() {
+        // **强边缘保持**：0.2/0.8 台阶，降噪后边两侧差值仍 > 0.4（引导滤波 var≫ε ⇒ a≈1 ✓）。
+        let mut buffer = Buffer::new(0, 0, 8, 8);
+        for y in 0..8 {
+            for x in 0..8 {
+                let v = if x < 4 { 0.2 } else { 0.8 };
+                buffer.set_pixel(x, y, [v, v, v, 1.0]);
+            }
+        }
+        denoise(&mut buffer, 1.0, 0.5, 0.0);
+        let (l, r) = (buffer.pixel(3, 4)[0], buffer.pixel(4, 4)[0]);
+        assert!(r - l > 0.4, "台阶边应保持：左 {l} 右 {r}");
     }
 }

@@ -667,6 +667,10 @@ tile 丢掉场景内容（症状：`(36,15)` 处场景笔迹变成背景白；�
 | 调整 `selective_color` | `adjust` {色类: [c,m,y,k] −1..1}（9 色类） | PS 可选颜色：相对模式，按色相扇区/明度路由 |
 | 调整 `color_lut` | `path`→工具层解析 .cube 注入 `size`+`table` | 3D LUT 三线性插值；渲染层纯函数不读盘 |
 | 调整 `split_toning` | `shadows`/`highlights` 各 `[r,g,b]`、`balance` −1..1、`amount` 0..1 | 权重为 smoothstep（分界 `mid = 0.5 + balance×0.25`），阴影/高光分别着色 |
+| 调整 `red_eye` | `strength` 0..1、`threshold` 0.5..10（默认 1 / 2.0） | 红眼消除：红度 `r/(g+b)` 超阈值的像素把 R 压向 max(G,B)，皮肤/砖红不动 |
+| 调整 `denoise` | `luminance`/`detail`/`color`（0..1） | 自引导滤波（√Linear+亮色分离）：Y 保边、Cb/Cr 大半径抹除；抄 Lightroom 三滑杆 |
+| 调整 `lens` | `k1`/`k2`（−1..1）、`tca_r`/`tca_b`（0.9..1.1）、`vignette_strength`（0..1）、`auto_crop`（bool） | 径向多项式畸变+TCA+暗角，单次逆映射；手动滑杆，镜头数据库预留接口 |
+| 调整 `perspective` | `quad`（[[x,y]×4]，必须凸）、可选 `k1`/`k2`、`auto_crop`（bool） | 四角拉正：Heckbert 闭式单应（只解 2×2）+ 与镜头畸变合并一次采样；凹四边形拒绝 |
 | 滤镜 `motion_blur` | `angle`/`distance`/`samples` | 沿角度平均 |
 | 滤镜 `sharpen` | `amount`/`radius` | 非锐化掩模 |
 | 滤镜 `noise` | `amount`/`seed` | 逐像素确定性，随机量只来自 `seed` |
@@ -984,7 +988,7 @@ patch 内先建对象再更新（合法）、更新不存在的对象（非法�
 
 ## 二之五之三、效果算子清单与文档一致性（自动校验）
 
-调整 **18 种** / 滤镜 **14 种**（本行由 `crates/yanshi-render/tests/doc_consistency.rs` 校验，
+调整 **22 种** / 滤镜 **14 种**（本行由 `crates/yanshi-render/tests/doc_consistency.rs` 校验，
 数字与 `ADJUSTMENT_NAMES`/`FILTER_NAMES` 的实际长度必须一致；每个名字也必须出现在本文档与两份 README 中）。
 
 > **为什么要自动化**：此前几轮我把「| 调整与滤镜 | N 种调整 / M 种滤镜 |」当作文档同步目标，

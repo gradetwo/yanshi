@@ -106,6 +106,7 @@ pub mod font;
 pub mod font_atlas;
 pub mod geometry;
 pub mod half;
+pub mod jpeg;
 pub mod object;
 pub mod paint;
 pub mod png;
@@ -145,6 +146,7 @@ pub use geometry::{
     DEFAULT_SUPERSAMPLE,
 };
 pub use half::{f16_bits_to_f32, f32_to_f16_bits, quantize_f16};
+pub use jpeg::{apply_orientation, decode_jpeg, exif_orientation, is_jpeg};
 pub use object::{layer_bbox, object_bbox, parse_color, parse_object, Primitive, ShapeKind};
 pub use png::{
     adler32, encode_png, write_png_file, zlib_compress, zlib_compress_best, zlib_decompress,

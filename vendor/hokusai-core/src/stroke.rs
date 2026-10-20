@@ -1152,7 +1152,8 @@ fn build_dab(    brush: &Brush,
             mixed[2].clamp(0.0, 1.0),
         ]
     } else {
-        let col_factor = 1.0 - smudge_amt;
+        // **`col_factor` 已不需要**（第 1314 轮）：加权和现在在 `mix_smudge_linear` 里算
+        //   ⇒ 这里只在**注释**里保留公式说明 ⇒ 所以不声明变量（否则 clippy 报 unused）✓
         // **★ Phase 1（色彩体系规划）：加权混合必须在**线性空间**做** ✓（第 1306 轮）
         //   **为什么**：`smudge*amt + base*(1-amt)` 是**光的相加** ⇒ 而加权和**只在 linear 上有
         //     物理意义**（sRGB 是感知编码，有 gamma）⇒ 在 sRGB 上做会让中间调**偏暗** ✗

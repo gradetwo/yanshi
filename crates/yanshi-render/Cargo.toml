@@ -36,6 +36,12 @@ yanshi-gpu = { version = "0.2.0", path = "../yanshi-gpu", optional = true }
 # **风险如实记**：供应链年轻（单作者、单版本、下载 27 次）；**采纳后对 wasm 的体积增量本机量不了**
 # （本机没装 wasm32 target）=> 由 CI 的 wasm job 覆盖构建，体积增量待测。
 neco-pigment = "0.1"
+# **JPEG 解码**（纯 Rust 的 `jpeg-decoder`）——**本仓第一个为图像格式新增的外部依赖** ✗（零依赖口径的例外 ✓）。
+# **代价已核**：`.crate` 压缩 ~110KB、纯 Rust 无 unsafe 网络/时间依赖 ✓；传递依赖见 Cargo.lock
+#（jpeg-decoder 的并行解码路径会带入 rayon 一系——与"传递依赖 0"的旧说法不符，以 lock 文件为准 ✓）。
+# **为什么破例**：JPEG 是照片的默认格式，手写 DCT/Huffman 解码器不在本仓自研范围内 ✓（与 PSD 走 ag-psd 同理 ✓）。
+# **风险如实记**：解码器由第三方维护；坏文件/CMYK 走显式失败路，不静默 ✓。
+jpeg-decoder = "0.3"
 [dev-dependencies]
 proptest.workspace = true
 

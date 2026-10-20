@@ -48,10 +48,25 @@ pub(super) fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> R
         (EffectKind::Adjustment, "saturation") => &[("amount", 0.0, 8.0)],
         (EffectKind::Adjustment, "invert") => &[],
         (EffectKind::Adjustment, "posterize") => &[("levels", 2.0, 64.0)],
+        (EffectKind::Adjustment, "red_eye") => &[("strength", 0.0, 1.0), ("threshold", 0.5, 10.0)],
         (EffectKind::Adjustment, "vibrance") => &[("amount", 0.0, 2.0)],
         // 色彩平衡 / 分离色调的档位是 [r,g,b]，分量范围在下面的逐项检查里完成。
         (EffectKind::Adjustment, "color_balance") => &[],
         (EffectKind::Adjustment, "split_toning") => &[("balance", -1.0, 1.0), ("amount", 0.0, 1.0)],
+        (EffectKind::Adjustment, "denoise") => &[
+            ("luminance", 0.0, 1.0),
+            ("detail", 0.0, 1.0),
+            ("color", 0.0, 1.0),
+        ],
+        (EffectKind::Adjustment, "lens") => &[
+            ("k1", -1.0, 1.0),
+            ("k2", -1.0, 1.0),
+            ("tca_r", 0.9, 1.1),
+            ("tca_b", 0.9, 1.1),
+            ("vignette_strength", 0.0, 1.0),
+        ],
+        // 透视四边形在下面的逐项检查里完成（形状 + 凸性）。
+        (EffectKind::Adjustment, "perspective") => &[("k1", -1.0, 1.0), ("k2", -1.0, 1.0)],
         (EffectKind::Adjustment, "levels") => &[
             ("black", 0.0, 1.0),
             ("white", 0.0, 1.0),
@@ -209,6 +224,80 @@ pub(super) fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> R
                         )),
                     ));
                 }
+            }
+        }
+    }
+    if name == "lens" || name == "perspective" {
+        // auto_crop 若给出必须是布尔（**静默降级**形态④：非法输入看起来正常 ✗）。
+        if let Some(value) = object.get("auto_crop") {
+            if !value.is_boolean() {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("{name} 的 auto_crop 必须是布尔，得到 {value}")),
+                ));
+            }
+        }
+    }
+    if name == "perspective" {
+        // 四边形：4 个 [x, y]，必须凸（叉积同号；内核与工具层用同一判据 ✓）。
+        let quad = object.get("quad").ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("perspective 需要 quad: [[x,y]×4]"),
+            )
+        })?;
+        let points = quad.as_array().ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("perspective 的 quad 必须是 4 个 [x,y]"),
+            )
+        })?;
+        if points.len() != 4 {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "perspective 的 quad 必须有 4 个点，得到 {}",
+                    points.len()
+                )),
+            ));
+        }
+        let mut coords = [[0.0f64; 2]; 4];
+        for (i, point) in points.iter().enumerate() {
+            let pair = point
+                .as_array()
+                .filter(|array| array.len() == 2)
+                .ok_or_else(|| {
+                    YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!("perspective 的 quad[{i}] 必须是 [x,y]")),
+                    )
+                })?;
+            for (j, value) in pair.iter().enumerate() {
+                coords[i][j] = value.as_f64().ok_or_else(|| {
+                    YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!("perspective 的 quad[{i}][{j}] 必须是数字")),
+                    )
+                })?;
+            }
+        }
+        let mut sign = 0.0f64;
+        for i in 0..4 {
+            let (a, b, c) = (coords[i], coords[(i + 1) % 4], coords[(i + 2) % 4]);
+            let cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+            if cross.abs() < 1e-9 {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("perspective 的四边形必须严格凸（共线顶点不接受）"),
+                ));
+            }
+            if sign == 0.0 {
+                sign = cross.signum();
+            } else if cross.signum() != sign {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("perspective 的四边形必须凸（检测到凹顶点）"),
+                ));
             }
         }
     }

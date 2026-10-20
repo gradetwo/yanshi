@@ -517,11 +517,19 @@ This file is checked by `crates/yanshi-render/tests/doc_consistency.rs` (every a
 filter name) and `crates/yanshi-server/tests/tool_inventory.rs` (the counts), so it cannot drift
 from the kernel and registry silently.
 
-## Adjustments (18)
+## Adjustments (22)
 
 brightness_contrast, saturation, invert, levels, exposure, white_balance, curves, hsl, posterize,
 color_balance, split_toning, vibrance, black_and_white, channel_mixer, gradient_map,
-shadows_highlights, selective_color, color_lut.
+shadows_highlights, selective_color, color_lut, red_eye, denoise, lens, perspective.
+
+`red_eye` takes `strength` 0..1 (default 1) and `threshold` 0.5..10 (default 2.0): pixels whose
+red dominance `r/(g+b)` exceeds the threshold get R pulled toward max(G,B); skin tones and
+ordinary red objects stay untouched.
+
+`denoise` takes `luminance` / `detail` / `color` (0..1). `lens` takes `k1` / `k2`
+(-1..1), `tca_r` / `tca_b` (0.9..1.1), `vignette_strength` (0..1), `auto_crop` (bool).
+`perspective` takes `quad` ([[x,y]×4], must be convex), optional `k1` / `k2`, `auto_crop`.
 
 `levels` takes an optional per-channel `channel` (`rgb` / `r` / `g` / `b`). `posterize` takes
 `levels` 2..64. `color_balance` takes `shadows` / `midtones` / `highlights` as `[r,g,b]` triples.

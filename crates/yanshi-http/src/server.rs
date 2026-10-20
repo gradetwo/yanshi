@@ -2094,9 +2094,10 @@ fn blob_upload(state: &ServerState, request: &Request) -> Response {
     // mime_type}` ✓），像素已经入库 ✓ ⇒ 在这里归一化 ⇒ **下游一行都不用改** ✓
     //（工具 ✓、介质路径 ✓、缩略图 ✓ 全都照旧吃 raw ✓）。
     //
-    // **边界写清楚 ✓**：只认 **PNG** ✓。JPEG/WebP 的解码器不在本仓库自研范围内 ✓
-    //（零外部依赖 ✓）⇒ **显式拒绝并说明** ✓。界面不受影响 ✓：它用浏览器的
-    // `createImageBitmap` 解码任意格式 ✓ 后上传 raw ✓（见 `importLocalImage` ✓）。
+    // **边界写清楚 ✓**：认 **PNG 与 JPEG** ✓。JPEG 走外部 `jpeg-decoder` 依赖 ✓（本轮新增，
+    // 详见 `crates/yanshi-render/src/jpeg.rs` 头注与补丁 README「新增外部依赖」一节 ✓）。
+    // WebP 的解码器不在本仓库自研范围内 ✓ ⇒ **显式拒绝并说明** ✓。界面不受影响 ✓：
+    // 它用浏览器的 `createImageBitmap` 解码任意格式 ✓ 后上传 raw ✓（见 `importLocalImage` ✓）。
     let mut mime_type = declared_mime.clone();
     let mut body = request.body.clone();
     let mut decoded_from = Value::Null;
@@ -2114,11 +2115,24 @@ fn blob_upload(state: &ServerState, request: &Request) -> Response {
             }
         }
     } else if declared_mime.eq_ignore_ascii_case("image/jpeg")
-        || declared_mime.eq_ignore_ascii_case("image/webp")
+        || yanshi_render::jpeg::is_jpeg(&request.body)
     {
+        match yanshi_render::jpeg::decode_jpeg(&request.body) {
+            Some((width, height, rgba)) => {
+                decoded_from = json!({"format": "jpeg", "width": width, "height": height});
+                body = rgba;
+                mime_type = "image/x-yanshi-raw".to_owned();
+            }
+            None => {
+                return crate::http::bad_request(
+                    "JPEG 解码失败（只支持 baseline/渐进式灰度与 RGB 彩色 JPEG；CMYK 请先转成 PNG）",
+                );
+            }
+        }
+    } else if declared_mime.eq_ignore_ascii_case("image/webp") {
         return crate::http::bad_request(
-            "本仓库自带的解码器只支持 PNG；JPEG/WebP 请在界面里导入（浏览器会先解码），\
-             或先转成 PNG（零外部依赖，见设计 791 行）",
+            "本仓库自带的解码器只支持 PNG/JPEG；WebP 请在界面里导入（浏览器会先解码），\
+             或先转成 PNG（见设计 791 行）",
         );
     }
     let Ok(workspace) = state.workspace.lock() else {

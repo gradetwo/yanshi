@@ -7941,7 +7941,7 @@ fn write_set_brush_dynamics(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
 /// **`list_engine_capabilities`** ✓：一处导出引擎的**全部能力面** ✓。
 ///
 /// **每个列表都引用引擎自己的常量** ✗（不是硬编码 ✓）：
-/// `BlendMode::NAMES`（11 ✓）／`FILTER_NAMES`（14 ✓）／`ADJUSTMENT_NAMES`（18 ✓）／
+/// `BlendMode::NAMES`（11 ✓）／`FILTER_NAMES`（14 ✓）／`ADJUSTMENT_NAMES`（22 ✓）／
 /// `RETOUCH_KINDS`（4 ✓）／`LIQUIFY_KINDS`（3 ✓）／`BrushSetting::ALL`（63 ✓）
 /// ⇒ **∴ 以后加一种混合模式/滤镜/修图/液化，只改一处，这里自动跟上 ✓**。
 ///
@@ -14569,7 +14569,7 @@ fn asset_category(name: &str) -> &'static str {
 fn write_list_textures(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let dir = optional_str(args, "dir");
     let entries = ctx.workspace.list_textures(dir.as_deref())?;
-    // **把"能不能直接用"一并报出来** ✓：内核**只解 PNG** ✗（JPEG/WebP 会被**明确拒绝** ✓）
+    // **把"能不能直接用"一并报出来** ✓：内核解 PNG 与 JPEG ✓（WebP 会被**明确拒绝** ✓）
     // ⇒ 与其让调用方试一次才知道 ✓，不如这里就说清 ✓ —— 与"错误里带可用选项"同一规矩 ✓。
     let items = asset_entries_to_json(&entries);
     Ok(json!({
@@ -14579,7 +14579,7 @@ fn write_list_textures(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         "hint": if items.is_empty() {
             "没有可用纹理 ⇒ 跑 scripts/fetch-textures.sh --root <工作区> 抓取 CC0 纹理（默认来自 ambientCG ✓）"
         } else {
-            "usable=true 的才能直接导入（内核只解 PNG ✓）；source=bundled 随发行包发布，source=cache 是本地抓的"
+            "usable=true 的才能直接导入（内核解 PNG/JPEG ✓）；source=bundled 随发行包发布，source=cache 是本地抓的"
         },
         "textures": items,
     }))
