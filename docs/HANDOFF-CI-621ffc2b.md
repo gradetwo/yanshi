@@ -2513,7 +2513,7 @@ deterministic 模式不做缩放：源 1024×1024，目标 512×512
 
 | 环境 | 结果 |
 |---|---|
-| **CI（`5f8334d1`，shard 3）** | **✓ tool-smart-select-add-merges.mjs** |
+| **CI（最近一次绿 run，shard 3）** | **✓ tool-smart-select-add-merges.mjs** |
 | **本机（连跑两次）** | **✗ ⑤ ratio 1.00｜area1=1600 area2=1600** |
 
 **⇒ 本机两次都是 `1600 → 1600`** ⇒ 不是偶发抖动 ✓
