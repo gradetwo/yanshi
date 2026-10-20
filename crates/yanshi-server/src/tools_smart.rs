@@ -3010,6 +3010,44 @@ impl BilinearOklabField {
 
 /// 读取参考源的 RGBA8 像素。
 /// `ref_src`：文档内参考图层 `layer_id`，或 `blob_hash`（`sha256:…`），或 PNG 文件路径。
+/// **把整幅 RGBA 裁到 `region`** ✓（第 1422 轮；外部 §213）
+///
+/// **⇒ 为什么需要** ✗：`read_reference_rgba` 的**图层**分支走 `render_region_raw_layer`
+///   ⇒ 天然只拿 `region` ✓；而 **blob 与文件**分支原来 `decode_png` 后**直接整幅返回**
+///   ⇒ **`ref_bbox` 对它们完全无效** ✗✗
+///   **⇒ 实测**（外部）：同一 shape、`ref_bbox` 给**像素**与给**归一化**两种写法
+///     ⇒ 结果**逐字节一致**（164.7 / 1.02 / 0.62 完全相同）⇒ 那就说明它被忽略了 ✓
+/// **⇒ ⇒ 所以**在这里裁**，让三条参考来路**行为一致** ✓
+fn crop_rgba_to_region(
+    w: u32,
+    h: u32,
+    px: Vec<u8>,
+    region: yanshi_core::Bbox,
+) -> (u32, u32, Vec<u8>) {
+    let x0 = region.x.floor().max(0.0) as u32;
+    let y0 = region.y.floor().max(0.0) as u32;
+    let x1 = (region.x + region.w).ceil().max(0.0) as u32;
+    let y1 = (region.y + region.h).ceil().max(0.0) as u32;
+    let x1 = x1.min(w);
+    let y1 = y1.min(h);
+    if x1 <= x0 || y1 <= y0 {
+        return (0, 0, Vec::new());
+    }
+    if x0 == 0 && y0 == 0 && x1 == w && y1 == h {
+        return (w, h, px);
+    }
+    let (cw, ch) = (x1 - x0, y1 - y0);
+    let mut out = Vec::with_capacity((cw * ch * 4) as usize);
+    for y in y0..y1 {
+        let start = ((y * w + x0) * 4) as usize;
+        let end = start + (cw * 4) as usize;
+        if end <= px.len() {
+            out.extend_from_slice(&px[start..end]);
+        }
+    }
+    (cw, ch, out)
+}
+
 pub(super) fn read_reference_rgba(
     ctx: &mut ToolContext<'_>,
     ref_src: &str,
@@ -3029,7 +3067,8 @@ pub(super) fn read_reference_rgba(
         if let Ok(hash) = ref_src.parse::<yanshi_core::BlobHash>() {
             if let Ok(bytes) = ctx.workspace.store().get(&hash) {
                 if let Some((w, h, px)) = yanshi_render::png::decode_png(&bytes) {
-                    return Ok((w, h, px));
+                    // **按 `region` 裁剪** ✓（第 1422 轮）：blob 是**整幅图** ⇒ 不裁就等于忽略 `ref_bbox` ✗
+                    return Ok(crop_rgba_to_region(w, h, px, region));
                 }
             }
         }
@@ -3043,12 +3082,15 @@ pub(super) fn read_reference_rgba(
             )),
         )
     })?;
-    yanshi_render::png::decode_png(&bytes).ok_or_else(|| {
-        YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail("「ref」文件不是有效 PNG".to_owned()),
-        )
-    })
+    // **同样按 `region` 裁剪** ✓（第 1422 轮）
+    yanshi_render::png::decode_png(&bytes)
+        .map(|(w, h, px)| crop_rgba_to_region(w, h, px, region))
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("「ref」文件不是有效 PNG".to_owned()),
+            )
+        })
 }
 
 /// ① `smart_sample`：从参考图/参考图层采样区域内的明暗与色彩分布，
