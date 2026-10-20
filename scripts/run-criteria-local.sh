@@ -21,7 +21,11 @@ CRIT="${1:?用法: $0 <判据脚本> [参数...]}"
 shift
 
 BIN=target/release/yanshi-serve
-SRC_MAX=$(find crates/*/src -name '*.rs' -newer "$BIN" 2>/dev/null | head -5)
+# **★ 必须同时扫 `vendor/`** ✓（第 1308 轮；外部 2026-10-20 的报告指出）
+#   **漏项的代价**：Phase 1 改的是 `vendor/hokusai-core/src/stroke.rs` ⇒ 而这里只扫
+#     `crates/*/src` ⇒ 于是**二进制陈旧却判「新」** ⇒ 判据测的是**旧代码** ✗
+#   ⇒ 而那正是 `N3E-01` 的同一类错（静默用陈旧二进制）⇒ 所以扫描范围要**覆盖所有 .rs**
+SRC_MAX=$(find crates vendor -name '*.rs' -newer "$BIN" 2>/dev/null | head -5)
 
 if [ ! -x "$BIN" ] || [ -n "$SRC_MAX" ]; then
   echo "  ⟳ 二进制比源码旧（或不存在）⇒ 先重建"
