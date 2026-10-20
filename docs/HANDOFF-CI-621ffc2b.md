@@ -1004,3 +1004,57 @@ gh api "repos/gradetwo/yanshi/actions/runs/<run_id>/jobs" \
 2. **`TOOL_EXAMPLES` 独立** ⇒ 纯数据，无依赖
 3. **`smart` 族 5049 行独立** ⇒ 那是**最复杂的一族**，现在与其它工具**编译隔离**（改它不会重编其它）
 4. **判据侧的收获**：**5 个假红被修 + 12 个引用点被普查** ⇒ 那批判据现在**不怕再拆**
+
+## ✅ **Phase 2 完成**（第 1283 轮：十五刀全部 CI 绿）
+
+### 最终数字（可复核）
+
+| 项 | 起 | 终 | 变化 |
+|---|---|---|---|
+| **`crates/yanshi-server/src/tools.rs`** | **30777 行** | **16403 行** | **−14374（降 47%）** |
+| **拆出的模块** | 0 | **12 个** | — |
+
+**⇒ 12 个模块：**
+```
+tools_mask  tools_selection  tools_bitmap  tools_io  tools_psd  tools_smart
+tools_brush  tools_registry  tools_examples  tools_effect  tools_read  tools_tests
+```
+
+### CI 验证（**七次全绿，且最后三次连续**）
+
+**⇒ 关键：`tools.rs` 的**每一次**搬运都过了完整 CI（`test (stable)` + `test (beta)` + 6 片 `criteria` + `clippy` + `rustfmt` + `GPU` + `wasm`）。**
+
+**⇒ 而**每刀之后**还多跑了一次端到端冒烟（`tool-import-blob-decodable.mjs`，7 条断言）：**最近八刀 8/8 全绿**。**
+
+### 这一场修掉的**两类**真问题
+
+| 类 | 个数 | 例子 |
+|---|---|---|
+| **产品缺陷** | **3** | `import_image` 的位图永不渲染（两个 bug）；blob codec 两个 store 用不同 codec |
+| **判据假红（拆分副作用）** | **6** | `check-no-local-srgb-transfer`、`tool-liquify-size-doc`、`tool-offline-asset-coverage`、`tool-color-schema`、`tool-engine-capabilities`、`tool-region-shape-parity` |
+
+**⇒ 而判据假红的**统一修法**（6 个都一样）：**
+```js
+// 原来：硬编码一个文件
+const src = readFileSync(".../tools.rs")
+// 改成：枚举 + 零匹配守卫
+const src = readdirSync(DIR).filter(/^tools.*\.rs$/).sort().map(read).join("\n")
+if (src.length < 10000) { console.error("⊘ 不可判"); process.exit(3) }
+```
+
+### 三条**血的教训**（都是我这场的错）
+
+| # | 错 | 代价 | 正确做法 |
+|---|---|---|---|
+| **1** | 切代码块时**只向上吃 `///`，不吃 `#[...]`** | `paint_brush` 丢了 `#[allow]` ⇒ clippy 红 | **连属性一起向上吃** |
+| **2** | 找函数末尾用**「第一个 `}`」** | 停在 `match` 的括号 ⇒ **两个 helper 数据丢失**（从 git 恢复） | **括号深度计数** |
+| **3** | 搬 `mod tests` 时**原样保留内层包装** | 层级多一层 ⇒ `use super::ALL_TOOLS` 解析错 ⇒ **147 个错误同源** | **去掉内层 `mod`，`super` 才指向父模块** |
+
+### 外部（apple2011）的独立验证
+
+**⇒ 他们**四次**端到端冒烟（`put_blob` + `import_image` + `blob_decodable`），**逐字一致** ⇒
+**「15 刀全部行为零变化」** ✓
+
+**⇒ 而我这边**八次**（同样的判据）⇒ **两个仓库、十二次独立运行、同一结论。**
+
+**⇒ 那证明的不是「测试通过」，是**「搬家是恒等的」** ⇒ 比测试强。**
