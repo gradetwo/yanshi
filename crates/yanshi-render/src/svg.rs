@@ -138,7 +138,7 @@ pub fn effective_alpha(brush: &BrushSpec) -> f64 {
     } else {
         1.0
     };
-    1.0 - (1.0 - a).powf(k)
+    1.0 - libm::pow(1.0 - a, k)
 }
 
 /// 复刻引擎盖章路径，算出这一笔的 dab 序列（**按簇分组** ✓）。
@@ -307,8 +307,8 @@ pub fn envelope_contour(dabs: &[SvgDab]) -> Vec<Pt> {
             .map(|i| {
                 let angle = (i as f64) * std::f64::consts::TAU / 24.0;
                 (
-                    dab.x + dab.radius * angle.cos(),
-                    dab.y + dab.radius * angle.sin(),
+                    dab.x + dab.radius * libm::cos(angle),
+                    dab.y + dab.radius * libm::sin(angle),
                 )
             })
             .collect();
@@ -368,17 +368,17 @@ pub fn envelope_contour(dabs: &[SvgDab]) -> Vec<Pt> {
             continue; // 被邻圆吞没 ⇒ 无包络点 ✓。
         }
         let r_slope = r_slope.clamp(-0.999, 0.999);
-        let theta = tangents[i].1.atan2(tangents[i].0);
-        let tilt = (-r_slope).acos();
+        let theta = libm::atan2(tangents[i].1, tangents[i].0);
+        let tilt = libm::acos(-r_slope);
         let phi_plus = theta + tilt;
         let phi_minus = theta - tilt;
         let lp = (
-            dab.x + dab.radius * phi_plus.cos(),
-            dab.y + dab.radius * phi_plus.sin(),
+            dab.x + dab.radius * libm::cos(phi_plus),
+            dab.y + dab.radius * libm::sin(phi_plus),
         );
         let rp = (
-            dab.x + dab.radius * phi_minus.cos(),
-            dab.y + dab.radius * phi_minus.sin(),
+            dab.x + dab.radius * libm::cos(phi_minus),
+            dab.y + dab.radius * libm::sin(phi_minus),
         );
         push_with_cusp_filter(&mut left, lp);
         push_with_cusp_filter(&mut right, rp);
@@ -436,15 +436,15 @@ fn push_with_cusp_filter(points: &mut Vec<Pt>, candidate: Pt) {
 /// 一侧到 `to`，等角采样 10 段 ⇒ 返回 9 个内点 ✓。
 fn cap_arc(dab: SvgDab, from: Pt, to: Pt, tangent: Pt, start: bool) -> Vec<Pt> {
     let center = (dab.x, dab.y);
-    let a_from = (from.1 - center.1).atan2(from.0 - center.0);
-    let a_to = (to.1 - center.1).atan2(to.0 - center.0);
+    let a_from = libm::atan2(from.1 - center.1, from.0 - center.0);
+    let a_to = libm::atan2(to.1 - center.1, to.0 - center.0);
     // 帽的朝向：起始帽朝行进反方向、终点帽朝行进方向 ✓。
     let through = if start {
         (-tangent.0, -tangent.1)
     } else {
         tangent
     };
-    let a_through = through.1.atan2(through.0);
+    let a_through = libm::atan2(through.1, through.0);
     // 选扫掠方向：从 a_from 出发、经过 a_through 附近到达 a_to 的那一条 ✓。
     let tau = std::f64::consts::TAU;
     let norm = |a: f64| {
@@ -466,8 +466,8 @@ fn cap_arc(dab: SvgDab, from: Pt, to: Pt, tangent: Pt, start: bool) -> Vec<Pt> {
         .map(|k| {
             let angle = a_from + sweep * (k as f64) / (steps as f64);
             (
-                center.0 + dab.radius * angle.cos(),
-                center.1 + dab.radius * angle.sin(),
+                center.0 + dab.radius * libm::cos(angle),
+                center.1 + dab.radius * libm::sin(angle),
             )
         })
         .collect()
@@ -846,7 +846,7 @@ pub fn fit_closed_contour(loop_pts: &[Pt], forced: &[Pt]) -> Option<FittedContou
         let l2 = (v2.0 * v2.0 + v2.1 * v2.1).sqrt();
         if l1 > 1e-12 && l2 > 1e-12 {
             let cos = ((v1.0 * v2.0 + v1.1 * v2.1) / (l1 * l2)).clamp(-1.0, 1.0);
-            if cos.acos() > 55.0f64.to_radians() {
+            if libm::acos(cos) > 55.0f64.to_radians() {
                 split[i] = true;
             }
         }
@@ -1832,7 +1832,7 @@ fn has_sharp_fold(clusters: &[Vec<SvgDab>]) -> bool {
                 continue;
             }
             let cos = ((v1.0 * v2.0 + v1.1 * v2.1) / (l1 * l2)).clamp(-1.0, 1.0);
-            if cos.acos() > 45.0f64.to_radians() && l1 < cluster[i].radius {
+            if libm::acos(cos) > 45.0f64.to_radians() && l1 < cluster[i].radius {
                 return true;
             }
         }
@@ -2134,7 +2134,9 @@ mod tests {
         let mut field = vec![0.0f32; w * h];
         for j in 0..h {
             for i in 0..w {
-                let d = ((i as f64 - 19.5).powi(2) + (j as f64 - 19.5).powi(2)).sqrt();
+                let di = i as f64 - 19.5;
+                let dj = j as f64 - 19.5;
+                let d = (di * di + dj * dj).sqrt();
                 if d <= 10.0 {
                     field[j * w + i] = 1.0;
                 }
@@ -2152,7 +2154,9 @@ mod tests {
         let mut ring = vec![0.0f32; w * h];
         for j in 0..h {
             for i in 0..w {
-                let d = ((i as f64 - 19.5).powi(2) + (j as f64 - 19.5).powi(2)).sqrt();
+                let di = i as f64 - 19.5;
+                let dj = j as f64 - 19.5;
+                let d = (di * di + dj * dj).sqrt();
                 if (6.0..=10.0).contains(&d) {
                     ring[j * w + i] = 1.0;
                 }
@@ -2179,7 +2183,7 @@ mod tests {
         let circle: Vec<Pt> = (0..128)
             .map(|i| {
                 let a = f64::from(i) * std::f64::consts::TAU / 128.0;
-                (50.0 + 20.0 * a.cos(), 50.0 + 20.0 * a.sin())
+                (50.0 + 20.0 * libm::cos(a), 50.0 + 20.0 * libm::sin(a))
             })
             .collect();
         let fitted = fit_closed_contour(&circle, &[]).expect("圆应可拟合");
