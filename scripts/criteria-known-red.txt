@@ -28171,3 +28171,4 @@ browser-live-ui.mjs  # 环境红：要真实 chromium 渲染（本机无 GPU 合
 browser-new-doc-size.mjs  # 环境红：同上（要真实 chromium 的视口与合成）。AGENTS.md「已知的 3 条环境红」第 2 条。
 tool-dwell.mjs  断的是像素数（本机 +1 / CI −5，方向相反）⇒ 环境红；AGENTS.md「已知的 3 条环境红」第 1 条同族。第 1333 轮曾误删又恢复。
 tool-zero-dab-hint.mjs  同一提交两个环境相反（CI painted=73673、本机 0）⇒ 环境红；AGENTS.md「已知的 3 条环境红」第 1 条同族。第 1333 轮曾误删又恢复。
+tool-stamp-parity.mjs  时间型断言在 CI 上抖：本机连跑 exit 0，CI（shard 3）exit 1，失败点是它内部跑的 Rust 测试 `incremental_stamp_matches_full_tile_re_render` 里的**比例断言**（实测 f16 往返占整条的 97.5%，断言要求 5%–95%）。本仓已裁定「时间断言不上共享 runner」，但这条在**测试代码**里（不是判据脚本）⇒ 修法是把那条比例断言改成**结构断言**（增量结果 == 整段重渲的**像素**），而不是放宽区间。第 1404 轮登记。
