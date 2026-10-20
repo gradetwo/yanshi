@@ -191,7 +191,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             YanshiError::new(
                 ErrorCode::InvalidArgument,
                 ErrorContext::detail(format!(
-                    "未知 color_mixing {name} ⇒ 可用：rgb（缺省）/ pigment"
+                    "未知 color_mixing {name} ⇒ 可用：rgb（缺省）/ linear（物理正确混色）/ pigment（光谱颜料）"
                 )),
             )
         })?,
