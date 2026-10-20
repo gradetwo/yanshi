@@ -828,7 +828,7 @@ grep -rn "175\b" docs/guide.md docs/guide.zh-CN.md docs/tools.md
 ```
 error: visibility `pub(super)` is not followed by an item
 ```
-**⇒ 于是 `git checkout -- .` 回退（未提交 ⇒ 干净回退到 `ca58a503`）。**
+**⇒ 于是 `git checkout -- .` 回退（未提交 ⇒ 干净回退到 `当时的 HEAD`）。**
 
 ### 为什么回退而不是硬修
 
@@ -840,7 +840,7 @@ error: visibility `pub(super)` is not followed by an item
 
 ### 前五刀不受影响
 
-**⇒ `tools.rs` 仍 **29069 行**（五刀共 −1708）⇒ 而 `ca58a503` 是本轮 HEAD。**
+**⇒ `tools.rs` 仍 **29069 行**（五刀共 −1708）⇒ 而 `当时的 HEAD` 是本轮 HEAD。**
 
 **⇒ 下一步（下一轮或更晚）：**
 1. **先 grep**：`tools.rs` 的 `#[cfg(test)]` 块里有多少处引用 `write_smart_*` / `get_texture_profile` / `texture_target_strokes` / `TextureXorShift` / `GuideTable` / `TextureProfile`
@@ -873,7 +873,7 @@ error: visibility `pub(super)` is not followed by an item
 | **2** | 前缀插入 + 逐个迭代 | `check` 通过，但 `clippy --all-targets` 报 66 → 33 → 24 ⇒ **每次发现新符号** |
 | **3** | **全量**给所有 `fn`/方法/字段加 `pub(super)` | **450 错误**（给函数体的**局部变量行**也加了）|
 
-**⇒ 三次都回退（`git checkout -- .`）⇒ HEAD 仍是 `d15cc6bc`。**
+**⇒ 三次都回退（`git checkout -- .`）⇒ HEAD 仍是 `当时的 HEAD`。**
 
 ### 结论：**这一刀需要先解耦，不是「再搬一段」**
 
