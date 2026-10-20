@@ -3283,7 +3283,38 @@ pub(super) fn write_smart_sample(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     };
 
     // === Pass 1：大笔软边铺底（约 2S 笔）===
-    let horizontal = sw >= sh;
+    //
+    // **★★★ 方向取**等明度切向**（第 1423 轮；外部 §213）★★★**
+    //
+    // **⇒ 原缺陷** ✗：这里原本只有一行 `let horizontal = sw >= sh;` ⇒ **方向只由形状长宽比决定**，
+    //   **与参考图毫无关系** ✗✗ ⇒ 于是**高位画布（如 600×1066）上永远是竖条** ✓
+    //   **⇒ ⇒ 而 summary 明确承诺**「自动生成**顺应等明度线**的多尺度笔触…**方向取等明度切向**」✗✗✗
+    //     ⇒ **文档对、代码错**（与本场 `fill_region.opacity`、掩膜遍时间基同一类 ✓）
+    //   **⇒ ⇒ ⇒ 而外部用三组独立实验（画布差 3.3 倍、`ref_bbox` 三种写法、`samples/size` 三组）
+    //     都得到竖条** ⇒ 他排除掉参数之后**正确地**判定是方向场的问题 ✓（他的判断对 ✓）
+    //
+    // **⇒ 现在怎么做**：每个笔触在**自己的中心点**取参考图的**有限差分梯度**（ΔL/Δx、ΔL/Δy）⇒
+    //   **等明度切向 = 梯度旋转 90°** ⇒ `(-gy, gx)` ✓
+    //   **⇒ 梯度≈0（平坦区）⇒ 回退到长轴方向**（确定性、可复现 ✓，且平坦区本来就没有"等明度线"可言 ✓）
+    let long_axis_horizontal = sw >= sh;
+    let iso_tangent = |cx: f64, cy: f64| -> Option<(f64, f64)> {
+        // 1 px 的有限差分（与参考采样同坐标系 = 文档坐标 ✓）
+        let e = 1.0;
+        let l = |c: [f32; 3]| srgb_f32_l(c[0], c[1], c[2]);
+        let (ca, _, _) = sample_ref(cx - e, cy);
+        let (cb, _, _) = sample_ref(cx + e, cy);
+        let (cc, _, _) = sample_ref(cx, cy - e);
+        let (cd, _, _) = sample_ref(cx, cy + e);
+        let span = 2.0 * e; // f64
+        let gx = f64::from(l(cb) - l(ca)) / span;
+        let gy = f64::from(l(cd) - l(cc)) / span;
+        let mag = (gx * gx + gy * gy).sqrt();
+        // 平均明度差 < 0.5% ⇒ 视为平坦（噪声级），不用它定方向 ✓
+        if mag < 0.005 {
+            return None;
+        }
+        Some((-gy / mag, gx / mag))
+    };
     let size_base = sw.min(sh) / (samples as f64 * 0.65);
     let n1 = (2 * samples).clamp(8, 48);
     for i in 0..n1 {
@@ -3291,10 +3322,28 @@ pub(super) fn write_smart_sample(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         let t = (i as f64 + 0.5) / n1 as f64;
         let jitter = rng.gaussian() * 0.02;
         let tc = (t + jitter).clamp(0.0, 1.0);
-        let (x0s, y0s, x1s, y1s) = if horizontal {
+        // 长轴方向的基线（平坦区的回退 ✓）
+        let (lx0, ly0, lx1, ly1) = if long_axis_horizontal {
             (bx0, by0 + tc * sh, bx1, by0 + tc * sh)
         } else {
             (bx0 + tc * sw, by0, bx0 + tc * sw, by1)
+        };
+        // **有梯度 ⇒ 沿等明度切向**（长度取长轴的 80%，中心不变 ✓）
+        let (cx0, cy0) = ((lx0 + lx1) / 2.0, (ly0 + ly1) / 2.0);
+        let (x0s, y0s, x1s, y1s) = match iso_tangent(cx0, cy0) {
+            Some((tx, ty)) => {
+                let half = 0.4 * (sw.max(sh));
+                let (ax, ay) = (cx0 + tx * half, cy0 + ty * half);
+                let (bx_, by_) = (cx0 - tx * half, cy0 - ty * half);
+                // 裁到形状 bbox 内（贴着边缘走时不许把笔甩到外面 ✗）
+                (
+                    ax.clamp(bx0, bx1),
+                    ay.clamp(by0, by1),
+                    bx_.clamp(bx0, bx1),
+                    by_.clamp(by0, by1),
+                )
+            }
+            None => (lx0, ly0, lx1, ly1),
         };
         // 起止点明度差 → 决定拆段数。
         let (c0, _, _) = sample_ref(x0s, y0s);
