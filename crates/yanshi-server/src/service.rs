@@ -723,6 +723,11 @@ impl Workspace {
     /// ⇒ 它们引用的 blob 会被判成"无人引用"的孤儿 ✗ ⇒ 一旦带 `confirm` 跑 ✓ **活数据就没了** ✗✗。
     /// 所以这里先按磁盘上的文档清单逐份打开 ✓，**再**做分级 ✓；
     /// 并把"考虑了几份文档"一并报出来 ✓（分类是否可信，看一眼就知道 ✓）。
+    /// **工作区根目录**（用于把 `put_blob` 的路径限制在工作区内）✓
+    pub fn root_path(&self) -> Option<&std::path::Path> {
+        self.persist.as_ref().map(|p| p.root())
+    }
+
     /// **把一个字节块放进内容寻址存储，返回 `blob_hash`** ✓（第 1228 轮；外部 §176/177 要的 `put_blob`）
     ///
     /// **为什么需要**：外部用户手里**只有本地 PNG 文件** ⇒ 而 `import_image` 要求先有 `blob_hash`。

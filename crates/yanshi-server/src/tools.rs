@@ -6739,10 +6739,36 @@ pub fn write_put_blob(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     //   （如 `path: "/etc/passwd"`）⇒ 要彻底堵住需要 `--root` 的 canonicalize + 前缀校验。
     //   为什么先不做：那需要拿到服务端 root（`FileStore` 的根），而我这一轮的上下文用尽了；
     //   而**路径穿越**（`..`）是更常见的那一类 ⇒ 先堵它，并在 spec 的 summary 里写明限制。
+    // **★ 完整的 root 沙箱**（第 1232 轮：堵掉「绝对路径读工作区外」）
+    //   上一轮只查 `..` ⇒ 而 `/etc/passwd` 这种**绝对路径**照样能读 ✗
+    //   本轮的判据：**canonicalize 之后，路径必须落在工作区 root 之内**
+    //   ⇒ 两句一起做：① 拒 `..`（早退，给清晰的错误）② canonicalize + 前缀校验（权威）
     if path.split(['/', '\\']).any(|seg| seg == "..") {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
             ErrorContext::detail(format!("path 不许含 `..` 组件（防路径穿越）：{path}")),
+        ));
+    }
+    let resolved = std::fs::canonicalize(&path).map_err(|e| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("读不到 {path}：{e}")),
+        )
+    })?;
+    // **root 必须存在才算可判** —— 没有 `--root` 的工作区不能写 blob（前面 put_blob 会报）
+    let inside_root = match ctx.workspace.root_path() {
+        Some(root) => std::fs::canonicalize(root)
+            .map(|r| resolved.starts_with(&r))
+            .unwrap_or(false),
+        None => false,
+    };
+    if !inside_root {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "path 必须落在工作区根目录之内（put_blob 不支持读工作区外的文件）：{path} ⇒ {}",
+                resolved.display()
+            )),
         ));
     }
     let bytes = std::fs::read(&path).map_err(|e| {
