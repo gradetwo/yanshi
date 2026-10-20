@@ -200,3 +200,441 @@ pub(super) fn selection_area_px(ctx: &mut ToolContext<'_>, shape: &Value) -> (f6
         _ => (0.0, false),
     }
 }
+
+// ===== 同族追加（第 1272 轮）：transform_selection + select_opaque_pixels =====
+
+/// 选区变换（`transform_selection`）：Q1 双轨制。
+///
+/// 纯几何选区（`patches` 为空且 `kind != "bitmap"`）在 JSON 几何层原地精确变换；
+/// 位图选区（`kind == "bitmap"` 或 `patches` 非空）做逆向双线性重采样。
+/// `feather` 乘面积缩放因子 `sqrt(|sx*sy|)`，`invert`/`mode`/`id` 不动。
+/// 通过 `AtomKind::UpdateSelection` 提交。
+pub(super) fn write_transform_selection(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let selection_id_in = require_str(args, "selection_id")?;
+    let state = document_state(ctx)?;
+    // 解析 selection_id（含 "latest"：按 created_by 取最新；必须用 map 的 key）。
+    let selection_id = if selection_id_in == "latest" {
+        let mut ordered: Vec<(&String, &yanshi_core::Selection)> = state
+            .selections
+            .iter()
+            .filter(|(_, s)| !s.is_deleted())
+            .collect();
+        ordered.sort_by(|a, b| a.1.created_by.as_str().cmp(b.1.created_by.as_str()));
+        ordered.last().map(|(k, _)| (*k).clone()).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail("没有可变换的选区".to_owned()),
+            )
+        })?
+    } else {
+        selection_id_in.to_owned()
+    };
+    let sel = state.selections.get(&selection_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("选区 {selection_id} 不存在")),
+        )
+    })?;
+    if sel.is_deleted() {
+        return Err(YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("选区 {selection_id} 已删除")),
+        ));
+    }
+
+    // ---- 参数 ----
+    let (dx, dy) = args
+        .get("translate")
+        .and_then(Value::as_array)
+        .map(|a| {
+            (
+                a.first().and_then(Value::as_f64).unwrap_or(0.0),
+                a.get(1).and_then(Value::as_f64).unwrap_or(0.0),
+            )
+        })
+        .unwrap_or((0.0, 0.0));
+    let (sx, sy) = args
+        .get("scale")
+        .and_then(Value::as_array)
+        .map(|a| {
+            (
+                a.first().and_then(Value::as_f64).unwrap_or(1.0),
+                a.get(1).and_then(Value::as_f64).unwrap_or(1.0),
+            )
+        })
+        .unwrap_or((1.0, 1.0));
+    if !sx.is_finite() || !sy.is_finite() || sx == 0.0 || sy == 0.0 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("scale 必须是非零有限值".to_owned()),
+        ));
+    }
+    let rotate_deg = args
+        .get("rotate_deg")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    if !rotate_deg.is_finite() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("rotate_deg 必须是有限值".to_owned()),
+        ));
+    }
+    let theta = rotate_deg.to_radians();
+
+    let shape = sel.shape.clone();
+    let kind = shape
+        .get("kind")
+        .or_else(|| shape.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("rect");
+    let bbox = selection_shape_bbox(&shape).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "选区 {selection_id} 的形状无法解析包围盒（kind={kind}）"
+            )),
+        )
+    })?;
+    // pivot 缺省为包围盒中心。
+    let (px, py) = args
+        .get("pivot")
+        .and_then(Value::as_array)
+        .map(|a| {
+            (
+                a.first()
+                    .and_then(Value::as_f64)
+                    .unwrap_or(bbox.0 + bbox.2 / 2.0),
+                a.get(1)
+                    .and_then(Value::as_f64)
+                    .unwrap_or(bbox.1 + bbox.3 / 2.0),
+            )
+        })
+        .unwrap_or((bbox.0 + bbox.2 / 2.0, bbox.1 + bbox.3 / 2.0));
+
+    let m = selection_affine(dx, dy, sx, sy, theta, px, py);
+    let apply =
+        |x: f64, y: f64| -> (f64, f64) { (m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5]) };
+    // feather 按面积缩放因子调整（专家方案）；invert 不动。
+    let new_feather = sel.feather * (sx.abs() * sy.abs()).sqrt();
+
+    let is_bitmap = kind == "bitmap" || !sel.patches.is_empty();
+    let new_shape: Value;
+    let note: String;
+    if is_bitmap {
+        // ---- 位图轨：逆向双线性重采样 ----
+        // 源位图：kind=="bitmap" 时读 shape.blob；几何+patches 时先用 CompiledMask
+        // 把「几何底座 + patch 链」烘焙成位图（否则 patches 会丢失）。
+        let (src_data, sw, sh, src_ox, src_oy): (Vec<u8>, usize, usize, f64, f64) = if kind
+            == "bitmap"
+        {
+            let blob = shape.get("blob").and_then(Value::as_str).ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("选区 {selection_id} 是位图选区但缺少 blob")),
+                )
+            })?;
+            let src_mask = yanshi_render::selection::get_bitmap_mask(blob).ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::ReferenceNotFound,
+                    ErrorContext::detail(format!("选区 {selection_id} 的位图 blob 未注册：{blob}")),
+                )
+            })?;
+            let (bx0, _, _, _) = bbox;
+            (
+                src_mask.data.clone(),
+                src_mask.width as usize,
+                src_mask.height as usize,
+                bx0,
+                bbox.1,
+            )
+        } else {
+            // 几何底座 + patches：烘焙 bbox 区域。
+            let load_blob = |s: &str| {
+                s.parse::<yanshi_core::BlobHash>()
+                    .ok()
+                    .and_then(|hash| ctx.workspace.store().get(&hash).ok())
+            };
+            let compiled = yanshi_render::selection::CompiledMask::build(
+                sel,
+                state.width as i32,
+                state.height as i32,
+                &load_blob,
+            );
+            let (bx0, by0, bw0, bh0) = bbox;
+            let (ix0, iy0) = (bx0.floor() as i32, by0.floor() as i32);
+            let (iw, ih) = (bw0.ceil() as usize, bh0.ceil() as usize);
+            let mut data = vec![0u8; iw * ih];
+            for y in 0..ih {
+                for x in 0..iw {
+                    data[y * iw + x] = (compiled.sample(ix0 + x as i32, iy0 + y as i32) * 255.0)
+                        .round()
+                        .clamp(0.0, 255.0) as u8;
+                }
+            }
+            (data, iw, ih, ix0 as f64, iy0 as f64)
+        };
+        // 变换后包围盒：4 角点变换后取 min/max。
+        let (bx0, by0, bw0, bh0) = bbox;
+        let corners = [
+            apply(bx0, by0),
+            apply(bx0 + bw0, by0),
+            apply(bx0 + bw0, by0 + bh0),
+            apply(bx0, by0 + bh0),
+        ];
+        let (mut nx0, mut ny0, mut nx1, mut ny1) = (
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        );
+        for (cx, cy) in corners {
+            nx0 = nx0.min(cx);
+            ny0 = ny0.min(cy);
+            nx1 = nx1.max(cx);
+            ny1 = ny1.max(cy);
+        }
+        let (ix0, iy0) = (nx0.floor() as i32, ny0.floor() as i32);
+        let (iw, ih) = ((nx1 - nx0).ceil() as i32, (ny1 - ny0).ceil() as i32);
+        if iw <= 0 || ih <= 0 {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("变换后选区面积为 0".to_owned()),
+            ));
+        }
+        let inv = invert_affine(&m).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("变换矩阵退化（行列式为 0），无法求逆".to_owned()),
+            )
+        })?;
+        // 源位图是 bbox 原点为 (src_ox, src_oy) 的裁剪块；源坐标 = 逆矩阵(目标画布坐标) - 原点。
+        let mut out = vec![0u8; (iw as usize) * (ih as usize)];
+        for y in 0..ih as usize {
+            for x in 0..iw as usize {
+                let tx = ix0 as f64 + x as f64;
+                let ty = iy0 as f64 + y as f64;
+                let sx_f = inv[0] * tx + inv[1] * ty + inv[2] - src_ox;
+                let sy_f = inv[3] * tx + inv[4] * ty + inv[5] - src_oy;
+                out[y * iw as usize + x] =
+                    bilinear_sample_u8_zero_fill(&src_data, sw, sh, sx_f, sy_f);
+            }
+        }
+        let png = yanshi_render::png::encode_png_l8(iw as u32, ih as u32, &out)
+            .expect("内存 PNG 编码不会失败");
+        let blob_hash = ctx.workspace.store().put(&png)?;
+        let blob_str = blob_hash.to_string();
+        yanshi_render::selection::register_bitmap_mask(
+            blob_str.clone(),
+            Arc::new(yanshi_render::selection::DecodedBitmapMask {
+                width: iw as u32,
+                height: ih as u32,
+                data: out,
+            }),
+        );
+        let mut s = shape.clone();
+        if let Some(obj) = s.as_object_mut() {
+            obj.insert("kind".to_owned(), json!("bitmap"));
+            obj.insert("bbox".to_owned(), json!([ix0, iy0, iw, ih]));
+            obj.insert("blob".to_owned(), json!(blob_str.clone()));
+            // 注意：patches 非空的几何选区转位图后，patches 语义已烘焙进新位图，
+            // 故不再保留旧 patches（由 UpdateSelection 的 shape 替换体现）。
+        }
+        new_shape = s;
+        note = format!("位图逆向双线性重采样：{sw}x{sh} → {iw}x{ih}");
+        // patches 已烘焙：通过 shape 替换体现，见下。
+    } else if theta.abs() < 1e-9 {
+        // ---- 几何轨：无旋转 → 直接改 bbox（零精度损失）----
+        let (x, y, w, h) = bbox;
+        let (nx, ny) = apply(x, y);
+        // 负缩放时规范化（宽高取绝对值，原点取最小角）。
+        let (nx2, ny2) = apply(x + w, y + h);
+        let (fx0, fx1) = (nx.min(nx2), nx.max(nx2));
+        let (fy0, fy1) = (ny.min(ny2), ny.max(ny2));
+        let mut s = shape.clone();
+        if let Some(obj) = s.as_object_mut() {
+            // 统一写成规范 x/y/w/h（解析器兼容旧式 width/height）。
+            obj.insert("x".to_owned(), json!(fx0));
+            obj.insert("y".to_owned(), json!(fy0));
+            obj.insert("w".to_owned(), json!(fx1 - fx0));
+            obj.insert("h".to_owned(), json!(fy1 - fy0));
+            obj.remove("bbox");
+            obj.remove("width");
+            obj.remove("height");
+            obj.remove("cx");
+            obj.remove("cy");
+            obj.remove("rx");
+            obj.remove("ry");
+        }
+        new_shape = s;
+        note = "几何精确变换（bbox 原地更新）".to_owned();
+    } else {
+        // ---- 几何轨：含旋转 → 顶点左乘矩阵 ----
+        // rect → 4 顶点 polygon；ellipse → 64 顶点 polygon；polygon 直接变换顶点。
+        let pts = selection_shape_points(&shape, bbox).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "选区 {selection_id} 的形状不支持旋转变换（kind={kind}）"
+                )),
+            )
+        })?;
+        let new_pts: Vec<Value> = pts
+            .iter()
+            .map(|(x, y)| {
+                let (nx, ny) = apply(*x, *y);
+                json!([nx, ny])
+            })
+            .collect();
+        let mut s = shape.clone();
+        if let Some(obj) = s.as_object_mut() {
+            obj.insert("kind".to_owned(), json!("polygon"));
+            obj.remove("type");
+            obj.insert("points".to_owned(), Value::Array(new_pts));
+            obj.remove("x");
+            obj.remove("y");
+            obj.remove("w");
+            obj.remove("h");
+            obj.remove("width");
+            obj.remove("height");
+            obj.remove("bbox");
+            obj.remove("cx");
+            obj.remove("cy");
+            obj.remove("rx");
+            obj.remove("ry");
+        }
+        new_shape = s;
+        note = format!(
+            "旋转变换：{kind} → polygon（{} 顶点，零精度损失）",
+            pts.len()
+        );
+    }
+
+    // 通过 UpdateSelection 提交（不改 id/mode/patches；位图轨的 patches 烘焙已在 shape 里体现，
+    // 但 patches 字段本身保留——其求值由 clip 路径的 CompiledMask 钩子处理，见 Q2）。
+    let payload = json!({
+        "selection_id": selection_id,
+        "shape": new_shape,
+        "feather": new_feather,
+    });
+    let result = ctx.commit(AtomKind::UpdateSelection, payload)?;
+    Ok(json!({
+        "ok": true,
+        "selection_id": selection_id,
+        "kind": if is_bitmap { "bitmap" } else { kind },
+        "feather": new_feather,
+        "note": note,
+        "atom_seq": result.seq,
+    }))
+}
+
+/// 按图层不透明像素建选区（`select_opaque_pixels`）：Q1。
+///
+/// Photoshop「Ctrl+点击图层缩略图」语义：`coverage(x,y) = alpha(x,y)` 直接映射，
+/// 不做硬二值化（无 1px 白边/黑边）。可选 `min_alpha` 过滤飞白、`binarize` 硬二值化
+///（不推荐）、`close_pinholes` 闭合 ≤8px² 微孔（复用 `smart_select` 的 `pinhole_close`）。
+/// 落盘复用 `commit_bitmap_selection`。
+pub(super) fn write_select_opaque_pixels(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let selection_id = optional_str(args, "selection_id").unwrap_or_else(|| {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(1);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("sel_opaque_{n}")
+    });
+    let min_alpha = args.get("min_alpha").and_then(Value::as_f64).unwrap_or(0.0);
+    if !(0.0..=1.0).contains(&min_alpha) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("min_alpha 必须在 [0, 1] 内，得到 {min_alpha}")),
+        ));
+    }
+    let binarize = args
+        .get("binarize")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let close_pinholes = args
+        .get("close_pinholes")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let mode = optional_str(args, "mode").unwrap_or_else(|| "new".to_owned());
+    let feather = args.get("feather").and_then(Value::as_f64).unwrap_or(0.0);
+
+    // 读整图层像素（与 smart_select 同一入口，严格用返回的 (rw, rh) 算 stride）。
+    let state = document_state(ctx)?;
+    let canvas_w = state.width as usize;
+    let canvas_h = state.height as usize;
+    let region = yanshi_core::Bbox::new(0.0, 0.0, canvas_w as f64, canvas_h as f64);
+    let (rw, rh, raw) = ctx
+        .workspace
+        .render_region_raw_layer(&ctx.doc_id, region, &layer_id)
+        .map_err(|e| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("读取图层 {layer_id} 像素失败：{e}")),
+            )
+        })?;
+    let (rw, rh) = (rw as usize, rh as usize);
+    if raw.len() < rw * rh * 4 {
+        return Err(YanshiError::new(
+            ErrorCode::Degraded,
+            ErrorContext::detail(format!(
+                "render_region_raw_layer 返回字节不足：{rw}x{rh} 需要 {}，实际 {}",
+                rw * rh * 4,
+                raw.len()
+            )),
+        ));
+    }
+
+    // coverage = alpha 直接映射（关键：不做硬二值化）。
+    let min_a_u8 = (min_alpha * 255.0).round() as u8;
+    let mut mask = vec![0u8; rw * rh];
+    let mut any = false;
+    for i in 0..rw * rh {
+        let a = raw[i * 4 + 3];
+        let v = if a < min_a_u8 {
+            0
+        } else if binarize {
+            if a > 0 {
+                255
+            } else {
+                0
+            }
+        } else {
+            a
+        };
+        mask[i] = v;
+        if v > 0 {
+            any = true;
+        }
+    }
+    if close_pinholes {
+        pinhole_close(&mut mask, rw, rh);
+    }
+
+    let (bx, by, bw, bh, _blob_str, png_len, atom_seq) = commit_bitmap_selection(
+        ctx,
+        &selection_id,
+        &mut mask,
+        rw,
+        rh,
+        feather,
+        &mode,
+        false,
+        false,
+    )?;
+
+    let mut selected_area = 0f64;
+    for &v in &mask {
+        selected_area += f64::from(v) / 255.0;
+    }
+    Ok(json!({
+        "ok": true,
+        "selection_id": selection_id,
+        "bbox": [bx, by, bw, bh],
+        "selected_area_px": selected_area,
+        "any": any,
+        "blob_bytes": png_len,
+        "note": if binarize { "已硬二值化（不推荐：边缘有 1px 误差）" } else { "alpha 直接映射（无二值化）" },
+        "atom_seq": atom_seq,
+    }))
+}
