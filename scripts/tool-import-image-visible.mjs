@@ -15,7 +15,7 @@
 //   `YANSHI_EXPORT_DIR="$ROOT/exports"` ⇒ 所以 `root = dirname(YANSHI_EXPORT_DIR)` ✓
 //
 // **∴ 变异**：把 `import_image` 净荷里的 `region` 删掉 ⇒ ②③ 必红 ✓
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
