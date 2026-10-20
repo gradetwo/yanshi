@@ -546,9 +546,24 @@ shadows_highlights, selective_color, color_lut, red_eye, denoise, lens, perspect
 
 **⇒ 外推**：`11000` 笔 ≈ **18 s**（同构型：800×800、`size 40`、`preview:false`、`wait_for_render:false`）。
 
-**⇒ ⇒ 提速来自两处，都要显式关掉：**
-- `preview: false` —— 否则**每笔都编码一张预览 PNG**
-- `wait_for_render: false` —— 否则每笔等渲染（20 笔实测：`true` 4 ms/笔 → `false` 1 ms/笔）
+**⇒ 提速只有一处**（实测，第 1361 轮更正）：
+
+| 开关 | 实测效果 |
+|---|---|
+| **`wait_for_render: false`** | **有效**：20 笔 `true` 4 ms/笔 ⇒ `false` 1 ms/笔（**约 4×**）|
+| `preview: false` | **量不到差异**：20 笔 `36 ms` vs `38 ms`；单独调用 `2.7` vs `2.8 ms/笔` ⇒ **噪声内** ⇒ **别把它当提速手段** |
+
+> **⇒ 我曾在这份文档里写「`preview` 默认会每笔编码一张预览 PNG」⇒ 第 1361 轮实测**否证了它** ✗
+> ⇒ 所以那一句已删。**别把一个「听起来合理」的因果写进文档** ✓
+
+**⇒ 而真正**主导成本的是画布尺寸**（单独 10 笔、`wait_for_render:false`）：**
+
+| 画布 | ms/笔 |
+|---|---|
+| 400×400 | **2.7** |
+| 800×800 | **4.2** |
+| 1600×1600 | **9.7** |
+| 3000×3000 | **28.4** |
 
 **⇒ 而 `wait_for_render: false` 会让栅格落后于 head** ⇒ 导出前看 `export_png` 的
 **`raster_pending`**（第 1346 轮加）⇒ 为 `true` 就先 `get_render_status` 或改用同步模式再导出。
