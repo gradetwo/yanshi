@@ -723,6 +723,35 @@ impl Workspace {
     /// ⇒ 它们引用的 blob 会被判成"无人引用"的孤儿 ✗ ⇒ 一旦带 `confirm` 跑 ✓ **活数据就没了** ✗✗。
     /// 所以这里先按磁盘上的文档清单逐份打开 ✓，**再**做分级 ✓；
     /// 并把"考虑了几份文档"一并报出来 ✓（分类是否可信，看一眼就知道 ✓）。
+    /// **把一个字节块放进内容寻址存储，返回 `blob_hash`** ✓（第 1228 轮；外部 §176/177 要的 `put_blob`）
+    ///
+    /// **为什么需要**：外部用户手里**只有本地 PNG 文件** ⇒ 而 `import_image` 要求先有 `blob_hash`。
+    /// 手写文件**不够**（服务端用的是 `RenderCodec`：落盘格式 `[0x00][TAG][body]`，
+    /// 裸 PNG 的第一个字节 `0x89` 会让 `decode` 返回 `None`）⇒ 所以必须由服务端自己写。
+    ///
+    /// **它内部会过 `RenderCodec::encode`** ⇒ 所以调用方**不需要**知道编码格式 ✓
+    pub fn put_blob(&mut self, bytes: &[u8]) -> Result<String> {
+        let persist = self.persist.as_ref().ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail("工作区没有持久化存储 ⇒ 不能写 blob（用 --root 启动才有）"),
+            )
+        })?;
+        // **★ 必须过 `RenderCodec::encode`** ✓（第 1228 轮实测：`put` 本身**不编码**）
+        //   ⇒ 否则存进去的是**裸字节** ⇒ 而 `get` 会 `codec.decode` ⇒ 读到裸 PNG 的 `0x89`
+        //     而不是 `0x00` 头 ⇒ 返回 `None` ⇒ 「blob 无法按当前存储编码解出」✗
+        //   ⇒ 这正是外部（apple2011）手写裸 PNG 失败的原因，也是本工具存在的意义 ✓
+        let stored = crate::blob_codec::encode_for_storage(bytes);
+        Ok(persist.blob_store()?.put(&stored)?.to_string())
+    }
+
+    /// **统计 blob 的三级生命周期** ✓（设计 §6.3 ✓，只读 ✓）。
+    ///
+    /// **先把所有文档读进来** ✓ —— 这条是**一次险些删掉 1.09 GB 活数据**换来的 ✗：
+    /// 服务端**惰性打开**文档 ✓ ⇒ 只打开一份空文档时 ✓，别的文档的日志**根本不在内存里** ✗
+    /// ⇒ 它们引用的 blob 会被判成"无人引用"的孤儿 ✗ ⇒ 一旦带 `confirm` 跑 ✓ **活数据就没了** ✗✗。
+    /// 所以这里先按磁盘上的文档清单逐份打开 ✓，**再**做分级 ✓；
+    /// 并把"考虑了几份文档"一并报出来 ✓（分类是否可信，看一眼就知道 ✓）。
     pub fn blob_lifecycle(&mut self, ttl_days: i64, now_ms: i64) -> Result<BlobLifecycle> {
         // ① 磁盘上的文档全部载入 ✓（`list_documents` 只列**已加载**的 ✗ ⇒ 用持久层那份清单 ✓）。
         let known: Vec<String> = match &self.persist {

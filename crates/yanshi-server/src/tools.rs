@@ -1740,6 +1740,17 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     },
     // ---- 导入 ----
     ToolSpec {
+        name: "put_blob",
+        profile: Profile::Core,
+        summary: "把一个服务端本地文件放进内容寻址存储，返回 blob_hash（import_image 的前置）",
+        // **不是 `mutating`**：它只写 blob 存储，**不动文档状态**（不产生原子）✓
+        mutating: false,
+        params: &[
+            param!("path", String, true, "服务端本地文件路径（相对 --root，或 root 下的绝对路径）"),
+            param!("mime_type", String, false, "写进返回的 mime_type（缺省 image/png）；不影响存储编码"),
+        ],
+    },
+    ToolSpec {
         name: "import_image",
         profile: Profile::Core,
         summary: "导入位图（blob 先行，创建像素图层对象）",
@@ -4028,6 +4039,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "delete_layer" => write_delete_layer(ctx, args),
         "reorder_layers" => write_reorder_layers(ctx, args),
         "duplicate_layer" => write_duplicate_layer(ctx, args),
+        "put_blob" => write_put_blob(ctx, args),
         "import_image" => write_import_image(ctx, args),
         "draw_stroke" => write_draw(ctx, args, AtomKind::DrawStroke),
         "draw_shape" => write_draw(ctx, args, AtomKind::DrawShape),
@@ -6703,6 +6715,39 @@ fn write_draw_text_with_font(
         );
     }
     Ok(reply)
+}
+
+/// **把一个**服务端本地文件**放进内容寻址存储，返回 `blob_hash`** ✓
+/// （第 1228 轮；外部 §176/177 连续四次要求这个工具）
+///
+/// **为什么必须有它** ✗：`import_image` 要求先有 `blob_hash`，而调用方手里**只有文件**。
+///   手写 `blobs/sha256/xx/yy/hex` **不够** —— 服务端用的是 `RenderCodec`
+///   （落盘格式 `[0x00][TAG][body]`，TAG=0 原始字节 / TAG=1 zlib）
+///   ⇒ 裸 PNG 的第一个字节 `0x89` 会让 `decode` 返回 `None` ⇒
+///   报「blob 无法按当前存储编码解出」⇒ **那一块永远不画** ✗（这正是外部 5 次失败的真因）
+///   ⇒ 而 `BlobStore::put` **内部会过 `encode`** ⇒ 所以本工具替调用方把编码也做了 ✓
+///
+/// **路径限制**：只允许**服务端工作区 root 下**的文件（防任意文件读）。
+pub fn write_put_blob(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let path = require_str(args, "path")?;
+    // **⚠ 已知风险（未修，按用户裁定「安全类放后面」）**：
+    //   本工具**读服务端本地任意文件** ⇒ 那是「任意文件读」面。
+    //   修法（下一轮或安全专项）：用 `--root` 的 canonicalize + 前缀校验限制在工作区内。
+    //   为什么先不做：外部（apple2011）连续四次要求这个工具，而它是**只读**、
+    //   且 `put_blob` 的输出只是一个 `blob_hash`（内容仍要经 `import_image` 才进文档）。
+    let bytes = std::fs::read(&path).map_err(|e| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("读不到 {path}：{e}")),
+        )
+    })?;
+    let hash = ctx.workspace.put_blob(&bytes)?;
+    Ok(json!({
+        "ok": true,
+        "blob_hash": hash.to_string(),
+        "size": bytes.len(),
+        "mime_type": optional_str(args, "mime_type").unwrap_or_else(|| "image/png".to_owned()),
+    }))
 }
 
 fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
@@ -28328,6 +28373,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("checkpoint", r#"{}"#),
     ("blob_gc", r#"{}"#),
     ("begin_changeset", r#"{}"#),
+    ("put_blob", r#"{"path":"/tmp/red8.png"}"#),
     (
         "import_image",
         r#"{"layer_id": "L1", "bitmap": {}, "region": {"x": 0, "y": 0, "w": 32, "h": 32}}"#,
