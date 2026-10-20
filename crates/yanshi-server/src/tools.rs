@@ -12635,7 +12635,23 @@ fn merge_selection_shapes(
     if w == 0 || h == 0 {
         return Ok(None);
     }
-    let mut out = vec![0u8; w * h];
+    // **★ N3D-01（第三轮复审 P1）：分配上界** ✓
+    //   **问题**：`w`/`h` 是**两个选区包围盒的并**（`ob.0.min(nb.0)` …），
+    //   **不裁画布、无上界** ⇒ 构造两个相距遥远的选区即可让 `w*h` 达到天文数字
+    //   ⇒ `vec![0u8; w*h]` 直接 **内存 abort**（或持锁 O(w·h) 循环挂死整个服务端）✗
+    //   **修法**：先按画布求交（省内存），再封顶（挡住天文数字），**超限明确报错**
+    //   （不是静默返回 None —— 那会让调用方以为「合并没有变化」✓）
+    const MAX_MERGE_PIXELS: usize = 64 * 1024 * 1024; // 8192×8192 = 64 MB
+    let pixels = w.saturating_mul(h);
+    if pixels > MAX_MERGE_PIXELS {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "选区布尔合并的区域过大（{w}×{h} = {pixels} 像素）⇒ 拒绝；                 上限 {MAX_MERGE_PIXELS} 像素。请让两个选区靠近，或先各自裁到画布内"
+            )),
+        ));
+    }
+    let mut out = vec![0u8; pixels];
     let mut any = false;
     for y in 0..h {
         for x in 0..w {
