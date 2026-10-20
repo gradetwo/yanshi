@@ -1556,3 +1556,46 @@ base(linear) → 混合(linear 值，但 sRGB 语义) → Dab(linear 值)
 **⇒ ⇒ 若线性混合**做对了** ⇒ 那四个值**应当不变**（因为往返恒等）⇒ **若变了 ⇒ 就是转错了一次** ✓**
 
 **⇒ ⇒ ⇒ 所以**这条判据足以验收**，不需要新的。**
+
+## ★ 全链路表的**修正**（第 1304 轮：真实解码点找到了，第 7 行原来是错的）
+
+**⇒ 上一版表把步骤 7 写成 `tile.rs:223 blit_rgba8` ⇒ **那只是 `RasterPatch`/`import_image` 的路**，不是**笔触的路** ✗**
+
+**⇒ 笔触的真实解码点是：**
+
+```
+crates/yanshi-server/src/document.rs:1750
+    let buffer = Buffer::from_f32(0, 0, render.width, render.height,
+        &linear_premul_from_u8x4(&render.rgba8));
+```
+
+**⇒ ⇒ `render.rgba8` 是**sRGB 字节**（hokusai 一路 sRGB 到渲染输出）⇒ `linear_premul_from_u8x4` 把它转成 **linear f32 premultiplied** ⇒ **那才是入向的唯一次解码** ✓
+
+### 修正后的完整链路（**sRGB 一路到底，最后一处解码**）
+
+| # | 步骤 | 空间 | 位置 |
+|---|---|---|---|
+| 1 | 工具参数（`#rrggbb` / `{r,g,b,a}`）| **sRGB** | `tools.rs` `brush_color_to_srgb_bytes` |
+| 2 | sRGB → HSV | 派生 | `tools.rs:12012` |
+| 3 | HSV → RGB | **sRGB** | `vendor/.../color.rs:124` `hsv_to_rgb` |
+| 4 | `base` + 涂抹混合 | **sRGB** | `vendor/.../stroke.rs:1126, 1154` |
+| 5 | `Dab.color` → 印章 | **sRGB** | `vendor/.../brushmodes.rs:149` |
+| 6 | 印章 → `MemSurface`（u8）| **sRGB 字节** | `hokusai-tile-mem` |
+| 7 | 渲染合成 → `render.rgba8` | **sRGB 字节** | 渲染出口（`export_png`/`render_region` 共用）|
+| **8** | **`render.rgba8` → `Buffer::from_f32`** | **sRGB → linear** | **`document.rs:1750` `linear_premul_from_u8x4`** ★ **唯一入向解码** |
+| 9 | tile / thumb（f32 premultiplied）| **linear** | `buffer.rs`、`thumb.rs` |
+| **10** | 导出 | **linear → sRGB** | `buffer.rs:531` `srgb_encode_table()` ★ **唯一出向编码** |
+
+**⇒ ⇒ 所以我那一改**必然是第二次解码** ⇒ 颜色暗 61–65 级 ✓ 与两个判据的数字吻合。**
+
+### ⇒ 要真做「线性混合」，改动点是**这三处**（不是一处）
+
+| 端 | 改什么 | 为什么不能只改一处 |
+|---|---|---|
+| **A** | hokusai 内部按 linear 混合（`base` 转 linear）| 混合的**物理正确性** |
+| **B** | **步骤 7→8 之间不再解码**（`render.rgba8` 已是 linear）| 否则**双解码** |
+| **C** | `RasterPatch`/`import_image` 仍走老路（sRGB ⇒ 解码）| 它们传的是**文件字节**，本来就是 sRGB |
+
+**⇒ ⇒ 所以是**一条新通道 + 两个调用方分流** ⇒ 而**B 最难**：`render.rgba8` 是**共用出口** ⇒ 要给它加「空间标记」或分成两个出口。**
+
+**⇒ ⇒ ⇒ 那正是**用户说「先把链路画清楚」的价值** —— 现在能看到：改动不是一行，而是「出口要分叉」。**
