@@ -64,22 +64,40 @@ export const wrap = (req) => new Promise((res, rej) => { req.onsuccess = () => r
 
 /** 写一条原子（**自动编号 ✓**）。 */
 export async function putAtom(db, doc, atom) {
-  const meta = (await wrap(tx(db, "docs", "readonly").get(doc))) || { doc, seq: 0 };
+  // **★ D-01（第三轮复审 P0）：一个事务包住「读 seq + 写 atoms + 写 docs」** ✓
+  //   **问题**：原来是**三段独立事务**（① docs 只读取 seq ② atoms 写 ③ docs 写）
+  //   ⇒ 两个 `putAtom` 并发时都读到同一个 `seq = N` ⇒ 都写 `seq = N+1`
+  //   ⇒ **主键 `${doc}:${seq}` 相撞 ⇒ 后写覆盖前写 ⇒ 已确认的笔触静默消失** ✗
+  //   **修法**：IndexedDB 的事务**跨 store 也是原子的** ⇒ 把三个操作放进**同一个**
+  //     `db.transaction(["docs","atoms"], "readwrite")` ⇒ 要么全成、要么全不成 ✓
+  //
+  // **⚠ 改这个文件，不要改 web/store.js** —— 后者是 `pwa:sync` 的**产物**：
+  //   `scripts/pwa-sync-viewer.mjs` 的 FILES 列表里有 `store.js`
+  //   ⇒ 它从 `crates/yanshi-http/assets/store.js` **复制**到 `web/store.js`
+  //   ⇒ 改产物会被下一次 `pwa:sync` **静默覆盖**（我 1209 轮就是这么丢了修改的 ✗）
+  const t = db.transaction(["docs", "atoms"], "readwrite");
+  const done = new Promise((res, rej) => {
+    t.oncomplete = () => res();
+    t.onerror = () => rej(t.error);
+    t.onabort = () => rej(t.error || new Error("事务被中止"));
+  });
+  const meta = (await wrap(t.objectStore("docs").get(doc))) || { doc, seq: 0 };
   const seq = meta.seq + 1;
   // **★ 覆盖原子自己的 `seq` ✗ ★**（第 630 轮 ✓）：**∴ 内核按 `seq` 判重 ✗**
   // ⇒ **∴ 两处都写 1 ⇒ **`seq 1 重复`✗**（**实测 ✓**）。
   const stored = { ...atom, seq };
   const rec = { id: `${doc}:${seq}`, doc, seq, atom: stored };
-  await wrap(tx(db, "atoms", "readwrite").put(rec));
+  await wrap(t.objectStore("atoms").put(rec));
   // **★ 写原子时必须**清掉旧快照**✗ ★**（第 663 轮 ✓，**真缺陷 ✓**）：
   //   **∴ 旧写法** `{ ...meta, doc, seq, format }` **保留了 `meta.snapshot` ✗**
   //   ⇒ **∴ 于是**：**旧图 ✗ ＋ **新序号 ✗** ⇒ **∴ `readSnapshot` **恒命中**✗**
   //   ⇒ **∴ 结果就是**"**拿旧图冒充**"✗** —— **∴ 正是目标第 6 条禁止的那件事 ✓**。
   //   **∴ 修法** ✓：**写原子 ⇒ **快照显式失效 ✗**（`snapshot: null` ＋ 记下失效时刻 ✓）**。
   const { snapshot: _stale, ...metaNoSnap } = meta;
-  await wrap(tx(db, "docs", "readwrite").put({
+  await wrap(t.objectStore("docs").put({
     ...metaNoSnap, doc, seq, format: FORMAT_VERSION, snapshot: null,
   }));
+  await done;
   return seq;
 }
 
