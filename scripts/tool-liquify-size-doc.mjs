@@ -9,9 +9,21 @@
 // **∴ 判据怎么判 ✓**：读源码 ✓（与 `tool-ci-parity-budget.mjs` 同型 ✓），
 //   在 `name: "liquify_push"` 的块里找 `param!("size"` 那一行 ✓
 //   ⇒ **∴ 必须同时含「直径」与「radius」**✗（**∴ 少了任一个 ⇒ 读者就不知道"直径≠半径"✓**）✓
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
-const src = readFileSync(new URL("../crates/yanshi-server/src/tools.rs", import.meta.url), "utf8");
+// **★ 扫全部 `tools*.rs`** ✓（第 1274 轮）：Phase 2 把 `ALL_TOOLS`（工具声明）搬到了
+//   `tools_registry.rs` ⇒ 而本判据原来只读 `tools.rs` ⇒ 于是「找不到 name: "liquify_push"」✗
+//   ⇒ 修法：目录枚举拼接 ⇒ 以后再拆模块也不用改这条判据 ✓
+const TOOLS_DIR = new URL("../crates/yanshi-server/src/", import.meta.url);
+const src = readdirSync(TOOLS_DIR)
+  .filter((name) => /^tools.*\.rs$/.test(name))
+  .sort()
+  .map((name) => readFileSync(new URL(name, TOOLS_DIR), "utf8"))
+  .join("\n");
+if (src.length < 1000) {
+  console.error("  ⊘ 不可判：tools*.rs 拼起来不到 1000 字节（枚举或读取坏了）");
+  process.exit(3);
+}
 const lines = src.split("\n");
 
 const start = lines.findIndex((l) => l.includes('name: "liquify_push"'));

@@ -47,7 +47,12 @@ import { createContext, runInNewContext } from "node:vm";
 
 const SW_PATH = "crates/yanshi-http/assets/service-worker.js";
 const SERVER_RS = "crates/yanshi-http/src/server.rs";
-const TOOLS_RS = "crates/yanshi-server/src/tools.rs";
+// **★ 拼全部 `tools*.rs`** ✓（第 1274 轮）：Phase 2 把 `ALL_TOOLS`（工具声明）搬到了
+//   `tools_registry.rs` ⇒ 而本判据原来只读 `tools.rs` ⇒ 于是
+//   `tools.indexOf('name: "list_palette_colors"')` 返回 **-1** ⇒ `toolIsReadOnly` 恒 false
+//   ⇒ 判据以为「这些工具不再是只读」⇒ **假红** ✗（产品完全正常）
+//   ⇒ 修法：目录枚举拼接 ✓（以后再拆模块也不用改这条判据）
+const TOOLS_DIR = "crates/yanshi-server/src";
 const VIEWER_RS = "crates/yanshi-http/src/viewer.rs";
 const VIEWER_APP = "crates/yanshi-http/assets/viewer-app.js";
 const FONT_ATLAS = "crates/yanshi-render/src/font_atlas.rs";
@@ -69,7 +74,15 @@ const read = (path) => {
 
 const sw = read(SW_PATH);
 const server = read(SERVER_RS);
-const tools = read(TOOLS_RS);
+const tools = readdirSync(TOOLS_DIR)
+  .filter((name) => /^tools.*\.rs$/.test(name))
+  .sort()
+  .map((name) => read(`${TOOLS_DIR}/${name}`))
+  .join("\n");
+if (tools.length < 10000) {
+  console.error("  ⊘ 不可判：tools*.rs 拼起来不到 10000 字节（枚举或读取坏了）");
+  process.exit(3);
+}
 const viewerRs = read(VIEWER_RS);
 const viewerApp = read(VIEWER_APP);
 const fontAtlas = read(FONT_ATLAS);
@@ -283,7 +296,23 @@ function makeServiceWorker(source, buildId, sharedStore = new Map()) {
       return undefined;
     },
   };
-  const sandbox = { URL, Request, Response, Headers, TextEncoder, caches, fetch: networkFetch, console };
+  // **★ `Request` 要支持**相对 URL** ✓（第 1274 轮查清的假红）
+  //   **为什么** ✗：`web/service-worker.js:316/335` 里写的是
+  //     `new Request("/__sw_precache_report")` —— 那是**相对 URL** ✓
+  //     在**浏览器**里合法（有 base URL）✓；而在**Node**里 `new Request("/x")` 直接抛
+  //     `Failed to parse URL from /__sw_precache_report` ✗
+  //   ⇒ 所以**产品是对的，是桩不完备**（我的老教训：桩不完备会让产品对、判据红 ✗）
+  //   ⇒ 修法：沙箱里给一个按 `ORIGIN` 补全相对路径的 `Request` ✓（模拟浏览器行为）
+  const RequestWithBase = class extends Request {
+    constructor(input, init) {
+      if (typeof input === "string" && input.startsWith("/")) {
+        super(ORIGIN + input, init);
+      } else {
+        super(input, init);
+      }
+    }
+  };
+  const sandbox = { URL, Request: RequestWithBase, Response, Headers, TextEncoder, caches, fetch: networkFetch, console };
   sandbox.self = sandbox;
   sandbox.location = { origin: ORIGIN };
   sandbox.addEventListener = (type, handler) => handlers.set(type, handler);
