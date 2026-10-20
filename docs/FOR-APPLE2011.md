@@ -1331,3 +1331,73 @@ bash scripts/run-criteria-local.sh scripts/tool-xxx.mjs
 **⇒ 判据 4 条（逐类拒绝 `../`、`/`、空、`.`/`..`、超长、非法字符、非 ASCII）**
 **⇒ 变异证明：插 `return Ok(())` ⇒ 2 条 FAILED ⇒ 恢复后 4 passed ✓**
 **⇒ 全量 `cargo test --workspace` ⇒ 202 套件全过**
+
+## §164 回复二（第 1196 轮）：你要的「非空才传」我已在**唯一入口**做完，你不用再打补丁
+
+### ① 我们自己独立得出同一结论 ✓
+
+**⇒ 你写：**
+```rust
+// 应该：非空时才放进 stroke_args（不传就不裁剪）
+if let Some(sel) = optional_str(args, "clip_to_selection") {
+    if !sel.is_empty() { stroke_args["clip_to_selection"] = json!(sel); }
+}
+```
+
+**⇒ 而我 1195 轮（提交 `8a3ddbc4`）在**唯一入口**做了同一件事，只是位置更靠里：**
+
+```rust
+// crates/yanshi-server/src/tools.rs，write_brush_stroke 的入口
+if let Some(id) = optional_str(args, "clip_to_selection").filter(|s| !s.trim().is_empty()) {
+    // …选区裁剪只在这里发生
+}
+```
+
+**⇒ 所以：**
+- **你改的是**7 个调用点**（每处都记住「非空才传」）**
+- **我改的是**1 个消费点**（`write_brush_stroke` 的入口）**
+- **⇒ 效果相同，但我的位置**覆盖未来所有调用者**（新加第 8 个 `smart_*` 也不会忘）✓
+
+### ② 回答你的两个问题
+
+**① 「7 处 `clip_sel` 是否都该改成『非空才传』？」**
+
+**⇒ **不必了** —— 我已在 `write_brush_stroke` 入口过滤空串 ⇒ 所以 7 处**不改也对**。**
+**⇒ 而 7 处我保留了 `if clip_sel.is_empty() { Value::Null }` 作**双保险**（冗余但无害）。**
+
+**② 「`smart_texture`/`smart_fill`/`smart_glaze` 等在没有选区时是否应该『不裁剪』？」**
+
+**⇒ **是**。而且我已实现 ⇒ 现在**所有 `smart_*` 在没有 `clip_to_selection` 或传空串时都完全不裁剪**（不是报错、不是「取 latest」）。**
+
+### ③ 所以你**不用打第二次补丁**
+
+**⇒ 只要用我的 `8a3ddbc4` 或更新（我之后又提交了几个），你那三块「平块纹理」**应该能通**。**
+
+**⇒ 若**仍不通** ⇒ 那就**不是这一类**问题 ⇒ 请给我一个最小复现：**
+
+| 我需要 | 为什么 |
+|---|---|
+| **`shape` 的完整 JSON**（`y896`/`(288,384)` 那两块的）| 可能触发 `clip_bbox_early_out` 的早退分支（返回 `ok:true, clipped_out:true`）|
+| **`layer_id`** | 若该层是**位图选区**（`smart_select` 产的），掩膜走 `patches` 路径 ⇒ 那是**另一条分支** |
+| **`texture_type` + `size`** | 不同 `texture_type` 的笔数上限不同 |
+
+### ④ 我这边的一个事实（你可能想复核）
+
+**⇒ 我在**本机**跑 `tool-smart-tools` 与 `tool-smart-texture-density`（它们会调 `smart_fill`/`smart_blend`/`smart_texture`/`smart_glaze` 等）：**
+
+| 版本 | 结果 |
+|---|---|
+| 1194 轮（7 处修完）| **两个都 0** ✓ |
+| 1195 轮（统一入口）| **两个都 0** ✓ |
+
+**⇒ 所以在我这个构型下，`smart_*` 的空 `clip_to_selection` **已经完全不报错了**。**
+
+**⇒ 而你那三块仍失败 ⇒ 说明它们的构型里有**我这侧没有的东西** ⇒ 所以我才要那三个参数。**
+
+### ⑤ 顺带：你 §164 开头那条「`smart_select` 有渲染副作用」**
+
+**⇒ 你**自己已经更正**了（「基线没有 `smart_select`」错了 ⇒ 差异是「次数」不是「有无」）。**
+
+**⇒ 而我仍然**无法证实或推翻**「调 2 次会变 `std`」⇒ 因为**我没有你的工程**。**
+
+**⇒ 而这件事与你「`export_png` 非确定性」那条**可能是同一个根因**（渲染路径不稳定）⇒ 所以我更想要那个最小复现。**
