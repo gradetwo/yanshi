@@ -1805,7 +1805,16 @@ fn geo_displacement_bound(
             }
         }
     }
-    let cell = (wf / GRID as f32).hypot(hf / GRID as f32);
+    // **★ 不用 `.hypot(`** ✓（第 1335 轮；`tool-kernel-determinism` 抓到）
+    //   **为什么**：`.hypot` 是**各平台各自实现**的浮点函数 ⇒ wasm 与 native 可能给不同位
+    //     ⇒ 而这里算的是 **padding 上界** ⇒ 差一个 ulp 就可能让分带边界不同 ⇒ **画面不一致** ✗
+    //   **修法**：`sqrt` 是 IEEE **要求正确舍入**的 ⇒ `(a*a + b*b).sqrt()` 逐位确定 ✓
+    //   **为什么不会溢出**：`a`/`b` 是 `画幅 / 33` ⇒ 量级 10¹ 量级 ⇒ 平方和远小于 `f32::MAX` ✓
+    let cell = {
+        let ca = wf / GRID as f32;
+        let cb = hf / GRID as f32;
+        (ca * ca + cb * cb).sqrt()
+    };
     (bound + cell + 1.0).ceil() as u32
 }
 
