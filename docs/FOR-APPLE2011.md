@@ -2385,3 +2385,60 @@ cv.tool("put_blob", {"path": "/你的/服务端/--root/uploads/mymask.png"})
 **⇒ ⇒ 而你叠「笔触」做油画感那步 ⇒ `smart_texture` 的 `density=0.25/size=4` 你说可用 ⇒ 那就先它，别再碰 `smart_hatch_follow`（你已确认白条纹是你自己的 `guides` 坐标错）。**
 
 **⇒ ⇒ ⇒ 若叠完发现「纹理盖住了位图的亮部」⇒ 那是 `blend_mode` 的事（用 `multiply` 或 `overlay`，不要 `normal`）⇒ 而 `create_layer` 有 `blend_mode` 参数。**
+
+## ✅ `blob_decodable` 已可用（你说「加了我第一时间用」）
+
+### ① 语义（**两个字段，别混**）
+
+| 字段 | 含义 | 什么时候 `false` |
+|---|---|---|
+| **`ok`** | **原子提交成功**（导入这个操作本身成功）| 参数错／图层不存在等 |
+| **`blob_decodable`** | **这块 blob 能不能解出位图**（⇒ 能不能画出来）| **blob 不是可解码的存储格式** |
+
+**⇒ ⇒ 所以「`ok:true` 但 `blob_decodable:false`」是**一个合法且有意义的组合** ⇒ 它精确描述了你踩的那个坑：**
+```
+上传/提交成功，但位图**不会画**
+```
+
+### ② `blob_decodable:false` 时会**同时给 `note`**（说清为什么）
+
+**⇒ 实测（我本机）：**
+```json
+{"ok": true, "blob_decodable": false,
+ "note": "blob sha256:709a4e7e… 解不开 ⇒ 这一块不会画出来（手写文件要包 RenderCodec 头 [0x00][TAG]，或用 put_blob）"}
+```
+
+**⇒ ⇒ 所以**你不用再去 `export_png` 的 `render_warnings` 里找原因** ✓（那条仍然在，只是不再是你唯一的信息源）
+
+### ③ 你要的用法（**建议先查 `blob_decodable`**）
+
+```python
+r = cv.tool("import_image", {
+    "layer_id": "L1",
+    "bitmap": {"blob_hash": h, "size": 0, "mime_type": "image/png"},
+    "region": {"x": 0, "y": 0, "w": 512, "h": 768},
+})
+if not r.get("blob_decodable", True):
+    # ⇒ 这里**立刻**能知道「blob 解不开」⇒ 不用等导出才发现
+    print("blob 不可解码：", r.get("note"))
+```
+
+### ④ 顺带：我在做这个信号时查出了一个**架构级问题**（你该知道）
+
+**⇒ 仓库里**曾有两个 blob store 实例，用不同的 codec**：**
+```
+FileStore::blob_store()  ⇒ 默认 PlainCodec（identity）
+service.rs 里文档用的      ⇒ RenderCodec
+```
+
+**⇒ ⇒ 所以**同一份 blob 被两种方式解释**：`PlainCodec` 看谁都「能解码」（裸 PNG 也算），`RenderCodec` 只认 `[0x00][TAG]` 头。**
+
+**⇒ ⇒ ⇒ 现在**统一了**（都带 `RenderCodec`）⇒ 所以 `blob_decodable` 才是准的。**
+
+**⇒ 而这也解释了我之前几轮为什么自相矛盾（1202 说「手写够」、1234 说「反了」、1236 才查清）—— **三个观察点背后是两个不同的 store 实例**。**
+
+### ⑤ 一个提醒：`put_blob` 的路径限制（上次那条）
+
+**⇒ 文件要放在 `<服务端 --root>/uploads/` 下（`/tmp` 会被拒）⇒ 那是我上一轮说过的。**
+
+**⇒ ⇒ 而你现在有 `blob_decodable` 了 ⇒ 若某次忘了放对位置，`put_blob` 会直接报错（不会静默）✓**
