@@ -4791,11 +4791,14 @@ pub(super) fn commit_bitmap_selection(
     //     于是 `mode=add/subtract/intersect` **静默覆盖**旧选区（旧工具修过的缺陷在新工具复发）✗
     //   **修法**：`mode != "new"` 时先取旧选区的 shape ⇒ 合并 ⇒ 用合并结果替换 payload 的 shape/blob
     if mode != "new" {
-        if let Some(old_shape) = document_state(ctx)
-            .ok()
-            .and_then(|st| st.selections.get(selection_id).map(|s| s.shape.clone()))
-        {
-            let old_json = serde_json::to_value(&old_shape).unwrap_or(Value::Null);
+        // **★ 照抄 `create_selection`（`tools_selection.rs:125-133`）的成功路径** ✓（第 1300 轮）
+        //   **我原来的两个错**：
+        //     ① `document_state(ctx).ok()` ⇒ 若 Err 会**静默变 None**（静默降级 ✗）
+        //     ② `serde_json::to_value(&old_shape)` ⇒ 而 `existing.shape` **已经是 `Value`**
+        //   ⇒ 于是合并分支**从不执行**（判据实测 `merged_from=None`、`r1 == r2`）✗
+        let state = document_state(ctx)?;
+        if let Some(existing) = state.selections.get(selection_id) {
+            let old_json = existing.shape.clone();
             let new_json = json!({
                 "kind": "bitmap",
                 "bbox": [bx, by, bw, bh],
@@ -4816,7 +4819,10 @@ pub(super) fn commit_bitmap_selection(
                     "selection_id": selection_id,
                     "shape": merged_shape,
                     "feather": 0.0,
-                    "mode": "new",  // 已经合并过 ⇒ 不要再让折叠层按 mode 放行
+                    // **★ 必须是原 mode，不是 "new"** ✓（第 1300 轮实测）
+                    //    的语义是「mode == "new" 且已存在 ⇒ **拒绝**」
+                    //   ⇒ 所以写 "new" 会让**已存在的选区被拒**（precondition_failed）✗
+                    "mode": mode,
                     "invert": invert,
                     "refined_edges": refined_edges,
                     "blobs": [mblob],

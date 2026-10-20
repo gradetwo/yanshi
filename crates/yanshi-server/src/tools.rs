@@ -8532,6 +8532,21 @@ fn shape_json_bbox(shape: &Value) -> Option<(f64, f64, f64, f64)> {
             }
             (bb.2 > bb.0 && bb.3 > bb.1).then_some(bb)
         }
+        // **★ `bitmap` 选区必须能取 bbox** ✓（第 1300 轮：真缺陷）
+        //   **症状**：`smart_select` 产出的是**位图选区**（`{"kind":"bitmap","bbox":[x,y,w,h]}`）⇒
+        //     而这里**没有 bitmap 分支** ⇒ 返回 `None` ⇒ `merge_selection_shapes` 返回 `Ok(None)`
+        //     ⇒ 于是 `mode=add/subtract/intersect` **永远不合并**（静默覆盖）✗
+        //   **判据抓到它**：`tool-smart-select-add-merges.mjs` ⇒ `r1 == r2`、`merged_from=None`
+        //   **格式**：`bbox` 是**数组** `[x, y, w, h]`（`commit_bitmap_selection` 写的就是这个）
+        "bitmap" => {
+            let a = shape.get("bbox").and_then(Value::as_array)?;
+            let n = |i: usize| a.get(i).and_then(Value::as_f64);
+            let (x, y, w, h) = (n(0)?, n(1)?, n(2)?, n(3)?);
+            if w <= 0.0 || h <= 0.0 {
+                return None;
+            }
+            Some((x, y, x + w, y + h))
+        }
         _ => None,
     }
 }

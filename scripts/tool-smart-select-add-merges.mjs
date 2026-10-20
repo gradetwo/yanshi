@@ -45,19 +45,19 @@ if (layer.ok !== true) {
 }
 // 左上红块 40×40，右下蓝块 40×40（互不相交、颜色不同 ⇒ 魔棒各选一块）
 const red = await call("fill_region", {
-  layer_id: "L_add", region: { x: 10, y: 10, w: 40, h: 40 },
+  layer_id: "L_add", shape: { type: "rect", x: 10, y: 10, w: 40, h: 40 },
   color: "#c81818", opacity: 1.0,
 });
 check(red.ok === true, `① 铺红块 ⇒ ok=${red.ok}`);
 const blue = await call("fill_region", {
-  layer_id: "L_add", region: { x: W - 50, y: H - 50, w: 40, h: 40 },
+  layer_id: "L_add", shape: { type: "rect", x: W - 50, y: H - 50, w: 40, h: 40 },
   color: "#1818c8", opacity: 1.0,
 });
 check(blue.ok === true, `② 铺蓝块 ⇒ ok=${blue.ok}`);
 
 // 第一次 add：选红块
 const first = await call("smart_select", {
-  selection_id: "S_add", mode: "add", seed: { x: 30, y: 30 },
+  selection_id: "S_add", mode: "add", seed: [30, 30],
   tolerance: 0.15, feather: 0,
 });
 check(first.ok === true, `③ 第一次 smart_select(mode=add, 红) ⇒ ok=${first.ok}｜${JSON.stringify(first.context?.detail ?? "").slice(0, 80)}`);
@@ -65,7 +65,7 @@ const r1 = Number(first.canvas_coverage_ratio ?? 0);
 
 // 第二次 add：选蓝块（**不相交** ⇒ 正确时应累加）
 const second = await call("smart_select", {
-  selection_id: "S_add", mode: "add", seed: { x: W - 30, y: H - 30 },
+  selection_id: "S_add", mode: "add", seed: [W - 30, H - 30],
   tolerance: 0.15, feather: 0,
 });
 check(second.ok === true, `④ 第二次 smart_select(mode=add, 蓝) ⇒ ok=${second.ok}`);

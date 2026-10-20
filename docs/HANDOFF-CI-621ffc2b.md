@@ -1421,3 +1421,55 @@ fn hsv_to_rgb_is_srgb_and_linear_differs() {
 - `ColorMixing::Linear` **已可用**（4 判据 + 变异 ✓）
 - `stroke.rs:1126` 的 `base` **仍是 sRGB**（未改，`/tmp/dg/stroke.bak` 已恢复）
 - **待做**：Rust 单测（上面那个形状）+ 逐层验证
+
+## N3D-04 的**三个真 bug**（第 1300 轮：判据抓到两个，还剩一个）
+
+**⇒ 外部（apple2011）给了判据建议：**两次 `add`（两个不相交矩形）⇒ `canvas_coverage_ratio` 应 ≈ 两者之和。**
+**⇒ 我写成 `scripts/tool-smart-select-add-merges.mjs`（5 条断言）⇒ 它**立刻抓出三个真 bug**。**
+
+### bug ①：`shape_json_bbox` 没有 `bitmap` 分支（**真缺陷**）
+
+**⇒ `tools.rs:8509` 只处理 `rect`/`ellipse`/`polygon` ⇒ 而 `smart_select` 产出的是**
+`{"kind":"bitmap","bbox":[x,y,w,h]}` ⇒ **返回 `None`** ⇒ `merge_selection_shapes` 返回 `Ok(None)`
+⇒ **`mode=add` 永远不合并**（静默覆盖）✗
+
+**⇒ 已修**（加 `bitmap` 分支，读 `bbox` 数组）✓
+
+### bug ②：合并后把 `mode` 写成 `"new"`（**我的错**）
+
+**⇒ `fold.rs:683` 的语义是「`mode == "new"` **且已存在** ⇒ 拒绝」**
+**⇒ 而我在合并后的 payload 里写 `"mode": "new"` 并注释「已经合并过 ⇒ 不要再按 mode 放行」⇒ **那让已存在的选区被拒**：**
+```
+error: 选区 S1 已存在（要改它请传 mode=add/subtract/intersect）
+```
+**⇒ 已修**（用原 `mode`）✓
+
+### bug ③（**仍未修**）：`merge_selection_shapes` 返回 `Ok(None)`
+
+**⇒ 现状：`merged_from = None`、`r1 = r2 = 0.0533`（比值 1.00）⇒ 合并**仍未发生**。**
+
+**⇒ 已知的排除项：**
+- `shape_json_bbox` 的 bitmap 分支**已修**（不再返回 None）
+- `mode` **已修**（不再被 fold 拒）
+- `blob_str = blob_hash.to_string()` 且 `register_bitmap_mask` 已调（`tools_smart.rs:4760-4765`）
+- 选区 `S1` **确实存在**（`list_selections` 实测 `ids=['S1']`）
+
+**⇒ 所以剩下的可能（下一轮的检查点）：**
+1. `SelectionShape::from_value` 对 bitmap 的解析是否需要**额外字段**（如 `patches`）
+2. `merge_selection_shapes` 内部的**光栅化**是否解得开旧 blob（注册表按进程，第二次请求应还在）
+3. `coverage` 是否因为 **`feather_baked`** 的语义而全零
+
+### ★ 判据当前状态：**红**（正确地红了）
+
+**⇒ 它**没有被削弱**，也没有登记为 known-red ⇒ **它如实报告「`mode=add` 不累加」这个真缺陷** ✓**
+
+**⇒ ⇒ 这符合「判据的诚实不在断言，而在退出码」：它 `exit(1)` + 说清哪一条不符。**
+
+### ⚠ 我这个判据自己犯的错（两次，都是参数）
+
+| # | 错 | 修 |
+|---|---|---|
+| **1** | `fill_region` 用 `region` | **`shape: {type:"rect", …}`** |
+| **2** | `smart_select` 的 `seed` 用 `{x,y}` 对象 | **`seed: [x, y]` 数组** |
+
+**⇒ 两次都是「没读 spec 就写参数」⇒ 而错误信息**第一句就说了**（`参数 seed 类型应为 array`）✓**
