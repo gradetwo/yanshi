@@ -614,3 +614,23 @@ abort on a single failure), `reject_suggestion` (records the reason) and `list_s
 设计把"修改对象内容"交给 `supersede` ✓，但 **10.x 的工具清单没有列出对应入口** ✗；
 `update_object` 只覆盖 6 个属性键（`visible/locked/z_index/layer_id/metadata/type` ✓）。
 此前只能自行构造原子 ✓，本工具把那条路补成正式入口 ✓。设计未规定处 → 已记入 implementation-notes ✓。
+
+## `mask_to_polygon` 的语义（**外部 §175 要求写清**）
+
+**⇒ 它**只取外轮廓** ⇒ **会丢掉掩膜内部的洞与碎块** ✗
+
+**⇒ ⇒ 这不是 bug，是**设计边界**（简化多边形 = 单条闭合折线，表示不了洞）。**
+
+**⇒ ⇒ ⇒ 但**你按「它会保留形状」去想会栽跟头** —— 外部实测「100+ 条实验栽在这个想当然上」。**
+
+**⇒ 所以：**
+
+| 你要的 | 该用什么 |
+|---|---|
+| **只要大致轮廓**（面积误差可接受）| `mask_to_polygon` ✓ |
+| **要保住洞与碎块**（面积 85–97%）| **自己追踪轮廓**：`cv2.findContours(RETR_CCOMP)` 取「外轮廓 + 洞」⇒ **每个轮廓一次 `fill`** ⇒ 外轮廓用 `mode: "new"`、洞用 `mode: "subtract"` |
+
+**⇒ 注意（我踩过的坑）：**
+1. **`subtract` 顺序**：先建外轮廓，再逐个挖洞（反过来会把外轮廓也挖掉）
+2. **洞的绕向别当判据**：`find_contours` 与 `cv2` 绕向**相反** ⇒ 用「轮廓面积 vs 掩膜面积」判
+3. **`feather` 会用掉面积**：面积判据要用 `feather: 0` 测一次
