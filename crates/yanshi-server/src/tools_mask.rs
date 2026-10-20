@@ -145,7 +145,8 @@ pub(super) fn write_paint_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
     let region_height = region.height;
     let region_x0 = region.x0;
     let region_y0 = region.y0;
-    let rgba = brush_deposit_mask(&brush, &points, region);
+    // `paint_mask` 这条路**没有真实时间戳** ⇒ 传空切片（= 老行为，逐字节不变）✓
+    let rgba = brush_deposit_mask(&brush, &points, region, &[]);
     let mut deposit = vec![0u8; region_width * region_height];
     for (index, pixel) in rgba.chunks_exact(4).enumerate() {
         deposit[index] = pixel[3];

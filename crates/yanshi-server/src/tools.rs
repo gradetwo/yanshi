@@ -12549,20 +12549,11 @@ fn read_surface_region(
 ///
 /// **∴ 门控 ✗**：**只在 `YANSHI_RENDER_PROBE` 开着时累加 ✓（**∴ 生产路**零开销 ✓）★
 static STAMP_DAB_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// **把一条路径走成 dab** ✓（`brush.stroke_to` 的调用序列）—— 返回步数 ✓。
-///
-/// **为什么抽出来** ✓：需要**走两遍** —— 一遍真正落墨 ✓、一遍只取**覆盖掩膜** ✓；
-/// 两遍的 **dab 位置 / 半径 / 压力必须完全一致** ✗（各写一份必然漂移 ✓）。
-fn stamp_stroke(
-    brush: &hokusai::Brush,
-    state: &mut hokusai::BrushState,
-    surface: &mut hokusai::tile_mem::MemSurface,
-    points: &[(f64, f64, f64)],
-) -> usize {
-    let mut previous: Option<(f64, f64, f64)> = None;
-    stamp_stroke_from(brush, state, surface, points, &mut previous, &[])
-}
+// **`stamp_stroke` 包装已删除** ✓（第 1417 轮；外部 D-10）
+//
+// **⇒ 为什么删** ✗：它固定传 `&[]`（空时间基）⇒ 而**掩膜遍**用它会与主遍不同步
+//   ⇒ 修好后（掩膜遍显式传 `dtimes`）它**没有任何调用点** ⇒ clippy 报 `never used`
+//   **⇒ 所以删掉，而不是留着等下次被误用** ✓（这正是外部 patch#3 的做法 ✓）
 
 /// **接着上一段继续走** ✓ —— 多色笔迹要逐段换颜色 ✓，但**不能在段边界重新播种** ✗
 /// （那会在每个换色点多盖一枚 dab ✓ ⇒ 一串深色小点 ✗）。`previous` 由调用方跨段持有 ✓。
@@ -12840,6 +12831,13 @@ fn brush_deposit_mask(
     brush: &hokusai::Brush,
     points: &[(f64, f64, f64)],
     region: PaintRegion,
+    // **★ 掩膜遍必须与主遍**共用同一套时间基** ✓（第 1417 轮；外部 D-10）
+    //   **⇒ 原缺陷** ✗：这里原来用不带 `dtimes` 的 `stamp_stroke` 包装 ⇒ 它固定传 `&[]`
+    //     ⇒ 每步按 `STEP_SECONDS` 走 ⇒ 而引擎每步的 dab 数含 `dt × dabs_per_second`
+    //     ⇒ **有真实时间戳时，掩膜遍每步多落几枚 dab** ✗
+    //   **⇒ ⇒ 而这个函数的注释自己写着「两遍的 dab 位置 / 半径 / 压力必须完全一致」** ✗✗
+    //   **⇒ 修法**：把 `dtimes` 传进来 ⇒ 掩膜遍显式走 `stamp_stroke_from(..., dtimes)` ✓
+    dtimes: &[f64],
 ) -> Vec<u8> {
     let mut state = hokusai::BrushState::default();
     prime_stroke_total_length(&mut state, points);
@@ -12877,7 +12875,15 @@ fn brush_deposit_mask(
     } else {
         points
     };
-    let _ = stamp_stroke(brush, &mut state, &mut surface, points);
+    let mut previous: Option<(f64, f64, f64)> = None;
+    let _ = stamp_stroke_from(
+        brush,
+        &mut state,
+        &mut surface,
+        points,
+        &mut previous,
+        dtimes,
+    );
     read_surface_region(&surface, region).0
 }
 
