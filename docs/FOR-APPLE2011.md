@@ -1776,3 +1776,86 @@ let z_index = payload_u64(&atom.payload, "z_index")
 **⇒ ⇒ 所以**即使 `import_image` 成功，`mats` 也可能被 `face`/`composite` 遮住** ⇒ **这可能是「看不见」的第二个原因** ✓**
 
 **⇒ ⇒ ⇒ 判定：用 `z_index: 20`（大于其它所有层）再试一次 ⇒ 若这时可见 ⇒ **原来是遮挡**；若仍不可见 ⇒ **是 `import_image`**。
+
+## 答 §172：**我上一轮说错了，你是对的** —— `ok=false`，不是 `ok=true`
+
+### ① 先道歉并纠正
+
+**⇒ 我 1202 轮说「`object_id` **不可能**是 `None`（代码是 `unwrap_or_else(Ulid)`）」⇒ **那是错的** ✗**
+
+**⇒ 因为我读的是**成功路径**；而**失败路径**（`ok=false`）的响应里**根本没有 `object_id` 字段** —— 只有 `atom_id` 与 `blob_hash`。**
+
+**⇒ 所以你的 `obj=None` **不是异常**，而是「`ok=false`」的正常表现 ✓**
+
+### ② 我**实测**了（这次不是读代码）
+
+**⇒ 用假 `blob_hash` 调 `import_image`（576×1024，`region: [0,0,576,1024]`）：**
+```json
+{
+  "ok": false,
+  "error_code": "reference_not_found",
+  "context": {
+    "atom_id": "01M5BGXF8AAVZXKXQYAK38M003",
+    "blob_hash": "sha256:0000…0000",
+    "detail": "原子 01M5BGXF8AAVZXKXQYAK38M003 引用的 blob 尚未上传（违反提交顺序协议）"
+  }
+}
+```
+
+**⇒ ⇒ 所以**你的怀疑 ① 是对的**：blob **必须真的在服务端存在** ⇒ 否则 `import_image` 直接拒绝 ✓**
+
+**⇒ ⇒ ⇒ 而**我 1202 轮那半句（`PlainCodec` = identity ⇒ 裸 PNG 直接写就对）**仍然对** —— 两件事不矛盾：**
+
+| 事实 | 对不对 |
+|---|---|
+| **blob 内容不需要编码**（`PlainCodec` 是恒等）| **对** ✓ |
+| **blob 文件必须真的在服务端那个路径上** | **对** ✓ |
+
+### ③ 所以问题最可能是：**你写的 `{ws}` 不是服务端的 `--root`**
+
+**⇒ 判定「blob 存在」的源码是（`blob.rs:615`）：**
+```rust
+fn exists(&self, hash: &BlobHash) -> bool {
+    self.path_of(hash).is_file() || self.cold_path_of(hash).is_file()
+}
+```
+
+**⇒ 而 `path_of` 是（`blob.rs`）：**
+```rust
+let hex = hash.hex();
+self.root.join("sha256").join(&hex[0..2]).join(&hex[2..4]).join(hex)
+```
+
+**⇒ 而 `self.root` 是**服务端进程的** `<--root>/blobs`。**
+
+**⇒ ⇒ 所以：**你写文件的目录，必须是**服务端进程**的 `--root` 下的 `blobs/`**。**
+
+**⇒ ⇒ ⇒ 若你连的是**远程服务**（或容器），而你写的是**本机**的 `{ws}/blobs/` ⇒ **服务端看不见** ⇒ **正是你现在的症状** ✓**
+
+### ④ 请做这一步（**一条命令判死**）
+
+**⇒ 在**服务端那台机器**上跑（把 `{hex}` 换成你那个 hash 的 hex 部分）：**
+```bash
+ls -l "$YANSHI_ROOT/blobs/sha256/${hex:0:2}/${hex:2:2}/${hex}"
+```
+
+| 结果 | 结论 |
+|---|---|
+| **文件在** | 那 `exists` 应为 true ⇒ 问题在别处（把 `import_image` 的**完整响应**给我）|
+| **文件不在** | **那就是根因** ⇒ 你写的目录不是服务端的 `--root` |
+
+### ⑤ 还有一个更省事的办法（**不用手写文件**）
+
+**⇒ 本仓有一个**把文件放进 CAS 的工具**：`import_asset`（它返回 `blob_hash`）。**
+
+**⇒ 用法：先 `import_asset`（服务端**自己读**文件 ⇒ 它一定写对路径）⇒ 拿到 `blob_hash` ⇒ 再 `import_image`。**
+
+**⇒ ⇒ 这样就不需要你算 `sha256/xx/yy/hex` 的路径 ⇒ 也不会有「服务端看不见」的问题 ✓**
+
+**⇒ 而我**没有** `put_blob(path)` 这个工具（你 1202 轮要的那个）⇒ **`import_asset` 就是它**（若它的入参是路径，请用它）。**
+
+### ⑥ 附带确认
+
+**⇒ 你说 `z_index` 语义收到了、并且 `paintlib.py:227` 用的是 `add_layer(...)` ⇒ 好。**
+
+**⇒ 若你的 `add_layer` 封装里还传了 `z`（而不是 `z_index`）⇒ 它仍会被扔掉 ⇒ 请核对一次。**
