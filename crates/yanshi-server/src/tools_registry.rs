@@ -2273,6 +2273,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "输出文件路径（含 .svg）。**只能写进导出目录**（缺省 ./exports，可用 YANSHI_EXPORT_DIR 改）\\n                 或系统临时目录 ✓；也可以给相对路径 ✓（与 export_png 同一沙箱规矩）"
             ),
             param!("validate", Boolean, false, "true ⇒ 逐笔跑边缘容忍度量验收（E_interior ≤ 0.12 且 E_geom ≤ 0.15），不过线的笔自动回退位图并计入 validate_failed；缺省 false（快）"),
+            param!("flatten_opacity", Boolean, false, "true ⇒ 把半透明路径在**线性空间**压平到背景后 emit 不透明色 ⇒ 与 PNG 逐像素一致（代价：该路径不再保留可编辑的 α）；要求背景不透明，否则不生效（第 1409 轮）"),
         ],
     },
     ToolSpec {

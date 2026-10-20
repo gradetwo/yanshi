@@ -828,6 +828,41 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         ));
     }
     let canvas = (canvas_w, canvas_h);
+    // **`flatten_opacity`（第 1409 轮）** ✓：把半透明路径**在线性空间压平到背景**再 emit 不透明色
+    //   ⇒ 与引擎的合成**逐像素一致**（否则差最多 73 通道，见 check-svg-opacity-colour-space.mjs）
+    //   **⇒ 只有背景**不透明**时才压平**：压平到一个透明背景没有意义（会得到偏黑的颜色 ✗）
+    //   ⇒ 所以透明画布 + `flatten_opacity: true` ⇒ **不压平**，并让调用方从 `flattened` 字段看出来 ✓
+    let flatten_requested = args
+        .get("flatten_opacity")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let background_bytes: Option<(u64, u64, u64, u64)> = match (
+        state.background.get("r").and_then(Value::as_u64),
+        state.background.get("g").and_then(Value::as_u64),
+        state.background.get("b").and_then(Value::as_u64),
+    ) {
+        (Some(r), Some(g), Some(b)) => Some((
+            r.min(255),
+            g.min(255),
+            b.min(255),
+            state
+                .background
+                .get("a")
+                .and_then(Value::as_u64)
+                .unwrap_or(255),
+        )),
+        _ => None,
+    };
+    let flatten_active = flatten_requested && background_bytes.is_some_and(|(_, _, _, a)| a == 255);
+    let background_linear: [f32; 3] = match background_bytes {
+        Some((r, g, b, _)) => [
+            yanshi_render::color::srgb_to_linear(r as f32 / 255.0),
+            yanshi_render::color::srgb_to_linear(g as f32 / 255.0),
+            yanshi_render::color::srgb_to_linear(b as f32 / 255.0),
+        ],
+        None => [1.0, 1.0, 1.0],
+    };
+    let flatten_opacity = flatten_active;
     let mut counts = SvgCounts::default();
     let mut mask_seq = 0usize;
     let mut root_children: Vec<SvgNode> = Vec::new();
@@ -1070,16 +1105,34 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                                 }
                             }
                             flush_pending!();
-                            let fill =
-                                svgx::srgb_hex([brush.color[0], brush.color[1], brush.color[2]]);
+                            let fill_linear = [brush.color[0], brush.color[1], brush.color[2]];
+                            let fill = svgx::srgb_hex(fill_linear);
                             if export_layers.len() > 1 {
                                 counts.strokes_double_layered += 1;
                             }
                             for export_layer in &export_layers {
+                                // **`flatten_opacity`（第 1409 轮）** ✓：把半透明**在线性空间压平到背景**，
+                                //   emit 不透明色 ⇒ 与引擎逐像素一致 ✓
+                                //   **⇒ 为什么** ✗：引擎在**线性光**空间合成，而 SVG 的 `fill-opacity`
+                                //     在**sRGB 空间**混合 ⇒ 两者数学上不等 ⇒ 实测最坏差 **73 通道**
+                                //     （`scripts/check-svg-opacity-colour-space.mjs` 钉住这个数 ✓）
+                                //   **⇒ 代价**：那条路径不再保留可编辑的 α（变成压平色）⇒ 取舍已写进文档 ✓
+                                let (fill_out, opacity_out) =
+                                    if flatten_opacity && export_layer.fill_opacity < 0.9995 {
+                                        let a = export_layer.fill_opacity.clamp(0.0, 1.0) as f32;
+                                        let mixed = [
+                                            fill_linear[0] * a + background_linear[0] * (1.0 - a),
+                                            fill_linear[1] * a + background_linear[1] * (1.0 - a),
+                                            fill_linear[2] * a + background_linear[2] * (1.0 - a),
+                                        ];
+                                        (svgx::srgb_hex(mixed), 1.0)
+                                    } else {
+                                        (fill.clone(), export_layer.fill_opacity)
+                                    };
                                 nodes.push(SvgNode::Path {
                                     d: svgx::contours_path_data(&export_layer.contours),
-                                    fill: fill.clone(),
-                                    fill_opacity: export_layer.fill_opacity,
+                                    fill: fill_out,
+                                    fill_opacity: opacity_out,
                                     blend: css_blend.filter(|name| *name != "normal"),
                                 });
                             }

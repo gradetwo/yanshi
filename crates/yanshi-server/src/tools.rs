@@ -3638,6 +3638,24 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         let mut copy = object.clone();
         copy.insert("a".to_string(), json!(alpha.clamp(0.0, 255.0)));
         Value::Object(copy)
+    } else if let Some(items) = color.as_array() {
+        // **数组形态也要把 `opacity` 乘进 alpha** ✓（第 1410 轮修）
+        //   **⇒ 原缺陷** ✗：这里原来直接 `color` ⇒ 而紧邻注释写着「颜色两种形态都收」✗
+        //     ⇒ 实测 `fill_region(color=[0,0,0], opacity=0.5)` 的中心仍是 `[0,0,0,255]`
+        //       （1.0／0.5／0.2 三者完全相同）⇒ **参数被静默忽略** ✗✗
+        //   **⇒ 修法**：`[r,g,b]` 与 `[r,g,b,a]` 都认 ⇒ 乘上 `opacity` 后写回四元数组 ✓
+        let mut copy: Vec<Value> = items.clone();
+        let existing = copy.get(3).and_then(Value::as_f64).unwrap_or(255.0);
+        let alpha = (existing * opacity).clamp(0.0, 255.0);
+        if copy.len() >= 4 {
+            copy[3] = json!(alpha);
+        } else {
+            while copy.len() < 3 {
+                copy.push(json!(0.0));
+            }
+            copy.push(json!(alpha));
+        }
+        Value::Array(copy)
     } else {
         color
     };
