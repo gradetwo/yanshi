@@ -523,6 +523,36 @@ brightness_contrast, saturation, invert, levels, exposure, white_balance, curves
 color_balance, split_toning, vibrance, black_and_white, channel_mixer, gradient_map,
 shadows_highlights, selective_color, color_lut, red_eye, denoise, lens, perspective.
 
+### 批量落笔：一次调用画 N 笔（第 1359 轮补；外部提问）
+
+**用 `batch`** —— 把 N 个 `brush_stroke` 放进 `calls` 数组：
+
+```json
+{"calls": [
+  {"tool": "brush_stroke", "arguments": {"layer_id": "L", "brush": "calligraphy", "size": 40,
+    "color": [0.3, 0.3, 0.4], "points": [[40,60,0.7],[80,120,0.7]],
+    "preview": false, "wait_for_render": false}},
+  … N 条 …
+]}
+```
+
+**⇒ 三个关键性质（实测，截至第 1359 轮）：**
+
+| 性质 | 实测 |
+|---|---|
+| **一次 HTTP 调用画 N 笔** | 100 笔 / **0.17 s**（**2 ms/笔**）|
+| **原子数 = N**（每笔一个原子 ⇒ timelapse 可每笔一帧）| head **+100** |
+| **不提亮** | 它就是 `brush_stroke` ⇒ 纯笔触语义（不是 `smart_texture` 那种加肌理）|
+
+**⇒ 外推**：`11000` 笔 ≈ **18 s**（同构型：800×800、`size 40`、`preview:false`、`wait_for_render:false`）。
+
+**⇒ ⇒ 提速来自两处，都要显式关掉：**
+- `preview: false` —— 否则**每笔都编码一张预览 PNG**
+- `wait_for_render: false` —— 否则每笔等渲染（20 笔实测：`true` 4 ms/笔 → `false` 1 ms/笔）
+
+**⇒ 而 `wait_for_render: false` 会让栅格落后于 head** ⇒ 导出前看 `export_png` 的
+**`raster_pending`**（第 1346 轮加）⇒ 为 `true` 就先 `get_render_status` 或改用同步模式再导出。
+
 ### `export_png` 允许写哪些位置（第 1347 轮补；外部提问）
 
 **绝对路径**只放行两个根：

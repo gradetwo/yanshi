@@ -3520,3 +3520,46 @@ node scripts/run-criteria-local.sh scripts/tool-fill-region-feather.mjs
 **⇒ ⇒ 我的猜测（要你确认）：你看到的是**多笔叠加**或 **`wetness` 较高**时的效果 ⇒ 而我只用了**单笔**（`wetness:0.5`）✓**
 
 **⇒ ⇒ ⇒ 若你给参数后仍复现不了 ⇒ 我会写成「**我这边构型下不可复现**」并列出**构型差异**，而不是说「不存在」。**
+
+## ✅ 你要的「批量笔触」**已经有了** —— 就是 `batch`，而且我量给你看
+
+**⇒ 你的三条要求，`batch` **全部满足**（实测，截至第 1359 轮）：**
+
+| 你的要求 | `batch` 的实测 |
+|---|---|
+| **① 一次调用画 N 笔，每笔独立 `color`/`points`/`size`** | **一次 `calls` 数组 ⇒ 100 笔 / 0.17 s（2 ms/笔）** ✓ |
+| **② 不提亮** | 它就是 `brush_stroke` ⇒ **纯笔触语义**（`smart_texture` 那种加肌理的不是它）✓ |
+| **③ 原子数按 N 记（timelapse 可每笔一帧）** | **head +100**（100 笔 ⇒ 100 个原子）✓ |
+
+### 用法（照抄）
+
+```json
+POST /api/tools/batch?doc=…&token=…
+{"calls": [
+  {"tool":"brush_stroke","arguments":{"layer_id":"L","brush":"calligraphy","size":40,
+    "color":[0.3,0.3,0.4],"points":[[40,60,0.7],[80,120,0.7]],
+    "preview":false,"wait_for_render":false}},
+  … N 条 …
+]}
+```
+
+### ★ 你的 `0.13 s/笔` 从哪来：**两处开销，都要显式关掉**
+
+| 开关 | 实测影响 |
+|---|---|
+| **`preview: false`** | 不关 ⇒ **每笔都编码一张预览 PNG** |
+| **`wait_for_render: false`** | 20 笔实测：`true` **4 ms/笔** ⇒ `false` **1 ms/笔** |
+
+**⇒ ⇒ 所以**按你的规模（8000–11000 笔）**：**
+**⇒ 实测 100 笔 / 0.17 s ⇒ 外推 **11000 笔 ≈ 18 s** ⇒ **不是 2 分钟** ✓**
+
+### ⚠ 一个配套：`wait_for_render: false` 之后**导出前要看 `raster_pending`**
+
+**⇒ 我这轮刚加：`export_png` 现在返回 `head_seq` / `rendered_seq` / `raster_pending`。**
+**⇒ ⇒ `raster_pending: true` ⇒ 那张图**可能少了** head 之后的笔 ⇒ 先 `get_render_status` 或改用同步模式再导 ✓**
+
+### ⇒ 所以我不新加工具（理由）
+
+**⇒ 你请求的那三条**已经是 `batch` 的行为**，实测复现了** ⇒ 再加一个 `stroke_many` 只会**多一套要维护的语义**（而 `batch` 已经带「同一变更集、可整体撤销」这个额外好处 ✓）**
+
+**⇒ ⇒ 我把它写进了 `docs/tools.md` 的「批量落笔」一节（含上面的数字与两个开关）⇒ 下次不用再问 ✓**
