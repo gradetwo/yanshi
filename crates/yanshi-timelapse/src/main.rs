@@ -189,6 +189,41 @@ fn main() -> Result<()> {
         .collect();
     let end_idx = end_atom.unwrap_or(atom_lines.len()).min(atom_lines.len());
     let start_idx = start_atom.min(end_idx);
+
+    // **★ `meta.json` 的尺寸必须与 `create_document` 原子**一致**** ✓
+    //   （第 1349 轮；外部「视频只有 48 字节」换来的）
+    //   **⇒ 症状** ✗：不一致时 ⇒ 内核按**原子**的尺寸建文档、ffmpeg 按 **meta** 的尺寸出帧
+    //     ⇒ 重放中途报「渲染区域 … 与文档 64×64 不相交」⇒ **中止**
+    //     ⇒ **mp4 只剩 ffmpeg 写的头**（实测 261 字节 + 一行 Error）⇒ 外部看到 48 字节，
+    //        像「卡住」⇒ **而真正的原因在那一行 Error 里** ✗
+    //   **⇒ 所以先比一次** ⇒ 报错同时写出**两边的数字** ✓
+    if let Some(line) = atom_lines
+        .iter()
+        .find(|line| line.contains("\"create_document\""))
+    {
+        if let Ok(v) = serde_json::from_str::<Value>(line) {
+            // **尺寸在 `payload.width` / `payload.height`** ✓（不是 `payload.canvas.*`）
+            //   ⇒ **实测 dump 才知道**：`payload` 的键是
+            //     `background` / `color_space` / `doc_id` / `height` / `width` ✓
+            let payload = v.get("payload");
+            let aw = payload
+                .and_then(|p| p.get("width"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32;
+            let ah = payload
+                .and_then(|p| p.get("height"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32;
+            if aw != 0 && ah != 0 && (aw != doc_w || ah != doc_h) {
+                bail!(
+                    "meta.json 说画布 {doc_w}×{doc_h}，而 atoms.jsonl 的 create_document 说 {aw}×{ah} \
+                     ⇒ 两者必须一致（内核按**原子**建文档、ffmpeg 按 **meta** 出帧 ⇒ 不一致会在中途失败、\
+                     只留下 mp4 的头）⇒ 请把 meta.json 改成与原子一致"
+                );
+            }
+        }
+    }
+
     let t_replay = Instant::now();
 
     // **∴ ffmpeg 起不来时要给一句人话 ✗**（**∴ 交付版只 `eprintln!("ffmpeg 失败")` ✓）★
