@@ -6765,9 +6765,14 @@ fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             .get("blob_hash")
             .and_then(Value::as_str)
             .unwrap_or_default()]},
+        // **★ 单一来源：只写 `region`（原始输入），不写派生的 `width`/`height`** ✓
+        //   **为什么**（第 1225 轮查清）：原来这里同时写了
+        //     region: {x,y,w,h} + width: region.w + height: region.h
+        //   ⇒ 同一事实写两遍 ⇒ `parse_raster_patch` 优先读 `width`/`height`
+        //     ⇒ **删 `region` 不影响渲染**（我上一轮的变异因此不红 ✗）
+        //     ⇒ 而两条数据一旦不同步（如未来的形状变换只改 region）就会**静默不一致** ✗
+        //   ⇒ 所以只保留 `region`（它已经包含 x/y/w/h 全部信息）✓
         "region": {"x": region.x, "y": region.y, "w": region.w, "h": region.h},
-        "width": region.w as u64,
-        "height": region.h as u64,
     });
     if let Some(medium) = args.get("medium") {
         if !medium.is_null() {
