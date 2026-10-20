@@ -3674,6 +3674,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("height", Integer, false, "输出高"),
             param!("max_edge", Integer, false, "限制最长边（按比例缩放；与 width/height 二选一）"),
             param!("filter", String, false, "nearest | bilinear（缺省 bilinear）"),
+            // **★ 第 1199 轮**：外部 §164 报「连续两次导出 43194 像素不同」⇒
+            //   而 render_region 的 CAS 哈希相同 ⇒ 非确定源在导出后半段（缩放/编码）
+            //   ⇒ 本参数**禁止缩放 + 强制 Nearest** ⇒ 让「改一处测指标」可复现
+            param!("deterministic", Boolean, false, "true ⇒ 禁止缩放并强制 nearest，保证同一文档两次导出逐像素相同（外部 §164）"),
             param!("layer_id", String, false, "只导出这一层（**忽略它的可见性** ✓；缺省导出整幅合成）"),
         ],
     },
@@ -26449,14 +26453,43 @@ fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             ))
         }
     };
-    let filter = match optional_str(args, "filter").as_deref() {
-        None | Some("bilinear") => yanshi_core::resample::ResampleFilter::Bilinear,
-        Some("nearest") => yanshi_core::resample::ResampleFilter::Nearest,
-        Some(other) => {
-            return Err(YanshiError::new(
-                ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!("未知缩放算法 {other} ✓（可用 nearest / bilinear）")),
-            ))
+    // **★ `deterministic: true`（第 1199 轮，外部 §164 请求）** ✓
+    //   **为什么需要**：外部实测「同一文档连续两次 `export` ⇒ 43,194 像素不同、最大差 25」
+    //   ⇒ 而他们同时实测 `render_region(raw=true)` 两次的 CAS 哈希**完全相同**
+    //   ⇒ 所以非确定性**不在渲染**，而在**导出路径的后半段**（缩放 or 编码）✓
+    //
+    //   **本模式的语义**（明确写的取舍，不是「大概确定」）：
+    //   · **禁止缩放**：给了不等于源尺寸的 width/height/max_edge ⇒ **报错**
+    //     （缩放是逐行浮点重采样 ⇒ 最可能的累加顺序敏感点）
+    //   · **强制 `Nearest`**：即使源尺寸不变也锁死算法（防御性 —— 若将来加了别的路径）
+    //   ⇒ 满足这两条后，同一文档同一参数两次导出**应当逐像素相同**
+    let deterministic = args
+        .get("deterministic")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if deterministic && (target_w != width || target_h != height) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "deterministic 模式不做缩放：源 {}×{}，目标 {target_w}×{target_h} ⇒ 请去掉 width/height/max_edge（缩放是逐行浮点重采样，是最可能的非确定源）",
+                width, height
+            )),
+        ));
+    }
+    let filter = if deterministic {
+        yanshi_core::resample::ResampleFilter::Nearest
+    } else {
+        match optional_str(args, "filter").as_deref() {
+            None | Some("bilinear") => yanshi_core::resample::ResampleFilter::Bilinear,
+            Some("nearest") => yanshi_core::resample::ResampleFilter::Nearest,
+            Some(other) => {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "未知缩放算法 {other} ✓（可用 nearest / bilinear）"
+                    )),
+                ))
+            }
         }
     };
     let scaled = if target_w == width && target_h == height {
