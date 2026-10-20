@@ -17,7 +17,7 @@ use super::*;
 const ID_ARGS: &[ParamSpec] = &[param!("object_id", String, true, "对象 id")];
 const LAYER_ID: &[ParamSpec] = &[param!("layer_id", String, true, "图层 id")];
 
-/// 核心层 109 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 112 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -253,7 +253,13 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "type",
                 String,
                 false,
-                "raster | vector | layer_group | mask"
+                "raster | vector | layer_group | mask（不认识的值会显式报错，不再静默落盘）"
+            ),
+            param!(
+                "kind",
+                String,
+                false,
+                "图层类型别名：raster | vector（路线甲）；与 type 都给且不一致会显式报错"
             ),
             param!("parent_id", String, false, "父图层（图层组）"),
             param!("z_index", Integer, false, "z 序"),
@@ -950,6 +956,45 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "删除对象（tombstone）",
         mutating: true,
         params: ID_ARGS,
+    },
+    // ---- 原生矢量（路线甲）----
+    ToolSpec {
+        name: "vector_erase",
+        profile: Profile::Core,
+        summary: "矢量橡皮：按脊线截断擦除矢量图层的笔触（擦掉整笔/截成多段都如实计数，不碰像素）",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "矢量图层 id（非矢量图层会显式报错）"),
+            param!(
+                "points",
+                Array,
+                true,
+                "擦除轨迹 [[x, y], …]（文档坐标；也接受 {x, y} 对象式）"
+            ),
+            param!(
+                "radius",
+                Number,
+                true,
+                "橡皮半径 px（截断带 = 轨迹两侧各 radius + 该处剖面半径）"
+            ),
+        ],
+    },
+    ToolSpec {
+        name: "vector_hit_test",
+        profile: Profile::Core,
+        summary: "矢量笔触命中测试：按脊线距离 ≤ 剖面半径 + 容差返回命中的笔触 id 与余量",
+        mutating: false,
+        params: &[
+            param!("layer_id", String, true, "矢量图层 id（非矢量图层会显式报错）"),
+            param!("x", Number, true, "查询点 x（文档坐标）"),
+            param!("y", Number, true, "查询点 y（文档坐标）"),
+            param!(
+                "tolerance",
+                Number,
+                false,
+                "额外容差 px（缺省 0；负数会显式报错）"
+            ),
+        ],
     },
     // ---- 撤销 ----
     ToolSpec {

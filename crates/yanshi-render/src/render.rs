@@ -986,6 +986,12 @@ pub struct Renderer {
     /// **★ `above` 缓存 ✓ ★**（第 682 轮 ✓）：**只在**当前层半透明**时才有值 ✓**
     ///（**∴ 否则恒 `None` ⇒ **∴ 不占内存 ✓**）⇒ **∴ 与 `below` **同一套**统计口径 ✓**。
     above: std::sync::Mutex<Option<AboveTiles>>,
+
+    /// **原生矢量笔触的单笔光栅缓存**（路线甲 Phase 2 ✓）：vector 图层的
+    /// 笔触以单笔为单位缓存光栅（已提交笔触「冻结」、只合成不重盖章 ✓）。
+    /// `Mutex` 与 `below`/`above` 同例（渲染走 `&self`、多 tile 并行 ✓）；
+    /// 计数经 [`Self::vector_raster_stats`] 读（增量渲染的证据面 ✓）。
+    vector_raster: std::sync::Mutex<crate::vector::VectorRasterCache>,
 }
 
 impl Renderer {
@@ -1004,6 +1010,78 @@ impl Renderer {
     /// **∴ 返回旧值 ✓**（**便于调用方还原 ✓**）。**∴ `None` ⇒ 退回"最上层以外"✓**。
     pub fn set_active_layer(&mut self, layer: Option<String>) -> Option<String> {
         std::mem::replace(&mut self.options.active_layer, layer)
+    }
+
+    /// **原生矢量笔触光栅缓存的计数快照**（路线甲 Phase 2 ✓）：
+    /// 命中/未命中/实际盖章数——「第二遍渲染不重算未变笔触」的证据面 ✓。
+    pub fn vector_raster_stats(&self) -> crate::vector::VectorRasterStats {
+        self.vector_raster
+            .lock()
+            .map(|cache| cache.stats())
+            .unwrap_or_default()
+    }
+
+    /// **vector 图层的一笔：优先从单笔光栅缓存合成**（已提交笔触冻结 ✓），
+    /// 未命中才走引擎盖章路径并入缓存。返回本次**实际盖章**的 dab 数
+    /// （命中 ⇒ 0 ✓，供 `note_stamps` 如实记账 ✓）。
+    ///
+    /// **像素等价性**：缓存里的单笔光栅由**同一个**盖章函数
+    /// （`stamp_stroke_configured_on`，经 `svg::render_stroke_buffer`）
+    /// 在该笔的紧凑包围盒里生成，再以 `Normal` 预乘 source-over 合成——
+    /// source-over 对预乘色是**可结合**的 ⇒ 与逐 dab 直接盖在图层上
+    /// 数学等价 ✓。因此调用方只在 `blend_mode == Normal`、无外观、
+    /// 无选区裁剪时走这里，其余情形一律走原路径（语义不让步 ✓）。
+    /// A/B 开关 `YANSHI_VECTOR_RASTER_CACHE=0` 关掉缓存走原路径（与
+    /// DabCache 的开关同例，供判据同进程对比 ✓）。
+    fn stamp_stroke_via_cache(
+        &self,
+        layer_id: &str,
+        object: &Object,
+        brush: &BrushSpec,
+        geometry: &StrokeGeometry,
+        appearance: &crate::brush::StrokeAppearance,
+        layer_buffer: &mut Buffer,
+    ) -> usize {
+        let canvas = (self.grid.width(), self.grid.height());
+        if std::env::var_os("YANSHI_VECTOR_RASTER_CACHE").is_some_and(|v| v == "0") {
+            return crate::brush::stamp_stroke_configured_on(
+                layer_buffer,
+                brush,
+                geometry,
+                Some(appearance),
+                None,
+                canvas,
+            );
+        }
+        let mut transform = [0.0f64; 8];
+        transform[..6].copy_from_slice(&object.transform.matrix);
+        transform[6..].copy_from_slice(&object.transform.pivot);
+        let fingerprint = crate::vector::stroke_fingerprint(&object.data, &transform);
+        let Ok(mut cache) = self.vector_raster.lock() else {
+            // 锁中毒 ⇒ 不静默吞：退回原路径把这一笔如实画出来 ✓。
+            return crate::brush::stamp_stroke_configured_on(
+                layer_buffer,
+                brush,
+                geometry,
+                Some(appearance),
+                None,
+                canvas,
+            );
+        };
+        let dabs_before = cache.stats().dabs_stamped;
+        if let Some(buffer) = cache.get_or_raster(
+            (layer_id, &object.id),
+            fingerprint,
+            brush,
+            geometry,
+            Some(appearance),
+            canvas,
+        ) {
+            layer_buffer.composite(buffer, BlendMode::Normal, 1.0);
+        }
+        // `None` = 笔完全在画布外 ⇒ 原路径盖章也全部落在画布外、像素不变，
+        // 记 0 章与原路径一致 ✓。
+        (cache.stats().dabs_stamped - dabs_before) as usize
     }
 
     /// **★ 临时改输出底色 ✗ ★**（**第 253 轮 ✓；**单层导出要**透明底** ✓）
@@ -1056,6 +1134,7 @@ impl Renderer {
             masks: crate::selection::MaskCache::new(),
             below: std::sync::Mutex::new(None),
             above: std::sync::Mutex::new(None),
+            vector_raster: std::sync::Mutex::new(crate::vector::VectorRasterCache::new()),
         }
     }
 
@@ -1074,6 +1153,7 @@ impl Renderer {
             masks: crate::selection::MaskCache::new(),
             below: std::sync::Mutex::new(None),
             above: std::sync::Mutex::new(None),
+            vector_raster: std::sync::Mutex::new(crate::vector::VectorRasterCache::new()),
         };
 
         // **★ 让并行度可测 ✗ ★**（第 861 轮 ✓；**目标第 8 条 ✓**）：
@@ -1173,6 +1253,11 @@ impl Renderer {
         // **∴ 上 tile 版时再改成 `*guard = None` ✓**（**类型随之变 ✓**）。
         if let Ok(mut guard) = self.below.lock() {
             *guard = None;
+        }
+        // **原生矢量单笔光栅缓存**（路线甲 Phase 2 ✓）：条目带内容指纹、
+        // 不清也不会用错，但全量失效的语义就是全清 ⇒ 按本函数约定一并登记 ✓。
+        if let Ok(mut guard) = self.vector_raster.lock() {
+            guard.clear();
         }
     }
 
@@ -3335,16 +3420,38 @@ impl Renderer {
                     //     ⇒ **∴ 于是**：**印章累计**恒为 **0** ✓（**实测 ✓）**
                     //       ⇒ **∴ 那**说明：**461 个 `import_image`** 走的是**这一条** ✓
                     //         ⇒ **★ 所以**：**计数必须装在这里** ✓ ★**** ✓✓
-                    let drawn = crate::brush::stamp_stroke_configured_on(
-                        layer_buffer,
-                        &brush,
-                        &geometry,
-                        Some(&appearance),
-                        coverage_ref,
-                        // **∴ 镜像轴要**画布**尺寸 ✗ 不能拿 `layer_buffer` 的 bbox**
-                        //   （**∴ 分块渲染时那只是**一块 tile** ✓）★
-                        (self.grid.width(), self.grid.height()),
-                    );
+                    // **路线甲 Phase 2**：vector 图层的原生笔触走单笔光栅缓存
+                    // （冻结前缀 ✓）。准入条件一条不能少（像素语义不让步 ✓）：
+                    // 本对象确是 Stroke 对象（实例的几何来自 master、指纹对不上 ✗）、
+                    // `Normal` 混合（非 Normal 的逐 dab 混合对目标像素敏感 ✗）、
+                    // 无外观（载墨/混色要读目标像素 ✗）、无选区裁剪 ✓。
+                    // 不满足 ⇒ 原路径，与未接入前逐字一致 ✓。
+                    let via_cache = layer.layer_type == yanshi_core::LayerType::Vector
+                        && object.object_type == yanshi_core::ObjectType::Stroke
+                        && brush.blend_mode == BlendMode::Normal
+                        && !appearance.active
+                        && coverage_ref.is_none();
+                    let drawn = if via_cache {
+                        self.stamp_stroke_via_cache(
+                            &layer.id,
+                            object,
+                            &brush,
+                            &geometry,
+                            &appearance,
+                            layer_buffer,
+                        )
+                    } else {
+                        crate::brush::stamp_stroke_configured_on(
+                            layer_buffer,
+                            &brush,
+                            &geometry,
+                            Some(&appearance),
+                            coverage_ref,
+                            // **∴ 镜像轴要**画布**尺寸 ✗ 不能拿 `layer_buffer` 的 bbox**
+                            //   （**∴ 分块渲染时那只是**一块 tile** ✓）★
+                            (self.grid.width(), self.grid.height()),
+                        )
+                    };
                     note_stamps(drawn);
                 }
                 Primitive::Shape {

@@ -122,6 +122,7 @@ pub mod selection;
 pub mod svg;
 pub mod thumb;
 pub mod tile;
+pub mod vector;
 
 pub use blend::{blend_pixel, over, scale_alpha, BlendMode};
 pub use brush::{

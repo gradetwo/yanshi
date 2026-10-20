@@ -19,6 +19,16 @@
 /// 形状：`(工具名, 一段可直接粘贴的 JSON 参数)`。**先给日常最常用的三个**，
 /// 其余工具按同一模式补齐（每加一个，测试自动替它把关）。
 pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
+    // **原生矢量（路线甲 Phase 2）**：先建矢量层、在矢量层上落笔，
+    // 之后才能用脊线橡皮截断、用命中测试按脊线选笔 ✓。
+    (
+        "vector_erase",
+        r#"[{"tool":"create_layer","arguments":{"layer_id":"v1","kind":"vector"}},{"tool":"draw_stroke","arguments":{"layer_id":"v1","data":{"points":[[20,60],[140,60]],"size":20,"color":[200,60,40,255]}}},{"tool":"vector_erase","arguments":{"layer_id":"v1","points":[[80,40],[80,80]],"radius":6}}]"#,
+    ),
+    (
+        "vector_hit_test",
+        r#"{"layer_id":"v1","x":80,"y":60,"tolerance":2}"#,
+    ),
     // **选区变换 + 不透明像素选区**（yanshi-gaps 补丁，第 1187 轮补示例）：
     //   **补丁加了这两个工具却漏了 TOOL_EXAMPLES** ⇒ 被
     //   `every_registered_tool_has_a_documented_example` 抓到 ✗

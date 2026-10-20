@@ -1467,6 +1467,11 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
 }
 
 fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **矢量图层守卫**（路线甲 Phase 2 ✓）：光栅通路工具不许落到矢量图层
+    // （像素语义静默顶替矢量语义 ✗ ⇒ 入口统一显式拒绝，见 `tools_vector` ✓）。
+    if let Some(error) = vector_layer_tool_guard(spec.name, ctx, args) {
+        return Err(error);
+    }
     match spec.name {
         "sample_color" => read_sample_color(ctx, args),
         "sample_colors" => read_sample_colors(ctx, args),
@@ -1554,6 +1559,8 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "remove_from_group" => write_remove_from_group(ctx, args),
         "set_group_transform" => write_set_group_transform(ctx, args),
         "move_object" => write_move_object(ctx, args),
+        "vector_erase" => write_vector_erase(ctx, args),
+        "vector_hit_test" => read_vector_hit_test(ctx, args),
         "delete_object" => write_tombstone(ctx, args, "object_id"),
         "revert_group" => write_revert_group(ctx, args),
         "revert_to_seq" => write_revert_to_seq(ctx, args),
@@ -2522,6 +2529,9 @@ fn read_describe_canvas(ctx: &mut ToolContext<'_>) -> Result<Value> {
             "layer_id": layer.id,
             "name": layer.name,
             "type": layer.layer_type,
+            // 路线甲别名（与 `type` 同值 ✓）：`kind` 是创建时的入参名，
+            // 读回时同名可读、免得调用方还要记两套词 ✓。
+            "kind": layer.layer_type,
             "visible": layer.visible,
             "opacity": layer.opacity,
             "blend_mode": layer.blend_mode,
@@ -2553,6 +2563,7 @@ fn read_list_layers(ctx: &mut ToolContext<'_>) -> Result<Value> {
             "layer_id": layer.id,
             "name": layer.name,
             "type": layer.layer_type,
+            "kind": layer.layer_type,
             "parent_id": layer.parent_id,
             "z_index": layer.z_index,
             "visible": layer.visible,
@@ -2932,10 +2943,57 @@ fn write_create_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             }
         }),
     });
-    for key in ["type", "parent_id"] {
-        if let Some(value) = optional_str(args, key) {
-            payload[key] = json!(value);
+    // **图层类型**：`type` 是落盘字段（`raster`/`vector`/`layer_group`/`mask` ✓）；
+    // `kind` 是路线甲给它的别名（只收 `raster`/`vector` ✓）。两者都给且不一致
+    // ⇒ 显式报错（不猜调用方想要哪个 ✗）；给了不认识的值也报错——此前任意
+    // 字符串都照单落盘、fold 读不出又是静默退化 ✗。
+    let map_kind = |kind: &str| -> Result<&'static str> {
+        match kind {
+            "raster" => Ok("raster"),
+            "vector" => Ok("vector"),
+            other => Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "kind=「{other}」不认识：只收 raster / vector（图层组与蒙版请用 type ✓）"
+                )),
+            )),
         }
+    };
+    let layer_type = match (optional_str(args, "kind"), optional_str(args, "type")) {
+        (Some(kind), Some(explicit)) => {
+            let mapped = map_kind(&kind)?;
+            if mapped != explicit {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "kind=「{kind}」与 type=「{explicit}」不一致 ⇒ 说清你要哪种图层"
+                    )),
+                ));
+            }
+            Some(mapped.to_owned())
+        }
+        (Some(kind), None) => Some(map_kind(&kind)?.to_owned()),
+        (None, Some(explicit)) => {
+            if !matches!(
+                explicit.as_str(),
+                "raster" | "vector" | "layer_group" | "mask"
+            ) {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "type=「{explicit}」不认识：只收 raster / vector / layer_group / mask"
+                    )),
+                ));
+            }
+            Some(explicit)
+        }
+        (None, None) => None,
+    };
+    if let Some(ref layer_type) = layer_type {
+        payload["type"] = json!(layer_type);
+    }
+    if let Some(value) = optional_str(args, "parent_id") {
+        payload["parent_id"] = json!(value);
     }
     if let Some(z_index) = args.get("z_index").and_then(Value::as_i64) {
         payload["z_index"] = json!(z_index);
@@ -2974,6 +3032,9 @@ fn write_create_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     //（形如 `layer_01M3…` ✓）⇒ **多一次往返** ✓，而且**写脚本的 agent 必踩** ✓。
     // 现在它随结果一起回来 ✓ ⇒ 一次往返就够 ✓。
     value["layer_id"] = json!(layer_id);
+    // 实际落盘的图层类型也回给调用方（缺省 raster 时 fold 不落字段 ⇒
+    // 这里如实回缺省值、不让调用方再猜 ✓）。
+    value["layer_type"] = json!(layer_type.as_deref().unwrap_or("raster"));
     Ok(value)
 }
 
@@ -3710,6 +3771,17 @@ fn write_draw(ctx: &mut ToolContext<'_>, args: &Value, kind: AtomKind) -> Result
         // **选择"归一化"而不是"拒绝"** ✓：数组写法与扁平写法都是**自然的** ✓，
         // 既然它们能通过校验 ✓，就应当**真的能画** ✓；拒掉只是在惩罚调用方 ✗。
         //（归一化已经在上面、**校验之前**做完了 ✓ —— 顺序见那段注释 ✓。）
+    }
+    // **矢量图层写侧校验**（路线甲 Phase 2 ✓）：落到矢量图层的笔触必须是
+    // 脊线 + 剖面能完整表示的 ⇒ 表示不了的参数逐项报错、整笔拒绝
+    // （见 `tools_vector::validate_vector_stroke_data` ✓），不许丢参数静默落笔 ✗。
+    if kind == AtomKind::DrawStroke
+        && matches!(
+            layer_type_of(ctx, &layer_id),
+            Ok(yanshi_core::LayerType::Vector)
+        )
+    {
+        validate_vector_stroke_data(&layer_id, &data)?;
     }
     let object_id = optional_str(args, "object_id")
         .unwrap_or_else(|| format!("obj_{}", yanshi_core::Ulid::new().encode()));
@@ -16526,6 +16598,9 @@ use tools_effect::*;
 #[path = "tools_read.rs"]
 mod tools_read;
 use tools_read::*;
+#[path = "tools_vector.rs"]
+mod tools_vector;
+use tools_vector::*;
 
 // **★ 跨模块的 test 辅助 ⇒ 父模块**（第 1279 轮）：`tools_brush.rs` / `tools_read.rs` 的
 //   `#[cfg(test)]` 段也用它们 ⇒ 所以不能放在 `tools_tests.rs` 里（那会多一层模块）✓

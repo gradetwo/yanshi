@@ -730,6 +730,8 @@ struct SvgCounts {
     layers_invisible: u32,
     layers_rasterized: u32,
     strokes_vector: u32,
+    /// 原生矢量图层的笔触直出数（路线甲 ✓；与事后转矢量的 `strokes_vector` 分开记账）。
+    strokes_vector_native: u32,
     strokes_double_layered: u32,
     strokes_raster: u32,
     strokes_empty: u32,
@@ -805,6 +807,8 @@ fn svg_image_node(rx: i64, ry: i64, w: u32, h: u32, rgba: &[u8]) -> Option<SvgNo
 /// **账目**：每笔/每层的去向都在返回值里计数（`strokes_vector` /
 /// `strokes_raster` + `raster_reasons` / `layers_rasterized` …）⇒
 /// 「导出了但少东西」永远有数字可查、不静默 ✓。
+/// **矢量图层**（路线甲 Phase 2）的笔触走原生直出（`vector::export_stroke_native`：
+/// 解析包络、无光栅化中间步），单列 `strokes_vector_native` 与事后转矢量分开记账 ✓。
 /// `validate: true` 时逐笔跑边缘容忍度量验收，不过线的自动回退位图 ✓。
 pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     use yanshi_render::svg as svgx;
@@ -1069,7 +1073,22 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                         pending.push(index);
                         continue;
                     }
-                    match svgx::export_stroke(&brush, &geometry, &appearance, canvas) {
+                    // **路线甲**：矢量图层的笔触走原生直出（解析包络、不光栅化、
+                    // 不做事后拟合 ✓），计数单列 `strokes_vector_native`；
+                    // 其余图层仍走路线乙的事后转换 ✓。原生路表达不了的
+                    // （软边/自交/抖动…）同样回退位图段、理由是 `native_*` 短码 ✓。
+                    let native_layer = layer.layer_type == yanshi_core::LayerType::Vector;
+                    let exported = if native_layer {
+                        yanshi_render::vector::export_stroke_native(
+                            &brush,
+                            &geometry,
+                            &appearance,
+                            canvas,
+                        )
+                    } else {
+                        svgx::export_stroke(&brush, &geometry, &appearance, canvas)
+                    };
+                    match exported {
                         svgx::StrokeExport::Raster { reason } => {
                             counts.strokes_raster += 1;
                             counts.note_reason(reason);
@@ -1136,7 +1155,11 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                                     blend: css_blend.filter(|name| *name != "normal"),
                                 });
                             }
-                            counts.strokes_vector += 1;
+                            if native_layer {
+                                counts.strokes_vector_native += 1;
+                            } else {
+                                counts.strokes_vector += 1;
+                            }
                         }
                     }
                 }
@@ -1348,6 +1371,7 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         "layers_rasterized": counts.layers_rasterized,
         "layers_collapsed": counts.layers_collapsed,
         "strokes_vector": counts.strokes_vector,
+        "strokes_vector_native": counts.strokes_vector_native,
         "strokes_double_layered": counts.strokes_double_layered,
         "strokes_raster": counts.strokes_raster,
         "strokes_empty": counts.strokes_empty,
