@@ -654,7 +654,32 @@ grep -rn "175\b" docs/guide.md docs/guide.zh-CN.md docs/tools.md
 
 **⇒ 而这次的教训**更细**：`grep` 要按**那个数字**，不是按**相关的名字**。**
 
-## K-01 的定位结果（第 1211 轮，未修，只定位）
+## K-01：**已修**（那节原来写「未修，只定位」是**过期的** ✓ 第 1284 轮纠正）
+
+**⇒ 结论先说：`stroke_total_length` 现在**两个宿主都算**，且**调同一个函数**：
+```rust
+// crates/yanshi-wasm/src/brush.rs:167（wasm 侧）
+state.stroke_total_length = yanshi_core::stroke_length::total_length(&tuple_points);
+// crates/yanshi-server/src/tools.rs:12750（服务端）
+fn prime_stroke_total_length(state: &mut hokusai::BrushState, points: &[[f64; 3]])
+```
+**⇒ 共享函数在 `crates/yanshi-core/src/stroke_length.rs`（`pub fn total_length`）⇒ **同一事实只写一处** ✓**
+
+**⇒ 判据：`scripts/check-k01-both-hosts.mjs` ⇒ **4 条断言全绿**（第 1284 轮实测）：**
+```
+✓ ① 服务端的 prime_stroke_total_length 必须调 yanshi_core::stroke_length::total_length
+✓ ② wasm 的 stamp 里必须有 state.stroke_total_length 赋值
+✓ ③ wasm 的赋值也必须来自 yanshi_core::stroke_length::total_length
+✓ 两个宿主都算 stroke_total_length，且调同一个共享函数
+```
+
+### ⇒ 所以那节标题的「未修」是**我自己写的过期状态**（同一场修的，但没回去改标题）
+
+**⇒ 那正是台账类的通病：**追加新节 ≠ 回去改旧节** ✗（AGENTS.md 那条「台账表格变了回去改」）**
+
+---
+
+## 原 K-01 的定位结果（第 1211 轮，**当时**未修，只定位）
 
 **⇒ 第三轮复审的 P0 之一：`stroke_total_length` 只在 native 通道计算 ⇒ wasm 双宿主输出不一致。**
 
