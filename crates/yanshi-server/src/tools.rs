@@ -14602,6 +14602,32 @@ fn write_list_textures(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 /// 老代码会再拼一次 `exports/` ⇒ 变成 `exports/exports/x.png` ✗，然后报 "No such file or directory" ✗
 /// （实测错误原文就是它 ✓）⇒ 调用方只能反直觉地**只传文件名** ✓。现在**两种写法等价** ✓。
 ///
+/// **词法归一化**（消解 `.`／`..`，不碰文件系统 ✓）——第 1342 轮修 **X-01** 用。
+///
+/// **为什么必须有** ✗：`Path::starts_with` 是**按组件前缀**比较的，而它**不看 `..`** ⇒
+/// `/tmp/x/../../home/z/evil.png` 的组件前缀**确实是** `/tmp` ⇒ 于是**放行** ✗
+/// ⇒ 而随后 `fs::write` 会**解释 `..`** ⇒ 真的写到 `/home/z/` ⇒ **沙箱穿透** ✗
+/// （第 1342 轮实测：`ok=true`，文件落到许可目录之外 ✓）
+///
+/// **为什么是词法而不是 `canonicalize`** ✓：目标文件**可能还不存在** ⇒ `canonicalize` 会失败；
+/// 而词法归一化**不需要**存在性 ⇒ 与「守卫只看字符串」的语义一致 ✓
+fn normalize_lexically(path: &std::path::Path) -> std::path::PathBuf {
+    let mut out = std::path::PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                // 根上的 `..` **丢弃**（与内核语义一致：`/..` 还是 `/`）✓
+                if !out.pop() {
+                    out.push(std::path::Component::RootDir);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// 规则：只接受**相对**路径 ✓；拒绝任何 `..` 组件 ✓；相对**导出目录**解析
 ///（缺省 `./exports`，可用 `YANSHI_EXPORT_DIR` 改 ✓，目录不存在就自己建 ✓）；错误信息可照做 ✓。
 fn guarded_output_path(raw: &str) -> Result<std::path::PathBuf> {
@@ -14609,12 +14635,32 @@ fn guarded_output_path(raw: &str) -> Result<std::path::PathBuf> {
     let root = std::env::var("YANSHI_EXPORT_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("exports"));
-    if candidate.is_absolute() {
+    // **先词法归一化** ✓（X-01）：后续**所有**比较与 IO 都用归一化后的路径
+    //   ⇒ 否则 `/tmp/x/../../../home/z/evil.png` 会过前缀检查、然后被 `fs::write` 解释出去 ✗
+    let normalized = normalize_lexically(candidate);
+    // **⇒ 导出目录**先**建出来** ✓（第 1343 轮修不对称）：
+    //   原先只在**相对**分支里 `create_dir_all` ⇒ 于是**绝对**路径在目录还不存在时
+    //   **写失败**（`No such file or directory`），而**相对**路径**成功** ✗
+    //   ⇒ 实测：同一个目录，`/abs/exports/a.png` ⇒ `ok=false`，而 `b.png` ⇒ `ok=true`
+    //   ⇒ 而**两种写法本该等价**（文档就是这么承诺的）⇒ 所以提到分支**之前** ✓
+    if let Err(error) = std::fs::create_dir_all(&root) {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!(
+                "导出目录 {} 建不出来 ⇒ {error}（可用 YANSHI_EXPORT_DIR 指定一个可写目录）",
+                root.display()
+            )),
+        ));
+    }
+    if normalized.is_absolute() {
         // **绝对路径只在两处放行** —— 导出目录内 ✓（`YANSHI_EXPORT_DIR` ✓）或**系统临时目录内** ✓。
         // 为什么会放行临时目录：实测 `crates/yanshi-server/tests/brush_stroke.rs:264` 就是
         // **合法地**导出到自己的临时根 ✓ ⇒ 一律拒绝会把正常用法也关掉 ✗（门禁当场红 ✓）。
         // 反过来，`/etc/...`、`/usr/...`、家目录里的任意文件**一律拒绝** ✓ —— 那才是审计说的"任意覆写" ✗。
-        let inside = candidate.starts_with(&root) || candidate.starts_with(std::env::temp_dir());
+        let normalized_root = normalize_lexically(&root);
+        let normalized_temp = normalize_lexically(&std::env::temp_dir());
+        let inside =
+            normalized.starts_with(&normalized_root) || normalized.starts_with(&normalized_temp);
         if !inside {
             return Err(YanshiError::new(
                 ErrorCode::PreconditionFailed,
@@ -14623,7 +14669,8 @@ fn guarded_output_path(raw: &str) -> Result<std::path::PathBuf> {
                 )),
             ));
         }
-        return Ok(candidate.to_path_buf());
+        // **返回归一化后的路径** ✓：否则调用方拿到的还是带 `..` 的那个 ⇒ 下次 IO 又解释一遍 ✗
+        return Ok(normalized);
     }
     if candidate
         .components()
@@ -14633,15 +14680,6 @@ fn guarded_output_path(raw: &str) -> Result<std::path::PathBuf> {
             ErrorCode::PreconditionFailed,
             ErrorContext::detail(format!(
                 "拒绝写 {raw}：路径里不许出现 ..（导出目录内的相对路径才行）"
-            )),
-        ));
-    }
-    if let Err(error) = std::fs::create_dir_all(&root) {
-        return Err(YanshiError::new(
-            ErrorCode::PreconditionFailed,
-            ErrorContext::detail(format!(
-                "导出目录 {} 建不出来 ⇒ {error}（可用 YANSHI_EXPORT_DIR 指定一个可写目录）",
-                root.display()
             )),
         ));
     }

@@ -53,7 +53,13 @@ try {
   process.exit(1);
 }
 
-const get = async (path) => {
+// **★ 5xx 要重试** ✓（第 1341 轮；CI 实测过 500）
+//   **⇒ 实测**：CI 上 15:11Z 首页返回 **500** ⇒ 判据红；而 15:14Z 我在本机对**同一线上站点**
+//     跑同一判据 ⇒ **12 项全过** ⇒ 所以那是**外部瞬时故障**，不是产品缺陷 ✗
+//   **⇒ 为什么不直接把 5xx 当跳过**：**那会掩盖真的持续故障** ✗（站点真的挂了就再也不报警）
+//   **⇒ 所以重试 3 次 / 间隔 700ms**：**瞬时**能过，**持续**照样红 ✓（断言本身一点没变）
+//   **⇒ 而 4xx 不重试**：那是**确定的答案**（404/403），重试只是拖时间 ✓
+const getOnce = async (path) => {
   const res = await fetch(BASE + path, { cache: "no-store" });
   const buf = new Uint8Array(await res.arrayBuffer());
   return {
@@ -62,6 +68,21 @@ const get = async (path) => {
     ctype: String(res.headers.get("content-type") || ""),
     text: new TextDecoder().decode(buf),
   };
+};
+
+const get = async (path) => {
+  let last = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    last = await getOnce(path);
+    // **只有 5xx 与「0/网络异常」值得重试**；2xx/3xx/4xx 是确定答案 ✓
+    if (last.status < 500) return last;
+    if (attempt < 3) {
+      console.log(`  RETRY ${path} 返回 ${last.status}（第 ${attempt} 次）⇒ 700ms 后重试`);
+      await new Promise((r) => setTimeout(r, 700));
+    }
+  }
+  console.log(`  RETRY ${path} 连续 3 次 5xx（最后 ${last.status}）⇒ 判定为持续故障`);
+  return last;
 };
 const check = (ok, msg) => { checked += 1; if (!ok) fails.push(msg); console.log(`  ${ok ? "OK  " : "FAIL"} ${msg}`); };
 
