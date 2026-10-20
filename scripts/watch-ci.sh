@@ -54,8 +54,12 @@ esac
 [ "$INTERVAL" -lt 5 ] && { echo "  ⊘ 间隔至少 5 秒（别把 API 打爆）" >&2; exit 2; }
 
 SHA=$(git rev-parse HEAD)
-RUN=$(gh run list --limit 20 --json databaseId,headSha --jq \
-  "[.[] | select(.headSha==\"$SHA\")] | .[0].databaseId // empty")
+# **★ 用 `/actions/runs` 端点，不要 `gh run list`** ✓（第 1278 轮实测）
+#   **为什么**：`gh run list` 内部请求 `/actions/workflows?per_page=100`
+#   ⇒ 那个端点有**独立的、低得多的次级限额** ⇒ 即使 `core` 还有 3806/5000 也会 403 ✗
+#   ⇒ 而 `/actions/runs` 同一时刻可用 ✓
+RUN=$(gh api "repos/gradetwo/yanshi/actions/runs?per_page=20" \
+  --jq "[.workflow_runs[] | select(.head_sha==\"$SHA\")] | .[0].id // empty" 2>/dev/null)
 
 if [ -z "$RUN" ]; then
   echo "  ⊘ 不可判：HEAD 还没有对应的 CI run（刚 push？等 GitHub 创建）"
