@@ -200,3 +200,100 @@ mod legacy_compat_tests {
 pub fn encode_for_storage(bytes: &[u8]) -> Vec<u8> {
     BlobCodec::encode(&RenderCodec, bytes)
 }
+
+#[cfg(test)]
+mod probe_bare_png {
+    //! **探针**（第 1235 轮）：`RenderCodec::decode` 对**裸 PNG**（没有 0x00 头）到底返回什么？
+    //!
+    //! **为什么需要这个探针** ✗：我第 1234 轮想做 `import_image` 的 `blob_decodable`，
+    //! 而两次实测都说「裸 PNG 也能解出东西」⇒ 与我读代码的结论（`_ => zlib_decompress`
+    //! 应该失败）**不符** ⇒ 所以先在这里**直接问**，不再靠读码猜。
+    //!
+    //! **诊断三层**（每层单独断言，这样红的时候能指出是哪一层）：
+    //!   ① 裸 PNG 的 `decode` 是 `None` 还是 `Some`？
+    //!   ② 若是 `Some`，解出来多少字节？前 8 字节是什么？
+    //!   ③ 包头（`\x00\x00` + PNG）的 `decode` 是 `Some` 吗？解出来是原 PNG 吗？
+
+    use super::{BlobCodec, RenderCodec};
+
+    /// 一个最小的 8×8 RGBA PNG（纯红），不依赖外部库。
+    fn red_png() -> Vec<u8> {
+        fn chunk(kind: &[u8], data: &[u8]) -> Vec<u8> {
+            let mut out = Vec::new();
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            out.extend_from_slice(kind);
+            out.extend_from_slice(data);
+            out.extend_from_slice(&crc32(&[kind, data].concat()).to_be_bytes());
+            out
+        }
+        fn crc32(buf: &[u8]) -> u32 {
+            let mut table = [0u32; 256];
+            for n in 0..256u32 {
+                let mut c = n;
+                for _ in 0..8 {
+                    c = if c & 1 != 0 {
+                        0xedb8_8320 ^ (c >> 1)
+                    } else {
+                        c >> 1
+                    };
+                }
+                table[n as usize] = c;
+            }
+            let mut c = 0xffff_ffffu32;
+            for &b in buf {
+                c = table[((c ^ b as u32) & 0xff) as usize] ^ (c >> 8);
+            }
+            c ^ 0xffff_ffff
+        }
+        let (w, h) = (8u32, 8u32);
+        let mut raw = Vec::new();
+        for _ in 0..h {
+            raw.extend_from_slice(&[0u8]); // filter: none
+            for _ in 0..w {
+                raw.extend_from_slice(&[200, 40, 40, 255]);
+            }
+        }
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&w.to_be_bytes());
+        ihdr.extend_from_slice(&h.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit RGBA
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        png.extend_from_slice(&chunk(b"IHDR", &ihdr));
+        png.extend_from_slice(&chunk(b"IDAT", &super::zlib_compress_best(&raw)));
+        png.extend_from_slice(&chunk(b"IEND", &[]));
+        png
+    }
+
+    #[test]
+    fn probe_what_decode_does_with_a_bare_png() {
+        let codec = RenderCodec;
+        let png = red_png();
+        let bare = codec.decode(&png);
+        println!(
+            "  ① 裸 PNG（{} 字节，首字节 0x{:02x}）⇒ decode = {:?}",
+            png.len(),
+            png[0],
+            bare.as_ref().map(|b| format!(
+                "Some({} 字节，前 8 = {:02x?})",
+                b.len(),
+                &b[..b.len().min(8)]
+            ))
+        );
+        // **不在这里断言「应该是 None」** —— 那取决于旧格式兼容策略。
+        // 本探针的职责是**把事实打出来**，让下一轮据此设计 `blob_decodable`。
+
+        let wrapped = [b"\x00\x00".as_slice(), &png].concat();
+        let ok = codec.decode(&wrapped);
+        println!(
+            "  ② 包头（\\x00\\x00 + PNG，{} 字节）⇒ decode = {:?}",
+            wrapped.len(),
+            ok.as_ref()
+                .map(|b| format!("Some({} 字节，是原 PNG = {})", b.len(), b == &png))
+        );
+        assert_eq!(
+            ok.as_deref(),
+            Some(png.as_slice()),
+            "包头之后必须能还原出原 PNG"
+        );
+    }
+}
