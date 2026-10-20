@@ -71,6 +71,20 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     let color_source = args.get("color").cloned().unwrap_or(Value::Null);
     let color_to_source = args.get("color_to").cloned().unwrap_or(Value::Null);
     let smooth_source = json!(optional_bool(args, "smooth").unwrap_or(false));
+    // **★ `opacity` 越界要**报错**，不许静默夹紧** ✓（第 1419 轮；外部 D-12）
+    //   **⇒ 原缺陷** ✗：`opacity: 5` **静默变成 1.0**（`opacity.clamp(0.0, 1.0)`）⇒
+    //     调用方以为「5 是个很强的透明度」⇒ 实际**和 1.0 一样** ✗
+    //   **⇒ ⇒ 所以**在这里就拒绝**并说清范围 ✓（负值同样）
+    if let Some(raw) = args.get("opacity").and_then(Value::as_f64) {
+        if !(0.0..=1.0).contains(&raw) {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "opacity 必须在 0..1（给了 {raw}）⇒ 越界不再静默夹紧；0 = 全透明，1 = 全不透明"
+                )),
+            ));
+        }
+    }
     let opacity_source = args.get("opacity").cloned().unwrap_or(Value::Null);
     let hardness_source = args.get("hardness").cloned().unwrap_or(Value::Null);
     // **落笔之前先问"这条笔迹在画布上吗"** ✗（本轮新增 ✓）。

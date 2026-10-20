@@ -12071,12 +12071,22 @@ fn brush_points_from_json(value: Option<&Value>) -> Result<Vec<(f64, f64, f64)>>
                 ErrorContext::detail(format!("points[{index}][1] 不是数字")),
             )
         })?;
-        let pressure = pair
-            .get(2)
-            .and_then(Value::as_f64)
-            .unwrap_or(0.5)
-            .clamp(0.0, 1.0);
-        points.push((x, y, pressure));
+        let pressure_raw = pair.get(2).and_then(Value::as_f64).unwrap_or(0.5);
+        // **★ 压力越界要**报错**，不许静默夹紧** ✓（第 1419 轮；外部 D-12）
+        //   **⇒ 原缺陷** ✗：`.clamp(0.0, 1.0)` ⇒ `pressure: 99` **静默变成 1.0** ⇒
+        //     调用方以为「99 是合法的高压力」，其实**和 1.0 完全一样** ✗
+        //   **⇒ ⇒ 所以**越界即拒绝**，并把**第几个点、给了什么**写进错误里 ✓
+        //   （与 `read_canvas: "yes"` 那条同族：非法输入不许看起来正常 ✓）
+        if !(0.0..=1.0).contains(&pressure_raw) {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "points[{index}] 的压力必须在 0..1（给了 {pressure_raw}）⇒ 越界不再静默夹紧，请改数字；\
+                     若想表示「最重」，用 1.0"
+                )),
+            ));
+        }
+        points.push((x, y, pressure_raw));
     }
     Ok(points)
 }
