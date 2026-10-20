@@ -1616,7 +1616,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // **写法与画笔 / 形状 / 笔迹统一** ✓：同一个解析器 ✓ ⇒ 用户不必记三套 ✓。
             param!("color", Any, false, "笔尖色：{r,g,b,a}（0..255）/ [r,g,b,(a)]（0..1 线性或 0..255 字节） ⇒ **任一分量 > 1 即按 0..255 字节解释**（想要近黑请用 `#RRGGBB` 或 `{r:1,…}`） / \"#RRGGBB\"（缺省不透明黑）"),
             param!("color_to", Any, false, "**末端颜色**（写法同 color）⇒ 一笔之内从 color 渐变到它（**介质也能画渐变了** ✓，第 254 轮补：验收实测过它缺失 ✗）；给了它就必须同时给 color ✓"),
-            param!("color_mixing", String, false, "颜色混合模式：rgb（缺省，sRGB 线性插值）/ pigment（**光谱 K/S 混色**：黄+蓝混出绿而不是灰）；**与 `brush_stroke` 是同一处实现** ✓"),
+            param!("color_mixing", String, false, "颜色混合模式：rgb（**缺省**，sRGB 空间插值）/ linear（**线性光混色**，物理正确：红+蓝各 50% 比 rgb 亮 **35 级**）/ pigment（**光谱 K/S 混色**：黄+蓝混出绿而不是灰）；**三种都走 `mix_colors` 同一处实现** ✓"),
             param!("smooth", Boolean, false, "true ⇒ 控制点按 **Catmull-Rom** 重采样（与 brush_stroke / draw_stroke 同一条实现 ✓）⇒ 手写的折线不再有硬角；缺省 false ⇒ 与前完全一致"),
             param!("symmetry", String, false, "★ 对称模式（第 253 轮）：none（缺省）/ vertical / horizontal ⇒ 一笔画两份（镜像那份与原笔像素相同，轴取画布中心线）"),
             param!("load", Number, false, "载墨 0..1（缺省 1；越画越少）"),

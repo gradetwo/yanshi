@@ -8001,7 +8001,7 @@ fn read_list_engine_capabilities(_ctx: &mut ToolContext<'_>, _args: &Value) -> R
             "names": ["color", "color_mixing", "color_to", "layer_id", "load", "medium", "object_id", "points", "size", "smooth", "symmetry", "texture", "wetness"],
             "load": "0..1（缺省 1；越画越少）",
             "wetness": "0..1（缺省 0.4）",
-            "color_mixing": ["rgb", "pigment"],
+            "color_mixing": ["rgb", "linear", "pigment"],
         },
         "brush_settings": brush_settings,
         "counts": {
