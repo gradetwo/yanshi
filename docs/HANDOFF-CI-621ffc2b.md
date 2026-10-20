@@ -891,3 +891,32 @@ error: visibility `pub(super)` is not followed by an item
 ### 前五刀不受影响（已绿两刀）
 
 **⇒ `tools.rs` 仍 **29069 行**（五刀共 **−1708**）⇒ 而 `mask`/`selection`/`bitmap` 三刀已 CI 绿，`io`/`psd` 待验。**
+
+## ⚠ GitHub API 限额被我查爆了（第 1277 轮实测）
+
+**⇒ 症状：**
+```
+$ gh run list --limit 1
+failed to get runs: HTTP 403: API rate limit exceeded for user ID 44745
+```
+
+**⇒ 原因：我**每轮都查 CI**（`gh run list` + `gh run view` + `curl` 取日志）⇒
+**未认证限额是 60 次/小时**（认证的是 5000 次/小时，但 `gh auth token` 的 5000 也可能被
+「每个 job 一次 curl + 每轮几次 list」累计用完）。**
+
+**⇒ 而 CI 一次要跑 20–40 分钟 ⇒ 我在这期间查了**十几次** ⇒ 于是限额耗尽。**
+
+### 规矩（写下来，以后照做）
+
+| 活 | 频率 |
+|---|---|
+| `gh run list --limit 1 --json status,conclusion` | **每 10 分钟最多一次**（别每轮都查）|
+| `gh run view --json jobs` | **只在 `status == completed` 后查一次** |
+| `curl .../jobs/<id>/logs` | **只取**失败的那个 job**（不要全取）** |
+
+**⇒ 更好的做法：`bash scripts/watch-ci.sh`（第 975 轮写的）⇒ 它自己轮询、只在状态变化时打印、
+run 完成即退出 ⇒ 一次调用就够，不消耗多次限额。**
+
+**⇒ 而**若限额已耗尽** ⇒ 等一小时（GitHub 的窗口是滚动小时）或换 `gh auth token` 的另一个 token。**
+
+**⇒ ⇒ 判断限额是否恢复：`gh api rate_limit --jq '.rate.remaining'` ⇒ 返回 > 0 即可。**
