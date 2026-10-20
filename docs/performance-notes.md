@@ -454,3 +454,27 @@ background 必须是对象 {r,g,b,a}（0..255；缺省不透明白）
 
 **⇒ ⇒ ⇒ 所以我把「需要什么才能复现」写清楚：**他那一次的完整请求体（`calls` 条数、每笔 `points`、`size`、`silent`、`preview`、`wait_for_render`）
 ＋ 他的**轮询代码**（读哪个字段、超时多少）** ✓
+
+## 7.4 排除法：O(n) 到底在哪儿（第 1398 轮，**修法尚未做**）
+
+**⇒ 目标：把「每笔 O(文档对象数)」缩到具体那一行。已排除的：**
+
+| 怀疑对象 | 证据 | 结论 |
+|---|---|---|
+| **`persist.append_atom`** | 代码是 `OpenOptions::append(true)` ＋ 写一行 ＋ flush | **O(1)** ⇒ 排除 ✓ |
+| **`range_exclusive_inclusive`** | 用 `partition_point`（二分） | **O(log n)** ⇒ 排除 ✓ |
+| **文档缓存驱逐**（每次重开 ⇒ 重折）| 400 笔后 `cache_evictions = 0` | **没驱逐** ⇒ 排除 ✓ |
+| **`self.state.clone()`（`previous`）** | `needs_previous_state()` 只对 **Tombstone/Supersede/Move/Transform/SetProperty/Revert/Reapply/ReorderLayers** 返 true ⇒ **落笔类原子不在内** | **落笔不克隆** ⇒ 排除 ✓ |
+| **同一提交折两遍** | 第二个 `folder.fold` 在 `append_system_atom`（只走系统原子）| ⇒ 排除 ✓ |
+
+**⇒ ⇒ 所以剩下的唯一嫌疑人：`fold_atoms(state, slice)` 里对**单个落笔原子**的折叠本身就是 O(现有对象数)** ✓
+（`IncrementalFolder::fold` 的快路径确实是 `fold_atoms(state, slice)` ⇒ 输入只有 1 个原子，
+⇒ **所以 O(n) 一定发生在「把这一笔并进 state」那一步**）
+
+### ⇒ 下一步（未做）
+
+**⇒ 在 `fold_atoms` 里对**落笔原子**那一条加计时打印**（`state.objects.len()` 与耗时，
+⇒ 若耗时 ∝ `objects.len()` ⇒ 就是「并入对象」那一步（可能是 `Vec` 的插入/去重/重算派生量）✓
+**⇒ ⇒ 然后按那条路径改成**增量维护**（只改受影响的图层/对象）✓
+
+**⇒ ⇒ ⇒ 而**这一轮没做修法** ⇒ 所以**外部只有「分文档」那个绕过**可用 ✗（已告知他们）✓**
