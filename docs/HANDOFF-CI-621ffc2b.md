@@ -969,7 +969,7 @@ gh api "repos/gradetwo/yanshi/actions/runs/<run_id>/jobs" \
 |---|---|
 | **`tools.rs`** | **30777 → 17800 行**（**−12977，降 42%**）|
 | **拆出的模块** | **11 个**（mask / selection / bitmap / io / psd / smart / brush / registry / examples / effect / read）|
-| **已过的 CI 全绿 run** | **5 个**（`044e0ace`、`50f6b946`、`0ccc22a5`、`ca58a503`、`d927d7bc`）|
+| **已过的 CI 全绿 run** | **5 个**（``、``、``、``、``）|
 
 ### 剩余结构（`tools.rs` 17800 行的构成）
 
