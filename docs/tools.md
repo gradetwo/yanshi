@@ -573,6 +573,23 @@ shadows_highlights, selective_color, color_lut, red_eye, denoise, lens, perspect
 > **⇒ 上一版那张「画布 400→3000 ⇒ 2.7→28.4 ms」的表是**混淆了两个变量**（`points` 坐标随画布缩放 ⇒
 > 长笔画也更长）⇒ **画布其实没有影响** ✗ —— 那一版已删 ✓
 
+### 整批撤销：`revert_changeset`
+
+**⇒ `batch` 的响应里有 `changeset_id` ⇒ 用 `revert_changeset` **一次撤掉整批** ✓**
+
+**⇒ 实测（第 1370 轮，2 笔的 batch）：**
+
+| 步 | `head_seq` | 两个采样点的墨 |
+|---|---|---|
+| 建层后 | 2 | — |
+| **`batch` 2 笔** | **4** | **2/2** |
+| **`revert_changeset`** | **6**（+2 个撤销原子）| **0/2** ✓ |
+
+**⇒ ⇒ 所以「同一变更集、可整体撤销」是**实测成立**的 ✓**
+
+> **⇒ 工具名是 `revert_changeset`**，**不是** `undo_changeset`（后者不存在，会返回 `ok=false`）✓
+> 相关：`undo_last`（撤最后一笔）／`revert_atoms`／`revert_to_seq`／`get_undo_status`。**
+
 **⇒ 而 `wait_for_render: false` 会让栅格落后于 head** ⇒ 导出前看 `export_png` 的
 **`raster_pending`**（第 1346 轮加）⇒ 为 `true` 就先 `get_render_status` 或改用同步模式再导出。
 
