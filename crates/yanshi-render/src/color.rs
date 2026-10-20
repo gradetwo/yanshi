@@ -642,6 +642,47 @@ pub fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
     (hue / 360.0, sat, max)
 }
 
+/// **HSL → sRGB（u8）**。
+///
+/// **口径**：`h` 用**度**（0..360，会自动回绕，360=0）；`s`、`l` 用 0..1 的分数。
+/// 与 `rgb_to_hsv` 的"H 用度"口径一致，调用方传人类直觉的度数即可。
+pub fn hsl_to_srgb(h_deg: f64, s: f64, l: f64) -> [u8; 3] {
+    let h = h_deg.rem_euclid(360.0) / 360.0;
+    let s = s.clamp(0.0, 1.0);
+    let l = l.clamp(0.0, 1.0);
+    if s <= f64::EPSILON {
+        let v = (l * 255.0).round().clamp(0.0, 255.0) as u8;
+        return [v, v, v];
+    }
+    let q = if l < 0.5 {
+        l * (1.0 + s)
+    } else {
+        l + s - l * s
+    };
+    let p = 2.0 * l - q;
+    let hue_to_rgb = |t: f64| {
+        let t = t.rem_euclid(1.0);
+        if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 0.5 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        }
+    };
+    [
+        (hue_to_rgb(h + 1.0 / 3.0) * 255.0)
+            .round()
+            .clamp(0.0, 255.0) as u8,
+        (hue_to_rgb(h) * 255.0).round().clamp(0.0, 255.0) as u8,
+        (hue_to_rgb(h - 1.0 / 3.0) * 255.0)
+            .round()
+            .clamp(0.0, 255.0) as u8,
+    ]
+}
+
 /// **线性 sRGB → CIE Lab（D65 白点）**（测试报告 §三.2 ✓）。
 ///
 /// **为什么需要它** ✓：`analyze_region` 现在只描述"画面是什么" ✓（直方图/亮度/冷暖/主色 ✓），

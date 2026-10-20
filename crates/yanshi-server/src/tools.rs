@@ -15849,13 +15849,15 @@ fn parse_hex_colour(text: &str) -> Option<[u8; 4]> {
 /// **颜色取值的统一入口**（对象或十六进制都认 ✓）—— **认不出来就报错** ✓。
 /// 这一条是报告里"静默变黑"的根因修复：以前只有对象一条路 ✓，字符串走 `.get("r")` 全是 `None` ✗
 /// ⇒ `unwrap_or(0.0)` ⇒ **全黑且无告警** ✗。
+/// **HSL 写法** ✓：`{h,s,l[,a]}` —— `h` 用度（0..360，自动回绕）；`s`、`l` 用 0..1，
+/// 若 > 1 则按 0..100 百分比理解（与 RGB"任一分量 > 1 按字节"的宽容口径同族 ✓）；`a` 同 RGB（0..255，缺省 255）。
 fn parse_colour_value(value: &Value, name: &str) -> Result<[u8; 4]> {
     if let Some(text) = value.as_str() {
         return parse_hex_colour(text).ok_or_else(|| {
             YanshiError::new(
                 ErrorCode::InvalidArgument,
                 ErrorContext::detail(format!(
-                    "{name} 的颜色 {text:?} 解析不了 ⇒ 给 #rgb / #rrggbb / #rrggbbaa 或 {{r,g,b,a}}（0..255）"
+                    "{name} 的颜色 {text:?} 解析不了 ⇒ 给 #rgb / #rrggbb / #rrggbbaa 或 {{r,g,b,a}}（0..255）或 {{h,s,l}}（h 用度，s/l 用 0..1）"
                 )),
             )
         });
@@ -15864,10 +15866,34 @@ fn parse_colour_value(value: &Value, name: &str) -> Result<[u8; 4]> {
         YanshiError::new(
             ErrorCode::InvalidArgument,
             ErrorContext::detail(format!(
-                "{name} 必须是颜色对象 {{r,g,b,a}}（0..255）或 #rrggbb 这样的字符串"
+                "{name} 必须是颜色对象 {{r,g,b,a}}（0..255）/ {{h,s,l}}（h 用度，s/l 用 0..1）或 #rrggbb 这样的字符串"
             )),
         )
     })?;
+    // **HSL 分支** ✓：有 `h` 键即按 HSL 理解（与 `r` 键互斥，`r` 优先以保旧行为 ✓）。
+    if object.contains_key("h") && !object.contains_key("r") {
+        let h = object.get("h").and_then(Value::as_f64).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("{name} 的 h 必须是数字（度，0..360）")),
+            )
+        })?;
+        // **s/l 宽容** ✓：> 1 按百分比（0..100）理解，否则按 0..1 ✓。
+        let frac = |key: &str| {
+            object
+                .get(key)
+                .and_then(Value::as_f64)
+                .map(|v| if v > 1.0 { v / 100.0 } else { v })
+                .unwrap_or(0.0)
+        };
+        let [r, g, b] = yanshi_render::color::hsl_to_srgb(h, frac("s"), frac("l"));
+        let a = object
+            .get("a")
+            .and_then(Value::as_u64)
+            .unwrap_or(255)
+            .min(255) as u8;
+        return Ok([r, g, b, a]);
+    }
     let mut out = [0u8; 4];
     for (index, key) in ["r", "g", "b", "a"].iter().enumerate() {
         let raw = object.get(*key).and_then(Value::as_u64);
@@ -23283,16 +23309,35 @@ fn write_smart_erase_shape(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
     let (bx0, by0, bx1, by1) = parsed.bbox;
 
     // 擦除区域：invert=false 时 shape.bbox 外扩 feather；invert=true 时整幅画布。
+    // **★ N3D-03（第三轮复审 P1）：非反相分支也要裁到画布** ✓
+    //   **问题**：原来 `invert=true` 用整幅画布（有界 ✓），而 `invert=false` 用
+    //   `shape.bbox 外扩 feather`，**完全不裁画布** ✗
+    //   ⇒ shape 放在画布外（如 x=1e7）⇒ 蛇形扫描线会走 1e7 × 1e7 ⇒
+    //     `path` 无上界 ⇒ **一次调用持锁挂死服务端** ✗
+    //   **修法**：两分支**共用**画布裁剪（这正是报告建议的「与非反相分支共用同一裁剪函数」）；
+    //   若裁剪后区域为空 ⇒ **明确返回 clipped_out**（不是静默成功）
+    let (dw, dh) = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|d| (d.state().width as f64, d.state().height as f64))
+        .unwrap_or((4096.0, 4096.0));
     let (rx0, ry0, rx1, ry1) = if invert {
-        let (dw, dh) = ctx
-            .workspace
-            .document(&ctx.doc_id)
-            .map(|d| (d.state().width as f64, d.state().height as f64))
-            .unwrap_or((4096.0, 4096.0));
         (0.0, 0.0, dw, dh)
     } else {
-        (bx0 - feather, by0 - feather, bx1 + feather, by1 + feather)
+        (
+            (bx0 - feather).max(0.0),
+            (by0 - feather).max(0.0),
+            (bx1 + feather).min(dw),
+            (by1 + feather).min(dh),
+        )
     };
+    if rx1 <= rx0 || ry1 <= ry0 {
+        return Ok(json!({
+            "ok": true,
+            "clipped_out": true,
+            "note": "擦除区域与画布无交集 ⇒ 没有可擦除的像素（未提交原子）",
+        }));
+    }
     // 擦除区域：invert=false 时 shape.bbox 外扩 feather；invert=true 时整幅画布。
     // （行游程计算见 erase_shape_runs。）
 
@@ -29564,7 +29609,9 @@ mod tests {
 
 #[cfg(test)]
 mod colour_parsing_tests {
+    use super::parse_colour_value;
     use super::parse_hex_colour;
+    use serde_json::json;
 
     /// **十六进制颜色的四种写法**（测试报告第 1 条）：支持 `#rgb` / `#rgba` / `#rrggbb` / `#rrggbbaa` ✓，
     /// `#` 可省略 ✓。这条测试保证"接口说明写了支持"与"代码真的支持"一致 ✓。
@@ -29587,6 +29634,45 @@ mod colour_parsing_tests {
         assert_eq!(parse_hex_colour("#12345"), None);
         assert_eq!(parse_hex_colour("#gggggg"), None);
         assert_eq!(parse_hex_colour(""), None);
+    }
+
+    /// **HSL 三原色** ✓：h 用度，s/l 用 0..1。
+    #[test]
+    fn hsl_primary_colours() {
+        let red = parse_colour_value(&json!({"h": 0, "s": 1.0, "l": 0.5}), "c").unwrap();
+        assert_eq!(red, [255, 0, 0, 255]);
+        let green = parse_colour_value(&json!({"h": 120, "s": 1.0, "l": 0.5}), "c").unwrap();
+        assert_eq!(green, [0, 255, 0, 255]);
+        let blue = parse_colour_value(&json!({"h": 240, "s": 1.0, "l": 0.5}), "c").unwrap();
+        assert_eq!(blue, [0, 0, 255, 255]);
+    }
+
+    /// **HSL 口径宽容** ✓：h 自动回绕（360=0）；s/l > 1 按百分比理解；a 缺省 255。
+    #[test]
+    fn hsl_wrapping_and_percentage() {
+        let wrapped = parse_colour_value(&json!({"h": 360, "s": 1.0, "l": 0.5}), "c").unwrap();
+        assert_eq!(wrapped, [255, 0, 0, 255]);
+        let pct = parse_colour_value(&json!({"h": 0, "s": 100.0, "l": 50.0}), "c").unwrap();
+        assert_eq!(pct, [255, 0, 0, 255]);
+        let with_alpha =
+            parse_colour_value(&json!({"h": 0, "s": 1.0, "l": 0.5, "a": 128}), "c").unwrap();
+        assert_eq!(with_alpha, [255, 0, 0, 128]);
+        // **无彩**：s=0 时 h 无所谓，应得灰。
+        let gray = parse_colour_value(&json!({"h": 999, "s": 0.0, "l": 0.5}), "c").unwrap();
+        assert_eq!(gray, [128, 128, 128, 255]);
+    }
+
+    /// **RGB 优先** ✓：同时有 r 和 h 时走 RGB 老路，不改变存量行为。
+    #[test]
+    fn hsl_rgb_key_conflict_prefers_rgb() {
+        let v = parse_colour_value(&json!({"r": 10, "g": 20, "b": 30, "h": 0}), "c").unwrap();
+        assert_eq!(v, [10, 20, 30, 255]);
+    }
+
+    /// **h 非数字必须报错** ✓（静默降级是唯一对手：不能吞成黑）。
+    #[test]
+    fn hsl_non_numeric_hue_is_error() {
+        assert!(parse_colour_value(&json!({"h": "红", "s": 1.0, "l": 0.5}), "c").is_err());
     }
 }
 
