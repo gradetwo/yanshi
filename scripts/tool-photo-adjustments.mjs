@@ -217,6 +217,31 @@ await geoCase(
   else bad(`⑤ 缺省 lens 必须幂等 ⇒ ok=${r?.ok}、变化 ${n} 个像素（应 0）`);
 }
 
+// ---- ⑥ 退化/越界输入必须**明确拒绝**（防「静默降级」——本仓的核心对手）----
+//   **⇒ 为什么这是一条判据** ✗：若这些输入被**静默接受**（例如非凸 quad 被当作合法、
+//     `k1=999` 被悄悄 clamp）⇒ 调用方**以为调整生效了** ⇒ 而画面没按预期变 ⇒ 最难查 ✗
+//   **⇒ 实测（第 1321 轮）：四种输入各有一条**不同的**错误信息** ✓
+{
+  const D = await mkDoc("reject", 60, 60);
+  if (!D) { console.error("  ⊘ 不可判：建文档失败"); process.exit(3); }
+  const cases = [
+    ["非凸 quad（自交）", "perspective", { quad: [[0, 0], [50, 50], [50, 0], [0, 50]] }],
+    ["共线顶点", "perspective", { quad: [[0, 0], [25, 0], [50, 0], [25, 50]] }],
+    ["quad 只有 3 点", "perspective", { quad: [[0, 0], [50, 0], [25, 50]] }],
+    ["k1 越界（999）", "lens", { k1: 999 }],
+  ];
+  const wrong = [];
+  for (const [label, kind, params] of cases) {
+    const r = await post("/api/tools/add_adjustment", { layer_id: "L", adjustment_type: kind, params }, D.doc, D.token);
+    if (r?.ok !== false) wrong.push(`${label}（被判为接受：ok=${r?.ok}）`);
+  }
+  if (wrong.length === 0) {
+    ok(`⑥ 退化/越界输入**全部被明确拒绝**（${cases.length} 种：非凸/共线/少点/越界）`);
+  } else {
+    bad(`⑥ 这些退化输入必须被拒绝 ⇒ 实测被接受：${wrong.join("、")}`);
+  }
+}
+
 if (fail.length > 0) {
   console.log(`\n  ✗ ${fail.length} 处不符（四个照片调整必须各有可量效果）`);
   process.exit(1);
