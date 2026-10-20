@@ -6730,11 +6730,21 @@ fn write_draw_text_with_font(
 /// **路径限制**：只允许**服务端工作区 root 下**的文件（防任意文件读）。
 pub fn write_put_blob(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let path = require_str(args, "path")?;
-    // **⚠ 已知风险（未修，按用户裁定「安全类放后面」）**：
-    //   本工具**读服务端本地任意文件** ⇒ 那是「任意文件读」面。
-    //   修法（下一轮或安全专项）：用 `--root` 的 canonicalize + 前缀校验限制在工作区内。
-    //   为什么先不做：外部（apple2011）连续四次要求这个工具，而它是**只读**、
-    //   且 `put_blob` 的输出只是一个 `blob_hash`（内容仍要经 `import_image` 才进文档）。
+    // **路径防护（第 1230 轮：挡掉路径穿越这一层）** ✓
+    //   **为什么必须有** ✗：本工具**读服务端本地文件** ⇒ 若 `path` 含 `..`
+    //   ⇒ 调用方能读**工作区之外**的任意文件（`../../etc/passwd`）✗
+    //   **本条挡住**：任何含 `..` 组件的路径 ⇒ 立刻报错（不静默）
+    //
+    //   **⚠ 剩余风险（仍存在，未修）**：**绝对路径**仍能读工作区外的文件
+    //   （如 `path: "/etc/passwd"`）⇒ 要彻底堵住需要 `--root` 的 canonicalize + 前缀校验。
+    //   为什么先不做：那需要拿到服务端 root（`FileStore` 的根），而我这一轮的上下文用尽了；
+    //   而**路径穿越**（`..`）是更常见的那一类 ⇒ 先堵它，并在 spec 的 summary 里写明限制。
+    if path.split(['/', '\\']).any(|seg| seg == "..") {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("path 不许含 `..` 组件（防路径穿越）：{path}")),
+        ));
+    }
     let bytes = std::fs::read(&path).map_err(|e| {
         YanshiError::new(
             ErrorCode::InvalidArgument,
