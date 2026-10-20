@@ -7,7 +7,12 @@
 //   ⇒ 我实测「图层里一个不透明矩形 + 四周透明」⇒ 加 `perspective`（quad = 矩形四角）⇒
 //   **整幅被填成矩形色**（六个采样点全蓝）✗
 //
-// **⇒ A/B 已定因**（第 1328 轮）：**补丁之前就有**（基线 4/5 已蓝）⇒ 所以是既有缺陷 ✓
+// **⇒ 而第 1330 轮查清：那不是缺陷，是**我搞错了语义** ✗**
+//   `perspective` 的意思是「**把整幅画布映射到给定 quad**」（corner-pin）⇒
+//   所以**真恒等 = quad 为**画布四角****（`(0,0),(W,0),(W,H),(0,H)`）
+//   ⇒ 我上一轮用「矩形四角」⇒ 那是**把画布挤进矩形** ⇒ 于是边距读到矩形色 ⇒
+//     **那是正确行为** ✓（实测：画布四角 quad ⇒ **0 个像素变化**）
+//   ⇒ 而「矩形四角」那种输入**另有其正当语义** ⇒ 不留断言 ✓
 //
 // **⇒ 断什么**：
 //   ① 不加调整时：边距是背景（白）、矩形内是矩形色  ← 前提
@@ -96,19 +101,24 @@ const D1 = await mk();
 if (!D1) { console.error("  ⊘ 不可判：建文档失败"); process.exit(3); }
 const r1 = await post("/api/tools/add_adjustment", {
   layer_id: "L", adjustment_type: "perspective",
-  params: { quad: [[20, 20], [180, 20], [180, 130], [20, 130]], auto_crop: false },
+  // **⇒ 真恒等 = 画布四角** ✓（第 1330 轮实测：那样 0 个像素变化）
+  params: { quad: [[0, 0], [W, 0], [W, H], [0, H]], auto_crop: false },
 }, D1.doc, D1.token);
 const f1 = await exp(D1.doc, D1.token, "pm_after");
 if (!f1) { console.error("  ⊘ 不可判：导出失败"); process.exit(3); }
 const B = readPng(f1);
-const corners = [[5, 5], [5, 75], [195, 145], [100, 5]];
-const filled = corners.filter(([x, y]) => !isBg(B.px, at(B, x, y)));
+let changed = 0;
+if (A.px.length === B.px.length) {
+  for (let i = 0; i < A.px.length; i += A.bpp) {
+    if (Math.abs(A.px[i] - B.px[i]) > 2 || Math.abs(A.px[i + 1] - B.px[i + 1]) > 2 || Math.abs(A.px[i + 2] - B.px[i + 2]) > 2) changed += 1;
+  }
+}
 if (r1?.ok !== true) {
-  bad(`② 恒等 quad 必须被接受 ⇒ ok=${r1?.ok}`);
-} else if (filled.length === 0) {
-  ok("② 恒等 quad 之后边距仍是背景（未被填满）");
+  bad(`② 画布四角 quad（真恒等）必须被接受 ⇒ ok=${r1?.ok}`);
+} else if (changed === 0) {
+  ok(`② 画布四角 quad 是**真恒等**：0 个像素变化（${A.px.length / A.bpp} 个像素全同）`);
 } else {
-  bad(`② 恒等 quad 之后边距必须仍是背景 ⇒ 实测 ${filled.length}/${corners.length} 个采样点被填（如 (${filled[0][0]},${filled[0][1]}) 已不是背景）`);
+  bad(`② 画布四角 quad 必须逐像素不变 ⇒ 实测 ${changed} 个像素变了`);
 }
 
 if (fail.length > 0) {

@@ -28174,4 +28174,3 @@ tool-stamp-parity.mjs	# 第 1037 轮登记（flaky，约 10%）——⚠ 与第 
 #     ⇒ 修好后这判据应恢复「30 次全绿」⇒ 届时可移除本登记
 browser-live-ui.mjs  # 环境红：要真实 chromium 渲染（本机无 GPU 合成 ⇒ 退出码 1）。不是产品缺陷 —— AGENTS.md「已知的 3 条环境红」第 2 条。
 browser-new-doc-size.mjs  # 环境红：同上（要真实 chromium 的视口与合成）。AGENTS.md「已知的 3 条环境红」第 2 条。
-tool-perspective-keeps-margins.mjs  # 既有缺陷（补丁前就有，A/B 已定因）：perspective 的恒等 quad 把透明边距填满；补丁的文档级测试只覆盖整幅不透明图层
