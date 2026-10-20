@@ -6729,6 +6729,20 @@ fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         "layer_id": layer_id,
         "type": "raster_patch",
         "bitmap": bitmap,
+        // **★ P0：必须写 `region`（或 width/height），否则位图**永远不可见** ✗ ★**
+        //   **根因**（第 1223 轮实测）：`yanshi-render/src/object.rs` 的 `parse_raster_patch`
+        //     从 `data["region"]`（或 `data["width"]`/`height`）取位图尺寸 ⇒
+        //     **两个都没有 ⇒ 返回 `Primitive::Unsupported`**
+        //     ⇒ 对象**建成了**（`describe_canvas` 实测 `L1.objects = 1`）、`ok:true`、
+        //       `dirty_bbox` 也对 ⇒ **但渲染器把它当"不支持的原语"跳过** ⇒
+        //       导出 PNG 里**一个像素都没有**（实测：墨 0、红块 0，应为 64）✗
+        //   **修法**：把 `region` 一起写进净荷（`parse_raster_patch` 优先读它）
+        "region": {
+            "x": region.x,
+            "y": region.y,
+            "w": region.w,
+            "h": region.h,
+        },
         // **★ 登记**结构化的 blob 引用** ✗ ★**（第 227 轮 ✓；**∴ 导出丢位图的修复 ✓）。
         //
         // **∴ 为什么必须写 ✗**：**实测**（**第 226 轮 ✓）**✗**：
