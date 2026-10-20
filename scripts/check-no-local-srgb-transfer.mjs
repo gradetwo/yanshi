@@ -12,14 +12,23 @@
 //   ② 那些调用必须**来自** `yanshi_render::color`（不许再出现无来源的本地实现）
 //
 // **∴ 变异**：把本地函数加回去 ⇒ ① 必红 ✓
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
 const fails = [];
 const check = (ok, msg) => { if (!ok) fails.push(msg); console.log(`  ${ok ? "✓" : "✗"} ${msg}`); };
 
-const FILES = [
-  "crates/yanshi-server/src/tools.rs",
-];
+// **★ 扫全部 `tools*.rs`** ✓（第 1265 轮：Phase 2 把 `tools.rs` 拆成了多个模块，
+//   而本判据原来假设「所有服务端工具代码都在 tools.rs 里」⇒ 于是拆分后它**假红**了 ✗
+//   ⇒ 修法：用目录枚举 ⇒ 这样以后再加模块也不用改这条判据 ✓）
+const TOOLS_DIR = "crates/yanshi-server/src";
+const FILES = readdirSync(TOOLS_DIR)
+  .filter((name) => /^tools.*\.rs$/.test(name))
+  .sort()
+  .map((name) => `${TOOLS_DIR}/${name}`);
+if (FILES.length < 1) {
+  console.error("  ⊘ 不可判：一个 tools*.rs 都没找到（路径或枚举坏了）");
+  process.exit(3);
+}
 // 去掉注释（我这两轮已经两次把注释当代码，这里一开始就剥离）
 const strip = (text) =>
   text
@@ -46,7 +55,8 @@ for (const file of FILES) {
 }
 
 // ② 调用必须来自公共 crate（`use yanshi_render::color::…` 或带前缀调用）
-const tools = strip(readFileSync("crates/yanshi-server/src/tools.rs", "utf8"));
+// **★ 扫全部 `tools*.rs`** ✓（同上：拆分后 `use` 可能在任意模块里）
+const tools = FILES.map((f) => strip(readFileSync(f, "utf8"))).join("\n");
 const hasUse = /use\s+yanshi_render::color::\{[^}]*\b(srgb_to_linear|linear_to_srgb)\b[^}]*\}/.test(tools);
 const hasPrefixed = /yanshi_render::color::(srgb_to_linear|linear_to_srgb)\s*\(/.test(tools);
 check(
