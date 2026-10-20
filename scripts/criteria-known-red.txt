@@ -28170,3 +28170,5 @@ browser-layout.mjs  第 742 轮核实：判据要求「400% 缩放时画布溢�
 #     ⇒ 修好后这判据应恢复「30 次全绿」⇒ 届时可移除本登记
 browser-live-ui.mjs  # 环境红：要真实 chromium 渲染（本机无 GPU 合成 ⇒ 退出码 1）。不是产品缺陷 —— AGENTS.md「已知的 3 条环境红」第 2 条。
 browser-new-doc-size.mjs  # 环境红：同上（要真实 chromium 的视口与合成）。AGENTS.md「已知的 3 条环境红」第 2 条。
+tool-dwell.mjs  断的是像素数（本机 +1 / CI −5，方向相反）⇒ 环境红；AGENTS.md「已知的 3 条环境红」第 1 条同族。第 1333 轮曾误删又恢复。
+tool-zero-dab-hint.mjs  同一提交两个环境相反（CI painted=73673、本机 0）⇒ 环境红；AGENTS.md「已知的 3 条环境红」第 1 条同族。第 1333 轮曾误删又恢复。
