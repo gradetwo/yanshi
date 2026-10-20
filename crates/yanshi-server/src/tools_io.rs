@@ -742,6 +742,17 @@ struct SvgCounts {
     objects_unsupported: u32,
     instances_unresolved: u32,
     validate_failed: u32,
+    /// `flatten_opacity` 下**累积压平成功**的笔触数（2026-10-21 Q1 ✓）。
+    strokes_flattened: u32,
+    /// `flatten_opacity` 下压平成功的形状数（2026-10-21 Q1 ✓）。
+    shapes_flattened: u32,
+    /// backdrop 异质（通道跨度 > 4/255）⇒ 拒绝单色压平、回退位图的对象数
+    /// （笔触+形状合计 ✓；理由另见 `raster_reasons` 的
+    /// `flatten_heterogeneous_backdrop` ✓）。
+    flatten_heterogeneous_raster: u32,
+    /// 想压平但资格不成立（图层组非 plain／backdrop 不可信／取不到）的
+    /// 对象数 ⇒ 保留 `fill-opacity` 形式发出、**不**用近似色静默糊 ✓。
+    flatten_skipped: u32,
     raster_reasons: std::collections::BTreeMap<&'static str, u32>,
 }
 
@@ -795,6 +806,143 @@ fn svg_image_node(rx: i64, ry: i64, w: u32, h: u32, rgba: &[u8]) -> Option<SvgNo
     })
 }
 
+/// sRGB 字节像素的 source-over（在 linear 空间合成、再编码回字节 ✓）。
+///
+/// `fg`/`bg` 都是直通（非预乘）RGBA8；返回值同格式。引擎在 linear f32
+/// 里合成 ⇒ 这里除了每步的 u8 量化（≤1/255）外与引擎同式 ✓。
+fn srgb_over_px(fg: [u8; 4], bg: [u8; 4]) -> [u8; 4] {
+    let fa = f32::from(fg[3]) / 255.0;
+    let ba = f32::from(bg[3]) / 255.0;
+    let out_a = fa + ba * (1.0 - fa);
+    if out_a <= 1e-6 {
+        return [0, 0, 0, 0];
+    }
+    let mut out = [0u8; 4];
+    for ch in 0..3 {
+        let f = yanshi_render::color::srgb_to_linear(f32::from(fg[ch]) / 255.0) * fa;
+        let b = yanshi_render::color::srgb_to_linear(f32::from(bg[ch]) / 255.0) * (1.0 - fa);
+        let mixed = (f + b) / out_a;
+        out[ch] = (yanshi_render::color::linear_to_srgb(mixed) * 255.0)
+            .round()
+            .clamp(0.0, 255.0) as u8;
+    }
+    out[3] = (out_a * 255.0).round() as u8;
+    out
+}
+
+/// 把一块图层本地像素（透明底 RGBA8、原点在文档坐标 `origin` ✓）以
+/// `opacity` 盖到整幅 backdrop 上（`export_svg` 的 below 追踪用 ✓）。
+fn composite_layer_into_below(
+    below: &mut [[u8; 4]],
+    canvas: (usize, usize),
+    origin: (i64, i64),
+    img_w: usize,
+    img_h: usize,
+    rgba: &[u8],
+    opacity: f32,
+) {
+    for row in 0..img_h {
+        let dy = origin.1 + row as i64;
+        if dy < 0 || dy >= canvas.1 as i64 {
+            continue;
+        }
+        for col in 0..img_w {
+            let dx = origin.0 + col as i64;
+            if dx < 0 || dx >= canvas.0 as i64 {
+                continue;
+            }
+            let src = (row * img_w + col) * 4;
+            if src + 4 > rgba.len() {
+                return;
+            }
+            let mut fg = [rgba[src], rgba[src + 1], rgba[src + 2], rgba[src + 3]];
+            if fg[3] == 0 {
+                continue;
+            }
+            fg[3] = (f32::from(fg[3]) * opacity).round().clamp(0.0, 255.0) as u8;
+            let idx = dy as usize * canvas.0 + dx as usize;
+            below[idx] = srgb_over_px(fg, below[idx]);
+        }
+    }
+}
+
+/// `flatten_opacity` 的 backdrop 评估结论（2026-10-21 Q1 ✓）。
+enum BackdropAssessment {
+    /// 均质（支撑集下方各通道跨度 ≤ 4/255 ✓）：linear 空间的均值色。
+    Homogeneous([f32; 3]),
+    /// 异质 ⇒ 不许单色压平（调用方回退位图并计数 ✓）。
+    Heterogeneous,
+    /// 取不到（子集渲染失败／无有效支撑像素）⇒ 调用方不压平并计数 ✓。
+    Unavailable,
+}
+
+/// 取某个压平候选**下方**的真实 backdrop 并判均质 ✓。
+///
+/// 做法：把候选之前的同层对象（`prior`）在 `region` 内做一次子集渲染
+/// （生产渲染器 ⇒ 含橡皮/混合/实例的真实前缀、不是近似 ✗），逐支撑像素
+/// 与已追踪的下层合成结果 `below` 做 over，再统计通道跨度与 linear 均值。
+/// 跨度按**合成后**的 sRGB 字节算：≤ 4 视为均质（压平误差 ≤ ~2 通道、
+/// 与引擎的 AA 边缘误差同量级 ✓）。
+#[allow(clippy::too_many_arguments)]
+fn assess_backdrop(
+    ctx: &mut ToolContext<'_>,
+    layer_id: &str,
+    prior: &std::collections::BTreeSet<yanshi_core::ObjectId>,
+    region: yanshi_core::Bbox,
+    support: &[(i64, i64)],
+    below: &[[u8; 4]],
+    canvas: (usize, usize),
+) -> BackdropAssessment {
+    let (img_w, img_h, rgba) =
+        match ctx
+            .workspace
+            .render_layer_objects_subset(&ctx.doc_id, region, layer_id, prior)
+        {
+            Ok(img) => img,
+            Err(_) => return BackdropAssessment::Unavailable,
+        };
+    let (rx, ry) = (region.x as i64, region.y as i64);
+    let mut sum = [0.0f32; 3];
+    let mut count = 0usize;
+    let mut mins = [255u8; 3];
+    let mut maxs = [0u8; 3];
+    for &(x, y) in support {
+        let (lx, ly) = (x - rx, y - ry);
+        if lx < 0 || ly < 0 || lx >= img_w as i64 || ly >= img_h as i64 {
+            continue;
+        }
+        if x < 0 || y < 0 || x >= canvas.0 as i64 || y >= canvas.1 as i64 {
+            continue;
+        }
+        let src = ((ly as usize) * (img_w as usize) + (lx as usize)) * 4;
+        if src + 4 > rgba.len() {
+            continue;
+        }
+        let fg = [rgba[src], rgba[src + 1], rgba[src + 2], rgba[src + 3]];
+        let px = srgb_over_px(fg, below[(y as usize) * canvas.0 + (x as usize)]);
+        count += 1;
+        for ch in 0..3 {
+            sum[ch] += yanshi_render::color::srgb_to_linear(f32::from(px[ch]) / 255.0);
+            mins[ch] = mins[ch].min(px[ch]);
+            maxs[ch] = maxs[ch].max(px[ch]);
+        }
+    }
+    if count == 0 {
+        return BackdropAssessment::Unavailable;
+    }
+    let spread = (0..3)
+        .map(|ch| f64::from(maxs[ch] - mins[ch]))
+        .fold(0.0f64, f64::max);
+    if spread > 4.0 {
+        return BackdropAssessment::Heterogeneous;
+    }
+    BackdropAssessment::Homogeneous([
+        sum[0] / count as f32,
+        sum[1] / count as f32,
+        sum[2] / count as f32,
+    ])
+}
+
 /// **`export_svg`** ✓ —— 把文档导出成**矢量 + 位图混合 SVG** 落盘 ✓。
 ///
 /// 路线乙（专家咨询定版 ✓）：通用光栅笔触走算法转矢量
@@ -832,10 +980,12 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         ));
     }
     let canvas = (canvas_w, canvas_h);
-    // **`flatten_opacity`（第 1409 轮）** ✓：把半透明路径**在线性空间压平到背景**再 emit 不透明色
+    // **`flatten_opacity`（第 1409 轮）** ✓：把半透明路径**在线性空间压平到 backdrop**再 emit 不透明色
     //   ⇒ 与引擎的合成**逐像素一致**（否则差最多 73 通道，见 check-svg-opacity-colour-space.mjs）
     //   **⇒ 只有背景**不透明**时才压平**：压平到一个透明背景没有意义（会得到偏黑的颜色 ✗）
-    //   ⇒ 所以透明画布 + `flatten_opacity: true` ⇒ **不压平**，并让调用方从 `flattened` 字段看出来 ✓
+    //   ⇒ 所以透明画布 + `flatten_opacity: true` ⇒ **不压平**，并在返回值里
+    //     用 `flatten_active: false` 如实报告（2026-10-21 起有这个字段 ✓；
+    //     此前注释承诺的 `flattened` 字段从未存在 ✗、已随 Q1 一并纠正 ✓）
     let flatten_requested = args
         .get("flatten_opacity")
         .and_then(Value::as_bool)
@@ -858,15 +1008,21 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         _ => None,
     };
     let flatten_active = flatten_requested && background_bytes.is_some_and(|(_, _, _, a)| a == 255);
-    let background_linear: [f32; 3] = match background_bytes {
-        Some((r, g, b, _)) => [
-            yanshi_render::color::srgb_to_linear(r as f32 / 255.0),
-            yanshi_render::color::srgb_to_linear(g as f32 / 255.0),
-            yanshi_render::color::srgb_to_linear(b as f32 / 255.0),
-        ],
-        None => [1.0, 1.0, 1.0],
-    };
     let flatten_opacity = flatten_active;
+    // **真实 backdrop 追踪（2026-10-21 Q1 ✓）**：`below` = 已处理完的图层
+    // 逐层 over 后的整幅合成（sRGB 字节、初值 = 文档背景 ✓）。压平的
+    // backdrop **不再**无条件用文档背景字段 ✗ —— 那只对「单层、笔下无物」
+    // 成立；多层/垫底对象时要用 `assess_backdrop` 取实测合成 ✓。
+    // 任一已处理图层的合成没法用 plain over 镜像（组带 CSS 混合等）⇒
+    // `backdrop_exact = false` ⇒ 此后只计数 `flatten_skipped`、不再压平，
+    // 绝不用近似 backdrop 静默糊 ✗。
+    let mut below: Vec<[u8; 4]> = vec![
+        background_bytes.map_or([0, 0, 0, 0], |(r, g, b, a)| {
+            [r as u8, g as u8, b as u8, a as u8]
+        });
+        (canvas_w as usize) * (canvas_h as usize)
+    ];
+    let mut backdrop_exact = true;
     let mut counts = SvgCounts::default();
     let mut mask_seq = 0usize;
     let mut root_children: Vec<SvgNode> = Vec::new();
@@ -944,6 +1100,28 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                     blend: None,
                     children: vec![node],
                 });
+                // backdrop 追踪：整层图就是该层的完整像素 ⇒ 合成可 plain
+                // 镜像时（normal 混合、无蒙版/剪贴/蒙版层本体）并入 below ✓；
+                // 否则 below 不可信 ⇒ 此后停止压平资格（不静默近似 ✗）。
+                if flatten_active && backdrop_exact {
+                    let plain = layer_blend == Some("normal")
+                        && layer.mask_id.is_none()
+                        && !layer.clipping_mask
+                        && layer.layer_type != yanshi_core::LayerType::Mask;
+                    if plain {
+                        composite_layer_into_below(
+                            &mut below,
+                            (canvas_w as usize, canvas_h as usize),
+                            (0, 0),
+                            w as usize,
+                            h as usize,
+                            &rgba,
+                            layer.opacity as f32,
+                        );
+                    } else {
+                        backdrop_exact = false;
+                    }
+                }
             } else {
                 counts.layers_rasterized += 1;
             }
@@ -1054,16 +1232,11 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
             use yanshi_render::object::Primitive as Prim;
             match primitive {
                 Prim::Stroke { geometry, brush } => {
-                    // 对象不透明度折进笔刷（与渲染器逐字一致 ✓）。
-                    let object_opacity = object
-                        .data
-                        .get("opacity")
-                        .and_then(Value::as_f64)
-                        .unwrap_or(1.0);
-                    let brush = yanshi_render::brush::BrushSpec {
-                        opacity: brush.opacity * object_opacity,
-                        ..brush
-                    };
+                    // 对象 `opacity` **不在这里折** ✗：`brush` 已经由
+                    // `BrushSpec::from_value(data)` 读过 `data.opacity`，
+                    // 渲染器对象通路同理（见 render.rs 的 Stroke 分支注释 ✓）。
+                    // 曾经两边都再乘一次 ⇒ 导出场与 PNG 一起按 opacity² 变淡、
+                    // 只有公式（核心路径校准）是对的 ⇒ 三者互相矛盾 ✗。
                     let appearance =
                         yanshi_render::brush::StrokeAppearance::from_data(&object.data);
                     // 选区裁剪过的笔 ⇒ 覆盖度调制、路径表达不了 ⇒ 位图段 ✓。
@@ -1129,6 +1302,89 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                             if export_layers.len() > 1 {
                                 counts.strokes_double_layered += 1;
                             }
+                            // **`flatten_opacity` 的压平资格与 backdrop 评估（2026-10-21 Q1 ✓）**：
+                            // 旧实现逐层各自对**文档背景字段**压平 ⇒ 第 2 层 emit
+                            // 不透明后把第 1 层的贡献整片遮掉（docE 笔触中心实测
+                            // 差 20 通道 ✓；形状只有一层 ⇒ 旧实现对形状恰好精确、
+                            // 这也是它当时测不出的原因 ✓）。新实现走**累积压平**
+                            // （见下面发射循环 ✓），backdrop 由 `assess_backdrop`
+                            // 实测（本层前缀子集渲染 over 已追踪的下层合成 ✓）；
+                            // 异质（跨度 > 4/255）⇒ **不许单色糊** ⇒ 整笔回退
+                            // 位图并计数 ✓；组非 plain / 笔带混合 / backdrop
+                            // 不可信 ⇒ 不压平、保留 `fill-opacity` 形式并计数 ✓。
+                            let mut flat_backdrop: Option<[f32; 3]> = None;
+                            let wants_flatten = flatten_opacity
+                                && export_layers.iter().any(|l| l.fill_opacity < 0.9995);
+                            if wants_flatten {
+                                if layer.opacity < 0.9995
+                                    || layer_blend_css.is_some()
+                                    || css_blend.is_some_and(|name| name != "normal")
+                                    || !backdrop_exact
+                                {
+                                    counts.flatten_skipped += 1;
+                                } else {
+                                    let assessment = (|| {
+                                        let Some((buffer, (x0, y0, bw, bh))) =
+                                            svgx::render_stroke_buffer(
+                                                &brush,
+                                                &geometry,
+                                                Some(&appearance),
+                                                canvas,
+                                            )
+                                        else {
+                                            return BackdropAssessment::Unavailable;
+                                        };
+                                        let mut support: Vec<(i64, i64)> = Vec::new();
+                                        for yy in 0..bh {
+                                            for xx in 0..bw {
+                                                if buffer.pixel(xx, yy)[3] > 0.05 {
+                                                    support.push((
+                                                        x0 + i64::from(xx),
+                                                        y0 + i64::from(yy),
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                        if support.is_empty() {
+                                            return BackdropAssessment::Unavailable;
+                                        }
+                                        let region = yanshi_core::Bbox::new(
+                                            x0 as f64,
+                                            y0 as f64,
+                                            f64::from(bw),
+                                            f64::from(bh),
+                                        );
+                                        let prior: std::collections::BTreeSet<
+                                            yanshi_core::ObjectId,
+                                        > = objects[..index].iter().map(|o| o.id.clone()).collect();
+                                        assess_backdrop(
+                                            ctx,
+                                            &layer.id,
+                                            &prior,
+                                            region,
+                                            &support,
+                                            &below,
+                                            (canvas_w as usize, canvas_h as usize),
+                                        )
+                                    })();
+                                    match assessment {
+                                        BackdropAssessment::Homogeneous(mean) => {
+                                            flat_backdrop = Some(mean);
+                                        }
+                                        BackdropAssessment::Heterogeneous => {
+                                            counts.strokes_raster += 1;
+                                            counts.flatten_heterogeneous_raster += 1;
+                                            counts.note_reason("flatten_heterogeneous_backdrop");
+                                            pending.push(index);
+                                            continue;
+                                        }
+                                        BackdropAssessment::Unavailable => {
+                                            counts.flatten_skipped += 1;
+                                        }
+                                    }
+                                }
+                            }
+                            let mut a_cum = 0.0f64;
                             for export_layer in &export_layers {
                                 // **`flatten_opacity`（第 1409 轮）** ✓：把半透明**在线性空间压平到背景**，
                                 //   emit 不透明色 ⇒ 与引擎逐像素一致 ✓
@@ -1136,13 +1392,20 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                                 //     在**sRGB 空间**混合 ⇒ 两者数学上不等 ⇒ 实测最坏差 **73 通道**
                                 //     （`scripts/check-svg-opacity-colour-space.mjs` 钉住这个数 ✓）
                                 //   **⇒ 代价**：那条路径不再保留可编辑的 α（变成压平色）⇒ 取舍已写进文档 ✓
+                                // 累积压平：第 k 层 emit 色 = 前 k 层依次合成的
+                                // 累积色（`A_k = 1 − Π(1 − o_j)`、`C_k = A_k·C +
+                                // (1 − A_k)·C_backdrop`、全部 emit 不透明 ✓）。
+                                // tier 支撑严格嵌套 ⇒ 层内精确、只剩 AA 边缘带 ✓。
                                 let (fill_out, opacity_out) =
-                                    if flatten_opacity && export_layer.fill_opacity < 0.9995 {
-                                        let a = export_layer.fill_opacity.clamp(0.0, 1.0) as f32;
+                                    if let Some(backdrop_lin) = flat_backdrop {
+                                        a_cum = 1.0
+                                            - (1.0 - a_cum)
+                                                * (1.0 - export_layer.fill_opacity.clamp(0.0, 1.0));
+                                        let a = a_cum as f32;
                                         let mixed = [
-                                            fill_linear[0] * a + background_linear[0] * (1.0 - a),
-                                            fill_linear[1] * a + background_linear[1] * (1.0 - a),
-                                            fill_linear[2] * a + background_linear[2] * (1.0 - a),
+                                            fill_linear[0] * a + backdrop_lin[0] * (1.0 - a),
+                                            fill_linear[1] * a + backdrop_lin[1] * (1.0 - a),
+                                            fill_linear[2] * a + backdrop_lin[2] * (1.0 - a),
                                         ];
                                         (svgx::srgb_hex(mixed), 1.0)
                                     } else {
@@ -1159,6 +1422,9 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                                 counts.strokes_vector_native += 1;
                             } else {
                                 counts.strokes_vector += 1;
+                            }
+                            if flat_backdrop.is_some() {
+                                counts.strokes_flattened += 1;
                             }
                         }
                     }
@@ -1181,14 +1447,91 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                     //   **⇒ 为什么需要** ✗：第 1410 轮修好 `fill_region` 的 `opacity` 之后，
                     //     形状**真的**会带 `fill-opacity` 了 ⇒ 于是「引擎线性合成 vs SVG sRGB 混合」
                     //     这个色差**也出现在形状上** ⇒ 而压平此前只作用于**笔触路径** ⇒ 不一致 ✗
-                    //   **⇒ 修法**：同一个压平逻辑（线性空间混到背景 ⇒ emit 不透明色）✓
+                    //   **⇒ 修法**：同一个压平逻辑（线性空间混到 backdrop ⇒ emit 不透明色）✓
+                    //   **2026-10-21 Q1** ✓：backdrop 与笔触同路实测（`assess_backdrop` ✓）；
+                    //   形状只有一层 alpha ⇒ 累积退化为单层式、与旧实现同式，
+                    //   区别只在 backdrop 的来源（实测合成 vs 文档背景字段 ✓）；
+                    //   异质 ⇒ 回退位图并计数（不许单色糊 ✗）；描边 alpha 不压
+                    //   （形状描边是独立的一层覆盖 ⇒ 已知界限、见补丁 README ✓）。
                     let shape_alpha = f64::from(color[3]);
-                    let (fill, emit_opacity) = if flatten_opacity && shape_alpha < 0.9995 {
+                    let mut shape_backdrop: Option<[f32; 3]> = None;
+                    let mut shape_raster_fallback = false;
+                    if flatten_opacity && shape_alpha < 0.9995 {
+                        if layer.opacity < 0.9995 || layer_blend_css.is_some() || !backdrop_exact {
+                            counts.flatten_skipped += 1;
+                        } else {
+                            // 支撑采样点：bbox 内网格（≤ ~40×40 ✓）；rect 全取、
+                            // ellipse 做点测、polygon 用 bbox 近似（偏保守：
+                            // 可能把均质误判异质 ⇒ 只是回退位图、不出错色 ✓）。
+                            let mut support: Vec<(i64, i64)> = Vec::new();
+                            let step_x = (bbox.w / 40.0).max(1.0);
+                            let step_y = (bbox.h / 40.0).max(1.0);
+                            let (cx, cy) = (bbox.x + bbox.w / 2.0, bbox.y + bbox.h / 2.0);
+                            let mut sy = bbox.y + step_y * 0.5;
+                            while sy < bbox.y + bbox.h {
+                                let mut sx = bbox.x + step_x * 0.5;
+                                while sx < bbox.x + bbox.w {
+                                    let inside = match kind {
+                                        yanshi_render::object::ShapeKind::Ellipse => {
+                                            let dx = (sx - cx) / (bbox.w / 2.0).max(1e-6);
+                                            let dy = (sy - cy) / (bbox.h / 2.0).max(1e-6);
+                                            dx * dx + dy * dy <= 1.0
+                                        }
+                                        _ => true,
+                                    };
+                                    if inside {
+                                        support.push((sx.floor() as i64, sy.floor() as i64));
+                                    }
+                                    sx += step_x;
+                                }
+                                sy += step_y;
+                            }
+                            let rx0 = (bbox.x - 2.0).floor().max(0.0);
+                            let ry0 = (bbox.y - 2.0).floor().max(0.0);
+                            let rx1 = (bbox.x + bbox.w + 2.0).ceil().min(f64::from(canvas_w));
+                            let ry1 = (bbox.y + bbox.h + 2.0).ceil().min(f64::from(canvas_h));
+                            let region = yanshi_core::Bbox::new(
+                                rx0,
+                                ry0,
+                                (rx1 - rx0).max(0.0),
+                                (ry1 - ry0).max(0.0),
+                            );
+                            let prior: std::collections::BTreeSet<yanshi_core::ObjectId> =
+                                objects[..index].iter().map(|o| o.id.clone()).collect();
+                            match assess_backdrop(
+                                ctx,
+                                &layer.id,
+                                &prior,
+                                region,
+                                &support,
+                                &below,
+                                (canvas_w as usize, canvas_h as usize),
+                            ) {
+                                BackdropAssessment::Homogeneous(mean) => {
+                                    shape_backdrop = Some(mean);
+                                }
+                                BackdropAssessment::Heterogeneous => {
+                                    shape_raster_fallback = true;
+                                    counts.flatten_heterogeneous_raster += 1;
+                                    counts.note_reason("flatten_heterogeneous_backdrop");
+                                }
+                                BackdropAssessment::Unavailable => {
+                                    counts.flatten_skipped += 1;
+                                }
+                            }
+                        }
+                    }
+                    if shape_raster_fallback {
+                        pending.push(index);
+                        continue;
+                    }
+                    let (fill, emit_opacity) = if let Some(backdrop_lin) = shape_backdrop {
+                        counts.shapes_flattened += 1;
                         let a = shape_alpha.clamp(0.0, 1.0) as f32;
                         let mixed = [
-                            color[0] * a + background_linear[0] * (1.0 - a),
-                            color[1] * a + background_linear[1] * (1.0 - a),
-                            color[2] * a + background_linear[2] * (1.0 - a),
+                            color[0] * a + backdrop_lin[0] * (1.0 - a),
+                            color[1] * a + backdrop_lin[1] * (1.0 - a),
+                            color[2] * a + backdrop_lin[2] * (1.0 - a),
                         ];
                         (svgx::srgb_hex(mixed), None)
                     } else {
@@ -1312,6 +1655,35 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
             }
         }
         flush_pending!();
+        // backdrop 追踪（Q1 ✓）：本层处理完 ⇒ 整层子集渲染（透明底 ✓）以
+        // 图层不透明度并入 `below`、供后面图层的压平取 backdrop ✓。
+        // 组带 CSS 混合时 plain over 镜像不了引擎合成 ⇒ 资格终止（计数在
+        // 候选侧的 `flatten_skipped` 体现 ✓）；渲染失败同理（不静默近似 ✗）。
+        if flatten_active && backdrop_exact {
+            if layer_blend_css.is_some() {
+                backdrop_exact = false;
+            } else {
+                let keep_all: std::collections::BTreeSet<yanshi_core::ObjectId> =
+                    objects.iter().map(|o| o.id.clone()).collect();
+                match ctx.workspace.render_layer_objects_subset(
+                    &ctx.doc_id,
+                    full_region,
+                    &layer.id,
+                    &keep_all,
+                ) {
+                    Ok((w, h, rgba)) => composite_layer_into_below(
+                        &mut below,
+                        (canvas_w as usize, canvas_h as usize),
+                        (0, 0),
+                        w as usize,
+                        h as usize,
+                        &rgba,
+                        layer.opacity as f32,
+                    ),
+                    Err(_) => backdrop_exact = false,
+                }
+            }
+        }
         if !nodes.is_empty() {
             counts.layers_exported += 1;
             root_children.push(SvgNode::Group {
@@ -1377,6 +1749,15 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         "strokes_empty": counts.strokes_empty,
         "raster_reasons": counts.raster_reasons,
         "shapes_vector": counts.shapes_vector,
+        // **`flatten_opacity` 的账目（2026-10-21 Q1 ✓）**：请求了没、实际
+        // 生效没、压平了几个、几个因 backdrop 异质回退位图、几个资格不
+        // 成立没压 —— 全部如实报、不许调用方猜 ✓。
+        "flatten_requested": flatten_requested,
+        "flatten_active": flatten_active,
+        "strokes_flattened": counts.strokes_flattened,
+        "shapes_flattened": counts.shapes_flattened,
+        "flatten_heterogeneous_raster": counts.flatten_heterogeneous_raster,
+        "flatten_skipped": counts.flatten_skipped,
         "images_embedded": counts.images_embedded,
         "erases_masked": counts.erases_masked,
         "objects_unsupported": counts.objects_unsupported,

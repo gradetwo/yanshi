@@ -760,8 +760,17 @@ pub struct FittedContour {
 
 /// Ramer–Douglas–Peucker 简化（开链 ✓；容差 `eps` 单位像素）。
 pub fn rdp(points: &[Pt], eps: f64) -> Vec<Pt> {
+    rdp_indices(points, eps)
+        .iter()
+        .map(|&i| points[i])
+        .collect()
+}
+
+/// 同 [`rdp`] 的保留判据、但返回**保留点的下标**（拟合分段要把稀疏点映射回
+/// 原始稠密链 ⇒ 误差必须在稠密点上量，见 [`fit_closed_contour_eps`] 的注释 ✓）。
+fn rdp_indices(points: &[Pt], eps: f64) -> Vec<usize> {
     if points.len() <= 2 {
-        return points.to_vec();
+        return (0..points.len()).collect();
     }
     let mut keep = vec![false; points.len()];
     keep[0] = true;
@@ -793,21 +802,55 @@ pub fn rdp(points: &[Pt], eps: f64) -> Vec<Pt> {
             stack.push((max_i, b));
         }
     }
-    points
-        .iter()
-        .zip(keep.iter())
-        .filter(|(_, k)| **k)
-        .map(|(p, _)| *p)
-        .collect()
+    (0..points.len()).filter(|&i| keep[i]).collect()
+}
+
+/// 拟合容差按笔触有效半径 `radius` 的**相对调度**（2026-10-21 复测 Q2 ✓）。
+///
+/// **外扩的实测机制**（逐环二分定位 ✓）：原始 MS 环本身准（最大法向偏差
+/// 0.46px），坏在拟合 —— ① 误差只在 RDP 稀疏点上量、而 RDP 删光了直线段
+/// 内点 ⇒ 一条 cubic 横跨「弧＋直线＋弧」的下垂无人测量（已在
+/// [`fit_closed_contour_eps`] 改为稠密点拟合 ✓）；② 即便处处测量，
+/// `ε_fit = 0.6px` 对 size 40 的笔是半径的 3%、对 size 7 的笔（`r = 3.5`）
+/// 却是 **17%** ⇒ 小笔的端帽/拐角被许可外鼓到 0.6px（外部实测
+/// `E_support = 0.31`、距脊线 4.02px 处被填全色而引擎为白 ✓）。
+/// ⇒ 容差必须随 `r` 缩放：
+/// `eps_rdp = (0.04·r).clamp(0.05, 0.20)`、`eps_fit = (0.07·r).clamp(0.10, 0.60)`。
+/// （系数 0.07 是实测定的 ✓：0.10 时文档级 `E_support = 0.1546`、恰在判据线
+/// `0.08 + 0.25/r ≈ 0.151` 外侧；0.07 时 0.1365、留出一成余量 ✓；
+/// 代价是小笔段数再增约 25%（780 → 1970 段/200 笔），大笔被上限钳住不受影响 ✓。）
+/// 下限防 Marching Squares 的亚像素量化噪声被当成几何特征（段数暴增 ✓）、
+/// 上限使 `r ≥ 5`（RDP）／`r ≥ 8.6`（Schneider）时与旧固定值**逐字一致**
+/// ⇒ 大笔的段数与形状不回归（size 40 实测段数 284 → 298、+4.9% ✓）。
+pub fn fit_tolerances(radius: f64) -> (f64, f64) {
+    let r = radius.max(0.0);
+    ((0.04 * r).clamp(0.05, 0.20), (0.07 * r).clamp(0.10, 0.60))
 }
 
 /// 把一条闭合轮廓点列拟合成三次 Bézier 轮廓（**导出管线的主拟合入口** ✓）。
 ///
-/// 流程（专家 P0-2 ✓）：RDP 预抽稀（`ε=0.20px`）→ 转角 `> 55°` 的点与
+/// 流程（专家 P0-2 ✓）：RDP 预抽稀 → 转角 `> 55°` 的点与
 /// `forced` 位置（taper 尖端等）作**强制分段点** → 逐段 Schneider 拟合
-/// （最大误差 `0.6px`、Newton 重参数化 ≤ 4 轮 ✓）。
+/// （Newton 重参数化 ≤ 4 轮 ✓）。容差是旧固定值（RDP `ε=0.20px`、
+/// Schneider `0.6px`）⇒ 新代码请用按半径调度的 [`fit_closed_contour_r`] ✓。
 /// 起点取离质心最远的轮廓点 ⇒ 输出稳定（确定性 ✓）。
 pub fn fit_closed_contour(loop_pts: &[Pt], forced: &[Pt]) -> Option<FittedContour> {
+    fit_closed_contour_eps(loop_pts, forced, 0.20, 0.6)
+}
+
+/// 同 [`fit_closed_contour`]，但容差按笔触有效半径 `radius` 相对调度
+/// （见 [`fit_tolerances`] ✓）。`forced` 强制分段点逻辑与容差无关、不受影响 ✓。
+pub fn fit_closed_contour_r(loop_pts: &[Pt], forced: &[Pt], radius: f64) -> Option<FittedContour> {
+    let (eps_rdp, eps_fit) = fit_tolerances(radius);
+    fit_closed_contour_eps(loop_pts, forced, eps_rdp, eps_fit)
+}
+
+fn fit_closed_contour_eps(
+    loop_pts: &[Pt],
+    forced: &[Pt],
+    eps_rdp: f64,
+    eps_fit: f64,
+) -> Option<FittedContour> {
     if loop_pts.len() < 3 {
         return None;
     }
@@ -831,7 +874,8 @@ pub fn fit_closed_contour(loop_pts: &[Pt], forced: &[Pt]) -> Option<FittedContou
         chain.push(loop_pts[(start_idx + k) % loop_pts.len()]);
     }
     chain.push(chain[0]);
-    let simplified = rdp(&chain, 0.20);
+    let keep_idx = rdp_indices(&chain, eps_rdp);
+    let simplified: Vec<Pt> = keep_idx.iter().map(|&i| chain[i]).collect();
     if simplified.len() < 2 {
         return None;
     }
@@ -869,8 +913,14 @@ pub fn fit_closed_contour(loop_pts: &[Pt], forced: &[Pt]) -> Option<FittedContou
     let mut cubics: Vec<Cubic> = Vec::new();
     for pair in bounds.windows(2) {
         let (a, b) = (pair[0], pair[1]);
-        let segment = &simplified[a..=b];
-        cubics.extend(fit_chain(segment, 0.6));
+        // **拟合吃稠密点、不是 RDP 稀疏点** ✓（2026-10-21 Q2 实测定位）：
+        // RDP 把直线段的内点全删 ⇒ 只在稀疏点上量误差时，一条 cubic 横跨
+        // 「弧＋直线＋弧」、直线中段下垂**无人测量**（size 7 胶囊轮廓实测
+        // 侧边下垂 1.85px、`E_support` 0.30 ✗；原始 MS 环本身只有 0.46px）。
+        // 分段点仍由稀疏链决定（转角/forced 的稳定性不变 ✓），段内点列
+        // 回到原始稠密链 ⇒ `fit_chain` 的误差驱动细分处处生效 ✓。
+        let segment = &chain[keep_idx[a]..=keep_idx[b]];
+        cubics.extend(fit_chain(segment, eps_fit));
     }
     if cubics.is_empty() {
         return None;
@@ -1333,15 +1383,49 @@ pub struct StrokeMetrics {
     pub e_interior: f64,
     /// 几何误差（alpha 对称差面积比 ✓）。
     pub e_geom: f64,
+    /// 支撑集误差：`alpha > 0.05` 的像素集合的对称差 / 并集（2026-10-21 Q2 新增 ✓）。
+    ///
+    /// **为什么单加这一条** ✗：`E_geom` 是面积比 ⇒ 小笔（size 7）的轮廓外扩
+    /// 0.5px 在整幅面积下只贡献百分之几 ⇒ 外扩整片实心填错也测不出来
+    /// （外部实测小笔 `E_support = 0.31` 时 `E_geom` 只有 0.05–0.09、照样「通过」✗）。
+    /// **判据线** `0.08 + 0.25 / r` 在**带 AA 的文档级渲染**下验收（冒烟实测 ✓）；
+    /// 本结构由内部二值光栅化算出时另有采样地板（像素中心采样 vs 参考的
+    /// AA `> 0.05` ⇒ 完美轮廓在 size 7 孤立短笔上也有 ≈0.13–0.17）⇒
+    /// 它在 [`Self::passes`] 里只**并列报告**、不单独否决（见彼处注释 ✓）。
+    pub e_support: f64,
+    /// 轮廓法向偏差 P95（px，2026-10-21 Q2 新增 ✓）：拟合轮廓采样点到脊线
+    /// （dab 中心连线）的距离与该处理论半径之差的绝对值的 95 分位。
+    /// 只由 [`validate_stroke`] 计算（需要笔刷/几何上下文 ✓）；直接调
+    /// [`stroke_metrics`] 时为 0、`radius` 也为 0 ⇒ 两条新判据不启用 ✓。
+    pub normal_p95: f64,
+    /// 验收对象的有效半径（dab 半径中位数 ✓）；0 = 未知（见上 ✓）。
+    pub radius: f64,
     /// 参与 `e_interior` 统计的内域像素数（**防真空** ✓：边缘带把全图吃光时
     /// 这个数会暴露 ⇒ `e_interior = 0` 不再能冒充「完美」✗）。
     pub interior_px: usize,
 }
 
 impl StrokeMetrics {
-    /// 合格线（专家给定 ✓）：`E_interior ≤ 0.12` 且 `E_geom ≤ 0.15`。
+    /// 合格线（专家给定 ✓）：`E_interior ≤ 0.12` 且 `E_geom ≤ 0.15`；
+    /// `radius` 已知时**并列**追加法向偏差判据（小笔外扩在旧两条下不可见 ✓）：
+    /// P95 ≤ `max(0.35px, 0.08·r)`。
+    ///
+    /// `E_support` **不**在这里否决 ✗：内部候选图是二值光栅化（像素中心采样）、
+    /// 参考支撑是 AA `alpha > 0.05` ⇒ 两者的采样约定差给孤立小笔留了
+    /// ≈0.13–0.17 的地板（轮廓完美也降不下去）⇒ 拿 `0.08 + 0.25/r` 在这里
+    /// 卡会把**所有** size 7 上下的笔无条件打回位图、与拟合质量无关 ⇒
+    /// 那条判据改在带 AA 的文档级渲染下验收（基线 0.31 与目标 0.151 同口径 ✓），
+    /// 本结构只负责把它**算出来并列报告**（`normal_p95` 与它一起出现在
+    /// 每次验收的 Debug 输出里 ✓）。
     pub fn passes(&self) -> bool {
-        self.e_interior <= 0.12 && self.e_geom <= 0.15
+        if !(self.e_interior <= 0.12 && self.e_geom <= 0.15) {
+            return false;
+        }
+        if self.radius > 0.0 {
+            let p95_limit = (0.08 * self.radius).max(0.35);
+            return self.normal_p95 <= p95_limit;
+        }
+        true
     }
 }
 
@@ -1401,11 +1485,21 @@ pub fn stroke_metrics(reference: &PremultImage, candidate: &PremultImage) -> Str
     let mut errors: Vec<f64> = Vec::new();
     let mut geom_num = 0.0f64;
     let mut geom_den = 0.0f64;
+    let mut support_diff = 0usize;
+    let mut support_union = 0usize;
     for (i, (ref_px, cand_px)) in reference.rgba.iter().zip(candidate.rgba.iter()).enumerate() {
         let ra = f64::from(ref_px[3]);
         let ca = f64::from(cand_px[3]);
         geom_num += (ra - ca).abs();
         geom_den += ra.max(ca);
+        let in_ref = ra > 0.05;
+        let in_cand = ca > 0.05;
+        if in_ref || in_cand {
+            support_union += 1;
+            if in_ref != in_cand {
+                support_diff += 1;
+            }
+        }
         if ra.max(ca) > 0.05 && !edge[i] {
             let mut err = (ra - ca).abs();
             for ch in 0..3 {
@@ -1426,9 +1520,17 @@ pub fn stroke_metrics(reference: &PremultImage, candidate: &PremultImage) -> Str
     } else {
         geom_num / geom_den
     };
+    let e_support = if support_union == 0 {
+        0.0
+    } else {
+        support_diff as f64 / support_union as f64
+    };
     StrokeMetrics {
         e_interior,
         e_geom,
+        e_support,
+        normal_p95: 0.0,
+        radius: 0.0,
         interior_px: errors.len(),
     }
 }
@@ -1462,7 +1564,68 @@ pub fn validate_stroke(
         .map(|(loops, alpha)| (loops.as_slice(), rgb, *alpha))
         .collect();
     let candidate = rasterize_filled(&layer_refs, (x0, y0), w, h);
-    Some(stroke_metrics(&reference, &candidate))
+    let mut metrics = stroke_metrics(&reference, &candidate);
+    metrics.radius = stroke_radius_median(brush, geometry, canvas);
+    metrics.normal_p95 = contour_normal_p95(brush, geometry, canvas, layers);
+    Some(metrics)
+}
+
+/// 轮廓法向偏差 P95（见 [`StrokeMetrics::normal_p95`] ✓）。
+///
+/// 把每个拟合轮廓的展平采样点投影到**脊线**（dab 中心按落笔序连成的折线、
+/// 半径在相邻 dab 间线性插值 ✓）：偏差 `|投影距离 − 该处理论半径|`。
+/// 端帽采样点投影落在首/末 dab 中心（`t` 钳到端点 ✓）⇒ 端帽的外鼓/内缩
+/// 正好被这一条量到 —— 这正是 Q2 要治的病灶 ✓。多簇（虚线/镜像）时簇间
+/// 跳段也参与投影：端帽点到跳段端点的距离 ≈ 其半径 ⇒ 不系统性放大 ✓。
+/// 无 dab 或无采样点时返回 0（该笔没有可量的轮廓 ⇒ 由其他判据兜底 ✓）。
+fn contour_normal_p95(
+    brush: &BrushSpec,
+    geometry: &StrokeGeometry,
+    canvas: (u32, u32),
+    layers: &[(&[FittedContour], f64)],
+) -> f64 {
+    let dabs: Vec<(Pt, f64)> = stroke_dab_clusters(brush, geometry, canvas)
+        .iter()
+        .flatten()
+        .map(|d| ((d.x, d.y), d.radius))
+        .collect();
+    if dabs.is_empty() {
+        return 0.0;
+    }
+    let mut deviations: Vec<f64> = Vec::new();
+    for (contours, _alpha) in layers {
+        for contour in *contours {
+            for p in flatten_contour(contour) {
+                let mut best = f64::INFINITY;
+                if dabs.len() == 1 {
+                    best = (dist(p, dabs[0].0) - dabs[0].1).abs();
+                }
+                for seg in dabs.windows(2) {
+                    let (a, ra) = seg[0];
+                    let (b, rb) = seg[1];
+                    let ab = (b.0 - a.0, b.1 - a.1);
+                    let len2 = ab.0 * ab.0 + ab.1 * ab.1;
+                    let t = if len2 <= 1e-12 {
+                        0.0
+                    } else {
+                        (((p.0 - a.0) * ab.0 + (p.1 - a.1) * ab.1) / len2).clamp(0.0, 1.0)
+                    };
+                    let q = (a.0 + ab.0 * t, a.1 + ab.1 * t);
+                    let r_at = ra + (rb - ra) * t;
+                    best = best.min((dist(p, q) - r_at).abs());
+                }
+                if best.is_finite() {
+                    deviations.push(best);
+                }
+            }
+        }
+    }
+    if deviations.is_empty() {
+        return 0.0;
+    }
+    deviations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let idx = ((deviations.len() as f64 * 0.95).ceil() as usize).clamp(1, deviations.len()) - 1;
+    deviations[idx]
 }
 
 /// 一层矢量填充（轮廓组 + 该层的不透明度 ✓；双层近似时两层同色叠加 ✓）。
@@ -1533,12 +1696,29 @@ fn taper_tips(clusters: &[Vec<SvgDab>]) -> Vec<Pt> {
     tips
 }
 
+/// 一笔的**有效半径** `r`（拟合容差调度与验收判据共用同一个定义 ✓）：
+/// 全部 dab 半径的**中位数** —— 对 taper 收尖与压力变化稳健（均值会被
+/// 个别大 dab 拉偏、最大值更甚 ✓）；无 dab 时退回 `size / 2`。
+fn stroke_radius_median(brush: &BrushSpec, geometry: &StrokeGeometry, canvas: (u32, u32)) -> f64 {
+    let mut radii: Vec<f64> = stroke_dab_clusters(brush, geometry, canvas)
+        .iter()
+        .flatten()
+        .map(|d| d.radius)
+        .collect();
+    if radii.is_empty() {
+        return brush.size / 2.0;
+    }
+    radii.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    radii[radii.len() / 2]
+}
+
 /// 一组点列轮廓 → 拟合轮廓（拟合失败的单个轮廓丢弃 ⇒ 计数由调用方的
-/// 度量验收兜底，不在这里静默吞整笔 ✓）。
-fn fit_loops(loops: &[Vec<Pt>], forced: &[Pt]) -> Vec<FittedContour> {
+/// 度量验收兜底，不在这里静默吞整笔 ✓）。容差按这一笔的有效半径 `radius`
+/// 调度（见 [`fit_tolerances`] ✓）。
+fn fit_loops(loops: &[Vec<Pt>], forced: &[Pt], radius: f64) -> Vec<FittedContour> {
     loops
         .iter()
-        .filter_map(|l| fit_closed_contour(l, forced))
+        .filter_map(|l| fit_closed_contour_r(l, forced, radius))
         .collect()
 }
 
@@ -1584,7 +1764,8 @@ fn field_contours_abs(
         (x0, y0),
         threshold_abs as f32,
     );
-    Some(fit_loops(&loops, forced))
+    let radius = stroke_radius_median(brush, geometry, canvas);
+    Some(fit_loops(&loops, forced, radius))
 }
 
 /// **一笔的导出主入口**：分类（专家 P1-3 ✓）→ 轮廓提取（A 主 C 兜底 ✓）
@@ -1662,30 +1843,34 @@ pub fn export_stroke(
     // 层数 ≤ 3。`α − o ≤ 0.05`（环可忽略）或 K = 1（无环）时不走这里，
     // 落回下面的双层/单层路 ✓。这是对专家「双层」方案的**实测驱动偏离**，
     // 理由与数字写在补丁 README 里 ✓。
-    let dab_alpha = brush.opacity.clamp(0.0, 1.0);
-    if alpha_eff < 0.999 && alpha_eff - dab_alpha > 0.05 {
+    // **这里的 `o` 必须是单 dab alpha 本人**（[`dab_alpha`]：`color.a × flow × opacity` ✓）：
+    // 曾经误用 `brush.opacity` ⇒ `flow < 1` 或颜色带 alpha 时环层阈值高于场里
+    // 的单 dab 平台 ⇒ 环层轮廓缩没、整笔误判 `field_empty` 回退 ✗
+    // （`flow = 1` 且 `color.a = 1` 时两者相等 ⇒ 老判据不受影响 ✓）。
+    let dab_a = dab_alpha(brush);
+    if alpha_eff < 0.999 && alpha_eff - dab_a > 0.05 {
         let deep_alpha = 1.0 - (1.0 - alpha_eff) * (1.0 - alpha_eff);
         let ring = field_contours_abs(
             brush,
             geometry,
             Some(appearance),
             canvas,
-            dab_alpha / 2.0,
+            dab_a / 2.0,
             &forced,
         );
         match ring {
             Some(ring) if !ring.is_empty() => {
                 let mut layers = vec![ExportLayer {
                     contours: ring,
-                    fill_opacity: dab_alpha,
+                    fill_opacity: dab_a,
                 }];
-                let plateau_opacity = (alpha_eff - dab_alpha) / (1.0 - dab_alpha).max(1e-9);
+                let plateau_opacity = (alpha_eff - dab_a) / (1.0 - dab_a).max(1e-9);
                 if let Some(plateau) = field_contours_abs(
                     brush,
                     geometry,
                     Some(appearance),
                     canvas,
-                    (dab_alpha + alpha_eff) / 2.0,
+                    (dab_a + alpha_eff) / 2.0,
                     &forced,
                 ) {
                     if !plateau.is_empty() {
@@ -1796,7 +1981,14 @@ pub fn export_stroke(
     let mut contours: Vec<FittedContour> = Vec::new();
     for cluster in &clusters {
         let loop_pts = envelope_contour(cluster);
-        if let Some(fitted) = fit_closed_contour(&loop_pts, &forced) {
+        // 容差按**本簇** dab 半径的中位数调度（簇间半径可差很多 ✓）。
+        let mut radii: Vec<f64> = cluster.iter().map(|d| d.radius).collect();
+        radii.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let cluster_radius = radii
+            .get(radii.len() / 2)
+            .copied()
+            .unwrap_or(brush.size / 2.0);
+        if let Some(fitted) = fit_closed_contour_r(&loop_pts, &forced, cluster_radius) {
             contours.push(fitted);
         }
     }
@@ -2356,6 +2548,75 @@ mod tests {
                 assert!(metrics.passes(), "三级层验收 {metrics:?}");
             }
             other => panic!("半透明自交应转三级等值层矢量，得到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fit_tolerances_scale_with_radius_and_clamp_to_legacy() {
+        let near =
+            |(a, b): (f64, f64), (c, d): (f64, f64)| (a - c).abs() < 1e-9 && (b - d).abs() < 1e-9;
+        // 小笔（r = 3.5）：容差显著收紧（旧固定值 0.20 / 0.60 ⇒ 外扩元凶 ✗）。
+        assert!(near(fit_tolerances(3.5), (0.14, 0.245)));
+        // 下限：再小的笔也不许低于 MS 量化噪声量级（防段数暴增 ✓）。
+        assert!(near(fit_tolerances(0.5), (0.05, 0.10)));
+        assert!(near(fit_tolerances(0.0), (0.05, 0.10)));
+        // 上限：r ≥ 8.6 时与旧固定值逐字一致 ⇒ 大笔行为不回归 ✓。
+        assert!(near(fit_tolerances(9.0), (0.20, 0.60)));
+        assert!(near(fit_tolerances(20.0), (0.20, 0.60)));
+    }
+
+    #[test]
+    fn fit_closed_contour_r_matches_legacy_for_large_radius() {
+        let circle: Vec<Pt> = (0..128)
+            .map(|i| {
+                let a = f64::from(i) * std::f64::consts::TAU / 128.0;
+                (50.0 + 20.0 * libm::cos(a), 50.0 + 20.0 * libm::sin(a))
+            })
+            .collect();
+        // r = 20 ⇒ 两道容差都被钳到旧值 ⇒ 输出必须与旧入口逐点相同（恒等式 ✓）。
+        assert_eq!(
+            fit_closed_contour_r(&circle, &[], 20.0),
+            fit_closed_contour(&circle, &[])
+        );
+    }
+
+    #[test]
+    fn small_stroke_support_error_and_normal_p95_within_limits() {
+        // Q2 的病灶样本：size 7（r = 3.5）的短硬线。旧绝对容差下 E_support
+        // 实测 0.31–0.39（端帽外鼓）⇒ 新判据 0.08 + 0.25/3.5 ≈ 0.151。
+        let canvas = (120, 90);
+        let brush = brush_with(7.0, 0.25, 1.0);
+        let geometry = line_geometry(30.0, 45.0, 64.0, 52.0);
+        let appearance = StrokeAppearance::default();
+        match export_stroke(&brush, &geometry, &appearance, canvas) {
+            StrokeExport::Vector { layers, .. } => {
+                let refs: Vec<(&[FittedContour], f64)> = layers
+                    .iter()
+                    .map(|l| (l.contours.as_slice(), l.fill_opacity))
+                    .collect();
+                let metrics = validate_stroke(&brush, &geometry, Some(&appearance), canvas, &refs)
+                    .expect("应能验收");
+                eprintln!("  小笔（size 7）验收度量：{metrics:?}");
+                assert!(
+                    (metrics.radius - 3.5).abs() < 1e-9,
+                    "有效半径应为 dab 半径中位数 3.5：{metrics:?}"
+                );
+                // 内部二值光栅化的 E_support 有采样地板（见字段注释 ✓）：
+                // 修复前 0.297、修复后必须显著下降（严格判据 0.08 + 0.25/r
+                // ≈ 0.151 在带 AA 的文档级冒烟里同口径验收 ✓）。
+                assert!(
+                    metrics.e_support <= 0.20,
+                    "E_support {} 未从 0.297 的基线显著下降",
+                    metrics.e_support
+                );
+                assert!(
+                    metrics.normal_p95 <= 0.35,
+                    "法向偏差 P95 {} 超过 0.35px",
+                    metrics.normal_p95
+                );
+                assert!(metrics.passes(), "小笔验收 {metrics:?}");
+            }
+            other => panic!("小硬笔应转矢量，得到 {other:?}"),
         }
     }
 }

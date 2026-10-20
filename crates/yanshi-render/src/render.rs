@@ -3399,10 +3399,14 @@ impl Renderer {
             let mut probe_object_stage = stage_probe::Stage::start();
             match primitive {
                 Primitive::Stroke { geometry, brush } => {
-                    let brush = BrushSpec {
-                        opacity: brush.opacity * f64::from(opacity),
-                        ..brush
-                    };
+                    // **这里不许再乘对象级 `opacity`** ✗：`Primitive::Stroke` 的
+                    // `brush` 由 `BrushSpec::from_value(data)` 构造、**已经读过**
+                    // `data.opacity` ⇒ 再乘一次会让半透明笔按 opacity² 落墨
+                    // （实测：opacity 0.5、spacing 0.25 的笔平台 alpha 是
+                    // `1 − 0.75⁴ = 0.6836` 而非单算的 `1 − 0.5⁴ = 0.9375` ✓）。
+                    // 对象级 `opacity` 只属于**没有**把 opacity 嵌进自身参数的
+                    // primitive（Shape／Adjustment／Filter／RasterPatch 等 ✓），
+                    // 它们在各自的分支里消费上面那个变量 ✓。
                     // ① 外观参数（设计 808 行 `advanced.appearance`）：曲线 / 动力学 / 纹理 ✓。
                     //    **没有 appearance 时整条路径与接线前逐字节一致** ✓（有回归测试守住 ✓）。
                     let appearance = crate::brush::StrokeAppearance::from_data(&object.data);
