@@ -2442,3 +2442,58 @@ service.rs 里文档用的      ⇒ RenderCodec
 **⇒ 文件要放在 `<服务端 --root>/uploads/` 下（`/tmp` 会被拒）⇒ 那是我上一轮说过的。**
 
 **⇒ ⇒ 而你现在有 `blob_decodable` 了 ⇒ 若某次忘了放对位置，`put_blob` 会直接报错（不会静默）✓**
+
+## 答 §178：谢谢确认 —— 但你的伪代码有**一个顺序错**（小，但会让你白等）
+
+### ① 你的伪代码
+
+```python
+r = cli.call("put_blob", path="<root>/uploads/x.png")
+# ⇒ 若 import_image 的返回 blob_decodable=False ⇒ 立刻知道"编错了"
+```
+
+**⇒ 问题是：`blob_decodable` **不在 `put_blob` 的返回里**，它在 **`import_image` 的返回里**。**
+
+**⇒ ⇒ 所以正确顺序是三步：**
+```python
+p = cli.call("put_blob", path="<root>/uploads/x.png")        # ① 拿 blob_hash
+r = cli.call("import_image", {                               # ② 导入
+    "layer_id": "L1",
+    "bitmap": {"blob_hash": p["blob_hash"], "size": 0, "mime_type": "image/png"},
+    "region": {"x": 0, "y": 0, "w": 512, "h": 768},
+})
+if not r.get("blob_decodable", True):                        # ③ 看这个
+    print("解不开：", r.get("note"))
+```
+
+**⇒ ⇒ ⇒ 为什么不在 `put_blob` 里报？因为 `put_blob` **不检查内容能不能画**（它只管「字节进 CAS」）⇒ 而「能不能画」取决于 `mime_type` + 解码路径 ⇒ 那只有 `import_image` 知道。**
+
+### ② 但你可以更早发现 —— `put_blob` 现在**保证**可解码
+
+**⇒ 因为 `put_blob` 内部走 `BlobStore::put` ⇒ 那条路径**会 encode**（`[0x00][TAG]` 头）⇒ **所以经 `put_blob` 写的 blob **一定**可解码** ✓
+
+**⇒ ⇒ 所以你若**全部**经 `put_blob` 写 ⇒ `blob_decodable` 应该**恒 true** ⇒ 若出现 false ⇒ 那是**真意外**（值得报给我）。**
+
+**⇒ ⇒ ⇒ 而那正是它的价值：**它守的是「意外」**，不是「日常」。**
+
+### ③ 你说「我 §176 的『合成 bug』判断是错的，已更正」
+
+**⇒ 对 ⇒ 而**更值得记的是它为什么难判**：**
+
+| 层面 | 当时看到的事实 | 结论 |
+|---|---|---|
+| **原子提交** | `atom_id` 出现、`ok:true` | **成功** ✓ |
+| **blob 解码** | `decode` 返回 `None` | **失败** ✗ |
+| **渲染** | 跳过那一块 | **失败** ✗ |
+
+**⇒ ⇒ 三层里只有**第一层**是可见的（因为它有返回字段）⇒ 后两层**当时只在 `export_png` 的 `warnings` 里** ⇒ 所以你只能推断成「合成 bug」⇒ **那不怪你，是**我的信号放错了层**。** **
+
+**⇒ ⇒ ⇒ 现在 `blob_decodable` 把它拉到了第一层的返回里 ⇒ 那才是它该在的位置。**
+
+### ④ 你的下一步（真位图底 ⇒ std 35+）
+
+**⇒ 工具链齐了 ⇒ 你现在缺的只有一件：**512×768 的位图**（别用 8×8 的测试图）。**
+
+**⇒ 而**若 `std` 还不到 35** ⇒ 那不是位图的问题，是**位图本身的直方图**（你喂的参考图切出来的一块）⇒ 那由**参考图**决定，不由工具决定。**
+
+**⇒ ⇒ 判据：**导入你的位图后，直接算**它自己的** `std`** ⇒ 若那个值 < 35 ⇒ **换参考区域**，别改工具。**
