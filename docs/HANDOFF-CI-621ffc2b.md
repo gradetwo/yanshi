@@ -1648,3 +1648,38 @@ pub fn mix_smudge_linear(smudge: [f32;3], brush: [f32;3], amt: f32, alpha: f32) 
 **⇒ ⇒ 而**若我在 1299 年推之前先跑 `tool-visible-delta`（1 分钟）** ⇒ **那 6 轮可以压到 2 轮。**
 
 **⇒ ⇒ ⇒ 所以规矩（已写进 AGENTS.md 的实践）：**改 `vendor/` 之前先跑一个受影响的判据。**
+
+## ⚠ **重要修正**：我的线性混合**只覆盖 wasm 路径**（第 1310 轮；顺着「接线」查出来的）
+
+**⇒ 我问的问题是「`mix_smudge_linear` 真被调用了吗」⇒ 顺着调用链查到一件更重要的事：**
+
+| 路径 | 落笔实现 | 涂抹混合在哪 |
+|---|---|---|
+| **wasm 宿主** | `hokusai::stamp_stroke`（`vendor/hokusai-core/src/stroke.rs`）| **`mix_smudge_linear`（我改的）** ✓ |
+| **服务端** | **`crates/yanshi-server/src/tools.rs:12503` `fn stamp_stroke`（自己实现，不用 hokusai 的 `build_dab`）** | **`crates/yanshi-render/src/brush.rs` 的 `smudge_dab`（净室实现，`tools.rs:12667` 调用）——**仍是 sRGB 插值** ✗ |
+
+**⇒ ⇒ 所以**服务端的 `brush_stroke` 从来不走 vendor 的 `stroke.rs`** ⇒ 我那一改**对服务端零影响**。**
+
+**⇒ 证据：**
+- `tools.rs:12503` 是服务端自己的 `stamp_stroke`（签名用 `hokusai::Brush`/`BrushState`/`MemSurface`，但**自己跑 dab 循环**）
+- 它的涂抹调用是 `yanshi_render::brush::smudge_dab(...)`（`tools.rs:12667`）
+- 而 `smudge_dab` 的注释写着「混合是**线性的**（`out = dst*(1-a) + src*a`）」⇒ **那是在 sRGB 值上做插值** ⇒ **同一个问题** ✗
+
+### ⇒ 所以 Phase 1 的真实完成度是 **50%**
+
+| 宿 | 状态 |
+|---|---|
+| **wasm** | **✓ 线性混合**（`mix_smudge_linear`）|
+| **服务端** | **✗ 仍是 sRGB 插值**（`smudge_dab`）|
+
+**⇒ ⇒ 而我上一轮报「Phase 1 完成」⇒ **那句话是错的** ⇒ 准确说法是「**wasm 侧完成，服务端未做**」。**
+
+### 下一步（明确、可执行）
+
+**⇒ 改 `smudge_dab` 的混合，让它与 `mix_smudge_linear` **同一套数学**（线性空间加权和）⇒ 而**顺序**是：**
+
+1. **先加端到端判据**：用涂抹笔（`Blender.myb`）在**两色交界**上拖一笔 ⇒ 断言**混合像素的亮度 > sRGB 插值的期望**（相对关系，跨机器稳定）
+2. **再改 `smudge_dab`**（复用 `yanshi_render::color::{srgb_to_linear, linear_to_srgb}`，那已是公共函数）
+3. **守门员**：`tool-visible-delta` 的 `0/1/31/205` 必须**不变**（那四条是不涂抹的纯色笔）
+
+**⇒ ⇒ 而那**才是 Phase 1 的实质**（服务端才是用户实际在用的宿主）。**
