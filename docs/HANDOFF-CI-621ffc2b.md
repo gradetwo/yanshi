@@ -1262,3 +1262,57 @@ bash scripts/criteria-for-changes.sh --since HEAD~3
 **⇒ 而**这也是 Phase 2 拆分的一个**额外收益**：拆出去的模块越多，`criteria-for-changes.sh` 能缩得越细 ⇒ 目前 12 个模块覆盖了 14374 行（47%），所以约**一半的改动**能落到小子集上。**
 
 **⇒ ⇒ 剩下的一半（`tools.rs` 的 16403 行）⇒ 要再缩就只能**按行号范围**映射 ⇒ 而那太脆（行号每次重构都变）⇒ **不做**。**
+
+## 色彩管线 Phase 1：**三个判决实验的结果**（第 1295 轮，全部实测）
+
+### 实验 ①：管线往返是否无损？**是**
+
+**⇒ 填 `#808080`（sRGB 128）⇒ `export_png` ⇒ 读中心像素 = **`[128,128,128]`** ⇒ **往返恒等，无损失** ✓**
+
+**⇒ 所以**单色路径正确**（不是「sRGB 被当 linear」的偏亮）。**
+
+### 实验 ②：渲染层内部是 linear 吗？**是**
+
+**⇒ `buffer.rs:530-531`：**
+```rust
+let table = crate::color::srgb_encode_table();
+...
+None => crate::color::linear_premul_to_u8x4_with(table, pixel),
+```
+**⇒ ⇒ 所以 buffer 存的是 **linear premultiplied**，导出时才 `linear_premul_to_u8x4_with` 转 sRGB ✓**
+
+**⇒ 所以「输出侧」**已经正确**（不需要 Phase 1 再改）。**
+
+### 实验 ③（关键）：hokusai 的混合在哪个空间？**sRGB**
+
+**⇒ `vendor/hokusai-core/src/color.rs:33` **定义了** `srgb_to_linear`，而**全仓没有一个调用**（`grep -c` = 1 = 只有定义行）**
+**⇒ ⇒ 所以 hokusai 内部**把 sRGB 值直接当 linear 用**？⇒ 而实验 ① 显示往返恒等 ⇒ 所以**不是**。**
+
+**⇒ 真相（结合 ① 与 ③）：**hokusai 写的是 **sRGB 字节**，而 `buffer` 的 `to_rgba8` 又做了一次 sRGB 编码 ⇒ 若真如此，128 会变成 **186** ⇒ 而实测是 **128** ⇒ **所以 buffer 存的确实不是 sRGB 字节。**
+
+**⇒ ⇒ 结论：**三段拼接起来是对的**（写入时某处转了 linear，输出时转回），但**那个「某处」不在 `tools_brush.rs`**（那里没有 `srgb_to_linear`）⇒ **所以它在 `hokusai` 的 tile 写入路径或 `MemSurface` 里**（我还没定位到具体行）。**
+
+**⇒ ⇒ ⇒ 这是**我没查完的一步** ⇒ 下一轮继续（`MemSurface` 的写入口）。**
+
+### ★ 而 `ColorMixing::Linear` 已经**端到端可用**
+
+**⇒ 实测（第 1295 轮）：**
+```
+POST /api/tools/medium_stroke {..., "color_mixing":"rgb"}    ⇒ ok=true
+POST /api/tools/medium_stroke {..., "color_mixing":"linear"} ⇒ ok=true
+```
+**⇒ ⇒ 所以第 2 步（让 `linear` 在工具面可达）**完成** ✓**
+
+### ⚠ 一个我搞错的地方（记下来）
+
+**⇒ 我原以为 `smart_blend` 是 `color_mixing` 的接线点 ⇒ **错**：它**不接受**该参数（`ok=false`，`error` 明确说「不接受参数 color_mixing」）。**
+
+**⇒ 它的 `color_a`/`color_b` 是 **Array** `[r,g,b,a]`（0..1），且它用**固定的 OKLab 插值**（`lerp_oklab`）⇒ 而那正是规划说的「smart_blend 内的转换是 OKLab 插值的正确组成部分」✓**
+
+**⇒ ⇒ 所以正确接线点是 **`medium_stroke`**（`:1619` 那个 param）✓**
+
+### ⚠ 还有一个（`fill_region` 的 `opacity` 不是颜色混合）
+
+**⇒ 我原以为「红底 + 50% 蓝」会混合 ⇒ 实测 `[25,25,204]` = **纯蓝** ⇒ 因为 `opacity` 是**alpha 合成（覆盖）**，不是颜色混合 ✗**
+
+**⇒ ⇒ 所以「测混合」必须用 `medium_stroke` / `brush_stroke`（它们有 `color_mixing`），**不能**用 `fill_region`。**
