@@ -15938,9 +15938,17 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             .cloned()
             .unwrap_or_else(|| json!({}));
         let value = match registry.get(name) {
-            Some(spec) => match dispatch(spec, ctx, &arguments) {
-                Ok(value) => ok_response(value),
-                // 单个调用失败不回滚已提交的原子（append-only），逐项报告 5.7 错误。
+            // **★ 子调用也要走**参数面校验** ✓（第 1402 轮修）
+            //   **⇒ 原缺陷** ✗：`ToolRegistry::call`（HTTP 入口）里有 `validate_args`，
+            //     而 `batch` **直接调 `dispatch`** ⇒ **绕过了它** ⇒
+            //     **未知参数被静默忽略**，而 `batch` 返回 `ok: true`、`failed_calls: []` ✗✗
+            //   **⇒ 实测**：`medium_stroke` 带 `preview`（它没有这个参数）
+            //     · **单独调用** ⇒ `ok=false`「不接受参数 preview」✓
+            //     · **放进 `batch`** ⇒ `ok=true`、子调用 `ok=true`、`failed_calls=[]` ✗
+            //   ⇒ 而外部正是这样丢了 **1495 个子调用**（参数被忽略 ⇒ 画出来的东西不对，
+            //     却没有任何错误信号 ✓）⇒ 这就是本仓最反对的**静默降级** ✓
+            //   **⇒ 所以**这里补上同一套校验 ⇒ 失败进 `failed_calls`（可观测 ✓）而不提交原子 ✓
+            Some(spec) => match validate_args(spec, &arguments) {
                 Err(error) => {
                     let rendered = error_response(&error);
                     failed_calls.push(serde_json::json!({
@@ -15950,6 +15958,19 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                     }));
                     rendered
                 }
+                Ok(()) => match dispatch(spec, ctx, &arguments) {
+                    Ok(value) => ok_response(value),
+                    // 单个调用失败不回滚已提交的原子（append-only），逐项报告 5.7 错误。
+                    Err(error) => {
+                        let rendered = error_response(&error);
+                        failed_calls.push(serde_json::json!({
+                            "index": call_index,
+                            "name": name,
+                            "error": rendered,
+                        }));
+                        rendered
+                    }
+                },
             },
             None => {
                 // 工具不存在也走这里 ⇒ 同样要留痕（第 1000+ 轮）。
@@ -16060,6 +16081,15 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     Ok(json!({
         // 失败留痕（第 1000+ 轮）：空数组 = 全成功；非空 = 有子调用失败（ok 仍是 true）。
         "failed_calls": failed_calls,
+        // **★ 一个布尔说清「整批都成了吗」** ✓（第 1402 轮加）
+        //   **⇒ 为什么加** ✗：外部把 **1495 个子调用**的参数传错 ⇒ 每个子调用都被**静默忽略**
+        //     （那时 `batch` 连校验都不做 ⇒ 已在本轮修好 ✓）⇒ 而当时他们只看了 `ok: true` ✗
+        //   **⇒ `ok` 的语义保持不动** ✓（=「这次批量请求本身跑完了」，与 `swatch` 的 per-item 一致 ✓）
+        //     ⇒ 但**再给一个 `all_ok`** ⇒ 调用方看一个布尔就知道**整批是否全成** ✓
+        //   **⇒ ⇒ 三个数互为恒等式**：`ok_count + fail_count == count`，且 `all_ok == (fail_count == 0)` ✓
+        "ok_count": results.len().saturating_sub(failed_calls.len()),
+        "fail_count": failed_calls.len(),
+        "all_ok": failed_calls.is_empty(),
 
         "preview": preview_value,
         "changeset_id": changeset,
