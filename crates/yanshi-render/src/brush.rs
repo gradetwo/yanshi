@@ -796,23 +796,11 @@ pub fn smudge_dab(
                         //   **⇒ 判据**：`tool-visible-delta`（不涂抹的纯色笔）必须**一字不变**；
                         //      而涂抹笔的混合像素**变亮** ⇒ 与 `mix_smudge_linear`（wasm 侧）同一套数学 ✓
                         const FULL: f32 = 32640.0; // 255 << 7
-                                                   // **★ `srgb_to_linear` 换成 **256 项查表**（**无损**，第 1420 轮；外部 D-11）★**
-                                                   //   **⇒ 为什么可以无损**：tile 存的是 `u8 << 7` ⇒ 取值**只有 256 个**（`0,128,…,32640`）⇒
-                                                   //     `v / FULL == u8 / 255` **在 f32 里精确成立** ⇒ 查表结果与现算**逐位相同** ✓
-                                                   //   **⇒ 为什么值得**：这是**每像素每通道 2 次**的调用（`dst` 与 `src`）⇒
-                                                   //     每次 `srgb_to_linear` 含一个 `powf` ⇒ 换掉它等于**每像素省 6 次 `powf`** ✓
-                                                   //     （外部实测：4K 涂抹类笔刷一条 **33–55 s**，且定位到「成本在每像素 gamma 往返」✓）
-                                                   //   **⇒ 表只算 256 次 `powf`**，而它服务的是**百万级像素** ⇒ 摊薄到零 ✓
-                                                   //   **⇒ 输出那一次 `linear_to_srgb` 保留** ✗：它的入参是**浮点混合结果**（连续值）
-                                                   //     ⇒ 查表就必须量化 ⇒ 会**引入误差** ⇒ 所以只换输入侧 ✓（宁可少省，不引入漂移 ✓）
-                        let srgb_lut: [f32; 256] =
-                            std::array::from_fn(|i| crate::color::srgb_to_linear(i as f32 / 255.0));
                         let mix_rgb = |i: usize| -> u16 {
-                            // `>> 7` 取回 u8（`0..=255`）；索引不可能越界（`u16 >> 7 ≤ 511`，
-                            // 而 `dst`/`src` 来自 `u8 << 7` ⇒ 实际 ≤ 255 ✓）
-                            let a = srgb_lut[usize::from(dst[i] >> 7).min(255)];
-                            let b = srgb_lut[usize::from(src[i] >> 7).min(255)];
-                            let lin = a * (1.0 - amount) + b * amount;
+                            let a = f32::from(dst[i]) / FULL;
+                            let b = f32::from(src[i]) / FULL;
+                            let lin = crate::color::srgb_to_linear(a) * (1.0 - amount)
+                                + crate::color::srgb_to_linear(b) * amount;
                             (crate::color::linear_to_srgb(lin).clamp(0.0, 1.0) * FULL).round()
                                 as u16
                         };
@@ -2809,44 +2797,5 @@ mod smudge_tests {
         assert_eq!(touched, 0, "方向未知时不该动任何像素");
         let edge = read(&mut surface, split as i32 + 6, 32);
         assert!(!is_reddish(edge), "不该被拖动：{edge:?}");
-    }
-
-    /// **查表版与现算版必须**逐位相同**（第 1420 轮；外部 D-11）**
-    ///
-    /// **⇒ 为什么这条是核心** ✗：把 `srgb_to_linear` 换成 256 项查表是一个**性能**改动，
-    ///   而它只有在**逐位不变**时才允许（否则就是拿正确性换速度 ✗）。
-    /// **⇒ ⇒ 为什么可以逐位相同**：tile 存 `u8 << 7` ⇒ `v / FULL == u8 / 255` 在 f32 里**精确** ✓
-    /// **⇒ ⇒ ⇒ 所以这条断言既是**正确性守卫**，也是**这个优化的许可证** ✓
-    #[test]
-    fn smudge_lut_matches_direct_conversion() {
-        const FULL: f32 = 32640.0; // 255 << 7
-        let lut: [f32; 256] =
-            std::array::from_fn(|i| crate::color::srgb_to_linear(i as f32 / 255.0));
-        // 所有 u8 取值 × 所有 u8 取值 × 若干 amount
-        for dst_u8 in 0u16..=255 {
-            for src_u8 in 0u16..=255 {
-                let dst = dst_u8 << 7;
-                let src = src_u8 << 7;
-                for amount in [0.0f32, 0.2, 0.5, 0.8, 1.0] {
-                    // 现算（改动前的写法）
-                    let a_direct = f32::from(dst) / FULL;
-                    let b_direct = f32::from(src) / FULL;
-                    let lin_direct = crate::color::srgb_to_linear(a_direct) * (1.0 - amount)
-                        + crate::color::srgb_to_linear(b_direct) * amount;
-                    let out_direct = (crate::color::linear_to_srgb(lin_direct).clamp(0.0, 1.0)
-                        * FULL)
-                        .round() as u16;
-                    // 查表（改动后的写法）
-                    let lin_lut = lut[usize::from(dst >> 7)] * (1.0 - amount)
-                        + lut[usize::from(src >> 7)] * amount;
-                    let out_lut = (crate::color::linear_to_srgb(lin_lut).clamp(0.0, 1.0) * FULL)
-                        .round() as u16;
-                    assert_eq!(
-                        out_direct, out_lut,
-                        "查表与现算不一致：dst={dst_u8}、src={src_u8}、amount={amount}"
-                    );
-                }
-            }
-        }
     }
 }

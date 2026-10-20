@@ -3,7 +3,7 @@
 **这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，
 所以它不会与实现漂移；`--check` 模式会在文档过期时失败。
 
-当前共 183 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
+当前共 185 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
 
 ## `abort_changeset`
 
@@ -1935,5 +1935,72 @@
 {
   "instance_id": "inst1",
   "policy": "all"
+}
+```
+
+## `vector_erase`
+
+```json
+[
+  {
+    "arguments": {
+      "kind": "vector",
+      "layer_id": "v1"
+    },
+    "tool": "create_layer"
+  },
+  {
+    "arguments": {
+      "data": {
+        "color": [
+          200,
+          60,
+          40,
+          255
+        ],
+        "points": [
+          [
+            20,
+            60
+          ],
+          [
+            140,
+            60
+          ]
+        ],
+        "size": 20
+      },
+      "layer_id": "v1"
+    },
+    "tool": "draw_stroke"
+  },
+  {
+    "arguments": {
+      "layer_id": "v1",
+      "points": [
+        [
+          80,
+          40
+        ],
+        [
+          80,
+          80
+        ]
+      ],
+      "radius": 6
+    },
+    "tool": "vector_erase"
+  }
+]
+```
+
+## `vector_hit_test`
+
+```json
+{
+  "layer_id": "v1",
+  "tolerance": 2,
+  "x": 80,
+  "y": 60
 }
 ```
