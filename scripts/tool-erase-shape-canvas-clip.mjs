@@ -33,6 +33,14 @@ const call = async (name, args, timeoutMs = 20_000) => {
   }
 };
 
+// **★ 判据自己建层**（不能假设 L1 存在 —— run-criteria.sh 起的服务只有 layer_default）
+//   而 if_exists: "reuse" 让它幂等（重复跑不报错）
+const layerReply = await call("create_layer", { layer_id: "L1", name: "A", if_exists: "reuse" });
+if (layerReply && layerReply.ok === false && !/已存在/.test(String(layerReply.context?.detail ?? ""))) {
+  console.log(`  ⊘ 不可判：建层失败 ${JSON.stringify(layerReply.context?.detail ?? "")}`);
+  process.exit(3);
+}
+
 const fails = [];
 const check = (ok, msg) => { if (!ok) fails.push(msg); console.log(`  ${ok ? "✓" : "✗"} ${msg}`); };
 
