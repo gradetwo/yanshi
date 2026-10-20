@@ -2261,6 +2261,21 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "export_svg",
+        profile: Profile::Core,
+        summary: "把文档导出成 SVG 落盘：能转矢量的笔触转成可编辑路径（路线乙），转不动的（纹理/软边/调整等）按紧凑包围盒嵌 PNG 保 z 序；返回值逐项计数每笔去向",
+        mutating: false,
+        params: &[
+            param!(
+                "path",
+                String,
+                true,
+                "输出文件路径（含 .svg）。**只能写进导出目录**（缺省 ./exports，可用 YANSHI_EXPORT_DIR 改）\\n                 或系统临时目录 ✓；也可以给相对路径 ✓（与 export_png 同一沙箱规矩）"
+            ),
+            param!("validate", Boolean, false, "true ⇒ 逐笔跑边缘容忍度量验收（E_interior ≤ 0.12 且 E_geom ≤ 0.15），不过线的笔自动回退位图并计入 validate_failed；缺省 false（快）"),
+        ],
+    },
+    ToolSpec {
         name: "export_book_pngs",
         profile: Profile::Core,
         summary: "把多个文档**按给定顺序**各导出一页 PNG（书册／连环画的一步出口；PDF 由它拼）",
@@ -2278,6 +2293,28 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 true,
                 "输出目录（**只能写进导出目录或系统临时目录** ✓）；文件名是 p00.png／p01.png…"
             ),
+        ],
+    },
+    ToolSpec {
+        name: "export_timelapse",
+        profile: Profile::Core,
+        summary: "把绘画过程导出成 MP4 视频：服务端单趟增量重放 atom 日志抓帧 ⇒ ffmpeg（libx264）编码落盘；以 job 登记进度，可用 get_job 看 progress",
+        // **不改文档 ⇒ mutating: false** ✓（与 export_png 同口径：它写文件，但不动文档 ✓）。
+        mutating: false,
+        params: &[
+            param!(
+                "path",
+                String,
+                true,
+                "输出文件路径（含 .mp4）。**只能写进导出目录**（缺省 ./exports，可用 YANSHI_EXPORT_DIR 改）\n                 或系统临时目录 ✓（与 export_png 同一条沙箱规矩 ✓）"
+            ),
+            param!("doc_id", String, false, "导出哪个文档（缺省当前文档）"),
+            param!("fps", Integer, false, "帧率（缺省 30，钳到 1~60）"),
+            param!("frame_every", Integer, false, "每 N 个 atom 抓一帧（缺省 10，与 Web 端过程视频同一观感）；给了它就不看 duration_sec"),
+            param!("duration_sec", Number, false, "目标总时长（秒）：按 fps 反推步长，让成片接近这个时长；与 frame_every 二选一"),
+            param!("width", Integer, false, "输出宽度上限（缺省 2048）：等比缩小、从不放大、两边取偶（yuv420p 要求）"),
+            param!("crf", Integer, false, "libx264 质量（缺省 20，0~51，越小越清晰、文件越大）"),
+            param!("max_frames", Integer, false, "帧数上限（缺省 1800）：帧数将超时自动加大步长（过程仍完整、只是更粗），绝不截断过程"),
         ],
     },
     ToolSpec {

@@ -21,14 +21,14 @@ canvas. Two stale claims were corrected rather than left to mislead: draw_text's
 item while it renders Chinese today, and this file said convert_to_shape, convert_to_path, split, merge and boolean
 were refused because no path model existed, which stopped being true when the path object model landed.
 
-The tool layer registers **109 core tools**, and with every implemented group enabled there are **169 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
+The tool layer registers **111 core tools**, and with every implemented group enabled there are **171 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
 
 > **完整工具列表**：本文档是散文式概述，不逐个列出全部工具。完整、实时的工具目录（含参数表）由注册表生成，见 `GET /api/tools` 或 MCP 的 `tools/list`。
 
-> **注意这里有两套口径，别混**：上面那两个数字（109 / 169）是**工具注册表**里的条目数，由
+> **注意这里有两套口径，别混**：上面那两个数字（111 / 171）是**工具注册表**里的条目数，由
 > `tool_inventory.rs` 断言。而 **HTTP 面**（`GET /api/tools`）会按启用的 profile 展开，实测是
-> **181 个**（**第 1229 轮实测** `GET /api/tools`（yanshi-gaps 补丁 +2 工具后）；`scripts/tool-surface-coverage.mjs` 对账 `docs/guide.md` 用的就是这个数）。
-> 一个工具可能同时在多个 profile 里注册，所以 181 > 169 不是重复注册的 bug ✓。
+> **183 个**（**第 1407 轮实测** `GET /api/tools`（svg ＋ timelapse 补丁 +2 工具后）；`scripts/tool-surface-coverage.mjs` 对账 `docs/guide.md` 用的就是这个数）。
+> 一个工具可能同时在多个 profile 里注册，所以 183 > 171 不是重复注册的 bug ✓。
 (`analyze_image`, `inpaint_region`, `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke`,
 `apply_style_transfer`) is **reserved but not implemented** by the project owner's decision - the provider
 seam and the guarantees it owes are written down in [semantic-tools.md](semantic-tools.md), and no code,
@@ -245,6 +245,22 @@ image option on the render tool caps at 512 pixels and otherwise returns a yansh
 protocol that nothing outside the process can fetch, leaving no practical way to obtain a file. It does not change
 the document, so it is not a mutating tool, but it does write to the filesystem, which is stated here rather than
 implied.
+
+export_timelapse exports the painting process itself as an MP4: it replays the atom log once, incrementally, into a
+scratch document (never re-rendering from scratch per frame), captures a frame every N atoms (10 by default, the
+same cadence as the browser timelapse, or sized from a target duration), flattens each frame onto white, and pipes
+raw RGB frames straight into an ffmpeg subprocess (libx264, veryfast, CRF 20 by default) with no intermediate image
+files. The output width is capped (2048 by default), never upscaled, with even dimensions for yuv420p, and a frame
+budget (1800 by default) that widens the step instead of truncating the process, so the last frame is always the
+final state. The export is registered as a job on the document, reporting frames done out of frames total in its
+progress and the output statistics in its result, both readable through get_job. It needs ffmpeg on the server's
+PATH: if ffmpeg is missing the tool fails before doing any work, with an error that names the missing program and
+gives the install command for Debian/Ubuntu, macOS and Windows, and no partial file is left behind (the encode goes
+to a sibling .part file that is only renamed into place on success). Like export_png it does not change the
+document, and it does write to the filesystem. End-to-end verification of the encoding path is a local check by
+decision of the project owner: the unit tests exercise the frame pipeline through a fake sink without ffmpeg, and
+the integration test skips itself with an explanation when ffmpeg (or its opt-in flag) is absent, so CI never has
+to install ffmpeg for this tool and never goes red over it.
 
 Shape geometry accepts three spellings, and all three draw: a kind with a bbox object, a bbox as a four number
 array, and the flat form with x, y, w and h written directly on the geometry. Normalisation now runs before

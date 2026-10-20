@@ -73,6 +73,12 @@ pub struct Job {
     /// 失败原因。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<serde_json::Value>,
+    /// 运行进度（长任务自报，如过程视频导出的已渲帧/总帧；短任务恒为空）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<serde_json::Value>,
+    /// 不产出 atom 的 job 的结果（如导出文件的路径与统计；产出 atom 的走 `atom_id`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
     /// TTL（秒）。
     pub ttl: i64,
 }
@@ -142,6 +148,8 @@ impl JobManager {
             status: JobStatus::Submitted,
             atom_id: None,
             error: None,
+            progress: None,
+            result: None,
             ttl: self.default_ttl,
         };
         self.jobs.insert(id.clone(), job);
@@ -223,6 +231,42 @@ impl JobManager {
             JobStatus::Submitted | JobStatus::Running => {
                 job.status = JobStatus::Committed;
                 job.atom_id = Some(atom_id.into());
+                Ok(job.status)
+            }
+            other => Err(invalid_transition(id, other, JobStatus::Committed)),
+        }
+    }
+
+    /// 更新运行进度（只有未结束的 job 能更新；终态更新会报错）。
+    pub fn set_progress(
+        &mut self,
+        id: &str,
+        progress: serde_json::Value,
+        now: i64,
+    ) -> Result<JobStatus> {
+        self.expire_due(now);
+        let job = self.jobs.get_mut(id).ok_or_else(|| not_found(id))?;
+        if job.status.is_terminal() {
+            return Err(invalid_transition(id, job.status, JobStatus::Running));
+        }
+        job.progress = Some(progress);
+        Ok(job.status)
+    }
+
+    /// 完成一个**不产出 atom** 的 job，并登记它的结果
+    /// （如导出文件的路径与统计；产出 atom 的仍走 [`Self::complete`]）。
+    pub fn complete_with_result(
+        &mut self,
+        id: &str,
+        result: serde_json::Value,
+        now: i64,
+    ) -> Result<JobStatus> {
+        self.expire_due(now);
+        let job = self.jobs.get_mut(id).ok_or_else(|| not_found(id))?;
+        match job.status {
+            JobStatus::Submitted | JobStatus::Running => {
+                job.status = JobStatus::Committed;
+                job.result = Some(result);
                 Ok(job.status)
             }
             other => Err(invalid_transition(id, other, JobStatus::Committed)),
@@ -410,6 +454,35 @@ mod tests {
         let removed = manager.gc(10 * 1000 + 1);
         assert!(removed >= 1);
         assert!(!manager.pending().iter().any(|job| job.id == first));
+    }
+
+    #[test]
+    fn progress_and_result_round_trip_for_non_atom_jobs() {
+        let mut manager = JobManager::new(300);
+        let id = manager.submit("export_timelapse", "session:a", 0);
+        manager.begin(&id, 1).unwrap();
+        manager
+            .set_progress(
+                &id,
+                serde_json::json!({"frames_done": 3, "frames_total": 9}),
+                2,
+            )
+            .unwrap();
+        let job = manager.get(&id, 3).unwrap();
+        assert_eq!(job.progress.unwrap()["frames_done"], serde_json::json!(3));
+        assert_eq!(
+            manager
+                .complete_with_result(&id, serde_json::json!({"path": "x.mp4"}), 4)
+                .unwrap(),
+            JobStatus::Committed
+        );
+        let job = manager.get(&id, 5).unwrap();
+        assert_eq!(job.result.unwrap()["path"], serde_json::json!("x.mp4"));
+        assert!(job.atom_id.is_none(), "不产 atom 的 job 不应冒出 atom_id");
+        // 终态之后进度不可再改。
+        assert!(manager
+            .set_progress(&id, serde_json::json!({"frames_done": 9}), 6)
+            .is_err());
     }
 
     #[test]

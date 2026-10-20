@@ -652,6 +652,8 @@ pub(super) fn read_get_job(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
         "status": job.status,
         "atom_id": job.atom_id,
         "error": job.error,
+        "progress": job.progress,
+        "result": job.result,
         "created_at": job.created_at,
         "ttl": job.ttl,
         "terminal": job.status.is_terminal(),

@@ -1967,6 +1967,18 @@ impl Workspace {
             .render_region_raw_layer(bbox, layer_id)
     }
 
+    /// **只渲染某一层里的一个对象子集** ✓（一行转调，语义见 `Document` 侧 ✓）。
+    pub fn render_layer_objects_subset(
+        &mut self,
+        doc_id: &str,
+        bbox: Bbox,
+        layer_id: &str,
+        keep: &std::collections::BTreeSet<yanshi_core::ObjectId>,
+    ) -> Result<(u32, u32, Vec<u8>)> {
+        self.document_mut(doc_id)?
+            .render_layer_objects_subset(bbox, layer_id, keep)
+    }
+
     /// 渲染区域。
     ///
     /// 只有覆盖整幅画布的渲染才落盘为「HEAD 渲染缓存」（14.5 打开即图片）；

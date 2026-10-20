@@ -1279,6 +1279,41 @@ impl Document {
         Ok((rendered.width, rendered.height, rendered.rgba8))
     }
 
+    /// **只渲染某一层里的一个对象子集** ✓（SVG 导出的位图回退段用 ✓）。
+    ///
+    /// 做法与 [`Self::render_region_raw_layer`] 同构 ✓：临时拼一份过滤后的
+    /// 状态（**目标层里不在 `keep` 的对象一律标不可见** ✓），`only_layer`
+    /// 限定该层后走正常渲染 ⇒ 与生产路径**同一套合成语义**、不另写渲染器 ✓。
+    /// 其他层对象保持原样是**有意的** ✓：实例对象的 master 可能在别的层，
+    /// 渲染器解析实例时要能找到它（它本身不直接出图，被 `only_layer` 挡住 ✓）。
+    /// 不走区域缓存（键里没有对象子集这个维度 ✗ ⇒ 复用必串图 ✓）。
+    pub fn render_layer_objects_subset(
+        &mut self,
+        bbox: Bbox,
+        layer_id: &str,
+        keep: &std::collections::BTreeSet<yanshi_core::ObjectId>,
+    ) -> Result<(u32, u32, Vec<u8>)> {
+        let mut filtered = self.state.clone();
+        // **背景必须置空** ✓（2026-10-20 端到端实测抓到）：`render_region` 会把
+        // 结果合成到 `state.background` 上 ⇒ 不置空时子集像素是**白底不透明**的，
+        // 调用方（如 SVG 导出的位图段）按 alpha 裁剪/叠放就会全错 —— 段图会变成
+        // 一块盖住下层内容的白板。克隆用完即弃、真文档不受影响 ✓。
+        // 渲染器读背景是逐次从 state 读的（`parse_background`），Null = 透明 ✓。
+        filtered.background = serde_json::Value::Null;
+        for (id, object) in filtered.objects.iter_mut() {
+            if object.layer_id == layer_id && !keep.contains(id) {
+                object.visible = false;
+            }
+        }
+        let previous = self.renderer.set_only_layer(Some(layer_id.to_owned()));
+        let rendered = self.renderer.render_region(&filtered, &*self.store, bbox);
+        // **无论成功失败都要还原** ✓（同单层渲染那条的纪律 ✓）。
+        self.renderer.set_only_layer(previous);
+        let rendered = rendered?;
+        self.note_render_stats(&rendered.stats);
+        Ok((rendered.width, rendered.height, rendered.rgba8))
+    }
+
     /// **最近一次渲染里被跳过的东西** ✓（裸像素出口的告警通道 ✓，见字段说明 ✓）。
     ///
     /// **为什么不是一个 `Result`** ✗：缺一个补丁**不该**让整幅渲染失败 ✓

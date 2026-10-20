@@ -119,6 +119,7 @@ pub mod render;
 ///   （**∴ 而**主路径**用的**就是它**✗ ⇒ **∴ 不是**另写一套 ✓）** ✓✓
 pub mod rows;
 pub mod selection;
+pub mod svg;
 pub mod thumb;
 pub mod tile;
 

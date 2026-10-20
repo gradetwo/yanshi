@@ -117,6 +117,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("get_ancestors", r#"{"object_id":"o1"}"#),
     ("fill", r#"{"layer_id":"L1","data":{}}"#),
     ("export_png", r#"{"path":"x"}"#),
+    ("export_svg", r#"{"path":"x"}"#),
     // **两点之间生成过渡笔触**（AI 画家需求 P0-1.2）：左暗蓝 ⇒ 右暖白，10 笔。
     // 它逐笔走 `brush_stroke` 的落笔实现 ⇒ 与手画一致；`steps` 含首末两点。
     (
@@ -329,8 +330,16 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         r#"{"path": "example-export.png", "layer_id": "L1", "max_edge": 512}"#,
     ),
     (
+        "export_svg",
+        r#"{"path": "example-export.svg", "validate": true}"#,
+    ),
+    (
         "export_book_pngs",
         r#"{"doc_ids": ["page-01", "page-02"], "dir": "book-pages"}"#,
+    ),
+    (
+        "export_timelapse",
+        r#"{"path": "process.mp4", "fps": 30, "frame_every": 10, "width": 2048}"#,
     ),
     (
         "get_object",
