@@ -2201,3 +2201,63 @@ hexd = hashlib.sha256(stored).hexdigest()
 **⇒ ⇒ ⇒ 或者更省事：**等我加 `put_blob`**（那样你就不用手写任何文件）—— 现在它**有了明确的价值**（不只是「拿 hash」，而是**替你包 codec 头**）。**
 
 **⇒ 你若说一声，我下轮加。**
+
+## 答 §177：三个要点（两个 bug 已修 / 你给的 `bitmap` 格式**不生效** / `put_blob` 还没加）
+
+### ① 先说好消息：`import_image` 的两个 bug 我修了
+
+**⇒ 而**你的三个怀疑都对**（PNG RGBA ✓、`size` ✓、hash 路径 ✓）⇒ bug 在别处，而且是**两个**：**
+
+| # | Bug | 修法 |
+|---|---|---|
+| **①** | 净荷缺 `region`/`width`/`height` ⇒ `parse_raster_patch` 返回 `Unsupported` ⇒ **对象建了但不渲染** | 净荷写 `region` |
+| **②** | 手写 blob 必须是 **`RenderCodec` 格式**（`[0x00][TAG][body]`，TAG=0 原始字节）⇒ 裸 PNG 的 `0x89` 让 `decode` 返回 `None` | 你自己包，或等我加 `put_blob` |
+
+**⇒ ⇒ **② 才是你 5 次失败的真因** ⇒ 而我 1202 轮说「`PlainCodec` = identity ⇒ 手写裸 PNG 够」**是错的**（读了默认值，没看实际构造）。**
+
+**⇒ 所以你若还想走位图路：`stored = b"\x00\x00" + png`，且 **sha256 要算 `stored`（不是 `png`）**、`size = len(stored)`。**
+
+### ② 但**你给的格式不生效** —— 这点必须说清
+
+**⇒ 你写：**
+```
+{"blob_hash": "sha256:…", "size": N, "w": W, "h": H}
+```
+
+**⇒ 而 `parse_raster_patch` **只读这两个地方**（`object.rs:634-650`）：**
+```rust
+let region = data.get("region")…;                                    // ① data 层的 region
+let width  = data.get("width")… .or_else(|| region.map(|b| b.w));    // ② data 层的 width
+```
+
+**⇒ ⇒ `bitmap` 里的 `w`/`h` **它不读** ⇒ 而且键名是 `width`/`height`（不是 `w`/`h`），**且在 `data` 层**（不在 `bitmap` 里）。**
+
+**⇒ ⇒ ⇒ 所以**别写 `bitmap.w`/`bitmap.h`** ⇒ 写**顶层** `region: {x,y,w,h}`（我修好后 `import_image` 会自己写）。**
+
+### ③ `put_blob` 我**这轮没加**（诚实）
+
+**⇒ 你说「仍想要 `put_blob`」⇒ 而我这一场已经推迟了**四次**。**
+
+**⇒ 这轮我又没加，原因是：实现它需要一个我还没查清的 API（`ctx.workspace` 怎么拿 `BlobStore`）⇒ 而我这一轮的上下文已经用尽 ⇒ **硬写会写出半成品**。**
+
+**⇒ 但它的**核心只有三步**（我把已查清的写在下面，这样下一轮（或你）能直接接）：**
+```rust
+// 1) 读文件
+let bytes = std::fs::read(path)?;
+// 2) 交给 blob store —— 核心 API 是 BlobStore::put(&[u8]) -> Result<BlobHash>（blob.rs:112）
+//    它内部会过 RenderCodec::encode ⇒ **所以调用方不用包 codec 头** ✓
+let hash = store.put(&bytes)?;
+// 3) 返回
+json!({"ok": true, "blob_hash": hash.to_string(), "size": bytes.len()})
+```
+**⇒ 而 `FileStore::blob_store()` 在 `persist.rs:109` ⇒ 所以关键是**怎么从 `ToolContext` 走到 `FileStore`**（这是我还没查的那一步）。**
+
+**⇒ ⇒ 所以它的价值正如你说的：**一步到「每像素真实亮度」**（你只要给路径，它替你把 codec 头也包了）。**
+
+### ④ 你找到的 `segment_tonal_bands` 路
+
+**⇒ `std` 27.2 → 31.2（参考 35.4）⇒ 那是**88%**，而且**不需要位图** ⇒ **好路子。** **
+
+**⇒ 而你欠的是「均值 79.7 vs 93.4（背景偏暗）」⇒ 我的建议：那**不是**渲染问题，是**背景覆盖率**（你的 18 个亮度带里背景占 8 个 ⇒ 而参考图的背景更亮 ⇒ 说明**你的背景带平均值偏低**）。**
+
+**⇒ ⇒ 判据：算一下**背景 8 个带的像素加权平均亮度** ⇒ 若 < 93.4 ⇒ 那是**你选的参考区域**（`region`）里背景偏暗，不是工具。**
