@@ -1499,3 +1499,60 @@ error: 选区 S1 已存在（要改它请传 mode=add/subtract/intersect）
 **⇒ 一次「凭源码推理」的改动，让**两个**判据红** ⇒ **而它们的数值（65 和 61）本来就指向同一个原因**（变暗）。
 
 **⇒ ⇒ 若我**推之前先跑一个判据**（1 分钟），那两轮 CI（各 20–40 分钟）就省了。**
+
+## 色彩管线**全链路转换点表**（第 1303 轮；用户要求「画清楚再动核心」）
+
+**⇒ 每一行都是**查证过的**（`file:line` 可复核）。⇒ 表里**只有两次转换**，所以「双重转换」没有容身之处。**
+
+### 入向（工具参数 → 画布 tile）
+
+| # | 步骤 | 空间 | 位置 | 转了吗 |
+|---|---|---|---|---|
+| **1** | 工具参数解析（`color` / `#rrggbb` / `{r,g,b,a}`）| **sRGB** | `tools.rs` `brush_color_to_srgb_bytes` | — |
+| **2** | sRGB 字节 → HSV（`rgb_to_hsv`）| sRGB 派生 | `tools.rs:12012` `brush_color_to_hsv` | — |
+| **3** | HSV → RGB 字节 | **sRGB** | `vendor/hokusai-core/src/color.rs:124` `hsv_to_rgb` | **不转 gamma** ⇒ 输出就是 sRGB ✓ |
+| **4** | `base` 参与涂抹混合 | **sRGB** | `vendor/.../stroke.rs:1126` `base` + `:1154` 公式 | **不转**（当前设计：在 sRGB 混合）|
+| **5** | `Dab.color` → 印章 | **sRGB** | `vendor/.../brushmodes.rs:149` `draw_dab_default` | **不转** |
+| **6** | 印章写进 `MemSurface`（u8 tiles）| **sRGB 字节** | `hokusai-tile-mem`（外部 crate，79 行薄封装）| **不转** |
+| **7** | **`MemSurface` → 渲染 tile** | **sRGB → linear** | **`crates/yanshi-render/src/tile.rs:223` `blit_rgba8`**：注释写「用 u8 RGBA（**显示空间**，直通 alpha）覆盖写入」+ **`:226` `srgb_decode_table()`** | **★ 这里是唯一的入向转换** ✓ |
+
+### 出向（tile → PNG）
+
+| # | 步骤 | 空间 | 位置 | 转了吗 |
+|---|---|---|---|---|
+| **8** | `RasterPatch` / `import_image` 也走同一入口 | sRGB → linear | `tile.rs:223` `blit_rgba8` | 同上 ✓ |
+| **9** | tile 像素（f16 RGBA premultiplied）| **linear** | `tile.rs` `pixels: Vec<u16>`（f16）| — |
+| **10** | tile → PNG 字节 | **linear → sRGB** | `buffer.rs:531` `srgb_encode_table()` + `linear_premul_to_u8x4_with` | **★ 唯一的出向转换** ✓ |
+
+### ⇒ 所以链路是**自洽的**（两次转换，一进一出）
+
+```
+sRGB 参数 → HSV → sRGB 字节 → 混合(sRGB) → Dab(sRGB) → MemSurface(sRGB u8)
+  → [tile.rs:226  decode] → linear f16 tile
+  → [buffer.rs:531 encode] → sRGB u8 → PNG
+```
+
+**⇒ ⇒ **每一步都只转一次** ⇒ 所以缺的是「hokusai 内部在线性空间混合」这个**设计变更** ⇒ 而**不是**补一个转换。**
+
+### ★ 我上次为什么错（现在能精确说明）
+
+**⇒ 我在 **步骤 3→4 之间**加了 `srgb_to_linear` ⇒ 于是：**
+```
+base(linear) → 混合(linear 值，但 sRGB 语义) → Dab(linear 值)
+  → [tile.rs:226 decode 一次] → linear²  → [buffer.rs:531 encode] → 比输入暗 61–65 级 ✗
+```
+**⇒ ⇒ 所以**「在 `base` 上加转换」这条路**不可能对** —— 因为**步骤 7 已经解码了一次**。**
+
+**⇒ 要真做「线性混合」，必须**同时**改两端：**
+1. **步骤 4–6**：hokusai 内部按 linear 混合（`base` 转 linear）
+2. **步骤 7**：`blit_rgba8` **不能再解码**（它收到的已经是 linear）⇒ 需要一条**新的入口**（`blit_rgba8_linear`），而**不能改 `blit_rgba8`**（`RasterPatch`/`import_image` 仍传 sRGB 字节）
+
+**⇒ ⇒ ⇒ 所以那不是一个「一行改动」，是**一条新入口 + 两个调用方的分流** ⇒ **那才是它该有的工作量。**
+
+### 判据（要落这一步，先得有这个）
+
+**⇒ 现有 `tool-visible-delta` 就是最好的守门员**：它断「四个颜色的 `max_channel_delta`」（白 0 / `#fefefe` 1 / `#e0e0e0` 31 / `#343832` 205）。**
+
+**⇒ ⇒ 若线性混合**做对了** ⇒ 那四个值**应当不变**（因为往返恒等）⇒ **若变了 ⇒ 就是转错了一次** ✓**
+
+**⇒ ⇒ ⇒ 所以**这条判据足以验收**，不需要新的。**
