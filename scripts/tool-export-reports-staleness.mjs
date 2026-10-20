@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// **`export_png` 必须报告「这张图是否落后于 head」**（第 1346 轮；外部 **X-03**）
+// **`export_png` 报告 head 与文档渲染水位**（第 1346 轮建立；**第 1364 轮改**：不再给误导的 `raster_pending`）
 //
 // **⇒ 为什么有这条** ✗：
 //   外部在 `yanshi-mcp --no-wait` 下连下 10 笔后立刻导出 ⇒ **只有第 1 笔在图里**
@@ -41,52 +41,56 @@ const fails = [];
 const ok = (m) => console.log(`  ✓ ${m}`);
 const bad = (m) => { fails.push(m); console.log(`  ✗ ${m}`); };
 
-const has = ["head_seq", "rendered_seq", "raster_pending"].every((k) => k in ex);
-if (has) ok(`① 三个字段都在（head_seq=${ex.head_seq}｜rendered_seq=${ex.rendered_seq}｜raster_pending=${ex.raster_pending}）`);
-else bad(`① 响应必须有 head_seq / rendered_seq / raster_pending ⇒ 实测缺 ${["head_seq", "rendered_seq", "raster_pending"].filter((k) => !(k in ex)).join("、")}`);
+const has = ["head_seq", "rendered_seq"].every((k) => k in ex);
+if (has) ok(`① 两个字段都在（head_seq=${ex.head_seq}｜rendered_seq=${ex.rendered_seq}）`);
+else bad(`① 响应必须有 head_seq / rendered_seq ⇒ 实测缺 ${["head_seq", "rendered_seq"].filter((k) => !(k in ex)).join("、")}`);
 
-if (typeof ex.head_seq === "number" && typeof ex.rendered_seq === "number" && typeof ex.raster_pending === "boolean") {
-  const expect = ex.rendered_seq < ex.head_seq;
-  if (ex.raster_pending === expect) ok(`② 恒等式成立：raster_pending === (rendered_seq < head_seq) ⇒ ${ex.raster_pending}`);
-  else bad(`② 恒等式必须成立 ⇒ rendered_seq=${ex.rendered_seq}、head_seq=${ex.head_seq} 时 raster_pending 应为 ${expect}，实测 ${ex.raster_pending}`);
+if (typeof ex.head_seq === "number" && typeof ex.rendered_seq === "number") {
+  // **⇒ 恒等式**：渲染水位**不该超过** head（超过就是矛盾）
+  if (ex.rendered_seq <= ex.head_seq) ok(`② 渲染水位不超过 head（${ex.rendered_seq} ≤ ${ex.head_seq}）`);
+  else bad(`② rendered_seq 不该超过 head_seq ⇒ 实测 ${ex.rendered_seq} > ${ex.head_seq}`);
   if (ex.head_seq >= 1) ok(`③ head_seq=${ex.head_seq}（≥1 ⇒ 原子进了日志）`);
   else bad(`③ 写过一笔之后 head_seq 应 ≥ 1 ⇒ 实测 ${ex.head_seq}`);
-  if (ex.raster_pending === false) ok("④ 同步模式下导出后栅格不落后（raster_pending=false）");
-  else bad(`④ 同步模式导出后 raster_pending 应为 false ⇒ 实测 true（rendered ${ex.rendered_seq} < head ${ex.head_seq}）`);
+  // **⇒ 第 1364 轮的关键断言**：**不许**再出现 `raster_pending`
+  //   它曾被误当成「导出可能不完整」⇒ 而导出是**同步重渲** ⇒ 那个布尔**必然误报** ✗
+  if (!("raster_pending" in ex)) ok("④ 不再返回误导字段 raster_pending");
+  else bad("④ 不该再有 raster_pending ⇒ 它对「导出是否完整」是误导的（导出总是同步重渲）");
 } else {
-  bad("② 三个字段的类型不对（head/rendered 应 number、raster_pending 应 boolean）");
+  bad("② 两个字段的类型不对（都应是 number）");
 }
 
-// ---- ⑤ **能造出落后时，必须如实报 true** ----
-//   **⇒ 为什么必须有这条** ✗（第 1346 轮实测）：只断「同步时是 false」的话，
-//     把 `raster_pending` 写成**常量 false** 也能过 ⇒ **判据毫无牙** ✗
-//     ⇒ 而我第一次的变异正是这个 → **判据没红** ⇒ 所以补这一条 ✓
-//   **⇒ 怎么造**：`brush_stroke` 带 `wait_for_render: false` ⇒ 立即返回、渲染留后台
-//     ⇒ 实测 `head=5｜rendered=2` ⇒ 落后是真的 ✓
+// **⑤ 真正该验的**：`wait_for_render:false` 之后导出，图**仍然完整**
+//   ⇒ 用两笔颜色截然不同的笔画：若导出只含第一笔，第二个颜色点会是白底 ✓
 {
   const lag = `lag_${stamp}`;
-  const d2 = await post("/api/documents", { doc_id: lag, width: 512, height: 512 });
-  if (!d2?.token) { console.error("  ⊘ 不可判：建文档失败（落后用例）"); process.exit(3); }
-  const T2 = d2.token;
-  await post("/api/tools/create_layer", { layer_id: "L", name: "L" }, lag, T2);
-  for (let k = 1; k <= 3; k += 1) {
-    await post("/api/tools/brush_stroke", {
-      layer_id: "L", brush: "calligraphy", size: 40, color: [200, 60, 60], wait_for_render: false,
-      points: [[40, 100 * k, 60 * k], [200, 120 * k, 80 * k], [380, 140 * k, 100 * k]],
-    }, lag, T2);
-  }
-  const ex2 = await post("/api/tools/export_png", { path: `lag_${stamp}.png`, deterministic: true }, lag, T2);
-  if (ex2?.ok !== true) {
-    console.log("  ⊘ 跳过 ⑤：落后用例的导出失败（不是产品问题）");
+  const d2 = await post("/api/documents", { doc_id: lag, width: 256, height: 256 });
+  if (!d2?.token) {
+    console.log("  ⊘ 跳过 ⑤：建文档失败（不是产品问题）");
   } else {
-    const behind = typeof ex2.rendered_seq === "number" && typeof ex2.head_seq === "number"
-      && ex2.rendered_seq < ex2.head_seq;
-    if (!behind) {
-      console.log(`  ○ ⑤ 本轮没造出落后（head=${ex2.head_seq}｜rendered=${ex2.rendered_seq}）⇒ 不可判，不算不符`);
-    } else if (ex2.raster_pending === true) {
-      ok(`⑤ 落后时如实报 true：head=${ex2.head_seq}｜rendered=${ex2.rendered_seq}｜raster_pending=true`);
+    const T2 = d2.token;
+    await post("/api/tools/create_layer", { layer_id: "L", name: "L" }, lag, T2);
+    for (const [c, y] of [[[220, 30, 30], 80], [[30, 30, 220], 180]]) {
+      await post("/api/tools/brush_stroke", {
+        layer_id: "L", brush: "calligraphy", size: 40, color: c.map((v) => v / 255),
+        points: [[60, y, 0.8], [200, y, 0.8]], preview: false, wait_for_render: false,
+      }, lag, T2);
+    }
+    // **⇒ 用 `sample_colors` 采两点，不必解 PNG**（判据里没有解码器 ✓）
+    const ex2 = await post("/api/tools/export_png", { path: `lag_${stamp}.png`, deterministic: true }, lag, T2);
+    if (ex2?.ok !== true) {
+      console.log("  ⊘ 跳过 ⑤：导出失败（不是产品问题）");
     } else {
-      bad(`⑤ 落后时必须报 raster_pending=true ⇒ head=${ex2.head_seq}｜rendered=${ex2.rendered_seq} 而实测 ${ex2.raster_pending}（掩盖了落后）`);
+      const sc = await post("/api/tools/sample_colors", { points: [[130, 80], [130, 180]] }, lag, T2);
+      const samples = sc?.samples ?? sc?.context?.samples ?? [];
+      if (samples.length !== 2) {
+        console.log(`  ⊘ 跳过 ⑤：sample_colors 返回 ${samples.length} 个样本`);
+      } else {
+        const [red, blue] = samples.map((x) => x.rgba || []);
+        const redOk = red[0] > red[2] + 60;
+        const blueOk = blue[2] > blue[0] + 60;
+        if (redOk && blueOk) ok(`⑤ wait_for_render:false 之后画面仍含**两笔**（红 ${red}｜蓝 ${blue}）`);
+        else bad(`⑤ 画面必须含两笔 ⇒ 实测红点 ${red}（红=${redOk}）、蓝点 ${blue}（蓝=${blueOk}）`);
+      }
     }
   }
 }

@@ -558,11 +558,18 @@ pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         "source_width": width,
         "source_height": height,
         "scaled": target_w != width || target_h != height,
-        // **落后标记** ✓：`raster_pending=true` ⇒ 这张图**可能少了** head 之后的那些笔
-        //   ⇒ 调用方应先 `get_render_status` 或改用**同步**模式，再重导 ✓
+        // **★ 这里**不许**给 `raster_pending`** ✗（第 1364 轮自查推翻第 1346 轮）
+        //   **⇒ 我原先加的 `raster_pending = rendered_seq < head_seq` 是**误报**：
+        //     `rendered_seq` 是**文档渲染水位**（预览/缩略图那条线），而 `export_png` 是
+        //     **同步重渲**（`render_region_raw` 从原子直接渲）⇒ **与那个水位无关** ✓
+        //   **⇒ 实测**：`batch` 50 笔（`wait_for_render:false`）后导出 ⇒
+        //     `head=52 / rendered=2`（水位落后）⇒ 而导出的图**非白像素 45100**、
+        //     两张（连导两次）**逐像素相同** ⇒ **图是完整的** ⇒ 那个 `true` 会让人**白跑一遍** ✗
+        //   **⇒ 所以**只留两个**如实**的数字（head 与渲染水位），并说清它们**不管**导出的完整性 ✓
         "head_seq": head_seq,
         "rendered_seq": rendered_seq,
-        "raster_pending": rendered_seq < head_seq,
+        // **⇒ 导出完整性**不需要这个字段：`export_png` **总是**从原子同步重渲 ✓
+
         "warnings": render_warnings,
     }))
 }
