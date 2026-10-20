@@ -8543,7 +8543,7 @@ fn shape_json_bbox(shape: &Value) -> Option<(f64, f64, f64, f64)> {
 /// 都不是矩形 ⇒ 只有 `intersect` 能解析式覆盖，那会让三条走两条不同的路（必然漂移）。
 ///
 /// 采样用 `coverage(x+0.5, y+0.5)`（像素中心）。全空时返回 `Ok(None)`。
-fn merge_selection_shapes(
+pub(super) fn merge_selection_shapes(
     ctx: &mut ToolContext<'_>,
     old_json: &Value,
     new_json: &Value,

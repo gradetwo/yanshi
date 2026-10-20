@@ -4785,6 +4785,51 @@ pub(super) fn commit_bitmap_selection(
         (String::new(), 0)
     };
 
+    // **★ N3D-04：`mode != "new"` 时必须**真的合并**（第 1288 轮）** ✓
+    //   **缺陷**：`fold.rs:683` 只做「允许覆盖」⇒ 而**真正的布尔合并**在
+    //     `tools.rs` 的 `merge_selection_shapes` ⇒ 而这里**从不调它** ⇒
+    //     于是 `mode=add/subtract/intersect` **静默覆盖**旧选区（旧工具修过的缺陷在新工具复发）✗
+    //   **修法**：`mode != "new"` 时先取旧选区的 shape ⇒ 合并 ⇒ 用合并结果替换 payload 的 shape/blob
+    if mode != "new" {
+        if let Some(old_shape) = document_state(ctx)
+            .ok()
+            .and_then(|st| st.selections.get(selection_id).map(|s| s.shape.clone()))
+        {
+            let old_json = serde_json::to_value(&old_shape).unwrap_or(Value::Null);
+            let new_json = json!({
+                "kind": "bitmap",
+                "bbox": [bx, by, bw, bh],
+                "blob": blob_str,
+                "feather_baked": feather_baked,
+            });
+            if let Ok(Some((mb, mblob, mlen))) =
+                merge_selection_shapes(ctx, &old_json, &new_json, mode)
+            {
+                // 合并成功 ⇒ 用合并后的 bbox/blob 覆盖（`mblob` 是新的 blob hash）
+                let merged_shape = json!({
+                    "kind": "bitmap",
+                    "bbox": mb,
+                    "blob": mblob,
+                    "feather_baked": feather_baked,
+                });
+                let payload = json!({
+                    "selection_id": selection_id,
+                    "shape": merged_shape,
+                    "feather": 0.0,
+                    "mode": "new",  // 已经合并过 ⇒ 不要再让折叠层按 mode 放行
+                    "invert": invert,
+                    "refined_edges": refined_edges,
+                    "blobs": [mblob],
+                    "refs": { "blobs": [mblob] },
+                    "merged_from": mode,
+                    "merged_bytes": mlen,
+                });
+                let _result = ctx.commit(AtomKind::CreateSelection, payload)?;
+                return Ok((mb[0], mb[1], mb[2], mb[3], mblob, mlen, _result.seq));
+            }
+        }
+    }
+
     // ---- 提交 CreateSelection 原子 ----
     // shape 的 feather_baked 标记防渲染期重复羽化；顶层 feather 置 0
     //（`SelectionShape::from_selection` 会并入，但 Bitmap 的 coverage 本就跳过羽化）。
