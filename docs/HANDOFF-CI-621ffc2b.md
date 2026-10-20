@@ -653,3 +653,40 @@ grep -rn "175\b" docs/guide.md docs/guide.zh-CN.md docs/tools.md
 **⇒ 所以「改一个数字前先 `grep -rn` 全仓」这条规矩（AGENTS.md 已有），本轮**第 2 次**被验证。**
 
 **⇒ 而这次的教训**更细**：`grep` 要按**那个数字**，不是按**相关的名字**。**
+
+## K-01 的定位结果（第 1211 轮，未修，只定位）
+
+**⇒ 第三轮复审的 P0 之一：`stroke_total_length` 只在 native 通道计算 ⇒ wasm 双宿主输出不一致。**
+
+### 已确认的事实（全部源码行）
+
+| # | 事实 | 位置 |
+|---|---|---|
+| **①** | `stroke_total_length` 字段定义 | `vendor/hokusai-core/src/state.rs:90` |
+| **②** | 初始值为 **`0.0`** | `vendor/hokusai-core/src/state.rs:219` |
+| **③** | 它被用来算 `stroke_progress = stroke_current_length / stroke_total_length` | `vendor/hokusai-core/src/stroke.rs:462-463` |
+| **④** | `stroke_progress` 决定 `effective_pressure`（`pressure_shape`） | `vendor/hokusai-core/src/stroke.rs:471` |
+| **⑤** | **唯一的写入点**在 native 侧：`prime_stroke_total_length` | `crates/yanshi-server/src/tools.rs:17285` |
+| **⑥** | 它由 `brush_deposit_mask` 调用（`stamp_stroke` 之前） | `tools.rs:17294` |
+| **⑦** | **wasm 侧没有对应调用** ⇒ `stroke_total_length` 恒 `0.0` | 全仓 `grep` 只找到 ①–⑥（5 处） |
+
+**⇒ ⇒ 所以：**wasm 里 `stroke_total_length = 0` ⇒ ③ 的 `if` 不成立 ⇒ `stroke_progress` 退回缺省 ⇒ **`pressure_shape`/`stroke_taper` 在 wasm 里不生效** ✓**
+
+### 下一轮的第一步（我没做完的）
+
+**⇒ native 的 `stamp_stroke` 在 `tools.rs:17015`（**自己实现**，不在 vendor）⇒ 所以它和 wasm 走的是**两条**落笔路径。**
+
+**⇒ 所以修法有两条路（下一轮择一）：**
+
+| # | 路 | 代价 |
+|---|---|---|
+| **A** | 把 `prime_stroke_total_length` **移进 `hokusai`**（如 `BrushState::prime_total_length(&points)`）⇒ 两个宿主都能调 | **小**（一个 pub 方法 + native 改为调用它）|
+| **B** | 在 wasm 侧**也调**一次 `prime_stroke_total_length`（若 wasm 能复用同一 crate）| **更小，但要确认 wasm 侧有等价入口** |
+
+**⇒ 而第一步要先查：`tools.rs:17015-17340` 里 `stamp_stroke` 调的**具体 `hokusai` 入口是什么**（我只看到 `myb::from_str` 与 `tile_mem::`）⇒ 若它不调 `hokusai` 的 stamp，而是自己逐 dab 画，那**路 A 的落点就要重新找**。**
+
+### 判据（下一轮要写的）
+
+**⇒ 最直接：**同一笔（同 brush + 同 points + 同 `pressure_shape`）在 native 与 wasm 各渲染一次 ⇒ 逐像素相同**。**
+
+**⇒ 而 wasm 侧的渲染入口在哪，我**还没查**（那也是下一轮的事）。**
