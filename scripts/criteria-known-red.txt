@@ -28172,3 +28172,5 @@ tool-stamp-parity.mjs	# 第 1037 轮登记（flaky，约 10%）——⚠ 与第 
 #     （判据文案自己说：增量盖章丢 tile 内容；常见根因是参照组只清了 tile 缓存）
 #   ⇒ 修法（引擎侧）：修 `incremental_stamp_matches_full_tile_re_render` 的缺陷
 #     ⇒ 修好后这判据应恢复「30 次全绿」⇒ 届时可移除本登记
+browser-live-ui.mjs  # 环境红：要真实 chromium 渲染（本机无 GPU 合成 ⇒ 退出码 1）。不是产品缺陷 —— AGENTS.md「已知的 3 条环境红」第 2 条。
+browser-new-doc-size.mjs  # 环境红：同上（要真实 chromium 的视口与合成）。AGENTS.md「已知的 3 条环境红」第 2 条。
