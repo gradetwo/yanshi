@@ -46,20 +46,26 @@ else bad(`③ 必须一致 ⇒ 代码 ${codeN}、文档 ${docN}`);
 const base = process.argv[2];
 if (base) {
   try {
+    // **⇒ `doc_id` 必须自己留着用** ✓（第 1353 轮修）：原先读 `d.doc_id`，
+    //   而建文档的响应**不含** `doc_id` ⇒ URL 变成 `?doc=&token=…` ⇒ 服务端拒绝
+    //   ⇒ 于是 ④ **静默降级成「未验」** ✗ —— 那正是我在打的那个模式 ✗
+    const docId = `adj_${Date.now()}`;
     const r = await fetch(`${base}/api/documents`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ doc_id: `adj_${Date.now()}`, width: 8, height: 8 }),
+      body: JSON.stringify({ doc_id: docId, width: 8, height: 8 }),
     });
     const d = await r.json();
     const tok = d?.token;
     if (!tok) {
       console.log("  ○ ④ 运行时未验：建不出文档（不算失败）");
     } else {
-      const rr = await fetch(`${base}/api/tools/list_engine_capabilities?doc=${d.doc_id || ""}&token=${tok}`, {
+      const rr = await fetch(`${base}/api/tools/list_engine_capabilities?doc=${docId}&token=${tok}`, {
         method: "POST", headers: { "content-type": "application/json" }, body: "{}",
       });
-      const c = (await rr.json())?.context ?? {};
-      const live = c?.counts?.adjustments;
+      // **⇒ `counts` 在**顶层**，不在 `context` 里** ✓（第 1353 轮实测：
+      //   响应顶层 keys 是 `adjustments`/`blend_modes`/`counts`/… ⇒ `context` 里没有）
+      const body = await rr.json();
+      const live = body?.counts?.adjustments ?? body?.context?.counts?.adjustments;
       if (typeof live !== "number") console.log("  ○ ④ 运行时未验：响应里没有 counts.adjustments（不算失败）");
       else if (live === codeN) ok(`④ 运行时 counts.adjustments = ${live}（与代码一致）`);
       else bad(`④ 运行时 counts.adjustments 必须是 ${codeN} ⇒ 实测 ${live}`);
