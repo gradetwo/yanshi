@@ -747,3 +747,27 @@ abort on a single failure), `reject_suggestion` (records the reason) and `list_s
 1. **`subtract` 顺序**：先建外轮廓，再逐个挖洞（反过来会把外轮廓也挖掉）
 2. **洞的绕向别当判据**：`find_contours` 与 `cv2` 绕向**相反** ⇒ 用「轮廓面积 vs 掩膜面积」判
 3. **`feather` 会用掉面积**：面积判据要用 `feather: 0` 测一次
+
+### `medium_stroke` 的 `texture`：**只有 `oil` 真的用它**（第 1412 轮实测）
+
+**⇒ 参数本身**：`texture` 是**数字 0..1**（`GET /api/tools` 的 `inputSchema` 里就是这么声明的，
+说明为「纹理强度 0..1；缺省 0 = 插件原本的笔痕；越大越平滑」）。
+
+**⇒ ⇒ 而**哪些介质真的响应它**，此前没有任何地方写过。实测（同一笔、`texture` 0 vs 1、导出 PNG 逐字节比）：**
+
+| 介质 | `texture` 0 → 1 是否改变产物 |
+|---|---|
+| **`oil`** | **改变 ✓** |
+| `watercolor` | **逐字节相同 ✗** |
+| `marker` | **逐字节相同 ✗** |
+| `pencil` | **逐字节相同 ✗** |
+| `pixel` | **逐字节相同 ✗** |
+| `example` | **逐字节相同 ✗** |
+
+**⇒ ⇒ 所以**只有油画插件把这个参数接进了它自己的笔痕模型**；其余五个忽略它（**能力边界，不是缺陷**）✓**
+
+**⇒ 判据**：`tool-medium-stroke-texture.mjs`
+- ① `inputSchema` 里 `texture` 的类型必须是 **number**
+- ② 传字符串 `"smooth"` ⇒ **必须被拒**（类型检查；以前会被静默读成 0 ✗）
+- ③ **`oil` 必须响应**（0 与 1 的导出字节不同）
+- ④ **打印**其余五个介质（实测都不变 ⇒ 边界，不断言）
