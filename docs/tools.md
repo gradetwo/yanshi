@@ -525,6 +525,8 @@ shadows_highlights, selective_color, color_lut, red_eye, denoise, lens, perspect
 
 ### 批量落笔：一次调用画 N 笔（第 1359 轮补；外部提问）
 
+> **本节所有耗时数字的权威来源是 `docs/performance-notes.md`**（第 2 节）⇒ 若不一致以那份为准 ✓
+
 **用 `batch`** —— 把 N 个 `brush_stroke` 放进 `calls` 数组：
 
 ```json
