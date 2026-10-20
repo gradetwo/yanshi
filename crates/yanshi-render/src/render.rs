@@ -14,7 +14,8 @@
 //!
 //! 文本光栅化（需要内嵌字体子集）、retouch/liquify、实例/组引用、
 //! WebP/AVIF 位图编解码尚未实现：这些对象被跳过并记入 [`RenderStats::unsupported`]，
-//! 而不是让整次渲染失败。位图补丁目前只支持 `image/x-yanshi-raw`（内核内表示）。
+//! 而不是让整次渲染失败。位图补丁支持 `image/x-yanshi-raw`（内核内表示）、
+//! `image/png` 与 `image/jpeg`（后两者在内核里解码成 RGBA，见 [`fetch_raster_patch`]）。
 
 // **★ 渲染趟编号（2026-10-15 ✓）**：同一趟分层渲染里 blit 与 composite 打**同一个号** ✓
 //   **为什么需要** ✗：同一个画布点上，blit 追踪看到虹膜 ✓、合成追踪看到眼白 ✗
@@ -25,7 +26,7 @@ use crate::blend::BlendMode;
 use crate::brush::{BrushSpec, StrokeGeometry, StrokePoint};
 use crate::buffer::Buffer;
 use crate::color::{premultiply, u8x4_to_linear_premul, LinearRgba};
-use crate::filter::{apply_adjustment, apply_filter, FilterKind};
+use crate::filter::{apply_adjustment, apply_filter, AdjustmentKind, FilterKind};
 use crate::geometry::{
     ellipse_coverage_clipped, polygon_coverage_clipped, rect_coverage_clipped, Coverage,
 };
@@ -2966,7 +2967,7 @@ impl Renderer {
         self.local_padding(state, &reach_area).max(global)
     }
 
-    /// 整层类效果的外扩（调整不产生外扩；滤镜与蒙版羽化产生邻域需求）。
+    /// 整层类效果的外扩（逐像素调整不产生外扩；几何/邻域类调整、滤镜与蒙版羽化产生源像素需求）。
     fn global_padding(&self, state: &DocumentState) -> u32 {
         let mut padding = 0u32;
         for layer in state.alive_layers() {
@@ -3001,6 +3002,23 @@ impl Renderer {
                     let radius = (f / 2.0).round().max(1.0) as u32;
                     padding = padding.max(radius + 1);
                 }
+            }
+            // **几何/邻域类调整也要外扩** ✓（缺陷修复）：旧口径「调整不产生外扩」只对
+            // 逐像素调整成立；lens/perspective 的源像素可偏离输出像素（见
+            // `AdjustmentKind::padding`），不外扩 ⇒ 子缓冲里没有源像素 ⇒ 采样判越界
+            // 写透明（曾表现为并行分带下的交替白带 ✓）。
+            if object.object_type == yanshi_core::ObjectType::Adjustment {
+                let kind_name = object
+                    .data
+                    .get("adjustment_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let params = object.data.get("params").cloned().unwrap_or(Value::Null);
+                if let Some(kind) = AdjustmentKind::from_name(kind_name) {
+                    padding = padding
+                        .max(kind.padding(&params, (state.width as f64, state.height as f64)));
+                }
+                continue;
             }
             if object.object_type != yanshi_core::ObjectType::Filter {
                 continue;
@@ -3160,6 +3178,23 @@ impl Renderer {
                     .unwrap_or((0.0, 0.0));
                 let reach = (offset.0.max(offset.1) + size / 2.0 + 2.0).ceil() as u32;
                 padding = padding.max(reach);
+                continue;
+            }
+            // **几何/邻域类调整也要外扩** ✓（缺陷修复）：旧口径「调整不产生外扩」只对
+            // 逐像素调整成立；lens/perspective 的源像素可偏离输出像素（见
+            // `AdjustmentKind::padding`），不外扩 ⇒ 子缓冲里没有源像素 ⇒ 采样判越界
+            // 写透明（曾表现为并行分带下的交替白带 ✓）。
+            if object.object_type == yanshi_core::ObjectType::Adjustment {
+                let kind_name = object
+                    .data
+                    .get("adjustment_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let params = object.data.get("params").cloned().unwrap_or(Value::Null);
+                if let Some(kind) = AdjustmentKind::from_name(kind_name) {
+                    padding = padding
+                        .max(kind.padding(&params, (state.width as f64, state.height as f64)));
+                }
                 continue;
             }
             if object.object_type != yanshi_core::ObjectType::Filter {
@@ -3485,7 +3520,13 @@ impl Renderer {
                     }
                 }
                 Primitive::Adjustment { kind, params } => {
-                    if !apply_adjustment(layer_buffer, &kind, &params, opacity) {
+                    if !apply_adjustment(
+                        layer_buffer,
+                        &kind,
+                        &params,
+                        opacity,
+                        (state.width as f64, state.height as f64),
+                    ) {
                         track
                             .unsupported
                             .push(format!("调整类型未实现: {kind}（对象 {}）", object.id));
@@ -4271,6 +4312,17 @@ pub const RAW_RGBA_MIME: &str = "image/x-yanshi-raw";
 /// 而内核内部表示**仍然是 RGBA** ✓ ⇒ **∴ 渲染结果不变 ✓**（"同笔同结果" ✓）。
 pub const PNG_MIME: &str = "image/png";
 
+/// **JPEG 位图的 MIME** ✓（照片导入）：存储用 JPEG（有损 ⇒ 只作**导入源** ✓），
+/// 内核解码成 RGBA 后与其它格式走同一条路（解码器见 [`crate::jpeg`] ✓）。
+pub const JPEG_MIME: &str = "image/jpeg";
+
+/// **内核能解码的位图补丁 MIME**（单一事实来源 ✓）：[`fetch_raster_patch`] 的分派与
+/// 服务端 `import_image` 的 `blob_decodable` 信号都读它 ⇒ 两处不再各写一份清单后漂移
+/// （曾漂移过：内核只认 raw/PNG 时 JPEG 被静默跳过、而信号仍报「可解码」✓）。
+pub fn raster_mime_supported(mime_type: &str) -> bool {
+    mime_type == RAW_RGBA_MIME || mime_type == PNG_MIME || mime_type == JPEG_MIME
+}
+
 /// 读取并解码一个位图补丁（`Ok(None)` ⇒ 该对象应被跳过，告警已写入 `warnings`）。
 ///
 /// 抽出来是为了让"缓存未命中"那条路径也能在 [`BitmapCache`] 的锁内执行
@@ -4308,9 +4360,23 @@ fn fetch_raster_patch(
         })?;
         return Ok(Some((width, height, rgba8)));
     }
+    if mime_type == JPEG_MIME {
+        let (width, height, rgba8) = crate::jpeg::decode_jpeg(&bytes).ok_or_else(|| {
+            YanshiError::new(
+                yanshi_core::ErrorCode::InvalidArgument,
+                yanshi_core::ErrorContext::detail(format!(
+                    "位图补丁 JPEG 解码失败（对象 {object_id}；只支持 baseline/渐进式灰度与 \
+                     RGB 彩色 JPEG，CMYK 请先转成 PNG）"
+                )),
+            )
+            .with_object(object_id.to_owned())
+            .with_blob(blob.to_string())
+        })?;
+        return Ok(Some((width, height, rgba8)));
+    }
     if mime_type != RAW_RGBA_MIME {
         warnings.push(format!(
-            "位图补丁格式未实现: {mime_type}（对象 {object_id}，内核仅支持 {RAW_RGBA_MIME} 与 {PNG_MIME}）"
+            "位图补丁格式未实现: {mime_type}（对象 {object_id}，内核仅支持 {RAW_RGBA_MIME}、{PNG_MIME} 与 {JPEG_MIME}）"
         ));
         return Ok(None);
     }
@@ -6034,6 +6100,197 @@ mod tests {
         let warned = renderer.render_document(&state, &store).unwrap();
         assert_eq!(warned.stats.unsupported.len(), 1);
         assert_eq!(warned.pixel(5, 5).unwrap()[0], 255, "未识别时不改动像素");
+    }
+
+    /// **JPEG 位图补丁必须被内核解码**（缺陷：`image/jpeg` 曾走「格式未实现」分支被静默跳过
+    /// ⇒ MCP 路 `put_blob` + `import_image` 全程 ok 却渲染纯白 ✓）。
+    /// 夹具：一张 16×16 的 JPEG（左半红、右半蓝，quality 95；JPEG 有损 ⇒ 只断关系不断单点 ✓）。
+    const TINY_JPEG: &[u8] = &[
+        255, 216, 255, 224, 0, 16, 74, 70, 73, 70, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 255, 219, 0, 67,
+        0, 2, 1, 1, 1, 1, 1, 2, 1, 1, 1, 2, 2, 2, 2, 2, 4, 3, 2, 2, 2, 2, 5, 4, 4, 3, 4, 6, 5, 6,
+        6, 6, 5, 6, 6, 6, 7, 9, 8, 6, 7, 9, 7, 6, 6, 8, 11, 8, 9, 10, 10, 10, 10, 10, 6, 8, 11, 12,
+        11, 10, 12, 9, 10, 10, 10, 255, 219, 0, 67, 1, 2, 2, 2, 2, 2, 2, 5, 3, 3, 5, 10, 7, 6, 7,
+        10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+        10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+        10, 10, 10, 10, 255, 192, 0, 17, 8, 0, 16, 0, 16, 3, 1, 34, 0, 2, 17, 1, 3, 17, 1, 255,
+        196, 0, 31, 0, 0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8,
+        9, 10, 11, 255, 196, 0, 181, 16, 0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 125, 1, 2, 3,
+        0, 4, 17, 5, 18, 33, 49, 65, 6, 19, 81, 97, 7, 34, 113, 20, 50, 129, 145, 161, 8, 35, 66,
+        177, 193, 21, 82, 209, 240, 36, 51, 98, 114, 130, 9, 10, 22, 23, 24, 25, 26, 37, 38, 39,
+        40, 41, 42, 52, 53, 54, 55, 56, 57, 58, 67, 68, 69, 70, 71, 72, 73, 74, 83, 84, 85, 86, 87,
+        88, 89, 90, 99, 100, 101, 102, 103, 104, 105, 106, 115, 116, 117, 118, 119, 120, 121, 122,
+        131, 132, 133, 134, 135, 136, 137, 138, 146, 147, 148, 149, 150, 151, 152, 153, 154, 162,
+        163, 164, 165, 166, 167, 168, 169, 170, 178, 179, 180, 181, 182, 183, 184, 185, 186, 194,
+        195, 196, 197, 198, 199, 200, 201, 202, 210, 211, 212, 213, 214, 215, 216, 217, 218, 225,
+        226, 227, 228, 229, 230, 231, 232, 233, 234, 241, 242, 243, 244, 245, 246, 247, 248, 249,
+        250, 255, 196, 0, 31, 1, 0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5,
+        6, 7, 8, 9, 10, 11, 255, 196, 0, 181, 17, 0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 119,
+        0, 1, 2, 3, 17, 4, 5, 33, 49, 6, 18, 65, 81, 7, 97, 113, 19, 34, 50, 129, 8, 20, 66, 145,
+        161, 177, 193, 9, 35, 51, 82, 240, 21, 98, 114, 209, 10, 22, 36, 52, 225, 37, 241, 23, 24,
+        25, 26, 38, 39, 40, 41, 42, 53, 54, 55, 56, 57, 58, 67, 68, 69, 70, 71, 72, 73, 74, 83, 84,
+        85, 86, 87, 88, 89, 90, 99, 100, 101, 102, 103, 104, 105, 106, 115, 116, 117, 118, 119,
+        120, 121, 122, 130, 131, 132, 133, 134, 135, 136, 137, 138, 146, 147, 148, 149, 150, 151,
+        152, 153, 154, 162, 163, 164, 165, 166, 167, 168, 169, 170, 178, 179, 180, 181, 182, 183,
+        184, 185, 186, 194, 195, 196, 197, 198, 199, 200, 201, 202, 210, 211, 212, 213, 214, 215,
+        216, 217, 218, 226, 227, 228, 229, 230, 231, 232, 233, 234, 242, 243, 244, 245, 246, 247,
+        248, 249, 250, 255, 218, 0, 12, 3, 1, 0, 2, 17, 3, 17, 0, 63, 0, 249, 14, 190, 127, 175,
+        160, 43, 231, 250, 253, 195, 232, 97, 255, 0, 51, 223, 251, 149, 255, 0, 221, 131, 250, 59,
+        233, 103, 255, 0, 50, 111, 251, 152, 255, 0, 220, 7, 255, 217,
+    ];
+
+    #[test]
+    fn fetch_raster_patch_decodes_jpeg_instead_of_skipping() {
+        let store = MemoryBlobStore::new();
+        let blob = store.put(TINY_JPEG).unwrap();
+        let mut warnings = Vec::new();
+        let got = fetch_raster_patch(
+            &store,
+            &blob,
+            "image/jpeg",
+            16,
+            16,
+            "obj_jpeg",
+            &mut warnings,
+        )
+        .unwrap()
+        .expect("JPEG 位图补丁应被解码，而不是当作未实现格式跳过");
+        let (width, height, rgba) = got;
+        assert_eq!((width, height), (16, 16));
+        assert_eq!(rgba.len(), 16 * 16 * 4);
+        // 左半红、右半蓝（关系断言：红区 R 应显著大于 B，蓝区反之 ✓）。
+        let pixel = |x: usize, y: usize| {
+            let base = (y * 16 + x) * 4;
+            [rgba[base], rgba[base + 1], rgba[base + 2], rgba[base + 3]]
+        };
+        let left = pixel(4, 8);
+        let right = pixel(12, 8);
+        assert!(left[0] > left[2] + 60, "左半应为红色主导，实测 {left:?}");
+        assert!(right[2] > right[0] + 60, "右半应为蓝色主导，实测 {right:?}");
+        // 损坏的 JPEG 必须像损坏的 PNG 一样硬报错，而不是静默跳过 ✓。
+        let bad = store.put(b"not a jpeg at all").unwrap();
+        let mut warnings = Vec::new();
+        let result =
+            fetch_raster_patch(&store, &bad, "image/jpeg", 16, 16, "obj_bad", &mut warnings);
+        assert!(result.is_err(), "损坏的 JPEG 应报错，实测 {result:?}");
+        // 真未实现的格式仍走「告警 + 跳过」（行为锁定 ✓）。
+        let webp = store.put(b"RIFF....WEBP").unwrap();
+        let mut warnings = Vec::new();
+        let skipped = fetch_raster_patch(
+            &store,
+            &webp,
+            "image/webp",
+            16,
+            16,
+            "obj_webp",
+            &mut warnings,
+        )
+        .unwrap();
+        assert!(skipped.is_none());
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].contains("未实现"),
+            "告警应说明未实现：{warnings:?}"
+        );
+    }
+
+    /// **透视恒等在真实文档渲染里必须逐字节恒等**（缺陷：几何调整按带本地坐标算
+    /// ⇒ 并行分带时每带下半采样越界写透明、合成出交替白带 ✓）。
+    /// 不变量有二：① 带恒等调整的渲染 == 不带调整的渲染（逐字节）；
+    /// ② 并行渲染 == 串行渲染（逐字节，本仓「分块 == 整幅」的老规矩 ✓）。
+    #[test]
+    fn perspective_identity_is_exact_in_document_render() {
+        let (width, height) = (200u32, 150u32);
+        // 逐像素可区分的图案（raw 位图补丁）：任何错位/白带都会让字节不等 ✓。
+        let mut rgba = vec![0u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let base = ((y * width + x) * 4) as usize;
+                rgba[base] = ((x * 7 + y * 3) % 251) as u8;
+                rgba[base + 1] = ((x * 5 + y * 11) % 241) as u8;
+                rgba[base + 2] = ((x * 13 + y * 7) % 233) as u8;
+                rgba[base + 3] = 255;
+            }
+        }
+        let store = MemoryBlobStore::new();
+        let blob = store.put(&rgba).unwrap();
+        let mut state = white_document();
+        state.width = width;
+        state.height = height;
+        state.objects.insert(
+            "obj_img".to_owned(),
+            object(
+                "obj_img",
+                "layer_1",
+                ObjectType::RasterPatch,
+                0,
+                json!({
+                    "bitmap": {"blob_hash": blob.to_string(), "mime_type": "image/x-yanshi-raw"},
+                    "region": {"x": 0, "y": 0, "w": width, "h": height},
+                    "width": width,
+                    "height": height,
+                }),
+            ),
+        );
+        let plain = renderer().render_document(&state, &store).unwrap();
+        state.objects.insert(
+            "obj_persp".to_owned(),
+            object(
+                "obj_persp",
+                "layer_1",
+                ObjectType::Adjustment,
+                5,
+                json!({
+                    "adjustment_type": "perspective",
+                    "params": {"quad": [[0, 0], [width, 0], [width, height], [0, height]]},
+                }),
+            ),
+        );
+        let warped = renderer().render_document(&state, &store).unwrap();
+        let mismatches = plain
+            .rgba8
+            .iter()
+            .zip(warped.rgba8.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(
+            mismatches, 0,
+            "恒等透视不应改动任何像素（并行分带下曾出现交替白带）"
+        );
+        // 串行（1 worker）必须与并行逐字节一致 ✓。
+        let mut serial = renderer();
+        serial.set_max_workers(Some(1));
+        let serial_out = serial.render_document(&state, &store).unwrap();
+        assert_eq!(
+            warped.rgba8, serial_out.rgba8,
+            "并行与串行渲染必须逐字节一致"
+        );
+        // 非恒等四边形同样只许串行/并行一致（不预设像素值，只断两条路径同算一件事 ✓）。
+        state.objects.get_mut("obj_persp").unwrap().data = json!({
+            "adjustment_type": "perspective",
+            "params": {"quad": [[30, 15], [170, 10], [185, 135], [15, 140]]},
+        });
+        let warped2 = renderer().render_document(&state, &store).unwrap();
+        let serial2 = serial.render_document(&state, &store).unwrap();
+        // **非恒等重采样下串/并的容差口径**：源采样位置在窗口路径里多一次原点加减，
+        // 个别像素会落在量化边界两侧 ⇒ 允许 1-LSB 级偏差（与内核 f32 分区非结合性
+        // 同性质 ✓）；但**大偏差必须为 0**——白带级错误（差 ~200）在这里过不去 ✓。
+        let (mut off_by_one, mut off_by_more) = (0usize, 0usize);
+        for (a, b) in warped2.rgba8.iter().zip(serial2.rgba8.iter()) {
+            match a.abs_diff(*b) {
+                0 => {}
+                1 => off_by_one += 1,
+                _ => off_by_more += 1,
+            }
+        }
+        assert_eq!(
+            off_by_more, 0,
+            "非恒等透视下并行与串行出现大偏差（疑似白带回归）"
+        );
+        assert!(
+            off_by_one <= 12,
+            "1-LSB 偏差字节数异常多：{off_by_one}（总字节 120000）"
+        );
+        assert_ne!(warped2.rgba8, plain.rgba8, "非恒等透视必须真的改变画面");
     }
 
     /// heal：复制源纹理的同时，把低频颜色对齐到目标处（修复画笔）。

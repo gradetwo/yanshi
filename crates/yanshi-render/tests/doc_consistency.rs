@@ -179,7 +179,7 @@ fn single_effect_cost_budget() {
         for _ in 0..7 {
             let mut buffer = sample();
             let started = Instant::now();
-            apply_adjustment(&mut buffer, name, &params, 1.0);
+            apply_adjustment(&mut buffer, name, &params, 1.0, (512.0, 512.0));
             best = best.min(started.elapsed());
         }
         rows.push((format!("adjustment:{name}"), best));

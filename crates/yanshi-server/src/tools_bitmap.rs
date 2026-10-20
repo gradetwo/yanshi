@@ -220,13 +220,30 @@ pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_owned();
-    let decodable = ctx.workspace.blob_decodable(&hash_for_check);
+    let mime_for_check = payload
+        .get("bitmap")
+        .and_then(|b| b.get("mime_type"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    // **`blob_decodable` 必须名副其实**：除了 blob 存在/信封可解，**格式**也要在内核
+    // 支持清单里（`raster_mime_supported` 单一事实来源 ✓）——曾只查存在性，JPEG 导入
+    // 全程报 true 却被内核按「格式未实现」跳过、渲染纯白 ✗。
+    let format_supported = yanshi_render::raster_mime_supported(&mime_for_check);
+    let decodable = ctx.workspace.blob_decodable(&hash_for_check) && format_supported;
     let result = ctx.commit(AtomKind::ImportImage, payload)?;
     let bbox = region_of(&result).or(Some(region));
     let mut out = finish_mutation(ctx, &result, bbox)?;
     if let Some(object) = out.as_object_mut() {
         object.insert("blob_decodable".to_owned(), json!(decodable));
-        if !decodable {
+        if !decodable && !format_supported {
+            object.insert(
+                "note".to_owned(),
+                json!(format!(
+                    "格式 {mime_for_check} 内核解不开 ⇒ 这一块不会画出来（内核仅支持 raw/PNG/JPEG，请先转码）"
+                )),
+            );
+        } else if !decodable {
             object.insert(
                 "note".to_owned(),
                 json!(format!(

@@ -3349,10 +3349,16 @@ fn build_bitmap_tile_index(
     let hash: yanshi_core::BlobHash = blob_hash.parse().ok()?;
     let store = ctx.workspace.store();
     let bytes = store.get(&hash).ok()?;
-    // **两种 MIME 都认** ✓：PNG 要解码 ✓；旧工程的 raw 已经是 RGBA8 ✓。
+    // **三种 MIME 都认** ✓：PNG/JPEG 要解码 ✓；旧工程的 raw 已经是 RGBA8 ✓。
     // **⚠️ 用字面量** ✓（**常量未在 crate 根重导出** ✗ —— 第 169 轮的错 ✓）。
     let rgba8 = if mime == "image/png" {
         let (w, h, px) = yanshi_render::png::decode_png(&bytes)?;
+        if w != width || h != height {
+            return None; // 声明尺寸与像素不符 ⇒ 不切 ✓（宁可走原路 ✓）
+        }
+        px
+    } else if mime == "image/jpeg" {
+        let (w, h, px) = yanshi_render::jpeg::decode_jpeg(&bytes)?;
         if w != width || h != height {
             return None; // 声明尺寸与像素不符 ⇒ 不切 ✓（宁可走原路 ✓）
         }

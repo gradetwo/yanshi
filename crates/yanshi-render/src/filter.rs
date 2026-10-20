@@ -145,6 +145,87 @@ impl AdjustmentKind {
         Self::Lens,
         Self::Perspective,
     ];
+
+    /// 该调整在子缓冲（分带/区域）渲染时需要的窗口外扩（像素）。
+    ///
+    /// 逐像素调整为 0；**降噪**是邻域运算（引导滤波两趟方框 ⇒ 2×半径；色度模糊 1×半径）；
+    /// **镜头/透视**是全图逆映射：输出像素的源位置可偏离自身，须按
+    /// [`geo_displacement_bound`] 的位移上界 + 双三次采样足迹（±2）外扩，
+    /// 否则源像素不在窗口里、采样被判越界写透明（曾表现为并行分带下的交替白带 ✓）。
+    /// `canvas` 是整幅画面的文档尺寸（位移按它换算成像素 ✓）。
+    pub fn padding(&self, params: &Value, canvas: (f64, f64)) -> u32 {
+        let frame = (canvas.0 as f32, canvas.1 as f32);
+        match self {
+            Self::Lens => {
+                let lens = LensParams {
+                    k1: params.get("k1").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+                    k2: params.get("k2").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+                    tca_r: params.get("tca_r").and_then(Value::as_f64).unwrap_or(1.0) as f32,
+                    tca_b: params.get("tca_b").and_then(Value::as_f64).unwrap_or(1.0) as f32,
+                    vignette_strength: params
+                        .get("vignette_strength")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.0) as f32,
+                    auto_crop: params
+                        .get("auto_crop")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true),
+                };
+                let scale = geo_auto_crop_scale(None, &lens, frame);
+                geo_displacement_bound(None, &lens, scale, frame) + 2
+            }
+            Self::Perspective => {
+                let Some(quad) = quad_param(params) else {
+                    return 0;
+                };
+                let Some(hom) = unit_square_to_quad(quad) else {
+                    return 0;
+                };
+                let lens = LensParams {
+                    k1: params.get("k1").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+                    k2: params.get("k2").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+                    auto_crop: params
+                        .get("auto_crop")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true),
+                    ..LensParams::default()
+                };
+                let scale = geo_auto_crop_scale(Some(quad), &lens, frame);
+                geo_displacement_bound(Some(&hom), &lens, scale, frame) + 2
+            }
+            Self::Denoise => {
+                let luminance = params
+                    .get("luminance")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.5)
+                    .clamp(0.0, 1.0) as f32;
+                let detail = params
+                    .get("detail")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.5)
+                    .clamp(0.0, 1.0) as f32;
+                let color = params
+                    .get("color")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.5)
+                    .clamp(0.0, 1.0) as f32;
+                // 与 `denoise` 内部同式：Y 引导半径 (1 + detail·8)、两趟 ⇒ ×2；
+                // 色度半径 (color·12)、一趟 ⇒ ×1。两者并行路径取大 ✓。
+                let y_reach = if luminance > 0.0 {
+                    2 * (1.0 + detail * 8.0).round() as u32
+                } else {
+                    0
+                };
+                let c_reach = if color > 0.0 {
+                    (color * 12.0).round() as u32
+                } else {
+                    0
+                };
+                y_reach.max(c_reach)
+            }
+            _ => 0,
+        }
+    }
 }
 
 /// 滤镜类型（`filter_name` 字段）。
@@ -1495,23 +1576,43 @@ fn radial_distort(nx: f32, ny: f32, k1: f32, k2: f32) -> (f32, f32) {
     (nx * f, ny * f)
 }
 
-/// **透视+镜头合并逆映射**（专家链路，一次采样 ✓）：
-/// `(x_out,y_out) → H（若透视）→ (x_undist,y_undist) → 代入正向畸变多项式 D(·) →
-/// (x_src,y_src) → 一次采样`。**不需要求畸变多项式的逆** ✓（逆映射顺着物理畸变方向走 ✓）。
-/// TCA：R/B 在同一链路里按系数缩放源坐标独立采样（Catmull-Rom 的 2×2 钳制即局部钳制，
-/// 专家方案：防高光彩边震荡 ✓）。暗角 gain 在线性光、按**源位置**半径乘（重采样之前 ✓）。
-fn merged_geo_warp(
-    buffer: &mut Buffer,
-    hom: Option<UnitSquareToQuad>,
-    quad: Option<[[f32; 2]; 4]>,
+/// **几何逆映射的坐标链**（`merged_geo_warp` 的逐像素计算与
+/// [`AdjustmentKind::padding`] 的位移上界评估**共用同一份**，避免两处各写一遍后漂移 ✓）：
+/// 文档坐标的输出像素 → （自动裁剪缩放 → 单应（若有）→ 镜头多项式）→ 源文档坐标，
+/// 并附源位置的归一化半径平方（暗角 gain 用 ✓）。
+fn geo_source_for(
+    hom: Option<&UnitSquareToQuad>,
     lens: &LensParams,
-) {
-    let (w, h) = (buffer.width(), buffer.height());
-    if w == 0 || h == 0 {
-        return;
-    }
-    let (wf, hf) = (w as f32, h as f32);
-    // 自动裁剪缩放（MVP 启发式，只放大不缩小；恒等情形恰为 1 ✓）。
+    scale: f32,
+    frame: (f32, f32),
+    dx: f32,
+    dy: f32,
+) -> (f32, f32, f32) {
+    let (wf, hf) = frame;
+    // auto_crop：绕画面中心缩放（s=1 ⇒ 恒等 ✓）。
+    let (u, v) = (0.5 + (dx / wf - 0.5) / scale, 0.5 + (dy / hf - 0.5) / scale);
+    let (px, py) = match hom {
+        Some(hom) => hom.map(u, v),
+        None => (u * wf, v * hf),
+    };
+    let (_, _, r2) = lens_normalized(px, py, wf, hf);
+    // k1=k2=0 ⇒ 直通（避免归一化往返的 f32 舍入破坏恒等的逐位精确 ✓）。
+    let (gx, gy) = if lens.k1 != 0.0 || lens.k2 != 0.0 {
+        let (cx, cy) = (wf / 2.0, hf / 2.0);
+        let (nx, ny, _) = lens_normalized(px, py, wf, hf);
+        let (dnx, dny) = radial_distort(nx, ny, lens.k1, lens.k2);
+        let rmax = (cx * cx + cy * cy).sqrt().max(1e-9);
+        (cx + dnx * rmax, cy + dny * rmax)
+    } else {
+        (px, py)
+    };
+    (gx, gy, r2)
+}
+
+/// **自动裁剪的缩放系数**（MVP 启发式，只放大不缩小；恒等情形恰为 1 ✓）。
+/// 与坐标链分开算是因为位移上界评估也要先拿到它 ✓。
+fn geo_auto_crop_scale(quad: Option<[[f32; 2]; 4]>, lens: &LensParams, frame: (f32, f32)) -> f32 {
+    let (wf, hf) = frame;
     let mut scale = 1.0f32;
     if lens.auto_crop {
         if let Some(q) = quad {
@@ -1530,49 +1631,65 @@ fn merged_geo_warp(
         }
         scale = scale.max(1.0);
     }
-    let (cx, cy) = (wf / 2.0, hf / 2.0);
+    scale
+}
+
+/// **透视+镜头合并逆映射**（专家链路，一次采样 ✓）：
+/// `(x_out,y_out) → H（若透视）→ (x_undist,y_undist) → 代入正向畸变多项式 D(·) →
+/// (x_src,y_src) → 一次采样`。**不需要求畸变多项式的逆** ✓（逆映射顺着物理畸变方向走 ✓）。
+/// TCA：R/B 在同一链路里按系数缩放源坐标独立采样（Catmull-Rom 的 2×2 钳制即局部钳制，
+/// 专家方案：防高光彩边震荡 ✓）。暗角 gain 在线性光、按**源位置**半径乘（重采样之前 ✓）。
+///
+/// **坐标口径（缺陷修复）**：`quad`、画面中心、归一化半径都按**整幅画面**（`canvas`）的
+/// 文档坐标定义；`buffer` 只是这幅画面的一个窗口（分带/区域渲染时它是子缓冲，
+/// `buffer.bbox()` 给出窗口原点）。旧实现把子缓冲当整幅图（按带高归一化、quad 按带本地
+/// 坐标解释）⇒ 并行分带时每带下半采样越界写透明、输出交替白带。
+/// 窗口外的源像素不在本缓冲里 ⇒ 写透明；渲染器按 [`AdjustmentKind::padding`]
+/// 申报的位移上界外扩窗口，正常参数下需要的源像素都在窗口内 ✓。
+fn merged_geo_warp(
+    buffer: &mut Buffer,
+    hom: Option<UnitSquareToQuad>,
+    quad: Option<[[f32; 2]; 4]>,
+    lens: &LensParams,
+    canvas: (f64, f64),
+) {
+    let (w, h) = (buffer.width(), buffer.height());
+    if w == 0 || h == 0 {
+        return;
+    }
+    let frame = (canvas.0 as f32, canvas.1 as f32);
+    let scale = geo_auto_crop_scale(quad, lens, frame);
+    let (cx, cy) = (frame.0 / 2.0, frame.1 / 2.0);
     let (v1, v2) = (2.0 * lens.vignette_strength, 0.5 * lens.vignette_strength);
-    let distort = lens.k1 != 0.0 || lens.k2 != 0.0;
     let snapshot: Vec<f32> = buffer.pixels().to_vec();
     let (ox, oy) = buffer.origin();
     let reader = Buffer::from_f32(ox, oy, w, h, &snapshot)
         .expect("merged_geo_warp：快照尺寸与原 Buffer 一致");
-    let in_bounds =
+    // 窗口原点（文档坐标，f64 框 ⇒ 取 f32 与 vignette 的口径一致 ✓）。
+    let bbox = buffer.bbox();
+    let (fox, foy) = (bbox.x as f32, bbox.y as f32);
+    // 源文档坐标 → 窗口本地坐标后判界（窗口外 ⇒ 透明，与旧整幅语义一致 ✓）。
+    let in_window =
         |sx: f32, sy: f32| sx >= 0.0 && sy >= 0.0 && sx <= (w - 1) as f32 && sy <= (h - 1) as f32;
     for y in 0..h {
         for x in 0..w {
-            // auto_crop：绕中心缩放（s=1 ⇒ 恒等 ✓）。
-            let (u, v) = (
-                0.5 + (x as f32 / wf - 0.5) / scale,
-                0.5 + (y as f32 / hf - 0.5) / scale,
-            );
-            let (px, py) = match hom {
-                Some(ref hom) => hom.map(u, v),
-                None => (u * wf, v * hf),
-            };
-            let (_, _, r2) = lens_normalized(px, py, wf, hf);
-            // k1=k2=0 ⇒ 直通（避免归一化往返的 f32 舍入破坏恒等的逐位精确 ✓）。
-            let (gx, gy) = if distort {
-                let (nx, ny, _) = lens_normalized(px, py, wf, hf);
-                let (dnx, dny) = radial_distort(nx, ny, lens.k1, lens.k2);
-                let rmax = (cx * cx + cy * cy).sqrt().max(1e-9);
-                (cx + dnx * rmax, cy + dny * rmax)
-            } else {
-                (px, py)
-            };
-            if !in_bounds(gx, gy) {
+            let (dx, dy) = (fox + x as f32, foy + y as f32);
+            let (gx, gy, r2) = geo_source_for(hom.as_ref(), lens, scale, frame, dx, dy);
+            let (lx, ly) = (gx - fox, gy - foy);
+            if !in_window(lx, ly) {
                 buffer.set_pixel(x, y, [0.0; 4]);
                 continue;
             }
-            let base = sample_catmull_rom(&reader, gx, gy);
+            let base = sample_catmull_rom(&reader, lx, ly);
             // 暗角 gain（源半径 r2 ✓）。
             let gain = 1.0 / (1.0 + v1 * r2 + v2 * r2 * r2);
             let sample_channel = |ch: usize, tca: f32| {
                 if tca == 1.0 {
                     base[ch]
                 } else {
-                    let (sx, sy) = (cx + (gx - cx) * tca, cy + (gy - cy) * tca);
-                    if in_bounds(sx, sy) {
+                    // TCA 缩放在文档坐标里绕画面中心做，再换回窗口本地坐标采样 ✓。
+                    let (sx, sy) = (cx + (gx - cx) * tca - fox, cy + (gy - cy) * tca - foy);
+                    if in_window(sx, sy) {
                         sample_catmull_rom(&reader, sx, sy)[ch]
                     } else {
                         0.0
@@ -1595,6 +1712,8 @@ fn merged_geo_warp(
 
 /// **镜头校正**（手动参数；单次逆映射 ✓）。`k1/k2` 畸变、`tca_r/tca_b` 色差、
 /// `vignette_strength` 暗角、`auto_crop` 自动裁剪。
+/// `canvas` 是整幅画面的文档尺寸（子缓冲渲染时几何中心/半径按它算，见 `merged_geo_warp` ✓）。
+#[allow(clippy::too_many_arguments)]
 pub fn lens_correction(
     buffer: &mut Buffer,
     k1: f32,
@@ -1603,6 +1722,7 @@ pub fn lens_correction(
     tca_b: f32,
     vignette_strength: f32,
     auto_crop: bool,
+    canvas: (f64, f64),
 ) {
     merged_geo_warp(
         buffer,
@@ -1616,18 +1736,21 @@ pub fn lens_correction(
             vignette_strength,
             auto_crop,
         },
+        canvas,
     );
 }
 
-/// **透视校正**（四角拖拽 MVP）。`quad` 为源四边形（顺序 q0..q3 对应矩形四角），
-/// 必须凸（工具层已校验；这里复核，`false` = 拒绝且不动 ✓）。
+/// **透视校正**（四角拖拽 MVP）。`quad` 为源四边形（顺序 q0..q3 对应矩形四角，
+/// **文档坐标**），必须凸（工具层已校验；这里复核，`false` = 拒绝且不动 ✓）。
 /// `k1/k2` 可选：与镜头畸变合并一次采样（专家链路 ✓）。
+/// `canvas` 是整幅画面的文档尺寸（子缓冲渲染时 quad 按它解释，见 `merged_geo_warp` ✓）。
 pub fn perspective_warp(
     buffer: &mut Buffer,
     quad: [[f32; 2]; 4],
     k1: f32,
     k2: f32,
     auto_crop: bool,
+    canvas: (f64, f64),
 ) -> bool {
     if !quad_is_convex(quad) {
         return false;
@@ -1645,8 +1768,45 @@ pub fn perspective_warp(
             auto_crop,
             ..LensParams::default()
         },
+        canvas,
     );
     true
+}
+
+/// **几何调整的位移上界**（像素）：输出像素与其源像素在 x/y 上的最大距离。
+///
+/// 算法：在画面上取 33×33 网格逐点走 [`geo_source_for`] 同一条坐标链（含 TCA 的
+/// 额外采样点），取最大值后加「一格对角线 + 1px」余量（坐标链是光滑映射，
+/// 格内峰值不会离格点太远 ✓）。渲染器据此把子缓冲窗口外扩到装得下全部源像素；
+/// 上界超过渲染器的外扩上限时它会显式告警（不静默不一致 ✓）。
+fn geo_displacement_bound(
+    hom: Option<&UnitSquareToQuad>,
+    lens: &LensParams,
+    scale: f32,
+    frame: (f32, f32),
+) -> u32 {
+    let (wf, hf) = frame;
+    if wf <= 0.0 || hf <= 0.0 {
+        return 0;
+    }
+    let (cx, cy) = (wf / 2.0, hf / 2.0);
+    let mut bound = 0.0f32;
+    const GRID: u32 = 32;
+    for iy in 0..=GRID {
+        for ix in 0..=GRID {
+            let (dx, dy) = (wf * ix as f32 / GRID as f32, hf * iy as f32 / GRID as f32);
+            let (gx, gy, _) = geo_source_for(hom, lens, scale, frame, dx, dy);
+            for (sx, sy) in [
+                (gx, gy),
+                (cx + (gx - cx) * lens.tca_r, cy + (gy - cy) * lens.tca_r),
+                (cx + (gx - cx) * lens.tca_b, cy + (gy - cy) * lens.tca_b),
+            ] {
+                bound = bound.max((sx - dx).abs()).max((sy - dy).abs());
+            }
+        }
+    }
+    let cell = (wf / GRID as f32).hypot(hf / GRID as f32);
+    (bound + cell + 1.0).ceil() as u32
 }
 
 /// **标量方框模糊**（单通道 `Vec<f32>` 版；与 `box_blur` 同一边界语义：clamp 复制 ✓）。
@@ -2195,11 +2355,14 @@ fn quad_param(params: &Value) -> Option<[[f32; 2]; 4]> {
 }
 
 /// 应用一个调整对象；返回是否被识别。
+/// `canvas` 是整幅画面的文档尺寸（几何类调整 lens/perspective 按它解释参数，
+/// 与 `apply_filter` 的同名参数同口径 ✓）。
 pub fn apply_adjustment(
     buffer: &mut Buffer,
     adjustment_type: &str,
     params: &Value,
     opacity: f32,
+    canvas: (f64, f64),
 ) -> bool {
     let Some(kind) = AdjustmentKind::from_name(adjustment_type) else {
         return false;
@@ -2360,6 +2523,7 @@ pub fn apply_adjustment(
                 .get("auto_crop")
                 .and_then(Value::as_bool)
                 .unwrap_or(true),
+            canvas,
         ),
         AdjustmentKind::Perspective => {
             let Some(quad) = quad_param(params) else {
@@ -2374,6 +2538,7 @@ pub fn apply_adjustment(
                     .get("auto_crop")
                     .and_then(Value::as_bool)
                     .unwrap_or(true),
+                canvas,
             ) {
                 return false;
             }
@@ -3119,7 +3284,7 @@ mod tests {
             let mut buffer = make();
             let before = buffer.pixel(0, 0);
             assert!(
-                apply_adjustment(&mut buffer, name, &params, 1.0),
+                apply_adjustment(&mut buffer, name, &params, 1.0, (2.0, 1.0)),
                 "{name} 应被识别"
             );
             assert_ne!(before, buffer.pixel(0, 0), "{name} 必须改变像素");
@@ -3136,7 +3301,13 @@ mod tests {
         }
         // 曝光 +1EV 在线性光下翻倍。
         let mut buffer = make();
-        apply_adjustment(&mut buffer, "exposure", &json!({"ev": 1.0}), 1.0);
+        apply_adjustment(
+            &mut buffer,
+            "exposure",
+            &json!({"ev": 1.0}),
+            1.0,
+            (2.0, 1.0),
+        );
         assert!(
             (buffer.pixel(0, 0)[0] - 0.5).abs() < 1e-4,
             "{:?}",
@@ -3914,10 +4085,17 @@ mod tests {
             &mut buffer,
             "brightness_contrast",
             &json!({"brightness": 0.1, "contrast": 1.0}),
-            1.0
+            1.0,
+            (4.0, 4.0)
         ));
         assert!((buffer.pixel(0, 0)[0] - 0.6).abs() < 1e-5);
-        assert!(!apply_adjustment(&mut buffer, "unknown", &json!({}), 1.0));
+        assert!(!apply_adjustment(
+            &mut buffer,
+            "unknown",
+            &json!({}),
+            1.0,
+            (4.0, 4.0)
+        ));
         assert!(apply_filter(
             &mut buffer,
             "invert",
@@ -4620,7 +4798,7 @@ mod coloradj_tests {
         ] {
             let mut buffer = filled([0.5, 0.3, 0.1, 1.0]);
             assert!(
-                apply_adjustment(&mut buffer, name, &json!({}), 1.0),
+                apply_adjustment(&mut buffer, name, &json!({}), 1.0, (4.0, 4.0)),
                 "{name} 未被 apply_adjustment 识别"
             );
         }
@@ -4630,7 +4808,8 @@ mod coloradj_tests {
             &mut buffer,
             "channel_mixer",
             &json!({}),
-            1.0
+            1.0,
+            (4.0, 4.0)
         ));
         assert_rgb_close(px(&buffer), [0.5, 0.3, 0.1], "channel_mixer 缺省应恒等");
         let mut buffer = filled([0.5, 0.3, 0.1, 1.0]);
@@ -4638,7 +4817,8 @@ mod coloradj_tests {
             &mut buffer,
             "shadows_highlights",
             &json!({}),
-            1.0
+            1.0,
+            (4.0, 4.0)
         ));
         assert_rgb_close(
             px(&buffer),
@@ -4650,7 +4830,8 @@ mod coloradj_tests {
             &mut buffer,
             "black_and_white",
             &json!({}),
-            1.0
+            1.0,
+            (4.0, 4.0)
         ));
         let out = px(&buffer);
         assert_eq!(out[0], out[1], "black_and_white 缺省输出应为灰阶");
@@ -4814,7 +4995,14 @@ mod photoretouch_tests {
         assert!(!quad_is_convex(dart), "箭镞四边形应判为凹");
         let before = gradient();
         let mut after = before.clone();
-        assert!(!perspective_warp(&mut after, dart, 0.0, 0.0, true));
+        assert!(!perspective_warp(
+            &mut after,
+            dart,
+            0.0,
+            0.0,
+            true,
+            (8.0, 8.0)
+        ));
         assert_eq!(before.pixels(), after.pixels());
         // 凸四边形（矩形）放行 ✓。
         let rect = [[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0]];
@@ -4847,8 +5035,152 @@ mod photoretouch_tests {
         let before = gradient();
         let mut after = before.clone();
         let rect = [[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0]];
-        assert!(perspective_warp(&mut after, rect, 0.0, 0.0, true));
+        assert!(perspective_warp(
+            &mut after,
+            rect,
+            0.0,
+            0.0,
+            true,
+            (8.0, 8.0)
+        ));
         assert_eq!(before.pixels(), after.pixels());
+    }
+
+    /// 窗口图案：按**文档坐标**生成的可区分纹理（整幅与子缓冲同源 ⇒ 可逐位比 ✓）。
+    fn pattern_window(ox: i64, oy: i64, w: u32, h: u32) -> Buffer {
+        let mut buffer = Buffer::new(ox, oy, w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let (dx, dy) = ((ox + i64::from(x)) as u32, (oy + i64::from(y)) as u32);
+                buffer.set_pixel(
+                    x,
+                    y,
+                    [
+                        ((dx * 31 + dy * 17) % 251) as f32 / 251.0,
+                        ((dx * 13 + dy * 29) % 241) as f32 / 241.0,
+                        ((dx * 7 + dy * 11) % 233) as f32 / 233.0,
+                        1.0,
+                    ],
+                );
+            }
+        }
+        buffer
+    }
+
+    #[test]
+    fn perspective_on_window_matches_full_frame() {
+        // **子缓冲（分带窗口）与整幅必须同算一件事**（缺陷：warp 曾按带本地坐标解释
+        // quad/归一化 ⇒ 并行分带输出交替白带 ✓）。画幅 64×48、quad 顶边下拉；
+        // 窗口 = 行 8..48；比较位移+采样足迹都在窗口内的行（16..44），须逐位一致 ✓。
+        let quad = [[0.0, 8.0], [64.0, 4.0], [64.0, 48.0], [0.0, 48.0]];
+        let canvas = (64.0, 48.0);
+        let mut full = pattern_window(0, 0, 64, 48);
+        assert!(perspective_warp(&mut full, quad, 0.0, 0.0, true, canvas));
+        let mut win = pattern_window(0, 8, 64, 40);
+        assert!(perspective_warp(&mut win, quad, 0.0, 0.0, true, canvas));
+        for y in 16..44u32 {
+            for x in 0..64u32 {
+                assert_eq!(
+                    win.pixel(x, y - 8),
+                    full.pixel(x, y),
+                    "({x},{y}) 窗口与整幅不一致"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn perspective_identity_on_window_is_exact() {
+        // **恒等 quad 在窗口上也必须逐位恒等**（窗口原点 ≠ 0 时旧实现按本地尺寸
+        // 归一化 ⇒ 采样点整体错位 ✓）。
+        let canvas = (64.0, 48.0);
+        let quad = [[0.0, 0.0], [64.0, 0.0], [64.0, 48.0], [0.0, 48.0]];
+        let before = pattern_window(0, 16, 64, 32);
+        let mut after = before.clone();
+        assert!(perspective_warp(&mut after, quad, 0.0, 0.0, true, canvas));
+        for y in 4..28u32 {
+            for x in 0..64u32 {
+                assert_eq!(
+                    after.pixel(x, y),
+                    before.pixel(x, y),
+                    "恒等透视在窗口 ({x},{}) 不应改动",
+                    y + 16
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lens_on_window_matches_full_frame() {
+        // **镜头畸变同理**：中心/半径按画幅算 ⇒ 窗口与整幅在足迹内逐位一致
+        // （k1=0 时旧实现恰好也是恒等、测不出来；k1≠0 才现形 ✓）。
+        // 画幅 64×64、k1=0.25（角点位移 ~11px）；窗口 = 行 12..64；比较行 26..50 ✓。
+        let canvas = (64.0, 64.0);
+        let mut full = pattern_window(0, 0, 64, 64);
+        lens_correction(&mut full, 0.25, 0.0, 1.0, 1.0, 0.0, false, canvas);
+        let mut win = pattern_window(0, 12, 64, 52);
+        lens_correction(&mut win, 0.25, 0.0, 1.0, 1.0, 0.0, false, canvas);
+        for y in 26..50u32 {
+            for x in 0..64u32 {
+                assert_eq!(
+                    win.pixel(x, y - 12),
+                    full.pixel(x, y),
+                    "({x},{y}) 窗口与整幅不一致"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn adjustment_padding_covers_geometry_and_denoise() {
+        // **padding 申报必须盖住真实位移**（关系断言 ✓）：渲染器据此把子缓冲窗口
+        // 外扩到装得下源像素；申报不足 ⇒ 采样判越界写透明（白带回归 ✓）。
+        let frame = (200.0, 150.0);
+        let identity = AdjustmentKind::Perspective.padding(
+            &serde_json::json!({"quad": [[0, 0], [200, 0], [200, 150], [0, 150]]}),
+            frame,
+        );
+        let shifted = AdjustmentKind::Perspective.padding(
+            &serde_json::json!({"quad": [[0, 20], [200, 16], [200, 150], [0, 150]]}),
+            frame,
+        );
+        assert!(
+            shifted >= 20,
+            "顶边下拉 20px 的透视 padding 应 ≥ 20，实测 {shifted}"
+        );
+        assert!(
+            shifted > identity,
+            "非恒等透视的 padding 应大于恒等：{shifted} vs {identity}"
+        );
+        let lens_off = AdjustmentKind::Lens.padding(&serde_json::json!({"k1": 0.0}), frame);
+        let lens_barrel = AdjustmentKind::Lens
+            .padding(&serde_json::json!({"k1": 0.35, "auto_crop": false}), frame);
+        assert!(
+            lens_barrel >= 40,
+            "k1=0.35 在 200×150 上角点位移 ~35+余量，padding 应 ≥ 40，实测 {lens_barrel}"
+        );
+        assert!(
+            lens_barrel > lens_off,
+            "畸变越大 padding 越大：{lens_barrel} vs {lens_off}"
+        );
+        let denoise_full = AdjustmentKind::Denoise.padding(
+            &serde_json::json!({"luminance": 1.0, "detail": 1.0, "color": 1.0}),
+            frame,
+        );
+        let denoise_off = AdjustmentKind::Denoise.padding(
+            &serde_json::json!({"luminance": 0.0, "detail": 1.0, "color": 0.0}),
+            frame,
+        );
+        assert_eq!(denoise_off, 0, "降噪两路都关 ⇒ 无邻域需求");
+        assert!(
+            denoise_full >= 18,
+            "降噪满档 padding 应 ≥ 18，实测 {denoise_full}"
+        );
+        assert_eq!(
+            AdjustmentKind::Invert.padding(&serde_json::json!({}), frame),
+            0,
+            "逐像素调整不需要外扩"
+        );
     }
 
     #[test]
@@ -4856,7 +5188,7 @@ mod photoretouch_tests {
         // **默认镜头参数 ⇒ 恒等**（k1=k2=0、tca=1、vignette=0、auto_crop 的 scale=1 ✓）。
         let before = gradient();
         let mut after = before.clone();
-        lens_correction(&mut after, 0.0, 0.0, 1.0, 1.0, 0.0, true);
+        lens_correction(&mut after, 0.0, 0.0, 1.0, 1.0, 0.0, true, (8.0, 8.0));
         assert_eq!(before.pixels(), after.pixels());
     }
 
@@ -4867,7 +5199,7 @@ mod photoretouch_tests {
         // src_y = 8+(2−8)×1.1406 = 1.156 ⇒ 输出 (8,2) 采自 (8,1.16)，亮点被搬走 ✓。
         let mut buffer = Buffer::new(0, 0, 16, 16);
         buffer.set_pixel(8, 2, [1.0, 1.0, 1.0, 1.0]);
-        lens_correction(&mut buffer, 0.5, 0.0, 1.0, 1.0, 0.0, false);
+        lens_correction(&mut buffer, 0.5, 0.0, 1.0, 1.0, 0.0, false, (16.0, 16.0));
         let p = buffer.pixel(8, 2);
         assert!(
             p[0] < 0.5,
