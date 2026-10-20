@@ -105,6 +105,10 @@ for f in $CHANGED; do
     crates/yanshi-core/src/*)                    add_all 'tool-*.mjs' ;;
     web/*|assets/*)                              add_all 'browser-*.mjs'; add_all 'tool-pwa-*.mjs' ;;
     docs/*)                                      add_all 'check-*.mjs'; add_all 'tool-*-doc.mjs' ;;
+    # **★ `vendor/hokusai-core` 是**笔刷引擎本身** ⇒ 改它影响**所有**笔刷判据** ✓（第 1299 轮实测漏过）
+    #   **当时的错**：改了 `stroke.rs`/`color.rs` ⇒ 本工具报「0 个」⇒ 而那是**最重要的一类改动** ✗
+    vendor/hokusai-core/src/*)                   add_all 'tool-brush-*.mjs'; add_all 'tool-stroke-*.mjs'; add_all 'tool-taper-*.mjs'; add_all 'tool-color-*.mjs' ;;
+    vendor/*)                                    add_all 'tool-*.mjs' ;;
   esac
 done
 
