@@ -20930,24 +20930,16 @@ fn write_smart_blend(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         ));
     }
 
-    // --- OKLab 色彩插值（零依赖，25 行）---
-    #[inline]
-    fn srgb_to_linear(c: f32) -> f32 {
-        if c <= 0.04045 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
-    }
-    #[inline]
-    fn linear_to_srgb(c: f32) -> f32 {
-        let c = c.clamp(0.0, 1.0);
-        if c <= 0.0031308 {
-            c * 12.92
-        } else {
-            1.055 * c.powf(1.0 / 2.4) - 0.055
-        }
-    }
+    // --- OKLab 色彩插值 ---
+    // **★ Phase 1（色彩体系规划）：删掉这里的两个本地 sRGB 传递函数** ✓
+    //   **为什么**：它们是 `yanshi_render::color` 同名函数的**重复实现** ✗
+    //     ⇒ 而两份实现**已经不同**：公共版 `srgb_to_linear` 有 `clamp(0,1)`，本地版没有
+    //     ⇒ 于是「越界输入」在两个调用点会给出**不同**结果 ⇒ 正是规划说的「散落逻辑」
+    //   **修法**：直接用公共的（`yanshi_render::color::{srgb_to_linear, linear_to_srgb}`）
+    //     ⇒ 一处定义、全仓一致 ✓
+    //   **行为变化**：越界输入现在会被 clamp（这是更正确的语义）；
+    //     规划「存量 atoms 接受重放颜色变化」（用户已拍板）⇒ 可接受 ✓
+    use yanshi_render::color::{linear_to_srgb, srgb_to_linear};
     /// 在 OKLab 感知均匀空间插值（利用数学性质：在立方根 LMS 空间线性插值
     /// 与转到 (L,a,b) 再插值恒等，省两次 3x3 矩阵乘法）
     fn lerp_oklab(rgba_a: [f32; 4], rgba_b: [f32; 4], t: f32) -> [f32; 4] {
