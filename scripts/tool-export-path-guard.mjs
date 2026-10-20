@@ -78,6 +78,20 @@ const accepted5 = await exp(`guard_ok_rel_${stamp}.png`);
 if (accepted5) ok("⑤ 纯文件名被接受");
 else bad("⑤ 纯文件名**必须**被接受");
 
+// ⑦ **系统临时目录内必须可写**（第 1347 轮；外部要的「规则稳定」）
+//   **⇒ 为什么单独断这条** ✗：外部的管线一直用 `/tmp/<RUN>/ws/exports/` 导出 ✓
+//     ⇒ 而它能过**不是因为 `--root`**，而是因为**允许根含系统临时目录** ✓
+//   ⇒ 若哪天这条被收紧（安全加固很自然会收紧它）⇒ **他们的管线会静默失败** ✗
+//   ⇒ 所以**用一条断言把它固定下来**：收紧就会红 ✓
+{
+  const tmpDir = path.join(os.tmpdir(), `dg_guard_tmp_${stamp}`);
+  try { (await import("node:fs")).mkdirSync(tmpDir, { recursive: true }); } catch { /* 已有 */ }
+  const p = path.join(tmpDir, "in_tmp.png");
+  const acceptedTmp = await exp(p);
+  if (acceptedTmp) ok(`⑦ 系统临时目录内可写（${p}）`);
+  else bad(`⑦ 系统临时目录内**必须**可写 ⇒ 实测拒绝（${p}）⇒ 若这是有意的收紧，需要同步告知外部并改文档`);
+}
+
 // ⑥ 拒绝必须是**真拒绝**：越界位置不许有新文件
 if (!existsSync(homeOut) && !existsSync(homeOut2)) ok("⑥ 三次拒绝之后，越界位置没有新文件（是真拒绝）");
 else {

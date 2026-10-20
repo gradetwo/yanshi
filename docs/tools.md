@@ -523,6 +523,23 @@ brightness_contrast, saturation, invert, levels, exposure, white_balance, curves
 color_balance, split_toning, vibrance, black_and_white, channel_mixer, gradient_map,
 shadows_highlights, selective_color, color_lut, red_eye, denoise, lens, perspective.
 
+### `export_png` 允许写哪些位置（第 1347 轮补；外部提问）
+
+**绝对路径**只放行两个根：
+
+| 根 | 值 | 说明 |
+|---|---|---|
+| **导出目录** | `YANSHI_EXPORT_DIR`（缺省 `./exports`）| 会自动创建 |
+| **系统临时目录** | `std::env::temp_dir()`（Linux 上 `/tmp`，或 `$TMPDIR`）| **整个临时目录都放行**，不只某一个子目录 |
+
+**相对路径**相对**导出目录**解析，且**不许出现 `..`**；目录会自动创建。
+其余绝对路径（如 `/etc/...`、`/usr/...`、家目录）**一律拒绝**，错误信息里直接写出允许的根。
+
+> **⇒ 这条规则是**可测的**，不是承诺**：判据 `scripts/tool-export-path-guard.mjs` 直接断言
+> ① 穿越被拒 ② 越权被拒 ③ 相对 `..` 被拒 ④ 导出目录内可写 ⑤ 纯文件名可写
+> ⑥ 拒绝之后越界位置无新文件 ⑦ **系统临时目录内可写**。
+> ⇒ 若哪天允许根被收紧，**⑦ 会红** ⇒ 不会静默改变行为。
+
 `red_eye` takes `strength` 0..1 (default 1) and `threshold` 0.5..10 (default 2.0): pixels whose
 red dominance `r/(g+b)` exceeds the threshold get R pulled toward max(G,B); skin tones and
 ordinary red objects stay untouched.
