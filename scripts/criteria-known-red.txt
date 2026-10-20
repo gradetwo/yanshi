@@ -28151,7 +28151,6 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
   ⇒ **∴ 删错会让 CI 偶发红 ⇒ **掩盖真回归**✗** ⇒ 按纪律**只记录事实** ✓
 - **∴ 下一步**：**先解释"当初为什么红"**（查 git 历史／找那次复现的提交）⇒ 再决定删不删 ✓
 tool-export-idempotent.mjs  CI 上 3 笔 100%_Opaque 全都没记可重放 recipe（kept_no_recipe 本机 0 / CI 3 ⇒ omitted 0），属引擎侧可重放构造；最小构型见台账第九十三节。转绿条件：kept_no_recipe 回到 0。
-tool-taper-shrinks-ink.mjs            stroke_taper 让墨面积反而大 8.7%（基线 1259 vs 1369）；根因是 dab 密度按半径倒数增加、半径×密度不守恒。真缺陷，等引擎修（见 brush-capability-gap.md 三百一十八节）
 browser-layout.mjs  第 742 轮核实：判据要求「400% 缩放时画布溢出舞台 > 10px」，而 CI 视口 854px、400% 时画布 852px（溢出 −2）⇒ 视口刚好塞满 ⇒ 依赖视口尺寸的环境红，不是产品缺陷。第 830 轮登记（此前只写在 AGENTS.md 表格里、没进这个机检名单 ⇒ shard 3 一直报「意外失败 1」）
 #   第 503 轮的注释（本文件 :604-642）说：「红线判据 tool-stamp-parity 跑 30 次应全绿」
 #   而实测（CI，criteria shard 1/6）：

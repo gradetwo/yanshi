@@ -24,14 +24,32 @@ const call = (tool, args) => fetch(`${base}/api/tools?doc=${doc}&token=${token}`
 
 const pts = [];
 for (let y = 150; y <= 250; y += 2) for (let x = 55; x <= 345; x += 2) pts.push([x, y]);
+// **★ 每次测量必须用**独立文档**** ✓（第 1356 轮；这条判据原先**污染了自己**）
+//   **⇒ 原错** ✗：`k0` 与 `k1` 建在**同一个 `doc`** 里 ⇒ 数 `k1` 时 **`k0` 的墨还在**
+//     ⇒ 于是「taper 的墨面积」其实是**两笔叠加** ⇒ 恒大于 `plain` ⇒
+//     ⇒ **判据把「正确行为」报成缺陷**，而那条缺陷被写进 `AGENTS.md` 与 known-red 名单 ✗
+//   **⇒ 实测（独立文档）**：`plain=5034`｜`taper=4447`｜比 **0.883** ⇒ **taper 确实让墨变小** ✓
+//   **⇒ ⇒ 这与第 916 轮那个「一个判据里多个 case 共用一个文档」是同一个坑** ⇒ 又一次 ✓
 const ink = async (layer, extra) => {
-  await call("create_layer", { layer_id: layer, name: layer });
-  await call("brush_stroke", {
+  // **新文档**（每次一份 ⇒ 互不污染 ✓）
+  const fresh = `${doc}_${layer}`;
+  const made = await (await fetch(`${base}/api/documents`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: fresh, width: 400, height: 400 }),
+  })).json();
+  const tok = made.token;
+  if (!tok) { console.error("判据自身前提不成立：拿不到 token（不是产品问题）"); process.exit(3); }
+  const callFresh = (tool, args) => fetch(`${base}/api/tools?doc=${fresh}&token=${tok}`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ tool, arguments: args }),
+  }).then((r) => r.json());
+  await callFresh("create_layer", { layer_id: layer, name: layer });
+  await callFresh("brush_stroke", {
     layer_id: layer, brush: "calligraphy", size: 30,
     color: [0.05, 0.05, 0.05, 1.0], points: [[60, 200, 0.9], [340, 200, 0.9]],
     preview: false, ...extra,
   });
-  const r = await call("sample_colors", { points: pts });
+  const r = await callFresh("sample_colors", { points: pts });
   return (r.samples ?? []).filter((z) => z.rgba && z.rgba[0] < 128).length;
 };
 const plain = await ink("k0", {});
