@@ -270,6 +270,48 @@ await geoCase(
   }
 }
 
+// ---- ⑦ 几何剂量-响应：`k1` 越大，内容面积越小（在 **200×200** 上才可测）----
+//   **⇒ 上一轮我判过「几何测不出剂量」⇒ 那**结论是错的**（第 1325 轮纠正）**
+//     当时用 **60×60** 画布 + 「左边缘位置」⇒ 位移只 0–1 像素、被阈值量化 ⇒ 不可用 ✗
+//   **⇒ 换成 **200×200** + 「非背景像素数」⇒ 实测四档**：
+//     `k1=0.00` ⇒ **14400**（= 120×120，正好是矩形面积 ✓）
+//     `k1=0.10` ⇒ **13624**｜`k1=0.20` ⇒ **12964**｜`k1=0.40` ⇒ **11967** ⇒ **严格单调下降** ✓
+//   **⇒ ⇒ 所以教训是**「先问效果在**这个尺寸**上够不够大」** ⇒ 不够就**换尺寸或换度量**，
+//     而**不是**断定「测不出」✓
+{
+  const W = 200;
+  const inkAt = async (k1) => {
+    const D = await mkDoc(`g${Math.round(k1 * 100)}`, W, W);
+    if (!D) { console.error("  ⊘ 不可判：建文档失败"); process.exit(3); }
+    await post("/api/tools/fill_region", {
+      layer_id: "L", shape: { type: "rect", x: 40, y: 40, w: 120, h: 120 },
+      color: [90, 140, 200], opacity: 1.0,
+    }, D.doc, D.token);
+    await post("/api/tools/add_adjustment", {
+      layer_id: "L", adjustment_type: "lens", params: { k1, auto_crop: false },
+    }, D.doc, D.token);
+    const f = await exportPng(D.doc, D.token, `g${Math.round(k1 * 100)}`);
+    if (!f) { console.error("  ⊘ 不可判：导出失败"); process.exit(3); }
+    const { bpp, px } = readPng(f);
+    let n = 0;
+    for (let i = 0; i < px.length; i += bpp) {
+      if (px[i] < 240 || px[i + 1] < 240 || px[i + 2] < 240) n += 1;
+    }
+    return n;
+  };
+  const a0 = await inkAt(0.0);
+  const a10 = await inkAt(0.1);
+  const a20 = await inkAt(0.2);
+  const a40 = await inkAt(0.4);
+  if (a0 !== 14400) {
+    bad(`⑦ k1=0 时内容面积应是 120×120=14400（不该被重采样）⇒ 实测 ${a0}`);
+  } else if (a10 < a0 && a20 < a10 && a40 < a20) {
+    ok(`⑦ lens 几何剂量-响应严格单调：0.00=${a0}｜0.10=${a10}｜0.20=${a20}｜0.40=${a40}`);
+  } else {
+    bad(`⑦ lens 几何剂量-响应必须严格单调下降 ⇒ 实测 0=${a0}、0.10=${a10}、0.2=${a20}、0.4=${a40}`);
+  }
+}
+
 if (fail.length > 0) {
   console.log(`\n  ✗ ${fail.length} 处不符（四个照片调整必须各有可量效果）`);
   process.exit(1);
