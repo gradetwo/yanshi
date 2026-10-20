@@ -2560,3 +2560,27 @@ deterministic 模式不做缩放：源 1024×1024，目标 512×512
 
 **⇒ ⇒ 所以「同一个问题、两种 grep 给两个数」时，**打印行**才是答案** ✓
 （这与第 888 轮「先枚举措辞」同族：**模式宽窄会改变计数**）
+
+## ★ `neutral` 改动的**影响面验证**：8 条判据本地全 0（第 1386 轮）
+
+**⇒ 背景** ✗：第 1382 轮我改了 `tools_smart.rs`（`smart_texture` 的基色）＋ 加了 `neutral` 参数 ⇒
+**⇒ 而 CI 还排着 4 笔未验的提交** ⇒ 所以先在本地把**影响面**跑一遍 ✓
+
+| 判据 | 结果 |
+|---|---|
+| `tool-smart-tools` | **0** ✓ |
+| `tool-smart-texture-density` | **0** ✓ |
+| `tool-smart-texture-brightening` | **0** ✓ |
+| `tool-smart-select-block` | **0** ✓ |
+| `tool-smart-select-add-merges` | **0** ✓（第 1384 轮修好后）|
+| `tool-tileable-textures` | **0** ✓ |
+| `tool-examples-doc-check` | **0** ✓（加参数后文档仍一致）|
+| `tool-examples-doc` | **0** ✓ |
+
+**⇒ ⇒ 所以 `tools_smart.rs` 的改动**没有波及**现有纹理/选区/文档类判据 ✓**
+
+**⇒ ⇒ ⇒ 而 `tool-examples-doc` 也过 ⇒ 说明**加一个参数不需要重新生成 `tool-examples.md`** ✓
+（因为那份文档是**按工具**列示例，不是按参数）
+
+**⇒ 这条路值得复用：**改一个 handler 时，先按**关键字**找出所有相关判据（这里是 `smart*` + `texture` + `examples`），
+⇒ 一次跑完 ⇒ **比等 CI 快 20 分钟** ✓
