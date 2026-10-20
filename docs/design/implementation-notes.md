@@ -654,10 +654,10 @@ tile 丢掉场景内容（症状：`(36,15)` 处场景笔迹变成背景白；�
 |---|---|---|
 | 调整 `exposure` | `ev` −10..10 | 线性光下 `×2^ev` |
 | 调整 `white_balance` | `temperature`/`tint` −1..1 | 暖/冷 + 品红/绿 |
-| 调整 `curves` | `points`[[x,y]...]、`channel` rgb/r/g/b | **单调三次插值**（Fritsch–Carlson），保证不过冲 |
+| 调整 `curves` | `points`[[x,y]...]、`channel` rgb/r/g/b/l/h/s | **单调三次插值**（Fritsch–Carlson），保证不过冲；l=Lab 明度曲线、h=HSL 色相曲线、s=HSL 饱和度曲线 |
 | 调整 `hsl` | `hue` −180..180、`saturation` 0..4、`lightness` −1..1 | 标准 HSL：色相旋转 / 饱和度缩放 / 明度偏移 |
 | 调整 `vibrance` | `amount` 0..2 | 自然饱和度：权重 `1 − 饱和度`，**低饱和提升更强**、灰色不产生色偏 |
-| 调整 `levels`（扩展） | 增加 `channel`（rgb/r/g/b） | 分通道色阶，与 `curves` 同一套通道命名 |
+| 调整 `levels`（扩展） | 增加 `channel`（rgb/r/g/b） | 分通道色阶，通道命名与 `curves` 的 RGB 部分一致 |
 | 调整 `posterize` | `levels` 2..64 | 直通通道量化到 N 个台阶（如 3 级 → 0/0.5/1） |
 | 调整 `color_balance` | `shadows`/`midtones`/`highlights` 各 `[r,g,b]`（−1..1） | 按线性亮度分档加权偏移：`shadows=(1-luma)²`、`highlights=luma²`、中间调为余量 |
 | 调整 `split_toning` | `shadows`/`highlights` 各 `[r,g,b]`、`balance` −1..1、`amount` 0..1 | 权重为 smoothstep（分界 `mid = 0.5 + balance×0.25`），阴影/高光分别着色 |

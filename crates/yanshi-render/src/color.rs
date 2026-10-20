@@ -707,6 +707,35 @@ pub fn linear_to_lab(linear: [f32; 3]) -> [f32; 3] {
     [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
 }
 
+/// **CIE Lab → 线性 sRGB（D65 白点）**：`linear_to_lab` 的逆 ✓。
+///
+/// **为什么需要它**：`curves` 的 `"l"` 通道（Lab 明度曲线）要逐像素"转 Lab→套曲线→转回" ✓，
+/// 没有逆变换就只能单向分析、不能调色 ✗。
+pub fn lab_to_linear(lab: [f32; 3]) -> [f32; 3] {
+    let (l, a, b) = (lab[0], lab[1], lab[2]);
+    let fy = (l + 16.0) / 116.0;
+    let (fx, fz) = (a / 500.0 + fy, fy - b / 200.0);
+    let finv = |t: f32| {
+        let t3 = t * t * t;
+        if t3 > 0.008_856 {
+            t3
+        } else {
+            (t - 16.0 / 116.0) / 7.787
+        }
+    };
+    // D65 白点 ✓（与 linear_to_lab 同一组 ✓）。
+    let (x, y, z) = (
+        0.95047_f32 * finv(fx),
+        1.0_f32 * finv(fy),
+        1.08883_f32 * finv(fz),
+    );
+    // XYZ → 线性 sRGB（linear_to_lab 里那个矩阵的逆 ✓）。
+    [
+        3.2406 * x - 1.5372 * y - 0.4986 * z,
+        -0.9689 * x + 1.8758 * y + 0.0415 * z,
+        0.0557 * x - 0.2040 * y + 1.0570 * z,
+    ]
+}
 /// **CIE76 色差**（§三.2 ✓）：Lab 空间里的欧氏距离 ✓。**同一个颜色恒为 0** ✓（判据的一侧靠它 ✓）。
 pub fn delta_e_cie76(a: [f32; 3], b: [f32; 3]) -> f32 {
     let (dl, da, db) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]);
@@ -720,7 +749,28 @@ pub fn delta_e_linear_rgb(a: [f32; 3], b: [f32; 3]) -> f32 {
 
 #[cfg(test)]
 mod lab_delta_e_tests {
-    use super::{delta_e_cie76, delta_e_linear_rgb, linear_to_lab};
+    use super::{delta_e_cie76, delta_e_linear_rgb, lab_to_linear, linear_to_lab};
+
+    /// **Lab 往返恒等** ✓ —— `lab_to_linear` 是 `linear_to_lab` 的逆 ✓。
+    /// 这是 curves "l" 通道的正确性根基（转 Lab→套曲线→转回不能漂移 ✓）。
+    #[test]
+    fn lab_roundtrip_is_identity() {
+        for color in [
+            [0.2, 0.5, 0.8],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [0.18, 0.18, 0.18],
+        ] {
+            let back = lab_to_linear(linear_to_lab(color));
+            for channel in 0..3 {
+                assert!(
+                    (back[channel] - color[channel]).abs() < 1e-4,
+                    "{color:?} 往返：{back:?}"
+                );
+            }
+        }
+    }
 
     /// **同一颜色 ΔE = 0** ✓ —— 这是判据"自比必须≈0"那一侧的依据 ✓。
     #[test]

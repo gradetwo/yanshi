@@ -418,6 +418,51 @@ pub fn posterize(buffer: &mut Buffer, levels: u32) {
     });
 }
 
+/// **RGB → HSL 分解**（h/s/l 都是 0..1 的分数）✓ —— `hsl` 调整与 `curves` 的 h/s 通道共用 ✓，
+/// 口径只此一处 ✗（两边各算一遍必然漂移 ✓）。
+fn hsl_decompose(color: &[f32; 3]) -> (f32, f32, f32) {
+    let (r, g, b) = (color[0], color[1], color[2]);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let chroma = max - min;
+    let l = (max + min) / 2.0;
+    let h = if chroma <= 0.0 {
+        0.0
+    } else if max == r {
+        ((g - b) / chroma).rem_euclid(6.0) / 6.0
+    } else if max == g {
+        (((b - r) / chroma) + 2.0) / 6.0
+    } else {
+        (((r - g) / chroma) + 4.0) / 6.0
+    };
+    let s = if l <= 0.0 || l >= 1.0 {
+        0.0
+    } else {
+        chroma / (1.0 - (2.0 * l - 1.0).abs())
+    };
+    (h, s, l)
+}
+
+/// **HSL → RGB 组装** ✓ —— `hsl_decompose` 的逆 ✓。
+fn hsl_compose(h: f32, s: f32, l: f32) -> [f32; 3] {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h * 6.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r1, g1, b1) = match (h * 6.0) as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    [
+        (r1 + m).clamp(0.0, 1.0),
+        (g1 + m).clamp(0.0, 1.0),
+        (b1 + m).clamp(0.0, 1.0),
+    ]
+}
+
 /// HSL 调整：色相旋转（度）+ 饱和度倍率 + 明度偏移。
 ///
 /// 与其它调整一致，作用于**直通线性**通道并钳制到 [0,1]。HSL 采用标准定义：
@@ -427,44 +472,12 @@ pub fn hsl(buffer: &mut Buffer, hue_degrees: f32, saturation: f32, lightness: f3
     let saturation = saturation.clamp(0.0, 8.0);
     let lightness = lightness.clamp(-1.0, 1.0);
     for_each_straight_color(buffer, |color| {
-        let (r, g, b) = (color[0], color[1], color[2]);
-        let max = r.max(g).max(b);
-        let min = r.min(g).min(b);
-        let chroma = max - min;
-        let l = (max + min) / 2.0;
-        let mut h = if chroma <= 0.0 {
-            0.0
-        } else if max == r {
-            ((g - b) / chroma).rem_euclid(6.0) / 6.0
-        } else if max == g {
-            (((b - r) / chroma) + 2.0) / 6.0
-        } else {
-            (((r - g) / chroma) + 4.0) / 6.0
-        };
-        let s = if l <= 0.0 || l >= 1.0 {
-            0.0
-        } else {
-            chroma / (1.0 - (2.0 * l - 1.0).abs())
-        };
+        let (h, s, l) = hsl_decompose(color);
         // 色相旋转 + 饱和度缩放 + 明度偏移。
-        h = (h + hue_shift).rem_euclid(1.0);
+        let h = (h + hue_shift).rem_euclid(1.0);
         let s = (s * saturation).clamp(0.0, 1.0);
         let l = (l + lightness).clamp(0.0, 1.0);
-        // HSL → RGB。
-        let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-        let x = c * (1.0 - ((h * 6.0) % 2.0 - 1.0).abs());
-        let m = l - c / 2.0;
-        let (r1, g1, b1) = match (h * 6.0) as u32 {
-            0 => (c, x, 0.0),
-            1 => (x, c, 0.0),
-            2 => (0.0, c, x),
-            3 => (0.0, x, c),
-            4 => (x, 0.0, c),
-            _ => (c, 0.0, x),
-        };
-        color[0] = (r1 + m).clamp(0.0, 1.0);
-        color[1] = (g1 + m).clamp(0.0, 1.0);
-        color[2] = (b1 + m).clamp(0.0, 1.0);
+        *color = hsl_compose(h, s, l);
     });
 }
 
@@ -566,7 +579,9 @@ fn monotone_curve(points: &[(f32, f32)], x: f32) -> f32 {
         .clamp(0.0, 1.0)
 }
 
-/// 曲线：控制点在 0..1 归一化空间，可按通道（rgb/r/g/b）分别作用。
+/// 曲线：控制点在 0..1 归一化空间，可按通道分别作用。
+/// 通道：`rgb`/`r`/`g`/`b`（线性 RGB）、`l`（Lab 明度：调亮不偏色）、
+/// `h`（HSL 色相：输入色相→输出色相）、`s`（HSL 饱和度）。
 pub fn curves(buffer: &mut Buffer, points: &[(f32, f32)], channel: &str) {
     if points.len() < 2 {
         return;
@@ -577,6 +592,28 @@ pub fn curves(buffer: &mut Buffer, points: &[(f32, f32)], channel: &str) {
         "r" => color[0] = monotone_curve(&sorted, color[0].clamp(0.0, 1.0)),
         "g" => color[1] = monotone_curve(&sorted, color[1].clamp(0.0, 1.0)),
         "b" => color[2] = monotone_curve(&sorted, color[2].clamp(0.0, 1.0)),
+        // **Lab 明度曲线** ✓：只动 L，a/b 原样 ⇒ 提亮不偏色（RGB 曲线做不到 ✓）。
+        "l" => {
+            let lab = crate::color::linear_to_lab(*color);
+            let new_l = monotone_curve(&sorted, (lab[0] / 100.0).clamp(0.0, 1.0)) * 100.0;
+            let back = crate::color::lab_to_linear([new_l, lab[1], lab[2]]);
+            color[0] = back[0].clamp(0.0, 1.0);
+            color[1] = back[1].clamp(0.0, 1.0);
+            color[2] = back[2].clamp(0.0, 1.0);
+        }
+        // **HSL 色相曲线** ✓：输入色相（0..1）→输出色相，自动回绕 ✓。
+        // 无彩像素（s=0）组装回去仍是灰 ⇒ 曲线动不了它 ✓（符合直觉 ✓）。
+        "h" => {
+            let (h, s, l) = hsl_decompose(color);
+            let new_h = monotone_curve(&sorted, h).rem_euclid(1.0);
+            *color = hsl_compose(new_h, s, l);
+        }
+        // **HSL 饱和度曲线** ✓。
+        "s" => {
+            let (h, s, l) = hsl_decompose(color);
+            let new_s = monotone_curve(&sorted, s.clamp(0.0, 1.0));
+            *color = hsl_compose(h, new_s, l);
+        }
         _ => {
             for value in color.iter_mut() {
                 *value = monotone_curve(&sorted, value.clamp(0.0, 1.0));
@@ -2886,6 +2923,87 @@ mod tests {
         );
         assert_eq!(FilterKind::GaussianBlur.padding(&json!({"sigma": 2.0})), 6);
         assert_eq!(FilterKind::Invert.padding(&json!({})), 0);
+    }
+
+    #[test]
+    fn curves_lightness_channel_brightens_without_hue_shift() {
+        // **Lab 明度曲线**：L 提高，a/b（色相）基本不动 ✓ —— 这是 RGB 曲线做不到的 ✓。
+        // 注：用砖红而非纯红——纯红提亮 +27 会超色域被 clamp 剪掉，a/b 漂移是正确的色域裁剪，
+        // 不是曲线错（实测 L 84 a 8.2 b 20.2 全程在色域内 ✓）。
+        let mut buffer = filled([0.4, 0.25, 0.15, 1.0]);
+        let before = crate::color::linear_to_lab([0.4, 0.25, 0.15]);
+        curves(&mut buffer, &[(0.0, 0.0), (0.5, 0.8), (1.0, 1.0)], "l");
+        let p = buffer.pixel(0, 0);
+        let after = crate::color::linear_to_lab([p[0], p[1], p[2]]);
+        assert!(
+            after[0] > before[0] + 10.0,
+            "L 应明显提高：{before:?} → {after:?}"
+        );
+        assert!(
+            (after[1] - before[1]).abs() < 1.0 && (after[2] - before[2]).abs() < 1.0,
+            "a/b 应基本不动（色相守恒）：{before:?} → {after:?}"
+        );
+    }
+
+    #[test]
+    fn curves_hue_channel_rotates_hue() {
+        // **HSL 色相曲线**：青（h=1/2）→ 黄绿（h=1/4）✓。
+        // 用青不用绿：绿的 s=1.0 和 h=1/3 在某些曲线下撞车，测不出"动的是 h 还是 s"（变异验证教训 ✓）。
+        let mut buffer = filled([0.0, 0.5, 0.5, 1.0]);
+        curves(&mut buffer, &[(0.0, 0.0), (0.5, 0.25), (1.0, 1.0)], "h");
+        let p = buffer.pixel(0, 0);
+        let (h_after, ..) = super::hsl_decompose(&[p[0], p[1], p[2]]);
+        assert!(
+            (h_after - 0.25).abs() < 1e-3,
+            "色相应为 1/4：{p:?}（h={h_after}）"
+        );
+    }
+
+    #[test]
+    fn curves_saturation_channel_desaturates_to_gray() {
+        // **HSL 饱和度曲线**：全压到 0 ⇒ 灰，明度不变 ✓。
+        let mut buffer = filled([0.8, 0.2, 0.1, 1.0]);
+        let (.., l_before) = super::hsl_decompose(&[0.8, 0.2, 0.1]);
+        curves(&mut buffer, &[(0.0, 0.0), (1.0, 0.0)], "s");
+        let p = buffer.pixel(0, 0);
+        assert!(
+            (p[0] - p[1]).abs() < 1e-3 && (p[1] - p[2]).abs() < 1e-3,
+            "应成灰：{p:?}"
+        );
+        assert!(
+            (p[0] - l_before).abs() < 1e-3,
+            "明度应守恒：{p:?} vs {l_before}"
+        );
+    }
+
+    #[test]
+    fn curves_unknown_channel_still_hits_rgb_fallback() {
+        // **未知通道走 rgb 回退**（与原来一致 ✓）—— 工具层校验挡住了非法值，
+        // 这里守的是"实现不 panic"。
+        let mut buffer = filled([0.2, 0.4, 0.6, 1.0]);
+        curves(&mut buffer, &[(0.0, 0.0), (1.0, 1.0)], "nope");
+        let p = buffer.pixel(0, 0);
+        assert!((p[0] - 0.2).abs() < 1e-4 && (p[2] - 0.6).abs() < 1e-4);
+    }
+
+    #[test]
+    fn hsl_helpers_are_inverse_of_each_other() {
+        // **分解/组装互逆** ✓ —— hsl() 重构后行为不变的依据 ✓。
+        for color in [
+            [1.0, 0.0, 0.0],
+            [0.2, 0.5, 0.8],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ] {
+            let (h, s, l) = super::hsl_decompose(&color);
+            let back = super::hsl_compose(h, s, l);
+            for channel in 0..3 {
+                assert!(
+                    (back[channel] - color[channel]).abs() < 1e-5,
+                    "{color:?} 往返：{back:?}"
+                );
+            }
+        }
     }
 }
 

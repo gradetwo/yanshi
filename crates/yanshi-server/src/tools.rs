@@ -12226,11 +12226,11 @@ fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> Result<()> {
     }
     if name == "curves" {
         if let Some(channel) = object.get("channel").and_then(Value::as_str) {
-            if !["rgb", "r", "g", "b"].contains(&channel) {
+            if !["rgb", "r", "g", "b", "l", "h", "s"].contains(&channel) {
                 return Err(YanshiError::new(
                     ErrorCode::InvalidArgument,
                     ErrorContext::detail(format!(
-                        "curves 的 channel 只能是 rgb/r/g/b，得到 {channel}"
+                        "curves 的 channel 只能是 rgb/r/g/b/l/h/s，得到 {channel}"
                     )),
                 ));
             }

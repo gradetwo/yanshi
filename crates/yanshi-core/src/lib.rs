@@ -55,6 +55,7 @@ pub mod resample;
 pub mod seq;
 pub mod snapshot;
 pub mod state;
+pub mod stroke_length;
 pub mod testkit;
 pub mod watch;
 
