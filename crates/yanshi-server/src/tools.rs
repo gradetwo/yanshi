@@ -20368,7 +20368,7 @@ fn write_smart_fill(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             "stroke_taper": use_taper,
             "paint_push": use_push,
             "preview": false,
-            "clip_to_selection": clip_sel,
+            "clip_to_selection": if clip_sel.is_empty() { Value::Null } else { json!(clip_sel) },
         });
 
         match write_brush_stroke(ctx, &stroke_args) {
@@ -20741,7 +20741,7 @@ fn write_smart_blend(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             "stroke_taper": taper,
             "paint_push": paint_push,
             "preview": false,
-            "clip_to_selection": clip_sel,
+            "clip_to_selection": if clip_sel.is_empty() { Value::Null } else { json!(clip_sel) },
         });
         match write_brush_stroke(ctx, &stroke_args) {
             Ok(_) => *ok_count += 1,
@@ -21263,7 +21263,7 @@ fn write_smart_glaze(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 "stroke_taper": 0.35,
                 "paint_push": 0.0,
                 "preview": false,
-                "clip_to_selection": clip_sel,
+                "clip_to_selection": if clip_sel.is_empty() { Value::Null } else { json!(clip_sel) },
             });
             match write_brush_stroke(ctx, &stroke_args) {
                 Ok(_) => ok_count += 1,
@@ -21550,7 +21550,7 @@ fn write_smart_edge_soften(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
             "stroke_taper": taper,
             "paint_push": paint_push,
             "preview": false,
-            "clip_to_selection": clip_sel,
+            "clip_to_selection": if clip_sel.is_empty() { Value::Null } else { json!(clip_sel) },
         });
         if let Some(c) = color_opt {
             stroke_args["color"] = json!([c[0], c[1], c[2], c[3]]);
@@ -22530,7 +22530,7 @@ fn write_smart_texture(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
             "hand_tremor": stroke.tremor,
             "color_breath": 0.1,
             "preview": false,
-            "clip_to_selection": clip_sel,
+            "clip_to_selection": if clip_sel.is_empty() { Value::Null } else { json!(clip_sel) },
         });
         match write_brush_stroke(ctx, &stroke_args) {
             Ok(_) => ok_count += 1,
@@ -23012,7 +23012,7 @@ fn write_smart_sample(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             "size": size,
             "color": [color[0], color[1], color[2], color[3]],
             "hardness": hardness,
-            "clip_to_selection": clip_sel,
+            "clip_to_selection": if clip_sel.is_empty() { Value::Null } else { json!(clip_sel) },
             "preview": false,
         });
         match write_brush_stroke(ctx, &stroke_args) {
@@ -23686,7 +23686,7 @@ fn write_smart_hatch_follow(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
                         "points": points,
                         "size": size,
                         "color": [color_arr[0], color_arr[1], color_arr[2], color_arr[3]],
-                        "clip_to_selection": clip_sel,
+                        "clip_to_selection": if clip_sel.is_empty() { Value::Null } else { json!(clip_sel) },
                         "preview": false,
                     });
                     match write_brush_stroke(ctx, &stroke_args) {

@@ -3,7 +3,7 @@
 **这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，
 所以它不会与实现漂移；`--check` 模式会在文档过期时失败。
 
-当前共 178 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
+当前共 180 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
 
 ## `abort_changeset`
 
@@ -1404,6 +1404,18 @@
 }
 ```
 
+## `select_opaque_pixels`
+
+```json
+{
+  "binarize": false,
+  "close_pinholes": true,
+  "layer_id": "L1",
+  "min_alpha": 128,
+  "selection_id": "s_opaque"
+}
+```
+
 ## `set_anchor`
 
 ```json
@@ -1747,6 +1759,27 @@
 ```json
 {
   "object_id": "L1"
+}
+```
+
+## `transform_selection`
+
+```json
+{
+  "pivot": [
+    100,
+    100
+  ],
+  "rotate_deg": 30,
+  "scale": [
+    1.5,
+    1.5
+  ],
+  "selection_id": "s1",
+  "translate": [
+    10,
+    0
+  ]
 }
 ```
 
