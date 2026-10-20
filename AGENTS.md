@@ -958,3 +958,44 @@ HEAD 还没有 run 时 `exit(3)`（不可判 ≠ 失败）。
 
 **配套**：改完**立刻**跑一次 `cargo fmt --all`（它会先编译解析）或 `node --check` ✓，
 不要攒到最后一次编译才发现 ✗。
+
+## 内存开销大的活一律走 GitHub CI/CD（**用户裁定 2026-10-20**）
+
+**规则**：`cargo test --workspace`／`cargo build --workspace`／`cargo clippy --workspace`（首次全量）这类
+**整 workspace 的重计算**，**不在本机跑** ⇒ 提交 + push ⇒ 让 CI 跑。
+
+**为什么（实测，不是推论）**：
+
+```
+本机总内存 **3.8 Gi**｜已用 2.3 Gi｜可用 **1.5 Gi**｜交换 11 Gi（已用 1.4 Gi）
+而占最多的是 **DSH Web GUI 自己 1040 MB**（`node apps/cli/src/bin.ts web`，不能杀）
+
+内核日志（2026-10-20 12:23:56）：
+  Out of memory: Killed process 1498143 (node-MainThread) total-vm:10990752kB
+  ⇒ 与我的工具调用被中断的时刻吻合 ⇒ 那次中断**不是超时，是 OOM** ✗
+```
+
+⇒ 所以「本机跑全量 `cargo test`」会**被 OOM killer 杀掉**，代价不只是那次失败：
+**交换被吃掉 1.4 Gi ⇒ 整机变慢 ⇒ 之后每次工具调用都更慢。**
+
+**本机可以跑**（内存友好）：
+
+| 活 | 为什么可以 |
+|---|---|
+| `cargo fmt --all -- --check` | 不编译 |
+| `cargo check -p <单个 crate>` | 单 crate |
+| `cargo test -p <单个 crate> --lib <过滤>` | 单 crate + 过滤 |
+| `cargo build --release -p yanshi-http --bin yanshi-serve` | 单目标 |
+| `node scripts/*.mjs`（判据） | 轻 |
+| `cargo clippy --workspace --all-targets` | **边界** ⇒ 先 `free -h` 确认可用 > 3 Gi |
+
+**自检**（跑任何「重」命令前）：
+
+```bash
+free -h | awk 'NR==2 {print "可用 " $7}'
+# 可用 < 2 Gi ⇒ 不要跑整 workspace 的命令
+```
+
+**⇒ 与「合并外部补丁要本机跑 clippy + test」的关系**：
+合并补丁那个例外**仍在**（低频高风险），但**只跑 clippy**（它比 test 省内存）；
+`cargo test --workspace` 那一步**改由 CI 做** ⇒ 提交信息里写「等 CI 的 test (stable)/(beta)」。
