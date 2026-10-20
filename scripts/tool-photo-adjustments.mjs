@@ -128,34 +128,53 @@ const exportPng = async (doc, token, name) => {
   else bad(`① red_eye 必须压低红点中心（30,30）⇒ 实测 ${b} → ${a}（没效果）`);
 }
 
-// ---- ② denoise：噪声区 ⇒ 局部标准差下降 ----
+// ---- ② denoise：**剂量-响应**（更强的参数必须得到更强的降噪）----
+//   **⇒ 为什么不是「std 下降」就够** ✗（第 1322 轮实测）：
+//     单点断言只要降 0.1 就过 ⇒ 而那**区分不出**「参数接线断了（无论传什么都只跑缺省）」
+//     ⇒ 而**剂量-响应**能：传 0.0 应当**不动**、传 1.0 应当**最狠**、中间单调 ✓
+//   **⇒ 实测三档**（`detail=0`、`color=0`、只变 `luminance`）：
+//     0.00 ⇒ 84.85｜0.50 ⇒ 84.02｜1.00 ⇒ 82.21 ⇒ **单调下降** ✓
 {
-  const D = await mkDoc("dn", 60, 60);
-  if (!D) { console.error("  ⊘ 不可判：建文档失败"); process.exit(3); }
-  // 交替色块 = 高频噪声（确定性，不用随机数）
-  for (let i = 0; i < 12; i += 1) {
-    const c = i % 2 === 0 ? [40, 40, 40] : [210, 210, 210];
-    await post("/api/tools/fill_region", {
-      layer_id: "L", shape: { type: "rect", x: 10 + i * 3, y: 10, w: 3, h: 40 }, color: c, opacity: 1.0,
-    }, D.doc, D.token);
-  }
-  const std = (f) => {
-    const { bpp, w, px } = readPng(f);
-    let s = 0; let s2 = 0; let n = 0;
-    for (let y = 12; y < 48; y += 1) {
-      for (let x = 12; x < 46; x += 1) { const v = px[(y * w + x) * bpp]; s += v; s2 += v * v; n += 1; }
+  const mkNoise = async (tag) => {
+    const D = await mkDoc(tag, 60, 60);
+    if (!D) return null;
+    for (let i = 0; i < 12; i += 1) {
+      const c = i % 2 === 0 ? [40, 40, 40] : [210, 210, 210];
+      await post("/api/tools/fill_region", {
+        layer_id: "L", shape: { type: "rect", x: 10 + i * 3, y: 10, w: 3, h: 40 }, color: c, opacity: 1.0,
+      }, D.doc, D.token);
     }
-    const mean = s / n; return Math.sqrt(Math.max(0, s2 / n - mean * mean));
+    return D;
   };
-  const before = await exportPng(D.doc, D.token, "dn_before");
-  await post("/api/tools/add_adjustment", {
-    layer_id: "L", adjustment_type: "denoise", params: { luminance: 0.9, detail: 0.9, color: 0.5 },
-  }, D.doc, D.token);
-  const after = await exportPng(D.doc, D.token, "dn_after");
-  if (!before || !after) { console.error("  ⊘ 不可判：导出失败"); process.exit(3); }
-  const b = std(before); const a = std(after);
-  if (a < b - 0.5) ok(`② denoise 降低局部标准差：${b.toFixed(1)} → ${a.toFixed(1)}`);
-  else bad(`② denoise 必须降低局部标准差 ⇒ 实测 ${b.toFixed(1)} → ${a.toFixed(1)}`);
+  const stdOf = (file) => {
+    const { bpp, w, px } = readPng(file);
+    let s = 0; let s2 = 0; let n = 0;
+    for (let y = 12; y < 48; y += 1) for (let x = 12; x < 46; x += 1) {
+      const v = px[(y * w + x) * bpp]; s += v; s2 += v * v; n += 1;
+    }
+    const mean = s / n;
+    return Math.sqrt(Math.max(0, s2 / n - mean * mean));
+  };
+  const at = async (lum) => {
+    const D = await mkNoise(`dn${Math.round(lum * 100)}`);
+    if (!D) { console.error("  ⊘ 不可判：建文档失败"); process.exit(3); }
+    await post("/api/tools/add_adjustment", {
+      layer_id: "L", adjustment_type: "denoise", params: { luminance: lum, detail: 0.0, color: 0.0 },
+    }, D.doc, D.token);
+    const f = await exportPng(D.doc, D.token, `dn${Math.round(lum * 100)}`);
+    if (!f) { console.error("  ⊘ 不可判：导出失败"); process.exit(3); }
+    return stdOf(f);
+  };
+  const s0 = await at(0.0);
+  const s5 = await at(0.5);
+  const s10 = await at(1.0);
+  if (s0 <= s5 && s5 <= s10) {
+    bad(`② denoise 剂量-响应必须**单调下降** ⇒ 实测 0.0=${s0.toFixed(1)}、0.5=${s5.toFixed(1)}、1.0=${s10.toFixed(1)}（在上升）`);
+  } else if (!(s10 < s0 - 1.0)) {
+    bad(`② denoise 最强档必须比关档降 1 以上 ⇒ 实测 ${s0.toFixed(1)} → ${s10.toFixed(1)}`);
+  } else {
+    ok(`② denoise 剂量-响应单调：0.0=${s0.toFixed(1)}｜0.5=${s5.toFixed(1)}｜1.0=${s10.toFixed(1)}`);
+  }
 }
 
 // ---- ③ lens / ④ perspective：几何必须动 ----
