@@ -1147,6 +1147,35 @@ impl Workspace {
         session: &str,
     ) -> Result<&mut Document> {
         let doc_id = spec.doc_id.clone();
+        // **★ 画布尺寸上限** ✓（第 1418 轮；外部 D-12）
+        //   **⇒ 原缺陷** ✗：`POST /api/documents` 接受 **100000×100000**（= **10^10 像素**）⇒
+        //     实测**真的建成**了（惰性分配，所以当场不炸）⇒ 但**任何一次全幅渲染/导出**
+        //     都要 ≈ **40 GB** 内存 ⇒ 变成一次**必然的 OOM** ✗
+        //   **⇒ 注意**：`new_document` **工具**那条路早有 `clamp(1, 65536)` ✓
+        //     ⇒ 而 **HTTP 这条路没有** ✗ ⇒ 所以同一个参数两条路行为不同 ✓
+        //   **⇒ ⇒ 所以**在这里也拒绝**，并说清上限 ✓
+        //   **⇒ 上限**：单边 `16384`（GPU 常见最大纹理边）＋ 总像素 `2^28`（≈ 2.68 亿 ⇒ 1 GiB RGBA）
+        const MAX_CANVAS_EDGE: u32 = 16_384;
+        const MAX_CANVAS_PIXELS: u64 = 1 << 28;
+        if spec.width > MAX_CANVAS_EDGE || spec.height > MAX_CANVAS_EDGE {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "画布单边上限 {MAX_CANVAS_EDGE}（请求 {}×{}）⇒ 超过就必然 OOM，所以在这里拒绝",
+                    spec.width, spec.height
+                )),
+            ));
+        }
+        let pixels = u64::from(spec.width).saturating_mul(u64::from(spec.height));
+        if pixels > MAX_CANVAS_PIXELS {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "画布总像素上限 {MAX_CANVAS_PIXELS}（请求 {}×{} = {pixels}）⇒ 超过就必然 OOM，所以在这里拒绝",
+                    spec.width, spec.height
+                )),
+            ));
+        }
         if self.documents.contains_key(&doc_id) {
             return Err(YanshiError::new(
                 ErrorCode::PreconditionFailed,
