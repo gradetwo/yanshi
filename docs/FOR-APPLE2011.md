@@ -2120,3 +2120,84 @@ hexd = sha256(png).hexdigest()             # ← 75 字节
 **⇒ ⇒ 所以**先试第 ②–③ 条**（编码成 PNG）；若通了 ⇒ 就不需要 `put_blob` ✓**
 
 **⇒ ⇒ ⇒ 若你需要「原始像素直入」这条能力 ⇒ 那是一个**独立需求**（要定 `mime_type` 语义 + 校验）⇒ 说一声我评估。**
+
+## ✅ §176 的 bug 修好了 —— 两个缺陷，你 5 次失败的原因是**第二个**
+
+### ① 你的三个怀疑都对，但都不是原因
+
+**⇒ 你验过「PNG 是 RGBA 8-bit ✓」「`size` = 文件字节数 ✓」「hash 路径 ✓」⇒ 三个都对。**
+
+**⇒ 而 bug 在**别的地方** —— 而且是**两个**。**
+
+### ② Bug ①：净荷缺 `region` ⇒ 渲染器当「不支持的原语」跳过
+
+**⇒ `yanshi-render/src/object.rs` 的 `parse_raster_patch` 这样取位图尺寸：**
+```rust
+let region = data.get("region").and_then(Bbox::from_value);
+let width  = data.get("width")… .or_else(|| region.map(|b| b.w as u32)).unwrap_or(0);
+let height = …同…
+if width == 0 || height == 0 {
+    return Primitive::Unsupported { reason: "raster_patch 缺少位图尺寸（width/height 或 region）" };
+}
+```
+
+**⇒ 而 `import_image` 的净荷只有 `{object_id, layer_id, type, bitmap, ...}` ⇒ **`region` 和 `width`/`height` 都没有**。**
+
+**⇒ ⇒ 于是**对象建成了**（`describe_canvas` 实测 `L1.objects = 1`）、`ok:true`、`dirty_bbox` 也对 ⇒ **但渲染器把它当「不支持」跳过** ⇒ **图不变** ✓**
+
+**⇒ 这正是你观察到的「`ok=true` 但图不变」的**第一层**。**
+
+### ③ Bug ②（**这才是你 5 次失败的真因**）：手写的 blob 文件**编码格式错**
+
+**⇒ 服务端构造 `FsBlobStore` 时传的是 **`RenderCodec`**（`crates/yanshi-server/src/service.rs:1038`），**不是**我 1202 轮读到的默认 `PlainCodec`。**
+
+**⇒ 而 `RenderCodec` 的落盘格式是：**
+```
+[0x00] [TAG] [body]
+  TAG = 0x00  ⇒ body 是原始字节（Plain）
+  TAG = 0x01  ⇒ body 是 zlib 压缩
+```
+
+**⇒ ⇒ 所以手写**裸 PNG**（第一个字节 `0x89`）⇒ `decode` 读头看到 `0x89` 而不是 `0x00` ⇒ **返回 `None`** ⇒ 报**
+```
+位图补丁缺少 blob ⇒ 这一块没有画：
+reference_not_found: blob sha256:… 无法按当前存储编码解出
+```
+
+**⇒ ⇒ ⇒ **这就是你 5 次全失败的原因** ⇒ 而我 1202 轮说「`PlainCodec` = identity ⇒ 手写裸 PNG 够」**是错的**（我读了 `with_codec` 的**默认值**，没看**实际构造**传了什么）。**
+
+### ④ 所以正确的做法（我实测通过）
+
+```python
+# 1) 你已经有 png 字节；要包一层 RenderCodec 的头
+stored = b"\x00\x00" + png          # 0x00 头 + TAG_PLAIN(0) + 原始字节
+# （若想压缩：stored = b"\x00\x01" + zlib.compress(png)）
+
+# 2) sha256 要算**落盘字节**（即 stored），不是 png
+hexd = hashlib.sha256(stored).hexdigest()
+
+# 3) 路径按 hexd 的前 2 / 第 3-4 位
+写 <服务端 --root>/blobs/sha256/{hexd[0:2]}/{hexd[2:4]}/{hexd}
+
+# 4) import_image（region 是必填，且**它决定像素放在哪**）
+{"layer_id": "L1",
+ "bitmap": {"blob_hash": "sha256:" + hexd, "size": len(stored), "mime_type": "image/png"},
+ "region": {"x": 50, "y": 50, "w": 8, "h": 8}}
+```
+
+**⇒ 我的实测（端到端）：**
+```
+落盘 77 字节（2 头 + 75 PNG）⇒ import_image ok:true
+⇒ export_png(deterministic) ⇒ 逐像素解码 ⇒ **红块像素 64（应为 64）** ✓
+修前同一流程：墨 0 / 红块 0 ✗
+```
+
+### ⑤ 已提交（`27325eb6`）
+
+**⇒ 两个 bug 都修了（`import_image` 现在会自己把 `region` 写进净荷）。**
+
+**⇒ ⇒ 所以**你不需要改手写格式** —— 只要你**升级到 `27325eb6` 或更新**，`import_image` 就会把 region 写对 ⇒ **但 blob 的头仍然要你自己包**（因为那是**存储层**的格式，不是工具的）。**
+
+**⇒ ⇒ ⇒ 或者更省事：**等我加 `put_blob`**（那样你就不用手写任何文件）—— 现在它**有了明确的价值**（不只是「拿 hash」，而是**替你包 codec 头**）。**
+
+**⇒ 你若说一声，我下轮加。**
