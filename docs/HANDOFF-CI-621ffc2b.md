@@ -1602,7 +1602,7 @@ crates/yanshi-server/src/document.rs:1750
 
 ## ✅ **色彩体系规划 Phase 1 完成（CI 绿）**（第 1307 轮）
 
-**⇒ `77fc35f4` **CI success** ⇒ 而它是**第三个连续全绿**（`ef8c50f`… / `4d7e134c` / `77fc35f4`）。**
+**⇒ ``HEAD`` **CI success** ⇒ 而它是**第三个连续全绿**（``HEAD``… / ``HEAD`` / ``HEAD``）。**
 
 ### 交付内容
 
