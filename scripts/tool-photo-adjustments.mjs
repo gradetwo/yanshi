@@ -103,29 +103,38 @@ const exportPng = async (doc, token, name) => {
   return join(dir, rel);
 };
 
-// ---- ① red_eye：红点 ⇒ 最大红通道下降 ----
+// ---- ① red_eye：**剂量-响应**（strength 越大压得越狠，且 0 是 no-op）----
+//   **⇒ 为什么不是「1.0 时下降」就够** ✗（第 1323 轮实测）：单点断言**区分不出**
+//     「strength 接线」与「忽略 strength、恒用某个值」⇒ 而**剂量-响应**能 ✓
+//   **⇒ 实测四档**（`threshold=2.0`）：0.00 ⇒ **220**（= 原色 ⇒ no-op ✓）、
+//     0.25 ⇒ **194**、0.50 ⇒ **162**、1.00 ⇒ **20** ⇒ **严格单调下降** ✓
 {
-  const D = await mkDoc("re", 60, 60);
-  if (!D) { console.error("  ⊘ 不可判：建文档失败"); process.exit(3); }
-  await post("/api/tools/fill_region", {
-    layer_id: "L", shape: { type: "rect", x: 20, y: 20, w: 20, h: 20 },
-    color: [220, 20, 20], opacity: 1.0,
-  }, D.doc, D.token);
-  const before = await exportPng(D.doc, D.token, "re_before");
-  await post("/api/tools/add_adjustment", {
-    layer_id: "L", adjustment_type: "red_eye", params: { strength: 1.0, threshold: 2.0 },
-  }, D.doc, D.token);
-  const after = await exportPng(D.doc, D.token, "re_after");
-  if (!before || !after) { console.error("  ⊘ 不可判：导出失败"); process.exit(3); }
-  // **★ 只量**红点中心**（第 1316 轮实测）**：全图最大红恒 255（白底是 `[255,255,255]`）
-  //   ⇒ 那样永远测不出变化 ✗ ⇒ 所以采 `(30, 30)`（红块 20..40 的中心）✓
-  const centreRed = (f) => {
+  const redAt = async (strength) => {
+    const D = await mkDoc(`re${Math.round(strength * 100)}`, 60, 60);
+    if (!D) { console.error("  ⊘ 不可判：建文档失败"); process.exit(3); }
+    await post("/api/tools/fill_region", {
+      layer_id: "L", shape: { type: "rect", x: 20, y: 20, w: 20, h: 20 },
+      color: [220, 20, 20], opacity: 1.0,
+    }, D.doc, D.token);
+    await post("/api/tools/add_adjustment", {
+      layer_id: "L", adjustment_type: "red_eye", params: { strength, threshold: 2.0 },
+    }, D.doc, D.token);
+    const f = await exportPng(D.doc, D.token, `re${Math.round(strength * 100)}`);
+    if (!f) { console.error("  ⊘ 不可判：导出失败"); process.exit(3); }
     const { bpp, w, px } = readPng(f);
     return px[(30 * w + 30) * bpp];
   };
-  const b = centreRed(before); const a = centreRed(after);
-  if (a < b) ok(`① red_eye 压低红点中心：${b} → ${a}`);
-  else bad(`① red_eye 必须压低红点中心（30,30）⇒ 实测 ${b} → ${a}（没效果）`);
+  const r0 = await redAt(0.0);
+  const r25 = await redAt(0.25);
+  const r50 = await redAt(0.5);
+  const r100 = await redAt(1.0);
+  if (r0 !== 220) {
+    bad(`① red_eye 的 strength=0 必须是 **no-op**（应保持 220）⇒ 实测 ${r0}`);
+  } else if (r25 < r0 && r50 < r25 && r100 < r50) {
+    ok(`① red_eye 剂量-响应严格单调：0.00=${r0}｜0.25=${r25}｜0.50=${r50}｜1.00=${r100}`);
+  } else {
+    bad(`① red_eye 剂量-响应必须严格单调下降 ⇒ 实测 0=${r0}、0.25=${r25}、0.5=${r50}、1=${r100}`);
+  }
 }
 
 // ---- ② denoise：**剂量-响应**（更强的参数必须得到更强的降噪）----
