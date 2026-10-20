@@ -2035,6 +2035,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("direction_guides", Array, false, "方向场引导点 [[x,y,angle_deg],...]，肌理走向顺应局部场"),
             param!("direction_from", String, false, "\"shape_contour\"/\"shape_normal\"/\"mask_gradient\"（见 smart_fill）；**三者都依赖选区（`clip_to_selection`）⇒ 无选区时会失败**"),
             param!("density", Number, false, "肌理密度 0-1，缺省 0.5"),
+            param!("neutral", Boolean, false, "为 true 时把肌理基色减半 ⇒ 上完肌理**画面均值基本不变**（第 1382 轮；缺省 false ⇒ 行为不变）"),
             param!("size", Number, false, "肌理笔触大小，缺省 6"),
             param!("color", Array, false, "肌理基准色 [r,g,b] 0..1；缺省或 \"auto\" 时自动采样图层平均色"),
             param!("brush", String, false, "笔刷名，缺省 calligraphy"),

@@ -2603,7 +2603,7 @@ pub(super) fn write_smart_texture(ctx: &mut ToolContext<'_>, args: &Value) -> Re
     let shape_area: f64 = parsed.area();
 
     // --- 基准色：color 参数或自动采样 ---
-    let base_rgb: [f64; 3] = match args.get("color") {
+    let mut base_rgb: [f64; 3] = match args.get("color") {
         Some(Value::String(s)) if s == "auto" => {
             sample_layer_average(ctx, &layer_id, bx0, by0, bx1, by1)?
         }
@@ -2620,6 +2620,53 @@ pub(super) fn write_smart_texture(ctx: &mut ToolContext<'_>, args: &Value) -> Re
         }
         None => sample_layer_average(ctx, &layer_id, bx0, by0, bx1, by1)?,
     };
+    // **`neutral`（opt-in）** ✓：把基色乘 0.5 ⇒ **均值基本不变** ✓（第 1382 轮）
+    //
+    // **⇒ 为什么需要它** ✗：实测（第 1380 轮）肌理**会让画面上移 +25**，而且
+    //   **用底的同一颜色**上肌理也是 +25 ⇒ 所以「提亮」来自**混合本身** ✗
+    //   ⇒ 而实测**零点在「底色 × 0.5」**（底 0.502 ⇒ color 0.25 时 Δ=+0.7）✓
+    // **⇒ 默认关闭** ⇒ **现有行为完全不变** ✓（有人依赖当前观感）
+    // **⇒ 开它** ⇒ 只把**基色**减半 ⇒ 笔数/走向/尺寸都不变 ✓
+    if args
+        .get("neutral")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        // **⇒ 「均值不变」的肌理色与底色的比值随底色变化**（第 1382 轮实测 5 档）：
+        //   g 0.235 ⇒ **0.15**｜g 0.353 ⇒ **0.31**｜g 0.502 ⇒ **0.50**｜g 0.667 ⇒ **0.70**｜g 0.824 ⇒ **0.87**
+        //   ⇒ **所以固定乘 0.5 只在 g≈0.5 准** ✗（实测 g=0.235 时 Δ=+9.8、g=0.824 时 Δ=−10.6）
+        // **⇒ 所以用**查表 ＋ 线性插值**（表外取端点）⇒ 这是**实测表**，不是推导公式 ✓
+        const NEUTRAL_RATIOS: [(f64, f64); 5] = [
+            (0.235, 0.15),
+            (0.353, 0.31),
+            (0.502, 0.50),
+            (0.667, 0.70),
+            (0.824, 0.87),
+        ];
+        let g = (base_rgb[0] + base_rgb[1] + base_rgb[2]) / 3.0;
+        let last = NEUTRAL_RATIOS.len() - 1;
+        let ratio = if g <= NEUTRAL_RATIOS[0].0 {
+            NEUTRAL_RATIOS[0].1
+        } else if g >= NEUTRAL_RATIOS[last].0 {
+            NEUTRAL_RATIOS[last].1
+        } else {
+            let mut r = NEUTRAL_RATIOS[last].1;
+            for w in NEUTRAL_RATIOS.windows(2) {
+                let (g0, r0) = w[0];
+                let (g1, r1) = w[1];
+                if g >= g0 && g <= g1 {
+                    r = r0 + (r1 - r0) * ((g - g0) / (g1 - g0));
+                    break;
+                }
+            }
+            r
+        };
+        base_rgb = [
+            base_rgb[0] * ratio,
+            base_rgb[1] * ratio,
+            base_rgb[2] * ratio,
+        ];
+    }
 
     // --- 笔数与有效尺寸（专家方案「一、4」）---
     let profile = get_texture_profile(&texture);

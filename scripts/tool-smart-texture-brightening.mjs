@@ -8,6 +8,7 @@
 // **⇒ 这条判据断什么**（**只断规律，不给缺陷盖章** ✓）：
 //   ① **单调**：`color` 越大 ⇒ Δ 越大（0.65 的 Δ 必须 > 0.35 的 Δ）
 //   ② **零点存在且在半色附近**：`color = 底色 × 0.5` 时 |Δ| **< 8**
+//   ④ **`neutral: true` 必须把 Δ 压到 |Δ| < 8**（第 1382 轮加的实测查表）
 //   ③ **打印**缺省与 `= 底色` 的 Δ（**只打印不断言** ⇒ 因为那是**待修的缺陷**，
 //      一旦哪天修好，断言它会红，而打印只提示 ✓）
 //
@@ -58,6 +59,26 @@ const measure = async (colour) => {
   return after - before;
 };
 
+// **④ `neutral: true`**：五档底色下 |Δ| 都必须 < 8（第 1382 轮）
+//   ⇒ 它按**实测查表**把肌理色换成「均值不变」的那个值 ⇒ 所以这条也在验那张表没被弄坏 ✓
+const neutralDeltas = [];
+for (const grey of [60, 90, 128, 170, 210]) {
+  const doc = `nt_${grey}_${stamp}`;
+  const r0 = await (await fetch(`${base}/api/documents`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: doc, width: 256, height: 256,
+      background: { r: grey, g: grey, b: grey, a: 255 } }),
+  })).json();
+  if (!r0.token) { neutralDeltas.push(null); continue; }
+  TOK = r0.token;
+  await post(doc, "create_layer", { layer_id: "L", name: "L" });
+  const b = await lum(doc);
+  await post(doc, "smart_texture", { layer_id: "L", texture_type: "canvas", neutral: true,
+    shape: { type: "rect", x: 0, y: 0, w: 256, h: 256 }, density: 0.9, size: 9 });
+  const a = await lum(doc);
+  neutralDeltas.push(a === null || b === null ? null : a - b);
+}
+
 const fails = [];
 const ok = (m) => console.log(`  ✓ ${m}`);
 const bad = (m) => { fails.push(m); console.log(`  ✗ ${m}`); };
@@ -75,6 +96,16 @@ if (dDark === null || dLight === null || dHalf === null) {
 
 // **③ 先打印**（待修的缺陷 ⇒ 只打印 ✓）
 console.log(`  ③ 打印：缺省 Δ ${dDefault === null ? "n/a" : dDefault.toFixed(1)}｜= 底色 Δ ${dSame === null ? "n/a" : dSame.toFixed(1)}`);
+
+// ④ neutral: true 的 |Δ|
+if (neutralDeltas.every((d) => d !== null)) {
+  const worst = Math.max(...neutralDeltas.map((d) => Math.abs(d)));
+  const shown = neutralDeltas.map((d) => d.toFixed(1)).join(", ");
+  if (worst < 8) ok(`④ neutral:true ⇒ 五档底色 |Δ| 最大 ${worst.toFixed(1)}（${shown}）`);
+  else bad(`④ neutral:true 必须把 |Δ| 压到 < 8 ⇒ 五档实测 ${shown}（最大 ${worst.toFixed(1)}）`);
+} else {
+  console.log("  ○ ④ 未验：有一档建文档失败");
+}
 
 // ① 单调
 if (dLight > dDark) ok(`① 单调：color 0.65 ⇒ Δ ${dLight.toFixed(1)} > color 0.35 ⇒ Δ ${dDark.toFixed(1)}`);
