@@ -690,3 +690,48 @@ grep -rn "175\b" docs/guide.md docs/guide.zh-CN.md docs/tools.md
 **⇒ 最直接：**同一笔（同 brush + 同 points + 同 `pressure_shape`）在 native 与 wasm 各渲染一次 ⇒ 逐像素相同**。**
 
 **⇒ 而 wasm 侧的渲染入口在哪，我**还没查**（那也是下一轮的事）。**
+
+## ⚠ 本机内存只有 3.8 Gi ⇒ **全量 `cargo test` 会 OOM**（第 1222 轮实测）
+
+### 实测证据（内核日志，不是猜）
+
+```
+10月 20 12:23:56 cachyos kernel: Out of memory: Killed process 1498143 (node-MainThread)
+                                 total-vm:10990752kB, anon-rss:73…
+```
+
+**⇒ 时间 `12:23:56` 与我的工具调用被中断的时刻（`12:23:41`）吻合 ⇒ 所以那次中断**不是网络/超时，是 OOM**。**
+
+### 内存账（`free -h` 实测）
+
+| 项 | 值 |
+|---|---|
+| **总内存** | **3.8 Gi** |
+| 已用 | 2.3 Gi |
+| **可用** | **1.5 Gi** |
+| **交换** | 11 Gi（已用 **1.4 Gi**）|
+
+**⇒ 而占最多的是**DSH Web GUI 自己**（我不能杀，那是用户正在用的）：**
+```
+1040 MB  node --import tsx/esm apps/cli/src/bin.ts web --no-open
+```
+
+**⇒ 所以留给 `cargo test --workspace` 的只有 ~2.4 Gi（含交换余量）⇒ 而它要 3+ Gi ⇒ **必然 OOM**。
+
+### 所以规矩（AGENTS.md 早就有，我这一场违反了多次）
+
+**⇒ **本机不跑 `cargo test --workspace`**（那是「重计算」，交给 CI）。**
+
+**⇒ 本机可以跑的：**
+| 活 | 为什么可以 |
+|---|---|
+| `cargo fmt --check` | 不编译 |
+| `cargo check -p <单个 crate>` | 单 crate，内存小 |
+| `cargo test -p <单个 crate> --lib <过滤>` | 单 crate + 过滤，内存小 |
+| `cargo clippy --workspace --all-targets` | **边界情况** —— 它要整 workspace 的元数据，实测能过（但慢）；若同时有别的大进程就会 OOM |
+| `node scripts/*.mjs` | 判据，轻 |
+| `cargo build --release -p yanshi-http --bin yanshi-serve` | 单目标，能过 |
+
+**⇒ **不许**在本机跑 `cargo test --workspace`（除非先确认 `free -h` 的可用 > 3.5 Gi）。**
+
+**⇒ 替代：提交后 push ⇒ 让 CI 的 `test (stable)/(beta)` 跑（那才是权威）。**
