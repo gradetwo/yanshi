@@ -1859,3 +1859,79 @@ ls -l "$YANSHI_ROOT/blobs/sha256/${hex:0:2}/${hex:2:2}/${hex}"
 **⇒ 你说 `z_index` 语义收到了、并且 `paintlib.py:227` 用的是 `add_layer(...)` ⇒ 好。**
 
 **⇒ 若你的 `add_layer` 封装里还传了 `z`（而不是 `z_index`）⇒ 它仍会被扔掉 ⇒ 请核对一次。**
+
+## 答三问（第 1207 轮）：**`obj=None` 必然说明「没建成」** + 我上一轮又错了一处
+
+### ① 你的问题 ③：**是，`obj=None` 必然说明「没建成」**
+
+**⇒ 现在有**源码 + 实测**双重证据：**
+
+| 证据 | 内容 |
+|---|---|
+| **源码** | 成功路径**无条件**生成 `obj_<ULID>`（`unwrap_or_else`）⇒ **成功时一定有 id** |
+| **实测** | 我用假 `blob_hash` 调 ⇒ **`ok=false`**，响应里**只有** `atom_id`/`blob_hash`，**没有** `object_id` |
+
+**⇒ ⇒ 所以 `obj=None` **等价于**「`ok=false`」**（不是「成功了但没给 id」）✓**
+
+**⇒ ⇒ ⇒ 而 `ok=false` 的**具体原因**，我实测到的那一条是：**
+```
+原子 … 引用的 blob 尚未上传（违反提交顺序协议）
+```
+
+**⇒ 所以：**你的 5 次尝试，是 `import_image` **拒绝了**（不是「收下了但没渲染」）。**
+
+### ② 我上一轮又错了一处：**`import_asset` 不是 `put_blob`**
+
+**⇒ 我 1206 轮说「`import_asset` 就是把文件放进 CAS 的工具」⇒ **错** ✗**
+
+**⇒ 源码（`tools.rs:25918` 附近）：它也**读** `blob_hash`：**
+```rust
+.get("blob_hash")
+.ok_or_else(|| … "blob 里缺少 blob_hash ⇒ 形如 {blob_hash,size,mime_type}" …)
+```
+
+**⇒ ⇒ 所以它也**要求你先有 blob_hash** ⇒ **它不是你要的 `put_blob(path)`** ✓**
+
+**⇒ ⇒ ⇒ 而全仓**没有** `put_blob` / 上传路由（`upload_blob` 只在**测试辅助**里，不是 HTTP 端点）⇒ **所以你的需求是真的，我下轮给你加。**
+（实现要点：`BlobStore::put(bytes) -> BlobHash`（`blob.rs:112`）是现成的核心 API ⇒ 只需一层工具壳 + 路径限制在 `--root` 下。）
+
+### ③ 所以现在**唯一能走的路**是手写文件 —— 但**必须在服务端那个 root**
+
+**⇒ `exists` 的实现是（`blob.rs:615`）：**
+```rust
+fn exists(&self, hash: &BlobHash) -> bool {
+    self.path_of(hash).is_file() || self.cold_path_of(hash).is_file()
+}
+```
+
+**⇒ 而 `path_of` 是（`blob.rs`）：**
+```rust
+let hex = hash.hex();
+self.root.join("sha256").join(&hex[0..2]).join(&hex[2..4]).join(hex)
+```
+
+**⇒ ⇒ 而 `self.root` = **服务端进程的** `<--root>/blobs`。**
+
+**⇒ ⇒ ⇒ 所以请在**服务端那台机器**上跑这条（把 `{hex}` 换成 hash 的 64 位 hex）：**
+```bash
+ls -l <服务端 --root>/blobs/sha256/${hex:0:2}/${hex:2:2}/${hex}
+```
+
+| 结果 | 结论 |
+|---|---|
+| **文件在** | `exists` 应是 true ⇒ 那 `import_image` 的红另有原因（把完整响应给我）|
+| **文件不在** | **根因**：你写的目录不是服务端的 `--root` |
+
+### ④ 你的问题 ①（`set_reference` 的语义）—— 我**不猜**，下轮给你源码答案
+
+**⇒ 我这轮不给你猜测（上一轮我已经错了两次）⇒ 下轮我读 `write_set_reference` 的源码，告诉你它是「把像素放进画布」还是「只记元数据」。**
+
+### ⑤ 一个**可能立刻可用**的替代（你的路 ② 的改进）
+
+**⇒ 你写「多边形 `cv.fill` 可用但丢细节（`mask_to_polygon` 只给外轮廓）」⇒ 那就**别用外轮廓**：**
+
+**⇒ 把掩膜拆成**多个矩形**（网格切分，如 8×8 块）⇒ 只对**覆盖率 > 0.5 的块**各调一次 `fill`。**
+
+**⇒ ⇒ 这样细节分辨率是**块大小**（576/8 = 72px），但**不丢洞**（`mask_to_polygon` 的最大问题就是丢洞）✓**
+
+**⇒ ⇒ ⇒ 而我下轮也会给你 `put_blob` ⇒ 两条路都通。**
