@@ -538,6 +538,18 @@ pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         // 只在**原尺寸整幅**时写缓存 ✓（缩放过的图不该当成"打开即图片" ✗）。
         let _ = ctx.workspace.cache_full_frame_png(&ctx.doc_id, &png);
     }
+    // **★ 必须报告「这张图是不是落后于 head」** ✓（第 1346 轮；外部 **X-03** 换来的）
+    //   **⇒ 外部实测**：`yanshi-mcp --no-wait` 下连下 10 笔后立刻 `export_png`
+    //     ⇒ **只有第 1 笔出现在图里** ⇒ 而响应里**没有任何提示** ✗
+    //   ⇒ 所以调用方**无从判断**这张图是「全部内容」还是「部分内容」⇒ 那是静默降级 ✗
+    //   **⇒ 修法不是「悄悄等」**（`--no-wait` 的调用方**明确选择了不等** ✓）
+    //     ⇒ 而是**把差距说出来**：`head_seq` / `rendered_seq` / `raster_pending` ✓
+    //   **⇒ 判据不变量**：`raster_pending === (rendered_seq < head_seq)` ✓（两个数不一致就是矛盾）
+    let (head_seq, rendered_seq) = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| (document.head_seq(), document.render_watermark()))
+        .unwrap_or((0, 0));
     Ok(json!({
         "path": path,
         "width": target_w,
@@ -546,6 +558,11 @@ pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         "source_width": width,
         "source_height": height,
         "scaled": target_w != width || target_h != height,
+        // **落后标记** ✓：`raster_pending=true` ⇒ 这张图**可能少了** head 之后的那些笔
+        //   ⇒ 调用方应先 `get_render_status` 或改用**同步**模式，再重导 ✓
+        "head_seq": head_seq,
+        "rendered_seq": rendered_seq,
+        "raster_pending": rendered_seq < head_seq,
         "warnings": render_warnings,
     }))
 }
