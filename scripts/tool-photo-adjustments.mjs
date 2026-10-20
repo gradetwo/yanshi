@@ -194,6 +194,29 @@ await geoCase(
   "④ perspective(quad)",
 );
 
+// ---- ⑤ 幂等：`lens` 全缺省参数必须**什么都不改** ----
+//   **⇒ 为什么这是一条**不变量**而不只是「另一个 case」 ✗：
+//     「几何调整在参数全 0 时不动像素」是**语义承诺** ⇒ 若它恒动（哪怕 1 像素）
+//     ⇒ 说明重采样底座**无条件跑**（如 `auto_crop` 或钳制总在生效）⇒ 那会
+//     让**每一层**带 lens 的文档都在无声地被重采样一次 ✗
+//   **⇒ 实测（第 1319 轮）：0 个像素变化、最大通道差 0** ✓
+{
+  const D = await mkDoc("idem", 60, 60);
+  if (!D) { console.error("  ⊘ 不可判：建文档失败"); process.exit(3); }
+  await post("/api/tools/fill_region", {
+    layer_id: "L", shape: { type: "rect", x: 5, y: 5, w: 50, h: 50 }, color: [90, 140, 200], opacity: 1.0,
+  }, D.doc, D.token);
+  const before = await exportPng(D.doc, D.token, "idem_before");
+  const r = await post("/api/tools/add_adjustment", {
+    layer_id: "L", adjustment_type: "lens", params: {},
+  }, D.doc, D.token);
+  const after = await exportPng(D.doc, D.token, "idem_after");
+  if (!before || !after) { console.error("  ⊘ 不可判：导出失败"); process.exit(3); }
+  const n = changedPixels(before, after);
+  if (r?.ok === true && n === 0) ok("⑤ 缺省 lens 幂等：0 个像素变化（几何底座不会无条件重采样）");
+  else bad(`⑤ 缺省 lens 必须幂等 ⇒ ok=${r?.ok}、变化 ${n} 个像素（应 0）`);
+}
+
 if (fail.length > 0) {
   console.log(`\n  ✗ ${fail.length} 处不符（四个照片调整必须各有可量效果）`);
   process.exit(1);
