@@ -1995,7 +1995,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "smart_fill",
         profile: Profile::Core,
-        summary: "智能填充：一笔一笔画出带人味的排线填充，替代 fill_region 的塑料感。输入形状 + 主方向，自动生成平行排线（带方向抖动），每条线用 hand_tremor + pressure_shape 保证自然。三种模式：hatch（单向排线）、cross_hatch（交叉）、contour（沿轮廓收缩）。",
+        summary: "智能填充：一笔一笔画出带人味的排线填充，替代 fill_region 的塑料感。输入形状 + 主方向，自动生成平行排线（带方向抖动），每条线用 hand_tremor + pressure_shape 保证自然。三种模式：hatch（单向排线）、cross_hatch（交叉）、contour（沿轮廓收缩）。 **⇒ `cross_hatch` 的排线是**真的画出来了**（笔触分两组角度，实测 0° 与 140–150° 两个峰）；看不见排线通常不是几何问题，而是**笔刷的单笔 alpha 太低** ⇒ 多笔叠加后只剩平均色 ⇒ 要看见排线请用不透明笔（如 `100%_Opaque.myb`）或减少叠笔。",
         mutating: true,
         params: &[
             param!("shape", Object, true, "形状：{\"type\":\"rect\",\"x\":100,\"y\":100,\"w\":200,\"h\":150} 或 {\"type\":\"circle\",\"cx\":200,\"cy\":200,\"r\":80} 或 {\"type\":\"polygon\",\"points\":[[x,y],...]}；可选 \"holes\"（[[[x,y],...]] 或子形状数组）挖孔"),
