@@ -2598,3 +2598,25 @@ deterministic 模式不做缩放：源 1024×1024，目标 512×512
 **⇒ ⇒ 所以两者都**远低于 120 s** 上限 ⇒ **不会成为分片的拖累** ✓**
 
 **⇒ 对照：CI 上最慢的判据是 `kernel-brush-parity`（超时 1800 s）⇒ 它一个人就能撑满一片的时间预算。**
+
+## ★ 提交前验证（第 1388 轮）：`export_png` 面 7 条 ＋ 纹理面 8 条，全 0
+
+**⇒ 背景** ✗：第 88–91 轮攒了 4 笔未验证的提交，其中两笔改了**服务端行为**：
+- `tools_io.rs`：删掉 `raster_pending` 字段（第 1364 轮）
+- `tools_smart.rs`：`smart_texture` 的基色 ＋ `neutral` 参数（第 1382 轮）
+
+**⇒ ⇒ 所以在等 CI 的同时，把**两个影响面**都本地跑了一遍：**
+
+| 面 | 判据 | 结果 |
+|---|---|---|
+| **导出** | `tool-export-deterministic`／`-path-guard`／`-reports-staleness`／`-path-safety`／`-idempotent`／`-path`／`tool-export-bitmaps` | **7 条全 0** ✓ |
+| **纹理/选区** | `tool-smart-tools`／`tool-smart-texture-density`／`tool-smart-texture-brightening`／`tool-smart-select-block`／`tool-smart-select-add-merges`／`tool-tileable-textures`／`tool-examples-doc-check`／`tool-examples-doc` | **8 条全 0** ✓ |
+
+**⇒ ⇒ 所以**15 条判据、两个影响面、本地全绿** ⇒ 那 4 笔提交的**可本地验证部分**已经验完 ✓**
+
+**⇒ 剩下的只能等 CI（浏览器族、跨机器环境红、全量组合）。**
+
+### ★ 为什么这比"等 CI"划算
+
+**⇒ CI 一轮 ≈ 20–40 分钟，而这一轮本地扫 ≈ 2 分钟** ⇒
+**⇒ ⇒ 所以「改一个服务端行为 ⇒ 按关键字把相关判据跑完」**应该成为固定动作** ✓**
