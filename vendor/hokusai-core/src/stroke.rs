@@ -1153,14 +1153,25 @@ fn build_dab(    brush: &Brush,
         ]
     } else {
         let col_factor = 1.0 - smudge_amt;
-        [
-            ((smudge_amt * state.smudge_ra + col_factor * base.r) / eraser_target_alpha)
-                .clamp(0.0, 1.0),
-            ((smudge_amt * state.smudge_ga + col_factor * base.g) / eraser_target_alpha)
-                .clamp(0.0, 1.0),
-            ((smudge_amt * state.smudge_ba + col_factor * base.b) / eraser_target_alpha)
-                .clamp(0.0, 1.0),
-        ]
+        // **★ Phase 1（色彩体系规划）：加权混合必须在**线性空间**做** ✓（第 1306 轮）
+        //   **为什么**：`smudge*amt + base*(1-amt)` 是**光的相加** ⇒ 而加权和**只在 linear 上有
+        //     物理意义**（sRGB 是感知编码，有 gamma）⇒ 在 sRGB 上做会让中间调**偏暗** ✗
+        //   **为什么只改这一处**（不改 `base`）：
+        //     `base` 转 linear 会连带 `Dab.color`/`MemSurface` 全变 linear ⇒ 那需要
+        //     `blit_rgba8` 停止解码（新通道）⇒ 而我上一轮只改了 `base` ⇒ **双解码** ⇒
+        //     颜色暗 61–65 级 ⇒ `tool-visible-delta` 65（应 31）／`tool-palette-hex` 61 ✗
+        //   **为什么这个改法安全**：**接口不变**（仍是 sRGB 进、sRGB 出）⇒ 所以
+        //     · **不涂抹的笔**（`smudge_amt <= 0`）**完全不受影响**（走上面那个分支）✓
+        //     · 只有**带涂抹**的笔（`paint_mode == 0`）的混合结果按物理正确的方式变化 ✓
+        //   **判据守门员**：`tool-visible-delta`（白 0 / #fefefe 1 / #e0e0e0 31 / #343832 205）
+        //     ⇒ 那四条都是**不涂抹**的纯色笔 ⇒ **必须一字不变** ✓
+        let m = crate::color::mix_smudge_linear(
+            [state.smudge_ra, state.smudge_ga, state.smudge_ba],
+            [base.r, base.g, base.b],
+            smudge_amt,
+            eraser_target_alpha,
+        );
+        [m[0], m[1], m[2]]
     };
 
     // 2) HSV / HSL color dynamics on the *post-smudge* colour. Matches

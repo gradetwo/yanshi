@@ -188,6 +188,38 @@ mod tests {
     }
 }
 
+/// **加权混合（涂抹）在**线性空间**做** ✓（Phase 1，第 1306 轮）
+///
+/// **⇒ 为什么必须在这个空间** ✗：`smudge*amt + brush*(1-amt)` 是**光的相加** ⇒
+///   而加权和**只在 linear 上有物理意义**（sRGB 是感知编码，有 gamma）⇒
+///   在 sRGB 上做会让**中间调偏暗** ✗
+///
+/// **⇒ 接口为什么仍是 sRGB** ✓：入参、出参都是 **sRGB** ⇒ 所以它**不改** `MemSurface` 的语义
+///   ⇒ 于是**不需要**新通道，也不会与 `blit_rgba8` 的解码叠加成双解码 ✓
+///
+/// **⇒ 与「把 `base` 转 linear」的区别**（我上一轮的错误做法）：
+///   那种做法让**整条下游**都变 linear ⇒ 而下游有一处解码 ⇒ **双解码** ⇒ 颜色暗 61–65 级 ✗
+///
+/// `alpha` 是 `eraser_target_alpha`（alpha 不做 gamma 转换 ⇒ 它在两个空间里都是线性量）。
+#[must_use]
+pub fn mix_smudge_linear(
+    smudge: [f32; 3],
+    brush: [f32; 3],
+    amt: f32,
+    alpha: f32,
+) -> [f32; 3] {
+    let mix = |s: f32, b: f32| {
+        let sl = srgb_to_linear(s);
+        let bl = srgb_to_linear(b);
+        linear_to_srgb(((amt * sl + (1.0 - amt) * bl) / alpha).clamp(0.0, 1.0))
+    };
+    [
+        mix(smudge[0], brush[0]),
+        mix(smudge[1], brush[1]),
+        mix(smudge[2], brush[2]),
+    ]
+}
+
 #[cfg(test)]
 mod phase1_pipeline_space {
     //! **Phase 1（色彩体系规划）的判据**：`hsv_to_rgb` 的输出**是 sRGB，不是 linear** ✓
@@ -258,6 +290,70 @@ mod phase1_pipeline_space {
                 (back - c).abs() < 1e-5,
                 "c={c}：往返后 {back}（应相等）"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod phase1_smudge_mix {
+    //! **线性涂抹混合的判据**（第 1306 轮；色彩体系规划 Phase 1）
+    //!
+    //! **⇒ 要证的命题**：加权混合在**线性空间**做 ⇒ 结果**比 sRGB 空间的混合更亮**。
+    //!
+    //! **⇒ 三个确定的数字**（`smudge=0.8`、`brush=0.1`、`amt=0.5`、`alpha=1`）：
+    //!   · **sRGB 空间**混合 = `(0.8 + 0.1)/2 = 0.45`
+    //!   · **linear 空间**混合 = `linear_to_srgb((srgb_to_linear(0.8)+srgb_to_linear(0.1))/2)`
+    //!     = `linear_to_srgb((0.603827 + 0.010023)/2)` = `linear_to_srgb(0.306925)` = **`0.5911`**
+    //!   · **差 0.1411** ⇒ 换算 8-bit 是 **36 级** ⇒ 两者**不可能混淆** ✓
+    //!
+    //! **⇒ 变异**：把 `mix_smudge_linear` 改成「直接在 sRGB 上插值」⇒ 这条必红。
+
+    use super::mix_smudge_linear;
+
+    /// **线性混合给出 0.5911，不是 0.45。**
+    #[test]
+    fn smudge_mix_is_brighter_than_srgb_mix() {
+        let out = mix_smudge_linear([0.8, 0.8, 0.8], [0.1, 0.1, 0.1], 0.5, 1.0);
+        assert!(
+            (out[0] - 0.5911).abs() < 0.002,
+            "线性混合应给 0.5911，实测 {:.4}",
+            out[0]
+        );
+        let srgb_mix = (0.8 + 0.1) / 2.0;
+        assert!(
+            out[0] > srgb_mix + 0.1,
+            "线性必须比 sRGB 混合（0.45）亮 0.1 以上，实测 {:.4}",
+            out[0]
+        );
+    }
+
+    /// **端点与恒等**：`amt=0` ⇒ 取笔色；`amt=1` ⇒ 取涂抹色；两色相同 ⇒ 原值。
+    #[test]
+    fn smudge_mix_endpoints_and_identity() {
+        let brush = [0.25, 0.5, 0.75];
+        let smudge = [0.9, 0.1, 0.4];
+        let at0 = mix_smudge_linear(smudge, brush, 0.0, 1.0);
+        for i in 0..3 {
+            assert!((at0[i] - brush[i]).abs() < 1e-4, "amt=0 应给笔色（{i}）");
+        }
+        let at1 = mix_smudge_linear(smudge, brush, 1.0, 1.0);
+        for i in 0..3 {
+            assert!((at1[i] - smudge[i]).abs() < 1e-4, "amt=1 应给涂抹色（{i}）");
+        }
+        let same = mix_smudge_linear(brush, brush, 0.37, 1.0);
+        for i in 0..3 {
+            assert!((same[i] - brush[i]).abs() < 1e-4, "同色混合应恒等（{i}）");
+        }
+    }
+
+    /// **单调性**：`amt` 从 0 到 1 时，结果单调靠近涂抹色（不许出现回摆）。
+    #[test]
+    fn smudge_mix_is_monotonic() {
+        let mut prev = mix_smudge_linear([0.9, 0.9, 0.9], [0.1, 0.1, 0.1], 0.0, 1.0)[0];
+        for k in 1..=10 {
+            let v = mix_smudge_linear([0.9, 0.9, 0.9], [0.1, 0.1, 0.1], k as f32 / 10.0, 1.0)[0];
+            assert!(v >= prev - 1e-5, "amt={} 时结果回摆了（{prev} → {v}）", k as f32 / 10.0);
+            prev = v;
         }
     }
 }

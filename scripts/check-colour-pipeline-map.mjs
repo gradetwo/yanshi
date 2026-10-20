@@ -127,20 +127,50 @@ if (vendorFiles.length === 0) {
   console.error("  ⊘ 不可判：vendor/hokusai-core/src 里没有 .rs");
   process.exit(3);
 }
-const vendorCalls = [];
+// **★ ③ 改成**平衡式** ✓（第 1306 轮）**
+//   **原来的规则**「hokusai 里零 `srgb_to_linear` 调用」**太粗**：
+//     Phase 1 的正确做法是「**混合那一步**转 linear，混合完**再转回 sRGB**」
+//     ⇒ 那样必然**同时**出现 `srgb_to_linear` 和 `linear_to_srgb` ⇒ 而**接口不变** ✓
+//   **而**我上次犯的错是**只转过去、不转回来**（`base` 转 linear 之后一路带下去）
+//     ⇒ 那让 `MemSurface` 变成线性字节 ⇒ 与 `blit_rgba8` 的解码**叠加** ⇒ **双解码** ✗
+//   ⇒ **所以不变量是**「两个方向**配对**」：数量相等 ⇒ 每次转换都有对应的回转 ✓
+//   ⇒ **而那正好区分**「局部往返（对）」与「单向改语义（错）」 ✓
+// **★ 按**函数**判定「有去必须有回」** ✓（第 1306 轮第二版）
+//   **第一版按行计数** ⇒ 我的闭包是「两行 `srgb_to_linear`、一行 `linear_to_srgb`」
+//     ⇒ 计数 2:1 ⇒ **假红** ✗（而那明明是配对的一次往返）
+//   ⇒ 所以判据换成**函数级**：某个函数里**出现** `srgb_to_linear` ⇒ 同一函数里**必须出现**
+//     `linear_to_srgb`。⇒ 那正好抓「只转过去、不转回来」（= `MemSurface` 变线性 = 双解码前兆）✓
+const vendorBad = [];
 for (const f of vendorFiles) {
-  for (const [n, l] of productionLines(f)) {
-    if (!isCode(l) || isDefinition(l)) continue;
-    if (/srgb_to_linear\(/.test(l)) vendorCalls.push(`${f}:${n}`);
+  const lines = productionLines(f);
+  let fnName = "<file>";
+  let hasTo = false;
+  let hasBack = false;
+  const flush = () => {
+    if (hasTo && !hasBack) vendorBad.push(`${f} ${fnName}`);
+    hasTo = false;
+    hasBack = false;
+  };
+  for (const [, l] of lines) {
+    if (isDefinition(l)) {
+      flush();
+      const m = l.match(/\bfn\s+(\w+)/);
+      fnName = m ? m[1] : "<file>";
+      continue;  // **定义行本身不算调用** ✓
+    }
+    if (!isCode(l)) continue;
+    if (/srgb_to_linear\(/.test(l)) hasTo = true;
+    if (/linear_to_srgb\(/.test(l)) hasBack = true;
   }
+  flush();
 }
-if (vendorCalls.length > 0) {
+if (vendorBad.length > 0) {
   bad(
-    `③ hokusai 里不许调用 srgb_to_linear ⇒ 实测 ${vendorCalls.length} 处：${vendorCalls.slice(0, 3).join(", ")}` +
-      `（当前设计：hokusai 在 sRGB 空间混合；在那里加转换 = 双解码的前兆）`,
+    `③ hokusai 里「转过去」必须「转回来」⇒ 这些函数只去不回：${vendorBad.join(", ")}` +
+      `（只去不回 = MemSurface 变线性字节 ⇒ 与 blit_rgba8 的解码叠加成双解码）`,
   );
 } else {
-  ok("③ hokusai 里没有 srgb_to_linear 调用（只有定义）⇒ 混合仍在 sRGB 空间（当前设计）");
+  ok("③ hokusai 里的 gamma 转换都是**函数内往返**（去的函数都有回）⇒ 接口不变 ✓");
 }
 
 if (fail.length > 0) {
