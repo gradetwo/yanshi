@@ -2253,3 +2253,24 @@ create_layer("k1") → brush_stroke → sample_colors   ⇒ 数出来的是 k0 +
 **⇒ 外推 4K ≈ 40–50 ms/笔 ⇒ 外部报的 `0.13 s/笔` 大头是**画布 + 同步等待**，不是 preview ✓**
 
 **⇒ ⇒ 所以两处文档已改：**删掉那句错因**（不是弱化）+ 加这张表 ✓**
+
+## ★ 本场新增判据的**回归扫**（第 1362 轮，全绿）
+
+**⇒ 做法：把这一场（第 1340–1361 轮）新写的判据**逐条跑一遍** ⇒ 结果：**
+
+| 判据 | 类型 | 结果 |
+|---|---|---|
+| `check-vendor-determinism-ratchet` | 静态 | **0** ✓（**53 处 / 基线 53**）|
+| `check-smart-texture-doc-gaps` | 静态 | **0** ✓ |
+| `check-adjustment-count-sync` | 静态 ＋ 运行时 | **0** ✓（给了 BASE 也 0）|
+| `tool-batch-stroke-atoms` | 服务 | **0** ✓ |
+| `tool-export-path-guard` | 服务 | **0** ✓ |
+| `tool-photo-adjustments` | 服务 | **0** ✓ |
+| `tool-perspective-keeps-margins` | 服务 | **0** ✓ |
+| `tool-export-reports-staleness` | 服务 | **0** ✓（本轮前一阶段验过）|
+| `check-project-package-blob-naming` | 服务 | **0** ✓（本轮前一阶段验过）|
+
+**⇒ ⇒ 9 条**全部 0** ⇒ 所以这一场的判据面是**自洽的**（不是各写各的、互相对不起来）✓**
+
+**⇒ 而这次扫也顺带验了**判据自己的前提**：静态的 3 条不依赖服务；服务的 6 条都自己建文档 ⇒
+⇒ **没有一条靠「恰好本机有这个状态」** ✓
