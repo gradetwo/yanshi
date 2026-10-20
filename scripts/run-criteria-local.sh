@@ -100,7 +100,19 @@ export YANSHI_EXPORT_DIR="$ROOT"
 #        「Failed to parse URL from <token>/api/documents」⇒ exit 3）
 #   ⇒ **∴ 所以**回退：只传 `<base>`，需要额外参数的**手动跑** ✓
 #   ⇒ 判据数量：用 `argv[3]`/`argv[4]` 的共 **31 个**（`grep -lE 'argv\[3\]'`）
-node "$CRIT" "$BASE_URL" "$@"
+# **★ 按需传** ✓（第 1267 轮）：判据源码里出现 `argv[3]`/`argv[4]` ⇒ 它要 `<doc> <token>`
+#   ⇒ 传三个；否则只传 `<base>`（避免第 1076 轮那次「doc 被当 base」⇒
+#   `Failed to parse URL from <token>/api/documents` ✗）
+# **★ 三种取参写法都要认** ✓（第 1267 轮）：`argv[3]` / `argv[4]` / `process.argv.slice(2)`
+#   ⇒ 我自己的新判据用的是 `slice(2)` ⇒ 前两种正则匹配不到它 ⇒ 于是又 exit 3 ✗
+# **★ 判据进程也要拿到 `YANSHI_EXPORT_DIR`** ✓（第 1267 轮）
+#   ⇒ 原来只有**服务进程**有（`:57` 的前缀赋值）⇒ 而判据要按它反推 `<root>`
+#     （我的 `tool-import-blob-decodable` 就是这么找 CAS 的）⇒ 没有它 ⇒ 写不进 root ⇒ 假红 ✗
+if grep -qE 'argv\[3\]|argv\[4\]|argv\.slice\(2\)' "$CRIT" 2>/dev/null; then
+  YANSHI_EXPORT_DIR="$ROOT/exports" node "$CRIT" "$BASE_URL" _bootstrap "$CRIT_TOKEN" "$@"
+else
+  YANSHI_EXPORT_DIR="$ROOT/exports" node "$CRIT" "$BASE_URL" "$@"
+fi
 RC=$?
 echo "  ⇒ 判据退出码=$RC"
 exit $RC
