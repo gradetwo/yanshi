@@ -1710,3 +1710,33 @@ pub fn mix_smudge_linear(smudge: [f32;3], brush: [f32;3], amt: f32, alpha: f32) 
 
 **⇒ `Blender` 从右往左拖 ⇒ 整片变成蓝** ⇒ 说明**净室揉合确实把后方颜色搬过来了**（不是空操作）⇒
 **那证明 `smudge_dab` 是**活的**（`painted=2269`）** ⇒ 所以我对它做的线性改动**有实际作用面** ✓
+
+## ★ 合并两个补丁后的**验证记录**（第 1315 轮）
+
+**⇒ 补丁：**`yanshi-redeye-jpeg-20261020.tar.gz` + `yanshi-photoretouch-20261020.tar.gz`（按顺序应用，都干净）。**
+
+**⇒ 结果：`ADJUSTMENT_NAMES` 19 → 22**（`red_eye` / `denoise` / `lens` / `perspective`）✓
+
+### ⚠ 而我又踩了一次「陈旧二进制」——**这次是我手动调服务**
+
+**⇒ 经过：**
+1. 应用两个补丁 ⇒ `cargo fmt` / `check` / `clippy` 全绿 ⇒ **提交并推送**
+2. **然后我手动**起了 `target/release/yanshi-serve`（**没重建**）⇒ 查 `list_engine_capabilities`
+3. 得到 `adjustments = 18` ⇒ **我一度以为「补丁漏更新了工具的清单」** ✗
+4. 重建后 ⇒ `adjustments = 22` ✓ **⇒ 所以那是旧二进制**
+
+**⇒ ⇒ 而我**自己的脚本**本该防住这个**（`run-criteria-local.sh` 会查新鲜度）⇒ **是我绕过脚本手动调服务才中的招。**
+
+**⇒ 而用脚本跑同一个判据 ⇒ 全绿：**
+```
+✓ 二进制比源码新
+✓ adjustments: 工具报 22、列表长 22、源码常量 22
+```
+
+### ⇒ 规矩补一条（第三条同类）
+
+**⇒ 已有的两条：**
+- `N3E-01`：运行器**编译失败时**不许用陈旧二进制
+- 第 1308 轮：新鲜度检查**必须扫 `vendor/`**
+
+**⇒ 现在第三条：**手动调研也不许绕过脚本** ⇒ 要查任何工具响应，用 `run-criteria-local.sh`（它会重建）或**先 `cargo build --release`。**
