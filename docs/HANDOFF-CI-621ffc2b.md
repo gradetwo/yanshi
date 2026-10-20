@@ -846,3 +846,48 @@ error: visibility `pub(super)` is not followed by an item
 1. **先 grep**：`tools.rs` 的 `#[cfg(test)]` 块里有多少处引用 `write_smart_*` / `get_texture_profile` / `texture_target_strokes` / `TextureXorShift` / `GuideTable` / `TextureProfile`
 2. **量出真实耦合面**（数字，不是「感觉」）
 3. 若耦合面小（< 20 处）⇒ 加 `pub(super)` + 搬测试；若大（> 50 处）⇒ **先提取 helper 到 `tools_shared.rs`**
+
+## ❌ Phase 2 第六刀（`smart` 族）：**我试了三次，都失败 ⇒ 结论：暂时不做**
+
+### 量到的数字（有用，留着）
+
+**⇒ `tools.rs` 的 `#[cfg(test)]` 段 = **`:27635..29069`（1434 行）**。**
+
+**⇒ 那一段引用 `smart` 族的符号：**
+
+| 符号 | 次数 |
+|---|---|
+| `get_texture_profile` | **14** |
+| `texture_target_strokes` | **9** |
+| `TextureXorShift` | **6** |
+| `GuideTable` | **5** |
+| **（加上后续发现的）** `wand_thresholds`、`magic_wand_scanline`、`rgba_to_oklaba`、`plan_texture_strokes`、`collect_texture_seeds`、`derive_stroke_color`、`erase_shape_runs`、`fold_dipole_colors`、`oklaba_dist_sq`、`rgb_to_hsl`、`BilinearOklabField` | 各 2–5 |
+
+**⇒ ⇒ 所以真实耦合面**远大于 34** ⇒ 我第一次数的 5 个符号只是**编译器先报出来的那批**。**
+
+### 三次尝试（都是「可见性」问题）
+
+| 次 | 做法 | 结果 |
+|---|---|---|
+| **1** | 整行替换 `fn X(` → `pub(super) fn X(` | **丢了行尾参数** ⇒ `mismatched closing delimiter` |
+| **2** | 前缀插入 + 逐个迭代 | `check` 通过，但 `clippy --all-targets` 报 66 → 33 → 24 ⇒ **每次发现新符号** |
+| **3** | **全量**给所有 `fn`/方法/字段加 `pub(super)` | **450 错误**（给函数体的**局部变量行**也加了）|
+
+**⇒ 三次都回退（`git checkout -- .`）⇒ HEAD 仍是 `d15cc6bc`。**
+
+### 结论：**这一刀需要先解耦，不是「再搬一段」**
+
+**⇒ `smart` 族与 `tools.rs` 的测试**双向依赖**：**
+- `tools.rs` 的 test 用 `smart` 的内部 helper（14+9+6+5+…）
+- 而 `smart` 的实现用 `tools.rs` 的 `selection_affine` 等
+
+**⇒ 所以正确的顺序是：**
+1. **先把那些测试搬到 `tools_smart.rs` 的 `#[cfg(test)]` 里**（它们本来就该在实现附近）
+2. **再搬实现**
+3. 或者：**先把共享 helper 提取到 `tools_shared.rs`**
+
+**⇒ 而那是**至少两笔独立提交**的工程 ⇒ **不是一刀**。**
+
+### 前五刀不受影响（已绿两刀）
+
+**⇒ `tools.rs` 仍 **29069 行**（五刀共 **−1708**）⇒ 而 `mask`/`selection`/`bitmap` 三刀已 CI 绿，`io`/`psd` 待验。**
