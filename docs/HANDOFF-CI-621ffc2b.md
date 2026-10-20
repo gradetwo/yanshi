@@ -735,3 +735,38 @@ grep -rn "175\b" docs/guide.md docs/guide.zh-CN.md docs/tools.md
 **⇒ **不许**在本机跑 `cargo test --workspace`（除非先确认 `free -h` 的可用 > 3.5 Gi）。**
 
 **⇒ 替代：提交后 push ⇒ 让 CI 的 `test (stable)/(beta)` 跑（那才是权威）。**
+
+## ⚠ 一个我**没查清**的变异（第 1225–1226 轮，`import_image` 的 region）
+
+**⇒ 事实链（全部实测）：**
+
+| # | 事实 | 证据 |
+|---|---|---|
+| **①** | `parse_raster_patch` 只从 `data["region"]` 或 `data["width"]`/`height` 取尺寸 | `object.rs:634-650` 读的 |
+| **②** | `object_data` **不补**这些键（只是 `payload.get("data")` 或 `payload.clone()`）| `fold.rs:1369` |
+| **③** | `import_image` 现在只写 `region`（我删了派生的 `width`/`height`，`872e7268`）| 净荷唯一一行 `"region": {...}` |
+| **④** | **但我按行号精确删掉那行 + 重编 + 跑判据 ⇒ 判据仍然绿**（退出码 0，`warnings: []`）| 实测三次 |
+
+**⇒ ④ 与 ①②③ 矛盾。所以有一个我**没读到**的路径在补尺寸。**
+
+### 我试过什么（6 次，都没让它红）
+
+| 次 | 做法 | 结果 |
+|---|---|---|
+| 1 | 字符串替换删 `region` | `assert` 挡住（`fmt` 改了格式）|
+| 2 | 同上 | 同上 |
+| 3 | 短锚点 `region.w, "h": region.h},` | `assert` 挡住（**锚点出现 3 次**）|
+| 4 | 按行号删（`:6775`）| **注入成功**，判据仍绿 |
+| 5 | 加 `warnings` 观察 | `[]`（没有 `Unsupported` 警告）|
+| 6 | 删 `width`/`height`（派生值）后再删 `region` | 仍绿 |
+
+### 下一步该查的三处（我还没查）
+
+1. **`yanshi-wasm/src/kernel.rs`** —— 若 `export_png` 走 wasm 内核的渲染路径，那它可能**自己**从 blob 推尺寸（而我看的是 CPU 路径 `yanshi-render/src/object.rs`）
+2. **`document.rs` 的 `render_region_raw_layer`** —— 那是我实测用的导出路径（`export_png` 调它）
+3. **`write_import_image` 之后是否还有一步**（如 `commit` 时补 `data`）
+
+**⇒ 为什么我先停下**：这个变异只影响「判据的变异覆盖」，**不影响产品行为**（Bug ② 的修复是真的，实测 64/64）。
+⇒ 而**继续追**的代价不小（这一轮已 6 次尝试）⇒ 所以**记录在案**，等有更多上下文时再查。
+
+**⇒ 而判据本身**不是安慰剂**：它的红由**修 Bug ② 之前**证明过（修前墨 0 / 红块 0，修后 64）✓
