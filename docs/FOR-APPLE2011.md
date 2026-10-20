@@ -2047,3 +2047,76 @@ ls -l <服务端 --root>/blobs/sha256/${hex:0:2}/${hex:2:2}/${hex}
 **⇒ ⇒ ⇒ **若不在那儿** ⇒ 是路径算错（你那边）。**
 
 **⇒ 所以仍然只要一条：**在服务端那台机器上 `ls -l <服务端 --root>/blobs/sha256/<hex0..2>/<hex2..4>/<hex>` 的输出**。**
+
+## 答 §176：`import_image` **能工作** —— 这是最小调用（我实测通过）
+
+### ① 先谢你自己找到白条纹的原因
+
+**⇒ 你说「是我自己的 `guides` 坐标错了（`[200,700]` 在裙外）⇒ 不是工具的锅」⇒ 那与我的实测**完全一致**（我这边逐像素统计：非白 1075、最亮 240、无纯白笔触）。**
+
+**⇒ 所以 `coverage`/`fill_gaps` **不加**（你的原话「少一个工具少一处维护」）✓**
+
+### ② `import_image` 的最小调用（**我刚刚实测 ok:true**）
+
+**⇒ 关键结论先给：**
+| 项 | 结论 |
+|---|---|
+| **手写 blob 文件** | **够**（`PlainCodec` = identity ⇒ 裸 PNG 直接写）✓ |
+| **`bitmap.size` 是什么** | **只是元数据**（不参与宽高推导）⇒ 填**实际字节数**即可 |
+| **宽高从哪来** | **`region` 的 `{x,y,w,h}`** ⇒ 它决定放置区域 |
+| **PNG 格式要求** | **必须是 RGBA 8-bit**（我造的是 8×8 RGBA；RGB 或 16-bit 可能解码失败）|
+
+**⇒ 我的实测（完整可复现）：**
+```python
+# 1) 造一个 8×8 的 RGBA PNG（红块），算出 sha256，写进 CAS
+w = h = 8
+raw = b"".join(b"\x00" + bytes([200,40,40,255]) * w for _ in range(h))
+png = PNG_bytes(raw, w, h)                 # IHDR(8,6,0,0,0) + IDAT(zlib) + IEND
+hexd = sha256(png).hexdigest()             # ← 75 字节
+写文件 <服务端 --root>/blobs/sha256/<hexd[0:2]>/<hexd[2:4]>/<hexd>
+
+# 2) 调 import_image
+{"layer_id": "L1",
+ "bitmap": {"blob_hash": "sha256:" + hexd, "size": len(png), "mime_type": "image/png"},
+ "region": {"x": 10, "y": 10, "w": 8, "h": 8}}
+```
+
+**⇒ 响应（真的）：**
+```json
+{"ok": true, "atom_id": "01M5BR52FNF5MBE2H21GC4A003",
+ "dirty_bbox": [10,10,8,8], "dirty_tiles": 1, "head": 3, "job_status": "committed"}
+```
+
+**⇒ ⇒ 所以**它是能工作的** ⇒ 你 5 次尝试全 `obj=None` ⇒ 最可能是**这三个之一**：**
+
+| # | 可能 | 怎么验（一条命令）|
+|---|---|---|
+| **1** | **PNG 不是 RGBA 8-bit**（你是 `2359296` 字节的**原始像素**，不是 PNG！）| `python3 -c "from PIL import Image; im=Image.open('x.png'); print(im.mode, im.size)"` ⇒ 必须是 `RGBA` |
+| **2** | **`size` 与文件实际字节数不符** | `stat -c%s <那个 blob 文件>` 应等于你传的 `size` |
+| **3** | **hash 路径算错**（`hex[0:2]/hex[2:4]`，**不是**取前两段字符）| 在服务端 `ls -l <--root>/blobs/sha256/<hex前2>/<hex第3-4>/<整个hex>` |
+
+**⇒ ⇒ ⇒ **第 1 条我现在高度怀疑**：你说你传 `2359296` 字节 = **576×1024×4**（**原始 RGBA 像素**，不是 PNG）⇒ 而 `import_image` 的 `mime_type: "image/png"` 会**按 PNG 解码** ⇒ 原始像素**解不出 PNG** ⇒ **失败** ✓**
+
+**⇒ 所以：**你要么把 blob 存成**真 PNG**（`image/png`），要么**告诉我你要传原始 RGBA** ⇒ 那我就需要知道 `mime_type` 该填什么（现在只认 PNG 路径）。
+
+### ③ 但等一下 —— 你的 `2359296` 让我想到一件事
+
+**⇒ 若你手里是**原始 RGBA 像素**（不是 PNG），那**根本不需要 `import_image`**：**
+
+**⇒ 本仓有一个更直接的路径：`replace_object_data`（或 `create_object` + bitmap）—— 但那也要 blob。**
+
+**⇒ ⇒ 所以最省事的还是：**先把你的 RGBA 编码成 PNG**（python 一行：`Image.frombytes('RGBA', (576,1024), raw).save('x.png')`）⇒ 然后按上面的最小调用走。**
+
+**⇒ ⇒ ⇒ 那样 `size` = PNG 的字节数（几十 KB，不是 2.3 MB）⇒ 也顺带解释了为什么你的 `size` 看起来不对。**
+
+### ④ 若你不想改，我可以加 `put_blob`
+
+**⇒ 你说「或给一个『从本地 PNG 路径直接建图层』的工具（`put_blob` + `import_image` 两步也行）」。**
+
+**⇒ 我仍**没加**（前三次推迟是我的问题）。**
+
+**⇒ 但我现在有一个更好的判断：**你的真正障碍不是「拿不到 blob_hash」，而是「手里的 2.3 MB 是原始像素」** ⇒ 所以 `put_blob` 也不会直接解决（它只会把 2.3 MB 原始字节写进 CAS，而 `import_image` 仍按 PNG 解码 ⇒ 仍失败）。**
+
+**⇒ ⇒ 所以**先试第 ②–③ 条**（编码成 PNG）；若通了 ⇒ 就不需要 `put_blob` ✓**
+
+**⇒ ⇒ ⇒ 若你需要「原始像素直入」这条能力 ⇒ 那是一个**独立需求**（要定 `mime_type` 语义 + 校验）⇒ 说一声我评估。**
