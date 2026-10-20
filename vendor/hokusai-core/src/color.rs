@@ -187,3 +187,77 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod phase1_pipeline_space {
+    //! **Phase 1（色彩体系规划）的判据**：`hsv_to_rgb` 的输出**是 sRGB，不是 linear** ✓
+    //!
+    //! **⇒ 为什么这条判据必须先存在**（第 1298 轮）：
+    //!   Phase 1 要改的是「`base` 应在 linear 空间参与混合」⇒ 而**改之前必须先能证明现状**。
+    //!   我用端到端像素测了**五次都失败**（笔刷透明把信号埋了，见 HANDOFF「测量失败记录」）⇒
+    //!   所以判据只能在这里：**两个确定的数字**。
+    //!
+    //! **⇒ 三个数字**（`v=0.8`、`s=1.0`、`h=0.0`）：
+    //!   · sRGB 空间：`r = 0.8`（标准 HSV→RGB 直接给 `v`）
+    //!   · linear 空间：`r = srgb_to_linear(0.8) = 0.603827`
+    //!   · **差 0.196** ⇒ 所以两者**不可能混淆** ✓
+    //!
+    //! **⇒ 变异**：把 `hsv_to_rgb` 的返回改成 `srgb_to_linear` 处理过 ⇒ 这条判据必红。
+
+    use super::{hsv_to_rgb, srgb_to_linear, Hsv};
+
+    /// **饱和红在 `v=0.8` 时，`hsv_to_rgb` 给 `0.8`（sRGB），不是 `0.6038`（linear）。**
+    #[test]
+    fn hsv_to_rgb_returns_srgb_not_linear() {
+        let c = hsv_to_rgb(Hsv {
+            h: 0.0,
+            s: 1.0,
+            v: 0.8,
+        });
+        // sRGB：直接就是 v
+        assert!(
+            (c.r - 0.8).abs() < 0.001,
+            "hsv_to_rgb 必须返回 **sRGB**（r 应 0.8），实测 {}",
+            c.r
+        );
+        assert!((c.g - 0.0).abs() < 0.001, "g 应 0，实测 {}", c.g);
+        assert!((c.b - 0.0).abs() < 0.001, "b 应 0，实测 {}", c.b);
+        // 而 linear 的值明显不同 ⇒ 证明两者不混淆
+        let lin = srgb_to_linear(c.r);
+        assert!(
+            (lin - 0.603_827).abs() < 0.001,
+            "srgb_to_linear(0.8) 应 0.603827，实测 {lin}"
+        );
+        assert!(
+            (c.r - lin).abs() > 0.15,
+            "sRGB 与 linear 的差应 > 0.15（实测 {:.4}）⇒ 否则判据无鉴别力",
+            (c.r - lin).abs()
+        );
+    }
+
+    /// **灰阶的三个值都相等**（`s=0` 时 HSV→RGB 给 `v,v,v`）⇒ 守住「无色彩偏移」。
+    #[test]
+    fn grey_stays_grey_in_srgb() {
+        for v in [0.0f32, 0.25, 0.5, 0.8, 1.0] {
+            let c = hsv_to_rgb(Hsv { h: 0.0, s: 0.0, v });
+            assert!((c.r - v).abs() < 0.001, "v={v}：r 应 {v}，实测 {}", c.r);
+            assert!((c.g - v).abs() < 0.001, "v={v}：g 应 {v}，实测 {}", c.g);
+            assert!((c.b - v).abs() < 0.001, "v={v}：b 应 {v}，实测 {}", c.b);
+        }
+    }
+
+    /// **`srgb_to_linear` 与 `linear_to_srgb` 互逆**（往返误差 < 1e-5）。
+    ///
+    /// **⇒ 为什么重要**：Phase 1 若在 `base` 之后转 linear、在导出时转回 sRGB ⇒
+    ///   那**必须是互逆的**，否则往返会引入漂移。
+    #[test]
+    fn srgb_round_trip_is_lossless() {
+        for c in [0.0f32, 0.001, 0.04045, 0.1, 0.5, 0.8, 1.0] {
+            let back = super::linear_to_srgb(srgb_to_linear(c));
+            assert!(
+                (back - c).abs() < 1e-5,
+                "c={c}：往返后 {back}（应相等）"
+            );
+        }
+    }
+}
