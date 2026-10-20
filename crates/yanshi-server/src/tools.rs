@@ -10492,7 +10492,23 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         let pressure = pair.get(2).and_then(Value::as_f64).unwrap_or(1.0);
         points.push((x, y, pressure));
     }
-    let size = args.get("size").and_then(Value::as_f64).unwrap_or(24.0);
+    let size_requested = args.get("size").and_then(Value::as_f64).unwrap_or(24.0);
+    // **★ 按介质的 `max_dab` **夹紧** `size`** ✓（第 1416 轮；外部 D-09）
+    //   **⇒ 原缺陷** ✗：`size` 一路传下去，插件内部按 `max_dab`（六种介质都是 **64**）截断 ⇒
+    //     而**脏区按**请求值**算 ⇒ **返回值与真实落墨不符** ✗✗
+    //     **⇒ 实测（oil）**：`size` 64/96/200/640 ⇒ 墨厚恒 **58–62 px**，
+    //       而 `dirty_bbox` 报 **68 / 100 / 204 / 644** ⇒ 调用方以为铺了 644 px ✗
+    //   **⇒ 修法**：**在此处夹紧** ⇒ ① 脏区按夹紧值算 ⇒ 与落墨一致 ✓
+    //     ② 返回值给出 `size_requested`／`size_used` ⇒ **截断可见** ✓
+    let max_dab = yanshi_medium_host::MEDIUMS
+        .iter()
+        .find(|spec| spec.id == medium.as_str())
+        .map(|spec| spec.max_dab as f64);
+    let size = match max_dab {
+        Some(cap) if size_requested > cap => cap,
+        _ => size_requested,
+    };
+    let size_clamped = size < size_requested;
     let load = args.get("load").and_then(Value::as_f64).unwrap_or(1.0);
     let wetness = args.get("wetness").and_then(Value::as_f64).unwrap_or(0.4);
     // **纹理强度** ✓（真实用户报告"油画纹理过重"✓）：缺省 **0.0** ✓
@@ -10691,6 +10707,18 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     // ★ **一遍遍历同时算两个量** ✗**（第 100 轮 ✓；**∴ 原来 `paint_delta` 自己又扫了一遍 ✓
     //   ⇒ **∴ 在 4K 上那是 **67,108,864** 字节 ✗ ⇒ **∴ 实测 `brush_stroke` 中位 101.6 → 235.0 ms ✗**）
     let (painted_pixels, paint_delta) = count_painted_and_delta(base.as_deref(), &rgba);
+    // **截断可见** ✓（第 1416 轮；外部 D-09）：两个数都给，且被夹紧时加一句说明
+    value["size_requested"] = json!(size_requested);
+    value["size_used"] = json!(size);
+    if size_clamped {
+        value["size_clamped"] = json!(true);
+        value["size_clamp_note"] = json!(format!(
+            "请求 size={size_requested} 超过介质的单枚 dab 上限 {} ⇒ 已按上限落笔；\n                 \
+             所以 `dirty_bbox` 的尺寸按 {} 算，不是按请求值算（第 1416 轮修：以前返回的包围盒比真实落墨大）",
+            max_dab.unwrap_or(f64::NAN),
+            size
+        ));
+    }
     value["painted_pixels"] = json!(painted_pixels);
     value["paint_delta"] = json!(paint_delta);
     // ★ **`paint_delta`：真正的落墨幅度 ✗** ★**（第 71 轮 ✓；**∴ 报告 §40 要用它做薄涂的"看得见"门 ✓**）
