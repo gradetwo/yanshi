@@ -26,9 +26,21 @@ SRC_MAX=$(find crates/*/src -name '*.rs' -newer "$BIN" 2>/dev/null | head -5)
 if [ ! -x "$BIN" ] || [ -n "$SRC_MAX" ]; then
   echo "  ⟳ 二进制比源码旧（或不存在）⇒ 先重建"
   [ -n "$SRC_MAX" ] && echo "$SRC_MAX" | sed 's/^/      新于二进制：/'
-  cargo build --release -p yanshi-http 2>&1 | tail -2 | sed 's/^/      /'
+  # **★ 必须看 `cargo build` 的退出码，不能只看二进制是否存在** ✓（第 1287 轮；N3E-01）
+  #   **缺陷**：编译失败时**旧二进制还在** ⇒ `[ -x "$BIN" ]` 为真 ⇒ 脚本**继续用陈旧二进制跑判据**
+  #     ⇒ 于是判据可能**假绿**（测的是旧代码）✗ —— 而这恰好发生在「源码比二进制新」这个**主场景**
+  #   **修法**：把 build 的退出码取出来 ⇒ 非 0 就 exit 3（不可判，不是产品失败）
+  BUILD_LOG=$(mktemp)
+  cargo build --release -p yanshi-http > "$BUILD_LOG" 2>&1
+  BUILD_RC=$?
+  tail -2 "$BUILD_LOG" | sed 's/^/      /'
+  rm -f "$BUILD_LOG"
+  if [ "$BUILD_RC" -ne 0 ]; then
+    echo "  ⊘ 不可判：重建失败（cargo build 退出码 ${BUILD_RC}）⇒ 拒绝用陈旧二进制跑判据" >&2
+    exit 3
+  fi
   if [ ! -x "$BIN" ]; then
-    echo "  ⊘ 不可判：重建失败（判据前提不成立，不是产品问题）" >&2
+    echo "  ⊘ 不可判：重建成功但没有二进制（$BIN 不存在）" >&2
     exit 3
   fi
 else
