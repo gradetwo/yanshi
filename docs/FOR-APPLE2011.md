@@ -1627,3 +1627,93 @@ let object_id = optional_str(args, "object_id")
 **⇒ ⇒ 我需要你 `import_image` 的**完整 args**（`layer_id` / `bitmap` / `region`），特别是 `bitmap` 里有哪些键。**
 
 **⇒ 因为 `bitmap` 是 `Object` 类型 ⇒ 若它缺 `blob_hash`（或键名不同）⇒ 对象建了但**渲染时找不到图** ⇒ 正好是「`ok=true` 但图不变」。**
+
+## 答「手写 blob 够不够」（第 1202 轮）：**够** —— 默认 codec 是 identity
+
+### ① 你要的那一条：**手写 `blobs/sha256/xx/yy/hash` 就够**
+
+**⇒ 源码（`crates/yanshi-core/src/blob.rs`）：**
+
+```rust
+pub struct PlainCodec;                                    // :85 —— 默认编码器
+
+impl BlobCodec for PlainCodec {
+    fn encode(&self, plain: &[u8]) -> Vec<u8> { plain.to_vec() }        // :88
+    fn decode(&self, stored: &[u8]) -> Option<Vec<u8>> { Some(stored.to_vec()) }  // :92
+}
+```
+
+**⇒ 而 `FsBlobStore` 的默认构造是 `codec: Arc::new(PlainCodec)`（`:462`）。**
+
+**⇒ ⇒ 所以 `get` 做的两步（`fs::read` + `codec.decode`）里，**第二步是恒等** ⇒ **裸 PNG 直接写就对** ✓**
+
+**⇒ ⇒ ⇒ **所以你的怀疑 ①（「必须先经服务端登记」）不成立** —— 不需要索引、不需要登记 ✓**
+
+**⇒ ⇒ ⇒ ⇒ 而 `mime_type` 也是**自由字段**（不进 codec）⇒ **你怀疑的 ③ 也不成立** ✓
+
+### ② `object_id: None` —— 我这边**不可能**，所以它是一把钥匙
+
+**⇒ 源码（`write_import_image`）：**
+```rust
+let object_id = optional_str(args, "object_id")
+    .unwrap_or_else(|| format!("obj_{}", yanshi_core::Ulid::new().encode()));
+```
+
+**⇒ **不传 `object_id` 时一定会生成一个 `obj_<ULID>`** ⇒ 响应里**一定有个 id**。**
+
+**⇒ ⇒ 所以你看到 `None` 只有三种可能：**
+
+| 可能 | 怎么分辨（**一步**）|
+|---|---|
+| **你读的字段名不同** | 打印**完整响应**（不要 `resp.get("object_id")`）|
+| **你调的不是 `import_image`** | 看响应里有没有 `"type": "raster_patch"` |
+| **`ok` 其实是 `false`** | 看 `ok` 的真实值 + `context.detail` |
+
+**⇒ ⇒ ⇒ **这一条能立刻判死你的问题**：若响应里有 `obj_<ULID>` ⇒ 对象**建成了** ⇒ 那问题在**渲染侧**；若没有 ⇒ 你调的不是 `import_image`。**
+
+### ③ 最可能的真因：**`region` 与 `bitmap` 的尺寸不匹配**
+
+**⇒ `import_image` 的三个必填参数是 `layer_id` / `bitmap` / `region`（spec 里 `region` 是 `Any, true`）。**
+
+**⇒ 而 `region` 的解析是（`parse_bbox`）：**
+```rust
+// 先试对象形式（Bbox::from_value），再试数组形式：
+//   [x, y, w, h]  ⇒  Bbox::new(numbers[0..4])
+```
+
+**⇒ 所以 `region` 必须是**`{x,y,w,h}` 或 `[x,y,w,h]`**（**4 个数，顺序是 x/y/宽/高**）。**
+
+**⇒ ⇒ 而它决定**画到哪里** ⇒ 若你传的 `w/h` 与 PNG 实际尺寸不匹配，或坐标在画布外 ⇒ **对象建了但看不见** ✓**
+
+**⇒ ⇒ ⇒ **这正是你自己怀疑的第 ③ 条**（「`region` 与 `bitmap.size` 不匹配」）—— 而我认为它是**最可能的真因** ✓**
+
+### ④ 请你做这一步（**一条命令就能判**）
+
+**⇒ 把你的 `import_image` 参数补全成（576×1024 的画布）：**
+```json
+{
+  "layer_id": "composite",
+  "bitmap": {"blob_hash": "sha256:1f14674a…d14", "size": 34909, "mime_type": "image/png"},
+  "region": [0, 0, 576, 1024]
+}
+```
+
+**⇒ 然后看响应里的 `object_id`：**
+| `object_id` | 结论 |
+|---|---|
+| **`obj_<ULID>`** | 对象建成了 ⇒ 再看 `region` 是否与 PNG 真尺寸一致（你的 PNG 是 576×1024 吗？）|
+| **`None`** | 你调的不是 `import_image`（或 `ok=false`）|
+
+### ⑤ `z_index` 的语义（你问的 ②）—— 我还没读清，但给你一个安全值
+
+**⇒ 我上一轮确认了**参数名是 `z_index`**（不是 `z`）⇒ 你改成 `z_index` 之后，**
+
+**⇒ 而 `z_index` 的具体规则（0 是最上还是最下、超范围怎么钳）我**下一轮给你确切答案**。**
+
+**⇒ 在此之前用 **`z_index: 0`**（或干脆不传，让它按添加顺序）⇒ **别用 99/100**（你的层数只有 11 ⇒ 会被钳到同一端 ⇒ 无法判断是否生效）。
+
+### ⑥ 谢谢你对 `deterministic` 的确认
+
+**⇒ 你说「下一轮起所有指标测量都用它」⇒ 那正是我做它的目的 ✓**
+
+**⇒ 提醒一句：它**拒绝缩放**（给了不等于源尺寸的 `width`/`height`/`max_edge` 会报错）⇒ 所以你的测量脚本要**不传缩参**。**
