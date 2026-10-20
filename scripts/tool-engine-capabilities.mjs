@@ -6,7 +6,7 @@
 // ⇒ **∴ 本判据直接读源码，从 `[&str; N]` / `[&'static str; N]` 里取 N，再与工具的输出比** ✓✓
 //
 // 用法：node scripts/tool-engine-capabilities.mjs <server-base> <doc-id> <token>
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 const [base, doc, token] = process.argv.slice(2);
 if (!base || !doc || !token) {
   console.error("用法: node scripts/tool-engine-capabilities.mjs <base> <doc> <token>");
@@ -59,7 +59,21 @@ check(
 // ★ 介质那条路的参数：**读 `medium_stroke` 的 schema，与工具返回的 medium_params.names 逐项比** ✓
 //   **∴ 为什么读源码** ✗：这样 Rust 侧加了参数而这里没跟上（或反过来）都会红 ✓（**∴ 硬编码清单必漂移 ✗**）
 {
-  const src = readFileSync(new URL("../crates/yanshi-server/src/tools.rs", import.meta.url), "utf8");
+  const src = (function () {
+  // **★ 拼全部 `tools*.rs`** ✓（第 1275 轮）：Phase 2 把工具声明/实现对半拆到多个模块
+  //   ⇒ 只读 `tools.rs` 会「找不到 medium_stroke」/「找到 0 个带 region 的工具」⇒ **假红** ✗
+  const dir = new URL("../crates/yanshi-server/src/", import.meta.url);
+  const text = readdirSync(dir)
+    .filter((n) => /^tools.*\.rs$/.test(n))
+    .sort()
+    .map((n) => readFileSync(new URL(n, dir), "utf8"))
+    .join("\n");
+  if (text.length < 10000) {
+    console.error("  ⊘ 不可判：tools*.rs 拼起来不到 10000 字节（枚举或读取坏了）");
+    process.exit(3);
+  }
+  return text;
+})();
   const start = src.indexOf('name: "medium_stroke"');
   if (start < 0) { console.log("  ✗ 源码里找不到 medium_stroke"); process.exit(3); }
   const next = src.indexOf('name: "', start + 10);

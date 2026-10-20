@@ -11,14 +11,28 @@
 //   对每个带 `region` 的工具**只传** `{"region": [0,0,8,8]}` ✗
 //   ⇒ **∴ 它必然因为**别的参数缺失**而失败 ✓（**∴ 那是正常 ✓**）
 //   ⇒ **∴ 但失败原因里**不能出现 "region"**✗ ⇒ **∴ 出现了就说明 `region` 本身被拒 ✓ ⇒ **∴ 判据红 ✓**
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
 const [base, doc, token] = process.argv.slice(2);
 if (!base || !doc || !token) {
   console.error("用法: node scripts/tool-region-shape-parity.mjs <base> <doc> <token>");
   process.exit(3);
 }
-const src = readFileSync(new URL("../crates/yanshi-server/src/tools.rs", import.meta.url), "utf8");
+const src = (function () {
+  // **★ 拼全部 `tools*.rs`** ✓（第 1275 轮）：Phase 2 把工具声明/实现对半拆到多个模块
+  //   ⇒ 只读 `tools.rs` 会「找不到 medium_stroke」/「找到 0 个带 region 的工具」⇒ **假红** ✗
+  const dir = new URL("../crates/yanshi-server/src/", import.meta.url);
+  const text = readdirSync(dir)
+    .filter((n) => /^tools.*\.rs$/.test(n))
+    .sort()
+    .map((n) => readFileSync(new URL(n, dir), "utf8"))
+    .join("\n");
+  if (text.length < 10000) {
+    console.error("  ⊘ 不可判：tools*.rs 拼起来不到 10000 字节（枚举或读取坏了）");
+    process.exit(3);
+  }
+  return text;
+})();
 const call = async (name, args) => {
   const url = `${base}/api/tools/${name}?doc=${encodeURIComponent(doc)}&token=${encodeURIComponent(token)}`;
   const reply = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(args) });

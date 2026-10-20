@@ -13,14 +13,26 @@
 //   ③ 一处都扫不到 ⇒ **报错**（不许静默通过 ✗）；提到十六进制色的一处都没有 ⇒ **也报错** ✓；
 //   ④ **打印覆盖面** ✓。
 // 用法：node scripts/tool-color-schema.mjs（**静态检查 ✓，不需要服务端** ✓）
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
-const SRC = "crates/yanshi-server/src/tools.rs";
-const text = readFileSync(SRC, "utf8");
+// **★ 拼全部 `tools*.rs`** ✓（第 1275 轮）：Phase 2 把 `param!` 分散到多个模块里
+//   ⇒ 只读 `tools.rs` 会「一处都没扫到」⇒ 而它**诚实报错**（不是静默通过）✓
+//   ⇒ 修法：目录枚举拼接 ✓
+const SRC_DIR = "crates/yanshi-server/src";
+const SRC = readdirSync(SRC_DIR)
+  .filter((n) => /^tools.*\.rs$/.test(n))
+  .sort()
+  .map((n) => readFileSync(`${SRC_DIR}/${n}`, "utf8"))
+  .join("\n");
+if (SRC.length < 10000) {
+  console.error("  ⊘ 不可判：tools*.rs 拼起来不到 10000 字节（枚举或读取坏了）");
+  process.exit(3);
+}
+const text = SRC;  // SRC 已经是拼好的内容（第 1275 轮）
 const re = /param!\(\s*"([a-z_0-9]+)"\s*,\s*([A-Za-z]+)\s*,\s*(true|false)\s*,\s*"((?:[^"\\]|\\.)*)"/g;
 const all = [...text.matchAll(re)];
 if (all.length === 0) {
-  console.error("❌ 在 " + SRC + " 里一处 param! 都没扫到 ⇒ 判据无法运行（**不是通过** ✗）");
+  console.error("❌ 在 tools*.rs 里一处 param! 都没扫到 ⇒ 判据无法运行（**不是通过** ✗）");
   process.exit(1);
 }
 const hexNamed = all.filter((m) => /#(rrggbb|RRGGBB)/.test(m[4]));
