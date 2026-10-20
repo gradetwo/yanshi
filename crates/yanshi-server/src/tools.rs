@@ -6846,14 +6846,21 @@ fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             .get("blob_hash")
             .and_then(Value::as_str)
             .unwrap_or_default()]},
-        // **★ 单一来源：只写 `region`（原始输入），不写派生的 `width`/`height`** ✓
-        //   **为什么**（第 1225 轮查清）：原来这里同时写了
-        //     region: {x,y,w,h} + width: region.w + height: region.h
-        //   ⇒ 同一事实写两遍 ⇒ `parse_raster_patch` 优先读 `width`/`height`
-        //     ⇒ **删 `region` 不影响渲染**（我上一轮的变异因此不红 ✗）
-        //     ⇒ 而两条数据一旦不同步（如未来的形状变换只改 region）就会**静默不一致** ✗
-        //   ⇒ 所以只保留 `region`（它已经包含 x/y/w/h 全部信息）✓
+        // **★ `region` + `width`/`height` 都要写** ✗→✓（第 1242 轮：我第 1225 轮删它们**错了**）
+        //   **第 1225 轮我的理由**：同一事实写两遍 ⇒ 单一来源 ⇒ 只留 `region`
+        //   **那条理由被 CI 推翻了**（第 1242 轮）：两个测试直接断言净荷里的 `width`/`height`
+        //     · `one_atom_records_the_bitmap_and_the_medium_descriptor`
+        //     · `the_one_atom_form_matches_the_old_two_step_form_on_every_rendering_field`
+        //   ⇒ 所以它们**不是**「派生冗余」，而是**协议的一部分**（旧的两步形式
+        //     `replace_object_data` 也写 `{bitmap, region, width, height, medium}`）✗
+        //   ⇒ **教训**：判「冗余」之前要 grep **测试与文档**，不能只看代码里谁读它
+        //     （我 1225 轮只看了 `parse_raster_patch` 的读取顺序）✗
+        //
+        //   **而这也是我 1225 轮「删 region 变异不红」的真正原因** ✓：
+        //     因为 `width`/`height` 一直在，`parse_raster_patch` 优先读它们 ⇒ 删 `region` 看不出变化
         "region": {"x": region.x, "y": region.y, "w": region.w, "h": region.h},
+        "width": region.w as u64,
+        "height": region.h as u64,
     });
     if let Some(medium) = args.get("medium") {
         if !medium.is_null() {
