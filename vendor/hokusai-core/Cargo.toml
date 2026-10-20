@@ -50,3 +50,10 @@ path = "src/lib.rs"
 
 [dependencies.thiserror]
 version = "2"
+
+# **⇒ `libm` 用于 sRGB 传递函数**（第 1339 轮）：`.powf` 是**各平台各自实现**的
+#   ⇒ wasm 与 native 可能差 1 ulp ⇒ 而 `srgb_to_linear`/`linear_to_srgb` 现在在
+#   `mix_smudge_linear` 的**活路径**上 ⇒ 两种渲染模式的混合结果可能不同 ✗
+#   ⇒ `libm::powf` 是**纯 Rust** ⇒ 同一份源码编两次 ⇒ **逐位相同** ✓
+[dependencies.libm]
+version = "0.2"

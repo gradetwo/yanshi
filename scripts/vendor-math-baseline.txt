@@ -18,7 +18,6 @@
 #     而 `libm::powf` 与本机 `powf` 的差异会让混合结果差 1 个通道级 ⇒ 需要一条像素判据对照 ✓
 
 brushmodes.rs 2
-color.rs 2
 spectral.rs 5
 state.rs 1
 stroke.rs 45

@@ -551,6 +551,7 @@ dependencies = [
 name = "hokusai-core"
 version = "0.3.0"
 dependencies = [
+ "libm",
  "thiserror 2.0.21",
 ]
 
