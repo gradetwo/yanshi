@@ -81,10 +81,20 @@ const mkDoc = async (tag, w, h) => {
 };
 
 const exportPng = async (doc, token, name) => {
-  // **⇒ 不自己造临时目录** ✓（元判据要求造目录必须 import trackTemp ⇒ 所以直接用运行器给的）
-  const dir = process.env.YANSHI_EXPORT_DIR;
+  // **⇒ 不自己造临时目录** ✓（元判据要求造目录必须 import trackTemp ⇒ 所以用运行器给的）
+  // **⇒ 候选路径链** ✓（第 1317 轮）：本机运行器给 `YANSHI_EXPORT_DIR`；
+  //   **而 CI 的 `run-criteria.sh` 只导出 `YANSHI_WORKSPACE`**（服务端写 `$ROOT/work/exports`）✗
+  //   ⇒ 若只认 `YANSHI_EXPORT_DIR` ⇒ 本判据**在 CI 上永远 `exit 3`（跳过）** ⇒ 等于没加 ✗
+  //   ⇒ 所以与 `tool-cjk-text` 同一套候选链 ✓
+  // **⇒ 顺序取，**不要求已存在**** ✓（第 1317 轮实测）：
+  //   我第一版用 `existsSync` 筛 ⇒ 而「本机运行器刚建好 `exports/` 但服务端还没写」时
+  //   `${ws}/exports` 不存在 ⇒ 于是退到 `ws` ⇒ **与服务端的写路径不一致** ⇒ 读不到文件 ✗
+  //   ⇒ 所以：`YANSHI_EXPORT_DIR` **有值就用**（它就是服务端的导出目录）；
+  //     否则用 `${YANSHI_WORKSPACE}/exports`（CI 的 `run-criteria.sh` 就是那个布局）✓
+  const ws = process.env.YANSHI_WORKSPACE;
+  const dir = process.env.YANSHI_EXPORT_DIR || (ws ? `${ws}/exports` : null);
   if (!dir) {
-    console.error("  ⊘ 不可判：没有 YANSHI_EXPORT_DIR（运行器会给）");
+    console.error("  ⊘ 不可判：找不到导出目录（试过 YANSHI_EXPORT_DIR / YANSHI_WORKSPACE/exports / YANSHI_WORKSPACE）");
     process.exit(3);
   }
   const rel = `${name}_${stamp}.png`;
