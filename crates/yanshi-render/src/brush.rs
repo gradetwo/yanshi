@@ -788,12 +788,28 @@ pub fn smudge_dab(
                         }
                         let src = sample[(qy - sy0) as usize * sample_w + (qx - sx0) as usize];
                         let dst = tile[row as usize][column as usize];
-                        let mix = |i: usize| -> u16 {
+                        // **★ 颜色三通道在**线性空间**混合，alpha 保持线性插值** ✓（第 1311 轮；Phase 1）
+                        //   **⇒ 为什么**：`dst*(1-a) + src*a` 是**光的相加** ⇒ 只在 linear 上有物理意义
+                        //      （sRGB 是感知编码，有 gamma）⇒ 在 sRGB 上插值会让中间调**偏暗** ✗
+                        //   **⇒ 为什么 alpha 不转**：alpha 不是 gamma 编码量 ⇒ 它在两个空间里都是线性 ✓
+                        //   **⇒ 缩放**：tile 存的是 `u8 << 7`（`brush.rs:658`）⇒ 所以 `255<<7 = 32640` 是满量程 ✓
+                        //   **⇒ 判据**：`tool-visible-delta`（不涂抹的纯色笔）必须**一字不变**；
+                        //      而涂抹笔的混合像素**变亮** ⇒ 与 `mix_smudge_linear`（wasm 侧）同一套数学 ✓
+                        const FULL: f32 = 32640.0; // 255 << 7
+                        let mix_rgb = |i: usize| -> u16 {
+                            let a = f32::from(dst[i]) / FULL;
+                            let b = f32::from(src[i]) / FULL;
+                            let lin = crate::color::srgb_to_linear(a) * (1.0 - amount)
+                                + crate::color::srgb_to_linear(b) * amount;
+                            (crate::color::linear_to_srgb(lin).clamp(0.0, 1.0) * FULL).round()
+                                as u16
+                        };
+                        let mix_alpha = |i: usize| -> u16 {
                             let a = f32::from(dst[i]);
                             let b = f32::from(src[i]);
                             (a * (1.0 - amount) + b * amount).clamp(0.0, 65535.0) as u16
                         };
-                        let out = [mix(0), mix(1), mix(2), mix(3)];
+                        let out = [mix_rgb(0), mix_rgb(1), mix_rgb(2), mix_alpha(3)];
                         if out != dst {
                             tile[row as usize][column as usize] = out;
                             touched += 1;

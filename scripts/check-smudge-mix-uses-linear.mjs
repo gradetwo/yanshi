@@ -91,6 +91,38 @@ if (inline.length === 0) {
   bad(`④ stroke.rs 里仍有旧内联公式 ${inline.length} 处（首处 :${inline[0][0]}）⇒ 混合没走线性函数`);
 }
 
+// ---- ⑤ 服务端路径（`smudge_dab`）也必须是线性混合 ----
+//   **为什么单列**：服务端**不走** hokusai 的 `stroke.rs`（它有自己 `tools.rs:12503` 的 `stamp_stroke`）
+//     ⇒ 所以上面 ①–④ 只守住 **wasm** 那条 ⇒ 服务端要单独守 ✓
+const DAB = "crates/yanshi-render/src/brush.rs";
+if (!existsSync(DAB)) {
+  console.error(`  ⊘ 不可判：找不到 ${DAB}`);
+  process.exit(3);
+}
+const dabCode = codeLines(DAB);
+const dabIdx = dabCode.findIndex(([, l]) => /pub\s+fn\s+smudge_dab\s*\(/.test(l));
+if (dabIdx < 0) {
+  console.error("  ⊘ 不可判：brush.rs 里没有 `pub fn smudge_dab`");
+  process.exit(3);
+}
+let d2 = 0;
+let started2 = false;
+const dabBody = [];
+for (let k = dabIdx; k < dabCode.length; k += 1) {
+  const [, l] = dabCode[k];
+  d2 += (l.match(/{/g) ?? []).length - (l.match(/}/g) ?? []).length;
+  if (!started2 && d2 > 0) started2 = true;
+  dabBody.push(l);
+  if (started2 && d2 === 0) break;
+}
+const dabHasTo = dabBody.some((l) => /srgb_to_linear\s*\(/.test(l));
+const dabHasBack = dabBody.some((l) => /linear_to_srgb\s*\(/.test(l));
+if (dabHasTo && dabHasBack) {
+  ok(`⑤ 服务端 smudge_dab 的颜色混合也是线性的（:${dabCode[dabIdx][0]}，去/回都在）`);
+} else {
+  bad(`⑤ 服务端 smudge_dab 必须在线性空间混合 ⇒ 实测 去=${dabHasTo} 回=${dabHasBack}`);
+}
+
 if (fail.length > 0) {
   console.log(`\n  ✗ ${fail.length} 处不符（涂抹混合必须走共享的线性函数）`);
   process.exit(1);
