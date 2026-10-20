@@ -110,9 +110,59 @@ impl FileStore {
         FsBlobStore::open(self.root.join("blobs"))
     }
 
+    /// **校验 `doc_id` 是否可以安全当目录名** ✓（2026-10-20 第三轮复审 **C-02**）。
+    ///
+    /// **为什么必须有** ✗：`doc_dir` 原来是**裸 `join`** ——
+    /// `self.root.join("docs").join(doc_id)` ⇒ 若 `doc_id` 含 `../`
+    /// ⇒ **创建/导入/打开三条路径都能写到任意目录** ✗（路径穿越）。
+    ///
+    /// **规则**（白名单，不是黑名单 —— 黑名单总会漏）：
+    /// · 非空、长度 ≤ 128
+    /// · 只许 `[A-Za-z0-9._-]`
+    /// · 不许 `.` / `..`（虽然白名单已挡 `/`，但 `.`/`..` 本身也是病态 id）
+    /// · 不许以 `-`/`.` 开头（避免掩盖文件）
+    pub fn validate_doc_id(doc_id: &str) -> Result<()> {
+        let bad = |why: &str| {
+            Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("doc_id {doc_id:?} 不合法：{why}")),
+            ))
+        };
+        if doc_id.is_empty() {
+            return bad("不能为空");
+        }
+        if doc_id.len() > 128 {
+            return bad("长度超过 128");
+        }
+        if doc_id == "." || doc_id == ".." {
+            return bad("不能是 . 或 ..");
+        }
+        if doc_id.starts_with('.') || doc_id.starts_with('-') {
+            return bad("不能以 . 或 - 开头");
+        }
+        if let Some(ch) = doc_id
+            .chars()
+            .find(|c| !(c.is_ascii_alphanumeric() || *c == '.' || *c == '_' || *c == '-'))
+        {
+            return bad(&format!("含非法字符 {ch:?}（只许字母/数字/._-）"));
+        }
+        Ok(())
+    }
+
     /// 文档目录。
+    ///
+    /// **⚠ 调用方必须先 `validate_doc_id`**（见上）。这里再兜一层：
+    /// 若 id 不合法，返回一个**不可能被写到仓库外**的路径（`docs/_invalid`），
+    /// 而不是让 `join` 穿越 —— 但**真正的拒绝在 `validate_doc_id`**，
+    /// 这层只是「即使调用方忘了也不会穿越」（不是静默降级：入口会报错）。
     pub fn doc_dir(&self, doc_id: &str) -> PathBuf {
-        self.root.join("docs").join(doc_id)
+        let safe = if Self::validate_doc_id(doc_id).is_ok() {
+            doc_id
+        } else {
+            debug_assert!(false, "doc_dir 收到未校验的 doc_id：{doc_id:?}");
+            "_invalid"
+        };
+        self.root.join("docs").join(safe)
     }
 
     fn atoms_path(&self, doc_id: &str) -> PathBuf {
@@ -661,5 +711,67 @@ mod tests {
         assert_eq!(blobs.get(&hash).unwrap(), b"bitmap");
         assert!(store.root().join("blobs").join("sha256").is_dir());
         let _ = fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod doc_id_validation_tests {
+    //! **C-02 判据**（第三轮复审）：`doc_id` 必须不能穿越目录。
+    //!
+    //! 判据不是「`validate_doc_id` 返回 Ok」而是**逐类拒绝**：
+    //! 只要有一类被放过，路径就穿越了 ⇒ 所以每类单独一条断言。
+
+    use super::FileStore;
+
+    fn ok(id: &str) -> bool {
+        FileStore::validate_doc_id(id).is_ok()
+    }
+
+    #[test]
+    fn rejects_path_traversal_and_separators() {
+        // **这是 C-02 的核心**：`../` 与分隔符必须拒绝
+        for bad in [
+            "../etc",
+            "..",
+            ".",
+            "a/b",
+            "/abs",
+            "a\\b",
+            "..\\win",
+            "docs/../../x",
+        ] {
+            assert!(!ok(bad), "必须拒绝 {bad:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_empty_long_and_hidden() {
+        assert!(!ok(""));
+        assert!(!ok(&"a".repeat(129)), "129 字符必须拒绝");
+        assert!(!ok(".hidden"), "以 . 开头必须拒绝");
+        assert!(!ok("-flag"), "以 - 开头必须拒绝");
+    }
+
+    #[test]
+    fn rejects_non_ascii_and_spaces() {
+        for bad in ["文档", "a b", "a:b", "a*b", "a?b", "a\u{0}b"] {
+            assert!(!ok(bad), "必须拒绝 {bad:?}");
+        }
+    }
+
+    #[test]
+    fn accepts_normal_ids() {
+        // **正向**：正常 id 不能被误拒（否则功能坏了）
+        for good in [
+            "_b",
+            "doc1",
+            "a.b",
+            "a-b",
+            "a_b",
+            "A1",
+            "x".repeat(128).as_str(),
+        ] {
+            assert!(ok(good), "不该拒绝 {good:?}");
+        }
     }
 }

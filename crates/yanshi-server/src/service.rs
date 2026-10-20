@@ -1182,6 +1182,8 @@ impl Workspace {
     /// **打开文档（计时包装 ✓）** —— 第 71 轮 ✓：把整段耗时记进文档 ✓，
     /// 供 `get_document` 以 `open_ms` 报出 ✓（**加载在工具开始之前 ⇒ 装不进 `total_ms`** ✗）。
     pub fn open_document(&mut self, doc_id: &str) -> Result<&mut Document> {
+        // **C-02（第三轮复审）**：先校验 doc_id ⇒ 否则 ../ 可穿越写任意目录
+        crate::persist::FileStore::validate_doc_id(doc_id)?;
         let started = std::time::Instant::now();
         // 第一次调用**真正做加载** ✓（第二次只是 map 查找 ✓ ⇒ 极快 ✓）。
         self.open_document_inner(doc_id)?;
@@ -1370,6 +1372,8 @@ impl Workspace {
         session: &str,
     ) -> Result<&mut Document> {
         let doc_id = spec.doc_id.clone();
+        // **C-02（第三轮复审）**：先校验 doc_id ⇒ 否则 ../ 可穿越写任意目录
+        crate::persist::FileStore::validate_doc_id(&doc_id)?;
         if self.documents.contains_key(&doc_id) {
             return self.document_mut(&doc_id);
         }
