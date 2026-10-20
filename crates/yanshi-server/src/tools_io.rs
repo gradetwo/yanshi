@@ -1154,13 +1154,31 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                         continue;
                     }
                     flush_pending!();
-                    let fill = svgx::srgb_hex([color[0], color[1], color[2]]);
+                    // **`flatten_opacity` 也覆盖**形状** ✓（第 1411 轮）
+                    //   **⇒ 为什么需要** ✗：第 1410 轮修好 `fill_region` 的 `opacity` 之后，
+                    //     形状**真的**会带 `fill-opacity` 了 ⇒ 于是「引擎线性合成 vs SVG sRGB 混合」
+                    //     这个色差**也出现在形状上** ⇒ 而压平此前只作用于**笔触路径** ⇒ 不一致 ✗
+                    //   **⇒ 修法**：同一个压平逻辑（线性空间混到背景 ⇒ emit 不透明色）✓
+                    let shape_alpha = f64::from(color[3]);
+                    let (fill, emit_opacity) = if flatten_opacity && shape_alpha < 0.9995 {
+                        let a = shape_alpha.clamp(0.0, 1.0) as f32;
+                        let mixed = [
+                            color[0] * a + background_linear[0] * (1.0 - a),
+                            color[1] * a + background_linear[1] * (1.0 - a),
+                            color[2] * a + background_linear[2] * (1.0 - a),
+                        ];
+                        (svgx::srgb_hex(mixed), None)
+                    } else {
+                        (
+                            svgx::srgb_hex([color[0], color[1], color[2]]),
+                            Some(shape_alpha),
+                        )
+                    };
                     let mut attrs = format!(" fill=\"{fill}\"");
-                    if color[3] < 0.9995 {
-                        attrs.push_str(&format!(
-                            " fill-opacity=\"{}\"",
-                            svgx::fmt_num(f64::from(color[3]))
-                        ));
+                    if let Some(op) = emit_opacity {
+                        if op < 0.9995 {
+                            attrs.push_str(&format!(" fill-opacity=\"{}\"", svgx::fmt_num(op)));
+                        }
                     }
                     if stroke_width > 0.0 {
                         if let Some(sc) = stroke_color {
