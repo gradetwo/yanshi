@@ -723,6 +723,27 @@ impl Workspace {
     /// ⇒ 它们引用的 blob 会被判成"无人引用"的孤儿 ✗ ⇒ 一旦带 `confirm` 跑 ✓ **活数据就没了** ✗✗。
     /// 所以这里先按磁盘上的文档清单逐份打开 ✓，**再**做分级 ✓；
     /// 并把"考虑了几份文档"一并报出来 ✓（分类是否可信，看一眼就知道 ✓）。
+    /// **某个 blob 能不能解码**（第 1236 轮；`import_image` 用它给调用方一个**即时信号**）
+    ///
+    /// **为什么需要** ✗：外部用户 5 次失败，而**唯一能看见原因的地方**是
+    /// `export_png` 的 `render_warnings`（「位图补丁缺少 blob ⇒ 这一块没有画」）
+    /// ⇒ 而调用方通常只看 `import_image` 的返回 ⇒ **把「原子提交成功」误读成「位图导入成功」** ✗
+    ///
+    /// **为什么现在敢用它**：第 1235 轮的探针（`blob_codec.rs` 的 `probe_bare_png`）
+    /// **直接对 `RenderCodec::decode` 写了单测** ⇒ 结论：
+    ///   裸 PNG（首字节 0x89）⇒ `None`；包头（`\x00\x00` + PNG）⇒ `Some(原 PNG)` ✓
+    /// ⇒ 所以 `get(...).is_ok()` **就是**「能不能解码」的准确判据 ✓
+    /// （第 1234 轮我说它「反了」是**我的测试脚本错**，不是实现错）
+    pub fn blob_decodable(&self, hash: &str) -> bool {
+        let Ok(parsed) = hash.parse::<yanshi_core::BlobHash>() else {
+            return false;
+        };
+        match self.persist.as_ref().and_then(|p| p.blob_store().ok()) {
+            Some(store) => yanshi_core::blob::BlobStore::get(&store, &parsed).is_ok(),
+            None => false,
+        }
+    }
+
     /// **工作区根目录**（用于把 `put_blob` 的路径限制在工作区内）✓
     pub fn root_path(&self) -> Option<&std::path::Path> {
         self.persist.as_ref().map(|p| p.root())
@@ -742,12 +763,15 @@ impl Workspace {
                 ErrorContext::detail("工作区没有持久化存储 ⇒ 不能写 blob（用 --root 启动才有）"),
             )
         })?;
-        // **★ 必须过 `RenderCodec::encode`** ✓（第 1228 轮实测：`put` 本身**不编码**）
-        //   ⇒ 否则存进去的是**裸字节** ⇒ 而 `get` 会 `codec.decode` ⇒ 读到裸 PNG 的 `0x89`
-        //     而不是 `0x00` 头 ⇒ 返回 `None` ⇒ 「blob 无法按当前存储编码解出」✗
-        //   ⇒ 这正是外部（apple2011）手写裸 PNG 失败的原因，也是本工具存在的意义 ✓
-        let stored = crate::blob_codec::encode_for_storage(bytes);
-        Ok(persist.blob_store()?.put(&stored)?.to_string())
+        // **★ 不要在这里 encode**（第 1236 轮纠正第 1228 轮的错）
+        //   **第 1228 轮我写的**：`let stored = encode_for_storage(bytes); put(&stored)`
+        //     理由是我当时读码认为「`put` 本身不编码」✗ —— **那是错的** ✗
+        //   **实测（第 1236 轮）**：`put_blob` 之后 `import_image` 报
+        //     「位图补丁 PNG 解码失败」⇒ 因为 `put_inner` **已经 encode 过一次**
+        //     ⇒ 而我又 encode 一次 ⇒ 落盘是 `[0x00][0x00][0x00][0x00] + png`
+        //     ⇒ `decode` 只剥一层 ⇒ 得到 `[0x00][0x00] + png` ⇒ **不是 PNG** ⇒ 解码失败 ✗
+        //   ⇒ 所以这里**直接** `put(bytes)`：`put_inner` 会做唯一的一次 encode ✓
+        Ok(persist.blob_store()?.put(bytes)?.to_string())
     }
 
     /// **统计 blob 的三级生命周期** ✓（设计 §6.3 ✓，只读 ✓）。

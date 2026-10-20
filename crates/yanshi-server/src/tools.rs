@@ -6912,9 +6912,33 @@ fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         }
     }
 
+    // **★ 把「blob 能不能解码」提前报出来**（第 1236 轮）
+    //   **为什么** ✗：外部用户 5 次失败，而唯一能看见原因的地方是
+    //     `export_png` 的 `render_warnings`（「位图补丁缺少 blob ⇒ 这一块没有画」）
+    //     ⇒ 而调用方只看 `import_image` 的返回 ⇒ 把「原子提交成功」误读成「位图导入成功」✗
+    //   **语义**：`ok` 不变（导入本身成功）；`blob_decodable=false` 是**能力信号**
+    let hash_for_check = payload
+        .get("bitmap")
+        .and_then(|b| b.get("blob_hash"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let decodable = ctx.workspace.blob_decodable(&hash_for_check);
     let result = ctx.commit(AtomKind::ImportImage, payload)?;
     let bbox = region_of(&result).or(Some(region));
-    finish_mutation(ctx, &result, bbox)
+    let mut out = finish_mutation(ctx, &result, bbox)?;
+    if let Some(object) = out.as_object_mut() {
+        object.insert("blob_decodable".to_owned(), json!(decodable));
+        if !decodable {
+            object.insert(
+                "note".to_owned(),
+                json!(format!(
+                    "blob {hash_for_check} 解不开 ⇒ 这一块不会画出来（手写文件要包 RenderCodec 头 [0x00][TAG]，或用 put_blob）"
+                )),
+            );
+        }
+    }
+    Ok(out)
 }
 
 /// 校验 `data.points` 非空（空点列会提交一个无意义的原子 —— 审计发现的静默接受）。

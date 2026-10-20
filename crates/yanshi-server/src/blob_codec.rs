@@ -192,15 +192,6 @@ mod legacy_compat_tests {
     }
 }
 
-/// **把原始字节编码成"落盘格式"** ✓（第 1228 轮；`put_blob` 用）。
-///
-/// **为什么需要**：`FsBlobStore::put` **不编码**（实测：75 字节的 PNG 原样落盘 ⇒
-/// `decode` 读到 `0x89` 而不是 `0x00` ⇒ 返回 `None` ⇒ 「无法按当前存储编码解出」✗）。
-/// 而 `BlobCodec` trait 在 core 里是**私有**的 ⇒ 所以 server 侧需要这个薄封装。
-pub fn encode_for_storage(bytes: &[u8]) -> Vec<u8> {
-    BlobCodec::encode(&RenderCodec, bytes)
-}
-
 #[cfg(test)]
 mod probe_bare_png {
     //! **探针**（第 1235 轮）：`RenderCodec::decode` 对**裸 PNG**（没有 0x00 头）到底返回什么？

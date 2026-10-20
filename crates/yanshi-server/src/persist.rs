@@ -106,8 +106,22 @@ impl FileStore {
     }
 
     /// CAS（`<root>/blobs`）。
+    ///
+    /// **★ 必须带 `RenderCodec`** ✓（第 1236 轮查清的根因）
+    ///   **问题**：原来它只是 `FsBlobStore::open(...)` ⇒ 用**默认的 `PlainCodec`**（identity）
+    ///   ⇒ 而 `service.rs` 里**真正用于读写文档的那个 store** 是 `with_codec(RenderCodec)`
+    ///   ⇒ **同一份 blob 数据被两个 store 用不同的 codec 解释** ✗
+    ///     · `PlainCodec::decode` 恒返回 `Some(bytes)` ⇒ **裸 PNG 也「能解码」**
+    ///     · `RenderCodec::decode` 认 `[0x00][TAG]` 头 ⇒ **裸 PNG 返回 `None`**
+    ///   ⇒ ⇒ 于是**凡是走本函数的路径**（`put_blob` / `blob_decodable` / GC 统计）
+    ///        都看到「能解码」⇒ **与渲染路径相反** ✗
+    ///   ⇒ 这正是我 1202／1234／1235 三轮互相矛盾的**真正原因**（三个不同的观察点，
+    ///     而它们背后是**两个不同的 store 实例**）
+    ///
+    ///   **修法**：本函数也带 `RenderCodec` ⇒ 全仓只有**一种** blob 解释 ✓
     pub fn blob_store(&self) -> Result<FsBlobStore> {
-        FsBlobStore::open(self.root.join("blobs"))
+        Ok(FsBlobStore::open(self.root.join("blobs"))?
+            .with_codec(std::sync::Arc::new(crate::blob_codec::RenderCodec)))
     }
 
     /// **校验 `doc_id` 是否可以安全当目录名** ✓（2026-10-20 第三轮复审 **C-02**）。
