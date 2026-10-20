@@ -140,6 +140,23 @@ const main = async () => {
     bad.push("③ 拼错的字段名（opaqe）被静默接受了 ⇒ 用户会以为参数生效了（应当报错并给候选）");
   }
 
+  // ④ **`brush_params` 里拼错时，必须给出**相近候选****（第 1358 轮补；台账「待核」那一条）
+  //   **⇒ 为什么单列一条** ✗：③ 只验了「顶层 opaqe 被拒」✗ ——
+  //     而**顶层被拒只是因为**它不是工具参数** ⇒ 与「brush_params 的规范名校验」**是两条路** ✗
+  //   **⇒ 实测**：`brush_params:{"opaqe":0.15}` ⇒
+  //     `brush_params 里没有「opaqe」这个规范名 ⇒ 相近的有：opaque、opaque_multiply、opaque_linearize` ✓
+  //   ⇒ 所以要断：**拒绝 ＋ 给出相近候选**（只拒不给人猜 ⇒ 仍要靠文档 ✗）
+  const bpT = await run("bptypo", { opaqe: 0.15 });
+  const bp = bpT.replied || {};
+  const bpDetail = String((bp.context || {}).detail || bp.detail || "");
+  if (bp.ok !== false) {
+    console.log(`  ④ brush_params 拼错 ⇒ ok=${bp.ok}（**被接受了** ✗）`);
+  } else if (/相近的有|你是不是要找/.test(bpDetail) && /opaque/.test(bpDetail)) {
+    console.log(`  ④ brush_params 拼错 ⇒ 拒绝并给出候选 ✓（${bpDetail.slice(0, 60)}…）`);
+  } else {
+    bad.push(`④ brush_params 拼错时**必须给出相近候选** ⇒ 实测「${bpDetail.slice(0, 80)}」`);
+  }
+
   if (bad.length) {
     console.error(`❌ ${bad.length} 项没成立：${bad.join("｜")}`);
     process.exit(1);
