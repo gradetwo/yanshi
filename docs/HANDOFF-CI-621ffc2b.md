@@ -1316,3 +1316,60 @@ POST /api/tools/medium_stroke {..., "color_mixing":"linear"} ⇒ ok=true
 **⇒ 我原以为「红底 + 50% 蓝」会混合 ⇒ 实测 `[25,25,204]` = **纯蓝** ⇒ 因为 `opacity` 是**alpha 合成（覆盖）**，不是颜色混合 ✗**
 
 **⇒ ⇒ 所以「测混合」必须用 `medium_stroke` / `brush_stroke`（它们有 `color_mixing`），**不能**用 `fill_region`。**
+
+## ★ Phase 1 的**决定性定位**：改动点是 `stroke.rs:1126`（第 1296 轮）
+
+### 管线的真实形状（三层，全部查证）
+
+| 层 | 在哪个空间 | 证据 |
+|---|---|---|
+| **hokusai 算颜色** | **sRGB** | `stroke.rs:1126`：`let base = hsv_to_rgb(Hsv { h, s, v })` ⇒ 标准 HSV→RGB，**无 gamma** |
+| **hokusai 混合** | **sRGB**（用 linear 算术）| `stroke.rs:1154-1156`：`(smudge_amt * state.smudge_ra + col_factor * base.r) / eraser_target_alpha` ⇒ **加权和 + 除法 = 线性运算**，而操作数是 **sRGB** ✗ |
+| **渲染 buffer** | **linear premultiplied** | `buffer.rs:530-531` `srgb_encode_table()` + `linear_premul_to_u8x4_with` ⇒ 导出时 linear→sRGB |
+
+**⇒ ⇒ 所以矛盾在**中间那一层**：**hokusai 对 sRGB 值做线性运算** ⇒ 那正是 Phase 1 要修的。**
+
+### 为什么这不是「已经对了」
+
+**⇒ 实验 ① 显示**往返无损**（128 in ⇒ 128 out）⇒ 那说明**单色路径**对。**
+
+**⇒ 而实验 ③ 显示往返无损**不能**证明混合对 ⇒ 因为**混合只在有第二个颜色或涂抹时才发生**。**
+
+**⇒ ⇒ 而 `stroke.rs:1154` 的公式**是线性运算** ⇒ 在 sRGB 输入上做 ⇒ **结果偏暗**。**
+
+### 改动点（最小集）
+
+**⇒ 在 `stroke.rs:1126` 之后把 `base` 转 linear：**
+```rust
+let base = hsv_to_rgb(Hsv { h: base_h, s: base_s, v: base_v });
+// **★ Phase 1：hokusai 的混合是**线性算术** ⇒ 所以输入必须在 linear 空间** ✓
+let base = crate::color::RgbaF32 {
+    r: crate::color::srgb_to_linear(base.r),
+    g: crate::color::srgb_to_linear(base.g),
+    b: crate::color::srgb_to_linear(base.b),
+    a: base.a,
+};
+```
+
+**⇒ 而**关键问题**：`Dab.color` 随后会进 `draw_dab_default` ⇒ 而 buffer 是 **linear** ⇒
+**若 `draw_dab_default` 不做转换，那么 linear 的 `Dab.color` 直接进 linear buffer ⇒ 正确** ✓
+
+**⇒ ⇒ 所以**最小改动只需一行转换**（`base` 之后），不需要先改 `Dab` 或 `draw_dab`。**
+
+### ★ 基线数字（判据的对照，第 1296 轮实测）
+
+**⇒ `medium_stroke`（oil，`size=20`，`#cc1919` → `#1919cc`，`color_mixing=rgb`）⇒ 导出 ⇒ 中段像素：**
+
+```
+[143, 93, 119]
+```
+
+**⇒ 修复后的期望值**（linear 混合）：**中段应更亮**（红/蓝分量升高）⇒ 而**具体数值要改后实测**（oil 的湿性混色使它不是纯渐变，所以不能用一个理论值断言）。**
+
+**⇒ ⇒ 所以判据的形状是**改前/改后对比**：`linear 中段的 R 分量 > rgb 中段的 R 分量`（相对关系，跨机器稳定 ✓）。**
+
+### ⚠ 风险（必须写清）
+
+**⇒ 这会改变**所有笔触颜色**（`base` 是全笔触的根）⇒ 影响面很大 ⇒ 而用户已拍板「存量 atoms 接受重放颜色变化」 ✓
+
+**⇒ ⇒ 所以：**改之前先跑一遍现有判据拿基线**（`criteria-for-changes.sh` 会对 `tools_brush.rs` 给出 23 个）⇒ 改后同样的 23 个再跑 ⇒ **只允许「颜色变亮」这一个方向的差异**，不允许其它变化。**
