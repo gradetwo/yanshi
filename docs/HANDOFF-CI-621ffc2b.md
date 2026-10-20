@@ -744,7 +744,7 @@ grep -rn "175\b" docs/guide.md docs/guide.zh-CN.md docs/tools.md
 |---|---|---|
 | **①** | `parse_raster_patch` 只从 `data["region"]` 或 `data["width"]`/`height` 取尺寸 | `object.rs:634-650` 读的 |
 | **②** | `object_data` **不补**这些键（只是 `payload.get("data")` 或 `payload.clone()`）| `fold.rs:1369` |
-| **③** | `import_image` 现在只写 `region`（我删了派生的 `width`/`height`，`872e7268`）| 净荷唯一一行 `"region": {...}` |
+| **③** | `import_image` 现在只写 `region`（我删了派生的 `width`/`height`；查它用 git log --oneline --grep="只留 region"）| 净荷唯一一行 `"region": {...}` |
 | **④** | **但我按行号精确删掉那行 + 重编 + 跑判据 ⇒ 判据仍然绿**（退出码 0，`warnings: []`）| 实测三次 |
 
 **⇒ ④ 与 ①②③ 矛盾。所以有一个我**没读到**的路径在补尺寸。**
