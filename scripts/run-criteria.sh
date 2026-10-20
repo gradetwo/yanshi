@@ -117,6 +117,7 @@ except Exception:
 }
 
 pass=0; fail=0; expected_red=0; skipped=0
+KNOWN_RED_HIT=""
 FAIL_SUMMARY=""      # **末尾汇总** ✓：GitHub 的 --log-failed 只给"步骤日志尾部" ✗
 # **分片** ✓（`SHARD`/`SHARDS` 由 CI 的矩阵传入 ✓）：按**文件名排序后取模** ✓
 # ⇒ 分片是**确定性**的 ✓（同一份代码每次落进同一片 ✓），也**不重不漏** ✓。
@@ -434,6 +435,11 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs sc
     # **`px` 探查行也要抽** ✓（第 549 轮 ✓）：它不以 ✗ 开头 ✗ ⇒ 头尾窗口抓不到 ✓
     grep -F "px 请求" "$ROOT_DIR/out.txt" | head -12 | sed 's/^/     px│/'
     expected_red=$((expected_red+1))
+    # **★ 记下名字** ✓（第 1332 轮）：末了要与名单比 ⇒ 列出「**名单里但没失败**」的
+    #   **⇒ 为什么需要** ✗：名单 32 条而 CI 实测只有 20 条真失败 ⇒ **12 条是陈旧的** ✗
+    #   ⇒ 而**陈旧的会藏住将来的真红**（那条判据若回归 ⇒ CI 仍把它当「已知红」不阻塞）✗
+    #   ⇒ 所以每次打印「未失败」的候选 ⇒ **名单可审计** ✓
+    KNOWN_RED_HIT="${KNOWN_RED_HIT} ${name}"
   else
     # **计数必须独立成行** ✓（第 412 轮 ✓）：原先写成 `tail -6 … # 注释 ; fail=$((fail+1))` ✗
     # ⇒ **`#` 之后全被当注释** ✓ ⇒ 那行**永不执行** ✗ ⇒ 汇总恒写"意外失败 0" ✗
@@ -484,4 +490,24 @@ if [ -n "$FAIL_SUMMARY" ]; then
   printf '%s' "$FAIL_SUMMARY"
 fi
 echo "  —— 通过 ${pass}｜意外失败 ${fail}｜已知红 ${expected_red}｜跳过 $skipped"
+
+# **★ 名单里**未失败**的条目 ⇒ 可能已修好、该从名单移除** ✓（第 1332 轮）
+#   **⇒ 为什么** ✗：`criteria-known-red.txt` 有 32 条，而 CI 实测只有 20 条真失败
+#     ⇒ **12 条陈旧** ⇒ 而陈旧的会**藏住将来的真红**（判据回归 ⇒ 仍被当「已知红」不阻塞）✗
+#   ⇒ 所以每次打印候选 ⇒ 由人判断「真已修（移除）」还是「环境红（保留）」✓
+#   **⇒ 为什么只报本片**：判据是**分片**跑的 ⇒ 每片只知道自己跑过哪些 ⇒ 各片各报 ✓
+KR_FILE="$(cd "$(dirname "$0")" && pwd)/criteria-known-red.txt"
+if [ -f "$KR_FILE" ]; then
+  STALE=""
+  for kr in $(grep -oE "^[a-z][a-z0-9._-]+\.mjs" "$KR_FILE"); do
+    case " ${KNOWN_RED_HIT} " in
+      *" ${kr} "*) : ;;
+      *) STALE="${STALE} ${kr}" ;;
+    esac
+  done
+  if [ -n "${STALE}" ]; then
+    echo "  ○ 名单里有、但**本片没失败**（可能已修好 ⇒ 考虑移除；环境红则保留）："
+    for kr in ${STALE}; do echo "      ○ ${kr}"; done
+  fi
+fi
 [ "$fail" = 0 ] || exit 1
