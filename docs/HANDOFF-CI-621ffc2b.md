@@ -808,3 +808,41 @@ grep -rn "175\b" docs/guide.md docs/guide.zh-CN.md docs/tools.md
    「解出的字节**是合法 PNG**」（用真正的 PNG 结构校验，如 `IHDR` 在偏移 12 处）
 3. **或者更简单**：`import_image` 直接**在写入后自己试解码一次**（它已经有 blob 访问）
    ⇒ 若失败 ⇒ 在返回里带 `blob_decodable: false` + note ⇒ 那与导出路径**同源**，不会撒谎
+
+## ⚠ 我**回退**了 Phase 2 第六刀（`smart` 族，第 1260 轮）
+
+**⇒ 切出的是 `:19157..24174` = **5018 行**、9 个 `write_smart_*` 函数 ⇒ 那一刀**切出去是成功的**。**
+
+**⇒ 但它在 `cargo clippy --all-targets` 上爆了 **68 个「找不到符号」** ⇒ 而**全部来自 `tools.rs` 里的 `#[cfg(test)]` 块**：**
+
+| 符号 | 我用 | 它在 `tools_smart.rs` |
+|---|---|---|
+| `get_texture_profile` | 14 次 | **是** |
+| `texture_target_strokes` | 9 次 | **是** |
+| `TextureXorShift` | 6 次 | **是** |
+| `GuideTable` | 5 次 | **是** |
+| `TextureProfile` 的字段 | 6 次 | **是（且字段私有）** |
+| `GuideTable::build` | 5 次 | **是（私有）** |
+
+**⇒ 我把它们逐个加 `pub(super)` ⇒ 但**第 4 步崩了**：我的 python 给 struct 里**非字段行**（`#[derive(...)]` 等）也加了 `pub(super)` ⇒ 报**
+```
+error: visibility `pub(super)` is not followed by an item
+```
+**⇒ 于是 `git checkout -- .` 回退（未提交 ⇒ 干净回退到 `ca58a503`）。**
+
+### 为什么回退而不是硬修
+
+**⇒ 因为**那不是机械搬运**了：`smart` 族与 `tools.rs` 的测试**耦合太深**（5 个符号 + 2 个私有成员 + 6 个私有字段）。**
+
+**⇒ 正确的做法是**把那些测试一起搬**（`#[cfg(test)]` 块里引用 `smart_*` 的部分），或者**先把那些 helper 提取到共享模块**。**
+
+**⇒ 而那是**一笔独立的工程**（不是「再搬一段」）⇒ 所以回退比硬凑好。**
+
+### 前五刀不受影响
+
+**⇒ `tools.rs` 仍 **29069 行**（五刀共 −1708）⇒ 而 `ca58a503` 是本轮 HEAD。**
+
+**⇒ 下一步（下一轮或更晚）：**
+1. **先 grep**：`tools.rs` 的 `#[cfg(test)]` 块里有多少处引用 `write_smart_*` / `get_texture_profile` / `texture_target_strokes` / `TextureXorShift` / `GuideTable` / `TextureProfile`
+2. **量出真实耦合面**（数字，不是「感觉」）
+3. 若耦合面小（< 20 处）⇒ 加 `pub(super)` + 搬测试；若大（> 50 处）⇒ **先提取 helper 到 `tools_shared.rs`**
