@@ -3703,7 +3703,7 @@ gh auth status 2>&1 | head -4           # API 侧是否 timeout
 
 ## ✅ **第二十八个绿 run**：文件传输三通道（第 1543 轮）
 
-**⇒ `e4fd18f4`（**path / URL / base64 三通道**，纯增量）⇒ **12 绿 / 0 红** ✓
+**⇒ **那一笔**（**path / URL / base64 三通道**，纯增量）⇒ **12 绿 / 0 红** ✓
 **⇒ ⇒ 它带来的 `data_base64` 通道**实测可用**（`put_blob` 返回 `blob_hash`/`size`/`source`）✓
 **⇒ ⇒ ⇒ 而 `server --lib` 从 123 涨到 **132**（**+9 测试**）✓
 
