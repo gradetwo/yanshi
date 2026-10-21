@@ -3600,3 +3600,15 @@ gh auth status 2>&1 | head -4           # API 侧是否 timeout
 **⇒ ⇒ 12 绿 / 0 红** ✓ ⇒ **而它守的是外部被坑的那个点**（`{brightness:0, contrast:0}` ⇒ 全黑）✓
 
 **⇒ 累计**：**二十二个完整绿的 run** ✓
+
+## ★ 严格参数检查**只影响 effect 工具**，`gradient_fill` 不受影响（第 1520 轮）
+
+**⇒ 外部提到 `gradient_fill` 的参数是 `{r,g,b,a}` 对象 ⇒ 而我刚加的**未知键拒绝**可能误伤它** ⇒ 验 ✓
+
+| 调用 | 结果 |
+|---|---|
+| `gradient_fill` + `kind:linear` + `region` + `angle:90` + `from/to`（对象）| **`ok=true`** ✓ |
+| `gradient_fill` + **`shape`**（我第一版猜的）| **`ok=false`**「不认识参数 `shape`」⇒ **这个拒是对的**（它不是参数）✓ |
+
+**⇒ ⇒ 所以**：**我的严格检查在**工具级**参数上本来就存在**（`不接受参数 X（拼写错误？）`），
+我只在**effect 的 `params`** 里补了同类检查 ⇒ **两者互不干扰** ✓
