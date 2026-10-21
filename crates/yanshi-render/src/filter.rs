@@ -2223,8 +2223,13 @@ pub const ADJUSTMENT_NAMES: [&str; 22] = [
 ];
 
 /// 内核支持的滤镜名。
-pub const FILTER_NAMES: [&str; 14] = [
+pub const FILTER_NAMES: [&str; 15] = [
     "box_blur",
+    // **`blur` 是 `box_blur` 的**别名** ✓**（第 1513 轮；外部实测发现它**到不了**）：
+    //   `FilterKind::from_name` 认 `"box_blur" | "blur"` ✓，而**这个白名单漏了 `blur`** ✗
+    //   ⇒ 于是 `blur` 会报「内核未实现该滤镜：blur」⇒ **有实现却用不了** ✓
+    //   **⇒ 这正是本文件下面注释警告过的那个坑**（「漏了就会报内核未实现」）✓
+    "blur",
     "gaussian_blur",
     "motion_blur",
     "sharpen",
@@ -2241,6 +2246,55 @@ pub const FILTER_NAMES: [&str; 14] = [
     // 漏了就会报"内核未实现该滤镜"（本轮实测踩到：`FilterKind` 加了变体还不够）。
     "relief",
 ];
+
+/// **守卫：`from_name` 认识的每个名字都必须在 `FILTER_NAMES` 里** ✓
+///
+/// **⇒ 为什么需要**（第 1513 轮）：`blur` 曾经**只在 `from_name` 里、不在白名单里** ✗
+///   ⇒ 于是它报「内核未实现该滤镜：blur」⇒ **有实现却到不了** ✓
+/// **⇒ ⇒ 而这条守卫是**双向**的**：白名单里的每个名字也必须 `from_name` 认 ✓
+/// **⇒ ⇒ ⇒ 判据断的是**两个集合相等**（结构量），不是数量 ✓
+#[cfg(test)]
+mod name_whitelist_tests {
+    use super::*;
+
+    #[test]
+    fn from_name_and_filter_names_agree() {
+        // ① 白名单里每个名字都要能被 from_name 认出来
+        for name in FILTER_NAMES {
+            assert!(
+                FilterKind::from_name(name).is_some(),
+                "白名单里的 `{name}` 在 from_name 里认不出来 ⇒ 用户会拿到「内核未实现」✗"
+            );
+        }
+        // ② from_name 认的所有别名都要在白名单里（`blur` 就是在这里被抓到的）
+        let aliases = [
+            "box_blur",
+            "blur",
+            "gaussian_blur",
+            "motion_blur",
+            "sharpen",
+            "noise",
+            "vignette",
+            "glow",
+            "clarity",
+            "dehaze",
+            "film_grain",
+            "brightness_contrast",
+            "saturation",
+            "invert",
+            "relief",
+        ];
+        for name in aliases {
+            let known = FilterKind::from_name(name).is_some();
+            let listed = FILTER_NAMES.contains(&name);
+            assert_eq!(
+                known, listed,
+                "`{name}` 的两种归属不一致：from_name 认={known}、白名单有={listed} \
+                 ⇒ 这种不一致会让用户看到「内核未实现」而实际上有实现 ✗"
+            );
+        }
+    }
+}
 
 /// 解析 `[r,g,b]` 形式的三元组，缺省为零（不改变该档）。
 fn triple(value: Option<&Value>) -> [f32; 3] {

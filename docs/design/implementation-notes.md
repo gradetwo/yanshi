@@ -988,7 +988,7 @@ patch 内先建对象再更新（合法）、更新不存在的对象（非法�
 
 ## 二之五之三、效果算子清单与文档一致性（自动校验）
 
-调整 **22 种** / 滤镜 **14 种**（本行由 `crates/yanshi-render/tests/doc_consistency.rs` 校验，
+调整 **22 种** / 滤镜 **15 种**（本行由 `crates/yanshi-render/tests/doc_consistency.rs` 校验，
 数字与 `ADJUSTMENT_NAMES`/`FILTER_NAMES` 的实际长度必须一致；每个名字也必须出现在本文档与两份 README 中）。
 
 > **为什么要自动化**：此前几轮我把「| 调整与滤镜 | N 种调整 / M 种滤镜 |」当作文档同步目标，
