@@ -3931,14 +3931,53 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             }
             json!({"kind": "polygon", "points": points, "feather": feather})
         }
+        // **★ 补上 `path`（贝塞尔/SVG 路径填充）★**（第 1558 轮；外部 `B8`）
+        //   **⇒ 他们报的缺口**：「**能填的不能裁、能裁的不能填**」✗
+        //     ⇒ `create_selection` 收 `path`（`kind` 或 `type` 都行）✓，而 `fill_region` **只收三种** ✗
+        //   **⇒ ⇒ 为什么这是**纯粹的人为限制****：本工具下面提交的是
+        //     `AtomKind::DrawShape` + `data.geometry` ⇒ **与 `draw_shape` 同一条几何管线** ✓
+        //     ⇒ 而 `draw_shape` **本来就收 `kind: path` + `d`** ✓ ⇒ 所以**只差这里放行** ✓
+        //   **⇒ ⇒ ⇒ 归一化也照 `draw_shape` 的规矩**：`d` ⇒ `subpaths`（用**同一份** `parse_svg_d`）✓
+        //     ⇒ `bbox` 缺省由下游 `path_control_bbox` 补（`draw_shape` 那条路已验证 ✓）
+        "path" => {
+            let fill_rule = shape
+                .get("fill_rule")
+                .and_then(Value::as_str)
+                .unwrap_or("evenodd")
+                .to_owned();
+            let subpaths = if let Some(existing) = shape.get("subpaths") {
+                existing.clone()
+            } else if let Some(d) = shape.get("d").and_then(Value::as_str) {
+                crate::tools::parse_svg_d(d).map_err(|reason| {
+                    YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "`shape.d` 解析失败：{reason} ⇒ **路径语法**照 SVG 的 M/L/C/Q/H/V/Z \
+                             （支持小写相对命令）✓"
+                        )),
+                    )
+                })?
+            } else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(
+                        "`shape.type` 是 path ⇒ **必须给 `d`（SVG 路径字符串）或 `subpaths`** ✓".to_owned(),
+                    ),
+                ));
+            };
+            json!({
+                "kind": "path",
+                "subpaths": subpaths,
+                "fill_rule": fill_rule,
+                "feather": feather,
+            })
+        }
         other => {
             return Err(YanshiError::new(
                 ErrorCode::InvalidArgument,
                 ErrorContext::detail(format!(
-                    "未知形状 {other} ⇒ **`fill_region` 的 `shape` 只接受 rect / ellipse / polygon**（**不支持路径** ✗）：\
-                     若要**用贝塞尔/路径填充**，请改用 `draw_shape`（它的 `data.geometry` 接受 **`d`**，\n\
-                     例如 {{\"kind\": \"path\", \"d\": \"M 10,10 C 40,0 60,40 90,30 Z\"}}）；\n\
-                     或者把路径当**掩膜**（`fit_background_field` / `create_mask` 的 `mask` 接受 **只给 `d`** ✓）"
+                    "未知形状 {other} ⇒ **`fill_region` 的 `shape` 接受 rect / ellipse / polygon / path** ✓\
+                     （path 给 `d` 或 `subpaths`，`fill_rule` 可选 evenodd/nonzero）"
                 )),
             ))
         }
