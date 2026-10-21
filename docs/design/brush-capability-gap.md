@@ -24,7 +24,14 @@
 | 项 | 实测 |
 |---|---|
 | **工具数** | **151 个** |
-| **滤镜/调整可达** | **14/14 ＋ 12/12 ✓**（`validate_effect` 用 `kind.supported()` ⇒ `FILTER_NAMES`／`ADJUSTMENT_NAMES` ✓） |
+| **滤镜/调整可达** | **过滤器可达性按**内核实现**算，不按注册表** ✓（第 1511 轮更正）：
+内核 `FilterKind::from_name` 认识的**滤镜名共 17 个** ——
+`blur`／`box_blur`／`brightness_contrast`／`clarity`／`dehaze`／`emboss`／`film_grain`／
+`gaussian_blur`／`glow`／`impasto`／`invert`／`motion_blur`／`noise`／`relief`／`saturation`／`sharpen`／`vignette` ✓
+**⇒ 而 `levels`／`curves` 内核未实现** ✗（实测 `add_filter` 报「内核未实现该滤镜」）|
+| ⚠ **这一行原来写「14/14」** | **错在按注册表算** ✗：注册表声明了 `levels`／`curves`，**内核没实现** ⇒
+**「声明了」≠「能用」**（与本仓「静默降级」同一族：**注册表说有，实际报错**）|
+
 | **混合模式可达** | **10/10 ✓**（`set_layer_blend` 用 `BlendMode::NAMES` ✓，注释还记着"本文件此前硬编码 7 个 ✗"已修 ✓） |
 | **修图可达** | **4/4 ✓**（`patch`／`smudge`／`heal_stamp`／`clone_stamp` ＋ `erase` ✓） |
 | **液化可达** | **3/3 ✓**（`liquify_push`／`liquify_twirl`／`liquify_pinch` ✓） |
@@ -74,7 +81,7 @@
 
 ## 六、本轮已核实的"没有缺口"的项（**避免重复劳动 ✓**）
 
-**滤镜 14/14 ✓｜调整 12/12 ✓｜混合模式 10/10 ✓｜修图 4/4 ✓｜液化 3/3 ✓｜形状 3/3 ✓**
+**滤镜：见第 27 行的更正**（内核 **17** 个名字；`levels`/`curves` 未实现 ✗）｜调整 12/12 ✓｜混合模式 10/10 ✓｜修图 4/4 ✓｜液化 3/3 ✓｜形状 3/3 ✓
 ⇒ **∴ 真正该动的是**笔刷动力学（59 项）＋ 时间基间距**✗**
 
 ## 七、P0 落地与证据（第 1000+ 轮 ✓）
