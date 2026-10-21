@@ -507,6 +507,10 @@ impl Document {
         match base {
             // **没有快照 ⇒ 与今天的老 `open` 完全一样** ✓
             None => {
+                // **这里也要修复重复 `seq`** ✓（第 1507 轮；外部实测：只修 `open` ⇒ **他们的文档仍打不开** ✗）
+                //   **⇒ 为什么漏了**：`open_from_snapshot` 有**两个分支**，而我只改了 `open` ⇒
+                //     **快照路径与无快照路径都不经过 `open`** ⇒ 外部那份文档正好走这里 ✗
+                let tail = repair_duplicate_seqs(tail);
                 document.log = AtomLog::with_atoms(tail)?;
                 document.rebuild()?;
             }
@@ -517,6 +521,26 @@ impl Document {
                 let folded = yanshi_core::fold_atoms(state, &tail);
                 // **用 `with_base_seq`** ✓：空尾巴时也要让 `next_seq` 从 `seq_at + 1` 起 ✓
                 //   ⇒ 否则下一次提交会**重用 seq** ✗（`§49 之补十四` ✓）。
+                // **同样要修复** ✓（第 1507 轮）：`with_base_seq` 只查**尾巴内部**重复 ✗
+                //   ⇒ **尾巴与快照的 `seq` 范围**是否重叠，它**不查** ⇒ 修在装日志之前 ✓
+                let tail = repair_duplicate_seqs(tail);
+                // **额外守一条**：尾巴里有 `seq <= base` 的原子 ⇒ 那是**与快照范围重叠** ✗
+                //   ⇒ 重编号到 `base+1` 之后（**并告知**），否则 `by_seq` 会与快照的历史对不上 ✓
+                let tail: Vec<Atom> = tail
+                    .into_iter()
+                    .map(|mut a| {
+                        if a.seq <= _seq_at {
+                            let old = a.seq;
+                            a.seq = _seq_at + 1;
+                            eprintln!(
+                                "⚠ 文档修复：原子 {} 的 seq {old} 落在快照范围（≤{_seq_at}）内 ⇒ 已重编号为 {}",
+                                a.id, a.seq
+                            );
+                        }
+                        a
+                    })
+                    .collect();
+                let tail = repair_duplicate_seqs(tail);
                 document.log = AtomLog::with_base_seq(_seq_at, tail)?;
                 document.state = folded.state;
                 document.render_watermark = document.state.head_seq;
