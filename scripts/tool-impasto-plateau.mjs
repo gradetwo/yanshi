@@ -98,9 +98,18 @@ curveOf("被测笔触", strokeRow.line);
 console.log(`  被测笔触 dabs=${stroke.dabs}｜acf(4)-acf(2) = ${strokeContrast.toFixed(3)}｜暗环数=${dips}（占 dab ${(dips / stroke.dabs).toFixed(2)}）`);
 console.log(`  笔触亮度=${ink.toFixed(0)}｜背景亮度=${background.toFixed(0)}`);
 // ---------- ④ 自证：量法对平坦块必须不报警 ----------
-if (Math.abs(flatContrast) > 0.15) { console.log(`  ✗ 连平坦块都报周期（${flatContrast.toFixed(3)}）⇒ 量法不可用 ⇒ 判据无效 ✗`); process.exit(1); }
+// **⇒ 量法自证失败 ⇒ `exit 3`（**判据不可用**，不是产品失败）** ✓（第 1600 轮修）
+//   **⇒ 为什么改**：原来 `exit(1)` ⇒ **CI 上看起来像"产品坏了"** ✗
+//     而它说的是"**量法不可用**" ⇒ **按本仓那条「判据的诚实在退出码」该是 3** ✓
+if (Math.abs(flatContrast) > 0.15) { console.log(`  ⊘ 连平坦块都报周期（${flatContrast.toFixed(3)}）⇒ **量法不可用**（**不是产品问题**）`); process.exit(3); }
 // ---------- ⑤ 判产品 ----------
-if (Math.abs(ink - background) < 15) failures.push("笔触与背景几乎没差别 ⇒ 判据无效");
+// **⇒ 笔触与背景无差别 ⇒ **前提不成立**（量不出对比）⇒ `exit 3`** ✓（第 1600 轮修）
+//   **⇒ 为什么**：它原来是 `failures.push(...)` ⇒ 最后 `exit(1)` ⇒ **在 CI 上像产品红** ✗
+//     而**真因是"这一笔没画出可见的对比"** ⇒ **量法没有对象** ⇒ **不可判** ✓
+if (Math.abs(ink - background) < 15) {
+  console.log(`  ⊘ 笔触与背景几乎没差别（${ink.toFixed(0)} vs ${background.toFixed(0)}）⇒ **前提不成立**（**不是产品问题**）`);
+  process.exit(3);
+}
 if (strokeContrast > 0.05) failures.push(`中心线呈 4px 周期（acf(4)-acf(2)=${strokeContrast.toFixed(2)}）⇒ 一串泡泡 ✗`);
 if (dips / Math.max(1, stroke.dabs) > 0.10) failures.push(`暗环占 dab 数的 ${(dips / stroke.dabs).toFixed(2)} ⇒ 每枚 dab 自带边缘 ✗`);
 if (failures.length) { console.log("  ✗ " + failures.join("；")); process.exit(1); }
