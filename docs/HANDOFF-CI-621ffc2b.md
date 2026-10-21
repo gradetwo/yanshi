@@ -3591,3 +3591,12 @@ gh auth status 2>&1 | head -4           # API 侧是否 timeout
 **与本次改动无关** ✓（我上一轮已经排除过 `import_image`，这条是另一条）
 
 **⇒ 所以**：**这个行为变更**安全** ✓** —— **没有任何示例在用错键** ✓
+
+## ✅ **第二十二个绿 run**：恒等约定 + 新判据（第 1518 轮）
+
+**⇒ 那一笔做了两件事**：
+1. **spec 写明 `brightness_contrast` 的**两套约定****（`brightness` 恒等 0、`contrast` 恒等 1）✓
+2. **新判据 `tool-filter-adjust-identity`**（4 条，变异让**两条都红**）✓
+**⇒ ⇒ 12 绿 / 0 红** ✓ ⇒ **而它守的是外部被坑的那个点**（`{brightness:0, contrast:0}` ⇒ 全黑）✓
+
+**⇒ 累计**：**二十二个完整绿的 run** ✓
