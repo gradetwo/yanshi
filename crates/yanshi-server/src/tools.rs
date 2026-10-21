@@ -10051,6 +10051,13 @@ fn write_apply_adjustments(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
         if let Some(label) = &item.label {
             data["name"] = json!(label);
         }
+        // **提交期失败要**说清"已落了几项"**** ✓（第 1546 轮；转交包的"非真事务"拍板项）
+        //   **⇒ 为什么不是真事务**：原子是**逐条 append** 的，日志模型本身没有多原子事务 ✓
+        //   **⇒ ⇒ 但**参数错不会留部分**：`prepared` 已经**全校验过** ⇒ 走到这里的项都合法 ✓
+        //   **⇒ ⇒ ⇒ 只有**提交期**失败（并发冲突／锁）才留部分 ⇒ **这时必须告诉调用方落了几项** ✓
+        //     （**否则他会以为"全没做"，而实际落了 3 项** ⇒ **正是本仓"静默降级"那条内核**）
+        let committed = object_ids.len();
+        let atom_id = item.object_id.clone();
         let result = ctx.commit(
             AtomKind::CreateObject,
             json!({
@@ -10060,7 +10067,20 @@ fn write_apply_adjustments(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
                 "z_index": z_index,
                 "data": data,
             }),
-        )?;
+        )
+        .map_err(|mut error| {
+            if committed == 0 {
+                return error;
+            }
+            error.context = Box::new(yanshi_core::ErrorContext {
+                detail: Some(format!(
+                    "已提交 {committed} 项后，第 {} 项（{atom_id}）失败 ⇒ **前面的项已经落库**（日志逐条 append，没有多原子事务）",
+                    committed + 1
+                )),
+                ..*error.context
+            });
+            error
+        })?;
         object_ids.push(item.object_id.clone());
         last_result = Some(result);
     }

@@ -14036,3 +14036,41 @@ bash scripts/run-criteria-local.sh scripts/tool-brush-parity-jitter.mjs
 
 **⇒ 待查**（下一轮）：**当批次中某一项失败时，前面已提交的原子会留下** ⇒ **要量出"部分成功"的具体形态** ⇒
 **⇒ 而这需要看它的实现**（是"逐项提交"还是"全部校验后一次提交"）✓
+
+## 三百四十一、外部 `B1`：`clip_to_selection` 不认 **path 选区**（第 1547 轮，**修法未成功，已撤销**）
+
+**⇒ 外部报告（`B1`，致命）**：用 `create_selection({"kind":"path","d":…})` 建的选区，
+`brush_stroke(clip_to_selection="A")` 报「**找不到可裁剪的选区 A ⇒ 现有：（一个都没有）**」
+而 `list_selections` 明明列得出来 ✗ —— **文档侧有、裁剪侧"一个都没有"** ✓
+
+**⇒ 我的实测对照（同机、同笔、同路径，只有选区形状不同）**：
+
+| 选区 | 结果 |
+|---|---|
+| **`polygon`** | **`ok=true`**、`painted=5438` ✓ |
+| **`path`** | **`ok=false`**，报「一个都没有」✗ |
+
+**⇒ ⇒ 所以 `B1` **属实**，且与 `list_selections` 的矛盾也属实** ✓
+
+### 我试的修法（**已撤销**）
+
+**⇒ 按他们的根因**（`tools_brush.rs` 的 `filter_map` 四条 bbox 推导都没有 `d`）⇒ 我加了**第 5 条**：
+`subpaths`（`create_selection` 已把 `d` 归一成它）⇒ 用 `parse_path_subpaths` + `path_control_bbox` 算 bbox ✓
+
+**⇒ 结果**：**报错消失了**（`ok=true`、`painted=5438`）**但**实际墨 = 0** ✗
+```
+dirty_bbox = [6, 136, 288, 28]（仍是全宽）
+analyze_region → avg_brightness = 1.0（全白 ⇒ 一个像素都没落）
+```
+
+**⇒ ⇒ ⇒ 所以**：**选区被找到了，但**裁剪的覆盖度是 0**** ⇒ 真正的堵点在**覆盖度计算**，
+不在 bbox 推导 ⇒ **我只修了"找得到"这一半** ✗
+
+### 为什么撤销（**关键取舍**）
+
+**⇒ 改动前**：**响亮的报错**（`ok=false`）⇒ 调用方**立刻知道不行** ✓
+**⇒ ⇒ 改动后**：**`ok=true` 但一个像素没落** ⇒ **静默失败** ✗✗
+**⇒ ⇒ ⇒ 按本仓头号规则**（**"静默降级是唯一的对手"**）⇒ **宁可保留响亮的报错** ⇒ **撤销** ✓
+
+**⇒ 下一步（未做）**：查 `selection_coverage`／`SelectionShape::Path` 的**覆盖度**为什么是 0
+（`selection.rs:119` 说支持 `path` + `subpaths`，`0` 说明**那条路没被走到，或走了算错**）✓
