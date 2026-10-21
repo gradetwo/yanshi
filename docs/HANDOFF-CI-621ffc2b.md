@@ -3442,3 +3442,27 @@ grep -rhoE '"[^"]*(不支持的|支持的取值|可用参数|必须是以下|可
 
 **⇒ 判据（自查）**：看到红先问「**这条判据在我的 `criteria-known-red.txt` 里吗**」
 ⇒ 在里面 ⇒ **看是不是提交早于登记** ✓；不在 ⇒ **才是真问题** ✓
+
+## ★ 亲自验了 known-red 的**匹配机制**（第 1499 轮）
+
+**⇒ 运行器里就是一行**（`run-criteria.sh:17`）：
+```bash
+is_known_red() { [ -f "$KNOWN" ] && grep -qE "^$1[[:space:]]" "$KNOWN"; }
+```
+**⇒ ⇒ 即**行首 = 判据名，紧跟一个空白** 才算匹配** ✓
+
+**⇒ 实测两条**：
+| 判据 | 匹配？ | 期望 |
+|---|---|---|
+| `tool-single-point-rejected.mjs` | **✓ 匹配** | **应容忍**（环境红）✓ |
+| `tool-combine-shapes-modes.mjs` | **✗ 不匹配** | **应不受影响**（**它已修好**，0 行匹配）✓ |
+
+**⇒ ⇒ 所以登记**格式正确、范围精确** ⇒ `tool-combine-shapes-modes` **不会被误容忍** ✓
+（这点重要：**若两者的行首写混**，我修好的那条就会被**静默放过** ✗）
+
+**⇒ 复算**：
+```bash
+for n in tool-single-point-rejected.mjs tool-combine-shapes-modes.mjs; do
+  grep -qE "^$n[[:space:]]" scripts/criteria-known-red.txt && echo "$n 在名单里" || echo "$n 不在"
+done
+```
