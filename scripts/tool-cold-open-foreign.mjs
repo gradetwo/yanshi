@@ -14,11 +14,50 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 
-const root = process.argv[2];
-const minSeq = Number(process.argv[3] || 1);
-if (!root || !existsSync(root)) {
-  console.error("❌ 判不了：没给（或不存在的）外部工程目录 ⇒ 退出码 3");
-  process.exit(3);
+// **★ 自备 fixture** ✓（第 1433 轮）：本判据原本**只能**靠人手给一个"外部工程目录" ⇒
+//   `run-criteria-local.sh` 传的是 **URL** ⇒ `existsSync(url)` 为假 ⇒ **长期退出码 3**
+//   （`❌ 判不了：没给（或不存在的）外部工程目录`）⇒ **等于从没跑过** ✗
+// **⇒ ⇒ 现在**：给 URL／没给**都能跑** —— 自己造一个 workspace：起服务 ⇒ 建文档 + 笔画 ⇒ **杀掉**
+//   ⇒ 于是 `docs/<id>/atoms.jsonl` 落在盘上 ⇒ **再起一个全新进程冷开它** ✓
+//   ⇒ 这与"别人给的工程"**同一个考验**（盘上有、本进程没开过）✓
+let root = process.argv[2];
+let minSeq = 1;
+const givenIsDir = root && existsSync(root) && !/^https?:\/\//.test(root);
+if (givenIsDir) {
+  minSeq = Number(process.argv[3] || 1);
+} else {
+  const { mkdtempSync, mkdirSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { trackTemp } = await import("./lib/temp-dirs.mjs");
+  root = trackTemp(mkdtempSync(join(tmpdir(), "cold-foreign-")));
+  mkdirSync(join(root, "docs"), { recursive: true });
+  const bin0 = process.env.YANSHI_SERVE_BIN || "target/release/yanshi-serve";
+  const p0 = Number(process.env.YANSHI_FOREIGN_BOOT_PORT || 8839);
+  const boot = spawn(bin0, ["--bind", `127.0.0.1:${p0}`, "--root", root, "--no-wasm"], { stdio: "ignore" });
+  try {
+    let up = false;
+    for (let i = 0; i < 80; i += 1) {
+      await new Promise((r) => setTimeout(r, 250));
+      try { if ((await fetch(`http://127.0.0.1:${p0}/health`)).ok) { up = true; break; } } catch { /* 还没起来 */ }
+    }
+    if (!up) { console.error("❌ 判不了：自备 fixture 的服务起不来 ⇒ 退出码 3"); process.exit(3); }
+    const j = (p, body) => fetch(`http://127.0.0.1:${p0}${p}`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    const made = await (await j("/api/documents", { doc_id: "foreign_fixture", width: 300, height: 200 })).json();
+    if (!made.token) { console.error("❌ 判不了：造 fixture 建不出文档 ⇒ 退出码 3"); process.exit(3); }
+    const tok = made.token;
+    await j(`/api/tools/create_layer?doc=foreign_fixture&token=${tok}`, { layer_id: "L", name: "L" });
+    for (const y of [60, 100, 140]) {
+      await j(`/api/tools/brush_stroke?doc=foreign_fixture&token=${tok}`, {
+        layer_id: "L", brush: "calligraphy.myb", size: 16, opacity: 1.0, color: [0.1, 0.1, 0.1],
+        points: [[40, y, 0.9], [260, y, 0.9]], preview: false, wait_for_render: false });
+    }
+    console.log("  · 自备 fixture 已建成（3 笔）⇒ 杀掉服务，让 atoms 落盘");
+  } finally {
+    try { boot.kill("SIGKILL"); } catch { /* 已退出 */ }
+    await new Promise((r) => setTimeout(r, 800));
+  }
 }
 const docsDir = join(root, "docs");
 if (!existsSync(docsDir)) {
