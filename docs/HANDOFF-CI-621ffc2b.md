@@ -3198,3 +3198,9 @@ E=$(date +%s%N); echo "$(( (E-S)/1000000 )) 毫秒"
 ```bash
 for i in 1 2; do bash scripts/run-criteria-local.sh scripts/tool-fit-background-field.mjs >/dev/null; echo $?; done
 ```
+
+## ✅ **第九个绿 run**（第 1473 轮）
+
+**⇒ `residual_rms` 规则那笔（含 `degree` 描述改 0..3）也是 **success** ⇒ 本场**第九个完整绿的 run** ✓
+**⇒ ⇒ 它证明的是**文档与实现一致**这件事**（spec 描述进 `/api/tools`、且与 `clamp(0,3)` 相符）✓
+**⇒ ⇒ ⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=20" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'`
