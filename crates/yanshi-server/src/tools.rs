@@ -3684,7 +3684,7 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                  rect / ellipse / polygon**（**不支持路径** ✗）：\
                  若要用贝塞尔/路径填充，请改用 `draw_shape`（`data.geometry` 接受 **`d`**，例如 \
                  {\"kind\":\"path\",\"d\":\"M 10,10 C 40,0 60,40 90,30 Z\"}）；\
-                 或把路径当**掩膜**（`create_mask` / `fit_background_field` 的 `mask` 接受**只给 `d`** ✓）",
+                 或把路径当**掩膜**：`fit_background_field` 的 `mask` 接受**只给 `d`** ✓；`create_mask` 要写成 `{{\"kind\":\"path\",\"d\":…}}` 或 `{{\"type\":\"path\",\"d\":…}}`（**它不接受只给 d**）✓",
             ),
         ));
     }

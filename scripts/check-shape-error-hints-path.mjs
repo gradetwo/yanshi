@@ -41,17 +41,24 @@ const fails = [];
 const ok = (m) => console.log(`  ✓ ${m}`);
 const bad = (m) => { fails.push(m); console.log(`  ✗ ${m}`); };
 
-// ① **语义已变（第 1502 轮）**：二期补丁把 `type:"path"` **做成了正式支持** ✓
-//   ⇒ 原来这条断言「写错 type 必须报错并提示 `d`」**已被产品超越** ✗
-//   ⇒ 现在应断：**两种写法都能用**（`{"type":"path","d":…}` 与**只给 `d`**）✓
-//   **⇒ 保留的历史理由**（仍然成立）：**报错不该把人挡在门外** ⇒ 现在不需要"提示"了，
-//     因为**不需要绕过** ✓
-const withType = await call("fit_background_field", {
-  layer_id: "L", mask: { type: "path", d: "M 150,120 C 200,70 260,170 300,120 Z" } });
-if (withType?.ok === true && (withType?.filled_pixels ?? 0) > 0) {
-  ok(`① {\"type\":\"path\"} 现在**正式支持** ⇒ samples=${withType.samples}、filled=${withType.filled_pixels}`);
-} else {
-  bad(`① {\"type\":\"path\"} 应被支持 ⇒ 实测 ok=${withType?.ok}、detail=${String((withType?.context || {}).detail || "").slice(0, 90)}`);
+// ① **两种写法都必须真的对，而且**面积要对得上**（第 1503 轮；按二期整合包 README 的真值）
+//   **⇒ 我原来的断言是"写错 type 必须报错并提示 d"** ⇒ 补丁把 `type:"path"` 做成了正式支持 ⇒ 语义变 ✓
+//   **⇒ ⇒ 更严重的是我第二版的断言只断 `filled_pixels > 0`** ✗ —— README 指出：
+//     **静默 rect 恰好给 10000** ⇒ 那样的断言**抓不到"其实是矩形"** ✗（**接近安慰剂**）
+//   **⇒ ⇒ ⇒ 所以现在断**面积**：本样本（`M 150,120 C 200,70 260,170 300,120 Z`）的**解析真值 ≈ 1402**
+//     （README 实测 1402；我实测 1403；**静默矩形会变 10000**）⇒ 容差 ±8% ✓
+const AREA = 1402;
+for (const [tag, mask] of [
+  ["type:path+d", { type: "path", d: "M 150,120 C 200,70 260,170 300,120 Z" }],
+  ["只给 d", { d: "M 150,120 C 200,70 260,170 300,120 Z" }],
+]) {
+  const r = await call("fit_background_field", { layer_id: "L", mask });
+  const got = r?.filled_pixels ?? 0;
+  if (r?.ok === true && Math.abs(got - AREA) <= AREA * 0.08) {
+    ok(`① ${tag} ⇒ 面积 ${got}（解析 ${AREA}）✓ —— **不是**缺省矩形的 10000`);
+  } else {
+    bad(`① ${tag} ⇒ 面积 ${got}，应 ≈ ${AREA}（**10000 就意味着静默成了矩形**）`);
+  }
 }
 
 // ② 正解必须真的能成
@@ -67,4 +74,4 @@ if (fails.length > 0) {
   console.log(`\n  ✗ ${fails.length} 处不符（路径掩膜两种写法）`);
   process.exit(1);
 }
-console.log("\n  ✓ 两种写法都能用（`type:path` 与**只给 `d`**）");
+console.log("\n  ✓ 两种写法都能用，且面积与解析真值一致");
