@@ -1,0 +1,44 @@
+[package]
+name = "yanshi-raw"
+description = "偃师 Yanshi 的 RAW 解码与展开层（rawler 适配 + 线性展开管线，feature 门控）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+# **★ RAW 解码器：`rawler`（纯 Rust）★**（RAW 设计 v3 第 3 章选型定版）。
+#
+# **∴ 两面（按 AGENTS.md 的清单）**：
+#   ＋ **收益**：纯 Rust、无 C 依赖（与本仓 zlib-rs／jpeg-decoder 的依赖哲学一致，
+#     wasm32 同构不破）；格式覆盖 DNG/CR2/CR3/NEF/ARW/RAF/ORF/RW2（设计 R1 清单），
+#     且有机型级相机数据库（色彩矩阵／CFA／黑白电平随 RawImage 给出）——自研
+#     DNG-only 解码是重写一个解码器且厂商格式无望（设计第 3 章否决项）。
+#   － **代价**：传递依赖一批（image 格式生态：byteorder／weezl／zune 等，以
+#     Cargo.lock 为准）；**只许落在本 crate** —— `rawler` 仅经 `src/decode.rs`
+#     一个文件接触（设计 5.1：全仓只许此文件 `use rawler`），render/server 的
+#     缺省依赖树不许出现它（设计 9.2／NF5，由 `raw` feature 的 optional 依赖守住）。
+#   － **确定性**：解码产物是整数马赛克 + 有理数标定量，展开数学全部在本 crate
+#     内以 f32 + libm 实现（NF1）；rawler 内部浮点差异面在解码器验收（设计 6.4）另测。
+rawler = "0.7"
+serde.workspace = true
+serde_json.workspace = true
+libm.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+# **集成测试要经 `yanshi-render` 的挂接点调回来**（设计 9.3）：dev-dependency
+# 循环是 Rust 允许的（只出现在测试构建里，不进任何发布依赖树）。
+yanshi-render = { path = "../yanshi-render", version = "0.2.0", features = ["raw"] }
+# 自引用（集成测试用合成 DNG 夹具）：dev-only，生产依赖树不含此环。
+yanshi-raw = { path = ".", features = ["test-support"] }
+
+[features]
+# **合成 DNG 夹具 writer**（设计 6.1）：测试内以代码现写最小合法 DNG、不落
+# 二进制资产（NF3）。以子 feature 暴露给本仓与下游集成测试复用，缺省不开。
+test-support = []

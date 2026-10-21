@@ -50,6 +50,15 @@ zip = { version = "7", default-features = false, features = ["deflate-flate2-zli
 #     gzip/charset/cookies/json（都用不上），只留 `rustls` 特性收窄攻击面。
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 
+[features]
+# **★ `raw`：**委托** `yanshi-render/raw` ✗ ★**（RAW 设计 v3 第 9 章定版）：
+#   **∴ 必须**与 `yanshi-render` **同开同关** ✗ —— **∴ 所以**写成**委托** ✗
+#     ⇒ **∴ 开**本 feature **即**同时开**渲染层那份** ✓ ⇒ **∴ 不存在**「**只开一侧**」的**中间态** ✗
+#       （**第 448 轮 `gpu` 的教训**：**http 开了、render 没开** ⇒ **∴ 渲染路**被 `cfg` **静默拿掉** ✗）。
+#   **∴ 默认关** ⇒ **∴ 依赖树与工具面**逐位不变** ✓（**RAW **不新增工具** ✗，
+#     **只**给既有 `import_image` **加参数**——**那是**导入链包**的事**，**不在**本包 ✓）。
+raw = ["yanshi-render/raw"]
+
 [dev-dependencies]
 proptest.workspace = true
 yanshi-wasm = { path = "../yanshi-wasm" }

@@ -1,0 +1,441 @@
+//! 解码边界（设计 5.2）：**全仓唯一允许 `use rawler` 的文件**（治理规矩同
+//! 「photo.rs 是唯一 JPEG 编解码接点」）。职责只有两件：把文件字节解码成
+//! rawler 的 `RawImage`，再把 `RawImage` 映射成本仓自有的 `RawFrame`——
+//! rawler 类型绝不外泄到展开管线（解码器可换、管线与判据不动）。
+//!
+//! ⚠️ 绝不调用 rawler 的 `apply_scaling` 做归一化：它内部的
+//! `correct_blacklevel_cfa` 会把负值 clip 到 0，与设计 5.2「下界不钳、
+//! 出口才截零」直接冲突。归一化在 `develop::normalize_mosaic` 自行实现。
+//!
+//! 已知解码器缺口（rawler 0.7.2 实测，见包 README 缺口清单）：
+//! - **BaselineExposure 读不到**：标签常量存在（DNG tag 50730），但解码器
+//!   不往 `RawImage` 上挂（`dng_tags` 从未被任何 decoder 填充）；
+//!   本模块如实返回 `baseline_exposure_ev: None`，不许硬编、不许猜。
+//! - `RawImage::cropped_cfa()` 在 0.7.2 是 `todo!()`，相位对齐在本模块
+//!   按 rawler 自家口径手工完成（见 `map_frame` 的相位换算注释）。
+
+use rawler::decoders::RawDecodeParams;
+use rawler::imgop::Rect;
+use rawler::rawsource::RawSource;
+use rawler::{Orientation, RawImage, RawImageData};
+
+use crate::error::{RawError, Result};
+use crate::frame::{
+    CalibrationMatrix, Channel, DecodedRaw, LensExif, RawFileMeta, RawFrame, RecordContext,
+};
+
+/// 解码器身份（留痕记录用）。版本字面与 Cargo.toml 的 rawler 依赖锁定一致，
+/// 升级依赖时必须同步改这里——`decoder_version_matches_lockfile` 测试守着。
+pub const DECODER_NAME: &str = "rawler";
+pub const DECODER_VERSION: &str = "0.7.2";
+
+/// 字节 → 解码产物（帧 + 文件元数据）。任一环节失败走 `RawError`，不 panic。
+pub fn decode_bytes(bytes: &[u8]) -> Result<DecodedRaw> {
+    let source_format = sniff_format(bytes);
+    let source = RawSource::new_from_slice(bytes);
+    let decoder = rawler::get_decoder(&source)
+        .map_err(|e| RawError::Decode(format!("无法识别 RAW 格式：{e}")))?;
+    let params = RawDecodeParams::default();
+    let raw = decoder
+        .raw_image(&source, &params, false)
+        .map_err(|e| RawError::Decode(e.to_string()))?;
+    // 元数据整表失败不阻断展开（设计 5.7）：取不到就 None，展开照常。
+    let metadata = decoder.raw_metadata(&source, &params).ok();
+    map_decoded(raw, metadata.as_ref(), &source_format)
+}
+
+/// `RawImage` → 自有帧 + 元数据（映射规则全在这一处，设计 5.2）。
+fn map_decoded(
+    raw: RawImage,
+    metadata: Option<&rawler::decoders::RawMetadata>,
+    source_format: &str,
+) -> Result<DecodedRaw> {
+    if raw.cpp != 1 {
+        return Err(RawError::UnsupportedData(format!(
+            "每像素采样数 cpp={}（已是多通道数据），一期只支持单通道 Bayer 马赛克",
+            raw.cpp
+        )));
+    }
+    // 马赛克像素：整数读数原样进 f32；浮点读数一期不支持（HDR 浮点 DNG 等，
+    // 量纲约定未定版，不许拍脑袋选缩放），响亮报错、记 README 缺口。
+    let full: Vec<f32> = match &raw.data {
+        RawImageData::Integer(values) => values.iter().map(|&v| v as f32).collect(),
+        RawImageData::Float(_) => {
+            return Err(RawError::UnsupportedData(
+                "浮点马赛克数据（float DNG 等）一期不支持".to_string(),
+            ));
+        }
+    };
+    let (full_w, full_h) = (raw.width, raw.height);
+    if full.len() != full_w * full_h {
+        return Err(RawError::InvalidFrame(format!(
+            "解码像素数 {} 与全幅尺寸 {full_w}×{full_h} 对不上",
+            full.len()
+        )));
+    }
+    // active area 裁剪（设计 5.2：展开坐标系 = active area）。
+    let (ax, ay, crop_w, crop_h, mut notes) = active_crop(&raw, full_w, full_h);
+    let mut mosaic = Vec::with_capacity(crop_w * crop_h);
+    for y in 0..crop_h {
+        let start = (ay + y) * full_w + ax;
+        mosaic.extend_from_slice(&full[start..start + crop_w]);
+    }
+    // CFA 相位对齐（关键）：rawler 的 `camera.cfa` 锚在**全幅数据原点**
+    // （DNG 解码器会把文件内 active-area 相对的 CFAPattern 反向平移回全幅
+    // 口径，见 rawler dng.rs `get_cfa`），黑／白电平的四相位数组同理锚在
+    // 数据原点（rawler 自家 `correct_blacklevel_cfa` 即按 (y%2)*2+(x%2)
+    // 作用于未裁数据）。因此裁后帧的相位下标要按裁剪原点 (ax, ay) 的奇偶
+    // 换算，绝不能把全幅相位数组直接套到裁后帧上。
+    let cfa = derive_cfa(&raw, ax, ay, crop_w, crop_h)?;
+    // 电平数组：levels 为空时 rawler 的 as_bayer_array 会 panic，先守一道。
+    if raw.blacklevel.levels.is_empty() || raw.whitelevel.0.is_empty() {
+        return Err(RawError::InvalidFrame("解码器未给出黑／白电平".to_string()));
+    }
+    let black_levels = remap_phases(raw.blacklevel.as_bayer_array(), ax, ay);
+    let white_levels = remap_phases(raw.whitelevel.as_bayer_array(), ax, ay);
+    // WB：wb_coeffs 是 RGBE 四元组，Bayer 一期只取 RGB 三项（第 4 项 E 通道
+    // 在 DNG 路径上是 NaN 占位，误读会毒化整链）。任一项非法 ⇒ 解码期拒绝，
+    // 不把坏乘子留给展开期。
+    let wb = [raw.wb_coeffs[0], raw.wb_coeffs[1], raw.wb_coeffs[2]];
+    let wb_multipliers = if wb.iter().all(|&v| v > 0.0 && v.is_finite()) {
+        Some(wb)
+    } else {
+        None
+    };
+    let as_shot_neutral = wb_multipliers.map(|w| [1.0 / w[0], 1.0 / w[1], 1.0 / w[2]]);
+    // 色彩标定矩阵：HashMap<Illuminant, 平铺矩阵> → 自有结构（9 元取 3×3；
+    // 12 元是 RGBE 四通道，取前三行 RGB）。色温由光源枚举映射（标准 CCT）。
+    let mut calibrations: Vec<CalibrationMatrix> = Vec::new();
+    for (illuminant, flat) in &raw.color_matrix {
+        let matrix = match flat.len() {
+            9 | 12 => {
+                let mut m = [[0.0f32; 3]; 3];
+                for i in 0..3 {
+                    for j in 0..3 {
+                        m[i][j] = flat[i * 3 + j];
+                    }
+                }
+                m
+            }
+            other => {
+                notes.push(format!(
+                    "色彩标定矩阵长度为 {other}（预期 9/12），已跳过该组标定"
+                ));
+                continue;
+            }
+        };
+        calibrations.push(CalibrationMatrix {
+            illuminant_kelvin: illuminant_kelvin(*illuminant),
+            xyz_to_cam: matrix,
+        });
+    }
+    // 双标定按色温升序；超过两组时保留色温两端（rawler 实际至多双标定）。
+    calibrations.sort_by(|a, b| {
+        a.illuminant_kelvin
+            .unwrap_or(f32::INFINITY)
+            .partial_cmp(&b.illuminant_kelvin.unwrap_or(f32::INFINITY))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    if calibrations.len() > 2 {
+        let last = calibrations[calibrations.len() - 1];
+        let first = calibrations[0];
+        calibrations = vec![first, last];
+        notes.push("色彩标定矩阵超过两组，仅保留色温两端".to_string());
+    }
+    let frame = RawFrame {
+        width: crop_w,
+        height: crop_h,
+        mosaic,
+        cfa,
+        black_levels,
+        white_levels,
+        wb_multipliers,
+        as_shot_neutral,
+        color_matrices: calibrations,
+        // rawler 0.7.2 未暴露 BaselineExposure（本文件头注的实测缺口）：
+        // 如实 None；develop 会按 0 处理并写进展开注记，不许在此硬编。
+        baseline_exposure_ev: None,
+    };
+    let file_meta = map_file_meta(&raw, metadata, source_format);
+    Ok(DecodedRaw {
+        frame,
+        file_meta,
+        notes,
+    })
+}
+
+/// active area → (左, 上, 宽, 高)。缺失 = 全幅；形状非法 = 回退全幅
+/// （宽高口径以解码器为准，个别老文件的 ActiveArea 写错不许让展开全灭，
+/// 但回退事实要留痕——见调用处 notes）。
+fn active_crop(
+    raw: &RawImage,
+    full_w: usize,
+    full_h: usize,
+) -> (usize, usize, usize, usize, Vec<String>) {
+    let mut notes = Vec::new();
+    let Some(rect) = &raw.active_area else {
+        return (0, 0, full_w, full_h, notes);
+    };
+    let [l, t, r, b] = rect_ltrb(rect);
+    if r <= l || b <= t || r > full_w || b > full_h {
+        notes.push(format!(
+            "ActiveArea [{l}, {t}, {r}, {b}] 形状非法，已回退为全幅 {full_w}×{full_h}"
+        ));
+        return (0, 0, full_w, full_h, notes);
+    }
+    (l, t, r - l, b - t, notes)
+}
+
+fn rect_ltrb(rect: &Rect) -> [usize; 4] {
+    rect.as_ltrb()
+}
+
+/// 由全幅 CFA 在裁后帧上推导 Bayer 排列，并用探针点校验 2-周期性
+/// （X-Trans 等非 Bayer 排列在此被拦下，不许硬套 Bayer 解马赛克）。
+fn derive_cfa(
+    raw: &RawImage,
+    ax: usize,
+    ay: usize,
+    crop_w: usize,
+    crop_h: usize,
+) -> Result<crate::frame::CfaPattern> {
+    let cfa = &raw.camera.cfa;
+    if !cfa.is_valid() {
+        return Err(RawError::UnsupportedData(
+            "解码器未给出有效 CFA（单色／线性数据一期不支持）".to_string(),
+        ));
+    }
+    let channel = |fx: usize, fy: usize| -> Option<Channel> {
+        match cfa.color_at(fy, fx) {
+            0 => Some(Channel::R),
+            1 => Some(Channel::G),
+            2 => Some(Channel::B),
+            _ => None,
+        }
+    };
+    let cell = [
+        channel(ax, ay),
+        channel(ax + 1, ay),
+        channel(ax, ay + 1),
+        channel(ax + 1, ay + 1),
+    ];
+    let (Some(c00), Some(c10), Some(c01), Some(c11)) = (cell[0], cell[1], cell[2], cell[3]) else {
+        return Err(RawError::NonBayerCfa {
+            pattern: cfa.name.clone(),
+        });
+    };
+    let Some(pattern) = crate::frame::CfaPattern::from_cell([c00, c10, c01, c11]) else {
+        return Err(RawError::NonBayerCfa {
+            pattern: cfa.name.clone(),
+        });
+    };
+    // 2-周期探针：裁后帧的四角 + 中心邻域，全幅坐标逐点对照推导出的排列。
+    let probes_x = [
+        0usize,
+        1,
+        crop_w / 2,
+        crop_w.saturating_sub(2),
+        crop_w.saturating_sub(1),
+    ];
+    let probes_y = [
+        0usize,
+        1,
+        crop_h / 2,
+        crop_h.saturating_sub(2),
+        crop_h.saturating_sub(1),
+    ];
+    for &y in &probes_y {
+        for &x in &probes_x {
+            if x >= crop_w || y >= crop_h {
+                continue;
+            }
+            if channel(ax + x, ay + y) != Some(pattern.channel_at(x, y)) {
+                return Err(RawError::NonBayerCfa {
+                    pattern: cfa.name.clone(),
+                });
+            }
+        }
+    }
+    Ok(pattern)
+}
+
+/// 全幅相位数组 → 裁后帧相位数组：裁后相位 p′=(y%2)*2+(x%2) 处的电平，
+/// 等于全幅相位 ((ay+y)%2)*2+((ax+x)%2) 处的电平（两边同为 2-周期）。
+fn remap_phases(full: [f32; 4], ax: usize, ay: usize) -> [f32; 4] {
+    let mut out = [0.0f32; 4];
+    for (p, slot) in out.iter_mut().enumerate() {
+        let (x, y) = (p % 2, p / 2);
+        *slot = full[((ay + y) % 2) * 2 + ((ax + x) % 2)];
+    }
+    out
+}
+
+/// 文件级元数据映射（设计 5.7 的 `raw_meta` 原料）。整表缺失 ⇒ 全 None，
+/// 不阻断展开；镜头口径 focal/fnumber 取 EXIF 实测（定版不取镜头库标称值，
+/// 5.6／Q4 裁决④：库的三元组在归一化下退化为标量，不许冒充修正）。
+fn map_file_meta(
+    raw: &RawImage,
+    metadata: Option<&rawler::decoders::RawMetadata>,
+    source_format: &str,
+) -> RawFileMeta {
+    let exif = metadata.map(|m| &m.exif);
+    let lens_from_desc = metadata.and_then(|m| m.lens.as_ref()).map(|lens| {
+        if lens.lens_make.is_empty() {
+            lens.lens_model.clone()
+        } else {
+            format!("{} {}", lens.lens_make, lens.lens_model)
+        }
+    });
+    let lens_from_exif =
+        exif.and_then(
+            |e| match (e.lens_make.as_deref(), e.lens_model.as_deref()) {
+                (Some(make), Some(model)) => Some(format!("{make} {model}")),
+                (None, Some(model)) => Some(model.to_string()),
+                (Some(make), None) => Some(make.to_string()),
+                (None, None) => None,
+            },
+        );
+    let focal_mm = exif.and_then(|e| e.focal_length).map(|r| r.as_f32());
+    let fnumber = exif.and_then(|e| e.fnumber).map(|r| r.as_f32());
+    let lens_exif = if exif.is_some() || lens_from_desc.is_some() {
+        Some(LensExif {
+            make: exif.and_then(|e| e.lens_make.clone()),
+            model: exif.and_then(|e| e.lens_model.clone()).or_else(|| {
+                metadata
+                    .and_then(|m| m.lens.as_ref())
+                    .map(|l| l.lens_model.clone())
+            }),
+            focal_mm,
+            fnumber,
+            focus_distance_m: exif.and_then(|e| e.subject_distance).map(|r| r.as_f32()),
+        })
+    } else {
+        None
+    };
+    RawFileMeta {
+        make: Some(raw.make.clone()),
+        model: Some(raw.model.clone()),
+        lens: lens_from_desc.or(lens_from_exif),
+        lens_exif,
+        iso: exif.and_then(|e| e.iso_speed.or_else(|| e.iso_speed_ratings.map(u32::from))),
+        exposure_time: exif.and_then(|e| e.exposure_time).map(|r| r.as_f32()),
+        fnumber,
+        focal_mm,
+        orientation: orientation_u8(raw.orientation),
+        bit_depth: Some(raw.bps as u32),
+        source_format: source_format.to_string(),
+    }
+}
+
+/// `rawler::Orientation` → EXIF Orientation 数值（1–8，标准 TIFF 口径）。
+fn orientation_u8(orientation: Orientation) -> u32 {
+    match orientation {
+        Orientation::Normal => 1,
+        Orientation::HorizontalFlip => 2,
+        Orientation::Rotate180 => 3,
+        Orientation::VerticalFlip => 4,
+        Orientation::Transpose => 5,
+        Orientation::Rotate90 => 6,
+        Orientation::Transverse => 7,
+        Orientation::Rotate270 => 8,
+        Orientation::Unknown => 1,
+    }
+}
+
+/// 标定光源 → 相关色温（标准 CCT，DNG/CIE 口径）。
+/// 无 CCT 定版值的光源（荧光灯各型等）返回 `None`——不许编一个数字进去，
+/// 复合色彩链遇 `None` 端会退单矩阵并注明（`develop::composite_color_matrix`）。
+fn illuminant_kelvin(illuminant: rawler::imgop::xyz::Illuminant) -> Option<f32> {
+    use rawler::imgop::xyz::Illuminant::*;
+    match illuminant {
+        A | Tungsten => Some(2856.0),
+        B => Some(4889.0),
+        C => Some(6774.0),
+        D50 => Some(5000.0),
+        D55 | Daylight | Flash | FineWeather => Some(5500.0),
+        D65 | CloudyWeather => Some(6504.0),
+        D75 | Shade => Some(7500.0),
+        IsoStudioTungsten => Some(3200.0),
+        _ => None,
+    }
+}
+
+/// 源格式 sniff（留痕记录用）：只认文件头魔数，不猜机型。
+/// TIFF 家族细分（DNG 与厂商 TIFF-RAW 魔数相同）靠解码成功后的标签区分
+/// 不在本包范围：TIFF 一律记 "tiff"，DNG 的确切识别随导入链包补。
+fn sniff_format(bytes: &[u8]) -> String {
+    if bytes.len() >= 16 && &bytes[0..16] == b"FUJIFILMCCD-RAW " {
+        return "raf".to_string();
+    }
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        if bytes[8..12] == *b"crx " {
+            return "cr3".to_string();
+        }
+        return "bmff".to_string();
+    }
+    if bytes.len() >= 4 && (&bytes[0..4] == b"II\x2a\x00" || &bytes[0..4] == b"MM\x00\x2a") {
+        return "tiff".to_string();
+    }
+    "raw".to_string()
+}
+
+/// 由解码产物组装留痕上下文（render 挂接点与集成测试共用）。
+pub fn record_context(decoded: &DecodedRaw) -> RecordContext {
+    RecordContext {
+        source_format: decoded.file_meta.source_format.clone(),
+        camera_make: decoded.file_meta.make.clone(),
+        camera_model: decoded.file_meta.model.clone(),
+        lens: decoded.file_meta.lens.clone(),
+        lens_exif: decoded.file_meta.lens_exif.clone(),
+        decoder_name: DECODER_NAME.to_string(),
+        decoder_version: DECODER_VERSION.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decoder_version_matches_lockfile() {
+        // DECODER_VERSION 是手写常量：与 Cargo.lock 里 rawler 的实际锁定版本
+        // 对照，依赖升级忘了同步就红（留痕记录里的解码器版本不许说谎）。
+        let manifest = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock"),
+        )
+        .expect("workspace Cargo.lock 可读");
+        let needle = "name = \"rawler\"";
+        let pos = manifest.find(needle).expect("Cargo.lock 里有 rawler");
+        let tail = &manifest[pos..];
+        let version_line = tail
+            .lines()
+            .find(|l| l.starts_with("version = "))
+            .expect("rawler 条目有 version 行");
+        assert!(
+            version_line.contains(DECODER_VERSION),
+            "DECODER_VERSION={DECODER_VERSION} 与 Cargo.lock 的 {version_line} 不一致"
+        );
+    }
+
+    #[test]
+    fn phase_remap_follows_crop_origin_parity() {
+        // 全幅相位 [10, 20, 30, 40]，裁剪原点 (1, 0)：裁后相位 0 处对应
+        // 全幅 (1, 0) → 相位 1 → 20；整表应左旋一位行内交换。
+        assert_eq!(
+            remap_phases([10.0, 20.0, 30.0, 40.0], 1, 0),
+            [20.0, 10.0, 40.0, 30.0]
+        );
+        assert_eq!(
+            remap_phases([10.0, 20.0, 30.0, 40.0], 0, 1),
+            [30.0, 40.0, 10.0, 20.0]
+        );
+        assert_eq!(
+            remap_phases([10.0, 20.0, 30.0, 40.0], 1, 1),
+            [40.0, 30.0, 20.0, 10.0]
+        );
+        assert_eq!(
+            remap_phases([10.0, 20.0, 30.0, 40.0], 0, 0),
+            [10.0, 20.0, 30.0, 40.0]
+        );
+    }
+}

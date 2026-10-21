@@ -160,11 +160,15 @@ pub use png::{
 };
 pub use prng::Prng;
 pub use render::{
-    coverage_from_shape, mask_path_coverage, mask_shape_is_path_reference, parse_background,
-    raster_mime_supported, render_region_unquantized, shape_coverage, shape_outline,
-    tile_from_buffer, RegionRender, RenderOptions, RenderStats, Renderer, JPEG_MIME,
-    MAX_EFFECT_PADDING, PNG_MIME, RAW_RGBA_MIME,
+    coverage_from_shape, is_raw_source_mime, mask_path_coverage, mask_shape_is_path_reference,
+    parse_background, raster_mime_supported, render_region_unquantized, shape_coverage,
+    shape_outline, tile_from_buffer, RegionRender, RenderOptions, RenderStats, Renderer, JPEG_MIME,
+    MAX_EFFECT_PADDING, PNG_MIME, RAW_RGBA_MIME, RAW_SOURCE_MIME,
 };
+
+/// RAW 展开挂接点（设计 v3 §9.3）：仅 feature `raw` 开时存在。
+#[cfg(feature = "raw")]
+pub use render::develop_raw_source;
 pub use thumb::{render_thumbnail, Thumb, ThumbKind, ThumbStats, THUMB_BLOCK};
 pub use tile::{
     Tile, TileCache, TileCacheStats, TileGrid, TileKey, ALLOWED_TILE_SIZES, DEFAULT_TILE_SIZE,

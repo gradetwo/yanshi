@@ -55,6 +55,11 @@ default = []
 #   **∴ 代价 ✗**：**开 `gpu` 时** `yanshi-render` **也**编入 GPU 路** ✓
 #     （**∴ 那**正是**本 feature 的意图** ✓；**∴ 默认关 ⇒ **依赖树**不变 ✓）★**** ✓✓
 gpu = ["dep:wgpu", "dep:yanshi-gpu", "yanshi-render/gpu", "dep:libc"]
+# **★ `raw`：**委托链** `yanshi-http/raw` → `yanshi-server/raw` → `yanshi-render/raw` ✗ ★**
+#   （RAW 设计 v3 第 9 章定版）：**∴ 三处**同开同关**靠**委托**结构**保证** ✗，
+#     **不靠**调用方**逐个记得开** ✗（**第 448 轮 `gpu` **只开一侧**被**静默拿掉**的教训 ✓）。
+#   **∴ 默认关** ⇒ **∴ 依赖树**不变** ✓ ⇒ **∴ `rawler` **只**在**三处同开**时**才**进树** ✓。
+raw = ["yanshi-server/raw"]
 
 [dependencies]
 yanshi-core = { path = "../yanshi-core", version = "0.2.0" }

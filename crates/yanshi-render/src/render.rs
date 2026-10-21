@@ -4472,6 +4472,19 @@ pub const PNG_MIME: &str = "image/png";
 /// 内核解码成 RGBA 后与其它格式走同一条路（解码器见 [`crate::jpeg`] ✓）。
 pub const JPEG_MIME: &str = "image/jpeg";
 
+/// **RAW 源对象的 MIME**（RAW 导入设计 v3 §4.1 定版）：blob **内容是相机 RAW 原文件**
+/// 本人（CR2/NEF/DNG…），与「已解码 RGBA」的 [`RAW_RGBA_MIME`] 是**两个物种**、不许混淆。
+/// 本包（RAW 第一包）只定版常量与判定：**故意不进** [`raster_mime_supported`] 清单——
+/// rawsrc 的取图走线性 f32 链（`Buffer::blit_linear`，下一包），若现在把它塞进
+/// RGBA8 清单，服务端 `blob_decodable` 信号会与取图实际行为漂移（正是该清单注释里
+/// 记过的 JPEG 漂移事故的同型）。取图侧对它有显式分支、响亮跳过（见 fetch_raster_patch）。
+pub const RAW_SOURCE_MIME: &str = "image/x-yanshi-rawsrc";
+
+/// 该 MIME 是否为 RAW 源对象（设计 §9.3 的最小判定挂接点）。
+pub fn is_raw_source_mime(mime_type: &str) -> bool {
+    mime_type == RAW_SOURCE_MIME
+}
+
 /// **内核能解码的位图补丁 MIME**（单一事实来源 ✓）：[`fetch_raster_patch`] 的分派与
 /// 服务端 `import_image` 的 `blob_decodable` 信号都读它 ⇒ 两处不再各写一份清单后漂移
 /// （曾漂移过：内核只认 raw/PNG 时 JPEG 被静默跳过、而信号仍报「可解码」✓）。
@@ -4530,6 +4543,21 @@ fn fetch_raster_patch(
         })?;
         return Ok(Some((width, height, rgba8)));
     }
+    if is_raw_source_mime(mime_type) {
+        // RAW 源对象（设计 v3 §9.3，第一包的边界）：展开主链已可经
+        // `develop_raw_source` 调用，但取图的线性链（blit_linear）是下一包——
+        // 在此显式跳过并把原因喊出来，不许落进下面的「未实现」兜底文案、
+        // 更不许静默当 RGBA 解（NF2：能力边界要有信号）。
+        #[cfg(feature = "raw")]
+        warnings.push(format!(
+            "RAW 源对象已存入但线性取图链尚未接入，本轮渲染跳过（对象 {object_id}） —— 请等待 RAW 导入链包"
+        ));
+        #[cfg(not(feature = "raw"))]
+        warnings.push(format!(
+            "RAW 源对象需要启用 raw feature 的构建才能展开，本构建未启用，本轮渲染跳过（对象 {object_id}）"
+        ));
+        return Ok(None);
+    }
     if mime_type != RAW_RGBA_MIME {
         warnings.push(format!(
             "位图补丁格式未实现: {mime_type}（对象 {object_id}，内核仅支持 {RAW_RGBA_MIME}、{PNG_MIME} 与 {JPEG_MIME}）"
@@ -4553,6 +4581,39 @@ fn fetch_raster_patch(
         declared_height,
         bytes[..expected].to_vec(),
     )))
+}
+
+/// RAW 展开挂接点（设计 v3 §9.3，第一包的最小集）：feature `raw` 开时才存在。
+///
+/// 字节 → `yanshi_raw::decode_bytes` → `yanshi_raw::develop`，产出线性 f32 RGB
+/// 与 `raw_develop` 留痕记录。完整入库链路（rawsrc 对象落盘、导入工具、
+/// 取图侧 `blit_linear`）是下一包；本函数是那条链的唯一展开入口，先立住、
+/// 先被集成测试钉住，防后续包另起炉灶再实现一遍展开。
+#[cfg(feature = "raw")]
+pub fn develop_raw_source(
+    bytes: &[u8],
+    options: &yanshi_raw::DevelopOptions,
+) -> Result<yanshi_raw::DevelopedImage> {
+    let decoded = yanshi_raw::decode_bytes(bytes).map_err(raw_error_as_invalid_argument)?;
+    let ctx = yanshi_raw::record_context(&decoded);
+    let mut developed = yanshi_raw::develop(&decoded.frame, options, &ctx)
+        .map_err(raw_error_as_invalid_argument)?;
+    // 解码期注记（ActiveArea 回退等）在时序上在展开注记之前，并入同一出口。
+    let mut notes = decoded.notes.clone();
+    notes.extend(developed.notes.iter().cloned());
+    developed.notes = notes;
+    Ok(developed)
+}
+
+/// yanshi-raw 的结构化错误 → 内核错误：第一包统一映射 `InvalidArgument`
+/// （解码失败／参数非法／数据形态不支持都是「这份输入展开不了」），
+/// 细节全量保留在 detail 里，不许吞。
+#[cfg(feature = "raw")]
+fn raw_error_as_invalid_argument(error: yanshi_raw::RawError) -> YanshiError {
+    YanshiError::new(
+        yanshi_core::ErrorCode::InvalidArgument,
+        yanshi_core::ErrorContext::detail(error.to_string()),
+    )
 }
 
 /// 笔迹几何的文档包围盒（含笔尖半径）。
@@ -7764,5 +7825,37 @@ mod by_sig_budget_tests {
             BELOW_SIG_GROUPS,
         ));
         assert_eq!(small.len(), 1);
+    }
+}
+
+/// **★ RAW 第一包的边界锁（设计 v3 §9.3）★**
+///
+/// 本包只定版 rawsrc 常量与判定、留展开挂接点：**不许**把 rawsrc 塞进
+/// `raster_mime_supported`（线性取图链在下一包）——谁手滑加进去，这条立刻红。
+#[cfg(test)]
+mod raw_boundary_tests {
+    use super::{is_raw_source_mime, raster_mime_supported, JPEG_MIME, PNG_MIME, RAW_SOURCE_MIME};
+
+    #[test]
+    fn rawsrc_mime_is_defined_but_not_in_the_rgba_raster_list() {
+        assert_eq!(RAW_SOURCE_MIME, "image/x-yanshi-rawsrc");
+        assert!(is_raw_source_mime(RAW_SOURCE_MIME));
+        assert!(!is_raw_source_mime(PNG_MIME));
+        assert!(!is_raw_source_mime(JPEG_MIME));
+        // ★ 边界：rawsrc 不是 RGBA8 位图补丁，第一包不进取图清单
+        assert!(
+            !raster_mime_supported(RAW_SOURCE_MIME),
+            "rawsrc 不许进 raster_mime_supported（线性取图链是下一包）"
+        );
+    }
+
+    /// feature 开时挂接点可调用：垃圾字节必须走响亮的解码失败，
+    /// 不许 panic、不许静默产出空图（证明 §9.3 的入口真的接上了展开链）。
+    #[cfg(feature = "raw")]
+    #[test]
+    fn develop_raw_source_rejects_garbage_bytes_loudly() {
+        let options = yanshi_raw::DevelopOptions::default();
+        let result = super::develop_raw_source(b"this is not a raw file", &options);
+        assert!(result.is_err(), "垃圾字节必须报错，实得 {result:?}");
     }
 }

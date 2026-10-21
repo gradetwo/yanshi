@@ -1,0 +1,270 @@
+//! 合成 DNG 夹具（设计 6.1）：手写最小合法 TIFF/DNG（单 IFD、小端、单 strip、
+//! 无压缩），让解码冒烟与集成测试不依赖任何真机文件。
+//!
+//! 本模块只经 `test-support` feature 暴露：生产构建不带写 DNG 的代码。
+//! 标签号逐个对过 rawler 0.7.2 的 `tags.rs`（DngTag）与 DNG 1.4 规范，
+//! 不是凭记忆写的：DNGVersion=50706、BlackLevel=50714、WhiteLevel=50717、
+//! ColorMatrix1/2=50721/50722、AsShotNeutral=50728、BaselineExposure=50730、
+//! CalibrationIlluminant1/2=50778/50779、ActiveArea=50829。
+
+/// 合成 DNG 的规格：马赛克图案由调用方以「解析可算」的方式生成
+///（常量场／渐变／棋盘／冲激），断言才有解析期望可对照。
+pub struct SyntheticDng {
+    pub width: u32,
+    pub height: u32,
+    /// 全幅马赛克（u16，行主序，len = width × height）。
+    pub mosaic: Vec<u16>,
+    /// CFAPattern 四字节（CFAPlaneColor 下标：0=R、1=G、2=B），如 RGGB = [0,1,1,2]。
+    pub cfa_pattern: [u8; 4],
+    /// BlackLevel 四相位（行主序），写为 RATIONAL。锚定口径按 rawler 的
+    /// 消费方式：锚在**全幅数据原点**（其 `correct_blacklevel_cfa` 即如此
+    /// 作用于未裁数据，且 get_blacklevels 不做 ActiveArea 平移——与
+    /// CFAPattern 的 active-area 相对口径不同，冒烟测试把这条钉死）。
+    pub black_levels: [(u32, u32); 4],
+    pub white_level: u32,
+    /// (矩阵, 标定光源 EXIF 值)：ColorMatrix1 + CalibrationIlluminant1。
+    pub color_matrix1: Option<([[f32; 3]; 3], u16)>,
+    pub color_matrix2: Option<([[f32; 3]; 3], u16)>,
+    /// AsShotNeutral 三元组（RATIONAL 写入，分母 100000）。
+    pub as_shot_neutral: [f32; 3],
+    /// ActiveArea (top, left, bottom, right)——DNG 的原生顺序。
+    pub active_area: Option<[u32; 4]>,
+    /// BaselineExposure（SRational）：夹具故意写上它——rawler 0.7.2 读不到，
+    /// 冒烟测试断言「写了也读不到」以钉住这个缺口（解码器升级暴露它时测试转红，
+    /// 强制回头更新缺口清单，这正是断言该有的牙齿）。
+    pub baseline_exposure: Option<(i32, u32)>,
+    pub make: String,
+    pub model: String,
+}
+
+impl Default for SyntheticDng {
+    fn default() -> Self {
+        Self {
+            width: 8,
+            height: 8,
+            mosaic: vec![1024; 64],
+            cfa_pattern: [0, 1, 1, 2],
+            black_levels: [(512, 1), (512, 1), (512, 1), (512, 1)],
+            white_level: 16383,
+            color_matrix1: Some((
+                [
+                    [0.7355, -0.1828, -0.0836],
+                    [-0.4262, 1.2845, 0.2576],
+                    [-0.0698, 0.1123, 0.7846],
+                ],
+                21, // D65
+            )),
+            color_matrix2: Some((
+                [
+                    [0.5844, -0.0506, -0.1067],
+                    [-0.6724, 1.5265, 0.2291],
+                    [-0.0837, 0.1436, 0.6759],
+                ],
+                17, // A
+            )),
+            as_shot_neutral: [0.58, 1.0, 0.72],
+            active_area: None,
+            baseline_exposure: None,
+            make: "YanshiFixture".to_string(),
+            model: "Synthetic One".to_string(),
+        }
+    }
+}
+
+/// TIFF 字段值（只实现夹具用到的类型）。
+enum Value {
+    Bytes(Vec<u8>),
+    Ascii(String),
+    Shorts(Vec<u16>),
+    Longs(Vec<u32>),
+    Rationals(Vec<(u32, u32)>),
+    SRationals(Vec<(i32, u32)>),
+}
+
+impl Value {
+    fn type_code(&self) -> u16 {
+        match self {
+            Value::Bytes(_) => 1,
+            Value::Ascii(_) => 2,
+            Value::Shorts(_) => 3,
+            Value::Longs(_) => 4,
+            Value::Rationals(_) => 5,
+            Value::SRationals(_) => 10,
+        }
+    }
+
+    fn count(&self) -> u32 {
+        match self {
+            Value::Bytes(v) => v.len() as u32,
+            Value::Ascii(s) => s.len() as u32 + 1, // 含 NUL 结尾
+            Value::Shorts(v) => v.len() as u32,
+            Value::Longs(v) => v.len() as u32,
+            Value::Rationals(v) => v.len() as u32,
+            Value::SRationals(v) => v.len() as u32,
+        }
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        match self {
+            Value::Bytes(v) => out.extend_from_slice(v),
+            Value::Ascii(s) => {
+                out.extend_from_slice(s.as_bytes());
+                out.push(0);
+            }
+            Value::Shorts(v) => {
+                for x in v {
+                    out.extend_from_slice(&x.to_le_bytes());
+                }
+            }
+            Value::Longs(v) => {
+                for x in v {
+                    out.extend_from_slice(&x.to_le_bytes());
+                }
+            }
+            Value::Rationals(v) => {
+                for (num, den) in v {
+                    out.extend_from_slice(&num.to_le_bytes());
+                    out.extend_from_slice(&den.to_le_bytes());
+                }
+            }
+            Value::SRationals(v) => {
+                for (num, den) in v {
+                    out.extend_from_slice(&num.to_le_bytes());
+                    out.extend_from_slice(&den.to_le_bytes());
+                }
+            }
+        }
+        out
+    }
+}
+
+/// f32 → SRational（分母 100000，冒烟精度足够；矩阵只要求可逆且量纲现实）。
+fn srational(v: f32) -> (i32, u32) {
+    (libm::roundf(v * 100000.0) as i32, 100000)
+}
+
+fn rational(v: f32) -> (u32, u32) {
+    (libm::roundf(v * 100000.0) as u32, 100000)
+}
+
+/// 按规格写出 DNG 字节。布局：头(8) → IFD → 溢出值区 → strip 像素区；
+/// 条目按标签升序（TIFF 规范要求，解码器实现多半也默认）。
+pub fn write_synthetic_dng(spec: &SyntheticDng) -> Vec<u8> {
+    assert_eq!(
+        spec.mosaic.len(),
+        spec.width as usize * spec.height as usize,
+        "夹具马赛克尺寸与规格对不上"
+    );
+    let strip_bytes = (spec.mosaic.len() * 2) as u32;
+    let mut entries: Vec<(u16, Value)> = vec![
+        (256, Value::Longs(vec![spec.width])),   // ImageWidth
+        (257, Value::Longs(vec![spec.height])),  // ImageLength
+        (258, Value::Shorts(vec![16])),          // BitsPerSample
+        (259, Value::Shorts(vec![1])),           // Compression = 无
+        (262, Value::Shorts(vec![32803])),       // Photometric = CFA
+        (271, Value::Ascii(spec.make.clone())),  // Make
+        (272, Value::Ascii(spec.model.clone())), // Model
+        // StripOffsets 占位，最后回填（条目 273）。
+        (273, Value::Longs(vec![0])),
+        (277, Value::Shorts(vec![1])),          // SamplesPerPixel
+        (278, Value::Longs(vec![spec.height])), // RowsPerStrip
+        (279, Value::Longs(vec![strip_bytes])), // StripByteCounts
+        (284, Value::Shorts(vec![1])),          // PlanarConfiguration
+        (33421, Value::Shorts(vec![2, 2])),     // CFARepeatPatternDim
+        (33422, Value::Bytes(spec.cfa_pattern.to_vec())), // CFAPattern
+        (50706, Value::Bytes(vec![1, 4, 0, 0])), // DNGVersion
+        (50707, Value::Bytes(vec![1, 0, 0, 0])), // DNGBackwardVersion
+        (50708, Value::Ascii(spec.model.clone())), // UniqueCameraModel
+        (50710, Value::Bytes(vec![0, 1, 2])),   // CFAPlaneColor
+        (50711, Value::Shorts(vec![1])),        // CFALayout
+        (50713, Value::Shorts(vec![2, 2])),     // BlackLevelRepeatDim
+        (50714, Value::Rationals(spec.black_levels.to_vec())), // BlackLevel
+        (50717, Value::Longs(vec![spec.white_level])), // WhiteLevel
+        (
+            50728, // AsShotNeutral
+            Value::Rationals(spec.as_shot_neutral.iter().map(|&v| rational(v)).collect()),
+        ),
+    ];
+    if let Some((matrix, illuminant)) = &spec.color_matrix1 {
+        entries.push((50778, Value::Shorts(vec![*illuminant]))); // CalibrationIlluminant1
+        entries.push((
+            50721, // ColorMatrix1
+            Value::SRationals(matrix.iter().flatten().map(|&v| srational(v)).collect()),
+        ));
+    }
+    if let Some((matrix, illuminant)) = &spec.color_matrix2 {
+        entries.push((50779, Value::Shorts(vec![*illuminant]))); // CalibrationIlluminant2
+        entries.push((
+            50722, // ColorMatrix2
+            Value::SRationals(matrix.iter().flatten().map(|&v| srational(v)).collect()),
+        ));
+    }
+    if let Some(area) = &spec.active_area {
+        entries.push((50829, Value::Longs(area.to_vec()))); // ActiveArea
+    }
+    if let Some((num, den)) = &spec.baseline_exposure {
+        entries.push((50730, Value::SRationals(vec![(*num, *den)]))); // BaselineExposure
+    }
+    entries.sort_by_key(|(tag, _)| *tag);
+
+    // 布局计算：IFD 紧随文件头；溢出值（>4 字节）依次放 IFD 之后；strip 最后。
+    let ifd_offset = 8u32;
+    let entries_bytes = 2 + entries.len() as u32 * 12 + 4;
+    let mut cursor = ifd_offset + entries_bytes;
+    let mut serialized: Vec<(u16, Value, Vec<u8>)> = Vec::new();
+    for (tag, value) in entries {
+        let bytes = value.bytes();
+        serialized.push((tag, value, bytes));
+    }
+    let mut value_offsets: Vec<u32> = Vec::with_capacity(serialized.len());
+    for (_, _, bytes) in &serialized {
+        if bytes.len() > 4 {
+            value_offsets.push(cursor);
+            cursor += bytes.len() as u32;
+            if cursor % 2 == 1 {
+                cursor += 1; // TIFF 值区按字对齐
+            }
+        } else {
+            value_offsets.push(0);
+        }
+    }
+    let strip_offset = cursor;
+
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(b"II");
+    out.extend_from_slice(&42u16.to_le_bytes());
+    out.extend_from_slice(&ifd_offset.to_le_bytes());
+    out.extend_from_slice(&(serialized.len() as u16).to_le_bytes());
+    for (i, (tag, value, bytes)) in serialized.iter().enumerate() {
+        out.extend_from_slice(&tag.to_le_bytes());
+        out.extend_from_slice(&value.type_code().to_le_bytes());
+        out.extend_from_slice(&value.count().to_le_bytes());
+        if *tag == 273 {
+            out.extend_from_slice(&strip_offset.to_le_bytes());
+        } else if bytes.len() <= 4 {
+            let mut inline = [0u8; 4];
+            inline[..bytes.len()].copy_from_slice(bytes);
+            out.extend_from_slice(&inline);
+        } else {
+            out.extend_from_slice(&value_offsets[i].to_le_bytes());
+        }
+    }
+    out.extend_from_slice(&0u32.to_le_bytes()); // 无下一 IFD
+    for (i, (_, _, bytes)) in serialized.iter().enumerate() {
+        if bytes.len() > 4 {
+            // 对齐到先前算好的偏移（前面可能有对齐填充）。
+            while (out.len() as u32) < value_offsets[i] {
+                out.push(0);
+            }
+            out.extend_from_slice(bytes);
+        }
+    }
+    while (out.len() as u32) < strip_offset {
+        out.push(0);
+    }
+    for sample in &spec.mosaic {
+        out.extend_from_slice(&sample.to_le_bytes());
+    }
+    out
+}
