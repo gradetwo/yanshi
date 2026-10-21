@@ -434,6 +434,38 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
                             owned_bbox =
                                 json!({"x": cx - rx, "y": cy - ry, "w": rx * 2.0, "h": ry * 2.0});
                             &owned_bbox
+                        } else if selection.shape.get("subpaths").is_some()
+                            || selection.shape.get("d").is_some()
+                        {
+                            // **第 5 条：路径选区** ✓（第 1549 轮；外部 `B1`）
+                            //   **⇒ 为什么需要**：上面四条（bbox／x,y,w,h／cx,cy,rx,ry／points）
+                            //     **都取不到** ⇒ `?` ⇒ `filter_map` 丢掉 ⇒ `alive` 空 ⇒
+                            //     报「找不到可裁剪的选区 ⇒ 现有一个都没有」✗
+                            //   **⇒ ⇒ 两种落库形态**：`create_selection` 把 `d` **归一成 `subpaths`**
+                            //     （**不留 `d`**）⇒ 所以**两种都要认** ✓
+                            let geometry: Option<Value> =
+                                if let Some(subpaths) = selection.shape.get("subpaths") {
+                                    Some(json!({
+                                        "subpaths": subpaths,
+                                        "fill_rule": selection.shape.get("fill_rule")
+                                            .cloned()
+                                            .unwrap_or_else(|| json!("evenodd")),
+                                    }))
+                                } else {
+                                    selection
+                                        .shape
+                                        .get("d")
+                                        .and_then(Value::as_str)
+                                        .and_then(|d| crate::tools::parse_svg_d(d).ok())
+                                        .map(|subpaths| json!({"subpaths": subpaths}))
+                                };
+                            let parsed = geometry.and_then(|g| {
+                                yanshi_render::object::parse_path_subpaths(&g).ok()
+                            })?;
+                            let (ax, ay, bx, by) =
+                                yanshi_render::object::path_control_bbox(&parsed.subpaths)?;
+                            owned_bbox = json!({"x": ax, "y": ay, "w": bx - ax, "h": by - ay});
+                            &owned_bbox
                         } else {
                             let points = selection.shape.get("points")?.as_array()?;
                             let (mut ax, mut ay) = (f64::INFINITY, f64::INFINITY);
@@ -600,6 +632,45 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
                             width: gw,
                             height: gh,
                             data,
+                        }
+                    }
+                    // **路径选区**不许当成矩形** ✓**（第 1549 轮；外部 `B1` 的**真正**根因）
+                    //   **⇒ 症状**：`bbox` 装不下就报"找不到"。而**找到了**之后会**当成矩形** ✗
+                    //     ⇒ 于是 `clip_to_selection` 用**整个 bbox** 裁剪（**选多了**，不是选少了）
+                    //   **⇒ ⇒ 所以我加 `path` 分支**：走与 `draw_shape` **同一份** `path_coverage_clipped` ✓
+                    //     ⇒ **控制点之外的部分不再被误覆盖** ✓
+                    //   **⇒ ⇒ ⇒ `subpaths` 与 `d` 两种落库形态都认**（`create_selection` 归一成 `subpaths`）✓
+                    "path" => {
+                        // **先拿到 `subpaths`（已有或从 `d` 解析），再交给与 `draw_shape`
+                        // 同一份的 `path_coverage_clipped`** ✓
+                        // 任何一步失败 ⇒ **退回 bbox 矩形**（**保持旧行为，不静默变成"不落墨"**）✓
+                        let geometry: Option<Value> = if let Some(subpaths) = shape.get("subpaths")
+                        {
+                            Some(json!({
+                                "subpaths": subpaths,
+                                "fill_rule": shape.get("fill_rule")
+                                    .cloned()
+                                    .unwrap_or_else(|| json!("evenodd")),
+                            }))
+                        } else {
+                            shape
+                                .get("d")
+                                .and_then(Value::as_str)
+                                .and_then(|d| crate::tools::parse_svg_d(d).ok())
+                                .map(|subpaths| json!({"subpaths": subpaths}))
+                        };
+                        let fallback =
+                            || yanshi_render::geometry::rect_coverage_clipped(bbox, &clip);
+                        match geometry
+                            .and_then(|g| yanshi_render::object::parse_path_subpaths(&g).ok())
+                        {
+                            Some(parsed) => yanshi_render::geometry::path_coverage_clipped(
+                                &parsed.subpaths,
+                                4,
+                                &clip,
+                                parsed.fill_rule,
+                            ),
+                            None => fallback(),
                         }
                     }
                     _ => yanshi_render::geometry::rect_coverage_clipped(bbox, &clip),

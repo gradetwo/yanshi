@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 
 /// 解析 SVG path `d` 字符串 → subpaths JSON 数组
 /// （形态与 `object::parse_path_subpaths` 的输入一致）。
-pub(super) fn parse_svg_d(d: &str) -> Result<Value, String> {
+pub(crate) fn parse_svg_d(d: &str) -> Result<Value, String> {
     let mut parser = DParser {
         chars: d.chars().collect(),
         pos: 0,
