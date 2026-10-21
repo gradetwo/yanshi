@@ -3344,3 +3344,11 @@ gh api "repos/gradetwo/yanshi/actions/runs/<id>/jobs" --jq '.jobs[] | "\(.name)�
 ```
 CI 口径=323｜自检口径=262｜豁免=61 ⇒ 262 + 61 = 323 ✓ 自洽
 ```
+
+## ✅ **第十五个绿 run**（第 1490 轮）
+
+**⇒ `§232` 的报错提示修复（+ 新判据 `check-shape-error-hints-path`）⇒ **12 绿 / 0 红** ✓
+**⇒ ⇒ 本场**第十五个完整绿的 run** ✓
+**⇒ ⇒ ⇒ 它证明的是**"报错别把能力藏起来"**这条修复：写错 `type` 时**报错自己会教**怎么传 ✓
+
+**⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=25" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'` ✓
