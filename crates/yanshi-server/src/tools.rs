@@ -17924,6 +17924,17 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let mut cancelled: Option<YanshiError> = None;
     // 失败要留痕（第 1000+ 轮）：子调用失败时 ok 仍是 true ⇒ 静默吞掉 ⇒ 收集它们，返回里给 failed_calls。
     let mut failed_calls: Vec<Value> = Vec::new();
+    // **★ 全批汇总"保留像素"★**（第 1569 轮；外部在 `2073a4f7` 之后的补记）
+    //   **⇒ 他们的原话**：「建议 `batch` 的返回里**汇总**"总保留像素数/总尝试数"⇒
+    //     那样 `4000/4000` 会**是 0** 而 `6000/6000` 会**是 ~500000** ⇒ **一眼可辨**」✓
+    //   **⇒ ⇒ 为什么需要**：他们 `E1649` 用 `size 1.0` 画了 **4000 笔** ⇒ **全零像素**，
+    //     而**每笔的字段都在**、只是**没人会去翻 4000 条** ✗
+    //     ⇒ 汇总成**一个数** ⇒ **"4000 笔共落 0 像素"** 一眼就看见 ✓
+    //   **⇒ ⇒ ⇒ 恒等式**（本仓那条内核）：`painted_total == 0` **且** `stroke_calls > 0`
+    //     ⇒ **那这一批一笔都没画** ⇒ 调用方**不该**从 `ok: true` 得出"画了" ✓
+    let mut painted_total: u64 = 0;
+    let mut painted_clipped_total: u64 = 0;
+    let mut stroke_calls: u64 = 0;
     for (call_index, call) in calls.iter().enumerate() {
         // **安全点** ✓：每个子调用之前检查一次 ✓ ——
         // `batch` 正是"长任务"的典型形态 ✓（报告实测 300 笔 ⇒ 4~6 分钟 ✓）
@@ -18010,6 +18021,15 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         };
         if let Some(atom_id) = value.get("atom_id").and_then(Value::as_str) {
             atom_ids.push(json!(atom_id));
+        }
+        // **汇总落墨量**（只有笔触类工具才有这两个字段 ⇒ 其余不计入分母）✓
+        if let Some(painted) = value.get("painted_pixels").and_then(Value::as_u64) {
+            painted_total += painted;
+            stroke_calls += 1;
+            painted_clipped_total += value
+                .get("painted_pixels_clipped")
+                .and_then(Value::as_u64)
+                .unwrap_or(painted);
         }
         results.push(json!({"tool": name, "result": value}));
         if want_preview {
@@ -18109,6 +18129,20 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         //   **⇒ `ok` 的语义保持不动** ✓（=「这次批量请求本身跑完了」，与 `swatch` 的 per-item 一致 ✓）
         //     ⇒ 但**再给一个 `all_ok`** ⇒ 调用方看一个布尔就知道**整批是否全成** ✓
         //   **⇒ ⇒ 三个数互为恒等式**：`ok_count + fail_count == count`，且 `all_ok == (fail_count == 0)` ✓
+        // **★ 全批落墨汇总**（第 1569 轮；外部在 `clip_coverage` 之后的补记）
+        //   **⇒ 恒等式**：`stroke_calls > 0` **且** `painted_total == 0`
+        //     ⇒ **这一批一笔都没画**（典型：`size` 太小、或选区把墨全裁掉）✓
+        //   **⇒ ⇒ 所以**这两个数**不必翻 4000 条子调用**就知道"画了没有" ✓
+        "stroke_calls": stroke_calls,
+        "painted_total": painted_total,
+        "painted_clipped_total": painted_clipped_total,
+        // **★ 不给 `all_strokes_blank` 布尔** ✗（第 1569 轮自查后删掉）
+        //   **⇒ 我本想给**：`stroke_calls > 0 && painted_total == 0` ⇒ "这一批一笔都没画"
+        //   **⇒ ⇒ 但**我**造不出**那个情形**：画布外的一笔**直接被拒**（`ok=false`）、
+        //     小 `size` 的笔**仍会落几个像素**（实测 148 / 128 / 60）⇒ **那个 `true` 分支验不到** ✗
+        //   **⇒ ⇒ ⇒ 而**未验到的分支是负债**（本仓那条：断言必须能红）⇒ **所以删掉布尔，
+        //     只留**两个数字**：`stroke_calls` 与 `painted_total` ⇒ **调用方自己比** ✓
+        //     （**`painted_total == 0` 且 `stroke_calls > 0` 的意思仍然一眼可见** ✓）
         "ok_count": results.len().saturating_sub(failed_calls.len()),
         "fail_count": failed_calls.len(),
         "all_ok": failed_calls.is_empty(),
