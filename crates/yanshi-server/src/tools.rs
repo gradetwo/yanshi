@@ -608,7 +608,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，109 个）。
+    /// 核心层（默认注册，113 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
