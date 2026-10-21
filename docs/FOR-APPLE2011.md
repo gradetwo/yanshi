@@ -4700,3 +4700,33 @@ add_filter curves    ⇒ ok = False｜内核未实现该滤镜：curves；…
 **⇒ 因为连着错两次**（先说 `14/14`、又改成 `17`）⇒ **数字本身不是结论** ✗
 **⇒ ⇒ 现在写的是**：「**逐个实调，`params` 先给 `{}`、失败再补必填项**」✓
 **⇒ ⇒ ⇒ 这样下次谁去数，都会得到**同一个方法**，而不是抄一个会过期的数** ✓
+
+## ✅✅ **`levels` 与 `curves` 是**能用**的 —— 它们是**调整项**，不是滤镜**
+
+**⇒ 你试的是 `add_filter`**（那是对的直觉，但 `levels`/`curves` **不在滤镜里**）
+**⇒ ⇒ 正确用法是 `add_adjustment`，参数名是 **`adjustment_type`**（不是 `adjustment_name`）**：
+
+```json
+{"layer_id": "L1", "adjustment_type": "levels", "params": {}}
+{"layer_id": "L1", "adjustment_type": "curves", "params": {}}
+```
+**⇒ ⇒ ⇒ **实测两个都 `ok=true`** ✓**
+
+### 所以你的 `E1513` 现在有三条路，**都实测可用**
+
+| 目的 | 用什么 | 实测 |
+|---|---|---|
+| **压暗**（不产生边）| **`set_layer_blend` + `multiply`** | **`ok=true`** ✓ |
+| **暗角**（你手画的那个）| **`add_filter` + `filter_name: vignette`** | **`ok=true`** ✓ |
+| **精确调明暗/曲线** | **`add_adjustment` + `adjustment_type: levels` / `curves`** | **`ok=true`** ✓ |
+
+**⇒ ⇒ 而 `levels`/`curves` **不在 `add_filter` 里** ⇒ 我上一轮的台账说"未实现"**是错的** ✗
+**⇒ ⇒ ⇒ 更准确的说法**：**它们**不是滤镜**，是**调整** —— 两个工具、两套名字** ✓
+
+### 顺带（我实测的调整项白名单）
+
+**⇒ `add_adjustment` 报错里给出的支持列表**：
+```
+brightness_contrast / saturation / invert / levels / exposure / wh…
+```
+**⇒ ⇒ 而 `hue_saturation` **不是**调整项** ✗（实测报「内核未实现该调整类型」）⇒ **别用那个名字** ✓
