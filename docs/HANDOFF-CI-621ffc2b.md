@@ -2986,3 +2986,22 @@ ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs scripts/serve-*.mj
 **⇒ 顺带一条**负结论**：大笔（`r ≥ 3`）仍走 `e_interior`／`e_geom`／`p95` **三条**判据，
 探针显示 size 7 与 size 20 **都通过** ⇒ **`e_geom` 的绝对线对大笔是合适的，不需要半径相关化** ✓
 （只有 `r < 3` 需要换尺子，已在第 1440 轮做掉 ✓）
+
+## ★ 第 1446 轮的**本地预防普查**（共 16 条，全绿；含一次**我自己记错文件名**）
+
+**⇒ 目的**：在等 CI 时，把**今日改动会碰到**的判据先在本地跑掉 ⇒ 减少 CI 红的风险 ✓
+
+| 组 | 判据 | 结果 |
+|---|---|---|
+| smart_sample 族 | `ref-bbox`／`direction-follows-ref`／`smart-texture-brightening`／`smart-tools` | **0** ✓ |
+| 填充/批次 | `fill-region-feather`／`batch`／`brush-names`／`color-schema` | **0** ✓ |
+| 导出 | `export-deterministic`／`export-svg-validate-not-overrejecting`／`export-bitmaps` | **0** ✓ |
+| 介质 | `medium-filter-covers-all`／`medium-stroke-texture`／`medium-stroke-size-clamp` | **0** ✓ |
+| 位图/blob | `import-blob-decodable`／`bitmap-tiles-render` | **0** ✓ |
+
+**⇒ ⇒ 16/16 全绿** ⇒ **本场的行为改动没有碰坏既有判据** ✓
+
+**⇒ 顺带一条**自己的错**（记下来免得下次再猜）：
+`tool-export-png-deterministic.mjs` **不存在**（我凭记忆写的名字）⇒ 真正的是
+**`tool-export-deterministic.mjs`** ✓
+⇒ **⇒ 教训**：**判据名要 `ls` 一下**，别凭记忆 —— 与「文档里写命令而不是数字」同源 ✓
