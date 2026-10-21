@@ -698,6 +698,12 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         } else {
             None
         };
+        // **这一笔的选区是否反选** ✓（第 1550 轮；`B2`：网格外默认值要用它）
+        let invert_selection = state
+            .selections
+            .get(&name)
+            .map(|s| s.invert)
+            .unwrap_or(false);
         let mut dropped = 0usize;
         for index in (0..rgba.len()).step_by(4) {
             let pixel = index / 4;
@@ -723,7 +729,19 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
                             .clamp(0.0, 1.0),
                     )
                 } else {
-                    0.0
+                    // **覆盖网格外**的默认值取决于**反选*** ✗→✓（第 1550 轮；外部 `B2`）
+                    //   **⇒ 症状**：`create_selection(invert=true)` + `clip_to_selection`
+                    //     ⇒ **`ok=true` 但一个像素都不落** ✗（外部两次独立实验都是 0）
+                    //   **⇒ ⇒ 根因**：覆盖网格**只覆盖选区自己的 `bbox`**（`90..210`）
+                    //     ⇒ 而笔触横贯 `20..280` ⇒ **大部分像素在网格外** ⇒ 这里一律给 `0`
+                    //     ⇒ 于是"网格外"被当成"未覆盖" ⇒ **反选恰恰要求那里是 1** ✗✗
+                    //   **⇒ ⇒ ⇒ 所以**：**反选时网格外 = 1（覆盖）**；**不反选时网格外 = 0** ✓
+                    //     这正是 `coverage()` 里 `if self.invert { 1.0 - base }` 的同一套语义 ✓
+                    if invert_selection {
+                        1.0
+                    } else {
+                        0.0
+                    }
                 }
             } else {
                 1.0
