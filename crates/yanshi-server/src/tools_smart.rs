@@ -1132,6 +1132,16 @@ pub(super) fn write_smart_glaze(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
     }
     let shape_type = parsed.outer.kind_str();
     let poly_pts: Vec<(f64, f64)> = parsed.outer.polygon_points();
+    // glaze 的分层内缩要一条边界折线：polygon 用顶点，path 用点数最多的
+    // 展平环（主边界，与 edge_soften 同口径）；其它形状为空（走各自的臂）。
+    let glaze_pts: Vec<(f64, f64)> = match &parsed.outer {
+        PrimShape::Path { rings, .. } => rings
+            .iter()
+            .max_by_key(|ring| ring.len())
+            .cloned()
+            .unwrap_or_default(),
+        _ => poly_pts.clone(),
+    };
     let (bx0, by0, bx1, by1): (f64, f64, f64, f64) = parsed.bbox;
 
     // --- 辅助函数 ---
@@ -1257,8 +1267,8 @@ pub(super) fn write_smart_glaze(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
                     let r = (bx1 - bx0) / 2.0 - inset_px;
                     (ccx - r, ccy - r, ccx + r, ccy + r, Vec::new())
                 }
-                "polygon" => {
-                    let ip = inset_polygon(&poly_pts, inset_px);
+                "polygon" | "path" => {
+                    let ip = inset_polygon(&glaze_pts, inset_px);
                     if ip.len() < 3 {
                         (0.0, 0.0, -1.0, -1.0, Vec::new()) // 标记无效
                     } else {
@@ -1296,7 +1306,7 @@ pub(super) fn write_smart_glaze(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
             match shape_type {
                 "rect" => px >= lbx0 && px <= lbx1 && py >= lby0 && py <= lby1,
                 "circle" => (px - ccx).powi(2) + (py - ccy).powi(2) <= crad * crad,
-                "polygon" => {
+                "polygon" | "path" => {
                     if lpoly.len() < 3 {
                         return px >= lbx0 && px <= lbx1 && py >= lby0 && py <= lby1;
                     }
@@ -1554,6 +1564,23 @@ pub(super) fn write_smart_edge_soften(ctx: &mut ToolContext<'_>, args: &Value) -
                     path_pts.push((*px, *py));
                 }
                 closed = true;
+            }
+            PrimShape::Path {
+                subpaths, rings, ..
+            } => {
+                // 边缘路径只有一条：取点数最多的展平环作主边界（多子路径
+                // 时其余环不在柔化范围，与「只用外层」的既有口径一致）；
+                // 闭合性随该子路径自身的 closed。
+                let main = rings
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(_, ring)| ring.len())
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                if let Some(ring) = rings.get(main) {
+                    path_pts = ring.clone();
+                    closed = subpaths.get(main).map(|s| s.closed).unwrap_or(false);
+                }
             }
         }
     } else {
@@ -2601,6 +2628,23 @@ pub(super) fn write_smart_texture(ctx: &mut ToolContext<'_>, args: &Value) -> Re
             }
             PrimShape::Rect { x, y, w, h } => {
                 px >= x + e && px <= x + w - e && py >= y + e && py <= y + h - e
+            }
+            PrimShape::Path { rings, .. } => {
+                // 与 polygon 同款近似：到任一环任一边距离 ≥ e（环按闭合折线）。
+                for ring in rings {
+                    let n = ring.len();
+                    if n < 2 {
+                        continue;
+                    }
+                    for i in 0..n {
+                        let (ax, ay) = ring[i];
+                        let (bx, by) = ring[(i + 1) % n];
+                        if point_seg_dist(px, py, ax, ay, bx, by) < e {
+                            return false;
+                        }
+                    }
+                }
+                true
             }
         }
     };

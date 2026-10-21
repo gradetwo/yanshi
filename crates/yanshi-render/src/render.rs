@@ -5480,6 +5480,25 @@ pub fn mask_path_coverage(
 /// `kind = "path"` 且带内联 `subpaths` 时走 [`mask_path_coverage`] 的同一条
 /// 覆盖率路径，`object_id` 引用需要文档状态、只能经 `apply_layer_mask_warn`）。
 pub fn coverage_from_shape(shape: &Value) -> Coverage {
+    // 内联 path 蒙版与 clipped 版同路（`path_coverage_clipped`）：本函数没有
+    // 外部 clip ⇒ 以控制点包围盒为界（覆盖率恒在其内）。`object_id` 引用
+    // 需要文档状态、本函数解不了 ⇒ 解析必失败 ⇒ 空覆盖率（带状态入口
+    // `apply_layer_mask_warn` 会告警并按不施加蒙版处理，两处一致）。
+    // 此前这里直接落 `parse_shape_coverage`，它把 "path" 吞成 Rect ⇒
+    // 拿包围盒矩形冒充 path 覆盖率（静默降级）✗，与本函数文档承诺不符。
+    if shape.get("kind").and_then(Value::as_str) == Some("path") {
+        if let Ok(parsed) = crate::object::parse_path_subpaths(shape) {
+            if let Some((x, y, w, h)) = crate::object::path_control_bbox(&parsed.subpaths) {
+                return crate::geometry::path_coverage_clipped(
+                    &parsed.subpaths,
+                    4,
+                    &Bbox::new(x, y, w, h),
+                    parsed.fill_rule,
+                );
+            }
+        }
+        return Coverage::empty();
+    }
     let (kind, bbox, points) = parse_shape_coverage(shape);
     shape_coverage(kind, bbox, &points)
 }
@@ -6651,6 +6670,48 @@ mod tests {
             1,
             "未实现的修图类型必须告警"
         );
+    }
+
+    /// `coverage_from_shape` 对内联 path 必须走 path 覆盖率路，**不许**被
+    /// `parse_shape_coverage` 吞成包围盒 Rect（静默降级）✓。
+    ///
+    /// **变异判据** ✓：撤掉 path 分流 ⇒ 直角三角形被当成 40×40 矩形 ⇒
+    /// 三角外像素 (30,30) 覆盖率 = 1 ⇒ 第二条断言红 ✓。
+    #[test]
+    fn coverage_from_shape_treats_inline_path_as_path_not_rect() {
+        let shape = json!({"kind": "path", "subpaths": [
+            {"start": [0.0, 0.0], "closed": true, "segments": [
+                {"op": "L", "to": [40.0, 0.0]},
+                {"op": "L", "to": [0.0, 40.0]}]}]});
+        let coverage = coverage_from_shape(&shape);
+        // 三角内（x + y 远小于 40）满覆盖、三角外零覆盖。
+        assert!(coverage.at_doc(5.0, 5.0) > 0.5, "三角内应有覆盖率");
+        assert_eq!(
+            coverage.at_doc(30.0, 30.0),
+            0.0,
+            "三角外（包围盒内）必须零覆盖率——被吞成 Rect 就会在这里露馅"
+        );
+        // 与主路径恒等：同 subpaths 走 `path_coverage_clipped`
+        //（clip = 控制点包围盒）逐格一致。
+        let parsed = crate::object::parse_path_subpaths(&shape).unwrap();
+        let reference = crate::geometry::path_coverage_clipped(
+            &parsed.subpaths,
+            4,
+            &Bbox::new(0.0, 0.0, 40.0, 40.0),
+            parsed.fill_rule,
+        );
+        assert_eq!(coverage.bbox, reference.bbox);
+        assert_eq!(coverage.data, reference.data);
+        // `object_id` 引用在本函数无状态可解 ⇒ 空覆盖率（与 clipped 版
+        // 一致），不许编造矩形。
+        let referenced = coverage_from_shape(&json!({"kind": "path", "object_id": "obj_x"}));
+        assert_eq!(referenced.width, 0);
+        assert!(referenced.data.iter().all(|value| *value == 0.0));
+        // 老 kind 行为不变：rect 仍是满矩形。
+        let rect = coverage_from_shape(
+            &json!({"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 40, "h": 40}}),
+        );
+        assert!(rect.at_doc(30.0, 30.0) > 0.5);
     }
 
     /// 蒙版：范围外应被裁掉、反选应翻转、羽化应产生软边，缺失蒙版必须告警。

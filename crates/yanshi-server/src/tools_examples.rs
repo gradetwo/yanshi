@@ -525,6 +525,16 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         // **轻按时出细线、按满时到 1** ✓ —— 这是一条真实可照抄的压力曲线 ✓（spec：[[输入值, 倍率], …] ✓）。
         r#"{"brush":"100%_Opaque","curve":{"size_pressure":[[0,0.2],[1,1]]}}"#,
     ),
+    ("get_brush_dynamics", r#"{"brush":"100%_Opaque"}"#),
+    (
+        "set_brush_curve",
+        // 原始偏移口径：hardness 随 pressure 从 -0.2 到 +0.2（.myb 里的原值，不是倍率）。
+        r#"{"brush":"100%_Opaque","setting":"hardness","input":"pressure","points":[[0,-0.2],[1,0.2]]}"#,
+    ),
+    (
+        "apply_curve_preset",
+        r#"{"brush":"100%_Opaque","shape":"ease-in"}"#,
+    ),
     // **无参数工具**（✓，第 404 轮批量补 ✓）：这些 spec 的 `params` 是空数组 ✓
     // ⇒ **示例只可能是"成功"或"需要前置状态"** ✓，**不可能因缺参被拒** ✗。
     //（`commit_changeset` / `commit_transaction` 之类确实需要先有开启的变更集 ✓ ⇒ 归"需要前置状态"是**合理**的 ✓）

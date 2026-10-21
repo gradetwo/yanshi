@@ -61,6 +61,7 @@ fn dtimes_reach_the_engine() {
             &points,
             &mut previous,
             dtimes,
+            super::tools_brush::BrushSensors::default(),
         );
         // **∴ 用仓库自己的构造器 ✗ 别手填字段** ✓（**∴ 字段是 x0/y0/x1/y1/width/height ✓）
         let region = super::PaintRegion::from_bounds((0, 0, 255, 159, 256, 160));
@@ -423,6 +424,133 @@ fn smart_shape_area_subtracts_holes() {
         "面积应为 10000-400=9600，得到 {area}"
     );
     // 变异说明：area 不减孔洞 → 得到 10000，变红。
+}
+
+#[test]
+fn smart_shape_path_d_form_is_a_real_path() {
+    // type=path + d：三角形 (20,100) (100,20) (180,100)。contains/bbox/area
+    // 都按路径形状本身，不是控制点包围盒、更不是缺省矩形。
+    let v = json_shape(r#"{"type":"path","d":"M20 100 L100 20 L180 100 Z"}"#);
+    let p = parse_smart_shape(&v, "test").unwrap();
+    assert!(matches!(p.outer, PrimShape::Path { .. }));
+    assert_eq!(p.outer.kind_str(), "path");
+    assert_eq!(p.bbox, (20.0, 20.0, 180.0, 100.0));
+    assert!(p.contains(100.0, 73.0), "三角形质心应在内");
+    assert!(!p.contains(30.0, 30.0), "左上在三角形外（斜边 x+y=120）");
+    // 面积 = 底 160 × 高 80 / 2 = 6400（覆盖率口径，容差按边界长度给）。
+    let area = p.area();
+    assert!(
+        (area - 6400.0).abs() < 48.0,
+        "三角形面积应为 6400，得到 {area}"
+    );
+    // 变异说明：path 臂回到「返回空/矩形」⇒ contains 与 bbox 断言变红。
+}
+
+#[test]
+fn smart_shape_bare_d_without_type_is_path_not_default_rect() {
+    // 事故回归：{"d": …} 没有 type ⇒ 按 path 解析，绝不吞成 (0,0,100,100)。
+    let v = json_shape(r#"{"d":"M20 100 L100 20 L180 100 Z"}"#);
+    let p = parse_smart_shape(&v, "test").unwrap();
+    assert!(matches!(p.outer, PrimShape::Path { .. }));
+    assert_ne!(p.bbox, (0.0, 0.0, 100.0, 100.0), "bbox 不该是缺省矩形");
+    assert!(!p.contains(10.0, 10.0), "缺省矩形内、三角形外 ⇒ 必须在外");
+    assert!(p.contains(100.0, 73.0), "三角形质心应在内");
+    // 变异说明：去掉 d/subpaths 特征键推断 ⇒ 落回 Rect(0,0,100,100)，三条全红。
+}
+
+#[test]
+fn smart_shape_no_type_with_only_rect_keys_stays_rect() {
+    // 存量兼容：无 type 且只有 rect 键 ⇒ 维持缺省 rect。
+    let v = json_shape(r#"{"x":5,"y":5,"w":10,"h":10}"#);
+    let p = parse_smart_shape(&v, "test").unwrap();
+    assert!(matches!(p.outer, PrimShape::Rect { .. }));
+    assert!(p.contains(10.0, 10.0));
+    assert!(!p.contains(50.0, 50.0));
+}
+
+#[test]
+fn smart_shape_curve_d_area_is_path_area_not_default_rect() {
+    // 外部复现样本（gradetwo 判据同款 d）：贝塞尔闭合路径。
+    // 真实几何（解析值）：y 极值在 t≈0.211/0.789 处 ⇒ bbox ≈
+    // (150, 105.6)-(300, 134.5)；边界与闭合弦相交成双叶，填充面积是
+    // 两叶之和 ≈1400（带符号鞋带只会给出两叶之差 ≈75）；被吞成缺省
+    // 矩形时面积是 10000、bbox 是 (0,0,100,100)——三头都对不上。
+    let v = json_shape(r#"{"d":"M 150,120 C 200,70 260,170 300,120 Z"}"#);
+    let p = parse_smart_shape(&v, "fit_background_field").unwrap();
+    let (x0, y0, x1, y1) = p.bbox;
+    assert!(
+        (x0 - 150.0).abs() < 0.5 && (x1 - 300.0).abs() < 0.5,
+        "bbox x 应为 150..300，实测 {p:?}"
+    );
+    assert!(
+        (104.0..=107.0).contains(&y0),
+        "bbox y0 应 ≈105.6，实测 {y0}"
+    );
+    assert!(
+        (133.0..=136.0).contains(&y1),
+        "bbox y1 应 ≈134.5，实测 {y1}"
+    );
+    let area = p.area();
+    assert!(
+        (1250.0..=1600.0).contains(&area),
+        "曲线路径面积应 ≈1400（双叶之和，解析积分 ≈1.42e3），实测 {area}（缺省矩形会给 10000）"
+    );
+    // 变异说明：d 被吞回缺省 rect ⇒ bbox=(0,0,100,100)、area=10000，四条全红。
+}
+
+#[test]
+fn smart_shape_path_subpaths_fill_rules() {
+    // subpaths 给法 + fill_rule 语义：外环 0..100、内环 40..60（同为逆时针
+    // 书写时针序不论）：evenodd ⇒ 内环是孔；nonzero 同向嵌套 ⇒ 孔被填回。
+    let subs = r#"[
+        {"start":[0,0],"closed":true,"segments":[{"op":"L","to":[100,0]},{"op":"L","to":[100,100]},{"op":"L","to":[0,100]}]},
+        {"start":[40,40],"closed":true,"segments":[{"op":"L","to":[60,40]},{"op":"L","to":[60,60]},{"op":"L","to":[40,60]}]}
+    ]"#;
+    let even = json_shape(&format!(
+        r#"{{"type":"path","fill_rule":"evenodd","subpaths":{subs}}}"#
+    ));
+    let p = parse_smart_shape(&even, "test").unwrap();
+    assert!(!p.contains(50.0, 50.0), "evenodd：内环中心是孔");
+    assert!(p.contains(10.0, 10.0), "evenodd：外环内、内环外应在内");
+    let area = p.area();
+    assert!(
+        (area - 9600.0).abs() < 64.0,
+        "evenodd 面积应为 10000-400=9600，得到 {area}"
+    );
+    let non = json_shape(&format!(
+        r#"{{"type":"path","fill_rule":"nonzero","subpaths":{subs}}}"#
+    ));
+    let p = parse_smart_shape(&non, "test").unwrap();
+    assert!(p.contains(50.0, 50.0), "nonzero 同向嵌套：内环中心被填回");
+    // 变异说明：contains 不分 fill_rule（恒 evenodd）⇒ nonzero 断言变红；
+    // area 不走 fill_rule 覆盖率 ⇒ 9600 断言变红。
+}
+
+#[test]
+fn smart_shape_path_errors_point_the_way() {
+    // path 什么都不给 ⇒ 明确报错并指路（d / subpaths 两种给法都写）。
+    let v = json_shape(r#"{"type":"path"}"#);
+    let err = parse_smart_shape(&v, "smart_fill").unwrap_err();
+    let text = format!("{err:?}");
+    assert!(text.contains("必须给"), "实测：{text}");
+    assert!(text.contains("subpaths"), "实测：{text}");
+    // d 与 subpaths 同给 ⇒ 二选一报错。
+    let v = json_shape(
+        r#"{"type":"path","d":"M0 0 L1 1 Z","subpaths":[{"start":[0,0],"segments":[{"op":"L","to":[1,1]}]}]}"#,
+    );
+    let err = parse_smart_shape(&v, "smart_fill").unwrap_err();
+    assert!(format!("{err:?}").contains("只能给一个"), "实测：{err:?}");
+    // d 语法坏 ⇒ 报错带解析原因（字符位置）。
+    let v = json_shape(r#"{"type":"path","d":"M0 0 X9 9"}"#);
+    let err = parse_smart_shape(&v, "smart_fill").unwrap_err();
+    assert!(format!("{err:?}").contains("d 非法"), "实测：{err:?}");
+    // 未知 type ⇒ 支持列表必须含 path（旧文案把二期主打功能写成不支持）。
+    let v = json_shape(r#"{"type":"blob","x":0,"y":0}"#);
+    let err = parse_smart_shape(&v, "smart_fill").unwrap_err();
+    let text = format!("{err:?}");
+    assert!(text.contains("不支持的 shape type"), "实测：{text}");
+    assert!(text.contains("path"), "支持列表应含 path，实测：{text}");
+    // 变异说明：错误文案退回旧版（无 path）⇒ 最后一条变红。
 }
 
 #[test]

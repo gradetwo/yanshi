@@ -8,6 +8,65 @@
 
 use super::*;
 
+/// **真实传感器输入**（`brush_stroke` 的 `sensors` 参数）✓。
+///
+/// 此前宿主把 `stroke_to` 的 xtilt/ytilt 恒喂 0、引擎又把 `viewzoom` /
+/// `barrel_rotation` 写死 0 ⇒ 19 个输入里 7 个是死的（C1 现状清单 §3 实测）。
+/// 本结构把四路真实信号带进来：xtilt/ytilt 走 `stroke_to` 的既有参数，
+/// viewzoom / barrel_rotation 走 `hokusai::Brush` 的宿主字段（不进 `.myb`）。
+/// **缺省全 0 = 历史行为逐位一致**（引擎注释与回归测试守住）。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(super) struct BrushSensors {
+    /// 笔尖倾斜 X 分量（-1..1，与引擎 `stroke_to` 的 xtilt 同口径）。
+    pub xtilt: f32,
+    /// 笔尖倾斜 Y 分量（-1..1）。
+    pub ytilt: f32,
+    /// 笔杆旋转（度，0..360）⇒ 引擎 `barrel_rotation` 输入。
+    pub barrel_rotation_deg: f32,
+    /// 视图缩放（`log(倍率)`，1 倍 = 0）⇒ 引擎 `viewzoom` 输入。
+    pub viewzoom: f32,
+}
+
+/// 从 `sensors` 参数对象解析并校验（越界**报错**，不静默夹紧 —— 与 pressure 同纪律）。
+pub(super) fn brush_sensors_from_value(value: &Value) -> Result<BrushSensors> {
+    let Some(obj) = value.as_object() else {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "sensors 必须是对象 {xtilt, ytilt, twist_deg, viewzoom}（都可省略）".to_string(),
+            ),
+        ));
+    };
+    let field = |key: &str, lo: f64, hi: f64| -> Result<f32> {
+        match obj.get(key) {
+            None | Some(Value::Null) => Ok(0.0),
+            Some(raw) => {
+                let Some(v) = raw.as_f64() else {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!("sensors.{key} 必须是数字")),
+                    ));
+                };
+                if !v.is_finite() || !(lo..=hi).contains(&v) {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "sensors.{key} 必须在 {lo}..{hi}（给了 {v}）⇒ 越界不静默夹紧"
+                        )),
+                    ));
+                }
+                Ok(v as f32)
+            }
+        }
+    };
+    Ok(BrushSensors {
+        xtilt: field("xtilt", -1.0, 1.0)?,
+        ytilt: field("ytilt", -1.0, 1.0)?,
+        barrel_rotation_deg: field("twist_deg", 0.0, 360.0)?,
+        viewzoom: field("viewzoom", -8.0, 8.0)?,
+    })
+}
+
 pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // Validate output options before rasterization or committing a stroke.
     let anchor_mode = optional_str(args, "anchor_mode").unwrap_or_else(|| "data".to_owned());
@@ -41,6 +100,12 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     let points = expand_degenerate_points(points, args.get("size").and_then(Value::as_f64));
     // **★ P0 #3：取每个点的真实时间（没有就是 -1 ⇒ 落回 STEP_SECONDS）★**
     let dtimes = parse_brush_point_times(args)?;
+    // **真实传感器**（缺省不传 ⇒ 全 0 ⇒ 与历史行为逐位一致；传了非法值报错 ✓）。
+    let sensors = match args.get("sensors") {
+        Some(value) if !value.is_null() => brush_sensors_from_value(value)?,
+        _ => BrushSensors::default(),
+    };
+    let sensors_source = args.get("sensors").cloned().unwrap_or(Value::Null);
     // **风格变换** ✓（缺省 ⇒ 原样 ✓，见 `apply_brush_style` ✓）。
     let points = apply_brush_style(points, args)?;
     // **曲线尺吸附**（二期 `path_guide`）：只拉落点坐标 (x, y)，压感逐位不动；
@@ -265,6 +330,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         color_mixing,
         &dtimes,
         None,
+        sensors,
     )?;
     let BrushPaint {
         name,
@@ -706,6 +772,9 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             // **∴ 对称也要进 `source` ✗**（**∴ 否则 `update_stroke` 重跑出来的
             //   是**没镜像的那一半** ✓）★
             "symmetry": symmetry_name,
+            // **传感器也要进 `source`**（同理：重放时 tilt/viewzoom 效果不能丢 ✓；
+            // 没传时记 null，重放侧还原成缺省全 0 ✓）。
+            "sensors": sensors_source,
         },
         "layer_id": layer_id,
         "object_id": optional_str(args, "object_id"),
@@ -721,6 +790,15 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     value["steps"] = json!(steps);
     value["painted_pixels"] = json!(painted);
     value["max_channel_delta"] = json!(max_delta);
+    // **传感器回执**：传了才出现（不静默 ✓）—— 调用方能确认四路信号都被采纳。
+    if args.get("sensors").is_some_and(|v| !v.is_null()) {
+        value["sensors_applied"] = json!({
+            "xtilt": sensors.xtilt,
+            "ytilt": sensors.ytilt,
+            "twist_deg": sensors.barrel_rotation_deg,
+            "viewzoom": sensors.viewzoom,
+        });
+    }
     // ★ **`render_backend`：这台机器走的是哪条渲染路** ✗**（第 108 轮 ✓）
     //
     // **∴ 为什么加 ✗**：**∴ 4K 单笔的墙钟预算 100 ms ✗ 在**某些机器上物理不可达**✗
@@ -861,9 +939,39 @@ pub enum PrimShape {
         /// 顶点序列。
         points: Vec<(f64, f64)>,
     },
+    /// 任意路径（曲线/路径一、二期的数据模型）：结构化子路径 + 填充规则。
+    ///
+    /// `rings` 是构造时用**同一份展平**（`path::flatten_subpath`）得到的
+    /// 折线环，`contains` 走**同一份多环填充判定**（`path::rings_fill_contains`，
+    /// 即渲染层 `path_fill_contains` 的后半段）——工具层不另起展平/命中实现。
+    Path {
+        /// 结构化子路径（已过 `object::parse_path_subpaths` 校验）。
+        subpaths: Vec<yanshi_render::path::Subpath>,
+        /// 填充规则。
+        fill_rule: yanshi_render::path::FillRule,
+        /// 展平折线环（与 `subpaths` 一一对应，构造时派生，不单独落库）。
+        rings: Vec<Vec<(f64, f64)>>,
+    },
 }
 
 impl PrimShape {
+    /// 由结构化子路径构造 path 形状：展平只在这里做一次（同一份
+    /// `path::flatten_subpath`），之后 contains/bbox/area 都读折线环。
+    pub fn from_path(
+        subpaths: Vec<yanshi_render::path::Subpath>,
+        fill_rule: yanshi_render::path::FillRule,
+    ) -> PrimShape {
+        let rings = subpaths
+            .iter()
+            .map(|sub| yanshi_render::path::flatten_subpath(sub, yanshi_render::path::FLATTEN_TOL))
+            .collect();
+        PrimShape::Path {
+            subpaths,
+            fill_rule,
+            rings,
+        }
+    }
+
     /// 外接盒 `(x0, y0, x1, y1)`。
     pub fn bbox(&self) -> (f64, f64, f64, f64) {
         match self {
@@ -884,6 +992,25 @@ impl PrimShape {
                         y1 = y1.max(*py);
                     }
                     (x0, y0, x1, y1)
+                }
+            }
+            PrimShape::Path { rings, .. } => {
+                let mut x0 = f64::INFINITY;
+                let mut y0 = f64::INFINITY;
+                let mut x1 = f64::NEG_INFINITY;
+                let mut y1 = f64::NEG_INFINITY;
+                for ring in rings {
+                    for (px, py) in ring {
+                        x0 = x0.min(*px);
+                        y0 = y0.min(*py);
+                        x1 = x1.max(*px);
+                        y1 = y1.max(*py);
+                    }
+                }
+                if x0.is_finite() {
+                    (x0, y0, x1, y1)
+                } else {
+                    (0.0, 0.0, 0.0, 0.0)
                 }
             }
         }
@@ -920,6 +1047,12 @@ impl PrimShape {
                 }
                 inside
             }
+            PrimShape::Path {
+                rings, fill_rule, ..
+            } => {
+                let refs: Vec<&[(f64, f64)]> = rings.iter().map(Vec::as_slice).collect();
+                yanshi_render::path::rings_fill_contains(&refs, *fill_rule, (px, py))
+            }
         }
     }
 
@@ -941,6 +1074,24 @@ impl PrimShape {
                 }
                 a.abs() / 2.0
             }
+            PrimShape::Path {
+                subpaths,
+                fill_rule,
+                ..
+            } => {
+                // 面积 = 填充覆盖率之和，走渲染层同一条光栅路
+                // （`geometry::path_coverage_clipped`，与 filled_pixels 同口径）。
+                // 不用鞋带公式：边界自交的路径（波浪线 + 闭合弦那种双叶形）
+                // 带符号鞋带会把两叶相减，而填充语义要的是两叶之和。
+                let (x0, y0, x1, y1) = self.bbox();
+                if x1 <= x0 || y1 <= y0 {
+                    return 0.0;
+                }
+                let clip = yanshi_core::Bbox::new(x0.floor(), y0.floor(), x1.ceil(), y1.ceil());
+                let coverage =
+                    yanshi_render::geometry::path_coverage_clipped(subpaths, 4, &clip, *fill_rule);
+                coverage.data.iter().map(|v| f64::from(*v)).sum()
+            }
         }
     }
 
@@ -957,6 +1108,7 @@ impl PrimShape {
                 }
             }
             PrimShape::Polygon { .. } => "polygon",
+            PrimShape::Path { .. } => "path",
         }
     }
 
@@ -991,8 +1143,13 @@ pub(super) fn paint_brush(
     // **★ P0 #3：每个点的真实时间步长（秒）★**（空切片 ⇒ 老行为不变）
     dtimes: &[f64],
     background: Option<[u8; 4]>,
+    // **真实传感器**（缺省全 0 ⇒ 与历史行为逐位一致；xtilt/ytilt 在落笔时传给
+    // `stamp_stroke_from`，viewzoom / barrel_rotation 在下面写到 Brush 宿主字段）。
+    sensors: BrushSensors,
 ) -> Result<BrushPaint> {
     let (name, mut brush) = load_brush(ctx.workspace, brush_name)?;
+    brush.viewzoom = sensors.viewzoom;
+    brush.barrel_rotation = sensors.barrel_rotation_deg;
     if let Some(opacity) = opacity {
         brush.set(
             hokusai::BrushSetting::Opaque,
@@ -1226,6 +1383,7 @@ pub(super) fn paint_brush(
                     &dense[cursor..=cursor + 1],
                     &mut previous,
                     dtimes,
+                    sensors,
                 );
                 cursor += 1;
             }
@@ -1260,6 +1418,7 @@ pub(super) fn paint_brush(
                     points,
                     &mut previous_here,
                     dtimes,
+                    sensors,
                 );
                 if std::env::var_os("YANSHI_OPEN_TIMING").is_some() {
                     eprintln!("stamp_steps side=server steps={steps}");

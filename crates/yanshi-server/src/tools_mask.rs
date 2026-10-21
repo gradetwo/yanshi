@@ -381,7 +381,7 @@ fn validate_mask_path_shape(ctx: &mut ToolContext<'_>, shape: &Value) -> Result<
             "shape.subpaths 与 shape.object_id 只能给一个（二选一）".to_owned(),
         )),
         (None, None) => Err(invalid(
-            "kind=path 的蒙版 shape 必须给 subpaths（内联子路径）或 object_id（引用已有 path 形状）之一"
+            "kind=path 的蒙版 shape 必须给 subpaths（内联子路径）、d（SVG path 字符串）或 object_id（引用已有 path 形状）之一"
                 .to_owned(),
         )),
         (Some(_), None) => {
@@ -460,7 +460,7 @@ pub(super) fn write_create_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
         } else {
             None
         };
-    let shape = if let Some((s, _, _, _, _)) = &from_sel {
+    let mut shape = if let Some((s, _, _, _, _)) = &from_sel {
         if args.get("shape").and_then(Value::as_object).is_some() {
             require_object(args, "shape")?.clone()
         } else {
@@ -469,20 +469,52 @@ pub(super) fn write_create_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
     } else {
         require_object(args, "shape")?.clone()
     };
-    if shape.get("kind").and_then(Value::as_str).is_none()
-        && shape.get("type").and_then(Value::as_str).is_none()
-    {
+    // kind/type 互为别名：只有 type 时按 type 走，并在入口把 kind 补进落库
+    // 形状（渲染层只认 kind——只带 type 的 path 形状不归一化就会绕过下面的
+    // 校验、且渲不出 path 覆盖率，是静默降级）。
+    let effective_kind = shape
+        .get("kind")
+        .and_then(Value::as_str)
+        .or_else(|| shape.get("type").and_then(Value::as_str))
+        .map(str::to_owned);
+    let Some(effective_kind) = effective_kind else {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
             ErrorContext::detail(
-                "shape 必须带 kind（rect/ellipse/polygon/path），from_selection 时可省略"
+                "shape 必须带 kind 或 type（rect/ellipse/polygon/path），from_selection 时可省略"
                     .to_owned(),
             ),
         ));
+    };
+    if shape.get("kind").and_then(Value::as_str).is_none() {
+        if let Some(obj) = shape.as_object_mut() {
+            obj.insert("kind".to_owned(), Value::String(effective_kind.clone()));
+        }
     }
     // 二期：kind=path 的蒙版形状在入口验完（内联/引用二选一 + 同一份解析），
     // 不许落库之后才在渲染层发现形状是坏的。
-    if shape.get("kind").and_then(Value::as_str) == Some("path") {
+    if effective_kind == "path" {
+        // `d` 语法糖（与 draw_shape normalize 同口径）：d 在入口转 subpaths
+        // 并摘掉；与 subpaths 同给 ⇒ 二选一报错；语法坏 ⇒ 这里就报
+        // （带字符位置），不静默落库。
+        if let Some(d) = shape.get("d").and_then(Value::as_str).map(str::to_owned) {
+            if shape.get("subpaths").is_some() {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("shape 的 d 与 subpaths 只能给一个（二选一）".to_owned()),
+                ));
+            }
+            let subpaths = super::tools_pathd::parse_svg_d(&d).map_err(|reason| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("shape 的 d 非法：{reason}")),
+                )
+            })?;
+            if let Some(obj) = shape.as_object_mut() {
+                obj.insert("subpaths".to_owned(), subpaths);
+                obj.remove("d");
+            }
+        }
         validate_mask_path_shape(ctx, &shape)?;
     }
     let feather = args

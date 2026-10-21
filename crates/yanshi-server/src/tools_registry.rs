@@ -345,7 +345,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("selection_id", String, true, "选区 id"),
-            param!("shape", Object, true, "几何 {kind:rect|ellipse|polygon, bbox, points?}"),
+            param!("shape", Object, true, "几何 {kind:rect|ellipse|polygon|path, bbox, points?, subpaths?(path), fill_rule?(path: evenodd|nonzero)}"),
             param!("feather", Number, false, "羽化过渡宽度（像素，缺省 0）"),
             param!("invert", Boolean, false, "反选（缺省 false）"),
             param!("mode", String, false, "缺省 new = 新建（id 已存在则报错）。add/subtract/intersect 现在**只能对一个已存在的 id** 放行，但落盘是**覆盖**旧形状，**不是**布尔合并 ⇒ 结果等于最后那个形状。真正的合并尚未实现（见 docs/design/brush-capability-gap.md 三百二十七节）"),
@@ -1386,7 +1386,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("mask_id", String, true, "蒙版 id"),
-            param!("shape", Object, true, "几何 {kind:rect|ellipse|polygon, bbox, points?}；kind=path 时二选一：subpaths（内联子路径，与 draw_shape 的 path geometry 同格式）或 object_id（引用已有 path 形状对象），覆盖率走 path 填充同一条路"),
+            param!("shape", Object, true, "几何 {kind:rect|ellipse|polygon|path, bbox, points?}；kind 与 type 互为别名（只有 type 时按 type 走）；kind=path 时三选一：subpaths（内联子路径，与 draw_shape 的 path geometry 同格式）、d（SVG path 字符串，入口转 subpaths）或 object_id（引用已有 path 形状对象），覆盖率走 path 填充同一条路"),
             param!("feather", Number, false, "羽化过渡宽度（像素，缺省 0）"),
             param!("invert", Boolean, false, "反选（缺省 false）"),
             param!("mode", String, false, "缺省 new = 新建（id 已存在则报错）。add/subtract/intersect 现在**只能对一个已存在的 id** 放行，但落盘是**覆盖**旧形状，**不是**布尔合并 ⇒ 结果等于最后那个形状。真正的合并尚未实现（见 docs/design/brush-capability-gap.md 三百二十七节）"),
@@ -1978,6 +1978,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 false,
                 "缺省 true = 等到这一笔的渲染落盘再返回（状态与图都是最新的）；**false = 不等** ⇒ 立刻返回、渲染留到后面做。**何时该设 false**：连续作画（每笔都不看图）时等渲染是**纯浪费** —— 实测它占单笔耗时的 **66%**（500 对象时 preview_ms 11.0 / total 16.8 ms）。**代价**：紧接着读像素（get_pixels／analyze_region）或导图时可能读到**上一笔**的状态。"
             ),
+            param!("sensors", Object, false, "真实传感器输入（缺省不传 = 全 0 = 历史行为）：{xtilt: -1..1, ytilt: -1..1, twist_deg: 0..360, viewzoom: log(缩放倍率)}，各字段可省略。喂给引擎的 tilt 全家 / barrel_rotation / viewzoom 输入——笔刷在这些输入上挂了曲线时才有效果（用 get_brush_dynamics 查）；越界报错不夹紧"),
             param!("layer_id", String, true, "目标图层"),
             // **★ 对称模式 ✗ ★**（**第 251 轮 ✓）：**画一笔同时在**镜像位置**再画一遍** ✓
             //   ＋ **∴ 借鉴 ✗**：**Krita／Procreate 的对称是**工具态**✗ 不写进笔迹数据**
@@ -2037,7 +2038,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "智能填充：一笔一笔画出带人味的排线填充，替代 fill_region 的塑料感。输入形状 + 主方向，自动生成平行排线（带方向抖动），每条线用 hand_tremor + pressure_shape 保证自然。三种模式：hatch（单向排线）、cross_hatch（交叉）、contour（沿轮廓收缩）。 **⇒ `cross_hatch` 的排线是**真的画出来了**（笔触分两组角度，实测 0° 与 140–150° 两个峰）；看不见排线通常不是几何问题，而是**笔刷的单笔 alpha 太低** ⇒ 多笔叠加后只剩平均色 ⇒ 要看见排线请用不透明笔（如 `100%_Opaque.myb`）或减少叠笔。",
         mutating: true,
         params: &[
-            param!("shape", Object, true, "形状：{\"type\":\"rect\",\"x\":100,\"y\":100,\"w\":200,\"h\":150} 或 {\"type\":\"circle\",\"cx\":200,\"cy\":200,\"r\":80} 或 {\"type\":\"polygon\",\"points\":[[x,y],...]}；可选 \"holes\"（[[[x,y],...]] 或子形状数组）挖孔"),
+            param!("shape", Object, true, "形状：{\"type\":\"rect\",\"x\":100,\"y\":100,\"w\":200,\"h\":150} 或 {\"type\":\"circle\",\"cx\":200,\"cy\":200,\"r\":80} 或 {\"type\":\"polygon\",\"points\":[[x,y],...]} 或 {\"type\":\"path\",\"d\":\"M…Z\"}（path 也可给 subpaths 数组；缺 type 但带 d/subpaths 时按 path 解析）；可选 \"holes\"（[[[x,y],...]] 或子形状数组）挖孔"),
             param!("fill_direction", Number, false, "主笔刷方向（度，0=水平，90=垂直），缺省 -30（人类自然斜角）；传了 direction_guides/direction_from 时被局部方向场替代"),
             param!("direction_guides", Array, false, "方向场引导点 [[x,y,angle_deg],...]，排线顺应局部走向（单位向量 IDW 插值）"),
             param!("direction_from", String, false, "\"shape_contour\"（顺边缘）/\"shape_normal\"（垂直边缘放射）/\"mask_gradient\"（从形状梯度推方向）；**三者都依赖选区（`clip_to_selection`）⇒ 无选区时失败**"),
@@ -2057,7 +2058,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "智能混色：两色之间自然过渡（Two-Pass Wet Blend）。Pass 1 斜切排线铺色（blend_direction+72°），OKLab 感知均匀插值 + 黄金分割抖动打破带；Pass 2 湿笔揉边（blend_direction-25°，大笔刷高 paint_push 轻扫）。解决 sRGB 插值发灰、排线条带、上游颜色绑架三大问题。",
         mutating: true,
         params: &[
-            param!("shape", Object, true, "形状：同 smart_fill（rect/circle/polygon；可选 \"holes\" 挖孔）"),
+            param!("shape", Object, true, "形状：同 smart_fill（rect/circle/ellipse/polygon/path；可选 \"holes\" 挖孔）"),
             param!("color_a", Array, true, "起始颜色 [r,g,b,a]，0..1（渐变起点，blend_direction 的 0 端）"),
             param!("color_b", Array, true, "结束颜色 [r,g,b,a]，0..1（渐变终点，blend_direction 的 1 端）"),
             param!("blend_direction", Number, false, "渐变方向（度，0=从左到右，缺省 0；只传 direction_guides 未传本参数时取引导向量平均角）。注意排线会自动取局部方向场+72° 斜切"),
@@ -2075,7 +2076,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "智能罩染：在已画好的底稿上罩一层透明色（夕阳暖光、投影冷光、水彩花瓣）。干透叠色 paint_push=0.0 绝不搅动底色；用 target_opacity 反推 dab_alpha（防 Per-Dab 累积涂死）；Beer-Lambert 色彩逐层浓郁演进；黄金角摆动防摩尔纹；逐层内缩形成自然水彩边缘。",
         mutating: true,
         params: &[
-            param!("shape", Object, true, "形状：同 smart_fill（rect/circle/polygon）"),
+            param!("shape", Object, true, "形状：同 smart_fill（rect/circle/ellipse/polygon/path）"),
             param!("color", Array, true, "罩染颜色 [r,g,b,a]，0..1"),
             param!("layers", Number, false, "罩染层数，缺省 3（1-8）"),
             param!("target_opacity", Number, false, "整次罩染完成后的目标视觉遮盖率 0.05-0.95，缺省 0.55。传这个最直观，不用自己算 Dab 累积"),
@@ -2097,7 +2098,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[
             param!("edge_path", Array, false, "边缘路径 [[x,y],...]（至少 2 点）；与 shape 二选一"),
             param!("path_guide", Object, false, "曲线尺吸附（二期）：{object_id|subpaths, snap_radius}——先把 edge_path 输入点列往一条 path 曲线拉（权重 (1−d/R)²）再柔化；只作用于 edge_path（shape 派生边界是精确几何、不吸附），只改落点坐标。与 direction_guides 并存不冲突（方向场改笔触走向、本参数改落点位置）"),
-            param!("shape", Object, false, "形状（rect/circle/polygon，同 smart_fill），自动取边界为边缘路径；与 edge_path 二选一"),
+            param!("shape", Object, false, "形状（rect/circle/ellipse/polygon/path，同 smart_fill），自动取边界为边缘路径；与 edge_path 二选一"),
             param!("soften_width", Number, false, "柔化宽度 px，缺省 20（2-100）；大于 10px 自动分级接力"),
             param!("soften_strength", Number, false, "柔化强度 0.1-1，缺省 0.5（映射为 paint_push）"),
             param!("max_steps", Integer, false, "边缘采样点上限，缺省 400 ⇒ 超出时**等距抽稀**（防大形状生成上千个原子）"),
@@ -2115,7 +2116,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "智能肌理：按材质类型在区域内自动生成肌理笔触（canvas 经纬线/fabric 斜纹织线/skin 漫游皮纹/stone 碎裂短线+斑块/wood 长流线+木节）。分层抖动网格+簇状调制防结块与筛子感；20% 骨相层+80% 肌理层双尺度；笔数按目标覆盖率反推（上限 240）；颜色从底色自动推导（80% 暗部+20% 微高光，Alpha 永不 1.0）。**在空（全透明）层上调用不会产生可见像素**（`Alpha ≤ base_alpha` 且底色由图层平均色推出 ⇒ 空层没有底色）⇒ 请先铺底再上肌理。",
         mutating: true,
         params: &[
-            param!("shape", Object, true, "形状：同 smart_fill（rect/circle/polygon；可选 \"holes\" 挖孔）"),
+            param!("shape", Object, true, "形状：同 smart_fill（rect/circle/ellipse/polygon/path；可选 \"holes\" 挖孔）"),
             param!("texture_type", String, true, "canvas（粗麻经纬线）/fabric（斜纹织线）/skin（漫游皮纹）/stone（碎裂短线+斑块）/wood（长流线+木节）/fold（衣褶：亮暗成对偶极子，配合 direction_guides 用）"),
             param!("direction_guides", Array, false, "方向场引导点 [[x,y,angle_deg],...]，肌理走向顺应局部场"),
             param!("direction_from", String, false, "\"shape_contour\"/\"shape_normal\"/\"mask_gradient\"（见 smart_fill）；**三者都依赖选区（`clip_to_selection`）⇒ 无选区时会失败**"),
@@ -2154,7 +2155,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层 id"),
-            param!("mask", Object, true, "掩膜形状（写法同 `fill_region` 的 shape：rect/circle/ellipse/polygon，支持 holes）⇒ **掩膜内**会被拟合场填掉，**掩膜外**的像素是拟合样本"),
+            param!("mask", Object, true, "掩膜形状（写法同 smart_fill 的 shape：rect/circle/ellipse/polygon/path，path 用 d 字符串或 subpaths 数组，支持 holes）⇒ **掩膜内**会被拟合场填掉，**掩膜外**的像素是拟合样本"),
             param!("degree", Number, false, "多项式阶数 **0..3**（缺省 2）。**0 = 常数项** ⇒ 等于「用掩膜外的均值填满」（不产生任何渐变）；越高越能贴合弯曲的背景，但也越容易过冲"),
             param!("sample_stride", Number, false, "采样步长 1..16（缺省 2）：每隔 N 个像素取一个样本 ⇒ 越大越快、越不敏感于噪声"),
             param!("margin", Number, false, "掩膜 bbox 外扩比例（缺省 0.25）⇒ 决定拿多远处的像素当样本；外扩不够时样本数可能不足"),
@@ -2168,7 +2169,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("ref", String, true, "参考源：文档内参考图层 layer_id，或 blob_hash（sha256:…），或 PNG 文件路径"),
-            param!("shape", Object, true, "目标绘制形状（rect/circle/ellipse/polygon，支持 holes）"),
+            param!("shape", Object, true, "目标绘制形状（rect/circle/ellipse/polygon/path，支持 holes）"),
             param!("ref_bbox", Array, false, "可选 [x,y,w,h]：参考图采样框；缺省与 shape 的 bbox 相同（同尺寸对齐）"),
             param!("samples", Number, false, "明暗采样网格阶数 S（S×S 双线性色彩场），范围 4..24，缺省 8"),
             param!("texture_type", String, false, "笔触肌理风格：smooth/fabric/fold/canvas/skin/stone/wood，缺省 fabric"),
@@ -2185,7 +2186,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层 id（必填）"),
-            param!("shape", Object, true, "擦除形状（rect/circle/ellipse/polygon，支持 holes）"),
+            param!("shape", Object, true, "擦除形状（rect/circle/ellipse/polygon/path，支持 holes）"),
             param!("invert", Boolean, false, "反相擦除（true = 保留 shape 内部，擦除 shape 外部溢色），缺省 false"),
             param!("feather", Number, false, "边缘羽化半径 0..256，缺省 1.0（1px 抗锯齿软边）"),
             param!("opacity", Number, false, "擦除强度 0..1，缺省 1.0"),
@@ -2588,6 +2589,49 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 true,
                 "{size_pressure|opacity_pressure|tilt_size: [[输入值, 倍率], …]}；只替换给到的输入，其余保留"
             ),
+        ],
+    },
+    ToolSpec {
+        name: "get_brush_dynamics",
+        profile: Profile::Core,
+        // **为什么需要它**（C1 现状清单短名单 #2）：`get_brush_settings` 只给 base_value，
+        // 曲线「写得进、读不回」⇒ 调参盲写。本工具把 66 项的 base + 全部 inputs 曲线
+        // （含未知输入/未知设置）一次读全；format=myb 时给完整 .myb 文本。
+        summary: "读出一支笔刷的全部动力学曲线：66 项设置的 base_value ＋ 每条 inputs 映射曲线（原始偏移）；format=myb 时返回完整 .myb 文本",
+        mutating: false,
+        params: &[
+            param!("brush", String, true, "笔刷名（同 brush_stroke，可省 .myb）"),
+            param!("format", String, false, "json（缺省）= 结构化读出；myb = 完整 .myb 文本"),
+        ],
+    },
+    ToolSpec {
+        name: "set_brush_curve",
+        profile: Profile::Core,
+        // **修 C1 短名单 #1**：老 set_brush_dynamics 的任意键分支只能改写已有 input、
+        // 且写出的 {"points": …} 与解析器不兼容（写坏整支笔，已实测）。
+        // 本工具：规范名校验（未识别报错）、input 不存在就新建、写裸数组（解析器原生格式）、
+        // 收**原始偏移**（与倍率口径的 set_brush_dynamics 分工，summary 里写清）。
+        summary: "写任意一条笔刷动力学曲线（原始偏移口径）：setting/input 用 .myb 规范名，points 是 [[输入值, 偏移], …]；input 不存在会自动新建，名字写错会报错",
+        mutating: false,
+        params: &[
+            param!("brush", String, true, "笔刷名（同 brush_stroke，可省 .myb）"),
+            param!("setting", String, true, "设置的规范名（如 radius_logarithmic / opaque / hardness）"),
+            param!("input", String, true, "输入的规范名（如 pressure / speed1 / tilt_declination / stroke）"),
+            param!("points", Array, true, "点列 [[输入值, 偏移], …]（至少 1 点；x 自动升序）—— 注意是原始偏移，不是倍率"),
+        ],
+    },
+    ToolSpec {
+        name: "apply_curve_preset",
+        profile: Profile::Core,
+        // **曲线形状快速通道**（C1 短名单 #5）：此前只有 Web 查看器里 3 档写死的
+        // size_pressure 形状，MCP 侧没有。这里给 6 个命名形状（倍率点列在实现里写死、
+        // README/工具说明可查），经 set_brush_dynamics 的语义键通道落盘。
+        summary: "一键套用命名曲线形状（倍率口径）：shape ∈ linear/soft/hard/ease-in/ease-out/s-curve，target 缺省 size_pressure（限七个语义键）",
+        mutating: false,
+        params: &[
+            param!("brush", String, true, "笔刷名（同 brush_stroke，可省 .myb）"),
+            param!("shape", String, true, "形状名：linear / soft / hard / ease-in / ease-out / s-curve（ease-in-out 是 s-curve 的别名）"),
+            param!("target", String, false, "套到哪条语义曲线（缺省 size_pressure）：size_pressure/opacity_pressure/tilt_size/size_speed/opacity_speed/opacity_multiply_pressure/smudge_stroke"),
         ],
     },
     ToolSpec {

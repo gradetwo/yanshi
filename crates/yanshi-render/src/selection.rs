@@ -11,9 +11,11 @@
 //! 几何契约与蒙版一致：
 //!
 //! ```json
-//! {"kind": "rect" | "ellipse" | "polygon" | "lasso",
+//! {"kind": "rect" | "ellipse" | "polygon" | "lasso" | "path",
 //!  "bbox": {"x": 0, "y": 0, "w": 10, "h": 10},
-//!  "points": [[x, y], ...]}
+//!  "points": [[x, y], ...],
+//!  "subpaths": [{"start": [x, y], "closed": true, "segments": [...]}],
+//!  "fill_rule": "evenodd" | "nonzero"}
 //! ```
 //!
 //! 退化输入一律**不 panic**：非法（kind 缺失/未知、缺少 bbox 等）退化为「覆盖全部」，
@@ -114,6 +116,20 @@ pub enum SelectionGeom {
         /// 顶点序列，按输入顺序，隐式闭合。
         points: Vec<(f64, f64)>,
     },
+    /// 曲线路径（`kind == "path"`，与一期 path 形状同构的载荷）。
+    ///
+    /// 解析时走 `object::parse_path_subpaths`（与 `draw_shape` 共用的同一份
+    /// 校验），再用 `path::flatten_subpath`（[`crate::path::FLATTEN_TOL`]）在
+    /// 解析期展平一次存环；覆盖率的内外判定走 `path::rings_fill_contains`——
+    /// 与 `path::path_fill_contains` 同一条填充路径，禁止另写展平 / 填充。
+    /// 校验失败（载荷非法）退化为 [`Self::Empty`]：已识别的 kind 载荷坏掉时
+    /// 宁可不选、不可错选（与 `Bitmap` 缺 blob 同例），绝不退化为覆盖全部。
+    Path {
+        /// 展平后的环列（每条子路径一环；填充语义隐式闭合，与 SVG 一致）。
+        rings: Vec<Vec<(f64, f64)>>,
+        /// 填充规则（`evenodd` / `nonzero`）。
+        fill_rule: crate::path::FillRule,
+    },
     /// 位图选区（`smart_select` 魔棒生成）：`kind == "bitmap"`。
     ///
     /// 覆盖率走 O(1) 查表（`coverage` 内零锁、零解码）；`feather` 已烘焙进位图
@@ -133,6 +149,8 @@ impl SelectionShape {
     ///
     /// - `kind` 为 `polygon` / `lasso`：顶点少于 3 个退化为空；
     ///   缺少 `points` 则把 `bbox` 当作退化多边形处理（仍为空）。
+    /// - `kind` 为 `path`：载荷走 `object::parse_path_subpaths` 校验，校验失败
+    ///   或展平后无有效环退化为空（不退化为覆盖全部，理由见 [`SelectionGeom::Path`]）。
     /// - `kind` 为 `rect` / `ellipse`：`bbox`（或顶层 `x/y/w/h`）面积为零 / 非有限 → 空。
     /// - `kind` 缺失或未知、或形状对象无法识别 → 覆盖全部（安全侧退化）。
     /// - `feather` 非有限或为负按 0 处理；`invert` 非布尔按 `false`；`mode` 未知按 `new`。
@@ -222,6 +240,29 @@ impl SelectionShape {
                     SelectionGeom::Polygon { points }
                 }
             }
+            "path" => {
+                // 与一期 path 形状共用同一份校验（`object::parse_path_subpaths`，
+                // 禁止再写第二套）；展平只在解析期做一次（`path::FLATTEN_TOL`）。
+                match crate::object::parse_path_subpaths(value) {
+                    Ok(parsed) => {
+                        let rings: Vec<Vec<(f64, f64)>> = parsed
+                            .subpaths
+                            .iter()
+                            .map(|sub| crate::path::flatten_subpath(sub, crate::path::FLATTEN_TOL))
+                            .collect();
+                        if rings.iter().all(|ring| ring.len() < 2) {
+                            SelectionGeom::Empty
+                        } else {
+                            SelectionGeom::Path {
+                                rings,
+                                fill_rule: parsed.fill_rule,
+                            }
+                        }
+                    }
+                    // 已识别的 kind 载荷非法 ⇒ 空（宁可不选、不可错选）。
+                    Err(_) => SelectionGeom::Empty,
+                }
+            }
             "bitmap" => {
                 // 位图选区：紧致 bbox + blob 哈希；掩膜由全局注册表单次绑定。
                 // 注意：绝不能复用 "magic_wand" 这个 kind（现有单测断言它退化全选）。
@@ -284,6 +325,9 @@ impl SelectionShape {
             SelectionGeom::Rect { bbox } => rect_signed_distance(*bbox, x, y),
             SelectionGeom::Ellipse { bbox } => ellipse_signed_distance(*bbox, x, y),
             SelectionGeom::Polygon { points } => polygon_signed_distance(points, x, y),
+            SelectionGeom::Path { rings, fill_rule } => {
+                path_signed_distance(rings, *fill_rule, x, y)
+            }
             // 位图选区不走有符号距离（`coverage` 直接查表）；这里返回 +∞
             // 表示「无穷远外部」，避免任何调用方误算出覆盖。
             SelectionGeom::Bitmap { .. } => f64::INFINITY,
@@ -410,6 +454,21 @@ impl SelectionGeom {
                 }
                 Some((min_x, min_y, max_x - min_x, max_y - min_y))
             }
+            SelectionGeom::Path { rings, .. } => {
+                let mut min_x = f64::INFINITY;
+                let mut min_y = f64::INFINITY;
+                let mut max_x = f64::NEG_INFINITY;
+                let mut max_y = f64::NEG_INFINITY;
+                for ring in rings {
+                    for &(x, y) in ring {
+                        min_x = min_x.min(x);
+                        min_y = min_y.min(y);
+                        max_x = max_x.max(x);
+                        max_y = max_y.max(y);
+                    }
+                }
+                Some((min_x, min_y, max_x - min_x, max_y - min_y))
+            }
             SelectionGeom::Empty => Some((0.0, 0.0, 0.0, 0.0)),
             SelectionGeom::CoverAll => None,
             SelectionGeom::Bitmap { bbox, .. } => Some((
@@ -450,6 +509,40 @@ fn feather_coverage(sdf: f64, feather: f64) -> f32 {
     // `t` 从内侧的 0 走到外侧的 1；smoothstep 后取反，得到单调递减的覆盖度。
     let t = ((sdf + half) / feather).clamp(0.0, 1.0);
     (1.0 - t * t * (3.0 - 2.0 * t)) as f32
+}
+
+/// 路径（多环）的有符号距离：内为负、外为正。
+///
+/// 内外判定用 [`crate::path::rings_fill_contains`]（与形状填充同一条路径，
+/// `fill_rule` 决定嵌套环的挖孔 / 叠加语义）；距离取到全部环折线段
+/// （含填充语义的隐式闭合段）的最短距离。
+fn path_signed_distance(
+    rings: &[Vec<(f64, f64)>],
+    fill_rule: crate::path::FillRule,
+    x: f64,
+    y: f64,
+) -> f64 {
+    let mut min_dist = f64::INFINITY;
+    for ring in rings {
+        let count = ring.len();
+        if count < 2 {
+            continue;
+        }
+        let mut j = count - 1;
+        for i in 0..count {
+            let d = segment_distance(x, y, ring[j], ring[i]);
+            if d < min_dist {
+                min_dist = d;
+            }
+            j = i;
+        }
+    }
+    let ring_refs: Vec<&[(f64, f64)]> = rings.iter().map(Vec::as_slice).collect();
+    if crate::path::rings_fill_contains(&ring_refs, fill_rule, (x, y)) {
+        -min_dist
+    } else {
+        min_dist
+    }
 }
 
 /// 轴对齐矩形的有符号距离（外正内负，边界为 0）。
@@ -711,6 +804,20 @@ fn shape_sample_points(shape: &SelectionShape) -> Vec<(f64, f64)> {
             points.push(((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0));
         }
     }
+    if let SelectionGeom::Path { rings, .. } = &shape.geom {
+        for ring in rings {
+            let count = ring.len();
+            if count < 2 {
+                continue;
+            }
+            for i in 0..count {
+                let a = ring[i];
+                let b = ring[(i + 1) % count];
+                points.push(a);
+                points.push(((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0));
+            }
+        }
+    }
     points
 }
 
@@ -828,6 +935,33 @@ fn geom_bbox_extent(
                 }
                 if y > max_y {
                     max_y = y;
+                }
+            }
+            if min_x > max_x {
+                None
+            } else {
+                Some((min_x, min_y, max_x - min_x, max_y - min_y))
+            }
+        }
+        SelectionGeom::Path { rings, .. } => {
+            let mut min_x = f64::INFINITY;
+            let mut min_y = f64::INFINITY;
+            let mut max_x = f64::NEG_INFINITY;
+            let mut max_y = f64::NEG_INFINITY;
+            for ring in rings {
+                for &(x, y) in ring {
+                    if x < min_x {
+                        min_x = x;
+                    }
+                    if y < min_y {
+                        min_y = y;
+                    }
+                    if x > max_x {
+                        max_x = x;
+                    }
+                    if y > max_y {
+                        max_y = y;
+                    }
                 }
             }
             if min_x > max_x {
@@ -1268,6 +1402,229 @@ mod tests {
         assert_eq!(s.coverage(1.0, 3.5), 1.0); // 同一条边上的普通点
         assert_eq!(s.coverage(2.5, 2.2), 0.0); // 凹口（形状外）
         assert_eq!(s.coverage(2.0, 4.0), 1.0); // 凹口上方的本体
+    }
+
+    /// 圆弧段的四点组（起点， c1, c2, 终点），`circle_subpath` 用。
+    type Arc4 = ((f64, f64), (f64, f64), (f64, f64), (f64, f64));
+
+    /// 圆弧近似的圆子路径（4 段三次 Bézier，κ 弧常数）：圆心 (cx, cy)、半径 r。
+    /// `reverse` 为真时整条子路径绕向反转（段序逆转 + 每段起终点互换），
+    /// nonzero 用例靠它区分「同向叠加 / 反向抵消」。
+    fn circle_subpath(cx: f64, cy: f64, r: f64, reverse: bool) -> Value {
+        const KAPPA: f64 = 0.552_284_749_830_79;
+        let d = r * KAPPA;
+        // 每段 (起点, c1, c2, 终点)，首尾相接成环。
+        let mut arcs: Vec<Arc4> = vec![
+            (
+                (cx + r, cy),
+                (cx + r, cy + d),
+                (cx + d, cy + r),
+                (cx, cy + r),
+            ),
+            (
+                (cx, cy + r),
+                (cx - d, cy + r),
+                (cx - r, cy + d),
+                (cx - r, cy),
+            ),
+            (
+                (cx - r, cy),
+                (cx - r, cy - d),
+                (cx - d, cy - r),
+                (cx, cy - r),
+            ),
+            (
+                (cx, cy - r),
+                (cx + d, cy - r),
+                (cx + r, cy - d),
+                (cx + r, cy),
+            ),
+        ];
+        if reverse {
+            arcs = arcs
+                .iter()
+                .rev()
+                .map(|&(p0, c1, c2, p1)| (p1, c2, c1, p0))
+                .collect();
+        }
+        let segments: Vec<Value> = arcs
+            .iter()
+            .map(|&(_, c1, c2, to)| {
+                json!({"op": "C", "c1": [c1.0, c1.1], "c2": [c2.0, c2.1], "to": [to.0, to.1]})
+            })
+            .collect();
+        let start = arcs[0].0;
+        json!({"start": [start.0, start.1], "closed": true, "segments": segments})
+    }
+
+    #[test]
+    fn path_circle_coverage_and_area_match_analytic() {
+        // r=16 的圆（圆弧近似 path）：覆盖率对解析圆，面积对 πr²。
+        let s = shape(json!({
+            "kind": "path",
+            "subpaths": [circle_subpath(32.0, 32.0, 16.0, false)],
+        }));
+        assert_eq!(s.coverage(32.0, 32.0), 1.0, "圆心应在内");
+        assert_eq!(s.coverage(47.0, 32.0), 1.0, "距圆心 15 < r 应在内");
+        assert_eq!(s.coverage(49.0, 32.0), 0.0, "距圆心 17 > r 应在外");
+        assert_eq!(s.coverage(0.0, 0.0), 0.0);
+        // 面积：0.5 步长采样求和（采样误差 ~周长×步长/2，远小于 5% 容差）。
+        let mut area = 0.0f64;
+        let mut y = 12.0;
+        while y < 52.0 {
+            let mut x = 12.0;
+            while x < 52.0 {
+                area += f64::from(s.coverage(x, y)) * 0.25;
+                x += 0.5;
+            }
+            y += 0.5;
+        }
+        let analytic = std::f64::consts::PI * 16.0 * 16.0;
+        assert!(
+            (area - analytic).abs() <= analytic * 0.05,
+            "path 圆面积 {area} 与解析值 {analytic} 偏差超过 5%"
+        );
+    }
+
+    #[test]
+    fn path_evenodd_concentric_rings_punch_hole() {
+        // 同心双环 + evenodd：内环是洞——中心不覆盖、环带覆盖、外侧不覆盖。
+        let s = shape(json!({
+            "kind": "path",
+            "fill_rule": "evenodd",
+            "subpaths": [
+                circle_subpath(32.0, 32.0, 16.0, false),
+                circle_subpath(32.0, 32.0, 6.0, false),
+            ],
+        }));
+        assert_eq!(s.coverage(32.0, 32.0), 0.0, "evenodd 内环应挖空中心");
+        assert_eq!(s.coverage(43.0, 32.0), 1.0, "两环之间的环带应覆盖");
+        assert_eq!(s.coverage(52.0, 32.0), 0.0, "外环之外不覆盖");
+    }
+
+    #[test]
+    fn path_nonzero_direction_decides_stacking() {
+        // nonzero + 同向内环：绕数叠加 ⇒ 中心被覆盖（与 evenodd 的关系差异）。
+        let stacked = shape(json!({
+            "kind": "path",
+            "fill_rule": "nonzero",
+            "subpaths": [
+                circle_subpath(32.0, 32.0, 16.0, false),
+                circle_subpath(32.0, 32.0, 6.0, false),
+            ],
+        }));
+        assert_eq!(stacked.coverage(32.0, 32.0), 1.0, "nonzero 同向应叠加");
+        assert_eq!(stacked.coverage(43.0, 32.0), 1.0);
+        // nonzero + 反向内环：绕数抵消 ⇒ 中心成洞。
+        let cancelled = shape(json!({
+            "kind": "path",
+            "fill_rule": "nonzero",
+            "subpaths": [
+                circle_subpath(32.0, 32.0, 16.0, false),
+                circle_subpath(32.0, 32.0, 6.0, true),
+            ],
+        }));
+        assert_eq!(
+            cancelled.coverage(32.0, 32.0),
+            0.0,
+            "nonzero 反向应抵消成洞"
+        );
+        assert_eq!(cancelled.coverage(43.0, 32.0), 1.0);
+        // evenodd 与绕向无关：反向内环照样挖洞。
+        let evenodd_reversed = shape(json!({
+            "kind": "path",
+            "fill_rule": "evenodd",
+            "subpaths": [
+                circle_subpath(32.0, 32.0, 16.0, false),
+                circle_subpath(32.0, 32.0, 6.0, true),
+            ],
+        }));
+        assert_eq!(evenodd_reversed.coverage(32.0, 32.0), 0.0);
+    }
+
+    #[test]
+    fn path_invalid_payload_is_empty_not_cover_all() {
+        // 回归锁：path 在本包之前落进未知 kind 的「覆盖全部」分支 ⇒ 传坏载荷
+        // 会把整个画布选上。修后必须是空：以下每种坏载荷在任何采样点都是 0。
+        for bad in [
+            json!({"kind": "path"}),
+            json!({"kind": "path", "subpaths": []}),
+            json!({"kind": "path", "subpaths": [{"start": [0.0, 0.0], "segments": [{"op": "X", "to": [1.0, 1.0]}]}]}),
+            json!({"kind": "path", "fill_rule": "bogus", "subpaths": [circle_subpath(8.0, 8.0, 4.0, false)]}),
+        ] {
+            let s = shape(bad);
+            for &(x, y) in &[(0.0, 0.0), (8.0, 8.0), (32.0, 32.0), (500.0, 500.0)] {
+                assert_eq!(s.coverage(x, y), 0.0, "坏 path 载荷应在 ({x},{y}) 为空");
+            }
+        }
+    }
+
+    #[test]
+    fn path_signed_distance_sign_and_feather_band() {
+        // L 形（纯直线段）：左柱 + 顶横，右下是凹口。
+        let l_shape = json!({
+            "kind": "path",
+            "subpaths": [{
+                "start": [0.0, 0.0], "closed": true,
+                "segments": [
+                    {"op": "L", "to": [20.0, 0.0]},
+                    {"op": "L", "to": [20.0, 10.0]},
+                    {"op": "L", "to": [10.0, 10.0]},
+                    {"op": "L", "to": [10.0, 20.0]},
+                    {"op": "L", "to": [0.0, 20.0]}
+                ]
+            }],
+        });
+        let s = shape(l_shape.clone());
+        assert_eq!(s.coverage(5.0, 15.0), 1.0, "左柱内");
+        assert_eq!(s.coverage(15.0, 5.0), 1.0, "顶横内");
+        assert_eq!(s.coverage(15.0, 15.0), 0.0, "凹口外");
+        // 有符号距离的符号关系 + 数值：(15,12) 到最近边 (10..20, 10) 为 2。
+        assert!(s.signed_distance(5.0, 15.0) < 0.0, "内点距离应为负");
+        assert!(s.signed_distance(15.0, 15.0) > 0.0, "外点距离应为正");
+        assert!(
+            (s.signed_distance(15.0, 12.0) - 2.0).abs() < 0.3,
+            "凹口内点到边的距离应约 2，实际 {}",
+            s.signed_distance(15.0, 12.0)
+        );
+        // 羽化带：边界上（距离 0）的点覆盖度恰为 0.5（smoothstep 中点）。
+        let mut feathered = l_shape;
+        feathered["feather"] = json!(4.0);
+        let sf = shape(feathered);
+        assert_near(sf.coverage(5.0, 0.0), 0.5);
+    }
+
+    #[test]
+    fn path_open_subpath_fill_closes_implicitly() {
+        // 开放子路径（closed=false）按填充语义隐式闭合（与 SVG / 形状填充一致）。
+        let s = shape(json!({
+            "kind": "path",
+            "subpaths": [{
+                "start": [0.0, 0.0], "closed": false,
+                "segments": [
+                    {"op": "L", "to": [12.0, 0.0]},
+                    {"op": "L", "to": [0.0, 12.0]}
+                ]
+            }],
+        }));
+        assert_eq!(s.coverage(2.0, 2.0), 1.0, "隐式闭合的三角内");
+        assert_eq!(s.coverage(10.0, 10.0), 0.0, "斜边外");
+    }
+
+    #[test]
+    fn path_selection_set_subtract_combine() {
+        // 选区栈组合：rect(new) − path 圆(subtract)：圆内被挖、圆外保留。
+        let mut set = SelectionSet::new();
+        set.push(shape(json!({
+            "kind": "rect", "bbox": {"x": 0.0, "y": 0.0, "w": 64.0, "h": 64.0}
+        })));
+        set.push(shape(json!({
+            "kind": "path", "mode": "subtract",
+            "subpaths": [circle_subpath(32.0, 32.0, 10.0, false)],
+        })));
+        assert_eq!(set.coverage(32.0, 32.0), 0.0, "subtract 的圆心应被挖掉");
+        assert_eq!(set.coverage(4.0, 4.0), 1.0, "圆外矩形内应保留");
+        assert_eq!(set.coverage(70.0, 70.0), 0.0, "矩形外本就无覆盖");
     }
 
     #[test]

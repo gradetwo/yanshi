@@ -3,7 +3,7 @@
 **这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，
 所以它不会与实现漂移；`--check` 模式会在文档过期时失败。
 
-当前共 188 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
+当前共 191 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
 
 ## `abort_changeset`
 
@@ -66,6 +66,15 @@
     "x": 0,
     "y": 0
   }
+}
+```
+
+## `apply_curve_preset`
+
+```json
+{
+  "brush": "100%_Opaque",
+  "shape": "ease-in"
 }
 ```
 
@@ -683,6 +692,14 @@
 ```json
 {
   "atom_id": "atom1"
+}
+```
+
+## `get_brush_dynamics`
+
+```json
+{
+  "brush": "100%_Opaque"
 }
 ```
 
@@ -1480,6 +1497,26 @@
   "note": "外眼角偏 2px",
   "x": 268,
   "y": 286
+}
+```
+
+## `set_brush_curve`
+
+```json
+{
+  "brush": "100%_Opaque",
+  "input": "pressure",
+  "points": [
+    [
+      0,
+      -0.2
+    ],
+    [
+      1,
+      0.2
+    ]
+  ],
+  "setting": "hardness"
 }
 ```
 

@@ -821,9 +821,87 @@ pub fn dashed_line(
     stamps
 }
 
+/// 变间距采样整条折线：步长 = `spacing × scale(弧长进度)`。
+///
+/// 与 [`dashed_line`] 的唯一区别是步长随进度变（供 `spacing_curve` 用）：
+/// `scale` 恒为 1 时产出与 `dashed_line` **逐点相同**（同一起点、同样的
+/// `next_at <= arc + segment + 1e-9` 口径、同样的虚线相位计算）。
+/// `scale` 的返回值由调用方负责钳制在合理区间（如 `0.05..=1.0`）。
+pub fn dashed_line_variable(
+    points: &[(f64, f64, f64)],
+    spacing: f64,
+    dash: Option<f64>,
+    scale: &dyn Fn(f64) -> f64,
+) -> Vec<(f64, f64, f64)> {
+    let mut stamps = Vec::new();
+    if points.is_empty() {
+        return stamps;
+    }
+    let spacing = spacing.max(0.05);
+    // 进度口径：弧长 / 总弧长（先算总长，零长笔迹直接退回起点）。
+    let mut total = 0.0f64;
+    for window in points.windows(2) {
+        let (x0, y0, _) = window[0];
+        let (x1, y1, _) = window[1];
+        total += (((x1 - x0) * (x1 - x0)) + ((y1 - y0) * (y1 - y0))).sqrt();
+    }
+    let first = points[0];
+    if dash.map(|d| (0.0f64 % (d * 2.0)) < d).unwrap_or(true) {
+        stamps.push(first);
+    }
+    if total <= f64::EPSILON {
+        return stamps;
+    }
+    let mut next_at = spacing * scale(0.0);
+    let mut arc = 0.0f64;
+    for window in points.windows(2) {
+        let (x0, y0, p0) = window[0];
+        let (x1, y1, p1) = window[1];
+        let segment = (((x1 - x0) * (x1 - x0)) + ((y1 - y0) * (y1 - y0))).sqrt();
+        if segment <= f64::EPSILON {
+            continue;
+        }
+        while next_at <= arc + segment + 1e-9 {
+            let t = ((next_at - arc) / segment).clamp(0.0, 1.0);
+            let keep = dash.map(|d| (next_at % (d * 2.0)) < d).unwrap_or(true);
+            if keep {
+                stamps.push((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, p0 + (p1 - p0) * t));
+            }
+            next_at += spacing * scale((next_at / total).clamp(0.0, 1.0));
+        }
+        arc += segment;
+    }
+    stamps
+}
+
 #[cfg(test)]
 mod cursor_tests {
     use super::*;
+
+    /// 变间距采样在 scale 恒 1 时必须与等间距采样逐点相同（回归锁）。
+    #[test]
+    fn variable_spacing_with_unit_scale_matches_dashed_line() {
+        let points: Vec<(f64, f64, f64)> = (0..8)
+            .map(|i| (i as f64 * 11.0, (i as f64 * 3.0).min(20.0), 1.0))
+            .collect();
+        let plain = dashed_line(&points, 3.25, None);
+        let variable = dashed_line_variable(&points, 3.25, None, &|_| 1.0);
+        assert_eq!(plain, variable);
+    }
+
+    /// scale 恒 0.5 ⇒ 步长减半 ⇒ stamp 更多（结构量断言，不数像素）。
+    #[test]
+    fn variable_spacing_with_half_scale_densifies() {
+        let points = vec![(0.0, 0.0, 1.0), (100.0, 0.0, 1.0)];
+        let plain = dashed_line(&points, 10.0, None);
+        let dense = dashed_line_variable(&points, 10.0, None, &|_| 0.5);
+        assert!(
+            dense.len() > plain.len(),
+            "半步长应更密（{} vs {}）",
+            dense.len(),
+            plain.len()
+        );
+    }
 
     /// 13.3 的关键不变量：携带游标逐段采样，必须与一次性整段采样**逐点相同**。
     #[test]

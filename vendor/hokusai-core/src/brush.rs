@@ -26,6 +26,17 @@ pub struct Brush {
     /// Settings hokusai didn't recognise on parse, kept by string key for
     /// lossless round-trip via `hokusai-brush`.
     pub unknown_settings: BTreeMap<String, UnknownSetting>,
+    /// Host-fed `viewzoom` input value (`log(scale)`; 0 = 1.0× neutral).
+    ///
+    /// Not part of the `.myb` configuration: the application sets this per
+    /// stroke (like the `xtilt`/`ytilt` arguments of `stroke_to`). Default
+    /// 0.0 reproduces the historical behaviour exactly.
+    pub viewzoom: f32,
+    /// Host-fed `barrel_rotation` input value, in degrees (0..360).
+    ///
+    /// Same contract as `viewzoom`: application-supplied per stroke, never
+    /// serialised into `.myb`. Default 0.0 = historical behaviour.
+    pub barrel_rotation: f32,
 }
 
 impl Brush {
@@ -37,6 +48,8 @@ impl Brush {
             comment: None,
             settings: vec![SettingValue::default(); NUM_SETTINGS],
             unknown_settings: BTreeMap::new(),
+            viewzoom: 0.0,
+            barrel_rotation: 0.0,
         }
     }
 

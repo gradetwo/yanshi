@@ -41,14 +41,17 @@ const fails = [];
 const ok = (m) => console.log(`  ✓ ${m}`);
 const bad = (m) => { fails.push(m); console.log(`  ✗ ${m}`); };
 
-// ① 错误写法 ⇒ 报错里必须提到 "d"
-const wrong = await call("fit_background_field", {
+// ① **语义已变（第 1502 轮）**：二期补丁把 `type:"path"` **做成了正式支持** ✓
+//   ⇒ 原来这条断言「写错 type 必须报错并提示 `d`」**已被产品超越** ✗
+//   ⇒ 现在应断：**两种写法都能用**（`{"type":"path","d":…}` 与**只给 `d`**）✓
+//   **⇒ 保留的历史理由**（仍然成立）：**报错不该把人挡在门外** ⇒ 现在不需要"提示"了，
+//     因为**不需要绕过** ✓
+const withType = await call("fit_background_field", {
   layer_id: "L", mask: { type: "path", d: "M 150,120 C 200,70 260,170 300,120 Z" } });
-const detail = String((wrong?.context || {}).detail || "");
-if (wrong?.ok === false && /"d"/.test(detail) && /不要给 *`?type/.test(detail)) {
-  ok(`① 写错 type 时，报错**说了路径怎么传**（含「"d"」与「不要给 type」）`);
+if (withType?.ok === true && (withType?.filled_pixels ?? 0) > 0) {
+  ok(`① {\"type\":\"path\"} 现在**正式支持** ⇒ samples=${withType.samples}、filled=${withType.filled_pixels}`);
 } else {
-  bad(`① 报错必须提到「"d"」与「不要给 type」⇒ 实测：${detail.slice(0, 120)}`);
+  bad(`① {\"type\":\"path\"} 应被支持 ⇒ 实测 ok=${withType?.ok}、detail=${String((withType?.context || {}).detail || "").slice(0, 90)}`);
 }
 
 // ② 正解必须真的能成
@@ -61,7 +64,7 @@ if (right?.ok === true && (right?.filled_pixels ?? 0) > 0) {
 }
 
 if (fails.length > 0) {
-  console.log(`\n  ✗ ${fails.length} 处不符（shape 报错提示路径）`);
+  console.log(`\n  ✗ ${fails.length} 处不符（路径掩膜两种写法）`);
   process.exit(1);
 }
-console.log("\n  ✓ 报错提示了路径写法，且正解可用");
+console.log("\n  ✓ 两种写法都能用（`type:path` 与**只给 `d`**）");

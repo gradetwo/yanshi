@@ -58,7 +58,7 @@ pub(super) fn write_create_selection(ctx: &mut ToolContext<'_>, args: &Value) ->
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
             ErrorContext::detail(
-                "shape 必须带 kind（rect/ellipse/polygon），from_mask 时可省略".to_owned(),
+                "shape 必须带 kind（rect/ellipse/polygon/path），from_mask 时可省略".to_owned(),
             ),
         ));
     }
@@ -202,6 +202,19 @@ pub(super) fn selection_area_px(ctx: &mut ToolContext<'_>, shape: &Value) -> (f6
 }
 
 // ===== 同族追加（第 1272 轮）：transform_selection + select_opaque_pixels =====
+
+/// 对 `[x, y]` 形式的 JSON 坐标点原地施加仿射（非该形态的值不动）。
+fn affine_json_point(value: &mut Value, apply: &dyn Fn(f64, f64) -> (f64, f64)) {
+    if let Some(arr) = value.as_array_mut() {
+        if arr.len() == 2 {
+            if let (Some(x), Some(y)) = (arr[0].as_f64(), arr[1].as_f64()) {
+                let (nx, ny) = apply(x, y);
+                arr[0] = json!(nx);
+                arr[1] = json!(ny);
+            }
+        }
+    }
+}
 
 /// 选区变换（`transform_selection`）：Q1 双轨制。
 ///
@@ -442,6 +455,30 @@ pub(super) fn write_transform_selection(ctx: &mut ToolContext<'_>, args: &Value)
         new_shape = s;
         note = format!("位图逆向双线性重采样：{sw}x{sh} → {iw}x{ih}");
         // patches 已烘焙：通过 shape 替换体现，见下。
+    } else if kind == "path" {
+        // ---- 几何轨：path → 全部坐标点施同一仿射 ----
+        // Bézier 的仿射不变性：变换 start 与每段的 c1/c2/to 即精确变换整条曲线，
+        // 所以平移 / 缩放 / 旋转同一条路（不许分叉，分叉必然漂移）；
+        // `kind` 与 `fill_rule` 保持，零精度损失（不像旋转轨要转 polygon）。
+        let mut s = shape.clone();
+        if let Some(subs) = s.get_mut("subpaths").and_then(Value::as_array_mut) {
+            for sub in subs.iter_mut() {
+                if let Some(start) = sub.get_mut("start") {
+                    affine_json_point(start, &apply);
+                }
+                if let Some(segs) = sub.get_mut("segments").and_then(Value::as_array_mut) {
+                    for seg in segs.iter_mut() {
+                        for key in ["c1", "c2", "to"] {
+                            if let Some(point) = seg.get_mut(key) {
+                                affine_json_point(point, &apply);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        new_shape = s;
+        note = "几何精确变换（path 全部坐标点仿射，kind/fill_rule 保持）".to_owned();
     } else if theta.abs() < 1e-9 {
         // ---- 几何轨：无旋转 → 直接改 bbox（零精度损失）----
         let (x, y, w, h) = bbox;

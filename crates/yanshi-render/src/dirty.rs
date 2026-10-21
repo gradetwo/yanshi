@@ -353,6 +353,19 @@ fn dirty_for_object(
                         }
                     }
                 }
+                // **mask 反向依赖** ✓（二期 mask 源 = path）：对象被蒙版以
+                // `object_id` 引用时，宿主图层的像素是它的函数 ⇒ 宿主图层
+                // 包围盒一并失效（与实例 dependents 同理，现/旧两态都查）。
+                // 只失效对象自身 bbox 会少报：蒙版失效、羽化外扩等情形下
+                // 宿主层受影响区域大于 path 自身包围盒 ⇒ 增量渲染留旧像 ✗。
+                if let Some(host_bbox) = mask_host_bbox(state, object_id) {
+                    union = union_bbox(union, host_bbox);
+                }
+                if let Some(previous) = previous {
+                    if let Some(host_bbox) = mask_host_bbox(previous, object_id) {
+                        union = union_bbox(union, host_bbox);
+                    }
+                }
                 return DirtySet::geometry(
                     union,
                     format!(
@@ -377,7 +390,15 @@ fn dirty_for_object(
     if let Some(previous) = previous {
         if let Some(object) = previous.objects.get(object_id) {
             if let Some(bbox) = object_bbox(object) {
-                return DirtySet::geometry(bbox, format!("{reason}: {object_id} 已删除"));
+                // 同上：被删对象若是蒙版的 path 源，宿主图层一并失效 ✓。
+                let mut union = bbox;
+                if let Some(host_bbox) = mask_host_bbox(state, object_id) {
+                    union = union_bbox(union, host_bbox);
+                }
+                if let Some(host_bbox) = mask_host_bbox(previous, object_id) {
+                    union = union_bbox(union, host_bbox);
+                }
+                return DirtySet::geometry(union, format!("{reason}: {object_id} 已删除"));
             }
         }
     }
@@ -420,6 +441,59 @@ pub fn dependents_of(state: &DocumentState, object_id: &str) -> Vec<String> {
         frontier = next;
     }
     out
+}
+
+/// 蒙版形状以 `object_id` 引用的对象（二期 mask 源 = path 的引用形态；
+/// 与 `render::mask_shape_is_path_reference` 同一判定，这里取被引用 id）。
+fn mask_referenced_object(shape: &Value) -> Option<&str> {
+    if shape.get("kind").and_then(Value::as_str) != Some("path") {
+        return None;
+    }
+    shape.get("object_id").and_then(Value::as_str)
+}
+
+/// **反向依赖**：哪些图层挂着「以 `object_id` 为 path 源」的蒙版 ✓。
+///
+/// 宿主图层的像素是被引用对象的函数（蒙版覆盖率经 `mask_path_coverage`
+/// 由被引用对象产生）⇒ 被引用对象变更/删除时，宿主图层必须一并失效——
+/// 与实例依赖 master 同理（[`dependents_of`]）。引用关系没有索引：
+/// 文档规模小，按本模块的保守约定每次扫描 `state.masks` + `state.layers`
+/// 即可；已删除的蒙版/图层不产生渲染效果，不算宿主。
+pub fn mask_host_layers_of(state: &DocumentState, object_id: &str) -> Vec<String> {
+    let mut hosts: Vec<String> = Vec::new();
+    for layer in state.layers.values() {
+        if layer.deleted_by.is_some() {
+            continue;
+        }
+        let Some(mask_id) = layer.mask_id.as_deref() else {
+            continue;
+        };
+        let Some(mask) = state.masks.get(mask_id) else {
+            continue;
+        };
+        if mask.is_deleted() {
+            continue;
+        }
+        if mask_referenced_object(&mask.shape) == Some(object_id) {
+            hosts.push(layer.id.clone());
+        }
+    }
+    hosts.sort();
+    hosts
+}
+
+/// mask 宿主图层们的包围盒并集（无宿主或宿主无包围盒时为 `None`）。
+fn mask_host_bbox(state: &DocumentState, object_id: &str) -> Option<Bbox> {
+    let mut acc: Option<Bbox> = None;
+    for host in mask_host_layers_of(state, object_id) {
+        if let Some(candidate) = layer_bbox(state, &host) {
+            acc = Some(match acc {
+                Some(current) => current.union(&candidate),
+                None => candidate,
+            });
+        }
+    }
+    acc
 }
 
 /// **精确区域**：仅当 atom 的像素**已经烘焙成位图**、且 payload 给了 `region` 时返回它。
@@ -501,6 +575,29 @@ fn dirty_for_tombstone(
                     Some(current) => current.union(&layer_bounds),
                     None => layer_bounds,
                 });
+            }
+        }
+        // **mask 反向依赖** ✓（二期 mask 源 = path）：被删对象是蒙版的
+        // path 源时，蒙版随之失效（渲染侧告警并不再施加）⇒ 宿主图层的
+        // 内容整体改变 ⇒ 宿主图层的对象与包围盒一并进结构 dirty；
+        // 现/旧两态都查（引用关系在哪一态成立都算）。
+        for source in [Some(state), previous].into_iter().flatten() {
+            for host in mask_host_layers_of(source, object_id) {
+                for hosted in source.objects_in_layer(&host) {
+                    objects.insert(hosted.id.clone());
+                    if let Some(candidate) = object_bbox(hosted) {
+                        bbox = Some(match bbox {
+                            Some(current) => current.union(&candidate),
+                            None => candidate,
+                        });
+                    }
+                }
+                if let Some(bounds) = layer_bbox(source, &host) {
+                    bbox = Some(match bbox {
+                        Some(current) => current.union(&bounds),
+                        None => bounds,
+                    });
+                }
             }
         }
         DirtySet::structure(objects, bbox, "tombstone 影响整层")
@@ -597,7 +694,8 @@ fn dirty_for_property(
 /// - 同图层中 `z_index` 不小于种子的对象（其上方的调整/滤镜对象会作用于它）；
 /// - 以种子为 master 的实例；
 /// - 成员引用种子的对象组；
-/// - 实例/组的 master 对象（反向：实例的渲染结果依赖 master）。
+/// - 实例/组的 master 对象（反向：实例的渲染结果依赖 master）；
+/// - 以种子为 path 源的蒙版的宿主图层的全部对象（蒙版覆盖率依赖它）。
 pub fn structure_closure(state: &DocumentState, seeds: &BTreeSet<ObjectId>) -> BTreeSet<ObjectId> {
     let mut closure = seeds.clone();
     let mut queue: VecDeque<ObjectId> = seeds.iter().cloned().collect();
@@ -662,6 +760,13 @@ pub fn structure_closure(state: &DocumentState, seeds: &BTreeSet<ObjectId>) -> B
             .and_then(Value::as_str)
         {
             affected.push(master.to_owned());
+        }
+        // 5) 当前对象被蒙版引用作 path 源 ⇒ 宿主图层的全部对象
+        //（蒙版覆盖率是它的函数，宿主层整体都是下游）。
+        for host in mask_host_layers_of(state, &current) {
+            for hosted in state.objects_in_layer(&host) {
+                affected.push(hosted.id.clone());
+            }
         }
 
         for id in affected {
@@ -997,5 +1102,215 @@ mod tests {
         let merged = geometry.union(other);
         assert_eq!(merged.bbox, Some(Bbox::new(0.0, 0.0, 15.0, 15.0)));
         assert!(DirtySet::none().union(DirtySet::none()).is_none());
+    }
+
+    fn path_shape(id: &str, layer: &str, z: i64, x: f64, y: f64, w: f64, h: f64) -> Object {
+        let mut object = shape(id, layer, z, x, y, w, h);
+        object.data = json!({"geometry": {"kind": "path",
+            "subpaths": [{"start": [x, y], "closed": true, "segments": [
+                {"op": "L", "to": [x + w, y]},
+                {"op": "L", "to": [x + w, y + h]},
+                {"op": "L", "to": [x, y + h]}]}]},
+            "color": "#336655"});
+        object
+    }
+
+    fn path_mask(id: &str, referenced: &str) -> yanshi_core::Selection {
+        yanshi_core::Selection {
+            id: id.to_owned(),
+            shape: json!({"kind": "path", "object_id": referenced}),
+            feather: 0.0,
+            mode: "new".to_owned(),
+            invert: false,
+            linked_layer: None,
+            refined_edges: false,
+            blobs: Vec::new(),
+            patches: Vec::new(),
+            created_by: "a1".to_owned(),
+            deleted_by: None,
+        }
+    }
+
+    /// 场景：`layer_1` 上有 path 对象 `path_src`（(0,0) 起 10×10）；
+    /// `layer_2` 上有远离它的 `host_obj`（(90,90) 起 20×20），且 `layer_2`
+    /// 挂着以 `path_src` 为源的蒙版 `mask_1`。
+    fn state_with_path_mask() -> DocumentState {
+        let mut state = state_with_layers();
+        state.objects.insert(
+            "path_src".to_owned(),
+            path_shape("path_src", "layer_1", 0, 0.0, 0.0, 10.0, 10.0),
+        );
+        state.objects.insert(
+            "host_obj".to_owned(),
+            shape("host_obj", "layer_2", 0, 90.0, 90.0, 20.0, 20.0),
+        );
+        state
+            .masks
+            .insert("mask_1".to_owned(), path_mask("mask_1", "path_src"));
+        state.layers.get_mut("layer_2").unwrap().mask_id = Some("mask_1".to_owned());
+        state
+    }
+
+    fn covers(outer: &Bbox, inner: &Bbox) -> bool {
+        outer.x <= inner.x
+            && outer.y <= inner.y
+            && outer.x + outer.w >= inner.x + inner.w
+            && outer.y + outer.h >= inner.y + inner.h
+    }
+
+    /// **mask 反向查找**：只有「存活蒙版 × 存活图层 × path 引用」三者齐备
+    /// 才算宿主关系 ✓（变异：把任一过滤去掉 ⇒ 后两条断言红 ✓）。
+    #[test]
+    fn mask_host_layers_reverse_lookup() {
+        let state = state_with_path_mask();
+        assert_eq!(
+            mask_host_layers_of(&state, "path_src"),
+            vec!["layer_2".to_owned()]
+        );
+        assert!(mask_host_layers_of(&state, "host_obj").is_empty());
+        // 蒙版已删除 ⇒ 不再是宿主关系。
+        let mut dead_mask = state.clone();
+        dead_mask.masks.get_mut("mask_1").unwrap().deleted_by = Some("a9".to_owned());
+        assert!(mask_host_layers_of(&dead_mask, "path_src").is_empty());
+        // 形状不是 path 引用（rect 蒙版）⇒ 不构成跨对象引用。
+        let mut rect_mask = state.clone();
+        rect_mask.masks.get_mut("mask_1").unwrap().shape =
+            json!({"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 5, "h": 5}});
+        assert!(mask_host_layers_of(&rect_mask, "path_src").is_empty());
+    }
+
+    /// **改被引用 path ⇒ 宿主图层标脏** ✓（二期遗留限制的正题）。
+    ///
+    /// **变异判据** ✓：去掉 `dirty_for_object` 里的 mask 反向依赖 ⇒
+    /// 脏区只剩 path 旧∪新 (0,0)-(30,30)，宿主对象 (90,90)-(110,110)
+    /// 与它的 tile (2,2) 都不在内 ⇒ 两条断言必然红 ✓。
+    #[test]
+    fn moving_a_mask_referenced_path_dirties_the_host_layer() {
+        let previous = state_with_path_mask();
+        let mut state = previous.clone();
+        state.objects.insert(
+            "path_src".to_owned(),
+            path_shape("path_src", "layer_1", 0, 20.0, 20.0, 10.0, 10.0),
+        );
+        let atom = stroke_atom(AtomKind::Move, json!({"object_id": "path_src"}));
+        let dirty = plan_dirty(&state, Some(&previous), &atom);
+        assert_eq!(dirty.kind, DirtyKind::Geometry);
+        let bbox = dirty.bbox.expect("几何失效必须给 bbox");
+        assert!(
+            covers(&bbox, &Bbox::new(90.0, 90.0, 20.0, 20.0)),
+            "宿主图层区域必须被标脏，实际 {bbox:?}"
+        );
+        let grid = TileGrid::new(32, 128, 128).unwrap();
+        let tiles = invalidated_tiles(&grid, &state, &dirty);
+        assert!(
+            tiles.contains(&TileKey::new(2, 2)),
+            "宿主对象所在 tile (2,2) 必须失效，实际 {tiles:?}"
+        );
+        // 无变更前状态（`previous = None`）时，宿主失效只能靠现态反查 ⇒
+        // 这条专杀「只并旧态宿主」的变异（现态那半被摘掉时必然红）。
+        let dirty_no_previous = plan_dirty(&state, None, &atom);
+        let bbox = dirty_no_previous.bbox.expect("几何失效必须给 bbox");
+        assert!(
+            covers(&bbox, &Bbox::new(90.0, 90.0, 20.0, 20.0)),
+            "无 previous 时宿主图层区域也必须被标脏，实际 {bbox:?}"
+        );
+    }
+
+    /// **对象已不在现态（删除走的不是 tombstone 原子）时**，`dirty_for_object`
+    /// 的已删除分支同样要并入宿主图层 ✓（与精确分支同理的镜像代码，
+    /// 单独一条断言守它，防镜像漏改）。
+    ///
+    /// **变异判据** ✓：摘掉已删除分支里的宿主并入 ⇒ 断言红 ✓。
+    #[test]
+    fn moving_a_deleted_mask_referenced_path_dirties_the_host_layer() {
+        let previous = state_with_path_mask();
+        let mut state = previous.clone();
+        state.objects.remove("path_src");
+        let atom = stroke_atom(AtomKind::Move, json!({"object_id": "path_src"}));
+        let dirty = plan_dirty(&state, Some(&previous), &atom);
+        assert_eq!(dirty.kind, DirtyKind::Geometry);
+        let bbox = dirty.bbox.expect("几何失效必须给 bbox");
+        assert!(
+            covers(&bbox, &Bbox::new(90.0, 90.0, 20.0, 20.0)),
+            "已删除分支也必须标脏宿主图层，实际 {bbox:?}"
+        );
+    }
+
+    /// **删被引用对象 ⇒ 宿主图层进结构 dirty** ✓：蒙版随之失效（渲染侧
+    /// 告警并不再施加，二期已有集成断言），宿主层内容整体改变 ⇒ 增量
+    /// 路径必须在这里把它标脏，否则旧像留在 tile 缓存里 ✗。
+    ///
+    /// **变异判据** ✓：去掉 tombstone 里的 mask 反向依赖 ⇒ `host_obj`
+    /// 不在 dirty 集里 ⇒ 第一条断言红 ✓。
+    #[test]
+    fn tombstoning_a_mask_referenced_path_dirties_the_host_layer() {
+        let previous = state_with_path_mask();
+        let mut state = previous.clone();
+        state.objects.get_mut("path_src").unwrap().deleted_by = Some("atom_x".to_owned());
+        let atom = stroke_atom(AtomKind::Tombstone, json!({"object_id": "path_src"}));
+        let dirty = plan_dirty(&state, Some(&previous), &atom);
+        assert_eq!(dirty.kind, DirtyKind::Structure);
+        assert!(
+            dirty.objects.contains("host_obj"),
+            "宿主图层对象必须进 dirty 集，实际 {:?}",
+            dirty.objects
+        );
+        let bbox = dirty.bbox.expect("结构失效必须给 bbox");
+        assert!(
+            covers(&bbox, &Bbox::new(90.0, 90.0, 20.0, 20.0)),
+            "宿主图层区域必须被标脏，实际 {bbox:?}"
+        );
+    }
+
+    /// **结构属性改到被引用对象 ⇒ 闭包要走到宿主图层** ✓（`visible` 等
+    /// 结构键走 `structure_closure`，它此前只认实例/组/master ✗）。
+    ///
+    /// **变异判据** ✓：去掉闭包第 5 条 ⇒ 闭包只剩种子与同层对象 ⇒
+    /// `host_obj` 缺席 ⇒ 断言红 ✓。
+    #[test]
+    fn structural_property_on_a_mask_referenced_path_reaches_the_host_layer() {
+        let state = state_with_path_mask();
+        let atom = stroke_atom(
+            AtomKind::SetProperty,
+            json!({"object_id": "path_src", "key": "visible", "value": false}),
+        );
+        let dirty = plan_dirty(&state, None, &atom);
+        assert_eq!(dirty.kind, DirtyKind::Structure);
+        assert!(
+            dirty.objects.contains("host_obj"),
+            "闭包必须含宿主图层对象，实际 {:?}",
+            dirty.objects
+        );
+        let bbox = dirty.bbox.expect("结构失效必须给 bbox");
+        assert!(
+            covers(&bbox, &Bbox::new(90.0, 90.0, 20.0, 20.0)),
+            "宿主图层区域必须被标脏，实际 {bbox:?}"
+        );
+    }
+
+    /// **回归**：没有蒙版引用时，脏区与本包改动前**逐项一致**——
+    /// 只有 path 自身的旧∪新，不多一分（恒等式级断言，不是单点快照：
+    /// 输入的旧/新位置决定期望值）。
+    #[test]
+    fn unreferenced_path_move_dirties_only_its_own_union() {
+        let mut previous = state_with_layers();
+        previous.objects.insert(
+            "path_src".to_owned(),
+            path_shape("path_src", "layer_1", 0, 0.0, 0.0, 10.0, 10.0),
+        );
+        previous.objects.insert(
+            "host_obj".to_owned(),
+            shape("host_obj", "layer_2", 0, 90.0, 90.0, 20.0, 20.0),
+        );
+        let mut state = previous.clone();
+        state.objects.insert(
+            "path_src".to_owned(),
+            path_shape("path_src", "layer_1", 0, 20.0, 20.0, 10.0, 10.0),
+        );
+        let atom = stroke_atom(AtomKind::Move, json!({"object_id": "path_src"}));
+        let dirty = plan_dirty(&state, Some(&previous), &atom);
+        assert_eq!(dirty.kind, DirtyKind::Geometry);
+        assert!(dirty.objects.is_empty());
+        assert_eq!(dirty.bbox, Some(Bbox::new(0.0, 0.0, 30.0, 30.0)));
     }
 }

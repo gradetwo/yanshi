@@ -8,7 +8,7 @@
 use crate::blend::BlendMode;
 use crate::buffer::Buffer;
 use crate::color::{premultiply, LinearRgba};
-use crate::geometry::dashed_line;
+use crate::geometry::{dashed_line, dashed_line_variable};
 use crate::prng::Prng;
 use serde_json::Value;
 
@@ -347,7 +347,9 @@ impl StrokeAppearance {
             || dynamics.texture.kind != crate::dynamics::TextureKind::None
             || curves.size != identity
             || curves.opacity != identity
-            || curves.pressure != identity;
+            || curves.pressure != identity
+            || curves.flow != identity
+            || curves.spacing != identity;
         StrokeAppearance {
             curves,
             dynamics,
@@ -406,7 +408,21 @@ pub fn stamp_stroke_configured_on(
         .iter()
         .map(|point| (point.x, point.y, point.pressure))
         .collect();
-    let stamps = dashed_line(&samples, spacing, brush.dash);
+    // **间距曲线**（`spacing_curve`）：只在外观有效且曲线非恒等时走变间距采样；
+    // 其余情况走原 `dashed_line`（恒等曲线下变间距采样与它逐点相同，但不换路径
+    // ⇒ 老文档的采样相位由回归测试原样守住）。
+    let stamps = match appearance {
+        Some(appearance)
+            if appearance.active
+                && appearance.curves.spacing != crate::curve::Curve::constant(1.0) =>
+        {
+            let curves = &appearance.curves;
+            dashed_line_variable(&samples, spacing, brush.dash, &|progress| {
+                curves.spacing_scale(progress)
+            })
+        }
+        _ => dashed_line(&samples, spacing, brush.dash),
+    };
     // **★★★ 对称：把每个印章**在镜像位置再盖一遍** ✗ ★★★**（**第 251 轮 ✓）
     //   ＋ **∴ 点序列**一个字节都不改**✗ 只是**多喂一批镜像坐标**给盖章 ✓
     //     ⇒ **∴ 于是**：**压力／间距／抖动**全跟着原样** ✓（**∴ 镜像 dab 的压力
@@ -471,6 +487,10 @@ fn stamp_samples_with_appearance(
             appearance
                 .curves
                 .modulate_shape(base_radius, base_alpha, progress);
+        // ①a **流量曲线**：`base_alpha` 里已含 `brush.flow`（标量），这里再乘
+        // progress 处的 `flow_curve` 乘子 ⇒ 「起笔浓、收笔淡」的流量塑形。
+        // 恒等曲线时乘子恒 1.0 ⇒ alpha 逐位不变。
+        let alpha = alpha * appearance.curves.flow_scale(progress);
         // ①b **压力 → 粗细**：与不带 appearance 的路径用**同一条规则** ✓ ——
         // 此前这里完全没施加 ✗ ⇒ 只要给一个 `appearance`（哪怕只加了纹理 ✓）
         // 就会**静默关掉**压力响应 ✓（子 agent 实测：同一组点列，无 appearance 时 38→14px ✓，
@@ -1846,6 +1866,82 @@ fn size_curve_shapes_the_stroke_along_its_progress() {
         start >= end * 3,
         "锥形曲线应让起点明显宽于终点（起点 {start}px，终点 {end}px）"
     );
+}
+
+/// **`spacing_curve` 必须真的改变采样密度**（progress 曲线，1 = 原间距、越小越密）。
+#[test]
+fn spacing_curve_densifies_stamps_along_progress() {
+    use crate::buffer::Buffer;
+    use serde_json::json;
+
+    let brush = BrushSpec {
+        size: 40.0,
+        hardness: 1.0,
+        color: [0.9, 0.1, 0.1, 1.0],
+        opacity: 1.0,
+        flow: 1.0,
+        ..Default::default()
+    };
+    let geometry = StrokeGeometry::from_value(&json!({
+        "points": (0..=40).map(|i| json!([10.0 + i as f64 * 4.0, 60.0])).collect::<Vec<_>>()
+    }))
+    .expect("点列应可解析");
+
+    let mut plain_buffer = Buffer::new(0, 0, 200, 120);
+    let plain = stamp_stroke_configured(&mut plain_buffer, &brush, &geometry, None, None);
+
+    let appearance = StrokeAppearance::from_data(&json!({
+        "appearance": { "spacing_curve": [[0.0, 1.0], [1.0, 0.25]] }
+    }));
+    assert!(appearance.active, "只有 spacing_curve 也应算有效外观");
+    let mut curved_buffer = Buffer::new(0, 0, 200, 120);
+    let curved = stamp_stroke_configured(
+        &mut curved_buffer,
+        &brush,
+        &geometry,
+        Some(&appearance),
+        None,
+    );
+    assert!(
+        curved > plain * 3 / 2,
+        "间距收至 1/4 应让 stamp 明显变密（无曲线 {plain}，有曲线 {curved}）"
+    );
+}
+
+/// **`flow_curve` 必须沿 progress 调制流量**：收笔处 alpha 趋零、起笔处不受影响。
+#[test]
+fn flow_curve_fades_alpha_along_progress() {
+    use crate::buffer::Buffer;
+    use serde_json::json;
+
+    let brush = BrushSpec {
+        size: 40.0,
+        hardness: 1.0,
+        color: [0.9, 0.1, 0.1, 1.0],
+        opacity: 1.0,
+        flow: 1.0,
+        ..Default::default()
+    };
+    let geometry = StrokeGeometry::from_value(&json!({
+        "points": (0..=40).map(|i| json!([10.0 + i as f64 * 4.0, 60.0])).collect::<Vec<_>>()
+    }))
+    .expect("点列应可解析");
+    let appearance = StrokeAppearance::from_data(&json!({
+        "appearance": { "flow_curve": [[0.0, 1.0], [1.0, 0.0]] }
+    }));
+    let mut buffer = Buffer::new(0, 0, 200, 120);
+    let drawn = stamp_stroke_configured(&mut buffer, &brush, &geometry, Some(&appearance), None);
+    assert!(drawn > 0, "起笔段应画出印章");
+    let buffer_ref = &buffer;
+    let max_alpha = |x0: u32, x1: u32| -> f32 {
+        (x0..x1)
+            .flat_map(|x| (0..120).map(move |y| buffer_ref.pixel(x, y)[3]))
+            .fold(0.0f32, f32::max)
+    };
+    let start = max_alpha(12, 20);
+    let end = max_alpha(163, 170);
+    assert!(start > 0.9, "起笔处流量应接近满（实际 {start}）");
+    assert!(end < 0.2, "收笔处流量应被曲线压到近零（实际 {end}）");
 }
 
 /// **加上 `appearance` 不能静默改变几何** ✓ —— 子 agent 报的 #9：

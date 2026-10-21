@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 116 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 119 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -33,7 +33,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（116 个）。
+    /// 核心层：默认注册（119 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -608,7 +608,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，116 个）。
+    /// 核心层（默认注册，119 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1757,6 +1757,9 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "get_brush_settings" => read_get_brush_settings(ctx, args),
         "set_brush_setting" => write_set_brush_setting(ctx, args),
         "set_brush_dynamics" => write_set_brush_dynamics(ctx, args),
+        "get_brush_dynamics" => read_get_brush_dynamics(ctx, args),
+        "set_brush_curve" => write_set_brush_curve(ctx, args),
+        "apply_curve_preset" => write_apply_curve_preset(ctx, args),
         "lock_layer" => write_lock_layer(ctx, args, true),
         "unlock_layer" => write_lock_layer(ctx, args, false),
         "list_brushes" => read_list_brushes(ctx, args),
@@ -4488,6 +4491,11 @@ fn restyle_baked_brush_stroke(
     } else {
         points
     };
+    // **改色重跑也要带上原笔的传感器**（source 里记着；没记 ⇒ 缺省全 0 ✓）。
+    let sensors = match source.get("sensors").filter(|value| !value.is_null()) {
+        Some(value) => brush_sensors_from_value(value)?,
+        None => BrushSensors::default(),
+    };
     let paint = paint_brush(
         ctx,
         &brush,
@@ -4502,6 +4510,7 @@ fn restyle_baked_brush_stroke(
         yanshi_render::color::ColorMixing::Rgb,
         &[],
         None,
+        sensors,
     )?;
     let hash = ctx.workspace.store().put(&paint.rgba)?;
     let mut new_data = data.clone();
@@ -8604,6 +8613,326 @@ fn write_cancel_operation(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
 /// **`set_layer_blend`**（AI 画家需求 P1-4 ✓）：**薄包装** ✓ ——
 /// 直接转发给既有的 `set_property{key:"blend_mode"}` ✓（渲染器与 core **早就有**这条能力 ✓，
 /// 本轮只是给它一个符合直觉的名字 ✓；**不另存状态** ✗、**不与该属性分叉** ✗）。
+/// 读一支笔的原始 `.myb` JSON（名字放宽规则与落笔共用 `load_brush` ✓）。
+fn load_brush_json(ctx: &ToolContext<'_>, brush_name: &str) -> Result<(String, Value)> {
+    let (name, _brush) = load_brush(ctx.workspace, brush_name)?;
+    let source = ctx.workspace.resolve_asset("brush", &name)?;
+    let text = std::fs::read_to_string(&source).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("读不到笔刷 {}：{error}", source.display())),
+        )
+    })?;
+    let data: Value = serde_json::from_str(&text).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("{name} 不是合法的 .myb JSON：{error}")),
+        )
+    })?;
+    Ok((name, data))
+}
+
+/// 把改好的 `.myb` JSON 写回工作区缓存（临时文件 ⇒ `import_asset(overwrite)` ⇒
+/// 预设覆盖内置；与 `set_brush_dynamics` 同一手法 ✓，新工具共用这一份）。
+fn persist_brush_json(ctx: &mut ToolContext<'_>, name: &str, data: &Value) -> Result<Value> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_nanos())
+        .unwrap_or(0);
+    let path =
+        std::env::temp_dir().join(format!("yanshi-brush-{}-{}.myb", std::process::id(), stamp));
+    std::fs::write(&path, serde_json::to_vec_pretty(data).unwrap_or_default()).map_err(
+        |error| {
+            YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!("写不了临时笔刷 {}：{error}", path.display())),
+            )
+        },
+    )?;
+    write_import_asset(
+        ctx,
+        &json!({"kind": "brush", "name": name, "path": path.to_string_lossy(), "overwrite": true}),
+    )
+}
+
+/// **`get_brush_dynamics`**：把一支笔的**全部**动力学读出来 —— 66 项设置的
+/// `base_value` ＋ 每条 inputs 曲线（含引擎不认识的未知输入/未知设置）。
+///
+/// **为什么需要它**（C1 现状清单短名单 #2）：此前 `get_brush_settings` 只给
+/// base_value，曲线是「写得进、读不回」⇒ 调参只能盲写。本工具补上读面；
+/// `format: "myb"` 时返回序列化后的完整 `.myb` 文本（可存档/迁移）。
+fn read_get_brush_dynamics(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let brush_name = require_str(args, "brush")?;
+    let format = optional_str(args, "format").unwrap_or_else(|| "json".to_string());
+    let (name, brush) = load_brush(ctx.workspace, &brush_name)?;
+    if format == "myb" {
+        let text = hokusai::myb::to_string_pretty(&brush).map_err(|error| {
+            YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!("{name} 序列化 .myb 失败：{error}")),
+            )
+        })?;
+        return Ok(json!({
+            "ok": true,
+            "brush": name,
+            "format": "myb",
+            "myb": text,
+            "note": "完整 .myb（含未知设置/输入的无损保留）；base_value 是解析时补过 libmypaint 缺省后的有效值",
+        }));
+    }
+    if format != "json" {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("format 只支持 json（缺省）/ myb（给了 {format}）")),
+        ));
+    }
+    let points_json = |points: &[(f32, f32)]| -> Value {
+        json!(points
+            .iter()
+            .map(|(x, y)| json!([x, y]))
+            .collect::<Vec<_>>())
+    };
+    let mut settings = serde_json::Map::new();
+    let mut with_inputs = 0usize;
+    for setting in hokusai::BrushSetting::ALL {
+        let value = brush.get(*setting);
+        let mut inputs = serde_json::Map::new();
+        for mapping in &value.inputs {
+            inputs.insert(
+                mapping.input.cname().to_string(),
+                points_json(&mapping.points),
+            );
+        }
+        if !inputs.is_empty() {
+            with_inputs += 1;
+        }
+        let mut unknown_inputs = serde_json::Map::new();
+        for (input_name, points) in &value.unknown_inputs {
+            unknown_inputs.insert(input_name.clone(), points_json(points));
+        }
+        settings.insert(
+            setting.cname().to_string(),
+            json!({
+                "base_value": value.base_value,
+                "inputs": inputs,
+                "unknown_inputs": unknown_inputs,
+            }),
+        );
+    }
+    let mut unknown_settings = serde_json::Map::new();
+    for (setting_name, unknown) in &brush.unknown_settings {
+        let mut inputs = serde_json::Map::new();
+        for (input_name, points) in &unknown.inputs {
+            inputs.insert(input_name.clone(), points_json(points));
+        }
+        unknown_settings.insert(
+            setting_name.clone(),
+            json!({"base_value": unknown.base_value, "inputs": inputs}),
+        );
+    }
+    Ok(json!({
+        "ok": true,
+        "brush": name,
+        "format": "json",
+        "count": settings.len(),
+        "with_inputs": with_inputs,
+        "settings": settings,
+        "unknown_settings": unknown_settings,
+        "note": "inputs 里的点是 [输入值, 偏移]（原始偏移，不是倍率）；unknown_inputs / unknown_settings 是引擎不认识、只保留不求值的部分",
+    }))
+}
+
+/// **`set_brush_curve`**：写任意一条 `{设置} × {输入}` 曲线（原始偏移口径）。
+///
+/// **修的是 C1 短名单 #1**：老 `set_brush_dynamics` 的任意键分支只能改写已有
+/// input、且写出的 `{"points": …}` 与解析器不兼容（写坏整支笔）。本工具：
+/// 设置/输入名都用引擎规范名校验（未识别**报错**）、input 不存在就**新建**、
+/// 写**裸数组** `[[x, y], …]`（解析器 `RawSetting.inputs` 的原生格式）。
+/// 与 `set_brush_dynamics` 的分工：那边收「倍率」（ln 转换、7 个语义键），
+/// 这边收**原始偏移**（.myb 里的原值，任意组合）。
+fn write_set_brush_curve(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let brush_name = require_str(args, "brush")?;
+    let setting_name = require_str(args, "setting")?;
+    let input_name = require_str(args, "input")?;
+    let setting = hokusai::BrushSetting::from_cname(&setting_name).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "未知笔刷设置 {setting_name} ⇒ 用 get_brush_dynamics 看全部 {} 项规范名",
+                hokusai::BrushSetting::ALL.len()
+            )),
+        )
+    })?;
+    if hokusai::BrushInput::from_cname(&input_name).is_none() {
+        let known: Vec<&str> = hokusai::BrushInput::ALL.iter().map(|i| i.cname()).collect();
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "未知输入 {input_name} ⇒ 已知输入共 {} 个：{}",
+                known.len(),
+                known.join(" / ")
+            )),
+        ));
+    }
+    let raw_points = args
+        .get("points")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("points 必须是 [[输入值, 偏移], …] 数组".to_string()),
+            )
+        })?;
+    if raw_points.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("points 至少要有一个点".to_string()),
+        ));
+    }
+    let mut points: Vec<(f64, f64)> = Vec::with_capacity(raw_points.len());
+    for (index, pair) in raw_points.iter().enumerate() {
+        let pair = pair.as_array().ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("points[{index}] 必须是 [输入值, 偏移]")),
+            )
+        })?;
+        let (Some(x), Some(y)) = (
+            pair.first().and_then(Value::as_f64),
+            pair.get(1).and_then(Value::as_f64),
+        ) else {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("points[{index}] 必须是 [数字, 数字]")),
+            ));
+        };
+        if !x.is_finite() || !y.is_finite() {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("points[{index}] 必须是有限数字")),
+            ));
+        }
+        points.push((x, y));
+    }
+    // 引擎要求 x 升序（libmypaint 口径）；稳定排序保留同 x 点的原有顺序（阶梯曲线靠它）。
+    points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let (name, mut data) = load_brush_json(ctx, &brush_name)?;
+    let (_, parsed) = load_brush(ctx.workspace, &brush_name)?;
+    let Some(settings) = data.get_mut("settings").and_then(Value::as_object_mut) else {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("这份 .myb 里没有 settings 对象".to_string()),
+        ));
+    };
+    let entry = settings
+        .entry(setting_name.clone())
+        .or_insert_with(|| json!({"base_value": parsed.get(setting).base_value, "inputs": {}}));
+    if entry.get("inputs").is_none() {
+        entry["inputs"] = json!({});
+    }
+    let Some(inputs) = entry.get_mut("inputs").and_then(Value::as_object_mut) else {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("settings.{setting_name} 里没有 inputs 对象")),
+        ));
+    };
+    let created = !inputs.contains_key(&input_name);
+    inputs.insert(
+        input_name.clone(),
+        json!(points
+            .iter()
+            .map(|(x, y)| json!([x, y]))
+            .collect::<Vec<_>>()),
+    );
+    let imported = persist_brush_json(ctx, &name, &data)?;
+    Ok(json!({
+        "ok": true,
+        "brush": name,
+        "setting": setting_name,
+        "input": input_name,
+        "created_input": created,
+        "points_written": points.len(),
+        "imported": imported,
+        "note": "写的是原始偏移（.myb 原生口径）；改的是工作区缓存里的同名笔刷（预设覆盖内置）；读回用 get_brush_dynamics",
+    }))
+}
+
+/// **`apply_curve_preset`**：一键套用命名曲线形状（倍率口径，快速通道）。
+///
+/// 形状点列（倍率，x = 归一输入 0..1）：linear / soft / hard 沿用 Web 查看器
+/// 既有三档；ease-in / ease-out / s-curve 为新增。`target` 缺省 `size_pressure`，
+/// 只能是 `set_brush_dynamics` 的七个语义键（倍率语义只在那里成立）；
+/// 任意 `{设置}_{输入}` 请用 `set_brush_curve`（原始偏移口径）。
+fn write_apply_curve_preset(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    const SHAPES: [(&str, &[(f64, f64)]); 6] = [
+        ("linear", &[(0.0, 0.5), (1.0, 1.0)]),
+        ("soft", &[(0.0, 0.3), (0.5, 0.8), (1.0, 1.5)]),
+        ("hard", &[(0.0, 0.8), (0.5, 1.1), (1.0, 1.2)]),
+        ("ease-in", &[(0.0, 0.2), (0.5, 0.55), (1.0, 1.5)]),
+        ("ease-out", &[(0.0, 0.8), (0.5, 1.3), (1.0, 1.5)]),
+        (
+            "s-curve",
+            &[
+                (0.0, 0.25),
+                (0.25, 0.45),
+                (0.5, 0.85),
+                (0.75, 1.25),
+                (1.0, 1.5),
+            ],
+        ),
+    ];
+    const TARGETS: [&str; 7] = [
+        "size_pressure",
+        "opacity_pressure",
+        "tilt_size",
+        "size_speed",
+        "opacity_speed",
+        "opacity_multiply_pressure",
+        "smudge_stroke",
+    ];
+    let brush_name = require_str(args, "brush")?;
+    let shape_name = require_str(args, "shape")?;
+    let shape_key = if shape_name == "ease-in-out" {
+        "s-curve"
+    } else {
+        shape_name.as_str()
+    };
+    let Some((_, knots)) = SHAPES.iter().find(|(name, _)| *name == shape_key) else {
+        let known: Vec<&str> = SHAPES.iter().map(|(name, _)| *name).collect();
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "未知曲线形状 {shape_name} ⇒ 可用：{}（另别名 ease-in-out = s-curve）",
+                known.join(" / ")
+            )),
+        ));
+    };
+    let target = optional_str(args, "target").unwrap_or_else(|| "size_pressure".to_string());
+    if !TARGETS.contains(&target.as_str()) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "target 必须是七个语义键之一（{}）；任意 {{设置}}_{{输入}} 曲线用 set_brush_curve",
+                TARGETS.join(" / ")
+            )),
+        ));
+    }
+    let points: Vec<Value> = knots.iter().map(|(x, y)| json!([x, y])).collect();
+    let applied = write_set_brush_dynamics(
+        ctx,
+        &json!({"brush": brush_name, "curve": { target.as_str(): points }}),
+    )?;
+    Ok(json!({
+        "ok": true,
+        "brush": applied["brush"],
+        "shape": shape_key,
+        "target": target,
+        "points": points,
+        "applied": applied["applied"],
+        "note": "形状是倍率点列，已按 set_brush_dynamics 的口径（ln 转换）写进工作区缓存；精细调整用 set_brush_curve / set_brush_dynamics",
+    }))
+}
+
 /// **`set_brush_dynamics`**（AI 画家需求 P1-7 ✓）：把"倍率曲线"写进工作区缓存里的一份 `.myb` ✓。
 ///
 /// **为什么必须落盘** ✗（本轮最值钱的判断 ✓）：`brush_stroke` **每次都重新 `load_brush`** ✓
@@ -9397,6 +9726,16 @@ fn shape_json_bbox(shape: &Value) -> Option<(f64, f64, f64, f64)> {
                 bb = (bb.0.min(x), bb.1.min(y), bb.2.max(x), bb.3.max(y));
             }
             (bb.2 > bb.0 && bb.3 > bb.1).then_some(bb)
+        }
+        // path 选区（曲线线第三包）：与 draw_shape 共用同一份校验解析，
+        // bbox 用控制点包围盒（`object::path_control_bbox`，保守且不展平）。
+        "path" => {
+            let parsed = yanshi_render::object::parse_path_subpaths(shape).ok()?;
+            let (x, y, w, h) = yanshi_render::object::path_control_bbox(&parsed.subpaths)?;
+            if w <= 0.0 || h <= 0.0 {
+                return None;
+            }
+            Some((x, y, x + w, y + h))
         }
         // **★ `bitmap` 选区必须能取 bbox** ✓（第 1300 轮：真缺陷）
         //   **症状**：`smart_select` 产出的是**位图选区**（`{"kind":"bitmap","bbox":[x,y,w,h]}`）⇒
@@ -13415,6 +13754,8 @@ fn stamp_stroke_from(
     previous: &mut Option<(f64, f64, f64)>,
     // **★ P0 #3：每个点的**真实时间步长**（秒；空切片 ⇒ 用 STEP_SECONDS ⇒ 老行为逐字节不变）★**
     dtimes: &[f64],
+    // **真实传感器**（xtilt/ytilt 在这里喂给 `stroke_to`；缺省全 0 ⇒ 老行为逐字节不变）。
+    sensors: BrushSensors,
 ) -> usize {
     // **★★★ 第 246 轮：**给落笔的 dab 循环计时 ✗ ★★★**（**用户裁定「先量笔触占比」✓）
     //   ＋ **∴ 为什么是**这里**✗ 而**不是 `yanshi-render::brush`** ✓**：
@@ -13496,8 +13837,8 @@ fn stamp_stroke_from(
                     *x as f32,
                     *y as f32,
                     *pressure as f32,
-                    0.0,
-                    0.0,
+                    sensors.xtilt,
+                    sensors.ytilt,
                     // **第一笔只播种**：这里恒用 STEP_SECONDS（与老行为一致；
                     // 第一个点的 provided 本来就是 0，用真实值反而会改变老行为）
                     STEP_SECONDS,
@@ -13508,42 +13849,26 @@ fn stamp_stroke_from(
                 let distance = ((x - px).powi(2) + (y - py).powi(2)).sqrt();
                 // **2px 步长** ✓：比任何笔尖都细 ✓ ⇒ 不会出现离散盖章 ✓（上限防病态输入 ✓）。
                 let divisions = ((distance / 2.0).ceil() as usize).clamp(1, 4096);
-                // **上一枚 dab 的位置** ✓ —— 位移必须相对**上一枚 dab** ✓，不是相对控制点 ✗。
-                let mut last_x = px;
-                let mut last_y = py;
                 for step in 1..=divisions {
                     let t = step as f64 / divisions as f64;
                     let ix = px + (x - px) * t;
                     let iy = py + (y - py) * t;
                     let ip = pp + (pressure - pp) * t;
-                    // **这里曾经试过"喂真实位移"** ✓（即把相邻两枚 dab 的 `(dx, dy)` 传下去 ✓，
-                    // 而不是恒给 `0.0` ✗）—— 动机很正当 ✓：MyPaint 的 `speed1` / `speed2` 由
-                    // `(dx, dy, dt)` 算出 ✓，恒给 0 就等于把"速度"钉死在 0 ✓
-                    //（`Round.myb` 的 `opaque` 与半径都挂了 `speed2` ✓）。
-                    //
-                    // **但实测它证明不了任何效果** ✗：六支笔刷（`Round` / `airbrush` / `2B_pencil` /
-                    // `spray` / `watercolor_glazing` / `100%_Opaque`）在"喂真实位移"与"恒给 0"两种
-                    // 构建下，墨量、最深处、均值**逐字节相同** ✓ ⇒ 按本项目纪律**不发布证明不了的行为** ✗
-                    // ⇒ 撤回 ✓（代码与之前一致 ✓）。实验条件记在这里 ✓：
-                    // 黑笔、size 40、三点水平笔迹 ✓，`/tmp/speed_probe.py` 那种量法 ✓。
-                    // **顺带确定的两件事** ✓（都实测 ✓）：① `100%_Opaque` 纯黑**就是 (0,0,0)** ✓
-                    // ⇒ **颜色参数是精确生效的** ✓（外部报告"纯黑渲染成浅灰"✗ 的成因是**它用了整幅均值** ✓
-                    // ＋ 它选的那几支笔刷本身流量低 ✓）；② 低流量笔刷（`Round` 最深 221 ✗、
-                    // `airbrush` 233 ✗、`2B_pencil` 192 ✗、`spray` 129 ✗、`watercolor_glazing` 197 ✗）
-                    // 的"淡"来自**它们自己的动力学曲线** ✓，不是速度被钉死 ✓。
-                    // **将来若要让速度真正参与** ✓：先找到一支**能红**的笔刷（判据：两种位移下像素必须不同 ✓），
-                    // 再动这里 ✓ —— 别又变成"改了、看不出来"✗。
-                    let dx = 0.0 * (ix - last_x);
-                    let dy = 0.0 * (iy - last_y);
-                    let _ = (last_x, last_y);
+                    // **`stroke_to` 的第 5/6 参数是 xtilt/ytilt（倾斜），不是位移** ✓。
+                    // 历史注记：这里曾试过把相邻 dab 的位移 `(dx, dy)` 当这两个参数喂下去，
+                    // 六支笔实测与恒 0 逐字节相同 ⇒ 已撤回（位移 ≠ 倾斜，速度由引擎
+                    // 从坐标与 dtime 内部算，不经这两个参数）。
+                    // 现在喂的是调用方经 `sensors` 给的**真实倾斜**（缺省 0 ⇒ 老行为不变）：
+                    // tilt 全家输入（tilt / tilt_declination / tilt_ascension /
+                    // tilt_declinationx/y / attack_angle 的 ascension 基准）都由此派生。
                     brush.stroke_to(
                         state,
                         surface,
                         ix as f32,
                         iy as f32,
                         ip as f32,
-                        dx as f32,
-                        dy as f32,
+                        sensors.xtilt,
+                        sensors.ytilt,
                         // **有真实时间 ⇒ 段内均分（总时长守恒）；没有 ⇒ STEP_SECONDS/步**
                         //   （`divisions` 在这个分支里才有 —— 这就是上一版 E0425 的原因）
                         if distribute {
@@ -13568,8 +13893,6 @@ fn stamp_stroke_from(
                             smudge_amount,
                         );
                     }
-                    last_x = ix;
-                    last_y = iy;
                     steps += 1;
                 }
             }
@@ -13733,6 +14056,7 @@ fn brush_deposit_mask(
         points,
         &mut previous,
         dtimes,
+        BrushSensors::default(),
     );
     read_surface_region(&surface, region).0
 }
@@ -13944,6 +14268,11 @@ pub(crate) fn replay_brush_bitmap(
     // 就是这个原因 ✓）。
     let color = source.get("color").filter(|value| !value.is_null());
     let color_to = source.get("color_to").filter(|value| !value.is_null());
+    // **传感器随 source 一起重放**（没记 ⇒ null ⇒ 缺省全 0，与落笔时一致 ✓）。
+    let sensors = match source.get("sensors").filter(|value| !value.is_null()) {
+        Some(value) => brush_sensors_from_value(value)?,
+        None => BrushSensors::default(),
+    };
     let paint = paint_brush(
         &mut ctx,
         &brush,
@@ -13959,6 +14288,7 @@ pub(crate) fn replay_brush_bitmap(
         yanshi_render::color::ColorMixing::Rgb,
         &[],
         None,
+        sensors,
     )?;
     Ok(paint.rgba)
 }
@@ -14452,7 +14782,15 @@ pub fn clip_bbox_early_out(
 
 /// 解析单个几何对象（外层或孔洞）。`tool` 只用于错误信息。
 fn parse_prim_shape(v: &Value, tool: &str) -> Result<PrimShape> {
-    let t = v.get("type").and_then(Value::as_str).unwrap_or("rect");
+    // 缺 `type` 时的推断只认 path 的特征键（`d` / `subpaths`）：带它们却
+    // 没有 type 的对象按 path 解析，**绝不**再静默吞成缺省 rect
+    // （实测事故：`{"d": "M…"}` 被吞成 (0,0,100,100) 矩形、结果全错还不报错）。
+    // 无 type 且只有 rect 键的存量写法维持缺省 rect 兼容。
+    let t = match v.get("type").and_then(Value::as_str) {
+        Some(t) => t,
+        None if v.get("d").is_some() || v.get("subpaths").is_some() => "path",
+        None => "rect",
+    };
     let num = |k: &str| v.get(k).and_then(Value::as_f64).unwrap_or(0.0);
     match t {
         "rect" => Ok(PrimShape::Rect {
@@ -14513,11 +14851,48 @@ fn parse_prim_shape(v: &Value, tool: &str) -> Result<PrimShape> {
                 .unwrap_or_default();
             Ok(PrimShape::Polygon { points })
         }
+        "path" => {
+            // 两种给法二选一：`d`（SVG path 字符串，入口转 subpaths）或
+            // `subpaths`（结构化子路径）。校验只走渲染层同一份解析
+            // （`object::parse_path_subpaths`），工具层不写第二套。
+            let invalid = |message: String| {
+                YanshiError::new(ErrorCode::InvalidArgument, ErrorContext::detail(message))
+            };
+            let d = v.get("d").and_then(Value::as_str);
+            if d.is_some() && v.get("subpaths").is_some() {
+                return Err(invalid(format!(
+                    "「{tool}」shape 的 d 与 subpaths 只能给一个（二选一）"
+                )));
+            }
+            let wrapper = match d {
+                Some(d) => {
+                    let subpaths = parse_svg_d(d)
+                        .map_err(|reason| invalid(format!("「{tool}」shape 的 d 非法：{reason}")))?;
+                    let mut w = serde_json::Map::new();
+                    w.insert("subpaths".to_owned(), subpaths);
+                    if let Some(rule) = v.get("fill_rule") {
+                        w.insert("fill_rule".to_owned(), rule.clone());
+                    }
+                    Value::Object(w)
+                }
+                None if v.get("subpaths").is_some() => v.clone(),
+                None => {
+                    return Err(invalid(format!(
+                        "「{tool}」type=path 的 shape 必须给 d（SVG path 字符串）或 subpaths（结构化子路径）之一"
+                    )));
+                }
+            };
+            let parsed = yanshi_render::object::parse_path_subpaths(&wrapper)
+                .map_err(|reason| invalid(format!("「{tool}」shape 的 path 非法：{reason}")))?;
+            Ok(PrimShape::from_path(parsed.subpaths, parsed.fill_rule))
+        }
         _ => Err(YanshiError::new(
             ErrorCode::InvalidArgument,
             ErrorContext::detail(format!(
-                "「{tool}」不支持的 shape type：「{t}」（支持 rect/circle/ellipse/polygon，\
-                 以及 **SVG 路径**：**只给 `d`、不要给 `type`**，例如 {{\"d\": \"M 10,10 C 40,0 60,40 90,30 Z\"}}）"
+                "「{tool}」不支持的 shape type：「{t}」（支持 rect/circle/ellipse/polygon/path；\
+                 path 两种给法：{{\"type\": \"path\", \"d\": \"M 10,10 C 40,0 60,40 90,30 Z\"}} \
+                 或只给 {{\"d\": \"M 10,10 C 40,0 60,40 90,30 Z\"}}（缺 type 时按 d/subpaths 特征键认 path），\
+                 也可给 subpaths 数组）"
             )),
         )),
     }
@@ -14940,6 +15315,11 @@ fn selection_shape_bbox(shape: &Value) -> Option<(f64, f64, f64, f64)> {
                 None
             }
         }
+        "path" => {
+            // path 选区（曲线线第三包）：同一份校验解析 + 控制点包围盒。
+            let parsed = yanshi_render::object::parse_path_subpaths(shape).ok()?;
+            yanshi_render::object::path_control_bbox(&parsed.subpaths)
+        }
         "bitmap" => {
             let arr = shape.get("bbox")?.as_array()?;
             let n = |i: usize| arr.get(i).and_then(Value::as_f64).unwrap_or(0.0);
@@ -15052,6 +15432,9 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         yanshi_render::color::ColorMixing::Rgb,
         &[],
         preview_background(args),
+        // **预览不带传感器**（回答的是"这支笔长什么样"，与 brush_stroke 的
+        // sensors 是两回事；缺省全 0 ⇒ 与历史预览逐位一致 ✓）。
+        BrushSensors::default(),
     )?;
     let (width, height) = (paint.width as u32, paint.height as u32);
     let png = yanshi_render::png::encode_png(width, height, &paint.rgba).ok_or_else(|| {
@@ -16144,6 +16527,11 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
         .unwrap_or(true);
     let margin = optional_u64(args, "margin").unwrap_or(16) as i64;
     let _ = layer_id;
+    // **试画与真画同路**：sensors 给了就带上（缺省全 0 ⇒ 老行为 ✓）。
+    let sensors = match args.get("sensors") {
+        Some(value) if !value.is_null() => brush_sensors_from_value(value)?,
+        _ => BrushSensors::default(),
+    };
     let paint = paint_brush(
         ctx,
         &brush,
@@ -16158,6 +16546,7 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
         yanshi_render::color::ColorMixing::Rgb,
         &[],
         None,
+        sensors,
     )?;
     let bbox = [
         paint.x0,

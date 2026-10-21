@@ -239,7 +239,7 @@ impl Curve {
     }
 }
 
-/// 一次笔触的三条曲线，对应 `advanced.appearance` 的三个键。
+/// 一次笔触的五条曲线，对应 `advanced.appearance` 的五个键。
 #[derive(Debug, Clone, PartialEq)]
 pub struct StrokeCurves {
     /// 大小曲线：控制半径缩放系数。
@@ -248,17 +248,23 @@ pub struct StrokeCurves {
     pub opacity: Curve,
     /// 压力曲线：先把原始压力映射一次，再供上述两条曲线查询。
     pub pressure: Curve,
+    /// 流量曲线（progress 驱动）：逐 stamp 调制 `BrushSpec::flow`（乘子）。
+    pub flow: Curve,
+    /// 间距曲线（progress 驱动）：逐 stamp 调制采样步长（乘子，1 = 原间距，
+    /// 越小越密；曲线值域 0..1 ⇒ 只能加密、不能稀疏，与其余曲线的口径一致）。
+    pub spacing: Curve,
 }
 
 impl Default for StrokeCurves {
-    /// 三条曲线全部为恒等曲线（即不改变任何输入）。
+    /// 五条曲线全部为恒等曲线（即不改变任何输入）。
     fn default() -> Self {
         Self::from_appearance(&Value::Null)
     }
 }
 
 impl StrokeCurves {
-    /// 从 `advanced.appearance` 对象解析 `size_curve` / `opacity_curve` / `pressure_curve`。
+    /// 从 `advanced.appearance` 对象解析 `size_curve` / `opacity_curve` / `pressure_curve`
+    /// / `flow_curve` / `spacing_curve`。
     ///
     /// 键缺失、`appearance` 不是对象、或某条曲线非法时，对应曲线取恒等 `constant(1.0)`。
     pub fn from_appearance(appearance: &Value) -> StrokeCurves {
@@ -267,7 +273,30 @@ impl StrokeCurves {
             size: Curve::from_value(get("size_curve")),
             opacity: Curve::from_value(get("opacity_curve")),
             pressure: Curve::from_value(get("pressure_curve")),
+            flow: Curve::from_value(get("flow_curve")),
+            spacing: Curve::from_value(get("spacing_curve")),
         }
+    }
+
+    /// 流量乘子（progress 采样口径与 [`Self::modulate_shape`] 一致）。
+    pub fn flow_scale(&self, progress: f64) -> f32 {
+        let t = if progress.is_finite() {
+            progress.clamp(0.0, 1.0) as f32
+        } else {
+            0.0
+        };
+        self.flow.eval(t)
+    }
+
+    /// 间距乘子（progress 采样）：钳到 `0.05..=1.0` —— 0 会让采样步长为 0
+    /// （无限 stamp），下限与 `dashed_line` 的最小步长口径一致。
+    pub fn spacing_scale(&self, progress: f64) -> f64 {
+        let t = if progress.is_finite() {
+            progress.clamp(0.0, 1.0) as f32
+        } else {
+            0.0
+        };
+        (self.spacing.eval(t) as f64).clamp(0.05, 1.0)
     }
 
     /// 把**尺寸与不透明度曲线**作用到基础半径/alpha 上，采样参数是**笔迹进度** ✓。
@@ -348,6 +377,30 @@ mod tests {
     /// 三点曲线（0.0→0.2、0.5→1.0、1.0→0.0），期望值写死。
     fn three_point() -> Curve {
         Curve::from_value(Some(&json!([[0.0, 0.2], [0.5, 1.0], [1.0, 0.0]])))
+    }
+
+    #[test]
+    fn flow_and_spacing_curves_parse_from_appearance() {
+        let curves = StrokeCurves::from_appearance(&json!({
+            "flow_curve": [[0.0, 1.0], [1.0, 0.0]],
+            "spacing_curve": [[0.0, 1.0], [1.0, 0.5]],
+        }));
+        assert!((curves.flow_scale(0.0) - 1.0).abs() < 1e-6);
+        assert!((curves.flow_scale(1.0) - 0.0).abs() < 1e-6);
+        assert!((curves.spacing_scale(0.0) - 1.0).abs() < 1e-6);
+        assert!((curves.spacing_scale(1.0) - 0.5).abs() < 1e-6);
+        // 缺省（没给这两条）必须是恒等 ⇒ 老行为不变。
+        let defaults = StrokeCurves::default();
+        assert!((defaults.flow_scale(0.37) - 1.0).abs() < 1e-6);
+        assert!((defaults.spacing_scale(0.37) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn spacing_scale_never_reaches_zero() {
+        let curves = StrokeCurves::from_appearance(&json!({
+            "spacing_curve": [[0.0, 0.0], [1.0, 0.0]],
+        }));
+        assert!(curves.spacing_scale(0.5) >= 0.05);
     }
 
     #[test]

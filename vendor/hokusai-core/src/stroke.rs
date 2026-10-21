@@ -232,11 +232,13 @@ impl Brush {
         // `update_states_and_setting_values` call.
         let mut dab_inputs = InputValues::new();
         dab_inputs.set(BrushInput::Tilt, tilt_mag);
-        // `viewzoom = log(scale)` in libmypaint; with the app feeding no
-        // zoom information we sit at the neutral value (1.0× → 0).
-        dab_inputs.set(BrushInput::Viewzoom, 0.0);
-        // No barrel/twist on a plain stroke_to API, so always 0°.
-        dab_inputs.set(BrushInput::BarrelRotation, 0.0);
+        // `viewzoom = log(scale)` in libmypaint. The host feeds it via
+        // `Brush::viewzoom`; the default 0.0 is the neutral value (1.0×),
+        // which is what this engine historically hard-coded.
+        dab_inputs.set(BrushInput::Viewzoom, self.viewzoom);
+        // Barrel/twist likewise comes from the host (`Brush::barrel_rotation`,
+        // degrees); default 0.0 reproduces the historical hard-coded 0°.
+        dab_inputs.set(BrushInput::BarrelRotation, self.barrel_rotation);
         // libmypaint feeds `BASEVAL(RADIUS_LOGARITHMIC)` directly (`ln(r)`).
         dab_inputs.set(
             BrushInput::BrushRadius,
