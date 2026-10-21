@@ -3254,3 +3254,19 @@ for i in 1 2; do bash scripts/run-criteria-local.sh scripts/tool-fit-background-
 **⇒ `effective_*` 改名那笔也是 **success**（12 绿 / 0 红）⇒ 本场**第十一个完整绿的 run** ✓
 **⇒ ⇒ 它证明的是**接口命名**这件事**（外部读 API 的方式影响了字段名 ⇒ 改名后**他们猜的就是接口**）✓
 **⇒ ⇒ ⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=25" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'`
+
+## ⚠ 大补丁的 CI：**1 红，而红的是我上轮已修的计数**（第 1483 轮）
+
+**⇒ `3bd5f21f`（曲线/路径一期补丁本体）⇒ 10 绿 / **1 红** / shard 3 仍在跑**
+**⇒ ⇒ 红的是 `tool-surface-coverage`（shard 1/6），报的是**：
+```
+✗ crates/yanshi-server/src/tools.rs 里写「核心层 … 114 个」，而实际 core = 115 个
+```
+**⇒ ⇒ ⇒ 这正是**我上一轮修掉的那处**（补丁漏改 `tools.rs` 三处 + 中文 guide）⇒ 修在 `64afc03a` ✓
+
+**⇒ ⇒ ⇒ ⇒ 所以**：**同一处缺陷，我在本机独立发现、CI 也发现了**（互为交叉验证 ✓）
+**⇒ 而 `test (stable)` / `test (beta)` / `GPU feature` 与另五片 criteria **都绿** ⇒
+**⇒ ⇒ 说明**补丁本体的代码是好的**，红的只是**计数文档** ✓
+
+**⇒ 当前工作区实测**：`tool-surface-coverage` = **0** ✓（修已生效）
+**⇒ 复算**：`bash scripts/run-criteria-local.sh scripts/tool-surface-coverage.mjs` ✓
