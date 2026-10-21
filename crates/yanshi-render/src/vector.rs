@@ -445,7 +445,19 @@ pub fn export_stroke_native(
     let mut contours = Vec::new();
     for cluster in &clusters {
         let loop_pts = svg::envelope_contour(cluster);
-        match svg::fit_closed_contour(&loop_pts, &forced) {
+        // 容差按**本簇** dab 半径的中位数调度（与 Phase 1 路线 A 逐字一致 ✓）：
+        // 本函数曾是全仓唯一还走旧固定容差入口（`fit_closed_contour`，
+        // ε_fit = 0.6px）的生产调用——对 r = 1.5 的分隔线级细线那是半径的
+        // 40%，轮廓偏差实测达 0.57px、过不了 validate 的 P95 线
+        // （`max(0.35, 0.08r)`）✗；`fit_closed_contour_r` 在 r ≥ 8.6 时与
+        // 旧入口逐字一致 ⇒ 粗线输出不回归 ✓。
+        let mut radii: Vec<f64> = cluster.iter().map(|d| d.radius).collect();
+        radii.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let cluster_radius = radii
+            .get(radii.len() / 2)
+            .copied()
+            .unwrap_or(brush.size / 2.0);
+        match svg::fit_closed_contour_r(&loop_pts, &forced, cluster_radius) {
             Some(fitted) => contours.push(fitted),
             None => {
                 return StrokeExport::Raster {
@@ -935,5 +947,96 @@ mod tests {
             stroke_fingerprint(&data, &[1.0, 0.0]),
             stroke_fingerprint(&data, &[2.0, 0.0])
         );
+    }
+
+    #[test]
+    fn native_export_thin_line_contour_stays_on_capsule_across_phases() {
+        // 回归（2026-10-21 logo 实验渲染级对比抓到的真缺陷）：size 3 /
+        // spacing 0.1 的两点直线（logo 横版分隔线的构造）在原生直出里
+        // 畸变成水滴形——本函数当时是全仓唯一还走旧固定容差入口
+        // （`fit_closed_contour`、ε_fit = 0.6px = r 的 40%）的生产调用，
+        // 轮廓偏差随绝对位置的浮点相位漂移（旧分支构建实测：同一条线在
+        // y0 = 88 处拟合控制点被拉出 −29.37px、渲回墨宽 3 → 14px；
+        // y0 = 68 处却正常）。判据是胶囊边界恒等式：采样拟合轮廓、逐点
+        // 量「到脊线段的距离 − r」，全相位 ≤ 0.25px（修复前实测最坏
+        // 0.57px ⇒ 本测试在旧入口上必红 ✓；修复后最坏 0.13px ✓）。
+        let appearance = StrokeAppearance::default();
+        let capsule_dev = |b: &BrushSpec, g: &StrokeGeometry, canvas: (u32, u32), r: f64| {
+            let exported = export_stroke_native(b, g, &appearance, canvas);
+            let StrokeExport::Vector { layers, .. } = exported else {
+                panic!("细线应可直出：{exported:?}");
+            };
+            let a = (g.points[0].x, g.points[0].y);
+            let z = (
+                g.points[g.points.len() - 1].x,
+                g.points[g.points.len() - 1].y,
+            );
+            let mut worst = 0.0f64;
+            for layer in &layers {
+                for c in &layer.contours {
+                    let mut cur = c.start;
+                    for cu in &c.cubics {
+                        for i in 1..=40 {
+                            let t = f64::from(i) / 40.0;
+                            let mt = 1.0 - t;
+                            let p = (
+                                mt * mt * mt * cur.0
+                                    + 3.0 * mt * mt * t * cu.p1.0
+                                    + 3.0 * mt * t * t * cu.p2.0
+                                    + t * t * t * cu.p3.0,
+                                mt * mt * mt * cur.1
+                                    + 3.0 * mt * mt * t * cu.p1.1
+                                    + 3.0 * mt * t * t * cu.p2.1
+                                    + t * t * t * cu.p3.1,
+                            );
+                            let dev = (segment_closest(a, z, p).2 - r).abs();
+                            if dev > worst {
+                                worst = dev;
+                            }
+                        }
+                        cur = cu.p3;
+                    }
+                }
+            }
+            worst
+        };
+        let mut thin = brush(3.0);
+        thin.spacing = 0.1;
+        // 实验原案逐字：(356, 88) → (356, 272)、画布 1120×360 ✓。
+        let original = line(&[(356.0, 88.0), (356.0, 272.0)]);
+        let dev = capsule_dev(&thin, &original, (1120, 360), 1.5);
+        assert!(dev <= 0.25, "原案轮廓偏差 {dev:.3}px 超线");
+        // 相位扫：竖线 y0 = 40..=130、横线 x0 = 40..=120（步长 1/2）——
+        // 缺陷是相位依赖的，只测一个位置锁不住 ✓。
+        for k in 0..=90 {
+            let y0 = 40.0 + f64::from(k);
+            let g = line(&[(356.0, y0), (356.0, y0 + 184.0)]);
+            let dev = capsule_dev(&thin, &g, (1120, 400), 1.5);
+            assert!(dev <= 0.25, "竖线 y0={y0} 轮廓偏差 {dev:.3}px 超线");
+        }
+        for k in 0..=40 {
+            let x0 = 40.0 + f64::from(k) * 2.0;
+            let g = line(&[(x0, 200.0), (x0 + 184.0, 200.0)]);
+            let dev = capsule_dev(&thin, &g, (1120, 400), 1.5);
+            assert!(dev <= 0.25, "横线 x0={x0} 轮廓偏差 {dev:.3}px 超线");
+        }
+    }
+
+    #[test]
+    fn native_export_thick_line_matches_legacy_fit() {
+        // 粗线不回归（恒等式 ✓）：r ≥ 8.6 时相对容差被钳到旧固定值 ⇒
+        // 原生直出的轮廓必须与旧入口对同一包络线的拟合逐点一致。
+        let appearance = StrokeAppearance::default();
+        let b = brush(20.0);
+        let g = line(&[(20.0, 50.0), (180.0, 50.0)]);
+        let exported = export_stroke_native(&b, &g, &appearance, (200, 100));
+        let StrokeExport::Vector { layers, .. } = exported else {
+            panic!("粗线应可直出：{exported:?}");
+        };
+        let clusters = svg::stroke_dab_clusters(&b, &g, (200, 100));
+        assert_eq!(clusters.len(), 1);
+        let loop_pts = svg::envelope_contour(&clusters[0]);
+        let legacy = svg::fit_closed_contour(&loop_pts, &[]).expect("包络线应可拟合");
+        assert_eq!(layers[0].contours, vec![legacy]);
     }
 }
