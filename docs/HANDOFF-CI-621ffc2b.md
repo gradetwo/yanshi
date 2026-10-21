@@ -3218,3 +3218,9 @@ for i in 1 2; do bash scripts/run-criteria-local.sh scripts/tool-fit-background-
 **⇒ ⇒ 判别命令**：`bash scripts/run-criteria-local.sh scripts/tool-examples-doc-check.mjs` ⇒ **非 0 就是没重生成** ✓
 
 **⇒ 这条我在本场**已经踩过一次**（重生成之前）⇒ 记下来，别再踩 ✓
+
+## ✅ **第十个绿 run**（第 1479 轮）
+
+**⇒ 那笔（重生成示例文档、修掉 `tool-examples-doc-check` 的红）也是 **success** ⇒ 本场**第十个完整绿的 run** ✓
+**⇒ ⇒ 它对**上一轮那条真红**是**闭环证明**：red ⇒ 我修 ⇒ **green** ✓
+**⇒ ⇒ ⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=25" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'`
