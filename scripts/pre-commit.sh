@@ -49,7 +49,27 @@ if git diff --name-only HEAD 2>/dev/null | grep -q '^scripts/.*\.sh$' \
   fi
 fi
 
-# ④ **磁盘卫生提醒**（第 1038 轮加）—— **只提醒，不阻塞** ✓
+# ⑤ **改工具注册表 ⇒ 自动跑"新增工具的八处清单"那两条检查**（第 1562 轮）
+#   **⇒ 为什么加**：我加 `explain_tool` 时**记得七处、漏了 `TOOL_EXAMPLES`** ✗
+#     ⇒ CI 的 `every_registered_tool_has_a_documented_example` 当场红了 ✓
+#   **⇒ ⇒ 而那正说明**：**清单是有效的，失效的是我的记性** ✓
+#     ⇒ 所以把它**挂到改注册表的那一刻**，而不是靠我记住 ✓
+#   **⇒ ⇒ ⇒ 只在 `tools_registry.rs` / `tools_examples.rs` 变了时才跑**（约 30 秒）
+#     ⇒ 其余提交不受影响 ✓
+if git diff --name-only HEAD 2>/dev/null | grep -qE 'tools_(registry|examples)\.rs$' \
+   || git diff --name-only --cached 2>/dev/null | grep -qE 'tools_(registry|examples)\.rs$'; then
+  echo "  ④ 新增工具清单（注册表变了 ⇒ 跑两条机械检查）"
+  if cargo test -p yanshi-server --lib every_registered_tool_has_a_documented_example > /tmp/pre-commit-tools.log 2>&1 \
+     && cargo test -p yanshi-server --test tool_inventory >> /tmp/pre-commit-tools.log 2>&1; then
+    echo "     ✓（示例齐全、文档计数与注册表一致）"
+  else
+    echo "     ✗（详见 /tmp/pre-commit-tools.log）"
+    grep -aE "没有可照抄的示例|声明的工具数量与注册表不符|panicked" /tmp/pre-commit-tools.log | head -3 | sed 's/^/       /'
+    fail=1
+  fi
+fi
+
+# ⑥ **磁盘卫生提醒**（第 1038 轮加）—— **只提醒，不阻塞** ✓
 #   **∴ 为什么**：`AGENTS.md` 里有「build 后清 target/debug/{deps,build,incremental}」那条，
 #     而本场我**读了但没做** ⇒ `target/debug` 涨到 **9.5 G**、磁盘 **63%** ✗
 #     ⇒ 清完 **614 M**、磁盘 **60%** ✓（省 8.9 G）
