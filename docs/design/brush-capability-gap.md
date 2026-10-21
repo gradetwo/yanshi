@@ -14429,7 +14429,13 @@ let divisions = ((distance / 2.0).ceil() as usize).clamp(1, 4096);
 存储中：108 字节，前 10 字节 = 00 00 89 50 4e 47 0d 0a 1a 0a  （**多了 2 字节前缀**）
 ```
 
-**⇒ ⇒ 所以**：**`store().get(&hash)` 返回的是**带 2 字节前缀**的字节** ⇒
+**⇒ ⇒ ⚠⚠ **更正（第 1611 轮）：这个结论是错的** ✗**
+**⇒ 我去读了 `FsBlobStore::get`** ⇒ 它 **`self.codec.decode(&stored)`** ⇒
+**那 2 字节是**磁盘编码头**，`get()` 会**解码掉**、返回**原始净荷** ✓
+**⇒ ⇒ 所以**：**我读的是**文件**，而不是**API 的返回值** ⇒ **又是"我的测量比被测对象更容易错"** ✗**
+**⇒ ⇒ ⇒ 而真正的第四处仍未找到**（**`get()` 给的字节是对的**）⇒ 下面这条**作废**：
+
+~~**⇒ ⇒ 所以**：**`store().get(&hash)` 返回的是**带 2 字节前缀**的字节** ⇒
 **而 `decode_png_l8` 要求 `bytes[..8] == SIGNATURE`** ⇒ **签名不匹配 ⇒ 返回 `None`** ⇒
 **⇒ ⇒ ⇒ 注册从未发生 ⇒ `bitmap_coverage` 恒 0** ✓
 
@@ -14440,3 +14446,12 @@ let divisions = ((distance / 2.0).ceil() as usize).clamp(1, 4096);
 
 **⇒ 下一步（明确）**：**在 `ensure_bitmap_masks_registered` 的 `load` 上报前剥掉 2 字节前缀**
 （**或改用与 `import_image` 同一份解码**）⇒ **一行改动** ✓
+
+**⇒ ⇒ ⇒ 那么第四处到底在哪？**（**第 1611 轮重新定位**）
+**⇒ 已排除**：`get()` 的字节 ✓、`decode_png_l8` 的条件（L8 ✓ 满足）、`bbox` ✓、`blob`/`blob_hash` ✓
+**⇒ 剩下的候选**（**按可能性排序**）：
+1. **`ensure_bitmap_masks_registered` 在 `bitmap_coverage` 里根本没被调用**（**它只在某条分支上**）✓
+2. **`SelectionShape::from_selection(sel)` 之后，`coverage` 走的不是 `bitmap` 分支**（**`parse_geom` 的 `bbox` 我补的是**选区** shape，而 `from_selection` 会再加 `feather`/`mode`/`invert`** ⇒ **可能盖掉了什么**）✓
+3. **注册表是**全局**的，而**服务进程换了** ⇒ **跨请求丢失** ✓
+
+**⇒ 下一步（明确）**：**在 `bitmap_coverage` 里加一行 stderr**（**看它被调没被调、注册表里有没有那个 key**）✓
