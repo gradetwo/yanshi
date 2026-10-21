@@ -2961,3 +2961,8 @@ ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs scripts/serve-*.mj
 2. 只改 `sample_lab`（`sample_at` 不必动）；
 3. 重推那条单测的**中心期望值**（或把它改成断言"spread 小 且 在黑白之间"这类**结构性**措辞），
    再加一条**折痕判据**（二阶差分；变异回 bilinear ⇒ 红）。
+
+## ✅ **第三个绿 run**（第 1444 轮）
+
+**⇒ 细线补丁合并那笔的 run 也是 **success** ⇒ 本场**第三个完整绿的 run** ✓
+**⇒ ⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=6" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'`
