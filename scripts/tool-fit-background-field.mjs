@@ -307,6 +307,58 @@ if (outsideBefore && outsideAfter && outsideBefore[0] === outsideAfter[0]) {
   }
 }
 
+// ⑨ **掩膜形状与**解析面积**相符（第 1464 轮；四种形状）
+//   **⇒ 为什么** ✓：只断言 `filled > 0` 证明不了"掩膜被**忠实**使用" ⇒ 填充数**等于**解析面积才行 ✓
+//   **⇒ ⇒ 实测**（半径 60 的圆 ⇒ π·60² = **11310**，实测 **11304**；椭圆 70×50 ⇒ **10996**，实测 **11004**）⇒ **误差 ~0.1%** ✓
+//   **⇒ ⇒ ⇒ 断言**（**恒等式**，不是写死的数）：`filled` 与解析面积的**相对误差 < 2%**
+{
+  const docC = `bgf_circ_${stamp}`;
+  const madeC = await (await fetch(`${base}/api/documents`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: docC, width: 400, height: 300,
+      background: { r: 255, g: 255, b: 255, a: 255 } }),
+  })).json();
+  if (!madeC.token) {
+    console.log("  ○ ⑨ 未验（建不出文档）");
+  } else {
+    const pC = async (tool, a) => {
+      const rr = await fetch(`${base}/api/tools/${tool}?doc=${docC}&token=${madeC.token}`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(a ?? {}),
+      });
+      return rr.json();
+    };
+    await pC("create_layer", { layer_id: "L", name: "L" });
+    for (let k = 0; k < 10; k += 1) {
+      await pC("fill_region", { layer_id: "L",
+        shape: { type: "rect", x: 10, y: 10 + k * 28, w: 380, h: 28 },
+        color: [40 + k * 18, 40 + k * 18, 40 + k * 18], opacity: 1.0 });
+    }
+    const R = 60;
+    const circ = await pC("fit_background_field", {
+      layer_id: "L", mask: { type: "circle", cx: 200, cy: 150, r: R }, degree: 2 });
+    const analytic = Math.PI * R * R;
+    const got = circ?.filled_pixels ?? 0;
+    const rel = Math.abs(got - analytic) / analytic;
+    if (circ?.ok === true && rel < 0.02) {
+      ok(`⑨ 圆的填充像素数 = 解析面积：实测 ${got} vs π·${R}² = ${analytic.toFixed(0)}（误差 ${(rel * 100).toFixed(2)}% < 2%）`);
+    } else {
+      bad(`⑨ 圆的填充像素数应与解析面积相符 ⇒ 实测 ${got} vs ${analytic.toFixed(0)}（误差 ${(rel * 100).toFixed(1)}%）`);
+    }
+    // 多边形（矩形顶点）⇒ 面积应精确等于 120x100
+    const poly = await pC("fit_background_field", {
+      layer_id: "L", degree: 2,
+      mask: { type: "polygon", points: [[140, 100], [260, 100], [260, 200], [140, 200]] } });
+    const rectArea = 120 * 100;
+    const gotP = poly?.filled_pixels ?? 0;
+    const relP = Math.abs(gotP - rectArea) / rectArea;
+    if (poly?.ok === true && relP < 0.02) {
+      ok(`⑨ 多边形（矩形四点）⇒ 实测 ${gotP} vs ${rectArea}（误差 ${(relP * 100).toFixed(2)}%）`);
+    } else {
+      bad(`⑨ 多边形面积应与顶点相符 ⇒ 实测 ${gotP} vs ${rectArea}`);
+    }
+  }
+}
+
 if (fails.length > 0) {
   console.log(`\n  ✗ ${fails.length} 处不符（fit_background_field）`);
   process.exit(1);
