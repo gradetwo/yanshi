@@ -125,7 +125,7 @@ for (const tool of withExample) {
   // badParameter 的正则里有「缺少必填」与「必须」⇒ 上面两条实测先命中它
   // ⇒ 走了「示例被拒」而永远到不了下面的 needsState ⇒ 我补的措辞等于没加。
   // 缺上下文比「参数错」更具体（要你先建对象，不是写错值），所以先算它。
-  const needsPriorState = /不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|已经有一个打开的|先 begin_|需要 delta 或 transform|缺少必填参数 path|文档 .* 未打开|尚未打开|order 必须是全部存活图层|需要 suggestion_id 或 patch|已经存在/i.test(detail);
+  const needsPriorState = /不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|已经有一个打开的|先 begin_|需要 delta 或 transform|缺少必填参数 path|文档 .* 未打开|尚未打开|不在存储|order 必须是全部存活图层|需要 suggestion_id 或 patch|已经存在/i.test(detail);
   if (response.ok) { accepted += 1; console.log(`  ✓ ${tool.name}：**成功** ✓`); }
   else if (badParameter && !needsPriorState) { rejected += 1; console.log(`  ✗ ${tool.name}：示例被拒 ⇒ ${detail.slice(0, 90)}`); }
   // **措辞要收全** ✓（第 514 轮 ✓）：原先只认 `不存在|未找到|not found|no such|missing` ✗ ⇒
@@ -142,7 +142,7 @@ for (const tool of withExample) {
   // 「需要 suggestion_id 或 patch」（**要先有建议** ✓）。
   // ⚠️ **注释不能写在正则字面量里面** ✗（第 546 轮实测 ✓）：`//` 会**终止正则** ✓
   // ⇒ 报 `SyntaxError: Invalid regular expression: missing /` ✓ ⇒ **整条判据当场失效** ✗。
-  else if (/不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|已经有一个打开的|先 begin_|需要 delta 或 transform|缺少必填参数 path|文档 .* 未打开|尚未打开|order 必须是全部存活图层|需要 suggestion_id 或 patch|已经存在/i.test(detail)) {
+  else if (/不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|已经有一个打开的|先 begin_|需要 delta 或 transform|缺少必填参数 path|文档 .* 未打开|尚未打开|不在存储|order 必须是全部存活图层|需要 suggestion_id 或 patch|已经存在/i.test(detail)) {
     needsState += 1;
     console.log(`  ⊙ ${tool.name}：**需要前置状态**（引用了还不存在的对象）⇒ ${detail.slice(0, 80)}`);
   }
