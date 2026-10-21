@@ -1284,18 +1284,42 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                                     .iter()
                                     .map(|l| (l.contours.as_slice(), l.fill_opacity))
                                     .collect();
-                                let failed = svgx::validate_stroke(
+                                let metrics = svgx::validate_stroke(
                                     &brush,
                                     &geometry,
                                     Some(&appearance),
                                     canvas,
                                     &refs,
-                                )
-                                .is_some_and(|metrics| !metrics.passes());
+                                );
+                                let failed =
+                                    metrics.as_ref().is_some_and(|metrics| !metrics.passes());
                                 if failed {
                                     counts.strokes_raster += 1;
                                     counts.validate_failed += 1;
                                     counts.note_reason("validate_failed");
+                                    // **★ 探针：回退时把**为什么**打出来** ✓（第 1439 轮）
+                                    //   **⇒ 为什么需要** ✗：回退目前只报**计数** ⇒ 调用方（和我）
+                                    //     只知道"有 N 笔回退"，**不知道是哪条指标不过** ✗
+                                    //     ⇒ 而"要不要放宽"是个需要**具体数字**的决定 ✓
+                                    //   **⇒ 门控**：只在 `YANSHI_SVG_VALIDATE_PROBE=1` 时打印 ✓
+                                    //     （生产路零开销 ✓；与 `YANSHI_RENDER_PROBE` 同例 ✓）
+                                    if std::env::var("YANSHI_SVG_VALIDATE_PROBE").as_deref()
+                                        == Ok("1")
+                                    {
+                                        if let Some(m) = &metrics {
+                                            eprintln!(
+                                                "[svg-validate] 回退：e_interior={:.4}（线 0.12）\
+                                                 ｜e_geom={:.4}（线 0.15）｜normal_p95={:.4}（线 {:.2}）\
+                                                 ｜radius={:.2}｜e_support={:.4}",
+                                                m.e_interior,
+                                                m.e_geom,
+                                                m.normal_p95,
+                                                (0.08 * m.radius).max(0.35),
+                                                m.radius,
+                                                m.e_support
+                                            );
+                                        }
+                                    }
                                     pending.push(index);
                                     continue;
                                 }
