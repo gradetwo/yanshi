@@ -3379,3 +3379,25 @@ grep -rhoE '"[^"]*(不支持的|支持的取值|可用参数|必须是以下|可
 **有罪的是"存在**默认/替代写法**却没列"那一种** ✓
 
 **⇒ 复算（判据）**：`bash scripts/run-criteria-local.sh scripts/check-shape-error-hints-path.mjs` ✓
+
+## ★ 广域本地普查 10 条：**全绿**，但抓到一处**我自己的环境错误**（第 1492 轮）
+
+**⇒ 队列空 ⇒ 在推之前先把**我本场改过的区域**扫一遍** ✓
+
+| 判据 | 结果 |
+|---|---|
+| `tool-fit-background-field` | **0** ✓ |
+| `check-shape-error-hints-path` | **0** ✓ |
+| `tool-examples-doc-check` | **0** ✓ |
+| **`tool-surface-coverage`** | **3**（不可判）✗ → **重编 mcp 后 0** ✓ |
+| `tool-export-svg-flatten-opacity` / `tool-smart-sample-ref-bbox` | **0 / 0** ✓ |
+| `tool-export-deterministic` / `tool-batch` / `tool-import-blob-decodable` / `check-canvas-size-cap` | **0 / 0 / 0 / 0** ✓ |
+
+**⇒ ⇒ 所以最终 **10/10 全绿** ✓
+
+**⇒ 但我先吃到一次 `exit 3`** ✗：我上一轮清 `target/debug/{deps,build,incremental}` 时**顺手清掉了 `yanshi-mcp`**
+⇒ 那条判据**依赖 `target/debug/yanshi-mcp`** ⇒ **前提不成立 ⇒ 诚实地报 3（不可判）** ✓
+**⇒ ⇒ **重编 `cargo build -p yanshi-mcp` ⇒ 立刻 0** ✓
+
+**⇒ ⇒ ⇒ 教训（与 AGENTS 那条同源）**：**清 `target/debug` 之后，依赖它的判据会变成 `exit 3`**
+⇒ **那不是产品失败，但也不是"通过"** ⇒ **看到 3 先查二进制** ✓
