@@ -2617,6 +2617,23 @@ fn read_describe_canvas(ctx: &mut ToolContext<'_>) -> Result<Value> {
             .unwrap_or("")
             .cmp(b.get("selection_id").and_then(Value::as_str).unwrap_or(""))
     });
+    // **先把三个与内存有关的量算好** ✓（`json!` 里**不能放语句** —— 我在这条坑上踩过多次）
+    let atom_total = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| document.log().len())
+        .unwrap_or(0);
+    let rss_mb = proc_rss_mb();
+    // **原子太少时这个平均值没有意义** ✓（第 1555 轮自查）
+    //   **⇒ 实测**：3 个原子、RSS 9 MB ⇒ 报 **3 145 728 字节/原子 ≈ 3 MB** ✗
+    //     ⇒ 而那是**固定开销**（二进制、线程栈、分配器）摊到 3 个原子上 ⇒ **不是每原子成本**
+    //   **⇒ ⇒ 所以**：**原子数 < 100 ⇒ 报 0**（**0 = 不可判**，而不是编一个荒谬的均值）
+    //     ⇒ 外部实测的 300 KB/原子 来自 3 600 个原子 ✓（那个分母才够大）
+    const MIN_ATOMS_FOR_AVERAGE: usize = 100;
+    let rss_per_atom = match (rss_mb, atom_total) {
+        (Some(mb), n) if n >= MIN_ATOMS_FOR_AVERAGE => (mb * 1_024 * 1_024) / n as u64,
+        _ => 0,
+    };
     Ok(json!({
         "ok": true,
         "width": width,
@@ -2644,12 +2661,39 @@ fn read_describe_canvas(ctx: &mut ToolContext<'_>) -> Result<Value> {
         //   ⇒ **∴ 代价 ✓**：**一次 `to_vec` ✓ ⇒ **∴ 大文档会有几十毫秒 ✓**（**∴ 而 `describe_canvas`
         //     本来就是"一次拿全状态"✗ ⇒ **∴ 可接受 ✓**）
         "estimated_memory_bytes": serde_json::to_vec(&state).map(|bytes| bytes.len()).unwrap_or(0),
+        // **★ 进程真实内存 + 每原子平均 ★**（第 1555 轮；外部 `B5` 的建议 ①）
+        //   **⇒ 为什么 `estimated_memory_bytes` 不够**：那是**状态序列化**的字节数，
+        //     而外部实测 **≈ 300 KB/原子**（3 600 原子 ⇒ RSS 1 088 MB）
+        //     ⇒ **两者差一个量级** ⇒ 用序列化大小预估会**严重低估** ✗
+        //   **⇒ ⇒ 所以**给两个**实测**的数：
+        //     · `server_rss_mb`：本进程的 **VmRSS**（`/proc/self/status`）⇒ **真实占用**
+        //     · `bytes_per_atom_avg`：**RSS / 原子数** ⇒ 用来预估"再加 N 笔要多少内存"
+        //   **⇒ ⇒ ⇒ 外部实测的用法正是这个**：他们靠"每原子约 300 KB"算出
+        //     "分阶段跑、每阶段一个新进程" ✓
+        "server_rss_mb": rss_mb,
+        "bytes_per_atom_avg": rss_per_atom,
         "counts": {
             "layers": state.alive_layers().len(),
             "selections": selections.len(),
             "masks": masks.len(),
+            "atoms": atom_total,
         },
     }))
+}
+
+/// **本进程的 RSS（MB）** ✓ —— 读 `/proc/self/status` 的 `VmRSS`（Linux）。
+///
+/// **⇒ 为什么不用 crate**：**一行解析就够**，而 `sysinfo` 那类依赖会**多一个供应链面** ✓
+/// **⇒ ⇒ 非 Linux 或读不到 ⇒ 返回 `None`**（**不编数字** ✗ —— 编了会让调用方按错的量预估）✓
+fn proc_rss_mb() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
+            return Some(kb / 1_024);
+        }
+    }
+    None
 }
 
 fn read_list_layers(ctx: &mut ToolContext<'_>) -> Result<Value> {
