@@ -3772,3 +3772,19 @@ gh auth status 2>&1 | head -4           # API 侧是否 timeout
 ⇒ **判据"不存在"与"不过"都是 `1`** ⇒ **这是可误导的** ⇒ **下面这条已记**：
 
 **⇒ 判据**：**报一个判据红之前，先 `ls scripts/<名字>.mjs` 确认它存在** ✓
+
+## ✅✅ **第三十一个绿 run**：known-red 从 30 降到 29 有 CI 背书（第 1566 轮）
+
+**⇒ 那一笔只改了 `scripts/criteria-known-red.txt`** ⇒ **而它**在 `paths-ignore` 里**（**有意为之**：
+它是**名单**、不是代码）⇒ **所以 push 不触发 CI** ✓
+**⇒ ⇒ ⇒ 所以**我**手动派发 HEAD**（**HEAD 就是它，不违反"别派发旧提交"**）⇒ **12 绿 / 1 个 `continue-on-error`** ⇒
+**`conclusion: success`** ✓
+
+**⇒ ⇒ 而这**正好验证了移除是对的**：
+**`criteria` 的六个分片全过** ⇒ **`tool-example-acceptance.mjs` 真的能绿**（**不是我以为能绿**）✓
+
+| 项 | 值 |
+|---|---|
+| 那个红 | **`brush parity (arm64 vs wasm32)`** ⇒ **`continue-on-error`**（**数据收集，不阻塞**）✓ |
+| `criteria` 分片 | **全过** ✓ |
+| **结论** | **success** ✓ |
