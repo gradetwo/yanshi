@@ -396,7 +396,15 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "delete_selection",
         profile: Profile::Structure,
-        summary: "删除选区（tombstone）：删除后笔触/擦除不再受约束，且**已画内容按日志重算恢复原样**",
+        // **这句以前写的是**「已画内容按日志重算恢复原样」** ⇒ 实测**不是这样** ✗**（第 1554 轮；外部 `B7`）
+        //   **⇒ 他们的实测**：被该选区裁剪过的笔触，删除选区前后**墨迹完全一致**（3812 px、x 0.23–0.35 不变）✓
+        //   **⇒ ⇒ 而本仓的测试注释也写「已画内容保持不变」**（`tests/selection_tools.rs:5`）✓
+        //     ⇒ **所以是 summary 一家写错**，实现与测试都是对的 ✓
+        //   **⇒ ⇒ ⇒ 后果**：他们**因为相信 summary**，设计了"绝不删选区"的绕行方案、**白绕一圈** ✗
+        //     ⇒ **一句错文档的代价 = 一轮工程决策** ✓（**文档也是接口**）
+        summary: "删除选区（tombstone）：删除后笔触/擦除不再受约束；**已画内容不变** \
+                  （裁剪在渲染期按日志重算，但**删选区不会重算已提交的笔触** ⇒ \
+                  与 `tests/selection_tools.rs` 的实测一致）",
         mutating: true,
         params: &[param!("selection_id", String, true, "选区 id")],
     },
