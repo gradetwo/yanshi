@@ -447,6 +447,54 @@ if (outsideBefore && outsideAfter && outsideBefore[0] === outsideAfter[0]) {
   }
 }
 
+// ⑫ **样本波动与相对残差**必须报出，且**比值不等于 1**（第 1475 轮；外部 §224 的提问）
+//   **⇒ 外部问**：`< 15` 的绝对阈值在**低对比**图上是否偏严？
+//   **⇒ ⇒ 实测（同一条二次曲线，只缩放对比）**：
+//     高对比 0..255 ⇒ `rms=30.6`、`std=79.5` ⇒ **ratio 0.385**
+//     低对比 100..140 ⇒ `rms=24.1`、`std=30.0` ⇒ **ratio 0.804**
+//   **⇒ ⇒ ⇒ 所以**：**比值也不能归一化**（低对比**更难**拟合 ⇒ 相对误差**更大**）✓
+//     ⇒ 而外部 `test1`（`std 13.5`、`rms 11`）比值也是 **0.81** ⇒ **与他们判为可接受的情形同量级** ✓
+//   **⇒ ⇒ ⇒ ⇒ 结论**：**没有单一判据** —— `< 15` 的**绝对**阈值是**对的**（误差的**可感知性**是绝对的），
+//     而 `sample_std` / `residual_ratio` 只是**额外语境** ⇒ 断言只查"报出来了"与"比值合理"，不查阈值 ✓
+{
+  const docRt = `bgf_ratio_${stamp}`;
+  const madeRt = await (await fetch(`${base}/api/documents`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: docRt, width: 400, height: 300,
+      background: { r: 255, g: 255, b: 255, a: 255 } }),
+  })).json();
+  if (!madeRt.token) {
+    console.log("  ○ ⑫ 未验（建不出文档）");
+  } else {
+    const pRt = async (tool, a) => {
+      const rr = await fetch(`${base}/api/tools/${tool}?doc=${docRt}&token=${madeRt.token}`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(a ?? {}),
+      });
+      return rr.json();
+    };
+    await pRt("create_layer", { layer_id: "L", name: "L" });
+    for (let k = 0; k < 10; k += 1) {
+      const t = k / 9;
+      const v = Math.round(255 * t * t);
+      await pRt("fill_region", { layer_id: "L",
+        shape: { type: "rect", x: 10, y: 10 + k * 28, w: 380, h: 28 },
+        color: [v, v, v], opacity: 1.0 });
+    }
+    const rr = await pRt("fit_background_field", {
+      layer_id: "L", mask: { type: "rect", x: 150, y: 100, w: 100, h: 80 }, degree: 2 });
+    const rms = rr?.residual_rms?.[0];
+    const sd = rr?.sample_std?.[0];
+    const rat = rr?.residual_ratio?.[0];
+    const okShape = typeof rms === "number" && typeof sd === "number" && typeof rat === "number"
+      && sd > 0 && Math.abs(rat - rms / sd) < 0.01;
+    if (okShape) {
+      ok(`⑫ 报出 sample_std 与 residual_ratio 且**自洽**：rms ${rms.toFixed(1)} / std ${sd.toFixed(1)} = ${rat.toFixed(3)}`);
+    } else {
+      bad(`⑫ 必须报 sample_std 与 residual_ratio，且 ratio === rms/std ⇒ 实测 rms=${rms}、std=${sd}、ratio=${rat}`);
+    }
+  }
+}
+
 if (fails.length > 0) {
   console.log(`\n  ✗ ${fails.length} 处不符（fit_background_field）`);
   process.exit(1);

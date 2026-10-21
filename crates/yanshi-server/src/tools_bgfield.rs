@@ -149,6 +149,11 @@ pub(super) fn write_fit_background_field(ctx: &mut ToolContext<'_>, args: &Value
     // 正规方程 AᵀA c = Aᵀb（每通道一套 b，共用 AᵀA ✓）
     let mut ata = vec![vec![0.0f64; n]; n];
     let mut atb = [vec![0.0f64; n], vec![0.0f64; n], vec![0.0f64; n]];
+    // **样本自身的波动**（第 1475 轮；外部 §224 提出「绝对阈值在低对比图上偏严」）
+    //   ⇒ 一个**绝对**灰度阈值不可能同时适合**高对比**与**低对比**的底 ✓
+    //   ⇒ ⇒ 所以同时报 `sample_std` 与**无量纲**的 `residual_ratio = rms / std` ✓
+    let mut sum = [0.0f64; 3];
+    let mut sumsq = [0.0f64; 3];
     let mut samples = 0usize;
     let use_count = rw as usize * rh as usize;
     let mut cache: Vec<[f64; 10]> = Vec::with_capacity(use_count);
@@ -181,6 +186,11 @@ pub(super) fn write_fit_background_field(ctx: &mut ToolContext<'_>, args: &Value
             for c in 0..3 {
                 atb[c][i] += row[i] * f64::from(px[c]);
             }
+        }
+        for c in 0..3 {
+            let v = f64::from(px[c]);
+            sum[c] += v;
+            sumsq[c] += v * v;
         }
         cache.push(row);
         ys.push([f64::from(px[0]), f64::from(px[1]), f64::from(px[2])]);
@@ -225,6 +235,17 @@ pub(super) fn write_fit_background_field(ctx: &mut ToolContext<'_>, args: &Value
         (sq[1] / samples as f64).sqrt(),
         (sq[2] / samples as f64).sqrt(),
     ];
+
+    // **样本标准差**（总体，按通道）✓
+    let sample_std = {
+        let n_f = samples as f64;
+        let mut sd = [0.0f64; 3];
+        for c in 0..3 {
+            let mean = sum[c] / n_f;
+            sd[c] = (sumsq[c] / n_f - mean * mean).max(0.0).sqrt();
+        }
+        sd
+    };
 
     // **铺进掩膜内**：只在掩膜 bbox 内建图，掩膜外的像素**全透明**（这样 import_image 只覆盖掩膜 ✓）
     let (ow, oh) = (mw.ceil() as u32, mh.ceil() as u32);
@@ -375,6 +396,13 @@ pub(super) fn write_fit_background_field(ctx: &mut ToolContext<'_>, args: &Value
         "margin": margin_frac,
         "samples": samples,
         "residual_rms": [rms[0], rms[1], rms[2]],
+        // **相对残差（无量纲）** ⇒ 高对比与低对比**可比** ✓（第 1475 轮）
+        "sample_std": [sample_std[0], sample_std[1], sample_std[2]],
+        "residual_ratio": [
+            if sample_std[0] > 1e-9 { rms[0] / sample_std[0] } else { 0.0 },
+            if sample_std[1] > 1e-9 { rms[1] / sample_std[1] } else { 0.0 },
+            if sample_std[2] > 1e-9 { rms[2] / sample_std[2] } else { 0.0 },
+        ],
         "mask_bbox": [bx0, by0, bx1, by1],
         "filled_pixels": filled,
         "field_range": [lo, hi],
