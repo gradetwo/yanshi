@@ -3894,3 +3894,24 @@ gh auth status 2>&1 | head -4           # API 侧是否 timeout
 **⇒ ⇒ ⇒ 而说明里给了**有效替代**：**加笔数／加 `size`／用 `smudge`**（**`smudge` 实测 R 40→89**）✓
 
 **⇒ 累计**：**四十个完整绿的 run**（**八次 12/12 全清**）✓
+
+## ★ 收尾复查：**9 条全绿**（第 1595 轮；40 个绿 run 之后）
+
+**⇒ 检查的是**今天新增/改过的面**：
+
+| 判据 | 结果 |
+|---|---|
+| `tool-surface-coverage` | **0**（**先 3 后 0** ⇒ 又是**陈旧 mcp**，第 5 次）|
+| `tool-examples-doc-check` | **0** ✓ |
+| **`tool-blob-gc-integrity`**（新）| **0** ✓ |
+| **`tool-smudge-drags-color`**（新）| **0** ✓ |
+| **`tool-medium-overlap-blends`**（新）| **0** ✓ |
+| `check-shape-error-hints-path` | **0** ✓ |
+| `tool-stamp-parity` | **0** ✓ |
+| `tool-visible-delta` / `tool-export-sha256` | **0 / 0** ✓ |
+| `tool-import-blob-decodable` | **0** ✓ |
+
+**⇒ ⇒ 自检 0** ✓ ⇒ **今天 40+ 提交没有留下回归** ✓
+
+**⇒ ⇒ ⇒ 而"陈旧 mcp"已是**第 5 次**（`tool-surface-coverage` 的 `exit 3`）⇒
+**我已经能立刻识别它**（**"先 3 先查二进制"**）✓
