@@ -2918,18 +2918,14 @@ ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs scripts/serve-*.mj
 
 ## ✅ **连续两个完整绿的 run**（第 1439 轮，本场首次）
 
-**⇒ 之前几十轮里每次都被下一笔 push 顶掉（`cancelled`），这次终于有两个 run 跑完：**
+**⇒ 之前几十轮里每次都被下一笔 push 顶掉（`cancelled`），这次终于有两个 run 跑完并且**都是 success** ✓
+**⇒ ⇒ 两个 run 各 **12 success / 0 failure / 0 在跑**** ✓
 
-| run（提交）| 结果 | job 统计 |
-|---|---|---|
-| **`6a5d227e`** | **success** ✓ | **12 success / 0 failure / 0 在跑** |
-| **`68bbd800`** | **success** ✓ | 同上 |
-
-**⇒ ⇒ 这两个 run 覆盖的东西（都不是小事）**：
-- **Phase 2 原生矢量**（`f573c788`）
-- **Q123 三修复**（`dae49178`）
+**⇒ ⇒ 它们覆盖的东西（都不是小事）**：
+- **Phase 2 原生矢量**（合入提交见 `git log --grep='phase two'`）
+- **Q123 三修复**（`git log --grep='Q123'` 或 `--grep='stroke opacity double-apply'`）
 - **本场救活的 4 条判据**（surface／cold-export／cold-open／bitmap-scope）
-- **本场新增的判据**（size-clamp／out-of-range／canvas-cap／ref-bbox／direction／flatten-stroke／validate-over-reject）
+- **本场新增的 7 条判据**（size-clamp／out-of-range／canvas-cap／ref-bbox／direction／flatten-stroke／validate-over-reject）
 
 **⇒ ⇒ ⇒ 所以「CI 绿 = 红都在 known-red 里」这条**真的成立**了 ⇒
 **`criteria` 六个分片 + `test (stable)/(beta)` + `clippy` + `rustfmt` + `wasm smoke` + `GPU feature` 全绿** ✓
