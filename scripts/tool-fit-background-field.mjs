@@ -495,6 +495,51 @@ if (outsideBefore && outsideAfter && outsideBefore[0] === outsideAfter[0]) {
   }
 }
 
+// ⑬ **响应里每个业务字段都必须在说明里提到**（第 1480 轮；外部 §226 的教训）
+//   **⇒ 为什么** ✗：我两次靠**记忆**补说明（先漏 5 个、后又漏 4 个）⇒ 而**记忆不可靠** ✓
+//   **⇒ ⇒ 所以**这条判据**程序化**地查：取 `/api/tools` 的 `description`，跑一次工具，
+//     把响应的业务字段（去掉标准变更字段）逐个在 `description` 里找 ⇒ **有一个找不到就红** ✓
+//   **⇒ ⇒ ⇒ 实测**：之前漏的 4 个（`samples`/`filled_pixels`/`mask_bbox`/`placed`）⇒ 补上后 **0 个漏** ✓
+{
+  const cat = await (await fetch(`${base}/api/tools?doc=${doc}&token=${made.token}`)).json();
+  const spec = (cat?.tools || []).find((t) => t.name === "fit_background_field");
+  const desc = String(spec?.description ?? "");
+  const docD = `bgf_audit_${stamp}`;
+  const madeD = await (await fetch(`${base}/api/documents`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: docD, width: 400, height: 300,
+      background: { r: 255, g: 255, b: 255, a: 255 } }),
+  })).json();
+  if (!spec || !madeD.token) {
+    console.log("  ○ ⑬ 未验（拿不到 spec 或建不出文档）");
+  } else {
+    const pD = async (tool, a) => {
+      const rr = await fetch(`${base}/api/tools/${tool}?doc=${docD}&token=${madeD.token}`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(a ?? {}),
+      });
+      return rr.json();
+    };
+    await pD("create_layer", { layer_id: "L", name: "L" });
+    for (let k = 0; k < 10; k += 1) {
+      await pD("fill_region", { layer_id: "L",
+        shape: { type: "rect", x: 10, y: 10 + k * 28, w: 380, h: 28 },
+        color: [40 + k * 18, 40 + k * 18, 40 + k * 18], opacity: 1.0 });
+    }
+    const rr = await pD("fit_background_field", {
+      layer_id: "L", mask: { type: "rect", x: 150, y: 100, w: 100, h: 80 }, degree: 2 });
+    // 标准变更字段不算业务字段
+    const standard = new Set(["ok", "timings", "atom_id", "changeset_id", "head",
+      "dirty_bbox", "object_id", "layer_id", "objects"]);
+    const keys = Object.keys(rr || {}).filter((k) => !standard.has(k));
+    const missing = keys.filter((k) => !desc.includes(k));
+    if (keys.length > 0 && missing.length === 0) {
+      ok(`⑬ 响应的 ${keys.length} 个业务字段**全部**在说明里（程序化核对，不靠记忆）`);
+    } else {
+      bad(`⑬ 有字段没写进说明 ⇒ ${JSON.stringify(missing)}（说明里查不到就算漏）`);
+    }
+  }
+}
+
 if (fails.length > 0) {
   console.log(`\n  ✗ ${fails.length} 处不符（fit_background_field）`);
   process.exit(1);
