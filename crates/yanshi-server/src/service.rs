@@ -787,6 +787,51 @@ impl Workspace {
             Some(persist) => persist.list_documents()?,
             None => self.documents.keys().cloned().collect(),
         };
+        // **★ 先估算内存，超了就**明确拒绝**，而不是让 OOM killer 杀进程 ★**（第 1551 轮）
+        //   **⇒ 外部实测（`B4`）**：25 499 原子的 4K 文档、磁盘 469 MB ⇒ `blob_gc` **即使
+        //     `dry_run:true`** 也被 **SIGKILL**（`rc=-9`）⇒ **进程死掉，调用方只看到 "server closed"** ✗✗
+        //   **⇒ ⇒ 为什么 dry_run 也死**：本函数在**分档之前**就把
+        //     ① **所有文档**（`open_document`）② **所有原子 clone 进一份合并日志**
+        //     全载入内存 ⇒ **25k 原子的 4K 文档约 1.8 GB/份** ⇒ 几份就爆 ✗
+        //   **⇒ ⇒ ⇒ 所以加一道闸**：估算"把未加载文档全打开 + 合并原子"的内存，
+        //     超过上限就**返回可重试的错误**，并在 `context.detail` 里给出**两个数字**
+        //     （估算值与上限）⇒ 调用方据此**分阶段跑**（外部本来就是这么绕的）✓
+        //   **⇒ ⇒ ⇒ ⇒ 为什么不直接改成流式**：`plan_gc` 收的是**一份** `AtomLog`（内核签名），
+        //     改它要动内核；而**先给闸**能立刻把"进程被杀"变成"可读的拒绝" ✓（**下一步再做流式**）
+        const GC_MEMORY_BUDGET_BYTES: u64 = 1_536 * 1_024 * 1_024; // 1.5 GiB
+        let mut unloaded_atoms = 0u64;
+        for doc_id in &known {
+            if !self.documents.contains_key(doc_id) {
+                // 用持久层的原子数**估算**（不必真的打开）✓
+                if let Some(persist) = &self.persist {
+                    if let Ok(atoms) = persist.load_atoms(doc_id) {
+                        unloaded_atoms += atoms.len() as u64;
+                    }
+                }
+            }
+        }
+        let loaded_atoms: u64 = self
+            .documents
+            .values()
+            .map(|document| document.log().len() as u64)
+            .sum();
+        // **每个原子约 300 KB**（外部实测：3 600 原子 ⇒ RSS 1 088 MB ⇒ **≈ 300 KB/原子**）✓
+        const BYTES_PER_ATOM: u64 = 300 * 1_024;
+        let estimate = (unloaded_atoms + loaded_atoms).saturating_mul(BYTES_PER_ATOM);
+        if estimate > GC_MEMORY_BUDGET_BYTES {
+            return Err(YanshiError::new(
+                ErrorCode::ResourceExhausted,
+                ErrorContext::detail(format!(
+                    "blob_gc 需要把所有文档载入内存来算引用闭包 ⇒ 估算 **{} MB**（{} 个原子 × ≈300 KB/原子）\
+                     超过本服务的上限 **{} MB** ⇒ **已拒绝，进程不会被 OOM 杀掉**。\
+                     出路：① 先 `close_document` 掉不用的文档再跑；② 分阶段跑（关掉一批、跑一次）；\
+                     ③ 真的只需要**计划**时，给 `dry_run:true` 也要走同一条闸（本函数就是它）",
+                    estimate / (1_024 * 1_024),
+                    unloaded_atoms + loaded_atoms,
+                    GC_MEMORY_BUDGET_BYTES / (1_024 * 1_024),
+                )),
+            ));
+        }
         for doc_id in &known {
             if !self.documents.contains_key(doc_id) {
                 // 打不开就当它不存在 ✓（分级会因此偏保守：宁可把 blob 当孤儿也不误判为活跃 ✗）。
