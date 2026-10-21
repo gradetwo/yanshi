@@ -13789,6 +13789,8 @@ grep -rn "with_base_seq" crates/yanshi-server/src/document.rs       # 快照路�
 
 ### 剩下的可能与影响
 
-**⇒ 可能**：`import_project` / `stage_blob` 之后的某个工具 / `apply_style` 之类**带 blob 的对象创建路径** ⇒ **待查** ✓
+**⇒ 第三个嫌疑也排除**：`import_project`（不存在的包）⇒ **`ok=false`**，之后 `duplicate_layer` **`ok=true`** ✓（本轮）
+**⇒ ⇒ 所以已排除三个**：`import_image`、`set_reference`、`import_project` ✓
+**⇒ ⇒ ⇒ 剩下的可能**：某个**直接写对象元数据**的工具（不经过 blob 校验），或**示例顺序**里的一次 `put_blob` 失败**没回滚** ⇒ **待查** ✓
 **⇒ ⇒ 影响范围**：**只有那条验收判据里的 1 个示例** ⇒ **不是产品路径**（用户不会遇到）✓
 **⇒ ⇒ ⇒ 所以**：**继续记为 known-red（附已排除项）**，**不为了让它变绿而放宽验收判据** ✓
