@@ -149,7 +149,18 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         //   ⇒ **∴ 报告里说"一次调用拿到尺寸 ＋ 层列表 ＋ 选区 ＋ 掩码"✗ ⇒ **∴ 免得 agent 打四五次 ✓**
         name: "describe_canvas",
         profile: Profile::Core,
-        summary: "一次返回画布状态：尺寸、层列表、选区、掩码（只读 ✓）。省掉分别调 get_document／list_layers／list_selections",
+        // **★ 把"内存只增不减"这条实测性质写进工具面 ★**（第 1560 轮；外部 `B5`）
+        //   **⇒ 他们的原话**：「服务端内存只增不减，只能靠 close/reopen 释放 ⇒
+        //     这个性质**我是自己试出来的**，工具面没有告诉我」✗
+        //   **⇒ ⇒ 他们的实测**：`close → reopen` ⇒ **4 450 MB → 1 736 MB**（16k 原子回放 0.8 s）✓
+        //     ⇒ 以及 **≈ 300 KB/原子**（3 600 原子 ⇒ RSS 1 088 MB）✓
+        //   **⇒ ⇒ ⇒ 所以**：**summary 直接说清**三件事 —— RSS 会随原子增长、
+        //     **`/api/documents` 的 close+open 能释放**、单会话有天花板但文档本身没有 ✓
+        summary: "一次返回画布状态：尺寸、层列表、选区、掩码，外加**真实内存**（`server_rss_mb`）\
+                  与**每原子均值**（`bytes_per_atom_avg`，<100 原子时报 0=不可判）（只读 ✓）。\
+                  **内存只增不减**：渲染缓存按原子增长（实测 ≈300 KB/原子，4K 一笔 ≈300 KB）⇒ \
+                  **要释放就 `close` 再 `open` 同一文档**（实测 4 450 MB → 1 736 MB，回放 0.8 s）⇒ \
+                  **单会话有天花板、文档本身没有** ⇒ 长跑请分阶段、每阶段重开",
         mutating: false,
         params: &[],
     },
