@@ -2866,3 +2866,24 @@ grep -ln "/tmp/eval" scripts/*.mjs
 - **有 bug**：预设了人手前置条件 ⇒ **它会永远 3** ⇒ 必须改判据**自备 fixture** ✓
 **⇒ ⇒ 判别问句**：「**这条判据的前置条件，自动 runner 会给吗？**」✗
   ⇒ 不会 ⇒ **要么让它自己造，要么把它登记成环境红**（不能让它静默 3 下去）✓
+
+## ★ 本场新增/修改的判据**抖动检查**（第 1437 轮，8 条，各连跑 2 次）
+
+**⇒ 为什么查**：**抖动的判据比慢的判据更糟** ✗ —— 慢只是等，抖动会让人**开始不信判据** ✓
+**⇒ ⇒ 方法**：`bash scripts/run-criteria-local.sh scripts/<name>.mjs` **同一条连跑两次**，两次退出码必须一致 ✓
+
+| 判据 | 第 1 次 | 第 2 次 |
+|---|---|---|
+| `tool-export-cold-identical` | 0 | 0 |
+| `tool-cold-open-foreign` | 0 | 0 |
+| `tool-export-svg-flatten-opacity` | 0 | 0 |
+| `tool-smart-sample-direction-follows-ref` | 0 | 0 |
+| `tool-smart-sample-ref-bbox` | 0 | 0 |
+| `tool-medium-stroke-size-clamp` | 0 | 0 |
+| `tool-brush-out-of-range-args` | 0 | 0 |
+| `check-canvas-size-cap` | 0 | 0 |
+
+**⇒ ⇒ **8/8 两次一致** ✓ —— 本场改动没有引入抖动 ✓**
+
+**⇒ 顺带记一条**：**纯文档提交（`docs/**.md`）不会触发 CI**（`paths-ignore`）⇒
+**⇒ ⇒ 所以在等 CI 时，写文档是**不打扰队列**的工作** ✓（第 398 轮定的规则，本场第 1437 轮又用到 ✓）
