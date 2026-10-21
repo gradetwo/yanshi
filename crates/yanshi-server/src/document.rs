@@ -465,6 +465,13 @@ impl Document {
         settings: DocumentSettings,
     ) -> Result<Self> {
         let id = doc_id.into();
+        // **★ 重复 `seq` 的**修复路径** ✓★（第 1505 轮；外部 `§238`：一个损坏 atom 让整份文档永久打不开）
+        //   **⇒ 为什么要在**这一层**修** ✗：`AtomLog::with_atoms` 是**唯一闸门**
+        //     ⇒ 它拒绝 ⇒ 文档打不开 ⇒ **导出、删层、任何操作都被挡**（外部实测：连 `delete_layer` 都失败）✗
+        //   **⇒ ⇒ 症状**：「seq 15523 重复」⇒ 两个原子拿到同一 `seq`（外部怀疑**同毫秒并发** `create_layer`）✓
+        //   **⇒ ⇒ ⇒ 修法**：**检测到重复就把后者推到 `max+1`** ⇒ **保留全部原子、只重编号**
+        //     ⇒ 比「拒绝」好：**拒绝 = 丢整份文档**，重编号 = **顺序里有一处是猜的**（并**明确告知**）✓
+        let atoms = repair_duplicate_seqs(atoms);
         let log = AtomLog::with_atoms(atoms)?;
         let mut document = Self::empty(store, id, settings, yanshi_core::now_ms());
         document.log = log;
@@ -2657,6 +2664,37 @@ fn internal(detail: &str) -> YanshiError {
     YanshiError::new(ErrorCode::ResourceExhausted, ErrorContext::detail(detail))
 }
 
+/// **把重复的 `seq` 重编号**（第 1505 轮；外部 `§238` 的数据丢失事故）。
+///
+/// **⇒ 为什么允许"重编号"而不是拒绝** ✗：`seq` 重复意味着**顺序不可判定**，
+///   但**拒绝**的后果是**整份文档打不开**（外部实测：一个坏原子挡住导出与删层，1 小时工作不可用）✗
+/// **⇒ ⇒ 所以**取舍是：**保留全部原子**、把重复的**推到 `max+1`**，并**打一条明确的警告** ✓
+/// **⇒ ⇒ ⇒ 判据**：`repair_duplicate_seqs` **不改非重复原子**、**不改原子内容**（只改 `seq`）✓
+fn repair_duplicate_seqs(mut atoms: Vec<yanshi_core::Atom>) -> Vec<yanshi_core::Atom> {
+    use std::collections::HashSet;
+    let mut seen: HashSet<yanshi_core::Seq> = HashSet::new();
+    let mut next = atoms.iter().map(|a| a.seq).max().unwrap_or(0) + 1;
+    let mut fixed = 0usize;
+    for atom in atoms.iter_mut() {
+        while !seen.insert(atom.seq) {
+            let old = atom.seq;
+            atom.seq = next;
+            next += 1;
+            fixed += 1;
+            eprintln!(
+                "⚠ 文档修复：原子 {} 的 seq {old} 重复 ⇒ 已重编号为 {}（保留全部原子；顺序在该点按到达顺序取）",
+                atom.id, atom.seq
+            );
+        }
+    }
+    if fixed > 0 {
+        eprintln!(
+            "⚠ 本次打开共修复 {fixed} 处重复 seq —— 建议尽快用 `export_png` 另存一份健康副本"
+        );
+    }
+    atoms
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2672,6 +2710,45 @@ mod tests {
             DocumentSettings::default(),
         )
         .unwrap()
+    }
+
+    /// **重复 `seq` 必须能修**（第 1505 轮；外部 `§238` 的数据丢失事故）
+    ///
+    /// **⇒ 断什么**（结构量）：
+    ///   ① 修完之后**没有任何重复 `seq`** ✓
+    ///   ② **非重复原子一个都没动**（`seq` 与 `id` 逐位相同）✓
+    ///   ③ **原子总数不变**（**不丢东西** —— 这正是这次修复的意义）✓
+    ///   ④ 被重编号的那个**推到 `max+1` 之后**，而不是随便一个数 ✓
+    #[test]
+    fn repair_duplicate_seqs_keeps_every_atom_and_only_renumbers() {
+        let mut atoms = drawing_atoms();
+        // 造一个重复：把第二个原子的 seq 改成和第一个一样
+        let first_seq = atoms[0].seq;
+        atoms[1].seq = first_seq;
+        let before_ids: Vec<String> = atoms.iter().map(|a| a.id.to_string()).collect();
+        let before_len = atoms.len();
+        let max_seq = atoms.iter().map(|a| a.seq).max().unwrap();
+
+        let repaired = repair_duplicate_seqs(atoms);
+
+        // ③ 不丢原子
+        assert_eq!(repaired.len(), before_len, "修复不许丢原子");
+        let after_ids: Vec<String> = repaired.iter().map(|a| a.id.to_string()).collect();
+        assert_eq!(after_ids, before_ids, "修复不许改原子顺序或 id");
+        // ① 没有重复
+        let mut seqs: Vec<_> = repaired.iter().map(|a| a.seq).collect();
+        let n = seqs.len();
+        seqs.sort_unstable();
+        seqs.dedup();
+        assert_eq!(seqs.len(), n, "修复后不许有重复 seq");
+        // ④ 被推的那个在 max 之后
+        let pushed = repaired.iter().filter(|a| a.seq > max_seq).count();
+        assert_eq!(
+            pushed, 1,
+            "应当**恰好一个**原子被推到 max 之后，实测 {pushed}"
+        );
+        // ② 没被碰的那个保持原 seq
+        assert_eq!(repaired[0].seq, first_seq, "第一个原子不该被动");
     }
 
     fn drawing_atoms() -> Vec<Atom> {
