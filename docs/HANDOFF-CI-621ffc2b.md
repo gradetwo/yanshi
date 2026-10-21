@@ -2966,3 +2966,23 @@ ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs scripts/serve-*.mj
 
 **⇒ 细线补丁合并那笔的 run 也是 **success** ⇒ 本场**第三个完整绿的 run** ✓
 **⇒ ⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=6" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'`
+
+## ★ bicubic 改动的**本地回归普查**（第 1445 轮，7 条判据全绿）
+
+**⇒ 为什么**：`sample_lab` 换成 Catmull-Rom 是**行为改动**（会影响 `smart_sample` 画出来的颜色场）
+⇒ 所以**在等 CI 之前**先本地把受影响的判据跑一遍 ✓
+
+| 判据 | 结果 |
+|---|---|
+| `tool-smart-sample-ref-bbox` | **0** ✓ |
+| `tool-smart-sample-direction-follows-ref` | **0** ✓ |
+| `tool-smart-texture-brightening` | **0** ✓ |
+| `tool-smart-tools` | **0** ✓ |
+| `tool-fill-region-feather` | **0** ✓ |
+| `tool-batch` / `tool-brush-names` / `tool-color-schema` / `tool-export-deterministic` | **0** ✓ |
+
+**⇒ ⇒ 9/9 全绿** ⇒ **bicubic 没有把既有行为弄坏** ✓
+
+**⇒ 顺带一条**负结论**：大笔（`r ≥ 3`）仍走 `e_interior`／`e_geom`／`p95` **三条**判据，
+探针显示 size 7 与 size 20 **都通过** ⇒ **`e_geom` 的绝对线对大笔是合适的，不需要半径相关化** ✓
+（只有 `r < 3` 需要换尺子，已在第 1440 轮做掉 ✓）
