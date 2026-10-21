@@ -278,7 +278,23 @@ pub(super) fn write_fit_background_field(ctx: &mut ToolContext<'_>, args: &Value
         ctx,
         &json!({
             "layer_id": layer_id,
-            "object_id": format!("bgfield_{}", ctx.doc_id),
+            // **默认 id 必须**每次唯一** ✓（第 1448 轮修）
+            //   **⇒ 原缺陷** ✗：写死成 `bgfield_{doc}` ⇒ **同一文档第二次调用报「对象已存在」** ✗
+            //     ⇒ 于是"先试 degree 1 再试 3"这种**正常用法**直接失败 ✗（判据 ⑤ 当场抓到 ✓）
+            //   **⇒ 修法**：带上文档的 `head_seq`（单调递增 ⇒ 唯一）✓
+            //     调用方给了 `object_id` 就用它的 ✓
+            "object_id": args
+                .get("object_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!(
+                    "bgfield_{}_{}",
+                    ctx.doc_id,
+                    ctx.workspace
+                        .document(&ctx.doc_id)
+                        .map(|d| d.state().head_seq)
+                        .unwrap_or(0)
+                )),
             "bitmap": {
                 "blob_hash": blob_hash.to_string(),
                 "size": png.len(),

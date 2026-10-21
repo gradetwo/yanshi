@@ -94,6 +94,50 @@ if (outsideBefore && outsideAfter && outsideBefore[0] === outsideAfter[0]) {
   bad(`④ 掩膜外不应被改 ⇒ 前 ${JSON.stringify(outsideBefore)}、后 ${JSON.stringify(outsideAfter)}`);
 }
 
+// ⑤ **degree 真的在起作用**：1 的残差必须 **>** 3 的残差（同一份数据）
+//   **⇒ 为什么这条重要** ✗：前四条只证明"填进去了"，**没证明"拟合在拟合"** ⇒
+//     把 `degree` 写死成 2 也能全过 ✗ ⇒ 这条**封住它** ✓
+//   **⇒ ⇒ 实测**：degree 1 ⇒ 73.5、2 ⇒ 39.7、3 ⇒ **36.6** ⇒ **单调下降** ✓
+//   **⇒ ⇒ ⇒ 而 `degree=9` 必须**夹到 3**（返回里 `degree` 是**生效值** ⇒ 调用方看得见 ✓）
+{
+  const doc2 = `bgf2_${stamp}`;
+  const made2 = await (await fetch(`${base}/api/documents`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: doc2, width: 400, height: 300,
+      background: { r: 255, g: 255, b: 255, a: 255 } }),
+  })).json();
+  if (!made2.token) {
+    console.log("  ○ ⑤ 未验（建不出第二个文档）");
+  } else {
+    const p2 = async (tool, a) => {
+      const rr = await fetch(`${base}/api/tools/${tool}?doc=${doc2}&token=${made2.token}`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(a ?? {}),
+      });
+      return rr.json();
+    };
+    await p2("create_layer", { layer_id: "L", name: "L" });
+    for (let k = 0; k < 12; k += 1) {
+      const y = 10 + k * 23;
+      const g = Math.round(255 * ((y / 300 - 0.5) ** 2 * 4));
+      await p2("fill_region", { layer_id: "L", shape: { type: "rect", x: 10, y, w: 380, h: 23 },
+        color: [g, g, g], opacity: 1.0 });
+    }
+    const mask = { type: "rect", x: 120, y: 80, w: 160, h: 140 };
+    const d1 = await p2("fit_background_field", { layer_id: "L", mask, degree: 1 });
+    const d3 = await p2("fit_background_field", { layer_id: "L", mask, degree: 3 });
+    const d9 = await p2("fit_background_field", { layer_id: "L", mask, degree: 9 });
+    const r1 = d1?.residual_rms?.[0];
+    const r3 = d3?.residual_rms?.[0];
+    if (typeof r1 === "number" && typeof r3 === "number" && r3 < r1) {
+      ok(`⑤ degree 真的在拟合：degree 1 残差 ${r1.toFixed(1)} > degree 3 残差 ${r3.toFixed(1)}`);
+    } else {
+      bad(`⑤ degree 1 与 3 的残差必须不同（否则 degree 是摆设）⇒ 实测 1:${r1}、3:${r3}`);
+    }
+    if (d9?.degree === 3) ok(`⑤ degree=9 被**夹到 3**且返回里如实给出（degree=${d9.degree}）`);
+    else bad(`⑤ degree=9 必须夹到 3 ⇒ 实测 degree=${d9?.degree}`);
+  }
+}
+
 if (fails.length > 0) {
   console.log(`\n  ✗ ${fails.length} 处不符（fit_background_field）`);
   process.exit(1);
