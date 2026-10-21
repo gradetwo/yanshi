@@ -3296,3 +3296,19 @@ gh api "repos/gradetwo/yanshi/actions/runs/<id>/jobs" --jq '.jobs[] | "\(.name)�
 **⇒ ⇒ ⇒ 所以**：**红的是文档计数，不是代码**；**修好后全绿** ✓
 
 **⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=25" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'` ✓
+
+## ✅ 曲线/路径**二期**：`test (stable)` / `test (beta)` / `clippy` **全绿**（第 1486 轮）
+
+**⇒ 这是我最想看到的结果**：`cargo test --workspace`（**我按内存约束委托给 CI 的那部分**）
+在**二期补丁**（+834 行、2 个新文件、4 项功能）下**两档都通过** ✓
+
+| job | 结果 |
+|---|---|
+| **`test (stable)`** | **success** ✓ |
+| **`test (beta)`** | **success** ✓ |
+| **`clippy`** | **success** ✓ |
+| `rustfmt` / `wasm smoke` / `GPU feature` | success ✓ |
+| **汇总** | **8 绿 / 0 红**，4 片 criteria 在跑 |
+
+**⇒ ⇒ 所以**：**二期的代码在全 workspace 测试下站得住** ✓
+**⇒ ⇒ ⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs/<id>/jobs" --jq '.jobs[] | "\(.name)｜\(.conclusion // .status)"'`
