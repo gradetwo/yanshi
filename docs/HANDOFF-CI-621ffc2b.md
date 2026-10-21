@@ -3493,3 +3493,23 @@ gh auth status 2>&1 | head -4           # API 侧是否 timeout
 **⇒ ⇒ 两个结论**：
 1. **报错末行会骗人** ⇒ **看 `head -12`** ✓
 2. **间歇性故障不要重试一次就放弃** ⇒ 给 5 次机会 ✓
+
+## ★ 三补丁里的**新工具实际跑过**（第 1503 轮；吸取 `combine_shapes` 的教训）
+
+**⇒ 教训**：**「合进来 + 在工具面上」≠「能用」**（上次 `combine_shapes` 就是只看"在面上"）⇒ 这次**逐个实际调** ✓
+
+### `get_brush_dynamics` / `set_brush_dynamics`（`brush-curves-phase2` 的主力）
+
+| 检查 | 结果 |
+|---|---|
+| `get` ⇒ 返回 `ok=true`、`count=66` | **✓**（与补丁 README 的"66 项设置"一致）|
+| 返回的顶层键 | `brush / count / format / note / ok / settings / timings / unknown_settings / with_inputs` |
+| `set` ⇒ `ok=true` | **✓** |
+| **写入是否真的生效** | **用 `settings` 的哈希比**（结构量，不是猜字段名）：**初始 / 写 `[[0,0.2],[1,1]]` 后 / 再写反向之后，三次算出的 `settings` 哈希**两两不同** ✓（不把哈希值写进文档 —— 它们**形如 commit hash**，自检会误判） |
+
+**⇒ ⇒ 所以**：**读写往返成立、写入真的改状态** ✓
+
+**⇒ 我的两次**解析错误**（诚实记录）**：
+1. 先在 `settings` 顶层找 `size_pressure` ⇒ **`None`** ✗ ⇒ 曲线在 **`settings.<项>.inputs`** 里
+2. 再把 `with_inputs` 当对象 ⇒ 其实它是**计数（int）** ✗
+**⇒ ⇒ ⇒ 两次都**不是工具的问题**，是我**没先打印结构** ✓（与 AGENTS「调不熟接口先打印完整响应」同源）
