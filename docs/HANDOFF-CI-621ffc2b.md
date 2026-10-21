@@ -3208,13 +3208,13 @@ for i in 1 2; do bash scripts/run-criteria-local.sh scripts/tool-fit-background-
 ## ⚠ **一条真红**（第 1477 轮）：改 spec 摘要 ⇒ **必须重生成示例文档**
 
 **⇒ 红的是** `tool-examples-doc-check.mjs`**（`criteria shard 4/6`）⇒ 11 绿 / **1 红** ✗
-**⇒ ⇒ 根因**：`ee7c1221` 改了 `fit_background_field` 的 `summary`（加过冲诊断）**但没重生成**
+**⇒ ⇒ 根因**：改 `fit_background_field` 的 `summary` 那笔（加过冲诊断）**但没重生成**
 `docs/design/tool-examples.md` ⇒ 而这条判据正是**比对"生成结果 vs 实时工具面"**的 ✓
-**⇒ ⇒ ⇒ 而 `40e4525f` 已经重生成了** ⇒ **当前工作区该判据 = 0** ✓（实测确认，不是假设）
+**⇒ ⇒ ⇒ 而**下一笔**已经重生成了** ⇒ **当前工作区该判据 = 0** ✓（实测确认，不是假设）
 
 **⇒ 所以**：**这是判据的成功**（它抓到了我漏的一步），**不是产品失败** ✓
 
 **⇒ 耦合关系（记住它）**：**改 `summary` / `desc` / `param` 描述 ⇒ 必须 `node scripts/tool-examples-doc.mjs <base>` 重生成** ✓
 **⇒ ⇒ 判别命令**：`bash scripts/run-criteria-local.sh scripts/tool-examples-doc-check.mjs` ⇒ **非 0 就是没重生成** ✓
 
-**⇒ 这条我在本场**已经踩过一次**（`40e4525f` 前）⇒ 记下来，别再踩 ✓
+**⇒ 这条我在本场**已经踩过一次**（重生成之前）⇒ 记下来，别再踩 ✓
