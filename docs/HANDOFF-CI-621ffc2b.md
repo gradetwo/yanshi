@@ -3941,7 +3941,7 @@ gh auth status 2>&1 | head -4           # API 侧是否 timeout
 
 **⇒ 那一笔含**：**新 crate `yanshi-raw`**（解码边界 + 展开主链）＋ **`raw` feature 三处委托** ＋ **known-red 恢复**
 ⇒ **12 绿 / 0 红** ✓
-**⇒ ⇒ 而它**同时**修掉了 `ed23a3f6` 的 `criteria shard 5/6` 红**（**我误移除的 `tool-impasto-plateau` 已恢复**）✓
+**⇒ ⇒ 而它**同时**修掉了**上一笔**的 `criteria shard 5/6` 红**（**我误移除的 `tool-impasto-plateau` 已恢复**）✓
 
 **⇒ ⇒ ⇒ 所以**：**"本机两次绿 ⇒ 移出名单"这条被证伪** ⇒ **必须"CI 上见过绿"** ✓
 
