@@ -192,7 +192,21 @@ impl Timeline {
                 let s = (src_row + col * 4) as usize;
                 let d = (dst_row + col * 4) as usize;
                 if s + 4 <= rendered.rgba8.len() && d + 4 <= self.frame.len() {
-                    self.frame[d..d + 4].copy_from_slice(&rendered.rgba8[s..s + 4]);
+                    // **★ 必须按 alpha 合成（`over`），不能直接覆盖 ★**（第 1575 轮；外部实测）
+                    //   **⇒ 他们的最小复现**：参考底图（满幅不透明）+ 1 笔 + 抽帧 ⇒
+                    //     **实测那一帧是"底图 + 笔 + 该笔补丁的白色矩形"** ✗
+                    //   **⇒ ⇒ 根因**：`brush_stroke` 落库的是 `import_image` 的**位图补丁**，
+                    //     RGBA 里**笔之外是 `a=0`** ⇒ 而这里原来 `copy_from_slice` **整段覆盖**
+                    //     ⇒ **底图被 `a=0` 替换成透明** ⇒ **编码成图/视频时就变白** ✗
+                    //   **⇒ ⇒ ⇒ 所以**改成**标准 `over`**（非预乘）：
+                    //     `out_a = sa + da·(1-sa)`、`out_c = (sc·sa + dc·da·(1-sa)) / out_a`
+                    //     ⇒ **透明区透出底图**，**不透明区盖住底图** ✓
+                    //   **⇒ ⇒ ⇒ ⇒ 而帧初值是**全零**（透明）⇒ `over` 在透明底上也正确** ✓
+                    let mut src = [0u8; 4];
+                    src.copy_from_slice(&rendered.rgba8[s..s + 4]);
+                    let mut dst = [0u8; 4];
+                    dst.copy_from_slice(&self.frame[d..d + 4]);
+                    self.frame[d..d + 4].copy_from_slice(&over_pixel(dst, src));
                 }
             }
         }
@@ -213,5 +227,86 @@ impl Timeline {
     #[must_use]
     pub fn doc_size(&self) -> (u32, u32) {
         (self.doc_w, self.doc_h)
+    }
+}
+
+/// **一个像素的 `over` 合成**（非预乘 RGBA）✓ —— 第 1575 轮抽成**纯函数**，于是**可单测** ✓
+///
+/// **⇒ 为什么要它**：外部实测「参考底图 + 1 笔」抽帧后**出现该笔补丁的白色矩形** ✗
+///   ⇒ 根因是这里原来**直接覆盖** ⇒ 笔补丁的 `a=0` 区**把底图替换成透明** ✓
+/// **⇒ ⇒ 语义**：
+///   * `src.a == 0` ⇒ **原样返回 dst**（透明的东西不该改变任何像素）✓
+///   * `src.a == 255` ⇒ **原样返回 src**（不透明的东西完全盖住）✓
+///   * 其余 ⇒ `out_a = sa + da·(1-sa)`、`out_c = (sc·sa + dc·da·(1-sa)) / out_a` ✓
+#[must_use]
+pub fn over_pixel(dst: [u8; 4], src: [u8; 4]) -> [u8; 4] {
+    let sa = f32::from(src[3]) / 255.0;
+    if sa >= 1.0 {
+        return src;
+    }
+    if sa <= 0.0 {
+        return dst;
+    }
+    let da = f32::from(dst[3]) / 255.0;
+    let out_a = sa + da * (1.0 - sa);
+    if out_a <= 0.0 {
+        return [0, 0, 0, 0];
+    }
+    let blend = |sc: u8, dc: u8| -> u8 {
+        let value = (f32::from(sc) * sa + f32::from(dc) * da * (1.0 - sa)) / out_a;
+        value.round().clamp(0.0, 255.0) as u8
+    };
+    [
+        blend(src[0], dst[0]),
+        blend(src[1], dst[1]),
+        blend(src[2], dst[2]),
+        (out_a * 255.0).round().clamp(0.0, 255.0) as u8,
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::over_pixel;
+
+    /// **透明像素不许改变底图** ✓ —— 这正是外部那个"白色矩形"的形状：
+    /// 笔补丁的 `a=0` 区若被覆盖，底图就没了 ✗
+    #[test]
+    fn transparent_source_leaves_destination_untouched() {
+        let dst = [40, 90, 160, 255];
+        let src = [255, 255, 255, 0];
+        assert_eq!(over_pixel(dst, src), dst, "a=0 必须一个字节都不改");
+    }
+
+    /// **不透明像素完全盖住底图** ✓
+    #[test]
+    fn opaque_source_replaces_destination() {
+        let dst = [40, 90, 160, 255];
+        let src = [255, 0, 0, 255];
+        assert_eq!(over_pixel(dst, src), src);
+    }
+
+    /// **半透明按比例混合** ✓（`sa≈0.5`、底不透明 ⇒ 中点、alpha 仍 255）
+    #[test]
+    fn half_transparent_blends_evenly() {
+        let out = over_pixel([0, 0, 0, 255], [200, 200, 200, 128]);
+        assert_eq!(out[3], 255, "底不透明 ⇒ 结果仍不透明");
+        for channel in &out[..3] {
+            assert!(
+                (i16::from(*channel) - 100).abs() <= 2,
+                "中点应在 100 附近，实测 {channel}"
+            );
+        }
+    }
+
+    /// **透明底 + 半透明源 ⇒ alpha 累加、颜色保留** ✓
+    #[test]
+    fn transparent_destination_accumulates_alpha() {
+        let out = over_pixel([0, 0, 0, 0], [100, 100, 100, 128]);
+        assert_eq!(out[3], 128);
+        assert!(
+            out[0] >= 99 && out[0] <= 101,
+            "颜色应原样保留，实测 {}",
+            out[0]
+        );
     }
 }
