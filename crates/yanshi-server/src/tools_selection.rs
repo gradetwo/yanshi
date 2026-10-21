@@ -62,6 +62,43 @@ pub(super) fn write_create_selection(ctx: &mut ToolContext<'_>, args: &Value) ->
             ),
         ));
     }
+    // F2：kind=path 的选区形状在入口处理 `d` 语法糖（与 `create_mask` 同
+    // 口径，只用既有 `parse_svg_d` 一份解析器）：d 转 subpaths 并摘掉
+    // （落库只存结构化形态），再走渲染层同一份校验
+    // （`object::parse_path_subpaths`）——此前带 d 的选区形状落库后在
+    // 渲染层被判非法、静默退化成空选（v8 实测只能先建蒙版中转）。
+    // 带 `object_id` 的是引用形态（校验归引用解析侧），不在这里验。
+    let path_kind = shape
+        .get("kind")
+        .or_else(|| shape.get("type"))
+        .and_then(Value::as_str)
+        == Some("path");
+    if path_kind && shape.get("object_id").is_none() {
+        if let Some(d) = shape.get("d").and_then(Value::as_str).map(str::to_owned) {
+            if shape.get("subpaths").is_some() {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("shape 的 d 与 subpaths 只能给一个（二选一）".to_owned()),
+                ));
+            }
+            let subpaths = super::tools_pathd::parse_svg_d(&d).map_err(|reason| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("shape 的 d 非法：{reason}")),
+                )
+            })?;
+            if let Some(obj) = shape.as_object_mut() {
+                obj.insert("subpaths".to_owned(), subpaths);
+                obj.remove("d");
+            }
+        }
+        yanshi_render::object::parse_path_subpaths(&shape).map_err(|reason| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("shape 的 path 非法：{reason}")),
+            )
+        })?;
+    }
     let feather = args
         .get("feather")
         .and_then(Value::as_f64)

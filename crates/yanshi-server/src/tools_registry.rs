@@ -345,10 +345,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("selection_id", String, true, "选区 id"),
-            param!("shape", Object, true, "几何 {kind:rect|ellipse|polygon|path, bbox, points?, subpaths?(path), fill_rule?(path: evenodd|nonzero)}"),
+            param!("shape", Object, false, "几何 {kind:rect|ellipse|polygon|path, bbox, points?, subpaths?(path), d?(path：SVG 路径字符串，与 subpaths 二选一，入口转 subpaths), fill_rule?(path: evenodd|nonzero)}；给了 from_mask 时可省略（缺省用蒙版的 shape），其余情况必填（缺了明确报错）"),
             param!("feather", Number, false, "羽化过渡宽度（像素，缺省 0）"),
             param!("invert", Boolean, false, "反选（缺省 false）"),
-            param!("mode", String, false, "缺省 new = 新建（id 已存在则报错）。add/subtract/intersect 现在**只能对一个已存在的 id** 放行，但落盘是**覆盖**旧形状，**不是**布尔合并 ⇒ 结果等于最后那个形状。真正的合并尚未实现（见 docs/design/brush-capability-gap.md 三百二十七节）"),
+            param!("mode", String, false, "缺省 new = 新建（id 已存在则报错）。add/subtract/intersect 对**已存在的 id** 做**位图布尔合并**（新旧形状光栅化后按 mode 合成、落成 bitmap 选区），不是覆盖；id 不存在时按新形状创建"),
             param!("linked_layer", String, false, "仅约束该图层的落笔（缺省约束全文档）"),
             param!("from_mask", String, false, "从已有蒙版一键转换：传 mask_id，克隆其 shape/feather/invert/blobs/patches；此时 shape 可省略，显式传的 shape/feather/invert 优先"),
         ],

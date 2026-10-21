@@ -368,3 +368,160 @@ fn transform_selection_moves_and_rotates_path_exactly() {
     );
     assert_eq!(back["fill_rule"], json!("nonzero"), "fill_rule 应保持");
 }
+
+// ---------------------------------------------------------------------------
+// F2：create_selection 的 path 选区直收 `d`（此前只认 subpaths，带 d 的
+// 形状在渲染期被 parse_path_subpaths 判非法 ⇒ 静默退化成空选；v8 实测
+// 只能先建蒙版中转）。入口转 subpaths（与 create_mask 同口径，只用既有
+// parse_svg_d 一份解析器），落库只存结构化形态。
+// ---------------------------------------------------------------------------
+
+/// 与 `circle_subpath(64, 64, 30)` 等价的 d 字符串（同一 kappa 常数、同一批
+/// 坐标，f64 最短往返格式 ⇒ 解析回的 f64 与 JSON 数字逐位相同）。
+fn circle_d_64_30() -> String {
+    const KAPPA: f64 = 0.552_284_749_830_79;
+    let (cx, cy, r) = (64.0_f64, 64.0_f64, 30.0_f64);
+    let d = r * KAPPA;
+    format!(
+        "M {} {} C {} {} {} {} {} {} C {} {} {} {} {} {} C {} {} {} {} {} {} C {} {} {} {} {} {} Z",
+        cx + r,
+        cy,
+        cx + r,
+        cy + d,
+        cx + d,
+        cy + r,
+        cx,
+        cy + r,
+        cx - d,
+        cy + r,
+        cx - r,
+        cy + d,
+        cx - r,
+        cy,
+        cx - r,
+        cy - d,
+        cx - d,
+        cy - r,
+        cx,
+        cy - r,
+        cx + d,
+        cy - r,
+        cx + r,
+        cy - d,
+        cx + r,
+        cy
+    )
+}
+
+fn call_tool(workspace: &mut Workspace, tool: &str, args: serde_json::Value) -> serde_json::Value {
+    let registry = registry();
+    let mut ctx = context(workspace);
+    registry.call(&mut ctx, tool, &args)
+}
+
+/// 一条横贯线在选区约束下的改动像素掩码（与基准逐像素比）。
+fn changed_mask(workspace: &mut Workspace, baseline: &[u8], line_id: &str) -> Vec<bool> {
+    let drawn = draw_line(
+        workspace,
+        line_id,
+        json!([[4.0, 64.0], [124.0, 64.0]]),
+        20.0,
+    );
+    assert_eq!(drawn["ok"], json!(true), "{drawn}");
+    let after = render(workspace);
+    (0..128 * 128)
+        .map(|i| after[i * 4..i * 4 + 4] != baseline[i * 4..i * 4 + 4])
+        .collect()
+}
+
+#[test]
+fn path_selection_accepts_d_and_matches_subpaths_form() {
+    let mut workspace = workspace();
+    let baseline = setup(&mut workspace);
+
+    // 基准相：subpaths 写法。
+    let created = create_selection(
+        &mut workspace,
+        "sel_sub",
+        json!({"kind": "path", "subpaths": [circle_subpath(64.0, 64.0, 30.0)]}),
+        "new",
+    );
+    assert_eq!(created["ok"], json!(true), "{created}");
+    let changed_sub = changed_mask(&mut workspace, &baseline, "line_sub");
+    let removed = call_tool(
+        &mut workspace,
+        "delete_object",
+        json!({"object_id": "line_sub"}),
+    );
+    assert_eq!(removed["ok"], json!(true), "{removed}");
+    let removed = call_tool(
+        &mut workspace,
+        "delete_selection",
+        json!({"selection_id": "sel_sub"}),
+    );
+    assert_eq!(removed["ok"], json!(true), "{removed}");
+
+    // d 相：同一圆改用 d 字符串。
+    let created = create_selection(
+        &mut workspace,
+        "sel_d",
+        json!({"kind": "path", "d": circle_d_64_30()}),
+        "new",
+    );
+    assert_eq!(created["ok"], json!(true), "d 写法应被接受：{created}");
+
+    // 落库只存结构化形态：读回的 shape 应有 subpaths、无 d。
+    let listed = call_tool(&mut workspace, "list_selections", json!({}));
+    let shape = &listed["selections"][0]["shape"];
+    assert_eq!(shape["kind"], json!("path"), "{listed}");
+    assert!(
+        shape.get("subpaths").is_some_and(|s| s.is_array()),
+        "落库 shape 应含 subpaths：{shape}"
+    );
+    assert!(shape.get("d").is_none(), "落库 shape 不应残留 d：{shape}");
+
+    let changed_d = changed_mask(&mut workspace, &baseline, "line_d");
+    let count = changed_d.iter().filter(|&&c| c).count();
+    assert!(count > 500, "圆内横线应改动数百像素，实测 {count}");
+    assert_eq!(
+        changed_sub, changed_d,
+        "d 写法与 subpaths 写法的选区约束应逐像素一致"
+    );
+}
+
+#[test]
+fn path_selection_d_argument_errors() {
+    let mut workspace = workspace();
+    let _baseline = setup(&mut workspace);
+
+    // d 与 subpaths 同给 ⇒ 二选一报错。
+    let both = create_selection(
+        &mut workspace,
+        "sel_both",
+        json!({"kind": "path", "d": circle_d_64_30(),
+               "subpaths": [circle_subpath(64.0, 64.0, 30.0)]}),
+        "new",
+    );
+    assert_ne!(both["ok"], json!(true), "同给应失败：{both}");
+    assert!(
+        both.to_string().contains("二选一"),
+        "错误应说明二选一，实测：{both}"
+    );
+
+    // d 语法坏 ⇒ 入口报错（带字符位置），不静默落库成空选。
+    let bad = create_selection(
+        &mut workspace,
+        "sel_bad",
+        json!({"kind": "path", "d": "M 10 10 C 1 2 3"}),
+        "new",
+    );
+    assert_ne!(bad["ok"], json!(true), "坏 d 应失败：{bad}");
+    assert!(
+        bad.to_string().contains("d 非法"),
+        "错误应指明 d 非法，实测：{bad}"
+    );
+
+    // kind=path 既无 d 也无 subpaths ⇒ 入口报错，不再静默退化成空选。
+    let empty = create_selection(&mut workspace, "sel_none", json!({"kind": "path"}), "new");
+    assert_ne!(empty["ok"], json!(true), "无载荷应失败：{empty}");
+}

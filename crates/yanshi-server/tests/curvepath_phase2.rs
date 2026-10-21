@@ -877,3 +877,186 @@ fn combine_shapes_argument_errors() {
         assert!(text.contains(needle), "错误应含「{needle}」，实测：{text}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// 4b. combine_shapes 的 path 输入（F1 回归：外延口径错位）
+//
+// 二期自测的 path 输入恰好被另一个 rect 输入的外延罩住、断言又只要求
+// 「面积 > 较大输入」，path 臂的真实覆盖从未被验过。根因：输入外延累积时
+// path 臂直接透传 `path_control_bbox` 的 (x, y, w, h)，而合成口径是角点
+// (x0, y0, x1, y1) ⇒ min 坐标 > 0 时场窗口被压缩：path 独占的外延被切、
+// 两个 path 相遇时场退化为空。下面四条让 path 自己定义外延，面积对解析值。
+// ---------------------------------------------------------------------------
+
+/// 圆子路径（4 段三次 Bézier，kappa 常数）：圆心 (cx, cy)、半径 r。
+fn circle_subpaths(cx: f64, cy: f64, r: f64) -> Value {
+    const KAPPA: f64 = 0.552_284_749_830_79;
+    let d = r * KAPPA;
+    json!([{
+        "start": [cx + r, cy], "closed": true,
+        "segments": [
+            {"op": "C", "c1": [cx + r, cy + d], "c2": [cx + d, cy + r], "to": [cx, cy + r]},
+            {"op": "C", "c1": [cx - d, cy + r], "c2": [cx - r, cy + d], "to": [cx - r, cy]},
+            {"op": "C", "c1": [cx - r, cy - d], "c2": [cx - d, cy - r], "to": [cx, cy - r]},
+            {"op": "C", "c1": [cx + d, cy - r], "c2": [cx + r, cy - d], "to": [cx + r, cy]}
+        ]
+    }])
+}
+
+/// L 段矩形环子路径：(x0, y0) → (x1, y1) 的轴对齐矩形（隐式闭合回起点）。
+fn l_rect_subpaths(x0: f64, y0: f64, x1: f64, y1: f64) -> Value {
+    json!([{
+        "start": [x0, y0], "closed": true,
+        "segments": [
+            {"op": "L", "to": [x1, y0]},
+            {"op": "L", "to": [x1, y1]},
+            {"op": "L", "to": [x0, y1]}
+        ]
+    }])
+}
+
+fn draw_path(workspace: &mut Workspace, doc: &str, id: &str, subpaths: Value) {
+    let made = call(
+        workspace,
+        doc,
+        "draw_shape",
+        &json!({
+            "layer_id": "L",
+            "object_id": id,
+            "data": {
+                "geometry": {"kind": "path", "subpaths": subpaths},
+                "color": {"r": 200, "g": 30, "b": 30, "a": 255}
+            }
+        }),
+    );
+    assert_eq!(made["ok"], json!(true), "{made}");
+}
+
+/// 隔离渲染结果对象（隐藏全部输入）后的红色像素数。
+fn isolated_area(
+    workspace: &mut Workspace,
+    doc: &str,
+    width: u32,
+    height: u32,
+    inputs: &[&str],
+) -> f64 {
+    for id in inputs {
+        hide_object(workspace, doc, id);
+    }
+    count_red(&render(workspace, doc, width, height)) as f64
+}
+
+#[test]
+fn combine_union_of_two_bezier_circles_matches_analytic() {
+    let mut ws = Workspace::in_memory(DocumentSettings::default());
+    make_doc(&mut ws, "cPC", 320, 220);
+    draw_path(&mut ws, "cPC", "c1", circle_subpaths(120.0, 110.0, 50.0));
+    draw_path(&mut ws, "cPC", "c2", circle_subpaths(190.0, 110.0, 50.0));
+    let combined = call(
+        &mut ws,
+        "cPC",
+        "combine_shapes",
+        &json!({"object_ids": ["c1", "c2"], "result_id": "u", "simplify": 0}),
+    );
+    assert_eq!(
+        combined["ok"],
+        json!(true),
+        "两圆 path 并集不应失败：{combined}"
+    );
+    assert_eq!(combined["loops"], json!(1), "{combined}");
+    let area = isolated_area(&mut ws, "cPC", 320, 220, &["c1", "c2"]);
+    // 解析并集：2·π·50² − 交叠（d=70：2r²·acos(d/2r) − (d/2)·√(4r²−d²) ≈ 1477.5）
+    // ≈ 14230。修复前两 path 的外延互相压缩 ⇒ 场退化为空、直接报「空集」。
+    assert!(
+        (area - 14230.0).abs() <= 14230.0 * 0.05,
+        "两圆 path 并集面积应 ≈14230，实测 {area}"
+    );
+}
+
+#[test]
+fn combine_intersect_of_two_bezier_circles_matches_analytic() {
+    let mut ws = Workspace::in_memory(DocumentSettings::default());
+    make_doc(&mut ws, "cPI", 320, 220);
+    draw_path(&mut ws, "cPI", "c1", circle_subpaths(120.0, 110.0, 50.0));
+    draw_path(&mut ws, "cPI", "c2", circle_subpaths(190.0, 110.0, 50.0));
+    let combined = call(
+        &mut ws,
+        "cPI",
+        "combine_shapes",
+        &json!({"object_ids": ["c1", "c2"], "mode": "intersect", "result_id": "i", "simplify": 0}),
+    );
+    assert_eq!(
+        combined["ok"],
+        json!(true),
+        "两圆 path 交集不应失败：{combined}"
+    );
+    let area = isolated_area(&mut ws, "cPI", 320, 220, &["c1", "c2"]);
+    // 解析交叠（透镜）≈ 1477.5（推导见并集用例）。修复前场退化 ⇒ 报空集。
+    assert!(
+        (area - 1477.5).abs() <= 1477.5 * 0.08,
+        "两圆 path 交集面积应 ≈1477.5，实测 {area}"
+    );
+}
+
+#[test]
+fn combine_union_path_and_rect_where_path_defines_extent() {
+    let mut ws = Workspace::in_memory(DocumentSettings::default());
+    make_doc(&mut ws, "cPE", 400, 240);
+    // L 多边形 path（200×100 矩形环）向右/向下独占外延；rect 只占左上一角。
+    draw_path(
+        &mut ws,
+        "cPE",
+        "p",
+        l_rect_subpaths(150.0, 50.0, 350.0, 150.0),
+    );
+    draw_rect(&mut ws, "cPE", "r", 100.0, 75.0, 100.0, 50.0);
+    let combined = call(
+        &mut ws,
+        "cPE",
+        "combine_shapes",
+        &json!({"object_ids": ["p", "r"], "result_id": "u", "simplify": 0}),
+    );
+    assert_eq!(combined["ok"], json!(true), "{combined}");
+    let area = isolated_area(&mut ws, "cPE", 400, 240, &["p", "r"]);
+    // 解析并集：20000 + 5000 − 重叠 (50×50) = 22500。
+    // 修复前 path 外延被当成 (150,50,200,100) 角点 ⇒ 场右界止于 200，
+    // path 在 x>200 的一半被整段切掉，实测约 6250。
+    assert!(
+        (area - 22500.0).abs() <= 22500.0 * 0.03,
+        "path∪rect 并集面积应 ≈22500，实测 {area}"
+    );
+}
+
+#[test]
+fn combine_subtract_rect_from_path_base() {
+    let mut ws = Workspace::in_memory(DocumentSettings::default());
+    make_doc(&mut ws, "cPS", 480, 240);
+    // path 作被减数（240×120 矩形环），rect 刀完全落在 path 右半内部。
+    draw_path(
+        &mut ws,
+        "cPS",
+        "base",
+        l_rect_subpaths(200.0, 50.0, 440.0, 170.0),
+    );
+    draw_rect(&mut ws, "cPS", "knife", 380.0, 80.0, 40.0, 60.0);
+    let combined = call(
+        &mut ws,
+        "cPS",
+        "combine_shapes",
+        &json!({"object_ids": ["base", "knife"], "mode": "subtract", "result_id": "cut", "simplify": 0}),
+    );
+    assert_eq!(combined["ok"], json!(true), "{combined}");
+    assert_eq!(
+        combined["kind"],
+        json!("path"),
+        "带孔应落成 path：{combined}"
+    );
+    assert_eq!(combined["loops"], json!(2), "{combined}");
+    let area = isolated_area(&mut ws, "cPS", 480, 240, &["base", "knife"]);
+    // 解析差：28800 − 2400 = 26400。修复前场被压到 (200,50)-(420,140)，
+    // path 的右条与下条被切，实测约 17400。
+    assert!(
+        (area - 26400.0).abs() <= 26400.0 * 0.03,
+        "path−rect 差集面积应 ≈26400，实测 {area}"
+    );
+}

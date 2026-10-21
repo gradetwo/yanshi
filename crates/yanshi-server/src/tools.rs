@@ -5480,7 +5480,14 @@ fn write_combine_shapes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
                     // points 的并集（polygon 的 bbox 老数据可能不含全部点）。
                     let shape_extent = match kind {
                         yanshi_render::object::ShapeKind::Path => {
+                            // `path_control_bbox` 返回 (x, y, w, h)，而本臂与
+                            // 下面另一臂的外延口径是角点 (x0, y0, x1, y1) ⇒
+                            // 必须换算。早期直接透传：min 坐标 > 0 时 w/h 被
+                            // 当成 x1/y1，场窗口被压缩——path 独占的外延被
+                            // 整段切掉、两个 path 相遇时场退化为空（v8 实测
+                            // F1：两圆并集报空集、主体∪rect 右界被切）。
                             yanshi_render::object::path_control_bbox(&subpaths)
+                                .map(|(x, y, w, h)| (x, y, x + w, y + h))
                         }
                         _ => {
                             let mut e = (bbox.x, bbox.y, bbox.x + bbox.w, bbox.y + bbox.h);
