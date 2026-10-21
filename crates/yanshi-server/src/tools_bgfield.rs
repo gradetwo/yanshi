@@ -350,6 +350,10 @@ pub(super) fn write_fit_background_field(ctx: &mut ToolContext<'_>, args: &Value
     Ok(json!({
         "ok": true,
         "degree": degree,
+        // **生效值也报出来** ✓（第 1472 轮）：`sample_stride`/`margin` 被 `clamp` 时**原来静默** ✗
+        //   ⇒ 与 `degree` 一致（它本来就报**生效值**）⇒ 让调用方**看得见夹紧** ✓
+        "sample_stride": stride,
+        "margin": margin_frac,
         "samples": samples,
         "residual_rms": [rms[0], rms[1], rms[2]],
         "mask_bbox": [bx0, by0, bx1, by1],

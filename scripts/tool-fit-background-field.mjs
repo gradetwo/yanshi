@@ -410,6 +410,43 @@ if (outsideBefore && outsideAfter && outsideBefore[0] === outsideAfter[0]) {
   }
 }
 
+// ⑪ **被夹紧的参数必须**报生效值**（第 1472 轮）
+//   **⇒ 为什么** ✗：`degree` 一直报生效值 ✓，但 `sample_stride`（>16 夹到 16）与 `margin`（>2 夹到 2）
+//     **原来静默** ⇒ 调用方以为用了自己给的值 ✗（与 `§222` 同类：**静默降级**）
+//   **⇒ ⇒ 实测**：请求 `degree=9 / stride=99 / margin=9.0` ⇒ 生效 **3 / 16 / 2.0** ✓
+{
+  const docE = `bgf_eff_${stamp}`;
+  const madeE = await (await fetch(`${base}/api/documents`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: docE, width: 400, height: 300,
+      background: { r: 255, g: 255, b: 255, a: 255 } }),
+  })).json();
+  if (!madeE.token) {
+    console.log("  ○ ⑪ 未验（建不出文档）");
+  } else {
+    const pE = async (tool, a) => {
+      const rr = await fetch(`${base}/api/tools/${tool}?doc=${docE}&token=${madeE.token}`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(a ?? {}),
+      });
+      return rr.json();
+    };
+    await pE("create_layer", { layer_id: "L", name: "L" });
+    for (let k = 0; k < 10; k += 1) {
+      await pE("fill_region", { layer_id: "L",
+        shape: { type: "rect", x: 10, y: 10 + k * 28, w: 380, h: 28 },
+        color: [40 + k * 18, 40 + k * 18, 40 + k * 18], opacity: 1.0 });
+    }
+    const e = await pE("fit_background_field", {
+      layer_id: "L", mask: { type: "rect", x: 150, y: 100, w: 100, h: 80 },
+      degree: 9, sample_stride: 99, margin: 9.0 });
+    if (e?.degree === 3 && e?.sample_stride === 16 && e?.margin === 2.0) {
+      ok(`⑪ 三个越界参数都被夹紧**且报生效值**：请求 9/99/9.0 ⇒ 生效 ${e.degree}/${e.sample_stride}/${e.margin}`);
+    } else {
+      bad(`⑪ 越界参数必须报生效值 ⇒ 实测 degree=${e?.degree}、stride=${e?.sample_stride}、margin=${e?.margin}`);
+    }
+  }
+}
+
 if (fails.length > 0) {
   console.log(`\n  ✗ ${fails.length} 处不符（fit_background_field）`);
   process.exit(1);
