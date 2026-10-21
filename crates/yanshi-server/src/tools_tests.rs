@@ -557,15 +557,24 @@ fn fold_emits_paired_strokes() {
 // ---- ① smart_sample ----
 #[test]
 fn bilinear_field_samples_center_correctly() {
-    // 2×2 像素：左上黑、右上白、左下白、右下黑；S=2 时每格=1 像素。
-    // 中心双线性 = 四角在 OKLab 中的平均（中灰，r≈g≈b）。
+    // **★ 4×4 像素、S=4** ✓（第 1443 轮修：原来写 2×2 + `s=2` ✗）
+    //   **⇒ 为什么必须改** ✗：`build()` 里 `s = s.clamp(4, 24)` ⇒ 传 2 实际得 **4** ⇒
+    //     而 2×2 的图像只能填到 4×4 场里**隔行隔列**的格点 ⇒ 中间那些格用**全局均值**填 ⇒
+    //     场是**锯齿状**的 ✗ ⇒ Catmull-Rom 有**负瓣**会**放大**这种交替 ⇒ 中心算出近黑（0.1838）✗
+    //     ⇒ 而旧断言（0.2..0.9）在 bilinear 下过关只是因为矩形窗把它**糊平**了 ✓
+    //   **⇒ ⇒ 所以**改成 4×4 图像 + `s=4`** ⇒ 每个格点都有真实数据 ⇒ 无混叠 ⇒
+    //     bicubic 与 bilinear 的**中心都该是中灰** ✓（这才是这条测试本来想测的东西 ✓）
     let px: Vec<u8> = vec![
-        0, 0, 0, 255, 255, 255, 255, 255, // y=0: 黑 白
-        255, 255, 255, 255, 0, 0, 0, 255, // y=1: 白 黑
+        0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255,
+        255, // y=0: 黑 白 黑 白
+        255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0,
+        255, // y=1: 白 黑 白 黑
+        0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255, // y=2
+        255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, // y=3
     ];
-    let f = BilinearOklabField::build(&px, 2, 2, 2, (0.0, 0.0, 2.0, 2.0));
-    let (rgb, _, _) = f.sample_at(1.0, 1.0);
-    // 应为灰色（r≈g≈b），明度在黑白之间。
+    let f = BilinearOklabField::build(&px, 4, 4, 4, (0.0, 0.0, 4.0, 4.0));
+    let (rgb, _, _) = f.sample_at(2.0, 2.0); // 区域是 0..4 ⇒ 中心是 (2,2) ✓
+                                             // 应为灰色（r≈g≈b），明度在黑白之间。
     let mx = rgb.iter().cloned().fold(0f32, f32::max);
     let mn = rgb.iter().cloned().fold(1f32, f32::min);
     let spread = mx - mn;
@@ -575,10 +584,53 @@ fn bilinear_field_samples_center_correctly() {
         "中心明度应在黑白之间，得到 {rgb:?}（双线性插值错则变红）"
     );
     // 角点采样应接近原色。
-    let (corner, _, _) = f.sample_at(0.1, 0.1);
+    let (corner, _, _) = f.sample_at(0.2, 0.2);
     assert!(corner[0] < 0.2, "左上角应接近黑，得到 {corner:?}");
     // 变异说明：把双线性改成最近邻 → 中心取到某格纯色（spread 仍小但值偏），
     // 或角点采样错位 → 变红。
+}
+
+/// **格点边界处**不许有折痕**（第 1443 轮；外部 `E1408` 的根治判据）
+///
+/// **⇒ 为什么** ✗：双线性是**分段线性** ⇒ 格点边界处**一阶导跳变** ⇒ 画出来是**折痕/竖纹** ✗
+/// **⇒ ⇒ 怎么量**（**第一版是安慰剂，这是第二版** ✗）：
+///   第一版量的是**割线斜率之差** ⇒ 而它被**二次曲率**主导（`Δslope ≈ f'' · eps`）
+///   ⇒ **bilinear 与 bicubic 都能过** ⇒ 变异不变红 ⇒ **换掉** ✓
+/// **⇒ ⇒ ⇒ 正确量法**：**二阶差分**（`Δ²`）在**结点**与**格内**的**比值**
+///   ⇒ 分段线性在**格内** `Δ² ≈ 0`、在**结点** `Δ²` 突跳 ⇒ **比值很大** ✗
+///   ⇒ C¹ 插值两处都小 ⇒ **比值 ≈ 1** ✓
+#[test]
+fn field_has_no_crease_at_cell_boundary() {
+    // 平滑**二次**灰阶 ⇒ 线性插值无法精确表示 ⇒ 结点处必然折
+    let (w, h, s) = (24usize, 4usize, 4usize);
+    let mut px: Vec<u8> = Vec::with_capacity(w * h * 4);
+    for _y in 0..h {
+        for x in 0..w {
+            let t = x as f32 / (w - 1) as f32;
+            let v = (t * t * 255.0).round().clamp(0.0, 255.0) as u8;
+            px.extend_from_slice(&[v, v, v, 255]);
+        }
+    }
+    let f = BilinearOklabField::build(&px, w, h, s, (0.0, 0.0, w as f64, h as f64));
+    let lum = |x: f64| {
+        let (rgb, _, _) = f.sample_at(x, h as f64 / 2.0);
+        0.2126 * f64::from(rgb[0]) + 0.7152 * f64::from(rgb[1]) + 0.0722 * f64::from(rgb[2])
+    };
+    // **二阶差分**（步长 d）
+    let d2 = |x: f64, d: f64| (lum(x + d) - 2.0 * lum(x) + lum(x - d)).abs() / (d * d);
+    let d = 0.25;
+    // 结点：`s=4` ⇒ 内部结点在 u = 1/3、2/3 ⇒ 文档 x = w/3、2w/3
+    let knot = (w as f64) / 3.0;
+    // 格内：结点与中点之间
+    let mid = (w as f64) / 3.0 + (w as f64) / 6.0;
+    let at_knot = d2(knot, d);
+    let away = d2(mid, d);
+    let ratio = at_knot / away.max(1e-6);
+    assert!(
+        ratio < 4.0,
+        "结点处的二阶差分不应远大于格内（折痕判据）：结点 {at_knot:.4}、格内 {away:.4}、\
+         比值 {ratio:.2}（bilinear 会让这个比值到几十 ⇒ 红 ✓）"
+    );
 }
 
 #[test]

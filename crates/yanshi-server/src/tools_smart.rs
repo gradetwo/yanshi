@@ -2838,6 +2838,23 @@ pub(super) struct BilinearOklabField {
     pub(super) bbox: (f64, f64, f64, f64),
 }
 
+/// **Catmull-Rom 四个权重**（C¹ 连续）✓（第 1443 轮）
+///
+/// **⇒ 为什么** ✗：双线性是**分段线性** ⇒ 采样线处一阶导跳变 ⇒ **折痕/竖纹** ✗
+///   （外部 `E1408` 的机制诊断正确 ✓）
+/// **⇒ ⇒ 只在 `sample_lab` 上换** ✓ —— `sample_at` 内部就调它，rgb 只走这一条路 ✓
+/// **⇒ ⇒ ⇒ 代价**：4 点 → **16 点/次**，且会**过冲** ⇒ 索引夹紧 + 调用处夹到合法区间 ✓
+fn catmull_rom_weights(t: f32) -> [f32; 4] {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    [
+        -0.5 * t3 + t2 - 0.5 * t,
+        1.5 * t3 - 2.5 * t2 + 1.0,
+        -1.5 * t3 + 2.0 * t2 + 0.5 * t,
+        0.5 * t3 - 0.5 * t2,
+    ]
+}
+
 impl BilinearOklabField {
     /// 从 RGBA8 像素构建。透明像素（a<16）不参与平均。
     pub(super) fn build(
@@ -2944,21 +2961,23 @@ impl BilinearOklabField {
         let fy = (v.clamp(0.0, 1.0) * (s - 1) as f64).clamp(0.0, (s - 1) as f64);
         let x0 = fx.floor() as usize;
         let y0 = fy.floor() as usize;
-        let x1 = (x0 + 1).min(s - 1);
-        let y1 = (y0 + 1).min(s - 1);
         let tx = (fx - x0 as f64) as f32;
         let ty = (fy - y0 as f64) as f32;
         let mut out = [0f32; 3];
-        #[allow(clippy::needless_range_loop)]
-        for k in 0..3 {
-            let a = self.cells[y0 * s + x0][k];
-            let b = self.cells[y0 * s + x1][k];
-            let c = self.cells[y1 * s + x0][k];
-            let d = self.cells[y1 * s + x1][k];
-            out[k] = a * (1.0 - tx) * (1.0 - ty)
-                + b * tx * (1.0 - ty)
-                + c * (1.0 - tx) * ty
-                + d * tx * ty;
+        let wx = catmull_rom_weights(tx);
+        let wy = catmull_rom_weights(ty);
+        for (k, slot) in out.iter_mut().enumerate() {
+            let mut acc = 0.0f32;
+            for (j, wyj) in wy.iter().enumerate() {
+                let yy = (y0 as isize + j as isize - 1).clamp(0, s as isize - 1) as usize;
+                let mut row = 0.0f32;
+                for (i, wxi) in wx.iter().enumerate() {
+                    let xx = (x0 as isize + i as isize - 1).clamp(0, s as isize - 1) as usize;
+                    row += self.cells[yy * s + xx][k] * wxi;
+                }
+                acc += row * wyj;
+            }
+            *slot = acc;
         }
         out
     }
