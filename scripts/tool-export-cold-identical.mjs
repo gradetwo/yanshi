@@ -9,10 +9,21 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { trackTemp } from "./lib/temp-dirs.mjs";
 
-const bin = process.argv[2];
-if (!bin) { console.error("用法: node scripts/tool-export-cold-identical.mjs <yanshi-serve 路径>"); process.exit(2); }
+// **⇒ 两种入口都收** ✓（第 1430 轮）：
+//   · 给**二进制路径** ⇒ 用它（本判据要自己 spawn、还要中途重启 ⇒ 必须是路径）
+//   · 给 **URL**（`run-criteria-local.sh` 统一传的是 URL）⇒ **回退到 `target/release/yanshi-serve`**
+//     本来这里直接 `spawn(url)` ⇒ `ENOENT` ⇒ 长期 `exit 3`「本机不可判」✗（判据自己从未真正跑过 ✗）
+let bin = process.argv[2];
+if (!bin || /^https?:\/\//.test(bin)) {
+  bin = join(process.cwd(), "target", "release", "yanshi-serve");
+}
+if (!existsSync(bin)) {
+  console.error(`判据自身的前提不成立（不是产品问题）：找不到 yanshi-serve（${bin}）⇒ 先 cargo build --release -p yanshi-http --bin yanshi-serve`);
+  process.exit(3);
+}
 const root = mkdtempSync(join(tmpdir(), "cold-export-"));
 trackTemp(root);
 const PORT = 22541;
