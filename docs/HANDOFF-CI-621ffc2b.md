@@ -3180,3 +3180,21 @@ E=$(date +%s%N); echo "$(( (E-S)/1000000 )) 毫秒"
 **⇒ 映射补丁那笔（`tools_bgfield.rs` ⇒ 判据的映射）也是 **success** ⇒ 本场**第八个完整绿的 run** ✓
 **⇒ ⇒ 它证明的是一件**工具链**的事：**新模块被 `criteria-for-changes.sh` 正确识别** ✓
 **⇒ ⇒ ⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=15" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'`
+
+## ★ 19 条断言（含**陡边**块）仍零抖动（第 1471 轮）
+
+**⇒ 为什么要重查**：新加的 ⑩ 过冲断言依赖**陡边几何**（半黑半白 + `degree 3`）⇒
+**这类几何敏感的断言最容易抖动** ✗ ⇒ 必须连跑两次 ✓
+
+| 次 | 退出码 | 逐条输出 |
+|---|---|---|
+| 1 | **0** | — |
+| 2 | **0** | **与第 1 次一致**（数字归一化）✓ |
+
+**⇒ ⇒ **19 条断言 / 两次一致** ✓** ⇒ 过冲块用的是**结构量**（`clamped_pixels > 0` + 警告文案正则），
+**不是像素计数** ⇒ 所以跨机器也稳 ✓
+
+**⇒ 复算**：
+```bash
+for i in 1 2; do bash scripts/run-criteria-local.sh scripts/tool-fit-background-field.mjs >/dev/null; echo $?; done
+```
