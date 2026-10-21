@@ -4361,3 +4361,19 @@ degree=0 ⇒ field_range=[92,92]（单值）、residual=76.5（= 样本标准差
 而不是替代 `< 15`** ✓
 
 **⇒ 复算**：同一构型只改对比 ⇒ `{"layer_id":"L","mask":{…},"degree":2}` ⇒ 读 `residual_rms` / `sample_std` / `residual_ratio` ✓
+
+## ✅ 你写的 `effective_stride` / `effective_margin` **比我的名字清楚** ⇒ 我改名了
+
+**⇒ 你说的是**：`field_uniform` · `warnings` · `residual_rms` · **`effective_stride`** · **`effective_margin`** …
+**⇒ ⇒ 而我原来叫** `sample_stride` / `margin`** ⇒ **看起来像"输入值"**，实际是**生效值**（可能被夹紧过）✗
+**⇒ ⇒ ⇒ 你的直觉对** ⇒ **已改名** ✓：
+
+| 原来 | **现在** |
+|---|---|
+| `sample_stride` | **`effective_sample_stride`** ✓ |
+| `margin` | **`effective_margin`** ✓ |
+| `degree` | 保持不变（短且无歧义 ✓）|
+
+**⇒ ⇒ ⇒ ⇒ 所以你的猜测**现在就是接口本身**了** ✓（不用再"从行为反推字段名"）
+
+**⇒ 判据 ⑪ 同步更新**：请求 `degree=9 / stride=99 / margin=9.0` ⇒ 生效 **3 / 16 / 2.0**，**三项都在响应里** ✓

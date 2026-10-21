@@ -392,8 +392,10 @@ pub(super) fn write_fit_background_field(ctx: &mut ToolContext<'_>, args: &Value
         "degree": degree,
         // **生效值也报出来** ✓（第 1472 轮）：`sample_stride`/`margin` 被 `clamp` 时**原来静默** ✗
         //   ⇒ 与 `degree` 一致（它本来就报**生效值**）⇒ 让调用方**看得见夹紧** ✓
-        "sample_stride": stride,
-        "margin": margin_frac,
+        // **改名成 `effective_*`** ✓（第 1478 轮；**外部的直觉**：`sample_stride`/`margin` 看起来像**输入**）
+        //   ⇒ 响应里它们是**生效值**（可能被夹紧过）⇒ 名字**必须**说清这一点 ✓
+        "effective_sample_stride": stride,
+        "effective_margin": margin_frac,
         "samples": samples,
         "residual_rms": [rms[0], rms[1], rms[2]],
         // **相对残差（无量纲）** ⇒ 高对比与低对比**可比** ✓（第 1475 轮）

@@ -439,10 +439,10 @@ if (outsideBefore && outsideAfter && outsideBefore[0] === outsideAfter[0]) {
     const e = await pE("fit_background_field", {
       layer_id: "L", mask: { type: "rect", x: 150, y: 100, w: 100, h: 80 },
       degree: 9, sample_stride: 99, margin: 9.0 });
-    if (e?.degree === 3 && e?.sample_stride === 16 && e?.margin === 2.0) {
-      ok(`⑪ 三个越界参数都被夹紧**且报生效值**：请求 9/99/9.0 ⇒ 生效 ${e.degree}/${e.sample_stride}/${e.margin}`);
+    if (e?.degree === 3 && e?.effective_sample_stride === 16 && e?.effective_margin === 2.0) {
+      ok(`⑪ 三个越界参数都被夹紧**且报生效值**：请求 9/99/9.0 ⇒ 生效 ${e.degree}/${e.effective_sample_stride}/${e.effective_margin}`);
     } else {
-      bad(`⑪ 越界参数必须报生效值 ⇒ 实测 degree=${e?.degree}、stride=${e?.sample_stride}、margin=${e?.margin}`);
+      bad(`⑪ 越界参数必须报生效值 ⇒ 实测 degree=${e?.degree}、stride=${e?.effective_sample_stride}、margin=${e?.effective_margin}`);
     }
   }
 }
