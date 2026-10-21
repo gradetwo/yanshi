@@ -3558,3 +3558,13 @@ gh auth status 2>&1 | head -4           # API 侧是否 timeout
 1. **最小可复现信息**（`atom_id` ＋ `seq` ＋ `retryable`）⇒ **20 分钟定位** ✓
 2. **「顺着报告自己找同类问题」对**批量操作**的使用者特别重要**（他们的故障往往是"批量"而非"单次"）✓
 3. **「a rare cache race」解释了他们连发为何会撞** ⇒ 他们以后**串行 + 每步确认** ✓
+
+## ✅ **第二十个绿 run**：`combine_shapes` 的 **path 输入修复**（第 1512 轮）
+
+**⇒ 补丁（+386 行、5 文件）⇒ **12 绿 / 0 红** ✓
+**⇒ ⇒ 它修的正是**二期自测漏掉的那块**（README 自承：「唯一的 path 用例被同组 rect 的外延罩住、断言又太松」）✓
+**⇒ ⇒ ⇒ 而它同时**没有破坏 rect 行为** —— 我那条 `tool-combine-shapes-modes` 仍通过 ✓
+
+**⇒ 累计**：本场**二十个完整绿的 run** ✓
+
+**⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=25" --jq '.workflow_runs[] | select(.conclusion=="success") | .head_sha[0:8]'`
