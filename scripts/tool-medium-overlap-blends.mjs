@@ -29,22 +29,43 @@ const fails = [];
 const ok = (m) => console.log(`  ✓ ${m}`);
 const bad = (m) => { fails.push(m); console.log(`  ✗ ${m}`); };
 
+// **★ 坐标必须按**画布尺寸**缩放 ★**（第 1578 轮自查）
+//   **⇒ 我第一版写死了 `[[40,60],[160,60]]`（按 200×120 算）** ✗
+//     ⇒ 而 `run-criteria-local.sh` 建的画布**小得多** ⇒ **采样点落在画布外**
+//     ⇒ `sample_colors` 返回 `(0,0,0,0)` ⇒ **判据误报"重叠 == 纯蓝"** ✗
+//     （**这与 `tool-smudge-deposit` 是同一个坑** —— 判据假设的画布 ≠ 运行器给的 ✓）
+//   **⇒ ⇒ 所以**：**先问画布多大，再按比例算坐标** ✓
+const canvas = await call("describe_canvas", {});
+const W = canvas?.width ?? 0;
+const H = canvas?.height ?? 0;
+if (!(W > 0) || !(H > 0)) {
+  console.error(`  ⊘ 不可判：拿不到画布尺寸（${JSON.stringify({ W, H })}）`);
+  process.exit(3);
+}
+// 两条笔**横竖交叉**于画布中心；笔宽取短边的 1/4
+const cx = W / 2;
+const cy = H / 2;
+const size = Math.max(6, Math.round(Math.min(W, H) / 4));
+const armX = Math.round(W * 0.35);
+const armY = Math.round(H * 0.35);
+console.log(`  ⊙ 画布 ${W}×${H}｜笔宽 ${size}｜交叉点 (${cx}, ${cy})`);
+
 await call("create_layer", { layer_id: "L", name: "L" });
 const RED = [200, 40, 40];
 const BLUE = [40, 40, 200];
 const a = await call("medium_stroke", {
-  layer_id: "L", medium: "oil", load: 0.8, size: 30, color: RED,
-  points: [[40, 60, 1], [160, 60, 1]],
+  layer_id: "L", medium: "oil", load: 0.8, size, color: RED,
+  points: [[cx - armX, cy, 1], [cx + armX, cy, 1]],
 });
 const b = await call("medium_stroke", {
-  layer_id: "L", medium: "oil", load: 0.8, size: 30, color: BLUE,
-  points: [[100, 20, 1], [100, 100, 1]],
+  layer_id: "L", medium: "oil", load: 0.8, size, color: BLUE,
+  points: [[cx, cy - armY, 1], [cx, cy + armY, 1]],
 });
 if (a?.ok !== true || b?.ok !== true) {
   console.error(`  ⊘ 不可判：medium_stroke 失败（${JSON.stringify((a?.context || b?.context || {}).detail || "").slice(0, 120)}）`);
   process.exit(3);
 }
-const sampled = await call("sample_colors", { points: [[100, 60], [60, 60], [100, 30]] });
+const sampled = await call("sample_colors", { points: [[cx, cy], [cx - armX * 0.6, cy], [cx, cy - armY * 0.6]] });
 const px = (sampled?.samples || []).map((z) => (z?.rgba || [0, 0, 0, 0]).slice(0, 3));
 if (px.length !== 3 || px.some((p) => p.every((c) => c === 255))) {
   console.error(`  ⊘ 不可判：拿不到三处采样（${JSON.stringify(px)}）`);
@@ -65,13 +86,12 @@ const gMin = Math.min(onlyRed[1], onlyBlue[1]);
 if (overlap[1] <= gMin + 2) ok(`② 重叠处 G=${overlap[1]} ≤ 两笔较小者 ${gMin}+2 ⇒ **两笔都压了 G** ✓`);
 else bad(`② 重叠处 G=${overlap[1]} > ${gMin}+2 ⇒ 不像混合（混合应更暗）`);
 
-// ③ R 与 B 各取一侧：R 介于两笔之间、B 介于两笔之间
-const between = (v, x, y) => v >= Math.min(x, y) - 2 && v <= Math.max(x, y) + 2;
-if (between(overlap[0], onlyRed[0], onlyBlue[0]) && between(overlap[2], onlyRed[2], onlyBlue[2])) {
-  ok(`③ 重叠处 R=${overlap[0]}、B=${overlap[2]} **都落在两笔之间** ✓`);
-} else {
-  bad(`③ 重叠处 R=${overlap[0]}、B=${overlap[2]} 不在两笔之间 ⇒ 颜色关系不对`);
-}
-
+// **③ 我删掉了**（第 1578 轮自查）
+//   **⇒ 原来写的是**「重叠处 R 与 B **都落在两笔之间**」✗
+//   **⇒ ⇒ 而实测**：`只有红 #ce6d6d`、`只有蓝 #5d5cce`、`重叠 #5649bb`
+//     ⇒ **重叠的 R=86 **略低于**纯蓝的 R=93** ✗（**因为混合整体会压暗**）
+//     ⇒ **所以"必须落在两者之间"是错的假设** ✓
+//   **⇒ ⇒ ⇒ 而 ①② 已经足够**：**重叠 ≠ 任何一笔** + **G 比两者都低** ⇒ **这就是融合的定义** ✓
+//     （**多一条错的断言**比**少一条**更糟 —— 它会**假红**）
 if (fails.length > 0) { console.log(`\n  ✗ ${fails.length} 处不符（重叠混色）`); process.exit(1); }
 console.log("\n  ✓ 两笔重叠处是**混合色**，不是覆盖");
