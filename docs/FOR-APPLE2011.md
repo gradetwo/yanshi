@@ -4654,3 +4654,28 @@ if log.atoms.last().is_some_and(|existing| existing.seq == atom.seq) {
 
 **⇒ 「多个脚本同时跑同一 doc 就可能撞」⇒ 串行 + 跑前 `list_objects` 确认** ✓
 **⇒ ⇒ 我这边**根因仍未定**（`append` 是串行正确的 ⇒ 所以只能是**两个写者**，与你的猜测一致）✓
+
+## ⚠ 你还没用的那三条里，**有两条要更正**（我刚实测）
+
+**⇒ 你列的三条**（`multiply`／`vignette`／63 项动力学）⇒ **我逐个跑了** ✓
+
+| 你要的 | 正确的工具名 | 实测 |
+|---|---|---|
+| **`multiply` 混合** | **`set_layer_blend`**（不是 `set_layer_blend_mode`）| **`ok=true`** ✓ |
+| **`vignette` 滤镜** | **`add_filter`**（参数是 **`filter_name`**，不是 `filter`）| **`ok=true`** ✓ |
+| `clarity` / `noise` | 同上 | **`ok=true`** ✓ |
+
+### ✗ 但 **`levels` 与 `curves` 内核没实现**
+
+**⇒ 实测**：
+```
+add_filter vignette  ⇒ ok = True
+add_filter levels    ⇒ ok = False｜内核未实现该滤镜：levels；支持 box_blur / gaussian_blur / motion_blur / sharpen / …
+add_filter curves    ⇒ ok = False｜内核未实现该滤镜：curves；…
+```
+
+**⇒ ⇒ 所以我台账里那句「滤镜 `14/14` 可达」是**错的** ✗（它按"注册表里有"算，没按"内核实现了"算）
+**⇒ ⇒ ⇒ 这是我的文档与实现不一致** ⇒ **已记，会改** ✓
+
+**⇒ 对你的影响**：**`vignette` 能用**（正是你要的暗角）✓；**`levels`/`curves` 暂时别指望** ✗
+⇒ **压暗仍靠 `multiply` 混合 + `vignette`**（两条都实测可用）✓
