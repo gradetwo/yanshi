@@ -2931,3 +2931,33 @@ ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs scripts/serve-*.mj
 **`criteria` 六个分片 + `test (stable)/(beta)` + `clippy` + `rustfmt` + `wasm smoke` + `GPU feature` 全绿** ✓
 
 **⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=6" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'` ✓
+
+## ★ bicubic 插值：**两次尝试、同一个阻塞点**（第 1442 轮，未完成，**如实记录**）
+
+**⇒ 目标**：外部 `E1408` 的机制诊断正确（「插值点少 ⇒ 分段线性 ⇒ 采样线折痕」）
+⇒ 根治是把 `BilinearOklabField` 的两处采样换成 **Catmull-Rom（C¹）** ✓
+
+**⇒ ⇒ 这轮查清了**两件**让下次能一次做成的事**：
+
+1. **`sample_at` **内部调用 `sample_lab`** ⇒ rgb 只走 `sample_lab` 一条路**
+   ```rust
+   // tools_smart.rs 的 sample_at 里：
+   let lab = self.sample_lab(u, v);
+   let rgb = oklab_to_srgb_f32(lab[0], lab[1], lab[2]);
+   ```
+   ⇒ **所以我第一轮"只改标量版、单测通过"是**假通过**（那版不在 rgb 路径上）** ✗
+   ⇒ **只需改 `sample_lab` 一处** ✓（下一次少改一半）
+
+2. **改 `sample_lab` 后，2×2 场的中心给出 `0.1838`（近黑），而测试期望"黑白之间"** ⇒
+   说明我的**边缘夹紧**与 `cells` 的语义不符（我假设 `s=2` 时索引 -1,0,1,2 夹紧成 0,0,1,1、
+   权重 `[-0.0625,0.5625,0.5625,-0.0625]` ⇒ 恰好各 0.5 ⇒ 应得灰，但**实得近黑**）✗
+   ⇒ **⇒ 所以下次要先**读 `build()` 怎么填 `cells`**（尤其透明像素与列优先/行优先），再决定夹紧方式 ✓
+
+**⇒ ⇒ ⇒ 按仓库规矩（红了要么修好、要么回退）⇒ **回退**，未把半成品留在地上 ✓
+**⇒ `server --lib` 回退后 **103 passed** ✓**
+
+**⇒ 下次的最短路径**（三件）：
+1. 读 `build()` 确认 `cells` 的填充顺序与 `s` 的关系；
+2. 只改 `sample_lab`（`sample_at` 不必动）；
+3. 重推那条单测的**中心期望值**（或把它改成断言"spread 小 且 在黑白之间"这类**结构性**措辞），
+   再加一条**折痕判据**（二阶差分；变异回 bilinear ⇒ 红）。
