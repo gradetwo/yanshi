@@ -27,9 +27,14 @@ const call = async (name, args) => {
   });
   return { status: reply.status, body: await reply.json() };
 };
-const BLOCK = [[20, 60], [110, 60], [110, 140], [20, 140]];
-const SMUDGE = [[110, 100], [130, 100], [150, 100]];
-const REGION = { x: 0, y: 0, w: 300, h: 200 };
+// **坐标必须在**判据运行器给的画布内**** ✓（第 1540 轮）
+//   **⇒ 原来假设 300×200**（`BLOCK` 到 x110、`SMUDGE` 到 x150、`size 40`）✗
+//   **⇒ ⇒ 而 `run-criteria-local.sh` 建的是 **64×64** ⇒ 整个涂抹**落在画布外** ⇒
+//     判据报「这次 smudge 完全在画布外面」✗（**不是产品问题**）
+//   **⇒ ⇒ ⇒ 所以缩到 64×64 内**：方块 10..54、涂抹 30..50、`size 16`（半径 8）✓
+const BLOCK = [[10, 10], [54, 10], [54, 54], [10, 54]];
+const SMUDGE = [[28, 32], [38, 32], [48, 32]];
+const REGION = { x: 0, y: 0, w: 64, h: 64 };
 const bright = async () => {
   const r = await call("analyze_region", { region: REGION });
   const v = r.body?.avg_brightness;
@@ -45,7 +50,7 @@ const variant = async (layer, deposit) => {
   });
   if (painted.body?.ok !== true) { console.log(`  ✗ ${layer}: brush_stroke 失败`); process.exit(1); }
   const before = await bright();
-  const args = { layer_id: layer, points: SMUDGE, size: 40, smudge_length: 14, hardness: 0.4 };
+  const args = { layer_id: layer, points: SMUDGE, size: 16, smudge_length: 6, hardness: 0.4 };
   if (deposit !== null) args.deposit = deposit;
   const smudged = await call("smudge", args);
   if (smudged.body?.ok !== true) {
