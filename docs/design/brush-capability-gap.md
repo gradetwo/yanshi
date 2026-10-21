@@ -13715,3 +13715,28 @@ self.next_seq += 1;
 grep -n "atom.seq = self.next_seq" crates/yanshi-core/src/log.rs   # 串行分配 ✓
 grep -rn "with_base_seq" crates/yanshi-server/src/document.rs       # 快照路径 ✓
 ```
+
+## 三百三十一、`tool-stamp-parity` 的 1/10 竞态：本轮**排除了一个嫌疑**（第 1509 轮）
+
+**⇒ 问题**：`incremental_stamp_matches_full_tile_re_render` 在 CI 上 **10 次挂 1 次**，本机 **12/12 过**
+⇒ 输出「**增量与整段不一致 ⇒ 缓存撒谎了**」✗
+
+### 本轮查到的
+
+| 缓存 | 位置 | 盖章时失效？ |
+|---|---|---|
+| **`below`** | `render.rs:985` | **是** ✓（`stamp_into_tiles` 与 `stamp_into_tiles_incremental` 都置 `None`）|
+| **`above`** | `render.rs:988` | **不单独失效** —— 但它**从 `below` 派生**（`above.lock()` 只在填充/读取处出现）⇒ **`below` 置空后 `above` 会重建** ✓ |
+
+**⇒ ⇒ 所以**：**「`below` 没失效」这个假设被排除** ✓ —— 与第 488/489 轮修的正是它（当时实测 **37.5%** 差）✓
+
+### 还没排除的（下轮从这里接）
+
+1. **`tile` 缓存**（`render.rs:886` 的 `tiles`）与 **`stamp_samples_into_tiles` 的写入顺序**
+   ⇒ 若**先读旧 tile 再写**、且**两次调用间**有别的东西改了 tile ⇒ 会不一致 ✓
+2. **`cache_mut().clear()` 清不到 `below`**（`render.rs:1247` 的注释已经说了这件事）
+   ⇒ **别的入口**（非盖章）改像素时**只清 `cache`** ⇒ 那条路径上仍会撒谎 ✓
+3. **测试本身的两组参照**是否**共享了渲染器**（若共享 ⇒ 计数/缓存互相污染）
+   ⇒ **这正是 `AGENTS.md` 记过两次的坑**（第 916 轮：一个判据多 case 共用文档）✓
+
+**⇒ 未定论 ⇒ 不猜** ✓（判据保持严格，红着登记）
