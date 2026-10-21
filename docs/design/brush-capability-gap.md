@@ -14402,3 +14402,20 @@ let divisions = ((distance / 2.0).ceil() as usize).clamp(1, 4096);
 
 **⇒ 而**同族规律**（第 4 次）**：**形状键名不一致**（`w`/`width`、`blob`/`blob_hash`）⇒
 **⇒ 判据**：**凡是 `shape.get("x")` 的地方，都要问"调用方可能用哪个名字存"** ✓
+
+### 第三处：`parse_geom` 的 `bitmap` 分支要求 `bbox`（**已修，但覆盖率仍 0**）
+
+**⇒ 源码**（`crates/yanshi-render/src/selection.rs:266`）：
+```rust
+"bitmap" => {
+    let bbox = value.get("bbox")...unwrap_or([0, 0, 0, 0]);
+    if bbox[2] <= 0 || bbox[3] <= 0 { return SelectionGeom::Empty; }   // ← 无 bbox ⇒ Empty
+```
+**⇒ ⇒ 而掩膜的 shape 只有 `{kind, blob_hash}`** ⇒ `from_mask` 克隆后**也没有 bbox** ⇒ **`Empty` ⇒ coverage 0** ✗
+
+**⇒ ⇒ ⇒ 修法**：**`create_selection` 里给 `bitmap` 选区补 `bbox`**（**优先掩膜尺寸，缺省整幅**）✓
+**⇒ 实测**：选区 shape 现在带 **`"bbox": [0, 0, 64, 64]`** ✓ **而 `clip_coverage` 仍 0.0** ✗
+
+**⇒ ⇒ ⇒ ⇒ 所以还有**第四处**（**注册或查表**）⇒ **范围已很窄**：
+`ensure_bitmap_masks_registered` 拿到 `blob_hash` ✓、`decode_png_l8` 接受 L8 ✓、
+而 **`bitmap_coverage(bbox, mask, x, y)` 仍返回 0** ⇒ **下一步查注册表里到底有没有那个 key** ✓

@@ -52,6 +52,40 @@ pub(super) fn write_create_selection(ctx: &mut ToolContext<'_>, args: &Value) ->
     } else {
         require_object(args, "shape")?.clone()
     };
+    // **★ `bitmap` 选区必须补 `bbox` ★**（第 1609 轮；外部 `E1742` 的**第三处**）
+    //   **⇒ 现象**：`create_mask(shape.kind=bitmap)` ✓、`from_mask` ✓、`list_selections` ✓
+    //     **而裁剪 `clip_coverage` 恒 0**（**`ok=true` 但一个像素不落**）✗
+    //   **⇒ ⇒ 根因**：渲染层 `SelectionShape::parse_geom` 的 `bitmap` 分支**要求 `shape.bbox`**
+    //     （**没 bbox ⇒ `SelectionGeom::Empty` ⇒ coverage 0**）✗
+    //     而**掩膜的 shape 只有 `{kind, blob_hash}`** ⇒ **`from_mask` 克隆后也没有 bbox** ✗
+    //   **⇒ ⇒ ⇒ 所以**：**位图选区在这里补 `bbox`** —— 优先用掩膜给的尺寸，
+    //     没有就用**整幅**（**位图掩膜按约定覆盖全画布**）✓
+    let bitmap_kind = shape
+        .get("kind")
+        .or_else(|| shape.get("type"))
+        .and_then(Value::as_str)
+        == Some("bitmap");
+    if bitmap_kind && shape.get("bbox").is_none() {
+        let num = |k: &str| shape.get(k).and_then(Value::as_f64);
+        let (w, h) = match (num("width"), num("height")) {
+            (Some(w), Some(h)) if w > 0.0 && h > 0.0 => (w, h),
+            _ => {
+                let document = ctx.workspace.document(&ctx.doc_id);
+                match document {
+                    Some(d) => (d.state().width as f64, d.state().height as f64),
+                    None => (0.0, 0.0),
+                }
+            }
+        };
+        if w > 0.0 && h > 0.0 {
+            if let Some(obj) = shape.as_object_mut() {
+                obj.insert(
+                    "bbox".to_owned(),
+                    json!([0, 0, w.round() as i64, h.round() as i64]),
+                );
+            }
+        }
+    }
     if shape.get("kind").and_then(Value::as_str).is_none()
         && shape.get("type").and_then(Value::as_str).is_none()
     {
