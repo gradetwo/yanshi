@@ -503,6 +503,15 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("virtual_speed", Number, false, "虚拟手速 px/ms（缺省 0.5）：决定烘焙点的 time_ms 与吃速度的笔刷行为"),
             param!("preview", Boolean, false, "缺省 true = 每笔产出预览图；false = 不产出（连续落笔提速；透传 brush_stroke）"),
             param!("wait_for_render", Boolean, false, "缺省 true = 等渲染落盘再返回；false = 不等（透传 brush_stroke）"),
+            // **★ 补上两个**早就该有的参数** ★**（第 1556 轮；外部 `B9`）
+            //   **⇒ 外部实测**：`stroke_path` 不接受 `clip_to_selection` / `opacity`，
+            //     而报错**猜「拼写错误？」** ✗（**因为它们在 spec 里没列，校验先拒** ✓）
+            //   **⇒ ⇒ 而实现**早就透传了**：本工具把 `args` 克隆后只剔除**自己的 7 个键**，
+            //     剩下的**原样交给 `brush_stroke`** ✓ ⇒ **所以缺的只是 spec 这两行** ✓
+            //   **⇒ ⇒ ⇒ 而 `brush_stroke` 两个都有**（`opacity` 映射 MyPaint 的 `opaque`、
+            //     `clip_to_selection` 支持 `latest`/`combined`）⇒ **补齐即等价** ✓
+            param!("opacity", Number, false, "整笔不透明度 0..1（**透传 brush_stroke**：映射到 MyPaint 的 `opaque`，即每枚 dab 的不透明度）；缺省用 .myb 自带的"),
+            param!("clip_to_selection", String, false, "只把墨落在该选区里（**透传 brush_stroke**：选区 id / latest / combined，add·subtract·intersect 生效）；缺省不裁剪"),
         ],
     },
     ToolSpec {
