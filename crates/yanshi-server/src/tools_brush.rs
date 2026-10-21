@@ -68,6 +68,8 @@ pub(super) fn brush_sensors_from_value(value: &Value) -> Result<BrushSensors> {
 }
 
 pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **裁剪一共吃掉多少像素**（跨选区累计，供 `painted_pixels_clipped` 用）✓
+    let mut clipped_away = 0usize;
     // Validate output options before rasterization or committing a stroke.
     let anchor_mode = optional_str(args, "anchor_mode").unwrap_or_else(|| "data".to_owned());
     if anchor_mode != "data" {
@@ -705,6 +707,9 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             .map(|s| s.invert)
             .unwrap_or(false);
         let mut dropped = 0usize;
+        // **裁剪一共吃掉多少像素**（跨选区累计，供 `painted_pixels_clipped` 用）✓
+        //   **⇒ 外部 `B6`**：`painted_pixels` 是**裁剪前**的 ⇒ 用它算覆盖率会得出
+        //     「笔触都落上了」的错觉（他们实测：选区 166 万像素，累计报 793 万）✗
         for index in (0..rgba.len()).step_by(4) {
             let pixel = index / 4;
             let step = width.max(1);
@@ -759,6 +764,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             }
         }
         eprintln!("  选区 {name} 裁剪：清掉 {dropped} 个选区外像素 ✓");
+        clipped_away += dropped;
     }
     // **★★★ 对称：按**位图**镜像并合并** ✗ ★★★**（**第 251 轮 ✓）
     //   ＋ **∴ 做法 ✗**：**把这一笔自己的位图**翻转**✗ 摆到**镜像后的位置** ✓
@@ -878,6 +884,12 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     value["brush"] = json!(name);
     value["steps"] = json!(steps);
     value["painted_pixels"] = json!(painted);
+    // **裁剪后的真实落墨量** ✓（第 1553 轮；外部 `B6`）
+    //   **⇒ 为什么两个都要**：`painted_pixels` 是**印章面积**（裁剪前）⇒ 用它算覆盖率
+    //     会得出「笔触都落上了」的错觉（他们实测：选区 166 万像素、累计报 793 万）✗
+    //   **⇒ ⇒ 所以**同时给：`painted_pixels`（raw）与 `painted_pixels_clipped`（**真实落墨**）✓
+    //   **⇒ ⇒ ⇒ 没有裁剪时两者相等**（`clipped_away == 0`）⇒ **老调用方不受影响** ✓
+    value["painted_pixels_clipped"] = json!(painted.saturating_sub(clipped_away));
     value["max_channel_delta"] = json!(max_delta);
     // **传感器回执**：传了才出现（不静默 ✓）—— 调用方能确认四路信号都被采纳。
     if args.get("sensors").is_some_and(|v| !v.is_null()) {
