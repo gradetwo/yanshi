@@ -370,7 +370,7 @@ pub(super) fn write_delete_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
 /// 内联 `subpaths` 或 `object_id` 引用已有 path 形状对象，二选一；引用在
 /// 工具层先验存在性/存活/类型，让「建得出来 ⇒ 渲得出」在入口就成立
 /// （渲染层对失效引用另有告警兜底，防的是文档被其它方式改坏）。
-fn validate_mask_path_shape(ctx: &mut ToolContext<'_>, shape: &Value) -> Result<()> {
+pub(super) fn validate_mask_path_shape(ctx: &mut ToolContext<'_>, shape: &Value) -> Result<()> {
     let invalid = |message: String| {
         YanshiError::new(ErrorCode::InvalidArgument, ErrorContext::detail(message))
     };

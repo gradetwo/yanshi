@@ -59,6 +59,12 @@ pub enum AdjustmentKind {
     Lens,
     /// 透视校正（四角拉正 + 可选镜头畸变合并；照片修图）。
     Perspective,
+    /// 去雾（Presence 三件套之一；暗通道先验调整版，大气光在调整层内估计）。
+    Dehaze,
+    /// 局部对比（Presence 三件套之一；大半径引导滤波细节，负值柔化）。
+    Clarity,
+    /// 纹理（Presence 三件套之一；小尺度高频细节，负值平滑细纹理）。
+    Texture,
 }
 
 impl AdjustmentKind {
@@ -66,7 +72,7 @@ impl AdjustmentKind {
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "brightness_contrast" | "brightness" => Some(Self::BrightnessContrast),
-            "saturation" | "vibrance" => Some(Self::Saturation),
+            "saturation" => Some(Self::Saturation),
             "invert" => Some(Self::Invert),
             "levels" => Some(Self::Levels),
             "exposure" => Some(Self::Exposure),
@@ -76,8 +82,11 @@ impl AdjustmentKind {
             "posterize" => Some(Self::Posterize),
             "color_balance" => Some(Self::ColorBalance),
             "split_toning" => Some(Self::SplitToning),
-            // `saturation` 的同义词之一，保持向后兼容。
-            "vibrance_natural" => Some(Self::Vibrance),
+            // **规范名就是 `vibrance`**（与 `as_str`／`ADJUSTMENT_NAMES`／工具层校验三处一致 ✓）。
+            // 此前 `"vibrance"` 被并入 `Saturation` ⇒ 真 Vibrance 只能用这个别名到达，
+            // 而别名不在工具层白名单里 ⇒ 两条路都不可达 ✗（2026-10-21 修图实测）。
+            // `vibrance_natural` 保留为别名：已用它落存的文档渲染不变 ✓。
+            "vibrance" | "vibrance_natural" => Some(Self::Vibrance),
             "black_and_white" => Some(Self::BlackAndWhite),
             "channel_mixer" => Some(Self::ChannelMixer),
             "gradient_map" => Some(Self::GradientMap),
@@ -88,6 +97,9 @@ impl AdjustmentKind {
             "denoise" => Some(Self::Denoise),
             "lens" => Some(Self::Lens),
             "perspective" => Some(Self::Perspective),
+            "dehaze" => Some(Self::Dehaze),
+            "clarity" => Some(Self::Clarity),
+            "texture" => Some(Self::Texture),
             _ => None,
         }
     }
@@ -117,11 +129,14 @@ impl AdjustmentKind {
             Self::Denoise => "denoise",
             Self::Lens => "lens",
             Self::Perspective => "perspective",
+            Self::Dehaze => "dehaze",
+            Self::Clarity => "clarity",
+            Self::Texture => "texture",
         }
     }
 
     /// 全部类型。
-    pub const ALL: [AdjustmentKind; 22] = [
+    pub const ALL: [AdjustmentKind; 25] = [
         Self::BrightnessContrast,
         Self::Saturation,
         Self::Invert,
@@ -144,6 +159,9 @@ impl AdjustmentKind {
         Self::Denoise,
         Self::Lens,
         Self::Perspective,
+        Self::Dehaze,
+        Self::Clarity,
+        Self::Texture,
     ];
 
     /// 该调整在子缓冲（分带/区域）渲染时需要的窗口外扩（像素）。
@@ -222,6 +240,33 @@ impl AdjustmentKind {
                     0
                 };
                 y_reach.max(c_reach)
+            }
+            Self::Dehaze => {
+                // 透射率图方框模糊半径 4（一趟）⇒ 与滤镜版同口径取 8（含余量 ✓）。
+                let amount = params.get("amount").and_then(Value::as_f64).unwrap_or(0.0);
+                if amount == 0.0 {
+                    0
+                } else {
+                    8
+                }
+            }
+            Self::Clarity => {
+                // 引导滤波两趟方框（mean 与 a/b 各一趟）⇒ 2×半径(16) ✓。
+                let amount = params.get("amount").and_then(Value::as_f64).unwrap_or(0.0);
+                if amount == 0.0 {
+                    0
+                } else {
+                    32
+                }
+            }
+            Self::Texture => {
+                // 同上，半径 3 ⇒ 2×3 ✓。
+                let amount = params.get("amount").and_then(Value::as_f64).unwrap_or(0.0);
+                if amount == 0.0 {
+                    0
+                } else {
+                    6
+                }
             }
             _ => 0,
         }
@@ -419,10 +464,21 @@ fn gradient_sample(stops: &[(f32, [f32; 3])], x: f32) -> [f32; 3] {
 
 /// **阴影/高光恢复**：`shadows`／`highlights` 各 -1..1，0 = 不动（恒等 ✓）。
 ///
-/// 掩码按线性明度：暗部权重 `(1−L)²`、高光权重 `L²` ⇒ 白色处暗部权重**恰好 0**、
+/// 掩码按**显示空间（sRGB 编码）明度**：暗部权重 `(1−L)²`、高光权重 `L²` ⇒ 白色处暗部权重**恰好 0**、
 /// 黑色处高光权重**恰好 0**（不是近似 ✓）⇒
 /// 「shadows>0 只提暗部」「highlights<0 只压高光」两条性质精确成立 ✓。
 /// 每通道朝目标端移动 `参数 × 权重 × 剩余距离 × 0.5` ⇒ 移动量不超过半程、永不越界 ✓。
+///
+/// **作用空间（缺陷修复）**：权重与幅度是按**显示参照值**标定的（参数语义即
+/// 「0.15 只把黑抬到约 0.075」），而缓冲是**线性光**——旧实现直接在线性域套这套
+/// 数学：sRGB 0.5 在线性域只有 0.214、0.75 只有 0.522 ⇒ 主体色调全挤在低线性区、
+/// `(1−L)²` 对几乎全图 ≈ 1、抬升被成倍放大，编码回显示后全图堆成近常数灰
+/// （实测：256 级渐变 `shadows=0.6` 输出 std 73.90→**31.43**、黑端 0→**149**；
+/// `shadows=0.15` 黑端抬到 **77** 而非应有的 19）。已排除「重复施加」：旧输出与
+/// 「线性域单次」模型逐点误差 0、与「两次」差达 21 ⇒ 每像素只施加了一次，病在空间。
+/// 现先把直通色编码到显示空间算权重与 `toward()`、再解码回线性写回 ⇒
+/// 渲染结果与文档数学**单次**一致；管线其余部分（线性合成）不动。
+/// `shadows` 与 `highlights` 两分支同在此闭包内，一并按此口径计算（同病同修）。
 pub fn shadows_highlights(buffer: &mut Buffer, shadows: f32, highlights: f32) {
     const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
     let shadows = shadows.clamp(-1.0, 1.0);
@@ -431,15 +487,26 @@ pub fn shadows_highlights(buffer: &mut Buffer, shadows: f32, highlights: f32) {
         return;
     }
     for_each_straight_color(buffer, |color| {
-        let luma = (LUMA[0] * color[0] + LUMA[1] * color[1] + LUMA[2] * color[2]).clamp(0.0, 1.0);
+        let mut display = [
+            linear_to_srgb(color[0]),
+            linear_to_srgb(color[1]),
+            linear_to_srgb(color[2]),
+        ];
+        let luma =
+            (LUMA[0] * display[0] + LUMA[1] * display[1] + LUMA[2] * display[2]).clamp(0.0, 1.0);
         let shadow_weight = (1.0 - luma) * (1.0 - luma);
         let highlight_weight = luma * luma;
-        for value in color.iter_mut() {
+        for value in display.iter_mut() {
             let current = *value;
             let mut next = current + toward(shadows, shadow_weight, current);
             next += toward(highlights, highlight_weight, current);
             *value = next.clamp(0.0, 1.0);
         }
+        *color = [
+            srgb_to_linear(display[0]),
+            srgb_to_linear(display[1]),
+            srgb_to_linear(display[2]),
+        ];
     });
 }
 
@@ -1959,6 +2026,179 @@ pub fn denoise(buffer: &mut Buffer, luminance: f32, detail: f32, color: f32) {
     }
 }
 
+/// **大气光估计（调整层内版）**：暗通道最亮的 0.1% 像素的平均直通色
+/// （与 [`estimate_atmospheric_light`] 同口径，只是数据源是 `Buffer` 的直通色 ✓）。
+/// 排序换成 512 桶直方图取阈值（O(N)、无大额分配；排序版在 1200×800 上是主要瓶颈 ✗）。
+/// 无不透明像素时退回近白雾色 `[0.95; 3]`。
+fn estimate_air_from_buffer(buffer: &Buffer) -> [f32; 3] {
+    const BINS: usize = 512;
+    let mut hist = [0u64; BINS];
+    let mut total = 0u64;
+    for pixel in buffer.pixels().chunks_exact(4) {
+        let alpha = pixel[3];
+        if alpha <= 0.0 {
+            continue;
+        }
+        let dark = (pixel[0] / alpha)
+            .min(pixel[1] / alpha)
+            .min(pixel[2] / alpha)
+            .clamp(0.0, 1.0);
+        let bin = ((dark * (BINS - 1) as f32) as usize).min(BINS - 1);
+        hist[bin] += 1;
+        total += 1;
+    }
+    if total == 0 {
+        return [0.95, 0.95, 0.95];
+    }
+    let need = ((total as f64 * 0.001).ceil() as u64).max(1);
+    let mut acc = 0u64;
+    let mut thresh_bin = BINS - 1;
+    for bin in (0..BINS).rev() {
+        acc += hist[bin];
+        if acc >= need {
+            thresh_bin = bin;
+            break;
+        }
+    }
+    let thresh = thresh_bin as f32 / (BINS - 1) as f32;
+    let mut air = [0.0f32; 3];
+    let mut count = 0u64;
+    for pixel in buffer.pixels().chunks_exact(4) {
+        let alpha = pixel[3];
+        if alpha <= 0.0 {
+            continue;
+        }
+        let straight = [pixel[0] / alpha, pixel[1] / alpha, pixel[2] / alpha];
+        let dark = straight[0].min(straight[1]).min(straight[2]);
+        if dark >= thresh {
+            for (slot, value) in air.iter_mut().zip(straight.iter()) {
+                *slot += value;
+            }
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return [0.95, 0.95, 0.95];
+    }
+    let scale = 1.0 / count as f32;
+    for value in air.iter_mut() {
+        *value = (*value * scale).clamp(0.05, 1.0);
+    }
+    air
+}
+
+/// **去雾调整（Presence）**：`amount` −1..1，0 = 逐位恒等 ✓。
+///
+/// 正值走暗通道先验（复用滤镜版 [`dehaze`] 内核）：大气光由
+/// [`estimate_air_from_buffer`] 在**当前缓冲内**估计，`omega = amount × 0.95`、
+/// 透射率下限 0.1。**与滤镜版的口径差**：滤镜版要求调用方给 `air` 以保证
+/// 分块 == 整幅；调整版在缓冲内估计 ⇒ 跨 tile 的大气光可能不同（README 已标注，
+/// 这是与 Lightroom 全图估计实现的主要差距之一）。
+/// 负值反向加雾：直通色朝大气光混合 `|amount| × 0.6`，对比单调下降（可做雾效/柔化背景）。
+pub fn dehaze_adjustment(buffer: &mut Buffer, amount: f32) {
+    let amount = amount.clamp(-1.0, 1.0);
+    if amount == 0.0 {
+        return;
+    }
+    let air = estimate_air_from_buffer(buffer);
+    if amount > 0.0 {
+        dehaze(buffer, air, amount * 0.95, 0.1);
+    } else {
+        let haze = -amount * 0.6;
+        for_each_straight_color(buffer, |color| {
+            for (channel, slot) in color.iter_mut().enumerate() {
+                *slot = (*slot * (1.0 - haze) + air[channel] * haze).clamp(0.0, 1.0);
+            }
+        });
+    }
+}
+
+/// **引导滤波细节调整（clarity / texture 共用底座）**：
+/// 明度（线性 Rec709）跑一趟自引导滤波（复用降噪的 [`guided_filter_self`]，保边 ✓），
+/// `detail = luma − base`，`new_luma = luma + amount × detail × weight`，
+/// 三通道按 `new_luma / luma` 等比缩放（保色相、灰度样本下与分通道版逐位一致 ✓）。
+/// `amount` −1..1（0 = 逐位恒等 ✓；负值压细节 ⇒ 柔化）。纯黑（luma≈0）不动
+/// （detail 恒 0，缩放无意义，数学上恒等 ✓）。输出钳制 [0,1]，
+/// 预乘不变量保持 ✓。运算在线性光直通空间（与全管线坐标口径一致 ✓）。
+///
+/// **只跑一趟引导滤波**（性能：第 1 版三通道各一趟是主要瓶颈 ✗；明度细节 + 等比
+/// 缩放也是 Lightroom 语义下更保色相的做法，一举两得 ✓）。
+fn guided_detail_adjust(
+    buffer: &mut Buffer,
+    amount: f32,
+    radius: u32,
+    epsilon: f32,
+    midtone_weighted: bool,
+) {
+    let amount = amount.clamp(-1.0, 1.0);
+    if amount == 0.0 {
+        return;
+    }
+    let (w, h) = (buffer.width(), buffer.height());
+    if w == 0 || h == 0 {
+        return;
+    }
+    let n = (w * h) as usize;
+    let mut luma = vec![0.0f32; n];
+    for (i, pixel) in buffer.pixels().chunks_exact(4).enumerate() {
+        let a = pixel[3];
+        if a > 0.0 {
+            luma[i] = (0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2]) / a;
+        }
+    }
+    let mut base = luma.clone();
+    guided_filter_self(&mut base, w, h, radius, epsilon);
+    for y in 0..h {
+        for x in 0..w {
+            let i = (y * w + x) as usize;
+            let pixel = buffer.pixel(x, y);
+            let alpha = pixel[3];
+            if alpha <= 0.0 {
+                continue;
+            }
+            let l = luma[i].clamp(0.0, 1.0);
+            if l < 1e-6 {
+                continue;
+            }
+            let weight = if midtone_weighted {
+                let centered = 2.0 * l - 1.0;
+                (1.0 - centered * centered).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            let new_luma = (l + amount * (l - base[i]) * weight).clamp(0.0, 1.0);
+            let scale = new_luma / l;
+            buffer.set_pixel(
+                x,
+                y,
+                [
+                    (pixel[0] * scale).min(alpha),
+                    (pixel[1] * scale).min(alpha),
+                    (pixel[2] * scale).min(alpha),
+                    alpha,
+                ],
+            );
+        }
+    }
+}
+
+/// **局部对比调整（Presence Clarity）**：`amount` −1..1，0 = 逐位恒等 ✓。
+///
+/// 大半径（16）自引导滤波保边细节 + 中间调加权 `1 − (2L − 1)²`（与滤镜版 clarity
+/// 同一加权口径：中间调最强、极暗/极亮抑制防光晕 ✓）。
+/// 正值增强中频局部对比；负值压中频 ⇒ 柔化（Orton 柔光的那一半靠它近似 ✓）。
+pub fn clarity_adjustment(buffer: &mut Buffer, amount: f32) {
+    guided_detail_adjust(buffer, amount, 16, 0.005, true);
+}
+
+/// **纹理调整（Presence Texture）**：`amount` −1..1，0 = 逐位恒等 ✓。
+///
+/// 小半径（3）自引导滤波细节、无中间调加权：只动最细一档高频，
+/// 中/大尺度结构（clarity 的地盘）基本不碰。正值强化细纹理；负值平滑细纹理（磨皮方向）。
+pub fn texture_adjustment(buffer: &mut Buffer, amount: f32) {
+    guided_detail_adjust(buffer, amount, 3, 0.001, false);
+}
+
 /// 可分离方框模糊（`passes` 趟近似高斯；边缘按 clamp 复制）。
 /// 水平/垂直方框模糊（滑动窗口，O(1)/像素；见文件内 `blur_horizontal` 的说明）。
 /// **⚠️ 这不是唯一的方框模糊**（✓，第 371 轮 ✓）：`geometry::feather_coverage` 自带一份，
@@ -2197,7 +2437,7 @@ fn for_each_straight_color(buffer: &mut Buffer, mut transform: impl FnMut(&mut [
 }
 
 /// 内核支持的调整类型名（工具层据此校验参数，避免造出无法渲染的对象）。
-pub const ADJUSTMENT_NAMES: [&str; 22] = [
+pub const ADJUSTMENT_NAMES: [&str; 25] = [
     "brightness_contrast",
     "saturation",
     "invert",
@@ -2220,6 +2460,9 @@ pub const ADJUSTMENT_NAMES: [&str; 22] = [
     "denoise",
     "lens",
     "perspective",
+    "dehaze",
+    "clarity",
+    "texture",
 ];
 
 /// 内核支持的滤镜名。
@@ -2606,6 +2849,18 @@ pub fn apply_adjustment(
                 return false;
             }
         }
+        AdjustmentKind::Dehaze => dehaze_adjustment(
+            &mut adjusted,
+            params.get("amount").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+        ),
+        AdjustmentKind::Clarity => clarity_adjustment(
+            &mut adjusted,
+            params.get("amount").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+        ),
+        AdjustmentKind::Texture => texture_adjustment(
+            &mut adjusted,
+            params.get("amount").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+        ),
     }
     if (opacity - 1.0).abs() < f32::EPSILON {
         *buffer = adjusted;
@@ -3950,6 +4205,59 @@ mod tests {
         }
     }
 
+    /// **名字路由**（2026-10-21）：`apply_adjustment("vibrance")` 必须走 Vibrance、
+    /// 不许再被 Saturation 偷换。判据用两条恒等/非恒等关系，不写死像素：
+    /// `saturation(amount=1)` 是恒等（作对照基线），`vibrance(amount=1)` 对低饱和像素非恒等，
+    /// 且规范名与旧别名 `vibrance_natural` 的结果逐位相同。
+    #[test]
+    fn vibrance_name_routes_to_vibrance_not_saturation() {
+        let make = || {
+            let mut buffer = Buffer::new(0, 0, 1, 1);
+            buffer.set_pixel(0, 0, [0.45, 0.5, 0.55, 1.0]);
+            buffer
+        };
+        let original = make().pixel(0, 0);
+        let mut via_canonical = make();
+        assert!(apply_adjustment(
+            &mut via_canonical,
+            "vibrance",
+            &json!({"amount": 1.0}),
+            1.0,
+            (1.0, 1.0)
+        ));
+        assert_ne!(
+            via_canonical.pixel(0, 0),
+            original,
+            "vibrance(amount=1) 对低饱和像素应非恒等（若与原图相同，多半又被偷换成 saturation 恒等）"
+        );
+        let mut via_alias = make();
+        assert!(apply_adjustment(
+            &mut via_alias,
+            "vibrance_natural",
+            &json!({"amount": 1.0}),
+            1.0,
+            (1.0, 1.0)
+        ));
+        assert_eq!(
+            via_canonical.pixel(0, 0),
+            via_alias.pixel(0, 0),
+            "规范名 vibrance 与别名 vibrance_natural 必须逐位一致"
+        );
+        let mut via_saturation = make();
+        assert!(apply_adjustment(
+            &mut via_saturation,
+            "saturation",
+            &json!({"amount": 1.0}),
+            1.0,
+            (1.0, 1.0)
+        ));
+        assert_eq!(
+            via_saturation.pixel(0, 0),
+            original,
+            "saturation(amount=1) 应恒等（对照基线）"
+        );
+    }
+
     /// 分离色调：暗部取阴影色、亮部取高光色；`balance` 移动分界。
     #[test]
     fn split_toning_tints_shadows_and_highlights() {
@@ -4727,6 +5035,22 @@ mod coloradj_tests {
         assert!(px(&bright)[0] < 0.9, "高光应被压暗，实得 {:?}", px(&bright));
     }
 
+    /// **作用空间（回归）**：缓冲是线性光、本函数的数学按显示值标定 ⇒
+    /// 显示值 0.5（线性 `srgb_to_linear(0.5)`）过 `shadows=0.6` 后，**显示值**必须等于
+    /// 单次公式 `0.5 + 0.6×(1−0.5)²×(1−0.5)×0.5 = 0.5375`（±0.004）。
+    /// 基线（在线性域直接算）给出线性 ≈0.360 ⇒ 显示 ≈0.634，与期望差 0.097 ⇒ 红。
+    #[test]
+    fn shadows_highlights_math_is_in_display_space() {
+        let linear = srgb_to_linear(0.5);
+        let mut buffer = filled([linear, linear, linear, 1.0]);
+        shadows_highlights(&mut buffer, 0.6, 0.0);
+        let display = linear_to_srgb(px(&buffer)[0]);
+        assert!(
+            (display - 0.5375).abs() <= 0.004,
+            "显示值应为单次公式 0.5375，实得 {display}"
+        );
+    }
+
     // ── selective_color ─────────────────────────────────────────────
 
     fn ranges_with(index: usize, offset: [f32; 4]) -> [[f32; 4]; 9] {
@@ -4910,16 +5234,6 @@ mod coloradj_tests {
             "AdjustmentKind::ALL 与 ADJUSTMENT_NAMES 长度必须一致"
         );
         for kind in AdjustmentKind::ALL {
-            if kind == AdjustmentKind::Vibrance {
-                // **`vibrance` 是 `saturation` 的向后兼容别名**（from_name 里并入 Saturation ✓），
-                // 往返本就不成立——这是既有口径，不是新增 6 种引入的 ✓。
-                assert_eq!(
-                    AdjustmentKind::from_name("vibrance"),
-                    Some(AdjustmentKind::Saturation),
-                    "vibrance 应仍是 saturation 的别名"
-                );
-                continue;
-            }
             assert_eq!(
                 AdjustmentKind::from_name(kind.as_str()),
                 Some(kind),
@@ -4932,6 +5246,26 @@ mod coloradj_tests {
                 kind.as_str()
             );
         }
+        // **vibrance 专项**（2026-10-21 修图实测抓到的偷换）：
+        // 规范名 `vibrance` 必须到达真 Vibrance、不许再被 Saturation 冒名；
+        // 旧别名 `vibrance_natural` 保留（已落存文档渲染不变）；
+        // `saturation` 只认自己的名字。
+        assert_eq!(
+            AdjustmentKind::from_name("vibrance"),
+            Some(AdjustmentKind::Vibrance),
+            "vibrance 必须解析为 Vibrance（此前被偷换成 Saturation）"
+        );
+        assert_eq!(
+            AdjustmentKind::from_name("vibrance_natural"),
+            Some(AdjustmentKind::Vibrance),
+            "vibrance_natural 别名必须保留为 Vibrance"
+        );
+        assert_eq!(
+            AdjustmentKind::from_name("saturation"),
+            Some(AdjustmentKind::Saturation),
+            "saturation 必须解析为 Saturation"
+        );
+        assert_eq!(AdjustmentKind::Vibrance.as_str(), "vibrance");
     }
 }
 
@@ -5304,5 +5638,281 @@ mod photoretouch_tests {
         denoise(&mut buffer, 1.0, 0.5, 0.0);
         let (l, r) = (buffer.pixel(3, 4)[0], buffer.pixel(4, 4)[0]);
         assert!(r - l > 0.4, "台阶边应保持：左 {l} 右 {r}");
+    }
+}
+
+/// **Presence 三件套测试（包 D）**：恒等式 / 名字四处一致 / 单调性（数值关系断言 ✓）。
+#[cfg(test)]
+mod presence_tests {
+    use super::*;
+
+    fn pattern_buffer() -> Buffer {
+        let mut buffer = Buffer::new(0, 0, 16, 16);
+        for y in 0..16u32 {
+            for x in 0..16u32 {
+                let v = ((x * 31 + y * 17) % 251) as f32 / 251.0;
+                buffer.set_pixel(x, y, [v, 1.0 - v, v * 0.5, 1.0]);
+            }
+        }
+        buffer.set_pixel(3, 3, [0.2, 0.1, 0.05, 0.5]);
+        buffer
+    }
+
+    fn std_of(buffer: &Buffer, channel: usize) -> f32 {
+        let values: Vec<f32> = buffer
+            .pixels()
+            .chunks_exact(4)
+            .map(|pixel| pixel[channel])
+            .collect();
+        let mean = values.iter().sum::<f32>() / values.len() as f32;
+        let var = values.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / values.len() as f32;
+        var.sqrt()
+    }
+
+    /// 带通能量：`mean((blur_small(I) − blur_large(I))²)`（R 通道；用方框模糊实现，
+    /// 与被测的引导滤波是不同算法族 ⇒ 不是同义反复 ✓）。
+    fn band_energy(buffer: &Buffer, small: u32, large: u32) -> f32 {
+        let mut lo = buffer.clone();
+        box_blur(&mut lo, small, 2);
+        let mut hi = buffer.clone();
+        box_blur(&mut hi, large, 2);
+        let mut sum = 0.0f32;
+        let mut count = 0usize;
+        for (a, b) in lo.pixels().chunks_exact(4).zip(hi.pixels().chunks_exact(4)) {
+            let d = a[0] - b[0];
+            sum += d * d;
+            count += 1;
+        }
+        sum / count as f32
+    }
+
+    #[test]
+    fn presence_zero_amount_is_exact_identity() {
+        // **amount = 0（直调与 apply_adjustment 两条路）⇒ 逐位不变** ✓。
+        let before = pattern_buffer();
+        for apply in [
+            dehaze_adjustment as fn(&mut Buffer, f32),
+            clarity_adjustment,
+            texture_adjustment,
+        ] {
+            let mut after = before.clone();
+            apply(&mut after, 0.0);
+            assert_eq!(before.pixels(), after.pixels(), "amount=0 必须逐位恒等");
+        }
+        for name in ["dehaze", "clarity", "texture"] {
+            for params in [serde_json::json!({"amount": 0.0}), serde_json::json!({})] {
+                let mut after = before.clone();
+                assert!(
+                    apply_adjustment(&mut after, name, &params, 1.0, (16.0, 16.0)),
+                    "{name} 应被 apply_adjustment 识别"
+                );
+                assert_eq!(
+                    before.pixels(),
+                    after.pixels(),
+                    "{name} 缺省/零参数必须逐位恒等"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn presence_names_agree_in_all_four_places() {
+        // **四处一致**：enum 变体 / as_str / from_name / ADJUSTMENT_NAMES（服务端
+        // EffectKind::supported 直接取 ADJUSTMENT_NAMES ⇒ 它就是服务端校验名单的单一来源 ✓）。
+        let cases = [
+            (AdjustmentKind::Dehaze, "dehaze"),
+            (AdjustmentKind::Clarity, "clarity"),
+            (AdjustmentKind::Texture, "texture"),
+        ];
+        assert_eq!(AdjustmentKind::ALL.len(), 25);
+        assert_eq!(ADJUSTMENT_NAMES.len(), 25);
+        for (kind, name) in cases {
+            assert_eq!(kind.as_str(), name);
+            assert_eq!(
+                AdjustmentKind::from_name(kind.as_str()),
+                Some(kind),
+                "{name} 的 from_name/as_str 必须往返"
+            );
+            assert!(
+                ADJUSTMENT_NAMES.contains(&name),
+                "{name} 必须在 ADJUSTMENT_NAMES（服务端校验名单）里"
+            );
+            assert!(AdjustmentKind::ALL.contains(&kind), "{name} 必须在 ALL 里");
+        }
+    }
+
+    #[test]
+    fn presence_padding_is_declared_and_zero_when_off() {
+        // **邻域调整必须申报 padding**（关系断言 ✓）：关 ⇒ 0；开 ⇒ clarity > texture > 0。
+        let frame = (200.0, 150.0);
+        let off = serde_json::json!({"amount": 0.0});
+        let on = serde_json::json!({"amount": 1.0});
+        for kind in [
+            AdjustmentKind::Dehaze,
+            AdjustmentKind::Clarity,
+            AdjustmentKind::Texture,
+        ] {
+            assert_eq!(
+                kind.padding(&off, frame),
+                0,
+                "{} 关时不应外扩",
+                kind.as_str()
+            );
+            assert!(
+                kind.padding(&on, frame) > 0,
+                "{} 开时必须外扩",
+                kind.as_str()
+            );
+        }
+        assert!(
+            AdjustmentKind::Clarity.padding(&on, frame)
+                > AdjustmentKind::Texture.padding(&on, frame),
+            "clarity 半径大于 texture ⇒ padding 应更大"
+        );
+    }
+
+    /// 合成雾图：上部天空 = 纯雾色（大气光可估 ✓），下部场景两色块被 50% 雾混合。
+    fn foggy_scene() -> Buffer {
+        let air = [0.85f32, 0.88, 0.90];
+        let mut buffer = Buffer::new(0, 0, 32, 16);
+        for y in 0..16u32 {
+            for x in 0..32u32 {
+                let pixel = if y < 4 {
+                    [air[0], air[1], air[2], 1.0]
+                } else if x < 16 {
+                    [
+                        0.08 * 0.5 + air[0] * 0.5,
+                        0.08 * 0.5 + air[1] * 0.5,
+                        0.10 * 0.5 + air[2] * 0.5,
+                        1.0,
+                    ]
+                } else {
+                    [
+                        0.60 * 0.5 + air[0] * 0.5,
+                        0.25 * 0.5 + air[1] * 0.5,
+                        0.20 * 0.5 + air[2] * 0.5,
+                        1.0,
+                    ]
+                };
+                buffer.set_pixel(x, y, pixel);
+            }
+        }
+        buffer
+    }
+
+    #[test]
+    fn dehaze_amount_monotonically_restores_fog_contrast() {
+        // **单调性**：正 amount 越大，雾图 R 通道标准差（对比度）越大；负值则更低 ✓。
+        let base = foggy_scene();
+        let c0 = std_of(&base, 0);
+        let mut previous = c0;
+        for amount in [0.35f32, 0.7, 1.0] {
+            let mut after = base.clone();
+            dehaze_adjustment(&mut after, amount);
+            let contrast = std_of(&after, 0);
+            assert!(
+                contrast > previous,
+                "dehaze {amount} 后对比度应单调上升：{previous} → {contrast}（原始 {c0}）"
+            );
+            previous = contrast;
+        }
+        let mut hazed = base.clone();
+        dehaze_adjustment(&mut hazed, -0.6);
+        assert!(
+            std_of(&hazed, 0) < c0,
+            "dehaze 负值应加雾降对比：{} vs 原始 {c0}",
+            std_of(&hazed, 0)
+        );
+    }
+
+    /// 中频样本：8px 方块波（周期 16px），中间调 0.45/0.55。
+    fn midband_sample() -> Buffer {
+        let mut buffer = Buffer::new(0, 0, 64, 64);
+        for y in 0..64u32 {
+            for x in 0..64u32 {
+                let v = if (x / 8) % 2 == 0 { 0.45 } else { 0.55 };
+                buffer.set_pixel(x, y, [v, v, v, 1.0]);
+            }
+        }
+        buffer
+    }
+
+    #[test]
+    fn clarity_amount_monotonically_raises_midband_energy() {
+        // **中频带 = blur(2) 与 blur(16) 之差的能量**；正 clarity 应单调抬升、负值压低 ✓。
+        let base = midband_sample();
+        let e0 = band_energy(&base, 2, 16);
+        let mut previous = e0;
+        for amount in [0.5f32, 1.0] {
+            let mut after = base.clone();
+            clarity_adjustment(&mut after, amount);
+            let energy = band_energy(&after, 2, 16);
+            assert!(
+                energy > previous,
+                "clarity {amount} 后中频能量应上升：{previous} → {energy}（原始 {e0}）"
+            );
+            previous = energy;
+        }
+        let mut softened = base.clone();
+        clarity_adjustment(&mut softened, -0.8);
+        assert!(
+            band_energy(&softened, 2, 16) < e0,
+            "clarity 负值应压中频能量：{} vs 原始 {e0}",
+            band_energy(&softened, 2, 16)
+        );
+        // 平坦区不动（detail = 0 ⇒ 任意 amount 逐位恒等）✓。
+        let flat = Buffer::filled(0, 0, 32, 32, [0.5, 0.5, 0.5, 1.0]);
+        let mut after = flat.clone();
+        clarity_adjustment(&mut after, 1.0);
+        assert_eq!(flat.pixels(), after.pixels(), "平坦区 clarity 不应改动");
+    }
+
+    /// 高频样本：平滑大块底 + 小幅细纹理（±0.04 的确定性hash纹理，无三角函数 ✓）。
+    fn highband_sample() -> Buffer {
+        let mut buffer = Buffer::new(0, 0, 64, 64);
+        for y in 0..64u32 {
+            for x in 0..64u32 {
+                let base = if x < 32 { 0.45 } else { 0.55 };
+                let grain = (((x * 7 + y * 13) % 5) as f32 - 2.0) * 0.02;
+                let v = base + grain;
+                buffer.set_pixel(x, y, [v, v, v, 1.0]);
+            }
+        }
+        buffer
+    }
+
+    #[test]
+    fn texture_amount_monotonically_raises_highband_energy() {
+        // **高频带 = blur(1) 与 blur(4) 之差的能量**；正 texture 应单调抬升、负值压低 ✓。
+        let base = highband_sample();
+        let e0 = band_energy(&base, 1, 4);
+        let mut previous = e0;
+        for amount in [0.5f32, 1.0] {
+            let mut after = base.clone();
+            texture_adjustment(&mut after, amount);
+            let energy = band_energy(&after, 1, 4);
+            assert!(
+                energy > previous,
+                "texture {amount} 后高频能量应上升：{previous} → {energy}（原始 {e0}）"
+            );
+            previous = energy;
+        }
+        let mut smoothed = base.clone();
+        texture_adjustment(&mut smoothed, -0.8);
+        assert!(
+            band_energy(&smoothed, 1, 4) < e0,
+            "texture 负值应压高频能量：{} vs 原始 {e0}",
+            band_energy(&smoothed, 1, 4)
+        );
+        // **尺度选择性（关系断言）**：texture 对高频带的相对提升应大于对中频带的相对提升 ✓。
+        let mid0 = band_energy(&base, 2, 16);
+        let mut after = base.clone();
+        texture_adjustment(&mut after, 1.0);
+        let high_gain = band_energy(&after, 1, 4) / e0;
+        let mid_gain = band_energy(&after, 2, 16) / mid0.max(1e-9);
+        assert!(
+            high_gain > mid_gain,
+            "texture 应更偏向高频：高频增益 {high_gain} vs 中频增益 {mid_gain}"
+        );
     }
 }

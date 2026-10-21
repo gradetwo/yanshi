@@ -162,6 +162,91 @@ pub(super) fn read_analyze_region(ctx: &mut ToolContext<'_>, args: &Value) -> Re
     }))
 }
 
+/// **`get_histogram`**（包 B，2026-10-21）：**纯读** —— 返回数值直方图，不回图。
+///
+/// 作用域三选一（缺省 = 整文档渲染结果）：
+/// * 只给 `layer_id` ⇒ 只渲染那一层（走 `render_region_raw_layer`，不污染文档级缓存 ✓）；
+/// * 只给 `region` ⇒ 整文档渲染后取该区域；
+/// * 两者都给 ⇒ 该图层在该区域内的像素；都不给 ⇒ 整幅画布。
+///
+/// 统计口径在内核 `yanshi_render::histogram` 一处：每通道 256 桶 + 亮度桶
+/// （整数 Rec.601）+ 摘要（均值/极值/p5/中位数/p95，下分位口径）。
+pub(super) fn read_get_histogram(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = optional_str(args, "layer_id");
+    let region = match args.get("region") {
+        Some(value) if !value.is_null() => Some(parse_bbox(value)?),
+        _ => None,
+    };
+    let state = document_state(ctx)?;
+    if let Some(id) = layer_id.as_deref() {
+        if !state.layers.contains_key(id) {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("图层 {id} 不存在")),
+            )
+            .with_layer(id.to_owned()));
+        }
+    }
+    let bbox = region
+        .unwrap_or_else(|| Bbox::new(0.0, 0.0, f64::from(state.width), f64::from(state.height)));
+    let scope = match (layer_id.is_some(), region.is_some()) {
+        (true, true) => "layer_region",
+        (true, false) => "layer",
+        (false, true) => "region",
+        (false, false) => "document",
+    };
+    ctx.count_region_render();
+    let render_started = std::time::Instant::now();
+    let (width, height, pixels) = match layer_id.as_deref() {
+        Some(id) => ctx
+            .workspace
+            .render_region_raw_layer(&ctx.doc_id, bbox, id)?,
+        None => ctx.workspace.render_region_raw(&ctx.doc_id, bbox)?,
+    };
+    ctx.time(Phase::Render, render_started);
+    if pixels.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail("这块作用域没有像素可统计".to_string()),
+        ));
+    }
+    let histogram = yanshi_render::histogram_rgba8(&pixels);
+    let summary = |buckets: &[u64; 256]| {
+        let summary = yanshi_render::summarize(buckets, histogram.count);
+        json!({
+            "mean": summary.mean,
+            "min": summary.min,
+            "max": summary.max,
+            "p5": summary.p5,
+            "median": summary.median,
+            "p95": summary.p95,
+        })
+    };
+    Ok(json!({
+        "ok": true,
+        "scope": scope,
+        "layer_id": layer_id,
+        "region": {"x": bbox.x, "y": bbox.y, "w": bbox.w, "h": bbox.h},
+        "width": width,
+        "height": height,
+        "pixels": histogram.count,
+        "channels": {
+            "r": histogram.r.as_slice(),
+            "g": histogram.g.as_slice(),
+            "b": histogram.b.as_slice(),
+            "a": histogram.a.as_slice(),
+        },
+        "luma": histogram.luma.as_slice(),
+        "summary": {
+            "r": summary(&histogram.r),
+            "g": summary(&histogram.g),
+            "b": summary(&histogram.b),
+            "a": summary(&histogram.a),
+            "luma": summary(&histogram.luma),
+        },
+    }))
+}
+
 pub(super) fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **★ 可选 `active_layer` ✓ ★**（**目标第 4 条 ✓**；第 523 轮 ✓）：**∴ 让"改中间层"
     // 只重渲该层 ✓**（**三段分解的切点 ✓**）；**∴ 不传 ⇒ 退回"最上层以外"✓**（**行为不变 ✓**）。

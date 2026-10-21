@@ -100,6 +100,21 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "get_histogram",
+        profile: Profile::Core,
+        summary: "读取直方图（只读 ✓，只回数值不回图）：每通道 256 桶计数 + 亮度桶 + 均值/中位数/百分位摘要。作用域三选一：缺省整文档渲染结果；给 layer_id 只统计那一层；给 region 只统计该区域（两者都给 = 该层在该区域内）",
+        mutating: false,
+        params: &[
+            param!("layer_id", String, false, "只统计这个图层（缺省 = 整文档合成结果）"),
+            param!(
+                "region",
+                Object,
+                false,
+                "只统计这个区域 {x,y,w,h}（文档坐标，像素；缺省 = 整幅画布）"
+            ),
+        ],
+    },
+    ToolSpec {
         name: "get_state",
         profile: Profile::Core,
         summary: "读取当前 HEAD 状态摘要与预览地址",
@@ -157,6 +172,29 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[
             param!("object_id", String, true, "对象 id"),
             param!("include_history", Boolean, false, "是否包含版本链"),
+        ],
+    },
+    ToolSpec {
+        name: "get_path",
+        profile: Profile::Core,
+        summary: "读回 path 形状的完整几何（本地坐标，不含 object.transform）：结构化 subpaths、可直接塞回 draw_shape 的 geometry、等价 SVG d 字符串（最短往返数字，再解析逐位一致）、控制点包围盒 bbox、展平总长 length（闭合含回首段）、每条子路径的 node_counts（edit_path 的节点下标口径）。对象不存在/已删除/不是 path 形状都会明确报错，不回退成 get_object 的原始 data",
+        mutating: false,
+        params: &[param!("object_id", String, true, "path 形状对象 id（draw_shape 建的 kind=path 对象）")],
+    },
+    ToolSpec {
+        name: "edit_path",
+        profile: Profile::Core,
+        summary: "节点级编辑 path 形状（不必整形重发）：节点下标口径为「节点 0 = 子路径 start，节点 k = 第 k-1 段的终点」。move_node 把锚点移到 to，相连的两个存储控制柄按同一位移刚性平移（柄相对锚点的偏移不变）；insert_node 在第 segment 段的参数 t（缺省 0.5）处插锚点（直段取插值点、三次段 de Casteljau 切分，几何不变；闭合子路径可给 segment=段数作用于回首段）；delete_node 删锚点并按合并规则接回相邻段（只剩一段的子路径拒绝）；set_handle 把一侧控制柄设到 to（该侧是直段时升格为三次段、另一侧控制点取段上 1/3 或 2/3 点；闭合回首段的柄会落成显式三次段）。编辑后整份几何复验、bbox 同步更新",
+        mutating: true,
+        params: &[
+            param!("object_id", String, true, "path 形状对象 id（draw_shape 建的 kind=path 对象）"),
+            param!("op", String, true, "move_node | insert_node | delete_node | set_handle"),
+            param!("subpath", Integer, true, "子路径下标（0 起）"),
+            param!("node", Integer, false, "节点下标（move_node / delete_node / set_handle 用；0 = start，k = 第 k-1 段终点）"),
+            param!("segment", Integer, false, "段下标（insert_node 用；闭合子路径给段数 = 回首段）"),
+            param!("t", Number, false, "insert_node 的段内参数（0 与 1 之间，缺省 0.5）"),
+            param!("side", String, false, "set_handle 的侧：in（上一段的 c2）| out（下一段的 c1）"),
+            param!("to", Any, false, "目标点 [x, y]（move_node 的新锚点位置 / set_handle 的新控制点位置，绝对坐标）"),
         ],
     },
     ToolSpec {
@@ -347,7 +385,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("selection_id", String, true, "选区 id"),
-            param!("shape", Object, false, "几何 {kind:rect|ellipse|polygon|path, bbox, points?, subpaths?(path), d?(path：SVG 路径字符串，与 subpaths 二选一，入口转 subpaths), fill_rule?(path: evenodd|nonzero)}；给了 from_mask 时可省略（缺省用蒙版的 shape），其余情况必填（缺了明确报错）"),
+            param!("shape", Object, false, "几何 {kind:rect|ellipse|polygon|path, bbox, points?, subpaths?(path), d?(path：SVG 路径字符串，与 subpaths 二选一，入口转 subpaths), object_id?(path：引用已有 path 形状对象，与 create_mask 同口径——与 subpaths/d 二选一、坏 id 明确报错；入口展开成内联 subpaths 快照落库并记 resolved_from，fill_rule 以被引用对象为准), fill_rule?(path: evenodd|nonzero)}；给了 from_mask 时可省略（缺省用蒙版的 shape），其余情况必填（缺了明确报错）"),
             param!("feather", Number, false, "羽化过渡宽度（像素，缺省 0）"),
             param!("invert", Boolean, false, "反选（缺省 false）"),
             param!("mode", String, false, "缺省 new = 新建（id 已存在则报错）。add/subtract/intersect 对**已存在的 id** 做**位图布尔合并**（新旧形状光栅化后按 mode 合成、落成 bitmap 选区），不是覆盖；id 不存在时按新形状创建"),
@@ -462,7 +500,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "combine_shapes",
         profile: Profile::Core,
-        summary: "简易布尔（位图路线）：把 2 个以上 draw_shape 形状（rect/ellipse/polygon/path 都吃）的填充覆盖率在像素场里按选区位图布尔公式合成（union=max、subtract=max(0,a−b)、intersect=a·b，左折叠、subtract 第一个是被减数），marching squares 提轮廓 + RDP 简化后落成一个新形状（单环=polygon，多环/带孔=path+evenodd）。与 path_boolean 的分工：那边解析精确但只吃 polygon 且会 tombstone 输入；这边吃全部形状种类且不删输入，代价是轮廓精度受光栅限制（亚像素等值线 + simplify 容差）。结果为空集明确报错。",
+        summary: "简易布尔（位图路线）：把 2 个以上 draw_shape 形状（rect/ellipse/polygon/path 都吃）的填充覆盖率在像素场里按选区位图布尔公式合成（union=max、subtract=max(0,a−b)、intersect=a·b，左折叠、subtract 第一个是被减数），marching squares 提轮廓 + RDP 简化后落成一个新形状（单环=polygon，多环/带孔=path+evenodd）。与 path_boolean 的分工：那边解析精确但只吃 polygon 且会 tombstone 输入；这边吃全部形状种类且不删输入，代价是轮廓精度受光栅限制（亚像素等值线 + simplify 容差）。结果为空集明确报错。engine=vector 时走矢量布尔（平面排列+面分类，吃多环带孔与相切/共线重叠，退化输入明确报错），结果恒落成 path+evenodd。",
         mutating: true,
         params: &[
             param!("object_ids", Array, true, "形状对象 id 数组（至少 2 个；subtract 时第一个是被减数，其余按顺序减）"),
@@ -471,6 +509,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("simplify", Number, false, "轮廓 RDP 简化容差（像素，缺省 0.5；0 = 不简化只去重复点。值越大点越少、轮廓越偏离原边界）"),
             param!("layer_id", String, false, "结果图层（缺省取第一个输入对象的图层）"),
             param!("color", Any, false, "结果填充色（与 draw_shape 同格式；缺省克隆第一个输入对象的样式）"),
+            param!("engine", String, false, "bitmap（缺省，位图路线，存量行为不变）/ vector（矢量布尔：展平后做真多边形布尔，结果恒为 path+evenodd，轮廓精度只受 tolerance 限）"),
+            param!("tolerance", Number, false, "矢量展平容差（像素，缺省 0.15，范围 (0, 5]）；只在 engine=vector 时可传。vector 时 simplify 不适用（传了报错）"),
         ],
     },
     ToolSpec {
@@ -1426,7 +1466,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "add_adjustment",
         profile: Profile::Retouch,
-        summary: "新增调整图层对象（调色）：brightness_contrast / saturation / vibrance / invert / levels（可分通道）/ exposure / white_balance / curves / hsl / posterize / color_balance / split_toning / black_and_white / channel_mixer / gradient_map / shadows_highlights / selective_color / color_lut / red_eye / denoise / lens / perspective",
+        summary: "新增调整图层对象（调色）：brightness_contrast / saturation / vibrance / invert / levels（可分通道）/ exposure / white_balance / curves / hsl / posterize / color_balance / split_toning / black_and_white / channel_mixer / gradient_map / shadows_highlights / selective_color / color_lut / red_eye / denoise / lens / perspective / dehaze / clarity / texture（Presence 三件套，amount −1..1，0=恒等）",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
@@ -1446,6 +1486,21 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             ),
             param!("name", String, false, "对象名（元数据）"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
+        ],
+    },
+    ToolSpec {
+        name: "apply_adjustments",
+        profile: Profile::Retouch,
+        summary: "批量配方：一次按序建多个调整对象（先全量校验，任一项非法则整组不落成、报错指明第几项）。每项 {adjustment_type, params, layer_id?, opacity?, z_index?, name?, object_id?}；项内没给 layer_id 时用顶层 layer_id",
+        mutating: true,
+        params: &[
+            param!(
+                "adjustments",
+                Array,
+                true,
+                "配方数组（1..32 项）：[{adjustment_type, params, layer_id?}, …]，按数组顺序落成"
+            ),
+            param!("layer_id", String, false, "顶层缺省图层（项内 layer_id 优先）"),
         ],
     },
     ToolSpec {

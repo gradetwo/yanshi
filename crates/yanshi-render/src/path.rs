@@ -397,6 +397,347 @@ pub fn path_stroke_contains(subpaths: &[Subpath], stroke_width: f64, p: (f64, f6
     })
 }
 
+/// 控制柄侧（节点编辑用）：`In` 是进入该节点的段的第二控制点，
+/// `Out` 是离开该节点的段的第一控制点。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandleSide {
+    /// 进入侧（上一段的 `c2`）。
+    In,
+    /// 离开侧（下一段的 `c1`）。
+    Out,
+}
+
+impl HandleSide {
+    /// 载荷里的字符串名（`in` / `out`）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            HandleSide::In => "in",
+            HandleSide::Out => "out",
+        }
+    }
+
+    /// 从载荷字符串解析；未知值返回 `None`（调用方报错，不静默降级）。
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "in" => Some(HandleSide::In),
+            "out" => Some(HandleSide::Out),
+            _ => None,
+        }
+    }
+}
+
+/// 一条子路径的**节点（锚点）列**：节点 0 是 `start`，节点 k（≥1）是
+/// `segments[k-1]` 的终点。节点总数恒为 `segments.len() + 1`。
+///
+/// 这是节点级编辑（`edit_path` 工具）的统一下标口径：移动 / 删除按这个
+/// 下标寻址，控制柄按「节点的上一段 / 下一段」寻址（见 [`HandleSide`]）。
+/// 闭合子路径的回首段（末节点 → `start` 的隐式直段）**不是** `segments`
+/// 的一员、没有存储的控制柄；它只在 [`insert_path_node`] /
+/// [`set_path_handle`] 里以「段下标 = `segments.len()`」的虚拟段出现。
+pub fn node_anchors(sub: &Subpath) -> Vec<(f64, f64)> {
+    let mut anchors = Vec::with_capacity(sub.segments.len() + 1);
+    anchors.push(sub.start);
+    for seg in &sub.segments {
+        anchors.push(match *seg {
+            PathSeg::Line { to } => to,
+            PathSeg::Cubic { to, .. } => to,
+        });
+    }
+    anchors
+}
+
+/// 两点线性插值（节点编辑的切分 / 补柄用；纯 f64 四则，确定性）。
+fn lerp_point(a: (f64, f64), b: (f64, f64), t: f64) -> (f64, f64) {
+    (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+}
+
+/// 把 subpaths 序列化成等价的 SVG `d` 字符串（绝对命令 `M/L/C/Z`）。
+///
+/// 数字用 `f64` 的最短往返十进制表示（`Display`，无科学计数法），因此
+/// 把输出再喂给 SVG `d` 解析器能逐位重建同一批 `f64` —— 往返恒等靠这条。
+/// 闭合子路径以 `Z` 收尾；开放子路径不回首。
+pub fn subpaths_to_svg_d(subpaths: &[Subpath]) -> String {
+    let mut out = String::new();
+    for sub in subpaths {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&format!("M {} {}", sub.start.0, sub.start.1));
+        for seg in &sub.segments {
+            match *seg {
+                PathSeg::Line { to } => {
+                    out.push_str(&format!(" L {} {}", to.0, to.1));
+                }
+                PathSeg::Cubic { c1, c2, to } => {
+                    out.push_str(&format!(
+                        " C {} {} {} {} {} {}",
+                        c1.0, c1.1, c2.0, c2.1, to.0, to.1
+                    ));
+                }
+            }
+        }
+        if sub.closed {
+            out.push_str(" Z");
+        }
+    }
+    out
+}
+
+/// 路径总长：各子路径在生产容差 [`FLATTEN_TOL`] 下展平后的折线长之和。
+///
+/// 闭合子路径的展平点列含回首点 ⇒ 回首段长度计入总长（与「这条路径
+/// 描一圈有多长」的直觉一致）。纯函数、同输入同输出（逐位）。
+pub fn subpaths_total_length(subpaths: &[Subpath]) -> f64 {
+    subpaths
+        .iter()
+        .map(|sub| polyline_length(&flatten_subpath(sub, FLATTEN_TOL)))
+        .sum()
+}
+
+/// 移动一个节点到 `to`（绝对坐标）。
+///
+/// **控制柄跟随规则（刚性平移）**：与该节点相连的两个存储控制柄——上一段
+/// 的 `c2`（in 柄）与下一段的 `c1`（out 柄）——按与锚点**相同的位移**
+/// 平移，柄相对锚点的偏移不变、曲线在节点处的切线方向不变；其余节点与
+/// 控制柄逐位不动。闭合子路径的首 / 末节点没有存储的回首段控制柄（回首
+/// 段是隐式直段），只移锚点本身。`to` 非有限或下标越界 ⇒ 报错、不动数据。
+pub fn move_path_node(sub: &mut Subpath, node: usize, to: (f64, f64)) -> Result<(), String> {
+    if !to.0.is_finite() || !to.1.is_finite() {
+        return Err(format!("目标点必须是有限数，得到 ({}, {})", to.0, to.1));
+    }
+    let anchors = node_anchors(sub);
+    let Some(&old) = anchors.get(node) else {
+        return Err(format!(
+            "节点下标 {node} 越界（本子路径共 {} 个节点，下标 0..={}）",
+            anchors.len(),
+            anchors.len().saturating_sub(1)
+        ));
+    };
+    let delta = (to.0 - old.0, to.1 - old.1);
+    if node == 0 {
+        sub.start = to;
+    } else if let PathSeg::Cubic { c2, to: end, .. } = &mut sub.segments[node - 1] {
+        *c2 = (c2.0 + delta.0, c2.1 + delta.1);
+        *end = to;
+    } else if let PathSeg::Line { to: end } = &mut sub.segments[node - 1] {
+        *end = to;
+    }
+    if node < sub.segments.len() {
+        if let PathSeg::Cubic { c1, .. } = &mut sub.segments[node] {
+            *c1 = (c1.0 + delta.0, c1.1 + delta.1);
+        }
+    }
+    Ok(())
+}
+
+/// 在第 `segment` 段的参数 `t`（0 < t < 1）处插入一个新节点，返回新节点
+/// 的下标（恒为 `segment + 1`；闭合回首虚拟段时为旧节点数）。
+///
+/// - 直段：在直线上取插值点，拆成两段直段（几何逐位不变）。
+/// - 三次段：de Casteljau 在 `t` 处切分（几何不变，只换控制点表达）。
+/// - `segment == segments.len()` 且子路径闭合：作用于隐式回首直段
+///   （末节点 → `start`），把插值点落成一段显式直段追加在末尾，
+///   回首点从此是该新节点（`closed` 不变）。
+///
+/// `t` 不在 (0, 1) 开区间、段下标越界 ⇒ 报错、不动数据。
+pub fn insert_path_node(sub: &mut Subpath, segment: usize, t: f64) -> Result<usize, String> {
+    if !t.is_finite() || t <= 0.0 || t >= 1.0 {
+        return Err(format!(
+            "t 必须在 (0, 1) 开区间内（端点就是已有节点），得到 {t}"
+        ));
+    }
+    let anchors = node_anchors(sub);
+    if segment == sub.segments.len() && sub.closed && !sub.segments.is_empty() {
+        // 闭合回首虚拟段：末节点 → start 的隐式直段。
+        let mid = lerp_point(*anchors.last().unwrap(), sub.start, t);
+        sub.segments.push(PathSeg::Line { to: mid });
+        return Ok(anchors.len());
+    }
+    let Some(seg) = sub.segments.get(segment).copied() else {
+        return Err(format!(
+            "段下标 {segment} 越界（本子路径共 {} 段，下标 0..={}）",
+            sub.segments.len(),
+            sub.segments.len().saturating_sub(1)
+        ));
+    };
+    let p0 = anchors[segment];
+    match seg {
+        PathSeg::Line { to } => {
+            let mid = lerp_point(p0, to, t);
+            sub.segments[segment] = PathSeg::Line { to: mid };
+            sub.segments.insert(segment + 1, PathSeg::Line { to });
+        }
+        PathSeg::Cubic { c1, c2, to } => {
+            let q0 = lerp_point(p0, c1, t);
+            let q1 = lerp_point(c1, c2, t);
+            let q2 = lerp_point(c2, to, t);
+            let r0 = lerp_point(q0, q1, t);
+            let r1 = lerp_point(q1, q2, t);
+            let m = lerp_point(r0, r1, t);
+            sub.segments[segment] = PathSeg::Cubic {
+                c1: q0,
+                c2: r0,
+                to: m,
+            };
+            sub.segments
+                .insert(segment + 1, PathSeg::Cubic { c1: r1, c2: q2, to });
+        }
+    }
+    Ok(segment + 1)
+}
+
+/// 删除一个节点。
+///
+/// - 节点 0：丢掉第一段，`segments[0]` 的终点成为新 `start`（`closed` 不变）。
+/// - 末节点：丢掉最后一段（闭合时回首段改为从新末节点隐式连回 `start`）。
+/// - 中间节点：相邻两段合并成一段——两段都是直段 ⇒ 直段；任一段是三次
+///   段 ⇒ 三次段，其 `c1` 取入段的 `c1`（入段是直段时取**被删锚点**），
+///   `c2` 取出段的 `c2`（出段是直段时取**被删锚点**），即合并段的曲线
+///   仍朝被删点弯过去（形状会变，这是删锚点的固有语义，不假装无损）。
+///
+/// 子路径只剩一段时拒绝（删完会剩零段、违反入库校验）；下标越界 ⇒ 报错。
+pub fn delete_path_node(sub: &mut Subpath, node: usize) -> Result<(), String> {
+    let anchors = node_anchors(sub);
+    if node >= anchors.len() {
+        return Err(format!(
+            "节点下标 {node} 越界（本子路径共 {} 个节点，下标 0..={}）",
+            anchors.len(),
+            anchors.len().saturating_sub(1)
+        ));
+    }
+    if sub.segments.len() < 2 {
+        return Err("子路径只剩一段，删节点会让它没有段（先 insert_node 或整条重画）".to_owned());
+    }
+    if node == 0 {
+        let new_start = anchors[1];
+        sub.segments.remove(0);
+        sub.start = new_start;
+        return Ok(());
+    }
+    if node == anchors.len() - 1 {
+        sub.segments.pop();
+        return Ok(());
+    }
+    let incoming = sub.segments[node - 1];
+    let outgoing = sub.segments[node];
+    let deleted = anchors[node];
+    let target = match outgoing {
+        PathSeg::Line { to } => to,
+        PathSeg::Cubic { to, .. } => to,
+    };
+    let merged = match (incoming, outgoing) {
+        (PathSeg::Line { .. }, PathSeg::Line { .. }) => PathSeg::Line { to: target },
+        _ => {
+            let c1 = match incoming {
+                PathSeg::Cubic { c1, .. } => c1,
+                PathSeg::Line { .. } => deleted,
+            };
+            let c2 = match outgoing {
+                PathSeg::Cubic { c2, .. } => c2,
+                PathSeg::Line { .. } => deleted,
+            };
+            PathSeg::Cubic { c1, c2, to: target }
+        }
+    };
+    sub.segments[node - 1] = merged;
+    sub.segments.remove(node);
+    Ok(())
+}
+
+/// 设置一个节点一侧的控制柄到 `to`（绝对坐标）。
+///
+/// - 该侧的段已是三次段 ⇒ 直接改对应控制点（`In` 改上一段 `c2`，
+///   `Out` 改下一段 `c1`）。
+/// - 该侧的段是直段 ⇒ 升格为三次段：给定的柄落在 `to`，另一侧控制点
+///   取该段的 1/3（`In` 侧升格时是 `c1`）/ 2/3（`Out` 侧升格时是 `c2`）
+///   线性插值点——即未动的那一侧保持贴着原直线，曲线只朝给定柄弯。
+/// - 闭合子路径首节点的 `In` / 末节点的 `Out` 作用于隐式回首段：把回首
+///   段落成一段显式三次段（终点 = `start`）追加在末尾，未给的一侧控制
+///   点按同一 1/3 / 2/3 规则取在回首直线上。
+/// - 开放子路径首节点的 `In`、末节点的 `Out` 不存在 ⇒ 明确报错。
+///
+/// `to` 非有限或下标越界 ⇒ 报错、不动数据。
+pub fn set_path_handle(
+    sub: &mut Subpath,
+    node: usize,
+    side: HandleSide,
+    to: (f64, f64),
+) -> Result<(), String> {
+    if !to.0.is_finite() || !to.1.is_finite() {
+        return Err(format!("控制点必须是有限数，得到 ({}, {})", to.0, to.1));
+    }
+    let anchors = node_anchors(sub);
+    if node >= anchors.len() {
+        return Err(format!(
+            "节点下标 {node} 越界（本子路径共 {} 个节点，下标 0..={}）",
+            anchors.len(),
+            anchors.len().saturating_sub(1)
+        ));
+    }
+    match side {
+        HandleSide::Out => {
+            if node < sub.segments.len() {
+                match &mut sub.segments[node] {
+                    PathSeg::Cubic { c1, .. } => *c1 = to,
+                    slot @ PathSeg::Line { .. } => {
+                        let PathSeg::Line { to: end } = *slot else {
+                            unreachable!()
+                        };
+                        *slot = PathSeg::Cubic {
+                            c1: to,
+                            c2: lerp_point(anchors[node], end, 2.0 / 3.0),
+                            to: end,
+                        };
+                    }
+                }
+                Ok(())
+            } else if sub.closed && !sub.segments.is_empty() {
+                let last = anchors[node];
+                sub.segments.push(PathSeg::Cubic {
+                    c1: to,
+                    c2: lerp_point(last, sub.start, 2.0 / 3.0),
+                    to: sub.start,
+                });
+                Ok(())
+            } else {
+                Err(format!(
+                    "节点 {node} 是开放子路径的末节点，没有 out 控制柄（其后没有段）"
+                ))
+            }
+        }
+        HandleSide::In => {
+            if node > 0 {
+                match &mut sub.segments[node - 1] {
+                    PathSeg::Cubic { c2, .. } => *c2 = to,
+                    slot @ PathSeg::Line { .. } => {
+                        let PathSeg::Line { to: end } = *slot else {
+                            unreachable!()
+                        };
+                        *slot = PathSeg::Cubic {
+                            c1: lerp_point(anchors[node - 1], end, 1.0 / 3.0),
+                            c2: to,
+                            to: end,
+                        };
+                    }
+                }
+                Ok(())
+            } else if sub.closed && !sub.segments.is_empty() {
+                let last = *anchors.last().unwrap();
+                sub.segments.push(PathSeg::Cubic {
+                    c1: lerp_point(last, sub.start, 1.0 / 3.0),
+                    c2: to,
+                    to: sub.start,
+                });
+                Ok(())
+            } else {
+                Err(format!(
+                    "节点 {node} 是开放子路径的首节点，没有 in 控制柄（其前没有段）"
+                ))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -690,5 +1031,298 @@ mod tests {
         // 半径非法 ⇒ 恒等（防御性退化；工具层先报错、到不了这里）。
         let out = snap_points_to_polylines(&[(50.0, 5.0)], &guide, 0.0);
         assert_eq!(out, vec![(50.0, 5.0)]);
+    }
+
+    // ---- A1 路径数据面：d 序列化 / 总长 / 节点编辑 ----
+
+    fn sample_curve() -> Subpath {
+        Subpath {
+            start: (0.0, 0.0),
+            segments: vec![
+                PathSeg::Cubic {
+                    c1: (10.0, 40.0),
+                    c2: (50.0, 40.0),
+                    to: (60.0, 0.0),
+                },
+                PathSeg::Line { to: (60.0, 60.0) },
+            ],
+            closed: false,
+        }
+    }
+
+    #[test]
+    fn svg_d_serialization_is_exact_text() {
+        // 数字用最短往返十进制（0.1 的 f64 显示就是 "0.1"），命令绝对、Z 收尾。
+        let subs = vec![
+            Subpath {
+                start: (0.1, -20.5),
+                segments: vec![
+                    PathSeg::Line { to: (30.0, 40.25) },
+                    PathSeg::Cubic {
+                        c1: (1.0, 2.0),
+                        c2: (3.0, 4.0),
+                        to: (5.0, 6.0),
+                    },
+                ],
+                closed: true,
+            },
+            Subpath {
+                start: (7.0, 8.0),
+                segments: vec![PathSeg::Line { to: (9.0, 10.0) }],
+                closed: false,
+            },
+        ];
+        assert_eq!(
+            subpaths_to_svg_d(&subs),
+            "M 0.1 -20.5 L 30 40.25 C 1 2 3 4 5 6 Z M 7 8 L 9 10"
+        );
+        assert_eq!(subpaths_to_svg_d(&[]), "");
+    }
+
+    #[test]
+    fn total_length_matches_pythagoras() {
+        // 3-4-5 直角边：开放折线长 = 30 + 40 = 70（逐位：2500 与 1600 的
+        // IEEE sqrt 分别是 50 的缩放，(30²+0²) 与 (0²+40²) 开方精确）。
+        let open = Subpath {
+            start: (0.0, 0.0),
+            segments: vec![
+                PathSeg::Line { to: (30.0, 0.0) },
+                PathSeg::Line { to: (30.0, 40.0) },
+            ],
+            closed: false,
+        };
+        assert_eq!(subpaths_total_length(std::slice::from_ref(&open)), 70.0);
+        // 闭合后多回首段 (30,40)→(0,0) = 50 ⇒ 120。
+        let mut closed = open;
+        closed.closed = true;
+        assert_eq!(subpaths_total_length(&[closed]), 120.0);
+        // 曲线长介于弦长与控制多边形长之间（Bézier 的凸包性质给出的区间恒等式）。
+        let curve = sample_curve();
+        let len = subpaths_total_length(std::slice::from_ref(&curve));
+        let chord = 60.0 + 60.0;
+        assert!(
+            len > 60.0 && len < chord + 80.0,
+            "曲线长 {len} 应在合理区间"
+        );
+    }
+
+    #[test]
+    fn move_node_translates_handles_rigidly() {
+        let mut sub = sample_curve();
+        // 移节点 1（(60,0)）到 (70, 10)：位移 (+10, +10)。
+        move_path_node(&mut sub, 1, (70.0, 10.0)).unwrap();
+        // 入段 c2 (50,40) 跟随平移到 (60,50)；c1 不属于该节点、不动；
+        // 出段是直段只有终点，终点 (60,60) 不动。
+        assert_eq!(
+            sub.segments[0],
+            PathSeg::Cubic {
+                c1: (10.0, 40.0),
+                c2: (60.0, 50.0),
+                to: (70.0, 10.0),
+            }
+        );
+        assert_eq!(sub.segments[1], PathSeg::Line { to: (60.0, 60.0) });
+        assert_eq!(sub.start, (0.0, 0.0));
+        // 移首节点：start 与出段 c1 一起平移。
+        move_path_node(&mut sub, 0, (-5.0, -5.0)).unwrap();
+        assert_eq!(sub.start, (-5.0, -5.0));
+        assert_eq!(
+            sub.segments[0],
+            PathSeg::Cubic {
+                c1: (5.0, 35.0),
+                c2: (60.0, 50.0),
+                to: (70.0, 10.0),
+            }
+        );
+        // 越界 / 非有限 ⇒ 报错且数据不动。
+        let before = sub.clone();
+        assert!(move_path_node(&mut sub, 3, (0.0, 0.0)).is_err());
+        assert!(move_path_node(&mut sub, 0, (f64::NAN, 0.0)).is_err());
+        assert_eq!(sub, before);
+    }
+
+    #[test]
+    fn insert_node_on_line_is_bitwise_geometry_preserving() {
+        let mut sub = Subpath {
+            start: (0.0, 0.0),
+            segments: vec![PathSeg::Line { to: (30.0, 40.0) }],
+            closed: false,
+        };
+        let len_before = subpaths_total_length(std::slice::from_ref(&sub));
+        let index = insert_path_node(&mut sub, 0, 0.5).unwrap();
+        assert_eq!(index, 1);
+        assert_eq!(
+            node_anchors(&sub),
+            vec![(0.0, 0.0), (15.0, 20.0), (30.0, 40.0)]
+        );
+        // 25 + 25 = 50 逐位成立（3-4-5 缩放）⇒ 插点不改总长一位。
+        assert_eq!(
+            subpaths_total_length(std::slice::from_ref(&sub)),
+            len_before
+        );
+        assert_eq!(len_before, 50.0);
+        // t 在端点 / 越界段 ⇒ 报错。
+        assert!(insert_path_node(&mut sub, 0, 0.0).is_err());
+        assert!(insert_path_node(&mut sub, 0, 1.0).is_err());
+        assert!(insert_path_node(&mut sub, 5, 0.5).is_err());
+    }
+
+    #[test]
+    fn insert_node_on_cubic_keeps_curve_and_lands_on_it() {
+        let mut sub = sample_curve();
+        let p0 = sub.start;
+        let PathSeg::Cubic { c1, c2, to } = sub.segments[0] else {
+            unreachable!()
+        };
+        let len_before = subpaths_total_length(std::slice::from_ref(&sub));
+        let index = insert_path_node(&mut sub, 0, 0.5).unwrap();
+        assert_eq!(index, 1);
+        // 新锚点 = 曲线在 t=0.5 的真值（de Casteljau 中点与 Horner 求值一致到浮点误差内）。
+        let anchor = node_anchors(&sub)[1];
+        let truth = cubic_at(p0, c1, c2, to, 0.5);
+        assert!(
+            (anchor.0 - truth.0).abs() < 1e-9 && (anchor.1 - truth.1).abs() < 1e-9,
+            "新锚点 {anchor:?} 应落在原曲线上（真值 {truth:?}）"
+        );
+        // 切分不改几何：总长变化只许有展平离散误差量级。
+        let len_after = subpaths_total_length(std::slice::from_ref(&sub));
+        assert!(
+            (len_after - len_before).abs() < 0.05,
+            "切分前后总长应近恒等：{len_before} → {len_after}"
+        );
+        // 两半的终点衔接：左半 to == 新锚点 == 右半的隐含起点（右半 to 是原终点）。
+        assert_eq!(node_anchors(&sub)[2], (60.0, 0.0));
+        assert_eq!(sub.segments.len(), 3);
+    }
+
+    #[test]
+    fn insert_node_on_closing_segment_materializes_anchor() {
+        let mut sub = Subpath {
+            start: (0.0, 0.0),
+            segments: vec![
+                PathSeg::Line { to: (40.0, 0.0) },
+                PathSeg::Line { to: (40.0, 40.0) },
+            ],
+            closed: true,
+        };
+        // 回首段 (40,40)→(0,0) 在 t=0.5 插点 (20,20)：成为显式段终点。
+        let index = insert_path_node(&mut sub, 2, 0.5).unwrap();
+        assert_eq!(index, 3);
+        assert_eq!(node_anchors(&sub)[3], (20.0, 20.0));
+        assert!(sub.closed);
+        // 总长不变：回首段被拆成两段共线直段（20√2 + 20√2 = 40√2，浮点容差内）。
+        let len = subpaths_total_length(std::slice::from_ref(&sub));
+        assert!(
+            (len - (80.0 + 40.0 * 2.0f64.sqrt())).abs() < 1e-9,
+            "总长 {len}"
+        );
+    }
+
+    #[test]
+    fn delete_node_merges_neighbours_by_the_documented_rule() {
+        // 直 + 直 ⇒ 直：删中间点后总长 = 首尾直线距离（3-4-5 ⇒ 50）。
+        let mut sub = Subpath {
+            start: (0.0, 0.0),
+            segments: vec![
+                PathSeg::Line { to: (30.0, 0.0) },
+                PathSeg::Line { to: (30.0, 40.0) },
+            ],
+            closed: false,
+        };
+        delete_path_node(&mut sub, 1).unwrap();
+        assert_eq!(sub.segments, vec![PathSeg::Line { to: (30.0, 40.0) }]);
+        assert_eq!(subpaths_total_length(std::slice::from_ref(&sub)), 50.0);
+        // 删首节点：新 start 是原第二节点、丢第一段。
+        let mut sub2 = Subpath {
+            start: (0.0, 0.0),
+            segments: vec![
+                PathSeg::Line { to: (10.0, 0.0) },
+                PathSeg::Line { to: (10.0, 10.0) },
+            ],
+            closed: false,
+        };
+        delete_path_node(&mut sub2, 0).unwrap();
+        assert_eq!(sub2.start, (10.0, 0.0));
+        assert_eq!(sub2.segments.len(), 1);
+        // 直 + 曲合并 ⇒ 三次段，c1 取被删锚点（入段是直段），c2 取出段 c2。
+        let mut sub3 = Subpath {
+            start: (0.0, 0.0),
+            segments: vec![
+                PathSeg::Line { to: (20.0, 0.0) },
+                PathSeg::Cubic {
+                    c1: (30.0, 10.0),
+                    c2: (40.0, 10.0),
+                    to: (50.0, 0.0),
+                },
+            ],
+            closed: false,
+        };
+        delete_path_node(&mut sub3, 1).unwrap();
+        assert_eq!(
+            sub3.segments,
+            vec![PathSeg::Cubic {
+                c1: (20.0, 0.0),
+                c2: (40.0, 10.0),
+                to: (50.0, 0.0),
+            }]
+        );
+        // 只剩一段时拒绝再删；越界拒绝。
+        assert!(delete_path_node(&mut sub3, 0).is_err());
+        let mut sub4 = sample_curve();
+        assert!(delete_path_node(&mut sub4, 9).is_err());
+    }
+
+    #[test]
+    fn set_handle_promotes_lines_and_materializes_closing_segment() {
+        // 直段升格（Out）：c1 = 给定点，c2 = 段上 2/3 点（(0,0)→(30,60) ⇒ (20,40)）。
+        let mut sub = Subpath {
+            start: (0.0, 0.0),
+            segments: vec![PathSeg::Line { to: (30.0, 60.0) }],
+            closed: false,
+        };
+        set_path_handle(&mut sub, 0, HandleSide::Out, (5.0, 30.0)).unwrap();
+        assert_eq!(
+            sub.segments[0],
+            PathSeg::Cubic {
+                c1: (5.0, 30.0),
+                c2: (20.0, 40.0),
+                to: (30.0, 60.0),
+            }
+        );
+        // 已是三次段：In 直接改 c2，其余逐位不动。
+        set_path_handle(&mut sub, 1, HandleSide::In, (25.0, 55.0)).unwrap();
+        assert_eq!(
+            sub.segments[0],
+            PathSeg::Cubic {
+                c1: (5.0, 30.0),
+                c2: (25.0, 55.0),
+                to: (30.0, 60.0),
+            }
+        );
+        // 开放路径首节点 In / 末节点 Out 不存在 ⇒ 明确报错。
+        assert!(set_path_handle(&mut sub, 0, HandleSide::In, (0.0, 0.0)).is_err());
+        assert!(set_path_handle(&mut sub, 1, HandleSide::Out, (0.0, 0.0)).is_err());
+        // 闭合路径首节点 In：回首段落成显式三次段，终点 = start，c1 在回首
+        // 直线的 1/3 处（(40,40)→(0,0) ⇒ (80/3, 80/3)），c2 = 给定点。
+        let mut tri = Subpath {
+            start: (0.0, 0.0),
+            segments: vec![
+                PathSeg::Line { to: (40.0, 0.0) },
+                PathSeg::Line { to: (40.0, 40.0) },
+            ],
+            closed: true,
+        };
+        set_path_handle(&mut tri, 0, HandleSide::In, (10.0, 30.0)).unwrap();
+        assert_eq!(tri.segments.len(), 3);
+        let PathSeg::Cubic { c1, c2, to } = tri.segments[2] else {
+            panic!("回首段应落成三次段，实测 {:?}", tri.segments[2]);
+        };
+        assert_eq!(to, (0.0, 0.0));
+        assert_eq!(c2, (10.0, 30.0));
+        assert!((c1.0 - 80.0 / 3.0).abs() < 1e-9 && (c1.1 - 80.0 / 3.0).abs() < 1e-9);
+        // HandleSide 往返。
+        assert_eq!(HandleSide::parse("in"), Some(HandleSide::In));
+        assert_eq!(HandleSide::parse("out"), Some(HandleSide::Out));
+        assert_eq!(HandleSide::parse("sideways"), None);
     }
 }

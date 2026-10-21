@@ -31,7 +31,7 @@ That resolves the release asset for your platform, **verifies its SHA256** again
 `SHA256SUMS`, unpacks it to `~/.local/share/yanshi/<version>`, and puts `yanshi-serve` and `yanshi-mcp`
 into `~/.local/bin` as thin wrappers.
 
-The tarball is **self-contained**: brushes, brush previews, mediums, palettes, textures, brand assets and
+The tarball is **self-contained**: brushes, brush previews, mediums, palettes, material assets, brand assets and
 the WASM kernel all ship inside it, and the binaries locate them through the package layout
 (`bin/…` next to `share/yanshi/…`), so nothing depends on where you unpack it.
 
@@ -121,7 +121,7 @@ The project is MIT (see `LICENSE`), with two notable exceptions and additions.
 `assets/brushes` holds 196 brushes from **mypaint-brushes 2.0.2**, which is **CC0 1.0**; the upstream `COPYING` is kept
 there as `LICENSE-CC0.txt`.
 
-Paper and canvas textures are being sourced from CC0 providers rather than from MyPaint's own assets, whose
+Paper and canvas grain assets are being sourced from CC0 providers rather than from MyPaint's own assets, whose
 GPL-2.0-or-later licence would have put a second licence in the tree; the earlier copy was removed for that reason,
 so everything shipped today is MIT or CC0.
 
@@ -175,7 +175,7 @@ What it borrows is the gesture in a joke, **making something usable out of whate
   `-mcp`, `-wasm` (browser kernel); `scripts/`, `deploy/`, `docs/design/`.
 - [SECURITY.md](SECURITY.md) — threat model and reporting.
 
-Detailed operational documentation — release packaging, viewer controls, brushes, textures, palettes, compatibility and the rest — lives in [docs/guide.md](docs/guide.md).
+Detailed operational documentation — release packaging, viewer controls, brushes, material assets, palettes, compatibility and the rest — lives in [docs/guide.md](docs/guide.md).
 
 ## License
 

@@ -670,6 +670,9 @@ tile 丢掉场景内容（症状：`(36,15)` 处场景笔迹变成背景白；�
 | 调整 `red_eye` | `strength` 0..1、`threshold` 0.5..10（默认 1 / 2.0） | 红眼消除：红度 `r/(g+b)` 超阈值的像素把 R 压向 max(G,B)，皮肤/砖红不动 |
 | 调整 `denoise` | `luminance`/`detail`/`color`（0..1） | 自引导滤波（√Linear+亮色分离）：Y 保边、Cb/Cr 大半径抹除；抄 Lightroom 三滑杆 |
 | 调整 `lens` | `k1`/`k2`（−1..1）、`tca_r`/`tca_b`（0.9..1.1）、`vignette_strength`（0..1）、`auto_crop`（bool） | 径向多项式畸变+TCA+暗角，单次逆映射；手动滑杆，镜头数据库预留接口 |
+| 调整 `dehaze`（Presence） | `amount` −1..1（0=恒等，缺省 0） | 暗通道先验调整版：大气光在当前缓冲内估计（暗通道最亮 0.1% 均值），正值复用滤镜版恢复内核（omega=amount×0.95、floor 0.1）；负值朝大气光加雾。跨 tile 大气光可能不同（与 LR 全图估计的差距，见包 D README） |
+| 调整 `clarity`（Presence） | `amount` −1..1（0=恒等，缺省 0） | 大半径(16)自引导滤波细节（复用 denoise 的 guided filter）+ 中间调加权；负值柔化（Orton 的一半） |
+| 调整 `texture`（Presence） | `amount` −1..1（0=恒等，缺省 0） | 小半径(3)自引导滤波高频细节，无中间调加权；负值平滑细纹理 |
 | 调整 `perspective` | `quad`（[[x,y]×4]，必须凸）、可选 `k1`/`k2`、`auto_crop`（bool） | 四角拉正：Heckbert 闭式单应（只解 2×2）+ 与镜头畸变合并一次采样；凹四边形拒绝 |
 | 滤镜 `motion_blur` | `angle`/`distance`/`samples` | 沿角度平均 |
 | 滤镜 `sharpen` | `amount`/`radius` | 非锐化掩模 |
@@ -988,7 +991,7 @@ patch 内先建对象再更新（合法）、更新不存在的对象（非法�
 
 ## 二之五之三、效果算子清单与文档一致性（自动校验）
 
-调整 **22 种** / 滤镜 **15 种**（本行由 `crates/yanshi-render/tests/doc_consistency.rs` 校验，
+调整 **25 种** / 滤镜 **15 种**（本行由 `crates/yanshi-render/tests/doc_consistency.rs` 校验，
 数字与 `ADJUSTMENT_NAMES`/`FILTER_NAMES` 的实际长度必须一致；每个名字也必须出现在本文档与两份 README 中）。
 
 > **为什么要自动化**：此前几轮我把「| 调整与滤镜 | N 种调整 / M 种滤镜 |」当作文档同步目标，

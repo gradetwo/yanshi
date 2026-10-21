@@ -1060,3 +1060,210 @@ fn combine_subtract_rect_from_path_base() {
         "path−rect 差集面积应 ≈26400，实测 {area}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 4c. combine_shapes engine=vector（矢量布尔）
+//
+// 质量门在几何层验：回读结果对象的 subpaths、鞋带公式算面积对解析值
+// （≤1%），不靠像素计数（光栅化误差会淹掉矢量精度）。缺省引擎的
+// 存量行为（kind=polygon、无 engine 字段）由回归锁钉住。
+// ---------------------------------------------------------------------------
+
+/// 从 get_object 的响应里递归找 subpaths 并算 evenodd 净面积
+/// （单环时即 |鞋带|；多环按包含深度定符号，与 render 层口径一致）。
+fn stored_path_area(stored: &Value) -> f64 {
+    fn find<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+        match value {
+            Value::Object(map) => {
+                if let Some(found) = map.get(key) {
+                    return Some(found);
+                }
+                map.values().find_map(|v| find(v, key))
+            }
+            Value::Array(items) => items.iter().find_map(|v| find(v, key)),
+            _ => None,
+        }
+    }
+    let subpaths = find(stored, "subpaths").expect("结果对象应带 subpaths");
+    let mut rings: Vec<Vec<(f64, f64)>> = Vec::new();
+    for sub in subpaths.as_array().expect("subpaths 应是数组") {
+        let start = sub["start"].as_array().expect("start 应是数组");
+        let mut ring = vec![(start[0].as_f64().unwrap(), start[1].as_f64().unwrap())];
+        for seg in sub["segments"].as_array().expect("segments 应是数组") {
+            let to = seg["to"].as_array().expect("段应带 to");
+            ring.push((to[0].as_f64().unwrap(), to[1].as_f64().unwrap()));
+        }
+        rings.push(ring);
+    }
+    let signed = |ring: &Vec<(f64, f64)>| -> f64 {
+        let mut sum = 0.0;
+        for i in 0..ring.len() {
+            let (x1, y1) = ring[i];
+            let (x2, y2) = ring[(i + 1) % ring.len()];
+            sum += x1 * y2 - x2 * y1;
+        }
+        sum / 2.0
+    };
+    // 深度：环的一个顶点严格落在几个其它环内（射线法）。
+    let mut total = 0.0;
+    for (i, ring) in rings.iter().enumerate() {
+        let p = ring[0];
+        let mut depth = 0;
+        for (j, other) in rings.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let mut inside = false;
+            for k in 0..other.len() {
+                let (x1, y1) = other[k];
+                let (x2, y2) = other[(k + 1) % other.len()];
+                if (y1 > p.1) != (y2 > p.1) {
+                    let x_at = x1 + (p.1 - y1) / (y2 - y1) * (x2 - x1);
+                    if p.0 < x_at {
+                        inside = !inside;
+                    }
+                }
+            }
+            if inside {
+                depth += 1;
+            }
+        }
+        let area = signed(ring).abs();
+        total += if depth % 2 == 0 { area } else { -area };
+    }
+    total
+}
+
+fn draw_ellipse(workspace: &mut Workspace, doc: &str, id: &str, x: f64, y: f64, w: f64, h: f64) {
+    let made = call(
+        workspace,
+        doc,
+        "draw_shape",
+        &json!({
+            "layer_id": "L",
+            "object_id": id,
+            "data": {
+                "geometry": {"kind": "ellipse", "bbox": {"x": x, "y": y, "w": w, "h": h}},
+                "color": {"r": 200, "g": 30, "b": 30, "a": 255}
+            }
+        }),
+    );
+    assert_eq!(made["ok"], json!(true), "{made}");
+}
+
+#[test]
+fn combine_vector_rect_union_area_is_exact() {
+    let mut ws = Workspace::in_memory(DocumentSettings::default());
+    make_doc(&mut ws, "vU", 120, 120);
+    draw_rect(&mut ws, "vU", "r1", 10.0, 10.0, 40.0, 40.0);
+    draw_rect(&mut ws, "vU", "r2", 30.0, 30.0, 40.0, 40.0);
+    let combined = call(
+        &mut ws,
+        "vU",
+        "combine_shapes",
+        &json!({"object_ids": ["r1", "r2"], "result_id": "u1", "engine": "vector"}),
+    );
+    assert_eq!(combined["ok"], json!(true), "{combined}");
+    assert_eq!(combined["engine"], json!("vector"), "{combined}");
+    // 矢量引擎恒落 path（单环也不降成 polygon）。
+    assert_eq!(combined["kind"], json!("path"), "{combined}");
+    assert_eq!(combined["loops"], json!(1), "{combined}");
+    let stored = call(&mut ws, "vU", "get_object", &json!({"object_id": "u1"}));
+    let area = stored_path_area(&stored);
+    assert!(
+        (area - 2800.0).abs() < 1e-6,
+        "矢量并集面积应精确 2800，实测 {area}"
+    );
+}
+
+#[test]
+fn combine_vector_circle_intersect_within_one_percent() {
+    let mut ws = Workspace::in_memory(DocumentSettings::default());
+    make_doc(&mut ws, "vC", 240, 140);
+    // 两圆 r=50、圆心 (60,60) 与 (120,60)，圆心距 60。
+    draw_ellipse(&mut ws, "vC", "c1", 10.0, 10.0, 100.0, 100.0);
+    draw_ellipse(&mut ws, "vC", "c2", 70.0, 10.0, 100.0, 100.0);
+    let combined = call(
+        &mut ws,
+        "vC",
+        "combine_shapes",
+        &json!({"object_ids": ["c1", "c2"], "mode": "intersect", "result_id": "lens", "engine": "vector"}),
+    );
+    assert_eq!(combined["ok"], json!(true), "{combined}");
+    let stored = call(&mut ws, "vC", "get_object", &json!({"object_id": "lens"}));
+    let area = stored_path_area(&stored);
+    // 解析值：2r²·acos(d/2r) − (d/2)·√(4r²−d²) = 5000·acos(0.6) − 30·80；
+    // acos(0.6) = 0.9272952180016123（常数，避免测试里用平台相关浮点 method）。
+    let analytic = 5000.0 * 0.927_295_218_001_612_3 - 2400.0;
+    let rel = (area - analytic).abs() / analytic;
+    assert!(
+        rel <= 0.01,
+        "圆∩圆面积 {area} vs 解析 {analytic}，相对偏差 {rel:.4} 超 1%"
+    );
+}
+
+#[test]
+fn combine_vector_subtract_keeps_hole() {
+    let mut ws = Workspace::in_memory(DocumentSettings::default());
+    make_doc(&mut ws, "vS", 120, 120);
+    draw_rect(&mut ws, "vS", "base", 20.0, 20.0, 80.0, 80.0);
+    draw_ellipse(&mut ws, "vS", "hole", 45.0, 45.0, 30.0, 30.0);
+    let combined = call(
+        &mut ws,
+        "vS",
+        "combine_shapes",
+        &json!({"object_ids": ["base", "hole"], "mode": "subtract", "result_id": "donut", "engine": "vector"}),
+    );
+    assert_eq!(combined["ok"], json!(true), "{combined}");
+    assert_eq!(combined["loops"], json!(2), "带孔应 2 环：{combined}");
+    hide_object(&mut ws, "vS", "base");
+    hide_object(&mut ws, "vS", "hole");
+    let img = render(&mut ws, "vS", 120, 120);
+    assert!(is_red(px(&img, 120, 28, 28)), "角上应是红");
+    assert!(!is_red(px(&img, 120, 60, 60)), "孔中心应透空");
+}
+
+#[test]
+fn combine_vector_argument_errors_and_default_regression_lock() {
+    let mut ws = Workspace::in_memory(DocumentSettings::default());
+    make_doc(&mut ws, "vE", 120, 120);
+    draw_rect(&mut ws, "vE", "a", 10.0, 10.0, 30.0, 30.0);
+    draw_rect(&mut ws, "vE", "b", 20.0, 20.0, 30.0, 30.0);
+    let cases: Vec<(Value, &str)> = vec![
+        (
+            json!({"object_ids": ["a", "b"], "engine": "magic"}),
+            "未知的 engine",
+        ),
+        (
+            json!({"object_ids": ["a", "b"], "tolerance": 0.1}),
+            "只在 engine=vector 时生效",
+        ),
+        (
+            json!({"object_ids": ["a", "b"], "engine": "vector", "simplify": 0.5}),
+            "simplify 不适用",
+        ),
+        (
+            json!({"object_ids": ["a", "b"], "engine": "vector", "tolerance": 0}),
+            "tolerance 必须是",
+        ),
+    ];
+    for (args, needle) in cases {
+        let failed = call(&mut ws, "vE", "combine_shapes", &args);
+        assert_ne!(failed["ok"], json!(true), "应当失败：{failed}");
+        let text = failed.to_string();
+        assert!(text.contains(needle), "错误应含「{needle}」，实测：{text}");
+    }
+    // 回归锁：不传 engine ⇒ 位图路线原样（polygon、无 engine 字段）。
+    let combined = call(
+        &mut ws,
+        "vE",
+        "combine_shapes",
+        &json!({"object_ids": ["a", "b"], "result_id": "d1", "simplify": 0}),
+    );
+    assert_eq!(combined["ok"], json!(true), "{combined}");
+    assert_eq!(combined["kind"], json!("polygon"), "{combined}");
+    assert!(
+        combined.get("engine").is_none(),
+        "缺省响应不应出现 engine 字段：{combined}"
+    );
+}

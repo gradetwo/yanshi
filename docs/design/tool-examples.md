@@ -3,7 +3,7 @@
 **这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，
 所以它不会与实现漂移；`--check` 模式会在文档过期时失败。
 
-当前共 191 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
+当前共 195 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
 
 ## `abort_changeset`
 
@@ -66,6 +66,28 @@
     "x": 0,
     "y": 0
   }
+}
+```
+
+## `apply_adjustments`
+
+```json
+{
+  "adjustments": [
+    {
+      "adjustment_type": "exposure",
+      "params": {
+        "ev": 0.3
+      }
+    },
+    {
+      "adjustment_type": "vibrance",
+      "params": {
+        "amount": 0.6
+      }
+    }
+  ],
+  "layer_id": "layer_default"
 }
 ```
 
@@ -541,6 +563,21 @@
 }
 ```
 
+## `edit_path`
+
+```json
+{
+  "node": 1,
+  "object_id": "p1",
+  "op": "move_node",
+  "subpath": 0,
+  "to": [
+    120,
+    80
+  ]
+}
+```
+
 ## `erase`
 
 ```json
@@ -753,6 +790,19 @@
 {}
 ```
 
+## `get_histogram`
+
+```json
+{
+  "region": {
+    "h": 150,
+    "w": 200,
+    "x": 0,
+    "y": 0
+  }
+}
+```
+
 ## `get_inflight`
 
 ```json
@@ -786,6 +836,14 @@
 ```json
 {
   "object_id": "o1"
+}
+```
+
+## `get_path`
+
+```json
+{
+  "object_id": "p1"
 }
 ```
 

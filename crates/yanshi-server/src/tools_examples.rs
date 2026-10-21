@@ -97,6 +97,11 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         r#"{"layer_id":"L1","guides":[[[40,200],[120,160],[200,200]]],"color":[0.2,0.15,0.1,1.0],"width":12,"size":22,"density":0.6}"#,
     ),
     ("sample_colors", r#"{"points": [[120, 64], [200, 80]]}"#),
+    // **`get_histogram`**（包 B）：两个参数都可选 ⇒ 示例给一个区域作用域的典型用法 ✓。
+    (
+        "get_histogram",
+        r#"{"region": {"x": 0, "y": 0, "w": 200, "h": 150}}"#,
+    ),
     ("describe_canvas", r#"{}"#),
     ("undo_last", r#"{}"#),
     // 只读查询 ⇒ 不需要任何参数 ✓（落笔之后问一次，界面据此刷新按钮 ✓）。
@@ -126,6 +131,12 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("get_resolved_state", r#"{"object_id":"o1"}"#),
     ("get_object_history", r#"{"object_id":"o1"}"#),
     ("get_object", r#"{"object_id":"o1"}"#),
+    // **A1 路径数据面**：读回 path 几何 / 节点级编辑（先 draw_shape 建 kind=path 对象）。
+    ("get_path", r#"{"object_id":"p1"}"#),
+    (
+        "edit_path",
+        r#"{"object_id":"p1","op":"move_node","subpath":0,"node":1,"to":[120,80]}"#,
+    ),
     ("get_descendants", r#"{"object_id":"o1"}"#),
     ("get_dependency_graph", r#"{"object_id":"o1"}"#),
     ("get_ancestors", r#"{"object_id":"o1"}"#),
@@ -582,6 +593,11 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     (
         "add_adjustment",
         r#"{"layer_id":"layer_default","adjustment_type":"invert"}"#,
+    ),
+    // **`apply_adjustments`**（包 B）：必填只有 `adjustments` 数组；示例两项都走顶层缺省图层 ✓。
+    (
+        "apply_adjustments",
+        r#"{"layer_id":"layer_default","adjustments":[{"adjustment_type":"exposure","params":{"ev":0.3}},{"adjustment_type":"vibrance","params":{"amount":0.6}}]}"#,
     ),
     // **`suggest`**（✓）：唯一必填参数 `patch` 是**非空的工具步骤数组** ✓ ⇒
     // 这里填一步 `add_filter` ✓，**参数就是上面那条示例里验证过的那组** ✓（`invert` 不需要额外参数 ✓）。

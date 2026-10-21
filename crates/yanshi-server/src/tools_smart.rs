@@ -1028,6 +1028,57 @@ pub(super) fn write_smart_blend(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
     Ok(value)
 }
 
+/// 椭圆的归一化距离 `q(p) = sqrt(((x-cx)/rx)² + ((y-cy)/ry)²)`。
+///
+/// `q <= 1` 即在椭圆内；同一条 `q = const` 等值线上的点离边界「一样远」
+/// （按椭圆自身的长短轴度量）。`rx`/`ry` 任一非正时返回无穷大（无内点）。
+pub(super) fn glaze_ellipse_q(cx: f64, cy: f64, rx: f64, ry: f64, px: f64, py: f64) -> f64 {
+    if rx <= 0.0 || ry <= 0.0 {
+        return f64::INFINITY;
+    }
+    let nx = (px - cx) / rx;
+    let ny = (py - cy) / ry;
+    (nx * nx + ny * ny).sqrt()
+}
+
+/// 点是否在给定半轴的椭圆内（`q <= 1`，与 `PrimShape::Ellipse::contains` 同口径）。
+pub(super) fn glaze_ellipse_contains(cx: f64, cy: f64, rx: f64, ry: f64, px: f64, py: f64) -> bool {
+    glaze_ellipse_q(cx, cy, rx, ry, px, py) <= 1.0
+}
+
+/// 罩染逐层内缩后这一层的椭圆半轴；内缩吃掉整个形状时返回 `None`。
+///
+/// 两种口径，差别只在真椭圆（`rx != ry`）上：
+/// - 圆（`rx == ry`，与 `kind_str` 的 1e-9 阈值同口径）：`r - inset_px`，
+///   与旧实现同一算术，逐位一致（回归锁见 tools_tests 的圆恒等式测试）。
+/// - 真椭圆：按归一化距离内缩 —— 半轴同比例缩放 `k = 1 - inset_px/min(rx,ry)`，
+///   于是这一层覆盖的点集恰好是 `{p : q(p) <= k}`：罩染作用量（覆盖层数）
+///   只依赖 `q`，沿长轴与短轴的衰减剖面是同一条 `q` 曲线。若像圆那样对
+///   两轴同减 `inset_px`，短轴会先被吃穿、等 `q` 点的覆盖层数也不再相等。
+pub(super) fn glaze_ellipse_layer_radii(rx: f64, ry: f64, inset_px: f64) -> Option<(f64, f64)> {
+    if rx <= 0.0 || ry <= 0.0 {
+        return None;
+    }
+    if (rx - ry).abs() < 1e-9 {
+        let r = rx - inset_px;
+        if r <= 0.0 {
+            return None;
+        }
+        return Some((r, r));
+    }
+    let shrink = inset_px / rx.min(ry);
+    if shrink >= 1.0 {
+        return None;
+    }
+    let k = 1.0 - shrink;
+    let out = (rx * k, ry * k);
+    if out.0 <= 0.0 || out.1 <= 0.0 {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 /// `smart_glaze`：透明罩染 / 水彩叠色（Glazing / Layer Wash）。
 ///
 /// 在已画好的底稿上罩一层透明色（夕阳暖光、投影冷光、水彩花瓣、腮红血色）。
@@ -1132,6 +1183,12 @@ pub(super) fn write_smart_glaze(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
     }
     let shape_type = parsed.outer.kind_str();
     let poly_pts: Vec<(f64, f64)> = parsed.outer.polygon_points();
+    // 真椭圆（rx≠ry）的几何参数：内缩与点内判定都走椭圆距离场（见
+    // glaze_ellipse_layer_radii），不能落到 bbox / 圆的口径上。
+    let ellipse_params: Option<(f64, f64, f64, f64)> = match &parsed.outer {
+        PrimShape::Ellipse { cx, cy, rx, ry } => Some((*cx, *cy, *rx, *ry)),
+        _ => None,
+    };
     // glaze 的分层内缩要一条边界折线：polygon 用顶点，path 用点数最多的
     // 展平环（主边界，与 edge_soften 同口径）；其它形状为空（走各自的臂）。
     let glaze_pts: Vec<(f64, f64)> = match &parsed.outer {
@@ -1267,6 +1324,21 @@ pub(super) fn write_smart_glaze(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
                     let r = (bx1 - bx0) / 2.0 - inset_px;
                     (ccx - r, ccy - r, ccx + r, ccy + r, Vec::new())
                 }
+                "ellipse" => {
+                    // 真椭圆逐层内缩：半轴按归一化距离同比例收缩（作用量
+                    // 只依赖 q）；内缩吃掉整个椭圆时给出无效标记，该层跳过。
+                    match ellipse_params {
+                        Some((ecx, ecy, erx, ery)) => {
+                            match glaze_ellipse_layer_radii(erx, ery, inset_px) {
+                                Some((lrx, lry)) => {
+                                    (ecx - lrx, ecy - lry, ecx + lrx, ecy + lry, Vec::new())
+                                }
+                                None => (0.0, 0.0, -1.0, -1.0, Vec::new()),
+                            }
+                        }
+                        None => (0.0, 0.0, -1.0, -1.0, Vec::new()),
+                    }
+                }
                 "polygon" | "path" => {
                     let ip = inset_polygon(&glaze_pts, inset_px);
                     if ip.len() < 3 {
@@ -1306,6 +1378,13 @@ pub(super) fn write_smart_glaze(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
             match shape_type {
                 "rect" => px >= lbx0 && px <= lbx1 && py >= lby0 && py <= lby1,
                 "circle" => (px - ccx).powi(2) + (py - ccy).powi(2) <= crad * crad,
+                "ellipse" => {
+                    // 本层 bbox 半宽/半高即内缩后的半轴（bbox 由半轴构造），
+                    // 中心即椭圆中心：按 q<=1 判定，而不是按圆的 crad。
+                    let lrx = (lbx1 - lbx0) / 2.0;
+                    let lry = (lby1 - lby0) / 2.0;
+                    glaze_ellipse_contains(ccx, ccy, lrx, lry, px, py)
+                }
                 "polygon" | "path" => {
                     if lpoly.len() < 3 {
                         return px >= lbx0 && px <= lbx1 && py >= lby0 && py <= lby1;

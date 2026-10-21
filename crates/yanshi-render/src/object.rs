@@ -659,6 +659,43 @@ fn parse_one_subpath(value: &Value, index: usize) -> Result<Subpath, String> {
     })
 }
 
+/// 把 subpaths 序列化回与 [`parse_path_subpaths`] 输入**同构**的 JSON。
+///
+/// 字段形态与入库形态逐字一致（`start` / `closed` / `segments[{op,to|c1,c2,to}]`），
+/// 因此 `parse_path_subpaths(subpaths_to_json(x)) == x` 是逐位恒等式——
+/// `get_path` 读回与节点编辑写回都走这一份序列化，禁止再拼第二套 JSON。
+pub fn subpaths_to_json(subpaths: &[Subpath]) -> Value {
+    Value::Array(
+        subpaths
+            .iter()
+            .map(|sub| {
+                let segments: Vec<Value> = sub
+                    .segments
+                    .iter()
+                    .map(|seg| match *seg {
+                        PathSeg::Line { to } => {
+                            serde_json::json!({"op": "L", "to": [to.0, to.1]})
+                        }
+                        PathSeg::Cubic { c1, c2, to } => {
+                            serde_json::json!({
+                                "op": "C",
+                                "c1": [c1.0, c1.1],
+                                "c2": [c2.0, c2.1],
+                                "to": [to.0, to.1],
+                            })
+                        }
+                    })
+                    .collect();
+                serde_json::json!({
+                    "start": [sub.start.0, sub.start.1],
+                    "closed": sub.closed,
+                    "segments": segments,
+                })
+            })
+            .collect(),
+    )
+}
+
 /// Path 的 base 包围盒 = 全部控制点（start + 每段 c1/c2/to）的包围盒。
 ///
 /// Bézier 曲线恒在其控制多边形凸包内，所以这个盒保守且 O（点数）；
@@ -1687,5 +1724,64 @@ mod tests {
             Some(Bbox::new(0.0, 0.0, 30.0, 30.0))
         );
         assert_eq!(layer_bbox(&state, "layer_missing"), None);
+    }
+
+    #[test]
+    fn subpaths_json_roundtrip_is_bitwise_identity() {
+        // 序列化 → 同一份解析 ⇒ 逐位恒等（Subpath 的 PartialEq 是 f64 ==，
+        // 这里再逐个 to_bits 复核，防 == 把 -0.0/0.0 之类放过去）。
+        let geometry = json!({
+            "fill_rule": "nonzero",
+            "subpaths": [
+                {"start": [0.1, -20.5], "closed": true, "segments": [
+                    {"op": "C", "c1": [1.25, 2.5], "c2": [3.75, 4.125], "to": [5.0, 6.0]},
+                    {"op": "L", "to": [0.1, -20.5]}
+                ]},
+                {"start": [7.0, 8.0], "closed": false, "segments": [
+                    {"op": "L", "to": [9.5, 10.25]}
+                ]}
+            ]
+        });
+        let parsed = parse_path_subpaths(&geometry).expect("载荷应合法");
+        let back = subpaths_to_json(&parsed.subpaths);
+        let reparsed = parse_path_subpaths(&serde_json::json!({
+            "fill_rule": parsed.fill_rule.as_str(),
+            "subpaths": back,
+        }))
+        .expect("序列化产物应能被同一份解析吃回去");
+        assert_eq!(reparsed.fill_rule, parsed.fill_rule);
+        assert_eq!(reparsed.subpaths.len(), parsed.subpaths.len());
+        for (a, b) in parsed.subpaths.iter().zip(reparsed.subpaths.iter()) {
+            assert_eq!(a.start.0.to_bits(), b.start.0.to_bits());
+            assert_eq!(a.start.1.to_bits(), b.start.1.to_bits());
+            assert_eq!(a.closed, b.closed);
+            assert_eq!(a.segments.len(), b.segments.len());
+            for (sa, sb) in a.segments.iter().zip(b.segments.iter()) {
+                match (*sa, *sb) {
+                    (PathSeg::Line { to: ta }, PathSeg::Line { to: tb }) => {
+                        assert_eq!(ta.0.to_bits(), tb.0.to_bits());
+                        assert_eq!(ta.1.to_bits(), tb.1.to_bits());
+                    }
+                    (
+                        PathSeg::Cubic {
+                            c1: a1,
+                            c2: a2,
+                            to: ta,
+                        },
+                        PathSeg::Cubic {
+                            c1: b1,
+                            c2: b2,
+                            to: tb,
+                        },
+                    ) => {
+                        for (pa, pb) in [a1, a2, ta].iter().zip([b1, b2, tb].iter()) {
+                            assert_eq!(pa.0.to_bits(), pb.0.to_bits());
+                            assert_eq!(pa.1.to_bits(), pb.1.to_bits());
+                        }
+                    }
+                    _ => panic!("段类型在往返中变了：{sa:?} → {sb:?}"),
+                }
+            }
+        }
     }
 }

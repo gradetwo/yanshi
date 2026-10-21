@@ -106,6 +106,7 @@ pub mod font;
 pub mod font_atlas;
 pub mod geometry;
 pub mod half;
+pub mod histogram;
 pub mod jpeg;
 pub mod object;
 pub mod paint;
@@ -123,6 +124,7 @@ pub mod selection;
 pub mod svg;
 pub mod thumb;
 pub mod tile;
+pub mod vecbool;
 pub mod vector;
 
 pub use blend::{blend_pixel, over, scale_alpha, BlendMode};
@@ -140,8 +142,9 @@ pub use color::{
 pub use dirty::{invalidated_tiles, plan_dirty, plan_dirty_with_log, DirtyKind, DirtySet};
 pub use filter::{
     apply_adjustment, apply_filter, black_and_white, box_blur, brightness_contrast, channel_mixer,
-    color_balance, color_lut, dehaze, estimate_atmospheric_light, gaussian_blur, gradient_map,
-    invert, levels, saturation, selective_color, shadows_highlights, split_toning, AdjustmentKind,
+    clarity_adjustment, color_balance, color_lut, dehaze, dehaze_adjustment,
+    estimate_atmospheric_light, gaussian_blur, gradient_map, invert, levels, saturation,
+    selective_color, shadows_highlights, split_toning, texture_adjustment, AdjustmentKind,
     FilterKind, ADJUSTMENT_NAMES, FILTER_NAMES, SELECTIVE_COLOR_RANGES,
 };
 pub use geometry::{
@@ -149,6 +152,7 @@ pub use geometry::{
     DEFAULT_SUPERSAMPLE,
 };
 pub use half::{f16_bits_to_f32, f32_to_f16_bits, quantize_f16};
+pub use histogram::{histogram_rgba8, percentile, summarize, ChannelSummary, Histogram};
 pub use jpeg::{apply_orientation, decode_jpeg, exif_orientation, is_jpeg};
 pub use object::{layer_bbox, object_bbox, parse_color, parse_object, Primitive, ShapeKind};
 pub use png::{

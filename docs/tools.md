@@ -21,14 +21,14 @@ canvas. Two stale claims were corrected rather than left to mislead: draw_text's
 item while it renders Chinese today, and this file said convert_to_shape, convert_to_path, split, merge and boolean
 were refused because no path model existed, which stopped being true when the path object model landed.
 
-The tool layer registers **119 core tools**, and with every implemented group enabled there are **179 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
+The tool layer registers **122 core tools**, and with every implemented group enabled there are **183 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
 
 > **完整工具列表**：本文档是散文式概述，不逐个列出全部工具。完整、实时的工具目录（含参数表）由注册表生成，见 `GET /api/tools` 或 MCP 的 `tools/list`。
 
-> **注意这里有两套口径，别混**：上面那两个数字（119 / 179）是**工具注册表**里的条目数，由
+> **注意这里有两套口径，别混**：上面那两个数字（121 / 181）是**工具注册表**里的条目数，由
 > `tool_inventory.rs` 断言。而 **HTTP 面**（`GET /api/tools`）会按启用的 profile 展开，实测是
-> **191 个**（**第 1447 轮实测** `GET /api/tools`（svg Phase 2 补丁 +2 工具后）；曲线/路径一期 +1 工具 `stroke_path`、二期 +1 工具 `combine_shapes`、笔刷曲线二期 +3 工具 `get_brush_dynamics`／`set_brush_curve`／`apply_curve_preset` 后同步更新；`scripts/tool-surface-coverage.mjs` 对账 `docs/guide.md` 用的就是这个数）。
-> 一个工具可能同时在多个 profile 里注册，所以 191 > 179 不是重复注册的 bug ✓。
+> **193 个**（**第 1447 轮实测** `GET /api/tools`（svg Phase 2 补丁 +2 工具后）；曲线/路径一期 +1 工具 `stroke_path`、二期 +1 工具 `combine_shapes`、笔刷曲线二期 +3 工具 `get_brush_dynamics`／`set_brush_curve`／`apply_curve_preset`、A1 路径数据面 +2 工具 `get_path`／`edit_path` 后同步更新；`scripts/tool-surface-coverage.mjs` 对账 `docs/guide.md` 用的就是这个数）。
+> 一个工具可能同时在多个 profile 里注册，所以 193 > 181 不是重复注册的 bug ✓。
 (`analyze_image`, `inpaint_region`, `generate_mask_from_prompt`, `semantic_replace`, `vectorize_stroke`,
 `apply_style_transfer`) is **reserved but not implemented** by the project owner's decision - the provider
 seam and the guarantees it owes are written down in [semantic-tools.md](semantic-tools.md), and no code,
@@ -533,11 +533,12 @@ This file is checked by `crates/yanshi-render/tests/doc_consistency.rs` (every a
 filter name) and `crates/yanshi-server/tests/tool_inventory.rs` (the counts), so it cannot drift
 from the kernel and registry silently.
 
-## Adjustments (22)
+## Adjustments (25)
 
 brightness_contrast, saturation, invert, levels, exposure, white_balance, curves, hsl, posterize,
 color_balance, split_toning, vibrance, black_and_white, channel_mixer, gradient_map,
-shadows_highlights, selective_color, color_lut, red_eye, denoise, lens, perspective.
+shadows_highlights, selective_color, color_lut, red_eye, denoise, lens, perspective,
+dehaze, clarity, texture.
 
 ### 批量落笔：一次调用画 N 笔（第 1359 轮补；外部提问）
 
@@ -635,6 +636,13 @@ ordinary red objects stay untouched.
 `denoise` takes `luminance` / `detail` / `color` (0..1). `lens` takes `k1` / `k2`
 (-1..1), `tca_r` / `tca_b` (0.9..1.1), `vignette_strength` (0..1), `auto_crop` (bool).
 `perspective` takes `quad` ([[x,y]×4], must be convex), optional `k1` / `k2`, `auto_crop`.
+
+Presence trio (Lightroom-style): `dehaze` / `clarity` / `texture` each take a single
+`amount` in -1..1 (0 = exact no-op, the default). `dehaze` (positive) runs a dark-channel
+prior with the atmospheric light estimated inside the render buffer; negative adds haze.
+`clarity` amplifies large-radius (16px) guided-filter detail with midtone weighting;
+negative softens. `texture` amplifies small-radius (3px) guided-filter detail; negative
+smooths fine texture.
 
 `levels` takes an optional per-channel `channel` (`rgb` / `r` / `g` / `b`). `posterize` takes
 `levels` 2..64. `color_balance` takes `shadows` / `midtones` / `highlights` as `[r,g,b]` triples.

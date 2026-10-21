@@ -564,6 +564,210 @@ fn smart_shape_no_holes_backward_compat() {
     assert!(!p.contains(0.0, 0.0));
 }
 
+// ---- smart_glaze 真椭圆（A3：rx≠ry 静默无效果修复）----
+
+/// 端到端跑一次 `smart_glaze`（内存工作区 + 真实笔刷落笔），返回其 JSON
+/// 结果；工具报错时把错误文本带出来（基线下真椭圆正是走这条路）。
+fn glaze_e2e(
+    doc_id: &str,
+    shape: serde_json::Value,
+) -> std::result::Result<serde_json::Value, String> {
+    // 内存工作区缺省 assets_dir=None ⇒ 笔刷一只都找不到（落笔全失败）；
+    // 显式挂上仓库 assets（与 dtimes 测试拼 .myb 路径同口径）。
+    let mut workspace =
+        Workspace::in_memory(crate::document::DocumentSettings::default()).with_assets_dir(Some(
+            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets")),
+        ));
+    workspace
+        .create_document(
+            crate::document::NewDocument::new(doc_id, 300, 300),
+            "test:1",
+            "s",
+        )
+        .map_err(|e| format!("{e:?}"))?;
+    let mut ctx = ToolContext::new(&mut workspace, doc_id, "test:1", "s");
+    write_create_layer(&mut ctx, &json!({"layer_id": "p", "name": "p"}))
+        .map_err(|e| format!("{e:?}"))?;
+    write_smart_glaze(
+        &mut ctx,
+        &json!({
+            "layer_id": "p",
+            "shape": shape,
+            "color": [0.86, 0.24, 0.16, 1.0],
+            "layers": 3,
+            "size": 15.0,
+        }),
+    )
+    .map_err(|e| format!("{e:?}"))
+}
+
+#[test]
+fn smart_glaze_true_ellipse_produces_strokes() {
+    // 真椭圆 rx=100、ry=40：基线下 kind_str 给 "ellipse"，而 glaze 的内缩与
+    // 点内判定只认 "circle"，每层落进缺省无效臂被跳过 ⇒ ok_count=0 报错、
+    // 作用量（成功笔触数）恒为 0。修后必须显著 >0 且每层都有排线。
+    let r = glaze_e2e(
+        "glaze_ellipse_doc",
+        json!({"type": "ellipse", "cx": 150.0, "cy": 150.0, "rx": 100.0, "ry": 40.0}),
+    )
+    .expect("真椭圆 glaze 不应报错");
+    let strokes = r["strokes"].as_u64().unwrap_or(0);
+    assert!(
+        strokes >= 20,
+        "真椭圆作用量（成功笔触数）应显著 >0，实测 {strokes}"
+    );
+    let lines: Vec<u64> = r["layer_lines"]
+        .as_array()
+        .map(|arr| arr.iter().map(|v| v.as_u64().unwrap_or(0)).collect())
+        .unwrap_or_default();
+    assert_eq!(lines.len(), 3, "应有 3 层记录，实测 {lines:?}");
+    assert!(
+        lines.iter().all(|&n| n > 0),
+        "每一层都应有排线（基线下全为 0），实测 {lines:?}"
+    );
+    assert_eq!(r["failed"], json!(0), "不应有失败笔触：{r}");
+    // 变异说明：把 ellipse 臂删掉 ⇒ 每层又落进无效臂 ⇒ 本测试回到基线红。
+}
+
+#[test]
+fn smart_glaze_circle_unchanged_identity() {
+    // 回归锁：rx==ry（圆）时与基线行为逐项一致 —— 同一几何分别用
+    // type=circle 与 type=ellipse(rx==ry) 两种写法给入，结果必须逐项相同；
+    // 再与基线（29e248bd）实测的作用量常数对照锁死。
+    let circle = glaze_e2e(
+        "glaze_circle_doc",
+        json!({"type": "circle", "cx": 150.0, "cy": 150.0, "r": 60.0}),
+    )
+    .expect("圆 glaze 应成功");
+    let as_ellipse = glaze_e2e(
+        "glaze_circle_as_ellipse_doc",
+        json!({"type": "ellipse", "cx": 150.0, "cy": 150.0, "rx": 60.0, "ry": 60.0}),
+    )
+    .expect("rx==ry 的 ellipse 应与圆一致");
+    assert_eq!(circle["layer_lines"], as_ellipse["layer_lines"]);
+    assert_eq!(circle["strokes"], as_ellipse["strokes"]);
+    assert_eq!(circle["layer_dab_alphas"], as_ellipse["layer_dab_alphas"]);
+    // 基线对照常数（29e248bd 未改代码实测，见 A3 包 README）。
+    assert_eq!(circle["strokes"], json!(37), "圆作用量与基线对照");
+    assert_eq!(
+        circle["layer_lines"],
+        json!([13, 13, 11]),
+        "圆逐层排线与基线对照"
+    );
+}
+
+/// 某点被多少层内缩椭圆覆盖 = 罩染在该点的「作用量」（层数越多罩得越浓）。
+/// 与生产路径同口径：逐层 inset = i*size*0.18，半轴走
+/// `glaze_ellipse_layer_radii`，点内判定走 `glaze_ellipse_contains`。
+fn glaze_cover_count(rx: f64, ry: f64, layers: usize, size: f64, px: f64, py: f64) -> usize {
+    (0..layers)
+        .filter(|&i| {
+            let inset_px = i as f64 * size * 0.18;
+            match glaze_ellipse_layer_radii(rx, ry, inset_px) {
+                Some((lrx, lry)) => glaze_ellipse_contains(0.0, 0.0, lrx, lry, px, py),
+                None => false,
+            }
+        })
+        .count()
+}
+
+#[test]
+fn smart_glaze_ellipse_q_profile() {
+    // 归一化距离：长轴上 90/100 与短轴上 36/40 是同一个 q=0.9。
+    let q_long = glaze_ellipse_q(0.0, 0.0, 100.0, 40.0, 90.0, 0.0);
+    let q_short = glaze_ellipse_q(0.0, 0.0, 100.0, 40.0, 0.0, 36.0);
+    assert!(
+        (q_long - 0.9).abs() < 1e-12,
+        "长轴 q 应为 0.9，实测 {q_long}"
+    );
+    assert!(
+        (q_long - q_short).abs() < 1e-12,
+        "等 q 点的 q 必须相等：{q_long} vs {q_short}"
+    );
+    // 同一欧氏距离 90：短轴方向 q=2.25，远大于长轴方向的 0.9。
+    let q_short_far = glaze_ellipse_q(0.0, 0.0, 100.0, 40.0, 0.0, 90.0);
+    assert!(
+        (q_short_far - 2.25).abs() < 1e-12,
+        "短轴 90px 处 q 应为 2.25，实测 {q_short_far}"
+    );
+    // 变异说明：q 误用欧氏距离（不除半轴）⇒ q_short 变 36、q_short_far 与
+    // q_long 相等 ⇒ 上面三条全红。
+}
+
+#[test]
+fn smart_glaze_ellipse_layer_radii_rules() {
+    // 圆：与旧实现同一算术（r − inset），逐位相等，不是近似。
+    assert_eq!(
+        glaze_ellipse_layer_radii(60.0, 60.0, 2.7),
+        Some((60.0 - 2.7, 60.0 - 2.7)),
+        "圆的内缩半轴必须与基线算术逐位一致"
+    );
+    // 第 0 层（inset=0）：真椭圆半轴原样返回，逐位相等。
+    assert_eq!(
+        glaze_ellipse_layer_radii(100.0, 40.0, 0.0),
+        Some((100.0, 40.0))
+    );
+    // 真椭圆内缩后仍是相似椭圆（同比例缩放）：半轴比保持 2.5。
+    let (lrx, lry) = glaze_ellipse_layer_radii(100.0, 40.0, 2.7).expect("第 1 层应存在");
+    assert!(
+        (lrx / lry - 2.5).abs() < 1e-12,
+        "内缩后半轴比应保持 2.5，实测 {} / {}",
+        lrx,
+        lry
+    );
+    // 短轴方向恰好退 inset_px：40 − lry = 2.7（归一化内缩的定义）。
+    assert!(
+        (40.0 - lry - 2.7).abs() < 1e-9,
+        "短轴应恰退 2.7px，实测退 {}",
+        40.0 - lry
+    );
+    // inset 吃掉短轴（>=ry）⇒ 该层不存在。
+    assert_eq!(glaze_ellipse_layer_radii(100.0, 40.0, 40.0), None);
+    assert_eq!(glaze_ellipse_layer_radii(100.0, 40.0, 41.0), None);
+    // 变异说明：两轴同减 inset（圆口径套椭圆）⇒ 半轴比变 97.3/37.3≈2.609
+    // 且短轴退量仍是 2.7 但等 q 覆盖（下一条）先红；本条半轴比断言亦红。
+}
+
+#[test]
+fn smart_glaze_ellipse_cover_count_decays_by_q() {
+    // rx=100、ry=40、3 层、size=15（逐层 inset 0 / 2.7 / 5.4）。
+    let (rx, ry, layers, size) = (100.0, 40.0, 3usize, 15.0f64);
+    // 中心被全部 3 层覆盖。
+    assert_eq!(glaze_cover_count(rx, ry, layers, size, 0.0, 0.0), 3);
+    // 等 q（0.9）点：长轴 (90,0) 与短轴 (0,36) 覆盖层数必须相等（同为 2：
+    // 第 2 层 k=0.865 < 0.9）。这是「衰减只依赖椭圆距离场」的核心恒等式。
+    let c_long = glaze_cover_count(rx, ry, layers, size, 90.0, 0.0);
+    let c_short = glaze_cover_count(rx, ry, layers, size, 0.0, 36.0);
+    assert_eq!(c_long, 2, "长轴 q=0.9 处应覆盖 2 层，实测 {c_long}");
+    assert_eq!(
+        c_long, c_short,
+        "等 q 点覆盖层数必须相等：长轴 {c_long} vs 短轴 {c_short}"
+    );
+    // 等 q（0.5）点同理：(50,0) 与 (0,20) 都被 3 层覆盖。
+    assert_eq!(glaze_cover_count(rx, ry, layers, size, 50.0, 0.0), 3);
+    assert_eq!(glaze_cover_count(rx, ry, layers, size, 0.0, 20.0), 3);
+    // 同一欧氏距离 90：长轴方向 2 层、短轴方向 0 层 ⇒ 长短轴衰减剖面不同。
+    let c_short_far = glaze_cover_count(rx, ry, layers, size, 0.0, 90.0);
+    assert_eq!(c_short_far, 0, "短轴 90px 处应在椭圆外，实测 {c_short_far}");
+    assert!(
+        c_long > c_short_far,
+        "同欧氏距离下长轴作用量应大于短轴：{c_long} vs {c_short_far}"
+    );
+    // 沿长轴单调衰减：0 → 50 → 90 → 99 覆盖层数不增。
+    let prof: Vec<usize> = [0.0, 50.0, 90.0, 99.0]
+        .iter()
+        .map(|&x| glaze_cover_count(rx, ry, layers, size, x, 0.0))
+        .collect();
+    assert!(
+        prof.windows(2).all(|w| w[0] >= w[1]),
+        "长轴剖面应单调不增，实测 {prof:?}"
+    );
+    assert_eq!(prof, vec![3, 3, 2, 1], "长轴剖面数值，实测 {prof:?}");
+    // 变异说明：内缩改回两轴同减 inset ⇒ (0,36) 第 1 层半轴 (97.3,37.3)
+    // 时 36/37.3<1 仍在、第 2 层 (94.6,34.6) 时 36/34.6>1 出局 ⇒ 也是 2，
+    // 但 (90,0) 第 2 层 90/94.6<1 ⇒ 3 层 ⇒ 等 q 恒等式（2==2）变红。
+}
+
 // ---- ③ 方向场 ----
 #[test]
 fn direction_field_guides_angle_wrap() {

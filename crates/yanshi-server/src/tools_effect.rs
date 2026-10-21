@@ -14,6 +14,10 @@ pub(super) fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> R
     // ⇒ **∴ 直接给常量加名字会破坏契约（实测 CI 红 ✓）⇒ **∴ 在这一层放行 ✓**，
     // **∴ 常量保持 14 ✓、 也能接受别名 ✓。**
     let aliased = kind == EffectKind::Filter && matches!(name, "emboss" | "impasto");
+    // **调整别名也要放行**（2026-10-21 包 B）：`vibrance_natural` 是内核 `from_name`
+    // 保留的 Vibrance 旧别名（已落存文档靠它渲染）；规范名 `vibrance` 本就在白名单里。
+    // 此前别名被这一关拒绝 ⇒ 报「内核未实现」⇒ 真 Vibrance 两条路都不可达 ✗。
+    let aliased = aliased || (kind == EffectKind::Adjustment && name == "vibrance_natural");
     if !kind.supported().contains(&name) && !aliased {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
@@ -40,7 +44,12 @@ pub(super) fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> R
     // 参数范围按内核的数学假设逐项校验。注意同名参数在不同效果里含义不同
     // （`radius` 对模糊滤镜是像素、对暗角是归一化半径；`amount` 对饱和度/锐化/噪点各异），
     // 因此必须**按效果名**分别限定，否则会出现「合法参数被拒」或「非法参数放行」。
-    let name = name.to_owned();
+    // 别名按规范名查表（只影响本函数的校验口径，落存的原始名字不动）：
+    // `vibrance_natural` 与 `vibrance` 同一张参数表（amount 0..2）。
+    let name = match name {
+        "vibrance_natural" => "vibrance".to_owned(),
+        other => other.to_owned(),
+    };
     let checks: &[(&str, f64, f64)] = match (kind, name.as_str()) {
         (EffectKind::Adjustment, "brightness_contrast") => {
             &[("brightness", -1.0, 1.0), ("contrast", 0.0, 8.0)]
@@ -79,6 +88,10 @@ pub(super) fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> R
         (EffectKind::Adjustment, "shadows_highlights") => {
             &[("shadows", -1.0, 1.0), ("highlights", -1.0, 1.0)]
         }
+        // Presence 三件套（包 D）：统一单参数 amount −1..1，0 = 恒等（与 shadows_highlights 同口径 ✓）。
+        (EffectKind::Adjustment, "dehaze") => &[("amount", -1.0, 1.0)],
+        (EffectKind::Adjustment, "clarity") => &[("amount", -1.0, 1.0)],
+        (EffectKind::Adjustment, "texture") => &[("amount", -1.0, 1.0)],
         (EffectKind::Adjustment, "curves") => &[],
         (EffectKind::Adjustment, "hsl") => &[
             ("hue", -180.0, 180.0),
@@ -209,8 +222,10 @@ pub(super) fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> R
             }
         }
     }
-    if name == "dehaze" {
+    if name == "dehaze" && kind == EffectKind::Filter {
         // 大气光必须是调用方给定的 [r,g,b]（滤镜内部不做全局估计，否则分块 != 整幅）。
+        // **只限滤镜版**：调整版 dehaze（包 D）在渲染层内估计大气光、不收 air 参数，
+        // 若不分 kind 拦截，调整版会被误要求 air（vibrance 式跨层口径不一致）✗。
         let air = object.get("air").ok_or_else(|| {
             YanshiError::new(
                 ErrorCode::InvalidArgument,
@@ -695,4 +710,52 @@ pub(super) fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> R
         }
     }
     Ok(())
+}
+
+/// **Presence 三件套的服务端校验（包 D）**：名单放行 + amount 范围 + 调整版 dehaze 不收 air。
+#[cfg(test)]
+mod presence_validation_tests {
+    use super::super::EffectKind;
+    use super::validate_effect;
+    use serde_json::json;
+
+    #[test]
+    fn presence_adjustments_pass_server_validation() {
+        for name in ["dehaze", "clarity", "texture"] {
+            assert!(
+                validate_effect(EffectKind::Adjustment, name, &json!({"amount": 0.5})).is_ok(),
+                "{name} amount=0.5 应通过服务端校验"
+            );
+            assert!(
+                validate_effect(EffectKind::Adjustment, name, &json!({"amount": -1.0})).is_ok(),
+                "{name} amount=-1 应通过（边界）"
+            );
+            assert!(
+                validate_effect(EffectKind::Adjustment, name, &json!({"amount": 1.5})).is_err(),
+                "{name} amount=1.5 应被服务端拒绝"
+            );
+        }
+    }
+
+    #[test]
+    fn adjustment_dehaze_does_not_require_air_but_filter_dehaze_does() {
+        // **回归守卫**：air 必填检查若不分 kind，调整版 dehaze 会被误拒（vibrance 式口径不一致）✗。
+        assert!(
+            validate_effect(EffectKind::Adjustment, "dehaze", &json!({"amount": 0.5})).is_ok(),
+            "调整版 dehaze 不应要求 air"
+        );
+        assert!(
+            validate_effect(EffectKind::Filter, "dehaze", &json!({})).is_err(),
+            "滤镜版 dehaze 仍应要求 air"
+        );
+        assert!(
+            validate_effect(
+                EffectKind::Filter,
+                "dehaze",
+                &json!({"air": [0.85, 0.88, 0.9]})
+            )
+            .is_ok(),
+            "滤镜版 dehaze 给了 air 应通过"
+        );
+    }
 }

@@ -73,6 +73,50 @@ pub(super) fn write_create_selection(ctx: &mut ToolContext<'_>, args: &Value) ->
         .or_else(|| shape.get("type"))
         .and_then(Value::as_str)
         == Some("path");
+    // A1：`shape:{kind:"path", object_id}` 引用已有 path 对象建选区——与
+    // `create_mask` 的 object_id **同一口径**：二选一（与 subpaths / d 同给
+    // 报错）、引用先验存在性 / 存活 / 是 path 形状（复用蒙版的同一份
+    // `validate_mask_path_shape`，不许写第二套）、坏 id 明确报错不静默回退。
+    // 与蒙版的差别只在落库形态：蒙版在渲染期按引用现解（`mask_path_coverage`
+    // 拿得到文档状态），而选区覆盖率走无状态的 `SelectionShape::from_value`
+    // ⇒ 引用在这里**展开成内联 subpaths 快照**落库（另记 `resolved_from`
+    // 留痕来源），渲染口径因此与内联写法逐像素同源；被引用对象之后再改，
+    // 本选区不跟随（要跟随请用 create_mask 的引用形态）。
+    if path_kind && shape.get("object_id").is_some() {
+        if shape.get("subpaths").is_some() || shape.get("d").is_some() {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(
+                    "shape 的 object_id 与 subpaths / d 只能给一个（二选一）".to_owned(),
+                ),
+            ));
+        }
+        validate_mask_path_shape(ctx, &shape)?;
+        let object_id = shape
+            .get("object_id")
+            .and_then(Value::as_str)
+            .expect("上面已确认 object_id 存在")
+            .to_owned();
+        let state = document_state(ctx)?;
+        let object = state
+            .objects
+            .get(&object_id)
+            .expect("validate_mask_path_shape 已验存在性");
+        let yanshi_render::object::Primitive::Shape {
+            subpaths,
+            fill_rule,
+            ..
+        } = yanshi_render::object::parse_object(object)
+        else {
+            unreachable!("validate_mask_path_shape 已验是 path 形状")
+        };
+        shape = json!({
+            "kind": "path",
+            "fill_rule": fill_rule.as_str(),
+            "subpaths": yanshi_render::object::subpaths_to_json(&subpaths),
+            "resolved_from": object_id,
+        });
+    }
     if path_kind && shape.get("object_id").is_none() {
         if let Some(d) = shape.get("d").and_then(Value::as_str).map(str::to_owned) {
             if shape.get("subpaths").is_some() {

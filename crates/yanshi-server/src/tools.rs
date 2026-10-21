@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 119 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 122 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -33,7 +33,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（119 个）。
+    /// 核心层：默认注册（122 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -608,7 +608,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，119 个）。
+    /// 核心层（默认注册，122 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1561,6 +1561,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
     match spec.name {
         "sample_color" => read_sample_color(ctx, args),
         "sample_colors" => read_sample_colors(ctx, args),
+        "get_histogram" => read_get_histogram(ctx, args),
         "get_document" => read_get_document(ctx, args),
         "set_anchor" => write_set_anchor(ctx, args),
         "get_anchors" => read_get_anchors(ctx, args),
@@ -1572,6 +1573,8 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "describe_canvas" => read_describe_canvas(ctx),
         "list_objects" => read_list_objects(ctx, args),
         "get_object" => read_get_object(ctx, args),
+        "get_path" => read_get_path(ctx, args),
+        "edit_path" => write_edit_path(ctx, args),
         "render_region" => read_render_region(ctx, args),
         "collect_garbage" => read_collect_garbage(ctx, args),
         "create_layer" => write_create_layer(ctx, args),
@@ -1680,6 +1683,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "resolve_annotation" => write_resolve_annotation(ctx, args, AnnotationStatus::Resolved),
         "reject_annotation" => write_resolve_annotation(ctx, args, AnnotationStatus::Rejected),
         "add_adjustment" => write_add_effect(ctx, args, EffectKind::Adjustment),
+        "apply_adjustments" => write_apply_adjustments(ctx, args),
         "add_filter" => write_add_effect(ctx, args, EffectKind::Filter),
         "update_adjustment" => write_update_effect(ctx, args, EffectKind::Adjustment),
         "update_filter" => write_update_effect(ctx, args, EffectKind::Filter),
@@ -5388,6 +5392,14 @@ fn write_path_split(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 /// 闭合环的 RDP 简化（`combine_shapes` 用）：把环摊成「点列 + 首点」的开链
 /// 喂 `svg::rdp`，再去掉结尾的重复首点。简化后唯一点 < 3（环塌了）⇒ 回退
 /// 原环——**保形优先于省点**，不许为了少几个点把结果形状弄没。
+type PrimParts = (
+    yanshi_render::object::ShapeKind,
+    yanshi_core::Bbox,
+    Vec<(f64, f64)>,
+    Vec<yanshi_render::path::Subpath>,
+    yanshi_render::path::FillRule,
+);
+
 fn simplify_closed_ring(ring: &[(f64, f64)], eps: f64) -> Vec<(f64, f64)> {
     if eps <= 0.0 || ring.len() < 4 {
         return ring.to_vec();
@@ -5449,6 +5461,37 @@ fn write_combine_shapes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
             "未知的 mode {mode}（可用：union / subtract / intersect）"
         )));
     }
+    // ---- 引擎选择：缺省 bitmap（存量行为逐位不变）；vector 走真矢量布尔 ----
+    let engine = args
+        .get("engine")
+        .and_then(Value::as_str)
+        .unwrap_or("bitmap");
+    if !matches!(engine, "bitmap" | "vector") {
+        return Err(invalid(format!(
+            "未知的 engine {engine}（可用：bitmap（缺省）/ vector）"
+        )));
+    }
+    let tolerance = args
+        .get("tolerance")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.15);
+    if engine == "vector" {
+        if !tolerance.is_finite() || tolerance <= 0.0 || tolerance > 5.0 {
+            return Err(invalid(format!(
+                "tolerance 必须是 (0, 5] 的数（矢量展平容差，像素），得到 {tolerance}"
+            )));
+        }
+        if args.get("simplify").is_some() {
+            return Err(invalid(
+                "engine=vector 时 simplify 不适用（矢量路径不做 RDP 简化，轮廓精度由 tolerance 决定）"
+                    .to_owned(),
+            ));
+        }
+    } else if args.get("tolerance").is_some() {
+        return Err(invalid(
+            "tolerance 只在 engine=vector 时生效——请同时传 engine:\"vector\"".to_owned(),
+        ));
+    }
     let simplify = args.get("simplify").and_then(Value::as_f64).unwrap_or(0.5);
     if !simplify.is_finite() || simplify < 0.0 {
         return Err(invalid(format!(
@@ -5456,13 +5499,6 @@ fn write_combine_shapes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
         )));
     }
     // ---- 逐个输入解析成 Primitive，并累出共同的填充外延 ----
-    type PrimParts = (
-        yanshi_render::object::ShapeKind,
-        yanshi_core::Bbox,
-        Vec<(f64, f64)>,
-        Vec<yanshi_render::path::Subpath>,
-        yanshi_render::path::FillRule,
-    );
     let mut prims: Vec<PrimParts> = Vec::new();
     let mut extent: Option<(f64, f64, f64, f64)> = None;
     let mut first_layer: Option<String> = None;
@@ -5543,6 +5579,18 @@ fn write_combine_shapes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
                 }
             }
         }
+    }
+    if engine == "vector" {
+        return write_combine_shapes_vector(
+            ctx,
+            args,
+            &prims,
+            mode,
+            tolerance,
+            &object_ids,
+            first_layer,
+            first_data,
+        );
     }
     // ---- 像素场：整数对齐，面积上限明确报错（不许静默截断） ----
     let (ex0, ey0, ex1, ey1) = extent.expect("至少两个输入已累出外延");
@@ -5718,6 +5766,207 @@ fn write_combine_shapes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
         "object_id": result_id,
         "mode": mode,
         "kind": kind_name,
+        "loops": kept.len(),
+        "points_total": points_total,
+        "inputs_kept": true,
+    }))
+}
+
+/// **矢量布尔 `combine_shapes`（engine=vector）**：输入形状先按
+/// `tolerance` 自适应展平成环组（rect 直取四角、ellipse 走 κ 圆弧
+/// Bézier 展平、polygon 直取点列、path 逐子路径展平，各自保留填充
+/// 规则），再经 `vecbool::boolean_rings`（平面排列 + 面分类）左折叠
+/// 布尔，结果**恒落成 path + evenodd**（单环也不降成 polygon——矢量
+/// 引擎的契约是真 path 输出，孔洞靠 evenodd 保留）。与位图路线的
+/// 分工：那边吃全部形状、精度受光栅限；这边轮廓是真折线，精度只
+/// 受展平容差限，代价是边数有上限（见 vecbool 的 TooComplex）。
+#[allow(clippy::too_many_arguments)]
+fn write_combine_shapes_vector(
+    ctx: &mut ToolContext<'_>,
+    args: &Value,
+    prims: &[PrimParts],
+    mode: &str,
+    tolerance: f64,
+    object_ids: &[String],
+    first_layer: Option<String>,
+    first_data: Option<Value>,
+) -> Result<Value> {
+    use yanshi_render::path::{flatten_subpath, FillRule, PathSeg, Subpath};
+    use yanshi_render::polygon::BooleanMode;
+    let invalid = |message: String| {
+        YanshiError::new(ErrorCode::InvalidArgument, ErrorContext::detail(message))
+    };
+    let bool_mode = match mode {
+        "union" => BooleanMode::Union,
+        "subtract" => BooleanMode::Subtract,
+        _ => BooleanMode::Intersect,
+    };
+    // 一个输入形状 → 环组 + 它自己的填充规则。
+    let rings_of = |prim: &PrimParts| -> (Vec<Vec<(f64, f64)>>, FillRule) {
+        let (kind, bbox, points, subpaths, fill_rule) = prim;
+        match kind {
+            yanshi_render::object::ShapeKind::Rect => (
+                vec![vec![
+                    (bbox.x, bbox.y),
+                    (bbox.x + bbox.w, bbox.y),
+                    (bbox.x + bbox.w, bbox.y + bbox.h),
+                    (bbox.x, bbox.y + bbox.h),
+                ]],
+                *fill_rule,
+            ),
+            yanshi_render::object::ShapeKind::Ellipse => {
+                // κ 圆弧（与既有 circle 构造同一常数），展平容差即调用方给的 tolerance。
+                const KAPPA: f64 = 0.552_284_749_830_79;
+                let (cx, cy) = (bbox.x + bbox.w / 2.0, bbox.y + bbox.h / 2.0);
+                let (rx, ry) = (bbox.w / 2.0, bbox.h / 2.0);
+                let (dx, dy) = (rx * KAPPA, ry * KAPPA);
+                let sub = Subpath {
+                    start: (cx + rx, cy),
+                    closed: true,
+                    segments: vec![
+                        PathSeg::Cubic {
+                            c1: (cx + rx, cy + dy),
+                            c2: (cx + dx, cy + ry),
+                            to: (cx, cy + ry),
+                        },
+                        PathSeg::Cubic {
+                            c1: (cx - dx, cy + ry),
+                            c2: (cx - rx, cy + dy),
+                            to: (cx - rx, cy),
+                        },
+                        PathSeg::Cubic {
+                            c1: (cx - rx, cy - dy),
+                            c2: (cx - dx, cy - ry),
+                            to: (cx, cy - ry),
+                        },
+                        PathSeg::Cubic {
+                            c1: (cx + dx, cy - ry),
+                            c2: (cx + rx, cy - dy),
+                            to: (cx + rx, cy),
+                        },
+                    ],
+                };
+                (vec![flatten_subpath(&sub, tolerance)], *fill_rule)
+            }
+            yanshi_render::object::ShapeKind::Polygon => (vec![points.clone()], *fill_rule),
+            yanshi_render::object::ShapeKind::Path => (
+                subpaths
+                    .iter()
+                    .map(|sub| flatten_subpath(sub, tolerance))
+                    .collect(),
+                *fill_rule,
+            ),
+        }
+    };
+    // 左折叠（subtract 第一个是被减数，与位图路线同序）。
+    // `acc` 是当前累积区域；空集单独立旗（环组为空既是合法中间态、
+    // 也可能是最终结果，不能与「还没开始」混淆）。
+    type RingSet = (Vec<Vec<(f64, f64)>>, FillRule);
+    let mut acc: Option<RingSet> = None;
+    let mut acc_empty = false;
+    for prim in prims {
+        let (rings, rule) = rings_of(prim);
+        if acc_empty {
+            // 空 ∪ X = X；空 − X = 空；空 ∩ X = 空。
+            if bool_mode == BooleanMode::Union {
+                acc = Some((rings, rule));
+                acc_empty = false;
+            }
+            continue;
+        }
+        let Some((acc_rings, acc_rule)) = acc.take() else {
+            acc = Some((rings, rule));
+            continue;
+        };
+        let out =
+            yanshi_render::vecbool::boolean_rings(&acc_rings, acc_rule, &rings, rule, bool_mode)
+                .map_err(|error| invalid(format!("矢量布尔无法进行：{}", error.detail())))?;
+        if out.is_empty() {
+            acc = Some((Vec::new(), FillRule::EvenOdd));
+            acc_empty = true;
+        } else {
+            // 布尔输出统一按 evenodd 解释（vecbool 的输出契约）。
+            acc = Some((out, FillRule::EvenOdd));
+        }
+    }
+    let kept: Vec<Vec<(f64, f64)>> = match acc {
+        Some((rings, _)) if !acc_empty => rings,
+        _ => {
+            return Err(YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!(
+                    "布尔结果为空集（{} 的 {mode}）—— 空集没有可以落成对象的轮廓",
+                    object_ids.join(", ")
+                )),
+            ));
+        }
+    };
+    // ---- 落成一个 path 形状对象（样式克隆第一个输入，与位图路线同例） ----
+    let points_total: usize = kept.iter().map(Vec::len).sum();
+    let result_id = args
+        .get("result_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("combine_{}", yanshi_core::Ulid::new().encode()));
+    let layer_id = args
+        .get("layer_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or(first_layer)
+        .unwrap_or_else(|| "layer_default".to_owned());
+    let (min_x, min_y, max_x, max_y) = kept.iter().flat_map(|ring| ring.iter()).fold(
+        (
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ),
+        |(a, b, c, d), (x, y)| (a.min(*x), b.min(*y), c.max(*x), d.max(*y)),
+    );
+    let result_bbox = json!({"x": min_x, "y": min_y, "w": max_x - min_x, "h": max_y - min_y});
+    let subpaths_json: Vec<Value> = kept
+        .iter()
+        .map(|ring| {
+            json!({
+                "start": [ring[0].0, ring[0].1],
+                "closed": true,
+                "segments": ring[1..].iter().map(|(x, y)| json!({"op": "L", "to": [x, y]})).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let geometry = json!({
+        "kind": "path",
+        "fill_rule": "evenodd",
+        "subpaths": subpaths_json,
+        "bbox": result_bbox.clone(),
+    });
+    yanshi_render::object::parse_path_subpaths(&geometry)
+        .map_err(|reason| invalid(format!("内部错误：合成的 path 几何未通过校验：{reason}")))?;
+    let mut data = first_data.unwrap_or_else(|| json!({}));
+    if !data.is_object() {
+        data = json!({});
+    }
+    if let Some(map) = data.as_object_mut() {
+        map.remove("nodes");
+        map.remove("points");
+        map.remove("closed");
+    }
+    if let Some(color) = args.get("color") {
+        data["color"] = color.clone();
+    }
+    data["geometry"] = geometry;
+    data["bbox"] = result_bbox;
+    ctx.commit(
+        AtomKind::CreateObject,
+        json!({"object_id": result_id, "layer_id": layer_id, "type": "shape", "data": data}),
+    )?;
+    Ok(json!({
+        "ok": true,
+        "object_id": result_id,
+        "mode": mode,
+        "engine": "vector",
+        "tolerance": tolerance,
+        "kind": "path",
         "loops": kept.len(),
         "points_total": points_total,
         "inputs_kept": true,
@@ -9668,6 +9917,163 @@ fn write_add_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind) -
     )?;
     let region = region_of(&result);
     finish_mutation(ctx, &result, region)
+}
+
+/// **批量配方 `apply_adjustments`**（包 B，2026-10-21）：一次调用按序建多个调整对象。
+///
+/// **原子性口径**：先**全量校验**（形状／图层存在／`validate_effect`／`object_id` 不冲突），
+/// 任一项非法 ⇒ **整组不落成**，且错误指明是第几项、什么错；全合法才进入提交阶段。
+/// 提交阶段的 z 序按配方顺序在同层内依次递增 ⇒ 落成顺序与配方顺序一致。
+/// （提交阶段若仍失败——例如与并发写入撞 id——已提交的前项不回滚；这一点在响应语义里
+/// 如实标注为「校验原子」而非「事务原子」。）
+fn write_apply_adjustments(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let items = require_array(args, "adjustments")?;
+    if items.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("adjustments 不能为空"),
+        ));
+    }
+    if items.len() > 32 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("一次最多 32 项调整（收到 {}）", items.len())),
+        ));
+    }
+    let default_layer = optional_str(args, "layer_id");
+    let state = document_state(ctx)?;
+    // ---- 第一阶段：全量校验（这一段一个原子都不提交）----
+    struct PreparedAdjustment {
+        layer_id: String,
+        name: String,
+        params: Value,
+        opacity: f64,
+        object_id: String,
+        label: Option<String>,
+        z_index: Option<i64>,
+    }
+    let mut prepared: Vec<PreparedAdjustment> = Vec::with_capacity(items.len());
+    let mut seen_ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (index, item) in items.iter().enumerate() {
+        // 错误统一包上「第几项」，保留原始错误码；detail 缺失时用错误码兜底，不许静默。
+        let wrap = |error: YanshiError| {
+            let detail = error
+                .context
+                .detail
+                .clone()
+                .unwrap_or_else(|| format!("{:?}", error.code));
+            YanshiError::new(
+                error.code,
+                ErrorContext::detail(format!(
+                    "adjustments[{index}]（第 {} 项）非法：{detail}",
+                    index + 1
+                )),
+            )
+        };
+        let Some(item_object) = item.as_object() else {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "adjustments[{index}]（第 {} 项）必须是对象 {{adjustment_type, params, layer_id?}}",
+                    index + 1
+                )),
+            ));
+        };
+        let item_args = Value::Object(item_object.clone());
+        let layer_id = optional_str(&item_args, "layer_id")
+            .or_else(|| default_layer.clone())
+            .ok_or_else(|| {
+                wrap(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("缺少 layer_id（项内与顶层都没给）"),
+                ))
+            })?;
+        if !state.layers.contains_key(&layer_id) {
+            return Err(wrap(
+                YanshiError::new(
+                    ErrorCode::ReferenceNotFound,
+                    ErrorContext::detail(format!("图层 {layer_id} 不存在")),
+                )
+                .with_layer(layer_id.clone()),
+            ));
+        }
+        let name = require_str(&item_args, "adjustment_type").map_err(wrap)?;
+        let mut params = item.get("params").cloned().unwrap_or_else(|| json!({}));
+        if let Value::Object(map) = &mut params {
+            resolve_lut_path(&name, map).map_err(wrap)?;
+            map.remove("path");
+        }
+        validate_effect(EffectKind::Adjustment, &name, &params).map_err(wrap)?;
+        let object_id = optional_str(&item_args, "object_id")
+            .unwrap_or_else(|| format!("obj_{}", yanshi_core::Ulid::new().encode()));
+        if state.objects.contains_key(&object_id) || !seen_ids.insert(object_id.clone()) {
+            return Err(wrap(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("object_id {object_id} 已存在或在配方内重复")),
+            )));
+        }
+        prepared.push(PreparedAdjustment {
+            layer_id,
+            name,
+            params,
+            opacity: item
+                .get("opacity")
+                .and_then(Value::as_f64)
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0),
+            object_id,
+            label: optional_str(&item_args, "name"),
+            z_index: item.get("z_index").and_then(Value::as_i64),
+        });
+    }
+    // ---- 第二阶段：按序提交（z 在同层内依次递增，保证落成顺序 = 配方顺序）----
+    let mut next_z: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+    for object in state.alive_objects() {
+        let entry = next_z.entry(object.layer_id.clone()).or_insert(i64::MIN);
+        *entry = (*entry).max(object.z_index);
+    }
+    let mut object_ids: Vec<String> = Vec::with_capacity(prepared.len());
+    let mut last_result = None;
+    for item in &prepared {
+        let z_index = match item.z_index {
+            Some(z_index) => z_index,
+            None => {
+                let entry = next_z.entry(item.layer_id.clone()).or_insert(0);
+                *entry += 1;
+                *entry
+            }
+        };
+        let mut data = json!({
+            "adjustment_type": item.name,
+            "params": item.params,
+            "opacity": item.opacity,
+        });
+        if let Some(label) = &item.label {
+            data["name"] = json!(label);
+        }
+        let result = ctx.commit(
+            AtomKind::CreateObject,
+            json!({
+                "object_id": item.object_id,
+                "layer_id": item.layer_id,
+                "type": "adjustment",
+                "z_index": z_index,
+                "data": data,
+            }),
+        )?;
+        object_ids.push(item.object_id.clone());
+        last_result = Some(result);
+    }
+    let last = last_result.expect("已校验非空，必有至少一项");
+    let region = region_of(&last);
+    let mut value = finish_mutation(ctx, &last, region)?;
+    value["created"] = json!(object_ids.len());
+    value["object_ids"] = json!(object_ids);
+    value["adjustments_applied"] = json!(prepared
+        .iter()
+        .map(|item| item.name.clone())
+        .collect::<Vec<_>>());
+    Ok(value)
 }
 
 fn write_update_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind) -> Result<Value> {
@@ -17867,6 +18273,10 @@ fn object_type_name(object_type: ObjectType) -> &'static str {
 #[path = "tools_pathd.rs"]
 mod tools_pathd;
 use tools_pathd::*;
+// **A1 路径数据面**：`get_path` 读回 + `edit_path` 节点级编辑（几何在渲染层纯函数）。
+#[path = "tools_pathdata.rs"]
+mod tools_pathdata;
+use tools_pathdata::*;
 // **Phase 2 拆分**（色彩体系规划）：蒙版工具已搬到「tools_mask.rs」（纯搬运，行为零变化）
 #[path = "tools_mask.rs"]
 mod tools_mask;
