@@ -3708,3 +3708,21 @@ gh auth status 2>&1 | head -4           # API 侧是否 timeout
 **⇒ ⇒ ⇒ 而 `server --lib` 从 123 涨到 **132**（**+9 测试**）✓
 
 **⇒ 本场累计**：**二十八个完整绿的 run** ✓
+
+## ✅✅ **第二十九个绿 run**：**六个补丁一次过**（第 1544 轮，本场最大一批）
+
+**⇒ 那一批**：**6 个独立补丁、+2566 行、19 文件、+33 测试** ⇒ **12 绿 / 0 红** ✓✓
+
+| 包 | 内容 |
+|---|---|
+| C | `shadows_highlights` **显示空间错位**修复 |
+| D | Presence 三件套（`dehaze`/`clarity`/`texture` → **AdjustmentKind**）|
+| B | 照片三件套（`vibrance` 往返／`get_histogram`／`apply_adjustments）|
+| A3 | `smart_glaze` **真椭圆** |
+| A1 | **路径数据面**（`get_path`/`edit_path`/选区引用 path）|
+| A2 | **矢量布尔**（`vecbool.rs` + `combine_shape engine=vector`）|
+
+**⇒ ⇒ 而它**一次就绿**，说明**转交包的自测是可信的**（他们写了「六包已在该 HEAD 上逐个实测」）✓
+**⇒ ⇒ ⇒ 我做的只有三件**：① **按序 apply** ② **计数对账（122/195）** ③ **两处 doc 缩进 clippy 修正** ✓
+
+**⇒ 累计**：**二十九个完整绿的 run** ✓
