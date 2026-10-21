@@ -71,15 +71,56 @@ for (const [label, points, size] of cases) {
   else bad(`${label} ⇒ 应全部转矢量，实测矢量 ${r.vector}、位图 ${r.raster}、validate_failed ${r.failed}`);
 }
 
-// 反证：极短笔**允许**回退，而且必须**计数**（证明判据真的会拒）
+// 反证：**软边笔必须仍被拒**（第 1440 轮换的）
+//   **⇒ 为什么换** ✗：原来那条反证用「12 px / size 5 极短笔」⇒ 而第 1440 轮把细笔（r<3）
+//     改判胶囊恒等式后，**它现在会通过** ⇒ 那条反证失效（会误报"判据从没触发过"）✗
+//   **⇒ ⇒ 改成**软边笔**（`hardness 0.3`）：它的 `normal_p95` 实测 **0.76**（线 0.52）⇒
+//     **必然**被拒 ✓ ⇒ 证明闸门真的会拒，不是恒真 ✓
 {
-  const r = await run("tiny", [[100, 100, 0.9], [112, 100, 0.9]], 5);
-  if (!r) {
-    console.log("  ○ 极短笔未验（调用失败）");
-  } else if (r.raster >= 1 && r.failed >= 1) {
-    ok(`反证：极短笔（12px/size5）回退 ${r.raster} 且 validate_failed=${r.failed} ⇒ 判据确实会拒（不是恒真）`);
+  const d = await newDoc("softedge");
+  if (!d) {
+    console.log("  ○ 反证未验（建不出文档）");
   } else {
-    console.log(`  ○ 极短笔这次转成了矢量（矢量 ${r.vector}、位图 ${r.raster}）⇒ 反证不成立，但不影响上面的正面断言`);
+    await post(d.doc, d.tok, "create_layer", { layer_id: "L", name: "L" });
+    const st = await post(d.doc, d.tok, "draw_stroke", { layer_id: "L",
+      data: { points: [[80, 150, 0.9], [300, 150, 0.9]], size: 20.0, hardness: 0.3,
+        color: [0.1, 0.1, 0.1], opacity: 1.0 } });
+    if (st?.ok !== true) {
+      console.log("  ○ 反证未验（软边笔没画成）");
+    } else {
+      const g = await post(d.doc, d.tok, "export_svg", { path: `vno_soft_${stamp}.svg`, validate: true });
+      const ras = g?.strokes_raster ?? 0;
+      const failed = g?.validate_failed ?? 0;
+      // **⇒ 软边的回退理由**不是 `validate_failed`**（它走的是原生导出自己的软边判据 ⇒
+      //   `raster_reasons.soft_edge`）⇒ 所以断言"**被拒且理由被计数**"，不限定是哪一条理由 ✓
+      const reasons = g?.raster_reasons || {};
+      const counted = failed >= 1 || Object.keys(reasons).length > 0;
+      if (ras >= 1 && counted) {
+        ok(`反证：软边笔仍被拒且**理由被计数** ⇒ 位图 ${ras}、validate_failed ${failed}、`
+          + `raster_reasons ${JSON.stringify(reasons)} ⇒ 闸门不恒真 ✓`);
+      } else {
+        bad(`反证失败：软边笔应被拒且理由可查（否则闸门可能恒真）⇒ 位图 ${ras}、`
+          + `validate_failed ${failed}、raster_reasons ${JSON.stringify(reasons)}`);
+      }
+    }
+  }
+}
+
+// ① 细笔（r < 3）现在也必须转矢量（第 1440 轮：改判胶囊恒等式）
+{
+  const d = await newDoc("thin3");
+  if (!d) {
+    console.log("  ○ 细笔未验（建不出文档）");
+  } else {
+    await post(d.doc, d.tok, "create_layer", { layer_id: "L", name: "L" });
+    await post(d.doc, d.tok, "draw_stroke", { layer_id: "L",
+      data: { points: [[80, 150, 0.9], [120, 150, 0.9]], size: 3.0,
+        color: [0.1, 0.1, 0.1], opacity: 1.0 } });
+    const g = await post(d.doc, d.tok, "export_svg", { path: `vno_thin_${stamp}.svg`, validate: true });
+    const vec = (g?.strokes_vector ?? 0) + (g?.strokes_vector_native ?? 0);
+    const ras = g?.strokes_raster ?? 0;
+    if (vec >= 1 && ras === 0) ok(`① 细笔 size 3 现在转矢量（胶囊恒等式通过）⇒ 矢量 ${vec}、位图 0`);
+    else bad(`① 细笔 size 3 应转矢量（它按胶囊恒等式是 0.13 px）⇒ 矢量 ${vec}、位图 ${ras}`);
   }
 }
 

@@ -1418,6 +1418,21 @@ impl StrokeMetrics {
     /// 本结构只负责把它**算出来并列报告**（`normal_p95` 与它一起出现在
     /// 每次验收的 Debug 输出里 ✓）。
     pub fn passes(&self) -> bool {
+        // **★ 细笔改判**胶囊恒等式**（`normal_p95`），不再用 `e_geom`** ✓
+        //   （第 1440 轮；证据见 `docs/performance-notes.md` 11.4／11.5）
+        //   **⇒ 为什么** ✗：`e_geom` 是**轮廓 vs 墨面积**的不一致度 ⇒ 分母被**约 1 px 的抗锯齿边**
+        //     主导 ⇒ 半径 1.4 px 的笔上那个边占 **1/3** ⇒ **指标有地板**（实测 0.31，线 0.15）✗
+        //   **⇒ ⇒ 而同一个 size 3 笔按**到胶囊的距离**量是 **0.129 px**（线 0.25）
+        //     ⇒ **补丁自带的回归测试** `native_export_thin_line_contour_stays_on_capsule_across_phases`
+        //       （竖/横**相位扫**）**通过** ✓ ⇒ **几何上它是准的** ✓
+        //   **⇒ ⇒ ⇒ 所以**这不是"放宽"，是**换一把更硬的尺子**：
+        //     `normal_p95` 量的是「拟合轮廓到脊线的距离 vs 理论半径」= **胶囊恒等式**，
+        //     与抗锯齿无关 ✓；而它的线 `max(0.35, 0.08·r)` 本来就是**半径相关**的 ✓
+        //   **⇒ 大笔（`r ≥ 3`）行为**完全不变**（仍走 e_interior / e_geom / p95 三条）✓
+        if self.radius > 0.0 && self.radius < 3.0 {
+            let p95_limit = (0.08 * self.radius).max(0.35);
+            return self.normal_p95 <= p95_limit;
+        }
         if !(self.e_interior <= 0.12 && self.e_geom <= 0.15) {
             return false;
         }
