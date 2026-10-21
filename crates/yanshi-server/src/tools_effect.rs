@@ -126,6 +126,30 @@ pub(super) fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> R
             }
         }
     }
+    // **未知参数键必须**报错**，不许静默忽略 ✓**（第 1516 轮；外部实测被它坑过 ✗）
+    //   **⇒ 他们的原话**：「我试 `black_point` 时它**接受了但什么都没做**」
+    //     ⇒ **「接受但无效」比「拒绝」更难查** ✓（与本仓「静默降级」同一族）
+    //   **⇒ ⇒ 只在这个效果的键表**非空**时检查** ✓：`curves`／`color_balance` 等的表是空的
+    //     （它们的参数是嵌套结构或在别处校验）⇒ **不能一律拒** ✗
+    //   **⇒ ⇒ ⇒ 而 `levels` 额外接受 `channel`** ⇒ 也算已知键 ✓
+    if !checks.is_empty() {
+        let extra: &[&str] = if name == "levels" { &["channel"] } else { &[] };
+        for key in object.keys() {
+            let known = checks.iter().any(|(k, _, _)| k == key) || extra.contains(&key.as_str());
+            if !known {
+                let mut allowed: Vec<&str> = checks.iter().map(|(k, _, _)| *k).collect();
+                allowed.extend_from_slice(extra);
+                allowed.sort_unstable();
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "{name} 不认识参数 `{key}`（**不会静默忽略**）⇒ 可用键：{}",
+                        allowed.join(" / ")
+                    )),
+                ));
+            }
+        }
+    }
     if name == "levels" {
         if let Some(channel) = object.get("channel").and_then(Value::as_str) {
             // 分通道色阶：与 curves 同一套通道命名。
