@@ -3281,3 +3281,18 @@ for i in 1 2; do bash scripts/run-criteria-local.sh scripts/tool-fit-background-
 ```bash
 gh api "repos/gradetwo/yanshi/actions/runs/<id>/jobs" --jq '.jobs[] | "\(.name)｜\(.conclusion // .status)"'
 ```
+
+## ✅ **第十三个绿 run**（第 1485 轮）⇒ **曲线/路径补丁链条闭合**
+
+**⇒ 计数修复那笔 **success**（12/12）⇒ 本场**第十三个完整绿的 run** ✓
+**⇒ ⇒ 于是补丁链完整**：
+
+| 环节 | 结果 |
+|---|---|
+| 补丁本体（+1364 行、新模块、新工具）| **10 绿 / 1 红**（红在计数）|
+| **计数修复**（`guide.zh-CN` + `tools.rs` 三处）| **12 绿 / 0 红** ✓ |
+| **补丁的**代码**部分**（`test stable`/`beta`/`GPU`/五片 criteria）| **全绿** ✓ |
+
+**⇒ ⇒ ⇒ 所以**：**红的是文档计数，不是代码**；**修好后全绿** ✓
+
+**⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=25" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'` ✓
