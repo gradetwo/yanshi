@@ -2915,3 +2915,23 @@ ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs scripts/serve-*.mj
    scripts/build-warnings-check.sh | awk '{n+=1; if ($0 ~ /build-warnings/) print n, ((n-1)%6)+1}'
 ```
 **⇒ 实测**：53/7、54/7、54/7、53/7、53/8、53/7 ⇒ **均衡**；`build-warnings-check.sh` = **第 43 个 ⇒ shard 1** ✓
+
+## ✅ **连续两个完整绿的 run**（第 1439 轮，本场首次）
+
+**⇒ 之前几十轮里每次都被下一笔 push 顶掉（`cancelled`），这次终于有两个 run 跑完：**
+
+| run（提交）| 结果 | job 统计 |
+|---|---|---|
+| **`6a5d227e`** | **success** ✓ | **12 success / 0 failure / 0 在跑** |
+| **`68bbd800`** | **success** ✓ | 同上 |
+
+**⇒ ⇒ 这两个 run 覆盖的东西（都不是小事）**：
+- **Phase 2 原生矢量**（`f573c788`）
+- **Q123 三修复**（`dae49178`）
+- **本场救活的 4 条判据**（surface／cold-export／cold-open／bitmap-scope）
+- **本场新增的判据**（size-clamp／out-of-range／canvas-cap／ref-bbox／direction／flatten-stroke／validate-over-reject）
+
+**⇒ ⇒ ⇒ 所以「CI 绿 = 红都在 known-red 里」这条**真的成立**了 ⇒
+**`criteria` 六个分片 + `test (stable)/(beta)` + `clippy` + `rustfmt` + `wasm smoke` + `GPU feature` 全绿** ✓
+
+**⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=6" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'` ✓
