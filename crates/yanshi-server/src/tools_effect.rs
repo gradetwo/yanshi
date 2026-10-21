@@ -133,17 +133,50 @@ pub(super) fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> R
     //     （它们的参数是嵌套结构或在别处校验）⇒ **不能一律拒** ✗
     //   **⇒ ⇒ ⇒ 而 `levels` 额外接受 `channel`** ⇒ 也算已知键 ✓
     if !checks.is_empty() {
-        let extra: &[&str] = if name == "levels" { &["channel"] } else { &[] };
+        // **非数值键的全局白名单** ✓（第 1519 轮修：第一版只写了 `levels` 的 `channel`，
+        //   ⇒ **`dehaze` 的 `air` 被误拒** ⇒ `test (stable)` 红了两条 ✗）。
+        //   **⇒ 这些键是**数组/结构**（`air: [r,g,b]`、`points`、`matrix`、`weights`…），
+        //     `checks` 表只收**数值**键，所以它们天然不在表里 ✓
+        //   **⇒ ⇒ 而"白名单"必须覆盖**所有滤镜读过的键**（`params.get(...)` 的并集）✓
+        const NON_NUMERIC: &[&str] = &[
+            "adjust",
+            "air",
+            "angle",
+            "balance",
+            "channel",
+            "color",
+            "constants",
+            "detail",
+            "highlights",
+            "hue",
+            "levels",
+            "matrix",
+            "midtones",
+            "omega",
+            "points",
+            "quad",
+            "samples",
+            "seed",
+            "shadows",
+            "size",
+            "stops",
+            "tca_b",
+            "tca_r",
+            "tint",
+            "weights",
+        ];
+        let extra: &[&str] = NON_NUMERIC;
         for key in object.keys() {
             let known = checks.iter().any(|(k, _, _)| k == key) || extra.contains(&key.as_str());
             if !known {
+                // **只列**本效果自己的数值键** ✓（第 1519 轮修：第一版把 25 个全局键全列出来 ⇒ 太吵）
                 let mut allowed: Vec<&str> = checks.iter().map(|(k, _, _)| *k).collect();
-                allowed.extend_from_slice(extra);
                 allowed.sort_unstable();
                 return Err(YanshiError::new(
                     ErrorCode::InvalidArgument,
                     ErrorContext::detail(format!(
-                        "{name} 不认识参数 `{key}`（**不会静默忽略**）⇒ 可用键：{}",
+                        "{name} 不认识参数 `{key}`（**不会静默忽略**）⇒ 数值键：{}；\
+                         另有若干数组类键（如 air／points／matrix／weights）按各自说明使用",
                         allowed.join(" / ")
                     )),
                 ));

@@ -1900,13 +1900,21 @@ fn batch_accept_and_suggestion_paging() {
 
     // 三条可接受的建议 + 一条坏的（未知建议 id）。
     let mut ids = Vec::new();
-    for adjustment in ["invert", "saturation", "levels"] {
+    // **每个效果只能收到**它自己的**键** ✓（第 1519 轮修）：
+    //   原来三个效果**共用** `{"amount":1.2,"black":0.0,"white":1.0}` ✗ ⇒
+    //   **每个效果都在静默忽略自己不认识的两个键** ⇒ 而那正是新检查要拒的 ✓
+    //   ⇒ 所以改成**按效果给参数** ✓（这也让断言真的在验东西）
+    for (adjustment, params) in [
+        ("invert", json!({})),
+        ("saturation", json!({"amount": 1.2})),
+        ("levels", json!({"black": 0.0, "white": 1.0})),
+    ] {
         let response = registry.call(
             &mut context,
             "suggest",
             &json!({"summary": adjustment, "patch": [{"tool": "add_adjustment",
                 "arguments": {"layer_id": "layer_1", "adjustment_type": adjustment,
-                              "params": {"amount": 1.2, "black": 0.0, "white": 1.0}}}]}),
+                              "params": params}}]}),
         );
         assert_eq!(response["ok"], json!(true), "{response}");
         ids.push(response["suggestion_id"].clone());
