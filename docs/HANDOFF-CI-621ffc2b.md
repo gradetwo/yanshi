@@ -3270,3 +3270,14 @@ for i in 1 2; do bash scripts/run-criteria-local.sh scripts/tool-fit-background-
 
 **⇒ 当前工作区实测**：`tool-surface-coverage` = **0** ✓（修已生效）
 **⇒ 复算**：`bash scripts/run-criteria-local.sh scripts/tool-surface-coverage.mjs` ✓
+
+## ✅ 计数修复那笔 **11 绿 / 0 红**（第 1484 轮）
+
+**⇒ 关键事实**：`tool-surface-coverage`（**shard 1**）**已绿** ⇒ **三处源码注释 + 两份文档的计数全部一致** ✓
+**⇒ ⇒ 也就是：**补丁链条闭合**（补丁红的地方 = 计数 ⇒ 计数修好 ⇒ 不再红）✓
+**⇒ ⇒ ⇒ 只剩 shard 3 在跑（它每次都最慢，18–19 分钟）**
+
+**⇒ 复算**：
+```bash
+gh api "repos/gradetwo/yanshi/actions/runs/<id>/jobs" --jq '.jobs[] | "\(.name)｜\(.conclusion // .status)"'
+```
