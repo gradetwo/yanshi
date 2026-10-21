@@ -70,6 +70,8 @@ pub(super) fn brush_sensors_from_value(value: &Value) -> Result<BrushSensors> {
 pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **裁剪一共吃掉多少像素**（跨选区累计，供 `painted_pixels_clipped` 用）✓
     let mut clipped_away = 0usize;
+    // **选区内的覆盖率**（`None` = 这一笔没裁剪）（第 1567 轮）
+    let mut clip_coverage: Option<f64> = None;
     // Validate output options before rasterization or committing a stroke.
     let anchor_mode = optional_str(args, "anchor_mode").unwrap_or_else(|| "data".to_owned());
     if anchor_mode != "data" {
@@ -765,6 +767,16 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         }
         eprintln!("  选区 {name} 裁剪：清掉 {dropped} 个选区外像素 ✓");
         clipped_away += dropped;
+        // **记下"这一笔在选区内的覆盖率"** ✓（第 1567 轮；外部的方法学建议）
+        //   **⇒ 他们的原话**：「**检查中间产物**比检查最终产物更有效」⇒ 因为最终产物里
+        //     **错误会被后续步骤掩盖** ⇒ 而"**让中间状态变成可见的字段**"是同一个思路 ✓
+        //   **⇒ ⇒ 而 `B1`/`B2` 那次正是**中间状态不可见**：`ok=true`、`painted_pixels=5438`
+        //     ⇒ **而实际墨 = 0** ⇒ **我花了两轮才看出"覆盖度是 0"** ✗
+        //   **⇒ ⇒ ⇒ 所以**：把"**没有被裁掉的像素占比**"报出来 ⇒ **0.0 就是"全被裁掉了"** ✓
+        //     ⇒ 调用方**一眼**就知道，而不必去采样或看图 ✓
+        let kept = painted.saturating_sub(dropped) as f64;
+        let total = painted.max(1) as f64;
+        clip_coverage = Some(kept / total);
     }
     // **★★★ 对称：按**位图**镜像并合并** ✗ ★★★**（**第 251 轮 ✓）
     //   ＋ **∴ 做法 ✗**：**把这一笔自己的位图**翻转**✗ 摆到**镜像后的位置** ✓
@@ -890,6 +902,10 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     //   **⇒ ⇒ 所以**同时给：`painted_pixels`（raw）与 `painted_pixels_clipped`（**真实落墨**）✓
     //   **⇒ ⇒ ⇒ 没有裁剪时两者相等**（`clipped_away == 0`）⇒ **老调用方不受影响** ✓
     value["painted_pixels_clipped"] = json!(painted.saturating_sub(clipped_away));
+    // **覆盖率只在裁剪时出现**（不裁剪时不出现，而不是给个 1.0 让人以为是量出来的）✓
+    if let Some(coverage) = clip_coverage {
+        value["clip_coverage"] = json!(coverage);
+    }
     value["max_channel_delta"] = json!(max_delta);
     // **传感器回执**：传了才出现（不静默 ✓）—— 调用方能确认四路信号都被采纳。
     if args.get("sensors").is_some_and(|v| !v.is_null()) {
