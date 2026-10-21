@@ -234,6 +234,12 @@ pub(super) fn write_fit_background_field(ctx: &mut ToolContext<'_>, args: &Value
     }
     let mut out = vec![0u8; (ow as usize) * (oh as usize) * 4];
     let mut filled = 0usize;
+    // **填出来的场是不是**几乎单色**（第 1451 轮；外部 `§222`）
+    //   **⇒ 为什么** ✗：他们报「对象存在但渲染空白」⇒ 我复现后发现**对象真的画了、画的是纯白**
+    //     ⇒ 因为**掩膜外的样本本来就是白的** ⇒ 拟合出 255 ⇒ `mean 255 / std 0` ⇒ **看起来像没画** ✗
+    //   **⇒ ⇒ 所以**：把"场几乎单色"这件事**说出来** ⇒ 调用方立刻知道"不是没画，是画成了单色" ✓
+    let mut lo = u8::MAX;
+    let mut hi = u8::MIN;
     for oy in 0..oh {
         for ox in 0..ow {
             let dx = bx0 + f64::from(ox) + 0.5;
@@ -253,7 +259,14 @@ pub(super) fn write_fit_background_field(ctx: &mut ToolContext<'_>, args: &Value
                 for (k, r) in row.iter().enumerate().take(n) {
                     pred += coeffs[c][k] * r;
                 }
-                out[i + c] = pred.round().clamp(0.0, 255.0) as u8;
+                let v = pred.round().clamp(0.0, 255.0) as u8;
+                out[i + c] = v;
+                if v < lo {
+                    lo = v;
+                }
+                if v > hi {
+                    hi = v;
+                }
             }
             out[i + 3] = 255;
             filled += 1;
@@ -311,6 +324,17 @@ pub(super) fn write_fit_background_field(ctx: &mut ToolContext<'_>, args: &Value
         "residual_rms": [rms[0], rms[1], rms[2]],
         "mask_bbox": [bx0, by0, bx1, by1],
         "filled_pixels": filled,
+        "field_range": [lo, hi],
+        "field_uniform": (hi.saturating_sub(lo)) < 2,
+        "warnings": if (hi.saturating_sub(lo)) < 2 {
+            json!([format!(
+                "拟合出来的场**几乎是单色**（{lo}..{hi}，跨度 < 2）⇒ 这**不是没画**，是**画成了单色** ✗；\
+                 常见原因：**掩膜外的像素本来就是单色**（空图层、或外面全被某个纯色盖住）\
+                 ⇒ 想让场有变化，请确保掩膜外是**真的有明暗变化**的背景"
+            )])
+        } else {
+            Value::Null
+        },
         "placed": placed,
     }))
 }

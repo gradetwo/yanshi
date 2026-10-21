@@ -138,6 +138,67 @@ if (outsideBefore && outsideAfter && outsideBefore[0] === outsideAfter[0]) {
   }
 }
 
+// ⑥ **单色场必须**说出来**（第 1451 轮；外部 `§222` 的根因）
+//   **⇒ 外部报的** ✗：「对象存在但渲染 100% 空白」⇒ 我复现后发现**对象真的画了、画的是纯白** ⇒
+//     **掩膜外的样本本来就是白的** ⇒ 拟合出 255 ⇒ `mean 255 / std 0` ⇒ **看起来像没画** ✗
+//   **⇒ ⇒ 所以**判据断两件事**：
+//     ① **空白层**（掩膜外全白）⇒ `field_uniform === true` **且** `warnings` 非空 ⇒ **说得出来** ✓
+//     ② **渐变层**（掩膜外有明暗）⇒ `field_uniform === false` **且** `warnings` 为空 ⇒ **不许狼来了** ✓
+{
+  const docW = `bgf_white_${stamp}`;
+  const madeW = await (await fetch(`${base}/api/documents`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: docW, width: 400, height: 300,
+      background: { r: 255, g: 255, b: 255, a: 255 } }),
+  })).json();
+  if (!madeW.token) {
+    console.log("  ○ ⑥ 未验（建不出文档）");
+  } else {
+    const pW = async (tool, a) => {
+      const rr = await fetch(`${base}/api/tools/${tool}?doc=${docW}&token=${madeW.token}`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(a ?? {}),
+      });
+      return rr.json();
+    };
+    await pW("create_layer", { layer_id: "BG", name: "BG" });
+    const w = await pW("fit_background_field", {
+      layer_id: "BG", mask: { type: "rect", x: 120, y: 80, w: 160, h: 140 }, degree: 2 });
+    const said = Array.isArray(w?.warnings) && w.warnings.some((x) => /单色/.test(String(x)));
+    if (w?.field_uniform === true && said) {
+      ok(`⑥ 空白层（掩膜外全白）⇒ 场被判定为单色**并说出来**（range ${JSON.stringify(w.field_range)}）`);
+    } else {
+      bad(`⑥ 空白层的场是单色 ⇒ 必须 field_uniform=true 且给出 warning ⇒ 实测 ${JSON.stringify(w?.field_range)}、uniform=${w?.field_uniform}`);
+    }
+    // ② 渐变层不许误报（**自带一个渐变文档** ⇒ 不依赖 ⑤ 块的局部变量 ✓）
+    const docG = `bgf_grad_${stamp}`;
+    const madeG = await (await fetch(`${base}/api/documents`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ doc_id: docG, width: 400, height: 300,
+        background: { r: 255, g: 255, b: 255, a: 255 } }),
+    })).json();
+    const pG = async (tool, a) => {
+      const rr = await fetch(`${base}/api/tools/${tool}?doc=${docG}&token=${madeG.token}`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(a ?? {}),
+      });
+      return rr.json();
+    };
+    await pG("create_layer", { layer_id: "L", name: "L" });
+    for (let k = 0; k < 12; k += 1) {
+      const y = 10 + k * 23;
+      const g = Math.round(255 * ((y / 300 - 0.5) ** 2 * 4));
+      await pG("fill_region", { layer_id: "L", shape: { type: "rect", x: 10, y, w: 380, h: 23 },
+        color: [g, g, g], opacity: 1.0 });
+    }
+    const g2 = await pG("fit_background_field", {
+      layer_id: "L", mask: { type: "rect", x: 120, y: 80, w: 160, h: 140 }, degree: 2 });
+    if (g2?.field_uniform === false && (g2?.warnings === null || g2?.warnings === undefined)) {
+      ok(`⑥ 渐变层不误报（range ${JSON.stringify(g2.field_range)}、warnings 为空）`);
+    } else {
+      bad(`⑥ 渐变层不该被判成单色 ⇒ 实测 uniform=${g2?.field_uniform}、warnings=${JSON.stringify(g2?.warnings)}`);
+    }
+  }
+}
+
 if (fails.length > 0) {
   console.log(`\n  ✗ ${fails.length} 处不符（fit_background_field）`);
   process.exit(1);
