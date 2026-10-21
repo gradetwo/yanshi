@@ -3071,3 +3071,32 @@ SELF=$(ls scripts/{tool,mcp}-*.mjs | wc -l)
 EXEMPT=$(ls scripts/{browser,serve,check}-*.mjs | wc -l)
 [ "$((SELF + EXEMPT))" -eq "$ALL" ] && echo ✓
 ```
+
+## ★ `criteria shard 3/6` 的**耗时分布**与**已有的 45 分钟上限**（第 1457 轮）
+
+**⇒ 实测（同一批 run，各分片 `created_at → completed_at`）**：
+
+| 分片 | 耗时 |
+|---|---|
+| 6/6 | **6 分 22 秒** |
+| 4/6 | 8 分 45 秒 |
+| 2/6 | 9 分 52 秒 |
+| 1/6 | 9 分 42 秒 |
+| 5/6 | 10 分 57 秒 |
+| **3/6** | **31 分钟仍在跑**（16 分钟无更新）✗ |
+
+**⇒ ⇒ 所以 shard 3 从"慢"升级为**"有时挂住"** ✗ —— 正常分片 **6–11 分钟**，它是 **31+ 分钟** ✓
+
+**⇒ ⇒ ⇒ 而我原本担心「挂住会烧到 GitHub 默认 360 分钟」⇒ **实测推翻** ✓：
+`.github/workflows/ci.yml:420` 已有 **`timeout-minutes: 45`** ⇒ **会被砍** ✓ **不用改** ✓
+
+**⇒ 这是一个**负结果**（我担心的坏事已经有防护）⇒ 记下来免得下次再查一遍 ✓
+**⇒ ⇒ 若要缩尾**：把 45 降到 **30** 也行（正常分片 6–11 分钟 ⇒ 30 有 3 倍余量）⇒
+**但**冷缓存那天可能真需要 35 分钟 ⇒ **没有证据前不改** ✓（改了会变成**假红**）
+
+**⇒ 复算**：
+```bash
+gh api "repos/gradetwo/yanshi/actions/runs/<id>/jobs" \
+  --jq '.jobs[] | select(.name|startswith("criteria")) | "\(.name) \(.started_at) → \(.completed_at // "-")"'
+grep -n "timeout-minutes" .github/workflows/ci.yml
+```
