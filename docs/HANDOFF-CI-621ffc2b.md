@@ -3748,3 +3748,27 @@ gh auth status 2>&1 | head -4           # API 侧是否 timeout
 | **B10** | 参数试错 4 次 ⇒ **新工具 `explain_tool`**（签名＋示例＋拼错时给候选）|
 
 **⇒ ⇒ 加上**：`TOOL_EXAMPLES` 漏项（**CI 抓到**）、`pre-commit` 第 ④ 步（**把清单变成机械的**）✓
+
+## ★ 今天改动后的**受影响面复查**：9 条全绿（第 1564 轮）
+
+**⇒ 今天动了**：`explain_tool`（新工具）、`fill_region`（收 path）、`stroke_path`（spec 两行）、
+`describe_canvas`（内存字段＋说明）、`blob_gc`（内存闸）、裁剪覆盖度（两层）、`pre-commit`（第 ④ 步）✓
+
+**⇒ ⇒ 复查这 9 条**：
+
+| 判据 | 结果 |
+|---|---|
+| `tool-surface-coverage` | **0** ✓ |
+| `tool-examples-doc-check` | **0** ✓ |
+| `check-shape-error-hints-path` | **0** ✓ |
+| `tool-export-sha256` | **0** ✓ |
+| `tool-stamp-parity` / `tool-visible-delta` | **0 / 0** ✓ |
+| `tool-brush-params-doc` / `tool-anchor-mode-rejects` | **0 / 0** ✓ |
+| `tool-import-blob-decodable` / `tool-export-deterministic` | **0 / 0** ✓ |
+| `tool-smudge-deposit` | **0** ✓ |
+
+**⇒ ⇒ ⇒ 顺带一条**自查**：我**猜了一个不存在的判据名**（`tool-extra-keys-rejected`）⇒ 它报
+`MODULE_NOT_FOUND`、退出码 1 ⇒ **看起来像产品红，其实是我名字猜错** ✗
+⇒ **判据"不存在"与"不过"都是 `1`** ⇒ **这是可误导的** ⇒ **下面这条已记**：
+
+**⇒ 判据**：**报一个判据红之前，先 `ls scripts/<名字>.mjs` 确认它存在** ✓
