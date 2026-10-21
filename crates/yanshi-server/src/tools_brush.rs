@@ -903,6 +903,13 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     //   **⇒ ⇒ ⇒ 没有裁剪时两者相等**（`clipped_away == 0`）⇒ **老调用方不受影响** ✓
     value["painted_pixels_clipped"] = json!(painted.saturating_sub(clipped_away));
     // **覆盖率只在裁剪时出现**（不裁剪时不出现，而不是给个 1.0 让人以为是量出来的）✓
+    // **⇒ ★ 但它单独**不能**用于验收 ★**（第 1573 轮自查；用外部那条判据检验自己）
+    //   **⇒ 我实测**：一笔**极小**、且**完全在选区内** ⇒ **`clip_coverage = 1.0`**，
+    //     而 **`painted_pixels_clipped = 10`** ⇒ **几乎没画，覆盖率却是满分** ✗
+    //   **⇒ ⇒ 所以**：**`clip_coverage` 必须和 `painted_pixels_clipped` 一起读** ✓
+    //     （**前者答"裁剪消化了多少"，后者答"实际落了多少"** ⇒ **两个一起才是"效果"**）
+    //   **⇒ ⇒ ⇒ 而这条来自外部的验收设计结论**：「一条指标如果能被**廉价地满足**，
+    //     它就不能**单独**作为验收」✓
     if let Some(coverage) = clip_coverage {
         value["clip_coverage"] = json!(coverage);
     }
