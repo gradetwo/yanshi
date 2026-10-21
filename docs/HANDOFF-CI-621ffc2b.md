@@ -2887,3 +2887,31 @@ grep -ln "/tmp/eval" scripts/*.mjs
 
 **⇒ 顺带记一条**：**纯文档提交（`docs/**.md`）不会触发 CI**（`paths-ignore`）⇒
 **⇒ ⇒ 所以在等 CI 时，写文档是**不打扰队列**的工作** ✓（第 398 轮定的规则，本场第 1437 轮又用到 ✓）
+
+## ★ 分片耗时**不均衡**的诊断（第 1438 轮，含一次**被证伪的假设**）
+
+**⇒ 现象**：同一次 run 里 5 个 criteria 分片 **6–11 分钟**完成，而 **shard 3 跑了 22 分钟**（还在跑）✗
+**⇒ ⇒ 而分片**构成是均衡的**：各片判据 **53–54 条**、浏览器判据 **7–8 条** ✓（名字排序 + 取模 ⇒ `browser-*` 自然摊开）
+
+**⇒ 我的第一个假设（错）**：是那条 `timeout 1800`（30 分钟预算）的 `build-warnings-check.sh` 卡住了它。
+**⇒ ⇒ **实测证伪**：它按枚举顺序是**第 43 个** ⇒ 落在 **shard 1**，而 shard 1 只用了 **10 分钟** ✓
+**⇒ ⇒ ⇒ 所以**不是它** ✗
+
+**⇒ 现在的解释（未取到日志，如实标注）**：shard 3 的浏览器判据**真的在跑**（CI 有 chromium）
+⇒ 每条最长 **120 s** ⇒ 7 条就可能 **14 分钟**；而别的分片里浏览器判据**很快 exit 3**（或 `SKIP_BROWSER=1`）⇒ 6–11 分钟 ✓
+**⇒ ⇒ 这**不是缺陷**，是**环境条件不同**（哪些 browser 判据真的拿到了 CDP）⇒ **取到 job 日志才能定论**
+（AGENTS 已记：job 在跑时 `curl` 取不到日志 ✗）
+
+**⇒ 可复算的命令**：
+```bash
+# 各分片的判据数与浏览器判据数（应均衡）
+for s in 1 2 3 4 5 6; do
+  ls scripts/{tool,browser,mcp,serve,check}-*.mjs | sort | awk -v s=$s 'NR%6==(s%6)' | wc -l
+  ls scripts/{tool,browser,mcp,serve,check}-*.mjs | sort | awk -v s=$s 'NR%6==(s%6)' | grep -c browser-
+done
+# 那条 1800 s 预算的判据落在哪片
+ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs scripts/serve-*.mjs \
+   scripts/check-*.mjs scripts/kernel-brush-parity.mjs scripts/kernel-wasm-allowlist.mjs \
+   scripts/build-warnings-check.sh | awk '{n+=1; if ($0 ~ /build-warnings/) print n, ((n-1)%6)+1}'
+```
+**⇒ 实测**：53/7、54/7、54/7、53/7、53/8、53/7 ⇒ **均衡**；`build-warnings-check.sh` = **第 43 个 ⇒ shard 1** ✓
