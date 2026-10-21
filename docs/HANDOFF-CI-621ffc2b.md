@@ -3248,3 +3248,9 @@ for i in 1 2; do bash scripts/run-criteria-local.sh scripts/tool-fit-background-
 | **3/6** | **> 18 分**（在跑）|
 
 **⇒ ⇒ ⇒ 三次实测一致**：shard 3 是第二名的 **1.5–2×**，**45 分钟上限仍有余量** ✓
+
+## ✅ **第十一个绿 run**（第 1482 轮）
+
+**⇒ `effective_*` 改名那笔也是 **success**（12 绿 / 0 红）⇒ 本场**第十一个完整绿的 run** ✓
+**⇒ ⇒ 它证明的是**接口命名**这件事**（外部读 API 的方式影响了字段名 ⇒ 改名后**他们猜的就是接口**）✓
+**⇒ ⇒ ⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=25" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'`
