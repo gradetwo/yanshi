@@ -196,17 +196,29 @@ const check = (ok, label, detail) => {
 //   依赖服务端能写 `path`（**同机时成立 ✓）** ✓✓
 
 /** **∴ 造一张 w×h 的纯色 PNG ✗**（**不引依赖 ✓：**deflateSync ＋ 手工 CRC32 ✓）** ✓✓ */
-function solidPng(w, h, [r, g, b]) {
+// **★ 噪声图** ✓（第 1432 轮）：
+//   **⇒ 为什么** ✗：**纯色** 512×512 的 PNG 压到几 KB ⇒ 整个工程 **14336 字节** ⇒ 判据自己拒绝跑
+//     （「fixture 只有 14336 字节（< 100 KB）⇒ 太小的工程不触发整幅预解 ⇒ 判据会假绿」）✗
+//   **⇒ ⇒ 噪声**几乎不可压缩 ⇒ 512×512×3 ≈ **786 KB 原始** ⇒ PNG 也在几百 KB ⇒ **超过门槛** ✓
+function noisyPng(w, h) {
   const raw = Buffer.alloc((w * 3 + 1) * h);
+  let seed = 0x9e3779b9;
   for (let y = 0; y < h; y += 1) {
     const row = y * (w * 3 + 1);
     raw[row] = 0; // filter: none
     for (let x = 0; x < w; x += 1) {
-      raw[row + 1 + x * 3] = r;
-      raw[row + 2 + x * 3] = g;
-      raw[row + 3 + x * 3] = b;
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      raw[row + 1 + x * 3] = seed & 0xff;
+      raw[row + 2 + x * 3] = (seed >>> 8) & 0xff;
+      raw[row + 3 + x * 3] = (seed >>> 16) & 0xff;
     }
   }
+  return raw;
+}
+
+function solidPng(w, h, [r, g, b]) {
+  // **⇒ 用噪声填充**（不是纯色）⇒ 包体大 ⇒ 触发整幅预解 ✓
+  const raw = noisyPng(w, h);
   const crcTable = [];
   for (let n = 0; n < 256; n += 1) {
     let c = n;
