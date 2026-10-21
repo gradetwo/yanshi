@@ -3679,3 +3679,24 @@ gh auth status 2>&1 | head -4           # API 侧是否 timeout
 **⇒ ⇒ ⇒ 而这笔的意义是**：**仓库回到"干净、绿、且 P0 已诊断未修"的状态** ✓
 
 **⇒ 本场累计**：**二十六个完整绿的 run** ✓
+
+## ★ 广域回归 10 条：**全绿**（第 1541 轮；今天改动很多，必须自己扫）
+
+**⇒ 今天改了**：effect 参数校验（**未知键拒绝**）、`duplicate_layer`（**跳过+报告**）、
+`smudge_dab` 的临时改动（**已撤**）、`divisions`（**已撤**）、两条判据的修复 ✓
+**⇒ ⇒ 所以扫这 10 条**（覆盖工具面、示例文档、路径掩膜、滤镜恒等、涂抹、parity、导出确定性）：
+
+| 判据 | 结果 |
+|---|---|
+| `tool-surface-coverage` | **0** ✓（**先 3 后 0**：mcp 二进制陈旧 ⇒ 重编即绿，**与第 1492 轮同一个坑**）|
+| `tool-examples-doc-check` | **0** ✓ |
+| `check-shape-error-hints-path` | **0** ✓ |
+| `tool-filter-adjust-identity` | **0** ✓ |
+| **`tool-smudge-deposit`** | **0** ✓（**今天修好的**）|
+| `check-smudge-mix-uses-linear` | **0** ✓ |
+| `tool-stamp-parity` | **0** ✓ |
+| `tool-visible-delta` / `tool-dwell` | **0 / 0** ✓ |
+| `tool-export-deterministic` | **0** ✓ |
+
+**⇒ ⇒ 所以**：**10/10 全绿** ⇒ **今天的改动没有回归** ✓
+**⇒ ⇒ ⇒ 而 `tool-surface-coverage` 的 `exit 3`** 又一次是**陈旧 mcp 二进制** ⇒ **重编即绿** ✓（**这条已第二次**）
