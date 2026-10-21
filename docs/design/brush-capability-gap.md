@@ -24,13 +24,18 @@
 | 项 | 实测 |
 |---|---|
 | **工具数** | **151 个** |
-| **滤镜/调整可达** | **过滤器可达性按**内核实现**算，不按注册表** ✓（第 1511 轮更正）：
-内核 `FilterKind::from_name` 认识的**滤镜名共 17 个** ——
-`blur`／`box_blur`／`brightness_contrast`／`clarity`／`dehaze`／`emboss`／`film_grain`／
+| **滤镜可达** | **不写死数字，写**方法** ✓**（第 1512 轮第三次更正）：
+**以「实际调用通过」为准** —— `add_filter` 逐个试，`params` 先给 `{}`、失败再补必填项 ✓
+**⇒ 实测（`2026-10-21`，本机 release）**：
+· **15 个空参数即可用**：`box_blur`／`brightness_contrast`／`clarity`／`emboss`／`film_grain`／
 `gaussian_blur`／`glow`／`impasto`／`invert`／`motion_blur`／`noise`／`relief`／`saturation`／`sharpen`／`vignette` ✓
-**⇒ 而 `levels`／`curves` 内核未实现** ✗（实测 `add_filter` 报「内核未实现该滤镜」）|
-| ⚠ **这一行原来写「14/14」** | **错在按注册表算** ✗：注册表声明了 `levels`／`curves`，**内核没实现** ⇒
-**「声明了」≠「能用」**（与本仓「静默降级」同一族：**注册表说有，实际报错**）|
+· **`dehaze` 可用，但必须给 `air: [r,g,b]`** ✓（不给就报「dehaze 需要 air」⇒ **不是未实现** ✓）
+· **`blur` 被拒** ✗ —— 报「内核未实现该滤镜：blur」，**而 `FilterKind::from_name` 明明认 `blur`**（`box_blur | blur`）
+  ⇒ **两层不一致**（`from_name` 收、`validate_effect` 拒）⇒ **这是真缺陷** ✓
+· **`levels`／`curves` 被拒** ✗（真正未实现）
+**⇒ ⇒ 所以总数是「17 个名字里 16 个可用」**（15 空参 + `dehaze`）⇒ **而外部实测数到 14**，
+  因为他们把 `dehaze` 算进去了、没试 `impasto` ⇒ **两个数都对，只是口径与覆盖面不同** ✓
+**⇒ ⇒ ⇒ 教训**：**可达性必须逐个实调**，且**要试到必填参数** —— 否则会把「缺参数」误报成「未实现」 ✗ |
 
 | **混合模式可达** | **10/10 ✓**（`set_layer_blend` 用 `BlendMode::NAMES` ✓，注释还记着"本文件此前硬编码 7 个 ✗"已修 ✓） |
 | **修图可达** | **4/4 ✓**（`patch`／`smudge`／`heal_stamp`／`clone_stamp` ＋ `erase` ✓） |
