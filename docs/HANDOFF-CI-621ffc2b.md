@@ -3047,3 +3047,27 @@ ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs scripts/serve-*.mj
 **⇒ ⇒ ⇒ **两者一字不差** ✓ ⇒ **没有静默失败，不需要修** ✓
 
 **⇒ 这类"我担心但实测没问题"的负结果也要记**：否则下一个人（或下一轮的我）会**重新担心一遍** ✓
+
+## ★ 新判据的抖动检查 + 判据普查自洽（第 1455 轮）
+
+**⇒ 新判据 `tool-fit-background-field.mjs` 有 **6 条断言**（含两条**反向**的：单色/非单色）
+⇒ 所以它**必须**连跑两次比对 ✓
+
+| 次 | 退出码 | 逐条输出 |
+|---|---|---|
+| 1 | **0** | — |
+| 2 | **0** | **与第 1 次逐条一致**（去掉小数位）✓ |
+
+**⇒ 判据普查**（AGENTS 那三个数字当场算）：
+```
+CI 口径=322｜自检口径=262｜豁免=60 ⇒ 262 + 60 = 322 ✓ 自洽
+```
+**⇒ 新判据在 **CI 口径**里** ✓（它叫 `tool-*` ⇒ `run-criteria.sh` 会收集 ✓）
+
+**⇒ 复算**：
+```bash
+ALL=$(ls scripts/{tool,browser,mcp,serve,check}-*.mjs | wc -l)
+SELF=$(ls scripts/{tool,mcp}-*.mjs | wc -l)
+EXEMPT=$(ls scripts/{browser,serve,check}-*.mjs | wc -l)
+[ "$((SELF + EXEMPT))" -eq "$ALL" ] && echo ✓
+```
