@@ -14498,7 +14498,8 @@ fn parse_prim_shape(v: &Value, tool: &str) -> Result<PrimShape> {
         _ => Err(YanshiError::new(
             ErrorCode::InvalidArgument,
             ErrorContext::detail(format!(
-                "「{tool}」不支持的 shape type：「{t}」（支持 rect/circle/ellipse/polygon）"
+                "「{tool}」不支持的 shape type：「{t}」（支持 rect/circle/ellipse/polygon，\
+                 以及 **SVG 路径**：**只给 `d`、不要给 `type`**，例如 {{\"d\": \"M 10,10 C 40,0 60,40 90,30 Z\"}}）"
             )),
         )),
     }
