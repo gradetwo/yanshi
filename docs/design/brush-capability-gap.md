@@ -13682,3 +13682,36 @@ preview_size, colors, paths, size, smooth, include_image」）
 **⇒ ⇒ 已登记 `known-red`**（附三个数与解析期望）⇒ **修好后删除那一行即可** ✓
 
 **⇒ 教训**：**"合进来 + 在工具面上" ≠ "能用"** ⇒ **合并外部补丁后必须**至少跑一次每个新工具** ✓
+
+## 三百三十、`seq` 重复导致**整份文档打不开**（外部 `§238`，1 小时工作受损）—— 止血已做，根因待定
+
+**⇒ 症状**：一个原子（`01M5EQRN18AM8J8APWT6BNR003`，`seq 15523`）与另一原子**同 `seq`**
+⇒ `AtomLog::with_atoms` 拒绝加载（**按设计**，单测 `restore_from_atoms_requires_unique_seq` 断言）
+⇒ **后续一切操作都被挡**（导出、`delete_layer` 都不行）✗
+
+### 止血（第 1505 轮）：**打开时重编号**
+
+**⇒ `Document::open` 里**先跑 `repair_duplicate_seqs`** ⇒ 重复的推到 `max+1` ⇒ **保留全部原子** + **stderr 逐条打印** ✓
+**⇒ ⇒ 判据 4 条**（无重复／非重复原子不动／总数不变／恰好一个被推）⇒ **变异（不重编号）⇒ 红** ✓
+
+### 根因：**`append` 本身是串行正确的**，所以重复只可能来自**两个写者**
+
+```rust
+// log.rs:append —— 内存内串行分配，天然不重复 ✓
+atom.seq = self.next_seq;
+self.next_seq += 1;
+```
+
+**⇒ ⇒ 候选**（按可能性）：
+1. **两个进程写同一文档**（HTTP 服务 + MCP 服务，或两份 `yanshi-serve`）⇒ 各自有**自己的 `next_seq`** ⇒ **必然撞** ✓
+2. **快照 `base_seq` 算错** ⇒ `with_base_seq` 从错的 `seq_at+1` 起 ⇒ 与已有原子撞 ✓
+3. 单进程内**同一文档两个 `Document` 实例**（缓存 bug）⇒ 同上 ✓
+
+**⇒ ⇒ ⇒ **要定论需要**：外部那份日志（能看出**两个原子是否来自不同会话**）；或**复现"两进程同写"** ✓
+**⇒ 未复现 ⇒ 不下结论**（符合"不许说不存在，也不许假装知道"）✓
+
+**⇒ 复算**：
+```bash
+grep -n "atom.seq = self.next_seq" crates/yanshi-core/src/log.rs   # 串行分配 ✓
+grep -rn "with_base_seq" crates/yanshi-server/src/document.rs       # 快照路径 ✓
+```
