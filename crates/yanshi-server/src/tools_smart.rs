@@ -1525,6 +1525,12 @@ pub(super) fn write_smart_edge_soften(ctx: &mut ToolContext<'_>, args: &Value) -
                 path_pts.pop(); // 去掉重复的闭合点
             }
         }
+        // **曲线尺吸附**（二期 `path_guide`）：只作用于 `edge_path` 输入点列
+        //（`shape` 派生边界是精确几何，不吸附）；只拉落点坐标，柔化宽度/
+        // 强度等参数不受影响。缺省不传 ⇒ 点列逐位不变。
+        if args.get("path_guide").is_some() {
+            path_pts = apply_path_guide_xy(ctx, args, path_pts)?;
+        }
     } else if let Some(shape) = args.get("shape") {
         // 形状转边缘路径（只用外层；孔洞边界不在柔化范围）。
         let parsed = parse_smart_shape(shape, "smart_edge_soften")?;

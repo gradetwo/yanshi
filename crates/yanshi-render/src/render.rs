@@ -1633,6 +1633,19 @@ impl Renderer {
                 // **④ 剪贴蒙版 ✓**：**用下方内容的 alpha 裁剪本层 ⇒ 它不是层的函数 ✗**。
                 except_seen = true;
             }
+            // **⑦ path 引用蒙版 ✓**（二期 mask 源 = path）：蒙版以 `object_id` 引用
+            // path 对象时，本层像素是**那个对象**的函数，而本层的内容指纹只含
+            // 蒙版 JSON（引用 id、不含被引用对象的内容）⇒ 被引用对象一变、指纹
+            // 不变 ⇒ 与 ④ 同例：整片不走分段缓存（**宁慢勿错 ✓**）。
+            let mask_is_path_ref = layer
+                .mask_id
+                .as_deref()
+                .and_then(|m| state.masks.get(m))
+                .map(|mask| mask_shape_is_path_reference(&mask.shape))
+                .unwrap_or(false);
+            if mask_is_path_ref {
+                except_seen = true;
+            }
             // **① 非可分离混合 ✓**（`behind`／`erase` ✓）：**结果依赖下方已合成的像素 ✗**。
             let mode_name = layer.blend_mode.to_ascii_lowercase();
             if mode_name == "behind" || mode_name == "erase" {
@@ -3555,7 +3568,8 @@ impl Renderer {
                     let mut t_shape_cov = stage_probe::Stage::start();
                     // Path 填充走规范折线多环覆盖率（§4.4，与 shape_coverage_in 同 clip 语义）；
                     // 无填充色（has_fill=false）⇒ 覆盖率为空、只描边。
-                    // shape_coverage_in 的签名没有 subpaths，Path 不经它（蒙版路径同理不认 path，§4.8）。
+                    // shape_coverage_in 的签名没有 subpaths，Path 不经它
+                    //（二期蒙版 path 源走 mask_path_coverage，同一条覆盖率路）。
                     let mut coverage = if kind == ShapeKind::Path {
                         if has_fill {
                             crate::geometry::path_coverage_clipped(&subpaths, 4, &clip, fill_rule)
@@ -5370,8 +5384,9 @@ pub fn shape_coverage_in(
                 }
             }
             // 本函数签名没有 subpaths，Path 形状的填充不经这里
-            //（渲染主路径在 Primitive::Shape 分支直接走 path_coverage_clipped）；
-            // 蒙版解析不产生 Path（§4.8 一期不动），探针里如实报「未覆盖」。
+            //（渲染主路径在 Primitive::Shape 分支直接走 path_coverage_clipped；
+            // 二期起蒙版 path 源走 mask_path_coverage 同一条覆盖率路，也不经
+            // 这里），探针里如实报「未覆盖」。
             ShapeKind::Path => ("Path", "none"),
         };
         eprintln!(
@@ -5396,7 +5411,74 @@ pub fn shape_coverage_in(
     }
 }
 
-/// 由蒙版 `shape` 字段构造覆盖率（支持 `{"kind": "rect"|"ellipse"|"polygon", ...}`）。
+/// 蒙版形状是否以 `object_id` 引用一个 path 对象（二期：mask 源 = path）。
+///
+/// 这类蒙版的像素是**被引用对象**的函数，而图层指纹里只有蒙版自己的 JSON
+/// （含引用 id、不含被引用对象的内容）⇒ 分段缓存判定必须把它当例外
+/// （与剪贴蒙版同例：整片不走缓存，宁慢勿错）。
+pub fn mask_shape_is_path_reference(shape: &Value) -> bool {
+    shape.get("kind").and_then(Value::as_str) == Some("path")
+        && shape.get("object_id").and_then(Value::as_str).is_some()
+}
+
+/// 蒙版 `kind = "path"` 形状的覆盖率（二期：mask 源 = path）。
+///
+/// 来源二选一：内联 `subpaths`（蒙版 shape 本身即一份 path geometry），或
+/// `object_id` 引用文档里已有的 path 形状对象。覆盖率与 path 形状填充走
+/// **同一条路**（[`crate::geometry::path_coverage_clipped`]：规范容差展平 +
+/// fill_rule），**不另写一套光栅化**。任何来源问题（两者同给/都不给、解析
+/// 失败、引用不存在/已删除/不是 path 形状）都返回 `Err(原因)`，由调用方记
+/// 告警——**绝不静默回退成 rect**（`parse_shape_coverage` 对未知 kind 的
+/// 存量回退不适用于 path：path 在进回退之前就被分流到这里）。
+pub fn mask_path_coverage(
+    state: &DocumentState,
+    shape: &Value,
+    clip: &Bbox,
+) -> std::result::Result<Coverage, String> {
+    let inline = shape.get("subpaths");
+    let object_id = shape.get("object_id").and_then(Value::as_str);
+    let (subpaths, fill_rule) = match (inline, object_id) {
+        (Some(_), Some(_)) => {
+            return Err("subpaths 与 object_id 同时给出（只能给一个）".to_owned());
+        }
+        (Some(_), None) => {
+            let parsed = crate::object::parse_path_subpaths(shape)
+                .map_err(|reason| format!("内联 subpaths 非法：{reason}"))?;
+            (parsed.subpaths, parsed.fill_rule)
+        }
+        (None, Some(id)) => {
+            let Some(object) = state.objects.get(id) else {
+                return Err(format!("引用的对象 {id} 不存在"));
+            };
+            if object.deleted_by.is_some() {
+                return Err(format!("引用的对象 {id} 已被删除"));
+            }
+            match crate::object::parse_object(object) {
+                crate::object::Primitive::Shape {
+                    kind: crate::object::ShapeKind::Path,
+                    subpaths,
+                    fill_rule,
+                    ..
+                } => (subpaths, fill_rule),
+                _ => {
+                    return Err(format!(
+                        "引用的对象 {id} 不是 path 形状（蒙版 path 源只认 draw_shape 建的 kind=path 对象）"
+                    ));
+                }
+            }
+        }
+        (None, None) => {
+            return Err("既没有 subpaths 也没有 object_id".to_owned());
+        }
+    };
+    Ok(crate::geometry::path_coverage_clipped(
+        &subpaths, 4, clip, fill_rule,
+    ))
+}
+
+/// 由蒙版 `shape` 字段构造覆盖率（支持 `{"kind": "rect"|"ellipse"|"polygon", ...}`；
+/// `kind = "path"` 且带内联 `subpaths` 时走 [`mask_path_coverage`] 的同一条
+/// 覆盖率路径，`object_id` 引用需要文档状态、只能经 `apply_layer_mask_warn`）。
 pub fn coverage_from_shape(shape: &Value) -> Coverage {
     let (kind, bbox, points) = parse_shape_coverage(shape);
     shape_coverage(kind, bbox, &points)
@@ -5408,6 +5490,21 @@ pub fn coverage_from_shape(shape: &Value) -> Coverage {
 /// 分块渲染时这条很关键：否则**每一块**都要按整块蒙版的 bbox 重算覆盖率
 /// （实测一份 90% 画布大的椭圆蒙版把并行收益吃光：图层耗时从 1.7s 变成 4 块合计 7.3s）。
 fn coverage_from_shape_clipped(shape: &Value, clip: &Bbox) -> Coverage {
+    // 二期：内联 path 蒙版在这里同样成立（与 `apply_layer_mask_warn` 的带状态
+    // 路径共用 `path_coverage_clipped`）。`object_id` 引用需要文档状态、本
+    // 函数解不了 ⇒ 空覆盖率；带状态入口对引用型蒙版会给出告警并按「不施加
+    // 蒙版」处理，引用型蒙版不经本函数，两处不矛盾。
+    if shape.get("kind").and_then(Value::as_str) == Some("path") {
+        if let Ok(parsed) = crate::object::parse_path_subpaths(shape) {
+            return crate::geometry::path_coverage_clipped(
+                &parsed.subpaths,
+                4,
+                clip,
+                parsed.fill_rule,
+            );
+        }
+        return Coverage::empty();
+    }
     let (kind, bbox, points) = parse_shape_coverage(shape);
     shape_coverage_in(kind, bbox, &points, clip)
 }
@@ -5512,7 +5609,23 @@ fn apply_layer_mask_warn(
         layer_buffer.width(),
         layer_buffer.height(),
     );
-    let coverage = coverage_from_shape_clipped(&mask.shape, &layer_buffer.bbox());
+    let coverage = if mask.shape.get("kind").and_then(Value::as_str) == Some("path") {
+        // 二期（mask 源 = path）：来源解析需要文档状态（object_id 引用），且
+        // 失败必须留告警——不走 `coverage_from_shape_clipped` 的无状态口径，
+        // 更不许落进 `parse_shape_coverage` 的 rect 回退里静默变形。
+        // 失败时与「蒙版不存在」同例：告警 + 本层不施加蒙版（可观测，不撒谎）。
+        match mask_path_coverage(state, &mask.shape, &layer_buffer.bbox()) {
+            Ok(coverage) => coverage,
+            Err(reason) => {
+                warnings.push(format!(
+                    "蒙版 {mask_id} 的 path 形状不可用：{reason}（本层不施加蒙版）"
+                ));
+                return;
+            }
+        }
+    } else {
+        coverage_from_shape_clipped(&mask.shape, &layer_buffer.bbox())
+    };
     mask_buffer.fill_coverage(&coverage, [0.0, 0.0, 0.0, 1.0], BlendMode::Normal, 1.0);
     if mask.invert {
         for y in 0..mask_buffer.height() {

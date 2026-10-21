@@ -364,6 +364,62 @@ pub(super) fn write_delete_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
     finish_mutation(ctx, &result, region)
 }
 
+/// `create_mask` 的 path 形状校验（二期：mask 源 = path）。
+///
+/// 与渲染层共用同一份解析（`object::parse_path_subpaths`，禁止再写第二套）：
+/// 内联 `subpaths` 或 `object_id` 引用已有 path 形状对象，二选一；引用在
+/// 工具层先验存在性/存活/类型，让「建得出来 ⇒ 渲得出」在入口就成立
+/// （渲染层对失效引用另有告警兜底，防的是文档被其它方式改坏）。
+fn validate_mask_path_shape(ctx: &mut ToolContext<'_>, shape: &Value) -> Result<()> {
+    let invalid = |message: String| {
+        YanshiError::new(ErrorCode::InvalidArgument, ErrorContext::detail(message))
+    };
+    let inline = shape.get("subpaths");
+    let object_id = shape.get("object_id").and_then(Value::as_str);
+    match (inline, object_id) {
+        (Some(_), Some(_)) => Err(invalid(
+            "shape.subpaths 与 shape.object_id 只能给一个（二选一）".to_owned(),
+        )),
+        (None, None) => Err(invalid(
+            "kind=path 的蒙版 shape 必须给 subpaths（内联子路径）或 object_id（引用已有 path 形状）之一"
+                .to_owned(),
+        )),
+        (Some(_), None) => {
+            yanshi_render::object::parse_path_subpaths(shape)
+                .map_err(|reason| invalid(format!("shape 非法：{reason}")))?;
+            Ok(())
+        }
+        (None, Some(id)) => {
+            let state = document_state(ctx)?;
+            let Some(object) = state.objects.get(id) else {
+                return Err(YanshiError::new(
+                    ErrorCode::ReferenceNotFound,
+                    ErrorContext::detail(format!(
+                        "shape.object_id 引用的对象 {id} 不存在"
+                    )),
+                ));
+            };
+            if object.deleted_by.is_some() {
+                return Err(YanshiError::new(
+                    ErrorCode::ReferenceNotFound,
+                    ErrorContext::detail(format!(
+                        "shape.object_id 引用的对象 {id} 已被删除"
+                    )),
+                ));
+            }
+            match yanshi_render::object::parse_object(object) {
+                yanshi_render::object::Primitive::Shape {
+                    kind: yanshi_render::object::ShapeKind::Path,
+                    ..
+                } => Ok(()),
+                _ => Err(invalid(format!(
+                    "shape.object_id 引用的对象 {id} 不是 path 形状（只认 draw_shape 建的 kind=path 对象）"
+                ))),
+            }
+        }
+    }
+}
+
 pub(super) fn write_create_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let mask_id = require_str(args, "mask_id")?;
     // Q2：`from_selection` 一键转换（传 selection_id 或 "latest"）：克隆该选区的
@@ -419,9 +475,15 @@ pub(super) fn write_create_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
             ErrorContext::detail(
-                "shape 必须带 kind（rect/ellipse/polygon），from_selection 时可省略".to_owned(),
+                "shape 必须带 kind（rect/ellipse/polygon/path），from_selection 时可省略"
+                    .to_owned(),
             ),
         ));
+    }
+    // 二期：kind=path 的蒙版形状在入口验完（内联/引用二选一 + 同一份解析），
+    // 不许落库之后才在渲染层发现形状是坏的。
+    if shape.get("kind").and_then(Value::as_str) == Some("path") {
+        validate_mask_path_shape(ctx, &shape)?;
     }
     let feather = args
         .get("feather")

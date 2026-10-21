@@ -156,9 +156,10 @@ pub use png::{
 };
 pub use prng::Prng;
 pub use render::{
-    coverage_from_shape, parse_background, raster_mime_supported, render_region_unquantized,
-    shape_coverage, shape_outline, tile_from_buffer, RegionRender, RenderOptions, RenderStats,
-    Renderer, JPEG_MIME, MAX_EFFECT_PADDING, PNG_MIME, RAW_RGBA_MIME,
+    coverage_from_shape, mask_path_coverage, mask_shape_is_path_reference, parse_background,
+    raster_mime_supported, render_region_unquantized, shape_coverage, shape_outline,
+    tile_from_buffer, RegionRender, RenderOptions, RenderStats, Renderer, JPEG_MIME,
+    MAX_EFFECT_PADDING, PNG_MIME, RAW_RGBA_MIME,
 };
 pub use thumb::{render_thumbnail, Thumb, ThumbKind, ThumbStats, THUMB_BLOCK};
 pub use tile::{

@@ -418,7 +418,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "draw_shape",
         profile: Profile::Core,
-        summary: "绘制形状（矩形/椭圆/多边形/路径 path，可描边）：path 的 geometry 形如 {kind:\"path\", fill_rule:\"evenodd\"|\"nonzero\"（缺省 evenodd）, subpaths:[{start:[x,y], closed:bool, segments:[{op:\"L\",to:[x,y]} | {op:\"C\",c1:[x,y],c2:[x,y],to:[x,y]}]}]}；path 不给 color ⇒ 纯描边（开放路径），给 color ⇒ 填充（开放路径按隐式闭合填充、描边不封口）；非法 path 载荷带字段路径报错、不回退成多边形",
+        summary: "绘制形状（矩形/椭圆/多边形/路径 path，可描边）：path 的 geometry 形如 {kind:\"path\", fill_rule:\"evenodd\"|\"nonzero\"（缺省 evenodd）, subpaths:[{start:[x,y], closed:bool, segments:[{op:\"L\",to:[x,y]} | {op:\"C\",c1:[x,y],c2:[x,y],to:[x,y]}]}]}，或用 d 给 SVG 路径字符串（支持 M/L/C/Q/H/V/Z 与小写相对命令，Q 自动转 C；与 subpaths 二选一，落库前统一转成 subpaths）；path 不给 color ⇒ 纯描边（开放路径），给 color ⇒ 填充（开放路径按隐式闭合填充、描边不封口）；非法 path 载荷带字段路径报错、不回退成多边形",
         mutating: true,
         params: &[
             param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
@@ -442,8 +442,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
             param!("group_id", String, false, "组标识：一组笔共享一个 id ⇒ 用 revert_group 整组撤销（不给则不成组）"),
             param!("layer_id", String, true, "目标图层（与 brush_stroke 同语义）"),
-            param!("path_object_id", String, false, "已有 path 形状对象 id（与 subpaths 二选一，同时给报错）"),
-            param!("subpaths", Array, false, "内联子路径（与 draw_shape 的 path 载荷同构：[{start:[x,y], closed:bool, segments:[{op:\"L\",to} | {op:\"C\",c1,c2,to}]}]；与 path_object_id 二选一）"),
+            param!("path_object_id", String, false, "已有 path 形状对象 id（与 subpaths / d 三选一，多给报错）"),
+            param!("subpaths", Array, false, "内联子路径（与 draw_shape 的 path 载荷同构：[{start:[x,y], closed:bool, segments:[{op:\"L\",to} | {op:\"C\",c1,c2,to}]}]；与 path_object_id / d 三选一）"),
+            param!("d", String, false, "SVG 路径字符串（与 path_object_id / subpaths 三选一）：支持 M/L/C/Q/H/V/Z 与小写相对命令，Q 按公式自动转 C；解析错误带字符位置，解析结果走与 subpaths 同一份校验"),
             param!("brush", String, true, "笔刷名（同 brush_stroke：assets/brushes 或缓存里的 .myb，可省 .myb）"),
             param!("size", Number, false, "覆盖笔刷自带半径（直径像素，同 brush_stroke）；同时决定烘焙采样间距 Δs = max(1, 0.2×size)；不给时按 10 估算采样间距（笔刷半径仍以 .myb 为准）"),
             param!("color", Any, false, "颜色（同 brush_stroke：{r,g,b,a} / [r,g,b,(a)] / \"#RRGGBB\"）"),
@@ -454,6 +455,20 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("virtual_speed", Number, false, "虚拟手速 px/ms（缺省 0.5）：决定烘焙点的 time_ms 与吃速度的笔刷行为"),
             param!("preview", Boolean, false, "缺省 true = 每笔产出预览图；false = 不产出（连续落笔提速；透传 brush_stroke）"),
             param!("wait_for_render", Boolean, false, "缺省 true = 等渲染落盘再返回；false = 不等（透传 brush_stroke）"),
+        ],
+    },
+    ToolSpec {
+        name: "combine_shapes",
+        profile: Profile::Core,
+        summary: "简易布尔（位图路线）：把 2 个以上 draw_shape 形状（rect/ellipse/polygon/path 都吃）的填充覆盖率在像素场里按选区位图布尔公式合成（union=max、subtract=max(0,a−b)、intersect=a·b，左折叠、subtract 第一个是被减数），marching squares 提轮廓 + RDP 简化后落成一个新形状（单环=polygon，多环/带孔=path+evenodd）。与 path_boolean 的分工：那边解析精确但只吃 polygon 且会 tombstone 输入；这边吃全部形状种类且不删输入，代价是轮廓精度受光栅限制（亚像素等值线 + simplify 容差）。结果为空集明确报错。",
+        mutating: true,
+        params: &[
+            param!("object_ids", Array, true, "形状对象 id 数组（至少 2 个；subtract 时第一个是被减数，其余按顺序减）"),
+            param!("mode", String, false, "union（缺省）/ subtract / intersect"),
+            param!("result_id", String, false, "结果对象 id（缺省 combine_<ulid>）"),
+            param!("simplify", Number, false, "轮廓 RDP 简化容差（像素，缺省 0.5；0 = 不简化只去重复点。值越大点越少、轮廓越偏离原边界）"),
+            param!("layer_id", String, false, "结果图层（缺省取第一个输入对象的图层）"),
+            param!("color", Any, false, "结果填充色（与 draw_shape 同格式；缺省克隆第一个输入对象的样式）"),
         ],
     },
     ToolSpec {
@@ -1371,7 +1386,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("mask_id", String, true, "蒙版 id"),
-            param!("shape", Object, true, "几何 {kind:rect|ellipse|polygon, bbox, points?}"),
+            param!("shape", Object, true, "几何 {kind:rect|ellipse|polygon, bbox, points?}；kind=path 时二选一：subpaths（内联子路径，与 draw_shape 的 path geometry 同格式）或 object_id（引用已有 path 形状对象），覆盖率走 path 填充同一条路"),
             param!("feather", Number, false, "羽化过渡宽度（像素，缺省 0）"),
             param!("invert", Boolean, false, "反选（缺省 false）"),
             param!("mode", String, false, "缺省 new = 新建（id 已存在则报错）。add/subtract/intersect 现在**只能对一个已存在的 id** 放行，但落盘是**覆盖**旧形状，**不是**布尔合并 ⇒ 结果等于最后那个形状。真正的合并尚未实现（见 docs/design/brush-capability-gap.md 三百二十七节）"),
@@ -1954,6 +1969,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "边缘意图（缺省 hard）：hard=硬边，soft=羽化边缘，lost=消失边（融入背景）"
             ),
             param!("pressure_shape", Number, false, "压力曲线 -1..1（缺省 0 = 不启用）：一笔内压力自动变化。正值中间粗两头细（通用），负值起笔粗收笔细（书法顿笔出锋）"),
+            param!("path_guide", Object, false, "曲线尺吸附（二期）：{object_id|subpaths, snap_radius}——把落点往一条 path 曲线拉（权重 (1−d/R)²，d 为落点到规范折线的距离）；只改落点坐标，压感/时间不动。与 direction_guides 并存不冲突：那是方向场（改生成笔触的走向），本参数改的是已有落点的位置，两者独立生效。缺省不传 ⇒ 点列逐位不变"),
             param!("stroke_taper", Number, false, "起收锋 0..1（缺省 0 = 不启用）：笔画两头几何收细，中段不受影响。模拟锋利笔尖"),
             param!("preview", Boolean, false, "缺省 true = 产出这一笔的预览图；false = 不产出（连续作画提速；预览仍可由 export_png / get_document 取）"),
             param!(
@@ -2080,6 +2096,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("edge_path", Array, false, "边缘路径 [[x,y],...]（至少 2 点）；与 shape 二选一"),
+            param!("path_guide", Object, false, "曲线尺吸附（二期）：{object_id|subpaths, snap_radius}——先把 edge_path 输入点列往一条 path 曲线拉（权重 (1−d/R)²）再柔化；只作用于 edge_path（shape 派生边界是精确几何、不吸附），只改落点坐标。与 direction_guides 并存不冲突（方向场改笔触走向、本参数改落点位置）"),
             param!("shape", Object, false, "形状（rect/circle/polygon，同 smart_fill），自动取边界为边缘路径；与 edge_path 二选一"),
             param!("soften_width", Number, false, "柔化宽度 px，缺省 20（2-100）；大于 10px 自动分级接力"),
             param!("soften_strength", Number, false, "柔化强度 0.1-1，缺省 0.5（映射为 paint_push）"),

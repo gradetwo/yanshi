@@ -43,6 +43,21 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     let dtimes = parse_brush_point_times(args)?;
     // **风格变换** ✓（缺省 ⇒ 原样 ✓，见 `apply_brush_style` ✓）。
     let points = apply_brush_style(points, args)?;
+    // **曲线尺吸附**（二期 `path_guide`）：只拉落点坐标 (x, y)，压感逐位不动；
+    // 时间戳在点列之外按下标携带（`dtimes`），点数与顺序不变 ⇒ 同样不受影响。
+    // 缺省不传 ⇒ 点列逐位不变（回归锁）；传了 ⇒ 吸附后的点列即此后的一切
+    // 来源（含下方 `points_source` 的回放记录），与 style 变换同例。
+    let points: Vec<(f64, f64, f64)> = if args.get("path_guide").is_some() {
+        let coords: Vec<(f64, f64)> = points.iter().map(|p| (p.0, p.1)).collect();
+        let snapped = apply_path_guide_xy(ctx, args, coords)?;
+        points
+            .into_iter()
+            .zip(snapped)
+            .map(|((_, _, pressure), (x, y))| (x, y, pressure))
+            .collect()
+    } else {
+        points
+    };
     // **★★★ 对称模式 ✗ ★★★**（**第 251 轮 ✓）：**这一条路是**服务端自己栅格化**的** ✓
     //   ＋ **∴ 仓库自己写明 ✗**：**"提交一条笔触走的是**本文件这一份**（**`hokusai` ✓）
     //     ＋ **∴ 而** `yanshi-render::brush` 是**渲染那条路**用的** ✓

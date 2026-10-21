@@ -340,6 +340,51 @@ pub fn path_fill_contains(subpaths: &[Subpath], fill_rule: FillRule, p: (f64, f6
     rings_fill_contains(&rings, fill_rule, p)
 }
 
+/// 曲线尺吸附（二期 `path_guide`）：把点列往一组引导折线的最近点拉。
+///
+/// 每个点独立处理：在所有折线里找最近投影点 `Q`（[`nearest_on_polyline`]，
+/// 全部在线性化折线上算，不解曲线方程），距离 `d = |P − Q|`；`d >= radius`
+/// 时**逐位原样返回**（吸附半径外零影响，回归锁靠这一条）；`d < radius` 时
+/// `P' = P + w·(Q − P)`，权重 `w = (1 − d/radius)²`（`d = 0` 时 `w = 1`，
+/// 点恰落在引导线上）。纯函数、无状态；`radius <= 0` 或非有限 ⇒ 恒等返回
+/// （防御性退化，工具层在调用前已把非法半径报成参数错误）。
+pub fn snap_points_to_polylines(
+    points: &[(f64, f64)],
+    polylines: &[Vec<(f64, f64)>],
+    radius: f64,
+) -> Vec<(f64, f64)> {
+    if !radius.is_finite() || radius <= 0.0 || polylines.is_empty() {
+        return points.to_vec();
+    }
+    points
+        .iter()
+        .map(|&p| {
+            let mut best: Option<((f64, f64), f64)> = None;
+            for line in polylines {
+                if line.is_empty() {
+                    continue;
+                }
+                let (_, _, proj) = nearest_on_polyline(line, p);
+                let dx = p.0 - proj.0;
+                let dy = p.1 - proj.1;
+                let d2 = dx * dx + dy * dy;
+                if best.map(|(_, bd2)| d2 < bd2).unwrap_or(true) {
+                    best = Some((proj, d2));
+                }
+            }
+            let Some((proj, d2)) = best else {
+                return p;
+            };
+            let d = d2.sqrt();
+            if d >= radius || d == 0.0 {
+                return p;
+            }
+            let w = (1.0 - d / radius) * (1.0 - d / radius);
+            (p.0 + w * (proj.0 - p.0), p.1 + w * (proj.1 - p.1))
+        })
+        .collect()
+}
+
 /// 描边命中（§4.6）：点到任一子路径规范折线的最近距离 ≤ `stroke_width / 2 + 2px 容差`。
 pub fn path_stroke_contains(subpaths: &[Subpath], stroke_width: f64, p: (f64, f64)) -> bool {
     let limit = stroke_width / 2.0 + 2.0;
@@ -619,5 +664,31 @@ mod tests {
         ));
         // 端点外侧按最近点（端帽）算距离。
         assert!(path_stroke_contains(&[line], 10.0, (106.0, 0.0)));
+    }
+
+    #[test]
+    fn snap_pulls_points_by_quadratic_weight() {
+        // 引导线：y=0 的直段，吸附半径 10。
+        let guide = vec![vec![(0.0, 0.0), (100.0, 0.0)]];
+        // d = 5 = R/2 ⇒ w = (1 − 0.5)² = 0.25 ⇒ y: 5 → 5 − 1.25 = 3.75。
+        let out = snap_points_to_polylines(&[(50.0, 5.0)], &guide, 10.0);
+        assert_eq!(out, vec![(50.0, 3.75)]);
+        // d = 0 ⇒ 恰在引导线上，原样。
+        let out = snap_points_to_polylines(&[(50.0, 0.0)], &guide, 10.0);
+        assert_eq!(out, vec![(50.0, 0.0)]);
+        // d >= R ⇒ 逐位不变（吸附关/远距离的回归锁靠这一条）。
+        let out = snap_points_to_polylines(&[(50.0, 10.0), (50.0, 25.0)], &guide, 10.0);
+        assert_eq!(out, vec![(50.0, 10.0), (50.0, 25.0)]);
+        // 多条引导线取最近的那条：最近点在 y=20 线上，d=4
+        // ⇒ w = (1 − 0.4)² = 0.36 ⇒ y = 16 + 0.36 × 4 = 17.44。
+        let guides = vec![
+            vec![(0.0, 0.0), (100.0, 0.0)],
+            vec![(0.0, 20.0), (100.0, 20.0)],
+        ];
+        let out = snap_points_to_polylines(&[(50.0, 16.0)], &guides, 10.0);
+        assert!((out[0].1 - 17.44).abs() < 1e-9, "实测 {}", out[0].1);
+        // 半径非法 ⇒ 恒等（防御性退化；工具层先报错、到不了这里）。
+        let out = snap_points_to_polylines(&[(50.0, 5.0)], &guide, 0.0);
+        assert_eq!(out, vec![(50.0, 5.0)]);
     }
 }

@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 115 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 116 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -33,7 +33,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（115 个）。
+    /// 核心层：默认注册（116 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -608,7 +608,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，115 个）。
+    /// 核心层（默认注册，116 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1073,6 +1073,23 @@ fn normalize_shape_bbox(data: &mut Value) {
             );
         }
     }
+    // **kind=path 的 `d` 语法糖**（二期）：geometry 给 `d` 字符串（且没给
+    // `subpaths`）⇒ 在这里解析成 subpaths 并摘掉 `d`，下游（bbox 归一化、
+    // 校验、渲染）只见一种结构化形态。两者同给 ⇒ 不转换，留给校验明确报错
+    // （二选一）；`d` 语法坏 ⇒ 不转换，校验会用同一解析器给出带字符位置的
+    // 错误（normalize 不能返回错误，报错通道在校验里，解析器只有一份）。
+    if let Some(geometry) = data.get_mut("geometry").and_then(Value::as_object_mut) {
+        if geometry.get("kind").and_then(Value::as_str) == Some("path")
+            && geometry.get("subpaths").is_none()
+        {
+            if let Some(d) = geometry.get("d").and_then(Value::as_str).map(str::to_owned) {
+                if let Ok(subpaths) = parse_svg_d(&d) {
+                    geometry.insert("subpaths".to_owned(), subpaths);
+                    geometry.remove("d");
+                }
+            }
+        }
+    }
     // **kind=path 的 bbox 归一化**（曲线/路径一期 §4.3）：没给 bbox ⇒ 写入控制点包围盒，
     // 与渲染层 parse 的缺省口径一致（显式 bbox 优先，含上面刚归一化出的扁平写法）；
     // 下游只见一种形态。解析失败不在这里报错 —— `validate_shape_geometry` 紧接着
@@ -1205,6 +1222,46 @@ fn validate_shape_geometry(data: &Value) -> Result<()> {
             }
         }
         "path" => {
+            // `d` 语法糖（二期）：正常入口在 normalize 阶段已把 `d` 换成
+            // subpaths；走到这里还带 `d` 的只有两种情况——与 subpaths 同给
+            // （明确报二选一）、或绕过 normalize 的入口。两种都用同一解析器
+            // 说话：语法错误带字符位置，语义错误仍走下面同一份校验。
+            if let Some(d_value) = geometry.get("d") {
+                if geometry.get("subpaths").is_some() {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(
+                            "path 几何的 d 与 subpaths 只能给一个（二选一）".to_owned(),
+                        ),
+                    ));
+                }
+                let Some(d_str) = d_value.as_str() else {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail("path 几何的 d 必须是字符串".to_owned()),
+                    ));
+                };
+                let subpaths = parse_svg_d(d_str).map_err(|reason| {
+                    YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!("path 几何非法：{reason}")),
+                    )
+                })?;
+                let mut synthesized = serde_json::Map::new();
+                synthesized.insert("subpaths".to_owned(), subpaths);
+                if let Some(rule) = geometry.get("fill_rule") {
+                    synthesized.insert("fill_rule".to_owned(), rule.clone());
+                }
+                if let Err(reason) =
+                    yanshi_render::object::parse_path_subpaths(&Value::Object(synthesized))
+                {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!("path 几何非法：{reason}")),
+                    ));
+                }
+                return Ok(());
+            }
             // 与渲染层共用同一份校验（`object::parse_path_subpaths`，禁止再写第二套）：
             // 校验通过 ⇒ 渲染层必然解析得出，不会出现「工具说 ok、画出来是空」。
             let geometry_value = Value::Object(geometry.clone());
@@ -1655,6 +1712,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "list_assets" => write_list_assets(ctx, args),
         "brush_stroke" => write_brush_stroke(ctx, args),
         "stroke_path" => write_stroke_path(ctx, args),
+        "combine_shapes" => write_combine_shapes(ctx, args),
         "smart_fill" => write_smart_fill(ctx, args),
         "smart_blend" => write_smart_blend(ctx, args),
         "smart_glaze" => write_smart_glaze(ctx, args),
@@ -3948,6 +4006,113 @@ fn plan_stroke_path(
     plan
 }
 
+/// `path_guide` 解析结果（二期曲线尺吸附）：引导子路径在规范容差下展平的
+/// 折线列 + 吸附半径。
+struct PathGuideSpec {
+    polylines: Vec<Vec<(f64, f64)>>,
+    radius: f64,
+}
+
+/// `path_guide` 参数解析（二期曲线尺吸附；brush_stroke / smart_edge_soften 共用）。
+///
+/// 形态：`{object_id | subpaths, snap_radius}`——来源二选一（引用已有 path
+/// 形状对象，或内联子路径，与 draw_shape 共用 `parse_path_subpaths` 同一份
+/// 校验，禁止再写第二套）；`snap_radius` 必填、必须为 > 0 的有限数。没传
+/// `path_guide` ⇒ `Ok(None)`，调用方行为与现状逐位一致（回归锁）。
+fn resolve_path_guide(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Option<PathGuideSpec>> {
+    let Some(guide) = args.get("path_guide") else {
+        return Ok(None);
+    };
+    let invalid = |message: String| {
+        YanshiError::new(ErrorCode::InvalidArgument, ErrorContext::detail(message))
+    };
+    let Some(guide) = guide.as_object() else {
+        return Err(invalid(
+            "path_guide 必须是对象 {object_id|subpaths, snap_radius}".to_owned(),
+        ));
+    };
+    let radius = guide
+        .get("snap_radius")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| invalid("path_guide.snap_radius 必填（吸附半径，像素）".to_owned()))?;
+    if !radius.is_finite() || radius <= 0.0 {
+        return Err(invalid(format!(
+            "path_guide.snap_radius 必须 > 0，得到 {radius}"
+        )));
+    }
+    let ref_id = guide.get("object_id").and_then(Value::as_str);
+    let inline = guide.get("subpaths");
+    let subpaths: Vec<yanshi_render::path::Subpath> = match (ref_id, inline) {
+        (Some(_), Some(_)) => {
+            return Err(invalid(
+                "path_guide.object_id 与 path_guide.subpaths 只能给一个（二选一）".to_owned(),
+            ));
+        }
+        (None, None) => {
+            return Err(invalid(
+                "path_guide 必须给 object_id（引用已有 path 形状）或 subpaths（内联路径）之一"
+                    .to_owned(),
+            ));
+        }
+        (Some(object_id), None) => {
+            let state = document_state(ctx)?;
+            let Some(object) = state.objects.get(object_id) else {
+                return Err(invalid(format!(
+                    "path_guide.object_id 引用的对象不存在：{object_id}"
+                )));
+            };
+            if object.deleted_by.is_some() {
+                return Err(invalid(format!(
+                    "path_guide.object_id 引用的对象已被删除：{object_id}"
+                )));
+            }
+            match yanshi_render::object::parse_object(object) {
+                yanshi_render::object::Primitive::Shape {
+                    kind: yanshi_render::object::ShapeKind::Path,
+                    subpaths,
+                    ..
+                } => subpaths,
+                _ => {
+                    return Err(invalid(format!(
+                        "path_guide.object_id 引用的对象 {object_id} 不是 path 形状"
+                    )));
+                }
+            }
+        }
+        (None, Some(subpaths_value)) => {
+            let wrapper = json!({ "subpaths": subpaths_value });
+            match yanshi_render::object::parse_path_subpaths(&wrapper) {
+                Ok(parsed) => parsed.subpaths,
+                Err(reason) => {
+                    return Err(invalid(format!("path_guide.subpaths 非法：{reason}")));
+                }
+            }
+        }
+    };
+    let polylines: Vec<Vec<(f64, f64)>> = subpaths
+        .iter()
+        .map(|sub| yanshi_render::path::flatten_subpath(sub, yanshi_render::path::FLATTEN_TOL))
+        .collect();
+    Ok(Some(PathGuideSpec { polylines, radius }))
+}
+
+/// 把 `path_guide` 吸附施加到 (x, y) 点列（权重公式在
+/// `yanshi_render::path::snap_points_to_polylines`）。无 path_guide ⇒ 原样返回。
+fn apply_path_guide_xy(
+    ctx: &mut ToolContext<'_>,
+    args: &Value,
+    points: Vec<(f64, f64)>,
+) -> Result<Vec<(f64, f64)>> {
+    let Some(guide) = resolve_path_guide(ctx, args)? else {
+        return Ok(points);
+    };
+    Ok(yanshi_render::path::snap_points_to_polylines(
+        &points,
+        &guide.polylines,
+        guide.radius,
+    ))
+}
+
 /// **沿路径描边 `stroke_path`**（曲线/路径一期 §5）：把 path 形状（或内联 subpaths）
 /// 烘焙成标准 brush_stroke 落文档——介质 / 图层 / 撤销 / 判据与手绘笔触全同源，
 /// **不另写一条近似落笔路径**。多个 subpath 逐个成笔、顺序与输入一致。
@@ -3957,18 +4122,21 @@ fn write_stroke_path(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     };
     let ref_id = optional_str(args, "path_object_id");
     let inline = args.get("subpaths");
-    match (ref_id.is_some(), inline.is_some()) {
-        (true, true) => {
-            return Err(invalid(
-                "path_object_id 与 subpaths 只能给一个（二选一）".to_owned(),
-            ));
-        }
-        (false, false) => {
-            return Err(invalid(
-                "必须给 path_object_id（引用已有 path 形状）或 subpaths（内联路径）之一".to_owned(),
-            ));
-        }
-        _ => {}
+    let d_str = optional_str(args, "d");
+    // 来源三选一（path_object_id / subpaths / d 语法糖）：多给、一个不给都明确报错。
+    let source_count = usize::from(ref_id.is_some())
+        + usize::from(inline.is_some())
+        + usize::from(d_str.is_some());
+    if source_count > 1 {
+        return Err(invalid(
+            "path_object_id / subpaths / d 只能给一个（三选一）".to_owned(),
+        ));
+    }
+    if source_count == 0 {
+        return Err(invalid(
+            "必须给 path_object_id（引用已有 path 形状）、subpaths（内联路径）或 d（SVG 路径字符串）之一"
+                .to_owned(),
+        ));
     }
     let profile = match optional_str(args, "pressure_profile").as_deref() {
         None | Some("simulate_pressure") => StrokePressureProfile::Simulate,
@@ -4006,7 +4174,17 @@ fn write_stroke_path(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             "virtual_speed 必须 > 0，得到 {virtual_speed}"
         )));
     }
-    let subpaths: Vec<yanshi_render::path::Subpath> = if let Some(object_id) = &ref_id {
+    let subpaths: Vec<yanshi_render::path::Subpath> = if let Some(d) = &d_str {
+        // `d` 语法糖（二期）：tools 层解析成结构化 subpaths（错误带字符位置），
+        // 再喂同一份校验——解析产物与手写 subpaths 走同一条路，无第二套口径。
+        let subpaths_json =
+            parse_svg_d(d).map_err(|reason| invalid(format!("d 非法：{reason}")))?;
+        let wrapper = json!({ "subpaths": subpaths_json });
+        match yanshi_render::object::parse_path_subpaths(&wrapper) {
+            Ok(parsed) => parsed.subpaths,
+            Err(reason) => return Err(invalid(format!("d 非法：{reason}"))),
+        }
+    } else if let Some(object_id) = &ref_id {
         let state = document_state(ctx)?;
         let Some(object) = state.objects.get(object_id) else {
             return Err(invalid(format!(
@@ -4051,6 +4229,7 @@ fn write_stroke_path(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     for key in [
         "path_object_id",
         "subpaths",
+        "d",
         "pressure_profile",
         "pressure_max",
         "ramp_ratio",
@@ -5154,6 +5333,338 @@ fn write_path_split(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         "right_nodes": nodes.len() - at,
         "changeset_id": changeset,
         "head": committed_left.head_seq.max(committed_right.head_seq),
+    }))
+}
+
+/// 闭合环的 RDP 简化（`combine_shapes` 用）：把环摊成「点列 + 首点」的开链
+/// 喂 `svg::rdp`，再去掉结尾的重复首点。简化后唯一点 < 3（环塌了）⇒ 回退
+/// 原环——**保形优先于省点**，不许为了少几个点把结果形状弄没。
+fn simplify_closed_ring(ring: &[(f64, f64)], eps: f64) -> Vec<(f64, f64)> {
+    if eps <= 0.0 || ring.len() < 4 {
+        return ring.to_vec();
+    }
+    let mut open: Vec<(f64, f64)> = ring.to_vec();
+    open.push(ring[0]);
+    let mut out = yanshi_render::svg::rdp(&open, eps);
+    if out.len() > 1 && out.first() == out.last() {
+        out.pop();
+    }
+    let mut unique = out.clone();
+    unique.sort_by(|a, b| {
+        a.0.partial_cmp(&b.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    unique.dedup();
+    if unique.len() < 3 {
+        return ring.to_vec();
+    }
+    out
+}
+
+/// **简易布尔 `combine_shapes`**（曲线/路径二期 §9）：位图路线，补
+/// `path_boolean`（解析法、只认 polygon 形状）的位——输入是 draw_shape 的
+/// 形状对象（rect/ellipse/polygon/path），各自的**填充覆盖率**（渲染主管线
+/// 同款两个入口：path 走 `path_coverage_clipped`、其余走 `shape_coverage_in`）
+/// 在像素场里按选区位图布尔的同一组公式合成，再用 marching squares 提
+/// 轮廓、RDP 适度简化，落成**一个**新形状对象（单环 ⇒ polygon；多环/带孔
+/// ⇒ path + evenodd）。与 `path_boolean` 的分工写在注册表 summary 里：
+/// 那边解析精确但只吃 polygon 且 tombstone 输入；这边吃全部形状种类、
+/// **不删输入**，代价是轮廓精度受光栅分辨率限制（亚像素等值线 + simplify）。
+fn write_combine_shapes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let invalid = |message: String| {
+        YanshiError::new(ErrorCode::InvalidArgument, ErrorContext::detail(message))
+    };
+    // ---- 参数 ----
+    let Some(ids) = args.get("object_ids").and_then(Value::as_array) else {
+        return Err(invalid(
+            "object_ids 必填（形状对象 id 数组，至少 2 个）".to_owned(),
+        ));
+    };
+    if ids.len() < 2 {
+        return Err(invalid(format!(
+            "object_ids 至少给 2 个形状，得到 {}",
+            ids.len()
+        )));
+    }
+    let mut object_ids: Vec<String> = Vec::with_capacity(ids.len());
+    for value in ids {
+        let Some(id) = value.as_str() else {
+            return Err(invalid("object_ids 的元素必须是字符串".to_owned()));
+        };
+        object_ids.push(id.to_owned());
+    }
+    let mode = args.get("mode").and_then(Value::as_str).unwrap_or("union");
+    if !matches!(mode, "union" | "subtract" | "intersect") {
+        return Err(invalid(format!(
+            "未知的 mode {mode}（可用：union / subtract / intersect）"
+        )));
+    }
+    let simplify = args.get("simplify").and_then(Value::as_f64).unwrap_or(0.5);
+    if !simplify.is_finite() || simplify < 0.0 {
+        return Err(invalid(format!(
+            "simplify 必须是 ≥ 0 的数，得到 {simplify}"
+        )));
+    }
+    // ---- 逐个输入解析成 Primitive，并累出共同的填充外延 ----
+    type PrimParts = (
+        yanshi_render::object::ShapeKind,
+        yanshi_core::Bbox,
+        Vec<(f64, f64)>,
+        Vec<yanshi_render::path::Subpath>,
+        yanshi_render::path::FillRule,
+    );
+    let mut prims: Vec<PrimParts> = Vec::new();
+    let mut extent: Option<(f64, f64, f64, f64)> = None;
+    let mut first_layer: Option<String> = None;
+    let mut first_data: Option<Value> = None;
+    {
+        let state = document_state(ctx)?;
+        for id in &object_ids {
+            let Some(object) = state.objects.get(id) else {
+                return Err(YanshiError::new(
+                    ErrorCode::ReferenceNotFound,
+                    ErrorContext::detail(format!("对象 {id} 不存在")),
+                ));
+            };
+            if object.deleted_by.is_some() {
+                return Err(invalid(format!("对象 {id} 已被删除")));
+            }
+            if first_layer.is_none() {
+                first_layer = Some(object.layer_id.clone());
+                first_data = Some(object.data.clone());
+            }
+            match yanshi_render::object::parse_object(object) {
+                yanshi_render::object::Primitive::Shape {
+                    kind,
+                    bbox,
+                    points,
+                    subpaths,
+                    fill_rule,
+                    has_fill,
+                    ..
+                } => {
+                    if !has_fill {
+                        return Err(invalid(format!(
+                            "对象 {id} 没有填充区域（纯描边形状布尔无从谈起；path 要先给填充色）"
+                        )));
+                    }
+                    // 填充外延：path 用控制点包围盒，其余用 primitive bbox 与
+                    // points 的并集（polygon 的 bbox 老数据可能不含全部点）。
+                    let shape_extent = match kind {
+                        yanshi_render::object::ShapeKind::Path => {
+                            yanshi_render::object::path_control_bbox(&subpaths)
+                        }
+                        _ => {
+                            let mut e = (bbox.x, bbox.y, bbox.x + bbox.w, bbox.y + bbox.h);
+                            for (x, y) in &points {
+                                e.0 = e.0.min(*x);
+                                e.1 = e.1.min(*y);
+                                e.2 = e.2.max(*x);
+                                e.3 = e.3.max(*y);
+                            }
+                            Some(e)
+                        }
+                    };
+                    let Some(shape_extent) = shape_extent else {
+                        return Err(invalid(format!("对象 {id} 的填充外延为空")));
+                    };
+                    extent = Some(match extent {
+                        None => shape_extent,
+                        Some((a, b, c, d)) => (
+                            a.min(shape_extent.0),
+                            b.min(shape_extent.1),
+                            c.max(shape_extent.2),
+                            d.max(shape_extent.3),
+                        ),
+                    });
+                    prims.push((kind, bbox, points, subpaths, fill_rule));
+                }
+                _ => {
+                    return Err(invalid(format!(
+                        "对象 {id} 不是形状（combine_shapes 只吃 draw_shape 的形状对象；解析多边形布尔见 path_boolean）"
+                    )));
+                }
+            }
+        }
+    }
+    // ---- 像素场：整数对齐，面积上限明确报错（不许静默截断） ----
+    let (ex0, ey0, ex1, ey1) = extent.expect("至少两个输入已累出外延");
+    let x0 = ex0.floor() as i64;
+    let y0 = ey0.floor() as i64;
+    let x1 = ex1.ceil() as i64;
+    let y1 = ey1.ceil() as i64;
+    let width = (x1 - x0).max(0) as usize;
+    let height = (y1 - y0).max(0) as usize;
+    if width * height > 16_777_216 {
+        return Err(invalid(format!(
+            "形状外延 {width}×{height} 超过位图布尔的场上限（2^24 像素）——请改用 path_boolean（解析法）或先缩小形状"
+        )));
+    }
+    let field_bbox =
+        yanshi_core::Bbox::new(x0 as f64, y0 as f64, (x1 - x0) as f64, (y1 - y0) as f64);
+    let mut field = vec![0.0f32; width * height];
+    // ---- 左折叠合成（第一形状作底，之后逐个按 mode 并入） ----
+    // 组合公式逐字镜像选区位图布尔（`selection.rs::combine`）：
+    // union = max、subtract = max(0, a − b)、intersect = a · b；
+    // subtract 时第一个对象是被减数。
+    let mut started = false;
+    for (kind, bbox, points, subpaths, fill_rule) in &prims {
+        let coverage = match kind {
+            yanshi_render::object::ShapeKind::Path => {
+                yanshi_render::geometry::path_coverage_clipped(subpaths, 4, &field_bbox, *fill_rule)
+            }
+            _ => yanshi_render::render::shape_coverage_in(*kind, *bbox, points, &field_bbox),
+        };
+        if coverage.width == 0 || coverage.height == 0 {
+            // 空覆盖：union/subtract 的被加项是空集 ⇒ 无变化；intersect 的被乘
+            // 项是空集 ⇒ 全场清零（在下面的分支里处理，这里不能 continue 跳过）。
+            if started && mode == "intersect" {
+                field.iter_mut().for_each(|v| *v = 0.0);
+            }
+            started = true;
+            continue;
+        }
+        if started && mode == "intersect" {
+            // intersect 必须在**全场**相乘：新形状窗口之外的覆盖恒为 0，
+            // 只在窗口内贴值会把底图残留在窗口外（实测踩过：不交叠两矩形
+            // intersect 冒出底图自己的轮廓）。窗口外用 at_doc 采样（越界 0）。
+            for fy in 0..height {
+                for fx in 0..width {
+                    let value = coverage.at_doc((x0 + fx as i64) as f64, (y0 + fy as i64) as f64);
+                    let at = fy * width + fx;
+                    field[at] *= value;
+                }
+            }
+            started = true;
+            continue;
+        }
+        let off_x = (coverage.bbox.x as i64 - x0) as usize;
+        let off_y = (coverage.bbox.y as i64 - y0) as usize;
+        for cy in 0..coverage.height as usize {
+            for cx in 0..coverage.width as usize {
+                let value = coverage.data[cy * coverage.width as usize + cx];
+                let at = (off_y + cy) * width + (off_x + cx);
+                field[at] = if !started {
+                    value
+                } else {
+                    match mode {
+                        "union" => field[at].max(value),
+                        "subtract" => (field[at] - value).max(0.0),
+                        _ => unreachable!("intersect 已在上面全场处理"),
+                    }
+                };
+            }
+        }
+        started = true;
+    }
+    // ---- 提轮廓 + 简化 + 丢噪声环 ----
+    let loops = yanshi_render::svg::marching_squares(&field, width, height, (x0, y0), 0.5);
+    let mut kept: Vec<Vec<(f64, f64)>> = Vec::new();
+    for ring in loops {
+        if ring.len() < 3 {
+            continue;
+        }
+        let simplified = simplify_closed_ring(&ring, simplify);
+        if simplified.len() < 3 {
+            continue;
+        }
+        if yanshi_render::svg::signed_area(&simplified).abs() < 1.0 {
+            continue;
+        }
+        kept.push(simplified);
+    }
+    if kept.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!(
+                "布尔结果为空集（{} 的 {mode}）—— 空集没有可以落成对象的轮廓",
+                object_ids.join(", ")
+            )),
+        ));
+    }
+    // ---- 落成一个新形状对象（样式克隆第一个输入，与 path_boolean 同例） ----
+    let points_total: usize = kept.iter().map(Vec::len).sum();
+    let result_id = args
+        .get("result_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("combine_{}", yanshi_core::Ulid::new().encode()));
+    let layer_id = args
+        .get("layer_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or(first_layer)
+        .unwrap_or_else(|| "layer_default".to_owned());
+    let (min_x, min_y, max_x, max_y) = kept.iter().flat_map(|ring| ring.iter()).fold(
+        (
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ),
+        |(a, b, c, d), (x, y)| (a.min(*x), b.min(*y), c.max(*x), d.max(*y)),
+    );
+    let result_bbox = json!({"x": min_x, "y": min_y, "w": max_x - min_x, "h": max_y - min_y});
+    let (kind_name, geometry) = if kept.len() == 1 {
+        let ring = &kept[0];
+        (
+            "polygon",
+            json!({
+                "kind": "polygon",
+                "points": ring.iter().map(|(x, y)| json!([x, y])).collect::<Vec<_>>(),
+                "bbox": result_bbox.clone(),
+            }),
+        )
+    } else {
+        let subpaths_json: Vec<Value> = kept
+            .iter()
+            .map(|ring| {
+                json!({
+                    "start": [ring[0].0, ring[0].1],
+                    "closed": true,
+                    "segments": ring[1..].iter().map(|(x, y)| json!({"op": "L", "to": [x, y]})).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        let geometry = json!({
+            "kind": "path",
+            "fill_rule": "evenodd",
+            "subpaths": subpaths_json,
+            "bbox": result_bbox.clone(),
+        });
+        // 合成的 path 几何先过同一份校验再落库（建得出来 ⇒ 渲得出）。
+        yanshi_render::object::parse_path_subpaths(&geometry)
+            .map_err(|reason| invalid(format!("内部错误：合成的 path 几何未通过校验：{reason}")))?;
+        ("path", geometry)
+    };
+    let mut data = first_data.unwrap_or_else(|| json!({}));
+    if !data.is_object() {
+        data = json!({});
+    }
+    if let Some(map) = data.as_object_mut() {
+        map.remove("nodes");
+        map.remove("points");
+        map.remove("closed");
+    }
+    // color 显式给 ⇒ 覆盖克隆来的样式（注册表声明了就必须真的被读）。
+    if let Some(color) = args.get("color") {
+        data["color"] = color.clone();
+    }
+    data["geometry"] = geometry;
+    data["bbox"] = result_bbox;
+    ctx.commit(
+        AtomKind::CreateObject,
+        json!({"object_id": result_id, "layer_id": layer_id, "type": "shape", "data": data}),
+    )?;
+    Ok(json!({
+        "ok": true,
+        "object_id": result_id,
+        "mode": mode,
+        "kind": kind_name,
+        "loops": kept.len(),
+        "points_total": points_total,
+        "inputs_kept": true,
     }))
 }
 
@@ -16816,6 +17327,10 @@ fn object_type_name(object_type: ObjectType) -> &'static str {
     }
 }
 
+// **二期语法糖**：SVG `d` 字符串 → subpaths JSON（纯语法层，校验仍走渲染层同一份）。
+#[path = "tools_pathd.rs"]
+mod tools_pathd;
+use tools_pathd::*;
 // **Phase 2 拆分**（色彩体系规划）：蒙版工具已搬到「tools_mask.rs」（纯搬运，行为零变化）
 #[path = "tools_mask.rs"]
 mod tools_mask;
