@@ -142,6 +142,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("get_ancestors", r#"{"object_id":"o1"}"#),
     ("fill", r#"{"layer_id":"L1","data":{}}"#),
     ("export_png", r#"{"path":"x"}"#),
+    // **查一个工具怎么调** ✓（第 1561 轮；八处清单里我漏了这一处 ⇒ CI 的
+    // `every_registered_tool_has_a_documented_example` 当场抓住 ✗）
+    //   ⇒ **这条判据的价值正在此**：新工具忘了写示例，它立刻红 ✓
+    ("explain_tool", r#"{"name":"stroke_path"}"#),
     ("export_svg", r#"{"path":"x"}"#),
     // **两点之间生成过渡笔触**（AI 画家需求 P0-1.2）：左暗蓝 ⇒ 右暖白，10 笔。
     // 它逐笔走 `brush_stroke` 的落笔实现 ⇒ 与手画一致；`steps` 含首末两点。
