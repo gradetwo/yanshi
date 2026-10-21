@@ -3568,3 +3568,12 @@ gh auth status 2>&1 | head -4           # API 侧是否 timeout
 **⇒ 累计**：本场**二十个完整绿的 run** ✓
 
 **⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=25" --jq '.workflow_runs[] | select(.conclusion=="success") | .head_sha[0:8]'`
+
+## ✅ **第二十一个绿 run**：`blur` 别名修复（第 1514 轮）
+
+**⇒ 那一笔把 `blur` 从「**只在 `from_name` 里**」补进 `FILTER_NAMES`** ⇒ **12 绿 / 0 红** ✓
+**⇒ ⇒ 它修的是**有实现却到不了**（报「内核未实现」，实际有）⇒ 与「静默降级」**反向**同族：
+**不是"说成功却没做"，而是"说没做其实有"** ✓
+**⇒ ⇒ ⇒ 而 `doc_consistency` 立刻抓到我**漏改文档**（14 → 15）⇒ **那条测试在干它该干的事** ✓
+
+**⇒ 累计**：本场**二十一个完整绿的 run** ✓
