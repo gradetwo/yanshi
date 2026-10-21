@@ -3011,3 +3011,19 @@ ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs scripts/serve-*.mj
 **⇒ 细笔闸门那笔（`r < 3` 改判胶囊恒等式）也是 **success** ⇒ 本场**第四个完整绿的 run** ✓
 **⇒ ⇒ 累计覆盖**：Phase 2 原生矢量、Q123 三修复、细线补丁、**细笔闸门** ✓
 **⇒ ⇒ ⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=8" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'`
+
+## ★ `criteria shard 3/6` **每次都是最后一个**（第 1450 轮，第三次实测）
+
+**⇒ 观察**：前几次 run 里 shard 3 已经把整个 run 拖长；这次（新工具那笔）**又是它**：
+**⇒ ⇒ 11 绿 / 0 红 / 1 在跑，唯一在跑的就是 `criteria shard 3/6`** ✓
+
+**⇒ 这是**第三次**同一条 ⇒ 不再是偶发** ✓
+**⇒ ⇒ 而上一轮已排除的两个解释**：分片**构成均衡**（各片 53–54 条、浏览器 7–8 条 ✓）、
+那条 `timeout 1800` 的判据**在 shard 1**（而 shard 1 只用 10 分钟 ✓）
+**⇒ ⇒ ⇒ 剩下的解释**（仍待日志确认）：shard 3 里的**浏览器判据真的在跑**（CI 有 chromium）⇒ 每条最长 120 s ⇒ 7 条就可能 14 分钟 ✓
+
+**⇒ 若要根治**：把 `browser-*` 从"按名排序后取模"改成**显式按族摊开**（每片固定 7 条）
+⇒ 但**现在已经是 7–8 条**（均衡）⇒ **所以根治不是重排分片，而是缩短单条浏览器判据的 120 s 上限**
+⇒ **⇒ 那是另一件事**（要先知道哪条真的用满了 120 s，需要 job 日志 ⇒ AGENTS 记着"跑时取不到"）✗
+
+**⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs/<id>/jobs" --jq '.jobs[] | select(.status=="in_progress") | .name'` ✓
