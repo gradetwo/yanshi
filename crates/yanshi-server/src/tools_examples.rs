@@ -85,6 +85,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         r#"{"ref":"L_ref","layer_id":"L1","shape":{"type":"rect","x":40,"y":40,"w":180,"h":120},"samples":8}"#,
     ),
     (
+        "fit_background_field",
+        r#"{"layer_id":"L1","mask":{"type":"rect","x":120,"y":80,"w":160,"h":140},"degree":2}"#,
+    ),
+    (
         "smart_erase_shape",
         r#"{"layer_id":"L1","shape":{"type":"polygon","points":[[100,100],[200,100],[150,180]]}}"#,
     ),

@@ -1,0 +1,101 @@
+#!/usr/bin/env node
+// **`fit_background_field`**：掩膜外的像素拟合成平滑场、铺进掩膜内（第 1447 轮；外部功能请求）
+//
+// **⇒ 它解决什么** ✓：外部在做「只画背景」⇒ 他要「一个工具直接把掩膜外像素拟合成平滑背景场并铺上」
+//   ⇒ 而这个需求在本仓**也出现过**：`smart_sample` 用 8×8 的场近似参考图 ⇒ 他刚诊断出
+//   「插值点太少 ⇒ 必然斑块/竖纹」（`E1408`）⇒ **多项式场没有格点 ⇒ 结构上不可能有折痕** ✓
+//
+// **⇒ 断什么**（**结构量** ✓）：
+//   ① 掩膜内的一整块**白色**必须**被替换**（不能残留 255）⇒ 证明"真的铺进去了" ✓
+//   ② 填充结果**平滑**：沿一条线逐点灰度，**相邻差**的最大值必须**小**（阶梯底 ⇒ 拟合值连续）✓
+//   ③ **残差被报出来**（`residual_rms` 是三个数）⇒ 调用方能判断 degree 够不够 ✓
+//   ④ 反证：掩膜外的像素**不许**被改动（取掩膜外一点，前后灰度相同）✓
+//
+// **⇒ 退出码**：0 通过｜1 不符｜**3 不可判**
+const [base] = process.argv.slice(2);
+if (!base) {
+  console.error("用法: node scripts/tool-fit-background-field.mjs <base>");
+  process.exit(3);
+}
+const stamp = Date.now();
+const doc = `bgf_${stamp}`;
+const made = await (await fetch(`${base}/api/documents`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ doc_id: doc, width: 400, height: 300,
+    background: { r: 255, g: 255, b: 255, a: 255 } }),
+})).json();
+if (!made.token) { console.error("  ⊘ 不可判：建不出文档"); process.exit(3); }
+const post = async (tool, args) => {
+  const r = await fetch(`${base}/api/tools/${tool}?doc=${doc}&token=${made.token}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(args ?? {}),
+  });
+  return r.json();
+};
+await post("create_layer", { layer_id: "L", name: "L" });
+// 二次渐变的底（12 条横带）
+for (let k = 0; k < 12; k += 1) {
+  const y = 10 + k * 23;
+  const g = Math.round(255 * ((y / 300 - 0.5) ** 2 * 4));
+  await post("fill_region", { layer_id: "L", shape: { type: "rect", x: 10, y, w: 380, h: 23 },
+    color: [g, g, g], opacity: 1.0 });
+}
+// 掩膜区涂白（要被填掉）
+await post("fill_region", { layer_id: "L", shape: { type: "rect", x: 120, y: 80, w: 160, h: 140 },
+  color: [255, 255, 255], opacity: 1.0 });
+const outsideBefore = (await post("sample_colors", { points: [[40, 150]] })).samples?.[0]?.rgba;
+
+const r = await post("fit_background_field", {
+  layer_id: "L", mask: { type: "rect", x: 120, y: 80, w: 160, h: 140 }, degree: 2, sample_stride: 2 });
+// **⇒ 工具在**合法输入**下报错 = **产品失败**（红），不是"不可判"** ✗
+//   **⇒ 为什么**：我第一版在这里 `exit(3)` ⇒ 而变异（不填像素 ⇒ 工具报"掩膜内没有一个像素"）
+//     ⇒ 判据只报"不可判" ⇒ **变异证明不了任何东西** ✗（当场被变异抓住 ✓）
+if (r?.ok !== true) {
+  console.error(`  ✗ fit_background_field 在合法输入上失败 ⇒ ${String((r?.context || {}).detail || "").slice(0, 120)}`);
+  process.exit(1);
+}
+
+const fails = [];
+const ok = (m) => console.log(`  ✓ ${m}`);
+const bad = (m) => { fails.push(m); console.log(`  ✗ ${m}`); };
+
+// ① 掩膜内的白色被替换
+const pts = [];
+for (let y = 85; y <= 215; y += 10) pts.push([200, y]);
+const inside = (await post("sample_colors", { points: pts })).samples?.map((s) => s.rgba?.[0]) ?? [];
+if (inside.length > 0 && !inside.some((v) => v === 255)) {
+  ok(`① 掩膜内 ${inside.length} 个采样点**没有**残留白色 ⇒ 真的铺进去了（灰度 ${inside.slice(0, 4).join(",")}…）`);
+} else {
+  bad(`① 掩膜内不应残留 255 ⇒ 实测 ${JSON.stringify(inside)}`);
+}
+
+// ② 平滑（相邻差小）：阶梯底拟合出来必须是连续的
+if (inside.length > 2) {
+  let maxStep = 0;
+  for (let i = 1; i < inside.length; i += 1) maxStep = Math.max(maxStep, Math.abs(inside[i] - inside[i - 1]));
+  if (maxStep <= 60) ok(`② 填充平滑：相邻采样点灰度最大差 ${maxStep} ≤ 60（阶梯底被拟合成连续场）`);
+  else bad(`② 填充应平滑 ⇒ 相邻最大差 ${maxStep}（> 60 ⇒ 场不连续）`);
+} else {
+  bad("② 采样点不足，无法判断平滑性");
+}
+
+// ③ 残差被报出来
+const rms = r.residual_rms;
+if (Array.isArray(rms) && rms.length === 3 && rms.every((v) => typeof v === "number")) {
+  ok(`③ 残差已报出：[${rms.map((v) => v.toFixed(1)).join(", ")}]（degree 2 对阶梯底 ≈ 40 是合理的）`);
+} else {
+  bad(`③ 必须返回三通道 residual_rms ⇒ 实测 ${JSON.stringify(rms)}`);
+}
+
+// ④ 反证：掩膜外不许被改
+const outsideAfter = (await post("sample_colors", { points: [[40, 150]] })).samples?.[0]?.rgba;
+if (outsideBefore && outsideAfter && outsideBefore[0] === outsideAfter[0]) {
+  ok(`④ 掩膜外像素未被改动（前 ${outsideBefore[0]}、后 ${outsideAfter[0]}）`);
+} else {
+  bad(`④ 掩膜外不应被改 ⇒ 前 ${JSON.stringify(outsideBefore)}、后 ${JSON.stringify(outsideAfter)}`);
+}
+
+if (fails.length > 0) {
+  console.log(`\n  ✗ ${fails.length} 处不符（fit_background_field）`);
+  process.exit(1);
+}
+console.log("\n  ✓ 掩膜内被平滑场替换、残差可查、掩膜外未动");

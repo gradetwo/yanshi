@@ -2107,6 +2107,20 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "fit_background_field",
+        profile: Profile::Core,
+        summary: "把**掩膜外**的像素拟合成**平滑多项式背景场**，并铺进**掩膜内**（一次落平，不出笔触）。\n\n**⇒ 什么时候用它** ✓：想要**平滑的底**（sky/墙/桌面），而不想要笔触或折痕 —— 多项式是**全局**的 ⇒ **结构上不可能有格点折痕** ✓；\n**⇒ 什么时候别用** ✗：背景有**高频细节**（树叶/织物）⇒ 多项式**不能表示** ⇒ 会糊 ⇒ 那种情况用 `smart_sample`（笔触）或直接 `import_image` ✓。\n**⇒ 与 `smart_sample` 的分工**：这个是**像素**、那个是**笔触** ⇒ **底用这个、上面再用笔触** ✓。\n**⇒ 返回** `residual_rms`（三通道拟合残差）⇒ **调用方据此判断 degree 够不够** ✓（残差大 ⇒ 加 degree 或换工具）",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层 id"),
+            param!("mask", Object, true, "掩膜形状（写法同 `fill_region` 的 shape：rect/circle/ellipse/polygon，支持 holes）⇒ **掩膜内**会被拟合场填掉，**掩膜外**的像素是拟合样本"),
+            param!("degree", Number, false, "多项式阶数 1..3（缺省 2）。越高越能贴合弯曲的背景，但也越容易过冲"),
+            param!("sample_stride", Number, false, "采样步长 1..16（缺省 2）：每隔 N 个像素取一个样本 ⇒ 越大越快、越不敏感于噪声"),
+            param!("margin", Number, false, "掩膜 bbox 外扩比例（缺省 0.25）⇒ 决定拿多远处的像素当样本；外扩不够时样本数可能不足"),
+            param!("object_id", String, false, "对象 id（缺省自动生成）"),
+        ],
+    },
+    ToolSpec {
         name: "smart_sample",
         profile: Profile::Core,
         summary: "从参考图/参考图层采样区域内的明暗与色彩分布，自动生成顺应等明度线的多尺度笔触。两阶段：大笔软边铺底 + 梯度加权肌理笔触（落笔概率 ∝ 明暗梯度，方向取等明度切向）。",
