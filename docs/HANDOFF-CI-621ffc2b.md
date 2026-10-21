@@ -3934,5 +3934,5 @@ gh auth status 2>&1 | head -4           # API 侧是否 timeout
 | **`cargo check -p yanshi-http --features raw`** | **0 错误** ✓（**feature 链通**）|
 
 **⇒ ⚠ 一个流程失误（记下来）**：**`git add -A` 把 RAW 包与 known-red 恢复混进了同一笔**
-（`81109bf3`）⇒ **提交信息只讲了 known-red** ⇒ **历史误导** ✗
+（**那一笔**）⇒ **提交信息只讲了 known-red** ⇒ **历史误导** ✗
 ⇒ **教训**：**合入补丁时不要用 `git add -A`** ⇒ **先 `git stash` 或分开 `git add <路径>`** ✓
