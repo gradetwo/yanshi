@@ -3672,6 +3672,19 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             ));
         }
     }
+    // **先拦 "给了 `d` 却没给 type"** ✓（第 1500 轮；与 `§232` 同型：**静默默认成 rect** ⇒ 报错误导 ✗）
+    if shape.get("d").is_some() && shape.get("type").is_none() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "这一调给了 `d`（SVG 路径）却没给 `type` ⇒ **`fill_region` 的 `shape` 只接受 \
+                 rect / ellipse / polygon**（**不支持路径** ✗）：\
+                 若要用贝塞尔/路径填充，请改用 `draw_shape`（`data.geometry` 接受 **`d`**，例如 \
+                 {\"kind\":\"path\",\"d\":\"M 10,10 C 40,0 60,40 90,30 Z\"}）；\
+                 或把路径当**掩膜**（`create_mask` / `fit_background_field` 的 `mask` 接受**只给 `d`** ✓）",
+            ),
+        ));
+    }
     let number =
         |key: &str, default: f64| shape.get(key).and_then(Value::as_f64).unwrap_or(default);
     let kind = shape
@@ -3773,7 +3786,12 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         other => {
             return Err(YanshiError::new(
                 ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!("未知形状 {other} ⇒ 可用：rect / ellipse / polygon")),
+                ErrorContext::detail(format!(
+                    "未知形状 {other} ⇒ **`fill_region` 的 `shape` 只接受 rect / ellipse / polygon**（**不支持路径** ✗）：\
+                     若要**用贝塞尔/路径填充**，请改用 `draw_shape`（它的 `data.geometry` 接受 **`d`**，\n\
+                     例如 {{\"kind\": \"path\", \"d\": \"M 10,10 C 40,0 60,40 90,30 Z\"}}）；\n\
+                     或者把路径当**掩膜**（`fit_background_field` / `create_mask` 的 `mask` 接受 **只给 `d`** ✓）"
+                )),
             ))
         }
     };

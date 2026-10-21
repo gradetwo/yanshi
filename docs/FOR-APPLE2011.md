@@ -4492,3 +4492,42 @@ degree=0 ⇒ field_range=[92,92]（单值）、residual=76.5（= 样本标准差
 **⇒ ⇒ 变异（从报错里删掉提示）⇒ 红** ✓
 
 **⇒ ⇒ ⇒ 所以这条**不会退回去** ✓
+
+## 你说的「`fill_region` 的 `shape` 不支持 `path`」⇒ **实测确认，而且是个真缺口**
+
+**⇒ 对照实测**：
+
+| 调用 | 结果 |
+|---|---|
+| **`fill_region` + `{"type":"path","d":…}`** | ✗ 报「未知形状 path ⇒ 可用：rect / ellipse / polygon」|
+| **`fill_region` + `{"d": …}`**（不给 type）| ✗ 报「**rect 形状**的 bbox 宽高必须大于 0」⇒ **静默默认成 rect** ✗ |
+| **`mask` + `{"d": …}`**（如 `fit_background_field` / `create_mask`）| **✓ 可用** |
+| **`draw_shape` + `data.geometry.kind=path` + `d`** | **✓ 可用** |
+
+**⇒ ⇒ 所以缺口是真的**：**同一条贝塞尔曲线，能当掩膜、能画成形状，但**不能用 `fill_region` 直接填** ✗
+
+### 我这轮做的（**不是加功能，是把话说清**）
+
+**⇒ 两条报错现在都**明确告诉你该怎么办**** ✓：
+```
+「未知形状 path ⇒ **`fill_region` 的 `shape` 只接受 rect / ellipse / polygon**（**不支持路径** ✗）：
+ 若要用贝塞尔/路径填充，请改用 `draw_shape`（`data.geometry` 接受 **`d`**，例如
+ {"kind":"path","d":"M 10,10 C 40,0 60,40 90,30 Z"}）；
+ 或把路径当**掩膜**（`create_mask` / `fit_background_field` 的 `mask` 接受**只给 `d`** ✓）」
+```
+**⇒ ⇒ 而"只给 `d`"那一调现在**也有专门报错**（不再落进 rect 默认分支报"bbox 宽高"）✓
+
+### 而**你现在就能用**的两条路（都实测过）
+
+**① 面用 `draw_shape` + `d`**（它支持 `fill`）：
+```json
+{"layer_id":"L1","object_id":"face",
+ "data":{"geometry":{"kind":"path","d":"M 100,80 C 160,20 240,140 300,80 L 300,220 L 100,220 Z"},
+          "fill":{"color":[0.9,0.75,0.65,1.0]}}}
+```
+**⇒ 实测 `ok=true`** ✓ —— 这正是你要的"**面**"（不是沿线的带）✓
+
+**② 先画形状再当掩膜** ⇒ 需要"只在面内落笔"时，用 `create_mask`（`mask` 收 `d`）+ 笔刷 ✓
+
+**⇒ ⇒ **要不要我把 `d` 也加进 `fill_region` 的 `shape`**？**可以做，但**不是小改动**（它有自己的解析路径）⇒ **你说一声我就排**
+—— 若 `draw_shape` + `fill` 已经够你用，就**不必**加 ✓
