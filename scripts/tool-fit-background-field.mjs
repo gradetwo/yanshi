@@ -249,6 +249,64 @@ if (outsideBefore && outsideAfter && outsideBefore[0] === outsideAfter[0]) {
   }
 }
 
+// ⑧ **`sample_stride` 与 `margin` 必须**真的被读**（第 1460 轮；AGENTS 那条问句）
+//   **⇒ 为什么** ✗：两个参数**都写在 spec 里**，但**前七条断言一条也没证明它们被读过** ⇒
+//     **把它们静默忽略**（写死 stride=2、margin=0.25）⇒ **前七条照样全过** ✗
+//   **⇒ ⇒ 实测**（同一构型只改一个参数）：
+//     · `stride` 1 → 8 ⇒ **samples 112000 → 1780（~63×）**
+//     · `margin` 0 → 1.0 ⇒ **samples 22784 → 52000（2.3×）**
+//   **⇒ ⇒ ⇒ 断言**（**比值/方向**，不是写死的数字 ✓）：
+//     ① `samples(stride=8)` **<** `samples(stride=1) / 10`（步长 8 倍 ⇒ 样本至少少一个量级）
+//     ② `samples(margin=1.0)` **>** `samples(margin=0.0)`（外扩更大 ⇒ 样本更多）
+//     ③ **恒等式**：`rms(stride=1)` **≤** `rms(stride=8)`（样本多不可能拟合更差）
+{
+  const docS = `bgf_par_${stamp}`;
+  const madeS = await (await fetch(`${base}/api/documents`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: docS, width: 600, height: 400,
+      background: { r: 255, g: 255, b: 255, a: 255 } }),
+  })).json();
+  if (!madeS.token) {
+    console.log("  ○ ⑧ 未验（建不出文档）");
+  } else {
+    const pS = async (tool, a) => {
+      const rr = await fetch(`${base}/api/tools/${tool}?doc=${docS}&token=${madeS.token}`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(a ?? {}),
+      });
+      return rr.json();
+    };
+    await pS("create_layer", { layer_id: "L", name: "L" });
+    for (let k = 0; k < 12; k += 1) {
+      const y = 10 + k * 30;
+      const g = Math.round(255 * ((y / 400 - 0.5) ** 2 * 4));
+      await pS("fill_region", { layer_id: "L", shape: { type: "rect", x: 10, y, w: 580, h: 30 },
+        color: [g, g, g], opacity: 1.0 });
+    }
+    const maskS = { type: "rect", x: 200, y: 120, w: 200, h: 160 };
+    const s1 = await pS("fit_background_field", { layer_id: "L", mask: maskS, degree: 2, sample_stride: 1 });
+    const s8 = await pS("fit_background_field", { layer_id: "L", mask: maskS, degree: 2, sample_stride: 8 });
+    const m0 = await pS("fit_background_field", { layer_id: "L", mask: maskS, degree: 2, margin: 0.0 });
+    const m1 = await pS("fit_background_field", { layer_id: "L", mask: maskS, degree: 2, margin: 1.0 });
+    if ((s8?.samples ?? 0) * 10 < (s1?.samples ?? 0)) {
+      ok(`⑧ sample_stride 被读：stride 1 ⇒ ${s1.samples} 样本｜stride 8 ⇒ ${s8.samples}（少 10 倍以上）`);
+    } else {
+      bad(`⑧ sample_stride 必须影响采样数 ⇒ 实测 1:${s1?.samples}、8:${s8?.samples}（被忽略时两者相等）`);
+    }
+    if ((m1?.samples ?? 0) > (m0?.samples ?? 0)) {
+      ok(`⑧ margin 被读：0 ⇒ ${m0.samples} 样本｜1.0 ⇒ ${m1.samples}（外扩更大 ⇒ 样本更多）`);
+    } else {
+      bad(`⑧ margin 必须影响采样数 ⇒ 实测 0:${m0?.samples}、1.0:${m1?.samples}`);
+    }
+    const q1 = s1?.residual_rms?.[0];
+    const q8 = s8?.residual_rms?.[0];
+    if (typeof q1 === "number" && typeof q8 === "number" && q1 <= q8 + 0.5) {
+      ok(`⑧ 恒等式成立：stride 1 残差 ${q1.toFixed(1)} ≤ stride 8 残差 ${q8.toFixed(1)}（样本多不可能更差）`);
+    } else {
+      bad(`⑧ stride 1 的残差不应大于 stride 8 ⇒ 实测 1:${q1}、8:${q8}`);
+    }
+  }
+}
+
 if (fails.length > 0) {
   console.log(`\n  ✗ ${fails.length} 处不符（fit_background_field）`);
   process.exit(1);
