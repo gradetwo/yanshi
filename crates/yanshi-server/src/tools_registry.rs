@@ -1454,7 +1454,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[
             param!("layer_id", String, true, "目标图层"),
             param!("filter_name", String, true, "滤镜名（见工具说明）。**`relief`（厚涂浮雕）的参数与实测范围**（第 254 轮修过一处设计缺陷后**重测** ✓）：`strength` **0.5–10** 都可用且**均值不漂**（实测漂移 ≤0.4/255 ✓），**越大只是浮雕越强**（对比 +0.0 ⇒ +2.2 ✓）—— **0.5 轻微／2 明显／5–10 强烈** ✓；`height_gain` 10–30 常见；`azimuth` 0–360（缺省 135）、`elevation` 1–89（缺省 45）✓ ★需要额外参数的：`dehaze` 必须给 `air: [r,g,b]`（可用 `estimate_dehaze` 估计）✓；其余 13 个不需要 ✓。"),
-            param!("params", Object, false, "滤镜参数，如 {sigma:2.0}"),
+            param!("params", Object, false, "滤镜参数（按 `filter_name` 取；每个滤镜的键见工具说明）。\n**`brightness_contrast` 的**两套约定**（第 1515 轮实测，外部被它坑过）**：\n· `brightness`：**加法偏移，恒等值是 `0`**（`0.1` 约等于提亮 25.5/255）\n· `contrast`：**乘法增益，恒等值是 `1`**（`0` 会**全黑**、`2` 则对比翻倍）\n**⇒ 于是 `{brightness:0, contrast:0}` 不是**不变**，而是**全黑**** ——\n要**不变**请**省略参数**或写 `{brightness:0, contrast:1}`。\n**⇒ 若你要的是**零点即恒等**那种语义**，请用 **`add_adjustment` + `adjustment_type: brightness_contrast`**。\n（两者**实测都恒等**；只是 `add_filter` 这条路的**恒等值不同**）"),
             param!("opacity", Number, false, "整体不透明度 0-1（缺省 1）"),
             param!(
                 "z_index",

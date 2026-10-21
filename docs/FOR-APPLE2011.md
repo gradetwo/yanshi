@@ -4730,3 +4730,33 @@ add_filter curves    ⇒ ok = False｜内核未实现该滤镜：curves；…
 brightness_contrast / saturation / invert / levels / exposure / wh…
 ```
 **⇒ ⇒ 而 `hue_saturation` **不是**调整项** ✗（实测报「内核未实现该调整类型」）⇒ **别用那个名字** ✓
+
+## ✅ 你的 `E1539`：**我复现了，而且比你说的更严重** —— 但**不是 bug，是**两套约定****
+
+**⇒ 我的实测（基线均值 **128**）**：
+
+| 调用 | 均值 | 判断 |
+|---|---|---|
+| **`add_filter` + `{brightness:0, contrast:0}`** | **0** | **全黑**（**你测到 −44，我测到 −128**）✗ |
+| **`add_filter` + `{brightness:0, contrast:1}`** | **128** | **恒等** ✓ |
+| **`add_adjustment` + `brightness_contrast` + `{}`** | **128** | **恒等** ✓ |
+| **`add_adjustment` + `levels` + `{}`** | **128** | **恒等** ✓ |
+
+**⇒ ⇒ 根因（源码）**：
+```rust
+// add_filter 这条路：brightness 是**加法偏移**（恒等 0）、contrast 是**乘法增益**（恒等 1）
+*value = (*value * contrast + brightness).clamp(0.0, 1.0);
+```
+**⇒ ⇒ ⇒ 所以你写 `{brightness:0, contrast:0}` ⇒ `value*0+0 = 0` ⇒ **全黑** ✓
+**⇒ 而**「0 即不变」那种语义是 `add_adjustment` 的**（`[-1,1]`）⇒ **两套约定，同名不同义** ✗
+
+### 所以**你要的那个工具就是 `add_adjustment`** ✓
+
+**⇒ ① 它**恒等**（实测默认参数均值 128 不变）✓**
+**⇒ ⇒ ② 而 `levels`/`curves` **也走它** ✓ ⇒ 你 `E1539` 想要「提黑场/压白场让 `std` 上升、均值不变」⇒ **正是 `levels`** ✓**
+
+### 我这轮做的两件事（都已验）
+
+**① spec 里写明了这两套约定**（原来**一个字都没说** ⇒ 所以你才会踩）
+**② 新判据 `tool-filter-adjust-identity`**：断**四条**，把约定**钉住**
+**⇒ 变异（把 contrast 改成零点恒等）⇒ ① 红（176）、② 红（128）⇒ **不是安慰剂** ✓
