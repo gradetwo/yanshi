@@ -96,6 +96,28 @@ else bad(`② 不压平时应有 fill-opacity ⇒ 实测 ${String(rawRect).slice
 if (flatRect && !/fill-opacity/.test(flatRect)) ok("③ 压平后没有 fill-opacity（不会再被 sRGB 混合一次）");
 else bad(`③ 压平后不该有 fill-opacity ⇒ 实测 ${String(flatRect).slice(0, 90)}`);
 
+// ④ 半透明**描边**压不了 ⇒ 必须**出声**（第 1434 轮；补丁自己列的「已知界限：只压 fill」）
+//   **⇒ 为什么压不了** ✗：描边骑在形状边缘上 ⇒ 一半压在 fill、一半压在背景
+//     ⇒ **两个 backdrop** ⇒ 压成单色**必错一半** ✗（而 Q123 对 fill 的规矩正是「异质 ⇒ 不压」✓）
+//   **⇒ ⇒ 所以**判据断的不是"压平了"，而是"**如实说了**" ✓
+{
+  // 本判据的 `post` 已绑定到单一文档 ⇒ 用**新图层**隔离（不污染 ①–③ 的采样 ✓）
+  {
+    await post("create_layer", { layer_id: "SL", name: "SL" });
+    await post("draw_shape", { layer_id: "SL", data: {
+      geometry: { kind: "rect", bbox: { x: 40, y: 40, w: 80, h: 80 } },
+      color: [0, 0, 0, 0.5], stroke_color: [1, 1, 1, 0.5], stroke_width: 8 } });
+    const r = await post("export_svg", { path: `flat_stroke_${stamp}.svg`, flatten_opacity: true });
+    const w = r?.warnings;
+    const said = Array.isArray(w) && w.some((x) => /半透明描边/.test(String(x)));
+    if (r?.flatten_stroke_skipped >= 1 && said) {
+      ok(`④ 半透明描边未压平但**出声**（flatten_stroke_skipped=${r.flatten_stroke_skipped}）`);
+    } else {
+      bad(`④ 半透明描边压不了 ⇒ 必须计数并警告 ⇒ 实测 skipped=${r?.flatten_stroke_skipped}、warnings=${JSON.stringify(w)}`);
+    }
+  }
+}
+
 if (fails.length > 0) {
   console.log(`\n  ✗ ${fails.length} 处不符（flatten_opacity 必须与引擎逐通道一致）`);
   process.exit(1);

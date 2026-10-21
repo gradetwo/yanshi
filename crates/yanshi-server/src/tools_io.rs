@@ -753,6 +753,8 @@ struct SvgCounts {
     /// 想压平但资格不成立（图层组非 plain／backdrop 不可信／取不到）的
     /// 对象数 ⇒ 保留 `fill-opacity` 形式发出、**不**用近似色静默糊 ✓。
     flatten_skipped: u32,
+    /// **半透明描边压不了**（描边骑在边缘上 ⇒ 两个 backdrop ⇒ 压成单色必错一半 ⇒ 不压、只计数）
+    flatten_stroke_skipped: u32,
     raster_reasons: std::collections::BTreeMap<&'static str, u32>,
 }
 
@@ -1009,6 +1011,8 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
     };
     let flatten_active = flatten_requested && background_bytes.is_some_and(|(_, _, _, a)| a == 255);
     let flatten_opacity = flatten_active;
+    // 有半透明描边没能压平 ⇒ 结尾加一句 warning ✓
+    let mut flatten_stroke_warned = false;
     // **真实 backdrop 追踪（2026-10-21 Q1 ✓）**：`below` = 已处理完的图层
     // 逐层 over 后的整幅合成（sRGB 字节、初值 = 文档背景 ✓）。压平的
     // backdrop **不再**无条件用文档背景字段 ✗ —— 那只对「单层、笔下无物」
@@ -1558,6 +1562,18 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                                     " stroke-opacity=\"{}\"",
                                     svgx::fmt_num(f64::from(sc[3]))
                                 ));
+                                // **★ 压平模式下，半透明**描边**压不了 ⇒ 必须**出声**** ✓
+                                //   （第 1434 轮；补丁自己列的「已知界限：形状只压 fill，描边不压」✓）
+                                //   **⇒ 为什么**压不了** ✗：描边**骑在**形状边缘上 ⇒ 一半压在 fill 上、
+                                //     一半压在背景上 ⇒ **两个不同的 backdrop** ⇒ 压成单色**必错一半** ✗
+                                //     （而 Q123 给 fill 的规矩正是「异质 ⇒ 回退位图、不许单色糊」✓）
+                                //   **⇒ ⇒ 所以**不假装压平**，而是**如实计数 + 警告** ✓：
+                                //     `flatten_stroke_skipped`（数）+ `warnings`（一句话，说清只有描边仍会在
+                                //     浏览器里按 sRGB 混合 ⇒ 它的颜色仍可能与 PNG 不同）
+                                if flatten_active {
+                                    counts.flatten_stroke_skipped += 1;
+                                    flatten_stroke_warned = true;
+                                }
                             }
                         }
                     }
@@ -1730,6 +1746,21 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         )
     })?;
     let render_warnings = ctx.workspace.last_render_warnings(&ctx.doc_id);
+    // **半透明描边压不了** ⇒ 必须在 `warnings` 里说清（第 1434 轮）
+    let export_warnings = {
+        let mut warnings = render_warnings.clone();
+        if flatten_stroke_warned {
+            warnings.push(format!(
+                "有 {} 处**半透明描边**没能压平（`flatten_stroke_skipped`）⇒ 描边骑在形状边缘上 \
+                 （一半压在 fill、一半压在背景）⇒ **压成单色必错一半** ⇒ 所以保留 `stroke-opacity`；\
+                 代价是**描边**的颜色仍会在浏览器里按 sRGB 混合（与 PNG 可能有差异），\
+                 而 **fill 已经逐通道一致** ✓",
+                counts.flatten_stroke_skipped
+            ));
+        }
+        warnings
+    };
+
     Ok(json!({
         "ok": true,
         "path": path.display().to_string(),
@@ -1758,11 +1789,12 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         "shapes_flattened": counts.shapes_flattened,
         "flatten_heterogeneous_raster": counts.flatten_heterogeneous_raster,
         "flatten_skipped": counts.flatten_skipped,
+        "flatten_stroke_skipped": counts.flatten_stroke_skipped,
         "images_embedded": counts.images_embedded,
         "erases_masked": counts.erases_masked,
         "objects_unsupported": counts.objects_unsupported,
         "instances_unresolved": counts.instances_unresolved,
         "validate_failed": counts.validate_failed,
-        "warnings": render_warnings,
+        "warnings": export_warnings,
     }))
 }
