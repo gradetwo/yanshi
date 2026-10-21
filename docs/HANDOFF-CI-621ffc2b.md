@@ -3915,3 +3915,24 @@ gh auth status 2>&1 | head -4           # API 侧是否 timeout
 
 **⇒ ⇒ ⇒ 而"陈旧 mcp"已是**第 5 次**（`tool-surface-coverage` 的 `exit 3`）⇒
 **我已经能立刻识别它**（**"先 3 先查二进制"**）✓
+
+## ★ RAW 第一包已合入 + 验证（第 1598 轮）
+
+**⇒ 包内容**（`yanshi-raw-pkg1-20261021`）：**新 crate `yanshi-raw`**（解码边界 + 展开主链）
+＋ **`raw` feature 三处委托**（`http → server → render`）＋ **内核最小挂接点** ✓
+**⇒ ⇒ 明确**不做**的**：高光恢复、镜头三项、完整入库链路（**后续包**）✓
+
+**⇒ 验证**（**本机**）：
+
+| 项 | 结果 |
+|---|---|
+| `cargo check --workspace` | **0 错误** ✓ |
+| **`cargo clippy --workspace --all-targets -D warnings`** | **0 错误** ✓ |
+| **`cargo test -p yanshi-raw`** | **`lib` 5 ＋ `criteria` 11 ＋ `decode_smoke` 4 ＋ `render_hook` 2 = 22 passed** ✓ |
+| `yanshi-render --lib` | **466 passed** ✓ |
+| `yanshi-server --lib` | **139 passed** ✓ |
+| **`cargo check -p yanshi-http --features raw`** | **0 错误** ✓（**feature 链通**）|
+
+**⇒ ⚠ 一个流程失误（记下来）**：**`git add -A` 把 RAW 包与 known-red 恢复混进了同一笔**
+（`81109bf3`）⇒ **提交信息只讲了 known-red** ⇒ **历史误导** ✗
+⇒ **教训**：**合入补丁时不要用 `git add -A`** ⇒ **先 `git stash` 或分开 `git add <路径>`** ✓
