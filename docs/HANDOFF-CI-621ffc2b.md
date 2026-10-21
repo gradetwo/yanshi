@@ -3513,3 +3513,18 @@ gh auth status 2>&1 | head -4           # API 侧是否 timeout
 1. 先在 `settings` 顶层找 `size_pressure` ⇒ **`None`** ✗ ⇒ 曲线在 **`settings.<项>.inputs`** 里
 2. 再把 `with_inputs` 当对象 ⇒ 其实它是**计数（int）** ✗
 **⇒ ⇒ ⇒ 两次都**不是工具的问题**，是我**没先打印结构** ✓（与 AGENTS「调不熟接口先打印完整响应」同源）
+
+## ✅ 三补丁的 **`test (stable)` / `test (beta)` 全绿**（第 1504 轮）
+
+**⇒ 这是我最关心的两档**（`cargo test --workspace` 在本机受内存限制 ⇒ **委托给 CI**）：
+
+| job | 结果 |
+|---|---|
+| **`test (stable)`** | **success** ✓ |
+| **`test (beta)`** | **success** ✓ |
+| 汇总 | **10 绿 / 0 红**，2 片 criteria 在跑 |
+
+**⇒ ⇒ 所以**：**+1892 行 / 19 文件 / 3 个补丁**（笔刷曲线二期 + 选区认 path + 二期整合尾巴）
+**在**两档 toolchain 的整套 workspace 测试**下**站得住** ✓
+
+**⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs/<id>/jobs" --jq '.jobs[] | select(.name|test("test")) | "\(.name)｜\(.conclusion)"'`
