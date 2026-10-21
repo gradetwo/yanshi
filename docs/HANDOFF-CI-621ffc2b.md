@@ -3027,3 +3027,9 @@ ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs scripts/serve-*.mj
 ⇒ **⇒ 那是另一件事**（要先知道哪条真的用满了 120 s，需要 job 日志 ⇒ AGENTS 记着"跑时取不到"）✗
 
 **⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs/<id>/jobs" --jq '.jobs[] | select(.status=="in_progress") | .name'` ✓
+
+## ✅ **第五个绿 run**（第 1452 轮）
+
+**⇒ 新工具 `fit_background_field` 那笔也是 **success** ⇒ 本场**第五个完整绿的 run** ✓
+**⇒ ⇒ 累计覆盖**：Phase 2、Q123、细线补丁、细笔闸门、**新工具** ✓
+**⇒ ⇒ ⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=10" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'`
