@@ -325,6 +325,25 @@ pub(super) fn write_fit_background_field(ctx: &mut ToolContext<'_>, args: &Value
             "region": { "x": bx0, "y": by0, "width": ow, "height": oh },
         }),
     )?;
+    // **`import_image` 的失败必须**传播** ✓（第 1474 轮）
+    //   **⇒ 为什么** ✗：我原来把它的结果原样塞进 `placed` 就返回 `ok: true` ⇒
+    //     若它失败（图层类型不接受位图、blob 不可解码…）⇒ 我会**报成功而什么都没画** ✗
+    //     ⇒ 那正是 `§222` 那一类"静默"的另一种形状 ✓
+    //   **⇒ ⇒ 诚实说明**：**我构造不出**能触发它的 API 场景（矢量层实测也成功 ✓）⇒
+    //     所以这条是**防御性**的：**不触发则行为不变**，触发则**给出真实原因** ✓
+    if placed.get("ok").and_then(Value::as_bool) != Some(true) {
+        let why = placed
+            .get("context")
+            .and_then(|c| c.get("detail"))
+            .and_then(Value::as_str)
+            .unwrap_or("（import_image 没给原因）");
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "拟合完成但**落位失败** ⇒ {why}（图层 {layer_id} 可能不接受位图对象）"
+            )),
+        ));
+    }
 
     // **`warnings` 必须在 `json!` 之前算好** ✗（`json!` 里不能写语句块 ⇒ 第 1470 轮又踩一次）
     let mut warnings: Vec<String> = Vec::new();
