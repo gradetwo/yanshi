@@ -3072,7 +3072,39 @@ EXEMPT=$(ls scripts/{browser,serve,check}-*.mjs | wc -l)
 [ "$((SELF + EXEMPT))" -eq "$ALL" ] && echo ✓
 ```
 
-## ★ `criteria shard 3/6` 的**耗时分布**与**已有的 45 分钟上限**（第 1457 轮）
+## ⚠ **更正**（第 1459 轮）：`criteria shard 3/6` **没有挂住**，我把它算成了 31 分钟 —— **错在把 `created_at` 当 `started_at`**
+
+**⇒ 我上一轮说「shard 3 跑了 31 分钟仍在跑 ⇒ 升级为会挂住」⇒ **两处都错** ✗**
+**⇒ ⇒ 实测（`started_at → completed_at`，**真正的执行时长**）**：
+
+| 分片 | 执行时长 |
+|---|---|
+| 2/6 | **7 分 36 秒** |
+| 6/6 | 7 分 50 秒 |
+| 1/6 | 9 分 07 秒 |
+| 4/6 | 10 分 13 秒 |
+| 5/6 | 12 分 14 秒 |
+| **3/6** | **18 分 24 秒** |
+
+**⇒ ⇒ ⇒ 所以**：shard 3 **确实最长**（第二名的 **1.5×**），但**只有 18 分钟**，**离 45 分钟上限还有 2.4 倍** ✓
+**⇒ 而且那次 run **最终 success**（12 绿 / 0 红）⇒ **它没挂，只是慢** ✓
+
+**⇒ 我的错误**：拿 **run 的 `created_at`（02:04:54）** 减当前时间 ⇒ 得 31 分钟
+**⇒ ⇒ 而 shard 的 `started_at` 是 **02:19:24** ⇒ 中间那 **14 分钟是「runner 排队」**，不是执行 ✗
+**⇒ ⇒ ⇒ 教训**：**`created_at` ≠ `started_at`**；报「跑了多久」必须用 **`started_at`** ✓
+（AGENTS 里「CI 排队慢」那几条讲的是同一件事，我却在自己的测量里忘了 ✓）
+
+**⇒ 复算**：
+```bash
+gh api "repos/gradetwo/yanshi/actions/runs/<id>/jobs"   --jq '.jobs[] | select(.name|startswith("criteria")) | "\(.name) \(.started_at) → \(.completed_at)"'
+# ⇒ 用这两个字段算时长，不要用 run 的 created_at
+```
+
+---
+
+## ★ 上一轮（1457）的**错误记录**（保留，作为反面教材）
+
+
 
 **⇒ 实测（同一批 run，各分片 `created_at → completed_at`）**：
 
