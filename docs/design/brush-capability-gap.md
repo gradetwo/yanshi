@@ -14006,3 +14006,33 @@ let divisions = ((distance / dab_step_px).ceil() as usize).clamp(1, 4096);
 bash scripts/run-criteria-local.sh scripts/tool-stamp-parity.mjs
 bash scripts/run-criteria-local.sh scripts/tool-brush-parity-jitter.mjs
 ```
+
+## 三百四十、转交包两处待拍板：**我量出了数据**（第 1545 轮）
+
+### ① `vibrance` 的语义变更（**有真实影响面，但影响温和**）
+
+**⇒ 我核了**改动前的源码**（`3b81a695` 版的 `filter.rs`）：
+```
+"vibrance" 在 ADJUSTMENT_NAMES 里（第 2212 行）⇒ **可达** ✓
+而 `from_name("vibrance")` ⇒ **Saturation** ✗
+"vibrance_natural" ⇒ Vibrance，但**不在白名单** ⇒ 不可达 ✗
+```
+**⇒ ⇒ 所以**：**改动前 `vibrance` 可达但走 Saturation** ⇒ **语义变更**确实影响存量调用** ✓
+（**转交说明里"两条路都不可达"的说法对 `vibrance_natural` 成立，对 `vibrance` 不成立** ✗）
+
+**⇒ 量出的差异**（`amount=1.8`、低饱和色 `#8c8278`）：
+
+| `adjustment_type` | 结果 |
+|---|---|
+| `saturation` | **`#92816e`** |
+| **`vibrance`** | **`#968067`** |
+| `vibrance_natural` | **`#968067`**（**与新 `vibrance` 逐位相同** ✓）|
+
+**⇒ ⇒ 差异 **≈ 12/255（5%）** ⇒ **可见但温和**；**两边都提高饱和度**（**同意图、不同曲线**）✓
+**⇒ ⇒ ⇒ 我的建议**：**接受**（旧路由把一个叫 vibrance 的参数做成 saturation，**本身就是错标**）✓
+**⇒ ⇒ ⇒ ⇒ 但必须**在变更日志里写一句**（**用 `vibrance` 且 `amount≠1` 的存量脚本，结果会变 5%**）✓
+
+### ② `apply_adjustments` 的"非真事务"
+
+**⇒ 待查**（下一轮）：**当批次中某一项失败时，前面已提交的原子会留下** ⇒ **要量出"部分成功"的具体形态** ⇒
+**⇒ 而这需要看它的实现**（是"逐项提交"还是"全部校验后一次提交"）✓
