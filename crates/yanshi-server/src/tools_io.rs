@@ -555,6 +555,15 @@ pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         "width": target_w,
         "height": target_h,
         "bytes": png.len(),
+        // **`sha256` 让调用方能判"两次导出是否逐字节相同"** ✓（第 1542 轮；外部 `E1613` 的做法）
+        //   **⇒ 他们的原话**：「我在 `E1613` 用的检验是**两次输出的 `sha256` 是否相同**」
+        //     ⇒ **它立刻证明"改动一个像素都没生效"**，而**指标（local/edge/std）没有任何提示** ✓
+        //   **⇒ ⇒ 所以**：**"确定性 + 哈希"是比"统计量"更强的"改动是否生效"判据** ✓
+        //     ⇒ 而在此之前他们**只能自己读文件再算** ⇒ 现在**响应里直接给** ✓
+        //   **⇒ ⇒ ⇒ 纯增量**：只多一个字段，**不改任何既有行为** ✓
+        // **用 core 已有的 `BlobHash::from_bytes`** ✓（它算的就是**同一套 SHA-256**）⇒
+        //   **不引入新依赖** ✓（`yanshi-server` 里没有 `sha2`，而 core 有 ✓）
+        "sha256": yanshi_core::BlobHash::from_bytes(&png).to_string(),
         "source_width": width,
         "source_height": height,
         "scaled": target_w != width || target_h != height,
