@@ -154,6 +154,27 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[],
     },
     ToolSpec {
+        // **★ 一个工具问"另一个工具怎么调" ★**（第 1557 轮；外部 `B10` 的建议）
+        //   **他们的原话**：「这些工具的报错都列了合法参数（比大多数工具强），但我是靠
+        //     **连续 4 次撞墙**才拼出正确签名的。建议…或提供 `explain_tool`」✓
+        //   **⇒ ⇒ 所以**：把**已经存在**的 spec 与 schema **原样吐出来** ⇒ 不必去 `tools/list`
+        //     里翻（AI 常常只读 summary 就开始调）✓
+        //   **⇒ ⇒ ⇒ 三个字段是重点**：**`required`（互斥时谁必填）、`params` 的描述（含单位）、
+        //     `mutating`（会不会改文档）** ✓ —— 这三样正是"撞墙"的来源 ✓
+        name: "explain_tool",
+        profile: Profile::Core,
+        summary: "查一个工具怎么调：**必填项／可选参数／单位与取值范围／是否改文档**（只读 ✓）。\
+                  比 `tools/list` 好读（单工具、含 required 与互斥说明），\
+                  也免去「先调错一次、从报错里拼签名」",
+        mutating: false,
+        params: &[param!(
+            "name",
+            String,
+            true,
+            "要查的工具名（如 `stroke_path`）；给错名字会列出**最接近的 3 个**候选"
+        )],
+    },
+    ToolSpec {
         name: "list_objects",
         profile: Profile::Core,
         summary: "列出对象（可按图层与类型过滤）",

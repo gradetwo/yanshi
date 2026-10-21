@@ -1,7 +1,7 @@
 //! 工具协议层（设计文档 10 章）。
 //!
 //! - **10.1 成功返回格式**：`{ok, atom_id, seq, changeset_id, head, dirty_bbox, preview, job_id, warnings, suggestions}`。
-//! - **10.2 工具集与暴露分层**：核心层 122 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
+//! - **10.2 工具集与暴露分层**：核心层 123 个默认注册；扩展组按 `profile` 启用，命名前缀分组。
 //! - **5.7 错误协议**：失败返回 `{ok:false, error_code, retryable, context}`。
 //! - **6.7 Job**：重型/语义工具返回 `job_id`；`wait_for_render`（默认 true，500ms）超时后返回
 //!   `job_pending` 由 Agent 轮询。
@@ -33,7 +33,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（122 个）。
+    /// 核心层：默认注册（123 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -608,7 +608,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，122 个）。
+    /// 核心层（默认注册，123 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1571,6 +1571,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "list_documents" => read_list_documents(ctx),
         "list_layers" => read_list_layers(ctx),
         "describe_canvas" => read_describe_canvas(ctx),
+        "explain_tool" => read_explain_tool(ctx, args),
         "list_objects" => read_list_objects(ctx, args),
         "get_object" => read_get_object(ctx, args),
         "get_path" => read_get_path(ctx, args),
@@ -2565,6 +2566,80 @@ fn read_list_documents(ctx: &mut ToolContext<'_>) -> Result<Value> {
         })
         .collect();
     Ok(json!({ "documents": documents, "count": documents.len() }))
+}
+
+/// **`explain_tool`** ✓ —— 把**一个工具**的签名吐出来（第 1557 轮；外部 `B10` 的建议）
+///
+/// **⇒ 为什么需要**：他们拼一个 4 参数的签名**撞了 4 次墙**（`stride` 其实是 `sample_stride`、
+///  `smart_fill` 不吃 `opacity`…）⇒ **而 spec 里本来就有这些信息**，只是要去 `tools/list` 里翻 ✓
+/// **⇒ ⇒ 所以**：**一次调用只答一个工具**，并且**把"必填／可选／单位／是否改文档"分开列** ✓
+fn read_explain_tool(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let _ = ctx; // 只读：不需要画布状态
+    let name = require_str(args, "name")?;
+    let specs = tools_registry::ALL_TOOLS;
+    let Some(spec) = specs.iter().find(|spec| spec.name == name) else {
+        // **给错名字要**有用**：列出最接近的 3 个** ✓（**不猜、不说"不存在"就完** ✗）
+        let lowered = name.to_lowercase();
+        let mut near: Vec<&str> = specs
+            .iter()
+            .map(|spec| spec.name)
+            .filter(|candidate| {
+                candidate.contains(lowered.as_str())
+                    || lowered.contains(*candidate)
+                    || candidate
+                        .split('_')
+                        .any(|part| !part.is_empty() && lowered.contains(part))
+            })
+            .take(3)
+            .collect();
+        if near.is_empty() {
+            near = specs.iter().map(|spec| spec.name).take(3).collect();
+        }
+        return Err(YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!(
+                "没有工具叫 `{name}` ⇒ 最接近的候选：{} ⇒ \
+                 **要看全部**用 `GET /api/tools`（HTTP）或 `tools/list`（MCP）",
+                near.join("／")
+            )),
+        ));
+    };
+    let required: Vec<&str> = spec
+        .params
+        .iter()
+        .filter(|param| param.required)
+        .map(|param| param.name)
+        .collect();
+    let optional: Vec<&str> = spec
+        .params
+        .iter()
+        .filter(|param| !param.required)
+        .map(|param| param.name)
+        .collect();
+    Ok(json!({
+        "ok": true,
+        "name": spec.name,
+        "profile": format!("{:?}", spec.profile).to_lowercase(),
+        "mutating": spec.mutating,
+        "summary": spec.summary,
+        "required": required,
+        "optional": optional,
+        "params": spec.params.iter().map(|param| json!({
+            "name": param.name,
+            "type": format!("{:?}", param.kind),
+            "required": param.required,
+            "doc": param.description,
+        })).collect::<Vec<_>>(),
+        // **一句"怎么开始"** ✓（他们要的正是这个：不必先撞一次墙）
+        "how_to_call": if required.is_empty() {
+            "这个工具**没有必填参数** ⇒ 只给 optional 里的键即可".to_owned()
+        } else {
+            format!(
+                "**必填**：{}（缺了会明确报错）⇒ 其余键都在 optional 里，按需给",
+                required.join("、")
+            )
+        },
+    }))
 }
 
 fn read_describe_canvas(ctx: &mut ToolContext<'_>) -> Result<Value> {

@@ -97,7 +97,12 @@ fn registry_has_no_duplicate_or_undocumented_tools() {
 
 #[test]
 fn documented_tool_counts_match_the_registry() {
-    let registry = ToolRegistry::with_profiles(&DEFAULT_PROFILES);
+    // **分母必须是「全部已实现的组」** ✓（第 1557 轮；否则与文档那句话对不上）
+    //   **⇒ 实测**：`DEFAULT_PROFILES` 给 **184**，而 `Profile::ALL` 给 **196** ✗
+    //   **⇒ ⇒ 而 `docs/tools.md` 那句是**「with every implemented group enabled」**
+    //     ⇒ **说的是 ALL** ⇒ 所以这里**必须用 `full()`** ✓
+    //   **⇒ ⇒ ⇒ 这是「同一事实两个分母」的又一次**（`AGENTS.md` 记的判据数同型）✓
+    let registry = ToolRegistry::full();
     let actual_total = registry.tools().len();
     let actual_core = ToolRegistry::with_profiles(&[Profile::Core]).tools().len();
     println!("实际：core {actual_core} 个 / 全部 {actual_total} 个");
