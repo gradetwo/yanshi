@@ -3033,3 +3033,17 @@ ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs scripts/serve-*.mj
 **⇒ 新工具 `fit_background_field` 那笔也是 **success** ⇒ 本场**第五个完整绿的 run** ✓
 **⇒ ⇒ 累计覆盖**：Phase 2、Q123、细线补丁、细笔闸门、**新工具** ✓
 **⇒ ⇒ ⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=10" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'`
+
+## ★ 新工具在**矢量图层**上也没问题（第 1453 轮，负结果）
+
+**⇒ 我担心的事**：Phase 2 给光栅工具加了守卫 ⇒ `fit_background_field` 在**矢量层**上会不会
+**静默失败**（`import_image` 被拒、而我的工具仍报 `ok=true`）✗
+**⇒ ⇒ 实测（矢量层 vs 光栅层，同构型对照）**：
+| 图层类型 | `fill_region` | `fit_background_field` | `field_uniform` | 掩膜中心 |
+|---|---|---|---|---|
+| **vector** | ok ✓ | **ok ✓** | false | **[100,100,100]** |
+| **raster** | ok ✓ | **ok ✓** | false | **[100,100,100]** |
+
+**⇒ ⇒ ⇒ **两者一字不差** ✓ ⇒ **没有静默失败，不需要修** ✓
+
+**⇒ 这类"我担心但实测没问题"的负结果也要记**：否则下一个人（或下一轮的我）会**重新担心一遍** ✓
