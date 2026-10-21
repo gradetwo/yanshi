@@ -10,8 +10,13 @@
 //! }
 //! ```
 //!
-//! 每个控制点是 `[t, value]`，`t` 与 `value` 都在 `0..1`。曲线求值使用**单调分段线性插值**
-//! （控制点按 `t` 升序内部排序，端点外取端点值），结果 clamp 到 `0..1`。
+//! 每个控制点是 `[t, value]`，`t` 与 `value` 都在 `0..1`。曲线求值使用
+//! **Fritsch–Carlson 单调三次插值（PCHIP）**（控制点按 `t` 升序内部排序，端点外取端点值），
+//! 结果 clamp 到 `0..1`。PCHIP 保证：单调的控制点列求值后仍单调、求值不越出相邻
+//! 控制点的值域（零过冲）、控制点处一阶导连续。切线在构造期按 Fritsch–Butland
+//! 调和平均式预计算（端点取单侧割线斜率，割线斜率钳到 ±1e4 防极小区间放大），
+//! 求值期只做 Hermite 基组合与区间 clamp，全程 f32 四则运算，无 libm 依赖。
+//! N=2 时 Hermite 在数学上恒等于直线，求值直接走线性公式，与历史实现逐位一致。
 //!
 //! ## 与内核接线的语义
 //!
@@ -43,10 +48,64 @@ fn normalize_unit(value: f32) -> f32 {
 ///
 /// 内部不变量：`points` **永不为空**（空 / 非法输入退化为 [`Curve::constant`]），
 /// 且所有坐标都是有限值、`t` 与值都已 clamp 到 `0..1`。因此求值不会 panic。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Curve {
     /// `(t, value)` 控制点，按 `t` 升序、`t` 相同者只保留第一个。
     points: Vec<(f32, f32)>,
+    // Fritsch–Carlson 切线（与 `points` 等长，构造期由 `compute_tangents` 填充）。
+    // 它是 `points` 的纯函数：相等判定只比 `points`（见手写 `PartialEq`），
+    // 避免浮点路径差异让语义相同的两条曲线被判不等。
+    tangents: Vec<f32>,
+}
+
+impl PartialEq for Curve {
+    /// 只比控制点：`tangents` 是 `points` 的纯函数导出量，不进相等语义。
+    fn eq(&self, other: &Self) -> bool {
+        self.points == other.points
+    }
+}
+
+/// Fritsch–Carlson 切线预计算（构造期一次性）。
+///
+/// - 割线斜率 `δ_k = (y_{k+1} − y_k) / h_k`，先钳到 ±1e4：去重后 `h_k` 仍可极小，
+///   不钳会让 δ 爆大并在调和平均里传播 Inf / NaN。
+/// - 端点取单侧割线：`m_0 = δ_0`、`m_{n−1} = δ_{n−2}`。
+/// - 内点：相邻割线异号或任一为 0 ⇒ `m_k = 0`（局部极值处导数为零是保单调的关键）；
+///   否则用 Fritsch–Butland 调和平均 `m_k = (w1 + w2) / (w1/δ_{k−1} + w2/δ_k)`，
+///   其中 `w1 = 2h_k + h_{k−1}`、`w2 = h_k + 2h_{k−1}`（`h` 为相邻区间宽）。
+/// - N=2 时 `m_0 = m_1 = δ_0`，Hermite 退化为直线。
+fn compute_tangents(points: &[(f32, f32)]) -> Vec<f32> {
+    let n = points.len();
+    if n < 2 {
+        return vec![0.0; n];
+    }
+    let mut delta = Vec::with_capacity(n - 1);
+    for window in points.windows(2) {
+        let h = window[1].0 - window[0].0;
+        let d = if h > 0.0 {
+            (window[1].1 - window[0].1) / h
+        } else {
+            0.0
+        };
+        delta.push(d.clamp(-1.0e4, 1.0e4));
+    }
+    let mut tangents = vec![0.0f32; n];
+    tangents[0] = delta[0];
+    tangents[n - 1] = delta[n - 2];
+    for k in 1..n - 1 {
+        let d_prev = delta[k - 1];
+        let d_next = delta[k];
+        if d_prev * d_next <= 0.0 {
+            tangents[k] = 0.0;
+        } else {
+            let h_prev = points[k].0 - points[k - 1].0;
+            let h_next = points[k + 1].0 - points[k].0;
+            let w1 = 2.0 * h_next + h_prev;
+            let w2 = h_next + 2.0 * h_prev;
+            tangents[k] = (w1 + w2) / (w1 / d_prev + w2 / d_next);
+        }
+    }
+    tangents
 }
 
 impl Default for Curve {
@@ -61,6 +120,7 @@ impl Curve {
     pub fn constant(value: f32) -> Self {
         Self {
             points: vec![(0.0, normalize_unit(value))],
+            tangents: vec![0.0],
         }
     }
 
@@ -76,7 +136,10 @@ impl Curve {
     /// 值超出 `0..1` 时 clamp 到 `0..1`。
     pub fn from_value(value: Option<&Value>) -> Self {
         match value.and_then(Self::parse_points) {
-            Some(points) => Self { points },
+            Some(points) => {
+                let tangents = compute_tangents(&points);
+                Self { points, tangents }
+            }
             None => Self::constant(1.0),
         }
     }
@@ -91,11 +154,12 @@ impl Curve {
             .all(|point| (point.1 - first).abs() < EPS)
     }
 
-    /// 求值：单调分段线性插值。
+    /// 求值：Fritsch–Carlson 单调三次插值（PCHIP）。
     ///
     /// - `t <=` 首点 `t` ⇒ 首点值；`t >=` 末点 `t` ⇒ 末点值；
     /// - `t` 非有限（NaN / ±Inf）⇒ 首点值；
-    /// - 返回值 clamp 到 `0..1`。
+    /// - 返回值 clamp 到 `0..1`，且不越出所在区间两端控制点的值域（零过冲）；
+    /// - N=2 走线性公式，与 PCHIP 前的历史实现逐位一致。
     pub fn eval(&self, t: f32) -> f32 {
         let first = self.points[0];
         let last = self.points[self.points.len() - 1];
@@ -107,20 +171,37 @@ impl Curve {
             return last.1;
         }
 
-        for window in self.points.windows(2) {
-            let (t0, v0) = window[0];
-            let (t1, v1) = window[1];
-            if t >= t0 && t <= t1 {
-                let span = t1 - t0;
-                if span <= EPS {
-                    return v1;
-                }
-                let k = (t - t0) / span;
-                return normalize_unit(v0 + (v1 - v0) * k);
+        if self.points.len() == 2 {
+            // N=2：Hermite 在数学上恒等于直线；直接用线性公式，
+            // 避免基函数重排带来的浮点漂移（逐位一致由测试锁死）。
+            let (t0, v0) = first;
+            let (t1, v1) = last;
+            let span = t1 - t0;
+            if span <= EPS {
+                return v1;
             }
+            let k = (t - t0) / span;
+            return normalize_unit(v0 + (v1 - v0) * k);
         }
 
-        last.1
+        // 二分定位区间 k（`points[k].0 <= t < points[k+1].0`）；
+        // t 恰为内点控制点时 u=0，Hermite 基给出该点值本身。
+        let k = self.points.partition_point(|point| point.0 <= t) - 1;
+        let (t0, v0) = self.points[k];
+        let (t1, v1) = self.points[k + 1];
+        let h = t1 - t0;
+        if h <= 0.0 {
+            return normalize_unit(v1);
+        }
+        let u = (t - t0) / h;
+        let u2 = u * u;
+        let u3 = u2 * u;
+        let value = (2.0 * u3 - 3.0 * u2 + 1.0) * v0
+            + (u3 - 2.0 * u2 + u) * h * self.tangents[k]
+            + (-2.0 * u3 + 3.0 * u2) * v1
+            + (u3 - u2) * h * self.tangents[k + 1];
+        // FC 理论上已保证不越界；clamp 只防浮点毛刺（数值兜底）。
+        normalize_unit(value.clamp(v0.min(v1), v0.max(v1)))
     }
 
     /// 解析控制点数组；任何非法输入返回 `None`（由调用方退化为恒等曲线）。
@@ -285,11 +366,14 @@ mod tests {
     fn three_point_curve_has_exact_expected_values() {
         let curve = three_point();
         assert!(!curve.is_identity_or_constant());
-        // 写死期望值：折线 (0, 0.2) → (0.5, 1.0) → (1.0, 0.0)。
+        // 写死期望值：PCHIP 下 (0, 0.2) → (0.5, 1.0) → (1.0, 0.0)。
+        // 控制点处切线为 [1.6, 0, −2.0]（中点两侧割线异号 ⇒ 切线 0），
+        // Hermite 手算：eval(0.25) = 0.7、eval(0.75) = 0.625
+        //（旧分段线性分别是 0.6 / 0.5 —— N≥3 存量曲线重放数值变化，属预期，见设计 §2.6）。
         assert!((curve.eval(0.0) - 0.2).abs() < 1e-6);
-        assert!((curve.eval(0.25) - 0.6).abs() < 1e-6);
+        assert!((curve.eval(0.25) - 0.7).abs() < 1e-6);
         assert!((curve.eval(0.5) - 1.0).abs() < 1e-6);
-        assert!((curve.eval(0.75) - 0.5).abs() < 1e-6);
+        assert!((curve.eval(0.75) - 0.625).abs() < 1e-6);
         assert!((curve.eval(1.0) - 0.0).abs() < 1e-6);
         // 端点外取端点值。
         assert!((curve.eval(-1.0) - 0.2).abs() < 1e-6);
@@ -299,8 +383,8 @@ mod tests {
     #[test]
     fn control_points_are_sorted_by_t() {
         let curve = Curve::from_value(Some(&json!([[1.0, 0.0], [0.0, 0.2], [0.5, 1.0]])));
-        assert!((curve.eval(0.25) - 0.6).abs() < 1e-6);
-        assert!((curve.eval(0.75) - 0.5).abs() < 1e-6);
+        assert!((curve.eval(0.25) - 0.7).abs() < 1e-6);
+        assert!((curve.eval(0.75) - 0.625).abs() < 1e-6);
         assert_eq!(curve, three_point());
     }
 
@@ -440,5 +524,156 @@ mod tests {
         let (radius, alpha) = zero_curves.modulate(8.0, 1.0, 0.5);
         assert!((radius - 0.0).abs() < 1e-6, "radius={radius}");
         assert!((alpha - 0.0).abs() < 1e-6, "alpha={alpha}");
+    }
+
+    /// PCHIP 前的旧线性求值（逐字复制旧实现），只供 N=2 逐位对照测试当参照。
+    fn legacy_linear_eval(points: &[(f32, f32)], t: f32) -> f32 {
+        let first = points[0];
+        let last = points[points.len() - 1];
+        if !t.is_finite() || t <= first.0 {
+            return first.1;
+        }
+        if t >= last.0 {
+            return last.1;
+        }
+        for window in points.windows(2) {
+            let (t0, v0) = window[0];
+            let (t1, v1) = window[1];
+            if t >= t0 && t <= t1 {
+                let span = t1 - t0;
+                if span <= EPS {
+                    return v1;
+                }
+                let k = (t - t0) / span;
+                return normalize_unit(v0 + (v1 - v0) * k);
+            }
+        }
+        last.1
+    }
+
+    #[test]
+    fn pchip_preserves_monotonicity() {
+        // 单调控制点列稠密采样 1001 点必须保持单调（容差 0：FC 的核心承诺）。
+        let rising = Curve::from_value(Some(&json!([
+            [0.0, 0.0],
+            [0.3, 0.1],
+            [0.6, 0.9],
+            [1.0, 1.0]
+        ])));
+        let mut previous = rising.eval(0.0);
+        for i in 1..=1000 {
+            let x = i as f32 / 1000.0;
+            let value = rising.eval(x);
+            assert!(
+                value >= previous,
+                "递增曲线在 x={x} 处回落：{previous} → {value}"
+            );
+            previous = value;
+        }
+        let falling = Curve::from_value(Some(&json!([
+            [0.0, 1.0],
+            [0.4, 0.85],
+            [0.7, 0.2],
+            [1.0, 0.0]
+        ])));
+        let mut previous = falling.eval(0.0);
+        for i in 1..=1000 {
+            let x = i as f32 / 1000.0;
+            let value = falling.eval(x);
+            assert!(
+                value <= previous,
+                "递减曲线在 x={x} 处回升：{previous} → {value}"
+            );
+            previous = value;
+        }
+        // 带平台段的单调数据：平台两侧切线为 0，不许在平台边缘鼓包。
+        let plateau = Curve::from_value(Some(&json!([
+            [0.0, 0.0],
+            [0.3, 0.5],
+            [0.6, 0.5],
+            [1.0, 1.0]
+        ])));
+        let mut previous = plateau.eval(0.0);
+        for i in 1..=1000 {
+            let x = i as f32 / 1000.0;
+            let value = plateau.eval(x);
+            assert!(
+                value >= previous,
+                "平台曲线在 x={x} 处回落：{previous} → {value}"
+            );
+            previous = value;
+        }
+    }
+
+    #[test]
+    fn pchip_never_overshoots() {
+        // 固定种子伪随机 200 组控制点：每区间采样值必须落在该区间两端值域内（零过冲）。
+        let mut state = 0x2545_f491u32;
+        let mut next_unit = move || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state % 10_000) as f32 / 10_000.0
+        };
+        for case in 0..200 {
+            let n = 3 + (next_unit() * 5.0) as usize; // 3..=7 个控制点
+            let raw: Vec<[f32; 2]> = (0..n)
+                .map(|i| {
+                    let t = (i as f32 + next_unit() * 0.9) / n as f32;
+                    [t, next_unit()]
+                })
+                .collect();
+            let curve = Curve::from_value(Some(&json!(raw)));
+            let points = curve.points.clone();
+            for window in points.windows(2) {
+                let (t0, v0) = window[0];
+                let (t1, v1) = window[1];
+                let (lo, hi) = (v0.min(v1), v0.max(v1));
+                for s in 0..=20 {
+                    let x = t0 + (t1 - t0) * (s as f32 / 20.0);
+                    let value = curve.eval(x);
+                    assert!(
+                        value >= lo && value <= hi,
+                        "case {case}：eval({x}) = {value} 越出区间值域 [{lo}, {hi}]"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pchip_two_points_equals_legacy_linear() {
+        // N=2 与旧线性公式在 101 个采样点逐位相等（f32 位模式）。
+        for raw in [
+            [(0.2f32, 0.15f32), (0.9, 0.85)],
+            [(0.0, 1.0), (1.0, 0.0)],
+            [(0.35, 0.5), (0.65, 0.5)],
+        ] {
+            let curve = Curve::from_value(Some(&json!(raw)));
+            assert_eq!(curve.points.len(), 2);
+            for i in 0..=100 {
+                let t = i as f32 / 100.0;
+                assert_eq!(
+                    curve.eval(t).to_bits(),
+                    legacy_linear_eval(&raw, t).to_bits(),
+                    "N=2 曲线在 t={t} 与旧线性不一致"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pchip_smooth_at_knots() {
+        // [(0,0),(0.5,1),(1,0)] 在 x=0.5 两侧数值导数差 < 0.05（导数连续的定性断言）。
+        // 旧线性实现此处左右导数是 +2 / −2，差 4 ⇒ 本测试对旧实现必红。
+        let curve = Curve::from_value(Some(&json!([[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]])));
+        let eps = 1e-3f32;
+        let at = curve.eval(0.5);
+        let left = (at - curve.eval(0.5 - eps)) / eps;
+        let right = (curve.eval(0.5 + eps) - at) / eps;
+        assert!(
+            (left - right).abs() < 0.05,
+            "控制点处左右导数差过大：left={left} right={right}"
+        );
     }
 }

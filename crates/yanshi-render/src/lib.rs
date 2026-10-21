@@ -109,6 +109,7 @@ pub mod half;
 pub mod jpeg;
 pub mod object;
 pub mod paint;
+pub mod path;
 pub mod png;
 pub mod polygon;
 pub mod prng;

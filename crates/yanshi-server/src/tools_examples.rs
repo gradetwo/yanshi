@@ -336,6 +336,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         r#"{"brush": "100%_Opaque", "layer_id": "L1", "points": [[100, 100, 1], [180, 140, 1], [260, 100, 1]], "color": {"r": 255, "g": 0, "b": 0, "a": 255}, "size": 40}"#,
     ),
     (
+        "stroke_path",
+        r#"{"layer_id": "L1", "subpaths": [{"start": [60, 200], "segments": [{"op": "C", "c1": [160, 60], "c2": [300, 60], "to": [400, 200]}]}], "brush": "2B_pencil", "size": 24, "color": {"r": 30, "g": 30, "b": 30, "a": 255}}"#,
+    ),
+    (
         "brush_preview",
         r#"{"brush": "spray", "size": 24, "hardness": 0.6, "opacity": 0.8, "color": {"r": 0, "g": 64, "b": 255, "a": 255}}"#,
     ),

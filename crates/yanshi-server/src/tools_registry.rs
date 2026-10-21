@@ -418,7 +418,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "draw_shape",
         profile: Profile::Core,
-        summary: "绘制形状（矩形/椭圆/多边形，可描边）",
+        summary: "绘制形状（矩形/椭圆/多边形/路径 path，可描边）：path 的 geometry 形如 {kind:\"path\", fill_rule:\"evenodd\"|\"nonzero\"（缺省 evenodd）, subpaths:[{start:[x,y], closed:bool, segments:[{op:\"L\",to:[x,y]} | {op:\"C\",c1:[x,y],c2:[x,y],to:[x,y]}]}]}；path 不给 color ⇒ 纯描边（开放路径），给 color ⇒ 填充（开放路径按隐式闭合填充、描边不封口）；非法 path 载荷带字段路径报错、不回退成多边形",
         mutating: true,
         params: &[
             param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
@@ -428,9 +428,32 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "data",
                 Object,
                 true,
-                "{geometry,color,stroke_width,stroke_color}"
+                "{geometry,color,stroke_width,stroke_color}；geometry.kind 可为 rect/ellipse/polygon/path（path 的字段表见 summary）"
             ),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
+        ],
+    },
+    ToolSpec {
+        name: "stroke_path",
+        profile: Profile::Core,
+        summary: "沿路径用真笔刷描边：把 path 形状对象（path_object_id）或内联 subpaths 按弧长等距烘焙成 brush_stroke 落笔（与手绘笔触同一写路径：介质/撤销/判据同源）。每个 subpath 独立成一笔。pressure_profile=simulate_pressure（缺省）时压感两端 smoothstep 斜坡归零、中段满压；constant 时全程恒定。何时用它而不是 draw_shape 的 path 描边：要笔刷物理（压感变宽、飞白、混色）时用这个；只要纯几何线宽时用 draw_shape 的 stroke_width。",
+        mutating: true,
+        params: &[
+            param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
+            param!("group_id", String, false, "组标识：一组笔共享一个 id ⇒ 用 revert_group 整组撤销（不给则不成组）"),
+            param!("layer_id", String, true, "目标图层（与 brush_stroke 同语义）"),
+            param!("path_object_id", String, false, "已有 path 形状对象 id（与 subpaths 二选一，同时给报错）"),
+            param!("subpaths", Array, false, "内联子路径（与 draw_shape 的 path 载荷同构：[{start:[x,y], closed:bool, segments:[{op:\"L\",to} | {op:\"C\",c1,c2,to}]}]；与 path_object_id 二选一）"),
+            param!("brush", String, true, "笔刷名（同 brush_stroke：assets/brushes 或缓存里的 .myb，可省 .myb）"),
+            param!("size", Number, false, "覆盖笔刷自带半径（直径像素，同 brush_stroke）；同时决定烘焙采样间距 Δs = max(1, 0.2×size)；不给时按 10 估算采样间距（笔刷半径仍以 .myb 为准）"),
+            param!("color", Any, false, "颜色（同 brush_stroke：{r,g,b,a} / [r,g,b,(a)] / \"#RRGGBB\"）"),
+            param!("brush_params", Object, false, "覆盖 .myb 字段（同 brush_stroke）"),
+            param!("pressure_profile", String, false, "压感剖面：simulate_pressure（缺省）/ constant"),
+            param!("pressure_max", Number, false, "剖面峰值 0..1（缺省 1.0）"),
+            param!("ramp_ratio", Number, false, "simulate 时双端斜坡各占弧长比 0..0.5（缺省 0.25）"),
+            param!("virtual_speed", Number, false, "虚拟手速 px/ms（缺省 0.5）：决定烘焙点的 time_ms 与吃速度的笔刷行为"),
+            param!("preview", Boolean, false, "缺省 true = 每笔产出预览图；false = 不产出（连续落笔提速；透传 brush_stroke）"),
+            param!("wait_for_render", Boolean, false, "缺省 true = 等渲染落盘再返回；false = 不等（透传 brush_stroke）"),
         ],
     },
     ToolSpec {

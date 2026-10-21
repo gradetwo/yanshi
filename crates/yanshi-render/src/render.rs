@@ -3462,6 +3462,9 @@ impl Renderer {
                     kind,
                     bbox,
                     points,
+                    subpaths,
+                    fill_rule,
+                    has_fill,
                     color,
                     stroke_width,
                     stroke_color,
@@ -3550,7 +3553,18 @@ impl Renderer {
                     };
                     // **∴ 细粒度探针（**第 672 轮 ✓）★
                     let mut t_shape_cov = stage_probe::Stage::start();
-                    let mut coverage = shape_coverage_in(kind, bbox, &points, &clip);
+                    // Path 填充走规范折线多环覆盖率（§4.4，与 shape_coverage_in 同 clip 语义）；
+                    // 无填充色（has_fill=false）⇒ 覆盖率为空、只描边。
+                    // shape_coverage_in 的签名没有 subpaths，Path 不经它（蒙版路径同理不认 path，§4.8）。
+                    let mut coverage = if kind == ShapeKind::Path {
+                        if has_fill {
+                            crate::geometry::path_coverage_clipped(&subpaths, 4, &clip, fill_rule)
+                        } else {
+                            Coverage::empty()
+                        }
+                    } else {
+                        shape_coverage_in(kind, bbox, &points, &clip)
+                    };
                     let d_shape_cov = t_shape_cov.stop();
                     // **羽化**（测试报告 §二.1 ✓）：**只在 >0 时**才走新路径 ✓
                     // ⇒ **缺省 0 ⇒ 逐字节不变** ✓（硬要求 ✓）。
@@ -3572,59 +3586,76 @@ impl Renderer {
                     probe_objects.record("shape:fill", t_shape_fill.stop());
                     // **∴ outline 不单独插桩 ✗**（**第 672 轮 ✓）：**用「**其余 ＝ primitive:Shape − coverage − fill**」推断** ✓
                     if stroke_width > 0.0 {
-                        let outline = shape_outline(kind, bbox, &points);
-                        if outline.len() >= 2 {
-                            let brush = BrushSpec {
-                                size: stroke_width,
-                                color: stroke_color.unwrap_or(color),
-                                opacity: f64::from(opacity),
-                                seed: object.data.get("seed").and_then(Value::as_u64).unwrap_or(0),
-                                ..BrushSpec::default()
-                            };
-                            let geometry = StrokeGeometry {
-                                points: outline
-                                    .iter()
-                                    .map(|(x, y)| StrokePoint {
-                                        x: *x,
-                                        y: *y,
-                                        pressure: 1.0,
-                                    })
-                                    .collect(),
-                                // **图形轮廓必须保持尖角** ✗ —— 这里描的是矩形/椭圆的边 ✓，
-                                // 平滑会把直角削圆 ✓（那是**错的** ✓）。平滑只为**手绘笔迹**准备 ✓，
-                                // 因此这里显式关闭 ✓，而不是"跟着默认值走" ✓。
-                                smooth: false,
-                            };
-                            match &shape_clip {
-                                Some(clip) => {
-                                    let samples: Vec<(f64, f64, f64)> = geometry
-                                        .points
+                        // Path 的描边轮廓 = 每条子路径的规范折线，逐条盖章
+                        //（闭合环已回首、开放路径不封口）；其余 kind 仍走 shape_outline。
+                        let outlines: Vec<Vec<(f64, f64)>> = if kind == ShapeKind::Path {
+                            subpaths
+                                .iter()
+                                .map(|sub| {
+                                    crate::path::flatten_subpath(sub, crate::path::FLATTEN_TOL)
+                                })
+                                .collect()
+                        } else {
+                            vec![shape_outline(kind, bbox, &points)]
+                        };
+                        for outline in &outlines {
+                            if outline.len() >= 2 {
+                                let brush = BrushSpec {
+                                    size: stroke_width,
+                                    color: stroke_color.unwrap_or(color),
+                                    opacity: f64::from(opacity),
+                                    seed: object
+                                        .data
+                                        .get("seed")
+                                        .and_then(Value::as_u64)
+                                        .unwrap_or(0),
+                                    ..BrushSpec::default()
+                                };
+                                let geometry = StrokeGeometry {
+                                    points: outline
                                         .iter()
-                                        .map(|point| (point.x, point.y, point.pressure))
-                                        .collect();
-                                    let stamps = crate::geometry::dashed_line(
-                                        &samples,
-                                        brush.spacing_pixels(),
-                                        brush.dash,
-                                    );
-                                    crate::brush::stamp_samples_clipped(
-                                        layer_buffer,
-                                        &brush,
-                                        &stamps,
-                                        &|x, y| clip.coverage(x, y),
-                                    );
-                                }
-                                None => {
-                                    // **★ 记下**盖了几个章** ✗ ★**（第 204 轮 ✓）：
-                                    //   **∴ `stamp_stroke` 的返回值**是 `drawn`** ✓
-                                    //     ⇒ **∴ 于是**：**判据**能算**"每章多少时间 ✓"** ✓✓
-                                    let drawn = crate::brush::stamp_stroke_on(
-                                        layer_buffer,
-                                        &brush,
-                                        &geometry,
-                                        (self.grid.width(), self.grid.height()),
-                                    );
-                                    note_stamps(drawn);
+                                        .map(|(x, y)| StrokePoint {
+                                            x: *x,
+                                            y: *y,
+                                            pressure: 1.0,
+                                        })
+                                        .collect(),
+                                    // **图形轮廓必须保持尖角** ✗ —— 这里描的是矩形/椭圆的边 ✓，
+                                    // 平滑会把直角削圆 ✓（那是**错的** ✓）。平滑只为**手绘笔迹**准备 ✓，
+                                    // 因此这里显式关闭 ✓，而不是"跟着默认值走" ✓。
+                                    smooth: false,
+                                };
+                                match &shape_clip {
+                                    Some(clip) => {
+                                        let samples: Vec<(f64, f64, f64)> = geometry
+                                            .points
+                                            .iter()
+                                            .map(|point| (point.x, point.y, point.pressure))
+                                            .collect();
+                                        let stamps = crate::geometry::dashed_line(
+                                            &samples,
+                                            brush.spacing_pixels(),
+                                            brush.dash,
+                                        );
+                                        crate::brush::stamp_samples_clipped(
+                                            layer_buffer,
+                                            &brush,
+                                            &stamps,
+                                            &|x, y| clip.coverage(x, y),
+                                        );
+                                    }
+                                    None => {
+                                        // **★ 记下**盖了几个章** ✗ ★**（第 204 轮 ✓）：
+                                        //   **∴ `stamp_stroke` 的返回值**是 `drawn`** ✓
+                                        //     ⇒ **∴ 于是**：**判据**能算**"每章多少时间 ✓"** ✓✓
+                                        let drawn = crate::brush::stamp_stroke_on(
+                                            layer_buffer,
+                                            &brush,
+                                            &geometry,
+                                            (self.grid.width(), self.grid.height()),
+                                        );
+                                        note_stamps(drawn);
+                                    }
                                 }
                             }
                         }
@@ -5338,6 +5369,10 @@ pub fn shape_coverage_in(
                     ("Polygon<3", "rect")
                 }
             }
+            // 本函数签名没有 subpaths，Path 形状的填充不经这里
+            //（渲染主路径在 Primitive::Shape 分支直接走 path_coverage_clipped）；
+            // 蒙版解析不产生 Path（§4.8 一期不动），探针里如实报「未覆盖」。
+            ShapeKind::Path => ("Path", "none"),
         };
         eprintln!(
             "PROBE shape 类型：{tag} 实际={covered} points={} 面积={:.0}",
@@ -5355,6 +5390,9 @@ pub fn shape_coverage_in(
                 rect_coverage_clipped(bbox, clip)
             }
         }
+        // 见上方探针注释：Path 填充需要 subpaths，本函数拿不到 ⇒ 空覆盖率。
+        // 真正的 Path 渲染在 Primitive::Shape 分支走 path_coverage_clipped，不经这里。
+        ShapeKind::Path => Coverage::empty(),
     }
 }
 
@@ -5520,6 +5558,9 @@ pub fn shape_outline(kind: ShapeKind, bbox: Bbox, points: &[(f64, f64)]) -> Vec<
             }
             outline
         }
+        // Path 的描边轮廓是逐子路径的规范折线（渲染主路径单独构造），
+        // 本函数签名只有 points ⇒ 给不出轮廓，返回空列（主路径不会用它描 Path）。
+        ShapeKind::Path => Vec::new(),
     }
 }
 

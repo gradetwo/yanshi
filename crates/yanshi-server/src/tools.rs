@@ -1073,6 +1073,24 @@ fn normalize_shape_bbox(data: &mut Value) {
             );
         }
     }
+    // **kind=path 的 bbox 归一化**（曲线/路径一期 §4.3）：没给 bbox ⇒ 写入控制点包围盒，
+    // 与渲染层 parse 的缺省口径一致（显式 bbox 优先，含上面刚归一化出的扁平写法）；
+    // 下游只见一种形态。解析失败不在这里报错 —— `validate_shape_geometry` 紧接着
+    // 会用同一份校验给出带字段路径的错误。
+    if let Some(geometry) = data.get_mut("geometry").and_then(Value::as_object_mut) {
+        if geometry.get("kind").and_then(Value::as_str) == Some("path")
+            && geometry.get("bbox").is_none()
+        {
+            let snapshot = Value::Object(geometry.clone());
+            if let Ok(parsed) = yanshi_render::object::parse_path_subpaths(&snapshot) {
+                if let Some((x, y, w, h)) =
+                    yanshi_render::object::path_control_bbox(&parsed.subpaths)
+                {
+                    geometry.insert("bbox".to_owned(), json!({"x": x, "y": y, "w": w, "h": h}));
+                }
+            }
+        }
+    }
     let Some(geometry) = data.get_mut("geometry").and_then(Value::as_object_mut) else {
         return;
     };
@@ -1091,9 +1109,11 @@ fn normalize_shape_bbox(data: &mut Value) {
 
 /// **校验形状几何** ✓ —— 拒绝解析不了的写法 ✓，而不是静默落一个空对象 ✗。
 ///
-/// **依据是渲染层实际支持的三种** ✓（`yanshi-render/src/object.rs` ✓）：
-/// `rect` / `ellipse` / `polygon`（`path` 也归多边形 ✓）。
-/// 数据形态 ✓：`{kind:"rect"|"ellipse", bbox:{x,y,w,h}}` ✓ 或 `{kind:"polygon", points:[[x,y],…]}` ✓。
+/// **依据是渲染层实际支持的四种** ✓（`yanshi-render/src/object.rs` ✓）：
+/// `rect` / `ellipse` / `polygon` / `path`（曲线/路径一期起 path 是真路径形状，
+/// 不再按多边形处理；校验与渲染层共用 `object::parse_path_subpaths` 同一份实现 ✓）。
+/// 数据形态 ✓：`{kind:"rect"|"ellipse", bbox:{x,y,w,h}}` ✓ 或 `{kind:"polygon", points:[[x,y],…]}`
+/// 或 `{kind:"path", subpaths:[{start, closed, segments:[{op,to,…}]}]}` ✓。
 ///
 /// **为什么报错要写得具体** ✓：调用方（尤其 agent ✓）第一次猜错写法很正常 ✓，
 /// 而"**从错误里学到正确写法**" ✓ 比"返回 ok 然后画出一片空白" ✓ 有用得多 ✓ ——
@@ -1119,9 +1139,7 @@ fn validate_shape_geometry(data: &Value) -> Result<()> {
         .ok_or_else(|| {
             YanshiError::new(
                 ErrorCode::InvalidArgument,
-                ErrorContext::detail(
-                    "geometry 缺少 kind ✓：可用 rect / ellipse / polygon（path 按多边形处理）",
-                ),
+                ErrorContext::detail("geometry 缺少 kind ✓：可用 rect / ellipse / polygon / path"),
             )
         })?;
     match kind {
@@ -1171,7 +1189,7 @@ fn validate_shape_geometry(data: &Value) -> Result<()> {
                 ));
             }
         }
-        "polygon" | "path" => {
+        "polygon" => {
             let count = geometry
                 .get("points")
                 .and_then(Value::as_array)
@@ -1186,11 +1204,22 @@ fn validate_shape_geometry(data: &Value) -> Result<()> {
                 ));
             }
         }
+        "path" => {
+            // 与渲染层共用同一份校验（`object::parse_path_subpaths`，禁止再写第二套）：
+            // 校验通过 ⇒ 渲染层必然解析得出，不会出现「工具说 ok、画出来是空」。
+            let geometry_value = Value::Object(geometry.clone());
+            if let Err(reason) = yanshi_render::object::parse_path_subpaths(&geometry_value) {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("path 几何非法：{reason}")),
+                ));
+            }
+        }
         other => {
             return Err(YanshiError::new(
                 ErrorCode::InvalidArgument,
                 ErrorContext::detail(format!(
-                    "未知的形状 kind：{other} ✓（可用 rect / ellipse / polygon；path 按多边形处理）"
+                    "未知的形状 kind：{other} ✓（可用 rect / ellipse / polygon / path）"
                 )),
             ));
         }
@@ -1625,6 +1654,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "list_textures" => write_list_textures(ctx, args),
         "list_assets" => write_list_assets(ctx, args),
         "brush_stroke" => write_brush_stroke(ctx, args),
+        "stroke_path" => write_stroke_path(ctx, args),
         "smart_fill" => write_smart_fill(ctx, args),
         "smart_blend" => write_smart_blend(ctx, args),
         "smart_glaze" => write_smart_glaze(ctx, args),
@@ -3835,6 +3865,214 @@ fn write_draw(ctx: &mut ToolContext<'_>, args: &Value, kind: AtomKind) -> Result
     let result = ctx.commit(kind, payload)?;
     let region = region_of(&result);
     finish_mutation(ctx, &result, region)
+}
+
+/// stroke_path 的压感剖面（与工具参数 `pressure_profile` 一一对应）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StrokePressureProfile {
+    /// 全程恒定 `pressure_max`。
+    Constant,
+    /// 双端 smoothstep 斜坡 + 中段满压（模拟真笔起收）。
+    Simulate,
+}
+
+/// stroke_path 的烘焙计划：一串待落笔的笔触（每笔一个子路径）。
+struct StrokePathPlan {
+    /// 每笔的点列：`[x, y, pressure, time_ms]`。
+    strokes: Vec<Vec<[f64; 4]>>,
+    /// 总长为 0 被跳过的子路径数（计数进返回值报告，不静默）。
+    skipped_subpaths: usize,
+    /// 全部成笔子路径的弧长合计。
+    length_total: f64,
+}
+
+fn profile_smoothstep(tau: f64) -> f64 {
+    let tau = tau.clamp(0.0, 1.0);
+    tau * tau * (3.0 - 2.0 * tau)
+}
+
+/// 纯函数：subpaths → 烘焙计划（详细设计 §5.2）。
+///
+/// 每条子路径独立成笔：规范容差展平 → 全径弧长 → `Δs = max(1.0, 0.20 × size)`
+/// 等弧长重采样（末点必达）→ 压感剖面 → `time_ms = round(s / virtual_speed)`
+/// （每笔从 0 起，与手绘多笔一致）。总长为 0 的子路径跳过并计数。
+fn plan_stroke_path(
+    subpaths: &[yanshi_render::path::Subpath],
+    size: f64,
+    profile: StrokePressureProfile,
+    pressure_max: f64,
+    ramp_ratio: f64,
+    virtual_speed: f64,
+) -> StrokePathPlan {
+    use yanshi_render::path::{
+        flatten_subpath, polyline_length, resample_by_arclength, FLATTEN_TOL,
+    };
+    let step = (0.20 * size).max(1.0);
+    let mut plan = StrokePathPlan {
+        strokes: Vec::new(),
+        skipped_subpaths: 0,
+        length_total: 0.0,
+    };
+    for sub in subpaths {
+        let flat = flatten_subpath(sub, FLATTEN_TOL);
+        let total = polyline_length(&flat);
+        if total <= 0.0 {
+            plan.skipped_subpaths += 1;
+            continue;
+        }
+        let samples = resample_by_arclength(&flat, step);
+        let points: Vec<[f64; 4]> = samples
+            .iter()
+            .map(|&(x, y, s)| {
+                let u = s / total;
+                let pressure = match profile {
+                    StrokePressureProfile::Constant => pressure_max,
+                    StrokePressureProfile::Simulate => {
+                        if ramp_ratio <= 0.0 {
+                            pressure_max
+                        } else if u < ramp_ratio {
+                            pressure_max * profile_smoothstep(u / ramp_ratio)
+                        } else if u > 1.0 - ramp_ratio {
+                            pressure_max * profile_smoothstep((1.0 - u) / ramp_ratio)
+                        } else {
+                            pressure_max
+                        }
+                    }
+                };
+                [x, y, pressure, (s / virtual_speed).round()]
+            })
+            .collect();
+        plan.length_total += total;
+        plan.strokes.push(points);
+    }
+    plan
+}
+
+/// **沿路径描边 `stroke_path`**（曲线/路径一期 §5）：把 path 形状（或内联 subpaths）
+/// 烘焙成标准 brush_stroke 落文档——介质 / 图层 / 撤销 / 判据与手绘笔触全同源，
+/// **不另写一条近似落笔路径**。多个 subpath 逐个成笔、顺序与输入一致。
+fn write_stroke_path(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let invalid = |message: String| {
+        YanshiError::new(ErrorCode::InvalidArgument, ErrorContext::detail(message))
+    };
+    let ref_id = optional_str(args, "path_object_id");
+    let inline = args.get("subpaths");
+    match (ref_id.is_some(), inline.is_some()) {
+        (true, true) => {
+            return Err(invalid(
+                "path_object_id 与 subpaths 只能给一个（二选一）".to_owned(),
+            ));
+        }
+        (false, false) => {
+            return Err(invalid(
+                "必须给 path_object_id（引用已有 path 形状）或 subpaths（内联路径）之一".to_owned(),
+            ));
+        }
+        _ => {}
+    }
+    let profile = match optional_str(args, "pressure_profile").as_deref() {
+        None | Some("simulate_pressure") => StrokePressureProfile::Simulate,
+        Some("constant") => StrokePressureProfile::Constant,
+        Some(other) => {
+            return Err(invalid(format!(
+                "pressure_profile 只认 constant / simulate_pressure，得到 {other}"
+            )));
+        }
+    };
+    let pressure_max = args
+        .get("pressure_max")
+        .and_then(Value::as_f64)
+        .unwrap_or(1.0);
+    if !(0.0..=1.0).contains(&pressure_max) {
+        return Err(invalid(format!(
+            "pressure_max 必须在 0..1，得到 {pressure_max}"
+        )));
+    }
+    let ramp_ratio = args
+        .get("ramp_ratio")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.25);
+    if !(0.0..=0.5).contains(&ramp_ratio) {
+        return Err(invalid(format!(
+            "ramp_ratio 必须在 0..0.5，得到 {ramp_ratio}"
+        )));
+    }
+    let virtual_speed = args
+        .get("virtual_speed")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.5);
+    if !virtual_speed.is_finite() || virtual_speed <= 0.0 {
+        return Err(invalid(format!(
+            "virtual_speed 必须 > 0，得到 {virtual_speed}"
+        )));
+    }
+    let subpaths: Vec<yanshi_render::path::Subpath> = if let Some(object_id) = &ref_id {
+        let state = document_state(ctx)?;
+        let Some(object) = state.objects.get(object_id) else {
+            return Err(invalid(format!(
+                "找不到 path_object_id 引用的对象：{object_id}"
+            )));
+        };
+        match yanshi_render::object::parse_object(object) {
+            yanshi_render::object::Primitive::Shape {
+                kind: yanshi_render::object::ShapeKind::Path,
+                subpaths,
+                ..
+            } => subpaths,
+            _ => {
+                return Err(invalid(format!(
+                    "对象 {object_id} 不是 path 形状（需要 draw_shape 建的 kind=path 对象）"
+                )));
+            }
+        }
+    } else {
+        // 内联 subpaths 与 draw_shape 共用同一份校验（object::parse_path_subpaths）。
+        let wrapper = json!({ "subpaths": inline.cloned().unwrap_or(Value::Null) });
+        match yanshi_render::object::parse_path_subpaths(&wrapper) {
+            Ok(parsed) => parsed.subpaths,
+            Err(reason) => return Err(invalid(format!("subpaths 非法：{reason}"))),
+        }
+    };
+    // 采样间距按 size 估：未给 size 时按 10px 估（笔刷自带半径在落笔时仍以 .myb 为准，
+    // 这里只决定烘焙点密度，说明写在注册表 size 参数里）。
+    let size = args.get("size").and_then(Value::as_f64).unwrap_or(10.0);
+    let plan = plan_stroke_path(
+        &subpaths,
+        size,
+        profile,
+        pressure_max,
+        ramp_ratio,
+        virtual_speed,
+    );
+    // 转发 brush_stroke 参数：剔除 stroke_path 专属键，points 由烘焙逐笔生成；
+    // humanize 强制关——压感剖面已由本工具生成，拟人包络再叠一层会把剖面改掉
+    //（brush_stroke 的契约：humanize=false ⇒ 一位都不动）。
+    let mut base = args_object(args)?.clone();
+    for key in [
+        "path_object_id",
+        "subpaths",
+        "pressure_profile",
+        "pressure_max",
+        "ramp_ratio",
+        "virtual_speed",
+    ] {
+        base.remove(key);
+    }
+    base.insert("humanize".to_owned(), json!(false));
+    let mut points_total = 0usize;
+    for stroke in &plan.strokes {
+        let mut stroke_args = base.clone();
+        stroke_args.insert("points".to_owned(), json!(stroke));
+        write_brush_stroke(ctx, &Value::Object(stroke_args))?;
+        points_total += stroke.len();
+    }
+    Ok(json!({
+        "ok": true,
+        "strokes": plan.strokes.len(),
+        "points_total": points_total,
+        "skipped_subpaths": plan.skipped_subpaths,
+        "length_total": plan.length_total,
+    }))
 }
 
 const OBJECT_PATCH_KEYS: [&str; 6] = [

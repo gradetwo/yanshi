@@ -1461,6 +1461,9 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                     kind,
                     bbox,
                     points,
+                    subpaths,
+                    fill_rule,
+                    has_fill,
                     color,
                     stroke_width,
                     stroke_color,
@@ -1484,7 +1487,9 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                     let shape_alpha = f64::from(color[3]);
                     let mut shape_backdrop: Option<[f32; 3]> = None;
                     let mut shape_raster_fallback = false;
-                    if flatten_opacity && shape_alpha < 0.9995 {
+                    // 纯描边 Path（has_fill=false）没有填充可压：跳过压平、下面直出 fill="none"。
+                    // has_fill 对其余 kind 恒 true ⇒ 这一条只影响 Path，存量行为不变。
+                    if flatten_opacity && has_fill && shape_alpha < 0.9995 {
                         if layer.opacity < 0.9995 || layer_blend_css.is_some() || !backdrop_exact {
                             counts.flatten_skipped += 1;
                         } else {
@@ -1568,11 +1573,22 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                             Some(shape_alpha),
                         )
                     };
-                    let mut attrs = format!(" fill=\"{fill}\"");
+                    let mut attrs = if kind == yanshi_render::object::ShapeKind::Path && !has_fill {
+                        " fill=\"none\"".to_string()
+                    } else {
+                        format!(" fill=\"{fill}\"")
+                    };
                     if let Some(op) = emit_opacity {
                         if op < 0.9995 {
                             attrs.push_str(&format!(" fill-opacity=\"{}\"", svgx::fmt_num(op)));
                         }
+                    }
+                    // fill-rule 透传（§4.7）：nonzero 是 SVG 默认值可省略，evenodd 必须写。
+                    if kind == yanshi_render::object::ShapeKind::Path
+                        && has_fill
+                        && fill_rule == yanshi_render::path::FillRule::EvenOdd
+                    {
+                        attrs.push_str(" fill-rule=\"evenodd\"");
                     }
                     if stroke_width > 0.0 {
                         if let Some(sc) = stroke_color {
@@ -1634,6 +1650,44 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                                 }
                             }
                             d.push_str(" z");
+                            format!("<path d=\"{d}\"{attrs}/>")
+                        }
+                        yanshi_render::object::ShapeKind::Path => {
+                            // 原生直出（§4.7）：控制点原样写 M / L / C / Z，**不展平**
+                            //（展平点列只活在渲染期；导出写它等于把曲线降级成折线）。
+                            let mut d = String::new();
+                            for sub in subpaths {
+                                d.push_str(&format!(
+                                    "M {} {}",
+                                    svgx::fmt_num(sub.start.0),
+                                    svgx::fmt_num(sub.start.1)
+                                ));
+                                for seg in &sub.segments {
+                                    match seg {
+                                        yanshi_render::path::PathSeg::Line { to } => {
+                                            d.push_str(&format!(
+                                                " L {} {}",
+                                                svgx::fmt_num(to.0),
+                                                svgx::fmt_num(to.1)
+                                            ));
+                                        }
+                                        yanshi_render::path::PathSeg::Cubic { c1, c2, to } => {
+                                            d.push_str(&format!(
+                                                " C {} {} {} {} {} {}",
+                                                svgx::fmt_num(c1.0),
+                                                svgx::fmt_num(c1.1),
+                                                svgx::fmt_num(c2.0),
+                                                svgx::fmt_num(c2.1),
+                                                svgx::fmt_num(to.0),
+                                                svgx::fmt_num(to.1)
+                                            ));
+                                        }
+                                    }
+                                }
+                                if sub.closed {
+                                    d.push_str(" Z");
+                                }
+                            }
                             format!("<path d=\"{d}\"{attrs}/>")
                         }
                     };

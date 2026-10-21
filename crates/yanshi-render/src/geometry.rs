@@ -548,6 +548,158 @@ fn inside_from_thresholds(x: f64, thresholds: &[f64]) -> bool {
     (thresholds.len() - first_greater) % 2 == 1
 }
 
+/// 带符号阈值（多环 / nonzero 用）：穿越表达式与 [`edge_thresholds_at`] 逐字相同，
+/// 每项多带一个方向：边向下穿过扫描线记 +1、向上记 −1。
+///
+/// 多环时把所有环的穿越并进同一张排序表：evenodd 看总数奇偶、nonzero 看
+/// `x` 右侧的带符号和——两种规则共用同一份穿越几何，不各算各的。
+fn signed_thresholds_at(y: f64, rings: &[&[(f64, f64)]]) -> Vec<(f64, i32)> {
+    let mut out: Vec<(f64, i32)> = Vec::new();
+    for points in rings {
+        let count = points.len();
+        if count == 0 {
+            continue;
+        }
+        let mut j = count - 1;
+        for i in 0..count {
+            let (xi, yi) = points[i];
+            let (xj, yj) = points[j];
+            if (yi > y) != (yj > y) {
+                let t = (y - yi) / (yj - yi);
+                out.push((xi + t * (xj - xi), if yj > yi { 1 } else { -1 }));
+            }
+            j = i;
+        }
+    }
+    out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+/// 用已排序的带符号阈值判定内外：evenodd 奇偶 / nonzero 绕向和 ≠ 0。
+fn inside_from_signed_thresholds(
+    x: f64,
+    thresholds: &[(f64, i32)],
+    rule: crate::path::FillRule,
+) -> bool {
+    let first_greater = thresholds.partition_point(|t| t.0 <= x);
+    match rule {
+        crate::path::FillRule::EvenOdd => (thresholds.len() - first_greater) % 2 == 1,
+        crate::path::FillRule::NonZero => {
+            thresholds[first_greater..].iter().map(|t| t.1).sum::<i32>() != 0
+        }
+    }
+}
+
+/// 多环覆盖率（path 形状填充专用，曲线/路径一期 §4.4）。
+///
+/// 几何语义与 [`polygon_coverage_clipped`] 相同：同样的超采样、同样的逐行阈值
+/// 预计算、同样的「像素横档内无穿越 ⇒ 整档同判」快路径（保守判定，只会多算不会错算）。
+/// 区别只有两点：输入是多个环（逐环以末点连回首点收尾，开放环即隐式闭合，
+/// 与 SVG 填充一致）、内外判定按 `rule` 走。老的单环 evenodd 路径一字未动（回归红线）。
+#[must_use]
+pub fn rings_coverage_clipped(
+    rings: &[&[(f64, f64)]],
+    supersample: u32,
+    clip: &Bbox,
+    rule: crate::path::FillRule,
+) -> Coverage {
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    let mut total_points = 0usize;
+    for ring in rings {
+        total_points += ring.len();
+        for point in ring.iter() {
+            min_x = min_x.min(point.0);
+            min_y = min_y.min(point.1);
+            max_x = max_x.max(point.0);
+            max_y = max_y.max(point.1);
+        }
+    }
+    if total_points < 3 {
+        return Coverage::empty();
+    }
+    let bbox = Bbox::new(
+        min_x,
+        min_y,
+        (max_x - min_x).max(0.0),
+        (max_y - min_y).max(0.0),
+    );
+    if bbox.w <= 0.0 || bbox.h <= 0.0 {
+        return Coverage::empty();
+    }
+    let Some((x0, y0, x1, y1)) = clipped_grid(bbox, clip) else {
+        return Coverage::empty();
+    };
+    let width = (x1 - x0).max(0) as u32;
+    let height = (y1 - y0).max(0) as u32;
+    let ss = supersample.max(1);
+    let samples = (ss * ss) as f32;
+    let offs: Vec<f64> = (0..ss)
+        .map(|i| (f64::from(i) + 0.5) / f64::from(ss))
+        .collect();
+    // 逐行（子采样行）预计算带符号阈值，整行复用（与单环版同一成本模型）。
+    let mut rows: Vec<Vec<Vec<(f64, i32)>>> = Vec::with_capacity(height as usize);
+    for py in 0..height {
+        let mut per_sy = Vec::with_capacity(ss as usize);
+        for sy in 0..ss {
+            let y = y0 as f64 + py as f64 + offs[sy as usize];
+            per_sy.push(signed_thresholds_at(y, rings));
+        }
+        rows.push(per_sy);
+    }
+    let mut data = Vec::with_capacity((width * height) as usize);
+    for py in 0..height {
+        for px in 0..width {
+            let mut hits = 0.0f32;
+            let lo = x0 as f64 + px as f64;
+            let hi = lo + 1.0;
+            for sy in 0..ss {
+                let thresholds = &rows[py as usize][sy as usize];
+                let i = thresholds.partition_point(|t| t.0 <= lo);
+                let has_crossing = i < thresholds.len() && thresholds[i].0 <= hi;
+                if has_crossing {
+                    for sx in 0..ss {
+                        let x = x0 as f64 + px as f64 + offs[sx as usize];
+                        if inside_from_signed_thresholds(x, thresholds, rule) {
+                            hits += 1.0;
+                        }
+                    }
+                } else {
+                    let x = x0 as f64 + px as f64 + offs[0];
+                    if inside_from_signed_thresholds(x, thresholds, rule) {
+                        hits += ss as f32;
+                    }
+                }
+            }
+            data.push(hits / samples);
+        }
+    }
+    Coverage {
+        bbox: Bbox::new(x0 as f64, y0 as f64, width as f64, height as f64),
+        width,
+        height,
+        data,
+    }
+}
+
+/// path 形状的填充覆盖率：子路径在规范容差下展平为多环后走 [`rings_coverage_clipped`]。
+#[must_use]
+pub fn path_coverage_clipped(
+    subpaths: &[crate::path::Subpath],
+    supersample: u32,
+    clip: &Bbox,
+    rule: crate::path::FillRule,
+) -> Coverage {
+    let flattened: Vec<Vec<(f64, f64)>> = subpaths
+        .iter()
+        .map(|sub| crate::path::flatten_subpath(sub, crate::path::FLATTEN_TOL))
+        .collect();
+    let rings: Vec<&[(f64, f64)]> = flattened.iter().map(Vec::as_slice).collect();
+    rings_coverage_clipped(&rings, supersample, clip, rule)
+}
+
 /// 从折线展开 stamp 位置（等距采样，确定性）。
 ///
 /// `points` 为 `(x, y, pressure)`；`spacing` 为 stamp 间距（像素）；
@@ -808,6 +960,66 @@ mod tests {
         let stamps = dashed_line(&[(0.0, 0.0, 1.0), (12.0, 0.0, 1.0)], 1.0, Some(2.0));
         assert!(!stamps.is_empty());
         assert!(stamps.len() < 13, "虚线应少于实线 stamp 数");
+    }
+
+    #[test]
+    fn rings_coverage_single_ring_matches_polygon_bitwise() {
+        // 单环 evenodd 必须与老的 polygon_coverage_clipped 逐位一致
+        //（新多环实现的忠实性锁：同阈值表达式、同快路径、同累加方式）。
+        let ring: Vec<(f64, f64)> = vec![(2.5, 1.5), (30.25, 4.75), (25.5, 28.5), (6.0, 22.25)];
+        let clip = Bbox::new(0.0, 0.0, 40.0, 35.0);
+        let old = polygon_coverage_clipped(&ring, 4, &clip);
+        let new = rings_coverage_clipped(&[&ring[..]], 4, &clip, crate::path::FillRule::EvenOdd);
+        assert_eq!((old.width, old.height), (new.width, new.height));
+        assert_eq!(old.data.len(), new.data.len());
+        for (a, b) in old.data.iter().zip(new.data.iter()) {
+            assert_eq!(a.to_bits(), b.to_bits());
+        }
+    }
+
+    #[test]
+    fn rings_coverage_fill_rules_on_nested_squares() {
+        let outer: Vec<(f64, f64)> = vec![(0.0, 0.0), (40.0, 0.0), (40.0, 40.0), (0.0, 40.0)];
+        let inner: Vec<(f64, f64)> = vec![(10.0, 10.0), (30.0, 10.0), (30.0, 30.0), (10.0, 30.0)];
+        let inner_rev: Vec<(f64, f64)> =
+            vec![(10.0, 10.0), (10.0, 30.0), (30.0, 30.0), (30.0, 10.0)];
+        let clip = Bbox::new(0.0, 0.0, 40.0, 40.0);
+        // 同向嵌套：evenodd 中心挖洞、nonzero 中心叠加。
+        let eo = rings_coverage_clipped(
+            &[&outer[..], &inner[..]],
+            4,
+            &clip,
+            crate::path::FillRule::EvenOdd,
+        );
+        let nz = rings_coverage_clipped(
+            &[&outer[..], &inner[..]],
+            4,
+            &clip,
+            crate::path::FillRule::NonZero,
+        );
+        assert_eq!(eo.at_doc(20.0, 20.0), 0.0, "evenodd 同向嵌套中心应挖洞");
+        assert_eq!(nz.at_doc(20.0, 20.0), 1.0, "nonzero 同向嵌套中心应叠加");
+        assert_eq!(eo.at_doc(5.0, 5.0), 1.0);
+        assert_eq!(nz.at_doc(5.0, 5.0), 1.0);
+        // 反向嵌套：nonzero 绕向抵消 ⇒ 也挖洞。
+        let nz_rev = rings_coverage_clipped(
+            &[&outer[..], &inner_rev[..]],
+            4,
+            &clip,
+            crate::path::FillRule::NonZero,
+        );
+        assert_eq!(nz_rev.at_doc(20.0, 20.0), 0.0, "nonzero 反向嵌套中心应抵消");
+        // 覆盖总量：evenodd 环形 = 1600 − 400 = 1200；nonzero 叠加 = 1600（AA 带内容差）。
+        let total_eo: f32 = eo.data.iter().sum();
+        assert!(
+            (total_eo - 1200.0).abs() < 20.0,
+            "环形覆盖总量异常：{total_eo}"
+        );
+        let total_nz: f32 = nz.data.iter().sum();
+        assert!(
+            (total_nz - 1600.0).abs() < 20.0,
+            "nonzero 叠加总量异常：{total_nz}"
+        );
     }
 }
 

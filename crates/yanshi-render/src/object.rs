@@ -6,6 +6,7 @@
 
 use crate::brush::{BrushSpec, StrokeGeometry, StrokePoint};
 use crate::color::LinearRgba;
+use crate::path::{FillRule, PathSeg, Subpath};
 use serde_json::Value;
 use yanshi_core::{Bbox, BlobHash, Object, ObjectType, Transform};
 
@@ -18,6 +19,8 @@ pub enum ShapeKind {
     Ellipse,
     /// 多边形。
     Polygon,
+    /// 路径（子路径 + 三次 Bézier 段，曲线/路径一期）。
+    Path,
 }
 
 /// **修图（Retouch）引擎侧真正实现的种类** ✓（第 1000+ 轮 ✓）。
@@ -52,8 +55,17 @@ pub enum Primitive {
         feather: f64,
         /// 形状外接盒（文档坐标）。
         bbox: Bbox,
-        /// 多边形顶点（`kind = Polygon` 时使用）。
+        /// 多边形顶点（`kind = Polygon` 时使用；`kind = Path` 时恒空，
+        /// 展平点列**禁止**回填到这里存进文档——几何只存控制点）。
         points: Vec<(f64, f64)>,
+        /// 子路径列（仅 `kind = Path` 时非空；其余 kind 恒空）。
+        subpaths: Vec<Subpath>,
+        /// 填充规则（仅 `kind = Path` 有意义；缺省 evenodd）。
+        fill_rule: FillRule,
+        /// 载荷里是否显式给了填充色（仅 `kind = Path` 有意义）：
+        /// 开放路径无填充色 ⇒ 纯描边；有填充色 ⇒ 按隐式闭合填充（SVG 语义）。
+        /// 其余 kind 恒为 true（形状总是填充，存量语义）。
+        has_fill: bool,
         /// 填充色（直通线性）。
         color: LinearRgba,
         /// 描边宽度（像素，0 表示不描边）。
@@ -540,14 +552,178 @@ fn parse_stroke(data: &Value) -> Primitive {
     }
 }
 
+/// `kind = "path"` 载荷的解析结果（子路径 + 填充规则）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedPath {
+    /// 子路径列（已校验：非空、每条段数 ≥ 1、坐标全有限）。
+    pub subpaths: Vec<Subpath>,
+    /// 填充规则（缺省 evenodd）。
+    pub fill_rule: FillRule,
+}
+
+/// 解析并校验 `kind = "path"` 的 geometry（详细设计 §4.2 校验表）。
+///
+/// 这是工具层与对象层**共用的同一份校验**（禁止再写第二套）：draw_shape 的
+/// 工具层校验、stroke_path 的内联 subpaths 校验都调它。任何非法载荷都返回
+/// 带字段路径的错误（如 `subpaths[2].segments[0].c1 必须是 [x, y] 两个有限数`），
+/// 绝不静默降级、绝不回退成别的形状。
+pub fn parse_path_subpaths(geometry: &Value) -> Result<ParsedPath, String> {
+    let fill_rule = match geometry.get("fill_rule") {
+        None => FillRule::EvenOdd,
+        Some(Value::String(name)) => FillRule::parse(name)
+            .ok_or_else(|| format!("fill_rule 只认 evenodd/nonzero，得到 {name}"))?,
+        Some(other) => {
+            return Err(format!(
+                "fill_rule 必须是字符串 evenodd/nonzero，得到 {other}"
+            ));
+        }
+    };
+    let Some(subpaths_value) = geometry.get("subpaths") else {
+        return Err("subpaths 缺失（kind=path 必须给 subpaths 数组）".to_owned());
+    };
+    let Some(subpaths_array) = subpaths_value.as_array() else {
+        return Err("subpaths 必须是数组".to_owned());
+    };
+    if subpaths_array.is_empty() {
+        return Err("subpaths 至少要有一条子路径".to_owned());
+    }
+    let mut subpaths = Vec::with_capacity(subpaths_array.len());
+    for (i, sub_value) in subpaths_array.iter().enumerate() {
+        subpaths.push(parse_one_subpath(sub_value, i)?);
+    }
+    Ok(ParsedPath {
+        subpaths,
+        fill_rule,
+    })
+}
+
+fn parse_path_point(value: Option<&Value>, label: &str) -> Result<(f64, f64), String> {
+    let Some(pair) = value.and_then(Value::as_array) else {
+        return Err(format!("{label} 必须是 [x, y] 两个有限数"));
+    };
+    if pair.len() != 2 {
+        return Err(format!("{label} 必须是 [x, y] 两个有限数"));
+    }
+    let (Some(x), Some(y)) = (pair[0].as_f64(), pair[1].as_f64()) else {
+        return Err(format!("{label} 必须是 [x, y] 两个有限数"));
+    };
+    if !x.is_finite() || !y.is_finite() {
+        return Err(format!("{label} 必须是 [x, y] 两个有限数"));
+    }
+    Ok((x, y))
+}
+
+fn parse_one_subpath(value: &Value, index: usize) -> Result<Subpath, String> {
+    let base = format!("subpaths[{index}]");
+    if !value.is_object() {
+        return Err(format!("{base} 必须是对象（start / closed / segments）"));
+    }
+    let start = parse_path_point(value.get("start"), &format!("{base}.start"))?;
+    let closed = match value.get("closed") {
+        None => false,
+        Some(Value::Bool(b)) => *b,
+        Some(other) => return Err(format!("{base}.closed 必须是布尔，得到 {other}")),
+    };
+    let Some(segments_array) = value.get("segments").and_then(Value::as_array) else {
+        return Err(format!("{base}.segments 必须是数组"));
+    };
+    if segments_array.is_empty() {
+        return Err(format!("{base}.segments 至少要有一段（空路径无意义）"));
+    }
+    let mut segments = Vec::with_capacity(segments_array.len());
+    for (j, seg_value) in segments_array.iter().enumerate() {
+        let seg_base = format!("{base}.segments[{j}]");
+        match seg_value.get("op").and_then(Value::as_str) {
+            Some("L") => {
+                let to = parse_path_point(seg_value.get("to"), &format!("{seg_base}.to"))?;
+                segments.push(PathSeg::Line { to });
+            }
+            Some("C") => {
+                let c1 = parse_path_point(seg_value.get("c1"), &format!("{seg_base}.c1"))?;
+                let c2 = parse_path_point(seg_value.get("c2"), &format!("{seg_base}.c2"))?;
+                let to = parse_path_point(seg_value.get("to"), &format!("{seg_base}.to"))?;
+                segments.push(PathSeg::Cubic { c1, c2, to });
+            }
+            Some(other) => {
+                return Err(format!("{seg_base}.op 未知：{other}（只认 L / C）"));
+            }
+            None => {
+                return Err(format!("{seg_base}.op 缺失（只认 L / C）"));
+            }
+        }
+    }
+    Ok(Subpath {
+        start,
+        segments,
+        closed,
+    })
+}
+
+/// Path 的 base 包围盒 = 全部控制点（start + 每段 c1/c2/to）的包围盒。
+///
+/// Bézier 曲线恒在其控制多边形凸包内，所以这个盒保守且 O（点数）；
+/// 禁止用展平点列算 bbox（渲染期不能为了脏区先展平全图）。
+/// 返回 `(x, y, w, h)`；空 subpaths 返回 `None`。
+pub fn path_control_bbox(subpaths: &[Subpath]) -> Option<(f64, f64, f64, f64)> {
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    let mut any = false;
+    for sub in subpaths {
+        let mut visit = |p: (f64, f64)| {
+            any = true;
+            min_x = min_x.min(p.0);
+            min_y = min_y.min(p.1);
+            max_x = max_x.max(p.0);
+            max_y = max_y.max(p.1);
+        };
+        visit(sub.start);
+        for seg in &sub.segments {
+            match *seg {
+                PathSeg::Line { to } => visit(to),
+                PathSeg::Cubic { c1, c2, to } => {
+                    visit(c1);
+                    visit(c2);
+                    visit(to);
+                }
+            }
+        }
+    }
+    if !any {
+        return None;
+    }
+    Some((min_x, min_y, max_x - min_x, max_y - min_y))
+}
+
 fn parse_shape(data: &Value) -> Primitive {
     // 形状数据形如：
     //   {"geometry": {"kind": "rect", "bbox": {"x":0,"y":0,"w":10,"h":10}},
     //    "color": [...], "stroke_width": 1.0, "stroke_color": [...]}
     let geometry = data.get("geometry").cloned().unwrap_or(Value::Null);
+    let mut subpaths: Vec<Subpath> = Vec::new();
+    let mut fill_rule = FillRule::EvenOdd;
+    let mut has_fill = true;
     let kind = match geometry.get("kind").and_then(Value::as_str) {
         Some("ellipse") => ShapeKind::Ellipse,
-        Some("polygon") | Some("path") => ShapeKind::Polygon,
+        Some("polygon") => ShapeKind::Polygon,
+        Some("path") => match parse_path_subpaths(&geometry) {
+            Ok(parsed) => {
+                subpaths = parsed.subpaths;
+                fill_rule = parsed.fill_rule;
+                // 填充语义（§4.5）：载荷没给 color（或显式 null）⇒ 无填充，
+                // 开放路径纯描边、闭合路径只描边；给了 color 才填充。
+                has_fill = matches!(data.get("color"), Some(c) if !c.is_null());
+                ShapeKind::Path
+            }
+            Err(reason) => {
+                // 非法 path 载荷明确落 Unsupported 并带字段路径，**不回退成 Polygon**
+                //（历史上 "path" 被吞成多边形正是本期要修的静默降级）。
+                return Primitive::Unsupported {
+                    reason: format!("path 载荷非法：{reason}"),
+                };
+            }
+        },
         _ => ShapeKind::Rect,
     };
     // **扁平写法 `{kind:"rect", x, y, w, h}` 也认** ✓（真实用户第二次报告 ✓）。
@@ -568,6 +744,14 @@ fn parse_shape(data: &Value) -> Primitive {
         })
         .or_else(|| data.get("bbox").and_then(Bbox::from_value))
         .unwrap_or_else(|| Bbox::new(0.0, 0.0, 0.0, 0.0));
+    // Path 且载荷没给可用 bbox ⇒ 用控制点包围盒（§4.3；显式 bbox 优先）。
+    let bbox = if kind == ShapeKind::Path && bbox.w <= 0.0 && bbox.h <= 0.0 {
+        path_control_bbox(&subpaths)
+            .map(|(x, y, w, h)| Bbox::new(x, y, w, h))
+            .unwrap_or(bbox)
+    } else {
+        bbox
+    };
     let mut points = Vec::new();
     if let Some(array) = geometry.get("points").and_then(Value::as_array) {
         for item in array {
@@ -608,6 +792,9 @@ fn parse_shape(data: &Value) -> Primitive {
         kind,
         bbox,
         points,
+        subpaths,
+        fill_rule,
+        has_fill,
         color,
         stroke_width,
         stroke_color,
@@ -881,7 +1068,12 @@ pub fn transform_primitive(mut primitive: Primitive, transform: &Transform) -> P
                 point.y = y;
             }
         }
-        Primitive::Shape { bbox, points, .. } => {
+        Primitive::Shape {
+            bbox,
+            points,
+            subpaths,
+            ..
+        } => {
             let (x0, y0) = map_point(bbox.x, bbox.y);
             let (x1, y1) = map_point(bbox.x + bbox.w, bbox.y + bbox.h);
             *bbox = Bbox::new(
@@ -899,6 +1091,22 @@ pub fn transform_primitive(mut primitive: Primitive, transform: &Transform) -> P
             for point in points.iter_mut() {
                 let (x, y) = map_point(point.0, point.1);
                 *point = (x, y);
+            }
+            // Path 控制点同步变换：仿射变换 Bézier 控制点 = 精确变换后的曲线。
+            for sub in subpaths.iter_mut() {
+                sub.start = map_point(sub.start.0, sub.start.1);
+                for seg in sub.segments.iter_mut() {
+                    match seg {
+                        PathSeg::Line { to } => {
+                            *to = map_point(to.0, to.1);
+                        }
+                        PathSeg::Cubic { c1, c2, to } => {
+                            *c1 = map_point(c1.0, c1.1);
+                            *c2 = map_point(c2.0, c2.1);
+                            *to = map_point(to.0, to.1);
+                        }
+                    }
+                }
             }
         }
         Primitive::Retouch { points, .. } => {
@@ -1041,10 +1249,16 @@ pub fn object_bbox(object: &Object) -> Option<Bbox> {
             kind,
             bbox,
             points,
+            subpaths,
             stroke_width,
             ..
         } => {
-            let base = if kind == ShapeKind::Polygon && !points.is_empty() {
+            let base = if kind == ShapeKind::Path && !subpaths.is_empty() {
+                // Path 的脏区按控制点包围盒（与 parse 的 base bbox 同口径）。
+                path_control_bbox(&subpaths)
+                    .map(|(x, y, w, h)| Bbox::new(x, y, w, h))
+                    .unwrap_or(bbox)
+            } else if kind == ShapeKind::Polygon && !points.is_empty() {
                 let min_x = points.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
                 let min_y = points.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
                 let max_x = points.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
@@ -1168,6 +1382,132 @@ mod tests {
             json!({"geometry": {"kind": "ellipse", "bbox": {"x": 0, "y": 0, "w": 2, "h": 2}}}),
         );
         matches!(parse_object(&ellipse), Primitive::Shape { .. });
+    }
+
+    #[test]
+    fn shape_primitive_parses_path_with_control_point_bbox() {
+        // 合法 path：一段 L + 一段 C；无显式 bbox ⇒ 控制点包围盒（含 C 的控制点 (30, 40)）。
+        let path = object(
+            ObjectType::Shape,
+            json!({
+                "geometry": {
+                    "kind": "path",
+                    "subpaths": [{
+                        "start": [0, 0],
+                        "closed": true,
+                        "segments": [
+                            {"op": "L", "to": [10, 0]},
+                            {"op": "C", "c1": [30, 40], "c2": [-5, 20], "to": [0, 0]}
+                        ]
+                    }]
+                },
+                "color": [1.0, 0.0, 0.0, 1.0]
+            }),
+        );
+        match parse_object(&path) {
+            Primitive::Shape {
+                kind,
+                bbox,
+                points,
+                subpaths,
+                fill_rule,
+                has_fill,
+                ..
+            } => {
+                assert_eq!(kind, ShapeKind::Path);
+                assert!(points.is_empty(), "Path 的 points 恒空（几何只存控制点）");
+                assert_eq!(subpaths.len(), 1);
+                assert!(subpaths[0].closed);
+                assert_eq!(subpaths[0].segments.len(), 2);
+                assert_eq!(fill_rule, FillRule::EvenOdd, "fill_rule 缺省 evenodd");
+                assert!(has_fill, "给了 color ⇒ 有填充");
+                // 控制点集：(0,0) (10,0) (30,40) (-5,20) (0,0) ⇒ (-5, 0, 35, 40)。
+                assert_eq!(bbox, Bbox::new(-5.0, 0.0, 35.0, 40.0));
+            }
+            other => panic!("期望 Path Shape，得到 {other:?}"),
+        }
+        // object_bbox 与 parse 的 base bbox 同口径（无描边时不扩）。
+        assert_eq!(
+            object_bbox(&path).unwrap(),
+            Bbox::new(-5.0, 0.0, 35.0, 40.0)
+        );
+        // 无 color ⇒ has_fill=false（纯描边语义）；fill_rule=nonzero 透传。
+        let stroke_only = object(
+            ObjectType::Shape,
+            json!({
+                "geometry": {
+                    "kind": "path",
+                    "fill_rule": "nonzero",
+                    "subpaths": [{
+                        "start": [0, 0],
+                        "segments": [{"op": "L", "to": [10, 0]}]
+                    }]
+                },
+                "stroke_width": 2.0
+            }),
+        );
+        match parse_object(&stroke_only) {
+            Primitive::Shape {
+                kind,
+                fill_rule,
+                has_fill,
+                ..
+            } => {
+                assert_eq!(kind, ShapeKind::Path);
+                assert_eq!(fill_rule, FillRule::NonZero);
+                assert!(!has_fill, "没给 color ⇒ 无填充");
+            }
+            other => panic!("期望 Path Shape，得到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shape_path_illegal_payloads_are_unsupported_with_field_paths() {
+        // 非法 path 载荷一律落 Unsupported 并带字段路径，**绝不回退成 Polygon**。
+        let cases: Vec<(Value, &str)> = vec![
+            // 缺 c1：错误必须点名 subpaths[0].segments[0].c1。
+            (
+                json!({"geometry": {"kind": "path", "subpaths": [{"start": [0, 0], "segments": [{"op": "C", "c2": [1, 1], "to": [2, 2]}]}]}}),
+                "subpaths[0].segments[0].c1",
+            ),
+            // 未知段类型。
+            (
+                json!({"geometry": {"kind": "path", "subpaths": [{"start": [0, 0], "segments": [{"op": "Q", "to": [2, 2]}]}]}}),
+                "subpaths[0].segments[0].op",
+            ),
+            // 空 subpaths。
+            (
+                json!({"geometry": {"kind": "path", "subpaths": []}}),
+                "subpaths",
+            ),
+            // 空 segments。
+            (
+                json!({"geometry": {"kind": "path", "subpaths": [{"start": [0, 0], "segments": []}]}}),
+                "subpaths[0].segments",
+            ),
+            // 非法 fill_rule。
+            (
+                json!({"geometry": {"kind": "path", "fill_rule": "winding", "subpaths": [{"start": [0, 0], "segments": [{"op": "L", "to": [1, 1]}]}]}}),
+                "fill_rule",
+            ),
+            // start 不是有限数对。
+            (
+                json!({"geometry": {"kind": "path", "subpaths": [{"start": [0], "segments": [{"op": "L", "to": [1, 1]}]}]}}),
+                "subpaths[0].start",
+            ),
+        ];
+        for (data, needle) in cases {
+            let obj = object(ObjectType::Shape, data);
+            match parse_object(&obj) {
+                Primitive::Unsupported { reason } => {
+                    assert!(
+                        reason.contains(needle),
+                        "错误应包含字段路径 {needle}，实测：{reason}"
+                    );
+                }
+                other => panic!("非法 path 应落 Unsupported，得到 {other:?}"),
+            }
+        }
     }
 
     #[test]

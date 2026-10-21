@@ -746,3 +746,123 @@ fn guide_table_needs_two_points() {
     assert!(GuideTable::build(&[]).is_none());
     assert!(GuideTable::build(&[(1.0, 1.0)]).is_none());
 }
+
+#[test]
+fn stroke_path_plan_line_spacing_and_count() {
+    // 直线 300px、size 20 ⇒ Δs = max(1, 0.2×20) = 4：点数 = floor(300/4)+1 = 76，间距恒 4。
+    let sub = yanshi_render::path::Subpath {
+        start: (0.0, 0.0),
+        segments: vec![yanshi_render::path::PathSeg::Line { to: (300.0, 0.0) }],
+        closed: false,
+    };
+    let plan = plan_stroke_path(
+        &[sub],
+        20.0,
+        StrokePressureProfile::Constant,
+        1.0,
+        0.25,
+        0.5,
+    );
+    assert_eq!(plan.skipped_subpaths, 0);
+    assert_eq!(plan.strokes.len(), 1);
+    let pts = &plan.strokes[0];
+    assert_eq!(pts.len(), 76, "点数应为 76，实测 {}", pts.len());
+    for pair in pts.windows(2) {
+        let d = (pair[1][0] - pair[0][0]).abs();
+        assert!(
+            (4.0 * 0.99..=4.0 * 1.01).contains(&d),
+            "采样间距 {d} 超出 Δs ±1%"
+        );
+        assert_eq!(pair[0][1], 0.0);
+    }
+    assert!((plan.length_total - 300.0).abs() < 1e-9);
+}
+
+#[test]
+fn stroke_path_plan_profiles_and_time() {
+    let sub = yanshi_render::path::Subpath {
+        start: (0.0, 0.0),
+        segments: vec![yanshi_render::path::PathSeg::Line { to: (300.0, 0.0) }],
+        closed: false,
+    };
+    let plan = plan_stroke_path(
+        std::slice::from_ref(&sub),
+        20.0,
+        StrokePressureProfile::Simulate,
+        0.8,
+        0.25,
+        0.5,
+    );
+    let pts = &plan.strokes[0];
+    assert_eq!(pts.first().unwrap()[2], 0.0, "simulate 首点压感应为 0");
+    assert_eq!(pts.last().unwrap()[2], 0.0, "simulate 尾点压感应为 0");
+    let mid = pts[pts.len() / 2];
+    assert!(
+        (mid[2] - 0.8).abs() < 1e-6,
+        "simulate 中段应满压 0.8，实测 {}",
+        mid[2]
+    );
+    for pair in pts.windows(2) {
+        assert!(pair[1][3] > pair[0][3], "time_ms 必须严格单调递增");
+    }
+    assert_eq!(pts.last().unwrap()[3], 600.0, "末点 time = round(300/0.5)");
+    // constant：全点压感相等。
+    let plan = plan_stroke_path(
+        &[sub],
+        20.0,
+        StrokePressureProfile::Constant,
+        0.8,
+        0.25,
+        0.5,
+    );
+    assert!(plan.strokes[0].iter().all(|p| (p[2] - 0.8).abs() < 1e-12));
+}
+
+#[test]
+fn stroke_path_plan_skips_zero_length_and_counts_closed_loop() {
+    let zero = yanshi_render::path::Subpath {
+        start: (5.0, 5.0),
+        segments: vec![yanshi_render::path::PathSeg::Line { to: (5.0, 5.0) }],
+        closed: false,
+    };
+    let line = yanshi_render::path::Subpath {
+        start: (0.0, 0.0),
+        segments: vec![yanshi_render::path::PathSeg::Line { to: (30.0, 0.0) }],
+        closed: false,
+    };
+    let plan = plan_stroke_path(
+        &[zero, line],
+        10.0,
+        StrokePressureProfile::Constant,
+        1.0,
+        0.25,
+        0.5,
+    );
+    assert_eq!(plan.skipped_subpaths, 1, "零长子路径应跳过并计数");
+    assert_eq!(plan.strokes.len(), 1);
+    // 闭合子路径：回环段（50 的斜边）计入总长：30 + 40 + 50 = 120。
+    let closed = yanshi_render::path::Subpath {
+        start: (0.0, 0.0),
+        segments: vec![
+            yanshi_render::path::PathSeg::Line { to: (30.0, 0.0) },
+            yanshi_render::path::PathSeg::Line { to: (30.0, 40.0) },
+        ],
+        closed: true,
+    };
+    let plan = plan_stroke_path(
+        &[closed],
+        10.0,
+        StrokePressureProfile::Constant,
+        1.0,
+        0.25,
+        0.5,
+    );
+    assert!(
+        (plan.length_total - 120.0).abs() < 1e-9,
+        "闭合回环总长应为 120，实测 {}",
+        plan.length_total
+    );
+    // 闭合笔的末点回到起点。
+    let last = plan.strokes[0].last().unwrap();
+    assert_eq!((last[0], last[1]), (0.0, 0.0));
+}
