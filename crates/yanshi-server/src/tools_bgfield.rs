@@ -242,6 +242,10 @@ pub(super) fn write_fit_background_field(ctx: &mut ToolContext<'_>, args: &Value
     //   **⇒ ⇒ 所以**：把"场几乎单色"这件事**说出来** ⇒ 调用方立刻知道"不是没画，是画成了单色" ✓
     let mut lo = u8::MAX;
     let mut hi = u8::MIN;
+    // **过冲被夹紧的像素数**（第 1470 轮；与 `field_uniform` 同一类诊断）
+    //   **⇒ 为什么** ✗：高阶多项式**会过冲** ⇒ 值可能 < 0 或 > 255 ⇒ 我**静默 clamp** ✗
+    //     ⇒ 调用方看到"填进去了"，却不知道**有多少像素被改过值** ⇒ 与 `§222` 同类 ✓
+    let mut clamped = 0usize;
     for oy in 0..oh {
         for ox in 0..ow {
             let dx = bx0 + f64::from(ox) + 0.5;
@@ -260,6 +264,9 @@ pub(super) fn write_fit_background_field(ctx: &mut ToolContext<'_>, args: &Value
                 let mut pred = 0.0;
                 for (k, r) in row.iter().enumerate().take(n) {
                     pred += coeffs[c][k] * r;
+                }
+                if pred < -0.5 || pred > 255.5 {
+                    clamped += 1;
                 }
                 let v = pred.round().clamp(0.0, 255.0) as u8;
                 out[i + c] = v;
@@ -319,6 +326,27 @@ pub(super) fn write_fit_background_field(ctx: &mut ToolContext<'_>, args: &Value
         }),
     )?;
 
+    // **`warnings` 必须在 `json!` 之前算好** ✗（`json!` 里不能写语句块 ⇒ 第 1470 轮又踩一次）
+    let mut warnings: Vec<String> = Vec::new();
+    if (hi.saturating_sub(lo)) < 2 {
+        warnings.push(format!(
+            "拟合出来的场**几乎是单色**（{lo}..{hi}，跨度 < 2）⇒ 这**不是没画**，是**画成了单色** ✗；\
+             常见原因：**掩膜外的像素本来就是单色**（空图层、或外面全被某个纯色盖住）\
+             ⇒ 想让场有变化，请确保掩膜外是**真的有明暗变化**的背景"
+        ));
+    }
+    if clamped > 0 {
+        warnings.push(format!(
+            "有 **{clamped}** 个通道值**超出 0-255** 被夹紧（多项式**过冲**）⇒ 这些像素的颜色**不是**拟合值 ✗\
+             ⇒ 常见原因：**degree 太高**（换小一阶）或**掩膜外有离群亮/暗点**（加大 `margin` 让采样更远）"
+        ));
+    }
+    let warnings_value = if warnings.is_empty() {
+        Value::Null
+    } else {
+        json!(warnings)
+    };
+
     Ok(json!({
         "ok": true,
         "degree": degree,
@@ -328,15 +356,8 @@ pub(super) fn write_fit_background_field(ctx: &mut ToolContext<'_>, args: &Value
         "filled_pixels": filled,
         "field_range": [lo, hi],
         "field_uniform": (hi.saturating_sub(lo)) < 2,
-        "warnings": if (hi.saturating_sub(lo)) < 2 {
-            json!([format!(
-                "拟合出来的场**几乎是单色**（{lo}..{hi}，跨度 < 2）⇒ 这**不是没画**，是**画成了单色** ✗；\
-                 常见原因：**掩膜外的像素本来就是单色**（空图层、或外面全被某个纯色盖住）\
-                 ⇒ 想让场有变化，请确保掩膜外是**真的有明暗变化**的背景"
-            )])
-        } else {
-            Value::Null
-        },
+        "clamped_pixels": clamped,
+        "warnings": warnings_value,
         "placed": placed,
     }))
 }

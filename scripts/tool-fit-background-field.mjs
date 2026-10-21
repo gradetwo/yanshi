@@ -191,10 +191,16 @@ if (outsideBefore && outsideAfter && outsideBefore[0] === outsideAfter[0]) {
     }
     const g2 = await pG("fit_background_field", {
       layer_id: "L", mask: { type: "rect", x: 120, y: 80, w: 160, h: 140 }, degree: 2 });
-    if (g2?.field_uniform === false && (g2?.warnings === null || g2?.warnings === undefined)) {
-      ok(`⑥ 渐变层不误报（range ${JSON.stringify(g2.field_range)}、warnings 为空）`);
+    // **只查「单色」这一类** ✗→✓（第 1470 轮）：
+    //   **⇒ 我原来的断言**要求 `warnings` **完全为空** ⇒ 而**这条渐变阶梯底 degree 2 也会过冲**
+    //     （实测 **35361** 个通道被夹紧）⇒ **过冲警告是对的** ⇒ **原来是断言太严** ✓
+    //   **⇒ ⇒ 所以**只断言「**没有单色警告**」+「uniform=false」 ✓（关注点分离 ✓）
+    const uniformityWarned = Array.isArray(g2?.warnings)
+      && g2.warnings.some((x) => /单色/.test(String(x)));
+    if (g2?.field_uniform === false && !uniformityWarned) {
+      ok(`⑥ 渐变层**不误报单色**（range ${JSON.stringify(g2.field_range)}、非单色警告 ${Array.isArray(g2?.warnings) ? g2.warnings.length : 0} 条）`);
     } else {
-      bad(`⑥ 渐变层不该被判成单色 ⇒ 实测 uniform=${g2?.field_uniform}、warnings=${JSON.stringify(g2?.warnings)}`);
+      bad(`⑥ 渐变层不该被判成单色 ⇒ 实测 uniform=${g2?.field_uniform}、单色警告=${uniformityWarned}`);
     }
   }
 }
@@ -355,6 +361,51 @@ if (outsideBefore && outsideAfter && outsideBefore[0] === outsideAfter[0]) {
       ok(`⑨ 多边形（矩形四点）⇒ 实测 ${gotP} vs ${rectArea}（误差 ${(relP * 100).toFixed(2)}%）`);
     } else {
       bad(`⑨ 多边形面积应与顶点相符 ⇒ 实测 ${gotP} vs ${rectArea}`);
+    }
+  }
+}
+
+// ⑩ **过冲必须**说出来**（第 1470 轮；与「单色场」同一类诊断）
+//   **⇒ 为什么** ✗：三阶多项式在**陡边**上**必然过冲**（值跑出 0-255）⇒ 我**静默 clamp** ✗
+//     ⇒ 调用方以为"填的是拟合值"，实际**部分像素是夹紧值** ⇒ 与 `§222` 同类的静默 ✓
+//   **⇒ ⇒ 实测**：陡边（一半 0、一半 255）+ `degree=3` ⇒ **`clamped_pixels=1893`** ✓
+//     （`degree=1` 与平滑底 ⇒ **0** ⇒ 所以它不是恒真 ✓）
+{
+  const docO = `bgf_over_${stamp}`;
+  const madeO = await (await fetch(`${base}/api/documents`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: docO, width: 400, height: 300,
+      background: { r: 255, g: 255, b: 255, a: 255 } }),
+  })).json();
+  if (!madeO.token) {
+    console.log("  ○ ⑩ 未验（建不出文档）");
+  } else {
+    const pO = async (tool, a) => {
+      const rr = await fetch(`${base}/api/tools/${tool}?doc=${docO}&token=${madeO.token}`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(a ?? {}),
+      });
+      return rr.json();
+    };
+    await pO("create_layer", { layer_id: "L", name: "L" });
+    // 陡边：上半 0、下半 255
+    await pO("fill_region", { layer_id: "L", shape: { type: "rect", x: 0, y: 10, w: 400, h: 150 },
+      color: [0, 0, 0], opacity: 1.0 });
+    await pO("fill_region", { layer_id: "L", shape: { type: "rect", x: 0, y: 160, w: 400, h: 130 },
+      color: [255, 255, 255], opacity: 1.0 });
+    const maskO = { type: "rect", x: 150, y: 100, w: 100, h: 80 };
+    const o3 = await pO("fit_background_field", { layer_id: "L", mask: maskO, degree: 3, margin: 0.5 });
+    const said = Array.isArray(o3?.warnings) && o3.warnings.some((x) => /超出 0-255/.test(String(x)));
+    if ((o3?.clamped_pixels ?? 0) > 0 && said) {
+      ok(`⑩ 陡边 + degree 3 ⇒ 过冲被**数出来并说出来**：clamped_pixels=${o3.clamped_pixels}，range ${JSON.stringify(o3.field_range)}`);
+    } else {
+      bad(`⑩ 陡边 + degree 3 应过冲并报出 ⇒ 实测 clamped=${o3?.clamped_pixels}、warnings=${JSON.stringify(o3?.warnings)}`);
+    }
+    // 反证：平缓底 + degree 1 ⇒ 不许瞎报
+    const o1 = await pO("fit_background_field", { layer_id: "L", mask: maskO, degree: 1, margin: 0.5 });
+    if ((o1?.clamped_pixels ?? -1) === 0) {
+      ok(`⑩ 反证：degree 1 在同一个底上 clamped_pixels=0（不是恒真）`);
+    } else {
+      bad(`⑩ degree 1 不该过冲 ⇒ 实测 clamped=${o1?.clamped_pixels}`);
     }
   }
 }
