@@ -3005,3 +3005,9 @@ ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs scripts/serve-*.mj
 `tool-export-png-deterministic.mjs` **不存在**（我凭记忆写的名字）⇒ 真正的是
 **`tool-export-deterministic.mjs`** ✓
 ⇒ **⇒ 教训**：**判据名要 `ls` 一下**，别凭记忆 —— 与「文档里写命令而不是数字」同源 ✓
+
+## ✅ **第四个绿 run**（第 1449 轮）
+
+**⇒ 细笔闸门那笔（`r < 3` 改判胶囊恒等式）也是 **success** ⇒ 本场**第四个完整绿的 run** ✓
+**⇒ ⇒ 累计覆盖**：Phase 2 原生矢量、Q123 三修复、细线补丁、**细笔闸门** ✓
+**⇒ ⇒ ⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=8" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'`
