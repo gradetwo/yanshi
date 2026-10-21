@@ -3466,3 +3466,30 @@ for n in tool-single-point-rejected.mjs tool-combine-shapes-modes.mjs; do
   grep -qE "^$n[[:space:]]" scripts/criteria-known-red.txt && echo "$n 在名单里" || echo "$n 不在"
 done
 ```
+
+## ★ 一次**网络故障**的诊断与恢复（第 1501 轮）
+
+**⇒ 现象**：`git push` 报「请确认您有正确的访问权限并且仓库存在」⇒ **看着像权限** ✗
+**⇒ ⇒ 完整错误才是真相**：
+```
+Connection timed out during banner exchange
+Connection to 20.27.177.113 port 22 timed out
+致命错误：无法读取远程仓库。
+```
+**⇒ ⇒ ⇒ 所以是**SSH 到 GitHub 间歇超时**（不是权限）✓ —— 而 `ssh -T git@github.com` **单独跑是成功的**（`Hi gradetwo!`）
+⇒ **同一条链路会时好时坏** ✓
+
+**⇒ 怎么分辨**（三条命令，按顺序）：
+```bash
+git push origin main 2>&1 | head -12    # **看完整错误**，别只看 tail -1
+ssh -T -o BatchMode=yes git@github.com  # 认证是否还通
+gh auth status 2>&1 | head -4           # API 侧是否 timeout
+```
+**⇒ ⇒ 实测**：`git push | tail -1` 只给「请确认您有正确的访问权限」（**误导**）；
+`git push | head -12` 才给出 `banner exchange timeout`（**真因**）✓
+
+**⇒ 恢复办法**：**重试 5 次、间隔 20 秒** ⇒ 实测**第 1 次就成功** ✓（前面的失败是同一分钟的抖动）
+
+**⇒ ⇒ 两个结论**：
+1. **报错末行会骗人** ⇒ **看 `head -12`** ✓
+2. **间歇性故障不要重试一次就放弃** ⇒ 给 5 次机会 ✓
