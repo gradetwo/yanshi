@@ -37,6 +37,18 @@ ab_glyph = "0.2"
 # 只开 `deflate-flate2-zlib-rs`（纯 Rust 的 zlib-rs 后端 ✓）⇒ **不引** zopfli / bzip2 /
 # zstd / lzma / aes 那一整套默认特性（默认特性会把它们与七八种压缩后端全拉进来）。
 zip = { version = "7", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# **URL 拉取的 HTTP 客户端**（设计文档第 4 章：`put_blob` 的 `path` 增加 http(s) 形态）。
+# 选 `ureq` 3 + rustls/ring：同步 API、无 async 运行时（**不引 tokio 级依赖** ✓）。
+#
+# **∴ 两面（按 AGENTS.md 的清单）**：
+#   ＋ **收益**：成熟稳定（3.x）、阻塞式小 API 与工具层同步风格一致；rustls 纯 Rust、
+#     供应链可审计；ring 是 rustls 的缺省级密码后端，无需 aws-lc 的 C 工具链。
+#   ＋ **体积**：只加在 `yanshi-server` ⇒ 不进 `yanshi-render`/`yanshi-wasm`，
+#     浏览器内核一字节不涨；服务端多约十个传递依赖（rustls/ring/webpki-roots/
+#     ureq-proto/http 等），二进制相应变大（量级以构建产物为准）。
+#   － **代价**：ring 带一个 C 编译步（cc）；`default-features = false` 关掉
+#     gzip/charset/cookies/json（都用不上），只留 `rustls` 特性收窄攻击面。
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 proptest.workspace = true

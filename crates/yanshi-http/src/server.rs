@@ -2069,10 +2069,9 @@ fn blob_upload(state: &ServerState, request: &Request) -> Response {
             ErrorContext::detail("该 token 不允许上传 blob"),
         ));
     }
-    let limit = std::env::var("YANSHI_MAX_UPLOAD_BYTES")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(64 * 1024 * 1024);
+    // **上限的唯一出处在 `yanshi_server::file_source`**（设计文档第 4 章：同源常量，
+    // 工具层的 URL 拉取／base64 通道与本端点共用它，不在两处各写一份）。
+    let limit = yanshi_server::file_source::max_upload_bytes();
     if request.body.is_empty() {
         return crate::http::bad_request("上传内容为空");
     }

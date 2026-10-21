@@ -18,55 +18,73 @@ use super::*;
 ///   ⇒ 而 `BlobStore::put` **内部会过 `encode`** ⇒ 所以本工具替调用方把编码也做了 ✓
 ///
 /// **路径限制**：只允许**服务端工作区 root 下**的文件（防任意文件读）。
+///
+/// **双通道扩展**（设计文档第 4 章）：本工具仍是 path 通道的入库端，新增两条：
+///   ① `path` 以 `http://`／`https://` 开头 ⇒ URL 拉取（细则在
+///      `crate::file_source::fetch_url`：超时／重定向／体积／类型五类分开报错）；
+///   ② 平铺参数 `data_base64`（与 `path` 二选一，同给 ⇒ 互斥报错，不静默取舍）。
+/// 三条通道的字节都过同一体积上限（`file_source::max_upload_bytes`，与 HTTP
+/// 上传同源），且都汇进同一个 `put_blob`（编码口径只有一份 ⇒ 下游零改动）。
+/// 本地 path 的沙箱口径（第 1230/1232 轮）原样保留，实现收进
+/// `file_source::resolve_local_path` 全仓共用（错误码与触发条件不变）。
 pub(super) fn write_put_blob(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
-    let path = require_str(args, "path")?;
-    // **路径防护（第 1230 轮：挡掉路径穿越这一层）** ✓
-    //   **为什么必须有** ✗：本工具**读服务端本地文件** ⇒ 若 `path` 含 `..`
-    //   ⇒ 调用方能读**工作区之外**的任意文件（`../../etc/passwd`）✗
-    //   **本条挡住**：任何含 `..` 组件的路径 ⇒ 立刻报错（不静默）
-    //
-    //   **⚠ 剩余风险（仍存在，未修）**：**绝对路径**仍能读工作区外的文件
-    //   （如 `path: "/etc/passwd"`）⇒ 要彻底堵住需要 `--root` 的 canonicalize + 前缀校验。
-    //   为什么先不做：那需要拿到服务端 root（`FileStore` 的根），而我这一轮的上下文用尽了；
-    //   而**路径穿越**（`..`）是更常见的那一类 ⇒ 先堵它，并在 spec 的 summary 里写明限制。
-    // **★ 完整的 root 沙箱**（第 1232 轮：堵掉「绝对路径读工作区外」）
-    //   上一轮只查 `..` ⇒ 而 `/etc/passwd` 这种**绝对路径**照样能读 ✗
-    //   本轮的判据：**canonicalize 之后，路径必须落在工作区 root 之内**
-    //   ⇒ 两句一起做：① 拒 `..`（早退，给清晰的错误）② canonicalize + 前缀校验（权威）
-    if path.split(['/', '\\']).any(|seg| seg == "..") {
-        return Err(YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail(format!("path 不许含 `..` 组件（防路径穿越）：{path}")),
-        ));
+    let cap = crate::file_source::max_upload_bytes();
+    let path_arg = optional_str(args, "path");
+    let has_b64 = args.get("data_base64").and_then(Value::as_str).is_some();
+    if path_arg.is_some() && has_b64 {
+        crate::file_source::check_exclusive(&["path", "data_base64"])?;
     }
-    let resolved = std::fs::canonicalize(&path).map_err(|e| {
-        YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail(format!("读不到 {path}：{e}")),
-        )
-    })?;
-    // **root 必须存在才算可判** —— 没有 `--root` 的工作区不能写 blob（前面 put_blob 会报）
-    let inside_root = match ctx.workspace.root_path() {
-        Some(root) => std::fs::canonicalize(root)
-            .map(|r| resolved.starts_with(&r))
-            .unwrap_or(false),
-        None => false,
+    if let Some(bytes) = crate::file_source::decode_base64_param(args, "data_base64", cap)? {
+        let hash = ctx.workspace.put_blob(&bytes)?;
+        return Ok(json!({
+            "ok": true,
+            "blob_hash": hash.to_string(),
+            "size": bytes.len(),
+            "mime_type": optional_str(args, "mime_type").unwrap_or_else(|| "image/png".to_owned()),
+            "source": "base64",
+        }));
+    }
+    // 一个来源都没给 ⇒ 仍走 require_str 的原报错（与旧行为同文案）。
+    let path = match path_arg {
+        Some(path) => path,
+        None => require_str(args, "path")?,
     };
-    if !inside_root {
+    if crate::file_source::is_http_url(&path) {
+        let fetched = crate::file_source::fetch_url(&path)?;
+        let hash = ctx.workspace.put_blob(&fetched.bytes)?;
+        let mut value = json!({
+            "ok": true,
+            "blob_hash": hash.to_string(),
+            "size": fetched.bytes.len(),
+            "mime_type": optional_str(args, "mime_type").unwrap_or_else(|| "image/png".to_owned()),
+            "source": "url",
+            "source_url": path,
+            "final_url": fetched.final_url,
+        });
+        if let Some(content_type) = &fetched.content_type {
+            value["content_type"] = json!(content_type);
+        }
+        if let Some(detected) = fetched.detected_format {
+            value["detected_format"] = json!(detected);
+        }
+        if fetched.content_type_mismatch {
+            value["content_type_mismatch"] = json!(true);
+        }
+        return Ok(value);
+    }
+    if let Some(scheme) = crate::file_source::url_scheme(&path) {
+        // file:// 之类想用 URL 形态绕本地路径 ⇒ 明确拒绝（设计 4.3 协议白名单）。
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
             ErrorContext::detail(format!(
-                "path 必须落在工作区根目录之内（put_blob 不支持读工作区外的文件）：{path} ⇒ {}",
-                resolved.display()
+                "path 的 scheme 不支持：{scheme}://（只接受 http:// 与 https://；本地文件请直接给路径，不要用 file://）"
             )),
         ));
     }
-    let bytes = std::fs::read(&path).map_err(|e| {
-        YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail(format!("读不到 {path}：{e}")),
-        )
-    })?;
+    // **路径防护（第 1230/1232 轮的口径，实现收进 file_source 全仓共用）** ✓
+    //   拒 `..` 组件（早退）＋ canonicalize 后必须落在工作区 root 之内（权威校验）。
+    let (bytes, _resolved) =
+        crate::file_source::resolve_local_path(&path, ctx.workspace.root_path(), cap)?;
     let hash = ctx.workspace.put_blob(&bytes)?;
     Ok(json!({
         "ok": true,

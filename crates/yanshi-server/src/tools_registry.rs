@@ -167,6 +167,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[
             param!("region", Any, true, "区域 {x,y,w,h} 或 [x,y,w,h]"),
             param!("raw", Boolean, false, "返回未编码的直通 RGBA8（写入 CAS 并返回 raw_url），供逐像素自检"),
+            param!("output_path", String, false, "给了就把预览 PNG（**全尺寸**，不受 max_px 限制）落盘到该路径（导出目录或系统临时目录内，守卫同 export_png），响应给 image_file 元数据而非内嵌图；与 raw 同给报错"),
             param!(
                 "show_coords",
                 Boolean,
@@ -319,7 +320,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         // **不是 `mutating`**：它只写 blob 存储，**不动文档状态**（不产生原子）✓
         mutating: false,
         params: &[
-            param!("path", String, true, "服务端本地文件路径（相对 --root，或 root 下的绝对路径）"),
+            param!("path", String, false, "服务端本地文件路径（相对 --root，或 root 下的绝对路径）；**也可以直接给 http(s) URL** ⇒ 先拉取再入库（连接 10s／总 30s 超时、重定向 ≤5 跳且禁 https→http 降级、体积上限与上传同源 64MiB、五类失败分开报错）；与 data_base64 二选一，同给报错"),
+            param!("data_base64", String, false, "与 path 二选一（同给报错）：文件字节的 base64 正文（**不带 `data:` 前缀**）；解码后与 path 通道走同一入库与同一体积上限"),
             param!("mime_type", String, false, "写进返回的 mime_type（缺省 image/png）；不影响存储编码"),
         ],
     },
@@ -748,6 +750,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: false,
         params: &[
             param!("filename", String, false, "建议的下载文件名（缺省 <doc>.psd）"),
+            param!("output_path", String, false, "给了就把同一份 PSD 再落一份到该路径（导出目录或系统临时目录内，守卫同 export_png），响应多 path / mime_type / overwritten；不给只回 blob_hash + yanshi:// url（旧行为）"),
         ],
     },
     ToolSpec {
@@ -2254,6 +2257,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("size", Number, false, "笔尖直径（像素，缺省 24，上限 512）"),
             param!("smooth", Boolean, false, "把路径当 Catmull-Rom 平滑（同 brush_stroke.smooth）"),
             param!("include_image", Boolean, false, "true ⇒ 每个 swatch 额外给一个 `image` 块（base64 PNG ✓）⇒ **MCP Agent 能直接看到图** ✓（外部复测 QY-G01；**最多 8 张**，超了给 `image_skipped` ✓）"),
+            param!("output_path", String, false, "给了（**目录**，须在导出目录或系统临时目录内，守卫同 export_png）⇒ 每支试笔的 PNG 落盘为 swatch_<序号>.png（仍受 8 张上限），每条给 `image_file` 而非内嵌 base64；与 include_image 同给时文件形态优先"),
         ],
     },
     ToolSpec {
@@ -2293,6 +2297,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "true ⇒ 额外内嵌图像 ⇒ **图片以 MCP 的 `image` 内容块返回**（base64 在那里 ✓，不在 text 里 ✗）；\\n\
                  text 块里只有 thumb_url（`yanshi://blob/…`）✓。批处理客户端可加 `--no-inline-images` 关掉 ✓。"
             ),
+            param!("output_path", String, false, "给了就把预览 PNG 落盘到该路径（导出目录或系统临时目录内，守卫同 export_png），响应给 `image_file` 元数据而非内嵌 base64；与 include_image 同给时文件形态优先"),
         ],
     },
     ToolSpec {
@@ -2325,6 +2330,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("path", String, false, "服务器本地文件路径（MCP 常用）"),
             param!("blob", Object, false, "{blob_hash,size,mime_type}（Web 先把文件上传成 blob 再用）"),
             param!("overwrite", Boolean, false, "已存在时是否替换（缺省 false ⇒ 报冲突，不静默覆盖）"),
+            param!("data_base64", String, false, "与 path / blob 三选一（同给报错）：资产字节的 base64 正文（**不带 `data:` 前缀**）；解码与体积上限与 put_blob 同源"),
         ],
     },
     ToolSpec {
@@ -2433,6 +2439,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("opacity", Number, false, "整笔不透明度 0..1"),
             param!("hardness", Number, false, "笔尖硬度 0..1"),
             param!("want_image", Boolean, false, "缺省 true = 返回区域图（base64 PNG）；false = 只返回包围盒与像素数"),
+            param!("output_path", String, false, "给了就把区域图 PNG 落盘到该路径（导出目录或系统临时目录内，守卫同 export_png），响应给 image_file 元数据；它本身即「要图」，不必再传 want_image"),
             param!("margin", Integer, false, "区域图在包围盒外扩的像素数（缺省 16）"),
             param!("label", String, false, "笔迹标签 ⇒ 提交时写进原子，供 list_atoms(label=…) 筛"),
             param!("based_on", String, false, "基于某次试画：只覆盖本次传入的字段，其余全部继承"),

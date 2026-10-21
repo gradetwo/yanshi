@@ -15527,7 +15527,27 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     value["target_layer_note"] = json!("预览不支持只读某一层（没有 layer_id 参数）：`render_region_raw` 读的是文档合成。要做这种预览，需要渲染层提供按层读取；这与「底图内容仍未读入」是同一处限制。要只看一层，用 export_png 的 layer_id（它走文档合成，能按层导出）。");
     value["color_space"] = json!("srgb");
     value["color_space_note"] = json!("`brush_preview` 恒在 **sRGB 字节空间**混色（`ColorMixing::Rgb` 直接对 u8 插值；`Pigment` 也以 `ks_to_srgb` 结束）⇒ **不是 linear**。所以 `max_channel_delta` 这类差值也在 sRGB 里量；若你的参考图或计算在 linear/LAB/HSV 里，**Δ 不能直接比**。");
-    if optional_bool(args, "include_image").unwrap_or(false) {
+    // **出参 path 形态**（设计文档第 4 章 4.2/4.5）：给了 `output_path` ⇒ 同一份 PNG
+    // 落盘（守卫与 export_png 共用 `guarded_output_path`），响应给 `image_file`
+    // 元数据而**不内嵌 base64**；不给 ⇒ 与旧行为逐字一致。
+    if let Some(raw_path) = optional_str(args, "output_path") {
+        let target = guarded_output_path(&raw_path)?;
+        let overwritten = target.exists();
+        std::fs::write(&target, &png).map_err(|error| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("写文件失败：{} ⇒ {error}", target.display())),
+            )
+        })?;
+        value["image_file"] = json!({
+            "path": target.display().to_string(),
+            "bytes": bytes,
+            "width": width,
+            "height": height,
+            "mime_type": "image/png",
+            "overwritten": overwritten,
+        });
+    } else if optional_bool(args, "include_image").unwrap_or(false) {
         value["image"] = json!({
             "mime_type": "image/png",
             "data": base64::encode(&png),
@@ -15586,6 +15606,22 @@ fn write_swatch_brush_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result
             .unwrap_or("single"),
         "area" | "patch" | "large"
     );
+    // **出参 path 形态**（设计文档第 4 章 4.2/4.5）：`output_path` 在本工具是**目录**
+    //（一次调用产多张图）——先过输出守卫并建好，逐支把各自的文件名透传给
+    // `brush_preview` 的 `output_path`（它会再过一次守卫，路径在导出目录内 ⇒ 通过）。
+    let output_dir = match optional_str(args, "output_path") {
+        Some(raw) => {
+            let dir = guarded_output_path(&raw)?;
+            std::fs::create_dir_all(&dir).map_err(|error| {
+                YanshiError::new(
+                    ErrorCode::PreconditionFailed,
+                    ErrorContext::detail(format!("建不了输出目录 {}：{error}", dir.display())),
+                )
+            })?;
+            Some(dir)
+        }
+        None => None,
+    };
     let mut swatches: Vec<Value> = Vec::new();
     for brush in &brushes {
         for color in &colors {
@@ -15626,9 +15662,20 @@ fn write_swatch_brush_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result
                 // 外部复测 QY-G01：把 include_image 透传下去，但**最多 8 张**
                 // **超限要说原因**（spec 承诺过 `image_skipped`）⇒ 不静默丢
                 let wants_image = optional_bool(args, "include_image").unwrap_or(false);
-                let image_allowed = wants_image && swatches.len() < 8;
+                let wants_file = output_dir.is_some();
+                let image_allowed = (wants_image || wants_file) && swatches.len() < 8;
                 if image_allowed {
-                    sub.insert("include_image".to_owned(), Value::Bool(true));
+                    if let Some(dir) = &output_dir {
+                        // 文件形态优先：给了 output_path 就不内嵌（哪怕同时传了
+                        // include_image）——每条给的是 image_file，不是 base64。
+                        let file = dir.join(format!("swatch_{}.png", swatches.len()));
+                        sub.insert(
+                            "output_path".to_owned(),
+                            Value::String(file.display().to_string()),
+                        );
+                    } else {
+                        sub.insert("include_image".to_owned(), Value::Bool(true));
+                    }
                 }
                 // **★ 单个组合失败 ⇒ 记在该条上 ✗ 不整批失败** ✓（**第 254 轮实测修 ✓）**
                 //   ＋ **∴ 实测踩到 ✗**：**第一支用了 `Blender`（**纯揉合 ✓）✗ 空画布上什么都不沉积**✗
@@ -15644,8 +15691,10 @@ fn write_swatch_brush_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result
                         "mime_type": rendered.get("mime_type").cloned().unwrap_or(Value::Null),
                         // 外部复测 QY-G01：透传 image 块（没有就 null，不伪装成功）
                         "image": rendered.get("image").cloned().unwrap_or(Value::Null),
+                        // 文件形态时透传 image_file（同上：没有就 null）
+                        "image_file": rendered.get("image_file").cloned().unwrap_or(Value::Null),
                         // 要图但没给（超了 8 张上限）⇒ 说原因，不假装
-                        "image_skipped": if wants_image && !image_allowed {
+                        "image_skipped": if (wants_image || wants_file) && !image_allowed {
                             json!("超过 8 张上限，用 thumb_url 取图")
                         } else {
                             Value::Null
@@ -15801,6 +15850,21 @@ fn write_import_asset(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         .get("overwrite")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    // **来源三选一**（设计文档第 4 章 4.2 定版）：`path` / `blob` / `data_base64`
+    // 同给 ⇒ 互斥报错（`file_source::check_exclusive`，全仓一份文案），不静默取舍。
+    // `data_base64` 是本次新增的第三条通道（解码与体积上限都在 file_source 收口），
+    // 前两条的解析口径一字未动。
+    let mut given: Vec<&str> = Vec::new();
+    if optional_str(args, "path").is_some() {
+        given.push("path");
+    }
+    if args.get("blob").is_some_and(|value| !value.is_null()) {
+        given.push("blob");
+    }
+    if args.get("data_base64").and_then(Value::as_str).is_some() {
+        given.push("data_base64");
+    }
+    crate::file_source::check_exclusive(&given)?;
     let bytes = if let Some(path) = optional_str(args, "path") {
         std::fs::read(&path).map_err(|error| {
             YanshiError::new(
@@ -15825,8 +15889,14 @@ fn write_import_asset(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             )
         })?;
         ctx.workspace.store().get(&hash)?
+    } else if let Some(bytes) = crate::file_source::decode_base64_param(
+        args,
+        "data_base64",
+        crate::file_source::max_upload_bytes(),
+    )? {
+        bytes
     } else {
-        return Err(missing("path 或 blob"));
+        return Err(missing("path、blob 或 data_base64"));
     };
     let written = ctx
         .workspace
@@ -16667,11 +16737,40 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
         "height": paint.height,
         "note": "试画不写入文档：没有原子、seq 不变、文件字节数不变",
     });
-    if want_image {
+    // **出参 path 形态**（设计文档第 4 章 4.2/4.5）：给了 `output_path` ⇒ PNG 落盘
+    // （守卫与 export_png 共用 `guarded_output_path`）、响应给 `image_file` 元数据；
+    // 它本身即「要图」的表示，不必再传 `want_image`。不给 ⇒ 与旧行为逐字一致。
+    let output_path = optional_str(args, "output_path");
+    if want_image || output_path.is_some() {
         if let Some(bytes) =
             yanshi_render::png::encode_png(paint.width as u32, paint.height as u32, &paint.rgba)
         {
-            out["image"] = json!(base64::encode(&bytes));
+            match &output_path {
+                Some(raw_path) => {
+                    let target = guarded_output_path(raw_path)?;
+                    let overwritten = target.exists();
+                    std::fs::write(&target, &bytes).map_err(|error| {
+                        YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail(format!(
+                                "写文件失败：{} ⇒ {error}",
+                                target.display()
+                            )),
+                        )
+                    })?;
+                    out["image_file"] = json!({
+                        "path": target.display().to_string(),
+                        "bytes": bytes.len(),
+                        "width": paint.width,
+                        "height": paint.height,
+                        "mime_type": "image/png",
+                        "overwritten": overwritten,
+                    });
+                }
+                None => {
+                    out["image"] = json!(base64::encode(&bytes));
+                }
+            }
         }
     }
     Ok(out)

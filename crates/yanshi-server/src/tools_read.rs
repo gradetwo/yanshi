@@ -222,6 +222,16 @@ pub(super) fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     // `raw: true`：额外把**原始 RGBA8** 存入 CAS 并返回取回地址，供客户端做逐像素比对
     // （哈希相等无法说明差多少；跨客户端/服务端路径的差异属于 D1 的 ±1 LSB）。
     if args.get("raw").and_then(Value::as_bool).unwrap_or(false) {
+        // **不静默忽略**：`output_path` 只适用于下面的预览形态（PNG 落盘）；
+        // raw 形态回的是原始 RGBA blob，两者同给必须说清，而不是悄悄丢掉参数。
+        if optional_str(args, "output_path").is_some() {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(
+                    "output_path 不适用于 raw 形态（raw 回的是原始 RGBA，不是 PNG 文件）；请去掉 raw，或改用 export_png 落盘",
+                ),
+            ));
+        }
         // **★★★ 第 247 轮：**给 raw 路分段计时**✗ ★★★**（**∴ 因为缓存已经生效 ✗ 却还有 94 ms ✓）
         //   ＋ **∴ 实测（**上一轮 ✓）✗**：**同一请求连做三次 **609 → 94 → 99 ms**✗
         //     ＋ **∴ 而**带 `active_layer` 连做两次是 **94 → 94 ms** ✓
@@ -470,6 +480,30 @@ pub(super) fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     //   ⇒ **∴ 判据**可以**区分"**没命中**✗"与"**根本没渲染**✓"** ✓**** ✓✓
     value["renders_done"] =
         json!(yanshi_render::render::renders_done().saturating_sub(renders_before));
+    // **出参 path 形态**（设计文档第 4 章 4.2/4.5）：给了 `output_path` ⇒ 把预览的
+    // **全尺寸** PNG 直接落盘（守卫与 export_png 共用 `guarded_output_path`），
+    // 响应只加 `image_file` 元数据、**不再走下面的内嵌/缩放 machinery**——文件形态
+    // 的意义正是绕开 `max_px` 与响应体积。不给 ⇒ 以下行为逐字不变。
+    if let Some(raw_path) = optional_str(args, "output_path") {
+        let target = guarded_output_path(&raw_path)?;
+        let png = ctx.workspace.store().get(&preview.blob_hash)?;
+        let overwritten = target.exists();
+        std::fs::write(&target, &png).map_err(|error| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("写文件失败：{} ⇒ {error}", target.display())),
+            )
+        })?;
+        value["image_file"] = json!({
+            "path": target.display().to_string(),
+            "bytes": png.len(),
+            "width": preview.width,
+            "height": preview.height,
+            "mime_type": preview.mime_type,
+            "overwritten": overwritten,
+        });
+        return Ok(value);
+    }
     // 7.5：MCP 响应可选内嵌 image content ✓ —— **超限不再静默降级** ✗（第三方 MCP 实测报告 P0-1 ✓：
     // "画 50 笔之前看不到任何效果，只能盲画" ✗ ⇒ 调用方拿到 `yanshi://blob/…` 却**不知道为什么不给图** ✗）。
     // `max_px`（缺省 512 ✓）是本工具自己声明的上限；**超了就明说** ✓ + 给出出路 ✓，而不是只回地址 ✗。

@@ -28,6 +28,7 @@ pub mod base64;
 pub mod broadcast;
 pub mod diagnostics;
 pub mod document;
+pub mod file_source;
 pub mod fonts;
 pub mod inflight;
 pub mod job;

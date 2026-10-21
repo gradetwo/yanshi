@@ -228,7 +228,7 @@ pub(super) fn write_export_psd_layers(ctx: &mut ToolContext<'_>, args: &Value) -
     let bytes = yanshi_render::psd::write_layer_tree(doc_w, doc_h, &composite, &roots);
     let blob = ctx.workspace.store().put(&bytes)?;
     let filename = optional_str(args, "filename").unwrap_or_else(|| format!("{}.psd", ctx.doc_id));
-    Ok(json!({
+    let mut value = json!({
         "ok": true,
         "blob_hash": blob.to_string(),
         "url": format!("yanshi://blob/{blob}"),
@@ -238,7 +238,25 @@ pub(super) fn write_export_psd_layers(ctx: &mut ToolContext<'_>, args: &Value) -
         "groups": group_ids.len(),
         "canvas": {"w": doc_w, "h": doc_h},
         "note": "Phase 1：每层 rect 用整幅画布（不做内容裁剪 ⇒ 文件偏大但位置绝对正确）；蒙版／图层效果／智能对象不导出；组只导一层",
-    }))
+    });
+    // **出参 path 形态**（设计文档第 4 章 4.2/4.5）：给了 `output_path` 就把同一份
+    // 字节再落一份到磁盘（守卫与 export_png 共用 `guarded_output_path`），
+    // 响应只多 `path`/`mime_type`/`overwritten` 三个元数据字段，不回字节；
+    // 不给 ⇒ 响应与旧行为逐字一致（blob_hash + yanshi:// url）。
+    if let Some(raw_path) = optional_str(args, "output_path") {
+        let target = guarded_output_path(&raw_path)?;
+        let overwritten = target.exists();
+        std::fs::write(&target, &bytes).map_err(|error| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("写文件失败：{} ⇒ {error}", target.display())),
+            )
+        })?;
+        value["path"] = json!(target.display().to_string());
+        value["mime_type"] = json!("image/vnd.adobe.photoshop");
+        value["overwritten"] = json!(overwritten);
+    }
+    Ok(value)
 }
 
 pub(super) fn write_import_psd_layers(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
