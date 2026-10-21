@@ -3528,3 +3528,9 @@ gh auth status 2>&1 | head -4           # API 侧是否 timeout
 **在**两档 toolchain 的整套 workspace 测试**下**站得住** ✓
 
 **⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs/<id>/jobs" --jq '.jobs[] | select(.name|test("test")) | "\(.name)｜\(.conclusion)"'`
+
+## ✅ **第十八个绿 run**：`seq` 修复第一笔（第 1508 轮）
+
+**⇒ 那一笔（`Document::open` 接入重编号）⇒ **12 绿 / 0 红** ✓
+**⇒ ⇒ 而它**只覆盖一条加载路径**（第 1507 轮已补另两条）⇒ 但**它本身是绿的** ✓
+**⇒ ⇒ ⇒ 本场第十八个完整绿的 run** ✓
