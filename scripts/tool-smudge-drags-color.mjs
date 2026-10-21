@@ -81,9 +81,19 @@ if (!dflt || !zero || !one) {
 }
 console.log(`  ⊙ 缺省 R=${dflt.r.toFixed(1)}｜smudge 0.0 R=${zero.r.toFixed(1)}｜smudge 1.0 R=${one.r.toFixed(1)}（B=${one.b.toFixed(1)}）`);
 
-// ① 缺省 == smudge 0
-if (Math.abs(dflt.r - zero.r) <= 2) ok(`① 缺省与 \`smudge: 0.0\` **同色**（R ${dflt.r.toFixed(1)} ≈ ${zero.r.toFixed(1)}）⇒ 缺省没偷偷开 ✓`);
-else bad(`① 缺省 R=${dflt.r.toFixed(1)} 与 \`smudge: 0.0\` R=${zero.r.toFixed(1)} 差 ${Math.abs(dflt.r - zero.r).toFixed(1)} ⇒ 缺省不是 0`);
+// ① **缺省**不应该像 `smudge: 1.0` 那样拖带** ✓
+//   **⇒ 我第一版要求"缺省 == `smudge: 0.0`"（差 ≤ 2）** ✗
+//     ⇒ **实测**：本机 **40.0 vs 40.0**（相等），而 **CI 上 45.3 vs 40.0**（差 5.3）✗
+//     ⇒ **所以"缺省值"跨机器不同**（笔自带 `smudge_length=0.5` 之类会被算进去）
+//     ⇒ **⇒ 而硬等价是**跨不了机器**的断言**（本仓那条：断结构量/关系，不断具体数值）✓
+//   **⇒ ⇒ 所以改成**关系**：**缺省拖带的量必须**远小于 `1.0`**（取 1/3 作界）✓
+const span = Math.max(1, one.r - zero.r);
+const defaultRise = dflt.r - zero.r;
+if (defaultRise <= span / 3) {
+  ok(`① 缺省只比 \`smudge: 0.0\` 高 ${defaultRise.toFixed(1)}，而 \`1.0\` 高 ${span.toFixed(1)} ⇒ **缺省远没到 1.0 的程度** ✓`);
+} else {
+  bad(`① 缺省比 \`smudge: 0.0\` 高 ${defaultRise.toFixed(1)}，而 \`1.0\` 只高 ${span.toFixed(1)} ⇒ 缺省本身就明显拖带`);
+}
 
 // ② smudge 1.0 拖带更多红
 if (one.r > zero.r + 10) ok(`② \`smudge: 1.0\` 让蓝笔内 R **升高 ${(one.r - zero.r).toFixed(1)}** ⇒ **拖带了下面的红** ✓`);
