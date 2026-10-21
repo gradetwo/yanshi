@@ -38,7 +38,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ),
     (
         "select_opaque_pixels",
-        r#"{"layer_id":"L1","selection_id":"s_opaque","min_alpha":128,"binarize":false,"close_pinholes":true}"#,
+        r#"{"layer_id":"L1","selection_id":"s_opaque","min_alpha":0.5,"binarize":false,"close_pinholes":true}"#,
     ),
     // **蒙版画笔/擦除 + 智能肌理**（mask-texture 补丁遗留的三个缺口，第 765 轮补齐；
     // smart-select 补丁的说明里主动指出『paint_mask/delete_mask/smart_texture 缺示例，
@@ -94,7 +94,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ),
     (
         "smart_hatch_follow",
-        r#"{"layer_id":"L1","guides":[[[40,200],[120,160],[200,200]]],"color":[0.2,0.15,0.1,1.0]}"#,
+        r#"{"layer_id":"L1","guides":[[[40,200],[120,160],[200,200]]],"color":[0.2,0.15,0.1,1.0],"width":12,"size":22,"density":0.6}"#,
     ),
     ("sample_colors", r#"{"points": [[120, 64], [200, 80]]}"#),
     ("describe_canvas", r#"{}"#),

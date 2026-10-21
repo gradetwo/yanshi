@@ -98,7 +98,19 @@ for (const tool of withExample) {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ tool: tool.name, arguments: finalArguments }),
   }).then((r) => r.json());
-  const detail = (response.context || {}).detail || "";
+  // **★ 取值链** ✓（第 1467 轮）：只读 `context.detail` 会**把真实原因读丢** ✗
+  //   **⇒ 实测两例** ✗：`revert_atoms` 的原因在 **`failed[].error`**（"目标原子 a1 不在日志中"）、
+  //     `smart_hatch_follow` 的在 **`first_error`**（"这一笔没落下任何像素…size=5.0 太小"）
+  //     ⇒ 两者 `context.detail` 都是**空** ⇒ 判据打出「参数没问题但没成功 ⇒ （空）」
+  //       ⇒ **看日志的人完全不知道原因** ✗ ⇒ 而**响应里明明写着** ✓
+  //   **⇒ ⇒ 所以**按优先级取第一个**非空**的说明字段 ✓
+  const detail =
+    (response.context || {}).detail ||
+    response.first_error ||
+    (Array.isArray(response.failed) && response.failed[0] && (response.failed[0].error || response.failed[0].detail)) ||
+    response.note ||
+    response.error ||
+    "";
   // **鉴权失败 ⇒ 判据无效** ✗（不是"通过"）：工具根本没执行，谈不上"参数被接受"。
   if (/token|鉴权|未授权|unauthorized/i.test(detail)) {
     console.error(`  ✗ ${tool.name}：**token 无效 ⇒ 判据无效**（不是通过）⇒ ${detail.slice(0, 60)}`);
@@ -113,7 +125,7 @@ for (const tool of withExample) {
   // badParameter 的正则里有「缺少必填」与「必须」⇒ 上面两条实测先命中它
   // ⇒ 走了「示例被拒」而永远到不了下面的 needsState ⇒ 我补的措辞等于没加。
   // 缺上下文比「参数错」更具体（要你先建对象，不是写错值），所以先算它。
-  const needsPriorState = /不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|已经有一个打开的|先 begin_|需要 delta 或 transform|缺少必填参数 path|order 必须是全部存活图层|需要 suggestion_id 或 patch|已经存在/i.test(detail);
+  const needsPriorState = /不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|已经有一个打开的|先 begin_|需要 delta 或 transform|缺少必填参数 path|文档 .* 未打开|尚未打开|order 必须是全部存活图层|需要 suggestion_id 或 patch|已经存在/i.test(detail);
   if (response.ok) { accepted += 1; console.log(`  ✓ ${tool.name}：**成功** ✓`); }
   else if (badParameter && !needsPriorState) { rejected += 1; console.log(`  ✗ ${tool.name}：示例被拒 ⇒ ${detail.slice(0, 90)}`); }
   // **措辞要收全** ✓（第 514 轮 ✓）：原先只认 `不存在|未找到|not found|no such|missing` ✗ ⇒
@@ -130,7 +142,7 @@ for (const tool of withExample) {
   // 「需要 suggestion_id 或 patch」（**要先有建议** ✓）。
   // ⚠️ **注释不能写在正则字面量里面** ✗（第 546 轮实测 ✓）：`//` 会**终止正则** ✓
   // ⇒ 报 `SyntaxError: Invalid regular expression: missing /` ✓ ⇒ **整条判据当场失效** ✗。
-  else if (/不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|已经有一个打开的|先 begin_|需要 delta 或 transform|缺少必填参数 path|order 必须是全部存活图层|需要 suggestion_id 或 patch|已经存在/i.test(detail)) {
+  else if (/不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|已经有一个打开的|先 begin_|需要 delta 或 transform|缺少必填参数 path|文档 .* 未打开|尚未打开|order 必须是全部存活图层|需要 suggestion_id 或 patch|已经存在/i.test(detail)) {
     needsState += 1;
     console.log(`  ⊙ ${tool.name}：**需要前置状态**（引用了还不存在的对象）⇒ ${detail.slice(0, 80)}`);
   }
