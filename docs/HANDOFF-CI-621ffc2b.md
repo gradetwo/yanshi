@@ -3132,3 +3132,11 @@ gh api "repos/gradetwo/yanshi/actions/runs/<id>/jobs" \
   --jq '.jobs[] | select(.name|startswith("criteria")) | "\(.name) \(.started_at) → \(.completed_at // "-")"'
 grep -n "timeout-minutes" .github/workflows/ci.yml
 ```
+
+## ✅ **第七个绿 run**（第 1462 轮）
+
+**⇒ 那一笔（known-red 前提说明 + 判据头部注释）也是 **success** ⇒ 本场**第七个完整绿的 run** ✓
+**⇒ ⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=15" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'`
+**⇒ ⇒ ⇒ 注意**：本场后期有**多笔被后代顶掉（`cancelled`）** ⇒ 那**不是失败** ——
+按 AGENTS 那条：**后代提交包含祖先** ⇒ 验后代就等于验祖先，**无损** ✓
+（唯一"有害"的情况是**手动派发旧提交** —— 本场没做 ✓）
