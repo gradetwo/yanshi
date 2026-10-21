@@ -14322,3 +14322,16 @@ let divisions = ((distance / 2.0).ceil() as usize).clamp(1, 4096);
 
 **⇒ 而本场的方法学结论（双方共享）**：
 **"看起来像 X" 不等于 "X 发生了"** ⇒ **而区分它们只需要**量那个中间量**** ✓
+
+### 方案 ③ 的**实现入口**（第 1594 轮实测定位，省下次的时间）
+
+**⇒ `divisions` 在 `crates/yanshi-server/src/tools.rs` 的 **`fn stamp_stroke_from`**（约第 14378 行）** ✓
+**⇒ ⇒ 而**`brush_stroke` 的入口在 `tools_brush.rs` 的 `write_brush_stroke` → `paint_brush`**
+⇒ **所以方案 ③ 要**串一层**：`write_brush_stroke` 解析 `dab_step_px` ⇒
+**加一个参数传给 `paint_brush` ⇒ 再传给 `stamp_stroke_from`** ✓
+
+**⇒ ⇒ ⇒ 我第 1593 轮试了"只在 `tools_brush.rs` 解析"** ⇒ **编译报 `cannot find value dab_step_px`**
+（**因为 `divisions` 在 `tools.rs` 的另一个函数里**）⇒ **已撤销**（**不留破的树**）✓
+
+**⇒ 所以**这条的**工作量**是：**穿 3 层参数 + 1 个 spec 参数 + 判据**（**约 1 轮**）
+⇒ **而它仍然需要"parity 与密度谁优先"的拍板** ⇒ **拍板后 1 轮可落** ✓
