@@ -3312,3 +3312,19 @@ gh api "repos/gradetwo/yanshi/actions/runs/<id>/jobs" --jq '.jobs[] | "\(.name)�
 
 **⇒ ⇒ 所以**：**二期的代码在全 workspace 测试下站得住** ✓
 **⇒ ⇒ ⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs/<id>/jobs" --jq '.jobs[] | "\(.name)｜\(.conclusion // .status)"'`
+
+## ✅ **第十四个绿 run —— 曲线/路径二期全绿**（第 1488 轮）
+
+**⇒ 二期补丁（**+834 行、2 个新文件、4 项功能**）⇒ **12 绿 / 0 红** ⇒ 本场**第十四个完整绿的 run** ✓
+**⇒ ⇒ 覆盖的四项**：path 掩膜、`path_guide` 吸附、SVG `d` 语法糖、`combine_shapes` ✓
+**⇒ ⇒ ⇒ 加上**一期**（`+1364 行、stroke_path、PCHIP、Path 图元`）⇒ **两个补丁都在主线上验证通过** ✓
+
+**⇒ 本场补丁链总览**：
+
+| 补丁 | 规模 | 结果 |
+|---|---|---|
+| 曲线/路径**一期** | +1364 行，14 文件 | 10 绿 / 1 红（计数）|
+| 一期**计数修复** | 5 处 | **12 绿 / 0 红** ✓ |
+| 曲线/路径**二期** | +834 行，13 文件 | **12 绿 / 0 红** ✓ |
+
+**⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=25" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'`
