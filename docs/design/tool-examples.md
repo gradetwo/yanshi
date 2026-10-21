@@ -1454,7 +1454,7 @@
   "binarize": false,
   "close_pinholes": true,
   "layer_id": "L1",
-  "min_alpha": 128,
+  "min_alpha": 0.5,
   "selection_id": "s_opaque"
 }
 ```
@@ -1667,6 +1667,7 @@
     0.1,
     1
   ],
+  "density": 0.6,
   "guides": [
     [
       [
@@ -1683,7 +1684,9 @@
       ]
     ]
   ],
-  "layer_id": "L1"
+  "layer_id": "L1",
+  "size": 22,
+  "width": 12
 }
 ```
 
