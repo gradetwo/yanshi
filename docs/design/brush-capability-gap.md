@@ -14074,3 +14074,21 @@ analyze_region → avg_brightness = 1.0（全白 ⇒ 一个像素都没落）
 
 **⇒ 下一步（未做）**：查 `selection_coverage`／`SelectionShape::Path` 的**覆盖度**为什么是 0
 （`selection.rs:119` 说支持 `path` + `subpaths`，`0` 说明**那条路没被走到，或走了算错**）✓
+
+### 我先把**最容易被冤枉的那一层**证明了清白（新单测）
+
+**⇒ 猜疑链**：`B1`（路径选区"找不到"）⇒ 自然怀疑**选区形状/覆盖度**是坏的 ✗
+**⇒ ⇒ 所以我写了 `selection_from_value_path_gives_nonempty_rings`** 直接问它：
+
+```
+from_value(subpaths) ⇒ geom = Path {
+    rings: [[(90,90),(210,90),(210,210),(90,210),(90,90)]],
+    fill_rule: NonZero }
+coverage(150,150) = 1   ✓（矩形中心，被覆盖）
+coverage(20,150)  = 0   ✓（矩形外，不覆盖）
+```
+
+**⇒ ⇒ ⇒ 所以**：**`from_value` 与 `coverage` 都是好的** ✓ ⇒ **bug 只在**裁剪侧**
+（`tools_brush.rs` 怎么取选区、怎么把覆盖度用上去）✓
+
+**⇒ 这条单测**留作**回归守卫**：以后谁再怀疑"路径选区的覆盖度"，一眼就能证伪 ✓

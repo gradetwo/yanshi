@@ -2471,3 +2471,27 @@ mod bitmap_mask_registry_tests {
         assert!(get_bitmap_mask("solo").is_none(), "移除后不该还能查到");
     }
 }
+#[test]
+fn selection_from_value_path_gives_nonempty_rings() {
+    // **`subpaths` 载荷 ⇒ `Path{rings}` 非空，且覆盖度内 1 外 0** ✓（第 1548 轮）
+    //   **⇒ 为什么留这条**：外部 `B1`（路径选区在裁剪里"找不到"）时会怀疑**这一层** ✗
+    //     ⇒ 这条单测证明**这一层是好的** ⇒ 于是搜索面直接缩小到"裁剪侧" ✓
+    let payload = serde_json::json!({
+        "kind": "path",
+        "fill_rule": "nonzero",
+        "subpaths": [{
+            "start": [90.0, 90.0],
+            "closed": true,
+            "segments": [
+                {"op": "L", "to": [210.0, 90.0]},
+                {"op": "L", "to": [210.0, 210.0]},
+                {"op": "L", "to": [90.0, 210.0]}
+            ]
+        }]
+    });
+    let shape = SelectionShape::from_value(&payload);
+    let inside = shape.coverage(150.0, 150.0);
+    let outside = shape.coverage(20.0, 150.0);
+    assert!(inside > 0.5, "中心必须被覆盖 ⇒ 实测 {inside}");
+    assert!(outside < 0.5, "外部不该被覆盖 ⇒ 实测 {outside}");
+}
