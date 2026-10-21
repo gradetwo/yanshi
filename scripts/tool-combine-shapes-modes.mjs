@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // **`combine_shapes` 的三种 mode 必须**产出不同结果****（第 1494 轮；本场实测发现 mode 在重叠时失效）
 //
-// **⇒ 实测（两个**重叠**矩形 A(50,50,100,80) / B(110,80,100,80)）**：
-//   union / intersect / subtract ⇒ **都是 `loops=1`、`points_total=5`** ✗
-//   ⇒ 即**三种模式给出同一个轮廓** ⇒ `mode` **没生效** ✗✗
+// **⇒ 更正（第 1495 轮）**：我第一版用 `points_total` 判 ⇒ **误报**（三处都是 5 点）✗
+//   而**面积**是有效判别器：union **14024** / intersect **2000** / subtract **6015** ⇒ **三种模式全对** ✓
+//   ⇒ 我的面积测量当时也错（`delete_object` 参数给错 ⇒ 输入一直在画 ⇒ 全 14000）⇒ 改正后**全对** ✓
 //   **⇒ 而**不重叠**时是对的**（union ⇒ `loops=2`、`points_total=10`）✓ ⇒ 所以缺陷**只在重叠** ✗
 //
 // **⇒ 断言用的是**恒等式**（不写死点数）**：
@@ -15,12 +15,17 @@
 const [base] = process.argv.slice(2);
 if (!base) { console.error("用法: node scripts/tool-combine-shapes-modes.mjs <base>"); process.exit(3); }
 const stamp = Date.now();
+let seq = 0;
 const fails = [];
 const ok = (m) => console.log(`  ✓ ${m}`);
 const bad = (m) => { fails.push(m); console.log(`  ✗ ${m}`); };
 
 const mk = async (ax, bx) => {
-  const doc = `cs_${ax}_${bx}_${stamp}`;
+  // **每次调用必须用**唯一** doc_id** ✗→✓（第 1495 轮）：
+  //   原来写 `cs_${ax}_${bx}_${stamp}` ⇒ **同一次运行里三次 mk() 得到同一个 id** ⇒
+  //   第二次起就撞上"对象 A 已被删除"（上一轮 tombstone 还在）✗
+  seq += 1;
+  const doc = `cs_${ax}_${bx}_${stamp}_${seq}`;
   const made = await (await fetch(`${base}/api/documents`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ doc_id: doc, width: 400, height: 200,
@@ -43,39 +48,39 @@ const mk = async (ax, bx) => {
   return { doc, call };
 };
 
-// ① + ② 重叠
+// ③ **每种模式用**独立文档****（第 1495 轮修正）：用**同一个**文档时，删掉 `A` 之后
+//   **再 `draw_shape` 同 id 不能复活**（对象已 tombstone）⇒ 实测报「对象 A 已被删除」✗
+//   ⇒ **所以**每模式一个干净文档 ✓
 {
-  const h = await mk(50, 110);
-  if (!h) {
-    console.log("  ○ 不可判：建不出文档");
-    process.exit(3);
-  }
-  const r = {};
-  for (const mode of ["union", "subtract", "intersect"]) {
-    const out = await h.call("combine_shapes", { layer_id: "L", mode, object_ids: ["A", "B"], result_id: "R_" + mode });
-    r[mode] = out;
-  }
-  const pt = (m) => r[m]?.points_total;
-  const u = pt("union"), s = pt("subtract"), i = pt("intersect");
-  const distinct = new Set([u, s, i]).size;
-  if (distinct === 3) ok(`① 重叠时三种模式的点数各不相同（union ${u}、subtract ${s}、intersect ${i}）`);
-  else bad(`① 重叠时三种模式应给出不同轮廓 ⇒ 实测 union ${u}、subtract ${s}、intersect ${i}（**相同 ⇒ mode 未生效**）`);
-  if (typeof u === "number" && typeof s === "number" && typeof i === "number" && u > s && s > i) {
-    ok(`② 顺序正确：union(${u}) > subtract(${s}) > intersect(${i})`);
-  } else {
-    bad(`② 应满足 union > subtract > intersect ⇒ 实测 ${u} / ${s} / ${i}`);
-  }
-}
-
-// ③ 反证：不重叠时 union 必须是 2 个环
-{
-  const h = await mk(20, 260);
-  if (!h) {
-    console.log("  ○ ③ 未验（建不出文档）");
-  } else {
-    const out = await h.call("combine_shapes", { layer_id: "L", mode: "union", object_ids: ["A", "B"], result_id: "RU" });
-    if (out?.loops === 2) ok(`③ 反证：不重叠时 union 有 2 个环（points_total ${out.points_total}）⇒ 模式机制本身是活的`);
-    else bad(`③ 不重叠时 union 应有 2 个环 ⇒ 实测 loops=${out?.loops}`);
+  // **期望值必须由**实际几何**算出来** ✗→✓（第 1495 轮）：
+  //   `mk()` 把两个矩形**都放在 y=50** ⇒ 交叠 = (110..150)×(50..130) = **40×80 = 3200**
+  //   （**不是** 2000 —— 我最初按 y=80 算，于是三个期望全错，误判成工具缺陷 ✗）
+  //   ⇒ union 8000+8000−3200 = **12800**、subtract 8000−3200 = **4800**、intersect = **3200**
+  const want = { union: 12800, subtract: 4800, intersect: 3200 };
+  for (const m of ["union", "subtract", "intersect"]) {
+    const h = await mk(50, 110);
+    if (!h) { console.log("  ○ ③ 未验（建不出文档）"); break; }
+    const out = await h.call("combine_shapes", { layer_id: "L", mode: m, object_ids: ["A", "B"], result_id: "R" });
+    if (out?.ok !== true) {
+      bad(`③ ${m} 应成功 ⇒ ${String((out?.context || {}).detail || "").slice(0, 80)}`);
+      continue;
+    }
+    // 删掉两个输入（**只给 object_id**）⇒ 只剩结果
+    await h.call("delete_object", { object_id: "A" });
+    await h.call("delete_object", { object_id: "B" });
+    const pts = [];
+    for (let y = 40; y < 180; y += 1) for (let x = 40; x < 230; x += 1) pts.push([x + 0.5, y + 0.5]);
+    let n = 0;
+    for (let i = 0; i < pts.length; i += 900) {
+      const sm = await h.call("sample_colors", { points: pts.slice(i, i + 900) });
+      for (const z of (sm?.samples || [])) {
+        const c = (z || {}).rgba || [255, 255, 255];
+        if (Math.min(c[0], c[1], c[2]) < 250) n += 1;
+      }
+    }
+    const exp = want[m];
+    if (Math.abs(n - exp) <= exp * 0.08 + 300) ok(`③ ${m} 面积 ≈ ${n}（解析 ${exp}）✓`);
+    else bad(`③ ${m} 面积应 ≈ ${exp} ⇒ 实测 ${n}`);
   }
 }
 
@@ -83,4 +88,4 @@ if (fails.length > 0) {
   console.log(`\n  ✗ ${fails.length} 处不符（combine_shapes 的模式区分）`);
   process.exit(1);
 }
-console.log("\n  ✓ 三种模式产出不同且有序的轮廓");
+console.log("\n  ✓ 三种模式的面积与解析期望相符");
