@@ -3376,6 +3376,9 @@ fn write_duplicate_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
     let mut head = 0u64;
     let mut failure: Option<YanshiError> = None;
     let mut created_objects = 0usize;
+    // **悬空 blob 的对象**被跳过的个数** ✓（第 1530 轮）
+    let mut skipped_objects = 0usize;
+    let mut skipped_reason: Option<String> = None;
     let mut layer_payload = source.clone();
     layer_payload["layer_id"] = json!(new_layer_id);
     layer_payload["name"] = json!(name);
@@ -3407,6 +3410,20 @@ fn write_duplicate_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
                 Ok(result) => {
                     head = head.max(result.head_seq);
                     created_objects += 1;
+                }
+                // **悬空 blob 的对象**跳过 + 计数** ✓（第 1530 轮；外部实测：
+                //   **一个坏对象会让**整层不可复制** ✗ —— 而复制图层是常用操作）
+                //   **⇒ 判据**：`error.code == ReferenceNotFound` 且 `error.context.blob` 有值 ⇒ **跳过** ✓
+                //   **⇒ ⇒ 别的错误仍然**中断**（那些是真问题，不该吞掉）✓
+                Err(error)
+                    if error.code == yanshi_core::ErrorCode::ReferenceNotFound
+                        && error.context.blob_hash.is_some() =>
+                {
+                    skipped_objects += 1;
+                    skipped_reason = Some(format!(
+                        "对象引用的 blob {} 不在存储里 ⇒ 已跳过该对象（图层其余部分照常复制）",
+                        error.context.blob_hash.clone().unwrap_or_default()
+                    ));
                 }
                 Err(error) => {
                     failure = Some(error);
@@ -3441,6 +3458,11 @@ fn write_duplicate_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
         "from": layer_id,
         "name": name,
         "objects": created_objects,
+        // **跳过了几个对象 + 为什么** ✓（第 1530 轮）：**不许静默少复制** ✗
+        //   ⇒ 一个对象引用的 blob 不在存储里 ⇒ **跳过它、把这份图层其余部分复制过去** ✓
+        //   ⇒ **而**原因必须出现在响应里**（本仓「静默降级」那条内核）✓
+        "skipped_objects": skipped_objects,
+        "skipped_reason": skipped_reason,
         "z_index": position,
         "changeset_id": changeset,
         "head": head,
