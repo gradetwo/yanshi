@@ -3328,3 +3328,19 @@ gh api "repos/gradetwo/yanshi/actions/runs/<id>/jobs" --jq '.jobs[] | "\(.name)�
 | 曲线/路径**二期** | +834 行，13 文件 | **12 绿 / 0 红** ✓ |
 
 **⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=25" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'`
+
+## ★ 新判据 `check-shape-error-hints-path` 零抖动 + 普查自洽（第 1489 轮）
+
+**⇒ 连跑两次**（它断 4 条，含"正解必须能用"）：
+
+| 次 | 退出码 |
+|---|---|
+| 1 | **0** |
+| 2 | **0** |
+
+**⇒ ⇒ 逐条输出**一致**（数字归一化）✓
+
+**⇒ 判据普查（当场算）**：
+```
+CI 口径=323｜自检口径=262｜豁免=61 ⇒ 262 + 61 = 323 ✓ 自洽
+```
