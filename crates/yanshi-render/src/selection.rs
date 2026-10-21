@@ -1227,7 +1227,18 @@ pub fn ensure_bitmap_masks_registered(shapes: &[&Value], load: &dyn Fn(&str) -> 
         if shape.get("kind").and_then(Value::as_str) != Some("bitmap") {
             continue;
         }
-        let Some(blob) = shape.get("blob").and_then(Value::as_str) else {
+        // **★ `blob` **或** `blob_hash` —— 掩膜存的是后者 ★**（第 1607 轮）
+        //   **⇒ 外部 `E1742` 收窄后的真因**：`create_mask(shape.kind=bitmap)` 存的是
+        //     **`{kind:"bitmap", blob_hash:"sha256:…"}`** ⇒ 而这里**只找 `blob`** ✗
+        //     ⇒ **`continue` 静默跳过 ⇒ 从不注册 ⇒ 覆盖率恒 0** ⇒
+        //     `brush_stroke(clip_to_selection=…)` **`ok=true` 而一个像素不落** ✗✗
+        //   **⇒ ⇒ 而这是**同族第三次**：`w`/`width`（rect）、`points`（polygon）、现在 `blob`/`blob_hash`** ✓
+        //   **⇒ ⇒ ⇒ 所以**：**两种键都收** ⇒ 用**同一个** blob 字符串 ✓
+        let Some(blob) = shape
+            .get("blob")
+            .or_else(|| shape.get("blob_hash"))
+            .and_then(Value::as_str)
+        else {
             continue;
         };
         {

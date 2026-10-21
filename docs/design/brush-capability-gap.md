@@ -14377,3 +14377,28 @@ let divisions = ((distance / 2.0).ceil() as usize).clamp(1, 4096);
 
 **⇒ ⇒ 我上一条**说错了**（"batch 不是提速手段"）⇒ **原因是 N=10/40 太小** ✗
 **⇒ ⇒ ⇒ 教训**：**测"批处理"的收益，N 必须够大**（**否则固定开销压过一切**）✓
+
+## 三百五十四、`bitmap` 选区在裁剪里"找不到"（第 1608 轮，**两个真 bug 修好、第三个未通**）
+
+**⇒ 外部 `E1742` 收窄后的结论**：**`from_mask` 对 `path` 型掩膜是好的**，
+**只有 `bitmap` 型掩膜取不出选区**（**静默 no-op**）✓
+
+**⇒ 我的复现（与他们的描述**不同**）**：`create_mask(bitmap)` ✓、`create_selection(from_mask)` ✓、
+`list_selections` **列得出**（`shape = {kind:"bitmap", blob_hash}`）✓ **而
+`brush_stroke(clip_to_selection=…)` 报「找不到可裁剪的选区」** ✗
+
+**⇒ ⇒ 修好两个真 bug**：
+
+| # | 位置 | 问题 | 修法 |
+|---|---|---|---|
+| **①** | `tools_brush.rs` 的 `alive` bbox 推导 | **没有 `bitmap` 分支**（**只有 `blob_hash`**）⇒ 被 `filter_map` 丢掉 | **第 6 条：`bitmap` ⇒ 用掩膜尺寸，缺省整幅** ✓ |
+| **②** | `selection.rs` 的 `ensure_bitmap_masks_registered` | **只找 `shape.blob`**，而掩膜存的是 **`blob_hash`** ⇒ `continue` **静默跳过 ⇒ 从不注册** | **两种键都收** ✓ |
+
+**⇒ ⇒ ⇒ 而两个都修完后**：**报错消失（`ok=true`）**，**但 `clip_coverage` 仍 0.0** ✗
+⇒ **所以还有第三处**（**注册/解码那一段**）⇒ **`decode_png_l8` 要求 `color_type==0 && bit_depth==8`**，
+我用的是标准 L8 PNG ⇒ **解码应该过** ⇒ **所以卡在 `register_bitmap_mask` 或 `from_selection`** ✓
+
+**⇒ ⇒ ⇒ ⇒ 而**`clip_coverage = 0.0` 让这件事**不再静默**（**第 1567 轮加的那个字段在这里救了一次**）✓
+
+**⇒ 而**同族规律**（第 4 次）**：**形状键名不一致**（`w`/`width`、`blob`/`blob_hash`）⇒
+**⇒ 判据**：**凡是 `shape.get("x")` 的地方，都要问"调用方可能用哪个名字存"** ✓

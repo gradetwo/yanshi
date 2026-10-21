@@ -438,6 +438,32 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
                             owned_bbox =
                                 json!({"x": cx - rx, "y": cy - ry, "w": rx * 2.0, "h": ry * 2.0});
                             &owned_bbox
+                        } else if selection.shape.get("kind").and_then(Value::as_str)
+                            == Some("bitmap")
+                        {
+                            // **★ 第 6 条：`bitmap` 选区 ★**（第 1606 轮；外部 `E1742` 收窄后的真因）
+                            //   **⇒ 现象**：`create_mask(shape.kind=bitmap)` 成功 ✓、
+                            //     `create_selection(from_mask=…)` 成功 ✓、`list_selections` **也列得出**（`shape = {kind:"bitmap", blob_hash}`）✓
+                            //     **而 `brush_stroke(clip_to_selection="s1")` 报「找不到可裁剪的选区」** ✗
+                            //   **⇒ ⇒ 根因与 `B1` 同族**：`alive` 的 bbox 推导**没有 `bitmap` 分支**
+                            //     （它只有 `blob_hash`）⇒ `?` ⇒ 被 `filter_map` 丢掉 ✓
+                            //   **⇒ ⇒ ⇒ 所以**：**位图掩膜的 bbox 取自**掩膜 blob 的尺寸**
+                            //     （`kind: bitmap` 形如 `{blob_hash, width?, height?}`；
+                            //      没给尺寸时**退回整幅**，因为位图掩膜按约定覆盖全画布）✓
+                            let num = |k: &str| selection.shape.get(k).and_then(Value::as_f64);
+                            let (w, h) = (num("width"), num("height"));
+                            match (w, h) {
+                                (Some(w), Some(h)) if w > 0.0 && h > 0.0 => {
+                                    owned_bbox = json!({"x": 0.0, "y": 0.0, "w": w, "h": h});
+                                }
+                                _ => {
+                                    owned_bbox = json!({
+                                        "x": 0.0, "y": 0.0,
+                                        "w": state.width as f64, "h": state.height as f64,
+                                    });
+                                }
+                            }
+                            &owned_bbox
                         } else if selection.shape.get("subpaths").is_some()
                             || selection.shape.get("d").is_some()
                         {
