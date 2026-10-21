@@ -94,6 +94,8 @@ for f in $CHANGED; do
     crates/yanshi-server/src/tools_mask.rs)      add_all 'tool-mask-*.mjs' ;;
     crates/yanshi-server/src/tools_bitmap.rs)    add_all 'tool-import-*.mjs'; add_all 'tool-put-blob-*.mjs'; add_all 'tool-export-*.mjs' ;;
     crates/yanshi-server/src/tools_io.rs)        add_all 'tool-export-*.mjs' ;;
+    # **新模块 `tools_bgfield.rs`** ✓（第 1461 轮补）：否则改它时**本地定向跑会漏掉**它自己的判据 ✗
+    crates/yanshi-server/src/tools_bgfield.rs)   add_all 'tool-fit-background-field.mjs' ;;
     crates/yanshi-server/src/tools_psd.rs)       add_all 'tool-psd-*.mjs' ;;
     crates/yanshi-server/src/tools_effect.rs)    add_all 'tool-effect-*.mjs'; add_all 'tool-filter-*.mjs' ;;
     crates/yanshi-server/src/tools_read.rs)      add_all 'tool-read-*.mjs'; add_all 'tool-sample-*.mjs' ;;
