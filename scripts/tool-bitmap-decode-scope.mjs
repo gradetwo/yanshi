@@ -65,7 +65,17 @@ import { deflateSync } from "node:zlib";
 //     ⇒ **∴ 若**它是 `const`**✗ ⇒ **∴ 赋值**抛 `TypeError: Assignment to constant variable`
 //       ⇒ **∴ 服务**起来了**✗，**而**判据**崩掉 ✓**** ✓✓
 let base = process.argv[2];
-const localProject = process.argv[3] || "/tmp/eval/artworks/bench_4k_archive.yanshi";
+// **★ 第 1431 轮：兼容 runner 的通用参数约定** ✓
+//   **⇒ 冲突** ✗：runner 给**所有**判据传 `<base> <doc> <token>`（见 `run-criteria-local.sh:128`），
+//     而本判据的老约定是 `<base> [<工程>] [<buildBase>]` ⇒ **`argv[4]` 撞车** ✗：
+//     `buildBase` 拿到的是 **token**（64 位十六进制）⇒ `${token}/api/documents` ⇒
+//     `TypeError: Failed to parse URL` ⇒ **本判据长期 `exit 3`**（`⊘ 判据自身出错`）✗
+//   **⇒ ⇒ 所以**只认合法形状**：`argv[3]` 必须像路径（`_bootstrap` 不算）、`argv[4]` 必须像 URL ✓
+const projectArg = process.argv[3];
+const localProject =
+  projectArg && projectArg !== "_bootstrap" && !/^https?:\/\//.test(projectArg)
+    ? projectArg
+    : "/tmp/eval/artworks/bench_4k_archive.yanshi";
 // **★ 可选：**造 fixture 用的另一个服务 ✓ ★**（第 43 轮 ✓）。
 //
 // **∴ 为什么需要它 ✗ ★**：**`missed_bytes`**是**进程级累加**✗ ⇒
@@ -77,7 +87,9 @@ const localProject = process.argv[3] || "/tmp/eval/artworks/bench_4k_archive.yan
 //     ⇒ **∴ 整幅渲染**必须解码 ⇒ **∴ 触发诊断**会看到 > 0 ✓**** ✓✓
 //
 // **∴ 用法 ✗**：`node scripts/tool-bitmap-decode-scope.mjs <判据base> [<工程>] [<造包base>]`
-let buildBase = process.argv[4] || base;
+const buildArg = process.argv[4];
+// **只有**真的是 URL 才当 `buildBase`**（否则就是 runner 传的 token ✓）
+let buildBase = buildArg && /^https?:\/\//.test(buildArg) ? buildArg : base;
 
 // **★ `--spawn` ✗ ★**（第 45 轮 ✓）：**自己起两个临时服务**✗ ⇒ **∴ 一条命令就能跑 ✓**。
 //
@@ -95,7 +107,12 @@ let buildBase = process.argv[4] || base;
 //     ⇒ **∴ `=== 0`**永远为假 ⇒ **∴ `spawnMode` 恒 false** ✗
 //       ⇒ **∴ spawn 块**不执行 ⇒ **∴ `base` undefined ⇒ **∴ 报用法 ＋ `exit(2)` ✓**** ✓✓
 //   **∴ 正确写法**：**先切掉那两个**✗ ⇒ **∴ 用** `slice(2).length === 0` ✓**** ✓✓
-const spawnMode = process.argv.includes("--spawn") || process.argv.slice(2).length === 0;
+// **⇒ 需要两个**独立进程**（`missed_bytes` 是进程级累加 ✓）⇒ 若没给出**真正的** buildBase
+//   （URL 形状的 `argv[4]`）⇒ **自己 spawn 两个** ✓（二进制取 `target/release` ✓）
+const spawnMode =
+  process.argv.includes("--spawn") ||
+  process.argv.slice(2).length === 0 ||
+  buildBase === base;
 let spawned = [];
 if (spawnMode) {
   const { spawn } = await import("node:child_process");
@@ -132,8 +149,10 @@ if (spawnMode) {
   spawned.push(await start(buildPort));
   spawned.push(await start(judgePort));
     // **∴ 自起之后**把地址填上 ✗**（**∴ 于是**无参也能跑 ✓）** ✓✓
-    if (!base) base = `http://127.0.0.1:${judgePort}`;
-    if (!buildBase) buildBase = `http://127.0.0.1:${buildPort}`;
+    // **无条件**覆盖**：spawn 之后，两个 base 只能是刚起的这两个 ✓
+    //   （原来写 `if (!base)` ⇒ 而 runner 总会给一个 URL ⇒ **永远不覆盖** ⇒ 判据拿旧 URL 去造包 ✗）
+    base = `http://127.0.0.1:${judgePort}`;
+    buildBase = `http://127.0.0.1:${buildPort}`;
   // **∴ 退出时**必须收拾干净 ✗**（**∴ 否则**每跑一次**留两个服务 ✓）** ✓✓
   //   **∴ 用 `exit` 钩子 ✗**：**无论**怎么退出（**正常／异常／退出码 ✓）都会走 ✓**** ✓✓
   process.on("exit", () => {
