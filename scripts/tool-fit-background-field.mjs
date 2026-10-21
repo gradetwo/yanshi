@@ -199,6 +199,56 @@ if (outsideBefore && outsideAfter && outsideBefore[0] === outsideAfter[0]) {
   }
 }
 
+// ⑦ **`degree=0` = 用掩膜外的均值填充**（第 1458 轮）
+//   **⇒ 为什么要有它** ✓：有人**不想要任何渐变**、只要"和周围一致的平均色" ⇒ 0 阶多项式**正好**是这个 ✓
+//     （之前被 `clamp(1,3)` 静默挡掉 ⇒ 用户拿到的是**平面**而不是**均值** ⇒ 不对但看不出来 ✗）
+//   **⇒ ⇒ 断什么**（**两个结构量**）：
+//     ① `field_uniform === true` **且** `field_range` 两端相等 ⇒ "填的是单值" ✓
+//     ② **残差 = 样本标准差**：rms 必须 **> 40**（我的阶梯底实测 76.5）⇒ 若 `clamp` 又回到 1，
+//        rms 会掉到 73 附近（同样高 ✗）⇒ **所以再加**：`degree=0` 的 rms 必须 **≥** `degree=2` 的 rms ✓
+//        （恒等式优于单点 ✓：阶数越低，残差**不可能更小**）
+{
+  const docZ = `bgf_d0_${stamp}`;
+  const madeZ = await (await fetch(`${base}/api/documents`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: docZ, width: 400, height: 300,
+      background: { r: 255, g: 255, b: 255, a: 255 } }),
+  })).json();
+  if (!madeZ.token) {
+    console.log("  ○ ⑦ 未验（建不出文档）");
+  } else {
+    const pZ = async (tool, a) => {
+      const rr = await fetch(`${base}/api/tools/${tool}?doc=${docZ}&token=${madeZ.token}`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(a ?? {}),
+      });
+      return rr.json();
+    };
+    await pZ("create_layer", { layer_id: "L", name: "L" });
+    for (let k = 0; k < 12; k += 1) {
+      const y = 10 + k * 23;
+      const g = Math.round(255 * ((y / 300 - 0.5) ** 2 * 4));
+      await pZ("fill_region", { layer_id: "L", shape: { type: "rect", x: 10, y, w: 380, h: 23 },
+        color: [g, g, g], opacity: 1.0 });
+    }
+    const maskZ = { type: "rect", x: 120, y: 80, w: 160, h: 140 };
+    const z0 = await pZ("fit_background_field", { layer_id: "L", mask: maskZ, degree: 0 });
+    const z2 = await pZ("fit_background_field", { layer_id: "L", mask: maskZ, degree: 2 });
+    const flat = Array.isArray(z0?.field_range) && z0.field_range[0] === z0.field_range[1];
+    if (z0?.degree === 0 && flat) {
+      ok(`⑦ degree=0 ⇒ 生效 0 且填的是**单值**（range ${JSON.stringify(z0.field_range)}）`);
+    } else {
+      bad(`⑦ degree=0 必须生效并填单值 ⇒ 实测 degree=${z0?.degree}、range=${JSON.stringify(z0?.field_range)}`);
+    }
+    const r0 = z0?.residual_rms?.[0];
+    const r2 = z2?.residual_rms?.[0];
+    if (typeof r0 === "number" && typeof r2 === "number" && r0 >= r2) {
+      ok(`⑦ 恒等式成立：0 阶残差 ${r0.toFixed(1)} ≥ 2 阶残差 ${r2.toFixed(1)}（阶数越低残差不可能更小）`);
+    } else {
+      bad(`⑦ 0 阶残差必须 ≥ 2 阶 ⇒ 实测 0:${r0}、2:${r2}（若 0 阶被夹成 1 阶，这条会红）`);
+    }
+  }
+}
+
 if (fails.length > 0) {
   console.log(`\n  ✗ ${fails.length} 处不符（fit_background_field）`);
   process.exit(1);

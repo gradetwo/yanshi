@@ -105,7 +105,9 @@ pub(super) fn write_fit_background_field(ctx: &mut ToolContext<'_>, args: &Value
         .get("degree")
         .and_then(Value::as_u64)
         .unwrap_or(2)
-        .clamp(1, 3) as u32;
+        // **`degree=0` 允许** ✓（第 1458 轮）：它只有常数项 ⇒ **等于"用掩膜外的均值填满"** ✓
+        //   ⇒ 这是个**合理的用途**（不要任何渐变、只要"和周围一致的平均色"）✗ 之前被 `clamp(1,3)` 挡掉 ✗
+        .clamp(0, 3) as u32;
     let stride = args
         .get("sample_stride")
         .and_then(Value::as_u64)
