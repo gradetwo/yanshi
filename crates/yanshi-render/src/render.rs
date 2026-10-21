@@ -6102,7 +6102,13 @@ mod tests {
                        "color": {"r": 240, "g": 240, "b": 240, "a": 255}}),
             ),
         );
-        renderer.cache_mut().clear();
+        // **必须用 `clear_all_caches()`，不是 `cache_mut().clear()`** ✓（第 1525 轮）
+        //   **⇒ 为什么**：后者**清不到 `below`** ⇒ **参照渲染可能复用盖章前的下方合成**
+        //     ⇒ 于是这条测试**偶发失败**（CI 实测 **10 次挂 1 次**、本机 12 次全过）✗
+        //   **⇒ ⇒ 而 `clear_all_caches()` 的文档就写着这件事**（`render.rs:1244`
+        //     「`incremental_stamp_matches_full_tile_re_render` 因 `cache_mut().clear()`
+        //      清不到 below 而差 37.5%」）⇒ **也就是说：这条测试自己**违反了它** ✓
+        renderer.clear_all_caches();
         renderer
             .render_region(&state, &store, Bbox::new(0.0, 0.0, 128.0, 128.0))
             .unwrap();
