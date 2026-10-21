@@ -3174,3 +3174,9 @@ grep -n "timeout-minutes" .github/workflows/ci.yml
 S=$(date +%s%N); bash scripts/run-criteria-local.sh scripts/tool-fit-background-field.mjs >/dev/null
 E=$(date +%s%N); echo "$(( (E-S)/1000000 )) 毫秒"
 ```
+
+## ✅ **第八个绿 run**（第 1468 轮）
+
+**⇒ 映射补丁那笔（`tools_bgfield.rs` ⇒ 判据的映射）也是 **success** ⇒ 本场**第八个完整绿的 run** ✓
+**⇒ ⇒ 它证明的是一件**工具链**的事：**新模块被 `criteria-for-changes.sh` 正确识别** ✓
+**⇒ ⇒ ⇒ 复算**：`gh api "repos/gradetwo/yanshi/actions/runs?per_page=15" --jq '.workflow_runs[] | "\(.head_sha[0:8])｜\(.status)｜\(.conclusion)"'`
