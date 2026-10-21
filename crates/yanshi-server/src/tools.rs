@@ -2630,6 +2630,22 @@ fn read_explain_tool(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             "required": param.required,
             "doc": param.description,
         })).collect::<Vec<_>>(),
+        // **★ 参数示例 ★**（第 1559 轮；外部追加要求：「如果它返回"参数示例 + 返回字段"」）
+        //   **⇒ 他们的原话**：那 `export_png` 的 `sha256`、`batch` 的 `failed_calls`
+        //     这些**我就不用试** ✓
+        //   **⇒ ⇒ 示例从**同一张表**来**（`TOOL_EXAMPLES`）⇒ **不另写一份** ✓
+        //     （**同一事实只写一处** —— 本仓那条内核 ✓）
+        "example": tools_examples::TOOL_EXAMPLES
+            .iter()
+            .find(|(tool, _)| *tool == spec.name)
+            .map(|(_, example)| *example)
+            .unwrap_or(""),
+        // **返回字段**：我**没有**一份"每个工具返回什么"的权威表 ⇒ **不编** ✗
+        //   ⇒ 但**指路**：`docs/design/tool-examples.md` 是**按工具列出示例**的那份文档 ✓
+        //   ⇒ （**编一张会漂移的表**，比**指对地方**更糟 —— 见台账「同一事实只写一处」）
+        "returns_hint": "返回字段没有一份权威表（**别信猜的** ✗）：\
+                         实际返回用一次真调用看（响应里的键就是全部），\
+                         或读 `docs/design/tool-examples.md` 里同一个工具的示例",
         // **一句"怎么开始"** ✓（他们要的正是这个：不必先撞一次墙）
         "how_to_call": if required.is_empty() {
             "这个工具**没有必填参数** ⇒ 只给 optional 里的键即可".to_owned()
