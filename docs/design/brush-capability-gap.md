@@ -14419,3 +14419,24 @@ let divisions = ((distance / 2.0).ceil() as usize).clamp(1, 4096);
 **⇒ ⇒ ⇒ ⇒ 所以还有**第四处**（**注册或查表**）⇒ **范围已很窄**：
 `ensure_bitmap_masks_registered` 拿到 `blob_hash` ✓、`decode_png_l8` 接受 L8 ✓、
 而 **`bitmap_coverage(bbox, mask, x, y)` 仍返回 0** ⇒ **下一步查注册表里到底有没有那个 key** ✓
+
+### 第四处的**精确定位**：**存储里的字节不是原 PNG**（第 1610 轮）
+
+**⇒ 实测**（`put_blob` 一张 106 字节的 L8 PNG，再把 blob 文件读回来）：
+
+```
+我上传：106 字节，前 8 字节 = 89 50 4e 47 0d 0a 1a 0a   （标准 PNG 签名）
+存储中：108 字节，前 10 字节 = 00 00 89 50 4e 47 0d 0a 1a 0a  （**多了 2 字节前缀**）
+```
+
+**⇒ ⇒ 所以**：**`store().get(&hash)` 返回的是**带 2 字节前缀**的字节** ⇒
+**而 `decode_png_l8` 要求 `bytes[..8] == SIGNATURE`** ⇒ **签名不匹配 ⇒ 返回 `None`** ⇒
+**⇒ ⇒ ⇒ 注册从未发生 ⇒ `bitmap_coverage` 恒 0** ✓
+
+**⇒ 这就是 `bitmap` 路线的**第四处**，而且**不是形状键名问题，是**字节层**问题** ✓
+
+**⇒ 为什么 `import_image` 没这个问题**：它走的是**另一条存储/解码路径**（`bitmap` 对象内联）
+⇒ **所以**"同一条 blob 在不同使用者眼里字节不同"** ⇒ **这是本仓那条「`put_blob` 双重编码」的第三次现身** ✓
+
+**⇒ 下一步（明确）**：**在 `ensure_bitmap_masks_registered` 的 `load` 上报前剥掉 2 字节前缀**
+（**或改用与 `import_image` 同一份解码**）⇒ **一行改动** ✓
