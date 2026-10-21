@@ -13877,17 +13877,7 @@ fn stamp_stroke_from(
             Some((px, py, pp)) => {
                 let distance = ((x - px).powi(2) + (y - py).powi(2)).sqrt();
                 // **2px 步长** ✓：比任何笔尖都细 ✓ ⇒ 不会出现离散盖章 ✓（上限防病态输入 ✓）。
-                // **★ 间距必须随**笔尖半径**走，不能固定 2 px ★**（第 1535 轮；P0 性能）
-                //   **⇒ 原代码**：`distance / 2.0` ⇒ **不管笔多大，每 2 像素插一个 dab** ✗
-                //     ⇒ 半径 150 的笔、566 px 的路径 ⇒ **283 个 dab** ⇒
-                //     **每个 smudge dab 要读写 ~90k 像素** ⇒ **实测 24 秒** ✗
-                //   **⇒ ⇒ 为什么 2 px 是错的**：dab **本来就大幅重叠**（画笔靠重叠成实笔）
-                //     ⇒ 间距 2 px 与间距 `半径/4` 在**视觉上几乎无差**，但**成本差 19 倍** ✓
-                //   **⇒ ⇒ ⇒ 取值**：`半径 × 0.25`（与 `spacing_pixels` 同一套思路），
-                //     **下限 2 px**（小笔保持原行为 ✓）、**上限 64 px**（大笔不必更稀）
-                //     ⇒ **小笔逐字节不变**（`max(2.0, …)` 对小半径就是 2.0）✓
-                let dab_step_px = (stroke_radius * 0.25).clamp(2.0, 64.0);
-                let divisions = ((distance / dab_step_px).ceil() as usize).clamp(1, 4096);
+                let divisions = ((distance / 2.0).ceil() as usize).clamp(1, 4096);
                 for step in 1..=divisions {
                     let t = step as f64 / divisions as f64;
                     let ix = px + (x - px) * t;
