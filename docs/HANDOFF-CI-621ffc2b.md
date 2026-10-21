@@ -3638,3 +3638,19 @@ gh auth status 2>&1 | head -4           # API 侧是否 timeout
 而 `clear_all_caches()` 的文档**就点名这条测试**当年因此差 **37.5%** ⇒ **测试违反了自己旁边的规则** ✗
 
 **⇒ 外部把这一条归为**同一类****（他们的原话）：「**和"静默忽略参数"是同一类：测试/工具的行为不稳定，而它不报错**」✓
+
+## ★ 改 effect 参数校验后：**8 条相关判据全部回归通过**（第 1529 轮）
+
+**⇒ 因为 `tools_effect.rs` 的**未知键拒绝**是**行为变更** ⇒ 任何"用了错键"的判据都会红 ⇒ **所以逐条跑**：
+
+| 判据 | 结果 |
+|---|---|
+| `check-adjustment-count-sync` | **0** ✓ |
+| `tool-medium-filter-covers-all` | **0** ✓ |
+| `tool-photo-adjustments` | **0** ✓ |
+| `tool-perspective-keeps-margins` | **0** ✓（**修复后**）|
+| `tool-filter-adjust-identity` | **0** ✓（**新判据**）|
+| `tool-brush-tag-filter` / `tool-speed-gain-effective` / `tool-relief` | **0 / 0 / 0** ✓ |
+
+**⇒ ⇒ 所以**：**8/8 全绿** ⇒ **没有其它判据在依赖"未知键被静默忽略"** ✓
+**⇒ ⇒ ⇒ 唯一的例外是 `service_flow` 那两个测试**（**已修**：它们确实在共用一套参数 ✗）
