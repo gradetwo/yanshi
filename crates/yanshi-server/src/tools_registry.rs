@@ -2114,7 +2114,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[
             param!("layer_id", String, true, "目标图层 id"),
             param!("mask", Object, true, "掩膜形状（写法同 `fill_region` 的 shape：rect/circle/ellipse/polygon，支持 holes）⇒ **掩膜内**会被拟合场填掉，**掩膜外**的像素是拟合样本"),
-            param!("degree", Number, false, "多项式阶数 1..3（缺省 2）。越高越能贴合弯曲的背景，但也越容易过冲"),
+            param!("degree", Number, false, "多项式阶数 **0..3**（缺省 2）。**0 = 常数项** ⇒ 等于「用掩膜外的均值填满」（不产生任何渐变）；越高越能贴合弯曲的背景，但也越容易过冲"),
             param!("sample_stride", Number, false, "采样步长 1..16（缺省 2）：每隔 N 个像素取一个样本 ⇒ 越大越快、越不敏感于噪声"),
             param!("margin", Number, false, "掩膜 bbox 外扩比例（缺省 0.25）⇒ 决定拿多远处的像素当样本；外扩不够时样本数可能不足"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
