@@ -3972,6 +3972,25 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                     // **`seam` 只认 `linear`（= 当前的按距离过渡 ✓）** ✓
                     //   `min_error`（DP 找最小误差切缝 ✓，外部第 81 次点名要的）**还没实现** ✗
                     //   ⇒ **响亮拒绝** ✓（绝不静默按 linear 处理 ✗ —— 他们从 `D18` 起说的就是这条 ✓）。
+                    // **`brightness_match` 尚未实现** ✗ ⇒ **响亮拒绝** ✓（绝不静默忽略 ✗）
+                    //   外部第 82 次实测：`test2` 的墙是**左右渐变** ⇒ 单一亮度的源块
+                    //   ⇒ **洞内亮出一块"人形"** ✗ ⇒ 他们要「按位置的源亮度匹配」✓。
+                    if value
+                        .get("brightness_match")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
+                        return Err(YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail(
+                                "texture.brightness_match（按位置的源亮度匹配）**尚未实现** \
+                                 ⇒ 现在只有**全局 SSD 选块**（一个源块铺满）✓ ⇒ 在「左右渐变」的目标上 \
+                                 会合成出**一块均匀亮度**（外部第 82 次实测：亮出人形 ✗）\
+                                 ⇒ **不会静默忽略这个键** ✗ —— 需要的话等实现，或改用 `mode:patch` ＋ 多块源 ✓"
+                                    .to_string(),
+                            ),
+                        ));
+                    }
                     match value.get("seam").and_then(Value::as_str) {
                         None | Some("linear") => {}
                         // **`min_error` 已实现**（按行最小误差切 ✓；带平滑的 DP 见台账）✓
@@ -4016,6 +4035,8 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                             "overlap",
                             "candidates",
                             "seam",
+                            // **外部第 82 次的正式需求**：按位置的源亮度匹配 ✓（**尚未实现** ✗）
+                            "brightness_match",
                         ]
                     } else {
                         &[
@@ -4034,6 +4055,8 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                             "overlap",
                             "candidates",
                             "seam",
+                            // **外部第 82 次的正式需求**：按位置的源亮度匹配 ✓（**尚未实现** ✗）
+                            "brightness_match",
                         ]
                     };
                     if let Some(object) = value.as_object() {

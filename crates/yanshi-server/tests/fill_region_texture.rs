@@ -1656,3 +1656,65 @@ fn the_shape_does_not_leak_into_the_synthesised_texture() {
         );
     }
 }
+
+#[test]
+fn brightness_matching_is_refused_loudly_until_it_exists() {
+    // **外部第 82 次的正式需求**：按位置的源亮度匹配 ✓（`test2` 的墙左右渐变 ⇒
+    // 单一亮度的源会"亮出人形" ✗）。**尚未实现** ✗ ⇒ 必须**响亮拒绝** ✓，不许静默忽略 ✗。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let hash = workspace
+        .store()
+        .put(&source_bytes())
+        .expect("源位图应能入库")
+        .to_string();
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    let message = expect_error(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 4, "y": 4, "w": 24, "h": 24},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                "width": 8,
+                "height": 8,
+                "mode": "patch",
+                "brightness_match": true
+            }
+        }),
+    );
+    assert!(
+        message.contains("brightness_match") && message.contains("尚未实现"),
+        "必须点名 brightness_match ＋「尚未实现」⇒ {message}"
+    );
+    // **对照组**：`false`（或不传）⇒ 照常成功 ✓
+    let ok = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 4, "y": 34, "w": 24, "h": 24},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                "width": 8,
+                "height": 8,
+                "mode": "patch",
+                "brightness_match": false
+            }
+        }),
+    );
+    assert_eq!(
+        ok.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "false 必须照常可用 ⇒ {ok}"
+    );
+}
