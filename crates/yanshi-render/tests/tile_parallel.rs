@@ -1508,3 +1508,50 @@ fn smudge_scan_skips_raster_patches() {
         "只有非位图对象才做那次整份 JSON 的 Debug 格式化（位图补丁不可能带涂抹笔刷）"
     );
 }
+
+/// **位图补丁的缓存指纹必须"内容变就变、且不付整份 JSON 格式化的代价"**（第 551 轮）。
+///
+/// **判据（结构量）**：同一个补丁 ——
+/// ① 改 `region.x` ⇒ 指纹**必须变**（像素位置变了，缓存不许复用）；
+/// ② 改 `bitmap.blob_hash` ⇒ 指纹**必须变**；
+/// ③ 只在 `metadata` 里加东西 ⇒ 指纹**可以不变**（像素没变）；
+/// ④ 键集合超出已知集合（例如多一个 `opacity`）⇒ **必须退回** Debug 指纹（保守）。
+#[test]
+fn raster_patch_fingerprint_tracks_pixels_only() {
+    let build = |region_x: f64, blob: &str, extra: Option<(&str, serde_json::Value)>| {
+        let mut data = json!({
+            "region": {"x": region_x, "y": 10.0, "w": 8.0, "h": 8.0},
+            "bitmap": {"blob_hash": blob, "width": 8, "height": 8},
+            "width": 8,
+            "height": 8,
+            "layer_id": "layer_0",
+            "object_id": "patch",
+            "refs": [],
+            "type": "raster_patch"
+        });
+        if let Some((key, value)) = extra {
+            data[key] = value;
+        }
+        object("patch", "layer_0", ObjectType::RasterPatch, 0, data)
+    };
+    let base = yanshi_render::render::object_fingerprint(&build(10.0, "aa", None));
+    let moved = yanshi_render::render::object_fingerprint(&build(11.0, "aa", None));
+    let reblobbed = yanshi_render::render::object_fingerprint(&build(10.0, "bb", None));
+    assert!(
+        !base.contains('{'),
+        "简单位图补丁必须走快路（指纹里不该出现 JSON 花括号）：{base}"
+    );
+    assert_ne!(base, moved, "挪了位置 ⇒ 指纹必须变（否则缓存会拿旧图冒充）");
+    assert_ne!(base, reblobbed, "换了位图 ⇒ 指纹必须变");
+    assert_eq!(
+        base,
+        yanshi_render::render::object_fingerprint(&build(10.0, "aa", None)),
+        "同样的内容 ⇒ 指纹必须稳定（否则缓存永不命中）"
+    );
+    let with_opacity = build(10.0, "aa", Some(("opacity", json!(0.5))));
+    assert_ne!(
+        base,
+        yanshi_render::render::object_fingerprint(&with_opacity),
+        "未知键（opacity）⇒ 必须退回 Debug 指纹 ⇒ 与快路不同"
+    );
+}
