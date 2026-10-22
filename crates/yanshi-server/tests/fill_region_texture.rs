@@ -1058,3 +1058,38 @@ fn a_region_texture_can_be_scoped_to_one_layer() {
         "按层取时**不许**出现 L_top 的绿（绿 = 拍成了整幅合成）⇒ 实测 {inked:?}"
     );
 }
+
+#[test]
+fn a_misspelled_shape_key_is_rejected_too() {
+    // **实测过的静默忽略** ✗：`{"type":"rect","x":4,"y":4,"w":8,"h":8,"fether":3}`
+    // 在旧版上**返回 ok:true** ⇒ 用户以为羽化 3px 生效了，实际一个字都没读 ✓。
+    // （与 `bug_report.md` BUG-15 同族：拼错的键**不许**静默忽略 ✓）
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    let message = expect_error(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 4, "y": 4, "w": 8, "h": 8, "fether": 3},
+            "color": [255, 0, 0, 255]
+        }),
+    );
+    assert!(
+        message.contains("fether"),
+        "错误必须**点名**那个未知键 ⇒ {message}"
+    );
+    assert!(
+        message.contains("feather"),
+        "错误必须给出**可用键清单**（含正确的 `feather`）⇒ {message}"
+    );
+    assert!(
+        message.contains("你是想写") && message.contains("feather"),
+        "拼写接近时要给**近似提示**（`fether` ⇒ `feather`）⇒ {message}"
+    );
+}

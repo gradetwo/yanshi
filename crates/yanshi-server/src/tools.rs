@@ -4026,6 +4026,62 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 "rect".to_owned()
             }
         });
+    // **`shape` 里的拼写错误也不许静默忽略** ✓（`bug_report.md` BUG-15 同一族；
+    //   实测 `{"type":"rect","x":4,"y":4,"w":8,"h":8,"fether":3}` **返回 ok:true** ✗
+    //   —— 用户以为羽化 3px 生效了，实际**一个字都没读** ✓）。
+    //   **⇒ 允许键取各形态的并集** ✓（`rect`/`ellipse`/`polygon`/`path` 都在这一个入口 ✓），
+    //     只挡**完全没被读过**的键 ✓ —— 不做"按形态分表"的严格区分 ✗（那会误伤合法写法 ✓）。
+    {
+        const SHAPE_KEYS: &[&str] = &[
+            "type",
+            "kind",
+            "bbox",
+            "x",
+            "y",
+            "w",
+            "h",
+            "width",
+            "height",
+            "cx",
+            "cy",
+            "rx",
+            "ry",
+            "points",
+            "subpaths",
+            "d",
+            "fill_rule",
+            "feather",
+            "radius",
+            "round",
+            "rotation",
+            "opacity",
+            "radius_x",
+            "radius_y",
+        ];
+        if let Some(object) = shape.as_object() {
+            for key in object.keys() {
+                if !SHAPE_KEYS.contains(&key.as_str()) {
+                    let hint = match key.as_str() {
+                        "fether" | "freather" | "feathre" => " ⇒ 你是想写 `feather` 吗？",
+                        "widht" | "with" | "widh" => " ⇒ 你是想写 `width` 吗？",
+                        "heigth" | "hight" => " ⇒ 你是想写 `height` 吗？",
+                        "fillrule" | "fillRule" => " ⇒ 你是想写 `fill_rule` 吗？",
+                        "subpath" | "subPath" => " ⇒ 你是想写 `subpaths` 吗？",
+                        _ => "",
+                    };
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "shape 里有未知键 `{key}`{hint}（形态 {}）⇒ 可用键：{} ⇒ \
+                             这个键**不会被静默忽略** ✓（静默忽略会让参数「看起来设了却没生效」✗）",
+                            kind,
+                            SHAPE_KEYS.join(" / ")
+                        )),
+                    ));
+                }
+            }
+        }
+    }
     let number =
         |key: &str, default: f64| shape.get(key).and_then(Value::as_f64).unwrap_or(default);
     // **羽化半径**（像素 ✓，缺省 0 ✓ ⇒ **不传 ⇒ 行为逐字节不变** ✓）：
