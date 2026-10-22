@@ -15791,3 +15791,21 @@ preview_calls=2                                        ← 但计数仍是 2 ✗
    ⇒ 真正的优化方向是**把 N 个 job 合并成一次渲染**（一次扫全 buffer）✓，不是"跳过" ✓。
 **⇒ 下一轮**：看 `run_pending_jobs`/job 队列如何逐条执行 ✓，评估"同一批 job 合并成一次区域渲染"的可行性 ✓；
 判据仍是 `preview_calls`（或新增 `render_jobs`）从 **N → 1** ✓。
+
+### 四百（续）：**下一个可测的怀疑** —— `render_region` 是否真的只渲染该区域 ✓
+
+**⇒ 代码**（`document.rs:1497` `render_region_complete_jobs`）：
+```rust
+let rendered = self.renderer.render_region(&self.state, &*self.store, region)?;   // 渲染 dirty 区域
+...
+self.complete_render_jobs()?;                                                     // 完成所有 job
+```
+⇒ 每次子调用渲染**自己的 dirty 区域**（很小，16×16 ✓）＋ 完成全部 job ✓
+⇒ **可实测成本却是 11.5 ms（512²）／20–30 ms（4608×8192）** ✗ ⇒ **与 dirty 区域大小无关、与画布面积相关** ✓
+⇒ **强怀疑**：`renderer.render_region` **内部其实渲染了整幅/整层** ✗（`region` 只是"取这块" ✗）。
+
+**⇒ 下一轮第一件事（一次测量就能定案）**：同一文档（512²）上分别渲染
+`bbox = 16×16` 与 `bbox = 512×512`，各取 `timings.render_ms`（或 `preview_ms`）✓：
+- **两者相近** ⇒ `render_region` **不按区域裁剪** ✓ ⇒ **这才是慢的根因** ✓ ⇒ 优化点在渲染器（要改 `renderer`，跨 crate）；
+- **差距明显** ⇒ 区域裁剪有效 ✓ ⇒ 慢在**每次调用都全量完成 job** ✓ ⇒ 优化在 `complete_render_jobs` ✓。
+**⇒ 判据（若改渲染器）**：`render_region(16×16)` 的中位耗时 ≤ `render_region(512×512)` 的 **1/3** ✓（配变异：忽略 region ⇒ 两者相近 ⇒ 红 ✓）。
