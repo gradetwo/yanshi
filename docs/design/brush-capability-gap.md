@@ -15419,3 +15419,20 @@ min_error ＋「尚未实现」＋「当前只有 linear」✓；**对照组** `
 **⇒ 下一步**：给判据一个**亮度跨度大的源**（例如先用 `fill_region` 在文档里铺"暗→亮"的窄条，
 再用 `texture.type:"region"` 把它当源 ✓），然后量「开/关」的平均亮度差 ✓。
 **⇒ 在此之前不写这条判据** ✗ —— 写了也是恒绿 ✗（本仓的"判据必须能红"❌）。
+
+## 三百九十一、**真 bug**：`texture.type:"region"` 会**静默丢掉合成的全部旋钮** ✗（第 423 轮抓到）
+
+**⇒ 现象（我自己踩的）**：用 `texture.type:"region"` 当源 ＋ `mode:"patch"` ⇒ 两个开关跑出**完全相同的数**（`关=91.7｜开=91.7`）✗
+⇒ 一度怀疑"亮度项没生效"✗ ⇒ 但探针证明**参考场 512/512 读到了墙** ✓。
+**⇒ 根因（源码）**：region → bitmap 的转换只带
+```rust
+for key in ["min_distance", "min_distance_from_target", "jitter"] { … }
+```
+⇒ `mode`／`patch`／`overlap`／`candidates`／`seam`／`brightness_match` **全部被丢掉** ✗
+⇒ 于是 region 源**永远走平铺** ✓ —— 用户以为在用合成 ✗（**正是外部从 `D18` 起最恨的那类** ✗）。
+**⇒ 修法**：键表补全那六个 ✓（转换后仍原样带过去 ✓）。
+**⇒ 判据**（`fill_region_texture` 新增）：region 源 ＋ 六个旋钮 ⇒ 回显必须逐个对上 ✓
+（`mode=patch`／`seam=min_error`／`brightness_match=true` ✓）。
+**变异**：把键表缩回三项 ⇒ **红** ✓（实测回显变成 `mode=tile`／`brightness_match=false` ✓）。
+**⇒ 教训**：**"从 A 形态转成 B 形态"的那段代码是旋钮丢失的高发区** ✗ ——
+每转一次都要问「**B 形态还认得 A 形态的所有旋钮吗**」✓。

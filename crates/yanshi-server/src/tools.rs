@@ -4408,7 +4408,21 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             });
             // **旋钮原样带过去** ✓（`min_distance` 两种拼写 ＋ `jitter` ✓）——
             // 否则"从 region 取纹理"会**静默丢掉护栏** ✗（正是本仓最恨的那类 ✗）。
-            for key in ["min_distance", "min_distance_from_target", "jitter"] {
+            // **合成的旋钮也必须原样带过去** ✓（第 423 轮抓到的真 bug ✗）：
+            //   原来只带 `min_distance`/`jitter` ⇒ 用 `texture.type:"region"` 当源时，
+            //   `mode:"patch"`／`patch`／`overlap`／`candidates`／`seam`／`brightness_match`
+            //   **全部被静默丢掉** ✗ ⇒ 用户以为在用合成 ✓，实际拿到的是平铺 ✗。
+            for key in [
+                "min_distance",
+                "min_distance_from_target",
+                "jitter",
+                "mode",
+                "patch",
+                "overlap",
+                "candidates",
+                "seam",
+                "brightness_match",
+            ] {
                 if let Some(value) = spec.get(key) {
                     converted[key] = value.clone();
                 }

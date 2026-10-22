@@ -1712,3 +1712,74 @@ fn brightness_matching_is_accepted_and_echoed() {
         "`brightness_match:false` 必须回显 `false`（否则这个字段没有鉴别力）"
     );
 }
+
+#[test]
+fn a_region_source_keeps_the_synthesis_knobs() {
+    // **第 423 轮抓到的真 bug** ✗：`texture.type:"region"` 的转换只带
+    // `min_distance`/`jitter` ⇒ `mode:"patch"` 等**被静默丢掉** ✗
+    // ⇒ 用户以为在用合成 ✓，实际拿到的是平铺 ✗（**这正是外部从 `D18` 起最恨的那类** ✗）。
+    // 判据断**回显**：region 源 ＋ `mode:"patch"` ⇒ 回显必须是 `patch` ✓（丢掉就是 `tile` ⇒ 红）。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    // 先铺一条源带（暗→亮）供 region 取
+    for (index, level) in [20u64, 90, 180].into_iter().enumerate() {
+        let band = registry().call(
+            &mut ctx,
+            "fill_region",
+            &json!({
+                "layer_id": layer,
+                "shape": {"type": "rect", "x": index as i32 * 10, "y": 0, "w": 10, "h": 10},
+                "color": [level, level, level, 255]
+            }),
+        );
+        assert_eq!(
+            band.get("ok").and_then(Value::as_bool),
+            Some(true),
+            "源带应当铺成：{band}"
+        );
+    }
+    let filled = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 4, "y": 30, "w": 24, "h": 16},
+            "texture": {
+                "type": "region",
+                "source": {"x": 0, "y": 0, "w": 30, "h": 10},
+                "mode": "patch",
+                "patch": 8,
+                "overlap": 2,
+                "candidates": 16,
+                "seam": "min_error",
+                "brightness_match": true
+            }
+        }),
+    );
+    assert_eq!(
+        filled.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "region 填充应当成功：{filled}"
+    );
+    let texture = filled.get("texture").cloned().unwrap_or(Value::Null);
+    assert_eq!(
+        texture.get("mode").and_then(Value::as_str),
+        Some("patch"),
+        "region 源必须保住 `mode:patch`（丢掉就是静默退回平铺）⇒ {texture}"
+    );
+    assert_eq!(
+        texture.get("seam").and_then(Value::as_str),
+        Some("min_error"),
+        "region 源必须保住 `seam` ⇒ {texture}"
+    );
+    assert_eq!(
+        texture.get("brightness_match").and_then(Value::as_bool),
+        Some(true),
+        "region 源必须保住 `brightness_match` ⇒ {texture}"
+    );
+}
