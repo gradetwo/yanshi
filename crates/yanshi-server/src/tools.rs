@@ -3891,24 +3891,15 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         Some(Value::String(text)) if text == "smooth" => None,
         Some(value @ Value::Object(_)) => {
             match value.get("type").and_then(Value::as_str) {
-                Some("bitmap") => {}
-                Some("region") => {
-                    return Err(YanshiError::new(
-                        ErrorCode::InvalidArgument,
-                        ErrorContext::detail(
-                            "texture.type=region（从图层的某形状取纹理）**尚未实现** ⇒ 第一版只支持 \
-                             {\"type\":\"bitmap\",\"blob_hash\":…,\"source\":{x,y,w,h},\"width\":…,\"height\":…,\
-                             \"min_distance\":25}：先把那块源区域导出成位图（`export_png` 或 bitmap 掩膜）\
-                             再传它的 `blob_hash` ✓"
-                                .to_string(),
-                        ),
-                    ));
-                }
+                // **`region` 放行** ✓（第 2680 轮）：下面会把它**就地拍成位图** ✓
+                //   ⇒ 这里只做"类型是已知的"这一层，不再拒绝 ✓ —— 原来那句「尚未实现」
+                //     是他们第 71~78 次一直撞的墙 ✗，现在**拆了** ✓。
+                Some("bitmap") | Some("region") => {}
                 other => {
                     return Err(YanshiError::new(
                         ErrorCode::InvalidArgument,
                         ErrorContext::detail(format!(
-                            "texture.type 只能是 bitmap（region 未实现），得到 {other:?}"
+                            "texture.type 只能是 bitmap 或 region，得到 {other:?}"
                         )),
                     ));
                 }
@@ -4127,6 +4118,58 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // ⇒ 所以这里做三件事：① 哈希能解析 ② blob 在存储里 ③ 字节**真能解码**且尺寸对得上
     //   （PNG 还可以**自动认出** ✓：字节头是 PNG 签名而没写 mime 时 ⇒ 记成 `image/png` ✓，
     //    并把生效的 mime **写进文档** ✓ —— 不做"悄悄按 PNG 解但文档里写着 raw" ✗）。
+    // **`texture.type:"region"` ⇒ 就地"拍照"成位图** ✓（第 2680 轮；外部第 71~78 次一直撞的那条
+    //   「region 未实现」✗ —— 错误文本还会给三条替代路，现在**不用绕了** ✓）。
+    //   **⇒ 语义**：把**文档当前合成**在 `source` 那块矩形的像素**读出来存成 blob** ✓，
+    //     然后**完全走 bitmap 那条路** ✓（逐像素取源、平铺、`jitter`、`min_distance` 全都继承 ✓）。
+    //   **⇒ 为什么这样够**：他们真正要的是"从**已经有颜色的地方**取纹理"✓ ——
+    //     自己先画好那块（或它本来就有墨 ✓）再指向它 ✓ ⇒ 不需要另一套采样器 ✓。
+    //   **⇒ 确定性**：拍下来的字节**存进文档引用的 blob** ✓ ⇒ 之后重放不依赖"当时的画布" ✓。
+    let mut texture_from_region = false;
+    if let Some(spec) = texture.clone() {
+        if spec.get("type").and_then(Value::as_str) == Some("region") {
+            let source = spec
+                .get("source")
+                .and_then(yanshi_core::Bbox::from_value)
+                .ok_or_else(|| {
+                    YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(
+                            "texture.type=region 需要 source（{x,y,w,h}：从文档哪块取纹理）"
+                                .to_string(),
+                        ),
+                    )
+                })?;
+            if source.w <= 0.0 || source.h <= 0.0 {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(
+                        "texture.source 面积为 0（宽高都要 > 0）⇒ region 取不到任何像素"
+                            .to_string(),
+                    ),
+                ));
+            }
+            let (_, _, raw) = ctx.workspace.render_region_raw(&ctx.doc_id, source)?;
+            let hash = ctx.workspace.store().put(&raw)?;
+            let mut converted = json!({
+                "type": "bitmap",
+                "blob_hash": hash.as_str(),
+                "source": {"x": source.x, "y": source.y, "w": source.w, "h": source.h},
+                "width": source.w as u64,
+                "height": source.h as u64,
+                "mime_type": "image/x-yanshi-raw",
+            });
+            // **旋钮原样带过去** ✓（`min_distance` 两种拼写 ＋ `jitter` ✓）——
+            // 否则"从 region 取纹理"会**静默丢掉护栏** ✗（正是本仓最恨的那类 ✗）。
+            for key in ["min_distance", "min_distance_from_target", "jitter"] {
+                if let Some(value) = spec.get(key) {
+                    converted[key] = value.clone();
+                }
+            }
+            texture = Some(converted);
+            texture_from_region = true;
+        }
+    }
     let mut texture_mime: Option<String> = None;
     let mut texture_jitter: f64 = 0.0;
     if let Some(spec) = texture.as_mut() {
@@ -4239,6 +4282,8 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             // **回声 jitter** ✓：传了 0 与"没传"在文档里都记成 0 ✓，调用方要看得见生效值 ✓。
             "jitter": texture_jitter,
             "tiles": texture_tiles,
+            // 从 `region` 拍下来的 ⇒ 说出来 ✓（不说的话调用方分不清"我给的 bitmap"与"它替我拍的" ✗）
+            "from_region": texture_from_region,
         }),
         _ => Value::Null,
     };

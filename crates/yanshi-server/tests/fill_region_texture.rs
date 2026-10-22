@@ -196,22 +196,19 @@ fn textured_fill_says_why_when_the_source_is_unimplemented_or_too_close() {
     let mut ctx = context(&mut workspace);
     let layer = first_layer(&mut ctx);
 
-    // ② region 未实现 ⇒ 报错**点名** region（静默当"没有纹理"是本仓头号病症）。
+    // ② **`region` 现在可实现**（第 2680 轮）⇒ 这里的负例换成"**缺 `source`**"：
+    //    静默当"没有纹理"仍是本仓头号病症 ✗ ⇒ 缺什么就要点名什么 ✓。
+    //    （`region` 的正例见本文件最后一条 `a_region_texture_snapshots_...` ✓）
     let region = json!({
         "layer_id": layer,
         "shape": {"type": "rect", "x": 32, "y": 32, "w": 32, "h": 32},
         "color": [0, 0, 0, 255],
-        "texture": {
-            "type": "region",
-            "source": {"x": 0, "y": 0, "w": 8, "h": 8},
-            "width": 8,
-            "height": 8
-        }
+        "texture": {"type": "region"}
     });
     let message = expect_error(&mut ctx, "fill_region", &region);
     assert!(
-        message.contains("region"),
-        "错误必须点名 region（缺什么就说缺什么）：{message}"
+        message.contains("region") && message.contains("source"),
+        "缺 `source` 时必须同时点名 region 与 source（缺什么就说缺什么）：{message}"
     );
 
     // ③ 源离目标太近且 min_distance 要求更远 ⇒ 报错**点名** min_distance。
@@ -744,5 +741,103 @@ fn a_small_source_block_warns_about_repeating_its_features() {
     assert!(
         small.get("warnings").is_none(),
         "源块比目标还大时**不该**提醒平铺（提醒必须有鉴别力）⇒ {small}"
+    );
+}
+
+#[test]
+fn a_region_texture_snapshots_the_document_instead_of_being_unsupported() {
+    // **外部第 71~78 次一直撞的那条**「`texture.type:"region"` 未实现」✗：
+    // 他们真正要的是"**从已经有颜色的地方取纹理**"✓ ⇒ 现在把它**就地拍成位图** ✓
+    // （逐像素取源、平铺、`jitter`、`min_distance` 全部继承 ✓，而且**字节进了文档引用的 blob** ⇒ 重放确定 ✓）。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    // 先铺一块**左红右蓝**的"画布内容"（8×8 的两半，落在 (100,4) 附近）。
+    let left = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 52, "y": 4, "w": 4, "h": 8},
+            "color": [255, 0, 0, 255]
+        }),
+    );
+    assert_eq!(
+        left.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "前置：红半没画上：{left}"
+    );
+    let right = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 56, "y": 4, "w": 4, "h": 8},
+            "color": [0, 0, 255, 255]
+        }),
+    );
+    assert_eq!(
+        right.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "前置：蓝半没画上：{right}"
+    );
+
+    // 再从那块区域取纹理，填到 (32,32,32,32)。
+    let filled = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 8, "y": 20, "w": 32, "h": 32},
+            "texture": {"type": "region", "source": {"x": 52, "y": 4, "w": 8, "h": 8}}
+        }),
+    );
+    assert_eq!(
+        filled.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "`texture.type=region` 必须已经可用（不许再回「尚未实现」）：{filled}"
+    );
+    assert_eq!(
+        filled
+            .get("texture")
+            .and_then(|texture| texture.get("from_region"))
+            .and_then(Value::as_bool),
+        Some(true),
+        "响应必须说明「这次是就地拍下来的」：{filled}"
+    );
+    // **逐像素取源**：目标左半红、右半蓝（平均会变紫 ⇒ 这条红）。
+    let samples = registry().call(
+        &mut ctx,
+        "sample_colors",
+        &json!({"points": [[10, 36], [36, 36]]}),
+    );
+    let samples = samples
+        .get("samples")
+        .and_then(Value::as_array)
+        .expect("sample_colors 形状变了");
+    let rgba = |index: usize| -> [u64; 3] {
+        let values = samples[index]
+            .get("rgba")
+            .and_then(Value::as_array)
+            .expect("缺 rgba");
+        [
+            values.first().and_then(Value::as_u64).unwrap_or(0),
+            values.get(1).and_then(Value::as_u64).unwrap_or(0),
+            values.get(2).and_then(Value::as_u64).unwrap_or(0),
+        ]
+    };
+    let inside_left = rgba(0);
+    let inside_right = rgba(1);
+    assert!(
+        inside_left[0] > 200 && inside_left[1] < 60 && inside_left[2] < 60,
+        "目标左半必须取到源的红 ⇒ 实测 {inside_left:?}"
+    );
+    assert!(
+        inside_right[2] > 200 && inside_right[0] < 60,
+        "目标右半必须取到源的蓝 ⇒ 实测 {inside_right:?}"
     );
 }
