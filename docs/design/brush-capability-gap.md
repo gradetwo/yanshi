@@ -15642,3 +15642,14 @@ import_image timings = {preview_calls:1, preview_ms:2.917, total_ms:3.725, rende
 或新加 `defer_preview` ✓；**判据（结构量，与画布无关）**：
 同一个响应里 `timings.preview_calls == 0` ✓（默认应为 1 ✓ —— 成对 ✓）；**变异**：忽略该参数 ⇒ 仍为 1 ⇒ 红 ✓。
 **⇒ 这是外部 `4608×8192` 回放变快的**唯一**实质手段 ✓（预览耗时随面积增长 ✓，512² 已 19 ms/原子 ✓）。
+
+### 三百九十三（续六）：**入口精确定位**（下一轮直接改这里）
+
+**⇒ 框架参数的落点**：`crates/yanshi-server/src/tools.rs:723 pub fn call(&self, ctx: &mut ToolContext<'_>, name: &str, args: &Value) -> Value` ✓
+—— 它已经是**别名映射 ＋ 权限检查**的落点 ✓（注释里写明「Phase 5 权限的落点就是这里」✓）
+⇒ **`silent` 也该放这里** ✓：进入时 `if args["silent"] == true { ctx.silent = true }` ✓、
+**返回前恢复**（函数有多个 return 点 ⇒ 用一个局部 guard 或把体包一层 ✓，**别漏恢复** ✗）。
+**⇒ 判据（不变）**：`timings.preview_calls == 0`（`silent:true`）✓ vs 默认 `1` ✓（成对）；
+**变异**：不读 `silent` ⇒ 仍 1 ⇒ 红 ✓。
+**⇒ 本轮到此为止**：只定位、不改 ✗ —— 这个函数里有权限检查与多个返回点 ✓，
+在**上下文不足**时动手的风险（漏恢复 `ctx.silent` ⇒ 后续调用全静默 ✗）比收益大 ✗。
