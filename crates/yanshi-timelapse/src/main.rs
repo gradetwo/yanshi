@@ -52,6 +52,8 @@ const KERNEL_MEMORY_LIMIT: usize = 2 * 1024 * 1024 * 1024;
 const TILE_SIZE: u32 = 64;
 
 fn main() -> Result<()> {
+    // **读包计时起点** ✓（第 612 轮）：外部要"阶段计时"，而"读包"是**最容易被误判成渲染**的一段 ✓
+    let t_read = std::time::Instant::now();
     let args: Vec<String> = std::env::args().collect();
     if !(2..=6).contains(&args.len()) {
         eprintln!(
@@ -142,6 +144,7 @@ fn main() -> Result<()> {
         .and_then(Value::as_str)
         .unwrap_or("timelapse")
         .to_owned();
+    let read_ms = t_read.elapsed().as_millis();
     let scale = f64::min(
         1.0,
         f64::min(
@@ -156,6 +159,13 @@ fn main() -> Result<()> {
         blobs.len(),
         encoding,
         skipped_entries
+    );
+    // **读包/解码的开销也报出来** ✓（第 612 轮；外部第 91 次要"阶段计时"）
+    //   ⇒ 他们的包 0.3 GB / 400 blob ⇒ **如果时间花在读包上**，那么"渲染慢"这个结论就是错的 ✓
+    //   ⇒ 打印到 **stderr** ✓（与进度行同一路 ✓，被 timeout 杀掉时也能看到 ✓）。
+    eprintln!(
+        "读包 {read_ms} ms｜blob {} 个（编码 {encoding}）｜忽略条目 {skipped_entries}",
+        blobs.len()
     );
 
     let layout = Layout {

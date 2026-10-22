@@ -177,6 +177,12 @@ if (!String(run).includes("进度 ")) {
   process.exit(1);
 }
 
+
+// **读包耗时也要报** ✓（第 612 轮；外部第 91 次要"阶段计时"）
+if (!String(run).includes("读包 ")) {
+  console.error(`✗ stderr 里没有读包耗时 ⇒ 无法区分"读包慢"与"渲染慢"\n${String(run).slice(-400)}`);
+  process.exit(1);
+}
 console.log(
   `✓ timelapse 出片：${total} 帧，其中 ${painted}/${decoded} 帧有内容，且颜色对（绿占优像素 ${green} 个，` +
     `红占优 ${reddish}／蓝占优 ${blues}）（最小工程包 128×96、7 条原子）`,
