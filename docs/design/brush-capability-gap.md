@@ -15195,3 +15195,16 @@ raw RGBA 取 alpha ✓／raw L8 ✓），并**返回解不开的名单** ✓；
 ① `layer_id:"L_ref"` ⇒ 目标里必须看到**红**、且**不许出现绿** ✓（绿 = 拍成了合成 ✓）；
 ② 响应回显 `layer_id:"L_ref"` ✓。
 **变异**：忽略 `layer_id`（永远拍合成）⇒ ① **红**（出现绿 ✓）。
+
+## 三百八十五、BUG-12 的一半：`preview_size` 超过 256 时**不再静默夹** ✓
+
+**⇒ 他们报的**：`get_document` 的缩略图只有 **64/128/256** 三档 ⇒ 细节目检只能走 `render_region`／`export_png` ✓。
+**⇒ 能力缺口**（任意分辨率）**另算** ✓（记在台账里，未做 ✗）；**本轮修的是"静默夹"** ✗：
+传 `preview_size: 1024` 会**悄悄**给你 256 ✓，调用方以为拿到了 1024 ✓ ⇒ 这是**静默降级** ✓。
+**⇒ 修法**：真要过图时，响应里并排给出
+`preview_size_requested` / `preview_size_effective` ✓，并在 `requested > effective` 时打
+`preview_size_capped: true` ＋ 一条**点名三档与替代工具**的 warning ✓。
+**⇒ 判据**（`tests/preview_size_cap.rs`）：① 要 1024 ⇒ `capped:true`、`requested:1024`、`effective:256`、
+warning 含「64/128/256」与「render_region」✓；② 要 128 ⇒ **不许**出现 `capped` ✓（说了才叫说 ✓）。
+**变异**：把比较短路 ⇒ ① **红** ✓。
+**⇒ 措辞纪律**：能力没做的部分**不许**用"我告诉你了"冒充"我做了" ✓ —— 台账里仍写着「任意分辨率：未做」✓。

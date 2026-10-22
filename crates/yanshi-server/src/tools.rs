@@ -2247,6 +2247,15 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     //     **没写 ⇒ **首次读只报 `pending`**✗（**不阻塞 ✓ ⇒ **之后的读**才材料化** ✓）★
     //   ＋ **∴ 依据 ✗**：`tool-cold-open-budget.mjs` 的两段契约（**见下面 Pending 分支的注释 ✓）★
     let explicitly_asked_for_image = args.get("preview_size").is_some();
+    // **请求的档位 vs 生效的档位** ✓（外部 `bug_report.md` BUG-12）
+    //   **⇒ 现状的毛病不是"上限低"** ✗（那是能力缺口 ✓ 记在台账里 ✓），
+    //     而是**静默夹** ✗：传 `preview_size: 1024` 会**悄悄**给你 256 ✓，调用方毫不知情 ✗。
+    //   ⇒ **先把这件事说出来** ✓（`preview_size_requested` / `preview_size_effective` ＋ 一条 warning ✓）。
+    //   **能力的补齐（任意分辨率）另算** ✓ —— 不许拿"说了"冒充"做了" ✗。
+    let requested_preview = args
+        .get("preview_size")
+        .and_then(Value::as_f64)
+        .filter(|value| *value > 0.0);
     let size = args
         .get("preview_size")
         .map(DocThumbSize::parse)
@@ -2418,6 +2427,30 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         let cache = document.cache_stats();
         summary["cache_evictions"] = json!(cache.evictions);
         summary["cache_used_bytes"] = json!(cache.used_bytes);
+    }
+    // **"你要的"与"实际给的"并排** ✓（只有真要过图才标 ✓）
+    if let Some(requested) = requested_preview {
+        let effective = summary
+            .get("thumb_size")
+            .and_then(Value::as_u64)
+            .map(|value| value as f64)
+            .unwrap_or(0.0);
+        if effective > 0.0 {
+            summary["preview_size_requested"] = json!(requested);
+            summary["preview_size_effective"] = json!(effective);
+            if requested > effective {
+                summary["preview_size_capped"] = json!(true);
+                let text = format!(
+                    "preview_size 要了 {requested}px，而缩略图目前只有 64/128/256 三档 ⇒ 本次**实际给的是 {effective}px** \
+                     （**这不是静默夹**：这两个字段就是让你看见 ✓）。要更高分辨率的局部预览请用 `render_region`（可 `max_px`）✓，\
+                     整幅导出请用 `export_png` ✓"
+                );
+                match summary.get_mut("warnings").and_then(Value::as_array_mut) {
+                    Some(list) => list.push(json!(text)),
+                    None => summary["warnings"] = json!([text]),
+                }
+            }
+        }
     }
     Ok(summary)
 }
