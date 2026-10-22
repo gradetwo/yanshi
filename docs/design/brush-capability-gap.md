@@ -16684,3 +16684,25 @@ git push git@github.com:gradetwo/yanshi.git main      # ⇒ 4480d815..90687b4c �
 git ls-remote git@github.com:gradetwo/yanshi.git refs/heads/main
 ```
 **⇒ 下次 HTTPS 推不动时**：**先试 SSH** ✓ —— 不要连试三次 HTTPS（每次 ~135 s，白等 7 分钟 ✗）。
+
+## 四百二十二、造「带真实 blob 的包」需要什么（第 616 轮读码结论，供给下一轮直接用）
+
+**⇒ 包内 blob 的存放约定**（`crates/yanshi-timelapse/src/main.rs:108-125` 实测）：
+| 项 | 约定 |
+|---|---|
+| 路径 | `blobs/sha256/<hex>` ✓（`<hex>` 就是**内容哈希**）|
+| 编码 | 由 `blobs.encoding` 决定 ✓：`zlib` ⇒ `yanshi_render::zlib_decompress` ✓；其它 ⇒ 原样 ✓ |
+| 校验 | 读完立刻 `timeline.blob_put(data)` ⇒ **返回的哈希必须等于文件名** ✓，否则打 `⚠️` ✓ |
+
+**⇒ `import_image` 原子的净荷**（`crates/yanshi-server/src/tools_bitmap.rs:215-330`）：
+- `bitmap.{blob_hash, mime_type}` ✓；`raw_options` 只对 RAW 源有效 ✓；
+- >64px 的位图会被**切成 256² 块**（`payload.tiles = index_hash` ✓）⇒ **块本身也是 blob** ✓
+- 净荷里还会有 `source`（画笔来源）等可选字段 ✓。
+
+**⇒ 所以"最小真实 blob 包"的造法**（下一轮直接照做）：
+1. 取一张 **32×32 RGBA** 位图 ✓（小到**不触发切块** ✓，先只验"一次贴图"）；
+2. `zlib` 压缩 ⇒ 算 `sha256` ⇒ 写 `blobs/sha256/<hex>` ✓；
+3. `create_document`（**512×512** 与 **4608×8192** 各一份 ✓）＋ `create_layer` ＋
+   `import_image{object_id, layer_id, type:"shape"?…, bitmap:{blob_hash, mime_type:"image/x-yanshi-raw"}}` ✓；
+4. 跑 `yanshi-timelapse <pkg> out.mp4 1` ⇒ 看 **`atom N（import_image）apply X ms`** ✓
+   ⇒ **同一张图在两种画布上的 X 之差** 就是"画布越大越慢"的直接证据 ✓（外部第 92 次猜的就是这个 ✓）。
