@@ -1095,10 +1095,11 @@ fn a_misspelled_shape_key_is_rejected_too() {
 }
 
 #[test]
-fn texture_mode_patch_is_refused_loudly_until_it_exists() {
-    // **外部第 81 次的正式需求**：纹理合成（patch/overlap/candidates/seam ✓）。
-    // 本仓**还没实现** ✗ ⇒ 必须**响亮拒绝** ✓，**绝不静默退回平铺** ✗
-    // （否则调用方会以为自己在用合成，实际拿到的是"墙纸" ✗ —— 他们从 `D18` 起反复抱怨的那类）。
+fn texture_mode_patch_synthesises_instead_of_tiling() {
+    // **外部第 81 次的正式需求**：平铺夹在「源块大 ⇒ 周期」与「源块小 ⇒ 块边界密集」之间 ✗
+    // ⇒ `mode:"patch"` 做**合成**（选块＋重叠过渡 ✓）。判据用**他们提的自相关思路**的构造版 ✓：
+    // ① `tile` ⇒ 相距 8px（源块宽）的采样对**全部相同** ✓（= 周期峰 ✓，对照组 ✓）；
+    // ② `patch` ⇒ **至少一对不同** ✓（没有周期峰 ✓），且目标**必须有墨**（不是空白 ✓）。
     let mut workspace = Workspace::in_memory(DocumentSettings::default());
     let hash = workspace
         .store()
@@ -1111,123 +1112,52 @@ fn texture_mode_patch_is_refused_loudly_until_it_exists() {
     }
     let mut ctx = context(&mut workspace);
     let layer = first_layer(&mut ctx);
-    let message = expect_error(
-        &mut ctx,
-        "fill_region",
-        &json!({
-            "layer_id": layer,
-            "shape": {"type": "rect", "x": 4, "y": 4, "w": 16, "h": 16},
-            "texture": {
-                "type": "bitmap",
-                "blob_hash": hash,
-                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
-                "width": 8,
-                "height": 8,
-                "mode": "patch",
-                "patch": 24,
-                "overlap": 6,
-                "candidates": 200,
-                "seam": "min_error"
-            }
-        }),
-    );
-    assert!(
-        message.contains("patch") && message.contains("尚未实现"),
-        "`mode=patch` 必须**响亮**说未实现（不许静默按 tile 处理）⇒ {message}"
-    );
-    assert!(
-        message.contains("不会静默") || message.contains("jitter"),
-        "文案要说明「当前只有 tile（平铺＋jitter）」并保证「不会静默降级」⇒ {message}"
-    );
+    let mut run = |mode: &str, y: i32| -> Vec<[u64; 4]> {
+        let filled = registry().call(
+            &mut ctx,
+            "fill_region",
+            &json!({
+                "layer_id": layer,
+                "shape": {"type": "rect", "x": 4, "y": y, "w": 32, "h": 24},
+                "texture": {
+                    "type": "bitmap",
+                    "blob_hash": hash,
+                    "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                    "width": 8,
+                    "height": 8,
+                    "mode": mode,
+                    "patch": 6,
+                    "overlap": 2,
+                    "candidates": 24
+                }
+            }),
+        );
+        assert_eq!(
+            filled.get("ok").and_then(Value::as_bool),
+            Some(true),
+            "mode={mode} 应当成功：{filled}"
+        );
+        row_alpha_and_colour(&mut ctx, 6, y + 12, 24)
+    };
+    let tiled = run("tile", 4);
+    let patched = run("patch", 30);
 
-    // **对照组**：`mode:"tile"` 是现在的能力 ⇒ 必须照常成功 ✓（否则上面那条就没有鉴别力）。
-    let tiled = registry().call(
-        &mut ctx,
-        "fill_region",
-        &json!({
-            "layer_id": layer,
-            "shape": {"type": "rect", "x": 4, "y": 40, "w": 16, "h": 16},
-            "texture": {
-                "type": "bitmap",
-                "blob_hash": hash,
-                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
-                "width": 8,
-                "height": 8,
-                "mode": "tile"
-            }
-        }),
-    );
+    let (same_tile, total_tile) = repeated_pairs(&tiled, 8);
     assert_eq!(
-        tiled.get("ok").and_then(Value::as_bool),
-        Some(true),
-        "`mode:tile` 必须照常可用（现状能力不许被这条门挡到）⇒ {tiled}"
+        same_tile, total_tile,
+        "`tile` 必须**原样平铺**（相距 8px 的对全同 = 周期峰）⇒ 实测 {same_tile}/{total_tile}"
     );
-}
-
-#[test]
-fn patch_parameters_are_validated_before_the_renderer_sees_them() {
-    // **外部第 81 次给的那组参数**（`patch:24` / `overlap:6` / `candidates:200`）在**工具层**校验 ✓：
-    // 渲染层也会校验 ✗，但那里失败会变成 `unsupported` 警告 ＋ **一个像素都不画** ⇒ 静默降级 ✗
-    // ⇒ 所以必须在**这里**响亮拒绝 ✓。
-    let mut workspace = Workspace::in_memory(DocumentSettings::default());
-    let hash = workspace
-        .store()
-        .put(&source_bytes())
-        .expect("源位图应能入库")
-        .to_string();
-    {
-        let mut ctx = context(&mut workspace);
-        new_document(&mut ctx);
-    }
-    let mut ctx = context(&mut workspace);
-    let layer = first_layer(&mut ctx);
-    // `overlap >= patch` ⇒ 块无法推进 ✓ ⇒ 必须报错并**同时**点名两个数 ✓
-    let message = expect_error(
-        &mut ctx,
-        "fill_region",
-        &json!({
-            "layer_id": layer,
-            "shape": {"type": "rect", "x": 4, "y": 4, "w": 16, "h": 16},
-            "texture": {
-                "type": "bitmap",
-                "blob_hash": hash,
-                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
-                "width": 8,
-                "height": 8,
-                "mode": "tile",
-                "patch": 8,
-                "overlap": 8
-            }
-        }),
-    );
+    let (same_patch, total_patch) = repeated_pairs(&patched, 8);
     assert!(
-        message.contains("overlap") && message.contains("patch") && message.contains('8'),
-        "错误必须同时点名 overlap 与 patch 并给出数值 ⇒ {message}"
+        same_patch < total_patch,
+        "`patch` 必须**打散周期**（至少一对不同）⇒ 实测 {same_patch}/{total_patch}"
     );
-
-    // **对照组**：合法的参数组合（外部给的那组）⇒ `mode:"tile"` 下必须照常成功 ✓。
-    let ok = registry().call(
-        &mut ctx,
-        "fill_region",
-        &json!({
-            "layer_id": layer,
-            "shape": {"type": "rect", "x": 4, "y": 40, "w": 16, "h": 16},
-            "texture": {
-                "type": "bitmap",
-                "blob_hash": hash,
-                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
-                "width": 8,
-                "height": 8,
-                "mode": "tile",
-                "patch": 24,
-                "overlap": 6,
-                "candidates": 200
-            }
-        }),
-    );
-    assert_eq!(
-        ok.get("ok").and_then(Value::as_bool),
-        Some(true),
-        "合法参数（patch:24/overlap:6/candidates:200）必须照常可用 ⇒ {ok}"
+    let inked = patched
+        .iter()
+        .filter(|rgba| **rgba != [255, 255, 255, 255])
+        .count();
+    assert!(
+        inked > total_patch / 2,
+        "`patch` 填出来的区域**必须有墨**（不是空白）⇒ 实测 {inked}/{total_patch} 有墨"
     );
 }

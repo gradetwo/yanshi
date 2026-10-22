@@ -3708,7 +3708,52 @@ impl Renderer {
                             match &*entry {
                                 DecodedPixels::Rgba8(w, h, bytes) => {
                                     let (w, h) = (*w as i64, *h as i64);
+                                    // **`mode:"patch"` ⇒ 先把目标 bbox 合成成一块缓冲** ✓
+                                    //   （外部第 81 次的正式需求；选块＋线性过渡见 `quilt_patches` ✓）
+                                    //   **`tile`（缺省）⇒ `None`** ✓ ⇒ 下面那套逐像素平铺原样走 ✓（逐字节不变 ✓）。
+                                    let patch_seed = object.id.bytes().fold(0u64, |acc, byte| {
+                                        acc.wrapping_mul(131).wrapping_add(u64::from(byte))
+                                    });
+                                    let patch_dims = (
+                                        bbox.w.max(1.0).round() as usize,
+                                        bbox.h.max(1.0).round() as usize,
+                                    );
+                                    let patch_buf: Option<Vec<u8>> = if spec.mode == "patch" {
+                                        Some(quilt_patches(
+                                            bytes,
+                                            w as usize,
+                                            h as usize,
+                                            patch_dims,
+                                            spec.patch as usize,
+                                            spec.overlap as usize,
+                                            spec.candidates as usize,
+                                            patch_seed,
+                                        ))
+                                    } else {
+                                        None
+                                    };
                                     let sample = |x: i32, y: i32| -> LinearRgba {
+                                        if let Some(buf) = &patch_buf {
+                                            let px = (x as f64 - ox).floor() as i64;
+                                            let py = (y as f64 - oy).floor() as i64;
+                                            let px = px
+                                                .clamp(0, patch_dims.0.saturating_sub(1) as i64)
+                                                as usize;
+                                            let py = py
+                                                .clamp(0, patch_dims.1.saturating_sub(1) as i64)
+                                                as usize;
+                                            let index = (py * patch_dims.0 + px) * 4;
+                                            let Some(&[r, g, b, a]) = buf.get(index..index + 4)
+                                            else {
+                                                return [0.0, 0.0, 0.0, 0.0];
+                                            };
+                                            return [
+                                                lut[r as usize],
+                                                lut[g as usize],
+                                                lut[b as usize],
+                                                f32::from(a) / 255.0,
+                                            ];
+                                        }
                                         let (jx, jy) = tile_shift(x, y);
                                         let dx = (x as f64 + 0.5 - ox + jx).rem_euclid(sw);
                                         let dy = (y as f64 + 0.5 - oy + jy).rem_euclid(sh);
@@ -4689,6 +4734,128 @@ pub fn raster_mime_supported(mime_type: &str) -> bool {
         return true;
     }
     false
+}
+
+/// **纹理合成**（Efros-Freeman 式；外部第 81 次的正式需求）✓：
+/// 左→右／上→下填块 ⇒ 每块在源图里试 `candidates` 个位置、取**重叠区 SSD 最小**者 ⇒
+/// 重叠区按"到块内边界的距离"**线性过渡** ✓（`seam:"min_error"` 的 DP 切缝**还没做** ✗，见台账）。
+///
+/// **⇒ 为什么要它**（他们的实测）✗：平铺无论怎么调都夹在"源块大 ⇒ 周期重复"与
+/// "源块小 ⇒ 块边界密集、最小误差挑块还会沿目标形状聚成剪影"之间 ✓ ⇒ 只有合成能同时避开 ✓。
+/// **⇒ 确定性** ✓：候选位置来自 `(seed, 块号, 候选号)` 的 splitmix64 ✓ ⇒ 同输入逐字节同输出 ✓。
+#[allow(clippy::too_many_arguments)]
+fn quilt_patches(
+    source: &[u8],
+    sw: usize,
+    sh: usize,
+    target: (usize, usize),
+    patch: usize,
+    overlap: usize,
+    candidates: usize,
+    seed: u64,
+) -> Vec<u8> {
+    let (tw, th) = target;
+    let mut out = vec![0u8; tw * th * 4];
+    let mut filled = vec![false; tw * th];
+    let p = patch.min(sw).min(sh).max(2);
+    let o = overlap.min(p / 2);
+    let step = (p - o).max(1);
+    let hash = |a: u64, b: u64, c: u64| -> u64 {
+        let mut z = seed
+            ^ a.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ b.wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+            ^ c.wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 30;
+        z = z.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z ^= z >> 27;
+        z = z.wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    };
+    let mut cell = 0u64;
+    let mut y0 = 0usize;
+    while y0 < th {
+        let mut x0 = 0usize;
+        while x0 < tw {
+            let mut best: Option<(u64, usize, usize)> = None;
+            for candidate in 0..candidates.max(1) {
+                let bits = hash(cell, candidate as u64, 0);
+                let sx = if sw > p {
+                    (bits % (sw - p + 1) as u64) as usize
+                } else {
+                    0
+                };
+                let sy = if sh > p {
+                    ((bits >> 32) % (sh - p + 1) as u64) as usize
+                } else {
+                    0
+                };
+                let mut cost = 0u64;
+                for yy in 0..p {
+                    let ty = y0 + yy;
+                    if ty >= th {
+                        break;
+                    }
+                    for xx in 0..p {
+                        let tx = x0 + xx;
+                        if tx >= tw || !filled[ty * tw + tx] {
+                            continue;
+                        }
+                        let si = ((sy + yy) * sw + (sx + xx)) * 4;
+                        let ti = (ty * tw + tx) * 4;
+                        for channel in 0..3 {
+                            let diff =
+                                i64::from(out[ti + channel]) - i64::from(source[si + channel]);
+                            cost += (diff * diff) as u64;
+                        }
+                    }
+                }
+                if best.map(|(c, _, _)| cost < c).unwrap_or(true) {
+                    best = Some((cost, sx, sy));
+                }
+            }
+            let (_, sx, sy) = best.unwrap_or((0, 0, 0));
+            for yy in 0..p {
+                let ty = y0 + yy;
+                if ty >= th {
+                    break;
+                }
+                for xx in 0..p {
+                    let tx = x0 + xx;
+                    if tx >= tw {
+                        break;
+                    }
+                    let si = ((sy + yy) * sw + (sx + xx)) * 4;
+                    let ti = (ty * tw + tx) * 4;
+                    if !filled[ty * tw + tx] {
+                        out[ti..ti + 4].copy_from_slice(&source[si..si + 4]);
+                        filled[ty * tw + tx] = true;
+                    } else if o > 0 {
+                        let wx = if xx < o {
+                            (xx + 1) as f32 / o as f32
+                        } else {
+                            1.0
+                        };
+                        let wy = if yy < o {
+                            (yy + 1) as f32 / o as f32
+                        } else {
+                            1.0
+                        };
+                        let w = (wx * wy).clamp(0.0, 1.0);
+                        for channel in 0..4 {
+                            let old = f32::from(out[ti + channel]);
+                            let new = f32::from(source[si + channel]);
+                            out[ti + channel] =
+                                (old + (new - old) * w).round().clamp(0.0, 255.0) as u8;
+                        }
+                    }
+                }
+            }
+            cell += 1;
+            x0 += step;
+        }
+        y0 += step;
+    }
+    out
 }
 
 /// 读取并解码一个位图补丁（`Ok(None)` ⇒ 该对象应被跳过，告警已写入 `warnings`）。

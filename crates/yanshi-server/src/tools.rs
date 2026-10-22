@@ -3971,18 +3971,8 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                     }
                     match value.get("mode").and_then(Value::as_str) {
                         None | Some("tile") => {}
-                        Some("patch") => {
-                            return Err(YanshiError::new(
-                                ErrorCode::InvalidArgument,
-                                ErrorContext::detail(
-                                    "texture.mode=patch（纹理合成：最小误差选块 ＋ 切缝）**尚未实现** \
-                                     ⇒ 目前只支持 `tile`（平铺 ＋ `jitter`）✓。**不会静默按 tile 处理** ✗ \
-                                     —— 参数 `patch`/`overlap`/`candidates`/`seam` 已预留在白名单里 ✓，\
-                                     实现之后同一个调用直接生效 ✓"
-                                        .to_string(),
-                                ),
-                            ));
-                        }
+                        // **`patch` 已实现**（第 2770 轮；见 `render.rs::quilt_patches`）✓
+                        Some("patch") => {}
                         Some(other) => {
                             return Err(YanshiError::new(
                                 ErrorCode::InvalidArgument,

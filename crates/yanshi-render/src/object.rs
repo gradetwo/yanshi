@@ -58,6 +58,17 @@ pub struct ShapeTexture {
     pub height: u32,
     /// MIME（解码分派用 ✓；缺省 `image/x-yanshi-raw` ✓，与 `raster_patch` 一致 ✓）。
     pub mime_type: String,
+    /// **纹理合成模式** ✓（外部第 81 次的正式需求）：
+    /// `"tile"`（缺省 = 平铺 ＋ `jitter` ✓）或 `"patch"`（**Efros-Freeman 式合成** ✓：
+    /// 左→右／上→下填块 ✓、每块 `candidates` 个候选取**重叠区最小 SSD** ✓、
+    /// 重叠区**线性过渡**（`seam:"min_error"` 的 DP 切缝**还没做** ✗ → 见台账「三百八十九」）。
+    pub mode: String,
+    /// `patch` 模式的块边长（像素 ✓；缺省 **24** ✓）。
+    pub patch: u32,
+    /// `patch` 模式的重叠宽度（像素 ✓；缺省 **6** ✓）。
+    pub overlap: u32,
+    /// `patch` 模式每块试几个候选（缺省 **200** ✓）。
+    pub candidates: u32,
     /// **每块平铺的随机位移强度** ✓（`0.0..=1.0`，缺省 **0** = 原样平铺 ✓）。
     ///
     /// **为什么需要它**（外部第 76 次实测 ✗）：源块（`60×40` 的天空 / `90×60` 的草地）按原样平铺
@@ -944,6 +955,33 @@ fn parse_shape_texture(value: &Value) -> Result<ShapeTexture, String> {
         }
         None => 0.0,
     };
+    // **`mode` 只认 tile / patch** ✓（`patch` 的参数在这里就校验 ✓ —— 越界不许静默夹 ✗）
+    let mode = match object.get("mode").and_then(Value::as_str) {
+        None | Some("tile") => "tile".to_owned(),
+        Some("patch") => "patch".to_owned(),
+        Some(other) => return Err(format!("texture.mode 只能是 tile / patch，得到 {other:?}")),
+    };
+    let patch = object.get("patch").and_then(Value::as_u64).unwrap_or(24) as u32;
+    let overlap = object.get("overlap").and_then(Value::as_u64).unwrap_or(6) as u32;
+    let candidates = object
+        .get("candidates")
+        .and_then(Value::as_u64)
+        .unwrap_or(200) as u32;
+    if !(4..=256).contains(&patch) {
+        return Err(format!(
+            "texture.patch 必须在 4..=256（像素），得到 {patch}"
+        ));
+    }
+    if overlap >= patch {
+        return Err(format!(
+            "texture.overlap 必须小于 patch（否则块无法推进），得到 overlap={overlap} / patch={patch}"
+        ));
+    }
+    if !(1..=4096).contains(&candidates) {
+        return Err(format!(
+            "texture.candidates 必须在 1..=4096，得到 {candidates}"
+        ));
+    }
     let mime_type = object
         .get("mime_type")
         .and_then(Value::as_str)
@@ -956,6 +994,10 @@ fn parse_shape_texture(value: &Value) -> Result<ShapeTexture, String> {
         height,
         mime_type,
         jitter,
+        mode,
+        patch,
+        overlap,
+        candidates,
     })
 }
 
