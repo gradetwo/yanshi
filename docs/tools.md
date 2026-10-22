@@ -298,7 +298,13 @@ and the rule kept is to suspect the judge when the judge reports no difference.
 A stroke can carry two colours. brush_stroke takes a color_to as well as a color and ramps between them along
 the stroke: the path is split by arc length, the brush colour is changed for each segment, and the surface and brush
 state are carried across the segments, so the result is still one stroke, one object and one undo step rather than two
-strokes with a hard join. The interpolation happens in display space, because interpolating hue from red to blue would
+strokes with a hard join. The interpolation happens in display space by default, and `color_mixing` selects the space: `rgb` is that default
+and is byte for byte what earlier releases drew, `linear` mixes in linear light (physically correct) and `pigment` mixes
+in spectral K/S space so yellow plus blue gives green rather than grey. Measured on one yellow to blue gradient, the
+mid colour is rgb(100,100,155) in `rgb`, rgb(168,168,205) in `linear` (sixty eight levels brighter) and rgb(0,84,105)
+in `pigment`, where the channel spread grows from fifty six to a hundred and five. Worth recording: the handler read
+this parameter from the day it was written but the tool spec never declared it, so validate_args rejected every call
+and the feature was unreachable until 457b1351. Interpolating hue from red to blue would
 detour through green, and colour_to without colour is refused rather than guessing the brush's own colour as the
 start. A test paints one stroke from red to blue, splits it into eight bands and requires the red component to fall
 and the blue to rise monotonically, with the object count still one, and it fails when the ramp is disabled, which
