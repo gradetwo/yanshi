@@ -841,3 +841,49 @@ fn a_region_texture_snapshots_the_document_instead_of_being_unsupported() {
         "目标右半必须取到源的蓝 ⇒ 实测 {inside_right:?}"
     );
 }
+
+#[test]
+fn a_misspelled_texture_key_is_rejected_with_the_available_ones() {
+    // **外部 `bug_report.md` BUG-15 残留**：子对象里的**拼写错误被静默忽略** ✗
+    // ⇒ 用户以为设了、其实没设 ✓（最典型：`blobhash` vs `blob_hash` ✓）。
+    // 本判据钉：**未知键必须响亮** ＋ 给出**可用键清单** ＋（拼写近的）**近似提示** ✓。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let hash = workspace
+        .store()
+        .put(&source_bytes())
+        .expect("源位图应能入库")
+        .to_string();
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    let message = expect_error(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 4, "y": 4, "w": 16, "h": 16},
+            "texture": {
+                "type": "bitmap",
+                "blobhash": hash,                 // ★ 拼写错误
+                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                "width": 8,
+                "height": 8
+            }
+        }),
+    );
+    assert!(
+        message.contains("blobhash"),
+        "错误必须**点名**那个未知键（否则用户不知道是哪个键写错了）⇒ {message}"
+    );
+    assert!(
+        message.contains("blob_hash"),
+        "错误必须给出**可用键清单**（含正确的 `blob_hash`）⇒ {message}"
+    );
+    assert!(
+        message.contains("你是想写") && message.contains("blob_hash"),
+        "拼写接近时要给**近似提示**（`blobhash` ⇒ `blob_hash`）⇒ {message}"
+    );
+}

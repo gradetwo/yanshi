@@ -3894,7 +3894,64 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 // **`region` 放行** ✓（第 2680 轮）：下面会把它**就地拍成位图** ✓
                 //   ⇒ 这里只做"类型是已知的"这一层，不再拒绝 ✓ —— 原来那句「尚未实现」
                 //     是他们第 71~78 次一直撞的墙 ✗，现在**拆了** ✓。
-                Some("bitmap") | Some("region") => {}
+                // **未知键要响亮** ✓（外部 `bug_report.md` BUG-15 残留：嵌套 `data.*`／子对象里的
+                //   拼写错误会被**静默忽略** ✗ ⇒ 用户以为设了、其实没设 ✓）。
+                //   **⇒ 只做我们自己拥有的这层 schema**（`texture` ✓）—— `data` 顶层还承载
+                //     `label`／`group_id` 等自由字段 ✓，那层**不能**一刀切 ✗。
+                Some("bitmap") | Some("region") => {
+                    let is_region = value.get("type").and_then(Value::as_str) == Some("region");
+                    let allowed: &[&str] = if is_region {
+                        &[
+                            "type",
+                            "source",
+                            "min_distance",
+                            "min_distance_from_target",
+                            "jitter",
+                        ]
+                    } else {
+                        &[
+                            "type",
+                            "blob",
+                            "blob_hash",
+                            "source",
+                            "width",
+                            "height",
+                            "mime_type",
+                            "min_distance",
+                            "min_distance_from_target",
+                            "jitter",
+                        ]
+                    };
+                    if let Some(object) = value.as_object() {
+                        for key in object.keys() {
+                            if !allowed.contains(&key.as_str()) {
+                                // **近似提示**（拼写最常见的两个：少了下划线／驼峰 ✓）
+                                let hint = match key.as_str() {
+                                    "blobhash" | "blobHash" | "blob-hash" => {
+                                        " ⇒ 你是想写 `blob_hash` 吗？"
+                                    }
+                                    "mime" | "mimeType" | "mime-type" => {
+                                        " ⇒ 你是想写 `mime_type` 吗？"
+                                    }
+                                    "mindistance" | "minDistance" => {
+                                        " ⇒ 你是想写 `min_distance` 吗？"
+                                    }
+                                    _ => "",
+                                };
+                                return Err(YanshiError::new(
+                                    ErrorCode::InvalidArgument,
+                                    ErrorContext::detail(format!(
+                                        "texture 里有未知键 `{key}`（{}{}）⇒ 可用键：{} ⇒ \
+                                         拼错的键**不会被静默忽略** ✓（静默忽略会让参数「看起来设了却没生效」✗）",
+                                        if is_region { "region 形态" } else { "bitmap 形态" },
+                                        hint,
+                                        allowed.join(" / ")
+                                    )),
+                                ));
+                            }
+                        }
+                    }
+                }
                 other => {
                     return Err(YanshiError::new(
                         ErrorCode::InvalidArgument,
