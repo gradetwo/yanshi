@@ -1155,7 +1155,7 @@ $ node scripts/check-k01-both-hosts.mjs
 
 | # | 规划要求 | 现状 | 证据 |
 |---|---|---|---|
-| **①** | **hokusai 输入层按 sRGB 理解 → 转 linear 混合 → 导出转回 sRGB** | **未做** | 见下 |
+| **①** | **hokusai 输入层按 sRGB 理解 → 转 linear 混合 → 导出转回 sRGB** | **容器已就绪，笔刷管线未接**（第 559 轮更正）| `ColorMixing::Linear` 已存在且**有判据**（`linear_mixing_differs_from_srgb_mixing_by_about_35_levels`，4 条测试绿）；但 `mix_colors` 只在 `medium_stroke`（`tools_brush.rs:1548`）被调用，**hokusai 的 `stroke.rs` 仍在 sRGB 空间混合** ✗ |
 | **②** | 工具层颜色参数统一走公共转换入口（收敛散落逻辑） | **部分已做** | `tools_smart.rs:609-618` 已删本地 sRGB 传递函数，改用 `yanshi_render::color::{srgb_to_linear, linear_to_srgb}`；判据 `check-no-local-srgb-transfer.mjs` **4 条断言绿** |
 | **③** | 存量 atoms：接受重放颜色变化（用户已拍板） | **已拍板** | 规划第 53 行 |
 | **④** | 收尾：像素级判据/单测期望按新语义重标定 | **待做**（依赖 ①）| — |
@@ -1194,7 +1194,14 @@ let t = hsv.v * (1.0 - hsv.s * (1.0 - f));
 
 ### 下一步（可执行）
 
-1. **加 `ColorMixing::Linear`**（枚举 + 解析 + 两个混合点接线）
+> **第 559 轮更正**：第 1 条**已经做完了** ✓ ——`ColorMixing::Linear` 在枚举里（`color.rs:814`）、
+> `parse("linear")` 与 `name()` 都在（`:826/:838`）、`mix_colors` 的 Linear 分支在（`:866`）、
+> 判据在（`:1018`，断言"红蓝各 50% 差 29..=41 级"，若被误实现成 `Rgb` ⇒ 差 0 ⇒ **红**）✓
+> ⇒ 所以**真正的下一步是"接线到笔刷管线"**，不是"加枚举" ✗：
+> `vendor/hokusai-core/src/stroke.rs:1128` 用 `hsv_to_rgb` 得到 **sRGB**、之后一路 sRGB 混合 ✗
+> ⇒ 要 Phase 1 对**笔触**生效，得在那条管线里转 linear（`color.rs:11` 的 `srgb_to_linear`）✓
+
+1. ~~**加 `ColorMixing::Linear`**~~（**已完成** ✓，见上）
 2. **`hokusai` 的 `hsv_to_rgb` 输出后转 linear**（或在混合函数里转）
 3. **导出时转回 sRGB**（`export_png` 路径已有 sRGB 转换 ⇒ 需确认它不会**双重**转换）
 4. **判据**：同两个颜色混合 ⇒ **linear 结果 = `(0.590, 0.100, 0.590)`**（那个 35 级差就是判据）

@@ -16202,3 +16202,25 @@ f3bcde39  completed/success   每帧只重算脏区的降采样
 - 部分缩小 == 全量缩小（变异 ⇒ 列偏移一格 ⇒ 红 ✓）＋ 脏区至少便宜 20×（实测 585× ✓）。
 **⇒ 端到端**：`100 imports: 1356 → 384 ms`；`单帧缩小 1304 → 2.2 ms（脏区）`；
 **`10 vs 100 远对象` 的渲染耗时比 3.94× → 1.16×** ✓。
+
+## 四百零八、**更正规划文档**：`ColorMixing::Linear` **早就做完了** ✓（真正缺的是"接到笔刷管线"）
+
+**⇒ 证据**（第 559 轮逐处查证）：
+```
+color.rs:814   Linear 变体
+color.rs:826   parse("linear")
+color.rs:838   name() -> "linear"
+color.rs:866   mix_colors 的 Linear 分支（srgb_to_linear → 插值 → linear_to_srgb）
+color.rs:1018  判据 linear_mixing_differs_from_srgb_mixing_by_about_35_levels
+               （红蓝各 50% 差必须落在 29..=41 级；误实现成 Rgb ⇒ 差 0 ⇒ 红 ✓）
+```
+⇒ `cargo test -p yanshi-render --lib linear_mixing` ⇒ **4 passed** ✓。
+
+**⇒ 而 `HANDOFF-CI-621ffc2b.md` 的 Phase 1 表格写着「① 未做」「下一步 1. 加 ColorMixing::Linear」** ✗
+⇒ **那是过期文档** ✓ ⇒ 已当场改掉（表格 ＋ 下一步）✓ —— 否则下一个会话会**重复实现一个已存在的东西** ✗。
+
+**⇒ 真正剩下的缺口（也是这轮查清的）**：`mix_colors` 只在 **`medium_stroke`**（`tools_brush.rs:1548`）被调用 ✓；
+**hokusai 的笔刷管线仍在 sRGB 空间混合** ✗（`vendor/hokusai-core/src/stroke.rs:1128` 的 `hsv_to_rgb` 输出 sRGB，
+之后一路 sRGB）⇒ **`color_mixing:"linear"` 对 `brush_stroke` 不生效** ✓。
+**⇒ 下一步**：在那条管线里转 linear（`color.rs:11 srgb_to_linear`）＋ 按规划 ④ 重标定像素判据 ✓；
+**注意**：那会改变**所有笔触**的混色（用户已拍板接受重放变化 ✓），且 `brush parity` 只比 arm64 vs wasm32（不影响 ✓）。
