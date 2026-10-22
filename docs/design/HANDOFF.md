@@ -107,3 +107,13 @@ cp "$BASE/issues_latest.md" "$BASE/issues_seen.md"
 ## 七、这份文件自己会过期
 
 **⇒ 别信这里的数字**，只信第一节的命令 ✓；**结论与新发现一律追加到台账** ✓（`docs/design/brush-capability-gap.md`）。
+
+## 八、最近这几轮补的能力（**纹理合成线**，接手先读这条）
+
+- `texture.mode:"patch"` **已实现**（合成：左→右/上→下填块、每块 K 候选取重叠区最小 SSD、重叠区**线性过渡**）；
+  `quilt_patches` 用**行号定位**接线（字符串锚点会被 `cargo fmt` 重排 ⇒ 失败过两次）。
+- `texture.seam:"min_error"` **按行最小误差硬切**（带平滑约束的 DP **还没做**）。
+- `texture.layer_id`：`region` 取纹理**只拍那一层**（缺省拍整幅合成）。
+- `texture.tiles` ＋ 两条 warning：**平铺次数 ≥12**（特征会被复制）、**候选池 <64**（棋盘格/人形）。
+- 判据全在 `crates/yanshi-server/tests/fill_region_texture.rs`（**17 条**，每条都有变异记录）。
+- **下一轮**：① DP 平滑切缝；② 外部提的两条更硬判据（**自相关无峰**、**形状泄漏**）。
