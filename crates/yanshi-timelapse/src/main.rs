@@ -311,17 +311,14 @@ fn main() -> Result<()> {
     //   他们的环境里 `ffmpeg` **返回成功**、可 mp4 只有 **261 字节**（只有文件头、`ffprobe` 读不出流）✗
     //   ⇒ 而那时我们**照样 exit 0** ✗ ⇒ 最坏的一种"成功" ✓
     //   ⇒ 所以：**帧数为 0 就是失败** ✓（不猜他们那边为什么送不进去，但绝不再说"成功" ✓）。
-    if frames == 0 {
-        bail!(
-            "一帧都没写出去（apply {}..{}、每 {} 个 atom 一帧）⇒ ffmpeg 只写了文件头，\
-             拒绝把它当成成功。请检查 ffmpeg 是否能吃 `-f rawvideo -pix_fmt rgb24 -s {}x{}`",
-            start_idx,
-            end_idx,
-            frame_every,
-            layout.out_w,
-            layout.out_h
-        );
-    }
+    ensure_frames_written(
+        frames,
+        start_idx,
+        end_idx,
+        frame_every,
+        layout.out_w,
+        layout.out_h,
+    )?;
     if probe {
         let ms = |ns: u128| ns as f64 / 1e6;
         account.frame_render_ns.sort_unstable();
@@ -443,4 +440,45 @@ fn push_frame(
     account.write_ns += t_write.elapsed().as_nanos();
     *frames += 1;
     Ok(())
+}
+
+/// **没写出一帧就算失败** ✓（第 589 轮；外部第 86–88 次：`ffmpeg` 成功、mp4 只有 261 字节文件头）
+///
+/// 抽成纯函数是为了**能测**：真实触发要等 ffmpeg 拒绝输入，本机复现不了 ✓
+/// （**变异**：把 `frames == 0` 的判断去掉 ⇒ 判据 `zero_frames_is_an_error` 红 ✓）。
+fn ensure_frames_written(
+    frames: usize,
+    start_idx: usize,
+    end_idx: usize,
+    frame_every: usize,
+    out_w: u32,
+    out_h: u32,
+) -> Result<()> {
+    if frames == 0 {
+        bail!(
+            "一帧都没写出去（apply {start_idx}..{end_idx}、每 {frame_every} 个 atom 一帧）\
+             ⇒ ffmpeg 只写了文件头，拒绝把它当成成功。\
+             请检查 ffmpeg 是否能吃 `-f rawvideo -pix_fmt rgb24 -s {out_w}x{out_h}`"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod frame_count_tests {
+    use super::ensure_frames_written;
+
+    /// **判据**：0 帧必须报错；>0 帧必须通过（第 589 轮）。
+    /// **变异**：去掉 `frames == 0` 的判断 ⇒ 第一行断言会红。
+    #[test]
+    fn zero_frames_is_an_error() {
+        assert!(
+            ensure_frames_written(0, 0, 209, 10, 608, 1080).is_err(),
+            "一帧都没有就必须报错（外部实测：ffmpeg 成功但 mp4 只有 261 字节文件头）"
+        );
+        assert!(
+            ensure_frames_written(6, 0, 209, 10, 608, 1080).is_ok(),
+            "写出了帧就必须通过"
+        );
+    }
 }
