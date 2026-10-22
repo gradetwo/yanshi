@@ -206,9 +206,63 @@ check(
   jittered?.error ? detailOf(jittered.error) : `${jittered?.same}/${jittered?.total} 对相同`,
 );
 
+// ⑨⑩ **`mode:"patch"` 合成（外部第 81 次的正式需求）** ✓
+//   **为什么要在 JS 判据里也钉** ✗：Rust 侧已有（`fill_region_texture.rs` ✓），
+//   而 CI 的 `criteria` 跑的是**真服务端 ＋ 真 HTTP** ✓ ⇒ 这里钉的是"端到端真的走了合成" ✓。
+//   构型与 ⑦⑧ 相同（源 8×8 左红右蓝）⇒ **相距 8px 的对**在合成下**必须至少有一对不同** ✓
+//   （若静默退回平铺 ⇒ 全同 ⇒ 红 ✓），并且两条回显字段必须对得上 ✓。
+const patchStats = async () => {
+  const boot = await fetch(`${base}/api/documents`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: `texp_${Date.now().toString(36)}`, width: 128, height: 96 }),
+  });
+  const body = await boot.json();
+  const docId = body.doc ?? body.doc_id;
+  const tk = body.token;
+  const post = async (name, args) => {
+    const reply = await fetch(
+      `${base}/api/tools/${name}?doc=${encodeURIComponent(docId)}&token=${encodeURIComponent(tk)}`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(args) },
+    );
+    return reply.json();
+  };
+  const layers = await post("list_layers", {});
+  const lid = layers?.layers?.[0]?.layer_id;
+  const filled = await post("fill_region", {
+    layer_id: lid,
+    shape: { type: "rect", x: 32, y: 32, w: 32, h: 32 },
+    texture: { ...texture, mode: "patch", seam: "min_error", patch: 6, overlap: 2, candidates: 12 },
+  });
+  if (filled?.ok !== true) return { error: filled };
+  const points = [];
+  for (let i = 0; i < 24; i += 1) points.push([34 + i, 40]);
+  const samples = (await post("sample_colors", { points }))?.samples ?? [];
+  const colour = (index) => (samples[index]?.rgba ?? []).slice(0, 3).join(",");
+  let same = 0;
+  let total = 0;
+  for (let i = 0; i + 8 < points.length; i += 1) {
+    total += 1;
+    if (colour(i) === colour(i + 8)) same += 1;
+  }
+  return { same, total, mode: filled?.texture?.mode, seam: filled?.texture?.seam };
+};
+
+const patch = await patchStats();
+check(
+  patch?.mode === "patch" && patch?.seam === "min_error",
+  "⑨ mode=patch/seam=min_error ⇒ 回显必须说清跑的是合成与哪种缝（不许沉默）",
+  patch?.error ? detailOf(patch.error) : `mode=${patch?.mode}｜seam=${patch?.seam}`,
+);
+check(
+  patch?.total > 0 && patch.same < patch.total,
+  "⑩ mode=patch ⇒ 相距 8px 的对必须至少有一对不同（静默退回平铺就全同）",
+  patch?.error ? detailOf(patch.error) : `${patch?.same}/${patch?.total} 对相同`,
+);
+
 console.log(
   failures.length === 0
-    ? "  ⇒ 纹理填充：逐像素取源、region 可用、min_distance 护栏、jitter 打散墙纸 ✓"
+    ? "  ⇒ 纹理填充：逐像素取源、region 可用、min_distance 护栏、jitter 打散墙纸、patch 合成 ✓"
     : `  ⇒ 失败 ${failures.length} 条`,
 );
 process.exit(failures.length === 0 ? 0 : 1);
