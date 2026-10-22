@@ -16224,3 +16224,22 @@ color.rs:1018  判据 linear_mixing_differs_from_srgb_mixing_by_about_35_levels
 之后一路 sRGB）⇒ **`color_mixing:"linear"` 对 `brush_stroke` 不生效** ✓。
 **⇒ 下一步**：在那条管线里转 linear（`color.rs:11 srgb_to_linear`）＋ 按规划 ④ 重标定像素判据 ✓；
 **注意**：那会改变**所有笔触**的混色（用户已拍板接受重放变化 ✓），且 `brush parity` 只比 arm64 vs wasm32（不影响 ✓）。
+
+## 四百零九、**发现一条"看着在查、其实查不了"的判据** ✗：`tool-color-mixing.mjs`
+
+**⇒ 怎么发现的**：本轮想给 `color_mixing:"linear"` 补一条**端到端**判据 ⇒ 先跑现成的那条 ⇒ 实测：
+```
+中段色：不传 rgb(100,100,155) 极差 56｜rgb 量不到｜pigment 量不到
+❌ 判不了：… rgb={"context":{"detail":"brush_stroke 不接受参数 color_mixing（拼写错误？）…"}}
+⇒ 退出码 3
+```
+**⇒ 根因**（源码证据）：`color_mixing` 的解析在 **`medium_stroke`**（`tools_brush.rs:287`，参数面里也写在第 1326 行那个函数），
+而这条判据用的是 **`brush_stroke`** ✗ ⇒ 该工具**明确拒收**这个参数 ✓ ⇒ 于是 `rgb`/`pigment` 两次调用**都被拒** ✓
+⇒ ② 那条"pigment 必须更有色"的断言**从未真正执行** ✓（它 `exit(3)` ⇒ 被当成"不可判" ✓）。
+
+**⇒ 这是本仓最反对的那类**：`exit(3)` 说"判不了"很诚实 ✓，但**它不会红** ✗ ⇒ 于是**没人注意到** ✓
+（与 `AGENTS.md` 里"测量工具要先被测量"同一条 ✓）。
+
+**⇒ 下一轮**：把那条判据改成对 **`medium_stroke`** 打（它才是收 `color_mixing` 的工具 ✓），
+或**删掉**它并明说"`brush_stroke` 没有混色参数" ✓ —— **不许留着"看起来在查"的脚本** ✗。
+**⇒ 顺带**：我原本要加的 `linear` 检查也一并放在新脚本里（三条：linear≠rgb、linear≠pigment、差 ≥10 ✓）。
