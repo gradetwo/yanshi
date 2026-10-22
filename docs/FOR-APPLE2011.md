@@ -5349,3 +5349,29 @@ fill_region(
 **⇒ 判据**：画左红右蓝两块，再从它取 region 纹理论别处 ⇒ 目标**左红右蓝**（平均会变紫 ⇒ 红 ✓）；
 变异（把快照退化成 1×1）⇒ 红 ✓。
 **⇒ 你那条 `test3`/`test5`** 现在有**两种**取纹理方式可选：`bitmap+blob_hash`（外部图）或 `region`（画布内）。
+
+---
+
+## 第 80 次收到（`region` ＋ 严格白名单）＋ **新增 `texture.layer_id`：可以从"单独那一层"取纹理**
+
+**⇒ 你那条**「把 `ref` 整幅 `import_image` 进文档，再从它的天空区/草区取 `region`」**现在更准了** ✓：
+原来 `region` 拍的是**整幅合成** ✗ ⇒ **你自己画的底也会被拍进去** ✓
+⇒ 现在可以**只拍一层**：
+
+```python
+fill_region(
+  shape = {"type":"path","subpaths":[…洞…]},
+  texture = {
+     "type": "region",
+     "source": {"x": 1200, "y": 300, "w": 40, "h": 30},
+     "layer_id": "L_ref",      # ★ 只从这一层取（不给 = 整幅合成）
+     "jitter": 0.8, "min_distance": 25
+  })
+```
+
+**⇒ 回显**：响应里 `texture.layer_id` 会告诉你"这次是从哪层拍的"（`null` = 合成 ✓）⇒ 不用猜。
+**⇒ 判据**（左红右蓝在 `L_ref`、同一块被 `L_top` 盖绿）：
+`layer_id:"L_ref"` ⇒ 目标里必须**看到红且不许有绿**（绿 = 拍成合成了 ✗）；变异（忽略 `layer_id`）⇒ 红 ✓。
+
+**⇒ 你 `test5` 的顺序建议**：`import_image(ref)` 单独一层 → 画洞的蒙版 → `fill_region(shape=path, texture={type:"region", layer_id: ref 层, source: 同质小区, jitter 0.5~0.85})`
+⇒ 一次调用，**不需要 `put_blob`、也不会把你自己的底拍进去** ✓。
