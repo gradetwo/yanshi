@@ -15489,3 +15489,23 @@ for key in ["min_distance", "min_distance_from_target", "jitter"] { … }
 **⇒ 下一轮**：用 `get_changesets`/`get_state` 拿到真正的 `atom_id` ⇒ 读原子 ⇒ 确认
 `data.texture.brightness_match` ✓；若确实没有 ⇒ 问题在工具层（`texture.clone()` 那条）✓；
 若有 ⇒ 做探针 ②（`quilt_patches` 入口打 `reference.is_some()`）✓。
+
+### 三百九十一（续五）：**根因找到了**——参考亮度只在**整层那一趟**可读，对象级那一趟是空的 ✗
+
+**⇒ 探针 ③ 实测**（`eprintln!("mode={} match={} ref={}")`，已撤），一次填充打出**四行**：
+```
+[probe3] mode=patch match=false ref=false   ← 关的那次（两趟）
+[probe3] mode=patch match=false ref=false
+[probe3] mode=patch match=true  ref=true    ← 开的那次：**有一趟读到了墙** ✓
+[probe3] mode=patch match=true  ref=false   ← **另一趟读不到** ✗
+```
+**⇒ 结论**：同一次填充会被渲染**多趟** ✓ —— **整层那一趟** `layer_buffer` 里有墙 ⇒ `ref=true` ✓；
+**对象级那一趟**（自建缓冲、只画这个对象）⇒ **底下什么都没有** ⇒ `ref=false` ✗。
+**⇒ 而 `sample_colors` 读的是最终合成** ✓ ⇒ 起作用的是**后一趟**（`ref=false`）✓
+⇒ **亮度项实际上没参与** ✗ ⇒ 这就是「开/关同数（85.0 / 85.0）」的**真正原因** ✓。
+**⇒ 下一步（两条路，都要先量）**：
+1. **在整层那一趟把参考场缓存进对象/文档**（例如对象上一次合成用的参考场 ✗ 不干净）；
+2. **改语义**：`brightness_match` 只对**整层渲染**生效 ✓，并在 `ref=false` 的那趟**回一条 warning**
+   （"参考亮度不可用 ⇒ 本次按无匹配合成"）✓ —— **至少不许静默** ✗。
+**⇒ 判据**（下一轮）：`ref=false` 那条 warning 必须出现 ✓（这是"失败要有信号"的落地 ✓）；
+而行为判据要等语义定下来再写 ✓。
