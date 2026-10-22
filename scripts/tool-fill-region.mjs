@@ -7,7 +7,12 @@
 //   ③ **包围盒的四个角**必须**没被填** ✗（矩形包围盒的四角在椭圆之外 ✓）
 //      —— 这一条专防"把椭圆当矩形填了"✗（那种实现①②都过 ✓，只有③能抓住 ✓）。
 const base = process.argv[2];
-const docId = process.argv[3] || "fr1";
+// **★ 自己建一个够大的文档 ★**（第 595 轮）：判据的采样点最高到 (248,158) ⇒ 假设 ≥300×200 ✓
+//   而 `_bootstrap` 常是 64×64（谁先建大它就大 ⇒ **顺序依赖的假红** ✗）
+//   ⇒ 这里的做法抄 `tool-fill-region-opacity.mjs`（CI 上一直绿 ✓）：**唯一 id ＋ 明确尺寸** ✓
+const docId = process.argv[3] && !process.argv[3].startsWith("_")
+  ? process.argv[3]
+  : `fr1_${Date.now().toString(36)}`;
 if (!base) { console.error("用法: node scripts/tool-fill-region.mjs <base-url> [docId]"); process.exit(2); }
 const created = await (await fetch(`${base}/api/documents`, {
   method: "POST", headers: { "content-type": "application/json" },
