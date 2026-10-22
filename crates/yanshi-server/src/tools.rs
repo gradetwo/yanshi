@@ -4533,8 +4533,13 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     )?;
     // **回显生效值** ✓（不撒谎 ✓）：`texture` 传了而这里说 `null` ⇒ 就是没落地 ✓。
     let texture_out = match (&texture, texture_gap) {
-        (Some(_), Some(gap)) => json!({
+        (Some(spec), Some(gap)) => json!({
             "type": "bitmap",
+            // **回显合成模式与缝法** ✓（外部第 81 次那组参数 ✓）：调用方必须看得见
+            // 「这次到底跑的是平铺还是合成、缝是 linear 还是 min_error」✓
+            // —— 否则"看起来设了、实际没生效"又回来了 ✗。
+            "mode": spec.get("mode").and_then(Value::as_str).unwrap_or("tile"),
+            "seam": spec.get("seam").and_then(Value::as_str).unwrap_or("linear"),
             "source_gap_px": gap,
             // **生效的 MIME 要回显** ✓：PNG 被自动认出时，调用方必须看得见文档里记的是什么 ✓。
             "mime_type": texture_mime.clone().unwrap_or_default(),

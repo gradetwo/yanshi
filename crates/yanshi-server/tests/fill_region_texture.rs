@@ -1463,3 +1463,64 @@ fn patch_mode_has_no_periodic_peak_at_several_shifts() {
         );
     }
 }
+
+#[test]
+fn the_response_echoes_the_mode_and_seam_that_ran() {
+    // **"看起来设了、实际没生效"** ✗ 是这一场反复出现的形态 ✓ ⇒ 合成的两个旋钮也必须回显 ✓：
+    // 调用方要能从响应里分辨「跑的是平铺还是合成」「缝是 linear 还是 min_error」✓。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let hash = workspace
+        .store()
+        .put(&source_bytes())
+        .expect("源位图应能入库")
+        .to_string();
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    let mut echo = |mode: &str, seam: &str, y: i32| -> (String, String) {
+        let filled = registry().call(
+            &mut ctx,
+            "fill_region",
+            &json!({
+                "layer_id": layer,
+                "shape": {"type": "rect", "x": 4, "y": y, "w": 24, "h": 16},
+                "texture": {
+                    "type": "bitmap",
+                    "blob_hash": hash,
+                    "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                    "width": 8,
+                    "height": 8,
+                    "mode": mode,
+                    "seam": seam,
+                    "patch": 6,
+                    "overlap": 2,
+                    "candidates": 8
+                }
+            }),
+        );
+        let texture = filled.get("texture").cloned().unwrap_or(Value::Null);
+        (
+            texture
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("<缺>")
+                .to_owned(),
+            texture
+                .get("seam")
+                .and_then(Value::as_str)
+                .unwrap_or("<缺>")
+                .to_owned(),
+        )
+    };
+    assert_eq!(
+        echo("patch", "min_error", 4),
+        ("patch".to_owned(), "min_error".to_owned())
+    );
+    assert_eq!(
+        echo("tile", "linear", 26),
+        ("tile".to_owned(), "linear".to_owned())
+    );
+}
