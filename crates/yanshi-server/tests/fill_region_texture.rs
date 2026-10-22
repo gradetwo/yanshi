@@ -1720,3 +1720,68 @@ fn brightness_matching_is_refused_because_it_cannot_see_the_wall() {
         "false 必须照常可用 ⇒ {ok}"
     );
 }
+
+#[test]
+fn a_brightness_ramp_makes_the_synthesis_follow_it() {
+    // **外部第 82 次的核心判据** ✓（第 437 轮实现路线）：调用方给出亮度渐变 ⇒
+    // 合成结果必须**沿该渐变走** ✓ —— 量法：左半平均亮度 **<** 右半 ✓，
+    // 且两半各自的标准差 **> 0** ✓（**不许出现"一整块均匀亮度"** ✗ —— 那正是他们要避免的"人形"）。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let hash = workspace
+        .store()
+        .put(&source_bytes())
+        .expect("blob")
+        .to_string();
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    let filled = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 4, "y": 4, "w": 48, "h": 24},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                "width": 8, "height": 8,
+                "mode": "patch",
+                "patch": 6, "overlap": 2, "candidates": 24,
+                "brightness_ramp": {"axis": "x", "at_start": 5.0, "at_end": 250.0}
+            }
+        }),
+    );
+    assert_eq!(
+        filled.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "应当成功：{filled}"
+    );
+    let luma = |row: &[[u64; 4]]| -> Vec<f64> {
+        row.iter()
+            .map(|rgba| 0.299 * rgba[0] as f64 + 0.587 * rgba[1] as f64 + 0.114 * rgba[2] as f64)
+            .collect()
+    };
+    let left = luma(&row_alpha_and_colour(&mut ctx, 6, 16, 16));
+    let right = luma(&row_alpha_and_colour(&mut ctx, 30, 16, 16));
+    let mean = |values: &[f64]| values.iter().sum::<f64>() / values.len() as f64;
+    let sd = |values: &[f64]| {
+        let m = mean(values);
+        (values.iter().map(|v| (v - m) * (v - m)).sum::<f64>() / values.len() as f64).sqrt()
+    };
+    assert!(
+        mean(&left) + 1.0 < mean(&right),
+        "亮度渐变 ⇒ 左半必须更暗 ⇒ 左={:.1}｜右={:.1}",
+        mean(&left),
+        mean(&right)
+    );
+    assert!(
+        sd(&left) > 1.0 && sd(&right) > 1.0,
+        "两半都不许是「一整块均匀亮度」 ⇒ 左 sd={:.2}｜右 sd={:.2}",
+        sd(&left),
+        sd(&right)
+    );
+}

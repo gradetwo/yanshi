@@ -3745,43 +3745,68 @@ impl Renderer {
                                     //   （同一个 `layer_buffer` 也用于纯色填充 ⇒ 填充前它就是"下面的墙" ✓）
                                     //   **全透明（alpha=0）⇒ 视为不可用** ✓（返回 `None` ⇒ 不加亮度项 ✓，
                                     //   并且**在响应里说出来** ← 由 `tools.rs` 检查 `has_reference` ✓）
-                                    let reference: Option<Vec<f32>> = if spec.brightness_match {
-                                        let origin = layer_buffer.bbox();
-                                        let (bw, bh) = patch_dims;
-                                        let mut field = vec![0.0f32; bw * bh];
-                                        let mut covered = 0usize;
-                                        for row in 0..bh {
-                                            for col in 0..bw {
-                                                let local_x =
-                                                    (ox - origin.x).round() as i64 + col as i64;
-                                                let local_y =
-                                                    (oy - origin.y).round() as i64 + row as i64;
-                                                if local_x < 0 || local_y < 0 {
-                                                    continue;
+                                    let reference: Option<Vec<f32>> =
+                                        if let Some((axis, at_start, at_end)) =
+                                            spec.brightness_ramp.clone()
+                                        {
+                                            // **调用方给的亮度渐变** ✓（第 437 轮）：沿 `axis` 线性插值 ✓
+                                            let (bw, bh) = patch_dims;
+                                            let mut field = vec![0.0f32; bw * bh];
+                                            for row in 0..bh {
+                                                for col in 0..bw {
+                                                    let t = if axis == "x" {
+                                                        if bw > 1 {
+                                                            col as f32 / (bw - 1) as f32
+                                                        } else {
+                                                            0.0
+                                                        }
+                                                    } else if bh > 1 {
+                                                        row as f32 / (bh - 1) as f32
+                                                    } else {
+                                                        0.0
+                                                    };
+                                                    field[row * bw + col] =
+                                                        at_start + (at_end - at_start) * t;
                                                 }
-                                                let pixel = layer_buffer
-                                                    .pixel(local_x as u32, local_y as u32);
-                                                let alpha = pixel[3];
-                                                if alpha <= 0.0 {
-                                                    continue;
-                                                }
-                                                // 反预乘回直通色 ✓（`Buffer` 存的是预乘 ✓）
-                                                let r = pixel[0] / alpha;
-                                                let g = pixel[1] / alpha;
-                                                let b = pixel[2] / alpha;
-                                                field[row * bw + col] =
-                                                    (r * 0.299 + g * 0.587 + b * 0.114) * alpha;
-                                                covered += 1;
                                             }
-                                        }
-                                        if covered * 10 >= bw * bh {
                                             Some(field)
+                                        } else if spec.brightness_match {
+                                            let origin = layer_buffer.bbox();
+                                            let (bw, bh) = patch_dims;
+                                            let mut field = vec![0.0f32; bw * bh];
+                                            let mut covered = 0usize;
+                                            for row in 0..bh {
+                                                for col in 0..bw {
+                                                    let local_x =
+                                                        (ox - origin.x).round() as i64 + col as i64;
+                                                    let local_y =
+                                                        (oy - origin.y).round() as i64 + row as i64;
+                                                    if local_x < 0 || local_y < 0 {
+                                                        continue;
+                                                    }
+                                                    let pixel = layer_buffer
+                                                        .pixel(local_x as u32, local_y as u32);
+                                                    let alpha = pixel[3];
+                                                    if alpha <= 0.0 {
+                                                        continue;
+                                                    }
+                                                    // 反预乘回直通色 ✓（`Buffer` 存的是预乘 ✓）
+                                                    let r = pixel[0] / alpha;
+                                                    let g = pixel[1] / alpha;
+                                                    let b = pixel[2] / alpha;
+                                                    field[row * bw + col] =
+                                                        (r * 0.299 + g * 0.587 + b * 0.114) * alpha;
+                                                    covered += 1;
+                                                }
+                                            }
+                                            if covered * 10 >= bw * bh {
+                                                Some(field)
+                                            } else {
+                                                None
+                                            }
                                         } else {
                                             None
-                                        }
-                                    } else {
-                                        None
-                                    };
+                                        };
                                     let patch_buf: Option<Vec<u8>> = if spec.mode == "patch" {
                                         Some(quilt_patches(
                                             bytes,

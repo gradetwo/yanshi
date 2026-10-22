@@ -3986,6 +3986,39 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                             ));
                         }
                     }
+                    // **`brightness_ramp` 校验** ✓（第 437 轮）：`axis` 只认 x/y，亮度 0..=255 ✓
+                    if let Some(ramp) = value.get("brightness_ramp") {
+                        let ramp = ramp.as_object().ok_or_else(|| {
+                            YanshiError::new(
+                                ErrorCode::InvalidArgument,
+                                ErrorContext::detail(
+                                    "texture.brightness_ramp 必须是对象 {axis, at_start, at_end}"
+                                        .to_string(),
+                                ),
+                            )
+                        })?;
+                        let axis = ramp.get("axis").and_then(Value::as_str).unwrap_or("x");
+                        if axis != "x" && axis != "y" {
+                            return Err(YanshiError::new(
+                                ErrorCode::InvalidArgument,
+                                ErrorContext::detail(format!(
+                                    "texture.brightness_ramp.axis 只能是 x / y，得到 {axis:?}"
+                                )),
+                            ));
+                        }
+                        for name in ["at_start", "at_end"] {
+                            if let Some(v) = ramp.get(name).and_then(Value::as_f64) {
+                                if !(0.0..=255.0).contains(&v) {
+                                    return Err(YanshiError::new(
+                                        ErrorCode::InvalidArgument,
+                                        ErrorContext::detail(format!(
+                                            "texture.brightness_ramp.{name} 必须在 0..=255（亮度），得到 {v}"
+                                        )),
+                                    ));
+                                }
+                            }
+                        }
+                    }
                     // **`brightness_match` 暂不可用 ⇒ 响亮拒绝** ✓（第 435 轮，**有实测依据**）：
                     //   探针实测同一次填充会渲染多趟 ✓ —— **整层那一趟**能读到墙 ✓、
                     //   **对象级那一趟读不到**（自建缓冲）✗ ⇒ 而 `sample_colors`/导出读的是后一趟 ✗
@@ -4041,6 +4074,7 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                             "seam",
                             // **外部第 82 次的正式需求**：按位置的源亮度匹配 ✓（**尚未实现** ✗）
                             "brightness_match",
+                            "brightness_ramp",
                         ]
                     } else {
                         &[
@@ -4061,6 +4095,7 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                             "seam",
                             // **外部第 82 次的正式需求**：按位置的源亮度匹配 ✓（**尚未实现** ✗）
                             "brightness_match",
+                            "brightness_ramp",
                         ]
                     };
                     if let Some(object) = value.as_object() {
@@ -4585,6 +4620,8 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 .get("brightness_match")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            // **回显亮度渐变** ✓（第 437 轮）：调用方要看得见这次用了什么参考 ✓
+            "brightness_ramp": spec.get("brightness_ramp").cloned().unwrap_or(Value::Null),
             "seam": spec.get("seam").and_then(Value::as_str).unwrap_or("linear"),
             "source_gap_px": gap,
             // **生效的 MIME 要回显** ✓：PNG 被自动认出时，调用方必须看得见文档里记的是什么 ✓。

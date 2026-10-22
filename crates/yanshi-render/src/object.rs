@@ -69,6 +69,10 @@ pub struct ShapeTexture {
     pub overlap: u32,
     /// `patch` 模式每块试几个候选（缺省 **200** ✓）。
     pub candidates: u32,
+    /// **调用方给的亮度渐变参考** ✓（外部第 82 次的正式需求；第 436 轮定下的路线）：
+    /// `{axis:"x"|"y", at_start, at_end}` ⇒ 目标 bbox 内沿该轴从 `at_start` 线性变到 `at_end`（0..=255）✓
+    /// ⇒ quilt 用它做"该位置的参考亮度" ✓（**不依赖跨趟缓冲** ✓）。
+    pub brightness_ramp: Option<(String, f32, f32)>,
     /// **按位置匹配源亮度** ✓（外部第 82 次的正式需求）：候选块的平均亮度要贴近
     /// **该位置下方的图层内容**的平均亮度 ✓ ⇒ 左右渐变的墙也能合成 ✓（缺省 `false` = 不匹配 ✓）。
     pub brightness_match: bool,
@@ -996,6 +1000,32 @@ fn parse_shape_texture(value: &Value) -> Result<ShapeTexture, String> {
             "texture.candidates 必须在 1..=4096，得到 {candidates}"
         ));
     }
+    let brightness_ramp = match object.get("brightness_ramp") {
+        None => None,
+        Some(Value::Object(ramp)) => {
+            let axis = ramp
+                .get("axis")
+                .and_then(Value::as_str)
+                .unwrap_or("x")
+                .to_owned();
+            if axis != "x" && axis != "y" {
+                return Err(format!(
+                    "texture.brightness_ramp.axis 只能是 x / y，得到 {axis:?}"
+                ));
+            }
+            let at_start = ramp.get("at_start").and_then(Value::as_f64).unwrap_or(0.0);
+            let at_end = ramp.get("at_end").and_then(Value::as_f64).unwrap_or(255.0);
+            for (name, value) in [("at_start", at_start), ("at_end", at_end)] {
+                if !(0.0..=255.0).contains(&value) {
+                    return Err(format!(
+                        "texture.brightness_ramp.{name} 必须在 0..=255（亮度），得到 {value}"
+                    ));
+                }
+            }
+            Some((axis, at_start as f32, at_end as f32))
+        }
+        Some(_) => return Err("texture.brightness_ramp 必须是对象".to_string()),
+    };
     let brightness_match = object
         .get("brightness_match")
         .and_then(Value::as_bool)
@@ -1018,6 +1048,7 @@ fn parse_shape_texture(value: &Value) -> Result<ShapeTexture, String> {
         candidates,
         seam,
         brightness_match,
+        brightness_ramp,
     })
 }
 
