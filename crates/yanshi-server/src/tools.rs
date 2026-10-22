@@ -4147,6 +4147,8 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         };
     }
     let mut texture_gap: Option<f64> = None;
+    let mut texture_tiles: Option<f64> = None;
+    let mut texture_warnings: Vec<String> = Vec::new();
     if let Some(spec) = &texture {
         // **path 的目标框由控制点算** ✓（`path` 的 geometry 里没有 `bbox` ✓ ——
         // 用 `rect` 的读法会得到「需要目标形状能解析出 bbox」✗，而 path 本来就没有那个字段 ✓）。
@@ -4199,6 +4201,20 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             ));
         }
         texture_gap = Some(gap);
+        // **平铺次数** ✓（外部第 78 次实测：`jitter` 生效了，但源块里的**特征图案**被反复复制 ✗）
+        //   **⇒ 他们的三条选源原则**（小 30~50px ✓／同质 ✓／离洞 ≥25px ✓）里，
+        //     前两条**工具可以算**：目标面积 ÷ 源面积 ≈ 要复制多少次 ✓
+        //     ⇒ **超过 ~12 次就提醒** ✓（他们那次 90×60 的源铺进大洞 ⇒ 约 20+ 次 ⇒ 就是"图案重复"的来源 ✓）。
+        //   **⇒ 只提醒、不改行为** ✓（填充本身是对的；选源是创作者的决定 ✓）。
+        let tiles = (target.w * target.h) / (source.w * source.h).max(f64::MIN_POSITIVE);
+        texture_tiles = Some(tiles);
+        if tiles >= 12.0 {
+            texture_warnings.push(format!(
+                "纹理源块会被平铺约 {tiles:.0} 次 ⇒ 源里的**特征图案**会被反复复制（外部第 78 次实测的\"图案重复\" ✗）\
+                 ⇒ 建议：① 源块取 **30~50px** 的**同质区**（无花/石头/人物残影 ✓）；② 把 `jitter` 调到 0.3~0.85 ✓；\
+                 ③ 源块离洞 ≥ `min_distance`（缺省 25px）✓"
+            ));
+        }
     }
     // 纹理随 `data` 落进文档 ✓（渲染侧从 `data.texture` 读 ✓，与 `raster_patch` 的 `data.bitmap` 同口径 ✓）。
     let mut data = json!({"geometry": geometry, "color": color});
@@ -4222,16 +4238,22 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             "mime_type": texture_mime.clone().unwrap_or_default(),
             // **回声 jitter** ✓：传了 0 与"没传"在文档里都记成 0 ✓，调用方要看得见生效值 ✓。
             "jitter": texture_jitter,
+            "tiles": texture_tiles,
         }),
         _ => Value::Null,
     };
-    Ok(json!({
+    let mut response = json!({
         "ok": true,
         "shape": kind,
         "opacity": opacity,
         "texture": texture_out,
         "drawn": drawn,
-    }))
+    });
+    // **警告只在非空时出现** ✓（老响应的键集合因此不变 ✓）
+    if !texture_warnings.is_empty() {
+        response["warnings"] = json!(texture_warnings);
+    }
+    Ok(response)
 }
 
 /// **纹理 blob 早校验** ✓（外部第 74 次报告 ✗）：返回**生效的 MIME** ✓。

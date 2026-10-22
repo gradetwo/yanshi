@@ -658,3 +658,91 @@ fn jitter_out_of_range_is_rejected_by_name() {
         "错误必须点名 jitter 与区间（不是只报「参数非法」）：{message}"
     );
 }
+
+#[test]
+fn a_small_source_block_warns_about_repeating_its_features() {
+    // **外部第 78 次实测的"图案重复"** ✓：`jitter` 生效了（错开网格 ✓），但**源块里的特征**
+    // （红花／裙摆残影）被**反复复制** ⇒ 他们的结论是「选源三原则：小 30~50px／同质／离洞 ≥25px」✓。
+    // **工具能算的**：目标面积 ÷ 源面积 ≈ 要复制多少次 ✓ ⇒ **超过 ~12 次就提醒** ✓（只提醒、不改行为 ✓）。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let hash = workspace
+        .store()
+        .put(&source_bytes())
+        .expect("源位图应能入库")
+        .to_string();
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+
+    // ① 大目标 ＋ 8×8 源 ⇒ 平铺约 150 次 ⇒ 必须**提醒**。
+    let big = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 4, "y": 4, "w": 120, "h": 80},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 100, "y": 4, "w": 8, "h": 8},
+                "width": 8,
+                "height": 8
+            }
+        }),
+    );
+    assert_eq!(
+        big.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "大目标那一笔应当成功：{big}"
+    );
+    let tiles = big
+        .get("texture")
+        .and_then(|texture| texture.get("tiles"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    assert!(
+        tiles >= 12.0,
+        "`texture.tiles` 必须回显平铺次数（120×80 ÷ 8×8 = 150）⇒ 实测 {tiles}"
+    );
+    let warnings = big
+        .get("warnings")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        warnings
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|text| text.contains("平铺") && text.contains("同质")),
+        "小源块铺进大目标必须提醒（特征会被复制 ＋ 给三条选源建议）⇒ {warnings:?}"
+    );
+
+    // ② 小目标 ＋ 大源块 ⇒ **不许**出现这条提醒（否则提醒就没有鉴别力 ✗）。
+    let small = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 4, "y": 4, "w": 16, "h": 16},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 40, "y": 20, "w": 64, "h": 64},
+                "width": 8,
+                "height": 8
+            }
+        }),
+    );
+    assert_eq!(
+        small.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "小目标那一笔应当成功：{small}"
+    );
+    assert!(
+        small.get("warnings").is_none(),
+        "源块比目标还大时**不该**提醒平铺（提醒必须有鉴别力）⇒ {small}"
+    );
+}
