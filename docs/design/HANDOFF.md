@@ -57,11 +57,18 @@ wc -l < scripts/criteria-known-red.txt                     # 已知红条数（�
 ## 四、和 `apple2011` 的固定仪式（**每轮第一件事**）
 
 ```bash
-scp -o BatchMode=yes apple2011:/home/crow/work/art/YANSHI_ISSUES.md /tmp/art/issues_latest.md
-md5sum /tmp/art/issues_latest.md /tmp/art/issues_seen.md     # 相同 ⇒ 只回一句「未变」
+# 基线**不许放 /tmp** ✗（2026-10-22 下午 /tmp 被清理 ⇒ 基线连同 md5 一起没了，白丢一轮 ✓）
+BASE=~/.local/share/yanshi-external
+scp -o BatchMode=yes apple2011:/home/crow/work/art/YANSHI_ISSUES.md "$BASE/issues_latest.md"
+md5sum "$BASE/issues_latest.md" "$BASE/issues_seen.md"      # 相同 ⇒ 只回一句「未变」
 # 变了 ⇒ 读新增节（diff 标题）⇒ 分三类：我的 bug（判据＋变异立刻修）／引擎真问题（复现或写清缺什么）／误判（附证据）
-cp /tmp/art/issues_latest.md /tmp/art/issues_seen.md
+cp "$BASE/issues_latest.md" "$BASE/issues_seen.md"
+# 绝对路径拉不到时，`$BASE/state.json` 里存着最近一次读到的 md5（可比对、也可据此判断"到底变没变"）
 ```
+
+**⚠ 网络**：2026-10-22 下午起，本机到 `apple2011` 的 **22 端口**一直 `No route to host` / `Connection closed`
+（`ping` 通、GitHub 的 SSH 同样超时；**HTTPS 正常**）⇒ 拉不到就**如实记「这一轮没拉到」**，
+**不许**把"没变"当成默认结论 ✓。
 
 回信写在 `docs/FOR-APPLE2011.md`（他们按 §分节引用）。**不许说「不存在」** ⇒ 要写构型差异与「我还缺什么才能复现」。
 

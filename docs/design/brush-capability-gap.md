@@ -14968,3 +14968,16 @@ BUG-20 图层层级）⇒ 并按投入产出比给了 6 条建议 ✓。**⇒ �
 
 **⇒ 还没做**（同报告 BUG-04 残留第 2 条）：散点的**笔段第二点与 dab 半径仍可越出多边形** ✗
 ⇒ 现在只是"锚点在内" ✓ ⇒ 逐像素遮罩要另做 ✓。
+
+## 三百七十六、两个**环境/流程**事实（不是代码问题，但会伤到下一轮）
+
+**① `/tmp` 被清理过**：2026-10-22 下午 `/tmp/art`（外部报告的**基线** md5）与 `/tmp/dg`（取报告的小脚本）
+**一起消失** ✓ ⇒ **⇒ 所以**那一轮只能"没拉到" ✓ —— **⇒ 基线改存** `~/.local/share/yanshi-external/` ✓
+（`state.json` 里还留了最近一次读到的 md5 ✓；`HANDOFF.md` 的仪式已改成这个路径 ✓）。
+
+**② 到 `apple2011` 的 SSH（22 端口）从今天下午起不通**：`ping` 通（86ms ✓）、而
+`ssh` 报 `No route to host` / `Connection closed` ✓；**GitHub 的 SSH 同样超时**（`banner exchange` ✓），
+而 **HTTPS 正常** ✓（push 与 API 都走 HTTPS ✓）。
+**⇒ 影响**：外部报告的**拉取**与 `git push` 都要绕 ✓ ⇒ push 已改成
+`https://x-access-token:$(gh auth token)@github.com/…` ✓；**报告则只能等网络恢复** ✓，
+**不许把"拉不到"写成"未变"** ✗。
