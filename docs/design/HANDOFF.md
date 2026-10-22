@@ -129,3 +129,17 @@ cp "$BASE/issues_latest.md" "$BASE/issues_seen.md"
 git ls-remote "<url>" refs/heads/main | cut -c1-12   # 应等于 git rev-parse --short HEAD
 ```
 （`update-ref` 只用来让本地 `origin/main` 跟上，**不能当推送证据** ✓。）
+
+## 十、**下一步只有一件事**（2026-10-22 收尾时定，带判据）
+
+**做**：`batch` 内**合并渲染** —— 现在 N 次 `import_image` ⇒ `timings.preview_calls = N`（本机实测 4/4），
+目标 **N → 1（或 0）**。
+
+**为什么是它**：外部回放 `22,917` 个 `import_image`（`4608×8192` 画布）实测 >9 分钟；
+本机测得每个原子 **11.5 ms**，而 `render_ms ≈ 0`、`fold_ms ≈ 0.84` ⇒ **贵在"每次调用渲染一次脏区"** ✓。
+（`silent` 只省**编码/落盘**，不省渲染 ✓ —— 已实测并已回信更正 ✓。）
+
+**判据**：同一个 `batch` 里 N 个 `import_image` ⇒ `preview_calls` 应为 **1（或 0）**；
+**变异**：不合并 ⇒ 回到 **N** ⇒ 红。
+
+**注入入口**：`crates/yanshi-server/src/tools.rs` 的 `write_batch`（`ctx.silent` 就在那里设置，`tools.rs:18818` 一带）。
