@@ -3854,12 +3854,23 @@ fn require_non_empty_points(args: &Value) -> Result<()> {
 fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let shape = require_object(args, "shape")?;
-    let color = args.get("color").cloned().ok_or_else(|| {
-        YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail("缺少 color（{r,g,b,a} 或 #rrggbb）".to_string()),
-        )
-    })?;
+    // **`color` 只在纯色填充时必填** ✓（外部第 12 次实测：「`color` 仍必填（被 texture 覆盖）」✓
+    // ⇒ 传了 `texture` 之后它**一个像素都用不到** ⇒ 还要求它是白要 ✓；缺省写不透明黑 ✓）。
+    let color = match args.get("color").cloned() {
+        Some(color) => color,
+        None if args.get("texture").and_then(Value::as_object).is_some() => {
+            json!([0.0, 0.0, 0.0, 255.0])
+        }
+        None => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(
+                    "缺少 color（{r,g,b,a} 或 #rrggbb）⇒ 纯色填充必填；给了 texture 时可省略"
+                        .to_string(),
+                ),
+            ));
+        }
+    };
     // **纹理填充** ✓（外部第 71 次报告 ✓：`texture` 从**字符串**升级成**对象** ✓）。
     //
     // **对方的三条必须**（他的 `E1761`/`E1758`/`E1764` 踩出来的 ✓），与本实现的对应：
@@ -4129,8 +4140,11 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 )
             })?;
         let gap = rect_gap(&source, &target);
+        // **两种拼写都收** ✓（他们提案里写的是 `min_distance_from_target` ✓，我先实现成了
+        // `min_distance` ✓ ⇒ 两个都认 ✓，避免"照文档写却不生效" ✗）。
         let min_distance = spec
             .get("min_distance")
+            .or_else(|| spec.get("min_distance_from_target"))
             .and_then(Value::as_f64)
             .unwrap_or(0.0)
             .max(0.0);

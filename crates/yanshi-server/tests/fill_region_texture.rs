@@ -233,4 +233,63 @@ fn textured_fill_says_why_when_the_source_is_unimplemented_or_too_close() {
         message.contains("min_distance"),
         "错误必须点名 min_distance 与实测间距：{message}"
     );
+
+    // ④ **`min_distance_from_target` 是同一个东西的另一种拼写** ✓（外部提案里写的就是它 ✓）：
+    // 只收 `min_distance` 会让"照他们文档写"的调用**静默不拦** ✗ ⇒ 两种拼写都要生效 ✓。
+    let alias = json!({
+        "layer_id": layer,
+        "shape": {"type": "rect", "x": 32, "y": 32, "w": 32, "h": 32},
+        "color": [0, 0, 0, 255],
+        "texture": {
+            "type": "bitmap",
+            "blob_hash": hash,
+            "source": {"x": 30, "y": 30, "w": 8, "h": 8},
+            "width": 8,
+            "height": 8,
+            "min_distance_from_target": 25
+        }
+    });
+    let message = expect_error(&mut ctx, "fill_region", &alias);
+    assert!(
+        message.contains("min_distance"),
+        "`min_distance_from_target` 也必须生效（否则照文档写会静默不拦）：{message}"
+    );
+}
+
+#[test]
+fn textured_fill_does_not_require_a_colour() {
+    // **传了 texture 就不该再要 `color`** ✓（外部第 12 次实测：「color 仍必填（被 texture 覆盖）」✗
+    // ⇒ 那个参数一个像素都用不到，却卡住调用 ✓）。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let hash = workspace
+        .store()
+        .put(&source_bytes())
+        .expect("源位图应能入库")
+        .to_string();
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    let filled = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 0, "y": 0, "w": 16, "h": 16},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 32, "y": 32, "w": 8, "h": 8},
+                "width": 8,
+                "height": 8
+            }
+        }),
+    );
+    assert_eq!(
+        filled.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "给了 texture 时 color 应当可省略：{filled}"
+    );
 }
