@@ -3907,6 +3907,9 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                             "min_distance",
                             "min_distance_from_target",
                             "jitter",
+                            // **只从**这个图层**取纹理** ✓（外部第 80 次的用法：`ref` 单独一层
+                            // ⇒ 不想把"自己画的底"也拍进去 ✓）
+                            "layer_id",
                         ]
                     } else {
                         &[
@@ -4183,6 +4186,8 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     //     自己先画好那块（或它本来就有墨 ✓）再指向它 ✓ ⇒ 不需要另一套采样器 ✓。
     //   **⇒ 确定性**：拍下来的字节**存进文档引用的 blob** ✓ ⇒ 之后重放不依赖"当时的画布" ✓。
     let mut texture_from_region = false;
+    // **从哪个图层取的纹理** ✓（`None` = 整幅合成 ✓；响应要回显 ✓）
+    let mut texture_region_layer: Option<String> = None;
     if let Some(spec) = texture.clone() {
         if spec.get("type").and_then(Value::as_str) == Some("region") {
             let source = spec
@@ -4206,7 +4211,20 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                     ),
                 ));
             }
-            let (_, _, raw) = ctx.workspace.render_region_raw(&ctx.doc_id, source)?;
+            // **可选的 `layer_id`** ✓：给了就**只拍那一层** ✓，不给就拍**整幅合成** ✓
+            //   —— 在"ref 单独一层"的用法里这个差别是**决定性**的 ✓
+            //   （拍合成会把"自己画的底"也带上 ✗ ⇒ 纹理里混进不该有的颜色 ✓）。
+            let layer_scope = spec
+                .get("layer_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+                .map(str::to_owned);
+            let (_, _, raw) = match &layer_scope {
+                Some(layer) => ctx
+                    .workspace
+                    .render_region_raw_layer(&ctx.doc_id, source, layer)?,
+                None => ctx.workspace.render_region_raw(&ctx.doc_id, source)?,
+            };
             let hash = ctx.workspace.store().put(&raw)?;
             let mut converted = json!({
                 "type": "bitmap",
@@ -4223,6 +4241,7 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                     converted[key] = value.clone();
                 }
             }
+            texture_region_layer = layer_scope.clone();
             texture = Some(converted);
             texture_from_region = true;
         }
@@ -4341,6 +4360,8 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             "tiles": texture_tiles,
             // 从 `region` 拍下来的 ⇒ 说出来 ✓（不说的话调用方分不清"我给的 bitmap"与"它替我拍的" ✗）
             "from_region": texture_from_region,
+            // **回显取纹理的图层** ✓（`null` = 整幅合成 ✓；调用方要分得清 ✓）
+            "layer_id": texture_region_layer,
         }),
         _ => Value::Null,
     };

@@ -958,3 +958,103 @@ fn a_region_texture_keeps_the_jitter_knob() {
         }
     }
 }
+
+#[test]
+fn a_region_texture_can_be_scoped_to_one_layer() {
+    // **外部第 80 次那类用法** ✓：`ref` 单独一层 ⇒ 想从**那一层**取纹理，
+    // 而**不想**把"自己画的底"也拍进去 ✓。`region` 原来只会拍**整幅合成** ✗。
+    // 构型：L_ref 上有**左红右蓝**；L_top 在**同一块区域**盖一层**绿** ⇒
+    //   · `layer_id:"L_ref"` ⇒ 目标必须是**红/蓝** ✓
+    //   · 不给 `layer_id` ⇒ 目标是**绿**（合成 ✓）⇒ 两条互相排斥 ⇒ 判据有鉴别力 ✓。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    // L_ref：左红右蓝（源区就取这一块）
+    let made = registry().call(&mut ctx, "create_layer", &json!({"layer_id": "L_ref"}));
+    assert_eq!(
+        made.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "前置：建 L_ref 失败：{made}"
+    );
+    for (x, color) in [
+        (44.0, json!([255, 0, 0, 255])),
+        (48.0, json!([0, 0, 255, 255])),
+    ] {
+        let painted = registry().call(
+            &mut ctx,
+            "fill_region",
+            &json!({
+                "layer_id": "L_ref",
+                "shape": {"type": "rect", "x": x, "y": 4, "w": 4, "h": 8},
+                "color": color
+            }),
+        );
+        assert_eq!(
+            painted.get("ok").and_then(Value::as_bool),
+            Some(true),
+            "前置：L_ref 上色失败：{painted}"
+        );
+    }
+    // L_top：把**同一块源区**刷成绿（合成里会盖住 L_ref）
+    let made_top = registry().call(&mut ctx, "create_layer", &json!({"layer_id": "L_top"}));
+    assert_eq!(
+        made_top.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "前置：建 L_top 失败：{made_top}"
+    );
+    let green = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": "L_top",
+            "shape": {"type": "rect", "x": 44, "y": 4, "w": 8, "h": 8},
+            "color": [0, 200, 0, 255]
+        }),
+    );
+    assert_eq!(
+        green.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "前置：L_top 盖绿失败：{green}"
+    );
+
+    // ① **按层取** ⇒ 红/蓝（不是绿 ✓）
+    let scoped = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": "L_ref",
+            "shape": {"type": "rect", "x": 8, "y": 20, "w": 32, "h": 16},
+            "texture": {"type": "region", "source": {"x": 44, "y": 4, "w": 8, "h": 8}, "layer_id": "L_ref"}
+        }),
+    );
+    assert_eq!(
+        scoped.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "按层取纹理应当成功：{scoped}"
+    );
+    assert_eq!(
+        scoped
+            .get("texture")
+            .and_then(|texture| texture.get("layer_id"))
+            .and_then(Value::as_str),
+        Some("L_ref"),
+        "响应必须回显取纹理的图层（`null` = 整幅合成）⇒ {scoped}"
+    );
+    let row = row_alpha_and_colour(&mut ctx, 10, 24, 24);
+    let inked: Vec<[u64; 4]> = row
+        .iter()
+        .copied()
+        .filter(|rgba| *rgba != [255, 255, 255, 255])
+        .collect();
+    assert!(
+        inked.iter().any(|rgba| rgba[0] > 200 && rgba[1] < 60),
+        "按层取时必须看到 **L_ref 的红**（而不是 L_top 的绿）⇒ 实测 {inked:?}"
+    );
+    assert!(
+        inked.iter().all(|rgba| rgba[1] < 60),
+        "按层取时**不许**出现 L_top 的绿（绿 = 拍成了整幅合成）⇒ 实测 {inked:?}"
+    );
+}
