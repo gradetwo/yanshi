@@ -177,10 +177,34 @@ for (const brush of names) {
       allEqual = false;
       continue;
     }
+    // **★ 比法换了（第 2685 轮）✗ ★**：原先拿**门面输出**直接比**画后合成** ✗ ——
+    //   而门面给的是**这一笔所在图层的像素** ✓，合成里还含着**底图** ✓ ⇒ 两者本来就不同 ✓
+    //   （实测：`Classic_Paint` 五色差 2054~2652 字节、最大通道差 215 ✓ —— 那是**底图**的贡献 ✓，
+    //    不是"两边数学不同" ✗）。
+    //   **⇒ 正确的对照**：**把门面输出按 Normal 合成叠到底图上** ✓，再和**画后合成**比 ✓
+    //     ⇒ 若逐字节（±1 ulp）相同 ⇒ 门面这一笔与真实渲染**等价** ✓。
+    const compositeOver = (base, layer) => {
+      const out = new Uint8Array(base.length);
+      for (let i = 0; i < base.length; i += 4) {
+        const a = layer[i + 3] / 255;
+        const inv = 1 - a;
+        for (let k = 0; k < 3; k += 1) {
+          out[i + k] = Math.round(layer[i + k] * a + base[i + k] * inv);
+        }
+        out[i + 3] = Math.round(layer[i + 3] + base[i + 3] * inv);
+      }
+      return out;
+    };
+    const expectedBox = compositeOver(beforeBox, facadeC);
     let diffC = 0, maxC = 0;
     for (let i = 0; i < want; i += 1) {
-      const d = Math.abs(afterBox[i] - facadeC[i]);
+      const d = Math.abs(afterBox[i] - expectedBox[i]);
       if (d !== 0) { diffC += 1; if (d > maxC) maxC = d; }
+    }
+    // 旧比法（门面 vs 合成）只作**参考**打印：它的差主要是**底图**贡献 ✓，不参与判定 ✓。
+    let rawDiff = 0;
+    for (let i = 0; i < want; i += 1) {
+      if (afterBox[i] !== facadeC[i]) rawDiff += 1;
     }
     // **容差 1** ✓ —— 这是**语义边界** ✓（已知的依赖侧 1 ulp 类 ✓），不是"某次实测的数" ✗。
     const okC = maxC <= 1;
@@ -188,7 +212,7 @@ for (const brush of names) {
     if (okC) compositeSame += 1; else allEqual = false;
     console.log(
       `  ${(brush + "/" + colourName).padEnd(22)} 区域 ${region.w}×${region.h}（整层合成 ✓）｜` +
-      `门面 vs 画后合成：不同字节 ${diffC}｜最大通道差 ${maxC}｜` +
+      `门面⊕底图 vs 画后合成：不同字节 ${diffC}｜最大通道差 ${maxC}｜（未合成时 ${rawDiff}）｜` +
       (okC ? "**在 1 ulp 容差内** ✓" : "超出 1 ulp 容差 ✗（**这不等于「笔刷不同」** ✗ —— 两侧管线尚未对齐 ✓）"),
     );
     continue;
