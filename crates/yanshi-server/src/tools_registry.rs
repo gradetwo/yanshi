@@ -500,7 +500,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         // `selection.rs:14` ✓ 里记的 `rect | ellipse | polygon | lasso`）⇒ **不另写绘制** ✗。
         // **`texture` 明确不支持** ✓：**厚涂肌理是独立的活** ✓（需要笔触合成/高度场 ✓，我已分诊另排 ✓）
         // ⇒ 给了非缺省值就**报错说清** ✗，**绝不静默忽略** ✗（那是本仓库的头号病症 ✓）。
-        summary: "按形状填充一块区域（rect/ellipse/polygon；opacity 乘进颜色的 a）；texture 暂不支持会明确报错。**要『整体压暗/提亮但保住对比度』请用图层混合模式**（不在这里）：建一层灰再 set_property(key=blend_mode, value=multiply) —— multiply 在 sRGB 空间做 new=old×k，均值和 std 同时按 k 缩；而 fill 的 opacity 是叠加式 new=old×(1−a)+c×a，std 会按 (1−a) 被压扁（第 833 轮，外部 §139）",
+        summary: "按形状填充一块区域（rect/ellipse/polygon；opacity 乘进颜色的 a）；texture 已在计划中（规格：源区域取纹理 + 最近邻 + 羽化只作用合成量；第一版只做矩形源），当前给非缺省值会明确报错。**要『整体压暗/提亮但保住对比度』请用图层混合模式**（不在这里）：建一层灰再 set_property(key=blend_mode, value=multiply) —— multiply 在 sRGB 空间做 new=old×k，均值和 std 同时按 k 缩；而 fill 的 opacity 是叠加式 new=old×(1−a)+c×a，std 会按 (1−a) 被压扁（第 833 轮，外部 §139）",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
@@ -514,7 +514,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // **"描述说支持、schema 拒绝"** ✓ ⇒ 与同仓 `brush_stroke` / `preview` / `test_color` 一致 ⇒ 用 `Any` ✓。
             param!("color", Any, true, "填充色 {r,g,b,a} 或 #rrggbb；**任一分量 > 1 即按字节**（0..255），否则按 0..1 的比例"),
             param!("opacity", Number, false, "不透明度 0..1（乘进颜色的 a；缺省 1）"),
-            param!("texture", String, false, "暂不支持（只接受缺省/smooth）⇒ 给别的会明确报错"),
+            param!("texture", String, false, "暂不支持（只接受缺省/smooth）⇒ 给别的会明确报错。**⇒ 而它已在计划里**（第 1614 轮受理，外部最需要的能力）：规格是「**从源区域取纹理、按最近源像素分配（不许全图平均）、羽化只作用在合成量上**」；第一版只做**矩形源 + 最近邻平铺**（任意形状源要距离变换，属下一版）。**⇒ 在那之前请用 `path` 掩膜 + 现有笔刷**"),
         ],
     },
     ToolSpec {
