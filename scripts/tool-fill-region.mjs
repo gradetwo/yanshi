@@ -21,7 +21,20 @@ const call = async (tool, args) => (await fetch(`${base}/api/tools?doc=${docId}&
 })).json();
 const rgba = async (x, y) => {
   const raw = await call("render_region", { region: { x, y, w: 1, h: 1 }, raw: true, max_px: 1000 });
-  if (!raw.ok || !raw.raw_url) return null;
+  if (!raw.ok || !raw.raw_url) {
+    // **"画布太小"⇒ 判据前提不成立（exit 3），不是产品缺陷** ✓（第 594 轮实测）
+    //   ⇒ 本脚本的采样点 (150,100)/(248,41)/(51,158)/(248,158) 假设画布 ≥ 300×200 ✓
+    //   而 `_bootstrap` 在"本片之前没人建过大画布"时是 **64×64** ⇒ 采样点全越界 ⇒
+    //   以前会报成 🔴 产品红 ✓（**顺序依赖的假红** ✗）⇒ 现在如实说"判不了" ✓
+    const detail = String((raw.context && raw.context.detail) || "");
+    if (detail.includes("不相交")) {
+      console.error(
+        `⊘ 不可判：画布小于 300×200（${detail}）⇒ 本判据的采样点假设 ≥300×200（不是产品问题）`,
+      );
+      process.exit(3);
+    }
+    return null;
+  }
   const buffer = Buffer.from(await (await fetch(base + raw.raw_url)).arrayBuffer());
   return [buffer[0], buffer[1], buffer[2], buffer[3]];
 };
