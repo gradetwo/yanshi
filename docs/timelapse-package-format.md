@@ -91,3 +91,26 @@ curl -X POST "localhost:PORT/api/tools/export_project?doc=d1&token=$T" -d '{"pat
 # 6) 出视频
 yanshi-timelapse $WS/exports/proj.yanshi out.mp4 1
 ```
+
+## 七、**打包方必须知道的两件事**（外部第 83 次实测补，2026-10-22）
+
+> 下面两条**文档原先没写** ⇒ 对方踩了才知道（`tools/pack_yanshi.py` 已按此改）。
+
+### ① tar 必须是 **USTAR**，**PAX 会被拒**
+
+Python 的 `tarfile` **默认写 PAX 扩展头**（`tarfile.open(..., format=tarfile.PAX_FORMAT)`），
+而引擎**只接受 USTAR** ⇒ 报错 `工程包里用了 GNU 长名 / PAX 扩展`。
+
+**⇒ 打包方**：`tarfile.open(path, "w", format=tarfile.USTAR_FORMAT)` ✓
+（路径保持短 ✓ —— USTAR 的名字段只有 100 字节 ✓）。
+
+### ② 工作区里的 blob **文件**不是纯 zlib，而是 **2 字节前缀 ＋ zlib**
+
+工区落盘格式：`<2 字节前缀>` ＋ `zlib(明文)` ⇒
+**打包时要把那 2 字节去掉**，只写 `zlib(明文)` ✓ —— 否则引擎解压会失败（或哈希对不上 ✓）。
+
+**⇒ 判据式记法**：包里的文件内容必须满足
+`sha256(inflate(文件内容)) == 文件名里的哈希` ✓（**前缀还在就会对不上** ✓）。
+
+**⇒ 这两条都是"外部实测换来的"** ✗：`①` 是他们 `E1843` 之后撞的、`②` 是他们读工区文件时发现的
+⇒ **写格式文档时"能跑通"不等于"写全了"** ✓。
