@@ -210,3 +210,54 @@ fn scaled_frame_is_never_empty() {
     yanshi_timelapse::scale_rgb_region(&frame, (dw, dh), &mut full, (16, 16), (0, 16), (0, 16));
     assert_eq!(scaled, full, "增量缩小必须与整幅缩小逐字节相同");
 }
+
+/// **新增一个小矩形 ⇒ 这一帧的脏区必须远小于整幅**（第 580 轮，实测驱动）。
+///
+/// **为什么**：合成包实测「每帧 768 tile = 整幅」⇒ `frame()` 每帧全渲染 ⇒ 外部 4608×8192
+/// 的回放因此极慢（第 87 次仍报 261 字节）。这条判据守的是「脏区真的增量」。
+///
+/// **变异**：`plan_dirty` 对 `CreateObject` 退回 `dirty_for_layer`／`DirtySet::full` ⇒ 整幅 ⇒ 红。
+#[test]
+#[ignore = "已知缺陷（第 580 轮实测 16/16 tile）：create_object 会让整幅失效 ⇒ timelapse 每帧全渲染；修好前不阻塞 CI"]
+fn a_new_small_object_does_not_dirty_the_whole_canvas() {
+    let (dw, dh) = (256u32, 256u32);
+    let mut timeline = Timeline::new("tl_dirty", 64, dw, dh, 256 * 1024 * 1024).expect("kernel");
+    timeline
+        .apply(&atom(
+            "a0",
+            1,
+            "create_document",
+            json!({"background": {"r": 255, "g": 255, "b": 255, "a": 255},
+                   "color_space": "srgb", "doc_id": "tl_dirty", "width": dw, "height": dh}),
+        ))
+        .expect("create_document");
+    timeline
+        .apply(&atom(
+            "a1",
+            2,
+            "create_layer",
+            json!({"layer_id": "L1", "name": "L1"}),
+        ))
+        .expect("create_layer");
+    let _ = timeline.frame();
+    let before = timeline.stats().2;
+    timeline
+        .apply(&atom(
+            "a2",
+            3,
+            "create_object",
+            json!({"object_id": "o1", "layer_id": "L1", "kind": "shape",
+                   "data": {"geometry": {"kind": "rect",
+                                         "bbox": {"x": 40.0, "y": 40.0, "w": 24.0, "h": 24.0}},
+                            "color": {"r": 10, "g": 200, "b": 30, "a": 255}}}),
+        ))
+        .expect("create_object");
+    let _ = timeline.frame();
+    let after = timeline.stats().2;
+    let delta = after.saturating_sub(before);
+    // 256×256、tile 64 ⇒ 全画布 16 个 tile；一个 24×24 的矩形最多碰到 4 个 tile
+    assert!(
+        delta <= 4,
+        "只新增一个 24×24 的矩形 ⇒ 这一帧的脏 tile 必须 ≤ 4，实测 {delta}（整幅是 16）"
+    );
+}

@@ -1555,3 +1555,55 @@ fn raster_patch_fingerprint_tracks_pixels_only() {
         "未知键（opacity）⇒ 必须退回 Debug 指纹 ⇒ 与快路不同"
     );
 }
+
+/// **建一个普通矩形对象 ⇒ 脏区必须是"那个矩形"，不是整幅**（第 580 轮，实测驱动）。
+///
+/// **为什么**：`yanshi-timelapse` 的合成包（2048×1536、tile 64 ⇒ 全画布 768 tile）实测
+/// **每帧脏区都是 768 tile**（`DirtyKind::Full ⇒ grid.all_keys()`）⇒ 增量出帧退化成每帧全渲染
+/// ⇒ 渲染量多 **48×**。外部第 87 次也把「纯 `import_image` 序列」列为怀疑对象。
+///
+/// **变异**：让 `dirty_for_object` 对 `CreateObject` 直接返回 `dirty_for_layer(...)` ⇒ 红。
+#[test]
+fn creating_a_small_object_dirties_only_its_bbox() {
+    use yanshi_core::{Atom, AtomKind};
+    use yanshi_render::dirty::{plan_dirty, DirtyKind};
+
+    let mut state = DocumentState::empty();
+    state.doc_id = Some("doc_dirty_obj".to_owned());
+    state.width = 256;
+    state.height = 256;
+    state.layers.insert("L1".to_owned(), layer("L1", 0));
+    state.objects.insert(
+        "o1".to_owned(),
+        object(
+            "o1",
+            "L1",
+            ObjectType::Shape,
+            0,
+            json!({"geometry": {"kind": "rect",
+                                "bbox": {"x": 16.0, "y": 16.0, "w": 24.0, "h": 24.0}},
+                   "color": {"r": 10, "g": 200, "b": 30, "a": 255}}),
+        ),
+    );
+    let atom = Atom::new(
+        AtomKind::CreateObject,
+        "human:1",
+        "session:test",
+        json!({"object_id": "o1", "layer_id": "L1", "kind": "shape",
+               "data": {"geometry": {"kind": "rect",
+                                     "bbox": {"x": 16.0, "y": 16.0, "w": 24.0, "h": 24.0}},
+                        "color": {"r": 10, "g": 200, "b": 30, "a": 255}}}),
+    )
+    .with_id("a_obj");
+    let plan = plan_dirty(&state, None, &atom);
+    assert!(
+        matches!(plan.kind, DirtyKind::Geometry),
+        "建一个小矩形应当是几何脏区，实测 {:?}（Full ⇒ 增量出帧退化成全渲染）",
+        plan.kind
+    );
+    let bbox = plan.bbox.expect("几何脏区必须给 bbox");
+    assert!(
+        bbox.w <= 64.0 && bbox.h <= 64.0,
+        "脏区必须局限在那个矩形附近，实测 {bbox:?}"
+    );
+}
