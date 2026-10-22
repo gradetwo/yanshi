@@ -400,21 +400,16 @@ fn push_frame(
     // **第 568 轮：先退回"整幅缩小"** ✗ —— 外部实测「增量缩小 ⇒ mp4 只有 261 字节」（`f3bcde39`）✗
     //   ⇒ **正确性优先**：帧管线回到已知可用的整幅缩小 ✓；增量路径要**先有自己的判据**再启用 ✓
     //   （`Timeline::frame_rgb_scaled` 与 `scale_rgb_region` 都还在，等一条能证伪"空帧"的判据 ✓）。
+    // **只重算脏区对应的输出像素** ✓（第 583 轮：正确键名的包实测 **scale 占 33%** ⇒ 值得）
     let frame = timeline
-        .frame()
+        .frame_rgb_scaled(layout.out_w, layout.out_h)
         .map_err(|e| anyhow!("渲染失败：{} {}", e.code, e.detail))?;
     let render_ns = t_render.elapsed().as_nanos();
     account.render_ns += render_ns;
     account.frame_render_ns.push(render_ns);
     let t_scale = Instant::now();
-    yanshi_timelapse::scale_rgb_region(
-        frame,
-        (layout.doc_w, layout.doc_h),
-        scaled,
-        (layout.out_w, layout.out_h),
-        (0, layout.out_h),
-        (0, layout.out_w),
-    );
+    let copy = scaled.len().min(frame.len());
+    scaled[..copy].copy_from_slice(&frame[..copy]);
     account.scale_ns += t_scale.elapsed().as_nanos();
     // **绝不静默产出空帧** ✓（外部第 86 次：退出码 0 而 mp4 只有 261 字节 ⇒ 那是最坏的一种"成功"✗）
     if scaled.iter().all(|byte| *byte == 0) {
