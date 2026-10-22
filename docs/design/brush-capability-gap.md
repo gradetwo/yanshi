@@ -14689,3 +14689,30 @@ handler 里**两者都没有**时报错**同时点名两条出路** ✓（原来
 （响应是通用变更回执、不回显 `mask_id` ⇒ 用"只能靠它成功"的调用证明 ✓）；
 ② 显式 `shape` 仍然优先 ✓；③ 两者都不给 ⇒ 文案**同时**含 `shape` 与 `from_selection` ✓。
 **变异**：把 `shape` 改回 `required: true` ⇒ ① **红**，文案正是外部报的那句「缺少必填参数 shape」✓。
+
+## 三百六十四、合并第五包之后 CI 红了一片（**未定位，下一轮第一件事**）
+
+**⇒ 事实**（`c47cb832` 与 `e32d4497` 两次 run，同一批）：
+`test (stable)`／`test (beta)`／`clippy`／`rustfmt`／`wasm smoke` **全绿** ✓，
+而 **criteria 分片 1/2/3/5/6 红** ✗，失败的判据是：
+
+| 判据 | 现象 |
+|---|---|
+| `tool-region-cache-reuse` | `below_reuse` **没有自增**（1152 ⇒ 1152） |
+| `tool-below-reuse` | `below_reuse` **22 ⇒ 22**（改当前层后不涨） |
+| `tool-below-retention` | 六次读数**全 0 → 0** |
+| `tool-latency-tiers` | ③ 应快于 ① ✗（388.2 vs 327.3）｜两层都没报复用 |
+| `tool-below-sig-alternate` | 回到原切点必须复用 ✗ |
+| `tool-erase-shape-canvas-clip` / `tool-smart-texture-density` | `smart_*` 的形状被判"错词汇"⇒ **已修**（`kind` 是 `type` 的别名 ✓） |
+| `tool-examples-doc-check` | 无明确失败行（待查） |
+
+**⇒ 已排除**：`layer_alive` 语义正确（`!is_deleted()` ✓）；补丁 A/D/E 都没有碰渲染器；
+`below_reuse` 在**改当前层**后不涨，而**输出确实变了**（`tool-below-reuse` 的 ② 是绿的 ✓）。
+
+**⇒ 未定位** ✗ ⇒ **不许猜** ✓。**下一轮按这个顺序**：
+1. 本机 `cargo build --release -p yanshi-http` ⇒ `bash scripts/run-criteria-local.sh scripts/tool-below-reuse.mjs` **复现**；
+2. 复现后**逐条 `git revert`** 这五条补丁（B→A→D→E→C 顺序无关，一次一条）⇒ 找出是哪一条把 below 缓存打掉；
+3. 找到后：若是补丁行为变化 ✓ ⇒ 改**判据**（below 缓存真的不该命中时）并**写出理由**；
+   若是补丁缺陷 ✗ ⇒ 修补丁 ＋ 加一条**能红的**判据（不许只把它塞进 known-red 掩盖 ✗）。
+
+**⇒ 现在不把这几条登记成 known-red** ✗：它们在 `8a7df363` 是**绿的** ✓ ⇒ 登记等于**把回归藏起来** ✗。
