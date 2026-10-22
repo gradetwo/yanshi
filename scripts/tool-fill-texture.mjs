@@ -1,0 +1,146 @@
+#!/usr/bin/env node
+// **`fill_region(texture=bitmap)` 必须逐像素取源位图** ✓（外部第 71–73 次报告要的那个能力）
+//
+// **为什么需要这条判据** ✗：纹理填充最容易的错法是"取全图平均色/单一颜色"✗ ——
+//   **结果仍然 `ok:true`、仍然填满了整块、仍然比纯色好看** ✓ ⇒ 正确性判据抓不到 ✗
+//   ⇒ 而对方的实测（`E1761`）正是"平均会让深处看不出纹理" ✓
+//   ⇒ **∴ 唯一能抓住它的构型**：源位图**左半红、右半蓝** ⇒ 目标区**必须同时含红与蓝** ✓
+//     （平均 ⇒ 整片紫 ⇒ 两条断言同时红 ✓）
+//
+// **判据（五条，成对才有意义）**：
+//   ① `texture={type:"bitmap",…}` 被接受（`ok:true`）
+//   ② 响应**回显** `texture.source_gap_px`（传了纹理却不说它生效 = 撒谎 ✗）
+//   ③ 源 8×8（左红右蓝）、目标 32×32 ⇒ 目标左/右各取到**红**/**蓝**
+//   ④ `type:"region"` **未实现** ⇒ 必须**报错并点名 region**（不许静默当"没有纹理" ✗）
+//   ⑤ `min_distance` 大于实际间距 ⇒ 必须**报错并点名**（对方的 `test1` 红褐竖痕护栏 ✓）
+//
+// **退出码**（第 336 轮）：0 通过｜1 产品失败｜3 判据自身前提不成立（不是产品问题）。
+import { Buffer } from "node:buffer";
+
+const [base] = process.argv.slice(2);
+if (!base) {
+  console.error("用法: node scripts/tool-fill-texture.mjs <base-url>");
+  process.exit(3);
+}
+
+const failures = [];
+const check = (ok, label, detail) => {
+  console.log(`  ${ok ? "✓" : "✗"} ${label}${detail ? `（${detail}）` : ""}`);
+  if (!ok) failures.push(label);
+};
+
+const stamp = Date.now().toString(36);
+const boot = await fetch(`${base}/api/documents`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ doc_id: `tex_${stamp}`, width: 128, height: 96 }),
+});
+const bootBody = await boot.json().catch(() => ({}));
+const doc = bootBody.doc ?? bootBody.doc_id ?? `tex_${stamp}`;
+const token = bootBody.token;
+if (!token) {
+  console.error(`  ⊘ 不可判：建不出文档 ⇒ ${JSON.stringify(bootBody).slice(0, 160)}`);
+  process.exit(3);
+}
+const call = async (name, args) => {
+  const reply = await fetch(
+    `${base}/api/tools/${name}?doc=${encodeURIComponent(doc)}&token=${encodeURIComponent(token)}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(args || {}),
+    },
+  );
+  return reply.json();
+};
+const detailOf = (body) => JSON.stringify(body?.context?.detail ?? body?.context ?? {}).slice(0, 160);
+
+const layers = await call("list_layers", {});
+const layerId = layers?.layers?.[0]?.layer_id ?? layers?.layers?.[0]?.id;
+if (!layerId) {
+  console.error(`  ⊘ 不可判：新文档没有图层 ⇒ ${JSON.stringify(layers).slice(0, 160)}`);
+  process.exit(3);
+}
+
+// 源位图：8×8 原始 RGBA，**左半红、右半蓝**（与 `tests/fill_region_texture.rs` 同一构型）。
+const source = Buffer.alloc(8 * 8 * 4);
+for (let y = 0; y < 8; y += 1) {
+  for (let x = 0; x < 8; x += 1) {
+    const i = (y * 8 + x) * 4;
+    const red = x < 4;
+    source[i] = red ? 255 : 0;
+    source[i + 1] = 0;
+    source[i + 2] = red ? 0 : 255;
+    source[i + 3] = 255;
+  }
+}
+const put = await call("put_blob", {
+  data_base64: source.toString("base64"),
+  mime_type: "image/x-yanshi-raw",
+});
+const hash = put?.blob_hash ?? put?.blob ?? put?.hash;
+if (!hash) {
+  console.error(`  ⊘ 不可判：put_blob 没回哈希 ⇒ ${JSON.stringify(put).slice(0, 160)}`);
+  process.exit(3);
+}
+
+const texture = {
+  type: "bitmap",
+  blob_hash: hash,
+  source: { x: 0, y: 0, w: 8, h: 8 },
+  width: 8,
+  height: 8,
+};
+const target = { type: "rect", x: 32, y: 32, w: 32, h: 32 };
+const filled = await call("fill_region", { layer_id: layerId, shape: target, texture });
+check(filled?.ok === true, "① texture={type:\"bitmap\"} 必须被接受", detailOf(filled));
+check(
+  typeof filled?.texture?.source_gap_px === "number",
+  "② 响应必须回显 texture.source_gap_px（生效了就要说）",
+  JSON.stringify(filled?.texture ?? null),
+);
+
+// 目标 x=34 ⇒ 源里 x=2 ⇒ 红；x=60 ⇒ 源里 x=4 ⇒ 蓝（8px 平铺 ✓）。
+const samples = (await call("sample_colors", { points: [[34, 36], [60, 36]] }))?.samples;
+if (!Array.isArray(samples) || samples.length !== 2) {
+  console.error("  ⊘ 不可判：sample_colors 形状变了");
+  process.exit(3);
+}
+const rgb = (index) => samples[index]?.rgba?.slice(0, 3) ?? [0, 0, 0];
+const [lr, , lb] = rgb(0);
+const [rr, , rb] = rgb(1);
+check(lr > 200 && lb < 60, "③ 目标**左**侧取到源的**红**半（平均会变紫 ⇒ 这条红）", `实测 [${rgb(0)}]`);
+check(rr < 60 && rb > 200, "④ 目标**右**侧取到源的**蓝**半（平均会变紫 ⇒ 这条红）", `实测 [${rgb(1)}]`);
+
+// ⑤ `type:"region"` 未实现 ⇒ 必须报错并**点名** region（不许静默降级）。
+const region = await call("fill_region", {
+  layer_id: layerId,
+  shape: target,
+  texture: { type: "region", source: { x: 0, y: 0, w: 8, h: 8 }, width: 8, height: 8 },
+});
+const regionDetail = detailOf(region);
+check(
+  region?.ok === false && /region/i.test(regionDetail),
+  "⑤ texture.type=region 未实现 ⇒ 必须报错并点名 region",
+  `ok=${region?.ok}｜${regionDetail}`,
+);
+
+// ⑥ `min_distance` 大于实际间距 ⇒ 必须报错并点名 min_distance。
+const tooClose = await call("fill_region", {
+  layer_id: layerId,
+  shape: target,
+  texture: { ...texture, source: { x: 30, y: 30, w: 8, h: 8 }, min_distance: 40 },
+});
+const closeDetail = detailOf(tooClose);
+check(
+  tooClose?.ok === false && /min_distance/.test(closeDetail),
+  "⑥ min_distance 超过实际间距 ⇒ 必须报错并点名 min_distance",
+  `ok=${tooClose?.ok}｜${closeDetail}`,
+);
+
+console.log(
+  failures.length === 0
+    ? "  ⇒ 纹理填充：逐像素取源、region 响亮未实现、min_distance 护栏 ✓"
+    : `  ⇒ 失败 ${failures.length} 条`,
+);
+process.exit(failures.length === 0 ? 0 : 1);
