@@ -261,3 +261,51 @@ fn a_new_small_object_does_not_dirty_the_whole_canvas() {
         "只新增一个 24×24 的矩形 ⇒ 这一帧的脏 tile 必须 ≤ 4，实测 {delta}（整幅是 16）"
     );
 }
+
+/// **只建过文档/图层 ⇒ 那一帧必须是背景色，且不算"整幅渲染"**（第 620 轮）。
+///
+/// **为什么**：`create_document` / `create_layer` 是结构性失效 ⇒ 旧实现直接渲整幅 ✓
+/// ⇒ 4608×8192 上**每帧约 27 s** ⇒ 外部第 92 次的"卡死"就是这两帧起步 ✗
+/// ⇒ 现在直接按背景色填缓冲 ✓（3072² 的包实测 **25.3 s → 0.6 s** ✓）。
+///
+/// **变异**：去掉那条快路径 ⇒ `full_renders` 从 0 变 1 ⇒ 红 ✓；
+/// 背景色取错（比如恒白）⇒ 像素断言红 ✓。
+#[test]
+fn blank_frames_are_background_not_full_renders() {
+    let (dw, dh) = (64u32, 64u32);
+    let mut timeline = Timeline::new("tl_blank", 64, dw, dh, 64 * 1024 * 1024).expect("kernel");
+    timeline
+        .apply(&atom(
+            "a0",
+            1,
+            "create_document",
+            json!({"background": {"r": 10, "g": 20, "b": 30, "a": 255},
+                   "color_space": "srgb", "doc_id": "tl_blank", "width": dw, "height": dh}),
+        ))
+        .expect("create_document");
+    timeline
+        .apply(&atom(
+            "a1",
+            2,
+            "create_layer",
+            json!({"layer_id": "L1", "name": "L1"}),
+        ))
+        .expect("create_layer");
+    let frame = timeline.frame().expect("frame");
+    assert_eq!(frame.len(), (dw * dh * 4) as usize, "帧缓冲大小不对");
+    assert_eq!(
+        &frame[..4],
+        &[10, 20, 30, 255],
+        "空白帧必须是文档的背景色（不是白、也不是没初始化）"
+    );
+    assert!(
+        frame.chunks_exact(4).all(|px| px == [10, 20, 30, 255]),
+        "空白帧的每个像素都必须是背景色"
+    );
+    let (full_renders, dirty_renders, _, _) = timeline.stats();
+    assert_eq!(
+        full_renders, 0,
+        "只建文档/图层 ⇒ 不该发生整幅渲染（4608×8192 上每帧约 27 s）"
+    );
+    assert_eq!(dirty_renders, 0, "空白帧也不该产生脏区渲染");
+}

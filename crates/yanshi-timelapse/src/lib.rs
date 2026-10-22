@@ -128,6 +128,12 @@ pub struct Timeline {
     ///   ＋ **∴ 现在 ✗**：**存集合 ✗ 出帧时按行并成 run**✗ ⇒ **∴ 渲的量**与"**改了多少像素**"
     ///     成正比** ✓ ★★★
     dirty: BTreeSet<(u32, u32)>,
+    /// **画布背景色** ✓（从 `create_document` 里记下来 ✓）：还没放过任何对象时，
+    /// 出帧就是**一块背景色** ✓ ⇒ 不必为它渲整幅 ✓（第 620 轮；4608×8192 上省 ~27 s/帧 ✓）。
+    background: [u8; 4],
+    /// **有没有出现过"非 建文档/建图层"的原子** ✓ —— 没有 ⇒ **帧就是背景色** ✓
+    /// （保守：只要来过一个别的 kind 就置 false ✓，之后一律走真渲染 ✓）。
+    only_document_and_layers: bool,
     /// **∴ 统计：**整幅渲染了几次／脏区渲染了几次／脏区覆盖了多少 tile** ✓（**账用 ✓）★
     full_renders: u64,
     /// 见 [`Timeline::stats`]。
@@ -158,6 +164,8 @@ impl Timeline {
             scaled: Vec::new(),
             scaled_dims: (0, 0),
             dirty: BTreeSet::new(),
+            background: [255, 255, 255, 255],
+            only_document_and_layers: true,
             full_renders: 0,
             dirty_renders: 0,
             dirty_tiles_total: 0,
@@ -176,6 +184,28 @@ impl Timeline {
     ///   ＋ **∴ 而**两次出帧之间可能吃了**很多**个 atom**✗ ⇒ **∴ 只取最后一个**会漏内容 ✓
     ///     ⇒ **∴ 于是**：**自己并 ✗ 不假设内核替我们累积** ✓ ★★
     pub fn apply(&mut self, atom_json: &str) -> Result<Value, KernelError> {
+        // **记背景色 ＋ 判断"还没放过对象"** ✓（第 620 轮）
+        if let Ok(atom) = serde_json::from_str::<Value>(atom_json) {
+            match atom.get("kind").and_then(Value::as_str) {
+                Some("create_document") => {
+                    if let Some(background) = atom.get("payload").and_then(|p| p.get("background"))
+                    {
+                        let channel = |key: &str| {
+                            background
+                                .get(key)
+                                .and_then(Value::as_u64)
+                                .map(|value| value.min(255) as u8)
+                                .unwrap_or(255)
+                        };
+                        self.background = [channel("r"), channel("g"), channel("b"), channel("a")];
+                    }
+                }
+                // 建图层不影响"画面还是背景色"这一点 ✓
+                Some("create_layer") => {}
+                // 其它任何 kind 都可能改像素 ⇒ 以后一律走真渲染 ✓
+                Some(_) | None => self.only_document_and_layers = false,
+            }
+        }
         let out = self.kernel.apply_atom_json(atom_json)?;
         for key in self.kernel.last_dirty_tiles() {
             // **∴ 只**记下 tile 坐标 ✗ 不在这里算 bbox** ✓（**∴ 出帧时才按行并 run ✓）★
@@ -216,6 +246,17 @@ impl Timeline {
                 (y1 + 1).saturating_mul(self.tile).min(self.doc_h),
             ))
         };
+        // **★ 只建过文档/图层 ⇒ 这一帧就是背景色 ⇒ 不要渲整幅 ★**（第 620 轮）
+        //   ⇒ 4608×8192 上**每帧 ~27 s** ⇒ 前两帧直接省掉 ✓（外部第 92 次的"卡死"就是这两帧起步 ✓）
+        //   ⇒ 判据 `blank_frames_are_background_not_full_renders`（`incremental_matches_full.rs` ✓）
+        if self.only_document_and_layers {
+            let pixel = self.background;
+            for chunk in self.frame.chunks_exact_mut(4) {
+                chunk.copy_from_slice(&pixel);
+            }
+            self.last_dirty_px = Some((0, 0, self.doc_w, self.doc_h));
+            return Ok(&self.frame);
+        }
         if dirty.is_empty() {
             let region = Bbox::new(0.0, 0.0, f64::from(self.doc_w), f64::from(self.doc_h));
             let rendered = self.kernel.render_region(region)?;

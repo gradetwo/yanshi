@@ -16768,3 +16768,23 @@ git ls-remote git@github.com:gradetwo/yanshi.git refs/heads/main
 1. **别为"空画布"渲染整幅** ✓：`create_document`/`create_layer` 之后那一帧，画面就是**背景色** ✓
    ⇒ 直接按背景填缓冲（或首帧从**空白**起算）⇒ 省掉 1–2 个整幅帧 ✓（4608×8192 上 ≈ **54 s** ✓）；
 2. **按输出尺寸渲染**（现在全分辨率渲完再缩 0.132 ⇒ **56× 像素白算** ✗）—— 收益最大，但要看内核能否按缩放渲 ✓。
+
+### 四百二十三（续三）：**空白帧不再渲整幅** ✓ —— 3072² **25.3 s → 0.6 s（42×）**
+
+**⇒ 改法**（`crates/yanshi-timelapse/src/lib.rs`）：`Timeline` 记住 `create_document` 的**背景色**，
+并记一个 `only_document_and_layers`（只要来过一个别的 kind 就置 false ✓）；
+该标志为真时 `frame()` **直接按背景色填缓冲** ✓，**不调 `render_region`** ✓。
+
+**⇒ 实测（同一 3072×3072 包：`create_document` ＋ `create_layer`）**：
+| | 整跑 |
+|---|---|
+| 改前 | **25.3 s** |
+| 改后 | **0.6 s** ✓（**42×**）|
+
+**⇒ 而 4608×8192 ＋ 一个 `import_image` 的包**：改前 **>240 s 卡死** ⇒ 改后**正常出片**（2 帧、3414 字节 ✓）。
+
+**⇒ 判据**（`incremental_matches_full.rs::blank_frames_are_background_not_full_renders`）：
+- 24 位背景色 `{10,20,30}` ⇒ 帧的**每个像素**都必须是它 ✓；
+- `stats().0 == 0`（**整幅渲染 0 次** ✓）＋ `stats().1 == 0`（脏区渲染 0 次 ✓）。
+**⇒ 变异**：把快路径关掉 ⇒ 测试 **FAILED** ✓（`full_renders` 变 1 ⇒ 红 ✓）。
+**⇒ 本机**：`yanshi-timelapse` **6 passed**；`check-timelapse-produces-frames` ✓ 9 帧；`pre-commit` 通过 ✓。
