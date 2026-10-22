@@ -16260,3 +16260,21 @@ color.rs:1018  判据 linear_mixing_differs_from_srgb_mixing_by_about_35_levels
 **⇒ 变异**（`mix_colors` 把 Linear 当 Rgb）⇒ 实测 `linear rgb(100,100,155)`、两项不成立 ⇒ **退出码 1** ✓
 **⇒ 这一轮的数字**：linear 中段 `rgb(168,168,205)` vs sRGB 模式 `rgb(100,100,155)` ⇒ **＋68/＋68/＋50 级** ✓
 （这比单测那个"红蓝各 50% 差 35 级"更贴近真实笔触 ✓）。
+
+## 四百一十、试做"参数面/处理器"机检 **没做成** ✗（已撤，但记下坑在哪）
+
+**⇒ 目标**：机检"处理器读了、参数面没声明"这一类（就是 `color_mixing` 那个 bug）✓。
+**⇒ 结果**：脚本对 **38 处**报红，但**绝大多数是假红** ✗（`import_image` 的 `layer_id`/`bitmap`/`region`
+明明声明了、JSON 调用一直能用 ✓）⇒ **已删** ✓（宁可没有，也不要一个"喊狼来了"的检查 ✗）。
+
+**⇒ 三个坑（下一轮要么绕开、要么别做）**：
+1. **参数面不是内联的**：`import_image` 写的是 `params: IMPORT_IMAGE_PARAMS`（常量）✓
+   —— 我加了常量解析但**仍没生效** ✗（`ToolSpec {` 切块 ＋ `name:` 定位的匹配没对上 ✓）；
+2. **一个处理器被多个工具复用**（`write_retouch` 服务 `clone_stamp`/`heal_stamp`/`smudge` ✓）
+   ⇒ "读了就要求声明"会**按工具重复报** ✗ ⇒ 必须**按处理器去重**或用"该工具允许的子集" ✓；
+3. **描述里也会出现 `name: "x",`** ⇒ 切块会错位 ✓（我已改成按 `ToolSpec {` 切，但仍不够 ✓）。
+
+**⇒ 结论**：这条机检**值得做**，但要**先做一个可靠的 Rust 侧导出**（例如让注册表暴露
+`spec.params` 的 JSON，脚本去比对 ✓），而不是**用正则猜 Rust** ✗。
+**⇒ 现有替代**：`color_mixing` 那个具体 bug 已有**端到端判据**（`scripts/tool-color-mixing.mjs`）✓，
+它能抓到"参数被拒收" ✓（`exit 1` vs `exit 3` 的区别就是这个 bug 的指纹 ✓）。
