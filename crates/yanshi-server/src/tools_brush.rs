@@ -1747,8 +1747,23 @@ pub(super) fn paint_brush(
                     "① **加长路径**（本笔 {n} 点、总长 {path_len:.1}px）✓；② 加大 size；③ 换一支能画的笔刷"
                 ),
             };
+            // **结论句要跟着**真实原因**走** ✓（外部 `B3` ✗）：`size=120` ＋ 15px 路径时，
+            //   首推"加大 size"是**无效建议** ✓ ⇒ 而**表头**原先仍写"几乎都是 size 太小" ✗
+            //   ⇒ 现在表头与建议**同一个判据**（`size >= 4 && path_len < size` ⇒ 路径太短）✓。
+            //   另：外壳已经写了「这一笔没落下任何像素 ⇒ 笔刷「X」」✗ ⇒ 这里**不再重复**那句话 ✓
+            //   （实测原来会打印成「…没落下任何像素 ⇒ 笔刷「calligraphy.myb」这一笔没落下任何像素…」✗）。
+            let cause: String = match size {
+                Some(sz) if sz >= 4.0 && path_len < sz => format!(
+                    "**路径太短**（撑不满一个 dab 间距：总长 {path_len:.1}px，size={sz}px ⇒ 比值 {:.2}）",
+                    path_len / sz
+                ),
+                Some(sz) if sz < 4.0 => format!(
+                    "**size 太小**（{sz}px：抗锯齿把小半径的 `hardness` 压成负数）"
+                ),
+                _ => "**这一笔没落下任何像素**".to_string(),
+            };
             format!(
-                "这一笔没落下任何像素（`painted_pixels=0`）⇒ **几乎都是 size 太小**：\
+                "（`painted_pixels=0`）⇒ {cause} ⇒ \
                  `size={size:?}` ⇒ 半径约 size/2 px ⇒ 笔刷的抗锯齿分支（`stroke.rs` 的 `current_fadeout < aa_min`）\
                  会把 `hardness` 调成**负数** ⇒ `draw_dab_default` 在 `hardness <= 0` 时整 dab 拒画。\
                  **已实测**（第 731 轮）：`calligraphy` 在 `size=1/2/3` 全不落墨、`size=4` 起正常；\
