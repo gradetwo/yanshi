@@ -18,6 +18,63 @@ use serde_json::Value;
 use yanshi_core::Bbox;
 use yanshi_wasm::{Kernel, KernelError};
 
+/// **RGBA8 → RGB24 ＋ 盒平均缩小，但只算"受影响的那块输出像素"**（第 556 轮）。
+///
+/// **为什么可以只算一块**：每个输出像素只由**它自己那块源像素**决定 ⇒ 子集与全量
+/// **逐字节相同** ✓（判据 `scaled_region_matches_full` 守着）。`frame()` 本来就是增量的
+/// （只渲脏 tile），缺的只是"只更新对应的输出像素" ⇒ 每帧成本 ∝ 脏面积，而不是整幅。
+///
+/// `out_rows` / `out_cols` 是**输出空间**的行、列范围（左闭右开）。
+pub fn scale_rgb_region(
+    src: &[u8],
+    src_size: (u32, u32),
+    out: &mut [u8],
+    out_size: (u32, u32),
+    out_rows: (u32, u32),
+    out_cols: (u32, u32),
+) {
+    let (src_w, src_h) = src_size;
+    let (out_w, out_h) = out_size;
+    let (sw, sh) = (src_w as usize, src_h as usize);
+    let ow = out_w as usize;
+    if sw == 0 || sh == 0 || ow == 0 || out_h == 0 {
+        return;
+    }
+    let (row0, row1) = (
+        out_rows.0 as usize,
+        (out_rows.1 as usize).min(out_h as usize),
+    );
+    let (col0, col1) = (out_cols.0 as usize, (out_cols.1 as usize).min(ow));
+    for oy in row0..row1 {
+        let y0 = oy * sh / out_h as usize;
+        let y1 = (((oy + 1) * sh) / out_h as usize).max(y0 + 1).min(sh);
+        for ox in col0..col1 {
+            let x0 = ox * sw / ow;
+            let x1 = (((ox + 1) * sw) / ow).max(x0 + 1).min(sw);
+            let (mut r, mut g, mut b) = (0u32, 0u32, 0u32);
+            let mut n = 0u32;
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let i = (y * sw + x) * 4;
+                    if i + 3 < src.len() {
+                        r += u32::from(src[i]);
+                        g += u32::from(src[i + 1]);
+                        b += u32::from(src[i + 2]);
+                        n += 1;
+                    }
+                }
+            }
+            let n = n.max(1);
+            let o = (oy * ow + ox) * 3;
+            if o + 2 < out.len() {
+                out[o] = (r / n) as u8;
+                out[o + 1] = (g / n) as u8;
+                out[o + 2] = (b / n) as u8;
+            }
+        }
+    }
+}
+
 /// **一块 tile 的坐标范围 ✗**（**闭区间 ✗ tile 坐标不是像素 ✓）★
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TileRange {
@@ -57,6 +114,12 @@ pub struct Timeline {
     doc_h: u32,
     /// **∴ 持久帧缓冲 ✗**（**RGBA8 ✗ 只 blit 脏区 ✓）★
     frame: Vec<u8>,
+    /// **上一帧的脏区（像素，闭开区间）✗**；`None` ⇒ 整幅都脏 ✓（第 556 轮）。
+    last_dirty_px: Option<(u32, u32, u32, u32)>,
+    /// **降采样后的 RGB24 缓冲 ✗**（**只更新脏区对应的输出像素 ✓）★
+    scaled: Vec<u8>,
+    /// 上面那个缓冲的尺寸 ✓（变了就整幅重算 ✓）。
+    scaled_dims: (u32, u32),
     /// **★★★ 两次出帧之间累计的脏 tile **集合** ✗ ★★★**（**第 249 轮续 ✓）
     ///
     /// **∴ 为什么不是"并集的 bbox" ✗**（**实测换来的 ✓）**：
@@ -91,6 +154,9 @@ impl Timeline {
             doc_w,
             doc_h,
             frame: vec![0u8; (doc_w as usize) * (doc_h as usize) * 4],
+            last_dirty_px: None,
+            scaled: Vec::new(),
+            scaled_dims: (0, 0),
             dirty: BTreeSet::new(),
             full_renders: 0,
             dirty_renders: 0,
@@ -129,6 +195,27 @@ impl Timeline {
     ///     ⇒ **∴ 收益**只剩 18%** ✓ ⇒ **∴ 所以**改成**逐条 run** ✓ ★★
     pub fn frame(&mut self) -> Result<&[u8], KernelError> {
         let dirty = std::mem::take(&mut self.dirty);
+        // **记录这一帧的脏区**（像素口径）⇒ 缩小那步可以只更新对应输出像素 ✓
+        self.last_dirty_px = if dirty.is_empty() {
+            None
+        } else {
+            let mut x0 = u32::MAX;
+            let mut y0 = u32::MAX;
+            let mut x1 = 0u32;
+            let mut y1 = 0u32;
+            for (x, y) in &dirty {
+                x0 = x0.min(*x);
+                y0 = y0.min(*y);
+                x1 = x1.max(*x);
+                y1 = y1.max(*y);
+            }
+            Some((
+                x0.saturating_mul(self.tile),
+                y0.saturating_mul(self.tile),
+                (x1 + 1).saturating_mul(self.tile).min(self.doc_w),
+                (y1 + 1).saturating_mul(self.tile).min(self.doc_h),
+            ))
+        };
         if dirty.is_empty() {
             let region = Bbox::new(0.0, 0.0, f64::from(self.doc_w), f64::from(self.doc_h));
             let rendered = self.kernel.render_region(region)?;
@@ -170,6 +257,62 @@ impl Timeline {
             }
         }
         Ok(&self.frame)
+    }
+
+    /// **出一帧"降采样后的 RGB24"**（第 556 轮）：内部只更新**脏区对应的输出像素** ✓。
+    ///
+    /// **为什么快**：整幅缩小一次要 ~3.9 s（`4608×8192 → 960×1707` 实测），而每帧真正变的
+    /// 只是几个 tile ⇒ 只重算那几个输出像素即可。**子集与全量逐字节相同**（判据
+    /// `scaled_region_matches_full` 守着 ✓）。
+    pub fn frame_rgb_scaled(&mut self, out_w: u32, out_h: u32) -> Result<&[u8], KernelError> {
+        self.frame()?;
+        if self.scaled_dims != (out_w, out_h)
+            || self.scaled.len() != (out_w as usize) * (out_h as usize) * 3
+        {
+            self.scaled = vec![0u8; (out_w as usize) * (out_h as usize) * 3];
+            self.scaled_dims = (out_w, out_h);
+            self.last_dirty_px = None;
+        }
+        let (rows, cols) = match self.last_dirty_px {
+            None => ((0, out_h), (0, out_w)),
+            Some((x0, y0, x1, y1)) => {
+                // 输出行 oy 覆盖源行 [y0', y1')：与脏区相交才算 ✓
+                let mut row_lo = out_h;
+                let mut row_hi = 0u32;
+                for oy in 0..out_h {
+                    let sy0 = (oy as u64 * self.doc_h as u64 / out_h as u64) as u32;
+                    let sy1 = (((oy + 1) as u64 * self.doc_h as u64 / out_h as u64) as u32)
+                        .max(sy0 + 1)
+                        .min(self.doc_h);
+                    if sy1 > y0 && sy0 < y1 {
+                        row_lo = row_lo.min(oy);
+                        row_hi = row_hi.max(oy + 1);
+                    }
+                }
+                let mut col_lo = out_w;
+                let mut col_hi = 0u32;
+                for ox in 0..out_w {
+                    let sx0 = (ox as u64 * self.doc_w as u64 / out_w as u64) as u32;
+                    let sx1 = (((ox + 1) as u64 * self.doc_w as u64 / out_w as u64) as u32)
+                        .max(sx0 + 1)
+                        .min(self.doc_w);
+                    if sx1 > x0 && sx0 < x1 {
+                        col_lo = col_lo.min(ox);
+                        col_hi = col_hi.max(ox + 1);
+                    }
+                }
+                ((row_lo, row_hi), (col_lo, col_hi))
+            }
+        };
+        scale_rgb_region(
+            &self.frame,
+            (self.doc_w, self.doc_h),
+            &mut self.scaled,
+            (out_w, out_h),
+            rows,
+            cols,
+        );
+        Ok(&self.scaled)
     }
 
     /// **把一次区域渲染的结果贴进持久帧缓冲 ✗**（**∴ 这里错一个偏移 ⇒ **画面就错** ✓）★
@@ -307,6 +450,97 @@ mod tests {
             out[0] >= 99 && out[0] <= 101,
             "颜色应原样保留，实测 {}",
             out[0]
+        );
+    }
+}
+
+#[cfg(test)]
+mod scaled_tests {
+    use super::scale_rgb_region;
+
+    fn sample(w: u32, h: u32) -> Vec<u8> {
+        let mut data = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                data.push(((x * 7 + y * 13) % 256) as u8);
+                data.push(((x * 3 + y * 29) % 256) as u8);
+                data.push(((x * 51 + y * 5) % 256) as u8);
+                data.push(255);
+            }
+        }
+        data
+    }
+
+    /// **判据**：只算"受影响的那块输出像素"必须与**全量缩小**逐字节相同（截取对应子块比较）。
+    /// **变异**：把 `out_rows`/`out_cols` 的边界改成开区间（少算一行/一列）⇒ 该子块与全量不同 ⇒ 红。
+    #[test]
+    fn scaled_region_matches_full() {
+        for (sw, sh, ow, oh) in [
+            (64u32, 48u32, 16u32, 12u32),
+            (33, 17, 9, 5),
+            (100, 60, 7, 3),
+        ] {
+            let src = sample(sw, sh);
+            let mut full = vec![0u8; (ow * oh * 3) as usize];
+            scale_rgb_region(&src, (sw, sh), &mut full, (ow, oh), (0, oh), (0, ow));
+            for (rows, cols) in [
+                ((0u32, 3u32), (0u32, 2u32)),
+                ((2, 5), (1, 4)),
+                ((0, oh), (0, ow)),
+            ] {
+                let mut part = vec![0u8; (ow * oh * 3) as usize];
+                scale_rgb_region(&src, (sw, sh), &mut part, (ow, oh), rows, cols);
+                for oy in rows.0 as usize..(rows.1 as usize).min(oh as usize) {
+                    for ox in cols.0 as usize..(cols.1 as usize).min(ow as usize) {
+                        let o = (oy * ow as usize + ox) * 3;
+                        assert_eq!(
+                            &part[o..o + 3],
+                            &full[o..o + 3],
+                            "缩小 {sw}x{sh}→{ow}x{oh} 区域 {rows:?}/{cols:?} 的像素 ({ox},{oy}) 必须与全量一致"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod scaled_bench {
+    use super::scale_rgb_region;
+
+    /// **量一下"只算脏区"到底省多少**（`--nocapture` 时打印）。
+    /// 4608×8192 → 960×1707 的画布上，一个 256×256 的脏区对应约 53×53 个输出像素。
+    #[test]
+    fn dirty_region_scaling_is_much_cheaper_than_full() {
+        let (sw, sh, ow, oh) = (4608u32, 8192u32, 960u32, 1707u32);
+        let mut src = vec![0u8; (sw * sh * 4) as usize];
+        for (i, byte) in src.iter_mut().enumerate() {
+            *byte = (i % 251) as u8;
+        }
+        let mut out = vec![0u8; (ow * oh * 3) as usize];
+        let full = std::time::Instant::now();
+        scale_rgb_region(&src, (sw, sh), &mut out, (ow, oh), (0, oh), (0, ow));
+        let full_ms = full.elapsed().as_secs_f64() * 1000.0;
+        // 一个 256×256 的脏区（源像素）⇒ 输出行列各约 53 格
+        let (row0, row1, col0, col1) = (0u32, 53u32, 0u32, 53u32);
+        let dirty = std::time::Instant::now();
+        scale_rgb_region(
+            &src,
+            (sw, sh),
+            &mut out,
+            (ow, oh),
+            (row0, row1),
+            (col0, col1),
+        );
+        let dirty_ms = dirty.elapsed().as_secs_f64() * 1000.0;
+        eprintln!(
+            "[bench-scale] 整幅 {full_ms:.0} ms｜256×256 脏区 {dirty_ms:.1} ms ⇒ {:.0}×",
+            full_ms / dirty_ms.max(0.001)
+        );
+        assert!(
+            dirty_ms * 20.0 < full_ms,
+            "只算脏区应当便宜一个数量级以上（整幅 {full_ms:.0} ms，脏区 {dirty_ms:.1} ms）"
         );
     }
 }

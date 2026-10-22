@@ -158,12 +158,7 @@ fn main() -> Result<()> {
         skipped_entries
     );
 
-    let layout = Layout {
-        doc_w,
-        doc_h,
-        out_w,
-        out_h,
-    };
+    let layout = Layout { out_w, out_h };
     // **∴ 用仓库自己的内核 replay ✗**（**与浏览器同一个引擎 ✓）★
     //   ＋ **∴ 而**增量重放放在 `yanshi_timelapse::Timeline` 里 ✗**（**它**只渲脏区并集 ✓）
     //     ＋ **∴ 逐行 apply ⇒ **脏 tile 并集**长起来 ⇒ **出帧时只渲那一块** ✓ ★★
@@ -346,10 +341,6 @@ fn main() -> Result<()> {
 ///     ⇒ **∴ 参数回到 5 个 ✓** ★
 #[derive(Clone, Copy)]
 struct Layout {
-    /// 源画布宽 ✓。
-    doc_w: u32,
-    /// 源画布高 ✓。
-    doc_h: u32,
     /// 目标宽 ✓。
     out_w: u32,
     /// 目标高 ✓。
@@ -380,60 +371,18 @@ fn push_frame(
     let t_render = Instant::now();
     // **∴ 交给 `Timeline::frame()` ✗**：**它内部决定**只渲脏区并集还是整幅**✗
     //   ＋ **∴ 并**把结果 blit 进持久缓冲**✗ ⇒ **∴ 这里拿到的是**整幅 RGBA** ✓ ★★
-    let frame = timeline
-        .frame()
+    // **一帧一次，但只更新脏区对应的输出像素**（第 556 轮）⇒ 缩小成本 ∝ 脏面积 ✓
+    let rgb = timeline
+        .frame_rgb_scaled(layout.out_w, layout.out_h)
         .map_err(|e| anyhow!("渲染失败：{} {}", e.code, e.detail))?;
     let render_ns = t_render.elapsed().as_nanos();
     account.render_ns += render_ns;
     account.frame_render_ns.push(render_ns);
     let t_scale = Instant::now();
-    let rgb = to_rgb_scaled(
-        frame,
-        layout.doc_w,
-        layout.doc_h,
-        layout.out_w,
-        layout.out_h,
-    );
     account.scale_ns += t_scale.elapsed().as_nanos();
     let t_write = Instant::now();
-    stdin.write_all(&rgb).context("写帧到 ffmpeg 失败")?;
+    stdin.write_all(rgb).context("写帧到 ffmpeg 失败")?;
     account.write_ns += t_write.elapsed().as_nanos();
     *frames += 1;
     Ok(())
-}
-
-/// **RGBA8 → RGB24 ✗ 并缩放到 `(out_w, out_h)` ✓**（**∴ 盒平均 ✗ 比最近邻干净 ✓）★
-///
-/// **∴ 为什么按盒平均 ✗**：**缩小时最近邻会**丢掉笔画**✗（**一条细线可能整条被抽掉 ✓）⇒
-///   **∴ 而**盒平均对每个目标像素取源矩形均值**✗ ⇒ **∴ 细线**会变淡 ✗ 而**不会消失** ✓ ★★
-fn to_rgb_scaled(src: &[u8], src_w: u32, src_h: u32, out_w: u32, out_h: u32) -> Vec<u8> {
-    let mut out = vec![0u8; (out_w as usize) * (out_h as usize) * 3];
-    let (sw, sh) = (src_w as usize, src_h as usize);
-    for oy in 0..out_h as usize {
-        let y0 = oy * sh / out_h as usize;
-        let y1 = (((oy + 1) * sh) / out_h as usize).max(y0 + 1).min(sh);
-        for ox in 0..out_w as usize {
-            let x0 = ox * sw / out_w as usize;
-            let x1 = (((ox + 1) * sw) / out_w as usize).max(x0 + 1).min(sw);
-            let (mut r, mut g, mut b) = (0u32, 0u32, 0u32);
-            let mut n = 0u32;
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    let i = (y * sw + x) * 4;
-                    if i + 3 < src.len() {
-                        r += u32::from(src[i]);
-                        g += u32::from(src[i + 1]);
-                        b += u32::from(src[i + 2]);
-                        n += 1;
-                    }
-                }
-            }
-            let n = n.max(1);
-            let o = (oy * out_w as usize + ox) * 3;
-            out[o] = (r / n) as u8;
-            out[o + 1] = (g / n) as u8;
-            out[o + 2] = (b / n) as u8;
-        }
-    }
-    out
 }
