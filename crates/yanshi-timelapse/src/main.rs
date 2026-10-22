@@ -158,7 +158,12 @@ fn main() -> Result<()> {
         skipped_entries
     );
 
-    let layout = Layout { out_w, out_h };
+    let layout = Layout {
+        doc_w,
+        doc_h,
+        out_w,
+        out_h,
+    };
     // **∴ 用仓库自己的内核 replay ✗**（**与浏览器同一个引擎 ✓）★
     //   ＋ **∴ 而**增量重放放在 `yanshi_timelapse::Timeline` 里 ✗**（**它**只渲脏区并集 ✓）
     //     ＋ **∴ 逐行 apply ⇒ **脏 tile 并集**长起来 ⇒ **出帧时只渲那一块** ✓ ★★
@@ -254,6 +259,8 @@ fn main() -> Result<()> {
     let mut stdin = ffmpeg.stdin.take().expect("stdin 是 piped");
 
     let mut frames = 0usize;
+    // **缩小后的 RGB 缓冲**（复用，每帧整幅重算 ⇒ 第 568 轮先保证正确）
+    let mut scaled: Vec<u8> = vec![0u8; (layout.out_w as usize) * (layout.out_h as usize) * 3];
     let mut apply_failures = 0usize;
     let mut first_failure: Option<String> = None;
     // **★★★ 第 249 轮：**先立账 ✗ 再谈优化** ★★★**（**门控 `YANSHI_TIMELAPSE_PROBE` ✓）
@@ -277,10 +284,24 @@ fn main() -> Result<()> {
         }
         account.apply_ns += t_apply.elapsed().as_nanos();
         if i >= start_idx && (i + 1 - start_idx) % frame_every == 0 {
-            push_frame(&mut timeline, &mut stdin, &mut frames, layout, &mut account)?;
+            push_frame(
+                &mut timeline,
+                &mut stdin,
+                &mut frames,
+                layout,
+                &mut account,
+                &mut scaled,
+            )?;
         }
     }
-    push_frame(&mut timeline, &mut stdin, &mut frames, layout, &mut account)?;
+    push_frame(
+        &mut timeline,
+        &mut stdin,
+        &mut frames,
+        layout,
+        &mut account,
+        &mut scaled,
+    )?;
     drop(stdin);
     let status = ffmpeg.wait().context("等 ffmpeg 失败")?;
     if !status.success() {
@@ -341,6 +362,10 @@ fn main() -> Result<()> {
 ///     ⇒ **∴ 参数回到 5 个 ✓** ★
 #[derive(Clone, Copy)]
 struct Layout {
+    /// 源画布宽 ✓。
+    doc_w: u32,
+    /// 源画布高 ✓。
+    doc_h: u32,
     /// 目标宽 ✓。
     out_w: u32,
     /// 目标高 ✓。
@@ -367,19 +392,42 @@ fn push_frame(
     frames: &mut usize,
     layout: Layout,
     account: &mut Account,
+    scaled: &mut [u8],
 ) -> Result<()> {
     let t_render = Instant::now();
     // **∴ 交给 `Timeline::frame()` ✗**：**它内部决定**只渲脏区并集还是整幅**✗
     //   ＋ **∴ 并**把结果 blit 进持久缓冲**✗ ⇒ **∴ 这里拿到的是**整幅 RGBA** ✓ ★★
-    // **一帧一次，但只更新脏区对应的输出像素**（第 556 轮）⇒ 缩小成本 ∝ 脏面积 ✓
-    let rgb = timeline
-        .frame_rgb_scaled(layout.out_w, layout.out_h)
+    // **第 568 轮：先退回"整幅缩小"** ✗ —— 外部实测「增量缩小 ⇒ mp4 只有 261 字节」（`f3bcde39`）✗
+    //   ⇒ **正确性优先**：帧管线回到已知可用的整幅缩小 ✓；增量路径要**先有自己的判据**再启用 ✓
+    //   （`Timeline::frame_rgb_scaled` 与 `scale_rgb_region` 都还在，等一条能证伪"空帧"的判据 ✓）。
+    let frame = timeline
+        .frame()
         .map_err(|e| anyhow!("渲染失败：{} {}", e.code, e.detail))?;
     let render_ns = t_render.elapsed().as_nanos();
     account.render_ns += render_ns;
     account.frame_render_ns.push(render_ns);
     let t_scale = Instant::now();
+    yanshi_timelapse::scale_rgb_region(
+        frame,
+        (layout.doc_w, layout.doc_h),
+        scaled,
+        (layout.out_w, layout.out_h),
+        (0, layout.out_h),
+        (0, layout.out_w),
+    );
     account.scale_ns += t_scale.elapsed().as_nanos();
+    // **绝不静默产出空帧** ✓（外部第 86 次：退出码 0 而 mp4 只有 261 字节 ⇒ 那是最坏的一种"成功"✗）
+    if scaled.iter().all(|byte| *byte == 0) {
+        anyhow::bail!(
+            "第 {} 帧缩小后全是 0（画布 {}×{} ⇒ 输出 {}×{}）⇒ 拒绝写出空帧",
+            *frames + 1,
+            layout.doc_w,
+            layout.doc_h,
+            layout.out_w,
+            layout.out_h
+        );
+    }
+    let rgb = &scaled[..];
     let t_write = Instant::now();
     stdin.write_all(rgb).context("写帧到 ffmpeg 失败")?;
     account.write_ns += t_write.elapsed().as_nanos();
