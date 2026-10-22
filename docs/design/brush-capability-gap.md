@@ -15738,3 +15738,18 @@ numpy 纯重放**几秒**、最终图差 **0.63** ⇒ 建议 timelapse 改批量
 ⇒ **"逐 atom 脏区渲染"是瓶颈**这件事**双方独立测到了** ✓。
 **⇒ 下一步**：`defer_preview`（8 处计时点，先探针定位）✓ → 落定后**重测倍数**再告知 ✓；
 并且**不承诺** `apply_atoms`（该工具不存在 ✓，现成的是 `batch` ✓）。
+
+### 三百九十八：**只有 1 处预览计时点会触发** ✓，而 `ctx.defer_preview` **没传到子调用** ✗
+
+**⇒ 探针实测**（7 处计时点逐个编号 `eprintln!("[prev] site N")`，已撤）：
+```
+batch（无 silent，2 次 import_image）：[prev] site 1  ×2   ⇒ preview_calls=2 ✓
+单次 import_image：[prev] site 1                            ⇒ 也只有 site 1 ✓
+```
+⇒ **只有 site 1 触发** ✓（其余 6 处在 `import_image` 这条路上**没执行** ✓）⇒ 上一轮"8 处"的担心是多余的 ✓。
+**⇒ 可是**：给 site 1 的闸门加 `!ctx.defer_preview`、并让 `write_batch` 在 `silent` 时置位 ⇒
+**`preview_calls` 仍是 4** ✗ ⇒ 说明 **子调用看到的 `ctx.defer_preview` 还是 `false`** ✓。
+**⇒ 可能的因**（下一轮**先验**，别再盲改）：`batch` 的子调用可能**不是**同一个 `ToolContext`（例如内部再包一层，
+或 `call` 里对某些字段做了 `with_*` 复制 ✓）⇒ 探针：在 site 1 里 `eprintln!("defer={}", ctx.defer_preview)` ✓
+＋ 在 `write_batch` 置位后立刻打一次 ✓ 对不上就能定位 ✓。
+**⇒ 现状**：已回滚 ✓（`git checkout` ＋ 删测试 ✓），`yanshi-server --lib` **140** 绿 ✓。
