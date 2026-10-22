@@ -15995,3 +15995,22 @@ for object in __order {
 **⇒ 下一轮的改法（精确、小）**：把"包围盒与区域是否相交"的判断**提到 `probe_prep` 之前** ✓
 —— 用**存下来的 `object.bbox`**（或 `object_bbox_in` 的廉价分支 ✓），只对**相交**的对象才 `parse_object`/`transform_primitive` ✓。
 **⇒ 判据**：`10 vs 100 个远对象` 的 16×16 渲染耗时比 **≤ 1.5** ✓（现 **4.5×**）；**变异**：把裁剪放回解析之后 ⇒ 回升 ⇒ 红 ✓。
+
+### 四百零三（续四）：**提前裁剪的两个坑**（写清楚，免得下一轮改错）
+
+**⇒ 现状**（`render.rs:3427`）：
+```rust
+let intersects = crate::object::object_bbox_in(state, object)
+    .map(|bbox| bbox.w > 0.0 && bbox.h > 0.0 && bbox.intersects(&layer_buffer.bbox()))
+    .unwrap_or(false);
+```
+⇒ 这行的成本本身**也可能不便宜**（`object_bbox_in` 对实例要解析 master ✓），
+但它排在 `parse_object`/`transform_primitive` **之后** ⇒ 大头已经付掉了 ✗。
+
+**⇒ 坑 1（必须验）**：能不能用**存下来的 `object.bbox`** 做提前粗筛 ✓ ——
+但要先确认它**是否包含 `object.transform`** ✓。若不含 ⇒ 移动/旋转过的对象会被**误裁** ✗（更糟）。
+⇒ **安全做法**：只对 **`transform` 是单位变换**的对象用存储 bbox 粗筛 ✓；其余走原路径 ✓。
+**⇒ 坑 2**：实例（`ObjectType::Instance`）的 bbox 要解析 master ✓ ⇒ **别对实例做提前粗筛** ✗。
+**⇒ 判据**（不变）：`10 vs 100 个远对象` 的 16×16 渲染耗时比 **≤ 1.5**（现 4.5×）✓；
+**变异**：把粗筛放回解析之后 ⇒ 回升 ⇒ 红 ✓。
+**⇒ 还必须有回归保护**：加一条「移动过的对象不被误裁」的断言 ✓（否则优化会静默丢内容 ✗）。
