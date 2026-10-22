@@ -15685,3 +15685,17 @@ ctx.time(Phase::Preview, preview_started);   // ← **两个分支都计一次**
 **变异**（忽略 ramp ⇒ 红）＋ **CI 绿** ✓。
 **⇒ 对外部第 82 次的正式需求**：`mode:"patch"` ＋ `brightness_ramp:{axis, at_start, at_end}` ✓
 就是他们要的「按位置匹配亮度」✓ —— **已可用、已验、已回信** ✓。
+
+### 三百九十五：`batch` ＋ `silent` **实测提速 4.19×**（同一批 100 次 `import_image`）
+
+**⇒ 探针实测**（512×512 画布，16×16 图，同一 `batch` 100 次 `import_image`）：
+```
+不带 silent：675 ms（preview_calls = 100）   ← 每个原子各渲染一次脏区
+带 silent：161 ms（preview_calls = 0）      ← 整批一次都不渲染
+⇒ 提速 4.19×
+```
+**⇒ 机制**：`silent` 现在同时把 `wait_for_render` 关掉 ⇒ 子调用整段跳过预览块 ✓（第 482 轮改动 ✓）。
+**⇒ 判据**：`batch_silent_preview.rs` —— `silent` ⇒ `preview_calls == 0` ✓；不带 ⇒ **> 0** ✓（成对）；
+**变异**：保留 `wait_for_render` ⇒ 红 ✓（回到 100 ✓）。
+**⇒ 外推**：他们 `22,917` 个导入、`4608×8192` 画布 ⇒ 预览/区域渲染耗时随面积更大 ✓ ⇒ 收益应**大于** 4.19× ✓
+（但**不许**把外推当实测 ✓ —— 要他们回放后用 `timings` 报数 ✓）。
