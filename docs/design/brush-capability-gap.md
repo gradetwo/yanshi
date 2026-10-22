@@ -16014,3 +16014,25 @@ let intersects = crate::object::object_bbox_in(state, object)
 **⇒ 判据**（不变）：`10 vs 100 个远对象` 的 16×16 渲染耗时比 **≤ 1.5**（现 4.5×）✓；
 **变异**：把粗筛放回解析之后 ⇒ 回升 ⇒ 红 ✓。
 **⇒ 还必须有回归保护**：加一条「移动过的对象不被误裁」的断言 ✓（否则优化会静默丢内容 ✗）。
+
+### 四百零三（续五）：**廉价上界是可行的（至少对 rect/ellipse）** ✓ —— 下一轮从这里下手
+
+**⇒ 观察**：`fill_region`/`draw_shape` 写进 `data.geometry` 的 **rect/ellipse** 形如
+`{x,y,w,h}` 或 `{cx,cy,rx,ry}` ✓ ⇒ **不解析、不已施加 transform**就能算出 bbox ✓（几纳秒 ✓）。
+**⇒ 所以最小的安全改动**：
+```rust
+// 在 render_layer_objects 的循环开头、`probe_prep` 之前：
+if object.object_type != ObjectType::Instance && transform_is_identity(&object.transform) {
+    if let Some(bbox) = cheap_bbox_from_geometry(&object.data) {   // 只认 rect/ellipse
+        if !bbox.intersects(&layer_buffer.bbox()) {
+            track.culled.insert(object.id.clone());
+            continue;      // 省掉 parse + transform
+        }
+    }
+}
+```
+⇒ **对 rect/ellipse ＋ 无变换**这一大类立刻生效 ✓（外部那种 `import_image`/方块填充正是这类 ✓），
+其余（path／有 transform／实例）**走原路径** ✓ ⇒ **不会误裁** ✓。
+**⇒ 判据**：`10 vs 100 个远对象`（全是 rect）的 16×16 渲染耗时比 **≤ 1.5**（现 4.5×）✓；
+**变异**：把 `cheap` 换回 `object_bbox_in`（贵但正确）⇒ 比值回升 ⇒ 红 ✓；
+**回归**：`transform_is_identity` 为假的对象**必须**走原路径 ✓（单独一条断言 ✓）。
