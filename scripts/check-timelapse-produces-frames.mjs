@@ -183,6 +183,12 @@ if (!String(run).includes("读包 ")) {
   console.error(`✗ stderr 里没有读包耗时 ⇒ 无法区分"读包慢"与"渲染慢"\n${String(run).slice(-400)}`);
   process.exit(1);
 }
+// **前 10 个 atom 的 apply 耗时要打印** ✓（第 615 轮；外部第 92 次靠它把范围缩到一个 atom 之内）
+if (!/atom 0（/.test(String(run))) {
+  console.error(`✗ stderr 里没有逐 atom 的 apply 耗时 ⇒ 卡住时无法把范围缩到某个 atom\n${String(run).slice(-400)}`);
+  process.exit(1);
+}
+
 console.log(
   `✓ timelapse 出片：${total} 帧，其中 ${painted}/${decoded} 帧有内容，且颜色对（绿占优像素 ${green} 个，` +
     `红占优 ${reddish}／蓝占优 ${blues}）（最小工程包 128×96、7 条原子）`,

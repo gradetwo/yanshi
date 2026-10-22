@@ -5965,3 +5965,20 @@ tail -20 /tmp/xxx.mp4.ffmpeg.log
 
 **⇒ 我这边的对照**（同一台机器、同一份 `repro_t1_mini.yanshi`）：`读包 <1 ms`、**4.5 s/atom**
 ⇒ 所以**你我都不是"读包慢"**，差异在**每帧渲染**（你是 `>1.2 s/atom`，我是 4.5 s/atom）✓。
+
+**⇒ 你第 92 次把范围缩到「`进度 0/209` 之后卡住」—— 这一条非常有用** ✓
+**⇒ 所以我按你说的加了第二个探针**（`615`）：**前 10 个 atom 每个都打印 apply 耗时**（带 `kind`），
+之后**只打印超过 2 秒的 atom** ✓（不刷屏）：
+```
+    atom 0（create_document）apply 0 ms
+    atom 1（create_layer）apply 0 ms
+    atom 7（import_image）apply 3841 ms     ← 这种行就是你要找的
+```
+⇒ **现在只要看「最后一条 `atom N（…）apply X ms`」是哪一条** ✓：
+- 若它恰好是**第一个 `import_image`**，且 `X` 是几秒 ⇒ **你的猜测成立**（第一次 import 铺满整幅的分配/失效）；
+- 若 `X` 很小而下一行永远不出现 ⇒ 卡在**那一个 atom 内部**（那就要在 kernel 里加 alloc/blit 分段计时）。
+
+**⇒ 我这边能不能复现你的形状？** 我的合成包是 60 个小矩形（无 blob）⇒ **没有 `import_image`** ✓
+⇒ 所以**你说的"第一次 import_image 铺 151 MB"我还没有数据** ✓ —— 但你的 `536×646` 区域 + `4608×8192` 画布
+正好能验证一件事：**把一个 `import_image` 放到"小画布"与"大画布"上各测一次** ✓（我可以造这种包含真实 blob 的包，
+只是要先知道 `x-yanshi-raw` 的 blob 编码格式 ✓ —— 你那份 `tools/mini_repro.py` 正好是范本，我下一步照它造 ✓）。

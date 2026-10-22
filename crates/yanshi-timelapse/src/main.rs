@@ -316,7 +316,21 @@ fn main() -> Result<()> {
                 first_failure = Some(format!("第 {i} 行：{} {}", error.code, error.detail));
             }
         }
-        account.apply_ns += t_apply.elapsed().as_nanos();
+        let atom_apply_ns = t_apply.elapsed().as_nanos();
+        account.apply_ns += atom_apply_ns;
+        // **★ 逐个 atom 的 apply 耗时 ★**（第 615 轮；外部第 92 次实测）
+        //   他们的日志停在 `进度 0/209` 之后 ⇒ 说明**卡在第 1~10 个 atom 之间** ✓
+        //   ⇒ 前 10 个 atom **每个都打印**（带 kind）✓；之后**只打印超过 2 秒的** ✓（避免刷屏 ✓）
+        if i < 10 || atom_apply_ns >= 2_000_000_000 {
+            let kind = serde_json::from_str::<Value>(line)
+                .ok()
+                .and_then(|atom| atom.get("kind").and_then(Value::as_str).map(str::to_owned))
+                .unwrap_or_else(|| "?".to_owned());
+            eprintln!(
+                "    atom {i}（{kind}）apply {} ms",
+                atom_apply_ns / 1_000_000
+            );
+        }
         if i >= start_idx && (i + 1 - start_idx) % frame_every == 0 {
             push_frame(
                 &mut timeline,
