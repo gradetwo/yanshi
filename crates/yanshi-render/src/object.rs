@@ -69,6 +69,9 @@ pub struct ShapeTexture {
     pub overlap: u32,
     /// `patch` 模式每块试几个候选（缺省 **200** ✓）。
     pub candidates: u32,
+    /// **按位置匹配源亮度** ✓（外部第 82 次的正式需求）：候选块的平均亮度要贴近
+    /// **该位置下方的图层内容**的平均亮度 ✓ ⇒ 左右渐变的墙也能合成 ✓（缺省 `false` = 不匹配 ✓）。
+    pub brightness_match: bool,
     /// `patch` 模式的重叠怎么缝：`"linear"`（缺省）/ `"min_error"`（**按行最小误差切** ✓）。
     pub seam: String,
     /// **每块平铺的随机位移强度** ✓（`0.0..=1.0`，缺省 **0** = 原样平铺 ✓）。
@@ -993,6 +996,10 @@ fn parse_shape_texture(value: &Value) -> Result<ShapeTexture, String> {
             "texture.candidates 必须在 1..=4096，得到 {candidates}"
         ));
     }
+    let brightness_match = object
+        .get("brightness_match")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let mime_type = object
         .get("mime_type")
         .and_then(Value::as_str)
@@ -1010,6 +1017,7 @@ fn parse_shape_texture(value: &Value) -> Result<ShapeTexture, String> {
         overlap,
         candidates,
         seam,
+        brightness_match,
     })
 }
 

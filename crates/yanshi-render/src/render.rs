@@ -3741,6 +3741,47 @@ impl Renderer {
                                         bbox.w.max(1.0).round() as usize,
                                         bbox.h.max(1.0).round() as usize,
                                     );
+                                    // **参考亮度场** ✓（外部第 82 次）：从**图层已有内容**读 ✓
+                                    //   （同一个 `layer_buffer` 也用于纯色填充 ⇒ 填充前它就是"下面的墙" ✓）
+                                    //   **全透明（alpha=0）⇒ 视为不可用** ✓（返回 `None` ⇒ 不加亮度项 ✓，
+                                    //   并且**在响应里说出来** ← 由 `tools.rs` 检查 `has_reference` ✓）
+                                    let reference: Option<Vec<f32>> = if spec.brightness_match {
+                                        let origin = layer_buffer.bbox();
+                                        let (bw, bh) = patch_dims;
+                                        let mut field = vec![0.0f32; bw * bh];
+                                        let mut covered = 0usize;
+                                        for row in 0..bh {
+                                            for col in 0..bw {
+                                                let local_x =
+                                                    (ox - origin.x).round() as i64 + col as i64;
+                                                let local_y =
+                                                    (oy - origin.y).round() as i64 + row as i64;
+                                                if local_x < 0 || local_y < 0 {
+                                                    continue;
+                                                }
+                                                let pixel = layer_buffer
+                                                    .pixel(local_x as u32, local_y as u32);
+                                                let alpha = pixel[3];
+                                                if alpha <= 0.0 {
+                                                    continue;
+                                                }
+                                                // 反预乘回直通色 ✓（`Buffer` 存的是预乘 ✓）
+                                                let r = pixel[0] / alpha;
+                                                let g = pixel[1] / alpha;
+                                                let b = pixel[2] / alpha;
+                                                field[row * bw + col] =
+                                                    (r * 0.299 + g * 0.587 + b * 0.114) * alpha;
+                                                covered += 1;
+                                            }
+                                        }
+                                        if covered * 10 >= bw * bh {
+                                            Some(field)
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    };
                                     let patch_buf: Option<Vec<u8>> = if spec.mode == "patch" {
                                         Some(quilt_patches(
                                             bytes,
@@ -3752,6 +3793,7 @@ impl Renderer {
                                             spec.candidates as usize,
                                             patch_seed,
                                             spec.seam == "min_error",
+                                            reference.as_deref(),
                                         ))
                                     } else {
                                         None
@@ -4780,6 +4822,7 @@ fn quilt_patches(
     candidates: usize,
     seed: u64,
     seam_min_error: bool,
+    reference: Option<&[f32]>,
 ) -> Vec<u8> {
     let (tw, th) = target;
     let mut out = vec![0u8; tw * th * 4];
@@ -4834,6 +4877,38 @@ fn quilt_patches(
                                 i64::from(out[ti + channel]) - i64::from(source[si + channel]);
                             cost += (diff * diff) as u64;
                         }
+                    }
+                }
+                // **按位置匹配亮度** ✓（外部第 82 次）：候选块平均亮度要贴近该格的参考亮度 ✓
+                //   （参考 = **该位置下方的图层内容** ✓；`None` ⇒ 不加这一项，旧行为逐字节不变 ✓）
+                if let Some(field) = reference {
+                    let mut cand_sum = 0.0f64;
+                    let mut cand_n = 0.0f64;
+                    let mut ref_sum = 0.0f64;
+                    let mut ref_n = 0.0f64;
+                    for yy in 0..p {
+                        let ty = y0 + yy;
+                        if ty >= th {
+                            break;
+                        }
+                        for xx in 0..p {
+                            let tx = x0 + xx;
+                            if tx >= tw {
+                                break;
+                            }
+                            let si = ((sy + yy) * sw + (sx + xx)) * 4;
+                            cand_sum += f64::from(source[si]) * 0.299
+                                + f64::from(source[si + 1]) * 0.587
+                                + f64::from(source[si + 2]) * 0.114;
+                            cand_n += 1.0;
+                            ref_sum += f64::from(field[ty * tw + tx]);
+                            ref_n += 1.0;
+                        }
+                    }
+                    if cand_n > 0.0 && ref_n > 0.0 {
+                        let diff = cand_sum / cand_n - ref_sum / ref_n;
+                        // **权重取重叠像素数量级** ✓：让亮度项与 SSD 项可比 ✓
+                        cost += ((diff * diff) * 24.0 * cand_n.min(ref_n)) as u64;
                     }
                 }
                 if best.map(|(c, _, _)| cost < c).unwrap_or(true) {

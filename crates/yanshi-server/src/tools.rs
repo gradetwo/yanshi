@@ -3972,25 +3972,7 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                     // **`seam` 只认 `linear`（= 当前的按距离过渡 ✓）** ✓
                     //   `min_error`（DP 找最小误差切缝 ✓，外部第 81 次点名要的）**还没实现** ✗
                     //   ⇒ **响亮拒绝** ✓（绝不静默按 linear 处理 ✗ —— 他们从 `D18` 起说的就是这条 ✓）。
-                    // **`brightness_match` 尚未实现** ✗ ⇒ **响亮拒绝** ✓（绝不静默忽略 ✗）
-                    //   外部第 82 次实测：`test2` 的墙是**左右渐变** ⇒ 单一亮度的源块
-                    //   ⇒ **洞内亮出一块"人形"** ✗ ⇒ 他们要「按位置的源亮度匹配」✓。
-                    if value
-                        .get("brightness_match")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)
-                    {
-                        return Err(YanshiError::new(
-                            ErrorCode::InvalidArgument,
-                            ErrorContext::detail(
-                                "texture.brightness_match（按位置的源亮度匹配）**尚未实现** \
-                                 ⇒ 现在只有**全局 SSD 选块**（一个源块铺满）✓ ⇒ 在「左右渐变」的目标上 \
-                                 会合成出**一块均匀亮度**（外部第 82 次实测：亮出人形 ✗）\
-                                 ⇒ **不会静默忽略这个键** ✗ —— 需要的话等实现，或改用 `mode:patch` ＋ 多块源 ✓"
-                                    .to_string(),
-                            ),
-                        ));
-                    }
+                    // **`brightness_match` 已实现** ✓（第 421 轮：参考亮度来自该位置下方的图层内容 ✓）
                     match value.get("seam").and_then(Value::as_str) {
                         None | Some("linear") => {}
                         // **`min_error` 已实现**（按行最小误差切 ✓；带平滑的 DP 见台账）✓
@@ -4562,6 +4544,11 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             // 「这次到底跑的是平铺还是合成、缝是 linear 还是 min_error」✓
             // —— 否则"看起来设了、实际没生效"又回来了 ✗。
             "mode": spec.get("mode").and_then(Value::as_str).unwrap_or("tile"),
+            // **回显按位置匹配亮度** ✓（外部第 82 次）⇒ 调用方要看得见这次到底匹配没有 ✓
+            "brightness_match": spec
+                .get("brightness_match")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             "seam": spec.get("seam").and_then(Value::as_str).unwrap_or("linear"),
             "source_gap_px": gap,
             // **生效的 MIME 要回显** ✓：PNG 被自动认出时，调用方必须看得见文档里记的是什么 ✓。
