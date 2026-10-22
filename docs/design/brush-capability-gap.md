@@ -16386,3 +16386,26 @@ render 59474 → **59113 ms**（**没变** ✗）
    注意 `many` 的 shape 与 `longbig` 的**结构相同**，差别只有**尺寸与数量** ⇒ 值得先验"是不是面积/数量触发了保守回退" ✓）；
 3. **判据**：同一 `longbig` 包 ⇒ **脏区 tile 总数 ≤ 63 × 32** ✓（现在 63 × 768 ✓）；变异：退回整幅 ⇒ 回升 ⇒ 红 ✓。
 **⇒ 已撤探针** ✓（工作树干净 ✓），release 二进制已按探针前的源码重建 ✓。
+
+### 四百一十二（续二）：**是 `DirtyKind::Full`** ⇒ `grid.all_keys()` ⇒ 每帧整幅 ✓（源码链已定位）
+
+**⇒ 源码链**（`crates/yanshi-render/src/dirty.rs:787`，`invalidated_tiles`）：
+```rust
+DirtyKind::Full => grid.all_keys(),                      // ← 768 = 全画布 ✓
+_ => { let bbox = …; grid.keys_for_bbox(&bbox) }           // ← 精确路径
+```
+⇒ 实测「每帧 768 tile」⇒ **plan 返回的是 `Full`** ✓ —— 不是"bbox 算大了"，而是**根本没走 bbox 分支** ✓。
+
+**⇒ 所以下一步只查一处**：`plan_dirty` → `AtomKind::CreateObject` → `dirty_for_object`：
+```rust
+let Some(object_id) = atom.object_id() else { return dirty_for_layer(...) };
+if let Some(object) = state.objects.get(object_id) {
+    if let Some(bbox) = object_bbox_in(state, object) { …精确… }
+    else { ??? }            // ← 这里若落 Full ⇒ 就是它
+}
+```
+**⇒ 我要验的**：`atom.object_id()` 在这些 `create_object` 原子上的写法（我的合成包用 `object_id` ✓；
+但外部是 `import_image` ⇒ 它写的是 `object_id` 还是别的键？**这决定了 `object_id()` 是否为 `None`** ✓）。
+**⇒ 判据（下一轮）**：`creating_a_small_object_dirties_only_its_bbox`（我本轮写了但因 `Layer` 字面量字段多、编译器连报两次缺字段而撤回 ✓）
+⇒ 改法：**别手搓 `Layer`/`Object` 字面量**，改用 `DocumentState::empty()` ＋ 已有测试里的构造器 ✓
+（`crates/yanshi-render/tests/tile_parallel.rs` 有 `layer()`/`object()` 两个 helper ⇒ 把判据放进**那个 test 文件**最省事 ✓）。
