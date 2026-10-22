@@ -149,6 +149,29 @@ if (painted === 0) {
   console.error(`✗ 解出 ${decoded} 帧，但没有一帧有内容（全背景色）⇒ 视频是空的：帧数对而画面空白`);
   process.exit(1);
 }
+// **颜色也要对** ✓（第 588 轮）：画的是 `{r:10,g:200,b:30}` ⇒ **画出来的像素必须绿占优** ✓
+//   ⇒ 这能抓到"整条管线颜色被换掉"（色彩空间、通道序、预乘）那类错误 ✓（视频编码有 YUV 往返 ⇒ 只看**相对**关系 ✓）。
+let green = 0;
+let reddish = 0;
+let blues = 0;
+for (let index = 0; index < decoded; index += 1) {
+  const slice = raw.subarray(index * frameSize, (index + 1) * frameSize);
+  for (let at = 0; at + 2 < slice.length; at += 3) {
+    const [r, g, b] = [slice[at], slice[at + 1], slice[at + 2]];
+    if (r === 255 && g === 255 && b === 255) continue;
+    if (g > r && g > b) green += 1;
+    else if (r > g && r > b) reddish += 1;
+    else if (b > g && b > r) blues += 1;
+  }
+}
+// **必须是"多数派"** ✓（只看 >0 会被压缩噪点蒙混过关：实测把夹具画成红色后，仍有 264 个"绿占优"噪点 ✗）
+if (!(green > reddish && green > blues)) {
+  console.error(
+    `✗ 画的是绿色 {10,200,30}，但像素里不是绿占优（绿 ${green}｜红占优 ${reddish}｜蓝占优 ${blues}）⇒ 颜色不对`,
+  );
+  process.exit(1);
+}
 console.log(
-  `✓ timelapse 出片：${total} 帧，其中 ${painted}/${decoded} 帧有内容（最小工程包 128×96、7 条原子）`,
+  `✓ timelapse 出片：${total} 帧，其中 ${painted}/${decoded} 帧有内容，且颜色对（绿占优像素 ${green} 个，` +
+    `红占优 ${reddish}／蓝占优 ${blues}）（最小工程包 128×96、7 条原子）`,
 );
