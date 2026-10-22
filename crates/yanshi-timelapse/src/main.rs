@@ -472,7 +472,10 @@ fn pick_encoder() -> String {
         .ok()
         .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
         .unwrap_or_default();
-    for candidate in ["libx264", "mpeg4", "mpeg2video"] {
+    // **顺序**：`libx264` → `libopenh264` → `mpeg4` → `mpeg2video` ✓
+    //   （外部第 90 次实测：他们有 `libx264`、**没有** `libopenh264` ⇒ 所以 libx264 必须排第一 ✓；
+    //    反过来若某机器只有 openh264，也能退回它 ✓）
+    for candidate in ["libx264", "libopenh264", "mpeg4", "mpeg2video"] {
         if listed.contains(candidate) {
             return candidate.to_owned();
         }
