@@ -16486,3 +16486,20 @@ ffprobe 读到 63 帧 ✓（判据 `check-timelapse-produces-frames.mjs` 也 ✓
 2. 或者弄清 `create_object` 的完整形状（`tools.rs:5864` 那个分支生成的 payload 就是范本 ✓）；
 3. 或者改用 `import_image` 原子（外部的真实情形 ✓，但要造 blob ＋ 2 字节前缀 ✓，代价最大 ✓）。
 **⇒ 现在的诚实结论**：帧数判据**能抓"261 字节/无流"** ✓，但**抓不到"全白"** ✗ —— 后者要靠真包 ✓。
+
+## 四百一十五、本机新发现：`tool-fill-region.mjs` **本机红**（CI 绿）⇒ 待查，不是我这两笔引入的
+
+**⇒ 实测**（`bash scripts/run-criteria-local.sh scripts/tool-fill-region.mjs`，两跑都复现）：
+```
+椭圆中心像素：null
+包围盒四角：{"左上":[255,255,255,255],"右上":null,"左下":null,"右下":null}
+✗ 椭圆中心没被填成指定色 ⇒ null   ⇒ 退出码=1
+```
+⇒ **同一个 1×1 采样，左上拿得到 4 字节、另外三个是 `null`** ✓ ⇒ 说明 `render_region` 对**某些 1×1 区域**
+返回了没有 `raw_url` 的响应（或被拒）✓，而不是颜色错 ✓。
+**⇒ 它不在 `criteria-known-red.txt` 里** ✓，而**CI 上 `criteria` 分片是绿的** ⇒ **本机特有** ✓。
+**⇒ 与我这两天的改动无关**（我没碰 `fill_region`／`render_region` 的 1×1 路径 ✓；改动只涉及 render 的对象预扫、
+缓存指纹、timelapse、`color_mixing` spec ✓）。
+**⇒ 下一步（一条命令即可定性）**：直接对 `render_region` 打四个 1×1 区域（`51,41／248,41／51,158／248,158`），
+把**四个响应体原样打出来** ⇒ 看是 `ok:false`（参数/边界）还是 `raw_url` 缺失（缓存/编码）✓。
+**⇒ 不许**把它加进 known-red 当"环境红" ✗ —— 它是**可复现的接口行为** ✓，只是恰好没在 CI 上出现 ✓。
