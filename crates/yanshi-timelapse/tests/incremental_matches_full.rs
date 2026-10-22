@@ -159,3 +159,54 @@ fn incremental_frames_match_a_full_render_byte_for_byte() {
         }
     }
 }
+
+/// **判据**：`frame_rgb_scaled` 必须真的产出一帧（不能全零），且与「整幅缩小」逐字节相同。
+///
+/// **为什么要有它**（外部第 86 次实测）：`f3bcde39` 把帧管线切到"只重算脏区"之后，
+/// `yanshi-timelapse` 跑完 **exit 0**，但 mp4 只有 **261 字节**、`ffprobe` 读不出流 ⇒
+/// **产出空帧却报成功**。那条路径当时只有纯函数判据（部分 == 整幅），**缺这一条**。
+///
+/// **变异**：把 `frame_rgb_scaled` 里首次的 `last_dirty_px = None` 改成 `Some((0, 0, 0, 0))`
+/// ⇒ 一个输出像素都不写 ⇒ 全零 ⇒ 红。
+#[test]
+fn scaled_frame_is_never_empty() {
+    let (dw, dh) = (64u32, 64u32);
+    let mut timeline = Timeline::new("tl_scaled", 64, dw, dh, 256 * 1024 * 1024).expect("kernel");
+    timeline
+        .apply(&atom(
+            "a0",
+            1,
+            "create_document",
+            json!({
+                "background": {"r": 255, "g": 255, "b": 255, "a": 255},
+                "color_space": "srgb",
+                "doc_id": "tl_scaled",
+                "width": dw,
+                "height": dh,
+            }),
+        ))
+        .expect("create_document");
+    timeline
+        .apply(&atom(
+            "a1",
+            2,
+            "create_layer",
+            json!({"layer_id": "L1", "name": "L1"}),
+        ))
+        .expect("create_layer");
+
+    let scaled = timeline
+        .frame_rgb_scaled(16, 16)
+        .expect("frame_rgb_scaled")
+        .to_vec();
+    assert_eq!(scaled.len(), 16 * 16 * 3, "尺寸必须是 out_w*out_h*3");
+    assert!(
+        scaled.iter().any(|byte| *byte != 0),
+        "缩小后的帧不能全零（全零 ⇒ ffmpeg 收到空流 ⇒ mp4 只剩头，外部第 86 次就是这么坏的）"
+    );
+
+    let frame = timeline.frame().expect("frame").to_vec();
+    let mut full = vec![0u8; 16 * 16 * 3];
+    yanshi_timelapse::scale_rgb_region(&frame, (dw, dh), &mut full, (16, 16), (0, 16), (0, 16));
+    assert_eq!(scaled, full, "增量缩小必须与整幅缩小逐字节相同");
+}
