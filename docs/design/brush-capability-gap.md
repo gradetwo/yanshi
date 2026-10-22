@@ -16331,3 +16331,17 @@ exit=0｜huge.mp4 = 3414 B｜ffprobe: stream 608×1080，nb_frames=2 ✓
 **⇒ 现状**：main **仍是"整幅缩小"**（`126fc1eb` 的回滚 ✓）—— 已有 `scaled_frame_is_never_empty` 判据兜底 ✓，
 但**要不要把增量接回去，等你那儿先确认回滚版能出片** ✓（不拿他们的产线做实验 ✗）。
 **⇒ 需要他们的**：`yanshi-timelapse … 2>&1 | tail -30` 的 **Error 行** ＋ `--stats` 的 `render_ns/scale_ns/write_ns` ✓。
+
+### 四百一十一（续三）：**新判据 `check-timelapse-produces-frames.mjs`** ✓（外部第 86 次建议的那条）
+
+**⇒ 它做什么**：造一个最小工程包（裸 tar：`meta.json` ＋ `atoms.jsonl`，128×96、7 条原子）⇒
+**真跑** `target/release/yanshi-timelapse` ⇒ 用 **`ffprobe` 读 `nb_frames`** ⇒ **必须 > 0** ✓。
+**⇒ 退出码语义**：0 出片且帧数 >0｜**1 = 产出了空片（产品问题）**｜3 = 前提不成立（没二进制／没 ffmpeg／没 tar）✓
+**⇒ 实测**：`✓ timelapse 出片：9 帧（最小工程包 128×96、7 条原子）` ✓
+**⇒ 变异**（给 `stdin.write_all` 加个 env 开关，`YANSHI_BREAK_FRAMES=1` 时不写帧）：
+```
+✗ ffprobe 没给出 nb_frames ⇒ 判不了帧数：
+```
+⇒ **红** ✓（已恢复，复跑 `✓ 9 帧` ✓）。
+**⇒ 意义**：这正是外部建议的「**跑完必须产出 `ffprobe` 能读出 `nb_frames > 0` 的 mp4；否则返回非零**」 ✓
+—— 之前这个失败**完全没人守** ✗ ⇒ 261 字节那种"exit 0 的坏文件"才溜进他们的产线 ✓。
