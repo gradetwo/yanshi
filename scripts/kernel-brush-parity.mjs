@@ -52,7 +52,23 @@ const module_ = await import(pathToFileURL(wasmPath).href);
 // Node 里没有 fetch 相对路径的语境 ✓ ⇒ 把**同目录的 `_bg.wasm`** 交给它 ✓（bindgen 的标准入参 ✓）。
 const bgPath = wasmPath.replace(/\.js$/, "_bg.wasm");
 await module_.default(readFileSync(bgPath));
-const kernel = new module_.WasmKernel("kernel-parity", 256, 400, 300, 64 * 1024 * 1024);
+// **★ 画布尺寸必须问服务端 ✗ 不许写死 ★**（2641 轮实测 ✓；外部「测量工具要先被测量」✓）
+//   **⇒ 症状**：CI 的 parity job 起的是 **320×240** 的文档 ✓，而本脚本写死 **400×300**
+//     ⇒ 只有"吃底图"的笔刷要整幅合成 ⇒ 长度期望 `400×300×4 = 480000`
+//     ⇒ 实际 `320×240×4 = 307200` ⇒ **50 支全被跳过** ✗
+//     ⇒ 而结论那句"存在差异（差异的机制是两边数学实现不同）"**是假的** ✗ ——
+//       **一个字节都没比** ✓（连 arm64 也是同一个假象 ✓）
+//   **⇒ 修法**：尺寸从 `describe_canvas` 读 ✓（两处 `WasmKernel` 也用它 ✓），
+//     拿不到就 `exit(3)`（判据前提不成立 ≠ 产品失败 ✓）。
+const canvasInfo = await tool("describe_canvas", {});
+if (!canvasInfo?.ok || !Number.isFinite(canvasInfo.width) || !Number.isFinite(canvasInfo.height)) {
+  console.error(
+    `  ⊘ 不可判：拿不到画布尺寸 ⇒ ${JSON.stringify(canvasInfo).slice(0, 160)}`,
+  );
+  process.exit(3);
+}
+const CANVAS = { width: canvasInfo.width, height: canvasInfo.height };
+const kernel = new module_.WasmKernel("kernel-parity", 256, CANVAS.width, CANVAS.height, 64 * 1024 * 1024);
 /// 收 JSON 请求 ⇒ 成功给像素 ✓、失败给 null ✓（内核返回 `Option<Vec<u8>>` ✓ ⇒ 可区分 ✓）
 const facade = (request) => {
   const out = kernel.paint_brush(JSON.stringify(request));
@@ -72,7 +88,7 @@ let missingFlagCount = 0;
 // ⇒ **∴ 比"门面 vs 画后合成"** ✓，容差按**已知的依赖侧 1 ulp 类** ✓（**语义边界**，不是某次观测 ✗）。
 let compositeCompared = 0;
 let compositeSame = 0;
-const docSize = { x: 0, y: 0, w: 400, h: 300 };
+const docSize = { x: 0, y: 0, w: CANVAS.width, h: CANVAS.height };
 /// 取整幅原始 RGBA（`raw:true` ✓ ⇒ CAS 里的裸像素 ✓）。
 const rawRegion = async (region) => {
   const r = await tool("render_region", { region, raw: true });
@@ -139,14 +155,17 @@ for (const brush of names) {
     }
     const want = region.w * region.h * 4;
     if (beforeWhole.length !== docSize.w * docSize.h * 4 || afterWhole.length !== docSize.w * docSize.h * 4) {
-      console.log(`  ${(brush + "/" + colourName).padEnd(22)} 整幅 raw 长度不是 ${docSize.w * docSize.h * 4} ⇒ 本次跳过 ✗`);
-      allEqual = false;
-      continue;
+      // **这是"判据前提不成立"，不是"两支笔不一样"** ✗（2641 轮：写死尺寸时它伪装成后者 ✓）。
+      console.error(
+        `  ⊘ 不可判：整幅 raw 长度 ${beforeWhole.length}/${afterWhole.length}，` +
+          `期望 ${docSize.w * docSize.h * 4}（文档 ${docSize.w}×${docSize.h}）⇒ 尺寸口径不一致，不是笔刷差异`,
+      );
+      process.exit(3);
     }
     const beforeBox = cropWhole(beforeWhole, region);
     const afterBox = cropWhole(afterWhole, region);
     const mybC = readFileSync(`assets/brushes/${brush}.myb`, "utf8");
-    const kernelC = new module_.WasmKernel("kernel-parity-composite", 256, 400, 300, 64 * 1024 * 1024);
+    const kernelC = new module_.WasmKernel("kernel-parity-composite", 256, CANVAS.width, CANVAS.height, 64 * 1024 * 1024);
     // **`Base` 要有三个字段** ✓（`width`/`height`/`rgba` ✓ —— 只传 `rgba` 会被 serde 拒 ⇒ 门面回空 ✗，踩过 ✓）。
     const outC = kernelC.paint_brush(JSON.stringify({
       myb: mybC, points: pointList, size, color: colour, opacity: null, hardness: null,
@@ -195,7 +214,7 @@ for (const brush of names) {
   // 上面那个 kernel 在前序段落里已被用过（预览/渲染等）⇒ 文档状态可能已变
   // ⇒ 笔刷可能落在**空的当前图层**上 ⇒ 门面返回**整块全透明**
   //（实测：服务端有墨 #115，门面 #-1 ✓）。
-  const brushKernel = new module_.WasmKernel("kernel-parity-brush", 256, 400, 300, 64 * 1024 * 1024);
+  const brushKernel = new module_.WasmKernel("kernel-parity-brush", 256, CANVAS.width, CANVAS.height, 64 * 1024 * 1024);
   const facadeFresh = (request) => {
     const out = brushKernel.paint_brush(JSON.stringify(request));
     return out ? Uint8Array.from(out) : null;
