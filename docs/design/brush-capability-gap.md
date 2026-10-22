@@ -15771,3 +15771,23 @@ let caller_render_wanted = preview_region.is_some() && (!ctx.silent || result.jo
    `preview_region.is_some() && !ctx.defer_preview && (!ctx.silent || result.job_id.is_some())` ✓ —— 我这轮就是这么写的 ✗ 但仍 4 ⇒
    **必须实测 `ctx.defer_preview` 在 site 1 的值** ✓，别再猜 ✓）；
 2. 若值确实是 `true` 而仍渲染 ⇒ 说明**还有第二条路径**（不是 site 1 的那些计时点 ✓）⇒ 用 `RUST_LOG`/`eprintln` 在渲染函数入口打 ✓。
+
+## 四百、**决定性发现**：那些"预览"其实是**画像素的渲染 job** ⇒ **跳不得** ✗
+
+**⇒ 探针实测**（`batch` + `silent`，2 次 `import_image`，闸门处打点）：
+```
+[gate] defer=true silent=true job=true region=true     ← 闸门**已经**判掉（caller_render_wanted=false）
+[gate] defer=true silent=true job=true region=true
+preview_calls=2                                        ← 但计数仍是 2 ✗
+```
+⇒ **闸门确实生效了**（`!defer` 让它为 false ✓），可 `preview_calls` **仍涨** ✓
+⇒ **那些渲染不是"预览"，是 `import_image` 入队后真正画像素的渲染 job** ✓
+（重型原子 ⇒ `result.job_id` ✓ ⇒ 排队执行 ✓ ⇒ 每次执行都计一个 `Phase::Preview` ✓）。
+
+**⇒ 所以**：
+1. **"跳过预览"这条路对 `import_image` 不存在** ✗ —— 跳掉就不画了 ✓；
+2. 11.5 ms/atom **是真实的绘制成本** ✓，不是装饰 ✓；
+3. 外部 numpy 几秒 vs 我们 20 分钟 ⇒ **我们的逐原子合成比纯重放慢 2~3 个数量级** ✓
+   ⇒ 真正的优化方向是**把 N 个 job 合并成一次渲染**（一次扫全 buffer）✓，不是"跳过" ✓。
+**⇒ 下一轮**：看 `run_pending_jobs`/job 队列如何逐条执行 ✓，评估"同一批 job 合并成一次区域渲染"的可行性 ✓；
+判据仍是 `preview_calls`（或新增 `render_jobs`）从 **N → 1** ✓。
