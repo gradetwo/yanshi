@@ -510,7 +510,10 @@ jobs:
       #     **∴ 代价**：**每片多一次** release 构建**✗
       #       ⇒ **∴ 而** rust-cache **命中后**只有增量**✗ ⇒ **∴ 实测**待 CI 报** ✓**** ✓✓
       - name: Build the release server for cost criteria
-        run: cargo build --release -p yanshi-http --bin yanshi-serve
+        run: |
+          cargo build --release -p yanshi-http --bin yanshi-serve
+          # **`check-timelapse-produces-frames.mjs` 要真跑这个二进制** ✓（外部第 86 次：空 mp4 + exit 0）
+          cargo build --release -p yanshi-timelapse
       # ★ **环境诊断 ✗**（第五十七节 ✓）
       #   **∴ 为什么加 ✗**：有 **3 条**红只在 runner 上出现 ✓（本机全绿 ✓、且我没改过相关代码 ✓）：
       #     · `background_stroke_cost` 的 `other_ms`（CI 486ms vs 本机 7.3ms ✓）
