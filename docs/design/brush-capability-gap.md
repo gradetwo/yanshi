@@ -14660,3 +14660,32 @@ D `erase{region}` **真擦**（8K：704 tile／8622 ms ⇒ 6 tile／326 ms）｜
 **⇒ 清单头部 B1…B10 的基线是 `cb260252`（196 工具时代）** ⇒ **本轮没有逐条复核** ✗（诚实说明 ✓）：
 其中 B1（`clip_to_selection` 不认 path）与 B9（`stroke_path` 不收 `clip_to_selection`）在他们的 §十三 已复验为**已修** ✓；
 其余八条是否还成立**未验证** ⇒ **下一轮按 B1…B10 逐条在当前 HEAD 上复跑** ✓（不许凭印象说"应该修好了" ✗）。
+
+## 三百六十三、`create_mask{from_selection}` 被自己的 schema 拦死（外部更新包 `yanshi-update-20261022`）
+
+**⇒ 更新包里的 `feature-followup/results.json`** 三个用例：两个 `passed`、一个 `needs-inspection` ✓
+⇒ 那个 `needs-inspection` 是**真 bug**（不是误判 ✓）：
+
+```
+create_mask {mask_id:"mask", from_selection:"sel"}
+→ {"error_code":"invalid_argument","context":{"detail":"缺少必填参数 shape"}}
+```
+
+**⇒ 根因**：`create_mask` 的 schema 把 `shape` 标成 **`required: true`** ✗，而同一张表的
+`from_selection` 描述写着「**此时 shape 可省略**」✓ ⇒ **派发前的必填校验**（`tools.rs` 遍历
+`spec.params` 那段 ✓）**先于 handler** 把这一调拦下 ✗ ⇒ **文档里写的用法一次也用不了** ✓。
+handler 里其实**早就**支持 `from_selection`（克隆 `shape/feather/invert/blobs/patches` ✓）⇒
+**代码是好的，接口声明是错的** ✓ —— 这正是 `color` 声明成 `Object` 那次的同族 ✓（"描述说支持、schema 拒绝" ✓）。
+
+**⇒ 为什么示例门禁没抓到** ✗：`create_mask` 的两条示例**都传了 `shape`** ✓ ⇒
+**示例只走了一条路** ⇒ 另一条"文档承诺的路"从来没被执行过 ✓。
+（与 §三百四十四「判据要问：它的输入制造出它要检查的情况了吗」同源 ✓。）
+
+**⇒ 修法**：`shape` 改成 `required: false` ＋ 描述里写「与 `from_selection` 二选一」✓；
+handler 里**两者都没有**时报错**同时点名两条出路** ✓（原来只说缺 shape ⇒ 会把"我其实想从选区转"的人带偏 ✗）。
+
+**⇒ 判据**（`crates/yanshi-server/tests/create_mask_from_selection.rs`）三条 ✓：
+① `from_selection` + 无 `shape` ⇒ 必须成功，并且**在新建的蒙版上落一笔**证明它真存在 ✓
+（响应是通用变更回执、不回显 `mask_id` ⇒ 用"只能靠它成功"的调用证明 ✓）；
+② 显式 `shape` 仍然优先 ✓；③ 两者都不给 ⇒ 文案**同时**含 `shape` 与 `from_selection` ✓。
+**变异**：把 `shape` 改回 `required: true` ⇒ ① **红**，文案正是外部报的那句「缺少必填参数 shape」✓。

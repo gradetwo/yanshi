@@ -467,6 +467,17 @@ pub(super) fn write_create_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
             s.clone()
         }
     } else {
+        // **没给 `from_selection` 时 `shape` 才是必填** ✓：两条出路都要说出来 ✓
+        // （只说「缺少必填参数 shape」会把「我其实想从选区转」的人带到错方向 ✓）。
+        if args.get("shape").and_then(Value::as_object).is_none() {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(
+                    "缺少 shape（几何），或改用 from_selection（传 selection_id 或 \"latest\" 从已有选区转换，此时形状/羽化/反选/位图一并克隆）"
+                        .to_owned(),
+                ),
+            ));
+        }
         require_object(args, "shape")?.clone()
     };
     // kind/type 互为别名：只有 type 时按 type 走，并在入口把 kind 补进落库
