@@ -395,6 +395,15 @@ single tool with both MyPaint physics and a caller-chosen colour: one had the ph
 had the colour without the physics. Verified by measuring the pixels a red stroke leaves: the values come out at two
 hundred and twenty, thirty one, thirty one, against the two hundred and twenty, thirty, thirty that were asked for.
 
+The blend space is selectable too. The `color` to `color_to` gradient on `brush_stroke` can be mixed in three spaces:
+`rgb` (the default, interpolated in sRGB, byte for byte what it always was), `linear` (linear light, physically correct),
+and `pigment` (spectral K/S mixing, so yellow and blue give green rather than grey). Measured on one yellow to blue
+gradient: the mid colour is rgb(100,100,155) in `rgb` mode, rgb(168,168,205) in `linear` mode, sixty eight levels
+brighter, and rgb(0,84,105) in `pigment` mode, where the channel spread grows from fifty six to a hundred and five.
+Worth knowing: the handler read this parameter from the day it was written, but the tool spec never declared it, so the
+API rejected every call and nothing could reach it. The colour mixing check could only ever report that it was unable
+to judge. That is fixed as of 457b1351.
+
 ### Descriptions say when to use a tool
 
 Tool descriptions now open with the situation they are for and name the neighbours they compete with, because a model
