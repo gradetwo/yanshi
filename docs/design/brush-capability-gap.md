@@ -16662,3 +16662,25 @@ CI 是**干净工作区** ⇒ 该接口给出 300×200 ⇒ 通过 ✓。
 `✗ stderr 里没有进度行 ⇒ 被 timeout 杀掉时无法判断卡在哪一段` ⇒ **退出码 1** ✓（已恢复 ✓）。
 **⇒ 顺带修**：我第一次把断言插在 `console.log(` 的多行表达式**中间** ⇒ `Unexpected token 'if'` ✗
 ⇒ 改成"**先找到语句起点（最近的 `console.log(` 行）再插**" ✓。
+
+## 四百二十一、**推送通道**：`https://github.com` 挂了，**SSH 还能用**（第 611 轮实测）
+
+**⇒ 症状**（连续三发失败）：
+```
+致命错误：OpenSSL SSL_read: unexpected eof while reading
+致命错误：Failed to connect to github.com:443（两次，各 ~135 s）
+```
+**⇒ 诊断**：
+| 目标 | 结果 |
+|---|---|
+| `https://github.com`（v4） | **超时 / 空** ✗ |
+| `https://api.github.com` | **200** ✓（`gh` 还能用 ✓）|
+| `ssh -T git@github.com` | **`Hi gradetwo! You've successfully authenticated`** ✓ |
+
+**⇒ 所以**：**HTTPS 到 `github.com` 这一条路断了**，但 **`api.github.com`（`gh` 用）与 SSH 都通** ✓。
+**⇒ 可用命令**（本轮实测成功）：
+```bash
+git push git@github.com:gradetwo/yanshi.git main      # ⇒ 4480d815..90687b4c ✓
+git ls-remote git@github.com:gradetwo/yanshi.git refs/heads/main
+```
+**⇒ 下次 HTTPS 推不动时**：**先试 SSH** ✓ —— 不要连试三次 HTTPS（每次 ~135 s，白等 7 分钟 ✗）。
