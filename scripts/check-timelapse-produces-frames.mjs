@@ -70,7 +70,7 @@ const atoms = [
     payload: {
       object_id: `s${index}`,
       layer_id: "L1",
-      kind: "shape",
+      type: "shape",
       data: {
         geometry: { kind: "rect", bbox: { x: 8 + index * 16, y: 16, w: 12, h: 12 } },
         color: { r: 10, g: 200, b: 30, a: 255 },

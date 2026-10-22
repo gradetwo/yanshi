@@ -16424,3 +16424,25 @@ if let Some(object) = state.objects.get(object_id) {
 ⇒ **下一步只查**：`Kernel::apply_atom`（`yanshi-wasm/src/kernel.rs:637`，`last_tiles` 在 `:685` 赋值）
 —— 在 `:685` 之前把 `dirty.kind`／`dirty.bbox` 打出来，就知道**是 planner 给了 Full，还是别处把 tiles 填满了** ✓。
 **⇒ 已撤探针** ✓（工作树干净 ✓）。
+
+## 四百一十三、**更正**：那个「每帧整幅」是**我的合成包写错了键名** ✗ —— 不是产品缺陷
+
+**⇒ 怎么发现的**：在 `Kernel::apply_atom` 里打探针 ⇒ 实测：
+```
+[kernel] atom=CreateDocument kind=Full   bbox=None
+[kernel] atom=CreateLayer    kind=Full   bbox=Some(0,0,256,256)
+[kernel] atom=CreateObject   kind=Structure bbox=Some(0,0,256,256)   ← 整层
+```
+⇒ `CreateObject` 走了 `dirty_for_object` 的**"包围盒未知 ⇒ 整层失效"**兜底 ✓ ⇒ 因为 `object_bbox_in` 返回 `None` ✓。
+**⇒ 根因**：**我的合成原子把对象类型写成了 `"kind": "shape"`，而 folder 读的是 `"type"`** ✗
+（`fold.rs:451` 用的是 `payload.get("type")` ✓）⇒ 对象类型成了默认值 ⇒ 不支持 ⇒ bbox 未知 ⇒ 整层 ✓。
+
+**⇒ 改正后立刻绿**：同一条判据 `a_new_small_object_does_not_dirty_the_whole_canvas`
+（256×256、tile 64、加一个 24×24 矩形 ⇒ 脏 tile 必须 ≤ 4）⇒ **通过** ✓（已去掉 `#[ignore]` ✓）。
+
+**⇒ 所以必须收回的两条结论** ✗：
+1. 「timelapse 每帧重渲整幅、有 48× 空间」—— **不成立** ✓（那是我包写错的产物）；
+2. 「外部 261 字节可能与脏区 Full 同因」—— **不成立** ✓（他们的原子由服务端生成，键名是对的）。
+**⇒ 仍成立的部分** ✓：`render 94.8% / scale 4.6%`（那是**真实包**不可能，但**我的包**上测的 ⇒ 也要重新用**正确键名**的包复测 ✓）。
+**⇒ 顺手修**：`scripts/check-timelapse-produces-frames.mjs` 的合成包也用了 `kind` ⇒ 改成 `type` ✓
+（否则它出的片是**空白**的，"帧数 > 0"仍会通过 ⇒ 判据偏弱 ✓ —— 现在是真画出东西 ✓）。

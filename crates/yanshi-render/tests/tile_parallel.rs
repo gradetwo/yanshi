@@ -1589,7 +1589,7 @@ fn creating_a_small_object_dirties_only_its_bbox() {
         AtomKind::CreateObject,
         "human:1",
         "session:test",
-        json!({"object_id": "o1", "layer_id": "L1", "kind": "shape",
+        json!({"object_id": "o1", "layer_id": "L1", "type": "shape",
                "data": {"geometry": {"kind": "rect",
                                      "bbox": {"x": 16.0, "y": 16.0, "w": 24.0, "h": 24.0}},
                         "color": {"r": 10, "g": 200, "b": 30, "a": 255}}}),

@@ -213,12 +213,12 @@ fn scaled_frame_is_never_empty() {
 
 /// **新增一个小矩形 ⇒ 这一帧的脏区必须远小于整幅**（第 580 轮，实测驱动）。
 ///
-/// **为什么**：合成包实测「每帧 768 tile = 整幅」⇒ `frame()` 每帧全渲染 ⇒ 外部 4608×8192
-/// 的回放因此极慢（第 87 次仍报 261 字节）。这条判据守的是「脏区真的增量」。
+/// **为什么**：我一度用**键名写错的合成包**（`"kind": "shape"` 而不是 `"type": "shape"`）测出
+/// 「每帧 768 tile = 整幅」，于是误判"脏区机制坏了" ✗ —— 改正键名后**这条判据立刻绿** ✓
+/// ⇒ 现在它守的是：**别再把"我的测试数据写错"当成产品缺陷** ✓。
 ///
 /// **变异**：`plan_dirty` 对 `CreateObject` 退回 `dirty_for_layer`／`DirtySet::full` ⇒ 整幅 ⇒ 红。
 #[test]
-#[ignore = "已知缺陷（第 580 轮实测 16/16 tile）：create_object 会让整幅失效 ⇒ timelapse 每帧全渲染；修好前不阻塞 CI"]
 fn a_new_small_object_does_not_dirty_the_whole_canvas() {
     let (dw, dh) = (256u32, 256u32);
     let mut timeline = Timeline::new("tl_dirty", 64, dw, dh, 256 * 1024 * 1024).expect("kernel");
@@ -246,7 +246,7 @@ fn a_new_small_object_does_not_dirty_the_whole_canvas() {
             "a2",
             3,
             "create_object",
-            json!({"object_id": "o1", "layer_id": "L1", "kind": "shape",
+            json!({"object_id": "o1", "layer_id": "L1", "type": "shape",
                    "data": {"geometry": {"kind": "rect",
                                          "bbox": {"x": 40.0, "y": 40.0, "w": 24.0, "h": 24.0}},
                             "color": {"r": 10, "g": 200, "b": 30, "a": 255}}}),
