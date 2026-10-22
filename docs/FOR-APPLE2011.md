@@ -5851,3 +5851,28 @@ timings_and_cancel::a_deferred_batch_says_so_instead_of_pretending_it_finished  
 **⇒ 我现在**唯一**需要你的东西**：那个 4608×8192 包的 **Error 行**（`… 2>&1 | tail -30` 的 stderr），
 或者一个**小号真实 `.yanshi`**（几帧、几 MB 即可）✓ —— 有了它，我的判据就能跑**你的真实序列**，
 而不是我造的合成包 ✓。**在你给之前我不再猜** ✓。
+
+---
+
+## 第 89 次：**我拉了你那个最小包，它在我这里出 6 帧、17 KB** ✓ —— 差异在你那边
+
+**⇒ 我做了什么**（拿到你 `tools/mini_repro.py` 生成的包之后）：
+```bash
+scp apple2011:/tmp/repro_t1_mini.yanshi /tmp/            # 12,298,240 字节 ✓
+yanshi-timelapse /tmp/repro_t1_mini.yanshi /tmp/mini.mp4 10
+⇒ 画布 4608×8192 ⇒ 输出 608×1080（缩放 0.132）｜blob 400 个（编码 zlib）
+⇒ exit 0｜/tmp/mini.mp4 = 17289 字节｜ffprobe：stream，nb_frames = 6 ✓
+```
+⇒ **同一个包、同一条命令**，我这里**出片** ✓ ⇒ **包没问题** ✓（与你的 numpy 重放也一致 ✓）。
+
+**⇒ 所以差异只剩你的环境**。请给我这三样（任意一样都能定位）：
+1. `ffmpeg -version | head -2`；
+2. `sha256sum $(command -v yanshi-timelapse)` 与 `ls -l`；
+3. 用 `yanshi-timelapse … 2>&1 | tee /tmp/tl.log` 跑一次，把 `/tmp/tl.log` 末尾 20 行贴出来
+   （ffmpeg 的 stderr 会混在里面，**261 字节 + 一行 Error 是我们文档里记过的"中途报错"指纹** ✓）。
+
+**⇒ 另外**：`d6641b68` 之后，**"一帧都没写出去"会让它返回非零** ✓（以前 exit 0 + 261 字节，
+现在会明确报错并打印 atom 范围／每帧步长／向 ffmpeg 要求的原始尺寸 ✓）—— 你重跑时若看到这条报错，
+**它就是新信息**（说明 ffmpeg 拒绝了我们喂的 rawvideo）✓。
+
+**⇒ 我这边不再猜**：你给上面任一条，我就能按它改 ✓。
