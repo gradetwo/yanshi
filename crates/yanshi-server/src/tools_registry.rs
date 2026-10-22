@@ -526,7 +526,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // **"描述说支持、schema 拒绝"** ✓ ⇒ 与同仓 `brush_stroke` / `preview` / `test_color` 一致 ⇒ 用 `Any` ✓。
             param!("color", Any, false, "填充色 {r,g,b,a} 或 #rrggbb；**任一分量 > 1 即按字节**（0..255），否则按 0..1 的比例。**给了 `texture` 时可省略**（那时颜色全部来自源位图）"),
             param!("opacity", Number, false, "不透明度 0..1（乘进颜色的 a；缺省 1）"),
-            param!("texture", Any, false, "**纹理填充**（缺省 = 纯色；`\"smooth\"` 同缺省）⇒ 传对象：{\"type\":\"bitmap\", \"blob_hash\":\"<源位图哈希>\", \"source\":{x,y,w,h}（源矩形，文档坐标）, \"width\":…, \"height\":…（源位图像素尺寸）, \"mime_type\":\"image/x-yanshi-raw\"（可选）, \"min_distance\":25（也可写 min_distance_from_target；与目标的最小间距，缺省 0 = 不拦）}。语义：**每个像素从源矩形按最近源像素取色**（**不是全图平均** —— 平均会让深处看不出纹理）；**羽化只乘 alpha**（颜色不被背景污染）；宽度/高度比源矩形大时**按模平铺**。**`type:\"region\"`（从图层形状取）尚未实现**，会给明确报错 ⇒ 先把源区域导出成位图再传 blob_hash"),
+            param!("texture", Any, false, "**纹理填充**（缺省 = 纯色；`\"smooth\"` 同缺省）⇒ 传对象：{\"type\":\"bitmap\", \"blob_hash\":\"<源位图哈希>\", \"source\":{x,y,w,h}（源矩形，文档坐标）, \"width\":…, \"height\":…（源位图像素尺寸）, \"mime_type\":\"image/x-yanshi-raw\"（可选）, \"min_distance\":25（也可写 min_distance_from_target；与目标的最小间距，缺省 0 = 不拦）, \"jitter\":0.3（**可选，0..1**：每个平铺块整体随机平移 ±jitter/2×源块边长 ⇒ **防「墙纸重复」**；缺省 0 = 原样平铺，逐字节等同旧行为）}。语义：**每个像素从源矩形按最近源像素取色**（**不是全图平均** —— 平均会让深处看不出纹理）；**羽化只乘 alpha**（颜色不被背景污染）；宽度/高度比源矩形大时**按模平铺**。**`type:\"region\"`（从图层形状取）尚未实现**，会给明确报错 ⇒ 先把源区域导出成位图再传 blob_hash"),
         ],
     },
     ToolSpec {

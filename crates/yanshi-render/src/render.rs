@@ -3675,12 +3675,42 @@ impl Renderer {
                             //（夹边会把一条边色拉成整片 ⇒ 看起来像"糊了" ✓）。
                             let (sw, sh) = (spec.source.w.max(1.0), spec.source.h.max(1.0));
                             let lut = crate::color::srgb_decode_table();
+                            // **每块平铺的确定性位移** ✓（外部第 76 次：平铺像「墙纸」✗）
+                            //   **`jitter = 0` ⇒ 恒 `(0,0)`** ✓ ⇒ **逐字节等同于原来的平铺** ✓
+                            //   **`jitter > 0` ⇒ 每个块整体平移 `±jitter/2 × 源块边长`** ✓
+                            //     位移由**块坐标的整数哈希**决定 ✓（无 RNG 状态 ⇒ 同输入同输出、跨平台一致 ✓）
+                            //   **⇒ 为什么按「块」不按「像素」** ✗：按像素加噪会**糊掉纹理本身** ✗，
+                            //     按块平移只**打散重复周期** ✓ —— 这正是他们要的「防墙纸」✓。
+                            let jitter = spec.jitter.clamp(0.0, 1.0);
+                            let tile_shift = |x: i32, y: i32| -> (f64, f64) {
+                                if jitter <= 0.0 {
+                                    return (0.0, 0.0);
+                                }
+                                let cell_x = ((x as f64 + 0.5 - ox) / sw).floor() as i64;
+                                let cell_y = ((y as f64 + 0.5 - oy) / sh).floor() as i64;
+                                // splitmix64（短、无依赖、跨平台一致 ✓）
+                                let hash = |a: i64, b: i64| -> u64 {
+                                    let mut z = (a as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                                        ^ (b as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+                                    z ^= z >> 30;
+                                    z = z.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                                    z ^= z >> 27;
+                                    z = z.wrapping_mul(0x94D0_49BB_1331_11EB);
+                                    z ^ (z >> 31)
+                                };
+                                let unit = |bits: u64| (bits >> 11) as f64 / (1u64 << 53) as f64;
+                                let hx = unit(hash(cell_x, cell_y));
+                                let hy =
+                                    unit(hash(cell_y ^ 0x5DEE_CE66_1F3A_9B21u64 as i64, cell_x));
+                                ((hx - 0.5) * jitter * sw, (hy - 0.5) * jitter * sh)
+                            };
                             match &*entry {
                                 DecodedPixels::Rgba8(w, h, bytes) => {
                                     let (w, h) = (*w as i64, *h as i64);
                                     let sample = |x: i32, y: i32| -> LinearRgba {
-                                        let dx = (x as f64 + 0.5 - ox).rem_euclid(sw);
-                                        let dy = (y as f64 + 0.5 - oy).rem_euclid(sh);
+                                        let (jx, jy) = tile_shift(x, y);
+                                        let dx = (x as f64 + 0.5 - ox + jx).rem_euclid(sw);
+                                        let dy = (y as f64 + 0.5 - oy + jy).rem_euclid(sh);
                                         let px = ((dx * sx_scale) as i64).clamp(0, w - 1);
                                         let py = ((dy * sy_scale) as i64).clamp(0, h - 1);
                                         let index = ((py * w + px) * 4) as usize;
@@ -3707,8 +3737,9 @@ impl Renderer {
                                 DecodedPixels::Linear(w, h, values) => {
                                     let (w, h) = (*w as i64, *h as i64);
                                     let sample = |x: i32, y: i32| -> LinearRgba {
-                                        let dx = (x as f64 + 0.5 - ox).rem_euclid(sw);
-                                        let dy = (y as f64 + 0.5 - oy).rem_euclid(sh);
+                                        let (jx, jy) = tile_shift(x, y);
+                                        let dx = (x as f64 + 0.5 - ox + jx).rem_euclid(sw);
+                                        let dy = (y as f64 + 0.5 - oy + jy).rem_euclid(sh);
                                         let px = ((dx * sx_scale) as i64).clamp(0, w - 1);
                                         let py = ((dy * sy_scale) as i64).clamp(0, h - 1);
                                         let index = ((py * w + px) * 3) as usize;

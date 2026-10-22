@@ -425,3 +425,236 @@ fn a_truncated_raw_texture_is_rejected_here_with_the_byte_counts() {
         "错误必须告诉用户 PNG 要写 mime_type（否则他只会看到字节数不符）：{message}"
     );
 }
+
+#[test]
+fn a_path_shaped_texture_fill_only_covers_the_path_not_its_bbox() {
+    // **外部第 75 次的新发现** ✓：用 `rect` 填洞会把**洞外的像素**也刷掉
+    // （他们实测 ①=29.77 ⇒ 天空/草地被外包矩形盖掉 ✓）⇒ 要只填洞内必须用 **`path`** 形状 ✓。
+    // 本测试就是他们"下一步"要打的那一调：`fill_region(shape=path, texture=bitmap)` ✓，
+    // 并且**同时**验证"只盖 path、不盖它的外包矩形"（否则 rect 也过 ✓ ⇒ 又变成那个坑 ✗）。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let hash = workspace
+        .store()
+        .put(&source_bytes())
+        .expect("源位图应能入库")
+        .to_string();
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    // 三角形 (16,16)-(56,16)-(36,56)：质心 ≈ (36,29) 在形内；
+    // **(52,48)** 在**外接盒内（16..56）但形外**（该 y 上三角形只占 x≈32..40）⇒ 这一条才有鉴别力✓。
+    // ⇒ 注意：**别取太靠边的点** —— `sample_colors` 会把"落在渲染区之外"的点标成
+    //   `outside:true` 且 `rgba:null` ✓（我第一次取 (70,70) 就是这样 ✗）。
+    // ⇒ 我第一版取的 **(34,34)** 其实**在三角形里**（它离顶点 (32,32) 很近）✗ ⇒ 断言写错了 ✓
+    //   （与第 904 轮那次「采样点落在矩形里」是同一类错 ✓ —— 采样点要**先算边界** ✓）。
+    // ⚠️ 文档是 **64×64**（本文件的 `new_document` 助手 ✓）⇒ **形状与采样点都必须落在里面** ✗
+    //   我第一版用了 (32,32)-(72,32)-(52,72) ＋ 采样 (68,55) ⇒ **点出了画布** ⇒
+    //   `sample_colors` 回 `outside:true`、`rgba:null` ✗（**又是"采样点先算边界"** ✓ —— 这次边界是**画布** ✓）。
+    let triangle = json!({
+        "kind": "path",
+        "subpaths": [{
+            "start": [16.0, 16.0],
+            "closed": true,
+            "segments": [{"op": "L", "to": [56.0, 16.0]}, {"op": "L", "to": [36.0, 56.0]}]
+        }]
+    });
+    let filled = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": triangle,
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 0, "y": 0, "w": 8, "h": 8},
+                "width": 8,
+                "height": 8
+            }
+        }),
+    );
+    assert_eq!(
+        filled.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "path 形状的纹理填充必须被接受（外部 B8 之后已支持 path）：{filled}"
+    );
+    let samples = registry().call(
+        &mut ctx,
+        "sample_colors",
+        &json!({"points": [[36, 29], [52, 48]]}),
+    );
+    let samples = samples
+        .get("samples")
+        .and_then(Value::as_array)
+        .expect("sample_colors 形状变了");
+    let rgba = |index: usize| -> [u64; 4] {
+        let values = samples[index]
+            .get("rgba")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("缺 rgba：samples={samples:?}"));
+        let mut out = [0u64; 4];
+        for (index, slot) in out.iter_mut().enumerate() {
+            *slot = values.get(index).and_then(Value::as_u64).unwrap_or(0);
+        }
+        out
+    };
+    // ① **形内**必须吃到源纹理（红或蓝 ⇒ 只要不是白底就行）。
+    let inside = rgba(0);
+    assert!(
+        inside[0] > 200 || inside[2] > 200,
+        "三角形内部必须填上源纹理（红/蓝）⇒ 实测 {inside:?}"
+    );
+    // ② **外接盒里、形外**的那一点必须**仍是白底** ⇒ 否则就是又用了 rect（他们踩的那个坑 ✗）。
+    let corner = rgba(1);
+    assert_eq!(
+        corner,
+        [255, 255, 255, 255],
+        "path 填充不许盖到它的外包矩形：形外那点必须还是白底 ⇒ 实测 {corner:?}"
+    );
+}
+
+/// 在目标矩形里横向取 `count` 个像素（步长 1，y 固定）。
+fn row_alpha_and_colour(ctx: &mut ToolContext<'_>, x0: i32, y: i32, count: i32) -> Vec<[u64; 4]> {
+    let points: Vec<[i32; 2]> = (0..count).map(|i| [x0 + i, y]).collect();
+    let samples = registry()
+        .call(ctx, "sample_colors", &json!({"points": points}))
+        .get("samples")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    samples
+        .iter()
+        .map(|sample| {
+            let mut out = [0u64; 4];
+            if let Some(values) = sample.get("rgba").and_then(Value::as_array) {
+                for (index, slot) in out.iter_mut().enumerate() {
+                    *slot = values.get(index).and_then(Value::as_u64).unwrap_or(0);
+                }
+            }
+            out
+        })
+        .collect()
+}
+
+/// 与 `x + period` 那一列**完全相同**的对数（`jitter=0` 时应当满格 ✓）。
+fn repeated_pairs(row: &[[u64; 4]], period: usize) -> (usize, usize) {
+    let mut same = 0usize;
+    let mut total = 0usize;
+    for index in 0..row.len().saturating_sub(period) {
+        total += 1;
+        if row[index] == row[index + period] {
+            same += 1;
+        }
+    }
+    (same, total)
+}
+
+#[test]
+fn jitter_zero_tiles_exactly_and_jitter_one_breaks_the_period() {
+    // **外部第 76 次实测** ✓：`fill_region(shape=path, texture=bitmap)` 通了（①=0.33 ✓），
+    // 而**源块被原样平铺几十次 ⇒ 视觉上是「墙纸」** ✗ ⇒ 他们要 `texture.jitter` ✓。
+    // 本判据钉两件**结构**事（不断像素数）：
+    //   ① `jitter` 缺省 ⇒ **横向 `period=8` 的每一对必须逐字节相同** ✓（= 旧行为，不许被扰动 ✓）
+    //   ② `jitter=1` ⇒ **至少有一对不再相同** ✓（= 周期真的被打散了 ✓）
+    // 两件事**成对**才有意义：只断 ② 的话，"永远加确定性噪声"也能过 ✗；
+    // 只断 ① 的话，"jitter 被忽略"也能过 ✗。
+    for (jitter, expect_periodic) in [(None, true), (Some(1.0), false)] {
+        let mut workspace = Workspace::in_memory(DocumentSettings::default());
+        let hash = workspace
+            .store()
+            .put(&source_bytes())
+            .expect("源位图应能入库")
+            .to_string();
+        {
+            let mut ctx = context(&mut workspace);
+            new_document(&mut ctx);
+        }
+        let mut ctx = context(&mut workspace);
+        let layer = first_layer(&mut ctx);
+        let mut texture = json!({
+            "type": "bitmap",
+            "blob_hash": hash,
+            "source": {"x": 0, "y": 0, "w": 8, "h": 8},
+            "width": 8,
+            "height": 8
+        });
+        if let Some(value) = jitter {
+            texture["jitter"] = json!(value);
+        }
+        let filled = registry().call(
+            &mut ctx,
+            "fill_region",
+            &json!({
+                "layer_id": layer,
+                "shape": {"type": "rect", "x": 32, "y": 32, "w": 32, "h": 32},
+                "texture": texture
+            }),
+        );
+        assert_eq!(
+            filled.get("ok").and_then(Value::as_bool),
+            Some(true),
+            "jitter={jitter:?} 时 fill_region 必须成功：{filled}"
+        );
+        assert_eq!(
+            filled
+                .get("texture")
+                .and_then(|texture| texture.get("jitter"))
+                .and_then(Value::as_f64),
+            Some(jitter.unwrap_or(0.0)),
+            "生效的 jitter 必须回显（缺省 0）：{filled}"
+        );
+        let row = row_alpha_and_colour(&mut ctx, 34, 40, 24);
+        let (same, total) = repeated_pairs(&row, 8);
+        if expect_periodic {
+            assert_eq!(
+                same, total,
+                "jitter 缺省时必须**原样平铺**（周期 8 ⇒ 每一对都相同）⇒ 实测 {same}/{total} 对相同"
+            );
+        } else {
+            assert!(
+                same < total,
+                "jitter=1 时必须**打散周期**（至少一对不相同）⇒ 实测 {same}/{total} 对相同"
+            );
+        }
+    }
+}
+
+#[test]
+fn jitter_out_of_range_is_rejected_by_name() {
+    // 越界不许静默夹：渲染侧拒绝会变成 `unsupported` 警告 ＋ 一个像素都不画 ⇒ 那是静默降级 ✗。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let hash = workspace
+        .store()
+        .put(&source_bytes())
+        .expect("源位图应能入库")
+        .to_string();
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    let message = expect_error(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 32, "y": 32, "w": 32, "h": 32},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 0, "y": 0, "w": 8, "h": 8},
+                "width": 8,
+                "height": 8,
+                "jitter": 1.5
+            }
+        }),
+    );
+    assert!(
+        message.contains("jitter") && message.contains("0.0..=1.0"),
+        "错误必须点名 jitter 与区间（不是只报「参数非法」）：{message}"
+    );
+}

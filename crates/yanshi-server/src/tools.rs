@@ -4128,8 +4128,23 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     //   （PNG 还可以**自动认出** ✓：字节头是 PNG 签名而没写 mime 时 ⇒ 记成 `image/png` ✓，
     //    并把生效的 mime **写进文档** ✓ —— 不做"悄悄按 PNG 解但文档里写着 raw" ✗）。
     let mut texture_mime: Option<String> = None;
+    let mut texture_jitter: f64 = 0.0;
     if let Some(spec) = texture.as_mut() {
         texture_mime = Some(validate_texture_blob(ctx, spec)?);
+        // **`jitter` 早校验** ✓（外部第 76 次要的那个「防墙纸」旋钮）：越界**不许静默夹** ✗
+        //   （渲染侧也会拒，但那会变成 `unsupported` 警告 ＋ 一个像素都不画 ⇒ 正是静默降级 ✗）
+        texture_jitter = match spec.get("jitter").and_then(Value::as_f64) {
+            Some(value) if (0.0..=1.0).contains(&value) => value,
+            Some(value) => {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "texture.jitter 必须在 0.0..=1.0（0 = 原样平铺，1 = 每块最多平移半块），得到 {value}"
+                    )),
+                ));
+            }
+            None => 0.0,
+        };
     }
     let mut texture_gap: Option<f64> = None;
     if let Some(spec) = &texture {
@@ -4205,6 +4220,8 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             "source_gap_px": gap,
             // **生效的 MIME 要回显** ✓：PNG 被自动认出时，调用方必须看得见文档里记的是什么 ✓。
             "mime_type": texture_mime.clone().unwrap_or_default(),
+            // **回声 jitter** ✓：传了 0 与"没传"在文档里都记成 0 ✓，调用方要看得见生效值 ✓。
+            "jitter": texture_jitter,
         }),
         _ => Value::Null,
     };

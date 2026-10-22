@@ -58,6 +58,14 @@ pub struct ShapeTexture {
     pub height: u32,
     /// MIME（解码分派用 ✓；缺省 `image/x-yanshi-raw` ✓，与 `raster_patch` 一致 ✓）。
     pub mime_type: String,
+    /// **每块平铺的随机位移强度** ✓（`0.0..=1.0`，缺省 **0** = 原样平铺 ✓）。
+    ///
+    /// **为什么需要它**（外部第 76 次实测 ✗）：源块（`60×40` 的天空 / `90×60` 的草地）按原样平铺
+    /// ⇒ **几十次重复 ⇒ 视觉上是"墙纸"** ✗ ⇒ 他们要的是 `{"jitter": 0.3}` ✓。
+    /// **⇒ 语义**：**每个平铺块**整体平移 `±jitter/2 × 源块边长` ✓
+    /// （由**块坐标的整数哈希**决定 ✓ ⇒ 同输入同输出、跨平台一致 ✓，不用 RNG 状态 ✓）。
+    /// **⇒ `0` ⇒ 逐字节等同于原来的平铺** ✓（判据：`jitter=0` 的两块必须完全一致 ✓）。
+    pub jitter: f64,
 }
 
 /// 渲染图元。
@@ -926,6 +934,16 @@ fn parse_shape_texture(value: &Value) -> Result<ShapeTexture, String> {
     if width == 0 || height == 0 {
         return Err("texture 缺少 width/height（源位图的像素尺寸）".to_owned());
     }
+    // **`jitter` 取值必须响亮**（外部第 76 次：越界不许静默夹 ✓）
+    let jitter = match object.get("jitter").and_then(Value::as_f64) {
+        Some(value) if (0.0..=1.0).contains(&value) => value,
+        Some(value) => {
+            return Err(format!(
+                "texture.jitter 必须在 0.0..=1.0（0 = 原样平铺，1 = 每块最多平移半块），得到 {value}"
+            ));
+        }
+        None => 0.0,
+    };
     let mime_type = object
         .get("mime_type")
         .and_then(Value::as_str)
@@ -937,6 +955,7 @@ fn parse_shape_texture(value: &Value) -> Result<ShapeTexture, String> {
         width,
         height,
         mime_type,
+        jitter,
     })
 }
 
