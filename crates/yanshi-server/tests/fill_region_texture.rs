@@ -1316,3 +1316,73 @@ fn a_tiny_patch_candidate_pool_warns_about_checkerboards() {
         "`tile` 不许出「候选池」提醒 ⇒ {tiled_warnings:?}"
     );
 }
+
+#[test]
+fn the_min_error_seam_stays_continuous_between_adjacent_rows() {
+    // **DP 的牙齿** ✓：外部第 81 次点名要 `seam:"min_error"` 就是为了**接缝连续**（不打折）✓。
+    // 按行贪心版**每行独立挑列** ⇒ 相邻行的切点可以**跳** ✗；DP 加了三邻域约束 ⇒ `|Δ| ≤ 1` ✓。
+    // 构型：源图红/蓝两色 ⇒ 每行从红切到蓝一次 ✓ ⇒ 切点列可直接量出来 ✓。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let hash = workspace
+        .store()
+        .put(&source_bytes())
+        .expect("源位图应能入库")
+        .to_string();
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    let filled = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 4, "y": 4, "w": 32, "h": 16},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                "width": 8,
+                "height": 8,
+                "mode": "patch",
+                "patch": 6,
+                "overlap": 3,
+                "candidates": 16,
+                "seam": "min_error"
+            }
+        }),
+    );
+    assert_eq!(
+        filled.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "应当成功：{filled}"
+    );
+
+    // 切点 = 该行**第一次**与行首颜色不同的下标 ✓
+    let cut_of = |row: &[[u64; 4]]| -> Option<usize> {
+        let first = row.first().copied()?;
+        row.iter().position(|rgba| *rgba != first)
+    };
+    let mut previous: Option<usize> = None;
+    let mut checked = 0usize;
+    for y in [6, 8, 10, 12, 14] {
+        let row = row_alpha_and_colour(&mut ctx, 6, y, 24);
+        if let Some(cut) = cut_of(&row) {
+            if let Some(prev) = previous {
+                let delta = cut.abs_diff(prev);
+                assert!(
+                    delta <= 1,
+                    "相邻两行的切点必须连续（|Δ| ≤ 1）⇒ y={y} 切在 {cut}，上一行切在 {prev}（Δ={delta}）"
+                );
+                checked += 1;
+            }
+            previous = Some(cut);
+        }
+    }
+    assert!(
+        checked >= 2,
+        "至少要比到两对相邻行（实测 {checked} 对）—— 否则这条判据是空转 ✗"
+    );
+}
