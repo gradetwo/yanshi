@@ -375,6 +375,14 @@ mod tests {
         // **∴ 3 轮取**最小**✗**（**∴ 守"单次测量不算数"✓ —— 与附二十／二十一 同一条纪律 ✓**）
         let mut whole = Duration::MAX;
         let mut seg = [Duration::MAX; 5];
+        // ★ **配对比较**（第 2643 轮；CI 实测 163% 的那次红 ✓）★
+        //   **⇒ 症状**：原先把 `whole` 的**最小值**与 `seg` 各段的**最小值**拿来比 ✗
+        //     ⇒ **而两者取自不同轮** ✗ ⇒ **∴ 那不是同一台机器状态下的两个测量** ✗
+        //     ⇒ **∴ CI 上实测**「整段 46.9ms、五段合 76.5ms ⇒ 163%」✗（**本机三轮 100.9/101.0/102.7%** ✓）
+        //       —— 而两边的活**逐行相同** ✓（`whole_run` 与 `segmented_run` 调的是同一组函数 ✓）
+        //   **⇒ ⇒ 所以**：**比值按轮算，再取**最小**那个 ✓**（**配对** ⇒ 同一轮里两边看到的是同一台机器 ✓）
+        //     ⇒ **∴ 它仍然有牙**：把某段清零 ⇒ 那一轮的比值掉到 0.x ⇒ 下界红 ✓
+        let mut best_share = f64::MAX;
         for round in 0..3 {
             let w = whole_run();
             let s = segmented_run();
@@ -385,6 +393,10 @@ mod tests {
             whole = whole.min(w);
             for i in 0..5 {
                 seg[i] = seg[i].min(s[i]);
+            }
+            let round_sum: Duration = s.iter().sum();
+            if w > Duration::ZERO {
+                best_share = best_share.min(round_sum.as_secs_f64() / w.as_secs_f64());
             }
         }
         let sum: Duration = seg.iter().sum();
@@ -422,7 +434,12 @@ mod tests {
         //     **上界严 ✓**：**分段和若**远大于**整段 ⇒ **说明分母漏了东西 ✗**（**∴ 那才是 bug ✓**）；
         //     **下界松 ✓**：**分段和偏小只表示"没覆盖满"✗ ⇒ **在噪声下是正常的 ✓**
         //   ⇒ **∴ 于是**下界取 0.4 ✓（**它仍能抓住"某段被清零"✗ —— 变异就是靠它 ✓**）
-        let share = sum.as_secs_f64() / whole.as_secs_f64();
+        // **配对比值**（按轮取最小 ✓）——**不是**两个最小值之比 ✓（第 2643 轮）。
+        let share = if best_share.is_finite() {
+            best_share
+        } else {
+            sum.as_secs_f64() / whole.as_secs_f64()
+        };
         assert!(
             share <= 1.5,
             "分段和占整段 {:.1}% ⇒ **∴ 远大于整段 ⇒ **∴ 说明**有一段的计时被算到了别处 ✗，\
