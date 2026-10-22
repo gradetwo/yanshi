@@ -124,4 +124,31 @@ if (total <= 0) {
   console.error(`✗ mp4 里 nb_frames=${total} ⇒ 出的是空片（外部第 86 次就是 261 字节全是头）\n${(run || "").slice(-400)}`);
   process.exit(1);
 }
-console.log(`✓ timelapse 出片：${total} 帧（最小工程包 128×96、7 条原子）`);
+// **帧数 > 0 还不够 —— 画面必须有内容** ✓（第 585 轮实测：合成包曾因原子写错而**全白**，
+//   而"帧数 > 0"照样通过 ✗）⇒ 把**所有帧**解成 rawvideo，要求**至少一帧**有非背景色像素 ✓。
+//   ⚠️ 不要用 `-sseof` 取"最后一帧"：实测那次取到的是**空白**（误导）✗ —— 全解一遍最稳 ✓。
+let raw;
+try {
+  raw = execFileSync(
+    "ffmpeg",
+    ["-v", "error", "-i", join(root, "out.mp4"), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+    { timeout: 120_000, maxBuffer: 256 * 1024 * 1024 },
+  );
+} catch (error) {
+  console.error(`✗ 解不出帧：${(error.stderr || "").toString().slice(-400)}`);
+  process.exit(1);
+}
+const frameSize = meta.width * meta.height * 3;
+const decoded = Math.floor(raw.length / frameSize);
+let painted = 0;
+for (let index = 0; index < decoded; index += 1) {
+  const slice = raw.subarray(index * frameSize, (index + 1) * frameSize);
+  if ([...slice].some((byte) => byte !== 255)) painted += 1;
+}
+if (painted === 0) {
+  console.error(`✗ 解出 ${decoded} 帧，但没有一帧有内容（全背景色）⇒ 视频是空的：帧数对而画面空白`);
+  process.exit(1);
+}
+console.log(
+  `✓ timelapse 出片：${total} 帧，其中 ${painted}/${decoded} 帧有内容（最小工程包 128×96、7 条原子）`,
+);
