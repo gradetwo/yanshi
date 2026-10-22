@@ -1455,3 +1455,56 @@ fn tiled_and_plain_bitmaps_render_identically() {
     assert_eq!(a.rgba8.len(), b.rgba8.len(), "尺寸必须相同");
     assert!(a.rgba8 == b.rgba8, "**分块路径必须与整幅路径逐字节相同** ✗");
 }
+
+/// **位图补丁不该为"是否含涂抹/水彩笔刷"付 Debug 格式化的代价**（第 549 轮）。
+///
+/// **为什么**：那次 `format!("{:?}{:?}")` 是每层每对象一次；实测 100 个位图对象让
+/// 一次 16×16 渲染的 `建立` 从 0.05 ms 涨到 6.09 ms。位图补丁（`import_image` 的产物）不可能
+/// 携带涂抹/水彩笔刷 ⇒ 必须能被跳过。
+///
+/// **判据（结构量）**：2 个位图补丁 ＋ 1 个形状 ⇒ `objects_smudge_scanned == 1`（只扫形状）。
+/// **变异**：去掉 `RasterPatch` 跳过 ⇒ 变成 3 ⇒ 红。
+#[test]
+fn smudge_scan_skips_raster_patches() {
+    let mut state = DocumentState::empty();
+    state.doc_id = Some("doc_smudge_scan".to_owned());
+    state.width = 256;
+    state.height = 256;
+    state.background = json!({"r": 255, "g": 255, "b": 255, "a": 255});
+    state
+        .layers
+        .insert("layer_0".to_owned(), layer("layer_0", 0));
+    for index in 0..2 {
+        state.objects.insert(
+            format!("patch_{index}"),
+            object(
+                &format!("patch_{index}"),
+                "layer_0",
+                ObjectType::RasterPatch,
+                index as i64,
+                json!({"region": {"x": 10.0, "y": 10.0, "w": 8.0, "h": 8.0}}),
+            ),
+        );
+    }
+    state.objects.insert(
+        "rect_0".to_owned(),
+        object(
+            "rect_0",
+            "layer_0",
+            ObjectType::Shape,
+            2,
+            json!({"geometry": {"kind": "rect",
+                                "bbox": {"x": 4.0, "y": 4.0, "w": 8.0, "h": 8.0}},
+                   "color": {"r": 0, "g": 0, "b": 0, "a": 255}}),
+        ),
+    );
+    let store = MemoryBlobStore::new();
+    let grid = TileGrid::new(64, state.width, state.height).unwrap();
+    let rendered = Renderer::with_budget(grid, 32 * 1024 * 1024)
+        .render_region(&state, &store, Bbox::new(0.0, 0.0, 32.0, 32.0))
+        .unwrap();
+    assert_eq!(
+        rendered.stats.objects_smudge_scanned, 1,
+        "只有非位图对象才做那次整份 JSON 的 Debug 格式化（位图补丁不可能带涂抹笔刷）"
+    );
+}
