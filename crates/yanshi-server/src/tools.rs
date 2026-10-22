@@ -3969,6 +3969,31 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                             )),
                         ));
                     }
+                    // **`seam` 只认 `linear`（= 当前的按距离过渡 ✓）** ✓
+                    //   `min_error`（DP 找最小误差切缝 ✓，外部第 81 次点名要的）**还没实现** ✗
+                    //   ⇒ **响亮拒绝** ✓（绝不静默按 linear 处理 ✗ —— 他们从 `D18` 起说的就是这条 ✓）。
+                    match value.get("seam").and_then(Value::as_str) {
+                        None | Some("linear") => {}
+                        Some("min_error") => {
+                            return Err(YanshiError::new(
+                                ErrorCode::InvalidArgument,
+                                ErrorContext::detail(
+                                    "texture.seam=min_error（动态规划找最小误差切缝）**尚未实现** \
+                                     ⇒ 目前只有 `linear`（重叠区按距离线性过渡）✓ ⇒ **不会静默按 linear 处理** ✗ \
+                                     —— 参数已预留在白名单里 ✓，实现之后同一个调用直接生效 ✓"
+                                        .to_string(),
+                                ),
+                            ));
+                        }
+                        Some(other) => {
+                            return Err(YanshiError::new(
+                                ErrorCode::InvalidArgument,
+                                ErrorContext::detail(format!(
+                                    "texture.seam 只能是 linear（min_error 尚未实现），得到 {other:?}"
+                                )),
+                            ));
+                        }
+                    }
                     match value.get("mode").and_then(Value::as_str) {
                         None | Some("tile") => {}
                         // **`patch` 已实现**（第 2770 轮；见 `render.rs::quilt_patches`）✓

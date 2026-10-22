@@ -1161,3 +1161,78 @@ fn texture_mode_patch_synthesises_instead_of_tiling() {
         "`patch` 填出来的区域**必须有墨**（不是空白）⇒ 实测 {inked}/{total_patch} 有墨"
     );
 }
+
+#[test]
+fn seam_min_error_is_refused_until_the_dp_cut_exists() {
+    // **外部第 81 次点名要的 `seam:"min_error"`**（DP 找最小误差切缝 ✓）**还没实现** ✗
+    // ⇒ 必须**响亮拒绝** ✓，绝不静默按 `linear` 处理 ✗ —— 否则调用方以为切缝是按最小误差走的 ✓
+    //   （他们从 `D18` 起反复主张的「参数看起来设了却没生效」✗）。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let hash = workspace
+        .store()
+        .put(&source_bytes())
+        .expect("源位图应能入库")
+        .to_string();
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    let message = expect_error(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 4, "y": 4, "w": 24, "h": 24},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                "width": 8,
+                "height": 8,
+                "mode": "patch",
+                "patch": 6,
+                "overlap": 2,
+                "candidates": 16,
+                "seam": "min_error"
+            }
+        }),
+    );
+    assert!(
+        message.contains("min_error") && message.contains("尚未实现") && message.contains("linear"),
+        "必须点名 min_error ＋「尚未实现」＋ 当前只有 linear ⇒ {message}"
+    );
+
+    // **对照组**：`seam` 缺省 / `"linear"` ⇒ 合成**必须照常成功** ✓
+    for seam in [None, Some("linear")] {
+        let mut texture = json!({
+            "type": "bitmap",
+            "blob_hash": hash,
+            "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+            "width": 8,
+            "height": 8,
+            "mode": "patch",
+            "patch": 6,
+            "overlap": 2,
+            "candidates": 16
+        });
+        if let Some(seam) = seam {
+            texture["seam"] = json!(seam);
+        }
+        let ok = registry().call(
+            &mut ctx,
+            "fill_region",
+            &json!({
+                "layer_id": layer,
+                "shape": {"type": "rect", "x": 4, "y": 34, "w": 24, "h": 24},
+                "texture": texture
+            }),
+        );
+        assert_eq!(
+            ok.get("ok").and_then(Value::as_bool),
+            Some(true),
+            "seam={seam:?} 时合成必须照常成功 ⇒ {ok}"
+        );
+    }
+}
