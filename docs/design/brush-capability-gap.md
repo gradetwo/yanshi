@@ -15477,3 +15477,15 @@ for key in ["min_distance", "min_distance_from_target", "jitter"] { … }
 
 **⇒ 顺序**：先 ①（便宜 ✓，只读响应）⇒ 若 `true` 再做 ② ⇒ 两者都排除后才是"权重不够" ✓。
 **⇒ 本轮不做** ✗（时间用在纠正上一条错误猜想 ✓）。
+
+### 三百九十一（续四）：探针 ① 的正确读法（两条工具事实）
+
+**⇒ 探针 ① 要读"`brightness_match` 有没有落进原子"** ⇒ 两条实测事实（这一轮踩出来的）：
+1. **`get_state` 不返回对象数据** ✗（只有 `objects[].{object_id,bbox,type,…}` ✓）⇒ 别用它验数据字段 ✗；
+2. **`get_atom` 要 `atom_id`，不是 `object_id`** ✓ —— 传 `object_id` 会报
+   `get_atom 不接受参数 object_id（拼写错误？）；可用参数：atom_id` ✓；
+   而把 `object_id` 当 `atom_id` 传 ⇒ `原子 obj_… 不在日志里`（`reference_not_found`）✓
+   ⇒ **两者是不同的 id** ✓ ⇒ 下一轮要**先从 state/log 里取 atom_id** ✓ 再读 ✓。
+**⇒ 下一轮**：用 `get_changesets`/`get_state` 拿到真正的 `atom_id` ⇒ 读原子 ⇒ 确认
+`data.texture.brightness_match` ✓；若确实没有 ⇒ 问题在工具层（`texture.clone()` 那条）✓；
+若有 ⇒ 做探针 ②（`quilt_patches` 入口打 `reference.is_some()`）✓。
