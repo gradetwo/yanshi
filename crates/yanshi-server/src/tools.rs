@@ -18817,13 +18817,8 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **静默批处理** ✓（用户 §五-5 ✓）：`batch` 里的子调用**共用这个 `ctx`** ✓
     // ⇒ 在这里置一次 ✓ ⇒ **所有子调用都不再生成预览** ✓（一处生效、全部受益 ✓）。
     let previous_silent = ctx.silent;
-    let previous_wait = ctx.wait_for_render;
     if optional_bool(args, "silent").unwrap_or(false) {
         ctx.silent = true;
-        // **静默批处理 ⇒ 子调用不必**等渲染 ✓（第 483 轮：实测 `silent` 只省编码、不省渲染 ✗
-        //   ⇒ 每个子调用仍各渲染一次脏区 ✓ ⇒ N 个导入 = N 次 ✓）。
-        //   ⇒ 关掉 `wait_for_render` ⇒ 子调用**整段跳过**预览块 ✓ ⇒ 整批只由调用方决定何时渲染 ✓。
-        ctx.wait_for_render = false;
     }
     // **长批次中途的预览**（测试报告 §一.4）✓：`batch` 在一个循环里跑完 ✓ ⇒ 单线程服务下
     // 这期间别的写盘路径没有机会 ⇒ `render.png` 会冻结"整批时长" ✗（实测 300 笔 ⇒ 4~6 分钟 ✓）。
@@ -18983,7 +18978,6 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **还原静默标志** ✓：`ctx` 是**共享**的 ✓ ⇒ 不还原就会**漏到 batch 之后的调用** ✗
     //（那些调用本该照常带预览 ✓）。**共享上下文里"改了就要还原"** ✓ —— 与 `changeset` 同一规矩 ✓。
     ctx.silent = previous_silent;
-    ctx.wait_for_render = previous_wait;
     // **取消 ⇒ 整批回滚** ✓（P1）：先还原上下文 ✓，再撤销 ✓ ——
     // 撤销本身要提交原子（`ctx.commit` ✓），所以必须放在"取消检查"之外 ✓
     //（见 `ToolContext::check_cancelled` 的说明 ✓）。
