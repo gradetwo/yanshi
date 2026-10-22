@@ -15069,3 +15069,23 @@ raw RGBA 取 alpha ✓／raw L8 ✓），并**返回解不开的名单** ✓；
 **≥12 次就回一条 `warnings`** ✓（点名"特征会被复制" ＋ 三条建议 ✓）；**只提醒不改行为** ✓。
 **⇒ 判据**：第 9 条（大目标必有提醒 ＋ `tiles=150` ✓；小目标**不许**有 `warnings` ✓）；
 **变异**：阈值改到不可达 ⇒ **红** ✓。
+
+## 三百八十、BUG-19 残留：**打开文档时报告缺失的 blob** ✓
+
+**⇒ 他们报的**（`bug_report.md` §3.2 第 5 条）：「缺件检测已遍布各处，只差**打开时的统一入口**」✓
+⇒ blob 被**带外删除**（手删目录／换机／备份不全）时，现在只有"画到它那一刻"才会发现（可能几天以后 ✓）。
+
+**⇒ 修法**：`new_document` 的"打开"分支（`opened:true` ✓）扫一遍 `active_blob_manifest()`，
+逐个 `BlobStore::exists`（一次 stat ✓）⇒ 返回
+`blob_integrity: {referenced, scanned, missing, missing_sample[≤8]}` ✓；**只报不修** ✓（不重建、不阻塞打开 ✓）。
+**⇒ 上限 4096 个**（大文档几万引用会拖慢每次打开 ✗）⇒ 超了用 `scanned` 说明**只覆盖多少** ✓（不假装扫全 ✓）。
+
+**⇒ 判据**（`tests/open_blob_integrity.rs`）：
+① 完好 ⇒ `missing=0`、`missing_sample` **是空数组**（字段要在 ✓，不许缺省 ✗）；
+② `store().remove()` 带外删掉后重开 ⇒ `missing=1` 且 `missing_sample` **点名**那个哈希 ✓；
+③ **打开本身仍成功**（`opened:true`）✓ —— 只报不修 ✓。
+**变异**：把 `exists` 判断短路 ⇒ ② **红**（实测 `missing:0, missing_sample:[]`）✓。
+
+**⇒ 顺带确认（写下来免得以后重查）**：**写入路径已经不许引用未上传的 blob** ✓ ——
+`create_mask{kind:bitmap,blob_hash:<假哈希>}` 报「引用的 blob 尚未上传（违反提交顺序协议）」✓、
+`set_reference` 报「这个 blob 不在存储里」✓ ⇒ **缺件只可能来自带外删除** ✓ ⇒ 这条扫描正是为它准备的 ✓。

@@ -12458,6 +12458,40 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
                 let state = document.state();
                 (state.width, state.height)
             };
+            // **打开时做一次 blob 引用完整性扫描** ✓（外部 `bug_report.md` BUG-19 残留：
+            //   「缺件检测已遍布各处，只差**打开时的统一入口**」✓）。
+            //   **⇒ 为什么值得** ✗：blob 被**带外删除**（手删目录／换机／备份不全）时，
+            //     现在只有"画到它那一刻"才会发现（可能几天以后 ✓）；打开时就说 ⇒ 立刻可查 ✓。
+            //   **⇒ 只报不修** ✓（不自动重建、不阻塞打开 ✓ —— 打开本身仍然成功 ✓）。
+            //   **⇒ 上限 4096 个**（`exists` 是一次 stat ✓，但大文档几万个引用会拖慢每次打开 ✗）
+            //     ⇒ 超了就说 `scanned` 只覆盖多少 ✓（**不假装扫全了** ✗）。
+            let blob_integrity = {
+                const SCAN_CAP: usize = 4_096;
+                let manifest = match ctx.workspace.document(&doc_id) {
+                    Some(document) => document.state().active_blob_manifest(),
+                    None => std::collections::BTreeSet::new(),
+                };
+                let referenced = manifest.len();
+                let mut missing_sample: Vec<String> = Vec::new();
+                let mut missing = 0usize;
+                for (index, hash) in manifest.iter().enumerate() {
+                    if index >= SCAN_CAP {
+                        break;
+                    }
+                    if !ctx.workspace.store().exists(hash) {
+                        missing += 1;
+                        if missing_sample.len() < 8 {
+                            missing_sample.push(hash.to_string());
+                        }
+                    }
+                }
+                json!({
+                    "referenced": referenced,
+                    "scanned": referenced.min(SCAN_CAP),
+                    "missing": missing,
+                    "missing_sample": missing_sample,
+                })
+            };
             return Ok(json!({
                 "ok": true,
                 "doc_id": doc_id,
@@ -12466,6 +12500,7 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
                 "width": existing_width,
                 "height": existing_height,
                 "session_document": ctx.doc_id,
+                "blob_integrity": blob_integrity,
                 "note": "该 doc_id 已存在 ⇒ 本次是**打开**（内容未被清空 ✓）；要一块新画布请换 doc_id",
             }));
         }
