@@ -1524,3 +1524,57 @@ fn the_response_echoes_the_mode_and_seam_that_ran() {
         ("tile".to_owned(), "linear".to_owned())
     );
 }
+
+#[test]
+fn the_same_texture_and_region_synthesise_the_same_content_anywhere() {
+    // **同一源 ＋ 同一参数 ⇒ 同一图案** ✓（第 411 轮）：种子不再含对象 id ✓
+    //   ⇒ 这是外部第 81 次**第二条判据（形状泄漏）**的**前提** ✓：
+    //     圆与方各跑一次，**内部本该逐像素相同** ✓ ⇒ 不同才说明形状漏进了纹理 ✓。
+    // 判据断结构量：同一文档里**两处不同位置**用**同一纹理同一参数**填，
+    // 取**相对位置一致**的两行 ⇒ 必须**逐像素相同** ✓。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let hash = workspace
+        .store()
+        .put(&source_bytes())
+        .expect("源位图应能入库")
+        .to_string();
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    let mut fill_at = |y: i32| -> Vec<[u64; 4]> {
+        let filled = registry().call(
+            &mut ctx,
+            "fill_region",
+            &json!({
+                "layer_id": layer,
+                "shape": {"type": "rect", "x": 4, "y": y, "w": 24, "h": 12},
+                "texture": {
+                    "type": "bitmap",
+                    "blob_hash": hash,
+                    "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                    "width": 8,
+                    "height": 8,
+                    "mode": "patch",
+                    "patch": 6,
+                    "overlap": 2,
+                    "candidates": 12
+                }
+            }),
+        );
+        assert_eq!(
+            filled.get("ok").and_then(Value::as_bool),
+            Some(true),
+            "应当成功：{filled}"
+        );
+        row_alpha_and_colour(&mut ctx, 6, y + 4, 20)
+    };
+    let first = fill_at(4);
+    let second = fill_at(24);
+    assert_eq!(
+        first, second,
+        "同一纹理 ＋ 同一参数在**不同位置**必须合成出**同一图案**（种子不含对象 id）\n第一处：{first:?}\n第二处：{second:?}"
+    );
+}

@@ -3711,9 +3711,32 @@ impl Renderer {
                                     // **`mode:"patch"` ⇒ 先把目标 bbox 合成成一块缓冲** ✓
                                     //   （外部第 81 次的正式需求；选块＋线性过渡见 `quilt_patches` ✓）
                                     //   **`tile`（缺省）⇒ `None`** ✓ ⇒ 下面那套逐像素平铺原样走 ✓（逐字节不变 ✓）。
-                                    let patch_seed = object.id.bytes().fold(0u64, |acc, byte| {
-                                        acc.wrapping_mul(131).wrapping_add(u64::from(byte))
-                                    });
+                                    // **种子只由「源 ＋ 参数」决定，不含对象 id** ✓（第 411 轮）：
+                                    //   ⇒ **为什么**：对象 id 每画一次都不一样 ✓ ⇒ 同一纹理、同一区域、
+                                    //     同一参数，**两次会得到不同图案** ✗ ⇒ 于是
+                                    //     **「形状泄漏」这条判据没法写** ✗（外部第 81 次提的第二条 ✓：
+                                    //     「圆与方各跑一次 ⇒ 内部差异图不许呈现目标形状」✓ —— 两次内部
+                                    //     本该**逐像素相同** ✓，不同才说明形状漏进了纹理 ✓）。
+                                    //   ⇒ 现在种子 = 源哈希 ＋ 源矩形 ＋ patch 参数 ✓ ⇒ **同输入同图案** ✓。
+                                    let patch_seed = {
+                                        let mut seed = 0u64;
+                                        for byte in spec.blob.to_string().bytes() {
+                                            seed = seed
+                                                .wrapping_mul(131)
+                                                .wrapping_add(u64::from(byte));
+                                        }
+                                        for value in [
+                                            spec.source.x,
+                                            spec.source.y,
+                                            spec.source.w,
+                                            spec.source.h,
+                                            spec.patch as f64,
+                                        ] {
+                                            seed =
+                                                seed.wrapping_mul(31).wrapping_add(value.to_bits());
+                                        }
+                                        seed
+                                    };
                                     let patch_dims = (
                                         bbox.w.max(1.0).round() as usize,
                                         bbox.h.max(1.0).round() as usize,
