@@ -16706,3 +16706,22 @@ git ls-remote git@github.com:gradetwo/yanshi.git refs/heads/main
    `import_image{object_id, layer_id, type:"shape"?…, bitmap:{blob_hash, mime_type:"image/x-yanshi-raw"}}` ✓；
 4. 跑 `yanshi-timelapse <pkg> out.mp4 1` ⇒ 看 **`atom N（import_image）apply X ms`** ✓
    ⇒ **同一张图在两种画布上的 X 之差** 就是"画布越大越慢"的直接证据 ✓（外部第 92 次猜的就是这个 ✓）。
+
+## 四百二十三、🎯 **复现了他们的症状**：一个 `import_image` 落在 4608×8192 画布上 ⇒ 卡死
+
+**⇒ 造包方法**（照 四百二十二 的约定）：32×32 RGBA ⇒ `zlib` ⇒ `sha256` ⇒ `blobs/sha256/<hex>`，
+`import_image` 净荷 `{"object_id","layer_id","type":"bitmap","data":{"bitmap":{blob_hash,mime_type,width,height},"region":{x,y,w,h}}}` ✓
+
+**⇒ 实测对照（同一张 32×32 图、同一份包、只改画布尺寸）**：
+| 画布 | `atom 2（import_image）apply` | 整跑 |
+|---|---|---|
+| **512×512** | **0 ms** ✓ | **0.5 s** ✓（4 帧）|
+| **4608×8192** | **卡死** ✗（`timeout 240` 到点，输出停在 `atom 1（create_layer）apply 15 ms` 之后）| —— |
+
+⇒ **所以外部第 92 次的猜测成立** ✓：**卡在第一个 `import_image`** ✓
+⇒ 而且**不是"包大"**（这个包只有 32×32 的 blob、1 个 blob）✓，**是"画布大"** ✓ ——
+`create_document` 也已经开始露头（**7 ms**）✓、`create_layer` **15 ms** ✓（512² 上都是 0 ms）。
+**⇒ 下一步（明确）**：在 4096/2048/1024 画布上各测一次 ⇒ 找出**阈值与增长阶** ✓；
+然后看 `import_image` 在 kernel 里做了什么**与画布面积成正比**的事（`apply_dirty` 的 `all_keys`？位图补丁的
+`RasterPatch` 按整幅做指纹？）✓ —— **这一次有判据可写**：同一 `import_image` 在 512² 与 4608×8192 上的
+`apply` 耗时之比 ≤ 常数 ✓（现在是从 0 ms 到"卡死" ✗）。
