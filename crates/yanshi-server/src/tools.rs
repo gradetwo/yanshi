@@ -15771,11 +15771,13 @@ pub fn precompute_clip_mask(
             }
         } else {
             // 纯几何/位图：SelectionShape::from_selection 已含 invert/feather。
-            yanshi_render::selection::ensure_bitmap_masks_registered(&[&sel.shape], &|hh| {
-                hh.parse::<yanshi_core::BlobHash>()
-                    .ok()
-                    .and_then(|hash| ctx.workspace.store().get(&hash).ok())
-            });
+            // 返回值是「解不开的 blob 名单」✓ —— 这里只预热，真正的报错在 `brush_stroke` 的裁剪路径 ✓。
+            let _ =
+                yanshi_render::selection::ensure_bitmap_masks_registered(&[&sel.shape], &|hh| {
+                    hh.parse::<yanshi_core::BlobHash>()
+                        .ok()
+                        .and_then(|hash| ctx.workspace.store().get(&hash).ok())
+                });
             let shape = yanshi_render::selection::SelectionShape::from_selection(sel);
             for (i, v) in data.iter_mut().enumerate() {
                 let px = x0 as f64 + (i % w as usize) as f64;

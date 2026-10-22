@@ -517,11 +517,36 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
                         }
                     }
                 };
+                // **`bbox` 有两种写法** ✗：对象 `{x,y,w,h}` ✓ 与**数组 `[x,y,w,h]`** ✓
+                //   （`create_selection{from_mask}` 写的就是**数组** ✓）
+                //   ⇒ 原来这里只 `bbox.get("x")` ✗ ⇒ **数组读出 (0,0,0,0)** ⇒ 裁剪框**空**
+                //   ⇒ **位图选区做裁剪时一个像素都不落**（`ok:true`、`painted_pixels_clipped=0` ✗，
+                //     实测第 2665 轮：`clip_coverage=0.0`、选区 `area=0.0` ✓）
+                //   ⇒ 现在**先用 `Bbox::from_value`（两种都认 ✓）**，失败再退回对象字段 ✓。
+                // **对象与数组两种 `bbox` 都要认** ✓：`create_selection{from_mask}` 写的是**数组** ✓，
+                //   而 `Bbox::from_value` **只收对象** ⇒ 数组会退化成 `(0,0,0,0)`（裁剪框空 ✗）。
+                //   ⚠️ **但这一处**在本轮实测里**不是**关键路径（把数组分支去掉，判据照样绿 ✓）——
+                //   真正让位图选区落墨的是 `parse_geom` 认 `blob_hash` ✓（见台账「三百七十八」）。
+                //   保留它是**防御性**的：任何走 `alive` 的路径拿到数组 bbox 时都不会再退化成 0 ✓。
+                let parsed = bbox
+                    .as_array()
+                    .and_then(|values| {
+                        Some(yanshi_core::Bbox::new(
+                            values.first()?.as_f64()?,
+                            values.get(1)?.as_f64()?,
+                            values.get(2)?.as_f64()?,
+                            values.get(3)?.as_f64()?,
+                        ))
+                    })
+                    .or_else(|| yanshi_core::Bbox::from_value(bbox));
                 let number = |key: &str| bbox.get(key).and_then(Value::as_f64).unwrap_or(0.0);
-                Some((
-                    selection_id.clone(),
-                    yanshi_core::Bbox::new(number("x"), number("y"), number("w"), number("h")),
-                ))
+                let bbox_value = match parsed {
+                    Some(value) => value,
+                    None => {
+                        yanshi_core::Bbox::new(number("x"), number("y"), number("w"), number("h"))
+                    }
+                };
+                Some((selection_id.clone(), bbox_value))
             })
             .collect();
         let wanted = matches!(id.as_str(), "1" | "true" | "latest" | "all");
@@ -641,7 +666,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
                         let gh = height.max(1) as u32;
                         let mut data = vec![0.0f32; (gw * gh) as usize];
                         if let Some(sel) = sel {
-                            yanshi_render::selection::ensure_bitmap_masks_registered(
+                            let failed = yanshi_render::selection::ensure_bitmap_masks_registered(
                                 &[&sel.shape],
                                 &|h| {
                                     h.parse::<yanshi_core::BlobHash>()
@@ -649,6 +674,15 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
                                         .and_then(|hash| ctx.workspace.store().get(&hash).ok())
                                 },
                             );
+                            // **解不开就响亮报错** ✓（第 2665 轮：原来静默 ⇒ `ok:true` 而一个像素不落 ✗）
+                            if let Some(blob) = failed.first() {
+                                return Err(YanshiError::new(
+                                    ErrorCode::InvalidArgument,
+                                    ErrorContext::detail(format!(
+                                        "位图选区的蒙版 blob 解不开：{blob} ⇒ 支持 **8 位灰度 PNG**、**RGBA PNG（取 alpha）**、**raw RGBA（w×h×4，取 alpha）**、**raw L8（w×h）**；raw 形态必须在 shape 里给 `width`/`height` ✓ —— 以前这里**静默**当成「什么都没选」⇒ `ok:true` 而一个像素不落 ✗"
+                                    )),
+                                ));
+                            }
                             let shape =
                                 yanshi_render::selection::SelectionShape::from_selection(sel);
                             for (i, v) in data.iter_mut().enumerate() {

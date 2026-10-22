@@ -14999,3 +14999,33 @@ BUG-20 图层层级）⇒ 并按投入产出比给了 6 条建议 ✓。**⇒ �
 
 **⇒ 这轮我自己踩的坑**（记下来）：第一版只查了**起点**方框的四个角 ＋ **远端那一个点** ✗
 ⇒ 判据立刻红在 **(32,4)**：笔朝上时**远端的 5px 半径**越过了顶边 ✓（**只查点不查框** ✗）。
+
+## 三百七十八、**位图选区做裁剪一直"静默不落墨"** —— 真因是 `parse_geom` 只认 `blob`（同族第三次）✓
+
+**⇒ 台账里那条"`bitmap` 选区覆盖度仍 0.0"，这一轮查清了** ✓（第 2665 轮）。
+
+**⇒ 实测**（真服务端 64×64）：`create_mask{kind:bitmap,blob_hash,width,height}` ✓ →
+`create_selection{from_mask}` ✓ → `brush_stroke{clip_to_selection}` ⇒ **`ok:true`、
+`painted_pixels=1186`、`painted_pixels_clipped=0`、`clip_coverage=0.0`** ✗（一个像素都不落 ✓）。
+
+**⇒ 定位过程（靠**中间量可见** ✓，不是猜 ✓）**：在裁剪路径插临时 trace 打出 `shape_kind`/`bbox`/coverage 总和
+⇒ 第一版 trace：`bbox=(0,0,0,0)` ✗ ⇒ 修掉数组 `bbox` 的解析 ⇒ trace 变成 `(0,0,64,64)` ✓
+**而 coverage 总和仍是 0** ✗ ⇒ 于是往注册/查表那段读 ✓ ⇒ 找到真因：
+**真正查表的是 `SelectionShape::parse_geom`，它 `value.get("blob")` **只认 `blob`** ✗，
+而选区存的是 **`blob_hash`** ✓** ⇒ `mask=None` ⇒ 覆盖率恒 0 ✓
+（**注册那边**第 1607 轮就两种键都收了 ✓ —— **只改了注册、没改查表** ✗ ⇒ 同族第三次 ✓）。
+
+**⇒ 修法（三处，都是"别静默"）**：
+① `parse_geom`：`blob` **或** `blob_hash` 都认 ✓（关键一处 ✓）；
+② `ensure_bitmap_masks_registered`：**多格式解码**（8 位灰度 PNG ✓／RGBA PNG 取 alpha ✓／
+raw RGBA 取 alpha ✓／raw L8 ✓），并**返回解不开的名单** ✓；
+③ `brush_stroke` 的裁剪路径：名单非空 ⇒ **`invalid_argument` + 支持格式清单** ✓（不再静默 ✓）。
+
+**⇒ 修后实测**：`painted_pixels_clipped=**290**`、`clip_coverage=**0.2445**`、
+采样 `(16,32)=[10,10,10]`（不透明半边 ✓）、`(48,32)=[255,255,255]`（透明半边 ✓）。
+
+**⇒ 判据** `tests/bitmap_selection_clip.rs`：蒙版**左半不透明／右半透明** ⇒ ① 不透明半边必须有墨 ✓
+② 透明半边必须白 ✓。**变异**：把 `parse_geom` 的 `blob_hash` 去掉 ⇒ **红** ✓
+（另：把数组 `bbox` 分支去掉 ⇒ **仍绿** ⇒ 那一处是**防御性**的，不是关键路径 ✓，已在代码里注明 ✓）。
+
+**⇒ 还没做**：`list_selections` 里位图选区的 `area` 仍报 `0.0` ✗（面积统计走的是另一处 ⇒ 下轮修 ✓）。

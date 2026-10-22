@@ -277,8 +277,15 @@ impl SelectionShape {
                 if bbox[2] <= 0 || bbox[3] <= 0 {
                     return SelectionGeom::Empty;
                 }
+                // **`blob` 与 `blob_hash` 都要认** ✗（第 2665 轮；与第 1607 轮**同一族**的第三次 ✓）：
+                //   `ensure_bitmap_masks_registered` 那边**已经**两种键都收 ✓，
+                //   而**这里**（真正查表的地方）**只认 `blob`** ✗ ⇒ 选区存的是 `blob_hash`
+                //   ⇒ `mask = None` ⇒ **覆盖率恒 0 ⇒ `ok:true` 而一个像素不落** ✗✗
+                //   （实测：`create_mask{kind:bitmap}` ＋ `from_mask` ＋ `clip_to_selection` ⇒
+                //    `painted_pixels_clipped=0`、`clip_coverage=0.0`、选区 `area=0.0` ✓）
                 let mask = value
                     .get("blob")
+                    .or_else(|| value.get("blob_hash"))
                     .and_then(Value::as_str)
                     .and_then(get_bitmap_mask);
                 SelectionGeom::Bitmap { bbox, mask }
@@ -1222,7 +1229,16 @@ pub fn get_bitmap_mask(blob_hash: &str) -> Option<Arc<DecodedBitmapMask>> {
 /// `load` 只在注册表未命中时调用（通常是 `store.get(&hash)`）。已注册的直接跳过，
 /// 解码失败的也跳过（`from_value` 会把 `mask` 置 `None`，覆盖率退化为 0，
 /// 调用方按「宁可不选、不可错选」处理）。
-pub fn ensure_bitmap_masks_registered(shapes: &[&Value], load: &dyn Fn(&str) -> Option<Vec<u8>>) {
+pub fn ensure_bitmap_masks_registered(
+    shapes: &[&Value],
+    load: &dyn Fn(&str) -> Option<Vec<u8>>,
+) -> Vec<String> {
+    // **返回值 = 解不开的 blob** ✓（第 2665 轮；外部 `E1742` 一族）：
+    //   原来它**只认 `decode_png_l8`（8 位灰度 PNG）** ✗ ⇒ 传 **raw RGBA** 或 **RGBA PNG** 的蒙版
+    //   ⇒ **静默不注册 ⇒ 覆盖率恒 0 ⇒ `ok:true` 但一个像素都不落** ✗✗
+    //   ⇒ **现在**：① 多格式解码（L8 PNG ✓ / RGBA PNG 取 alpha ✓ / raw RGBA 取 alpha ✓ / raw L8 ✓）
+    //            ② **解不开就**回报名单** ⇒ 调用方必须**响亮报错** ✓（不许再静默 ✓）
+    let mut failed: Vec<String> = Vec::new();
     for shape in shapes {
         if shape.get("kind").and_then(Value::as_str) != Some("bitmap") {
             continue;
@@ -1247,19 +1263,52 @@ pub fn ensure_bitmap_masks_registered(shapes: &[&Value], load: &dyn Fn(&str) -> 
                 continue;
             }
         }
-        if let Some(bytes) = load(blob) {
-            if let Some((w, h, data)) = decode_png_l8(&bytes) {
-                register_bitmap_mask(
-                    blob.to_owned(),
-                    Arc::new(DecodedBitmapMask {
-                        width: w,
-                        height: h,
-                        data,
-                    }),
-                );
-            }
+        let Some(bytes) = load(blob) else {
+            failed.push(blob.to_owned());
+            continue;
+        };
+        let dims = (
+            shape.get("width").and_then(Value::as_u64).map(|v| v as u32),
+            shape
+                .get("height")
+                .and_then(Value::as_u64)
+                .map(|v| v as u32),
+        );
+        let decoded = decode_png_l8(&bytes)
+            .or_else(|| {
+                // RGBA PNG ⇒ 取 **alpha** 通道（蒙版的语义就是"哪些像素参与"✓）
+                crate::png::decode_png(&bytes).map(|(w, h, rgba)| {
+                    let data = rgba.chunks(4).map(|px| px[3]).collect();
+                    (w, h, data)
+                })
+            })
+            .or_else(|| {
+                // **裸字节**（没有 PNG 头）：按 shape 的 `width`/`height` 认
+                //   `w*h*4` ⇒ raw RGBA 取 alpha ✓；`w*h` ⇒ raw L8 ✓。
+                let (w, h) = (dims.0?, dims.1?);
+                let want_rgba = (w as usize) * (h as usize) * 4;
+                let want_l8 = (w as usize) * (h as usize);
+                if bytes.len() == want_rgba {
+                    Some((w, h, bytes.chunks(4).map(|px| px[3]).collect()))
+                } else if bytes.len() == want_l8 {
+                    Some((w, h, bytes.clone()))
+                } else {
+                    None
+                }
+            });
+        match decoded {
+            Some((w, h, data)) => register_bitmap_mask(
+                blob.to_owned(),
+                Arc::new(DecodedBitmapMask {
+                    width: w,
+                    height: h,
+                    data,
+                }),
+            ),
+            None => failed.push(blob.to_owned()),
         }
     }
+    failed
 }
 
 /// 蒙版编译缓存：按 `mask.id` 存 `(指纹, 编译结果)`。

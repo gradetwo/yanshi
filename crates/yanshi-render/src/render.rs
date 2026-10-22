@@ -1373,7 +1373,8 @@ impl Renderer {
                 .map(|s| &s.shape)
                 .collect();
             if !shapes.is_empty() {
-                crate::selection::ensure_bitmap_masks_registered(&shapes, &|h| {
+                // 渲染侧只拿到「解不开的名单」⇒ 只能忽略（渲染不能失败）；响亮报错在裁剪路径 ✓。
+                let _failed = crate::selection::ensure_bitmap_masks_registered(&shapes, &|h| {
                     h.parse::<yanshi_core::BlobHash>()
                         .ok()
                         .and_then(|hash| store.get(&hash).ok())
