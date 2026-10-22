@@ -1921,6 +1921,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("size_range", Array, false, "笔尖直径范围 [min, max]（缺省 [6, 18]）"),
             param!("opacity_range", Array, false, "不透明度范围 [min, max]（缺省 [0.4, 1.0]）"),
             param!("direction", String, false, "random（缺省）/ horizontal / vertical / 角度数字"),
+            // **接上选区裁剪** ✓（外部 `bug_report.md` BUG-04 残留第 3 条 ✓）：
+            //   全部落笔工具里**只有 `scatter_strokes` 没接** `clip_to_selection` ✗ ——
+            //   而它内部逐笔调的就是 `write_brush_stroke` ✓（那条链早就支持 ✓）⇒ 只差**传下去** ✓。
+            param!("clip_to_selection", String, false, "只把散点落在该选区里（透传 `brush_stroke`：选区 id / latest / combined）；缺省不裁剪"),
         ],
     },
     ToolSpec {

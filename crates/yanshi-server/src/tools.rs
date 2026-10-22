@@ -13195,6 +13195,9 @@ fn write_scatter_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
     let (size_low, size_high) = range("size_range", 6.0, 18.0);
     let (opacity_low, opacity_high) = range("opacity_range", 0.4, 1.0);
     let direction = optional_str(args, "direction").unwrap_or_else(|| "random".to_string());
+    // **选区裁剪** ✓（外部 BUG-04 残留：全部落笔工具里只有 `scatter` 没接 ✗）
+    //   内部每笔都走 `write_brush_stroke` ✓ ⇒ 把那一个键**原样传下去**即可 ✓（不在工具层重复实现 ✓）。
+    let clip = optional_str(args, "clip_to_selection").filter(|id| !id.trim().is_empty());
     let fixed_angle = match direction.as_str() {
         "horizontal" => Some(0.0_f64),
         "vertical" => Some(std::f64::consts::FRAC_PI_2),
@@ -13243,7 +13246,7 @@ fn write_scatter_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
         });
         // **一小段**（长度 ≈ 笔尖 ✓）：与 `gradient_blend` 同样的两点式 ✓（一个点会被判"没落下任何像素"✗）。
         let length = (size * 1.2).max(4.0);
-        let stroke = json!({
+        let mut stroke = json!({
             "layer_id": layer_id,
             "brush": brush,
             "points": [
@@ -13253,6 +13256,9 @@ fn write_scatter_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
             "size": size.round() as i64,
             "color": color,
         });
+        if let Some(id) = &clip {
+            stroke["clip_to_selection"] = json!(id);
+        }
         write_brush_stroke(ctx, &stroke)?;
     }
     Ok(json!({
@@ -13260,6 +13266,8 @@ fn write_scatter_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
         "strokes": placed,
         "seed": seed,
         "direction": direction,
+        // **回声**：传了裁剪就说 ✓（没传 ⇒ 不出现 ⇒ 老响应逐字节不变 ✓）。
+        "clip_to_selection": clip.clone(),
         // **同步还是推迟** ✓（P1 的相关项）：报告实测"在 batch 里 0 s 返回、
         // 真正的合成发生在下一次渲染"✗ ⇒ 调用方与日志必须能分辨 ✓。
         "execution": execution_report(ctx),

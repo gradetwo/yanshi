@@ -31,6 +31,7 @@ wc -l < scripts/criteria-known-red.txt                     # 已知红条数（�
 | `blob_gc` 内存闸（外部 `B4`）：**本来就有闸，缺判据** ⇒ 上限改成 `YANSHI_GC_MEMORY_BUDGET_MB`（缺省 1536）＋ 判据 | `tests/blob_gc_budget.rs`｜台账「三百七十」 |
 | `update_layer` 收 **`z_index`**（外部 `bug_report.md` BUG-20，ROI 第 1 条） | `tests/layer_z_index.rs`｜台账「三百七十二」 |
 | `scatter_strokes.area.points` 写进声明（同报告 BUG-04 第 1 条；他们说的「会被拒绝」**实测不成立**） | `tools_registry.rs` 的 `area` 参数｜台账「三百七十二」 |
+| `scatter_strokes` 接上 **`clip_to_selection`**（同报告 BUG-04 残留第 3 条） | `tests/scatter_clip_to_selection.rs`｜台账「三百七十五」 |
 | 双渲染器一致性脚本一直**空转**（写死 400×300，CI 起 320×240 ⇒ 0 条比对）⇒ 改成问 `describe_canvas` | `scripts/kernel-brush-parity.mjs`｜台账「三百六十七」 |
 | `raster_patch_fixed_cost` 的 CI 假红（163%）⇒ 比值改成**按轮配对** | `crates/yanshi-render/src/bitmap_tiles.rs`｜台账「三百七十三」 |
 | 纹理填充的 **JS 判据**（CI 分片里会跑） | `scripts/tool-fill-texture.mjs` |
@@ -43,7 +44,7 @@ wc -l < scripts/criteria-known-red.txt                     # 已知红条数（�
    - `BUG-12`：`get_document` 的 `preview_size` 只有 64/128/256 ⇒ 支持任意分辨率或加「低开销区域预览」。
    - `BUG-15 残留`：`validate_args` 不下沉到嵌套 `data.*`（`additionalProperties:true`）⇒ 嵌套键写错仍静默忽略。
    - `BUG-19 残留`：`open_document` 时做一次 blob 引用完整性扫描并回报缺失清单。
-   - `BUG-04 残留`：`scatter_strokes` **没接 `clip_to_selection`**；散点**半径可越出多边形**。
+   - `BUG-04 残留`：`scatter_strokes` 的 `clip_to_selection` **已接上**（判据 `tests/scatter_clip_to_selection.rs`）；**还差**散点半径可越出多边形（逐像素遮罩）。
    - `BUG-01`：把「当前原子数／预计 fold 成本」暴露到文档元数据（他们要在超阈值前主动切分）。
 3. **parity 吃底图那半**：机制未隔离（台账「三百六十七（续）」）。下一步：把服务端的**第二遍掩膜落墨**
    与门面的单遍对齐再比（本机取证：region 底图 2652 字节 vs 全画布底图 6564 字节 ⇒ 不是"底图裁小了"）。
