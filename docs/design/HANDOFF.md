@@ -117,3 +117,15 @@ cp "$BASE/issues_latest.md" "$BASE/issues_seen.md"
 - `texture.tiles` ＋ 两条 warning：**平铺次数 ≥12**（特征会被复制）、**候选池 <64**（棋盘格/人形）。
 - 判据全在 `crates/yanshi-server/tests/fill_region_texture.rs`（**17 条**，每条都有变异记录）。
 - **下一轮**：① DP 平滑切缝；② 外部提的两条更硬判据（**自相关无峰**、**形状泄漏**）。
+
+## 九、**推送成功的判据**（第 417 轮的坑）
+
+**⇒ 事实**：`git push … | tail -1` 那天**连不上 github**（`Failed to connect … after 133 s`）⇒ 推送失败 ✗，
+而我随后跑了 `git update-ref refs/remotes/origin/main HEAD` ⇒ **本地 ref 显示"已同步"** ⇒ **假绿** ✗
+（`git status -sb` 显示 `## main...origin/main` 没有 ahead/behind ⇒ 看起来推上去了 ✓ 实际没有 ✗）。
+
+**⇒ 规矩**：push 之后**必须**用远端说话，不许用本地 ref：
+```bash
+git ls-remote "<url>" refs/heads/main | cut -c1-12   # 应等于 git rev-parse --short HEAD
+```
+（`update-ref` 只用来让本地 `origin/main` 跟上，**不能当推送证据** ✓。）
