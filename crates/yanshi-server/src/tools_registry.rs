@@ -2181,6 +2181,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // `[r,g,b,(a)]`（0..1 线性或 0..255 字节）/ `"#RRGGBB"` ✓ ——
             // Web 的颜色选择器给的就是 `"#RRGGBB"` ✓（此前查看器只传 `undefined` ✗ ⇒ 选了色也画不上 ✗）。
             param!("color", Any, false, "笔尖颜色：{r,g,b,a}（0..255）/ [r,g,b,(a)]（0..1 线性或 0..255 字节） ⇒ **任一分量 > 1 即按 0..255 字节解释**（想要近黑请用 `#RRGGBB` 或 `{r:1,…}`） / \"#RRGGBB\" ⇒ **覆盖 .myb 默认色** ✓；不给则用笔刷自带色 ✓"),
+            param!("color_mixing", String, false, "`color` → `color_to` 的**混色空间**：`rgb`（缺省，sRGB 空间插值 ⇒ 与以前逐字节相同）/ `linear`（线性光混色，物理正确：红+蓝各 50% 比 rgb **亮 35 级**）/ `pigment`（光谱 K/S 混合：黄+蓝混出绿）。**不给 `color_to` 时无意义**"),
             param!("color_to", Any, false, "**末端颜色**（写法同 color）⇒ 一笔之内从 color 渐变到它（Loaded Brush ✓）：花瓣 / 叶尖那种渐变**一笔就能画** ✓，不必分两笔（交界不会有硬边 ✓）；给了它就必须同时给 color ✓"),
             // **与 `draw_stroke` 对齐** ✓（外部绘画 agent 实测痛点 ✓："要 MyPaint 物理"和"要能控透明度"
             // 以前**无法同时满足** ✗ ⇒ 它只能放弃画笔/介质引擎、改用 `draw_stroke` 画云 ✓）。

@@ -16243,3 +16243,20 @@ color.rs:1018  判据 linear_mixing_differs_from_srgb_mixing_by_about_35_levels
 **⇒ 下一轮**：把那条判据改成对 **`medium_stroke`** 打（它才是收 `color_mixing` 的工具 ✓），
 或**删掉**它并明说"`brush_stroke` 没有混色参数" ✓ —— **不许留着"看起来在查"的脚本** ✗。
 **⇒ 顺带**：我原本要加的 `linear` 检查也一并放在新脚本里（三条：linear≠rgb、linear≠pigment、差 ≥10 ✓）。
+
+### 四百零九（续）：**修好了** ✓ —— `color_mixing` 从来没在 `brush_stroke` 的**参数面**里声明
+
+**⇒ 根因不是"参数不存在"** ✗：`write_brush_stroke` 一直在解析它（`tools_brush.rs:287`），
+但 **spec 里没声明** ⇒ `validate_args` 直接拒收 ⇒ **API 层根本调不到** ✗
+⇒ 于是那条判据只能 `exit(3)`，**永远绿不了也红不了** ✓。
+
+**⇒ 修法**：给 `brush_stroke` 的 spec 加 `color_mixing`（`tools_registry.rs:2184`，与 `color_to` 相邻）✓
+**⇒ 修完立刻见效**（同一脚本）：
+```
+不传 rgb(100,100,155) 极差 56｜rgb rgb(100,100,155)｜pigment rgb(0,84,105) 极差 105｜linear rgb(168,168,205) 极差 37
+✓ 判据退出码=0
+```
+**⇒ 并补上 `linear` 的端到端断言**（第 ③ 条）：linear 与 rgb **画面不同**、中段色差 **≥ 10**、且与 pigment 不同 ✓
+**⇒ 变异**（`mix_colors` 把 Linear 当 Rgb）⇒ 实测 `linear rgb(100,100,155)`、两项不成立 ⇒ **退出码 1** ✓
+**⇒ 这一轮的数字**：linear 中段 `rgb(168,168,205)` vs sRGB 模式 `rgb(100,100,155)` ⇒ **＋68/＋68/＋50 级** ✓
+（这比单测那个"红蓝各 50% 差 35 级"更贴近真实笔触 ✓）。

@@ -122,6 +122,10 @@ const main = async () => {
   const plain = await paint("plain", {});
   const rgbMode = await paint("rgb", { color_mixing: "rgb" });
   const pigment = await paint("pigment", { color_mixing: "pigment" });
+  // **③ `linear` 也必须真的生效**（第 562 轮）：`mix_colors` 的 Linear 有单测，但**端到端**没人证明
+  //   `brush_stroke` 真的把这个参数传下去了 ⇒ 这条补上（断言结构量，不押方向）。
+  //   **变异**：把 `linear` 当成 `rgb` 处理 ⇒ 画面逐字节相同 ⇒ 红。
+  const linearMode = await paint("linear", { color_mixing: "linear" });
   const again = await paint("again", { color_mixing: "pigment" });
   const bogus = await paint("bogus", { color_mixing: "mixbox" });
 
@@ -134,6 +138,25 @@ const main = async () => {
       `❌ 判不了：量不到（plain=${JSON.stringify(plain.replied).slice(0, 90)}｜rgb=${JSON.stringify(rgbMode.replied).slice(0, 90)}｜pigment=${JSON.stringify(pigment.replied).slice(0, 90)}）⇒ 退出码 3`,
     );
     process.exit(3);
+  }
+  // ③ linear 必须与 rgb / pigment 都不同（证明参数被读过）
+  if (linearMode.mid) {
+    const diff = (x, y) =>
+      Math.abs(x[0] - y[0]) + Math.abs(x[1] - y[1]) + Math.abs(x[2] - y[2]);
+    if (linearMode.fingerprint === rgbMode.fingerprint) {
+      bad.push('③ `"linear"` 与 `"rgb"` 画面逐字节相同 ⇒ 参数没生效（或 linear 被当成 rgb）');
+    }
+    if (diff(linearMode.mid, rgbMode.mid) < 10) {
+      bad.push(
+        `③ linear 与 rgb 的中段色差只有 ${diff(linearMode.mid, rgbMode.mid).toFixed(0)}（应 ≥ 10）⇒ 线性混合没起作用`,
+      );
+    }
+    if (pigment.mid && diff(linearMode.mid, pigment.mid) < 10) {
+      bad.push('③ linear 与 pigment 的中段几乎相同 ⇒ linear 可能被接成了 pigment');
+    }
+    console.log(`  中段色：linear ${fmt(linearMode.mid)}`);
+  } else {
+    bad.push('③ `"linear"` 量不到画面（调用被拒或渲染失败）');
   }
   // ① 默认口径 = rgb（逐字节）
   if (plain.fingerprint !== rgbMode.fingerprint) {
