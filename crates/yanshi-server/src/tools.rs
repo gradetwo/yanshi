@@ -4492,6 +4492,22 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         //     前两条**工具可以算**：目标面积 ÷ 源面积 ≈ 要复制多少次 ✓
         //     ⇒ **超过 ~12 次就提醒** ✓（他们那次 90×60 的源铺进大洞 ⇒ 约 20+ 次 ⇒ 就是"图案重复"的来源 ✓）。
         //   **⇒ 只提醒、不改行为** ✓（填充本身是对的；选源是创作者的决定 ✓）。
+        // **`patch` 模式的"候选池"要够大** ✓（外部第 81 次实测：源区 44×34 铺进 230×400 的洞
+        // ⇒ 候选太少 ⇒ **棋盘格 ＋ 人形** ✗）。池 = `(width-patch+1) × (height-patch+1)` ✓
+        // （候选是在**源图**里抽位置 ✓）。太小就说 ✓ —— 只提醒，不改行为 ✓。
+        if spec.get("mode").and_then(Value::as_str) == Some("patch") {
+            let patch = spec.get("patch").and_then(Value::as_u64).unwrap_or(24) as f64;
+            let width = spec.get("width").and_then(Value::as_u64).unwrap_or(0) as f64;
+            let height = spec.get("height").and_then(Value::as_u64).unwrap_or(0) as f64;
+            let pool = (width - patch + 1.0).max(1.0) * (height - patch + 1.0).max(1.0);
+            if pool < 64.0 {
+                texture_warnings.push(format!(
+                    "`mode:patch` 的**候选池只有 {pool:.0} 个位置**（源图 {width:.0}×{height:.0}、patch={patch:.0}）\
+                     ⇒ 合成的「块选择」会反复落在少数几种 ⇒ **棋盘格 / 人形**（外部第 81 次实测 ✗）\
+                     ⇒ 建议：① 源区取**大**一些（他们的草地整块约 260×180 ✓）；② 或把 `patch` 调到 8~12 ✓"
+                ));
+            }
+        }
         let tiles = (target.w * target.h) / (source.w * source.h).max(f64::MIN_POSITIVE);
         texture_tiles = Some(tiles);
         if tiles >= 12.0 {

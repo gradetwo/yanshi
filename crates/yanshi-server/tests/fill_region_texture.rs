@@ -1230,3 +1230,89 @@ fn seam_min_error_makes_a_hard_cut_while_linear_blends() {
         "`seam:min_error` 必须是**硬切**（重叠区只出现源色，不许有中间色）⇒ 实测 {hard_mixed}/{total}"
     );
 }
+
+#[test]
+fn a_tiny_patch_candidate_pool_warns_about_checkerboards() {
+    // **外部第 81 次实测**：源区 44×34 铺进 230×400 的洞 ⇒ **候选太少** ⇒ 棋盘格 ＋ 人形 ✗
+    // ⇒ 工具必须**当场提醒**（只提醒、不改行为 ✓）：候选池 = `(w-patch+1)×(h-patch+1)` ✓。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let hash = workspace
+        .store()
+        .put(&source_bytes())
+        .expect("源位图应能入库")
+        .to_string();
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    // 8×8 源 ＋ patch 6 ⇒ 池只有 3×3 = 9 ⇒ 必须提醒 ✓
+    let patch_fill = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 4, "y": 4, "w": 32, "h": 24},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                "width": 8,
+                "height": 8,
+                "mode": "patch",
+                "patch": 6,
+                "overlap": 2,
+                "candidates": 16
+            }
+        }),
+    );
+    assert_eq!(
+        patch_fill.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "应当成功：{patch_fill}"
+    );
+    let warnings = patch_fill
+        .get("warnings")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let joined = warnings
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join("｜");
+    assert!(
+        joined.contains("候选池") && joined.contains("patch"),
+        "候选池太小必须提醒（名字要能被搜到）⇒ {warnings:?}"
+    );
+    // **对照组**：`mode:"tile"` **不许**出这条（提醒只属于 patch ✓）
+    let tiled = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 4, "y": 34, "w": 32, "h": 24},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                "width": 8,
+                "height": 8,
+                "mode": "tile"
+            }
+        }),
+    );
+    let tiled_warnings = tiled
+        .get("warnings")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !tiled_warnings
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|text| text.contains("候选池")),
+        "`tile` 不许出「候选池」提醒 ⇒ {tiled_warnings:?}"
+    );
+}
