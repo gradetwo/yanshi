@@ -887,3 +887,74 @@ fn a_misspelled_texture_key_is_rejected_with_the_available_ones() {
         "拼写接近时要给**近似提示**（`blobhash` ⇒ `blob_hash`）⇒ {message}"
     );
 }
+
+#[test]
+fn a_region_texture_keeps_the_jitter_knob() {
+    // **"旋钮原样带过去"必须有判据** ✓：`region` 转换时若不转发 `jitter`／`min_distance`，
+    // 用户会**静默失去护栏** ✗（这正是本仓最恨的那类）⇒ 本判据钉 `jitter` 这一半：
+    // 同源同目标，`jitter=0` ⇒ 相距 8px 的每一对相同 ✓；`jitter=1` ⇒ 至少一对不同 ✓。
+    for (jitter, expect_periodic) in [(0.0, true), (1.0, false)] {
+        let mut workspace = Workspace::in_memory(DocumentSettings::default());
+        {
+            let mut ctx = context(&mut workspace);
+            new_document(&mut ctx);
+        }
+        let mut ctx = context(&mut workspace);
+        let layer = first_layer(&mut ctx);
+        // 铺一块 8×8 的"左红右蓝"（源区在 (52,4)），再用 region 把它填到别处。
+        for (x, color) in [
+            (52.0, json!([255, 0, 0, 255])),
+            (56.0, json!([0, 0, 255, 255])),
+        ] {
+            let painted = registry().call(
+                &mut ctx,
+                "fill_region",
+                &json!({
+                    "layer_id": layer,
+                    "shape": {"type": "rect", "x": x, "y": 4, "w": 4, "h": 8},
+                    "color": color
+                }),
+            );
+            assert_eq!(
+                painted.get("ok").and_then(Value::as_bool),
+                Some(true),
+                "前置：底色没画上：{painted}"
+            );
+        }
+        let filled = registry().call(
+            &mut ctx,
+            "fill_region",
+            &json!({
+                "layer_id": layer,
+                "shape": {"type": "rect", "x": 8, "y": 20, "w": 32, "h": 32},
+                "texture": {"type": "region", "source": {"x": 52, "y": 4, "w": 8, "h": 8}, "jitter": jitter}
+            }),
+        );
+        assert_eq!(
+            filled.get("ok").and_then(Value::as_bool),
+            Some(true),
+            "region＋jitter={jitter} 应当成功：{filled}"
+        );
+        assert_eq!(
+            filled
+                .get("texture")
+                .and_then(|texture| texture.get("jitter"))
+                .and_then(Value::as_f64),
+            Some(jitter),
+            "生效的 jitter 必须回显成我们传的那个值（说明它**转发**过去了）：{filled}"
+        );
+        let row = row_alpha_and_colour(&mut ctx, 10, 36, 24);
+        let (same, total) = repeated_pairs(&row, 8);
+        if expect_periodic {
+            assert_eq!(
+                same, total,
+                "jitter=0 时必须**原样平铺**（相距 8px 的每一对都相同）⇒ 实测 {same}/{total}"
+            );
+        } else {
+            assert!(
+                same < total,
+                "jitter=1 时必须**打散周期**（至少一对不同）⇒ 实测 {same}/{total}"
+            );
+        }
+    }
+}
