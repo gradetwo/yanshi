@@ -1,9 +1,11 @@
-//! 展开管线（设计 v3 第 5 章）：归一化 → WB → 解马赛克 → 复合色彩链 →
-//! pre_exposure → 出口截零。纯函数、无 IO、确定性（NF1）：浮点超越函数只走
-//! `libm::` 自由函数，禁止平台相关的 method 调用（交付前 grep 自查）。
+//! 展开管线（设计 v3 第 5 章）：归一化 → WB → 解马赛克 → 高光恢复（④′）→
+//! 复合色彩链 → pre_exposure → 方向 → 出口截零。纯函数、无 IO、确定性
+//! （NF1）：浮点超越函数只走 `libm::` 自由函数，禁止平台相关的 method
+//! 调用（交付前 grep 自查）。
 //!
-//! 本包范围（第一包）：主链如上。高光恢复（④′）与镜头三项（② 暗角／
-//! ⑤ 复合重采样）是后续包，注入点在链上已留位、此处不实现、不冒充。
+//! ④′ 高光恢复为第三包实现（保底机制：解析阈值 + 单调性下界 + μ_ref
+//! 下限钳 + 色度门控 desat，见 `highlight_recover`）。镜头三项（② 暗角／
+//! ⑤ 复合重采样）仍是后续包，注入点在链上留位、此处不实现、不冒充。
 
 use crate::error::{RawError, Result};
 use crate::frame::{
@@ -270,6 +272,230 @@ pub fn demosaic(
 }
 
 // ---------------------------------------------------------------------------
+// ④′ 高光恢复（设计 5.5 保底机制，第三包）：解马赛克之后、色彩矩阵之前，
+//    在已白平衡的线性相机 RGB 域作用。纯局部 3×3、零迭代、确定性。
+//
+//    保底机制只有三件（附录 A14–A16 定版）：单调性下界、μ_ref 下限钳、
+//    带色度门控的渐入中性白（desat）。专家原案的 stage-1「3×3 引导比值
+//    重建」按公式字面实现在 s=1 处是恒等映射、无恢复效果（实证 W2(a1)
+//    解析证明 + 98.5% 逐位相同），**不写成能力**：单通道饱和像素在本包
+//    口径下保持硬钳结果，只由单调性下界保证不劣化。真色度恢复（dcraw
+//    替换式／RT 传播式）是独立增强项，不在本包。
+// ---------------------------------------------------------------------------
+
+/// 解析阈值的饱和系数 τ_clip（设计 5.5 定版）：物理饱和天花板
+/// `T_c = τ_clip · g_vig · w_c`，无 clip_mask 侧通道。
+pub const HIGHLIGHT_TAU_CLIP: f32 = 0.98;
+
+/// 软过渡起点 τ_0（设计 5.5 定版）：`s_c` 在 `τ_0·T_c` 以下为 0、
+/// 在 `T_c` 处为 1，区间宽 6%，严禁硬布尔分支。
+pub const HIGHLIGHT_TAU_0: f32 = 0.92;
+
+/// μ_ref 下限钳 ε_floor（设计 5.5「规格必补」，附录 A13）：归一化域内
+/// 约 −13.3 EV（相对满量程 1.0），远低于任何真实场景信号，只在窗口
+/// 未饱和权重为零（全饱和窗口）时生效——防专家原式在 μ_ref=0 处的
+/// 0/0 退化成「裁剪值 2.5 倍」的静默错误（实证 W2(b)）。
+pub const HIGHLIGHT_MU_REF_FLOOR: f32 = 1e-4;
+
+/// 色度门控过渡带下界（本包定版，依据见 `highlight_recover` 门控注释）：
+/// 相对色度断言量 κ ≤ 本值 ⇒ 门全开（允许 desat）。
+pub const HIGHLIGHT_GATE_CHROMA_LO: f32 = 0.48;
+
+/// 色度门控过渡带上界：κ ≥ 本值 ⇒ 门全关（色度可恢复，禁止 desat）。
+pub const HIGHLIGHT_GATE_CHROMA_HI: f32 = 0.62;
+
+/// 单通道软饱和权重 `s = clamp((I − τ_0·T) / ((1 − τ_0)·T), 0, 1)`
+/// （设计 5.5 定版式）。`ceiling` 是该通道的物理饱和天花板 T_c。
+pub fn highlight_softness(value: f32, ceiling: f32) -> f32 {
+    ((value - HIGHLIGHT_TAU_0 * ceiling) / ((1.0 - HIGHLIGHT_TAU_0) * ceiling)).clamp(0.0, 1.0)
+}
+
+/// 逐像素派生量（④′ 内部）：软饱和权重 s 与其补 u = 1 − s。
+fn highlight_terms(value: f32, ceiling: f32) -> (f32, f32) {
+    let s = highlight_softness(value, ceiling);
+    (s, 1.0 - s)
+}
+
+/// ④′ 高光恢复（保底机制）：就地作用于已白平衡的线性相机 RGB 平面。
+///
+/// - `wb`：重归一化后（min_c w_c = 1.0）的 WB 乘子，阈值
+///   `T_c(r) = τ_clip · g_vig(r) · w_c` 的 w 分量。
+/// - `vig`：步骤 ② 的暗角增益场（逐像素，与 ② 施加的乘子同一份）；
+///   镜头包（第四包）落地前恒传 `None`（全场 1.0）。增益场必须以参数
+///   形式预留：② 对饱和像素**照常乘增益、禁止跳过**（跳过会在高光
+///   边缘造一圈暗环），阈值同步乘 g_vig 后，饱和像素在恢复眼里仍恰
+///   位于其天花板（设计 5.5／附录 A12）。
+///
+/// 门控定版（附录 A15：触发不许只数饱和通道个数）：先由 3×3 窗口内
+/// **未饱和样本的天花板归一化均值** m_c（u 加权；某通道在窗口内无未
+/// 饱和样本时取像素自身 Ĩ_c = I_c/T_c，那时该通道已饱和、自身值 ≥
+/// 天花板）算相对色度断言量 κ = 1 − min_c m_c / max_c m_c。κ 小 ⇒
+/// 存活证据断言的颜色接近中性，观测到的色差主要是差分裁剪伪影 ⇒
+/// 许 desat；κ 大 ⇒ 存活通道明确断言强色度、色度走向可由邻域连续
+/// 恢复 ⇒ 禁 desat。过渡带 [0.48, 0.62] 由 W2 两组对偶夹具的 κ 实测
+/// 分布定版：浅色天空（a2′）κ = 0.442/0.318/0.194（t = 1.8/2.2/2.6）
+/// 全在带下，深蓝渐变（a2）κ = 0.648–0.780（t ∈ [2.0, 3.2]）全在带
+/// 上，带宽落在两组分布之间的空白区。
+///
+/// desat 的公共高光亮度 L = max(max_c I_c, μ_ref)：至少是像素自身最
+/// 亮通道（保单调精神），且不低于窗口未饱和参考亮度 μ_ref（3×3 内
+/// u 加权池化均值，下限钳 ε_floor）。收敛估计再过单调性下界
+/// `Î_c = max(I_c, ·)`：任何通道都不许被往低拉（附录 A17 承重）。
+pub fn highlight_recover(
+    rgb: &mut [f32],
+    width: usize,
+    height: usize,
+    wb: [f32; 3],
+    vig: Option<&[f32]>,
+) -> Result<()> {
+    if rgb.len() != width * height * 3 {
+        return Err(RawError::InvalidFrame(format!(
+            "高光恢复输入长度 {} 与尺寸 {width}×{height}×3 对不上",
+            rgb.len()
+        )));
+    }
+    if wb.iter().any(|&v| !is_positive_finite(v)) {
+        return Err(RawError::InvalidFrame(format!(
+            "高光恢复的 WB 乘子非法（须正有限）：{wb:?}"
+        )));
+    }
+    if let Some(gain) = vig {
+        if gain.len() != width * height || gain.iter().any(|&v| !is_positive_finite(v)) {
+            return Err(RawError::InvalidFrame(
+                "暗角增益场长度不对或含非正／非有限值".to_string(),
+            ));
+        }
+    }
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
+    let ceilings = |x: usize, y: usize| -> [f32; 3] {
+        let g = vig.map_or(1.0, |field| field[y * width + x]);
+        [
+            HIGHLIGHT_TAU_CLIP * g * wb[0],
+            HIGHLIGHT_TAU_CLIP * g * wb[1],
+            HIGHLIGHT_TAU_CLIP * g * wb[2],
+        ]
+    };
+    // 逐像素字段（8 分量）：[池化未饱和能量, 池化未饱和权重,
+    // R/G/B 各自的未饱和权重与未饱和天花板归一化能量]。窗口聚合全部
+    // 由这 8 个字段的 3×3 盒和推出（μ_ref 与门控证据同源，不两处统计）。
+    let pixel_fields = |rgb: &[f32], x: usize, y: usize| -> [f32; 8] {
+        let o = (y * width + x) * 3;
+        let t = ceilings(x, y);
+        let mut fields = [0.0f32; 8];
+        for c in 0..3 {
+            let value = rgb[o + c];
+            let (_, u) = highlight_terms(value, t[c]);
+            fields[0] += u * value;
+            fields[1] += u;
+            fields[2 + 2 * c] = u;
+            fields[3 + 2 * c] = u * (value / t[c]);
+        }
+        fields
+    };
+    // 行字段的水平 3 点 reflect-101 盒和。
+    let hsum_row = |fields: &[[f32; 8]]| -> Vec<[f32; 8]> {
+        let mut out = vec![[0.0f32; 8]; width];
+        for (x, cell) in out.iter_mut().enumerate() {
+            let xm = reflect_index(x as isize - 1, width);
+            let xp = reflect_index(x as isize + 1, width);
+            for k in 0..8 {
+                cell[k] = fields[xm][k] + fields[x][k] + fields[xp][k];
+            }
+        }
+        out
+    };
+    // 三行环形缓冲（slot = 源行号 % 3；同一时刻需要的三行行号互不相同
+    // 且两两差 ≤ 2，模 3 必不冲突，reflect 重复行是同一行、复用同 slot）。
+    // 字段一律在该行被写回之前生成，写回不污染后续行的字段来源。
+    let mut slots: [Vec<[f32; 8]>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let mut slot_row = [usize::MAX; 3];
+    let mut raw_fields: Vec<[f32; 8]> = Vec::new();
+    for y in 0..height {
+        let rows = [
+            reflect_index(y as isize - 1, height),
+            y,
+            reflect_index(y as isize + 1, height),
+        ];
+        for &src_row in &rows {
+            let slot = src_row % 3;
+            if slot_row[slot] != src_row {
+                raw_fields.clear();
+                raw_fields.reserve(width);
+                for x in 0..width {
+                    raw_fields.push(pixel_fields(rgb, x, src_row));
+                }
+                slots[slot] = hsum_row(&raw_fields);
+                slot_row[slot] = src_row;
+            }
+        }
+        for x in 0..width {
+            // 竖直盒和：三行 hsum 相加（reflect 重复行在三行集合里出现
+            // 两次，与 reflect-101 的窗口语义一致）。
+            let mut win = [0.0f32; 8];
+            for &src_row in &rows {
+                let slot = &slots[src_row % 3];
+                for k in 0..8 {
+                    win[k] += slot[x][k];
+                }
+            }
+            let o = (y * width + x) * 3;
+            let value = [rgb[o], rgb[o + 1], rgb[o + 2]];
+            let t = ceilings(x, y);
+            let mut s_sum = 0.0f32;
+            for c in 0..3 {
+                let (sc, _) = highlight_terms(value[c], t[c]);
+                s_sum += sc;
+            }
+            let alpha_base = (s_sum - 1.0).clamp(0.0, 1.0);
+            if alpha_base <= 0.0 {
+                continue; // 至多一个通道进软区：desat 不触发，逐位不变。
+            }
+            // μ_ref：窗口池化未饱和参考亮度（下限钳必补，附录 A13）。
+            let mu_ref = if win[1] > 0.0 {
+                (win[0] / win[1]).max(HIGHLIGHT_MU_REF_FLOOR)
+            } else {
+                HIGHLIGHT_MU_REF_FLOOR
+            };
+            // 门控证据 m_c：窗口未饱和样本的天花板归一化均值；该通道
+            // 在窗口内无未饱和样本时取像素自身 Ĩ_c（已饱和，≥ 1）。
+            let mut m = [0.0f32; 3];
+            for c in 0..3 {
+                let weight = win[2 + 2 * c];
+                m[c] = if weight > 0.0 {
+                    win[3 + 2 * c] / weight
+                } else {
+                    value[c] / t[c]
+                };
+            }
+            let m_max = m[0].max(m[1]).max(m[2]);
+            let m_min = m[0].min(m[1]).min(m[2]);
+            let kappa = if m_max > 0.0 {
+                1.0 - m_min / m_max
+            } else {
+                0.0 // 窗口全负（极端暗场）：无色度断言可依，不拦 desat。
+            };
+            let gate = ((HIGHLIGHT_GATE_CHROMA_HI - kappa)
+                / (HIGHLIGHT_GATE_CHROMA_HI - HIGHLIGHT_GATE_CHROMA_LO))
+                .clamp(0.0, 1.0);
+            let alpha = alpha_base * gate;
+            if alpha <= 0.0 {
+                continue; // 门控关：色度可恢复，不许脱色，逐位不变。
+            }
+            let l_hi = value[0].max(value[1]).max(value[2]).max(mu_ref);
+            for c in 0..3 {
+                let estimate = (1.0 - alpha) * value[c] + alpha * l_hi;
+                // 单调性下界（附录 A17）：饱和只会把读数截小，估计把
+                // 已饱和通道往低拉一律拒绝。下界在此不可删。
+                rgb[o + c] = value[c].max(estimate);
+            }
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // ⑥ 复合色彩链（设计 5.5，专家裁决 Q3）：
 //    M_total = M_XYZ(D65)→sRGB · M_Bradford(w_XYZ → w_D65) · [CM(α)⁻¹ · diag(n)]
 //    构造后逐行行和归一化，保证 [1,1,1] ↦ [1,1,1] 精确成立。
@@ -513,8 +739,8 @@ pub fn assemble_record(
 }
 
 // ---------------------------------------------------------------------------
-// 主链：① → ③ → ④ → ⑥ → ⑦ → ⑧ → ⑨（② 暗角／④′ 高光恢复／⑤ 重采样
-// 是后续包的注入点，本包不实现、链上位置在此注明，防误读为遗漏）
+// 主链：① → ③ → ④ → ④′ → ⑥ → ⑦ → ⑧ → ⑨（② 暗角／⑤ 重采样是后续
+// 包的注入点，本包不实现、链上位置在此注明，防误读为遗漏）
 // ---------------------------------------------------------------------------
 
 /// 展开一帧：设计 5.1 主链中属本包的步骤全量执行。
@@ -545,13 +771,23 @@ pub fn develop(
     let multipliers = renormalized_wb_multipliers(frame)?;
     apply_wb(&mut plane, frame, multipliers);
     // ④ 解马赛克（纯整数网格 MHC／双线性基线）。
-    let rgb_camera = demosaic(
+    let mut rgb_camera = demosaic(
         &plane,
         frame.width,
         frame.height,
         frame.cfa,
         options.demosaic,
     );
+    // ④′ 高光恢复（保底机制，第三包）：已白平衡相机 RGB 域、无条件
+    // 环节（不进 raw_options）。暗角增益场是第四包的产物，此处恒
+    // None（全场 1.0），公式与接入点已按设计 5.5 预留。
+    highlight_recover(
+        &mut rgb_camera,
+        frame.width,
+        frame.height,
+        multipliers,
+        None,
+    )?;
     // ⑥ 复合色彩链：已白平衡相机 RGB → 线性 sRGB D65。
     let neutral = as_shot_neutral(frame)?;
     let composite = composite_color_matrix(&frame.color_matrices, neutral, &mut notes)?;
