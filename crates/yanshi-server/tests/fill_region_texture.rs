@@ -1163,10 +1163,13 @@ fn texture_mode_patch_synthesises_instead_of_tiling() {
 }
 
 #[test]
-fn seam_min_error_is_refused_until_the_dp_cut_exists() {
-    // **外部第 81 次点名要的 `seam:"min_error"`**（DP 找最小误差切缝 ✓）**还没实现** ✗
-    // ⇒ 必须**响亮拒绝** ✓，绝不静默按 `linear` 处理 ✗ —— 否则调用方以为切缝是按最小误差走的 ✓
-    //   （他们从 `D18` 起反复主张的「参数看起来设了却没生效」✗）。
+fn seam_min_error_makes_a_hard_cut_while_linear_blends() {
+    // **外部第 81 次点名要的 `seam:"min_error"`** ✓：重叠区不再按距离过渡 ✓
+    // （**按行贪心**地找"新块 vs 旧像素"SSD 最小的那一列切 ✓；带平滑约束的 DP 还没做 ✗）。
+    // **判据要断"缝的性质"，不是断"两次输出不同"** ✗ —— 后者会被"对象 id 不同 ⇒ 种子不同"
+    // 混淆 ✓（我第一版就是这么写的，变异**竟然通过** ⇒ 说明它根本没在验 seam ✓）。
+    // 源图只有**红/蓝**两种颜色 ⇒ **混合**（linear）会产生**中间色** ✓，
+    // 而**硬切**（min_error）只会出现红或蓝 ✓ ⇒ 数"非纯色像素"即可分辨 ✓。
     let mut workspace = Workspace::in_memory(DocumentSettings::default());
     let hash = workspace
         .store()
@@ -1179,60 +1182,51 @@ fn seam_min_error_is_refused_until_the_dp_cut_exists() {
     }
     let mut ctx = context(&mut workspace);
     let layer = first_layer(&mut ctx);
-    let message = expect_error(
-        &mut ctx,
-        "fill_region",
-        &json!({
-            "layer_id": layer,
-            "shape": {"type": "rect", "x": 4, "y": 4, "w": 24, "h": 24},
-            "texture": {
-                "type": "bitmap",
-                "blob_hash": hash,
-                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
-                "width": 8,
-                "height": 8,
-                "mode": "patch",
-                "patch": 6,
-                "overlap": 2,
-                "candidates": 16,
-                "seam": "min_error"
-            }
-        }),
-    );
-    assert!(
-        message.contains("min_error") && message.contains("尚未实现") && message.contains("linear"),
-        "必须点名 min_error ＋「尚未实现」＋ 当前只有 linear ⇒ {message}"
-    );
-
-    // **对照组**：`seam` 缺省 / `"linear"` ⇒ 合成**必须照常成功** ✓
-    for seam in [None, Some("linear")] {
-        let mut texture = json!({
-            "type": "bitmap",
-            "blob_hash": hash,
-            "source": {"x": 40, "y": 20, "w": 8, "h": 8},
-            "width": 8,
-            "height": 8,
-            "mode": "patch",
-            "patch": 6,
-            "overlap": 2,
-            "candidates": 16
-        });
-        if let Some(seam) = seam {
-            texture["seam"] = json!(seam);
-        }
-        let ok = registry().call(
+    let mut mixed_pixels = |seam: &str, y: i32| -> (usize, usize) {
+        let filled = registry().call(
             &mut ctx,
             "fill_region",
             &json!({
                 "layer_id": layer,
-                "shape": {"type": "rect", "x": 4, "y": 34, "w": 24, "h": 24},
-                "texture": texture
+                "shape": {"type": "rect", "x": 4, "y": y, "w": 32, "h": 24},
+                "texture": {
+                    "type": "bitmap",
+                    "blob_hash": hash,
+                    "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                    "width": 8,
+                    "height": 8,
+                    "mode": "patch",
+                    "patch": 6,
+                    "overlap": 3,
+                    "candidates": 16,
+                    "seam": seam
+                }
             }),
         );
         assert_eq!(
-            ok.get("ok").and_then(Value::as_bool),
+            filled.get("ok").and_then(Value::as_bool),
             Some(true),
-            "seam={seam:?} 时合成必须照常成功 ⇒ {ok}"
+            "seam={seam} 应当成功：{filled}"
         );
-    }
+        let row = row_alpha_and_colour(&mut ctx, 6, y + 12, 24);
+        let mixed = row
+            .iter()
+            .filter(|rgba| {
+                let inked = **rgba != [255, 255, 255, 255];
+                // 纯红 / 纯蓝 之外的有墨像素 = **混过色** ✓
+                inked && **rgba != [255, 0, 0, 255] && **rgba != [0, 0, 255, 255]
+            })
+            .count();
+        (mixed, row.len())
+    };
+    let (linear_mixed, total) = mixed_pixels("linear", 4);
+    let (hard_mixed, _) = mixed_pixels("min_error", 32);
+    assert!(
+        linear_mixed > 0,
+        "`seam:linear` 必须**混过色**（否则这个对照就失效了）⇒ 实测 {linear_mixed}/{total}"
+    );
+    assert_eq!(
+        hard_mixed, 0,
+        "`seam:min_error` 必须是**硬切**（重叠区只出现源色，不许有中间色）⇒ 实测 {hard_mixed}/{total}"
+    );
 }

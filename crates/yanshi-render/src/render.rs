@@ -3728,6 +3728,7 @@ impl Renderer {
                                             spec.overlap as usize,
                                             spec.candidates as usize,
                                             patch_seed,
+                                            spec.seam == "min_error",
                                         ))
                                     } else {
                                         None
@@ -4753,6 +4754,7 @@ fn quilt_patches(
     overlap: usize,
     candidates: usize,
     seed: u64,
+    seam_min_error: bool,
 ) -> Vec<u8> {
     let (tw, th) = target;
     let mut out = vec![0u8; tw * th * 4];
@@ -4830,6 +4832,34 @@ fn quilt_patches(
                         out[ti..ti + 4].copy_from_slice(&source[si..si + 4]);
                         filled[ty * tw + tx] = true;
                     } else if o > 0 {
+                        // **`seam:"min_error"`**：水平重叠里按行找**最小 SSD 的列**切 ✓
+                        //   （**按行贪心** —— 带平滑约束的 DP 还没做 ✗，见台账「三百八十九」）
+                        if seam_min_error && xx < o {
+                            let mut best_x = 0usize;
+                            let mut best_cost = f64::INFINITY;
+                            for offset in 0..o {
+                                if x0 + offset >= tw {
+                                    continue;
+                                }
+                                let sx2 = ((sy + yy) * sw + (sx + offset)) * 4;
+                                let tx2 = (ty * tw + (x0 + offset)) * 4;
+                                let mut cost = 0.0f64;
+                                for channel in 0..3 {
+                                    let diff = f64::from(out[tx2 + channel])
+                                        - f64::from(source[sx2 + channel]);
+                                    cost += diff * diff;
+                                }
+                                if cost < best_cost {
+                                    best_cost = cost;
+                                    best_x = offset;
+                                }
+                            }
+                            if xx < best_x {
+                                continue;
+                            }
+                            out[ti..ti + 4].copy_from_slice(&source[si..si + 4]);
+                            continue;
+                        }
                         let wx = if xx < o {
                             (xx + 1) as f32 / o as f32
                         } else {

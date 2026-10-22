@@ -69,6 +69,8 @@ pub struct ShapeTexture {
     pub overlap: u32,
     /// `patch` 模式每块试几个候选（缺省 **200** ✓）。
     pub candidates: u32,
+    /// `patch` 模式的重叠怎么缝：`"linear"`（缺省）/ `"min_error"`（**按行最小误差切** ✓）。
+    pub seam: String,
     /// **每块平铺的随机位移强度** ✓（`0.0..=1.0`，缺省 **0** = 原样平铺 ✓）。
     ///
     /// **为什么需要它**（外部第 76 次实测 ✗）：源块（`60×40` 的天空 / `90×60` 的草地）按原样平铺
@@ -967,6 +969,15 @@ fn parse_shape_texture(value: &Value) -> Result<ShapeTexture, String> {
         .get("candidates")
         .and_then(Value::as_u64)
         .unwrap_or(200) as u32;
+    let seam = match object.get("seam").and_then(Value::as_str) {
+        None | Some("linear") => "linear".to_owned(),
+        Some("min_error") => "min_error".to_owned(),
+        Some(other) => {
+            return Err(format!(
+                "texture.seam 只能是 linear / min_error，得到 {other:?}"
+            ))
+        }
+    };
     if !(4..=256).contains(&patch) {
         return Err(format!(
             "texture.patch 必须在 4..=256（像素），得到 {patch}"
@@ -998,6 +1009,7 @@ fn parse_shape_texture(value: &Value) -> Result<ShapeTexture, String> {
         patch,
         overlap,
         candidates,
+        seam,
     })
 }
 

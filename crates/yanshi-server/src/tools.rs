@@ -3974,17 +3974,8 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                     //   ⇒ **响亮拒绝** ✓（绝不静默按 linear 处理 ✗ —— 他们从 `D18` 起说的就是这条 ✓）。
                     match value.get("seam").and_then(Value::as_str) {
                         None | Some("linear") => {}
-                        Some("min_error") => {
-                            return Err(YanshiError::new(
-                                ErrorCode::InvalidArgument,
-                                ErrorContext::detail(
-                                    "texture.seam=min_error（动态规划找最小误差切缝）**尚未实现** \
-                                     ⇒ 目前只有 `linear`（重叠区按距离线性过渡）✓ ⇒ **不会静默按 linear 处理** ✗ \
-                                     —— 参数已预留在白名单里 ✓，实现之后同一个调用直接生效 ✓"
-                                        .to_string(),
-                                ),
-                            ));
-                        }
+                        // **`min_error` 已实现**（按行最小误差切 ✓；带平滑的 DP 见台账）✓
+                        Some("min_error") => {}
                         Some(other) => {
                             return Err(YanshiError::new(
                                 ErrorCode::InvalidArgument,
