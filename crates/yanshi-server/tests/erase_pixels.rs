@@ -114,3 +114,100 @@ fn erase_reduces_alpha_along_the_stroke() {
         "左上角不应被擦到（仍是底色的像素 {corner}）"
     );
 }
+
+/// `data.region` 这一族写法是 `erase` 自己在 registry 里承诺的参数形状
+/// （`{region,hardness,opacity}`）⇒ 它必须**真的擦掉像素**，而且不能把整层标脏 ✓。
+///
+/// 此前：`region` 原样进原子 ⇒ `parse_object` 见 `points` 为空判成 `Unsupported`
+/// ⇒ `ok: true` 而零像素 ✗；又因包围盒未知退化成 `dirty_for_layer`（结构失效、
+/// 包围盒＝整层＝整幅）⇒ 8K 实测一次 200×120 的擦除花 8.6 s 重绘全画布 ✗。
+#[test]
+fn erase_by_region_paints_and_dirties_only_that_region() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_erase", 256, 256),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        let filled = registry.call(
+            &mut ctx,
+            "fill",
+            &json!({"layer_id": "L",
+                    "data": {"color": {"r": 40, "g": 160, "b": 90, "a": 255},
+                             "region": {"x": 0, "y": 0, "w": 256, "h": 256}}}),
+        );
+        assert_eq!(filled["ok"], json!(true), "{filled}");
+    }
+    let before = green_pixels(&mut workspace, 0.0, 0.0, 256.0, 256.0);
+
+    let erased = {
+        let mut ctx = context(&mut workspace);
+        registry.call(
+            &mut ctx,
+            "erase",
+            &json!({"layer_id": "L",
+                    "data": {"region": {"x": 60, "y": 60, "w": 100, "h": 70},
+                             "size": 20.0, "hardness": 1.0, "opacity": 1.0}}),
+        )
+    };
+    assert_eq!(erased["ok"], json!(true), "{erased}");
+
+    // ① 区域中心必须擦透。
+    let centre = green_pixels(&mut workspace, 100.0, 88.0, 16.0, 16.0);
+    assert_eq!(
+        centre, 0,
+        "region 中心应被完全擦除（仍是底色的像素 {centre}）"
+    );
+    // ② 区域外（留出一个 size 的外扩余量）不应被动。
+    let corner = green_pixels(&mut workspace, 0.0, 0.0, 30.0, 30.0);
+    assert_eq!(corner, 30 * 30, "左上角不应被擦到");
+    let after = green_pixels(&mut workspace, 0.0, 0.0, 256.0, 256.0);
+    assert!(after < before, "区域擦除应减少底色像素：{before} → {after}");
+
+    // ③ dirty 必须是**几何**且收在 region 附近，而不是整层结构失效。
+    assert_eq!(
+        erased["dirty_kind"],
+        json!("geometry"),
+        "region 擦除不该退化成整层/整幅失效：{erased}"
+    );
+    let bbox = erased["dirty_bbox"].as_array().expect("应给出脏区");
+    let (x, y, w, h) = (
+        bbox[0].as_f64().unwrap(),
+        bbox[1].as_f64().unwrap(),
+        bbox[2].as_f64().unwrap(),
+        bbox[3].as_f64().unwrap(),
+    );
+    assert!(
+        w < 200.0 && h < 170.0,
+        "脏区应远小于整幅 256×256，实测 {w}×{h} @ ({x},{y})"
+    );
+}
+
+/// 既没给 `points` 也没给 `region` ⇒ 必须**报错**，不许 `ok: true` 空转 ✓。
+#[test]
+fn erase_without_points_or_region_is_rejected() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_erase", 64, 64),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    let mut ctx = context(&mut workspace);
+    registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+    let answer = registry.call(&mut ctx, "erase", &json!({"layer_id": "L", "data": {}}));
+    assert_eq!(answer["ok"], json!(false), "空 data 必须被拒：{answer}");
+    let text = answer.to_string();
+    assert!(
+        text.contains("points") && text.contains("region"),
+        "报错要点名两种可用写法，实测：{text}"
+    );
+}

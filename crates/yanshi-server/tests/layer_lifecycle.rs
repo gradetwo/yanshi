@@ -125,3 +125,92 @@ fn a_deleted_layer_id_can_be_reused_but_stays_unusable_until_recreated() {
         );
     }
 }
+
+/// **`if_exists="reuse"` 不得把墓碑说成「复用成功」** ✓。
+///
+/// 实测（同一份日志、同一个 id ✓）：删掉 `detail` 之后再
+/// `create_layer {if_exists: "reuse"}` 回的是 `ok: true, reused: true` ✓，
+/// 但 `list_layers` **不列**它 ✗ —— 于是随后**每一笔**都撞
+/// 「图层 detail 已删除」✗，而调用方手里拿着的是一句**成功**。
+#[test]
+fn if_exists_reuse_recreates_a_tombstone_instead_of_reporting_a_lie() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_life", 64, 64),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+
+    {
+        let mut ctx = context(&mut workspace);
+        assert_eq!(
+            registry.call(
+                &mut ctx,
+                "create_layer",
+                &json!({"layer_id": "L_reuse", "name": "x", "if_exists": "reuse"})
+            )["ok"],
+            json!(true)
+        );
+        assert_eq!(
+            registry.call(&mut ctx, "delete_layer", &json!({"layer_id": "L_reuse"}))["ok"],
+            json!(true)
+        );
+    }
+
+    let mut ctx = context(&mut workspace);
+    let again = registry.call(
+        &mut ctx,
+        "create_layer",
+        &json!({"layer_id": "L_reuse", "name": "x", "if_exists": "reuse"}),
+    );
+    assert_eq!(
+        again["ok"],
+        json!(true),
+        "墓碑应当被重建而不是挡住 reuse：{again}"
+    );
+    assert_ne!(
+        again["reused"].as_bool(),
+        Some(true),
+        "这一条**真的新建了图层**，回 `reused: true` 就是假信息：{again}"
+    );
+
+    let listed = registry.call(&mut ctx, "list_layers", &json!({}));
+    assert!(
+        listed["layers"]
+            .as_array()
+            .map(|rows| rows
+                .iter()
+                .any(|row| row["layer_id"] == json!("L_reuse") && row["visible"] == json!(true)))
+            .unwrap_or(false),
+        "重建之后必须出现在 `list_layers` 里：{listed}"
+    );
+
+    let painted = registry.call(
+        &mut ctx,
+        "draw_shape",
+        &json!({"layer_id": "L_reuse", "object_id": "d", "data": square("d")}),
+    );
+    assert_eq!(
+        painted["ok"],
+        json!(true),
+        "重建后的图层必须能落笔：{painted}"
+    );
+
+    // **存活**图层走 reuse ⇒ 仍然复用、且**不多一条原子** ✓（原语义不能被带走 ✗）。
+    let before = registry.call(&mut ctx, "list_atoms", &json!({}))["count"].clone();
+    let reused = registry.call(
+        &mut ctx,
+        "create_layer",
+        &json!({"layer_id": "L_reuse", "name": "x", "if_exists": "reuse"}),
+    );
+    assert_eq!(
+        reused["reused"].as_bool(),
+        Some(true),
+        "存活图层该复用：{reused}"
+    );
+    let after = registry.call(&mut ctx, "list_atoms", &json!({}))["count"].clone();
+    assert_eq!(before, after, "复用不得写进日志：{before} → {after}");
+}

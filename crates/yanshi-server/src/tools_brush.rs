@@ -27,6 +27,50 @@ pub(super) struct BrushSensors {
     pub viewzoom: f32,
 }
 
+/// 重放侧读 `source.smudge_backend` ✓（**读不到 ⇒ `Engine` ⇒ 与历史逐字节相同 ✓**）
+pub(super) fn smudge_backend_from_source(source: &Value) -> SmudgeBackend {
+    match source.get("smudge_backend").and_then(Value::as_str) {
+        Some("host") => SmudgeBackend::Host,
+        // 显式 `engine`／缺省／null／**认不出的值**都回到 `Engine` ✓
+        //（重放整条历史不能因为一个脏字段就失败 ✗ ⇒ 这里**不报错** ✓
+        //  ⇒ 而**写入侧**拼错当场报错 ✓：两个方向的「静默」各按各的场景定 ✓）
+        _ => SmudgeBackend::Engine,
+    }
+}
+
+/// **★ 揉合（smudge）走哪条后端 ✓ ★**（**∴ 实测根因** ✗：`YANSHI_RASTER_SPLIT` 分段打点显示
+///   3840×2976 画布、`size=200`、161 点的 `Classic_Paint` 一笔
+///   ⇒ **④落墨 = 3829 ms** ✓，而**同一笔把引擎的 `smudge` 归零 ⇒ 60 ms**（**64 倍 ✗**）
+///   ⇒ **∴ 钱在引擎的逐 dab 画布采样**（`dabs × dab 足迹像素` ✓ 半径平方级 ✗）
+///   **∴ 于是**「几万笔」在 4K/8K 上是**几小时** ✗ ⇒ 必须能选后端 ✓）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SmudgeBackend {
+    /// **缺省** ✓：交给 `hokusai` 引擎 ✓ —— **与今天逐字节相同** ✓
+    Engine,
+    /// **只走本仓的净室揉合**（`yanshi_render::brush::smudge_dab` ✓）
+    ///   ⇒ 落笔前把引擎的 `smudge` 归零 ✓，揉合幅度/长度仍取笔刷自己的值 ✓
+    ///   ⇒ **代价**：与引擎的 bucket 回溯**不是同一套像素** ✗（近似 ✓ 而非等价 ✗）
+    Host,
+}
+
+impl SmudgeBackend {
+    /// 解析参数 ✓：拼错**报错并列出可用值** ✗（「静默降级是唯一的敌人」✓）
+    pub(super) fn parse(value: &str) -> Result<Self> {
+        match value {
+            "engine" => Ok(Self::Engine),
+            "host" => Ok(Self::Host),
+            other => Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "未知 smudge_backend {other} ⇒ 可用：engine（缺省，与历史逐字节相同）\
+                     / host（只用本仓净室揉合，实测快 1.4–11.2 倍、笔刷半径越大省得越多，\
+                      像素与引擎近似而非相同）"
+                )),
+            )),
+        }
+    }
+}
+
 /// 从 `sensors` 参数对象解析并校验（越界**报错**，不静默夹紧 —— 与 pressure 同纪律）。
 pub(super) fn brush_sensors_from_value(value: &Value) -> Result<BrushSensors> {
     let Some(obj) = value.as_object() else {
@@ -110,6 +154,22 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         _ => BrushSensors::default(),
     };
     let sensors_source = args.get("sensors").cloned().unwrap_or(Value::Null);
+    // **★ 揉合后端 ✓**（缺省 `engine` ⇒ **与历史逐字节相同** ✓）
+    //   **∴ 为什么要这个开关 ✗**：`YANSHI_RASTER_SPLIT` 分段实测：4K 画布、
+    //     `Classic_Paint`、`size=200`、161 点的一笔 ⇒ **④落墨 = 3829 ms** ✗
+    //     而把引擎的 `smudge` 归零 ⇒ **60 ms**（**64 倍 ✗**）
+    //   **∴ 钱在引擎的逐 dab 画布采样**（每枚 dab 扫过**自己的足迹** ⇒ 半径平方级 ✗）
+    //   **∴ 于是**「几万笔」在这个代价下是**几个小时** ✗ ⇒ `host` 把揉合交给本仓的
+    //     净室实现（`smudge_dab` ✓ 只拖笔尖后方一条带 ✓）⇒ 同一笔回到**几十毫秒** ✓
+    let smudge_backend = match optional_str(args, "smudge_backend") {
+        Some(text) => SmudgeBackend::parse(&text)?,
+        None => SmudgeBackend::Engine,
+    };
+    // **缺省不往 `source` 塞键 ✓**（老包读不到 ⇒ 重放走缺省 ⇒ 逐字节不变 ✓）
+    let smudge_backend_source = match smudge_backend {
+        SmudgeBackend::Engine => Value::Null,
+        SmudgeBackend::Host => json!("host"),
+    };
     // **风格变换** ✓（缺省 ⇒ 原样 ✓，见 `apply_brush_style` ✓）。
     let points = apply_brush_style(points, args)?;
     // **曲线尺吸附**（二期 `path_guide`）：只拉落点坐标 (x, y)，压感逐位不动；
@@ -335,6 +395,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         &dtimes,
         None,
         sensors,
+        smudge_backend,
     )?;
     let BrushPaint {
         name,
@@ -908,6 +969,9 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             // **传感器也要进 `source`**（同理：重放时 tilt/viewzoom 效果不能丢 ✓；
             // 没传时记 null，重放侧还原成缺省全 0 ✓）。
             "sensors": sensors_source,
+            // **揉合后端也要进 `source` ✓**（同理：改色/重放必须走同一后端 ✓
+            //  ⇒ 否则「画的时候快 64 倍 ✓、重放出另一种像素 ✗」= 撒谎 ✓）
+            "smudge_backend": smudge_backend_source,
         },
         "layer_id": layer_id,
         "object_id": optional_str(args, "object_id"),
@@ -1296,6 +1360,8 @@ pub(super) fn paint_brush(
     // **真实传感器**（缺省全 0 ⇒ 与历史行为逐位一致；xtilt/ytilt 在落笔时传给
     // `stamp_stroke_from`，viewzoom / barrel_rotation 在下面写到 Brush 宿主字段）。
     sensors: BrushSensors,
+    // **揉合后端** ✓（缺省 `Engine` ⇒ 与历史逐字节相同 ✓）。
+    smudge_backend: SmudgeBackend,
 ) -> Result<BrushPaint> {
     let (name, mut brush) = load_brush(ctx.workspace, brush_name)?;
     brush.viewzoom = sensors.viewzoom;
@@ -1419,10 +1485,52 @@ pub(super) fn paint_brush(
         let _ = applied;
     }
     let reads_canvas = feed_base && brush_reads_the_canvas(&brush);
+    // **★ 揉合后端切换 ✓ ★**（见 `SmudgeBackend` 的实测根因 ✓）
+    //   **∴ 必须在 `reads_canvas` 之后 ✗**：「这支笔读不读画布」要按**笔刷本来的设定**判 ✓
+    //     ⇒ 归零 `smudge` 之后再判就**永远判不出来**了 ✗（底图不喂 ⇒ 净室揉合也没有东西可揉 ✗）
+    //   **∴ 幅度与长度取笔刷自己的值 ✓** ⇒ `host` 只是**换了揉合的实现** ✗ 不是关掉揉合 ✓
+    //     （要关掉请用 `brush_params: {{smudge: 0}}` ✓）
+    let host_smudge = match smudge_backend {
+        SmudgeBackend::Engine => None,
+        SmudgeBackend::Host => {
+            let amount = f64::from(
+                brush
+                    .get(hokusai::BrushSetting::Smudge)
+                    .base_value
+                    .clamp(0.0, 1.0),
+            );
+            let length = f64::from(
+                brush
+                    .get(hokusai::BrushSetting::SmudgeLength)
+                    .base_value
+                    .max(0.0),
+            );
+            brush.set(
+                hokusai::BrushSetting::Smudge,
+                hokusai::SettingValue::constant(0.0),
+            );
+            Some((amount, length))
+        }
+    };
     // **光栅阶段之一：喂底图** ✓（P2）—— `render_region_raw` 是真正的渲染，
     // 涂抹类笔刷每次落笔都要付这份钱 ✓；测试方原先只能从外部猜它占多少 ✓。
+    // **★ 诊断分段 ✓ ★**（**∴ 为什么**：`Phase::Raster` 把「喂底图 / 落墨 / 读回掩膜」
+    //   三段合成一个 `raster_ms` ✗ ⇒ 实测里 `read_canvas=true` 比 `false` 慢 15 倍 ✗
+    //   却看不出钱花在哪一段 ✓ ⇒ 开 `YANSHI_RASTER_SPLIT` 才分段打点 ✗，
+    //   **关着时零行为改变**（与 `YANSHI_RENDER_PROBE`／`YANSHI_REGION_PROBE` 同一套规矩 ✓））
+    const SEG_RENDER: usize = 0;
+    const SEG_FEED: usize = 1;
+    const SEG_BEFORE: usize = 2;
+    const SEG_STAMP: usize = 3;
+    const SEG_READBACK: usize = 4;
+    const SEG_MAXDELTA: usize = 5;
+    const SEG_DEPOSIT: usize = 6;
+    const SEG_ZERO: usize = 7;
+    let raster_probe = std::env::var_os("YANSHI_RASTER_SPLIT").is_some();
+    let mut seg = [std::time::Duration::ZERO; 8];
     let base_started = std::time::Instant::now();
     if reads_canvas {
+        let render_started = std::time::Instant::now();
         if let Ok((base_width, base_height, base)) = ctx.workspace.render_region_raw(
             &ctx.doc_id,
             yanshi_core::Bbox::new(
@@ -1432,6 +1540,7 @@ pub(super) fn paint_brush(
                 seed_region.height as f64,
             ),
         ) {
+            seg[SEG_RENDER] = render_started.elapsed();
             let base_ok = base_width as usize == seed_region.width
                 && base_height as usize == seed_region.height
                 && base.len() >= seed_region.width * seed_region.height * 4;
@@ -1446,6 +1555,7 @@ pub(super) fn paint_brush(
                 // **调共享实现**（第 243 轮）：这段循环原先在这里与内核各有一份 ✗
                 // ⇒ 而"两份实现必然漂移"是本项目记录过的头号病 ✓。
                 // 内核那一份已在第 245 轮改成调 yanshi_render::brush::feed_base ✓。
+                let feed_started = std::time::Instant::now();
                 let fed = yanshi_render::brush::feed_base(
                     &mut surface,
                     seed_region.x0,
@@ -1454,6 +1564,7 @@ pub(super) fn paint_brush(
                     seed_region.height as i32,
                     &base,
                 );
+                seg[SEG_FEED] = std::time::Instant::now().duration_since(feed_started);
                 if !fed {
                     eprintln!("  底图尺寸不符 ⇒ 这次不喂底图（涂抹类笔刷将没有东西可抹）");
                 }
@@ -1467,11 +1578,13 @@ pub(super) fn paint_brush(
     // 而**很淡的笔刷**（`2B_pencil` 在白底上）本来就只差几个台阶 ✓
     // ⇒ 单靠容差会把**真的落下的墨**剔掉 ✗（实测：5467 个改动像素只剩 47 ✓）
     // ⇒ 所以**落墨掩膜与"挪动过"是"或"的关系** ✓：这支笔放了颜料的像素**一律保留** ✓。
+    let before_started = std::time::Instant::now();
     let before_pixels = if reads_canvas {
         Some(read_surface_region(&surface, seed_region).0)
     } else {
         None
     };
+    seg[SEG_BEFORE] = before_started.elapsed();
     // **光栅阶段之二：dab 生成** ✓（P2）—— `stamp_stroke` 是 Hokusai 内部的落墨循环 ✓，
     // 它不可中断 ✗（见 `crate::inflight` ✓）⇒ 取消的安全点只能落在**段之间** ✓。
     let stamp_started = std::time::Instant::now();
@@ -1534,6 +1647,7 @@ pub(super) fn paint_brush(
                     &mut previous,
                     dtimes,
                     sensors,
+                    host_smudge,
                 );
                 cursor += 1;
             }
@@ -1569,6 +1683,7 @@ pub(super) fn paint_brush(
                     &mut previous_here,
                     dtimes,
                     sensors,
+                    host_smudge,
                 );
                 if std::env::var_os("YANSHI_OPEN_TIMING").is_some() {
                     eprintln!("stamp_steps side=server steps={steps}");
@@ -1577,6 +1692,7 @@ pub(super) fn paint_brush(
             }
         }
     };
+    seg[SEG_STAMP] = stamp_started.elapsed();
     ctx.time(Phase::Raster, stamp_started);
 
     // **Hokusai 的 tile 是 fix15（u16, 0..32767）** ✓ ⇒ 转成我们用的 RGBA8 ✓（`>> 7` 正好 0..255 ✓）。
@@ -1586,6 +1702,8 @@ pub(super) fn paint_brush(
     // **光栅阶段之三：读回与掩膜** ✓（P2）。
     let read_started = std::time::Instant::now();
     let (mut rgba, mut painted) = read_surface_region(&surface, region);
+    seg[SEG_READBACK] = read_started.elapsed();
+    let maxdelta_started = std::time::Instant::now();
     // ★ **`max_channel_delta` ✗**（第 20 轮 ✓；**∴ 用户报的薄涂笔零落笔 ✓**）
     //
     // **∴ 为什么需要它 ✗**：`painted_pixels` 只数"字节变了"✗ ⇒ **∴ 差 1 LSB 也算 ✓**
@@ -1646,15 +1764,19 @@ pub(super) fn paint_brush(
         }
         max_delta
     };
+    seg[SEG_MAXDELTA] = maxdelta_started.elapsed();
     // **只保留"这一笔真的碰到过"的像素** ✗ —— 绝不能把喂进去的底图**原样复制**出来 ✓：
     // 那会把**笔触的包围矩形**烘成一个新对象 ✗ ⇒ 删掉底下的东西之后，
     // 画面里会留下一块**直角矩形幽灵** ✓ —— 这正是用户报的「`Flat2#1` 画叶子出矩形 artifact」✓
     //（实测复现 ✓：半透明绿矩形 + 一条 2B_pencil ✓ ⇒ 删掉绿矩形 ✓ ⇒ 矩形区域里**还剩 1076 个绿像素** ✗）。
     if reads_canvas {
+        let deposit_started = std::time::Instant::now();
         let deposit = brush_deposit_mask(&brush, points, region, dtimes);
+        seg[SEG_DEPOSIT] = deposit_started.elapsed();
         let before = before_pixels.unwrap_or_default();
         // 引擎在"没碰过的像素"上的量化漂移上限 ✓（见快照处的说明 ✓）。
         const CANVAS_DRIFT_TOLERANCE: i32 = 3;
+        let zero_started = std::time::Instant::now();
         for index in (0..rgba.len()).step_by(4) {
             // **留着它** ⟺ 这支笔在这里**落过颜料** ✓，或者这一像素被**明显挪动/覆盖**过 ✓。
             let deposited = deposit.get(index + 3).copied().unwrap_or(0) > 0;
@@ -1677,6 +1799,25 @@ pub(super) fn paint_brush(
                 rgba[index + 3] = 0;
             }
         }
+        seg[SEG_ZERO] = zero_started.elapsed();
+    }
+    if raster_probe {
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+        eprintln!(
+            "RASTER_SPLIT brush={name} region={}x{} steps={steps} \
+             ①render={:.1} ②feed={:.1} ③before读={:.1} ④落墨={:.1} ⑤读回={:.1} \
+             ⑥max_delta={:.1} ⑦掩膜落墨(第二遍)={:.1} ⑧清零={:.1} ms",
+            region.width,
+            region.height,
+            ms(seg[SEG_RENDER]),
+            ms(seg[SEG_FEED]),
+            ms(seg[SEG_BEFORE]),
+            ms(seg[SEG_STAMP]),
+            ms(seg[SEG_READBACK]),
+            ms(seg[SEG_MAXDELTA]),
+            ms(seg[SEG_DEPOSIT]),
+            ms(seg[SEG_ZERO]),
+        );
     }
     ctx.time(Phase::Raster, read_started);
     if painted == 0 {

@@ -640,7 +640,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
             param!("group_id", String, false, "组标识：一组笔共享一个 id ⇒ 用 revert_group 整组撤销（不给则不成组）"),
             param!("layer_id", String, true, "目标图层"),
-            param!("data", Object, true, "{region,hardness,opacity}"),
+            param!("data", Object, true, "{region|points, size, hardness, opacity}：region={x,y,w,h} 矩形擦（自动展开成盖章）、points=[[x,y],…] 沿路径擦；两者必给其一"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
         ],
     },
@@ -2168,6 +2168,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("clip_to_selection", String, false, "只把墨落在该选区里（选区 id，或 latest；\"combined\" 则按创建顺序组合全部选区，add/subtract/intersect 生效）；缺省 = 不裁剪。注意：传的 id 必须与建选区时用的名字完全一致（不要自己加 sel- 之类前缀；不确定就用 latest 取最新那个）"),
             param!("label", String, false, "笔迹标签（部位名，如「鼻子-轮廓」）⇒ 记进原子并可由 get_atom 读回；缺省不记"),
             param!("group_id", String, false, "组标识：一组笔共享一个 id ⇒ 用 revert_group 整组撤销（不给则不成组）"),
+            param!("smudge_backend", String, false, "揉合（smudge）走哪条后端 ✓：engine（**缺省** ⇒ 与历史逐字节相同 ✓）/ host（把引擎的逐 dab 画布采样关掉 ✓ 改走本仓净室揉合 smudge_dab ✓）。∴ 什么时候要 host ✗：大画布 + 大半径 + 涂抹类笔刷（smudge>0 ✓ 如 Classic_Paint／oil-06-paint／Round#1／WateryFlatbrush）⇒ 实测（4K 画布、161 点的一笔「落墨」raster_ms，engine → host ⇒ 倍率 ✓）：`Classic_Paint` 50:782→334（2.3×）✓ 200:12738→2345（5.4×）✓ 400:52505→4682（**11.2×**）✓ `Round#1` 1.6–6.5× ✓ `WateryFlatbrush` 1.4–2.8× ✓ ⇒ **半径越大省得越多**（缺省那条路每 **2 px** 就把**整个 dab 足迹**（半径平方量级）揉一遍 ✓ host 改成**每枚 dab 揉一次** ✓）。∴ 真正的成本律 ✗：同样 size=200，不涂抹的 `100%_Opaque` 只要 18 ms、`detail_brush_large` 21 ms ⇒ **涂抹类笔刷比它们贵 100–1000 倍**✓（缺省那条路上 `size=400` 一笔要 **52 秒**✗）。∴ 代价 ✗：host 的拖曳与引擎的 bucket 回溯是**近似而非相同** ⇒ 像素与老包不等价（所以缺省不开 ✓）。要**完全关掉**揉合请用 brush_params {smudge: 0}（那连本仓的揉合一起关 ✗）。∴ 这条笔触的 smudge_backend 会记进原子 source ⇒ 重放/改色走同一后端 ✓。拼错报错并列出可用值 ✓"),
         ],
     },
     ToolSpec {
@@ -2433,6 +2434,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                  text 块里只有 thumb_url（`yanshi://blob/…`）✓。批处理客户端可加 `--no-inline-images` 关掉 ✓。"
             ),
             param!("output_path", String, false, "给了就把预览 PNG 落盘到该路径（导出目录或系统临时目录内，守卫同 export_png），响应给 `image_file` 元数据而非内嵌 base64；与 include_image 同给时文件形态优先"),
+            param!("smudge_backend", String, false, "揉合（smudge）走哪条后端 ✓：engine（**缺省** ⇒ 与历史逐字节相同 ✓）/ host（把引擎的逐 dab 画布采样关掉 ✓ 改走本仓净室揉合 smudge_dab ✓）。∴ 什么时候要 host ✗：大画布 + 大半径 + 涂抹类笔刷（smudge>0 ✓ 如 Classic_Paint／oil-06-paint／Round#1／WateryFlatbrush）⇒ 实测（4K 画布、161 点的一笔「落墨」raster_ms，engine → host ⇒ 倍率 ✓）：`Classic_Paint` 50:782→334（2.3×）✓ 200:12738→2345（5.4×）✓ 400:52505→4682（**11.2×**）✓ `Round#1` 1.6–6.5× ✓ `WateryFlatbrush` 1.4–2.8× ✓ ⇒ **半径越大省得越多**（缺省那条路每 **2 px** 就把**整个 dab 足迹**（半径平方量级）揉一遍 ✓ host 改成**每枚 dab 揉一次** ✓）。∴ 真正的成本律 ✗：同样 size=200，不涂抹的 `100%_Opaque` 只要 18 ms、`detail_brush_large` 21 ms ⇒ **涂抹类笔刷比它们贵 100–1000 倍**✓（缺省那条路上 `size=400` 一笔要 **52 秒**✗）。∴ 代价 ✗：host 的拖曳与引擎的 bucket 回溯是**近似而非相同** ⇒ 像素与老包不等价（所以缺省不开 ✓）。要**完全关掉**揉合请用 brush_params {smudge: 0}（那连本仓的揉合一起关 ✗）。（与 brush_stroke 同一口径 ⇒ 「预览所见 = 落笔所得」✓）。拼错报错并列出可用值 ✓"),
         ],
     },
     ToolSpec {
@@ -2578,6 +2580,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("margin", Integer, false, "区域图在包围盒外扩的像素数（缺省 16）"),
             param!("label", String, false, "笔迹标签 ⇒ 提交时写进原子，供 list_atoms(label=…) 筛"),
             param!("based_on", String, false, "基于某次试画：只覆盖本次传入的字段，其余全部继承"),
+            param!("smudge_backend", String, false, "揉合（smudge）走哪条后端 ✓：engine（**缺省** ⇒ 与历史逐字节相同 ✓）/ host（把引擎的逐 dab 画布采样关掉 ✓ 改走本仓净室揉合 smudge_dab ✓）。∴ 什么时候要 host ✗：大画布 + 大半径 + 涂抹类笔刷（smudge>0 ✓ 如 Classic_Paint／oil-06-paint／Round#1／WateryFlatbrush）⇒ 实测（4K 画布、161 点的一笔「落墨」raster_ms，engine → host ⇒ 倍率 ✓）：`Classic_Paint` 50:782→334（2.3×）✓ 200:12738→2345（5.4×）✓ 400:52505→4682（**11.2×**）✓ `Round#1` 1.6–6.5× ✓ `WateryFlatbrush` 1.4–2.8× ✓ ⇒ **半径越大省得越多**（缺省那条路每 **2 px** 就把**整个 dab 足迹**（半径平方量级）揉一遍 ✓ host 改成**每枚 dab 揉一次** ✓）。∴ 真正的成本律 ✗：同样 size=200，不涂抹的 `100%_Opaque` 只要 18 ms、`detail_brush_large` 21 ms ⇒ **涂抹类笔刷比它们贵 100–1000 倍**✓（缺省那条路上 `size=400` 一笔要 **52 秒**✗）。∴ 代价 ✗：host 的拖曳与引擎的 bucket 回溯是**近似而非相同** ⇒ 像素与老包不等价（所以缺省不开 ✓）。要**完全关掉**揉合请用 brush_params {smudge: 0}（那连本仓的揉合一起关 ✗）。（试画与真画同后端 ⇒ 「试画效果 = 真画效果」✓）。拼错报错并列出可用值 ✓"),
         ],
     },
     ToolSpec {

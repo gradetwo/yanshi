@@ -62,6 +62,7 @@ fn dtimes_reach_the_engine() {
             &mut previous,
             dtimes,
             super::tools_brush::BrushSensors::default(),
+            None,
         );
         // **∴ 用仓库自己的构造器 ✗ 别手填字段** ✓（**∴ 字段是 x0/y0/x1/y1/width/height ✓）
         let region = super::PaintRegion::from_bounds((0, 0, 255, 159, 256, 160));
@@ -1039,6 +1040,34 @@ fn erase_runs_invert_covers_outside() {
     assert!(mid[0].1 < 40.0);
     assert!(mid[1].0 > 60.0);
     // 变异说明：invert 逻辑写反 → mid.len()==1（只擦形状内），变红。
+}
+
+/// **两套形状词汇不得互相兜底** ✓（实测事故 ✗）。
+///
+/// `draw_shape` 用 `{"kind":"rect","bbox":{x,y,w,h}}` ✓，smart_* 用**平铺**的
+/// `{"type":"rect","x":…,"w":…}` ✓。把前者喂给 `smart_erase_shape` 时它**静默**
+/// 兜底成 `(0,0,100,100)` ⇒ 擦掉左上角一小块、还回 `ok:true` ✗
+///（本仓 4K 临摹时真的踩了一次 ✓：`erased_runs:9`、`dirty_bbox:[-12,-12,124,120]`✓）
+#[test]
+fn shape_from_the_other_vocabulary_is_rejected_not_defaulted() {
+    for bad in [
+        r#"{"kind":"rect","bbox":{"x":0,"y":1488,"w":3840,"h":1488}}"#,
+        r#"{"type":"rect","bbox":{"x":0,"y":0,"w":10,"h":10}}"#,
+        r#"{"kind":"circle","x":10,"y":10,"r":5}"#,
+    ] {
+        let v = json_shape(bad);
+        let err = parse_smart_shape(&v, "smart_erase_shape").unwrap_err();
+        assert!(
+            format!("{err:?}").contains("平铺"),
+            "错误信息要写出可用形式，实测：{err:?}"
+        );
+    }
+    // 而**平铺**形式必须照旧通过 ✓（不能把修 bug 变成新限制 ✗）
+    let ok = json_shape(r#"{"type":"rect","x":0,"y":1488,"w":3840,"h":1488}"#);
+    assert_eq!(
+        parse_smart_shape(&ok, "smart_erase_shape").unwrap().bbox,
+        (0.0, 1488.0, 3840.0, 2976.0)
+    );
 }
 
 // ---- ⑥ smart_hatch_follow ----

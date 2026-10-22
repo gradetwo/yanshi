@@ -39,7 +39,10 @@ use yanshi_core::Bbox;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
 fn workspace() -> Workspace {
-    Workspace::in_memory(DocumentSettings::default())
+    // **内置笔刷资产** ✓：本文件的裁剪断言要用 `2B_pencil` 落笔 ⇒ 得指向仓库 `assets/`
+    // （与 `tests/brush_stroke.rs` 同一口径 ✓ —— 否则注册表里「共 0 支」⇒ `reference_not_found`）。
+    let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+    Workspace::in_memory(DocumentSettings::default()).with_assets_dir(Some(assets))
 }
 
 fn registry() -> ToolRegistry {
@@ -504,4 +507,132 @@ fn a_selection_clips_retouch() {
         outside.len(),
         outside.iter().take(5).collect::<Vec<_>>()
     );
+}
+
+/// **数组写法的选区必须和对象写法等价**（补丁 E 的回归用例 ✓）。
+///
+/// 症状（实测 ✓）：`shape: {kind:"rect", bbox:[40,0,48,128]}` ⇒ `create_selection` 回
+/// `ok: true` ✓、`list_selections` 里 `area: 0` ✓、随后**任何**带 `clip_to_selection`
+/// 的落墨**一个像素都不留** ✗ —— 连完全落在选区里的那一笔也被吃掉 ✗。
+/// 根因：`tools_brush.rs` 拿到 `bbox` 后按对象读 `x/y/w/h` ⇒ 在数组上全是 `None`
+/// ⇒ `unwrap_or(0.0)` ⇒ 选区包围盒退化成**贴在原点的 0×0** ⇒ 覆盖度恒 0。
+/// 工具面别处（`export_png`/`render_region` 的 `region`、位图选区的 `bbox`）用的
+/// **正是数组写法** ⇒ 这不是冷门输入，是必然会写出来的形状 ✓。
+#[test]
+fn an_array_bbox_selection_clips_rather_than_eating_every_stroke() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_clip", 128, 128),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        let filled = registry.call(
+            &mut ctx,
+            "fill",
+            &json!({"layer_id": "L", "object_id": "a_background",
+                    "data": {"color": {"r": 40, "g": 120, "b": 200, "a": 255},
+                             "region": {"x": 0, "y": 0, "w": 128, "h": 128}}}),
+        );
+        assert_eq!(filled["ok"], json!(true), "{filled}");
+    }
+    let baseline = render(&mut workspace);
+
+    let created = {
+        let mut ctx = context(&mut workspace);
+        registry.call(
+            &mut ctx,
+            "create_selection",
+            &json!({"selection_id": "sel_arr",
+                    "shape": {"kind": "rect", "bbox": [40.0, 0.0, 48.0, 128.0]},
+                    "feather": 0.0}),
+        )
+    };
+    assert_eq!(created["ok"], json!(true), "{created}");
+    // 归一之后 `area` 必须读得出来 ⇒ 顺手把「报 0 像诊断结论」那半个缺陷也钉住 ✓
+    let listed = {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "list_selections", &json!({}))
+    };
+    let area = listed["selections"][0]["area"].as_f64().unwrap_or(-1.0);
+    assert!(
+        (area - 48.0 * 128.0).abs() < 1.0,
+        "数组写法的选区面积应当读得出 6144（补丁 E 归一为平铺 ✓），得到 {area} ✗"
+    );
+
+    {
+        let mut ctx = context(&mut workspace);
+        // 走 `brush_stroke`：`clip_to_selection` 是它（与透传它的 `stroke_path`）的参数 ✓，
+        // 矢量 `draw_stroke` 不经过落墨裁剪那段代码 ✗。
+        let drawn = registry.call(
+            &mut ctx,
+            "brush_stroke",
+            &json!({"layer_id": "L", "object_id": "z_line_arr", "clip_to_selection": "sel_arr",
+                    "brush": "2B_pencil", "size": 20,
+                    "points": [[4.0, 64.0, 1.0], [64.0, 64.0, 1.0], [124.0, 64.0, 1.0]]}),
+        );
+        assert_eq!(drawn["ok"], json!(true), "{drawn}");
+    }
+    let changes = changed(&baseline, &render(&mut workspace));
+    assert!(
+        !changes.is_empty(),
+        "数组选区里应当留下落墨（修复前：整笔被 0×0 包围盒吃掉 ✗）"
+    );
+    let outside: Vec<(usize, usize)> = changes
+        .iter()
+        .copied()
+        .filter(|(x, _)| *x < 40 || *x >= 88)
+        .collect();
+    assert!(
+        outside.is_empty(),
+        "裁剪仍然要成立：选区外不应改动（越界 {} 个像素，例如 {:?}）",
+        outside.len(),
+        outside.iter().take(5).collect::<Vec<_>>()
+    );
+}
+
+/// **非法数组必须响**，不许静默存成一个永远框不住东西的空选区 ✗。
+#[test]
+fn a_malformed_array_bbox_is_rejected_not_stored() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_clip", 128, 128),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    for (tag, shape) in [
+        (
+            "个数不对",
+            json!({"kind": "rect", "bbox": [40.0, 0.0, 48.0]}),
+        ),
+        (
+            "零宽度",
+            json!({"kind": "rect", "bbox": [40.0, 0.0, 0.0, 128.0]}),
+        ),
+        (
+            "非数字",
+            json!({"kind": "rect", "bbox": [40.0, "x", 48.0, 128.0]}),
+        ),
+    ] {
+        let mut ctx = context(&mut workspace);
+        let answer = registry.call(
+            &mut ctx,
+            "create_selection",
+            &json!({"selection_id": format!("bad_{tag}"), "shape": shape}),
+        );
+        assert_ne!(answer["ok"], json!(true), "{tag} 的非法数组被静默接受了 ✗");
+        let detail = answer.to_string();
+        assert!(
+            detail.contains("shape.bbox") && detail.contains("[x, y, w, h]"),
+            "{tag}：错误信息应当告诉调用者两种合法写法，得到 {detail}"
+        );
+    }
 }

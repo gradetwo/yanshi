@@ -161,7 +161,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         r#"{"layer_id": "L1", "from": {"r": 255, "g": 0, "b": 0, "a": 255}, "to": {"r": 0, "g": 0, "b": 255, "a": 255}, "kind": "linear", "angle": 0}"#,
     ),
     ("estimate_dehaze", r#"{}"#),
-    ("erase", r#"{"layer_id":"L1","data":{}}"#),
+    (
+        "erase",
+        r#"{"layer_id":"L1","data":{"region":{"x":40,"y":40,"w":120,"h":80},"size":32.0,"hardness":1.0,"opacity":1.0}}"#,
+    ),
     ("duplicate_layer", r#"{"layer_id":"L1"}"#),
     ("draw_text", r#"{"layer_id":"L1","data":{}}"#),
     ("draw_stroke", r#"{"layer_id":"L1","data":{}}"#),

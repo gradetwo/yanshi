@@ -7,6 +7,68 @@
 
 use super::*;
 
+/// 把 `rect`／`ellipse`／`circle` 选区形状里的**数组写法** `bbox: [x, y, w, h]`
+/// 归一成**平铺写法** `x, y, w, h` ✓（并摘掉 `bbox`）。
+///
+/// **为什么是平铺、不是对象**：同一个 shape 会被**四处**读，四处的口径还各不相同 ✓
+/// * 渲染层 `selection::parse_bbox` ⇒ `bbox` 对象 **或** 平铺 ✓
+/// * 服务端 `tools::selection_shape_bbox` ⇒ `bbox` 对象 **或** 平铺 ✓
+/// * 裁剪入口 `tools_brush.rs` 的 `alive` 包围盒 ⇒ `bbox` 对象 **或** 平铺 ✓
+/// * 面积上报 `selection_area_px` ⇒ **只读平铺 `w`/`h`** ✗
+///
+/// ⇒ 只有**平铺**这一种能同时满足四处 ✓（对象写法会让 `area` 恒为 0，
+///   而数组写法会让前三处全部读不到 ⇒ 见调用点的说明）。
+///
+/// 只碰这三种形状：`bitmap` 的 `bbox` **本来就该是数组**（`selection_shape_bbox` 的
+/// `"bitmap"` 分支按 `arr.get(i)` 读 ✓）⇒ 归一它会改坏语义 ✓ 所以必须跳过。
+fn normalize_bbox_shape(shape: &mut Value) -> Result<()> {
+    let kind = shape
+        .get("kind")
+        .or_else(|| shape.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !matches!(kind, "rect" | "ellipse" | "circle") {
+        return Ok(());
+    }
+    let Some(array) = shape.get("bbox").and_then(Value::as_array).cloned() else {
+        return Ok(());
+    };
+    let reject = |why: String| {
+        Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "shape.bbox 数组写法必须是 [x, y, w, h] 四个有限数且 w、h > 0（{why}）；\
+                 或者用平铺写法 {{kind, x, y, w, h}} ✓"
+            )),
+        ))
+    };
+    if array.len() != 4 {
+        return reject(format!("得到 {} 个数", array.len()));
+    }
+    let mut n = [0.0_f64; 4];
+    for (i, value) in array.iter().enumerate() {
+        let Some(value) = value.as_f64() else {
+            return reject(format!("第 {} 个不是数字：{value}", i + 1));
+        };
+        n[i] = value;
+    }
+    if !n.iter().all(|v| v.is_finite()) {
+        return reject("含 NaN/Inf".to_owned());
+    }
+    if n[2] <= 0.0 || n[3] <= 0.0 {
+        return reject(format!("w={}、h={}", n[2], n[3]));
+    }
+    let Some(object) = shape.as_object_mut() else {
+        return Ok(());
+    };
+    object.remove("bbox");
+    object.insert("x".to_owned(), json!(n[0]));
+    object.insert("y".to_owned(), json!(n[1]));
+    object.insert("w".to_owned(), json!(n[2]));
+    object.insert("h".to_owned(), json!(n[3]));
+    Ok(())
+}
+
 /// 创建蒙版：内核按形状覆盖率调制图层 alpha（支持羽化与反选）。
 /// 选区语义（设计 4.4）：用户确认采用**路线 A「约束落笔」** ✓ ——
 /// 选区只约束**之后新落笔**的像素 ✓，不改写已有内容 ✓，删掉选区后已画内容**保持不变** ✓
@@ -96,6 +158,18 @@ pub(super) fn write_create_selection(ctx: &mut ToolContext<'_>, args: &Value) ->
             ),
         ));
     }
+    // **`bbox` 的两种写法必须在入口归一**（实测缺陷 ✓）：工具面别处到处是**数组**包围盒
+    // （`export_png`/`render_region` 的 `region: [0,0,64,64]` ✓、位图选区的 `shape.bbox` ✓）
+    // ⇒ 调用者把它写进 rect 选区是**必然会发生的**事。
+    // 而 `tools_brush.rs` 的裁剪入口先 `shape.get("bbox")` **拿到数组就当对象用** ✓
+    // ⇒ `bbox.get("x")` 在数组上恒 `None` ⇒ `unwrap_or(0.0)` ⇒
+    // **选区包围盒变成贴在原点的 0×0** ✓ ⇒ 与笔迹矩形求交为空 ⇒ 覆盖度全 0 ⇒
+    // **整笔印章被跳过** ✗。表现是：`create_selection` 回 `ok: true` ✓、
+    // `list_selections` 里 `area: 0` ✓、之后每一笔带 `clip_to_selection` 的墨**全被吃掉** ✗
+    // —— 与 `erase{region}` 同一类：**契约承诺了形状，读取方只认另一种写法** ✓。
+    // 修在**入口**而不是四处读取方 ⇒ 落库形态与旧数据一致 ✓、回放逐字节不变 ✓；
+    // 数组长度/数值非法时**明确拒绝**，不再静默存一个永远框不住东西的空选区 ✗。
+    normalize_bbox_shape(&mut shape)?;
     // F2：kind=path 的选区形状在入口处理 `d` 语法糖（与 `create_mask` 同
     // 口径，只用既有 `parse_svg_d` 一份解析器）：d 转 subpaths 并摘掉
     // （落库只存结构化形态），再走渲染层同一份校验
@@ -289,7 +363,14 @@ pub(super) fn write_delete_selection(ctx: &mut ToolContext<'_>, args: &Value) ->
 ///   ⇒ 调用方必须看第二个返回值，不许把 0 当成「空选区」（**静默降级**那条规矩）。
 pub(super) fn selection_area_px(ctx: &mut ToolContext<'_>, shape: &Value) -> (f64, bool) {
     let kind = shape.get("kind").and_then(Value::as_str).unwrap_or("");
-    let num = |key: &str| shape.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+    // **`bbox` 对象写法与平铺写法都要读** ✓（缺陷 ✓）：原来只读平铺 `w`/`h`
+    // ⇒ 而渲染层 `selection::parse_bbox` **两种都认** ✓ ⇒
+    // 于是 `{kind:"rect", bbox:{x,y,w,h}}` 这种**完全合法、裁剪也确实生效** ✓ 的选区
+    // 在 `list_selections` 里报 `area: 0` ✗ ⇒ 调用者据此判断"选区是空的"并被误导 ✗
+    // （我就是这样一路追到 `clip_to_selection` 的 ✓）。
+    // 报 0 比不报更糟：它长得像一个**诊断结论** ✓。
+    let source = shape.get("bbox").filter(|v| v.is_object()).unwrap_or(shape);
+    let num = |key: &str| source.get(key).and_then(Value::as_f64).unwrap_or(0.0);
     match kind {
         "rect" => (num("w") * num("h"), true),
         "ellipse" => (

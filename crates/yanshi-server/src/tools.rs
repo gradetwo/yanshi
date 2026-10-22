@@ -3249,13 +3249,18 @@ fn write_create_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let if_exists = optional_str(args, "if_exists").unwrap_or_default();
     if if_exists == "reuse" {
         let existing = ctx.workspace.document(&ctx.doc_id).and_then(|document| {
-            document
-                .state()
+            let state = document.state();
+            state
                 .layers
                 .get(&layer_id)
-                .map(|layer| layer.name.clone())
+                // **存活与否一起带出来** ✓：只查 `get()` 会把**墓碑**也算成「已存在」
+                // ⇒ 回 `reused: true` ✓ 而图层其实**不在** `list_layers` 里 ✗
+                // ⇒ 调用方随后每一笔都撞 `图层 … 已删除` ✗
+                // ⇒ **一句成功的谎**比失败更坏（「静默降级是唯一的敌人」✓）
+                // ⇒ 墓碑就往下走真正的 `CreateLayer`（重建它 ✓，见 `layer_lifecycle` 的 ②③ ✓）
+                .map(|layer| (layer.name.clone(), state.layer_alive(&layer_id)))
         });
-        if let Some(name) = existing {
+        if let Some(name) = existing.filter(|(_, alive)| *alive).map(|(name, _)| name) {
             return Ok(json!({
                 "ok": true,
                 "reused": true,
@@ -4246,6 +4251,45 @@ fn write_draw(ctx: &mut ToolContext<'_>, args: &Value, kind: AtomKind) -> Result
         declared_type = Some("shape");
     }
 
+    // **`erase` 的区域写法**：工具契约（registry 的 `data = {region,hardness,opacity}`）承诺
+    // 「区域擦除」，但渲染侧 `Primitive::Retouch` 只吃 `points` ⇒ 原先 `{region}` 一路走到
+    // `parse_object` 被判成 `Unsupported`（`object.rs` 的「retouch 缺少 points」）⇒
+    // **`ok: true` 而零像素** ✗，同时包围盒未知退化成整层结构失效 ✗（8K 实测一次
+    // 200×120 的擦除花 8.6 s 重绘全画布）。这里按 `size` 把矩形展开成蛇形盖章点列
+    //（与 `smart_erase_shape` 同一口径 ✓），语义＝「用直径 size 的橡皮沿矩形来回擦一遍」✓。
+    if kind == AtomKind::Erase {
+        let has_points = data
+            .get("points")
+            .and_then(Value::as_array)
+            .is_some_and(|points| !points.is_empty());
+        if !has_points {
+            let Some(region) = data.get("region") else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(
+                        "erase 需要 data.points（沿路径擦）或 data.region（矩形擦，\
+                         {x,y,w,h} 或 [x,y,w,h]）；两者都没有 ⇒ 这一笔什么也不会擦掉 ✗",
+                    ),
+                ));
+            };
+            let size = data.get("size").and_then(Value::as_f64).unwrap_or(64.0);
+            let points = region_erase_points(region, size)?;
+            let object = data.as_object_mut().expect("data 已是对象");
+            object.insert(
+                "points".to_owned(),
+                Value::Array(
+                    points
+                        .into_iter()
+                        .map(|(x, y)| json!([x, y]))
+                        .collect::<Vec<_>>(),
+                ),
+            );
+            object.insert("size".to_owned(), json!(size));
+            // 缺省走硬边：区域擦除的直觉是「这一块没了」，不是「这一块淡了」。
+            object.entry("hardness").or_insert_with(|| json!(1.0));
+        }
+    }
+
     let mut payload = json!({
         "object_id": object_id,
         "layer_id": layer_id,
@@ -4257,6 +4301,46 @@ fn write_draw(ctx: &mut ToolContext<'_>, args: &Value, kind: AtomKind) -> Result
     let result = ctx.commit(kind, payload)?;
     let region = region_of(&result);
     finish_mutation(ctx, &result, region)
+}
+
+/// 矩形区域 ⇒ 蛇形盖章点列（`erase` 的 `data.region` 写法用）。
+///
+/// 间距取 `size / 2`（＝橡皮半径）⇒ 相邻圆斑相接，矩形内部不留没擦到的缝隙；
+/// 代价是边界外扩至多半径，圆头橡皮本来就无法精确铺满矩形，这与
+/// `smart_erase_shape` 的取整口径一致 ✓。
+fn region_erase_points(region: &Value, size: f64) -> Result<Vec<(f64, f64)>> {
+    let bbox = parse_bbox(region).map_err(|_| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("erase 的 data.region 必须是 {x,y,w,h} 或 [x,y,w,h]"),
+        )
+    })?;
+    let step = (size / 2.0).max(1.0);
+    let cols = (bbox.w / step).floor() as i64 + 1;
+    let rows = (bbox.h / step).floor() as i64 + 1;
+    // 上限是要紧的：区域擦除常被用来清掉半幅画，点数失控会把原子日志撑爆。
+    const MAX_STAMPS: i64 = 40_000;
+    if cols * rows > MAX_STAMPS {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "erase 的 region {}×{} 在 size {size} 下需要 {} 个盖章，超过上限 {MAX_STAMPS} \
+                 ⇒ 把 data.size 调大（间距 = size/2 ⇒ 点数按 1/size² 下降）或分几次擦 ✓",
+                bbox.w,
+                bbox.h,
+                cols * rows
+            )),
+        ));
+    }
+    let mut out = Vec::with_capacity((cols * rows) as usize);
+    for row in 0..rows {
+        let y = bbox.y + row as f64 * step;
+        for col in 0..cols {
+            let col = if row % 2 == 0 { col } else { cols - 1 - col };
+            out.push((bbox.x + col as f64 * step, y));
+        }
+    }
+    Ok(out)
 }
 
 /// stroke_path 的压感剖面（与工具参数 `pressure_profile` 一一对应）。
@@ -4824,6 +4908,7 @@ fn restyle_baked_brush_stroke(
         &[],
         None,
         sensors,
+        smudge_backend_from_source(source),
     )?;
     let hash = ctx.workspace.store().put(&paint.rgba)?;
     let mut new_data = data.clone();
@@ -14419,6 +14504,10 @@ fn read_surface_region(
     } = region;
     let mut rgba = vec![0u8; width * height * 4];
     let mut painted = 0usize;
+    // **环境变量只读一次 ✓**（**∴ 原来写在最内层 `for column` 里**✗ ⇒
+    //   **∴ 于是**每一枚 **tile** 都要走一遍 `std::env::var_os` ✗（克隆整个进程环境 ✓）
+    //   ⇒ **∴ 短笔触无所谓 ✗ 但**大半径 × 长路径**是几百枚 tile ✗ ⇒ 白交学费 ✓）
+    let fix15_probe = std::env::var_os("YANSHI_OPEN_TIMING").is_some();
     for tile_y in (y0.div_euclid(64))..=(y1.div_euclid(64)) {
         for tile_x in (x0.div_euclid(64))..=(x1.div_euclid(64)) {
             let Some(tile) = surface.tile(tile_x, tile_y) else {
@@ -14440,8 +14529,7 @@ fn read_surface_region(
                     // 外部报告说的"颜色回归"因此**是真的** ✓，但真因是**这个口径** ✓，不是喂底图那件事 ✗。
                     let pixel = tile[row as usize][column as usize];
                     let alpha15 = u32::from(pixel[3]);
-                    if row == 1 && column == 27 && std::env::var_os("YANSHI_OPEN_TIMING").is_some()
-                    {
+                    if fix15_probe && row == 1 && column == 27 {
                         eprintln!("fix15_dump side=server pixel={:?}", pixel);
                     }
                     let straight_byte = |channel: u16| -> u8 {
@@ -14488,6 +14576,9 @@ static STAMP_DAB_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 
 /// **接着上一段继续走** ✓ —— 多色笔迹要逐段换颜色 ✓，但**不能在段边界重新播种** ✗
 /// （那会在每个换色点多盖一枚 dab ✓ ⇒ 一串深色小点 ✗）。`previous` 由调用方跨段持有 ✓。
+// 第 8 个参数是 `smudge_backend` 带来的 `host_smudge` ✓：它与 `sensors` 一样属于
+// 「这一笔的揉合口径」⇒ 与本仓既有的 `brush.rs:1140` 等五处同一处理方式 ✓
+#[allow(clippy::too_many_arguments)]
 fn stamp_stroke_from(
     brush: &hokusai::Brush,
     state: &mut hokusai::BrushState,
@@ -14498,6 +14589,11 @@ fn stamp_stroke_from(
     dtimes: &[f64],
     // **真实传感器**（xtilt/ytilt 在这里喂给 `stroke_to`；缺省全 0 ⇒ 老行为逐字节不变）。
     sensors: BrushSensors,
+    // **★ 净室揉合的幅度与长度（`Some` ⇒ 用这一对，而不是读笔刷）★**
+    //   ⇒ 调用方在 `smudge_backend: 「host」` 时**已经把引擎的 `smudge` 归零** ✓
+    //   ⇒ 这里若再去读笔刷就会读到 0 ✗ ⇒ 揉合整个消失 ✗（那不是「换后端」而是「关掉」）✓
+    //   **`None` ⇒ 完全走老路**（读笔刷 ✓ ⇒ 与历史逐字节相同 ✓）
+    host_smudge: Option<(f64, f64)>,
 ) -> usize {
     // **★★★ 第 246 轮：**给落笔的 dab 循环计时 ✗ ★★★**（**用户裁定「先量笔触占比」✓）
     //   ＋ **∴ 为什么是**这里**✗ 而**不是 `yanshi-render::brush`** ✓**：
@@ -14516,18 +14612,26 @@ fn stamp_stroke_from(
     // **净室揉合要用的三个量：只读一次**（笔刷自己的设置；`smudge = 0` 时下面整段都不执行）
     // **注意**：`BrushSetting::base_value` 是 **f32**（`hokusai` 的口径）=> 转成 f64 再算
     //（第一版直接传 f32 给要 f64 的 `smudge_dab`，编译报 E0308 三个参数全不匹配）。
-    let smudge_amount = f64::from(
-        brush
-            .get(hokusai::BrushSetting::Smudge)
-            .base_value
-            .clamp(0.0, 1.0),
-    );
-    let smudge_length = f64::from(
-        brush
-            .get(hokusai::BrushSetting::SmudgeLength)
-            .base_value
-            .max(0.0),
-    );
+    let (smudge_amount, smudge_length) = match host_smudge {
+        // **`host` 后端 ✓**：调用方已把**引擎的** `smudge` 归零 ✓（那才是 64 倍的钱 ✗）
+        //   ⇒ 这里改用**笔刷原来的幅度与长度** ✓（由 `paint_brush` 读好带进来 ✓）
+        Some((amount, length)) => (amount, length),
+        // **`engine` 后端 ✓**：与历史逐字节相同 ✓（净室揉合照旧**叠加**在引擎之上 ✓）
+        None => (
+            f64::from(
+                brush
+                    .get(hokusai::BrushSetting::Smudge)
+                    .base_value
+                    .clamp(0.0, 1.0),
+            ),
+            f64::from(
+                brush
+                    .get(hokusai::BrushSetting::SmudgeLength)
+                    .base_value
+                    .max(0.0),
+            ),
+        ),
+    };
     // **半径**：**必须取 exp ✗** —— `Radius` 的 `base_value` 存的是 **ln(半径)**（本仓注释
     // 早写过："`size` 是直径像素，而 MyPaint 的设置叫 `radius_logarithmic`，存的是 ln(半径)"）。
     // **实测踩到**：`size: 40`（直径）时探针报 `radius=2.9957` = **ln(20)**；
@@ -14603,7 +14707,7 @@ fn stamp_stroke_from(
                     // 现在喂的是调用方经 `sensors` 给的**真实倾斜**（缺省 0 ⇒ 老行为不变）：
                     // tilt 全家输入（tilt / tilt_declination / tilt_ascension /
                     // tilt_declinationx/y / attack_angle 的 ascension 基准）都由此派生。
-                    brush.stroke_to(
+                    let dabbed = brush.stroke_to(
                         state,
                         surface,
                         ix as f32,
@@ -14619,13 +14723,31 @@ fn stamp_stroke_from(
                             STEP_SECONDS
                         },
                     );
-                    // **★ 净室揉合：**每一个插值 dab** 都拖一次 ★**（第 254 轮第二轮修）
-                    //   第一版只在**控制点**上拖 => 拖曳是"点状"的（实测：只有带边 1–2 行变色，
-                    //   因为两点笔迹只拖了 2 次、而中间的 dab 全没吃到）。
-                    //   挪进内循环后，整条笔迹**沿途**都在把"后方"的颜料搬过来 => 更像真实脏笔。
-                    //   方向用**这一段的运动方向**（`x-px, y-py`，`smudge_dab` 内部会归一化），
-                    //   长度 = `smudge_length × 像素半径`。只在 `smudge > 0` 的笔刷上生效。
-                    if smudge_amount > 0.0 {
+                    // **★ 揉合要跟着 dab 走，不能跟着插值步走 ★**（实测定位 ✓）
+                    //   **⇒ 为什么**：`divisions` 把每段切成 **2 px** 一步，而真正的 dab 间隔是
+                    //     `半径 / dabs_per_actual_radius`（半径 150、`dpar=3.1` ⇒ **48 px** 一枚）
+                    //     ⇒ **∴ 于是**：不带这个门控时，**同一个位置被揉 ~24 次**，
+                    //       而每次揉合都要扫过**整个 dab 足迹**（半径平方量级）
+                    //       ⇒ **∴ 成本从 `路径长 × 半径` 变成 `路径长 × 半径² ÷ 2`** ✗
+                    //   **⇒ 实测 ✗**：4K 画布、`Classic_Paint`、`size=300`、3 点短笔
+                    //     `raster_ms` **3178 ⇒ 12**（**265 倍** ✓）；同笔 `smudge=0` 时为 10 ms
+                    //     ⇒ **∴ 说明**门控把带涂抹笔刷拉回到「与不涂抹同一量级」✓
+                    //   **⇒ 语义 ✗**：libmypaint 的 smudge 定义在**逐 dab** 上（`smudge_length`
+                    //     是「相对**上一枚 dab** 的位移」回看），不是逐指针事件 ⇒ **∴ 门控同时是
+                    //     修正**，原来每 2 px 揉一次会把画面**过度糊掉** ✗
+                    //   **⇒ 与第 254 轮那段注记的关系 ✗**：那次修的是「只在**控制点**揉 ⇒ 点状」
+                    //     ⇒ **∴ 本门控不退回那个 bug**：dab 间隔是**半径量级**（数十 px）✓
+                    //       而控制点间隔是**用户输入量级**（数百 px）✗ —— 两者不同 ✓
+                    //   **★★ 缺省不开 ✗★★**（判据实测逼出来的 ✓）：门控**会改像素** ✓
+                    //     —— 拿真 HEAD 基线（`e9fb3c9e` clean）逐笔对比 ✓ 涂抹类笔刷
+                    //     `Classic_Paint` / `Round#1` / `WateryFlatbrush` 的 `blob_hash` **全不等** ✗
+                    //     而 `smudge=0` 的七支**逐字节相同** ✓ ⇒ 差别就出在这一个门控上 ✓
+                    //     ⇒ **∴ 老包重放必须拿到老像素**✓ ⇒ 门控**只在 `smudge_backend:host`
+                    //       时生效** ✓（缺省 `engine` ⇒ 逐插值步揉 ⇒ 与历史一字不差 ✓）
+                    //     ⇒ **∴ 于是**「快」与「像」的改进被放到**显式 opt-in** 里 ✓
+                    //       而**不是**偷偷改所有人的画 ✓（静默降级是唯一的敌人 ✓）
+                    let smudge_per_dab = host_smudge.is_some();
+                    if smudge_amount > 0.0 && (!smudge_per_dab || dabbed) {
                         yanshi_render::brush::smudge_dab(
                             surface,
                             (ix, iy),
@@ -14791,6 +14913,7 @@ fn brush_deposit_mask(
         points
     };
     let mut previous: Option<(f64, f64, f64)> = None;
+    let deposit_stamp_started = std::time::Instant::now();
     let _ = stamp_stroke_from(
         brush,
         &mut state,
@@ -14799,8 +14922,23 @@ fn brush_deposit_mask(
         &mut previous,
         dtimes,
         BrushSensors::default(),
+        // **`None` ⇒ 照旧读笔刷 ✓**（**∴ 不是「掩膜遍关掉揉合」**✗：`engine` 后端下
+        //   笔刷的 `smudge` 还在 ⇒ 这一遍与历史**逐字节相同** ✓
+        //   ⇒ 而 `host` 后端下调用方**已把笔刷的 `smudge` 归零** ✓ ⇒ 这一遍自然不揉 ✓
+        //   ⇒ **∴ 两遍的 dab 几何仍然一致 ✓**（揉合只搬像素 ✗ 不改落点 ✓）
+        None,
     );
-    read_surface_region(&surface, region).0
+    let deposit_stamp_ms = deposit_stamp_started.elapsed().as_secs_f64() * 1000.0;
+    let deposit_read_started = std::time::Instant::now();
+    let mask = read_surface_region(&surface, region).0;
+    let deposit_read_ms = deposit_read_started.elapsed().as_secs_f64() * 1000.0;
+    if std::env::var_os("YANSHI_RASTER_SPLIT").is_some() {
+        eprintln!(
+            "RASTER_SPLIT deposit_mask: stamp={deposit_stamp_ms:.1}ms read={deposit_read_ms:.1}ms region={}x{}",
+            region.width, region.height
+        );
+    }
+    mask
 }
 
 /// **解析一支 `.myb` 笔刷** ✓（工作区缓存优先 ✓，与落笔时同一套规则 ✓）。
@@ -15031,6 +15169,7 @@ pub(crate) fn replay_brush_bitmap(
         &[],
         None,
         sensors,
+        smudge_backend_from_source(source),
     )?;
     Ok(paint.rgba)
 }
@@ -15524,6 +15663,25 @@ pub fn clip_bbox_early_out(
 
 /// 解析单个几何对象（外层或孔洞）。`tool` 只用于错误信息。
 fn parse_prim_shape(v: &Value, tool: &str) -> Result<PrimShape> {
+    // **★ 两套形状词汇 ✗**（实测事故 ✓）：`draw_shape` 那一套是
+    //   `{"kind":"rect","bbox":{x,y,w,h}}` ✓，而 smart_* 这一套是**平铺**的
+    //   `{"type":"rect","x":…,"w":…}` ✓。把前者喂给 `smart_erase_shape` ⇒
+    //   下面的 `num()` 全部取不到值 ⇒ **静默兜底成 (0,0,100,100)** ✗
+    //   ⇒ 擦掉了左上角一小块、还回 `ok: true` ✗（本文件 15280 行注释里那条
+    //   「`{"d":"M…"}` 被吞成缺省 rect」是同一类事故 ✓，这次补上另一半 ✓）
+    if v.get("kind").is_some() || v.get("bbox").is_some() || v.get("geometry").is_some() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "{tool} 的 `shape` 用的是**平铺**形式：\
+                 {{\"type\":\"rect\",\"x\":…,\"y\":…,\"w\":…,\"h\":…}} \
+                 ／ {{\"type\":\"circle\",\"x\":…,\"y\":…,\"r\":…}} \
+                 ／ {{\"type\":\"polygon\",\"points\":[[x,y],…]}} ✓，\
+                 而这次收到的是 `draw_shape.geometry` 那一套（`kind`／`bbox` ✗）\
+                 ⇒ **不猜、不兜底成 (0,0,100,100)**（那会擦错地方还回 `ok:true` ✗）"
+            )),
+        ));
+    }
     // 缺 `type` 时的推断只认 path 的特征键（`d` / `subpaths`）：带它们却
     // 没有 type 的对象按 path 解析，**绝不**再静默吞成缺省 rect
     // （实测事故：`{"d": "M…"}` 被吞成 (0,0,100,100) 矩形、结果全错还不报错）。
@@ -16177,6 +16335,10 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         // **预览不带传感器**（回答的是"这支笔长什么样"，与 brush_stroke 的
         // sensors 是两回事；缺省全 0 ⇒ 与历史预览逐位一致 ✓）。
         BrushSensors::default(),
+        match optional_str(args, "smudge_backend") {
+            Some(text) => SmudgeBackend::parse(&text)?,
+            None => SmudgeBackend::Engine,
+        },
     )?;
     let (width, height) = (paint.width as u32, paint.height as u32);
     let png = yanshi_render::png::encode_png(width, height, &paint.rgba).ok_or_else(|| {
@@ -17359,6 +17521,11 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
         &[],
         None,
         sensors,
+        // **试画必须与真画同后端 ✓**（「试画效果 = 真画效果」是这个工具的全部意义 ✗）
+        match optional_str(args, "smudge_backend") {
+            Some(text) => SmudgeBackend::parse(&text)?,
+            None => SmudgeBackend::Engine,
+        },
     )?;
     let bbox = [
         paint.x0,
