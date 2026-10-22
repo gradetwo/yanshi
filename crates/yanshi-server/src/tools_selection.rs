@@ -379,7 +379,11 @@ pub(super) fn selection_area_px(ctx: &mut ToolContext<'_>, shape: &Value) -> (f6
         ),
         "bitmap" => {
             // 位图选区（布尔合并 / smart_select 产出）：解 L8 blob，数非零像素。
-            let Some(text) = shape.get("blob").and_then(Value::as_str) else {
+            let Some(text) = shape
+                .get("blob")
+                .or_else(|| shape.get("blob_hash"))
+                .and_then(Value::as_str)
+            else {
                 return (0.0, false);
             };
             let Ok(hash) = text.parse::<yanshi_core::BlobHash>() else {
@@ -388,7 +392,33 @@ pub(super) fn selection_area_px(ctx: &mut ToolContext<'_>, shape: &Value) -> (f6
             let Ok(bytes) = ctx.workspace.store().get(&hash) else {
                 return (0.0, false);
             };
-            match yanshi_render::png::decode_png_l8(&bytes) {
+            let dims = (
+                shape.get("width").and_then(Value::as_u64).map(|v| v as u32),
+                shape
+                    .get("height")
+                    .and_then(Value::as_u64)
+                    .map(|v| v as u32),
+            );
+            let decoded = yanshi_render::png::decode_png_l8(&bytes)
+                .or_else(|| {
+                    yanshi_render::png::decode_png(&bytes).map(|(w, h, rgba)| {
+                        let data = rgba.chunks(4).map(|px| px[3]).collect();
+                        (w, h, data)
+                    })
+                })
+                .or_else(|| {
+                    let (w, h) = (dims.0?, dims.1?);
+                    let want_rgba = (w as usize) * (h as usize) * 4;
+                    let want_l8 = (w as usize) * (h as usize);
+                    if bytes.len() == want_rgba {
+                        Some((w, h, bytes.chunks(4).map(|px| px[3]).collect()))
+                    } else if bytes.len() == want_l8 {
+                        Some((w, h, bytes.clone()))
+                    } else {
+                        None
+                    }
+                });
+            match decoded {
                 Some((_, _, data)) => (data.iter().filter(|&&v| v > 0).count() as f64, true),
                 None => (0.0, false),
             }

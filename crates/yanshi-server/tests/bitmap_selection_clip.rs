@@ -147,3 +147,56 @@ fn a_bitmap_selection_clips_to_its_opaque_pixels() {
         "透明那一半（x=48）必须一点墨都没有 ⇒ 实测 {right:?}"
     );
 }
+
+#[test]
+fn a_bitmap_selection_reports_its_real_area() {
+    // **同族的第三处**：`list_selections` 的 `area` 也走 `shape.get("blob")` ✗ ⇒ 恒报 `0.0` ✓
+    // （而 `area_exact:false` 让人以为「算不出来」，实际是**键名没对上** ✗ ⇒ 报 0 比不报更糟 ✓）。
+    // 蒙版左半不透明 ⇒ 真实面积 = 64 × 32 = **2048** 像素 ✓。
+    let mut workspace = workspace();
+    let hash = workspace
+        .store()
+        .put(&mask_bytes())
+        .expect("蒙版位图应能入库")
+        .to_string();
+    let mut ctx = context(&mut workspace);
+    call(
+        &mut ctx,
+        "new_document",
+        &json!({"doc_id": "doc_bitmap_clip", "width": 64, "height": 64}),
+    );
+    call(
+        &mut ctx,
+        "create_mask",
+        &json!({
+            "mask_id": "mk",
+            "shape": {"kind": "bitmap", "blob_hash": hash, "width": 64, "height": 64}
+        }),
+    );
+    call(
+        &mut ctx,
+        "create_selection",
+        &json!({"selection_id": "sel_bitmap", "from_mask": "mk"}),
+    );
+    let listed = call(&mut ctx, "list_selections", &json!({}));
+    let entry = listed
+        .get("selections")
+        .and_then(Value::as_array)
+        .and_then(|selections| {
+            selections
+                .iter()
+                .find(|s| s.get("selection_id").and_then(Value::as_str) == Some("sel_bitmap"))
+        })
+        .cloned()
+        .unwrap_or_else(|| panic!("没列出位图选区：{listed}"));
+    assert_eq!(
+        entry.get("area").and_then(Value::as_f64),
+        Some(2048.0),
+        "位图选区的面积必须是**不透明像素数**（64×32=2048），不是 0 ⇒ {entry}"
+    );
+    assert_eq!(
+        entry.get("area_exact").and_then(Value::as_bool),
+        Some(true),
+        "数得出来就必须说 `area_exact:true`（说 false 会让人以为「算不出来」✗）⇒ {entry}"
+    );
+}
