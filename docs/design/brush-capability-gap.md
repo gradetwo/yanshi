@@ -15845,3 +15845,25 @@ self.complete_render_jobs()?;                                                   
 22,917 个导出的回放**收益更大** ✓（他们的 20–30 ms/atom 里绝大部分就是这 5–11 ms 建立开销 ＋ 像素工作）。
 **⇒ 下一轮**：动 `complete_render_jobs`／job 队列，把同批 job 合并成**一次**区域渲染 ✓，
 判据 `render_jobs`（或 `preview_calls`）从 **N → 1** ✓；**落地后**用 100 次导入的同一构型测真实倍数 ✓。
+
+## 四百零一、**真因找到了**：`run_pending_jobs` 里**每次都渲整幅文档预览** ✗
+
+**⇒ 源码**（`document.rs:2356` `run_pending_jobs`）：
+```rust
+let _ = self.render_document_preview()?;   // ← 每次有 pending job 就**整幅重渲染**一遍
+```
+**⇒ 与实测吻合** ✓：
+- 16×16 区域渲染 = 11 ms、512² = 409 ms（**线性** ✓）⇒ 说明这条路的成本**跟画布面积成正比** ✓；
+- 之前观察到的 `preview_ms`：256² ⇒ **2.9 ms**、512² ⇒ **19 ms**、他们的 `4608×8192` ⇒ **每原子 20–30 ms** ✓
+  ⇒ **正是"整幅预览"随面积增长的曲线** ✓。
+
+**⇒ 代码注释里已经写明了正确的方向** ✓（第 1038 轮）：
+> 「正确方向不是"删掉渲染"✗，而是"让这次渲染**只做变更区域**"✓ —— 见 `thumb.rs` 已有的**分块增量**机制（`incremental.dirty_blocks_for(…)` ✓）」
+
+**⇒ 所以**：
+1. 「合并 job」**不是**主线 ✗（那只是少渲几次 ✓）；
+2. **主线是**：把 `run_pending_jobs` 的整幅预览换成**脏块增量**（`thumb.rs` 已有机制 ✓）；
+3. **两条既有契约不能破**：`heavy_atoms_create_jobs_and_render_completes_them`（要求 `completed == [job_id]` ✓）
+   与 `jobs_ttl_cancel_and_render_watermark`（渲染水位随提交推进 ✓）⇒ **改法是"渲染什么"**，不是"渲不渲" ✓。
+**⇒ 下一轮**：读 `thumb.rs` 的 `dirty_blocks_for` ✓，把 `render_document_preview()` 换成"只渲脏块" ✓；
+判据：`import_image ×100` 的 `preview_ms` 中位数 **下降 ≥ 5×** ✓（配变异：忽略脏块 ⇒ 回到全量 ⇒ 红 ✓）。
