@@ -45,8 +45,14 @@ const check = (ok, message) => {
 
 // **填色与期望值必须分开写** ✓（第 608 轮实测）：我第一版用同一个常量既填又比 ⇒
 //   把常量改成 `g:201` 时**填的也跟着变** ⇒ 判据照样绿 ✗ ⇒ **变异证明不了它在读那条路径** ✓
-const FILL = { r: 10, g: 200, b: 30 };
-const WANT = { r: 10, g: 200, b: 30 };
+// **三个亮度都要查** ✓（第 614 轮）：**二次 sRGB↔linear 转换在中间调最明显** ✓
+//   —— 深色几乎不变、亮色接近饱和、**128 会掉 60+ 级** ⇒ 只测一个亮色会漏掉它 ✗
+// **`fill` 与 `want` 必须分开** ✓（第 614 轮）：写在一起的常量**变异不红** ✗（第 608 轮踩过）
+const SAMPLES = [
+  { fill: { r: 10, g: 200, b: 30 }, want: { r: 10, g: 200, b: 30 } },    // 深绿
+  { fill: { r: 128, g: 128, b: 128 }, want: { r: 128, g: 128, b: 128 } }, // **中灰（伽马错最敏感）**
+  { fill: { r: 250, g: 250, b: 250 }, want: { r: 250, g: 250, b: 250 } }, // 接近白
+];
 const PNG = `export_vs_render_${Date.now().toString(36)}.png`;
 
 // **图层可能已经存在** ✓（跑在 `_bootstrap` 上时它本来就有 `layer_default`）
@@ -58,21 +64,30 @@ check(
   `create_layer ⇒ ${JSON.stringify(layer).slice(0, 120)}`,
 );
 
-const filled = await call("fill_region", {
-  layer_id: "layer_default",
-  shape: { type: "rect", x: 0, y: 0, w: 32, h: 32 },
-  color: { ...FILL, a: 255 },
-  opacity: 1.0,
-});
-check(filled.ok === true, `fill_region ⇒ ${JSON.stringify(filled).slice(0, 140)}`);
+// **三条带子各填一次** ✓（第 614 轮）：每条 64×20，采样点取各自中心 ✓
+const bands = [];
+for (const [index, sample] of SAMPLES.entries()) {
+  const y = index * 20;
+  const filled = await call("fill_region", {
+    layer_id: "layer_default",
+    shape: { type: "rect", x: 0, y, w: 64, h: 20 },
+    color: { ...sample.fill, a: 255 },
+    opacity: 1.0,
+  });
+  check(filled.ok === true, `fill_region（第 ${index + 1} 条）⇒ ${JSON.stringify(filled).slice(0, 140)}`);
+  bands.push({ ...sample, y: y + 10 });
+}
 
-// ① 渲染像素
-const raw = await call("render_region", { region: { x: 16, y: 16, w: 1, h: 1 }, raw: true, max_px: 1000 });
-check(raw.ok === true && Boolean(raw.raw_url), `render_region(raw) ⇒ ${JSON.stringify(raw).slice(0, 140)}`);
-const rendered = Buffer.from(await (await fetch(base + raw.raw_url)).arrayBuffer());
-const rp = [rendered[0], rendered[1], rendered[2], rendered[3]];
+// ① 渲染像素（每条带子各取一点）
+const renderedPixels = [];
+for (const band of bands) {
+  const raw = await call("render_region", { region: { x: 32, y: band.y, w: 1, h: 1 }, raw: true, max_px: 1000 });
+  check(raw.ok === true && Boolean(raw.raw_url), `render_region(raw) y=${band.y} ⇒ ${JSON.stringify(raw).slice(0, 140)}`);
+  const rendered = Buffer.from(await (await fetch(base + raw.raw_url)).arrayBuffer());
+  renderedPixels.push([rendered[0], rendered[1], rendered[2], rendered[3]]);
+}
 
-// ② 导出像素（PNG 无损 ⇒ 用 ffmpeg 解成 rgba 再取第一个像素）
+// ② 导出像素（PNG 无损 ⇒ 用 ffmpeg 解成 rgba）
 const exported = await call("export_png", { path: PNG, deterministic: true });
 check(exported.ok === true, `export_png ⇒ ${JSON.stringify(exported).slice(0, 140)}`);
 // 优先级：响应里的 `path` ✓ → `YANSHI_EXPORT_DIR` 兜底 ✓ → 不可判
@@ -96,23 +111,28 @@ try {
   console.error(`  ⊘ 不可判：ffmpeg 解不出这个 PNG：${(error.stderr || "").toString().slice(-200)}`);
   process.exit(3);
 }
-// 导出是整幅（64×64）⇒ 取 (16,16) 那个像素
-const width = exported.width ?? exported.summary?.width ?? 64;
-const at = (16 * width + 16) * 4;
-const ep = [decoded[at], decoded[at + 1], decoded[at + 2], decoded[at + 3]];
-
-console.log(`  渲染像素 ${JSON.stringify(rp)}｜导出像素 ${JSON.stringify(ep)}｜导出宽 ${width}`);
-
+const width = exported.width ?? 64;
 const near = (a, b) => Math.abs(a - b) <= 1;
-check(
-  near(rp[0], ep[0]) && near(rp[1], ep[1]) && near(rp[2], ep[2]) && near(rp[3], ep[3]),
-  `导出与渲染的像素不一致 ⇒ 很可能在导出路径里又转了一次颜色（渲染 ${JSON.stringify(rp)} vs 导出 ${JSON.stringify(ep)}）`,
-);
-// **与"所填颜色"必须是精确等于** ✓（第 608 轮实测：用 ±1 的容差时，把期望值改成 g:201
-//   仍然通过 ✗ ⇒ 变异证明不了这条断言还活着 ✓）⇒ 只有"渲染 vs 导出"那一对用 ±1 ✓
-const exact = (left, right) => left === right;
-check(
-  exact(rp[0], WANT.r) && exact(rp[1], WANT.g) && exact(rp[2], WANT.b),
-  `渲染像素不等于所填颜色 {r:10,g:200,b:30} ⇒ 颜色在渲染路径里被改了：${JSON.stringify(rp)}`,
-);
-console.log("  ✓ 导出像素 == 渲染像素 == 所填颜色 ⇒ 导出路径没有二次颜色转换");
+const exact = (a, b) => a === b;
+
+for (const [index, band] of bands.entries()) {
+  const at = (band.y * width + 32) * 4;
+  const exportedPixel = [decoded[at], decoded[at + 1], decoded[at + 2], decoded[at + 3]];
+  const renderedPixel = renderedPixels[index];
+  console.log(
+    `  第 ${index + 1} 条（${JSON.stringify(band.fill)}）渲染 ${JSON.stringify(renderedPixel)}｜导出 ${JSON.stringify(exportedPixel)}`,
+  );
+  check(
+    near(renderedPixel[0], exportedPixel[0]) &&
+      near(renderedPixel[1], exportedPixel[1]) &&
+      near(renderedPixel[2], exportedPixel[2]) &&
+      near(renderedPixel[3], exportedPixel[3]),
+    `第 ${index + 1} 条的导出像素与渲染像素不一致 ⇒ 导出路径可能又转了一次颜色（渲染 ${JSON.stringify(renderedPixel)} vs 导出 ${JSON.stringify(exportedPixel)}）`,
+  );
+  // **与所填颜色必须是精确相等** ✓（容差 1 会让"期望值差 1"的变异漏过 —— 第 608 轮实测）
+  check(
+    exact(renderedPixel[0], band.want.r) && exact(renderedPixel[1], band.want.g) && exact(renderedPixel[2], band.want.b),
+    `第 ${index + 1} 条的渲染像素不等于所填颜色 ${JSON.stringify(band.want)} ⇒ 颜色在渲染路径里被改了：${JSON.stringify(renderedPixel)}`,
+  );
+}
+console.log(`  ✓ ${bands.length} 条带子：导出像素 == 渲染像素 == 所填颜色 ⇒ 导出路径没有二次颜色转换`);
