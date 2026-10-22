@@ -2054,6 +2054,26 @@ fn delete_document(state: &ServerState, request: &Request, doc_id: &str) -> Resp
 ///
 /// 返回 `{ok, blob_hash, size, mime_type}`，供 `import_image` 等工具引用。
 /// 大小上限与设计的画布规模相称（默认 64MiB，可用 `YANSHI_MAX_UPLOAD_BYTES` 覆盖）。
+/// RAW 上传识别探针（设计 5.3）：feature `raw` 开时经 render 挂接点识别
+/// RAW 字节并组装 `decoded_from` 概要；关时恒 `None`（调用方走既有分派，
+/// 行为与基线逐字一致）。
+#[cfg(feature = "raw")]
+fn raw_upload_probe(body: &[u8]) -> Option<Value> {
+    let probe = yanshi_render::probe_raw_source(body)?;
+    Some(json!({
+        "format": "raw",
+        "source_format": probe.source_format,
+        "make": probe.make,
+        "model": probe.model,
+    }))
+}
+
+/// RAW 上传识别探针（feature 关）：恒不识别——关构建不许存下读不出的 rawsrc。
+#[cfg(not(feature = "raw"))]
+fn raw_upload_probe(_body: &[u8]) -> Option<Value> {
+    None
+}
+
 fn blob_upload(state: &ServerState, request: &Request) -> Response {
     let doc_id = match doc_param(request) {
         Ok(doc_id) => doc_id,
@@ -2100,7 +2120,16 @@ fn blob_upload(state: &ServerState, request: &Request) -> Response {
     let mut mime_type = declared_mime.clone();
     let mut body = request.body.clone();
     let mut decoded_from = Value::Null;
-    if declared_mime.eq_ignore_ascii_case("image/png") {
+    // **相机 RAW 在上传端只识别、不展开**（设计 5.3，RAW 第二包）：识别走
+    // 字节探针（经 render 挂接点），**先于声明 mime 的分派**——RAW 文件常被
+    // 声明成 image/x-dcraw／octet-stream 甚至误报 image/tiff，字节说了算。
+    // 命中 ⇒ **原样存入**（body 不动）、mime 改报 rawsrc、decoded_from 给
+    // `{"format":"raw", ...}` 概要；展开留给取图侧凭对象 raw_develop 记录。
+    // feature 关时探针恒 None，本端点行为与基线逐字一致。
+    if let Some(summary) = raw_upload_probe(&request.body) {
+        decoded_from = summary;
+        mime_type = yanshi_render::RAW_SOURCE_MIME.to_owned();
+    } else if declared_mime.eq_ignore_ascii_case("image/png") {
         match yanshi_render::png::decode_png(&request.body) {
             Some((width, height, rgba)) => {
                 decoded_from = json!({"format": "png", "width": width, "height": height});
@@ -3676,6 +3705,75 @@ mod tests {
             400,
             "JPEG 应当被明确拒绝而不是静默入库"
         );
+    }
+
+    /// **RAW 上传只识别不展开**（设计 5.3，RAW 第二包）：合成 DNG 经
+    /// `POST /api/blob` 入库 ⇒ mime 改报 rawsrc、`decoded_from.format="raw"`、
+    /// 存入字节与源逐字节相同、hash = 内容寻址结果（与服务端 store 直存
+    /// 一致 ⇒ 与 put_blob 通道同源，判据 j 的 HTTP 侧）。
+    #[cfg(feature = "raw")]
+    #[test]
+    fn uploading_a_raw_stores_it_verbatim_with_a_raw_summary() {
+        use yanshi_raw::dng_fixture::{write_synthetic_dng, SyntheticDng};
+        let state = state();
+        let token = editor_token(&state, "doc_rawup");
+        let spec = SyntheticDng {
+            width: 8,
+            height: 6,
+            mosaic: vec![1024; 48],
+            ..SyntheticDng::default()
+        };
+        let bytes = write_synthetic_dng(&spec);
+        let uploaded = upload_blob(&state, "doc_rawup", &token, bytes.clone());
+        assert_eq!(uploaded["ok"], json!(true), "{uploaded}");
+        assert_eq!(
+            uploaded["mime_type"],
+            json!("image/x-yanshi-rawsrc"),
+            "{uploaded}"
+        );
+        assert_eq!(
+            uploaded["decoded_from"]["format"],
+            json!("raw"),
+            "{uploaded}"
+        );
+        assert_eq!(
+            uploaded["decoded_from"]["make"],
+            json!("YanshiFixture"),
+            "{uploaded}"
+        );
+        assert_eq!(
+            uploaded["size"],
+            json!(bytes.len()),
+            "RAW 必须原样存入（不展开、不转码）：{uploaded}"
+        );
+        let hash = uploaded["blob_hash"].as_str().unwrap().to_owned();
+        let workspace = state.workspace.lock().unwrap();
+        let direct = workspace.store().put(&bytes).unwrap().to_string();
+        assert_eq!(hash, direct, "HTTP 通道的 hash 必须等于内容寻址结果");
+        let parsed: yanshi_core::BlobHash = hash.parse().unwrap();
+        let stored = workspace.store().get(&parsed).unwrap();
+        assert_eq!(stored, bytes, "存入字节必须与源逐字节相同");
+    }
+
+    /// feature 关：同一份 DNG 字节走 HTTP 上传**不被识别**——按声明 mime
+    /// 的既有分派走（缺省 octet-stream ⇒ 原样存入、mime 保持声明值、
+    /// decoded_from 为 null），与基线逐字一致，不许留下 rawsrc。
+    #[cfg(not(feature = "raw"))]
+    #[test]
+    fn uploading_a_raw_without_the_feature_behaves_like_the_baseline() {
+        let state = state();
+        let token = editor_token(&state, "doc_rawup_off");
+        let mut bytes = b"II\x2a\x00".to_vec();
+        bytes.extend_from_slice(&[7u8; 64]);
+        let uploaded = upload_blob(&state, "doc_rawup_off", &token, bytes.clone());
+        assert_eq!(uploaded["ok"], json!(true), "{uploaded}");
+        assert_ne!(
+            uploaded["mime_type"],
+            json!("image/x-yanshi-rawsrc"),
+            "关构建不许报 rawsrc：{uploaded}"
+        );
+        assert_eq!(uploaded["decoded_from"], Value::Null, "{uploaded}");
+        assert_eq!(uploaded["size"], json!(bytes.len()), "{uploaded}");
     }
 
     #[test]

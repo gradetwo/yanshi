@@ -121,6 +121,11 @@ pub enum Primitive {
         /// **分块索引哈希** ✓（第 181 轮 ✓）：有它 ⇒ 渲染**只解覆盖请求区域**的块 ✓
         /// （**没有它 ⇒ 走原路整幅** ✓ —— 旧工程零改动 ✓）。
         tiles: Option<String>,
+        /// RAW 展开记录（`data.raw_develop`，相机 RAW 导入时落账）：对象层
+        /// **不透明透传**——只验「是对象」这一形态，不理解展开参数语义
+        /// （语义归 yanshi-raw，设计 9.3）；取图侧凭它重展开源 blob。
+        /// 非 RAW 对象恒 `None`，行为与旧工程逐位一致。
+        raw_develop: Option<Value>,
     },
     /// 修图（clone_stamp）：从**同一图层已绘制内容**按偏移采样后盖回。
     ///
@@ -875,6 +880,18 @@ fn parse_raster_patch(data: &Value) -> Primitive {
         };
     }
     let offset = region.map(|bbox| (bbox.x, bbox.y)).unwrap_or((0.0, 0.0));
+    // raw_develop 形态校验（设计 9.3 不透明透传）：给了但不是对象 ⇒ 响亮
+    // Unsupported（畸形落账不许静默当「没有」——取图侧会按缺省参数展开，
+    // 与导入期落账的参数不一致且无人知晓）。
+    let raw_develop = match data.get("raw_develop") {
+        None | Some(Value::Null) => None,
+        Some(value @ Value::Object(_)) => Some(value.clone()),
+        Some(_) => {
+            return Primitive::Unsupported {
+                reason: "raster_patch 的 raw_develop 必须是对象（RAW 展开记录）".to_owned(),
+            };
+        }
+    };
     Primitive::RasterPatch {
         blob,
         width,
@@ -882,6 +899,7 @@ fn parse_raster_patch(data: &Value) -> Primitive {
         offset,
         mime_type,
         tiles: data.get("tiles").and_then(Value::as_str).map(str::to_owned),
+        raw_develop,
     }
 }
 

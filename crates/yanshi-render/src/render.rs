@@ -221,7 +221,42 @@ fn bitmap_cache_budget(size: usize) -> usize {
 /// 用 `Arc` ✓ ⇒ 命中时只克隆一个指针 ✓，**绝不复制 33 MiB 的像素** ✗；
 /// 单独起个名字是因为 clippy 的 `type_complexity` 会挡在函数签名上 ✓
 /// （而它同时让"锁内解码、锁外共享"这件事在签名里一眼看得出来 ✓）。
-type DecodedBitmap = std::sync::Arc<(u32, u32, Vec<u8>)>;
+/// 已解码位图的载荷（第二包）：两种形态——
+/// `Rgba8` 是既有路（显示空间字节，`(宽, 高, RGBA 字节)`）；
+/// `Linear` 是 f32 线性直通路（`(宽, 高, 线性 RGB 三元组)`，相机 RAW 展开
+/// 的产物，**不量化回 8-bit**，设计 5.1 出口直通）。调用方按形态分派
+/// `blit_rgba8`／`blit_linear`，两条路互不换算。
+#[derive(Debug)]
+enum DecodedPixels {
+    Rgba8(u32, u32, Vec<u8>),
+    /// 线性载荷只由 feature `raw` 的取图分派构造，变体本身随 feature 门控
+    /// （关构建里它不存在，匹配臂同口径门控——不留死变体）。
+    #[cfg(feature = "raw")]
+    Linear(u32, u32, Vec<f32>),
+}
+
+type DecodedBitmap = std::sync::Arc<DecodedPixels>;
+
+/// 解码载荷的字节量（缓存记账用；线性载荷按 f32 元素计）。
+fn decoded_byte_len(pixels: &DecodedPixels) -> usize {
+    match pixels {
+        DecodedPixels::Rgba8(_, _, bytes) => bytes.len(),
+        #[cfg(feature = "raw")]
+        DecodedPixels::Linear(_, _, values) => values.len() * std::mem::size_of::<f32>(),
+    }
+}
+
+/// 探针采样（仅 Rgba8 载荷：探针的口径是字节非零计数，线性 f32 载荷
+/// 字节口径不同、暂不采样——不拿空切片冒充采样结果）。
+fn probe_decoded(kind: &str, key: &str, entry: &DecodedBitmap) {
+    match &**entry {
+        DecodedPixels::Rgba8(width, height, bytes) => {
+            bitmap_probe(kind, key, *width, *height, bytes);
+        }
+        #[cfg(feature = "raw")]
+        DecodedPixels::Linear(..) => {}
+    }
+}
 
 /// [`BitmapCache`] 的可观测读数（判据用 ✓）。
 /// **below 复用次数** ✓（第 95 轮 ✓）：**纯观测** ✓；缓存实现后由它自增 ✓。
@@ -615,7 +650,7 @@ impl BitmapCache {
     /// `decode` 返回 `Err` ⇒ 原样上抛 ✓（与没有缓存时的行为**逐字一致** ✓，不静默降级 ✗）。
     fn get_or_decode<F>(&self, key: &str, decode: F) -> Result<Option<DecodedBitmap>>
     where
-        F: FnOnce() -> Result<Option<(u32, u32, Vec<u8>)>>,
+        F: FnOnce() -> Result<Option<DecodedPixels>>,
     {
         // **★ 先做"快速命中"的只读检查 ✗ ★**（第 868 轮 ✓；**目标第 8 条 ✓**）：
         //   **∴ 原来的错 ✗**：**`decode()` 在**锁内**执行 ✗**（**它**做 `store.get()` ⇒ **读盘 ＋ 整份解码 ✓）
@@ -643,16 +678,17 @@ impl BitmapCache {
             //     ⇒ **∴ 排除法**到头了 ✓ ⇒ **∴ 换工具 ✗**：**让渲染器**自报
             //       **它**到底读到了什么 ✓**** ✓✓
             //   **∴ 未设变量 ⇒ 行为不变 ✗**（**∴ 只**多一次**环境变量查询 ✓）** ✓✓
-            bitmap_probe("hit", key, entry.0, entry.1, &entry.2);
+            probe_decoded("hit", key, &entry);
             return Ok(Some(entry));
         }
         // **∴ 锁**在这里释放 ✗**（**`inner` 不再使用 ✓）⇒ **∴ 于是**下面的 `decode()` 在锁外 ✓**
         drop(inner);
-        let Some((width, height, bytes)) = decode()? else {
+        let Some(decoded) = decode()? else {
             return Ok(None);
         };
+        let entry = std::sync::Arc::new(decoded);
         // **∴ 解码路径**也记一条 ✗**（**∴ 于是**：**两边**的"**读到什么**"**可以逐项比对 ✓）
-        bitmap_probe("decode", key, width, height, &bytes);
+        probe_decoded("decode", key, &entry);
         // **∴ 再拿锁写入 ✗**：**可能**另一个线程已经写好了 ⇒ **∴ 那时**直接用它的 ✓**
         let mut inner = self
             .inner
@@ -662,8 +698,9 @@ impl BitmapCache {
             return Ok(Some(entry));
         }
         inner.misses += 1;
-        inner.missed_bytes = inner.missed_bytes.saturating_add(bytes.len() as u64);
-        let entry = std::sync::Arc::new((width, height, bytes));
+        inner.missed_bytes = inner
+            .missed_bytes
+            .saturating_add(decoded_byte_len(&entry) as u64);
         insert_locked(&mut inner, key.to_owned(), entry.clone());
         Ok(Some(entry))
     }
@@ -693,7 +730,7 @@ fn insert_locked(inner: &mut BitmapCacheInner, key: String, entry: DecodedBitmap
     if inner.entries.contains_key(&key) {
         return;
     }
-    let size = entry.2.len();
+    let size = decoded_byte_len(&entry);
     // **单份就超过预算 ⇒ 根本不缓存它** ✗（调用方本次照样拿得到 ✓）：
     // 否则下面那条淘汰循环会**把库里所有东西挤光** ✓ 然后仍然超预算 ✗ ——
     // "不把别人挤光"这句承诺必须由这一段兑现 ✓（8K 画布的一张全幅补丁 ≈ 126 MiB ✓，
@@ -709,7 +746,7 @@ fn insert_locked(inner: &mut BitmapCacheInner, key: String, entry: DecodedBitmap
             break;
         };
         if let Some(removed) = inner.entries.remove(&oldest) {
-            inner.bytes = inner.bytes.saturating_sub(removed.2.len());
+            inner.bytes = inner.bytes.saturating_sub(decoded_byte_len(&removed));
             inner.evictions += 1;
         }
     }
@@ -3708,6 +3745,7 @@ impl Renderer {
                     offset,
                     mime_type,
                     tiles, // **分块路下一步接 ✓**（本轮惰性 ✓）
+                    raw_develop,
                 } => {
                     // **按 MIME 分派** ✓（体积专题，第 1056 轮）：
                     // 位图现在可以**存成 PNG** ✓（无损 ⇒ 渲染结果不变 ✓），
@@ -3916,7 +3954,15 @@ impl Renderer {
                     if std::env::var_os("YANSHI_TRACE_CACHE_KEY").is_some() {
                         eprintln!("CACHE_KEY {blob}|{width}x{height}|{mime_type}");
                     }
-                    let cache_key = format!("{blob}|{width}x{height}|{mime_type}");
+                    // 缓存键含 raw_develop 记录本身：同一源 blob 挂不同展开
+                    // 参数的对象展开结果不同，键不带记录会串味（第二包）。
+                    let cache_key = match &raw_develop {
+                        Some(record) => format!(
+                            "{blob}|{width}x{height}|{mime_type}|raw={}",
+                            serde_json::to_string(record).unwrap_or_default()
+                        ),
+                        None => format!("{blob}|{width}x{height}|{mime_type}"),
+                    };
                     let mut t_decode = stage_probe::Stage::start();
                     let Some(entry) = bitmaps.get_or_decode(&cache_key, || {
                         fetch_raster_patch(
@@ -3926,6 +3972,7 @@ impl Renderer {
                             width,
                             height,
                             &object.id,
+                            raw_develop.as_ref(),
                             &mut track.unsupported,
                         )
                     })?
@@ -3940,14 +3987,31 @@ impl Renderer {
                         }
                     }
                     let mut t_blit = stage_probe::Stage::start();
-                    layer_buffer.blit_rgba8(
-                        offset.0 as i64,
-                        offset.1 as i64,
-                        entry.0,
-                        entry.1,
-                        &entry.2,
-                        opacity,
-                    );
+                    // 载荷分派（第二包）：RGBA8 走字节路、线性载荷走 blit_linear
+                    // 直通路——两条路互不换算，线性值不许被量化成字节再贴。
+                    match &*entry {
+                        DecodedPixels::Rgba8(w, h, bytes) => {
+                            layer_buffer.blit_rgba8(
+                                offset.0 as i64,
+                                offset.1 as i64,
+                                *w,
+                                *h,
+                                bytes,
+                                opacity,
+                            );
+                        }
+                        #[cfg(feature = "raw")]
+                        DecodedPixels::Linear(w, h, values) => {
+                            layer_buffer.blit_linear(
+                                offset.0 as i64,
+                                offset.1 as i64,
+                                *w,
+                                *h,
+                                values,
+                                opacity,
+                            );
+                        }
+                    }
                     {
                         let __d = t_blit.stop();
                         if std::env::var_os("YANSHI_RENDER_PROBE").is_some() {
@@ -4474,10 +4538,9 @@ pub const JPEG_MIME: &str = "image/jpeg";
 
 /// **RAW 源对象的 MIME**（RAW 导入设计 v3 §4.1 定版）：blob **内容是相机 RAW 原文件**
 /// 本人（CR2/NEF/DNG…），与「已解码 RGBA」的 [`RAW_RGBA_MIME`] 是**两个物种**、不许混淆。
-/// 本包（RAW 第一包）只定版常量与判定：**故意不进** [`raster_mime_supported`] 清单——
-/// rawsrc 的取图走线性 f32 链（`Buffer::blit_linear`，下一包），若现在把它塞进
-/// RGBA8 清单，服务端 `blob_decodable` 信号会与取图实际行为漂移（正是该清单注释里
-/// 记过的 JPEG 漂移事故的同型）。取图侧对它有显式分支、响亮跳过（见 fetch_raster_patch）。
+/// 第二包起：feature `raw` 开时它进 [`raster_mime_supported`] 清单（取图侧有
+/// 真实的线性展开路，`blob_decodable` 信号与实际行为重新对齐）；feature 关时
+/// **仍不进**——关构建既不能入库 rawsrc、也不能展开它，信号必须如实。
 pub const RAW_SOURCE_MIME: &str = "image/x-yanshi-rawsrc";
 
 /// 该 MIME 是否为 RAW 源对象（设计 §9.3 的最小判定挂接点）。
@@ -4489,7 +4552,16 @@ pub fn is_raw_source_mime(mime_type: &str) -> bool {
 /// 服务端 `import_image` 的 `blob_decodable` 信号都读它 ⇒ 两处不再各写一份清单后漂移
 /// （曾漂移过：内核只认 raw/PNG 时 JPEG 被静默跳过、而信号仍报「可解码」✓）。
 pub fn raster_mime_supported(mime_type: &str) -> bool {
-    mime_type == RAW_RGBA_MIME || mime_type == PNG_MIME || mime_type == JPEG_MIME
+    if mime_type == RAW_RGBA_MIME || mime_type == PNG_MIME || mime_type == JPEG_MIME {
+        return true;
+    }
+    // RAW 源只在 feature 开时算「可解码」：取图侧真有展开路才许报 true
+    // （信号与行为同源，防 JPEG 漂移事故同型复发）。
+    #[cfg(feature = "raw")]
+    if is_raw_source_mime(mime_type) {
+        return true;
+    }
+    false
 }
 
 /// 读取并解码一个位图补丁（`Ok(None)` ⇒ 该对象应被跳过，告警已写入 `warnings`）。
@@ -4504,8 +4576,9 @@ fn fetch_raster_patch(
     declared_width: u32,
     declared_height: u32,
     object_id: &str,
+    raw_develop: Option<&serde_json::Value>,
     warnings: &mut Vec<String>,
-) -> Result<Option<(u32, u32, Vec<u8>)>> {
+) -> Result<Option<DecodedPixels>> {
     let bytes = match store.get(blob) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -4527,7 +4600,7 @@ fn fetch_raster_patch(
             .with_object(object_id.to_owned())
             .with_blob(blob.to_string())
         })?;
-        return Ok(Some((width, height, rgba8)));
+        return Ok(Some(DecodedPixels::Rgba8(width, height, rgba8)));
     }
     if mime_type == JPEG_MIME {
         let (width, height, rgba8) = crate::jpeg::decode_jpeg(&bytes).ok_or_else(|| {
@@ -4541,22 +4614,35 @@ fn fetch_raster_patch(
             .with_object(object_id.to_owned())
             .with_blob(blob.to_string())
         })?;
-        return Ok(Some((width, height, rgba8)));
+        return Ok(Some(DecodedPixels::Rgba8(width, height, rgba8)));
     }
     if is_raw_source_mime(mime_type) {
-        // RAW 源对象（设计 v3 §9.3，第一包的边界）：展开主链已可经
-        // `develop_raw_source` 调用，但取图的线性链（blit_linear）是下一包——
-        // 在此显式跳过并把原因喊出来，不许落进下面的「未实现」兜底文案、
-        // 更不许静默当 RGBA 解（NF2：能力边界要有信号）。
+        // RAW 源对象取图（设计 5.1／5.8，第二包接入）：凭对象落账的
+        // raw_develop 记录重展开源字节，走线性路返回——**不量化回 8-bit**。
         #[cfg(feature = "raw")]
-        warnings.push(format!(
-            "RAW 源对象已存入但线性取图链尚未接入，本轮渲染跳过（对象 {object_id}） —— 请等待 RAW 导入链包"
-        ));
+        {
+            let developed = develop_raw_source_recorded(&bytes, raw_develop, warnings)?;
+            return Ok(Some(DecodedPixels::Linear(
+                developed.width,
+                developed.height,
+                developed.rgb_linear,
+            )));
+        }
+        // feature 关（设计 5.8 定版文案）：响亮 InvalidArgument 整幅失败——
+        // 不许静默不可见（第一包的「warning 并跳过」是当时的边界，第二包
+        // 起按设计表升级为响亮错误），更不许落进下面的 Unsupported 兜底。
         #[cfg(not(feature = "raw"))]
-        warnings.push(format!(
-            "RAW 源对象需要启用 raw feature 的构建才能展开，本构建未启用，本轮渲染跳过（对象 {object_id}）"
-        ));
-        return Ok(None);
+        {
+            let _ = raw_develop;
+            return Err(YanshiError::new(
+                yanshi_core::ErrorCode::InvalidArgument,
+                yanshi_core::ErrorContext::detail(format!(
+                    "该对象为 RAW 源（{RAW_SOURCE_MIME}），本构建未启用 raw feature，无法展开（对象 {object_id}）"
+                )),
+            )
+            .with_object(object_id.to_owned())
+            .with_blob(blob.to_string()));
+        }
     }
     if mime_type != RAW_RGBA_MIME {
         warnings.push(format!(
@@ -4576,7 +4662,7 @@ fn fetch_raster_patch(
         .with_object(object_id.to_owned())
         .with_blob(blob.to_string()));
     }
-    Ok(Some((
+    Ok(Some(DecodedPixels::Rgba8(
         declared_width,
         declared_height,
         bytes[..expected].to_vec(),
@@ -4586,9 +4672,8 @@ fn fetch_raster_patch(
 /// RAW 展开挂接点（设计 v3 §9.3，第一包的最小集）：feature `raw` 开时才存在。
 ///
 /// 字节 → `yanshi_raw::decode_bytes` → `yanshi_raw::develop`，产出线性 f32 RGB
-/// 与 `raw_develop` 留痕记录。完整入库链路（rawsrc 对象落盘、导入工具、
-/// 取图侧 `blit_linear`）是下一包；本函数是那条链的唯一展开入口，先立住、
-/// 先被集成测试钉住，防后续包另起炉灶再实现一遍展开。
+/// 与 `raw_develop` 留痕记录。第二包起取图侧走 [`develop_raw_source_recorded`]
+/// （凭落账记录展开）；本函数保留给「显式参数展开」的调用方（集成测试钉住）。
 #[cfg(feature = "raw")]
 pub fn develop_raw_source(
     bytes: &[u8],
@@ -4603,6 +4688,65 @@ pub fn develop_raw_source(
     notes.extend(developed.notes.iter().cloned());
     developed.notes = notes;
     Ok(developed)
+}
+
+/// RAW 取图展开（设计 5.1，第二包）：凭对象 metadata 落账的 `raw_develop`
+/// 记录重展开——展开参数**只来自记录**（导入期落账的那一份），取图侧不
+/// 另设缺省之外的来源。记录缺失（手写对象／旧数据）⇒ 用缺省参数展开并把
+/// 事实写进 warnings（设计 5.3）；记录在但形态坏（反序列化失败）⇒ 响亮
+/// 报错——拿缺省参数顶上等于用错参数画图且无人知晓，不许。
+#[cfg(feature = "raw")]
+pub fn develop_raw_source_recorded(
+    bytes: &[u8],
+    raw_develop: Option<&serde_json::Value>,
+    warnings: &mut Vec<String>,
+) -> Result<yanshi_raw::DevelopedImage> {
+    let decoded = yanshi_raw::decode_bytes(bytes).map_err(raw_error_as_invalid_argument)?;
+    let (options, mut developed) = match raw_develop {
+        Some(value) => {
+            let record: yanshi_raw::RawDevelopRecord = serde_json::from_value(value.clone())
+                .map_err(|error| {
+                    YanshiError::new(
+                        yanshi_core::ErrorCode::InvalidArgument,
+                        yanshi_core::ErrorContext::detail(format!(
+                            "对象的 raw_develop 记录无法解析（{error}），拒绝按缺省参数展开"
+                        )),
+                    )
+                })?;
+            let options = yanshi_raw::DevelopOptions {
+                wb: record.wb,
+                demosaic: record.demosaic,
+                pre_exposure_ev: record.pre_exposure_ev,
+            };
+            let ctx = yanshi_raw::record_context(&decoded);
+            let developed = yanshi_raw::develop(&decoded.frame, &options, &ctx)
+                .map_err(raw_error_as_invalid_argument)?;
+            (options, developed)
+        }
+        None => {
+            warnings.push(
+                "RAW 源对象缺少 raw_develop 记录，已按缺省展开参数展开（设计 5.3）".to_string(),
+            );
+            let options = yanshi_raw::DevelopOptions::default();
+            let ctx = yanshi_raw::record_context(&decoded);
+            let developed = yanshi_raw::develop(&decoded.frame, &options, &ctx)
+                .map_err(raw_error_as_invalid_argument)?;
+            (options, developed)
+        }
+    };
+    let _ = options;
+    let mut notes = decoded.notes.clone();
+    notes.extend(developed.notes.iter().cloned());
+    developed.notes = notes;
+    Ok(developed)
+}
+
+/// RAW 入库识别探针挂接点（设计 5.3，第二包）：server／http 的入库通道经
+/// 此判断一份字节是不是相机 RAW——识别逻辑本人在 yanshi-raw（`probe_raw`），
+/// 本函数只转手，让上层源码不出现解码器字样（第一包 grep 判据的延续）。
+#[cfg(feature = "raw")]
+pub fn probe_raw_source(bytes: &[u8]) -> Option<yanshi_raw::RawProbe> {
+    yanshi_raw::probe_raw(bytes)
 }
 
 /// yanshi-raw 的结构化错误 → 内核错误：第一包统一映射 `InvalidArgument`
@@ -6501,11 +6645,14 @@ mod tests {
             16,
             16,
             "obj_jpeg",
+            None,
             &mut warnings,
         )
         .unwrap()
         .expect("JPEG 位图补丁应被解码，而不是当作未实现格式跳过");
-        let (width, height, rgba) = got;
+        let super::DecodedPixels::Rgba8(width, height, rgba) = got else {
+            panic!("JPEG 应走 RGBA8 载荷");
+        };
         assert_eq!((width, height), (16, 16));
         assert_eq!(rgba.len(), 16 * 16 * 4);
         // 左半红、右半蓝（关系断言：红区 R 应显著大于 B，蓝区反之 ✓）。
@@ -6520,8 +6667,16 @@ mod tests {
         // 损坏的 JPEG 必须像损坏的 PNG 一样硬报错，而不是静默跳过 ✓。
         let bad = store.put(b"not a jpeg at all").unwrap();
         let mut warnings = Vec::new();
-        let result =
-            fetch_raster_patch(&store, &bad, "image/jpeg", 16, 16, "obj_bad", &mut warnings);
+        let result = fetch_raster_patch(
+            &store,
+            &bad,
+            "image/jpeg",
+            16,
+            16,
+            "obj_bad",
+            None,
+            &mut warnings,
+        );
         assert!(result.is_err(), "损坏的 JPEG 应报错，实测 {result:?}");
         // 真未实现的格式仍走「告警 + 跳过」（行为锁定 ✓）。
         let webp = store.put(b"RIFF....WEBP").unwrap();
@@ -6533,6 +6688,7 @@ mod tests {
             16,
             16,
             "obj_webp",
+            None,
             &mut warnings,
         )
         .unwrap();
@@ -7828,24 +7984,38 @@ mod by_sig_budget_tests {
     }
 }
 
-/// **★ RAW 第一包的边界锁（设计 v3 §9.3）★**
+/// **★ RAW 边界锁（设计 v3 §9.3）★**
 ///
-/// 本包只定版 rawsrc 常量与判定、留展开挂接点：**不许**把 rawsrc 塞进
-/// `raster_mime_supported`（线性取图链在下一包）——谁手滑加进去，这条立刻红。
+/// 第一包边界：rawsrc 不进 `raster_mime_supported`。第二包起边界按 feature
+/// 分开钉：开 ⇒ 进清单（取图真有线性展开路）；关 ⇒ 仍不进（关构建既不能
+/// 入库也不能展开它，信号必须如实）。谁把两边的口径写串，这两条立刻红。
 #[cfg(test)]
 mod raw_boundary_tests {
     use super::{is_raw_source_mime, raster_mime_supported, JPEG_MIME, PNG_MIME, RAW_SOURCE_MIME};
 
     #[test]
-    fn rawsrc_mime_is_defined_but_not_in_the_rgba_raster_list() {
+    fn rawsrc_mime_constant_and_predicate_are_stable() {
         assert_eq!(RAW_SOURCE_MIME, "image/x-yanshi-rawsrc");
         assert!(is_raw_source_mime(RAW_SOURCE_MIME));
         assert!(!is_raw_source_mime(PNG_MIME));
         assert!(!is_raw_source_mime(JPEG_MIME));
-        // ★ 边界：rawsrc 不是 RGBA8 位图补丁，第一包不进取图清单
+    }
+
+    #[cfg(not(feature = "raw"))]
+    #[test]
+    fn rawsrc_stays_out_of_the_supported_list_without_the_feature() {
         assert!(
             !raster_mime_supported(RAW_SOURCE_MIME),
-            "rawsrc 不许进 raster_mime_supported（线性取图链是下一包）"
+            "feature 关时 rawsrc 不许进 raster_mime_supported（关构建展开不了它）"
+        );
+    }
+
+    #[cfg(feature = "raw")]
+    #[test]
+    fn rawsrc_enters_the_supported_list_with_the_feature() {
+        assert!(
+            raster_mime_supported(RAW_SOURCE_MIME),
+            "feature 开时 rawsrc 必须进 raster_mime_supported（取图有真实展开路）"
         );
     }
 
@@ -7857,5 +8027,77 @@ mod raw_boundary_tests {
         let options = yanshi_raw::DevelopOptions::default();
         let result = super::develop_raw_source(b"this is not a raw file", &options);
         assert!(result.is_err(), "垃圾字节必须报错，实得 {result:?}");
+    }
+
+    /// feature 关：含 rawsrc 的对象取图必须按设计 5.8 **响亮报错**
+    /// （不是 warning 跳过、不是落进「格式未实现」兜底）。
+    #[cfg(not(feature = "raw"))]
+    #[test]
+    fn fetch_rawsrc_without_feature_is_the_loud_5_8_error() {
+        use yanshi_core::blob::{BlobStore as _, MemoryBlobStore};
+        let store = MemoryBlobStore::new();
+        let blob = store.put(b"II\x2a\x00 fake raw bytes").unwrap();
+        let mut warnings = Vec::new();
+        let result = super::fetch_raster_patch(
+            &store,
+            &blob,
+            RAW_SOURCE_MIME,
+            4,
+            4,
+            "obj_raw",
+            None,
+            &mut warnings,
+        );
+        let error = result.expect_err("feature 关时 rawsrc 取图必须报错");
+        let text = error.to_string();
+        assert!(
+            text.contains("image/x-yanshi-rawsrc") && text.contains("未启用 raw feature"),
+            "错误文案须按设计 5.8 点名 mime 与未启用事实：{text}"
+        );
+    }
+
+    /// feature 开：rawsrc 取图走线性路，且产物与直接 develop 逐值一致；
+    /// 记录缺失时缺省展开 + warning（设计 5.3）。
+    #[cfg(feature = "raw")]
+    #[test]
+    fn fetch_rawsrc_with_feature_returns_linear_develop_output() {
+        use yanshi_core::blob::{BlobStore as _, MemoryBlobStore};
+        use yanshi_raw::dng_fixture::{write_synthetic_dng, SyntheticDng};
+        let spec = SyntheticDng {
+            width: 8,
+            height: 6,
+            mosaic: vec![1024; 48],
+            ..SyntheticDng::default()
+        };
+        let bytes = write_synthetic_dng(&spec);
+        let store = MemoryBlobStore::new();
+        let blob = store.put(&bytes).unwrap();
+        let mut warnings = Vec::new();
+        let got = super::fetch_raster_patch(
+            &store,
+            &blob,
+            RAW_SOURCE_MIME,
+            8,
+            6,
+            "obj_raw",
+            None,
+            &mut warnings,
+        )
+        .unwrap()
+        .expect("feature 开时 rawsrc 应展开而不是跳过");
+        let super::DecodedPixels::Linear(width, height, values) = got else {
+            panic!("rawsrc 必须走线性载荷，不许量化回 RGBA8");
+        };
+        assert_eq!((width, height), (8, 6));
+        let direct =
+            super::develop_raw_source(&bytes, &yanshi_raw::DevelopOptions::default()).unwrap();
+        assert_eq!(
+            values, direct.rgb_linear,
+            "取图产物须与直接 develop 逐值一致"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("缺省展开参数")),
+            "记录缺失必须留 warning：{warnings:?}"
+        );
     }
 }

@@ -2720,6 +2720,7 @@ dependencies = [
  "wgpu",
  "yanshi-core",
  "yanshi-gpu",
+ "yanshi-raw",
  "yanshi-render",
  "yanshi-server",
 ]
@@ -2781,6 +2782,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "yanshi-core",
  "yanshi-raw",
  "yanshi-render",
 ]
@@ -2817,6 +2819,7 @@ dependencies = [
  "ureq",
  "yanshi-core",
  "yanshi-medium-host",
+ "yanshi-raw",
  "yanshi-render",
  "yanshi-wasm",
  "zip",

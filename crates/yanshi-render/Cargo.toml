@@ -52,6 +52,8 @@ neco-pigment = "0.1"
 jpeg-decoder = "0.3"
 [dev-dependencies]
 proptest.workspace = true
+# RAW 第二包：render 的取图判据要在单元测试里造合成 DNG（夹具走 test-support 门控）。
+yanshi-raw = { version = "0.2.0", path = "../yanshi-raw", features = ["test-support"] }
 
 [features]
 gpu = ["dep:yanshi-gpu"]

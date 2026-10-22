@@ -17,6 +17,33 @@ use super::*;
 const ID_ARGS: &[ParamSpec] = &[param!("object_id", String, true, "对象 id")];
 const LAYER_ID: &[ParamSpec] = &[param!("layer_id", String, true, "图层 id")];
 
+/// import_image 的参数表（RAW 第二包，设计 9.4 条件注册）：
+/// feature `raw` **关**时与基线逐项一致（多一个参数都算漂移，注册表守卫
+/// 测试钉死）；**开**时恰好多一组 `raw_options`——工具总数不变。
+#[cfg(not(feature = "raw"))]
+const IMPORT_IMAGE_PARAMS: &[ParamSpec] = &[
+    param!("layer_id", String, true, "目标图层"),
+    param!("bitmap", Object, true, "{blob_hash,size,mime_type}"),
+    param!("region", Any, true, "放置区域 {x,y,w,h}"),
+    param!("object_id", String, false, "对象 id（缺省自动生成）"),
+    param!(
+        "medium",
+        Object,
+        false,
+        "{id,version} 介质描述符：随这条原子一并记录（设计 11.1）"
+    ),
+];
+/// import_image 的参数表（feature `raw` 开）：基线五项 + `raw_options` 一组。
+#[cfg(feature = "raw")]
+const IMPORT_IMAGE_PARAMS: &[ParamSpec] = &[
+    param!("layer_id", String, true, "目标图层"),
+    param!("bitmap", Object, true, "{blob_hash,size,mime_type}"),
+    param!("region", Any, true, "放置区域 {x,y,w,h}"),
+    param!("object_id", String, false, "对象 id（缺省自动生成）"),
+    param!("medium", Object, false, "{id,version} 介质描述符：随这条原子一并记录（设计 11.1）"),
+    param!("raw_options", Object, false, "仅当 bitmap 是 RAW 源（mime image/x-yanshi-rawsrc）时可用：展开参数 {wb: as_shot|auto（缺省 as_shot）, demosaic: malvar|bilinear（缺省 malvar）, pre_exposure_ev: -4..4（缺省 0，不 clamp、越界报错）, lens_correction: off|auto（缺省 off，D5 定版）, lens_override: string|null（本包镜头库未接入，给出即报错）}；给到非 RAW blob 报错"),
+];
+
 /// 核心层 112 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
@@ -400,15 +427,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         profile: Profile::Core,
         summary: "导入位图（blob 先行，创建像素图层对象）",
         mutating: true,
-        params: &[
-            param!("layer_id", String, true, "目标图层"),
-            param!("bitmap", Object, true, "{blob_hash,size,mime_type}"),
-            param!("region", Any, true, "放置区域 {x,y,w,h}"),
-            param!("object_id", String, false, "对象 id（缺省自动生成）"),
-            // **加参数就必须同时登记** ✓ —— 这个错我犯过三次 ✗（`at`、`right_id`、`shape_id`、
-            // `path_id` ✓），每次都是框架先报错、测试后失败 ✓。这次先写参数表 ✓。
-            param!("medium", Object, false, "{id,version} 介质描述符：随这条原子一并记录（设计 11.1）"),
-        ],
+        // **加参数就必须同时登记** ✓ —— 这个错我犯过三次 ✗（`at`、`right_id`、`shape_id`、
+        // `path_id` ✓），每次都是框架先报错、测试后失败 ✓。参数表在 IMPORT_IMAGE_PARAMS
+        // （feature `raw` 开时多一组 raw_options，关时与基线逐项一致，RAW 第二包）✓。
+        params: IMPORT_IMAGE_PARAMS,
     },
     ToolSpec {
         name: "create_selection",

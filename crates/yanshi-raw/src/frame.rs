@@ -111,6 +111,9 @@ pub struct RawFrame {
     /// DNG `BaselineExposure`（EV）。`None` = 当前解码器版本未暴露该标签
     /// （rawler 0.7.2 实测缺口，见 README），展开时按缺失 = 0 处理并注明。
     pub baseline_exposure_ev: Option<f32>,
+    /// 文件 EXIF Orientation（1–8；缺失／损坏按 1，与 jpeg.rs 兜底同口径）。
+    /// 展开步骤 ⑧ 据此变换（第二包接入；第一包时此值只解析未应用）。
+    pub orientation: u32,
 }
 
 /// 解马赛克算法（设计 5.4）。`Bilinear` 的身份是**回归基线**，不是质量选项。
@@ -191,6 +194,12 @@ pub struct AppliedLensProfile {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RawDevelopRecord {
     pub version: u32,
+    /// 源 RAW 文件的 blob hash（设计 5.6 定版字段）：展开期（develop）不
+    /// 知道存储、恒 `None`；导入期由入库端填入落账（re-develop 与审计凭它
+    /// 回到源字节）。第一包结构漏了这个字段，第二包补上；`serde(default)`
+    /// 保证第一包写出的无此字段记录仍可解析。
+    #[serde(default)]
+    pub source_blob: Option<String>,
     /// 源格式 sniff 结果（"dng" / "cr3" / "raf" / "tiff" / "raw" 等）。
     pub source_format: String,
     pub camera_make: Option<String>,
@@ -209,8 +218,8 @@ pub struct RawDevelopRecord {
     pub black_levels: [f32; 4],
     pub white_levels: [f32; 4],
     pub cfa: String,
-    /// 本包未应用方向变换（⑧ 在导入链包与 JPEG 路抽共用实现），恒记 1；
-    /// 文件原始方向值在 `DecodedRaw::file_meta` 里，下一包接手。
+    /// 实际应用的方向变换值（第二包起记真实值：= 文件 EXIF Orientation，
+    /// 缺失／非法按 1；变换表与 JPEG 路共用 `yanshi_core::orientation`）。
     pub orientation_applied: u32,
     pub decoder_name: String,
     pub decoder_version: String,
@@ -234,6 +243,8 @@ pub struct RawFileMeta {
     pub exposure_time: Option<f32>,
     pub fnumber: Option<f32>,
     pub focal_mm: Option<f32>,
+    /// EXIF DateTimeOriginal **原文字符串**（不解析、不换算时区，设计 5.7）。
+    pub date_time_original: Option<String>,
     /// EXIF Orientation 原始值（1–8）；缺失按 1（与 jpeg.rs 兜底口径一致）。
     pub orientation: u32,
     /// 传感器位深（文件口径，如 14）。
@@ -289,4 +300,54 @@ pub struct DevelopedImage {
     /// 展开过程中生效的回退／缺口事实（如 auto WB 回退、BaselineExposure
     /// 不可得、双矩阵缺色温退单矩阵）。注记是信号，不许静默（NF2）。
     pub notes: Vec<String>,
+}
+
+/// 入库识别探针的产物（设计 5.3）：字节被认作 RAW 时给出源格式与机型概要。
+/// 识别口径 = magic 签名 ∧ 解码器能认出该文件（见 `decode::probe_raw`）；
+/// 纯 TIFF 位图（解码器不认）不会命中，不许把普通 TIFF 误判成 RAW。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RawProbe {
+    /// 源格式 sniff 结果（与留痕记录的 `source_format` 同口径）。
+    pub source_format: String,
+    /// 相机厂商（元数据可得时；取不到给 `None`，不阻断识别）。
+    pub make: Option<String>,
+    /// 相机型号（同上）。
+    pub model: Option<String>,
+}
+
+/// `raw_meta` 回显（设计 5.7 字段清单）：回显与对象 metadata **共用同一份
+/// 解析结果**——由 [`crate::decode::raw_meta`] 从同一次解码产物组装，
+/// 禁止两处各解析一遍。字段缺失 ⇒ 该键为 `null`（JSON 侧），不整表失败。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RawMeta {
+    pub make: Option<String>,
+    pub model: Option<String>,
+    /// 镜头厂商／型号（分开给，与 `lens_exif` 同源）。
+    pub lens_make: Option<String>,
+    pub lens_model: Option<String>,
+    /// 镜头显示名（make + model 拼接后的既有口径，与 record 的 `lens` 同值）。
+    pub lens: Option<String>,
+    pub iso: Option<u32>,
+    /// 曝光时间（秒）。
+    pub exposure_time_s: Option<f32>,
+    pub fnumber: Option<f32>,
+    pub focal_mm: Option<f32>,
+    pub focus_distance_m: Option<f32>,
+    /// DateTimeOriginal 原文字符串。
+    pub date_time_original: Option<String>,
+    /// EXIF Orientation（1–8，缺失按 1）。
+    pub orientation: u32,
+    /// CFA 排列名（"RGGB" 等）。
+    pub cfa: String,
+    /// 传感器位深（文件口径）。
+    pub bit_depth: Option<u32>,
+    /// 黑／白电平（四相位，裁后帧口径，与 record 同值）。
+    pub black_levels: [f32; 4],
+    pub white_levels: [f32; 4],
+    /// 文件口径的 WB 乘子（未重归一化；重归一化后的生效值在 record 里）。
+    pub wb_multipliers: Option<[f32; 3]>,
+    /// active area 宽／高（展开产物尺寸口径，方向变换前）。
+    pub width: u32,
+    pub height: u32,
+    pub source_format: String,
 }

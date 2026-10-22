@@ -27,6 +27,35 @@ use super::*;
 /// 上传同源），且都汇进同一个 `put_blob`（编码口径只有一份 ⇒ 下游零改动）。
 /// 本地 path 的沙箱口径（第 1230/1232 轮）原样保留，实现收进
 /// `file_source::resolve_local_path` 全仓共用（错误码与触发条件不变）。
+/// RAW 入库识别回显（设计 5.3，RAW 第二包）：feature `raw` 开时，经 render
+/// 挂接点探针识别 RAW 字节——命中 ⇒ 这份 blob 的真实 mime 是 rawsrc，
+/// put_blob 的回显必须如实改报（调用方声明的 mime 只是声明，字节说了算），
+/// 并附 `detected` 概要。**只识别、不展开**（展开在取图侧，凭对象记录）。
+/// feature 关时本函数不存在：RAW 字节与基线一样按声明回显，之后
+/// import_image 的 `blob_decodable` 会如实报 false（关构建存不了能读的
+/// rawsrc，与基线行为一致）。
+#[cfg(feature = "raw")]
+fn merge_raw_detection(value: &mut Value, declared_mime: &str, bytes: &[u8]) {
+    let Some(probe) = yanshi_render::probe_raw_source(bytes) else {
+        return;
+    };
+    value["mime_type"] = json!(yanshi_render::RAW_SOURCE_MIME);
+    value["detected"] = json!({
+        "format": "raw",
+        "source_format": probe.source_format,
+        "make": probe.make,
+        "model": probe.model,
+    });
+    if declared_mime != yanshi_render::RAW_SOURCE_MIME {
+        value["declared_mime_type"] = json!(declared_mime);
+    }
+}
+
+/// feature 关：不存在 RAW 识别（与基线一致的空操作，让三条通道的调用点
+/// 不必各写一份 cfg 分叉）。
+#[cfg(not(feature = "raw"))]
+fn merge_raw_detection(_value: &mut Value, _declared_mime: &str, _bytes: &[u8]) {}
+
 pub(super) fn write_put_blob(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let cap = crate::file_source::max_upload_bytes();
     let path_arg = optional_str(args, "path");
@@ -36,13 +65,16 @@ pub(super) fn write_put_blob(ctx: &mut ToolContext<'_>, args: &Value) -> Result<
     }
     if let Some(bytes) = crate::file_source::decode_base64_param(args, "data_base64", cap)? {
         let hash = ctx.workspace.put_blob(&bytes)?;
-        return Ok(json!({
+        let declared = optional_str(args, "mime_type").unwrap_or_else(|| "image/png".to_owned());
+        let mut value = json!({
             "ok": true,
             "blob_hash": hash.to_string(),
             "size": bytes.len(),
-            "mime_type": optional_str(args, "mime_type").unwrap_or_else(|| "image/png".to_owned()),
+            "mime_type": declared,
             "source": "base64",
-        }));
+        });
+        merge_raw_detection(&mut value, &declared, &bytes);
+        return Ok(value);
     }
     // 一个来源都没给 ⇒ 仍走 require_str 的原报错（与旧行为同文案）。
     let path = match path_arg {
@@ -52,11 +84,12 @@ pub(super) fn write_put_blob(ctx: &mut ToolContext<'_>, args: &Value) -> Result<
     if crate::file_source::is_http_url(&path) {
         let fetched = crate::file_source::fetch_url(&path)?;
         let hash = ctx.workspace.put_blob(&fetched.bytes)?;
+        let declared = optional_str(args, "mime_type").unwrap_or_else(|| "image/png".to_owned());
         let mut value = json!({
             "ok": true,
             "blob_hash": hash.to_string(),
             "size": fetched.bytes.len(),
-            "mime_type": optional_str(args, "mime_type").unwrap_or_else(|| "image/png".to_owned()),
+            "mime_type": declared,
             "source": "url",
             "source_url": path,
             "final_url": fetched.final_url,
@@ -70,6 +103,7 @@ pub(super) fn write_put_blob(ctx: &mut ToolContext<'_>, args: &Value) -> Result<
         if fetched.content_type_mismatch {
             value["content_type_mismatch"] = json!(true);
         }
+        merge_raw_detection(&mut value, &declared, &fetched.bytes);
         return Ok(value);
     }
     if let Some(scheme) = crate::file_source::url_scheme(&path) {
@@ -86,12 +120,15 @@ pub(super) fn write_put_blob(ctx: &mut ToolContext<'_>, args: &Value) -> Result<
     let (bytes, _resolved) =
         crate::file_source::resolve_local_path(&path, ctx.workspace.root_path(), cap)?;
     let hash = ctx.workspace.put_blob(&bytes)?;
-    Ok(json!({
+    let declared = optional_str(args, "mime_type").unwrap_or_else(|| "image/png".to_owned());
+    let mut value = json!({
         "ok": true,
         "blob_hash": hash.to_string(),
         "size": bytes.len(),
-        "mime_type": optional_str(args, "mime_type").unwrap_or_else(|| "image/png".to_owned()),
-    }))
+        "mime_type": declared,
+    });
+    merge_raw_detection(&mut value, &declared, &bytes);
+    Ok(value)
 }
 
 pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
@@ -184,6 +221,38 @@ pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             payload["source"] = source.clone();
         }
     }
+    // **RAW 源对象导入（设计 5.6／5.7，RAW 第二包）**：bitmap 声明为 rawsrc 时
+    // 先跑导入计划（解码一次、组装 record + raw_meta + warnings），record 写进
+    // 净荷落账；`raw_options` 给到非 RAW blob ⇒ 响亮报错（参数被静默忽略是
+    // 本仓头号大敌）。RAW 对象不建分块索引（tiles 是 RGBA8 字节路的东西，
+    // 线性展开不吃它）。
+    #[cfg(feature = "raw")]
+    let mut raw_import: Option<RawImportOutcome> = None;
+    #[cfg(feature = "raw")]
+    {
+        let declared_mime = bitmap
+            .get("mime_type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if yanshi_render::is_raw_source_mime(declared_mime) {
+            let outcome = build_raw_import_plan(ctx, &bitmap, args.get("raw_options"))?;
+            payload["raw_develop"] = outcome.record_json.clone();
+            raw_import = Some(outcome);
+        } else if let Some(options) = args.get("raw_options") {
+            if !options.is_null() {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "raw_options 只能用于 RAW 源对象（bitmap.mime_type = {}），\
+                         本对象的 mime_type 是 {declared_mime}——展开参数不会被静默忽略，\
+                         请去掉 raw_options 或先把 RAW 文件经 put_blob 入库",
+                        yanshi_render::RAW_SOURCE_MIME
+                    )),
+                ));
+            }
+        }
+    }
+
     // **位图分块（(b1) 导入侧 ✓，第 170 轮 ✓）** —— 目标第 1 条"懒解码"的**落盘点** ✓。
     //
     // **为什么在这里** ✓：整体式 deflate 流**取任意一段都要先解整条** ✗ ⇒ 实测**为渲 64² 而解 265 MB**
@@ -211,7 +280,11 @@ pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     //     **∴ 代价 ✗**：**小图**多一个索引 blob**✗（**∴ 64² 图 ⇒ 1 块 ＋ 一份小 JSON ✓）
     //       ⇒ **∴ 对**极小图（**< 64 ✓）**几乎无变化** ✓
     //         ＋ **∴ 且**：**旧工程**没有 `tiles`**✗ ⇒ **∴ 读侧**回退整幅** ✓（**∴ 行为**一字不变 ✓）★**** ✓✓
-    if region.w.max(region.h) >= 64.0 {
+    #[cfg(feature = "raw")]
+    let skip_tiles = raw_import.is_some();
+    #[cfg(not(feature = "raw"))]
+    let skip_tiles = false;
+    if region.w.max(region.h) >= 64.0 && !skip_tiles {
         let blob_hash = bitmap
             .get("blob_hash")
             .and_then(Value::as_str)
@@ -270,5 +343,115 @@ pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             );
         }
     }
+    // RAW 导入的响应增量（设计 5.7 回显 + D1 缺省调整）：raw_meta 与落账
+    // record 同源于导入计划那一次解码；D1 的缺省 exposure 调整对象在这条
+    // 导入原子之后生成（同图层、原生调整形态），其 id 回显在响应里可查。
+    #[cfg(feature = "raw")]
+    if let Some(outcome) = raw_import {
+        if let Some(object) = out.as_object_mut() {
+            object.insert("raw_meta".to_owned(), outcome.meta_json.clone());
+            if !outcome.warnings.is_empty() {
+                object.insert("warnings".to_owned(), json!(outcome.warnings));
+            }
+        }
+        let adjustment = spawn_default_exposure_adjustment(ctx, &layer_id)?;
+        if let Some(object) = out.as_object_mut() {
+            object.insert("default_adjustment".to_owned(), adjustment);
+        }
+    }
     Ok(out)
+}
+
+/// RAW 导入计划的产物（record 落账、meta 回显、warnings 呈现）。
+#[cfg(feature = "raw")]
+struct RawImportOutcome {
+    record_json: Value,
+    meta_json: Value,
+    warnings: Vec<String>,
+}
+
+/// 取 RAW 源字节 → 解码一次 → 组装导入计划（设计 5.6/5.7）。
+/// 解码失败在此响亮报错：导入期就知道这份文件展开不了，好过建出一个
+/// 永远画不出来的对象（第一包 JPEG 漂移事故的教训）。
+#[cfg(feature = "raw")]
+fn build_raw_import_plan(
+    ctx: &ToolContext<'_>,
+    bitmap: &Value,
+    raw_options: Option<&Value>,
+) -> Result<RawImportOutcome> {
+    let hash = bitmap
+        .get("blob_hash")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let parsed: yanshi_core::BlobHash = hash.parse().map_err(|_| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("RAW 源 bitmap.blob_hash 非法：{hash}")),
+        )
+    })?;
+    let bytes = ctx.workspace.store().get(&parsed).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("RAW 源 blob 取不到（{hash}）：{error}")),
+        )
+    })?;
+    let decoded = yanshi_raw::decode_bytes(&bytes).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("RAW 源解码失败：{error}")),
+        )
+    })?;
+    let mut plan = yanshi_raw::plan_import(&decoded, raw_options).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(error.to_string()),
+        )
+    })?;
+    plan.record.source_blob = Some(hash.to_owned());
+    let record_json = serde_json::to_value(&plan.record).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!("raw_develop 记录序列化失败：{error}")),
+        )
+    })?;
+    let meta_json = serde_json::to_value(&plan.meta).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!("raw_meta 序列化失败：{error}")),
+        )
+    })?;
+    Ok(RawImportOutcome {
+        record_json,
+        meta_json,
+        warnings: plan.warnings,
+    })
+}
+
+/// D1 缺省曝光调整的 EV（定版依据 = 合成 DNG 夹具实测，数字见本包 README）：
+/// 25% 满量程均匀场展开后中间调显示约 sRGB 112（EV 0，偏暗）；+0.5 EV 到
+/// 约 132（中灰区下沿）；+1.0 EV 时该场最强通道已触顶 255。故定 **+0.5** 为
+/// 保守起始值（对象可见、可改、可删），不是「正确曝光」断言。
+#[cfg(feature = "raw")]
+const DEFAULT_RAW_EXPOSURE_EV: f64 = 0.5;
+
+/// D1（2026-10-22 定版）：RAW 导入自动生成一条缺省 exposure 调整——走既有
+/// 调整架构的原生入口（`write_add_effect`，与 `add_adjustment` 工具同一条
+/// 路），对象数据形态与手工添加逐字一致。生成失败响亮上抛：导入已成功
+/// 但缺省调整缺失必须让调用方知道，不许静默。
+#[cfg(feature = "raw")]
+fn spawn_default_exposure_adjustment(ctx: &mut ToolContext<'_>, layer_id: &str) -> Result<Value> {
+    let adjustment_id = format!("obj_{}", yanshi_core::Ulid::new().encode());
+    let args = json!({
+        "layer_id": layer_id,
+        "object_id": adjustment_id,
+        "adjustment_type": "exposure",
+        "params": {"ev": DEFAULT_RAW_EXPOSURE_EV},
+        "name": "RAW 缺省曝光（自动生成，可改可删）",
+    });
+    write_add_effect(ctx, &args, EffectKind::Adjustment)?;
+    Ok(json!({
+        "object_id": adjustment_id,
+        "adjustment_type": "exposure",
+        "params": {"ev": DEFAULT_RAW_EXPOSURE_EV},
+    }))
 }

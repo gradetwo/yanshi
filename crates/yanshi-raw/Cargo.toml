@@ -25,6 +25,10 @@ categories.workspace = true
 #   － **确定性**：解码产物是整数马赛克 + 有理数标定量，展开数学全部在本 crate
 #     内以 f32 + libm 实现（NF1）；rawler 内部浮点差异面在解码器验收（设计 6.4）另测。
 rawler = "0.7"
+# EXIF Orientation 的共用索引映射在内核（`yanshi_core::orientation`）：
+# 本 crate 的 f32 展开路与 render 的 JPEG u8 路共用一份（设计 5.7）。
+# core 是全仓共同下游、无图像格式依赖，不引入循环（render → raw → core）。
+yanshi-core = { path = "../yanshi-core", version = "0.2.0" }
 serde.workspace = true
 serde_json.workspace = true
 libm.workspace = true

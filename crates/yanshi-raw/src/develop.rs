@@ -433,7 +433,87 @@ pub fn clamp_exit(values: &mut [f32]) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// 主链：① → ③ → ④ → ⑥ → ⑦ → ⑨（② 暗角／④′ 高光恢复／⑤ 重采样／⑧ 方向
+// ⑧ EXIF 方向变换（设计 5.7，第二包接入）：在 ⑦ 之后、⑨ 之前作用于
+//    线性 RGB 三元组平面。索引映射走内核共用实现（`yanshi_core::orientation`，
+//    与 JPEG 的 u8 路同一份，设计 5.7「应抽共用实现」）；本函数只做 f32 搬运。
+//    与 ⑨ 的先后可交换（截零是逐像素运算、与置换可交换），但仍按设计链序
+//    放在 ⑨ 之前，让链上每一步的输入输出尺寸都与设计图一致、不靠交换性糊弄。
+// ---------------------------------------------------------------------------
+
+/// ⑧ 把方向变换作用于线性 RGB 三元组平面，返回（新宽，新高，新平面）。
+/// `orientation` 不在 1..=8 时按 1（恒等）处理（兜底口径同设计 5.7）。
+pub fn apply_orientation_rgb(
+    rgb: &[f32],
+    width: usize,
+    height: usize,
+    orientation: u32,
+) -> (usize, usize, Vec<f32>) {
+    debug_assert_eq!(rgb.len(), width * height * 3);
+    if !(2..=8).contains(&orientation) {
+        return (width, height, rgb.to_vec());
+    }
+    let (out_w, out_h) = yanshi_core::orientation::output_size(width, height, orientation);
+    let mut out = vec![0.0f32; out_w * out_h * 3];
+    for y in 0..out_h {
+        for x in 0..out_w {
+            let (sx, sy) = yanshi_core::orientation::source_coord(x, y, width, height, orientation);
+            let src = (sy * width + sx) * 3;
+            let dst = (y * out_w + x) * 3;
+            out[dst..dst + 3].copy_from_slice(&rgb[src..src + 3]);
+        }
+    }
+    (out_w, out_h, out)
+}
+
+/// 方向值的生效口径：文件值在 1..=8 时原样，其余（缺失／损坏）按 1。
+pub fn effective_orientation(file_value: u32) -> u32 {
+    if (1..=8).contains(&file_value) {
+        file_value
+    } else {
+        1
+    }
+}
+
+/// 组装 `raw_develop` 留痕记录（设计 5.6）：`develop` 与导入计划
+/// （`crate::import::plan_import`）共用这一份组装——记录的字段口径只许
+/// 有一个出处，两条路组装出的 record 必须逐字段一致。
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_record(
+    frame: &RawFrame,
+    options: &DevelopOptions,
+    ctx: &RecordContext,
+    wb_multipliers: [f32; 3],
+    baseline_exposure_ev: f32,
+    color_alpha: Option<f32>,
+    lens_match: Option<String>,
+) -> RawDevelopRecord {
+    RawDevelopRecord {
+        version: 1,
+        source_blob: None,
+        source_format: ctx.source_format.clone(),
+        camera_make: ctx.camera_make.clone(),
+        camera_model: ctx.camera_model.clone(),
+        lens: ctx.lens.clone(),
+        wb: options.wb,
+        demosaic: options.demosaic,
+        pre_exposure_ev: options.pre_exposure_ev,
+        baseline_exposure_ev,
+        wb_multipliers,
+        black_levels: frame.black_levels,
+        white_levels: frame.white_levels,
+        cfa: frame.cfa.name().to_string(),
+        orientation_applied: effective_orientation(frame.orientation),
+        decoder_name: ctx.decoder_name.clone(),
+        decoder_version: ctx.decoder_version.clone(),
+        color_alpha,
+        lens_exif: ctx.lens_exif.clone(),
+        lens_match,
+        applied_lens_profile: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 主链：① → ③ → ④ → ⑥ → ⑦ → ⑧ → ⑨（② 暗角／④′ 高光恢复／⑤ 重采样
 // 是后续包的注入点，本包不实现、链上位置在此注明，防误读为遗漏）
 // ---------------------------------------------------------------------------
 
@@ -497,33 +577,16 @@ pub fn develop(
     for v in rgb.iter_mut() {
         *v *= gain;
     }
+    // ⑧ EXIF 方向变换（设计 5.7）：置于 ⑦ 之后、⑨ 之前；5–8 时宽高互换。
+    let orientation = effective_orientation(frame.orientation);
+    let (out_w, out_h, mut rgb) =
+        apply_orientation_rgb(&rgb, frame.width, frame.height, orientation);
     // ⑨ 出口截零（全程唯一截零点）。
     clamp_exit(&mut rgb)?;
-    let record = RawDevelopRecord {
-        version: 1,
-        source_format: ctx.source_format.clone(),
-        camera_make: ctx.camera_make.clone(),
-        camera_model: ctx.camera_model.clone(),
-        lens: ctx.lens.clone(),
-        wb: options.wb,
-        demosaic: options.demosaic,
-        pre_exposure_ev: options.pre_exposure_ev,
-        baseline_exposure_ev: baseline,
-        wb_multipliers: multipliers,
-        black_levels: frame.black_levels,
-        white_levels: frame.white_levels,
-        cfa: frame.cfa.name().to_string(),
-        orientation_applied: 1,
-        decoder_name: ctx.decoder_name.clone(),
-        decoder_version: ctx.decoder_version.clone(),
-        color_alpha: alpha,
-        lens_exif: ctx.lens_exif.clone(),
-        lens_match: None,
-        applied_lens_profile: None,
-    };
+    let record = assemble_record(frame, options, ctx, multipliers, baseline, alpha, None);
     Ok(DevelopedImage {
-        width: frame.width as u32,
-        height: frame.height as u32,
+        width: out_w as u32,
+        height: out_h as u32,
         rgb_linear: rgb,
         record,
         notes,

@@ -35,6 +35,34 @@ pub struct SyntheticDng {
     pub baseline_exposure: Option<(i32, u32)>,
     pub make: String,
     pub model: String,
+    /// EXIF 段（第二包补）：缺省 `None` = 与第一包夹具逐字节一致（无 EXIF IFD、
+    /// 无 Orientation 标签）；给值时写出 IFD0 的 Orientation（若有）与
+    /// ExifIFD 指针（34665）+ EXIF IFD，供 raw_meta／方向判据逐项对账。
+    pub exif: Option<SyntheticExif>,
+}
+
+/// 合成 EXIF 内容：字段全部可选，只写给出的（EXIF 稀疏是常态，夹具要能
+/// 造「只给了两项」的稀疏文件）。标签号对过 rawler 0.7.2 的 `tags.rs`。
+#[derive(Default)]
+pub struct SyntheticExif {
+    /// IFD0 的 Orientation（274，SHORT）。
+    pub orientation: Option<u16>,
+    /// ExposureTime（33434，RATIONAL，如 (1, 125)）。
+    pub exposure_time: Option<(u32, u32)>,
+    /// FNumber（33437，RATIONAL，如 (28, 10) = f/2.8）。
+    pub fnumber: Option<(u32, u32)>,
+    /// ISOSpeedRatings（34855，SHORT）。
+    pub iso: Option<u16>,
+    /// DateTimeOriginal（36867，ASCII 原文）。
+    pub date_time_original: Option<String>,
+    /// SubjectDistance（37382，RATIONAL，米）。
+    pub subject_distance: Option<(u32, u32)>,
+    /// FocalLength（37386，RATIONAL，mm）。
+    pub focal_length: Option<(u32, u32)>,
+    /// LensMake（42035，ASCII）。
+    pub lens_make: Option<String>,
+    /// LensModel（42036，ASCII）。
+    pub lens_model: Option<String>,
 }
 
 impl Default for SyntheticDng {
@@ -67,6 +95,7 @@ impl Default for SyntheticDng {
             baseline_exposure: None,
             make: "YanshiFixture".to_string(),
             model: "Synthetic One".to_string(),
+            exif: None,
         }
     }
 }
@@ -206,17 +235,62 @@ pub fn write_synthetic_dng(spec: &SyntheticDng) -> Vec<u8> {
     if let Some((num, den)) = &spec.baseline_exposure {
         entries.push((50730, Value::SRationals(vec![(*num, *den)]))); // BaselineExposure
     }
+    // EXIF（第二包补）：Orientation 进 IFD0；其余进 EXIF IFD（经 34665 指针）。
+    let mut exif_entries: Vec<(u16, Value)> = Vec::new();
+    if let Some(exif) = &spec.exif {
+        if let Some(orientation) = exif.orientation {
+            entries.push((274, Value::Shorts(vec![orientation]))); // Orientation
+        }
+        if let Some(value) = exif.exposure_time {
+            exif_entries.push((33434, Value::Rationals(vec![value]))); // ExposureTime
+        }
+        if let Some(value) = exif.fnumber {
+            exif_entries.push((33437, Value::Rationals(vec![value]))); // FNumber
+        }
+        if let Some(iso) = exif.iso {
+            exif_entries.push((34855, Value::Shorts(vec![iso]))); // ISOSpeedRatings
+        }
+        if let Some(text) = &exif.date_time_original {
+            exif_entries.push((36867, Value::Ascii(text.clone()))); // DateTimeOriginal
+        }
+        if let Some(value) = exif.subject_distance {
+            exif_entries.push((37382, Value::Rationals(vec![value]))); // SubjectDistance
+        }
+        if let Some(value) = exif.focal_length {
+            exif_entries.push((37386, Value::Rationals(vec![value]))); // FocalLength
+        }
+        if let Some(text) = &exif.lens_make {
+            exif_entries.push((42035, Value::Ascii(text.clone()))); // LensMake
+        }
+        if let Some(text) = &exif.lens_model {
+            exif_entries.push((42036, Value::Ascii(text.clone()))); // LensModel
+        }
+    }
+    let has_exif_ifd = !exif_entries.is_empty();
     entries.sort_by_key(|(tag, _)| *tag);
+    exif_entries.sort_by_key(|(tag, _)| *tag);
 
-    // 布局计算：IFD 紧随文件头；溢出值（>4 字节）依次放 IFD 之后；strip 最后。
-    let ifd_offset = 8u32;
-    let entries_bytes = 2 + entries.len() as u32 * 12 + 4;
-    let mut cursor = ifd_offset + entries_bytes;
+    // 布局：头(8) → IFD0 → EXIF IFD（若有）→ 溢出值区 → strip。
+    // ExifIFD 指针（34665）的值就是 EXIF IFD 的绝对偏移，布局定下后回填，
+    // 因此先按「含指针条目」的条数算 IFD0 尺寸，再把指针条目插进去。
+    let ifd0_count = entries.len() + usize::from(has_exif_ifd);
+    let ifd0_bytes = 2 + ifd0_count as u32 * 12 + 4;
+    let exif_ifd_offset = 8 + ifd0_bytes;
+    if has_exif_ifd {
+        entries.push((34665, Value::Longs(vec![exif_ifd_offset]))); // ExifIFD 指针
+        entries.sort_by_key(|(tag, _)| *tag);
+    }
+    let exif_bytes = if has_exif_ifd {
+        2 + exif_entries.len() as u32 * 12 + 4
+    } else {
+        0
+    };
     let mut serialized: Vec<(u16, Value, Vec<u8>)> = Vec::new();
-    for (tag, value) in entries {
+    for (tag, value) in entries.into_iter().chain(exif_entries) {
         let bytes = value.bytes();
         serialized.push((tag, value, bytes));
     }
+    let mut cursor = exif_ifd_offset + exif_bytes;
     let mut value_offsets: Vec<u32> = Vec::with_capacity(serialized.len());
     for (_, _, bytes) in &serialized {
         if bytes.len() > 4 {
@@ -231,26 +305,35 @@ pub fn write_synthetic_dng(spec: &SyntheticDng) -> Vec<u8> {
     }
     let strip_offset = cursor;
 
+    // 逐 IFD 序列化：条目在 serialized 里是 [IFD0…, EXIF…] 顺序拼接。
+    let write_ifd = |out: &mut Vec<u8>, range: std::ops::Range<usize>| {
+        out.extend_from_slice(&(range.len() as u16).to_le_bytes());
+        for i in range {
+            let (tag, value, bytes) = &serialized[i];
+            out.extend_from_slice(&tag.to_le_bytes());
+            out.extend_from_slice(&value.type_code().to_le_bytes());
+            out.extend_from_slice(&value.count().to_le_bytes());
+            if *tag == 273 {
+                out.extend_from_slice(&strip_offset.to_le_bytes());
+            } else if bytes.len() <= 4 {
+                let mut inline = [0u8; 4];
+                inline[..bytes.len()].copy_from_slice(bytes);
+                out.extend_from_slice(&inline);
+            } else {
+                out.extend_from_slice(&value_offsets[i].to_le_bytes());
+            }
+        }
+        out.extend_from_slice(&0u32.to_le_bytes()); // 无下一 IFD
+    };
     let mut out: Vec<u8> = Vec::new();
     out.extend_from_slice(b"II");
     out.extend_from_slice(&42u16.to_le_bytes());
-    out.extend_from_slice(&ifd_offset.to_le_bytes());
-    out.extend_from_slice(&(serialized.len() as u16).to_le_bytes());
-    for (i, (tag, value, bytes)) in serialized.iter().enumerate() {
-        out.extend_from_slice(&tag.to_le_bytes());
-        out.extend_from_slice(&value.type_code().to_le_bytes());
-        out.extend_from_slice(&value.count().to_le_bytes());
-        if *tag == 273 {
-            out.extend_from_slice(&strip_offset.to_le_bytes());
-        } else if bytes.len() <= 4 {
-            let mut inline = [0u8; 4];
-            inline[..bytes.len()].copy_from_slice(bytes);
-            out.extend_from_slice(&inline);
-        } else {
-            out.extend_from_slice(&value_offsets[i].to_le_bytes());
-        }
+    out.extend_from_slice(&8u32.to_le_bytes()); // IFD0 紧随文件头
+    write_ifd(&mut out, 0..ifd0_count);
+    if has_exif_ifd {
+        let exif_count = serialized.len() - ifd0_count;
+        write_ifd(&mut out, ifd0_count..ifd0_count + exif_count);
     }
-    out.extend_from_slice(&0u32.to_le_bytes()); // 无下一 IFD
     for (i, (_, _, bytes)) in serialized.iter().enumerate() {
         if bytes.len() > 4 {
             // 对齐到先前算好的偏移（前面可能有对齐填充）。

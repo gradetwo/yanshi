@@ -171,7 +171,9 @@ fn parse_exif_orientation(payload: &[u8]) -> Option<u8> {
 
 /// EXIF Orientation 变换（输出像素 (x,y) 取自源 (sx,sy)，按 EXIF 规范）。
 ///
-/// 返回（新宽，新高，新像素）。orientation 非法或长度不对 ⇒ 原样返回。
+/// 索引映射走内核共用实现 [`yanshi_core::orientation`]（RAW 展开链的 f32 路
+/// 用同一份，设计 5.7「应抽共用实现而非复制第二份」）；本函数只做 u8 RGBA
+/// 的搬运。返回（新宽，新高，新像素）。orientation 非法或长度不对 ⇒ 原样返回。
 pub fn apply_orientation(
     rgba: &[u8],
     width: u32,
@@ -182,23 +184,12 @@ pub fn apply_orientation(
     if orientation == 1 || rgba.len() != w * h * 4 || !(1..=8).contains(&orientation) {
         return (width, height, rgba.to_vec());
     }
-    let (out_w, out_h): (usize, usize) = match orientation {
-        5..=8 => (h, w),
-        _ => (w, h),
-    };
+    let (out_w, out_h) = yanshi_core::orientation::output_size(w, h, u32::from(orientation));
     let mut out = vec![0u8; out_w * out_h * 4];
     for y in 0..out_h {
         for x in 0..out_w {
-            let (sx, sy) = match orientation {
-                2 => (w - 1 - x, y),
-                3 => (w - 1 - x, h - 1 - y),
-                4 => (x, h - 1 - y),
-                5 => (y, x),
-                6 => (y, h - 1 - x),
-                7 => (w - 1 - y, h - 1 - x),
-                8 => (w - 1 - y, x),
-                _ => (x, y),
-            };
+            let (sx, sy) =
+                yanshi_core::orientation::source_coord(x, y, w, h, u32::from(orientation));
             out[(y * out_w + x) * 4..(y * out_w + x) * 4 + 4]
                 .copy_from_slice(&rgba[(sy * w + sx) * 4..(sy * w + sx) * 4 + 4]);
         }

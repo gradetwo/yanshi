@@ -92,3 +92,6 @@ libc = { version = "0.2", optional = true }
 name = "gpu_quantize_bench"
 path = "src/bin/gpu_quantize_bench.rs"
 required-features = ["gpu"]
+
+[dev-dependencies]
+yanshi-raw = { path = "../yanshi-raw", features = ["test-support"] }

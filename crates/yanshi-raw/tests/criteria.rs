@@ -43,6 +43,7 @@ fn base_frame(width: usize, height: usize) -> RawFrame {
         as_shot_neutral: None,
         color_matrices: realistic_calibrations(),
         baseline_exposure_ev: None,
+        orientation: 1,
     }
 }
 

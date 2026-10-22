@@ -17,14 +17,16 @@ pub mod decode;
 pub mod develop;
 pub mod error;
 pub mod frame;
+pub mod import;
 
 #[cfg(feature = "test-support")]
 pub mod dng_fixture;
 
-pub use decode::{decode_bytes, record_context};
+pub use decode::{decode_bytes, probe_raw, raw_meta, record_context};
 pub use develop::develop;
 pub use error::{RawError, Result};
 pub use frame::{
     CalibrationMatrix, CfaPattern, Channel, DecodedRaw, Demosaic, DevelopOptions, DevelopedImage,
-    LensExif, RawDevelopRecord, RawFileMeta, RawFrame, RecordContext, WbMode,
+    LensExif, RawDevelopRecord, RawFileMeta, RawFrame, RawMeta, RawProbe, RecordContext, WbMode,
 };
+pub use import::{plan_import, ImportPlan, LensCorrection, ParsedRawOptions};

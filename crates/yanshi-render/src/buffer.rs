@@ -443,6 +443,51 @@ impl Buffer {
         }
     }
 
+    /// 以 f32 线性 RGB 三元组（不透明）写入，与 [`Buffer::blit_rgba8`] 并列的
+    /// 线性直通路：源值已是线性预乘口径（alpha 恒 1 ⇒ 预乘即自身），**不经
+    /// 显示空间量化**——值 >1（HDR）与负值都不在此处截断，截断归出口
+    /// （`to_rgba8` 的显示编码）。语义与 blit_rgba8 一致：`opacity` 额外缩放、
+    /// 走同一 blend（Normal 即覆盖写入）。
+    ///
+    /// 通用能力：任何「已经在线性空间里算好的像素」都走这里（相机 RAW 展开
+    /// 是第一个用户），本函数不认识任何来源格式。
+    pub fn blit_linear(
+        &mut self,
+        x: i64,
+        y: i64,
+        width: u32,
+        height: u32,
+        rgb_linear: &[f32],
+        opacity: f32,
+    ) {
+        let factor = opacity.clamp(0.0, 1.0);
+        // 相交裁剪与 blit_rgba8 同口径（只遍历相交行列，跳过的迭代本就不写）。
+        let col_start = (self.origin_x - x).max(0);
+        let row_start = (self.origin_y - y).max(0);
+        let col_end = (self.origin_x + self.width as i64 - x).min(width as i64);
+        let row_end = (self.origin_y + self.height as i64 - y).min(height as i64);
+        if col_end <= col_start || row_end <= row_start {
+            return;
+        }
+        for row in row_start..row_end {
+            for col in col_start..col_end {
+                let index = ((row * width as i64 + col) * 3) as usize;
+                if index + 2 >= rgb_linear.len() {
+                    return;
+                }
+                let local_x = (x + col - self.origin_x) as u32;
+                let local_y = (y + row - self.origin_y) as u32;
+                let pixel = [
+                    rgb_linear[index] * factor,
+                    rgb_linear[index + 1] * factor,
+                    rgb_linear[index + 2] * factor,
+                    factor,
+                ];
+                self.blend(local_x, local_y, pixel);
+            }
+        }
+    }
+
     /// 裁剪到文档坐标范围（不相交则返回空缓冲区）。
     pub fn crop(&self, bbox: &Bbox) -> Buffer {
         let x0 = (bbox.x.floor() as i64).max(self.origin_x);
@@ -1865,5 +1910,35 @@ mod copy_region_tests {
             !source.copy_region_into(&bbox, &mut wrong),
             "目标尺寸不对时必须返回 false"
         );
+    }
+
+    /// blit_linear（第二包）：线性值直通写入——含 >1 的 HDR 值不截断、
+    /// alpha 恒按不透明落账；opacity 走预乘缩放；负偏移只写相交部分。
+    #[test]
+    fn blit_linear_writes_values_verbatim_including_above_one() {
+        let mut buffer = Buffer::new(0, 0, 3, 2);
+        let rgb: Vec<f32> = vec![
+            0.25, 0.5, 2.5, // (0,0)：含 >1
+            1.0, 0.0, 0.125, // (1,0)
+            0.0, 0.0, 0.0, // (2,0)
+            3.0, 1.5, 0.75, // (0,1)
+            0.1, 0.2, 0.3, // (1,1)
+            0.9, 0.8, 0.7, // (2,1)
+        ];
+        buffer.blit_linear(0, 0, 3, 2, &rgb, 1.0);
+        assert_eq!(buffer.pixel(0, 0), [0.25, 0.5, 2.5, 1.0]);
+        assert_eq!(buffer.pixel(1, 0), [1.0, 0.0, 0.125, 1.0]);
+        assert_eq!(buffer.pixel(0, 1), [3.0, 1.5, 0.75, 1.0]);
+        assert_eq!(buffer.pixel(2, 1), [0.9, 0.8, 0.7, 1.0]);
+    }
+
+    #[test]
+    fn blit_linear_opacity_scales_premultiplied_and_offset_clips() {
+        let mut buffer = Buffer::new(0, 0, 2, 1);
+        // 源 2×1，贴到 (-1, 0)：只有源第 2 个像素落在画布 (0,0)。
+        let rgb: Vec<f32> = vec![9.0, 9.0, 9.0, 0.4, 0.6, 0.8];
+        buffer.blit_linear(-1, 0, 2, 1, &rgb, 0.5);
+        assert_eq!(buffer.pixel(0, 0), [0.2, 0.3, 0.4, 0.5]);
+        assert_eq!(buffer.pixel(1, 0), [0.0, 0.0, 0.0, 0.0]);
     }
 }

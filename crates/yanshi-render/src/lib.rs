@@ -168,7 +168,7 @@ pub use render::{
 
 /// RAW 展开挂接点（设计 v3 §9.3）：仅 feature `raw` 开时存在。
 #[cfg(feature = "raw")]
-pub use render::develop_raw_source;
+pub use render::{develop_raw_source, develop_raw_source_recorded, probe_raw_source};
 pub use thumb::{render_thumbnail, Thumb, ThumbKind, ThumbStats, THUMB_BLOCK};
 pub use tile::{
     Tile, TileCache, TileCacheStats, TileGrid, TileKey, ALLOWED_TILE_SIZES, DEFAULT_TILE_SIZE,

@@ -40,7 +40,29 @@ pub fn decode_bytes(bytes: &[u8]) -> Result<DecodedRaw> {
         .raw_image(&source, &params, false)
         .map_err(|e| RawError::Decode(e.to_string()))?;
     // 元数据整表失败不阻断展开（设计 5.7）：取不到就 None，展开照常。
-    let metadata = decoder.raw_metadata(&source, &params).ok();
+    let mut metadata = decoder.raw_metadata(&source, &params).ok();
+    // rawler 0.7.2 的通用 EXIF 路径不读 LensMake／LensModel（只有 RAF／TFR
+    // 解码器单独补读，decoders/raf.rs:406）——镜头名是 raw_meta 与 D5 提示的
+    // 依据，在此经解码器公开的 ifd() 接口从 EXIF IFD 补读，口径与 RAF 一致。
+    // 补读失败不连累解码：镜头名缺失给 None（设计 5.7）。
+    if let Some(metadata) = &mut metadata {
+        if metadata.exif.lens_make.is_none() || metadata.exif.lens_model.is_none() {
+            use rawler::decoders::WellKnownIFD;
+            use rawler::tags::ExifTag;
+            if let Ok(Some(exif_ifd)) = decoder.ifd(WellKnownIFD::Exif) {
+                if metadata.exif.lens_make.is_none() {
+                    metadata.exif.lens_make = exif_ifd
+                        .get_entry(ExifTag::LensMake)
+                        .and_then(|entry| entry.value.as_string().cloned());
+                }
+                if metadata.exif.lens_model.is_none() {
+                    metadata.exif.lens_model = exif_ifd
+                        .get_entry(ExifTag::LensModel)
+                        .and_then(|entry| entry.value.as_string().cloned());
+                }
+            }
+        }
+    }
     map_decoded(raw, metadata.as_ref(), &source_format)
 }
 
@@ -155,6 +177,7 @@ fn map_decoded(
         // rawler 0.7.2 未暴露 BaselineExposure（本文件头注的实测缺口）：
         // 如实 None；develop 会按 0 处理并写进展开注记，不许在此硬编。
         baseline_exposure_ev: None,
+        orientation: orientation_u8(raw.orientation),
     };
     let file_meta = map_file_meta(&raw, metadata, source_format);
     Ok(DecodedRaw {
@@ -321,6 +344,7 @@ fn map_file_meta(
         exposure_time: exif.and_then(|e| e.exposure_time).map(|r| r.as_f32()),
         fnumber,
         focal_mm,
+        date_time_original: exif.and_then(|e| e.date_time_original.clone()),
         orientation: orientation_u8(raw.orientation),
         bit_depth: Some(raw.bps as u32),
         source_format: source_format.to_string(),
@@ -377,6 +401,82 @@ fn sniff_format(bytes: &[u8]) -> String {
         return "tiff".to_string();
     }
     "raw".to_string()
+}
+
+/// 入库识别探针（设计 5.3，第二包）：判断一份字节是不是相机 RAW。
+///
+/// 口径 = **magic 签名 ∧ 解码器认得出**，两条都过才算：
+/// - magic 只认 RAW 容器签名（TIFF 家族／FUJIFILMCCD-RAW／CR3 的 ftyp crx）；
+/// - 再让 rawler 的解码器查找认一次——普通 TIFF 位图（截图等）魔数相同但
+///   解码器不认 ⇒ 不命中，不许把位图误判成 RAW 存成 rawsrc（存了读不出
+///   比当场拒绝更糟，NF2）。
+///
+/// 命中后顺带给出机型概要（上传端 `decoded_from` 的原料）：元数据取不到
+/// 时 make/model 给 `None`，识别本身不失败（设计 5.7：像素才是主语）。
+/// 不命中 ⇒ `None`（调用方按「不是 RAW」走既有路径，不报错）。
+pub fn probe_raw(bytes: &[u8]) -> Option<crate::frame::RawProbe> {
+    let has_raw_magic = (bytes.len() >= 4
+        && (&bytes[0..4] == b"II\x2a\x00" || &bytes[0..4] == b"MM\x00\x2a"))
+        || (bytes.len() >= 16 && &bytes[0..16] == b"FUJIFILMCCD-RAW ")
+        || (bytes.len() >= 12 && &bytes[4..8] == b"ftyp" && &bytes[8..12] == b"crx ");
+    if !has_raw_magic {
+        return None;
+    }
+    let source = RawSource::new_from_slice(bytes);
+    let decoder = rawler::get_decoder(&source).ok()?;
+    let (make, model) = match decoder.raw_metadata(&source, &RawDecodeParams::default()) {
+        Ok(metadata) => {
+            let make = if metadata.make.is_empty() {
+                None
+            } else {
+                Some(metadata.make.clone())
+            };
+            let model = if metadata.model.is_empty() {
+                None
+            } else {
+                Some(metadata.model.clone())
+            };
+            (make, model)
+        }
+        Err(_) => (None, None),
+    };
+    Some(crate::frame::RawProbe {
+        source_format: sniff_format(bytes),
+        make,
+        model,
+    })
+}
+
+/// 组装 `raw_meta` 回显（设计 5.7）：原料是同一次 `decode_bytes` 的产物，
+/// 回显与 metadata 落账共用这一份，禁止调用方再解析一遍字节。
+pub fn raw_meta(decoded: &DecodedRaw) -> crate::frame::RawMeta {
+    let meta = &decoded.file_meta;
+    let frame = &decoded.frame;
+    crate::frame::RawMeta {
+        make: meta.make.clone(),
+        model: meta.model.clone(),
+        lens_make: meta.lens_exif.as_ref().and_then(|lens| lens.make.clone()),
+        lens_model: meta.lens_exif.as_ref().and_then(|lens| lens.model.clone()),
+        lens: meta.lens.clone(),
+        iso: meta.iso,
+        exposure_time_s: meta.exposure_time,
+        fnumber: meta.fnumber,
+        focal_mm: meta.focal_mm,
+        focus_distance_m: meta
+            .lens_exif
+            .as_ref()
+            .and_then(|lens| lens.focus_distance_m),
+        date_time_original: meta.date_time_original.clone(),
+        orientation: meta.orientation,
+        cfa: frame.cfa.name().to_string(),
+        bit_depth: meta.bit_depth,
+        black_levels: frame.black_levels,
+        white_levels: frame.white_levels,
+        wb_multipliers: frame.wb_multipliers,
+        width: frame.width as u32,
+        height: frame.height as u32,
+        source_format: meta.source_format.clone(),
+    }
 }
 
 /// 由解码产物组装留痕上下文（render 挂接点与集成测试共用）。
