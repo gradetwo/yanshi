@@ -16409,3 +16409,18 @@ if let Some(object) = state.objects.get(object_id) {
 **⇒ 判据（下一轮）**：`creating_a_small_object_dirties_only_its_bbox`（我本轮写了但因 `Layer` 字面量字段多、编译器连报两次缺字段而撤回 ✓）
 ⇒ 改法：**别手搓 `Layer`/`Object` 字面量**，改用 `DocumentState::empty()` ＋ 已有测试里的构造器 ✓
 （`crates/yanshi-render/tests/tile_parallel.rs` 有 `layer()`/`object()` 两个 helper ⇒ 把判据放进**那个 test 文件**最省事 ✓）。
+
+### 四百一十二（续三）：**判据已入库（`#[ignore]`），但"整幅"的来源还差一层** —— 下一步很明确
+
+**⇒ 已入库**：`crates/yanshi-timelapse/tests/incremental_matches_full.rs::a_new_small_object_does_not_dirty_the_whole_canvas`
+（`#[ignore]` ＋ 理由写明）⇒ 256×256、tile 64 ⇒ 加一个 24×24 矩形 ⇒ **实测脏 tile = 16（整幅 16）** ⇒ 缺陷在代码里可复现 ✓。
+
+**⇒ 已排除的一层**：`plan_dirty`（纯函数）对**同一条原子**返回 `DirtyKind::Geometry` ＋ 小 bbox ✓
+⇒ **planner 没问题** ✓（判据 `creating_a_small_object_dirties_only_its_bbox` 在 `tile_parallel.rs` 里已绿 ✓）。
+
+**⇒ 还没排除的一层**：`Renderer::apply_dirty`（`render.rs:1313`）——
+我在它里面加了 `YANSHI_DIRTY_PROBE` 打印，**但测试里一次都没打印** ✗
+⇒ 说明这条路径**没有经过** `apply_dirty`（或测试二进制没重编 ⇒ 但 `cargo test -p yanshi-timelapse` 会重编 ✓）
+⇒ **下一步只查**：`Kernel::apply_atom`（`yanshi-wasm/src/kernel.rs:637`，`last_tiles` 在 `:685` 赋值）
+—— 在 `:685` 之前把 `dirty.kind`／`dirty.bbox` 打出来，就知道**是 planner 给了 Full，还是别处把 tiles 填满了** ✓。
+**⇒ 已撤探针** ✓（工作树干净 ✓）。
