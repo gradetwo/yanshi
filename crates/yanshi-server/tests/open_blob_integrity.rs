@@ -125,3 +125,84 @@ fn opening_a_document_reports_blobs_that_went_missing() {
         "missing_sample 必须**点名**缺的那个哈希 ⇒ {sample:?}"
     );
 }
+
+#[test]
+fn opening_a_document_also_reports_missing_texture_blobs() {
+    // **覆盖面**：`blob_integrity` 不能只覆盖蒙版 ✓ —— **纹理**引用的 blob 同样要报 ✓。
+    // 这一条是本轮"探针"的副产品：我先想证明"缺件时渲染会告警"✗，实测发现**同进程内**解码缓存命中
+    // ⇒ 不重新解码 ⇒ 也不重复告警 ✓（缓存按 blob 内容键 ✓，**不是缺陷** ✓，是它该做的 ✓）。
+    // ⇒ 于是把这条转成**打开时扫描**的覆盖面判据 ✓（那里没有缓存问题 ✓）。
+    let mut workspace = workspace();
+    let source = vec![180u8; 8 * 8 * 4];
+    let hash = workspace
+        .store()
+        .put(&source)
+        .expect("源位图应能入库")
+        .to_string();
+    let parsed: yanshi_core::BlobHash = hash.parse().expect("哈希应可解析");
+    {
+        let mut ctx = context(&mut workspace);
+        call(
+            &mut ctx,
+            "new_document",
+            &json!({"doc_id": "doc_integrity", "width": 64, "height": 64}),
+        );
+        let layers = call(&mut ctx, "list_layers", &json!({}));
+        let layer = layers
+            .get("layers")
+            .and_then(Value::as_array)
+            .and_then(|layers| layers.first())
+            .and_then(|entry| entry.get("layer_id").or_else(|| entry.get("id")))
+            .and_then(Value::as_str)
+            .expect("新文档应有图层")
+            .to_string();
+        let filled = call(
+            &mut ctx,
+            "fill_region",
+            &json!({
+                "layer_id": layer,
+                "shape": {"type": "rect", "x": 32, "y": 32, "w": 8, "h": 8},
+                "texture": {
+                    "type": "bitmap",
+                    "blob_hash": hash,
+                    "source": {"x": 0, "y": 0, "w": 8, "h": 8},
+                    "width": 8,
+                    "height": 8
+                }
+            }),
+        );
+        assert_eq!(
+            filled.get("ok").and_then(Value::as_bool),
+            Some(true),
+            "前置：带纹理的一笔没画上：{filled}"
+        );
+    }
+    workspace.store().remove(&parsed).expect("删 blob 应当成功");
+    let mut ctx = context(&mut workspace);
+    let reopened = call(
+        &mut ctx,
+        "new_document",
+        &json!({"doc_id": "doc_integrity", "width": 64, "height": 64}),
+    );
+    let integrity = reopened
+        .get("blob_integrity")
+        .cloned()
+        .unwrap_or_else(|| panic!("打开时必须报 blob_integrity：{reopened}"));
+    assert_eq!(
+        integrity.get("missing").and_then(Value::as_u64),
+        Some(1),
+        "**纹理**引用的 blob 缺件也必须被打开时的扫描抓到 ⇒ {integrity}"
+    );
+    let sample = integrity
+        .get("missing_sample")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        sample
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|text| text == hash),
+        "missing_sample 必须点名纹理那个哈希 ⇒ {sample:?}"
+    );
+}
