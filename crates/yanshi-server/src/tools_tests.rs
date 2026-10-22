@@ -62,7 +62,6 @@ fn dtimes_reach_the_engine() {
             &mut previous,
             dtimes,
             super::tools_brush::BrushSensors::default(),
-            None,
         );
         // **∴ 用仓库自己的构造器 ✗ 别手填字段** ✓（**∴ 字段是 x0/y0/x1/y1/width/height ✓）
         let region = super::PaintRegion::from_bounds((0, 0, 255, 159, 256, 160));

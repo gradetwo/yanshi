@@ -4940,7 +4940,6 @@ fn restyle_baked_brush_stroke(
         &[],
         None,
         sensors,
-        smudge_backend_from_source(source),
     )?;
     let hash = ctx.workspace.store().put(&paint.rgba)?;
     let mut new_data = data.clone();
@@ -14536,10 +14535,6 @@ fn read_surface_region(
     } = region;
     let mut rgba = vec![0u8; width * height * 4];
     let mut painted = 0usize;
-    // **环境变量只读一次 ✓**（**∴ 原来写在最内层 `for column` 里**✗ ⇒
-    //   **∴ 于是**每一枚 **tile** 都要走一遍 `std::env::var_os` ✗（克隆整个进程环境 ✓）
-    //   ⇒ **∴ 短笔触无所谓 ✗ 但**大半径 × 长路径**是几百枚 tile ✗ ⇒ 白交学费 ✓）
-    let fix15_probe = std::env::var_os("YANSHI_OPEN_TIMING").is_some();
     for tile_y in (y0.div_euclid(64))..=(y1.div_euclid(64)) {
         for tile_x in (x0.div_euclid(64))..=(x1.div_euclid(64)) {
             let Some(tile) = surface.tile(tile_x, tile_y) else {
@@ -14561,7 +14556,8 @@ fn read_surface_region(
                     // 外部报告说的"颜色回归"因此**是真的** ✓，但真因是**这个口径** ✓，不是喂底图那件事 ✗。
                     let pixel = tile[row as usize][column as usize];
                     let alpha15 = u32::from(pixel[3]);
-                    if fix15_probe && row == 1 && column == 27 {
+                    if row == 1 && column == 27 && std::env::var_os("YANSHI_OPEN_TIMING").is_some()
+                    {
                         eprintln!("fix15_dump side=server pixel={:?}", pixel);
                     }
                     let straight_byte = |channel: u16| -> u8 {
@@ -14608,9 +14604,6 @@ static STAMP_DAB_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 
 /// **接着上一段继续走** ✓ —— 多色笔迹要逐段换颜色 ✓，但**不能在段边界重新播种** ✗
 /// （那会在每个换色点多盖一枚 dab ✓ ⇒ 一串深色小点 ✗）。`previous` 由调用方跨段持有 ✓。
-// 第 8 个参数是 `smudge_backend` 带来的 `host_smudge` ✓：它与 `sensors` 一样属于
-// 「这一笔的揉合口径」⇒ 与本仓既有的 `brush.rs:1140` 等五处同一处理方式 ✓
-#[allow(clippy::too_many_arguments)]
 fn stamp_stroke_from(
     brush: &hokusai::Brush,
     state: &mut hokusai::BrushState,
@@ -14621,11 +14614,6 @@ fn stamp_stroke_from(
     dtimes: &[f64],
     // **真实传感器**（xtilt/ytilt 在这里喂给 `stroke_to`；缺省全 0 ⇒ 老行为逐字节不变）。
     sensors: BrushSensors,
-    // **★ 净室揉合的幅度与长度（`Some` ⇒ 用这一对，而不是读笔刷）★**
-    //   ⇒ 调用方在 `smudge_backend: 「host」` 时**已经把引擎的 `smudge` 归零** ✓
-    //   ⇒ 这里若再去读笔刷就会读到 0 ✗ ⇒ 揉合整个消失 ✗（那不是「换后端」而是「关掉」）✓
-    //   **`None` ⇒ 完全走老路**（读笔刷 ✓ ⇒ 与历史逐字节相同 ✓）
-    host_smudge: Option<(f64, f64)>,
 ) -> usize {
     // **★★★ 第 246 轮：**给落笔的 dab 循环计时 ✗ ★★★**（**用户裁定「先量笔触占比」✓）
     //   ＋ **∴ 为什么是**这里**✗ 而**不是 `yanshi-render::brush`** ✓**：
@@ -14644,26 +14632,18 @@ fn stamp_stroke_from(
     // **净室揉合要用的三个量：只读一次**（笔刷自己的设置；`smudge = 0` 时下面整段都不执行）
     // **注意**：`BrushSetting::base_value` 是 **f32**（`hokusai` 的口径）=> 转成 f64 再算
     //（第一版直接传 f32 给要 f64 的 `smudge_dab`，编译报 E0308 三个参数全不匹配）。
-    let (smudge_amount, smudge_length) = match host_smudge {
-        // **`host` 后端 ✓**：调用方已把**引擎的** `smudge` 归零 ✓（那才是 64 倍的钱 ✗）
-        //   ⇒ 这里改用**笔刷原来的幅度与长度** ✓（由 `paint_brush` 读好带进来 ✓）
-        Some((amount, length)) => (amount, length),
-        // **`engine` 后端 ✓**：与历史逐字节相同 ✓（净室揉合照旧**叠加**在引擎之上 ✓）
-        None => (
-            f64::from(
-                brush
-                    .get(hokusai::BrushSetting::Smudge)
-                    .base_value
-                    .clamp(0.0, 1.0),
-            ),
-            f64::from(
-                brush
-                    .get(hokusai::BrushSetting::SmudgeLength)
-                    .base_value
-                    .max(0.0),
-            ),
-        ),
-    };
+    let smudge_amount = f64::from(
+        brush
+            .get(hokusai::BrushSetting::Smudge)
+            .base_value
+            .clamp(0.0, 1.0),
+    );
+    let smudge_length = f64::from(
+        brush
+            .get(hokusai::BrushSetting::SmudgeLength)
+            .base_value
+            .max(0.0),
+    );
     // **半径**：**必须取 exp ✗** —— `Radius` 的 `base_value` 存的是 **ln(半径)**（本仓注释
     // 早写过："`size` 是直径像素，而 MyPaint 的设置叫 `radius_logarithmic`，存的是 ln(半径)"）。
     // **实测踩到**：`size: 40`（直径）时探针报 `radius=2.9957` = **ln(20)**；
@@ -14739,7 +14719,7 @@ fn stamp_stroke_from(
                     // 现在喂的是调用方经 `sensors` 给的**真实倾斜**（缺省 0 ⇒ 老行为不变）：
                     // tilt 全家输入（tilt / tilt_declination / tilt_ascension /
                     // tilt_declinationx/y / attack_angle 的 ascension 基准）都由此派生。
-                    let dabbed = brush.stroke_to(
+                    brush.stroke_to(
                         state,
                         surface,
                         ix as f32,
@@ -14755,31 +14735,13 @@ fn stamp_stroke_from(
                             STEP_SECONDS
                         },
                     );
-                    // **★ 揉合要跟着 dab 走，不能跟着插值步走 ★**（实测定位 ✓）
-                    //   **⇒ 为什么**：`divisions` 把每段切成 **2 px** 一步，而真正的 dab 间隔是
-                    //     `半径 / dabs_per_actual_radius`（半径 150、`dpar=3.1` ⇒ **48 px** 一枚）
-                    //     ⇒ **∴ 于是**：不带这个门控时，**同一个位置被揉 ~24 次**，
-                    //       而每次揉合都要扫过**整个 dab 足迹**（半径平方量级）
-                    //       ⇒ **∴ 成本从 `路径长 × 半径` 变成 `路径长 × 半径² ÷ 2`** ✗
-                    //   **⇒ 实测 ✗**：4K 画布、`Classic_Paint`、`size=300`、3 点短笔
-                    //     `raster_ms` **3178 ⇒ 12**（**265 倍** ✓）；同笔 `smudge=0` 时为 10 ms
-                    //     ⇒ **∴ 说明**门控把带涂抹笔刷拉回到「与不涂抹同一量级」✓
-                    //   **⇒ 语义 ✗**：libmypaint 的 smudge 定义在**逐 dab** 上（`smudge_length`
-                    //     是「相对**上一枚 dab** 的位移」回看），不是逐指针事件 ⇒ **∴ 门控同时是
-                    //     修正**，原来每 2 px 揉一次会把画面**过度糊掉** ✗
-                    //   **⇒ 与第 254 轮那段注记的关系 ✗**：那次修的是「只在**控制点**揉 ⇒ 点状」
-                    //     ⇒ **∴ 本门控不退回那个 bug**：dab 间隔是**半径量级**（数十 px）✓
-                    //       而控制点间隔是**用户输入量级**（数百 px）✗ —— 两者不同 ✓
-                    //   **★★ 缺省不开 ✗★★**（判据实测逼出来的 ✓）：门控**会改像素** ✓
-                    //     —— 拿真 HEAD 基线（`e9fb3c9e` clean）逐笔对比 ✓ 涂抹类笔刷
-                    //     `Classic_Paint` / `Round#1` / `WateryFlatbrush` 的 `blob_hash` **全不等** ✗
-                    //     而 `smudge=0` 的七支**逐字节相同** ✓ ⇒ 差别就出在这一个门控上 ✓
-                    //     ⇒ **∴ 老包重放必须拿到老像素**✓ ⇒ 门控**只在 `smudge_backend:host`
-                    //       时生效** ✓（缺省 `engine` ⇒ 逐插值步揉 ⇒ 与历史一字不差 ✓）
-                    //     ⇒ **∴ 于是**「快」与「像」的改进被放到**显式 opt-in** 里 ✓
-                    //       而**不是**偷偷改所有人的画 ✓（静默降级是唯一的敌人 ✓）
-                    let smudge_per_dab = host_smudge.is_some();
-                    if smudge_amount > 0.0 && (!smudge_per_dab || dabbed) {
+                    // **★ 净室揉合：**每一个插值 dab** 都拖一次 ★**（第 254 轮第二轮修）
+                    //   第一版只在**控制点**上拖 => 拖曳是"点状"的（实测：只有带边 1–2 行变色，
+                    //   因为两点笔迹只拖了 2 次、而中间的 dab 全没吃到）。
+                    //   挪进内循环后，整条笔迹**沿途**都在把"后方"的颜料搬过来 => 更像真实脏笔。
+                    //   方向用**这一段的运动方向**（`x-px, y-py`，`smudge_dab` 内部会归一化），
+                    //   长度 = `smudge_length × 像素半径`。只在 `smudge > 0` 的笔刷上生效。
+                    if smudge_amount > 0.0 {
                         yanshi_render::brush::smudge_dab(
                             surface,
                             (ix, iy),
@@ -14945,7 +14907,6 @@ fn brush_deposit_mask(
         points
     };
     let mut previous: Option<(f64, f64, f64)> = None;
-    let deposit_stamp_started = std::time::Instant::now();
     let _ = stamp_stroke_from(
         brush,
         &mut state,
@@ -14954,23 +14915,8 @@ fn brush_deposit_mask(
         &mut previous,
         dtimes,
         BrushSensors::default(),
-        // **`None` ⇒ 照旧读笔刷 ✓**（**∴ 不是「掩膜遍关掉揉合」**✗：`engine` 后端下
-        //   笔刷的 `smudge` 还在 ⇒ 这一遍与历史**逐字节相同** ✓
-        //   ⇒ 而 `host` 后端下调用方**已把笔刷的 `smudge` 归零** ✓ ⇒ 这一遍自然不揉 ✓
-        //   ⇒ **∴ 两遍的 dab 几何仍然一致 ✓**（揉合只搬像素 ✗ 不改落点 ✓）
-        None,
     );
-    let deposit_stamp_ms = deposit_stamp_started.elapsed().as_secs_f64() * 1000.0;
-    let deposit_read_started = std::time::Instant::now();
-    let mask = read_surface_region(&surface, region).0;
-    let deposit_read_ms = deposit_read_started.elapsed().as_secs_f64() * 1000.0;
-    if std::env::var_os("YANSHI_RASTER_SPLIT").is_some() {
-        eprintln!(
-            "RASTER_SPLIT deposit_mask: stamp={deposit_stamp_ms:.1}ms read={deposit_read_ms:.1}ms region={}x{}",
-            region.width, region.height
-        );
-    }
-    mask
+    read_surface_region(&surface, region).0
 }
 
 /// **解析一支 `.myb` 笔刷** ✓（工作区缓存优先 ✓，与落笔时同一套规则 ✓）。
@@ -15201,7 +15147,6 @@ pub(crate) fn replay_brush_bitmap(
         &[],
         None,
         sensors,
-        smudge_backend_from_source(source),
     )?;
     Ok(paint.rgba)
 }
@@ -16378,10 +16323,6 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         // **预览不带传感器**（回答的是"这支笔长什么样"，与 brush_stroke 的
         // sensors 是两回事；缺省全 0 ⇒ 与历史预览逐位一致 ✓）。
         BrushSensors::default(),
-        match optional_str(args, "smudge_backend") {
-            Some(text) => SmudgeBackend::parse(&text)?,
-            None => SmudgeBackend::Engine,
-        },
     )?;
     let (width, height) = (paint.width as u32, paint.height as u32);
     let png = yanshi_render::png::encode_png(width, height, &paint.rgba).ok_or_else(|| {
@@ -17564,11 +17505,6 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
         &[],
         None,
         sensors,
-        // **试画必须与真画同后端 ✓**（「试画效果 = 真画效果」是这个工具的全部意义 ✗）
-        match optional_str(args, "smudge_backend") {
-            Some(text) => SmudgeBackend::parse(&text)?,
-            None => SmudgeBackend::Engine,
-        },
     )?;
     let bbox = [
         paint.x0,
