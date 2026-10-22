@@ -1163,3 +1163,71 @@ fn texture_mode_patch_is_refused_loudly_until_it_exists() {
         "`mode:tile` 必须照常可用（现状能力不许被这条门挡到）⇒ {tiled}"
     );
 }
+
+#[test]
+fn patch_parameters_are_validated_before_the_renderer_sees_them() {
+    // **外部第 81 次给的那组参数**（`patch:24` / `overlap:6` / `candidates:200`）在**工具层**校验 ✓：
+    // 渲染层也会校验 ✗，但那里失败会变成 `unsupported` 警告 ＋ **一个像素都不画** ⇒ 静默降级 ✗
+    // ⇒ 所以必须在**这里**响亮拒绝 ✓。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let hash = workspace
+        .store()
+        .put(&source_bytes())
+        .expect("源位图应能入库")
+        .to_string();
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    // `overlap >= patch` ⇒ 块无法推进 ✓ ⇒ 必须报错并**同时**点名两个数 ✓
+    let message = expect_error(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 4, "y": 4, "w": 16, "h": 16},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                "width": 8,
+                "height": 8,
+                "mode": "tile",
+                "patch": 8,
+                "overlap": 8
+            }
+        }),
+    );
+    assert!(
+        message.contains("overlap") && message.contains("patch") && message.contains('8'),
+        "错误必须同时点名 overlap 与 patch 并给出数值 ⇒ {message}"
+    );
+
+    // **对照组**：合法的参数组合（外部给的那组）⇒ `mode:"tile"` 下必须照常成功 ✓。
+    let ok = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 4, "y": 40, "w": 16, "h": 16},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                "width": 8,
+                "height": 8,
+                "mode": "tile",
+                "patch": 24,
+                "overlap": 6,
+                "candidates": 200
+            }
+        }),
+    );
+    assert_eq!(
+        ok.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "合法参数（patch:24/overlap:6/candidates:200）必须照常可用 ⇒ {ok}"
+    );
+}

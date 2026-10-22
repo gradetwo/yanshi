@@ -3936,6 +3936,39 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                     //   `patch` 是外部第 81 次的**正式需求**（纹理合成：patch/overlap/candidates/seam ✓），
                     //   **本仓还没实现** ✗ ⇒ **响亮拒绝** ✓ —— 绝不静默退回平铺 ✗
                     //   （那正是他们从 `D18` 起反复抱怨的那类「看起来设了却没生效」✗）。
+                    // **`patch`/`overlap`/`candidates` 的取值在**工具层**就校验** ✓
+                    //   （渲染层也校验 ✓，但那里失败会变成 `unsupported` 警告 ＋ 不落墨 ⇒
+                    //     **静默降级** ✗；所以必须在这里响亮 ✓）
+                    let patch = value.get("patch").and_then(Value::as_u64).unwrap_or(24);
+                    let overlap = value.get("overlap").and_then(Value::as_u64).unwrap_or(6);
+                    let candidates = value
+                        .get("candidates")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(200);
+                    if !(4..=256).contains(&patch) {
+                        return Err(YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail(format!(
+                                "texture.patch 必须在 4..=256（像素），得到 {patch}"
+                            )),
+                        ));
+                    }
+                    if overlap >= patch {
+                        return Err(YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail(format!(
+                                "texture.overlap 必须小于 patch（否则块无法推进），得到 overlap={overlap} / patch={patch}"
+                            )),
+                        ));
+                    }
+                    if !(1..=4096).contains(&candidates) {
+                        return Err(YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail(format!(
+                                "texture.candidates 必须在 1..=4096，得到 {candidates}"
+                            )),
+                        ));
+                    }
                     match value.get("mode").and_then(Value::as_str) {
                         None | Some("tile") => {}
                         Some("patch") => {
