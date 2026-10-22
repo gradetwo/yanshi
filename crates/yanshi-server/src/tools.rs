@@ -3932,6 +3932,33 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 //   **⇒ 只做我们自己拥有的这层 schema**（`texture` ✓）—— `data` 顶层还承载
                 //     `label`／`group_id` 等自由字段 ✓，那层**不能**一刀切 ✗。
                 Some("bitmap") | Some("region") => {
+                    // **`mode` 先只认 `tile`（= 现在这套平铺＋jitter ✓）** ✓
+                    //   `patch` 是外部第 81 次的**正式需求**（纹理合成：patch/overlap/candidates/seam ✓），
+                    //   **本仓还没实现** ✗ ⇒ **响亮拒绝** ✓ —— 绝不静默退回平铺 ✗
+                    //   （那正是他们从 `D18` 起反复抱怨的那类「看起来设了却没生效」✗）。
+                    match value.get("mode").and_then(Value::as_str) {
+                        None | Some("tile") => {}
+                        Some("patch") => {
+                            return Err(YanshiError::new(
+                                ErrorCode::InvalidArgument,
+                                ErrorContext::detail(
+                                    "texture.mode=patch（纹理合成：最小误差选块 ＋ 切缝）**尚未实现** \
+                                     ⇒ 目前只支持 `tile`（平铺 ＋ `jitter`）✓。**不会静默按 tile 处理** ✗ \
+                                     —— 参数 `patch`/`overlap`/`candidates`/`seam` 已预留在白名单里 ✓，\
+                                     实现之后同一个调用直接生效 ✓"
+                                        .to_string(),
+                                ),
+                            ));
+                        }
+                        Some(other) => {
+                            return Err(YanshiError::new(
+                                ErrorCode::InvalidArgument,
+                                ErrorContext::detail(format!(
+                                    "texture.mode 只能是 tile（patch 尚未实现），得到 {other:?}"
+                                )),
+                            ));
+                        }
+                    }
                     let is_region = value.get("type").and_then(Value::as_str) == Some("region");
                     let allowed: &[&str] = if is_region {
                         &[
@@ -3943,6 +3970,13 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                             // **只从**这个图层**取纹理** ✓（外部第 80 次的用法：`ref` 单独一层
                             // ⇒ 不想把"自己画的底"也拍进去 ✓）
                             "layer_id",
+                            // **纹理合成（外部正式需求，第 81 次）**：参数面先立起来 ✓
+                            //   ⇒ 但 `patch` **还没实现** ✗ ⇒ 见下面的响亮拒绝 ✓
+                            "mode",
+                            "patch",
+                            "overlap",
+                            "candidates",
+                            "seam",
                         ]
                     } else {
                         &[
@@ -3956,6 +3990,11 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                             "min_distance",
                             "min_distance_from_target",
                             "jitter",
+                            "mode",
+                            "patch",
+                            "overlap",
+                            "candidates",
+                            "seam",
                         ]
                     };
                     if let Some(object) = value.as_object() {

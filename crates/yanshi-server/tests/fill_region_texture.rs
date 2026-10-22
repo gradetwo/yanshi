@@ -1093,3 +1093,73 @@ fn a_misspelled_shape_key_is_rejected_too() {
         "拼写接近时要给**近似提示**（`fether` ⇒ `feather`）⇒ {message}"
     );
 }
+
+#[test]
+fn texture_mode_patch_is_refused_loudly_until_it_exists() {
+    // **外部第 81 次的正式需求**：纹理合成（patch/overlap/candidates/seam ✓）。
+    // 本仓**还没实现** ✗ ⇒ 必须**响亮拒绝** ✓，**绝不静默退回平铺** ✗
+    // （否则调用方会以为自己在用合成，实际拿到的是"墙纸" ✗ —— 他们从 `D18` 起反复抱怨的那类）。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let hash = workspace
+        .store()
+        .put(&source_bytes())
+        .expect("源位图应能入库")
+        .to_string();
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    let message = expect_error(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 4, "y": 4, "w": 16, "h": 16},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                "width": 8,
+                "height": 8,
+                "mode": "patch",
+                "patch": 24,
+                "overlap": 6,
+                "candidates": 200,
+                "seam": "min_error"
+            }
+        }),
+    );
+    assert!(
+        message.contains("patch") && message.contains("尚未实现"),
+        "`mode=patch` 必须**响亮**说未实现（不许静默按 tile 处理）⇒ {message}"
+    );
+    assert!(
+        message.contains("不会静默") || message.contains("jitter"),
+        "文案要说明「当前只有 tile（平铺＋jitter）」并保证「不会静默降级」⇒ {message}"
+    );
+
+    // **对照组**：`mode:"tile"` 是现在的能力 ⇒ 必须照常成功 ✓（否则上面那条就没有鉴别力）。
+    let tiled = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 4, "y": 40, "w": 16, "h": 16},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                "width": 8,
+                "height": 8,
+                "mode": "tile"
+            }
+        }),
+    );
+    assert_eq!(
+        tiled.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "`mode:tile` 必须照常可用（现状能力不许被这条门挡到）⇒ {tiled}"
+    );
+}
