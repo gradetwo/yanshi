@@ -38,6 +38,15 @@ thiserror.workspace = true
 serde_json.workspace = true
 # **集成测试要经 `yanshi-render` 的挂接点调回来**（设计 9.3）：dev-dependency
 # 循环是 Rust 允许的（只出现在测试构建里，不进任何发布依赖树）。
+# **⇒ ⚠ 这条 dev-dependency 会**污染整个 workspace 的 feature 统一****（第 1619 轮实测）
+#   **⇒ 现象**：`cargo test --workspace` 时 `yanshi-render` **带上 `raw`** ⇒
+#     `yanshi-server` 的 **关构建测试**（`raw_registry_guard_off.rs`）**跑到开构建的行为** ✗
+#     ⇒ 因为 `#![cfg(not(feature = "raw"))]` 看的是**测试 crate 自己**的 feature，
+#       而**库**被统一成了开 ⇒ **测试会编译、会运行，但断言错** ✗
+#   **⇒ ⇒ 代价**：本仓 CI 的 `test (stable)`/`(beta)` **双双红**（第 1619 轮）✗
+#   **⇒ ⇒ ⇒ 所以**：**断言已改成容忍两种构型**（见 `raw_registry_guard_off.rs`）；
+#     **而这条 dev-dep 保留**（**集成测试确实要经 `yanshi-render/raw` 的挂接点调回来**）。
+#     ⇒ **⇒ 但要知道**：**"`--workspace` 下测关构建"这件事本身不可靠** ✓
 yanshi-render = { path = "../yanshi-render", version = "0.2.0", features = ["raw"] }
 # 自引用（集成测试用合成 DNG 夹具）：dev-only，生产依赖树不含此环。
 yanshi-raw = { path = ".", features = ["test-support"] }

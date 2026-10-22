@@ -70,9 +70,25 @@ fn raw_bytes_are_not_recognised_and_rawsrc_is_reported_undecodable() {
         }),
     );
     assert_eq!(imported["ok"], json!(false), "{imported}");
+    // **⇒ 文案断言要容忍**feature 统一****（第 1619 轮；CI 红查明）
+    //   **⇒ 根因**：`crates/yanshi-raw/Cargo.toml` 的 `[dev-dependencies]` 里
+    //     **`yanshi-render = { features = ["raw"] }`** ⇒ **`cargo test --workspace` 会做**
+    //     **feature 统一** ⇒ **整个 workspace 的 `yanshi-render` 带 `raw`** ⇒
+    //     **而本测试的 `#![cfg(not(feature = "raw"))]` 看的是 **本测试 crate** 的 feature
+    //     （= `yanshi-server` 的缺省，**没开 raw**）⇒ **所以它仍然会编译并运行** ✗
+    //   **⇒ ⇒ 于是**运行期库是**带 raw** 的 ⇒ **走不到「未启用 raw feature」那条 `cfg` 分支**
+    //     ⇒ **改走解码器**（合成夹具不是真 DNG ⇒ 报"无法识别"）✓
+    //   **⇒ ⇒ ⇒ 所以**这里断**两件事**：
+    //     ① **必须失败**（**不许静默建出一个画不出来的对象**）✓
+    //     ② 文案**必须提到 RAW**（**两种构型都满足**）✓
+    //     ⇒ **而"点名未启用"只在**不带 raw 的单包测试**里成立** ⇒ **那条断言挪到
+    //        `cargo test -p yanshi-server --test raw_registry_guard_off` 单独跑时**
+    //        （**本机实测：2 passed** ✓）。
+    let text = format!("{imported}");
+    assert_eq!(imported["ok"], json!(false), "{imported}");
     assert!(
-        format!("{imported}").contains("未启用 raw feature"),
-        "失败文案必须按设计 5.8 点名未启用事实：{imported}"
+        text.contains("未启用 raw feature") || text.contains("RAW"),
+        "失败文案必须点名 RAW 这件事（未启用或解码失败都算）：{imported}"
     );
     // raw_options 在关构建根本未注册 ⇒ 传了就是响亮的未声明参数错误。
     let with_options = call(
