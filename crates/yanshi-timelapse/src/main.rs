@@ -475,13 +475,64 @@ fn pick_encoder() -> String {
     // **顺序**：`libx264` → `libopenh264` → `mpeg4` → `mpeg2video` ✓
     //   （外部第 90 次实测：他们有 `libx264`、**没有** `libopenh264` ⇒ 所以 libx264 必须排第一 ✓；
     //    反过来若某机器只有 openh264，也能退回它 ✓）
+    // **★ 不光"有"，还要"真的吃得下我们这帧" ★**（第 606 轮）
+    //   外部第 90 次的实测：他们有 `libx264`、也有 `mpeg4`，可**输出仍是 261 字节** ✗
+    //   ⇒ 说明"编码器存在"**不等于**"这条命令能跑通" ✓
+    //   ⇒ 所以每个候选都**真跑一次**（同样的 rawvideo 输入 ＋ `-f null -` 丢弃输出 ✓）
+    //     第一个跑通的才算 ✓；都不通就退回 `libx264` 让 ffmpeg 自己报错（错误会留档 ✓）。
     for candidate in ["libx264", "libopenh264", "mpeg4", "mpeg2video"] {
-        if listed.contains(candidate) {
+        if listed.contains(candidate) && encoder_accepts_a_frame(candidate) {
             return candidate.to_owned();
         }
     }
     // 一个都没探到（或 ffmpeg 不认 `-encoders`）⇒ 仍用 libx264，让 ffmpeg 自己报错（错误现在会留档 ✓）
     "libx264".to_owned()
+}
+
+/// **真喂一帧给它**，看这个编码器在**这条命令形状**下能不能跑通（第 606 轮）。
+///
+/// 用**与正式导出相同的输入形状**（`-f rawvideo -pix_fmt rgb24 -s WxH -i -`），
+/// 只是把输出 `-f null -` 丢掉 ⇒ 不会写文件，也不会污染用户的目录 ✓。
+///
+/// **为什么必须真跑**：外部实测「编码器存在 ⇒ 仍然 261 字节」⇒ 存在性不是可用性 ✓。
+fn encoder_accepts_a_frame(encoder: &str) -> bool {
+    const PROBE_W: u32 = 64;
+    const PROBE_H: u32 = 64;
+    let mut child = match std::process::Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-s",
+            "64x64",
+            "-i",
+            "-",
+            "-c:v",
+            encoder,
+            "-f",
+            "null",
+            "-",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+    let mut stdin = match child.stdin.take() {
+        Some(stdin) => stdin,
+        None => return false,
+    };
+    let frame = vec![0u8; (PROBE_W * PROBE_H * 3) as usize];
+    let wrote = std::io::Write::write_all(&mut stdin, &frame).is_ok();
+    drop(stdin);
+    wrote && child.wait().map(|status| status.success()).unwrap_or(false)
 }
 
 fn ffmpeg_log(out_mp4: &std::path::Path) -> std::path::PathBuf {
@@ -543,6 +594,11 @@ mod encoder_tests {
         assert!(
             listed.contains(&picked),
             "挑出来的编码器 `{picked}` 不在 `ffmpeg -encoders` 里 ⇒ 会在外部机器上写出空视频"
+        );
+        // **★ 还要"真的吃得下" ★**（第 606 轮）：外部有 `libx264` 却仍 261 字节 ⇒ 存在性≠可用性
+        assert!(
+            super::encoder_accepts_a_frame(&picked),
+            "挑出来的编码器 `{picked}` 存在，但**喂一帧就失败** ⇒ 它会写出只有文件头的空视频"
         );
     }
 }
