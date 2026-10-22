@@ -16036,3 +16036,15 @@ if object.object_type != ObjectType::Instance && transform_is_identity(&object.t
 **⇒ 判据**：`10 vs 100 个远对象`（全是 rect）的 16×16 渲染耗时比 **≤ 1.5**（现 4.5×）✓；
 **变异**：把 `cheap` 换回 `object_bbox_in`（贵但正确）⇒ 比值回升 ⇒ 红 ✓；
 **回归**：`transform_is_identity` 为假的对象**必须**走原路径 ✓（单独一条断言 ✓）。
+
+### 四百零三（续六）：**第一次实现没生效** ✗ —— `import_image` 的对象**不是 rect/ellipse 几何**
+
+**⇒ 做了什么**：加 `cheap_bbox_from_data`（只认 `data.geometry` 的 rect/ellipse ＋ 恒等/纯平移 ✓），
+在 `render_layer_objects` 循环开头提前裁剪 ✓；编译通过 ✓。
+**⇒ 实测（同一探针）**：`10 个远对象 2.19 ms｜100 个远对象 10.15 ms｜比值 4.63×` ✗ —— **没有改善** ✓。
+**⇒ 原因**：这条路上的对象是 **`import_image` 的位图对象** ✓ ⇒ 它们的位置/尺寸**不在 `data.geometry`** ✗
+（是 `data.bitmap` ＋ 别处的 region ✓）⇒ `cheap_bbox_from_data` 返回 `None` ⇒ **全部走原路径** ✓。
+**⇒ 处理**：**已回滚** ✓（`git checkout render.rs` ✓），工作树干净 ✓。
+**⇒ 下一轮**：先读 `import_image` 写进 `data` 的**完整结构**（`data.bitmap` 有哪些键？region 存哪？）
+⇒ 给 `cheap_bbox_from_data` 补 **bitmap 分支** ✓，再跑同一探针（目标 ≤ 1.5×）✓。
+**⇒ 教训**：**"对象 bbox 从哪来"要先读一眼**，别按"形状对象"的直觉写 ✗ —— 又是"先确认再动手"的同类 ✓。
