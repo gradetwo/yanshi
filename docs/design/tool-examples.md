@@ -522,6 +522,12 @@
 ```json
 {
   "data": {
+    "color": [
+      200,
+      60,
+      60,
+      255
+    ],
     "geometry": {
       "bbox": {
         "h": 30,
@@ -582,7 +588,17 @@
 
 ```json
 {
-  "data": {},
+  "data": {
+    "hardness": 1,
+    "opacity": 1,
+    "region": {
+      "h": 80,
+      "w": 120,
+      "x": 40,
+      "y": 40
+    },
+    "size": 32
+  },
   "layer_id": "L1"
 }
 ```
