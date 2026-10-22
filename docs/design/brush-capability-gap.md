@@ -15576,3 +15576,20 @@ quilt 用它做参考场 ✓（**与"读图层"那条路互不依赖** ✓）。
 得先把 `render_ms`/`fold_ms` 拆出来 ✓ —— 下一轮用同一探针取这两个分量 ✓（本轮只取到 total ✓）。
 **⇒ 注意**：`import_image` 的参数是 `{region:{x,y,w,h}, bitmap:{blob_hash,width,height}}` ✓
 （**不是**顶层 `blob_hash` ✗；缺 `region` 会报「缺少必填参数 region」✓）—— 这条也省了下一轮踩坑 ✓。
+
+### 三百九十三（续二）：**根因不是"重贴图块"** ✗ —— `total_ms` 几乎全是 **`preview_ms`** ✓
+
+**⇒ 探针实测**（同一构型，200 次 `import_image`，16×16 图、512×512 画布）：
+```
+一次响应的完整 timings：
+{"render_ms":0.0, "fold_ms":1.638, "other_ms":0.265, "prep_ms":0.009, "log_ms":0.041,
+ "dirty_ms":0.085, "png_ms":0.0, "preview_calls":1, "preview_ms":19.062, "total_ms":21.1}
+中位数：render=0.00ms｜fold=0.84ms｜total=11.74ms
+```
+**⇒ 结论**：**`render_ms ≈ 0`、`fold_ms ≈ 0.84`** ✓ ⇒ **"每个 atom 重贴一张图块"的假设不成立** ✗；
+**`total_ms` 被 `preview_ms`（每次 19 ms、`preview_calls=1`）主导** ✓
+⇒ **每个 `import_image` 都触发一次预览渲染** ✓ —— 这才是那 11.5 ms/atom 的来源 ✓。
+
+**⇒ 所以"批量化合成"（外部第 83 次的建议）大概率选错了靶子** ✗ ——
+真正该做的是**别让每个 atom 各渲染一次预览** ✓（例如同一批里合并/延迟预览 ✓）。
+**⇒ 准入线（下一轮若动手）**：`import_image ×200` 的 **total 中位数从 11.7 ms 降到 ≤ 8 ms** ✓ 才算有价值 ✓。
