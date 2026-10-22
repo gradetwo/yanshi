@@ -251,7 +251,13 @@ fn main() -> Result<()> {
             &out_mp4,
         ])
         .stdin(Stdio::piped())
-        .stderr(Stdio::null())
+        // **ffmpeg 的 stderr 必须留档** ✓（第 599 轮）：原来 `Stdio::null()` **把它丢了** ✗
+        //   ⇒ 外部报「261 字节空视频」时**拿不到那行 Error** ✓（他们回了两轮都没法给 ✓）
+        //   ⇒ 现在写进 `<输出>.ffmpeg.log` ✓，失败时把**末几行**打出来并指路 ✓。
+        .stderr(Stdio::from(
+            std::fs::File::create(ffmpeg_log(std::path::Path::new(&out_mp4)))
+                .map_err(|e| anyhow!("建 ffmpeg 日志失败（{e}）⇒ 检查输出目录是否可写"))?,
+        ))
         .spawn()
         .map_err(|e| {
             anyhow!("起不来 ffmpeg（{e}）⇒ 这个导出需要一个**外部 ffmpeg**，请先装上或放进 PATH")
@@ -305,7 +311,12 @@ fn main() -> Result<()> {
     drop(stdin);
     let status = ffmpeg.wait().context("等 ffmpeg 失败")?;
     if !status.success() {
-        bail!("ffmpeg 退出码 {:?} ⇒ 没有产出可用的视频", status.code());
+        bail!(
+            "ffmpeg 退出码 {:?} ⇒ 没有产出可用的视频。ffmpeg 的 stderr 在 {}：\n{}",
+            status.code(),
+            ffmpeg_log(std::path::Path::new(&out_mp4)).display(),
+            tail_of(&ffmpeg_log(std::path::Path::new(&out_mp4)), 12)
+        );
     }
     // **★ 一帧都没写出去 ⇒ 必须报错 ★**（第 589 轮；外部第 86-88 次实测）
     //   他们的环境里 `ffmpeg` **返回成功**、可 mp4 只有 **261 字节**（只有文件头、`ffprobe` 读不出流）✗
@@ -446,6 +457,24 @@ fn push_frame(
 ///
 /// 抽成纯函数是为了**能测**：真实触发要等 ffmpeg 拒绝输入，本机复现不了 ✓
 /// （**变异**：把 `frames == 0` 的判断去掉 ⇒ 判据 `zero_frames_is_an_error` 红 ✓）。
+/// ffmpeg 的 stderr 落盘位置（与输出同目录，便于用户直接看）。
+fn ffmpeg_log(out_mp4: &std::path::Path) -> std::path::PathBuf {
+    let mut path = out_mp4.to_path_buf();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "out".to_owned());
+    path.set_file_name(format!("{name}.ffmpeg.log"));
+    path
+}
+
+/// 取文件末尾若干行（失败时打给用户看）。
+fn tail_of(path: &std::path::Path, lines: usize) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let collected: Vec<&str> = text.lines().rev().take(lines).collect();
+    collected.into_iter().rev().collect::<Vec<_>>().join("\n")
+}
+
 fn ensure_frames_written(
     frames: usize,
     start_idx: usize,
@@ -458,7 +487,8 @@ fn ensure_frames_written(
         bail!(
             "一帧都没写出去（apply {start_idx}..{end_idx}、每 {frame_every} 个 atom 一帧）\
              ⇒ ffmpeg 只写了文件头，拒绝把它当成成功。\
-             请检查 ffmpeg 是否能吃 `-f rawvideo -pix_fmt rgb24 -s {out_w}x{out_h}`"
+             请检查 ffmpeg 是否能吃 `-f rawvideo -pix_fmt rgb24 -s {out_w}x{out_h}`\
+             （ffmpeg 的 stderr 在同目录 `<输出>.ffmpeg.log`）"
         );
     }
     Ok(())

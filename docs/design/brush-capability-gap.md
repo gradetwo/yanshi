@@ -16575,3 +16575,16 @@ CI 是**干净工作区** ⇒ 该接口给出 300×200 ⇒ 通过 ✓。
 **⇒ 本机复核（第 597 轮）**：`check-timelapse-produces-frames.mjs` ✓（9 帧、7/9 有内容、颜色对）、
 `tool-fill-region.mjs` ✓（中心 `[220,40,40,255]`、四角全白、exit 0）、
 `cargo test -p yanshi-timelapse --bin` ✓（0 帧守卫判据）。
+
+## 四百一十六、**ffmpeg 的 stderr 原来被 `Stdio::null()` 丢掉了** ✗ ⇒ 外部拿不到那行 Error
+
+**⇒ 源码事实**（`main.rs`，spawn 处）：`.stderr(Stdio::null())` ✓ ⇒ **ffmpeg 的所有诊断信息直接丢弃** ✗
+⇒ 于是外部连续两轮都只能说「261 字节、exit 0」，**给不出那行 Error** ✓ —— 那不是他们不给，是**我们没留** ✓。
+
+**⇒ 改法**（第 599 轮）：
+1. ffmpeg 的 stderr **写进同目录 `<输出>.ffmpeg.log`** ✓；
+2. **失败时**把该日志**末 12 行**打进错误信息 ✓（并给出日志路径 ✓）；
+3. 「一帧都没写出」那条错误也指路到该日志 ✓。
+**⇒ 本机实测**：`log.mp4 = 2187 字节`、`log.mp4.ffmpeg.log = 3854 字节` ✓（stderr 真的留下来了 ✓）；
+`check-timelapse-produces-frames.mjs` 仍 **✓ 9 帧 / 7 有内容 / 颜色对** ✓。
+**⇒ 意义**：下次外部跑，**他们直接把 `<out>.ffmpeg.log` 发过来**即可定位 ✓，不必再猜 ✓。
