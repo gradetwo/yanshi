@@ -1477,8 +1477,12 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                     stroke_width,
                     stroke_color,
                     feather,
+                    texture,
                 } => {
-                    if feather > 0.0 {
+                    // **纹理填充也要压平** ✓（`fill_region(texture=…)` ✓）：SVG 的 `<path fill>` 只能
+                    // 表达**一个纯色** ✗ ⇒ 把它当纯色导出就是**静默画错** ✗ ⇒ 与羽化同路：
+                    // 交给渲染器光栅化 ✓（纹理是逐个像素取色的，压平后**外观与画布一致** ✓）。
+                    if feather > 0.0 || texture.is_some() {
                         pending.push(index);
                         continue;
                     }

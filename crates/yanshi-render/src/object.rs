@@ -36,6 +36,30 @@ pub const RETOUCH_KINDS: [&str; 4] = ["clone_stamp", "heal", "smudge", "erase"];
 /// 此前只写在文档注释与一个 `.unwrap_or("push")` 里 ✗ ⇒ **∴ 提成常量，供 MCP 导出 ✓**。
 pub const LIQUIFY_KINDS: [&str; 3] = ["push", "twirl", "pinch"];
 
+/// **纹理填充的来源**（`fill_region(texture=…)` 的**对象**形态 ✓）。
+///
+/// **为什么是对象而不是字符串** ✓（外部第 71 次报告 ✓）：要「**从源区域取纹理**」✓，
+/// 而一个名字表达不了"从哪块区域取" ✗ ⇒ 规格只能是对象 ✓。
+///
+/// **第一版只做位图来源** ✓（`type = "bitmap"` ✓）：源是一张已上传的 blob ✓，
+/// 按 [`ShapeTexture::source`] 这块矩形铺在文档坐标里 ✓，目标像素**按最近源像素**取样 ✓。
+/// **不许全图平均** ✗ —— 外部实测（`E1761`）：平均会让深处**看不出纹理** ✓。
+/// `type = "region"`（从某图层的某形状取）**尚未实现** ⇒ 解析期响亮 `Unsupported` ✓，
+/// **不静默当"没有纹理"** ✗（那是本仓头号病症 ✓）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShapeTexture {
+    /// 源位图的 blob 哈希（内容寻址 ✓，与 `raster_patch` 同一条解码路 ✓）。
+    pub blob: BlobHash,
+    /// 源矩形（**文档坐标** ✓）：位图铺在这块矩形上 ✓，取样时按它换算到像素 ✓。
+    pub source: Bbox,
+    /// 源位图**像素宽**（解码校验用 ✓，与 `raster_patch` 的 `width` 同口径 ✓）。
+    pub width: u32,
+    /// 源位图**像素高**（同上）。
+    pub height: u32,
+    /// MIME（解码分派用 ✓；缺省 `image/x-yanshi-raw` ✓，与 `raster_patch` 一致 ✓）。
+    pub mime_type: String,
+}
+
 /// 渲染图元。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Primitive {
@@ -53,6 +77,9 @@ pub enum Primitive {
         /// **羽化半径（像素）** ✓：0 = 不羽化 ✓（缺省 ✓）。
         /// 由渲染侧在"描述 → 覆盖率"处套用 ✓（见 `render.rs` 的 `feather_coverage` 调用 ✓）。
         feather: f64,
+        /// **纹理来源** ✓：`None` ⇒ 纯色填充 ✓（**缺省 ⇒ 逐字节不变** ✓，硬要求 ✓）；
+        /// `Some` ⇒ 填充色**每个像素从源位图取** ✓（见 [`ShapeTexture`] ✓）。
+        texture: Option<ShapeTexture>,
         /// 形状外接盒（文档坐标）。
         bbox: Bbox,
         /// 多边形顶点（`kind = Polygon` 时使用；`kind = Path` 时恒空，
@@ -830,8 +857,19 @@ fn parse_shape(data: &Value) -> Primitive {
         .and_then(Value::as_f64)
         .unwrap_or(0.0)
         .max(0.0);
+    // **纹理填充** ✓（`fill_region(texture=…)`，外部第 71 次报告 ✓）：
+    // 对象形态 ✓；`type` 只有 `bitmap` 实现了 ⇒ `region` **响亮 Unsupported** ✗
+    // （解析成 `None` 就是静默降级 ✗ —— 那正是本仓头号病症 ✓）。
+    let texture = match data.get("texture") {
+        None | Some(Value::Null) => None,
+        Some(value) => match parse_shape_texture(value) {
+            Ok(texture) => Some(texture),
+            Err(reason) => return Primitive::Unsupported { reason },
+        },
+    };
     Primitive::Shape {
         kind,
+        texture,
         bbox,
         points,
         subpaths,
@@ -842,6 +880,64 @@ fn parse_shape(data: &Value) -> Primitive {
         stroke_color,
         feather,
     }
+}
+
+/// 解析 `texture` 对象 ✓（见 [`ShapeTexture`] ✓）。
+///
+/// **每一条拒绝都说清缺什么** ✓：纹理是"看起来对、但什么都没发生"的高危区 ✓
+/// （§本仓头号病症：静默降级 ✓），所以这里**不吞**任何畸形 ✓。
+fn parse_shape_texture(value: &Value) -> Result<ShapeTexture, String> {
+    let object = value.as_object().ok_or_else(|| {
+        "texture 必须是对象（{type:\"bitmap\", blob_hash, source:{x,y,w,h}, width, height}）"
+            .to_owned()
+    })?;
+    match object.get("type").and_then(Value::as_str) {
+        Some("bitmap") => {}
+        Some("region") => {
+            return Err(
+                "texture.type=region（从图层的某形状取纹理）尚未实现 ⇒ 第一版只支持 bitmap：\
+                 先把那块区域导出成位图，再传 blob_hash"
+                    .to_owned(),
+            );
+        }
+        Some(other) => {
+            return Err(format!(
+                "texture.type 只能是 bitmap（region 未实现），得到 {other}"
+            ));
+        }
+        None => return Err("texture 缺少 type（目前只有 bitmap）".to_owned()),
+    }
+    let hash = object
+        .get("blob_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "texture 缺少 blob_hash（源位图的内容哈希）".to_owned())?;
+    let blob = hash
+        .parse::<BlobHash>()
+        .map_err(|_| format!("texture.blob_hash 非法: {hash}"))?;
+    let source = object
+        .get("source")
+        .and_then(Bbox::from_value)
+        .ok_or_else(|| "texture 缺少 source（{x,y,w,h} 源矩形，文档坐标）".to_owned())?;
+    if source.is_empty() {
+        return Err("texture.source 面积为 0（宽高都要 > 0）".to_owned());
+    }
+    let width = object.get("width").and_then(Value::as_u64).unwrap_or(0) as u32;
+    let height = object.get("height").and_then(Value::as_u64).unwrap_or(0) as u32;
+    if width == 0 || height == 0 {
+        return Err("texture 缺少 width/height（源位图的像素尺寸）".to_owned());
+    }
+    let mime_type = object
+        .get("mime_type")
+        .and_then(Value::as_str)
+        .unwrap_or("image/x-yanshi-raw")
+        .to_owned();
+    Ok(ShapeTexture {
+        blob,
+        source,
+        width,
+        height,
+        mime_type,
+    })
 }
 
 fn parse_raster_patch(data: &Value) -> Primitive {
@@ -1390,6 +1486,66 @@ mod tests {
             deleted_by: None,
             data,
             blobs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn shape_texture_parses_bitmap_source_and_leaves_pure_fill_alone() {
+        // **缺省 ⇒ `None`** ✓（存量行为**逐字节不变** ✓，硬要求 ✓）。
+        let plain = object(
+            ObjectType::Shape,
+            json!({"geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 10.0, "h": 10.0}}}),
+        );
+        match parse_object(&plain) {
+            Primitive::Shape { texture, .. } => assert!(texture.is_none()),
+            other => panic!("期望 Shape，得到 {other:?}"),
+        }
+        let hash = format!("sha256:{}", "b".repeat(64));
+        let textured = object(
+            ObjectType::Shape,
+            json!({
+                "geometry": {"kind": "rect", "bbox": {"x": 10, "y": 10, "w": 10.0, "h": 10.0}},
+                "texture": {
+                    "type": "bitmap",
+                    "blob_hash": hash,
+                    "source": {"x": 100, "y": 100, "w": 10.0, "h": 10.0},
+                    "width": 20,
+                    "height": 20
+                }
+            }),
+        );
+        match parse_object(&textured) {
+            Primitive::Shape { texture, .. } => {
+                let texture = texture.expect("给了 texture ⇒ 必须解析出来（不许静默丢 ✗）");
+                assert_eq!(texture.source, Bbox::new(100.0, 100.0, 10.0, 10.0));
+                assert_eq!((texture.width, texture.height), (20, 20));
+                assert_eq!(texture.mime_type, "image/x-yanshi-raw");
+                assert_eq!(texture.blob, hash.parse::<BlobHash>().unwrap());
+            }
+            other => panic!("期望 Shape，得到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shape_texture_region_source_is_unsupported_not_silently_dropped() {
+        // **`region` 未实现就必须响亮** ✗ —— 否则调用方以为纹理生效了（静默降级是本仓头号病症 ✓）。
+        let value = object(
+            ObjectType::Shape,
+            json!({
+                "geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 10.0, "h": 10.0}},
+                "texture": {
+                    "type": "region",
+                    "source": {"x": 100, "y": 100, "w": 10.0, "h": 10.0},
+                    "width": 10,
+                    "height": 10
+                }
+            }),
+        );
+        match parse_object(&value) {
+            Primitive::Unsupported { reason } => {
+                assert!(reason.contains("region"), "理由要说清是 region：{reason}");
+            }
+            other => panic!("region 必须 Unsupported，得到 {other:?}"),
         }
     }
 

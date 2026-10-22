@@ -3837,17 +3837,52 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             ErrorContext::detail("缺少 color（{r,g,b,a} 或 #rrggbb）".to_string()),
         )
     })?;
-    // **只接受缺省/smooth** ✓：别的值**报错说清** ✗（不静默忽略 ✗）。
-    if let Some(texture) = optional_str(args, "texture") {
-        if texture != "smooth" {
+    // **纹理填充** ✓（外部第 71 次报告 ✓：`texture` 从**字符串**升级成**对象** ✓）。
+    //
+    // **对方的三条必须**（他的 `E1761`/`E1758`/`E1764` 踩出来的 ✓），与本实现的对应：
+    //   ① **按最近源像素分配**（**不许全图平均** ✗）⇒ 渲染侧 `fill_coverage_sampled` 每像素问一次 ✓；
+    //   ② **羽化只作用在合成量上** ⇒ 取样只给颜色 ✓、羽化只乘 alpha ✓（不混参考图 ✓）；
+    //   ③ **源区域要能离洞 ≥ 25px** ⇒ 下面按 `min_distance` 校验并**报错说清** ✓
+    //      （他的 `test1` 红褐竖痕就是采到了人物边缘的过渡色 ✓ ⇒ 不校验等于让他重踩 ✓）。
+    // **缺省 / `"smooth"`** ⇒ 纯色填充 ✓（**存量行为逐字节不变** ✓）。
+    let texture = match args.get("texture") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(text)) if text == "smooth" => None,
+        Some(value @ Value::Object(_)) => {
+            match value.get("type").and_then(Value::as_str) {
+                Some("bitmap") => {}
+                Some("region") => {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(
+                            "texture.type=region（从图层的某形状取纹理）**尚未实现** ⇒ 第一版只支持 \
+                             {\"type\":\"bitmap\",\"blob_hash\":…,\"source\":{x,y,w,h},\"width\":…,\"height\":…,\
+                             \"min_distance\":25}：先把那块源区域导出成位图（`export_png` 或 bitmap 掩膜）\
+                             再传它的 `blob_hash` ✓"
+                                .to_string(),
+                        ),
+                    ));
+                }
+                other => {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "texture.type 只能是 bitmap（region 未实现），得到 {other:?}"
+                        )),
+                    ));
+                }
+            }
+            Some(value.clone())
+        }
+        Some(other) => {
             return Err(YanshiError::new(
                 ErrorCode::InvalidArgument,
                 ErrorContext::detail(format!(
-                    "texture={texture} 暂不支持 ⇒ 目前只有缺省（= smooth）✓；厚涂/干刷肌理是独立的活，另行排期"
+                    "texture 必须是对象（{{\"type\":\"bitmap\",…}}）或缺省/\"smooth\"，得到 {other}"
                 )),
             ));
         }
-    }
+    };
     // **先拦 "给了 `d` 却没给 type"** ✓（第 1500 轮；与 `§232` 同型：**静默默认成 rect** ⇒ 报错误导 ✗）
     if shape.get("d").is_some() && shape.get("type").is_none() {
         return Err(YanshiError::new(
@@ -4042,20 +4077,86 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     } else {
         color
     };
+    // **源矩形与目标的间距** ✓（对方第 ③ 条必须 ✓）：文档里存的 `min_distance` 只是**记录** ✓，
+    // 真正的拦截在这里 ✓ —— 采到"洞边缘的过渡色"是**看得见的事故**（他的 `test1` 红褐竖痕 ✓），
+    // 而它**不会报错** ✗ ⇒ 只能靠这一道校验 ✓。
+    let mut texture_gap: Option<f64> = None;
+    if let Some(spec) = &texture {
+        let target = geometry
+            .get("bbox")
+            .and_then(yanshi_core::Bbox::from_value)
+            .ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(
+                        "纹理填充需要目标形状能解析出 bbox（rect/ellipse/polygon 都有）"
+                            .to_string(),
+                    ),
+                )
+            })?;
+        let source = spec
+            .get("source")
+            .and_then(yanshi_core::Bbox::from_value)
+            .ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(
+                        "texture 缺少 source（{x,y,w,h}，源矩形，文档坐标）".to_string(),
+                    ),
+                )
+            })?;
+        let gap = rect_gap(&source, &target);
+        let min_distance = spec
+            .get("min_distance")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+            .max(0.0);
+        if gap < min_distance {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "texture.source 离目标太近：间距 {gap:.1}px < min_distance {min_distance:.1}px ⇒ \
+                     会采到边缘过渡色（外部 `test1` 的红褐竖痕就是这么来的）⇒ 把 source 挪远，\
+                     或显式把 min_distance 调小（缺省 0 = 不拦）"
+                )),
+            ));
+        }
+        texture_gap = Some(gap);
+    }
+    // 纹理随 `data` 落进文档 ✓（渲染侧从 `data.texture` 读 ✓，与 `raster_patch` 的 `data.bitmap` 同口径 ✓）。
+    let mut data = json!({"geometry": geometry, "color": color});
+    if let Some(texture) = &texture {
+        data["texture"] = texture.clone();
+    }
     let drawn = write_draw(
         ctx,
         &json!({
             "layer_id": layer_id,
-            "data": {"geometry": geometry, "color": color},
+            "data": data,
         }),
         AtomKind::DrawShape,
     )?;
+    // **回显生效值** ✓（不撒谎 ✓）：`texture` 传了而这里说 `null` ⇒ 就是没落地 ✓。
+    let texture_out = match (&texture, texture_gap) {
+        (Some(_), Some(gap)) => json!({"type": "bitmap", "source_gap_px": gap}),
+        _ => Value::Null,
+    };
     Ok(json!({
         "ok": true,
         "shape": kind,
         "opacity": opacity,
+        "texture": texture_out,
         "drawn": drawn,
     }))
+}
+
+/// **两个矩形之间的最短间距**（像素 ✓；重叠或相切 ⇒ 0 ✓）。
+///
+/// 对角线方向按欧氏距离 ✓（"斜着 25px"与"正着 25px"应当同权 ✓）。
+fn rect_gap(a: &yanshi_core::Bbox, b: &yanshi_core::Bbox) -> f64 {
+    let dx = (a.x - b.right()).max(b.x - a.right()).max(0.0);
+    let dy = (a.y - b.bottom()).max(b.y - a.bottom()).max(0.0);
+    (dx * dx + dy * dy).sqrt()
 }
 
 fn write_draw(ctx: &mut ToolContext<'_>, args: &Value, kind: AtomKind) -> Result<Value> {

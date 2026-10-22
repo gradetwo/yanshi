@@ -3519,6 +3519,7 @@ impl Renderer {
                     stroke_width,
                     stroke_color,
                     feather,
+                    texture,
                 } => {
                     // **★ 覆盖率**只按**形状自己的范围**算 ✗ ★**（第 206 轮 ✓；**用户第 594 轮 ✓）。
                     //
@@ -3633,7 +3634,101 @@ impl Renderer {
                     probe_objects.record("shape:clip", t_shape_clip.stop());
                     probe_objects.record("shape:coverage", d_shape_cov);
                     let mut t_shape_fill = stage_probe::Stage::start();
-                    layer_buffer.fill_coverage(&coverage, color, BlendMode::Normal, opacity);
+                    match &texture {
+                        // **存量路** ✓：没有纹理 ⇒ **逐字节不变** ✓（硬要求 ✓）。
+                        None => {
+                            layer_buffer.fill_coverage(&coverage, color, BlendMode::Normal, opacity)
+                        }
+                        Some(spec) => {
+                            // **纹理路** ✓（外部第 71 次报告 ✓；三条必须见 [`ShapeTexture`] ✓）：
+                            // ① 每像素**问一次源位图**（**不是全图平均** ✗ —— 平均会让深处看不出纹理 ✓）；
+                            // ② 羽化**只乘 alpha**（`fill_coverage_sampled` 内部 ✓ ⇒ 颜色不被参考图污染 ✓）；
+                            // ③ 源矩形与目标的间距由**工具侧**校验（这里只管画 ✓）。
+                            // 解码与 `raster_patch` **同一条路** ✓（同一个缓存 ＋ 同一个 MIME 分派 ✓）。
+                            let cache_key = format!(
+                                "{}|{}x{}|{}",
+                                spec.blob, spec.width, spec.height, spec.mime_type
+                            );
+                            let Some(entry) = bitmaps.get_or_decode(&cache_key, || {
+                                fetch_raster_patch(
+                                    store,
+                                    &spec.blob,
+                                    &spec.mime_type,
+                                    spec.width,
+                                    spec.height,
+                                    &object.id,
+                                    None,
+                                    &mut track.unsupported,
+                                )
+                            })?
+                            else {
+                                // 解码失败**已经进了** `track.unsupported` ✓（响亮 ✓）；
+                                // 这里**什么都不画** ✓（不拿别的字节顶上 ✗），与 `raster_patch` 同口径 ✓。
+                                continue;
+                            };
+                            // 源矩形 → 位图像素的换算比（位图**铺满** `source` 这块矩形 ✓）。
+                            let sx_scale = spec.width as f64 / spec.source.w.max(f64::MIN_POSITIVE);
+                            let sy_scale =
+                                spec.height as f64 / spec.source.h.max(f64::MIN_POSITIVE);
+                            let (ox, oy) = (bbox.x, bbox.y);
+                            // **模回绕平铺** ✓：目标比源大时**平铺**，**不夹边** ✗
+                            //（夹边会把一条边色拉成整片 ⇒ 看起来像"糊了" ✓）。
+                            let (sw, sh) = (spec.source.w.max(1.0), spec.source.h.max(1.0));
+                            let lut = crate::color::srgb_decode_table();
+                            match &*entry {
+                                DecodedPixels::Rgba8(w, h, bytes) => {
+                                    let (w, h) = (*w as i64, *h as i64);
+                                    let sample = |x: i32, y: i32| -> LinearRgba {
+                                        let dx = (x as f64 + 0.5 - ox).rem_euclid(sw);
+                                        let dy = (y as f64 + 0.5 - oy).rem_euclid(sh);
+                                        let px = ((dx * sx_scale) as i64).clamp(0, w - 1);
+                                        let py = ((dy * sy_scale) as i64).clamp(0, h - 1);
+                                        let index = ((py * w + px) * 4) as usize;
+                                        // `fill_coverage_sampled` 自己会预乘 ⇒ 这里给**直通**色 ✓。
+                                        if let Some(&[r, g, b, a]) = bytes.get(index..index + 4) {
+                                            [
+                                                lut[r as usize],
+                                                lut[g as usize],
+                                                lut[b as usize],
+                                                f32::from(a) / 255.0,
+                                            ]
+                                        } else {
+                                            [0.0, 0.0, 0.0, 0.0]
+                                        }
+                                    };
+                                    layer_buffer.fill_coverage_sampled(
+                                        &coverage,
+                                        sample,
+                                        BlendMode::Normal,
+                                        opacity,
+                                    );
+                                }
+                                #[cfg(feature = "raw")]
+                                DecodedPixels::Linear(w, h, values) => {
+                                    let (w, h) = (*w as i64, *h as i64);
+                                    let sample = |x: i32, y: i32| -> LinearRgba {
+                                        let dx = (x as f64 + 0.5 - ox).rem_euclid(sw);
+                                        let dy = (y as f64 + 0.5 - oy).rem_euclid(sh);
+                                        let px = ((dx * sx_scale) as i64).clamp(0, w - 1);
+                                        let py = ((dy * sy_scale) as i64).clamp(0, h - 1);
+                                        let index = ((py * w + px) * 3) as usize;
+                                        // 线性载荷已是线性值、alpha 恒 1 ✓（与 `blit_linear` 同口径 ✓）。
+                                        if let Some(&[r, g, b]) = values.get(index..index + 3) {
+                                            [r, g, b, 1.0]
+                                        } else {
+                                            [0.0, 0.0, 0.0, 0.0]
+                                        }
+                                    };
+                                    layer_buffer.fill_coverage_sampled(
+                                        &coverage,
+                                        sample,
+                                        BlendMode::Normal,
+                                        opacity,
+                                    );
+                                }
+                            }
+                        }
+                    }
                     probe_objects.record("shape:fill", t_shape_fill.stop());
                     // **∴ outline 不单独插桩 ✗**（**第 672 轮 ✓）：**用「**其余 ＝ primitive:Shape − coverage − fill**」推断** ✓
                     if stroke_width > 0.0 {
@@ -6650,8 +6745,13 @@ mod tests {
         )
         .unwrap()
         .expect("JPEG 位图补丁应被解码，而不是当作未实现格式跳过");
-        let super::DecodedPixels::Rgba8(width, height, rgba) = got else {
-            panic!("JPEG 应走 RGBA8 载荷");
+        // **`let … else` 会在单一变体时变成不可反驳**（rustc 已就此告警 ⇒ `-D warnings` 直接红 ✗）
+        // ⇒ 改成带 `_` 的 `match`：`raw` feature 打开时 `Linear` 变体存在 ✓、关掉时 `_` 不可达 ✓
+        // （`allow(unreachable_patterns)` 只在这一处、只为了两种 feature 组合都能编 ✓）。
+        #[allow(unreachable_patterns)]
+        let (width, height, rgba) = match got {
+            super::DecodedPixels::Rgba8(width, height, rgba) => (width, height, rgba),
+            _ => panic!("JPEG 应走 RGBA8 载荷"),
         };
         assert_eq!((width, height), (16, 16));
         assert_eq!(rgba.len(), 16 * 16 * 4);
