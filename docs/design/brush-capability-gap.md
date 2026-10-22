@@ -15753,3 +15753,21 @@ batch（无 silent，2 次 import_image）：[prev] site 1  ×2   ⇒ preview_ca
 或 `call` 里对某些字段做了 `with_*` 复制 ✓）⇒ 探针：在 site 1 里 `eprintln!("defer={}", ctx.defer_preview)` ✓
 ＋ 在 `write_batch` 置位后立刻打一次 ✓ 对不上就能定位 ✓。
 **⇒ 现状**：已回滚 ✓（`git checkout` ＋ 删测试 ✓），`yanshi-server --lib` **140** 绿 ✓。
+
+### 三百九十九：**真正的因**：`caller_render_wanted` 里有 `|| result.job_id.is_some()` ✓
+
+**⇒ 源码**（`tools.rs`，预览闸门）：
+```rust
+let caller_render_wanted = preview_region.is_some() && (!ctx.silent || result.job_id.is_some());
+```
+⇒ **`import_image` 是重型原子 ⇒ `result.job_id` 有值** ✓ ⇒ `||` 那一半**恒真** ✓
+⇒ **`silent` 根本管不到它** ✗ ⇒ 这就是「`silent` 只省编码不省渲染」的**准确机制** ✓
+（我先前说的"多趟渲染"只是现象 ✓，这里才是**条件** ✓）。
+**⇒ 另外**（同一段循环里）：`batch` 为了周期性放行预览会**临时把 `ctx.silent` 置 false** ✓
+（`let saved_silent = ctx.silent; … ctx.silent = false; …` 用完还原 ✓）
+⇒ 若 `preview_every_n_strokes`/`preview_interval_ms` 配了，**每 N 条/每 M 毫秒会额外渲染一次** ✓。
+**⇒ 所以下一轮的正确改法**：
+1. 把 `|| result.job_id.is_some()` 那半也纳入 `defer_preview` 的判断 ✓（顺序：
+   `preview_region.is_some() && !ctx.defer_preview && (!ctx.silent || result.job_id.is_some())` ✓ —— 我这轮就是这么写的 ✗ 但仍 4 ⇒
+   **必须实测 `ctx.defer_preview` 在 site 1 的值** ✓，别再猜 ✓）；
+2. 若值确实是 `true` 而仍渲染 ⇒ 说明**还有第二条路径**（不是 site 1 的那些计时点 ✓）⇒ 用 `RUST_LOG`/`eprintln` 在渲染函数入口打 ✓。
