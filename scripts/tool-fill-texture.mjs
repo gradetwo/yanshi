@@ -138,9 +138,64 @@ check(
   `ok=${tooClose?.ok}｜${closeDetail}`,
 );
 
+// ⑦⑧ **`jitter`（防「墙纸重复」，外部第 76 次要的那个旋钮）** ✓
+//   **为什么要在 JS 判据里也钉一遍** ✗：Rust 侧已有（`fill_region_texture.rs` ✓），
+//   而 CI 的 `criteria` 分片跑的是**真服务端 ＋ 真 HTTP** ✓ ⇒ 这里钉的是"**端到端**它真的生效" ✓。
+//   构型：源 8×8（左红右蓝）⇒ 目标 32×32 ⇒ **相距 8px 的两列**在 `jitter=0` 时必须**逐字节相同** ✓、
+//   在 `jitter=1` 时必须**至少有一对不同** ✓（两件事成对：只断后者，'永远加噪声'也能过 ✗）。
+const pairStats = async (jitter) => {
+  const boot = await fetch(`${base}/api/documents`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: `texj_${jitter}_${Date.now().toString(36)}`, width: 128, height: 96 }),
+  });
+  const body = await boot.json();
+  const docId = body.doc ?? body.doc_id;
+  const tk = body.token;
+  const post = async (name, args) => {
+    const reply = await fetch(
+      `${base}/api/tools/${name}?doc=${encodeURIComponent(docId)}&token=${encodeURIComponent(tk)}`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(args) },
+    );
+    return reply.json();
+  };
+  const layers = await post("list_layers", {});
+  const lid = layers?.layers?.[0]?.layer_id;
+  const filled = await post("fill_region", {
+    layer_id: lid,
+    shape: { type: "rect", x: 32, y: 32, w: 32, h: 32 },
+    texture: { ...texture, jitter },
+  });
+  if (filled?.ok !== true) return { error: filled };
+  const points = [];
+  for (let i = 0; i < 24; i += 1) points.push([34 + i, 40]);
+  const samples = (await post("sample_colors", { points }))?.samples ?? [];
+  const colour = (index) => (samples[index]?.rgba ?? []).slice(0, 3).join(",");
+  let same = 0;
+  let total = 0;
+  for (let i = 0; i + 8 < points.length; i += 1) {
+    total += 1;
+    if (colour(i) === colour(i + 8)) same += 1;
+  }
+  return { same, total, echoed: filled?.texture?.jitter };
+};
+
+const plain = await pairStats(0);
+const jittered = await pairStats(1);
+check(
+  plain?.total > 0 && plain.same === plain.total,
+  "⑦ jitter=0 ⇒ 相距 8px（= 源块宽）的每一对必须完全相同（原样平铺）",
+  plain?.error ? detailOf(plain.error) : `${plain?.same}/${plain?.total} 对相同`,
+);
+check(
+  jittered?.total > 0 && jittered.same < jittered.total,
+  "⑧ jitter=1 ⇒ 至少一对不再相同（重复周期真被打散）",
+  jittered?.error ? detailOf(jittered.error) : `${jittered?.same}/${jittered?.total} 对相同`,
+);
+
 console.log(
   failures.length === 0
-    ? "  ⇒ 纹理填充：逐像素取源、region 响亮未实现、min_distance 护栏 ✓"
+    ? "  ⇒ 纹理填充：逐像素取源、region 响亮未实现、min_distance 护栏、jitter 打散墙纸 ✓"
     : `  ⇒ 失败 ${failures.length} 条`,
 );
 process.exit(failures.length === 0 ? 0 : 1);
