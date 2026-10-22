@@ -15624,3 +15624,21 @@ import_image timings = {preview_calls:1, preview_ms:2.917, total_ms:3.725, rende
 **⇒ 准入线（不变）**：`import_image ×200` total 中位数 ≤ 8 ms ✓（256/512 画布下）；
 **⇒ 但真正的收益在**他们的画布尺寸** ✓ ⇒ 判据要加一条**结构量**：
 `defer_preview:true` ⇒ `preview_calls == 0` ✓（**与画布大小无关** ✓，CI 上稳定 ✓）。
+
+### 三百九十三（续五）：**`silent` 内部有，但没人能传** ✗ —— 这就是要补的那一个口子 ✓
+
+**⇒ 源码依据**（`tools.rs`）：
+- 预览触发点：`if ctx.wait_for_render && caller_render_wanted { … if ctx.preview && !ctx.silent { render_region } else { render_region_complete_jobs } }`
+  ⇒ **`ctx.silent` 已经能抑制预览** ✓；
+- `tools.rs:18818-18822` 有 `if optional_bool(args,"silent") { ctx.silent = true }` ✓
+  ⇒ **但那是一个具体工具自己的参数** ✗，不是框架级 ✓。
+**⇒ 探针实测**（50 次 `import_image`，想用 `silent:true` 省预览）：
+```
+{"detail":"import_image 不接受参数 silent（拼写错误？）；可用参数：layer_id, bitmap, region, object_id, medium；框架级参数：doc_id, actor, session"}
+```
+⇒ **`import_image` 传不了 `silent`** ✗ ⇒ 外部今天就**没法**用这条路 ✓。
+
+**⇒ 要做的（下一轮，小改动）**：把 `silent` 提成**框架级参数**（`dispatch` 里对**任何**工具生效 ✓），
+或新加 `defer_preview` ✓；**判据（结构量，与画布无关）**：
+同一个响应里 `timings.preview_calls == 0` ✓（默认应为 1 ✓ —— 成对 ✓）；**变异**：忽略该参数 ⇒ 仍为 1 ⇒ 红 ✓。
+**⇒ 这是外部 `4608×8192` 回放变快的**唯一**实质手段 ✓（预览耗时随面积增长 ✓，512² 已 19 ms/原子 ✓）。
