@@ -307,6 +307,21 @@ fn main() -> Result<()> {
     if !status.success() {
         bail!("ffmpeg 退出码 {:?} ⇒ 没有产出可用的视频", status.code());
     }
+    // **★ 一帧都没写出去 ⇒ 必须报错 ★**（第 589 轮；外部第 86-88 次实测）
+    //   他们的环境里 `ffmpeg` **返回成功**、可 mp4 只有 **261 字节**（只有文件头、`ffprobe` 读不出流）✗
+    //   ⇒ 而那时我们**照样 exit 0** ✗ ⇒ 最坏的一种"成功" ✓
+    //   ⇒ 所以：**帧数为 0 就是失败** ✓（不猜他们那边为什么送不进去，但绝不再说"成功" ✓）。
+    if frames == 0 {
+        bail!(
+            "一帧都没写出去（apply {}..{}、每 {} 个 atom 一帧）⇒ ffmpeg 只写了文件头，\
+             拒绝把它当成成功。请检查 ffmpeg 是否能吃 `-f rawvideo -pix_fmt rgb24 -s {}x{}`",
+            start_idx,
+            end_idx,
+            frame_every,
+            layout.out_w,
+            layout.out_h
+        );
+    }
     if probe {
         let ms = |ns: u128| ns as f64 / 1e6;
         account.frame_render_ns.sort_unstable();
