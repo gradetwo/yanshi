@@ -43,7 +43,15 @@ console.log(`  第二次 ⇒ ${JSON.stringify(String(b).slice(0, 40))}…`);
 console.log(`  fetch 调用次数 = ${calls}｜URL = ${JSON.stringify(seen)}`);
 
 const failures = [];
-if (a !== BODY || b !== BODY) failures.push("返回值与桩不符 ⇒ 判据前提不成立");
+// **⇒ 桩的返回值对不上 ⇒ **判据前提不成立** ⇒ `exit 3`**（第 1617 轮，**同族第三条**）
+//   **⇒ 为什么**：桩是本判据**自己造的** ⇒ 它的返回值与预期不符**说明桩没装好/被改过** ⇒
+//     **这既不是产品缺陷、也不是产品正常** ⇒ **是"判不了"** ✗
+//     而原来它进 `failures` ⇒ **最后 `exit(1)`** ⇒ **CI 上看起来像产品红** ✗
+//   **⇒ ⇒ 按本仓「判据的诚实在退出码」⇒ 用 `exit 3`** ✓
+if (a !== BODY || b !== BODY) {
+  console.log("  ⊘ 返回值与桩不符 ⇒ **判据前提不成立**（**桩没装好，不是产品问题**）");
+  process.exit(3);
+}
 if (calls !== 1) {
   failures.push(
     `同名笔刷调两次，fetch 却发了 ${calls} 次（期望 1）` +
