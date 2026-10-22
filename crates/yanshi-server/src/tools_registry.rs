@@ -205,12 +205,23 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                   比 `tools/list` 好读（单工具、含 required 与互斥说明），\
                   也免去「先调错一次、从报错里拼签名」",
         mutating: false,
-        params: &[param!(
-            "name",
-            String,
-            true,
-            "要查的工具名（如 `stroke_path`）；给错名字会列出**最接近的 3 个**候选"
-        )],
+        // **两个写法都收** ✓（外部第 10 轮：`tool` 是人的第一反应 ⇒ 只收 `name` 就让人白失败一次 ✗）。
+        // 两者都**不必填**在 schema 层（由 handler 校验并给出有用的话）✓；
+        // 都给时以 `name` 为准 ✓（更具体的那个）。
+        params: &[
+            param!(
+                "name",
+                String,
+                false,
+                "要查的工具名（如 `stroke_path`）；给错名字会列出**最接近的 3 个**候选。**与 `tool` 二选一**"
+            ),
+            param!(
+                "tool",
+                String,
+                false,
+                "`name` 的另一种写法（同义）⇒ 两者都给时以 `name` 为准"
+            ),
+        ],
     },
     ToolSpec {
         name: "list_objects",

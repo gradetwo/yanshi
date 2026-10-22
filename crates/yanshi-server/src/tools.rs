@@ -2575,7 +2575,25 @@ fn read_list_documents(ctx: &mut ToolContext<'_>) -> Result<Value> {
 /// **⇒ ⇒ 所以**：**一次调用只答一个工具**，并且**把"必填／可选／单位／是否改文档"分开列** ✓
 fn read_explain_tool(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let _ = ctx; // 只读：不需要画布状态
-    let name = require_str(args, "name")?;
+                 // **`tool` 是 `name` 的别名** ✓（外部第 10 轮实测 ✓）：`explain_tool{tool:…}` 是几乎所有人的
+                 // 第一反应 ⇒ 原来只回「不接受参数 tool（拼写错误？）；可用参数：name」✓ —— 提示本身有用 ✓，
+                 // 但**第一次调用必然失败一次** ✗ = 白花一轮 ✓ ⇒ 收下这个写法，同时保留 `name` 为准 ✓。
+    let name = match args.get("name").and_then(Value::as_str) {
+        Some(name) => name.to_string(),
+        None => match args.get("tool").and_then(Value::as_str) {
+            Some(tool) => tool.to_string(),
+            None => {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(
+                        "缺少 name（要查的工具名，如 `stroke_path`；也接受 `tool` 这个写法）"
+                            .to_string(),
+                    ),
+                ));
+            }
+        },
+    };
+    let name = name.as_str();
     let specs = tools_registry::ALL_TOOLS;
     let Some(spec) = specs.iter().find(|spec| spec.name == name) else {
         // **给错名字要**有用**：列出最接近的 3 个** ✓（**不猜、不说"不存在"就完** ✗）

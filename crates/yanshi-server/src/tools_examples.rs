@@ -278,9 +278,12 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "fill",
         r#"{"layer_id": "layer_default", "object_id": "bg", "data": {"color": {"r": 240, "g": 240, "b": 240, "a": 255}}}"#,
     ),
+    // **必须带颜色** ✓（外部第 10 轮实测 ✓）：`draw_shape` 没有 `fill` 键 ✓，而原来的示例里
+    // **也没有颜色** ✗ ⇒ 对方查不出来"怎么画一个有色矩形"，只好改用 `import_image` 导入自己生成的 PNG ✗
+    // ⇒ 示例就是接口的一部分 ✓：绘制类示例要**画出东西**（`data.color` 是填充色 ✓，与 `fill_region` 同口径 ✓）。
     (
         "draw_shape",
-        r#"{"layer_id": "layer_default", "object_id": "box", "data": {"geometry": {"kind": "rect", "bbox": {"x": 40, "y": 40, "w": 30, "h": 30}}}}"#,
+        r#"{"layer_id": "layer_default", "object_id": "box", "data": {"geometry": {"kind": "rect", "bbox": {"x": 40, "y": 40, "w": 30, "h": 30}}, "color": [200, 60, 60, 255]}}"#,
     ),
     ("list_selections", r#"{}"#),
     // 第 (5) 条继续扩 ✓：形状照**仓库里现成的调用**抄 ✓（第 236 轮普查 ✓）——
