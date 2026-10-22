@@ -15974,3 +15974,24 @@ N=100 ⇒ 墙钟 1356 ms ⇒ 每条 13.56 ms      ← N 增 5×，每条成本�
 **变异**：关掉剔除 ⇒ 比值回升到 ~4.5 ⇒ 红 ✓。
 **⇒ 预期收益**（外部构型 22,917 atom）：每次提交的渲染从 **O(N)** 掉到 **O(相交对象数)** ✓
 ⇒ 他们的回放应从 **O(N²) 变 O(N)** ✓ —— 这才是"20 分钟 → 秒级"的那一步 ✓。
+
+### 四百零三（续三）：**裁剪本来就有，但它在"每对象解析/变换"之后** ✗ ⇒ 等于没有
+
+**⇒ 源码**（`render.rs:3352 render_layer_objects`）：
+```rust
+for object in __order {
+    if !object.visible { continue; }
+    // 「几何裁剪：包围盒与渲染区域不相交的对象直接跳过」← 注释在这里 ✓
+    let mut probe_prep = stage_probe::Stage::start();
+    let primitive = … parse_object / transform_primitive …;   // ← 每对象的**贵**操作
+    probe_objects.record("prep:parse+transform", probe_prep.stop());
+    …之后才做相交判断…
+}
+```
+**⇒ 同一段注释里还留着实测**：「468 个对象 ⇒ **≈2.8 ms／对象**」在**每对象前置工作**里 ✓
+⇒ 所以 **O(N)** 的成本花在 `parse+transform` 上 ✓，而**裁剪在那之后** ⇒ 远对象照样要解析+变换 ✗
+⇒ 这**精确解释**了我们的探针：100 个远对象仍让 16×16 渲染从 2.29 涨到 10.24 ms ✓。
+
+**⇒ 下一轮的改法（精确、小）**：把"包围盒与区域是否相交"的判断**提到 `probe_prep` 之前** ✓
+—— 用**存下来的 `object.bbox`**（或 `object_bbox_in` 的廉价分支 ✓），只对**相交**的对象才 `parse_object`/`transform_primitive` ✓。
+**⇒ 判据**：`10 vs 100 个远对象` 的 16×16 渲染耗时比 **≤ 1.5** ✓（现 **4.5×**）；**变异**：把裁剪放回解析之后 ⇒ 回升 ⇒ 红 ✓。
