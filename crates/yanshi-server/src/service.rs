@@ -798,7 +798,17 @@ impl Workspace {
         //     （估算值与上限）⇒ 调用方据此**分阶段跑**（外部本来就是这么绕的）✓
         //   **⇒ ⇒ ⇒ ⇒ 为什么不直接改成流式**：`plan_gc` 收的是**一份** `AtomLog`（内核签名），
         //     改它要动内核；而**先给闸**能立刻把"进程被杀"变成"可读的拒绝" ✓（**下一步再做流式**）
-        const GC_MEMORY_BUDGET_BYTES: u64 = 1_536 * 1_024 * 1_024; // 1.5 GiB
+        // **上限可被环境变量覆盖** ✓（`YANSHI_GC_MEMORY_BUDGET_MB`，缺省 **1536 MB**）：
+        //   **⇒ 为什么要这个口子** ✗：这道闸挡的是"进程被 OOM 杀"✓，而**不可调的常量没法被测** ✗
+        //   ⇒ 判据只能在 3.8 GiB 的机器上真造 1.5 GiB 的文档才碰得到 ✗（谁都不会那么测 ✓）
+        //   ⇒ 于是它就成了"写了但永远不验"的那类断言 ✗（本轮补的正是这一条 ✓）。
+        //   顺带对运维有用 ✓：小机器可以把它调小（宁可拒绝，也别被 SIGKILL ✓）。
+        const GC_MEMORY_BUDGET_DEFAULT_BYTES: u64 = 1_536 * 1_024 * 1_024; // 1.5 GiB
+        let budget_bytes: u64 = std::env::var("YANSHI_GC_MEMORY_BUDGET_MB")
+            .ok()
+            .and_then(|text| text.trim().parse::<u64>().ok())
+            .map(|mb| mb.saturating_mul(1_024 * 1_024))
+            .unwrap_or(GC_MEMORY_BUDGET_DEFAULT_BYTES);
         let mut unloaded_atoms = 0u64;
         for doc_id in &known {
             if !self.documents.contains_key(doc_id) {
@@ -818,7 +828,7 @@ impl Workspace {
         // **每个原子约 300 KB**（外部实测：3 600 原子 ⇒ RSS 1 088 MB ⇒ **≈ 300 KB/原子**）✓
         const BYTES_PER_ATOM: u64 = 300 * 1_024;
         let estimate = (unloaded_atoms + loaded_atoms).saturating_mul(BYTES_PER_ATOM);
-        if estimate > GC_MEMORY_BUDGET_BYTES {
+        if estimate > budget_bytes {
             return Err(YanshiError::new(
                 ErrorCode::ResourceExhausted,
                 ErrorContext::detail(format!(
@@ -828,7 +838,7 @@ impl Workspace {
                      ③ 真的只需要**计划**时，给 `dry_run:true` 也要走同一条闸（本函数就是它）",
                     estimate / (1_024 * 1_024),
                     unloaded_atoms + loaded_atoms,
-                    GC_MEMORY_BUDGET_BYTES / (1_024 * 1_024),
+                    budget_bytes / (1_024 * 1_024),
                 )),
             ));
         }
