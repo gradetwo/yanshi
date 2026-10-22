@@ -171,6 +171,12 @@ if (!(green > reddish && green > blues)) {
   );
   process.exit(1);
 }
+// **进度行必须出现在 stderr 上** ✓（第 611 轮；外部第 91 次：`timeout` 杀掉后**一行诊断都没有**）
+if (!String(run).includes("进度 ")) {
+  console.error(`✗ stderr 里没有进度行 ⇒ 被 timeout 杀掉时无法判断卡在哪一段\n${String(run).slice(-400)}`);
+  process.exit(1);
+}
+
 console.log(
   `✓ timelapse 出片：${total} 帧，其中 ${painted}/${decoded} 帧有内容，且颜色对（绿占优像素 ${green} 个，` +
     `红占优 ${reddish}／蓝占优 ${blues}）（最小工程包 128×96、7 条原子）`,

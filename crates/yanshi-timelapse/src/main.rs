@@ -280,9 +280,24 @@ fn main() -> Result<()> {
     let probe = std::env::var_os("YANSHI_TIMELAPSE_PROBE").is_some();
     let mut account = Account::default();
 
+    // **★ 进度必须落盘 ★**（第 611 轮；外部第 91 次实测）
+    //   他们的包在 `timeout 240` 下被杀 ⇒ **一行诊断都没有** ⇒ 只能从"没有 ffmpeg 输出"反推
+    //   ⇒ 所以每 25 个 atom 往 **stderr** 打一行 ✓（被杀之后仍能看出卡在哪一段 ✓）。
+    let progress_every = 25usize;
+    let started = Instant::now();
     for (i, line) in atom_lines.iter().enumerate() {
         if i >= end_idx {
             break;
+        }
+        if i % progress_every == 0 {
+            eprintln!(
+                "  进度 {i}/{}｜已渲 {} 帧｜apply {} ms｜render {} ms｜累计 {} s",
+                atom_lines.len().min(end_idx),
+                frames,
+                account.apply_ns / 1_000_000,
+                account.render_ns / 1_000_000,
+                started.elapsed().as_secs()
+            );
         }
         let t_apply = Instant::now();
         if let Err(error) = timeline.apply(line) {
