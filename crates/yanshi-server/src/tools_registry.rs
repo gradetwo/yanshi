@@ -1908,7 +1908,13 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[
             param!("layer_id", String, true, "目标图层"),
             param!("seed", Number, true, "随机种子（必填；同 seed ⇒ 同结果）"),
-            param!("area", Object, true, "撒点区域 {x, y, w, h}"),
+            // **`points` 要写进声明** ✓（外部 `bug_report.md` BUG-04 的 ROI 第 3 条 ✓）：
+            //   能力**早就有**（多边形内重采样 + 如实计数 ✓，配 `tool-scatter-polygon.mjs` ✓），
+            //   而声明只写 `{x, y, w, h}` ✗ ⇒ **能力存在但没公开** ✗（调用方按声明面不敢用 ✓）。
+            //   ⚠️ 他们说"按声明面调用会被 `validate_args` 拒绝" ✗ —— **实测不成立** ✓
+            //   （`area:{points:…}` 直接 `ok:true` ✓：嵌套对象是 `additionalProperties:true` ✓），
+            //   所以这是**文档缺口**，不是拒绝 ✓。
+            param!("area", Object, true, "撒点区域：`{x, y, w, h}` 矩形，或 `{points: [[x,y], …]}` 多边形（≥3 点多边形内重采样，落不下就少落并如实计数）"),
             param!("palette", Array, true, "颜色数组 [{r,g,b,a} 或 #rrggbb]（随机取用）"),
             param!("count", Number, false, "撒几笔（缺省 24，上限 2000）"),
             param!("brush", String, true, "笔刷名（同 brush_stroke）"),

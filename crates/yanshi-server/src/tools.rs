@@ -3304,7 +3304,12 @@ fn write_create_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     Ok(value)
 }
 
-const LAYER_PATCH_KEYS: [&str; 9] = [
+// **★ 补上 `z_index` ★**（外部 `~/patch/bug_report.md` 的 BUG-20，ROI 第 1 条 ✓）：
+//   内核 `fold.rs` 的 `apply_property_to_layer` **早就有** `"z_index" => layer.z_index = …` ✓
+//   ⇒ 只差工具层**放行这一个键** ✗ ⇒ 于是 `update_layer{patch:{z_index:…}}` 落进
+//     「patch 中没有可修改的图层属性」✗，而层级**只能在 `create_layer` 时定一次** ✗（事后不可改）。
+//   **⇒ 判据**：`tests/layer_z_index.rs`（改完顺序真的变了 ⇒ 断结构量 ✓）。
+const LAYER_PATCH_KEYS: [&str; 10] = [
     "name",
     "visible",
     "opacity",
@@ -3313,6 +3318,8 @@ const LAYER_PATCH_KEYS: [&str; 9] = [
     "alpha_lock",
     "clipping_mask",
     "mask_id",
+    // **层级序号** ✓（内核已支持 ✓；`reorder_layers` 那种"提交全部图层完整序列"太容易错 ✗）
+    "z_index",
     // **★ 第 252 轮 ✗**：**把图层移进／移出**图层组** ✓（比建议里"新增 3 个工具"省得多 ✓）
     //   ＋ **∴ 为什么一行就够 ✗**：**应用侧**早就处理它了** ——
     //     `yanshi-core/src/fold.rs` 的 `apply_property_to_layer` 里有
@@ -3917,26 +3924,26 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             ));
         }
     };
-    // **先拦 "给了 `d` 却没给 type"** ✓（第 1500 轮；与 `§232` 同型：**静默默认成 rect** ⇒ 报错误导 ✗）
-    if shape.get("d").is_some() && shape.get("type").is_none() {
-        return Err(YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail(
-                "这一调给了 `d`（SVG 路径）却没给 `type` ⇒ **`fill_region` 的 `shape` 只接受 \
-                 rect / ellipse / polygon**（**不支持路径** ✗）：\
-                 若要用贝塞尔/路径填充，请改用 `draw_shape`（`data.geometry` 接受 **`d`**，例如 \
-                 {\"kind\":\"path\",\"d\":\"M 10,10 C 40,0 60,40 90,30 Z\"}）；\
-                 或把路径当**掩膜**：`fit_background_field` 的 `mask` 接受**只给 `d`** ✓；`create_mask` 要写成 `{{\"kind\":\"path\",\"d\":…}}` 或 `{{\"type\":\"path\",\"d\":…}}`（**它不接受只给 d**）✓",
-            ),
-        ));
-    }
-    let number =
-        |key: &str, default: f64| shape.get(key).and_then(Value::as_f64).unwrap_or(default);
+    // **`kind` 与 `type` 互为别名** ✓（`create_selection`／`draw_shape`／`smart_*` 都这样 ✓）——
+    // 而这里原来**只读 `type`** ✗ ⇒ 传 `{"kind":"path","subpaths":…}` 会被当成 **rect**
+    // ⇒ 报「rect 形状的 bbox 宽高必须大于 0（实测 w=0、h=0）」✗（外部第 75 次要打的那一调就是这个 ✓：
+    // 他们要"用洞的 path 形状填" ✓，而这条**静默把 path 当 rect** ✗）。
+    // **`d`／`subpaths` 单独给时按 path 推断** ✓（与 `parse_prim_shape` 同口径 ✓），
+    // 不再"给了 d 却没给 type 就拒绝"✗ —— 那条提示本身还写着「不支持路径」✗（早就支持了 ✓）。
     let kind = shape
         .get("type")
         .and_then(Value::as_str)
-        .unwrap_or("rect")
-        .to_string();
+        .or_else(|| shape.get("kind").and_then(Value::as_str))
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            if shape.get("subpaths").is_some() || shape.get("d").is_some() {
+                "path".to_owned()
+            } else {
+                "rect".to_owned()
+            }
+        });
+    let number =
+        |key: &str, default: f64| shape.get(key).and_then(Value::as_f64).unwrap_or(default);
     // **羽化半径**（像素 ✓，缺省 0 ✓ ⇒ **不传 ⇒ 行为逐字节不变** ✓）：
     // **负值按 0** ✓（没有"负羽化"这回事 ✓）；真正的模糊在**渲染侧**做 ✓
     //（`render.rs` 里 `feather_coverage` ✓）—— 这里只把**参数存进形状描述** ✓，
@@ -4126,9 +4133,17 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     }
     let mut texture_gap: Option<f64> = None;
     if let Some(spec) = &texture {
+        // **path 的目标框由控制点算** ✓（`path` 的 geometry 里没有 `bbox` ✓ ——
+        // 用 `rect` 的读法会得到「需要目标形状能解析出 bbox」✗，而 path 本来就没有那个字段 ✓）。
         let target = geometry
             .get("bbox")
             .and_then(yanshi_core::Bbox::from_value)
+            .or_else(|| {
+                yanshi_render::object::parse_path_subpaths(&geometry)
+                    .ok()
+                    .and_then(|parsed| yanshi_render::object::path_control_bbox(&parsed.subpaths))
+                    .map(|(x, y, w, h)| yanshi_core::Bbox::new(x, y, w, h))
+            })
             .ok_or_else(|| {
                 YanshiError::new(
                     ErrorCode::InvalidArgument,
