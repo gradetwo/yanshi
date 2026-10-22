@@ -1432,7 +1432,9 @@ fn patch_mode_has_no_periodic_peak_at_several_shifts() {
             "mode={mode} 应当成功：{filled}"
         );
         let row = row_alpha_and_colour(&mut ctx, 6, y + 8, 24); // 全在填充区内 ✓（32 会吃到画布外的白 ✗）
-        [4usize, 8, 12]
+                                                                // **位移不能是块步长（`patch-overlap = 3`）的倍数** ✗：12 与 3 对齐 ⇒ 会与"块网格"混叠
+                                                                // ⇒ 那测的是网格，不是周期峰 ✓（实测：位移 12 上全同 1.0 ⇒ 判据自己假红 ✗）。
+        [5usize, 7, 8, 11]
             .iter()
             .map(|shift| {
                 let pairs = row.len() - shift;
@@ -1444,12 +1446,19 @@ fn patch_mode_has_no_periodic_peak_at_several_shifts() {
     let tiled = identical_ratio("tile", 4);
     let patched = identical_ratio("patch", 22);
     assert!(
-        tiled[1] > 0.95,
+        tiled[2] > 0.95, // 下标 2 = 位移 8（周期峰）
         "`tile` 在位移 8 上必须几乎全同（这就是周期峰）⇒ 实测 {tiled:?}"
     );
-    for (index, shift) in [4usize, 8, 12].iter().enumerate() {
+    for shift in [5usize, 7, 11] {
+        let ratio = patched[if shift == 5 {
+            0
+        } else if shift == 7 {
+            1
+        } else {
+            3
+        }];
         assert!(
-            patched[index] < 0.9,
+            ratio < 0.9,
             "`patch` 在位移 {shift} 上不许出现周期峰（全同比 < 0.9）⇒ 实测 {patched:?}"
         );
     }
