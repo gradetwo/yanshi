@@ -15867,3 +15867,18 @@ let _ = self.render_document_preview()?;   // ← 每次有 pending job 就**整
    与 `jobs_ttl_cancel_and_render_watermark`（渲染水位随提交推进 ✓）⇒ **改法是"渲染什么"**，不是"渲不渲" ✓。
 **⇒ 下一轮**：读 `thumb.rs` 的 `dirty_blocks_for` ✓，把 `render_document_preview()` 换成"只渲脏块" ✓；
 判据：`import_image ×100` 的 `preview_ms` 中位数 **下降 ≥ 5×** ✓（配变异：忽略脏块 ⇒ 回到全量 ⇒ 红 ✓）。
+
+### 四百零一（续）：`dirty_blocks_for` 是**缩略图**级机制 ✓（改法要说清）
+
+**⇒ 读 code**（`thumb.rs:200`）：`dirty_blocks_for(&self, doc_bbox, doc_size)` 把**文档 bbox**
+映射到**缩略图的块网格**（`content_box` + `scale_x/scale_y` ✓）⇒ 它服务的是**缩略图的增量更新** ✓，
+不是"整幅文档预览的区域渲染" ✗。
+**⇒ 已有调用点**：`thumb.rs:535`（增量缩略图）✓、测试 `:566/:598` ✓。
+**⇒ 所以下一轮的改法是**：
+1. `run_pending_jobs` 里的 `render_document_preview()` ⇒ 改成**增量缩略图更新**
+   （用 `dirty_blocks_for` 算出本次变更覆盖的块 ✓ ⇒ 只重渲这些块 ✓）；
+2. **契约不能破**：`completed == [job_id]` ✓ 与"渲染水位随提交推进" ✓
+   ⇒ 增量更新**仍要**推进水位 ✓、仍要完成 job ✓；
+3. 若增量路径暂时不可用（例如块数过多）⇒ **回退全量** ✓ 并**说清**（`warnings` 或 `note` ✓），**不许静默** ✗。
+**⇒ 判据**：`import_image ×100` 的 `preview_ms` 中位数 **下降 ≥ 5×** ✓；
+**变异**：忽略脏块（永远全量）⇒ 回到当前值 ⇒ 红 ✓。
