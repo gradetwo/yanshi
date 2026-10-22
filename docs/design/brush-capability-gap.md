@@ -15677,3 +15677,11 @@ ctx.time(Phase::Preview, preview_started);   // ← **两个分支都计一次**
 （省的是编码 ✓）；真正贵的是**每次调用的区域渲染** ✓ —— 那要走"批量合并成一次渲染" ✓（尚未做 ✗）。
 **⇒ 判据（下一轮，若做批量合并）**：`batch` 里 N 个 `import_image` ⇒ **`preview_calls` 应为 1（或 0）** ✓，
 而**不是 N** ✓ —— 现为 **N** ✓（本轮实测 4/4 ✓）。
+
+### 三百九十四（补）：`brightness_ramp` **CI 通过** ✓（闭环）
+
+**⇒ `cfc87cfc` 的 run = completed/success** ✓（最后一轮统计：**11 success ／ 1 skipped（`brush parity`，名单内）／ 0 failure** ✓）
+⇒ 这条能力**四层齐**：实现（ramp → 参考场 → 候选打分亮度项）＋ 判据（左半 < 右半、两半 sd > 1）＋
+**变异**（忽略 ramp ⇒ 红）＋ **CI 绿** ✓。
+**⇒ 对外部第 82 次的正式需求**：`mode:"patch"` ＋ `brightness_ramp:{axis, at_start, at_end}` ✓
+就是他们要的「按位置匹配亮度」✓ —— **已可用、已验、已回信** ✓。
