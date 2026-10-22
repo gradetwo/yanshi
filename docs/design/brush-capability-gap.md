@@ -15699,3 +15699,17 @@ ctx.time(Phase::Preview, preview_started);   // ← **两个分支都计一次**
 **变异**：保留 `wait_for_render` ⇒ 红 ✓（回到 100 ✓）。
 **⇒ 外推**：他们 `22,917` 个导入、`4608×8192` 画布 ⇒ 预览/区域渲染耗时随面积更大 ✓ ⇒ 收益应**大于** 4.19× ✓
 （但**不许**把外推当实测 ✓ —— 要他们回放后用 `timings` 报数 ✓）。
+
+### 三百九十六：`defer_preview` 第一次没成 —— **预览点不止 `finish_mutation` 一处** ✗
+
+**⇒ 做了什么**：给 `ToolContext` 加 `defer_preview` ✓，在 `finish_mutation` 的
+`caller_render_wanted` 上 `&& !ctx.defer_preview` ✓，`write_batch` 在 `silent` 时置位 ✓。
+**⇒ 实测**：`silent` 的 4 次 `import_image` 批 ⇒ `preview_calls` **仍是 4** ✗ ⇒ **那条闸门没被命中** ✓。
+**⇒ 所以**：`preview_calls` 的**其他自增点**还没找到 ✓（`timings.rs:134` 是唯一自增点 ✓，
+但 `Phase::Preview` 的**计时包装**可能不止 `finish_mutation` 一处 ✓ —— 我只改了一处 ✗）。
+**⇒ 处理**：**已整体回滚** ✓（`git checkout` ＋ 删测试 ✓），`yanshi-server --lib` **140** 仍绿 ✓。
+**⇒ 下一轮正确顺序**（别再盲改）：
+1. `grep -n "Phase::Preview" crates/yanshi-server/src/*.rs` 把**所有**计时点列全 ✓（已知 `tools.rs:1435/1441/1469/1516/2373` ✓）；
+2. 每个点都加上 `&& !ctx.defer_preview`（或在**自增处** `timings.rs:134` 判断 ✓ —— 更集中 ✓）；
+3. 再跑判据 `preview_calls == 0` ＋变异 ✓。
+**⇒ 教训**：**"只有一个入口"的假设要先用 grep 证伪** ✗ —— 我按记忆改了一处就测 ✗。
