@@ -189,7 +189,7 @@ for (const brush of names) {
     console.log(
       `  ${(brush + "/" + colourName).padEnd(22)} 区域 ${region.w}×${region.h}（整层合成 ✓）｜` +
       `门面 vs 画后合成：不同字节 ${diffC}｜最大通道差 ${maxC}｜` +
-      (okC ? "**在 1 ulp 容差内** ✓" : "超出 1 ulp 容差 ✗"),
+      (okC ? "**在 1 ulp 容差内** ✓" : "超出 1 ulp 容差 ✗（**这不等于「笔刷不同」** ✗ —— 两侧管线尚未对齐 ✓）"),
     );
     continue;
   }
@@ -308,7 +308,11 @@ const total = allBrushes.length;
 const pct = total > 0 ? (100 * names.length / total).toFixed(1) : "?";
 const sample = wantsAll ? "全量" : (brushes.length ? "指定" : "**默认样本**");
 console.log(
-  (allEqual ? "结论：可比范围内逐字节相同 ✓" : "结论：存在差异 ✗（见上；差异的机制是两边数学实现不同 ⇒ 正在修 ✓）") +
+  (allEqual
+    ? "结论：可比范围内逐字节相同 ✓"
+    : "结论：存在差异 ✗（**机制未隔离** ✗ —— 不许再写「两边数学实现不同」当结论 ✓："
+      + "取证是本机把**两种底图口径**都试过 ⇒ region 裁剪 2652 字节 / 全画布 6564 字节 ✗"
+      + " ⇒ 至少不是「底图被裁小了」这一个原因 ✓；下一步要把服务端的**第二遍掩膜落墨**与门面的单遍对齐再比 ✓）") +
   `｜吃底图的 **已用整层合成比对** ✓：${compositeCompared} 条（其中 ${compositeSame} 条在 1 ulp 容差内 ✓）` +
   `｜吃底图的**未比对**：${fedBaseCount - compositeCompared} 条` +
   (missingFlagCount > 0 ? `｜服务端未报 fed_base：${missingFlagCount} 条` : "") +
