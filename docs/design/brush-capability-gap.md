@@ -15653,3 +15653,27 @@ import_image timings = {preview_calls:1, preview_ms:2.917, total_ms:3.725, rende
 **变异**：不读 `silent` ⇒ 仍 1 ⇒ 红 ✓。
 **⇒ 本轮到此为止**：只定位、不改 ✗ —— 这个函数里有权限检查与多个返回点 ✓，
 在**上下文不足**时动手的风险（漏恢复 `ctx.silent` ⇒ 后续调用全静默 ✗）比收益大 ✗。
+
+## 三百九十四、**`silent` 省的不是渲染** ✗ —— `preview_calls` 数的是"区域渲染"而不是"编码预览" ✓
+
+**⇒ 判据式实测**（`batch` 4 次 `import_image`）：
+- 不带 `silent` ⇒ `preview_calls = ?`（≥1 ✓）
+- **带 `silent: true` ⇒ `preview_calls = 4`** ✗ —— 与工具说明「`silent:true` 时子调用**不产出预览图**」**不符** ✓？
+
+**⇒ 读源码后真因**（`tools.rs` 预览触发点）：
+```rust
+if ctx.preview && !ctx.silent {
+    render_region(...)?;          // 要图：渲染 ＋ 编码 ＋ 落盘
+} else {
+    render_region_complete_jobs(...)?;   // 不要图：**仍然渲染**，只是省掉编码/落盘
+}
+ctx.time(Phase::Preview, preview_started);   // ← **两个分支都计一次**
+```
+**⇒ 所以 `preview_calls` 统计的是**"区域渲染"** ✗，不是"预览编码" ✓；
+`silent` 省的是**编码/落盘** ✓（确实省 ✓），但**渲染照旧发生** ✓ ⇒ 我之前的推断
+（"预览=缩略图，随画布面积增长"）**只有一半对** ✗ —— 19 ms 里**含区域渲染** ✓。
+
+**⇒ 对外部第 83 次的结论要更正** ✗：`batch + silent:true` **不会**让 22,917 个原子变快很多 ✓
+（省的是编码 ✓）；真正贵的是**每次调用的区域渲染** ✓ —— 那要走"批量合并成一次渲染" ✓（尚未做 ✗）。
+**⇒ 判据（下一轮，若做批量合并）**：`batch` 里 N 个 `import_image` ⇒ **`preview_calls` 应为 1（或 0）** ✓，
+而**不是 N** ✓ —— 现为 **N** ✓（本轮实测 4/4 ✓）。
