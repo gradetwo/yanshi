@@ -15687,15 +15687,21 @@ fn parse_prim_shape(v: &Value, tool: &str) -> Result<PrimShape> {
     //   下面的 `num()` 全部取不到值 ⇒ **静默兜底成 (0,0,100,100)** ✗
     //   ⇒ 擦掉了左上角一小块、还回 `ok: true` ✗（本文件 15280 行注释里那条
     //   「`{"d":"M…"}` 被吞成缺省 rect」是同一类事故 ✓，这次补上另一半 ✓）
-    if v.get("kind").is_some() || v.get("bbox").is_some() || v.get("geometry").is_some() {
+    // **只有"结构化的另一套"才拒** ✓（`geometry`／`bbox` 这两个键是 `draw_shape` 的词汇 ✓）。
+    // **`kind` 不拒** ✗：它与 `type` 互为别名（`create_mask` 的描述就是这么写的 ✓），
+    // 而「`kind` ＋ 平铺 x/y/w/h」是**合法混合写法** ✓ —— 仓内两条判据与外部评测都在用 ✓
+    // ⇒ 按 `kind` 一刀切会把它们误判成"错词汇" ✗（本轮 CI 上就是这么红的 ✓）。
+    // 真正的事故形态是 `{"kind":"rect","bbox":{x,y,w,h}}` ⇒ **`bbox` 在** ⇒ 拒 ✓。
+    if v.get("geometry").is_some() || v.get("bbox").is_some() {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
             ErrorContext::detail(format!(
                 "{tool} 的 `shape` 用的是**平铺**形式：\
                  {{\"type\":\"rect\",\"x\":…,\"y\":…,\"w\":…,\"h\":…}} \
                  ／ {{\"type\":\"circle\",\"x\":…,\"y\":…,\"r\":…}} \
-                 ／ {{\"type\":\"polygon\",\"points\":[[x,y],…]}} ✓，\
-                 而这次收到的是 `draw_shape.geometry` 那一套（`kind`／`bbox` ✗）\
+                 ／ {{\"type\":\"polygon\",\"points\":[[x,y],…]}} ✓ \
+                 （`kind` 可以与 `type` 互换 ✓，但**不要**用 `bbox`／`geometry` ✗），\
+                 而这次收到的是 `draw_shape.geometry` 那一套 \
                  ⇒ **不猜、不兜底成 (0,0,100,100)**（那会擦错地方还回 `ok:true` ✗）"
             )),
         ));
@@ -15704,7 +15710,12 @@ fn parse_prim_shape(v: &Value, tool: &str) -> Result<PrimShape> {
     // 没有 type 的对象按 path 解析，**绝不**再静默吞成缺省 rect
     // （实测事故：`{"d": "M…"}` 被吞成 (0,0,100,100) 矩形、结果全错还不报错）。
     // 无 type 且只有 rect 键的存量写法维持缺省 rect 兼容。
-    let t = match v.get("type").and_then(Value::as_str) {
+    // `kind` 是 `type` 的别名 ✓（同一个键名体系，不是"另一套词汇" ✗）。
+    let t = match v
+        .get("type")
+        .and_then(Value::as_str)
+        .or_else(|| v.get("kind").and_then(Value::as_str))
+    {
         Some(t) => t,
         None if v.get("d").is_some() || v.get("subpaths").is_some() => "path",
         None => "rect",
