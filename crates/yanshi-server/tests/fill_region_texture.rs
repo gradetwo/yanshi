@@ -1386,3 +1386,71 @@ fn the_min_error_seam_stays_continuous_between_adjacent_rows() {
         "至少要比到两对相邻行（实测 {checked} 对）—— 否则这条判据是空转 ✗"
     );
 }
+
+#[test]
+fn patch_mode_has_no_periodic_peak_at_several_shifts() {
+    // **外部第 81 次提议的第一条判据**（自相关）✓ 的构造版：
+    // 平铺在**源块宽的整数倍**位移上必然出现「峰」✓ ⇒ 而合成必须**在每个位移上都没有峰** ✓。
+    // 判据断结构量：横向 32 个采样点在位移 **4 / 8 / 12** 上，
+    //   · `tile` ⇒ 位移 8 全同（= 峰）✓ 对照组
+    //   · `patch` ⇒ 三个位移上的**全同比都远低于 1** ✓（无峰）
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let hash = workspace
+        .store()
+        .put(&source_bytes())
+        .expect("源位图应能入库")
+        .to_string();
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    let mut identical_ratio = |mode: &str, y: i32| -> Vec<f64> {
+        let filled = registry().call(
+            &mut ctx,
+            "fill_region",
+            &json!({
+                "layer_id": layer,
+                "shape": {"type": "rect", "x": 4, "y": y, "w": 32, "h": 16},
+                "texture": {
+                    "type": "bitmap",
+                    "blob_hash": hash,
+                    "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                    "width": 8,
+                    "height": 8,
+                    "mode": mode,
+                    "patch": 6,
+                    "overlap": 3,
+                    "candidates": 16
+                }
+            }),
+        );
+        assert_eq!(
+            filled.get("ok").and_then(Value::as_bool),
+            Some(true),
+            "mode={mode} 应当成功：{filled}"
+        );
+        let row = row_alpha_and_colour(&mut ctx, 6, y + 8, 24); // 全在填充区内 ✓（32 会吃到画布外的白 ✗）
+        [4usize, 8, 12]
+            .iter()
+            .map(|shift| {
+                let pairs = row.len() - shift;
+                let same = (0..pairs).filter(|i| row[*i] == row[i + shift]).count();
+                same as f64 / pairs as f64
+            })
+            .collect()
+    };
+    let tiled = identical_ratio("tile", 4);
+    let patched = identical_ratio("patch", 22);
+    assert!(
+        tiled[1] > 0.95,
+        "`tile` 在位移 8 上必须几乎全同（这就是周期峰）⇒ 实测 {tiled:?}"
+    );
+    for (index, shift) in [4usize, 8, 12].iter().enumerate() {
+        assert!(
+            patched[index] < 0.9,
+            "`patch` 在位移 {shift} 上不许出现周期峰（全同比 < 0.9）⇒ 实测 {patched:?}"
+        );
+    }
+}
