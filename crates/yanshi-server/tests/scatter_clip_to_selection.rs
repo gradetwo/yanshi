@@ -165,3 +165,77 @@ fn scatter_strokes_only_lands_inside_the_selection() {
         "选区**外面**必须一点墨都没有（这就是裁剪的全部意义）⇒ 实测 {inked_outside}/12 有墨：{outside:?}"
     );
 }
+
+#[test]
+fn scatter_keeps_the_whole_dab_inside_the_polygon_not_just_the_anchor() {
+    // **外部 `bug_report.md` BUG-04 残留第 2 条**：锚点在内，但**笔段第二点与 dab 半径**仍可越出多边形 ✓
+    // 构型：三角形 `(8,8)-(56,8)-(32,56)` ⇒ **取它外接盒里的"角"**（例如 (12,44)、(52,44)）
+    // 这些点**盒内、形外** ⇒ 修好之后那里必须**一点墨都没有** ✓（修之前半径 5px ⇒ 边缘会有墨 ✓）。
+    let mut workspace = workspace();
+    {
+        let mut ctx = context(&mut workspace);
+        call(
+            &mut ctx,
+            "new_document",
+            &json!({"doc_id": "doc_scatter_clip", "width": 64, "height": 64}),
+        );
+    }
+    let mut ctx = context(&mut workspace);
+    let scattered = call(
+        &mut ctx,
+        "scatter_strokes",
+        &json!({
+            "layer_id": "layer_default",
+            "seed": 20261023,
+            "area": {"points": [[8, 8], [56, 8], [32, 56]]},
+            "palette": ["#101010"],
+            "brush": "100%_Opaque",
+            "count": 300,
+            "size_range": [8, 12]
+        }),
+    );
+    assert_eq!(
+        scattered.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "撒点应当成功：{scattered}"
+    );
+    let placed = scattered
+        .get("strokes")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let skipped = scattered
+        .get("skipped_outside")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    assert!(placed > 0, "至少要有落笔（否则判据是空转）：{scattered}");
+    // **恒等式**：`落笔 + 越界跳过 ≤ count`（计数器之间不许自相矛盾 ✓）
+    assert!(
+        placed + skipped <= 300,
+        "`strokes + skipped_outside` 不许超过 `count` ⇒ 实测 {placed} + {skipped}"
+    );
+
+    // 形内（三角形中部）必须有墨
+    let inside = samples(&mut ctx, &[[32, 20], [28, 26], [36, 28], [30, 34]]);
+    assert!(
+        inside.iter().any(|rgba| has_ink(*rgba)),
+        "三角形内部必须有墨 ⇒ 实测 {inside:?}"
+    );
+    // **形外但盒内**：这些点距边最近约 3~5px ⇒ 半径 5px 的 dab 以前会漏进来
+    let outside = samples(
+        &mut ctx,
+        &[
+            [12, 44],
+            [14, 40],
+            [52, 44],
+            [50, 40],
+            [32, 4],
+            [8, 4],
+            [56, 4],
+        ],
+    );
+    let inked = outside.iter().filter(|rgba| has_ink(**rgba)).count();
+    assert_eq!(
+        inked, 0,
+        "多边形**外面**（但在外接盒内）不许有墨 ⇒ 实测 {inked}/7 有墨：{outside:?}"
+    );
+}

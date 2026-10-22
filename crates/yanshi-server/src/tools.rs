@@ -13210,6 +13210,11 @@ fn write_scatter_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
 
     let mut state = seed;
     let mut placed = 0usize;
+    // **笔段／笔尖越出多边形的笔数** ✓（外部 `bug_report.md` BUG-04 残留第 2 条 ✓）：
+    //   原来只保证**锚点**在多边形内 ✗ ⇒ 笔画的第二点与 dab 半径仍可越界 ✓
+    //   ⇒ 现在**整块（笔尖包围盒的四角 + 两端点）都必须在内**才算数 ✓，否则**跳过并如实计数** ✓
+    //     （不假装画了 ✓；也不偷偷把点搬进去 ✗ —— 那会让分布失真 ✓）。
+    let mut skipped_outside = 0usize;
     for _ in 0..count {
         // **协作式取消的安全点** ✓（P1）：一笔一停 ✓ ——
         // `scatter_strokes` 的 `count` 上限是 2000 ✓（每次落笔都是完整的一次光栅化 ✓）
@@ -13229,7 +13234,6 @@ fn write_scatter_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
                 continue;
             }
         }
-        placed += 1;
         let size = size_low + scatter_next(&mut state) * (size_high - size_low).max(0.0);
         let alpha = opacity_low + scatter_next(&mut state) * (opacity_high - opacity_low).max(0.0);
         let angle = fixed_angle.unwrap_or_else(|| scatter_next(&mut state) * std::f64::consts::TAU);
@@ -13259,11 +13263,41 @@ fn write_scatter_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
         if let Some(id) = &clip {
             stroke["clip_to_selection"] = json!(id);
         }
+        // **整块都要在里** ✓（锚点在内但半径越界 = 剪影边缘的脏笔 ✓）
+        if let Some(points) = &polygon {
+            let half = size / 2.0;
+            let (x1, y1) = (x + angle.cos() * length, y + angle.sin() * length);
+            let mut inside = true;
+            // **两端各自的方框四角都要查** ✗：只查"起点四角 ＋ 终点那一个点"会漏掉**远端的半径** ✓
+            //（本判据第一次实测就是因此红在 (32,4)——笔朝上时远端 5px 半径越过了顶边 ✗）。
+            for (px, py) in [
+                (x - half, y - half),
+                (x + half, y - half),
+                (x - half, y + half),
+                (x + half, y + half),
+                (x1 - half, y1 - half),
+                (x1 + half, y1 - half),
+                (x1 - half, y1 + half),
+                (x1 + half, y1 + half),
+            ] {
+                if !yanshi_render::geometry::point_in_polygon(px, py, points) {
+                    inside = false;
+                    break;
+                }
+            }
+            if !inside {
+                skipped_outside += 1;
+                continue;
+            }
+        }
+        placed += 1;
         write_brush_stroke(ctx, &stroke)?;
     }
     Ok(json!({
         "ok": true,
         "strokes": placed,
+        // **跳过了多少笔**（越出多边形 ✓）—— 与 `strokes` 成对读 ✓（`strokes + skipped_outside` ≤ `count` ✓）
+        "skipped_outside": skipped_outside,
         "seed": seed,
         "direction": direction,
         // **回声**：传了裁剪就说 ✓（没传 ⇒ 不出现 ⇒ 老响应逐字节不变 ✓）。
