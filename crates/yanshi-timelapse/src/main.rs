@@ -241,7 +241,10 @@ fn main() -> Result<()> {
             "-i",
             "-",
             "-c:v",
-            "libx264",
+            // **编码器要按可用性挑** ✓（第 601 轮）：外部那台机器若没有 `libx264`，
+            //   ffmpeg 只会写出文件头（我们之前还会 exit 0）⇒ 现在按 `-encoders` 探测，
+            //   依次尝试 `libx264` → `mpeg4`（两者都常见 ✓），并把选中的名字打进 banner ✓。
+            &pick_encoder(),
             "-preset",
             "ultrafast",
             "-pix_fmt",
@@ -458,6 +461,26 @@ fn push_frame(
 /// 抽成纯函数是为了**能测**：真实触发要等 ffmpeg 拒绝输入，本机复现不了 ✓
 /// （**变异**：把 `frames == 0` 的判断去掉 ⇒ 判据 `zero_frames_is_an_error` 红 ✓）。
 /// ffmpeg 的 stderr 落盘位置（与输出同目录，便于用户直接看）。
+/// 挑一个本机 ffmpeg **确实有**的编码器（`libx264` 优先，退回 `mpeg4`，再退回 `mpeg2video`）。
+///
+/// **为什么**：外部报「261 字节空视频、exit 0」，而最常见的环境差异就是**没有 libx264 的 ffmpeg 构建**。
+/// 猜不如问：跑一次 `ffmpeg -hide_banner -encoders`，从输出里挑 ✓。
+fn pick_encoder() -> String {
+    let listed = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-encoders"])
+        .output()
+        .ok()
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+        .unwrap_or_default();
+    for candidate in ["libx264", "mpeg4", "mpeg2video"] {
+        if listed.contains(candidate) {
+            return candidate.to_owned();
+        }
+    }
+    // 一个都没探到（或 ffmpeg 不认 `-encoders`）⇒ 仍用 libx264，让 ffmpeg 自己报错（错误现在会留档 ✓）
+    "libx264".to_owned()
+}
+
 fn ffmpeg_log(out_mp4: &std::path::Path) -> std::path::PathBuf {
     let mut path = out_mp4.to_path_buf();
     let name = path
@@ -492,6 +515,33 @@ fn ensure_frames_written(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod encoder_tests {
+    use super::pick_encoder;
+
+    /// **判据**：挑出来的编码器必须**真的在本机 `ffmpeg -encoders` 里**（第 601 轮）。
+    /// **变异**：让它返回 `definitely-not-an-encoder` ⇒ 红（若本机 ffmpeg 可用）。
+    #[test]
+    fn picked_encoder_exists_in_ffmpeg() {
+        let listed = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-encoders"])
+            .output()
+            .ok()
+            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+            .unwrap_or_default();
+        let picked = pick_encoder();
+        if listed.is_empty() {
+            // 本机没有 ffmpeg ⇒ 这条判不了（不是产品问题）
+            eprintln!("⊘ 不可判：本机没有可用的 ffmpeg ⇒ 跳过编码器检查");
+            return;
+        }
+        assert!(
+            listed.contains(&picked),
+            "挑出来的编码器 `{picked}` 不在 `ffmpeg -encoders` 里 ⇒ 会在外部机器上写出空视频"
+        );
+    }
 }
 
 #[cfg(test)]
