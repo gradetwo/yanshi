@@ -423,6 +423,42 @@ pub(super) fn selection_area_px(ctx: &mut ToolContext<'_>, shape: &Value) -> (f6
                 None => (0.0, false),
             }
         }
+        // **多边形选区的面积** ✓（`bug_report.md` BUG-06 那一族：**报 0 比不报更糟** ✗ ——
+        //   它长得像"这个选区是空的" ✓）。用**鞋带公式** ✓（顶点按顺序 ✓，绝对值的一半 ✓）。
+        "polygon" | "lasso" => {
+            let Some(points) = shape.get("points").and_then(Value::as_array) else {
+                return (0.0, false);
+            };
+            let mut area = 0.0_f64;
+            let mut count = 0usize;
+            let mut previous: Option<(f64, f64)> = None;
+            let mut first: Option<(f64, f64)> = None;
+            for point in points {
+                let Some(pair) = point.as_array() else {
+                    return (0.0, false);
+                };
+                let (Some(x), Some(y)) = (
+                    pair.first().and_then(Value::as_f64),
+                    pair.get(1).and_then(Value::as_f64),
+                ) else {
+                    return (0.0, false);
+                };
+                if let Some((px, py)) = previous {
+                    area += px * y - x * py;
+                } else {
+                    first = Some((x, y));
+                }
+                previous = Some((x, y));
+                count += 1;
+            }
+            if count < 3 {
+                return (0.0, false);
+            }
+            if let (Some((fx, fy)), Some((lx, ly))) = (first, previous) {
+                area += lx * fy - fx * ly;
+            }
+            (area.abs() / 2.0, true)
+        }
         _ => (0.0, false),
     }
 }
