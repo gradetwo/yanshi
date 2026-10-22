@@ -5237,3 +5237,30 @@ let divisions = ((distance / 2.0).ceil() as usize).clamp(1, 4096);
 **⇒ 下一步（你的 1/2/3）**：把 `ref` 里同质区截成 blob ⇒ 你第 3 条"源离洞 ≥25px"**现在可以被工具拦住** ✓
 （`min_distance`／`min_distance_from_target` 任一 ⇒ 低于就 `invalid_argument`，并**报出实测间距** ✓）。
 **`type:"region"`（直接从图层形状取）仍明确未实现** ✗ —— 会报错并告诉你先导出成位图 ✓，不会静默当没有 ✓。
+
+---
+
+## 第 74 次那条 `texture.blob_hash` 用 PNG 的坑：**已经在 `fill_region` 就拦住/认出来**了
+
+**⇒ 你说的三件事**，逐条对应：
+
+| 你的建议 | 现在的行为 |
+|---|---|
+| **要么接受 PNG 并解码** | ✅ **自动认出**：没写 `mime_type` 而字节头是 PNG 签名 ⇒ 按 `image/png` 解 ✓，并把生效的 MIME **写进文档** ✓、回显在 `texture.mime_type` ✓ |
+| **要么在 `fill_region` 就校验 raw／尺寸** | ✅ 现在**写文档之前**就解一遍：`image/x-yanshi-raw` 要求字节数 = `w×h×4`；`image/png` 会真的 `decode_png` 且尺寸必须与 `width`/`height` 一致 ✓ |
+| **错误信息要能看出哪里不对** | ✅ 两个数都写出来，并直接给补救办法（见下） |
+
+**⇒ 现在的错误长这样**（实测，8×8 传了 100 字节）：
+
+```
+texture.blob_hash 的字节数与 raw RGBA 不符：按 8×8×4 应为 256 字节，实际 100 字节
+⇒ 若这是一张 **PNG**，请给 `mime_type:"image/png"`（也可省略 mime，我会按文件头认出它 ✓）；
+否则请上传 raw RGBA
+```
+
+**⇒ 判据**（`crates/yanshi-server/tests/fill_region_texture.rs`，5 条）：
+PNG 当纹理 ⇒ `ok:true` ＋ 回显 `mime_type:"image/png"` ＋ **渲染后采样左红右蓝** ✓
+（只断"渲染成功"不够 ✗ —— 形状被跳过时也是一片白 ✓）；截断的 raw ⇒ 报错含 `256` 与 `100` ✓。
+**变异**：去掉 PNG 认出 ⇒ PNG 那条红；去掉长度检查 ⇒ 截断那条红（两条都实测红过 ✓）。
+
+**⇒ 你下一步不用改流程**：直接把 `ref/test5` 的 PNG 传进来就行 ✓ —— 不用先转 raw RGBA ✓。

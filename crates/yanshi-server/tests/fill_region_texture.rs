@@ -293,3 +293,135 @@ fn textured_fill_does_not_require_a_colour() {
         "给了 texture 时 color 应当可省略：{filled}"
     );
 }
+
+#[test]
+fn a_png_texture_is_accepted_and_the_effective_mime_is_recorded() {
+    // **外部第 74 次实测的那个坑** ✓：拿 PNG 当 `texture.blob_hash`（且不写 mime_type）
+    // ⇒ 原来 `fill_region` 回 `ok:true`，**之后**渲染/导出才失败，错误里只有 blob_hash ✗。
+    // 现在：字节头是 PNG 签名 ⇒ **自动认出** ✓、把 `image/png` **写进文档** ✓、并**立刻**校验尺寸 ✓。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let png = yanshi_render::png::encode_png(8, 8, &source_bytes()).expect("编码 PNG");
+    let hash = workspace
+        .store()
+        .put(&png)
+        .expect("PNG 应能入库")
+        .to_string();
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    let filled = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 32, "y": 32, "w": 32, "h": 32},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 0, "y": 0, "w": 8, "h": 8},
+                "width": 8,
+                "height": 8
+            }
+        }),
+    );
+    assert_eq!(
+        filled.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "PNG 纹理必须被接受（外部第 74 次：原来这里成功、导出才炸）：{filled}"
+    );
+    assert_eq!(
+        filled
+            .get("texture")
+            .and_then(|texture| texture.get("mime_type"))
+            .and_then(Value::as_str),
+        Some("image/png"),
+        "生效的 MIME 必须回显成 image/png（自动认出的结果）：{filled}"
+    );
+    // **渲染侧也必须真能解** ✓：这条正是他们失败的下一步（渲染/导出时才解码）。
+    let rendered = registry().call(
+        &mut ctx,
+        "render_region",
+        &json!({"region": [0, 0, 128, 96]}),
+    );
+    assert_eq!(
+        rendered.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "PNG 纹理的文档必须能渲染（他们的失败点就在这里）：{rendered}"
+    );
+    // **而且要真的把源图颜色搬过来** ✓（否则"渲染成功"也可能只是形状被跳过 ⇒ 一片白 ✗）。
+    let samples = registry().call(
+        &mut ctx,
+        "sample_colors",
+        &json!({"points": [[34, 36], [60, 36]]}),
+    );
+    let samples = samples
+        .get("samples")
+        .and_then(Value::as_array)
+        .expect("sample_colors 形状变了");
+    let channel = |index: usize, slot: usize| -> u64 {
+        samples[index]
+            .get("rgba")
+            .and_then(Value::as_array)
+            .and_then(|rgba| rgba.get(slot))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
+    assert!(
+        channel(0, 0) > 200 && channel(0, 2) < 60,
+        "PNG 纹理目标左侧应取到源的红半 ⇒ 实测 [{},{},{}]",
+        channel(0, 0),
+        channel(0, 1),
+        channel(0, 2)
+    );
+    assert!(
+        channel(1, 2) > 200 && channel(1, 0) < 60,
+        "PNG 纹理目标右侧应取到源的蓝半 ⇒ 实测 [{},{},{}]",
+        channel(1, 0),
+        channel(1, 1),
+        channel(1, 2)
+    );
+}
+
+#[test]
+fn a_truncated_raw_texture_is_rejected_here_with_the_byte_counts() {
+    // **早报错** ✓：字节数 ≠ w×h×4 时必须在 `fill_region` 就拒绝，并写出**两个数**与补救办法。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let truncated = vec![0u8; 100]; // 8×8×4 = 256 ⇒ 差 156 字节
+    let hash = workspace
+        .store()
+        .put(&truncated)
+        .expect("字节应能入库")
+        .to_string();
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    let message = expect_error(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 32, "y": 32, "w": 32, "h": 32},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 0, "y": 0, "w": 8, "h": 8},
+                "width": 8,
+                "height": 8
+            }
+        }),
+    );
+    assert!(
+        message.contains("256") && message.contains("100"),
+        "错误必须写出「应为 256、实际 100」两个数：{message}"
+    );
+    assert!(
+        message.contains("mime_type"),
+        "错误必须告诉用户 PNG 要写 mime_type（否则他只会看到字节数不符）：{message}"
+    );
+}

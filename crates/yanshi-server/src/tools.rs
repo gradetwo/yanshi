@@ -3879,7 +3879,7 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     //   ③ **源区域要能离洞 ≥ 25px** ⇒ 下面按 `min_distance` 校验并**报错说清** ✓
     //      （他的 `test1` 红褐竖痕就是采到了人物边缘的过渡色 ✓ ⇒ 不校验等于让他重踩 ✓）。
     // **缺省 / `"smooth"`** ⇒ 纯色填充 ✓（**存量行为逐字节不变** ✓）。
-    let texture = match args.get("texture") {
+    let mut texture = match args.get("texture") {
         None | Some(Value::Null) => None,
         Some(Value::String(text)) if text == "smooth" => None,
         Some(value @ Value::Object(_)) => {
@@ -4114,6 +4114,16 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **源矩形与目标的间距** ✓（对方第 ③ 条必须 ✓）：文档里存的 `min_distance` 只是**记录** ✓，
     // 真正的拦截在这里 ✓ —— 采到"洞边缘的过渡色"是**看得见的事故**（他的 `test1` 红褐竖痕 ✓），
     // 而它**不会报错** ✗ ⇒ 只能靠这一道校验 ✓。
+    // **纹理 blob 必须在**写文档之前**就能解开** ✓（外部第 74 次实测 ✗）：
+    //   他拿一张 **PNG** 当 `texture.blob_hash` ⇒ `fill_region` **成功** ✓
+    //   而**之后** `export_png` 才失败 ✓，错误里只有 `{"blob_hash": "sha256:…"}` ⇒ **看不出哪里不对** ✗
+    // ⇒ 所以这里做三件事：① 哈希能解析 ② blob 在存储里 ③ 字节**真能解码**且尺寸对得上
+    //   （PNG 还可以**自动认出** ✓：字节头是 PNG 签名而没写 mime 时 ⇒ 记成 `image/png` ✓，
+    //    并把生效的 mime **写进文档** ✓ —— 不做"悄悄按 PNG 解但文档里写着 raw" ✗）。
+    let mut texture_mime: Option<String> = None;
+    if let Some(spec) = texture.as_mut() {
+        texture_mime = Some(validate_texture_blob(ctx, spec)?);
+    }
     let mut texture_gap: Option<f64> = None;
     if let Some(spec) = &texture {
         let target = geometry
@@ -4175,7 +4185,12 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     )?;
     // **回显生效值** ✓（不撒谎 ✓）：`texture` 传了而这里说 `null` ⇒ 就是没落地 ✓。
     let texture_out = match (&texture, texture_gap) {
-        (Some(_), Some(gap)) => json!({"type": "bitmap", "source_gap_px": gap}),
+        (Some(_), Some(gap)) => json!({
+            "type": "bitmap",
+            "source_gap_px": gap,
+            // **生效的 MIME 要回显** ✓：PNG 被自动认出时，调用方必须看得见文档里记的是什么 ✓。
+            "mime_type": texture_mime.clone().unwrap_or_default(),
+        }),
         _ => Value::Null,
     };
     Ok(json!({
@@ -4185,6 +4200,116 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         "texture": texture_out,
         "drawn": drawn,
     }))
+}
+
+/// **纹理 blob 早校验** ✓（外部第 74 次报告 ✗）：返回**生效的 MIME** ✓。
+///
+/// **为什么必须早** ✗：原先是"写文档时照收、渲染/导出时才解码" ⇒ 一张 PNG 当 raw 传进来
+/// ⇒ `fill_region` 回 `ok:true` ✓、**几十分钟后** `export_png` 才失败 ✓，
+/// 而错误里只有 `blob_hash` ⇒ 谁都看不出"字节与 MIME 不匹配" ✗。
+///
+/// **三件事**：哈希能解析 ✓、blob 在存储里 ✓、字节**真能解码**且尺寸对得上 ✓。
+/// **PNG 自动认出** ✓：没写 `mime_type` 而字节头是 PNG 签名 ⇒ 记成 `image/png` ✓
+/// 并**写回 `spec`**（文档必须记录实际用的 MIME ✓，不许"按 PNG 解、文档写 raw" ✗）。
+fn validate_texture_blob(ctx: &mut ToolContext<'_>, spec: &mut Value) -> Result<String> {
+    let hash_text = spec
+        .get("blob_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("texture 缺少 blob_hash（源位图的内容哈希）".to_string()),
+            )
+        })?
+        .to_string();
+    let hash: yanshi_core::BlobHash = hash_text.parse().map_err(|_| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("texture.blob_hash 非法：{hash_text}")),
+        )
+    })?;
+    let bytes = ctx.workspace.store().get(&hash).map_err(|_| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!(
+                "texture.blob_hash 指向的 blob 不在存储里：{hash_text} ⇒ 先用 put_blob 上传"
+            )),
+        )
+    })?;
+    let (width, height) = (
+        spec.get("width").and_then(Value::as_u64).unwrap_or(0) as usize,
+        spec.get("height").and_then(Value::as_u64).unwrap_or(0) as usize,
+    );
+    if width == 0 || height == 0 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "texture 缺少 width/height（源位图的像素尺寸，用来校验字节数 ✓）".to_string(),
+            ),
+        ));
+    }
+    let declared = spec
+        .get("mime_type")
+        .and_then(Value::as_str)
+        .unwrap_or("image/x-yanshi-raw")
+        .to_string();
+    // **PNG 自动认出** ✓：字节头是 PNG 签名（`\x89PNG\r\n\x1a\n`）而声明是 raw ⇒ 改判 PNG ✓。
+    let png_magic = bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+    let effective = if declared == "image/x-yanshi-raw" && png_magic {
+        "image/png".to_string()
+    } else {
+        declared.clone()
+    };
+    match effective.as_str() {
+        "image/x-yanshi-raw" => {
+            let want = width * height * 4;
+            if bytes.len() != want {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "texture.blob_hash 的字节数与 raw RGBA 不符：按 {}×{}×4 应为 {want} 字节，                         实际 {} 字节 ⇒ 若这是一张 **PNG**，请给 `mime_type:\"image/png\"`                         （也可省略 mime，我会按文件头认出它 ✓）；否则请上传 raw RGBA",
+                        width,
+                        height,
+                        bytes.len()
+                    )),
+                ));
+            }
+        }
+        "image/png" => {
+            let Some((pw, ph, _)) = yanshi_render::png::decode_png(&bytes) else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "texture.blob_hash 声明为 image/png 但**解不开**（{} 字节）⇒ 检查上传的字节",
+                        bytes.len()
+                    )),
+                ));
+            };
+            if (pw as usize, ph as usize) != (width, height) {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "texture.blob_hash 的 PNG 尺寸是 {pw}×{ph}，与 width/height 声明的 {width}×{height} 不符"
+                    )),
+                ));
+            }
+        }
+        other => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "texture.blob_hash 的 mime_type 只支持 image/x-yanshi-raw（raw RGBA）与 image/png，得到 {other}"
+                )),
+            ));
+        }
+    }
+    // **文档必须记录生效的 MIME** ✓（自动认出时写回去 ✓）。
+    if effective != declared {
+        if let Some(object) = spec.as_object_mut() {
+            object.insert("mime_type".to_owned(), json!(effective));
+        }
+    }
+    Ok(effective)
 }
 
 /// **两个矩形之间的最短间距**（像素 ✓；重叠或相切 ⇒ 0 ✓）。
