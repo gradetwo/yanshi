@@ -44,7 +44,11 @@ const painted = await call("brush_stroke", {
 if (painted.ok !== true) { console.log("  ✗ 落笔失败 ⇒ 判据无效 ⇒ " + JSON.stringify(painted.context || painted.error_code)); process.exit(1); }
 const leftAfter = await shot(10, 80);
 const rightAfter = await shot(120, 80);
-if (!leftBefore || !rightBefore || !leftAfter || !rightAfter) { console.log("  ✗ 取不到像素 ⇒ 判据无效"); process.exit(1); }
+// **⇒ 取不到像素 ⇒ **前提不成立** ⇒ `exit 3`**（第 1616 轮；与 `tool-impasto-plateau` 同族）
+//   **⇒ 为什么**：原来 `exit(1)` ⇒ **CI 上看起来像"产品坏了"** ✗
+//     而它说的是"**量法没有对象**"（**例如服务没开 `--profile all`、`sample_colors` 不可用**）⇒
+//     **按本仓那条「判据的诚实在退出码」该是 3** ✓
+if (!leftBefore || !rightBefore || !leftAfter || !rightAfter) { console.log("  ⊘ 取不到像素 ⇒ **前提不成立**（**不是产品问题**）"); process.exit(3); }
 const changed = (a, b) => a.reduce((n, v, i) => (v !== b[i] ? n + 1 : n), 0);
 const leftDiff = changed(leftBefore, leftAfter);
 const rightDiff = changed(rightBefore, rightAfter);

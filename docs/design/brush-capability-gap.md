@@ -14498,3 +14498,22 @@ let divisions = ((distance / 2.0).ceil() as usize).clamp(1, 4096);
 
 **⇒ 为什么不做任意形状源**：**要距离变换** ⇒ **下一版** ✓
 **⇒ 工作量**：**spec／handler／渲染／判据／文档五处** ⇒ **不是一轮的活** ✓
+
+## 三百五十七、`tool-selection-clip` 把「判据无效」报成 `exit 1`（第 1616 轮，**同族第二条**）
+
+**⇒ 实测**：
+- **直接跑**（`--profile all` 的服务）⇒ **退出码 0**（**通过**）✓
+- **经 `run-criteria-local.sh`** ⇒ 「**✗ 取不到像素 ⇒ 判据无效**」＋ **`exit 1`** ✗
+
+**⇒ ⇒ 两个问题**：
+1. **前提不成立却给 `exit 1`** ⇒ **看起来像产品失败** ✗ ⇒ **改成 `exit 3`（⊘ 不可判）** ✓
+2. **`run-criteria-local.sh` 起的服务可能没开 `--profile all`** ⇒ **所以 `sample_colors` 不可用** ⇒ **这条待查** ✓
+
+**⇒ 而这是**同族第二条**（**第一条是 `tool-impasto-plateau`**）⇒
+**⇒ ⇒ 所以**"判据的前提失败要给 `exit 3`"这条**该普查一遍**：
+```bash
+grep -l '判据无效\|前提不成立\|取不到' scripts/tool-*.mjs | while read f; do
+  grep -q 'process.exit(3)' "$f" || echo "  缺 exit 3：$f"
+done
+```
+**⇒ ⇒ ⇒ 普查结果**（本轮）**见下一轮** —— **先修这一条** ✓
