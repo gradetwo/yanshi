@@ -21,11 +21,11 @@ if (!base || !doc || !token) {
   console.error("用法: node scripts/tool-export-matches-render.mjs <base> <doc> <token>");
   process.exit(2);
 }
-const dir = process.env.YANSHI_EXPORT_DIR;
-if (!dir) {
-  console.error("  ⊘ 不可判：没设 YANSHI_EXPORT_DIR（判据要靠它找到导出文件）");
-  process.exit(3);
-}
+// **导出文件的路径以工具返回的 `path` 为准** ✓（第 610 轮 CI 实测）：
+//   原版只认 `YANSHI_EXPORT_DIR` ⇒ **CI 上它没设** ⇒ 判据 `exit 3`「前置条件缺失」✗
+//   ⇒ 那就是「只在本机能过」的判据 ✓ ⇒ 现在**优先用响应里的 `path`**（实测存在且是绝对路径 ✓），
+//     环境变量只作为老服务器的兜底 ✓。
+const exportDir = process.env.YANSHI_EXPORT_DIR ?? null;
 
 const call = async (name, args) => {
   const url = `${base}/api/tools/${name}?doc=${encodeURIComponent(doc)}&token=${encodeURIComponent(token)}`;
@@ -75,8 +75,17 @@ const rp = [rendered[0], rendered[1], rendered[2], rendered[3]];
 // ② 导出像素（PNG 无损 ⇒ 用 ffmpeg 解成 rgba 再取第一个像素）
 const exported = await call("export_png", { path: PNG, deterministic: true });
 check(exported.ok === true, `export_png ⇒ ${JSON.stringify(exported).slice(0, 140)}`);
-const file = join(dir, PNG);
-check(existsSync(file), `导出文件不存在：${file}`);
+// 优先级：响应里的 `path` ✓ → `YANSHI_EXPORT_DIR` 兜底 ✓ → 不可判
+const candidates = [];
+if (typeof exported.path === "string" && exported.path.length > 0) candidates.push(exported.path);
+if (exportDir) candidates.push(join(exportDir, PNG));
+const file = candidates.find((candidate) => existsSync(candidate));
+if (!file) {
+  console.error(
+    `  ⊘ 不可判：拿不到导出的 PNG（响应 path=${JSON.stringify(exported.path ?? null)}｜YANSHI_EXPORT_DIR=${JSON.stringify(exportDir)}）——不是产品问题`,
+  );
+  process.exit(3);
+}
 let decoded;
 try {
   decoded = execFileSync("ffmpeg", ["-v", "error", "-i", file, "-f", "rawvideo", "-pix_fmt", "rgba", "-"], {
