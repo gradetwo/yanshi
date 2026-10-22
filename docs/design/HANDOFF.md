@@ -32,6 +32,12 @@ wc -l < scripts/criteria-known-red.txt                     # 已知红条数（�
 | `update_layer` 收 **`z_index`**（外部 `bug_report.md` BUG-20，ROI 第 1 条） | `tests/layer_z_index.rs`｜台账「三百七十二」 |
 | `scatter_strokes.area.points` 写进声明（同报告 BUG-04 第 1 条；他们说的「会被拒绝」**实测不成立**） | `tools_registry.rs` 的 `area` 参数｜台账「三百七十二」 |
 | `scatter_strokes` 接上 **`clip_to_selection`**（同报告 BUG-04 残留第 3 条） | `tests/scatter_clip_to_selection.rs`｜台账「三百七十五」 |
+| 散点**整块**（两端笔尖方框）留在多边形内 ＋ `skipped_outside` 计数 | 同文件第 2 条｜台账「三百七十七」 |
+| **位图选区**能裁剪了（`parse_geom` 认 `blob_hash`）＋ 蒙版多格式解码 ＋ 解不开时**响亮报错** | `tests/bitmap_selection_clip.rs`｜台账「三百七十八」 |
+| 位图选区的 **`area`** 报真实像素数（同族第三处） | 同文件第 2 条｜台账「三百七十八（续）」 |
+| **打开文档时报缺失 blob**（`blob_integrity`） | `tests/open_blob_integrity.rs`｜台账「三百八十」 |
+| **`texture.type:"region"`**（就地拍成位图＝从画布取纹理） | `tests/fill_region_texture.rs` 最后一条｜台账「三百八十一」 |
+| `texture.tiles` ＋ **平铺过多告警**（把外部第 78 次的选源原则做进工具） | 同文件第 9 条｜台账「三百七十九」 |
 | 双渲染器一致性脚本一直**空转**（写死 400×300，CI 起 320×240 ⇒ 0 条比对）⇒ 改成问 `describe_canvas` | `scripts/kernel-brush-parity.mjs`｜台账「三百六十七」 |
 | `raster_patch_fixed_cost` 的 CI 假红（163%）⇒ 比值改成**按轮配对** | `crates/yanshi-render/src/bitmap_tiles.rs`｜台账「三百七十三」 |
 | 纹理填充的 **JS 判据**（CI 分片里会跑） | `scripts/tool-fill-texture.mjs` |
