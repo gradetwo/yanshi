@@ -112,17 +112,30 @@ const [rr, , rb] = rgb(1);
 check(lr > 200 && lb < 60, "③ 目标**左**侧取到源的**红**半（平均会变紫 ⇒ 这条红）", `实测 [${rgb(0)}]`);
 check(rr < 60 && rb > 200, "④ 目标**右**侧取到源的**蓝**半（平均会变紫 ⇒ 这条红）", `实测 [${rgb(1)}]`);
 
-// ⑤ `type:"region"` 未实现 ⇒ 必须报错并**点名** region（不许静默降级）。
-const region = await call("fill_region", {
+// ⑤ **`type:"region"` 现在可用**（从画布取纹理 ⇒ 就地拍成位图）＋ ⑤b 缺 `source` 才报错
+//   **⇒ 这条判据原来是「region 必须报错」** ✗ —— 它钉的是**当时**的缺口 ✓；
+//     能力实现之后**它会红**（CI 实测 shard 2/6 红在这里 ✓）⇒ **判据要跟着能力走** ✓，
+//     否则它就变成"阻止功能上线"的绊脚石 ✗。
+const regionFilled = await call("fill_region", {
   layer_id: layerId,
   shape: target,
-  texture: { type: "region", source: { x: 0, y: 0, w: 8, h: 8 }, width: 8, height: 8 },
+  texture: { type: "region", source: { x: 40, y: 4, w: 8, h: 8 } },
 });
-const regionDetail = detailOf(region);
 check(
-  region?.ok === false && /region/i.test(regionDetail),
-  "⑤ texture.type=region 未实现 ⇒ 必须报错并点名 region",
-  `ok=${region?.ok}｜${regionDetail}`,
+  regionFilled?.ok === true && regionFilled?.texture?.from_region === true,
+  "⑤ texture.type=region 必须可用，并回显 from_region:true",
+  `ok=${regionFilled?.ok}｜${JSON.stringify(regionFilled?.texture ?? null).slice(0, 120)}`,
+);
+const regionNoSource = await call("fill_region", {
+  layer_id: layerId,
+  shape: target,
+  texture: { type: "region" },
+});
+const noSourceDetail = detailOf(regionNoSource);
+check(
+  regionNoSource?.ok === false && /source/.test(noSourceDetail) && /region/.test(noSourceDetail),
+  "⑤b region 缺 source ⇒ 必须报错并同时点名 region 与 source",
+  `ok=${regionNoSource?.ok}｜${noSourceDetail}`,
 );
 
 // ⑥ `min_distance` 大于实际间距 ⇒ 必须报错并点名 min_distance。
@@ -195,7 +208,7 @@ check(
 
 console.log(
   failures.length === 0
-    ? "  ⇒ 纹理填充：逐像素取源、region 响亮未实现、min_distance 护栏、jitter 打散墙纸 ✓"
+    ? "  ⇒ 纹理填充：逐像素取源、region 可用、min_distance 护栏、jitter 打散墙纸 ✓"
     : `  ⇒ 失败 ${failures.length} 条`,
 );
 process.exit(failures.length === 0 ? 0 : 1);

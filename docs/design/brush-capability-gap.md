@@ -15139,3 +15139,16 @@ raw RGBA 取 alpha ✓／raw L8 ✓），并**返回解不开的名单** ✓；
 **⇒ 判据**（`tests/fill_region_texture.rs` 第 11 条）：传 `blobhash` ⇒ 错误里必须**同时**
 出现「那个未知键」「可用键清单」「你是想写 `blob_hash` 吗」✓。
 **变异**：把未知键检查短路 ⇒ **红** ✓（实测只报"缺 blob_hash"，**没点名**拼错的那个键 ✗）。
+
+### 三百八十一（续）：**判据要跟着能力走** —— `tool-fill-texture.mjs` 的 ⑤ 在 region 实现后必红 ✓
+
+**⇒ CI 实测**（run `39766678356` 的 `criteria shard 2/6`）：
+`✗ tool-fill-texture.mjs｜⑤ texture.type=region 未实现 ⇒ 必须报错并点名 region（ok=true）` ✓
+**⇒ 这不是回归** ✓：能力**已经实现了** ✓ ⇒ 而判据还在要求它"必须报错" ✗。
+**⇒ 修法**：⑤ 改成**正向**（`ok:true` ＋ 回显 `from_region:true` ✓），
+并新增 **⑤b**（`region` **缺 `source`** ⇒ 报错并**同时点名** region 与 source ✓）。
+**⇒ 本机实测**（`run-criteria-local.sh`，退出码 **0**）：⑤ `ok=true｜from_region:true` ✓、
+⑤b `ok=false｜"texture.type=region 需要 source（…）"` ✓。
+**⇒ 教训**：**判据钉的是"当时的缺口"** ✗ ⇒ 缺口一补上，它就变成**阻止功能上线**的绊脚石 ✗
+⇒ **实现能力的那一笔里，必须同时把"证明缺口存在"的判据改成"证明能力可用"** ✓
+（与"同一事实只写一处"同源：同一个断言不能同时表达两种期望 ✓）。
