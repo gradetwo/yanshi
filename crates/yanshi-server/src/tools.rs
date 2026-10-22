@@ -3986,6 +3986,28 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                             ));
                         }
                     }
+                    // **`brightness_match` 暂不可用 ⇒ 响亮拒绝** ✓（第 435 轮，**有实测依据**）：
+                    //   探针实测同一次填充会渲染多趟 ✓ —— **整层那一趟**能读到墙 ✓、
+                    //   **对象级那一趟读不到**（自建缓冲）✗ ⇒ 而 `sample_colors`/导出读的是后一趟 ✗
+                    //   ⇒ **亮度项实际不参与** ✗（实测「开/关同数」85.0/85.0 ✓）。
+                    //   ⇒ 与其给一个"看起来有用、实际不生效"的旋钮 ✗ ⇒ **拒绝** ✓。
+                    if value
+                        .get("brightness_match")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
+                        return Err(YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail(
+                                "texture.brightness_match（按位置的源亮度匹配）**暂不可用** \
+                                 ⇒ 实测：同一次填充会渲染**多趟**，**整层那一趟**能读到目标下方的墙 ✓、\
+                                 **对象级那一趟读不到**（自建缓冲）✗ ⇒ 而采样/导出读的是**后一趟** ✗ \
+                                 ⇒ 亮度项**实际不参与**（实测「开/关」结果完全相同 ✗）\
+                                 ⇒ 所以现在**拒绝**这个键，而不是给一个不生效的旋钮 ✗"
+                                    .to_string(),
+                            ),
+                        ));
+                    }
                     match value.get("mode").and_then(Value::as_str) {
                         None | Some("tile") => {}
                         // **`patch` 已实现**（第 2770 轮；见 `render.rs::quilt_patches`）✓

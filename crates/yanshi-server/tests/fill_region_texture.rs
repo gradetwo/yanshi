@@ -1658,15 +1658,16 @@ fn the_shape_does_not_leak_into_the_synthesised_texture() {
 }
 
 #[test]
-fn brightness_matching_is_accepted_and_echoed() {
-    // **外部第 82 次的正式需求**：按位置的源亮度匹配 ✓（`test2` 的墙左右渐变 ⇒
-    // 单一亮度源会"亮出人形" ✗）。**已实现** ✓ ⇒ 传 `true` 必须成功、且**回显**说清它开着 ✓
-    // （`false` ⇒ 回显 `false` ✓ —— 两件事成对：只断前者，"永远 true" 也能过 ✗）。
+fn brightness_matching_is_refused_because_it_cannot_see_the_wall() {
+    // **第 435 轮：从"接受"退回"拒绝"** ✓ —— 依据是实测，不是口味 ✓：
+    // 探针打出同一次填充渲染**多趟**，**整层那一趟** `ref=true` ✓、**对象级那一趟** `ref=false` ✗，
+    // 而采样/导出读的是**后一趟** ⇒ 亮度项**实际不参与**（实测「开/关同数」85.0/85.0 ✗）。
+    // ⇒ 给它一个"看起来有用、实际不生效"的旋钮 ✗ 是本仓最恨的形态 ⇒ **拒绝并说清原因** ✓。
     let mut workspace = Workspace::in_memory(DocumentSettings::default());
     let hash = workspace
         .store()
         .put(&source_bytes())
-        .expect("源位图应能入库")
+        .expect("blob")
         .to_string();
     {
         let mut ctx = context(&mut workspace);
@@ -1674,112 +1675,48 @@ fn brightness_matching_is_accepted_and_echoed() {
     }
     let mut ctx = context(&mut workspace);
     let layer = first_layer(&mut ctx);
-    let mut run = |flag: bool, y: i32| -> bool {
-        let filled = registry().call(
-            &mut ctx,
-            "fill_region",
-            &json!({
-                "layer_id": layer,
-                "shape": {"type": "rect", "x": 4, "y": y, "w": 24, "h": 16},
-                "texture": {
-                    "type": "bitmap",
-                    "blob_hash": hash,
-                    "source": {"x": 40, "y": 20, "w": 8, "h": 8},
-                    "width": 8,
-                    "height": 8,
-                    "mode": "patch",
-                    "brightness_match": flag
-                }
-            }),
-        );
-        assert_eq!(
-            filled.get("ok").and_then(Value::as_bool),
-            Some(true),
-            "brightness_match={flag} 必须成功 ⇒ {filled}"
-        );
-        filled
-            .get("texture")
-            .and_then(|texture| texture.get("brightness_match"))
-            .and_then(Value::as_bool)
-            .unwrap_or(!flag)
-    };
-    assert!(
-        run(true, 4),
-        "`brightness_match:true` 必须回显 `true`（不许沉默）"
+    let message = expect_error(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 4, "y": 4, "w": 24, "h": 16},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                "width": 8, "height": 8,
+                "mode": "patch", "brightness_match": true
+            }
+        }),
     );
     assert!(
-        !run(false, 26),
-        "`brightness_match:false` 必须回显 `false`（否则这个字段没有鉴别力）"
+        message.contains("brightness_match") && message.contains("暂不可用"),
+        "必须点名 brightness_match ＋「暂不可用」⇒ {message}"
     );
-}
-
-#[test]
-fn a_region_source_keeps_the_synthesis_knobs() {
-    // **第 423 轮抓到的真 bug** ✗：`texture.type:"region"` 的转换只带
-    // `min_distance`/`jitter` ⇒ `mode:"patch"` 等**被静默丢掉** ✗
-    // ⇒ 用户以为在用合成 ✓，实际拿到的是平铺 ✗（**这正是外部从 `D18` 起最恨的那类** ✗）。
-    // 判据断**回显**：region 源 ＋ `mode:"patch"` ⇒ 回显必须是 `patch` ✓（丢掉就是 `tile` ⇒ 红）。
-    let mut workspace = Workspace::in_memory(DocumentSettings::default());
-    {
-        let mut ctx = context(&mut workspace);
-        new_document(&mut ctx);
-    }
-    let mut ctx = context(&mut workspace);
-    let layer = first_layer(&mut ctx);
-    // 先铺一条源带（暗→亮）供 region 取
-    for (index, level) in [20u64, 90, 180].into_iter().enumerate() {
-        let band = registry().call(
-            &mut ctx,
-            "fill_region",
-            &json!({
-                "layer_id": layer,
-                "shape": {"type": "rect", "x": index as i32 * 10, "y": 0, "w": 10, "h": 10},
-                "color": [level, level, level, 255]
-            }),
-        );
-        assert_eq!(
-            band.get("ok").and_then(Value::as_bool),
-            Some(true),
-            "源带应当铺成：{band}"
-        );
-    }
-    let filled = registry().call(
+    assert!(
+        message.contains("对象级") || message.contains("多趟"),
+        "必须说清**为什么**（多趟渲染／对象级那趟读不到）⇒ {message}"
+    );
+    // **对照组**：`false`/不传 ⇒ 照常可用 ✓
+    let ok = registry().call(
         &mut ctx,
         "fill_region",
         &json!({
             "layer_id": layer,
             "shape": {"type": "rect", "x": 4, "y": 30, "w": 24, "h": 16},
             "texture": {
-                "type": "region",
-                "source": {"x": 0, "y": 0, "w": 30, "h": 10},
-                "mode": "patch",
-                "patch": 8,
-                "overlap": 2,
-                "candidates": 16,
-                "seam": "min_error",
-                "brightness_match": true
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                "width": 8, "height": 8,
+                "mode": "patch", "brightness_match": false
             }
         }),
     );
     assert_eq!(
-        filled.get("ok").and_then(Value::as_bool),
+        ok.get("ok").and_then(Value::as_bool),
         Some(true),
-        "region 填充应当成功：{filled}"
-    );
-    let texture = filled.get("texture").cloned().unwrap_or(Value::Null);
-    assert_eq!(
-        texture.get("mode").and_then(Value::as_str),
-        Some("patch"),
-        "region 源必须保住 `mode:patch`（丢掉就是静默退回平铺）⇒ {texture}"
-    );
-    assert_eq!(
-        texture.get("seam").and_then(Value::as_str),
-        Some("min_error"),
-        "region 源必须保住 `seam` ⇒ {texture}"
-    );
-    assert_eq!(
-        texture.get("brightness_match").and_then(Value::as_bool),
-        Some(true),
-        "region 源必须保住 `brightness_match` ⇒ {texture}"
+        "false 必须照常可用 ⇒ {ok}"
     );
 }
