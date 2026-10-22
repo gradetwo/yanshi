@@ -14582,3 +14582,23 @@ texture = {"type": "bitmap", "blob_hash": "…"}                            # �
 **低于它就报错说清**（**"源区域太贴目标边缘，会采到过渡色"**）✓
 
 **⇒ 而 `jitter`**：**它对"重复平铺的可见周期"有用** ⇒ **第一版可不做**（**先保证不出现平均色**）✓
+
+## 三百六十、`texture=` 的**实现路线图**（第 1624 轮；**6 个精确改动点**）
+
+**⇒ 渲染腿**：**`Buffer::fill_coverage_sampled`（已完成，12/12 绿）** ✓
+**⇒ ⇒ 而**接线要改 6 处**（**全部已定位到行**）：
+
+| # | 文件:位置 | 改什么 |
+|---|---|---|
+| **①** | `object.rs:50` 的 `Primitive::Shape` 变体 | **加 `texture: Option<ShapeTexture>`** |
+| **②** | `object.rs:833`（描述 → Primitive）| **解析 `data.texture`**：`{type:"region", source:{layer_id, shape}}` 或 `{type:"bitmap", blob_hash}` |
+| **③** | `object.rs:1126` / `:1303` / `render.rs:5662` | **三个构造点补 `texture: None`**（**存量行为不变**）|
+| **④** | `render.rs:3511` 的解构 | **加 `texture`** |
+| **⑤** | `render.rs` 的 `fill_coverage` 调用点（约 3653 行）| **`texture.is_some()` ⇒ 走 `fill_coverage_sampled`** |
+| **⑥** | `tools_registry.rs` 的 `texture` 参数 | **从 `String` 改成 `Any`（对象或 "smooth"）** ＋ 说明三条规格 |
+
+**⇒ ⇒ 还有两件**：
+- **`min_distance_from_target`**（他们 ③）⇒ **服务端校验**：**源区域与目标区域的最小间距 < 值 ⇒ 报错说清**
+- **判据**（3 条）⇒ **全红源 ⇒ 全红 / 左红右蓝 ⇒ 跟着分 / `ref` 纯绿 ⇒ 边界无绿** ✓
+
+**⇒ 估计**：**一整轮**（**6 处 + 2 件 + 判据**）⇒ **必须一次做完**（**半成品 = 声明了但不生效** ✗）✓
