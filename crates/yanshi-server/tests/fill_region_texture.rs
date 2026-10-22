@@ -1578,3 +1578,81 @@ fn the_same_texture_and_region_synthesise_the_same_content_anywhere() {
         "同一纹理 ＋ 同一参数在**不同位置**必须合成出**同一图案**（种子不含对象 id）\n第一处：{first:?}\n第二处：{second:?}"
     );
 }
+
+#[test]
+fn the_shape_does_not_leak_into_the_synthesised_texture() {
+    // **外部第 81 次提的第二条判据（形状泄漏）** ✓：
+    // 「把目标形状换成圆形与方形各跑一次 ⇒ 两次结果的**内部差异图**不许呈现目标形状」✓。
+    // **构造版**：同一个文档里，方形与圆形各填一次**同一纹理、同一参数** ✓；
+    // 取**相对 bbox 原点相同**的若干**内部**采样点 ✓ ⇒ 两边必须**逐像素相同** ✓
+    // （种子只由源＋参数决定 ✓；合成按 bbox 的固定网格推进 ✓ ⇒ 内部历史相同 ⇒ 输出必须相同 ✓）。
+    // **若形状漏进纹理**：两次内部的块选择会因"已填邻域不同"而分叉 ⇒ 采样点会不同 ⇒ 红 ✓。
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let hash = workspace
+        .store()
+        .put(&source_bytes())
+        .expect("源位图应能入库")
+        .to_string();
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    let mut fill = |shape: Value| {
+        let filled = registry().call(
+            &mut ctx,
+            "fill_region",
+            &json!({
+                "layer_id": layer,
+                "shape": shape,
+                "texture": {
+                    "type": "bitmap",
+                    "blob_hash": hash,
+                    "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                    "width": 8,
+                    "height": 8,
+                    "mode": "patch",
+                    "patch": 6,
+                    "overlap": 2,
+                    "candidates": 12
+                }
+            }),
+        );
+        assert_eq!(
+            filled.get("ok").and_then(Value::as_bool),
+            Some(true),
+            "应当成功：{filled}"
+        );
+    };
+    // 方形 bbox 原点 (2,2)、圆形 bbox 原点 (34,2) ⇒ 相对原点相同的内部采样点 ✓
+    fill(json!({"type": "rect", "x": 2, "y": 2, "w": 30, "h": 30}));
+    fill(json!({"type": "ellipse", "cx": 49.0, "cy": 17.0, "rx": 15.0, "ry": 15.0}));
+    let offsets = [(8i32, 8i32), (12, 10), (16, 14), (10, 18)];
+    let points: Vec<[i32; 2]> = offsets
+        .iter()
+        .flat_map(|(dx, dy)| [[2 + dx, 2 + dy], [34 + dx, 2 + dy]])
+        .collect();
+    let samples = registry()
+        .call(&mut ctx, "sample_colors", &json!({"points": points}))
+        .get("samples")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(samples.len(), points.len(), "采样点数必须对得上");
+    let colour = |index: usize| -> Vec<u64> {
+        samples[index]
+            .get("rgba")
+            .and_then(Value::as_array)
+            .map(|values| values.iter().filter_map(Value::as_u64).collect())
+            .unwrap_or_default()
+    };
+    for (pair, (dx, dy)) in offsets.iter().enumerate() {
+        let square = colour(pair * 2);
+        let circle = colour(pair * 2 + 1);
+        assert_eq!(
+            square, circle,
+            "相对原点 ({dx},{dy}) 处，方形与圆形**内部内容必须相同**（形状不许漏进纹理）\n方形：{square:?}\n圆形：{circle:?}"
+        );
+    }
+}
