@@ -1053,7 +1053,9 @@ fn shape_from_the_other_vocabulary_is_rejected_not_defaulted() {
     for bad in [
         r#"{"kind":"rect","bbox":{"x":0,"y":1488,"w":3840,"h":1488}}"#,
         r#"{"type":"rect","bbox":{"x":0,"y":0,"w":10,"h":10}}"#,
-        r#"{"kind":"circle","x":10,"y":10,"r":5}"#,
+        // **`kind` 与 `type` 互为别名** ⇒ `{kind:"circle",x,y,r}` 属于**平铺**词汇、是合法写法 ✓
+        // ⇒ 真正的"另一套"是带 `bbox`／`geometry` 的结构化形态 ✓（下面这条就是）。
+        r#"{"kind":"circle","bbox":{"x":10,"y":10,"w":10,"h":10}}"#,
     ] {
         let v = json_shape(bad);
         let err = parse_smart_shape(&v, "smart_erase_shape").unwrap_err();
@@ -1062,6 +1064,13 @@ fn shape_from_the_other_vocabulary_is_rejected_not_defaulted() {
             "错误信息要写出可用形式，实测：{err:?}"
         );
     }
+    // **`kind` 当别名的平铺写法也必须通过** ✓（本轮 CI 上两条判据与外评测都用它 ✓）
+    let alias = json_shape(r#"{"kind":"rect","x":0,"y":1488,"w":3840,"h":1488}"#);
+    assert_eq!(
+        parse_smart_shape(&alias, "smart_erase_shape").unwrap().bbox,
+        (0.0, 1488.0, 3840.0, 2976.0),
+        "`kind` 与 `type` 互为别名 ⇒ 平铺 + kind 必须照旧通过"
+    );
     // 而**平铺**形式必须照旧通过 ✓（不能把修 bug 变成新限制 ✗）
     let ok = json_shape(r#"{"type":"rect","x":0,"y":1488,"w":3840,"h":1488}"#);
     assert_eq!(
