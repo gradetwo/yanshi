@@ -4745,6 +4745,8 @@ pub fn raster_mime_supported(mime_type: &str) -> bool {
 /// "源块小 ⇒ 块边界密集、最小误差挑块还会沿目标形状聚成剪影"之间 ✓ ⇒ 只有合成能同时避开 ✓。
 /// **⇒ 确定性** ✓：候选位置来自 `(seed, 块号, 候选号)` 的 splitmix64 ✓ ⇒ 同输入逐字节同输出 ✓。
 #[allow(clippy::too_many_arguments)]
+// 这里的下标循环是**二维 DP 的原意**（行/列就是坐标 ✓）⇒ 不算 `needless_range_loop` ✓
+#[allow(clippy::needless_range_loop)]
 fn quilt_patches(
     source: &[u8],
     sw: usize,
@@ -4816,6 +4818,67 @@ fn quilt_patches(
                 }
             }
             let (_, sx, sy) = best.unwrap_or((0, 0, 0));
+            // **带平滑约束的 DP 切缝** ✓（外部第 81 次点名要的 `seam:"min_error"` ✓）：
+            //   代价 = 该列「新块 vs 已填像素」的 SSD ✓；转移 = **上一行相邻三列取最小** ✓
+            //   （这就是"切缝连续、不打折"的约束 ✓ —— 按行贪心没有它，接缝会跳 ✗）。
+            let seam_cut: Option<Vec<usize>> = if seam_min_error && o > 1 {
+                let rows = (th - y0).min(p);
+                let cols = o.min(tw.saturating_sub(x0)).max(1);
+                let mut cost = vec![vec![0.0f64; cols]; rows];
+                for yy in 0..rows {
+                    let ty = y0 + yy;
+                    for xx in 0..cols {
+                        let sx2 = ((sy + yy) * sw + (sx + xx)) * 4;
+                        let tx2 = (ty * tw + (x0 + xx)) * 4;
+                        let mut c = 0.0f64;
+                        for channel in 0..3 {
+                            let d =
+                                f64::from(out[tx2 + channel]) - f64::from(source[sx2 + channel]);
+                            c += d * d;
+                        }
+                        cost[yy][xx] = c;
+                    }
+                }
+                let mut acc = cost.clone();
+                for yy in 1..rows {
+                    for xx in 0..cols {
+                        let mut best_prev = acc[yy - 1][xx];
+                        if xx > 0 {
+                            best_prev = best_prev.min(acc[yy - 1][xx - 1]);
+                        }
+                        if xx + 1 < cols {
+                            best_prev = best_prev.min(acc[yy - 1][xx + 1]);
+                        }
+                        acc[yy][xx] = cost[yy][xx] + best_prev;
+                    }
+                }
+                let mut path = vec![0usize; rows];
+                if rows > 0 {
+                    let mut best_x = 0usize;
+                    let mut best = f64::INFINITY;
+                    for xx in 0..cols {
+                        if acc[rows - 1][xx] < best {
+                            best = acc[rows - 1][xx];
+                            best_x = xx;
+                        }
+                    }
+                    path[rows - 1] = best_x;
+                    for yy in (0..rows - 1).rev() {
+                        let mut prev = path[yy + 1];
+                        let mut best = acc[yy][prev];
+                        for xx in [prev.saturating_sub(1), prev + 1] {
+                            if xx < cols && acc[yy][xx] < best {
+                                best = acc[yy][xx];
+                                prev = xx;
+                            }
+                        }
+                        path[yy] = prev;
+                    }
+                }
+                Some(path)
+            } else {
+                None
+            };
             for yy in 0..p {
                 let ty = y0 + yy;
                 if ty >= th {
@@ -4835,26 +4898,11 @@ fn quilt_patches(
                         // **`seam:"min_error"`**：水平重叠里按行找**最小 SSD 的列**切 ✓
                         //   （**按行贪心** —— 带平滑约束的 DP 还没做 ✗，见台账「三百八十九」）
                         if seam_min_error && xx < o {
-                            let mut best_x = 0usize;
-                            let mut best_cost = f64::INFINITY;
-                            for offset in 0..o {
-                                if x0 + offset >= tw {
-                                    continue;
-                                }
-                                let sx2 = ((sy + yy) * sw + (sx + offset)) * 4;
-                                let tx2 = (ty * tw + (x0 + offset)) * 4;
-                                let mut cost = 0.0f64;
-                                for channel in 0..3 {
-                                    let diff = f64::from(out[tx2 + channel])
-                                        - f64::from(source[sx2 + channel]);
-                                    cost += diff * diff;
-                                }
-                                if cost < best_cost {
-                                    best_cost = cost;
-                                    best_x = offset;
-                                }
-                            }
-                            if xx < best_x {
+                            let cut = seam_cut
+                                .as_ref()
+                                .and_then(|path| path.get(yy).copied())
+                                .unwrap_or(0);
+                            if xx < cut {
                                 continue;
                             }
                             out[ti..ti + 4].copy_from_slice(&source[si..si + 4]);
