@@ -366,6 +366,72 @@ impl Buffer {
         }
     }
 
+    /// **按像素取色填充**（第 1621 轮；外部 `fill_region(texture=)` 的渲染腿）
+    ///
+    /// **⇒ 与 [`Self::fill_coverage`] 的唯一差别**：颜色不是常数，而是
+    /// **每像素问一次 `sample(文档 x, 文档 y)`** ⇒ 于是可以做"从源区域取纹理"。
+    ///
+    /// **⇒ ⇒ 三条必须守住的语义**（外部给的验收规格）：
+    /// 1. **每处颜色都来自某个真实源像素** ⇒ 由调用方的 `sample` 保证（**平铺 = 最近邻**），
+    ///    这里**不做插值、不做平均**（插值会造出源里不存在的颜色）✓
+    /// 2. **羽化只作用在合成量上** ⇒ `alpha = sample.a × coverage × opacity`，
+    ///    **绝不把背景色混进 `sample`** ⇒ 于是边界上不会出现"鬼影" ✓
+    /// 3. **`coverage ≤ 0` 的像素一个字节都不碰** ⇒ 与 `fill_coverage` 相同 ✓
+    ///
+    /// **⇒ ⇒ ⇒ 逐位一致**：`coverage ≤ 0` 跳过、`alpha` 的三个边界分支
+    /// （`≤0` 不动 / `≥1` 直写 / 其余 `over`）**与 `fill_coverage` 逐字相同** ✓
+    pub fn fill_coverage_sampled(
+        &mut self,
+        coverage: &Coverage,
+        sample: impl Fn(i32, i32) -> LinearRgba,
+        mode: BlendMode,
+        opacity: f32,
+    ) {
+        let doc_x0 = coverage.bbox.x as i64;
+        let doc_y0 = coverage.bbox.y as i64;
+        let start_x = (self.origin_x - doc_x0).max(0) as u32;
+        let start_y = (self.origin_y - doc_y0).max(0) as u32;
+        let end_x = (self.origin_x + self.width as i64 - doc_x0).min(coverage.width as i64);
+        let end_y = (self.origin_y + self.height as i64 - doc_y0).min(coverage.height as i64);
+        if end_x <= start_x as i64 || end_y <= start_y as i64 {
+            return;
+        }
+        let opacity = opacity.clamp(0.0, 1.0);
+        for y in start_y..end_y as u32 {
+            let local_y = (doc_y0 + y as i64 - self.origin_y) as u32;
+            let row = (y * coverage.width) as usize;
+            let row_start = row + start_x as usize;
+            let row_end = row + end_x as usize;
+            let local_x0 = (doc_x0 + start_x as i64 - self.origin_x) as u32;
+            let doc_y = doc_y0 + y as i64;
+            for (dx, &coverage_value) in coverage.data[row_start..row_end].iter().enumerate() {
+                if coverage_value <= 0.0 {
+                    continue;
+                }
+                let local_x = local_x0 + dx as u32;
+                let doc_x = doc_x0 + start_x as i64 + dx as i64;
+                let texel = sample(doc_x as i32, doc_y as i32);
+                let rgb = [
+                    texel[0].clamp(0.0, 1.0),
+                    texel[1].clamp(0.0, 1.0),
+                    texel[2].clamp(0.0, 1.0),
+                ];
+                // **羽化只乘 alpha** ⇒ 颜色本身不被任何背景污染 ✓
+                let alpha = texel[3].clamp(0.0, 1.0) * coverage_value * opacity;
+                let source = premultiply([rgb[0], rgb[1], rgb[2], alpha]);
+                if alpha <= 0.0 {
+                    // `over` 返回 backdrop ⇒ 不改动 ✓
+                } else if alpha >= 1.0 {
+                    self.set_pixel(local_x, local_y, source);
+                } else if mode == BlendMode::Normal {
+                    self.blend_at(local_x, local_y, source);
+                } else {
+                    self.blend_mode(local_x, local_y, source, mode);
+                }
+            }
+        }
+    }
+
     /// 以 `mode` 把整块 `source` 合成到自身对应位置（按文档坐标对齐）。
     pub fn composite(&mut self, source: &Buffer, mode: BlendMode, opacity: f32) {
         let factor = opacity.clamp(0.0, 1.0);
@@ -1240,6 +1306,57 @@ mod tests {
         assert_eq!(buffer.pixel(1, 1), [0.25, 0.5, 0.5, 0.5]);
         buffer.set_pixel(9, 9, [1.0; 4]);
         assert_eq!(buffer.pixel(9, 9), [0.0; 4]);
+    }
+
+    // **⇒ `fill_coverage_sampled` 的三条语义**（第 1621 轮；外部 `texture=` 的验收规格）
+    #[test]
+    fn fill_coverage_sampled_takes_each_pixel_from_the_sampler() {
+        let mut buffer = Buffer::new(0, 0, 4, 2);
+        let coverage = Coverage::new_aligned(Bbox::new(0.0, 0.0, 4.0, 2.0), 1.0);
+        // **左红右蓝**：采样器按**文档 x** 决定 ⇒ **平铺/最近邻的地基** ✓
+        buffer.fill_coverage_sampled(
+            &coverage,
+            |x, _y| {
+                if x < 2 {
+                    [1.0, 0.0, 0.0, 1.0]
+                } else {
+                    [0.0, 0.0, 1.0, 1.0]
+                }
+            },
+            BlendMode::Normal,
+            1.0,
+        );
+        // ① **每处都来自采样器**（不出现"平均色"紫）
+        let left = buffer.pixel(0, 0);
+        let right = buffer.pixel(3, 0);
+        assert!(left[0] > 0.9 && left[2] < 0.1, "左半必须红：{left:?}");
+        assert!(right[2] > 0.9 && right[0] < 0.1, "右半必须蓝：{right:?}");
+        let purple = (left[0] + right[0]) * 0.5;
+        assert!(purple < 0.9, "不许出现两色平均：{purple}");
+    }
+
+    #[test]
+    fn fill_coverage_sampled_feathers_only_the_alpha() {
+        let mut buffer = Buffer::new(0, 0, 2, 1);
+        // 覆盖率先半 0.0、后半 1.0 ⇒ 模拟羽化边界（**覆盖率是唯一被乘进 alpha 的量**）
+        let mut coverage = Coverage::new_aligned(Bbox::new(0.0, 0.0, 2.0, 1.0), 1.0);
+        coverage.data[0] = 0.0;
+        coverage.data[1] = 1.0;
+        buffer.fill_coverage_sampled(
+            &coverage,
+            |_x, _y| [0.0, 1.0, 0.0, 1.0],
+            BlendMode::Normal,
+            1.0,
+        );
+        // **覆盖率为 0 的像素一个字节都不碰**（背景保持透明）
+        let untouched = buffer.pixel(0, 0);
+        assert!(untouched[3] < 0.01, "覆盖率 0 处不许落笔：{untouched:?}");
+        // **而覆盖率 1 处是采样器的绿**（真实源色，不是混合色）
+        let painted = buffer.pixel(1, 0);
+        assert!(
+            painted[1] > 0.9 && painted[0] < 0.1 && painted[2] < 0.1,
+            "必须是源色绿：{painted:?}"
+        );
     }
 
     #[test]
