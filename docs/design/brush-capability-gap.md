@@ -15464,3 +15464,16 @@ for key in ["min_distance", "min_distance_from_target", "jitter"] { … }
 并且**墙与纹理填充必须在同一图层** ✓（这点已满足 ✓）。
 **⇒ 教训**：**"两个数对不上"不一定是坐标系错** ✗ —— 先问「**那个量的语义**是不是我以为的那个」✓
 （`covered=0` 的语义是「没墙」✓，不是「坐标错」✗）。
+
+### 三百九十一（续三）：行为判据要**两处探针**才能定位（下一轮照这个顺序）
+
+**⇒ 已确认的事实（不用再验）**：`ox/oy` 与 `layer_buffer.bbox()` 原点一致 ✓；
+`covered` 的语义是"目标下面有没有墙" ✓；region 旋钮已不再丢 ✓。
+**⇒ 但"开/关同数"仍在**（`85.0 / 85.0`）✗ ⇒ 只剩两个可能 ✗：
+1. **`brightness_match` 没落进 `data.texture`**（`tools.rs:4543` 是 `texture.clone()` ✓ ⇒ 应该落 ✓，
+   但**没有断言** ✗）⇒ 探针：填完之后 `get_object` 看 `data.texture.brightness_match` ✓；
+2. **`reference` 在 `quilt_patches` 里是 `None`**（覆盖不足或 build 在 call 之后 ✗）
+   ⇒ 探针：在 `quilt_patches` 入口 `eprintln!("ref={}", reference.is_some())` ✓。
+
+**⇒ 顺序**：先 ①（便宜 ✓，只读响应）⇒ 若 `true` 再做 ② ⇒ 两者都排除后才是"权重不够" ✓。
+**⇒ 本轮不做** ✗（时间用在纠正上一条错误猜想 ✓）。
