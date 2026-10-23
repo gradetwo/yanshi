@@ -27,7 +27,10 @@ const which = (name) => {
 };
 
 if (!existsSync(BINARY)) unjudgeable(`没有 ${BINARY}（先 cargo build --release -p yanshi-timelapse）`);
-if (!which("ffprobe")) unjudgeable("没有 ffprobe");
+// **没有 ffprobe／ffmpeg 时改走"落盘模式"** ✓（第 701 轮）：`YANSHI_TIMELAPSE_RAW_DIR`
+//   ⇒ 二进制把每帧写成 `frame-0001.rgb` ✓ ⇒ 本判据**只读文件**数帧／看颜色 ✓
+//   ⇒ **∴ 它在 CI 上终于能真跑**（以前只能 `exit(3)` 跳过 ✗）。
+const RAW_MODE = !which("ffprobe") || !which("ffmpeg");
 if (!which("tar")) unjudgeable("没有 tar");
 
 const root = trackTemp(mkdtempSync(join(tmpdir(), "yanshi-timelapse-check-")));
@@ -86,14 +89,43 @@ execFileSync("tar", ["-cf", join(root, "probe.yanshi"), "-C", root, "meta.json",
 });
 
 let run;
+const rawDir = join(root, "frames");
+const runEnv = { ...process.env };
+if (RAW_MODE) runEnv.YANSHI_TIMELAPSE_RAW_DIR = rawDir;
 try {
   run = execFileSync("sh", ["-c", `${BINARY} ${join(root, "probe.yanshi")} ${join(root, "out.mp4")} 1 2>&1`], {
     encoding: "utf8",
     timeout: 240_000,
+    env: runEnv,
   });
 } catch (error) {
   console.error(`✗ 二进制运行失败（退出码非零）⇒ 产品问题：\n${(error.stdout || "").slice(-800)}`);
   process.exit(1);
+}
+
+if (RAW_MODE) {
+  // **落盘模式：直接数帧、看末帧颜色** ✓（不需要 ffprobe／ffmpeg ✓）
+  const { readdirSync, readFileSync } = await import("node:fs");
+  const files = existsSync(rawDir)
+    ? readdirSync(rawDir).filter((name) => /^frame-\d+\.rgb$/.test(name)).sort()
+    : [];
+  if (files.length === 0) {
+    console.error(`  ✗ 落盘模式下一帧都没写出来 ⇒ 产品问题（or 空包）\n${(run || "").slice(-600)}`);
+    process.exit(1);
+  }
+  const last = readFileSync(join(rawDir, files[files.length - 1]));
+  const colours = new Set();
+  for (let at = 0; at + 2 < last.length; at += 3) {
+    colours.add(`${last[at]},${last[at + 1]},${last[at + 2]}`);
+    if (colours.size > 8) break;
+  }
+  if (colours.size <= 1) {
+    console.error(`  ✗ 末帧只有 ${colours.size} 种颜色 ⇒ 画面是空的（帧数 ${files.length} 骗人）`);
+    process.exit(1);
+  }
+  console.log(`  ✓ 落盘模式：${files.length} 帧、末帧 ${colours.size}+ 种颜色（不需要 ffmpeg／ffprobe）`);
+  console.log("  ✓ yanshi-timelapse 真的产出了有内容的帧");
+  process.exit(0);
 }
 
 const probeOutput = (() => {
