@@ -985,11 +985,26 @@ impl RegionRender {
     }
 }
 
+impl BelowTiles {
+    /// **刷新一个 tile 的年龄** ✓（第 693 轮）：**只动 `recency`，不动 `tiles`** ✓
+    /// ⇒ 命中路径**不再需要独占**那份 tile 表 ⇒ 与 `by_sig` 共享也**不必复制** ✓。
+    fn touch(&mut self, key: (i64, i64)) {
+        if let Some(position) = self.recency.iter().position(|existing| *existing == key) {
+            self.recency.remove(position);
+        }
+        self.recency.push_back(key);
+    }
+}
+
 /// 计算内核层的文档渲染器。
 #[derive(Debug)]
 struct BelowTiles {
     /// **生成这些 tile 时的**下方层指纹** ✓**（**不匹配 ⇒ 整份作废 ✓**）。
     sig: Vec<String>,
+    /// **最近使用顺序（只放 key ✓）** —— 第 693 轮把"年龄"从 `tiles` 里**拆出来** ✓：
+    ///   `tiles` 的元素顺序**不再承载语义** ✓ ⇒ 命中时**不必重排** ⇒ **零拷贝** ✓
+    ///   （四百四十一：重排要独占 Vec ⇒ 与 `by_sig` 共享时必然整份复制 ✗）。
+    recency: std::collections::VecDeque<(i64, i64)>,
     /// **文档坐标（**按 [`BELOW_TILE`] 对齐 ✓**）⇒ 该 tile 的下方合成 ✓**。
     // **`Arc` 共享而不是拷贝** ✓（第 683 轮）：`by_sig` 与 `tiles` 曾经**各存一份**同内容 ✓
     //   ⇒ 每次写缓存都要 `merged.clone()`（一份 37 MB 的 tile 表 ✗）
@@ -2398,18 +2413,12 @@ impl Renderer {
                 // 可能被丢掉 ✗** ⇒ **∴ 命中率低于真正 LRU ✓**。
                 if let Ok(mut guard) = below.lock() {
                     if let Some(c) = guard.as_mut() {
-                        let mut recent = Vec::new();
-                        let mut rest = Vec::new();
-                        // **`Arc` 不能就地 drain** ✓（第 683 轮）：先把共享引用换成空表，再拿自有的那份 ✓
-                        for t in take_tiles(&mut c.tiles) {
-                            if want_tiles.contains(&t.0) {
-                                recent.push(t);
-                            } else {
-                                rest.push(t);
-                            }
+                        // **只刷新"年龄"，不再重排 `tiles`** ✓（第 693 轮；四百四十二 的方案）
+                        //   **⇒ 为什么**：重排要**独占**那份 Vec ⇒ 与 `by_sig` 共享时必然**整份复制** ✗
+                        //     （实测 93,998 条/帧级别 ✓）。年龄挪到只放 key 的 `recency` ⇒ 零拷贝 ✓。
+                        for key in want_tiles.iter() {
+                            c.touch(*key);
                         }
-                        rest.extend(recent); // **∴ 刚用过的排到尾部 ⇒ 下次先丢别人 ✓**
-                        c.tiles = std::sync::Arc::new(rest);
                     }
                 }
             }
@@ -2859,6 +2868,11 @@ impl Renderer {
                         //     而紧接着的 `*guard = Some(BelowTiles { … })` 就把旧的**整体替换**掉 ✓
                         //     ⇒ **该克隆纯粹是白拷贝** ✗（每个 band、每次区域渲染都拷一次）
                         //   **⇒ 修法**：`guard.take()` 把旧值**取走** ✓（旧值本来就要被丢弃 ✓）⇒ 语义完全相同 ✓。
+                        // **年龄也要带过去** ✓（第 693 轮）：它现在是**独立**的一份 key 序列 ✓
+                        let carried_recency = guard
+                            .as_ref()
+                            .map(|c| c.recency.clone())
+                            .unwrap_or_default();
                         let mut carried = guard.take().map(|c| c.by_sig).unwrap_or_default();
                         // **★ `by_sig` 必须**有界** ✗ ★**（第 984 轮 ✓；**目标第 4 条"**内存上限 ⇒ LRU ✓"）：
                         //   **∴ 为什么 ✗**：**`BELOW_TILE_BUDGET`**只管**旧字段的格数** ✓
@@ -2909,6 +2923,7 @@ impl Renderer {
                         }
                         *guard = Some(BelowTiles {
                             sig,
+                            recency: carried_recency,
                             tiles: shared,
                             empty: fresh_empty,
                             // **∴ 第 1 步：**先只初始化 ✗**（**行为不变 ✓）** —— **∴ 第 2／3 步**
@@ -3015,6 +3030,7 @@ impl Renderer {
                         let shared = std::sync::Arc::new(merged);
                         *guard = Some(BelowTiles {
                             sig: above_sig,
+                            recency: std::collections::VecDeque::new(),
                             tiles: shared,
                             empty: fresh_empty,
                             by_sig: std::collections::HashMap::new(),
