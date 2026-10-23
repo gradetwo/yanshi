@@ -16,6 +16,13 @@ pub struct SyntheticDng {
     pub mosaic: Vec<u16>,
     /// CFAPattern 四字节（CFAPlaneColor 下标：0=R、1=G、2=B），如 RGGB = [0,1,1,2]。
     pub cfa_pattern: [u8; 4],
+    /// 全尺寸 CFAPattern（ISSUE-3 补）：`Some((字节, 周期))` 时覆盖
+    /// `cfa_pattern` 与两个 RepeatDim 标签（如 X-Trans 36 字节／周期 6）；
+    /// `None`（缺省）时写出与旧夹具逐字节一致。
+    pub cfa_pattern_full: Option<(Vec<u8>, u16)>,
+    /// 全尺寸 BlackLevel（与 `cfa_pattern_full` 配套）：`Some` 时覆盖
+    /// 四相位 `black_levels`，元数须 = 周期²。
+    pub black_levels_full: Option<Vec<(u32, u32)>>,
     /// BlackLevel 四相位（行主序），写为 RATIONAL。锚定口径按 rawler 的
     /// 消费方式：锚在**全幅数据原点**（其 `correct_blacklevel_cfa` 即如此
     /// 作用于未裁数据，且 get_blacklevels 不做 ActiveArea 平移——与
@@ -72,6 +79,8 @@ impl Default for SyntheticDng {
             height: 8,
             mosaic: vec![1024; 64],
             cfa_pattern: [0, 1, 1, 2],
+            cfa_pattern_full: None,
+            black_levels_full: None,
             black_levels: [(512, 1), (512, 1), (512, 1), (512, 1)],
             white_level: 16383,
             color_matrix1: Some((
@@ -177,6 +186,30 @@ fn rational(v: f32) -> (u32, u32) {
     (libm::roundf(v * 100000.0) as u32, 100000)
 }
 
+/// CFA／BlackLevel 的 RepeatDim：全尺寸规格给出周期时用它，否则 2×2。
+fn cfa_repeat_dim(spec: &SyntheticDng) -> Vec<u16> {
+    match &spec.cfa_pattern_full {
+        Some((_, period)) => vec![*period, *period],
+        None => vec![2, 2],
+    }
+}
+
+/// CFAPattern 字节：全尺寸规格优先，否则四字节 Bayer 规格。
+fn cfa_pattern_bytes(spec: &SyntheticDng) -> Vec<u8> {
+    match &spec.cfa_pattern_full {
+        Some((bytes, _)) => bytes.clone(),
+        None => spec.cfa_pattern.to_vec(),
+    }
+}
+
+/// BlackLevel 有理数列：全尺寸规格优先，否则四相位规格。
+fn black_levels_of(spec: &SyntheticDng) -> Vec<(u32, u32)> {
+    match &spec.black_levels_full {
+        Some(levels) => levels.clone(),
+        None => spec.black_levels.to_vec(),
+    }
+}
+
 /// 按规格写出 DNG 字节。布局：头(8) → IFD → 溢出值区 → strip 像素区；
 /// 条目按标签升序（TIFF 规范要求，解码器实现多半也默认）。
 pub fn write_synthetic_dng(spec: &SyntheticDng) -> Vec<u8> {
@@ -196,19 +229,19 @@ pub fn write_synthetic_dng(spec: &SyntheticDng) -> Vec<u8> {
         (272, Value::Ascii(spec.model.clone())), // Model
         // StripOffsets 占位，最后回填（条目 273）。
         (273, Value::Longs(vec![0])),
-        (277, Value::Shorts(vec![1])),          // SamplesPerPixel
-        (278, Value::Longs(vec![spec.height])), // RowsPerStrip
-        (279, Value::Longs(vec![strip_bytes])), // StripByteCounts
-        (284, Value::Shorts(vec![1])),          // PlanarConfiguration
-        (33421, Value::Shorts(vec![2, 2])),     // CFARepeatPatternDim
-        (33422, Value::Bytes(spec.cfa_pattern.to_vec())), // CFAPattern
-        (50706, Value::Bytes(vec![1, 4, 0, 0])), // DNGVersion
-        (50707, Value::Bytes(vec![1, 0, 0, 0])), // DNGBackwardVersion
-        (50708, Value::Ascii(spec.model.clone())), // UniqueCameraModel
-        (50710, Value::Bytes(vec![0, 1, 2])),   // CFAPlaneColor
-        (50711, Value::Shorts(vec![1])),        // CFALayout
-        (50713, Value::Shorts(vec![2, 2])),     // BlackLevelRepeatDim
-        (50714, Value::Rationals(spec.black_levels.to_vec())), // BlackLevel
+        (277, Value::Shorts(vec![1])),                // SamplesPerPixel
+        (278, Value::Longs(vec![spec.height])),       // RowsPerStrip
+        (279, Value::Longs(vec![strip_bytes])),       // StripByteCounts
+        (284, Value::Shorts(vec![1])),                // PlanarConfiguration
+        (33421, Value::Shorts(cfa_repeat_dim(spec))), // CFARepeatPatternDim
+        (33422, Value::Bytes(cfa_pattern_bytes(spec))), // CFAPattern
+        (50706, Value::Bytes(vec![1, 4, 0, 0])),      // DNGVersion
+        (50707, Value::Bytes(vec![1, 0, 0, 0])),      // DNGBackwardVersion
+        (50708, Value::Ascii(spec.model.clone())),    // UniqueCameraModel
+        (50710, Value::Bytes(vec![0, 1, 2])),         // CFAPlaneColor
+        (50711, Value::Shorts(vec![1])),              // CFALayout
+        (50713, Value::Shorts(cfa_repeat_dim(spec))), // BlackLevelRepeatDim
+        (50714, Value::Rationals(black_levels_of(spec))), // BlackLevel
         (50717, Value::Longs(vec![spec.white_level])), // WhiteLevel
         (
             50728, // AsShotNeutral

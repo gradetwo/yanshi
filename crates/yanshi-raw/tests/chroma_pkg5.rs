@@ -5,7 +5,9 @@
 
 use yanshi_raw::develop::{highlight_chroma_recover, highlight_recover};
 use yanshi_raw::frame::CalibrationMatrix;
-use yanshi_raw::{develop, CfaPattern, DevelopOptions, HighlightMode, RawFrame, RecordContext};
+use yanshi_raw::{
+    develop, CfaGrid, CfaPattern, DevelopOptions, HighlightMode, RawFrame, RecordContext,
+};
 
 /// 与第三包判据同一套日光 WB（重归一化口径）：天花板 T = 0.98·w。
 const WB_DAY: [f32; 3] = [2.0, 1.0, 1.6];
@@ -188,9 +190,9 @@ fn develop_chroma_differs_only_in_saturated_region() {
         width: w,
         height: h,
         mosaic: vec![0.0; w * h],
-        cfa: CfaPattern::Rggb,
-        black_levels: [512.0; 4],
-        white_levels: [16383.0; 4],
+        cfa: CfaGrid::from_bayer(CfaPattern::Rggb),
+        black_levels: vec![512.0; 4],
+        white_levels: vec![16383.0; 4],
         wb_multipliers: Some([2.0, 1.0, 1.6]),
         as_shot_neutral: None,
         color_matrices: realistic_calibrations(),

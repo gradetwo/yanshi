@@ -12,7 +12,7 @@ use yanshi_raw::lens::{
 };
 use yanshi_raw::lens_db::{bundled_db, find_lens, parse_lensfun_xml, LensDb};
 use yanshi_raw::{
-    decode_bytes, develop, develop_with_lens, plan_import_with_db, CfaPattern, DecodedRaw,
+    decode_bytes, develop, develop_with_lens, plan_import_with_db, CfaGrid, CfaPattern, DecodedRaw,
     DevelopOptions, HighlightMode, LensCorrectionPlan, LensExecution, RawFileMeta, RawFrame,
     RecordContext, VignetteModel, WarpModel,
 };
@@ -43,9 +43,9 @@ fn base_frame(width: usize, height: usize) -> RawFrame {
         width,
         height,
         mosaic: vec![0.0; width * height],
-        cfa: CfaPattern::Rggb,
-        black_levels: [512.0; 4],
-        white_levels: [16383.0; 4],
+        cfa: CfaGrid::from_bayer(CfaPattern::Rggb),
+        black_levels: vec![512.0; 4],
+        white_levels: vec![16383.0; 4],
         wb_multipliers: Some([1.72, 1.0, 1.39]),
         as_shot_neutral: None,
         color_matrices: realistic_calibrations(),

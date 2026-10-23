@@ -74,6 +74,74 @@ impl CfaPattern {
     }
 }
 
+/// 通用 CFA 网格（设计 5.2 推广，ISSUE-3）：周期 `period × period` 的方阵
+/// 通道排布，是帧内的统一 CFA 载体——Bayer（period=2）与富士 X-Trans
+/// （period=6）同路。Bayer 四排列仍由 `CfaPattern` 命名与判据，
+/// `CfaGrid::bayer()` 命中时展开走 MHC 原路、像素逐位不变。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CfaGrid {
+    period: usize,
+    /// 行主序 period² 格通道。
+    cells: Vec<Channel>,
+    /// 排列名：Bayer 取排列名（"RGGB" 等）；其余取解码器给出的
+    /// 模式串（如 X-Trans 的 36 字符排列），原样进 record／metadata。
+    name: String,
+}
+
+impl CfaGrid {
+    /// 由周期与行主序通道格构造；形状不符（period<2 或格数 ≠ period²）⇒ 报错。
+    pub fn new(period: usize, cells: Vec<Channel>, name: String) -> Result<Self> {
+        if period < 2 || cells.len() != period * period {
+            return Err(RawError::InvalidFrame(format!(
+                "CFA 网格形状非法：period={period}，格数={}",
+                cells.len()
+            )));
+        }
+        Ok(Self {
+            period,
+            cells,
+            name,
+        })
+    }
+
+    /// 由 Bayer 排列构造（period=2，name=排列名）。
+    pub fn from_bayer(pattern: CfaPattern) -> Self {
+        Self {
+            period: 2,
+            cells: pattern.cell().to_vec(),
+            name: pattern.name().to_string(),
+        }
+    }
+
+    /// period=2 且逐格命中 Bayer 四排列之一 ⇒ `Some`（解马赛克据此分流）。
+    pub fn bayer(&self) -> Option<CfaPattern> {
+        if self.period != 2 {
+            return None;
+        }
+        CfaPattern::from_cell([self.cells[0], self.cells[1], self.cells[2], self.cells[3]])
+    }
+
+    /// CFA 周期（Bayer=2，X-Trans=6）。
+    pub fn period(&self) -> usize {
+        self.period
+    }
+
+    /// 排列名（与 record／metadata 的 `cfa` 字段同字面）。
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// 像素 (x, y) 处的采样通道。相位以帧左上角为 (0,0) 锚点。
+    pub fn channel_at(&self, x: usize, y: usize) -> Channel {
+        self.cells[(y % self.period) * self.period + (x % self.period)]
+    }
+
+    /// 像素 (x, y) 的 CFA 相位下标（0..period²，行主序，与黑／白电平数组同序）。
+    pub fn phase_at(&self, x: usize, y: usize) -> usize {
+        (y % self.period) * self.period + (x % self.period)
+    }
+}
+
 /// 一组双光源标定：某标定光源下的 XYZ → 相机原生矩阵（设计 5.5 色彩链）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CalibrationMatrix {
@@ -94,13 +162,14 @@ pub struct RawFrame {
     /// 原始马赛克读数（DN 单位，行主序，len = width × height）。
     /// 用 f32 承载：u16 读数可精确表示，个别解码器的浮点读数同路。
     pub mosaic: Vec<f32>,
-    /// CFA 排列（相位锚点 = 本帧左上角）。
-    pub cfa: CfaPattern,
-    /// 黑电平：按 CFA 相位 `[R 位, G1 位, G2 位, B 位]` 的行主序四标量，
-    /// **四相位独立、绝不合并 G1/G2**（设计 5.2 硬性要求，实证 V5）。
-    pub black_levels: [f32; 4],
-    /// 白电平：同相位口径四标量。
-    pub white_levels: [f32; 4],
+    /// CFA 网格（相位锚点 = 本帧左上角）。
+    pub cfa: CfaGrid,
+    /// 黑电平：按 CFA 相位的行主序 period² 标量，
+    /// **逐相位独立、绝不合并同色相位**（设计 5.2 硬性要求，实证 V5；
+    /// Bayer 时即 `[R 位, G1 位, G2 位, B 位]` 四标量）。
+    pub black_levels: Vec<f32>,
+    /// 白电平：同相位口径 period² 标量。
+    pub white_levels: Vec<f32>,
     /// as-shot WB 乘子（文件原始量纲，未重归一化；下标 R/G/B）。
     /// 与 `as_shot_neutral` 至少其一有值（解码期保证）。
     pub wb_multipliers: Option<[f32; 3]>,
@@ -254,8 +323,9 @@ pub struct RawDevelopRecord {
     pub baseline_exposure_ev: f32,
     /// 实际施加的 WB 乘子（已重归一化到 min_c w_c = 1.0，设计 5.5 硬规范）。
     pub wb_multipliers: [f32; 3],
-    pub black_levels: [f32; 4],
-    pub white_levels: [f32; 4],
+    /// 黑／白电平（逐相位 period²，裁后帧口径；Bayer 时为四相位）。
+    pub black_levels: Vec<f32>,
+    pub white_levels: Vec<f32>,
     pub cfa: String,
     /// 实际应用的方向变换值（第二包起记真实值：= 文件 EXIF Orientation，
     /// 缺失／非法按 1；变换表与 JPEG 路共用 `yanshi_core::orientation`）。
@@ -491,9 +561,9 @@ pub struct RawMeta {
     pub cfa: String,
     /// 传感器位深（文件口径）。
     pub bit_depth: Option<u32>,
-    /// 黑／白电平（四相位，裁后帧口径，与 record 同值）。
-    pub black_levels: [f32; 4],
-    pub white_levels: [f32; 4],
+    /// 黑／白电平（逐相位 period²，裁后帧口径，与 record 同值）。
+    pub black_levels: Vec<f32>,
+    pub white_levels: Vec<f32>,
     /// 文件口径的 WB 乘子（未重归一化；重归一化后的生效值在 record 里）。
     pub wb_multipliers: Option<[f32; 3]>,
     /// active area 宽／高（展开产物尺寸口径，方向变换前）。

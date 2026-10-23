@@ -34,7 +34,7 @@ pub use decode::{decode_bytes, probe_raw, raw_meta, record_context};
 pub use develop::{develop, develop_with_lens, LensExecution};
 pub use error::{RawError, Result};
 pub use frame::{
-    AppliedLensProfile, CalibrationMatrix, CfaPattern, Channel, DecodedRaw, Demosaic,
+    AppliedLensProfile, CalibrationMatrix, CfaGrid, CfaPattern, Channel, DecodedRaw, Demosaic,
     DevelopOptions, DevelopedImage, FileLensCorrection, HighlightMode, LensCorrectionPlan,
     LensExif, RawDevelopRecord, RawFileMeta, RawFrame, RawMeta, RawProbe, RecordContext, TcaParams,
     VignetteModel, WarpModel, WarpRectilinearSet, WbMode,

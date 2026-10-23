@@ -14,7 +14,7 @@
 
 use crate::error::{RawError, Result};
 use crate::frame::{
-    AppliedLensProfile, CalibrationMatrix, CfaPattern, Channel, Demosaic, DevelopOptions,
+    AppliedLensProfile, CalibrationMatrix, CfaGrid, CfaPattern, Channel, Demosaic, DevelopOptions,
     DevelopedImage, HighlightMode, LensCorrectionPlan, RawDevelopRecord, RawFrame, RecordContext,
     WarpModel, WbMode,
 };
@@ -101,8 +101,17 @@ fn is_positive_finite(v: f32) -> bool {
 }
 
 /// 逐相位校验电平合法性（white > black），任一相位非法 ⇒ 结构化报错，不除零兜底。
+/// 相位数 = CFA 周期²（Bayer 4、X-Trans 36），黑／白两数组须同长且与周期对齐。
 fn validate_levels(frame: &RawFrame) -> Result<()> {
-    for phase in 0..4 {
+    let phases = frame.cfa.period() * frame.cfa.period();
+    if frame.black_levels.len() != phases || frame.white_levels.len() != phases {
+        return Err(RawError::InvalidFrame(format!(
+            "电平数组长度（黑 {}／白 {}）与 CFA 相位数 {phases} 对不上",
+            frame.black_levels.len(),
+            frame.white_levels.len()
+        )));
+    }
+    for phase in 0..phases {
         let (black, white) = (frame.black_levels[phase], frame.white_levels[phase]);
         if white.partial_cmp(&black) != Some(std::cmp::Ordering::Greater) {
             return Err(RawError::InvalidLevels {
@@ -122,7 +131,7 @@ pub fn normalize_mosaic(frame: &RawFrame) -> Result<Vec<f32>> {
     for (i, &raw) in frame.mosaic.iter().enumerate() {
         let x = i % frame.width;
         let y = i / frame.width;
-        let phase = CfaPattern::phase_at(x, y);
+        let phase = frame.cfa.phase_at(x, y);
         let black = frame.black_levels[phase];
         let denom = frame.white_levels[phase] - black;
         out.push(((raw - black) / denom).min(1.0));
@@ -207,7 +216,23 @@ fn reflect_index(i: isize, n: usize) -> usize {
 }
 
 /// ④ 解马赛克：输入归一化 + 已乘 WB 的马赛克平面，输出 RGB 三元组平面。
+/// 按 CFA 网格分流：Bayer（period=2）走 MHC／Bilinear 原路（逐位不变）；
+/// 其余周期网格（X-Trans 等）走 `demosaic_grid` 色差插值路。
 pub fn demosaic(
+    plane: &[f32],
+    width: usize,
+    height: usize,
+    cfa: CfaGrid,
+    kind: Demosaic,
+) -> Vec<f32> {
+    match cfa.bayer() {
+        Some(pattern) => demosaic_bayer(plane, width, height, pattern, kind),
+        None => demosaic_grid(plane, width, height, &cfa),
+    }
+}
+
+/// ④ 解马赛克（Bayer 路）：MHC 默认、Bilinear 为回归基线。
+fn demosaic_bayer(
     plane: &[f32],
     width: usize,
     height: usize,
@@ -270,6 +295,83 @@ pub fn demosaic(
                 };
                 rgb[channel.index()] = estimate;
             }
+            let o = (y as usize * width + x as usize) * 3;
+            out[o..o + 3].copy_from_slice(&rgb);
+        }
+    }
+    out
+}
+
+/// ④ 解马赛克（通用网格路，ISSUE-3）：非 Bayer 周期网格（X-Trans 等）走
+/// 色差插值——先重建 G 全场，再对 R−G／B−G 差分面同法插值，最后
+/// R = G + ΔR、B = G + ΔB；采样位本通道取原样本（与 Bayer 路
+/// `rgb[here] = center` 同口径，保证高光天花板语义不被插值稀释）。
+/// 插值核为距离加权同色均值，权重 `1/(1+d²)` 纯算术、无超越函数
+/// （守本包 libm 纪律）；边界 reflect-101（与 Bayer 路同）。
+/// 窗口边长取 period+1：任意此大小的窗必含一整周期 ⇒ 目标通道采样
+/// 必存在（X-Trans 6×6 内 R／B 各 8 格、G 20 格）。
+/// `kind`（MHC／Bilinear 固定核）是 Bayer 专用标定，本路不消费。
+/// 已知边界：细密高频纹理的分辨力弱于 Markesteijn 类 X-Trans 专用
+/// 算法——属质量边界、非正确性边界（颜色与几何由构造保证）。
+fn demosaic_grid(plane: &[f32], width: usize, height: usize, cfa: &CfaGrid) -> Vec<f32> {
+    debug_assert_eq!(plane.len(), width * height);
+    let radius = cfa.period().div_ceil(2) as isize;
+    let sample = |x: isize, y: isize| -> f32 {
+        plane[reflect_index(y, height) * width + reflect_index(x, width)]
+    };
+    let chan = |x: isize, y: isize| -> Channel {
+        cfa.channel_at(reflect_index(x, width), reflect_index(y, height))
+    };
+    // 窗内同通道距离加权均值；value 给出每个采样点的待平均量。
+    let weighted =
+        |x: isize, y: isize, want: Channel, value: &dyn Fn(isize, isize) -> f32| -> f32 {
+            let mut sum = 0.0f32;
+            let mut wsum = 0.0f32;
+            for dy in -radius..=radius {
+                for dx in -radius..=radius {
+                    if chan(x + dx, y + dy) == want {
+                        let w = 1.0 / (1.0 + (dx * dx + dy * dy) as f32);
+                        sum += w * value(x + dx, y + dy);
+                        wsum += w;
+                    }
+                }
+            }
+            if wsum > 0.0 {
+                sum / wsum
+            } else {
+                0.0
+            }
+        };
+    // 1) G 全场：G 采样位取原值，其余位置同色加权均值。
+    let mut green = vec![0.0f32; width * height];
+    for y in 0..height as isize {
+        for x in 0..width as isize {
+            green[y as usize * width + x as usize] = if chan(x, y) == Channel::G {
+                sample(x, y)
+            } else {
+                weighted(x, y, Channel::G, &|sx, sy| sample(sx, sy))
+            };
+        }
+    }
+    let g_at = |x: isize, y: isize| -> f32 {
+        green[reflect_index(y, height) * width + reflect_index(x, width)]
+    };
+    // 2) R／B：差分面插值后加回 G；本通道采样位取原值。
+    let mut out = vec![0.0f32; width * height * 3];
+    for y in 0..height as isize {
+        for x in 0..width as isize {
+            let here = chan(x, y);
+            let g = g_at(x, y);
+            let mut rgb = [0.0f32; 3];
+            rgb[Channel::G.index()] = g;
+            for target in [Channel::R, Channel::B] {
+                rgb[target.index()] = if here == target {
+                    sample(x, y)
+                } else {
+                    g + weighted(x, y, target, &|sx, sy| sample(sx, sy) - g_at(sx, sy))
+                };
+            }
+            rgb[here.index()] = sample(x, y);
             let o = (y as usize * width + x as usize) * 3;
             out[o..o + 3].copy_from_slice(&rgb);
         }
@@ -978,8 +1080,8 @@ pub fn assemble_record(
         pre_exposure_ev: options.pre_exposure_ev,
         baseline_exposure_ev,
         wb_multipliers,
-        black_levels: frame.black_levels,
-        white_levels: frame.white_levels,
+        black_levels: frame.black_levels.clone(),
+        white_levels: frame.white_levels.clone(),
         cfa: frame.cfa.name().to_string(),
         orientation_applied: effective_orientation(frame.orientation),
         decoder_name: ctx.decoder_name.clone(),
@@ -1066,7 +1168,7 @@ pub fn develop_with_lens(
         &plane,
         frame.width,
         frame.height,
-        frame.cfa,
+        frame.cfa.clone(),
         options.demosaic,
     );
     // ④′ 高光恢复（保底机制，第三包）：已白平衡相机 RGB 域、无条件

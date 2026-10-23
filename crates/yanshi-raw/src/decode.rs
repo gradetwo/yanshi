@@ -136,7 +136,7 @@ fn map_decoded(
 ) -> Result<DecodedRaw> {
     if raw.cpp != 1 {
         return Err(RawError::UnsupportedData(format!(
-            "每像素采样数 cpp={}（已是多通道数据），一期只支持单通道 Bayer 马赛克",
+            "每像素采样数 cpp={}（已是多通道数据），一期只支持单通道马赛克",
             raw.cpp
         )));
     }
@@ -175,8 +175,29 @@ fn map_decoded(
     if raw.blacklevel.levels.is_empty() || raw.whitelevel.0.is_empty() {
         return Err(RawError::InvalidFrame("解码器未给出黑／白电平".to_string()));
     }
-    let black_levels = remap_phases(raw.blacklevel.as_bayer_array(), ax, ay);
-    let white_levels = remap_phases(raw.whitelevel.as_bayer_array(), ax, ay);
+    let period = cfa.period();
+    // 黑电平带自报 RepeatDim（rawler BlackLevel.width/height），按周期口径换算。
+    let black_full: Vec<f32> = raw.blacklevel.levels.iter().map(|v| v.as_f32()).collect();
+    let black_levels = remap_levels(
+        &black_full,
+        raw.blacklevel.width,
+        raw.blacklevel.height,
+        period,
+        ax,
+        ay,
+    )?;
+    // 白电平无自报形状：长度 1 ⇒ 全相位同值；长度 = period² ⇒ 逐相位。
+    let white_full: Vec<f32> = raw.whitelevel.0.iter().map(|&v| v as f32).collect();
+    let (white_w, white_h) = match white_full.len() {
+        1 => (1, 1),
+        n if n == period * period => (period, period),
+        n => {
+            return Err(RawError::InvalidFrame(format!(
+                "白电平长度 {n} 与 CFA 周期 {period} 对不齐"
+            )));
+        }
+    };
+    let white_levels = remap_levels(&white_full, white_w, white_h, period, ax, ay)?;
     // WB：wb_coeffs 是 RGBE 四元组，Bayer 一期只取 RGB 三项（第 4 项 E 通道
     // 在 DNG 路径上是 NaN 占位，误读会毒化整链）。任一项非法 ⇒ 解码期拒绝，
     // 不把坏乘子留给展开期。
@@ -280,15 +301,17 @@ fn rect_ltrb(rect: &Rect) -> [usize; 4] {
     rect.as_ltrb()
 }
 
-/// 由全幅 CFA 在裁后帧上推导 Bayer 排列，并用探针点校验 2-周期性
-/// （X-Trans 等非 Bayer 排列在此被拦下，不许硬套 Bayer 解马赛克）。
+/// 由全幅 CFA 在裁后帧上推导 CFA 网格，并用探针点校验周期性
+/// （设计 5.2 推广，ISSUE-3）。支持任意方阵周期：Bayer（2×2，须命中
+/// 四排列之一，严格性与旧口径一致）与 X-Trans（6×6）同路；非方阵、
+/// 含非 RGB 通道、探针不符 ⇒ 明确拒绝，不许硬套解马赛克。
 fn derive_cfa(
     raw: &RawImage,
     ax: usize,
     ay: usize,
     crop_w: usize,
     crop_h: usize,
-) -> Result<crate::frame::CfaPattern> {
+) -> Result<crate::frame::CfaGrid> {
     let cfa = &raw.camera.cfa;
     if !cfa.is_valid() {
         return Err(RawError::UnsupportedData(
@@ -303,61 +326,113 @@ fn derive_cfa(
             _ => None,
         }
     };
-    let cell = [
-        channel(ax, ay),
-        channel(ax + 1, ay),
-        channel(ax, ay + 1),
-        channel(ax + 1, ay + 1),
-    ];
-    let (Some(c00), Some(c10), Some(c01), Some(c11)) = (cell[0], cell[1], cell[2], cell[3]) else {
+    if cfa.width != cfa.height || cfa.width < 2 {
         return Err(RawError::NonBayerCfa {
             pattern: cfa.name.clone(),
         });
-    };
-    let Some(pattern) = crate::frame::CfaPattern::from_cell([c00, c10, c01, c11]) else {
-        return Err(RawError::NonBayerCfa {
-            pattern: cfa.name.clone(),
-        });
-    };
-    // 2-周期探针：裁后帧的四角 + 中心邻域，全幅坐标逐点对照推导出的排列。
-    let probes_x = [
-        0usize,
-        1,
-        crop_w / 2,
-        crop_w.saturating_sub(2),
-        crop_w.saturating_sub(1),
-    ];
-    let probes_y = [
-        0usize,
-        1,
-        crop_h / 2,
-        crop_h.saturating_sub(2),
-        crop_h.saturating_sub(1),
-    ];
-    for &y in &probes_y {
-        for &x in &probes_x {
-            if x >= crop_w || y >= crop_h {
-                continue;
-            }
-            if channel(ax + x, ay + y) != Some(pattern.channel_at(x, y)) {
+    }
+    let period = cfa.width;
+    let mut cells = Vec::with_capacity(period * period);
+    for y in 0..period {
+        for x in 0..period {
+            let Some(c) = channel(ax + x, ay + y) else {
                 return Err(RawError::NonBayerCfa {
                     pattern: cfa.name.clone(),
                 });
+            };
+            cells.push(c);
+        }
+    }
+    if period == 2 {
+        let cell = [cells[0], cells[1], cells[2], cells[3]];
+        let Some(pattern) = crate::frame::CfaPattern::from_cell(cell) else {
+            return Err(RawError::NonBayerCfa {
+                pattern: cfa.name.clone(),
+            });
+        };
+        // 2-周期探针：裁后帧的四角 + 中心邻域，全幅坐标逐点对照推导出的排列。
+        let probes_x = [
+            0usize,
+            1,
+            crop_w / 2,
+            crop_w.saturating_sub(2),
+            crop_w.saturating_sub(1),
+        ];
+        let probes_y = [
+            0usize,
+            1,
+            crop_h / 2,
+            crop_h.saturating_sub(2),
+            crop_h.saturating_sub(1),
+        ];
+        for &y in &probes_y {
+            for &x in &probes_x {
+                if x >= crop_w || y >= crop_h {
+                    continue;
+                }
+                if channel(ax + x, ay + y) != Some(pattern.channel_at(x, y)) {
+                    return Err(RawError::NonBayerCfa {
+                        pattern: cfa.name.clone(),
+                    });
+                }
+            }
+        }
+        return Ok(crate::frame::CfaGrid::from_bayer(pattern));
+    }
+    let grid = crate::frame::CfaGrid::new(period, cells, cfa.name.clone())?;
+    // 周期探针：四角 + 中心各取一整周期块，全幅坐标逐格对照推导出的网格
+    // （防解码器给出的周期与真实排列不符、网格在帧内漂移）。
+    let anchors_x = [0usize, crop_w / 2, crop_w.saturating_sub(period)];
+    let anchors_y = [0usize, crop_h / 2, crop_h.saturating_sub(period)];
+    for &oy in &anchors_y {
+        for &ox in &anchors_x {
+            if ox + period > crop_w || oy + period > crop_h {
+                continue;
+            }
+            for dy in 0..period {
+                for dx in 0..period {
+                    if channel(ax + ox + dx, ay + oy + dy)
+                        != Some(grid.channel_at(ox + dx, oy + dy))
+                    {
+                        return Err(RawError::NonBayerCfa {
+                            pattern: cfa.name.clone(),
+                        });
+                    }
+                }
             }
         }
     }
-    Ok(pattern)
+    Ok(grid)
 }
 
-/// 全幅相位数组 → 裁后帧相位数组：裁后相位 p′=(y%2)*2+(x%2) 处的电平，
-/// 等于全幅相位 ((ay+y)%2)*2+((ax+x)%2) 处的电平（两边同为 2-周期）。
-fn remap_phases(full: [f32; 4], ax: usize, ay: usize) -> [f32; 4] {
-    let mut out = [0.0f32; 4];
-    for (p, slot) in out.iter_mut().enumerate() {
-        let (x, y) = (p % 2, p / 2);
-        *slot = full[((ay + y) % 2) * 2 + ((ax + x) % 2)];
+/// 全幅相位电平 → 裁后帧相位电平（周期 N 口径）：裁后相位 (x, y) 处的
+/// 电平等于全幅相位 ((ax+x)%N, (ay+y)%N) 处的电平（两边同为 N-周期）。
+/// 源数组须按其自报的 RepeatDim (src_w × src_h) 解释：与 CFA 同周期
+/// （N×N）时逐相位换算；1×1 时全相位广播同值；其余形状与目标周期
+/// 对不齐 ⇒ 响亮报错，不许猜（旧 2×2 口径是本函数的 N=2 特例）。
+fn remap_levels(
+    full: &[f32],
+    src_w: usize,
+    src_h: usize,
+    period: usize,
+    ax: usize,
+    ay: usize,
+) -> Result<Vec<f32>> {
+    if full.len() == 1 && src_w == 1 && src_h == 1 {
+        return Ok(vec![full[0]; period * period]);
     }
-    out
+    if src_w != period || src_h != period || full.len() != period * period {
+        return Err(RawError::InvalidFrame(format!(
+            "电平数组形状 {src_w}×{src_h}（{} 元）与 CFA 周期 {period} 对不齐",
+            full.len()
+        )));
+    }
+    let mut out = vec![0.0f32; period * period];
+    for (p, slot) in out.iter_mut().enumerate() {
+        let (x, y) = (p % period, p / period);
+        *slot = full[((ay + y) % period) * period + ((ax + x) % period)];
+    }
+    Ok(out)
 }
 
 /// 文件级元数据映射（设计 5.7 的 `raw_meta` 原料）。整表缺失 ⇒ 全 None，
@@ -537,8 +612,8 @@ pub fn raw_meta(decoded: &DecodedRaw) -> crate::frame::RawMeta {
         orientation: meta.orientation,
         cfa: frame.cfa.name().to_string(),
         bit_depth: meta.bit_depth,
-        black_levels: frame.black_levels,
-        white_levels: frame.white_levels,
+        black_levels: frame.black_levels.clone(),
+        white_levels: frame.white_levels.clone(),
         wb_multipliers: frame.wb_multipliers,
         width: frame.width as u32,
         height: frame.height as u32,
@@ -588,21 +663,39 @@ mod tests {
     fn phase_remap_follows_crop_origin_parity() {
         // 全幅相位 [10, 20, 30, 40]，裁剪原点 (1, 0)：裁后相位 0 处对应
         // 全幅 (1, 0) → 相位 1 → 20；整表应左旋一位行内交换。
+        // （remap_levels 的 N=2 特例，与旧 remap_phases 逐位同口径。）
         assert_eq!(
-            remap_phases([10.0, 20.0, 30.0, 40.0], 1, 0),
-            [20.0, 10.0, 40.0, 30.0]
+            remap_levels(&[10.0, 20.0, 30.0, 40.0], 2, 2, 2, 1, 0).unwrap(),
+            vec![20.0, 10.0, 40.0, 30.0]
         );
         assert_eq!(
-            remap_phases([10.0, 20.0, 30.0, 40.0], 0, 1),
-            [30.0, 40.0, 10.0, 20.0]
+            remap_levels(&[10.0, 20.0, 30.0, 40.0], 2, 2, 2, 0, 1).unwrap(),
+            vec![30.0, 40.0, 10.0, 20.0]
         );
         assert_eq!(
-            remap_phases([10.0, 20.0, 30.0, 40.0], 1, 1),
-            [40.0, 30.0, 20.0, 10.0]
+            remap_levels(&[10.0, 20.0, 30.0, 40.0], 2, 2, 2, 1, 1).unwrap(),
+            vec![40.0, 30.0, 20.0, 10.0]
         );
         assert_eq!(
-            remap_phases([10.0, 20.0, 30.0, 40.0], 0, 0),
-            [10.0, 20.0, 30.0, 40.0]
+            remap_levels(&[10.0, 20.0, 30.0, 40.0], 2, 2, 2, 0, 0).unwrap(),
+            vec![10.0, 20.0, 30.0, 40.0]
         );
+    }
+
+    #[test]
+    fn level_remap_generalizes_to_xtrans_period() {
+        // 6×6 全幅电平 = 相位下标本身；裁剪原点 (1, 2) 时裁后相位 (x, y)
+        // 须取全幅相位 ((1+x)%6, (2+y)%6) 的值——逐相位恒等式核对。
+        let full: Vec<f32> = (0..36).map(|p| p as f32).collect();
+        let out = remap_levels(&full, 6, 6, 6, 1, 2).unwrap();
+        for y in 0..6 {
+            for x in 0..6 {
+                assert_eq!(out[y * 6 + x], full[((2 + y) % 6) * 6 + ((1 + x) % 6)]);
+            }
+        }
+        // 1×1 源 ⇒ 全相位广播；形状对不齐 ⇒ 响亮报错，不许猜。
+        assert_eq!(remap_levels(&[7.0], 1, 1, 6, 3, 4).unwrap(), vec![7.0; 36]);
+        assert!(remap_levels(&[1.0, 2.0, 3.0, 4.0], 2, 2, 6, 0, 0).is_err());
+        assert!(remap_levels(&full, 6, 6, 2, 0, 0).is_err());
     }
 }

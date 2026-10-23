@@ -8,7 +8,7 @@
 
 use yanshi_raw::develop::{composite_color_matrix, highlight_recover, highlight_softness};
 use yanshi_raw::frame::{CalibrationMatrix, RecordContext, WbMode};
-use yanshi_raw::{develop, CfaPattern, Demosaic, DevelopOptions, RawFrame};
+use yanshi_raw::{develop, CfaGrid, CfaPattern, Demosaic, DevelopOptions, RawFrame};
 
 /// W2 的日光 WB（balanced 域观测模型 obs = min(true, w_c) 的 w）。
 const WB_DAY: [f32; 3] = [2.0, 1.0, 1.6];
@@ -298,9 +298,9 @@ fn criterion1_full_develop_chain_neutralizes_saturated_frame() {
         width: w,
         height: h,
         mosaic: vec![16383.0; w * h],
-        cfa: CfaPattern::Rggb,
-        black_levels: [512.0; 4],
-        white_levels: [16383.0; 4],
+        cfa: CfaGrid::from_bayer(CfaPattern::Rggb),
+        black_levels: vec![512.0; 4],
+        white_levels: vec![16383.0; 4],
         wb_multipliers: Some([1.72, 1.0, 1.39]),
         as_shot_neutral: None,
         color_matrices: sony_calibrations(),

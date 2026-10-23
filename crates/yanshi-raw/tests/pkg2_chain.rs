@@ -96,7 +96,7 @@ fn raw_meta_echoes_every_fixture_value() {
     assert_eq!(meta.orientation, 6);
     assert_eq!(meta.cfa, "RGGB");
     assert_eq!(meta.bit_depth, Some(16));
-    assert_eq!(meta.black_levels, [512.0; 4]);
+    assert_eq!(meta.black_levels, vec![512.0; 4]);
     assert_eq!(meta.white_levels, [16383.0; 4]);
     assert_eq!((meta.width, meta.height), (6, 4));
 }

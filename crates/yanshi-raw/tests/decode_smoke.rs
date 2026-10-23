@@ -4,7 +4,7 @@
 
 use yanshi_raw::dng_fixture::{write_synthetic_dng, SyntheticDng};
 use yanshi_raw::frame::RecordContext;
-use yanshi_raw::{decode_bytes, develop, record_context, CfaPattern, DevelopOptions};
+use yanshi_raw::{decode_bytes, develop, record_context, CfaGrid, CfaPattern, DevelopOptions};
 
 /// 中性场景的夹具：马赛克逐通道 DN 与 AsShotNeutral [0.58, 1, 0.72] 成比例
 /// （k=50 ⇒ R/G/B 位 DN = 512 + [29, 50, 36]，整数精确成比例），
@@ -30,9 +30,9 @@ fn synthetic_dng_decodes_and_develops_end_to_end() {
     let decoded = decode_bytes(&bytes).expect("合成 DNG 必须能被 rawler 解码");
     let frame = &decoded.frame;
     assert_eq!((frame.width, frame.height), (8, 8));
-    assert_eq!(frame.cfa, CfaPattern::Rggb);
-    assert_eq!(frame.black_levels, [512.0; 4]);
-    assert_eq!(frame.white_levels, [16383.0; 4]);
+    assert_eq!(frame.cfa, CfaGrid::from_bayer(CfaPattern::Rggb));
+    assert_eq!(frame.black_levels, vec![512.0; 4]);
+    assert_eq!(frame.white_levels, vec![16383.0; 4]);
     // AsShotNeutral [0.58, 1, 0.72] ⇒ 乘子 [1/0.58, 1, 1/0.72]。
     let wb = frame.wb_multipliers.expect("应有 WB 乘子");
     assert!((wb[0] - 1.0 / 0.58).abs() < 1e-4, "wb={wb:?}");
@@ -83,12 +83,12 @@ fn active_area_crop_remaps_cfa_and_black_phases() {
     assert_eq!((frame.width, frame.height), (8, 8));
     assert_eq!(
         frame.cfa,
-        CfaPattern::Rggb,
+        CfaGrid::from_bayer(CfaPattern::Rggb),
         "裁后 CFA 必须回到 ActiveArea 口径的 RGGB"
     );
     assert_eq!(
         frame.black_levels,
-        [400.0, 300.0, 200.0, 100.0],
+        vec![400.0, 300.0, 200.0, 100.0],
         "裁剪原点 (1,1) 时四相位应整体换位"
     );
     // 裁后帧可全链展开（常量场仍是中性常数，只是黑电平逐相位不同——

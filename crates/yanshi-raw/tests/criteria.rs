@@ -7,7 +7,9 @@ use yanshi_raw::develop::{
     apply_wb, composite_color_matrix, demosaic, normalize_mosaic, renormalized_wb_multipliers,
 };
 use yanshi_raw::frame::{CalibrationMatrix, RecordContext};
-use yanshi_raw::{develop, CfaPattern, Channel, Demosaic, DevelopOptions, RawError, RawFrame};
+use yanshi_raw::{
+    develop, CfaGrid, CfaPattern, Channel, Demosaic, DevelopOptions, RawError, RawFrame,
+};
 
 /// 现实量纲的双标定（与合成 DNG 夹具同源数值，D65／A 两端）。
 fn realistic_calibrations() -> Vec<CalibrationMatrix> {
@@ -36,9 +38,9 @@ fn base_frame(width: usize, height: usize) -> RawFrame {
         width,
         height,
         mosaic: vec![0.0; width * height],
-        cfa: CfaPattern::Rggb,
-        black_levels: [512.0; 4],
-        white_levels: [16383.0; 4],
+        cfa: CfaGrid::from_bayer(CfaPattern::Rggb),
+        black_levels: vec![512.0; 4],
+        white_levels: vec![16383.0; 4],
         wb_multipliers: Some([1.72, 1.0, 1.39]),
         as_shot_neutral: None,
         color_matrices: realistic_calibrations(),
@@ -98,8 +100,20 @@ fn correction_ratio(
     site: Channel,
     post_gains: Option<[f32; 3]>,
 ) -> f32 {
-    let mhc = demosaic(plane, T_W, T_H, CfaPattern::Rggb, Demosaic::MalvarHeCutler);
-    let bilin = demosaic(plane, T_W, T_H, CfaPattern::Rggb, Demosaic::Bilinear);
+    let mhc = demosaic(
+        plane,
+        T_W,
+        T_H,
+        CfaGrid::from_bayer(CfaPattern::Rggb),
+        Demosaic::MalvarHeCutler,
+    );
+    let bilin = demosaic(
+        plane,
+        T_W,
+        T_H,
+        CfaGrid::from_bayer(CfaPattern::Rggb),
+        Demosaic::Bilinear,
+    );
     let mut ratios = Vec::new();
     for y in 3..T_H - 3 {
         for x in 3..T_W - 3 {
@@ -155,8 +169,8 @@ fn tungsten_pre_wb_pipeline_has_no_tear() {
     // **相等**——0.95/0.225 的现象不出现、4.22 撕裂不存在。
     let native = tungsten_native_plane();
     let mut frame = base_frame(T_W, T_H);
-    frame.black_levels = [0.0; 4];
-    frame.white_levels = [20000.0; 4];
+    frame.black_levels = vec![0.0; 4];
+    frame.white_levels = vec![20000.0; 4];
     frame.mosaic = native.iter().map(|&v| v * 10000.0).collect();
     frame.wb_multipliers = Some([1.0 / 1.9, 1.0, 1.0 / 0.45]);
     let mut plane = normalize_mosaic(&frame).unwrap();
@@ -249,8 +263,8 @@ fn neutral_constant_field_survives_full_develop() {
 #[test]
 fn four_phase_black_levels_stay_independent() {
     let mut frame = base_frame(16, 16);
-    frame.black_levels = [512.0, 544.0, 512.0, 512.0]; // 相位 1（G 位之一）+32
-    frame.white_levels = [16383.0; 4];
+    frame.black_levels = vec![512.0, 544.0, 512.0, 512.0]; // 相位 1（G 位之一）+32
+    frame.white_levels = vec![16383.0; 4];
     frame.mosaic = vec![3000.0; 16 * 16];
     let plane = normalize_mosaic(&frame).unwrap();
     let mut per_phase = [f32::NAN; 4];
@@ -431,7 +445,7 @@ fn constant_color_field_is_exact_for_every_pattern_and_kind() {
             }
         }
         for kind in [Demosaic::MalvarHeCutler, Demosaic::Bilinear] {
-            let out = demosaic(&plane, 12, 12, pattern, kind);
+            let out = demosaic(&plane, 12, 12, CfaGrid::from_bayer(pattern), kind);
             for pixel in out.chunks_exact(3) {
                 assert!(
                     (pixel[0] - 0.8).abs() < 1e-6
@@ -525,7 +539,7 @@ fn tiny_images_never_panic() {
     for (w, h) in [(1usize, 1usize), (2, 2), (3, 3), (1, 7), (7, 1)] {
         let plane = vec![0.5f32; w * h];
         for kind in [Demosaic::MalvarHeCutler, Demosaic::Bilinear] {
-            let out = demosaic(&plane, w, h, CfaPattern::Rggb, kind);
+            let out = demosaic(&plane, w, h, CfaGrid::from_bayer(CfaPattern::Rggb), kind);
             assert_eq!(out.len(), w * h * 3);
             assert!(out.iter().all(|v| v.is_finite()));
         }
