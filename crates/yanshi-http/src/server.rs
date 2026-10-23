@@ -2289,10 +2289,34 @@ fn tool_call_with(
     // **自己建文档的工具不替它预建** ✓（与 MCP 共用同一条规矩 ✓，判据见
     // `ToolSpec::creates_own_document` ✓）：HTTP 这边通常已经过 `authorize` ⇒ 目标多在内存里 ✓、
     // 这一句多半不生效 ✓，但**两个入口必须同一套规矩** ✓ —— 各写一套必然漂移 ✗。
+    // **★ 只读工具**不许**替调用方建文档** ★**（第 636 轮；外部 `report.md` 的 D10 ✓）
+    //   **症状**：`get_document({"doc_id": "test2"})` 对一个**拼错/不存在**的 id
+    //   **不报错**，而是**建一份空文档**再回它 ✓ ⇒ 审计时看起来"这份画就是空的" ✗，
+    //   而且**改动了工作区**（`list_documents` 里从此多了这个 id）✗。
+    //   **修法**：非变更型工具遇到未打开的文档 ⇒ **`reference_not_found`** ✓（**不创建** ✓）。
+    //   判据：`tool-unknown-doc-is-not-created.mjs`（第 637 轮补 ✓）。
     let pre_create = !state
         .registry
         .get(name)
         .is_some_and(|spec| spec.creates_own_document());
+    if pre_create && workspace.document(&doc_id).is_none() {
+        let mutating = state.registry.get(name).is_some_and(|spec| spec.mutating);
+        if !mutating {
+            return Response::json(
+                404,
+                &serde_json::json!({
+                    "ok": false,
+                    "error_code": "reference_not_found",
+                    "retryable": false,
+                    "context": {
+                        "detail": format!(
+                            "文档 {doc_id} 不存在 ⇒ 只读工具不会替调用方新建文档（先用 `POST /api/documents` 建，或用 `list_documents` 核对 id）"
+                        )
+                    }
+                }),
+            );
+        }
+    }
     if pre_create && workspace.document(&doc_id).is_none() {
         let spec = NewDocument::new(doc_id.clone(), state.options.width, state.options.height);
         if let Err(error) = workspace.open_or_create(spec, &principal.actor, "session:http") {

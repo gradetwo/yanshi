@@ -364,6 +364,18 @@ impl Server {
             .registry
             .get(name)
             .is_some_and(|spec| spec.creates_own_document());
+        // **只读工具不替调用方建文档** ✓（第 636 轮；外部 `report.md` 的 D10 ✓）
+        //   ⇒ 拼错的 `doc_id` 会**建出一份空文档再回它** ✗（审计会被误导读成"画是空的" ✓）
+        if pre_create
+            && self.workspace.document(&doc_id).is_none()
+            && !self.registry.get(name).is_some_and(|spec| spec.mutating)
+        {
+            // **走 `open_document` 的错误出口** ✓（内存没有 ⇒ 它会去磁盘找 ⇒ 都没有 ⇒
+            // `reference_not_found` ✓）——与下面 `open_or_create` 失败**同一条回执形状** ✓
+            if let Err(error) = self.workspace.open_document(&doc_id) {
+                return Ok(tool_error(&error.to_response()));
+            }
+        }
         if pre_create {
             let spec = yanshi_server::NewDocument::new(
                 doc_id.clone(),
