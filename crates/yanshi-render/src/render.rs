@@ -2881,12 +2881,27 @@ impl Renderer {
                             false
                         };
                         let _ = by_sig_entry_removed;
+                        // **切回"曾在 `by_sig` 里"的签名时，要把它的旧块拿来合并** ✓（第 708 轮；审计 R-03）
+                        //   **⇒ 缺陷** ✗：`c.sig != sig` 时直接丢弃当前块并把 `keep` 置空 ✗
+                        //     ⇒ 若 `by_sig` 里还留着该签名的**旧子集**，这一轮**只算新区域**，
+                        //     而下面 `needs_write` 又因"条目已存在且非空"算出 `false` ⇒ **不更新** ✗
+                        //     ⇒ 读侧 `tiles_for_sig` **优先返回 `by_sig`** ⇒ **旧子集永久生效** ✗
+                        //   **⇒ 修法**：`by_sig` 里有该签名 ⇒ **取出来当 `keep`** ✓（合并），
+                        //     并且**强制写回**（`merged_from_by_sig` ⇒ `needs_write = true` ✓）。
+                        let mut merged_from_by_sig = false;
                         let keep = match guard.as_mut() {
                             Some(c) if c.sig == sig => take_tiles_dropping_sig(c, &sig),
                             Some(c) => {
+                                let previous = c.by_sig.remove(&sig);
+                                merged_from_by_sig = previous.is_some();
                                 c.tiles = std::sync::Arc::new(Vec::new());
                                 c.sig = sig.clone();
-                                Vec::new()
+                                previous
+                                    .map(|(tiles, _)| {
+                                        std::sync::Arc::try_unwrap(tiles)
+                                            .unwrap_or_else(|shared| (*shared).clone())
+                                    })
+                                    .unwrap_or_default()
                             }
                             None => Vec::new(),
                         };
@@ -3008,8 +3023,8 @@ impl Renderer {
                         //     ⇒ 缓存里那条**变空** ✗ ⇒ 而我上一轮只判 `contains_key` ⇒
                         //     **空条目永远不会被补上** ⇒ 之后每次读都退化成"没命中" ✗
                         //   **⇒ 修法**：**空条目 ⇒ 照写** ✓（有内容的条目才跳过 ✓）。
-                        let needs_write =
-                            carried.get(&sig).is_none_or(|(tiles, _)| tiles.is_empty());
+                        let needs_write = merged_from_by_sig
+                            || carried.get(&sig).is_none_or(|(tiles, _)| tiles.is_empty());
                         // **一份 `Arc` 同时给 `by_sig` 与 `tiles`** ✓（第 683 轮）：两边共享，
                         //   所以"写缓存"不再等于"拷一份 37 MB 的表" ✓ ⇒ 也就不必用"跳过写"来省 ✗
                         let shared = std::sync::Arc::new(merged);
