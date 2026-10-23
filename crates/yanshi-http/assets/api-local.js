@@ -3528,15 +3528,50 @@ async function withKernel(doc, fn) {
         const { getBlob } = await import("./store.js");
         const blobBytes = await getBlob(handle, blobHash);
         if (!blobBytes) return p2Missing("blob " + blobHash + " 不在本地 blob 库里");
-        const srcBmp = await g.createImageBitmap(new Blob([new Uint8Array(blobBytes)], { type: "image/png" }));
-        const fromW = srcBmp.width, fromH = srcBmp.height;
+        // **原始 RGBA 位图不能当 PNG 喂给 `createImageBitmap`** ✓（第 742 轮；外部审计 S-11）
+        //   **⇒ 缺陷**：本仓自己的位图是 `image/x-yanshi-raw`（**裸 RGBA**）✓，而这段代码
+        //     **硬编码** `{ type: "image/png" }` ✗ ⇒ `createImageBitmap` **解析失败** ✓
+        //     ⇒ 本地重采样对**自家位图永远不工作** ✓（错误还被 `p2cKernel501` 包成 501 ✓，
+        //     看起来像"内核不支持"✓ —— 最误导的一种 ✓）。
+        //   **⇒ 修法**：按 `bitmap.mime_type` 分流 ✓ —— raw ⇒ 自己拼 `ImageData`（尺寸取对象里的
+        //     `width`/`height` ✓）；其它（真 PNG／JPEG）⇒ 仍走 `createImageBitmap` ✓。
+        const mime = String((bitmap && bitmap.mime_type) || "");
+        let srcBmp = null;
+        let srcImageData = null;
+        let fromW = 0, fromH = 0;
+        if (mime === "image/x-yanshi-raw") {
+          fromW = Math.floor(Number(data.width) || 0);
+          fromH = Math.floor(Number(data.height) || 0);
+          if (!(fromW > 0 && fromH > 0)) {
+            return p2Bad("原始位图缺少 width/height ⇒ 无法确定尺寸（对象 " + objectId + "）");
+          }
+          const expected = fromW * fromH * 4;
+          if (blobBytes.length !== expected) {
+            return p2Bad(
+              "原始位图大小不对：期望 " + expected + " 字节（" + fromW + "×" + fromH + "×4），实测 "
+                + blobBytes.length + " ⇒ 拒绝按 PNG 猜",
+            );
+          }
+          srcImageData = new g.ImageData(new Uint8ClampedArray(blobBytes), fromW, fromH);
+        } else {
+          srcBmp = await g.createImageBitmap(new Blob([new Uint8Array(blobBytes)], { type: mime || "image/png" }));
+          fromW = srcBmp.width; fromH = srcBmp.height;
+        }
         const toW = targetW || fromW, toH = targetH || fromH;
         const canvas = g.document.createElement("canvas");
         canvas.width = toW; canvas.height = toH;
         const c2d = canvas.getContext("2d", { willReadFrequently: true });
         c2d.imageSmoothingEnabled = filterName === "bilinear";
-        c2d.drawImage(srcBmp, 0, 0, toW, toH);
-        if (srcBmp.close) srcBmp.close();
+        if (srcImageData) {
+          // 先把裸 RGBA 画进一张**源尺寸**的画布，再缩放画到目标画布 ✓
+          const srcCanvas = g.document.createElement("canvas");
+          srcCanvas.width = fromW; srcCanvas.height = fromH;
+          srcCanvas.getContext("2d").putImageData(srcImageData, 0, 0);
+          c2d.drawImage(srcCanvas, 0, 0, toW, toH);
+        } else {
+          c2d.drawImage(srcBmp, 0, 0, toW, toH);
+          if (srcBmp.close) srcBmp.close();
+        }
         const outImg = c2d.getImageData(0, 0, toW, toH);
         const rgba = new Uint8Array(outImg.data.buffer.slice(0));
         const { entry } = await p2cKernelFor();
