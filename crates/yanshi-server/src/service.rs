@@ -1500,7 +1500,13 @@ impl Workspace {
             // 只有**真的缺**且**配方可重放**才落笔 ✓ ⇒ 平时的打开**一次重放都不做** ✓；
             // 补回来的会**写进本地 CAS** ✓ ⇒ 第二次打开就是普通的读 ✓（本地缓存 ✓）。
             let (replayed, unreplayable) = self.materialize_pending_replayable_blobs(doc_id)?;
-            if replayed > 0 {
+            // **"全部重放失败"也必须记账** ✓（第 725 轮；外部审计 S-03）
+            //   **⇒ 缺陷**：条件原来只有 `replayed > 0` ✗ ⇒ 当 `replayed == 0` 且
+            //     `unreplayable > 0`（**一个都没补回来**）时，`set_unreplayable_blobs` **不执行** ✗
+            //     ⇒ 文档状态把"全失败"报成 `blobs_unreplayable = 0` ✓ ⇒ **最坏的一种静默** ✓
+            //     （调用方看到"没有不可重放的" ⇒ 以为画是完整的 ✓）。
+            //   **⇒ 判据**：`blobs_replayed == 0` 且有不可重放的 ⇒ 那个计数必须 > 0 ✓。
+            if replayed > 0 || unreplayable > 0 {
                 if let Some(document) = self.documents.get_mut(doc_id) {
                     document.set_replayed_blobs(replayed);
                     document.set_unreplayable_blobs(unreplayable);
