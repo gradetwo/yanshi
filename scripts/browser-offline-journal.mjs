@@ -311,16 +311,26 @@ const waitForPrecache = async (path, timeoutMs = Number(process.env.YANSHI_WAIT_
   // **不 `await` 这一次求值** ✓ —— 本判据对时序敏感（入队时读 `window.yanshiStats.serverHead`
   // 当基线，多一次 CDP 往返会改变它何时被后台更新），所以让这个必然失败的请求**与入队那一步并发**，
   // 结论稍后再取 ✓（请求仍然真的由页面发出 ✓）。
+  // **★ 第 738 轮：探测改走 `XMLHttpRequest` ✗ ★**（**根因写全在台账第 450 节 ✓**）：
+  //   **∴ 旧注释把 501 归因成「**SW 绕过 ✓」✗ —— 那次 `fetch` **根本没出页面** ✓：
+  //     **静态 PWA** 的引导页 `installLocalApi` **覆写 `window.fetch`**✗
+  //     （**`web/index.html:74–76` ✓＋`api-local.js:4836–4854` ✓**——未映射的 `/api/` 本地回 501 ✓）
+  //       ⇒ **∴ 于是**：`knownCdpLimit` 那条「**不算失败**」的分支**掩盖的是接管**✗
+  //         **不是** CDP 限制 ✓ ⇒ **∴ 归因错了** ✗
+  //   **∴ XHR 没有被覆写**（**`grep XMLHttpRequest api-local.js` = 0 ✓）⇒ **∴ 真实经过**
+  //     **SW＋网络栈**✗ ⇒ **∴ 断网必失败**✓；**若仍成功**✗ 才是**真的没断下去**（**offline 没生效／
+  //     SW 上下文绕过 ✓**）⇒ **∴ `knownCdpLimit` 分支保留**✗ 但含义**变干净了** ✓ ★**** ✓✓
   const controlPending = send("Runtime.evaluate", {
-    awaitPromise: true, expression: `(async () => {
-      // **★ 诊断（**第 331 轮加 ✓）★**：**∴ 看** CDP 的 offline **是否生效** ＋ **SW 是否接管**
-      //   ⇒ **∴ 于是**：**下次 CI** 一次就能分辨**「**offline 没生效**」与「**SW 绕过**」 ✓
+    awaitPromise: true, expression: `(() => {
       const onLine = navigator.onLine;
       const swControlled = !!(navigator.serviceWorker && navigator.serviceWorker.controller);
-      try {
-        const response = await fetch(${JSON.stringify(NEGATIVE_CONTROL)}, { cache: "no-store" });
-        return { failed: false, status: response.status, bytes: (await response.arrayBuffer()).byteLength, onLine, swControlled };
-      } catch (error) { return { failed: true, error: String(error), onLine, swControlled }; }
+      return new Promise((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("GET", ${JSON.stringify(NEGATIVE_CONTROL)}, true);
+        xhr.onload = () => resolve({ failed: false, status: xhr.status, bytes: -1, onLine, swControlled, via: "xhr" });
+        xhr.onerror = () => resolve({ failed: true, status: xhr.status, onLine, swControlled, via: "xhr" });
+        xhr.send();
+      });
     })()`,
     returnByValue: true, awaitPromise: true,
   });
@@ -336,28 +346,33 @@ const waitForPrecache = async (path, timeoutMs = Number(process.env.YANSHI_WAIT_
   console.log("     界面 = " + JSON.stringify(ui1));
   const controlProbe = (await controlPending)?.result?.result?.value;
   console.log("     负对照（未缓存接口必须失败）= " + JSON.stringify(controlProbe));
-  // **★ 分清两种「不成立」✗ ★**（第 335 轮 ✓；**CI 诊断换来的 ✓）：
-  //   **∴ 第 333 轮的 CI 实测（**本判据自己打印的 ✓）★**：
+  // **★ 分清两种「不成立」✗ ★**（第 335 轮立 ✓；**第 738 轮重新归因 ✓——台账第 450 节 ✓**）：
+  //   **∴ 第 333 轮的 CI 实测（**本判据当时打印的 ✓）★**：
   //     `{"failed":false,"status":501,"bytes":307,"onLine":false,"swControlled":true}`
-  //     **∴ 读法 ✗**：**CDP 的 offline **已生效**（`onLine:false` ✓）
-  //       ＋ **页面**被 SW 接管**（`swControlled:true` ✓）
-  //         ⇒ **★ 所以**：**那次 `fetch` **由 SW 上下文发出** ⇒ **CDP 的页面级 offline **管不到** ✓ ★**** ✓✓
-  //           （**∴ 已知 CDP 限制 ✓ —— 见 `browser-offline-shell.mjs:238–244` ✓）** ✓✓
-  //   **∴ 所以 ✗**：**`swControlled === true` ＋ `onLine === false` ＋ 请求成功**
-  //     ⇒ **∴ 标为**已知 CDP 限制**✗ ⇒ **∴ 不报成**产品失败** ✓（**∴ 且**不假装通过 ✓）** ✓✓
+  //     **∴ 当时的读法 ✗**：offline 已生效＋请求由 SW 上下文发出 ⇒ **已知 CDP 限制** ✓
+  //     **∴ 现在的读法 ✓**：**那是页面里的 `fetch` 被 `installLocalApi` 接管**✗
+  //       ⇒ **∴ 501 是本地回的**✗（**请求没出页面**✓）**⇒ 与 CDP／SW 无关** ✓
+  //         ⇒ **∴ 所以**：那条「不算失败」的分支**当年掩盖的是接管**✗（**∴ 归因错 ✓）** ✓✓
+  //   **∴ 探针换成 XHR 之后 ✗**：`failed === false` **只能**是**真的没断下去** ✓
+  //     ⇒ **∴ `knownCdpLimit` 保留**✗（**SW 绕过这条 CDP 限制依然存在 ✓——见
+  //       `browser-offline-shell.mjs` 用 `self.fetch` 的那一节 ✓）**✗
+  //       但它**不再顺手豁免本地接管的假象** ✓ ★**** ✓✓
   const knownCdpLimit =
-    !!(controlProbe && controlProbe.swControlled === true && controlProbe.onLine === false);
+    !!(controlProbe && controlProbe.failed !== true
+       && controlProbe.swControlled === true && controlProbe.onLine === false);
   const controlBlocked = !!(controlProbe && controlProbe.failed) || knownCdpLimit;
   if (knownCdpLimit) {
-    console.log("     · ⊘ 已知 CDP 限制（**不算失败** ✗）：offline 已生效但请求由 SW 发出 ⇒ 负对照不可成立");
+    console.log("     · ⊘ 已知 CDP 限制（**不算失败** ✗）：offline 已生效但请求由 SW 上下文发出 ⇒ 负对照不可成立");
   }
   check(controlBlocked, `负对照：断网后未缓存的 ${NEGATIVE_CONTROL} 必须失败（拿到了 status=${controlProbe && controlProbe.status} ⇒ 断网模拟没生效 ⇒ 判据作废 VOID）`);
   if (!controlBlocked) {
     // **负对照不成立 ⇒ 立刻作废（VOID）** ✗ —— 不要带着"断网是假的"这个前提继续跑。
-    console.error("  ⊘ 判据作废（VOID）：断网模拟没有生效 ⇒ 后续离线结论无效");
+    // **∴ 退出码必须是 3 ✗ ★**（**第 738 轮改 ✓**）：这是「**判据自身前提不成立**」✗
+    //   ⇒ **∴ 不是**产品失败**✗（**仓内统一约定 ✓；**旧代码在这里退 1 ✗ 会把环境问题算成产品红 ✓）**）✓
+    console.error("  ⊘ 判据作废（VOID）：断网模拟没有生效 ⇒ 后续离线结论无效 ⇒ 退出码 3");
     await online();
     socket.close();
-    process.exit(1);
+    process.exit(3);
   }
   check(Array.isArray(entries1) && entries1.length === 1, "队列里恰好 1 条（拿到了 " + (entries1 ? entries1.length : "?") + "）");
   const first = entries1 && entries1[0];
