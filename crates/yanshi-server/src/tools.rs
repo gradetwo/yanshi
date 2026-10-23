@@ -15508,8 +15508,24 @@ fn prime_stroke_total_length(state: &mut hokusai::BrushState, points: &[(f64, f6
 
 /// **纯涂抹笔刷（opaque = 0 ✓）在这里是空的** ✓ —— 那没关系 ✓：
 /// 它的成果是"**把已有的颜色抹开**" ✓ ⇒ 由"落笔前后有可见差异"那条判据接住 ✓（见调用处 ✓）。
+/// **短笔触兜底位移的唯一口径** ✓（第 640 轮；外部 `report.md` 的 D1 ✓）
+///
+/// **为什么需要它**：引擎按 **dab 间距 ≈ `size/4`** 落笔 ⇒ 位移小于间距时**一枚 dab 都不盖** ✗，
+/// 而回执仍是 `ok:true`（静默无操作 ✗）。所以"兜底位移"必须**随 size 增长** ✓。
+///
+/// **为什么是 `size * 0.5`**：它**大于**间距（`size/4`，留 2× 余量 ✓）、**小于半径**（`size/2`，✓
+/// 视觉上仍是一"点"而不是一道线 ✓），下限 4px 覆盖小笔刷 ✓。
+///
+/// **为什么必须有这一份**：此前三处各写一个数 ✗ —— `paint_mask` 用 `(size*0.25).clamp(2,32)` ✓、
+/// `brush_deposit_mask` 单点写死 **4.0** ✗、多点阈值也写死 **4.0** ✗ ⇒ 同一个语义三个口径，
+/// 而且**大笔刷那两处必然失效**（size=176 时间距 44 > 位移 4 ✗）—— 正是外部实测到的那条 ✓。
+pub(crate) fn deposit_nudge(size: f64) -> f64 {
+    (size * 0.5).max(4.0)
+}
+
 fn brush_deposit_mask(
     brush: &hokusai::Brush,
+    size: f64,
     points: &[(f64, f64, f64)],
     region: PaintRegion,
     // **★ 掩膜遍必须与主遍**共用同一套时间基** ✓（第 1417 轮；外部 D-10）
@@ -15532,21 +15548,23 @@ fn brush_deposit_mask(
     let mut owned_points: Vec<(f64, f64, f64)>;
     let points: &[(f64, f64, f64)] = if points.len() == 1 {
         let (x, y, p) = points[0];
-        owned_points = vec![(x, y, p), (x + 4.0, y, p)];
+        let nudge = deposit_nudge(size);
+        owned_points = vec![(x, y, p), (x + nudge, y, p)];
         &owned_points
     } else if points.len() >= 2 {
         let total_len: f64 = points
             .windows(2)
             .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
             .sum();
-        // 4px 启发式：大于常见 dab 间距（size/4，size ≤ 16），视觉上仍可忽略。
-        if total_len < 4.0 && total_len > 0.0 {
+        // **阈值必须随 size** ✓（同 `deposit_nudge`：大笔刷的 dab 间距是 size/4，4px 远远不够 ✗）
+        let need_min = deposit_nudge(size);
+        if total_len < need_min && total_len > 0.0 {
             let (lx, ly, lp) = points[points.len() - 1];
             let (px, py, _) = points[points.len() - 2];
             let dx = lx - px;
             let dy = ly - py;
             let d = (dx * dx + dy * dy).sqrt().max(1e-6);
-            let need = 4.0 - total_len;
+            let need = need_min - total_len;
             owned_points = points.to_vec();
             owned_points.push((lx + dx / d * need, ly + dy / d * need, lp));
             &owned_points
