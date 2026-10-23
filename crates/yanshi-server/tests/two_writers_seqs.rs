@@ -75,8 +75,28 @@ fn two_writers_on_the_same_root_do_not_duplicate_sequences() {
     appended.push('\n');
     std::fs::write(&journal, appended).expect("写回日志");
 
-    // ③ 本进程（**内存里没有那条**）再画一笔 ⇒ 会复用刚被"别的进程"占掉的号 ✓
-    draw(&mut first, "s_after_other_process");
+    // ③ 本进程（**内存里没有那条**）再画一笔 ⇒ **必须被拒** ✓（第 749 轮：写前看盘 ⇒ 响亮报错 ✓）
+    let registry = ToolRegistry::with_profiles(&Profile::ALL);
+    let mut ctx = context(&mut first);
+    let refused = registry.call(
+        &mut ctx,
+        "draw_stroke",
+        &json!({
+            "layer_id": "layer_default", "object_id": "s_after_other_process",
+            "data": {"points": [[4.0, 4.0], [20.0, 20.0]], "size": 3.0, "hardness": 1.0,
+                     "color": {"r": 10, "g": 20, "b": 30, "a": 255}},
+        }),
+    );
+    assert_eq!(
+        refused["ok"],
+        json!(false),
+        "另一个进程已占掉 seq {}，这一笔却被接受 ⇒ 又会写出重复 seq：{refused}",
+        atom["seq"]
+    );
+    assert!(
+        refused.to_string().contains("seq"),
+        "拒绝的文案要说清是 seq 冲突：{refused}"
+    );
     drop(first);
 
     // ④ 第三个读者重新打开 ⇒ 不许因为重复 seq 打不开 ✓
@@ -124,8 +144,12 @@ fn two_writers_on_the_same_root_do_not_duplicate_sequences() {
         raw_seqs.len(),
         raw_total - raw_seqs.len()
     );
-    assert!(
-        raw_total > raw_seqs.len(),
-        "这一版没能复现「写时撞号」（盘上无重复）⇒ 判据没测到东西，先看注入是否生效"
+    // ⑥ **修好之后**：盘上**不许**再出现重复 ✓（写侧已拒绝 ✓）——
+    //   注入的那一条 + 之前两条 = 3 条；本进程那一笔被拒 ⇒ 不会再多一条 ✓。
+    assert_eq!(
+        raw_total,
+        raw_seqs.len(),
+        "盘上仍有重复 seq（{raw_total} 条、{} 个不同）⇒ 写侧没拦住",
+        raw_seqs.len()
     );
 }

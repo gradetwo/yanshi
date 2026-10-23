@@ -263,6 +263,27 @@ impl FileStore {
         let dir = self.doc_dir(doc_id);
         fs::create_dir_all(&dir).map_err(|error| io_error(&dir, error))?;
         let path = self.atoms_path(doc_id);
+        // **写前必须看盘上已到几号** ✓（第 749 轮；台账三百三十的**根因修复**）
+        //   **⇒ 缺陷**：追加时**从不看盘** ✗ ⇒ 另一个进程（有自己的 `next_seq` ✓）占掉的号
+        //     会被**照写一遍** ✓ ⇒ 盘上出现**重复 `seq`** ✓ ⇒ 下次打开要靠
+        //     `repair_duplicate_seqs` 重编号才打得开 ✓（止血有效，但**写侧一直在制造脏数据** ✓）。
+        //   **⇒ 修法**：追加前读盘上最后一条的 `seq` ✓；若本次 `seq` **不大于**它 ⇒ **响亮报错** ✓
+        //     （**不重编号**：重编号会破坏 `revert`／`supersede` 里对旧 `seq` 的引用 ✓）。
+        //   **⇒ 判据**：`two_writers_seqs` 里"另一个进程占掉号"之后，本进程的下一笔
+        //     **必须失败**且盘上**保持唯一** ✓（变异：去掉这段 ⇒ 又出现重复 ⇒ 红 ✓）。
+        if let Some(last) = self.last_seq_on_disk(doc_id)? {
+            if atom.seq <= last {
+                return Err(YanshiError::new(
+                    ErrorCode::PreconditionFailed,
+                    ErrorContext::detail(format!(
+                        "文档 {doc_id} 的日志已经写到 seq {last}，而这一条是 seq {} ⇒ \
+                         拒绝写入（**另一个进程正在写同一份文档**？）\
+                         ⇒ 请只保留一个写者，或等它退出后重开（盘上保持唯一比丢一条更重要）",
+                        atom.seq
+                    )),
+                ));
+            }
+        }
         let mut file = fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -286,6 +307,44 @@ impl FileStore {
     /// ⇒ 大日志（几十～上百 MB）下峰值内存 ≈ **2× 文件大小** ✗（整文本 ＋ `Vec<Atom>` 同时活着 ✓）。
     /// 现在逐行读 ✓ ⇒ 峰值 ≈ **1× 原子 ＋ 一行** ✓。
     ///
+    /// **盘上最后一条原子的 `seq`** ✓（第 749 轮）：只读**尾部 8 KiB** 并解析最后一整行 ✓
+    /// （`atoms.jsonl` 可能几十 MB ✓ ⇒ 不整份读 ✓）。没有文件／空文件 ⇒ `None` ✓。
+    fn last_seq_on_disk(&self, doc_id: &str) -> Result<Option<u64>> {
+        use std::io::{Read as _, Seek as _, SeekFrom};
+        let path = self.atoms_path(doc_id);
+        let mut file = match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(io_error(&path, error)),
+        };
+        let len = file
+            .metadata()
+            .map_err(|error| io_error(&path, error))?
+            .len();
+        if len == 0 {
+            return Ok(None);
+        }
+        let window = len.min(8 * 1024);
+        file.seek(SeekFrom::Start(len - window))
+            .map_err(|error| io_error(&path, error))?;
+        let mut tail = String::new();
+        file.read_to_string(&mut tail)
+            .map_err(|error| io_error(&path, error))?;
+        // **最后一条完整行** ✓（文件末尾有换行 ⇒ 去掉末尾空串 ✓）
+        for line in tail.lines().rev() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<Atom>(trimmed) {
+                Ok(atom) => return Ok(Some(atom.seq)),
+                // **尾部窗口切断了第一行** ⇒ 它不是完整 JSON ✓ ⇒ 继续往前 ✓
+                Err(_) => continue,
+            }
+        }
+        Ok(None)
+    }
+
     /// **语义逐条保持** ✓（不许悄悄改行为 ✗）：
     ///   * 文件不存在 ⇒ 空列表 ✓；
     ///   * 跳过空行 ✓；
