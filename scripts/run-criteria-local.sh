@@ -71,7 +71,7 @@ PORT=$(( 23000 + RANDOM % 2000 ))
 #     ⇒ 判据按 `YANSHI_WORKSPACE/exports` 找 ⇒ **找不到** ⇒ 抛错 ⇒ exit 3 ✗
 #   ⇒ 所以**启动服务时**就要设（只在 node 前 export 是没用的：那不影响已在跑的服务）✓
 YANSHI_EXPORT_DIR="$ROOT/exports" \
-  "$BIN" --root "$ROOT" --doc _bootstrap --width 64 --height 64 --bind "127.0.0.1:$PORT" > "$ROOT/s.log" 2>&1 &
+  "$BIN" --root "$ROOT" --doc _bootstrap --width 320 --height 240 --bind "127.0.0.1:$PORT" > "$ROOT/s.log" 2>&1 &
 PID=$!
 trap 'kill "$PID" 2>/dev/null; rm -rf "$ROOT"' EXIT
 
@@ -93,7 +93,7 @@ fi
 BASE_URL="http://127.0.0.1:$PORT"
 CRIT_TOKEN=$(curl -s -X POST "$BASE_URL/api/documents" \
   -H 'content-type: application/json' \
-  -d '{"doc_id":"_bootstrap","width":64,"height":64}' \
+  -d '{"doc_id":"_bootstrap","width":320,"height":240}' \
   | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
 if [ -z "$CRIT_TOKEN" ]; then
   echo "  ⊘ 不可判：拿不到 token（判据前提不成立，不是产品问题）" >&2
