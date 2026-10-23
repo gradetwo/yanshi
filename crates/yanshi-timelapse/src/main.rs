@@ -401,8 +401,23 @@ fn main() -> Result<()> {
                 &mut account,
                 &mut scaled,
             )?;
+            // **第一帧就慢 ⇒ 明确建议开降采样** ✓（第 678 轮；外部把"慢"当成"卡死"那次换来的 ✓）
+            //   ⇒ 他们盯着 `进度` 猜了 57 分钟 ✗ ⇒ 现在**第一帧**就能拿到一句可执行的建议 ✓。
+            if frames == 1 {
+                let doc_px = u64::from(layout.doc_w) * u64::from(layout.doc_h);
+                let out_px = u64::from(layout.out_w) * u64::from(layout.out_h);
+                let first_ms = t_replay.elapsed().as_millis();
+                if let Some(ratio) = shrink_advice(doc_px, out_px, first_ms, shrink) {
+                    eprintln!(
+                        "⚠️ 第一帧花了 {:.1}s ⇒ 画布是输出的 **{ratio} 倍**像素；\
+                         加 `YANSHI_TIMELAPSE_SHRINK=1` 可只算输出那一份（预计快约 {ratio} 倍，代价是细节先丢后缩）",
+                        first_ms as f64 / 1000.0
+                    );
+                }
+            }
         }
     }
+    let frames_before_tail = frames;
     push_frame(
         &mut timeline,
         &mut stdin,
@@ -411,6 +426,21 @@ fn main() -> Result<()> {
         &mut account,
         &mut scaled,
     )?;
+    // **`every` 很大时第一帧是"收尾那一帧"** ✓（第 678 轮补充）：`frames == 1` 的判断写在循环里
+    //   ⇒ 那种情况下**永远不会触发** ✗（`every=1000` 时整个包只出一帧 ✓）
+    //   ⇒ 所以这里再补一次，条件相同 ✓（`frames_before_tail == 0` ⇒ 这一帧才是第一帧 ✓）。
+    if frames_before_tail == 0 && frames == 1 {
+        let doc_px = u64::from(layout.doc_w) * u64::from(layout.doc_h);
+        let out_px = u64::from(layout.out_w) * u64::from(layout.out_h);
+        let first_ms = t_replay.elapsed().as_millis();
+        if let Some(ratio) = shrink_advice(doc_px, out_px, first_ms, shrink) {
+            eprintln!(
+                "⚠️ 第一帧花了 {:.1}s ⇒ 画布是输出的 **{ratio} 倍**像素；\
+                 加 `YANSHI_TIMELAPSE_SHRINK=1` 可只算输出那一份（预计快约 {ratio} 倍，代价是细节先丢后缩）",
+                first_ms as f64 / 1000.0
+            );
+        }
+    }
     drop(stdin);
     let status = ffmpeg.wait().context("等 ffmpeg 失败")?;
     if !status.success() {
@@ -583,6 +613,30 @@ fn push_frame(
 ///
 /// **为什么**：外部报「261 字节空视频、exit 0」，而最常见的环境差异就是**没有 libx264 的 ffmpeg 构建**。
 /// 猜不如问：跑一次 `ffmpeg -hide_banner -encoders`，从输出里挑 ✓。
+/// **"慢到该建议开降采样"的最后一个判断** ✓（第 678 轮；外部第 98 次的教训 ✓）
+///
+/// **⇒ 为什么需要它**：他们把一个 **57 分钟没出帧**的重放当成"卡死" ✗ ——
+///   而真相是**像素 × 层**在算 ✓。现在默认路径也快多了，但**大画布仍然慢** ✓
+///   ⇒ 所以**在第一次出帧之后**给一句明确的建议，比让人盯着 `进度` 猜要好 ✓。
+///
+/// **⇒ 三个条件同时成立才提示**（避免打扰）：
+/// 1. **没开降采样**（`shrink == false`）✓；
+/// 2. **画布像素比输出像素大至少 4 倍**（否则省不了什么 ✓）；
+/// 3. **第一帧就超过 3 秒**（否则不值得提 ✓）。
+///
+/// **⇒ 返回值**是**建议倍数**（≈ 像素比，取整 ✓），`None` ⇒ 不提示 ✓。
+/// **变异**：把条件 2 的阈值改成 `1.0`（或恒 `None`）⇒ 单元测试红 ✓。
+fn shrink_advice(doc_px: u64, out_px: u64, first_frame_ms: u128, shrink: bool) -> Option<u64> {
+    if shrink || first_frame_ms <= 3_000 || out_px == 0 {
+        return None;
+    }
+    let ratio = doc_px / out_px;
+    if ratio < 4 {
+        return None;
+    }
+    Some(ratio)
+}
+
 fn pick_encoder() -> String {
     let listed = std::process::Command::new("ffmpeg")
         .args(["-hide_banner", "-encoders"])
@@ -886,5 +940,31 @@ mod encoder_args_tests {
             x264.contains(&"-preset".to_owned()) && x264.contains(&"-crf".to_owned()),
             "{x264:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod shrink_advice_tests {
+    use super::shrink_advice;
+
+    /// **建议开降采样的三个条件** ✓（第 678 轮；外部把"慢"当成"卡死"那次换来的 ✓）
+    ///
+    /// **变异**：把"画布/输出 ≥ 4 倍"这条去掉（或恒 `None`）⇒ 第一条断言红 ✓；
+    /// 把"第一帧 > 3 秒"这条去掉 ⇒ 第二条红 ✓。
+    #[test]
+    fn advice_appears_only_when_it_would_help() {
+        // ① 大画布 ＋ 第一帧 11 s ＋ 没开降采样 ⇒ 提示，且倍数就是像素比 ✓
+        assert_eq!(
+            shrink_advice(4608 * 8192, 608 * 1080, 11_000, false),
+            Some(57)
+        );
+        // ② 画布与输出差不多大 ⇒ 不提示（省不了什么 ✓）
+        assert_eq!(shrink_advice(1024 * 1024, 1024 * 1024, 11_000, false), None);
+        // ③ 第一帧很快 ⇒ 不提示（不值得打扰 ✓）
+        assert_eq!(shrink_advice(4608 * 8192, 608 * 1080, 500, false), None);
+        // ④ 已经开了降采样 ⇒ 不提示 ✓
+        assert_eq!(shrink_advice(4608 * 8192, 608 * 1080, 11_000, true), None);
+        // ⑤ 输出像素为 0（不该发生）⇒ 不提示，也不除零 ✓
+        assert_eq!(shrink_advice(4608 * 8192, 0, 11_000, false), None);
     }
 }
