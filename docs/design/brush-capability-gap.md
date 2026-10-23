@@ -17633,3 +17633,26 @@ R-09（`Retouch` 暗化因子**乘了两次** ⇒ `darken²`）✓、R-10（RAW 
 
 **⇒ 仍然没有的（写清，别当成已完成）**：**文件锁** —— 两个进程**同时** `append` 仍可能交错 ✓；
 现在的保证是"**不写重复 ＋ 互相看得到 ＋ 按 id 查得对**" ✓，不是"并发写安全" ✗。
+
+## 四百五十六、把两条"结构检查"换成**运行时判据**；并量出/压掉自己引入的每次提交开销（第 759–762 轮）
+
+**⇒ 一、两条判据升级（不是叠加：旧的**删掉** ✓）**
+| 原结构检查 | 换成 | 变异 |
+|---|---|---|
+| `check-clear-all-caches-covers-above`（源码 grep ✓） | `above_cache::clearing_caches_stops_the_above_cache_from_hitting` | 去掉清 `above` ⇒ `1 ⇒ 2` ⇒ 红 ✓ |
+| `check-service-worker-roles` 只查"资产保留占位符" | **另加** `transport::the_served_service_worker_has_its_build_id_substituted`（`GET /service-worker.js` ⇒ 无 `__BUILD_ID__`、`yanshi-shell-<数字>` ✓） | 不替换 ⇒ 正文里还有占位符 ⇒ 红 ✓ |
+
+**⇒ 二、探针终于有判据**：`check-below-probe-live.mjs` —— 在最小包上跑 `yanshi-timelapse`（落盘模式，**不需要 ffmpeg**），
+断言探针文件**非空** ✓、有 `split_ids` ✓、有 `READ` 且 `n_tiles=` 是数字 ✓；变异（不写 `split_ids`）⇒ 红 ✓。
+**⇒ 附带一个否证**：`BAND_START` 在普通渲染里**根本不出现**（74,322 行探针里 **0 条** ✓）
+⇒ 它只属于并行分带路径 ⇒ 那条保留结构检查，**不为它硬造运行时判据** ✓。
+
+**⇒ 三、我引入的开销（三个数字，同一个基准：200 次落盘笔触）**
+| 版本 | ms/commit |
+|---|---|
+| 关掉 seq 对齐 | **33.86** |
+| 读盘尾 8 KiB（第 752 轮） | **35.68**（**+1.82 ms，5.4%** ✗）|
+| **先比长度再决定读**（第 762 轮） | **34.20**（**+0.35 ms，1.0%** ✓）|
+
+**⇒ 做法**：`Workspace` 记住每文档上次看到的 `atoms.jsonl` **字节长度** ✓ ⇒ `sync_next_seq_from_disk` 先 `stat` ✓
+（微秒级）⇒ 长度没变**直接返回** ✓，只有文件真长了才读那 8 KiB ✓。行为判据 `two_writers_seqs` 仍绿 ✓。
