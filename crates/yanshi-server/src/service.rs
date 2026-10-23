@@ -3585,6 +3585,37 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
         let Some(last) = persist.last_seq_on_disk(doc_id)? else {
             return Ok(());
         };
+        let head = self
+            .documents
+            .get(doc_id)
+            .map_or(0, |document| document.log().head_seq());
+        if last > head {
+            // **把它们读进来，而不只是把号推上去** ✓（第 754 轮）：
+            //   否则本进程的 `get_log` **永远看不到**别的写者那一笔（要重开才行 ✗）。
+            let extra: Vec<yanshi_core::Atom> = persist
+                .load_atoms(doc_id)?
+                .into_iter()
+                .filter(|atom| atom.seq > head)
+                .collect();
+            let adopted_head = {
+                let document = self.documents.get_mut(doc_id);
+                match document {
+                    Some(document) => {
+                        let before = document.log().head_seq();
+                        document.adopt_atoms(extra);
+                        document.log().head_seq().max(before)
+                    }
+                    None => head,
+                }
+            };
+            // **水位也要越过它们** ✓：否则 `flush_journal` 会把刚并进来的原子**再写一遍** ✗
+            //   （第 754 轮实测：不推水位 ⇒ 盘上出现"我自己重写了一遍 seq 3" ⇒ 打开时判重复 ✓）。
+            if let Some(document) = self.documents.get_mut(doc_id) {
+                if adopted_head > document.journal_watermark() {
+                    document.set_journal_watermark(adopted_head);
+                }
+            }
+        }
         if let Some(document) = self.documents.get_mut(doc_id) {
             document.bump_next_seq_at_least(last);
         }

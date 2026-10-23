@@ -238,6 +238,33 @@ impl AtomLog {
         })
     }
 
+    /// **并入"别的写者"已经落盘的原子**（第 754 轮；台账三百三十的下一步）
+    ///
+    /// **⇒ 为什么需要**：第 752 轮只把 `next_seq` 推上去 ⇒ **不再撞号** ✓，但另一个进程写的原子
+    /// **不进本进程的内存日志** ✗ ⇒ 要看到它们得**重新打开文档** ✓（`get_log` 看不到别人的一笔 ✓）。
+    /// **⇒ 做法**：保留它们**自己的 `seq`** ✓（不重新分配 ✗）、按 `seq` 插到正确位置 ✓、
+    /// 并把 `next_seq` 推到 `max + 1` ✓；`id` 已存在则**跳过**（幂等 ✓）。
+    /// **⇒ 判据**：`two_writers_seqs` 之后再加一条 —— 本进程的 `get_log` **必须看得到**那一笔 ✓。
+    pub fn adopt(&mut self, extra: Vec<Atom>) {
+        for atom in extra {
+            if self.by_id.contains_key(&atom.id) {
+                continue;
+            }
+            let index = self
+                .atoms
+                .partition_point(|existing| existing.seq <= atom.seq);
+            self.next_seq = self.next_seq.max(atom.seq + 1);
+            self.by_id.insert(atom.id.clone(), index);
+            self.atoms.insert(index, atom);
+            // **插在中间 ⇒ 后面那些的下标全要 +1** ✓（`by_id` 是下标表 ✓）
+            for value in self.by_id.values_mut() {
+                if *value > index {
+                    *value += 1;
+                }
+            }
+        }
+    }
+
     /// 提交时校验（设计文档 12.2）+ 追加。
     ///
     /// 校验失败时原子**不进日志**，返回 `precondition_failed` / `reference_not_found`

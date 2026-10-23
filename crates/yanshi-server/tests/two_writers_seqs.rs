@@ -78,7 +78,6 @@ fn two_writers_on_the_same_root_do_not_duplicate_sequences() {
     // ③ 本进程（**内存里没有那条**）再画一笔 ⇒ **必须成功** ✓，而 `seq` **必须不撞** ✓
     //   （第 752 轮修法：分配前把 `next_seq` 推到"盘上最后一条 + 1" ✓ —— 不是拒绝写 ✗）
     draw(&mut first, "s_after_other_process");
-    drop(first);
 
     // ④ 第三个读者重新打开 ⇒ 不许因为重复 seq 打不开 ✓
     let mut reader = workspace(&root);
@@ -131,6 +130,25 @@ fn two_writers_on_the_same_root_do_not_duplicate_sequences() {
         "盘上出现重复 seq（{raw_total} 条原子、{} 个不同）⇒ 分配前没与盘上对齐",
         raw_seqs.len()
     );
+    // ⑦ **另一个写者的那一笔必须"进得来"** ✓（第 754 轮）：本进程的 `get_log` 要能看到它 ✓
+    //   （第 752 轮只推号 ⇒ 看不到 ⇒ 要重开文档 ✗；这一条正是那次留下的缺口 ✓）。
+    let registry = ToolRegistry::with_profiles(&Profile::ALL);
+    let mut ctx = context(&mut first);
+    let log = registry.call(&mut ctx, "get_log", &json!({"limit": 50}));
+    let seen: Vec<String> = log["atoms"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|entry| entry["actor"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        seen.iter().any(|actor| actor == "human:other-process"),
+        "本进程的 `get_log` 看不到另一个写者那一笔 ⇒ 没把盘上的原子并进内存：{seen:?}"
+    );
+    drop(first);
     // **第 748 轮这里断的是"盘上必须有重复"** ✓（复现用 ✓）；第 752 轮修好之后
     //   **反过来**：盘上**必须没有重复** ✓ ⇒ 那条复现断言已换成下面的唯一性断言 ✓。
 }

@@ -783,6 +783,11 @@ impl Document {
         self.log.bump_next_seq_at_least(seq);
     }
 
+    /// **并入落盘上"别的写者"的原子**（第 754 轮）：见 `AtomLog::adopt` 的注释。
+    pub fn adopt_atoms(&mut self, extra: Vec<yanshi_core::Atom>) {
+        self.log.adopt(extra);
+    }
+
     /// 提交一个原子（actor 记作 `system`）。
     pub fn commit(&mut self, atom: Atom) -> Result<CommitResult> {
         self.commit_as(atom, "system", false, None)
