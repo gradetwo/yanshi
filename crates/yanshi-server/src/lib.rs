@@ -58,7 +58,8 @@ pub use persist::{DocumentMeta, FileStore, TokenRecord};
 pub use service::{DocThumbSize, DocumentSummary, Workspace};
 pub use timings::{CommitPhases, Phase, ToolTimings};
 pub use token::{
-    CapabilityToken, Principal, Role, Session, TokenAuthority, TransportKind, TOKEN_HEX_LEN,
+    ensure_doc_scope, CapabilityToken, Principal, Role, Session, TokenAuthority, TransportKind,
+    TOKEN_HEX_LEN,
 };
 pub use tools::{
     commit_response, error_response, ok_response, profile_summary, validate_args, ParamKind,

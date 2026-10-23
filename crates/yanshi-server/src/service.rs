@@ -1254,12 +1254,12 @@ impl Workspace {
         )?;
         self.documents.insert(doc_id.clone(), document);
         self.created += 1;
-
+        // **初始原子走提交路径的同一条咽喉** ✓（`flush_journal` ✓）⇒ 一份实现 ✓、
+        // 水位与落盘同步推进 ✓（旧写法自己循环 `append_atom` ✗ ⇒ 水位会停在 0 ⇒ 下次提交**重复追加** ✓）。
+        // **初始原子走提交路径的同一条咽喉** ✓（`flush_journal` ✓）⇒ 一份实现 ✓、
+        // 水位与落盘同步推进 ✓（旧写法自己循环 `append_atom` ✗ ⇒ 水位会停在 0 ⇒ 下次提交**重复追加** ✓）。
+        self.flush_journal(&doc_id)?;
         if let Some(persist) = &self.persist {
-            let document = self.documents.get(&doc_id).expect("刚插入");
-            for atom in document.log().atoms() {
-                persist.append_atom(&doc_id, atom)?;
-            }
             persist.save_meta(&DocumentMeta {
                 doc_id: doc_id.clone(),
                 width: spec.width,
@@ -1268,11 +1268,10 @@ impl Workspace {
                 tokens: Vec::new(),
             })?;
             // **★ 顺手把"最新可用快照"落盘（待办 ① ✓，2026-10-15 ✓）★**
-            //   **为什么在这儿** ✓：这里是"往磁盘追加原子"的**唯一咽喉** ✓
-            //     （`Workspace` 的提交入口有多个 ✓ ⇒ 逐个挂钩会重复 ✗）。
             //   **调用处不写"存不存在"的判断** ✓：`save_snapshot` **自带幂等** ✓（已存在 ⇒ `Ok(false)` ✓）
             //     —— 引擎已有的不做第二遍 ✓。
             //   **失败只记 stderr** ✗✓：快照只是**加速**用的 ✓ ⇒ **绝不让提交失败** ✓。
+            let document = self.documents.get(&doc_id).expect("刚插入");
             if let Some(snapshot) = document.latest_usable_snapshot() {
                 if let Err(error) = persist.save_snapshot(&doc_id, snapshot) {
                     eprintln!("快照落盘失败（不影响提交 ✓）：{error}");
@@ -1484,6 +1483,11 @@ impl Workspace {
                 }
                 eprintln!("{report}");
             }
+            // **日志是从磁盘读来的 ⇒ 水位直接推到 HEAD** ✓：这些原子本来就在 `atoms.jsonl` 里 ✓，
+            // 下一次提交只该追加**新**的那些 ✓（漏了这一行的后果是**重复追加** ✗ —— 可见 ✓，
+            // 比**漏写** ✓ 好发现，这正是水位方向选"保守重放"的理由 ✓）。
+            let head = document.log().head_seq();
+            document.set_journal_watermark(head);
             self.documents.insert(doc_id.to_owned(), document);
             // **"只解压到 `--root`"那条路也要能把省掉的位图补回来** ✓。
             //
@@ -1983,12 +1987,16 @@ impl Workspace {
         owner: bool,
         phases: &mut CommitPhases,
     ) -> Result<CommitResult> {
-        let result = {
+        // **提交与落盘解耦** ✓：先拿到提交结果（可能是 Err ✓），**再按水位落盘** ✓ ——
+        // 冲突拒绝在返回 Err 之前已把冲突图层原子追加进日志 ✓，
+        // 旧写法 `commit_as_timed(...)?` 会**短路掉落盘** ⇒ 那条原子只在内存 ✗ ⇒ 重开就没了 ✓。
+        let attempt = {
             let document = self.document_mut(doc_id)?;
-            document.commit_as_timed(atom, actor, owner, None, phases)?
+            document.commit_as_timed(atom, actor, owner, None, phases)
         };
         let journal_started = std::time::Instant::now();
-        self.journal(doc_id, &result)?;
+        self.journal(doc_id)?;
+        let result = attempt?;
         phases.log_us = phases
             .log_us
             .saturating_add(journal_started.elapsed().as_micros() as u64);
@@ -2026,12 +2034,15 @@ impl Workspace {
     ) -> Result<Vec<CommitResult>> {
         let mut results = Vec::with_capacity(atoms.len());
         for atom in atoms {
-            let result = {
+            // **同 `commit_timed` 的规矩** ✓：先落盘（按水位 ✓）再传播提交结果 ⇒
+            // 失败路径追加的原子（冲突图层 ✓）也进 `atoms.jsonl` ✓。
+            let attempt = {
                 let document = self.document_mut(doc_id)?;
-                document.commit_as_timed(atom, actor, owner, Some(changeset_id.clone()), phases)?
+                document.commit_as_timed(atom, actor, owner, Some(changeset_id.clone()), phases)
             };
             let journal_started = std::time::Instant::now();
-            self.journal(doc_id, &result)?;
+            self.journal(doc_id)?;
+            let result = attempt?;
             phases.log_us = phases
                 .log_us
                 .saturating_add(journal_started.elapsed().as_micros() as u64);
@@ -3511,31 +3522,76 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
         }))
     }
 
-    fn journal(&self, doc_id: &str, result: &CommitResult) -> Result<()> {
-        if result.duplicate {
-            return Ok(());
-        }
+    /// **落盘这份文档日志里"还没在盘上"的全部原子，再存快照** ✓。
+    ///
+    /// **★ 为什么按水位刷、不按"提交回了哪条 seq"刷 ✗**（第 1440 轮审计 ✓）：
+    /// 上一版只在提交**成功**时写 `result.seq` 那一条 ✗ ⇒
+    /// 而**冲突拒绝**这条路径在返回 Err **之前**已经把冲突图层原子追加进了日志 ✓
+    /// （`Document::ensure_conflict_layer` → `append_system_atom` ✓）⇒
+    /// 那条原子**只活在内存** ✗ ⇒ 重开文档后冲突图层凭空消失 ✓（数据丢失一类 ✓）。
+    /// 改成"日志里多了什么就落什么" ✓ ⇒ **任何追加路径都走同一条咽喉** ✓（内核 ①：一处实现 ✓）。
+    fn journal(&mut self, doc_id: &str) -> Result<()> {
+        self.flush_journal(doc_id)?;
         let Some(persist) = &self.persist else {
             return Ok(());
         };
-        let document = self.document(doc_id).ok_or_else(|| {
+        // **★ 普通提交路径也要把"最新可用快照"落盘（待办 ① ✓，2026-10-15 ✓）★**
+        //   **为什么这一处也要** ✗：建文档处只覆盖"建文档"那一刻 ✓；
+        //     普通提交走的是**这里** ✓ ⇒ 少挂一处 ⇒ 快照永远只覆盖开头 ✗ ⇒ 尾巴依旧很长 ✗。
+        //   **失败只记 stderr** ✗✓：快照只是**加速**用的 ✓ ⇒ **绝不让提交失败** ✓。
+        if let Some(snapshot) = self
+            .documents
+            .get(doc_id)
+            .and_then(|document| document.latest_usable_snapshot())
+        {
+            if let Err(error) = persist.save_snapshot(doc_id, snapshot) {
+                eprintln!("快照落盘失败（不影响提交 ✓）：{error}");
+            }
+        }
+        Ok(())
+    }
+
+    /// **把 `journal_watermark + 1 ..= head_seq` 的原子逐条落盘** ✓（`journal` 的落笔部分 ✓）。
+    ///
+    /// **逐条推进水位** ✓：每写完一条立刻记一条 ⇒ 中途失败（磁盘满 ✓）后
+    /// **下一次从断点续写** ✓ —— 不重复写 ✗、不漏写 ✓（失败本身由 `?` 抛出 ✓，不静默 ✓）。
+    /// **没有持久层** ⇒ 只把水位推到 HEAD ✓（没东西可写 ✓，语义保持一致 ✓）。
+    fn flush_journal(&mut self, doc_id: &str) -> Result<()> {
+        let not_open = || {
             YanshiError::new(
                 ErrorCode::ReferenceNotFound,
                 ErrorContext::detail(format!("文档 {doc_id} 未打开")),
             )
-        })?;
-        if let Some(atom) = document.log().by_seq(result.seq) {
-            persist.append_atom(doc_id, atom)?;
-        }
-        // **★ 普通提交路径也要把"最新可用快照"落盘（待办 ① ✓，2026-10-15 ✓）★**
-        //   **为什么这一处也要** ✗：建文档处（`service.rs:1119` ✓）只覆盖"建文档"那一刻 ✓；
-        //     普通提交走的是**这里** ✓ ⇒ 少挂一处 ⇒ 快照永远只覆盖开头 ✗ ⇒ 尾巴依旧很长 ✗。
-        //   **与建文档处同一块逻辑** ✓（那里有更详细的说明 ✓；两处借用形态不同 ⇒
-        //     暂时照抄 ✓，合并成一处留作单独的小重构 ✓）。
-        if let Some(snapshot) = document.latest_usable_snapshot() {
-            if let Err(error) = persist.save_snapshot(doc_id, snapshot) {
-                eprintln!("快照落盘失败（不影响提交 ✓）：{error}");
+        };
+        let head = self
+            .documents
+            .get(doc_id)
+            .map_or_else(|| Err(not_open()), |document| Ok(document.log().head_seq()))?;
+        let watermark = self.documents.get(doc_id).map_or_else(
+            || Err(not_open()),
+            |document| Ok(document.journal_watermark()),
+        )?;
+        let Some(persist) = &self.persist else {
+            if let Some(document) = self.documents.get_mut(doc_id) {
+                document.set_journal_watermark(head);
             }
+            return Ok(());
+        };
+        for seq in watermark + 1..=head {
+            match self
+                .documents
+                .get(doc_id)
+                .and_then(|document| document.log().by_seq(seq))
+            {
+                Some(atom) => persist.append_atom(doc_id, atom)?,
+                // **空洞不静默** ✓：日志的 seq 应当连续 ✓ ⇒ 真跳号就是异常，
+                // 大声说出来 ✓（水位照常推进 ✗ 否则会永远卡在这条 ✗）。
+                None => {
+                    eprintln!("⚠ 日志落盘：文档 {doc_id} 的日志里没有 seq {seq} ⇒ 跳过这一条")
+                }
+            }
+            let document = self.documents.get_mut(doc_id).ok_or_else(not_open)?;
+            document.set_journal_watermark(seq);
         }
         Ok(())
     }

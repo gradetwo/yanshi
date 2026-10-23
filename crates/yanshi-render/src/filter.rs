@@ -383,6 +383,9 @@ impl FilterKind {
             Self::Dehaze => 8,
             // 胶片颗粒逐像素（块坐标）计算，无邻域。
             Self::FilmGrain => 0,
+            // 浮雕读 ±1 邻域（`alpha_at(x±1, y±1)`）⇒ 必须申报 1，
+            // 否则分带/区域渲染在块边界少看一列，与整幅结果不一致（接缝）。
+            Self::Relief => 1,
             _ => 0,
         }
     }
@@ -2019,9 +2022,11 @@ pub fn denoise(buffer: &mut Buffer, luminance: f32, detail: f32, color: f32) {
         let bb = (yy + 1.772 * (cb[i] - 0.5)).max(0.0);
         let a = alpha[i];
         let base = i * 4;
-        out[base] = rr * rr * a;
-        out[base + 1] = gg * gg * a;
-        out[base + 2] = bb * bb * a;
+        // **钳到 alpha**（守预乘不变量 `rgb ≤ alpha` ✓，与 sharpen/glow/clarity 同纪律 ✓）：
+        // √ 空间 YCbCr 逆变换对高色度像素能推出 rr > 1 ⇒ rr²·a 超过 a ✗。
+        out[base] = (rr * rr * a).clamp(0.0, a);
+        out[base + 1] = (gg * gg * a).clamp(0.0, a);
+        out[base + 2] = (bb * bb * a).clamp(0.0, a);
         out[base + 3] = a;
     }
 }
@@ -5914,5 +5919,57 @@ mod presence_tests {
             high_gain > mid_gain,
             "texture 应更偏向高频：高频增益 {high_gain} vs 中频增益 {mid_gain}"
         );
+    }
+}
+
+/// **第 1440 轮审计锁**：两条「申报≠实现」与「不变量被破」的防回归 ✓。
+#[cfg(test)]
+mod audit_lock_tests_1440 {
+    use super::{denoise, FilterKind};
+    use crate::buffer::Buffer;
+    use serde_json::json;
+
+    /// **relief 的邻域是 ±1**（`alpha_at(x±1, y±1)` ✓），但 padding 的 match
+    /// 原来没有 Relief 臂 ⇒ 落 `_ => 0` ✗ ⇒ 分带渲染在块边界少看一列、与整幅不一致。
+    /// 变异：删掉 `Self::Relief => 1` 那条臂 ⇒ 本测试红 ✓。
+    #[test]
+    fn relief_declares_the_neighbourhood_it_reads() {
+        assert_eq!(
+            FilterKind::Relief.padding(&json!({})),
+            1,
+            "relief 读 ±1 邻域 ⇒ padding 必须申报 1"
+        );
+    }
+
+    /// **预乘不变量 `rgb ≤ alpha`**：√ 空间 YCbCr 逆变换对高色度跳变能推出 rr > 1
+    /// ⇒ 旧实现 `rr*rr*a` 不钳 ✗（sharpen/glow/clarity 都钳了，唯独这里漏了）。
+    /// 变异：把 `(rr*rr*a).clamp(0.0, a)` 改回 `rr*rr*a` ⇒ 本测试红 ✓。
+    #[test]
+    fn denoise_keeps_premultiplied_invariant() {
+        // 红块紧贴青块的高色度跳变，alpha 取 0.6（不变量必须对任意 alpha 成立 ✓）。
+        let mut buffer = Buffer::new(0, 0, 32, 32);
+        for y in 0..32 {
+            for x in 0..32 {
+                let color = if x < 16 {
+                    [0.95, 0.05, 0.05]
+                } else {
+                    [0.05, 0.95, 0.95]
+                };
+                buffer.set_pixel(x, y, [color[0], color[1], color[2], 0.6]);
+            }
+        }
+        // color=1 ⇒ 内部 chroma_r = 12（大半径抹除，正是能把 rr 推出 1 的参数 ✓）。
+        denoise(&mut buffer, 0.5, 0.5, 1.0);
+        for chunk in buffer.pixels().chunks_exact(4) {
+            let a = chunk[3];
+            for channel in 0..3 {
+                assert!(
+                    chunk[channel] <= a + 1e-6,
+                    "预乘不变量被破：rgb={} > alpha={a}（像素 {:?}）",
+                    chunk[channel],
+                    chunk
+                );
+            }
+        }
     }
 }

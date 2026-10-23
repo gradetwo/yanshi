@@ -205,21 +205,31 @@ pub fn resolve_local_path(
     if !inside_root {
         // **两种情形说两句不同的话** ✓（外部第 10 轮实测：给了 `--root` 却被告知"无根工作区" ✗，
         // 而且末尾把同一个路径打印两遍 `A ⇒ A` ✗ ⇒ 读起来像"从哪到哪的转换失败" ✓）。
-        let detail = match root {
-            Some(root) => format!(
-                "path 必须落在工作区根目录之内：当前 root={} ⇒ 收不到 {}（把文件放到 root 之下再传）",
-                root.display(),
-                resolved.display()
-            ),
-            None => format!(
-                "这个工作区没有根目录（以 `--root` 启动才有）⇒ 不接受 path 形态：{raw} \
-                 ⇒ 改用 base64 传字节，或让服务端带 --root 启动"
-            ),
-        };
-        return Err(YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail(detail),
-        ));
+        // **错误码也分两半** ✓（第 1440 轮）：**越界**是调用方给错了参数 ⇒ `invalid_argument` ✓；
+        // **没配 root** 是**服务端缺前置条件** ⇒ `precondition_failed` ✓ —— 与内核 `asset_dir`
+        // 同一口径 ✓（`textures.rs` 的旧断言钉的正是它 ✓；两种失败的**出路**不同 ✓，
+        // 调用方的处置也不同 ✗：一个改参数 ✓、一个只能改部署 ✓）。
+        match root {
+            Some(root) => {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "path 必须落在工作区根目录之内：当前 root={} ⇒ 收不到 {}（把文件放到 root 之下再传）",
+                        root.display(),
+                        resolved.display()
+                    )),
+                ));
+            }
+            None => {
+                return Err(YanshiError::new(
+                    ErrorCode::PreconditionFailed,
+                    ErrorContext::detail(format!(
+                        "这个工作区没有根目录（以 `--root` 启动才有）⇒ 不接受 path 形态：{raw} \
+                         ⇒ 改用 base64 传字节，或让服务端带 --root 启动"
+                    )),
+                ));
+            }
+        }
     }
     let bytes = std::fs::read(&resolved).map_err(|e| {
         YanshiError::new(

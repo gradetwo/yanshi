@@ -239,3 +239,54 @@ fn scatter_keeps_the_whole_dab_inside_the_polygon_not_just_the_anchor() {
         "多边形**外面**（但在外接盒内）不许有墨 ⇒ 实测 {inked}/7 有墨：{outside:?}"
     );
 }
+
+/// **第 1440 轮审计**：`direction` 拼错（"digonal"/"45deg"）曾被 `.ok()` 吞掉 ⇒
+/// **静默退回 random** ✗。现在明确报错并列出可用形态 ✓。
+/// 变异（退回 `.ok().map(...)`）⇒ 第一段的 `Some(false)` 断言拿不到 ⇒ 红 ✓。
+#[test]
+fn scatter_direction_typo_is_refused_not_randomized() {
+    let mut workspace = workspace();
+    {
+        let mut ctx = context(&mut workspace);
+        call(
+            &mut ctx,
+            "new_document",
+            &json!({"doc_id": "doc_scatter_clip", "width": 64, "height": 64}),
+        );
+    }
+    let base = |direction: &str| {
+        json!({
+            "layer_id": "layer_default",
+            "seed": 7,
+            "area": {"x": 4, "y": 4, "w": 56, "h": 56},
+            "palette": ["#101010"],
+            "brush": "100%_Opaque",
+            "count": 2,
+            "direction": direction
+        })
+    };
+    let mut ctx = context(&mut workspace);
+
+    let refused = call(&mut ctx, "scatter_strokes", &base("digonal"));
+    assert_eq!(
+        refused.get("ok").and_then(Value::as_bool),
+        Some(false),
+        "拼错的 direction 必须被拒（不许静默 random）：{refused}"
+    );
+    let detail = refused["context"]["detail"].as_str().unwrap_or_default();
+    for allowed in ["horizontal", "vertical", "random"] {
+        assert!(
+            detail.contains(allowed),
+            "要列出可用形态 {allowed}：{detail}"
+        );
+    }
+    assert!(detail.contains("digonal"), "要点名坏输入：{detail}");
+
+    // 数字角度仍然可用（拒绝只针对**解析不了**的）✓。
+    let angled = call(&mut ctx, "scatter_strokes", &base("45"));
+    assert_eq!(
+        angled.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "45（度）应当照常接受：{angled}"
+    );
+}

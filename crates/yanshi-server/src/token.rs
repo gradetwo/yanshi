@@ -103,6 +103,28 @@ impl Role {
     }
 }
 
+/// **每文档令牌不许越界到别的文档** ✓（第 1440 轮审计 · **单一实现** ✓ ——
+/// 工具层 `get_inflight`/`cancel_operation` 与控制面 `control_plane` **都调这一份** ✓，
+/// 各写一份必然漂移 ✗ 是本仓反复踩过的老坑 ✓）。
+///
+/// **洞的形状** ✗：`doc_id` 是这些工具的**入参** ✓ ⇒ 拿着文档 A 的一个 editor 令牌
+/// 就能**枚举／打断任意文档**的在飞操作 ✗ —— 12.x 的按文档授权模型在这里被入参绕开 ✗。
+/// **规矩不是新发明的** ✓：跨边界（跨 actor ✓、跨文档 ✓）只有 **Owner** ✓ ——
+/// 与 [`Role::can_revert_others`]（12.5）同形 ✓。
+/// 本地传输（MCP ✓／嵌入式 ✓）的角色缺省就是 `Owner` ⇒ **行为不变** ✓。
+pub fn ensure_doc_scope(authorized: &str, role: Role, wanted: &str) -> Result<()> {
+    if wanted == authorized || role == Role::Owner {
+        return Ok(());
+    }
+    Err(YanshiError::new(
+        ErrorCode::PermissionDenied,
+        ErrorContext::detail(format!(
+            "本 token 只授权文档「{authorized}」⇒ 跨文档查询／取消在飞操作需要 owner token（请求的是「{wanted}」，当前角色是 {}）",
+            role.as_str()
+        )),
+    ))
+}
+
 /// 传输类型：决定鉴权豁免与推送通道分工（6.7 / 12.7）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

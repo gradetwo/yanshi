@@ -86,8 +86,11 @@ export async function putAtom(db, doc, atom) {
   //   **为什么必须有** ✗：真浏览器里 `oncomplete` 一定会触发 ✓；但**测试环境**
   //   （`scripts/tool-pwa-api-behaviour.mjs` 在 Node 里模拟 IndexedDB）**可能不触发**
   //   ⇒ 那会让 `await done` **永远不 resolve** ⇒ 判据挂死（Node 报 unsettled top-level await）✗
-  //   **兜底语义**：5 秒后**当作已提交**并在返回里标 `txTimeout: true`
-  //     ⇒ **不是静默**（调用方能看见这个字段）✓；而真浏览器里这条**永远不触发** ✓
+  //   **兜底语义**：5 秒后**当作已提交**并**当场用 `console.warn` 说出 `txTimeout`** ✓
+  //     ⇒ **不是静默** ✓；而真浏览器里这条**永远不触发** ✓
+  //     （第 1440 轮审计 ✓：原注释承诺"在返回里标 `txTimeout: true`"✗ 而返回值一直是**裸数字** ✗
+  //     ⇒ `timedOut` 设了**没人读** ✗ = 死旗标 ✗ ⇒ 超时**不可见** ✗（静默降级第 5 形态 ✓）。
+  //     返回形状有十几处调用方按数字用 ⇒ **不改形状**，改为**在这里说出来** ✓。）
   const done = Promise.race([
     settled,
     new Promise((res) => setTimeout(() => { timedOut = true; res(); }, 5000)),
@@ -109,6 +112,10 @@ export async function putAtom(db, doc, atom) {
     ...metaNoSnap, doc, seq, format: FORMAT_VERSION, snapshot: null,
   }));
   await done;
+  // **兜底要兑现承诺 ✓**（第 1440 轮审计 ✓）：超时不是成功 —— 说出来 ✓
+  if (timedOut) {
+    console.warn(`putAtom：事务 5 秒未确认完成 ⇒ 文档 ${doc} 的原子 seq ${seq} 是否落盘**未知**（txTimeout）`);
+  }
   return seq;
 }
 
@@ -132,10 +139,33 @@ export async function readSnapshot(db, doc, expectedSeq) {
   return meta.snapshot;
 }
 
-/** 写快照（**同时写 `seq` ＋ `format` ✓**）。 */
+/**
+ * 写快照（**同时写 `seq` ＋ `format` ✓**）。
+ *
+ * **★ 单事务读改写 ＋ 序号校验 ✓ ★**（第 1440 轮审计 ✓）：
+ * 旧版 get 与 put 是**两个事务** ✗ ⇒ 中间若有 `putAtom` 提交 ⇒ 这次写会
+ * 把 `meta.seq` **拖回**快照的陈旧序号 ✗ ⇒ 下一次 `putAtom` 读到同一个 seq
+ * ⇒ 主键 `${doc}:${seq}` 相撞 ⇒ **已提交原子被静默覆盖** ✗
+ * （与 D-01 同根因、同病灶 ⇒ 同药 ✓：一个事务包住读改写 ✓）。
+ * **拒绝过期写** ✓：传入 `seq ≠ 当前 head` ⇒ 不写并**返回 `false`** ✓
+ * （旧图不许冒充新状态 —— 目标第 6 条 ✓；调用方拿到 `false` 就知道要重算 ✓）。
+ */
 export async function writeSnapshot(db, doc, seq, snapshot) {
-  const meta = (await wrap(tx(db, "docs", "readonly").get(doc))) || { doc };
-  await wrap(tx(db, "docs", "readwrite").put({ ...meta, doc, seq, format: FORMAT_VERSION, snapshot }));
+  const t = db.transaction(["docs"], "readwrite");
+  const store = t.objectStore("docs");
+  const done = new Promise((res, rej) => {
+    t.oncomplete = () => res();
+    t.onerror = () => rej(t.error);
+    t.onabort = () => rej(t.error || new Error("事务被中止"));
+  });
+  const meta = (await wrap(store.get(doc))) || { doc, seq: 0 };
+  let written = false;
+  if ((meta.seq ?? 0) === seq) {
+    await wrap(store.put({ ...meta, doc, seq, format: FORMAT_VERSION, snapshot }));
+    written = true;
+  }
+  await done;
+  return written;
 }
 
 /** 存 blob（**按内容哈希 ✓**）。 */

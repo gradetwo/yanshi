@@ -176,6 +176,17 @@ fn splitmix64(state: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
+/// 由随机流取一个**良态**的鬃毛方向 ✓（0..=π 均匀角 ✓）。
+///
+/// **第 1440 轮审计修复**：原来直接 `splitmix64(...) as f32 / u32::MAX as f32 * π` ⇒
+/// u64 可达 1.8e19，除以 4.3e9 后仍是 **≈4.3e9 的超大角** ✗（铅笔插件因此整块 dab 全 0 ✓，
+/// marker 已按同纪律修过 ✓）。超大角喂 `sin/cos` 依赖 libm 的参数归约 ✗ ⇒
+/// **arm64 与 wasm 可能画出不一样方向** ✗（正是 brush-parity 在收集的那类差 ✓）。
+/// 先掩到 32 位再归一化 ✓，角度就真的是 0..π 的均匀角 ✓。
+fn bristle_angle(state: &mut u64) -> f32 {
+    ((splitmix64(state) as u32) as f32 / u32::MAX as f32) * core::f32::consts::PI
+}
+
 /// 落一个点：`seed` 驱动鬃毛与颗粒 ✓，宿主上下文决定颜色与浓淡 ✓。
 ///
 /// 返回写入的字节数（`size * size * 4` ✓）。
@@ -204,8 +215,7 @@ fn oil_dab_body(seed: u32, size: u32, pressure_milli: u32) -> u32 {
         let radius = size as f32 / 2.0;
         let mut state = (seed as u64) ^ 0x9E37_79B9_7F4A_7C15;
         // 每笔一次"鬃毛方向"，由 seed 决定 ⇒ 同一笔条纹一致、可复现 ✓。
-        let bristle_angle =
-            (splitmix64(&mut state) as f32 / u32::MAX as f32) * core::f32::consts::PI;
+        let bristle_angle = bristle_angle(&mut state);
         let (sin_a, cos_a) = (bristle_angle.sin(), bristle_angle.cos());
         // **第一遍（只在 `texture > 0` 时跑）**：量这枚 dab 自己**夹过之后**的加权平均覆盖电平 ✓。
         // `texture = 0` 时取占位值即可 ✓ —— 反正下面 `toward_mean(.., 0.0)` 是恒等 ✓
@@ -502,12 +512,18 @@ mod tests {
     /// 为什么非要有这一条 ✗：`texture_zero_is_byte_identical_to_before` 只证明
     /// **新代码内部两个分支相等** ✓ —— 两个分支一起写错也能通过 ✗。
     /// 只有改动前的黄金值能钉住"**与旧版一致**" ✓。
+    ///
+    /// **第 1440 轮重新基线**：`bristle_angle` 曾把 u64 随机流直接 `as f32` 除以
+    /// `u32::MAX`（不先掩 32 位 ✗）⇒ 角度可达 ~1.3e10 ⇒ `sin/cos` 的结果依赖 libm 的
+    /// 超大参数归约 ✗ ⇒ arm64 与 wasm 可能画出**不同方向**的条纹（brush-parity 收的正是这类差 ✓）。
+    /// 掩到 32 位后角度回到语义承诺的 0..=π ✓ ⇒ 每枚 dab 都变 ✓，三个黄金值按修复后的
+    /// 代码重跑得到（铅笔/marker 当年同病同修 ✓，见各自注释 ✓）。
     #[test]
     fn texture_zero_matches_prechange_golden() {
         for (seed, size, pressure_milli, expected) in [
-            (1_u32, 46_u32, 1000_u32, 0x5d0c_7c00_e32f_31cd_u64),
-            (7, 17, 400, 0x83bd_8908_e198_2c2e),
-            (99, 3, 1000, 0x606a_2fb0_cfb8_14c7),
+            (1_u32, 46_u32, 1000_u32, 0xe453_9ca9_e99a_68e5_u64),
+            (7, 17, 400, 0xe59b_bc59_bded_e6f8),
+            (99, 3, 1000, 0x45e0_f371_8f47_f55f),
         ] {
             let bytes = render(seed, size, pressure_milli, None);
             assert_eq!(bytes.len(), (size * size * 4) as usize);
@@ -640,5 +656,19 @@ mod tests {
             absent,
             "NaN 应按 0.0（= 旧行为）处理"
         );
+    }
+
+    /// 第 1440 轮审计：鬃毛角必须是**良态**的 0..=π 均匀角 ✓。
+    /// 变异（去掉 `as u32` 掩码）⇒ 值冲到 ~1.3e10 ⇒ 本测试红 ✓。
+    #[test]
+    fn bristle_angle_is_a_well_conditioned_uniform_angle() {
+        for seed in 0..256_u32 {
+            let mut state = (seed as u64) ^ 0x9E37_79B9_7F4A_7C15;
+            let angle = bristle_angle(&mut state);
+            assert!(
+                (0.0..=core::f32::consts::PI + 1e-6).contains(&angle),
+                "seed={seed} 给出非法角度 {angle}（应在 0..=π）"
+            );
+        }
     }
 }

@@ -163,6 +163,23 @@ pub fn parse_raw_options(raw_options: Option<&Value>) -> Result<ParsedRawOptions
             parsed.lens_override = Some(text.to_string());
         }
     }
+    // **显式写 off 又给 override 是互相矛盾的输入 ⇒ 响亮报错**（第 1440 轮审计）。
+    // 旧行为：`resolve_lens` 的 off 早退条件是「off **且**没给 override」⇒ override
+    // 一在场就跳过 off，照样查库、照样改像素 ⇒ 用户写下的 off 被静默吃掉。
+    //
+    // ⚠ 只判**显式写过**的 `off`：`lens_correction` 缺省就是 `Off`（D5 定版），
+    // 而「只给 `lens_override`」正是第四包的手动点名路径（`lens_pkg4.rs:208` 断言
+    // 它必须成功）⇒ 按缺省值判会把合法输入一起拒掉（本仓「对方断言的取值集合
+    // 要和我们对齐」那条）。
+    let explicit_off = object.get("lens_correction").and_then(|v| v.as_str()) == Some("off");
+    if explicit_off && parsed.lens_override.is_some() {
+        return Err(RawError::InvalidOption(format!(
+            "raw_options 互相矛盾：显式写了 lens_correction=\"off\" 又给了 \
+             lens_override=\"{}\"——要做校正请写 \"auto\"（或不写 lens_correction），\
+             不许用 override 把显式的 off 暗中打开（第 1440 轮）",
+            parsed.lens_override.as_deref().unwrap_or("")
+        )));
+    }
     if let Some(highlight) = object.get("highlight_recovery") {
         parsed.develop.highlight = match highlight.as_str() {
             Some("chroma") => HighlightMode::Chroma,

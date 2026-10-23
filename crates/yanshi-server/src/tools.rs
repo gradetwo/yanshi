@@ -4007,12 +4007,29 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                             ));
                         }
                         for name in ["at_start", "at_end"] {
-                            if let Some(v) = ramp.get(name).and_then(Value::as_f64) {
-                                if !(0.0..=255.0).contains(&v) {
+                            match ramp.get(name) {
+                                // **缺省 ⇒ 不检查**（渲染层用 0/255 ✓）；
+                                // **给了就必须是数** ✓（第 1440 轮：非数曾被
+                                // `if let Some(as_f64)` 静默跳过 ⇒ 提交成功而渲染吃默认值 ✗）；
+                                // 是数再查范围 ✓。与渲染层同口径（object.rs ✓），两边都不会
+                                // 收下"看起来传了、实际被忽略"的 ramp ✓。
+                                None => {}
+                                Some(Value::Number(_)) => {
+                                    let v = ramp[name].as_f64().unwrap_or(0.0);
+                                    if !(0.0..=255.0).contains(&v) {
+                                        return Err(YanshiError::new(
+                                            ErrorCode::InvalidArgument,
+                                            ErrorContext::detail(format!(
+                                                "texture.brightness_ramp.{name} 必须在 0..=255（亮度），得到 {v}"
+                                            )),
+                                        ));
+                                    }
+                                }
+                                Some(other) => {
                                     return Err(YanshiError::new(
                                         ErrorCode::InvalidArgument,
                                         ErrorContext::detail(format!(
-                                            "texture.brightness_ramp.{name} 必须在 0..=255（亮度），得到 {v}"
+                                            "texture.brightness_ramp.{name} 必须是数字（0..=255 亮度），得到 {other}"
                                         )),
                                     ));
                                 }
@@ -9800,10 +9817,14 @@ fn write_cancel_job(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 /// 有了它：两次查询之间 `running_ms` **在变大** ⇒ 在动 ✓；操作不见了 ⇒ 已经结束 ✓
 ///（再去核对 `head` ✓）。
 ///
-/// `doc_id: "*"` ⇒ 看**所有**文档 ✓（多文档服务里排查"锁在哪"最有用 ✓）。
+/// `doc_id: "*"` ⇒ 看**所有**文档 ✓（多文档服务里排查"锁在哪"最有用 ✓）——
+/// 但**跨文档／`"*"` 需要 owner token** ✓（第 1440 轮审计：`doc_id` 是入参 ⇒ 不设限
+/// 就能拿一支 A 文档的 editor 令牌枚举**任意文档**的在飞操作 ✗）。
 fn read_get_inflight(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let registry = ctx.workspace.inflight();
     let wanted = optional_str(args, "doc_id").unwrap_or_else(|| ctx.doc_id.clone());
+    // **每文档令牌不许越界** ✓（与控制面同一份实现 ✓，见 `token::ensure_doc_scope`）。
+    crate::ensure_doc_scope(&ctx.doc_id, ctx.role, &wanted)?;
     let inflight = if wanted == "*" {
         registry.list()
     } else {
@@ -9841,6 +9862,9 @@ fn write_cancel_operation(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
         ));
     }
     let wanted = optional_str(args, "doc_id").unwrap_or_else(|| ctx.doc_id.clone());
+    // **每文档令牌不许越界** ✓（第 1440 轮审计：`can_edit` 只挡住"角色能不能取消" ✗
+    // 挡不住"能不能取消**别人的文档**" ✗ ⇒ A 文档的 editor 曾可打断任意文档 ✓）。
+    crate::ensure_doc_scope(&ctx.doc_id, ctx.role, &wanted)?;
     // **自己正在跑的那一个优先** ✓：`batch` 里的子调用就是这种情况 ✓
     //（此时登记表里那条就是**本次**调用 ✓ —— 报告里的"超时重试"场景则是下一条 ✓）。
     let info = match ctx.inflight_op() {
@@ -9886,26 +9910,35 @@ fn load_brush_json(ctx: &ToolContext<'_>, brush_name: &str) -> Result<(String, V
     Ok((name, data))
 }
 
-/// 把改好的 `.myb` JSON 写回工作区缓存（临时文件 ⇒ `import_asset(overwrite)` ⇒
-/// 预设覆盖内置；与 `set_brush_dynamics` 同一手法 ✓，新工具共用这一份）。
+/// 把改好的 `.myb` JSON 写回工作区缓存（`import_asset(overwrite)` ⇒ 预设覆盖内置；
+/// 与 `set_brush_dynamics` 同一手法 ✓，新工具共用这一份）。
+///
+/// **第 1440 轮：不再绕临时文件** ✓。原先是「写 `std::env::temp_dir()` ⇒ 把那个
+/// 绝对路径交给 `import_asset` 的 `path` 通道」⇒ 三个代价 ✗：
+/// ① 那个临时文件**从不删**（每次调用留一个 ✗）⇒ 现在是纯内存 ✓；
+/// ② `path` 通道是**外部调用方**用的，有工作区 root 沙箱 ⇒ 服务端自己走它
+///    会被拒（判据 `tool-brush-dynamics` 当场红 ✓）；
+/// ③ 字节本来就在内存里，先落盘再读回是白做的 IO。
+/// 现在走 `data_base64` ⇒ 校验、目录、覆盖语义**仍只有一份**（同一个 `write_import_asset` ✓）。
 fn persist_brush_json(ctx: &mut ToolContext<'_>, name: &str, data: &Value) -> Result<Value> {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|value| value.as_nanos())
-        .unwrap_or(0);
-    let path =
-        std::env::temp_dir().join(format!("yanshi-brush-{}-{}.myb", std::process::id(), stamp));
-    std::fs::write(&path, serde_json::to_vec_pretty(data).unwrap_or_default()).map_err(
-        |error| {
-            YanshiError::new(
-                ErrorCode::PreconditionFailed,
-                ErrorContext::detail(format!("写不了临时笔刷 {}：{error}", path.display())),
-            )
-        },
-    )?;
+    let bytes = serde_json::to_vec_pretty(data).map_err(|error| {
+        // **序列化失败不能说「写好了」** ✓（静默降级第 5 形态）：原先 `unwrap_or_default()`
+        // 把失败变成**零字节** ⇒ 于是拿空正文去 `overwrite: true` ⇒ **把那支笔刷清空了** ✗。
+        YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!(
+                "{name} 的笔刷 JSON 序列化失败 ⇒ 未写入任何字节：{error}"
+            )),
+        )
+    })?;
     write_import_asset(
         ctx,
-        &json!({"kind": "brush", "name": name, "path": path.to_string_lossy(), "overwrite": true}),
+        &json!({
+            "kind": "brush",
+            "name": name,
+            "data_base64": crate::base64::encode(&bytes),
+            "overwrite": true,
+        }),
     )
 }
 
@@ -10359,25 +10392,8 @@ fn write_set_brush_dynamics(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
             ),
         ));
     }
-    // **写临时文件 ⇒ 交给既有的资产导入（覆盖）** ✓ —— 与 `save_palette` 同一手法 ✓。
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|value| value.as_nanos())
-        .unwrap_or(0);
-    let path =
-        std::env::temp_dir().join(format!("yanshi-brush-{}-{}.myb", std::process::id(), stamp));
-    std::fs::write(&path, serde_json::to_vec_pretty(&data).unwrap_or_default()).map_err(
-        |error| {
-            YanshiError::new(
-                ErrorCode::PreconditionFailed,
-                ErrorContext::detail(format!("写不了临时笔刷 {}：{error}", path.display())),
-            )
-        },
-    )?;
-    let imported = write_import_asset(
-        ctx,
-        &json!({"kind": "brush", "name": name, "path": path.to_string_lossy(), "overwrite": true}),
-    )?;
+    // **交给既有的资产导入（覆盖）** ✓ —— 走 `persist_brush_json`（与 `save_palette` 同一手法 ✓）。
+    let imported = persist_brush_json(ctx, &name, &data)?;
     Ok(json!({
         "ok": true,
         "brush": name,
@@ -10570,24 +10586,7 @@ fn write_set_brush_setting(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
         ));
     };
     *slot = json!(value);
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|value| value.as_nanos())
-        .unwrap_or(0);
-    let path =
-        std::env::temp_dir().join(format!("yanshi-brush-{}-{}.myb", std::process::id(), stamp));
-    std::fs::write(&path, serde_json::to_vec_pretty(&data).unwrap_or_default()).map_err(
-        |error| {
-            YanshiError::new(
-                ErrorCode::PreconditionFailed,
-                ErrorContext::detail(format!("写不了临时笔刷 {}：{error}", path.display())),
-            )
-        },
-    )?;
-    let imported = write_import_asset(
-        ctx,
-        &json!({"kind": "brush", "name": name, "path": path.to_string_lossy(), "overwrite": true}),
-    )?;
+    let imported = persist_brush_json(ctx, &name, &data)?;
     Ok(json!({
         "ok": true,
         "brush": name,
@@ -10811,17 +10810,39 @@ fn parse_cube_lut(text: &str) -> Result<(u32, Vec<f32>)> {
 /// 把 `.cube` 文件读入并解析，`size` + `table` 注入 params
 /// （渲染层只认这两个字段、不碰文件系统）。
 /// `path` 与 `size`/`table` 同时给 ⇒ `path` 覆盖（显式重新导入）；解析失败直接报错。
-fn resolve_lut_path(name: &str, params: &mut serde_json::Map<String, Value>) -> Result<()> {
+/// **路径照 `put_blob`/`import_asset` 同一沙箱** ✓（第 1440 轮：原来 `read_to_string` 任意路径 ✗）。
+fn resolve_lut_path(
+    name: &str,
+    params: &mut serde_json::Map<String, Value>,
+    root: Option<&std::path::Path>,
+) -> Result<()> {
     if name != "color_lut" {
         return Ok(());
     }
-    let Some(path) = params.get("path").and_then(Value::as_str) else {
+    let Some(path) = params
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
         return Ok(());
     };
-    let text = std::fs::read_to_string(path).map_err(|error| {
+    if let Some(scheme) = crate::file_source::url_scheme(&path) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "path 的 scheme 不支持：{scheme}://（本地文件请直接给路径，不要用 file://）"
+            )),
+        ));
+    }
+    let (bytes, _resolved) = crate::file_source::resolve_local_path(
+        &path,
+        root,
+        crate::file_source::max_upload_bytes(),
+    )?;
+    let text = String::from_utf8(bytes).map_err(|_| {
         YanshiError::new(
             ErrorCode::InvalidArgument,
-            ErrorContext::detail(format!("color_lut 的 path 读不到文件：{error}")),
+            ErrorContext::detail(format!("color_lut 的 path 不是 UTF-8 文本：{path}")),
         )
     })?;
     let (size, table) = parse_cube_lut(&text)?;
@@ -10844,7 +10865,7 @@ fn write_add_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind) -
     let name = require_str(args, kind.key())?;
     let mut params = args.get("params").cloned().unwrap_or_else(|| json!({}));
     if let Value::Object(map) = &mut params {
-        resolve_lut_path(&name, map)?;
+        resolve_lut_path(&name, map, ctx.workspace.root_path())?;
         // path 只是导入手段：已解析为 size+table，存档里不留文件引用，
         // 免得以后文件移动/删除导致 update 无端失败。
         map.remove("path");
@@ -10976,7 +10997,7 @@ fn write_apply_adjustments(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
         let name = require_str(&item_args, "adjustment_type").map_err(wrap)?;
         let mut params = item.get("params").cloned().unwrap_or_else(|| json!({}));
         if let Value::Object(map) = &mut params {
-            resolve_lut_path(&name, map).map_err(wrap)?;
+            resolve_lut_path(&name, map, ctx.workspace.root_path()).map_err(wrap)?;
             map.remove("path");
         }
         validate_effect(EffectKind::Adjustment, &name, &params).map_err(wrap)?;
@@ -11113,7 +11134,7 @@ fn write_update_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind
         merged = patch.clone();
     }
     if let Value::Object(map) = &mut merged {
-        resolve_lut_path(&existing_name, map)?;
+        resolve_lut_path(&existing_name, map, ctx.workspace.root_path())?;
         map.remove("path");
     }
     validate_effect(kind, &existing_name, &merged)?;
@@ -13653,10 +13674,22 @@ fn write_scatter_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
         "horizontal" => Some(0.0_f64),
         "vertical" => Some(std::f64::consts::FRAC_PI_2),
         "random" => None,
-        other => other
-            .parse::<f64>()
-            .ok()
-            .map(|degrees| degrees.to_radians()),
+        // **第 1440 轮审计**：原来数字解析失败 ⇒ `None` ⇒ **静默退回 random** ✗
+        //（拼错 "digonal"/"45deg" 的用户得到一坨随机方向而毫不知情 ✓）。
+        // 现在明确报错并列出可用形态 ✓。
+        other => Some(
+            other
+                .parse::<f64>()
+                .map_err(|_| {
+                    YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "direction 不认识 {other:?} ⇒ 用 horizontal / vertical / random，或 0..360 的角度数字（度）"
+                        )),
+                    )
+                })?
+                .to_radians(),
+        ),
     };
 
     let mut state = seed;
@@ -14445,28 +14478,16 @@ fn write_save_palette(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             index + 1
         ));
     }
-    // **临时文件**：唯一名（进程 id + 纳秒）⇒ 不覆盖别人 ✓ 也不被别人覆盖 ✓。
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|value| value.as_nanos())
-        .unwrap_or(0);
-    let path = std::env::temp_dir().join(format!(
-        "yanshi-palette-{}-{}.gpl",
-        std::process::id(),
-        stamp
-    ));
-    std::fs::write(&path, lines).map_err(|error| {
-        YanshiError::new(
-            ErrorCode::PreconditionFailed,
-            ErrorContext::detail(format!("写不了临时调色板 {}：{error}", path.display())),
-        )
-    })?;
+    // **不绕临时文件** ✓（第 1440 轮，与 `persist_brush_json` 同一处修改）：
+    // 原先写 `std::env::temp_dir()` 再把那个绝对路径交给 `path` 通道 ⇒ 那个文件
+    // **从不删**（每次保存留一个 ✗），而 `path` 通道带工作区沙箱 ⇒ 服务端自己
+    // 走它会被拒 ✓。正文（`lines`，`String` ⇒ 所有权可移 ✓）直接走 `data_base64`。
     let imported = write_import_asset(
         ctx,
         &json!({
             "kind": "palette",
             "name": name,
-            "path": path.to_string_lossy(),
+            "data_base64": crate::base64::encode(lines.as_bytes()),
             "overwrite": true,
         }),
     )?;
@@ -15977,7 +15998,7 @@ fn preview_background(args: &Value) -> Option<[u8; 4]> {
 
 #[allow(clippy::too_many_arguments)] // 13 个实参：笔刷渲染的完整上下文，拆结构体反而更难读
 /// 意图级笔刷参数 → `brush_params` 别名，与显式 `brush_params` 合并（显式优先）。
-fn merge_intent_brush_params(args: &Value) -> Option<Value> {
+fn merge_intent_brush_params(args: &Value) -> Result<Option<Value>> {
     // **意图参数 → brush_params 的映射**：
     // - hand_tremor → hand_jitter 别名（语义组展开）
     // - speed_ink → 直接传 speed_ink（hokusai 原生 setting，增量语义，不再走 speed_gain 别名）
@@ -16077,20 +16098,47 @@ fn merge_intent_brush_params(args: &Value) -> Option<Value> {
     //   hard: 不动（默认硬边）
     //   soft: edge_soft=0.4 + paint_push=0.2（羽化边缘）
     //   lost: paint_push=0.5 + opacity 降低（消失边，融入背景）
-    if let Some(edge) = args.get("edge").and_then(Value::as_str) {
-        match edge {
-            "soft" => {
+    // **第 1440 轮审计**：原来 `_ => {}` 把**拼错的/非字符串**的 edge 静默当 "hard" ✗
+    //（本仓禁忌的静默降级形态四）⇒ 现在只认三个合法值，其余**明确报错并列出可用值** ✓。
+    if let Some(edge) = args.get("edge") {
+        match edge.as_str() {
+            Some("hard") => {}
+            Some("soft") => {
                 let hardness = 0.8 * (1.0 - 0.4);
                 map.insert("hardness".to_string(), json!(hardness));
                 // paint_push 的非线性映射在下面单独处理，这里只设 hardness
                 // 实际组合由调用方同时传 edge="soft" + paint_push=0.2 实现
             }
-            "lost" => {
+            Some("lost") => {
                 // 消失边：hardness 降到最低，opacity 降到 0.6
                 map.insert("hardness".to_string(), json!(0.1));
                 // opacity 由调用方通过 color 的 alpha 或专门参数控制
             }
-            _ => {} // "hard" 或未知：不动
+            // 字符串但不认识 ⇒ 列出可用值；非字符串 ⇒ 说明类型。两种情形都给**不同的话** ✓。
+            Some(other) => {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "edge 只接受 hard/soft/lost，得到 \"{other}\"（可用值：hard=硬边、soft=羽化边、lost=消失边）"
+                    )),
+                ));
+            }
+            None => {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "edge 必须是字符串（hard/soft/lost），得到 {}",
+                        match edge {
+                            Value::Null => "null",
+                            Value::Bool(_) => "布尔",
+                            Value::Number(_) => "数字",
+                            Value::Array(_) => "数组",
+                            Value::Object(_) => "对象",
+                            _ => "文本",
+                        }
+                    )),
+                ));
+            }
         }
     }
     // **paint_push 非线性解耦映射**（专家方案）：
@@ -16105,30 +16153,18 @@ fn merge_intent_brush_params(args: &Value) -> Option<Value> {
             map.insert("smudge_transparency".to_string(), json!(0.0));
         }
     }
-    // **pressure_shape / stroke_taper**：直接作为 hokusai 原生 setting 传入
-    //   （范围 -1..1 / 0..1）。引擎在 stroke.rs 里用预计算的总弧长算归一化进度 t。
-    //   注意：不要用 state.stroke_state——它是流式累积的"已走路程"，不知道总长度。
-    if let Some(v) = args.get("pressure_shape").and_then(Value::as_f64) {
-        let v = v.clamp(-1.0, 1.0);
-        if v.abs() > 1e-4 {
-            map.insert("pressure_shape".to_string(), json!(v));
-        }
-    }
-    if let Some(v) = args.get("stroke_taper").and_then(Value::as_f64) {
-        let v = v.clamp(0.0, 1.0);
-        if v > 1e-4 {
-            map.insert("stroke_taper".to_string(), json!(v));
-        }
-    }
+    // **pressure_shape / stroke_taper 已在本函数上方处理** ✓（带 `-1..1` 负值有效的注释 ✓）——
+    // 第 1440 轮审计删掉了这里的**重复块** ✗：两处 `insert` 同一个键、同一个钳制值 ⇒
+    // 后一处是死代码（覆盖成相同结果 ✓），留着只会让人以为改它有效果 ✓。
     if let Some(obj) = args.get("brush_params").and_then(Value::as_object) {
         for (k, v) in obj {
             map.insert(k.clone(), v.clone());
         }
     }
     if map.is_empty() {
-        None
+        Ok(None)
     } else {
-        Some(Value::Object(map))
+        Ok(Some(Value::Object(map)))
     }
 }
 
@@ -17395,12 +17431,22 @@ fn write_import_asset(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     }
     crate::file_source::check_exclusive(&given)?;
     let bytes = if let Some(path) = optional_str(args, "path") {
-        std::fs::read(&path).map_err(|error| {
-            YanshiError::new(
-                ErrorCode::ReferenceNotFound,
-                ErrorContext::detail(format!("读不到 {path}：{error}")),
-            )
-        })?
+        // **第 1440 轮审计：走全仓共用的沙箱**（`put_blob` 同口径 ✓）。
+        // 原来直接 `std::fs::read(&path)` ⇒ root 之外的任意绝对路径都能读、且无体积上限 ✗。
+        if let Some(scheme) = crate::file_source::url_scheme(&path) {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "path 的 scheme 不支持：{scheme}://（本地文件请直接给路径，不要用 file://）"
+                )),
+            ));
+        }
+        let (bytes, _resolved) = crate::file_source::resolve_local_path(
+            &path,
+            ctx.workspace.root_path(),
+            crate::file_source::max_upload_bytes(),
+        )?;
+        bytes
     } else if let Some(blob) = args.get("blob") {
         let hash_text = blob
             .get("blob_hash")

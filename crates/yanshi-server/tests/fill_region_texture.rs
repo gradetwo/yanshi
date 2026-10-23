@@ -1785,3 +1785,73 @@ fn a_brightness_ramp_makes_the_synthesis_follow_it() {
         sd(&right)
     );
 }
+
+/// **第 1440 轮审计**：`at_start`/`at_end` **给了但不是数**（"auto"）曾被提交层
+/// `if let Some(as_f64)` 跳过 ⇒ 提交成功、渲染静默吃默认 0/255 ✗。
+/// 现在提交层与渲染层同口径：**存在即必须是数** ✓。
+/// 变异（退回 `if let Some(v) = ..as_f64`）⇒ 第一段的 `Some(false)` 拿不到 ⇒ 红 ✓。
+#[test]
+fn a_non_numeric_brightness_ramp_bound_is_refused_at_commit() {
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let hash = workspace
+        .store()
+        .put(&source_bytes())
+        .expect("blob")
+        .to_string();
+    {
+        let mut ctx = context(&mut workspace);
+        new_document(&mut ctx);
+    }
+    let mut ctx = context(&mut workspace);
+    let layer = first_layer(&mut ctx);
+    let refused = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 4, "y": 4, "w": 48, "h": 24},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                "width": 8, "height": 8,
+                "mode": "patch",
+                "patch": 6, "overlap": 2, "candidates": 24,
+                "brightness_ramp": {"axis": "x", "at_start": "auto"}
+            }
+        }),
+    );
+    assert_eq!(
+        refused.get("ok").and_then(Value::as_bool),
+        Some(false),
+        "非数字的 at_start 必须被拒（不许静默默认）：{refused}"
+    );
+    let detail = refused["context"]["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("at_start") && detail.contains("必须是数字"),
+        "要点名字段与类型要求：{detail}"
+    );
+    // 合法的数字边界照常通过（拒绝只针对**不是数**的 ✓）。
+    let accepted = registry().call(
+        &mut ctx,
+        "fill_region",
+        &json!({
+            "layer_id": layer,
+            "shape": {"type": "rect", "x": 4, "y": 4, "w": 48, "h": 24},
+            "texture": {
+                "type": "bitmap",
+                "blob_hash": hash,
+                "source": {"x": 40, "y": 20, "w": 8, "h": 8},
+                "width": 8, "height": 8,
+                "mode": "patch",
+                "patch": 6, "overlap": 2, "candidates": 24,
+                "brightness_ramp": {"axis": "x", "at_start": 10.0, "at_end": 240.0}
+            }
+        }),
+    );
+    assert_eq!(
+        accepted.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "数字边界应当照常成功：{accepted}"
+    );
+}

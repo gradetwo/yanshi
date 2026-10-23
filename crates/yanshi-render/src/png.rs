@@ -37,6 +37,19 @@ use flate2::Compression;
 /// PNG 魔数。
 const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
+/// 解码尺寸上限 —— **边长**（与 `yanshi-server` 建画布的口径一致，见 service.rs 的
+/// `MAX_CANVAS_EDGE`）：PNG 规范允许 2^31−1，但本仓的画布/位图路径不需要那么大。
+pub(crate) const MAX_DECODE_EDGE: u32 = 65535;
+
+/// 解码尺寸上限 —— **总像素**（= `yanshi-server::service` 的 `MAX_CANVAS_PIXELS = 1 << 28`）。
+/// **为什么放在解码入口而不是只在建画布时查**：位图可以在进画布之前先被解码
+/// ⇒ 没有这道闸，几百 KB 的 IDAT 就能按 IHDR 声明放大成 GB 级分配（解压炸弹）。
+pub(crate) const MAX_DECODE_PIXELS: u64 = 1 << 28;
+
+/// IDAT（zlib 流本体）累计字节上限。deflate 实测最大压缩比在 1000 倍量级，
+/// 256 MiB 的 IDAT 已足够容纳任何**合法**的 ≤10.7 亿像素图形的最坏情况。
+const MAX_IDAT_BYTES: usize = 256 * 1024 * 1024;
+
 /// zlib **压缩级别** ✓（写死的常量 ✓ ⇒ 同一份输入永远得到同一串字节 ✓）。
 ///
 /// **为什么是 7** ✓（实测决定 ✓，不是"默认值" ✓）：`zlib-rs` 的级别表照抄 zlib-ng ✓
@@ -331,9 +344,25 @@ fn parse_png_chunks(bytes: &[u8]) -> Option<ParsedPng> {
                 if width == 0 || height == 0 {
                     return None;
                 }
+                // **尺寸上限**（防解压炸弹）：IHDR 宽高完全由文件作者控制 ⇒
+                // 不设上限时，几百 KB 的 IDAT 可以 inflate 成 GB 级
+                //（上传限 64 MiB 只约束**压缩字节**）。
+                // 口径与 `yanshi-server` 建画布的 `MAX_CANVAS_PIXELS = 1 << 28` 一致。
+                if width > MAX_DECODE_EDGE || height > MAX_DECODE_EDGE {
+                    return None;
+                }
+                if u64::from(width) * u64::from(height) > MAX_DECODE_PIXELS {
+                    return None;
+                }
                 seen_header = true;
             }
-            b"IDAT" => idat.extend_from_slice(payload),
+            b"IDAT" => {
+                // IDAT 累计也封顶：合法文件的 IDAT 远小于此 ⇒ 超限必是构造的文件。
+                if idat.len().saturating_add(payload.len()) > MAX_IDAT_BYTES {
+                    return None;
+                }
+                idat.extend_from_slice(payload);
+            }
             b"IEND" => break,
             _ => {}
         }
@@ -364,16 +393,23 @@ fn unfilter_png(idat: &[u8], width: u32, height: u32, channels: usize) -> Option
     if idat[1] & 0x20 != 0 {
         return None;
     }
-    let mut decoder = ZlibDecoder::new(idat);
+    let stride = width as usize * channels;
+    let expected_len = (stride + 1) * height as usize;
+    // **解压输出一律封顶**（防解压炸弹 ✓）：不封顶的 `read_to_end` 让
+    // 「小 IDAT ＋ 大 IHDR」在长度检查**之前**就把内存吃光 ⇒ 用 `Take`
+    // 把输出限死在 `expected_len + 1` ⇒ 比声明多输出 1 字节的构造流被砍断 ✗，
+    // 而**合法流的输出恰为 expected_len** ⇒ adler32 照常在流末尾被校验 ✓（行为不变 ✓）。
+    let mut decoder = ZlibDecoder::new(idat).take(expected_len as u64 + 1);
     let mut raw = Vec::new();
     // **adler32 由 `zlib-rs` 在流结束处校验** ✓ ⇒ 坏数据在这里变成 `Err` ⇒ `None` ✓
     //（与旧的"自己算 adler32 再比对"对外等价 ✓，连**截断**的流也一样拒绝 ✓）。
     if decoder.read_to_end(&mut raw).is_err() {
         return None;
     }
-    let stride = width as usize * channels;
-    let expected_len = (stride + 1) * height as usize;
-    if raw.len() < expected_len {
+    // **恰等于**（RFC 2083：解压输出 = (每行字节数+1)×行数，不多不少 ✓）。
+    // 旧的 `<` 会把"解压输出比声明长"的畸形流**静默接受**（只用前缀 ✗）；
+    // 现在与截断同口径显式拒绝 ⇒ 炸弹流（输出远超声明）也有明确的失败理由 ✓。
+    if raw.len() != expected_len {
         return None;
     }
     // 逐扫描线反 filter ✓（RFC 2083 §6 ✓）。
@@ -1001,5 +1037,74 @@ mod png_bench {
             got, pixels,
             "反滤波结果必须逐字节等于原始像素（含 Average/Paeth ✓）"
         );
+    }
+
+    /// 拼一个 **CRC 全部正确**的 PNG：签名 + IHDR(声明 `w×h`) + IDAT + IEND ✓。
+    /// CRC 正确 ⇒ 「被拒绝」只能来自**尺寸闸/长度闸**，不会误由 CRC 通过 ✓
+    /// （四层齐的第 2 层：输入制造的正是它要检查的情况 ✓）。
+    fn crafted_png(width: u32, height: u32, color_type: u8, idat: &[u8]) -> Vec<u8> {
+        let mut png: Vec<u8> = SIGNATURE.to_vec();
+        let mut chunk = |kind: &[u8; 4], payload: &[u8]| {
+            png.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+            png.extend_from_slice(kind);
+            png.extend_from_slice(payload);
+            let mut crc = yanshi_core::crc32_update(0xFFFF_FFFF, kind);
+            crc = yanshi_core::crc32_update(crc, payload);
+            png.extend_from_slice(&(crc ^ 0xFFFF_FFFF).to_be_bytes());
+        };
+        let mut ihdr: Vec<u8> = Vec::new();
+        ihdr.extend_from_slice(&width.to_be_bytes());
+        ihdr.extend_from_slice(&height.to_be_bytes());
+        ihdr.extend_from_slice(&[8, color_type, 0, 0, 0]);
+        chunk(b"IHDR", &ihdr);
+        chunk(b"IDAT", idat);
+        chunk(b"IEND", &[]);
+        png
+    }
+
+    /// 一段能正常 inflate 的 zlib 流（内容与尺寸声明**无关** ⇒ 炸弹形态 ✓）。
+    fn zlib_of(data: &[u8]) -> Vec<u8> {
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut z, data).expect("压缩");
+        z.finish().expect("结束 zlib 流")
+    }
+
+    /// **防解压炸弹 ①**：IHDR 声明的边长/总像素超上限 ⇒ 在分配前就 `None` ✓。
+    /// 变异：把尺寸闸删掉 ⇒ 这两条必须红 ✗（第二条会尝试 4 GB 级 `with_capacity`，
+    /// 所以断言只验 `None`；闸在 ⇒ 秒回 ✓）。
+    #[test]
+    fn huge_declared_png_is_refused_at_the_header_gate() {
+        let idat = zlib_of(&[0u8; 16]);
+        // 边长超上限（70000 > MAX_DECODE_EDGE = 65535）。
+        assert!(decode_png(&crafted_png(70000, 4, 6, &idat)).is_none());
+        // 总像素超上限（65535×65535 ≫ 1<<28）。
+        assert!(decode_png(&crafted_png(65535, 65535, 6, &idat)).is_none());
+        // 对照组：限额内的合法 PNG 不受影响 ✓（2×2 RGBA，由本仓编码器产出 ✓）。
+        let good = encode_png(
+            2,
+            2,
+            &[
+                255, 0, 0, 255, //
+                0, 255, 0, 128, //
+                0, 0, 255, 255, //
+                1, 2, 3, 4,
+            ],
+        )
+        .expect("编码 2×2");
+        let (w, h, _) = decode_png(&good).expect("2×2 必须仍能解开（闸门没误伤 ✓）");
+        assert_eq!((w, h), (2, 2));
+    }
+
+    /// **防解压炸弹 ②**：inflate 输出超过 IHDR 声明所需 ⇒ `None` ✓。
+    /// 旧行为：`read_to_end` 先把**全部**解压字节吃进内存，再只取前缀（静默接受 ✗）；
+    /// 现在限读 `expected+1` 并要求**恰等于** ⇒ 小 IDAT 放大不成大内存 ✓。
+    #[test]
+    fn inflated_output_beyond_declared_size_is_refused() {
+        // 声明 2×2 RGBA ⇒ expected_len = (2*4+1)*2 = 18；流实际输出 1 MiB ✗。
+        let bomb = zlib_of(&[0u8; 1024 * 1024]);
+        assert!(decode_png(&crafted_png(2, 2, 6, &bomb)).is_none());
+        // 截断流（输出不足）也拒绝 ✓（与既有「截断」判据同口径 ✓）。
+        let short = zlib_of(&[0u8; 8]);
+        assert!(decode_png(&crafted_png(64, 64, 6, &short)).is_none());
     }
 }

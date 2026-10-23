@@ -271,6 +271,8 @@ impl AtomLog {
         //（手工写进日志的环在折叠时也会被跳过并留下警告 ✓），但**判定提交与否的是这里** ✓。
         self.validate_instance_cycles(atom, commit.state)?;
         self.validate_object_type(atom)?;
+        self.validate_property_values(atom)?;
+        self.validate_document_size(atom)?;
         self.validate_lock(atom, commit.state)?;
         self.validate_history_refs(atom, commit)?;
         self.validate_conflict(atom)?;
@@ -567,6 +569,128 @@ impl AtomLog {
             )),
         )
         .with_atom(atom.id.clone()))
+    }
+
+    /// **`set_property` 的值类型校验** ✓（第 1440 轮审计）。
+    ///
+    /// 原来非法值在折叠层**静默取默认**：`"visible": "yes"` ⇒ `unwrap_or(true)`
+    /// 把对象**画成显示** ✗；`type: 未知串` ⇒ 静默换成 `Stroke` ✗ ——
+    /// 正是第 44 轮在 `CreateObject` 路上消灭的那类静默兜底，
+    /// 但 `SetProperty` 这条路**漏网** ✓（`validate_object_type` 只覆盖
+    /// `CreateObject|ImportImage` ✓）。
+    ///
+    /// **放在提交层** ✓（与 `validate_object_type` 同理由：`fold::precondition`
+    /// 的 `Err` 只警告并跳过 ✓，只有这里的 `Err` 才**拒绝提交** ✓）。
+    fn validate_property_values(&self, atom: &Atom) -> Result<()> {
+        if atom.kind != AtomKind::SetProperty {
+            return Ok(());
+        }
+        let Some(key) = atom.payload.get("key").and_then(serde_json::Value::as_str) else {
+            return Ok(());
+        };
+        let value = atom
+            .payload
+            .get("value")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let reject = |expect: &str| -> Result<()> {
+            Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "set_property(key={key}) 的值不合法：需要{expect}，收到 {value} —— \
+                     拒绝静默保持旧值或取默认（第 1440 轮）"
+                )),
+            )
+            .with_atom(atom.id.clone()))
+        };
+        match key {
+            "visible" | "locked" | "alpha_lock" | "clipping_mask" => {
+                if !value.is_boolean() {
+                    return reject("布尔");
+                }
+            }
+            "z_index" => {
+                if value.as_i64().is_none() {
+                    return reject("整数");
+                }
+            }
+            "opacity" => {
+                if !value.is_number() {
+                    return reject("数值");
+                }
+            }
+            "type" => {
+                // 分发口径与折叠层一致：有 `object_id` ⇒ 对象，否则 `layer_id` ⇒ 图层 ✓。
+                let object_side = atom.payload.get("object_id").is_some();
+                let known: &[&str] = if object_side {
+                    &[
+                        "stroke",
+                        "shape",
+                        "text",
+                        "adjustment",
+                        "filter",
+                        "raster_patch",
+                        "retouch",
+                        "liquify",
+                        "instance",
+                        "group",
+                        "path",
+                    ]
+                } else {
+                    &["raster", "vector", "layer_group", "mask"]
+                };
+                let declared = value.as_str();
+                if !declared.is_some_and(|d| known.contains(&d)) {
+                    return reject(if object_side {
+                        "已知对象类型字符串"
+                    } else {
+                        "已知图层类型字符串"
+                    });
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// **`create_document` 的宽高必须是有界整数** ✓（第 1440 轮审计）。
+    ///
+    /// 折叠层原来是 `payload_u64(...).unwrap_or(0) as u32`：缺省 ⇒ **0 尺寸** ✗、
+    /// `2^32+N` ⇒ **截断成 N** ✗，全程无信号 ✓。写进日志前在这里拒绝；
+    /// **没写**宽高的旧调用保持兼容 ✓（由上层默认处理）。
+    fn validate_document_size(&self, atom: &Atom) -> Result<()> {
+        if atom.kind != AtomKind::CreateDocument {
+            return Ok(());
+        }
+        for key in ["width", "height"] {
+            let Some(value) = atom.payload.get(key) else {
+                continue;
+            };
+            // 整数（u64）或**整数值的浮点**都接受；其余拒绝 ✓。
+            let whole = value
+                .as_u64()
+                .or_else(|| {
+                    value.as_f64().and_then(|f| {
+                        if f.fract() == 0.0 && f > 0.0 && f <= u64::from(u32::MAX) as f64 {
+                            Some(f as u64)
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .filter(|n| *n > 0 && *n <= 65535);
+            if whole.is_none() {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "create_document 的 {key} 必须是 1..=65535 的整数，收到 {value} —— \
+                        非法值若被静默取 0 或按 u32 截断，会得到没有信号的空文档（第 1440 轮）"
+                    )),
+                )
+                .with_atom(atom.id.clone()));
+            }
+        }
+        Ok(())
     }
 
     /// **锁定必须被强制** ✓ —— 否则"锁定图层"只是个**点了没用的标签** ✗。
@@ -1323,5 +1447,107 @@ mod tests {
                 "协作原子不应因嵌套引用被拒"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod audit_lock_tests_1440 {
+    use super::*;
+    use serde_json::json;
+
+    fn set_prop(object_id: bool, key: &str, value: serde_json::Value) -> Atom {
+        let mut payload = json!({"key": key, "value": value});
+        if object_id {
+            payload["object_id"] = json!("obj_1");
+        } else {
+            payload["layer_id"] = json!("layer_1");
+        }
+        Atom::new(AtomKind::SetProperty, "human:1", "session:a", payload).with_id("a_sp")
+    }
+
+    /// **提交层必须拒绝会被折叠层静默吞掉的非法值** ✓（第 1440 轮审计）。
+    /// 变异：把 `validate_property_values` 的对应分支改成直接 `Ok(())` ⇒ 红 ✓。
+    #[test]
+    fn set_property_rejects_values_that_were_silently_defaulted() {
+        let log = AtomLog::new();
+        // 旧行为：`"visible": "yes"` ⇒ unwrap_or(true) 静默**显示** ✗。
+        assert!(
+            log.validate_property_values(&set_prop(true, "visible", json!("yes")))
+                .is_err(),
+            "非布尔的 visible 必须拒绝"
+        );
+        // 旧行为：未知 type 静默兜底成 Stroke ✗（第 44 轮在 CreateObject 堵过，SetProperty 漏网）。
+        assert!(
+            log.validate_property_values(&set_prop(true, "type", json!("banana")))
+                .is_err(),
+            "未知对象类型必须拒绝"
+        );
+        assert!(
+            log.validate_property_values(&set_prop(false, "type", json!("banana")))
+                .is_err(),
+            "未知图层类型必须拒绝"
+        );
+        // 正例不许误伤 ✓。
+        assert!(log
+            .validate_property_values(&set_prop(true, "visible", json!(false)))
+            .is_ok());
+        assert!(log
+            .validate_property_values(&set_prop(true, "type", json!("path")))
+            .is_ok());
+        assert!(log
+            .validate_property_values(&set_prop(false, "opacity", json!(0.5)))
+            .is_ok());
+        assert!(log
+            .validate_property_values(&set_prop(true, "z_index", json!(3)))
+            .is_ok());
+        // z_index=1.5：折叠层 as_i64 ⇒ None ⇒ 静默保持旧值 ✗ ⇒ 提交层拒绝 ✓。
+        assert!(log
+            .validate_property_values(&set_prop(true, "z_index", json!(1.5)))
+            .is_err());
+    }
+
+    /// **create_document 宽高**：0、负数、小数尺寸、`2^32` 截断形态都要拒绝 ✓，
+    /// 合法整数与整数值浮点放行 ✓（不误伤现有 JSON 里写 `64.0` 的调用 ✓）。
+    #[test]
+    fn create_document_rejects_unusable_dimensions() {
+        let log = AtomLog::new();
+        let doc = |w: serde_json::Value, h: serde_json::Value| {
+            Atom::new(
+                AtomKind::CreateDocument,
+                "human:1",
+                "session:a",
+                json!({"doc_id": "doc_1", "width": w, "height": h}),
+            )
+            .with_id("a_doc")
+        };
+        assert!(log
+            .validate_document_size(&doc(json!(0), json!(64)))
+            .is_err());
+        assert!(log
+            .validate_document_size(&doc(json!(-5), json!(64)))
+            .is_err());
+        assert!(
+            log.validate_document_size(&doc(json!(4294967296u64 + 4), json!(64)))
+                .is_err(),
+            "2^32+4 会被折叠层 as u32 截断成 4 ✗ ⇒ 提交必须拒绝"
+        );
+        assert!(log
+            .validate_document_size(&doc(json!("wide"), json!(64)))
+            .is_err());
+        assert!(log
+            .validate_document_size(&doc(json!(64), json!(64)))
+            .is_ok());
+        assert!(log
+            .validate_document_size(&doc(json!(64.0), json!(64.0)))
+            .is_ok());
+        // 缺省宽高保持旧兼容 ✓（由上层默认处理）。
+        assert!(log
+            .validate_document_size(&Atom::new(
+                AtomKind::CreateDocument,
+                "human:1",
+                "session:a",
+                json!({"doc_id": "doc_1"})
+            ))
+            .is_ok());
     }
 }

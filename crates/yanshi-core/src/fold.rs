@@ -181,8 +181,19 @@ impl EffectiveActions {
                     }
                 }
                 AtomKind::Reapply => {
-                    // reapply 不是 revert 的合法目标（5.4），永远有效。
-                    if let Some(target) = atom.target_atom() {
+                    // **reapply 自己也可能被 revert** ✓（提交层 5.4 已放开
+                    // `revert` 的目标可以是 `Reapply` ✓，见 `log.rs` 的 `revertible` ✓）：
+                    // 那时这条 reapply 自身失效，**不**把目标改回生效 ✓，
+                    // 更早的 `Revert` 重新胜出 ⇒ `revert(reapply(x)) ≡ 维持 x 被抑制` ✓。
+                    // （第 1440 轮审计查明：这里原来是**无条件登记** ⇒ `draw→revert→reapply
+                    // →revert(reapply)` 折完笔画**仍生效** ✗，undo/redo 不对称 ✓。）
+                    let revert_of_reapply = matches!(
+                        effective.actions.get(&atom.id),
+                        Some((_, RevertAction::Revert))
+                    );
+                    if revert_of_reapply {
+                        effective.suppressed.insert(atom.id.clone());
+                    } else if let Some(target) = atom.target_atom() {
                         effective
                             .actions
                             .entry(target.to_owned())
@@ -1631,8 +1642,20 @@ fn supersede_object(
 
 fn apply_property_to_object(object: &mut Object, key: &str, value: &Value) {
     match key {
-        "visible" => object.visible = value.as_bool().unwrap_or(true),
-        "locked" => object.locked = value.as_bool().unwrap_or(false),
+        // **非布尔 ⇒ 保持旧值** ✗→✓（第 1440 轮审计）：原来 `unwrap_or(true)`
+        // 会把 `"visible": "yes"` 静默画成**显示** —— 画错东西且无信号，
+        // 正是本仓禁忌的静默降级。提交层现已直接拒绝非法值（`log.rs` 的
+        // `validate_property_values`），这里对**手工日志**保持"不动"而非"猜默认" ✓。
+        "visible" => {
+            if let Some(flag) = value.as_bool() {
+                object.visible = flag;
+            }
+        }
+        "locked" => {
+            if let Some(flag) = value.as_bool() {
+                object.locked = flag;
+            }
+        }
         "z_index" => object.z_index = value.as_i64().unwrap_or(object.z_index),
         "layer_id" => {
             if let Some(layer_id) = value.as_str() {
@@ -1668,10 +1691,27 @@ fn as_object_mut(value: &mut Value) -> Option<&mut Map<String, Value>> {
 
 fn apply_property_to_layer(layer: &mut Layer, key: &str, value: &Value) {
     match key {
-        "visible" => layer.visible = value.as_bool().unwrap_or(true),
-        "locked" => layer.locked = value.as_bool().unwrap_or(false),
-        "alpha_lock" => layer.alpha_lock = value.as_bool().unwrap_or(false),
-        "clipping_mask" => layer.clipping_mask = value.as_bool().unwrap_or(false),
+        // 与对象侧同纪律：**非布尔保持旧值**，不 `unwrap_or` 猜默认 ✓（第 1440 轮）。
+        "visible" => {
+            if let Some(flag) = value.as_bool() {
+                layer.visible = flag;
+            }
+        }
+        "locked" => {
+            if let Some(flag) = value.as_bool() {
+                layer.locked = flag;
+            }
+        }
+        "alpha_lock" => {
+            if let Some(flag) = value.as_bool() {
+                layer.alpha_lock = flag;
+            }
+        }
+        "clipping_mask" => {
+            if let Some(flag) = value.as_bool() {
+                layer.clipping_mask = flag;
+            }
+        }
         "opacity" => layer.opacity = value.as_f64().unwrap_or(layer.opacity),
         "blend_mode" => {
             if let Some(mode) = value.as_str() {
@@ -1917,6 +1957,82 @@ mod tests {
         assert_eq!(
             result.state.objects["obj_1"].current_version.as_deref(),
             Some("a_super")
+        );
+    }
+
+    /// **revert(reapply(x)) ≡ 维持 x 被抑制** ✓（第 1440 轮审计锁）。
+    ///
+    /// 提交层已允许 `revert` 指向 `Reapply` ✓（`log.rs` 的 `revertible` ✓），
+    /// 但折叠层原来**无条件登记** Reapply ⇒ `draw→revert→reapply→revert(reapply)`
+    /// 折完笔画**仍生效** ✗（撤销按钮按下去没有效果 —— undo/redo 不对称 ✓）。
+    /// 变异：把 `Reapply` 分支的 `revert_of_reapply` 体检删掉 ⇒ 本测试红 ✓。
+    #[test]
+    fn revert_of_reapply_suppresses_target_again() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::Supersede,
+                "a_super",
+                json!({"object_id": "obj_1", "data": {"v": 2}}),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(AtomKind::Revert, "a_r1", json!({"target": "a_super"})),
+        );
+        push(
+            &mut atoms,
+            atom(AtomKind::Reapply, "a_ap", json!({"target": "a_super"})),
+        );
+        push(
+            &mut atoms,
+            atom(AtomKind::Revert, "a_r2", json!({"target": "a_ap"})),
+        );
+
+        let result = fold(&atoms);
+        assert!(
+            result.is_suppressed("a_ap"),
+            "reapply 自己被 revert ⇒ 它应当失效"
+        );
+        assert!(
+            result.is_suppressed("a_super"),
+            "更早的 revert(a_r1) 重新胜出 ⇒ a_super 必须回到被抑制"
+        );
+        assert_ne!(
+            result.state.objects["obj_1"].data,
+            json!({"v": 2}),
+            "a_super 被抑制 ⇒ data 不许是它的版本"
+        );
+    }
+
+    /// **非布尔的属性值不许翻转状态** ✓（第 1440 轮审计锁）。
+    /// 变异：把 `apply_property_to_object` 的 visible 分支改回 `unwrap_or(true)` ⇒ 红 ✓。
+    #[test]
+    fn set_property_invalid_bool_keeps_old_value() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::SetProperty,
+                "a_hide",
+                json!({"object_id": "obj_1", "key": "visible", "value": false}),
+            ),
+        );
+        // 手工日志里的非法值（提交层会拒绝，这里是重放纵深防御 ✓）：
+        // 旧实现 `unwrap_or(true)` 会把隐藏的对象**静默画成显示** ✗。
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::SetProperty,
+                "a_junk",
+                json!({"object_id": "obj_1", "key": "visible", "value": "yes"}),
+            ),
+        );
+        let result = fold(&atoms);
+        assert!(
+            !result.state.objects["obj_1"].visible,
+            "非法值必须保持旧值（隐藏），不许猜默认 ✗"
         );
     }
 

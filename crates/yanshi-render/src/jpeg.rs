@@ -18,6 +18,58 @@ pub fn is_jpeg(bytes: &[u8]) -> bool {
     bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF
 }
 
+/// 扫段链找**主图**的 SOF0/1/2/3… 拿声明尺寸（不解码）。
+/// EXIF 缩略图藏在 APP1 的载荷**内部**（不是段链），所以第一个 SOF 就是主图 ✓。
+/// 找不到（流损坏/无 SOF）⇒ `None`。
+fn declared_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    let mut i = 2usize; // 跳过 SOI
+    while i + 4 <= bytes.len() {
+        if bytes[i] != 0xFF {
+            i += 1;
+            continue;
+        }
+        let marker = bytes[i + 1];
+        // 独立标记（RSTn/SO/EOI/TEM）没有长度字段。
+        if marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
+            i += 2;
+            continue;
+        }
+        if marker == 0xD9 {
+            return None; // EOI 之前没有 SOF
+        }
+        if (0xC0..=0xCF).contains(&marker) && !matches!(marker, 0xC4 | 0xC8 | 0xCC) {
+            // SOF 载荷：长度 2 + 精度 1 + 高 2 + 宽 2。
+            if i + 9 > bytes.len() {
+                return None;
+            }
+            let height = u16::from_be_bytes([bytes[i + 5], bytes[i + 6]]);
+            let width = u16::from_be_bytes([bytes[i + 7], bytes[i + 8]]);
+            return Some((u32::from(width), u32::from(height)));
+        }
+        let len = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
+        if len < 2 {
+            return None;
+        }
+        i += 2 + len;
+    }
+    None
+}
+
+/// SOF 声明尺寸 **且通过上限闸** 才返回 `Some` ✓（闸门单独成函数 ⇒ 可被单测直接问 ✓，
+/// 不然「假 JPEG 反正解不开」会让拒绝断言变成安慰剂 ✗）。
+fn declared_size_within_limit(bytes: &[u8]) -> Option<(u32, u32)> {
+    let (dw, dh) = declared_size(bytes)?;
+    if dw == 0
+        || dh == 0
+        || dw > crate::png::MAX_DECODE_EDGE
+        || dh > crate::png::MAX_DECODE_EDGE
+        || u64::from(dw) * u64::from(dh) > crate::png::MAX_DECODE_PIXELS
+    {
+        return None;
+    }
+    Some((dw, dh))
+}
+
 /// JPEG → RGBA8（与 `crate::png::decode_png` 返回口径一致 ✓）。
 ///
 /// EXIF 方向在内部自动应用 ✓ ⇒ 调用方拿到的就是**摆正了**的像素 ✓。
@@ -25,6 +77,9 @@ pub fn decode_jpeg(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     if !is_jpeg(bytes) {
         return None;
     }
+    // **先查声明尺寸再解码**（防解压炸弹 ✓，与 `png::decode_png` 同口径 ✓）：
+    // `decode()` 内部按 SOF 尺寸直接分配，解码**之后**再查就已经晚了。
+    declared_size_within_limit(bytes)?;
     let mut decoder = Decoder::new(Cursor::new(bytes));
     let pixels = decoder.decode().ok()?;
     let info = decoder.info()?;
@@ -329,6 +384,63 @@ mod tests {
         assert!(!is_jpeg(&[0x89, 0x50, 0x4E, 0x47])); // PNG
         assert!(!is_jpeg(&[0xFF, 0xD8])); // 太短
         assert!(!is_jpeg(&[]));
+    }
+
+    /// 拼 SOI + APP0 填充 + **SOF0(width×height)** + EOI ✓（只测尺寸闸，不需要真压缩数据 ✓）。
+    fn jpeg_with_sof(width: u16, height: u16) -> Vec<u8> {
+        let mut bytes = vec![0xFF, 0xD8];
+        bytes.extend_from_slice(&[0xFF, 0xE0, 0x00, 0x10]);
+        bytes.extend_from_slice(&[0u8; 14]);
+        bytes.extend_from_slice(&[
+            0xFF,
+            0xC0,
+            0x00,
+            0x11,
+            8,
+            height.to_be_bytes()[0],
+            height.to_be_bytes()[1],
+            width.to_be_bytes()[0],
+            width.to_be_bytes()[1],
+            3,
+            1,
+            0x22,
+            0,
+            2,
+            0x11,
+            1,
+            3,
+            0x11,
+            1,
+        ]);
+        bytes.extend_from_slice(&[0xFF, 0xD9]);
+        bytes
+    }
+
+    #[test]
+    fn declared_size_reads_main_sof() {
+        assert_eq!(declared_size(&jpeg_with_sof(60, 40)), Some((60, 40)));
+        // 无 SOF（只有 EOI）⇒ None（闸门拿不到尺寸就拒绝 ✓，不放行 ✗）。
+        assert_eq!(declared_size(&[0xFF, 0xD8, 0xFF, 0xD9]), None);
+    }
+
+    /// **防解压炸弹**：尺寸闸必须在 `Decoder::decode()` **之前**生效 ✓ ——
+    /// decode 内部按 SOF 直接分配，解码后再查已经晚了 ✗。
+    /// 闸**单独成谓词**并被直接问 ✓：变异「删掉上限检查」⇒ 本测试红 ✓
+    /// （若只断 `decode_jpeg(..).is_none()`，假文件本来就解不开 ⇒ 断言是安慰剂 ✗）。
+    #[test]
+    fn oversized_declared_jpeg_is_refused_before_decode() {
+        // 65535×65535 ⇒ 总像素 4.29e9 > MAX_DECODE_PIXELS(1<<28) ⇒ None ✓
+        assert_eq!(
+            declared_size_within_limit(&jpeg_with_sof(65535, 65535)),
+            None
+        );
+        // 限额内必须放行 ✓（闸门不误伤）。
+        assert_eq!(
+            declared_size_within_limit(&jpeg_with_sof(4000, 4000)),
+            Some((4000, 4000))
+        );
+        // 拿不到 SOF 的构造流 ⇒ 谓词 None ⇒ decode_jpeg 也不会碰 decode() ✓。
+        assert!(decode_jpeg(&[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0, 0, 0xFF, 0xD9]).is_none());
     }
 
     /// 极简 base64 解码（只给测试夹具用 ✓）。

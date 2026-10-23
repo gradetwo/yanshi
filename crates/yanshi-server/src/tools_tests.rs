@@ -1235,3 +1235,139 @@ fn stroke_path_plan_skips_zero_length_and_counts_closed_loop() {
     let last = plan.strokes[0].last().unwrap();
     assert_eq!((last[0], last[1]), (0.0, 0.0));
 }
+
+/// **第 1440 轮审计**：`color_lut` 的 `path` 曾直接 `read_to_string` ✗ ⇒
+/// root 之外的任意绝对路径都能读。现在与 `put_blob`/`import_asset` 同一沙箱
+/// （`file_source::resolve_local_path` 唯一实现 ✓）。
+/// 变异（退回 `read_to_string`）⇒ root 外文件被读进来 ⇒ 本测试红 ✓。
+#[test]
+fn color_lut_path_must_stay_inside_the_workspace_root() {
+    let pid = std::process::id();
+    let root = std::env::temp_dir().join(format!("yanshi_lut_root_{pid}"));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let cube = "LUT_3D_SIZE 2\n0 0 0\n0 0 1\n0 1 0\n0 1 1\n1 0 0\n1 0 1\n1 1 0\n1 1 1\n";
+
+    // root **内**的 .cube ⇒ 正常解析出 size+table ✓。
+    let inside = root.join("good.cube");
+    std::fs::write(&inside, cube).unwrap();
+    let mut params = serde_json::Map::new();
+    params.insert(
+        "path".to_owned(),
+        Value::String(inside.display().to_string()),
+    );
+    resolve_lut_path("color_lut", &mut params, Some(root.as_path())).unwrap();
+    assert_eq!(
+        params.get("size"),
+        Some(&json!(2)),
+        "root 内的合法 LUT 应当照常导入"
+    );
+
+    // root **外**的 .cube ⇒ 必须拒绝，且说清沙箱理由 ✓。
+    let outside = std::env::temp_dir().join(format!("yanshi_lut_outside_{pid}.cube"));
+    std::fs::write(&outside, cube).unwrap();
+    let mut params = serde_json::Map::new();
+    params.insert(
+        "path".to_owned(),
+        Value::String(outside.display().to_string()),
+    );
+    let err = resolve_lut_path("color_lut", &mut params, Some(root.as_path()))
+        .expect_err("root 之外的 path 必须被拒");
+    assert!(
+        format!("{err}").contains("工作区根目录"),
+        "要像 put_blob 一样说清沙箱理由：{err}"
+    );
+
+    // `file://` 形态不许绕道本地路径 ✓（与 tools_bitmap 同口径）。
+    let mut params = serde_json::Map::new();
+    params.insert(
+        "path".to_owned(),
+        Value::String(format!("file://{}", inside.display())),
+    );
+    let err = resolve_lut_path("color_lut", &mut params, Some(root.as_path()))
+        .expect_err("file:// 必须被拒");
+    assert!(
+        format!("{err}").contains("scheme"),
+        "要指名 scheme 问题：{err}"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_file(&outside).ok();
+}
+
+/// **第 1440 轮审计**：`edge` 曾 `_ => {}` 把拼错的/非字符串的值**静默当 "hard"** ✗
+///（静默降级形态四）。现在只认 hard/soft/lost，其余**报错并列出可用值** ✓。
+/// 变异（退回 `_ => {}` 吞掉）⇒ 前两段的 `unwrap_err` 拿不到错 ⇒ 红 ✓。
+#[test]
+fn edge_intent_rejects_unknown_values_with_allowed_list() {
+    // 合法三档照常工作 ✓（soft/lost 确实改了 hardness ✓）。
+    assert!(merge_intent_brush_params(&json!({ "edge": "hard" })).is_ok());
+    let soft = merge_intent_brush_params(&json!({ "edge": "soft" }))
+        .unwrap()
+        .expect("soft 应产出 hardness");
+    assert_eq!(soft["hardness"], json!(0.48), "{soft}");
+    let lost = merge_intent_brush_params(&json!({ "edge": "lost" }))
+        .unwrap()
+        .expect("lost 应产出 hardness");
+    assert_eq!(lost["hardness"], json!(0.1), "{lost}");
+
+    // 拼错 ⇒ 报错，且把**给的坏值**与**可用值**都写出来 ✓。
+    let err = format!(
+        "{}",
+        merge_intent_brush_params(&json!({ "edge": "fuzzy" })).unwrap_err()
+    );
+    assert!(err.contains("fuzzy"), "要点名坏值：{err}");
+    for allowed in ["hard", "soft", "lost"] {
+        assert!(err.contains(allowed), "要列出可用值 {allowed}：{err}");
+    }
+
+    // 非字符串 ⇒ 说明类型，不静默忽略 ✓。
+    let err = format!(
+        "{}",
+        merge_intent_brush_params(&json!({ "edge": 1 })).unwrap_err()
+    );
+    assert!(err.contains("必须是字符串"), "要说明类型要求：{err}");
+}
+
+// ---- 跨文档的在飞操作：每文档令牌不许越界（第 1440 轮审计）----
+
+/// `get_inflight`／`cancel_operation` 的 `doc_id` 是**入参** ✓ ⇒ 不设限时，
+/// 一支文档 A 的 editor 令牌就能**枚举／打断任意文档**的在飞操作 ✗
+///（12.x 的按文档授权被入参绕开 ✓）。规矩与 12.5 同形：跨边界只有 **Owner** ✓。
+#[test]
+fn inflight_tools_refuse_cross_document_targets_for_non_owner_tokens() {
+    let mut workspace = Workspace::in_memory(crate::document::DocumentSettings::default());
+    for id in ["doc_a", "doc_b"] {
+        workspace
+            .create_document(crate::document::NewDocument::new(id, 32, 32), "test:1", "s")
+            .unwrap_or_else(|error| panic!("建不出 {id}：{error:?}"));
+    }
+    let mut ctx = ToolContext::new(&mut workspace, "doc_a", "test:1", "s");
+    ctx.role = crate::token::Role::Editor;
+    // **editor 拿不动跨文档** ✓。
+    let err = read_get_inflight(&mut ctx, &json!({"doc_id": "*"}))
+        .expect_err("editor 令牌不许枚举全部文档的在飞操作");
+    let text = format!("{err}");
+    assert!(text.contains("owner"), "错误要给出办法：{text}");
+    assert!(text.contains("doc_a"), "错误要点名已授权文档：{text}");
+    assert!(text.contains('*'), "错误要点名被请求的目标：{text}");
+    assert!(
+        read_get_inflight(&mut ctx, &json!({"doc_id": "doc_b"})).is_err(),
+        "枚举别人的文档同样不许"
+    );
+    // 取消也一样 ✓ —— 原先的 `can_edit` 只看**角色** ✗，拦不住"取消**别人的文档**" ✗。
+    let err = write_cancel_operation(&mut ctx, &json!({"doc_id": "doc_b"}))
+        .expect_err("editor 不许打断其他文档的操作");
+    assert!(
+        format!("{err}").contains("doc_b"),
+        "错误要点名被请求文档：{err}"
+    );
+    // **授权范围内的都照旧** ✓：守卫不许变成墙 ✗。
+    assert!(read_get_inflight(&mut ctx, &json!({"doc_id": "doc_a"})).is_ok());
+    assert!(read_get_inflight(&mut ctx, &json!({})).is_ok());
+    assert!(write_cancel_operation(&mut ctx, &json!({"doc_id": "doc_a"})).is_ok());
+    // **owner ⇒ 跨文档照旧可用** ✓（MCP／嵌入式／本地缺省就是 owner ⇒ 行为不变 ✓）。
+    ctx.role = crate::token::Role::Owner;
+    assert!(read_get_inflight(&mut ctx, &json!({"doc_id": "*"})).is_ok());
+    assert!(write_cancel_operation(&mut ctx, &json!({"doc_id": "doc_b"})).is_ok());
+}

@@ -3682,9 +3682,28 @@ impl Renderer {
                                 continue;
                             };
                             // 源矩形 → 位图像素的换算比（位图**铺满** `source` 这块矩形 ✓）。
-                            let sx_scale = spec.width as f64 / spec.source.w.max(f64::MIN_POSITIVE);
-                            let sy_scale =
-                                spec.height as f64 / spec.source.h.max(f64::MIN_POSITIVE);
+                            // **比例用「解码后」尺寸，不用「声明」尺寸** ✗（越界/串位修复 ✓）：
+                            // 二者不符时（重放磁盘原子、非工具入口），用声明值会让像素索引
+                            // 与位图对不上 ⇒ 静默错缩放。不符时**报一条警告**（不许静默 ✓）。
+                            let (dec_w, dec_h) = match &*entry {
+                                DecodedPixels::Rgba8(w, h, _) => (*w, *h),
+                                #[cfg(feature = "raw")]
+                                DecodedPixels::Linear(w, h, _) => (*w, *h),
+                            };
+                            if dec_w != spec.width || dec_h != spec.height {
+                                track.unsupported.push(format!(
+                                    "纹理声明尺寸 {wx}x{wy} 与解码后 {dw}x{dh} 不符（对象 {obj}，blob {blob_id}）\
+                                     ⇒ 已按解码尺寸换算，导入时应核对源文件",
+                                    wx = spec.width,
+                                    wy = spec.height,
+                                    dw = dec_w,
+                                    dh = dec_h,
+                                    obj = object.id,
+                                    blob_id = spec.blob,
+                                ));
+                            }
+                            let sx_scale = f64::from(dec_w) / spec.source.w.max(f64::MIN_POSITIVE);
+                            let sy_scale = f64::from(dec_h) / spec.source.h.max(f64::MIN_POSITIVE);
                             let (ox, oy) = (bbox.x, bbox.y);
                             // **模回绕平铺** ✓：目标比源大时**平铺**，**不夹边** ✗
                             //（夹边会把一条边色拉成整片 ⇒ 看起来像"糊了" ✓）。
@@ -3757,70 +3776,86 @@ impl Renderer {
                                     );
                                     // **参考亮度场** ✓（外部第 82 次）：从**图层已有内容**读 ✓
                                     //   （同一个 `layer_buffer` 也用于纯色填充 ⇒ 填充前它就是"下面的墙" ✓）
-                                    //   **全透明（alpha=0）⇒ 视为不可用** ✓（返回 `None` ⇒ 不加亮度项 ✓，
-                                    //   并且**在响应里说出来** ← 由 `tools.rs` 检查 `has_reference` ✓）
-                                    let reference: Option<Vec<f32>> =
-                                        if let Some((axis, at_start, at_end)) =
-                                            spec.brightness_ramp.clone()
-                                        {
-                                            // **调用方给的亮度渐变** ✓（第 437 轮）：沿 `axis` 线性插值 ✓
-                                            let (bw, bh) = patch_dims;
-                                            let mut field = vec![0.0f32; bw * bh];
-                                            for row in 0..bh {
-                                                for col in 0..bw {
-                                                    let t = if axis == "x" {
-                                                        if bw > 1 {
-                                                            col as f32 / (bw - 1) as f32
-                                                        } else {
-                                                            0.0
-                                                        }
-                                                    } else if bh > 1 {
-                                                        row as f32 / (bh - 1) as f32
+                                    //   **全透明（alpha=0）⇒ 视为不可用** ✓（返回 `None` ⇒ 不加亮度项 ✓）。
+                                    //   **不可用时必须说出来** ✓（第 1440 轮：原来注释承诺的
+                                    //   `has_reference` 从未落地 ⇒ 静默降级 ✗）⇒ 走 `track.unsupported`
+                                    //   这条既有响亮通道 ✓（与"声明尺寸不符"同一个出口 ✓）。
+                                    let reference: Option<Vec<f32>> = if let Some((
+                                        axis,
+                                        at_start,
+                                        at_end,
+                                    )) =
+                                        spec.brightness_ramp.clone()
+                                    {
+                                        // **调用方给的亮度渐变** ✓（第 437 轮）：沿 `axis` 线性插值 ✓
+                                        let (bw, bh) = patch_dims;
+                                        let mut field = vec![0.0f32; bw * bh];
+                                        for row in 0..bh {
+                                            for col in 0..bw {
+                                                let t = if axis == "x" {
+                                                    if bw > 1 {
+                                                        col as f32 / (bw - 1) as f32
                                                     } else {
                                                         0.0
-                                                    };
-                                                    field[row * bw + col] =
-                                                        at_start + (at_end - at_start) * t;
-                                                }
+                                                    }
+                                                } else if bh > 1 {
+                                                    row as f32 / (bh - 1) as f32
+                                                } else {
+                                                    0.0
+                                                };
+                                                field[row * bw + col] =
+                                                    at_start + (at_end - at_start) * t;
                                             }
+                                        }
+                                        Some(field)
+                                    } else if spec.brightness_match {
+                                        let origin = layer_buffer.bbox();
+                                        let (bw, bh) = patch_dims;
+                                        let mut field = vec![0.0f32; bw * bh];
+                                        let mut covered = 0usize;
+                                        for row in 0..bh {
+                                            for col in 0..bw {
+                                                let local_x =
+                                                    (ox - origin.x).round() as i64 + col as i64;
+                                                let local_y =
+                                                    (oy - origin.y).round() as i64 + row as i64;
+                                                if local_x < 0 || local_y < 0 {
+                                                    continue;
+                                                }
+                                                let pixel = layer_buffer
+                                                    .pixel(local_x as u32, local_y as u32);
+                                                let alpha = pixel[3];
+                                                if alpha <= 0.0 {
+                                                    continue;
+                                                }
+                                                // 反预乘回直通色 ✓（`Buffer` 存的是预乘 ✓）
+                                                let r = pixel[0] / alpha;
+                                                let g = pixel[1] / alpha;
+                                                let b = pixel[2] / alpha;
+                                                field[row * bw + col] =
+                                                    (r * 0.299 + g * 0.587 + b * 0.114) * alpha;
+                                                covered += 1;
+                                            }
+                                        }
+                                        if covered * 10 >= bw * bh {
                                             Some(field)
-                                        } else if spec.brightness_match {
-                                            let origin = layer_buffer.bbox();
-                                            let (bw, bh) = patch_dims;
-                                            let mut field = vec![0.0f32; bw * bh];
-                                            let mut covered = 0usize;
-                                            for row in 0..bh {
-                                                for col in 0..bw {
-                                                    let local_x =
-                                                        (ox - origin.x).round() as i64 + col as i64;
-                                                    let local_y =
-                                                        (oy - origin.y).round() as i64 + row as i64;
-                                                    if local_x < 0 || local_y < 0 {
-                                                        continue;
-                                                    }
-                                                    let pixel = layer_buffer
-                                                        .pixel(local_x as u32, local_y as u32);
-                                                    let alpha = pixel[3];
-                                                    if alpha <= 0.0 {
-                                                        continue;
-                                                    }
-                                                    // 反预乘回直通色 ✓（`Buffer` 存的是预乘 ✓）
-                                                    let r = pixel[0] / alpha;
-                                                    let g = pixel[1] / alpha;
-                                                    let b = pixel[2] / alpha;
-                                                    field[row * bw + col] =
-                                                        (r * 0.299 + g * 0.587 + b * 0.114) * alpha;
-                                                    covered += 1;
-                                                }
-                                            }
-                                            if covered * 10 >= bw * bh {
-                                                Some(field)
-                                            } else {
-                                                None
-                                            }
                                         } else {
+                                            // **不许静默** ✓：调用方开了 `brightness_match`
+                                            // 而这次**没有**匹配 ⇒ 必须留下可读的痕迹 ✓
+                                            // （经由 `RenderStats::unsupported` → 文档
+                                            //  `last_render_warnings` → 渲染响应 warnings ✓）。
+                                            track.unsupported.push(format!(
+                                                    "brightness_match 需要目标区域下方的已有内容作参考，\
+                                                     但图层内容覆盖只有 {covered}/{} 像素（<10% ⇒ 视为无参考）\
+                                                     ⇒ 本次**未做亮度匹配**（对象 {}）",
+                                                    bw * bh,
+                                                    object.id
+                                                ));
                                             None
-                                        };
+                                        }
+                                    } else {
+                                        None
+                                    };
                                     let patch_buf: Option<Vec<u8>> = if spec.mode == "patch" {
                                         Some(quilt_patches(
                                             bytes,
@@ -4866,7 +4901,11 @@ fn quilt_patches(
     let (tw, th) = target;
     let mut out = vec![0u8; tw * th * 4];
     let mut filled = vec![false; tw * th];
-    let p = patch.min(sw).min(sh).max(2);
+    // **块边长不得超过源图**（越界修复 ✓）：原来 `.max(2)` 会在源图某边为 1 px 时
+    // 把 p 顶回 2 ⇒ 下面 `if sw > p` 的收界分支失效 ⇒ `sx+xx` 越到下一行（串位），
+    // 末行直接 panic。取 `max(1)` 后恒有 `sx + p ≤ sw`、`sy + p ≤ sh` ⇒ 三处取块循环
+    // （SSD／亮度参考场／切缝）全部天然在界内 ✓。`step = (p - o).max(1)` 保证推进 ✓。
+    let p = patch.min(sw).min(sh).max(1);
     let o = overlap.min(p / 2);
     let step = (p - o).max(1);
     let hash = |a: u64, b: u64, c: u64| -> u64 {
@@ -5231,15 +5270,28 @@ pub fn develop_raw_source_recorded(
                 highlight: record.highlight_recovery,
             };
             let ctx = yanshi_raw::record_context(&decoded);
+            // **记录自相矛盾必须先点名**（第 1440 轮审计）：`lens_match` 与
+            // `applied_lens_profile` 不一致 ⇒ 重放像素与导入当时不同，不许闷着展开。
+            warnings.extend(record.replay_gaps());
             // 镜头校正凭记录重建（第四包）：applied profile 在场 ⇒
             // 用同一套折算函数重建 plan 并走带校正的展开；profile
             // 在场但三项皆不可重建时响亮提示，不许静默丢校正。
             let developed = match &record.applied_lens_profile {
                 Some(profile) => {
-                    let plan = yanshi_raw::lens::plan_from_applied(profile);
+                    let (plan, dropped) = yanshi_raw::lens::plan_from_applied_report(profile);
+                    for item in dropped {
+                        // **部分丢失也要点名**（第 1440 轮）：旧版只在「三项全丢」时警告 ⇒
+                        // 丢掉一项照样成 plan ⇒ 那一项的校正**静默消失**，像素偏了没人知道。
+                        warnings.push(format!(
+                            "对象的 raw_develop 记录里 {item} 无法从落账参数重建 ⇒ 本次重放**未施加**该项校正（其余项照常）"
+                        ));
+                    }
                     match plan {
                         Some(plan) => {
-                            let lens_match = record.lens_match.as_deref().unwrap_or("matched");
+                            // **不凭空写 "matched"**（第 1440 轮）：记录没有出处时，
+                            // 旧版把 `lens_match` 编成 "matched" 再回写记录 ⇒ 出处造假。
+                            let lens_match =
+                                record.lens_match.as_deref().unwrap_or("record_unspecified");
                             yanshi_raw::develop_with_lens(
                                 &decoded.frame,
                                 &options,
@@ -5267,10 +5319,19 @@ pub fn develop_raw_source_recorded(
             (options, developed)
         }
         None => {
-            warnings.push(
-                "RAW 源对象缺少 raw_develop 记录，已按缺省展开参数展开（设计 5.3）".to_string(),
-            );
             let options = yanshi_raw::DevelopOptions::default();
+            // **警告要点名高光档位**（第 1440 轮审计）：缺省展开用的是
+            // `DevelopOptions::default()` 的 `floor`，而**导入契约**的缺省是 `chroma` ⇒
+            // 同一个源文件走导入与走重放可能出不同像素。旧文案只说「按缺省展开」，
+            // 读者无从判断是哪一档 ⇒ 差异不可见。
+            let highlight = match options.highlight {
+                yanshi_raw::HighlightMode::Chroma => "chroma",
+                yanshi_raw::HighlightMode::Floor => "floor",
+            };
+            warnings.push(format!(
+                "RAW 源对象缺少 raw_develop 记录，已按缺省展开参数展开（设计 5.3）；\
+                 高光档位 = {highlight}（导入契约缺省为 chroma ⇒ 与当年导入的像素可能不一致）"
+            ));
             let ctx = yanshi_raw::record_context(&decoded);
             let developed = yanshi_raw::develop(&decoded.frame, &options, &ctx)
                 .map_err(raw_error_as_invalid_argument)?;
@@ -8514,6 +8575,108 @@ mod tests {
         // ⑤ `old` 独有处取 `old` ✓
         assert_eq!(merged.pixel(0, 0), old.pixel(0, 0), "old 独有处应当取 old");
     }
+
+    /// **`brightness_match` 无参考时必须留下可读痕迹** ✓（第 1440 轮审计 ✓）。
+    ///
+    /// 原来注释承诺的 `has_reference` 从未落地 ⇒ 空图层上开了 `brightness_match`
+    /// 的对象**静默不做匹配** ⇒ 调用方以为匹配过了 ✗（「静默降级」第 3 形态的同族 ✓）。
+    /// 修法走既有响亮通道 `stats.unsupported`（与「声明尺寸不符」同一个出口 ✓）。
+    ///
+    /// **变异**：删掉 `render.rs` 里 `<10% covered` 分支的 `track.unsupported.push` ⇒
+    /// 下面第一条断言必须红 ✓（它读的就是那条 push，不读像素 ⇒ 跨机器稳 ✓）。
+    /// 三条一起构成**四层齐**的输入触发：空层（无参考 ⇒ 必须警告）、
+    /// 关掉开关（对照 ⇒ 不许误报）、有墙（有参考 ⇒ 不许漏报成警告 ✓）。
+    #[test]
+    fn brightness_match_without_reference_warns_instead_of_skipping_silently() {
+        let shape_data = |blob: &str, brightness_match: bool| {
+            serde_json::json!({
+                "geometry": {"kind": "rect", "bbox": {"x": 2, "y": 2, "w": 12, "h": 12}},
+                "color": {"r": 0, "g": 0, "b": 0, "a": 255},
+                "texture": {
+                    "type": "bitmap",
+                    "blob_hash": blob,
+                    "source": {"x": 0, "y": 0, "w": 8, "h": 8},
+                    "width": 8,
+                    "height": 8,
+                    "mode": "patch",
+                    "patch": 6,
+                    "overlap": 2,
+                    "candidates": 8,
+                    "brightness_match": brightness_match,
+                },
+            })
+        };
+        let store = MemoryBlobStore::new();
+        let source: Vec<u8> = (0..8 * 8).flat_map(|_| [200u8, 120, 60, 255]).collect();
+        let blob = store.put(&source).unwrap().to_string();
+
+        // ① 空图层 ⇒ 无参考 ⇒ **必须**给出恰好一条点名 brightness_match 的警告 ✓。
+        let mut state = white_document();
+        state.objects.insert(
+            "obj_patch".to_owned(),
+            object(
+                "obj_patch",
+                "layer_2",
+                ObjectType::Shape,
+                0,
+                shape_data(&blob, true),
+            ),
+        );
+        let warned = renderer().render_document(&state, &store).unwrap();
+        assert_eq!(
+            warned.stats.unsupported.len(),
+            1,
+            "无参考的 brightness_match 必须留下一条警告，实测 {:?}",
+            warned.stats.unsupported
+        );
+        assert!(
+            warned.stats.unsupported[0].contains("brightness_match")
+                && warned.stats.unsupported[0].contains("未做亮度匹配"),
+            "警告要点名参数与「本次没做」这件事：{}",
+            warned.stats.unsupported[0]
+        );
+
+        // ② 对照：关掉开关 ⇒ 同一形状、同一空层 ⇒ **不许**冒出这条警告 ✓。
+        state.objects.get_mut("obj_patch").unwrap().data = shape_data(&blob, false);
+        let clean = renderer().render_document(&state, &store).unwrap();
+        assert!(
+            clean.stats.unsupported.is_empty(),
+            "没开 brightness_match 不该被警告：{:?}",
+            clean.stats.unsupported
+        );
+
+        // ③ 有墙（同层先铺一块实心）⇒ 参考可用 ⇒ 开了也**不许**警告 ✓。
+        let mut walled = white_document();
+        walled.objects.insert(
+            "obj_wall".to_owned(),
+            object(
+                "obj_wall",
+                "layer_2",
+                ObjectType::Shape,
+                0,
+                serde_json::json!({
+                    "geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 32, "h": 32}},
+                    "color": {"r": 255, "g": 255, "b": 255, "a": 255},
+                }),
+            ),
+        );
+        walled.objects.insert(
+            "obj_patch".to_owned(),
+            object(
+                "obj_patch",
+                "layer_2",
+                ObjectType::Shape,
+                5,
+                shape_data(&blob, true),
+            ),
+        );
+        let matched = renderer().render_document(&walled, &store).unwrap();
+        assert!(
+            matched.stats.unsupported.is_empty(),
+            "有参考时不该警告：{:?}",
+            matched.stats.unsupported
+        );
+    }
 }
 
 // **★ `by_sig` 上限触发时"只淘汰一组"的判据 ★**（第 254 轮）
@@ -8697,6 +8860,63 @@ mod raw_boundary_tests {
         assert!(
             warnings.iter().any(|w| w.contains("缺省展开参数")),
             "记录缺失必须留 warning：{warnings:?}"
+        );
+    }
+}
+
+/// **quilt 退化输入锁**（第 1440 轮审计 ✓）：源图某边只有 1 px 时，
+/// 旧代码 `p = ….max(2)` 把块顶到 2 而收界分支 `if sw > p` 失效 ⇒
+/// 取块索引越到下一行（串位 ✗），末行直接 `source[si..si+4]` panic ✗。
+/// 修复后恒有 `sx + p ≤ sw`、`sy + p ≤ sh`（`p = patch.min(sw).min(sh).max(1)` ✓）。
+/// 变异：把 `.max(1)` 改回 `.max(2)` ⇒ 两条都该红 ✓。
+#[cfg(test)]
+mod quilt_degenerate_tests {
+    use super::quilt_patches;
+
+    /// 纯红源图（每像素 [255,0,0,255]），`sw × sh`。
+    fn red_source(sw: usize, sh: usize) -> Vec<u8> {
+        [255u8, 0, 0, 255]
+            .iter()
+            .copied()
+            .cycle()
+            .take(sw * sh * 4)
+            .collect()
+    }
+
+    #[test]
+    fn one_pixel_tall_source_does_not_panic() {
+        let source = red_source(4, 1);
+        let out = quilt_patches(&source, 4, 1, (6, 3), 4, 1, 3, 7, false, None);
+        assert_eq!(out.len(), 6 * 3 * 4);
+        assert!(
+            out.chunks_exact(4)
+                .all(|p| p == [255, 0, 0, 255] || p == [0, 0, 0, 0]),
+            "输出只能是源像素或初始透明：{out:?}"
+        );
+    }
+
+    #[test]
+    fn one_pixel_wide_source_does_not_panic() {
+        let source = red_source(1, 8);
+        let out = quilt_patches(&source, 1, 8, (3, 3), 4, 1, 3, 11, false, None);
+        assert_eq!(out.len(), 3 * 3 * 4);
+        assert!(
+            out.chunks_exact(4)
+                .all(|p| p == [255, 0, 0, 255] || p == [0, 0, 0, 0]),
+            "1 px 宽的源只能产出该颜色，串位会得到别的字节：{out:?}"
+        );
+    }
+
+    #[test]
+    fn normal_geometry_still_tiles_and_is_deterministic() {
+        let source = red_source(8, 8);
+        let a = quilt_patches(&source, 8, 8, (20, 6), 4, 1, 3, 5, false, None);
+        let b = quilt_patches(&source, 8, 8, (20, 6), 4, 1, 3, 5, false, None);
+        assert_eq!(a, b, "同输入必须逐字节同输出 ✓");
+        assert_eq!(a.len(), 20 * 6 * 4);
+        assert!(
+            a.chunks_exact(4).all(|p| p == [255, 0, 0, 255]),
+            "20×6 全部在 8×8 源覆盖范围内 ⇒ 不应留透明"
         );
     }
 }

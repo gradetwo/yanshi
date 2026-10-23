@@ -273,13 +273,23 @@ fn bad_arguments_are_refused_with_a_reason() {
 ///
 /// **判据** ✓：同一笔、只改 `texture` ✓ ⇒ **平滑度必须明显提高** ✓
 ///（用"水平相邻 alpha 的平均绝对差"衡量 ✓，与插件侧同一口径 ✓）。
+///
+/// **★ 第 1440 轮：每次测量用独立文档 ✓**（与第 916／1356 轮同一个坑的第三次发现 ✓）：
+/// 旧写法把 `texture=0` 与 `texture=1` **同一坐标叠在同一层** ✗ ⇒
+/// 第二次量的是**两笔叠加的合成画面** ✗ —— 前一笔的墨污染后一笔的采样 ✓。
+/// 当年它靠旧 `bristle_angle` 的随机角**碰巧**拉开了 13% 的差距 ✓；
+/// 本修复把角掩回 0..=π 后（每枚 dab 都变 ✓）** realized 角重抽** ✗ ⇒ 叠加测量翻向 ✗
+/// ⇒ 红的是**测量的混淆** ✗，不是产品 ✗（插件侧 `texture_reduces_grain` 始终绿 ✓）。
+/// **改法只治根**：两次各用**全新工作区** ⇒ 同一 `canvas_seed`（同坐标同尺寸 ⇒ 同角 ✓）⇒
+/// **唯一变量回到 `texture` 本身** ✓。门槛**没有松动**（仍是 2% ✓）。
 #[test]
 fn the_texture_parameter_reaches_the_plugin() {
-    let mut workspace = workspace();
-    setup(&mut workspace);
-    let roughness = |workspace: &mut Workspace, object: &str, texture: f64| -> f64 {
+    let roughness = |object: &str, texture: f64| -> f64 {
+        // **独立文档** ✓：这一次工作区里**只有这一笔** ⇒ 量到的就是它自己的肌理 ✓。
+        let mut workspace = workspace();
+        setup(&mut workspace);
         let made = {
-            let mut ctx = context(workspace);
+            let mut ctx = context(&mut workspace);
             registry().call(
                 &mut ctx,
                 "medium_stroke",
@@ -334,8 +344,8 @@ fn the_texture_parameter_reaches_the_plugin() {
         }
         total / count.max(1.0)
     };
-    let rough = roughness(&mut workspace, "rough", 0.0);
-    let smooth = roughness(&mut workspace, "smooth", 1.0);
+    let rough = roughness("rough", 0.0);
+    let smooth = roughness("smooth", 1.0);
     eprintln!(
         "  工具层纹理（亮度口径 ✓）：texture=0 粗糙度 {rough:.2} ⇒ texture=1 粗糙度 {smooth:.2}"
     );

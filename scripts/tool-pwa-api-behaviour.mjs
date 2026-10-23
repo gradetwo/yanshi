@@ -248,12 +248,37 @@ check(!!unBody.reason, "未实现端点应报出原因 ✗");
 // **★ 快照**过期**必须返回 null ✗ ★**（第 641 轮 ✓；**目标第 6 条 ✓**）：
 //   **∴ 规则**：**快照带**序号 ＋ 格式版本**✗ ⇒ **∴ 二者任一不匹配 ⇒ **必须重算 ✗****
 //   ⇒ **∴ 绝不许**拿旧图冒充**✗**（**∴ 这是能红判据的重点 ✓**）。
-const { writeSnapshot, readSnapshot, FORMAT_VERSION } = await import(base + "store.js");
+// **★ 第 1440 轮审计补：`writeSnapshot` 必须单事务 + 校验序号 ✗ ★**（**回归 D-01 同族 ✓**）：
+//   **∴ 旧写法 ✗**：`writeSnapshot` 用**两个事务**（readonly 读 → readwrite 写）✗ ⇒
+//     **∴ 中间若有 `putAtom` 提交** ⇒ 这次 `put` 把 `meta.seq` **拖回**陈旧 `seq` ✗ ⇒
+//     **∴ 下一次 `putAtom` 读到同一 seq ⇒ 主键 `${doc}:${seq}` 相撞 ⇒ 已提交原子被静默覆盖 ✗**。
+//   **∴ 修法 ✓**：单事务包住读改写 ✓ ＋ **`seq ≠ 当前 head` ⇒ 拒写并返回 false** ✓ ⇒
+//     **∴ 调用方据此重算 ✗，绝不让旧图冒充新状态 ✓**（目标第 6 条 ✓）。
+//   **∴ 判据要制造"读回 head ＋ 陈旧 seq 两个 case"** ⇒ 断 `true`/`false` 与"陈旧写不得覆盖 ✓"。
+const { writeSnapshot, readSnapshot, FORMAT_VERSION, tx: stx, wrap: swrap } = await import(base + "store.js");
 const snapBytes = new Uint8Array([1, 2, 3, 4]);
-await writeSnapshot(db, "d1", 3, { bytes: snapBytes });
-check(!!(await readSnapshot(db, "d1", 3)), "序号匹配时应能读到快照 ✗");
-check((await readSnapshot(db, "d1", 4)) === null, "序号**不**匹配时**必须**返回 null ✗（**∴ 否则就是拿旧图冒充 ✗**）");
-console.log(`  快照：序号匹配 ⇒ 命中 ✓｜序号不匹配 ⇒ null ✓（format=${FORMAT_VERSION}）`);
+const headD1 = (await swrap(stx(db, "docs", "readonly").get("d1")))?.seq ?? 0;
+// ① 序号＝head ⇒ 写成功 ＋ 读回命中 ✓。
+const wOk = await writeSnapshot(db, "d1", headD1, { bytes: snapBytes });
+check(wOk === true, `writeSnapshot 序号匹配 head(${headD1}) 应返回 true ✗（实测 ${wOk}）`);
+check(!!(await readSnapshot(db, "d1", headD1)), "序号匹配时应能读到快照 ✗");
+check((await readSnapshot(db, "d1", headD1 + 1)) === null,
+  "序号**不**匹配时**必须**返回 null ✗（**∴ 否则就是拿旧图冒充 ✗**）");
+// ② 制造陈旧：先写 head ⇒ 再追加一条原子把 head 顶上去 ⇒ 用**旧 seq** 覆写 ⇒ **必须拒 ✓**。
+const staleSeq = headD1;
+const c2 = await call("/api/atoms", { method: "POST",
+  body: JSON.stringify({ kind: "create_layer", layer_id: "L9", name: "顶高序号" }) });
+check(c2.ok === true, "追加原子应成功（制造 head 前进 ✗）");
+const headAdvanced = (await swrap(stx(db, "docs", "readonly").get("d1")))?.seq ?? 0;
+check(headAdvanced === staleSeq + 1, `head 应前进到 ${staleSeq + 1} ✗（实测 ${headAdvanced}）`);
+const wStale = await writeSnapshot(db, "d1", staleSeq, { bytes: new Uint8Array([9, 9, 9, 9]) });
+check(wStale === false, `陈旧序号(${staleSeq}) 覆写必须被拒、返回 false ✗（实测 ${wStale}）`);
+// ③ 陈旧写**不得**污染 meta.seq（这是 lost-update 的实质 ✗）：head 必须仍是新值。
+const metaAfter = await swrap(stx(db, "docs", "readonly").get("d1"));
+check((metaAfter?.seq ?? 0) === headAdvanced,
+  `陈旧 writeSnapshot 不得把 meta.seq 拖回 ${staleSeq} ✗（实测 ${metaAfter?.seq}）`);
+console.log(`  快照：序号匹配 ⇒ 写✓读✓｜序号不匹配 ⇒ null ✓｜陈旧写 ⇒ 被拒且不动 head ✓（format=${FORMAT_VERSION}）`);
+
 check(LOCAL_IMPLEMENTED >= 5, `声明实现数应 ≥ 5 ✗（实测 ${LOCAL_IMPLEMENTED}）`);
 
 console.log(`  实际调用通过 ✓：创建 ✓｜原子 ${atoms.count} 条 ✓｜层 ${layers.count} 个 ✓｜`

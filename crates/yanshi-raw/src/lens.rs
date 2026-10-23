@@ -404,9 +404,15 @@ pub fn build_plan_and_profile(
     (plan, profile)
 }
 
-/// 取图期重建：凭落账 profile 还原 plan（与导入期同一套折算）。
-/// profile 残缺到无法重建任一项 ⇒ 返回能重建的部分；三项全无 ⇒ None。
-pub fn plan_from_applied(profile: &AppliedLensProfile) -> Option<LensCorrectionPlan> {
+/// 取图期重建 ＋ **点名丢了哪几项**（第 1440 轮审计）。
+///
+/// 原 `plan_from_applied` 只说「三项全不可重建 ⇒ `None`」⇒ **部分**失败时
+/// 剩下那一项照样成 `Some`，被丢的那项（例如记为 `file_opcode` 却解析不出
+/// 参数的暗角）**没人知道** ⇒ 重放悄悄改了像素。返回的 `dropped` 逐项点名，
+/// 调用方必须把它变成可见警告（不许吞掉）。
+pub fn plan_from_applied_report(
+    profile: &AppliedLensProfile,
+) -> (Option<LensCorrectionPlan>, Vec<&'static str>) {
     let s = profile.crop_ratio.unwrap_or(1.0);
     let src = |key: &str| -> String {
         profile
@@ -485,11 +491,25 @@ pub fn plan_from_applied(profile: &AppliedLensProfile) -> Option<LensCorrectionP
             crop_ratio: s,
         });
     }
-    if plan.vignette.is_none() && plan.warp.is_none() {
-        None
-    } else {
-        Some(plan)
+    let mut dropped: Vec<&'static str> = Vec::new();
+    if src("vignetting") != "none" && plan.vignette.is_none() {
+        dropped.push("vignetting");
     }
+    if (src("distortion") != "none" || src("tca") != "none") && plan.warp.is_none() {
+        dropped.push("distortion/tca");
+    }
+    if plan.vignette.is_none() && plan.warp.is_none() {
+        (None, dropped)
+    } else {
+        (Some(plan), dropped)
+    }
+}
+
+/// 取图期重建：凭落账 profile 还原 plan（与导入期同一套折算）。
+/// profile 残缺到无法重建任一项 ⇒ 返回能重建的部分；三项全无 ⇒ None。
+/// **需要知道丢了哪几项的调用方用 `plan_from_applied_report`**（第 1440 轮）。
+pub fn plan_from_applied(profile: &AppliedLensProfile) -> Option<LensCorrectionPlan> {
+    plan_from_applied_report(profile).0
 }
 
 // ---------------------------------------------------------------------------

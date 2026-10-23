@@ -1013,8 +1013,26 @@ fn parse_shape_texture(value: &Value) -> Result<ShapeTexture, String> {
                     "texture.brightness_ramp.axis 只能是 x / y，得到 {axis:?}"
                 ));
             }
-            let at_start = ramp.get("at_start").and_then(Value::as_f64).unwrap_or(0.0);
-            let at_end = ramp.get("at_end").and_then(Value::as_f64).unwrap_or(255.0);
+            // **第 1440 轮审计**：键**存在但不是数**（"auto"/null/true）原来被
+            // `and_then(as_f64).unwrap_or(默认)` 静默当成"没给" ✗ ⇒ 调用方以为传了自己的
+            // 起止亮度，实际吃的是默认 0/255 ✓ —— 静默降级形态四。现在**存在即必须为数** ✓，
+            // 缺省才是缺省（None ⇒ 0.0/255.0 ✓）。
+            let at_start = match ramp.get("at_start") {
+                None => 0.0,
+                Some(value) => value.as_f64().ok_or_else(|| {
+                    format!(
+                        "texture.brightness_ramp.at_start 必须是数字（0..=255 亮度），得到 {value}"
+                    )
+                })?,
+            };
+            let at_end = match ramp.get("at_end") {
+                None => 255.0,
+                Some(value) => value.as_f64().ok_or_else(|| {
+                    format!(
+                        "texture.brightness_ramp.at_end 必须是数字（0..=255 亮度），得到 {value}"
+                    )
+                })?,
+            };
             for (name, value) in [("at_start", at_start), ("at_end", at_end)] {
                 if !(0.0..=255.0).contains(&value) {
                     return Err(format!(
@@ -2069,5 +2087,30 @@ mod tests {
                 }
             }
         }
+    }
+    /// 第 1440 轮审计：`at_start`/`at_end` **存在但非数**曾被 `unwrap_or(默认)` 静默
+    /// 当成"没给" ⇒ 调用方以为传了自己的起止亮度，渲染实际吃 0/255 默认 ✓。
+    /// 变异（退回 `and_then(as_f64).unwrap_or(..)`）⇒ `expect_err` 拿不到错 ⇒ 红 ✓。
+    #[test]
+    fn brightness_ramp_non_numeric_value_is_refused_not_defaulted() {
+        let hash = format!("sha256:{}", "b".repeat(64));
+        let base = |ramp: Value| {
+            json!({
+                "type": "bitmap", "blob_hash": hash,
+                "source": {"x": 0.0, "y": 0.0, "w": 10.0, "h": 10.0},
+                "width": 20, "height": 20,
+                "brightness_ramp": ramp
+            })
+        };
+        let err = parse_shape_texture(&base(json!({ "axis": "x", "at_start": "auto" })))
+            .expect_err("at_start 是字符串 ⇒ 必须响亮拒绝，不许静默用默认 0 ✓");
+        assert!(
+            err.contains("at_start") && err.contains("必须是数字"),
+            "要点名字段与类型要求：{err}"
+        );
+        // 缺省 ⇒ 仍是缺省（存量行为不动 ✓）。
+        let ok = parse_shape_texture(&base(json!({ "axis": "y" }))).unwrap();
+        let (axis, at_start, at_end) = ok.brightness_ramp.expect("axis 给了就该有 ramp");
+        assert_eq!((axis.as_str(), at_start, at_end), ("y", 0.0, 255.0));
     }
 }

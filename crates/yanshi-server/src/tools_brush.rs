@@ -316,7 +316,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         .and_then(Value::as_f64)
         .map(|value| value / glaze_passes as f64);
     // 意图参数（hand_tremor 等）展开成 brush_params 别名，与显式 brush_params 合并（显式优先）
-    let merged_brush_params = merge_intent_brush_params(args);
+    let merged_brush_params = merge_intent_brush_params(args)?;
     // **落笔走唯一的实现** ✓（`paint_brush` ✓，与 `brush_preview` 共用 ✓）。
     let paint = paint_brush(
         ctx,

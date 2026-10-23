@@ -96,7 +96,7 @@
 | 工具 | 作用 |
 |---|---|
 | **`get_brush_settings { brush }`** | 返回 `{ count, settings: { "<cname>": { base_value } }, unknown }`；**63 项由 `BrushSetting::ALL` 逐项遍历** ✓（不硬编码 ✗）；`unknown` ＝ 原始 JSON 里有、而 63 项里没有的键 ⇒ **引擎会忽略的设置** ✓ |
-| **`set_brush_setting { brush, setting, value }`** | 只写 `settings[setting].base_value` ✓；名字用 **`BrushSetting::from_cname`** 校验 ✓；落盘沿用 `set_brush_dynamics` 的手法 ✓（临时文件 ⇒ `import_asset(overwrite:true)`） |
+| **`set_brush_setting { brush, setting, value }`** | 只写 `settings[setting].base_value` ✓；名字用 **`BrushSetting::from_cname`** 校验 ✓；落盘沿用 `set_brush_dynamics` 的手法 ✓（`persist_brush_json` ⇒ 正文走 `data_base64` ⇒ `import_asset(overwrite:true)` ✓；第 1440 轮起**不再绕临时文件** ✗——那是外部调用方才用的 `path` 通道，带工作区沙箱） |
 
 **工具数 151 → 153** ✓（`95ecb484` ✓）。
 

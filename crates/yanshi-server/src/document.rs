@@ -417,6 +417,19 @@ pub struct Document {
     last_snapshot_seq: Seq,
     last_snapshot_at: i64,
     commits: u64,
+    /// **已落盘的日志前缀水位** ✓（第 1440 轮审计 ✓）：`atoms.jsonl` 里**已有**的最大 `seq` ✓，
+    /// ⇒ `Workspace::flush_journal` 只补 `journal_watermark + 1 ..= head_seq` 的那些 ✓。
+    ///
+    /// **为什么必须有它** ✗：旧落盘路径**只在提交成功时**写 `result.seq` 那一条 ✗
+    /// ⇒ 而**冲突拒绝**这条失败路径在返回 Err **之前**已把冲突图层原子追加进日志 ✓
+    /// ⇒ 那条原子**永远不落盘** ✗ ⇒ 重开后冲突图层凭空消失 ✗（数据丢失一类 ✓）。
+    /// **按"日志里新增了什么"落盘**（而不是"这次提交回了什么 seq"）✓
+    /// ⇒ 任何追加路径（系统原子 ✓、失败路径原子 ✓）都被同一条咽喉覆盖 ✓。
+    ///
+    /// **初始化** ✓：新建文档 = 0（初始原子由 `flush_journal` 落盘 ✓）；
+    /// 从磁盘打开 = `head_seq`（日志本来就在盘上 ✓）⇒ 漏初始化只会**重复追加**（可见 ✗）
+    /// 而不是**漏写**（静默 ✗）—— 这个方向是故意选的 ✓。
+    journal_watermark: Seq,
 }
 
 impl std::fmt::Debug for Document {
@@ -602,6 +615,7 @@ impl Document {
             last_snapshot_seq: 0,
             last_snapshot_at: 0,
             commits: 0,
+            journal_watermark: 0,
             settings,
         }
     }
@@ -654,6 +668,17 @@ impl Document {
     /// 渲染水位。
     pub const fn render_watermark(&self) -> Seq {
         self.render_watermark
+    }
+
+    /// **已落盘的日志前缀水位** ✓（见字段说明 ✓）：`Workspace::flush_journal` 专用 ✓。
+    pub const fn journal_watermark(&self) -> Seq {
+        self.journal_watermark
+    }
+
+    /// 设落盘水位 ✓（`flush_journal` 每写完一条前进一步 ✓ ⇒ 中途失败可续写 ✗ 不重复 ✓；
+    /// 文档注册进工作区时初始化为 `head_seq` ✓ —— 从磁盘读的日志不必再写回去 ✓）。
+    pub(crate) fn set_journal_watermark(&mut self, seq: Seq) {
+        self.journal_watermark = seq;
     }
 
     /// **★ 整幅缓存命中次数 ✗ ★**（第 796 轮 ✓）：**∴ 它是**用户实际走的快路径**的指标 ✓**

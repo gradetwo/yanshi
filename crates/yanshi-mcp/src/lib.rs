@@ -210,8 +210,16 @@ impl Server {
     pub fn new(options: McpOptions) -> Self {
         let settings = DocumentSettings::default();
         let workspace = match &options.root {
-            Some(root) => Workspace::with_file_store(root.clone(), settings.clone())
-                .unwrap_or_else(|_| Workspace::in_memory(settings)),
+            // **回退必须留痕**（第 1440 轮审计）：文档注释承诺「给出警告」而原来没给 ⇒
+            // 静默降级。with_file_store 失败 ⇒ 记住 root 和原因，
+            // 走 diagnostics 环（`log_lines` 可取）＋ stderr 两处可见 ✓。
+            Some(root) => Workspace::with_file_store(root.clone(), settings.clone()).unwrap_or_else(|err| {
+                yanshi_server::diagnostics::log_line(format!(
+                    "警告：文件存储 {root} 初始化失败（{err}）⇒ 已回退到内存存储，本次会话的文档不会落盘",
+                    root = root.display()
+                ));
+                Workspace::in_memory(settings)
+            }),
             None => Workspace::in_memory(settings),
         }
         // **与 HTTP 用同一个默认** ✓：内置纹理随仓库与发行包走 ✓。
@@ -1047,5 +1055,36 @@ mod tests {
         assert_eq!(lines.len(), 2, "通知不产生响应行");
         assert!(lines[0].contains("protocolVersion"));
         assert!(lines[1].contains("doc_stdio"));
+    }
+
+    /// 第 1440 轮审计：文件存储失败曾**静默**回退内存 ⇒ 承诺的「警告」必须有信号。
+    /// 变异（删掉 `log_line` 那一步）⇒ 本测试红 ✓。
+    #[test]
+    fn file_store_fallback_warns_instead_of_failing_silently() {
+        // root 指到一个**普通文件**：`FileStore::open` 想在其下建目录 ⇒ ENOTDIR ⇒ 失败。
+        let root = std::env::temp_dir().join(format!(
+            "yanshi-mcp-fallback-{}.not-a-dir",
+            std::process::id()
+        ));
+        std::fs::write(&root, b"i am a file, not a directory").unwrap();
+        let before = yanshi_server::diagnostics::log_lines().len();
+        let _server = Server::new(McpOptions {
+            root: Some(root.clone()),
+            doc_id: "doc_fallback".to_owned(),
+            ..McpOptions::default()
+        });
+        let lines = yanshi_server::diagnostics::log_lines();
+        assert!(
+            lines.len() > before,
+            "回退必须在诊断环里留下一行（静默回退 = 本仓禁忌）"
+        );
+        let marker = root.file_name().unwrap().to_string_lossy().to_string();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains(&marker) && line.contains("回退")),
+            "警告行要点名失败的 root 与「回退」，实测 {lines:?} 里没有"
+        );
+        std::fs::remove_file(&root).ok();
     }
 }

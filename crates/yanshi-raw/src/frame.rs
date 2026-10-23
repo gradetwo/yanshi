@@ -341,6 +341,31 @@ pub struct RawDevelopRecord {
     pub applied_lens_profile: Option<AppliedLensProfile>,
 }
 
+impl RawDevelopRecord {
+    /// **重放前的自洽检查**（第 1440 轮审计）。
+    ///
+    /// `lens_match` 与 `applied_lens_profile` 是一对互相约束的字段：前者说
+    /// 「施加过哪一类校正」、后者是「实际施加的参数」。二者矛盾时旧代码**照常展开**
+    /// 且不吭声 ⇒ 重放像素与导入当时不同而调用方无信号。返回的每条文字都必须
+    /// 进响应的 warnings（`develop_raw_source_recorded` 负责搬运）。
+    pub fn replay_gaps(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        match (&self.lens_match, &self.applied_lens_profile) {
+            (Some(label), None) if label == "matched" || label == "manual" => out.push(format!(
+                "记录的 lens_match={label} 声称施加过镜头校正，却没有 applied_lens_profile ⇒ \
+                 本次按无校正展开，像素与导入当时不一致"
+            )),
+            (None, Some(_)) => out.push(
+                "记录带有 applied_lens_profile 却缺 lens_match ⇒ 出处未知，重放按 \
+                 lens_match=record_unspecified 记账（旧版在这里凭空写成 matched，把出处编造了一次）"
+                    .to_string(),
+            ),
+            _ => {}
+        }
+        out
+    }
+}
+
 /// 文件级元数据（解码期解析，与展开产物分开：回显 `raw_meta` 的原料，设计 5.7）。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct RawFileMeta {

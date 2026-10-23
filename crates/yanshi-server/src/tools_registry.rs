@@ -2836,8 +2836,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         profile: Profile::Core,
         // **只写 `base_value`**（基准值 ✓），**不动 `inputs` 动力学曲线** ✗ —— 曲线归 `set_brush_dynamics` ✓。
         // 名字用 `BrushSetting::from_cname` 校验 ✓（那是 `.myb` 的官方标识符 ✓）⇒ **未知名报错并给候选** ✓。
-        // 落盘沿用 `set_brush_dynamics` 的手法 ✓：写临时文件 ⇒ `import_asset(overwrite)` ⇒ 覆盖工作区缓存里的同名笔刷 ✓
-        //（内置资产一个字节不动 ✓）。
+        // 落盘沿用 `set_brush_dynamics` 的手法 ✓（`persist_brush_json` ⇒ `import_asset(overwrite)` ✓）
+        // ⇒ 覆盖工作区缓存里的同名笔刷 ✓（内置资产一个字节不动 ✓）。
+        // **第 1440 轮**：那一手法原先要「写临时文件再交 `path`」✗，现在正文直接走 `data_base64` ✓
+        //（`path` 通道带工作区沙箱 ⇒ 服务端自己走它会被拒 ✗；临时文件也从不删 ✗）。
         summary: "设一笔刷的单项 MyPaint 动力学基准值（名字用 .myb 的规范名，如 smudge / speed1_gamma / change_color_h）",
         mutating: false,
         params: &[

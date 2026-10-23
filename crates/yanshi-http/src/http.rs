@@ -74,18 +74,17 @@ pub struct Request {
 impl Request {
     /// 解析请求（读取请求行、头部与请求体）。
     pub fn read<R: BufRead + std::io::Read>(reader: &mut R) -> io::Result<Option<Self>> {
-        let mut request_line = String::new();
-        loop {
-            request_line.clear();
-            match reader.read_line(&mut request_line) {
-                Ok(0) => return Ok(None),
-                Ok(_) => {}
-                Err(error) => return Err(error),
+        // **有上限读行** ✓（第 1440 轮）：慢滴不换行 ⇒ 不再无限攒 ✗。
+        // `loop` 直接产出请求行 ✓ —— 旧写法每轮先赋值再判断，编译器报「上一轮的赋值没读就覆盖」✗。
+        let request_line = loop {
+            let (read, line) = read_line_bounded(reader, MAX_LINE_BYTES)?;
+            if read == 0 {
+                return Ok(None);
             }
-            if request_line != "\r\n" && request_line != "\n" {
-                break;
+            if line != "\r\n" && line != "\n" {
+                break line;
             }
-        }
+        };
         if request_line.len() > MAX_LINE_BYTES {
             return Err(invalid("请求行过长"));
         }
@@ -105,8 +104,8 @@ impl Request {
 
         let mut headers = BTreeMap::new();
         loop {
-            let mut line = String::new();
-            let read = reader.read_line(&mut line)?;
+            // **有上限读行** ✓（同上：超长头部行在 `cap+1` 处止损，不再读完整行 ✗→✓）。
+            let (read, line) = read_line_bounded(reader, MAX_LINE_BYTES)?;
             if read == 0 {
                 break;
             }
@@ -412,6 +411,28 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.to_owned())
 }
 
+/// **有上限地读一行**（第 1440 轮审计）。
+///
+/// `BufRead::read_line` 会把一行**无限**攒进内存 ⇒ 对**永远不发换行**的慢滴客户端，
+/// "读完才检查长度"✗ 检查的是已经涨爆的缓冲 ✓。这里读到 `cap + 1` 字节就**止损返回**
+/// （调用方原有的 `len > MAX_LINE_BYTES` 判据照常生效 ✓）。
+/// 返回值 =（本次消费的字节数，行文本）；0 表示对端在空行前关闭（与 `read_line` 同义 ✓）。
+/// 非 UTF-8 按替换字符处理（头部键值随后只做 ASCII 小写比较 ✓，不该因脏字节断连 ✗）。
+fn read_line_bounded<R: BufRead>(reader: &mut R, cap: usize) -> io::Result<(usize, String)> {
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut one = [0u8; 1];
+    loop {
+        let n = reader.read(&mut one)?;
+        if n == 0 {
+            return Ok((bytes.len(), String::from_utf8_lossy(&bytes).into_owned()));
+        }
+        bytes.push(one[0]);
+        if one[0] == b'\n' || bytes.len() > cap {
+            return Ok((bytes.len(), String::from_utf8_lossy(&bytes).into_owned()));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,5 +548,49 @@ mod tests {
         assert_eq!(bad_request("x").status, 400);
         assert_eq!(forbidden("x").status, 403);
         assert_eq!(not_found("x").status, 404);
+    }
+
+    /// 第 1440 轮审计：**慢滴超长行不再把整段读进内存** ✓。
+    /// 判据：请求行是 1 MiB 个 `A`、**永不换行** ⇒ 解析必须报错，
+    /// 而且**消费掉的字节数**必须停在 `MAX_LINE_BYTES + 1` 附近 ✓。
+    /// 变异（退回 `read_line`）⇒ 它会把 1 MiB 全部读完才报同一个错 ⇒ position 红 ✓。
+    #[test]
+    fn an_endless_slow_drip_line_is_stopped_at_the_cap() {
+        let flood = vec![b'A'; 1024 * 1024];
+        let mut cursor = std::io::Cursor::new(flood);
+        let outcome = Request::read(&mut cursor);
+        assert!(outcome.is_err(), "超长请求行必须报错");
+        assert!(
+            (cursor.position() as usize) <= MAX_LINE_BYTES + 2,
+            "有上限读 ⇒ 只该消费 cap+1 字节，实测 {}",
+            cursor.position()
+        );
+    }
+
+    /// 头部行同口径 ✓：正常请求行 + 永不换行的 1 MiB 头部 ⇒ 在帽处止损 ✓。
+    #[test]
+    fn an_endless_header_line_is_stopped_at_the_cap() {
+        let mut data = b"GET / HTTP/1.1\r\n".to_vec();
+        data.extend_from_slice(b"X-Long: ");
+        data.extend_from_slice(&vec![b'B'; 1024 * 1024]);
+        let mut cursor = std::io::Cursor::new(data);
+        let outcome = Request::read(&mut cursor);
+        assert!(outcome.is_err(), "超长头部行必须报错");
+        assert!(
+            cursor.position() as usize <= 16 + MAX_LINE_BYTES + 64,
+            "消费字节数应停在帽附近，实测 {}",
+            cursor.position()
+        );
+    }
+
+    /// 哨兵：正常请求照常解析（换行、空行、头部、EOF 语义与 `read_line` 一致 ✓）。
+    /// 变异（`read_line_bounded` 提前截断正常行）⇒ 这条红 ✓。
+    #[test]
+    fn ordinary_requests_still_parse() {
+        let mut cursor = std::io::Cursor::new(b"GET /a?b=c HTTP/1.1\r\nHost: x\r\n\r\n".to_vec());
+        let request = Request::read(&mut cursor).unwrap().expect("应当解析成功");
+        assert_eq!(request.path, "/a");
+        assert_eq!(request.param("b"), Some("c"));
+        assert_eq!(request.headers.get("host").map(String::as_str), Some("x"));
     }
 }

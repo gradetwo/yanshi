@@ -283,32 +283,34 @@ fn main() -> Result<()> {
     let t_replay = Instant::now();
 
     // **∴ ffmpeg 起不来时要给一句人话 ✗**（**∴ 交付版只 `eprintln!("ffmpeg 失败")` ✓）★
-    let mut ffmpeg = Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgb24",
-            "-s",
-            &format!("{out_w}x{out_h}"),
-            "-framerate",
-            "30",
-            "-i",
-            "-",
-            "-c:v",
-            // **编码器要按可用性挑** ✓（第 601 轮）：外部那台机器若没有 `libx264`，
-            //   ffmpeg 只会写出文件头（我们之前还会 exit 0）⇒ 现在按 `-encoders` 探测，
-            //   依次尝试 `libx264` → `mpeg4`（两者都常见 ✓），并把选中的名字打进 banner ✓。
-            &pick_encoder(),
-            "-preset",
-            "ultrafast",
-            "-pix_fmt",
-            "yuv420p",
-            "-crf",
-            "23",
-            &out_mp4,
-        ])
+    //
+    // **第 1440 轮审计**：`-preset`/`-crf` 是 **x264 专属参数** ✗，而挑中的编码器
+    // 可能是 `mpeg4`/`mpeg2video`（探测命令当时**不带**这两个参数 ⇒ 探测通过 ✓、
+    // 正式导出因不认识而失败 ✗ ⇒ 又回到"宣布成功、只留 mp4 头"那个老症状）。
+    // 现在**探测与导出共用同一个 `encoder_quality_args`** ⇒ 两条命令不可能漂移 ✓。
+    let encoder = pick_encoder();
+    let mut ffmpeg = Command::new("ffmpeg");
+    ffmpeg.args([
+        "-y",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-s",
+        &format!("{out_w}x{out_h}"),
+        "-framerate",
+        "30",
+        "-i",
+        "-",
+        "-c:v",
+        // **编码器要按可用性挑** ✓（第 601 轮）：外部那台机器若没有 `libx264`，
+        //   ffmpeg 只会写出文件头（我们之前还会 exit 0）⇒ 现在按 `-encoders` 探测，
+        //   依次尝试，并把选中的名字打进 banner ✓。
+        &encoder,
+    ]);
+    ffmpeg.args(encoder_quality_args(&encoder));
+    let mut ffmpeg = ffmpeg
+        .args(["-pix_fmt", "yuv420p", &out_mp4])
         .stdin(Stdio::piped())
         // **ffmpeg 的 stderr 必须留档** ✓（第 599 轮）：原来 `Stdio::null()` **把它丢了** ✗
         //   ⇒ 外部报「261 字节空视频」时**拿不到那行 Error** ✓（他们回了两轮都没法给 ✓）
@@ -602,25 +604,27 @@ fn pick_encoder() -> String {
 fn encoder_accepts_a_frame(encoder: &str) -> bool {
     const PROBE_W: u32 = 64;
     const PROBE_H: u32 = 64;
-    let mut child = match std::process::Command::new("ffmpeg")
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgb24",
-            "-s",
-            "64x64",
-            "-i",
-            "-",
-            "-c:v",
-            encoder,
-            "-f",
-            "null",
-            "-",
-        ])
+    let mut command = std::process::Command::new("ffmpeg");
+    command.args([
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-s",
+        "64x64",
+        "-i",
+        "-",
+        "-c:v",
+        encoder,
+    ]);
+    // **第 1440 轮审计**：质量参数照**正式导出的同一函数**给 ✓ ——
+    // 原来探测不带 `-preset`/`-crf`/`-q:v` 而导出带 ⇒ 命令形状不一致 ✗。
+    command.args(encoder_quality_args(encoder));
+    let mut child = match command
+        .args(["-f", "null", "-"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -637,6 +641,24 @@ fn encoder_accepts_a_frame(encoder: &str) -> bool {
     let wrote = std::io::Write::write_all(&mut stdin, &frame).is_ok();
     drop(stdin);
     wrote && child.wait().map(|status| status.success()).unwrap_or(false)
+}
+
+/// **与编码器匹配的质量参数** ✓（第 1440 轮审计）：`-preset`/`-crf` 只有 x264 家族认 ✗，
+/// `mpeg4`/`mpeg2video` 要给 `-q:v`（2..31，越小越好的视觉质量档）。
+/// **探测与正式导出都从这里取** ⇒ 二者形状一致，不会再出现"探测通过、导出失败"✗。
+fn encoder_quality_args(encoder: &str) -> Vec<String> {
+    match encoder {
+        "libx264" => vec![
+            "-preset".to_owned(),
+            "ultrafast".to_owned(),
+            "-crf".to_owned(),
+            "23".to_owned(),
+        ],
+        // mpeg4/mpeg2video：**不许**带 preset/crf ✗（不认识 ⇒ 整条命令直接失败）。
+        "mpeg4" | "mpeg2video" => vec!["-q:v".to_owned(), "5".to_owned()],
+        // libopenh264 等其他：不塞质量参数（各 wrapper 的开关名不同，宁缺勿错 ✗）。
+        _ => Vec::new(),
+    }
 }
 
 fn ffmpeg_log(out_mp4: &std::path::Path) -> std::path::PathBuf {
@@ -824,6 +846,33 @@ mod frame_count_tests {
         assert!(
             ensure_frames_written(6, 0, 209, 10, 608, 1080).is_ok(),
             "写出了帧就必须通过"
+        );
+    }
+}
+
+#[cfg(test)]
+mod encoder_args_tests {
+    use super::encoder_quality_args;
+
+    /// **第 1440 轮审计的不变量**：x264 专属的 `-preset`/`-crf` **不许**出现在
+    /// 非 x264 编码器的参数里（mpeg4 不认识 ⇒ 正式导出直接失败，而探测曾照样通过 ✗）。
+    /// 变异（把 `"mpeg4" | "mpeg2video"` 那臂改成复用 libx264 的 vec）⇒ 本测试红 ✓。
+    #[test]
+    fn non_x264_encoders_never_receive_x264_only_flags() {
+        for encoder in ["mpeg4", "mpeg2video", "libopenh264"] {
+            let args = encoder_quality_args(encoder);
+            for forbidden in ["-preset", "-crf"] {
+                assert!(
+                    !args.iter().any(|a| a == forbidden),
+                    "{encoder} 不该收到 {forbidden}（它不认识 ⇒ 导出会失败）：{args:?}"
+                );
+            }
+        }
+        // libx264 维持旧形状（回归哨兵：这两条在探测/导出共用 ⇒ 一致 ✓）。
+        let x264 = encoder_quality_args("libx264");
+        assert!(
+            x264.contains(&"-preset".to_owned()) && x264.contains(&"-crf".to_owned()),
+            "{x264:?}"
         );
     }
 }

@@ -426,6 +426,10 @@ async function withKernel(doc, fn) {
   // **★ 标注通道的内存后备 ✗ ★**：**∴ 必须在 `makeLocalApi` 层 ✗**（**∴ 跨请求存活 ✓**）——
   //   **∴ 放进 `local()` 里 ⇒ 每次请求都是空 Map ✗** ⇒ **∴ 内存模式下标注写完就丢 ✓**（**已实测 ✓**）。
   const p2bAnnMem = new Map(); // key: doc → { order, versions }
+  // **最近一次标注落盘的结果 ✓**（第 1440 轮审计 ✓）：key: doc → `{ persisted, reason }`。
+  //   **∴ 为什么 ✗**：旧版 `p2bAnnChannel()` 只看 localStorage **存不存在** ✗ ⇒ `setItem`
+  //   被**配额**打回时异常被吞 ✗ ⇒ 响应仍报 `channel:"localStorage"` ✗（数据只活在内存 ⇒ 撒谎 ✓）。
+  const p2bAnnSaveState = new Map(); // key: doc → { persisted, reason }
   const __CROCKFORD32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
   /** **ULID 形 id ✗**（**∴ 与服务端 `Changeset::new_id()` 同形：26 位 Crockford ✓**）。 */
   function p2Ulid() {
@@ -618,7 +622,14 @@ async function withKernel(doc, fn) {
     //   **∴ 本地通道 = `localStorage` ✗**（**∴ 按文档键存整份标注表 ✓**），**∴ 非浏览器环境（node 判据）⇒ 内存 Map ✓**
     //   （**∴ 内存 Map 在 `makeLocalApi` 层：跨请求存活 ✓**）。
     function p2bAnnChannel() {
-      try { if (typeof localStorage !== "undefined") return "localStorage"; } catch (e) {}
+      // **报"实际生效"的通道 ✓**（第 1440 轮审计 ✓）：localStorage 在、但**上一次写被配额打回** ⇒
+      // 实际只剩内存通道 ⇒ 报 `memory` ✓（旧版报 `localStorage` ✗ = 撒谎）。下一次成功写会自愈 ✓。
+      const last = p2bAnnSaveState.get(doc);
+      try {
+        if (typeof localStorage !== "undefined" && !(last && last.persisted === false)) {
+          return "localStorage";
+        }
+      } catch (e) {}
       return "memory";
     }
     function p2bAnnLoad() {
@@ -642,10 +653,20 @@ async function withKernel(doc, fn) {
     function p2bAnnSave() {
       const st = p2bAnnMem.get(doc);
       if (!st) return;
+      if (typeof localStorage === "undefined") {
+        p2bAnnSaveState.set(doc, { persisted: false, reason: "localStorage 不可用 ⇒ 标注只活在内存（刷新即失）" });
+        return;
+      }
       try {
-        if (typeof localStorage !== "undefined")
-          localStorage.setItem("yanshi:annotations:" + doc, JSON.stringify(st));
-      } catch (e) { /* **∴ 配额等 ⇒ 内存里还有 ✗**（**∴ 不抛 ✓**） */ }
+        localStorage.setItem("yanshi:annotations:" + doc, JSON.stringify(st));
+        p2bAnnSaveState.set(doc, { persisted: true, reason: null });
+      } catch (e) {
+        // **∴ 配额等 ⇒ 内存里还有，但必须说出来 ✗**（**∴ 不抛 ✓**，第 1440 轮审计 ✓：
+        // 旧版这里**静默吞异常** ✗ ⇒ `channel` 字段仍报 localStorage ✗ ⇒ 调用方以为已持久化 ✓）。
+        const reason = "localStorage 写入失败（配额？）：" + String((e && e.message) || e);
+        p2bAnnSaveState.set(doc, { persisted: false, reason });
+        console.warn("标注未能持久化：" + reason + "（文档 " + doc + "）");
+      }
     }
     function p2bFail(status, error, reason) {
       const e = new Error(reason); e.p2bStatus = status; e.p2bError = error; throw e;
@@ -2761,11 +2782,9 @@ async function withKernel(doc, fn) {
       const rows = await atomsOf(handle, doc);
       const atoms = rows.map((r) => r.atom);
       const { w, h, color_space } = p2cDocSize(rows);
-      const refs = new Set();
-      for (const a of atoms) {
-        const bh = a && a.payload && a.payload.bitmap && a.payload.bitmap.blob_hash;
-        if (typeof bh === "string" && bh) refs.add(bh);
-      }
+      // **引用闭包与服务端同口径 ✓**（第 1440 轮审计：旧版只看 `payload.bitmap.blob_hash` ✗
+      // ⇒ `import_image` 的图**不会被嵌进工程包** ✗ 且**不记 `skipped_blobs`** ✗ 静默丢数据 ✓）
+      const refs = p2BlobRefsOfAtoms(atoms);
       const { getBlob } = await import("./store.js");
       const blobs = {};
       let embeddedBytes = 0;
@@ -3049,13 +3068,16 @@ async function withKernel(doc, fn) {
         const rows = await atomsOf(handle, doc);
         const { w, h } = p2cDocSize(rows);
         const { png } = await p2cRenderPng(0, 0, w, h);
-        const { tx: txFn, wrap: wrapFn } = await import("./store.js");
-        const meta = (await wrapFn(txFn(handle, "docs", "readonly").get(doc))) || { doc };
-        const seqNow = meta.seq ?? 0;
-        await writeSnapshot(handle, doc, seqNow, { bytes: png });
-        return json({ ok: true, server: false, doc_id: doc, seq: seqNow,
+        // **用被渲染状态的序号盖章 ✓**（第 1440 轮审计：旧版**渲染完再重读 head** ✗
+        // ⇒ 中间落了新原子 ⇒ 旧图盖新号 ⇒ 冒充新状态 ✓；`writeSnapshot` 现在
+        // 单事务 CAS ⇒ 拒绝写时**如实报 `snapshot_written:false`** ✓，不静默 ✓）。
+        const seqRendered = rows.length ? rows[rows.length - 1].seq : 0;
+        const written = await writeSnapshot(handle, doc, seqRendered, { bytes: png });
+        return json({ ok: true, server: false, doc_id: doc, seq: seqRendered,
                       width: w, height: h, bytes: png.length,
-                      note: "整幅预览已渲染并写入本地快照" });
+                      snapshot_written: written,
+                      note: written ? "整幅预览已渲染并写入本地快照"
+                                    : "快照未写：渲染之后又有新原子进来 ⇒ 调用方按最新 head 重算 ✓" });
       } catch (err) { return p2cKernel501(err); }
     }
 
@@ -3109,17 +3131,14 @@ async function withKernel(doc, fn) {
     }
 
     // **P2c-44 `collect_garbage` ✗**：**照 `read_collect_garbage` ✓** ⇒ **扫描 blob 库 ✗** ＋
-    //   **引用集合从原子日志推导 ✓**（**`bitmap.blob_hash` ✓**）；**`confirm:true` 才真删 ✓**。
+    //   **引用集合从原子日志推导 ✓**（**与服务端同口径：递归收 `blob_hash`/`blob` 键 ✓**
+    //   —— 第 1440 轮审计：旧版只看 `payload.bitmap.blob_hash` ✗ ⇒ `import_image` 的
+    //   `payload.blob_hash` 等**全部隐形** ✗ ⇒ `confirm:true` **删在用的 blob** ✗ 数据丢失 ✓）；
+    //   **`confirm:true` 才真删 ✓**。
     if (path === "/api/tools/collect_garbage") {
       const confirm = body.confirm === true;
       const rows = await atomsOf(handle, doc);
-      const refs = new Set();
-      for (const r of rows) {
-        const a = r.atom || {};
-        const pl = a.payload || {};
-        const bh = pl.bitmap && pl.bitmap.blob_hash;
-        if (typeof bh === "string" && bh) refs.add(bh);
-      }
+      const refs = p2BlobRefsOfAtoms(rows.map((r) => r.atom));
       const { tx: txFn, wrap: wrapFn } = await import("./store.js");
       const all = await wrapFn(txFn(handle, "blobs", "readonly").getAll());
       const orphans = [];
@@ -3150,11 +3169,7 @@ async function withKernel(doc, fn) {
     //   blob 盘点 ✓**（**总数／引用中／无引用 ✓**）＋ 明确说明不做分层 ✓**。
     if (path === "/api/tools/blob_gc") {
       const rows = await atomsOf(handle, doc);
-      const refs = new Set();
-      for (const r of rows) {
-        const bh = r.atom && r.atom.payload && r.atom.payload.bitmap && r.atom.payload.bitmap.blob_hash;
-        if (typeof bh === "string" && bh) refs.add(bh);
-      }
+      const refs = p2BlobRefsOfAtoms(rows.map((r) => r.atom));
       const { tx: txFn, wrap: wrapFn } = await import("./store.js");
       const all = await wrapFn(txFn(handle, "blobs", "readonly").getAll());
       let totalBytes = 0, unrefBytes = 0, unref = 0;
@@ -4027,15 +4042,21 @@ async function withKernel(doc, fn) {
                           info: String(meta).slice(0, 700),
                           atom_count: atoms.length, region: box });
           }
-          // **∴ 写进快照（**带当前 `seq` ✓**）⇒ **∴ 下次命中快照分支 ✓**。
-          const seqNow = (await wrap(tx(handle, "docs", "readonly").get(doc)))?.seq ?? 0;
-          await writeSnapshot(handle, doc, seqNow, { bytes: png });
-          // **∴ 诊断：写快照时用的序号 ✗**（第 662 轮 ✓）。
-          try { window.__snapSeq = seqNow; window.__snapAt = Date.now(); } catch (e) {}
+          // **∴ 写进快照（**带被渲染状态的序号 ✓**）⇒ **∴ 下次命中快照分支 ✓**。
+          // **★ 不许回头再读 head ✗ ★**（第 1440 轮审计 ✓）：折叠与写快照之间若有原子提交 ⇒
+          // 重读的 head 已经 +1 ✗ ⇒ 旧图会被盖上**新序号** ⇒ **拿旧图冒充新状态** ✗（目标第 6 条 ✓）。
+          // **∴ 用真正折叠进内核的最后一个原子的 `seq`** ✓ ⇒ `writeSnapshot` 只在 head 没动时收下 ✓
+          // ⇒ **并发时拒绝写**（返回 false ⇒ 响应头如实说 `skipped` ✓）⇒ 下个请求重算 ✓
+          // —— **宁可多算一次，不许撒谎 ✓**。
+          const seqRendered = atoms.length ? atoms[atoms.length - 1].seq : 0;
+          const snapWritten = await writeSnapshot(handle, doc, seqRendered, { bytes: png });
+          // **∴ 诊断：写快照时用的序号与是否写进 ✓**（第 662 轮 ✓；`written` 是第 1440 轮补的 ✓）。
+          try { window.__snapSeq = seqRendered; window.__snapAt = Date.now(); window.__snapWritten = snapWritten; } catch (e) {}
           return new Response(png, {
             status: 200,
             headers: { "content-type": "image/png", "cache-control": "no-store",
-                       "x-yanshi-source": "local-kernel" },
+                       "x-yanshi-source": "local-kernel",
+                       "x-yanshi-snapshot": snapWritten ? "written" : "skipped" },
           });
         });
       } catch (err) {
@@ -4700,6 +4721,33 @@ async function withKernel(doc, fn) {
 
 /** **∴ 内核没暴露尺寸 ✗ ⇒ **∴ 用一个安全默认值 ✓**（**真实尺寸由 `load_atoms_json` 里的创建原子决定 ✓**）。 */
 function k_width() { return 1024; }
+
+/**
+ * **★ blob 引用集合的**唯一**推导 ✓ ★**（第 1440 轮审计 ✓）。
+ *
+ * **∴ 为什么 ✗**：本地 `collect_garbage`／`blob_gc`／`export_project` 三处**各写一遍**
+ * "只看 `payload.bitmap.blob_hash`" ✗ ⇒ `import_image` 的 `payload.blob_hash`、
+ * 纹理对象的 `data.texture.blob_hash`……**凡是固定路径之外**的引用一律**看不见** ✗
+ * ⇒ `confirm:true` 会删掉**仍在用**的 blob ✗ ⇒ 重启后图消失 ✗（真数据丢失 ✓）。
+ * 服务端 `collect_refs`（`atom.rs` ✓）是**递归遍历**、收 `blob_hash`/`blob` 键下的
+ * `sha256:` 字符串 ⇒ **这里与之同口径** ✓，且**同一事实只留这一处** ✓（内核 ② ✓）。
+ */
+function p2BlobRefsOfAtoms(atoms) {
+  const refs = new Set();
+  const walk = (value, key) => {
+    if (Array.isArray(value)) { for (const item of value) walk(item, key); return; }
+    if (value && typeof value === "object") {
+      for (const [k, v] of Object.entries(value)) walk(v, k);
+      return;
+    }
+    if ((key === "blob_hash" || key === "blob") &&
+        typeof value === "string" && value.startsWith("sha256:")) {
+      refs.add(value);
+    }
+  };
+  for (const a of atoms || []) walk(a && a.payload, null);
+  return refs;
+}
 
 export function installLocalApi(deps) {
   const original = window.fetch.bind(window);

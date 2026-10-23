@@ -1480,6 +1480,8 @@ fn create_document(state: &ServerState, request: &Request) -> Response {
     // 与已修的"任意路径写"合起来就是"未授权 + 任意写"完整链 ✗）。
     // 策略（最小且可预期 ✓）：**绑回环** ⇒ 维持现状 ✓（本机开发/探针都靠它 ✓）；
     // **绑对外** ⇒ Editor/Owner 必须带密钥 `YANSHI_API_KEY` ✓；没配密钥就**明确拒绝**并给出两条出路 ✓。
+    // **维持现状有一个例外** ✓（第 1440 轮）：带着**外来 Origin** 的请求按"绑对外"口径处理
+    // —— DNS rebinding 正是"看着像回环、其实是浏览器"的形状 ✓（见 `require_write_access`）。
     let write_role = matches!(requested_role, Role::Editor | Role::Owner);
     if write_role {
         if let Some(response) = require_write_access(state, request) {
@@ -1510,18 +1512,49 @@ fn create_document(state: &ServerState, request: &Request) -> Response {
     )
 }
 
-/// **写权限的入口守卫** ✓（第三方代码审计 P0 第 2 条）。
+/// **这个 `Origin` 指的是本地名吗** ✓（第 1440 轮 · DNS rebinding 判定用 ✓）。
+///
+/// **只看字面 host 本身** ✓ —— 不许做"与 Host 一致就算同源"的相对判断 ✗：
+/// rebinding 时 Origin 与 Host **一起**是外域名 ✓ ⇒ 相对判定（`origin_is_acceptable`
+/// 的第 ② 条）恰好放行那个要防的形状 ✗。本地名口径：`localhost` ✓／回环 IP ✓
+///（`127.x` 与 `::1` ⇒ `IpAddr::is_loopback` ✓，不自己数点分十进制 ✗）。
+fn origin_is_local(origin: &str) -> bool {
+    let after_scheme = origin.split("://").nth(1).unwrap_or(origin);
+    let authority = after_scheme.split('/').next().unwrap_or("");
+    let host = authority
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(authority);
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+}
+
+/// **写权限的入口守卫** ✓（第三方代码审计 P0 第 2 条 ＋ 第 1440 轮 DNS rebinding 补口 ✓）。
 ///
 /// `/api/documents` 原先任何人无需凭据即可拿到 **Editor** 令牌 ✓，
 /// 与"任意路径写"合起来就是"未授权 + 任意写"完整链 ✗。策略（最小且可预期 ✓）：
 /// **绑回环** ⇒ 放行 ✓（本机开发/探针都靠它 ✓）；**绑对外** ⇒ 必须带密钥 `YANSHI_API_KEY` ✓；
 /// 没配密钥就**明确拒绝**并给出两条出路 ✓。
 ///
+/// **回环豁免的是"本机的客户端" ✗ 不是"任何碰巧打到回环的请求**" ✓（第 1440 轮 ✓）：
+/// DNS rebinding 把域名解析到 `127.0.0.1` ⇒ 浏览器请求**也**落在回环上 ✓、
+/// Host 与 Origin 还**彼此一致** ⇒ 相对判定（`origin_is_acceptable` 的第 ② 条）对它无效 ✗。
+/// 因此**带 `Origin` 头且来源不是本地名**的请求 ⇒ 即使绑回环也要走密钥通道 ✓。
+/// 非浏览器客户端（curl ✓／判据 ✓）**不带 `Origin`** ⇒ 行为不变 ✓；
+/// 经反代/隧道对外服务的合法浏览器（Origin 是外域名）与"绑对外"同一口径：**设 `YANSHI_API_KEY`** ✓。
+///
 /// **为什么抽成函数** ✓：工程包导入与文档删除都会**新建/销毁落盘文档** ✓，
 /// 与"开一个文档"是同一级写操作 ✓ ⇒ **必须用同一条策略** ✓。
 /// 各写一份必然漂移 ✗（本项目在这上面栽过不止一次 ✓）。
 fn require_write_access(state: &ServerState, request: &Request) -> Option<Response> {
-    if bind_is_loopback(&state.options.bind) {
+    let foreign_browser = request
+        .header("origin")
+        .is_some_and(|origin| !origin_is_local(origin));
+    if bind_is_loopback(&state.options.bind) && !foreign_browser {
         return None;
     }
     let expected = std::env::var("YANSHI_API_KEY")
@@ -1534,10 +1567,17 @@ fn require_write_access(state: &ServerState, request: &Request) -> Option<Respon
     match expected {
         None => Some(Response::from_error(&YanshiError::new(
             ErrorCode::PreconditionFailed,
-            ErrorContext::detail(
+            ErrorContext::detail(if foreign_browser {
+                // 绑的是回环但请求带着**外来 Origin** ⇒ rebinding/转发的形状 ✗。
+                "本服务绑在回环上，但这个请求带着外来的 Origin（DNS rebinding 与浏览器反代都是这个形状）\
+                     ⇒ 匿名签发写权限令牌只留给**本机 Origin** 的请求。两条出路：\
+                     ① 本机用 ⇒ 直接开 http://127.0.0.1 或 http://localhost；\
+                     ② 确实经域名对外服务 ⇒ 设 YANSHI_API_KEY=<密钥>，请求时带上 ?key=<密钥>（或 X-Yanshi-Key 头）"
+                        .to_owned()
+            } else {
                 "服务端绑在对外地址上，但没配 YANSHI_API_KEY ⇒ 拒绝匿名签发写权限令牌。                                 两条出路：① 只在本机用 ⇒ 用 --bind 127.0.0.1:8080 启动；                                 ② 确实要对外 ⇒ 设 YANSHI_API_KEY=<密钥>，请求时带上 ?key=<密钥>（或 X-Yanshi-Key 头）"
-                    .to_owned(),
-            ),
+                        .to_owned()
+            }),
         ))),
         Some(key) => {
             if provided.as_deref() == Some(key.as_str()) {
@@ -1546,7 +1586,8 @@ fn require_write_access(state: &ServerState, request: &Request) -> Option<Respon
                 Some(Response::from_error(&YanshiError::new(
                     ErrorCode::PermissionDenied,
                     ErrorContext::detail(
-                        "密钥不对（或没带）⇒ 对外绑定时签发写权限令牌需要 ?key=<YANSHI_API_KEY>".to_owned(),
+                        "密钥不对（或没带）⇒ 对外绑定时签发写权限令牌需要 ?key=<YANSHI_API_KEY>"
+                            .to_owned(),
                     ),
                 )))
             }
@@ -1571,6 +1612,27 @@ fn is_safe_upload_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// 缺省的**单会话累计**上限（2 GiB ✓ —— 夹具包约 349 MB ⇒ 默认值不许卡住正常导入 ✗）。
+const DEFAULT_MAX_IMPORT_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+// **这条守卫放在编译期** ✓：写成测试里的 `assert!` 会被 clippy 判成
+// `assertions_on_constants`（「断一个恒真的常量」✗ 而 CI 是 `-D warnings` ⇒ 直接红 ✓），
+// 而且**运行时才红**比**编不过**晚一步 ✗。
+const _: () = assert!(DEFAULT_MAX_IMPORT_TOTAL_BYTES > 349 * 1024 * 1024);
+
+/// 单个上传会话的累计字节上限：环境变量 `YANSHI_MAX_IMPORT_TOTAL_BYTES` 覆盖，
+/// 解析不出按缺省（与 `file_source::max_upload_bytes` 的口径逐字一致 ✓）。
+///
+/// **为什么这是另一个数、而不是复用 `max_upload_bytes`** ✓：后者限的是**单个素材源**
+///（一张 PNG、一份 LUT），这里限的是**整个工程包的累计** ⇒ 量级不同（素材 64 MiB ✗
+/// vs 工程包几百 MB ✓）。**不设限的后果**：单片有 `MAX_BODY_BYTES` 32 MiB 封顶 ✓，
+/// 但分片可以一直追加 ⇒ 24 小时清理窗内，一个放弃或恶意的会话能**把磁盘写满** ✗。
+fn max_import_total_bytes() -> u64 {
+    std::env::var("YANSHI_MAX_IMPORT_TOTAL_BYTES")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_MAX_IMPORT_TOTAL_BYTES)
+}
+
 /// **`POST /api/documents/import`：把 `.yanshi` 工程包导入成一份新文档** ✓。
 ///
 /// **为什么要有这条路由** ✗：工具层早就有 `import_project` ✓，查看器也早有一个按钮 ✓，
@@ -1584,10 +1646,12 @@ fn is_safe_upload_id(id: &str) -> bool {
 /// 而真实工程包是**几百 MB** ✓（产品负责人给的夹具：492 atom / 约 349 MB blob ✓）
 /// ⇒ 一次 POST 根本传不进来 ✓。协议三步（全部落在这一条路由上 ✓）：
 ///
-/// 1. `?begin=1` ⇒ 建一个上传会话，回 `upload_id` 与单片上限；
+/// 1. `?begin=1` ⇒ 建一个上传会话，回 `upload_id`、单片上限**与累计上限** ✓；
 /// 2. `?upload=<id>&offset=<n>` ⇒ 把这一段追加进临时文件，回**服务端实际收到的字节数**；
 ///    `offset` 与服务端已经收到的字节数不符 ⇒ **409 并告诉客户端该从哪续** ✓
 ///    （"静默丢弃一段"会让导入出来的文档**悄悄缺内容** ✗ —— 那是最坏的一种成功 ✓）；
+///    累计超过 `YANSHI_MAX_IMPORT_TOTAL_BYTES` ⇒ **拒绝且一个字节都不写** ✓（不封顶 ⇒ 一个
+///    放弃的会话能在 24 小时清理窗内**把磁盘写满** ✗）；
 /// 3. `?upload=<id>&finish=1[&doc_id=<新 id>]` ⇒ 走真实导入，回**新文档的令牌** ✓。
 ///
 /// **令牌随导入一起回** ✓：令牌是**按文档签发**的 ✗ ⇒ 导入完不给令牌，用户面对的就是
@@ -1667,6 +1731,9 @@ fn import_begin(root: &std::path::Path) -> Response {
             "received": 0,
             // **单片上限照实说** ✓：客户端据此切片 ✓（猜一个数就会撞上 32 MiB 的墙 ✗）。
             "max_chunk_bytes": crate::http::MAX_BODY_BYTES,
+            // **累计上限也照实说** ✓：客户端据此在**超限前**响亮失败 ✓
+            // ⇒ 而不是传完几百片、到收尾才撞墙 ✗（那时重传一次的代价最大 ✓）。
+            "max_total_bytes": max_import_total_bytes(),
         }),
     )
 }
@@ -1699,6 +1766,19 @@ fn import_chunk(request: &Request, root: &std::path::Path, upload_id: &str) -> R
             ErrorCode::Conflict,
             ErrorContext::detail(format!(
                 "分片偏移不符：服务端已经有 {received} 字节，而这一片从 {offset} 开始 ⇒ 请从 {received} 续传（少一段会让导入出来的文档悄悄缺内容）"
+            )),
+        ));
+    }
+    // **累计上限在追加前查** ✓：写完再拒 ⇒ 磁盘已经被这一片撑过 ✗ 且偏移也随之前进 ✗
+    //（客户端会陷入"续传还是超限"的死循环 ✗）。拒绝时**一个字节都不写** ✓：
+    // 下一片按原偏移续传仍然成立 ✓。
+    let projected = received.saturating_add(request.body.len() as u64);
+    let cap = max_import_total_bytes();
+    if projected > cap {
+        return Response::from_error(&YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!(
+                "这一片会让累计上传达到 {projected} 字节，超过单会话上限 {cap} ⇒ 请改用更大的工程包存储位置，或提高环境变量 YANSHI_MAX_IMPORT_TOTAL_BYTES（当前已收到 {received} 字节）"
             )),
         ));
     }
@@ -2399,8 +2479,17 @@ fn control_plane(
         .get("doc_id")
         .and_then(Value::as_str)
         .unwrap_or(doc_id);
+    // **越界判定只挡它要挡的那两个动作** ✓（第 1440 轮审计；`tool-session-semantics`
+    // 把它加在函数入口时误伤了 `new_document`——新建文档的 `doc_id` 本来就该是**别的**
+    // 文档 ⇒ 门禁挪到 `get_inflight`／`cancel_operation` 两个分支里）。
+    // 单一实现仍与工具层共用（`token::ensure_doc_scope` ✓，规矩各写一份必然漂移 ✗）。
     match name {
         "get_inflight" => {
+            // **每文档令牌不许越界** ✓（第 1440 轮审计）：`doc_id` 是**入参** ✗ ⇒ 不设限时
+            // 拿文档 A 的 editor 令牌就能枚举**任意文档**的在飞操作 ✗。
+            if let Err(error) = yanshi_server::ensure_doc_scope(doc_id, role, wanted) {
+                return Some((403, error.to_response()));
+            }
             let inflight = if wanted == "*" {
                 state.inflight.list()
             } else {
@@ -2420,6 +2509,10 @@ fn control_plane(
             ))
         }
         "cancel_operation" => {
+            // **同上**：打断的必须是**自己文档**的在飞操作（跨文档要 owner token ✓）。
+            if let Err(error) = yanshi_server::ensure_doc_scope(doc_id, role, wanted) {
+                return Some((403, error.to_response()));
+            }
             if !role.can_edit() {
                 return Some((
                     403,
@@ -4188,5 +4281,250 @@ mod tests {
         assert_eq!(options.doc_id, "d1");
         assert!(options.profiles.contains(&Profile::Collab));
         assert!(HttpOptions::parse_args(["--bogus"]).is_err());
+    }
+
+    /// **上传上限的环境变量在锁下读写** ✓ —— 测试并行跑 ⇒ `set_var` 必须串行 ✓。
+    static IMPORT_CAP_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// 造一个**真的走 `Request::read`** 的分片请求（带 query 与二进制 body ✓）。
+    fn chunk_request(upload_id: &str, offset: u64, body: Vec<u8>) -> Request {
+        let head = format!(
+            "POST /api/documents/import?upload={upload_id}&offset={offset} HTTP/1.1\r\n\
+             Host: localhost\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let mut raw = head.into_bytes();
+        raw.extend(body);
+        Request::read(&mut std::io::Cursor::new(raw))
+            .expect("分片请求应可解析")
+            .expect("分片请求不应为空")
+    }
+
+    /// **会话必须有累计上限** ✓（第 1440 轮审计）：单片被 `MAX_BODY_BYTES` 封顶 ✓
+    /// ⇒ 但分片可以**无限续** ⇒ 一个放弃的会话能在 24 小时清理窗内把磁盘写满 ✗。
+    /// 拒绝还必须**一个字节都不写** ✓ —— 写完再拒 ⇒ 偏移前移 ⇒ 客户端陷入「续传仍超限」✗。
+    #[test]
+    fn import_chunk_refuses_without_moving_the_offset_after_the_cumulative_cap() {
+        let _guard = IMPORT_CAP_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::set_var("YANSHI_MAX_IMPORT_TOTAL_BYTES", "100");
+        let mut root = std::env::temp_dir();
+        root.push(format!(
+            "yanshi-import-cap-{}",
+            yanshi_core::Ulid::new().encode()
+        ));
+        std::fs::create_dir_all(&root).expect("建得出临时根目录");
+        let begun = import_begin(&root);
+        let begun_body = body_json(&begun);
+        let upload_id = begun_body["upload_id"].as_str().unwrap_or("").to_owned();
+        assert!(!upload_id.is_empty(), "begin 应回 upload_id");
+        assert_eq!(
+            begun_body["max_total_bytes"].as_u64(),
+            Some(100),
+            "begin 要把累计上限照实说 ⇒ 客户端才能在超限前响亮失败"
+        );
+        // 0 + 60 ≤ 100 ⇒ 收。
+        let first = import_chunk(
+            &chunk_request(&upload_id, 0, vec![7u8; 60]),
+            &root,
+            &upload_id,
+        );
+        assert_eq!(
+            first.status,
+            200,
+            "第一片应被接受：{}",
+            String::from_utf8_lossy(&first.body)
+        );
+        assert_eq!(body_json(&first)["received"].as_u64(), Some(60));
+        // 60 + 60 = 120 > 100 ⇒ 拒，且错误要说清上限与调整办法 ✓。
+        let second = import_chunk(
+            &chunk_request(&upload_id, 60, vec![7u8; 60]),
+            &root,
+            &upload_id,
+        );
+        assert_ne!(second.status, 200, "超限的一片不许被接受");
+        let refused = String::from_utf8_lossy(&second.body).into_owned();
+        assert!(
+            refused.contains("YANSHI_MAX_IMPORT_TOTAL_BYTES"),
+            "错误要说出调什么：{refused}"
+        );
+        assert!(refused.contains("100"), "错误要说出上限：{refused}");
+        // **拒后偏移没动** ✓：60 + 10 ≤ 100 ⇒ 原样续传成功。
+        let third = import_chunk(
+            &chunk_request(&upload_id, 60, vec![7u8; 10]),
+            &root,
+            &upload_id,
+        );
+        assert_eq!(
+            third.status,
+            200,
+            "拒绝不该写进磁盘 ⇒ 从 60 续传应成功：{}",
+            String::from_utf8_lossy(&third.body)
+        );
+        assert_eq!(body_json(&third)["received"].as_u64(), Some(70));
+        std::env::remove_var("YANSHI_MAX_IMPORT_TOTAL_BYTES");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **上限的取值口径** ✓：未设／解析不出 ⇒ 缺省（与 `max_upload_bytes` 同口径 ✓）；
+    /// 有效值 ⇒ 生效。（「缺省不许卡住约 349 MB 的夹具包」那条改成**编译期**守卫 ✓
+    /// —— 见 `DEFAULT_MAX_IMPORT_TOTAL_BYTES` 下面那句 `const _: () = assert!(…)`。）
+    #[test]
+    fn import_total_cap_follows_env_and_falls_back_to_default() {
+        let _guard = IMPORT_CAP_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::remove_var("YANSHI_MAX_IMPORT_TOTAL_BYTES");
+        assert_eq!(
+            max_import_total_bytes(),
+            DEFAULT_MAX_IMPORT_TOTAL_BYTES,
+            "未设时用缺省"
+        );
+        std::env::set_var("YANSHI_MAX_IMPORT_TOTAL_BYTES", "不是数");
+        assert_eq!(
+            max_import_total_bytes(),
+            DEFAULT_MAX_IMPORT_TOTAL_BYTES,
+            "解析不出按缺省（与 max_upload_bytes 口径一致）"
+        );
+        std::env::set_var("YANSHI_MAX_IMPORT_TOTAL_BYTES", "4096");
+        assert_eq!(max_import_total_bytes(), 4096, "有效值必须生效");
+        std::env::remove_var("YANSHI_MAX_IMPORT_TOTAL_BYTES");
+    }
+
+    /// **控制面也讲按文档边界** ✓（第 1440 轮审计）：`doc_id` 是入参 ✗ ⇒ 不设限时
+    /// 一支 A 文档的 viewer/editor 令牌就能**枚举／打断任意文档**的在飞操作 ✗。
+    /// HTTP 与 WebSocket 都只经过 `control_plane` 这一份判定 ✓（同一规矩只写一处 ✓）。
+    #[test]
+    fn control_plane_refuses_cross_document_inflight_targets_for_non_owner() {
+        let state = state();
+        for role in [Role::Viewer, Role::Editor] {
+            let (status, body) = control_plane(
+                &state,
+                role,
+                "doc_a",
+                "cancel_operation",
+                &json!({"doc_id": "doc_b"}),
+            )
+            .expect("控制面应直接回答");
+            assert_eq!(status, 403, "{role:?} 不许跨文档取消");
+            let text = body.to_string();
+            assert!(text.contains("doc_a"), "要说清已授权文档：{text}");
+            assert!(text.contains("doc_b"), "要点名被请求文档：{text}");
+            let (status, _) = control_plane(
+                &state,
+                role,
+                "doc_a",
+                "get_inflight",
+                &json!({"doc_id": "*"}),
+            )
+            .expect("控制面应直接回答");
+            assert_eq!(status, 403, "{role:?} 不许枚举全部文档");
+        }
+        // **自己文档内的都照旧** ✓：viewer 可查自己文档 ✓，editor 可取消自己文档 ✓。
+        let (status, body) =
+            control_plane(&state, Role::Viewer, "doc_a", "get_inflight", &json!({}))
+                .expect("控制面应直接回答");
+        assert_eq!(status, 200, "自己文档的查询不许被拦：{body}");
+        let (status, _) = control_plane(
+            &state,
+            Role::Editor,
+            "doc_a",
+            "cancel_operation",
+            &json!({}),
+        )
+        .expect("控制面应直接回答");
+        assert_eq!(status, 200, "自己文档的取消不许被拦");
+        // **owner ⇒ 跨文档照旧可用** ✓（运维口径保留 ✓）。
+        let (status, _) = control_plane(
+            &state,
+            Role::Owner,
+            "doc_a",
+            "get_inflight",
+            &json!({"doc_id": "*"}),
+        )
+        .expect("控制面应直接回答");
+        assert_eq!(status, 200, "owner 令牌仍应能枚举全部文档");
+    }
+
+    /// **门禁只挡它要挡的那两个动作** ✓（第 1440 轮审计的**过度拦截**回归锁）：
+    /// `control_plane` 对**每个**工具名都会跑一遍，而很多工具的 `doc_id` 入参本来就该
+    /// 指向别的文档（`new_document` 要新建 `sem1` ⇒ 拿 `sem0` 的 editor 令牌是合法用法 ✗）。
+    /// 上一版把 `ensure_doc_scope` 写在函数入口 ⇒ `tool-session-semantics` 当场红
+    /// （`new_document` 变 403）。
+    /// 变异：把那两个分支里的门禁挪回 `match name` 之前 ⇒ 本条红 ✓
+    #[test]
+    fn control_plane_does_not_intercept_ordinary_tools_carrying_another_doc_id() {
+        let state = state();
+        for (role, name) in [
+            (Role::Editor, "new_document"),
+            (Role::Editor, "export_project"),
+            (Role::Viewer, "get_document"),
+        ] {
+            assert!(
+                control_plane(&state, role, "doc_a", name, &json!({"doc_id": "doc_b"})).is_none(),
+                "{name} 的 `doc_id` 是它自己的参数 ⇒ 控制面不许代替它做越界判定（{role:?}）"
+            );
+        }
+    }
+
+    /// **回环绑定的豁免不豁免"外来 Origin 的浏览器"** ✓（DNS rebinding，第 1440 轮）：
+    /// 域名被解析到 `127.0.0.1` ⇒ 请求照样落在回环 ✓、Host 与 Origin 还彼此一致 ✗
+    /// ⇒ 相对判定无效 ⇒ 这种请求必须与"绑对外"同一口径：没有 `YANSHI_API_KEY` 就拒 ✓。
+    #[test]
+    fn loopback_write_endpoints_demand_a_key_for_foreign_origin() {
+        let state = state();
+        let post = |origin: Option<&str>| {
+            let raw = match origin {
+                Some(origin) => format!(
+                    "POST /api/documents HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nOrigin: {origin}\r\nContent-Length: 2\r\n\r\n{{}}"
+                ),
+                None => "POST /api/documents HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nContent-Length: 2\r\n\r\n{}"
+                    .to_owned(),
+            };
+            let request = Request::read(&mut std::io::Cursor::new(raw.into_bytes()))
+                .expect("请求应可解析")
+                .expect("请求不应为空");
+            route(&state, &request)
+        };
+        // **本地 Origin 照旧放行** ✓（本机浏览器就是这个形状 ✓）。
+        for origin in [
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+            "http://[::1]:8080",
+        ] {
+            let response = post(Some(origin));
+            assert_eq!(response.status, 200, "本地 Origin {origin} 不许被拦");
+        }
+        // **非浏览器（不带 Origin）照旧放行** ✓（curl ✓／探针 ✓／判据 ✓ 全是这个形状 ✓）。
+        assert_eq!(
+            post(None).status,
+            200,
+            "不带 Origin 的客户端（curl）不许被拦"
+        );
+        // **外来 Origin 即使在回环上也拒** ✓，且错误要给出两条出路 ✓。
+        let response = post(Some("http://evil.example:8080"));
+        assert_ne!(response.status, 200, "外来 Origin 不许匿名拿到签发");
+        let text = String::from_utf8_lossy(&response.body).into_owned();
+        assert!(text.contains("YANSHI_API_KEY"), "错误要说出路：{text}");
+        assert!(text.contains("Origin"), "错误要说出为什么被拒：{text}");
+    }
+
+    /// **`origin_is_local` 只看字面 host** ✓ —— 不许做"与 Host 一致就算同源"的相对判断 ✗：
+    /// rebinding 时 Origin 与 Host **一起**是外域名、彼此完全一致 ✓ —— 那正是要拦的形状 ✓。
+    #[test]
+    fn origin_is_local_judges_the_literal_host_not_the_pairing() {
+        assert!(origin_is_local("http://localhost"));
+        assert!(origin_is_local("http://LOCALHOST:8080"));
+        assert!(origin_is_local("http://127.0.0.1:8080"));
+        assert!(origin_is_local("http://127.2.3.4"), "127/8 全段都是回环");
+        assert!(origin_is_local("http://[::1]:8080"));
+        assert!(!origin_is_local("http://evil.example:8080"));
+        assert!(!origin_is_local("http://10.0.0.5:8080"));
+        assert!(
+            !origin_is_local("http://127.evil.example"),
+            "不许按长得像放行"
+        );
+        assert!(!origin_is_local("http://"), "空 host 不是本地");
     }
 }

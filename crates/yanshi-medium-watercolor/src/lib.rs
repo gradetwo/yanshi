@@ -61,14 +61,31 @@ fn smooth(t: f32) -> f32 {
 /// 由 `seed` 与**角度**得到确定性的边界扰动 ✓（模拟水在纸上的扩散形状 ✓）。
 fn edge_wobble(seed: u64, angle: f32) -> f32 {
     // 三个不同频率的正弦叠加 ⇒ 形状自然又不规则 ✓，且完全确定 ✓。
-    let mut state = seed ^ ((angle * 1000.0) as u64).wrapping_mul(0x9E37_79B9);
-    let base = splitmix64(&mut state) as f32 / u32::MAX as f32;
+    // **第 1440 轮审计修复两处**（铅笔/marker 同病同修 ✓）：
+    // ① `atan2` 给 [-π, π] ✗ ⇒ 负角 `× 1000 as u64` **饱和成 0** ✗ ⇒
+    //    整个左半边共用同一个 seed 桶（文档承诺"由 seed 与角度"得扰动 ✗ 只兑现了一半 ✓）⇒
+    //    先把角度折回 0..τ ✓。
+    // ② `splitmix64` 是 u64 ✓，不先掩 32 位直接 `as f32 / u32::MAX` 会得到 ~4.3e9 ✗ ⇒
+    //    `base × τ` 是超大角 ⇒ `sin` 依赖 libm 的超大参数归约 ⇒ arm64 与 wasm 可能不同 ✗。
+    let angle = angle.rem_euclid(core::f32::consts::TAU);
+    let mut state = seed ^ angle_bucket(angle);
+    let base = unit_interval(splitmix64(&mut state));
     // 用 `core::f32::consts` 的常量而不是手写近似值 ✓ —— clippy 的 `approx_constant` 抓到过
     // 我写的 6.283 / 3.141 / 1.570 ✓（字面量近似常量既易错也不表意 ✓）。
     let a = (angle * 3.0 + base * core::f32::consts::TAU).sin();
     let b = (angle * 7.0 + base * core::f32::consts::PI).sin();
     let c = (angle * 13.0 + base * core::f32::consts::FRAC_PI_2).sin();
     (a * 0.5 + b * 0.3 + c * 0.2) * 0.5 + 0.5
+}
+
+/// 角度 → 随机流种子：把 0..τ 的角量化成千分位桶并打散高位 ✓（`angle` 必须已折成正角 ✓）。
+fn angle_bucket(angle: f32) -> u64 {
+    ((angle * 1000.0) as u64).wrapping_mul(0x9E37_79B9)
+}
+
+/// u64 随机流 → **良态**的 0..=1 ✓：先掩到 32 位再归一化 ✓（不掩 ⇒ ~4.3e9 ✗）。
+fn unit_interval(raw: u64) -> f32 {
+    (raw as u32) as f32 / u32::MAX as f32
 }
 
 /// 落一个水彩点 ✓：不规则边界 + 边缘沉积 + 半透明纸感 ✓。
@@ -210,4 +227,54 @@ pub extern "C" fn yanshi_dab(seed: u32, size: u32, pressure_milli: u32) -> u32 {
 #[no_mangle]
 pub extern "C" fn yanshi_watercolor_dab(seed: u32, size: u32, pressure_milli: u32) -> u32 {
     watercolor_dab_body(seed, size, pressure_milli)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 第 1440 轮审计：`unit_interval` 必须是**良态**的 0..=1 ✓。
+    /// 变异（去掉 `as u32` 掩码）⇒ u64 直接 `as f32` 冲到 ~4.3e9 ⇒ 本测试红 ✓。
+    #[test]
+    fn unit_interval_stays_in_zero_one() {
+        let mut state = 0x1234_5678_9abc_def0_u64;
+        for _ in 0..1024 {
+            let v = unit_interval(splitmix64(&mut state));
+            assert!(
+                (0.0..=1.0 + 1e-6).contains(&v),
+                "随机流归一化越界：{v}（应先掩到 32 位再除 u32::MAX）"
+            );
+        }
+    }
+
+    /// 角度是**圆上的坐标**：`-0.001` 与 `-0.001 + τ` 是同一条射线 ⇒ 扰动必须相同 ✓。
+    /// 修复前负角不折回 0..τ（且 `× 1000 as u64` 把负值**饱和成 0** ⇒ 整个左半边
+    /// 共用一个桶 ✗），等价格线给出不同扰动 ⇒ 本测试红 ✓。
+    #[test]
+    fn edge_wobble_is_periodic_in_angle() {
+        let tau = core::f32::consts::TAU;
+        for k in 0..64_u32 {
+            let a = -0.7 - k as f32 * 0.01;
+            let same_ray = a + tau;
+            assert_eq!(
+                edge_wobble(0xbeef, a),
+                edge_wobble(0xbeef, same_ray),
+                "角度 {a} 与 {same_ray} 是同一条射线，扰动必须一致"
+            );
+        }
+    }
+
+    /// `edge_wobble` 的输出范围 ✓（0..=1 ⇒ 调用方乘 0.28 加 0.72 落在 0.72..=1.0 ✓）。
+    /// 与上面两条不同，这条**修复前也能过** ⇒ 只当哨兵，不充数 ✓。
+    #[test]
+    fn edge_wobble_output_bounded() {
+        for seed in 0..32_u64 {
+            let mut angle = -core::f32::consts::PI;
+            while angle <= core::f32::consts::PI {
+                let w = edge_wobble(seed, angle);
+                assert!((0.0..=1.0).contains(&w), "扰动越界 {w}");
+                angle += 0.05;
+            }
+        }
+    }
 }

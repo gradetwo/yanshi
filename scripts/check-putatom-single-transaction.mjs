@@ -7,12 +7,14 @@
 //   ⇒ 所以这里断**结构**（它能抓到回归）：**putAtom 里 `db.transaction` 调用必须恰好 1 次**，
 //     且它必须**同时**列出 `docs` 与 `atoms` 两个 store，且**必须** `await` 事务完成。
 //
-// **∴ 这三个断言各抓一种回归**：
+// **∴ 这四个断言各抓一种回归**：
 //   ① 事务数 > 1  ⇒ 有人又把写拆开（D-01 原样）
 //   ② 只列一个 store ⇒ 跨 store 不原子（等于没修）
 //   ③ 不 await 完成 ⇒ 「发出去了」冒充「写进去了」
+//   ④ `timedOut` 只写不读 ⇒ **死标志**（第 1440 轮审计：超时兜底设了旗子却没人看 ⇒
+//      旧注释声称的 `txTimeout` 字段从未存在 ⇒ 静默降级第 5 形态）。**∴ 必须读它 ✗**
 //
-// **∴ 变异**：把 `await done;` 删掉 ⇒ ③ 必红 ✓
+// **∴ 变异**：把 `await done;` 删掉 ⇒ ③ 必红 ✓；把 `if (timedOut)` 那行删掉 ⇒ ④ 必红 ✓
 import { readFileSync } from "node:fs";
 
 const src = readFileSync("web/store.js", "utf8");
@@ -42,6 +44,9 @@ check(hasBoth, `② 那个事务必须同时列 ["docs","atoms"]（跨 store 才
 
 const awaitsDone = /await\s+done\b/.test(code);
 check(awaitsDone, `③ 必须 await 事务完成（不能「发出去了」冒充「写进去了」）`);
+
+const timedOutRead = /if\s*\(\s*timedOut\s*\)/.test(code);
+check(timedOutRead, `④ 超时旗标 timedOut 必须被读（只设不读＝死旗标 ⇒ 超时不可见 ✗ 第 1440 轮）`);
 
 if (fails.length) {
   console.log(`\n  ✗ ${fails.length} 处不符（putAtom 的原子性）`);
