@@ -388,6 +388,14 @@ pub struct ToolContext<'a> {
     pub now: i64,
     /// batch 内部使用的变更集 id（5.6）。
     changeset: Option<ChangesetId>,
+    /// **batch 的说明文字** ✓（第 724 轮；外部审计 S-02 第 ① 组）
+    ///
+    /// **⇒ 缺陷**：`batch.message` 声明了 ✓（"说明"），而 handler **从没读过** ✗
+    ///   ⇒ 调用方写了说明，**原子上没有** ✓ —— 而 `Atom::message` 早就有 ✓、
+    ///   `get_atom`／`get_stroke_log` 也都会回它 ✓ ⇒ 「声明了但不生效」= 静默降级 ✓。
+    /// **⇒ 收口点**：与 `pending_label`／`pending_group_id` 相同（[`Self::commit`] ✓）
+    ///   ⇒ 批里**每一条**都带上同一句说明 ✓，且只改一处 ✓。
+    batch_message: Option<String>,
     /// **本次调用的阶段耗时累计** ✓（外部测试报告 P2）。
     ///
     /// **为什么挂在上下文上** ✓：阶段发生在**很深的调用栈**里 ✓
@@ -438,6 +446,7 @@ impl<'a> ToolContext<'a> {
             wait_budget_ms: 500,
             now: yanshi_core::now_ms(),
             changeset: None,
+            batch_message: None,
             timings: ToolTimings::default(),
             inflight: None,
             diagnostics_facts: None,
@@ -506,6 +515,13 @@ impl<'a> ToolContext<'a> {
         // **组标识**：与 label 同一条收口点 ⇒ 所有提交路径都自动带上（不再"只改一条路径"）。
         if let Some(group_id) = self.pending_group_id.take() {
             atom = atom.with_group_id(group_id);
+        }
+        // **batch 的说明写进原子** ✓（第 724 轮；外部审计 S-02 第 ① 组）
+        //   ⇒ 子调用**自己给了** message 的话以它为准 ✓（显式优先 ✓）。
+        if atom.message.is_none() {
+            if let Some(message) = self.batch_message.clone() {
+                atom.message = Some(message);
+            }
         }
         // **`begin_changeset` 打开的那个变更集，在这里自动生效** ✓ ——
         // 这是"调用方自己把多步操作归成一个变更集"的**唯一**收口点 ✓：
@@ -19050,6 +19066,10 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **长批次中途的预览**（测试报告 §一.4）✓：`batch` 在一个循环里跑完 ✓ ⇒ 单线程服务下
     // 这期间别的写盘路径没有机会 ⇒ `render.png` 会冻结"整批时长" ✗（实测 300 笔 ⇒ 4~6 分钟 ✓）。
     // 这两个参数让**循环内部**周期性放行一次预览 ✓（默认 0 ⇒ **行为完全不变** ✓）。
+    // **`message` 以前声明了却没人读** ✓（第 724 轮；外部审计 S-02 第 ① 组）
+    //   ⇒ 挂到 `ctx.batch_message` ✓ ⇒ `commit` 收口点把它写进**每条**原子的 `message` ✓
+    //   ⇒ 读侧已经能看见 ✓（`get_stroke_log` 的条目带 `message` ✓，第 723 轮 ✓）。
+    let previous_message = std::mem::replace(&mut ctx.batch_message, optional_str(args, "message"));
     let preview_every = optional_count(args, "preview_every_n_strokes")?.unwrap_or(0);
     let preview_interval_ms = optional_count(args, "preview_interval_ms")?.unwrap_or(0);
     let mut last_preview = std::time::Instant::now();
@@ -19098,6 +19118,7 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             .ok_or_else(|| missing("calls[].tool"))?;
         if name == "batch" {
             ctx.changeset = previous;
+            ctx.batch_message = previous_message;
             return Err(YanshiError::new(
                 ErrorCode::InvalidArgument,
                 ErrorContext::detail("batch 不允许嵌套"),
