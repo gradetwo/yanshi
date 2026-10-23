@@ -117,6 +117,18 @@ assets/textures/Paper*.png
 !assets/textures/Paper003.png
 !assets/textures/Paper006.png
 
+# **★ 同一把尺子也要量 `web/textures/` ✗ ★**（第 739 轮 ✓）：**`pwa-sync-viewer.mjs` 的
+# `copyKind` 每次运行都 `rmSync` 整个目录再从 `assets/textures` 重建** ✓ ⇒
+# 那 7 张大图（**Cardboard001–004／CardboardSet001／Paper004／Paper005**，**约 5 MB** ✗）
+# 在 2026-10-09 入库（**早于 10-15 的"大图属于缓存"策略 ✓**）⇒ **此后每次同步都留下
+# 7 条 working-tree 删除**✗，**而它们没有任何消费者**（**全仓 grep 只有注释与抓取脚本 ✓**）。
+# ⇒ **∴ 已 `git rm --cached`**（**2026-10-23 ✓）**；**忽略写在这里** ⇒ 缓存重新抓出来也不会再被误提交 ✗：
+web/textures/Cardboard*.png
+web/textures/Paper*.png
+!web/textures/Paper001.png
+!web/textures/Paper003.png
+!web/textures/Paper006.png
+
 # cargo 的本地状态文件（与源码无关，不该进版本控制）
 vendor/**/.cargo-ok
 vendor/**/.cargo_vcs_info.json
