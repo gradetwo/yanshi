@@ -1405,13 +1405,16 @@ fn the_served_service_worker_has_its_build_id_substituted() {
         !text.contains("__BUILD_ID__"),
         "下发的 SW 里还留着 `__BUILD_ID__` ⇒ 缓存名永不变化（改了代码看不出变化）"
     );
-    let stamped = text
+    let stamped: String = text
         .split("yanshi-shell-")
         .nth(1)
-        .map(|rest| rest.chars().take(4).collect::<String>())
+        .map(|rest| rest.chars().take(4).collect())
         .unwrap_or_default();
+    // **构建号是 `commit-fingerprint`** ✓（`build.rs:114` ✓）⇒ **本地是纯数字、CI 上是十六进制 sha** ✗
+    //   ⇒ 断言只能要求"**十六进制字符**" ✓ —— 我第一次写成"纯数字"，**只在 CI 上红** ✓
+    //   （本地 `commit` 取不到就用时间戳 ⇒ 全数字 ✓；CI 有 git ⇒ `e8b0ac47-…` ✓）。
     assert!(
-        stamped.chars().all(|ch| ch.is_ascii_digit()) && !stamped.is_empty(),
-        "`yanshi-shell-` 后面应当紧跟具体构建号，实测 {stamped:?}"
+        stamped.len() == 4 && stamped.chars().all(|ch| ch.is_ascii_hexdigit()),
+        "`yanshi-shell-` 后面应当紧跟具体构建号（十六进制），实测 {stamped:?}"
     );
 }
