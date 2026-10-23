@@ -17656,3 +17656,23 @@ R-09（`Retouch` 暗化因子**乘了两次** ⇒ `darken²`）✓、R-10（RAW 
 
 **⇒ 做法**：`Workspace` 记住每文档上次看到的 `atoms.jsonl` **字节长度** ✓ ⇒ `sync_next_seq_from_disk` 先 `stat` ✓
 （微秒级）⇒ 长度没变**直接返回** ✓，只有文件真长了才读那 8 KiB ✓。行为判据 `two_writers_seqs` 仍绿 ✓。
+
+## 四百五十七、又一条「只在本机能过」的判据 —— **CI 抓的**（第 764–765 轮）
+
+**⇒ 事实链**：`d1b8afc9`（性能那笔）的 `test (stable)` 与 `test (beta)` **双双红** ✓
+⇒ 红点是我第 760 轮新加的 `the_served_service_worker_has_its_build_id_substituted` ✓
+⇒ 而它**在本机是绿的** ✗。
+
+**⇒ 根因**（读 `crates/yanshi-http/build.rs:114` 得到）：构建号是 `format!("{commit}-{fingerprint}")` ✓
+· **本机**取不到 git ⇒ `commit` 回退成**时间戳** ⇒ **全数字** ✓；
+· **CI** 有 git ⇒ **`e8b0ac47-…`（十六进制）** ✓
+⇒ 我断的「纯数字」**只在没有 git 的机器上成立** ✗。
+
+**⇒ 修法**（`fde65f35`）：断言改成「四位**十六进制**字符」（`is_ascii_hexdigit` ✓），
+并把「为什么两台机器不同」写进注释 ✓；**原来的变异仍然有效** ✓（不替换 `__BUILD_ID__` ⇒ 正文里还有占位符 ⇒ 红 ✓）。
+**⇒ CI**：`fde65f35` **completed/success** ✓（`test (stable)`／`test (beta)` 双双转绿 ✓）。
+
+**⇒ 教训（本场第 N 次「我的判据比被测对象更容易错」）**：
+**断言一个由构建脚本生成的字符串时，先读那个脚本怎么拼它** ✓ ——
+我当时只看到本机的 `yanshi-shell-9000800276677`（全数字）就以为格式是数字 ✓
+⇒ 而 `build.rs` 里明写着 `commit-fingerprint` ✓（**读源码 30 秒，CI 红了 1 轮** ✓）。
