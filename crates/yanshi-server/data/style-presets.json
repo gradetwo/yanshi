@@ -1,0 +1,5177 @@
+{
+ "version": 1,
+ "source": "《修片风格体系速查与配方》(upload.html) + 2026-10-23 实测批次结论 (chatlog)",
+ "presets": [
+  {
+   "id": "japanese_airy",
+   "name_zh": "小清新",
+   "name_en": "Japanese Airy",
+   "status": "established",
+   "tags": [
+    "人像",
+    "日光",
+    "高调"
+   ],
+   "suitable": [
+    "晴日户外人像",
+    "海边",
+    "白建筑",
+    "校园"
+   ],
+   "caution": [
+    "夜景（会变灰）",
+    "肤色易被青污染"
+   ],
+   "description": "高调、青绿环境、透肤、空气感；比韩系更通透、比糖水更克制。",
+   "notes": "已验证（补充找回的截图证据，2026-10-23）：以「JP LIGHT FINAL」在三素材上深挖验证——圣托里尼·伊亚小镇、罗弗敦·红房子（雾天变体格标注 JP CLEAN fog adapt）、树荫下人像。此前『蒙灰纱』问题已换轻校正基线。unsupported：逐通道 HSL（绿向青/提明）Yanshi 无逐通道 HSL，用全局 hsl + selective_color 近似；局部眼睛锐化需蒙版工具，不在预设内。截图为 1170px 参考图，非原始渲染。",
+   "correction": {
+    "baseline": "light",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.05
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.1,
+       "highlights": -0.1
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": 0.45
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.02,
+      "contrast": 0.88
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0.06
+       ],
+       [
+        0.25,
+        0.32
+       ],
+       [
+        0.5,
+        0.53
+       ],
+       [
+        0.75,
+        0.76
+       ],
+       [
+        1,
+        0.97
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.25,
+        0.25
+       ],
+       [
+        0.5,
+        0.5
+       ],
+       [
+        0.75,
+        0.75
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.92
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "vibrance",
+     "params": {
+      "amount": 0.35
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "white_balance",
+     "params": {
+      "temperature": 0.06,
+      "tint": 0.04
+     },
+     "neutral": {
+      "temperature": 0,
+      "tint": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.35,
+      "highlights": -0.3
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "levels",
+     "params": {
+      "black": 0.04,
+      "white": 1.0,
+      "gamma": 1.02
+     },
+     "neutral": {
+      "black": 0,
+      "white": 1,
+      "gamma": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "texture",
+     "params": {
+      "amount": -0.06
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "fade",
+     "label": "空气感",
+     "description": "抬黑点量（levels.black），越大越柔越雾",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 7,
+       "param": "black",
+       "range": [
+        0.0,
+        0.12
+       ]
+      }
+     ]
+    },
+    {
+     "id": "softness",
+     "label": "柔和度",
+     "description": "texture 负值量，越大越柔",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 8,
+       "param": "amount",
+       "range": [
+        -0.25,
+        0.0
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ccd",
+   "name_zh": "模拟 CCD",
+   "name_en": "CCD Simulation",
+   "status": "established",
+   "tags": [
+    "夜景",
+    "抓拍",
+    "直闪"
+   ],
+   "suitable": [
+    "直闪夜拍",
+    "日常抓拍",
+    "朋友聚会"
+   ],
+   "caution": [
+    "大光比风光（宽容度对不上）"
+   ],
+   "description": "低宽容、硬切高光、冷闪偏色、数字噪点；模拟 2000 年代 CCD 卡片机成像链而非只加颗粒。",
+   "notes": "已验证（补充找回的截图证据，2026-10-23）：以「CCD FINAL」在三素材上深挖验证——圣托里尼·伊亚小镇、罗弗敦·红房子、树荫下人像，与小清新同为当时深挖的两套。unsupported：直闪光效（拍摄端决定项）与真实色差/紫边（属导入期 raw_options）、PS 高光 glow 复制层法；此处以 noise 数字噪点 + 硬 S 曲线 + 冷偏近似。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.3
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0.0
+       ],
+       [
+        0.25,
+        0.19
+       ],
+       [
+        0.5,
+        0.5
+       ],
+       [
+        0.75,
+        0.81
+       ],
+       [
+        1,
+        1.0
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.25,
+        0.25
+       ],
+       [
+        0.5,
+        0.5
+       ],
+       [
+        0.75,
+        0.75
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "white_balance",
+     "params": {
+      "temperature": -0.12,
+      "tint": -0.06
+     },
+     "neutral": {
+      "temperature": 0,
+      "tint": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.15
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": -0.15
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "noise",
+     "params": {
+      "amount": 0.16,
+      "seed": 42
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "vignette",
+     "params": {
+      "strength": 0.2,
+      "radius": 0.75,
+      "softness": 0.8
+     },
+     "neutral": {
+      "strength": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "noise",
+     "label": "数字噪点",
+     "description": "noise.amount，CCD 彩噪/亮度噪的量",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 5,
+       "param": "amount",
+       "range": [
+        0.0,
+        0.35
+       ]
+      }
+     ]
+    },
+    {
+     "id": "cold",
+     "label": "冷闪偏色",
+     "description": "white_balance.temperature，越小越冷青",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 2,
+       "param": "temperature",
+       "range": [
+        -0.3,
+        0.05
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "japanese_film",
+   "name_zh": "日系胶片",
+   "name_en": "Japanese Film",
+   "status": "needs_review",
+   "tags": [
+    "人像",
+    "胶片",
+    "阴天"
+   ],
+   "suitable": [
+    "阴天",
+    "窗光",
+    "制服/校园题材"
+   ],
+   "caution": [
+    "强顺光金色时刻（绿偏变脏）"
+   ],
+   "description": "清、淡、略青绿、皮肤偏白皙，Fuji 400H 系。",
+   "notes": "未在实测批次中，未目检。unsupported：颗粒的粗糙度参数 Yanshi film_grain 只有 amount/size/seed。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": 0.35
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.01,
+      "contrast": 0.88
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0.05
+       ],
+       [
+        0.25,
+        0.3
+       ],
+       [
+        0.5,
+        0.52
+       ],
+       [
+        0.75,
+        0.75
+       ],
+       [
+        1,
+        0.96
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.25,
+        0.25
+       ],
+       [
+        0.5,
+        0.5
+       ],
+       [
+        0.75,
+        0.75
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.9
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "white_balance",
+     "params": {
+      "temperature": -0.05,
+      "tint": -0.04
+     },
+     "neutral": {
+      "temperature": 0,
+      "tint": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.03,
+       0.05,
+       0.03
+      ],
+      "highlights": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "balance": 0.0
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.22,
+      "size": 3,
+      "seed": 7
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "fade",
+     "label": "褪色",
+     "description": "曲线由 strength 主导；此旋钮改 split_toning 阴影青绿量",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 5,
+       "param": "shadows",
+       "range": [
+        [
+         -0.08,
+         0.0,
+         0.0
+        ],
+        [
+         0.02,
+         0.1,
+         0.08
+        ]
+       ]
+      }
+     ]
+    },
+    {
+     "id": "grain",
+     "label": "颗粒",
+     "description": "film_grain.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 6,
+       "param": "amount",
+       "range": [
+        0.0,
+        0.4
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "retro_film",
+   "name_zh": "胶片复古",
+   "name_en": "Retro Film",
+   "status": "fixed_v2",
+   "tags": [
+    "人像",
+    "胶片",
+    "金色时刻"
+   ],
+   "suitable": [
+    "婚礼",
+    "金色时刻人像",
+    "下坡路/街道日景"
+   ],
+   "caution": [
+    "神社夜景（天空仍偏棕橙，v2 未完全修透）",
+    "室内钨丝灯未校白平衡时暖上加暖"
+   ],
+   "description": "暖金、奶油肤、怀旧但不脏，Kodak Portra 系；v2 暖度减半。",
+   "notes": "v2：白天定版；夜景对暖偏置格外敏感，天空仍棕橙，未完全修透，已如实标注。曝光键为 ev（曾写错键，已修正）。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": 0.3
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.01,
+      "contrast": 0.88
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0.07
+       ],
+       [
+        0.25,
+        0.3
+       ],
+       [
+        0.5,
+        0.52
+       ],
+       [
+        0.75,
+        0.75
+       ],
+       [
+        1,
+        0.96
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.25,
+        0.25
+       ],
+       [
+        0.5,
+        0.5
+       ],
+       [
+        0.75,
+        0.75
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.94
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "white_balance",
+     "params": {
+      "temperature": 0.1,
+      "tint": 0.02
+     },
+     "neutral": {
+      "temperature": 0,
+      "tint": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       0.07,
+       0.03,
+       -0.03
+      ],
+      "highlights": [
+       0.05,
+       0.02,
+       -0.02
+      ],
+      "balance": 0.05
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.2,
+      "highlights": -0.2
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.24,
+      "size": 3,
+      "seed": 11
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "vignette",
+     "params": {
+      "strength": 0.12,
+      "radius": 0.8,
+      "softness": 0.9
+     },
+     "neutral": {
+      "strength": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "warmth",
+     "label": "暖度",
+     "description": "white_balance.temperature，夜景慎用大值",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 4,
+       "param": "temperature",
+       "range": [
+        -0.05,
+        0.22
+       ]
+      }
+     ]
+    },
+    {
+     "id": "grain",
+     "label": "颗粒",
+     "description": "film_grain.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 7,
+       "param": "amount",
+       "range": [
+        0.0,
+        0.4
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "hong_kong",
+   "name_zh": "港风",
+   "name_en": "Hong Kong",
+   "status": "fixed_v2",
+   "tags": [
+    "夜景",
+    "街景",
+    "霓虹"
+   ],
+   "suitable": [
+    "夜街",
+    "招牌",
+    "茶餐厅",
+    "地铁"
+   ],
+   "caution": [
+    "白天须降强度",
+    "肤色发绿是头号失败模式"
+   ],
+   "description": "浓、潮、红绿霓虹对撞、潮湿夜街，王家卫式；v2 全局色偏减半并保红。",
+   "notes": "v1 与国风同病：全局色偏开满。v2 已减半：split_toning 阴影青绿与全局饱和都按 v1 的约一半落值，红靠 selective_color 的 reds 保护。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.28
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.18
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.1,
+       0.08,
+       0.1
+      ],
+      "highlights": [
+       0.1,
+       0.04,
+       -0.05
+      ],
+      "balance": 0.0
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "selective_color",
+     "params": {
+      "adjust": {
+       "reds": [
+        -0.12,
+        0.0,
+        0.06,
+        0.0
+       ],
+       "greens": [
+        0.08,
+        0.0,
+        -0.08,
+        0.02
+       ]
+      }
+     },
+     "neutral": {
+      "adjust": {
+       "reds": [
+        0,
+        0,
+        0,
+        0
+       ],
+       "greens": [
+        0,
+        0,
+        0,
+        0
+       ]
+      }
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "white_balance",
+     "params": {
+      "temperature": -0.08,
+      "tint": 0.0
+     },
+     "neutral": {
+      "temperature": 0,
+      "tint": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.18
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.05,
+      "highlights": -0.35
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.2,
+      "size": 2,
+      "seed": 5
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "vignette",
+     "params": {
+      "strength": 0.25,
+      "radius": 0.75,
+      "softness": 0.8
+     },
+     "neutral": {
+      "strength": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "neon",
+     "label": "霓虹浓艳",
+     "description": "saturation.amount，v2 基准 1.18",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 1,
+       "param": "amount",
+       "range": [
+        1.0,
+        1.45
+       ]
+      }
+     ]
+    },
+    {
+     "id": "teal",
+     "label": "青绿阴影",
+     "description": "split_toning.shadows 的青绿量",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 2,
+       "param": "shadows",
+       "range": [
+        [
+         -0.04,
+         0.03,
+         0.04
+        ],
+        [
+         -0.18,
+         0.14,
+         0.18
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "korean",
+   "name_zh": "韩系",
+   "name_en": "Korean Creamy",
+   "status": "needs_review",
+   "tags": [
+    "人像",
+    "高调",
+    "奶油"
+   ],
+   "suitable": [
+    "棚拍",
+    "探店",
+    "情侣/闺蜜人像"
+   ],
+   "caution": [
+    "硬光正午（糊成一片）",
+    "男性/街头题材显假"
+   ],
+   "description": "奶油、粉彩、干净、白皙；柔焦比小清新敢下手。",
+   "notes": "实测批次蒙灰纱，换轻校正基线重渲 2 张，待最终目检。",
+   "correction": {
+    "baseline": "light",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.05
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.1,
+       "highlights": -0.1
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": 0.15
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.03,
+      "contrast": 0.6
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "levels",
+     "params": {
+      "black": 0.1,
+      "white": 1.0,
+      "gamma": 1.05
+     },
+     "neutral": {
+      "black": 0,
+      "white": 1,
+      "gamma": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.45,
+      "highlights": -0.45
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "vibrance",
+     "params": {
+      "amount": 0.2
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.02
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "texture",
+     "params": {
+      "amount": -0.14
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": -0.12
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "cream",
+     "label": "奶油柔焦",
+     "description": "texture.amount 负值量",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 6,
+       "param": "amount",
+       "range": [
+        -0.3,
+        0.0
+       ]
+      }
+     ]
+    },
+    {
+     "id": "bright",
+     "label": "明亮",
+     "description": "exposure.ev",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 0,
+       "param": "ev",
+       "range": [
+        -0.1,
+        0.4
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "western_cool",
+   "name_zh": "欧美清冷",
+   "name_en": "Western Cool",
+   "status": "established",
+   "tags": [
+    "风光",
+    "建筑",
+    "人像"
+   ],
+   "suitable": [
+    "建筑",
+    "汽车",
+    "健身",
+    "男性人像",
+    "雪景",
+    "港口"
+   ],
+   "caution": [
+    "婴幼儿/婚礼柔情题材显冷酷",
+    "肤色变青先查黄色压过头"
+   ],
+   "description": "冷峻、硬朗、蓝灰、杂志感；研究名「欧美冷调」，实测批次名「欧美清冷」，同一套。",
+   "notes": "实测本批最好：日落暖天配冷蓝阴影对撞干净；汉堡港微微去饱和的蓝灰，高级感成立。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.2
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "white_balance",
+     "params": {
+      "temperature": -0.14,
+      "tint": 0.0
+     },
+     "neutral": {
+      "temperature": 0,
+      "tint": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.08,
+       0.02,
+       0.14
+      ],
+      "highlights": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "balance": -0.1
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.92
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "selective_color",
+     "params": {
+      "adjust": {
+       "yellows": [
+        0.0,
+        0.0,
+        -0.3,
+        0.0
+       ],
+       "blues": [
+        0.0,
+        0.0,
+        0.15,
+        0.0
+       ]
+      }
+     },
+     "neutral": {
+      "adjust": {
+       "yellows": [
+        0,
+        0,
+        0,
+        0
+       ],
+       "blues": [
+        0,
+        0,
+        0,
+        0
+       ]
+      }
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "texture",
+     "params": {
+      "amount": 0.2
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.2
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "sharpen",
+     "params": {
+      "amount": 0.7,
+      "radius": 2
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "cold",
+     "label": "冷感",
+     "description": "white_balance.temperature，越小越冷",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 1,
+       "param": "temperature",
+       "range": [
+        -0.3,
+        0.05
+       ]
+      }
+     ]
+    },
+    {
+     "id": "hard",
+     "label": "硬朗",
+     "description": "clarity.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 6,
+       "param": "amount",
+       "range": [
+        0.0,
+        0.4
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "cinema",
+   "name_zh": "电影感",
+   "name_en": "Cinematic Teal-Orange",
+   "status": "fixed_v2",
+   "tags": [
+    "夜景",
+    "街景",
+    "叙事"
+   ],
+   "suitable": [
+    "旅行",
+    "街头",
+    "叙事人像",
+    "夜景灯火"
+   ],
+   "caution": [
+    "原片无橙色主体也无青色环境时硬套会假",
+    "分级饱和过头卡通化"
+   ],
+   "description": "青影、橙肤、哑光、叙事；v2 青只压阴影、橙留亮部，不再全局泼色。",
+   "notes": "v1 两张全泡进青色（威尼斯暖灯火被灭、罗弗敦海面成青汤）。v2 只用 split_toning 分段染色，全局饱和不再推高。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.22
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0.05
+       ],
+       [
+        0.25,
+        0.24
+       ],
+       [
+        0.5,
+        0.5
+       ],
+       [
+        0.75,
+        0.77
+       ],
+       [
+        1,
+        0.98
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.25,
+        0.25
+       ],
+       [
+        0.5,
+        0.5
+       ],
+       [
+        0.75,
+        0.75
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.12,
+       0.03,
+       0.14
+      ],
+      "highlights": [
+       0.13,
+       0.05,
+       -0.08
+      ],
+      "balance": 0.1
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.05
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "vibrance",
+     "params": {
+      "amount": 0.25
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "levels",
+     "params": {
+      "black": 0.02,
+      "white": 1.0,
+      "gamma": 1.0
+     },
+     "neutral": {
+      "black": 0,
+      "white": 1,
+      "gamma": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.12
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.12,
+      "size": 2,
+      "seed": 3
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "vignette",
+     "params": {
+      "strength": 0.18,
+      "radius": 0.8,
+      "softness": 0.8
+     },
+     "neutral": {
+      "strength": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "teal_orange",
+     "label": "青橙对峙",
+     "description": "split_toning.shadows 青量（高光橙同向由配方固定比）",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 2,
+       "param": "shadows",
+       "range": [
+        [
+         -0.05,
+         0.01,
+         0.06
+        ],
+        [
+         -0.2,
+         0.05,
+         0.22
+        ]
+       ]
+      }
+     ]
+    },
+    {
+     "id": "matte",
+     "label": "哑光",
+     "description": "levels.black 抬量",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 5,
+       "param": "black",
+       "range": [
+        0.0,
+        0.08
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "french",
+   "name_zh": "法式",
+   "name_en": "French Warm",
+   "status": "needs_review",
+   "tags": [
+    "人像",
+    "窗光",
+    "田园"
+   ],
+   "suitable": [
+    "田园",
+    "家居",
+    "窗光人像",
+    "婚礼细节"
+   ],
+   "caution": [
+    "霓虹/都市夜景（冷光被暖脏）",
+    "色温与分级双暖会把白墙变黄墙"
+   ],
+   "description": "慵懒、琥珀、奶油、橄榄绿、午后窗光。",
+   "notes": "实测批次换轻校正基线重渲 2 张，待最终目检。",
+   "correction": {
+    "baseline": "light",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.05
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.1,
+       "highlights": -0.1
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": 0.28
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.01,
+      "contrast": 0.9
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0.04
+       ],
+       [
+        0.25,
+        0.29
+       ],
+       [
+        0.5,
+        0.52
+       ],
+       [
+        0.75,
+        0.76
+       ],
+       [
+        1,
+        0.96
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.25,
+        0.25
+       ],
+       [
+        0.5,
+        0.5
+       ],
+       [
+        0.75,
+        0.75
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "white_balance",
+     "params": {
+      "temperature": 0.14,
+      "tint": 0.02
+     },
+     "neutral": {
+      "temperature": 0,
+      "tint": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       0.05,
+       0.03,
+       -0.02
+      ],
+      "highlights": [
+       0.07,
+       0.04,
+       -0.03
+      ],
+      "balance": 0.05
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.94
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": -0.06
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.14,
+      "size": 2,
+      "seed": 13
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "warmth",
+     "label": "琥珀暖",
+     "description": "white_balance.temperature",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 3,
+       "param": "temperature",
+       "range": [
+        0.0,
+        0.28
+       ]
+      }
+     ]
+    },
+    {
+     "id": "grain",
+     "label": "颗粒",
+     "description": "film_grain.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 7,
+       "param": "amount",
+       "range": [
+        0.0,
+        0.3
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "forest",
+   "name_zh": "森系",
+   "name_en": "Forest",
+   "status": "established",
+   "tags": [
+    "风光",
+    "森林",
+    "雾气"
+   ],
+   "suitable": [
+    "森林",
+    "溪流",
+    "雾日",
+    "森系人像"
+   ],
+   "caution": [
+    "城市/建筑显脏绿",
+    "林下人像肤色易被绿污染"
+   ],
+   "description": "墨绿、幽深、雾气、低饱和的绿海；绿要深不要亮。",
+   "notes": "实测：台湾苔藓森林合格（绿更润更深、苔藓与树根质感都在、无伪影）。雾林素材已剔除（九成白雾），仅作解码验证。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": -0.4
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.12
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.2,
+      "highlights": -0.5
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.85
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "selective_color",
+     "params": {
+      "adjust": {
+       "greens": [
+        0.12,
+        0.0,
+        -0.2,
+        0.08
+       ],
+       "yellows": [
+        0.1,
+        0.0,
+        -0.25,
+        0.05
+       ]
+      }
+     },
+     "neutral": {
+      "adjust": {
+       "greens": [
+        0,
+        0,
+        0,
+        0
+       ],
+       "yellows": [
+        0,
+        0,
+        0,
+        0
+       ]
+      }
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.06,
+       0.06,
+       0.05
+      ],
+      "highlights": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "balance": 0.0
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "dehaze",
+     "params": {
+      "amount": -0.08
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "depth",
+     "label": "幽深",
+     "description": "exposure.ev，越小越深",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 0,
+       "param": "ev",
+       "range": [
+        -0.7,
+        -0.1
+       ]
+      }
+     ]
+    },
+    {
+     "id": "mist",
+     "label": "雾气",
+     "description": "dehaze.amount 负值留雾",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 6,
+       "param": "amount",
+       "range": [
+        -0.25,
+        0.1
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "morandi",
+   "name_zh": "莫兰迪",
+   "name_en": "Morandi",
+   "status": "established",
+   "tags": [
+    "静物",
+    "室内",
+    "产品"
+   ],
+   "suitable": [
+    "静物",
+    "极简室内",
+    "服装平铺",
+    "高级感产品",
+    "港口建筑"
+   ],
+   "caution": [
+    "运动/广告/夜景（没精神）",
+    "降饱和过头肤色变灰"
+   ],
+   "description": "灰、粉、雾蓝、燕麦——所有颜色一起降饱和、明度向中高靠拢的粉彩。",
+   "notes": "实测：汉堡港是教科书式莫兰迪（灰米色、低饱和、哑光）。雾林素材不参与评测。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": 0.2
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.02,
+      "contrast": 0.75
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0.07
+       ],
+       [
+        0.25,
+        0.31
+       ],
+       [
+        0.5,
+        0.53
+       ],
+       [
+        0.75,
+        0.75
+       ],
+       [
+        1,
+        0.94
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.25,
+        0.25
+       ],
+       [
+        0.5,
+        0.5
+       ],
+       [
+        0.75,
+        0.75
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.72
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "vibrance",
+     "params": {
+      "amount": 0.0
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": -0.1
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.02,
+       0.0,
+       0.03
+      ],
+      "highlights": [
+       0.03,
+       0.01,
+       0.0
+      ],
+      "balance": 0.0
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "gray",
+     "label": "灰度",
+     "description": "saturation.amount，越小越灰",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 3,
+       "param": "amount",
+       "range": [
+        0.5,
+        0.9
+       ]
+      }
+     ]
+    },
+    {
+     "id": "matte",
+     "label": "哑光",
+     "description": "曲线由 strength 主导；此旋钮改 contrast",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 1,
+       "param": "contrast",
+       "range": [
+        0.6,
+        0.95
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "dark_moody",
+   "name_zh": "暗黑情绪",
+   "name_en": "Dark Moody",
+   "status": "needs_review",
+   "tags": [
+    "人像",
+    "低调",
+    "静物"
+   ],
+   "suitable": [
+    "黄昏/阴天人像",
+    "咖啡馆",
+    "静物",
+    "男性肖像"
+   ],
+   "caution": [
+    "儿童/婚礼明快题材禁用",
+    "只有黑没有层次 = 左端撞墙"
+   ],
+   "description": "低调、压抑、戏剧，一束光打在主体上。",
+   "notes": "未在实测批次中，未目检。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": -0.45
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.28
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.3,
+      "highlights": -0.6
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.82
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.08,
+       0.02,
+       0.1
+      ],
+      "highlights": [
+       0.07,
+       0.03,
+       -0.03
+      ],
+      "balance": 0.0
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.15
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "vignette",
+     "params": {
+      "strength": 0.3,
+      "radius": 0.7,
+      "softness": 0.8
+     },
+     "neutral": {
+      "strength": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.2,
+      "size": 2,
+      "seed": 17
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "dark",
+     "label": "压暗",
+     "description": "exposure.ev",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 0,
+       "param": "ev",
+       "range": [
+        -0.8,
+        -0.1
+       ]
+      }
+     ]
+    },
+    {
+     "id": "vignette",
+     "label": "暗角",
+     "description": "vignette.strength",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 6,
+       "param": "strength",
+       "range": [
+        0.0,
+        0.5
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "black_white",
+   "name_zh": "黑白",
+   "name_en": "B&W",
+   "status": "needs_review",
+   "tags": [
+    "街头",
+    "建筑",
+    "风光"
+   ],
+   "suitable": [
+    "建筑",
+    "街头",
+    "纹理人像",
+    "形态强的风光"
+   ],
+   "caution": [
+    "靠色彩叙事的题材（花海/美食/霓虹）"
+   ],
+   "description": "形态、纹理、灰阶分离；强 S 曲线 + 银盐颗粒。",
+   "notes": "未目检。unsupported：black_and_white 的逐色 B&W Mix 权重没有中性态（任何权重都全幅去色），会破坏 strength=0 恒等；故用 saturation 插值到 0 实现去色，Mix 权重列为二期（需内核给黑白加 amount）。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.0
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.32
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0.0
+       ],
+       [
+        0.25,
+        0.2
+       ],
+       [
+        0.5,
+        0.52
+       ],
+       [
+        0.75,
+        0.82
+       ],
+       [
+        1,
+        1.0
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.25,
+        0.25
+       ],
+       [
+        0.5,
+        0.5
+       ],
+       [
+        0.75,
+        0.75
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.35
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "sharpen",
+     "params": {
+      "amount": 0.8,
+      "radius": 2
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.2,
+      "size": 3,
+      "seed": 19
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "contrast",
+     "label": "灰阶对比",
+     "description": "brightness_contrast.contrast",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 1,
+       "param": "contrast",
+       "range": [
+        1.0,
+        1.6
+       ]
+      }
+     ]
+    },
+    {
+     "id": "grain",
+     "label": "银盐颗粒",
+     "description": "film_grain.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 5,
+       "param": "amount",
+       "range": [
+        0.0,
+        0.4
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "cyberpunk",
+   "name_zh": "赛博朋克",
+   "name_en": "Cyberpunk",
+   "status": "needs_review",
+   "tags": [
+    "夜景",
+    "霓虹",
+    "都市"
+   ],
+   "suitable": [
+    "雨夜霓虹（原片须真有霓虹/LED 光源）"
+   ],
+   "caution": [
+    "日光照片硬套只会得到紫天毒绿"
+   ],
+   "description": "青 + 品红、霓虹、高反差夜、湿地面反光；放大已有色光而非无中生有。",
+   "notes": "chatlog 点名未目检，须补目检才能升内置库。unsupported：LR 校准面板的越界移色用 channel_mixer 近似；霓虹 glow 复制层法用 glow 滤镜近似。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": -0.2
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.35
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.35,
+      "highlights": -0.4
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "channel_mixer",
+     "params": {
+      "matrix": [
+       [
+        1.1,
+        0.15,
+        0.0
+       ],
+       [
+        0.0,
+        0.9,
+        0.25
+       ],
+       [
+        0.2,
+        0.0,
+        1.1
+       ]
+      ],
+      "constants": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     "neutral": {
+      "matrix": [
+       [
+        1,
+        0,
+        0
+       ],
+       [
+        0,
+        1,
+        0
+       ],
+       [
+        0,
+        0,
+        1
+       ]
+      ],
+      "constants": [
+       0,
+       0,
+       0
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.1,
+       0.0,
+       0.16
+      ],
+      "highlights": [
+       0.1,
+       -0.02,
+       0.12
+      ],
+      "balance": 0.0
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.25
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.3
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "glow",
+     "params": {
+      "threshold": 0.6,
+      "radius": 8,
+      "intensity": 0.5
+     },
+     "neutral": {
+      "intensity": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "neon_glow",
+     "label": "霓虹晕",
+     "description": "glow.intensity",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 7,
+       "param": "intensity",
+       "range": [
+        0.0,
+        1.2
+       ]
+      }
+     ]
+    },
+    {
+     "id": "magenta",
+     "label": "品红",
+     "description": "split_toning.highlights 品红量",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 4,
+       "param": "highlights",
+       "range": [
+        [
+         0.04,
+         -0.01,
+         0.05
+        ],
+        [
+         0.18,
+         -0.04,
+         0.2
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "y2k",
+   "name_zh": "Y2K",
+   "name_en": "Y2K",
+   "status": "needs_review",
+   "tags": [
+    "夜景",
+    "派对",
+    "抓拍"
+   ],
+   "suitable": [
+    "派对",
+    "镜面自拍",
+    "夜出朋友合影"
+   ],
+   "caution": [
+    "严肃场合/商业交付禁用",
+    "不要做成暖胶片：Y2K 的黑是硬的、色是数码饱和的"
+   ],
+   "description": "闪光怼脸、低像素、饱和冷色；借 CCD 成像链再推一档。",
+   "notes": "待补图目检。unsupported：日期戳符号与 JPEG 压缩感（导出层的事）不在预设内。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.02,
+      "contrast": 1.38
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.32
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "white_balance",
+     "params": {
+      "temperature": -0.08,
+      "tint": 0.0
+     },
+     "neutral": {
+      "temperature": 0,
+      "tint": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": -0.15,
+      "highlights": 0.1
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": -0.08
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "noise",
+     "params": {
+      "amount": 0.12,
+      "seed": 23
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "vignette",
+     "params": {
+      "strength": 0.15,
+      "radius": 0.8,
+      "softness": 0.8
+     },
+     "neutral": {
+      "strength": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "pop",
+     "label": "数码浓艳",
+     "description": "saturation.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 1,
+       "param": "amount",
+       "range": [
+        1.0,
+        1.6
+       ]
+      }
+     ]
+    },
+    {
+     "id": "noise",
+     "label": "低像素噪",
+     "description": "noise.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 5,
+       "param": "amount",
+       "range": [
+        0.0,
+        0.3
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "guofeng",
+   "name_zh": "国风",
+   "name_en": "Chinese Ancient / Guochao",
+   "status": "fixed_v2",
+   "tags": [
+    "古建",
+    "人像",
+    "园林"
+   ],
+   "suitable": [
+    "汉服",
+    "古建",
+    "园林",
+    "茶空间",
+    "神社/寺庙"
+   ],
+   "caution": [
+    "现代极简/玻璃建筑只剩偏色",
+    "大红大绿同时拉满变影楼风"
+   ],
+   "description": "朱红、黛青、月白、鎏金；v2 青绿减半，朱红必须保住。",
+   "notes": "v1 青绿过头：神社朱红大门被压发闷。v2 硬约束：红还得是红（selective_color reds 减青保红），青只进阴影。研究名「古风/国潮」，实测名「国风」，同一套。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.01,
+      "contrast": 1.05
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0.04
+       ],
+       [
+        0.25,
+        0.28
+       ],
+       [
+        0.5,
+        0.51
+       ],
+       [
+        0.75,
+        0.76
+       ],
+       [
+        1,
+        0.97
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.25,
+        0.25
+       ],
+       [
+        0.5,
+        0.5
+       ],
+       [
+        0.75,
+        0.75
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.06,
+       0.02,
+       0.07
+      ],
+      "highlights": [
+       0.07,
+       0.03,
+       -0.03
+      ],
+      "balance": 0.0
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "selective_color",
+     "params": {
+      "adjust": {
+       "reds": [
+        -0.15,
+        0.0,
+        0.05,
+        0.0
+       ],
+       "greens": [
+        0.1,
+        0.0,
+        -0.1,
+        0.05
+       ],
+       "purples": [
+        0.0,
+        0.0,
+        -0.25,
+        0.0
+       ]
+      }
+     },
+     "neutral": {
+      "adjust": {
+       "reds": [
+        0,
+        0,
+        0,
+        0
+       ],
+       "greens": [
+        0,
+        0,
+        0,
+        0
+       ],
+       "purples": [
+        0,
+        0,
+        0,
+        0
+       ]
+      }
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.06
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": -0.02
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.08,
+      "size": 2,
+      "seed": 9
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "vignette",
+     "params": {
+      "strength": 0.1,
+      "radius": 0.8,
+      "softness": 0.9
+     },
+     "neutral": {
+      "strength": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "daiqing",
+     "label": "黛青",
+     "description": "split_toning.shadows 青量（v2 已减半，慎加大）",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 2,
+       "param": "shadows",
+       "range": [
+        [
+         -0.03,
+         0.01,
+         0.03
+        ],
+        [
+         -0.1,
+         0.04,
+         0.12
+        ]
+       ]
+      }
+     ]
+    },
+    {
+     "id": "zhuhong",
+     "label": "朱红",
+     "description": "selective_color.adjust 中 reds 的减青保红量",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 3,
+       "param": "adjust",
+       "range": [
+        {
+         "reds": [
+          -0.05,
+          0.0,
+          0.02,
+          0.0
+         ],
+         "greens": [
+          0.1,
+          0.0,
+          -0.1,
+          0.05
+         ],
+         "purples": [
+          0.0,
+          0.0,
+          -0.25,
+          0.0
+         ]
+        },
+        {
+         "reds": [
+          -0.25,
+          0.0,
+          0.08,
+          0.0
+         ],
+         "greens": [
+          0.1,
+          0.0,
+          -0.1,
+          0.05
+         ],
+         "purples": [
+          0.0,
+          0.0,
+          -0.25,
+          0.0
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ins_minimal",
+   "name_zh": "Ins 简约",
+   "name_en": "INS Minimal",
+   "status": "established",
+   "tags": [
+    "探店",
+    "家居",
+    "建筑"
+   ],
+   "suitable": [
+    "探店",
+    "好物分享",
+    "家居",
+    "留白构图",
+    "港口"
+   ],
+   "caution": [
+    "杂乱/多色场景极简不了（构图问题）",
+    "白色过曝丢细节",
+    "暗部勿压太狠"
+   ],
+   "description": "白、净、留白、低饱和；研究名「ins 极简」，实测名「Ins 简约」，同一套。",
+   "notes": "实测一半成立：汉堡港干净简约味成立；圣托里尼暗部压太狠、悬崖成一团黑——本配方阴影只轻提不压，避开该失败模式。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": 0.4
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.02,
+      "contrast": 1.0
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "levels",
+     "params": {
+      "black": 0.03,
+      "white": 1.0,
+      "gamma": 1.0
+     },
+     "neutral": {
+      "black": 0,
+      "white": 1,
+      "gamma": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.25,
+      "highlights": -0.2
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.86
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "vibrance",
+     "params": {
+      "amount": 0.15
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.08
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "texture",
+     "params": {
+      "amount": 0.1
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "white",
+     "label": "通透白",
+     "description": "exposure.ev",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 0,
+       "param": "ev",
+       "range": [
+        0.1,
+        0.6
+       ]
+      }
+     ]
+    },
+    {
+     "id": "clean",
+     "label": "低饱和",
+     "description": "saturation.amount，越小越净",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 4,
+       "param": "amount",
+       "range": [
+        0.7,
+        1.0
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "sweet",
+   "name_zh": "糖水",
+   "name_en": "Sweet Portrait",
+   "status": "needs_review",
+   "tags": [
+    "人像",
+    "高调",
+    "粉嫩"
+   ],
+   "suitable": [
+    "少女写真",
+    "闺蜜",
+    "樱花/花海人像"
+   ],
+   "caution": [
+    "男性、纪实、老人题材即灾难",
+    "过度柔焦+过曝丢轮廓"
+   ],
+   "description": "甜、嫩、粉、亮——小清新的「肤色极大化」变体。",
+   "notes": "实测遗留：去辉光对照实验未跑完（定斜切边缘是否辉光滤镜所致）；本配方默认不带 glow 滤镜，glow 只作 knob 可选项，默认 0。换轻校正基线重渲 1 张。",
+   "correction": {
+    "baseline": "light",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.05
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.1,
+       "highlights": -0.1
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": 0.65
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.03,
+      "contrast": 0.75
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0.06
+       ],
+       [
+        0.25,
+        0.33
+       ],
+       [
+        0.5,
+        0.55
+       ],
+       [
+        0.75,
+        0.78
+       ],
+       [
+        1,
+        0.97
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.25,
+        0.25
+       ],
+       [
+        0.5,
+        0.5
+       ],
+       [
+        0.75,
+        0.75
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.5,
+      "highlights": -0.5
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "levels",
+     "params": {
+      "black": 0.06,
+      "white": 1.0,
+      "gamma": 1.03
+     },
+     "neutral": {
+      "black": 0,
+      "white": 1,
+      "gamma": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.9
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "highlights": [
+       0.06,
+       0.0,
+       0.02
+      ],
+      "balance": 0.1
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "texture",
+     "params": {
+      "amount": -0.2
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": -0.18
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "glow",
+     "params": {
+      "threshold": 0.65,
+      "radius": 8,
+      "intensity": 0.0
+     },
+     "neutral": {
+      "intensity": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "glow",
+     "label": "辉光",
+     "description": "glow.intensity（斜切边缘嫌疑项，默认关，开启须目检边缘）",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 9,
+       "param": "intensity",
+       "range": [
+        0.0,
+        0.8
+       ]
+      }
+     ]
+    },
+    {
+     "id": "sweet",
+     "label": "甜亮",
+     "description": "exposure.ev",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 0,
+       "param": "ev",
+       "range": [
+        0.3,
+        0.9
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "commercial",
+   "name_zh": "商业",
+   "name_en": "Commercial",
+   "status": "needs_review",
+   "tags": [
+    "产品",
+    "广告",
+    "形象照"
+   ],
+   "suitable": [
+    "产品",
+    "广告",
+    "形象照"
+   ],
+   "caution": [
+    "把情绪风格带进商业交付会被退片：黑点抬高=黑位不准、颗粒=噪点"
+   ],
+   "description": "准、净、贵——风格即「没有风格」；只纠偏不移色。",
+   "notes": "chatlog 点名未目检。unsupported：美妆类频率分离/中性灰 D&B 是 PS 像素级技法，Yanshi 无对应专用工具，不在预设内。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.12
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.03
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "texture",
+     "params": {
+      "amount": 0.2
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.15
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "sharpen",
+     "params": {
+      "amount": 0.7,
+      "radius": 1
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "material",
+     "label": "材质感",
+     "description": "texture.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 2,
+       "param": "amount",
+       "range": [
+        0.0,
+        0.4
+       ]
+      }
+     ]
+    },
+    {
+     "id": "sharp",
+     "label": "锐利",
+     "description": "sharpen.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 4,
+       "param": "amount",
+       "range": [
+        0.0,
+        1.4
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "hdr_landscape",
+   "name_zh": "HDR 风光",
+   "name_en": "HDR Landscape",
+   "status": "fixed_v2",
+   "tags": [
+    "风光",
+    "建筑",
+    "大光比"
+   ],
+   "suitable": [
+    "大光比风光",
+    "建筑"
+   ],
+   "caution": [
+    "雾景、人像禁用 HDR 式拉法",
+    "清晰度/去朦胧过量出光晕"
+   ],
+   "description": "天地全有细节、通透、戏剧化；v2 降全局强度，必须留真黑否则必灰。",
+   "notes": "v1 两张都糊：日落阴影硬抬成绿雾、天空橙溢出；罗弗敦压成灰泥，左边缘有可疑青斑（待单独验）。v2：阴影/高光拉量约减半、dehaze/clarity 小量、levels 保真黑。unsupported：真 HDR 需包围曝光合并 DNG，Yanshi 无合并工具，此为单张伪 HDR。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.55,
+      "highlights": -0.55
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "levels",
+     "params": {
+      "black": 0.03,
+      "white": 0.99,
+      "gamma": 1.0
+     },
+     "neutral": {
+      "black": 0,
+      "white": 1,
+      "gamma": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "dehaze",
+     "params": {
+      "amount": 0.22
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.28
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.15
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "vibrance",
+     "params": {
+      "amount": 0.3
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.08
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.05,
+       0.02,
+       0.08
+      ],
+      "highlights": [
+       0.06,
+       0.02,
+       -0.04
+      ],
+      "balance": 0.0
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "drama",
+     "label": "戏剧化",
+     "description": "clarity.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 3,
+       "param": "amount",
+       "range": [
+        0.0,
+        0.5
+       ]
+      }
+     ]
+    },
+    {
+     "id": "lift",
+     "label": "暗部拉量",
+     "description": "shadows_highlights.shadows（过量出绿雾/灰泥）",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 0,
+       "param": "shadows",
+       "range": [
+        0.2,
+        0.8
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lomo",
+   "name_zh": "LOMO",
+   "name_en": "Lomo",
+   "status": "established",
+   "tags": [
+    "抓拍",
+    "旅行",
+    "生活"
+   ],
+   "suitable": [
+    "生活抓拍",
+    "聚会",
+    "旅行手帐"
+   ],
+   "caution": [
+    "需要色彩准确的场合禁用",
+    "暗角偏重会吃左下细节（在风格本性内）"
+   ],
+   "description": "浓艳、重暗角、不可预测偏色；宝丽来支线见 notes。",
+   "notes": "实测成立：下坡路糖果色与饱和就是 LOMO 本人；圣托里尼暗角偏重但在本性范围内。unsupported：宝丽来 milky fade 支线（白平衡 6000–7500K + 黑点 +30..60）与 Lomo 是两支，本预设只落 Lomo 支；手动加桶形畸变需 lens 调整逐张给，不进预设。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.32
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.25
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.06,
+       0.04,
+       0.08
+      ],
+      "highlights": [
+       0.08,
+       0.02,
+       -0.04
+      ],
+      "balance": 0.0
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "vignette",
+     "params": {
+      "strength": 0.38,
+      "radius": 0.65,
+      "softness": 0.7
+     },
+     "neutral": {
+      "strength": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.18,
+      "size": 3,
+      "seed": 29
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.1
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "vignette",
+     "label": "暗角",
+     "description": "vignette.strength（圣托里尼教训：过重吃细节）",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 3,
+       "param": "strength",
+       "range": [
+        0.1,
+        0.55
+       ]
+      }
+     ]
+    },
+    {
+     "id": "candy",
+     "label": "糖果色",
+     "description": "saturation.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 0,
+       "param": "amount",
+       "range": [
+        1.05,
+        1.55
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "pastoral_cream",
+   "name_zh": "田园奶油",
+   "name_en": "Pastoral Cream",
+   "status": "needs_review",
+   "tags": [
+    "田园",
+    "人像",
+    "亲子"
+   ],
+   "suitable": [
+    "田野",
+    "野餐",
+    "亲子",
+    "花市",
+    "田园婚纱"
+   ],
+   "caution": [
+    "都市/夜景无田园信息可提",
+    "黄提过头白裙/白墙泛奶黄"
+   ],
+   "description": "奶油田野、麦色阳光、柔绿、野餐布；法式的更亮更甜近亲，韩系的更暖更自然近亲。",
+   "notes": "待补图目检。修正段用 light 基线（与法式/韩系同族，避免灰纱）。",
+   "correction": {
+    "baseline": "light",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.05
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.1,
+       "highlights": -0.1
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": 0.42
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.02,
+      "contrast": 0.85
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0.04
+       ],
+       [
+        0.25,
+        0.3
+       ],
+       [
+        0.5,
+        0.53
+       ],
+       [
+        0.75,
+        0.77
+       ],
+       [
+        1,
+        0.96
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.25,
+        0.25
+       ],
+       [
+        0.5,
+        0.5
+       ],
+       [
+        0.75,
+        0.75
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "white_balance",
+     "params": {
+      "temperature": 0.16,
+      "tint": 0.02
+     },
+     "neutral": {
+      "temperature": 0,
+      "tint": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       0.04,
+       0.02,
+       -0.02
+      ],
+      "highlights": [
+       0.07,
+       0.04,
+       -0.03
+      ],
+      "balance": 0.05
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.92
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": -0.09
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.1,
+      "size": 2,
+      "seed": 31
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "cream",
+     "label": "奶油暖",
+     "description": "white_balance.temperature",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 3,
+       "param": "temperature",
+       "range": [
+        0.02,
+        0.3
+       ]
+      }
+     ]
+    },
+    {
+     "id": "glow_soft",
+     "label": "柔光",
+     "description": "clarity.amount 负值量",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 6,
+       "param": "amount",
+       "range": [
+        -0.25,
+        0.0
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
