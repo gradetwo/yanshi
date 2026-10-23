@@ -288,3 +288,62 @@ fn a_package_with_blobs_but_no_encoding_manifest_is_refused() {
         "被拒的导入不该留下文档目录 ✗"
     );
 }
+
+/// **`import_project` 指定新 `doc_id` 时，元数据必须落在新文档的目录**（第 728 轮；外部审计 S-04）
+///
+/// **⇒ 缺陷**：包里的 `meta.json` 里 `doc_id` 是**原文档**的 ✓ ⇒ `save_meta` 按它定位目录 ✗
+///   ⇒ **新文档的元数据写进原文档的目录** ✓ ⇒ 两个文档的 `meta.json` 互相覆盖（跨文档污染 ✓，无信号 ✓）。
+///
+/// **⇒ 实测坐标**（第 728 轮，先量后改 ✓）：导出包 `entries` 含 `meta.json` ✓；
+///   落盘布局是 `docs/<doc_id>/` ✓。
+///
+/// **⇒ 判据**：源文档 `doc_src` ⇒ 导出 ⇒ 导入成 `doc_copy` ⇒
+///   ① `docs/doc_copy/meta.json` **必须存在**且里面的 `doc_id` 是 `doc_copy` ✓；
+///   ② `docs/doc_src/meta.json`（**目标根下**）不许被写成 `doc_copy` ✓。
+/// **变异**：去掉 `meta.doc_id = doc_id.clone()` ⇒ ① 红 ✓（meta 落在 doc_src 目录里）。
+#[test]
+fn importing_under_a_new_id_writes_meta_into_the_new_document_directory() {
+    let root_a = temp_dir("meta728_a");
+    let root_b = temp_dir("meta728_b");
+    let mut source = workspace(&root_a);
+    let pack = root_a.join("meta728.yanshi");
+    assert_eq!(
+        call(&mut source, "create_layer", json!({ "layer_id": "L" }))["ok"],
+        json!(true)
+    );
+    assert_eq!(
+        call(
+            &mut source,
+            "export_project",
+            json!({ "path": pack.display().to_string() })
+        )["ok"],
+        json!(true)
+    );
+
+    let mut target = workspace(&root_b);
+    let imported = call(
+        &mut target,
+        "import_project",
+        json!({ "path": pack.display().to_string(), "doc_id": "doc_copy" }),
+    );
+    assert_eq!(imported["ok"], json!(true), "{imported}");
+
+    let copy_meta = root_b.join("docs").join("doc_copy").join("meta.json");
+    assert!(
+        copy_meta.exists(),
+        "新文档目录下没有 meta.json ⇒ 元数据写去了原文档的目录（跨文档污染）：{}",
+        copy_meta.display()
+    );
+    let text = std::fs::read_to_string(&copy_meta).expect("读新文档 meta.json");
+    assert!(
+        text.contains("\"doc_copy\""),
+        "新文档的 meta.json 里 doc_id 不是 doc_copy：{text}"
+    );
+    let polluted = root_b.join("docs").join("doc_src").join("meta.json");
+    if let Ok(polluted_text) = std::fs::read_to_string(&polluted) {
+        assert!(
+            !polluted_text.contains("\"doc_copy\""),
+            "目标根下 doc_src 的 meta.json 被写成了 doc_copy ⇒ 跨文档污染：{polluted_text}"
+        );
+    }
+}

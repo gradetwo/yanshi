@@ -2363,7 +2363,15 @@ impl Workspace {
             )
         })?;
         if let Some(meta) = &meta {
-            persist.save_meta(meta)?;
+            // **元数据要写成"这次导入的那个 id"** ✓（第 728 轮；外部审计 S-04）
+            //   **⇒ 缺陷**：`meta` 来自**包里的** `meta.json` ✓ ⇒ 它的 `doc_id` 是**原文档**的 ✗
+            //     ⇒ `save_meta` 按 `meta.doc_id` 建目录 ⇒ **新文档的元数据写进原文档的目录** ✓
+            //     ⇒ 两个文档的 `meta.json` 互相覆盖 ✓（跨文档污染，且**没有任何信号** ✓）。
+            //   **⇒ 判据**：`import_project(doc_id=doc_copy)` 之后，`docs/doc_copy/meta.json`
+            //     必须存在且里面是 `doc_copy` ✓（`import_project::importing_under_a_new_id_…` ✓）。
+            let mut meta = meta.clone();
+            meta.doc_id = doc_id.clone();
+            persist.save_meta(&meta)?;
         }
         if let Some((seq, png)) = &render {
             if !png.is_empty() {
