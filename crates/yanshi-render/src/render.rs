@@ -2391,6 +2391,10 @@ impl Renderer {
                 && match self.above.lock() {
                     Ok(guard) => match guard.as_ref() {
                         Some(c) => {
+                            // **审计 R-01 第 ② 项**（空白块应算"有"）**本轮没改** ✓ ——
+                            //   它与第 ① 项**必须一起改**：只放宽命中而不跳过上方层 ⇒ 那些层会被
+                            //   **渲染一遍、又把 `above` 合成一遍** ⇒ 半透明层出现两次 ✗
+                            //   ⇒ 而 `above` 这条路径目前**没有夹具**（见第 ① 项那句）⇒ 先做夹具 ✓。
                             c.sig == above_sig
                                 && want_tiles
                                     .iter()
@@ -2630,6 +2634,10 @@ impl Renderer {
             visited += 1;
             if reused && index_here < split {
                 // **★ 复用了 `above` ⇒ 跳过它覆盖的层 ✗ ★**（第 711 轮 ✓）：与上面那条对称 ✓。
+                // **⇒ 审计 R-01 第 ① 项指出这是死代码** ✓（`index_here < split` 与 `> split` 互斥 ✓），
+                //   我**本轮没改**它 ✓ —— **理由见台账**：`above` 只在「`split` 那层不透明度 < 1」时启用
+                //   （`above_wanted` ✓），而**现有夹具没有一个满足它**（实测复用计数 `0 ⇒ 0` ✗）
+                //   ⇒ 改这条等于**在无人覆盖的路径上改行为** ✗ ⇒ 先把**夹具**做出来，再改 ✓。
                 if above_ready && index_here > split {
                     continue;
                 }
@@ -3215,13 +3223,19 @@ impl Renderer {
                             let y_end = (oh - oy).max(0).min(bh);
                             let x_start = (-ox).max(0).min(bw);
                             let x_end = (ow - ox).max(0).min(bw);
+                            // **必须"合成"而不是"覆盖"** ✓（第 713 轮；外部审计 R-01 第 ③ 项）
+                            //   **⇒ 缺陷**：`copy_from_slice` 会把 `above` 的**透明区**当像素写下去 ✗
+                            //     ⇒ **底下的背景／`below` 层／当前活动层**被直接抹掉 ✓（视觉上是"少了图层"✓）。
+                            //   **⇒ 修法**：走 `composite_with_layer`（标准 `over` ✓），透明区自然透出下层 ✓。
                             if y_start < y_end && x_start < x_end {
-                                for row in y_start..y_end {
-                                    let si = ((row * bw + x_start) * 4) as usize;
-                                    let di = (((oy + row) * ow + ox + x_start) * 4) as usize;
-                                    let len = ((x_end - x_start) * 4) as usize;
-                                    dst[di..di + len].copy_from_slice(&src[si..si + len]);
-                                }
+                                let _ = (&dst, &src); // 旧绑定仍在作用域（下面走 Buffer 合成）
+                                                      // `Buffer` 是 `Clone` ✓ ⇒ 复制一份交给合成器（它按值借用 ✓）
+                                let piece = buf.clone();
+                                accumulation.composite_with_layer(
+                                    &piece,
+                                    crate::BlendMode::Normal,
+                                    1.0,
+                                );
                             }
                         }
                     }
