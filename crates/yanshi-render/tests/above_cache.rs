@@ -140,3 +140,51 @@ fn a_hit_on_the_above_cache_skips_the_layers_it_already_holds() {
         "命中 above 之后画面变了 ⇒ 跳过过头或合成错了"
     );
 }
+
+/// **空白 tile 也算"缓存里有"**（第 715 轮；外部审计 R-01 第 ② 项）
+///
+/// **⇒ 缺陷**：写侧把**整块为空**的 tile 记进 `fresh_empty`（**不进 `c.tiles`** ✓），
+///   而读侧 `above_ready` **只查 `c.tiles`** ✗ ⇒ 只要上方层在区域里**有一块是空的**
+///   （比如上方层只覆盖左半边 ✓），`above_ready` **恒 `false`** ✗ ⇒ **上方缓存永远不命中** ✓（白算 ✓）。
+///
+/// **⇒ 夹具**：活动层仍在中间（半透明 ✓），但**上方层只画左半边** ✓
+///   ⇒ 区域右半边那块 above tile 是**空的** ✓。
+/// **⇒ 判据**：连渲两次 ⇒ `above_reuse_count` **必须增长** ✓。
+///   **变异**：把 `above_ready` 里的 `|| c.empty.contains(t)` 去掉 ⇒ 计数不涨 ⇒ 红 ✓。
+#[test]
+fn an_empty_above_tile_still_counts_as_cached() {
+    // **`BELOW_TILE` 是 256** ✓ ⇒ 区域必须**跨 2×2 格**才可能出现"空白格" ✓
+    //   （64×64 只落在一格里 ⇒ 那一格有内容 ⇒ 这条判据测不到东西 ✗ —— 我第一次就是这么写的 ✓）
+    let mut state = document();
+    state.width = 512;
+    state.height = 512;
+    // 各层内容铺满整幅，但**上方层（L2）只画左上角一格** ✓ ⇒ 其余三格是空的 ✓
+    state.objects.insert(
+        "o0".to_owned(),
+        rect("o0", "L0", 0, (0.0, 0.0, 512.0, 512.0), [200, 30, 30]),
+    );
+    state.objects.insert(
+        "o1".to_owned(),
+        rect("o1", "L1", 0, (0.0, 0.0, 512.0, 512.0), [30, 200, 30]),
+    );
+    state.objects.insert(
+        "o2".to_owned(),
+        rect("o2", "L2", 0, (0.0, 0.0, 200.0, 200.0), [30, 30, 200]),
+    );
+    let store = MemoryBlobStore::new();
+    let bbox = Bbox::new(0.0, 0.0, 512.0, 512.0);
+    let mut renderer = Renderer::new(TileGrid::new(256, state.width, state.height).unwrap());
+    renderer.set_active_layer(Some("L1".to_owned()));
+    let _ = renderer
+        .render_region(&state, &store, bbox)
+        .expect("first render");
+    let before = renderer.above_reuse_count();
+    let _ = renderer
+        .render_region(&state, &store, bbox)
+        .expect("second render");
+    let after = renderer.above_reuse_count();
+    assert!(
+        after > before,
+        "上方层有一块是空的 ⇒ `above` 就再也不命中了（{before} ⇒ {after}）⇒ 空白块没被算作已缓存"
+    );
+}
