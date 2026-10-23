@@ -188,3 +188,42 @@ fn an_empty_above_tile_still_counts_as_cached() {
         "上方层有一块是空的 ⇒ `above` 就再也不命中了（{before} ⇒ {after}）⇒ 空白块没被算作已缓存"
     );
 }
+
+/// **`clear_all_caches` 必须连 `above` 一起清**（第 761 轮；外部审计 R-07 的**运行时判据**）
+///
+/// **⇒ 为什么以前只能做结构检查** ✗：`above` 只在「`split` 那层**半透明**」时才启用 ✓，
+///   而当时仓库里**没有**这样的夹具 ⇒ 连渲两次 `above_reuse_count` 是 `0 ⇒ 0` ⇒ 断言恒真 ✗。
+/// **⇒ 现在有了**：本文件第 1 条测试造的夹具（3 层、活动层 `opacity: 0.5`）**真会命中 above** ✓
+///   ⇒ 于是这一条可以**跑起来**：命中 → 清缓存 → **不许再命中** ✓。
+/// **⇒ 判据**：② 之后 `above_reuse_count` **不再增长** ✓。
+/// **变异**：去掉 `clear_all_caches` 里清 `self.above` 的三行 ⇒ 计数继续涨 ⇒ 红 ✓。
+#[test]
+fn clearing_caches_stops_the_above_cache_from_hitting() {
+    let state = document();
+    let store = MemoryBlobStore::new();
+    let bbox = Bbox::new(0.0, 0.0, 64.0, 64.0);
+    let mut renderer = Renderer::new(TileGrid::new(32, state.width, state.height).unwrap());
+    renderer.set_active_layer(Some("L1".to_owned()));
+
+    // ① 先证明"会命中" ✓（否则下面那半是空断言 ✗）
+    let _ = renderer.render_region(&state, &store, bbox).expect("first");
+    let before = renderer.above_reuse_count();
+    let _ = renderer
+        .render_region(&state, &store, bbox)
+        .expect("second");
+    let primed = renderer.above_reuse_count();
+    assert!(
+        primed > before,
+        "连渲两次都没命中 above（{before} ⇒ {primed}）⇒ 这条判据测不到东西（先看夹具）"
+    );
+
+    // ② 清掉全部缓存 ⇒ 再渲一次**不许**再命中 ✓
+    renderer.clear_all_caches();
+    let after_clear_start = renderer.above_reuse_count();
+    let _ = renderer.render_region(&state, &store, bbox).expect("third");
+    let after_clear = renderer.above_reuse_count();
+    assert_eq!(
+        after_clear, after_clear_start,
+        "清缓存之后 still 命中了 above（{after_clear_start} ⇒ {after_clear}）⇒ `clear_all_caches` 漏了 above"
+    );
+}
