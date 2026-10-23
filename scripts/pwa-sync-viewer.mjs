@@ -78,33 +78,9 @@ const BUILD_STAMP = (() => {
   const n = BigInt("0x" + hex) % 10000000000000n;
   return n.toString().padStart(13, "0");
 })();
-try {
-  const swPath = join(DST, "sw.js");
-  // **★ 戳替换必须幂等**（定位 ✓）：`web/sw.js` 是 git 跟踪文件，
-  //   占位符 `__BUILD_STAMP__` 在第一次运行时就被替换并提交了，
-  //   之后每次跑脚本 `replace("__BUILD_STAMP__")` 找不到目标 ⇒ 静默无操作 ⇒ 戳永不更新。
-  //   **∴ 改用正则**：占位符和旧戳都能换掉。
-  const swText = readFileSync(swPath, "utf8")
-    .replace("__BUILD_STAMP__", BUILD_STAMP)
-    .replace(/yanshi-online-\d+/, "yanshi-online-" + BUILD_STAMP);
-  writeFileSync(swPath, swText);
-  // **★ 占位符必须**保留** ✗ ★**（第 104 轮 ✓；**`cargo test --workspace` 抓到的 ✓）：
-  //   **∴ 我**第 84 轮**加了**一段"**替换 `__BUILD_ID__`**"**✗
-  //     ⇒ **∴ 而**它**让两个 Rust 测试红**✗**：
-  //       **∴ ①** `the_page_and_the_service_worker_agree_on_the_shell_cache_name`
-  //         ⇒ **∴ 页面**期望 `29d392b8`（**构建号 ✓）**✗
-  //           **∴ 而**SW **被我**换成了 `1535263715002`（**mtime 戳 ✓）⇒ `left != right` ✓**** ✓✓
-  //       **∴ ②** `the_service_worker_is_a_separate_packable_asset`
-  //         ⇒ **★ 它**断言"**SW 必须**保留 `__BUILD_ID__` 占位**"**✗
-  //           **∴ 即**：**那个占位符**是**设计的一部分 ✓（**服务端**在请求时替换它 ✓）★**** ✓✓
-  //     ⇒ **★ 所以**：**"**我看到 `yanshi-shell-__BUILD_ID__` ⇒ 以为**没替换**⇒ 是 bug**"**
-  //       ⇒ **∴ 那个判断**错了 ✓ ★**** ✓✓
-  //       **∴ 它**正是**新构建**自动作废旧外壳的机制 ✓**** ✓✓
-  //   **∴ 修法**：**删除那段替换**✗ ⇒ **∴ 让占位符**原样留在两份里 ✓**** ✓✓
-  console.log("  OK: service worker cache stamp ⇒ " + BUILD_STAMP);
-} catch (e) {
-  console.warn("  WARN: 未能写入 service worker 缓存戳：" + e.message);
-}
+// **不再给 `web/sw.js` 换戳** ✓（第 745 轮；外部审计 S-10）：那份**从来没被注册**过
+//   （应用注册 `/service-worker.js` ✓ —— `viewer-app.js:9300` ✓）⇒ **已删** ✓
+//   ⇒ 静态托管那份的戳由**下面 `service-worker.js` 那一组**负责 ✓（它有自己的 try/catch ✓）。
 
 // **★ 拷贝清单必须覆盖**所有会影响运行的前端文件** ✗ ★**（第 240 轮 ✓；**∴ 用户第 593 轮「**单一真源** ✓）。
 //

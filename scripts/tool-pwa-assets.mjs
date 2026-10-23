@@ -48,16 +48,18 @@ if (wrangler) {
 }
 
 // **④ PWA 三件套 ✓**
-for (const f of ["web/index.html", "web/manifest.webmanifest", "web/sw.js"]) {
+// **只认那一个被注册的 worker** ✓（第 745 轮；外部审计 S-10）：应用注册 `/service-worker.js`
+//   ⇒ 静态托管那份是 `web/service-worker.js` ✓；`web/sw.js`（48 行、永不加载）已删 ✓。
+for (const f of ["web/index.html", "web/manifest.webmanifest", "web/service-worker.js"]) {
   check(existsSync(f), `PWA 文件缺失：${f} ✗`);
 }
 
 // **⑤ service worker 预缓存必须含 wasm 与胶水 ✓**
-const sw = read("web/sw.js");
+const sw = read("web/service-worker.js");
 if (sw) {
   check(/yanshi_wasm_bg\.wasm/.test(sw), "sw.js 未把内核 wasm 列入预缓存 ⇒ 离线打不开 ✗");
   check(/yanshi_wasm\.js/.test(sw), "sw.js 未把内核 JS 胶水列入预缓存 ⇒ 离线打不开 ✗");
-  console.log("  sw.js：wasm ＋ 胶水 已入预缓存 ✓");
+  console.log("  service-worker.js：wasm ＋ 胶水 已入预缓存 ✓");
 }
 
 // **⑥ manifest 合法性 ✓**
