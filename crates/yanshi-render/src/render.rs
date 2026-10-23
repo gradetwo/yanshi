@@ -2793,7 +2793,17 @@ impl Renderer {
                                 BELOW_GROUPS_PEAK.store(now, Ordering::Relaxed);
                             }
                         }
-                        carried.insert(sig.clone(), (merged.clone(), fresh_empty.clone()));
+                        // **同签名的分组只写一次** ✓（第 668 轮；探针实测驱动）
+                        //   **⇒ 症状**：`below缓存写` 仍占 **110.9 s / 124.5 s（89%）**，
+                        //     4,856 次 × **22.85 ms** ≈ **拷一份 37 MB 的 tile 表** ✗
+                        //   **⇒ 根因**：这里 `(merged.clone(), …)` 每写一次就**整份克隆** ✓，
+                        //     而 `sig` 是**内容指纹**（`c.sig == sig` 就 `mem::take` 复用 ✓）
+                        //     ⇒ **同一个 `sig` 的内容必然相同** ✓ ⇒ 已经存过再拷一遍**毫无意义** ✗
+                        //   **⇒ 修法**：**已在表里就跳过** ✓（一次渲染里绝大多数写都是同一个签名 ✓）。
+                        //     ⚠️ **不改变命中语义**：条目还是那一份、`sig` 相同 ⇒ 读到的内容相同 ✓。
+                        if !carried.contains_key(&sig) {
+                            carried.insert(sig.clone(), (merged.clone(), fresh_empty.clone()));
+                        }
                         *guard = Some(BelowTiles {
                             sig,
                             tiles: merged,
