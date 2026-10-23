@@ -17732,3 +17732,75 @@ CI 日志里「名单里有、但本片没失败（**可能已修好**）」共 
 
 **⇒ 过程中两次 API 误用（都按编译器指摘改正）**：`PushChannel` 是**枚举**（`WebSocket`／`Poll`／`InProcess` ✓）
 不是可 `new` 的通道 ✗；`Document` 上没有 `unsubscribe` ✗（在 `broadcaster_mut()` 上 ✓）。
+
+## 四百四十九、`browser-offline-journal` 的 ⊘ 根因：写队列只活在「服务端渲染」一侧，而编排把判据钉死在 `render=client`（第 731 轮，附源码行）
+
+**⇒ 复现**（忠实复刻 `run-criteria.sh` 的 `browser-*` 接线：dev 服务端 ＋ `serve-web.mjs` 静态 PWA ＋
+`--remote-debugging-port` 的 chromium ＋ 预置客户端渲染偏好）⇒
+①②③⑤⑥⑦ 的「进队列」断言**全红**（队列恒 0 条、界面 `data-state=offline` 而不是 `queued`），
+而 **④ 的指针笔迹确实入队了**（「队列里的原子条目 = 1」✓），只是补交后服务端 0 条原子 ✗。
+慢环境下还会撞第三例看门狗：九秒级七段流程 ＞ 90 s 顶层 `setTimeout(…, 90000)` ⇒ **合法成功被报成 ⊘**
+（与 `kernel-perf`／`drag-perf`／`pwa-local` 同族，本条**尚未**改成 `YANSHI_JUDGE_TIMEOUT_MS` ＋ `clearTimeout` ✓）。
+
+**⇒ 机制（源码行，不是推测）**：
+- `callTool` 第一句就是 `if (!serverRenderPreferred()) return callToolLocal(...)` ✓
+  （`viewer-app.js:1383`）⇒ **客户端模式下改文档调用根本不经过** `fetchMutating` ⇒
+  那个「网络失败 ⇒ `outboxEnqueue("tool", …)`」分支（`:1403`）**永远走不到** ✗；
+  而编排给每条 `browser-*` 的 URL 都加了 `render=client`（`run-criteria.sh:350/:378`，第 778/780 轮为内核加的 ✓）
+  ⇒ **①②③⑤⑥⑦ 在现行编排下结构性不可通过** ✗。
+- `submitAtom`（`:2675`）**不看渲染开关** ⇒ 离线指针笔迹照样入队 ✓（实测「1 条」✓）；
+  但补交时被服务端**拒**——那一笔要的图层是客户端模式 `create_layer` 写进 **IndexedDB** 的，
+  服务端文档里不存在 ⇒ 「服务端里恰好一条那个客户端 ULID」拿到 0 ✗。
+  这正是 `:1382` 注释里写明的那个分叉（「本地模式写 IndexedDB，与服务端文档状态可能分叉」✓）。
+- 反过来钉 `render=server`：`initWasm` 第一句 `if (serverRenderPreferred()) return` ⇒ 内核不加载 ✓
+  ⇒ ④ 的硬断言 `check(kernelReady)`（`:416`）**必红** ✗。
+
+**⇒ 所以**：渲染模式分叉之后，**没有任何一种单一导航能让七段全过** ✗
+——这条判据写在分叉之前（第 111/372 轮时「静态 PWA ⇒ 内核 ＋ 补交」还同真 ✓）。
+
+**⇒ 该怎么改**（下一轮的事，本轮只定案不返工）：分段导航——
+①②③⑤⑥⑦ 用 `render=server` 的页面（工具调用才会进日志并补交），
+④ 用 `render=client` 的页面（要内核出 ULID 原子），**并且**图层/参照文档一律用
+`callToolHttp` 在**服务端**直建（避开 IndexedDB 分叉）；同族先例是 `browser-text-font`
+自己钉 `navUrl` 的那笔改动 ✓。看门狗三件套（可配上限 ＋ `clearTimeout` ＋ 显式 exit）一并带上 ✓。
+
+**⇒ 判据没改之前它的诚实分类**：**不是环境红，是判据前提失效**（测的是产品已改道的那条路）✗
+⇒ known-red 里那条的理由应当从「SW/时序」换成这一节 ✓。
+
+## 四百五十、离线负对照的 501 定案：`window.fetch` 被本地层覆写，探测根本没出页面（第 738 轮，实测双向）
+
+**∴ 症状 ✗**：CI 里 `browser-offline-export` / `browser-offline-reload` / `browser-offline-draw`
+的负对照常年打印 `{"failed":false,"status":501,"bytes":307}` ⇒ 前两条被登记成 known-red
+（**类型：判据的负对照设计错 ✓**——诊断早就写对了，**但一直没修** ✗）。
+
+**∴ 机制 ✗**（源码行）：编排在有 `web/index.html` 时把 `YANSHI_VIEWER_URL` 指到**静态 PWA** ⇒
+判据导航的是静态页 ⇒ 静态页引导时 `installLocalApi` **覆写 `window.fetch`**
+（`web/index.html:74–76`、`api-local.js:4810–4856`）⇒ 未映射的 `/api/` 前缀**在页面里**就被回
+501 `not_implemented_locally`（`api-local.js:4836–4854`）⇒ **断网与否根本影响不到这次探测** ✓。
+原判据的注释只排除了**SW 层**的缓存（"`service-worker.js` 对 `/api/` 直接 return ✓"）——
+那句话本身没错，**但它不是唯一的拦截者** ✗：`service-worker.js:398` 的早退反而证明
+**请求若真出页面就必然走网络** ⇒ 501 恰恰证明**请求没出页面** ✓。
+
+**∴ 修法 ✗**：探测改用 **`XMLHttpRequest`**——`api-local.js` 只覆写 `fetch`
+（**`grep -c XMLHttpRequest crates/yanshi-http/assets/api-local.js` = 0 ✓**），XHR 照常经过
+SW 与网络栈 ⇒ CDP 的 offline 对它**真实生效** ✓。
+
+**∴ 实测（双向，同一 harness、同一静态导航 ✓）**：
+
+| 探针 | 断网后的返回 | 结论 |
+|---|---|---|
+| 旧：`fetch(NEGATIVE_CONTROL)` | `{failed:false, status:501}` ⇒ VOID 退出码 3 | **测的是本地层，不是网络** ✗ |
+| 新：`XHR` 同一 URL | `{failed:true, status:0, onLine:false, via:"xhr"}` | **测的是网络栈本身** ✓ |
+
+⇒ 判据侧的等价性两头都拿到过：**修复前** export 以 `status:501` VOID（退出码 3 ✓），
+**修复后** export 与 draw 全绿（退出码 0 ✓，`下载目录里的文件：["doc_nc.png"]`）。
+reload 转成**另一条已登记的缺陷**（「在线那一笔没渲染出来」✗——负对照这次真的不再冤枉它了 ✓）。
+
+**∴ 顺带修的一个自伤 ✗**：第一版 XHR 探针写成 `(() => new Promise((resolve) => { … return { failed: … } }))()`
+——`return {…}` 后面的 `{` 被解析成**语句块** ⇒ 箭头函数返回的是 resolve 自身 ⇒
+CDP 打印 `{"type":"function","value":{}}`、判据拿到 `undefined` ⇒ **又一次「测量工具要先被测量」** ✓。
+正确写法：`(() => new Promise((resolve) => { … xhr.send(); }))()`（resolve 显式调用 ✓）。
+
+**∴ 教训 ✗**：**负对照必须走在「被测路径之外」的通道上**✗ ⇒ **∴ 凡是**页面里存在
+**全局覆写**（fetch／定时器／存储 ✓）的地方，**对照组要走另一条没有被覆写的 API** ✓——
+与「采样点先算边界」「一个判据多个 case 用独立文档」同族：**先确认尺子量的是想要的东西**。

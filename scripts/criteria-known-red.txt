@@ -137,8 +137,7 @@ browser-export-full-document.mjs  # **类型：环境敏感（内核就绪超时
 # **∴ 其中 1 条**当轮已修**✗ ⇒ **∴ 不在下面** ✓**：`tool-criteria-coverage.mjs`
 #   （**∴ 它**报了 `safe-edit.mjs`／`report-accounts.mjs` 没接线**✗ ⇒ **∴ 加进
 #     `tool-criteria-coverage.mjs` 的 `NOT_CRITERIA` ＋ 写明理由 ✓，提交 `0de84545` ✓）★
-browser-offline-export.mjs   # 类型：判据的负对照设计错（本地 API 覆写了 window.fetch ⇒ 501 被当成"网络还通"）
-browser-offline-reload.mjs   # 类型：同上（负对照）＋ 在线那一笔没渲染出来（客户端落笔一族）
+browser-offline-reload.mjs   # 类型：产品缺陷（客户端落笔一族：在线那一笔没渲染出来）——负对照 501 已在第 738 轮修好（探针改走 XHR，见台账第 450 节）
 browser-stroke-refresh.mjs   # 类型：产品缺陷（客户端落笔之后画布不更新）
 browser-no-stale-read.mjs    # 类型：产品缺陷（重载后读到旧状态：0 ≤ 0）
 browser-offline-brush.mjs    # 类型：产品缺陷（离线那一笔没挺过刷新：blobs=0／replay=0）
