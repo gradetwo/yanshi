@@ -254,11 +254,15 @@ impl AtomLog {
                 .atoms
                 .partition_point(|existing| existing.seq <= atom.seq);
             self.next_seq = self.next_seq.max(atom.seq + 1);
-            self.by_id.insert(atom.id.clone(), index);
+            let inserted = atom.id.clone();
+            self.by_id.insert(inserted.clone(), index);
             self.atoms.insert(index, atom);
-            // **插在中间 ⇒ 后面那些的下标全要 +1** ✓（`by_id` 是下标表 ✓）
-            for value in self.by_id.values_mut() {
-                if *value > index {
+            // **插在中间 ⇒ 从 `index` 起的那些下标都要 +1** ✓（`by_id` 是下标表 ✓）
+            //   **⇒ `>= index` 而不是 `> index`** ✓：被挤走的第一个元素**正好在** `index` 上 ✓
+            //     （第 756 轮判据抓到的实锤：用 `>` 时 `atom_layer` 停在下标 1 ⇒ 指向了别人 ✓）。
+            //   **⇒ 刚插入的那一条要跳过** ✓（它自己的下标就是 `index` ✓）。
+            for (key, value) in self.by_id.iter_mut() {
+                if key != &inserted && *value >= index {
                     *value += 1;
                 }
             }
@@ -1170,6 +1174,68 @@ fn check_layer_exists(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// **`adopt` 的语义**（第 756 轮）：保留外来 `seq` ✓、插到正确位置 ✓、同 `id` 幂等 ✓、
+    /// `next_seq` 推到 `max + 1` ✓、`by_id` 下标**随插入平移** ✓。
+    ///
+    /// **⇒ 为什么要"留空洞"** ✗：第 755 轮我把种子设成 1、2，并进来的 4、5 全在**末尾**
+    /// ⇒ 平移是**空操作** ⇒ 删掉平移那三行**也照样通过** ✓（变异 M-exit=0）⇒ 判据没鉴别力 ✗。
+    /// ⇒ 所以这里种子是 **1、5**（中间有洞 ✓），并进 **3、4** ⇒ 会插到**中间** ✓ ⇒ 平移不再是空操作 ✓。
+    ///
+    /// **变异**：删掉 `adopt` 里"`by_id` 下标平移"那三行 ⇒ 下面 ④ 红 ✓（实测过 ✓）。
+    #[test]
+    fn adopt_keeps_foreign_sequences_and_translates_indexes() {
+        let mut first = create_doc();
+        first.seq = 1;
+        let mut far = create_layer();
+        far.seq = 5;
+        let mut log = AtomLog::with_atoms(vec![first, far]).expect("建日志");
+        assert_eq!(log.head_seq(), 5, "两条原子，最大 seq 是 5（中间有空洞）");
+
+        let mut middle_a = create_object().with_id("atom_mid_a");
+        middle_a.seq = 3;
+        let mut middle_b = create_object().with_id("atom_mid_b");
+        middle_b.seq = 4;
+        log.adopt(vec![middle_a, middle_b]);
+
+        // ① `next_seq` 必须推到 max + 1 ✓
+        assert_eq!(log.next_seq(), 6, "最大 seq 5 ⇒ next_seq 必须是 6");
+        assert_eq!(log.len(), 4, "四条原子");
+        // ② 按 seq 取得到、且是对的那条 ✓
+        assert_eq!(
+            log.by_seq(3).map(|atom| atom.id.as_str()),
+            Some("atom_mid_a")
+        );
+        assert_eq!(
+            log.by_seq(4).map(|atom| atom.id.as_str()),
+            Some("atom_mid_b")
+        );
+        // ③ 原本在后面的那条仍在 seq 5 ✓
+        assert_eq!(
+            log.by_seq(5).map(|atom| atom.id.as_str()),
+            Some("atom_layer")
+        );
+        // ④ **`by_id` 必须跟着平移** ✓：`atom_layer` 原来在下标 1，插进两条后必须是下标 3 ✓
+        assert_eq!(
+            log.by_id.get("atom_layer").copied(),
+            Some(3),
+            "`by_id` 下标没平移（实测 {:?}）",
+            log.by_id.get("atom_layer")
+        );
+        assert_eq!(
+            log.by_id
+                .get("atom_layer")
+                .map(|index| log.atoms[*index].id.as_str()),
+            Some("atom_layer"),
+            "`by_id` 指错了原子"
+        );
+        // ⑤ 再并入同 id ⇒ 幂等 ✓（不重复、号不动）
+        let mut again = create_object().with_id("atom_mid_a");
+        again.seq = 3;
+        log.adopt(vec![again]);
+        assert_eq!(log.len(), 4, "同 id 再并入不许变多");
+        assert_eq!(log.next_seq(), 6, "幂等之后 next_seq 不变");
+    }
 
     fn create_doc() -> Atom {
         Atom::new(
