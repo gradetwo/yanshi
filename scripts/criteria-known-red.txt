@@ -19605,7 +19605,8 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #       **★ `❌ 内核 wasm 缺失：web/wasm/yanshi_wasm_bg.wasm` ✗** ✓
 #         ＋ **"内核 JS 胶水缺失"** ✓
 #         ＋ **提示**：**跑 `node scripts/pwa-sync-wasm.mjs`** ✓**** ✓✓
-browser-offline-journal.mjs  # #     **∴ ② `browser-offline-journal.mjs` ✗**：
+# 【第 739 轮移除】browser-offline-journal.mjs —— 分段导航已落地，七段全绿＋两条变异各自能红
+#   （改法与证据：brush-capability-gap.md 第 451 节 ✓；本行上方保留的是第 731 轮的定案记录 ✓）
 #       **★ "Service Worker 必须已激活（否则断网判据不成立）" ★** ✓
 #         ⇒ **∴ 它**依赖 wasm／SW 资产**✓ ⇒ **∴ 与 ① 同源** ✓**** ✓✓
 #     **∴ 统计 ✗**：**"通过 19｜意外失败 2｜已知红 3｜跳过 0"** ✓**** ✓✓
