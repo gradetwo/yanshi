@@ -444,19 +444,31 @@ if (existsSync(MEDIUM_SRC)) {
 //     **代价**＝**部署体积 ＋13 M ✗**（**纹理 ✓）——
 //       **∴ 而**静态托管**按需取 ✗ ⇒ **∴ 运行时不付代价 ✓**
 //         （**∴ 只有**真的用到纹理时**才下载 ✓）** ✓✓
-// **★ 作品展示图 ✓**（2026-10-16 ✓）：与笔刷/纹理/调色板**同一形状** ✓ ——
-//   **∴ 单一源**是 `assets/showcase/` ✓**（服务端也在发它 ✓，见 `server.rs::showcase_asset` ✓）
-//   ⇒ **∴ `web/showcase/` 是导出产物** ✓（已在 `.gitignore` 里 ✓）。
+// **★ 作品展示图 ✓**（2026-10-16 ✓；**这一段注释于第 745 轮核正 ✓**）：
+//   **∴ 单一源**是 `assets/showcase/` ✓（**服务端也从它发**✓ 见 `server.rs` 的 `/showcase/` 分支 ✓）
+//     ⇒ **∴ 页面引用的那几张必须在它里面**✓（**原来踩过的坑**：只放 `web/` ⇒ **服务端首页全 404**✓）。
+//   **∴ 但 `web/showcase/` 不是**纯导出产物** ✗ ★**（**原来这句写错了 ✓**）：
+//     它**故意入库**✓（**`.gitignore` 里那条 `web/showcase/` 是被注释掉的**✓，
+//     理由写着「**README 的图在 GitHub 上是 404**」✓ ⇒ **∴ 一旦忽略 ⇒ 远端裂图 ✗ 而本地看不出来**✓）
+//     ＋ **仓库里还有一张源里没有的图**（`ballet-reference-study-4k.png`✓ 6.0 M ✓ 两版 README 用 ✗ **页面不用**
+//       ⇒ 服务端取不到它**不是 bug**✓ ⇒ **∴ 所以**这段**不许**像字体段那样**清空目录**✓）
+//   ⇒ **∴ 于是形状与字体段不同 ✗**：字体段是**镜像**✓ ⇒ **这里只追加自己拷的**✓
+//     ⇒ **∴ 但**「**包里几个文件**」与「**本次同步几张**」是**两个数**✗ **必须分开报**✓
+//       （**原来只报目的地数 ⇒ 源空着也说「3 张 ✓」✗ 与字体段同一个毛病 ✓ 外部 §71 ✓**）
 const SHOWCASE_SRC = "assets/showcase";
 const SHOWCASE_DST = join(DST, "showcase");
 if (!existsSync(SHOWCASE_SRC)) {
-  console.warn("  WARN: 找不到 assets/showcase ⇒ 跳过作品展示图同步");
+  console.warn("  WARN: 找不到 assets/showcase ⇒ 跳过作品展示图同步（页面里的展示图会取不到）");
 } else {
   mkdirSync(SHOWCASE_DST, { recursive: true });
-  for (const f of readdirSync(SHOWCASE_SRC)) {
-    if (f.endsWith(".png")) copyFileSync(join(SHOWCASE_SRC, f), join(SHOWCASE_DST, f));
+  const showcaseNames = readdirSync(SHOWCASE_SRC).filter((f) => f.endsWith(".png"));
+  for (const f of showcaseNames) copyFileSync(join(SHOWCASE_SRC, f), join(SHOWCASE_DST, f));
+  if (showcaseNames.length === 0) {
+    console.warn("  WARN: assets/showcase 里没有 .png ⇒ 本次同步 0 张（离线首页会是裂图 ✗）");
   }
-  console.log(`  OK: 作品展示图 => web/showcase（${readdirSync(SHOWCASE_DST).length} 张 ✓）`);
+  const showcaseExtras = readdirSync(SHOWCASE_DST).filter((f) => !showcaseNames.includes(f));
+  console.log(`  OK: 本次同步作品展示图 ${showcaseNames.length} 张 => web/showcase` +
+    (showcaseExtras.length ? `（另有 ${showcaseExtras.length} 张仓库自带：${showcaseExtras.join(", ")} ✓ 故意入库 ⇒ 不清除 ✓）` : ""));
 }
 
 const PALETTE_SRC = "assets/palettes";
