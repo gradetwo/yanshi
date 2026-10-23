@@ -17373,3 +17373,22 @@ skipped brush parity（按设计不阻塞）
 
 **⇒ 结论**：`d9a1237e`（recency 拆分）在**121 条受影响判据**上没有引入任何意外失败 ✓
 ⇒ 加上 CI 全绿（`d9a1237e completed/success`）⇒ 这笔改动可以认为**站住了** ✓。
+
+## 四百四十五、审计包（读游标）合并后 **CI 全绿**（`6cc8c06b`，第 698 轮）
+
+**⇒ 两个提交分工**：
+| 提交 | 内容 | CI |
+|---|---|---|
+| `0bcdc706` | 合并审计补丁（3 个缺陷 ＋ 264 行判据 ＋ PWA 判据）| **failure**：`criteria shard 2/6` 的 `tool-repo-root-clean`（顶层多了 `tools/`）|
+| **`6cc8c06b`** | 把两个变异脚本移到 `scripts/mutations/` | **success** ✓（无 failure／cancelled）|
+
+**⇒ 这轮的三个坑（都记下来）**：
+1. **外部包会带顶层目录** ✓：`tools/` 一进来就被 `tool-repo-root-clean` 抓住（判据说"被跟踪比未跟踪**更严重**"✓）
+   ⇒ **以后合并补丁先看 `git apply --stat` 的路径**，顶层新目录要先搬走 ✓。
+2. **本地 sync 会改构建戳** ✗：`web/index.html`／`web/sw.js` 的缓存名被改成 `…3051941779129`
+   ⇒ 我**误带进了提交** ✗ ⇒ 已回滚（它们不是内容改动，是 `__BUILD_ID__` 的产物 ✓）。
+3. **heredoc 写坏提交信息** ✗：`git commit -F - <<'EOF' … EOF2` 拼错 ⇒ 提交信息变成一行 shell 命令
+   ⇒ 用 `--amend -F <文件>` 修正 ✓（**以后提交信息一律写进文件再用 `-F`** ✓）。
+
+**⇒ 磁盘**：`target/debug` 一度 **120 G**、根分区 **91%（剩 9.9 G）** ⇒ 清 `deps`／`build`／`incremental`
+⇒ **2.0 G**、分区 **62%（剩 42 G）**，回收约 **32 G** ✓。
