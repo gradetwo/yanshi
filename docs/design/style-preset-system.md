@@ -195,6 +195,7 @@ textures/render_params/seed_policy），是绘画侧的笔触样式，**不是�
 | 色调（绿↔品红） | `white_balance.tint`，正 = 品红 |
 | 曲线点 (输入→输出，0–255) | `curves.points` ÷255 归一后**逐点过 sRGB EOTF 换成线性坐标**（内核曲线直接作用于线性 RGB，不转换量级会被放大，见 §9.1 续；点列须含首尾） |
 | 抬黑点 fade（输出 5–15/255） | 曲线首点 y ÷255 后同样过 EOTF 换线性（**只能走曲线**：`levels.black` 是输入黑点、方向相反，写它只会压暗部——2026-10-23 修订，原稿把两者并列是错的） |
+| 色阶输入黑点（0–255） | `levels.black` ÷255 后**过 EOTF 换线性**（内核 black 是线性输入黑点位置，不转换有效显示黑点会被放大到 0.15–0.35，见 §9.1 续；white / gamma 跨空间近似不变，直通） |
 | 分离色调/色彩分级（H/S 两轮） | `split_toning` 三元组：按目标色的 RGB 偏移方向近似，量级 ≤0.15/分量（速查通则：分级宁小勿大，两轮之和 ≤25 的口径映射为三元组小量）；v2 四套再减半 |
 | HSL 逐通道（H/S/L） | **无逐通道 HSL**：全局 `hsl` 只动整体；逐通道意图改用 `selective_color` 的 CMYK 偏移近似，或写入 unsupported |
 | 校准面板移色 | `channel_mixer` 矩阵近似（赛博朋克），或 unsupported |
@@ -265,15 +266,54 @@ morandi 逐 op 隔离（基线黑位 p2 0.084、明度 std 0.131、均值 0.315�
   在覆盖瞬间把旧量级带回来；转换保单调，方向性单测（旋钮越大首点 y 越高）
   仍成立。
 
-**`brightness_contrast` 只点名、本次不动数据**：它同样是无枢轴线性运算
-（`value × contrast + brightness` 作用于线性值），morandi 隔离中单独
-p2 → 0.178【次犯】。但已过版的行（western_cool / lomo / forest）都含它且
-量级温和、目检无恙，贸然改数据会让已定版结果漂移。写预设时注意：它的
-显示等效量级随像素明度变（暗部相对增益更大）；是否给它加枢轴语义，
-与 split_toning 的内核侧问题一并留待后续评审。
+**同根问题三：`levels.black` 是位置型参数（2026-10-24 审计实锤）。**
+内核 `levels` 的 black / white 是**线性**输入黑白点位置
+（`out = ((v−black)/(white−black))^(1/gamma)`），而 6 套预设的著录值
+0.02–0.10 是按显示空间输入黑点直觉落的（§9 换算表此前没有 levels 一行，
+是文档缺口，已补）。有效显示黑点 = enc(black)：
 
-修正段只有 exposure / shadows_highlights / dehaze / clarity，不含 curves
-与 brightness_contrast，已渲的原图 / 修正图不受影响，重渲只需补 style 格。
+| 预设 | 著录 black | 有效显示黑点（转换前） | 转换后 black（线性） |
+|---|---|---|---|
+| cinema | 0.02 | 0.15 | 0.0015 |
+| ins_minimal | 0.03 | 0.19 | 0.0023 |
+| hdr_landscape | 0.03 | 0.19 | 0.0023 |
+| japanese_airy | 0.04 | 0.22 | 0.0031 |
+| sweet | 0.06 | 0.27 | 0.0049 |
+| korean | 0.10 | 0.35 | 0.01 |
+
+即暗部压黑的位置是著录意图的约 3.5–7 倍（korean 最重：显示 0.35 以下
+全压成黑）。修法与 curves 同：black_kernel = lin(black_著录）逐套转换。
+连带核对：white（0.99 的有效显示白点 0.9956）与 gamma（幂运算跨空间
+近似不变，仅深影分段区有二阶偏差）清白，不动；neutral 的 black 恒为 0，
+strength = 0 恒等不受影响。本条与旋钮归属问题（22290c4）相互独立：
+那次确认的是 black 的**方向**（输入侧、与抬升相反），这次是同一参数的
+**位置量纲**。注意 japanese_airy 是 established，其现行观感包含这 0.22
+的有效黑点——转换后暗部会明显变开，须以重渲目检定版（同 morandi
+金丝雀口径）；本册另三行 cinema / ins_minimal / hdr_landscape 赶在
+渲染前落数据，省整行重渲。
+
+**`brightness_contrast` 只点名、本次不动数据（2026-10-24 审计数据补全）**：
+它是无枢轴线性运算（`out = clamp(v·contrast + brightness)`，对比绕
+黑点 0 缩放、亮度为线性加法），与 §9 的著录直觉（显示空间绕 0.5 枢轴
+对比 + 显示加法亮度）**几何与空间双错位**。审计解析对照（显示探针值）：
+黑端 +brightness 的线性加法实效为著录值的 **5–6 倍**（著录 0.03 →
+黑端抬到显示 0.19 量级；morandi 隔离实测 bc 单独 p2 → 0.178 与此吻合）；
+contrast > 1 的一组（ccd 1.30 / y2k 1.38 / western_cool 1.20 /
+dark_moody 1.28 / hong_kong 1.28）内核并不压黑，代之以高光硬剪切，
+剪切点 = 显示 enc(1/c) ≈ **0.87–0.92**，即显示 0.87 以上并入纯白；
+中灰偏差 −0.09..+0.10 显示单位。**处置：不动已验收行的数据**——
+western_cool / lomo / forest / morandi 的现行观感已经包含此行为，
+改数据等于推翻验收；needs_review 的 10 套将来逐套评审时，按上述
+真实语义复核各自的 (brightness, contrast) 对；给内核加枢轴 / 显示
+空间模式是内核语义变更，留 gradetwo 评审。
+
+**潜伏警告：`color_balance`**：与 split_toning 同为线性空间的加法
+分档偏移，当前无任何预设使用。将来一旦著录，三元组必须按线性量级
+取（约显示直觉的 1/3），否则会同形态翻车。
+
+修正段只有 exposure / shadows_highlights / dehaze / clarity，不含
+curves、levels 与 brightness_contrast，已渲的原图 / 修正图不受影响，
+历次量纲修复重渲都只需补 style 格。
 
 ## 10. 测试门与三期划分
 
