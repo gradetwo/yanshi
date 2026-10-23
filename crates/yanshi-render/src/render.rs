@@ -3569,92 +3569,16 @@ impl Renderer {
     /// 渲染路径请用 [`Renderer::padding_for_region`]：它按区域收紧外扩，避免远离修图笔迹的
     /// tile 也按整篇文档的最大值膨胀缓冲。
     pub fn filter_padding(&self, state: &DocumentState) -> u32 {
-        let mut padding = 0u32;
-        // 蒙版羽化同样是「有限支撑的邻域运算」：区域渲染必须外扩，
-        // 否则 tile 边界会被 clamp，与整幅渲染不一致（bit-exact 自检会失败）。
-        for layer in state.alive_layers() {
-            let Some(mask_id) = &layer.mask_id else {
-                continue;
-            };
-            let Some(mask) = state.masks.get(mask_id) else {
-                continue;
-            };
-            if mask.is_deleted() || mask.feather <= 0.0 {
-                continue;
-            }
-            let radius = (mask.feather / 2.0).round().max(1.0) as u32;
-            padding = padding.max(radius + 1);
-        }
-        for object in state.alive_objects() {
-            // 修图对象从偏移位置采样：区域渲染必须外扩到源像素，否则边缘会缺一块。
-            if object.object_type == yanshi_core::ObjectType::Liquify {
-                let size = object
-                    .data
-                    .get("size")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(80.0);
-                let strength = object
-                    .data
-                    .get("strength")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(0.5)
-                    .abs()
-                    .clamp(0.0, 2.0);
-                padding = padding.max((size / 2.0 + strength * size + 2.0).ceil() as u32);
-                continue;
-            }
-            if object.object_type == yanshi_core::ObjectType::Retouch {
-                let size = object
-                    .data
-                    .get("size")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(24.0);
-                let offset = object
-                    .data
-                    .get("source_offset")
-                    .and_then(Value::as_array)
-                    .map(|pair| {
-                        (
-                            pair.first().and_then(Value::as_f64).unwrap_or(0.0).abs(),
-                            pair.get(1).and_then(Value::as_f64).unwrap_or(0.0).abs(),
-                        )
-                    })
-                    .unwrap_or((0.0, 0.0));
-                let reach = (offset.0.max(offset.1) + size / 2.0 + 2.0).ceil() as u32;
-                padding = padding.max(reach);
-                continue;
-            }
-            // **几何/邻域类调整也要外扩** ✓（缺陷修复）：旧口径「调整不产生外扩」只对
-            // 逐像素调整成立；lens/perspective 的源像素可偏离输出像素（见
-            // `AdjustmentKind::padding`），不外扩 ⇒ 子缓冲里没有源像素 ⇒ 采样判越界
-            // 写透明（曾表现为并行分带下的交替白带 ✓）。
-            if object.object_type == yanshi_core::ObjectType::Adjustment {
-                let kind_name = object
-                    .data
-                    .get("adjustment_type")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let params = object.data.get("params").cloned().unwrap_or(Value::Null);
-                if let Some(kind) = AdjustmentKind::from_name(kind_name) {
-                    padding = padding
-                        .max(kind.padding(&params, (state.width as f64, state.height as f64)));
-                }
-                continue;
-            }
-            if object.object_type != yanshi_core::ObjectType::Filter {
-                continue;
-            }
-            let name = object
-                .data
-                .get("filter_name")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let params = object.data.get("params").cloned().unwrap_or(Value::Null);
-            if let Some(kind) = FilterKind::from_name(name) {
-                padding = padding.max(kind.padding(&params));
-            }
-        }
-        padding
+        // **与 `global_padding` 同一口径** ✓（第 711 轮；外部审计 R-11）
+        //   **⇒ 缺陷**：这两份实现**各缺一块** ✗ ——
+        //     `global_padding` 认**形状羽化**（`geometry.feather`）与 `Retouch.smudge_length` ✓，
+        //     而 `filter_padding` **不认这两项** ✗ ⇒ **外扩不足** ⇒ 区域渲染时邻域被裁 ✓
+        //     （与整幅渲染不再逐字节一致 ✓）。
+        //   **⇒ 修法**：**同一事实只写一处** ✓ —— 直接复用 `global_padding` ✓。
+        //     它的口径是**超集**（多算不会错、只会多渲几个像素 ✓），所以这个替换是安全的 ✓。
+        //   **⇒ 判据**（`padding_agreement_tests`）：带羽化形状 ＋ 带 `smudge_length` 的文档上，
+        //     两个函数的返回值必须**相等** ✓。**变异**：让 `filter_padding` 退回旧口径 ⇒ 红 ✓。
+        self.global_padding(state)
     }
 
     fn render_layer_objects(
@@ -8556,6 +8480,47 @@ mod tests {
         assert_eq!(
             local, cloned,
             "区域渲染与整幅渲染必须逐字节一致：{local:?} vs {cloned:?}"
+        );
+    }
+
+    /// **`filter_padding` 与 `global_padding` 必须同口径** ✓（第 711 轮；外部审计 R-11）
+    ///
+    /// **⇒ 缺陷**：前者不认**形状羽化**与 `Retouch.smudge_length` ⇒ 外扩不足 ⇒ 区域渲染裁掉邻域 ✗。
+    /// **⇒ 判据**：在**同时含这两项**的文档上，两个函数的返回值必须相等 ✓
+    ///   （以前它们是 `0` 与 `>0` 的差别 ✓）。**变异**：让 `filter_padding` 退回旧实现 ⇒ 红 ✓。
+    #[test]
+    fn filter_padding_matches_global_padding_on_feathered_shapes_and_smudges() {
+        let mut state = white_document();
+        // ① 带羽化的形状（羽化写在 `geometry` 里 ✓）
+        state.objects.insert(
+            "shape_feather".to_owned(),
+            object(
+                "shape_feather",
+                "layer_1",
+                ObjectType::Shape,
+                0,
+                json!({"kind": "rect", "x": 2.0, "y": 2.0, "w": 8.0, "h": 8.0,
+                       "geometry": {"feather": 20.0}}),
+            ),
+        );
+        // ② 带 `smudge_length` 的修图对象
+        state.objects.insert(
+            "retouch_smudge".to_owned(),
+            object(
+                "retouch_smudge",
+                "layer_1",
+                ObjectType::Retouch,
+                0,
+                json!({"kind": "smudge", "size": 10.0, "smudge_length": 40.0}),
+            ),
+        );
+        let renderer = renderer();
+        let global = renderer.global_padding(&state);
+        let filter = renderer.filter_padding(&state);
+        assert!(global > 0, "夹具没造出外扩 ⇒ 判据测不到东西");
+        assert_eq!(
+            filter, global,
+            "filter_padding 与 global_padding 口径不一致（{filter} vs {global}）⇒ 区域渲染会裁掉邻域"
         );
     }
 
