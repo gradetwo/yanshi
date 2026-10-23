@@ -2398,15 +2398,14 @@ impl Renderer {
                 // 可能被丢掉 ✗** ⇒ **∴ 命中率低于真正 LRU ✓**。
                 if let Ok(mut guard) = below.lock() {
                     if let Some(c) = guard.as_mut() {
-                        let mut recent: Vec<((i64, i64), crate::buffer::Buffer)> = Vec::new();
-                        let mut rest: Vec<((i64, i64), crate::buffer::Buffer)> = Vec::new();
-                        if let Some(tiles) = std::sync::Arc::get_mut(&mut c.tiles) {
-                            for t in tiles.drain(..) {
-                                if want_tiles.contains(&t.0) {
-                                    recent.push(t);
-                                } else {
-                                    rest.push(t);
-                                }
+                        let mut recent = Vec::new();
+                        let mut rest = Vec::new();
+                        // **`Arc` 不能就地 drain** ✓（第 683 轮）：先把共享引用换成空表，再拿自有的那份 ✓
+                        for t in take_tiles(&mut c.tiles) {
+                            if want_tiles.contains(&t.0) {
+                                recent.push(t);
+                            } else {
+                                rest.push(t);
                             }
                         }
                         rest.extend(recent); // **∴ 刚用过的排到尾部 ⇒ 下次先丢别人 ✓**
