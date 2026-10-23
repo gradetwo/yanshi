@@ -194,7 +194,7 @@ textures/render_params/seed_policy），是绘画侧的笔触样式，**不是�
 | 色温偏移（K 差） | `white_balance.temperature ≈ ΔK/3000` 钳到 [−1,1]；正 = 暖（内核：R 增、B 减） |
 | 色调（绿↔品红） | `white_balance.tint`，正 = 品红 |
 | 曲线点 (输入→输出，0–255) | `curves.points` ÷255 归一（Yanshi 是单调三次插值，点列须含首尾） |
-| 抬黑点 fade（输出 5–15/255） | 曲线首点 y ÷255，或 `levels.black`（小量，二者取一，不叠） |
+| 抬黑点 fade（输出 5–15/255） | 曲线首点 y ÷255（**只能走曲线**：`levels.black` 是输入黑点、方向相反，写它只会压暗部——2026-10-23 修订，原稿把两者并列是错的） |
 | 分离色调/色彩分级（H/S 两轮） | `split_toning` 三元组：按目标色的 RGB 偏移方向近似，量级 ≤0.15/分量（速查通则：分级宁小勿大，两轮之和 ≤25 的口径映射为三元组小量）；v2 四套再减半 |
 | HSL 逐通道（H/S/L） | **无逐通道 HSL**：全局 `hsl` 只动整体；逐通道意图改用 `selective_color` 的 CMYK 偏移近似，或写入 unsupported |
 | 校准面板移色 | `channel_mixer` 矩阵近似（赛博朋克），或 unsupported |
@@ -268,7 +268,7 @@ full = 全量基线、light = 轻校正基线（配方均以 strength=1 记，�
 - 实测：以「JP LIGHT FINAL」在三素材（圣托里尼、罗弗敦雾天变体 JP CLEAN、树荫人像）
   深挖验证；此前蒙灰纱，换轻校正基线。
 - 配方要点（light）：曝光 +0.45、低对比、抬黑曲线、高光回收、微暖白平衡、柔 texture。
-- 旋钮：`fade` 空气感（levels.black）、`softness` 柔和度（texture.amount）。
+- 旋钮：`fade` 空气感（curves.points 首点抬升）、`softness` 柔和度（texture.amount）。
 - unsupported：逐通道 HSL 用全局 + selective 近似；眼睛局部锐化属蒙版活。
 
 ### 2. 模拟 CCD `ccd` — established（已验证）
@@ -307,7 +307,7 @@ full = 全量基线、light = 轻校正基线（配方均以 strength=1 记，�
 - 题材：旅行、街头、叙事人像、夜景灯火；慎：无青/橙素材硬套、分级过饱和卡通化。
 - 实测：v1 全局泼青（威尼斯暖灯被灭、罗弗敦海面成青汤）；v2 青只压阴影、橙留亮部
   （只用 split_toning 分段，全局饱和不推高）。
-- 旋钮：`teal_orange` 青橙对峙、`matte` 哑光（levels.black）。
+- 旋钮：`teal_orange` 青橙对峙、`matte` 哑光（curves.points 首点抬升）。
 
 ### 9. 法式 `french` — needs_review
 - 题材：田园、家居、窗光人像、婚礼细节；慎：都市夜景、双暖变黄墙。琥珀奶油橄榄绿。

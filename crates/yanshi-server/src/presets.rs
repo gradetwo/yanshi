@@ -994,4 +994,34 @@ mod preset_expander_tests {
             "未知预设报错必须写出收到的 id：{detail}"
         );
     }
+
+    /// 「抬黑点」类旋钮的方向守卫：fade（小清新）与 matte（电影）必须抬
+    /// **曲线首点的输出 y**，旋钮越大首点越高。`levels.black` 是输入黑点，
+    /// 加大只会把暗部往黑里压、方向相反——2026-10-23 首版数据曾把这两个
+    /// 旋钮错挂在 levels.black 上（描述写「抬量」、实际越拧越黑），本断言
+    /// 把方向钉死：谁再把目标改回 levels，这条立刻红。
+    #[test]
+    fn lift_knobs_raise_curve_first_point_not_levels_black() {
+        let library = builtin();
+        for (preset_id, knob_id) in [("japanese_airy", "fade"), ("cinema", "matte")] {
+            let preset = find_preset(&library, preset_id).unwrap();
+            let first_point_y = |knob_value: f64| -> f64 {
+                let mut knobs = Map::new();
+                knobs.insert(knob_id.to_owned(), json!(knob_value));
+                let ops = expand_preset(preset, 1.0, &knobs, false).unwrap();
+                let curves = ops
+                    .iter()
+                    .find(|op| op.segment == "style" && op.type_name == "curves")
+                    .unwrap_or_else(|| panic!("预设 {preset_id} 风格段必须有 curves 操作"));
+                curves.params["points"][0][1]
+                    .as_f64()
+                    .expect("曲线首点 y 必须是数字")
+            };
+            let (low, high) = (first_point_y(0.0), first_point_y(1.0));
+            assert!(
+                high > low,
+                "预设 {preset_id} 旋钮 {knob_id} 必须越拧黑点抬得越高（首点 y：0 档 {low} → 1 档 {high}）"
+            );
+        }
+    }
 }
