@@ -17392,3 +17392,28 @@ skipped brush parity（按设计不阻塞）
 
 **⇒ 磁盘**：`target/debug` 一度 **120 G**、根分区 **91%（剩 9.9 G）** ⇒ 清 `deps`／`build`／`incremental`
 ⇒ **2.0 G**、分区 **62%（剩 42 G）**，回收约 **32 G** ✓。
+
+## 四百四十六、外部**全仓审计**（2026-10-23，基线 `6cc8c06b`）：25 条，其中 **2 条是我引入的**（第 702 轮）
+
+**⇒ 报告**：`~/patch/audit-20261023-report.md`（390 行、12 HIGH／9 MEDIUM／4 LOW）✓
+**⇒ 我逐条读了 R-01…R-13 与 R-02/R-03 的代码**，结论如下（**只读、未改**；本轮预算不够安全地动 `render.rs`）：
+
+### 我的（必须修，且必须先有判据）
+| 编号 | 问题 | 我的判断 |
+|---|---|---|
+| **R-02** [HIGH] | ① 淘汰后**只改局部 `order`**，`carried_recency` 仍克隆**旧**值 ⇒ 死键永久留在队首 ⇒ 下次超预算挑到死键 ⇒ `retain` 删不掉任何东西 ⇒ **退到兜底 `drain(0..extra)`** ✗ ② `merged` 把**本次新算的 `fresh` 排在最前** ⇒ 兜底 drain **先删刚算出的块** ✗ | **成立** ✓（我读了源码：`recency: carried_recency` 与 `for (k, piece) in fresh { merged.push(..) }` 两处都对得上）|
+| **R-03** [HIGH] | 切回**已在 `by_sig` 里**的签名且**局部未命中**时：`needs_write = carried.get(&sig).is_none_or(|t| t.is_empty())` = **false** ⇒ 不更新 `by_sig` ⇒ 读侧 `tiles_for_sig` **优先返回 `by_sig`** ⇒ **旧子集永久**✗ | **成立** ✓（`needs_write` 是我第 683 轮加的 ✓）|
+
+### 不是我引入的（引擎／服务端／PWA）
+R-01（`above` 缓存三处：死代码嵌套／空白块漏判／`copy_from_slice` 抹底下层）✓、R-04（`sin_cos` 跨端确定性 ＋ 守卫漏检）✓、
+R-05（timelapse `blit` 在 sRGB 里 `over_pixel` ⇒ 擦除留残影、半透明重复加深；且默认背景白 vs 内核透明）✓、
+R-06（`yanshi-gpu`：`map_async` 忽略 `Result` ⇒ `get_mapped_range` Panic、超时把未完成映射的 Buffer 放回池、每次重编 Shader）✓、
+R-07（`clear_all_caches` 漏 `above`）✓、R-08（tar 顺序依赖 ＋ zlib 失败**静默**把压缩字节当像素）✓、
+R-09（`Retouch` 暗化因子**乘了两次** ⇒ `darken²`）✓、R-10（RAW 纹理分支**静默忽略** `mode/brightness_*`）✓。
+
+### 下一轮的顺序（按"便宜且能立判据"排）
+1. **R-08**（tar 两遍扫描 ＋ 解压失败报错）—— 判据好写、影响真实（`blobs.encoding` 顺序）；
+2. **R-09**（去掉重复的 `darken`）—— 一条像素判据即可；
+3. **R-07**（`clear_all_caches` 补 `above`）—— 一条结构判据；
+4. **R-04**（`sin_cos` → `libm`，守卫加 `sin_cos` 等）—— 判据是守卫脚本自己；
+5. **R-03 / R-02**（我引入的两条 HIGH）—— 要动 `by_sig`/`recency` 的写回逻辑，**先写判据**（R-02 的"新块不许先被淘汰"与 R-03 的"切回旧签名必须合并"），再用变异证明 ✓。
