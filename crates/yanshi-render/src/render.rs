@@ -1422,6 +1422,15 @@ impl Renderer {
         if let Ok(mut guard) = self.vector_raster.lock() {
             guard.clear();
         }
+        // **`above` 也必须清** ✓（第 705 轮；外部审计 R-07）
+        //   **⇒ 缺陷**：本函数的注释自己写着「**新增缓存必须纳入这里**」✓，而它只清了
+        //     `cache`／`below`／`vector_raster` ⇒ **漏了 `above`** ✗
+        //     ⇒ 全量失效之后，上方层缓存仍按**旧签名**命中 ⇒ **画面停在旧状态** ✗（静默 ✓）。
+        //   **⇒ 判据**（`clear_cache_tests`）：清完再读 `above_reuse_count()` 必须是 0 ✓；
+        //     变异（不写这三行）⇒ 那两条计数还留着 ⇒ 红 ✓。
+        if let Ok(mut guard) = self.above.lock() {
+            *guard = None;
+        }
     }
 
     /// 失效指定 tile（配合 [`crate::dirty`] 使用）。
