@@ -15,6 +15,7 @@
 //   `YANSHI_EXPORT_DIR="$ROOT/exports"` ⇒ 所以 `root = dirname(YANSHI_EXPORT_DIR)` ✓
 //
 // **∴ 变异**：把 `import_image` 净荷里的 `region` 删掉 ⇒ ②③ 必红 ✓
+import { decodePng } from "./lib/png.mjs";
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { createHash } from "node:crypto";
@@ -121,35 +122,10 @@ if (exported.ok !== true) {
   check(false, `③ export_png ⇒ ok=${exported.ok}`);
 } else {
   const buf = readFileSync(join(exportDir, outName));
-  let pos = 8, w = 0, h = 0, ct = 0;
-  const idat = [];
-  while (pos < buf.length) {
-    const len = buf.readUInt32BE(pos);
-    const type = buf.toString("ascii", pos + 4, pos + 8);
-    const data = buf.subarray(pos + 8, pos + 8 + len);
-    if (type === "IHDR") { w = data.readUInt32BE(0); h = data.readUInt32BE(4); ct = data[9]; }
-    if (type === "IDAT") idat.push(data);
-    pos += 12 + len;
-  }
-  const raw = zlib.inflateSync(Buffer.concat(idat));
-  const bpp = ct === 6 ? 4 : 3, stride = w * bpp;
-  const out = Buffer.alloc(h * stride);
-  for (let y = 0; y < h; y += 1) {
-    const f = raw[y * (stride + 1)];
-    const src = raw.subarray(y * (stride + 1) + 1, y * (stride + 1) + 1 + stride);
-    for (let x = 0; x < stride; x += 1) {
-      const a = x >= bpp ? out[y * stride + x - bpp] : 0;
-      const b = y > 0 ? out[(y - 1) * stride + x] : 0;
-      const c = x >= bpp && y > 0 ? out[(y - 1) * stride + x - bpp] : 0;
-      let v = src[x];
-      if (f === 1) v += a; else if (f === 2) v += b; else if (f === 3) v += (a + b) >> 1;
-      else if (f === 4) {
-        const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
-        v += pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
-      }
-      out[y * stride + x] = v & 255;
-    }
-  }
+  // **共用解码器** ✓（第 662 轮：原来这里内联 40 行 ⇒ 与判定逻辑重复 ⇒ 抽到 `lib/png.mjs` ✓）
+  const image = decodePng(buf);
+  const out = image.data;
+  const bpp = image.channels;
   let red = 0;
   for (let i = 0; i < out.length; i += bpp) {
     if (out[i] > 150 && out[i + 1] < 100 && out[i + 2] < 100) red += 1;

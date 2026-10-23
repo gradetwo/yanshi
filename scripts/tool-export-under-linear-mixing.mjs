@@ -11,8 +11,8 @@
 //   ③ 两条带子都必须**真的被画到**（与背景差 ≥ 8）✓。
 //
 // **变异**：把 `ColorMixing::Linear` 实现成与 `Rgb` 相同 ⇒ ② 红 ✓。
-import { existsSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { decodePng } from "./lib/png.mjs";
 
 const [base, doc, token] = process.argv.slice(2);
 if (!base || !doc || !token) {
@@ -86,21 +86,22 @@ if (!file || !existsSync(file)) {
   console.error(`  ⊘ 不可判：拿不到导出的 PNG（path=${JSON.stringify(file)}）`);
   process.exit(3);
 }
-const decoded = execFileSync("ffmpeg", ["-v", "error", "-i", file, "-f", "rawvideo", "-pix_fmt", "rgba", "-"], {
-  timeout: 120_000, maxBuffer: 256 * 1024 * 1024,
-});
-const pixelAt = (buffer, x, y) => {
-  const at = (y * docW + x) * 4;
-  return [buffer[at], buffer[at + 1], buffer[at + 2], buffer[at + 3]];
+// **用手写解码器，不用 ffmpeg** ✓（第 662 轮）：CI 上**没有 ffmpeg** ✗ ⇒
+//   `spawnSync("ffmpeg")` 会 `ENOENT` ⇒ 判据假红 ✓（这一条就是这么被 CI 抓到的 ✓）。
+const decodedPng = decodePng(readFileSync(file));
+const pixelAt = (image, x, y) => {
+  const at = (y * image.width + x) * image.channels;
+  const alpha = image.channels === 4 ? image.data[at + 3] : 255;
+  return [image.data[at], image.data[at + 1], image.data[at + 2], alpha];
 };
 
 const picked = [];
 for (const band of bands) {
   // **中段**：渐变在那里才混出第三种颜色
   const x = Math.round((x0 + x1) / 2);
-  const renderedPixel = pixelAt(rendered, x, band.y);
+  const renderedPixel = pixelAt({ width: docW, height: docH, channels: 4, data: rendered }, x, band.y);
   if (distance(renderedPixel, BACKGROUND) < 8) fail(`「${band.mixing}」重叠处仍是背景色 ⇒ 两笔没落上`);
-  picked.push({ ...band, x, renderedPixel, exportedPixel: pixelAt(decoded, x, band.y) });
+  picked.push({ ...band, x, renderedPixel, exportedPixel: pixelAt(decodedPng, x, band.y) });
 }
 
 for (const hit of picked) {
