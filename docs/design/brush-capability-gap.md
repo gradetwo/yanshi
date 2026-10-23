@@ -17172,3 +17172,22 @@ below 克隆 136 条 tile｜脏 tile 54 条
    **「`exit(3)` 的判据要在 CI 上核对它是否真的跑了」** ✓ —— 否则"跳过"会伪装成"通过" ✓。
 **⇒ 下一轮若能装/模拟编码器**：把 timelapse 的"渲帧"与"编码"拆开（缺 ffmpeg 时只统计不编码 ✓）
    ⇒ 这条判据就能在 CI 上真跑 ✓；在没做成之前，**我不声称它在 CI 上有效** ✓。
+
+## 四百三十六、CI 不可达期间的**本地替代验证**（第 679 轮）
+
+**⇒ 网络现状**：`api.github.com` 与 `github.com` 都返回 `000`、DNS 无返回 ⇒ **CI 结论取不到**；
+**SSH push 正常** ⇒ 代码都在远端 ✓。**∴ 所以这一轮不报"CI 绿"，报"本地验了什么"** ✓。
+
+**⇒ 本轮实测（都跑在最新 HEAD `cc2779a2` 上）**：
+| 检查 | 结果 |
+|---|---|
+| `cargo test -p yanshi-render --lib` | **485 passed / 0 failed**（7 ignored 为既有 ✓）|
+| `cargo test -p yanshi-timelapse` | **6 passed** |
+| `check-timelapse-below-cache-clones.mjs` | exit **0** |
+| `check-timelapse-produces-frames.mjs` | exit **0** |
+| `check-timelapse-shrink.mjs` | exit **0** |
+| `check-timelapse-shrink-scattered.mjs` | exit **0** |
+
+⇒ 覆盖面：**渲染层单测 485 条** ＋ **timelapse 全套判据 4 条** ＋ **6 条集成测试** ✓
+⇒ 这覆盖了本轮所有改动（`below` 缓存、矩形合并、`shrink_advice`）✓
+**⇒ 仍未验证**（必须等 CI）：workspace 级 `clippy`／`test (stable/beta)`／**6 个 criteria 分片** ✓
