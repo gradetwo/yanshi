@@ -485,6 +485,17 @@ impl<'a> ToolContext<'a> {
     }
 
     fn commit(&mut self, kind: AtomKind, payload: Value) -> Result<CommitResult> {
+        // **把来源写进原子本身** ✓（第 659 轮；外部 D5 的后半句：他们要「落账时写死」的来源 ✓）
+        //   **⇒ 为什么在收口点做**：`list_atoms` 的 `origin` 是**读时派生** ✓（对老日志有效 ✓），
+        //     但它**不是写入方当时的声明** ✗；这里在**所有提交都必经的唯一收口点**补一个
+        //     `payload.origin` ✓ ⇒ 一条事实（原子从哪来）只有**一个**写法 ✓。
+        //   **⇒ 取值口径与 `list_atoms` 的派生规则一致** ✓（见 `origin_of` ✓）：
+        //     `drawn`（有 `source.brush`）/ `imported`（`import_image` 且无画笔）/ `system` / `generated` ✓
+        //   **⇒ 不改老原子**：老日志没有这个字段 ⇒ 读时派生兜底 ✓。
+        let mut payload = payload;
+        if payload.get("origin").is_none() {
+            payload["origin"] = Value::String(origin_of(kind, &payload).to_owned());
+        }
         // **笔迹标签只对**这一笔**生效** ⇒ **∴ 读完立刻清** ✓
         let mut atom = match self.pending_label.take() {
             Some(label) => {
@@ -15540,6 +15551,36 @@ fn prime_stroke_total_length(state: &mut hokusai::BrushState, points: &[(f64, f6
 /// **为什么必须有这一份**：此前三处各写一个数 ✗ —— `paint_mask` 用 `(size*0.25).clamp(2,32)` ✓、
 /// `brush_deposit_mask` 单点写死 **4.0** ✗、多点阈值也写死 **4.0** ✗ ⇒ 同一个语义三个口径，
 /// 而且**大笔刷那两处必然失效**（size=176 时间距 44 > 位移 4 ✗）—— 正是外部实测到的那条 ✓。
+/// **原子来源的唯一口径** ✓（第 659 轮；外部 `report.md` 的 D5）
+///
+/// **`kind` 说的是"像素最后存在哪"（存储形态）**，不是来源 ✗ —— 笔触原子在库里恒为
+/// `import_image` ⇒ 拿 `kind` 当来源证明，会把「画出来的笔」误判成「导入了一张图」✓。
+///
+/// **⇒ 四个取值**：
+/// - `drawn` —— 净荷里有 `source.brush`（这一笔是某支笔画出来的 ✓）
+/// - `imported` —— `import_image` 且没有画笔来源 ✓（文件／流导入 ✓）
+/// - `system` —— 建文档／建图层这类记账原子 ✓
+/// - `generated` —— 其它（几何形状、滤镜、实例…）✓
+///
+/// **⇒ 两处共用**：`ToolContext::commit`（**落账时写进 `payload.origin`** ✓）与
+/// `list_atoms`（老日志没有该字段时**读时派生**兜底 ✓）—— 一条事实一个写法 ✓。
+pub(crate) fn origin_of(kind: AtomKind, payload: &Value) -> &'static str {
+    if payload
+        .get("source")
+        .and_then(|source| source.get("brush"))
+        .and_then(Value::as_str)
+        .is_some()
+    {
+        "drawn"
+    } else if kind == AtomKind::ImportImage {
+        "imported"
+    } else if matches!(kind, AtomKind::CreateDocument | AtomKind::CreateLayer) {
+        "system"
+    } else {
+        "generated"
+    }
+}
+
 pub(crate) fn deposit_nudge(size: f64) -> f64 {
     (size * 0.5).max(4.0)
 }
@@ -18497,29 +18538,18 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         //     `imported`—— `import_image` 且**没有**画笔来源 ✓（从文件/流导入 ✓）
         //     `system`  —— 建文档/建图层这类记账原子 ✓
         //     `generated` —— 其它（几何形状、滤镜、实例…）✓
-        let origin = if atom
-            .payload
-            .get("source")
-            .and_then(|source| source.get("brush"))
-            .and_then(Value::as_str)
-            .is_some()
-        {
-            "drawn"
-        } else if atom.kind == yanshi_core::AtomKind::ImportImage {
-            "imported"
-        } else if matches!(
-            atom.kind,
-            yanshi_core::AtomKind::CreateDocument | yanshi_core::AtomKind::CreateLayer
-        ) {
-            "system"
-        } else {
-            "generated"
-        };
+        // **落账时写死的优先，老日志退回派生** ✓（第 659 轮；外部 D5）
+        let origin = payload_str(atom, "origin")
+            .unwrap_or_else(|| origin_of(atom.kind, &atom.payload).to_owned());
+        let origin = origin.as_str();
         hits.push(json!({
             "atom_id": atom.id.to_string(),
             "seq": atom.seq,
             "kind": kind_label(&atom.kind),
             "origin": origin,
+            // **落账时写死的那个值**（老日志为 null ⇒ 只有派生 ✓）。判据靠它区分
+            //   「写入方声明」与「读时推断」✓（第 659 轮；外部 D5）
+            "stored_origin": payload_str(atom, "origin"),
             "label": atom.label,
             "group_id": atom.group_id,
             "layer_id": payload_str(atom, "layer_id"),

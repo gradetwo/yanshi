@@ -62,6 +62,14 @@ const drawn = atoms.filter((atom) => atom.origin === "drawn");
 if (drawn.length === 0) {
   fail(`刚画的那一笔没有 origin=drawn ⇒ 来源不可机械复核（清单：${atoms.map((a) => `${a.kind}/${a.origin}`).slice(0, 6).join(", ")}）`);
 }
+// **新原子必须把来源写进原子本身** ✓（第 659 轮；外部 D5 的后半句）
+//   ⇒ `stored_origin` 是**落账时写死的**值；老日志为 null（只有派生兜底 ✓）
+const storedMissing = drawn.filter((atom) => atom.stored_origin !== "drawn");
+if (storedMissing.length > 0) {
+  fail(
+    `刚画的笔没有把来源写进原子（stored_origin=${JSON.stringify(storedMissing[0].stored_origin)}）⇒ 只有"读时派生"，不是写入方声明`,
+  );
+}
 const system = atoms.filter((atom) => atom.origin === "system");
 if (system.length === 0) {
   fail(`建图层那类记账原子没有 origin=system ⇒ 来源分类不成立`);
