@@ -17191,3 +17191,29 @@ below 克隆 136 条 tile｜脏 tile 54 条
 ⇒ 覆盖面：**渲染层单测 485 条** ＋ **timelapse 全套判据 4 条** ＋ **6 条集成测试** ✓
 ⇒ 这覆盖了本轮所有改动（`below` 缓存、矩形合并、`shrink_advice`）✓
 **⇒ 仍未验证**（必须等 CI）：workspace 级 `clippy`／`test (stable/beta)`／**6 个 criteria 分片** ✓
+
+## 四百三十七、新红：`buffer_pool_budget_covers_every_concurrent_worker`（期望 4，实测 7）—— **不是我最近两处改动**（第 680 轮）
+
+**⇒ CI 恢复后的结论**：
+| 提交 | 结果 |
+|---|---|
+| `f8cf94ad`（矩形合并）| **failure**：`test (stable/beta)`、criteria 分片 2/4/5/6 |
+| `cc2779a2`（第一帧建议）| **failure**：同上 ＋ `GPU feature` |
+| `d8cc85b6`（此前的 ffmpeg 修复）| **success** ✓ |
+
+**⇒ 具体断言**（`crates/yanshi-render/tests/tile_parallel.rs:1047`）：
+```
+暖轮只应合成**不在 below 缓存里**的层：期望 1 × 4 = 4，实测 分配/复用 = 0/7
+```
+
+**⇒ 已排除的两条（本机 A/B，同一条测试）**：
+| 变体 | 结果 |
+|---|---|
+| 把 `guard.take()` 改回 `clone`（即撤掉 `af700167`）| **仍然 7** ✗ |
+| 把插入改回**无条件**（即撤掉 `9fa87d32`）| **仍然 7** ✗ |
+⇒ **∴ 所以这两笔都不是起因** ✓ ⇒ 起因在**更早**（`d8cc85b6` 还是绿的 ⇒ 区间在 `d8cc85b6..f8cf94ad` 之间，
+   但我这两处 A/B 已排除 ✓）。
+
+**⇒ 下一轮第一件事**：在 `d8cc85b6` 的**独立 worktree**（`/tmp/wt-<sha>`，不碰别人的 `~/yanshi-worktrees/*`）
+里跑同一条测试 ⇒ 若绿，则区间缩小到 `f8cf94ad`/`cc2779a2`（两者都只动 timelapse ⇒ 那就是**并行度/时序**引起的
+偶发，要用 CI 的 `nproc` 复核）；若红，则是更早已存在、只是 CI 之前没抽到这条。

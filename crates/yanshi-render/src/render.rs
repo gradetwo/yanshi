@@ -2822,7 +2822,17 @@ impl Renderer {
                         //     ⇒ **同一个 `sig` 的内容必然相同** ✓ ⇒ 已经存过再拷一遍**毫无意义** ✗
                         //   **⇒ 修法**：**已在表里就跳过** ✓（一次渲染里绝大多数写都是同一个签名 ✓）。
                         //     ⚠️ **不改变命中语义**：条目还是那一份、`sig` 相同 ⇒ 读到的内容相同 ✓。
-                        if !carried.contains_key(&sig) {
+                        // **条目在但"被取空了"时也要补写** ✓（第 680 轮，CI 抓到的真 bug）
+                        //   **⇒ 症状**：`cargo test -p yanshi-render --test tile_parallel
+                        //     buffer_pool_budget_covers_every_concurrent_worker` 红：
+                        //     暖轮期望只合成 4 个缓冲，实测 **7** ✗
+                        //   **⇒ 根因**：读路径命中时会 `mem::take(&mut c.tiles)` ✓
+                        //     ⇒ 缓存里那条**变空** ✗ ⇒ 而我上一轮只判 `contains_key` ⇒
+                        //     **空条目永远不会被补上** ⇒ 之后每次读都退化成"没命中" ✗
+                        //   **⇒ 修法**：**空条目 ⇒ 照写** ✓（有内容的条目才跳过 ✓）。
+                        let needs_write =
+                            carried.get(&sig).is_none_or(|(tiles, _)| tiles.is_empty());
+                        if needs_write {
                             BELOW_CACHE_TILES_CLONED
                                 .fetch_add(merged.len(), std::sync::atomic::Ordering::Relaxed);
                             carried.insert(sig.clone(), (merged.clone(), fresh_empty.clone()));
