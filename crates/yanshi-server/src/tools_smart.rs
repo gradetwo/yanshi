@@ -2857,6 +2857,13 @@ pub(super) fn write_smart_texture(ctx: &mut ToolContext<'_>, args: &Value) -> Re
             })
             .collect();
         let c = stroke.color;
+        // **内层笔触是否等渲染** ✓（第 639 轮；外部 D6 ✓）：不透传 ⇒ 客户端无从关闭 ✗（实测 3.4×）
+        //   ⚠️ **不能塞进 `stroke_args`** ✗：`wait_for_render` 是**框架级**参数，
+        //   塞进去会被 `validate_args` 当成"未知参数"拒收（实测 39 笔全失败 ✗）
+        //   ⇒ 正确做法是改**上下文**（`ToolContext::set_wait_for_render` ✓）⇒ 内层调用自然继承 ✓。
+        if let Some(wait) = args.get("wait_for_render").and_then(Value::as_bool) {
+            ctx.set_wait_for_render(wait);
+        }
         let stroke_args = json!({
             "layer_id": layer_id,
             "brush": brush_name,
