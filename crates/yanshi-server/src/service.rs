@@ -1701,6 +1701,13 @@ impl Workspace {
         self.close_document(doc_id);
         self.open_document(doc_id)
     }
+    /// **诊断出口**：`disk_len_seen` 里还有多少条 ✓（第 767 轮，给判据用）
+    ///
+    /// **⇒ 为什么要有出口** ✗：缓存条目是**私有字段** ✓ ⇒ 判据读不到 ✗
+    /// ⇒ 于是"删文档时有没有清掉它"**没法断言** ✗ ⇒ 只能靠读代码 ✓（而读代码不是判据 ✓）。
+    pub fn disk_len_cache_entries(&self) -> usize {
+        self.disk_len_seen.len()
+    }
 
     /// **真正删掉一份文档** ✓（原子日志与元数据从磁盘上一并移除 ✓）。
     ///
@@ -1781,6 +1788,12 @@ impl Workspace {
             }
         }
         let removed_from_memory = self.documents.remove(doc_id).is_some();
+        // **删除时也要清掉"上次看到的盘上长度"** ✓（第 767 轮）
+        //   **⇒ 缺陷（我自己第 762 轮引入的）**：`disk_len_seen` 按 `doc_id` 记 ✓
+        //     ⇒ 文档删掉后**条目留着** ✗ ⇒ ①**小内存泄漏**（每个删过的 id 一条 ✓）；
+        //     ②**更麻烦的一条**：同 id 重建后，若新文件长度**恰好等于**旧长度 ✓
+        //     ⇒ 缓存命中 ⇒ **跳过读盘** ⇒ **漏掉别的写者的原子** ✗（概率低但会静默错 ✓）。
+        self.disk_len_seen.remove(doc_id);
         // **真正删存储这一件事只有一处实现** ✓（`collect_orphan_blobs` ✓）——
         // 删除这层只负责**算出"哪些只有它引用"** ✓。
         let (blobs_deleted, blob_bytes_freed) = self.collect_orphan_blobs(&only_here)?;

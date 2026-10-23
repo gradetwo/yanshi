@@ -152,3 +152,54 @@ fn two_writers_on_the_same_root_do_not_duplicate_sequences() {
     // **第 748 轮这里断的是"盘上必须有重复"** ✓（复现用 ✓）；第 752 轮修好之后
     //   **反过来**：盘上**必须没有重复** ✓ ⇒ 那条复现断言已换成下面的唯一性断言 ✓。
 }
+
+/// **删掉文档后，"上次看到的盘上长度"也必须被清掉**（第 767 轮）
+///
+/// **⇒ 缺陷（第 762 轮我自己引入的）**：`disk_len_seen` 按 `doc_id` 记 ✓ ⇒ 删除后条目留着 ✗
+/// ⇒ ① 小内存泄漏；② **同 id 重建后，若新文件长度恰好等于旧长度 ⇒ 缓存命中 ⇒ 跳过读盘**
+/// ⇒ **漏掉别的写者的原子**（低概率、静默 ✓）。
+///
+/// **⇒ 判据**：建两个带持久化的文档（各有一次提交 ⇒ 各有条目 ✓）⇒ 删掉一个 ⇒
+/// 条目数必须**减一** ✓。**变异**：去掉 `self.disk_len_seen.remove(doc_id)` ⇒ 条目数不变 ⇒ 红 ✓。
+#[test]
+fn deleting_a_document_clears_its_journal_length_cache() {
+    let root = std::env::temp_dir().join(format!("yanshi_disklen_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("建根");
+    let mut workspace = workspace(&root);
+
+    // **`draw()` 里写死了 `doc_two`** ✓ ⇒ 这里用能指定文档的调用（第 767 轮踩到过 ✓）
+    let registry = ToolRegistry::with_profiles(&Profile::ALL);
+    for doc in ["doc_a", "doc_b"] {
+        workspace
+            .create_document(NewDocument::new(doc, 32, 32), "human:1", "session:test")
+            .expect("create_document");
+        let mut ctx = ToolContext::new(&mut workspace, doc, "human:1", "session:test")
+            .with_owner(true)
+            .with_wait_for_render(true, 4_000);
+        let response = registry.call(
+            &mut ctx,
+            "draw_stroke",
+            &json!({
+                "layer_id": "layer_default", "object_id": format!("s_{doc}"),
+                "data": {"points": [[4.0, 4.0], [20.0, 20.0]], "size": 3.0, "hardness": 1.0,
+                         "color": {"r": 10, "g": 20, "b": 30, "a": 255}},
+            }),
+        );
+        assert_eq!(response["ok"], json!(true), "{doc}: {response}");
+    }
+    let before = workspace.disk_len_cache_entries();
+    assert!(
+        before >= 2,
+        "两个文档各提交过 ⇒ 至少两条缓存条目，实测 {before}"
+    );
+
+    workspace.delete_document("doc_a").expect("删除");
+    let after = workspace.disk_len_cache_entries();
+    assert_eq!(
+        after,
+        before - 1,
+        "删掉 doc_a 之后缓存条目应当是 {} 条，实测 {after} ⇒ 删除没清（第 762 轮引入的泄漏）",
+        before - 1
+    );
+}
