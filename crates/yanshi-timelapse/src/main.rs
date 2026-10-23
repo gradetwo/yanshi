@@ -107,19 +107,33 @@ fn main() -> Result<()> {
     let mut encoding = String::from("none");
     let mut blobs: HashMap<String, Vec<u8>> = HashMap::new();
     let mut skipped_entries = 0usize;
+    // **第一遍：先把 `blobs.encoding` 读出来** ✓（第 703 轮；外部审计 R-08）
+    //   **⇒ 原来的缺陷** ✗：单遍遍历 ⇒ 若 tar 里 `blobs/sha256/*` 排在 `blobs.encoding` **前面**，
+    //     那些 blob 会按初始值 `"none"` **不解压**就入库 ✗ ⇒ 画面拿着 zlib 头当像素 ✓
+    //     （而 tar 的条目顺序**没有规范保证** ✓ —— 换一个打包器就翻车 ✓）。
+    //   **⇒ 修法**：先扫一遍拿编码 ✓，再扫一遍写入 ✓。
+    for entry in &entries {
+        if entry.path == "blobs.encoding" {
+            encoding = String::from_utf8_lossy(&entry.bytes).trim().to_owned();
+        }
+    }
     for entry in &entries {
         match entry.path.as_str() {
             "atoms.jsonl" => atoms_text = String::from_utf8_lossy(&entry.bytes).into_owned(),
             "meta.json" => meta_text = String::from_utf8_lossy(&entry.bytes).into_owned(),
-            "blobs.encoding" => {
-                encoding = String::from_utf8_lossy(&entry.bytes).trim().to_owned();
-            }
+            "blobs.encoding" => {}
             path if path.starts_with("blobs/sha256/") => {
                 let hex = path.rsplit('/').next().unwrap_or_default().to_owned();
-                // **∴ zlib 就解 ✗ 不是就原样 ✓** ⇒ **∴ 两种编码都兼容 ✗ 而**不猜** ✓ ★
+                // **解不开就报错** ✓（第 703 轮；外部审计 R-08 的第二半）
+                //   **⇒ 原来的缺陷** ✗：`unwrap_or_else(|| entry.bytes.clone())` ⇒
+                //     解压失败**静默**把压缩字节当像素入库 ✓ ⇒ 画面糊掉但**没有任何信号** ✗
+                //   **⇒ 这正是本仓的头号对手「静默降级」** ✓ ⇒ 改成**响亮失败** ✓。
                 let raw = match encoding.as_str() {
-                    "zlib" => yanshi_render::zlib_decompress(&entry.bytes)
-                        .unwrap_or_else(|| entry.bytes.clone()),
+                    "zlib" => yanshi_render::zlib_decompress(&entry.bytes).ok_or_else(|| {
+                        anyhow!(
+                            "blob {hex} 声明为 zlib，但解压失败 ⇒ 拒绝把它当作原始像素（包损坏？）"
+                        )
+                    })?,
                     _ => entry.bytes.clone(),
                 };
                 blobs.insert(hex, raw);
