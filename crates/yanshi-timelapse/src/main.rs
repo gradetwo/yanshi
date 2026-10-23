@@ -442,9 +442,14 @@ fn main() -> Result<()> {
             .map_or(0.0, |v| ms(*v));
         // **∴ 语义证据 ✗**（**∴ 不看墙钟也能看出"脏区路真的走了" ✓）★
         let (full_renders, dirty_renders, dirty_tiles, dirty_runs) = timeline.stats();
+        // **`below` 缓存的克隆量** ✓（第 671 轮）：这是"每次渲染都整份拷 37 MB"那个 bug 的**结构量** ✓
+        //   ⇒ 正常应当是**几十条**（≈ 不同签名的个数 × 一份表 ✓），
+        //     而不是"脏 tile 数量"级别（那说明又退回**每渲一次拷一份** ✗）。
+        let cloned = yanshi_render::render::below_cache_tiles_cloned();
         println!(
             "  ★ 渲染账 ★ 整幅 {full_renders} 次｜脏区 {dirty_renders} 次（**共 {dirty_tiles} 个 tile ✗ {dirty_runs} 条 run ✓）★"
         );
+        println!("  ★ 缓存账 ★ below 克隆 {cloned} 条 tile（脏 tile 是 {dirty_tiles} 条 ⇒ 应当远小于它 ✓）");
         println!(
             "  ★ 分段账（ms）★ apply {:.0}｜render {:.0}（每帧中位 {:.1}）｜scale {:.0}｜write {:.0}",
             ms(account.apply_ns),
@@ -473,6 +478,13 @@ fn main() -> Result<()> {
     println!(
         "  渲染账：整幅 {full} 次｜脏区 {dirty} 次（{tiles} tile／{runs} run）｜复用上一帧 {} 次",
         timeline.reused_frames()
+    );
+    // **缓存账** ✓（第 671 轮）：`below` 缓存**被克隆的 tile 条数** ✓
+    //   ⇒ 正常应当**远小于脏 tile 数**（≈ 不同签名 × 一份表 ✓）；
+    //     若它 ≈ 脏 tile 数 ⇒ 又退回"每渲一次整份拷 37 MB"✗（第 666 轮那个 bug ✓）。
+    println!(
+        "  缓存账：below 克隆 {} 条 tile（脏 tile {tiles} 条）",
+        yanshi_render::render::below_cache_tiles_cloned()
     );
     Ok(())
 }

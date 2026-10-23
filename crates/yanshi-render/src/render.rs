@@ -289,6 +289,27 @@ static BELOW_WANTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicU
 static BELOW_GROUPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static BELOW_GROUPS_PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// **`below` 缓存写入时"被克隆的 tile 条数"** ✓（第 671 轮；给判据用 ✓）
+///
+/// **⇒ 为什么数"条数"而不是"次数"** ✗：写入**次数**改前改后**一样**（每 band 一次 ✓）
+///   ⇒ **∴ 变了的是"每次拷多少"** ✓ ⇒ 所以要数 **`merged.len()` 的和** ✓。
+/// **⇒ 判据的形状**：让**签名变化**若干次（改一层可见性 ⇒ `sig` 变 ✓）⇒
+///   克隆条数应当 ≈ **不同签名的个数 × 一份表** ✓，而不是 **渲一次拷一份** ✗。
+/// **⇒ 变异**：插入改回**无条件** ⇒ 渲几次拷几份 ⇒ 红 ✓。
+static BELOW_CACHE_TILES_CLONED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// **读"被克隆的 tile 条数"**（进程级累计；判据用 ✓）。
+#[must_use]
+pub fn below_cache_tiles_cloned() -> usize {
+    BELOW_CACHE_TILES_CLONED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// **清零**（判据在测量窗口前调用 ✓）。
+pub fn reset_below_cache_tiles_cloned() {
+    BELOW_CACHE_TILES_CLONED.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// **读 `by_sig` 当前分组数**（进程级观测；第 254 轮）。
 #[must_use]
 pub fn below_groups_count() -> usize {
@@ -2802,6 +2823,8 @@ impl Renderer {
                         //   **⇒ 修法**：**已在表里就跳过** ✓（一次渲染里绝大多数写都是同一个签名 ✓）。
                         //     ⚠️ **不改变命中语义**：条目还是那一份、`sig` 相同 ⇒ 读到的内容相同 ✓。
                         if !carried.contains_key(&sig) {
+                            BELOW_CACHE_TILES_CLONED
+                                .fetch_add(merged.len(), std::sync::atomic::Ordering::Relaxed);
                             carried.insert(sig.clone(), (merged.clone(), fresh_empty.clone()));
                         }
                         *guard = Some(BelowTiles {
