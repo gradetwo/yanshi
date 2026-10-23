@@ -279,38 +279,53 @@ impl Timeline {
             self.have_frame = true;
             return Ok(&self.frame);
         }
-        // **∴ 同一行里**连着的 tile 合成一条**✗ 才能把每次 `render_region` 的固定开销摊薄** ✓ ★
+        // **先把脏 tile 合成"行内连续段"，再把**跨行相同的段**并成矩形** ✓（第 675 轮，实测驱动）
+        //   **⇒ 症状**：外部那个包里每帧 **72 条 run**、每条只有 **1 行高**（一张 `import_image`
+        //     脏 8×8 tile ⇒ 被拆成 **8 条 1 行高的 run** ✗）⇒ 每条 run 都要一次 `render_region`，
+        //     而每次的固定开销（`建立`≈0.7 ms）就白付一次 ✓（v2 探针：10996 次渲染 / 21 帧 ✓）。
+        //   **⇒ 修法**：同一 `(x0,x1)` 在**相邻行**上重复出现时，向上并成一个**矩形区域** ✓
+        //     ⇒ 一张 8×8 的贴图变成 **1 次**渲染而不是 8 次 ✓，而**不多渲任何像素** ✓。
+        let mut runs: Vec<(u32, u32, u32)> = Vec::new(); // (y, x0, x1)
         let rows: BTreeSet<u32> = dirty.iter().map(|(_, y)| *y).collect();
         for y in rows {
-            let mut runs: Vec<(u32, u32)> = Vec::new();
             let mut run: Option<(u32, u32)> = None;
             for (x, _) in dirty.iter().filter(|(_, ty)| *ty == y) {
                 match run {
                     Some((start, end)) if *x == end + 1 => run = Some((start, *x)),
                     Some((start, end)) => {
-                        runs.push((start, end));
+                        runs.push((y, start, end));
                         run = Some((*x, *x));
                     }
                     None => run = Some((*x, *x)),
                 }
             }
-            if let Some(pair) = run {
-                runs.push(pair);
+            if let Some((start, end)) = run {
+                runs.push((y, start, end));
             }
-            for (start, end) in runs {
-                let range = TileRange {
-                    x0: start,
-                    y0: y,
-                    x1: end,
-                    y1: y,
-                };
-                let region = range.to_bbox(self.tile, self.doc_w, self.doc_h);
-                let rendered = self.kernel.render_region(region)?;
-                self.blit(&rendered);
-                self.dirty_renders += 1;
-                self.dirty_tiles_total += range.tiles();
-                self.dirty_runs += 1;
+        }
+        // **贪心并矩形**：先按 (y, x0) 排序，再向下吸收"同一 (x0,x1) 且在下一行"的段 ✓
+        //   ⇒ 只在**完全相同**的列区间上合并 ⇒ **不会**为了合并而多渲像素 ✓。
+        let mut merged: Vec<(u32, u32, u32, u32)> = Vec::new(); // (y0, y1, x0, x1)
+        let mut index = 0usize;
+        while index < runs.len() {
+            let (y, x0, x1) = runs[index];
+            let mut y1 = y;
+            let mut next = index + 1;
+            while next < runs.len() && runs[next] == (y1 + 1, x0, x1) {
+                y1 += 1;
+                next += 1;
             }
+            merged.push((y, y1, x0, x1));
+            index = next;
+        }
+        for (y0, y1, x0, x1) in merged {
+            let range = TileRange { x0, y0, x1, y1 };
+            let region = range.to_bbox(self.tile, self.doc_w, self.doc_h);
+            let rendered = self.kernel.render_region(region)?;
+            self.blit(&rendered);
+            self.dirty_renders += 1;
+            self.dirty_tiles_total += range.tiles();
+            self.dirty_runs += 1;
         }
         self.have_frame = true;
         Ok(&self.frame)
