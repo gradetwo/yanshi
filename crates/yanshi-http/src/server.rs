@@ -3252,7 +3252,14 @@ fn handle_websocket(
     // **★ 它必须可更新（2026-10-15 ✓）：`reload_document` 会把旧 `Document`（连同订阅者与它的队列）
     //   一起丢掉** ✗ ⇒ 重载之后要**重新订阅** ✓，并且下面的 `drain` 必须用**新的** id ✓
     //   （`Broadcaster::subscribe` **不幂等** ✗：同一 session 也会拿到新 id ✓）。
-    let mut subscriber = {
+    // **`subscriber` 必须在读写两个线程之间共享** ✓（第 736 轮；外部审计 S-05）
+    //   **⇒ 缺陷**：它是 `u64`（`Copy`）✓ ⇒ `move` 闭包捕获的是**副本** ✗
+    //     ⇒ `--watch` 重载后 pusher 里那句 `subscriber = document.subscribe(…)`
+    //     **只改了闭包里的副本** ✗ ⇒ ① 客户端之后的 `subscribe{viewport}` 打在**旧 id** 上（`applied: false`）✓；
+    //     ② 断开时 `unsubscribe(旧 id)` ⇒ **新 id 永久留在 Broadcaster** ✓
+    //     ⇒ `active_subscribers() > 0` ⇒ **`delete_document` 永久报「文档正在使用中」** ✗。
+    //   **⇒ 修法**：`Arc<AtomicU64>` ⇒ 两个线程看**同一个值** ✓（审计的建议 ✓）。
+    let subscriber = {
         let Ok(mut workspace) = state.workspace.lock() else {
             return Ok(());
         };
@@ -3271,6 +3278,9 @@ fn handle_websocket(
         }
     };
 
+    let subscriber_cell = Arc::new(std::sync::atomic::AtomicU64::new(subscriber));
+    // **闭包里用这一份** ✓；主线程继续用 `subscriber_cell` ✓
+    let push_subscriber = Arc::clone(&subscriber_cell);
     let closed = Arc::new(AtomicBool::new(false));
     let write_stream = Arc::new(Mutex::new(writer.try_clone()?));
 
@@ -3317,8 +3327,11 @@ fn handle_websocket(
                                 if let Ok(document) = workspace.document_mut(&push_doc) {
                                     // **重载丢了订阅者** ✗ ⇒ 重新订阅 ✓ 并**更新 id** ✓
                                     //   （用**同一个 `session`** ✓：这样语义上还是"同一条连接" ✓）
-                                    subscriber =
+                                    let fresh =
                                         document.subscribe(&session, PushChannel::WebSocket);
+                                    // **写进共享格子** ✓（不是线程副本 ✗）
+                                    push_subscriber
+                                        .store(fresh, std::sync::atomic::Ordering::SeqCst);
                                     for atom in &polled.atoms {
                                         document.broadcaster_mut().publish_atom(atom);
                                     }
@@ -3335,7 +3348,9 @@ fn handle_websocket(
                 let Ok(document) = workspace.document_mut(&push_doc) else {
                     break;
                 };
-                document.broadcaster_mut().drain(subscriber)
+                document
+                    .broadcaster_mut()
+                    .drain(push_subscriber.load(std::sync::atomic::Ordering::SeqCst))
             };
             if events.is_empty() {
                 continue;
@@ -3386,7 +3401,7 @@ fn handle_websocket(
             // **角色必须传下去** ✗ —— 这里此前只传了 actor ✓，
             // 于是 WS 分支**无从知道**调用者是谁 ✓ ⇒ 只好**无条件**当 owner ✗（那就是漏洞 ✓）。
             principal.role,
-            subscriber,
+            subscriber_cell.load(std::sync::atomic::Ordering::SeqCst),
             &request_value,
         );
     }
@@ -3395,7 +3410,9 @@ fn handle_websocket(
     let _ = pusher.join();
     if let Ok(mut workspace) = state.workspace.lock() {
         if let Ok(document) = workspace.document_mut(&doc_id) {
-            document.broadcaster_mut().unsubscribe(subscriber);
+            document
+                .broadcaster_mut()
+                .unsubscribe(subscriber_cell.load(std::sync::atomic::Ordering::SeqCst));
         }
     }
     Ok(())
