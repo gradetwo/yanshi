@@ -17261,3 +17261,30 @@ skipped brush parity（按设计不阻塞）
 **⇒ 还剩什么（已量化）**：缓存账 `真正复制 93,998 条 vs 脏 tile 7,366 条` ⇒
 说明 `take_tiles` 仍有 **13×** 的复制 ✓ ⇒ 下一轮查"为什么 `Arc` 不是唯一的"（多半是 `by_sig` 里
 别的签名还引用着同一份表 ✓，那就能靠 `Arc::ptr_eq` 或按签名分别建表来消掉 ✓）。
+
+## 四百四十、CI 红**取不到明细**（`results-receiver` 不可达），本地全绿（第 689 轮）
+
+**⇒ `295f5ef4` 的 CI**：`test (stable)`／`test (beta)`／`criteria shard 3/6` 红 ✗
+**⇒ 但明细读不到**：`gh run view --log-failed` 报
+```
+error connecting to results-receiver.actions.githubusercontent.com
+```
+（`jobs/<id>/logs` 返回 **302**，跟随重定向后**空**；`gh api .../jobs/<id>` 的**步骤表**能读到：
+`Run criteria` 这一步 `failure`，其余 success ✓。）
+
+**⇒ 本机同期结果（全部绿）**：
+| 检查 | 结果 |
+|---|---|
+| `cargo test -p yanshi-render` | **485 passed**（＋ `tile_parallel` 23 passed / 1 ignored）|
+| `cargo test -p yanshi-server --lib` | **144 passed** |
+| `cargo test -p yanshi-http --lib` | **52 passed** |
+| `cargo test -p yanshi-timelapse` | **6 passed** |
+| `tool-below-sig-alternate.mjs`（CI 上一轮抓到的）| **exit 0** ✓ |
+| `below_cache_copies`（零拷贝判据）| **passed** ✓ |
+
+**⇒ 下一轮第一件事**：网络恢复后读 `criteria shard 3/6` 的 `失败清单`（一条 `✗ xxx.mjs` 就够 ✓）；
+若仍读不到，就在 `/tmp` 的 worktree 里对 **`e5e0c9a9`（上次全绿）** 跑同一条判据做二分 ✓。
+
+**⇒ 教训（第三次同型）**：`by_sig` 那套"切点复用"语义，我**改了三次才没碰坏** ✓
+（`clear()` 全清 ✗、删当前组 ✗、只在唯一时重排 ✓）。
+**⇒ 而**两次失败**都是被已有判据抓住的** ✓ —— 这条链上我自己的推断一次都没抓住 ✓。
