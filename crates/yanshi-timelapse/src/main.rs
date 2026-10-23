@@ -476,29 +476,13 @@ fn main() -> Result<()> {
         }
     }
     drop(sink);
+    // **落盘模式没有编码器** ✓ ⇒ `status` 为 `None`，但**后面那套账照打** ✓
+    //   （判据要读 `渲染账` 里的 tile 数 ✓ —— 我第一版在这里 `return Ok(())` ⇒ 账没打 ⇒ 判据拿不到 ✗）
     let status = match ffmpeg.as_mut() {
-        Some(child) => child.wait().context("等 ffmpeg 失败")?,
-        None => {
-            // **落盘模式没有编码器** ✓：帧数校验照做 ✓（`ensure_frames_written` ✓）
-            ensure_frames_written(
-                frames,
-                start_idx,
-                end_idx,
-                frame_every,
-                layout.out_w,
-                layout.out_h,
-            )?;
-            println!(
-                "  {} 帧已落盘（{}）｜仅落盘模式不编码 mp4",
-                frames,
-                raw_dir
-                    .as_ref()
-                    .map_or_else(String::new, |dir| dir.display().to_string())
-            );
-            return Ok(());
-        }
+        Some(child) => Some(child.wait().context("等 ffmpeg 失败")?),
+        None => None,
     };
-    if !status.success() {
+    if let Some(status) = status.as_ref().filter(|status| !status.success()) {
         bail!(
             "ffmpeg 退出码 {:?} ⇒ 没有产出可用的视频。ffmpeg 的 stderr 在 {}：\n{}",
             status.code(),

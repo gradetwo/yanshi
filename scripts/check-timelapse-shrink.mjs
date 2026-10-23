@@ -16,7 +16,15 @@
 //
 // **变异**：把 `YANSHI_TIMELAPSE_SHRINK` 的支持去掉（或让 `shrink_atom` 恒返回 `None`）⇒ ① 不成立 ⇒ 红 ✓。
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import zlib from "node:zlib";
@@ -26,7 +34,7 @@ import { trackTemp } from "./lib/temp-dirs.mjs";
 const root = trackTemp(mkdtempSync(join(tmpdir(), "timelapse-shrink-")));
 mkdirSync(join(root, "blobs/sha256"), { recursive: true });
 const BIN = "target/release/yanshi-timelapse";
-for (const tool of ["tar", "ffmpeg", "ffprobe"]) {
+for (const tool of ["tar"]) {
   try {
     execFileSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" });
   } catch {
@@ -101,12 +109,41 @@ const distinctInLastFrame = (file, w, h) => {
   return seen.size;
 };
 
+// **缺 ffmpeg／ffprobe 时走落盘模式** ✓（第 702 轮）：`YANSHI_TIMELAPSE_RAW_DIR` 写 `frame-*.rgb`
+//   ⇒ 帧数与颜色**只读文件**就能数 ✓ ⇒ **∴ 它在 CI 上也能真跑**（以前是 `exit(3)` 跳过 ✗）。
+const RAW_MODE = (() => {
+  for (const tool of ["ffmpeg", "ffprobe"]) {
+    try {
+      execFileSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" });
+    } catch {
+      return true;
+    }
+  }
+  return false;
+})();
+
+/// **落盘模式下数末帧颜色** ✓（RGB24，无填充 ✓）：不需要 ffmpeg ✓
+const distinctInRawLastFrame = (path) => {
+  const bytes = readFileSync(path);
+  const seen = new Set();
+  for (let at = 0; at + 2 < bytes.length; at += 3) {
+    seen.add(`${bytes[at]},${bytes[at + 1]},${bytes[at + 2]}`);
+    if (seen.size > 4000) break;
+  }
+  return seen.size;
+};
+
 const runOnce = (shrink) => {
   const out = join(root, shrink ? "shrunk.mp4" : "plain.mp4");
   rmSync(out, { force: true });
   const env = { ...process.env };
   if (shrink) env.YANSHI_TIMELAPSE_SHRINK = "1";
   else delete env.YANSHI_TIMELAPSE_SHRINK;
+  const rawDir = join(root, shrink ? "frames-shrunk" : "frames-plain");
+  if (RAW_MODE) {
+    rmSync(rawDir, { recursive: true, force: true });
+    env.YANSHI_TIMELAPSE_RAW_DIR = rawDir;
+  }
   let text;
   try {
     text = execFileSync("sh", ["-c", `${BIN} ${join(root, "probe.yanshi")} ${out} 1 2>&1`], {
@@ -120,8 +157,18 @@ const runOnce = (shrink) => {
   const dims = /输出 (\d+)×(\d+)/.exec(text);
   const width = dims ? Number(dims[1]) : 0;
   const height = dims ? Number(dims[2]) : 0;
-  const frames = width > 0 ? framesOf(out, width, height) : 0;
-  const colours = width > 0 ? distinctInLastFrame(out, width, height) : 0;
+  let frames;
+  let colours;
+  if (RAW_MODE) {
+    const files = existsSync(rawDir)
+      ? readdirSync(rawDir).filter((name) => /^frame-\d+\.rgb$/.test(name)).sort()
+      : [];
+    frames = files.length;
+    colours = files.length > 0 ? distinctInRawLastFrame(join(rawDir, files[files.length - 1])) : 0;
+  } else {
+    frames = width > 0 ? framesOf(out, width, height) : 0;
+    colours = width > 0 ? distinctInLastFrame(out, width, height) : 0;
+  }
   return { tiles: tiles ? Number(tiles[1]) : -1, frames, colours, width, height };
 };
 
