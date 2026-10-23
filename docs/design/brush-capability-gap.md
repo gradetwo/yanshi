@@ -17117,3 +17117,18 @@ deposited=false｜ok=true
 （那条早已绿，且含「linear 中段色比 rgb 亮 68 级」的实测断言 ✓）。
 **⇒ 教训（写进台账）**：**两次"产品像坏了"的结论都出自我的脚本** ✓ —— 与仓规里那条
 「我的测量比被测对象更容易错」**同型第 N 次** ✓；以后凡是"计数为 0"，先查**比较函数的两侧类型** ✓。
+
+## 四百三十三、**审计包（`38712029`）合进来之后，我自己的四条判据仍全绿** ✓（第 658 轮）
+
+**⇒ 为什么必须复查**：审计包同时动了**沙箱**（LUT／文件源走 `file_source::resolve_local_path`）、
+**控制面 `doc_id` 权限**、**行读取上限**、**快照拒写** —— 而我这四条判据正好走其中几条路 ✗。
+
+**⇒ 实测（重编 `yanshi-serve` 之后跑，全部退出码 0）**：
+| 判据 | 结果 |
+|---|---|
+| `tool-paint-mask-large-single-dab.mjs`（外部 D1 的兜底位移）| ✓ `deposited=true` |
+| `tool-render-region-twice.mjs`（两次渲染一致）| ✓ 首像素相同 |
+| `tool-export-under-linear-mixing.mjs`（色彩 Phase 1 的导出）| ✓ `linear` 与 `rgb` 差 **182 级**、导出 == 渲染 |
+| `tool-atom-origin.mjs`（外部 D5 的 `origin`）| ✓ `1 条 drawn`（其 `kind` 仍是 `import_image`）、`1 条 system` |
+
+**⇒ 结论**：审计包的沙箱／权限收紧**没有**误伤这四条（尤其 `put_blob` 同源那条沙箱 ✓）。
