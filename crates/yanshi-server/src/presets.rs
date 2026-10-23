@@ -854,6 +854,35 @@ mod preset_expander_tests {
         }
     }
 
+    /// 数值感知的深比较：JSON 里 `0` 与 `0.0` 是不同表示但同一个数，
+    /// 本系统的恒等式断的是「数」不是「序列化表示」，所以数字按 f64 比、
+    /// 数组/对象递归，其余按原值比。（若用 assert_eq，第一版就栽在这里：
+    /// 插值产物恒是 f64，而数据文件里中性值写的是整数 0。）
+    fn assert_json_number_eq(actual: &Value, expected: &Value, what: &str) {
+        match (actual, expected) {
+            (Value::Number(a), Value::Number(e)) => {
+                assert_eq!(
+                    a.as_f64(),
+                    e.as_f64(),
+                    "{what}：数字必须相等（{a} vs {e}）"
+                );
+            }
+            (Value::Array(a), Value::Array(e)) => {
+                assert_eq!(a.len(), e.len(), "{what}：数组长度必须一致");
+                for (i, (av, ev)) in a.iter().zip(e.iter()).enumerate() {
+                    assert_json_number_eq(av, ev, &format!("{what}[{i}]"));
+                }
+            }
+            (Value::Object(a), Value::Object(e)) => {
+                for (key, ev) in e {
+                    let av = a.get(key).unwrap_or_else(|| panic!("{what}：缺少键 {key}"));
+                    assert_json_number_eq(av, ev, &format!("{what}.{key}"));
+                }
+            }
+            _ => assert_eq!(actual, expected, "{what}"),
+        }
+    }
+
     #[test]
     fn strength_zero_style_segment_equals_neutral() {
         let library = builtin();
@@ -863,12 +892,13 @@ mod preset_expander_tests {
             for (expanded, recipe) in ops.iter().zip(preset.style_ops.iter()) {
                 let params = expanded.params.as_object().unwrap();
                 for (key, neutral_value) in &recipe.neutral {
-                    assert_eq!(
-                        params.get(key),
-                        Some(neutral_value),
-                        "预设 {} 的 {} 参数 {key} 在 strength=0 时必须恰等于中性值",
-                        preset.id,
-                        recipe.type_name
+                    assert_json_number_eq(
+                        params.get(key).expect("展开参数必须含配方全部键"),
+                        neutral_value,
+                        &format!(
+                            "预设 {} 的 {} 参数 {key} 在 strength=0 时必须恰等于中性值",
+                            preset.id, recipe.type_name
+                        ),
                     );
                 }
                 // 固定参数（无中性声明）在 strength=0 时必须是配方原值。
