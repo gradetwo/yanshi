@@ -463,13 +463,37 @@ const PALETTE_SRC = "assets/palettes";
 const PALETTE_DST = join(DST, "palettes");
 // **★ 预置字体（字体方案 Phase 2）★**：与纹理同一形状 —— **PWA 侧也要有** ✓
 //   （**∴ 否则**离线时 `@font-face` 404 ⇒ 静默回退 ⇒ **看起来"字体没生效"** ✓）。
+//
+// **∴ 第 745 轮换掉原来那五行的两个「静默」✗ ★**（**两条都是**实测**复现出来的 ✓**）：
+//   **① 计数读的是**目的地**不是**本次拷贝**✓**：
+//     **∴ 原来 ✗**：`readdirSync(FONT_DST).length`
+//       ⇒ **∴ 实测 ✗**：**临时镜像里**把 `assets/fonts` 换成**空目录**✗ ⇒ 打印
+//         **`OK: 预置字体 2 个`**✓ ——**而那 2 个是**上一次留在 `web/fonts` 的旧文件**✗
+//         **本次**一个都没拷 ✓（**外部 §71 那条 ✗「做了 0 次」冒充「做了 2 次」✓**）
+//   **② 目录不存在 ⇒ **整个同步炸在中途**✗ 而且**报错不说原因**✓**：
+//     **∴ 原来 ✗**：`mkdirSync` **写在循环里**⇒ **源里没有 `.ttf`／`.woff2` 时**目录**根本没建**✗
+//       ⇒ **∴ 于是**：`readdirSync(FONT_DST)` **抛 ENOENT**✓
+//     **∴ 实测 ✗**：镜像里删掉 `web/fonts` ⇒ **退出码 1**✓
+//       ＋ **`Error: ENOENT: no such file or directory, scandir 'web/fonts'`**✓
+//       ⇒ **∴ 而**它**已经跑过**了大半（**拷贝 ＋ 索引 ✓**）⇒ **∴ 于是**打戳那步**没做**✗
+//         产物停在**半新半旧**的状态 ✓（**内核 5 ✗ 失败要**说清缺什么** ✓**）
+//   **∴ 现在 ✗**：**照 `SHOWCASE_SRC` 的形状**加**存在性守卫**✓ ＋
+//     **目录无条件建**✓ ＋ **计数取自**源**里筛出来的名单**✓ ＋
+//     **先 `rmSync` 再拷**✓（**∴ 于是**它是**镜像**而非**追加**✗ 上游删掉的字体**不会在 `web/` 里赖着**✓）
 const FONT_SRC = "assets/fonts";
 const FONT_DST = join(DST, "fonts");
-for (const f of readdirSync(FONT_SRC).filter((n) => n.endsWith(".ttf") || n.endsWith(".woff2"))) {
+if (!existsSync(FONT_SRC)) {
+  console.warn("  WARN: 找不到 assets/fonts ⇒ 跳过预置字体（离线时 @font-face 会 404 ⇒ 静默回退 ✗）");
+} else {
+  const fontNames = readdirSync(FONT_SRC).filter((n) => n.endsWith(".ttf") || n.endsWith(".woff2"));
+  rmSync(FONT_DST, { recursive: true, force: true });
   mkdirSync(FONT_DST, { recursive: true });
-  copyFileSync(join(FONT_SRC, f), join(FONT_DST, f));
+  for (const f of fontNames) copyFileSync(join(FONT_SRC, f), join(FONT_DST, f));
+  if (fontNames.length === 0) {
+    console.warn("  WARN: assets/fonts 里没有 .ttf/.woff2 ⇒ 本次同步 0 个字体（web/fonts 现在是空目录 ✗ 离线字体不会生效）");
+  }
+  console.log(`  OK: 本次同步预置字体 ${fontNames.length} 个 => web/fonts`);
 }
-console.log(`  OK: 预置字体 ${readdirSync(FONT_DST).length} 个 => web/fonts`);
 
 const TEXTURE_SRC = "assets/textures";
 const TEXTURE_DST = join(DST, "textures");
