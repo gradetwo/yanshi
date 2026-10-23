@@ -119,6 +119,11 @@ except Exception:
 pass=0; fail=0; expected_red=0; skipped=0
 KNOWN_RED_HIT=""
 ALL_RAN=""
+# **本次"跑了但没结论"的条目** ✓（第 766 轮）：`exit 3` 或**自己打了 `⊘`** ✓
+#   **⇒ 为什么需要它** ✗：下面"名单里没失败 ⇒ 可能已修"那段报告，把**没结论**也当成了"已修好" ✗
+#   ⇒ **实测（第 766 轮）**：CI 上被报为"可能已修"的 **10 条**里，`tool-bitmap-decode-scope`
+#     在**本机跑一次仍然退出码 1**（解密字节 1,195,520 B ＝ 73× 区域像素）✗ ⇒ **报告有假候选** ✓。
+UNJUDGED=""
 FAIL_SUMMARY=""      # **末尾汇总** ✓：GitHub 的 --log-failed 只给"步骤日志尾部" ✗
 # **分片** ✓（`SHARD`/`SHARDS` 由 CI 的矩阵传入 ✓）：按**文件名排序后取模** ✓
 # ⇒ 分片是**确定性**的 ✓（同一份代码每次落进同一片 ✓），也**不重不漏** ✓。
@@ -402,6 +407,8 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs sc
     if [ -f "$ROOT_DIR/out.txt" ]; then
       n=$(grep -c "⊘" "$ROOT_DIR/out.txt" 2>/dev/null || true)
       [ -n "$n" ] && skipped=$((skipped+n))
+      # **自己说"跳过"的也算没结论** ✓ ⇒ 不进"可能已修"候选 ✓
+      if [ -n "$n" ] && [ "$n" != "0" ]; then UNJUDGED="${UNJUDGED} ${name}"; fi
     fi
     echo "  ✓ $name"; pass=$((pass+1))
       # **通过时也打最后一行** ✓（第 355 轮）：否则"绿了但为什么绿"这种问题，
@@ -427,6 +434,7 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs sc
     #       ＋ **∴ 而** `3` ＝「**本次环境不具备 ⇒ **∴ 没有结论**」** ✓ ★
     #         ＋ **∴ 所以**它**计入 `skipped`**✗ 而**不是** `pass`** ✓（**∴ 不许**假装验过了 ✓）★
     echo "  ⊘ ${name}（判据自身的前置条件缺失 EXIT=3 ⇒ 本次没验，不是产品失败）"
+    UNJUDGED="${UNJUDGED} ${name}"
     skipped=$((skipped+1))
     head -3 "$ROOT_DIR/out.txt" | sed 's/^/     前│/'
     tail -3 "$ROOT_DIR/out.txt" | sed 's/^/     后│/'
@@ -524,6 +532,10 @@ if [ -f "$KR_FILE" ]; then
     case " ${ALL_RAN} " in
       *" ${kr} "*) : ;;
       *) continue ;;
+    esac
+    # **跑了但没结论的不算"可能已修"** ✓（第 766 轮；实测那会让报告出假候选 ✓）
+    case " ${UNJUDGED} " in
+      *" ${kr} "*) continue ;;
     esac
     case " ${KNOWN_RED_HIT} " in
       *" ${kr} "*) : ;;
