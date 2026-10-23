@@ -7899,6 +7899,11 @@ fn read_get_stroke_log(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
             "kind": source_kind,
             "layer_id": atom_layer_id(atom),
             "object_id": atom_object_id(atom),
+            // **`message` 也要回** ✓（第 723 轮；外部审计 S-02 第 ① 组）
+            //   **⇒ 缺陷**：`Atom::message` 一直存在 ✓（`get_atom` 也在回 ✓），
+            //     而**这条笔迹日志的条目**没有它 ✗ ⇒ 调用方给 `batch` 写的说明**在这里看不到** ✓
+            //     ⇒ 只能一条条 `get_atom` 翻 ⇒ 等于没有 ✓。
+            "message": atom.message,
             "brush": source.get("brush"),
             "medium": source.get("medium"),
             "size": source.get("size"),
