@@ -513,8 +513,9 @@ fn main() -> Result<()> {
     //   ⇒ 正常应当**远小于脏 tile 数**（≈ 不同签名 × 一份表 ✓）；
     //     若它 ≈ 脏 tile 数 ⇒ 又退回"每渲一次整份拷 37 MB"✗（第 666 轮那个 bug ✓）。
     println!(
-        "  缓存账：below 克隆 {} 条 tile（脏 tile {tiles} 条）",
-        yanshi_render::render::below_cache_tiles_cloned()
+        "  缓存账：below 写入 {} 条｜**真正复制** {} 条（脏 tile {tiles} 条）",
+        yanshi_render::render::below_cache_tiles_cloned(),
+        yanshi_render::render::tiles_actually_copied()
     );
     Ok(())
 }

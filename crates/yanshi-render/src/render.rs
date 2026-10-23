@@ -289,6 +289,50 @@ static BELOW_WANTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicU
 static BELOW_GROUPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static BELOW_GROUPS_PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// **把共享的 tile 表取成"自有 Vec"** ✓（第 683 轮）：`Arc` 只有一个持有者时**零拷贝** ✓，
+/// 否则才复制一次 ✓（那种情形只在"同一份数据还被 `by_sig` 引用"时发生 ✓）。
+fn take_tiles(
+    tiles: &mut std::sync::Arc<Vec<((i64, i64), crate::buffer::Buffer)>>,
+) -> Vec<((i64, i64), crate::buffer::Buffer)> {
+    let taken = std::mem::replace(tiles, std::sync::Arc::new(Vec::new()));
+    match std::sync::Arc::try_unwrap(taken) {
+        Ok(owned) => owned,
+        Err(shared) => {
+            TILES_ACTUALLY_COPIED.fetch_add(shared.len(), std::sync::atomic::Ordering::Relaxed);
+            (*shared).clone()
+        }
+    }
+}
+
+/// **把"取走 tile 表"与"清掉同签名分组"合成一步** ✓（第 683 轮）
+///
+/// **⇒ 为什么必须一起做** ✗：`by_sig` 与 `tiles` **共享同一个 `Arc`** ✓
+/// ⇒ 若只 `take_tiles`，`Arc` 还有 `by_sig` 那一份引用 ⇒ `try_unwrap` **失败** ⇒ **悄悄整份复制** ✗
+/// （实测：夹具第一帧 **28 s**，而共享版本本应回到 **~11 s** ✓）。
+/// ⇒ **∴ 先删掉那个分组**（它的内容就是这份表 ✓ 本来就要被替换 ✓）⇒ `Arc` 唯一 ⇒ **零拷贝** ✓。
+fn take_tiles_dropping_sig(
+    guard: &mut BelowTiles,
+    sig: &[String],
+) -> Vec<((i64, i64), crate::buffer::Buffer)> {
+    guard.by_sig.remove(sig);
+    take_tiles(&mut guard.tiles)
+}
+
+/// **把"被真正复制的 tile 条数"记下来** ✓（第 683 轮）：只在 `try_unwrap` 失败时才有拷贝 ✓。
+static TILES_ACTUALLY_COPIED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// **读"真正被复制的 tile 条数"**（进程级累计；判据用 ✓）。
+#[must_use]
+pub fn tiles_actually_copied() -> usize {
+    TILES_ACTUALLY_COPIED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// **清零**（判据在测量窗口前调用 ✓）。
+pub fn reset_tiles_actually_copied() {
+    TILES_ACTUALLY_COPIED.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// **`below` 缓存写入时"被克隆的 tile 条数"** ✓（第 671 轮；给判据用 ✓）
 ///
 /// **⇒ 为什么数"条数"而不是"次数"** ✗：写入**次数**改前改后**一样**（每 band 一次 ✓）
@@ -947,7 +991,12 @@ struct BelowTiles {
     /// **生成这些 tile 时的**下方层指纹** ✓**（**不匹配 ⇒ 整份作废 ✓**）。
     sig: Vec<String>,
     /// **文档坐标（**按 [`BELOW_TILE`] 对齐 ✓**）⇒ 该 tile 的下方合成 ✓**。
-    tiles: Vec<((i64, i64), crate::buffer::Buffer)>,
+    // **`Arc` 共享而不是拷贝** ✓（第 683 轮）：`by_sig` 与 `tiles` 曾经**各存一份**同内容 ✓
+    //   ⇒ 每次写缓存都要 `merged.clone()`（一份 37 MB 的 tile 表 ✗）
+    //   ⇒ 第 666 轮那笔"少拷一次"的优化就是因为这个才必须"跳过一次写"，
+    //     而那又让"被 `mem::take` 取空的条目永不补写" ✗ ⇒ CI 红（第 681 轮二分 ✓）。
+    //   **⇒ 现在两边共享同一个 `Arc`** ✓ ⇒ **既不拷贝、也不必跳过写** ✓ ⇒ 两个不变量同时成立 ✓。
+    tiles: std::sync::Arc<Vec<((i64, i64), crate::buffer::Buffer)>>,
     /// **★ 算过、且**确实为空**的 tile 键 ✗ ★**（第 771 轮 ✓；**目标第 4 条 ✓**）：
     ///   **∴ 为什么需要它 ✗**：**写入侧**本来**跳过空 tile ✗**（**省内存 ✓），
     ///   **而**读取侧要求**每个请求的 tile **都在 `tiles` 里**✗
@@ -993,7 +1042,7 @@ fn tiles_for_sig<'a>(
 /// **∴ 为什么抽别名 ✗**：**clippy** 报 `very complex type` ✗**（**实测 ✓）⇒
 ///   **∴ 而**它**确实**难读 ✓ ⇒ **∴ 于是**给它**一个名字 ✓**** ✓✓
 type SigTiles = (
-    Vec<((i64, i64), crate::buffer::Buffer)>,
+    std::sync::Arc<Vec<((i64, i64), crate::buffer::Buffer)>>,
     std::collections::HashSet<(i64, i64)>,
 );
 
@@ -2351,7 +2400,8 @@ impl Renderer {
                     if let Some(c) = guard.as_mut() {
                         let mut recent = Vec::new();
                         let mut rest = Vec::new();
-                        for t in c.tiles.drain(..) {
+                        // **`Arc` 不能就地 drain** ✓（第 683 轮）：先把共享引用换成空表，再拿自有的那份 ✓
+                        for t in take_tiles(&mut c.tiles) {
                             if want_tiles.contains(&t.0) {
                                 recent.push(t);
                             } else {
@@ -2359,7 +2409,7 @@ impl Renderer {
                             }
                         }
                         rest.extend(recent); // **∴ 刚用过的排到尾部 ⇒ 下次先丢别人 ✓**
-                        c.tiles = rest;
+                        c.tiles = std::sync::Arc::new(rest);
                     }
                 }
             }
@@ -2722,9 +2772,9 @@ impl Renderer {
                         };
                         let _ = by_sig_entry_removed;
                         let keep = match guard.as_mut() {
-                            Some(c) if c.sig == sig => std::mem::take(&mut c.tiles),
+                            Some(c) if c.sig == sig => take_tiles_dropping_sig(c, &sig),
                             Some(c) => {
-                                c.tiles.clear();
+                                c.tiles = std::sync::Arc::new(Vec::new());
                                 c.sig = sig.clone();
                                 Vec::new()
                             }
@@ -2846,14 +2896,20 @@ impl Renderer {
                         //   **⇒ 修法**：**空条目 ⇒ 照写** ✓（有内容的条目才跳过 ✓）。
                         let needs_write =
                             carried.get(&sig).is_none_or(|(tiles, _)| tiles.is_empty());
+                        // **一份 `Arc` 同时给 `by_sig` 与 `tiles`** ✓（第 683 轮）：两边共享，
+                        //   所以"写缓存"不再等于"拷一份 37 MB 的表" ✓ ⇒ 也就不必用"跳过写"来省 ✗
+                        let shared = std::sync::Arc::new(merged);
                         if needs_write {
                             BELOW_CACHE_TILES_CLONED
-                                .fetch_add(merged.len(), std::sync::atomic::Ordering::Relaxed);
-                            carried.insert(sig.clone(), (merged.clone(), fresh_empty.clone()));
+                                .fetch_add(shared.len(), std::sync::atomic::Ordering::Relaxed);
+                            carried.insert(
+                                sig.clone(),
+                                (std::sync::Arc::clone(&shared), fresh_empty.clone()),
+                            );
                         }
                         *guard = Some(BelowTiles {
                             sig,
-                            tiles: merged,
+                            tiles: shared,
                             empty: fresh_empty,
                             // **∴ 第 1 步：**先只初始化 ✗**（**行为不变 ✓）** —— **∴ 第 2／3 步**
                             //   再让读写**真的**用它 ✓**** ✓✓
@@ -2925,9 +2981,9 @@ impl Renderer {
                             v
                         };
                         let keep = match guard.as_mut() {
-                            Some(c) if c.sig == above_sig => std::mem::take(&mut c.tiles),
+                            Some(c) if c.sig == above_sig => take_tiles_dropping_sig(c, &above_sig),
                             Some(c) => {
-                                c.tiles.clear();
+                                c.tiles = std::sync::Arc::new(Vec::new());
                                 c.sig = above_sig.clone();
                                 Vec::new()
                             }
@@ -2956,9 +3012,10 @@ impl Renderer {
                             let drop = merged.len() - BELOW_TILE_BUDGET;
                             merged.drain(0..drop);
                         }
+                        let shared = std::sync::Arc::new(merged);
                         *guard = Some(BelowTiles {
                             sig: above_sig,
-                            tiles: merged,
+                            tiles: shared,
                             empty: fresh_empty,
                             by_sig: std::collections::HashMap::new(),
                         });
@@ -8752,7 +8809,10 @@ mod by_sig_budget_tests {
     use super::{evict_one_sig_group_with, SigTiles, BELOW_SIG_GROUPS};
 
     fn dummy() -> SigTiles {
-        (Vec::new(), std::collections::HashSet::new())
+        (
+            std::sync::Arc::new(Vec::new()),
+            std::collections::HashSet::new(),
+        )
     }
 
     fn sig(name: &str) -> Vec<String> {
