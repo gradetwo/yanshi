@@ -288,6 +288,16 @@ impl FileStore {
     ///
     /// 盘上最后一条原子的 `seq`（第 752 轮）：只读尾部 8 KiB 并解析最后一整行。
     /// `atoms.jsonl` 可能几十 MB，所以不整份读。没有文件／空文件 ⇒ `None`。
+    /// 盘上 `atoms.jsonl` 的字节长度（不存在 ⇒ 0）。一次 `stat`，不读内容。
+    pub(crate) fn journal_len(&self, doc_id: &str) -> Result<u64> {
+        let path = self.atoms_path(doc_id);
+        match fs::metadata(&path) {
+            Ok(meta) => Ok(meta.len()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(error) => Err(io_error(&path, error)),
+        }
+    }
+
     pub(crate) fn last_seq_on_disk(&self, doc_id: &str) -> Result<Option<u64>> {
         use std::io::{Read as _, Seek as _, SeekFrom};
         let path = self.atoms_path(doc_id);

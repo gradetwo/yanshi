@@ -551,6 +551,13 @@ pub struct Workspace {
     inflight: Arc<InflightRegistry>,
     documents: BTreeMap<String, Document>,
     persist: Option<FileStore>,
+    /// **每个文档上次看到的 `atoms.jsonl` 长度** ✓（第 762 轮，性能）
+    ///
+    /// **⇒ 为什么要缓存** ✗：`sync_next_seq_from_disk` 每次提交都要读盘尾 8 KiB ✓
+    /// ⇒ 实测 **35.7 ms/commit vs 关掉时 33.9** ✓ ⇒ **多花 ~1.8 ms/commit（5.4%）** ✗。
+    /// **⇒ 做法**：先用 `metadata().len()` 比一下 ✓（一次 `stat`，微秒级 ✓）
+    /// ⇒ 长度没变 ⇒ **盘上没新东西** ✓ ⇒ **不读那 8 KiB** ✓。
+    disk_len_seen: std::collections::HashMap<String, u64>,
     /// **工作区级偏好** ✓（收藏的笔刷、最近使用…… ✓）。
     ///
     /// **为什么在工作区、而不是文档里** ✓：这些是**用的人**的偏好 ✓，不是这张画的一部分 ✓
@@ -1126,6 +1133,7 @@ impl Workspace {
             inflight: Arc::new(InflightRegistry::new()),
             documents: BTreeMap::new(),
             persist: None,
+            disk_len_seen: std::collections::HashMap::new(),
             assets_dir: None,
             preferences: BTreeMap::new(),
             open_changesets: BTreeMap::new(),
@@ -1157,6 +1165,7 @@ impl Workspace {
             documents: BTreeMap::new(),
             preferences: read_preferences(&persist),
             persist: Some(persist),
+            disk_len_seen: std::collections::HashMap::new(),
             assets_dir: None,
             settings,
             created: 0,
@@ -3582,9 +3591,16 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
         let Some(persist) = &self.persist else {
             return Ok(());
         };
+        // **先比长度，再决定要不要读盘尾** ✓（第 762 轮，性能）
+        let len = persist.journal_len(doc_id)?;
+        if self.disk_len_seen.get(doc_id).copied() == Some(len) {
+            return Ok(());
+        }
         let Some(last) = persist.last_seq_on_disk(doc_id)? else {
+            self.disk_len_seen.insert(doc_id.to_owned(), len);
             return Ok(());
         };
+        self.disk_len_seen.insert(doc_id.to_owned(), len);
         let head = self
             .documents
             .get(doc_id)
