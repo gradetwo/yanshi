@@ -1020,6 +1020,63 @@ fn keys_to_evict(
     recency.iter().take(count).copied().collect()
 }
 
+/// **一次写缓存之后的"淘汰结果"** ✓（第 707 轮；外部审计 R-02）
+///
+/// **⇒ 它守三件事**（都是审计列出的真实缺陷 ✓）：
+/// ① **新写的块要排在 `merged` 的尾部** ✓ —— 否则兜底 `drain(0..extra)` **先删刚算出的块** ✗；
+/// ② **淘汰按 `recency`**（最久没用的先走 ✓），且**新键附加在最末** ✓；
+/// ③ **淘汰后 `recency` 只保留还活着的键** ✓ 并**写回** `BelowTiles` ✓ ——
+///    否则死键永久留在队首 ⇒ 下次又挑到它们 ⇒ `retain` 删不掉任何东西 ⇒ 退到兜底 ✗。
+///
+/// **⇒ 判据**（`below_write_plan_tests`）：见那个模块的三条断言 ✓。
+/// **变异**：把 ③ 去掉（返回原 `recency`）⇒ 红 ✓；把 ② 改成"丢最新的"⇒ 红 ✓。
+/// **一份 tile 表**（key ⇒ 像素）✓ —— 别名只为让签名可读 ✓（clippy 的 `type_complexity` ✓）。
+type TilePieces = Vec<((i64, i64), crate::buffer::Buffer)>;
+/// **tile 的年龄序列**（只放 key，最久没用的在前 ✓）。
+type TileRecency = std::collections::VecDeque<(i64, i64)>;
+
+fn plan_below_write(
+    keep_first: TilePieces,
+    fresh_last: TilePieces,
+    recency: &TileRecency,
+    budget: usize,
+) -> (TilePieces, TileRecency) {
+    // ① 旧块（未被覆盖的）在前、本次新算的块在后 ✓
+    let mut merged = keep_first;
+    merged.extend(fresh_last);
+    // ② 年龄：旧顺序在前；`merged` 里还没出现过的键追加到末尾 ✓
+    let mut order = recency.clone();
+    for (key, _) in merged.iter() {
+        if !order.contains(key) {
+            order.push_back(*key);
+        }
+    }
+    if merged.len() > budget {
+        let drop = merged.len() - budget;
+        let evict = keys_to_evict(&order, drop);
+        merged.retain(|(key, _)| !evict.contains(key));
+        if merged.len() > budget {
+            // 兜底：`recency` 与 `merged` 对不齐时仍要守住预算 ✓
+            let extra = merged.len() - budget;
+            merged.drain(0..extra);
+        }
+    }
+    // ③ 年龄收敛到"还活着的键" ✓（顺序：旧顺序里活着的 → 其余按 `merged` 顺序 ✓）
+    let alive: std::collections::HashSet<(i64, i64)> = merged.iter().map(|(k, _)| *k).collect();
+    let mut new_recency = std::collections::VecDeque::new();
+    for key in order.iter() {
+        if alive.contains(key) && !new_recency.contains(key) {
+            new_recency.push_back(*key);
+        }
+    }
+    for (key, _) in merged.iter() {
+        if !new_recency.contains(key) {
+            new_recency.push_back(*key);
+        }
+    }
+    (merged, new_recency)
+}
+
 impl BelowTiles {
     /// **刷新一个 tile 的年龄** ✓（第 693 轮）：**只动 `recency`，不动 `tiles`** ✓
     /// ⇒ 命中路径**不再需要独占**那份 tile 表 ⇒ 与 `by_sig` 共享也**不必复制** ✓。
@@ -2835,7 +2892,10 @@ impl Renderer {
                         };
                         // **★ 同键 ⇒ **按行合并** ✓ ★**（**不是整体替换 ✗**）：**∴ 相邻两带各写一部分
                         // ⇒ **∴ 合并成完整 tile ✓**（**修"半块竞态"✓**）。
-                        let mut merged: Vec<((i64, i64), crate::buffer::Buffer)> = Vec::new();
+                        // **✓ 第 707 轮（外部审计 R-02）**：把"排序 + 淘汰 + 年龄收敛"交给
+                        //   纯函数 `plan_below_write` ✓ —— 它保证 ① 新块在尾部 ② 按年龄淘汰
+                        //   ③ 年龄只留活键 ✓（三条都有单测 ✓）。
+                        let mut fresh_vec: Vec<((i64, i64), crate::buffer::Buffer)> = Vec::new();
                         for (k, piece) in fresh {
                             let mut acc = piece;
                             for (_, old_piece) in keep.iter().filter(|(ok, _)| *ok == k) {
@@ -2843,37 +2903,20 @@ impl Renderer {
                                     acc = merge_by_rows(old_piece, &acc);
                                 }
                             }
-                            merged.push((k, acc));
+                            fresh_vec.push((k, acc));
                         }
-                        // **其余保留其原有顺序（**＝ 年龄 ✓**）**。
-                        for old in keep {
-                            if !merged.iter().any(|(k, _)| *k == old.0) {
-                                merged.push(old);
-                            }
-                        }
-                        // **丢"最久没用"的** ✓（第 696 轮）：`tiles` 顺序自第 693 轮起**没有语义** ✗
-                        //   ⇒ 仍按插入顺序丢就等于**退化成 FIFO** ✗（反复用到的会被丢掉 ✓）
-                        //   ⇒ 按 `recency`（只放 key ✓）挑最久没用的那几个 ✓；新写入的 key 排在最后 ✓。
-                        if merged.len() > BELOW_TILE_BUDGET {
-                            let drop = merged.len() - BELOW_TILE_BUDGET;
-                            // **旧的 `recency` 必须在这里读** ✓（`carried_recency` 是后面才算的 ✗）
-                            let mut order = guard
-                                .as_ref()
-                                .map(|c| c.recency.clone())
-                                .unwrap_or_default();
-                            for (key, _) in merged.iter() {
-                                if !order.contains(key) {
-                                    order.push_back(*key);
-                                }
-                            }
-                            let evict = keys_to_evict(&order, drop);
-                            merged.retain(|(key, _)| !evict.contains(key));
-                            if merged.len() > BELOW_TILE_BUDGET {
-                                // **兜底**：`recency` 与 `merged` 对不齐时仍要守住预算 ✓
-                                let extra = merged.len() - BELOW_TILE_BUDGET;
-                                merged.drain(0..extra);
-                            }
-                        }
+                        let fresh_keys: std::collections::HashSet<(i64, i64)> =
+                            fresh_vec.iter().map(|(k, _)| *k).collect();
+                        let keep_vec: Vec<((i64, i64), crate::buffer::Buffer)> = keep
+                            .into_iter()
+                            .filter(|(k, _)| !fresh_keys.contains(k))
+                            .collect();
+                        let old_recency = guard
+                            .as_ref()
+                            .map(|c| c.recency.clone())
+                            .unwrap_or_default();
+                        let (merged, new_recency) =
+                            plan_below_write(keep_vec, fresh_vec, &old_recency, BELOW_TILE_BUDGET);
                         // **★ 决定性 ✗ ★**（第 785 轮 ✓）：**∴ 把**要存的键**与**要存的空键**打出来 ✗**
                         //   ⇒ **∴ 与读取侧的 `want_tiles` **对照 ✗** ⇒ **∴ 一次看出**坐标系差异 ✓**。
                         if let Some(path) = probe_path.as_deref() {
@@ -2930,11 +2973,6 @@ impl Renderer {
                         //     而紧接着的 `*guard = Some(BelowTiles { … })` 就把旧的**整体替换**掉 ✓
                         //     ⇒ **该克隆纯粹是白拷贝** ✗（每个 band、每次区域渲染都拷一次）
                         //   **⇒ 修法**：`guard.take()` 把旧值**取走** ✓（旧值本来就要被丢弃 ✓）⇒ 语义完全相同 ✓。
-                        // **年龄也要带过去** ✓（第 693 轮）：它现在是**独立**的一份 key 序列 ✓
-                        let carried_recency = guard
-                            .as_ref()
-                            .map(|c| c.recency.clone())
-                            .unwrap_or_default();
                         let mut carried = guard.take().map(|c| c.by_sig).unwrap_or_default();
                         // **★ `by_sig` 必须**有界** ✗ ★**（第 984 轮 ✓；**目标第 4 条"**内存上限 ⇒ LRU ✓"）：
                         //   **∴ 为什么 ✗**：**`BELOW_TILE_BUDGET`**只管**旧字段的格数** ✓
@@ -2985,7 +3023,7 @@ impl Renderer {
                         }
                         *guard = Some(BelowTiles {
                             sig,
-                            recency: carried_recency,
+                            recency: new_recency,
                             tiles: shared,
                             empty: fresh_empty,
                             // **∴ 第 1 步：**先只初始化 ✗**（**行为不变 ✓）** —— **∴ 第 2／3 步**
@@ -8924,6 +8962,61 @@ mod retouch_color_tests {
             (half[0] - 0.66).abs() < 1e-5,
             "deposit=0.5 实测 {}",
             half[0]
+        );
+    }
+}
+
+/// **写缓存之后的淘汰计划** ✓（第 707 轮；外部审计 R-02）
+///
+/// **三条断言**对应审计的三个缺陷 ✓：
+/// ① 新块在尾部（兜底删的是最旧 ✓）；
+/// ② 淘汰按年龄（最久没用的先走 ✓）；
+/// ③ 年龄只留活键 ✓（死键不会永久堵在队首 ✓）。
+/// **变异**：让 `plan_below_write` 返回原 `recency` ⇒ ③ 红 ✓；丢"最新的" ⇒ ② 红 ✓。
+#[cfg(test)]
+mod below_write_plan_tests {
+    use super::*;
+    use crate::buffer::Buffer;
+    use std::collections::VecDeque;
+
+    fn piece(tag: u8) -> Buffer {
+        // 颜色不重要，只要每块**各不相同**（便于在断言里区分）✓
+        let value = f32::from(tag) / 255.0;
+        Buffer::filled(0, 0, 4, 4, [value, value, value, 1.0])
+    }
+
+    fn keys(merged: &[((i64, i64), Buffer)]) -> Vec<(i64, i64)> {
+        merged.iter().map(|(key, _)| *key).collect()
+    }
+
+    #[test]
+    fn the_plan_evicts_the_oldest_and_forgets_dead_keys() {
+        // 旧块：A、B；本次新算：C（`recency` 里 A 最久、B 次之，C 还没出现 ✓）
+        let keep = vec![((1, 0), piece(1)), ((2, 0), piece(2))];
+        let fresh = vec![((3, 0), piece(3))];
+        let recency: VecDeque<(i64, i64)> = [(1, 0), (2, 0)].into_iter().collect();
+        // 预算 2 ⇒ 丢 1 个 ⇒ 必是 A（最久没用 ✓），留下的顺序应为 [B, C]
+        let (merged, new_recency) = plan_below_write(keep, fresh, &recency, 2);
+        assert_eq!(
+            keys(&merged),
+            vec![(2, 0), (3, 0)],
+            "① 新块要排在尾部、且丢最旧的"
+        );
+        assert_eq!(
+            new_recency.into_iter().collect::<Vec<_>>(),
+            vec![(2, 0), (3, 0)],
+            "③ 年龄里不许留死键 (1,0)，且新键 C 要在末尾"
+        );
+        // 再写一次：这次预算 1 ⇒ 丢 2 个 ⇒ 只剩最新的 C ✓（若年龄没收敛，会先挑到已死的 A ✗）
+        let keep2: Vec<((i64, i64), crate::buffer::Buffer)> = Vec::new();
+        let fresh2 = vec![((3, 0), piece(3))];
+        let recency2: VecDeque<(i64, i64)> = [(2, 0), (3, 0)].into_iter().collect();
+        let (merged2, recency3) = plan_below_write(keep2, fresh2, &recency2, 1);
+        assert_eq!(keys(&merged2), vec![(3, 0)], "预算 1 ⇒ 只留最新的 C");
+        assert_eq!(
+            recency3.into_iter().collect::<Vec<_>>(),
+            vec![(3, 0)],
+            "年龄也只剩 C"
         );
     }
 }
