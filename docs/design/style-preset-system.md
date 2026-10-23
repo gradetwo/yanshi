@@ -1,0 +1,393 @@
+# Yanshi 风格预设系统设计文档
+
+> 状态：已实现一期+二期主体（展开器、四个工具、22 套内置数据、外挂目录合并），
+> 见文末「实现落点」。本文按能直接转给开发的规格写；所有「默认」项均已采用、可改，
+> 改时须同步数据与测试。
+> 数据来源：《修片风格体系速查与配方》（下称「速查」）的 22 套 Lightroom 参数签名、
+> 2026-10-23 实测批次结论（chatlog）、《Lightroom 与 Photoshop 精修技巧调研》（修正段依据）。
+
+## 1. 目标与非目标
+
+**目标**：让 agent 下次调风格时不必重写一整串 ops——按名取一套已验证的配方，
+一次调用落图；看后不满意，用一个 `strength` 或一两个语义旋钮重出，而不是重写配方。
+
+**非目标**：
+
+- 不做渲染队列/批处理调度（渲染仍走既有路径）；
+- 不做 PDF 展示册（素材与版式是另一项工作）；
+- 不模拟没有对应能力的技法：无对应工具的参数一律写进该预设的 `notes.unsupported`，
+  **不许编造参数硬凑**（见附录各套 notes）；
+- 不做天空替换/合成（与 LR/PS 调研的范围口径一致：只做忠实修复与风格化）。
+
+## 2. 核心决定：预设是数据，不是代码
+
+每个预设是一份 JSON 数据（id、双语名、状态、题材标签、适用/慎用、说明、实测 notes、
+修正段 + 风格段、旋钮）。新增/修订风格 = 改数据文件，不改代码、不重新编译逻辑
+（内置数据经 `include_str!` 嵌入，改数据仍需重新构建二进制——这是分发形态，不是逻辑耦合）。
+
+存放两层，仿镜头库先例：
+
+| 层 | 位置 | 规则 |
+|---|---|---|
+| 内置 | `crates/yanshi-server/data/style-presets.json` | 随程序走的种子库（首批 22 套） |
+| 外挂 | 环境变量 `YANSHI_PRESET_DIR` 指向的目录里的 `style-presets.json` | 同 id 覆盖、新 id 追加，来源标 `external`；**变量已设置但文件缺失/解析失败 = 报错**，不许静默当作没设置（仓规：不许静默降级） |
+
+## 3. 两段结构
+
+每套预设 = **修正段 + 风格段**（速查「配方构建八步」的口径：先校正、后风格；
+曝光/白平衡这类逐张校正**不进风格段**，只以温和基线出现在修正段里供 agent 逐张再调）。
+
+- 修正段声明 `baseline`：`full`（全量基线）或 `light`（轻校正基线）。
+  用 light 的是曾蒙灰纱的批次（小清新、韩系、法式、糖水、田园奶油）——全量基线
+  的阴影提量与它们的风格段叠加会蒙灰，这是实测教训，不是审美偏好。
+- 修正段**不参与 strength 插值**（校正不是风格的一部分，strength=0 不该把校正也关掉）。
+- 风格段是一串操作：`{kind: adjustment|filter, type, params, neutral}`，
+  类型与参数格式以仓内既有口径为准（`validate_effect` 的参数表、
+  `yanshi-render` 的 `ADJUSTMENT_NAMES` / `FILTER_NAMES`）。
+
+## 4. 数据模型
+
+```jsonc
+{
+  "id": "hong_kong",                 // 唯一，ASCII 小写下划线
+  "name_zh": "港风", "name_en": "Hong Kong",
+  "status": "fixed_v2",              // established | fixed_v2 | needs_review，如实标注
+  "tags": ["夜景", "街景", "霓虹"],
+  "suitable": ["夜街", "招牌"], "caution": ["白天须降强度"],
+  "description": "…", "notes": "实测结论 + 硬约束 + unsupported 技法",
+  "correction": { "baseline": "full", "ops": [ /* PresetOp */ ] },
+  "style_ops": [ /* PresetOp */ ],
+  "knobs": [ /* 每套 2 个语义旋钮 */ ]
+}
+// PresetOp: { "kind": "adjustment"|"filter", "type": "split_toning",
+//             "params": { …配方值（strength=1）… },
+//             "neutral": { …可插值参数的中性值，键必须是 params 的子集… } }
+// Knob: { "id": "teal", "label": "青绿阴影", "description": "…",
+//         "min": 0, "max": 1, "default": 0.5,
+//         "targets": [ { "op": 2, "param": "shadows", "range": [低端值, 高端值] } ] }
+//   op 是风格段下标；range 两端形状与目标参数一致（数字/三元组/对象均可）。
+```
+
+**状态口径**：`established` = 已在真实照片上目检成立；`fixed_v2` = v1 翻车后按
+修正口径出 v2 并入册；`needs_review` = 未目检——**不许装成成品**，`list_presets`
+会如实返回状态，agent 选用前必须先读。
+
+## 5. strength 插值（微调的核心语义）
+
+### 5.1 公式
+
+对风格段每个参数键：
+
+- 声明了中性值：`实际值 = 中性值 + (配方值 − 中性值) × strength`
+- 未声明中性值：**固定参数**，strength 不动它（seed、size、radius、threshold、
+  channel 等——它们决定「质感的种类」而不是「风格的量」）
+
+插值递归定义：数字线性；数组逐分量（两端长度必须一致，否则展开报错）；
+对象逐键（中性对象必须含配方对象的全部键）；`curves` 的 `points` 按此规则
+逐点插值——中性点列在数据里写成 `[[x, x], …]`（恒等线），配方点列与中性点列
+x 相同、只插 y。布尔/字符串等非数值出现在 neutral 里且两端不等 ⇒ 报错，
+不许静默取一端。
+
+### 5.2 中性值表（本系统用到者，逐项对着内核实现核过）
+
+| 效果 | 参数 | 中性值 | 依据（内核缺省/恒等条件） |
+|---|---|---|---|
+| exposure | ev | 0 | 缺省 0 |
+| brightness_contrast | brightness / contrast | 0 / 1 | 缺省 0 / 1 |
+| saturation | amount | 1 | 缺省 1，amount 是乘法倍率 |
+| vibrance | amount | 0 | amount ≤ 0 直接 return |
+| white_balance | temperature / tint | 0 / 0 | 缺省 0 |
+| shadows_highlights | shadows / highlights | 0 / 0 | 缺省 0 |
+| levels | black / white / gamma | 0 / 1 / 1 | 缺省 0/1/1 |
+| hsl | hue / saturation / lightness | 0 / 1 / 0 | 缺省 0/1/0 |
+| color_balance | shadows/midtones/highlights | [0,0,0] | 三元组缺省零 |
+| split_toning | shadows/highlights / balance | [0,0,0] / 0 | 同上；amount 不写（缺省 1，只插三元组，避免二次缩放） |
+| clarity / texture / dehaze（调整版） | amount | 0 | 文档明示 0 = 恒等 |
+| selective_color | adjust 各色类 [c,m,y,k] | [0,0,0,0] | 缺省全零 |
+| channel_mixer | matrix / constants | 单位阵 / [0,0,0] | 缺省单位阵 |
+| film_grain（滤镜） | amount | 0 | amount ≤ 0 直接 return |
+| noise（滤镜） | amount | 0 | 同上口径 |
+| vignette（滤镜） | strength | 0 | strength ≤ 0 直接 return |
+| glow（滤镜） | intensity | 0 | 无强度即无辉光 |
+| sharpen（滤镜） | amount | 0 | 同上口径 |
+| curves | points | [[x, x], …] 恒等线 | 缺省恒等曲线 |
+
+**没有中性态的效果不许进风格段**：`black_and_white`（任何权重都全幅去色）、
+`invert`、`posterize`、`gradient_map`、`color_lut` 等没有「量」的效果，
+strength 插值对它们无定义。需要去色时用 saturation 插值到 0（见黑白预设的 notes）。
+
+### 5.3 钳制
+
+展开（插值 + 旋钮）之后、校验之前，全部数值按 `validate_effect` 的范围表钳制
+（钳制表在展开器内与校验同口径维护）。钳制只处理浮点尾差与旋钮极端组合，
+**不许用钳制掩盖数据错误**：数据本身的配方值越界会在测试里被 `validate_effect` 抓红。
+
+### 5.4 可测性质（测试门守着，必须能变红）
+
+1. **strength=0 恒等**：风格段展开的每个可插值参数恰等于其中性值（展开器单元测试，
+   逐套逐参数断言）；像素层：strength=0 整套渲染与只施修正段逐像素一致（集成测试）。
+2. **全量可校验**：22 套在 strength ∈ {0, 0.5, 1} 的展开全部过 `validate_effect`。
+3. **二次应用不叠加**：见 §7。
+
+## 6. knobs 数据模型
+
+每套 2 个**语义**旋钮（不是把某个滑杆直接暴露）：旋钮给一个标量，归一位置
+`t = (值 − min) / (max − min)`，目标参数 = 在 `range` 两端之间按 t 插值
+（数字/三元组/对象同 §5.1 的递归规则），在 strength 插值**之后**施加、再钳制。
+
+- 调用方**没给**的旋钮不覆盖——配方值原样生效。`default` 只是建议值，不许拿它
+  覆盖配方（否则 strength=1 的「配方」会被缺省旋钮改掉，两处真相）。
+- 未知旋钮、非数字、越界值：一律报错，错误文本含**旋钮名与收到的值**
+  （仓规：报错要说清缺什么/错在哪）。
+
+## 7. 落成与二次应用（第一核对项的结论）
+
+**核对结论**：原设计曾打算把「二次应用 = 更新实例」挂在 core 的 `CreateStyle` /
+`Supersede` 原子上，并把「CreateStyle 载荷到底是不是同一物」列为实现期第一核对项。
+已对着源码核清（`crates/yanshi-core/src/fold.rs` 的 CreateStyle 分支）：
+**CreateStyle 的载荷是文档样式实体**（name/category/parent_style/brushes/palette/
+textures/render_params/seed_policy），是绘画侧的笔触样式，**不是照片调整配方，
+两者不是同一物**。⇒ 不硬塞 CreateStyle。
+
+**最终方案**（全部走既有路径，不造新原子）：
+
+- 每笔展开操作有**确定性 object_id**：`preset_<预设id>_<c|s>_<两位序号>_<类型>`。
+- 首次应用：走 `add_adjustment` / `add_filter` 的实现（`write_add_effect`）新建。
+- 二次应用：同 id 已存在 ⇒ 走 `update_adjustment` / `update_filter` 的实现
+  （`write_update_effect`，Supersede 提交）。响应分列 `created_object_ids` /
+  `updated_object_ids`，调用方能核对。
+- 更新是**合并**语义（patch 覆盖同名键）：预设保证「同一预设同一序号笔的参数键集
+  在所有 strength/knobs 组合下恒定」（键集由配方决定，插值与旋钮只改值不增删键），
+  ⇒ 对预设托管对象，合并恰等于全量替换该笔参数，不会残留上一轮的键。
+  这一条由数据结构保证：neutral 与 knobs.targets 引用的键都在配方键集内（加载时校验）。
+- 落成前先**全量校验**：图层存在、每笔过 `validate_effect`、已存在同 id 对象的
+  类型与效果名与将落的一致（不一致拒绝覆盖并说清）。任一不过整组不落成。
+  提交期失败（并发撞 id 等）口径同 `apply_adjustments`：在错误里说清已落几笔
+  的纪律由既有 add/update 路径各自负责，本层不另造事务。
+- `include_correction=false` 的二次应用只更新风格段对象；此前落的修正段对象
+  不动（不删、不更新），调用方要改修正请整套重 apply 或逐个 update。
+
+## 8. 工具规格（均在 Retouch 组；总数 196 → 200）
+
+| 工具 | 变更性 | 参数 | 返回要点 |
+|---|---|---|---|
+| `list_presets` | 只读 | `tag?` `subject?` `status?` | 摘要数组 + count；**先读它再选风格** |
+| `get_preset` | 只读 | `preset_id` | 完整定义 + strength=1 展开预览 |
+| `preview_preset` | 只读 | `preset_id` `strength?` `knobs?` `include_correction?` | 展开清单（object_id/段/序号/类型/实际参数）+ op_count；**不落成、不渲染**；展开结果先过一遍 `validate_effect`，非法在预览期就报 |
+| `apply_preset` | 变更 | `preset_id` `layer_id` `strength?` `knobs?` `include_correction?` | 既有变更响应 + `preset_id/strength/created_object_ids/updated_object_ids/op_count` |
+
+设计说明：原设计的「低清快速预览」在本期由 `preview_preset` 的**清单预览**承担
+（零渲染成本、确定性）；像素级小图预览列入三期（见 §10），不假装已有。
+
+## 9. Lightroom → Yanshi 换算规则（数据是怎么从速查来的）
+
+速查的数值是 Lightroom/ACR 口径，落 Yanshi 时按下面规则换算，并在每套 notes 里
+标注近似与 unsupported。换算只求**方向与量级**对，逐张适配仍是 agent 的事。
+
+| LR 口径 | Yanshi 落法 |
+|---|---|
+| 曝光 ±EV | `exposure.ev` 直通（Yanshi 是精确 2^ev，量级同阶） |
+| 对比滑杆 −100..+100 | `brightness_contrast.contrast = 1 + v/100` |
+| 饱和滑杆 | `saturation.amount = 1 + v/100` |
+| 自然饱和度 | `vibrance.amount ≈ v/50`（Yanshi 量程 0..2，0 为中性） |
+| 高光/阴影滑杆 | `shadows_highlights` ÷100（−1..1） |
+| 色温偏移（K 差） | `white_balance.temperature ≈ ΔK/3000` 钳到 [−1,1]；正 = 暖（内核：R 增、B 减） |
+| 色调（绿↔品红） | `white_balance.tint`，正 = 品红 |
+| 曲线点 (输入→输出，0–255) | `curves.points` ÷255 归一（Yanshi 是单调三次插值，点列须含首尾） |
+| 抬黑点 fade（输出 5–15/255） | 曲线首点 y ÷255，或 `levels.black`（小量，二者取一，不叠） |
+| 分离色调/色彩分级（H/S 两轮） | `split_toning` 三元组：按目标色的 RGB 偏移方向近似，量级 ≤0.15/分量（速查通则：分级宁小勿大，两轮之和 ≤25 的口径映射为三元组小量）；v2 四套再减半 |
+| HSL 逐通道（H/S/L） | **无逐通道 HSL**：全局 `hsl` 只动整体；逐通道意图改用 `selective_color` 的 CMYK 偏移近似，或写入 unsupported |
+| 校准面板移色 | `channel_mixer` 矩阵近似（赛博朋克），或 unsupported |
+| 清晰度/纹理/去朦胧 | 调整版 `clarity` / `texture` / `dehaze` 的 amount = LR 值 ÷100 |
+| 颗粒（量/大小/粗糙度） | `film_grain.amount` ≈ 量÷40 钳到 0..1；size 取 2–3；**粗糙度无对应**（unsupported 标注） |
+| 数字噪点（CCD） | 滤镜 `noise.amount` 小量 + 关降噪类操作；彩噪的红绿斑块质地无精确对应（notes 标注） |
+| 暗角（量） | 滤镜 `vignette.strength` ≈ |v|/100×0.6，radius/softness 给固定常用值 |
+| 柔焦/glow | 滤镜 `glow.intensity` 小量；或 clarity/texture 负值（糖水的辉光教训：默认关，见其 notes） |
+| 锐化（量/半径） | 滤镜 `sharpen` amount ≈ 量÷80、radius 取整 |
+
+**修正段**依据 LR/PS 调研：镜头校正在导入期（raw_options）完成，不进预设；
+修正段只落温和的影调基线（小曝光、阴影/高光回收、微去雾/微清晰），白平衡只以
+中性占位出现——逐张的白平衡与曝光收尾不进预设，这是速查「专业与业余预设的分水岭」。
+
+## 10. 测试门与三期划分
+
+**测试门**（`crates/yanshi-server/tests/style_preset_package.rs` + 展开器内单元测试）：
+
+1. 22 套全部展开并过 `validate_effect`，在合成文档上 apply 成功且落成对象数 = 展开笔数，
+   strength=1 对测试图非恒等；
+2. strength=0 恒等（参数层逐参数 = 中性值；像素层与只施修正段逐像素一致）；
+3. 二次应用改 strength：object_id 集合不变、对象总数不增、像素变；
+4. 未知预设/未知旋钮/strength 越界/旋钮越界：报错且文本含具体名字/值，且零落成；
+5. knob 覆盖只改其目标参数（展开结果对比）。
+
+**三期划分**：
+
+- 一期（已完成）：数据模型 + 内置 22 套 + 展开器（strength/knobs/钳制）+
+  list/get/preview 三个只读工具 + 测试门 2/4/5 的展开层部分。
+- 二期（已完成主体）：`apply_preset` 落成与二次更新、外挂目录合并、
+  测试门 1/3 与像素层恒等。
+- 三期（未做，如实标注）：像素级低清快速预览（固定长边渲染的 preview_preset 扩展）、
+  agent 实验配方从外挂升内置的流程化工具、黑白 B&W Mix 的 amount 化（需内核改动）、
+  逐通道 HSL（需内核新调整类型）。
+
+## 11. 原 5 个待定问题（默认建议，已采用，可改）
+
+| # | 问题 | 默认（已采用） |
+|---|---|---|
+| 1 | 预置放内置还是全走外挂 | **内置种子 + 外挂目录并存**（§2）：内置保证开箱可用，外挂保证不改代码加新风格 |
+| 2 | strength 线性插值够不够，还是要分段控制 | **先线性**：语义简单、性质可测（§5.4）；分段控制等有实测证据说线性不够再议 |
+| 3 | 快速预览的尺寸/速度目标 | **一期用清单预览（零渲染）**；像素预览列三期，目标到时再定（不预先承诺数字） |
+| 4 | 二次应用的语义 | **更新实例不叠加**：确定性 id + 既有 update 路径（§7）；CreateStyle 经核对不是同一物，不用 |
+| 5 | 未目检预设可否进内置库 | **可进，但 status 必须标 `needs_review`**，且 list/get 如实返回；升 `established` 必须有真实照片目检结论 |
+
+## 12. 实现落点（与本文的对账）
+
+| 设计 | 实现 |
+|---|---|
+| 数据 | `crates/yanshi-server/data/style-presets.json`（22 套） |
+| 展开器 + 工具处理器 | `crates/yanshi-server/src/presets.rs`（tools 的子模块，复用 `validate_effect` 与 add/update 实现，不另起校验口径） |
+| 注册/分发/示例 | `tools_registry.rs` +4（Retouch 组，总数 200）、`tools.rs` 分发 +4、`tools_examples.rs` +4 |
+| 文档 | `docs/tools.md` 工具总数 200 + Style presets 一节 |
+| 测试 | `crates/yanshi-server/tests/style_preset_package.rs` + `presets.rs` 内单元测试 |
+
+**与原设计不一致处**：① 二次应用不挂 CreateStyle——Supersede
+仍是更新的提交原子（经 update 工具），但入口是既有 update 工具而非 CreateStyle，
+原因见 §7 核对结论；② 「低清快速预览」一期降级为清单预览，像素版列三期（§8）；
+③ 外挂文件名与内置同名同格式（原设计只说外挂目录），合并规则见 §2。
+
+---
+
+## 附录：22 套预设目录
+
+图例：状态按 2026-10-23 实测与找回的截图证据如实标注。修正段基线：
+full = 全量基线、light = 轻校正基线（配方均以 strength=1 记，参数细节以
+`style-presets.json` 为单一事实来源，本附录记要点与旋钮）。
+
+### 1. 小清新 `japanese_airy` — established（已验证）
+- 题材：晴日户外人像、海边、白建筑、校园；慎：夜景、肤色易被青污染。
+- 实测：以「JP LIGHT FINAL」在三素材（圣托里尼、罗弗敦雾天变体 JP CLEAN、树荫人像）
+  深挖验证；此前蒙灰纱，换轻校正基线。
+- 配方要点（light）：曝光 +0.45、低对比、抬黑曲线、高光回收、微暖白平衡、柔 texture。
+- 旋钮：`fade` 空气感（levels.black）、`softness` 柔和度（texture.amount）。
+- unsupported：逐通道 HSL 用全局 + selective 近似；眼睛局部锐化属蒙版活。
+
+### 2. 模拟 CCD `ccd` — established（已验证）
+- 题材：直闪夜拍、日常抓拍、聚会；慎：大光比风光。
+- 实测：以「CCD FINAL」在同三素材深挖验证（与小清新是当时深挖的两套）。
+- 配方要点（full）：硬 S 曲线（两端不抬不压）、对比 1.3、冷偏白平衡、noise 数字噪点、暗角。
+- 旋钮：`noise` 数字噪点、`cold` 冷闪偏色。
+- unsupported：直闪光效（拍摄端）、真实色差（导入期处理）、PS 高光 glow 复制层法。
+
+### 3. 日系胶片 `japanese_film` — needs_review
+- 题材：阴天、窗光、校园；慎：强顺光金色时刻。清淡略青绿（Fuji 400H 系）。
+- 旋钮：`fade` 褪色（阴影青绿）、`grain` 颗粒。unsupported：颗粒粗糙度无对应参数。
+
+### 4. 胶片复古 `retro_film` — fixed_v2
+- 题材：婚礼、金色时刻人像；慎：神社夜景（天空仍偏棕橙，未完全修透）、钨丝灯未校白。
+- 实测：v2 暖度减半，白天定版；夜景对暖偏置格外敏感。曝光键是 `ev`（曾写错，已修正）。
+- 旋钮：`warmth` 暖度、`grain` 颗粒。
+
+### 5. 港风 `hong_kong` — fixed_v2
+- 题材：夜街、招牌、茶餐厅、地铁；慎：白天须降强度、肤色发绿是头号失败。
+- 实测：v1 全局色偏开满（与国风同病）；v2 色偏减半、selective_color 保红、要真黑不 fade。
+- 旋钮：`neon` 霓虹浓艳（saturation）、`teal` 青绿阴影（split_toning.shadows）。
+
+### 6. 韩系 `korean` — needs_review
+- 题材：棚拍、探店、情侣/闺蜜；慎：硬光正午、男性/街头。奶油粉彩、柔焦敢下手。
+- 实测：蒙灰纱批次，换轻校正基线重渲，待最终目检。基线 light。
+- 旋钮：`cream` 奶油柔焦（texture）、`bright` 明亮（exposure）。
+
+### 7. 欧美清冷 `western_cool` — established
+- 题材：建筑、汽车、健身、男性人像、雪景、港口；慎：柔情题材、肤色变青。
+- 实测：本批最好——日落暖天配冷蓝阴影对撞干净；汉堡港蓝灰高级感成立。
+  （研究名「欧美冷调」，同一套。）
+- 旋钮：`cold` 冷感（白平衡）、`hard` 硬朗（clarity）。
+
+### 8. 电影感 `cinema` — fixed_v2
+- 题材：旅行、街头、叙事人像、夜景灯火；慎：无青/橙素材硬套、分级过饱和卡通化。
+- 实测：v1 全局泼青（威尼斯暖灯被灭、罗弗敦海面成青汤）；v2 青只压阴影、橙留亮部
+  （只用 split_toning 分段，全局饱和不推高）。
+- 旋钮：`teal_orange` 青橙对峙、`matte` 哑光（levels.black）。
+
+### 9. 法式 `french` — needs_review
+- 题材：田园、家居、窗光人像、婚礼细节；慎：都市夜景、双暖变黄墙。琥珀奶油橄榄绿。
+- 实测：轻校正基线重渲，待目检。基线 light。旋钮：`warmth`、`grain`。
+
+### 10. 森系 `forest` — established
+- 题材：森林、溪流、雾日；慎：城市建筑脏绿、林下人像肤色。
+- 实测：台湾苔藓森林合格（绿更润更深、质感在、无伪影）；**雾林素材已剔除**
+  （九成白雾，任何风格都测不出，降级为解码验证，不进展示与评测）。
+- 配方要点：压曝光造林下暗、绿压暗不提亮（selective greens/yellows）、负 dehaze 留雾。
+- 旋钮：`depth` 幽深（exposure）、`mist` 雾气（dehaze 负值）。
+
+### 11. 莫兰迪 `morandi` — established
+- 题材：静物、极简室内、服装平铺、产品、港口建筑；慎：运动/广告/夜景。
+- 实测：汉堡港教科书式（灰米、低饱和、哑光）。
+- 配方要点：全色一起降饱和、明度向中高靠、曲线两端灰化。旋钮：`gray` 灰度、`matte` 哑光。
+
+### 12. 暗黑情绪 `dark_moody` — needs_review
+- 题材：黄昏/阴天人像、咖啡馆、静物、男性肖像；慎：明快题材、左端撞墙丢层次。
+- 旋钮：`dark` 压暗、`vignette` 暗角。
+
+### 13. 黑白 `black_white` — needs_review
+- 题材：建筑、街头、纹理人像、形态强的风光；慎：靠色彩叙事的题材。
+- 配方要点：saturation 插值到 0 去色 + 强 S + clarity + 银盐颗粒。
+- unsupported：B&W Mix 逐色权重无中性态（会破坏 strength=0 恒等），列三期。
+
+### 14. 赛博朋克 `cyberpunk` — needs_review
+- 题材：雨夜霓虹（原片须真有光源）；慎：日光硬套 = 紫天毒绿。
+- 实测：chatlog 点名未目检，须补目检才能升库内 established。
+- 配方要点：channel_mixer 近似校准移色、分级青/品红、glow 造霓虹晕。
+- 旋钮：`neon_glow` 霓虹晕、`magenta` 品红。
+
+### 15. Y2K `y2k` — needs_review
+- 题材：派对、镜面自拍、夜出合影；慎：严肃/商业场合、做成暖胶片（黑是硬的）。
+- 配方要点：CCD 链再推一档——高对比、高饱和冷色、硬黑边、noise。
+- unsupported：日期戳与 JPEG 压缩感属导出层，不在预设内。旋钮：`pop`、`noise`。
+
+### 16. 国风 `guofeng` — fixed_v2
+- 题材：汉服、古建、园林、茶空间、神社/寺庙；慎：现代玻璃建筑、红绿同拉满变影楼。
+- 实测：v1 青绿过头、神社朱红大门被压发闷；v2 硬约束**朱红必须保住**
+  （selective reds 减青保红，青只进阴影）。研究名「古风/国潮」，同一套。
+- 旋钮：`daiqing` 黛青、`zhuhong` 朱红（selective_color.adjust）。
+
+### 17. Ins 简约 `ins_minimal` — established
+- 题材：探店、好物、家居、留白构图、港口；慎：杂乱多色场景、白色过曝、暗部压太狠。
+- 实测：一半成立——汉堡港干净简约成立；圣托里尼暗部压太狠（悬崖成一团黑），
+  本配方阴影只轻提不压以避开该失败模式。研究名「ins 极简」，同一套。
+- 旋钮：`white` 通透白（exposure）、`clean` 低饱和（saturation）。
+
+### 18. 糖水 `sweet` — needs_review
+- 题材：少女写真、闺蜜、樱花/花海人像；慎：男性、纪实、老人。
+- 实测：轻校正基线重渲；**去辉光对照实验未跑完**（斜切边缘是否辉光所致未定），
+  故本配方 glow 默认关、只作旋钮可选项并注明开启须目检边缘。基线 light。
+- 旋钮：`glow` 辉光（默认 0）、`sweet` 甜亮（exposure）。
+
+### 19. 商业 `commercial` — needs_review
+- 题材：产品、广告、形象照；慎：情绪风格带进交付会被退片（黑位不准/颗粒=噪点）。
+- 实测：未目检。配方要点：风格即没有风格——只纠偏、材质与锐利小量。
+- unsupported：美妆频率分离/中性灰 D&B 是 PS 像素级技法，无对应工具，不进预设。
+- 旋钮：`material` 材质感（texture）、`sharp` 锐利（sharpen）。
+
+### 20. HDR 风光 `hdr_landscape` — fixed_v2
+- 题材：大光比风光、建筑；慎：雾景、人像禁用此拉法、过量出光晕。
+- 实测：v1 两张都糊（日落阴影硬抬成绿雾、天空橙溢出；罗弗敦灰泥 + 左边缘可疑青斑待验）；
+  v2 拉量约减半、保真黑（levels），青只进阴影、暖只进高光。
+  注：找回的修正对照截图显示罗弗敦原片高光粉边/青斑在**修正段**处理后消失，
+  与「HDR v1 的青斑」是两回事，勿混。
+- unsupported：真 HDR 的包围曝光合并无对应工具，此为单张伪 HDR。
+- 旋钮：`drama` 戏剧化（clarity）、`lift` 暗部拉量。
+
+### 21. LOMO `lomo` — established
+- 题材：生活抓拍、聚会、旅行手帐；慎：色彩准确场合。
+- 实测：成立——下坡路糖果色与饱和就是 LOMO 本人；圣托里尼暗角偏重、吃左下细节，
+  但在风格本性范围内（旋钮可收）。
+- 配方要点：高饱和、高对比、重暗角、分级染色、颗粒。
+- unsupported：宝丽来 milky fade 是另一支（速查同卡），未混入本预设；
+  手动桶形畸变属逐张 lens 操作，不进预设。旋钮：`vignette` 暗角、`candy` 糖果色。
+
+### 22. 田园奶油 `pastoral_cream` — needs_review
+- 题材：田野、野餐、亲子、花市、田园婚纱；慎：都市/夜景、黄提过头白衣泛奶黄。
+- 实测：待补图目检。基线 light（与法式/韩系同族，避灰纱）。
+- 配方要点：暖白平衡、麦色提亮靠曲线、高光奶油分级、细颗粒。
+- 旋钮：`cream` 奶油暖（白平衡）、`glow_soft` 柔光（clarity 负值）。
