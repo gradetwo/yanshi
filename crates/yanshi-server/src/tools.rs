@@ -9022,6 +9022,34 @@ fn write_resample(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             ))
         }
     };
+    // **目标尺寸也必须受画布上限约束** ✓（第 729 轮；外部审计 S-06）
+    //   **⇒ 缺陷**：`create_document` 有 `MAX_CANVAS_EDGE = 16_384` 与 `MAX_CANVAS_PIXELS = 1<<28` ✓，
+    //     而 `resample` **一个都没检查** ✗ ⇒ `width: 60000, height: 60000` 会一路走到
+    //     **分配 14.4 GB** ✓（本机 3.8 GiB ⇒ OOM killer；服务端 ⇒ **整个进程被带走** ✓）。
+    //   **⇒ 判据**：超上限必须 `invalid_argument`，且**文案要点出是哪一个上限** ✓
+    //     （`resample_refuses_target_sizes_beyond_the_canvas_limits` ✓）。
+    //   **⚠ 只拦"大于画布上限"** ✓：小于源图的重采样是**正常用法** ✓（不设别的门槛 ✗）。
+    const MAX_EDGE: u32 = 16_384;
+    const MAX_PIXELS: u64 = 1 << 28;
+    if target_w > MAX_EDGE || target_h > MAX_EDGE {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "resample 目标 {target_w}×{target_h} 超过画布单边上限 {MAX_EDGE} \
+                 ⇒ 这个尺寸必然 OOM，所以不做（要更大就分块）"
+            )),
+        ));
+    }
+    let pixels = u64::from(target_w) * u64::from(target_h);
+    if pixels > MAX_PIXELS {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "resample 目标 {target_w}×{target_h} = {pixels} 像素，超过画布总像素上限 {MAX_PIXELS} \
+                 ⇒ 这个尺寸必然 OOM，所以不做（要更大就分块）"
+            )),
+        ));
+    }
     if target_w == 0 || target_h == 0 {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
