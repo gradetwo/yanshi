@@ -28,6 +28,11 @@ if (layer.ok !== true && !String(layer.context?.detail ?? "").includes("已存�
   process.exit(1);
 }
 const summary = await call("get_document", {});
+if (summary.ok === false || typeof summary.width !== "number") {
+  // **判据前提不成立（拿不到画布尺寸）⇒ 不可判，不是产品失败** ✓
+  console.error(`  ⊘ 不可判：拿不到文档尺寸 ⇒ ${JSON.stringify(summary).slice(0, 140)}`);
+  process.exit(3);
+}
 const docW = Number(summary.width ?? 64);
 const docH = Number(summary.height ?? 64);
 const size = Math.min(64, Math.floor(Math.min(docW, docH) * 0.75));

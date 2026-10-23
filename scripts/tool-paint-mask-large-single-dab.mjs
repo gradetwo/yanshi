@@ -42,8 +42,10 @@ const mask = await call("create_mask", {
   shape: { kind: "rect", bbox: { x: 0, y: 0, w: docW, h: docH } },
 });
 if (mask.ok !== true) {
-  console.error(`  ✗ create_mask ⇒ ${JSON.stringify(mask).slice(0, 160)}`);
-  process.exit(mask.error_code === "invalid_argument" ? 1 : 3);
+  // **判据前提不成立（建不出蒙版）⇒ 不可判** ✓（`process.exit(3)` 必须**字面**出现，
+  // 仓里的门禁 `check-criteria-have-exit3.mjs` 是按字符串找的 —— 用三元表达式它会漏判 ✗）
+  console.error(`  ⊘ 不可判：建不出蒙版 ⇒ ${JSON.stringify(mask).slice(0, 160)}`);
+  process.exit(3);
 }
 const painted = await call("paint_mask", {
   mask_id: maskId,

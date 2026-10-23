@@ -35,6 +35,11 @@ if (layer.ok !== true && !String(layer.context?.detail ?? "").includes("已存�
 // **画布尺寸从 `get_document` 读** ✓（第 639 轮实测：判据曾在 64×64 的 `_bootstrap` 上
 //   用 200×200 的矩形 ⇒ 落笔全在画布外 ⇒ 39 笔全失败 ✗ ⇒ 那是**判据的错**，不是产品 ✓）
 const summary = await call("get_document", {});
+if (summary.ok === false || typeof summary.width !== "number") {
+  // **判据前提不成立（拿不到画布尺寸）⇒ 不可判** ✓
+  console.error(`  ⊘ 不可判：拿不到文档尺寸 ⇒ ${JSON.stringify(summary).slice(0, 140)}`);
+  process.exit(3);
+}
 const docW = Number(summary.width ?? 64);
 const docH = Number(summary.height ?? 64);
 const box = {

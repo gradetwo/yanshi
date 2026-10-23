@@ -1685,7 +1685,11 @@ pub(super) fn paint_brush(
     // 画面里会留下一块**直角矩形幽灵** ✓ —— 这正是用户报的「`Flat2#1` 画叶子出矩形 artifact」✓
     //（实测复现 ✓：半透明绿矩形 + 一条 2B_pencil ✓ ⇒ 删掉绿矩形 ✓ ⇒ 矩形区域里**还剩 1076 个绿像素** ✗）。
     if reads_canvas {
-        let deposit = brush_deposit_mask(&brush, size.unwrap_or(20.0), points, region, dtimes);
+        // **把 size 先落成变量** ✓（第 646 轮）：直接写 `size.unwrap_or(20.0)` 会让
+        // `scripts/check-deposit-mask-time-base.mjs` 的 ③ 号检查**匹配不到 `dtimes`**
+        // （它的正则 `brush_deposit_mask\([^)]*\)` 在嵌套括号处就断了 ✗）⇒ CI 红。
+        let paint_size = size.unwrap_or(20.0);
+        let deposit = brush_deposit_mask(&brush, paint_size, points, region, dtimes);
         let before = before_pixels.unwrap_or_default();
         // 引擎在"没碰过的像素"上的量化漂移上限 ✓（见快照处的说明 ✓）。
         const CANVAS_DRIFT_TOLERANCE: i32 = 3;
