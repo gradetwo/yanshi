@@ -3359,9 +3359,18 @@ async function withKernel(doc, fn) {
         if (pl.object_id) objects.add(pl.object_id);
         if (pl.layer_id) layers.add(pl.layer_id);
       }
+      // **字段要与服务端 `read_get_diff` 同名** ✓（第 735 轮；外部审计 S-07 第 ④ 项）
+      //   **⇒ 缺陷**：本地层返回 `count`，服务端返回 `atom_count` ✗；且**没有 `head_seq`** ✗；
+      //     还**忽略调用方的 `limit`** ✗ ⇒ 同一份代码在两台宿主上**字段不同** ✓
+      //     ⇒ 调用方按服务端写、在浏览器里读不到 ✓（PWA 与 server 的"两条路漂移"✓）。
+      //   **⇒ 判据**：`scripts/check-get-diff-parity.mjs` 比对两边**字段名集合** ✓。
+      const limitArg = p2Count(body.limit, "limit");
+      if (limitArg.error) return limitArg.error;
+      const page = limitArg.value !== undefined ? inRange.slice(0, limitArg.value) : inRange;
       return json({ ok: true, server: false, doc_id: doc, from_seq: fromSeq, to_seq: toSeq,
-                    atoms: inRange.map((r) => ({ atom_id: r.atom.id, seq: r.seq, kind: r.atom.kind })),
-                    count: inRange.length, by_kind: byKind,
+                    head_seq: head,
+                    atoms: page.map((r) => ({ atom_id: r.atom.id, seq: r.seq, kind: r.atom.kind })),
+                    atom_count: page.length, by_kind: byKind,
                     objects: [...objects], layers: [...layers],
                     note: "日志层差分（不做像素/求值层差分，要像素对比请用 render_region 各渲染一次）" });
     }
