@@ -18550,7 +18550,8 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         "limit": limit,
         "thumbnail_count": thumbs,
         "thumbnail_skipped": skipped,
-        "note": "按 seq 倒序（新的在前）；没给任何筛选就是最近 limit 条；用 `offset` 翻页，`truncated`/`has_more` 为真表示满页（后面可能还有）",
+        "note": "按 seq 倒序（新的在前）；用 `offset` 翻页，`truncated`/`has_more` 为真表示满页；\
+                 **`kind` 是存储形态**（笔触在库里也是 `import_image`）⇒ 判来源请看 `origin`（drawn/imported/generated/system）",
     }))
 }
 

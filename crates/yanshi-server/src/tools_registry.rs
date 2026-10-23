@@ -2663,7 +2663,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "list_atoms",
         profile: Profile::Core,
-        summary: "按 label／layer_id／brush／since_seq 筛出笔迹原子（带 seq 与 label）⇒ 先找到「哪一笔坏了」，再 revert",
+        summary: "按 label／layer_id／brush／since_seq 筛出笔迹原子（带 seq 与 label）⇒ 先找到「哪一笔坏了」，再 revert；**每条带 `origin`**（drawn／imported／generated／system）—— ⚠️ `kind` 说的是**像素存在哪**（存储形态），**不是来源**：笔触原子在库里恒为 `import_image`，拿 `kind` 当来源证明会把「画出来的笔」误判成「导入了一张图」",
         mutating: false,
         params: &[
             param!("limit", Integer, false, "最多返回几条（缺省 20，上限 500）"),
