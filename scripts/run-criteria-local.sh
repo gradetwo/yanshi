@@ -39,6 +39,11 @@ BIN=target/release/yanshi-serve
 #     `crates/*/src` ⇒ 于是**二进制陈旧却判「新」** ⇒ 判据测的是**旧代码** ✗
 #   ⇒ 而那正是 `N3E-01` 的同一类错（静默用陈旧二进制）⇒ 所以扫描范围要**覆盖所有 .rs**
 SRC_MAX=$(find crates vendor -name '*.rs' -newer "$BIN" 2>/dev/null | head -5)
+# **新鲜度也要扫 `assets/*.js`** ✓（第 740 轮）：viewer-app.js／api-local.js 是 `include_str!`
+#   **嵌进二进制**的 ⇒ 上游只改 JS 资产时（`42e965b3` 那次 ✓），`.rs` 比对说「二进制是新的」✗
+#   而**嵌进去的内容已经变了** ✓ —— 只看 `.rs` 会拿**旧资产**跑判据 ✓。
+SRC_JS=$(find crates -path '*/assets/*' \( -name '*.js' -o -name '*.css' -o -name '*.html' \) -newer "$BIN" 2>/dev/null | head -5)
+[ -n "$SRC_JS" ] && SRC_MAX="${SRC_MAX}${SRC_MAX:+$'\n'}$SRC_JS"
 
 if [ ! -x "$BIN" ] || [ -n "$SRC_MAX" ]; then
   echo "  ⟳ 二进制比源码旧（或不存在）⇒ 先重建"
@@ -62,6 +67,31 @@ if [ ! -x "$BIN" ] || [ -n "$SRC_MAX" ]; then
   fi
 else
   echo "  ✓ 二进制比源码新"
+fi
+
+# **★ `mcp-*` 判据自己 spawn 的二进制也要保鲜** ✓（第 740 轮：一次**假红**换来的）
+#   **⇒ 症状**：`mcp-import-project-rename.mjs` 默认吃 `target/debug/yanshi-mcp` ✗
+#     （`YANSHI_MCP_BIN` ✓）⇒ 而上面只重建 `yanshi-serve` ✓ ⇒ 本机那个 debug 产物陈旧 ✗
+#   **⇒ 代价**：上游 S-04 修好后判据在**修好的代码**上照样红 ✗（实测 740 轮 ✓）——
+#     「测量工具要先被测量」同族 ⇒ 所以凡是判据**自己 spawn** 的二进制，本脚本要么重建它 ✓
+#     要么**指到刚重建的 release** 上 ✓。
+if [[ "$CRIT" == scripts/mcp-*.mjs ]]; then
+  if [ ! -x target/release/yanshi-mcp ] || find crates -name '*.rs' -newer target/release/yanshi-mcp 2>/dev/null | head -1 | grep -q .; then
+    echo "  ⟳ yanshi-mcp（release）陈旧 ⇒ 先重建"
+    cargo build --release -p yanshi-mcp >/dev/null 2>&1 || { echo "  ⊘ 不可判：yanshi-mcp 重建失败" >&2; exit 3; }
+  fi
+  export YANSHI_MCP_BIN=target/release/yanshi-mcp
+  echo "  MCP 面 ⇒ ${YANSHI_MCP_BIN}（刚验过新鲜 ✓）"
+fi
+
+# **★ `browser-*` 不能走本脚本的缺省编排** ✓（第 740 轮：一次**假红**换来的）
+#   **⇒ 症状**：本脚本不起**静态 PWA** ✗ ⇒ `browser-live-ui.mjs` 拿不到 `YANSHI_LIVE_UI_URL` ⇒
+#     **缺省回落到线上** `yanshi-online.wangda.today` ✗（那上面 `list_assets` 404 ⇒ 判据红 ✓）
+#   ⇒ 那是**编排缺失**✗ 不是产品失败 ✓ ⇒ 按本仓规矩用**不同退出码**说话 ✓（exit 2＝用法错 ✓）。
+if [[ "$CRIT" == scripts/browser-*.mjs && -z "${YANSHI_LIVE_UI_URL:-}" ]]; then
+  echo "  ⊘ 不可判：browser-* 需要静态 PWA（`run-criteria.sh` 的编排 ✓）⇒ 设 YANSHI_LIVE_UI_URL 或改用 run-criteria.sh；" >&2
+  echo "            否则判据会**悄悄测线上生产站**（第 740 轮的假红根源 ✗）" >&2
+  exit 3
 fi
 
 # 起一个临时服务（判据自己建文档）

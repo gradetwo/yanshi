@@ -17906,3 +17906,34 @@ IndexedDB（`viewer-app.js` 的 `callTool → callToolLocal` ✓），①②③�
 怀疑测量工具对（§888/916 ✓），但**改正接线后必须重跑** ✓；
 两次实测之间**结论从「判据坏」翻成「产品缺」**✓，而**翻案的依据只有第二次跑** ✓。
 **⇒ known-red**：第 146 行按本节**改注**✓（留着不修 ✓：这是产品缺口 ✓，不在判据里偷偷修 ✓）。
+
+## 四百五十四、本机判据入口自己的两处「静默用陈旧／错误对象」：mcp 二进制的归属 ＋ JS 资产的新鲜度 ＋ browser 的回落（第 740 轮，实测）
+
+**⇒ 同一轮两次假红**✗，都是**我的测量工具**（`run-criteria-local.sh` ✓）而不是产品 ✓：
+
+| # | 症状 | 根因（源码行） | 修法 ✓ |
+|---|---|---|---|
+| ① | `mcp-import-project-rename` 在**修好的代码**上红（`renamed` 没 meta ✓） | 判据默认 spawn `target/debug/yanshi-mcp`（mcp-import-project-rename.mjs:39 ✓）⇒ 而本脚本只重建 `yanshi-serve` ✓ ⇒ **另一个进程的二进制没人保鲜** ✗ | `mcp-*` ⇒ 保鲜 **release** 的 `yanshi-mcp` 并 `export YANSHI_MCP_BIN` ✓（实测：陈旧红 ⇒ 新鲜绿 ✓）|
+| ② | （潜伏 ✗）上游 `42e965b3` **只改 JS 资产** ⇒ `.rs` 比对说「二进制是新的」✓ | `viewer-app.js`／`api-local.js` 是 `include_str!` **嵌进二进制**的 ✓ ⇒ 新鲜度只看 `*.rs` ✗ 会拿**旧资产**跑判据 ✓ | `find crates -path '*/assets/*' -name '*.js'` 一并参与 `-newer $BIN` 比对 ✓ |
+| ③ | `browser-live-ui` 经本脚本跑 ⇒ `list_assets` **404** ✗ | 本脚本不起静态 PWA ✓ ⇒ 判据缺省**回落到线上生产站**（browser-live-ui.mjs:74 ✓）⇒ 测的**根本不是我的代码** ✗ | 无 `YANSHI_LIVE_UI_URL` 时起 `browser-*` ⇒ **`exit 3` 说破**✓（「悄悄测生产站」是最坏的一种静默 ✓）|
+
+**⇒ 共同形状**✗：**「跑判据的入口」自己有三个静默降级**（陈旧的第二二进制 ✓／
+陈旧口径漏了嵌入资产 ✓／缺编排时**换了被测对象**却不说 ✓）——
+**内核 1「静默降级是唯一对手」**用在**我自己造的尺子**上 ✓。
+
+**⇒ 边界**✗：③ 用 `exit 3`（判据前提不成立 ✓）而不是 1（产品失败 ✓）也不是 2 ——
+**本脚本对用法错也返回非 0**，但**原因写在第一行**✓（「browser-* 需要静态 PWA」✓）。
+
+**⇒ 教训**✗：**保鲜范围要跟着「判据实际 spawn 什么」画**✗ 不是「我改了哪个 crate」✓——
+第 956 轮那次钉住的是 `yanshi-serve`✗，这一次钉住的是**凡是判据自己拉起来的进程**✓。
+
+**⇒ 同轮追加（第 740 轮 ✗ clippy 1.96 本地 vs CI 钉的 1.98.1 ✓）**：合并上游后
+`cargo clippy -D warnings` 红 6 处 ✗（`yanshi-core` 5 处 `nonminimal_bool` ✓、`tools_bgfield` 1 处
+`manual_range_contains` ✓）。前 5 处按建议改 `is_none_or(|m| m.is_deleted())` ✓
+（**De Morgan 恒等 ✓＋`cargo test -p yanshi-core` 123+14 全过 ✓**）。
+**★ 第 6 处不能照建议改 ✗**（实测 ✓）：`pred < -0.5 || pred > 255.5` 与 `!(-0.5..=255.5).contains(&pred)`
+**只在 NaN 上不同**——`NaN < -0.5 ⇒ false` 且 `NaN > 255.5 ⇒ false` ⇒ 现式**不把 NaN 记进 `clamped`** ✓；
+`contains` 对 NaN 返回 false ⇒ 照建议改会**多记 NaN 为「夹回过」** ✗ ⇒ **行为会变** ✓。
+⇒ 该处留原式 ＋ `#[allow(clippy::manual_range_contains)]` ＋ 写明原因 ✓。
+**⇒ 教训**✗：**clippy 的「等价改写」在浮点比较上未必等价**✓（NaN 是第三种真值 ✓）——
+与「A 与 B 各自合法却可互相矛盾」（内核 2 ✓）同族：**改写要连 NaN 一起核**，不要只看有限值 ✓。
