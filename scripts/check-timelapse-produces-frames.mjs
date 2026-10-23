@@ -189,6 +189,12 @@ if (!/atom 0（/.test(String(run))) {
   process.exit(1);
 }
 
+
+// **渲染账必须打出来** ✓（第 626 轮：让人看见"整幅渲了几次／省了几次"）
+if (!String(run).includes("渲染账")) {
+  console.error(`✗ 没有渲染账 ⇒ 无法判断省了多少整幅渲染\n${String(run).slice(-400)}`);
+  process.exit(1);
+}
 console.log(
   `✓ timelapse 出片：${total} 帧，其中 ${painted}/${decoded} 帧有内容，且颜色对（绿占优像素 ${green} 个，` +
     `红占优 ${reddish}／蓝占优 ${blues}）（最小工程包 128×96、7 条原子）`,

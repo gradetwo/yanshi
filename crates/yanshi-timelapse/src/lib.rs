@@ -423,6 +423,12 @@ impl Timeline {
         )
     }
 
+    /// **没有变化而复用上一帧的次数** ✓（第 626 轮：让"省下来多少"看得见 ✓）。
+    #[must_use]
+    pub fn reused_frames(&self) -> u64 {
+        self.reused_frames
+    }
+
     /// 画布尺寸 ✓（**`(宽, 高)` ✓）★
     #[must_use]
     pub fn doc_size(&self) -> (u32, u32) {

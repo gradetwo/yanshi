@@ -407,6 +407,12 @@ fn main() -> Result<()> {
         t_replay.elapsed().as_secs_f32(),
         t0.elapsed().as_secs_f32()
     );
+    // **渲染账** ✓（第 626 轮）：外部重跑时能直接看到"整幅渲了几次／省了几次" ✓
+    let (full, dirty, tiles, runs) = timeline.stats();
+    println!(
+        "  渲染账：整幅 {full} 次｜脏区 {dirty} 次（{tiles} tile／{runs} run）｜复用上一帧 {} 次",
+        timeline.reused_frames()
+    );
     Ok(())
 }
 
