@@ -1644,6 +1644,50 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: false,
         params: &[param!("layer_id", String, false, "按图层过滤")],
     },
+    // ---- 风格预设系统（设计 docs/design/style-preset-system.md；展开器在 presets.rs）----
+    ToolSpec {
+        name: "list_presets",
+        profile: Profile::Retouch,
+        summary: "列出照片风格预设（22 套内置 + YANSHI_PRESET_DIR 外挂）：id/中英文名/状态（established/fixed_v2/needs_review）/标签/适用与慎用题材/旋钮；选风格前先读它，不要盲选",
+        mutating: false,
+        params: &[
+            param!("tag", String, false, "按标签筛（如 夜景 / 人像 / 风光）"),
+            param!("subject", String, false, "按适用题材子串筛（如 霓虹 / 森林）"),
+            param!("status", String, false, "按状态筛（established / fixed_v2 / needs_review）"),
+        ],
+    },
+    ToolSpec {
+        name: "get_preset",
+        profile: Profile::Retouch,
+        summary: "读一套预设的完整定义：修正段（full/light 基线）+ 风格段配方与中性值、旋钮映射、实测结论与 unsupported 说明，并附 strength=1 的展开预览",
+        mutating: false,
+        params: &[param!("preset_id", String, true, "预设 id（先用 list_presets 查）")],
+    },
+    ToolSpec {
+        name: "apply_preset",
+        profile: Profile::Retouch,
+        summary: "把一套风格预设展开并落到图层上：先全量校验任一非法整组不落；确定性 object_id，二次应用同预设走更新（Supersede）不叠加；strength 0..1 插值（0=风格段恒等）、knobs 语义旋钮覆盖、include_correction 缺省 true",
+        mutating: true,
+        params: &[
+            param!("preset_id", String, true, "预设 id（先用 list_presets 查）"),
+            param!("layer_id", String, true, "目标图层"),
+            param!("strength", Number, false, "全局强度 0..1（缺省 1；0 时风格段逐参数等于中性值）"),
+            param!("knobs", Object, false, "语义旋钮覆盖 {旋钮id: 数值}（可用旋钮见 list_presets / get_preset；越界或未知旋钮报错）"),
+            param!("include_correction", Boolean, false, "是否同时落修正段（缺省 true；只调风格时给 false）"),
+        ],
+    },
+    ToolSpec {
+        name: "preview_preset",
+        profile: Profile::Retouch,
+        summary: "只展开不落成、不渲染：按 strength/knobs 算出将要落的全部操作清单（含确定性 object_id 与实际参数），供迭代调风格时先看再 apply_preset",
+        mutating: false,
+        params: &[
+            param!("preset_id", String, true, "预设 id（先用 list_presets 查）"),
+            param!("strength", Number, false, "全局强度 0..1（缺省 1）"),
+            param!("knobs", Object, false, "语义旋钮覆盖 {旋钮id: 数值}"),
+            param!("include_correction", Boolean, false, "展开清单是否含修正段（缺省 true）"),
+        ],
+    },
     // ---- 扩展：retouch（修图）----
     ToolSpec {
         name: "estimate_dehaze",

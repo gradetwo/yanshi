@@ -1760,6 +1760,10 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "update_adjustment" => write_update_effect(ctx, args, EffectKind::Adjustment),
         "update_filter" => write_update_effect(ctx, args, EffectKind::Filter),
         "list_effects" => read_list_effects(ctx, args),
+        "list_presets" => read_list_presets(ctx, args),
+        "get_preset" => read_get_preset(ctx, args),
+        "apply_preset" => write_apply_preset(ctx, args),
+        "preview_preset" => read_preview_preset(ctx, args),
         "create_mask" => write_create_mask(ctx, args),
         "paint_mask" => write_paint_mask(ctx, args),
         "delete_mask" => write_delete_mask(ctx, args),
@@ -19843,6 +19847,9 @@ pub use tools_examples::TOOL_EXAMPLES;
 #[path = "tools_effect.rs"]
 mod tools_effect;
 use tools_effect::*;
+#[path = "presets.rs"]
+mod presets;
+use presets::*;
 #[path = "tools_read.rs"]
 mod tools_read;
 use tools_read::*;

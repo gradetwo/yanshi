@@ -609,6 +609,17 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "apply_adjustments",
         r#"{"layer_id":"layer_default","adjustments":[{"adjustment_type":"exposure","params":{"ev":0.3}},{"adjustment_type":"vibrance","params":{"amount":0.6}}]}"#,
     ),
+    // **风格预设系统**：先 list 查 id、再 get/preview 看展开、最后 apply 落成（二次 apply 同参走更新不叠加）。
+    ("list_presets", r#"{"tag":"夜景"}"#),
+    ("get_preset", r#"{"preset_id":"hong_kong"}"#),
+    (
+        "preview_preset",
+        r#"{"preset_id":"hong_kong","strength":0.6,"knobs":{"teal":0.3}}"#,
+    ),
+    (
+        "apply_preset",
+        r#"{"preset_id":"hong_kong","layer_id":"layer_default","strength":0.8}"#,
+    ),
     // **`suggest`**（✓）：唯一必填参数 `patch` 是**非空的工具步骤数组** ✓ ⇒
     // 这里填一步 `add_filter` ✓，**参数就是上面那条示例里验证过的那组** ✓（`invert` 不需要额外参数 ✓）。
     // ⇒ 这条示例**自足** ✓：照抄它能真的提交一条建议 ✓。
