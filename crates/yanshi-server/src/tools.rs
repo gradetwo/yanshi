@@ -18549,7 +18549,22 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **负数／小数现在会响亮报错**（原来 `as_u64` 读出 `None` ⇒ 静默当 0 = 「保持 1:1」✓）。
     // **超过 `u32` 的写法仍在报告里挂着**：它会让 `as u32` 回绕成一个小边长，
     // 而**回执里没有任何字段能看出用了哪个边长** ⇒ 断言无从落地 ✓（先记进「未修」，见台账）。
-    let thumb_size = optional_count(args, "thumb_size")?.unwrap_or(0) as u32;
+    // **不许 `as u32` 回绕** ✓（第 738 轮；外部审计 S-12）
+    //   **⇒ 缺陷**：`4294967296`（`1<<32`）`as u32` 变成 **0** ✗ ⇒ 调用方要缩略图，
+    //     却拿到"不要缩略图"✓（`thumb_size: 0` 的语义 ✓）—— 静默降级 + 数值回绕 ✓。
+    //   **⇒ 判据**：超过 `u32` 必须 `invalid_argument` 并点名 ✓。
+    let thumb_size = {
+        let asked = optional_count(args, "thumb_size")?.unwrap_or(0);
+        u32::try_from(asked).map_err(|_| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "thumb_size 太大（{asked}）⇒ 缩略图边长上限 {}（不许回绕成 0）",
+                    u32::MAX
+                )),
+            )
+        })?
+    };
     let include_non_stroke = args
         .get("include_non_stroke")
         .and_then(Value::as_bool)
