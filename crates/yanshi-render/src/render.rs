@@ -985,6 +985,27 @@ impl RegionRender {
     }
 }
 
+/// **`Retouch` 的落笔颜色** ✓（第 704 轮；外部审计 R-09）
+///
+/// **⇒ 它守什么**：`deposit` 的暗化因子是 `1 - deposit*0.35` ✓，**只能乘一次** ✓。
+///   审计发现原来**乘了两次**（`straight` 里一次、`color` 里再一次）⇒ 实际生效 `darken²` ✗
+///   （`deposit=1` 时 `0.65² = 0.4225`，比设计值暗得多 ✓）。
+/// **⇒ 判据**：`retouch_color([0.8;3], 1.0)` 必须 ≈ `[0.52;3]`（`0.8 × 0.65` ✓），
+///   而"乘两次"会给 `0.338` ✓ ⇒ **有鉴别力** ✓。
+/// **变异**：在这个函数里再乘一次 `darken` ⇒ 红 ✓。
+fn retouch_color(straight: [f32; 3], deposit: f32) -> [f32; 3] {
+    let darken = if deposit > 0.0 {
+        1.0 - deposit.clamp(0.0, 1.0) * 0.35
+    } else {
+        1.0
+    };
+    [
+        straight[0] * darken,
+        straight[1] * darken,
+        straight[2] * darken,
+    ]
+}
+
 /// **超预算时该丢哪些 tile** ✓（第 696 轮）：按 `recency` **从最久没用的开始** ✓
 ///
 /// **⇒ 为什么需要它**：第 693 轮把"年龄"从 `tiles` 顺序里**拆出来**了 ✓ ⇒
@@ -4694,15 +4715,17 @@ impl Renderer {
                         if sampled[3] <= 0.0 {
                             continue;
                         }
-                        let darken = if deposit > 0.0 {
-                            1.0 - (deposit as f32).clamp(0.0, 1.0) * 0.35
-                        } else {
-                            1.0
-                        };
+                        // **暗化因子只在 `retouch_color` 里算一次** ✓（第 704 轮；外部审计 R-09）
+                        // **暗化只乘一次** ✓（第 704 轮；外部审计 R-09）
+                        //   **⇒ 原来的缺陷** ✗：这里乘了一次 `darken` ✓，而下面构造 `color` 时
+                        //     **又乘了一次同样的因子** ⇒ 实际生效是 **`darken²`** ✗
+                        //     （`deposit=1` 时是 `0.65² = 0.4225`，比设计值 `0.65` 暗得多 ✓）。
+                        //   **⇒ 修法**：`straight` 保持**未暗化**的直通色 ✓（`healing` 的低频对齐
+                        //     本来就该在**未被暗化**的颜色上做 ✓），暗化只在 `color` 里乘**一次** ✓。
                         let mut straight = [
-                            sampled[0] / sampled[3] * darken,
-                            sampled[1] / sampled[3] * darken,
-                            sampled[2] / sampled[3] * darken,
+                            sampled[0] / sampled[3],
+                            sampled[1] / sampled[3],
+                            sampled[2] / sampled[3],
                         ];
                         if healing {
                             // 修复画笔：保留源纹理，但把低频颜色/明度对齐到目标处。
@@ -4751,25 +4774,11 @@ impl Renderer {
                                 }
                             }
                         }
+                        let shaded = retouch_color(straight, deposit as f32);
                         let color = [
-                            straight[0]
-                                * (if deposit > 0.0 {
-                                    1.0 - (deposit as f32).clamp(0.0, 1.0) * 0.35
-                                } else {
-                                    1.0
-                                }),
-                            straight[1]
-                                * (if deposit > 0.0 {
-                                    1.0 - (deposit as f32).clamp(0.0, 1.0) * 0.35
-                                } else {
-                                    1.0
-                                }),
-                            straight[2]
-                                * (if deposit > 0.0 {
-                                    1.0 - (deposit as f32).clamp(0.0, 1.0) * 0.35
-                                } else {
-                                    1.0
-                                }),
+                            shaded[0],
+                            shaded[1],
+                            shaded[2],
                             (brush.opacity as f32 * sampled[3]).clamp(0.0, 1.0),
                         ];
                         // 选区「约束落笔」✓：印章的 alpha 本身就是"增量权重" ✓ ——
@@ -8875,6 +8884,37 @@ mod tests {
 /// **不再有语义** ✗ ⇒ 而淘汰若仍按插入顺序，就等于**退化成 FIFO** ✗（反复用到的会被丢 ✓）。
 ///
 /// **变异**：把 `keys_to_evict` 改成取**最后** `count` 个（`rev().take()`）⇒ 红 ✓。
+/// **`Retouch` 的暗化只乘一次** ✓（第 704 轮；外部审计 R-09）
+///
+/// **⇒ 判据**：`deposit = 1.0` 时颜色必须 ≈ `straight × 0.65` ✓
+///   —— "乘两次"会给 `× 0.4225` ✓ ⇒ **有鉴别力** ✓。
+/// **变异**：在 `retouch_color` 里再乘一次 `darken` ⇒ 红 ✓。
+#[cfg(test)]
+mod retouch_color_tests {
+    use super::retouch_color;
+
+    #[test]
+    fn the_deposit_darken_is_applied_once() {
+        let straight = [0.8_f32, 0.8, 0.8];
+        let shaded = retouch_color(straight, 1.0);
+        for channel in shaded {
+            assert!(
+                (channel - 0.52).abs() < 1e-5,
+                "deposit=1 应当只剩 65% 亮度（0.8 × 0.65 = 0.52），实测 {channel} ⇒ 暗化被乘了不止一次"
+            );
+        }
+        // deposit=0 不许暗化 ✓
+        assert_eq!(retouch_color(straight, 0.0), straight);
+        // 半量 → 0.8 × (1 - 0.5×0.35) = 0.8 × 0.825 = 0.66 ✓
+        let half = retouch_color(straight, 0.5);
+        assert!(
+            (half[0] - 0.66).abs() < 1e-5,
+            "deposit=0.5 实测 {}",
+            half[0]
+        );
+    }
+}
+
 #[cfg(test)]
 mod below_eviction_tests {
     use super::keys_to_evict;
