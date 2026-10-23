@@ -760,11 +760,21 @@ pub(super) fn read_get_log(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
             })
         })
         .collect();
+    let next_since = atoms
+        .iter()
+        .filter_map(|atom| atom["seq"].as_u64())
+        .max()
+        .map_or_else(|| json!(since), |seq| json!(seq));
     Ok(json!({
         "atoms": atoms,
         "count": atoms.len(),
         "head_seq": document.head_seq(),
-        "next_since": atoms.last().map(|atom| atom["seq"].clone()).unwrap_or(json!(since)),
+        // **游标必须是"这一页里最大的 seq"** ✓（第 734 轮；外部审计 S-07 第 ① 项）
+        //   **⇒ 缺陷**：取 `atoms.last()` ✗ ⇒ `order: "newest"` 时**最后一条是最旧的** ✓
+        //     ⇒ 游标**往回退** ✗ ⇒ 调用方拿它续读会**重复**上一页（甚至永远推不动 ✓）。
+        //   **⇒ 恒等式**（判据就断它 ✓）：`next_since` = 本页 `seq` 的**最大值** ✓，
+        //     与 `order` 无关 ✓ —— "我已经看到哪了"只取决于**最大的那个序号** ✓。
+        "next_since": next_since,
     }))
 }
 
