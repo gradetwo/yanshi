@@ -5226,10 +5226,44 @@ pub fn develop_raw_source_recorded(
                 wb: record.wb,
                 demosaic: record.demosaic,
                 pre_exposure_ev: record.pre_exposure_ev,
+                // 高光档位凭记录（第五包）：旧记录无此字段、反序列化
+                // 时已缺省 Floor，与当时导入的像素口径一致。
+                highlight: record.highlight_recovery,
             };
             let ctx = yanshi_raw::record_context(&decoded);
-            let developed = yanshi_raw::develop(&decoded.frame, &options, &ctx)
-                .map_err(raw_error_as_invalid_argument)?;
+            // 镜头校正凭记录重建（第四包）：applied profile 在场 ⇒
+            // 用同一套折算函数重建 plan 并走带校正的展开；profile
+            // 在场但三项皆不可重建时响亮提示，不许静默丢校正。
+            let developed = match &record.applied_lens_profile {
+                Some(profile) => {
+                    let plan = yanshi_raw::lens::plan_from_applied(profile);
+                    match plan {
+                        Some(plan) => {
+                            let lens_match = record.lens_match.as_deref().unwrap_or("matched");
+                            yanshi_raw::develop_with_lens(
+                                &decoded.frame,
+                                &options,
+                                &ctx,
+                                Some(yanshi_raw::LensExecution {
+                                    plan: &plan,
+                                    profile,
+                                    lens_match,
+                                }),
+                            )
+                            .map_err(raw_error_as_invalid_argument)?
+                        }
+                        None => {
+                            warnings.push(
+                                "对象的 raw_develop 记录带有 applied_lens_profile 但三项校正均无法重建，已按无校正展开".to_string(),
+                            );
+                            yanshi_raw::develop(&decoded.frame, &options, &ctx)
+                                .map_err(raw_error_as_invalid_argument)?
+                        }
+                    }
+                }
+                None => yanshi_raw::develop(&decoded.frame, &options, &ctx)
+                    .map_err(raw_error_as_invalid_argument)?,
+            };
             (options, developed)
         }
         None => {

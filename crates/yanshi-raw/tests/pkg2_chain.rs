@@ -170,12 +170,15 @@ fn plan_import_d5_branches() {
         "off 且有镜头时必须明确提示未启用：{:?}",
         plan.warnings
     );
-    // auto ⇒ db_unavailable + warning，不阻断。
+    // auto ⇒ 第四包起镜头库已接入：夹具镜头不在打包子集里 ⇒
+    // unmatched + warning，不阻断。（第二包时此处是 db_unavailable；
+    // 行为变化来自第四包落地，本断言随之更新——库整体不可用才
+    // db_unavailable，见 lens_pkg4 测试。）
     let plan = plan_import(&decoded, Some(&json!({"lens_correction": "auto"}))).unwrap();
-    assert_eq!(plan.record.lens_match.as_deref(), Some("db_unavailable"));
+    assert_eq!(plan.record.lens_match.as_deref(), Some("unmatched"));
     assert!(
-        plan.warnings.iter().any(|w| w.contains("db_unavailable")),
-        "auto 无库时 warning 要说清：{:?}",
+        plan.warnings.iter().any(|w| w.contains("unmatched")),
+        "auto 未匹配时 warning 要说清：{:?}",
         plan.warnings
     );
     // lens_override ⇒ 响亮报错（不静默忽略）。

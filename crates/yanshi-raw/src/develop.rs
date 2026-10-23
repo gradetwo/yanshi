@@ -1,16 +1,22 @@
-//! 展开管线（设计 v3 第 5 章）：归一化 → WB → 解马赛克 → 高光恢复（④′）→
-//! 复合色彩链 → pre_exposure → 方向 → 出口截零。纯函数、无 IO、确定性
-//! （NF1）：浮点超越函数只走 `libm::` 自由函数，禁止平台相关的 method
-//! 调用（交付前 grep 自查）。
+//! 展开管线（设计 v3 第 5 章）：归一化 → ② 暗角 → WB → 解马赛克 →
+//! 高光恢复（④′ 保底 + ④′′ 真色度）→ ⑤ 畸变/TCA 复合重采样 →
+//! 复合色彩链 → pre_exposure → 方向 → 出口截零。纯函数、无 IO、
+//! 确定性（NF1）：浮点超越函数只走 `libm::` 自由函数，禁止平台
+//! 相关的 method 调用（交付前 grep 自查）。
 //!
 //! ④′ 高光恢复为第三包实现（保底机制：解析阈值 + 单调性下界 + μ_ref
-//! 下限钳 + 色度门控 desat，见 `highlight_recover`）。镜头三项（② 暗角／
-//! ⑤ 复合重采样）仍是后续包，注入点在链上留位、此处不实现、不冒充。
+//! 下限钳 + 色度门控 desat，见 `highlight_recover`）；④′′ 真色度恢复
+//! 为第五包（见 `highlight_chroma_recover`），由 `DevelopOptions.
+//! highlight` 档位控制，缺省 Floor 时整链与第三包逐位一致。
+//! 镜头三项（② 暗角／⑤ 复合重采样）为第四包：参数以
+//! `LensCorrectionPlan` 注入（`develop_with_lens`），无 plan 时
+//! `develop` 的每一步与前三包逐位一致（D5 纪律：缺省 off 不动像素）。
 
 use crate::error::{RawError, Result};
 use crate::frame::{
-    CalibrationMatrix, CfaPattern, Channel, Demosaic, DevelopOptions, DevelopedImage,
-    RawDevelopRecord, RawFrame, RecordContext, WbMode,
+    AppliedLensProfile, CalibrationMatrix, CfaPattern, Channel, Demosaic, DevelopOptions,
+    DevelopedImage, HighlightMode, LensCorrectionPlan, RawDevelopRecord, RawFrame, RecordContext,
+    WarpModel, WbMode,
 };
 
 /// Bradford 锥响应矩阵（DNG Specification 1.6 第 6 章，设计 5.5 写死常数）。
@@ -496,6 +502,251 @@ pub fn highlight_recover(
 }
 
 // ---------------------------------------------------------------------------
+// ④′′ 真色度恢复（第五包）：在 ④′ 保底机制之后、同一相机 RGB 域作用。
+//
+// 第三包的两个已知视觉缺陷在此治：
+// 1. **单通道饱和残粉**：只有一个通道触顶的像素，④′ 按设计不动它
+//    （Σs ≤ 1 不触发 desat），被钳住的通道停在天花板、与其余两通道
+//    的真实比例脱钩，云带边缘留一圈粉。本步用**邻域未饱和像素的
+//    色度比**把该通道估回去。
+// 2. **高光区平无层次**：④′ 的 desat 把饱和区推向同一个公共亮度
+//    L（止损口径），灰度过渡被抹平。本步的亮度估计带空间变化
+//    （锚点亮度经扩散传播进饱和区），恢复出渐变而非一块平白。
+//
+// 方法（传播式，RT/dcraw 一族的口径在本仓的实现）：
+// - **锚点** = 三通道软饱和权重全为 0 的像素（数据完整可信），
+//   锚点给出色度比 q_c = I_c / max_c I_c 与锚点亮度 L = max_c I_c。
+// - **扩散**：q 与 L 以锚点权重场 W 做固定 12 轮 3×3 盒扩散
+//   （加权归一化，reflect 边界，迭代数写死 ⇒ 确定性），把邻域的
+//   色度与亮度结构传播进饱和区。W 太小（远离一切锚点，如整帧
+//   饱和）⇒ 该像素不动，保留 ④′ 结果——无证据时不编造。
+// - **重建**：像素尚有未饱和通道时，亮度由这些通道按 q̂ 反推取
+//   最大（与单调性精神一致）；三通道全饱和时才用扩散亮度 L̂。
+//   饱和通道的估计 Î_c = L·q̂_c，过单调性下界 max(I_c, ·) 后按
+//   软权重 s_c 与原值混合（s=0 的通道逐位不动，s=1 全量采用）。
+//
+// 诚实边界（立项时已对明）：三通道全饱和处的「细节」是邻域纹理
+// 的合理推断，不是还原——原始信息在传感器处已不存在。本步只把
+// 推断做得连续、合色度，不声称找回信息。
+// ---------------------------------------------------------------------------
+
+/// ④′′ 扩散步长表（写死，确定性纪律）：3×3 盒扩散先密后疏
+/// （步长 1,1,2,4,8,16,32 的膨胀采样），总传播半径约 60px——
+/// 普通盒扩散 12 轮的有效半径只有 σ≈3px（首版实测：饱和带深处
+/// 权重低于可信下限、恢复不生效），膨胀步长以同样的 9 抽头成本
+/// 把邻域证据送进大面积高光区。超出此半径的全饱和内陆保留
+/// ④′ 结果（见上「诚实边界」）。
+pub const CHROMA_DIFFUSION_STRIDES: [usize; 7] = [1, 1, 2, 4, 8, 16, 32];
+
+/// 锚点影响的可信下限：扩散权重 W ≤ 此值视为无证据，像素不动。
+pub const CHROMA_MIN_ANCHOR_WEIGHT: f32 = 0.02;
+
+/// ④′′ 真色度恢复：就地作用于已白平衡的线性相机 RGB 平面（④′ 之后）。
+/// 入参口径与 `highlight_recover` 相同（wb 为重归一化乘子、vig 为
+/// 步骤 ② 的增益场），天花板公式与 ④′ 共用同一份常数，不许两处漂移。
+pub fn highlight_chroma_recover(
+    rgb: &mut [f32],
+    width: usize,
+    height: usize,
+    wb: [f32; 3],
+    vig: Option<&[f32]>,
+) -> Result<()> {
+    if rgb.len() != width * height * 3 {
+        return Err(RawError::InvalidFrame(format!(
+            "真色度恢复输入长度 {} 与尺寸 {width}×{height}×3 对不上",
+            rgb.len()
+        )));
+    }
+    if wb.iter().any(|&v| !is_positive_finite(v)) {
+        return Err(RawError::InvalidFrame(format!(
+            "真色度恢复的 WB 乘子非法（须正有限）：{wb:?}"
+        )));
+    }
+    if let Some(gain) = vig {
+        if gain.len() != width * height || gain.iter().any(|&v| !is_positive_finite(v)) {
+            return Err(RawError::InvalidFrame(
+                "暗角增益场长度不对或含非正／非有限值".to_string(),
+            ));
+        }
+    }
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
+    let npix = width * height;
+    let ceiling_at = |i: usize| -> [f32; 3] {
+        let g = vig.map_or(1.0, |field| field[i]);
+        [
+            HIGHLIGHT_TAU_CLIP * g * wb[0],
+            HIGHLIGHT_TAU_CLIP * g * wb[1],
+            HIGHLIGHT_TAU_CLIP * g * wb[2],
+        ]
+    };
+    // 软饱和权重（与 ④′ 同源公式）。
+    let mut soft = vec![0.0f32; npix * 3];
+    let mut any_clipped = false;
+    for i in 0..npix {
+        let t = ceiling_at(i);
+        for c in 0..3 {
+            let s = highlight_softness(rgb[i * 3 + c], t[c]);
+            soft[i * 3 + c] = s;
+            any_clipped |= s > 0.0;
+        }
+    }
+    if !any_clipped {
+        return Ok(()); // 无饱和：逐位不变，早退（常态路径零成本之外的保证）。
+    }
+    // 扩散场：[q_R·W, q_G·W, q_B·W, L·W, W] 五平面，锚点处赋值、
+    // 其余为 0；每轮对五平面同做一遍 3×3 盒和平均（加权扩散的
+    // Jacobi 迭代，双缓冲防自污染）。
+    let mut field = vec![0.0f32; npix * 5];
+    let mut anchors = 0usize;
+    for i in 0..npix {
+        if soft[i * 3] == 0.0 && soft[i * 3 + 1] == 0.0 && soft[i * 3 + 2] == 0.0 {
+            let (r, g, b) = (rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
+            let l = r.max(g).max(b);
+            if l > 0.0 {
+                field[i * 5] = r / l;
+                field[i * 5 + 1] = g / l;
+                field[i * 5 + 2] = b / l;
+                field[i * 5 + 3] = l;
+                field[i * 5 + 4] = 1.0;
+                anchors += 1;
+            }
+        }
+    }
+    if anchors == 0 {
+        return Ok(()); // 整帧无锚点（全饱和）：无证据，保留 ④′ 结果。
+    }
+    let mut next = vec![0.0f32; npix * 5];
+    for &stride in CHROMA_DIFFUSION_STRIDES.iter() {
+        let s = stride as isize;
+        for y in 0..height {
+            let ym = reflect_index(y as isize - s, height);
+            let yp = reflect_index(y as isize + s, height);
+            for x in 0..width {
+                let xm = reflect_index(x as isize - s, width);
+                let xp = reflect_index(x as isize + s, width);
+                let mut acc = [0.0f32; 5];
+                for sy in [ym, y, yp] {
+                    for sx in [xm, x, xp] {
+                        let src = (sy * width + sx) * 5;
+                        for k in 0..5 {
+                            acc[k] += field[src + k];
+                        }
+                    }
+                }
+                let dst = (y * width + x) * 5;
+                for k in 0..5 {
+                    next[dst + k] = acc[k] / 9.0;
+                }
+            }
+        }
+        std::mem::swap(&mut field, &mut next);
+    }
+    // 重建：只动 s>0 的通道；无扩散证据处不动。
+    for i in 0..npix {
+        let s = [soft[i * 3], soft[i * 3 + 1], soft[i * 3 + 2]];
+        if s[0] == 0.0 && s[1] == 0.0 && s[2] == 0.0 {
+            continue;
+        }
+        let w = field[i * 5 + 4];
+        if w <= CHROMA_MIN_ANCHOR_WEIGHT {
+            continue;
+        }
+        let q = [
+            (field[i * 5] / w).max(0.0),
+            (field[i * 5 + 1] / w).max(0.0),
+            (field[i * 5 + 2] / w).max(0.0),
+        ];
+        let value = [rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]];
+        // 亮度估计：未（完全）饱和通道按 q̂ 反推、取最大；全饱和才
+        // 用扩散亮度。q̂_c 为 0 的通道不参与反推（无该通道色度证据）。
+        let mut l_est: Option<f32> = None;
+        for c in 0..3 {
+            if s[c] < 1.0 && q[c] > 1e-6 {
+                let candidate = value[c] / q[c];
+                l_est = Some(l_est.map_or(candidate, |l: f32| l.max(candidate)));
+            }
+        }
+        let l = match l_est {
+            Some(l) => l,
+            None => field[i * 5 + 3] / w,
+        };
+        if !l.is_finite() || l <= 0.0 {
+            continue;
+        }
+        for c in 0..3 {
+            if s[c] <= 0.0 {
+                continue;
+            }
+            let estimate = value[c].max(l * q[c]);
+            rgb[i * 3 + c] = (1.0 - s[c]) * value[c] + s[c] * estimate;
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// ⑤ 畸变 + TCA 复合重采样（第四包，设计 5.9.2 定版口径）：在已白
+//    平衡的线性相机 RGB 域、色彩矩阵之前，一次重采样同时完成
+//    PTLens 畸变与 TCA（或文件 WarpRectilinear 的逐平面 warp）。
+//    采样核为双线性 + reflect-101 边界（与 ④ 的边界口径一致）；
+//    自动裁剪 scale 由 `lens::auto_crop_scale` 与导入期落账共用
+//    同一个函数现算，两处同值。
+// ---------------------------------------------------------------------------
+
+/// 双线性采样单通道（reflect-101 边界）。
+fn sample_bilinear(
+    plane: &[f32],
+    width: usize,
+    height: usize,
+    channel: usize,
+    sx: f32,
+    sy: f32,
+) -> f32 {
+    let x0 = libm::floorf(sx);
+    let y0 = libm::floorf(sy);
+    let fx = sx - x0;
+    let fy = sy - y0;
+    let xi = [x0 as isize, x0 as isize + 1];
+    let yi = [y0 as isize, y0 as isize + 1];
+    let mut acc = 0.0f32;
+    for (row, &yy) in yi.iter().enumerate() {
+        let ry = reflect_index(yy, height);
+        for (col, &xx) in xi.iter().enumerate() {
+            let rx = reflect_index(xx, width);
+            let weight =
+                (if col == 0 { 1.0 - fx } else { fx }) * (if row == 0 { 1.0 - fy } else { fy });
+            acc += weight * plane[(ry * width + rx) * 3 + channel];
+        }
+    }
+    acc
+}
+
+/// ⑤ 把 warp 模型作用于 RGB 三元组平面（一次重采样，逐通道各自
+/// 的源坐标——TCA 的横向色差正来自三通道采样位置不同）。
+pub fn warp_rgb(rgb: &[f32], width: usize, height: usize, model: &WarpModel) -> Vec<f32> {
+    debug_assert_eq!(rgb.len(), width * height * 3);
+    if model.is_identity() {
+        return rgb.to_vec();
+    }
+    let scale = crate::lens::auto_crop_scale(model, width, height);
+    let mut out = vec![0.0f32; rgb.len()];
+    for y in 0..height {
+        for x in 0..width {
+            for channel in 0..3 {
+                let (sx, sy) = crate::lens::warp_source_coord(
+                    model, channel, x as f32, y as f32, width, height, scale,
+                );
+                out[(y * width + x) * 3 + channel] =
+                    sample_bilinear(rgb, width, height, channel, sx, sy);
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // ⑥ 复合色彩链（设计 5.5，专家裁决 Q3）：
 //    M_total = M_XYZ(D65)→sRGB · M_Bradford(w_XYZ → w_D65) · [CM(α)⁻¹ · diag(n)]
 //    构造后逐行行和归一化，保证 [1,1,1] ↦ [1,1,1] 精确成立。
@@ -712,6 +963,7 @@ pub fn assemble_record(
     baseline_exposure_ev: f32,
     color_alpha: Option<f32>,
     lens_match: Option<String>,
+    applied_lens_profile: Option<AppliedLensProfile>,
 ) -> RawDevelopRecord {
     RawDevelopRecord {
         version: 1,
@@ -721,6 +973,7 @@ pub fn assemble_record(
         camera_model: ctx.camera_model.clone(),
         lens: ctx.lens.clone(),
         wb: options.wb,
+        highlight_recovery: options.highlight,
         demosaic: options.demosaic,
         pre_exposure_ev: options.pre_exposure_ev,
         baseline_exposure_ev,
@@ -734,21 +987,45 @@ pub fn assemble_record(
         color_alpha,
         lens_exif: ctx.lens_exif.clone(),
         lens_match,
-        applied_lens_profile: None,
+        applied_lens_profile,
     }
 }
 
 // ---------------------------------------------------------------------------
-// 主链：① → ③ → ④ → ④′ → ⑥ → ⑦ → ⑧ → ⑨（② 暗角／⑤ 重采样是后续
-// 包的注入点，本包不实现、链上位置在此注明，防误读为遗漏）
+// 主链：① → ② → ③ → ④ → ④′（+④′′）→ ⑤ → ⑥ → ⑦ → ⑧ → ⑨。
+// 无镜头 plan 时 ②/⑤ 整步跳过、④′ 的增益场传 None，與前三包逐位
+// 一致；④′′ 由 options.highlight 档位控制（缺省 Floor = 不启用）。
 // ---------------------------------------------------------------------------
 
-/// 展开一帧：设计 5.1 主链中属本包的步骤全量执行。
+/// 展开一帧（无镜头校正）：设计 5.1 主链，行为与前三包逐位一致。
 pub fn develop(
     frame: &RawFrame,
     options: &DevelopOptions,
     ctx: &RecordContext,
 ) -> Result<DevelopedImage> {
+    develop_with_lens(frame, options, ctx, None)
+}
+
+/// 一次带镜头校正的展开所需的三件套（计划 + 留痕 + 匹配状态标签）：
+/// 三者同源（导入期解析产出，或取图期凭落账记录重建），成组传入，
+/// 不许调用方拆开拼——record 里的 profile 必须正是像素上施加的 plan。
+pub struct LensExecution<'a> {
+    pub plan: &'a LensCorrectionPlan,
+    pub profile: &'a AppliedLensProfile,
+    /// 五态标签：matched / manual（develop 路径只会出现这两种；
+    /// unmatched/db_unavailable/off 是「无 plan」的世界，由导入层落账）。
+    pub lens_match: &'a str,
+}
+
+/// 展开一帧（可带镜头校正计划）：`lens` 为 None 时与 `develop`
+/// 完全同路、逐位一致。
+pub fn develop_with_lens(
+    frame: &RawFrame,
+    options: &DevelopOptions,
+    ctx: &RecordContext,
+    lens: Option<LensExecution<'_>>,
+) -> Result<DevelopedImage> {
+    let lens_plan = lens.as_ref().map(|exec| exec.plan);
     options.validate()?;
     if frame.width == 0 || frame.height == 0 || frame.mosaic.len() != frame.width * frame.height {
         return Err(RawError::InvalidFrame(format!(
@@ -767,6 +1044,20 @@ pub fn develop(
     }
     // ① 归一化（下界不钳）。
     let mut plane = normalize_mosaic(frame)?;
+    // ② 暗角增益（第四包）：马赛克域逐像素乘增益场——对饱和像素
+    // **照常乘、禁止跳过**（跳过会在高光边缘造一圈暗环，设计 5.5）；
+    // 同一份场随后喂 ④′/④′′ 的天花板（增益场接线义务，第三包留、
+    // 第四包履约）。增益场只算一次，两处共用同一份 Vec。
+    let vig_field: Option<Vec<f32>> = lens_plan.and_then(|plan| {
+        plan.vignette
+            .as_ref()
+            .map(|model| crate::lens::vignette_gain_field(model, frame.width, frame.height))
+    });
+    if let Some(field) = &vig_field {
+        for (value, gain) in plane.iter_mut().zip(field.iter()) {
+            *value *= gain;
+        }
+    }
     // ③ WB 前置：重归一化后逐像素乘在马赛克域（MHC 的标定前提，专家裁决 Q1）。
     let multipliers = renormalized_wb_multipliers(frame)?;
     apply_wb(&mut plane, frame, multipliers);
@@ -779,15 +1070,31 @@ pub fn develop(
         options.demosaic,
     );
     // ④′ 高光恢复（保底机制，第三包）：已白平衡相机 RGB 域、无条件
-    // 环节（不进 raw_options）。暗角增益场是第四包的产物，此处恒
-    // None（全场 1.0），公式与接入点已按设计 5.5 预留。
+    // 环节（不进 raw_options）。天花板里的 g_vig 即 ② 的增益场。
     highlight_recover(
         &mut rgb_camera,
         frame.width,
         frame.height,
         multipliers,
-        None,
+        vig_field.as_deref(),
     )?;
+    // ④′′ 真色度恢复（第五包）：档位 Chroma 时在保底之后追加；
+    // Floor 档整步跳过（第三包行为逐位不变）。
+    if options.highlight == HighlightMode::Chroma {
+        highlight_chroma_recover(
+            &mut rgb_camera,
+            frame.width,
+            frame.height,
+            multipliers,
+            vig_field.as_deref(),
+        )?;
+    }
+    // ⑤ 畸变 + TCA 复合重采样（第四包）：一次重采样、逐通道源坐标；
+    // 排在色彩矩阵之前（相机 RGB 域的几何才是镜头几何）。
+    let rgb_camera = match lens_plan.and_then(|plan| plan.warp.as_ref()) {
+        Some(model) => warp_rgb(&rgb_camera, frame.width, frame.height, model),
+        None => rgb_camera,
+    };
     // ⑥ 复合色彩链：已白平衡相机 RGB → 线性 sRGB D65。
     let neutral = as_shot_neutral(frame)?;
     let composite = composite_color_matrix(&frame.color_matrices, neutral, &mut notes)?;
@@ -819,7 +1126,23 @@ pub fn develop(
         apply_orientation_rgb(&rgb, frame.width, frame.height, orientation);
     // ⑨ 出口截零（全程唯一截零点）。
     clamp_exit(&mut rgb)?;
-    let record = assemble_record(frame, options, ctx, multipliers, baseline, alpha, None);
+    let (lens_match, applied) = match &lens {
+        Some(exec) => (
+            Some(exec.lens_match.to_string()),
+            Some(exec.profile.clone()),
+        ),
+        None => (None, None),
+    };
+    let record = assemble_record(
+        frame,
+        options,
+        ctx,
+        multipliers,
+        baseline,
+        alpha,
+        lens_match,
+        applied,
+    );
     Ok(DevelopedImage {
         width: out_w as u32,
         height: out_h as u32,

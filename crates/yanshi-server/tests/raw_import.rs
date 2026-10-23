@@ -301,7 +301,10 @@ fn raw_options_on_non_raw_blob_and_illegal_values_are_loud_errors() {
 }
 
 #[test]
-fn lens_correction_auto_records_db_unavailable_without_blocking() {
+fn lens_correction_auto_records_unmatched_without_blocking() {
+    // 第四包起镜头库已接入：夹具镜头（FixtureOptics）不在打包子集
+    // 里 ⇒ lens_match=unmatched。第二包时此处断言 db_unavailable，
+    // 行为变化来自第四包落地，断言随之更新；不阻断导入的口径不变。
     let mut workspace = memory_workspace();
     create_layer(&mut workspace);
     let bytes = fixture_bytes();
@@ -319,17 +322,17 @@ fn lens_correction_auto_records_db_unavailable_without_blocking() {
     assert_eq!(
         imported["ok"],
         json!(true),
-        "auto 无库不应阻断导入：{imported}"
+        "auto 未匹配不应阻断导入：{imported}"
     );
     let data = object_data(&workspace, "raw_auto");
-    assert_eq!(data["raw_develop"]["lens_match"], json!("db_unavailable"));
+    assert_eq!(data["raw_develop"]["lens_match"], json!("unmatched"));
     assert_eq!(data["raw_develop"]["pre_exposure_ev"], json!(0.25));
     let warnings = imported["warnings"].as_array().expect("应有 warnings");
     assert!(
         warnings
             .iter()
-            .any(|w| w.as_str().unwrap_or("").contains("db_unavailable")),
-        "auto 的 warning 必须说清 db_unavailable：{imported}"
+            .any(|w| w.as_str().unwrap_or("").contains("unmatched")),
+        "auto 的 warning 必须说清 unmatched：{imported}"
     );
 }
 

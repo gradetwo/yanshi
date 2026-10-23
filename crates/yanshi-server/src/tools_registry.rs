@@ -41,7 +41,7 @@ const IMPORT_IMAGE_PARAMS: &[ParamSpec] = &[
     param!("region", Any, true, "放置区域 {x,y,w,h}"),
     param!("object_id", String, false, "对象 id（缺省自动生成）"),
     param!("medium", Object, false, "{id,version} 介质描述符：随这条原子一并记录（设计 11.1）"),
-    param!("raw_options", Object, false, "仅当 bitmap 是 RAW 源（mime image/x-yanshi-rawsrc）时可用：展开参数 {wb: as_shot|auto（缺省 as_shot）, demosaic: malvar|bilinear（缺省 malvar）, pre_exposure_ev: -4..4（缺省 0，不 clamp、越界报错）, lens_correction: off|auto（缺省 off，D5 定版）, lens_override: string|null（本包镜头库未接入，给出即报错）}；给到非 RAW blob 报错"),
+    param!("raw_options", Object, false, "仅当 bitmap 是 RAW 源（mime image/x-yanshi-rawsrc）时可用：展开参数 {wb: as_shot|auto（缺省 as_shot）, demosaic: malvar|bilinear（缺省 malvar）, pre_exposure_ev: -4..4（缺省 0，不 clamp、越界报错）, lens_correction: off|auto（缺省 off，D5 定版；auto = 文件自带校正逐项优先 + Lensfun 库匹配）, lens_override: string|null（手动点名镜头库中的镜头，查无此镜报错）, highlight_recovery: chroma|floor（缺省 chroma 真色度恢复，floor = 第三包保底机制）}；给到非 RAW blob 报错"),
 ];
 
 /// 核心层 112 个 + 扩展组中已实现的工具（10.2）。

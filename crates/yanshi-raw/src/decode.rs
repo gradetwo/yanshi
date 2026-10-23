@@ -63,7 +63,69 @@ pub fn decode_bytes(bytes: &[u8]) -> Result<DecodedRaw> {
             }
         }
     }
-    map_decoded(raw, metadata.as_ref(), &source_format)
+    let mut decoded = map_decoded(raw, metadata.as_ref(), &source_format)?;
+    attach_file_lens_and_crop(&mut decoded, decoder.as_ref(), metadata.as_ref());
+    Ok(decoded)
+}
+
+/// 第四包补挂：文件自带镜头校正（DNG OpcodeList2）与本图画幅系数。
+/// 两者都只在 DNG/TIFF 系文件里经 IFD 可得；取不到不报错——镜头库
+/// 路径照常走，只是逐项优先时少了文件一侧（导入注记会说明画幅
+/// 换算按 s=1 的事实，不在这里静默）。
+fn attach_file_lens_and_crop(
+    decoded: &mut DecodedRaw,
+    decoder: &dyn rawler::decoders::Decoder,
+    metadata: Option<&rawler::decoders::RawMetadata>,
+) {
+    use rawler::decoders::WellKnownIFD;
+    use rawler::formats::tiff::Value;
+    use rawler::tags::DngTag;
+    // OpcodeList2（DNG tag 51009）：先 Raw IFD 再根 IFD（各家 DNG
+    // 写法落点不一，两处都探）。
+    for wk in [WellKnownIFD::Raw, WellKnownIFD::Root] {
+        if let Ok(Some(ifd)) = decoder.ifd(wk) {
+            if let Some(entry) = ifd.get_entry(DngTag::OpcodeList2) {
+                let bytes = match &entry.value {
+                    Value::Undefined(bytes) | Value::Byte(bytes) => Some(bytes.clone()),
+                    _ => None,
+                };
+                if let Some(bytes) = bytes {
+                    let (parsed, mut notes) = crate::dng_opcode::parse_opcode_list2(&bytes);
+                    decoded.file_lens = parsed;
+                    if let Some(file_lens) = &decoded.file_lens {
+                        if !file_lens.skipped_opcodes.is_empty() {
+                            notes.push(format!(
+                                "文件 OpcodeList2 中未执行的 opcode：{:?}（本引擎只执行 WarpRectilinear 与 FixVignetteRadial）",
+                                file_lens.skipped_opcodes
+                            ));
+                        }
+                    }
+                    decoded.notes.append(&mut notes);
+                    break;
+                }
+            }
+        }
+    }
+    // 画幅系数：EXIF 35mm 等效焦距 / 实际焦距。rawler 的 Exif 结构
+    // 未收 35mm 等效字段，经 EXIF IFD 直读（口径同镜头名补读）。
+    let focal = metadata
+        .and_then(|m| m.exif.focal_length)
+        .map(|r| r.as_f32());
+    if let (Some(focal), Ok(Some(exif_ifd))) = (focal, decoder.ifd(WellKnownIFD::Exif)) {
+        use rawler::tags::ExifTag;
+        if let Some(entry) = exif_ifd.get_entry(ExifTag::FocalLengthIn35mmFormat) {
+            let equiv = match &entry.value {
+                Value::Short(values) => values.first().map(|&v| v as f32),
+                Value::Long(values) => values.first().map(|&v| v as f32),
+                _ => None,
+            };
+            if let Some(equiv) = equiv {
+                if focal > 0.0 && equiv > 0.0 {
+                    decoded.crop_factor = Some(equiv / focal);
+                }
+            }
+        }
+    }
 }
 
 /// `RawImage` → 自有帧 + 元数据（映射规则全在这一处，设计 5.2）。
@@ -184,6 +246,11 @@ fn map_decoded(
         frame,
         file_meta,
         notes,
+        // 画幅与文件自带校正由 decode_bytes 在解码器在场时补挂
+        // （map_decoded 只拿得到 RawImage，拿不到 IFD）；此处先给
+        // 缺省，decode_bytes 覆盖。
+        crop_factor: None,
+        file_lens: None,
     })
 }
 

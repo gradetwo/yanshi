@@ -141,13 +141,33 @@ pub enum WbMode {
     Auto,
 }
 
-/// 展开参数（设计 5.6 的 `raw_options` 子集；镜头参数属后续镜头包）。
+/// 高光恢复档位（④′ 的行为选择）：第三包保底机制与第五包真色度恢复。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum HighlightMode {
+    /// 第三包保底机制（解析阈值 + 单调性下界 + 色度门控 desat）为止，
+    /// 不做色度估计。旧记录（无此字段）按此档重展开，保证已入库对象
+    /// 的像素不因引擎升级漂移。
+    #[default]
+    #[serde(rename = "floor")]
+    Floor,
+    /// 第五包：在保底机制之后追加真色度恢复（未饱和通道 + 邻域纹理
+    /// 传播估计饱和通道的色度与层次）。新导入缺省此档（导入计划层
+    /// 决定，`DevelopOptions::default()` 本身仍是 Floor，见上）。
+    #[serde(rename = "chroma")]
+    Chroma,
+}
+
+/// 展开参数（设计 5.6 的 `raw_options` 子集；镜头意图在 `import` 层
+/// 解析为 `LensCorrectionPlan` 后经 `develop_with_lens` 注入，不进本结构体）。
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct DevelopOptions {
     pub wb: WbMode,
     pub demosaic: Demosaic,
     /// 用户预曝光（EV），契约范围 [-4.0, +4.0]，越界报错不 clamp（设计 5.6）。
     pub pre_exposure_ev: f32,
+    /// 高光恢复档位（缺省 Floor：`develop()` 的历史行为逐位不变；
+    /// 新导入由导入计划显式置 Chroma 并落账，取图侧按记录重展开）。
+    pub highlight: HighlightMode,
 }
 
 impl DevelopOptions {
@@ -173,8 +193,11 @@ pub struct LensExif {
     pub focus_distance_m: Option<f32>,
 }
 
-/// 展开期实际应用的镜头校正留痕（设计 5.9.5 的字段形状，本包恒为 `None`：
-/// 镜头校正是后续包，本包只把 schema 一次到位，不许等实施时再改版 metadata）。
+/// 展开期实际应用的镜头校正留痕（设计 5.9.5 定版字段形状；第四包起
+/// 真正填充）。`distortion_ptlens`／`vignetting_pa` 存的是**镜头库原样
+/// 参数**（出处可查），取图侧凭 `crop_ratio` 用同一套换算函数重建
+/// 像面有效参数——重建规则只有一个出处（`lens::plan_from_applied`），
+/// 不许两处各算一遍。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppliedLensProfile {
     pub source_db: String,
@@ -187,6 +210,17 @@ pub struct AppliedLensProfile {
     pub vignetting_pa: Option<[f32; 3]>,
     pub tca: Option<serde_json::Value>,
     pub crop_scale_applied: f32,
+    /// 画幅换算比 s = C_cal / C_img（标定画幅 / 本图画幅，设计 5.9.3）；
+    /// 旧记录无此字段 ⇒ `None`，重建时按 s=1 处理（与当时的恒 None
+    /// profile 一起出现时不生效，因为旧记录 profile 本身为 None）。
+    #[serde(default)]
+    pub crop_ratio: Option<f32>,
+    /// 文件自带校正（DNG OpcodeList2）实际采用的参数原文（JSON）：
+    /// `{warp_rectilinear: {sets: [[kr0,kr1,kr2,kr3,kt0,kt1]...], center: [cx, cy]},
+    ///   fix_vignette_radial: {k: [k0..k4], center: [cx, cy]}}`，
+    /// 哪一项生效由 `sources` 逐项标注。镜头库路径恒 `None`。
+    #[serde(default)]
+    pub opcode: Option<serde_json::Value>,
 }
 
 /// `raw_develop` 留痕记录（设计 5.6 定版形状）：写入对象 metadata，
@@ -208,6 +242,11 @@ pub struct RawDevelopRecord {
     /// 生效的 WB 来源（请求的模式；auto 回退 as-shot 时仍记请求值，
     /// 回退事实记在展开注记里，不许靠本字段猜）。
     pub wb: WbMode,
+    /// 高光恢复档位（第五包补字段）：第三／四包写出的记录无此字段，
+    /// `serde(default)` = Floor，保证旧对象按当时的保底机制重展开、
+    /// 像素不漂移；新导入由导入计划落实际档位。
+    #[serde(default)]
+    pub highlight_recovery: HighlightMode,
     pub demosaic: Demosaic,
     /// 用户给的 pre_exposure_ev（原样）。
     pub pre_exposure_ev: f32,
@@ -287,6 +326,117 @@ pub struct DecodedRaw {
     /// 解码期注记（ActiveArea 非法回退、标定矩阵跳过等事实）。
     /// 调用方应并入展开注记一起呈现，不许丢弃（NF2）。
     pub notes: Vec<String>,
+    /// 本图画幅的裁切系数 C_img：由 EXIF 35mm 等效焦距 / 实际焦距
+    /// 推出（两者齐备时）；取不到 ⇒ `None`，镜头画幅换算按 s=1 并
+    /// 在导入注记中注明（不许编一个数字进去）。
+    pub crop_factor: Option<f32>,
+    /// 文件自带镜头校正（DNG OpcodeList2 中本引擎认得的两项；
+    /// 解码期在 `decode` 解析，非 DNG / 无此标签 ⇒ `None`）。
+    pub file_lens: Option<FileLensCorrection>,
+}
+
+/// DNG WarpRectilinear 的一组系数（单平面或全平面共用，DNG 规范 1.7
+/// 第 7 章）：径向 kr0..kr3 + 切向 kt0/kt1，参数为文件原样 f64→f32。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WarpRectilinearSet {
+    pub kr: [f32; 4],
+    pub kt: [f32; 2],
+}
+
+/// 文件自带镜头校正（DNG OpcodeList2 解析产物，第四包）：只收本引擎
+/// 会执行的两项；其余 opcode 在注记里点名跳过，不静默吞。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileLensCorrection {
+    /// WarpRectilinear（opcode 1）：1 组（全平面共用）或 3 组（R/G/B
+    /// 逐平面——畸变与横向色差在同一 opcode 里逐项给出）。
+    pub warp_sets: Option<Vec<WarpRectilinearSet>>,
+    /// Warp 的归一化光心（相对左上像素，(0.5, 0.5) = 画面中心）。
+    pub warp_center: Option<[f32; 2]>,
+    /// FixVignetteRadial（opcode 3）的增益多项式系数 k0..k4：
+    /// 增益 g = 1 + k0·r² + k1·r⁴ + k2·r⁶ + k3·r⁸ + k4·r¹⁰
+    /// （r 为相对光心的归一化距离，分母是光心到最远像素的距离）。
+    pub vignette_k: Option<[f32; 5]>,
+    /// FixVignetteRadial 的归一化光心。
+    pub vignette_center: Option<[f32; 2]>,
+    /// 列表里出现但本引擎不执行的 opcode ID（留痕用，去重保序）。
+    pub skipped_opcodes: Vec<u32>,
+}
+
+/// 暗角模型（像面有效口径，展开期消费）：两种来源在本层归一——
+/// develop 只认「逐像素增益场」这一种产物，不关心参数出处。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum VignetteModel {
+    /// Lensfun `pa` 模型（已按画幅换算折算到像面）：衰减
+    /// V(r) = 1 + k1·r² + k2·r⁴ + k3·r⁶，增益 = 1/V(r)，
+    /// r 为半对角归一化半径（角点 r=1）。
+    Pa([f32; 3]),
+    /// DNG FixVignetteRadial（文件原样）：增益
+    /// g = 1 + k0·r² + k1·r⁴ + k2·r⁶ + k3·r⁸ + k4·r¹⁰ 直接是乘子，
+    /// r 的分母是光心到最远像素的距离、光心可偏离画面中心。
+    OpcodeGain { k: [f32; 5], center: [f32; 2] },
+}
+
+/// 几何 warp 模型（步骤 ⑤ 复合重采样，展开期消费）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum WarpModel {
+    /// Lensfun PTLens 畸变 + TCA：参数为**库原样**（标定画幅口径），
+    /// `crop_ratio` 为 s = C_cal/C_img，评估时在标定口径里算完再折回
+    /// 像面（换算式只有一个出处：`lens::warp_source_coord`）。
+    PtlensTca {
+        /// PTLens (a, b, c)。
+        ptlens: [f32; 3],
+        /// TCA 有效参数（模型名 + vr/vb/br/bb）；`None` = 无 TCA 项。
+        tca: Option<TcaParams>,
+        crop_ratio: f32,
+    },
+    /// DNG WarpRectilinear（文件原样）：1 组或 3 组系数 + 归一化光心，
+    /// 按 DNG 规范公式逐平面评估（畸变与横向色差同在此一项）。
+    OpcodeWarp {
+        sets: Vec<WarpRectilinearSet>,
+        center: [f32; 2],
+    },
+}
+
+impl WarpModel {
+    /// 数学上的恒等 warp 判定：PTLens 系数全零（P(r) ≡ 1）且 TCA
+    /// 为单位，或 WarpRectilinear 每组 kr=(1,0,0,0)、kt=(0,0)。
+    /// 恒等时展开层整步跳过重采样——不是省事，是**精确性**：恒等
+    /// 函数经归一化半径的浮点往返会引入末位误差，「零校正必须与
+    /// 无校正逐位一致」的纪律（D5）只能靠不计算来保证。
+    pub fn is_identity(&self) -> bool {
+        match self {
+            WarpModel::PtlensTca { ptlens, tca, .. } => {
+                *ptlens == [0.0, 0.0, 0.0]
+                    && tca.is_none_or(|t| t.vr == 1.0 && t.vb == 1.0 && t.br == 0.0 && t.bb == 0.0)
+            }
+            WarpModel::OpcodeWarp { sets, .. } => sets
+                .iter()
+                .all(|s| s.kr == [1.0, 0.0, 0.0, 0.0] && s.kt == [0.0, 0.0]),
+        }
+    }
+}
+
+/// TCA 有效参数（Lensfun linear / poly3 两模型归一后的形状）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TcaParams {
+    /// `true` = poly3（带三次项 br/bb），`false` = linear。
+    pub poly3: bool,
+    pub vr: f32,
+    pub vb: f32,
+    pub br: f32,
+    pub bb: f32,
+}
+
+/// 一次展开要施加的镜头校正计划（第四包）：导入期由镜头库匹配 /
+/// 文件自带校正解析产出（`import`），或取图期由落账记录重建
+/// （`lens::plan_from_applied`）。`develop_with_lens` 只消费本结构体，
+/// 不查库、不读文件——展开保持纯函数。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LensCorrectionPlan {
+    /// 步骤 ② 的暗角（马赛克域增益场 + 高光阈值接线共用同一份场）。
+    pub vignette: Option<VignetteModel>,
+    /// 步骤 ⑤ 的畸变 + TCA 复合 warp（一次重采样）。
+    pub warp: Option<WarpModel>,
 }
 
 /// 展开产物：线性 f32 RGB（行主序三元组，线性 sRGB D65 原色，
