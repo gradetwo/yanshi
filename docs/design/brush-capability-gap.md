@@ -16945,3 +16945,30 @@ deposited=false｜ok=true
 ```
 **⇒ 两个 API 细节**（判据写错过两次）：`create_mask` **没有** `layer_id` 参数；`paint_mask` **没有** `brush` 参数
 （有 `preset`）⇒ 报错信息里会直接列出可用参数 ✓（这正是仓规「看到 ok=false 先读 error」✓）。
+
+## 四百二十八、外部 **D5 做了一半**（`origin` 字段）—— 判据＋变异都过 ✓
+
+**⇒ 他们的实测**：一幅 8K 画的 **39,354 条笔触原子 `kind` 全是 `"import_image"`**
+⇒ `kind` 说的是"像素最后存在哪"（一张图块），**不是"怎么来的"** ✗
+⇒ 拿它当"严禁导入参考图"的证明，会把"画出来的 38k 笔"误判成"导入了一张图" ✓。
+
+**⇒ 我做的**：`list_atoms` 的每条原子加 **`origin`** ✓
+| 取值 | 条件 |
+|---|---|
+| `drawn` | 净荷里有 `source.brush`（某支笔画出来的）|
+| `imported` | `import_image` 且**没有**画笔来源（文件/流导入）|
+| `system` | `create_document` / `create_layer` |
+| `generated` | 其它（几何形状、滤镜、实例…）|
+
+**⇒ 判据**（`scripts/tool-atom-origin.mjs`）实测：
+```
+✓ origin 可复核：1 条 drawn（其中 1 条 kind 仍是 import_image ⇒ 正是 D5 说的"存储形态≠来源"）、1 条 system、共 2 条
+```
+**⇒ 变异**（把 `origin` 恒写成 `"imported"`）：
+```
+✗ 刚画的那一笔没有 origin=drawn ⇒ 来源不可机械复核（清单：import_image/imported, create_document/imported）
+⇒ 退出码=1  ✓（恢复后复跑绿 ✓）
+```
+**⇒ 还差的那一半（如实记）**：他们的建议是**另开一个"落账时写死"的字段** —— 我现在这个 `origin` 是
+**回执里算出来的**（读时派生 ✓），**没有写进原子本身** ✗ ⇒ 对**老日志**也有效 ✓（因为按净荷推断 ✓），
+但**不能**当作"当时写入方声明"的证据 ✓。要不要落账，等他们回话再定 ✓（落账会影响 schema 与体积 ✓）。

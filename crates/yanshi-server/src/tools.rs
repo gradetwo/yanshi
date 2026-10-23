@@ -18442,10 +18442,38 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         if matched <= offset {
             continue;
         }
+        // **`origin`：来源，不是存储形态** ✓（第 642 轮；外部 `report.md` 的 D5 ✓）
+        //   **⇒ 他们的实测**：一幅 8K 画的 **39,354 条笔触原子 `kind` 全是 `"import_image"`** ✗
+        //   ⇒ `kind` 描述的是"像素最后存在哪"（一张图块）✓，**不是"怎么来的"** ✗
+        //   ⇒ 拿它当来源证明，会把"画出来的 38k 笔"误判成"导入了一张图" ✓。
+        //   **⇒ 口径**（判据 `tool-atom-origin.mjs` ✓）：
+        //     `drawn`   —— 净荷里有 `source.brush`（这一笔是某支笔画出来的 ✓）
+        //     `imported`—— `import_image` 且**没有**画笔来源 ✓（从文件/流导入 ✓）
+        //     `system`  —— 建文档/建图层这类记账原子 ✓
+        //     `generated` —— 其它（几何形状、滤镜、实例…）✓
+        let origin = if atom
+            .payload
+            .get("source")
+            .and_then(|source| source.get("brush"))
+            .and_then(Value::as_str)
+            .is_some()
+        {
+            "drawn"
+        } else if atom.kind == yanshi_core::AtomKind::ImportImage {
+            "imported"
+        } else if matches!(
+            atom.kind,
+            yanshi_core::AtomKind::CreateDocument | yanshi_core::AtomKind::CreateLayer
+        ) {
+            "system"
+        } else {
+            "generated"
+        };
         hits.push(json!({
             "atom_id": atom.id.to_string(),
             "seq": atom.seq,
             "kind": kind_label(&atom.kind),
+            "origin": origin,
             "label": atom.label,
             "group_id": atom.group_id,
             "layer_id": payload_str(atom, "layer_id"),
