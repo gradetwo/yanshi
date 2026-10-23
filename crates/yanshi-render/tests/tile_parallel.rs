@@ -1607,3 +1607,51 @@ fn creating_a_small_object_dirties_only_its_bbox() {
         "脏区必须局限在那个矩形附近，实测 {bbox:?}"
     );
 }
+
+/// **建文档 / 建空图层不许让整幅失效**（第 646 轮；外部第 96 次"卡在 `进度 0/209`"的根因）。
+///
+/// **实测**：同一份"8 图层 + 8 张散布贴图"的包，`4608×8192` 上**改前 >240 s 卡死**，
+/// **改后 1.1 s / 16 帧 / 32 个脏 tile** —— 因为那份"整幅脏"一直留到第一次出帧，
+/// 让第一帧变成 37.7 M px × 图层数的整幅渲染。
+///
+/// **变异**：把 `AtomKind::CreateDocument` 改回 `DirtySet::full(...)` ⇒ 红。
+#[test]
+fn creating_a_document_or_an_empty_layer_dirties_nothing() {
+    use yanshi_core::{Atom, AtomKind};
+    use yanshi_render::dirty::{plan_dirty, DirtyKind};
+
+    let mut state = DocumentState::empty();
+    state.doc_id = Some("doc_cd".to_owned());
+    state.width = 4096;
+    state.height = 4096;
+    state.layers.insert("L1".to_owned(), layer("L1", 0));
+
+    let document = Atom::new(
+        AtomKind::CreateDocument,
+        "human:1",
+        "session:test",
+        json!({"doc_id": "doc_cd", "width": 4096, "height": 4096,
+               "background": {"r": 255, "g": 255, "b": 255, "a": 255}}),
+    )
+    .with_id("a_doc");
+    let plan = plan_dirty(&state, None, &document);
+    assert!(
+        matches!(plan.kind, DirtyKind::None),
+        "建文档那一刻画布还没有内容 ⇒ 不该让任何像素失效，实测 {:?}",
+        plan.kind
+    );
+
+    let fresh_layer = Atom::new(
+        AtomKind::CreateLayer,
+        "human:1",
+        "session:test",
+        json!({"layer_id": "L2", "name": "L2"}),
+    )
+    .with_id("a_layer");
+    let plan = plan_dirty(&state, None, &fresh_layer);
+    assert!(
+        matches!(plan.kind, DirtyKind::None),
+        "建一个空图层不改画面 ⇒ 不该整幅失效，实测 {:?}",
+        plan.kind
+    );
+}

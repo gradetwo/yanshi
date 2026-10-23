@@ -192,8 +192,27 @@ pub fn plan_dirty(
             "{} 改变有效集，按结构 dirty 保守全量失效",
             atom.kind
         )),
-        AtomKind::CreateDocument => DirtySet::full("create_document"),
-        AtomKind::CreateLayer | AtomKind::ReorderLayers => {
+        // **建文档不失效任何像素** ✓（第 646 轮，实测驱动）：那一刻画布**还没有内容** ✓
+        //   ⇒ 之前这里 `full()` ⇒ 这一份"整幅脏"会**一直留到第一次出帧** ✗
+        //   ⇒ 在 `4608×8192` 上第一帧就要渲 37.7 M px（× 图层数）⇒ 外部实测"卡在 `进度 0/209`" ✓。
+        //   ⇒ 现在 `none()`：空白帧由 `Timeline` 的"只建过文档/图层 ⇒ 填背景"那条路负责 ✓，
+        //     第一个真正落下的对象会失效**它自己的区域** ✓。
+        AtomKind::CreateDocument => DirtySet::none(),
+        // **新建一个"空图层"不改画面 ⇒ 不许整幅失效** ✓（第 646 轮，实测驱动）
+        //   **⇒ 症状**：`create_layer` 走 `whole_document` ⇒ 在 `4608×8192` 上**第一次出帧就要渲整幅** ✗
+        //   ⇒ 实测（8 图层＋散布贴图）：**1024×768 只要 1.2 s**，而 **4608×8192 连 1 帧都 >120 s** ✓
+        //   ⇒ 而外部那个包**开局就连建 8 个图层** ⇒ 第一帧 = 整幅 × 8 层 ⇒ 正是他们"卡在 `进度 0/209`" ✓。
+        //   **⇒ 判据**：新图层**没有对象** ⇒ `none()` ✓；**已有对象**（或重排）⇒ 保守整幅 ✓。
+        AtomKind::CreateLayer => {
+            let layer_id = atom.layer_id();
+            let has_objects = layer_id.is_some_and(|id| !state.objects_in_layer(id).is_empty());
+            if has_objects {
+                DirtySet::whole_document(state, "create_layer 覆盖了已有对象")
+            } else {
+                DirtySet::none()
+            }
+        }
+        AtomKind::ReorderLayers => {
             DirtySet::whole_document(state, format!("{} 改变图层结构", atom.kind))
         }
         // 选区改变"其后的对象如何渲染"（路线 A：约束落笔）⇒ **必须整文档失效** ✓。
