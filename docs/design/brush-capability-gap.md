@@ -17513,3 +17513,20 @@ R-09（`Retouch` 暗化因子**乘了两次** ⇒ `darken²`）✓、R-10（RAW 
 ② `tool-pwa-assets.mjs` 改查 `web/service-worker.js` ✓（**先在本机重建介质产物**，否则它的红与本改动无关、会掩盖结果 ✓）；
 ③ `tool-sw-stamp-idempotent.mjs` **改对象**为 `web/service-worker.js` 并**改成断言占位符被保留** ✓
    （设计如此：`__BUILD_ID__` 由**服务端**在请求时替换 ✓），再补一条 `check-one-service-worker.mjs` 钉住"只有一份 SW" ✓。
+
+## 四百五十一、审计 R-06（GPU 读回）：**按边界只定位**，已钉成规格（第 747 轮）
+
+**⇒ 逐处核对的结果**（`crates/yanshi-gpu/src/lib.rs`）：
+| 行 | 写法 | 判定 |
+|---|---|---|
+| **1070** | `move \|_r\|` ⇒ 回调结果**丢掉** | ✗ **不合格**（映射失败 ⇒ 后面 `get_mapped_range()` **panic**） |
+| **1139** | 发回 `result`，但只 `if rx.recv().is_ok()` | ✗ **只看通道**，没判 `Err` |
+| **1962** | `if rx.recv().ok()?.is_err() { return None; }` | ✓ **正确**（本仓已有的正确写法 ✓） |
+| **2107** | 只 `if rx.recv().is_err()` | ✗ **通道关了才算错**，`Err(结果)` 被忽略 |
+
+**⇒ 判据**：`scripts/check-gpu-map-async-errors.mjs`（**规格先行** ✓）—— 每处 `map_async` 的回调结果
+必须在**回调里**或**接收端**被判定 ✓。**实测 3/4 不合格 ⇒ 预期红** ✓，已登记 `criteria-known-red.txt` ✓。
+**⇒ 转绿条件**：三处都照 1962 那样"见 `Err` 就 `return None`" ⇒ 红转绿 ⇒ 从名单移出 ✓。
+
+**⇒ 为什么不修**：用户裁定过「**服务端 `wgpu`/WebGPU 只复现与定位，不修**」✓ ⇒ 本轮**只定位**：
+缺陷有三处、正确写法仓库里已有现成一处（1962）⇒ 修的人只要照抄那一处 ✓。

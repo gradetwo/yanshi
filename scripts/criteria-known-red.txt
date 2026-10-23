@@ -428,6 +428,17 @@ browser-reference-overlay.mjs  # **类型：规格先行（功能尚未实现）
 #   ③ 并证明"设／清参考图对文档渲染**逐字节无影响**" ✓。
 # **同类条目** ✓（同一根因、同一处置 ✓）：`tool-reference-overlay.mjs` ✓、`tool-example-acceptance.mjs` ✓。
 tool-bitmap-decode-scope.mjs  # **类型：规格先行（位图未分块存储）** ✓
+#
+# **★★★ 第 747 轮：`check-gpu-map-async-errors.mjs` 登记为**已知红**（规格先行 ✓）★★★**
+#   ＋ **∴ 症状**：4 处 GPU 读回里**3 处**没判 `map_async` 的回调结果 ✗
+#     · `yanshi-gpu/src/lib.rs:1070` `|_r|` ⇒ 结果被丢 ⇒ 映射失败时 `get_mapped_range()` **panic** ✓
+#     · `lib.rs:1139` 只 `rx.recv().is_ok()` ⇒ **只看通道**、没判 `Err` ✗
+#     · `lib.rs:2107` 只 `rx.recv().is_err()` ⇒ 同上 ✗
+#     （对照：`lib.rs:1962` **正确** ✓ —— `recv().ok()?.is_err()` ⇒ 见 `Err` 就 `return None` ✓）
+#   ＋ **∴ 为什么只定位不修 ✗**：**GPU／wgpu 是明确的边界**（"渲染层问题只复现与定位，不修" ✓）
+#     ⇒ 钉成**可复核的规格** ✓，等那侧的人修；**红转绿**就是修好的证明 ✓
+#   ＋ **∴ 转绿条件**：三处都改成"见 `Err` 就返回 `None`"（照 1962 那处的写法 ✓）⇒ 那时从名单移出 ✓
+check-gpu-map-async-errors.mjs  # **类型：规格先行（GPU 读回忽略 map_async 失败；边界内只定位）**
 # **判什么** ✓（目标第 1 条 ✓）：
 #   ① **"小区域所解码的字节 ≤ K × 区域像素 × 4（K=4）"** ✓（**须位图分块存储** ✓；**今天必红** ✗）；
 #   ①′ **"同一区域第二次渲染 ⇒ 解码增量 0"** ✓（**已绿** ✓ —— 第 139 轮修复 ✓）；
