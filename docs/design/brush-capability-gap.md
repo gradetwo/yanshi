@@ -17937,3 +17937,73 @@ IndexedDB（`viewer-app.js` 的 `callTool → callToolLocal` ✓），①②③�
 ⇒ 该处留原式 ＋ `#[allow(clippy::manual_range_contains)]` ＋ 写明原因 ✓。
 **⇒ 教训**✗：**clippy 的「等价改写」在浮点比较上未必等价**✓（NaN 是第三种真值 ✓）——
 与「A 与 B 各自合法却可互相矛盾」（内核 2 ✓）同族：**改写要连 NaN 一起核**，不要只看有限值 ✓。
+
+## 四百五十五、「客户端落笔一族」的第一次**逐字段**定位：本地层用**残缺日志**重建内核 ⇒ 折叠出的文档是 0×0（第 742 轮，实测双向）
+
+**⇒ 前情**✗：`browser-canvas-handfeel` 与 `browser-brush-preview` 长期登记为**「待定位」**✓
+（`criteria-known-red.txt`:147–148 ✓）⇒ 本轮**测到了**，而且是**当场 5 秒**测到的 ✓：
+用 CDP 在**页面自己的上下文**里读 `store.js` 的原子日志，再**亲手折一遍** ✓。
+
+**⇒ 实测**（`render=client` ＋ 静态 PWA ＋ 文档由**服务端** `POST /api/documents` 建，320×240 ✓）：
+
+```json
+{"doc":"doc_nc","local_atom_count":1,"local_kinds":["create_layer"],
+ "has_create_document":false,
+ "docs_store_meta":{"doc":"doc_nc","seq":1,"format":1,"snapshot":null},
+ "fold":"{\"atoms\":1,\"head_seq\":1,\"ok\":true,\"warnings\":[]}",
+ "state_json":{"width":0,"height":0,"layers":1,"objects":0,"atoms":1},
+ "render_info":"invalid_argument: 渲染区域 Bbox { x: 0.0, y: 0.0, w: 256.0, h: 256.0 } 与文档 0×0 不相交",
+ "png_bytes":0}
+```
+
+**⇒ 链条（每一环都有源码行 ✓）**：
+
+1. 文档在**服务端**建立 ⇒ `create_document` 原子只进了**服务端日志** ✓；
+   浏览器 IndexedDB 里只有**本地记账**的那颗 `create_layer` ✓（`local_kinds` ✓）。
+2. `api-local.js:4019` 重建内核时**只读本地日志**（`atomsOf(handle, doc)` ✓:4030 ✓）⇒
+   尺寸取**本地**的 `create_document` 的 `payload.width` ✓，取不到就 `|| 1024` ✓（:4020 ✓，
+   同一形状的缺省还有 `k_width(){return 1024}`:4780 ✓）。
+3. `WasmKernel(doc, 256, w, h, …)` ⇒ `Kernel::new`（kernel.rs:239 ✓）把 `w/h` **只**写进
+   `TileGrid` 与 `viewport` ✓ ⇒ **`state` 仍是 `DocumentState::empty()`**（:257 ✓ 0×0 ✗）。
+4. `load_atoms_json`（:601 ✓）**整体替换** `self.state = folded.state` ✓ ⇒
+   折叠的 `state.width` 来自 `create_document` 的 payload ✓（`fold.rs:847 ✓，
+   `payload_u64(…, "width").unwrap_or(0)` ⇒ **没有那颗原子 ⇒ 0**✓）。
+   **⇒ 所以第 3 步的 1024 到这里全部作废**✓（**∴ 这就是「同一事实两个副本」✗**：
+   格子的尺寸 ＝ 1024 ✓，状态的尺寸 ＝ 0 ✓ ⇒ **两边各自合法却互相矛盾**✓）。
+5. 于是**任何**区域渲染都失败：`Renderer::render_region` 先过 `clamp_region`
+   （render.rs:1579 ✓）⇒ 拿**状态**的 `width/height` 夹区域 ✓（:5633 ✓）⇒ `x1<=x0` ⇒
+   `invalid_argument` ✓ ⇒ `render_region_png` 走 `.unwrap_or_default()` ⇒ **空字节** ✓（lib.rs:240 ✓）
+   ⇒ `api-local.js:4059` 如实报 `needs_render｜内核未产出字节` ✓（**它没撒谎 ✓**）
+   ⇒ 判据看到「预览 0×0」「图层行不增加」「画布有墨而服务端 0 对象」✓。
+
+**⇒ 两条红当场复现（第 742 轮 ✓，且是**换过新内核之后**✓）**：
+`browser-canvas-handfeel` `NC_EXIT=1`（③ 面板行数 1 ⇒ 1｜日志 `needs_render` ✓，10 秒）；
+`browser-brush-preview` `NC_EXIT=1`（`2B_pencil: loaded=false 0×0`，121 秒）✓。
+
+**⇒ 为什么**追到这里**先停**✗（**不是**「修不动」✓）：
+
+| 方案 | 会怎样 | 为什么这轮不做 |
+|---|---|---|
+| A `Kernel::new` 顺手把 `w/h` 也写进 `state` ✓ | 不再报 0×0 ✓ | **折叠会覆盖它**（第 4 步 ✓）⇒ 只有把 `fold` 改成「以当前 state 为基座」才真生效 ⇒ **动的是折叠器的输入契约**✗（正是 `service.rs:1365` 那次「快照＋尾巴」**停用**的同一条线 ✓，§447 附近 ✓）——**不能顺手改** ✗ |
+| B 让 `api-local` 的内核也从**服务端权威日志**重建 ✓ | 尺寸与图层都对 ✓ | **本地层存在的意义**就是**没有服务端也要能画** ✓（离线落笔一族 ✓）⇒ 等于取消本地层 ✗ |
+| C 打开文档时把服务端的 `create_document` **镜像**进 IndexedDB ✓ | 本地日志变完整 ✓ | 要定「谁负责镜像」「离线首开怎么办」✓ ⇒ **是设计变更，不是补洞** ✓ |
+| D **只把缺尺寸这件事变成响亮信号** ✓ | 不再出现「1024 的格子 ＋ 0×0 的状态」✓ | **可以做**，但**要与 `vermeer-acceptance.md:5293` 那条定案同一口径**（「把『我不知道尺寸』写成『尺寸是 0×0』」✗ 已判过一次 ✓）⇒ 归到 C 一起做，**避免两条规则各改一半** ✓ |
+
+**⇒ 本轮落地的只有守卫**（**测量工具**✗ 不是产品 ✓）：跑这次追踪时**先踩到一个新的静默降级**——
+`pwa-sync-wasm.mjs` 把 `crates/yanshi-wasm/pkg/` 拷进 `web/wasm/`，**原来只验「在不在、空不空」**✗
+⇒ **`pkg/` 自己可以是上一版**（实测：`pkg` 是 00:15 的，而 `kernel.rs` 01:12 ✗）⇒
+**浏览器判据测的是过期内核** ✓（**第 956 轮同一个坑的资产版 ✓**）。
+⇒ 现在：**三个 crate（`yanshi-wasm`/`-render`/`-core`）的 `.rs` 只要有一颗比 `pkg/yanshi_wasm_bg.wasm` 新**
+⇒ **`exit 2` 拒绝发布**＋打印两步重建命令（`cargo build --target wasm32…` ＋ `wasm-bindgen`，
+**只 build 不 bindgen 时 `pkg/` 不更新** ✓）＋提醒版本取自 `scripts/wasm-bindgen-version.sh` ✓（第 492 轮 ✓）。
+**⇒ 变异（四层齐的第 4 层 ✓）**：把 `crates/yanshi-wasm/src/lib.rs` 的 mtime 推到产物之后
+⇒ **`exit 2` 并列出那颗文件**✓；还原 mtime ⇒ **`exit 0`**✓（前后各跑一次 ✓）。
+**⇒ 为什么在 CI 上不会假红**✗：`ci.yml:497` 与 `pwa.yml:104` 都是**先 build＋wasm-bindgen ⇒ 再跑本脚本**✓
+⇒ 守卫**只拦本机复用旧 `pkg/`** 这一种 ✓（那正是它要拦的 ✓）。
+
+**⇒ 教训**✗：**「内核的格子尺寸」与「内核的状态尺寸」是同一个事实的两个副本**✓ ⇒
+凡两个副本**都能各自合法却互相矛盾**（内核 2 ✓），而**矛盾在这里的显现形式是「渲染区不相交」**✗
+——**不是**「尺寸错了」✓ ⇒ 于是**三轮里我一直把它当成渲染问题在追**✓。
+**⇒ 下一次见到 `与文档 0×0 不相交`**✗ 第一个要问的不是「区域怎么算的」✓，
+而是「**这颗文档的 `create_document` 在哪本日志里**」✓。
+

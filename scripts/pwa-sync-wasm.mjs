@@ -43,6 +43,57 @@ if (!existsSync(src)) {
   console.error(`✗ 找不到内核产物 ${src} ⇒ 请先构建 yanshi-wasm（见本脚本头部说明）`);
   process.exit(2);
 }
+
+// **★★★ 陈旧守卫 ✗：宁可拒绝发布，也不把过期内核拷进 PWA ✓ ★**（**第 742 轮实测 ✓**）
+//
+// **∴ 原来缺什么 ✗**：本脚本**只验**「拷完之后文件在不在、空不空」✓（**见下方 `missing` ✓**）
+//   ⇒ **∴ 而**`pkg/` 本身**是构建产物**✗ ⇒ **∴ 它可以比源码旧** ✓
+//     ⇒ **∴ 于是**`web/wasm/` 拿到**上一版内核**✗ 而**没有任何信号** ✓
+//       ⇒ **★ 这就是「静默降级」的第 5 种形态 ✗**（**「做了 0 次」冒充「不需要做」✓**）：
+//         **∴ 「产物存在」被当成了「产物是新的**」✗ **✓
+//
+// **∴ 实测代价 ✗**（**第 740–742 轮 ✓**）：两条浏览器判据报「**文档 0×0**」✗
+//   ⇒ **∴ 我**据此去追「**客户端落笔一族**」的根因 ✗
+//     ⇒ **∴ 而**追的对象**是陈旧内核** ✓（**∴ 与第 956 轮同一个坑 ✗：陈旧二进制测出假象 ✓**）
+//
+// **∴ 守卫的判据 ✗**：内核由**这三个 crate 的 `.rs`** 决定 ✓
+//   ⇒ **∴ 其中任何一个**比 `pkg/yanshi_wasm_bg.wasm` 新**✗ ⇒ **∴ 产物就是旧的** ✗
+//   **∴ 为什么**响亮失败**✗ 而不是警告 ✓**：警告**会被 CI 日志淹没** ✗
+//     ⇒ **∴ 而**「**发布了假装是新的内核**」✗ 会让**之后每一条**浏览器判据**测到错的东西** ✓
+//
+// **∴ 什么时候不该报警 ✗**：**CI 的两个 job 都是**先 build ＋ `wasm-bindgen` ⇒ 再跑本脚本** ✓
+//   （**`.github/workflows/ci.yml` ✓／`pwa.yml` ✓**）⇒ **∴ 所以**守卫在 CI 上**恒通过** ✓
+//     **∴ 只有**本机**复用旧 `pkg/`** 时**才会拦 ✗（**∴ 那**正是**本守卫要拦的 ✓**）
+const KERNEL_SOURCE_DIRS = [
+  "crates/yanshi-wasm/src",
+  "crates/yanshi-render/src",
+  "crates/yanshi-core/src",
+];
+const pkgWasm = join(src, "yanshi_wasm_bg.wasm");
+if (existsSync(pkgWasm)) {
+  const built = statSync(pkgWasm).mtimeMs;
+  const stale = [];
+  for (const dir of KERNEL_SOURCE_DIRS) {
+    if (!existsSync(dir)) continue;
+    for (const rel of walk(dir)) {
+      if (!rel.endsWith(".rs")) continue;
+      const p = join(dir, rel);
+      if (statSync(p).mtimeMs > built) stale.push(p);
+    }
+  }
+  if (stale.length > 0) {
+    console.error(
+      `✗ 内核产物比源码陈旧 ⇒ 拒绝把 ${pkgWasm} 拷进 ${dst}（第 742 轮加的守卫 ✓）\n` +
+        `  比产物新的源码（最多列 5 个）：\n    ${stale.slice(0, 5).join("\n    ")}\n` +
+        `  修法（两条都要跑 ✗ ⇒ 只 build 不 wasm-bindgen 的话 pkg/ 不会更新 ✓）：\n` +
+        `    cargo build -p yanshi-wasm --release --target wasm32-unknown-unknown\n` +
+        `    wasm-bindgen --target web --out-dir ${src} target/wasm32-unknown-unknown/release/yanshi_wasm.wasm\n` +
+        `    ＋ wasm-bindgen 的版本要取自主线锁：scripts/wasm-bindgen-version.sh（第 492 轮的教训 ✗：别写死）`
+    );
+    process.exit(2);
+  }
+}
+
 mkdirSync(dst, { recursive: true });
 let copied = 0;
 const rels = walk(src);
