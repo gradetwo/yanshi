@@ -131,6 +131,10 @@ pub struct Timeline {
     /// **画布背景色** ✓（从 `create_document` 里记下来 ✓）：还没放过任何对象时，
     /// 出帧就是**一块背景色** ✓ ⇒ 不必为它渲整幅 ✓（第 620 轮；4608×8192 上省 ~27 s/帧 ✓）。
     background: [u8; 4],
+    /// **已经出过至少一帧** ✓ —— 没有变化时可复用上一帧，不必整幅重渲 ✓（第 624 轮）。
+    have_frame: bool,
+    /// **没有变化而复用上一帧的次数** ✓（账用 ✓）。
+    reused_frames: u64,
     /// **有没有出现过"非 建文档/建图层"的原子** ✓ —— 没有 ⇒ **帧就是背景色** ✓
     /// （保守：只要来过一个别的 kind 就置 false ✓，之后一律走真渲染 ✓）。
     only_document_and_layers: bool,
@@ -165,6 +169,8 @@ impl Timeline {
             scaled_dims: (0, 0),
             dirty: BTreeSet::new(),
             background: [255, 255, 255, 255],
+            have_frame: false,
+            reused_frames: 0,
             only_document_and_layers: true,
             full_renders: 0,
             dirty_renders: 0,
@@ -255,13 +261,22 @@ impl Timeline {
                 chunk.copy_from_slice(&pixel);
             }
             self.last_dirty_px = Some((0, 0, self.doc_w, self.doc_h));
+            self.have_frame = true;
             return Ok(&self.frame);
         }
         if dirty.is_empty() {
+            // **★ 没有任何变化 ⇒ 复用上一帧，别整幅重渲 ★**（第 624 轮）
+            //   ⇒ 旧行为：**空脏区也渲整幅** ✗ ⇒ 收尾那一帧白花 **~27 s**（4608×8192）✓
+            //   ⇒ 判据 `a_frame_with_no_changes_reuses_the_last_one`（`incremental_matches_full.rs` ✓）
+            if self.have_frame {
+                self.reused_frames += 1;
+                return Ok(&self.frame);
+            }
             let region = Bbox::new(0.0, 0.0, f64::from(self.doc_w), f64::from(self.doc_h));
             let rendered = self.kernel.render_region(region)?;
             self.full_renders += 1;
             self.blit(&rendered);
+            self.have_frame = true;
             return Ok(&self.frame);
         }
         // **∴ 同一行里**连着的 tile 合成一条**✗ 才能把每次 `render_region` 的固定开销摊薄** ✓ ★
@@ -297,6 +312,7 @@ impl Timeline {
                 self.dirty_runs += 1;
             }
         }
+        self.have_frame = true;
         Ok(&self.frame)
     }
 

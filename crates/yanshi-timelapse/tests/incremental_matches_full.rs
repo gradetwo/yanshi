@@ -309,3 +309,52 @@ fn blank_frames_are_background_not_full_renders() {
     );
     assert_eq!(dirty_renders, 0, "空白帧也不该产生脏区渲染");
 }
+
+/// **没有任何变化的帧必须复用上一帧，不许整幅重渲**（第 624 轮）。
+///
+/// **为什么**：旧实现「空脏区 ⇒ 渲整幅」✗ ⇒ 收尾那一帧白花 **~27 s**（4608×8192 实测）✓
+/// 而它和上一帧**逐字节相同** ✓ ⇒ 纯浪费 ✓。
+///
+/// **变异**：把复用那条去掉 ⇒ `full_renders` 从 1 变 2 ⇒ 红 ✓。
+#[test]
+fn a_frame_with_no_changes_reuses_the_last_one() {
+    let (dw, dh) = (64u32, 64u32);
+    let mut timeline = Timeline::new("tl_reuse", 64, dw, dh, 64 * 1024 * 1024).expect("kernel");
+    timeline
+        .apply(&atom(
+            "a0",
+            1,
+            "create_document",
+            json!({"background": {"r": 255, "g": 255, "b": 255, "a": 255},
+                   "color_space": "srgb", "doc_id": "tl_reuse", "width": dw, "height": dh}),
+        ))
+        .expect("create_document");
+    timeline
+        .apply(&atom(
+            "a1",
+            2,
+            "create_layer",
+            json!({"layer_id": "L1", "name": "L1"}),
+        ))
+        .expect("create_layer");
+    timeline
+        .apply(&atom(
+            "a2",
+            3,
+            "create_object",
+            json!({"object_id": "o1", "layer_id": "L1", "type": "shape",
+                   "data": {"geometry": {"kind": "rect",
+                                         "bbox": {"x": 8.0, "y": 8.0, "w": 16.0, "h": 16.0}},
+                            "color": {"r": 10, "g": 200, "b": 30, "a": 255}}}),
+        ))
+        .expect("create_object");
+    let first = timeline.frame().expect("first frame").to_vec();
+    let (full_after_first, _, _, _) = timeline.stats();
+    let second = timeline.frame().expect("second frame").to_vec();
+    let (full_after_second, _, _, _) = timeline.stats();
+    assert_eq!(second, first, "没有变化的第二帧必须与第一帧逐字节相同");
+    assert_eq!(
+        full_after_second, full_after_first,
+        "没有变化的帧不该再触发整幅渲染（4608×8192 上一次就是约 27 秒）"
+    );
+}
