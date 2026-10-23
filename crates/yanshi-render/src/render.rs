@@ -5864,16 +5864,22 @@ pub(crate) mod parallel_impl {
                                     .append(true)
                                     .open(&path)
                                 {
+                                    // **实参顺序必须与占位符一致** ✓（第 746 轮；外部审计 R-12）
+                                    //   **⇒ 缺陷**：`t_ns={}` 拿了 `region` 的四个数字之一、
+                                    //     而 `region=(…)` 拿了**时间戳** ✗ ⇒ 探针输出**看着像**正常
+                                    //     （都是数字 ✓）而**含义全错** ✓ —— 最坏的一种诊断错误 ✓
+                                    //     （我上一次调它就会被它带偏 ✓）。
+                                    //   **⇒ 判据**：`check-band-start-probe.mjs` 比对**占位符顺序**与**实参顺序** ✓。
                                     let line = format!(
                                         "BAND_START thread={:?} y={} rows={} t_ns={} region=({},{},{},{})\n",
                                         std::thread::current().id(),
                                         ry + row_start as i64,
                                         rows,
-                                                rx, ry, rw, rh,
                                         std::time::SystemTime::now()
                                             .duration_since(std::time::UNIX_EPOCH)
                                             .map(|d| d.as_nanos())
-                                            .unwrap_or(0)
+                                            .unwrap_or(0),
+                                        rx, ry, rw, rh,
                                     );
                                     let _ = f.write_all(line.as_bytes());
                                 }
