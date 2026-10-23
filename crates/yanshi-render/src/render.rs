@@ -2707,6 +2707,20 @@ impl Renderer {
                             }
                             v
                         };
+                        // **`mem::take` 之后必须把 `by_sig` 里那条**删掉** ✓（第 681 轮，CI 二分定位）
+                        //   **⇒ 否则**：条目还在、内容**已被取空** ✗ ⇒ 下一轮的
+                        //     `if !contains_key(&sig)` 判定**永远不会补写** ⇒ 缓存退化成永不命中 ✗
+                        //     ⇒ `buffer_pool_budget_covers_every_concurrent_worker` 实测 **7**（应为 4）✓
+                        //   **⇒ 修法**：取走内容的同时**移除该签名分组** ✓ ⇒ 下一次写入是"缺席⇒写"✓
+                        let by_sig_entry_removed = if guard.as_ref().is_some_and(|c| c.sig == sig) {
+                            if let Some(c) = guard.as_mut() {
+                                c.by_sig.remove(&sig);
+                            }
+                            true
+                        } else {
+                            false
+                        };
+                        let _ = by_sig_entry_removed;
                         let keep = match guard.as_mut() {
                             Some(c) if c.sig == sig => std::mem::take(&mut c.tiles),
                             Some(c) => {
