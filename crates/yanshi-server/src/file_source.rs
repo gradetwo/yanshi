@@ -170,6 +170,8 @@ pub fn decode_base64_param(args: &Value, key: &str, cap: usize) -> Result<Option
 /// 本地路径解析（设计 4.4：沿用 `put_blob` 第 1230/1232 轮已落地的沙箱，
 /// 本函数是那套口径的唯一实现，`put_blob` 与后续工具共用）：
 /// 拒 `..` 组件 ⇒ canonicalize ⇒ 必须落在工作区 root 之内 ⇒ 读字节并过上限。
+/// 相对路径相对 root 解析（工具文档口径：相对 --root），不相对进程 CWD——
+/// 否则 root 内的文件读不到、CWD 下的同名文件会被误读（2026-10-23 实测缺陷）。
 /// 无 root 的工作区不支持 path 形态，明确报错（不静默回退到别处读）。
 pub fn resolve_local_path(
     raw: &str,
@@ -182,7 +184,13 @@ pub fn resolve_local_path(
             ErrorContext::detail(format!("path 不许含 `..` 组件（防路径穿越）：{raw}")),
         ));
     }
-    let resolved = std::fs::canonicalize(raw).map_err(|e| {
+    // 相对路径先拼 root 再 canonicalize：canonicalize 本身按进程 CWD 解析，
+    // 不拼 root 则与文档口径（相对 --root）不符（见函数头注）。
+    let candidate = match root {
+        Some(root) if !Path::new(raw).is_absolute() => root.join(raw),
+        _ => PathBuf::from(raw),
+    };
+    let resolved = std::fs::canonicalize(&candidate).map_err(|e| {
         YanshiError::new(
             ErrorCode::InvalidArgument,
             ErrorContext::detail(format!("读不到 {raw}：{e}")),
@@ -547,6 +555,32 @@ mod tests {
         assert_eq!(url_scheme("file:///a/b.png"), Some("file"));
         assert_eq!(url_scheme("/plain/path.png"), None);
         assert_eq!(url_scheme("C:\\win\\path.png"), None);
+    }
+
+    #[test]
+    fn relative_path_resolves_against_root_not_cwd() {
+        // 回归（2026-10-23 实测）：相对路径必须相对 root 解析，
+        // 进程 CWD 下的同名文件不得被误读。
+        let root =
+            std::env::temp_dir().join(format!("yanshi-file-source-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("pic.bin"), b"from-root").unwrap();
+        // **诱饵文件名必须唯一** ✓：写进进程 CWD（本仓根）时不能撞上真实文件 ✓
+        let decoy = std::env::current_dir()
+            .unwrap()
+            .join(format!("yanshi_cwd_decoy_{}.bin", std::process::id()));
+        let decoy_preexisting = decoy.exists();
+        if !decoy_preexisting {
+            std::fs::write(&decoy, b"from-cwd").unwrap();
+        }
+        let (bytes, resolved) =
+            resolve_local_path("pic.bin", Some(&root), 1024).expect("root 内相对路径应可读");
+        assert_eq!(bytes, b"from-root");
+        assert!(resolved.starts_with(std::fs::canonicalize(&root).unwrap()));
+        if !decoy_preexisting {
+            let _ = std::fs::remove_file(&decoy);
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

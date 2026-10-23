@@ -15,7 +15,7 @@
 //
 // **∴ 第 1232 轮**：root 沙箱（canonicalize + 前缀校验）已做 ⇒ 所以断言 ③ 现在**成立** ✓
 //   （上一轮它还不成立，那时我把这条风险**只写进注释**、不写进断言）
-import { writeFileSync, rmSync } from "node:fs";
+import { writeFileSync, rmSync, existsSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 
 const [base, doc, token] = process.argv.slice(2);
@@ -62,6 +62,39 @@ const good = await call("put_blob", { path: insidePath });
 check(good.ok === true, `②a 工作区内的文件必须成功（不误拒）⇒ ok=${good.ok}｜${JSON.stringify(good.context?.detail ?? "").slice(0, 80)}`);
 check(typeof good.blob_hash === "string" && good.blob_hash.startsWith("sha256:"),
   `②b 必须返回 sha256: 开头的 blob_hash ⇒ ${String(good.blob_hash).slice(0, 24)}…`);
+
+// **②c 相对路径必须相对工作区 root 解析** ✓（第 638 轮；`yanshi-issue2-putblob-path.patch`）
+//   ⇒ **缺陷**：`canonicalize(raw)` 按**进程 CWD** 解析 ✗ ⇒ root 内相对路径读不到，
+//     而 CWD 下**同名文件**会被**误读** ✓（实测 2026-10-23）
+const relName = `putblob_rel_probe_${Date.now().toString(36)}.txt`;
+const relInRoot = join(root, relName);
+writeFileSync(relInRoot, "from-root\n");
+// **诱饵**：进程 CWD 下同名文件（内容不同）⇒ 必须**不被读**
+const decoy = join(process.cwd(), relName);
+let decoyWritten = false;
+if (!existsSync(decoy)) {
+  writeFileSync(decoy, "from-cwd\n");
+  decoyWritten = true;
+}
+const relRoot = await call("put_blob", { path: relName });
+const absRoot = await call("put_blob", { path: relInRoot });
+const relHash = relRoot.blob_hash;
+const absHash = absRoot.blob_hash;
+check(
+  relRoot.ok === true,
+  `②c 相对路径（相对 root）必须成功 ⇒ ok=${relRoot.ok}｜${JSON.stringify(relRoot.context?.detail ?? "").slice(0, 90)}`,
+);
+check(
+  typeof relHash === "string" && relHash === absHash,
+  `②c 相对路径与绝对路径必须指向**同一份内容**（相对 ${String(relHash).slice(0, 18)}… vs 绝对 ${String(absHash).slice(0, 18)}…）⇒ 说明相对路径被按 CWD 解析了（读了诱饵）`,
+);
+if (decoyWritten) {
+  try {
+    unlinkSync(decoy);
+  } catch {
+    /* 清不掉也不影响判据 */
+  }
+}
 
 // ③ 反向：**工作区外**的文件必须被拒（第 1232 轮加的 root 沙箱）
 const outside = await call("put_blob", { path: "/etc/hostname" });
