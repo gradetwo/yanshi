@@ -193,8 +193,8 @@ textures/render_params/seed_policy），是绘画侧的笔触样式，**不是�
 | 高光/阴影滑杆 | `shadows_highlights` ÷100（−1..1） |
 | 色温偏移（K 差） | `white_balance.temperature ≈ ΔK/3000` 钳到 [−1,1]；正 = 暖（内核：R 增、B 减） |
 | 色调（绿↔品红） | `white_balance.tint`，正 = 品红 |
-| 曲线点 (输入→输出，0–255) | `curves.points` ÷255 归一（Yanshi 是单调三次插值，点列须含首尾） |
-| 抬黑点 fade（输出 5–15/255） | 曲线首点 y ÷255（**只能走曲线**：`levels.black` 是输入黑点、方向相反，写它只会压暗部——2026-10-23 修订，原稿把两者并列是错的） |
+| 曲线点 (输入→输出，0–255) | `curves.points` ÷255 归一后**逐点过 sRGB EOTF 换成线性坐标**（内核曲线直接作用于线性 RGB，不转换量级会被放大，见 §9.1 续；点列须含首尾） |
+| 抬黑点 fade（输出 5–15/255） | 曲线首点 y ÷255 后同样过 EOTF 换线性（**只能走曲线**：`levels.black` 是输入黑点、方向相反，写它只会压暗部——2026-10-23 修订，原稿把两者并列是错的） |
 | 分离色调/色彩分级（H/S 两轮） | `split_toning` 三元组：按目标色的 RGB 偏移方向近似，量级 ≤0.15/分量（速查通则：分级宁小勿大，两轮之和 ≤25 的口径映射为三元组小量）；v2 四套再减半 |
 | HSL 逐通道（H/S/L） | **无逐通道 HSL**：全局 `hsl` 只动整体；逐通道意图改用 `selective_color` 的 CMYK 偏移近似，或写入 unsupported |
 | 校准面板移色 | `channel_mixer` 矩阵近似（赛博朋克），或 unsupported |
@@ -242,6 +242,38 @@ split_toning 单独仍有全图青绿染色（平均 ΔG +0.034），且 dehaze 
   别用显示器上看到的增量反推。
 - 内核侧是否应改 split_toning 的施加空间/权重曲线，留待后续评审（会改变所有
   既有调用方的语义，本次不动）。
+
+**续：`curves` 是同根问题（2026-10-23 同日续测，morandi 暗调静物上现形）。**
+内核 `curves` 的控制点**直接作用于线性 RGB**（`filter.rs` 的 `monotone_curve`
+单调三次插值），而数据里的点是按显示空间 / LR 直觉著录的——与 split_toning
+同根，只是形态从「染色罩」变成「奶雾抬黑」：显示 fade 黑点 (0, 0.07) 若直用作
+线性坐标点，等于把黑位抬到线性 0.07（编码回显示约 0.29），暗部被整体掀起。
+morandi 逐 op 隔离（基线黑位 p2 0.084、明度 std 0.131、均值 0.315）：curves
+单独 p2 → **0.311**、std → 0.086【主犯】；全套实测 p2 0.365 与隔离叠加一致。
+此前在亮调素材（汉堡港）上不现形，是暗部像素太少把 bug 掩盖了，不是无 bug。
+
+**修法（数据侧，与 split_toning 先例一致）**：style 段含 `curves` 的全部预设
+（数它用 `grep -c '"type": "curves"' crates/yanshi-server/data/style-presets.json`），
+其 `params.points` 与 `neutral.points` 逐点做 sRGB EOTF 转换
+(x, y) → (lin x, lin y)，lin 为 sRGB 解码（c ≤ 0.04045 时 c/12.92，否则
+((c+0.055)/1.055)^2.4），结果保留 4 位小数。转换后内核曲线在每个控制点上
+精确复现显示空间著录意图，段内由三次插值在线性空间近似。两点配套：
+- `neutral.points` 同法转换后仍落在对角线 y = x 上（EOTF 保对角），
+  恒等曲线不变、strength = 0 恒等不受影响；
+- 以 `points` 为目标的旋钮（`japanese_airy` 的 fade、`cinema` 的 matte）
+  其 `range` 两端点列同法转换——旋钮存的也是显示空间曲线值，不转换就会
+  在覆盖瞬间把旧量级带回来；转换保单调，方向性单测（旋钮越大首点 y 越高）
+  仍成立。
+
+**`brightness_contrast` 只点名、本次不动数据**：它同样是无枢轴线性运算
+（`value × contrast + brightness` 作用于线性值），morandi 隔离中单独
+p2 → 0.178【次犯】。但已过版的行（western_cool / lomo / forest）都含它且
+量级温和、目检无恙，贸然改数据会让已定版结果漂移。写预设时注意：它的
+显示等效量级随像素明度变（暗部相对增益更大）；是否给它加枢轴语义，
+与 split_toning 的内核侧问题一并留待后续评审。
+
+修正段只有 exposure / shadows_highlights / dehaze / clarity，不含 curves
+与 brightness_contrast，已渲的原图 / 修正图不受影响，重渲只需补 style 格。
 
 ## 10. 测试门与三期划分
 
