@@ -2300,8 +2300,15 @@ fn tool_call_with(
         .get(name)
         .is_some_and(|spec| spec.creates_own_document());
     if pre_create && workspace.document(&doc_id).is_none() {
+        // **只对"调用方自己点名的、不是默认文档"的 id 才拒绝** ✓（第 643 轮修正上一轮的过头）
+        //   ⇒ 上一轮我把**所有**只读工具都拦成 `reference_not_found` ⇒ **弄坏了既有契约** ✗：
+        //     MCP 的 `end_to_end_draw_render_and_poll` 与判据 `mcp-swatch-inline-images` 都会
+        //     **在空工作区上先 `get_document`**（文档按需创建 ✓）⇒ CI 两处红 ✗。
+        //   ⇒ 正确口径：**默认文档**（`--doc` / 服务配置里那个）仍按需创建 ✓；
+        //     **任何别的 id**（拼错的、不存在的）⇒ 只读工具**报错** ✓（这正是外部 D10 ✓）。
         let mutating = state.registry.get(name).is_some_and(|spec| spec.mutating);
-        if !mutating {
+        let is_default_doc = doc_id == state.options.doc_id;
+        if !mutating && !is_default_doc {
             return Response::json(
                 404,
                 &serde_json::json!({

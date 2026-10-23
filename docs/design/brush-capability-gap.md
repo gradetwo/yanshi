@@ -16991,3 +16991,22 @@ deposited=false｜ok=true
 ⇒ 退出码=1  ✓（恢复并重建后复跑绿 ✓）
 ```
 **⇒ 这条判据替换掉了三次失败的前作**（平铺 blob 路径 / 编造 `bitmap` 字段 / 在 64×64 上用 200×200 的矩形 ✓）。
+
+## 四百三十、我上一轮的 D10 修复**过火了** ✗ —— CI 两处红，已按"只有默认文档按需创建"修正 ✓
+
+**⇒ CI 在 `38a06d61` 上红了四处**（`test (stable)`、`test (beta)`、`criteria shard 3/6`、`shard 6/6`）：
+- `yanshi-mcp`：`end_to_end_draw_render_and_poll`、`profiles_gate_tool_visibility` —— 都在 `lib.rs:774`
+  断言 `get_document` 在**空工作区**上返回 32×32（文档**按需创建** ✓）⇒ 被我拦成 `reference_not_found` ✗；
+- 判据 `mcp-swatch-inline-images.mjs`：`✗ 工具返回 isError`、`批量试笔只交出 0 个 image 块` —— 同一个根因 ✓。
+
+**⇒ 我的错**：把**所有**只读工具都拦了 ✗ —— 而"按需创建**默认文档**"是**既有契约** ✓（我第一次读 D10 时
+只看见"不许编文档"，没看见"默认文档要按需建" ✓）。
+
+**⇒ 正确口径**（已改）：**只对"调用方点名了**别的** id 且它不存在"**才拒绝 ✓；默认文档（`--doc` / 服务配置）
+仍按需创建 ✓。两处都改了（HTTP 的 `is_default_doc`、MCP 的 `doc_id != self.options.doc_id` ✓）。
+
+**⇒ 本机复核（都绿）**：
+- `cargo test -p yanshi-mcp --lib` ⇒ **9 passed** ✓
+- `scripts/mcp-swatch-inline-images.mjs` ⇒ `✓ 批量试笔直接交出 3 个 image 块，且 text 里 inline_images.count=3` ✓
+- `scripts/tool-unknown-doc-is-not-created.mjs` ⇒ 仍是 `reference_not_found` 且文档列表 1 → 1 ✓（D10 没退化 ✓）
+**⇒ 教训**：**"拦得更严"不等于"更对"** ✓ —— 改一条既有契约前，先看**谁依赖它**（CI 替我看的 ✗）。

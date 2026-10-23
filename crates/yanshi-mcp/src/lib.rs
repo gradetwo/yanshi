@@ -366,8 +366,10 @@ impl Server {
             .is_some_and(|spec| spec.creates_own_document());
         // **只读工具不替调用方建文档** ✓（第 636 轮；外部 `report.md` 的 D10 ✓）
         //   ⇒ 拼错的 `doc_id` 会**建出一份空文档再回它** ✗（审计会被误导读成"画是空的" ✓）
+        // **默认文档仍按需创建** ✓，只拦"点名了别的 id 且它不存在"的情形 ✓（外部 D10 ✓）
         if pre_create
             && self.workspace.document(&doc_id).is_none()
+            && doc_id != self.options.doc_id
             && !self.registry.get(name).is_some_and(|spec| spec.mutating)
         {
             // **走 `open_document` 的错误出口** ✓（内存没有 ⇒ 它会去磁盘找 ⇒ 都没有 ⇒
