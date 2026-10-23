@@ -654,7 +654,8 @@
        0.0,
        0.0
       ],
-      "balance": 0.0
+      "balance": 0.0,
+      "amount": 0.35
      },
      "neutral": {
       "shadows": [
@@ -910,7 +911,8 @@
        0.02,
        -0.02
       ],
-      "balance": 0.05
+      "balance": 0.05,
+      "amount": 0.35
      },
      "neutral": {
       "shadows": [
@@ -1108,7 +1110,8 @@
        0.04,
        -0.05
       ],
-      "balance": 0.0
+      "balance": 0.0,
+      "amount": 0.35
      },
      "neutral": {
       "shadows": [
@@ -1553,7 +1556,8 @@
        0.0,
        0.0
       ],
-      "balance": -0.1
+      "balance": -0.1,
+      "amount": 0.35
      },
      "neutral": {
       "shadows": [
@@ -1835,7 +1839,8 @@
        0.05,
        -0.08
       ],
-      "balance": 0.1
+      "balance": 0.1,
+      "amount": 0.35
      },
      "neutral": {
       "shadows": [
@@ -2130,7 +2135,8 @@
        0.04,
        -0.03
       ],
-      "balance": 0.05
+      "balance": 0.05,
+      "amount": 0.35
      },
      "neutral": {
       "shadows": [
@@ -2382,7 +2388,8 @@
        0.0,
        0.0
       ],
-      "balance": 0.0
+      "balance": 0.0,
+      "amount": 0.35
      },
      "neutral": {
       "shadows": [
@@ -2638,7 +2645,8 @@
        0.01,
        0.0
       ],
-      "balance": 0.0
+      "balance": 0.0,
+      "amount": 0.35
      },
      "neutral": {
       "shadows": [
@@ -2822,7 +2830,8 @@
        0.03,
        -0.03
       ],
-      "balance": 0.0
+      "balance": 0.0,
+      "amount": 0.35
      },
      "neutral": {
       "shadows": [
@@ -3295,7 +3304,8 @@
        -0.02,
        0.12
       ],
-      "balance": 0.0
+      "balance": 0.0,
+      "amount": 0.35
      },
      "neutral": {
       "shadows": [
@@ -3729,7 +3739,8 @@
        0.03,
        -0.03
       ],
-      "balance": 0.0
+      "balance": 0.0,
+      "amount": 0.35
      },
      "neutral": {
       "shadows": [
@@ -4297,7 +4308,8 @@
        0.0,
        0.02
       ],
-      "balance": 0.1
+      "balance": 0.1,
+      "amount": 0.35
      },
      "neutral": {
       "shadows": [
@@ -4706,7 +4718,8 @@
        0.02,
        -0.04
       ],
-      "balance": 0.0
+      "balance": 0.0,
+      "amount": 0.35
      },
      "neutral": {
       "shadows": [
@@ -4867,7 +4880,8 @@
        0.02,
        -0.04
       ],
-      "balance": 0.0
+      "balance": 0.0,
+      "amount": 0.35
      },
      "neutral": {
       "shadows": [
@@ -5109,7 +5123,8 @@
        0.04,
        -0.03
       ],
-      "balance": 0.05
+      "balance": 0.05,
+      "amount": 0.35
      },
      "neutral": {
       "shadows": [
