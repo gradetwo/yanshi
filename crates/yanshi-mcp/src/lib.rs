@@ -29,7 +29,7 @@
 //! ```
 
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Read, Write};
 use yanshi_server::DocumentSettings;
 use yanshi_server::Workspace;
 use yanshi_server::{Profile, ToolContext, ToolRegistry};
@@ -646,9 +646,39 @@ pub fn serve<R: Read, W: Write>(
             follower = Some(yanshi_core::watch::TailFollower::new(&log));
         }
     }
-    let reader = BufReader::new(reader);
-    for line in reader.lines() {
-        let line = line?;
+    let mut reader = BufReader::new(reader);
+    // **每行必须有长度上限** ✓（第 739 轮；外部审计 S-08）
+    //   **⇒ 缺陷**：`reader.lines()` **无上限** ✗ ⇒ 一个不带换行的 10 GB 输入就能让
+    //     MCP 进程**把内存吃光** ✓（HTTP 层早有 `read_line_bounded` 的 64 KiB 口径 ✓，
+    //     两条路**一道门有锁、一道没有** ✓ —— 本仓反复吃过的「两条路径漂移」✓）。
+    //   **⇒ 判据**：超限的一行 ⇒ 报错退出且**文案说清上限** ✓（`mcp_line_cap`）。
+    //   **⚠ 不用 `reader.lines()`** ✓：它在超限前就已经把整行读进内存了 ✗。
+    const MAX_LINE: usize = 64 * 1024;
+    loop {
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut one = [0u8; 1];
+        loop {
+            let read = std::io::Read::read(&mut reader, &mut one)?;
+            if read == 0 {
+                break;
+            }
+            bytes.push(one[0]);
+            if one[0] == b'\n' {
+                break;
+            }
+            if bytes.len() > MAX_LINE {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "MCP 输入行超过 {MAX_LINE} 字节上限 ⇒ 拒绝继续读（否则一行就能把内存吃光）"
+                    ),
+                ));
+            }
+        }
+        if bytes.is_empty() {
+            break;
+        }
+        let line = String::from_utf8_lossy(&bytes).into_owned();
         // **每行之前**先 poll 一次 ✓（`serve` 是"轮到我们了"的地方 ✓，不需要额外线程 ✓）。
         if let Some(tail) = follower.as_mut() {
             if let Ok(polled) = tail.poll() {
