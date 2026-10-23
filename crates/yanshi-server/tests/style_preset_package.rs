@@ -411,8 +411,7 @@ fn knob_override_changes_only_its_target_param() {
                 }
             } else {
                 assert_eq!(
-                    bv,
-                    &mp[key],
+                    bv, &mp[key],
                     "旋钮 {knob_id} 只许改风格段第 {target_op} 笔的 {target_param}，\
                      但 {} 的 {key} 也变了",
                     m["object_id"]

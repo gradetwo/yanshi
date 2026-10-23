@@ -154,9 +154,8 @@ fn preset_err(detail: String) -> YanshiError {
 /// **不许静默降级**：环境变量已设置但文件缺失/读不了/解析失败 ⇒ 直接报错并说清
 /// 缺的是哪个文件；绝不装作没设置过环境变量。
 pub(super) fn load_preset_library() -> Result<PresetLibrary> {
-    let mut library: PresetLibrary = serde_json::from_str(BUILTIN_PRESETS_JSON).map_err(|e| {
-        preset_err(format!("内置预设库解析失败（数据文件损坏）：{e}"))
-    })?;
+    let mut library: PresetLibrary = serde_json::from_str(BUILTIN_PRESETS_JSON)
+        .map_err(|e| preset_err(format!("内置预设库解析失败（数据文件损坏）：{e}")))?;
     for preset in &mut library.presets {
         preset.source = "builtin".to_owned();
     }
@@ -209,15 +208,10 @@ fn validate_library(library: &PresetLibrary) -> Result<()> {
                 preset.id, preset.correction.baseline
             )));
         }
-        let all_ops = preset
-            .correction
-            .ops
-            .iter()
-            .chain(preset.style_ops.iter());
+        let all_ops = preset.correction.ops.iter().chain(preset.style_ops.iter());
         for op in all_ops {
             let supported = match op.kind.as_str() {
-                "adjustment" => yanshi_render::ADJUSTMENT_NAMES
-                    .contains(&op.type_name.as_str()),
+                "adjustment" => yanshi_render::ADJUSTMENT_NAMES.contains(&op.type_name.as_str()),
                 "filter" => yanshi_render::FILTER_NAMES.contains(&op.type_name.as_str()),
                 other => {
                     return Err(preset_err(format!(
@@ -264,7 +258,11 @@ fn validate_library(library: &PresetLibrary) -> Result<()> {
                         preset.style_ops.len()
                     )));
                 };
-                if !op.params.as_object().is_some_and(|m| m.contains_key(&target.param)) {
+                if !op
+                    .params
+                    .as_object()
+                    .is_some_and(|m| m.contains_key(&target.param))
+                {
                     return Err(preset_err(format!(
                         "预设「{}」的旋钮「{}」指向 {} 操作里没有的参数「{}」",
                         preset.id, knob.id, op.type_name, target.param
@@ -285,7 +283,10 @@ fn validate_library(library: &PresetLibrary) -> Result<()> {
 }
 
 /// 在库里按 id 找预设；找不到 ⇒ 报错并列出全部可用 id（说清缺什么）。
-pub(super) fn find_preset<'a>(library: &'a PresetLibrary, preset_id: &str) -> Result<&'a StylePreset> {
+pub(super) fn find_preset<'a>(
+    library: &'a PresetLibrary,
+    preset_id: &str,
+) -> Result<&'a StylePreset> {
     library
         .presets
         .iter()
@@ -477,10 +478,7 @@ pub(super) fn expand_preset(
                 kind: op.kind.clone(),
                 type_name: op.type_name.clone(),
                 params,
-                object_id: format!(
-                    "preset_{}_c_{index:02}_{}",
-                    preset.id, op.type_name
-                ),
+                object_id: format!("preset_{}_c_{index:02}_{}", preset.id, op.type_name),
             });
         }
     }
@@ -511,10 +509,7 @@ pub(super) fn expand_preset(
             kind: op.kind.clone(),
             type_name: op.type_name.clone(),
             params: Value::Object(expanded),
-            object_id: format!(
-                "preset_{}_s_{index:02}_{}",
-                preset.id, op.type_name
-            ),
+            object_id: format!("preset_{}_s_{index:02}_{}", preset.id, op.type_name),
         });
     }
     // 旋钮覆盖（只动风格段；覆盖后仍要钳制）。
@@ -535,7 +530,10 @@ pub(super) fn expand_preset(
                 &target.range[0],
                 &target.range[1],
                 t,
-                &format!("预设「{}」旋钮「{}」的目标参数 {}", preset.id, knob.id, target.param),
+                &format!(
+                    "预设「{}」旋钮「{}」的目标参数 {}",
+                    preset.id, knob.id, target.param
+                ),
             )?;
             if let Some(object) = op.params.as_object_mut() {
                 object.insert(target.param.clone(), mapped);
@@ -707,13 +705,11 @@ pub(super) fn write_apply_preset(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     // ---- 第一阶段：全量校验（这一段一个原子都不提交）----
     let state = document_state(ctx)?;
     if !state.layers.contains_key(&layer_id) {
-        return Err(
-            YanshiError::new(
-                ErrorCode::ReferenceNotFound,
-                ErrorContext::detail(format!("图层 {layer_id} 不存在")),
-            )
-            .with_layer(layer_id.clone()),
-        );
+        return Err(YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("图层 {layer_id} 不存在")),
+        )
+        .with_layer(layer_id.clone()));
     }
     let alive: BTreeMap<String, &yanshi_core::Object> = state
         .alive_objects()
@@ -824,7 +820,11 @@ mod preset_expander_tests {
         assert_eq!(ids.len(), 22, "预设 id 必须唯一");
         for preset in &library.presets {
             assert_eq!(preset.knobs.len(), 2, "预设 {} 必须有 2 个旋钮", preset.id);
-            assert!(!preset.style_ops.is_empty(), "预设 {} 风格段不能为空", preset.id);
+            assert!(
+                !preset.style_ops.is_empty(),
+                "预设 {} 风格段不能为空",
+                preset.id
+            );
         }
     }
 
@@ -833,8 +833,9 @@ mod preset_expander_tests {
         let library = builtin();
         for preset in &library.presets {
             for strength in [0.0, 0.5, 1.0] {
-                let ops = expand_preset(preset, strength, &Map::new(), true)
-                    .unwrap_or_else(|e| panic!("预设 {} strength {strength} 展开失败：{e:?}", preset.id));
+                let ops = expand_preset(preset, strength, &Map::new(), true).unwrap_or_else(|e| {
+                    panic!("预设 {} strength {strength} 展开失败：{e:?}", preset.id)
+                });
                 assert_eq!(
                     ops.len(),
                     preset.correction.ops.len() + preset.style_ops.len(),
@@ -861,11 +862,7 @@ mod preset_expander_tests {
     fn assert_json_number_eq(actual: &Value, expected: &Value, what: &str) {
         match (actual, expected) {
             (Value::Number(a), Value::Number(e)) => {
-                assert_eq!(
-                    a.as_f64(),
-                    e.as_f64(),
-                    "{what}：数字必须相等（{a} vs {e}）"
-                );
+                assert_eq!(a.as_f64(), e.as_f64(), "{what}：数字必须相等（{a} vs {e}）");
             }
             (Value::Array(a), Value::Array(e)) => {
                 assert_eq!(a.len(), e.len(), "{what}：数组长度必须一致");
