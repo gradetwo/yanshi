@@ -1162,13 +1162,13 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
         }
         AtomKind::CreateSelection => {
             let selection_id = required(atom, "selection_id")?.to_owned();
-            let selection = parse_selection(atom, selection_id.clone(), blobs);
+            let selection = parse_selection(atom, selection_id.clone(), blobs)?;
             state.selections.insert(selection_id, selection);
         }
 
         AtomKind::CreateMask => {
             let mask_id = required(atom, "mask_id")?.to_owned();
-            let mask = parse_selection(atom, mask_id.clone(), blobs);
+            let mask = parse_selection(atom, mask_id.clone(), blobs)?;
             state.masks.insert(mask_id, mask);
         }
         AtomKind::UpdateSelection => {
@@ -1546,8 +1546,12 @@ fn transform_from_payload(payload: &Value) -> Transform {
     Transform::IDENTITY
 }
 
-fn parse_selection(atom: &Atom, id: String, blobs: Vec<crate::atom::BlobHash>) -> Selection {
-    Selection {
+fn parse_selection(
+    atom: &Atom,
+    id: String,
+    blobs: Vec<crate::atom::BlobHash>,
+) -> Result<Selection> {
+    Ok(Selection {
         id,
         shape: atom.payload.get("shape").cloned().unwrap_or(Value::Null),
         feather: payload_f64(&atom.payload, "feather").unwrap_or(0.0),
@@ -1560,14 +1564,26 @@ fn parse_selection(atom: &Atom, id: String, blobs: Vec<crate::atom::BlobHash>) -
         blobs,
         // Q2：`create_mask(from_selection)` / `create_selection(from_mask)` 互转时
         // 携带位图增量链（`paint_mask` 的 patches）。
-        patches: atom
-            .payload
-            .get("patches")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default(),
+        // **坏 `patches` 必须报错** ✓（第 710 轮；外部审计 R-13）
+        //   **⇒ 缺陷**：原来 `.ok()` 把解析失败**静默**变成空 `Vec` ✗ ⇒ 携带位图增量的
+        //     `create_mask(from_selection)`／`create_selection(from_mask)` 会**丢掉整条增量链** ✓
+        //     而调用方看到 `ok:true` ✗（对比 `parse_mask_patch` 的严格口径 ✓）。
+        patches: match atom.payload.get("patches") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(value) => serde_json::from_value(value.clone()).map_err(|error| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "patches 解析失败 ⇒ 拒绝静默丢弃整条位图增量链（{}）",
+                        error
+                    )),
+                )
+                .with_object(atom.id.clone())
+            })?,
+        },
         created_by: atom.id.clone(),
         deleted_by: None,
-    }
+    })
 }
 
 /// 解析 `UpdateMask` 原子 payload 里的 `patch` 对象。
@@ -1788,6 +1804,34 @@ fn payload_ids(payload: &Value, key: &str) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+    /// **坏 `patches` 不许被静默丢弃** ✓（第 710 轮；外部审计 R-13）
+    ///
+    /// **⇒ 判据**：`create_selection` 带上**格式错误**的 `patches` ⇒ `apply` 必须返回
+    ///   `InvalidArgument` ✓；`patches` 缺失或为 `null` ⇒ 仍是空 `Vec`（老日志兼容 ✓）。
+    /// **变异**：把解析改回 `.ok()`（静默丢弃）⇒ 第一条红 ✓。
+    #[test]
+    fn a_malformed_patches_chain_is_rejected_not_silently_dropped() {
+        use super::*;
+        let mut state = DocumentState::empty();
+        state.doc_id = Some("doc_r13".to_owned());
+        let bad = json!({
+            "selection_id": "sel_bad",
+            "shape": {"kind": "rect", "x": 0.0, "y": 0.0, "w": 8.0, "h": 8.0},
+            "patches": "this is not a patch list",
+        });
+        let error = apply(&mut state, &atom(AtomKind::CreateSelection, "a_bad", bad))
+            .expect_err("坏 patches 必须报错（不许静默丢弃整条增量链）");
+        assert_eq!(error.code, ErrorCode::InvalidArgument, "{error:?}");
+        // 缺字段 ⇒ 允许（老日志没有 patches ✓）
+        let ok = json!({
+            "selection_id": "sel_ok",
+            "shape": {"kind": "rect", "x": 0.0, "y": 0.0, "w": 8.0, "h": 8.0},
+        });
+        apply(&mut state, &atom(AtomKind::CreateSelection, "a_ok", ok))
+            .expect("没有 patches 的老日志必须照常应用");
+        assert!(state.selections.contains_key("sel_ok"));
+    }
+
     use super::*;
 
     fn atom(kind: AtomKind, id: &str, payload: Value) -> Atom {
