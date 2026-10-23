@@ -2632,15 +2632,18 @@ impl Renderer {
             }
             let index_here = visited;
             visited += 1;
+            // **上方缓存命中 ⇒ 跳过它持有的那些层** ✓（第 714 轮；外部审计 R-01 第 ① 项）
+            //   **⇒ 缺陷**：这句原来嵌在 `reused && index_here < split` **里面** ✗
+            //     而 `index_here` 不可能同时 `<` 与 `>` `split` ⇒ **永远不可达** ✗
+            //     ⇒ `above` 命中后上方那些层**照样被重渲** ✓
+            //     （第 714 轮实测：新夹具 `above_cache.rs` 里第二次渲染**仍有 2 层**被渲染 ✗）。
+            //   **⇒ 夹具**：3 层、活动层在中间、**那层 `opacity: 0.5`**（`above_wanted` 要求
+            //     `split` 那层不透明度 < 1 ✓）—— 逐字读代码看不出这条路径有没有人走，
+            //     **跑一遍才知道** ✓（仓规：「我的测量比被测对象更容易错」✓）。
+            if above_ready && index_here > split {
+                continue;
+            }
             if reused && index_here < split {
-                // **★ 复用了 `above` ⇒ 跳过它覆盖的层 ✗ ★**（第 711 轮 ✓）：与上面那条对称 ✓。
-                // **⇒ 审计 R-01 第 ① 项指出这是死代码** ✓（`index_here < split` 与 `> split` 互斥 ✓），
-                //   我**本轮没改**它 ✓ —— **理由见台账**：`above` 只在「`split` 那层不透明度 < 1」时启用
-                //   （`above_wanted` ✓），而**现有夹具没有一个满足它**（实测复用计数 `0 ⇒ 0` ✗）
-                //   ⇒ 改这条等于**在无人覆盖的路径上改行为** ✗ ⇒ 先把**夹具**做出来，再改 ✓。
-                if above_ready && index_here > split {
-                    continue;
-                }
                 continue; // **∴ 复用了下方 ⇒ 这些层不算已渲染 ✓**
             }
             stats.layers += 1;
