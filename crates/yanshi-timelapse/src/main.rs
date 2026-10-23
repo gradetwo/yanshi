@@ -362,6 +362,12 @@ fn main() -> Result<()> {
         } else {
             None
         };
+        if shrink && shrunk.is_none() {
+            eprintln!(
+                "  [debug] 这一行没能缩小 ⇒ 用原样：{}",
+                &line[..line.len().min(120)]
+            );
+        }
         let line_to_apply = shrunk.as_deref().unwrap_or(line);
         if let Err(error) = timeline.apply(line_to_apply) {
             apply_failures += 1;
@@ -743,9 +749,20 @@ fn shrink_atom(
                 return None;
             }
             let hash = bitmap.get("blob_hash").and_then(Value::as_str)?.to_owned();
-            let raw = blobs.get(&hash)?;
-            let src_w = bitmap.get("width").and_then(Value::as_u64)? as u32;
-            let src_h = bitmap.get("height").and_then(Value::as_u64)? as u32;
+            // **原子里的哈希带 `sha256:` 前缀，而包里文件名是裸 hex** ✓（第 634 轮实测）
+            //   ⇒ 不剥前缀 ⇒ `blobs.get` 取不到 ⇒ 整条缩不了 ⇒ **回放按原尺寸** ⇒ 区域落到画布外 ⇒ **画面空白** ✗
+            let lookup = hash.strip_prefix("sha256:").unwrap_or(&hash).to_owned();
+            let raw = blobs.get(&lookup)?;
+            // **宽高在 payload 顶层**（真实原子就是这样：`bitmap` 只有 `blob_hash/mime_type/size` ✓）
+            //   ⇒ 先看 payload，再退回 `bitmap` 里（自造包两种写法都兼容 ✓）
+            let size_of = |key: &str| {
+                payload
+                    .get(key)
+                    .and_then(Value::as_u64)
+                    .or_else(|| bitmap.get(key).and_then(Value::as_u64))
+            };
+            let src_w = size_of("width")? as u32;
+            let src_h = size_of("height")? as u32;
             if raw.len() < (src_w as usize) * (src_h as usize) * 4 {
                 return None;
             }
@@ -762,10 +779,17 @@ fn shrink_atom(
                 }
             }
             let new_hash = timeline.blob_put(&small).ok()?;
+            // **`tiles` 索引必须一起去掉** ✓（第 634 轮实测）：它指向**原分辨率**的块 blob ✗
+            //   ⇒ 留着它 ⇒ 渲染侧按旧块画 ⇒ **画面丢内容**（实测：缩之后四帧全是一个颜色 ✗）
+            //   ⇒ 去掉 ⇒ 渲染侧直接解整张（已经降采样过的那张 ✓）。
+            payload.remove("tiles");
+            payload.insert("width".to_owned(), Value::from(dst_w));
+            payload.insert("height".to_owned(), Value::from(dst_h));
             if let Some(entry) = payload.get_mut("bitmap").and_then(Value::as_object_mut) {
                 entry.insert("blob_hash".to_owned(), Value::from(new_hash));
                 entry.insert("width".to_owned(), Value::from(dst_w));
                 entry.insert("height".to_owned(), Value::from(dst_h));
+                entry.insert("size".to_owned(), Value::from(small.len() as u64));
             }
             if let Some(region) = payload.get_mut("region").and_then(Value::as_object_mut) {
                 let mut scale = |key: &str, factor: f64| {
