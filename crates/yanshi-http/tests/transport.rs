@@ -1337,3 +1337,44 @@ fn the_health_endpoint_reports_which_build_is_running() {
         "{body}"
     );
 }
+
+/// **`GET /api/atoms` 的查询参数非法必须 400**（第 737 轮；外部审计 S-09）
+///
+/// **⇒ 缺陷**：`.and_then(parse().ok()).unwrap_or(默认)` ✗ ⇒ `?since=abc` 被静默当成 0、
+///   `?limit=-1` 被当成 10000 ✓ ⇒ 调用方以为自己在续读／限量，实际拿到默认值的结果 ✓。
+///
+/// **⇒ 判据**：`since=abc` 与 `limit=-1` 都必须 **400**（且点名字段 ✓）；合法查询仍 **200** ✓。
+/// **变异**：把解析改回静默回退 ⇒ 第一条红 ✓。
+#[test]
+fn atoms_endpoint_rejects_malformed_query_parameters() {
+    let handle = start_server();
+    let addr = handle.addr;
+    let token = create_document(addr, "doc_atoms_q");
+    let mut client = HttpClient::new(addr);
+    let (status, body) = client.json(
+        "GET",
+        &format!("/api/atoms?doc=doc_atoms_q&token={token}&since=abc"),
+        None,
+        None,
+    );
+    assert_eq!(status, 400, "since=abc 必须 400（不许静默当 0）：{body}");
+    assert!(
+        body.to_string().contains("since"),
+        "400 要说明是哪个参数：{body}"
+    );
+    let (status, body) = client.json(
+        "GET",
+        &format!("/api/atoms?doc=doc_atoms_q&token={token}&limit=-1"),
+        None,
+        None,
+    );
+    assert_eq!(status, 400, "limit=-1 必须 400（不许静默当默认值）：{body}");
+    // 合法值仍然 200 ✓（防"修过头"）
+    let (status, body) = client.json(
+        "GET",
+        &format!("/api/atoms?doc=doc_atoms_q&token={token}&since=0&limit=5"),
+        None,
+        None,
+    );
+    assert_eq!(status, 200, "合法查询必须照常：{body}");
+}

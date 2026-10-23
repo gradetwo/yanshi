@@ -3047,15 +3047,27 @@ fn atom_list(state: &ServerState, request: &Request) -> Response {
     if let Err(response) = authorize(state, request, &doc_id) {
         return response;
     }
-    let since: Seq = request
-        .param("since")
-        .and_then(|text| text.parse().ok())
-        .unwrap_or(0);
-    let limit: usize = request
-        .param("limit")
-        .and_then(|text| text.parse().ok())
-        .unwrap_or(10_000)
-        .min(100_000);
+    // **查询参数非法要 400，不许静默回退** ✓（第 737 轮；外部审计 S-09）
+    //   **⇒ 缺陷**：`.and_then(parse().ok()).unwrap_or(默认)` ✗ ⇒ `?since=abc` 被当成 0、
+    //     `?limit=-1` 被当成 10000 ✓ ⇒ 调用方以为自己在"从某处续读"或"只要 N 条" ✓
+    //     而实际拿到的是**默认值的结果** ✓（静默降级形态 4 ✓）。
+    //   **⇒ 判据**：`transport` 里那两条（400 且点名字段 ✓）。
+    let parse_query = |key: &str, default: u64| -> Result<u64, String> {
+        match request.param(key) {
+            None => Ok(default),
+            Some(text) => text.parse::<u64>().map_err(|_| {
+                format!("{key} 必须是不小于 0 的整数，得到 {text:?} ⇒ 非法值不会静默回退")
+            }),
+        }
+    };
+    let since: Seq = match parse_query("since", 0) {
+        Ok(value) => value,
+        Err(detail) => return crate::http::bad_request(detail),
+    };
+    let limit: usize = match parse_query("limit", 10_000) {
+        Ok(value) => value.min(100_000) as usize,
+        Err(detail) => return crate::http::bad_request(detail),
+    };
     let Ok(workspace) = state.workspace.lock() else {
         return internal("工作区锁中毒");
     };
