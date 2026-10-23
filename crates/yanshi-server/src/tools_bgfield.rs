@@ -286,6 +286,11 @@ pub(super) fn write_fit_background_field(ctx: &mut ToolContext<'_>, args: &Value
                 for (k, r) in row.iter().enumerate().take(n) {
                     pred += coeffs[c][k] * r;
                 }
+                // **故意不采纳 clippy 的 `!(-0.5..=255.5).contains(&pred)`** ✗（第 740 轮实测）：
+                //   两种写法只在 **NaN** 上不同（`NaN < -0.5 ⇒ false`、`NaN > 255.5 ⇒ false` ⇒
+                //   现式**不把 NaN 记进 `clamped`**；而 `contains` 对 NaN 返回 false ⇒ 改写**会多记** ✓）。
+                //   本函数对 NaN 的既有语义是「**不算被夹回**」⇒ 现式才保得住 ✓（改完行为就变 ✗）。
+                #[allow(clippy::manual_range_contains)]
                 if pred < -0.5 || pred > 255.5 {
                     clamped += 1;
                 }
