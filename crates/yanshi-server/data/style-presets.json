@@ -2389,7 +2389,7 @@
        0.0
       ],
       "balance": 0.0,
-      "amount": 0.35
+      "amount": 0.15
      },
      "neutral": {
       "shadows": [
@@ -2409,7 +2409,7 @@
      "kind": "adjustment",
      "type": "dehaze",
      "params": {
-      "amount": -0.08
+      "amount": -0.03
      },
      "neutral": {
       "amount": 0
