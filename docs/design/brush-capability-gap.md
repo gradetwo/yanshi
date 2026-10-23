@@ -17354,3 +17354,22 @@ skipped brush parity（按设计不阻塞）
 
 **⇒ 仍未做（下一轮）**：**淘汰**还是按 `tiles` 顺序裁剪 ✓ ⇒ 应改成按 `recency` 裁 ✓；
 但**淘汰行为目前没有判据** ✗ ⇒ 必须先写一条（例如"超预算时被丢的确实是最久没用的"✓）再改 ✓。
+
+## 四百四十四、`d9a1237e` 那笔的**受影响判据子集**本地跑完：121 ✓，无意外失败（第 695 轮）
+
+**⇒ 命令**：`bash scripts/criteria-for-changes.sh --since 2d695c3c --run`（后台跑，约 25 分钟）
+**⇒ 结果**：
+| 类 | 数 | 说明 |
+|---|---|---|
+| **✓ 通过** | **121** | 含 `tool-frame-reuse`、`tool-fill-texture`、`tool-first-preview` … |
+| ✗ 失败 | **6** | **全部在 `criteria-known-red.txt` 里** ✓ |
+| ⊘ 不可判 | 37 | 浏览器／需 GPU 的那批（本机没有可用的 CDP 会话）|
+
+**⇒ 6 条失败逐条核对（都已在 known-red 名单里）**：
+- `browser-live-ui`／`browser-new-doc-size`／`browser-offline-journal`／`browser-project-download`／`browser-pwa-local`
+  ⇒ 名单原文：「**环境红：要真实 chromium 渲染（本机无 GPU 合成）** ⇒ 不是产品缺陷」✓
+- `tool-bitmap-decode-scope` ⇒ 名单原文：「**类型：规格先行（位图未分块存储）**」✓
+  （它自己打印的结论也是「**预期红 ✓**」——**尚未实现按需解码** ✓）
+
+**⇒ 结论**：`d9a1237e`（recency 拆分）在**121 条受影响判据**上没有引入任何意外失败 ✓
+⇒ 加上 CI 全绿（`d9a1237e completed/success`）⇒ 这笔改动可以认为**站住了** ✓。
