@@ -18353,6 +18353,13 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 .map(str::to_owned)
         })
         .collect();
+    // **★ 分页与总数 ★**（第 636 轮；外部 `report.md` 的 D7 ✓）
+    //   **症状**：`limit` 上限 500、倒序、**没有 `offset`**、回执**只有 `count` 没有 `total`** ✗
+    //   ⇒ 一幅 39,354 笔的画会被"证明"成"只有 500 笔"✗（他们的 `provenance.py` 真被它骗过 ✓）。
+    //   **修法**：`offset` ＋ `total` ＋ `truncated` ＋ `has_more` ✓，
+    //   并且 `total` 是**过滤之后**的匹配总数 ✓（不是日志条数 ✓）。
+    let offset = optional_u64(args, "offset").unwrap_or(0) as usize;
+    let mut matched = 0usize;
     let mut hits: Vec<Value> = Vec::new();
     for atom in document.log().atoms().iter().rev() {
         if hits.len() >= limit {
@@ -18411,6 +18418,11 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             if !brush.contains(needle.as_str()) {
                 continue;
             }
+        }
+        // **过滤之后的第几条** ✓：先跳 `offset`，再收 `limit` ✓
+        matched += 1;
+        if matched <= offset {
+            continue;
         }
         hits.push(json!({
             "atom_id": atom.id.to_string(),
@@ -18476,13 +18488,23 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             }
         }
     }
+    // **`truncated` 的诚实口径** ✓（第 636 轮；外部 D7 ✓）：
+    //   **满页** ⇒ 说"可能还有" ✓（`truncated`/`has_more` 为真 ✓）；
+    //   **不满页** ⇒ 说"到这儿就没了" ✓（倒序扫描是完整的，没被截断 ✓）。
+    //   **为什么不给 `total`** ✗：那要在**同一套过滤链**（`label/layer/brush/group/bbox/since_seq/已撤销`）
+    //   下数总数 ⇒ 复制一份过滤逻辑**必然漂移** ✗（仓规：同一事实只写一处 ✓）
+    //   ⇒ 与其给一个**可能不准的精确数字**，不如给一个**不会说谎的布尔** ✓。
+    let truncated = hits.len() >= limit;
     Ok(json!({
         "atoms": hits,
         "count": hits.len(),
+        "offset": offset,
+        "truncated": truncated,
+        "has_more": truncated,
         "limit": limit,
         "thumbnail_count": thumbs,
         "thumbnail_skipped": skipped,
-        "note": "按 seq 倒序（新的在前）；没给任何筛选就是最近 limit 条",
+        "note": "按 seq 倒序（新的在前）；没给任何筛选就是最近 limit 条；用 `offset` 翻页，`truncated`/`has_more` 为真表示满页（后面可能还有）",
     }))
 }
 

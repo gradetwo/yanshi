@@ -2663,6 +2663,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: false,
         params: &[
             param!("limit", Integer, false, "最多返回几条（缺省 20，上限 500）"),
+            param!("offset", Integer, false, "跳过前面几条匹配（翻页用；回执里有 `offset`/`truncated`/`has_more`）"),
             param!("label", String, false, "只列该标签的原子（brush_stroke 的 label 参数写入）"),
             param!("layer_id", String, false, "只列该图层的原子"),
             param!("brush", String, false, "只列该笔刷画的原子（名字含该子串）"),
