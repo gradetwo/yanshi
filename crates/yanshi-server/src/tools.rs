@@ -8006,12 +8006,19 @@ fn read_find_atom(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         .last()
         .and_then(|atom| atom.get("seq"))
         .and_then(Value::as_u64);
+    // **`truncated` 与 `next_since` 必须自洽** ✓（第 731 轮；外部审计 S-07 第 ③ 项）
+    //   **⇒ 缺陷**：`truncated: total > limit` 与 `next_since`（末条的 seq）**各自独立算** ✗
+    //     ⇒ `limit: 0` 在非空文档上给出 **`returned: 0, truncated: true, next_since: null`** ✓
+    //     ⇒ 调用方看到"还有更多，但没给游标" ⇒ **永远翻不到下一页** ✓（且两个字段互相矛盾 ✓）。
+    //   **⇒ 恒等式**（本轮判据就断它 ✓）：`truncated == true` ⇔ `next_since != null` ✓。
+    //     没有游标 ⇒ 就没法"继续" ⇒ 那就不该说"被截断" ✓。
+    let has_more = total > limit && next_since.is_some();
     Ok(json!({
         "ok": true,
         "atoms": atoms,
         "returned": atoms.len(),
         "total_matched": total,
-        "truncated": total > limit,
+        "truncated": has_more,
         "limit": limit,
         "limit_requested": requested_limit,
         "limit_clamped": requested_limit as usize > limit,
