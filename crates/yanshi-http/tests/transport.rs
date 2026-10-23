@@ -170,6 +170,29 @@ fn http_round_trip_health_viewer_and_errors() {
     // 未知路由 404，错误方法 405。
     assert_eq!(client.json("GET", "/nope", None, None).0, 404);
     assert_eq!(client.json("PUT", "/api/documents", None, None).0, 405);
+    // **宽高非法 ⇒ 400，且不许静默回退成默认值** ✓（第 730 轮；外部审计 S-06 第 ② 项）
+    //   ① 非数字 ⇒ 原来**静默用 1024** ✓；② 超大整数 ⇒ `as u32` **回绕**成小数字 ✗。
+    let (status, body) = client.json(
+        "POST",
+        "/api/documents",
+        None,
+        Some(&json!({"doc_id": "doc_bad_w", "width": "big", "height": 64})),
+    );
+    assert_eq!(status, 400, "非数字宽高必须 400（不许静默回退）：{body}");
+    assert!(
+        body.to_string().contains("width"),
+        "400 的正文要说清是哪个字段：{body}"
+    );
+    let (status, body) = client.json(
+        "POST",
+        "/api/documents",
+        None,
+        Some(&json!({"doc_id": "doc_huge_w", "width": 5_000_000_000_u64, "height": 64})),
+    );
+    assert_eq!(
+        status, 400,
+        "超过 u32 的宽高必须 400（不许截断回绕）：{body}"
+    );
     assert_eq!(
         client.json("GET", "/api/tools/draw_stroke", None, None).0,
         405

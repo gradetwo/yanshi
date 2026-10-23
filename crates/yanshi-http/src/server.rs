@@ -1419,14 +1419,31 @@ fn create_document(state: &ServerState, request: &Request) -> Response {
                     "copied_atoms": copied, "copy_from": from}),
         );
     }
-    let width = body
-        .get("width")
-        .and_then(Value::as_u64)
-        .unwrap_or(state.options.width as u64) as u32;
-    let height = body
-        .get("height")
-        .and_then(Value::as_u64)
-        .unwrap_or(state.options.height as u64) as u32;
+    // **宽高必须显式校验，不许静默回退、也不许截断** ✓（第 730 轮；外部审计 S-06 第 ② 项）
+    //   **⇒ 缺陷**：原来 `.and_then(Value::as_u64).unwrap_or(默认)` ＋ `as u32` ✗
+    //     ① 传 `"width": "big"` 或负数 ⇒ **静默用 1024** ✓（调用方以为生效 ✓）；
+    //     ② 传 `"width": 5000000000` ⇒ `as u32` **回绕**成一个小数字 ✗ ⇒ 建出一个"合法"但错误的画布 ✓。
+    //   **⇒ 判据**：非法值必须 400 且说清原因 ✓（`transport` 里那条 ✓）。
+    let dimension = |key: &str, default: u32| -> Result<u32, String> {
+        match body.get(key) {
+            None | Some(Value::Null) => Ok(default),
+            Some(value) => match value.as_u64() {
+                Some(number) => u32::try_from(number)
+                    .map_err(|_| format!("{key} 太大（{number}）⇒ 最大 {}", u32::MAX)),
+                None => Err(format!(
+                    "{key} 必须是正整数（画布边长），得到 {value} ⇒ 非法值不会静默回退成默认值"
+                )),
+            },
+        }
+    };
+    let width = match dimension("width", state.options.width) {
+        Ok(value) => value,
+        Err(detail) => return crate::http::bad_request(detail),
+    };
+    let height = match dimension("height", state.options.height) {
+        Ok(value) => value,
+        Err(detail) => return crate::http::bad_request(detail),
+    };
     let actor = body
         .get("actor")
         .and_then(Value::as_str)
