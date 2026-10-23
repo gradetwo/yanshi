@@ -75,7 +75,20 @@ fi
 #   **⇒ 代价**：上游 S-04 修好后判据在**修好的代码**上照样红 ✗（实测 740 轮 ✓）——
 #     「测量工具要先被测量」同族 ⇒ 所以凡是判据**自己 spawn** 的二进制，本脚本要么重建它 ✓
 #     要么**指到刚重建的 release** 上 ✓。
-if [[ "$CRIT" == scripts/mcp-*.mjs ]]; then
+#
+# **★ 触发条件要按「这条判据会不会 spawn 它」，不能按「判据的文件名」 ✓**（第 746 轮实测）
+#   **⇒ 原来的写法**：`[[ "$CRIT" == scripts/mcp-*.mjs ]]` ⇒ 它匹配的是**文件名** ✗
+#   **⇒ 而**「会不会 spawn」这件事写在**判据的正文**里 ⇒ 两者不是一回事 ✓：
+#     `grep -l 'yanshi-mcp\|YANSHI_MCP_BIN' scripts/*.mjs` 数到 13 条，其中 **7 条不是 `mcp-*`** ✗
+#     （`tool-delete-document`／`tool-import-project`／`tool-collect-diagnostics`／
+#       `tool-export-reports-staleness`／`tool-surface-coverage`／`serve-watch-ws`）
+#   **⇒ 实测代价**：本仓 rebase 到 `864366d7` 之后跑 `tool-delete-document.mjs`，
+#     它打出的 banner 是 `yanshi-mcp 0.2.2 启动（commit e8b0ac47-dirty）`✓ ——
+#     **那个二进制是上一个基线编的** ⇒ 测的正是上游修好**之前**的代码 ✗
+#   **⇒ 与第 956 轮同一个坑，只是入口不同**：那次是 `yanshi-serve` 陈旧，这次是
+#     「保鲜范围按文件名圈」⇒ 而文件名**不是**「它需要哪些二进制」的可靠标识 ✓
+#     （**内核 ②：会变的东西不能当身份 ⇒ 判据名会变，需求也会变 ✓**）
+if grep -qE 'yanshi-mcp|YANSHI_MCP_BIN' "$CRIT" 2>/dev/null; then
   if [ ! -x target/release/yanshi-mcp ] || find crates -name '*.rs' -newer target/release/yanshi-mcp 2>/dev/null | head -1 | grep -q .; then
     echo "  ⟳ yanshi-mcp（release）陈旧 ⇒ 先重建"
     cargo build --release -p yanshi-mcp >/dev/null 2>&1 || { echo "  ⊘ 不可判：yanshi-mcp 重建失败" >&2; exit 3; }
