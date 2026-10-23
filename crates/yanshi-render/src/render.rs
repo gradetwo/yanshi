@@ -2400,7 +2400,12 @@ impl Renderer {
                     if let Some(c) = guard.as_mut() {
                         let mut recent = Vec::new();
                         let mut rest = Vec::new();
-                        // **`Arc` 不能就地 drain** ✓（第 683 轮）：先把共享引用换成空表，再拿自有的那份 ✓
+                        // **重排前先放掉 `by_sig` 的共享引用** ✓（第 685 轮，缓存账实测驱动）
+                        //   **⇒ 症状**：`真正复制 93,998 条 vs 脏 tile 7,366 条` ⇒ **13× 复制** ✗
+                        //   **⇒ 根因**：LRU「把用到的 tile 移到尾部」要**自有**的 Vec ⇒
+                        //     而 `by_sig` 还引用着同一份 `Arc` ⇒ `try_unwrap` **必失败** ⇒ 每次命中都整份复制 ✗
+                        //   **⇒ 修法**：重排前**清掉共享分组**（它马上会被下一次写入重建 ✓）⇒ 零拷贝 ✓
+                        c.by_sig.clear();
                         for t in take_tiles(&mut c.tiles) {
                             if want_tiles.contains(&t.0) {
                                 recent.push(t);
