@@ -12,9 +12,9 @@
 //
 // **⇒ 变异**：把导出路径里的颜色转换改成"再转一次"⇒ ① 红 ✓；
 //   把期望值写成别的颜色 ⇒ ② 红 ✓（证明断言真的在读那条路径）
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { execFileSync } from "node:child_process";
+import { decodePng } from "./lib/png.mjs";
 
 const [base, doc, token] = process.argv.slice(2);
 if (!base || !doc || !token) {
@@ -101,16 +101,28 @@ if (!file) {
   );
   process.exit(3);
 }
-let decoded;
+// **用仓内的手写解码器** ✓（第 663 轮）：原来走 `ffmpeg` ⇒ **CI 上没有 ffmpeg** ⇒
+//   这条判据在 CI 上**一直是被跳过**的（`⊘ 不可判`）✗ ⇒ **等于 CI 上一分覆盖都没有** ✗。
+//   换掉之后它在 CI 上**真的会跑** ✓。
+let image;
 try {
-  decoded = execFileSync("ffmpeg", ["-v", "error", "-i", file, "-f", "rawvideo", "-pix_fmt", "rgba", "-"], {
-    timeout: 60_000,
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  image = decodePng(readFileSync(file));
 } catch (error) {
-  console.error(`  ⊘ 不可判：ffmpeg 解不出这个 PNG：${(error.stderr || "").toString().slice(-200)}`);
+  console.error(`  ⊘ 不可判：解不出这个 PNG：${String(error.message || error).slice(-200)}`);
   process.exit(3);
 }
+const decoded = (() => {
+  // 统一成 RGBA（`export_png` 可能是 RGB 或 RGBA ✓）
+  if (image.channels === 4) return image.data;
+  const out = Buffer.alloc(image.width * image.height * 4);
+  for (let i = 0; i < image.width * image.height; i += 1) {
+    out[i * 4] = image.data[i * 3];
+    out[i * 4 + 1] = image.data[i * 3 + 1];
+    out[i * 4 + 2] = image.data[i * 3 + 2];
+    out[i * 4 + 3] = 255;
+  }
+  return out;
+})();
 const width = exported.width ?? 64;
 const near = (a, b) => Math.abs(a - b) <= 1;
 const exact = (a, b) => a === b;
