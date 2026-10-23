@@ -18743,7 +18743,9 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     //   下数总数 ⇒ 复制一份过滤逻辑**必然漂移** ✗（仓规：同一事实只写一处 ✓）
     //   ⇒ 与其给一个**可能不准的精确数字**，不如给一个**不会说谎的布尔** ✓。
     // **`has_more` / `truncated` 用"多收的那一条"算** ✓（精确，不是"满页就当还有" ✗）
-    let has_more = hits.len() > limit;
+    // **`limit: 0` 不许报截断** ✓（与 `find_atom` 同一条口径 ✓，第 731 轮）：
+    //   一条都没给 ⇒ "还有更多"对调用方没有意义 ✓，且会与 `count: 0` 构成矛盾 ✓。
+    let has_more = limit > 0 && hits.len() > limit;
     hits.truncate(limit);
     let truncated = has_more;
     Ok(json!({
