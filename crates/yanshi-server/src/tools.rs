@@ -18588,7 +18588,12 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let mut matched = 0usize;
     let mut hits: Vec<Value> = Vec::new();
     for atom in document.log().atoms().iter().rev() {
-        if hits.len() >= limit {
+        // **多收一条**，用来判断"还有没有下一页" ✓（第 732 轮；外部审计 S-07 第 ② 项）
+        //   **⇒ 缺陷**：原来 `hits.len() >= limit` 就 `break` ✗，随后 `truncated = hits.len() >= limit` ✗
+        //     ⇒ 正好有 `limit` 条匹配、**后面没东西了**，也报 `truncated: true` ✓（假阳性 ✓）；
+        //     且 `limit: 0` ⇒ `0 >= 0` ⇒ 同样报截断 ✓（与 `next_since`/`offset` 一起构成矛盾 ✓）。
+        //   **⇒ 修法**：**收到 limit+1 条**才停 ⇒ `has_more = 收进来的 > limit` ✓ 精确 ✓。
+        if hits.len() > limit {
             break;
         }
         if let Some(min) = since_seq {
@@ -18737,7 +18742,10 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     //   **为什么不给 `total`** ✗：那要在**同一套过滤链**（`label/layer/brush/group/bbox/since_seq/已撤销`）
     //   下数总数 ⇒ 复制一份过滤逻辑**必然漂移** ✗（仓规：同一事实只写一处 ✓）
     //   ⇒ 与其给一个**可能不准的精确数字**，不如给一个**不会说谎的布尔** ✓。
-    let truncated = hits.len() >= limit;
+    // **`has_more` / `truncated` 用"多收的那一条"算** ✓（精确，不是"满页就当还有" ✗）
+    let has_more = hits.len() > limit;
+    hits.truncate(limit);
+    let truncated = has_more;
     Ok(json!({
         "atoms": hits,
         "count": hits.len(),
