@@ -2602,6 +2602,11 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("color", Any, false, "笔尖颜色 {r,g,b,a} 或 [r,g,b,(a)]"),
             param!("opacity", Number, false, "整笔不透明度 0..1"),
             param!("hardness", Number, false, "笔尖硬度 0..1"),
+            // **`sensors` 之前漏声明** ✓（第 719 轮；外部审计 S-02 第 ② 组）
+            //   ⇒ handler 一直在读它 ✓（压感／倾斜／速度，见 `brush_sensors_from_value` ✓）
+            //   而 `validate_args` 只放行**声明过**的键 ✗ ⇒ 传它就 `invalid_argument`
+            //   ⇒ **这条能力（真实压感）从上线起就不可达** ✗ —— 声明与实现对不上，谁也发现不了 ✓。
+            param!("sensors", Any, false, "压感／倾斜／速度：{\"pressure\":0..1,\"tilt_x\":…,\"tilt_y\":…,\"velocity\":…}（缺省全 0 = 无压感）"),
             param!("want_image", Boolean, false, "缺省 true = 返回区域图（base64 PNG）；false = 只返回包围盒与像素数"),
             param!("output_path", String, false, "给了就把区域图 PNG 落盘到该路径（导出目录或系统临时目录内，守卫同 export_png），响应给 image_file 元数据；它本身即「要图」，不必再传 want_image"),
             param!("margin", Integer, false, "区域图在包围盒外扩的像素数（缺省 16）"),
