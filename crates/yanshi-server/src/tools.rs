@@ -7778,6 +7778,10 @@ fn read_get_stroke_log(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     let since = optional_count(args, "since_seq")?.unwrap_or(0);
     let layer_filter = optional_str(args, "layer_id");
     let object_filter = optional_str(args, "object_id");
+    // **`group_id` 之前声明了却没人读** ✓（第 721 轮；外部审计 S-02 第 ① 组）
+    //   ⇒ 调用方按它筛 ⇒ **拿到全部**（而文档说能筛 ✓）⇒ 「声明了但不生效」= 静默降级 ✓。
+    //   ⇒ 现在**真的筛** ✓（`Atom::group_id` 是原子上的字段 ✓，不是净荷里的 ✓）。
+    let group_filter = optional_str(args, "group_id");
     let newest_first = optional_str(args, "order").as_deref() == Some("newest");
     let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
         YanshiError::new(
@@ -7836,6 +7840,13 @@ fn read_get_stroke_log(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         if object_filter
             .as_deref()
             .is_some_and(|want| atom_object_id(atom) != Some(want))
+        {
+            continue;
+        }
+        // **按 `group_id` 筛** ✓（第 721 轮；外部审计 S-02 第 ① 组）
+        if group_filter
+            .as_deref()
+            .is_some_and(|want| atom.group_id.as_deref() != Some(want))
         {
             continue;
         }
