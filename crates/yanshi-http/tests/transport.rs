@@ -1378,3 +1378,40 @@ fn atoms_endpoint_rejects_malformed_query_parameters() {
     );
     assert_eq!(status, 200, "合法查询必须照常：{body}");
 }
+
+/// **服务端下发的 Service Worker 必须已把 `__BUILD_ID__` 换成具体构建号**（第 760 轮）
+///
+/// **⇒ 为什么要有这条运行时判据** ✗：`check-service-worker-roles.mjs` 只看**源码** ✓
+/// （资产里**保留**占位符 ✓、静态副本**有**具体戳 ✓）⇒ 它**证明不了**"服务端真的替换了" ✓
+/// ⇒ 占位符若被原样下发（或在服务端那侧被抹掉而不再注入）⇒ **缓存名永不变化** ✗
+/// ⇒ 「改了代码却看不出变化」正是这一条要防的 ✓。
+///
+/// **⇒ 判据**：`GET /service-worker.js` ⇒ 200 ✓、正文**不含** `__BUILD_ID__` ✓、
+/// 且含 `yanshi-shell-` ＋ 一段**数字**（构建号 ✓）。
+#[test]
+fn the_served_service_worker_has_its_build_id_substituted() {
+    let handle = start_server();
+    let addr = handle.addr;
+    let mut client = HttpClient::new(addr);
+    let (status, headers, body) = client.request("GET", "/service-worker.js", None, None);
+    assert_eq!(status, 200, "SW 必须 200");
+    let kind = headers.get("content-type").cloned().unwrap_or_default();
+    assert!(
+        kind.starts_with("text/javascript"),
+        "content-type 不对：{kind}"
+    );
+    let text = String::from_utf8_lossy(&body);
+    assert!(
+        !text.contains("__BUILD_ID__"),
+        "下发的 SW 里还留着 `__BUILD_ID__` ⇒ 缓存名永不变化（改了代码看不出变化）"
+    );
+    let stamped = text
+        .split("yanshi-shell-")
+        .nth(1)
+        .map(|rest| rest.chars().take(4).collect::<String>())
+        .unwrap_or_default();
+    assert!(
+        stamped.chars().all(|ch| ch.is_ascii_digit()) && !stamped.is_empty(),
+        "`yanshi-shell-` 后面应当紧跟具体构建号，实测 {stamped:?}"
+    );
+}
