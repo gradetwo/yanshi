@@ -358,3 +358,81 @@ fn a_frame_with_no_changes_reuses_the_last_one() {
         "没有变化的帧不该再触发整幅渲染（4608×8192 上一次就是约 27 秒）"
     );
 }
+
+/// **擦除之后不许留残影**（第 712 轮；外部审计 R-05）
+///
+/// **⇒ 缺陷**：`blit` 把 `render_region` 的结果 **`over` 到上一帧**上 ✓
+///   而 `render_region` 返回的是**所有可见图层的最终合成** ⇒ 某一区域**变透明**（对象被隐藏／
+///   被擦掉）时，`over` 遇到 `a=0` **直接跳过** ✗ ⇒ **旧像素留在帧里** ⇒ 视频里是**残影** ✓
+///   （半透明对象每次重渲还会**叠加加深** ✓ —— 同一个根因 ✓）。
+///
+/// **⇒ 修法**：合成基准从「上一帧」换成 **`self.background`** ✓ —— 渲染结果是"这一区域现在应该长什么样"，
+///   所以它该**盖住**旧像素，而不是**叠在**旧像素上 ✓。
+///
+/// **⇒ 判据**：画一块不透明绿方块 ⇒ 帧中心是绿的 ✓；**隐藏那个图层** ⇒ 再取帧，
+///   同一像素必须回到**背景色**（不是绿）✓。**变异**：把基准改回上一帧 ⇒ 红 ✓。
+#[test]
+fn hiding_a_layer_clears_its_pixels_instead_of_leaving_a_ghost() {
+    let (dw, dh) = (64u32, 64u32);
+    // **故意不传 `background`** ✓（审计 R-05 的根因之一 ✓）：时间线默认白底，
+    //   而**内核**那边是 `null`（渲染出来是**透明**）⇒ 这正是「`over` 遇到 `a=0` 直接跳过」的场景 ✓。
+
+    let mut timeline = Timeline::new("tl_ghost", 32, dw, dh, 64 * 1024 * 1024).expect("kernel");
+    timeline
+        .apply(&atom(
+            "a0",
+            1,
+            "create_document",
+            json!({"color_space": "srgb", "doc_id": "tl_ghost", "width": dw, "height": dh}),
+        ))
+        .expect("create_document");
+    timeline
+        .apply(&atom(
+            "a1",
+            2,
+            "create_layer",
+            json!({"layer_id": "L1", "name": "L1"}),
+        ))
+        .expect("create_layer");
+    timeline
+        .apply(&atom(
+            "a2",
+            3,
+            "create_object",
+            json!({"object_id": "o1", "layer_id": "L1", "type": "shape",
+                   "data": {"geometry": {"kind": "rect",
+                                         "bbox": {"x": 16.0, "y": 16.0, "w": 24.0, "h": 24.0}},
+                            "color": {"r": 20, "g": 200, "b": 40, "a": 255}}}),
+        ))
+        .expect("create_object");
+    let painted = {
+        let frame = timeline.frame().expect("frame with the green square");
+        let at = ((28 * dw + 28) * 4) as usize;
+        [frame[at], frame[at + 1], frame[at + 2]]
+    };
+    assert!(
+        painted[1] > painted[0] + 40 && painted[1] > painted[2] + 40,
+        "绿方块没画上（实测 {painted:?}）⇒ 判据测不到东西"
+    );
+    // 擦掉那一块 ⇒ 应该回到背景色（残留 = 视频里的残影 ✓）
+    timeline
+        .apply(&atom(
+            "a3",
+            4,
+            "erase",
+            json!({"object_id": "erase1", "layer_id": "L1", "type": "retouch",
+                   "data": {"kind": "erase", "size": 40.0, "opacity": 1.0,
+                            "points": [[28.0, 28.0]]}}),
+        ))
+        .expect("erase");
+    let after = {
+        let frame = timeline.frame().expect("frame after hiding the layer");
+        let at = ((28 * dw + 28) * 4) as usize;
+        [frame[at], frame[at + 1], frame[at + 2]]
+    };
+    assert_eq!(
+        after,
+        [255, 255, 255],
+        "擦除之后那个像素还是 {after:?}（应为背景 255,255,255）⇒ 帧里留了残影"
+    );
+}

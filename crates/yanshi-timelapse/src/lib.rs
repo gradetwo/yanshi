@@ -419,9 +419,16 @@ impl Timeline {
                     //   **⇒ ⇒ ⇒ ⇒ 而帧初值是**全零**（透明）⇒ `over` 在透明底上也正确** ✓
                     let mut src = [0u8; 4];
                     src.copy_from_slice(&rendered.rgba8[s..s + 4]);
-                    let mut dst = [0u8; 4];
-                    dst.copy_from_slice(&self.frame[d..d + 4]);
-                    self.frame[d..d + 4].copy_from_slice(&over_pixel(dst, src));
+                    // **合成基准是"背景色"，不是"上一帧"** ✓（第 712 轮；外部审计 R-05）
+                    //   **⇒ 缺陷**：原来 `over(上一帧, 渲染结果)` ✗ ⇒ 渲染结果**变透明**时
+                    //     （擦除／对象消失 ✓）`over` 看到 `a=0` **直接跳过** ⇒ **旧像素留在帧里** ✗
+                    //     ⇒ 视频里就是**残影** ✓；半透明对象每次重渲还会**叠加加深** ✓（同一根因 ✓）。
+                    //   **⇒ 为什么基准该是背景**：`render_region` 返回的是「这一区域**现在**应该长什么样」✓
+                    //     ⇒ 它该**盖住**旧像素，而不是**叠在**旧像素上 ✓。
+                    //   **⇒ 判据**：`incremental_matches_full::hiding_a_layer_clears_its_pixels_instead_of_leaving_a_ghost`
+                    //     （不传 `background` 的文档 ＋ 画一块绿 ＋ `erase` ⇒ 像素必须回到白 ✓）。
+                    let base = self.background;
+                    self.frame[d..d + 4].copy_from_slice(&over_pixel(base, src));
                 }
             }
         }

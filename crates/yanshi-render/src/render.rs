@@ -992,6 +992,7 @@ impl RegionRender {
 ///   **⇒ 静默不可接受** ✓ ⇒ 这里列出它们，调用点负责**记进 `warnings`** ✓。
 /// **⇒ 判据**（`raw_texture_params_tests`）：全开 ⇒ 三项齐全；全关 ⇒ 空 ✓。
 /// **变异**：返回空 `Vec`（回到静默）⇒ 红 ✓。
+#[cfg(any(feature = "raw", test))]
 fn raw_texture_ignored_params(
     mode: &str,
     has_brightness_match: bool,
