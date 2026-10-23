@@ -82,3 +82,40 @@ fn a_negative_since_seq_is_rejected_instead_of_silently_meaning_zero() {
     let response = registry.call(&mut ctx, "get_log", &json!({}));
     assert_eq!(response["ok"], json!(true), "不传参数应当照常：{response}");
 }
+
+/// **`blob_gc.ttl_days` 与试画的 `margin` 同样不许静默**（第 717 轮；外部审计 S-01）
+///
+/// **⇒ 缺陷**：`ttl_days: -1` 原来被 `unwrap_or(7)` **静默**当成 7 天 ✓
+///   （调用方以为"0 天＝立刻回收"，实际按 7 天算 ✗）；`margin: -8` 被当成 16 ✓。
+/// **⇒ 判据**：负数必须 `invalid_argument`；**不传**仍然 `ok` ✓。
+/// **变异**：改回 `optional_u64(...).unwrap_or(...)` ⇒ 红 ✓。
+#[test]
+fn negative_count_arguments_are_rejected_on_blob_gc_too() {
+    let mut workspace = workspace();
+    setup(&mut workspace);
+    let registry = registry();
+    let mut ctx = context(&mut workspace);
+    let response = registry.call(
+        &mut ctx,
+        "blob_gc",
+        &json!({"ttl_days": -1, "dry_run": true}),
+    );
+    assert_eq!(
+        response["ok"],
+        json!(false),
+        "ttl_days: -1 被接受了 ⇒ 静默当成缺省 7 天：{response}"
+    );
+    assert_eq!(
+        response["error_code"],
+        json!("invalid_argument"),
+        "{response}"
+    );
+    // 不传 ⇒ 照常（默认参数没被动过 ✓）
+    let mut ctx = context(&mut workspace);
+    let response = registry.call(&mut ctx, "blob_gc", &json!({"dry_run": true}));
+    assert_eq!(
+        response["ok"],
+        json!(true),
+        "不传 ttl_days 应当照常：{response}"
+    );
+}

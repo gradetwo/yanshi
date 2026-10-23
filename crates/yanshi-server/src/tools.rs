@@ -8607,7 +8607,10 @@ fn write_blob_gc(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let confirm = optional_bool(args, "confirm").unwrap_or(false);
     // **降冷**也是显式动作 ✓（它虽然不删数据 ✓，但会改变数据的存放位置 ✓ ⇒ 同样默认不做 ✓）。
     let demote = optional_bool(args, "demote").unwrap_or(false);
-    let ttl_days = optional_u64(args, "ttl_days").unwrap_or(7) as i64;
+    // **计数族走 `optional_count`** ✓（第 717 轮；外部审计 S-01）：
+    //   原来 `ttl_days: -1` 被**静默**当成缺省 7 天 ✓ ⇒ 调用方以为指定了 0 天（立刻回收）
+    //   而实际按 7 天算 ✗ —— 「静默降级形态 4」✓。
+    let ttl_days = optional_count(args, "ttl_days")?.unwrap_or(7) as i64;
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as i64)
@@ -18285,7 +18288,8 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
         .get("want_image")
         .and_then(Value::as_bool)
         .unwrap_or(true);
-    let margin = optional_u64(args, "margin").unwrap_or(16) as i64;
+    // **同上** ✓（第 717 轮）：`margin: -8` 原来被静默当成 16 ✓。
+    let margin = optional_count(args, "margin")?.unwrap_or(16) as i64;
     let _ = layer_id;
     // **试画与真画同路**：sensors 给了就带上（缺省全 0 ⇒ 老行为 ✓）。
     let sensors = match args.get("sensors") {
