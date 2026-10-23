@@ -40,7 +40,7 @@ use std::time::Instant;
 //   `code`／`detail` 两个**pub 字段** ＋ `to_json()` ✓）⇒ **∴ `{e}` 编不过** ✓
 //     ＋ **∴ 于是**：**错误信息必须**显式拼出来**✗ ⇒ **∴ 这样也**更诚实**（**码 ＋ 说明都留着 ✓）★
 use anyhow::{anyhow, bail, Context, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// 输出尺寸上限（**只缩不放 ✓**）。
 const MAX_W: u32 = 1920;
@@ -177,8 +177,54 @@ fn main() -> Result<()> {
     // **∴ 用仓库自己的内核 replay ✗**（**与浏览器同一个引擎 ✓）★
     //   ＋ **∴ 而**增量重放放在 `yanshi_timelapse::Timeline` 里 ✗**（**它**只渲脏区并集 ✓）
     //     ＋ **∴ 逐行 apply ⇒ **脏 tile 并集**长起来 ⇒ **出帧时只渲那一块** ✓ ★★
+    // **★ 降采样回放（第 630 轮）★**：目标输出比画布小 ⇒ **按输出尺寸回放** ✓
+    //   ⇒ 现在渲 `4608×8192` 只为得到 `608×1080`：**56× 白算** ✗（外部第 93 次同结论 ✓）。
+    //   ⇒ 用 `YANSHI_TIMELAPSE_SHRINK=1` 显式开启（默认不变 ✓）；只处理
+    //     `create_document` / `create_layer` / `import_image` 三种原子，
+    //     遇到别的 kind **整包放弃**（并说一句 ✓）——宁可不缩，也不出错图 ✗。
+    let mut shrink = std::env::var_os("YANSHI_TIMELAPSE_SHRINK").is_some() && scale < 1.0;
+    let (shrink_w, shrink_h) = (out_w, out_h);
+    // **预先检查整包能不能缩** ✓：只认这三种原子 ✓（别的 kind 有独立几何语义 ⇒ 不猜 ✓）
+    if shrink {
+        let supported = |line: &str| {
+            matches!(
+                serde_json::from_str::<Value>(line)
+                    .ok()
+                    .and_then(|atom| atom.get("kind").and_then(Value::as_str).map(str::to_owned))
+                    .as_deref(),
+                Some("create_document") | Some("create_layer") | Some("import_image")
+            )
+        };
+        let unsupported = atoms_text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .find(|line| !supported(line));
+        if let Some(line) = unsupported {
+            let kind = serde_json::from_str::<Value>(line)
+                .ok()
+                .and_then(|atom| atom.get("kind").and_then(Value::as_str).map(str::to_owned))
+                .unwrap_or_else(|| "?".to_owned());
+            eprintln!(
+                "⚠️ 降采样回放：包里出现 `{kind}` 原子（不在支持清单里）⇒ **整包按原尺寸回放** ✓ \
+                 （宁可不缩，也不出错图 ✗）"
+            );
+            shrink = false;
+        }
+    }
+    let (play_w, play_h) = if shrink {
+        (shrink_w, shrink_h)
+    } else {
+        (doc_w, doc_h)
+    };
+    if shrink {
+        eprintln!(
+            "降采样回放：画布 {doc_w}×{doc_h} ⇒ **按输出 {play_w}×{play_h} 回放**（渲染量约降 {:.0}×）✓",
+            1.0 / (f64::from(play_w) * f64::from(play_h) / (f64::from(doc_w) * f64::from(doc_h)))
+        );
+    }
     let mut timeline =
-        yanshi_timelapse::Timeline::new(&doc_id, TILE_SIZE, doc_w, doc_h, KERNEL_MEMORY_LIMIT)
+        yanshi_timelapse::Timeline::new(&doc_id, TILE_SIZE, play_w, play_h, KERNEL_MEMORY_LIMIT)
             .map_err(|e| anyhow!("建内核失败：{} {}", e.code, e.detail))?;
     for (hex, data) in &blobs {
         let got = timeline
@@ -310,7 +356,14 @@ fn main() -> Result<()> {
             );
         }
         let t_apply = Instant::now();
-        if let Err(error) = timeline.apply(line) {
+        // **降采样回放** ✓：这一行的几何按输出尺寸改写（位图也一起降采样 ✓）
+        let shrunk: Option<String> = if shrink {
+            shrink_atom(line, &blobs, play_w, play_h, doc_w, doc_h, &mut timeline)
+        } else {
+            None
+        };
+        let line_to_apply = shrunk.as_deref().unwrap_or(line);
+        if let Err(error) = timeline.apply(line_to_apply) {
             apply_failures += 1;
             if first_failure.is_none() {
                 first_failure = Some(format!("第 {i} 行：{} {}", error.code, error.detail));
@@ -646,6 +699,90 @@ mod encoder_tests {
             "挑出来的编码器 `{picked}` 存在，但**喂一帧就失败** ⇒ 它会写出只有文件头的空视频"
         );
     }
+}
+
+/// **把一条原子改写成"按输出尺寸"的版本** ✓（第 630 轮，降采样回放）。
+///
+/// 只处理三种原子（调用方已预先确认整包只含这三种 ✓）：
+/// - `create_document`：画布宽高改成 `play_w × play_h` ✓；
+/// - `create_layer`：原样 ✓；
+/// - `import_image`：`region` 按比例缩，**位图本身也按最近邻降采样**并重新入库 ✓；
+///   `mime_type` 只支持 `image/x-yanshi-raw`，别的返回 `None` ⇒ 调用方按原样用会出错图，
+///   所以调用方在预检查里就该拦住，这里再兜一层 ✓。
+///
+/// 返回 `None` ⇒ 这一行不能缩 ⇒ 调用方用原始行（**几何不再一致** ⇒ 因此只在预检查通过时才会走到这里 ✓）。
+fn shrink_atom(
+    line: &str,
+    blobs: &HashMap<String, Vec<u8>>,
+    play_w: u32,
+    play_h: u32,
+    doc_w: u32,
+    doc_h: u32,
+    timeline: &mut yanshi_timelapse::Timeline,
+) -> Option<String> {
+    let sx = f64::from(play_w) / f64::from(doc_w);
+    let sy = f64::from(play_h) / f64::from(doc_h);
+    let mut atom: Value = serde_json::from_str(line).ok()?;
+    let kind = atom.get("kind").and_then(Value::as_str)?.to_owned();
+    match kind.as_str() {
+        "create_document" => {
+            if let Some(payload) = atom.get_mut("payload").and_then(Value::as_object_mut) {
+                payload.insert("width".to_owned(), Value::from(play_w));
+                payload.insert("height".to_owned(), Value::from(play_h));
+            }
+        }
+        "create_layer" => {}
+        "import_image" => {
+            let payload = atom.get_mut("payload")?.as_object_mut()?;
+            let bitmap = payload.get("bitmap")?.clone();
+            let mime = bitmap
+                .get("mime_type")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if mime != "image/x-yanshi-raw" {
+                return None;
+            }
+            let hash = bitmap.get("blob_hash").and_then(Value::as_str)?.to_owned();
+            let raw = blobs.get(&hash)?;
+            let src_w = bitmap.get("width").and_then(Value::as_u64)? as u32;
+            let src_h = bitmap.get("height").and_then(Value::as_u64)? as u32;
+            if raw.len() < (src_w as usize) * (src_h as usize) * 4 {
+                return None;
+            }
+            let dst_w = ((src_w as f64 * sx).round() as u32).max(1);
+            let dst_h = ((src_h as f64 * sy).round() as u32).max(1);
+            // **最近邻** ⇒ 确定性 ✓、无插值核 ✓（预览片够用 ✓）
+            let mut small = Vec::with_capacity((dst_w as usize) * (dst_h as usize) * 4);
+            for y in 0..dst_h {
+                let sy_src = ((u64::from(y) * u64::from(src_h)) / u64::from(dst_h)) as usize;
+                for x in 0..dst_w {
+                    let sx_src = ((u64::from(x) * u64::from(src_w)) / u64::from(dst_w)) as usize;
+                    let at = (sy_src * src_w as usize + sx_src) * 4;
+                    small.extend_from_slice(&raw[at..at + 4]);
+                }
+            }
+            let new_hash = timeline.blob_put(&small).ok()?;
+            if let Some(entry) = payload.get_mut("bitmap").and_then(Value::as_object_mut) {
+                entry.insert("blob_hash".to_owned(), Value::from(new_hash));
+                entry.insert("width".to_owned(), Value::from(dst_w));
+                entry.insert("height".to_owned(), Value::from(dst_h));
+            }
+            if let Some(region) = payload.get_mut("region").and_then(Value::as_object_mut) {
+                let mut scale = |key: &str, factor: f64| {
+                    if let Some(value) = region.get(key).and_then(Value::as_f64) {
+                        let scaled = value * factor;
+                        region.insert(key.to_owned(), json!(scaled));
+                    }
+                };
+                scale("x", sx);
+                scale("y", sy);
+                scale("w", sx);
+                scale("h", sy);
+            }
+        }
+        _ => return None,
+    }
+    serde_json::to_string(&atom).ok()
 }
 
 #[cfg(test)]
