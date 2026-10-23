@@ -29,6 +29,10 @@ const ROOTS = ["crates/yanshi-render/src", "crates/yanshi-core/src", "crates/yan
 const FORBIDDEN = [
   "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh",
   "exp", "exp2", "ln", "log2", "log10", "powf", "powi", "hypot", "cbrt", "mul_add",
+  // **第 706 轮（外部审计 R-04）**：这些是**同一个坑的其它入口** ✗ ——
+  //   `sin_cos` 一次给两个值、绕过了 `sin`／`cos` 的正则 ✓（实测漏检一处生产路径 ✓）；
+  //   其余几个同理（`exp_m1`／`ln_1p`／双曲反函数 ✓）。**∴ 补齐** ✓。
+  "sin_cos", "exp_m1", "ln_1p", "asinh", "acosh", "atanh",
 ];
 const forbiddenRe = new RegExp("\\.(" + FORBIDDEN.join("|") + ")\\s*\\(");
 

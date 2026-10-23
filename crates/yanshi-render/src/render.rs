@@ -4921,7 +4921,10 @@ impl Renderer {
                                     // 旋转：把采样点绕中心转过 `strength × falloff` 弧度。
                                     "twirl" => {
                                         let angle = strength.clamp(-2.0, 2.0) * falloff;
-                                        let (sin, cos) = angle.sin_cos();
+                                        // **跨端确定性** ✓（第 706 轮；外部审计 R-04）：`std` 的 `sin_cos`
+                                        //   在 Linux 走 glibc、在 wasm32 走内置实现 ⇒ **1 ULP 风险** ✗
+                                        //   ⇒ 与本仓其余超越函数一致，统一走 `libm` ✓。
+                                        let (sin, cos) = (libm::sin(angle), libm::cos(angle));
                                         let rotated_x = dx * cos - dy * sin;
                                         let rotated_y = dx * sin + dy * cos;
                                         shift_x += dx - rotated_x;
@@ -8080,7 +8083,8 @@ mod tests {
                 let t = 1.0 - distance / radius;
                 let falloff = t * t * (3.0 - 2.0 * t);
                 let angle = strength * falloff;
-                let (sin, cos) = angle.sin_cos();
+                // 与生产路径同口径 ✓（第 706 轮；外部审计 R-04）：`std` 的 `sin_cos` 跨端有 1 ULP 风险 ✗
+                let (sin, cos) = (libm::sin(angle), libm::cos(angle));
                 let rotated_x = dx * cos - dy * sin;
                 let rotated_y = dx * sin + dy * cos;
                 let shift_x = dx - rotated_x;
