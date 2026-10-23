@@ -17288,3 +17288,28 @@ error connecting to results-receiver.actions.githubusercontent.com
 **⇒ 教训（第三次同型）**：`by_sig` 那套"切点复用"语义，我**改了三次才没碰坏** ✓
 （`clear()` 全清 ✗、删当前组 ✗、只在唯一时重排 ✓）。
 **⇒ 而**两次失败**都是被已有判据抓住的** ✓ —— 这条链上我自己的推断一次都没抓住 ✓。
+
+## 四百四十一、**CI 再次全绿**（`2d695c3c`），并把这三次失败的账算清（第 691 轮）
+
+**⇒ `2d695c3c`（撤回后两笔）的 CI：全部 success** ✓
+```
+success test (stable)｜success test (beta)｜success clippy｜success rustfmt
+success criteria shard 1..6/6｜success wasm smoke｜success GPU feature
+skipped brush parity（按设计不阻塞）
+```
+
+**⇒ 这一串（`below` 缓存提速）的三次失败与真因**：
+| 尝试 | 结果 | 破坏了什么 |
+|---|---|---|
+| `9fa87d32` 跳过一次写 | 红 | **`buffer_pool_budget_covers_every_concurrent_worker`**（池预算，期望 4 实测 7）|
+| `bcd5e53b` 重排前删 `by_sig` 全部 | 红 | **`tool-below-sig-alternate`**（交替切点复用）|
+| `295f5ef4` 共享时跳过重排 | 红 | **`tool-below-retention`**（第 2 轮 0/6 命中）|
+| **`2d695c3c` 全部撤回** | **绿** ✓ | —— |
+
+**⇒ 结论（写进设计约束）**：`below` 缓存把**三件事压在同一份 tile 表**上 ✓ ——
+① 按切点复用（`by_sig`）② 跨渲染保留（`tiles`）③ 最近使用（**向量顺序本身**）✓
+⇒ **∴ 想省掉那份拷贝，必须先把③拆出去**（单独的年龄结构）✓ ——
+**在那之前，"重排就要拷贝"是这条路径的既有契约** ✓，不是 bug ✓。
+
+**⇒ 最终收益（保留的部分）**：散布夹具第一帧 **307 s → 27.5 s（11×）** ✓、
+他们最小包 **33.9 s / 21 帧**（默认）与 **4 s**（`SHRINK=1`）✓。
