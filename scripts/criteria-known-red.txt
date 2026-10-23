@@ -143,7 +143,7 @@ browser-no-stale-read.mjs    # 类型：产品缺陷（重载后读到旧状态�
 browser-offline-brush.mjs    # 类型：产品缺陷（离线那一笔没挺过刷新：blobs=0／replay=0）
 browser-brush-panel.mjs      # 类型：产品缺陷（勾着「用完即收」时取色浮层不收）
 browser-project-download.mjs # 类型：产品缺陷（下载名是 <doc>.yanshi.json，判据要求 .yanshi）
-browser-live-brush.mjs       # 类型：与已登记的 kernel-brush-parity.mjs 同源（内核 ≠ 服务端）
+browser-live-brush.mjs       # 类型：产品缺陷（客户端落笔一族：官方接线下画布墨 1203 而服务端对象 0 ⇒ 0、重载后墨 0 ⇒ 这一笔没落成服务端原子；机理引台账第 449/451 节的渲染模式分叉，不是判据接线问题——第 740 轮实测改判，原「kernel-brush-parity 同源」的注不准确）
 browser-canvas-handfeel.mjs  # 类型：待定位（等待"图层行增加"超时 ⇒ 根因**未查明**）
 browser-brush-preview.mjs    # 类型：待定位（预览图 0×0，hint=预览不可用 ⇒ 根因**未查明**）
 browser-i18n.mjs             # 类型：待定位（effectsList／history 两处中文串；样本含 endpoint_not_local）
