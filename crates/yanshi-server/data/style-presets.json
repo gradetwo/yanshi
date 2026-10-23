@@ -1026,7 +1026,7 @@
      "kind": "adjustment",
      "type": "exposure",
      "params": {
-      "ev": 0.3
+      "ev": 0.1
      },
      "neutral": {
       "ev": 0
@@ -1036,7 +1036,7 @@
      "kind": "adjustment",
      "type": "brightness_contrast",
      "params": {
-      "brightness": 0.01,
+      "brightness": 0.0,
       "contrast": 0.88
      },
      "neutral": {
@@ -1052,15 +1052,15 @@
       "points": [
        [
         0,
-        0.006
+        0.003
        ],
        [
         0.0509,
-        0.0732
+        0.0621
        ],
        [
         0.214,
-        0.233
+        0.2235
        ],
        [
         0.5225,
@@ -1068,7 +1068,7 @@
        ],
        [
         1,
-        0.9114
+        0.9557
        ]
       ]
      },
@@ -1134,7 +1134,7 @@
        -0.02
       ],
       "balance": 0.05,
-      "amount": 0.35
+      "amount": 0.12
      },
      "neutral": {
       "shadows": [
@@ -1154,7 +1154,7 @@
      "kind": "adjustment",
      "type": "shadows_highlights",
      "params": {
-      "shadows": 0.2,
+      "shadows": 0.05,
       "highlights": -0.2
      },
      "neutral": {
@@ -1184,6 +1184,20 @@
      },
      "neutral": {
       "strength": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "levels",
+     "params": {
+      "black": 0.02,
+      "white": 1.0,
+      "gamma": 1.0
+     },
+     "neutral": {
+      "black": 0,
+      "white": 1,
+      "gamma": 1
      }
     }
    ],
@@ -4852,8 +4866,8 @@
      "kind": "adjustment",
      "type": "shadows_highlights",
      "params": {
-      "shadows": 0.55,
-      "highlights": -0.55
+      "shadows": 0.22,
+      "highlights": -0.3
      },
      "neutral": {
       "shadows": 0,
@@ -4989,8 +5003,8 @@
        "op": 0,
        "param": "shadows",
        "range": [
-        0.2,
-        0.8
+        0.04,
+        0.4
        ]
       }
      ]
