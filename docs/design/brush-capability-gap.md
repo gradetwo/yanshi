@@ -17486,3 +17486,30 @@ R-09（`Retouch` 暗化因子**乘了两次** ⇒ `darken²`）✓、R-10（RAW 
 
 **⇒ 仍未做**：**S-10**（`web/` 下两份不一致的 Service Worker）、**S-11**（本地 `resample` 把 raw RGBA 硬当 PNG）、
 **R-06**（`yanshi-gpu` 的 `map_async` Panic／泄漏 —— **边界内只定位不修**）、**R-12**（探针实参顺序，LOW）。
+
+## 四百五十、审计 S-10（两份 Service Worker）：**已定位，未动手**（第 743 轮，附证据）
+
+**⇒ 审计说**：`web/` 下有两份**不一致**的 Service Worker ✓。
+
+**⇒ 我查到的确切事实**（源码行）：
+| 文件 | 行数 | 谁用它 |
+|---|---|---|
+| `crates/yanshi-http/assets/service-worker.js` | 437 | **服务端内嵌**（`server.rs:3015` 的 `include_str!` ✓）⇒ 路由 `/service-worker.js`（`server.rs:773`）|
+| `web/service-worker.js` | 437 | **`pwa-sync-viewer.mjs` 从这里拷出来的副本** ✓ |
+| **`web/sw.js`** | **48** | **没人注册** ✗ —— 应用注册的是 `/service-worker.js`（`viewer-app.js:9300`）✓ |
+
+**⇒ 所以 `web/sw.js` 是一份"平行、更简单、永不被加载"的实现** ✓，而且**有两条判据在护着它**：
+`tool-pwa-assets.mjs`（检查它存在且预缓存 wasm ✓）与 `tool-sw-stamp-idempotent.mjs`（检查它的戳被幂等替换 ✓）
+⇒ **判据护着一个没人用的文件** ✓（这正是「安慰剂」的另一种形态 ✓）。
+
+**⇒ 本轮为什么没删** ✗（试过，已回退 ✓）：
+1. `pwa-sync-viewer.mjs:82` **专门给 `web/sw.js` 换戳** ✗ ⇒ 删它要同时改那段；
+2. `tool-sw-stamp-idempotent.mjs` 整个判据的**对象就是它** ⇒ 删文件 ⇒ 那条判据要么删、要么改对象 ✓；
+3. 我改完 `tool-pwa-assets.mjs` 去验证时，**它先红在「介质产物落后于源码」**（`oil.wasm`／`watercolor.wasm`）✓
+   —— 那是**本机构建产物陈旧**（CI 上会重建 ✓）⇒ **本机拿不到这条判据的绿** ✗ ⇒ 没法证明我的改动是对的 ✓。
+
+**⇒ 下一轮的做法**（三步一起，缺一不可）：
+① 删 `web/sw.js` ＋ 去掉 `pwa-sync-viewer.mjs` 里给它换戳那段 ✓；
+② `tool-pwa-assets.mjs` 改查 `web/service-worker.js` ✓（**先在本机重建介质产物**，否则它的红与本改动无关、会掩盖结果 ✓）；
+③ `tool-sw-stamp-idempotent.mjs` **改对象**为 `web/service-worker.js` 并**改成断言占位符被保留** ✓
+   （设计如此：`__BUILD_ID__` 由**服务端**在请求时替换 ✓），再补一条 `check-one-service-worker.mjs` 钉住"只有一份 SW" ✓。
