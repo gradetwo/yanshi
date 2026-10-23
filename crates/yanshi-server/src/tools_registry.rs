@@ -772,8 +772,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("actor", String, false, "提交者"),
             param!("object_id", String, false, "涉及的对象"),
             param!("layer_id", String, false, "涉及的图层"),
-            param!("since_seq", Integer, false, "起始序号（不含）"),
-            param!("limit", Integer, false, "最多返回多少条"),
+            param!("since_seq", Integer, false, "起始序号（不含）⇒ 配合回执的 `next_since` 翻页，直到 `truncated:false`"),
+            param!("limit", Integer, false, "最多返回多少条（缺省 200，上限 2000 ✓；被夹时 `limit_clamped:true` 且 `limit` 回显真正用的值）"),
         ],
     },
     ToolSpec {
@@ -2712,8 +2712,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "列出评论（协作通道的可读一侧）",
         mutating: false,
         params: &[
-            param!("limit", Integer, false, "最多返回条数（缺省 50，上限 500）"),
-            param!("since_seq", Integer, false, "只返回 seq 大于该值的评论（增量轮询用）"),
+            param!("limit", Integer, false, "本页最多返回条数（缺省 50，上限 500 ✓；满页时 `truncated:true` ⇒ 立刻再问一次）"),
+            param!("since_seq", Integer, false, "只返回 seq 大于该值的评论（增量轮询用 ✓）。**分页语义**：交付的是「游标之后最早的 `limit` 条」（页内仍是新的在前 ✓），`next_since` 只推进到**已交付**的最大 seq ⇒ 照着它轮询**一条不漏**（旧版交付最新一页却把游标推到全集最大 ⇒ 更早的评论永久消失 ✗）"),
             param!("actor", String, false, "按作者过滤"),
             param!("object_id", String, false, "按被评论的对象过滤"),
         ],

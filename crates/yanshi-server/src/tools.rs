@@ -1052,6 +1052,38 @@ fn optional_u64(args: &Value, key: &str) -> Option<u64> {
     args.get(key).and_then(Value::as_u64)
 }
 
+/// 取出**计数族**的可选参数（`limit`／`offset`／`since_seq`／`to_seq` 这类 ✓）。
+///
+/// **为什么不能用 `optional_u64`** ✗：`validate_args` 对 `ParamKind::Integer` 接受
+/// **负数**与**整数形态的浮点**（`-1`／`5.0` 都能通过 ✓），而 `Value::as_u64` 对这两类
+/// **一律返回 `None`**（serde_json 只在正整数段给 `Some` ✗）⇒ 于是 `.unwrap_or(缺省)`
+/// **静默接管**：`since_seq:-1` 被当成 `0` ⇒ 返回全量而回执里一切正常 ✗。
+/// 这正是本仓列的**静默降级形态 4**（非法输入看起来正常 ✓）
+/// ⇒ **声明了却读不出，必须响亮** ✓（与 `texture` 那些「未知键要响亮」同一口径 ✓）。
+fn optional_count(args: &Value, key: &str) -> Result<Option<u64>> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    if let Some(number) = value.as_u64() {
+        return Ok(Some(number));
+    }
+    if let Some(number) = value.as_f64() {
+        if number.fract() == 0.0 && number >= 0.0 && number < u64::MAX as f64 {
+            return Ok(Some(number as u64));
+        }
+    }
+    Err(YanshiError::new(
+        ErrorCode::InvalidArgument,
+        ErrorContext::detail(format!(
+            "参数 {key} 必须是不小于 0 的整数（它是计数／序号，不能是负数或小数），得到 {value}；\
+             要「从头开始」就**别传这个参数**（缺省即 0），传 0 也可以"
+        )),
+    ))
+}
+
 fn optional_bool(args: &Value, key: &str) -> Option<bool> {
     args.get(key).and_then(Value::as_bool)
 }
@@ -7739,9 +7771,9 @@ fn normalize_color(value: Option<&Value>) -> Value {
 }
 
 fn read_get_stroke_log(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
-    let limit = optional_u64(args, "limit").unwrap_or(50).min(500) as usize;
-    let offset = optional_u64(args, "offset").unwrap_or(0) as usize;
-    let since = optional_u64(args, "since_seq").unwrap_or(0);
+    let limit = optional_count(args, "limit")?.unwrap_or(50).min(500) as usize;
+    let offset = optional_count(args, "offset")?.unwrap_or(0) as usize;
+    let since = optional_count(args, "since_seq")?.unwrap_or(0);
     let layer_filter = optional_str(args, "layer_id");
     let object_filter = optional_str(args, "object_id");
     let newest_first = optional_str(args, "order").as_deref() == Some("newest");
@@ -7892,8 +7924,12 @@ fn read_get_stroke_log(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 }
 
 fn read_find_atom(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
-    let since = optional_u64(args, "since_seq").unwrap_or(0);
-    let limit = optional_u64(args, "limit").unwrap_or(200).min(2000) as usize;
+    let since = optional_count(args, "since_seq")?.unwrap_or(0);
+    // **上限是 2000 ✓，但「夹过」必须留痕 ✗→✓**（原来 `.min(2000)` 静默生效：
+    //   调用方请求 5000、拿到 2000，而回执里**既没有 `limit`、也没有游标** ⇒
+    //   第 2001 条之后的原子**永远取不到**，`truncated` 又把「被你夹了」和「还有下一页」混成一句 ✓）。
+    let requested_limit = optional_count(args, "limit")?.unwrap_or(200);
+    let limit = requested_limit.min(2000) as usize;
     let kind_filter = optional_str(args, "kind");
     let actor_filter = optional_str(args, "actor");
     let object_filter = optional_str(args, "object_id");
@@ -7931,12 +7967,21 @@ fn read_find_atom(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         .collect();
     let total = matched.len();
     let atoms: Vec<Value> = matched.into_iter().take(limit).map(atom_summary).collect();
+    // **游标 = 已交付这一页的最大 seq**（日志本来就是升序 ✓）⇒ 剩下的一页可以接着取 ✓。
+    let next_since = atoms
+        .last()
+        .and_then(|atom| atom.get("seq"))
+        .and_then(Value::as_u64);
     Ok(json!({
         "ok": true,
         "atoms": atoms,
         "returned": atoms.len(),
         "total_matched": total,
         "truncated": total > limit,
+        "limit": limit,
+        "limit_requested": requested_limit,
+        "limit_clamped": requested_limit as usize > limit,
+        "next_since": next_since,
     }))
 }
 
@@ -7947,8 +7992,8 @@ fn read_find_atom(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 /// 它**不**做像素/求值层差分 ✗（那会把"两个状态各渲染一遍"的成本塞进一个只读工具 ✓，
 /// 而且渲染缓存与容差语义会牵进来 ✓）—— 需要像素对比请用 `render_region` 各渲染一次 ✓。
 fn read_get_diff(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
-    let from_seq = optional_u64(args, "from_seq").unwrap_or(0);
-    let limit = optional_u64(args, "limit").unwrap_or(500).min(5000) as usize;
+    let from_seq = optional_count(args, "from_seq")?.unwrap_or(0);
+    let limit = optional_count(args, "limit")?.unwrap_or(500).min(5000) as usize;
     let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
         YanshiError::new(
             ErrorCode::ReferenceNotFound,
@@ -7956,7 +8001,7 @@ fn read_get_diff(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         )
     })?;
     let head = document.head_seq();
-    let to_seq = optional_u64(args, "to_seq").unwrap_or(head);
+    let to_seq = optional_count(args, "to_seq")?.unwrap_or(head);
     if to_seq < from_seq {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
@@ -8052,7 +8097,7 @@ fn read_get_descendants(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
 }
 
 fn read_get_changesets(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
-    let limit = optional_u64(args, "limit").unwrap_or(100).min(1000) as usize;
+    let limit = optional_count(args, "limit")?.unwrap_or(100).min(1000) as usize;
     let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
         YanshiError::new(
             ErrorCode::ReferenceNotFound,
@@ -18055,7 +18100,7 @@ fn write_discard_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
 
 /// **`list_attempts`**：读落盘的 `log.jsonl`，按 label／status 筛，新的在前。
 fn read_list_attempts(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
-    let limit = optional_u64(args, "limit").unwrap_or(20).min(500) as usize;
+    let limit = optional_count(args, "limit")?.unwrap_or(20).min(500) as usize;
     let want_label = optional_str(args, "label");
     let want_status = optional_str(args, "status");
     let dir = std::env::temp_dir()
@@ -18416,11 +18461,11 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
         )
     })?;
-    let limit = optional_u64(args, "limit").unwrap_or(20).min(500) as usize;
+    let limit = optional_count(args, "limit")?.unwrap_or(20).min(500) as usize;
     let want_label = optional_str(args, "label");
     let want_layer = optional_str(args, "layer_id");
     let want_brush = optional_str(args, "brush").map(|value| value.to_lowercase());
-    let since_seq = optional_u64(args, "since_seq");
+    let since_seq = optional_count(args, "since_seq")?;
     let want_group = optional_str(args, "group_id");
     // 区域筛选：`[x, y, w, h]`（文档像素）⇒ 只保留与该框相交的笔迹
     let want_thumb = args
@@ -18428,7 +18473,10 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         .and_then(Value::as_bool)
         .unwrap_or(true);
     const MAX_THUMBS: usize = 20;
-    let thumb_size = optional_u64(args, "thumb_size").unwrap_or(0) as u32;
+    // **负数／小数现在会响亮报错**（原来 `as_u64` 读出 `None` ⇒ 静默当 0 = 「保持 1:1」✓）。
+    // **超过 `u32` 的写法仍在报告里挂着**：它会让 `as u32` 回绕成一个小边长，
+    // 而**回执里没有任何字段能看出用了哪个边长** ⇒ 断言无从落地 ✓（先记进「未修」，见台账）。
+    let thumb_size = optional_count(args, "thumb_size")?.unwrap_or(0) as u32;
     let include_non_stroke = args
         .get("include_non_stroke")
         .and_then(Value::as_bool)
@@ -18463,7 +18511,7 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     //   ⇒ 一幅 39,354 笔的画会被"证明"成"只有 500 笔"✗（他们的 `provenance.py` 真被它骗过 ✓）。
     //   **修法**：`offset` ＋ `total` ＋ `truncated` ＋ `has_more` ✓，
     //   并且 `total` 是**过滤之后**的匹配总数 ✓（不是日志条数 ✓）。
-    let offset = optional_u64(args, "offset").unwrap_or(0) as usize;
+    let offset = optional_count(args, "offset")?.unwrap_or(0) as usize;
     let mut matched = 0usize;
     let mut hits: Vec<Value> = Vec::new();
     for atom in document.log().atoms().iter().rev() {
@@ -18673,8 +18721,8 @@ fn read_get_atom(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 ///
 /// **净荷在日志里** ✓（`document.log()` 的原子带 `payload` ✓）⇒ 这里按通道过滤后把它取出来 ✓。
 fn read_list_comments(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
-    let since = optional_u64(args, "since_seq").unwrap_or(0);
-    let limit = optional_u64(args, "limit").unwrap_or(50).clamp(1, 500) as usize;
+    let since = optional_count(args, "since_seq")?.unwrap_or(0);
+    let limit = optional_count(args, "limit")?.unwrap_or(50).clamp(1, 500) as usize;
     let actor = optional_str(args, "actor");
     let object_id = optional_str(args, "object_id");
     let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
@@ -18720,17 +18768,29 @@ fn read_list_comments(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         }));
     }
     let count = comments.len();
-    // **最新的在前** ✓（评论是"读最近发生了什么" ✓），并保持 `since_seq` 的语义用**最大 seq** ✓。
+    // **交付「最早的一页」，游标只推进到已交付的最大 seq** ✓（原来是反的 ✗）
+    //
+    //   原来：`next_since` 取**匹配全集**的最大 seq，而数组只保留**最新** `limit` 条
+    //   ⇒ 客户端照着 `next_since` 轮询时，比这一页更早的那几条**永远不会再被返回** ✗
+    //     （实测：5 条评论、`limit:2` ⇒ 只收到 2 条，其余 3 条没有任何信号地消失 ✓）。
+    //   现在：按升序取前 `limit` 条 ⇒ 游标之下没有漏网的 ✓；
+    //   **页内仍按新的在前**（那是既有显示语义，老客户端不受影响 ✓）。
+    //   `truncated` 是新增的**满页信号**：为真就立刻再问一次（不必等下一轮轮询 ✓）。
+    let truncated = count > limit;
+    comments.truncate(limit);
+    let returned = comments.len();
     let next_since = comments
         .last()
         .and_then(|item| item.get("seq"))
         .and_then(Value::as_u64)
         .unwrap_or(since);
     comments.reverse();
-    comments.truncate(limit);
     Ok(json!({
         "comments": comments,
         "count": count,
+        "returned": returned,
+        "truncated": truncated,
+        "limit": limit,
         "next_since": next_since,
     }))
 }
@@ -18739,9 +18799,9 @@ fn read_list_comments(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
 fn read_list_suggestions(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let filter = optional_str(args, "status");
     // AI 侧轮询：`since_seq` 取增量，`limit`/`offset` 用于分页。
-    let since = optional_u64(args, "since_seq").unwrap_or(0);
-    let limit = optional_u64(args, "limit").unwrap_or(50).clamp(1, 500) as usize;
-    let offset = optional_u64(args, "offset").unwrap_or(0) as usize;
+    let since = optional_count(args, "since_seq")?.unwrap_or(0);
+    let limit = optional_count(args, "limit")?.unwrap_or(50).clamp(1, 500) as usize;
+    let offset = optional_count(args, "offset")?.unwrap_or(0) as usize;
     let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
         YanshiError::new(
             ErrorCode::ReferenceNotFound,

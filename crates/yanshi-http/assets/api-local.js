@@ -360,6 +360,23 @@ async function withKernel(doc, fn) {
   function p2Bad(reason) {
     return json({ ok: false, error: "invalid_argument", reason, server: false }, 400);
   }
+  /** **计数族参数**（`limit`／`offset`／`since_seq`／`from_seq`／`to_seq`）**的读取 ✓**
+   *   （**∴ 与服务端 `optional_count` 同形 ✗**，第 1441 轮 ✓）。
+   *   **∴ 为什么 ✗**：旧写法 `Number(x) || 0` 把 `-1`／`"abc"`／`2.5` 一律**静默变成 0** ✗
+   *     ⇒ 「只看序号大于 0 的」= **返回全量**，而回执里一切正常 ⇒ **静默降级形态 4** ✓。
+   *   **∴ 现在**：读不出 ⇒ **400 ＋ 点名参数 ＋ 说清合法区间** ✓。
+   *   **∴ 注**：查询串（`?limit=2`）本来就是文本 ⇒ 这里接受**能无损转成非负整数**的写法 ✓。
+   *   **∴ 返回**：`{value}`（没给 ⇒ `undefined`）**或** `{error}`（**直接把 error return 出去**✓）。
+   */
+  function p2Count(raw, key) {
+    if (raw == null || raw === "") return { value: undefined };
+    const n = Number(raw);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+      return { error: p2Bad(`参数 ${key} 必须是不小于 0 的整数（它是计数／序号，不能是负数或小数），`
+        + `得到 ${JSON.stringify(raw)}；要「从头开始」就**别传这个参数**（缺省即 0），传 0 也可以`) };
+    }
+    return { value: n };
+  }
   /** **引用不存在 ⇒ 404 ✗**（**照服务端 `ReferenceNotFound` 的口径 ✓**）。 */
   function p2Missing(reason) {
     return json({ ok: false, error: "reference_not_found", reason, server: false }, 404);
@@ -3222,8 +3239,13 @@ async function withKernel(doc, fn) {
     // **P2c-50 `find_atom` ✗**：**照 `read_find_atom` ✓** ⇒ **按 `kind`／`actor`／`object_id`／
     //   `layer_id`／`since_seq` 过滤 ✓**（**`limit` 缺省 200、上限 2000 ✓**）。
     if (path === "/api/tools/find_atom") {
-      const since = body.since_seq !== undefined ? Number(body.since_seq) : 0;
-      const limit = Math.min(2000, Math.max(1, body.limit !== undefined ? Number(body.limit) : 200));
+      const sinceArg = p2Count(body.since_seq, "since_seq");
+      if (sinceArg.error) return sinceArg.error;
+      const limitArg = p2Count(body.limit, "limit");
+      if (limitArg.error) return limitArg.error;
+      const since = sinceArg.value !== undefined ? sinceArg.value : 0;
+      const requestedLimit = limitArg.value !== undefined ? limitArg.value : 200;
+      const limit = Math.min(2000, requestedLimit);
       const kindF = typeof body.kind === "string" ? body.kind : null;
       const actorF = typeof body.actor === "string" ? body.actor : null;
       const objectF = typeof body.object_id === "string" ? body.object_id : null;
@@ -3252,7 +3274,10 @@ async function withKernel(doc, fn) {
         object_id: atomObject(r.atom), layer_id: atomLayer(r.atom),
       }));
       return json({ ok: true, server: false, atoms, returned: atoms.length,
-                    total_matched: matched.length, truncated: matched.length > limit });
+                    total_matched: matched.length, truncated: matched.length > limit,
+                    limit, limit_requested: requestedLimit,
+                    limit_clamped: requestedLimit > limit,
+                    next_since: atoms.length ? atoms[atoms.length - 1].seq : null });
     }
 
     // **P2c-51 `get_atom` ✗**：**照 `read_get_atom` ✓** ⇒ **按 `atom_id` 取整条原子 ✓**。
@@ -3315,8 +3340,12 @@ async function withKernel(doc, fn) {
     if (path === "/api/tools/get_diff") {
       const rows = await atomsOf(handle, doc);
       const head = rows.length ? rows[rows.length - 1].seq : 0;
-      const fromSeq = body.from_seq !== undefined ? Number(body.from_seq) : 0;
-      const toSeq = body.to_seq !== undefined ? Number(body.to_seq) : head;
+      const fromArg = p2Count(body.from_seq, "from_seq");
+      if (fromArg.error) return fromArg.error;
+      const toArg = p2Count(body.to_seq, "to_seq");
+      if (toArg.error) return toArg.error;
+      const fromSeq = fromArg.value !== undefined ? fromArg.value : 0;
+      const toSeq = toArg.value !== undefined ? toArg.value : head;
       if (!Number.isFinite(fromSeq) || !Number.isFinite(toSeq) || fromSeq > toSeq) {
         return p2Bad("from_seq/to_seq 非法（需要 0 ≤ from_seq ≤ to_seq）");
       }
@@ -4141,7 +4170,9 @@ async function withKernel(doc, fn) {
     // **⑤ `get_changesets` ✗**：**∴ 按原子封套的 `changeset_id` 聚合 ✓**（**与服务端 `read_get_changesets` 同形 ✓**：
     //   **∴ 保持日志顺序 ✓ ＋ 最新在前 ✓ ＋ limit 缺省 100／上限 1000 ✓**）。
     if (path === "/api/tools/get_changesets") {
-      const limit = Math.min(1000, Math.max(1, Math.floor(Number((body && body.limit) ?? q.get("limit") ?? 100) || 100)));
+      const limitArg = p2Count((body && body.limit) ?? q.get("limit"), "limit");
+      if (limitArg.error) return limitArg.error;
+      const limit = Math.min(1000, Math.max(1, Math.floor(limitArg.value !== undefined ? limitArg.value : 100)));
       const rows = await atomsOf(handle, doc);
       const order = [], grouped = new Map();
       for (const r of rows) {
@@ -4310,9 +4341,15 @@ async function withKernel(doc, fn) {
       const statusFilter = argOf("status") != null ? String(argOf("status")) : null;
       if (statusFilter && ["pending", "accepted", "rejected"].indexOf(statusFilter) < 0)
         return p2bBad("status 只能是 pending/accepted/rejected，得到 " + statusFilter, "invalid_status");
-      const since = Math.max(0, Math.floor(Number(argOf("since_seq") ?? 0) || 0));
-      const limit = Math.min(500, Math.max(1, Math.floor(Number(argOf("limit") ?? 50) || 50)));
-      const offset = Math.max(0, Math.floor(Number(argOf("offset") ?? 0) || 0));
+      const sinceArg = p2Count(argOf("since_seq"), "since_seq");
+      if (sinceArg.error) return sinceArg.error;
+      const sugLimitArg = p2Count(argOf("limit"), "limit");
+      if (sugLimitArg.error) return sugLimitArg.error;
+      const offsetArg = p2Count(argOf("offset"), "offset");
+      if (offsetArg.error) return offsetArg.error;
+      const since = sinceArg.value !== undefined ? sinceArg.value : 0;
+      const limit = Math.min(500, Math.max(1, Math.floor(sugLimitArg.value !== undefined ? sugLimitArg.value : 50)));
+      const offset = offsetArg.value !== undefined ? offsetArg.value : 0;
       const rows = await atomsOf(handle, doc);
       const accepted = new Set(), rejected = new Map();
       for (const r of rows) {
@@ -4552,11 +4589,17 @@ async function withKernel(doc, fn) {
     }
     // **㉔ `list_comments` ✗**：**∴ 从日志推导 ✓**（**与服务端 `read_list_comments` 同形：
     //   **最新在前 ✓**；**`limit` 缺省 50／上限 500 ✓**；**`since_seq`／`actor`／`object_id` 过滤 ✓**；
-    //   **∴ `next_since` 取最大 seq ✓**）。
+    //   **∴ 分页**：交付「游标之后**最早**的 `limit` 条」（页内仍新的在前 ✓），
+    //   `next_since` 只推进到**已交付**的最大 seq ⇒ 照着它轮询**一条不漏** ✓（第 1441 轮修 ✗：
+    //   旧版把游标推到**全集**最大 ⇒ 更早的评论永久消失 ✓）**）。
     if (path === "/api/tools/list_comments") {
       const argOf = (k) => (body && body[k] != null ? body[k] : q.get(k));
-      const since = Math.max(0, Math.floor(Number(argOf("since_seq") ?? 0) || 0));
-      const limit = Math.min(500, Math.max(1, Math.floor(Number(argOf("limit") ?? 50) || 50)));
+      const sinceArg = p2Count(argOf("since_seq"), "since_seq");
+      if (sinceArg.error) return sinceArg.error;
+      const limitArg = p2Count(argOf("limit"), "limit");
+      if (limitArg.error) return limitArg.error;
+      const since = sinceArg.value !== undefined ? sinceArg.value : 0;
+      const limit = Math.min(500, Math.max(1, limitArg.value !== undefined ? limitArg.value : 50));
       const fActor = argOf("actor") != null ? String(argOf("actor")) : null;
       const fObjectId = argOf("object_id") != null ? String(argOf("object_id")) : null;
       const rows = await atomsOf(handle, doc);
@@ -4575,9 +4618,15 @@ async function withKernel(doc, fn) {
                         timestamp: a.timestamp != null ? a.timestamp : null });
       }
       const count = comments.length;
-      const nextSince = comments.length ? comments[comments.length - 1].seq : since;
-      comments.reverse();
-      return json({ ok: true, comments: comments.slice(0, limit), count,
+      const truncated = count > limit;
+      // **交付「最早的一页」，游标只推进到已交付的最大 seq** ✓（第 1441 轮与服务端同修 ✗）
+      //   **∴ 旧版 ✗**：`next_since` 取**匹配全集**的最大 seq，交付的却是**最新一页**
+      //     ⇒ 比这一页更早的评论**永远不会再被返回**（node 判据实测：5 条只收到 2 条 ✓）。
+      const page = comments.slice(0, limit);
+      const nextSince = page.length ? page[page.length - 1].seq : since;
+      page.reverse();   // **页内仍按新的在前** ✓（既有显示语义不动 ⇒ 老前端不受影响 ✓）
+      return json({ ok: true, comments: page, count, returned: page.length,
+                    truncated, limit,
                     next_since: nextSince, server: false, derived_from: "atoms" });
     }
 

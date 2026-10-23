@@ -313,5 +313,67 @@ check(strokeRes.status === 200 || String((strokeBody && strokeBody.reason) || ""
     JSON.stringify(strokeBody).slice(0, 120) + "）");
 console.log("  本地层 draw_stroke ⇒ " + strokeRes.status + "｜error=" + (strokeErr || "(无)"));
 
+// **★ ⑧ 评论的游标不能越过**没交付**的那几条 ✗ ★**（与服务端 `read_list_comments` 同形 ✓）
+//   **∴ 为什么 ✗**：本地层原来把 `next_since` 设成**匹配全集**的最大 seq，
+//     而交付的却是**最新一页** ✗ ⇒ 客户端照着游标轮询 ⇒
+//     **∴ 比这一页更早的评论永远收不到**（服务端同病，第 1441 轮已修 ✓）。
+//   **∴ 判据 ✗**：5 条评论、`limit:2` ⇒ 照游标轮询**必须收齐 5 条** ✓。
+//   **∴ 变异 ✗**：把游标改回「截断之前取最大」⇒ 本条必红 ✓。
+const postComment = (text) => call("/api/tools/comment", {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ text }),
+});
+for (let index = 0; index < 5; index++) await postComment(`巡检 ⑧ ${index}`);
+let cursor = 0;
+const received = [];
+for (let round = 0; round < 10; round++) {
+  const page = await (await call("/api/tools/list_comments", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ since_seq: cursor, limit: 2 }),
+  })).json();
+  const items = page.comments || [];
+  if (!items.length) break;
+  for (const item of items) received.push(item.text);
+  cursor = page.next_since;
+}
+check(new Set(received).size >= 5,
+  `照 next_since 轮询必须收齐 5 条评论（实测只收到 ${new Set(received).size} 条 ⇒ 游标越过了未交付的评论 ✗）`);
+// **⑧′ 满页信号 ＋ 恒等式**（结构量，不断条数 ✓）：`truncated` 必须等于「匹配总数 > 本页交付数」。
+const page8 = await (await call("/api/tools/list_comments", {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ limit: 2 }),
+})).json();
+check(page8.truncated === (page8.count > (page8.comments || []).length),
+  `truncated 必须等于 count > 本页条数 ✗（实测 ${page8.truncated}／count=${page8.count}）`);
+check(page8.returned === (page8.comments || []).length,
+  `returned 必须等于本页条数 ✗（实测 ${page8.returned}）`);
+
+// **★ ⑨ `find_atom` 必须回显**它真正用的 limit**✗ ★**（服务端 `read_find_atom` 同形 ✓）
+//   **∴ 为什么 ✗**：`.min(2000)` 静默生效 ⇒ 调用方请求 5000、拿到 2000，
+//     而回执里**既没有 `limit`、也没有游标** ⇒ 第 2001 条之后**永远取不到** ✗。
+const faBig = await (await call("/api/tools/find_atom", {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ limit: 5000 }),
+})).json();
+check(faBig.limit === 2000 && faBig.limit_requested === 5000 && faBig.limit_clamped === true,
+  `被夹过要留痕 ✗（实测 limit=${faBig.limit}／limit_requested=${faBig.limit_requested}／limit_clamped=${faBig.limit_clamped}）`);
+const faSmall = await (await call("/api/tools/find_atom", {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ limit: 2 }),
+})).json();
+check(faSmall.truncated === true && typeof faSmall.next_since === "number",
+  `截断时必须给游标，否则剩下的一条取不到 ✗（实测 ${JSON.stringify(faSmall).slice(0, 120)}）`);
+
+// **★ ⑩ 计数族参数读不出 ⇒ 必须响亮 ✗ ★**（服务端 `optional_count` 同形 ✓）
+//   **∴ 为什么 ✗**：`Number(body.since_seq)` 对 `-1`／`"abc"` 都能算出个数 ⇒
+//     旧版把 `-1` 静默当 0（= 返回全量）✗（静默降级形态 4 ✓）。
+const negRes = await call("/api/tools/find_atom", {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ since_seq: -1 }),
+});
+const negBody = await negRes.json().catch(() => ({}));
+check(negBody.ok === false && String(negBody.reason || "").includes("since_seq"),
+  `since_seq:-1 必须被拒绝并点名参数（不许静默当 0 ⇒ 返回全量 ✗；实测 ${negRes.status}／${JSON.stringify(negBody).slice(0, 120)}）`);
+
 if (bad.length) { console.error("❌ " + bad.join("｜")); process.exit(1); }
 console.log("  ✓ PWA 本地 API 在行为上成立（不是只看字符串 ✓）");
