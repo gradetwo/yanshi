@@ -410,9 +410,9 @@ pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         ));
     }
     // **目标尺寸** ✓：显式宽高 ⇒ 用它；`max_edge` ⇒ 等比缩到最长边；都没给 ⇒ 原尺寸 ✓。
-    let asked_width = optional_u64(args, "width").map(|value| value as u32);
-    let asked_height = optional_u64(args, "height").map(|value| value as u32);
-    let max_edge = optional_u64(args, "max_edge").map(|value| value as u32);
+    let asked_width = optional_count(args, "width")?.map(|value| value as u32);
+    let asked_height = optional_count(args, "height")?.map(|value| value as u32);
+    let max_edge = optional_count(args, "max_edge")?.map(|value| value as u32);
     if max_edge.is_some() && (asked_width.is_some() || asked_height.is_some()) {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,

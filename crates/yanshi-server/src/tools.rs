@@ -1048,9 +1048,11 @@ fn require_object<'a>(args: &'a Value, key: &str) -> Result<&'a Value> {
         .ok_or_else(|| missing(key))
 }
 
-fn optional_u64(args: &Value, key: &str) -> Option<u64> {
-    args.get(key).and_then(Value::as_u64)
-}
+// **`optional_u64` 已删** ✓（第 718 轮；外部审计 S-01 收尾）：
+//   它等于 `Value::as_u64`，而 `validate_args` 对 `ParamKind::Integer` **放行负数与整数浮点** ✗
+//   ⇒ 任何 `.unwrap_or(缺省)` 都成了**静默降级** ✓ ⇒ 现在**只剩** `optional_count`（会报错 ✓）。
+//   **⇒ 判据**：`crates/yanshi-server/tests/log_count_args.rs`（负数必须 `invalid_argument` ✓）；
+//     **⇒ 变异**：任一站点改回「取值 + 缺省」⇒ 那条判据红 ✓。
 
 /// 取出**计数族**的可选参数（`limit`／`offset`／`since_seq`／`to_seq` 这类 ✓）。
 ///
@@ -3189,7 +3191,7 @@ fn read_collect_diagnostics(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
     if let Some(include) = optional_bool(args, "include_thumbnail") {
         limits.include_thumbnail = include;
     }
-    if let Some(max_bytes) = optional_u64(args, "max_bytes") {
+    if let Some(max_bytes) = optional_count(args, "max_bytes")? {
         if max_bytes < 64 * 1024 {
             return Err(YanshiError::new(
                 ErrorCode::InvalidArgument,
@@ -12875,7 +12877,7 @@ fn kind_label(kind: &AtomKind) -> String {
 fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let doc_id = optional_str(args, "doc_id").unwrap_or_else(|| ctx.doc_id.clone());
     // 尺寸：缺了就给一句**能照做**的错 ✓（本轮刚给"不存在"加过可用值 ✓，同一个道理 ✓）。
-    let width = optional_u64(args, "width")
+    let width = optional_count(args, "width")?
         .ok_or_else(|| {
             YanshiError::new(
                 ErrorCode::InvalidArgument,
@@ -12883,7 +12885,7 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             )
         })?
         .clamp(1, 65536) as u32;
-    let height = optional_u64(args, "height")
+    let height = optional_count(args, "height")?
         .ok_or_else(|| {
             YanshiError::new(
                 ErrorCode::InvalidArgument,
@@ -17801,7 +17803,7 @@ fn write_revert_group(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
 /// **为什么不用循环 undo**：外部复测方的快照不恢复图层（`E765`/`E767`）⇒ 阶段回退没有可靠手段；
 /// 一句 `revert_to_seq` 比循环稳 ✓。
 fn write_revert_to_seq(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
-    let target = optional_u64(args, "seq").ok_or_else(|| {
+    let target = optional_count(args, "seq")?.ok_or_else(|| {
         YanshiError::new(
             ErrorCode::InvalidArgument,
             ErrorContext::detail("seq 必填（撤销 seq 大于它的笔迹）"),
@@ -19032,8 +19034,8 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **长批次中途的预览**（测试报告 §一.4）✓：`batch` 在一个循环里跑完 ✓ ⇒ 单线程服务下
     // 这期间别的写盘路径没有机会 ⇒ `render.png` 会冻结"整批时长" ✗（实测 300 笔 ⇒ 4~6 分钟 ✓）。
     // 这两个参数让**循环内部**周期性放行一次预览 ✓（默认 0 ⇒ **行为完全不变** ✓）。
-    let preview_every = optional_u64(args, "preview_every_n_strokes").unwrap_or(0);
-    let preview_interval_ms = optional_u64(args, "preview_interval_ms").unwrap_or(0);
+    let preview_every = optional_count(args, "preview_every_n_strokes")?.unwrap_or(0);
+    let preview_interval_ms = optional_count(args, "preview_interval_ms")?.unwrap_or(0);
     let mut last_preview = std::time::Instant::now();
     // batch 内的原子共用一个变更集（5.6：一个 batch 通常对应一个变更集）。
     let previous = ctx.changeset.replace(changeset.clone());

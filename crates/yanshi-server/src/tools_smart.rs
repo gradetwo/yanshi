@@ -1708,7 +1708,7 @@ pub(super) fn write_smart_edge_soften(ctx: &mut ToolContext<'_>, args: &Value) -
     // **按 `max_steps` 抽稀**（第 682 轮：矩形 1000px 时会有 ~740 个原子 ⇒ 每次落笔 740 次渲染）。
     // 注意是**等距抽稀**而不是砍尾巴 —— 砍尾巴会让边缘的后半段完全不被柔化，
     // 那是"看起来对了但一半没做"的静默降级。
-    let max_steps = optional_u64(args, "max_steps").unwrap_or(400) as usize;
+    let max_steps = optional_count(args, "max_steps")?.unwrap_or(400) as usize;
     let sampled: Vec<(f64, f64)> = if sampled.len() > max_steps && max_steps >= 2 {
         let stride = (sampled.len() as f64) / (max_steps as f64);
         (0..max_steps)

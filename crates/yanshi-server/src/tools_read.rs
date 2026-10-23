@@ -592,7 +592,9 @@ pub(super) fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     // 7.5：MCP 响应可选内嵌 image content ✓ —— **超限不再静默降级** ✗（第三方 MCP 实测报告 P0-1 ✓：
     // "画 50 笔之前看不到任何效果，只能盲画" ✗ ⇒ 调用方拿到 `yanshi://blob/…` 却**不知道为什么不给图** ✗）。
     // `max_px`（缺省 512 ✓）是本工具自己声明的上限；**超了就明说** ✓ + 给出出路 ✓，而不是只回地址 ✗。
-    let max_px = optional_u64(args, "max_px").unwrap_or(512).clamp(1, 8192) as f64;
+    let max_px = optional_count(args, "max_px")?
+        .unwrap_or(512)
+        .clamp(1, 8192) as f64;
     if include_image && (f64::from(preview.width) > max_px || f64::from(preview.height) > max_px) {
         // **方案 A：超限时默认就给一张缩小的图** ✓（报告 P0-1 ✓："画 50 笔之前看不到任何效果" ✗）。
         // 复用**既有**重采样与编码 ✓（`yanshi_core::resample::resample_rgba` ✓ +

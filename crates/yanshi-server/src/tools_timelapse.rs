@@ -447,21 +447,21 @@ pub(super) fn write_export_timelapse(ctx: &mut ToolContext<'_>, args: &Value) ->
     let doc_id = optional_str(args, "doc_id").unwrap_or_else(|| ctx.doc_id.clone());
 
     // 参数（越界值钳到可用范围，而不是让 ffmpeg 去报错）。
-    let fps = optional_u64(args, "fps")
+    let fps = optional_count(args, "fps")?
         .map(|value| value as u32)
         .unwrap_or(DEFAULT_FPS)
         .clamp(1, 60);
-    let frame_every = optional_u64(args, "frame_every");
+    let frame_every = optional_count(args, "frame_every")?;
     let duration_sec = args.get("duration_sec").and_then(Value::as_f64);
-    let width_cap = optional_u64(args, "width")
+    let width_cap = optional_count(args, "width")?
         .map(|value| value as u32)
         .unwrap_or(DEFAULT_WIDTH)
         .max(16);
-    let crf = optional_u64(args, "crf")
+    let crf = optional_count(args, "crf")?
         .map(|value| value as u32)
         .unwrap_or(DEFAULT_CRF)
         .min(51);
-    let max_frames = optional_u64(args, "max_frames")
+    let max_frames = optional_count(args, "max_frames")?
         .map(|value| value as usize)
         .unwrap_or(DEFAULT_MAX_FRAMES)
         .max(1);
