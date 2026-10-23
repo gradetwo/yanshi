@@ -985,6 +985,20 @@ impl RegionRender {
     }
 }
 
+/// **超预算时该丢哪些 tile** ✓（第 696 轮）：按 `recency` **从最久没用的开始** ✓
+///
+/// **⇒ 为什么需要它**：第 693 轮把"年龄"从 `tiles` 顺序里**拆出来**了 ✓ ⇒
+///   `tiles` 的顺序**不再有意义** ✗ ⇒ 而淘汰仍然是 `merged.drain(0..drop)`（＝按插入顺序 ✗）
+///   ⇒ **∴ 那样就退化成 FIFO** ✓（反复用到的 tile 也会被丢 ✗）。
+/// **⇒ 判据**（`below_eviction_tests`）：`[a, b, c]` 丢 2 ⇒ 必是 `{a, b}`（**最久没用的两个** ✓）；
+///   变异：改成丢**最后**两个（`{b, c}`）⇒ 红 ✓。
+fn keys_to_evict(
+    recency: &std::collections::VecDeque<(i64, i64)>,
+    count: usize,
+) -> std::collections::HashSet<(i64, i64)> {
+    recency.iter().take(count).copied().collect()
+}
+
 impl BelowTiles {
     /// **刷新一个 tile 的年龄** ✓（第 693 轮）：**只动 `recency`，不动 `tiles`** ✓
     /// ⇒ 命中路径**不再需要独占**那份 tile 表 ⇒ 与 `by_sig` 共享也**不必复制** ✓。
@@ -2807,10 +2821,28 @@ impl Renderer {
                                 merged.push(old);
                             }
                         }
-                        // **丢最旧 ✓**（**超出块数预算 ⇒ 从前面丢 ✓**）。
+                        // **丢"最久没用"的** ✓（第 696 轮）：`tiles` 顺序自第 693 轮起**没有语义** ✗
+                        //   ⇒ 仍按插入顺序丢就等于**退化成 FIFO** ✗（反复用到的会被丢掉 ✓）
+                        //   ⇒ 按 `recency`（只放 key ✓）挑最久没用的那几个 ✓；新写入的 key 排在最后 ✓。
                         if merged.len() > BELOW_TILE_BUDGET {
                             let drop = merged.len() - BELOW_TILE_BUDGET;
-                            merged.drain(0..drop);
+                            // **旧的 `recency` 必须在这里读** ✓（`carried_recency` 是后面才算的 ✗）
+                            let mut order = guard
+                                .as_ref()
+                                .map(|c| c.recency.clone())
+                                .unwrap_or_default();
+                            for (key, _) in merged.iter() {
+                                if !order.contains(key) {
+                                    order.push_back(*key);
+                                }
+                            }
+                            let evict = keys_to_evict(&order, drop);
+                            merged.retain(|(key, _)| !evict.contains(key));
+                            if merged.len() > BELOW_TILE_BUDGET {
+                                // **兜底**：`recency` 与 `merged` 对不齐时仍要守住预算 ✓
+                                let extra = merged.len() - BELOW_TILE_BUDGET;
+                                merged.drain(0..extra);
+                            }
                         }
                         // **★ 决定性 ✗ ★**（第 785 轮 ✓）：**∴ 把**要存的键**与**要存的空键**打出来 ✗**
                         //   ⇒ **∴ 与读取侧的 `want_tiles` **对照 ✗** ⇒ **∴ 一次看出**坐标系差异 ✓**。
@@ -3025,7 +3057,24 @@ impl Renderer {
                         // **丢最旧 ✓**（**超出块数预算 ⇒ 从前面丢 ✓**）。
                         if merged.len() > BELOW_TILE_BUDGET {
                             let drop = merged.len() - BELOW_TILE_BUDGET;
-                            merged.drain(0..drop);
+                            // **按 `recency` 丢"最久没用"的** ✓（第 696 轮）：`tiles` 顺序已无意义 ✗
+                            //   ⇒ 补上 `recency` 里没有的 key（新写入的 tile 还没 touch 过 ✓）
+                            //   排在最后 ⇒ **它们最后才被丢** ✓。
+                            // **above 这一路没有 `by_sig`／recency** ✓（它每次都整体重建 ✓）
+                            //   ⇒ 这里用空序列 ⇒ 回退到插入顺序 ✓（行为与第 696 轮之前一致 ✓）。
+                            let mut order = std::collections::VecDeque::new();
+                            for (key, _) in merged.iter() {
+                                if !order.contains(key) {
+                                    order.push_back(*key);
+                                }
+                            }
+                            let evict = keys_to_evict(&order, drop);
+                            merged.retain(|(key, _)| !evict.contains(key));
+                            if merged.len() > BELOW_TILE_BUDGET {
+                                // **兜底**：`recency` 与 `merged` 对不齐时仍要守住预算 ✓
+                                let extra = merged.len() - BELOW_TILE_BUDGET;
+                                merged.drain(0..extra);
+                            }
                         }
                         let shared = std::sync::Arc::new(merged);
                         *guard = Some(BelowTiles {
@@ -8820,6 +8869,35 @@ mod tests {
 //
 // **能红能绿**：改之前（`carried.clear()`）撞上限会把 8 组**全清** => 下面第一条断言
 // （`len() == BELOW_SIG_GROUPS`）立刻红 ✓；改之后只掉一组、且**刚插入的那组必须在** ✓。
+/// **淘汰顺序的判据** ✓（第 696 轮）：超预算时**先丢最久没用的** ✓，不是"先丢最早插入的" ✗
+///
+/// **⇒ 为什么需要它**：第 693 轮把"年龄"从 `tiles` 顺序里拆出去之后，`tiles` 的顺序
+/// **不再有语义** ✗ ⇒ 而淘汰若仍按插入顺序，就等于**退化成 FIFO** ✗（反复用到的会被丢 ✓）。
+///
+/// **变异**：把 `keys_to_evict` 改成取**最后** `count` 个（`rev().take()`）⇒ 红 ✓。
+#[cfg(test)]
+mod below_eviction_tests {
+    use super::keys_to_evict;
+    use std::collections::VecDeque;
+
+    #[test]
+    fn the_least_recently_used_keys_go_first() {
+        let mut recency: VecDeque<(i64, i64)> = VecDeque::new();
+        recency.push_back((0, 0)); // 最久没用
+        recency.push_back((1, 0));
+        recency.push_back((2, 0)); // 最近用过
+        let evicted = keys_to_evict(&recency, 2);
+        assert_eq!(evicted.len(), 2, "要丢 2 个");
+        assert!(evicted.contains(&(0, 0)), "最久没用的那个必须先丢");
+        assert!(evicted.contains(&(1, 0)), "第二久没用的也要丢");
+        assert!(!evicted.contains(&(2, 0)), "最近用过的那个不许被丢");
+        // 丢 0 个时不许丢任何东西 ✓
+        assert!(keys_to_evict(&recency, 0).is_empty());
+        // 丢得比条目还多时，全丢 ✓（不许 panic ✓）
+        assert_eq!(keys_to_evict(&recency, 99).len(), 3);
+    }
+}
+
 #[cfg(test)]
 mod by_sig_budget_tests {
     use super::{evict_one_sig_group_with, SigTiles, BELOW_SIG_GROUPS};
