@@ -15,6 +15,19 @@
 # 退出码：判据自己的退出码（0 通过 / 1 产品失败 / 3 不可判）
 
 set -uo pipefail
+
+# **画布尺寸必须与 CI 的 runner 一致** ✓（第 661 轮：这一条是用一次假红换来的）
+#   **⇒ 症状**：`run-criteria.sh`（CI）用 **320×240**，而这里原来是 **64×64** ✗
+#   ⇒ 任何按 ≥320×240 写夹具的判据**在 CI 绿、在本机假红** ✓
+#   （`tool-snapshot-roundtrip.mjs` 的「第二笔画不出来」就是这条：笔迹 x 40..160 落在 64×64 外 ✓）
+#   **⇒ 所以**：把 CI 那两个数**读出来**，不一致就 `exit 3`（**不可判 ≠ 产品失败** ✓）。
+CI_CANVAS=$(grep -oE -- '--width [0-9]+ --height [0-9]+' scripts/run-criteria.sh 2>/dev/null | head -1)
+LOCAL_CANVAS="--width 320 --height 240"
+if [[ -n "$CI_CANVAS" && "$CI_CANVAS" != "$LOCAL_CANVAS" ]]; then
+  echo "  ⊘ 不可判：本机画布（${LOCAL_CANVAS}）与 CI（${CI_CANVAS}）不一致 ⇒ 判据结论不能互比" >&2
+  echo "     改 scripts/run-criteria-local.sh 里的两处，或改 CI 的 runner —— 但**先对齐** ✓" >&2
+  exit 3
+fi
 cd "$(dirname "$0")/.."
 
 CRIT="${1:?用法: $0 <判据脚本> [参数...]}"
