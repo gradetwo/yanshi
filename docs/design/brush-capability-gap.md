@@ -16925,3 +16925,23 @@ wall=901 s｜mp4=45766 字节｜ffprobe nb_frames=17 ✓
 - 第二次**带两行注释做锚点**（唯一 ✓）⇒ `✗ 回执的 offset 没回显（请求 2，回 0）` ⇒ **退出码 1** ✓；
 - 恢复后复跑 ✓ 绿。
 **⇒ 教训**：`replace(..., 1)` 只在**锚点唯一**时安全 —— 仓规早写了「替换前 assert count == 1」，**我这次违反了** ✗。
+
+## 四百二十七、外部 **D1 立住了** ✓（`paint_mask` 的 `deposited`，判据＋变异都过）
+
+**⇒ 上一轮的错误**：我用 `brush_stroke` 的 `painted_pixels` 做判据 ⇒ **变异不红** ⇒
+说明它**不走** `brush_deposit_mask` ✗ ⇒ 那条判据**覆盖不到**我改的代码 ✓（已写进提交信息）。
+
+**⇒ 正确判据**（`scripts/tool-paint-mask-large-single-dab.mjs`）：
+`create_mask` 建蒙版 ⇒ `paint_mask` **单点** ＋ `size=44`（dab 间距 ≈ **11**）⇒ 断言 `deposited === true` ✓
+```
+画布 64×64｜单点 (32,32)｜size=44（dab 间距 ≈ 11.0）｜deposited=true｜ok=true
+✓ paint_mask：单点 + 大笔刷真的沉积了（兜底位移随 size ⇒ 跨过 dab 间距）
+```
+**⇒ 变异**（`deposit_nudge` 退回写死 `4.0`）：
+```
+deposited=false｜ok=true
+✗ 单点 + 大笔刷**零沉积**（deposited=false）⇒ 兜底位移小于 dab 间距（外部 D1：写死 4.0）
+⇒ 退出码=1  ✓（恢复后复跑绿 ✓）
+```
+**⇒ 两个 API 细节**（判据写错过两次）：`create_mask` **没有** `layer_id` 参数；`paint_mask` **没有** `brush` 参数
+（有 `preset`）⇒ 报错信息里会直接列出可用参数 ✓（这正是仓规「看到 ok=false 先读 error」✓）。
