@@ -684,8 +684,14 @@ pub(super) fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Res
 }
 
 pub(super) fn read_get_log(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
-    let since = optional_u64(args, "since_seq").unwrap_or(0);
-    let limit = optional_u64(args, "limit").unwrap_or(200).min(2000) as usize;
+    // **计数族必须走 `optional_count`** ✓（第 716 轮；外部审计 S-01）
+    //   **⇒ 缺陷**：`optional_u64` = `Value::as_u64` ⇒ 对 `-1` 与 `5.0` **一律 `None`** ✗
+    //     而 `validate_args` 对 `ParamKind::Integer` **放行**这两类 ✓
+    //     ⇒ `.unwrap_or(缺省)` **静默接管** ✗ ⇒ `since_seq: -1` 被当成 `0`（**返回全量、回执一切正常** ✓）
+    //     而 `limit: -5` 被当成 `200` ✓ —— 正是本仓的「静默降级形态 4」✓。
+    //   **⇒ 修法**：用审计补丁带来的 `optional_count`（负数报错、整数浮点接受 ✓）。
+    let since = optional_count(args, "since_seq")?.unwrap_or(0);
+    let limit = optional_count(args, "limit")?.unwrap_or(200).min(2000) as usize;
     let kind_filter = optional_str(args, "kind");
     let actor_filter = optional_str(args, "actor");
     let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
