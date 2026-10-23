@@ -288,7 +288,14 @@ fn main() -> Result<()> {
     // 可能是 `mpeg4`/`mpeg2video`（探测命令当时**不带**这两个参数 ⇒ 探测通过 ✓、
     // 正式导出因不认识而失败 ✗ ⇒ 又回到"宣布成功、只留 mp4 头"那个老症状）。
     // 现在**探测与导出共用同一个 `encoder_quality_args`** ⇒ 两条命令不可能漂移 ✓。
-    let encoder = pick_encoder();
+    // **落盘模式不要探测编码器** ✓（第 700 轮）：`pick_encoder` 会跑 `ffmpeg -encoders` ✗
+    //   ⇒ 在没有 ffmpeg 的机器（CI ✓）上会**先失败在这里** ✓ ⇒ 所以先分流 ✓。
+    let raw_dir_early = std::env::var_os("YANSHI_TIMELAPSE_RAW_DIR").map(std::path::PathBuf::from);
+    let encoder = if raw_dir_early.is_some() {
+        String::new()
+    } else {
+        pick_encoder()
+    };
     let mut ffmpeg = Command::new("ffmpeg");
     ffmpeg.args([
         "-y",
@@ -309,7 +316,12 @@ fn main() -> Result<()> {
         &encoder,
     ]);
     ffmpeg.args(encoder_quality_args(&encoder));
-    let mut ffmpeg = ffmpeg
+    // **落盘模式不 spawn ffmpeg** ✓（第 700 轮）：CI 上没有 ffmpeg ✗ ⇒ 先 spawn 必失败 ✓
+    let raw_dir = raw_dir_early;
+    let mut ffmpeg = if raw_dir.is_some() {
+        None
+    } else {
+        Some(ffmpeg
         .args(["-pix_fmt", "yuv420p", &out_mp4])
         .stdin(Stdio::piped())
         // **ffmpeg 的 stderr 必须留档** ✓（第 599 轮）：原来 `Stdio::null()` **把它丢了** ✗
@@ -322,8 +334,30 @@ fn main() -> Result<()> {
         .spawn()
         .map_err(|e| {
             anyhow!("起不来 ffmpeg（{e}）⇒ 这个导出需要一个**外部 ffmpeg**，请先装上或放进 PATH")
-        })?;
-    let mut stdin = ffmpeg.stdin.take().expect("stdin 是 piped");
+        })?)
+    };
+    // **设了 `YANSHI_TIMELAPSE_RAW_DIR` ⇒ 不出片，只按帧落盘** ✓（第 700 轮；给没有 ffmpeg 的 CI 用 ✓）
+    let mut sink = match raw_dir.clone() {
+        Some(dir) => {
+            std::fs::create_dir_all(&dir)
+                .with_context(|| format!("建帧目录失败：{}", dir.display()))?;
+            eprintln!(
+                "仅落盘模式：不出 mp4，只把 {}×{} 的 RGB24 帧写进 {}",
+                layout.out_w,
+                layout.out_h,
+                dir.display()
+            );
+            FrameSink::Raw { dir, next: 0 }
+        }
+        None => FrameSink::Pipe(
+            ffmpeg
+                .as_mut()
+                .expect("非落盘模式必然 spawn 过 ffmpeg")
+                .stdin
+                .take()
+                .expect("stdin 是 piped"),
+        ),
+    };
 
     let mut frames = 0usize;
     // **缩小后的 RGB 缓冲**（复用，每帧整幅重算 ⇒ 第 568 轮先保证正确）
@@ -395,7 +429,7 @@ fn main() -> Result<()> {
         if i >= start_idx && (i + 1 - start_idx) % frame_every == 0 {
             push_frame(
                 &mut timeline,
-                &mut stdin,
+                &mut sink,
                 &mut frames,
                 layout,
                 &mut account,
@@ -420,7 +454,7 @@ fn main() -> Result<()> {
     let frames_before_tail = frames;
     push_frame(
         &mut timeline,
-        &mut stdin,
+        &mut sink,
         &mut frames,
         layout,
         &mut account,
@@ -441,8 +475,29 @@ fn main() -> Result<()> {
             );
         }
     }
-    drop(stdin);
-    let status = ffmpeg.wait().context("等 ffmpeg 失败")?;
+    drop(sink);
+    let status = match ffmpeg.as_mut() {
+        Some(child) => child.wait().context("等 ffmpeg 失败")?,
+        None => {
+            // **落盘模式没有编码器** ✓：帧数校验照做 ✓（`ensure_frames_written` ✓）
+            ensure_frames_written(
+                frames,
+                start_idx,
+                end_idx,
+                frame_every,
+                layout.out_w,
+                layout.out_h,
+            )?;
+            println!(
+                "  {} 帧已落盘（{}）｜仅落盘模式不编码 mp4",
+                frames,
+                raw_dir
+                    .as_ref()
+                    .map_or_else(String::new, |dir| dir.display().to_string())
+            );
+            return Ok(());
+        }
+    };
     if !status.success() {
         bail!(
             "ffmpeg 退出码 {:?} ⇒ 没有产出可用的视频。ffmpeg 的 stderr 在 {}：\n{}",
@@ -561,9 +616,43 @@ struct Account {
     frame_render_ns: Vec<u128>,
 }
 
+/// **帧的去处** ✓（第 700 轮）：默认写进 `ffmpeg` 管道；设 `YANSHI_TIMELAPSE_RAW_DIR` 时**按帧落盘** ✓
+///
+/// **⇒ 为什么要它** ✗：`check-timelapse-*.mjs` 那几条判据要 `ffmpeg`／`ffprobe` ✗
+/// ⇒ **CI 上没有** ⇒ 它们只能 `exit(3)` **跳过** ⇒ **CI 上一分覆盖都没有** ✗（第 663 轮记的账 ✓）。
+/// ⇒ 有了"落盘"这条，判据可以**只读文件**数帧／看颜色 ⇒ **在 CI 上真跑** ✓。
+enum FrameSink {
+    /// 写进 `ffmpeg` 的 stdin（正常出片 ✓）。
+    Pipe(ChildStdin),
+    /// 按帧落盘：`<dir>/frame-0001.rgb`（**RGB24，尺寸 = 输出尺寸** ✓）。
+    Raw {
+        dir: std::path::PathBuf,
+        next: usize,
+    },
+}
+
+impl FrameSink {
+    /// 交一帧；返回**这一帧的路径**（管道时是 `None` ✓）。
+    fn write(&mut self, rgb: &[u8]) -> Result<Option<std::path::PathBuf>> {
+        match self {
+            Self::Pipe(pipe) => {
+                pipe.write_all(rgb).context("写帧失败")?;
+                Ok(None)
+            }
+            Self::Raw { dir, next } => {
+                let path = dir.join(format!("frame-{:04}.rgb", *next + 1));
+                std::fs::write(&path, rgb)
+                    .with_context(|| format!("写帧落盘失败：{}", path.display()))?;
+                *next += 1;
+                Ok(Some(path))
+            }
+        }
+    }
+}
+
 fn push_frame(
     timeline: &mut yanshi_timelapse::Timeline,
-    stdin: &mut ChildStdin,
+    sink: &mut FrameSink,
     frames: &mut usize,
     layout: Layout,
     account: &mut Account,
@@ -599,7 +688,7 @@ fn push_frame(
     }
     let rgb = &scaled[..];
     let t_write = Instant::now();
-    stdin.write_all(rgb).context("写帧到 ffmpeg 失败")?;
+    sink.write(rgb)?;
     account.write_ns += t_write.elapsed().as_nanos();
     *frames += 1;
     Ok(())
