@@ -970,6 +970,19 @@ impl AtomLog {
         self.atoms.is_empty()
     }
 
+    /// **把 `next_seq` 至少推到 `seq`** ✓（第 752 轮；台账三百三十的**正确修法**）
+    ///
+    /// **⇒ 为什么要它** ✗：另一个进程（有它自己的计数器 ✓）可能已经把日志写到更后面 ✓
+    /// ⇒ 本进程若照自己的 `next_seq` 分配 ⇒ **撞号** ✓ ⇒ 盘上出现重复 `seq` ✓
+    /// （打开时只能靠 `repair_duplicate_seqs` 补救 ✓）。
+    /// **⇒ 为什么不是"拒绝写"** ✗：第 749 轮试过 ✗ ⇒ 把**合法的两个写者**打回去了 ✓
+    /// （`tool-brush-parity-jitter` 就是这样红的 ✓）⇒ **只把号推上去**，不动已有原子 ✓。
+    pub fn bump_next_seq_at_least(&mut self, seq: Seq) {
+        if self.next_seq <= seq {
+            self.next_seq = seq + 1;
+        }
+    }
+
     /// 下一个待分配的 seq。
     pub fn next_seq(&self) -> Seq {
         self.next_seq

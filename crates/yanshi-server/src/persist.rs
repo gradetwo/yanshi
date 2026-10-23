@@ -286,6 +286,41 @@ impl FileStore {
     /// ⇒ 大日志（几十～上百 MB）下峰值内存 ≈ **2× 文件大小** ✗（整文本 ＋ `Vec<Atom>` 同时活着 ✓）。
     /// 现在逐行读 ✓ ⇒ 峰值 ≈ **1× 原子 ＋ 一行** ✓。
     ///
+    /// 盘上最后一条原子的 `seq`（第 752 轮）：只读尾部 8 KiB 并解析最后一整行。
+    /// `atoms.jsonl` 可能几十 MB，所以不整份读。没有文件／空文件 ⇒ `None`。
+    pub(crate) fn last_seq_on_disk(&self, doc_id: &str) -> Result<Option<u64>> {
+        use std::io::{Read as _, Seek as _, SeekFrom};
+        let path = self.atoms_path(doc_id);
+        let mut file = match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(io_error(&path, error)),
+        };
+        let len = file
+            .metadata()
+            .map_err(|error| io_error(&path, error))?
+            .len();
+        if len == 0 {
+            return Ok(None);
+        }
+        let window = len.min(8 * 1024);
+        file.seek(SeekFrom::Start(len - window))
+            .map_err(|error| io_error(&path, error))?;
+        let mut tail = String::new();
+        file.read_to_string(&mut tail)
+            .map_err(|error| io_error(&path, error))?;
+        for line in tail.lines().rev() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(atom) = serde_json::from_str::<Atom>(trimmed) {
+                return Ok(Some(atom.seq));
+            }
+        }
+        Ok(None)
+    }
+
     /// **语义逐条保持** ✓（不许悄悄改行为 ✗）：
     ///   * 文件不存在 ⇒ 空列表 ✓；
     ///   * 跳过空行 ✓；

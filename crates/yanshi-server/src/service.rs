@@ -3570,7 +3570,28 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
     /// **逐条推进水位** ✓：每写完一条立刻记一条 ⇒ 中途失败（磁盘满 ✓）后
     /// **下一次从断点续写** ✓ —— 不重复写 ✗、不漏写 ✓（失败本身由 `?` 抛出 ✓，不静默 ✓）。
     /// **没有持久层** ⇒ 只把水位推到 HEAD ✓（没东西可写 ✓，语义保持一致 ✓）。
-    fn flush_journal(&mut self, doc_id: &str) -> Result<()> {
+    /// **提交前把 `next_seq` 与盘上对齐** ✓（第 752 轮；台账三百三十）
+    ///
+    /// **⇒ 修的是哪件事**：另一个进程（自己的计数器 ✓）可能已经把日志写到更后面 ✓
+    /// ⇒ 本进程照自己的 `next_seq` 分配 ⇒ **撞号** ✓ ⇒ 盘上重复 `seq` ✓。
+    /// **⇒ 修法**：分配**之前**把 `next_seq` 至少推到"盘上最后一条 + 1" ✓
+    /// ⇒ **两个写者都能继续写** ✓、**号不撞** ✓（比第 749 轮"拒绝第二个写者"强 ✓）。
+    /// **⇒ 代价（如实说）**：另一个写者的原子**不会**进入本进程的内存日志 ✓
+    /// ⇒ 要看到它们仍需重新打开文档 ✓（真正的多写者一致性还得靠文件锁 ✓）。
+    pub fn sync_next_seq_from_disk(&mut self, doc_id: &str) -> Result<()> {
+        let Some(persist) = &self.persist else {
+            return Ok(());
+        };
+        let Some(last) = persist.last_seq_on_disk(doc_id)? else {
+            return Ok(());
+        };
+        if let Some(document) = self.documents.get_mut(doc_id) {
+            document.bump_next_seq_at_least(last);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn flush_journal(&mut self, doc_id: &str) -> Result<()> {
         let not_open = || {
             YanshiError::new(
                 ErrorCode::ReferenceNotFound,

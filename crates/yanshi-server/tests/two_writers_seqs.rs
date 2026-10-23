@@ -75,7 +75,8 @@ fn two_writers_on_the_same_root_do_not_duplicate_sequences() {
     appended.push('\n');
     std::fs::write(&journal, appended).expect("写回日志");
 
-    // ③ 本进程（**内存里没有那条**）再画一笔 ⇒ 会复用刚被"别的进程"占掉的号 ✓
+    // ③ 本进程（**内存里没有那条**）再画一笔 ⇒ **必须成功** ✓，而 `seq` **必须不撞** ✓
+    //   （第 752 轮修法：分配前把 `next_seq` 推到"盘上最后一条 + 1" ✓ —— 不是拒绝写 ✗）
     draw(&mut first, "s_after_other_process");
     drop(first);
 
@@ -124,8 +125,12 @@ fn two_writers_on_the_same_root_do_not_duplicate_sequences() {
         raw_seqs.len(),
         raw_total - raw_seqs.len()
     );
-    assert!(
-        raw_total > raw_seqs.len(),
-        "这一版没能复现「写时撞号」（盘上无重复）⇒ 判据没测到东西，先看注入是否生效"
+    assert_eq!(
+        raw_total,
+        raw_seqs.len(),
+        "盘上出现重复 seq（{raw_total} 条原子、{} 个不同）⇒ 分配前没与盘上对齐",
+        raw_seqs.len()
     );
+    // **第 748 轮这里断的是"盘上必须有重复"** ✓（复现用 ✓）；第 752 轮修好之后
+    //   **反过来**：盘上**必须没有重复** ✓ ⇒ 那条复现断言已换成下面的唯一性断言 ✓。
 }

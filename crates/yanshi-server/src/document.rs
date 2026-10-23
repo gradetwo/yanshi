@@ -774,6 +774,16 @@ impl Document {
     }
 
     /// 提交原子（服务端权威路径）。
+    /// **把 `next_seq` 至少推到 `seq`** ✓（第 752 轮；台账三百三十的正确修法）
+    ///
+    /// 谁调它：`Workspace::sync_next_seq_from_disk`，每次提交分配 `seq` 之前。
+    /// 为什么只推号、不拒绝：见 `AtomLog::bump_next_seq_at_least` 的注释
+    /// （第 749 轮"拒绝第二个写者"把 `tool-brush-parity-jitter` 弄红了）。
+    pub fn bump_next_seq_at_least(&mut self, seq: u64) {
+        self.log.bump_next_seq_at_least(seq);
+    }
+
+    /// 提交一个原子（actor 记作 `system`）。
     pub fn commit(&mut self, atom: Atom) -> Result<CommitResult> {
         self.commit_as(atom, "system", false, None)
     }
