@@ -17459,3 +17459,30 @@ R-09（`Retouch` 暗化因子**乘了两次** ⇒ `darken²`）✓、R-10（RAW 
 
 **⇒ 所以本轮不改 `above_ready`** ✓：改了也**没有可观测差异**（无鉴别力 ⇒ 安慰剂 ✗）。
 **⇒ 但把那个夹具留下了** ✓ —— 它现在钉住"上方层只覆盖一部分时 `above` 仍要命中" ✓（这正是 R-01 ① 的配套场景 ✓）。
+
+## 四百四十九、外部全仓审计（2026-10-23）：**S 系列 10/12 修完**，且 **CI 重新变绿**（第 741 轮）
+
+**⇒ CI 绿点**：`42e965b3` **completed/success** ✓（上一轮 `eb5c369b` 的 failure 被它修掉）。
+
+**⇒ 这一批修掉了什么**（每条都有判据＋变异）：
+| 编号 | 内容 | 提交 |
+|---|---|---|
+| S-01 | 计数参数全部改走 `optional_count`（16 处），**删掉** `optional_u64` | `404964a3`／`b0f067e5` |
+| S-02 | 声明与实现的**双向不对称**四处：`sensors`／`brush`（读了没声明）、`group_id`／`message`（声明了没读） | `361e8cc7`／`1c8dde36`／`29196bca`／`26df50aa` |
+| S-03 | 「全部重放失败」也记账（`replayed > 0 \|\| unreplayable > 0`） | `e7fec3bf` |
+| S-04 | `import_project` 改名时 **meta 落在新 id 下**（原写进**原文档目录** ⇒ 跨文档污染） | `60a527f0` |
+| S-05 | WebSocket `subscriber` 改 **`Arc<AtomicU64>`** 共享（原来 `move` 闭包拿到副本 ⇒ 退订漏、`delete_document` 永久报占用） | `d632fd7c` |
+| S-06 | `resample` 套画布上限（否则 60000² 要 14.4 GB）；`POST /api/documents` 宽高**校验**（原来静默回退＋`as u32` 截断） | `59246ce3`／`f4912b2d` |
+| S-07 | 分页四处：`get_log` 游标取**本页最大 seq**；`list_atoms` 用**多收一条**判截断；`limit: 0` 不报截断；浏览器端 `get_diff` **字段名对齐** | `10a1374d`／`1351b806`／`3cbea73e`／`f8b4d24f`→`42e965b3` |
+| S-08 | MCP stdio **每行 64 KiB 上限**（原来 `lines()` 无上限 ⇒ 一行吃光内存） | `8bf8c6d9` |
+| S-09 | `GET /api/atoms` 的 `since`／`limit` 非法值 ⇒ **400**（原来静默回退） | `eb5c369b` |
+| S-12 | `thumb_size` 超 `u32` ⇒ **报错**（原来 `as u32` 回绕成 0 ⇒ 要缩略图却拿到"不要"） | `0a60737b` |
+
+**⇒ 本轮最贵的一课（值得单列）**：`check-get-diff-parity` 在本机绿、**CI 红** ✓ ——
+因为我改的 `web/api-local.js` 是 **`pwa-sync-viewer.mjs` 从 `crates/yanshi-http/assets/` 拷出来的** ✓
+⇒ CI 一 sync 就把我的改动**覆盖回旧版** ✗ ⇒ **改生成物没用，要改源** ✓（`42e965b3`）。
+**⇒ 另一课**：`mcp-import-project-rename.mjs` 原来断言的正是 **S-04 修掉的污染** ✓
+⇒ **判据会替旧缺陷站岗** ✓ ⇒ 修缺陷时要**回头改那条判据** ✓。
+
+**⇒ 仍未做**：**S-10**（`web/` 下两份不一致的 Service Worker）、**S-11**（本地 `resample` 把 raw RGBA 硬当 PNG）、
+**R-06**（`yanshi-gpu` 的 `map_async` Panic／泄漏 —— **边界内只定位不修**）、**R-12**（探针实参顺序，LOW）。
