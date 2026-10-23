@@ -985,6 +985,31 @@ impl RegionRender {
     }
 }
 
+/// **RAW 源纹理上"被静默忽略"的参数清单** ✓（第 709 轮；外部审计 R-10）
+///
+/// **⇒ 它守什么**：`Rgba8` 源支持 `mode: "patch"`／`brightness_match`／`brightness_ramp` ✓，
+///   而 RAW（线性）源那条分支**只做平铺采样** ✗ ⇒ 这三个参数**没有生效** ✓。
+///   **⇒ 静默不可接受** ✓ ⇒ 这里列出它们，调用点负责**记进 `warnings`** ✓。
+/// **⇒ 判据**（`raw_texture_params_tests`）：全开 ⇒ 三项齐全；全关 ⇒ 空 ✓。
+/// **变异**：返回空 `Vec`（回到静默）⇒ 红 ✓。
+fn raw_texture_ignored_params(
+    mode: &str,
+    has_brightness_match: bool,
+    has_brightness_ramp: bool,
+) -> Vec<&'static str> {
+    let mut ignored = Vec::new();
+    if mode == "patch" {
+        ignored.push("mode: \"patch\"");
+    }
+    if has_brightness_match {
+        ignored.push("brightness_match");
+    }
+    if has_brightness_ramp {
+        ignored.push("brightness_ramp");
+    }
+    ignored
+}
+
 /// **`Retouch` 的落笔颜色** ✓（第 704 轮；外部审计 R-09）
 ///
 /// **⇒ 它守什么**：`deposit` 的暗化因子是 `1 - deposit*0.35` ✓，**只能乘一次** ✓。
@@ -4190,6 +4215,23 @@ impl Renderer {
                                 }
                                 #[cfg(feature = "raw")]
                                 DecodedPixels::Linear(w, h, values) => {
+                                    // **RAW 源当前只做平铺采样** ✓ ⇒ 那几个参数**没生效** ✗
+                                    //   （第 709 轮；外部审计 R-10）
+                                    //   **⇒ 缺陷**：`mode: "patch"`／`brightness_match`／`brightness_ramp`
+                                    //     在 `Rgba8` 源上都支持 ✓，而在 RAW 源上**被静默忽略** ✗
+                                    //     ⇒ 调用方以为生效了 ✓（本仓头号对手「静默降级」✓）。
+                                    //   **⇒ 本轮只做"不许静默"** ✓：把它们记进 `track.unsupported`（→ 回执的
+                                    //     `warnings` ✓）。**真正的实现**留作后续 ✓（那是纹理合成算法的事 ✓）。
+                                    for ignored in raw_texture_ignored_params(
+                                        &spec.mode,
+                                        spec.brightness_match,
+                                        spec.brightness_ramp.is_some(),
+                                    ) {
+                                        track.unsupported.push(format!(
+                                            "RAW 源纹理暂不支持 {ignored} ⇒ 本次**未生效**（对象 {}）",
+                                            object.id
+                                        ));
+                                    }
                                     let (w, h) = (*w as i64, *h as i64);
                                     let sample = |x: i32, y: i32| -> LinearRgba {
                                         let (jx, jy) = tile_shift(x, y);
@@ -8955,6 +8997,33 @@ mod tests {
 /// **⇒ 判据**：`deposit = 1.0` 时颜色必须 ≈ `straight × 0.65` ✓
 ///   —— "乘两次"会给 `× 0.4225` ✓ ⇒ **有鉴别力** ✓。
 /// **变异**：在 `retouch_color` 里再乘一次 `darken` ⇒ 红 ✓。
+/// **RAW 源纹理上被忽略的参数必须被列出来** ✓（第 709 轮；外部审计 R-10）
+///
+/// **⇒ 判据**：全开 ⇒ 三项齐全且**顺序稳定** ✓；全关 ⇒ 空 ✓。
+/// **变异**：让函数恒返回空 `Vec`（回到静默）⇒ 红 ✓。
+#[cfg(test)]
+mod raw_texture_params_tests {
+    use super::raw_texture_ignored_params;
+
+    #[test]
+    fn the_params_that_raw_textures_ignore_are_listed() {
+        let all = raw_texture_ignored_params("patch", true, true);
+        assert_eq!(
+            all,
+            vec!["mode: \"patch\"", "brightness_match", "brightness_ramp"],
+            "三个参数都必须被列出来（否则调用方以为它们生效了）"
+        );
+        assert!(
+            raw_texture_ignored_params("tile", false, false).is_empty(),
+            "都没开时不许凭空报警"
+        );
+        assert_eq!(
+            raw_texture_ignored_params("tile", true, false),
+            vec!["brightness_match"]
+        );
+    }
+}
+
 #[cfg(test)]
 mod retouch_color_tests {
     use super::retouch_color;
