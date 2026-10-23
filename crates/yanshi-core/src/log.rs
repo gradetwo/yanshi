@@ -520,7 +520,7 @@ impl AtomLog {
             if primary_mask == Some(mask_id.as_str()) {
                 continue;
             }
-            if !state.masks.get(mask_id).is_some_and(|m| !m.is_deleted()) {
+            if state.masks.get(mask_id).is_none_or(|m| m.is_deleted()) {
                 return Err(YanshiError::new(
                     ErrorCode::ReferenceNotFound,
                     ErrorContext::detail(format!("引用的蒙版 {mask_id} 不存在")),
@@ -532,10 +532,10 @@ impl AtomLog {
             if primary_selection == Some(selection_id.as_str()) {
                 continue;
             }
-            if !state
+            if state
                 .selections
                 .get(selection_id)
-                .is_some_and(|s| !s.is_deleted())
+                .is_none_or(|s| s.is_deleted())
             {
                 return Err(YanshiError::new(
                     ErrorCode::ReferenceNotFound,
@@ -548,7 +548,7 @@ impl AtomLog {
             if primary_style == Some(style_id.as_str()) {
                 continue;
             }
-            if !state.styles.get(style_id).is_some_and(|s| !s.is_deleted()) {
+            if state.styles.get(style_id).is_none_or(|s| s.is_deleted()) {
                 return Err(YanshiError::new(
                     ErrorCode::ReferenceNotFound,
                     ErrorContext::detail(format!("引用的风格 {style_id} 不存在")),
