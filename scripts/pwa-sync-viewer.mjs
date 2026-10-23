@@ -17,6 +17,20 @@ import { join } from "node:path";
 
 const SRC = "crates/yanshi-http/assets";
 const DST = "web";
+
+// **★ 戳的**形状**不在这里定义 ✗ ★**（**第 744 轮 ✓）：
+//   **∴ 原来 ✗**：**同一个事实**（「`yanshi-shell-` 后面那串是什么字符」）**写了四遍**✗，
+//     **∴ 而**字符类**各不相同**✗ ⇒ **归一化能吃掉的戳 ✗ 打戳那步吃不掉** ✓
+//       ⇒ **∴ 实测 ✗**：git 式戳 `yanshi-shell-e8b0ac47-dirty-f3ba45b2`
+//         ⇒ `[0-9a-f-]+` **只吃到** `e8b0ac47-d`（**`i` 不是十六进制字符 ✓）**
+//           ⇒ **`yanshi-shell-<新戳>irty-f3ba45b2`** ✓ ★**** ✓✓
+//   **∴ 后果 ✗**：页面 `caches.open(名字A)` ✗ 而 SW 预缓存的是**另一个名字** ✗
+//     ⇒ **∴ 离线外壳取不到** ✓（**症状像「缓存没建」**✗ 实际是**名字被截断后拼脏了** ✓）
+//   **∴ 现在 ✗**：**形状只有 `scripts/pwa-stamp.mjs` 一处**✗ ⇒ **∴ 本脚本只引用它** ✓
+//     ⇒ **∴ 于是**：**「归一化」与「打戳」不能互相矛盾** ✓（**内核 ② ✓**）
+//       ＋ **∴ 附带 ✓**：**被旧版截脏过的 `web/`**再跑一次**就自愈**（**宽类吃下整串 ✓**）
+//   **∴ 判据**：`scripts/tool-pwa-stamp-shape.mjs`（**含「把类改窄 ⇒ 必红」的变异 ✓**）
+import { setStamp } from "./pwa-stamp.mjs";
 // Rewrite the service worker cache name with a stamp derived from the files that
 // ship, so a deployment always gets a fresh cache and the previous one is deleted.
 // Without this the fixed name meant stale entries outlived every deploy.
@@ -44,9 +58,10 @@ const DST = "web";
 //     ＋ **∴ 且**它**不受 mtime 影响**✗ ⇒ **∴ CI 上**可复现** ✓
 //       （**∴ 原来**CI 与本地**会算出**不同**的戳 ✓）★**** ✓✓
 //
-// **∴ 为什么仍要**纯数字**✗**：**下游有 `yanshi-online-\d+` 的正则** ✓
-//   ＋ **∴ 且** `tool-sw-stamp-idempotent.mjs` **按数字戳断言** ✓
-//     ⇒ **∴ 所以**：**把 sha256 折成**13 位十进制** ✓ ★**** ✓✓
+// **∴ 为什么仍要**纯数字**✗**：**判据**断**的就是「产物里每个戳都是 13 位数字」**✗
+//   ＋ **∴ 且**数字戳**不可能**与 git 式短 sha**撞形**✓（**字母混在里面 ⇒ 一眼可见 ✓**）
+//     ⇒ **∴ 所以**：**把 sha256 折成**13 位十进制** ✓（**判据：`scripts/tool-pwa-stamp-shape.mjs` ✓**）
+//     （**原来这里引的** `tool-sw-stamp-idempotent.mjs`**已被上游删除**✓：**`web/sw.js` 那份**从来没被注册**过 ✗ S-10 ★**** ✓✓）
 const stampFiles = [
   "viewer-app.js", "viewer.css", "index.html",
   "api-local.js", "brush-local.js", "store.js",
@@ -57,18 +72,22 @@ const BUILD_STAMP = (() => {
   for (const f of stampFiles) {
     // **∴ 文件缺失也要**参与哈希**✗ ⇒ **∴ 否则**「从有到无」不会改戳** ✓
     try {
-      h.update(f + "\u0000" + readFileSync(join(DST, f), "utf8")
-        // **★ 算哈希前必须把**戳本身**归一化掉 ✗ ★**（**第 493 轮实测 ✓）
-        //   **∴ 为什么 ✗**：**`index.html` 里**写着上一次的戳**✗
-        //     （**∴ 本脚本会打印**「index.html 的 yanshi-shell- 戳 ⇒ …」✓）
-        //     ⇒ **∴ 若**直接哈希原文**✗ ⇒ **∴ 戳进哈希、哈希出戳** ✓
-        //       ⇒ **∴ 于是**：**每次跑都算出**不同的戳**✗ ⇒ **∴ 永不幂等** ✓
-        //         ⇒ **∴ 实测 ✗**：**第一次 4009077182629｜第二次 9495148370993** ✓ ★**** ✓✓
-        //   **∴ 现在 ✗**：**先把 `yanshi-shell-*`／`yanshi-online-*` 换成**占位符**✗
-        //     ⇒ **∴ 于是**：**戳**不影响自己** ✓
-        //       ＋ **∴ 而**任何**真实内容**变化**仍然会改戳** ✓ ★**** ✓✓
-        .replace(/yanshi-shell-[A-Za-z0-9_-]+/g, "yanshi-shell-__BUILD_ID__")
-        .replace(/yanshi-online-[A-Za-z0-9_-]+/g, "yanshi-online-__BUILD_STAMP__"));
+      // **★ 算哈希前必须把**戳本身**归一化掉 ✗ ★**（**第 493 轮实测 ✓）
+      //   **∴ 为什么 ✗**：**`index.html` 里**写着上一次的戳**✗
+      //     （**∴ 本脚本会打印**「index.html 的 yanshi-shell- 戳 ⇒ …」✓）
+      //     ⇒ **∴ 若**直接哈希原文**✗ ⇒ **∴ 戳进哈希、哈希出戳** ✓
+      //       ⇒ **∴ 于是**：**每次跑都算出**不同的戳**✗ ⇒ **∴ 永不幂等** ✓
+      //         ⇒ **∴ 实测 ✗**：**第一次 4009077182629｜第二次 9495148370993** ✓ ★**** ✓✓
+      //   **∴ 现在 ✗**：**先把 `yanshi-shell-*`／`yanshi-online-*` 换成**占位符**✗
+      //     ⇒ **∴ 于是**：**戳**不影响自己** ✓
+      //       ＋ **∴ 而**任何**真实内容**变化**仍然会改戳** ✓ ★**** ✓✓
+      //   **∴ 第 744 轮 ✗**：**这两步走 `setStamp`**（**同一字符类 ✓）**✗
+      //     ⇒ **∴ 原来**这里**写的是宽类**✗ 而**打戳处写的是窄类**✗
+      //       ⇒ **∴ 于是**「归一化能吃掉的戳**✗ 打戳那步吃不掉**」✓ ⇒ **∴ 拼出脏尾巴** ✓
+      const normalized = setStamp(
+        setStamp(readFileSync(join(DST, f), "utf8"), "yanshi-shell", "__BUILD_ID__"),
+        "yanshi-online", "__BUILD_STAMP__");
+      h.update(f + "\u0000" + normalized);
     } catch {
       h.update(f + "\u0000missing");
     }
@@ -510,9 +529,15 @@ console.log("  OK: 资产索引 => " + join(DST, "assets-index.json") +
     try {
       const target = join(DST, file);
       let text = readFileSync(target, "utf8");
-      text = text
-        .replaceAll("yanshi-shell-__BUILD_ID__", "yanshi-shell-" + BUILD_STAMP)
-        .replace(/yanshi-shell-((?:__BUILD_ID__)|[0-9a-f-]+)/g, "yanshi-shell-" + BUILD_STAMP);
+      // **∴ 第 744 轮 ✗**：**原来这两步的字符类是** `[0-9a-f-]`**✗**
+      //   ⇒ **∴ 它**遇到 git 式戳（**含 `i`／`u`／`r`／`y` 等非十六进制字母 ✓）**✗
+      //     **只吃到**第一个非十六进制字符之前**✗ ⇒ **∴ 剩下的尾巴**拼在**新戳后面** ✓
+      //       ⇒ **∴ 实测 ✗**：`yanshi-shell-e8b0ac47-dirty-f3ba45b2`
+      //         ⇒ **`yanshi-shell-4036615775438irty-f3ba45b2`** ✓ ★**** ✓✓
+      //   **∴ 后果 ✗**：**页面**与**SW**的缓存名**不再是同一个**✗ ⇒ **离线外壳取不到** ✓
+      //   **∴ 现在 ✗**：**走 `setStamp`**（**与归一化那步**同一个类 ✗ ⇒ **不能互相矛盾 ✓**）**
+      //     ⇒ **∴ 附带 ✓**：**已被旧版截脏的文件**再跑一次**就自愈**（**宽类吃下整串 ✓）**
+      text = setStamp(text, "yanshi-shell", BUILD_STAMP);
       writeFileSync(target, text);
       console.log("  OK: " + file + " 的 yanshi-shell- 戳 ⇒ " + BUILD_STAMP);
     } catch (e) {
