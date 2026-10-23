@@ -175,7 +175,7 @@
      "kind": "adjustment",
      "type": "levels",
      "params": {
-      "black": 0.04,
+      "black": 0.0031,
       "white": 1.0,
       "gamma": 1.02
      },
@@ -1344,7 +1344,7 @@
      "kind": "adjustment",
      "type": "levels",
      "params": {
-      "black": 0.1,
+      "black": 0.01,
       "white": 1.0,
       "gamma": 1.05
      },
@@ -1880,7 +1880,7 @@
      "kind": "adjustment",
      "type": "levels",
      "params": {
-      "black": 0.02,
+      "black": 0.0015,
       "white": 1.0,
       "gamma": 1.0
      },
@@ -4032,7 +4032,7 @@
      "kind": "adjustment",
      "type": "levels",
      "params": {
-      "black": 0.03,
+      "black": 0.0023,
       "white": 1.0,
       "gamma": 1.0
      },
@@ -4274,7 +4274,7 @@
      "kind": "adjustment",
      "type": "levels",
      "params": {
-      "black": 0.06,
+      "black": 0.0049,
       "white": 1.0,
       "gamma": 1.03
      },
@@ -4642,7 +4642,7 @@
      "kind": "adjustment",
      "type": "levels",
      "params": {
-      "black": 0.03,
+      "black": 0.0023,
       "white": 0.99,
       "gamma": 1.0
      },
