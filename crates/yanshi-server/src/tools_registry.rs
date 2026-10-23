@@ -2342,6 +2342,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("texture_type", String, false, "笔触肌理风格：smooth/fabric/fold/canvas/skin/stone/wood，缺省 fabric"),
             param!("density", Number, false, "铺笔密度 0..1，缺省 0.6"),
             param!("size", Number, false, "基准笔刷直径，缺省按区域自适应"),
+            // **`brush` 之前漏声明** ✓（第 720 轮；外部审计 S-02 第 ② 组）
+            //   ⇒ handler 一直读它（缺省 `calligraphy` ✓）而 `validate_args` 只放行声明过的键 ✗
+            //   ⇒ **传 `brush` 就 `invalid_argument`** ⇒ 用户**没法换笔刷** ✓（能力不可达 ✓）。
+            param!("brush", String, false, "用哪支笔刷画这些笔触（缺省 calligraphy ✓）"),
             param!("layer_id", String, true, "目标绘制图层 id（必填）"),
             CLIP_TO_SELECTION_PARAM,
         ],
