@@ -2398,19 +2398,15 @@ impl Renderer {
                 // 可能被丢掉 ✗** ⇒ **∴ 命中率低于真正 LRU ✓**。
                 if let Ok(mut guard) = below.lock() {
                     if let Some(c) = guard.as_mut() {
-                        let mut recent = Vec::new();
-                        let mut rest = Vec::new();
-                        // **重排前先放掉 `by_sig` 的共享引用** ✓（第 685 轮，缓存账实测驱动）
-                        //   **⇒ 症状**：`真正复制 93,998 条 vs 脏 tile 7,366 条` ⇒ **13× 复制** ✗
-                        //   **⇒ 根因**：LRU「把用到的 tile 移到尾部」要**自有**的 Vec ⇒
-                        //     而 `by_sig` 还引用着同一份 `Arc` ⇒ `try_unwrap` **必失败** ⇒ 每次命中都整份复制 ✗
-                        //   **⇒ 修法**：重排前**清掉共享分组**（它马上会被下一次写入重建 ✓）⇒ 零拷贝 ✓
-                        c.by_sig.clear();
-                        for t in take_tiles(&mut c.tiles) {
-                            if want_tiles.contains(&t.0) {
-                                recent.push(t);
-                            } else {
-                                rest.push(t);
+                        let mut recent: Vec<((i64, i64), crate::buffer::Buffer)> = Vec::new();
+                        let mut rest: Vec<((i64, i64), crate::buffer::Buffer)> = Vec::new();
+                        if let Some(tiles) = std::sync::Arc::get_mut(&mut c.tiles) {
+                            for t in tiles.drain(..) {
+                                if want_tiles.contains(&t.0) {
+                                    recent.push(t);
+                                } else {
+                                    rest.push(t);
+                                }
                             }
                         }
                         rest.extend(recent); // **∴ 刚用过的排到尾部 ⇒ 下次先丢别人 ✓**
