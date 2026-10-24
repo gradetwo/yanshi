@@ -239,7 +239,11 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("put_blob", r#"{"path":"/tmp/red8.png"}"#),
     (
         "import_image",
-        r#"{"layer_id": "L1", "bitmap": {}, "region": {"x": 0, "y": 0, "w": 32, "h": 32}}"#,
+        // **不能给空 `bitmap`** ✗（第 922 轮）：`bitmap.blob_hash` 是**必填** ✓ ⇒ 空对象是个**跑不通**的示例 ✗
+        //   **⇒ 但也不能写死哈希** ✗（内容寻址 ✓ 每台机器不同 ✓）
+        //   ⇒ 所以给**形状示例**：占位哈希 + 尺寸（**尺寸在 bitmap 里面** ✓ 第 921 轮）✓
+        //   ⇒ 调用方先 `put_blob` 拿到真哈希再替换 ✓（示例里写明 ✓）。
+        r#"{"layer_id": "L1", "region": {"x": 0, "y": 0, "w": 32, "h": 32}, "bitmap": {"blob_hash": "sha256:<64 位十六进制：先 put_blob 取回>", "size": 2048, "mime_type": "image/x-yanshi-raw", "width": 16, "height": 16}}"#,
     ),
     (
         "medium_stroke",
