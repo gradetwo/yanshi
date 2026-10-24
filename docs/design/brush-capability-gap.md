@@ -18241,3 +18241,25 @@ delta_regime = "document_background_base"
 ⇒ **这条判据现在的状态**：测量本身被三条断言守住了 ✓（可复核 ✓），
    **但仍缺一个能红的变异** ✓ ⇒ 仍按**回归护栏**记账 ✓（台账第四百八十一节 ✓）。
 ⇒ **在找到那个写点之前，这条判据按"回归护栏"记账** ✓，不算完成品 ✓。
+
+## 四百八十二、预览路径的字段统一 ＋ 清理守卫的作用域教训（第 832–836 轮）
+
+**① 字段统一（`c63119c1`）**：`swatch_brush_strokes` 的每一项现在**透传**五个字段
+（`painted_pixels`／`ink_footprint_pixels`／`ink_pixels`／`delta_regime`／`max_channel_delta`）✓
+⇒ 于是「这一笔落了多少／在哪个基准上量」在**预览**与**提交**两条路径上是**同一批名字** ✓
+（`qoder` §7 第 10 条抱怨的正是这个 ✓）。**判据**：每项必须有这三个字段 ✓、别名同值 ✓、
+regime ∈ 三值 ✓、**足迹 ≤ 印章面积** ✓。**变异**：不透传 `ink_footprint_pixels` ⇒ 红 ✓。
+
+**② 参数事实（省下下一次）**：`swatch_brush_strokes` 收 **`colors`**（数组，元素 `{r,g,b,a}` 或 `#RRGGBB`），
+**不收** `color`；`preview_size` 要**字符串**。两次都是我猜错的，两次都是**报错信息直接给的答案** ✓。
+
+**③ ★ 清理守卫的作用域（一次 CI 红换来的规矩）★**
+| 绑在哪 | 后果 |
+|---|---|
+| **辅助函数体内**（`fn temp_file()`）| 函数返回即 drop ⇒ **目录被删** ⇒ 后续导出失败 ✓ **CI 就红了这一次** ✗ |
+| **`std::env::temp_dir()` 本身** | drop 会**删掉整个 `/tmp`** ✗✗（我在两处写到过，幸好提前发现 ✓）|
+| **测试体内、绑辅助函数返回的子目录** ✓ | 正解 ✓（`coldstart_reuse`／`conflict_layer_durability`／`stdio`／`vector_layer` 都是这样 ✓）|
+
+**⇒ 红线**：`test (stable)` 在 `f6b559d1` 上**由红转绿** ✓（同一 job、同一测试名 `vector_layer_end_to_end` ✓）
+⇒ 这是这条线的**收尾证据** ✓；判据 `check-tests-clean-temp.mjs` 现在 **229/229** ✓，
+known-red 那条已**标注为转绿**（保留原始理由与 42 → 0 的历史 ✓）。

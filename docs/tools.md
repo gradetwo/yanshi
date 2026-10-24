@@ -22,6 +22,10 @@ value a change in the delivered image: when the brush does not read the canvas i
 onto white and compares against 255, so on a document whose background is not white its value is not the change in the
 delivered image and it must not be used as a zero-ink threshold.
 
+The preview tool reports the same ink fields as a committed stroke, so a caller checking a swatch and a caller checking
+a stroke read the same names: painted_pixels, ink_footprint_pixels with its ink_pixels alias, delta_regime and
+max_channel_delta. The swatch items pass them through from the preview receipt rather than recomputing them.
+
 Which field answers "how much did this call land" depends on the tool, and there is no shared vocabulary yet, which an
 external report measured by walking three tools: brush_stroke reports steps together with painted_pixels, and since the
 last round also ink_pixels, the count of pixels whose alpha is not zero after compositing; smart_texture reports strokes,
