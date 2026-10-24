@@ -20771,3 +20771,27 @@ apply  2,881,298 ms｜render 652,982 ms｜累计 3,545 s
 ⇒ 正确顺序：`grep -n "impl Timeline" -A 40` 读**全部** pub 方法 ✓ 再写 ✓（下一轮 ✓）
 
 **⇒ 本轮无净改动** ✓（唯一产出是这条教训与"目标形状已定"✓）
+
+## 五百七十四、**没有任何原子时 `frame()` 的脏 tile 为 0** ⇒ 修复的展开**只在有原子之后生效**（第 980 轮）
+
+**⇒ 这次用的是**真 API** ✓（先读了 `Timeline::new(doc_id, tile, w, h, mem)` ✓ 与 `apply(atom_json)` ✓）：
+```rust
+let mut timeline = Timeline::new("d", 64, 1024, 1024, 512*1024*1024).expect("时间线");
+timeline.frame().expect("第一帧");
+let (full, dirty_renders, dirty_tiles, _runs) = timeline.stats();
+```
+**⇒ 实测（1024×1024、tile 64 ⇒ 总 256）**：
+```
+TILES 总 256｜首帧脏 tile 0｜整幅 0｜脏区帧 0
+```
+⇒ **⇒ 首帧脏 tile 是 0，不是 256** ✗ ⇒ 我这条判据**期望错了** ✓
+
+**⇒ 这说明一件真事** ✓：**一个原子都没喂时，`frame()` 走的是"没什么可做"的路** ✓
+⇒ 而 `8fc7a623` 的展开在 `mem::take(&mut self.dirty)` **之后** ✓ ⇒ 若 dirty 本来就空且
+   `have_frame` 为假 ⇒ 展开**应该**插入全部 tile ✓ —— **而实测是 0** ⇒ **说明那条路径没被走到** ✗
+⇒ **⇒ 两种可能**（下一轮用一次实验分辨 ✓）：
+1. `frame()` 在"没 apply 过任何原子"时**提前返回** ✓（那修复对真实包仍有效 ✓ 因为包里有原子 ✓）
+2. 或 `stats()` 的 `dirty_tiles_total` 只在**有实际 blit** 时累加 ✓ ⇒ 展开插了 tile 但没 blit ⇒ 计数仍 0 ✓
+
+**⇒ 处理（按规矩 ✓）**：**测试已删** ✓（它的期望错了；留着会红 ✓）工作树干净 ✓
+**⇒ 下一轮**：先 `apply` 一个 `create_document` 原子再 `frame()` ✓ 再断言 256 ✓
