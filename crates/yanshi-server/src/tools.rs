@@ -17222,12 +17222,24 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     })?;
     let bytes = png.len();
     let hash = ctx.workspace.store().put(&png)?.to_string();
+    // **与 `brush_stroke` 同一套字段** ✓（第 832 轮；外部 §7 第 10 条"没有公共词汇"）
+    //   **⇒ 缺陷**：预览回执里没有 `ink_footprint_pixels` 与 `delta_regime` ✗
+    //     ⇒ 而提交路径两个都有 ✓ ⇒ 同一个问题两条路径两套字段 ✗。
+    let ink_footprint = paint.rgba.chunks_exact(4).filter(|px| px[3] != 0).count();
+    let delta_regime = if paint.fed_base {
+        "canvas_base"
+    } else {
+        "document_background_base"
+    };
     let mut value = json!({
         "ok": true,
         "brush": paint.name,
         "width": width,
         "height": height,
         "painted_pixels": paint.painted,
+        "ink_footprint_pixels": ink_footprint,
+        "ink_pixels": ink_footprint,
+        "delta_regime": delta_regime,
         "max_channel_delta": paint.max_delta,
         "steps": paint.steps,
         "blob_hash": hash,
@@ -17435,6 +17447,20 @@ fn write_swatch_brush_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result
                         "color": color,
                         "path_index": path_index,
                         "ok": true,
+                        // **与 `brush_stroke` 同一套「落了多少」字段** ✓（第 832 轮）
+                        //   ⇒ 这三个是 `write_brush_preview` 回执里**已有**的 ✓，这里**透传** ✓
+                        //   ⇒ 于是预览与提交两条路径的问题用**同一批名字**回答 ✓（外部 §7 第 10 条 ✓）
+                        "painted_pixels": rendered.get("painted_pixels").cloned().unwrap_or(Value::Null),
+                        "ink_footprint_pixels": rendered
+                            .get("ink_footprint_pixels")
+                            .cloned()
+                            .unwrap_or(Value::Null),
+                        "ink_pixels": rendered.get("ink_pixels").cloned().unwrap_or(Value::Null),
+                        "delta_regime": rendered.get("delta_regime").cloned().unwrap_or(Value::Null),
+                        "max_channel_delta": rendered
+                            .get("max_channel_delta")
+                            .cloned()
+                            .unwrap_or(Value::Null),
                         "thumb_url": rendered.get("thumb_url").cloned().unwrap_or(Value::Null),
                         "mime_type": rendered.get("mime_type").cloned().unwrap_or(Value::Null),
                         // 外部复测 QY-G01：透传 image 块（没有就 null，不伪装成功）

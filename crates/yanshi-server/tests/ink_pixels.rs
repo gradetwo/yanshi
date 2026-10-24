@@ -271,3 +271,70 @@ fn the_channel_delta_compares_against_the_document_background() {
         }
     }
 }
+
+/// **预览回执与提交回执用同一套字段**（第 832 轮；外部 §7 第 10 条"没有公共词汇"）
+///
+/// **⇒ 缺陷**：`swatch_brush_strokes` 每项没有 `ink_footprint_pixels`／`delta_regime` ✗
+///   而 `brush_stroke` 两个都有 ✓ ⇒ 同一个问题两条路径两套字段 ✗。
+///
+/// **⇒ 判据**：每个 `ok` 的 swatch 项都必须有
+///   ① `ink_footprint_pixels` ② `ink_pixels` 别名（同值）③ `delta_regime`（三值之一）✓。
+/// **变异**：删掉 swatch 里那三行 ⇒ 红 ✓。
+#[test]
+fn swatch_items_carry_the_same_ink_fields_as_a_committed_stroke() {
+    let mut workspace = setup("swatch_ink");
+    let registry = ToolRegistry::with_profiles(&Profile::ALL);
+    let mut ctx = ToolContext::new(&mut workspace, "doc_inkpx", "human:1", "s")
+        .with_owner(true)
+        .with_wait_for_render(true, 4_000);
+    // **颜色参数名是 `colors`（数组），元素是 `{r,g,b,a}` 或 `#RRGGBB`** ✓
+    //   （上一轮我传 `color` 与 `[[r,g,b,a]]` 都被拒 ✓ —— 报错信息里写着可用参数 ✓）
+    let out = registry.call(
+        &mut ctx,
+        "swatch_brush_strokes",
+        &json!({
+            "brushes": ["8B_Pencil#1", "oil-06-paint"],
+            "size": 12.0,
+            "colors": [{"r": 200, "g": 20, "b": 20, "a": 255}],
+            "preview_size": "64",
+        }),
+    );
+    assert_eq!(
+        out["ok"],
+        json!(true),
+        "swatch 必须成功：{}",
+        out["context"]["detail"]
+    );
+    let items = out["swatches"].as_array().expect("回执里必须有 swatches");
+    assert!(!items.is_empty(), "{out}");
+    let mut checked = 0;
+    for item in items {
+        if item["ok"] != json!(true) {
+            continue;
+        }
+        checked += 1;
+        let footprint = item["ink_footprint_pixels"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("swatch 项缺 ink_footprint_pixels：{item}"));
+        let alias = item["ink_pixels"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("swatch 项缺 ink_pixels 别名：{item}"));
+        assert_eq!(footprint, alias, "别名必须与主字段同值：{item}");
+        let regime = item["delta_regime"].as_str().unwrap_or_default();
+        assert!(
+            ["canvas_base", "document_background_base", "white_base"].contains(&regime),
+            "swatch 项的 delta_regime 必须是三值之一，实测 {regime:?}：{item}"
+        );
+        // 足迹必须 ≤ 印章面积（与提交路径同一条恒等式 ✓）
+        if let Some(painted) = item["painted_pixels"].as_u64() {
+            assert!(
+                footprint <= painted,
+                "足迹不可能超过印章面积（footprint={footprint}, painted={painted}）：{item}"
+            );
+        }
+    }
+    assert!(
+        checked > 0,
+        "至少要有一项成功，否则这条判据什么也没验：{out}"
+    );
+}
