@@ -9,6 +9,15 @@ a parameter name was to read the eleven thousand line tool source. The same rout
 what a missing tool meant: an unknown name and a tool whose group is disabled used to produce one identical message,
 and it now lists the enabled groups and points at the catalogue and at the all profiles switch.
 
+Which field answers "how much did this call land" depends on the tool, and there is no shared vocabulary yet, which an
+external report measured by walking three tools: brush_stroke reports steps together with painted_pixels, and since the
+last round also ink_pixels, the count of pixels whose alpha is not zero after compositing; smart_texture reports strokes,
+planned and failed; fit_background_field reports samples, filled_pixels and clamped_pixels on the current tip, though the
+report was written against a pin that had none of them. The unhelpful part is that the same question has four different
+names, so an audit that reads one name sees zeros on the other tools and reads "nothing landed" where the truth is "this
+tool calls it something else". A shared name has not been chosen yet, because pixels and item counts are different
+quantities and one name would hide that; when it is chosen, this paragraph and the tool specs change together.
+
 The alpha of the colour a caller passes to brush_stroke is currently ignored: the paint path keeps only the three
 colour channels, and brush alpha comes from the brush's own opacity and glaze. A stroke asking for a fully transparent
 colour therefore lands exactly as much ink as an opaque one, which was measured as identical stamp areas for alpha 0
