@@ -20795,3 +20795,24 @@ TILES 总 256｜首帧脏 tile 0｜整幅 0｜脏区帧 0
 
 **⇒ 处理（按规矩 ✓）**：**测试已删** ✓（它的期望错了；留着会红 ✓）工作树干净 ✓
 **⇒ 下一轮**：先 `apply` 一个 `create_document` 原子再 `frame()` ✓ 再断言 256 ✓
+
+## 五百七十五、"首帧画满"的判据**第三次没成**：内核文档仍是 `0×0`（第 981 轮）
+
+**⇒ 这次读对了入口**（`Timeline::new(doc_id, tile, w, h, mem)` ✓、`blob_put` ✓、`apply(&atom)` ✓、
+   `atom(id, seq, kind, payload)` 的七个键 ✓ —— 全部照 `incremental_matches_full.rs:36` 抄的 ✓）
+
+**⇒ 实测（1024×1024、tile 64 ⇒ 总 256）**：
+```
+KernelError { code: "invalid_argument", detail: "… Bbox { x: 0, y: 0, w: 64, h: 64 } 与文档 0×0 不相交" }
+```
+⇒ **⇒ 内核认为文档是 `0×0`** ✗ 而我 `apply` 的 `create_document`（含 `doc_id`／`width`／`height`／
+   `background`／`color_space` 五个键 ✓ 与参照测试**逐字相同** ✓）**没让它变成 1024×1024** ✗
+
+**⇒ 所以差在别处** ✗（**不猜 ✓**）—— 参照测试 `incremental_matches_full.rs` 里
+`Timeline::new(doc, tile, dw, dh, mem)` **之后**能直接 `apply` 这些原子 ✓ 而我的不能 ✓
+⇒ **唯一的差别候选**：**`doc` 这个 id** —— 参照测试用 `tl_test` 且原子里 `doc_id` 是 `"tl_test"` ✓
+   而我用 `tl_tiles` 且 `doc_id` 写 `"tl_tiles"` ✓（一致 ✓）⇒ **那也不是它** ✗
+
+**⇒ 处理**：**测试已删** ✓（第三次；工作树干净 ✓）
+**⇒ 下一轮（换个办法 ✓）**：**直接复制** `incremental_matches_full.rs` 的 `build` 闭包与 a0 原子 ✓
+  **只改尺寸** ✓ ⇒ 若那样能跑 ⇒ 差异就在我这份文件里 ✓（用**复制**代替**重写** ✓）
