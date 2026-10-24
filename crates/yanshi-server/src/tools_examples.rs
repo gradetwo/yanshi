@@ -30,7 +30,6 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("get_histogram", r#"{}"#),
     ("fit_background_field", r#"{"layer_id":"L1","mask":{}}"#),
     ("export_timelapse", r#"{"path":"x"}"#),
-    ("export_psd_layers", r#"{}"#),
     // **原生矢量（路线甲 Phase 2）**：先建矢量层、在矢量层上落笔，
     // 之后才能用脊线橡皮截断、用命中测试按脊线选笔 ✓。
     (
@@ -560,11 +559,5 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         // 原先写的是占位文本 `sha256:<先上传 PSD 得到的哈希>` ⇒ **形状不合法** ⇒ 抄走必然失败 ✗
         //（2026-10-06 判据实测：`blob_hash` 不是合法哈希 ✓）⇒ 违反「示例要**真的可照抄**」 ✓。
         r##"{"layer_id": "layer_default", "blob_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}"##,
-    ),
-    (
-        "set_reference",
-        // 只记进偏好，**不写进文档**；移除用 `clear_reference`。`opacity` 缺省 0.5，
-        // `position` 缺省铺满画布。
-        r##"{"blob_hash": "sha256:<参考图的哈希>", "opacity": 0.5, "position": {"x": 0, "y": 0, "w": 320, "h": 240}}"##,
     ),
 ];
