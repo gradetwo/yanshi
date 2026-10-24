@@ -377,3 +377,140 @@ fn auto_retouch_bad_args_rejected() {
     assert_eq!(no_layer["ok"], json!(false));
     assert_eq!(no_layer["error_code"], json!("reference_not_found"));
 }
+
+/// RAW 缺省曝光对象名（与 tools_bitmap.rs 的同名常量逐字一致）。
+const RAW_DEFAULT_NAME: &str = "RAW 缺省曝光（自动生成，可改可删）";
+
+/// 读文档状态里某对象的 params.ev（断言用；对象不存在时 panic）。
+fn object_ev(workspace: &Workspace, doc: &str, object_id: &str) -> f64 {
+    let state = workspace.document(doc).unwrap().state().clone();
+    let alive = state.alive_objects();
+    let object = alive
+        .iter()
+        .find(|object| object.id == object_id)
+        .unwrap_or_else(|| panic!("对象 {object_id} 应存在"));
+    object.data["params"]["ev"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("对象 {object_id} 应有 ev"))
+}
+
+#[test]
+fn auto_allows_untouched_raw_default_exposure_and_neutralizes_it() {
+    let root = temp_dir("raw_default");
+    let doc = "doc_auto_raw_default";
+    let (width, height) = (64, 48);
+    let mut workspace = workspace(&root, doc, width, height);
+    let src = setup_source(&mut workspace, doc, width, height);
+    let default = call(
+        &mut workspace,
+        doc,
+        "add_adjustment",
+        json!({"layer_id": src, "adjustment_type": "exposure", "params": {"ev": 0.5}, "name": RAW_DEFAULT_NAME, "object_id": "raw_default_1"}),
+    );
+    assert_eq!(default["ok"], json!(true), "{default}");
+
+    let auto = call(
+        &mut workspace,
+        doc,
+        "auto_retouch",
+        json!({"layer_id": src}),
+    );
+    assert_eq!(
+        auto["ok"],
+        json!(true),
+        "未动过的缺省对象不应触发拒绝：{auto}"
+    );
+    assert!(
+        auto["applied"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .any(|item| item["object_id"] == json!("auto_exposure")),
+        "合成图应落成 auto_exposure：{auto}"
+    );
+    assert_eq!(
+        auto["neutralized_default_exposure"],
+        json!(["raw_default_1"]),
+        "回执应点名被置零的缺省对象：{auto}"
+    );
+    assert!(
+        (object_ev(&workspace, doc, "raw_default_1") - 0.0).abs() < 1e-9,
+        "缺省对象 ev 应被置零（防与自动曝光叠加）"
+    );
+}
+
+#[test]
+fn auto_refuses_edited_raw_default_exposure() {
+    let root = temp_dir("raw_default_edited");
+    let doc = "doc_auto_raw_default_edited";
+    let (width, height) = (64, 48);
+    let mut workspace = workspace(&root, doc, width, height);
+    let src = setup_source(&mut workspace, doc, width, height);
+    let edited = call(
+        &mut workspace,
+        doc,
+        "add_adjustment",
+        json!({"layer_id": src, "adjustment_type": "exposure", "params": {"ev": 0.8}, "name": RAW_DEFAULT_NAME, "object_id": "raw_default_2"}),
+    );
+    assert_eq!(edited["ok"], json!(true), "{edited}");
+
+    let refused = call(
+        &mut workspace,
+        doc,
+        "auto_retouch",
+        json!({"layer_id": src}),
+    );
+    assert_eq!(
+        refused["ok"],
+        json!(false),
+        "改过 ev 的缺省对象应视为人工：{refused}"
+    );
+    assert_eq!(refused["error_code"], json!("precondition_failed"));
+
+    let forced = call(
+        &mut workspace,
+        doc,
+        "auto_retouch",
+        json!({"layer_id": src, "force": true}),
+    );
+    assert_eq!(forced["ok"], json!(true), "{forced}");
+}
+
+#[test]
+fn auto_rerun_after_neutralization_still_allowed() {
+    let root = temp_dir("raw_default_rerun");
+    let doc = "doc_auto_raw_default_rerun";
+    let (width, height) = (64, 48);
+    let mut workspace = workspace(&root, doc, width, height);
+    let src = setup_source(&mut workspace, doc, width, height);
+    let default = call(
+        &mut workspace,
+        doc,
+        "add_adjustment",
+        json!({"layer_id": src, "adjustment_type": "exposure", "params": {"ev": 0.5}, "name": RAW_DEFAULT_NAME, "object_id": "raw_default_3"}),
+    );
+    assert_eq!(default["ok"], json!(true), "{default}");
+    let first = call(
+        &mut workspace,
+        doc,
+        "auto_retouch",
+        json!({"layer_id": src}),
+    );
+    assert_eq!(first["ok"], json!(true), "{first}");
+    assert_eq!(
+        first["neutralized_default_exposure"],
+        json!(["raw_default_3"])
+    );
+
+    // 重跑：缺省对象已被置零（ev 0.0），仍属系统状态，不应拒绝；
+    // 且无物可置零，回执应为空表（不是重复点名）。
+    let second = call(
+        &mut workspace,
+        doc,
+        "auto_retouch",
+        json!({"layer_id": src}),
+    );
+    assert_eq!(second["ok"], json!(true), "置零后的重跑不应拒绝：{second}");
+    assert_eq!(second["neutralized_default_exposure"], json!([]));
+}

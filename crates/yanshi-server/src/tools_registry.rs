@@ -1726,7 +1726,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "auto_retouch",
         profile: Profile::Retouch,
-        summary: "自动模式（期 4 D3）：从图像统计里用有原理的算法求出每组参数并落成一组确定性对象（曝光/色阶/影调/白平衡/色彩/细节/降噪，细节组含 clarity/texture/dehaze，降噪组含 denoise/sharpen）；甜点带只作收缩先验与钳制。估计取自目标层位图/RAW 源对象的子集渲染（调整/滤镜对象排除在外），故重跑幂等、已落成的 auto 对象不污染估计。白平衡估的是显影后残余偏色（RAW 机内白平衡已在显影时施加）。每项 rationale 点名估计数字与收缩原因；skipped 逐对象列出原因（含未请求的组）。同层重跑原地更新（确定性 id + 复活路）；目标层已有人工调整/滤镜对象时拒绝（除非 force=true）。dry_run 或 strength=0 时只报告不落成（applied 为空，planned 给收缩后估计值）。重跑时某组新跳过不会删掉旧对象（v1 已知局限）。",
+        summary: "自动模式（期 4 D3）：从图像统计里用有原理的算法求出每组参数并落成一组确定性对象（曝光/色阶/影调/白平衡/色彩/细节/降噪，细节组含 clarity/texture/dehaze，降噪组含 denoise/sharpen）；甜点带只作收缩先验与钳制。估计取自目标层位图/RAW 源对象的子集渲染（调整/滤镜对象排除在外），故重跑幂等、已落成的 auto 对象不污染估计。白平衡估的是显影后残余偏色（RAW 机内白平衡已在显影时施加）。每项 rationale 点名估计数字与收缩原因；skipped 逐对象列出原因（含未请求的组）。同层重跑原地更新（确定性 id + 复活路）；目标层已有人工调整/滤镜对象时拒绝（除非 force=true）；RAW 导入的缺省曝光对象例外：未动过（名 + ev 0.5 全匹配）或已被 auto 置零（ev 0.0）的不触发拒绝，曝光落成时先把它置零防叠加（回执 neutralized_default_exposure 点名），改过 ev 的视为人工照常拒绝。dry_run 或 strength=0 时只报告不落成（applied 为空，planned 给收缩后估计值）。重跑时某组新跳过不会删掉旧对象（v1 已知局限）。",
         mutating: true,
         params: &[
             param!("layer_id", String, false, "目标图层 id（缺省：按 z 序首个含位图/RAW 对象的图层）"),

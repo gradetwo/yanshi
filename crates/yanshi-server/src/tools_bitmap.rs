@@ -431,8 +431,12 @@ fn build_raw_import_plan(
 /// 25% 满量程均匀场展开后中间调显示约 sRGB 112（EV 0，偏暗）；+0.5 EV 到
 /// 约 132（中灰区下沿）；+1.0 EV 时该场最强通道已触顶 255。故定 **+0.5** 为
 /// 保守起始值（对象可见、可改、可删），不是「正确曝光」断言。
-#[cfg(feature = "raw")]
-const DEFAULT_RAW_EXPOSURE_EV: f64 = 0.5;
+/// 两个常量不 gate 在 `raw` 后面（纯数值，不拉 raw 依赖），供
+/// `tools_auto` 的缺省对象豁免判定共用同一来源。
+pub(super) const DEFAULT_RAW_EXPOSURE_EV: f64 = 0.5;
+
+/// RAW 导入缺省曝光对象的名（与 `tools_auto` 豁免判定共用）。
+pub(super) const RAW_DEFAULT_EXPOSURE_NAME: &str = "RAW 缺省曝光（自动生成，可改可删）";
 
 /// D1（2026-10-22 定版）：RAW 导入自动生成一条缺省 exposure 调整——走既有
 /// 调整架构的原生入口（`write_add_effect`，与 `add_adjustment` 工具同一条
@@ -446,7 +450,7 @@ fn spawn_default_exposure_adjustment(ctx: &mut ToolContext<'_>, layer_id: &str) 
         "object_id": adjustment_id,
         "adjustment_type": "exposure",
         "params": {"ev": DEFAULT_RAW_EXPOSURE_EV},
-        "name": "RAW 缺省曝光（自动生成，可改可删）",
+        "name": RAW_DEFAULT_EXPOSURE_NAME,
     });
     write_add_effect(ctx, &args, EffectKind::Adjustment)?;
     Ok(json!({

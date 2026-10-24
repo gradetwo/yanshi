@@ -56,8 +56,9 @@ use yanshi_core::{Bbox, ErrorCode, ErrorContext, ObjectType, Result, YanshiError
 use yanshi_render::stats::{image_stats_rgba8, noise_sigma_rgba8, ImageStats, NOISE_KAPPA};
 
 use super::presets::{box_downsample, land_expanded_ops, ExpandedOp, LandedOps};
+use super::tools_bitmap::{DEFAULT_RAW_EXPOSURE_EV, RAW_DEFAULT_EXPOSURE_NAME};
 use super::tools_effect::validate_effect;
-use super::{document_state, optional_str, EffectKind, ToolContext};
+use super::{document_state, optional_str, write_update_effect, EffectKind, ToolContext};
 
 // ---------------------------------------------------------------------------
 // 标定常数（回测前为初值，见 phase4-notes.md「D3 待标定」）
@@ -1144,6 +1145,23 @@ fn resolve_iso(state: &yanshi_core::DocumentState, layer_id: &str) -> Option<u32
     None
 }
 
+/// RAW 缺省曝光豁免判定（期 4 D3 回测发现的缺口）：RAW 导入在源图层
+/// 生成一条缺省 exposure 对象（名与 ev 见 `tools_bitmap` 同名常量）。
+/// 它是显影管线的一部分，不是人工精修，故 force 检查不把它当「人工
+/// 对象」；但只认「系统状态」的：类型 exposure + 名全匹配 + ev 为
+/// 0.5（未动过的导入值）或 0.0（已被 auto 置零过的同一对象——重跑仍
+/// 豁免；用户手动置零亦无害：该对象对渲染的贡献本就为零，无叠加）。
+/// 其余一切（改过 ev、换过名、非 exposure 类型）一律视为人工。
+fn is_raw_default_exposure(object_type: ObjectType, data: &Value) -> bool {
+    object_type == ObjectType::Adjustment
+        && data.get("adjustment_type").and_then(Value::as_str) == Some("exposure")
+        && data.get("name").and_then(Value::as_str) == Some(RAW_DEFAULT_EXPOSURE_NAME)
+        && matches!(
+            data.get("params").and_then(|params| params.get("ev")).and_then(Value::as_f64),
+            Some(ev) if ev == DEFAULT_RAW_EXPOSURE_EV || ev == 0.0
+        )
+}
+
 /// `auto_retouch`：统计 → 估计 →（校验 →）落成 → 报告。
 pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // ---- 参数解析（非法值一律报错，不静默默认）----
@@ -1208,7 +1226,9 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     let layer = state.layers.get(&layer_id).expect("图层已验存在");
     let layer_name = layer.name.clone();
     let alive = state.alive_objects();
-    let manual: Vec<String> = alive
+    // force 检查：非 auto 调整/滤镜对象里，RAW 缺省曝光对象（系统状态）
+    // 豁免——其 id 留待落成时处理（曝光落成则置零，曝光跳过则原状）。
+    let (raw_defaults, manual): (Vec<String>, Vec<String>) = alive
         .iter()
         .filter(|object| {
             object.layer_id == layer_id
@@ -1218,8 +1238,25 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
                 )
                 && !object.id.starts_with("auto_")
         })
-        .map(|object| object.id.clone())
-        .collect();
+        .map(|object| {
+            if is_raw_default_exposure(object.object_type, &object.data) {
+                (Some(object.id.clone()), None)
+            } else {
+                (None, Some(object.id.clone()))
+            }
+        })
+        .fold(
+            (Vec::new(), Vec::new()),
+            |(mut defaults, mut manual), (default, manual_one)| {
+                if let Some(id) = default {
+                    defaults.push(id);
+                }
+                if let Some(id) = manual_one {
+                    manual.push(id);
+                }
+                (defaults, manual)
+            },
+        );
     if !manual.is_empty() && !force {
         return Err(auto_err(
             ErrorCode::PreconditionFailed,
@@ -1334,6 +1371,14 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             .iter()
             .map(|object| entry_of(object, &object.params))
             .collect();
+        let mut note = if dry_run {
+            "dry_run：只报告，不落成".to_owned()
+        } else {
+            "strength=0：只报告，不落成".to_owned()
+        };
+        if !raw_defaults.is_empty() {
+            note.push_str("；目标层有导入缺省曝光（ev 0.5），落成时若自动曝光落成会先置零");
+        }
         return Ok(json!({
             "layer_id": layer_id,
             "layer_name": layer_name,
@@ -1342,11 +1387,8 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             "skipped": skipped_json,
             "scene_flags": scene_json,
             "stats": stats_json,
-            "note": if dry_run {
-                "dry_run：只报告，不落成"
-            } else {
-                "strength=0：只报告，不落成"
-            },
+            "neutralized_default_exposure": [],
+            "note": note,
         }));
     }
 
@@ -1411,11 +1453,42 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     drop(state);
 
     // ---- 落成（单 changeset；谁打开谁关闭）----
+    let exposure_lands = ops.iter().any(|op| op.object_id == "auto_exposure");
     let opened_here = ctx
         .workspace
         .begin_changeset(&ctx.doc_id, &ctx.session)
         .is_some();
-    let landed: Result<LandedOps> = (|| {
+    let landed: Result<(LandedOps, Vec<String>)> = (|| {
+        // RAW 缺省曝光置零（曝光落成时）：未动过的缺省对象（ev 0.5）
+        // 必须先置零，否则缺省 +0.5 与自动估计叠加，落成结果 ≠ 源上
+        // 估计；已被置零过的（ev 0.0）无需再动。置零与落成同属一个
+        // changeset，失败时注册表事务层一并回滚。
+        let mut neutralized: Vec<String> = Vec::new();
+        if exposure_lands {
+            for default_id in &raw_defaults {
+                let state_now = document_state(ctx)?;
+                let current_ev = state_now
+                    .alive_objects()
+                    .iter()
+                    .find(|object| object.id == *default_id)
+                    .and_then(|object| {
+                        object
+                            .data
+                            .get("params")
+                            .and_then(|params| params.get("ev"))
+                            .and_then(Value::as_f64)
+                    });
+                drop(state_now);
+                if current_ev == Some(DEFAULT_RAW_EXPOSURE_EV) {
+                    write_update_effect(
+                        ctx,
+                        &json!({"object_id": default_id, "params": {"ev": 0.0}}),
+                        EffectKind::Adjustment,
+                    )?;
+                    neutralized.push(default_id.clone());
+                }
+            }
+        }
         // 落成循环要的是「当前 alive 且在目标层」的映射；第一阶段的
         // 映射不复用（其间状态可能已变），此处重新读。
         let state_now = document_state(ctx)?;
@@ -1431,9 +1504,9 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             labels.get(&op.object_id).cloned().unwrap_or_default()
         });
         drop(state_now);
-        result
+        result.map(|landed| (landed, neutralized))
     })();
-    let landed = match landed {
+    let (landed, neutralized) = match landed {
         Ok(landed) => {
             if opened_here {
                 ctx.workspace.close_changeset(&ctx.doc_id, &ctx.session);
@@ -1463,7 +1536,25 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         if landed.revived.contains(&object.object_id) {
             entry["revived"] = json!(true);
         }
+        if object.object_id == "auto_exposure" && !neutralized.is_empty() {
+            let rationale = entry["rationale"].as_str().unwrap_or_default().to_owned();
+            entry["rationale"] = json!(format!(
+                "{rationale}；已将导入缺省曝光对象（{}，ev 0.5）置零，避免与本估计叠加",
+                neutralized.join("、")
+            ));
+        }
         applied.push(entry);
+    }
+    let mut note =
+        "自动基线已落成：每组一笔确定性对象（细节/降噪组多对象），同层重跑原地更新；收缩与强度缩放依据见各 applied 项 rationale"
+            .to_owned();
+    if !neutralized.is_empty() {
+        note.push_str(&format!(
+            "；已将导入缺省曝光对象（{}，ev 0.5）置零，避免与自动曝光叠加",
+            neutralized.join("、")
+        ));
+    } else if !raw_defaults.is_empty() && !exposure_lands {
+        note.push_str("；导入缺省曝光（ev 0.5）保持原状（自动曝光未落成）");
     }
     Ok(json!({
         "layer_id": layer_id,
@@ -1475,7 +1566,8 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         "skipped": skipped_json,
         "scene_flags": scene_json,
         "stats": stats_json,
-        "note": "自动基线已落成：每组一笔确定性对象（细节/降噪组多对象），同层重跑原地更新；收缩与强度缩放依据见各 applied 项 rationale",
+        "neutralized_default_exposure": neutralized,
+        "note": note,
     }))
 }
 
@@ -1729,6 +1821,57 @@ mod tests {
         assert!(
             clarity.is_none() && texture.is_none(),
             "平坦时细节两项应跳过"
+        );
+    }
+
+    /// 缺省曝光豁免判定：名 + 类型 + ev 三者全匹配才豁免。
+    #[test]
+    fn raw_default_exposure_predicate() {
+        let name = RAW_DEFAULT_EXPOSURE_NAME;
+        let untouched = json!({
+            "adjustment_type": "exposure",
+            "name": name,
+            "params": {"ev": 0.5},
+        });
+        assert!(
+            is_raw_default_exposure(ObjectType::Adjustment, &untouched),
+            "未动过的缺省对象应豁免"
+        );
+        let already_zeroed = json!({
+            "adjustment_type": "exposure",
+            "name": name,
+            "params": {"ev": 0.0},
+        });
+        assert!(
+            is_raw_default_exposure(ObjectType::Adjustment, &already_zeroed),
+            "已被 auto 置零过的同一对象重跑时仍应豁免"
+        );
+        let edited = json!({
+            "adjustment_type": "exposure",
+            "name": name,
+            "params": {"ev": 0.8},
+        });
+        assert!(
+            !is_raw_default_exposure(ObjectType::Adjustment, &edited),
+            "改过 ev 的缺省对象应视为人工（变异：豁免条件丢掉 ev 检查即红）"
+        );
+        let renamed = json!({
+            "adjustment_type": "exposure",
+            "name": "我自己调的曝光",
+            "params": {"ev": 0.5},
+        });
+        assert!(
+            !is_raw_default_exposure(ObjectType::Adjustment, &renamed),
+            "换过名的同值对象应视为人工"
+        );
+        let wrong_type = json!({
+            "adjustment_type": "exposure",
+            "name": name,
+            "params": {"ev": 0.5},
+        });
+        assert!(
+            !is_raw_default_exposure(ObjectType::Filter, &wrong_type),
+            "滤镜类型即使名与值全中也不豁免"
         );
     }
 }
