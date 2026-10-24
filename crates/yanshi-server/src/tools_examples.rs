@@ -48,10 +48,6 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "transform_selection",
         r#"{"selection_id":"s1","translate":[10,0],"scale":[1.5,1.5],"rotate_deg":30,"pivot":[100,100]}"#,
     ),
-    (
-        "select_opaque_pixels",
-        r#"{"layer_id":"L1","selection_id":"s_opaque","min_alpha":0.5,"binarize":false,"close_pinholes":true}"#,
-    ),
     // **蒙版画笔/擦除 + 智能肌理**（mask-texture 补丁遗留的三个缺口，第 765 轮补齐；
     // smart-select 补丁的说明里主动指出『paint_mask/delete_mask/smart_texture 缺示例，
     // 剩余 3 个需 gradetwo 补』）。
@@ -77,14 +73,6 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         r#"{"layer_id":"L1","shape":{"type":"rect","x":40,"y":40,"w":180,"h":120},"brush":"2B_pencil","color":[0.86,0.24,0.16,1.0]}"#,
     ),
     (
-        "smart_blend",
-        r#"{"layer_id":"L1","shape":{"type":"rect","x":40,"y":40,"w":120,"h":80},"color_a":[0.86,0.24,0.16,1.0],"color_b":[0.16,0.24,0.86,1.0]}"#,
-    ),
-    (
-        "smart_glaze",
-        r#"{"layer_id":"L1","shape":{"type":"rect","x":60,"y":60,"w":100,"h":60},"color":[0.86,0.24,0.16,1.0]}"#,
-    ),
-    (
         "smart_edge_soften",
         r#"{"layer_id":"L1","shape":{"type":"rect","x":30,"y":30,"w":120,"h":100}}"#,
     ),
@@ -97,23 +85,11 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         r#"{"ref":"L_ref","layer_id":"L1","shape":{"type":"rect","x":40,"y":40,"w":180,"h":120},"samples":8}"#,
     ),
     (
-        "fit_background_field",
-        r#"{"layer_id":"L1","mask":{"type":"rect","x":120,"y":80,"w":160,"h":140},"degree":2}"#,
-    ),
-    (
-        "smart_erase_shape",
-        r#"{"layer_id":"L1","shape":{"type":"polygon","points":[[100,100],[200,100],[150,180]]}}"#,
-    ),
-    (
         "smart_hatch_follow",
         r#"{"layer_id":"L1","guides":[[[40,200],[120,160],[200,200]]],"color":[0.2,0.15,0.1,1.0],"width":12,"size":22,"density":0.6}"#,
     ),
     ("sample_colors", r#"{"points": [[120, 64], [200, 80]]}"#),
     // **`get_histogram`**（包 B）：两个参数都可选 ⇒ 示例给一个区域作用域的典型用法 ✓。
-    (
-        "get_histogram",
-        r#"{"region": {"x": 0, "y": 0, "w": 200, "h": 150}}"#,
-    ),
     ("describe_canvas", r#"{}"#),
     ("undo_last", r#"{}"#),
     // 只读查询 ⇒ 不需要任何参数 ✓（落笔之后问一次，界面据此刷新按钮 ✓）。
@@ -168,10 +144,6 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     // **渐变填充**（回归报告踩过：它和我们一开始都猜了个不存在的参数名 ✗）——
     // 真参数是 `kind`（不是 `geometry`）；颜色用**对象写法**而不是 `"#rrggbb"`，
     // 因为 Rust 的 `r#"…"#` 裸字符串不能包含 `"#`（会提前结束、把源码弄坏）。
-    (
-        "gradient_fill",
-        r#"{"layer_id": "L1", "from": {"r": 255, "g": 0, "b": 0, "a": 255}, "to": {"r": 0, "g": 0, "b": 255, "a": 255}, "kind": "linear", "angle": 0}"#,
-    ),
     ("estimate_dehaze", r#"{}"#),
     // **期 4 D1 频率分离 / D&B**：参数面见工具注册表（layer_id 必填，
     // radius 域 [1,64]，mode 仅 curves/gray）。
@@ -201,20 +173,8 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         r#"[{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}},{"tool":"resolve_conflict","arguments":{"resolution":"keep_ours"}}]"#,
     ),
     (
-        "get_object_history",
-        r#"[{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}},{"tool":"get_object_history","arguments":{"object_id":"L1"}}]"#,
-    ),
-    (
         "commit_transaction",
         r#"[{"tool":"begin_transaction","arguments":{}},{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}},{"tool":"commit_transaction","arguments":{}}]"#,
-    ),
-    (
-        "undo_last",
-        r#"[{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}},{"tool":"undo_last","arguments":{"count":1}}]"#,
-    ),
-    (
-        "redo_last",
-        r#"[{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}},{"tool":"undo_last","arguments":{"count":1}},{"tool":"redo_last","arguments":{"count":1}}]"#,
     ),
     // **变更集 / 祖先族**（第 278 轮）：与事务/历史相邻的一族，原先一条示例都没有。
     // 参数照原文抄：`abort_changeset` 无参数；`revert_changeset` 必填 `changeset_id`；
@@ -229,14 +189,6 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("delete_annotation", r#"{"annotation_id":"ann1"}"#),
     ("get_annotation", r#"{"annotation_id":"ann1"}"#),
     ("clear_reference", r#"{}"#),
-    (
-        "get_ancestors",
-        r#"[{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}},{"tool":"get_ancestors","arguments":{"object_id":"L1"}}]"#,
-    ),
-    (
-        "get_descendants",
-        r#"[{"tool":"draw_stroke","arguments":{"layer_id":"L1","data":{}}},{"tool":"get_descendants","arguments":{"object_id":"L1"}}]"#,
-    ),
     // **选区 / 填充 / 变更集**（第 279 轮）：这一族原先一条示例都没有；
     // 取值按各自参数说明里的形状照写（`shape` 的字段名就是从说明里抄的），不编造。
     (
@@ -265,10 +217,6 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         r#"{"layer_id": "L1", "medium": "oil", "points": [[60, 220, 1], [140, 220, 1]]}"#,
     ),
     ("list_palette_colors", r#"{"palette": "open-color.json"}"#),
-    (
-        "draw_stroke",
-        r#"{"layer_id": "L1", "data": {"points": [[60, 180, 1], [140, 180, 1]]}}"#,
-    ),
     ("delete_layer", r#"{"layer_id": "L1"}"#),
     ("list_textures", r#"{}"#),
     ("list_documents", r#"{}"#),
@@ -293,10 +241,6 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("list_assets", r#"{"kind": "brush", "tag": "fur"}"#),
     // 第 (5) 条继续扩 ✓：形状照**仓库里现成的调用**写 ✓（`browser-ui-check.mjs` 的 fill/draw_shape ✓），
     // 不凭记忆编参数 ✗（示例会被 `tool-example-acceptance.mjs` **真的执行** ✓，编错就红 ✓）。
-    (
-        "fill",
-        r#"{"layer_id": "layer_default", "object_id": "bg", "data": {"color": {"r": 240, "g": 240, "b": 240, "a": 255}}}"#,
-    ),
     // **必须带颜色** ✓（外部第 10 轮实测 ✓）：`draw_shape` 没有 `fill` 键 ✓，而原来的示例里
     // **也没有颜色** ✗ ⇒ 对方查不出来"怎么画一个有色矩形"，只好改用 `import_image` 导入自己生成的 PNG ✗
     // ⇒ 示例就是接口的一部分 ✓：绘制类示例要**画出东西**（`data.color` 是填充色 ✓，与 `fill_region` 同口径 ✓）。
@@ -328,48 +272,20 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     // 第 (5) 条继续扩 ✓：必填只有 `layer_id` ✓ ⇒ 用新建文档自带的 `layer_default` ✓（机器普查选出 ✓）。
     ("unlock_layer", r#"{"layer_id": "layer_default"}"#),
     // **多步示例** ✓（第 258 轮机制 ✓）：先画出它的对象 ✓，再对该对象操作 ✓（本批由普查+实调选出 ✓）。
-    (
-        "get_dependency_graph",
-        r#"[{"tool": "draw_shape", "arguments": {"layer_id": "layer_default", "object_id": "p0", "data": {"geometry": {"kind": "rect", "bbox": {"x": 40, "y": 40, "w": 30, "h": 30}}}}}, {"tool": "get_dependency_graph", "arguments": {"object_id": "p0"}}]"#,
-    ),
     // **多步示例** ✓（第 258 轮机制 ✓）：先画出它的对象 ✓，再对该对象操作 ✓（本批由普查+实调选出 ✓）。
-    (
-        "get_resolved_state",
-        r#"[{"tool": "draw_shape", "arguments": {"layer_id": "layer_default", "object_id": "p1", "data": {"geometry": {"kind": "rect", "bbox": {"x": 40, "y": 40, "w": 30, "h": 30}}}}}, {"tool": "get_resolved_state", "arguments": {"object_id": "p1"}}]"#,
-    ),
     // **多步示例** ✓（第 258 轮机制 ✓）：先画出它的对象 ✓，再对该对象操作 ✓（本批由普查+实调选出 ✓）。
-    (
-        "get_ancestors",
-        r#"[{"tool": "draw_shape", "arguments": {"layer_id": "layer_default", "object_id": "p2", "data": {"geometry": {"kind": "rect", "bbox": {"x": 40, "y": 40, "w": 30, "h": 30}}}}}, {"tool": "get_ancestors", "arguments": {"object_id": "p2"}}]"#,
-    ),
     // **多步示例** ✓（第 258 轮机制 ✓）：先画出它的对象 ✓，再对该对象操作 ✓（本批由普查+实调选出 ✓）。
-    (
-        "get_descendants",
-        r#"[{"tool": "draw_shape", "arguments": {"layer_id": "layer_default", "object_id": "p3", "data": {"geometry": {"kind": "rect", "bbox": {"x": 40, "y": 40, "w": 30, "h": 30}}}}}, {"tool": "get_descendants", "arguments": {"object_id": "p3"}}]"#,
-    ),
     // **多步示例** ✓（第 258 轮机制 ✓ + 本轮的测试与脚本 ✓）：数组 ⇒ 先画一个 `s1`、再查它的历史 ✓。
-    (
-        "get_object_history",
-        r#"[{"tool": "draw_shape", "arguments": {"layer_id": "layer_default", "object_id": "s1", "data": {"geometry": {"kind": "rect", "bbox": {"x": 40, "y": 40, "w": 30, "h": 30}}}}}, {"tool": "get_object_history", "arguments": {"object_id": "s1"}}]"#,
-    ),
     // 它要求对象**先存在** ✓，而示例机制是"**在全新文档上单跑一条**" ✓ ⇒ 结构上不适用 ✗
     //（要给这类工具做示例，得先支持**多步示例** ✓ —— 那是示例机制的扩展 ✓，不是这一条的事 ✗）。
     ("list_layers", r#"{}"#),
     ("sample_color", r#"{"x": 120, "y": 64}"#),
     ("get_document", r#"{}"#),
     // **★ 命名锚点（真机报告 2026-10-15）★**：起稿定死关键点 ⇒ 跨会话不再重估 ✓。
-    (
-        "set_anchor",
-        r#"{"name": "left_eye", "x": 268, "y": 286, "note": "外眼角偏 2px"}"#,
-    ),
     ("get_anchors", r#"{}"#),
     ("delete_anchor", r#"{"name": "left_eye"}"#),
     ("calibrate", r#"{}"#),
     ("get_stroke_log", r#"{"limit": 10}"#),
-    (
-        "new_document",
-        r#"{"height": 640, "width": 900, "background": {}, "doc_id": "demo"}"#,
-    ),
     ("create_layer", r#"{"layer_id": "L1", "name": "Layer 1"}"#),
     (
         "brush_stroke",
@@ -388,26 +304,9 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         r#"{"brush": "spray", "size": 24, "hardness": 0.6, "opacity": 0.8, "color": {"r": 0, "g": 64, "b": 255, "a": 255}}"#,
     ),
     (
-        "export_png",
-        r#"{"path": "example-export.png", "layer_id": "L1", "max_edge": 512}"#,
-    ),
-    (
-        "export_svg",
-        r#"{"path": "example-export.svg", "validate": true}"#,
-    ),
-    (
         "export_book_pngs",
         r#"{"doc_ids": ["page-01", "page-02"], "dir": "book-pages"}"#,
     ),
-    (
-        "export_timelapse",
-        r#"{"path": "process.mp4", "fps": 30, "frame_every": 10, "width": 2048}"#,
-    ),
-    (
-        "get_object",
-        r#"{"object_id": "o1", "include_history": true}"#,
-    ),
-    ("list_assets", r#"{"kind": "brush"}"#),
     ("delete_object", r#"{"object_id": "o1"}"#),
     // **分组 / 悬空变更集 / 路径转换**（第 287 轮）：这几族原先都没有示例；
     // 参数照原文抄：`add_to_group` 必填 `group_id` 与 `object_id`；
@@ -427,10 +326,6 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("get_inflight", r#"{}"#),
     ("cancel_operation", r#"{}"#),
     ("convert_to_path", r#"{"object_id":"L1"}"#),
-    (
-        "create_mask",
-        r#"{"mask_id":"m1","shape":{"kind":"rect","bbox":{"x":10,"y":10,"w":60,"h":60}}}"#,
-    ),
     // **区域分析 / 实例**（第 290 轮）：`analyze_region` 必填 `region`（`{x,y,w,h}`，与 `render_region` 同一形状）；
     // `create_instance` 必填 `instance_id` / `layer_id` / `master_id`（`local_transform` 可选）。
     (
@@ -487,7 +382,6 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("get_atom", r#"{"atom_id":"atom1"}"#),
     // **一批"纯 id / 无参数"的工具**（第 293 轮）：这些的必填参数都是 id 或什么都不需要，
     // 取值不需要猜 ⇒ 一次补齐。（`add_adjustment`/`add_filter`/`set_property` 等仍不写：取值说明不足。）
-    ("blob_gc", r#"{"dry_run":true}"#),
     ("export_project", r#"{"path":"exports/demo.yanshi"}"#),
     ("import_project", r#"{"path":"exports/demo.yanshi"}"#),
     ("update_stroke", r#"{"object_id":"L1"}"#),
@@ -578,15 +472,6 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     // **无参数工具**（✓，第 404 轮批量补 ✓）：这些 spec 的 `params` 是空数组 ✓
     // ⇒ **示例只可能是"成功"或"需要前置状态"** ✓，**不可能因缺参被拒** ✗。
     //（`commit_changeset` / `commit_transaction` 之类确实需要先有开启的变更集 ✓ ⇒ 归"需要前置状态"是**合理**的 ✓）
-    ("list_selections", r#"{}"#),
-    ("list_stashes", r#"{}"#),
-    ("begin_transaction", r#"{}"#),
-    ("begin_changeset", r#"{}"#),
-    ("commit_changeset", r#"{}"#),
-    ("abort_changeset", r#"{}"#),
-    ("clear_reference", r#"{}"#),
-    ("estimate_dehaze", r#"{}"#),
-    ("list_textures", r#"{}"#),
     // **`set_property`**（✓，第 441 轮 ✓）：它的"必填"有一部分**只写在实现里** ✗ ——
     // `param!` 把 `layer_id`/`object_id` 都标成可选 ✓，而写入器要求**二者必居其一** ✓
     //（`tools.rs:7907` ✓）⇒ **照 spec 写会被拒** ✗ ⇒ 这里按实现写 ✓。
@@ -603,10 +488,6 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     // 键是自由的 ✓）；spec 明说「值为 null 表示删除该键」✓、且是**合并**（没提到的键不动 ✓）⇒
     // 这里用一个**有据可查的真键** `reference.blob_hash` ✓（ΔE 写入器读的就是它 ✓，见 tools.rs:3121 ✓），
     // 传 null 表示"确保它不存在" ✓ ⇒ **对任何环境都成立、且不留副作用** ✓。
-    (
-        "set_preferences",
-        r#"{"values":{"reference.blob_hash":null}}"#,
-    ),
     // **`add_filter`**（✓，第 460 轮 ✓）：必填两个 ✓ —— `layer_id`（用默认图层 ✓，第 349 轮那条羽化判据
     // 实际用过 ✓）与 `filter_name`（spec 里写"见工具说明" ✗ ⇒ **取值域在渲染层** ✓：
     // `crates/yanshi-render/src/filter.rs` 的解析分支列出了 invert / posterize / blur / sharpen / noise … ✓）。
