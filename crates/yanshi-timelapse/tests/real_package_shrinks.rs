@@ -72,7 +72,36 @@ fn a_real_package_shrinks_and_has_no_black_blocks() {
     {
         eprintln!("REAL={line}");
     }
-    if !out.status.success() {
-        eprintln!("REAL_ERR={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "timelapse 必须成功：{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for line in stdout
+        .lines()
+        .filter(|line| line.contains("分段账") || line.contains("画布"))
+    {
+        eprintln!("REAL={line}");
     }
+    // ① **真的缩了**：不许有放弃的原子 ✓
+    assert!(
+        stdout.contains("shrink 放弃 0 个原子（原因 无）"),
+        "真包上 `shrink_atom` 必须每一行都能缩：\n{stdout}"
+    );
+    // ② **真的花了时间** ✓（0 ms 曾经是我误判"空转"的来源 ✓）
+    let shrink_ms: f64 = stdout
+        .split("shrink ")
+        .nth(1)
+        .and_then(|rest| rest.split('｜').next())
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .unwrap_or(0.0);
+    assert!(
+        shrink_ms > 0.0,
+        "缩样必须真的花时间（实测 {shrink_ms} ms）：\n{stdout}"
+    );
+    // ③ **没有黑块** ✓
+    assert!(
+        stdout.contains("缩小前全零 0"),
+        "真包上不许有「缩小前就全零」的块：\n{stdout}"
+    );
 }
