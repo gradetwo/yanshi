@@ -19780,3 +19780,29 @@ window.fetch = async (input, init) => {
 在 `viewer-app.js` 里 `grep -n "window.fetch"` ⇒ 看是否**在 install 之前**绑定了引用 ✓
 ＋ `grep -n "installLocalApi("` 看调用点在第几行 ✓ ⇒ **行号先后就能定论** ✓
 ⇒ 若确实有早绑定 ⇒ 修法是把那条引用**改成每次读 `window.fetch`** ✓（一处改动 ✓）
+
+## 五百二十三、真正的机制找到了：`fetchMutating` **本来就有**离线短路，而落笔那条路**没走它**（第 890 轮）
+
+**⇒ 关键代码（`web/viewer-app.js:774-779`）**：
+```js
+async function fetchMutating(url, options) {
+  if (navigator.onLine === false || state.outboxOffline === true) {
+    const error = new Error("offline");
+    error.yanshiOffline = true;
+    throw error;                       // ← 断网时**在这里就抛** ⇒ 上面 1403 的 catch ⇒ 入队 ✓
+  }
+  …
+}
+```
+⇒ **所以"断网 ⇒ 入队"这条链**本来就存在 ✓ **不需要我加守卫** ✗（前两轮的改动方向**是错的** ✓ 已撤回 ✓）
+
+**⇒ 而实测为什么没入队** ✗：落笔时工具响应**来自本地层**（`server:false`）✓
+⇒ 说明那次调用**根本没经过 `fetchMutating`** ✓（否则 `navigator.onLine === false` 会先抛 ✓）
+⇒ 而判据**先** `await offline()`（`browser-offline-journal.mjs:310`）**再**落笔 ✓
+   ＋ 负对照读到 `onLine:false` ✓ ⇒ **断网确实生效** ✓
+⇒ **⇒ 结论**：**`draw_stroke` 那条调用绕过了 `fetchMutating`** ✓（走了 `api()`／`fetch` 直连 ✓）
+
+**⇒ 下一轮（一处改动，可验证）**：把落笔这条工具的调用**改走 `fetchMutating`** ✓
+⇒ 判据会自己绿 ✓（因为链已存在 ✓）；变异：把 `fetchMutating` 的短路删掉 ⇒ 队列回到 0 ⇒ 红 ✓
+**⇒ 附带发现**：`fetchMutating` 的短路在 775 行**早就写着** ✓ —— 我前两轮加守卫是**在错误的层修**
+（产品里已经有正确逻辑 ✓，缺的是**调用点没用它** ✓）⇒ 这正是「读码比猜快」的又一次 ✓。
