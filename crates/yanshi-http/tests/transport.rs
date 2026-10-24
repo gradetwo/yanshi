@@ -1418,3 +1418,46 @@ fn the_served_service_worker_has_its_build_id_substituted() {
         "`yanshi-shell-` 后面应当紧跟具体构建号（十六进制），实测 {stamped:?}"
     );
 }
+
+/// **超过 `MAX_BODY_BYTES` 的请求必须在读体之前就被拒**（第 774 轮）
+///
+/// **⇒ 为什么值得一条判据**：`http.rs:127` 用 `Content-Length` **先判断**再分配 ✓ ——
+/// 若把它改成"先读再判"或干脆去掉 ⇒ **一个 5 GB 的 `Content-Length` 会让服务端先分配 5 GB** ✓
+/// ⇒ 用户看到的是**服务被杀**，而不是一个 400/413 ✓（正是最该挡住的那类失败 ✓）。
+///
+/// **⇒ 判据**：发一个 `Content-Length: 33554433`（32 MiB ＋ 1 ✓）但**不发送正文** ✓
+/// ⇒ 服务端必须**立刻**回错（不等待 32 MiB 正文 ✓）—— 这里只读 `Content-Length`、
+/// 一条字节都不写 ⇒ 若实现是"先读再判"，本测试会**卡住到超时** ✓（那也是红 ✓）。
+///
+/// **变异**：把 `if length > MAX_BODY_BYTES` 改成 `false` ⇒ 服务端会等正文 ⇒ 超时／错码不符 ⇒ 红 ✓。
+#[test]
+fn an_oversized_content_length_is_refused_before_any_body_is_read() {
+    use std::io::Write as _;
+    let handle = start_server();
+    let addr = handle.addr;
+    let mut stream = std::net::TcpStream::connect(addr).expect("连接");
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .expect("设超时");
+    let head = format!(
+        "POST /api/tools/put_blob HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        32 * 1024 * 1024 + 1
+    );
+    stream.write_all(head.as_bytes()).expect("写头部");
+    // **一个字节的正文都不发** ✓ ⇒ 实现若不看 `Content-Length` 就只能等到超时 ✓
+    let started = std::time::Instant::now();
+    let (status, _headers, body) = read_response(&mut stream);
+    let elapsed = started.elapsed();
+    // **两种拒法都算通过** ✓：回 400/413 ✓，或**直接关连接**（`status == 0` ✓ —— 本实现就是关 ✓）。
+    //   **⇒ 真正要断的是"它没有去等那 32 MiB"** ✓ ⇒ 用**耗时**断：< 3 秒 ✓
+    //     （变异成"先读再判" ⇒ 服务端会等正文 ⇒ 客户端 5 秒读超时 ⇒ 耗时不成立 ⇒ 红 ✓）。
+    assert!(
+        status == 0 || status == 400 || status == 413,
+        "超大 Content-Length 的响应码只可能是 关闭(0)／400／413，实测 {status}: {}",
+        String::from_utf8_lossy(&body)
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "服务端花了 {elapsed:?} 才回应 ⇒ 它在**等**那 32 MiB 正文（应当只看 Content-Length 就拒）"
+    );
+}
