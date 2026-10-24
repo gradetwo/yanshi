@@ -381,6 +381,7 @@ fn clamp_params(kind: &str, type_name: &str, params: &mut Value) {
             ("lightness", -1.0, 1.0),
         ],
         (_, "split_toning") => &[("balance", -1.0, 1.0), ("amount", 0.0, 1.0)],
+        (_, "black_and_white") => &[("amount", 0.0, 1.0)],
         (_, "dehaze") | (_, "clarity") | (_, "texture") => &[("amount", -1.0, 1.0)],
         (_, "film_grain") => &[("amount", 0.0, 1.0), ("size", 1.0, 8.0)],
         (_, "noise") => &[("amount", 0.0, 1.0)],
@@ -495,6 +496,15 @@ pub(super) fn expand_preset(
                 interpolate(
                     recipe_value,
                     neutral_value,
+                    strength,
+                    &format!("预设「{}」{} 的参数 {key}", preset.id, op.type_name),
+                )?
+            } else if op.type_name == "black_and_white" && key == "amount" {
+                // 期 4 D2-2：黑白 op 的 amount 中性值恒为 0（strength=0 ⇒ 恒等），
+                // 无论数据里有没有声明 neutral.amount；著录缺省 1.0 时即 strength × 1.0。
+                interpolate(
+                    recipe_value,
+                    &json!(0),
                     strength,
                     &format!("预设「{}」{} 的参数 {key}", preset.id, op.type_name),
                 )?
@@ -944,6 +954,44 @@ mod preset_expander_tests {
                 }
             }
         }
+    }
+
+    /// **黑白 op 的 strength 插值**（期 4 D2-2）：`amount` 的中性值恒为 0，
+    /// 即使数据里没有声明 `neutral.amount`；著录 0.8 时 strength 0.5 ⇒ 0.4、
+    /// strength 0 ⇒ 0（渲染逐位 = 基底，见 filter 层恒等断言）。
+    #[test]
+    fn preset_strength_interpolates_bw_amount() {
+        let preset: StylePreset = serde_json::from_value(json!({
+            "id": "test_bw",
+            "name_zh": "测试黑白",
+            "name_en": "Test B&W",
+            "status": "needs_review",
+            "tags": [],
+            "suitable": [],
+            "caution": [],
+            "description": "测试用",
+            "notes": "测试用",
+            "correction": {"baseline": "full", "ops": []},
+            "style_ops": [{
+                "kind": "adjustment",
+                "type": "black_and_white",
+                "params": {"weights": [0.2126, 0.7152, 0.0722], "amount": 0.8},
+                "neutral": {}
+            }]
+        }))
+        .expect("测试预设必须能构造");
+        let amount_at = |strength: f64| {
+            let ops = expand_preset(&preset, strength, &Map::new(), false)
+                .unwrap_or_else(|e| panic!("strength {strength} 展开失败：{e:?}"));
+            ops[0]
+                .params
+                .get("amount")
+                .and_then(Value::as_f64)
+                .expect("展开参数必须含 amount")
+        };
+        assert!((amount_at(1.0) - 0.8).abs() < 1e-9, "strength=1 时 amount 应为著录值 0.8");
+        assert!((amount_at(0.5) - 0.4).abs() < 1e-9, "strength=0.5 时 amount 应为 0.4");
+        assert!((amount_at(0.0) - 0.0).abs() < 1e-9, "strength=0 时 amount 应为 0（恒等）");
     }
 
     #[test]

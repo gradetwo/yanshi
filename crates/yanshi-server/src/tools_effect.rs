@@ -172,6 +172,7 @@ pub(super) fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> R
             "path",
             "points",
             "quad",
+            "ranges",
             "samples",
             "seed",
             "shadows",
@@ -460,6 +461,23 @@ pub(super) fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> R
                 }
             }
         }
+        // 期 4 D2-2：amount 可选，数字且在 [0,1] 内（越界报错，不静默钳制）。
+        if let Some(amount) = object.get("amount") {
+            let Some(value) = amount.as_f64() else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("black_and_white 的 amount 必须是数字"),
+                ));
+            };
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "black_and_white 的 amount 必须在 [0,1] 内，得到 {value}"
+                    )),
+                ));
+            }
+        }
         if let Some(tint) = object.get("tint") {
             let Some(array) = tint.as_array().filter(|array| array.len() == 3) else {
                 return Err(YanshiError::new(
@@ -481,6 +499,68 @@ pub(super) fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> R
                             "black_and_white 的 tint 分量必须在 [0,1] 内，得到 {value}"
                         )),
                     ));
+                }
+            }
+        }
+    }
+    // 期 4 D2-3：hsl 的 ranges 结构校验——档名白名单、三键数值域；
+    // 未知档名/未知键 ⇒ 报错且零落账（调用方在落成前全量校验）。
+    if name == "hsl" {
+        if let Some(ranges) = object.get("ranges") {
+            let Some(ranges_obj) = ranges.as_object() else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("hsl 的 ranges 必须是对象"),
+                ));
+            };
+            for (range_name, range_value) in ranges_obj {
+                if !yanshi_render::filter::HSL_RANGE_NAMES.contains(&range_name.as_str()) {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "hsl 的 ranges 档名「{range_name}」不认识；可用：{}",
+                            yanshi_render::filter::HSL_RANGE_NAMES.join(" / ")
+                        )),
+                    ));
+                }
+                let Some(range_obj) = range_value.as_object() else {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "hsl 的 ranges.{range_name} 必须是对象"
+                        )),
+                    ));
+                };
+                for (key, value) in range_obj {
+                    let domain = match key.as_str() {
+                        "hue" => (-180.0, 180.0),
+                        "saturation" | "lightness" => (-100.0, 100.0),
+                        other => {
+                            return Err(YanshiError::new(
+                                ErrorCode::InvalidArgument,
+                                ErrorContext::detail(format!(
+                                    "hsl 的 ranges.{range_name} 有未知键「{other}」；只收 hue / saturation / lightness"
+                                )),
+                            ));
+                        }
+                    };
+                    let Some(number) = value.as_f64() else {
+                        return Err(YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail(format!(
+                                "hsl 的 ranges.{range_name}.{key} 必须是数字"
+                            )),
+                        ));
+                    };
+                    if !number.is_finite() || !(domain.0..=domain.1).contains(&number) {
+                        return Err(YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail(format!(
+                                "hsl 的 ranges.{range_name}.{key} 必须在 [{}, {}] 内，得到 {number}",
+                                domain.0, domain.1
+                            )),
+                        ));
+                    }
                 }
             }
         }
@@ -737,6 +817,88 @@ mod presence_validation_tests {
                 "{name} amount=1.5 应被服务端拒绝"
             );
         }
+    }
+
+    #[test]
+    fn black_and_white_amount_is_validated_in_zero_to_one() {
+        // 期 4 D2-2：amount 可选，数字且在 [0,1] 内；越界报错，不静默钳制。
+        assert!(
+            validate_effect(
+                EffectKind::Adjustment,
+                "black_and_white",
+                &json!({"weights": [0.2126, 0.7152, 0.0722], "amount": 0.5})
+            )
+            .is_ok(),
+            "amount=0.5 应通过"
+        );
+        assert!(
+            validate_effect(
+                EffectKind::Adjustment,
+                "black_and_white",
+                &json!({"weights": [0.2126, 0.7152, 0.0722]})
+            )
+            .is_ok(),
+            "无 amount 键（老文档 = 1.0）应通过"
+        );
+        assert!(
+            validate_effect(
+                EffectKind::Adjustment,
+                "black_and_white",
+                &json!({"weights": [0.2126, 0.7152, 0.0722], "amount": 1.5})
+            )
+            .is_err(),
+            "amount=1.5 应被拒绝"
+        );
+        assert!(
+            validate_effect(
+                EffectKind::Adjustment,
+                "black_and_white",
+                &json!({"weights": [0.2126, 0.7152, 0.0722], "amount": "half"})
+            )
+            .is_err(),
+            "amount 非数字应被拒绝"
+        );
+    }
+
+    #[test]
+    fn hsl_ranges_unknown_key_rejected() {
+        // 期 4 D2-3：未知档名/未知键/越界值 ⇒ 报错（落成前全量校验 ⇒ 零落账）。
+        assert!(
+            validate_effect(
+                EffectKind::Adjustment,
+                "hsl",
+                &json!({"ranges": {"rose": {"saturation": 10}}})
+            )
+            .is_err(),
+            "未知档名 rose 应被拒绝"
+        );
+        assert!(
+            validate_effect(
+                EffectKind::Adjustment,
+                "hsl",
+                &json!({"ranges": {"reds": {"sat": 10}}})
+            )
+            .is_err(),
+            "未知键 sat 应被拒绝"
+        );
+        assert!(
+            validate_effect(
+                EffectKind::Adjustment,
+                "hsl",
+                &json!({"ranges": {"reds": {"saturation": 150}}})
+            )
+            .is_err(),
+            "饱和度 150 超出 [-100,100] 应被拒绝"
+        );
+        assert!(
+            validate_effect(
+                EffectKind::Adjustment,
+                "hsl",
+                &json!({"ranges": {"reds": {"saturation": 50}}})
+            )
+            .is_ok(),
+            "合法 ranges 应通过"
+        );
     }
 
     #[test]

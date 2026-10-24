@@ -395,23 +395,38 @@ impl FilterKind {
 }
 
 /// **黑白转换**：`gray = Σ w·c`（权重由参数给、缺省 Rec709），可选 `tint` 着色
-/// （输出 `gray × tint`），无 `tint` 时三通道同值。
+/// （输出 `gray × tint`），无 `tint` 时三通道同值；再按 `amount` 与输入混合
+/// （`out = mix(input, bw_result, amount)`，期 4 D2-2）。
+///
+/// `amount` 钳 [0,1]：`amount = 0` ⇒ **逐位** = 输入（恒等）；
+/// `amount = 1` ⇒ 逐位 = 现行实现输出（存量零影响：无 amount 键的老文档 = 1.0）。
 ///
 /// 断言应写**关系**而不是单点 ✓：灰像素（r=g=b）且 `Σw = 1` 时原样返回；
 /// 纯红配 `weights=[1,0,0]` ⇒ 输出 = 红通道值 ✓。
-pub fn black_and_white(buffer: &mut Buffer, weights: [f32; 3], tint: Option<[f32; 3]>) {
+pub fn black_and_white(
+    buffer: &mut Buffer,
+    weights: [f32; 3],
+    tint: Option<[f32; 3]>,
+    amount: f32,
+) {
+    let amount = amount.clamp(0.0, 1.0);
     for_each_straight_color(buffer, |color| {
+        let input = *color;
         let gray = weights[0] * color[0] + weights[1] * color[1] + weights[2] * color[2];
-        match tint {
-            Some(tint) => {
-                color[0] = (gray * tint[0]).clamp(0.0, 1.0);
-                color[1] = (gray * tint[1]).clamp(0.0, 1.0);
-                color[2] = (gray * tint[2]).clamp(0.0, 1.0);
-            }
+        let bw = match tint {
+            Some(tint) => [
+                (gray * tint[0]).clamp(0.0, 1.0),
+                (gray * tint[1]).clamp(0.0, 1.0),
+                (gray * tint[2]).clamp(0.0, 1.0),
+            ],
             None => {
                 let gray = gray.clamp(0.0, 1.0);
-                *color = [gray, gray, gray];
+                [gray, gray, gray]
             }
+        };
+        // 混合方向：amount = 0 ⇒ 输入、amount = 1 ⇒ 黑白结果（反了则两端断言都红）。
+        for i in 0..3 {
+            color[i] = input[i] * (1.0 - amount) + bw[i] * amount;
         }
     });
 }
@@ -1159,6 +1174,116 @@ pub fn hsl(buffer: &mut Buffer, hue_degrees: f32, saturation: f32, lightness: f3
         let s = (s * saturation).clamp(0.0, 1.0);
         let l = (l + lightness).clamp(0.0, 1.0);
         *color = hsl_compose(h, s, l);
+    });
+}
+
+/// **逐通道 HSL 的 8 个色档名**（固定白名单；工具层校验与渲染层共用 ⇒ 只此一处）。
+pub const HSL_RANGE_NAMES: [&str; 8] = [
+    "reds", "oranges", "yellows", "greens", "aquas", "blues", "purples", "magentas",
+];
+
+/// 8 档中心角（度，LR 式）：红 0、橙 30、黄 60、绿 120、青 180、蓝 240、紫 280、品红 315。
+const HSL_RANGE_CENTERS: [f32; 8] = [0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 280.0, 315.0];
+
+/// 单档偏移（期 4 D2-3）：`hue` 为度（加性）；`saturation` / `lightness` 为
+/// LR 式百分比：饱和度以因子 `(1 + saturation/100)` 乘（灰像素 s = 0 时仍为 0，
+/// 不会凭空染色——加性饱和度会把无色像素染上色，那是缺陷不是特性）；
+/// 明度以 `lightness/100` 加性偏移。缺省三键均为 0（无效果）。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct HslRangeOffset {
+    /// 色相偏移（度，加性）。
+    pub hue: f32,
+    /// 饱和度偏移（百分比，以因子 `(1 + saturation/100)` 乘）。
+    pub saturation: f32,
+    /// 明度偏移（百分比，以 `lightness/100` 加性偏移）。
+    pub lightness: f32,
+}
+
+/// 色相角的三角窗权重（期 4 D2-3）：权重在档中心为 1、向两侧线性衰减、
+/// **在相邻中心处恰好到 0**（中点两档各半——设计自家的边界测试定版；
+/// 若按「半宽 = 相邻中心距的一半」字面算，中点两档权重同为 0、归一化除零，
+/// 与该测试冲突 ⇒ 以测试为准）。权重和恒为 1（仍做归一化，防浮点漂移）。
+fn hsl_range_weights(hue_degrees: f32) -> [f32; 8] {
+    let h = hue_degrees.rem_euclid(360.0);
+    let mut weights = [0.0f32; 8];
+    for (i, center) in HSL_RANGE_CENTERS.iter().enumerate() {
+        // 到档中心的有向圆周差（−180, 180]。
+        let diff = (h - center + 540.0).rem_euclid(360.0) - 180.0;
+        let side_dist = if diff >= 0.0 {
+            let next = HSL_RANGE_CENTERS[(i + 1) % 8];
+            (next - center).rem_euclid(360.0)
+        } else {
+            let prev = HSL_RANGE_CENTERS[(i + 7) % 8];
+            (center - prev).rem_euclid(360.0)
+        };
+        weights[i] = if side_dist > 0.0 {
+            (1.0 - diff.abs() / side_dist).max(0.0)
+        } else {
+            0.0
+        };
+    }
+    let sum: f32 = weights.iter().sum();
+    if sum > 0.0 {
+        for weight in weights.iter_mut() {
+            *weight /= sum;
+        }
+    }
+    weights
+}
+
+/// **逐通道 HSL**（期 4 D2-3）：在**显示编码空间**分类与运算（照
+/// `shadows_highlights` 的「编码→算→解码」结构，编码用期 3 的扩展传递）：
+/// 编码后取色相角、按三角窗加权得档位偏移，与全局偏移合成后用既有
+/// `hsl_decompose` / `hsl_compose` 施加，再解码回线性。
+///
+/// 全局参数语义与标量路同形（色相度数加性、饱和度乘子、明度加性），
+/// 只是同样移到编码空间施加；档位饱和度为百分比因子、档位明度为百分比偏移。
+/// 全部偏移为零时像素**逐位不动**（短路——守「绿块逐位不变」与无用功）。
+pub fn hsl_with_ranges(
+    buffer: &mut Buffer,
+    hue_degrees: f32,
+    saturation: f32,
+    lightness: f32,
+    ranges: &[HslRangeOffset; 8],
+) {
+    let hue_shift = hue_degrees.clamp(-360.0, 360.0) / 360.0;
+    let saturation = saturation.clamp(0.0, 8.0);
+    let lightness = lightness.clamp(-1.0, 1.0);
+    for_each_straight_color(buffer, |color| {
+        let enc = [
+            srgb_encode_extended(color[0]),
+            srgb_encode_extended(color[1]),
+            srgb_encode_extended(color[2]),
+        ];
+        let (h, s, l) = hsl_decompose(&enc);
+        let weights = hsl_range_weights(h * 360.0);
+        let mut range_hue = 0.0f32;
+        let mut range_sat_factor = 1.0f32;
+        let mut range_light = 0.0f32;
+        for (weight, offset) in weights.iter().zip(ranges.iter()) {
+            range_hue += weight * offset.hue.clamp(-180.0, 180.0);
+            range_sat_factor += weight * (offset.saturation.clamp(-100.0, 100.0) / 100.0);
+            range_light += weight * (offset.lightness.clamp(-100.0, 100.0) / 100.0);
+        }
+        // 全零偏移 ⇒ 逐位不动（不经过 decompose/compose 的浮点往返）。
+        if hue_shift == 0.0
+            && saturation == 1.0
+            && lightness == 0.0
+            && range_hue == 0.0
+            && range_sat_factor == 1.0
+            && range_light == 0.0
+        {
+            return;
+        }
+        let h = (h + hue_shift + range_hue / 360.0).rem_euclid(1.0);
+        let s = (s * saturation * range_sat_factor).clamp(0.0, 1.0);
+        let l = (l + lightness + range_light).clamp(0.0, 1.0);
+        let composed = hsl_compose(h, s, l);
+        *color = [
+            srgb_decode_extended(composed[0]),
+            srgb_decode_extended(composed[1]),
+            srgb_decode_extended(composed[2]),
+        ];
     });
 }
 
@@ -3018,18 +3143,43 @@ pub fn apply_adjustment(
                 .unwrap_or(0.0) as f32,
             params.get("tint").and_then(Value::as_f64).unwrap_or(0.0) as f32,
         ),
-        AdjustmentKind::Hsl => hsl(
-            &mut adjusted,
-            params.get("hue").and_then(Value::as_f64).unwrap_or(0.0) as f32,
-            params
+        AdjustmentKind::Hsl => {
+            let hue = params.get("hue").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+            let saturation = params
                 .get("saturation")
                 .and_then(Value::as_f64)
-                .unwrap_or(1.0) as f32,
-            params
+                .unwrap_or(1.0) as f32;
+            let lightness = params
                 .get("lightness")
                 .and_then(Value::as_f64)
-                .unwrap_or(0.0) as f32,
-        ),
+                .unwrap_or(0.0) as f32;
+            // 期 4 D2-3：无 `ranges` 键 ⇒ 走现行标量路，逐位不变（分支在分发处
+            // 判断，不许新代码路径碰老行为）；有 ⇒ 走显示编码空间的逐通道路。
+            match params.get("ranges").and_then(Value::as_object) {
+                None => hsl(&mut adjusted, hue, saturation, lightness),
+                Some(ranges_obj) => {
+                    let mut ranges = [HslRangeOffset::default(); 8];
+                    for (index, name) in HSL_RANGE_NAMES.iter().enumerate() {
+                        if let Some(range) = ranges_obj.get(*name).and_then(Value::as_object) {
+                            ranges[index] = HslRangeOffset {
+                                hue: range.get("hue").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+                                saturation: range
+                                    .get("saturation")
+                                    .and_then(Value::as_f64)
+                                    .unwrap_or(0.0)
+                                    as f32,
+                                lightness: range
+                                    .get("lightness")
+                                    .and_then(Value::as_f64)
+                                    .unwrap_or(0.0)
+                                    as f32,
+                            };
+                        }
+                    }
+                    hsl_with_ranges(&mut adjusted, hue, saturation, lightness, &ranges)
+                }
+            }
+        }
         AdjustmentKind::Curves => curves(
             &mut adjusted,
             &curve_points(params),
@@ -3041,7 +3191,9 @@ pub fn apply_adjustment(
         AdjustmentKind::BlackAndWhite => {
             let tint =
                 fixed_floats(params.get("tint"), 3).map(|values| [values[0], values[1], values[2]]);
-            black_and_white(&mut adjusted, bw_weights(params), tint)
+            // 无 amount 键的老文档 = 1.0 = 现行像素（存量零影响）；越界由函数内钳制。
+            let amount = params.get("amount").and_then(Value::as_f64).unwrap_or(1.0) as f32;
+            black_and_white(&mut adjusted, bw_weights(params), tint, amount)
         }
         AdjustmentKind::ChannelMixer => {
             let constants = match fixed_floats(params.get("constants"), 3) {
@@ -5382,7 +5534,7 @@ mod coloradj_tests {
     #[test]
     fn black_and_white_red_only_weights_extract_the_red_channel() {
         let mut buffer = filled([0.7, 0.2, 0.1, 1.0]);
-        black_and_white(&mut buffer, [1.0, 0.0, 0.0], None);
+        black_and_white(&mut buffer, [1.0, 0.0, 0.0], None, 1.0);
         let out = px(&buffer);
         assert_eq!(out[0], out[1], "输出必须三通道同值");
         assert_eq!(out[1], out[2], "输出必须三通道同值");
@@ -5397,7 +5549,7 @@ mod coloradj_tests {
     fn black_and_white_gray_pixels_are_fixed_points_for_any_unit_sum_weights() {
         for weights in [[0.2126, 0.7152, 0.0722], [1.0, 0.0, 0.0], [0.5, 0.25, 0.25]] {
             let mut buffer = filled([0.42, 0.42, 0.42, 1.0]);
-            black_and_white(&mut buffer, weights, None);
+            black_and_white(&mut buffer, weights, None, 1.0);
             assert_rgb_close(px(&buffer), [0.42, 0.42, 0.42], "灰像素应不变");
         }
     }
@@ -5410,8 +5562,155 @@ mod coloradj_tests {
             &mut buffer,
             [0.2126, 0.7152, 0.0722],
             Some([0.5, 0.25, 0.0]),
+            1.0,
         );
         assert_rgb_close(px(&buffer), [0.5, 0.25, 0.0], "白经 tint 后应等于 tint");
+    }
+
+    /// **amount = 0 逐位恒等**（期 4 D2-2）：混合方向反了 ⇒ 这里给黑白值而非输入 ⇒ 红。
+    #[test]
+    fn bw_amount_zero_is_identity() {
+        let mut buffer = filled([0.7, 0.2, 0.1, 1.0]);
+        black_and_white(&mut buffer, [0.2126, 0.7152, 0.0722], None, 0.0);
+        assert_eq!(px(&buffer), [0.7, 0.2, 0.1], "amount=0 必须逐位等于输入");
+    }
+
+    /// **amount = 1 逐位等于现行实现输出**（期 4 D2-2 金样本）：
+    /// Rec709 灰阶 0.2126·0.7 + 0.7152·0.2 + 0.0722·0.1 = 0.29908。
+    #[test]
+    fn bw_amount_one_matches_legacy() {
+        let mut buffer = filled([0.7, 0.2, 0.1, 1.0]);
+        black_and_white(&mut buffer, [0.2126, 0.7152, 0.0722], None, 1.0);
+        assert_rgb_close(
+            px(&buffer),
+            [0.29908, 0.29908, 0.29908],
+            "amount=1 应等于旧输出",
+        );
+    }
+
+    /// **amount = 0.5 为中点**（期 4 D2-2）：输出 = (输入 + 旧输出) / 2 ± 浮点容差。
+    #[test]
+    fn bw_amount_half_is_midpoint() {
+        let mut buffer = filled([0.7, 0.2, 0.1, 1.0]);
+        black_and_white(&mut buffer, [0.2126, 0.7152, 0.0722], None, 0.5);
+        assert_rgb_close(
+            px(&buffer),
+            [0.49954, 0.24954, 0.19954],
+            "amount=0.5 应为输入与黑白结果的中点",
+        );
+    }
+
+    /// **amount 越界钳制**（期 4 D2-2）：2.0 ⇒ 1.0、−1.0 ⇒ 0.0。
+    #[test]
+    fn bw_amount_out_of_range_is_clamped() {
+        let mut buffer = filled([0.7, 0.2, 0.1, 1.0]);
+        black_and_white(&mut buffer, [0.2126, 0.7152, 0.0722], None, 2.0);
+        assert_rgb_close(
+            px(&buffer),
+            [0.29908, 0.29908, 0.29908],
+            "amount=2 应钳为 1",
+        );
+        let mut buffer = filled([0.7, 0.2, 0.1, 1.0]);
+        black_and_white(&mut buffer, [0.2126, 0.7152, 0.0722], None, -1.0);
+        assert_eq!(px(&buffer), [0.7, 0.2, 0.1], "amount=−1 应钳为 0");
+    }
+
+    // ── hsl ranges ────────────────────────────────────────────────
+
+    /// **无 `ranges` 键 ⇒ 走现行标量路，逐位不变**（期 4 D2-3 金样本回归）：
+    /// 分发路径（opacity = 1 时直接写回）与直接调 `hsl` 的结果必须逐位相等。
+    #[test]
+    fn hsl_ranges_absent_bit_identical() {
+        let mut via_scalar = filled([0.31, 0.57, 0.83, 1.0]);
+        hsl(&mut via_scalar, 20.0, 1.3, 0.1);
+        let mut via_dispatch = filled([0.31, 0.57, 0.83, 1.0]);
+        let applied = apply_adjustment(
+            &mut via_dispatch,
+            "hsl",
+            &json!({"hue": 20.0, "saturation": 1.3, "lightness": 0.1}),
+            1.0,
+            (4.0, 4.0),
+        );
+        assert!(applied, "hsl 调整必须被分发识别");
+        assert_eq!(
+            via_dispatch.pixel(0, 0),
+            via_scalar.pixel(0, 0),
+            "无 ranges 时分发路径必须逐位等于标量路"
+        );
+        assert_eq!(
+            via_dispatch.pixel(3, 3),
+            via_scalar.pixel(3, 3),
+            "无 ranges 时分发路径必须逐位等于标量路（角像素）"
+        );
+    }
+
+    /// **reds 档只动红块**（期 4 D2-3）：红块（编码色相 0°）饱和上升、
+    /// 绿块（编码色相 120°）逐位不变。变异：权重窗写成全宽 ⇒ 绿块被动 ⇒ 红；
+    /// 实现忽略 ranges ⇒ 红块不动 ⇒ 红。
+    #[test]
+    fn hsl_range_reds_only_moves_reds() {
+        let mut buffer = Buffer::new(0, 0, 2, 1);
+        buffer.set_pixel(0, 0, [0.6, 0.05, 0.05, 1.0]);
+        buffer.set_pixel(1, 0, [0.05, 0.6, 0.05, 1.0]);
+        let mut ranges = [HslRangeOffset::default(); 8];
+        ranges[0] = HslRangeOffset {
+            hue: 0.0,
+            saturation: 50.0,
+            lightness: 0.0,
+        };
+        hsl_with_ranges(&mut buffer, 0.0, 1.0, 0.0, &ranges);
+        // 红块：编码饱和度应从约 0.575 升到约 0.863（×1.5）。
+        let red = buffer.pixel(0, 0);
+        let red_enc = [
+            srgb_encode_extended(red[0]),
+            srgb_encode_extended(red[1]),
+            srgb_encode_extended(red[2]),
+        ];
+        let (_, red_s, _) = hsl_decompose(&red_enc);
+        assert!(
+            (red_s - 0.863).abs() < 0.02,
+            "红块饱和度应升到约 0.863，实测 {red_s}"
+        );
+        // 绿块：逐位不变。
+        assert_eq!(
+            buffer.pixel(1, 0),
+            [0.05, 0.6, 0.05, 1.0],
+            "绿块在 reds 档下必须逐位不变"
+        );
+    }
+
+    /// **档间边界混合**（期 4 D2-3）：编码色相 15°（红/橙正中）的像素，
+    /// reds +30° 与 oranges +10° 各半权重 ⇒ 偏移为均值 +20°，输出色相 35°±2°。
+    /// 变异：改成硬分档 ⇒ 偏移为 30° 或 10° ⇒ 红。
+    #[test]
+    fn hsl_range_boundary_blends() {
+        let mut buffer = Buffer::new(0, 0, 1, 1);
+        // 线性 (1.0, 0.05087, 0.0) 编码后为 (1.0, 0.25, 0.0)，色相恰 15°。
+        buffer.set_pixel(0, 0, [1.0, 0.05087, 0.0, 1.0]);
+        let mut ranges = [HslRangeOffset::default(); 8];
+        ranges[0] = HslRangeOffset {
+            hue: 30.0,
+            saturation: 0.0,
+            lightness: 0.0,
+        };
+        ranges[1] = HslRangeOffset {
+            hue: 10.0,
+            saturation: 0.0,
+            lightness: 0.0,
+        };
+        hsl_with_ranges(&mut buffer, 0.0, 1.0, 0.0, &ranges);
+        let out = buffer.pixel(0, 0);
+        let out_enc = [
+            srgb_encode_extended(out[0]),
+            srgb_encode_extended(out[1]),
+            srgb_encode_extended(out[2]),
+        ];
+        let (hue, _, _) = hsl_decompose(&out_enc);
+        let hue_deg = hue * 360.0;
+        assert!(
+            (hue_deg - 35.0).abs() < 2.0,
+            "边界像素色相应为 35°±2°，实测 {hue_deg}°"
+        );
     }
 
     // ── channel_mixer ───────────────────────────────────────────────
