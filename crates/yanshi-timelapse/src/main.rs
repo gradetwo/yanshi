@@ -531,6 +531,7 @@ fn main() -> Result<()> {
                 doc_h,
                 &mut timeline,
                 &mut account.shrink_black_blocks,
+                &mut account.shrink_skip_reasons,
             )
         } else {
             None
@@ -668,7 +669,7 @@ fn main() -> Result<()> {
         println!("  ★ 缓存账 ★ below 克隆 {cloned} 条 tile（脏 tile 是 {dirty_tiles} 条 ⇒ 应当远小于它 ✓）");
         println!(
             "  ★ 分段账（ms）★ apply {:.0}｜shrink {:.0}｜render {:.0}（每帧中位 {:.1}）｜scale {:.0}｜write {:.0}｜\
-             黑块 {}（缩小前全零 {}／缩小后全零 {}）｜shrink 放弃 {} 个原子",
+             黑块 {}（缩小前全零 {}／缩小后全零 {}）｜shrink 放弃 {} 个原子（原因 {}）",
             ms(account.apply_ns),
             ms(account.shrink_ns),
             ms(account.render_ns),
@@ -678,7 +679,26 @@ fn main() -> Result<()> {
             account.shrink_black_blocks[0] + account.shrink_black_blocks[1],
             account.shrink_black_blocks[0],
             account.shrink_black_blocks[1],
-            account.shrink_skips
+            account.shrink_skips,
+            {
+                let names = [
+                    "解析失败", "无 kind", "无 payload", "无 bitmap", "mime 不对",
+                    "无 blob_hash", "blob 查不到", "无宽高", "raw 太短", "其它",
+                ];
+                let mut text = String::new();
+                for (index, count) in account.shrink_skip_reasons.iter().enumerate() {
+                    if *count > 0 {
+                        if !text.is_empty() {
+                            text.push('、');
+                        }
+                        text.push_str(&format!("{}×{}", names[index], count));
+                    }
+                }
+                if text.is_empty() {
+                    text.push('无');
+                }
+                text
+            }
         );
     }
     if apply_failures > 0 {
@@ -749,6 +769,8 @@ struct Account {
     shrink_black_blocks: [u64; 2],
     /// **`shrink_atom` 放弃的次数** ✓（第 850 轮）—— 它放弃 ⇒ 这一行**用原样回放** ✓
     shrink_skips: u64,
+    /// **放弃原因分桶** ✓（第 851 轮）：见 `shrink_atom` 的注解（0..9）✓
+    shrink_skip_reasons: [u64; 10],
     /// 内核渲染的总纳秒 ✓。
     render_ns: u128,
     /// 缩放 ＋ 去 alpha 的总纳秒 ✓。
@@ -1054,11 +1076,26 @@ fn shrink_atom(
     // **黑块计数** ✓（第 847 轮；外部 `art` 第 127 次的「5 块纯黑矩形」）
     //   `[0]` = **缩小前**就全零的块数 ✓；`[1]` = **缩小后**全零的块数 ✓
     black_blocks: &mut [u64; 2],
+    // **放弃原因分桶** ✓（第 851 轮）：0 解析失败／1 无 kind／2 无 payload／3 无 bitmap／
+    //   4 mime 不是裸 RGBA／5 无 blob_hash／6 **blob 查不到**／7 无宽高／8 `raw` 太短／9 其它
+    skips: &mut [u64; 10],
 ) -> Option<String> {
     let sx = f64::from(play_w) / f64::from(doc_w);
     let sy = f64::from(play_h) / f64::from(doc_h);
-    let mut atom: Value = serde_json::from_str(line).ok()?;
-    let kind = atom.get("kind").and_then(Value::as_str)?.to_owned();
+    let mut atom: Value = match serde_json::from_str(line) {
+        Ok(value) => value,
+        Err(_) => {
+            skips[0] += 1;
+            return None;
+        }
+    };
+    let kind = match atom.get("kind").and_then(Value::as_str) {
+        Some(kind) => kind.to_owned(),
+        None => {
+            skips[1] += 1;
+            return None;
+        }
+    };
     match kind.as_str() {
         "create_document" => {
             if let Some(payload) = atom.get_mut("payload").and_then(Value::as_object_mut) {
@@ -1068,20 +1105,45 @@ fn shrink_atom(
         }
         "create_layer" => {}
         "import_image" => {
-            let payload = atom.get_mut("payload")?.as_object_mut()?;
-            let bitmap = payload.get("bitmap")?.clone();
+            let payload = match atom.get_mut("payload").and_then(Value::as_object_mut) {
+                Some(payload) => payload,
+                None => {
+                    skips[2] += 1;
+                    return None;
+                }
+            };
+            let bitmap = match payload.get("bitmap") {
+                Some(bitmap) => bitmap.clone(),
+                None => {
+                    skips[3] += 1;
+                    return None;
+                }
+            };
             let mime = bitmap
                 .get("mime_type")
                 .and_then(Value::as_str)
                 .unwrap_or("");
             if mime != "image/x-yanshi-raw" {
+                skips[4] += 1;
                 return None;
             }
-            let hash = bitmap.get("blob_hash").and_then(Value::as_str)?.to_owned();
+            let hash = match bitmap.get("blob_hash").and_then(Value::as_str) {
+                Some(hash) => hash.to_owned(),
+                None => {
+                    skips[5] += 1;
+                    return None;
+                }
+            };
             // **原子里的哈希带 `sha256:` 前缀，而包里文件名是裸 hex** ✓（第 634 轮实测）
             //   ⇒ 不剥前缀 ⇒ `blobs.get` 取不到 ⇒ 整条缩不了 ⇒ **回放按原尺寸** ⇒ 区域落到画布外 ⇒ **画面空白** ✗
             let lookup = hash.strip_prefix("sha256:").unwrap_or(&hash).to_owned();
-            let raw = blobs.get(&lookup)?;
+            let raw = match blobs.get(&lookup) {
+                Some(raw) => raw,
+                None => {
+                    skips[6] += 1;
+                    return None;
+                }
+            };
             // **宽高在 payload 顶层**（真实原子就是这样：`bitmap` 只有 `blob_hash/mime_type/size` ✓）
             //   ⇒ 先看 payload，再退回 `bitmap` 里（自造包两种写法都兼容 ✓）
             let size_of = |key: &str| {
@@ -1093,6 +1155,7 @@ fn shrink_atom(
             let src_w = size_of("width")? as u32;
             let src_h = size_of("height")? as u32;
             if raw.len() < (src_w as usize) * (src_h as usize) * 4 {
+                skips[8] += 1;
                 return None;
             }
             // **位图尺寸与 `region` 用**同一套**取整** ✓（第 839 轮）

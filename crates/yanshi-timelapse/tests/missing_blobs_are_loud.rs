@@ -322,6 +322,13 @@ fn shrink_time_is_accounted_separately_from_apply() {
         .output()
         .expect("跑 timelapse");
     let stdout = String::from_utf8_lossy(&out.stdout);
+    eprintln!(
+        "SUMMARY={}",
+        stdout
+            .lines()
+            .find(|l| l.contains("分段账"))
+            .unwrap_or("（无）")
+    );
     assert!(
         stdout.contains("shrink"),
         "分段账里必须**单独**列出 `shrink`（否则它会被算进 apply）：\n{stdout}"
@@ -334,8 +341,9 @@ fn shrink_time_is_accounted_separately_from_apply() {
     //     ⇒ 那 `SHRINK=1` 就是**空转** ✓ —— 正是 `D188` 的形态 ✓
     //   **⇒ 所以这里先**不断言 0** ✓：断言 0 现在会红，而红的是**产品**不是判据 ✓
     //     ⇒ 下一步是把原因分桶（`shrink_skips` 按 `None` 的出处拆开 ✓）⇒ 那时才能断言"健康包 = 0" ✓
+    // **原因分桶必须打印** ✓（第 851 轮）：`shrink 放弃 N 个原子（原因 …）`
     assert!(
-        stdout.contains("shrink 放弃"),
+        stdout.contains("（原因 "),
         "分段账里必须打印 `shrink 放弃 N 个原子`（它是「缩样到底生效没有」的唯一直接信号）：\n{stdout}"
     );
     assert!(
