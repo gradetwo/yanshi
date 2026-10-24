@@ -54,7 +54,42 @@ const TILE_SIZE: u32 = 64;
 fn main() -> Result<()> {
     // **读包计时起点** ✓（第 612 轮）：外部要"阶段计时"，而"读包"是**最容易被误判成渲染**的一段 ✓
     let t_read = std::time::Instant::now();
-    let args: Vec<String> = std::env::args().collect();
+    // **`--width`／`--max-dim`：让人用渲染成本换保真** ✓（第 795 轮；外部 `qoder` 的 D188 建议）
+    //   **⇒ 他们的处境**：`MAX_W/MAX_H` 硬编码 1920×1080 ✓ ⇒ 8192 高的画布必然落到
+    //     scale `0.13184` ✓ ⇒ 笔触肌理在过程视频里**看不见** ✓（`1/57 的像素` ✓）。
+    //   **⇒ 为什么给参数而不是改常量**：分辨率是**用途**决定的 ✓（审片要保真、预览要快 ✓）
+    //     ⇒ 写死任何一个值都会让另一半人难受 ✓。
+    //   **⇒ 形态**：`--width N`（等价于同时给 `--max-dim`）／`--max-dim N`（宽高共同上限 ✓）
+    //     ⇒ 从 argv 里**摘掉**它们，剩下的位置参数照旧 ✓（既有调用不受影响 ✓）。
+    let mut argv: Vec<String> = std::env::args().collect();
+    let mut max_w = MAX_W;
+    let mut max_h = MAX_H;
+    let mut index = 1;
+    while index < argv.len() {
+        let flag = argv[index].clone();
+        if flag == "--width" || flag == "--max-dim" {
+            let Some(value) = argv.get(index + 1).and_then(|s| s.parse::<u32>().ok()) else {
+                eprintln!("❌ `{flag}` 后面要跟一个正整数（像素）");
+                std::process::exit(2);
+            };
+            if value < 16 {
+                eprintln!("❌ `{flag} {value}` 太小 ⇒ 至少要 16 像素");
+                std::process::exit(2);
+            }
+            if flag == "--width" {
+                // **只给宽 ⇒ 高度按同一比例放宽** ✓（保持画面比例 ✓）
+                max_w = value;
+                max_h = value;
+            } else {
+                max_w = value;
+                max_h = value;
+            }
+            argv.drain(index..=index + 1);
+            continue;
+        }
+        index += 1;
+    }
+    let args: Vec<String> = argv;
     if !(2..=6).contains(&args.len()) {
         eprintln!(
             "用法: {} <输入.yanshi> [输出.mp4] [每N个atom一帧=10] [起始atom=0] [结束atom=全部]",
@@ -206,8 +241,8 @@ fn main() -> Result<()> {
     let scale = f64::min(
         1.0,
         f64::min(
-            f64::from(MAX_W) / f64::from(doc_w),
-            f64::from(MAX_H) / f64::from(doc_h),
+            f64::from(max_w) / f64::from(doc_w),
+            f64::from(max_h) / f64::from(doc_h),
         ),
     );
     // **输出宽高必须是偶数** ✓（第 777 轮；外部 `qoder`/`art` 报告第 110 次）

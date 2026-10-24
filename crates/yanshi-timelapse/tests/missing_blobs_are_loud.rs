@@ -151,3 +151,86 @@ fn the_shrink_path_says_the_picture_will_change() {
         "降采样回放必须说清「画会变」，实测 stderr：\n{stderr}"
     );
 }
+
+/// **`--max-dim` 必须真的改输出尺寸**（第 795 轮；外部 `qoder` D188 的建议）
+///
+/// **⇒ 为什么要有参数**：`MAX_W/MAX_H` 写死 1920×1080 ⇒ 8192 高的画布只能落 `0.13184` ✓
+/// ⇒ 笔触肌理在过程视频里看不见 ✓（他们的场景是审片 ✓）。分辨率该由**用途**决定 ✓。
+///
+/// **⇒ 判据**：同一份 2560×2160 的包，默认跑 ⇒ banner 里输出 `1920×1080`-级 ✓；
+/// 带 `--max-dim 512` 跑 ⇒ banner 里输出**不超过 512** ✓（且仍是偶数 ✓）。
+/// **变异**：忽略该参数（用回常量）⇒ 第二条仍报大到 1000+ ⇒ 红 ✓。
+#[test]
+fn the_max_dim_flag_changes_the_output_size() {
+    let dir = std::env::temp_dir().join(format!("yanshi_maxdim_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("建目录");
+    let meta = serde_json::json!({"width": 2560, "height": 2160, "doc_id": "d_dim", "fps": 24});
+    let atoms = [
+        serde_json::json!({"id": "a0", "seq": 1, "kind": "create_document", "actor": "human:t",
+            "session": "s", "timestamp": 0, "schema_version": 1,
+            "payload": {"doc_id": "d_dim", "width": 2560, "height": 2160, "color_space": "srgb"}}),
+        serde_json::json!({"id": "a1", "seq": 2, "kind": "create_layer", "actor": "human:t",
+            "session": "s", "timestamp": 0, "schema_version": 1,
+            "payload": {"layer_id": "L1", "name": "L1", "type": "raster"}}),
+    ];
+    std::fs::write(dir.join("meta.json"), meta.to_string()).expect("meta");
+    let text: String = atoms.iter().map(|atom| format!("{atom}\n")).collect();
+    std::fs::write(dir.join("atoms.jsonl"), text).expect("atoms");
+    let pack = dir.join("dim.yanshi");
+    assert!(Command::new("tar")
+        .arg("-cf")
+        .arg(&pack)
+        .arg("-C")
+        .arg(&dir)
+        .args(["meta.json", "atoms.jsonl"])
+        .status()
+        .expect("tar")
+        .success());
+
+    let run = |extra: &[&str], tag: &str| -> String {
+        let out = Command::new(env!("CARGO_BIN_EXE_yanshi-timelapse"))
+            .arg(&pack)
+            .arg(dir.join(format!("out-{tag}.mp4")))
+            .arg("1")
+            .args(extra)
+            .env(
+                "YANSHI_TIMELAPSE_RAW_DIR",
+                dir.join(format!("frames-{tag}")),
+            )
+            .output()
+            .expect("跑 timelapse");
+        format!(
+            "{}\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+            out.status
+        )
+    };
+
+    let default_out = run(&[], "default");
+    let small_out = run(&["--max-dim", "512"], "small");
+    // **输出尺寸在 stdout 的 banner 里**（`画布 W×H ⇒ 输出 w×h`）
+    let small_size = small_out
+        .split("输出 ")
+        .nth(1)
+        .and_then(|rest| rest.split("×").next())
+        .and_then(|w| w.trim().parse::<u32>().ok());
+    let default_size = default_out
+        .split("输出 ")
+        .nth(1)
+        .and_then(|rest| rest.split("×").next())
+        .and_then(|w| w.trim().parse::<u32>().ok());
+    // **默认按 1920×1080 收**：2560×2160 ⇒ 受**高**限制 ⇒ scale 0.5 ⇒ **1280×1080** ✓
+    //   （我第一版写成 1920 是错的：`scale` 取两边的 **min** ✓，不是先按宽收 ✓。）
+    assert_eq!(
+        default_size,
+        Some(1280),
+        "默认应当受 1080 高限制（2560×2160 ⇒ scale 0.5 ⇒ 1280×1080）：\n{default_out}"
+    );
+    assert_eq!(
+        small_size,
+        Some(512),
+        "`--max-dim 512` 应当把宽收到 512：\n{small_out}"
+    );
+}
