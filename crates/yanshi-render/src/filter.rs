@@ -1052,8 +1052,12 @@ pub fn color_balance(
 
 /// 分离色调：阴影与高光分别着色，`balance` 移动分界点，`amount` 控制总强度。
 ///
-/// 权重用 smoothstep 在 `mid ± 0.25` 之间过渡（`mid = 0.5 + balance × 0.25`），
+/// 期 5 Q1-c 口径（设计 §2 第 4 条）：权重取自 **sRGB 亮度 Y'**（显示空间，
+/// 通道先扩展编码再加权），着色在显示空间做，解码回线性后按**线性亮度比回写**
+/// （恢复原亮度，只留色度变化；黑像素亮度为 0 ⇒ 着色后仍为黑）。
+/// 权重仍用 smoothstep 在 `mid ± 0.25` 之间过渡（`mid = 0.5 + balance × 0.25`），
 /// 因此权重单调、确定，且 `balance` 的语义直观（正值把分界推向亮部）。
+/// 输出域钳 [0,1] 与旧内核一致（显示指涉域；HDR 负值与旧内核同处理）。
 pub fn split_toning(
     buffer: &mut Buffer,
     shadows: [f32; 3],
@@ -1070,13 +1074,30 @@ pub fn split_toning(
     let highlights = highlights.map(|value| value.clamp(-1.0, 1.0));
     let mid = 0.5 + balance.clamp(-1.0, 1.0) * 0.25;
     for_each_straight_color(buffer, |color| {
-        let luma = (LUMA[0] * color[0] + LUMA[1] * color[1] + LUMA[2] * color[2]).clamp(0.0, 1.0);
-        let t = ((luma - (mid - 0.25)) / 0.5).clamp(0.0, 1.0);
+        let orig = *color;
+        let orig_luma = LUMA[0] * orig[0] + LUMA[1] * orig[1] + LUMA[2] * orig[2];
+        let d = [
+            srgb_encode_extended(orig[0]),
+            srgb_encode_extended(orig[1]),
+            srgb_encode_extended(orig[2]),
+        ];
+        let y = LUMA[0] * d[0] + LUMA[1] * d[1] + LUMA[2] * d[2];
+        let t = ((y - (mid - 0.25)) / 0.5).clamp(0.0, 1.0);
         let highlight_weight = t * t * (3.0 - 2.0 * t);
         let shadow_weight = 1.0 - highlight_weight;
+        let mut lin = [0.0; 3];
         for channel in 0..3 {
             let tint = shadows[channel] * shadow_weight + highlights[channel] * highlight_weight;
-            color[channel] = (color[channel] + amount * tint).clamp(0.0, 1.0);
+            lin[channel] = srgb_decode_extended(d[channel] + amount * tint);
+        }
+        let new_luma = LUMA[0] * lin[0] + LUMA[1] * lin[1] + LUMA[2] * lin[2];
+        let scale = if new_luma > 1e-6 {
+            orig_luma / new_luma
+        } else {
+            1.0
+        };
+        for channel in 0..3 {
+            color[channel] = (lin[channel] * scale).clamp(0.0, 1.0);
         }
     });
 }
@@ -4902,6 +4923,8 @@ mod tests {
     }
 
     /// 分离色调：暗部取阴影色、亮部取高光色；`balance` 移动分界。
+    /// 期 5 Q1-c 语义：权重取自 sRGB Y'，着色后线性亮度恢复——故暗部偏蓝
+    /// 只断方向（恢复把蓝拉回，量级不再是旧线性加色的 +0.2），亮度本身断恢复。
     #[test]
     fn split_toning_tints_shadows_and_highlights() {
         let make = || {
@@ -4912,14 +4935,25 @@ mod tests {
             buffer.set_pixel(2, 0, [0.6, 0.6, 0.6, 1.0]);
             buffer
         };
+        let luma = |px: [f32; 4]| 0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2];
         // 阴影加蓝、高光加黄。
         let mut toned = make();
         split_toning(&mut toned, [0.0, 0.0, 0.3], [0.3, 0.3, 0.0], 0.0, 1.0);
         let dark = toned.pixel(0, 0);
         let bright = toned.pixel(2, 0);
-        assert!(dark[2] > dark[0] + 0.2, "暗部应偏蓝：{dark:?}");
-        // 高光权重在该亮度约 0.78，所以通道差约 0.17（不是满额 0.3）。
+        assert!(dark[2] > dark[0], "暗部应偏蓝：{dark:?}");
+        assert!(
+            (luma(dark) - 0.05).abs() < 0.005,
+            "暗部亮度应恢复：{} vs 0.05",
+            luma(dark)
+        );
+        // 高光在该 Y' 下为满权（显示 0.80 → t 触顶），通道差约 0.32。
         assert!(bright[0] > bright[2] + 0.1, "亮部应偏黄：{bright:?}");
+        assert!(
+            (luma(bright) - 0.6).abs() < 0.005,
+            "亮部亮度应恢复：{} vs 0.6",
+            luma(bright)
+        );
 
         // balance 把分界点推向亮部（mid 0.5 → 0.75），因此中间灰落入**阴影侧**。
         let mut shifted = make();
@@ -4954,6 +4988,33 @@ mod tests {
                 "越界参数不得产出非法值：{pixel:?}"
             );
         }
+    }
+
+    /// 期 5 Q1-c：权重取自 sRGB Y' 而非线性亮度——线性中灰 0.5（Y' ≈ 0.735）
+    /// 在新口径下落入高光侧（黄胜），旧口径下两色均分（R ≈ B）。
+    /// 变异：权重改回线性亮度 ⇒ R ≈ B ⇒ 红。
+    #[test]
+    fn split_toning_weights_follow_display_luma() {
+        let mut buffer = Buffer::new(0, 0, 1, 1);
+        buffer.set_pixel(0, 0, [0.5, 0.5, 0.5, 1.0]);
+        split_toning(&mut buffer, [0.0, 0.0, 0.3], [0.3, 0.3, 0.0], 0.0, 1.0);
+        let px = buffer.pixel(0, 0);
+        assert!(px[0] > px[2] + 0.05, "Y' 权重下中灰应取高光黄：{px:?}");
+    }
+
+    /// 期 5 Q1-c：亮度恢复——纯黑像素着色后仍为黑（亮度 0 乘任何比仍为 0）。
+    /// 变异：去掉亮度恢复 ⇒ 黑被阴影色染蓝 ⇒ 红。
+    #[test]
+    fn split_toning_black_stays_black() {
+        let mut buffer = Buffer::new(0, 0, 1, 1);
+        buffer.set_pixel(0, 0, [0.0, 0.0, 0.0, 1.0]);
+        split_toning(&mut buffer, [0.0, 0.0, 0.3], [0.3, 0.3, 0.0], 0.0, 1.0);
+        let px = buffer.pixel(0, 0);
+        assert_eq!(
+            [px[0], px[1], px[2]],
+            [0.0, 0.0, 0.0],
+            "黑像素不应被着色：{px:?}"
+        );
     }
 
     /// 色彩平衡（期 3 A2 改写：期望按新显示口径公式重算；旧断言钉的是
