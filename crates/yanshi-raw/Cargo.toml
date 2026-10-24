@@ -28,7 +28,7 @@ rawler = "0.7"
 # EXIF Orientation 的共用索引映射在内核（`yanshi_core::orientation`）：
 # 本 crate 的 f32 展开路与 render 的 JPEG u8 路共用一份（设计 5.7）。
 # core 是全仓共同下游、无图像格式依赖，不引入循环（render → raw → core）。
-yanshi-core = { path = "../yanshi-core", version = "0.2.0" }
+yanshi-core = { path = "../yanshi-core", version = "0.3.0" }
 serde.workspace = true
 serde_json.workspace = true
 libm.workspace = true
@@ -47,7 +47,7 @@ serde_json.workspace = true
 #   **⇒ ⇒ ⇒ 所以**：**断言已改成容忍两种构型**（见 `raw_registry_guard_off.rs`）；
 #     **而这条 dev-dep 保留**（**集成测试确实要经 `yanshi-render/raw` 的挂接点调回来**）。
 #     ⇒ **⇒ 但要知道**：**"`--workspace` 下测关构建"这件事本身不可靠** ✓
-yanshi-render = { path = "../yanshi-render", version = "0.2.0", features = ["raw"] }
+yanshi-render = { path = "../yanshi-render", version = "0.3.0", features = ["raw"] }
 # 自引用（集成测试用合成 DNG 夹具）：dev-only，生产依赖树不含此环。
 yanshi-raw = { path = ".", features = ["test-support"] }
 

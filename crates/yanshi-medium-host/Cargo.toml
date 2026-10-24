@@ -16,4 +16,4 @@ yanshi-medium-marker = { path = "../yanshi-medium-marker" }
 yanshi-medium-pencil = { path = "../yanshi-medium-pencil" }
 yanshi-medium-pixel = { path = "../yanshi-medium-pixel" }
 yanshi-medium-example = { path = "../yanshi-medium-example" }
-yanshi-core = { path = "../yanshi-core", version = "0.2.0" }
+yanshi-core = { path = "../yanshi-core", version = "0.3.0" }

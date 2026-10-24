@@ -21,14 +21,14 @@ ag-psd.workspace = true
 # **代价**：yanshi-render 多一个依赖。但 yanshi-wasm 与 yanshi-server 都已依赖它
 #（同一个 0.3，同一个 lock）⇒ **零新增包** ✓；且它已在 wasm32 上可用 ✓。
 hokusai = "0.3"
-yanshi-core = { path = "../yanshi-core", version = "0.2.0" }
+yanshi-core = { path = "../yanshi-core", version = "0.3.0" }
 serde.workspace = true
 serde_json.workspace = true
 libm.workspace = true
 # **deflate**：`flate2` + `zlib-rs`（纯 Rust ✓，wasm32 可用 ✓）——
 # 它**本来就在依赖树里** ✓（`zip` 带进来的 ✓）⇒ 本轮**零新增包** ✓（代价与收益见 `png.rs` 文件头 ✓）。
 flate2.workspace = true
-yanshi-gpu = { version = "0.2.0", path = "../yanshi-gpu", optional = true }
+yanshi-gpu = { version = "0.3.0", path = "../yanshi-gpu", optional = true }
 # **★ RAW 展开层：独立 crate `yanshi-raw` ✗ ★**（RAW 设计 v3 第 9 章定版）：
 #   **∴ 只经 `raw` feature **可选依赖** ✗ ⇒ **∴ 默认**依赖树**逐位不变** ✓
 #     ⇒ **∴ `rawler` **只**在开了 `raw` 时**才**进树** ✓（**判据**：`cargo tree` 前后对照 ✓）。
@@ -36,7 +36,7 @@ yanshi-gpu = { version = "0.2.0", path = "../yanshi-gpu", optional = true }
 #     **都**委托到这里** ✗ ⇒ **∴ 三处**同开同关**是**结构**保证的** ✗，
 #     **不靠**调用方记得** ✗（**第 448 轮 `gpu` 的**静默教训**：**只开一侧**被 `cfg` **拿掉**
 #     ⇒ **∴ 运行时**永远走**旧路**而**自检照样过** ✗ ⇒ **∴ 这里**用**委托链**从**结构上**堵死 ✓）。
-yanshi-raw = { version = "0.2.0", path = "../yanshi-raw", optional = true }
+yanshi-raw = { version = "0.3.0", path = "../yanshi-raw", optional = true }
 
 # **P2 #16 颜料混色（Clean-Room）**：MIT 的 `neco-pigment`（光谱 K/S 混合）。
 # **代价已核**：`.crate` 压缩 19,972 字节、源码 1505 行、传递依赖 +1（`neco-color`）、
@@ -53,7 +53,7 @@ jpeg-decoder = "0.3"
 [dev-dependencies]
 proptest.workspace = true
 # RAW 第二包：render 的取图判据要在单元测试里造合成 DNG（夹具走 test-support 门控）。
-yanshi-raw = { version = "0.2.0", path = "../yanshi-raw", features = ["test-support"] }
+yanshi-raw = { version = "0.3.0", path = "../yanshi-raw", features = ["test-support"] }
 
 [features]
 gpu = ["dep:yanshi-gpu"]

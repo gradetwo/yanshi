@@ -62,9 +62,9 @@ gpu = ["dep:wgpu", "dep:yanshi-gpu", "yanshi-render/gpu", "dep:libc"]
 raw = ["yanshi-server/raw"]
 
 [dependencies]
-yanshi-core = { path = "../yanshi-core", version = "0.2.0" }
-yanshi-render = { path = "../yanshi-render", version = "0.2.0" }
-yanshi-server = { path = "../yanshi-server", version = "0.2.0" }
+yanshi-core = { path = "../yanshi-core", version = "0.3.0" }
+yanshi-render = { path = "../yanshi-render", version = "0.3.0" }
+yanshi-server = { path = "../yanshi-server", version = "0.3.0" }
 serde.workspace = true
 serde_json.workspace = true
 # **∴ 可选：**只有 `--features gpu` 时才进依赖树** ✓（**第 261 轮 ✓）

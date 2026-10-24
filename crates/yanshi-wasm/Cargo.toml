@@ -40,8 +40,8 @@ gpu = [
 ]
 
 [dependencies]
-yanshi-core = { path = "../yanshi-core", version = "0.2.0" }
-yanshi-render = { path = "../yanshi-render", version = "0.2.0" }
+yanshi-core = { path = "../yanshi-core", version = "0.3.0" }
+yanshi-render = { path = "../yanshi-render", version = "0.3.0" }
 hokusai = "0.3"
 # **两端同源的数学** ✓（第 821 轮 ✓）：这一层里也曾有 `.ln(` 与 `.powi(2)` ✗
 # ⇒ 它们与服务端的 glibc 结果差最后一位 ⇒ **浏览器算出的笔触与服务端不同** ✗。
@@ -50,6 +50,6 @@ serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 wasm-bindgen = "0.2"
 # **∴ 只在 `gpu` 下引入 ✗**（**第 480 轮 ✓）：**∴ 默认产物**不含它** ✓
-yanshi-gpu = { path = "../yanshi-gpu", version = "0.2.0", optional = true }
+yanshi-gpu = { path = "../yanshi-gpu", version = "0.3.0", optional = true }
 # **∴ 异步导出所需 ✗**（**第 480 轮 ✓）：**∴ `async fn` 的展开**会引用它** ✓
 wasm-bindgen-futures = { version = "0.4", optional = true }

@@ -13,8 +13,8 @@ categories.workspace = true
 [dependencies]
 libm.workspace = true
 yanshi-medium-host = { path = "../yanshi-medium-host" }
-yanshi-core = { path = "../yanshi-core", version = "0.2.0" }
-yanshi-render = { path = "../yanshi-render", version = "0.2.0" }
+yanshi-core = { path = "../yanshi-core", version = "0.3.0" }
+yanshi-render = { path = "../yanshi-render", version = "0.3.0" }
 serde.workspace = true
 serde_json.workspace = true
 hokusai = "0.3"
@@ -65,7 +65,7 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 # **★ RAW 展开 crate（可选）★**（RAW 第二包）：导入计划／元数据组装的语义
 # 归 `yanshi-raw`（设计 9.3），工具层只透传与落账 ⇒ 由 `raw` feature 门控，
 # 与 `yanshi-render/raw` 同开同关（见下 [features]）；默认关 ⇒ 不进依赖树。
-yanshi-raw = { path = "../yanshi-raw", version = "0.2.0", optional = true }
+yanshi-raw = { path = "../yanshi-raw", version = "0.3.0", optional = true }
 
 [features]
 # **★ `raw`：**委托** `yanshi-render/raw` ✗ ★**（RAW 设计 v3 第 9 章定版）：
