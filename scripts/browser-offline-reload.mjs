@@ -209,16 +209,21 @@ const offline = await reload(true);
 // **负对照**（本次审计加的 ✓）：断网状态下，页面自己发一个**同一来源、已知不会被缓存**的请求 ⇒
 // 它**必须失败** ✓。为什么它不可能被缓存 ✓：`service-worker.js` 对 `/api/` 前缀直接 `return`
 //（不 respondWith ✓）⇒ **永远进不了 SW 的 Cache Storage** ✓；路径不存在（服务端 404 ✓）
-// ＋ `cache: "no-store"` ＋每次唯一 nonce ⇒ **也进不了浏览器 HTTP 缓存** ✓。
+// ＋每次唯一 nonce ⇒ **也进不了浏览器 HTTP 缓存** ✓。
 // 它若居然成功 ⇒ 说明"断网"没真的生效 ⇒ **本判据作废（VOID）**，不是产品通过 ✗。
+// **★ 第 738 轮：探测走 `XMLHttpRequest` 而不是 `window.fetch` ✗ ★**（**根因写全在
+// `browser-offline-export.mjs` 的那一节 ✓**）：**静态 PWA 引导页 `installLocalApi` 覆写
+// `window.fetch`**✗ ⇒ **未映射的 `/api/` 在页面里就被回 501**✗（**`api-local.js:4836–4854` ✓）
+// ⇒ **断网与否根本影响不到它** ✓ ⇒ **XHR 没被覆写**✗、**照常出网络** ✓ ★**** ✓✓
 const NEGATIVE_CONTROL = "/api/__offline_negative_control__?nonce=" + Date.now();
-const controlProbe = await evaluate(`(async () => {
-  try {
-    const response = await fetch(${JSON.stringify(NEGATIVE_CONTROL)}, { cache: "no-store" });
-    return { failed: false, status: response.status, bytes: (await response.arrayBuffer()).byteLength };
-  } catch (error) { return { failed: true, error: String(error) }; }
-})()`);
-console.log("  · 负对照（未缓存接口必须失败）= " + JSON.stringify(controlProbe));
+const controlProbe = await evaluate(`(() => new Promise((resolve) => {
+  const xhr = new XMLHttpRequest();
+  xhr.open("GET", ${JSON.stringify(NEGATIVE_CONTROL)}, true);
+  xhr.onload = () => resolve({ failed: false, status: xhr.status, bytes: -1, onLine: navigator.onLine, via: "xhr" });
+  xhr.onerror = () => resolve({ failed: true, status: xhr.status, onLine: navigator.onLine, via: "xhr" });
+  xhr.send();
+}))()`);
+console.log("  · 负对照（未缓存接口必须失败；XHR 绕开 api-local 对 window.fetch 的接管）= " + JSON.stringify(controlProbe));
 console.log("  断网重载后：" + JSON.stringify(offline));
 if (!offline || offline.error) failures.push("断网重载后取样失败（页面可能根本没打开）✗");
 else if (offline.dark <= 50) failures.push(`断网重载后画布上只有 ${offline.dark} 个深色像素 ⇒ 像素没有落到浏览器本地存储 ✗（目标：≥ 在线时的九成）`);

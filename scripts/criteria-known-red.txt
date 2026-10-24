@@ -137,16 +137,15 @@ browser-export-full-document.mjs  # **类型：环境敏感（内核就绪超时
 # **∴ 其中 1 条**当轮已修**✗ ⇒ **∴ 不在下面** ✓**：`tool-criteria-coverage.mjs`
 #   （**∴ 它**报了 `safe-edit.mjs`／`report-accounts.mjs` 没接线**✗ ⇒ **∴ 加进
 #     `tool-criteria-coverage.mjs` 的 `NOT_CRITERIA` ＋ 写明理由 ✓，提交 `0de84545` ✓）★
-browser-offline-export.mjs   # 类型：判据的负对照设计错（本地 API 覆写了 window.fetch ⇒ 501 被当成"网络还通"）
-browser-offline-reload.mjs   # 类型：同上（负对照）＋ 在线那一笔没渲染出来（客户端落笔一族）
+browser-offline-reload.mjs   # 类型：产品缺陷（客户端落笔一族：在线那一笔没渲染出来）——负对照 501 已在第 738 轮修好（探针改走 XHR，见台账第 450 节）
 browser-stroke-refresh.mjs   # 类型：产品缺陷（客户端落笔之后画布不更新）
 browser-no-stale-read.mjs    # 类型：产品缺陷（重载后读到旧状态：0 ≤ 0）
 browser-offline-brush.mjs    # 类型：产品缺陷（离线那一笔没挺过刷新：blobs=0／replay=0）
 browser-brush-panel.mjs      # 类型：产品缺陷（勾着「用完即收」时取色浮层不收）
 browser-project-download.mjs # 类型：产品缺陷（下载名是 <doc>.yanshi.json，判据要求 .yanshi）
-browser-live-brush.mjs       # 类型：与已登记的 kernel-brush-parity.mjs 同源（内核 ≠ 服务端）
-browser-canvas-handfeel.mjs  # 类型：待定位（等待"图层行增加"超时 ⇒ 根因**未查明**）
-browser-brush-preview.mjs    # 类型：待定位（预览图 0×0，hint=预览不可用 ⇒ 根因**未查明**）
+browser-live-brush.mjs       # 类型：产品缺陷（客户端落笔一族：官方接线下画布墨 1203 而服务端对象 0 ⇒ 0、重载后墨 0 ⇒ 这一笔没落成服务端原子；机理引台账第 449/451 节的渲染模式分叉，不是判据接线问题——第 740 轮实测改判，原「kernel-brush-parity 同源」的注不准确）
+browser-canvas-handfeel.mjs  # 类型：产品缺陷（客户端落笔一族：「图层行增加」超时只是症状，第 742 轮测到根因——本地层用 IndexedDB 的残缺日志重建内核，服务端建的 create_document 不在里面 ⇒ 折叠出的 state 是 0×0 ⇒ 任何区域渲染都 needs_render；机理与逐行证据引台账第 455 节，此处不再重述）
+browser-brush-preview.mjs    # 类型：产品缺陷（客户端落笔一族：预览图 0×0 的同一条根——本地日志缺 create_document ⇒ state 0×0 ⇒ render_region_png 给空字节；第 742 轮换新内核后仍复现（NC_EXIT=1，121 秒），证据引台账第 455 节）
 browser-i18n.mjs             # 类型：待定位（effectsList／history 两处中文串；样本含 endpoint_not_local）
 browser-cs-render-switch.mjs  # 类型：待定位（**抖动**：同一份代码在 3 次 run 里红、在 5 次里绿 ⇒ 见文末「第 246 轮（抖动）」一段）
 browser-open-list.mjs        # 类型：同上（抖动；只在 run 38357275400 红过）
@@ -19604,7 +19603,8 @@ browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线�
 #       **★ `❌ 内核 wasm 缺失：web/wasm/yanshi_wasm_bg.wasm` ✗** ✓
 #         ＋ **"内核 JS 胶水缺失"** ✓
 #         ＋ **提示**：**跑 `node scripts/pwa-sync-wasm.mjs`** ✓**** ✓✓
-browser-offline-journal.mjs  # #     **∴ ② `browser-offline-journal.mjs` ✗**：
+# 【第 739 轮移除】browser-offline-journal.mjs —— 分段导航已落地，七段全绿＋两条变异各自能红
+#   （改法与证据：brush-capability-gap.md 第 451 节 ✓；本行上方保留的是第 731 轮的定案记录 ✓）
 #       **★ "Service Worker 必须已激活（否则断网判据不成立）" ★** ✓
 #         ⇒ **∴ 它**依赖 wasm／SW 资产**✓ ⇒ **∴ 与 ① 同源** ✓**** ✓✓
 #     **∴ 统计 ✗**：**"通过 19｜意外失败 2｜已知红 3｜跳过 0"** ✓**** ✓✓
@@ -27882,21 +27882,28 @@ browser-offline-journal.mjs  # #     **∴ ② `browser-offline-journal.mjs` ✗
 ⇒ **∴ 两面 ✗**：**收益**：**它把"字节差异"升级成**用户可见的 WYSIWYG 差异**✗
 （**∴ 证据更硬 ✓）；**代价**：**修它要动**内核数学**✗ ⇒ **∴ 而**那**会改**输出字节** ✓ ★
 
-### 四、**待定位**的三条（**∴ 不许编原因 ✓）
+### 四、**待定位**的三条（**∴ 不许编原因 ✓）—— 第 742 轮：**其中两条已定位**✗ 一条仍待定位 ✓
 
 | 判据 | CI 症状 | 已知的边界 |
 |---|---|---|
-| `browser-canvas-handfeel.mjs` | `⏱ 等待超时：图层行增加`（前／后输出是缩放档的断言） | 等待型失败 ⇒ **∴ 可能是**产品**也可能是**判据的等待条件**✗ 未分 |
-| `browser-brush-preview.mjs` | `2B_pencil: loaded=false 0×0 hint=预览不可用` | 预览产物**在仓库里有**（`web/brush-previews/` ✓）⇒ **∴ 要查**它在 CI 里为什么取不到** ✓ |
-| `browser-i18n.mjs` | 整页扫描出 2 处中文串（`<div#effectsList>`／`<div#history>`）；样本含 `读取失败：endpoint_not_local` | **∴ `endpoint_not_local`**说明**页面在**读**一个**非本地端点**✗ ⇒ **∴ 先查**那个读取** ✓ |
+| `browser-canvas-handfeel.mjs` | `⏱ 等待超时：图层行增加`（前／后输出是缩放档的断言） | **第 742 轮已定位 ⇒ 产品缺陷 ✗**：本地层用 IndexedDB 的**残缺日志**重建内核 ⇒ 折叠出的 `state` 是 0×0 ⇒ `needs_render`（同一轮的页内日志就打着这句 ✓）⇒ **根因与逐行链条只在台账第 455 节** ✓，此处不重述 |
+| `browser-brush-preview.mjs` | `2B_pencil: loaded=false 0×0 hint=预览不可用` | **第 742 轮已定位 ⇒ 产品缺陷 ✗**：**同一条根**（**原来这一格写的猜测「预览产物在仓库里有 ⇒ 要查 CI 里为什么取不到」✗ 已被实测否掉**✓：不是取不到文件，是 `render_region_png` 返回**空字节**✓）；台账第 455 节 ✓ |
+| `browser-i18n.mjs` | 整页扫描出 2 处中文串（`<div#effectsList>`／`<div#history>`）；样本含 `读取失败：endpoint_not_local` | **∴ `endpoint_not_local`**说明**页面在**读**一个**非本地端点**✗ ⇒ **∴ 先查**那个读取** ✓（**本条仍待定位 ✓**）|
 
 **∴ 四要素（**共同的 ✓）✗**：
-- **[为什么红]** **∵ 未查明**✗（**∴ 只写症状，不写猜测的原因 ✓）★
-- **[谁的问题]** **待定**（**∴ 产品／判据都有可能 ✓）
-- **[转绿条件]** **先定位**✗ ⇒ **∴ 建议**：**用判据自己的诊断字段**（如 `hint`／等待标签 ✓）
-  ＋ **∴ 在 CI 日志里**只看**该判据那一段**（**∴ 用 `ci-failures.mjs` 的 ↳ 行 ✓）★
-- **[两面]** **收益**：**定位之后**它要么变绿 ✗ 要么**升级成一条有根因的红** ✓；
+- **[为什么红]** 原来三条都写「**未查明**」✗（**∴ 只写症状，不写猜测的原因 ✓）★
+  ⇒ **第 742 轮 ✗**：前两条**已查明**✓ ⇒ **原因写在台账第 455 节**✓（**同一事实只留一处 ✓**）
+- **[谁的问题]** 原来**待定**（**∴ 产品／判据都有可能 ✓）
+  ⇒ **前两条已定**：**产品**（「客户端落笔一族」✓ ⇒ **与 `browser-live-brush` 同族 ✓**）｜`browser-i18n` **仍待定** ✓
+- **[转绿条件]** 原建议：**用判据自己的诊断字段**（如 `hint`／等待标签 ✓）＋ **只看该判据那一段 CI 日志** ✓
+  ⇒ **前两条的具体转绿条件 ✗**：让本地层拿到**带 `create_document` 的完整日志**（**或给文档尺寸一个单一权威来源 ✓**）
+  ⇒ **∴ 那是设计变更**✗ ⇒ **四条候选方案 ＋「为什么本轮不动产品代码」✓ 全在台账第 455 节**✓
+- **[两面]** **收益**：**定位之后**它要么变绿 ✗ 要么**升级成一条有根因的红** ✓
+  ⇒ **前两条走的正是第二条路**✓（**从「未查明」升级成「有根因的产品红」✓**）；
   **代价**：**这三条**可能在**别的机器上不红**✗ ⇒ **∴ 别拿本机绿当成"没有缺陷"** ✓ ★
+  ＋ **本轮新增的一种代价 ✗**：跑这两条之前**先踩到「`web/wasm/` 可能是上一版内核」**✓（**第 956 轮同一个坑的资产版 ✓**）
+  ⇒ **守卫已加在 `pwa-sync-wasm.mjs`** ✓：`pkg/` 比 `yanshi-wasm`／`-render`／`-core` 的 `.rs` 旧 ⇒ **`exit 2` 拒绝发布**＋打印两步重建命令 ✓
+  ⇒ **变异 ✓**：把一颗 `.rs` 的 mtime 推到产物之后 ⇒ `exit 2` 并列出那颗文件 ✓；还原 ⇒ `exit 0` ✓
 
 
 
@@ -27951,7 +27958,9 @@ browser-offline-journal.mjs  # #     **∴ ② `browser-offline-journal.mjs` ✗
   - `browser-cs-render-switch`：`✗ **本地渲染模式下**画布必须有变化（**关掉服务端也必须画得上 ✓）（false）`
   - `browser-open-list`：`✓ 读失败 ⇒ error 且与空不同（不再是同一句话）｜{"state":"error","message":"读取文档列…`
 - **[为什么红]** **未查明** ✗ ⇒ **∴ 同一份产品代码**既红又绿**✗ ⇒ **∴ 最可能是**判据的等待条件** ✓
-  （**∴ 那**与 `browser-canvas-handfeel`／`browser-brush-preview` 属**同一类"待定位"** ✓）
+  （**∴ 原来这句把 `browser-canvas-handfeel`／`browser-brush-preview` 拉成**同一类"待定位"**✗
+  ⇒ **∴ 第 742 轮那条类比不成立了**✓：**那两条已定位**✗ 是**产品缺陷**（**确定复现、不是抖动 ✓**⇒ 台账第 455 节 ✓）
+  ⇒ **∴ 而本条（抖动）仍然是**「同一份代码既红又绿」**✓ ⇒ **⇒ 它属**判据的等待条件**那一类**✓（**两类不要混 ✓**））**
 - **[谁的问题]** **待定**（**∴ 判据／产品都有可能 ✓）—— **∴ 但**可以先排除一件事 ✗**：
   **∴ 与 GPU 收尾这条线**无关** ✓（**∴ 隔离证据**：**这些 run 的产品代码**只差文档／工具 ✓）
 - **[转绿条件]** **先用判据自己的诊断字段定位**✗（**∴ 如**等待标签／`false` 的来源 ✓）
@@ -28208,7 +28217,8 @@ browser-layout.mjs  第 742 轮核实：判据要求「400% 缩放时画布溢�
 #     （判据文案自己说：增量盖章丢 tile 内容；常见根因是参照组只清了 tile 缓存）
 #   ⇒ 修法（引擎侧）：修 `incremental_stamp_matches_full_tile_re_render` 的缺陷
 #     ⇒ 修好后这判据应恢复「30 次全绿」⇒ 届时可移除本登记
-browser-live-ui.mjs  # 环境红：要真实 chromium 渲染（本机无 GPU 合成 ⇒ 退出码 1）。不是产品缺陷 —— AGENTS.md「已知的 3 条环境红」第 2 条。
+# 【第 739 轮移除】browser-live-ui.mjs —— 定案换人：断言全过，是成功之后看门狗开火（不是 GPU 合成）
+#   （修法与双向证据：brush-capability-gap.md 第 452 节 ✓；上限可配 180s ＋ 两条出口 clearTimeout/exit ✓）
 browser-new-doc-size.mjs  # 环境红：同上（要真实 chromium 的视口与合成）。AGENTS.md「已知的 3 条环境红」第 2 条。
 
 # ===== 第 1495 轮：**撤回上面的假红**（`combine_shapes` 是**正确的**）=====

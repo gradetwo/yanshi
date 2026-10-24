@@ -227,24 +227,28 @@ await sleep(800);
 // **负对照**（本次审计加的 ✓）：断网状态下，页面自己发一个**同一来源、已知不会被缓存**的请求 ⇒
 // 它**必须失败** ✓。为什么它不可能被缓存 ✓：`service-worker.js` 对 `/api/` 前缀直接 `return`
 //（不 respondWith ✓）⇒ **永远进不了 SW 的 Cache Storage** ✓；路径不存在（服务端 404 ✓）
-// ＋ `cache: "no-store"` ＋每次唯一 nonce ⇒ **也进不了浏览器 HTTP 缓存** ✓。
+// ＋每次唯一 nonce ⇒ **也进不了浏览器 HTTP 缓存** ✓。
 // 它若居然成功 ⇒ 说明"断网"没真的生效 ⇒ **本判据作废（VOID）**，不是产品通过 ✗。
 const NEGATIVE_CONTROL = "/api/__offline_negative_control__?nonce=" + Date.now();
-// **★ 诊断（**第 331 轮加 ✓）★**：
-//   **∴ 为什么 ✗**：**CI 里这条负对照**一直失败**✗（`{"failed":false,"status":501}` ✓）
-//     ⇒ **∴ 而第 330 轮**已排除「**没调 `Network.enable`**」** ✗（**第 66 行**确实调了 ✓）
-//       ⇒ **∴ 剩下的假设 ✗**：**①** SW 绕过 ✗｜**②** chromium 差异 ✗｜**③** 目标未就绪 ✓
-//   **∴ 加上 `onLine` 与 SW 状态后 ✗** ⇒ **∴ 下次 CI 一次就能分辨** ✓：
-//     **∴ 若** `onLine === true`**✗ ⇒ **∴ CDP 的 offline **根本没生效** ✓（**∴ 假设 ② 或 ③** ✓）
-//     **∴ 若** `onLine === false` **而请求仍成功**✗ ⇒ **∴ 那**是** SW 绕过** ✓（**∴ 假设 ①** ✓）★**** ✓✓
-const controlProbe = await evaluate(`(async () => {
+// **★ 第 738 轮：那个常年 501 的根因查清了——不是 SW 绕过，是 `window.fetch` 被接管 ✗ ★**
+//   （**实测 ✓；同 `browser-offline-export.mjs` 里写全的那一节 ✓**）：
+//   **∴ 静态 PWA 的引导页 `installLocalApi` 覆写 `window.fetch`**✗（**`web/index.html:74–76` ✓）**
+//     ⇒ **∴ 未映射的 `/api/` 路径**在**页面里**就被回成 501 ✗（**`api-local.js:4836–4854` ✓）
+//       ⇒ **∴ 于是**下面的 `onLine`/`swControlled` 分辨法**永远指向错误的假设**✗ ——
+//         **fetch 压根没出页面**✗，**SW 绕过与否从未被测到** ✓ ★**** ✓✓
+//   **∴ 修法 ✗**：**探测换成 `XMLHttpRequest`**✗（**api-local 只覆写 fetch ✓，**
+//     **`grep XMLHttpRequest api-local.js` = 0 ✓**）⇒ **∴ 照常经过 SW 与网络栈**✗
+//     ⇒ **∴ CDP 的 offline 对它真实生效** ✓；**`onLine`/`swControlled` 继续带着**✗
+//     ⇒ **∴ 若**这次**还**是"不失败"**✗ 才是**真的**SW 绕过／CDP 失效** ✓ ★**** ✓✓
+const controlProbe = await evaluate(`(() => new Promise((resolve) => {
   const onLine = navigator.onLine;
   const swControlled = !!(navigator.serviceWorker && navigator.serviceWorker.controller);
-  try {
-    const response = await fetch(${JSON.stringify(NEGATIVE_CONTROL)}, { cache: "no-store" });
-    return { failed: false, status: response.status, bytes: (await response.arrayBuffer()).byteLength, onLine, swControlled };
-  } catch (error) { return { failed: true, error: String(error), onLine, swControlled }; }
-})()`);
+  const xhr = new XMLHttpRequest();
+  xhr.open("GET", ${JSON.stringify(NEGATIVE_CONTROL)}, true);
+  xhr.onload = () => resolve({ failed: false, status: xhr.status, bytes: -1, onLine, swControlled, via: "xhr" });
+  xhr.onerror = () => resolve({ failed: true, status: xhr.status, onLine, swControlled, via: "xhr" });
+  xhr.send();
+}))()`);
 console.log("  · 负对照（未缓存接口必须失败）= " + JSON.stringify(controlProbe));
 const before2 = await evaluate(INK);
 const offlineStroke = await evaluate(STROKE(0.40, 0.20));

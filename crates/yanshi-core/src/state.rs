@@ -791,7 +791,7 @@ impl DocumentState {
                 violations.push(Violation::LayerCycle(layer.id.clone()));
             }
             if let Some(mask_id) = &layer.mask_id {
-                if !self.masks.get(mask_id).is_some_and(|m| !m.is_deleted()) {
+                if self.masks.get(mask_id).is_none_or(|m| m.is_deleted()) {
                     violations.push(Violation::MissingMaskRef {
                         owner: layer.id.clone(),
                         missing: mask_id.clone(),
@@ -799,7 +799,7 @@ impl DocumentState {
                 }
             }
             if let Some(style_id) = &layer.style {
-                if !self.styles.get(style_id).is_some_and(|s| !s.is_deleted()) {
+                if self.styles.get(style_id).is_none_or(|s| s.is_deleted()) {
                     violations.push(Violation::MissingStyleRef {
                         owner: layer.id.clone(),
                         missing: style_id.clone(),

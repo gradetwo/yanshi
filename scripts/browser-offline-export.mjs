@@ -118,17 +118,31 @@ await send("Network.emulateNetworkConditions", { offline: true, latency: 0, down
 // **负对照**（本次审计加的 ✓ —— 证据：断网前先量一次"断网确实生效"）：
 // 页面自己发一个**同一来源、已知不会被缓存**的请求 ⇒ 它**必须失败** ✓。
 // 为什么它不可能被缓存 ✓：`service-worker.js` 对 `/api/` 前缀直接 `return`（不 respondWith ✓）
-// ⇒ **永远进不了 SW 的 Cache Storage** ✓；路径不存在（服务端 404 ✓）＋ `cache: "no-store"`
-// ＋每次唯一 nonce ⇒ **也进不了浏览器 HTTP 缓存** ✓。
+// ⇒ **永远进不了 SW 的 Cache Storage** ✓；路径不存在（服务端 404 ✓）＋每次唯一 nonce
+// ⇒ **也进不了浏览器 HTTP 缓存** ✓。
 // 它若居然成功 ⇒ 说明"断网"没真的生效 ⇒ **本判据作废（VOID）**，不是产品通过 ✗。
+// **★ 第 738 轮：探测必须走 `XMLHttpRequest`，不能走 `window.fetch` ✗ ★**（**实测根因 ✓）：
+//   **∴ 症状 ✗**：**CI 里这条负对照常年**不成立**✗（**`{"failed":false,"status":501}` ✓**，
+//     **`browser-offline-draw.mjs:236` 那段诊断注释早就记下了这个 501 ✗，只是归因归错了 ✓**）
+//   **∴ 而**判据原来只排除了**SW 层**的缓存 ✗ ⇒ **∴ 漏了**页面层**的另一个拦截者 ✓：
+//     **静态 PWA**（**编排把 `YANSHI_VIEWER_URL` 指到它 ✓**）的引导页会
+//     `installLocalApi`**覆写 `window.fetch`** ✗（**`web/index.html:74–76` ✓、**
+//     **`api-local.js:4836–4854` ✓ ⇒ 未映射的 `/api/` 本地回 501 ✓）
+//       ⇒ **∴ 于是**断网与否**都与这次探测无关**✗ —— **fetch 根本没出页面** ✓
+//         ⇒ **∴ 判据把自己测成 VOID**✗（**假阴 ✓）**，**而产品的离线能力没有被判定过** ✗ ★**** ✓✓
+//   **∴ 修法 ✗**：**`XMLHttpRequest` 没有被覆写**（**全仓 `grep -n XMLHttpRequest api-local.js` = 0 ✓）
+//     ⇒ **∴ 它**照常经过 SW 与网络栈**✗ ⇒ **∴ CDP 的 offline 对它真实生效** ✓ ★**** ✓✓
+//   **∴ 两面 ✗**：**收益**：**测到的是**真网络**✗（**在线时 nonce 路径必 404 ⇒ 仍"成功"✓）**
+//     ＋ **∴ 代价 ✗**：**拿不到 body 字节数**（**改记 `bytes: -1` ✓；**断网结论只看失败与否 ✓）**。
 const NEGATIVE_CONTROL = "/api/__offline_negative_control__?nonce=" + Date.now();
-const controlProbe = await evaluate(`(async () => {
-  try {
-    const response = await fetch(${JSON.stringify(NEGATIVE_CONTROL)}, { cache: "no-store" });
-    return { failed: false, status: response.status, bytes: (await response.arrayBuffer()).byteLength };
-  } catch (error) { return { failed: true, error: String(error) }; }
-})()`);
-console.log("  · 负对照（未缓存接口必须失败）= " + JSON.stringify(controlProbe));
+const controlProbe = await evaluate(`(() => new Promise((resolve) => {
+  const xhr = new XMLHttpRequest();
+  xhr.open("GET", ${JSON.stringify(NEGATIVE_CONTROL)}, true);
+  xhr.onload = () => resolve({ failed: false, status: xhr.status, bytes: -1, onLine: navigator.onLine, via: "xhr" });
+  xhr.onerror = () => resolve({ failed: true, status: xhr.status, onLine: navigator.onLine, via: "xhr" });
+  xhr.send();
+}))()`);
+console.log("  · 负对照（未缓存接口必须失败；XHR 绕开 api-local 对 window.fetch 的接管）= " + JSON.stringify(controlProbe));
 // ③ 点导出 ✓
 const clicked = await evaluate(`(() => { const b = document.getElementById("exportPng"); if (!b) return "no-button"; b.click(); return "clicked"; })()`);
 console.log("  导出按钮：" + clicked);

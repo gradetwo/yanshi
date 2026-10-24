@@ -169,101 +169,108 @@ const waitForPrecache = async (path, timeoutMs = Number(process.env.YANSHI_WAIT_
     }
   };
 
+  // **★ 第 739 轮：分段导航——这条判据**必须跨两种渲染模式**✗ ★**（**台账第 449 节 ✓**）：
+  //   **∴ 为什么 ✗**：**产品把「写队列」只留在了服务端渲染一侧**✗
+  //     （**`callTool → !serverRenderPreferred() ⇒ callToolLocal`✓：直接进 IndexedDB ✗**
+  //      **永不入队 ✗**），**而指针笔迹的 ULID 原子**需要 WASM 内核**✗
+  //     （**`initWasm` 第一行：服务端渲染模式直接 return ✗**）
+  //       ⇒ **∴ 于是**：**单一导航永远过不了七段**✗（**客户端：①②③⑤⑥⑦ 结构性 0 条 ✓；
+  //         服务端：④ 没内核 ✓）** ★**** ✓✓
+  //   **∴ 所以 ✗**：**工具路径段（①②③⑤⑥⑦）在 `render=server` 的页面跑**✓，
+  //     **指针原子段（④）在 `render=client` 的页面跑**✓（**层由判据经服务端 API 先建好 ✓，
+  //     否则补交会被拒——那测的就成了⑥ ✗**）。
+  //   **⚠ 静态 PWA 页面没有这个开关**✗：**`__pwaLocalOnly` 在 URL 参数之前就把模式钉死为本地**
+  //     （**viewer-app.js:59–60 ✓**）⇒ **分段必须在**服务端托管的页面**上做** ✓（**编排给 argv[2] ✓）。
+  const serverUrl = url.includes("render=client") ? url.replace("render=client", "render=server")
+    : (url.includes("?") ? url + "&render=server" : url + "?render=server");
+  const gotoUrl = async (target) => {
+    await send("Page.navigate", { url: target });
+    for (let i = 0; i < 40; i++) {
+      await sleep(300);
+      try { if (await evaluate('document.readyState === "complete"')) break; } catch (_) { /* 继续等 ✓ */ }
+    }
+  };
+  const waitKernelReady = async () => {
+    for (let i = 0; i < 40; i++) {
+      if (await evaluate('window.yanshiKernelReady === true')) return true;
+      await sleep(500);
+    }
+    return false;
+  };
+  // **把整段"启动＋清旧外壳＋等接口"做成函数**✓（**第 739 轮 ✓：**分段导航后每一页都要走一遍**✗，
+  // **原来内联一次 ✗ 复制两份一定漂移 ✓——内核 ② ✓**）。
+  const bootViewer = async (navUrl) => {
+    await send("Network.setCacheDisabled", { cacheDisabled: true });
+    await gotoUrl(navUrl);
+    const ready = await evaluate(`(async () => {
+      try {
+        const registration = await Promise.race([
+          navigator.serviceWorker.ready,
+          new Promise((r) => setTimeout(() => r(null), 12000)),
+        ]);
+        return registration ? (registration.active ? "active" : "installed") : "timeout";
+      } catch (error) { return "error:" + error; }
+    })()`);
+    console.log("  前置：Service Worker = " + ready + "（" + navUrl.replace(/token=[0-9a-f]+/, "token=…") + "）");
+    check(ready === "active", "Service Worker 必须已激活（否则断网判据不成立）");
+    // **清掉可能残留的队列** ✓（同一浏览器 profile 复用时 ✓ —— 否则计数会从中间开始 ✓）。
+    // **先清掉旧外壳**（第 1115 轮定案）：SW 的 SHELL 含 /viewer-app.js 与 /viewer.css，
+    // 而复用的浏览器 profile 会留下旧缓存 ⇒ 浏览器里的 window.yanshi 只有 18 个旧键
+    // （没有 outbox 那五个），而服务端发出的资产是新的（curl 已确认）✗。
+    // 所以：注销所有 Service Worker、删掉所有 caches，然后重载页面，再等就绪 ✓。
+    const purged = await evaluate(`(async () => {
+      const out = { workers: 0, caches: 0 };
+      try {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const r of regs) { await r.unregister(); out.workers += 1; }
+      } catch (e) { out.workerError = String(e); }
+      try {
+        const keys = await caches.keys();
+        for (const k of keys) { await caches.delete(k); out.caches += 1; }
+      } catch (e) { out.cacheError = String(e); }
+      return out;
+    })()`);
+    console.log("  清旧外壳 = " + JSON.stringify(purged));
+    await send("Page.reload", { ignoreCache: true });
+    for (let i = 0; i < 60; i++) {
+      await sleep(250);
+      try { if (await evaluate('document.readyState === "complete"')) break; } catch (_) { /* 继续等 ✓ */ }
+    }
+    // **等 window.yanshi 挂上再调用**（第 1112 轮：真错是 `discardOutbox is not a function`，
+    // 而方法确实存在 ⇒ 是**调用太早** ✗）。
+    let ifaceReady = false;
+    for (let i = 0; i < 60; i++) {
+      let ok = false;
+      try {
+        ok = await evaluate('typeof (window.yanshi && window.yanshi.discardOutbox) === "function"');
+      } catch (_) { /* 继续等 ✓ */ }
+      if (ok) { ifaceReady = true; break; }
+      await sleep(250);
+    }
+    console.log("  前置：window.yanshi.discardOutbox 就绪 = " + ifaceReady);
+    if (!ifaceReady) {
+      // **诊断阶梯**（第 1113/1114 轮）：脚本若中途抛错，后半段 `window.yanshi = {...}` 永不执行 ⇒
+      // 按定义行号递增的全局能夹出出错行段 ✓。
+      const ladder = await evaluate(`(() => {
+        const names = ["yanshiStats","yanshiKernel","yanshiKernelReady","yanshiDebugBlit","yanshiCallTool",
+                       "yanshiMediumBatch","yanshiApplyScore","yanshiListLayers","yanshiBrushArea",
+                       "yanshiDockFocus","yanshiDock","yanshiRightTabs","yanshi"];
+        const out = {};
+        for (const n of names) { try { out[n] = typeof window[n]; } catch (e) { out[n] = "throws"; } }
+        out.__marks = window.__appMarks || null;
+        return out;
+      })()`);
+      console.log("  全局阶梯 = " + JSON.stringify(ladder));
+      throw new Error("window.yanshi.discardOutbox 迟迟未挂上 ⇒ 判据无法进行");
+    }
+    await evaluate("window.yanshi.discardOutbox()");
+    await evaluate("window.yanshi.refreshOutbox()");
+  };
+
   await send("Runtime.enable"); await send("Page.enable"); await send("Network.enable");
-  // **禁用 HTTP 缓存**（第 1113 轮定案）：SW 的 SHELL 只缓存 /viewer.css 与 /viewer-app.js，
-  // **页面 HTML 本身不在 SHELL 里** ⇒ 它由 HTTP 缓存提供 ⇒ 旧页面内联旧 JS ⇒
-  // 于是"晚期全局都在、只有本次新加的方法缺"✗。curl 抓的是新页面（含 discardOutbox），
-  // 而浏览器用的是旧副本 ⇒ 判据必须禁用缓存 ✓。
-  await send("Network.setCacheDisabled", { cacheDisabled: true });
-  await send("Page.navigate", { url });
-  for (let i = 0; i < 40; i++) {
-    await sleep(300);
-    try { if (await evaluate('document.readyState === "complete"')) break; } catch (_) { /* 继续等 ✓ */ }
-  }
-  const ready = await evaluate(`(async () => {
-    try {
-      const registration = await Promise.race([
-        navigator.serviceWorker.ready,
-        new Promise((r) => setTimeout(() => r(null), 12000)),
-      ]);
-      return registration ? (registration.active ? "active" : "installed") : "timeout";
-    } catch (error) { return "error:" + error; }
-  })()`);
-  console.log("  前置：Service Worker = " + ready);
-  // **前置不成立就不许绿** ✗（否则"离线"根本没生效 ✓，判据会假绿 ✓）。
-  check(ready === "active", "Service Worker 必须已激活（否则断网判据不成立）");
-
-  // 等内核：指针落笔那条产品路径（`commit_preview` + `submitAtom`）需要它 ✓。
-  let kernelReady = false;
-  for (let i = 0; i < 40; i++) {
-    kernelReady = await evaluate('window.yanshiKernelReady === true');
-    if (kernelReady) break;
-    await sleep(500);
-  }
-  console.log("  前置：WASM 内核就绪 = " + kernelReady + "（指针笔迹走内核那条路；不去清缓存刷新 ✓）");
-
-  // **清掉可能残留的队列** ✓（同一浏览器 profile 复用时 ✓ —— 否则计数会从中间开始 ✓）。
-  // **先清掉旧外壳**（第 1115 轮定案）：SW 的 SHELL 含 /viewer-app.js 与 /viewer.css，
-  // 而复用的浏览器 profile 会留下旧缓存 ⇒ 浏览器里的 window.yanshi 只有 18 个旧键
-  // （没有 outbox 那五个），而服务端发出的资产是新的（curl 已确认）✗。
-  // 所以：注销所有 Service Worker、删掉所有 caches，然后重载页面，再等就绪 ✓。
-  const purged = await evaluate(`(async () => {
-    const out = { workers: 0, caches: 0 };
-    try {
-      const regs = await navigator.serviceWorker.getRegistrations();
-      for (const r of regs) { await r.unregister(); out.workers += 1; }
-    } catch (e) { out.workerError = String(e); }
-    try {
-      const keys = await caches.keys();
-      for (const k of keys) { await caches.delete(k); out.caches += 1; }
-    } catch (e) { out.cacheError = String(e); }
-    return out;
-  })()`);
-  console.log("  清旧外壳 = " + JSON.stringify(purged));
-  await send("Page.reload", { ignoreCache: true });
-  for (let i = 0; i < 60; i++) {
-    await sleep(250);
-    try { if (await evaluate('document.readyState === "complete"')) break; } catch (_) { /* 继续等 ✓ */ }
-  }
-  // **等 window.yanshi 挂上再调用**（第 1112 轮）：真错是
-  // `TypeError: window.yanshi.discardOutbox is not a function`，
-  // 而该方法确实存在（viewer-app.js:7513）⇒ 所以是**调用太早** ✗。
-  let ifaceReady = false;
-  for (let i = 0; i < 60; i++) {
-    let ok = false;
-    try {
-      ok = await evaluate('typeof (window.yanshi && window.yanshi.discardOutbox) === "function"');
-    } catch (_) { /* 继续等 ✓ */ }
-    if (ok) { ifaceReady = true; break; }
-    await sleep(250);
-  }
-  // **全局阶梯探测**（第 1113 轮）：服务端**确实发出了** discardOutbox（curl 页面确认），
-  // 语法也 OK（node --check 两块都过），但页面里它不存在 ⇒ 脚本必然在**中途抛错**，
-  // 使得后半段的 `window.yanshi = {...}`（viewer-app.js:7488）从未执行 ✗。
-  // 这些全局按定义行号递增排列 ⇒ 哪个存在、哪个不存在，就能夹出抛错的行段 ✓。
-  const ladder = await evaluate(`(() => {
-    const names = ["yanshiStats","yanshiKernel","yanshiKernelReady","yanshiDebugBlit","yanshiCallTool",
-                   "yanshiMediumBatch","yanshiApplyScore","yanshiListLayers","yanshiBrushArea",
-                   "yanshiDockFocus","yanshiDock","yanshiRightTabs","yanshi"];
-    const out = {};
-    for (const n of names) { try { out[n] = typeof window[n]; } catch (e) { out[n] = "throws"; } }
-    out.__marks = window.__appMarks || null;
-    return out;
-  })()`);
-  console.log("  全局阶梯 = " + JSON.stringify(ladder));
-  // **对象的真实键表**（第 1114 轮）：服务端发出的资产里含 discardOutbox（curl 已确认），
-  // 语法也 OK（node --check 过），而浏览器里 yanshi 是 object 却没有该方法 ⇒ 必须看真键表 ✓。
-  const keys = await evaluate(`(() => {
-    try {
-      const k = Object.keys(window.yanshi || {});
-      return { count: k.length, keys: k.slice(0, 60), hasDiscard: typeof (window.yanshi || {}).discardOutbox };
-    } catch (e) { return { error: String(e) }; }
-  })()`);
-  console.log("  window.yanshi 真键表 = " + JSON.stringify(keys));
-  console.log("  前置：window.yanshi.discardOutbox 就绪 = " + ifaceReady);
-  if (!ifaceReady) throw new Error("window.yanshi.discardOutbox 迟迟未挂上 ⇒ 判据无法进行");
-  await evaluate("window.yanshi.discardOutbox()");
-  await evaluate("window.yanshi.refreshOutbox()");
+  // **第 739 轮：首屏直接起在**服务端渲染**页**✗（**①②③⑤⑥⑦ 的主战场 ✓**）；
+  // **④ 在 ③ 之后单独切到 `render=client`**✓（**见下 ✓）**。
+  await bootViewer(serverUrl);
 
   // ——— 参照文档：**同样的动作在线做一遍** ✓（③要拿它做等价比对 ✓）———
   const refDoc = doc + "_ref";
@@ -311,16 +318,26 @@ const waitForPrecache = async (path, timeoutMs = Number(process.env.YANSHI_WAIT_
   // **不 `await` 这一次求值** ✓ —— 本判据对时序敏感（入队时读 `window.yanshiStats.serverHead`
   // 当基线，多一次 CDP 往返会改变它何时被后台更新），所以让这个必然失败的请求**与入队那一步并发**，
   // 结论稍后再取 ✓（请求仍然真的由页面发出 ✓）。
+  // **★ 第 738 轮：探测改走 `XMLHttpRequest` ✗ ★**（**根因写全在台账第 450 节 ✓**）：
+  //   **∴ 旧注释把 501 归因成「**SW 绕过 ✓」✗ —— 那次 `fetch` **根本没出页面** ✓：
+  //     **静态 PWA** 的引导页 `installLocalApi` **覆写 `window.fetch`**✗
+  //     （**`web/index.html:74–76` ✓＋`api-local.js:4836–4854` ✓**——未映射的 `/api/` 本地回 501 ✓）
+  //       ⇒ **∴ 于是**：`knownCdpLimit` 那条「**不算失败**」的分支**掩盖的是接管**✗
+  //         **不是** CDP 限制 ✓ ⇒ **∴ 归因错了** ✗
+  //   **∴ XHR 没有被覆写**（**`grep XMLHttpRequest api-local.js` = 0 ✓）⇒ **∴ 真实经过**
+  //     **SW＋网络栈**✗ ⇒ **∴ 断网必失败**✓；**若仍成功**✗ 才是**真的没断下去**（**offline 没生效／
+  //     SW 上下文绕过 ✓**）⇒ **∴ `knownCdpLimit` 分支保留**✗ 但含义**变干净了** ✓ ★**** ✓✓
   const controlPending = send("Runtime.evaluate", {
-    awaitPromise: true, expression: `(async () => {
-      // **★ 诊断（**第 331 轮加 ✓）★**：**∴ 看** CDP 的 offline **是否生效** ＋ **SW 是否接管**
-      //   ⇒ **∴ 于是**：**下次 CI** 一次就能分辨**「**offline 没生效**」与「**SW 绕过**」 ✓
+    awaitPromise: true, expression: `(() => {
       const onLine = navigator.onLine;
       const swControlled = !!(navigator.serviceWorker && navigator.serviceWorker.controller);
-      try {
-        const response = await fetch(${JSON.stringify(NEGATIVE_CONTROL)}, { cache: "no-store" });
-        return { failed: false, status: response.status, bytes: (await response.arrayBuffer()).byteLength, onLine, swControlled };
-      } catch (error) { return { failed: true, error: String(error), onLine, swControlled }; }
+      return new Promise((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("GET", ${JSON.stringify(NEGATIVE_CONTROL)}, true);
+        xhr.onload = () => resolve({ failed: false, status: xhr.status, bytes: -1, onLine, swControlled, via: "xhr" });
+        xhr.onerror = () => resolve({ failed: true, status: xhr.status, onLine, swControlled, via: "xhr" });
+        xhr.send();
+      });
     })()`,
     returnByValue: true, awaitPromise: true,
   });
@@ -336,28 +353,33 @@ const waitForPrecache = async (path, timeoutMs = Number(process.env.YANSHI_WAIT_
   console.log("     界面 = " + JSON.stringify(ui1));
   const controlProbe = (await controlPending)?.result?.result?.value;
   console.log("     负对照（未缓存接口必须失败）= " + JSON.stringify(controlProbe));
-  // **★ 分清两种「不成立」✗ ★**（第 335 轮 ✓；**CI 诊断换来的 ✓）：
-  //   **∴ 第 333 轮的 CI 实测（**本判据自己打印的 ✓）★**：
+  // **★ 分清两种「不成立」✗ ★**（第 335 轮立 ✓；**第 738 轮重新归因 ✓——台账第 450 节 ✓**）：
+  //   **∴ 第 333 轮的 CI 实测（**本判据当时打印的 ✓）★**：
   //     `{"failed":false,"status":501,"bytes":307,"onLine":false,"swControlled":true}`
-  //     **∴ 读法 ✗**：**CDP 的 offline **已生效**（`onLine:false` ✓）
-  //       ＋ **页面**被 SW 接管**（`swControlled:true` ✓）
-  //         ⇒ **★ 所以**：**那次 `fetch` **由 SW 上下文发出** ⇒ **CDP 的页面级 offline **管不到** ✓ ★**** ✓✓
-  //           （**∴ 已知 CDP 限制 ✓ —— 见 `browser-offline-shell.mjs:238–244` ✓）** ✓✓
-  //   **∴ 所以 ✗**：**`swControlled === true` ＋ `onLine === false` ＋ 请求成功**
-  //     ⇒ **∴ 标为**已知 CDP 限制**✗ ⇒ **∴ 不报成**产品失败** ✓（**∴ 且**不假装通过 ✓）** ✓✓
+  //     **∴ 当时的读法 ✗**：offline 已生效＋请求由 SW 上下文发出 ⇒ **已知 CDP 限制** ✓
+  //     **∴ 现在的读法 ✓**：**那是页面里的 `fetch` 被 `installLocalApi` 接管**✗
+  //       ⇒ **∴ 501 是本地回的**✗（**请求没出页面**✓）**⇒ 与 CDP／SW 无关** ✓
+  //         ⇒ **∴ 所以**：那条「不算失败」的分支**当年掩盖的是接管**✗（**∴ 归因错 ✓）** ✓✓
+  //   **∴ 探针换成 XHR 之后 ✗**：`failed === false` **只能**是**真的没断下去** ✓
+  //     ⇒ **∴ `knownCdpLimit` 保留**✗（**SW 绕过这条 CDP 限制依然存在 ✓——见
+  //       `browser-offline-shell.mjs` 用 `self.fetch` 的那一节 ✓）**✗
+  //       但它**不再顺手豁免本地接管的假象** ✓ ★**** ✓✓
   const knownCdpLimit =
-    !!(controlProbe && controlProbe.swControlled === true && controlProbe.onLine === false);
+    !!(controlProbe && controlProbe.failed !== true
+       && controlProbe.swControlled === true && controlProbe.onLine === false);
   const controlBlocked = !!(controlProbe && controlProbe.failed) || knownCdpLimit;
   if (knownCdpLimit) {
-    console.log("     · ⊘ 已知 CDP 限制（**不算失败** ✗）：offline 已生效但请求由 SW 发出 ⇒ 负对照不可成立");
+    console.log("     · ⊘ 已知 CDP 限制（**不算失败** ✗）：offline 已生效但请求由 SW 上下文发出 ⇒ 负对照不可成立");
   }
   check(controlBlocked, `负对照：断网后未缓存的 ${NEGATIVE_CONTROL} 必须失败（拿到了 status=${controlProbe && controlProbe.status} ⇒ 断网模拟没生效 ⇒ 判据作废 VOID）`);
   if (!controlBlocked) {
     // **负对照不成立 ⇒ 立刻作废（VOID）** ✗ —— 不要带着"断网是假的"这个前提继续跑。
-    console.error("  ⊘ 判据作废（VOID）：断网模拟没有生效 ⇒ 后续离线结论无效");
+    // **∴ 退出码必须是 3 ✗ ★**（**第 738 轮改 ✓**）：这是「**判据自身前提不成立**」✗
+    //   ⇒ **∴ 不是**产品失败**✗（**仓内统一约定 ✓；**旧代码在这里退 1 ✗ 会把环境问题算成产品红 ✓）**）✓
+    console.error("  ⊘ 判据作废（VOID）：断网模拟没有生效 ⇒ 后续离线结论无效 ⇒ 退出码 3");
     await online();
     socket.close();
-    process.exit(1);
+    process.exit(3);
   }
   check(Array.isArray(entries1) && entries1.length === 1, "队列里恰好 1 条（拿到了 " + (entries1 ? entries1.length : "?") + "）");
   const first = entries1 && entries1[0];
@@ -410,17 +432,37 @@ const waitForPrecache = async (path, timeoutMs = Number(process.env.YANSHI_WAIT_
 
   // ④ 真实指针笔迹（产品路径）也进队列，联网后服务端里恰好一条
   section("④ 真实指针笔迹：断网时进队列，联网后服务端**恰好一条**那个 id");
+  // **★ 第 739 轮：本段切到 `render=client` 的页面**✗ ★**（台账第 449 节 ✓）**：
+  //   **∴ 为什么 ✗**：`initWasm` 第一行在**服务端渲染模式**直接 return ✗
+  //     ⇒ 指针笔迹的**客户端 ULID 原子**需要 WASM 内核 ✓（**①②③ 用的**工具路径 ✗
+  //       在**服务端页**跑 ⇒ 那一侧的队列才是被测对象 ✓）** ★
+  //   **∴ 于是 ✗**：**④ 之后立刻切回**服务端页**✓（**⑤⑥⑦ 的队列语义只在服务端页存在 ✓**）✓
+  await bootViewer(url);
+  // **内核等待放在段内**✓（**原来挂在全局 ✗ —— 分段之后它只是这一段的先决条件 ✓**）。
+  const kernelReady = await waitKernelReady();
   // **这一步是硬断言** ✗：没有内核时普通画笔走 `commitShape`（工具路径 ✓），
   // 那条**不产生客户端 ULID 原子** ✓ ⇒ 这一段就没被验到 ✓ ⇒ **不当作通过** ✗。
   // CI 在跑判据前会构建 `crates/yanshi-wasm/pkg`（见 .github/workflows/ci.yml ✓）。
   check(kernelReady, "WASM 内核必须就绪（指针笔迹这条路要用它；CI 会先构建 wasm 产物）");
   if (kernelReady) {
     // **保证"当前图层"真的存在** ✗ —— 原始原子（`/api/atoms`）带的是 `state.layerId` ✓，
-    // 而这条判据是**用令牌直接打开**文档的 ✓ ⇒ 没走 `switchDocument` ⇒ 可能没有真实图层 ✓
-    // ⇒ 若图层不存在，服务端会拒这条原子 ✓ ⇒ 那测的就成了⑥而不是④ ✓。
+    // 所以**先读页面自己会用的那个 id**✗（**∴ 不是判据替页面挑一个 ✓**），再把它建到**服务端**✓：
+    //   **∴ 若图层不存在 ✗** ⇒ 补交会被服务端拒 ✓ ⇒ 那测的就成了⑥而不是④ ✓。
+    // **∴ 为什么经服务端 API 建 ✗**：客户端页的 callTool 只进本地 IndexedDB ✗
+    //   ⇒ **journal 里没有这条层 ⇒ 原子补交回来时服务端不认 ✗**（**上一版正是这样红 ✗**）。
     const activeLayer = await evaluate("window.yanshi.state().layerId");
-    await evaluate(`window.yanshiCallTool("create_layer", { layer_id: ${JSON.stringify(String(activeLayer))}, name: "active" })`);
+    check(!!activeLayer, "客户端页给出了当前图层 id（实际 " + JSON.stringify(activeLayer) + "）");
+    // **`if_exists: "reuse"`**✓（**产品自己的复用口径 ✓，tools.rs:3363 ✓**）：
+    //   **∴ 实测 ✗**：打开文档时服务端**早就建好** `layer_default` ✓ ⇒  plain create 被拒
+    //     （**"图层 layer_default 已存在" ✓——**服务端如实拒绝 ✗ 不是缺陷 ✓**）
+    //     ⇒ **∴ 判据原来的写法**（页面本地 callTool ✓）在**客户端页**上**根本不进服务端**✗
+    //       ⇒ **∴ 复用**是**唯一**既**不改文档语义**（**已存在就**不 commit ✓）**又**说清结果**（`reused: true` ✓）的写法 ✓
+    const layerSeed = await callToolHttp(doc, token, "create_layer",
+      { layer_id: String(activeLayer), name: "active", if_exists: "reuse" });
+    check(layerSeed && layerSeed.ok === true, "当前图层已在服务端日志里可用（新建或按 if_exists=reuse 复用，实际 " + JSON.stringify(layerSeed).slice(0, 120) + "）");
     console.log("     当前图层 = " + activeLayer);
+    // **断网前先确认离线资产进了缓存**✓（第 407 轮 ✓：`import("/brush-local.js")` 由 SW 服务 ✓）。
+    await waitForPrecache("/brush-local.js");
     await offline();
     await sleep(300);
     const stroke = await evaluate(`(async () => {
@@ -462,6 +504,13 @@ const waitForPrecache = async (path, timeoutMs = Number(process.env.YANSHI_WAIT_
     await evaluate("window.yanshi.flushOutbox()");
     const served2 = (await atomsOf(doc, token)).filter((a) => entry && a.id === entry.atom.id);
     check(served2.length === 1, "再补交一次仍然只有一条（不重复应用）");
+    // **★ 切回服务端渲染页 ✗ ★**（**第 739 轮 ✓**）：⑤⑥⑦ 断的是「**写队列**」那一半 ✗
+    //   ⇒ 它**只在** `render=server` 一侧存在 ✓（**客户端页的调用直接进 IndexedDB ✗ 永不入队 ✓**）。
+    await bootViewer(serverUrl);
+  } else {
+    // **内核没起来也必须切回服务端页**✗ —— 否则 ⑤⑥⑦ 会在**客户端页**上结构性全红 ✓，
+    //   而那是**判据自己的导航**坏了的样子 ✗，不是那条「内核未就绪」已经如实报出的红 ✓。
+    await bootViewer(serverUrl);
   }
 
   // ⑤ 有界
@@ -497,6 +546,26 @@ const waitForPrecache = async (path, timeoutMs = Number(process.env.YANSHI_WAIT_
   await evaluate("window.yanshi.refreshOutbox()");
   await online();
   await sleep(300);
+  // **★ 第 739 轮：⑥ 之前必须把入队基线刷成**当前** HEAD ✗ ★**（**实测证据 ✓**）：
+  //   **∴ 上一轮实测 ✗**：⑥ 拿到的是 `conflict`（**"server head 5 != 2"**✓）而不是"被服务端拒绝"✗
+  //     ⇒ **∴ 根因 ✗**：条目入队时记的 `base_head` 是**最后一次成功在线调用**给的 HEAD ✓（viewer-app.js:1442 ✓）
+  //       —— ⑤ 的 200 条**全被拒在门外 ⇒ 没有任何一次成功调用把基线抬到 5** ✗
+  //         ⇒ **∴ 于是**：flush 的冲突门（**发第一条之前先探 HEAD ✓**）先撞上 ✗ ⇒ 测不到"内容被拒" ✓
+  //   **∴ 修法 ✗**：**用产品自己的探针端点**（`outboxProbeHead` 同一条 URL ✓：
+  //     `since=999999999&limit=1` ⇒ 只回 `head_seq` ✗ 不改文档 ✓）**在线读一次**✗
+  //     写回 `window.yanshiStats.serverHead` ✓ ⇒ **∴ 于是** ⑥ 的基线 == 当前 HEAD ✓
+  //     ⇒ **拒绝测试**（draw_stroke 指向不存在的图层 ✓）测的才是**内容被拒** ✗ 不是基线过期 ✓
+  //   **∴ 为什么这不算替页面伪造 ✗**：产品本来就在**每次成功在线调用后**刷新这个值 ✓（:1442 ✓）
+  //     ⇒ 这里只是**在"没有成功调用可跑"的时刻走同一条读**✓ —— ⑦ 的冲突**不刷**✓
+  //       ⇒ 它拿基线 = ⑥ 之后的当前 HEAD ✓，别人再改一次 ⇒ 冲突照旧成立 ✓（**实测 5 ⇒ 6 ✓**）。
+  const headBeforeBad = await evaluate(`(async () => {
+    const response = await fetch("/api/atoms?doc=" + encodeURIComponent(${JSON.stringify(doc)})
+      + "&token=" + encodeURIComponent(${JSON.stringify(token)}) + "&since=999999999&limit=1");
+    const value = await response.json();
+    if (value && value.ok) window.yanshiStats.serverHead = Number(value.head_seq || 0);
+    return value && value.ok ? Number(value.head_seq || 0) : null;
+  })()`);
+  check(headBeforeBad !== null, "⑥ 前在线刷新入队基线成功（当前 HEAD = " + headBeforeBad + "）");
 
   // ⑥ 服务端拒绝：报告 + 仍留在队列
   section("⑥ 服务端拒绝某条：报告出来，且**仍留在队列**");

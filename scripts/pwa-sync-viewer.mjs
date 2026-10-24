@@ -17,6 +17,20 @@ import { join } from "node:path";
 
 const SRC = "crates/yanshi-http/assets";
 const DST = "web";
+
+// **★ 戳的**形状**不在这里定义 ✗ ★**（**第 744 轮 ✓）：
+//   **∴ 原来 ✗**：**同一个事实**（「`yanshi-shell-` 后面那串是什么字符」）**写了四遍**✗，
+//     **∴ 而**字符类**各不相同**✗ ⇒ **归一化能吃掉的戳 ✗ 打戳那步吃不掉** ✓
+//       ⇒ **∴ 实测 ✗**：git 式戳 `yanshi-shell-e8b0ac47-dirty-f3ba45b2`
+//         ⇒ `[0-9a-f-]+` **只吃到** `e8b0ac47-d`（**`i` 不是十六进制字符 ✓）**
+//           ⇒ **`yanshi-shell-<新戳>irty-f3ba45b2`** ✓ ★**** ✓✓
+//   **∴ 后果 ✗**：页面 `caches.open(名字A)` ✗ 而 SW 预缓存的是**另一个名字** ✗
+//     ⇒ **∴ 离线外壳取不到** ✓（**症状像「缓存没建」**✗ 实际是**名字被截断后拼脏了** ✓）
+//   **∴ 现在 ✗**：**形状只有 `scripts/pwa-stamp.mjs` 一处**✗ ⇒ **∴ 本脚本只引用它** ✓
+//     ⇒ **∴ 于是**：**「归一化」与「打戳」不能互相矛盾** ✓（**内核 ② ✓**）
+//       ＋ **∴ 附带 ✓**：**被旧版截脏过的 `web/`**再跑一次**就自愈**（**宽类吃下整串 ✓**）
+//   **∴ 判据**：`scripts/tool-pwa-stamp-shape.mjs`（**含「把类改窄 ⇒ 必红」的变异 ✓**）
+import { setStamp } from "./pwa-stamp.mjs";
 // Rewrite the service worker cache name with a stamp derived from the files that
 // ship, so a deployment always gets a fresh cache and the previous one is deleted.
 // Without this the fixed name meant stale entries outlived every deploy.
@@ -44,9 +58,10 @@ const DST = "web";
 //     ＋ **∴ 且**它**不受 mtime 影响**✗ ⇒ **∴ CI 上**可复现** ✓
 //       （**∴ 原来**CI 与本地**会算出**不同**的戳 ✓）★**** ✓✓
 //
-// **∴ 为什么仍要**纯数字**✗**：**下游有 `yanshi-online-\d+` 的正则** ✓
-//   ＋ **∴ 且** `tool-sw-stamp-idempotent.mjs` **按数字戳断言** ✓
-//     ⇒ **∴ 所以**：**把 sha256 折成**13 位十进制** ✓ ★**** ✓✓
+// **∴ 为什么仍要**纯数字**✗**：**判据**断**的就是「产物里每个戳都是 13 位数字」**✗
+//   ＋ **∴ 且**数字戳**不可能**与 git 式短 sha**撞形**✓（**字母混在里面 ⇒ 一眼可见 ✓**）
+//     ⇒ **∴ 所以**：**把 sha256 折成**13 位十进制** ✓（**判据：`scripts/tool-pwa-stamp-shape.mjs` ✓**）
+//     （**原来这里引的** `tool-sw-stamp-idempotent.mjs`**已被上游删除**✓：**`web/sw.js` 那份**从来没被注册**过 ✗ S-10 ★**** ✓✓）
 const stampFiles = [
   "viewer-app.js", "viewer.css", "index.html",
   "api-local.js", "brush-local.js", "store.js",
@@ -57,18 +72,22 @@ const BUILD_STAMP = (() => {
   for (const f of stampFiles) {
     // **∴ 文件缺失也要**参与哈希**✗ ⇒ **∴ 否则**「从有到无」不会改戳** ✓
     try {
-      h.update(f + "\u0000" + readFileSync(join(DST, f), "utf8")
-        // **★ 算哈希前必须把**戳本身**归一化掉 ✗ ★**（**第 493 轮实测 ✓）
-        //   **∴ 为什么 ✗**：**`index.html` 里**写着上一次的戳**✗
-        //     （**∴ 本脚本会打印**「index.html 的 yanshi-shell- 戳 ⇒ …」✓）
-        //     ⇒ **∴ 若**直接哈希原文**✗ ⇒ **∴ 戳进哈希、哈希出戳** ✓
-        //       ⇒ **∴ 于是**：**每次跑都算出**不同的戳**✗ ⇒ **∴ 永不幂等** ✓
-        //         ⇒ **∴ 实测 ✗**：**第一次 4009077182629｜第二次 9495148370993** ✓ ★**** ✓✓
-        //   **∴ 现在 ✗**：**先把 `yanshi-shell-*`／`yanshi-online-*` 换成**占位符**✗
-        //     ⇒ **∴ 于是**：**戳**不影响自己** ✓
-        //       ＋ **∴ 而**任何**真实内容**变化**仍然会改戳** ✓ ★**** ✓✓
-        .replace(/yanshi-shell-[A-Za-z0-9_-]+/g, "yanshi-shell-__BUILD_ID__")
-        .replace(/yanshi-online-[A-Za-z0-9_-]+/g, "yanshi-online-__BUILD_STAMP__"));
+      // **★ 算哈希前必须把**戳本身**归一化掉 ✗ ★**（**第 493 轮实测 ✓）
+      //   **∴ 为什么 ✗**：**`index.html` 里**写着上一次的戳**✗
+      //     （**∴ 本脚本会打印**「index.html 的 yanshi-shell- 戳 ⇒ …」✓）
+      //     ⇒ **∴ 若**直接哈希原文**✗ ⇒ **∴ 戳进哈希、哈希出戳** ✓
+      //       ⇒ **∴ 于是**：**每次跑都算出**不同的戳**✗ ⇒ **∴ 永不幂等** ✓
+      //         ⇒ **∴ 实测 ✗**：**第一次 4009077182629｜第二次 9495148370993** ✓ ★**** ✓✓
+      //   **∴ 现在 ✗**：**先把 `yanshi-shell-*`／`yanshi-online-*` 换成**占位符**✗
+      //     ⇒ **∴ 于是**：**戳**不影响自己** ✓
+      //       ＋ **∴ 而**任何**真实内容**变化**仍然会改戳** ✓ ★**** ✓✓
+      //   **∴ 第 744 轮 ✗**：**这两步走 `setStamp`**（**同一字符类 ✓）**✗
+      //     ⇒ **∴ 原来**这里**写的是宽类**✗ 而**打戳处写的是窄类**✗
+      //       ⇒ **∴ 于是**「归一化能吃掉的戳**✗ 打戳那步吃不掉**」✓ ⇒ **∴ 拼出脏尾巴** ✓
+      const normalized = setStamp(
+        setStamp(readFileSync(join(DST, f), "utf8"), "yanshi-shell", "__BUILD_ID__"),
+        "yanshi-online", "__BUILD_STAMP__");
+      h.update(f + "\u0000" + normalized);
     } catch {
       h.update(f + "\u0000missing");
     }
@@ -425,32 +444,68 @@ if (existsSync(MEDIUM_SRC)) {
 //     **代价**＝**部署体积 ＋13 M ✗**（**纹理 ✓）——
 //       **∴ 而**静态托管**按需取 ✗ ⇒ **∴ 运行时不付代价 ✓**
 //         （**∴ 只有**真的用到纹理时**才下载 ✓）** ✓✓
-// **★ 作品展示图 ✓**（2026-10-16 ✓）：与笔刷/纹理/调色板**同一形状** ✓ ——
-//   **∴ 单一源**是 `assets/showcase/` ✓**（服务端也在发它 ✓，见 `server.rs::showcase_asset` ✓）
-//   ⇒ **∴ `web/showcase/` 是导出产物** ✓（已在 `.gitignore` 里 ✓）。
+// **★ 作品展示图 ✓**（2026-10-16 ✓；**这一段注释于第 745 轮核正 ✓**）：
+//   **∴ 单一源**是 `assets/showcase/` ✓（**服务端也从它发**✓ 见 `server.rs` 的 `/showcase/` 分支 ✓）
+//     ⇒ **∴ 页面引用的那几张必须在它里面**✓（**原来踩过的坑**：只放 `web/` ⇒ **服务端首页全 404**✓）。
+//   **∴ 但 `web/showcase/` 不是**纯导出产物** ✗ ★**（**原来这句写错了 ✓**）：
+//     它**故意入库**✓（**`.gitignore` 里那条 `web/showcase/` 是被注释掉的**✓，
+//     理由写着「**README 的图在 GitHub 上是 404**」✓ ⇒ **∴ 一旦忽略 ⇒ 远端裂图 ✗ 而本地看不出来**✓）
+//     ＋ **仓库里还有一张源里没有的图**（`ballet-reference-study-4k.png`✓ 6.0 M ✓ 两版 README 用 ✗ **页面不用**
+//       ⇒ 服务端取不到它**不是 bug**✓ ⇒ **∴ 所以**这段**不许**像字体段那样**清空目录**✓）
+//   ⇒ **∴ 于是形状与字体段不同 ✗**：字体段是**镜像**✓ ⇒ **这里只追加自己拷的**✓
+//     ⇒ **∴ 但**「**包里几个文件**」与「**本次同步几张**」是**两个数**✗ **必须分开报**✓
+//       （**原来只报目的地数 ⇒ 源空着也说「3 张 ✓」✗ 与字体段同一个毛病 ✓ 外部 §71 ✓**）
 const SHOWCASE_SRC = "assets/showcase";
 const SHOWCASE_DST = join(DST, "showcase");
 if (!existsSync(SHOWCASE_SRC)) {
-  console.warn("  WARN: 找不到 assets/showcase ⇒ 跳过作品展示图同步");
+  console.warn("  WARN: 找不到 assets/showcase ⇒ 跳过作品展示图同步（页面里的展示图会取不到）");
 } else {
   mkdirSync(SHOWCASE_DST, { recursive: true });
-  for (const f of readdirSync(SHOWCASE_SRC)) {
-    if (f.endsWith(".png")) copyFileSync(join(SHOWCASE_SRC, f), join(SHOWCASE_DST, f));
+  const showcaseNames = readdirSync(SHOWCASE_SRC).filter((f) => f.endsWith(".png"));
+  for (const f of showcaseNames) copyFileSync(join(SHOWCASE_SRC, f), join(SHOWCASE_DST, f));
+  if (showcaseNames.length === 0) {
+    console.warn("  WARN: assets/showcase 里没有 .png ⇒ 本次同步 0 张（离线首页会是裂图 ✗）");
   }
-  console.log(`  OK: 作品展示图 => web/showcase（${readdirSync(SHOWCASE_DST).length} 张 ✓）`);
+  const showcaseExtras = readdirSync(SHOWCASE_DST).filter((f) => !showcaseNames.includes(f));
+  console.log(`  OK: 本次同步作品展示图 ${showcaseNames.length} 张 => web/showcase` +
+    (showcaseExtras.length ? `（另有 ${showcaseExtras.length} 张仓库自带：${showcaseExtras.join(", ")} ✓ 故意入库 ⇒ 不清除 ✓）` : ""));
 }
 
 const PALETTE_SRC = "assets/palettes";
 const PALETTE_DST = join(DST, "palettes");
 // **★ 预置字体（字体方案 Phase 2）★**：与纹理同一形状 —— **PWA 侧也要有** ✓
 //   （**∴ 否则**离线时 `@font-face` 404 ⇒ 静默回退 ⇒ **看起来"字体没生效"** ✓）。
+//
+// **∴ 第 745 轮换掉原来那五行的两个「静默」✗ ★**（**两条都是**实测**复现出来的 ✓**）：
+//   **① 计数读的是**目的地**不是**本次拷贝**✓**：
+//     **∴ 原来 ✗**：`readdirSync(FONT_DST).length`
+//       ⇒ **∴ 实测 ✗**：**临时镜像里**把 `assets/fonts` 换成**空目录**✗ ⇒ 打印
+//         **`OK: 预置字体 2 个`**✓ ——**而那 2 个是**上一次留在 `web/fonts` 的旧文件**✗
+//         **本次**一个都没拷 ✓（**外部 §71 那条 ✗「做了 0 次」冒充「做了 2 次」✓**）
+//   **② 目录不存在 ⇒ **整个同步炸在中途**✗ 而且**报错不说原因**✓**：
+//     **∴ 原来 ✗**：`mkdirSync` **写在循环里**⇒ **源里没有 `.ttf`／`.woff2` 时**目录**根本没建**✗
+//       ⇒ **∴ 于是**：`readdirSync(FONT_DST)` **抛 ENOENT**✓
+//     **∴ 实测 ✗**：镜像里删掉 `web/fonts` ⇒ **退出码 1**✓
+//       ＋ **`Error: ENOENT: no such file or directory, scandir 'web/fonts'`**✓
+//       ⇒ **∴ 而**它**已经跑过**了大半（**拷贝 ＋ 索引 ✓**）⇒ **∴ 于是**打戳那步**没做**✗
+//         产物停在**半新半旧**的状态 ✓（**内核 5 ✗ 失败要**说清缺什么** ✓**）
+//   **∴ 现在 ✗**：**照 `SHOWCASE_SRC` 的形状**加**存在性守卫**✓ ＋
+//     **目录无条件建**✓ ＋ **计数取自**源**里筛出来的名单**✓ ＋
+//     **先 `rmSync` 再拷**✓（**∴ 于是**它是**镜像**而非**追加**✗ 上游删掉的字体**不会在 `web/` 里赖着**✓）
 const FONT_SRC = "assets/fonts";
 const FONT_DST = join(DST, "fonts");
-for (const f of readdirSync(FONT_SRC).filter((n) => n.endsWith(".ttf") || n.endsWith(".woff2"))) {
+if (!existsSync(FONT_SRC)) {
+  console.warn("  WARN: 找不到 assets/fonts ⇒ 跳过预置字体（离线时 @font-face 会 404 ⇒ 静默回退 ✗）");
+} else {
+  const fontNames = readdirSync(FONT_SRC).filter((n) => n.endsWith(".ttf") || n.endsWith(".woff2"));
+  rmSync(FONT_DST, { recursive: true, force: true });
   mkdirSync(FONT_DST, { recursive: true });
-  copyFileSync(join(FONT_SRC, f), join(FONT_DST, f));
+  for (const f of fontNames) copyFileSync(join(FONT_SRC, f), join(FONT_DST, f));
+  if (fontNames.length === 0) {
+    console.warn("  WARN: assets/fonts 里没有 .ttf/.woff2 ⇒ 本次同步 0 个字体（web/fonts 现在是空目录 ✗ 离线字体不会生效）");
+  }
+  console.log(`  OK: 本次同步预置字体 ${fontNames.length} 个 => web/fonts`);
 }
-console.log(`  OK: 预置字体 ${readdirSync(FONT_DST).length} 个 => web/fonts`);
 
 const TEXTURE_SRC = "assets/textures";
 const TEXTURE_DST = join(DST, "textures");
@@ -510,9 +565,15 @@ console.log("  OK: 资产索引 => " + join(DST, "assets-index.json") +
     try {
       const target = join(DST, file);
       let text = readFileSync(target, "utf8");
-      text = text
-        .replaceAll("yanshi-shell-__BUILD_ID__", "yanshi-shell-" + BUILD_STAMP)
-        .replace(/yanshi-shell-((?:__BUILD_ID__)|[0-9a-f-]+)/g, "yanshi-shell-" + BUILD_STAMP);
+      // **∴ 第 744 轮 ✗**：**原来这两步的字符类是** `[0-9a-f-]`**✗**
+      //   ⇒ **∴ 它**遇到 git 式戳（**含 `i`／`u`／`r`／`y` 等非十六进制字母 ✓）**✗
+      //     **只吃到**第一个非十六进制字符之前**✗ ⇒ **∴ 剩下的尾巴**拼在**新戳后面** ✓
+      //       ⇒ **∴ 实测 ✗**：`yanshi-shell-e8b0ac47-dirty-f3ba45b2`
+      //         ⇒ **`yanshi-shell-4036615775438irty-f3ba45b2`** ✓ ★**** ✓✓
+      //   **∴ 后果 ✗**：**页面**与**SW**的缓存名**不再是同一个**✗ ⇒ **离线外壳取不到** ✓
+      //   **∴ 现在 ✗**：**走 `setStamp`**（**与归一化那步**同一个类 ✗ ⇒ **不能互相矛盾 ✓**）**
+      //     ⇒ **∴ 附带 ✓**：**已被旧版截脏的文件**再跑一次**就自愈**（**宽类吃下整串 ✓）**
+      text = setStamp(text, "yanshi-shell", BUILD_STAMP);
       writeFileSync(target, text);
       console.log("  OK: " + file + " 的 yanshi-shell- 戳 ⇒ " + BUILD_STAMP);
     } catch (e) {
