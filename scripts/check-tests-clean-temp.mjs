@@ -38,7 +38,20 @@ for (const file of files) {
   const text = readFileSync(file, "utf8");
   if (!text.includes("std::env::temp_dir()")) continue;
   const guarded = text.includes("struct Cleanup") || /impl Drop for \w+/.test(text);
-  if (!guarded) offenders.push(file);
+  // **⇒ 只声明不够，还要**真的绑上** ✅（第 1003 轮：原版只证明"声明在" ✗）
+  //   **⇒ 为什么** ✗：声明一个 `Drop` 类型却**从不实例化** ⇒ 目录照样不删 ✓
+  //     （第 939 轮就是这么干的：先只加声明，后来才在 26 处调用点绑定 ✓）
+  //   **⇒ 判法**：文件里必须出现**守卫绑定**（`= Cleanup(` 或 `= TempCleanup(` ✓）
+  //   **⇒ 变异**：把某文件的绑定删掉（只留声明）⇒ 该文件红 ✓
+  // **⇒ 两种合法形态** ✅（第 1003 轮实测发现第二种）：
+  //   ① 调用点绑定：`let _g = Cleanup(dir.clone());`
+  //   ② **助手直接返回守卫**：`fn temp_dir(..) -> TempRoot { … TempRoot(path) }` ✓
+  //      ⇒ 这时**绑定在调用方**（`let root = temp_dir(..)` ✓）⇒ 同样会 Drop ✓
+  //   **⇒ 只看 ① 会误报** ✗（第 1003 轮实测误报 2 个 ✓）⇒ 所以两种都认 ✓
+  const bound = /[\w_]+\s*=\s*(?:Temp)?Cleanup\s*\(/.test(text)
+    || /fn\s+\w*temp_dir\w*\s*\([^)]*\)\s*->\s*(?:Temp)\w+/.test(text);
+  if (!guarded) { offenders.push(`${file}（没有 Drop 清理器）`); continue; }
+  if (!bound) offenders.push(`${file}（有 Drop 类型但**从未绑定**）`);
 }
 
 console.log(`  扫描 ${files.length} 个测试文件，其中用 \`temp_dir()\` 的 ${files.length - offenders.length} 个有清理器`);
@@ -49,4 +62,4 @@ if (offenders.length > 0) {
   );
   process.exit(1);
 }
-console.log("✓ 每个用 `temp_dir()` 的测试都带了 Drop 清理器（结构检查：只证明声明在）");
+console.log("✓ 每个用 `temp_dir()` 的测试都带了 Drop 清理器，**且守卫真的被绑定**（两种形态：调用点绑定／助手返回守卫）");
