@@ -87,3 +87,67 @@ fn a_package_missing_a_referenced_blob_says_so() {
         "文案要给出**个数**，实测：\n{combined}"
     );
 }
+
+/// **`SHRINK=1` 必须说清「画会变」**（第 794 轮；外部 `qoder` 的 **D188**）
+///
+/// **⇒ 他们的实测**：`test1` 跑完 115 帧，**末帧与交付画差 `16.40 lv` 均值、`81.43%` 像素差 > 1 lv**，
+///   而**中帧 `14.93 lv` 反而更近** ⇒ 片子越到结尾离作品越远 ✓
+///   ⇒ 而 banner **只报「渲染量约降 57×」，不报画会变** ✗。
+///
+/// **⇒ 根因**（他们读码＋普查，我核过）：`brush_stroke` 最终走 `import_image` 的 `ctx.commit` ✓
+///   ⇒ journal 里**一笔 = 一块像素**、**没有笔刷参数可供缩** ✓ ⇒ 这条路径只能把**每一块**
+///   最近邻降采样 ✓ ⇒ **与"把整幅画缩一遍"不是同一件事** ✓。
+///
+/// **⇒ 判据**：带 `YANSHI_TIMELAPSE_SHRINK=1` 跑真二进制 ⇒ stderr 必须出现「**画会变**」✓。
+/// **变异**：去掉那段警告 ⇒ 只剩「渲染量约降 N×」⇒ 红 ✓。
+#[test]
+fn the_shrink_path_says_the_picture_will_change() {
+    let dir = std::env::temp_dir().join(format!("yanshi_shrink_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("建目录");
+    // 画布要**大于** `MAX_W/MAX_H`（1920×1080）才会真的走降采样路径
+    let meta = serde_json::json!({"width": 2560, "height": 2160, "doc_id": "d_shrink", "fps": 24});
+    let atoms = [
+        serde_json::json!({"id": "a0", "seq": 1, "kind": "create_document", "actor": "human:t",
+            "session": "s", "timestamp": 0, "schema_version": 1,
+            "payload": {"doc_id": "d_shrink", "width": 2560, "height": 2160, "color_space": "srgb"}}),
+        serde_json::json!({"id": "a1", "seq": 2, "kind": "create_layer", "actor": "human:t",
+            "session": "s", "timestamp": 0, "schema_version": 1,
+            "payload": {"layer_id": "L1", "name": "L1", "type": "raster"}}),
+    ];
+    std::fs::write(dir.join("meta.json"), meta.to_string()).expect("meta");
+    let text: String = atoms
+        .iter()
+        .map(|atom| format!("{atom}\n"))
+        .collect::<Vec<_>>()
+        .join("");
+    std::fs::write(dir.join("atoms.jsonl"), text).expect("atoms");
+    let pack = dir.join("shrink.yanshi");
+    assert!(
+        Command::new("tar")
+            .arg("-cf")
+            .arg(&pack)
+            .arg("-C")
+            .arg(&dir)
+            .args(["meta.json", "atoms.jsonl"])
+            .status()
+            .expect("tar")
+            .success(),
+        "打不出包"
+    );
+
+    let out = dir.join("out.mp4");
+    let result = Command::new(env!("CARGO_BIN_EXE_yanshi-timelapse"))
+        .arg(&pack)
+        .arg(&out)
+        .arg("1")
+        .env("YANSHI_TIMELAPSE_SHRINK", "1")
+        .env("YANSHI_TIMELAPSE_RAW_DIR", dir.join("frames"))
+        .output()
+        .expect("跑 timelapse");
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("画会变") || stderr.contains("不是同一幅"),
+        "降采样回放必须说清「画会变」，实测 stderr：\n{stderr}"
+    );
+}
