@@ -371,7 +371,10 @@ fn log_chromaticity_confidence(wb_channels: &[Vec<f32>; 3]) -> (f32, f32, f32) {
         if r < 0.005 || g < 0.005 || b < 0.005 {
             continue;
         }
-        points.push(((r / g).ln(), (b / g).ln()));
+        points.push((
+            libm::log(f64::from(r / g)) as f32,
+            libm::log(f64::from(b / g)) as f32,
+        ));
     }
     if points.is_empty() {
         return (0.0, 0.0, 0.0);
@@ -400,8 +403,8 @@ fn log_chromaticity_confidence(wb_channels: &[Vec<f32>; 3]) -> (f32, f32, f32) {
     cxx /= count;
     cyy /= count;
     cxy /= count;
-    let theta = 0.5 * (2.0 * cxy).atan2(cxx - cyy);
-    let (dx, dy) = (theta.cos(), theta.sin());
+    let theta = 0.5 * libm::atan2(2.0 * f64::from(cxy), f64::from(cxx - cyy));
+    let (dx, dy) = (libm::cos(theta) as f32, libm::sin(theta) as f32);
     let projected: Vec<f32> = points
         .iter()
         .map(|(u, v)| (u - mean_u) * dx + (v - mean_v) * dy)
@@ -436,9 +439,9 @@ fn sarle_bimodality(values: &[f32]) -> f32 {
     if m2 <= 0.0 {
         return 0.0;
     }
-    let skew = m3 / m2.powf(1.5);
+    let skew = m3 / libm::pow(f64::from(m2), 1.5) as f32;
     let kurt = m4 / (m2 * m2) - 3.0;
-    let correction = 3.0 * (nf - 1.0).powi(2) / ((nf - 2.0) * (nf - 3.0));
+    let correction = 3.0 * ((nf - 1.0) * (nf - 1.0)) / ((nf - 2.0) * (nf - 3.0));
     (skew * skew + 1.0) / (kurt + correction)
 }
 
@@ -680,7 +683,7 @@ mod tests {
             state ^= state >> 7;
             state ^= state << 17;
             let u2 = (state >> 11) as f64 / (1u64 << 53) as f64;
-            ((-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()) as f32
+            (libm::sqrt(-2.0 * libm::log(u1)) * libm::cos(2.0 * std::f64::consts::PI * u2)) as f32
         };
         for (base, sigma) in [(0.5f32, 0.03f32), (0.5, 0.01), (0.2, 0.03)] {
             let (w, h) = (256u32, 256u32);
