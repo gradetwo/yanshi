@@ -710,6 +710,32 @@ pub fn collect(workspace: &Workspace, request: &DiagnosticsRequest) -> Result<Di
             "open_document_count".to_owned(),
             json!(open_documents.len()),
         );
+        // C2（期 2）：已载入文档的内存观测 + 卸载留痕——预算卸载
+        // 不许静默，诊断里必须看得见每份文档的估算驻留与卸载账。
+        let loaded: Vec<Value> = workspace
+            .loaded_documents()
+            .into_iter()
+            .map(|info| {
+                json!({
+                    "doc_id": info.doc_id,
+                    "atoms": info.atoms,
+                    "estimated_bytes": info.estimated_bytes,
+                    "cache_bytes": info.cache_bytes,
+                    "last_used_seq": info.last_used_seq,
+                })
+            })
+            .collect();
+        map.insert("documents".to_owned(), Value::Array(loaded));
+        let evictions = workspace.doc_eviction_stats();
+        map.insert(
+            "doc_evictions".to_owned(),
+            json!({
+                "evictions": evictions.evictions,
+                "skipped_busy": evictions.skipped_busy,
+                "last_evicted_doc": evictions.last_evicted_doc,
+                "last_reason": evictions.last_reason,
+            }),
+        );
     }
     notes.push(format!(
         "文档 {doc_id}：原子 {atom_total} 条、head seq {log_head_seq}、打开中的文档 {} 份。",

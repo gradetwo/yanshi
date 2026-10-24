@@ -55,7 +55,7 @@ pub use document::{
 pub use inflight::{InflightGuard, InflightInfo, InflightOp, InflightRegistry};
 pub use job::{Job, JobId, JobManager, JobStatus, DEFAULT_JOB_TTL_SECONDS};
 pub use persist::{DocumentMeta, FileStore, TokenRecord};
-pub use service::{DocThumbSize, DocumentSummary, Workspace};
+pub use service::{DocEvictionStats, DocThumbSize, DocumentSummary, LoadedDocumentInfo, Workspace};
 pub use timings::{CommitPhases, Phase, ToolTimings};
 pub use token::{
     ensure_doc_scope, CapabilityToken, Principal, Role, Session, TokenAuthority, TransportKind,
