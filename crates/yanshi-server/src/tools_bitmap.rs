@@ -237,6 +237,11 @@ pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         if yanshi_render::is_raw_source_mime(declared_mime) {
             let outcome = build_raw_import_plan(ctx, &bitmap, args.get("raw_options"))?;
             payload["raw_develop"] = outcome.record_json.clone();
+            // 期 4 D3 回测发现：raw_meta（EXIF，含 iso）此前只进响应回显、
+            // 不进对象 ⇒ auto 的 ISO 先验（读对象 data["raw_meta"]["iso"]）
+            // 在真实 RAW 导入上永远取不到。对象上同源补一份（加法字段，
+            // 解析侧只读已知键，不影响旧对象与渲染；响应回显不变）。
+            payload["raw_meta"] = outcome.meta_json.clone();
             raw_import = Some(outcome);
         } else if let Some(options) = args.get("raw_options") {
             if !options.is_null() {
