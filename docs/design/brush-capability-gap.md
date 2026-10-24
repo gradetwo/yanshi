@@ -19845,3 +19845,22 @@ async function fetchMutating(url, options) {
 
 **⇒ 附带清理**：`pwa-sync-viewer.mjs` 会改 `web/index.html` 与 `web/assets-index.json`（**被跟踪** ✓）
 ⇒ 跑完要 `git checkout -- web/index.html web/assets-index.json` ✓（本轮就脏了这两个 ✓）。
+
+## 五百二十六、用 `render=server` 重跑：**同样 27 条** ⇒ 我的复现现在是**忠实的**（第 893 轮）
+
+**⇒ 实测（新栈，CDP 9339，URL 带 `render=server`）**：**27 条 ✗**，与 `render=client` **完全一致** ✓
+```
+入队返回 = {"ok":true,"seq":3,"server":false,…}   ← 仍是本地层
+界面 = {"state":"offline",…}
+上限 = 200｜第 null 次被拒｜排队 = 0｜界面 = offline
+```
+⇒ **⇒ 所以上一轮说的"配置错误"只解释了一半** ✓：两种模式**都复现** ✓ ⇒ **CI 那条 bug 是真的** ✓
+
+**⇒ 链条上唯一还没解释的一环（下一轮直接测，不再推）** ✗：
+判据的落笔入口是 `window.yanshiCallTool` ✓ = `(tool,args) => callTool(tool,args,{refresh:false})` ✓（源码 `:2910`）
+⇒ `callTool` 里 `mutating = !LOCAL_READ_TOOLS.includes("draw_stroke")` ⇒ **应为 true** ✓
+⇒ 于是走 `fetchMutating` ✓ ⇒ 它**第一句** `if (navigator.onLine === false …) throw` ✓
+⇒ 而我的独立探针**已证明** CDP 断网后 `navigator.onLine === false` ✓
+⇒ **⇒ 三者不可能同时成立** → 必有一个是假的 ⇒ **下一轮用三行 `console.log` 定位**（`serverRenderPreferred()`／`mutating`／`navigator.onLine`）✓
+⇒ 写法：改 **`crates/yanshi-http/assets/viewer-app.js`**（**真源** ✓ 第 524 节）→ `node scripts/pwa-sync-viewer.mjs` →
+`git checkout -- web/index.html web/assets-index.json`（那两个会被 sync 改脏 ✓）→ 复现 → 读 `Runtime.consoleAPICalled` ✓。
