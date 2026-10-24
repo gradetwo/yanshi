@@ -39,7 +39,15 @@ for (const file of files) {
   const text = readFileSync(file, "utf8");
   if (!text.includes("判据")) continue;
   claiming += 1;
-  const has_assert = /assert!|assert_eq!|assert_ne!|panic!/.test(text);
+  // **⇒ 注释里的断言不算** ✅（第 1006 轮，变异已证明 ✓）
+  //   **⇒ 为什么** ✗：原版对**整份文本**正则 ⇒ 唯一那句 `assert!` 若写在 `//` 或 `//!` 里也照样通过 ✗
+  //     （第 873 轮的形态正是"三条判据写在 `//!` 里、代码里一条都没有" ✓）
+  //   **⇒ 变异（已验证）**：把 `ink_pixels.rs` 里含 assert 的 25 行全部注释掉 ⇒
+  //     **剥离后剩余 assert! 计数 = 0** ⇒ 判据红：`✗ … 提到「判据」但没有任何断言` ✓
+  //   **⇒ 注意**：验证时**必须用同一条谓词量残量** ✗ —— `grep -c assert` 会把**注释行**也数进去
+  //     （第 1005 轮我就被它骗过一次 ✗）
+  const stripped = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  const has_assert = /assert!|assert_eq!|assert_ne!|panic!/.test(stripped);
   if (!has_assert) offenders.push(file);
 }
 
@@ -49,4 +57,4 @@ if (offenders.length > 0) {
   console.error(`  ✗ ${offenders.length} 个测试文件的「判据」只写在注释里`);
   process.exit(1);
 }
-console.log("✓ 每个声称有判据的测试文件都至少有一条断言（结构检查：只证明「有断言」）");
+console.log("✓ 每个声称有判据的测试文件都**在代码里**（不是注释里）至少有一条断言");
