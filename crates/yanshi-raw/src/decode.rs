@@ -147,30 +147,36 @@ fn map_decoded(
             raw.cpp
         )));
     }
+    let (full_w, full_h) = (raw.width, raw.height);
+    // active area 裁剪（设计 5.2：展开坐标系 = active area）。裁剪窗
+    // 先算（C1-a，期 2）：像素只物化裁剪区——直接从整数源逐行转 f32
+    // 进目标 Vec，不再先整幅转 f32 再拷一份裁剪（旧形态下全幅 f32 与
+    // 裁剪 f32 同时存活，大图多吃一整幅 4 B/px）。转换是逐值恒等
+    // 映射（u16 → f32 精确），产物与旧路逐位相同。
+    let (ax, ay, crop_w, crop_h, mut notes) = active_crop(&raw, full_w, full_h);
     // 马赛克像素：整数读数原样进 f32；浮点读数一期不支持（HDR 浮点 DNG 等，
     // 量纲约定未定版，不许拍脑袋选缩放），响亮报错、记 README 缺口。
-    let full: Vec<f32> = match &raw.data {
-        RawImageData::Integer(values) => values.iter().map(|&v| v as f32).collect(),
+    let mosaic: Vec<f32> = match &raw.data {
+        RawImageData::Integer(values) => {
+            if values.len() != full_w * full_h {
+                return Err(RawError::InvalidFrame(format!(
+                    "解码像素数 {} 与全幅尺寸 {full_w}×{full_h} 对不上",
+                    values.len()
+                )));
+            }
+            let mut mosaic = Vec::with_capacity(crop_w * crop_h);
+            for y in 0..crop_h {
+                let start = (ay + y) * full_w + ax;
+                mosaic.extend(values[start..start + crop_w].iter().map(|&v| v as f32));
+            }
+            mosaic
+        }
         RawImageData::Float(_) => {
             return Err(RawError::UnsupportedData(
                 "浮点马赛克数据（float DNG 等）一期不支持".to_string(),
             ));
         }
     };
-    let (full_w, full_h) = (raw.width, raw.height);
-    if full.len() != full_w * full_h {
-        return Err(RawError::InvalidFrame(format!(
-            "解码像素数 {} 与全幅尺寸 {full_w}×{full_h} 对不上",
-            full.len()
-        )));
-    }
-    // active area 裁剪（设计 5.2：展开坐标系 = active area）。
-    let (ax, ay, crop_w, crop_h, mut notes) = active_crop(&raw, full_w, full_h);
-    let mut mosaic = Vec::with_capacity(crop_w * crop_h);
-    for y in 0..crop_h {
-        let start = (ay + y) * full_w + ax;
-        mosaic.extend_from_slice(&full[start..start + crop_w]);
-    }
     // CFA 相位对齐（关键）：rawler 的 `camera.cfa` 锚在**全幅数据原点**
     // （DNG 解码器会把文件内 active-area 相对的 CFAPattern 反向平移回全幅
     // 口径，见 rawler dng.rs `get_cfa`），黑／白电平的四相位数组同理锚在

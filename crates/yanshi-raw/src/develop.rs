@@ -1171,6 +1171,9 @@ pub fn develop_with_lens(
         frame.cfa.clone(),
         options.demosaic,
     );
+    // C1-a（期 2）：马赛克平面在此之后再无用处，显式释放——不然它的
+    // 4 B/px 会陪 ⑥／⑧ 的大缓冲一路活到函数尾，白抬峰值。
+    drop(plane);
     // ④′ 高光恢复（保底机制，第三包）：已白平衡相机 RGB 域、无条件
     // 环节（不进 raw_options）。天花板里的 g_vig 即 ② 的增益场。
     highlight_recover(
@@ -1191,6 +1194,9 @@ pub fn develop_with_lens(
             vig_field.as_deref(),
         )?;
     }
+    // C1-a（期 2）：暗角增益场的最后一位消费者是 ④′′，此处释放
+    // （理由同上，4 B/px）。
+    drop(vig_field);
     // ⑤ 畸变 + TCA 复合重采样（第四包）：一次重采样、逐通道源坐标；
     // 排在色彩矩阵之前（相机 RGB 域的几何才是镜头几何）。
     let rgb_camera = match lens_plan.and_then(|plan| plan.warp.as_ref()) {
@@ -1202,10 +1208,14 @@ pub fn develop_with_lens(
     let composite = composite_color_matrix(&frame.color_matrices, neutral, &mut notes)?;
     let m_total = composite.matrix;
     let alpha = composite.alpha;
-    let mut rgb = vec![0.0f32; rgb_camera.len()];
-    for (dst, src) in rgb.chunks_exact_mut(3).zip(rgb_camera.chunks_exact(3)) {
-        let out = mat3_mul_vec(&m_total, [src[0], src[1], src[2]]);
-        dst.copy_from_slice(&out);
+    // C1-a（期 2）：色彩矩阵是逐像素独立运算 ⇒ 原地变换（三元先读进
+    // 局部量再写回同一槽位），省掉与 rgb_camera 并存的第二份
+    // 12 B/px 缓冲。每像素的算式与旧双缓冲形态逐项同式同序 ⇒
+    // 逐位守恒（tests/buffer_reuse_golden.rs 的金值守这条）。
+    let mut rgb = rgb_camera;
+    for pixel in rgb.chunks_exact_mut(3) {
+        let out = mat3_mul_vec(&m_total, [pixel[0], pixel[1], pixel[2]]);
+        pixel.copy_from_slice(&out);
     }
     // ⑦ pre_exposure = 2^(BaselineExposure + user)（必须在高光恢复之后——
     //    ④′ 是后续包，注入时勿把本步提前；Baseline 缺失按 0 并注明）。
@@ -1224,8 +1234,15 @@ pub fn develop_with_lens(
     }
     // ⑧ EXIF 方向变换（设计 5.7）：置于 ⑦ 之后、⑨ 之前；5–8 时宽高互换。
     let orientation = effective_orientation(frame.orientation);
-    let (out_w, out_h, mut rgb) =
-        apply_orientation_rgb(&rgb, frame.width, frame.height, orientation);
+    // C1-a（期 2）：恒等方向不再整幅拷一份（`apply_orientation_rgb`
+    // 对 1 档本就是逐值复制）；转置／翻转类保留一份输出拷贝——设计
+    // C1-a 的低风险支（⑧ 前上游缓冲已全部释放，峰值只剩输入＋输出
+    // 两份 12 B/px），不做原地重排的高风险索引手术。
+    let (out_w, out_h, mut rgb) = if orientation == 1 {
+        (frame.width, frame.height, rgb)
+    } else {
+        apply_orientation_rgb(&rgb, frame.width, frame.height, orientation)
+    };
     // ⑨ 出口截零（全程唯一截零点）。
     clamp_exit(&mut rgb)?;
     let (lens_match, applied) = match &lens {
