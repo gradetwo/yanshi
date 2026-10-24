@@ -284,10 +284,10 @@ fn auto_backtest_three_touchstones() {
                 }),
             );
             assert_eq!(imported["ok"], json!(true), "RAW 导入应成功：{imported}");
-        eprintln!(
-            "BACKTEST {}：import raw_meta iso={}（对象落账后 auto 应读到同一值）",
-            photo.name, imported["raw_meta"]["iso"]
-        );
+            eprintln!(
+                "BACKTEST {}：import raw_meta iso={}（对象落账后 auto 应读到同一值）",
+                photo.name, imported["raw_meta"]["iso"]
+            );
 
             // 基线：全幅渲染（未 auto）+ 探区 R−B。
             let bbox = Bbox::new(0.0, 0.0, dev_w as f64, dev_h as f64);

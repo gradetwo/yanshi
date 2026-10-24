@@ -63,7 +63,12 @@ fn center_pixel(workspace: &mut Workspace, doc: &str) -> Vec<i64> {
 }
 
 fn object_params(workspace: &mut Workspace, doc: &str, object_id: &str) -> Value {
-    let object = call(workspace, doc, "get_object", json!({"object_id": object_id}));
+    let object = call(
+        workspace,
+        doc,
+        "get_object",
+        json!({"object_id": object_id}),
+    );
     assert_eq!(object["ok"], json!(true), "{object}");
     object["data"]["params"].clone()
 }
@@ -109,7 +114,10 @@ fn apply_preset_revives_tombstoned_object() {
         json!(true),
         "墓碑 id 二次 apply 必须成功（复活路）：{second}"
     );
-    let revived = second["revived_object_ids"].as_array().cloned().unwrap_or_default();
+    let revived = second["revived_object_ids"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     assert!(
         revived.iter().any(|id| id == TARGET),
         "复活必须在响应里点名 {TARGET}：{second}"
@@ -164,14 +172,22 @@ fn revive_is_one_changeset_and_undoable() {
     );
     assert_eq!(applied["ok"], json!(true), "{applied}");
     let full_pixel = center_pixel(&mut ws, "doc");
-    let deleted = call(&mut ws, "doc", "delete_object", json!({"object_id": TARGET}));
+    let deleted = call(
+        &mut ws,
+        "doc",
+        "delete_object",
+        json!({"object_id": TARGET}),
+    );
     assert_eq!(deleted["ok"], json!(true), "{deleted}");
     let deleted_pixel = center_pixel(&mut ws, "doc");
     assert_ne!(full_pixel, deleted_pixel, "删掉一笔后渲染必须不同（前提）");
 
     let begun = call(&mut ws, "doc", "begin_changeset", json!({}));
     assert_eq!(begun["ok"], json!(true), "{begun}");
-    let changeset = begun["changeset_id"].as_str().expect("应回 changeset_id").to_owned();
+    let changeset = begun["changeset_id"]
+        .as_str()
+        .expect("应回 changeset_id")
+        .to_owned();
     let revived = call(
         &mut ws,
         "doc",
@@ -216,7 +232,12 @@ fn add_adjustment_revives_tombstoned_object() {
         }),
     );
     assert_eq!(added["ok"], json!(true), "{added}");
-    let deleted = call(&mut ws, "doc", "delete_object", json!({"object_id": "adj_1"}));
+    let deleted = call(
+        &mut ws,
+        "doc",
+        "delete_object",
+        json!({"object_id": "adj_1"}),
+    );
     assert_eq!(deleted["ok"], json!(true), "{deleted}");
     let revived = call(
         &mut ws,
@@ -229,7 +250,11 @@ fn add_adjustment_revives_tombstoned_object() {
             "params": {"brightness": -0.25}
         }),
     );
-    assert_eq!(revived["ok"], json!(true), "同 id 重建必须走复活路成功：{revived}");
+    assert_eq!(
+        revived["ok"],
+        json!(true),
+        "同 id 重建必须走复活路成功：{revived}"
+    );
     assert_eq!(
         revived["revived"],
         json!(true),

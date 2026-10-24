@@ -526,9 +526,7 @@ pub(super) fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> R
                 let Some(range_obj) = range_value.as_object() else {
                     return Err(YanshiError::new(
                         ErrorCode::InvalidArgument,
-                        ErrorContext::detail(format!(
-                            "hsl 的 ranges.{range_name} 必须是对象"
-                        )),
+                        ErrorContext::detail(format!("hsl 的 ranges.{range_name} 必须是对象")),
                     ));
                 };
                 for (key, value) in range_obj {
