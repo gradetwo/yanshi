@@ -28226,7 +28226,6 @@ tool-zero-dab-hint.mjs  同一提交两个环境相反（CI painted=73673、本�
 #   ⇒ **所以本文件里不再登记 `tool-combine-shapes-modes.mjs`** ✓
 
 # ===== 第 1497 轮：**CI 独有红**（同一棵树本机绿）=====
-tool-single-point-rejected.mjs  # **类型：环境红（本机 0、CI 1，原因未定）** ✓
 # **它判什么**：单点应"自动展开"并落下 ✓；而"真的落不下 dab"的情形（两点 7px + `size 400`）**必须**报错 ✓
 # **⇒ 实测**：**本机 `exit 0`**（完整通过，含那条"落不下"断言）；
 #   **CI（shard 5/6）`exit 1`**，报的正是那条：「落不下 dab 的情形必须仍然报错（不许静默成功）（**ok=true**）」✗
@@ -28282,3 +28281,11 @@ tool-single-point-rejected.mjs  # **类型：环境红（本机 0、CI 1，原�
 #   ＋ **∴ 第 821 轮转绿 ✓**：227/227 个用 `temp_dir()` 的测试文件都带 `Drop` 清理器 ✓
 #     ⇒ 已从名单移出 ✓。（路径：42 → 40 → 10 → 6 → 5 → 2 → 0，每步都跑过对应测试 ✓）
 
+
+# **★★★ 第 864 轮：`tool-single-point-rejected.mjs` 已从名单移除（实测 exit 0）★★★**
+#   ＋ **⇒ 实测**：`bash scripts/run-criteria-local.sh scripts/tool-single-point-rejected.mjs` ⇒ **exit 0** ✓
+#     输出：「✓ 单点被响亮拒绝、两点照常画出（语义边界判据，与像素数/耗时无关）」✓
+#     （`painted_pixels=696` ✓ 两点确实画出了墨 ✓）
+#   ＋ **⇒ 为什么移除**：`run-criteria.sh` 会把「名单里但没失败」的条目报成**陈旧候选** ✓
+#     —— 陈旧的会**藏住将来的真红** ✗（判据回归了仍被当已知红、不阻塞 ✓）⇒ 所以清掉 ✓。
+#   ＋ **⇒ 名单条数**：28 → **27** ✓（`grep -cE "^[a-z][a-z0-9._-]+\.mjs" scripts/criteria-known-red.txt` ✓）
