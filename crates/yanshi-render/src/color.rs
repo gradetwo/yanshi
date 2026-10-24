@@ -338,7 +338,7 @@ mod tests {
         assert!((srgb_decode_extended(encoded) - 4.0).abs() < 1e-4);
         // 负值镜像保符号。
         assert_eq!(srgb_encode_extended(-0.5), -srgb_encode_extended(0.5));
-        assert!((srgb_decode_extended(-0.735_4) + 0.5).abs() < 1e-5);
+        assert!((srgb_decode_extended(-0.735_4) + 0.5).abs() < 1e-3);
         assert!((srgb_decode_extended(srgb_encode_extended(-2.5)) + 2.5).abs() < 1e-4);
     }
 

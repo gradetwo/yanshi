@@ -528,59 +528,161 @@ pub const SELECTIVE_COLOR_RANGES: [&str; 9] = [
     "reds", "yellows", "greens", "cyans", "blues", "magentas", "whites", "neutrals", "blacks",
 ];
 
-/// **可选颜色**（PS 相对模式的简化版）：RGB → CMYK 后，按像素色类取出**唯一**一档的
-/// `[c,m,y,k]` 偏移（下标见 [`SELECTIVE_COLOR_RANGES`]）施加，再转回 RGB。
-///
-/// 色类判定（硬扇区、不羽化）：低饱和（色度 < 0.08）按 HSL 明度分
-/// whites（> 0.75）／blacks（< 0.25）／neutrals；否则按色相 60° 扇区
-/// （扇区中心对齐红/黄/绿/青/蓝/品红）。
-///
-/// **相对模式的口径**：偏移 δ 加到分量 v 上时按「到目标端的剩余量」缩放——
-/// `v' = v + δ·(δ ≥ 0 ? 1 − v : v)`。若按 PS 字面 `δ·v` 算，纯红的 c 恒为 0 ⇒
-/// reds 的 cyan 滑杆永远无效（静默失效 ✗）；剩余量口径下它生效，
-/// 且结果天然落在 [0,1]。全零偏移 ⇒ CMYK 往返恒等 ✓。
-pub fn selective_color(buffer: &mut Buffer, ranges: &[[f32; 4]; 9]) {
-    for_each_straight_color(buffer, |color| {
-        let offset = ranges[selective_range_index(color)];
-        if offset == [0.0; 4] {
-            return;
+/// 线性 sRGB → 线性 ProPhoto（ROMM）复合矩阵：sRGB→XYZ(D65) ∘ Bradford
+/// D65→D50 ∘ XYZ→ProPhoto。白点自检：三行和 = 1±0.001（D50 白在
+/// ProPhoto 里恰为 (1,1,1)）；往返一致性由测试钉死。A3 的 Melissa 口径用。
+const SRGB_TO_PROPHOTO: [[f32; 3]; 3] = [
+    [0.529_201, 0.330_110, 0.140_653],
+    [0.098_394, 0.873_509, 0.028_148],
+    [0.016_861, 0.117_561, 0.864_617],
+];
+
+fn mat3_apply(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+    [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    ]
+}
+
+/// 3×3 求逆（伴随矩阵／行列式）。只对上面的常量矩阵用（可逆性由测试
+/// 钉死）；行列式近零返回 None。
+fn mat3_inverse(m: &[[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
+    let (a, b, c) = (m[0][0], m[0][1], m[0][2]);
+    let (d, e, f) = (m[1][0], m[1][1], m[1][2]);
+    let (g, h, i) = (m[2][0], m[2][1], m[2][2]);
+    let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let s = 1.0 / det;
+    Some([
+        [(e * i - f * h) * s, (c * h - b * i) * s, (b * f - c * e) * s],
+        [(f * g - d * i) * s, (a * i - c * g) * s, (c * d - a * f) * s],
+        [(d * h - e * g) * s, (b * g - a * h) * s, (a * e - b * d) * s],
+    ])
+}
+
+/// 线性 sRGB → **Melissa 显示值**：经线性 ProPhoto 后以 sRGB TRC 编码
+/// （LR 的 Melissa 口径 = ProPhoto 原色 + sRGB 曲线；专家裁定 LR TRC =
+/// sRGB TRC）。扩展保符号编码，不钳 [0, 1]。
+fn melissa_encode(color: [f32; 3]) -> [f32; 3] {
+    let pp = mat3_apply(&SRGB_TO_PROPHOTO, color);
+    [
+        srgb_encode_extended(pp[0]),
+        srgb_encode_extended(pp[1]),
+        srgb_encode_extended(pp[2]),
+    ]
+}
+
+/// [`melissa_encode`] 的逆（逆矩阵由调用方按整图算一次传入）。
+fn melissa_decode(d: [f32; 3], inverse: &[[f32; 3]; 3]) -> [f32; 3] {
+    let pp = [
+        srgb_decode_extended(d[0]),
+        srgb_decode_extended(d[1]),
+        srgb_decode_extended(d[2]),
+    ];
+    mat3_apply(inverse, pp)
+}
+
+/// A3 的九档权重（**PS 差值权重法**的连续化，见 [`selective_color`]）：
+/// 与 [`SELECTIVE_COLOR_RANGES`] 同序、和为 1。
+fn selective_weights(d: [f32; 3]) -> [f32; 9] {
+    let max = d[0].max(d[1]).max(d[2]);
+    let min = d[0].min(d[1]).min(d[2]);
+    let span = max - min;
+    // 色相六档：PS 标度——(max−med) 给 max 通道的原色档、(med−min) 给
+    // min 通道对偶的复色档——**按跨度归一化**：权重只依赖色相构成、
+    // 不随饱和缩放（FFmpeg selectivecolor 逆向分析里的原始标度是
+    // max−med／med−min 本身；归一化是设计探针「同色不同亮 Δ 相等」
+    // 的硬要求）。通道并列 max/min 时对应权重恒为 0，不受下标选择影响。
+    let mut hue = [0.0f32; 9];
+    if span > 1e-6 {
+        let med = d[0] + d[1] + d[2] - max - min;
+        let primary = if d[0] == max { 0 } else if d[1] == max { 2 } else { 4 };
+        let dual = if d[2] == min { 1 } else if d[0] == min { 3 } else { 5 };
+        hue[primary] = (max - med) / span;
+        hue[dual] = (med - min) / span;
+    }
+    // 明度三档：按设计的 0.25/0.75 锚点回归本意——blacks 在 L ≤ 0.25
+    // 满权、0.375 归零；whites 在 L ≥ 0.75 满权、0.625 起升；neutrals
+    // 取余（三档单位分解）。纯 PS 标度在 L = 0.4 给 blacks 0.2 ≠ 0，
+    // 与设计探针「0.4 近灰入 neutrals」冲突 ⇒ 以设计探针为准。
+    let lightness = (max + min) / 2.0;
+    let blacks = ((0.375 - lightness) / 0.125).clamp(0.0, 1.0);
+    let whites = ((lightness - 0.625) / 0.125).clamp(0.0, 1.0);
+    let neutrals = 1.0 - blacks - whites;
+    // 色度门控交叉淡化：近灰（span → 0）由明度组主导、饱和像素由色相
+    // 组主导；0.08 沿用旧实现的低饱和界，改在显示（Melissa）口径上判。
+    let q = (span / 0.08).clamp(0.0, 1.0);
+    let mut w = [0.0f32; 9];
+    for (i, h) in hue.iter().enumerate() {
+        w[i] = h * q;
+    }
+    w[6] += (1.0 - q) * whites;
+    w[7] += (1.0 - q) * neutrals;
+    w[8] += (1.0 - q) * blacks;
+    w
+}
+
+/// 在显示值上施加九档 ranges：权重混合得有效偏移 → CMYK 剩余量模型。
+/// 有效偏移为零时**逐位**返回原值（恒等不靠浮点往返碰运气）。
+fn selective_apply_display(d: [f32; 3], ranges: &[[f32; 4]; 9]) -> [f32; 3] {
+    let w = selective_weights(d);
+    let mut offset = [0.0f32; 4];
+    for (range, weight) in ranges.iter().zip(w.iter()) {
+        if *weight != 0.0 {
+            for (slot, value) in offset.iter_mut().zip(range.iter()) {
+                *slot += value * weight;
+            }
         }
-        let mut cmyk = rgb_to_cmyk(*color);
-        for (slot, delta) in cmyk.iter_mut().zip(offset.iter()) {
+    }
+    if offset == [0.0; 4] {
+        return d;
+    }
+    let mut cmyk = rgb_to_cmyk(d);
+    for (slot, delta) in cmyk.iter_mut().zip(offset.iter()) {
+        if *delta != 0.0 {
             let value = *slot;
             let room = if *delta >= 0.0 { 1.0 - value } else { value };
             *slot = (value + delta * room).clamp(0.0, 1.0);
         }
-        *color = cmyk_to_rgb(cmyk);
-    });
+    }
+    cmyk_to_rgb_display(cmyk)
 }
 
-/// 色类下标：规则见 [`selective_color`] 的文档。
-fn selective_range_index(color: &[f32; 3]) -> usize {
-    let (r, g, b) = (color[0], color[1], color[2]);
-    let max = r.max(g).max(b);
-    let min = r.min(g).min(b);
-    let chroma = max - min;
-    if chroma < 0.08 {
-        let lightness = (max + min) / 2.0;
-        return if lightness > 0.75 {
-            6 // whites
-        } else if lightness < 0.25 {
-            8 // blacks
-        } else {
-            7 // neutrals
-        };
+/// **可选颜色**（**期 3 A3：全面显示空间重写，原地替换旧线性硬分类版**）。
+///
+/// 旧实现的问题（设计 §2 A3）：分类（唯一一档）算在**线性**值上、色相
+/// 60° 硬扇区、偏移在**线性** CMYK 上施加——路由与 LR（显示数据）系统
+/// 性错位：33–36° 暖黄在线性分类下被吞进 reds（LR 口径下 yellows 为主
+/// 权重）、同参数强度与 LR 参考系统性偏差、扇区边界处偏移突变。
+///
+/// 新口径（PS 差值权重法 + Melissa 空间，专家 Q1 定版）：
+/// 1. 像素线性 sRGB → **Melissa 显示值**（线性 ProPhoto + sRGB TRC，
+///    扩展保符号不钳）——为对齐 LR 来源数据而设：LR 的可选颜色工作在
+///    Melissa 空间；省掉这步矩阵往返，同参数 Δ 会系统性偏大约
+///    35–50%（参照带断言钉死）；
+/// 2. 权重 = [`selective_weights`]：色相六档用排序通道差值权重
+///    （**禁止色相角硬切**）、明度三档按 0.25/0.75 锚点、两组以色度
+///    门控交叉淡化，九档同时加权求和（PS 的多档可重叠语义）；
+/// 3. 有效偏移在显示值上经 CMYK 剩余量（相对）模型施加：
+///    `v' = v + δ·(δ ≥ 0 ? 1 − v : v)`——纯红的 c 恒为 0 时 reds 的
+///    cyan 滑杆仍生效（旧注记的静默失效防线保留），被改分量钳 [0, 1]；
+/// 4. 逆矩阵回线性 sRGB。全零 ranges 或像素有效偏移为零 ⇒ 逐位恒等。
+pub fn selective_color(buffer: &mut Buffer, ranges: &[[f32; 4]; 9]) {
+    if ranges.iter().all(|range| *range == [0.0; 4]) {
+        return;
     }
-    // 色相（0..6，整数位对齐红/黄/绿/青/蓝/品红）。
-    let hue = if max == r {
-        ((g - b) / chroma).rem_euclid(6.0)
-    } else if max == g {
-        (b - r) / chroma + 2.0
-    } else {
-        (r - g) / chroma + 4.0
-    };
-    // 扇区以原色为中心 ⇒ 把色相平移半格再取整。
-    ((hue + 0.5) % 6.0) as usize
+    let inverse = mat3_inverse(&SRGB_TO_PROPHOTO)
+        .expect("SRGB_TO_PROPHOTO 是常量矩阵且可逆（由 melissa 往返测试钉死）");
+    for_each_straight_color(buffer, |color| {
+        let d = melissa_encode(*color);
+        let out = selective_apply_display(d, ranges);
+        if out != d {
+            *color = melissa_decode(out, &inverse);
+        }
+    });
 }
 
 /// RGB → CMYK（朴素减色模型）：`k = 1 − max`，其余 `(1 − c − k)/(1 − k)`；
@@ -600,13 +702,15 @@ fn rgb_to_cmyk(color: [f32; 3]) -> [f32; 4] {
     ]
 }
 
-/// CMYK → RGB：[`rgb_to_cmyk`] 的逆（`(1 − c)(1 − k)`）⇒ 无偏移时往返恒等 ✓。
-fn cmyk_to_rgb(cmyk: [f32; 4]) -> [f32; 3] {
+/// CMYK → RGB（显示值版）：[`rgb_to_cmyk`] 的代数逆（`(1 − c)(1 − k)`）。
+/// **不钳 [0, 1]**——A3 在 Melissa 显示值上用它，HDR 显示值（> 1）必须
+/// 原样往返；代数上对 max > 0 的任意输入逐位逆（未改分量保真）。
+fn cmyk_to_rgb_display(cmyk: [f32; 4]) -> [f32; 3] {
     let keep = 1.0 - cmyk[3];
     [
-        ((1.0 - cmyk[0]) * keep).clamp(0.0, 1.0),
-        ((1.0 - cmyk[1]) * keep).clamp(0.0, 1.0),
-        ((1.0 - cmyk[2]) * keep).clamp(0.0, 1.0),
+        (1.0 - cmyk[0]) * keep,
+        (1.0 - cmyk[1]) * keep,
+        (1.0 - cmyk[2]) * keep,
     ]
 }
 
@@ -687,11 +791,13 @@ fn corner_weight(offset: usize, frac: f32) -> f32 {
 /// 2. 亮度平移 `d' = d + brightness·0.5`（规范刻度：brightness = ±0.5 ⇔
 ///    中灰显示 ±0.25；此 ±0.25 探针即刻度定义）；
 /// 3. 对比绕**显示中灰枢轴 0.5** 缩放 `d'' = (d' − 0.5)·contrast + 0.5`；
-/// 4. **亮度比回写（hue-twist 防护）**：`out_lin = in_lin · (Y''(d'') /
-///    Y'(d))`，Y' 为 sRGB 亮度 0.2126/0.7152/0.0722 在显示值上的加权和；
-///    像素色相/饱和由原像素决定，对比只缩放其亮度。入亮度 ≤ 0（纯黑/
-///    负值像素）时无亮度可缩放 ⇒ 回退逐通道解码
-///    `srgb_decode_extended(d'')`（黑位抬升 brightness 仍生效）。
+/// 4. **亮度比回写（hue-twist 防护）**：`out_lin = in_lin · (L'' / L)`，
+///    其中 `L = Σ wᵢ·cᵢ` 是入像素的**线性**亮度、`L'' = Σ wᵢ·dec(d''ᵢ)`
+///    是影调映射后像素的线性亮度（w = 0.2126/0.7152/0.0722）。比值在
+///    同一量纲（线性）里取——灰像素上它与逐通道显示映射**恰好等价**
+///    （刻度探针因此精确成立），彩色像素上只缩放亮度、色相由原像素
+///    决定。`L ≤ 0`（纯黑/负亮度像素）时无亮度可缩放 ⇒ 回退逐通道
+///    解码（黑位抬升 brightness 仍生效）；`L'' ≤ 0` 时比值钳 0（压黑）。
 ///
 /// 参数契约不变：brightness ∈ [−1, 1]，contrast ∈ [0, 8]（越界在工具层
 /// 拒）。neutral（brightness = 0 且 contrast = 1）逐像素恒等（含 HDR 与
@@ -706,15 +812,17 @@ pub fn brightness_contrast(buffer: &mut Buffer, brightness: f32, contrast: f32) 
             srgb_encode_extended(c[1]),
             srgb_encode_extended(c[2]),
         ];
-        let lum_in = 0.2126 * d[0] + 0.7152 * d[1] + 0.0722 * d[2];
+        let lum_in = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
         let shifted = [
             (d[0] + brightness * 0.5 - 0.5) * contrast + 0.5,
             (d[1] + brightness * 0.5 - 0.5) * contrast + 0.5,
             (d[2] + brightness * 0.5 - 0.5) * contrast + 0.5,
         ];
-        let lum_out = 0.2126 * shifted[0] + 0.7152 * shifted[1] + 0.0722 * shifted[2];
+        let lum_out = 0.2126 * srgb_decode_extended(shifted[0])
+            + 0.7152 * srgb_decode_extended(shifted[1])
+            + 0.0722 * srgb_decode_extended(shifted[2]);
         if lum_in > 0.0 {
-            let ratio = lum_out / lum_in;
+            let ratio = (lum_out / lum_in).max(0.0);
             *c = [c[0] * ratio, c[1] * ratio, c[2] * ratio];
         } else {
             *c = [
@@ -3650,12 +3758,8 @@ mod tests {
         let mut via_adjustment = filled([0.3, 0.6, 1.4, 1.0]);
         let mut via_filter = filled([0.3, 0.6, 1.4, 1.0]);
         let params = json!({"brightness": 0.3, "contrast": 1.4});
-        apply_adjustment(
-            &mut via_adjustment,
-            AdjustmentKind::BrightnessContrast,
-            &params,
-        );
-        apply_filter(&mut via_filter, FilterKind::BrightnessContrast, &params);
+        apply_adjustment(&mut via_adjustment, "brightness_contrast", &params, 1.0, (4.0, 4.0));
+        apply_filter(&mut via_filter, "brightness_contrast", &params, 1.0, (4.0, 4.0));
         assert_eq!(via_adjustment.pixel(0, 0), via_filter.pixel(0, 0));
     }
 
@@ -4511,13 +4615,17 @@ mod tests {
         let mut explicit = filled([0.2, 0.5, 0.8, 1.0]);
         apply_adjustment(
             &mut implicit,
-            AdjustmentKind::ColorBalance,
+            "color_balance",
             &json!({"shadows": [0.3, 0.0, 0.0]}),
+            1.0,
+            (4.0, 4.0),
         );
         apply_adjustment(
             &mut explicit,
-            AdjustmentKind::ColorBalance,
+            "color_balance",
             &json!({"shadows": [0.3, 0.0, 0.0], "amount": 1.0}),
+            1.0,
+            (4.0, 4.0),
         );
         assert_eq!(implicit.pixel(0, 0), explicit.pixel(0, 0), "缺省 amount 必须 = 1.0");
     }
@@ -4629,7 +4737,10 @@ mod tests {
             1.0,
             (4.0, 4.0)
         ));
-        assert!((buffer.pixel(0, 0)[0] - 0.6).abs() < 1e-5);
+        // 期 3 A1 改写：旧期望 0.6 是旧线性公式（0.5 + 0.1）；新显示口径下
+        // 同输入 = dec(enc(0.5) + 0.05) ≈ 0.5795（灰像素上亮度比回写与
+        // 逐通道显示映射等价）。
+        assert!((buffer.pixel(0, 0)[0] - 0.579_5).abs() < 1e-3);
         assert!(!apply_adjustment(
             &mut buffer,
             "unknown",
@@ -5249,8 +5360,10 @@ mod coloradj_tests {
         }
     }
 
-    /// reds 加 cyan ⇒ 纯红的 c 从 0 涨上来（红通道被吃掉、变出青）；
-    /// 纯绿不属于 reds ⇒ 恰好不动。
+    /// reds 加 cyan ⇒ 纯红的 R 被大幅吃掉；纯绿在 reds 档权重为 0 ⇒ 不动。
+    /// 期 3 A3 改写：旧实现是线性硬分类（纯红 100% 入 reds ⇒ R < 0.01）；
+    /// 新实现 Melissa 显示口径下纯红的 reds 差值权重 ≈ 0.66（余下 0.34 在
+    /// yellows），R 降至 ≈0.031——断言按新公式手算值改写（< 0.05）。
     #[test]
     fn selective_color_reds_cyan_affects_red_not_green() {
         // SELECTIVE_COLOR_RANGES 的 reds 下标是 0。
@@ -5259,24 +5372,140 @@ mod coloradj_tests {
         selective_color(&mut red, &ranges);
         let out = px(&red);
         assert!(
-            out[0] < 0.01,
-            "纯红加满 cyan 后红通道应被吃光（c=1），实得 {out:?}"
+            out[0] < 0.05,
+            "纯红加满 cyan 后红通道应被吃到 ≈0.03（差值权重 0.66），实得 {out:?}"
         );
         let mut green = filled([0.0, 1.0, 0.0, 1.0]);
         selective_color(&mut green, &ranges);
         assert_eq!(px(&green), [0.0, 1.0, 0.0], "纯绿不属于 reds，必须恰好不动");
     }
 
-    /// 色类路由：中间灰属 neutrals——动 neutrals 有效、动 whites 无效。
+    /// 色类路由（设计探针）：**显示**明度 0.4 的近灰入 neutrals——动
+    /// neutrals 有效、动 whites／blacks 都无效。期 3 A3 改写：旧测试用
+    /// 线性 0.5 灰（显示 ≈0.735，在新口径下属 whites 主导），探针像素
+    /// 改按显示口径构造（线性 = srgb_to_linear(0.4) ≈ 0.1329）。
     #[test]
     fn selective_color_gray_routes_to_neutrals_not_whites() {
-        let mut via_neutrals = filled([0.5, 0.5, 0.5, 1.0]);
+        let gray = srgb_to_linear(0.4);
+        let mut via_neutrals = filled([gray, gray, gray, 1.0]);
         selective_color(&mut via_neutrals, &ranges_with(7, [0.0, 0.0, 0.0, 1.0]));
-        assert_eq!(px(&via_neutrals), [0.0, 0.0, 0.0], "中间灰加满 k 应变黑");
+        let out = px(&via_neutrals);
+        assert!(
+            out.iter().all(|v| *v < 0.01),
+            "显示 0.4 灰加满 neutrals 的 k 应近黑，实得 {out:?}"
+        );
+        for index in [6usize, 8] {
+            let mut untouched = filled([gray, gray, gray, 1.0]);
+            selective_color(&mut untouched, &ranges_with(index, [0.0, 0.0, 0.0, 1.0]));
+            assert_eq!(
+                px(&untouched),
+                [gray, gray, gray],
+                "显示 0.4 灰不入档 {index}（6=whites/8=blacks），必须恰好不动"
+            );
+        }
+    }
 
-        let mut via_whites = filled([0.5, 0.5, 0.5, 1.0]);
-        selective_color(&mut via_whites, &ranges_with(6, [0.0, 0.0, 0.0, 1.0]));
-        assert_eq!(px(&via_whites), [0.5, 0.5, 0.5], "中间灰不动 whites 档");
+    /// A3 Melissa 往返：矩阵对（含 HDR 与负值）往返 ≈ 恒等；白点 (1,1,1)
+    /// 在 ProPhoto 线性里仍是 (1,1,1)（行和自检）。变异：矩阵写错一位
+    /// ⇒ 白点或往返断言红。
+    #[test]
+    fn selective_color_melissa_round_trip_is_identity() {
+        let inverse = mat3_inverse(&SRGB_TO_PROPHOTO).expect("常量矩阵可逆");
+        let white = mat3_apply(&SRGB_TO_PROPHOTO, [1.0, 1.0, 1.0]);
+        for (i, v) in white.iter().enumerate() {
+            assert!((v - 1.0).abs() < 0.002, "白点第 {i} 分量应 ≈1：{white:?}");
+        }
+        for color in [
+            [0.13, 0.47, 0.91],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.5, 0.1],
+            [0.4, -0.1, 0.2],
+            [0.0, 0.0, 0.0],
+        ] {
+            let back = melissa_decode(melissa_encode(color), &inverse);
+            for (a, b) in back.iter().zip(color.iter()) {
+                assert!((a - b).abs() < 2e-3, "Melissa 往返应恒等：{color:?} → {back:?}");
+            }
+        }
+    }
+
+    /// A3 路由探针：33–36° 暖黄（显示 (0.85, 0.55, 0.15)）在新口径下
+    /// yellows 为主权重——单独动 yellows 的 y 与单独动 reds 的 y，效果
+    /// 之比应 ≥ 1.2（手算权重 0.571/0.429 ⇒ ≈1.33）。旧线性硬分类把该
+    /// 像素整档吞进 reds（yellows 恒为 0）⇒ 变异回旧分类立刻红。
+    #[test]
+    fn selective_color_warm_yellow_routes_mainly_to_yellows() {
+        let pixel = [
+            srgb_to_linear(0.85),
+            srgb_to_linear(0.55),
+            srgb_to_linear(0.15),
+            1.0,
+        ];
+        let effect = |index: usize| {
+            let mut buffer = filled(pixel);
+            selective_color(&mut buffer, &ranges_with(index, [0.0, 0.0, -0.3, 0.0]));
+            let out = melissa_encode(px(&buffer));
+            let base = melissa_encode([pixel[0], pixel[1], pixel[2]]);
+            (out[0] - base[0]).abs() + (out[1] - base[1]).abs() + (out[2] - base[2]).abs()
+        };
+        let via_yellows = effect(1);
+        let via_reds = effect(0);
+        assert!(
+            via_yellows > 0.02 && via_yellows >= via_reds * 1.2,
+            "暖黄应以 yellows 为主：yellows {via_yellows} vs reds {via_reds}"
+        );
+    }
+
+    /// A3 均匀探针：显示 0.35 与 0.65 两灰（关于 0.5 对称 ⇒ neutrals
+    /// 权重同为 0.8）加 neutrals c=+0.4，显示 CMYK 的 c 槽位移应相等
+    /// （≈0.32）。旧线性分类下两灰的档归属/权重不同 ⇒ 位移不等。
+    #[test]
+    fn selective_color_neutrals_offset_is_uniform_across_lightness() {
+        let delta_c = |display_gray: f32| {
+            let lin = srgb_to_linear(display_gray);
+            let mut buffer = filled([lin, lin, lin, 1.0]);
+            selective_color(&mut buffer, &ranges_with(7, [0.4, 0.0, 0.0, 0.0]));
+            let before = rgb_to_cmyk(melissa_encode([lin, lin, lin]))[0];
+            let after = rgb_to_cmyk(melissa_encode(px(&buffer)))[0];
+            after - before
+        };
+        let dark = delta_c(0.35);
+        let bright = delta_c(0.65);
+        assert!(dark > 0.2, "位移必须非空（防安慰剂）：{dark}");
+        assert!(
+            (dark - bright).abs() < 0.02,
+            "同 neutrals 偏移在两亮度下 Δc 应相等：{dark} vs {bright}"
+        );
+    }
+
+    /// A3 参照带：同参数（reds c +0.3）在 Melissa 口径下的 Δ 应小于
+    /// 直接在 sRGB 显示空间施加的 Δ，比值落在专家所述的参照带内
+    /// （去掉矩阵往返偏大约 35–50% ⇒ 比值 ≈ 0.67–0.74；断言放宽为
+    /// [0.55, 0.85]）。变异：去掉矩阵往返 ⇒ 比值 = 1 ⇒ 红。
+    #[test]
+    fn selective_color_prophoto_round_trip_damps_delta_into_reference_band() {
+        let ranges = ranges_with(0, [0.3, 0.0, 0.0, 0.0]);
+        // 中间调红（显示口径构造）：Melissa 与 sRGB 显示值都可定义。
+        let lin = [
+            srgb_to_linear(0.72),
+            srgb_to_linear(0.45),
+            srgb_to_linear(0.32),
+        ];
+        let via_melissa = selective_apply_display(melissa_encode(lin), &ranges);
+        let base_melissa = melissa_encode(lin);
+        let delta_melissa = (via_melissa[0] - base_melissa[0]).abs()
+            + (via_melissa[1] - base_melissa[1]).abs()
+            + (via_melissa[2] - base_melissa[2]).abs();
+        let display = [0.72, 0.45, 0.32];
+        let via_srgb = selective_apply_display(display, &ranges);
+        let delta_srgb = (via_srgb[0] - display[0]).abs()
+            + (via_srgb[1] - display[1]).abs()
+            + (via_srgb[2] - display[2]).abs();
+        let ratio = delta_melissa / delta_srgb;
+        assert!(
+            (0.55..=0.85).contains(&ratio),
+            "Melissa/sRGB 的 Δ 比值应落在参照带 [0.55, 0.85]：{ratio}（{delta_melissa} vs {delta_srgb}）"
+        );
     }
 
     // ── color_lut ───────────────────────────────────────────────────
