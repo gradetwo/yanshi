@@ -84,3 +84,50 @@ fn ink_pixels_never_exceeds_the_stamp_area_and_is_positive_for_an_opaque_stroke(
         "`ink_pixels`({thin_ink}) 不可能超过 `painted_pixels`({thin_painted})：{thin}"
     );
 }
+
+/// **`color.a` 不被支持时必须说出来，而不是画成不透明**（第 786 轮；我扫描时发现的）
+///
+/// **⇒ 实测（第 785 轮扫描）**：`a=0`／`a=1`／`a=255` 的 `ink_pixels` **一模一样**
+/// （212/212、216/216、355/355 ✓）⇒ `brush_color_to_srgb_bytes` **只取 RGB** ✓
+/// ⇒ 传 `a: 0`（完全透明）会得到**不透明**的一笔 ✓ —— **与意图相反** ✓。
+///
+/// **⇒ 判据**：`color.a = 0` ⇒ `ok=false` 且文案提到 `color.a` 与 `opacity` ✓；
+/// `color.a = 255` ⇒ 正常落墨 ✓（证明拒绝不是"什么都拒" ✓）。
+/// **⇒ 变异**：去掉那段检查 ⇒ 第一条红 ✓。
+#[test]
+fn a_transparent_colour_is_refused_instead_of_painting_opaque() {
+    let mut workspace = setup("alpha");
+    let registry = ToolRegistry::with_profiles(&Profile::ALL);
+    let mut ctx = ToolContext::new(&mut workspace, "doc_inkpx", "human:1", "s")
+        .with_owner(true)
+        .with_wait_for_render(true, 4_000);
+    let refused = registry.call(
+        &mut ctx,
+        "brush_stroke",
+        &json!({
+            "layer_id": "layer_default", "object_id": "o_alpha0",
+            "brush": "8B_Pencil#1",
+            "points": [[8.0, 8.0, 1.0], [40.0, 40.0, 1.0]],
+            "size": 6.0,
+            "color": {"r": 200, "g": 20, "b": 20, "a": 0},
+        }),
+    );
+    assert_eq!(
+        refused["ok"],
+        json!(false),
+        "`color.a = 0` 必须被拒（否则会画成不透明，与意图相反）：{refused}"
+    );
+    let text = refused.to_string();
+    assert!(
+        text.contains("color.a") && text.contains("opacity"),
+        "文案要说清「alpha 归笔刷的 opacity」：{refused}"
+    );
+
+    // 对照：不透明的颜色照常落墨
+    let solid = stroke(&mut workspace, "o_alpha255", 6.0);
+    assert_eq!(solid["ok"], json!(true), "{solid}");
+    assert!(
+        solid["ink_pixels"].as_u64().unwrap_or(0) > 0,
+        "不透明的颜色必须真的落墨：{solid}"
+    );
+}
