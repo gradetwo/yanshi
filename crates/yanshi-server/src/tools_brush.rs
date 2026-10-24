@@ -1136,6 +1136,21 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
              x {x0}..{x1}、y {y0}..{y1}）—— 画布外的墨不会落上，这不是坐标偏移 ✗"
         )]);
     }
+    // **D139 的静默零墨：印章落了、画面没变** ✓（第 811 轮；探针确认此处两个值已就位 ✓）
+    //   **⇒ 实测（他们的调用）**：`ink_footprint_pixels=6`、`max_channel_delta=0` ✓
+    //     ⇒ 账面上"落了 6 个像素的墨" ✓ 而**画面一个像素都没变** ✗ ⇒ `ok=true` 且无提醒 ✗。
+    //   **⇒ 为什么上一轮发不出来**：那段断点当时**不在编译进来的路径上** ✓（我先移动、又删过 ✓）——
+    //     探针本轮证实：**在这一刻** `max_delta == 0` 且 `ink_footprint_pixels == 6` ✓ ⇒ 条件成立 ✓。
+    //   **⇒ 所以**：`footprint > 0 且 delta == 0` ⇒ **响亮警告** ✓（不是错误 ✓：参数本身合法 ✓）。
+    if value["ink_footprint_pixels"].as_u64().unwrap_or(0) > 0 && max_delta == 0 {
+        value["warning"] = json!(format!(
+            "这一笔**落了 {} 个像素的墨，但画面一个像素都没变**（`max_channel_delta = 0`，基准见 `delta_regime`）\
+             ⇒ 常见原因：① **太细**（`size` 小于一像素覆盖）② **太透明**（`opacity`／笔刷自带 opacity 太低）\
+             ③ **颜色与背景几乎相同**（`color` 与文档背景差得太少）\
+             **判据：`ink_footprint_pixels > 0` 只说明「墨落在足迹上」；`max_channel_delta = 0` 才说明「看不见」** ✓",
+            value["ink_footprint_pixels"]
+        ));
+    }
     Ok(value)
 }
 
