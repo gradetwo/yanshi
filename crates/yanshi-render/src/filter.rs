@@ -1476,6 +1476,15 @@ pub fn clarity(buffer: &mut Buffer, amount: f32, radius: u32) {
     }
 }
 
+/// 大气光色度阻尼（**期 3 A4-3 修正一**，专家 Q5）：各通道对亮度的
+/// 比值钳 [0.95, 1.05]。估计出的大气光带色度时，逐通道恢复会把色度
+/// 误差按 1/t 放大成前景色偏（中性灰反例可达 R/B 比 7×）；阻尼把
+/// 估计色度限制在 ±5% 内。两个估计器与恢复入口共用同一阻尼。
+fn damp_air_chromaticity(air: [f32; 3]) -> [f32; 3] {
+    let luma = (0.2126 * air[0] + 0.7152 * air[1] + 0.0722 * air[2]).max(1e-3);
+    air.map(|value| luma * (value / luma).clamp(0.95, 1.05))
+}
+
 /// 去雾（暗通道先验）：`air` 为**调用方给定**的大气光，`omega` 控制去雾强度，
 /// `floor` 是透射率下限（避免除零与过度放大噪声）。
 ///
@@ -1483,21 +1492,35 @@ pub fn clarity(buffer: &mut Buffer, amount: f32, radius: u32) {
 /// 不同的全局统计量，`分块 == 整幅` 立刻失效（这类问题此前已踩过）。只读工具
 /// `estimate_dehaze` 负责扫描文档给出建议值，再由调用方写进原子参数——这与
 /// Phase 4b 的「先预览/估计、再作为 patch 应用」是同一套思路。
+///
+/// **期 3 A4-3：保留线性 DCP + 专家四修正**（设计 §2 A4-3 / 专家 Q5）：
+/// ① 大气光进恢复前过 [`damp_air_chromaticity`]（色度比钳 [0.95, 1.05]）；
+/// ② 透射率先做 γ_t = 0.5 重映射（`t ← √t`，抬升低透射区、防暗部被
+/// 1/t 过度放大），再过动态下限 `max(floor, 0.25 − 0.05·omega)`
+/// （∈ [0.20, 0.25]；调用方的 floor 仍是下限语义、只许更高）；
+/// ③ 恢复走亮度/通道混合：逐通道恢复为主（0.65），混入 β = 0.35 的
+/// 「中性大气光（= air 亮度）亮度恢复」——通道色度误差被亮度锚稀释，
+/// 但主体仍是逐通道恢复（反过来以亮度为主会把通道对比一并冲淡，
+/// 既有对比度回归实测不允许，见 phase3-notes）；
+/// ④ 前景中性再锚定：输入近中性（色度 ≤ 0.03）且 t ≥ 0.5（前景）的
+/// 像素，恢复后逐通道增益拉回自身亮度，增益钳 [0.90, 1.10]。
 pub fn dehaze(buffer: &mut Buffer, air: [f32; 3], omega: f32, floor: f32) {
     let omega = omega.clamp(0.0, 1.0);
     let floor = floor.clamp(0.02, 0.8);
-    let air = air.map(|value| value.clamp(0.05, 1.0));
+    let air = damp_air_chromaticity(air.map(|value| value.clamp(0.05, 1.0)));
     let air_luma = (0.2126 * air[0] + 0.7152 * air[1] + 0.0722 * air[2]).max(1e-3);
+    // 修正二的动态下限（[0.20, 0.25] 带内随 omega 线性取）。
+    let t_floor = floor.max(0.25 - 0.05 * omega);
     let width = buffer.width();
     let height = buffer.height();
-    // 透射率图（先算再模糊，抑制块状伪影）。
+    // 透射率图（先算再模糊，抑制块状伪影）；γ 重映射与动态下限在取用时施加。
     let mut transmission = Buffer::new(buffer.origin().0, buffer.origin().1, width, height);
     for y in 0..height {
         for x in 0..width {
             let pixel = buffer.pixel(x, y);
             // 暗通道：直通空间的最小通道值。
             let dark = pixel[0].min(pixel[1]).min(pixel[2]);
-            let t = (1.0 - omega * dark / air_luma).clamp(floor, 1.0);
+            let t = (1.0 - omega * dark / air_luma).clamp(0.0, 1.0);
             transmission.set_pixel(x, y, [t, t, t, 1.0]);
         }
     }
@@ -1509,14 +1532,41 @@ pub fn dehaze(buffer: &mut Buffer, air: [f32; 3], omega: f32, floor: f32) {
             if alpha <= 0.0 {
                 continue;
             }
-            let t = transmission.pixel(x, y)[0].clamp(floor, 1.0);
+            // 修正二：γ_t = 0.5 重映射 + 动态下限。
+            let t = libm::sqrtf(transmission.pixel(x, y)[0].clamp(0.0, 1.0)).clamp(t_floor, 1.0);
+            let straight = [
+                pixel[0] / alpha,
+                pixel[1] / alpha,
+                pixel[2] / alpha,
+            ];
+            let lum_in = 0.2126 * straight[0] + 0.7152 * straight[1] + 0.0722 * straight[2];
+            // 修正三：逐通道恢复 0.65 + 亮度恢复 β = 0.35 混合。
+            let lum_recovered = (lum_in - air_luma) / t + air_luma;
+            let mut recovered = [0.0f32; 3];
+            for channel in 0..3 {
+                let per_channel = (straight[channel] - air[channel]) / t + air[channel];
+                recovered[channel] = 0.65 * per_channel + 0.35 * lum_recovered;
+            }
+            // 修正四：前景中性再锚定（近中性输入 + 高透射 ⇒ 增益拉回亮度）。
+            let chroma_in = straight[0].max(straight[1]).max(straight[2])
+                - straight[0].min(straight[1]).min(straight[2]);
+            if chroma_in <= 0.03 && t >= 0.5 {
+                let lum_out = 0.2126 * recovered[0]
+                    + 0.7152 * recovered[1]
+                    + 0.0722 * recovered[2];
+                if lum_out > 1e-6 {
+                    for channel in 0..3 {
+                        if recovered[channel] > 1e-6 {
+                            let gain = (lum_out / recovered[channel]).clamp(0.90, 1.10);
+                            recovered[channel] *= gain;
+                        }
+                    }
+                }
+            }
             let mut out = [0.0f32; 4];
             out[3] = alpha;
             for channel in 0..3 {
-                // 直通空间恢复后重新预乘。
-                let straight = pixel[channel] / alpha;
-                let recovered = (straight - air[channel]) / t + air[channel];
-                out[channel] = (recovered.clamp(0.0, 1.0)) * alpha;
+                out[channel] = recovered[channel].clamp(0.0, 1.0) * alpha;
             }
             buffer.set_pixel(x, y, out);
         }
@@ -1561,7 +1611,8 @@ pub fn estimate_atmospheric_light(
     for value in air.iter_mut() {
         *value = (*value * scale).clamp(0.05, 1.0);
     }
-    Some((air, sum / count as f32))
+    // 期 3 A4-3 修正一：估计值先过色度阻尼再报告（与恢复入口同口径）。
+    Some((damp_air_chromaticity(air), sum / count as f32))
 }
 
 /// 暗角：按到画布中心的归一化距离做平滑衰减。
@@ -2280,14 +2331,16 @@ fn estimate_air_from_buffer(buffer: &Buffer) -> [f32; 3] {
     for value in air.iter_mut() {
         *value = (*value * scale).clamp(0.05, 1.0);
     }
-    air
+    // 期 3 A4-3 修正一：估计值先过色度阻尼（与恢复入口同口径）。
+    damp_air_chromaticity(air)
 }
 
 /// **去雾调整（Presence）**：`amount` −1..1，0 = 逐位恒等 ✓。
 ///
 /// 正值走暗通道先验（复用滤镜版 [`dehaze`] 内核）：大气光由
 /// [`estimate_air_from_buffer`] 在**当前缓冲内**估计，`omega = amount × 0.95`、
-/// 透射率下限 0.1。**与滤镜版的口径差**：滤镜版要求调用方给 `air` 以保证
+/// 透射率下限名义 0.1（期 3 A4-3 后有效下限为动态值，见 [`dehaze`] 文档）。
+/// **与滤镜版的口径差**：滤镜版要求调用方给 `air` 以保证
 /// 分块 == 整幅；调整版在缓冲内估计 ⇒ 跨 tile 的大气光可能不同（README 已标注，
 /// 这是与 Lightroom 全图估计实现的主要差距之一）。
 /// 负值反向加雾：直通色朝大气光混合 `|amount| × 0.6`，对比单调下降（可做雾效/柔化背景）。
@@ -4353,6 +4406,47 @@ mod tests {
         let (estimated, dark_mean) = estimate_atmospheric_light(32, 8, &rgba8).expect("估计应成功");
         assert!(dark_mean > 0.4, "雾图暗通道均值应偏高：{dark_mean}");
         assert!(estimated[0] > 0.7, "大气光应接近亮部：{estimated:?}");
+    }
+
+    /// A4-3 中性灰反例（专家 Q5 的回归）：大面积暗中性前景 + 小块亮暖色
+    /// 区域（误导大气光估计偏暖）+ 中性大气光真雾。旧实现下估计 air
+    /// (0.875, 0.825, 0.725) 未经阻尼、t 无 γ 重映射，暗前景恢复成
+    /// ≈(0, 0.056, 0.176)——中性面被染成蓝色（R/B 比塌到 0）。四修正后
+    /// 恢复应近中性：R/B ∈ [0.95, 1.05]、且不被压到 0。
+    #[test]
+    fn dehaze_neutral_foreground_is_not_cast_blue() {
+        let air_true = [0.85f32, 0.85, 0.85];
+        let mut buffer = Buffer::new(0, 0, 32, 8);
+        for y in 0..8 {
+            for x in 0..32 {
+                let scene = if x < 24 {
+                    [0.10, 0.10, 0.10] // 暗中性前景
+                } else {
+                    [0.90, 0.80, 0.60] // 亮暖色块（误导估计）
+                };
+                buffer.set_pixel(
+                    x,
+                    y,
+                    [
+                        scene[0] * 0.5 + air_true[0] * 0.5,
+                        scene[1] * 0.5 + air_true[1] * 0.5,
+                        scene[2] * 0.5 + air_true[2] * 0.5,
+                        1.0,
+                    ],
+                );
+            }
+        }
+        dehaze_adjustment(&mut buffer, 1.0);
+        let out = buffer.pixel(4, 4);
+        assert!(
+            out[0] > 0.15 && out[2] > 0.15,
+            "暗前景不应被压到近 0（旧实现 R 通道 ≈0）：{out:?}"
+        );
+        let ratio = out[0] / out[2];
+        assert!(
+            (0.95..=1.05).contains(&ratio),
+            "中性前景恢复后 R/B 应回到 [0.95, 1.05]：{ratio}（{out:?}）"
+        );
     }
 
     /// 局部对比度：软边变陡、平坦区不变、极暗处抑制（中间调加权）。
