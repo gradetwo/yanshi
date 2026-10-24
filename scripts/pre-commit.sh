@@ -40,7 +40,20 @@ else
   fail=1
 fi
 
-# ④ **脚本卫生测试**（第 1059 轮加）—— **只在 scripts/*.sh 有改动时跑** ✓
+# ④ **判据自己的自测**（第 1024 轮加）—— **毫秒级** ＋ **不触碰仓库** ✓
+#   **⇒ 为什么**：这两条判据的谓词现在都有 `--self-test`（小字符串 ⇒ 期望值 ⇒ 变异可红 ✓）
+#     ⇒ 放进提交前 ⇒ **它们不会退化成装饰** ✓（谁改坏了谓词，提交就被拦 ✓）
+for probe in check-tests-clean-temp check-tests-have-asserts; do
+  if node "scripts/${probe}.mjs" --self-test > "/tmp/precommit-${probe}.log" 2>&1; then
+    echo "     ✓ ${probe}"
+  else
+    echo "     ✗ ${probe} 自测失败（谓词被改坏了？）"
+    tail -4 "/tmp/precommit-${probe}.log"
+    fail=1
+  fi
+done
+
+# ⑤ **脚本卫生测试**（第 1059 轮加）—— **只在 scripts/*.sh 有改动时跑** ✓
 #   **∴ 为什么**：本仓已有两组测试专门查脚本卫生：
 #     · shell_scripts        —— \$VAR 被引用但没赋值（1057 轮抓到我的 watch-ci.sh）
 #     · script_portability   —— \$VAR 紧跟非 ASCII（1014）+ bash 4+ 写法（1018）
