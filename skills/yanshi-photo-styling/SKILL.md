@@ -30,7 +30,7 @@ yanshi 会有很多个方向的 skill（已有 `yanshi-painting` 管绘画笔触
 | 条件 | 怎么确认 | 不满足的表现 |
 |---|---|---|
 | 服务端是 **raw feature 构建** | 导入 RAW 时 `put_blob` 能把返回的 `mime_type` 改写成 `image/x-yanshi-rawsrc` | 关构建**不能入库 rawsrc、也不能展开它**，错误会明说「本构建未启用 raw feature」⇒ 用开了 `raw` feature 的构建（`yanshi-http/raw` → `yanshi-server/raw` → `yanshi-render/raw` 同开同关，缺省关） |
-| 文档已打开/新建 | 新文档**自带 `layer_default` 图层** | 图层不存在 ⇒ `apply_preset` 报「图层 … 不存在」，不会替你新建 |
+| 文档已打开/新建 | 新文档**自带 layer_default 图层** | 图层不存在 ⇒ `apply_preset` 报「图层 … 不存在」，不会替你新建 |
 | 大图先掂量内存 | 见第一步的大图警告与 `references/anti-patterns.md` 的诊断表 | 约 3300 万像素级 RAW 在小内存机器上导入展开会被系统杀掉 |
 
 ## 四个预设工具（签名以注册表为准，这里只记语义）
@@ -42,8 +42,8 @@ yanshi 会有很多个方向的 skill（已有 `yanshi-painting` 管绘画笔触
 | `preview_preset` | **只展开不落成、不渲染**：算出将要落的全部操作（含确定性 object_id 与实际参数），展开结果先过一遍真实参数校验 | `preset_id` | `strength`（1）、`knobs`、`include_correction`（true） |
 | `apply_preset` | 展开并落到图层上：先全量校验，任一非法**整组不落**；二次应用走更新不叠加 | `preset_id`、`layer_id` | `strength`（1）、`knobs`、`include_correction`（true） |
 
-响应里要读的字段：`apply_preset` 回 `created_object_ids` / `updated_object_ids` 与计数、
-实际 `strength`、`op_count`；`list_presets` 回 `count` 与每套的 `correction_baseline`（full/light）、
+响应里要读的字段：`apply_preset` 回 created_object_ids / updated_object_ids 与计数、
+实际 `strength`、op_count；`list_presets` 回 `count` 与每套的 correction_baseline（full/light）、
 `source`（builtin/external）。看到 `ok=false` **先读 error 原文**——本系统的报错都会写明
 是哪套预设、哪个旋钮、收到什么值（如未知预设会把 22 个可用 id 全列出来）。
 
@@ -52,7 +52,7 @@ yanshi 会有很多个方向的 skill（已有 `yanshi-painting` 管绘画笔触
 1. **两段结构**：每套预设 = 修正段 + 风格段。修正段把照片拉回中性基线，风格段才是风格本体。
 2. **strength 只管风格段**：风格段每个可调参数都声明了中性值，实际值 = 中性值 +（配方值 − 中性值）× strength。
    修正段**不参与插值**——strength=0 关掉的是风格，不是校正。
-   没有声明中性值的键（seed、size、channel、`split_toning` 的 `amount` 这类）是**固定参数**，strength 不动它。
+   没有声明中性值的键（seed、size、channel、split_toning 的 `amount` 这类）是**固定参数**，strength 不动它。
 3. **knobs 在 strength 之后生效**：旋钮值按它自己的 [min, max] 归一后，映射到声明的目标参数上，
    **覆盖**插值结果。所以 strength=0 又给了旋钮，不再是恒等——做对照时别同时给旋钮。
    **没给的旋钮不生效**：`default` 只是建议值，不是缺省覆盖（只有一处真相：配方值）。
@@ -72,15 +72,15 @@ yanshi 会有很多个方向的 skill（已有 `yanshi-painting` 管绘画笔触
   作为下一步的 `bitmap`，不要自己拼 mime。
 - `import_image {"layer_id": "layer_default", "bitmap": {…上一步返回值…}, "region": {x,y,w,h}, "raw_options": {…}}` 落层。
   `raw_options` 只对 RAW 源有效，给到普通图会**响亮报错**（不是静默忽略）。常用键：
-  `wb`（as_shot/auto）、`demosaic`（malvar/bilinear，缺省 malvar）、`pre_exposure_ev`（−4..4，越界报错不钳制）、
-  `lens_correction`（off/auto，缺省 off）、`lens_override`（点名镜头库中的镜头，查无此镜报错）、
-  `highlight_recovery`（chroma/floor，缺省 chroma）。导入响应会回显 `raw_meta`——相机、镜头、
+  `wb`（as_shot/auto）、`demosaic`（malvar/bilinear，缺省 malvar）、pre_exposure_ev（−4..4，越界报错不钳制）、
+  lens_correction（off/auto，缺省 off）、lens_override（点名镜头库中的镜头，查无此镜报错）、
+  highlight_recovery（chroma/floor，缺省 chroma）。导入响应会回显 raw_meta——相机、镜头、
   实际生效的展开参数都在里面，**先读它**再往下走。
 - 大图警告：约 3300 万像素的 RAW 导入展开有内存峰值，小机器上服务端会被杀。
   先确认机器内存，或先降尺寸/换机器，**不要反复硬撞同一个文件**（撞一次记一次，没用）。
 - 格式注记：Panasonic RW2、Olympus ORF 已能被入库探针正确识别（旧版探针的 magic
   白名单缺这两家签名，会把真 RAW 判成非 RAW、连带拒绝 `raw_options`）。RW2 竖拍
-  文件的方向拾取有已知缺口（EXIF Orientation 可能记错），导入后核对 `raw_meta` 的
+  文件的方向拾取有已知缺口（EXIF Orientation 可能记错），导入后核对 raw_meta 的
   方向与画面是否一致，处置见诊断表。
 
 ### 第二步：校正（多数情况已含在预设里，但要知道自己在用哪种基线）
@@ -88,7 +88,7 @@ yanshi 会有很多个方向的 skill（已有 `yanshi-painting` 管绘画笔触
 - 预设的修正段有两种基线：`full`（全量）与 `light`（轻校正）。
   **用 light 的是曾蒙灰纱的批次**：小清新、韩系、法式、糖水、田园奶油——它们修正段只有 2 笔
   温和调整；全量基线的提影量和这些风格段叠加会蒙灰，这是实测教训。
-- `list_presets` 的摘要里有 `correction_baseline` 字段，apply 前看一眼就知道这套用哪种。
+- `list_presets` 的摘要里有 correction_baseline 字段，apply 前看一眼就知道这套用哪种。
 - 照片本身有预设基线盖不住的问题（严重欠曝、混合光源色偏）时，先用既有工具手工校正
   （`get_histogram` 看分布、`add_adjustment` / `apply_adjustments` 落笔），再考虑
   `include_correction: false` 只落风格段，避免两份校正打架。
@@ -96,7 +96,7 @@ yanshi 会有很多个方向的 skill（已有 `yanshi-painting` 管绘画笔触
   有原理、每项带 rationale；全局量，局部分区问题仍需手工 locals）。
   注意：RAW 导入的缺省曝光对象（未动过）会被 auto 置零、不与自动
   曝光叠加；目标层已有人工调整时 auto 缺省拒绝（force 才继续）。
-- 注意 `exposure` 的参数名是 **`ev`**；且导入期的 `pre_exposure_ev` 与调整层的 `exposure.ev`
+- 注意 `exposure` 的参数名是 **`ev`**；且导入期的 pre_exposure_ev 与调整层的 `exposure.ev`
   是两个阶段的量，别重复补同一笔曝光。
 
 ### 第三步：选风格（先 list，不要盲选）
@@ -107,8 +107,8 @@ yanshi 会有很多个方向的 skill（已有 `yanshi-painting` 管绘画笔触
   不要硬套后到处补救。
 - 读 `status`，三种状态的纪律不同：
   - `established`（7 套）：真实照片目检成立，可放心用；
-  - `fixed_v2`（5 套）：第一版翻车后按实测修正的配方（港风/国风/电影/HDR/胶片复古），就是要用这一版；
-  - `needs_review`（10 套）：**还没在真实照片上目检过**。可以用，但必须向用户提示「未目检」，
+  - fixed_v2（5 套）：第一版翻车后按实测修正的配方（港风/国风/电影/HDR/胶片复古），就是要用这一版；
+  - needs_review（10 套）：**还没在真实照片上目检过**。可以用，但必须向用户提示「未目检」，
     出图后认真看、把结论记下来——不要把 needs_review 的出图当成已验证效果交付。
 
 ### 第四步：preview 后再 apply
@@ -117,7 +117,7 @@ yanshi 会有很多个方向的 skill（已有 `yanshi-painting` 管绘画笔触
   一套预设总笔数 = 修正段 + 风格段（如港风 4 + 9 = 13 笔），数对得上才往下走。
 - 期 4 起 `preview_preset` 可带 `render {max_edge（缺省 512，128–2048）,
   format（png|jpeg，缺省 jpeg）}` 出像素级低清预览图：临时文档渲染、
-  阅后删除、净零状态。注意 `scale_notes`：含 clarity/texture/glow
+  阅后删除、净零状态。注意 scale_notes：含 clarity/texture/glow
   的预设在代理分辨率下与全幅有差（像素半径类操作），该字段会点名；
   其余逐像素颜色操作与几何归一化 vignette 在代理尺度下与全幅一致。
 - 再 `apply_preset {"preset_id": …, "layer_id": …}` 落图。批量驱动时走静默：
@@ -129,7 +129,7 @@ yanshi 会有很多个方向的 skill（已有 `yanshi-painting` 管绘画笔触
 
 - 小步看法：`render_region` 出局部、`export_png` 出整幅（路径只能落在导出目录
   `YANSHI_EXPORT_DIR` 或系统临时目录，这是沙箱口径，不是故障）。
-  `export_png` 是**同步重渲**：响应里的 `head_seq` / `rendered_seq` 只是预览水位，
+  `export_png` 是**同步重渲**：响应里的 head_seq / rendered_seq 只是预览水位，
   不管导出完整性——导出的图恒是当前全部原子的结果，不必「等渲染跟上」再导。
   判断一轮微调到底有没有生效，最硬的证据是比两次导出响应的 `sha256`：改了参数哈希还不变，就是没落上。
 - 对照法：需要判断「这个风格到底动了什么」时，在**另一文档/图层**上以同预设
@@ -147,8 +147,8 @@ yanshi 会有很多个方向的 skill（已有 `yanshi-painting` 管绘画笔触
 | 太灰/蒙纱 | 查是不是 light 基线风格又被手工叠了全量校正；或 strength 过低 | 不要先加 dehaze/clarity 硬拉 |
 | 个别地方仍不对 | 预设之外用 `add_adjustment` 手工补一两笔，并记下补了什么 | 不要为了局部问题把整套 strength 拉满 |
 
-- 每轮只改一个量、重新 apply、再看图。响应里的 `updated_object_ids` 非空说明走的是更新路径；
-  若 `created_object_ids` 每次都在涨，说明图层或文档换了（确定性 id 只在同一文档同一图层内命中）。
+- 每轮只改一个量、重新 apply、再看图。响应里的 updated_object_ids 非空说明走的是更新路径；
+  若 created_object_ids 每次都在涨，说明图层或文档换了（确定性 id 只在同一文档同一图层内命中）。
 - **再 apply 会把这组预设对象的 opacity 重置为 1.0**——手工改过某个预设对象不透明度的，
   微调后要重新设。
 - 糖水 `sweet` 特例：配方默认**不带辉光**（glow 那笔的 intensity 配方值就是 0），
@@ -161,7 +161,7 @@ yanshi 会有很多个方向的 skill（已有 `yanshi-painting` 管绘画笔触
 **不要**按显示空间（Lightroom）直觉去「纠正」它们。反过来，自己写新配方（外挂或升内置）
 时必须先换算，否则会原样复现展示册制作时抓到的三轮翻车：
 
-- **`split_toning` 必须带 `amount`**：三元组是显示空间的着色偏移（期 5 Q1-c
+- **split_toning 必须带 `amount`**：三元组是显示空间的着色偏移（期 5 Q1-c
   内核：Y' 权重 + 显示空间着色 + 线性亮度恢复；期 3 之前是线性加法偏移，
   旧「显示轻染会被放大 2–4 倍」警告随内核变更作废）。现行定档（期 3 重著录后，
   期 5 新内核下行目检复核无回调）：亮场景约 0.35；**暗场景必须更小**——forest 0.12、
@@ -173,19 +173,19 @@ yanshi 会有很多个方向的 skill（已有 `yanshi-painting` 管绘画笔触
   0.30；levels.black 不转换，有效显示黑点会被放大到意图的 3.5–7 倍）。现行数据里
   的点列已是转换后坐标（如小清新 curves 首点 y≈0.0049、且已按显示空间曲线形重采样
   到 17 点保形）。`levels.white` / `gamma` 跨空间近似不变，直通。
-- **`brightness_contrast` 已改为显示枢轴口径（期 3 A1）**：brightness ±0.5 ⇔ 中灰
+- **brightness_contrast 已改为显示枢轴口径（期 3 A1）**：brightness ±0.5 ⇔ 中灰
   显示 ±0.25、contrast 绕显示 0.5 枢轴、亮度比回写不扭色相；期 3 之前「无枢轴
   线性、只给 0–0.03 量级」的旧注记作废，新刻度见定档记录。fade 类组合仍建议在
   style 段末尾自带 `levels` 黑点回锚（retro_film 实测教训，与内核口径无关）。
-- **`color_balance` 已按显示口径修复（期 3 A2）**：Y' 分档 + 显示空间施加 +
+- **color_balance 已按显示口径修复（期 3 A2）**：Y' 分档 + 显示空间施加 +
   `amount`（缺省 1.0），偏移刻度 ±0.25 显示单位，可正常写进配方；
   期 3 之前的「线性分档、无 amount」警告作废。
-- **期 3 重著录迁移通则（旧数据往新语义搬时用）**：`selective_color` 偏移
+- **期 3 重著录迁移通则（旧数据往新语义搬时用）**：selective_color 偏移
   ×~1.8–1.9（PS 差值权重稀释 × ProPhoto 阻尼；期 3 起为差值权重 +
   矩阵往返，旧线性硬扇区口径作废）；`vignette` 强值约 ×0.8（显示乘算
   更强）；`brightness` 旧线性值 ×1.7；`dehaze` 正向 ×~1.35；`bc` 的
   contrast 大体保留、仅过暗者下调；`clarity`/`texture` 数值保留。
-- 其余常用项（`exposure.ev`、`shadows_highlights`、`saturation` 等）与显示口径同阶，
+- 其余常用项（`exposure.ev`、shadows_highlights、`saturation` 等）与显示口径同阶，
   直通著录即可；完整审计结论与清白名单见展示册 AUDIT 与设计文档 §9/§9.1。
 
 ## 外挂预设（YANSHI_PRESET_DIR）
