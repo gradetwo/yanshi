@@ -1924,6 +1924,8 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "smudge" => write_retouch(ctx, args, "smudge"),
         "patch" => write_patch(ctx, args),
         "estimate_dehaze" => read_estimate_dehaze(ctx),
+        "frequency_separation" => write_frequency_separation(ctx, args),
+        "dodge_burn_setup" => write_dodge_burn_setup(ctx, args),
         "liquify_push" => write_liquify(ctx, args, "push"),
         "liquify_twirl" => write_liquify(ctx, args, "twirl"),
         "liquify_pinch" => write_liquify(ctx, args, "pinch"),
@@ -20212,6 +20214,10 @@ pub use tools_examples::TOOL_EXAMPLES;
 #[path = "tools_effect.rs"]
 mod tools_effect;
 use tools_effect::*;
+// **期 4 D1**：频率分离 / 减淡加深（Retouch 层工具，见 tools_retouch.rs）
+#[path = "tools_retouch.rs"]
+mod tools_retouch;
+use tools_retouch::*;
 #[path = "presets.rs"]
 mod presets;
 use presets::*;

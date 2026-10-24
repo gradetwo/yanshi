@@ -161,6 +161,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         r#"{"layer_id": "L1", "from": {"r": 255, "g": 0, "b": 0, "a": 255}, "to": {"r": 0, "g": 0, "b": 255, "a": 255}, "kind": "linear", "angle": 0}"#,
     ),
     ("estimate_dehaze", r#"{}"#),
+    // **期 4 D1 频率分离 / D&B**：参数面见工具注册表（layer_id 必填，
+    // radius 域 [1,64]，mode 仅 curves/gray）。
+    ("frequency_separation", r#"{"layer_id":"L1","radius":8}"#),
+    ("dodge_burn_setup", r#"{"layer_id":"L1","mode":"curves"}"#),
     (
         "erase",
         r#"{"layer_id":"L1","data":{"region":{"x":40,"y":40,"w":120,"h":80},"size":32.0,"hardness":1.0,"opacity":1.0}}"#,

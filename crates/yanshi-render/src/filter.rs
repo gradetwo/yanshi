@@ -2694,6 +2694,62 @@ pub fn gaussian_blur(buffer: &mut Buffer, sigma: f32) {
     convolve_vertical(buffer, &kernel, radius);
 }
 
+/// 对显示编码 RGBA8 缓冲施加高斯模糊（期 4 D1，频率分离的低频层用）。
+///
+/// **薄封装，不写第二份模糊**：只做「直 RGBA8 → 预乘 f32 缓冲 →
+/// [`gaussian_blur`] → 反预乘回 u8」的往返；模糊核本身就是
+/// [`gaussian_blur`]（含其 feature-gated GPU 分支，GPU 与 CPU 在 u8 上
+/// 差 ≤1 LSB，见该函数的逐位口径说明——频率分离的重建容差 2/255 覆盖它）。
+/// 关键：**不在此做 sRGB 编解码**——输入字节就是显示编码值，模糊
+/// 作用在显示编码值上（与设计「对 RGBA8 缓冲施加」同形）；线性空间
+/// 的换算由调用方（频率分离的载荷公式）负责，两处不要混。
+/// 全透明像素（a = 0）反预乘时按 0 处理，不产生 NaN。
+pub fn gaussian_blur_rgba8(pixels: &[u8], width: u32, height: u32, sigma: f32) -> Vec<u8> {
+    let count = (width as usize).saturating_mul(height as usize);
+    assert_eq!(
+        pixels.len(),
+        count * 4,
+        "gaussian_blur_rgba8 输入长度必须是 width × height × 4"
+    );
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+    let mut buffer = Buffer::new(0, 0, width, height);
+    for (index, chunk) in pixels.chunks_exact(4).enumerate() {
+        let x = (index % width as usize) as u32;
+        let y = (index / width as usize) as u32;
+        let a = chunk[3] as f32 / 255.0;
+        buffer.set_pixel(
+            x,
+            y,
+            [
+                chunk[0] as f32 / 255.0 * a,
+                chunk[1] as f32 / 255.0 * a,
+                chunk[2] as f32 / 255.0 * a,
+                a,
+            ],
+        );
+    }
+    gaussian_blur(&mut buffer, sigma);
+    let mut out = vec![0u8; count * 4];
+    for (index, chunk) in out.chunks_exact_mut(4).enumerate() {
+        let x = (index % width as usize) as u32;
+        let y = (index / width as usize) as u32;
+        let pixel = buffer.pixel(x, y);
+        let a = pixel[3];
+        let straight = if a > 0.0 {
+            [pixel[0] / a, pixel[1] / a, pixel[2] / a]
+        } else {
+            [0.0, 0.0, 0.0]
+        };
+        chunk[0] = (straight[0].clamp(0.0, 1.0) * 255.0).round() as u8;
+        chunk[1] = (straight[1].clamp(0.0, 1.0) * 255.0).round() as u8;
+        chunk[2] = (straight[2].clamp(0.0, 1.0) * 255.0).round() as u8;
+        chunk[3] = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+    }
+    out
+}
+
 /// 水平方向方框模糊（**滑动窗口**，O(1)/像素）。
 ///
 /// 设计决策（设计方已批准）：模糊族放宽到 **D1（±1 LSB）**，以换取这里的复杂度下降。

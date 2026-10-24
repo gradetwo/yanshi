@@ -1393,7 +1393,7 @@ impl Workspace {
     /// **C2 预算读取**（期 2）：`YANSHI_DOC_MEMORY_BUDGET_MB`
     /// （缺省 2048 MB）——沿 GC 闸形态：调用时现读、解析失败回退
     /// 缺省（可调才可测；小内存部署可调低，宁可拒绝不被 OOM 杀）。
-    fn doc_memory_budget_bytes() -> u64 {
+    pub(crate) fn memory_budget_bytes() -> u64 {
         std::env::var("YANSHI_DOC_MEMORY_BUDGET_MB")
             .ok()
             .and_then(|text| text.trim().parse::<u64>().ok())
@@ -1489,7 +1489,7 @@ impl Workspace {
                 None => break,
             }
         }
-        let budget_bytes = Self::doc_memory_budget_bytes();
+        let budget_bytes = Self::memory_budget_bytes();
         // 待载入文档按其磁盘原子数估算（位图缓存尚未产生，按 0）；
         // 与 GC 闸一样先读一遍原子计数，不为估算另开近似通道。
         let incoming_atoms = match &self.persist {
