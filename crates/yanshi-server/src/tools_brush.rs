@@ -1143,13 +1143,21 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     //     探针本轮证实：**在这一刻** `max_delta == 0` 且 `ink_footprint_pixels == 6` ✓ ⇒ 条件成立 ✓。
     //   **⇒ 所以**：`footprint > 0 且 delta == 0` ⇒ **响亮警告** ✓（不是错误 ✓：参数本身合法 ✓）。
     if value["ink_footprint_pixels"].as_u64().unwrap_or(0) > 0 && max_delta == 0 {
-        value["warning"] = json!(format!(
+        // **用 `warnings` 数组，与"部分越界"那条同一形态** ✓（第 812 轮；外部 §7 第 10 条的同一诉求）
+        //   **⇒ 缺陷**：我原来写 `value["warning"]`（单数字段 ✓）而上面"越界"那条写 `warnings`（数组 ✓）
+        //     ⇒ **同一个响应里两种形态** ✗ ⇒ 调用方要写两条分支 ✓（正是"没有公共词汇" ✓）。
+        //   **⇒ 修法**：**都进 `warnings` 数组** ✓（已有就 push ✓，没有就建 ✓）。
+        let note = format!(
             "这一笔**落了 {} 个像素的墨，但画面一个像素都没变**（`max_channel_delta = 0`，基准见 `delta_regime`）\
              ⇒ 常见原因：① **太细**（`size` 小于一像素覆盖）② **太透明**（`opacity`／笔刷自带 opacity 太低）\
              ③ **颜色与背景几乎相同**（`color` 与文档背景差得太少）\
              **判据：`ink_footprint_pixels > 0` 只说明「墨落在足迹上」；`max_channel_delta = 0` 才说明「看不见」** ✓",
             value["ink_footprint_pixels"]
-        ));
+        );
+        match value.get_mut("warnings") {
+            Some(Value::Array(items)) => items.push(json!(note)),
+            _ => value["warnings"] = json!([note]),
+        }
     }
     Ok(value)
 }

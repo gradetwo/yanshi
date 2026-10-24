@@ -67,7 +67,17 @@ fn a_stroke_that_leaves_the_picture_untouched_says_so() {
         json!(0),
         "而画面一个像素都没变（这正是静默零墨）：{quiet}"
     );
-    let warning = quiet["warning"].as_str().unwrap_or_default();
+    // **用 `warnings` 数组**（第 812 轮统一形态 ✓：与"部分越界"那条同形 ✓）
+    let notes: Vec<String> = quiet["warnings"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let warning = notes.join(" / ");
     assert!(
         warning.contains("落了") && warning.contains("画面"),
         "落了墨但画面没变时必须给警告，且要说清这两件事：{quiet}"
@@ -93,8 +103,6 @@ fn a_stroke_that_leaves_the_picture_untouched_says_so() {
         loud["max_channel_delta"].as_u64().unwrap_or(0) > 0,
         "对照笔必须真的改了画面：{loud}"
     );
-    assert!(
-        loud["warning"].is_null(),
-        "改了画面的一笔不许带这个警告：{loud}"
-    );
+    let loud_notes = loud["warnings"].as_array().map_or(0, Vec::len);
+    assert_eq!(loud_notes, 0, "改了画面的一笔不许带这个警告：{loud}");
 }
