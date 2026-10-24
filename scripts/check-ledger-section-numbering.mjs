@@ -10,7 +10,7 @@ const KNOWN_DUP = ["一百五十九", "一百六十"];
 
 const fail = [];
 let tailLine = "";
-const EXPECTED = 6;
+const EXPECTED = 7;
 let ran = 0;
 const check = (cond, m) => {
   ran++;
@@ -150,6 +150,16 @@ const roundBad = headers
 check(
   roundBad.length === 0,
   `节号双向互转一致（实测 ${roundBad.length} 个不 round-trip${roundBad.length ? "：" + roundBad.slice(0, 3).join("｜") : ""}）`
+);
+
+// ⑦ **`§数字` 的棘轮**：那种写法**不能**被检查（两套编号混用 ✓ 第 914 轮查明 ✓）
+//   ⇒ **唯一能做的**：**不许再增长** ✓（棘轮 ✓ —— 与 `check-vendor-determinism-ratchet` 同一形态 ✓）
+//   ⇒ **变异**：往台账里再加一处 `§数字` ⇒ 红 ✓
+const DIGIT_REF_RATCHET = 430;
+const digitRefs = (text.match(/§[0-9]/g) || []).length;
+check(
+  digitRefs <= DIGIT_REF_RATCHET,
+  `「§数字」引用不许再增长（棘轮 ${DIGIT_REF_RATCHET}｜实测 ${digitRefs}）⇒ 新增的请改写成「第 N 节」或「外§N」`
 );
 
 const maxN = Math.max(...headers.map((h) => parseCn(h.num) || 0));
