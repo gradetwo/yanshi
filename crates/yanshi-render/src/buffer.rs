@@ -1836,6 +1836,11 @@ pub fn gpu_mode_code(mode: crate::BlendMode) -> Option<u32> {
         B::Add => 7,
         B::Subtract => 8,
         B::Difference => 9,
+        // **⇒ 期 4 新增的两种混合模式** ✓（第 932 轮；**GPU 特性构建**在这里报 `E0004` ✓）
+        //   **⇒ 为什么返回 `None`** ✗：GPU 的 mode 编码表**只有 0..9** ✓ 而着色器端没有对应分支 ✓
+        //     ⇒ 硬塞一个编码 ⇒ **渲染出错的颜色** ✗ 比"不走 GPU"糟得多 ✓
+        //   **⇒ 所以**：`None` ⇒ 调用方走 **CPU 合成** ✓（正确性优先 ✓；性能另说 ✓）
+        B::SoftLight | B::LinearLight => return None,
     })
 }
 
