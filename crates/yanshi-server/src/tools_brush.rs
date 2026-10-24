@@ -317,32 +317,15 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         .map(|value| value / glaze_passes as f64);
     // 意图参数（hand_tremor 等）展开成 brush_params 别名，与显式 brush_params 合并（显式优先）
     let merged_brush_params = merge_intent_brush_params(args)?;
-    // **`color.a` 非 255 ⇒ 响亮拒绝** ✓（第 786 轮；我自己扫描时发现的）
-    //   **⇒ 缺陷**：`brush_color_to_srgb_bytes` 只返回 `[u8; 3]` ✓ ⇒ **alpha 被整个丢掉** ✗
-    //     ⇒ 调用方传 `color.a = 0`（**完全透明** ✓）却得到**不透明**的一笔 ✓ —— 这不是"忽略" ✓
-    //     而是**与意图相反** ✓（实测：`a=0`／`a=1`／`a=255` 的 `ink_pixels` 一模一样 ✓）。
-    //   **⇒ 为什么选择拒绝而不是实现**：笔刷的不透明度归 `.myb` 自己的 `opacity` ＋ `glaze` ✓
-    //     ⇒ 把 `color.a` 乘进去会**悄悄改变每一笔的外观** ✓（既有画作会变 ✗）；
-    //     而"静默地做反了"比"说出来做不到"更坏 ✗ ⇒ 先说清楚 ✓，见 `opacity` ✓。
-    if let Some(alpha) = args
-        .get("color")
-        .and_then(|color| color.get("a"))
-        .and_then(Value::as_f64)
-    {
-        // **两种写法都接受**：0..1 的小数 ✓ 或 0..255 的字节 ✓（`parse_spec_color` 的口径 ✓）。
-        let byte = if alpha <= 1.0 { alpha * 255.0 } else { alpha };
-        if byte.round() < 255.0 {
-            return Err(YanshiError::new(
-                ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!(
-                    "`color.a` = {alpha} 不被支持（**笔刷笔触的 alpha 归笔刷自己的 `opacity`** ✓）\
-                     ⇒ 请传 `a: 255`（或 1.0）并用 `opacity`／`glaze` 控制透明度 ✓。\
-                     **为什么拒绝**：这条路径**只取 RGB**（`brush_color_to_srgb_bytes` ✓）\
-                     ⇒ 传 `a: 0` 会得到**不透明**的一笔 ✓（**与意图相反** ✓），而我们不愿猜测 ✓。"
-                )),
-            ));
-        }
-    }
+    // **`color.a`：本轮先恢复"接受但不生效"** ✓（第 788 轮；`2dfd7d2b` 的拒绝**太激进** ✗）
+    //   **⇒ CI 实测**：`export_small.rs` 用 `a = 220` ✓（半透明 ✓，完全合法的既有用法 ✓）
+    //     ⇒ 我的拒绝让 `export_small` 的 **3 个测试** 与 **4 片 criteria** 一起红 ✗
+    //     （`test (stable)` / `test (beta)` / `criteria shard 1,2,4,5` ✓）。
+    //   **⇒ 结论**：**"忽略 alpha"是既有行为、且有调用方依赖** ✓ ⇒ 不能直接改成拒绝 ✗；
+    //     正确的修法是**把 `a/255` 乘进笔刷的有效 opacity** ✓ ⇒ 但那会改变既有画作的外观 ✓
+    //     ⇒ **必须先有判据**（同一笔 `a=255` 与 `a=110` 的 `ink_pixels` 必须不同 ✓）再改 ✓。
+    //   **⇒ 所以这一笔只留 `ink_pixels`（第 784 轮 ✓），alpha 的行为回到原样** ✓，
+    //     并把它记进台账 ✓（`D139` 的"色偏移"那一维很可能就是这里 ✓）。
 
     // **落笔走唯一的实现** ✓（`paint_brush` ✓，与 `brush_preview` 共用 ✓）。
     let paint = paint_brush(

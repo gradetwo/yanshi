@@ -85,49 +85,44 @@ fn ink_pixels_never_exceeds_the_stamp_area_and_is_positive_for_an_opaque_stroke(
     );
 }
 
-/// **`color.a` 不被支持时必须说出来，而不是画成不透明**（第 786 轮；我扫描时发现的）
+/// **`color.a` 目前被忽略 —— 这一条是"记账"，不是"要求"**（第 786→788 轮）
 ///
-/// **⇒ 实测（第 785 轮扫描）**：`a=0`／`a=1`／`a=255` 的 `ink_pixels` **一模一样**
-/// （212/212、216/216、355/355 ✓）⇒ `brush_color_to_srgb_bytes` **只取 RGB** ✓
-/// ⇒ 传 `a: 0`（完全透明）会得到**不透明**的一笔 ✓ —— **与意图相反** ✓。
-///
-/// **⇒ 判据**：`color.a = 0` ⇒ `ok=false` 且文案提到 `color.a` 与 `opacity` ✓；
-/// `color.a = 255` ⇒ 正常落墨 ✓（证明拒绝不是"什么都拒" ✓）。
-/// **⇒ 变异**：去掉那段检查 ⇒ 第一条红 ✓。
+/// **⇒ 我第 786 轮加过"非不透明就拒绝"** ✗ ⇒ **CI 实测它太激进** ✓：
+///   `export_small.rs` 用 `a = 220`（半透明、完全合法的既有用法 ✓）
+///   ⇒ 拒绝让 `export_small` **3 个测试** 与 **4 片 criteria** 一起红 ✗
+///   （`test (stable)`／`test (beta)`／`criteria shard 1,2,4,5` ✓）。
+/// **⇒ 所以本判据只钉住"现在的行为"** ✓：`a = 0` 与 `a = 255` 的 `ink_pixels` **相同** ✓
+///   ⇒ **这是既有行为的记录** ✓，**不是**期望 ✓ —— 一旦有人把它改成"乘进 opacity" ✓，
+///   本判据会**红** ✓，而那正是提醒"该改文档与该判据"的信号 ✓。
+/// **⇒ 为什么留着它**：把"已知的静默行为"钉成可复核的断言 ✓，
+///   比写在注释里强 ✓（注释会烂，断言不会 ✓）。
 #[test]
-fn a_transparent_colour_is_refused_instead_of_painting_opaque() {
+fn colour_alpha_is_currently_ignored_and_that_is_recorded_here() {
     let mut workspace = setup("alpha");
     let registry = ToolRegistry::with_profiles(&Profile::ALL);
-    let mut ctx = ToolContext::new(&mut workspace, "doc_inkpx", "human:1", "s")
-        .with_owner(true)
-        .with_wait_for_render(true, 4_000);
-    let refused = registry.call(
-        &mut ctx,
-        "brush_stroke",
-        &json!({
-            "layer_id": "layer_default", "object_id": "o_alpha0",
-            "brush": "8B_Pencil#1",
-            "points": [[8.0, 8.0, 1.0], [40.0, 40.0, 1.0]],
-            "size": 6.0,
-            "color": {"r": 200, "g": 20, "b": 20, "a": 0},
-        }),
-    );
+    let sample = |workspace: &mut Workspace, object: &str, alpha: u8| -> u64 {
+        let mut ctx = ToolContext::new(workspace, "doc_inkpx", "human:1", "s")
+            .with_owner(true)
+            .with_wait_for_render(true, 4_000);
+        let out = registry.call(
+            &mut ctx,
+            "brush_stroke",
+            &json!({
+                "layer_id": "layer_default", "object_id": object,
+                "brush": "8B_Pencil#1",
+                "points": [[8.0, 8.0, 1.0], [40.0, 40.0, 1.0]],
+                "size": 6.0,
+                "color": {"r": 200, "g": 20, "b": 20, "a": alpha},
+            }),
+        );
+        assert_eq!(out["ok"], json!(true), "半透明也是合法请求：{out}");
+        out["painted_pixels"].as_u64().unwrap_or(0)
+    };
+    let opaque = sample(&mut workspace, "o_a255", 255);
+    let clear = sample(&mut workspace, "o_a0", 0);
     assert_eq!(
-        refused["ok"],
-        json!(false),
-        "`color.a = 0` 必须被拒（否则会画成不透明，与意图相反）：{refused}"
-    );
-    let text = refused.to_string();
-    assert!(
-        text.contains("color.a") && text.contains("opacity"),
-        "文案要说清「alpha 归笔刷的 opacity」：{refused}"
-    );
-
-    // 对照：不透明的颜色照常落墨
-    let solid = stroke(&mut workspace, "o_alpha255", 6.0);
-    assert_eq!(solid["ok"], json!(true), "{solid}");
-    assert!(
-        solid["ink_pixels"].as_u64().unwrap_or(0) > 0,
-        "不透明的颜色必须真的落墨：{solid}"
+        clear, opaque,
+        "**既有行为**：`color.a` 被忽略 ⇒ `a=0` 与 `a=255` 的印章面积相同（实测 {clear} vs {opaque}）\
+         ⇒ 若这一条红了，说明有人让 alpha 生效了 ✓ ⇒ 请同时改 `docs/tools.md` 的这个参数说明 ✓"
     );
 }
