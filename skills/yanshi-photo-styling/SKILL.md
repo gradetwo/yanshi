@@ -92,6 +92,10 @@ yanshi 会有很多个方向的 skill（已有 `yanshi-painting` 管绘画笔触
 - 照片本身有预设基线盖不住的问题（严重欠曝、混合光源色偏）时，先用既有工具手工校正
   （`get_histogram` 看分布、`add_adjustment` / `apply_adjustments` 落笔），再考虑
   `include_correction: false` 只落风格段，避免两份校正打架。
+- 期 4 起也可用 `auto_retouch` 先出自动基线（7 组确定性对象，估值
+  有原理、每项带 rationale；全局量，局部分区问题仍需手工 locals）。
+  注意：RAW 导入的缺省曝光对象（未动过）会被 auto 置零、不与自动
+  曝光叠加；目标层已有人工调整时 auto 缺省拒绝（force 才继续）。
 - 注意 `exposure` 的参数名是 **`ev`**；且导入期的 `pre_exposure_ev` 与调整层的 `exposure.ev`
   是两个阶段的量，别重复补同一笔曝光。
 
@@ -111,6 +115,11 @@ yanshi 会有很多个方向的 skill（已有 `yanshi-painting` 管绘画笔触
 
 - 先 `preview_preset` 看展开清单：笔数、每笔的实际参数、确定性 object_id。
   一套预设总笔数 = 修正段 + 风格段（如港风 4 + 9 = 13 笔），数对得上才往下走。
+- 期 4 起 `preview_preset` 可带 `render {max_edge（缺省 512，128–2048）,
+  format（png|jpeg，缺省 jpeg）}` 出像素级低清预览图：临时文档渲染、
+  阅后删除、净零状态。注意 `scale_notes`：含 clarity/texture/glow
+  的预设在代理分辨率下与全幅有差（像素半径类操作），该字段会点名；
+  其余逐像素颜色操作与几何归一化 vignette 在代理尺度下与全幅一致。
 - 再 `apply_preset {"preset_id": …, "layer_id": …}` 落图。批量驱动时走静默：
   把多步调用放进 `batch` 且 `silent: true`，子调用不产预览、不编码 PNG，省掉每步的预览开销；
   需要中途看进展时用 `preview_every_n_strokes` 放行几次即可。
