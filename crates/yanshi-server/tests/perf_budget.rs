@@ -99,6 +99,16 @@ fn seed_workspace(root: &std::path::Path, strokes: usize) {
 fn perf_view_open_under_100ms() {
     for atoms in [120usize, 600] {
         let root = temp_root(&format!("open{atoms}"));
+        // **跑完即删** ✓（第 819 轮；`/tmp` 是 1.9 GB tmpfs ✓）
+        //   **⇒ 守卫必须绑**子目录**，不能绑 `std::env::temp_dir()` 本身** ✗
+        //     —— 我第一版就是这么写的，那会在 drop 时删掉整个 `/tmp` ✗（已回退 ✓）。
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup_1 = Cleanup(root.clone());
         seed_workspace(&root, atoms);
         let settings = DocumentSettings::default();
 
@@ -187,6 +197,16 @@ fn perf_view_open_under_100ms() {
 #[ignore = "性能预算验收：CI 用 --ignored 执行（6.2 打开即图片 / 14.5）"]
 fn perf_open_without_render_cache_does_not_replay() {
     let root = temp_root("nocache");
+    // **跑完即删** ✓（第 819 轮；`/tmp` 是 1.9 GB tmpfs ✓）
+    //   **⇒ 守卫必须绑**子目录**，不能绑 `std::env::temp_dir()` 本身** ✗
+    //     —— 我第一版就是这么写的，那会在 drop 时删掉整个 `/tmp` ✗（已回退 ✓）。
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup_2 = Cleanup(root.clone());
     let settings = DocumentSettings::default();
     {
         let mut workspace = Workspace::with_file_store(&root, settings.clone()).unwrap();
