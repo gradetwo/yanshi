@@ -19864,3 +19864,29 @@ async function fetchMutating(url, options) {
 ⇒ **⇒ 三者不可能同时成立** → 必有一个是假的 ⇒ **下一轮用三行 `console.log` 定位**（`serverRenderPreferred()`／`mutating`／`navigator.onLine`）✓
 ⇒ 写法：改 **`crates/yanshi-http/assets/viewer-app.js`**（**真源** ✓ 第 524 节）→ `node scripts/pwa-sync-viewer.mjs` →
 `git checkout -- web/index.html web/assets-index.json`（那两个会被 sync 改脏 ✓）→ 复现 → 读 `Runtime.consoleAPICalled` ✓。
+
+## 五百二十七、**真相**：页面里跑的 `callTool` 在 `web/index.html` 里，不在 `viewer-app.js`（第 894 轮）
+
+**⇒ 决定性实测（探针，CDP 9340）**：
+```
+onLine(在线) = true
+onLine(断网) = false           ← CDP 断网确实生效 ✓
+返回 = {"ok":true,"seq":2,"server":false,"bytes":23184,…}   ← 本地层答的
+调试 = null                    ← **`viewer-app.js` 里的 `callTool` 一次都没被调用** ✗★
+队列 = 0
+```
+**⇒ 我在 `crates/yanshi-http/assets/viewer-app.js` 的 `callTool` 里加的调试**：**一次没触发** ✓
+⇒ 而 **`web/index.html` 自己有** `async function callTool`（**第 3540 行** ✓；还有自己的 `callToolLocal` 在 3470 ✓）
+⇒ 也就是说 **`web/index.html`（764 KB，**被 git 跟踪** ✓）是**自包含**的页面** ✓
+⇒ **⇒ 我前几轮改的 `viewer-app.js`（真源或产物都算）**对这条判据**毫无作用** ✗
+
+**⇒ 这解释了全部现象**（三次"改了没反应"）：改的不是**页面实际执行的那份** ✓
+⇒ 而 `yanshiCallTool` 的赋值也在 `web/index.html:5073` ✓ ⇒ 它绑的是**索引页里那个** `callTool` ✓
+
+**⇒ 下一轮（确定的做法）**：
+1. 在 **`web/index.html:3540` 的 `callTool`** 里加同一行调试 ✓（它**被跟踪** ✓ 直接可提交 ✓）
+2. 复现 ⇒ 读 `__toolDebug` ⇒ 看 `mutating`／`serverRender`／`onLine` 三个值 ✓
+3. 按读数改：若 `serverRender=false` 而 `onLine=false` ⇒ 缺的是"离线写 ⇒ 走服务端路" ✓（第 526 节的改法 ✓）
+
+**⇒ 教训（比上一轮那条更硬）**：**「同一个函数名在仓库里可能有几份实现，只有一份真的在跑」** ✗
+⇒ 机检：改之前 `git grep -n "async function <名字>"` ✓ 数**几处** ⇒ 再用**运行时探针**确认哪一处被执行 ✓（本轮正是探针抓出来的 ✓）。
