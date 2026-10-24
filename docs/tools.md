@@ -14,7 +14,8 @@ ink_footprint_pixels, the number of pixels whose alpha is not zero after composi
 with the same value for callers who already read it. Because alpha there comes from coverage times opacity, a stroke
 that leaves every colour channel exactly as it was still reports a full footprint, so the field answers "how much of the
 stamp survived" rather than "how much of the picture changed". max_channel_delta is the field meant to answer the
-second question, but only under a documented regime: when the brush does not read the canvas it composites the patch
+second question, and its reply now carries delta_regime, white_base or canvas_base, because the number alone cannot tell
+a caller which surface it was measured against; it is meaningful as a change in the delivered image only under canvas_base: when the brush does not read the canvas it composites the patch
 onto white and compares against 255, so on a document whose background is not white its value is not the change in the
 delivered image and it must not be used as a zero-ink threshold.
 
