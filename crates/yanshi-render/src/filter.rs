@@ -2296,16 +2296,25 @@ pub fn dehaze_adjustment(buffer: &mut Buffer, amount: f32) {
     }
 }
 
-/// **引导滤波细节调整（clarity / texture 共用底座）**：
-/// 明度（线性 Rec709）跑一趟自引导滤波（复用降噪的 [`guided_filter_self`]，保边 ✓），
-/// `detail = luma − base`，`new_luma = luma + amount × detail × weight`，
-/// 三通道按 `new_luma / luma` 等比缩放（保色相、灰度样本下与分通道版逐位一致 ✓）。
-/// `amount` −1..1（0 = 逐位恒等 ✓；负值压细节 ⇒ 柔化）。纯黑（luma≈0）不动
-/// （detail 恒 0，缩放无意义，数学上恒等 ✓）。输出钳制 [0,1]，
-/// 预乘不变量保持 ✓。运算在线性光直通空间（与全管线坐标口径一致 ✓）。
+/// **引导滤波细节调整（clarity / texture 共用底座）**。
 ///
-/// **只跑一趟引导滤波**（性能：第 1 版三通道各一趟是主要瓶颈 ✗；明度细节 + 等比
-/// 缩放也是 Lightroom 语义下更保色相的做法，一举两得 ✓）。
+/// **期 3 A4-1 口径（专家 Q1 定版）**：细节必须在 **sRGB 明度 Y'** 上算——
+/// 旧实现在线性明度上跑：中间调掩模的「中间」落在线性 0.5 ≈ 显示 0.735
+/// （偏高光一档）、线性明度与输出双双钳 [0, 1]（HDR 细节被压平）、
+/// epsilon 的量纲也随错空间漂移。新口径：
+/// 1. 直通色逐通道扩展编码得显示值，`Y' = 0.2126/0.7152/0.0722` 加权和
+///    （不钳：HDR 的 Y' 可 > 1、负值保符号）；
+/// 2. Y' 平面跑一趟自引导滤波（复用降噪的 [`guided_filter_self`]，保边），
+///    `detail = Y' − base`；
+/// 3. 中间调掩模 `1 − (2ŷ − 1)²`，ŷ = Y' 钳 [0, 1]——掩模中心回到
+///    **显示中灰**；`new_Y' = Y' + amount·detail·weight`；
+/// 4. **亮度比回写**：`scale = new_Y' / Y'`（Y' > 0 时），直通线性色等比
+///    缩放——保色相、且**不钳 [0, 1]**（HDR 细节增强后仍是 HDR）。
+///    Y' ≤ 0 的像素（纯黑/负亮度）无亮度可缩放 ⇒ 不动（其 detail 在
+///    平坦黑场里恒为 0，数学上一致）。
+///
+/// `amount` −1..1（0 = 逐位恒等 ✓；负值压细节 ⇒ 柔化）。半径/epsilon
+/// 数值不变（epsilon 的量纲随平面换成 Y'——这正是刻度重标定的一部分）。
 fn guided_detail_adjust(
     buffer: &mut Buffer,
     amount: f32,
@@ -2326,7 +2335,10 @@ fn guided_detail_adjust(
     for (i, pixel) in buffer.pixels().chunks_exact(4).enumerate() {
         let a = pixel[3];
         if a > 0.0 {
-            luma[i] = (0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2]) / a;
+            let straight = [pixel[0] / a, pixel[1] / a, pixel[2] / a];
+            luma[i] = 0.2126 * srgb_encode_extended(straight[0])
+                + 0.7152 * srgb_encode_extended(straight[1])
+                + 0.0722 * srgb_encode_extended(straight[2]);
         }
     }
     let mut base = luma.clone();
@@ -2339,25 +2351,30 @@ fn guided_detail_adjust(
             if alpha <= 0.0 {
                 continue;
             }
-            let l = luma[i].clamp(0.0, 1.0);
-            if l < 1e-6 {
+            let l = luma[i];
+            if l <= 0.0 {
                 continue;
             }
             let weight = if midtone_weighted {
-                let centered = 2.0 * l - 1.0;
+                let centered = 2.0 * l.clamp(0.0, 1.0) - 1.0;
                 (1.0 - centered * centered).clamp(0.0, 1.0)
             } else {
                 1.0
             };
-            let new_luma = (l + amount * (l - base[i]) * weight).clamp(0.0, 1.0);
-            let scale = new_luma / l;
+            let new_luma = l + amount * (l - base[i]) * weight;
+            let scale = (new_luma / l).max(0.0);
+            // 数值零守卫：引导滤波在常数平面上的浮点残差（实测 scale 偏差
+            // ~2.4e-7）不得改写像素——「平坦区逐位不动」是既有不变量。
+            if (scale - 1.0).abs() <= 1e-6 {
+                continue;
+            }
             buffer.set_pixel(
                 x,
                 y,
                 [
-                    (pixel[0] * scale).min(alpha),
-                    (pixel[1] * scale).min(alpha),
-                    (pixel[2] * scale).min(alpha),
+                    pixel[0] * scale,
+                    pixel[1] * scale,
+                    pixel[2] * scale,
                     alpha,
                 ],
             );
@@ -2367,8 +2384,8 @@ fn guided_detail_adjust(
 
 /// **局部对比调整（Presence Clarity）**：`amount` −1..1，0 = 逐位恒等 ✓。
 ///
-/// 大半径（16）自引导滤波保边细节 + 中间调加权 `1 − (2L − 1)²`（与滤镜版 clarity
-/// 同一加权口径：中间调最强、极暗/极亮抑制防光晕 ✓）。
+/// 大半径（16）自引导滤波保边细节 + 中间调加权 `1 − (2ŷ − 1)²`（ŷ 为显示
+/// 明度 Y'，期 3 A4-1：掩模中心在显示中灰；中间调最强、极暗/极亮抑制防光晕 ✓）。
 /// 正值增强中频局部对比；负值压中频 ⇒ 柔化（Orton 柔光的那一半靠它近似 ✓）。
 pub fn clarity_adjustment(buffer: &mut Buffer, amount: f32) {
     guided_detail_adjust(buffer, amount, 16, 0.005, true);
@@ -6314,6 +6331,138 @@ mod presence_tests {
         assert!(
             high_gain > mid_gain,
             "texture 应更偏向高频：高频增益 {high_gain} vs 中频增益 {mid_gain}"
+        );
+    }
+
+    /// 显示灰阶对（左/右两半）的 clarity 总响应（Σ|ΔY'|）。
+    fn clarity_step_response(dark: f32, bright: f32) -> f32 {
+        let mut buffer = Buffer::new(0, 0, 32, 16);
+        for y in 0..16u32 {
+            for x in 0..32u32 {
+                let d = if x < 16 { dark } else { bright };
+                let lin = srgb_to_linear(d);
+                buffer.set_pixel(x, y, [lin, lin, lin, 1.0]);
+            }
+        }
+        let before: Vec<f32> = buffer
+            .pixels()
+            .chunks_exact(4)
+            .map(|p| srgb_encode_extended(p[0]))
+            .collect();
+        clarity_adjustment(&mut buffer, 1.0);
+        buffer
+            .pixels()
+            .chunks_exact(4)
+            .zip(before.iter())
+            .map(|(p, b)| (srgb_encode_extended(p[0]) - b).abs())
+            .sum()
+    }
+
+    /// A4-1 掩模中心探针：同为 0.2 显示落差的灰阶对，中心在显示 0.5 的
+    /// 一对（0.4/0.6）响应必须**大于**中心在显示 0.75 的一对（0.65/0.85）。
+    /// 旧线性实现下结论相反（高光对的线性落差更大且掩模中心在线性 0.5
+    /// ≈ 显示 0.735，高光对响应约为中间对的 2 倍）⇒ 变异回线性平面红。
+    #[test]
+    fn clarity_midtone_mask_is_centered_on_display_midgray() {
+        let mid = clarity_step_response(0.4, 0.6);
+        let high = clarity_step_response(0.65, 0.85);
+        assert!(
+            mid > high,
+            "掩模中心应在显示中灰：中间对响应 {mid} 应大于高光对 {high}"
+        );
+    }
+
+    /// A4-1 HDR 探针：线性 0.8（Y' ≈ 0.906）/ 2.0（Y' ≈ 1.354）灰阶对——
+    /// 边界低侧（掩模权重 > 0）必须有响应；高侧深处保持 2.0 不被钳回
+    /// [0, 1]（旧实现明度钳 1 ⇒ 高侧先被压成 1.0）。Y' ≥ 1 区域掩模
+    /// 权重为 0 是**设计语义**（clarity 抑制高光防光晕），不是钳制伪影：
+    /// 断言区分两者——值原样保留（2.0）而非被压平（1.0）。
+    #[test]
+    fn clarity_responds_in_hdr_without_clamping() {
+        let mut buffer = Buffer::new(0, 0, 32, 16);
+        for y in 0..16u32 {
+            for x in 0..32u32 {
+                let v = if x < 16 { 0.8 } else { 2.0 };
+                buffer.set_pixel(x, y, [v, v, v, 1.0]);
+            }
+        }
+        let before = buffer.clone();
+        clarity_adjustment(&mut buffer, 1.0);
+        assert_ne!(
+            before.pixel(12, 8),
+            buffer.pixel(12, 8),
+            "边界低侧（Y'≈0.906、掩模权重 ≈0.34）必须有响应"
+        );
+        let deep = buffer.pixel(28, 8);
+        assert!(
+            (deep[0] - 2.0).abs() < 1e-4,
+            "HDR 高侧应原样保留 2.0（掩模抑制 ≠ 钳到 1.0）：{deep:?}"
+        );
+    }
+
+    /// A4-1 参照能量带：平滑正弦 Y' 图案（周期 32、幅 0.2）上，生产实现
+    /// （引导滤波底座）的 ΔY' 能量与参照实现（高斯底座 + 同掩模 + 同
+    /// 亮度比回写）的能量之比应在 ±10% 内（设计 §2 A4-1）。σ = 3.63 为
+    /// 标定值：使高斯对本正弦的衰减与引导滤波（r=16、eps=0.005）的
+    /// 有效衰减一致（σ=3.4 时实测比 1.264，按衰减公式反推标定）。
+    #[test]
+    fn clarity_energy_matches_gaussian_reference_within_band() {
+        let (w, h) = (64u32, 64u32);
+        let plane = |x: u32| 0.5 + 0.2 * libm::sinf(2.0 * std::f32::consts::PI * x as f32 / 32.0);
+        let mut buffer = Buffer::new(0, 0, w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let lin = srgb_to_linear(plane(x));
+                buffer.set_pixel(x, y, [lin, lin, lin, 1.0]);
+            }
+        }
+        let mut prod = buffer.clone();
+        clarity_adjustment(&mut prod, 1.0);
+        let energy = |buf: &Buffer| -> f64 {
+            buf.pixels()
+                .chunks_exact(4)
+                .enumerate()
+                .map(|(i, p)| {
+                    let d = srgb_encode_extended(p[0]) - plane((i as u32) % w);
+                    (d * d) as f64
+                })
+                .sum()
+        };
+        let e_prod = energy(&prod);
+        // 参照：可分离高斯（σ=3.63，截断 ±3σ，边缘复制）+ 掩模 + 亮度比回写。
+        let sigma = 3.63f32;
+        let radius = (3.0 * sigma).ceil() as i32;
+        let kernel: Vec<f32> = (-radius..=radius)
+            .map(|t| libm::expf(-(t as f32) * (t as f32) / (2.0 * sigma * sigma)))
+            .collect();
+        let ksum: f32 = kernel.iter().sum();
+        let src: Vec<f32> = (0..w * h).map(|i| plane((i as u32) % w)).collect();
+        let mut blurred = vec![0.0f32; (w * h) as usize];
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                let mut acc = 0.0f32;
+                for (ki, t) in (-radius..=radius).enumerate() {
+                    let cx = (x + t).clamp(0, w as i32 - 1);
+                    acc += kernel[ki] * src[(y * w as i32 + cx) as usize];
+                }
+                blurred[(y * w as i32 + x) as usize] = acc / ksum;
+            }
+        }
+        // 图案只沿 x 变化，纵向高斯为恒等 ⇒ 只做横向一趟即可。
+        let mut e_ref = 0.0f64;
+        for (i, yv) in src.iter().enumerate() {
+            let detail = yv - blurred[i];
+            let centered = 2.0 * yv - 1.0;
+            let weight = (1.0 - centered * centered).clamp(0.0, 1.0);
+            let new_y = yv + detail * weight;
+            let lin = srgb_to_linear(*yv) * (new_y / yv);
+            let d = srgb_encode_extended(lin) - yv;
+            e_ref += (d * d) as f64;
+        }
+        let ratio = e_prod / e_ref;
+        assert!(
+            (0.9..=1.1).contains(&ratio),
+            "clarity ΔY' 能量与高斯参照之比应在 ±10% 内：{ratio}（prod {e_prod} vs ref {e_ref}）"
         );
     }
 }
