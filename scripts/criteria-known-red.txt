@@ -28265,3 +28265,16 @@ tool-single-point-rejected.mjs  # **类型：环境红（本机 0、CI 1，原�
 #   「不给 deposit 与给 0 涂后亮度相同（0.163155… vs 0.163155…）」
 #   「deposit=0.6 改变了涂后亮度（0.163155 vs 0.161702）」
 #   「越大的 deposit 越暗（0.163155 > 0.162423 > 0.161702）」✓
+
+#
+# **★★★ 第 813 轮：`check-tests-clean-temp.mjs` 登记为**已知红**（规格先行 ✓）★★★**
+#   ＋ **∴ 症状**：**42 个**测试文件用了 `std::env::temp_dir()` 但**没有 Drop 清理器** ✗
+#     ⇒ 而 `/tmp` 在这台机器上是 **1.9 GB 的 tmpfs** ✓ ⇒ 夹具只建不删 ⇒ **跑几轮就 100% 满** ✓
+#     ⇒ **代价实测：连续 3 轮所有命令都起不来**（`bash` 写不了临时脚本 ⇒ `ENOSPC` ✓）
+#       而 `df -h /` 仍显示 44 G 空闲 ✓ —— **根分区没问题，是 /tmp 这个 tmpfs** ✓。
+#   ＋ **∴ 本轮已修**：我自己新加的 4 个（`d139_zero_ink_warning`／`tombstone_summary_roundtrip`／
+#     `ink_pixels`／`missing_blobs_are_loud` ✓）⇒ 42 → 38 ✓。
+#   ＋ **∴ 转绿条件**：剩下 38 个都补上 `struct Cleanup`（`Drop` 里 `remove_dir_all` ✓）
+#     ⇒ 那时从名单移出 ✓。**一次改一个、改完跑 `cargo test -p yanshi-server --test <名字>`** ✓
+#     —— 38 个一次改会让编译错误混在一起，反而更慢 ✓。
+check-tests-clean-temp.mjs  # **类型：规格先行（38 个测试不删临时目录 ⇒ /tmp 会被写满）**
