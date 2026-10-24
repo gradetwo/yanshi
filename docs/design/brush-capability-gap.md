@@ -17865,3 +17865,31 @@ CI 日志里「名单里有、但本片没失败（**可能已修好**）」共 
 
 **⇒ 为什么先记不做**：这需要**跨工具的设计决定**（一个字段名两种语义：像素 vs 条数 ✓），
 且 `draw_stroke` 的"落墨量"要不要回填会牵动渲染侧 ✓ ⇒ 留到有完整预算的一轮 ✓。
+
+## 四百六十七、他们 `apply` 的 **O(n²)**：定位到**代码行**（第 791 轮）
+
+**⇒ 他们的实测**（`art` 第 `120` 次）：`apply` 每 atom 从 **33 ms** 涨到 **209 → 299 ms** ✓，
+`test3` 直接**卡死**（3 轮停在 `12200/23472` ✓）⇒ 他们判「只能由引擎侧查」（他们从外部无法定位 ✓）。
+
+**⇒ 我这边定到的位置**（`crates/yanshi-wasm/src/kernel.rs` 的 `apply_atom_json`）：
+```rust
+let previous = self.state.clone();          // 每个 atom 克隆一次整份状态
+let outcome = self.log.append(atom)?;        // 便宜
+let applied = self.log.…cloned()…;           // 便宜
+let folded = self.folder.fold(&self.log, self.log.head_seq());   // ★ 每个 atom 折整份日志
+```
+而 `Folder::fold`（`fold.rs:121` → `fold_atoms` → `fold.rs:300-301`）**第一步就是**
+`compute_suppressed(atoms)` = `EffectiveActions::from_atoms(atoms)` ✓ ⇒ **扫全部原子** ✓。
+
+**⇒ 所以复杂度是**：`apply` × (整份日志扫描) ＝ **O(n²)** ✓ —— 与他们的曲线一致 ✓
+（33 → 209 → 299 ms/atom 是 n 增大时同一件事 ✓，不是"变慢" ✗）。
+
+**⇒ 为什么不能简单地改成"只折新原子"** ✗：`compute_suppressed` 扫全日志是因为**有效集（revert）**
+本质上是**全局**性质 ✓ ⇒ 只喂一个 atom 会**算错被撤销集合** ✗（静默画错 ✓，比慢更坏 ✓）。
+
+**⇒ 正确的修法（三步，下一轮做）**：
+1. **增量维护 suppressed 集合** ✓ —— 普通 atom 只做**局部更新** ✓；
+2. **只有遇到 `revert` 原子时**才做一次全量重算 ✓（revert 是少数 ✓）；
+3. 状态克隆改成**按需**（只在该 atom 真的要改状态时克隆 ✓）。
+**⇒ 判据**：**同一份日志上 `apply` 的每 atom 耗时不应随 n 线性增长** ✓
+（例如 n=100 与 n=1000 的**中位**比 < 3 ✓，而不是 ~10 ✓）—— 这条**要在 CI 上先量一次**再定阈值 ✓。
