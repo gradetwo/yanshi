@@ -962,6 +962,17 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     //   **⇒ ⇒ 所以**同时给：`painted_pixels`（raw）与 `painted_pixels_clipped`（**真实落墨**）✓
     //   **⇒ ⇒ ⇒ 没有裁剪时两者相等**（`clipped_away == 0`）⇒ **老调用方不受影响** ✓
     value["painted_pixels_clipped"] = json!(painted.saturating_sub(clipped_away));
+    // **`ink_pixels`：真正落上墨的像素数** ✓（第 784 轮；外部 `qoder` 的 D139）
+    //   **⇒ 与 `painted_pixels` 的区别**（这条是本轮新增的**可测量** ✓）：
+    //     `painted_pixels` ＝ **印章面积**（铺开了多少 ✓）；
+    //     `ink_pixels`     ＝ 合成后 **alpha 非零** 的像素数（真的画上了多少 ✓）。
+    //   **⇒ 为什么需要它** ✗：他们的 D139 说「有印章但落墨 0」是**静默区** ✓
+    //     ⇒ 而 `painted_pixels` **看不出**这件事 ✓（全透明一笔照样 `painted=324` ✓，实测 ✓）。
+    //   **⇒ 为什么现在只给数、不给 warning** ✗：**warning 那条分支我暂时造不出触发条件** ✓
+    //     （`color.a=0` 实测**不是**全透明 ✓：`painted=324 / ink=324` ✓）⇒ 按规矩
+    //     **不提交没有判据的分支** ✓ ⇒ 先只加字段 ✓，warning 等能复现了再加 ✓。
+    let ink_pixels = rgba.chunks_exact(4).filter(|px| px[3] != 0).count();
+    value["ink_pixels"] = json!(ink_pixels);
     // **覆盖率只在裁剪时出现**（不裁剪时不出现，而不是给个 1.0 让人以为是量出来的）✓
     // **⇒ ★ 但它单独**不能**用于验收 ★**（第 1573 轮自查；用外部那条判据检验自己）
     //   **⇒ 我实测**：一笔**极小**、且**完全在选区内** ⇒ **`clip_coverage = 1.0`**，
