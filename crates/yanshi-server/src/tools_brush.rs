@@ -1007,6 +1007,19 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         value["clip_coverage"] = json!(coverage);
     }
     value["max_channel_delta"] = json!(max_delta);
+    // **`max_channel_delta` 的 regime 必须**机器可读**** ✓（第 808 轮；外部 `qoder` 的 D193）
+    //   **⇒ 他们的实测**：`reads_canvas=false` 的那一支**先把补丁合成到白底**再与 `255` 比 ✓
+    //     ⇒ 在**非白底文档**上 `delta = (255 − patch_rgb) × alpha/255` ✓
+    //     ⇒ 一笔**导出 PNG 差 0 像素**的笔，这里**报正数** ✗ ⇒ **不能当 zero-ink 阈值** ✓。
+    //   **⇒ 他们已经收窄了结论**（我们的注释把"无基准 ⇒ 合白底"写成故意定义 ✓、回执也带 `fed_base` ✓）
+    //     ⇒ 可执行的那一半是：**调用方要能一眼看出这个数是在哪个 regime 下量的** ✓。
+    //   **⇒ 所以**：加一个字符串字段 ✓ —— `white_base`（没吃底图 ⇒ 合白底后与 255 比 ✓）
+    //     ／`canvas_base`（吃了底图 ⇒ 与真底图比 ✓）✓。**文档写了，但字段比文档强** ✓。
+    value["delta_regime"] = json!(if fed_base {
+        "canvas_base"
+    } else {
+        "white_base"
+    });
     // **传感器回执**：传了才出现（不静默 ✓）—— 调用方能确认四路信号都被采纳。
     if args.get("sensors").is_some_and(|v| !v.is_null()) {
         value["sensors_applied"] = json!({

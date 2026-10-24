@@ -135,3 +135,45 @@ fn colour_alpha_is_currently_ignored_and_that_is_recorded_here() {
          ⇒ 若这一条红了，说明有人让 alpha 生效了 ✓ ⇒ 请同时改 `docs/tools.md` 的这个参数说明 ✓"
     );
 }
+
+/// **`max_channel_delta` 必须说清自己在哪个 regime 下量的**（第 808 轮；外部 `qoder` D193）
+///
+/// **⇒ 他们的实测**：`reads_canvas=false` 的一支**先把补丁合成到白底**再与 255 比 ✓
+/// ⇒ 在**非白底文档**上 `delta = (255 − patch_rgb) × alpha/255` ✓
+/// ⇒ 一笔导出 PNG 差 0 像素的笔，这里**报正数** ✗ ⇒ **不能当 zero-ink 阈值** ✓。
+///
+/// **⇒ 判据**：回执里 `delta_regime` 必须存在，且**与 `fed_base` 一致** ✓
+/// （`fed_base=false` ⇒ `white_base`；`true` ⇒ `canvas_base`）✓。
+/// **变异**：把 `delta_regime` 写成常量 `"canvas_base"` ⇒ 第一条红 ✓。
+#[test]
+fn max_channel_delta_names_the_regime_it_was_measured_in() {
+    let mut workspace = setup("regime");
+    let registry = ToolRegistry::with_profiles(&Profile::ALL);
+    let mut ctx = ToolContext::new(&mut workspace, "doc_inkpx", "human:1", "s")
+        .with_owner(true)
+        .with_wait_for_render(true, 4_000);
+    // `8B_Pencil` 不读画布 ⇒ `fed_base=false` ⇒ `white_base`
+    let out = registry.call(
+        &mut ctx,
+        "brush_stroke",
+        &json!({
+            "layer_id": "layer_default", "object_id": "o_regime",
+            "brush": "8B_Pencil#1",
+            "points": [[8.0, 8.0, 1.0], [40.0, 40.0, 1.0]],
+            "size": 6.0,
+            "color": {"r": 200, "g": 20, "b": 20, "a": 255},
+        }),
+    );
+    assert_eq!(out["ok"], json!(true), "{out}");
+    let regime = out["delta_regime"].as_str().unwrap_or_default();
+    let fed = out["fed_base"].as_bool().unwrap_or(false);
+    assert_eq!(
+        regime,
+        if fed { "canvas_base" } else { "white_base" },
+        "`delta_regime` 必须与 `fed_base` 一致（fed_base={fed}）⇒ 否则调用方会把"
+    );
+    assert!(
+        !regime.is_empty(),
+        "`max_channel_delta` 旁边必须有 `delta_regime`（这是它唯一的 regime 说明）：{out}"
+    );
+}
