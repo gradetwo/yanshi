@@ -15699,6 +15699,21 @@ pub(crate) fn origin_of(kind: AtomKind, payload: &Value) -> &'static str {
         .is_some()
     {
         "drawn"
+    } else if kind == AtomKind::DrawStroke {
+        // **手画出来的笔** ✓（第 781 轮；外部 D5）：`draw_stroke` 是**程序化笔** ✓
+        //   （`brush_stroke` **不产生自己的 kind** ✓ —— 它也落成 `draw_stroke` ✓）。
+        //   **⇒ 为什么要按 `kind` 判**：`source.brush` 只有 `brush_stroke` 会写 ✓
+        //     ⇒ 只按它判的话，`draw_stroke` 会落到 `generated` ✗（**我第一版就是这样** ✓，
+        //     判据当场红：`{"kind":"draw_stroke","origin":"generated"}` ✓）。
+        "drawn"
+    } else if kind == AtomKind::ImportImage && payload.get("bitmap").is_none() {
+        // **`import_image` 分两种** ✓（第 781 轮；外部 D5 的另一半）
+        //   **⇒ 存储形态**：笔触与位图**都**存成 `import_image` ✓（像素最后落在一张图块里 ✓）
+        //     ⇒ 所以 `kind` **不能**当来源证明 ✓ —— 但**净荷能**：真位图带 `bitmap` ✓
+        //     （`blob_hash`／`mime_type`／`size` ✓），而笔触带 `points`／`stroke` ✓。
+        //   **⇒ 于是**：`import_image` **且没有 `bitmap`** ⇒ 是**画出来的笔** ✓ ⇒ `drawn` ✓；
+        //     带 `bitmap` ⇒ 真的导入了一张图 ✓ ⇒ `imported` ✓。
+        "drawn"
     } else if kind == AtomKind::ImportImage {
         "imported"
     } else if matches!(kind, AtomKind::CreateDocument | AtomKind::CreateLayer) {

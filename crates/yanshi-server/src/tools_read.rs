@@ -742,6 +742,16 @@ pub(super) fn read_get_log(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
                 "atom_id": atom.id,
                 "seq": atom.seq,
                 "kind": atom.kind,
+                // **`origin`：来源，不是存储形态** ✓（第 781 轮；外部 `qoder` 的 D5）
+                //   **⇒ 他们的实测**：一幅 8K 画的 39,354 条笔触 `kind` **全是 `import_image`** ✗
+                //     ⇒ 拿 `kind` 做来源审计会把"画出来的 38k 笔"误判成"导入的一张图" ✓。
+                //   **⇒ 为什么这里也要给**：`list_atoms` 早就有 `origin` ✓（第 642／659 轮），
+                //     而 `get_log` 没有 ✗ ⇒ 他们的脚本走的是 `get_log` ✓ ⇒ 只改一边 = 没修 ✓
+                //     （这正是本仓"两条接口不同形"的老坑 ✓）。
+                //   **⇒ 口径与 `list_atoms` 完全一致**：落账时写死的 `payload.origin` 优先 ✓，
+                //     老日志退回按 `kind`＋`payload` 派生 ✓（`origin_of` ✓）。
+                "origin": payload_str(atom, "origin")
+                    .unwrap_or_else(|| crate::tools::origin_of(atom.kind, &atom.payload).to_owned()),
                 "actor": atom.actor,
                 "session": atom.session,
                 "changeset_id": atom.changeset_id,
