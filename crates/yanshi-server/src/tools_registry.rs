@@ -23,7 +23,16 @@ const LAYER_ID: &[ParamSpec] = &[param!("layer_id", String, true, "图层 id")];
 #[cfg(not(feature = "raw"))]
 const IMPORT_IMAGE_PARAMS: &[ParamSpec] = &[
     param!("layer_id", String, true, "目标图层"),
-    param!("bitmap", Object, true, "{blob_hash,size,mime_type}"),
+    // **`width`／`height` 放在 `bitmap` **里面**，不是顶层** ✓（第 921 轮；我为此撞过两次 ✗）
+    //   **⇒ 依据** ✗：顶层给 `height` 会被框架拒绝 ✓（错误信息列出可用参数 ✓），
+    //     而 `bitmap.width`／`bitmap.height` 是**接受**的 ✓（真包导出里就是这么写的 ✓）
+    //   ⇒ 所以描述里要写清位置 ✓ —— 否则调用方（包括我自己的探针 ✓）会照 top-level 写 ✗。
+    param!(
+        "bitmap",
+        Object,
+        true,
+        "{blob_hash,size,mime_type}；**尺寸写在这里面**：{width,height}（不是顶层）"
+    ),
     param!("region", Any, true, "放置区域 {x,y,w,h}"),
     param!("object_id", String, false, "对象 id（缺省自动生成）"),
     param!(
@@ -37,7 +46,11 @@ const IMPORT_IMAGE_PARAMS: &[ParamSpec] = &[
 #[cfg(feature = "raw")]
 const IMPORT_IMAGE_PARAMS: &[ParamSpec] = &[
     param!("layer_id", String, true, "目标图层"),
-    param!("bitmap", Object, true, "{blob_hash,size,mime_type}"),
+    // **`width`／`height` 放在 `bitmap` **里面**，不是顶层** ✓（第 921 轮；我为此撞过两次 ✗）
+    //   **⇒ 依据** ✗：顶层给 `height` 会被框架拒绝 ✓（错误信息列出可用参数 ✓），
+    //     而 `bitmap.width`／`bitmap.height` 是**接受**的 ✓（真包导出里就是这么写的 ✓）
+    //   ⇒ 所以描述里要写清位置 ✓ —— 否则调用方（包括我自己的探针 ✓）会照 top-level 写 ✗。
+    param!("bitmap", Object, true, "{blob_hash,size,mime_type}；**尺寸写在这里面**：{width,height}（不是顶层）"),
     param!("region", Any, true, "放置区域 {x,y,w,h}"),
     param!("object_id", String, false, "对象 id（缺省自动生成）"),
     param!("medium", Object, false, "{id,version} 介质描述符：随这条原子一并记录（设计 11.1）"),
