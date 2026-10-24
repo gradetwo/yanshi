@@ -4496,10 +4496,14 @@ mod tests {
             buffer
         };
         let air_raw = [0.90, 0.80, 0.625];
+        // 阻尼结果按公式手算写死（luma = 0.8086，比值 1.113/0.989/0.772
+        // 钳后 1.05/原值/0.95）——不能调用生产 helper 算，否则变异
+        // helper 时两路同变、断言测不到（变异验证实测教训）。
+        let air_damped = [0.849_056, 0.80, 0.768_194];
         let mut via_raw = make();
         dehaze(&mut via_raw, air_raw, 0.9, 0.1);
         let mut via_damped = make();
-        dehaze(&mut via_damped, damp_air_chromaticity(air_raw), 0.9, 0.1);
+        dehaze(&mut via_damped, air_damped, 0.9, 0.1);
         for x in [4u32, 28] {
             let a = via_raw.pixel(x, 4);
             let b = via_damped.pixel(x, 4);
