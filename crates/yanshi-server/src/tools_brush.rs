@@ -1659,6 +1659,20 @@ pub(super) fn paint_brush(
     };
     ctx.time(Phase::Raster, stamp_started);
 
+    // **文档背景** ✓（第 809 轮）：`max_channel_delta` 在没有基准时要合成到**它**上 ✓
+    let background_rgb: Vec<u8> = {
+        let state = document_state(ctx)?;
+        let background = &state.background;
+        (0..3)
+            .map(|channel| {
+                background
+                    .get(["r", "g", "b"][channel])
+                    .and_then(Value::as_u64)
+                    .map(|value| value.min(255) as u8)
+                    .unwrap_or(255)
+            })
+            .collect()
+    };
     // **Hokusai 的 tile 是 fix15（u16, 0..32767）** ✓ ⇒ 转成我们用的 RGBA8 ✓（`>> 7` 正好 0..255 ✓）。
     // **同一个区域公式** ✓（落笔前喂底图用的就是它 ✓）。
     // **同一份（已裁的）区域** ✓ —— 读回与掩膜都必须与喂底图用的那个完全一致 ✗。
@@ -1704,19 +1718,30 @@ pub(super) fn paint_brush(
             for channel in 0..4 {
                 // **∴ 没有基准时按**白底**✗**（**∴ 不读画布的笔直接写色 ✓ ⇒ **∴ 与白底比才是真实幅度 ✓**）
                 //   ⇒ **∴ 否则**这类笔会报 0 ✗**（**∴ `pointy_ink` 实测就是 0 ✗ ⇒ **∴ 那会误导 ✓**）
+                // **没有基准时比**文档自己的背景**，不是恒白 255** ✓
+                //   （第 809 轮；外部 `qoder` 的 D194／D193 建议 (i)）
+                //   **⇒ 缺陷**：原来的 255 是"白底文档"的假设 ✓ ⇒ 在**灰底(128)** 文档上
+                //     一笔**纯白**笔（真实改变 = |255−128| = 127 ✓）会被算成 **0** ✗；
+                //     反过来一笔"什么都没改"的笔会被算成 **127** ✗ —— **符号都反了** ✓。
+                //   **⇒ 修法**：无基准时拿 `background` 的对应通道作 old ✓（读不到才退回 255 ✓）。
+                // `background_rgb` 已经归一成 3 个 `u8` ✓ ⇒ 直接取 ✓（读不到才退回 255 ✓）
+                let background_byte =
+                    |channel: usize| -> u8 { *background_rgb.get(channel).unwrap_or(&255) };
                 let old_byte = before
                     .and_then(|pixels| pixels.get(index + channel))
                     .copied()
-                    .unwrap_or(255);
+                    .unwrap_or_else(|| background_byte(channel));
                 // **∴ 有基准 ⇒ 直接比 ✓；无基准 ⇒ 先把该通道合成到白底 ✓**（**∴ 后者才等于"肉眼看到"✓**）
                 let current = if before.is_some() {
                     i32::from(rgba[index + channel])
                 } else if channel == 3 {
-                    // **∴ alpha 通道不与白底比 ✗**（**∴ 它不是可见颜色 ✓**）
+                    // **∴ alpha 通道不参与 ✗**（**∴ 它不是可见颜色 ✓**）
                     continue;
                 } else {
+                    // **合成到**文档背景**上 ✓**（不是白底 ✓）
                     let alpha = i32::from(rgba[index + 3]);
-                    (i32::from(rgba[index + channel]) * alpha + 255 * (255 - alpha)) / 255
+                    let base = i32::from(background_byte(channel));
+                    (i32::from(rgba[index + channel]) * alpha + base * (255 - alpha)) / 255
                 };
                 let diff = current - i32::from(old_byte);
                 let diff = u8::try_from(diff.unsigned_abs().min(255)).unwrap_or(255);

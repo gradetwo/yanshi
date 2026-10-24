@@ -177,3 +177,82 @@ fn max_channel_delta_names_the_regime_it_was_measured_in() {
         "`max_channel_delta` 旁边必须有 `delta_regime`（这是它唯一的 regime 说明）：{out}"
     );
 }
+
+/// **`max_channel_delta` 在没有基准时必须比**文档背景**，不是恒白 255**（第 809 轮）
+///
+/// **⇒ 他们的建议 (i)**（`qoder` 的 D193／D194）：「无基准时比 `state.background` 的实测背景而不是 255」✓
+/// **⇒ 缺陷的量级**：灰底（128）文档上
+///   · 一笔**纯白**笔 —— 真实改变 = `|255 − 128| = 127` ✓，旧算法（白底比）报 **0** ✗；
+///   · 一笔**什么都没改**的笔 —— 旧算法报 **127** ✗ ⇒ **符号都反了** ✓。
+///
+/// **⇒ 判据**：灰底 128 的文档上画一笔**纯白** ⇒ `max_channel_delta` 必须 **≥ 120**（真改变）✓；
+/// 而同一文档上画一笔**与背景同色**（128 灰）⇒ 必须 **≤ 2** ✓（它真的没改变什么）。
+/// **变异**：改回恒白 255 ⇒ 第一条报 0、第二条报 127 ⇒ 两条都红 ✓。
+#[test]
+fn the_channel_delta_compares_against_the_document_background() {
+    for (tag, doc, color, expect_low, weight_of_expectation) in [
+        (
+            "white_on_grey",
+            "doc_bg_white",
+            json!({"r": 255, "g": 255, "b": 255, "a": 255}),
+            120u64,
+            "纯白笔在灰底上必须报出真实改变",
+        ),
+        (
+            "grey_on_grey",
+            "doc_bg_grey",
+            json!({"r": 128, "g": 128, "b": 128, "a": 255}),
+            0u64,
+            "同色笔必须报「没改变」",
+        ),
+    ] {
+        let root = std::env::temp_dir().join(format!("yanshi_bg_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("建根");
+        let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("assets");
+        let mut workspace = Workspace::with_file_store(root, DocumentSettings::default())
+            .expect("落盘工作区")
+            .with_assets_dir(Some(assets));
+        workspace
+            .create_document(
+                NewDocument::new(doc, 64, 64)
+                    .with_background(json!({"r": 128, "g": 128, "b": 128, "a": 255})),
+                "human:1",
+                "s",
+            )
+            .expect("create_document");
+        let registry = ToolRegistry::with_profiles(&Profile::ALL);
+        let mut ctx = ToolContext::new(&mut workspace, doc, "human:1", "s")
+            .with_owner(true)
+            .with_wait_for_render(true, 4_000);
+        let out = registry.call(
+            &mut ctx,
+            "brush_stroke",
+            &json!({
+                "layer_id": "layer_default", "object_id": format!("o_{tag}"),
+                "brush": "8B_Pencil#1",
+                "points": [[8.0, 8.0, 1.0], [40.0, 40.0, 1.0]],
+                "size": 6.0,
+                "color": color,
+            }),
+        );
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let delta = out["max_channel_delta"]
+            .as_u64()
+            .expect("max_channel_delta");
+        if expect_low == 0 {
+            assert!(
+                delta <= 2,
+                "与背景同色的笔**什么都没改变**，delta 必须接近 0，实测 {delta} ⇒ {weight_of_expectation}: {out}"
+            );
+        } else {
+            assert!(
+                delta >= expect_low,
+                "纯白笔在 128 灰底上真实改变约 127，delta 必须 ≥ {expect_low}，实测 {delta} ⇒ {weight_of_expectation}: {out}"
+            );
+        }
+    }
+}
