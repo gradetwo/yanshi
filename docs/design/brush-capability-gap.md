@@ -20410,3 +20410,21 @@ note: 低频/高频是导入时刻的像素快照（烘焙）… 半透明像素
    （词表在 `tool-example-acceptance.mjs` 的 `needsPrior` 正则里 ✓）
 
 **⇒ 变异**：改完之后，把 `frequency_separation` 的示例放到**最后一个**示例之后跑 ⇒ 仍应 ⊙（不再受顺序影响 ✓）。
+
+## 五百五十四、`e5aad82c` 的 CI：**test (stable) 转绿** ✓，只剩 `test (beta)` 一条（疑似抖动）（第 940 轮）
+
+**⇒ 逐 job 实测（`e5aad82c`）**：
+| job | 结论 |
+|---|---|
+| `test (stable)` | **success** ✓（上一轮 `PHOTO_TOOLS` 下界修复生效 ✓）|
+| `GPU feature (build and size)` | **success** ✓（`gpu_mode_code` 修复生效 ✓）|
+| `clippy`／`rustfmt`／`wasm smoke`／`criteria shard 1、4、5` | success ✓ |
+| `test (beta)` | **failure** ✗ |
+
+**⇒ 失败测试**：`crates/yanshi-http/tests/transport.rs:607` 的
+`document_persistence_over_http_survives_restart` ⇒ **同一份代码在 stable 上通过** ✓ 在 beta 上失败 ✗
+⇒ 而该测试是**重启后从磁盘恢复**的语义（`/api/documents` 列表里要有 `doc_persist` ✓）
+⇒ **⇒ 同一提交两个工具链一绿一红** ⇒ 优先怀疑**抖动**（两个 job 并行 ⇒ 端口/磁盘竞争 ✓）而不是产品 ✗
+⇒ **⇒ 处理（按本仓规矩 ✓）**：**不改断言** ✓ ⇒ 等下一次 run 看它是否复现 ✓
+  - 若稳定复现 ⇒ 再查（`start_server_with_root` 的临时根是否与别的 job 撞 ✓）
+  - 若不复现 ⇒ 记为环境抖动 ✓ 并在台账留数字 ✓
