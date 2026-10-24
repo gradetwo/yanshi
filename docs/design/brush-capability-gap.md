@@ -19971,3 +19971,26 @@ if (!serverRenderPreferred()) { return await callToolLocal(name, args, options);
 
 **⇒ 仍未验证的**：`4c08d7ff` 的 CI 结论**还没出**（本机已 exit 0 ✓）
 ⇒ **不写成"CI 绿了"** ✗ —— 等 CI 定音 ✓。
+
+## 五百三十二、**CI 全绿**：离线队列那条红已关闭（第 903 轮；`a9856f67` 与 `4c08d7ff` 都 `completed/success`）
+
+**⇒ 实测（GitHub API 逐 job 读）**：
+| job | 结论 |
+|---|---|
+| `test (stable)` ／ `test (beta)` | **success** ✓ |
+| `clippy`／`rustfmt`／`wasm smoke (node)`／`GPU feature` | **success** ✓ |
+| `criteria shard 1/6`／`2/6`／`4/6`／`5/6`／**`6/6`** | **success** ✓ |
+| `criteria shard 3/6` | success ✓（最后完成 ✓）|
+| **`a9856f67` 整体** | **completed / success** ✓ |
+| **`4c08d7ff` 整体** | **completed / success** ✓ |
+
+**⇒ 而 `6/6` 正是**装 `browser-offline-journal` 那一片** ✓ ⇒ **这条从第 880 轮追到第 903 轮的红，CI 上确认关闭** ✓
+
+**⇒ 这 23 轮里真正解决问题的三处（都不是"产品写错"，是我的判据/编排写错）**：
+1. `serverUrl` 从**静态 PWA** 派生（`&render=server` 被 `__pwaLocalOnly` 忽略 ✓）⇒ 改成从**服务端 base** 拼 ✓（第 896 轮）
+2. 段 ④ 在**本地专用页**上**前提不成立** ⇒ 如实 `⊘` 并跳过 ✓（第 897 轮）
+3. `run-criteria.sh` 缺**工作区核对**（外部补丁登记的残余 ✓）⇒ 补上 ✓（第 880 轮）
+
+**⇒ 教训（这一族共有的）**：**"我改的那个东西，是不是运行时真正执行的那一份"** ✗ ——
+产物 vs 真源（第 524 节）、同名函数多份实现（第 527 节）、URL 参数被更早的哨兵钉死（第 528 节）✓
+⇒ 三次都靠**运行时探针**（CDP 里打印 `__toolDebug`／`navigator.onLine`／`String(fn)`）才定论 ✓ 而不是靠读码推 ✓。
