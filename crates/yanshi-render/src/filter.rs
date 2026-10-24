@@ -1565,6 +1565,14 @@ pub fn estimate_atmospheric_light(
 }
 
 /// 暗角：按到画布中心的归一化距离做平滑衰减。
+///
+/// **期 3 A4-2 口径**：衰减乘子作用在**显示空间**（`out_d = d ·
+/// (1 − strength·smoothstep(t))`，扩展保符号编解码、HDR 不钳）。旧实现
+/// 在线性空间乘同一乘子——中灰处视觉效果约差一倍（乘子 0.7：线性乘
+/// 使显示 0.5 → 约 0.43，显示乘直接得 0.35），预设 strength 数据是
+/// 按显示直觉定的，旧实现系统性偏弱（设计 §2 A4-2）。几何（文档中心/
+/// 对角线归一、smoothstep 形状）不变；乘子 = 1 的像素（中心区）逐位
+/// 不动；strength = 0 恒等。
 pub fn vignette(
     buffer: &mut Buffer,
     strength: f32,
@@ -1593,17 +1601,22 @@ pub fn vignette(
             let distance = (nx * nx + ny * ny).sqrt();
             let t = ((distance - radius) / softness).clamp(0.0, 1.0);
             let falloff = 1.0 - strength * (t * t * (3.0 - 2.0 * t));
+            if falloff == 1.0 {
+                continue;
+            }
             let pixel = buffer.pixel(x, y);
-            buffer.set_pixel(
-                x,
-                y,
-                [
-                    pixel[0] * falloff,
-                    pixel[1] * falloff,
-                    pixel[2] * falloff,
-                    pixel[3],
-                ],
-            );
+            let alpha = pixel[3];
+            if alpha <= 0.0 {
+                continue;
+            }
+            let mut out = [0.0f32; 4];
+            out[3] = alpha;
+            for channel in 0..3 {
+                let straight = pixel[channel] / alpha;
+                out[channel] =
+                    srgb_decode_extended(srgb_encode_extended(straight) * falloff) * alpha;
+            }
+            buffer.set_pixel(x, y, out);
         }
     }
 }
@@ -4113,6 +4126,29 @@ mod tests {
             "分块渲染的右下像素应与整幅渲染的 (31,31) 一致"
         );
         let _ = params;
+    }
+
+    /// A4-2 显示刻度探针（设计 §2 A4-2）：乘子在显示空间施加——均匀
+    /// 显示中灰 0.5 图、角落满衰减（t=1）且 strength=0.3（乘子 0.7）时
+    /// 角落显示输出 = 0.5 × 0.7 = 0.35 ± 0.01。旧线性乘子同输入给
+    /// enc(0.2140×0.7) ≈ 0.430 ⇒ 变异回线性立刻红。中心（t=0）逐位不动。
+    #[test]
+    fn vignette_multiplies_in_display_space() {
+        let mut buffer = Buffer::new(0, 0, 4, 4);
+        let lin = srgb_to_linear(0.5);
+        for y in 0..4 {
+            for x in 0..4 {
+                buffer.set_pixel(x, y, [lin, lin, lin, 1.0]);
+            }
+        }
+        vignette(&mut buffer, 0.3, 0.2, 0.6, (4.0, 4.0));
+        let corner = srgb_encode_extended(buffer.pixel(0, 0)[0]);
+        assert!(
+            (corner - 0.35).abs() < 0.01,
+            "角落显示输出应 = 0.35（显示乘子 0.7）：{corner}"
+        );
+        let center = buffer.pixel(2, 2);
+        assert_eq!(center, [lin, lin, lin, 1.0], "中心 t=0 应逐位不动");
     }
 
     /// 运动模糊：结果必须等于「按角度/距离/采样数取样的源像素均值」——
