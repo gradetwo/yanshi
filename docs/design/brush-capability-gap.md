@@ -20754,3 +20754,20 @@ apply  2,881,298 ms｜render 652,982 ms｜累计 3,545 s
 ⇒ **⇒ 但仍有一个可优化点**：**约 2,584 个输出 tile 里每帧只 blit 4.4 个** ⇒
   若某些 tile 只在首帧画过一次而之后内容变了 ⇒ 会出现"陈旧 tile" ✓ ⇒ **这是下一步该验的** ✓
   ⇒ **判据形状**：相邻两帧之间，**内容变化的 tile 必须都被 blit** ✓（不是"blit 了多少个"✓）
+
+## 五百七十三、"首帧画满"的**计数判据**：我猜了三个 API，全错，已全部回滚（第 979 轮）
+
+**⇒ 目标（好目标 ✓）**：用 **tile 计数**（结构量 ✓ 跨机器 ✓）断言「首帧画满」：
+`dirty_tiles_total == tile_count()` ✓ 变异：去掉 `!have_frame` 展开 ⇒ 远小于 ⇒ 红 ✓
+
+**⇒ 我写了什么** ✗：一个测试文件，用了 `Timeline::new(...)`／`ws.kernel_clone_for_tests()`／
+`timeline.apply_atom_json(...)` —— **三个都不存在** ✗ ⇒ `cargo test` 直接 **3 个编译错** ✓
+
+**⇒ 处理（按规矩 ✓）**：**测试文件删掉、`lib.rs` 的两个 getter 一起 `git checkout` 回滚** ✓
+⇒ 复查：`cargo check -p yanshi-timelapse` ⇒ **0 error** ✓、`git status` **空** ✓
+
+**⇒ 教训（第 N 次同型 ✓）**：**写测试前先把**真实的构造入口读出来** ✗** ——
+我只 grep 到 `pub fn frame(` 与 `pub fn stats(` 就**假定**了构造与喂原子的入口 ✓（假定 ≠ 读 ✓）
+⇒ 正确顺序：`grep -n "impl Timeline" -A 40` 读**全部** pub 方法 ✓ 再写 ✓（下一轮 ✓）
+
+**⇒ 本轮无净改动** ✓（唯一产出是这条教训与"目标形状已定"✓）
