@@ -13,6 +13,14 @@ use yanshi_http::server::{serve, HttpOptions};
 use yanshi_http::ws::{encode_client_frame, read_frame_any, Frame, OpCode};
 
 /// 每个请求用一条新连接（服务端一律 `Connection: close`）。
+/// **跑完即删临时目录** ✓（第 818 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 struct HttpClient {
     addr: std::net::SocketAddr,
 }
@@ -569,6 +577,7 @@ fn websocket_pushes_control_flow_globally_and_data_flow_by_viewport() {
 #[test]
 fn document_persistence_over_http_survives_restart() {
     let mut root = std::env::temp_dir();
+    let _cleanup_1 = Cleanup(root.clone());
     root.push(format!("yanshi-http-it-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
 
@@ -740,6 +749,7 @@ fn client_supplied_atom_ids_are_idempotent() {
 #[test]
 fn wasm_assets_are_served_from_the_configured_directory() {
     let mut root = std::env::temp_dir();
+    let _cleanup_2 = Cleanup(root.clone());
     root.push(format!("yanshi-wasm-assets-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
@@ -927,6 +937,7 @@ fn viewer_exposes_the_contact_mailbox() {
 #[test]
 fn brand_assets_are_served_from_the_configured_directory() {
     let mut root = std::env::temp_dir();
+    let _cleanup_3 = Cleanup(root.clone());
     root.push(format!("yanshi-brand-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("svg")).unwrap();
@@ -1169,6 +1180,7 @@ fn the_served_viewer_script_encodes_brush_names() {
 #[test]
 fn brush_asset_route_rejects_encoded_traversal() {
     let mut root = std::env::temp_dir();
+    let _cleanup_4 = Cleanup(root.clone());
     root.push(format!("yanshi-brush-traversal-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("brushes")).unwrap();

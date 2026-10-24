@@ -7,6 +7,14 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
+/// **跑完即删临时目录** ✓（第 818 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 struct McpProcess {
     child: Child,
     stdin: ChildStdin,
@@ -71,6 +79,7 @@ impl McpProcess {
 
 fn temp_root(tag: &str) -> std::path::PathBuf {
     let mut root = std::env::temp_dir();
+    let _cleanup_1 = Cleanup(root.clone());
     root.push(format!("yanshi-mcp-it-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     root
