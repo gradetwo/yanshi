@@ -21037,3 +21037,21 @@ failed to run git: fatal: not a git repository (or any of the parent directories
 
 **⇒ 验证边界（如实 ✓）**：工作流改动**只能在下一个 tag 上验证** ✓（`--repo` 是文档标志，本机 `--help` 已确认 ✓）
 ⇒ 同理 **v0.2.2 也是同一处红** ✓ ⇒ **不是 0.3.0 引入的** ✓
+
+## 五百八十七、发布修复**在本机跑通了那个作业的脚本**（第 1045 轮；不必等下一个 tag）
+
+**⇒ 做法（不动公开产物 ✓）**：从 `.github/workflows/release.yml` 的 `checksums` 作业里**抽出那段 shell** ✓
+⇒ 造 4 个假平台的 `artifacts/{a,b,c,d}`（各一份 `SHA256SUMS` ＋ 一个 `tar.gz` ✓）
+⇒ 用一个**桩 `gh`**（只记录参数 ✓）跑那段脚本 ✓
+**⇒ 实测**：
+```
+条目 4 ｜归档 4
+== 全部 4 个平台的校验和已汇总上传 ✓ ==
+exit=0
+gh-call: release upload v0.3.0 SHA256SUMS --clobber --repo gradetwo/yanshi   ← 标志在位 ✓
+```
+⇒ **⇒ 所以这次修复**不是"只能等下个 tag" ✓ —— 脚本级验证已经做完 ✓
+
+**⇒ 还剩下的边界（如实 ✓）**：桩 `gh` 不能证明**真实 API 接受**这些参数 ✓
+⇒ 但那正是 CI 上**已经失败过一次**的地方（`failed to run git` ⇒ 与 `--repo` 直接相关 ✓），
+  且同一命令形态在**本机非 git 目录**里也复现过该失败、加了 `--repo` 就不再走 git 推断 ✓（第 1044 轮 ✓）
