@@ -261,7 +261,8 @@ fn group_base_name(state: &yanshi_core::DocumentState, args: &Value, layer_id: &
 
 /// 新图层原子（CreateLayer；不给 z_index ⇒ fold 自动取存活最大 +1，
 /// 组内按原子顺序自下而上排布）。
-fn create_layer_atom(
+/// 期 4 D2-1 起供预设预览的临时文档共用（pub(super) ⇒ tools 树内可见）。
+pub(super) fn create_layer_atom(
     ctx: &ToolContext<'_>,
     layer_id: &str,
     name: &str,
@@ -289,7 +290,8 @@ fn create_layer_atom(
 
 /// 位图对象原子（CreateObject + raster_patch；与 import_image 同形，
 /// 但这里直接落原子以便与组同属一个 changeset）。
-fn raster_patch_atom(
+/// 期 4 D2-1 起供预设预览的临时文档共用（pub(super) ⇒ tools 树内可见）。
+pub(super) fn raster_patch_atom(
     ctx: &ToolContext<'_>,
     object_id: &str,
     layer_id: &str,
@@ -772,6 +774,7 @@ mod retouch_tests {
         );
         assert_eq!(ratio, 1.0, "全不透明图统计占比应为 1");
         assert_ne!(low, source, "低频必须是模糊过的，不能原样返回源图");
+        assert_ne!(high, source, "高频层是细节载荷，不能原样返回源图");
         // 纯色块内部高频必须是“线性 0.5 的 sRGB 编码”（I == LF ⇒
         // HF_lin = 0.5 ⇒ encode(0.5)×255 = 187.6 ⇒ 188 ± 1）——注意不是
         // 128：线性空间烘焙的中性点在字节上是 188（PS 显示空间烘焙

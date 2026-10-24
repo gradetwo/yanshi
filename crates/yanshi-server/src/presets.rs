@@ -654,8 +654,316 @@ pub(super) fn read_get_preset(_ctx: &mut ToolContext<'_>, args: &Value) -> Resul
     }))
 }
 
+/// 代理分辨率下效果与成品不同的操作（期 4 D2-1）：像素半径类
+///（clarity/texture）、邻域阈值类（glow）。逐像素颜色操作与几何归一化
+/// 的 vignette 不受分辨率影响，不在此列。规格点名的 grain 在本仓内核
+/// 操作名单里不存在（filter.rs 无此名），故不列入——grain 操作若日后
+/// 落地，须同步补进本表，否则 scale_notes 会漏报。
+const PREVIEW_SCALE_SENSITIVE_OPS: [&str; 3] = ["clarity", "texture", "glow"];
+
+/// `preview_preset` 的 `render` 参数（缺省 max_edge 512、format jpeg）。
+struct PreviewRender {
+    /// 代理图长边上限（128–2048）。
+    max_edge: u32,
+    /// 输出编码。
+    format: PreviewFormat,
+}
+
+/// 预览渲染的输出编码。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreviewFormat {
+    /// PNG（无损；与 apply 后渲染逐像素比对时用它）。
+    Png,
+    /// JPEG（有损；base64 体积约为 PNG 的十分之一，默认）。
+    Jpeg,
+}
+
+/// 解析 `render` 参数：缺席 ⇒ 不渲染（None，老行为逐字不变）；
+/// 在场 ⇒ 严格校验（未知键/非法 max_edge/format 一律响亮拒绝，
+/// 不静默取缺省）。
+fn parse_preview_render(args: &Value) -> Result<Option<PreviewRender>> {
+    let Some(render) = args.get("render") else {
+        return Ok(None);
+    };
+    let Some(map) = render.as_object() else {
+        return Err(preset_err(format!(
+            "preview_preset 的 render 必须是对象（{{max_edge, format}}），得到 {render}"
+        )));
+    };
+    for key in map.keys() {
+        if key != "max_edge" && key != "format" {
+            return Err(preset_err(format!(
+                "preview_preset 的 render 不认键「{key}」；只认 max_edge / format"
+            )));
+        }
+    }
+    let max_edge = match map.get("max_edge") {
+        None => 512,
+        Some(value) => {
+            let as_int = value.as_u64().or_else(|| {
+                value.as_f64().and_then(|f| {
+                    if f.is_finite() && f.fract() == 0.0 && f >= 0.0 {
+                        Some(f as u64)
+                    } else {
+                        None
+                    }
+                })
+            });
+            let Some(edge) = as_int else {
+                return Err(preset_err(format!(
+                    "preview_preset 的 render.max_edge 必须是整数，得到 {value}"
+                )));
+            };
+            if !(128..=2048).contains(&edge) {
+                return Err(preset_err(format!(
+                    "preview_preset 的 render.max_edge 必须在 [128, 2048] 内，得到 {edge}"
+                )));
+            }
+            edge as u32
+        }
+    };
+    let format = match map.get("format") {
+        None => PreviewFormat::Jpeg,
+        Some(Value::String(s)) if s == "png" => PreviewFormat::Png,
+        Some(Value::String(s)) if s == "jpeg" => PreviewFormat::Jpeg,
+        Some(other) => {
+            return Err(preset_err(format!(
+                "preview_preset 的 render.format 只收 png / jpeg，得到 {other}"
+            )));
+        }
+    };
+    Ok(Some(PreviewRender { max_edge, format }))
+}
+
+/// 盒式降采样（纯函数）：长边 ≤ max_edge 时原样返回（逐字节同一份，
+/// 保证“原生即 ≤max_edge 的图预览与 apply 逐像素相等”的测试前提）；
+/// 超出时按盒平均降采样（每个输出像素 = 覆盖源像素的均值，向零取整）。
+/// 输入尺寸为 0 时不做除法，直接原样返回，调用方随后响亮拒绝。
+fn box_downsample(pixels: &[u8], width: u32, height: u32, max_edge: u32) -> (Vec<u8>, u32, u32) {
+    if width == 0 || height == 0 {
+        return (Vec::new(), width, height);
+    }
+    let longest = width.max(height);
+    if longest <= max_edge {
+        return (pixels.to_vec(), width, height);
+    }
+    let scale = max_edge as f64 / longest as f64;
+    let new_width = ((width as f64 * scale).round() as u32).max(1);
+    let new_height = ((height as f64 * scale).round() as u32).max(1);
+    let mut out = vec![0u8; (new_width as usize) * (new_height as usize) * 4];
+    for y in 0..new_height as usize {
+        let y0 = y * height as usize / new_height as usize;
+        let y1 = ((y + 1) * height as usize / new_height as usize).max(y0 + 1);
+        for x in 0..new_width as usize {
+            let x0 = x * width as usize / new_width as usize;
+            let x1 = ((x + 1) * width as usize / new_width as usize).max(x0 + 1);
+            let mut sum = [0u32; 4];
+            let mut count = 0u32;
+            for sy in y0..y1 {
+                for sx in x0..x1 {
+                    let base = (sy * width as usize + sx) * 4;
+                    for channel in 0..4 {
+                        sum[channel] += pixels[base + channel] as u32;
+                    }
+                    count += 1;
+                }
+            }
+            let base = (y * new_width as usize + x) * 4;
+            for channel in 0..4 {
+                out[base + channel] = (sum[channel] / count) as u8;
+            }
+        }
+    }
+    (out, new_width, new_height)
+}
+
+/// 尺度诚实标注（期 4 D2-1）：展开串里含尺度敏感操作 ⇒ 点名；
+/// 不含 ⇒ 空串（测试断“不含时为空”）。
+fn preview_scale_notes(ops: &[ExpandedOp]) -> String {
+    let mut found: Vec<&str> = Vec::new();
+    for op in ops {
+        if PREVIEW_SCALE_SENSITIVE_OPS.contains(&op.type_name.as_str())
+            && !found.contains(&op.type_name.as_str())
+        {
+            found.push(op.type_name.as_str());
+        }
+    }
+    if found.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "代理图按长边 ≤ max_edge 降采样后渲染：{} 在代理分辨率下效果与成品不同（像素半径/邻域阈值随分辨率变化），逐像素颜色操作与几何归一化的 vignette 不受影响。",
+            found.join("、")
+        )
+    }
+}
+
+/// JPEG 编码（期 4 D2-1）：本仓此前只有 JPEG 解码、无编码器，预览
+/// 的默认格式需要它（base64 体积约为 PNG 的十分之一）。RGBA 对白底
+/// 合成后转 RGB（JPEG 无 alpha 通道）。
+fn encode_jpeg(width: u32, height: u32, rgba8: &[u8]) -> Result<Vec<u8>> {
+    let mut rgb = Vec::with_capacity((width as usize) * (height as usize) * 3);
+    for pixel in rgba8.chunks_exact(4) {
+        let alpha = pixel[3] as u32;
+        for value in &pixel[..3] {
+            rgb.push(((*value as u32 * alpha + 255 * (255 - alpha)) / 255) as u8);
+        }
+    }
+    let mut buf = std::io::Cursor::new(Vec::new());
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 85)
+        .encode(&rgb, width, height, image::ColorType::Rgb8.into())
+        .map_err(|error| preset_err(format!("JPEG 编码失败：{error}")))?;
+    Ok(buf.into_inner())
+}
+
+/// 盒式降采样后的代理图（像素 + 尺寸成组传，避免渲染函数参数超限）。
+struct ProxyImage<'a> {
+    /// 代理像素（显示编码 RGBA8）。
+    pixels: &'a [u8],
+    /// 代理宽。
+    width: u32,
+    /// 代理高。
+    height: u32,
+}
+
+/// `preview_preset` 的渲染路径（期 4 D2-1）：取源图层整幅像素 → 盒式
+/// 降采样 → 临时文档（画布 = 代理尺寸、背景 = 源文档背景）→ 落代理图
+/// → 用与 `apply_preset` 同一份落成循环（`land_expanded_ops`）落展开
+/// 串 → 整幅渲染 → 按 format 编码 → base64 回带。临时文档的删除由
+/// 调用方（`render_preview_image`）在所有出口执行，本函数只负责建
+/// 与渲染。
+fn render_preview_in_temp_doc(
+    ctx: &mut ToolContext<'_>,
+    preset: &StylePreset,
+    ops: &[ExpandedOp],
+    temp_id: &str,
+    proxy: &ProxyImage<'_>,
+    render: &PreviewRender,
+    source_background: Value,
+) -> Result<Value> {
+    let actor = ctx.actor.clone();
+    let session = ctx.session.clone();
+    let owner = ctx.owner;
+    let role = ctx.role;
+    ctx.workspace.create_document(
+        crate::NewDocument::new(temp_id, proxy.width, proxy.height)
+            .with_background(source_background),
+        &actor,
+        &session,
+    )?;
+    let mut temp_ctx =
+        ToolContext::new(&mut *ctx.workspace, temp_id, actor, session).with_owner(owner);
+    temp_ctx = temp_ctx.with_role(role);
+    // 底图：一个图层 + 一张代理位图（与 import_image 同形，直接落原子
+    // 以便与后续落成同属临时文档的原子流；复用 D1 的原子 helper）。
+    let base_layer_id = format!("layer_{}", yanshi_core::Ulid::new().encode());
+    let hash = temp_ctx.workspace.put_blob(proxy.pixels)?;
+    let object_id = format!("obj_{}", yanshi_core::Ulid::new().encode());
+    let atoms = vec![
+        super::tools_retouch::create_layer_atom(
+            &temp_ctx,
+            &base_layer_id,
+            "预览底图",
+            None,
+            None,
+            None,
+        ),
+        super::tools_retouch::raster_patch_atom(
+            &temp_ctx,
+            &object_id,
+            &base_layer_id,
+            &hash,
+            proxy.pixels.len(),
+            proxy.width,
+            proxy.height,
+        ),
+    ];
+    temp_ctx.commit_changeset(atoms, Changeset::new_id())?;
+    // 与 apply_preset 同一份落成循环（不是复制品）：临时文档全新，
+    // alive 为空 ⇒ 全走 add。
+    let alive: BTreeMap<String, &yanshi_core::Object> = BTreeMap::new();
+    let landed = land_expanded_ops(&mut temp_ctx, &base_layer_id, &preset.id, ops, &alive)?;
+    let bbox = Bbox::new(0.0, 0.0, proxy.width as f64, proxy.height as f64);
+    let (width, height, rendered) = temp_ctx.workspace.render_region_raw(temp_id, bbox)?;
+    let (bytes, format_name) = match render.format {
+        PreviewFormat::Png => (
+            yanshi_render::png::encode_png(width, height, &rendered)
+                .ok_or_else(|| preset_err("PNG 编码失败：渲染像素无法编码".to_owned()))?,
+            "png",
+        ),
+        PreviewFormat::Jpeg => (encode_jpeg(width, height, &rendered)?, "jpeg"),
+    };
+    let applied = landed.created.len() + landed.updated.len() + landed.revived.len();
+    Ok(json!({
+        "image_base64": crate::base64::encode(&bytes),
+        "image_width": width,
+        "image_height": height,
+        "image_format": format_name,
+        "ops_applied": applied,
+        "scale_notes": preview_scale_notes(ops),
+    }))
+}
+
+/// 渲染路径的外层：取源像素、降采样、建临时文档、渲染，并在**所有
+/// 出口**删除临时文档。删除失败只在成功响应里以 `warnings` 留痕；
+/// 错误路径上删除同样会尝试，但错误响应没有 warnings 槽位，删失败
+/// 的信息此时无法回带（残留临时文档须手动删除）——如实记录于此。
+fn render_preview_image(
+    ctx: &mut ToolContext<'_>,
+    preset: &StylePreset,
+    ops: &[ExpandedOp],
+    layer_id: &str,
+    render: &PreviewRender,
+) -> Result<Value> {
+    let state = document_state(ctx)?;
+    if state.width == 0 || state.height == 0 {
+        return Err(preset_err(format!(
+            "源文档画布尺寸为 {}×{}，无法渲染预览",
+            state.width, state.height
+        )));
+    }
+    let bbox = Bbox::new(0.0, 0.0, state.width as f64, state.height as f64);
+    let (src_width, src_height, source) = ctx
+        .workspace
+        .render_region_raw_layer(&ctx.doc_id, bbox, layer_id)
+        .map_err(|error| {
+            if error.code == ErrorCode::ReferenceNotFound {
+                preset_err(format!(
+                    "源图层 {layer_id} 渲染为空 ⇒ 它是空层或纯调整层，没有可预览的像素：{error}"
+                ))
+            } else {
+                error
+            }
+        })?;
+    let (pixels, width, height) = box_downsample(&source, src_width, src_height, render.max_edge);
+    let proxy = ProxyImage {
+        pixels: &pixels,
+        width,
+        height,
+    };
+    let temp_id = format!("preview_{}", yanshi_core::Ulid::new().encode());
+    let outcome = render_preview_in_temp_doc(
+        ctx,
+        preset,
+        ops,
+        &temp_id,
+        &proxy,
+        render,
+        state.background.clone(),
+    );
+    let mut warnings: Vec<String> = Vec::new();
+    if let Err(error) = ctx.workspace.delete_document(&temp_id) {
+        warnings.push(format!(
+            "临时文档 {temp_id} 删除失败：{error}（残留文档需手动删除）"
+        ));
+    }
+    let mut rendered = outcome?;
+    rendered["warnings"] = json!(warnings);
+    Ok(rendered)
+}
+
 /// `preview_preset`：只展开、不落成、不渲染——返回操作清单供 agent 先看再调。
-pub(super) fn read_preview_preset(_ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+pub(super) fn read_preview_preset(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let library = load_preset_library()?;
     let preset_id = require_str(args, "preset_id")?;
     let preset = find_preset(&library, &preset_id)?;
@@ -674,7 +982,10 @@ pub(super) fn read_preview_preset(_ctx: &mut ToolContext<'_>, args: &Value) -> R
             ))
         })?;
     }
-    Ok(json!({
+    // 不给 render ⇒ 响应与此前逐字一致（老调用方零影响）；给 ⇒ 走临时
+    // 文档渲染，渲染字段平铺进响应，notes 不再说“不渲染”。
+    let render = parse_preview_render(args)?;
+    let mut response = json!({
         "preset_id": preset.id,
         "name_zh": preset.name_zh,
         "status": preset.status,
@@ -684,7 +995,25 @@ pub(super) fn read_preview_preset(_ctx: &mut ToolContext<'_>, args: &Value) -> R
         "op_count": ops.len(),
         "notes": "只展开不落成、不渲染；落成请用 apply_preset（同一展开口径）",
         "preset_notes": preset.notes,
-    }))
+    });
+    if let Some(render) = render {
+        let layer_id = match args.get("layer_id") {
+            Some(Value::String(s)) if !s.trim().is_empty() => s.clone(),
+            _ => {
+                return Err(preset_err(
+                    "preview_preset 的 render 需要 layer_id（源图层）".to_owned(),
+                ));
+            }
+        };
+        let rendered = render_preview_image(ctx, preset, &ops, &layer_id, &render)?;
+        for (key, value) in rendered.as_object().expect("渲染回执必须是对象") {
+            response[key] = value.clone();
+        }
+        response["notes"] = json!(
+            "只展开不落原文档；渲染走临时文档（已删除），见 image_base64；落成请用 apply_preset（同一展开口径）"
+        );
+    }
+    Ok(response)
 }
 
 /// 操作的 kind 字符串 → 既有效果路径的 `EffectKind`。
@@ -697,6 +1026,80 @@ fn effect_kind_of(op: &ExpandedOp) -> Result<EffectKind> {
             op.object_id
         ))),
     }
+}
+
+/// 已展开操作串的落成结果（期 4 D2-1 抽出，供 `apply_preset` 与
+/// `preview_preset` 的渲染路径共用——展开器（`expand_preset`）与
+/// 落成循环各只有一份，不许复制第二份）。
+pub(super) struct LandedOps {
+    /// 新建的对象 id。
+    pub created: Vec<String>,
+    /// 走更新路径的对象 id。
+    pub updated: Vec<String>,
+    /// 走期 1 E-b 复活支路的对象 id（不许混进 created 冒充新建）。
+    pub revived: Vec<String>,
+    /// 最后一笔的工具回执；展开为空时为 None（apply 侧此时 expect 失败，
+    /// 与抽出前行为一致；preview 渲染侧不依赖它）。
+    pub last: Option<Value>,
+}
+
+/// 按序落成一串已展开操作（新走 add、已有走 update、墓碑走 add 的
+/// 复活支路）。调用方须先做全量校验（apply 侧的第一阶段）；preview
+/// 渲染侧对全新临时文档调用，alive 为空 ⇒ 全走 add。
+fn land_expanded_ops(
+    ctx: &mut ToolContext<'_>,
+    layer_id: &str,
+    preset_id: &str,
+    ops: &[ExpandedOp],
+    alive: &BTreeMap<String, &yanshi_core::Object>,
+) -> Result<LandedOps> {
+    let mut created: Vec<String> = Vec::new();
+    let mut updated: Vec<String> = Vec::new();
+    let mut revived: Vec<String> = Vec::new();
+    let mut last: Option<Value> = None;
+    for op in ops {
+        let kind = effect_kind_of(op)?;
+        let value = if alive.contains_key(&op.object_id) {
+            let result = write_update_effect(
+                ctx,
+                &json!({
+                    "object_id": op.object_id,
+                    "params": op.params,
+                    "opacity": 1.0,
+                }),
+                kind,
+            )?;
+            updated.push(op.object_id.clone());
+            result
+        } else {
+            let result = write_add_effect(
+                ctx,
+                &json!({
+                    "layer_id": layer_id,
+                    kind.key(): op.type_name,
+                    "params": op.params,
+                    "object_id": op.object_id,
+                    "name": format!("preset:{preset_id}"),
+                    "opacity": 1.0,
+                }),
+                kind,
+            )?;
+            // 复活的对象单列点名（期 1 E-b）：不许混进 created 冒充新建。
+            if result["revived"] == json!(true) {
+                revived.push(op.object_id.clone());
+            } else {
+                created.push(op.object_id.clone());
+            }
+            result
+        };
+        last = Some(value);
+    }
+    Ok(LandedOps {
+        created,
+        updated,
+        revived,
+        last,
+    })
 }
 
 /// `apply_preset`：展开 → **全量校验**（图层存在、每笔过 `validate_effect`、
@@ -788,48 +1191,14 @@ pub(super) fn write_apply_preset(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         }
     }
 
-    // ---- 第二阶段：按序落成（新走 add、已有走 update、墓碑走 add 的复活支路）----
-    let mut created: Vec<String> = Vec::new();
-    let mut updated: Vec<String> = Vec::new();
-    let mut revived: Vec<String> = Vec::new();
-    let mut last: Option<Value> = None;
-    for op in &ops {
-        let kind = effect_kind_of(op)?;
-        let value = if alive.contains_key(&op.object_id) {
-            let result = write_update_effect(
-                ctx,
-                &json!({
-                    "object_id": op.object_id,
-                    "params": op.params,
-                    "opacity": 1.0,
-                }),
-                kind,
-            )?;
-            updated.push(op.object_id.clone());
-            result
-        } else {
-            let result = write_add_effect(
-                ctx,
-                &json!({
-                    "layer_id": layer_id,
-                    kind.key(): op.type_name,
-                    "params": op.params,
-                    "object_id": op.object_id,
-                    "name": format!("preset:{}", preset.id),
-                    "opacity": 1.0,
-                }),
-                kind,
-            )?;
-            // 复活的对象单列点名（期 1 E-b）：不许混进 created 冒充新建。
-            if result["revived"] == json!(true) {
-                revived.push(op.object_id.clone());
-            } else {
-                created.push(op.object_id.clone());
-            }
-            result
-        };
-        last = Some(value);
-    }
+    // ---- 第二阶段：按序落成（抽出 land_expanded_ops，与 preview 渲染共用）----
+    let landed = land_expanded_ops(ctx, &layer_id, &preset.id, &ops, &alive)?;
+    let LandedOps {
+        created,
+        updated,
+        revived,
+        last,
+    } = landed;
     let mut value = last.expect("展开至少含风格段一笔，不会为空");
     value["preset_id"] = json!(preset.id);
     value["strength"] = json!(strength);
@@ -989,9 +1358,18 @@ mod preset_expander_tests {
                 .and_then(Value::as_f64)
                 .expect("展开参数必须含 amount")
         };
-        assert!((amount_at(1.0) - 0.8).abs() < 1e-9, "strength=1 时 amount 应为著录值 0.8");
-        assert!((amount_at(0.5) - 0.4).abs() < 1e-9, "strength=0.5 时 amount 应为 0.4");
-        assert!((amount_at(0.0) - 0.0).abs() < 1e-9, "strength=0 时 amount 应为 0（恒等）");
+        assert!(
+            (amount_at(1.0) - 0.8).abs() < 1e-9,
+            "strength=1 时 amount 应为著录值 0.8"
+        );
+        assert!(
+            (amount_at(0.5) - 0.4).abs() < 1e-9,
+            "strength=0.5 时 amount 应为 0.4"
+        );
+        assert!(
+            (amount_at(0.0) - 0.0).abs() < 1e-9,
+            "strength=0 时 amount 应为 0（恒等）"
+        );
     }
 
     #[test]
@@ -1103,5 +1481,112 @@ mod preset_expander_tests {
                 "预设 {preset_id} 旋钮 {knob_id} 必须越拧黑点抬得越高（首点 y：0 档 {low} → 1 档 {high}）"
             );
         }
+    }
+
+    /// 盒式降采样：长边 ≤ max_edge 时原样（逐字节同一份）；超出时
+    /// 尺寸按长边缩放、2×2 盒均值精确（向零取整）。
+    #[test]
+    fn box_downsample_identity_and_average() {
+        // 2×2 原生 ≤ max_edge ⇒ 原样。
+        let pixels = vec![
+            10u8, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
+        ];
+        let (out, w, h) = box_downsample(&pixels, 2, 2, 512);
+        assert_eq!((w, h), (2, 2));
+        assert_eq!(out, pixels, "长边内不降采样，必须逐字节原样");
+        // 4×2（红通道 0/64/128/192 交替）→ 长边 2 ⇒ 2×1，每盒 4 像素均值。
+        let mut big = vec![0u8; 4 * 2 * 4];
+        for (index, pixel) in big.chunks_exact_mut(4).enumerate() {
+            let x = index % 4;
+            pixel[0] = (x * 64) as u8;
+            pixel[1] = 0;
+            pixel[2] = 0;
+            pixel[3] = 255;
+        }
+        let (out, w, h) = box_downsample(&big, 4, 2, 2);
+        assert_eq!((w, h), (2, 1));
+        assert_eq!(out[0], 32, "左盒红均值 (0+64+0+64)/4 = 32，得到 {}", out[0]);
+        assert_eq!(
+            out[4], 160,
+            "右盒红均值 (128+192+128+192)/4 = 160，得到 {}",
+            out[4]
+        );
+    }
+
+    /// render 参数解析：缺省 max_edge 512 / format jpeg；非法值与未知键
+    /// 一律响亮拒绝（不静默取缺省）。
+    #[test]
+    fn parse_preview_render_defaults_and_rejections() {
+        let none = parse_preview_render(&json!({})).unwrap();
+        assert!(none.is_none(), "不给 render 必须返回 None（老行为）");
+        let render = parse_preview_render(&json!({"render": {}}))
+            .unwrap()
+            .expect("空 render 对象应取缺省");
+        assert_eq!(render.max_edge, 512);
+        assert_eq!(render.format, PreviewFormat::Jpeg);
+        let render = parse_preview_render(&json!({"render": {"max_edge": 128, "format": "png"}}))
+            .unwrap()
+            .expect("合法 render 应解析");
+        assert_eq!(render.max_edge, 128);
+        assert_eq!(render.format, PreviewFormat::Png);
+        for bad in [
+            json!({"render": {"max_edge": 64}}),
+            json!({"render": {"max_edge": 4096}}),
+            json!({"render": {"max_edge": 100.5}}),
+            json!({"render": {"format": "webp"}}),
+            json!({"render": {"quality": 90}}),
+            json!({"render": "jpeg"}),
+        ] {
+            assert!(
+                parse_preview_render(&bad).is_err(),
+                "非法 render 参数必须拒绝：{bad}"
+            );
+        }
+    }
+
+    /// 尺度标注：含 clarity ⇒ 非空且点名；全是逐像素操作 ⇒ 空串。
+    #[test]
+    fn preview_scale_notes_names_sensitive_ops() {
+        let library = builtin();
+        let ccd = library
+            .presets
+            .iter()
+            .find(|p| p.id == "ccd")
+            .expect("ccd 预设存在");
+        let ops = expand_preset(ccd, 1.0, &Map::new(), true).unwrap();
+        assert!(
+            ops.iter().any(|op| op.type_name == "clarity"),
+            "ccd 展开串应含 clarity（前提）"
+        );
+        let notes = preview_scale_notes(&ops);
+        assert!(
+            notes.contains("clarity"),
+            "含 clarity 时 scale_notes 必须点名：{notes}"
+        );
+        // 空分支不用库预设测：22 套库预设全含 clarity/texture/glow
+        // 中至少一种（实测），故用合成操作串直接断空分支。
+        let clean_ops = [
+            ExpandedOp {
+                segment: "style".to_owned(),
+                index: 0,
+                kind: "adjustment".to_owned(),
+                type_name: "exposure".to_owned(),
+                params: json!({"ev": 0.1}),
+                object_id: "synthetic_0".to_owned(),
+            },
+            ExpandedOp {
+                segment: "style".to_owned(),
+                index: 1,
+                kind: "adjustment".to_owned(),
+                type_name: "saturation".to_owned(),
+                params: json!({"amount": 1.1}),
+                object_id: "synthetic_1".to_owned(),
+            },
+        ];
+        assert_eq!(
+            preview_scale_notes(&clean_ops),
+            "",
+            "不含尺度敏感操作时 scale_notes 必须为空"
+        );
     }
 }

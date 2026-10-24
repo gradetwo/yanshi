@@ -1680,13 +1680,15 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "preview_preset",
         profile: Profile::Retouch,
-        summary: "只展开不落成、不渲染：按 strength/knobs 算出将要落的全部操作清单（含确定性 object_id 与实际参数），供迭代调风格时先看再 apply_preset",
+        summary: "只展开不落原文档：按 strength/knobs 算出将要落的全部操作清单（含确定性 object_id 与实际参数），供迭代调风格时先看再 apply_preset；可选 render 走临时文档渲染出代理图（临时文档在所有出口删除，净状态变化为零，故仍为只读工具）",
         mutating: false,
         params: &[
             param!("preset_id", String, true, "预设 id（先用 list_presets 查）"),
             param!("strength", Number, false, "全局强度 0..1（缺省 1）"),
             param!("knobs", Object, false, "语义旋钮覆盖 {旋钮id: 数值}"),
             param!("include_correction", Boolean, false, "展开清单是否含修正段（缺省 true）"),
+            param!("layer_id", String, false, "render 时必填：源图层 id（不给 render 时忽略）"),
+            param!("render", Object, false, "可选渲染：{max_edge 缺省 512（128–2048）, format png|jpeg 缺省 jpeg}；不给则只展开不渲染"),
         ],
     },
     // ---- 扩展：retouch（修图）----

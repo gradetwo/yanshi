@@ -2812,6 +2812,7 @@ dependencies = [
  "ab_glyph",
  "fontdb",
  "hokusai",
+ "image",
  "libm",
  "proptest",
  "serde",
