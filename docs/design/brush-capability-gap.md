@@ -20204,3 +20204,25 @@ for (const m of text.matchAll(new RegExp(`第\\s*(${NUM}{2,6})\\s*节`, "g")))
 **⇒ 下一轮（顺序不能反 ✓）**：
 1. **先查生成器**为什么写 `tools.rs`（读它写文件的那几行 ✓）＋ 加一条判据（生成前后 `git status` 只允许改**目标文档** ✓ —— 与第 880 轮的"工作区核对"同一思路 ✓）
 2. **再**改示例 ＋ 重新生成 ＋ `--check` 通过 ✓
+
+## 五百四十四、生成器**写坏源文件的根因找到了**：它指错文件 ⇒ `indexOf` 返回 `-1`（第 923 轮）
+
+**⇒ 根因（读码 + 实测 ✓）**：
+```js
+const path = "crates/yanshi-server/src/tools.rs";     // ✗ 表**早就不在这儿了**
+const start = source.indexOf("pub const TOOL_EXAMPLES");   // ⇒ **-1** ✗
+const end = source.indexOf("];", start);                    // ⇒ 全文件**第一个** `];` ✓
+writeFileSync(path, source.slice(0, start) + block + source.slice(end));
+```
+- 实测：在 `tools.rs` 里 `indexOf("pub const TOOL_EXAMPLES")` ＝ **-1** ✓
+- ⇒ `slice(0, -1)` 取到**除最后一字符外的整个文件** ✓ ＋ `slice(end)` **又接上大半段** ✗
+- ⇒ 于是 **+19,807 行重复** ＋ 末尾 `mod tools_tests;];` ✓ —— 与观测到的损坏**完全吻合** ✓
+
+**⇒ 修法（两处）**：
+1. `path` 指向**真正**的文件：`crates/yanshi-server/src/tools_examples.rs` ✓
+   ⇒ 实测 `start=781｜end=30279｜跨度 638 行` ✓（表就在那里 ✓）
+2. **边界守卫**：`start < 0 || end < start` ⇒ **打印并 `exit 3`，不写文件** ✓
+   （「宁可不改，也不写坏」✓ —— 这正是「失败要有信号」的形态 ✓）
+
+**⇒ 教训（可复用 ✓）**：**`indexOf` 返回 `-1` 时，后续所有切片都静默错位** ✗
+⇒ 判据：**任何 `indexOf` 之后，先断言它 ≥ 0** ✓（写文件之前尤其 ✓）。

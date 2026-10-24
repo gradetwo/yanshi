@@ -37,10 +37,26 @@ const catalogue = await call("__nope__", {}).then(() => null).catch(() => null);
 const all = await fetch(`${base}/api/tools?doc=${doc}&token=${token}`).then((r) => r.json());
 const tools = new Map((all.tools || []).map((tool) => [tool.name, tool]));
 
-const path = "crates/yanshi-server/src/tools.rs";
+// **⚠️ 路径必须指向**真正放着 `TOOL_EXAMPLES` 的文件** ✓（第 923 轮查明 ✓）
+//   **⇒ 原来写的是** `tools.rs` ✗ 而那个表**早就不在那儿了** ✓（现在在 `tools_examples.rs` ✓）
+//     ⇒ 于是 `start = indexOf(...) = -1` ✗ ⇒ `indexOf("];", -1)` 拿到**全文件第一个** `];` ✓
+//       ⇒ `slice(0,-1) + block + slice(end)` ⇒ **重复后面一大段** ✗（实测 +19,807 行 ✓ 文件末尾出现 `mod tools_tests;];` ✓）
+//   **⇒ 教训**：`indexOf` 返回 `-1` 时**所有后续切片都会静默错位** ✗ ⇒ 必须**先断言找到** ✓。
+const path = "crates/yanshi-server/src/tools_examples.rs";
 const source = readFileSync(path, "utf8");
+// **⇒ 边界必须找对，否则会**改写整个源文件**✗**（第 923 轮；实测把 `tools.rs` 写坏过 ✓）
+//   **⇒ 原写法** ✗：`indexOf("];", start)` —— 只找**第一个** `];`
+//     ⇒ 而 `TOOL_EXAMPLES` 里的示例是 `r#"…"#` 原始字符串 ✓ ⇒ **内容里可能有 `];`** ✗
+//     ⇒ 于是 `end` 落在**表中间** ⇒ `slice(0,start)+block+slice(end)` **重复后面一大段** ✗
+//       （实测：**+19,807 行** ✓ 文件末尾出现 `mod tools_tests;];` ✓）
+//   **⇒ 改法**：① 用**独占一行的** `\n];` 当终止 ✓（表尾就是 `\n];` ✓）
+//     ② **再校验** `end > start` ✓，不成立就 **`exit 3` 且不写文件** ✓（宁可不改，也不写坏 ✓）。
 const start = source.indexOf("pub const TOOL_EXAMPLES");
-const end = source.indexOf("];", start);
+const end = source.indexOf("\n];", start);
+if (start < 0 || end < start) {
+  console.error("  ⊘ 找不到 `TOOL_EXAMPLES` 的起止边界 ⇒ **不写文件**（宁可不改，也不写坏源文件）");
+  process.exit(3);
+}
 let block = source.slice(start, end);
 // **解析要覆盖两种排版** ✗ —— `cargo fmt` 会把短条目压成一行（`("name", r#"…"#),`），
 // 只认多行形态会漏判 ⇒ 漏判会导致"重复收录/覆盖已有条目"（第 4 轮就是这么把表弄坏的 ✗）。
