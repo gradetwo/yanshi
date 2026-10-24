@@ -3,7 +3,8 @@
 //! **为什么拆出来**（色彩体系规划 **Phase 2** + 外部评审报告第 15 项）。
 //! 本模块是**纯搬运**：行为**零变化**（全量测试通过即验收）。
 //!
-//! **边界**：`ID_ARGS` / `LAYER_ID` 两个参数常量 + `pub const ALL_TOOLS: &[ToolSpec]`。
+//! **边界**：`ID_ARGS` / `LAYER_ID` 两个参数常量、`pub const ALL_TOOLS: &[ToolSpec]`，
+//! 以及 `PHOTO_TOOLS` / `SVG_TOOLS` 两个 workflow 预设白名单常量（设计 §7 F 族）。
 //! `dispatch` **留在 `tools.rs`**（它含逻辑）。
 //!
 //! **可见性**：`ALL_TOOLS` 保持 `pub`（父模块 `use tools_registry::*` 即可用 ✓）。
@@ -2969,6 +2970,230 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             ),
         ],
     },
+];
+
+// ---------------------------------------------------------------------------
+// workflow 预设白名单（Photo / Svg，设计 §7 F 族）
+// ---------------------------------------------------------------------------
+
+/// **Photo（修图）预设的工具白名单** ✓ —— 与 `ALL_TOOLS` 同源同文件 ✓。
+///
+/// **它是什么** ✗：`Profile::Photo` 不展开为「加层」✗ ⇒ 它贡献这份名单 ✓，
+/// `ToolRegistry::with_profiles` 在**显式子集请求**时用它与分层展开集求交 ✓
+/// （**触发口径**见 `tools.rs` 的 `with_profiles` ✓：ALL 全集组成与缺省会话
+/// **不**触发收窄 ✓ —— Wang 2026-10-24 裁定「ALL 要包含所有的」✓）。
+///
+/// **维护纪律** ✓：名单里每个名字**必须**存在于 `ALL_TOOLS` 且分层 ∈ Photo
+/// 基底集 {Core, History, Changeset, Retouch, Structure} ✓ ⇒ 由测试
+/// `photo_allowlist_names_all_registered` 守 ✗（塞不存在的名字 ⇒ 红 ✓）。
+/// 新工具进预设 = **只改这一处** ✓。
+pub const PHOTO_TOOLS: &[&str] = &[
+    // ---- 文档与会话 ----
+    "new_document",
+    "list_documents",
+    "get_document",
+    "delete_document",
+    "get_state",
+    "get_log",
+    "list_atoms",
+    "get_atom",
+    "export_project",
+    "import_project",
+    "get_job",
+    "get_render_status",
+    "cancel_job",
+    "batch",
+    "collect_diagnostics",
+    "explain_tool",
+    "list_engine_capabilities",
+    // ---- 导入与资产 ----
+    "put_blob",
+    "import_image",
+    "import_asset",
+    "list_assets",
+    // ---- 图层与对象 ----
+    "create_layer",
+    "update_layer",
+    "delete_layer",
+    "reorder_layers",
+    "list_layers",
+    "duplicate_layer",
+    "lock_layer",
+    "unlock_layer",
+    "set_layer_blend",
+    "list_objects",
+    "get_object",
+    "update_object",
+    "delete_object",
+    "restore_object",
+    "move_object",
+    "replace_object_data",
+    "transform_object",
+    "set_property",
+    // ---- 修图（Retouch 全层） ----
+    "resample",
+    "add_adjustment",
+    "apply_adjustments",
+    "add_filter",
+    "update_adjustment",
+    "update_filter",
+    "list_effects",
+    "list_presets",
+    "get_preset",
+    "apply_preset",
+    "preview_preset",
+    "estimate_dehaze",
+    "liquify_push",
+    "liquify_twirl",
+    "liquify_pinch",
+    "patch",
+    "smudge",
+    "heal_stamp",
+    "clone_stamp",
+    // ---- 蒙版与选区 ----
+    "create_mask",
+    "paint_mask",
+    "delete_mask",
+    "create_selection",
+    "delete_selection",
+    "list_selections",
+    "transform_selection",
+    "select_opaque_pixels",
+    // ---- 分析取样 ----
+    "get_histogram",
+    "sample_color",
+    "sample_colors",
+    "analyze_region",
+    "render_region",
+    "describe_canvas",
+    // ---- 历史与变更集 ----
+    "undo_last",
+    "redo_last",
+    "get_undo_status",
+    "revert",
+    "revert_atoms",
+    "revert_to_seq",
+    "begin_changeset",
+    "commit_changeset",
+    "abort_changeset",
+    "begin_transaction",
+    "commit_transaction",
+    "get_changesets",
+    "revert_changeset",
+    // ---- 导出 ----
+    "export_png",
+    "export_book_pngs",
+    // ---- 精修最小绘画 ----
+    "draw_stroke",
+    "fill_region",
+    "erase",
+    "list_brushes",
+    "get_brush_settings",
+    "set_brush_setting",
+];
+
+/// **Svg（矢量）预设的工具白名单** ✓ —— 维护纪律同 [`PHOTO_TOOLS`] ✓：
+/// 每个名字必须存在于 `ALL_TOOLS` 且分层 ∈ Svg 基底集
+/// {Core, History, Changeset, Structure} ✓（**不含任何 Retouch 照片面** ✓），
+/// 由测试 `svg_allowlist_names_all_registered` 守 ✓。
+pub const SVG_TOOLS: &[&str] = &[
+    // ---- 文档与会话（同 Photo） ----
+    "new_document",
+    "list_documents",
+    "get_document",
+    "delete_document",
+    "get_state",
+    "get_log",
+    "list_atoms",
+    "get_atom",
+    "export_project",
+    "import_project",
+    "get_job",
+    "get_render_status",
+    "cancel_job",
+    "batch",
+    "collect_diagnostics",
+    "explain_tool",
+    "list_engine_capabilities",
+    // ---- 导入与资产（同 Photo） ----
+    "put_blob",
+    "import_image",
+    "import_asset",
+    "list_assets",
+    // ---- 图层与对象（Photo 同组去 replace_object_data，加组操作） ----
+    "create_layer",
+    "update_layer",
+    "delete_layer",
+    "reorder_layers",
+    "list_layers",
+    "duplicate_layer",
+    "lock_layer",
+    "unlock_layer",
+    "set_layer_blend",
+    "list_objects",
+    "get_object",
+    "update_object",
+    "delete_object",
+    "restore_object",
+    "move_object",
+    "transform_object",
+    "set_property",
+    "create_group",
+    "add_to_group",
+    "remove_from_group",
+    "set_group_transform",
+    "revert_group",
+    // ---- 矢量著录 ----
+    "get_path",
+    "edit_path",
+    "path_edit",
+    "draw_shape",
+    "stroke_path",
+    "combine_shapes",
+    "convert_to_shape",
+    "convert_to_path",
+    "vector_erase",
+    "vector_hit_test",
+    "draw_stroke",
+    "fill",
+    "fill_region",
+    "erase",
+    "gradient_fill",
+    "gradient_blend",
+    "create_selection",
+    "delete_selection",
+    "list_selections",
+    "transform_selection",
+    "select_opaque_pixels",
+    // ---- 文本 ----
+    "draw_text",
+    "list_fonts",
+    // ---- 实例 ----
+    "create_instance",
+    "detach_instance",
+    "link_to_master",
+    "get_dependency_graph",
+    "get_resolved_state",
+    "update_override",
+    "update_sync_policy",
+    // ---- 历史与变更集（同 Photo） ----
+    "undo_last",
+    "redo_last",
+    "get_undo_status",
+    "revert",
+    "revert_atoms",
+    "revert_to_seq",
+    "begin_changeset",
+    "commit_changeset",
+    "abort_changeset",
+    "begin_transaction",
+    "commit_transaction",
+    "get_changesets",
+    "revert_changeset",
+    // ---- 导出 ----
+    "export_svg",
+    "export_png",
+    "export_book_pngs",
 ];
 
 // ---------------------------------------------------------------------------

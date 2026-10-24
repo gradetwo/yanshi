@@ -61,11 +61,19 @@ pub enum Profile {
     Ink,
     /// 粉彩 workflow 预设：Core + History + Retouch，笔刷限粉彩/粉笔相关。
     Pastel,
+    /// 照片修图 workflow 预设：Core + History + Changeset + Retouch + Structure，
+    /// 再按 `PHOTO_TOOLS` 白名单收窄（正式设计文档 §7 / F 族）。
+    Photo,
+    /// 矢量插画 workflow 预设：Core + History + Changeset + Structure，
+    /// 再按 `SVG_TOOLS` 白名单收窄（正式设计文档 §7 / F 族）。
+    Svg,
 }
 
 impl Profile {
-    /// 全部 profile。
-    pub const ALL: [Profile; 14] = [
+    /// 全部 profile —— **ALL 包含系统所有功能和工具**（Wang 2026-10-24 裁定
+    /// 「ALL 要包含所有的，所以必须加进去」），Photo/Svg 两个 workflow 预设在内。
+    /// `with_profiles(&ALL)` 恒等于注册表全量，任何情况下不收窄。
+    pub const ALL: [Profile; 16] = [
         Self::Core,
         Self::History,
         Self::Changeset,
@@ -80,6 +88,8 @@ impl Profile {
         Self::Sketch,
         Self::Ink,
         Self::Pastel,
+        Self::Photo,
+        Self::Svg,
     ];
 
     /// 字符串名（MCP/HTTP/WS 会话的 `profile` 参数取值）。
@@ -99,6 +109,8 @@ impl Profile {
             Self::Sketch => "sketch",
             Self::Ink => "ink",
             Self::Pastel => "pastel",
+            Self::Photo => "photo",
+            Self::Svg => "svg",
         }
     }
 
@@ -119,6 +131,8 @@ impl Profile {
             "sketch" => Self::Sketch,
             "ink" => Self::Ink,
             "pastel" => Self::Pastel,
+            "photo" => Self::Photo,
+            "svg" => Self::Svg,
             other => {
                 return Err(YanshiError::new(
                     ErrorCode::InvalidArgument,
@@ -134,7 +148,11 @@ impl Profile {
     /// ⇒ **后期调色、滤镜、蒙版、修复类工具全都"看不见"** ✗；
     /// 而 CLI 又没有简写 ✓ ⇒ 得手敲几十个字符的完整列表才能激活全部工具 ✗
     /// ⇒ `--profile all` 就是他给的解法 ✓。
-    pub const IMPLEMENTED: [Profile; 13] = [
+    ///
+    /// **注意**：缺省会话组成已按 Wang 2026-10-24 新裁定改用 [`DEFAULT`](Self::DEFAULT)
+    /// （常用集，与 ALL 区分）；本常量保留为 `all` 简写的展开与「已实现全集」参照，
+    /// 不再是两入口的缺省值。
+    pub const IMPLEMENTED: [Profile; 15] = [
         Profile::Core,
         Profile::History,
         Profile::Changeset,
@@ -148,12 +166,42 @@ impl Profile {
         Profile::Sketch,
         Profile::Ink,
         Profile::Pastel,
+        Profile::Photo,
+        Profile::Svg,
+    ];
+
+    /// **缺省会话的常用集**（Wang 2026-10-24 裁定：「增加一个 default 作为和 ALL 区分，
+    /// ALL 包含系统所有功能和工具，default 只包含常用的」）。
+    ///
+    /// **成员**（基底层 + 本项目主线工作面；成员表由防漂移测试逐项钉死，
+    /// Wang 日后调整成员时先改这里、测试 diff 随之可见）：
+    /// - `Core` / `History` / `Changeset` / `Structure`：文档、历史、变更集与图层骨架，
+    ///   任何工作面都离不开；
+    /// - `Retouch`：调色 / 滤镜 / 修复——照片主线的核心工具层；
+    /// - `Photo`：照片修图 workflow 预设，本项目当前的主线工作面。
+    ///
+    /// **不含**：`Collab` / `Annotation` / `Conflict` / `Semantic` 等专用层，
+    /// 也不含 `Svg` 与 Oil / Watercolor / Sketch / Ink / Pastel 画风预设
+    /// ——需要时由用户显式 `--profile` 点名。
+    ///
+    /// **Photo 在此只贡献成员资格**：缺省组成**不触发**白名单收窄（收窄只对最终用户
+    /// 显式点名的子集请求生效，判据见 `ToolRegistry::with_profiles`），故缺省工具集
+    /// = 成员的分层并集，是注册表全量的真子集，且包含 `PHOTO_TOOLS` 全部工具
+    /// （由不变量测试钉死）。
+    pub const DEFAULT: [Profile; 6] = [
+        Profile::Core,
+        Profile::History,
+        Profile::Changeset,
+        Profile::Retouch,
+        Profile::Structure,
+        Profile::Photo,
     ];
 
     /// **解析逗号分隔的 profile 列表** ✓，支持 `all` 简写 ✓。
     ///
-    /// **`all` = 全部"已实现"的组** ✓（**不含 `semantic`** ✗）——
-    /// 与"缺省启用除 semantic 外的全部"是**同一条规矩** ✓ ⇒ 两处不会矛盾 ✓。
+    /// **`all` = 全部"已实现"的组** ✓（**不含 `semantic`** ✗）= [`IMPLEMENTED`](Self::IMPLEMENTED) ✓。
+    /// **缺省会话组成是另一回事** ✓：Wang 2026-10-24 裁定后缺省 = [`DEFAULT`](Self::DEFAULT)
+    /// （常用集）✓，**不再**与 `all` 同义 ✓。
     /// 想单独开 semantic 就显式写 ✓（它在册 ✓，只是没有工具 ✓）。
     pub fn parse_list(text: &str) -> Result<Vec<Profile>> {
         let mut out = Vec::new();
@@ -637,11 +685,71 @@ impl<'a> ToolContext<'a> {
     }
 }
 
+/// 白名单收窄的触发判据（Wang 2026-10-24 两轮裁定的合成口径）。
+///
+/// 返回 `Some(白名单并集)` 表示本次请求要收窄；`None` 表示不收窄：
+/// - 请求不含 Photo/Svg ⇒ 没有白名单可言，不收窄；
+/// - 请求恰为三层具名组成之一（[`Profile::ALL`] 全集 / [`Profile::IMPLEMENTED`]
+///   ——即 `--profile all` 的展开 / [`Profile::DEFAULT`] 缺省常用集）⇒ 属「全集 /
+///   缺省组成」而非「显式点名的子集」，不收窄（DEFAULT 里的 Photo 只贡献成员
+///   资格，其白名单不参与过滤——否则缺省会话会被收窄成照片名单，违背裁定）；
+/// - 其余含 Photo/Svg 的请求（最终用户显式点名的子集）⇒ 按设计 §7 公式收窄。
+fn whitelist_for(requested: &BTreeSet<Profile>) -> Option<BTreeSet<&'static str>> {
+    if !requested.contains(&Profile::Photo) && !requested.contains(&Profile::Svg) {
+        return None;
+    }
+    let named_compositions: [BTreeSet<Profile>; 3] = [
+        Profile::ALL.iter().copied().collect(),
+        Profile::IMPLEMENTED.iter().copied().collect(),
+        Profile::DEFAULT.iter().copied().collect(),
+    ];
+    if named_compositions.iter().any(|set| set == requested) {
+        return None;
+    }
+    let mut allowlist = BTreeSet::new();
+    if requested.contains(&Profile::Photo) {
+        allowlist.extend(PHOTO_TOOLS.iter().copied());
+    }
+    if requested.contains(&Profile::Svg) {
+        allowlist.extend(SVG_TOOLS.iter().copied());
+    }
+    Some(allowlist)
+}
+
+/// 把分层展开集与白名单求交（设计 §7 公式后半段）。
+///
+/// **求交为空必须响亮失败**：静默返回空注册表会让会话「一个工具都看不见」却
+/// 不报错，是本项目明令禁止的静默降级。正常组成下此路结构性不可达（每份白名单
+/// 都是其基底展开集的子集，由防漂移测试逐名钉死），故本断言只作纵深防御，
+/// 触发时点名冲突的请求方。
+fn apply_allowlist(
+    tools: Vec<ToolSpec>,
+    allowlist: &BTreeSet<&'static str>,
+    requested: &BTreeSet<Profile>,
+) -> Vec<ToolSpec> {
+    let narrowed: Vec<ToolSpec> = tools
+        .into_iter()
+        .filter(|tool| allowlist.contains(tool.name))
+        .collect();
+    assert!(
+        !narrowed.is_empty(),
+        "profile 组成冲突：请求 {:?} 的分层展开集与白名单求交为空（求交为空），拒绝生成空注册表",
+        requested
+            .iter()
+            .map(|profile| profile.as_str())
+            .collect::<Vec<_>>()
+    );
+    narrowed
+}
+
 /// 工具注册表。
 #[derive(Debug, Clone)]
 pub struct ToolRegistry {
     tools: Vec<ToolSpec>,
     profiles: BTreeSet<Profile>,
+    /// 本注册表生效的白名单：`Some` 表示构造时按 Photo/Svg 白名单收窄过
+    /// （仅显式子集请求，判据见 `whitelist_for`）；`None` 表示未收窄。
+    tool_allowlist: Option<BTreeSet<&'static str>>,
 }
 
 impl ToolRegistry {
@@ -654,6 +762,12 @@ impl ToolRegistry {
     ///
     /// 介质 profile（Oil/Watercolor/Sketch/Ink/Pastel）是 workflow 预设：
     /// 传了就自动展开成对应的功能组组合。
+    ///
+    /// **Photo/Svg 预设多一步白名单收窄**（设计 §7）：先按上表展开分层集，
+    /// 再与 `PHOTO_TOOLS` / `SVG_TOOLS` 的并集求交 —— 但收窄只对最终用户
+    /// 显式点名的子集请求生效；`ALL` / `IMPLEMENTED` / `DEFAULT` 三层具名
+    /// 组成不触发（判据与裁定出处见 `whitelist_for`）。生效的白名单可经
+    /// `tool_allowlist()` 读回。
     pub fn with_profiles(profiles: &[Profile]) -> Self {
         let mut enabled: BTreeSet<Profile> = BTreeSet::new();
         for profile in profiles.iter().copied() {
@@ -666,6 +780,17 @@ impl ToolRegistry {
                 Profile::Watercolor | Profile::Sketch | Profile::Ink => {
                     enabled.insert(Profile::History);
                 }
+                Profile::Photo => {
+                    enabled.insert(Profile::History);
+                    enabled.insert(Profile::Changeset);
+                    enabled.insert(Profile::Retouch);
+                    enabled.insert(Profile::Structure);
+                }
+                Profile::Svg => {
+                    enabled.insert(Profile::History);
+                    enabled.insert(Profile::Changeset);
+                    enabled.insert(Profile::Structure);
+                }
                 _ => {}
             }
         }
@@ -676,9 +801,17 @@ impl ToolRegistry {
             .filter(|tool| enabled.contains(&tool.profile))
             .collect();
         tools.sort_by_key(|tool| (tool.profile, tool.name));
+        // 白名单收窄（仅显式子集请求触发，判据见 `whitelist_for`）。
+        let requested: BTreeSet<Profile> = profiles.iter().copied().collect();
+        let tool_allowlist = whitelist_for(&requested);
+        let tools = match &tool_allowlist {
+            Some(allowlist) => apply_allowlist(tools, allowlist, &requested),
+            None => tools,
+        };
         Self {
             tools,
             profiles: enabled,
+            tool_allowlist,
         }
     }
 
@@ -695,6 +828,11 @@ impl ToolRegistry {
     /// 已启用的 profile。
     pub fn profiles(&self) -> &BTreeSet<Profile> {
         &self.profiles
+    }
+
+    /// 本注册表生效的白名单（`Some` = 构造时已按白名单收窄，见 `with_profiles`）。
+    pub fn tool_allowlist(&self) -> Option<&BTreeSet<&'static str>> {
+        self.tool_allowlist.as_ref()
     }
 
     /// 工具数量。
@@ -20054,7 +20192,7 @@ use tools_brush::*;
 mod tools_registry;
 // **★ re-export** ✓（第 1268 轮）：外部（）从 `tools::ALL_TOOLS` 用它
 //   ⇒ 而 `use` 只把名字带进本模块 ⇒ 所以需要在**这里**再 `pub use` 一次 ✓
-pub use tools_registry::ALL_TOOLS;
+pub use tools_registry::{ALL_TOOLS, PHOTO_TOOLS, SVG_TOOLS};
 
 #[path = "tools_examples.rs"]
 mod tools_examples;

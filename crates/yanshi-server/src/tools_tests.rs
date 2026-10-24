@@ -1417,3 +1417,66 @@ fn ensure_object_slot_distinguishes_three_states() {
         "删除后对象表留墓碑条目，必须是 Tombstoned（不是 Absent）"
     );
 }
+
+/// 纵深防御：`apply_allowlist` 求交为空必须响亮 panic 并点名冲突双方，
+/// 绝不静默生成空注册表（设计 §7「求交为空响亮失败」）。
+/// 正常组成下此路结构性不可达（白名单 ⊆ 自身基底展开，防漂移测试已钉死），
+/// 故直接对 helper 喂一个人造空交集，验证守卫本身能红。
+#[test]
+fn allowlist_empty_intersection_panics_naming_parties() {
+    let requested: std::collections::BTreeSet<Profile> =
+        [Profile::Photo, Profile::Svg].into_iter().collect();
+    let allowlist: std::collections::BTreeSet<&'static str> =
+        ["definitely_not_a_tool"].into_iter().collect();
+    let tools = ToolRegistry::full().tools().to_vec();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        apply_allowlist(tools, &allowlist, &requested)
+    }));
+    let payload = result.expect_err("求交为空必须 panic，不许静默返回空注册表");
+    let message = payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+        .unwrap_or_default();
+    assert!(
+        message.contains("求交为空"),
+        "panic 须点明求交为空：{message}"
+    );
+    assert!(
+        message.contains("photo"),
+        "panic 须点名请求方 photo：{message}"
+    );
+    assert!(message.contains("svg"), "panic 须点名请求方 svg：{message}");
+}
+
+/// 触发判据钉死（Wang 2026-10-24 裁定）：三层具名组成（ALL / IMPLEMENTED /
+/// DEFAULT）不收窄；只有最终用户显式点名的子集才触发白名单收窄。
+#[test]
+fn whitelist_trigger_only_for_explicit_subsets() {
+    let as_set = |ps: &[Profile]| {
+        ps.iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    assert!(
+        whitelist_for(&as_set(&Profile::ALL)).is_none(),
+        "ALL 不得收窄"
+    );
+    assert!(
+        whitelist_for(&as_set(&Profile::IMPLEMENTED)).is_none(),
+        "IMPLEMENTED（--profile all 的展开）不得收窄"
+    );
+    assert!(
+        whitelist_for(&as_set(&Profile::DEFAULT)).is_none(),
+        "DEFAULT 缺省常用集不得收窄（Photo 在此只贡献成员资格）"
+    );
+    assert!(
+        whitelist_for(&as_set(&[Profile::Core, Profile::Collab])).is_none(),
+        "不含 Photo/Svg 的请求不收窄"
+    );
+    let photo_list = whitelist_for(&as_set(&[Profile::Photo])).expect("[Photo] 必须收窄");
+    assert_eq!(photo_list.len(), PHOTO_TOOLS.len());
+    let union_list =
+        whitelist_for(&as_set(&[Profile::Photo, Profile::Svg])).expect("[Photo, Svg] 必须收窄");
+    assert!(union_list.len() > photo_list.len());
+}

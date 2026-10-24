@@ -63,5 +63,5 @@ pub use token::{
 };
 pub use tools::{
     commit_response, error_response, ok_response, profile_summary, validate_args, ParamKind,
-    ParamSpec, PreviewInfo, Profile, ToolContext, ToolRegistry, ToolSpec,
+    ParamSpec, PreviewInfo, Profile, ToolContext, ToolRegistry, ToolSpec, PHOTO_TOOLS, SVG_TOOLS,
 };
