@@ -26,14 +26,14 @@ if (!base) { console.error("用法: node scripts/tool-example-acceptance.mjs <se
 // 第二次跑时它**已经存在** ⇒ `import_project` 的语义是「**目标已存在 ⇒ 不覆盖**」（刻意设计 ✓）
 // ⇒ 该示例被判「被拒」✗ ⇒ **判据不可重跑** ✗（2026-10-06 CI 与本地各踩一次 ✓）。
 // ⇒ 用**唯一后缀** ✓（同文件里 `bloat_one_*`／`bloat_many_*` 已经是这个做法 ✓）。
-const doc = "ea1_" + Math.random().toString(36).slice(2, 10);
+let doc = "ea1_" + Math.random().toString(36).slice(2, 10);
 // **用自己这份文档的 token** —— 上一版拿外面传进来的 token，结果每次都是
 // capa token 无效（工具根本没执行），而脚本却报「参数被接受」：**典型的假绿**。
 const created = await fetch(`${base}/api/documents`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ doc_id: doc, width: 900, height: 640 }),
 }).then((r) => r.json());
-const token = created.token;
+let token = created.token;
 if (!token) { console.error("建文档没拿到 token ⇒ 判据无法运行（不是通过）"); process.exit(1); }
 const catalogue = await fetch(`${base}/api/tools?doc=${doc}&token=${token}`).then((r) => r.json());
 const call = async (name, args) =>
@@ -41,6 +41,29 @@ const call = async (name, args) =>
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ tool: name, arguments: args }),
   }).then((r) => r.json());
+
+// **⇒ 每条示例一个**干净文档** ✓**（第 941 轮；外部实测 `frequency_separation` 被前面的示例污染 ✗）
+//   **⇒ 症状** ✗：判据**共用一个文档** ⇒ 状态按顺序累积 ✓ ⇒ 某条示例看到的是**别的示例留下的图层内容** ✓
+//     ⇒ 于是 `frequency_separation` 的自检在"累积内容"上失败 ✗ 而干净文档上它只会报 `precondition_failed`（= 需前置 ✓）
+//   **⇒ 修法**：每条示例前**重建文档** ✓ 并**重新铺前置**（`L1` ＋ `o1` ✓ —— 否则示例里的 `L1` 不存在 ✓）
+//   **⇒ 代价**：多约 **2×140 次** HTTP 调用 ✓（毫秒级 ✓）；**收益**：**顺序无关** ✓
+//   **⇒ 例外**：`create_layer` 那条**必须**在**空文档**上跑 ✓（它自己就是"建 L1" ✓）⇒ `seed=false` ✓
+async function freshDoc(seed) {
+  doc = "ea1_" + Math.random().toString(36).slice(2, 10);
+  const made = await fetch(`${base}/api/documents`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: doc, width: 900, height: 640 }),
+  }).then((r) => r.json());
+  token = made.token;
+  if (!token) { console.error("建文档没拿到 token ⇒ 判据无法运行（不是通过）"); process.exit(1); }
+  if (seed) {
+    await call("create_layer", { layer_id: "L1", name: "L1" });
+    await call("brush_stroke", {
+      layer_id: "L1", object_id: "o1", brush: "100%_Opaque", size: 40,
+      points: [[60, 60, 1], [120, 60, 1]],
+    });
+  }
+}
 
 // **先把前置建好** —— 否则 brush_stroke / get_object / delete_object 必然因为
 // 没有图层或对象而失败，判据就只能停在"参数被接受"（那比"真的能用"弱一层）。
@@ -71,6 +94,10 @@ let rejected = 0, accepted = 0;
 //（抄它的人本来就得先建它 ✓）；这与"值/格式被拒"（抄走就会失败 ✗）是两回事 ✓。
 let needsState = 0;
 for (const tool of withExample) {
+  if (tool.name !== "create_layer") {
+    // **⇒ 每条示例前重建**干净文档 ＋ 前置** ✓（第 941 轮：顺序无关 ✓）
+    await freshDoc(true);
+  }
   if (tool.name === "create_layer") {
     accepted += 1;
     console.log(`  ✓ create_layer：**成功** ✓（就是上面那次前置运行）`);
