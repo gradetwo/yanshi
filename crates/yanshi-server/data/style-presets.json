@@ -3191,7 +3191,7 @@
    "id": "black_white",
    "name_zh": "黑白",
    "name_en": "B&W",
-   "status": "needs_review",
+   "status": "established",
    "tags": [
     "街头",
     "建筑",
@@ -3207,7 +3207,7 @@
     "靠色彩叙事的题材（花海/美食/霓虹）"
    ],
    "description": "形态、纹理、灰阶分离；强 S 曲线 + 银盐颗粒。",
-   "notes": "未目检。unsupported：black_and_white 的逐色 B&W Mix 权重没有中性态（任何权重都全幅去色），会破坏 strength=0 恒等；故用 saturation 插值到 0 实现去色，Mix 权重列为二期（需内核给黑白加 amount）。",
+   "notes": "已目检（期 5）：d700 桌游货架真照片三格行，全幅真黑白且灰阶分离优秀（红/绿/蓝/黄盒映射灰阶分明）；saturation 插值到 0 与真 black_and_white op（amount 1.0、缺省 Rec709 权重）像素等价（期 5 双配方对照，mean_abs_diff 0.0001），故保留 saturation 实现——是等价结论而非不得已。black_and_white 自期 4 起有 amount中性值（0 = 恒等），旧「无中性态」障碍已不存在；逐色 B&W Mix 权重仍为未来选项。",
    "correction": {
     "baseline": "full",
     "ops": [
