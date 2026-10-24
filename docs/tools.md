@@ -9,6 +9,15 @@ a parameter name was to read the eleven thousand line tool source. The same rout
 what a missing tool meant: an unknown name and a tool whose group is disabled used to produce one identical message,
 and it now lists the enabled groups and points at the catalogue and at the all profiles switch.
 
+The field that looks like "how much ink landed" measures a footprint, not a change. brush_stroke reports
+ink_footprint_pixels, the number of pixels whose alpha is not zero after compositing, and keeps ink_pixels as an alias
+with the same value for callers who already read it. Because alpha there comes from coverage times opacity, a stroke
+that leaves every colour channel exactly as it was still reports a full footprint, so the field answers "how much of the
+stamp survived" rather than "how much of the picture changed". max_channel_delta is the field meant to answer the
+second question, but only under a documented regime: when the brush does not read the canvas it composites the patch
+onto white and compares against 255, so on a document whose background is not white its value is not the change in the
+delivered image and it must not be used as a zero-ink threshold.
+
 Which field answers "how much did this call land" depends on the tool, and there is no shared vocabulary yet, which an
 external report measured by walking three tools: brush_stroke reports steps together with painted_pixels, and since the
 last round also ink_pixels, the count of pixels whose alpha is not zero after compositing; smart_texture reports strokes,

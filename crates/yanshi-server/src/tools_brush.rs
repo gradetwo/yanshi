@@ -323,8 +323,8 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     //     （`test (stable)` / `test (beta)` / `criteria shard 1,2,4,5` ✓）。
     //   **⇒ 结论**：**"忽略 alpha"是既有行为、且有调用方依赖** ✓ ⇒ 不能直接改成拒绝 ✗；
     //     正确的修法是**把 `a/255` 乘进笔刷的有效 opacity** ✓ ⇒ 但那会改变既有画作的外观 ✓
-    //     ⇒ **必须先有判据**（同一笔 `a=255` 与 `a=110` 的 `ink_pixels` 必须不同 ✓）再改 ✓。
-    //   **⇒ 所以这一笔只留 `ink_pixels`（第 784 轮 ✓），alpha 的行为回到原样** ✓，
+    //     ⇒ **必须先有判据**（同一笔 `a=255` 与 `a=110` 的 `ink_footprint_pixels` 必须不同 ✓）再改 ✓。
+    //   **⇒ 所以这一笔只留 `ink_footprint_pixels`（第 784 轮加、第 808 轮改名 ✓），alpha 的行为回到原样** ✓，
     //     并把它记进台账 ✓（`D139` 的"色偏移"那一维很可能就是这里 ✓）。
 
     // **落笔走唯一的实现** ✓（`paint_brush` ✓，与 `brush_preview` 共用 ✓）。
@@ -972,17 +972,29 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     //   **⇒ ⇒ 所以**同时给：`painted_pixels`（raw）与 `painted_pixels_clipped`（**真实落墨**）✓
     //   **⇒ ⇒ ⇒ 没有裁剪时两者相等**（`clipped_away == 0`）⇒ **老调用方不受影响** ✓
     value["painted_pixels_clipped"] = json!(painted.saturating_sub(clipped_away));
-    // **`ink_pixels`：真正落上墨的像素数** ✓（第 784 轮；外部 `qoder` 的 D139）
-    //   **⇒ 与 `painted_pixels` 的区别**（这条是本轮新增的**可测量** ✓）：
-    //     `painted_pixels` ＝ **印章面积**（铺开了多少 ✓）；
-    //     `ink_pixels`     ＝ 合成后 **alpha 非零** 的像素数（真的画上了多少 ✓）。
+    // **`ink_footprint_pixels`：落过墨的**足迹**像素数** ✓（第 808 轮改名；外部 `qoder` 的 D192）
+    //   **⇒ 为什么改名（他们说对了）** ✗：原来叫 `ink_pixels` ✓ 而谓词是
+    //     `rgba.chunks_exact(4).filter(|px| px[3] != 0).count()` ✓ ⇒ 它数的是
+    //     **印章足迹 × alpha 幸存** ✓（alpha 来自覆盖率 × opacity ✓）
+    //     ⇒ **颜色一格都没改的笔也报"满是墨"** ✗ ⇒ **名字承诺"落墨"，谓词量的是足迹** ✓。
+    //   **⇒ 所以**：名字改成**它真正量的东西** ✓（`ink_footprint_pixels` ✓），并保留
+    //     `ink_pixels` 作为**同值的兼容别名** ✓（免得他们已写好的脚本立刻断掉 ✓；
+    //     两个字段同源 ✓，注释里说清"别名" ✓）。
+    //   **⇒ 与 `painted_pixels` 的区别**：
+    //     `painted_pixels`         ＝ **印章面积**（铺开了多少 ✓）；
+    //     `ink_footprint_pixels`   ＝ 合成后 **alpha 非零** 的像素数（足迹上活下来多少 ✓）；
+    //     **两者都不回答"画面被改了多少"** ✗ —— 那需要"合成前后的 RGB 差"，
+    //     而 `max_channel_delta` 在 `reads_canvas=false` 的一支里**合到白底**再比 ✓
+    //     ⇒ **在非白底文档上它不等于"交付图被改了多少"** ✓（见台账第四百七十六节）。
     //   **⇒ 为什么需要它** ✗：他们的 D139 说「有印章但落墨 0」是**静默区** ✓
     //     ⇒ 而 `painted_pixels` **看不出**这件事 ✓（全透明一笔照样 `painted=324` ✓，实测 ✓）。
     //   **⇒ 为什么现在只给数、不给 warning** ✗：**warning 那条分支我暂时造不出触发条件** ✓
     //     （`color.a=0` 实测**不是**全透明 ✓：`painted=324 / ink=324` ✓）⇒ 按规矩
     //     **不提交没有判据的分支** ✓ ⇒ 先只加字段 ✓，warning 等能复现了再加 ✓。
-    let ink_pixels = rgba.chunks_exact(4).filter(|px| px[3] != 0).count();
-    value["ink_pixels"] = json!(ink_pixels);
+    let ink_footprint_pixels = rgba.chunks_exact(4).filter(|px| px[3] != 0).count();
+    value["ink_footprint_pixels"] = json!(ink_footprint_pixels);
+    // **兼容别名** ✓：值完全相同 ✓，只在注释里说明"同源、语义是足迹" ✓
+    value["ink_pixels"] = json!(ink_footprint_pixels);
     // **覆盖率只在裁剪时出现**（不裁剪时不出现，而不是给个 1.0 让人以为是量出来的）✓
     // **⇒ ★ 但它单独**不能**用于验收 ★**（第 1573 轮自查；用外部那条判据检验自己）
     //   **⇒ 我实测**：一笔**极小**、且**完全在选区内** ⇒ **`clip_coverage = 1.0`**，

@@ -5,11 +5,11 @@
 //!   （实测：一笔全透明参数照样 `painted_pixels = 324` ✓）。
 //!
 //! **⇒ 判据（恒等式，跨输入成立 ✓）**：
-//!   ① `ink_pixels ≤ painted_pixels` ✓ —— 落墨像素不可能超过印章面积 ✓；
-//!   ② 不透明的一笔 `ink_pixels ≥ 1` ✓ —— 否则这个字段没有意义 ✓；
+//!   ① `ink_footprint_pixels ≤ painted_pixels` ✓ —— 落墨像素不可能超过印章面积 ✓；
+//!   ② 不透明的一笔 `ink_footprint_pixels ≥ 1` ✓ —— 否则这个字段没有意义 ✓；
 //!   ③ 两条接口口径不同：`size=6` 与 `size=1.5` 的 `painted_pixels` **必须不同** ✓
 //!      （证明它真的随参数变 ✓，不是常量 ✓）。
-//! **⇒ 变异**：① 把 `ink_pixels` 写成 `painted + 1` ⇒ 第一条红 ✓；
+//! **⇒ 变异**：① 把 `ink_footprint_pixels` 写成 `painted + 1` ⇒ 第一条红 ✓；
 //!   ② 写成 `0` ⇒ 第二条红 ✓。
 //! **⇒ 坦白**：把 `ink_pixels` 直接写成 `painted_pixels` 的**副本**时本判据**抓不到** ✓
 //!   （实测 `size=6` 两者都是 324 ✓）⇒ 那时要靠 D139 的复现来抓 ✓，而**我还缺那组参数** ✓。
@@ -58,7 +58,14 @@ fn ink_pixels_never_exceeds_the_stamp_area_and_is_positive_for_an_opaque_stroke(
     let thick = stroke(&mut workspace, "o_thick", 6.0);
     assert_eq!(thick["ok"], json!(true), "{thick}");
     let painted = thick["painted_pixels"].as_u64().expect("painted_pixels");
-    let ink = thick["ink_pixels"].as_u64().expect("ink_pixels 必须存在");
+    let ink = thick["ink_footprint_pixels"]
+        .as_u64()
+        .expect("ink_footprint_pixels 必须存在（名字要量它真正量的东西）");
+    // **别名必须与主字段同值** ✓（第 808 轮；外部 D192 的改名建议）
+    assert_eq!(
+        thick["ink_pixels"], thick["ink_footprint_pixels"],
+        "`ink_pixels` 只是兼容别名，值必须与 `ink_footprint_pixels` 相同"
+    );
     // ② 不透明的一笔必须真的落墨
     assert!(
         ink >= 1,
@@ -74,7 +81,9 @@ fn ink_pixels_never_exceeds_the_stamp_area_and_is_positive_for_an_opaque_stroke(
     let thin = stroke(&mut workspace, "o_thin", 1.5);
     assert_eq!(thin["ok"], json!(true), "{thin}");
     let thin_painted = thin["painted_pixels"].as_u64().expect("painted_pixels");
-    let thin_ink = thin["ink_pixels"].as_u64().expect("ink_pixels");
+    let thin_ink = thin["ink_footprint_pixels"]
+        .as_u64()
+        .expect("ink_footprint_pixels");
     assert!(
         thin_painted < painted,
         "细笔的印章面积应当更小（{thin_painted} vs {painted}）⇒ 两个字段都要随 size 动：{thin}"
