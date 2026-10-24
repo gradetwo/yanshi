@@ -114,6 +114,32 @@ pub(super) fn write_create_selection(ctx: &mut ToolContext<'_>, args: &Value) ->
     } else {
         require_object(args, "shape")?.clone()
     };
+    // **未知形状当场拒绝** ✓（第 778 轮；外部报告「创建成功 ⇒ 之后找不到」）
+    //   **⇒ 现象**：`create_selection(shape.kind=spiral)` 回 `ok=true` ✗ ⇒ 而**没有任何工具认领它**
+    //     （`clip_to_selection` 找不到 bbox ⇒ 报「一支都没有」✓）⇒ 调用方**以为建好了** ✓。
+    //   **⇒ 为什么不是"把 rect/ellipse 也报错"** ✗：它们**真的能用** ✓
+    //     （`tools_brush.rs:417-440` 已为 rect 的 `w`/`h` 与 ellipse 的 `cx/cy/rx/ry` 算 bbox ✓，
+    //     第 901／911 轮 ✓）⇒ 关掉它们会砍掉一个能用的功能 ✗。
+    //   **⇒ 所以只拒绝"真的没人认领"的形状** ✓ —— 已知集合：`rect`／`ellipse`／`polygon`／`bitmap` ✓。
+    if from_mask_shape.is_none() {
+        let kind = shape
+            .get("kind")
+            .or_else(|| shape.get("type"))
+            .and_then(Value::as_str)
+            .unwrap_or("rect");
+        const KNOWN: [&str; 4] = ["rect", "ellipse", "polygon", "bitmap"];
+        if !KNOWN.contains(&kind) {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "未知的选区形状 {kind:?} ⇒ 可用：rect／ellipse／polygon／bitmap \
+                     （**建一个没人认领的选区比报错更坏**：之后 `clip_to_selection` 只会说\
+                     「一支都没有」，看起来像调用方传错了 id）"
+                )),
+            ));
+        }
+    }
+
     // **★ `bitmap` 选区必须补 `bbox` ★**（第 1609 轮；外部 `E1742` 的**第三处**）
     //   **⇒ 现象**：`create_mask(shape.kind=bitmap)` ✓、`from_mask` ✓、`list_selections` ✓
     //     **而裁剪 `clip_coverage` 恒 0**（**`ok=true` 但一个像素不落**）✗
