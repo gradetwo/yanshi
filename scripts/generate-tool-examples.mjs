@@ -102,8 +102,13 @@ for (const name of candidates) {
   for (const key of schema.required || []) args[key] = valueFor(key, (props[key] || {}).type);
   const outcome = await call(name, args);
   if (outcome.ok) {
+    // **⇒ 已经有这个工具的示例就**不再追加** ✅（第 951 轮）：否则重复条目会越积越多（实测 235 条 / 197 唯一 ✓）
+    if (block.includes('"' + name + '",')) {
+      console.log(`  = ${name} 已有示例 ⇒ 跳过（不重复追加）`);
+    } else {
     block = block.replace("&[\n", '&[\n    (\n        "' + name + '",\n        r#"' + JSON.stringify(args) + '"#,\n    ),\n');
     added += 1;
+    }
     console.log(`  ✓ ${name} 跑通 ⇒ 收录 ${JSON.stringify(args).slice(0, 60)}`);
   } else {
     // **失败消息不再截断** ✗ —— 原先只取 `detail` 的**前 56 字符** ✓，

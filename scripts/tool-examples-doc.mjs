@@ -30,8 +30,16 @@ const path = "docs/design/tool-examples.md";
 //     `scripts/tool-example-acceptance.mjs` 判 ✓（本文件只保证**与源码一致** ✓）。
 const source = readFileSync("crates/yanshi-server/src/tools_examples.rs", "utf8");
 const withExample = [...source.matchAll(/\(\s*"([a-z][a-z0-9_]+)",\s*\n?\s*r#"([\s\S]*?)"#,?\s*\)/g)]
-  .map((m) => ({ name: m[1], example: m[2] }))
-  .sort((a, b) => a.name.localeCompare(b.name));
+  .map((m) => ({ name: m[1], example: m[2] }));
+// **⇒ 去重** ✅（第 951 轮）：示例表里**同一个工具出现多次**（生成器历史上重复追加过 ✓ 实测 **235 条 / 197 唯一** ✓）
+//   ⇒ 文档里会出现**两节同名** ✓ ⇒ 读者两份不同示例不知道该抄哪个 ✗
+const seenNames = new Set();
+withExample.splice(0, withExample.length, ...withExample.filter((tool) => {
+  if (seenNames.has(tool.name)) return false;
+  seenNames.add(tool.name);
+  return true;
+}));
+withExample.sort((a, b) => a.name.localeCompare(b.name));
 if (withExample.length === 0) { console.error("  ⊘ 从源码里没解析出任何示例 ⇒ 判据无法运行（不是通过）"); process.exit(3); }
 // **⇒ 还要与**注册表**对齐** ✅（第 950 轮）：示例表里可能有**注册表没有的工具**（改名/删除的残留 ✓）
 //   ⇒ 那正是"文档会漂移"的形态 ✓ ⇒ **静态解析注册表的 `name: "…"`** ✓ 再**求交** ✓

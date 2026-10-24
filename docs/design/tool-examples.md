@@ -3,13 +3,7 @@
 **这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，
 所以它不会与实现漂移；`--check` 模式会在文档过期时失败。
 
-当前共 235 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
-
-## `abort_changeset`
-
-```json
-{}
-```
+当前共 197 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
 
 ## `abort_changeset`
 
@@ -154,18 +148,6 @@
 {}
 ```
 
-## `begin_changeset`
-
-```json
-{}
-```
-
-## `begin_transaction`
-
-```json
-{}
-```
-
 ## `begin_transaction`
 
 ```json
@@ -176,14 +158,6 @@
 
 ```json
 {}
-```
-
-## `blob_gc`
-
-```json
-{
-  "dry_run": true
-}
 ```
 
 ## `brush_preview`
@@ -268,12 +242,6 @@
 {}
 ```
 
-## `clear_reference`
-
-```json
-{}
-```
-
 ## `clone_stamp`
 
 ```json
@@ -340,12 +308,6 @@
     "a2"
   ]
 }
-```
-
-## `commit_changeset`
-
-```json
-{}
 ```
 
 ## `commit_changeset`
@@ -457,23 +419,6 @@
     "y": 0,
     "w": 100,
     "h": 300
-  }
-}
-```
-
-## `create_mask`
-
-```json
-{
-  "mask_id": "m1",
-  "shape": {
-    "kind": "rect",
-    "bbox": {
-      "x": 10,
-      "y": 10,
-      "w": 60,
-      "h": 60
-    }
   }
 }
 ```
@@ -626,28 +571,6 @@
 }
 ```
 
-## `draw_stroke`
-
-```json
-{
-  "layer_id": "L1",
-  "data": {
-    "points": [
-      [
-        60,
-        180,
-        1
-      ],
-      [
-        140,
-        180,
-        1
-      ]
-    ]
-  }
-}
-```
-
 ## `draw_text`
 
 ```json
@@ -705,12 +628,6 @@
 {}
 ```
 
-## `estimate_dehaze`
-
-```json
-{}
-```
-
 ## `explain_tool`
 
 ```json
@@ -739,16 +656,6 @@
 }
 ```
 
-## `export_png`
-
-```json
-{
-  "path": "example-export.png",
-  "layer_id": "L1",
-  "max_edge": 512
-}
-```
-
 ## `export_project`
 
 ```json
@@ -771,31 +678,11 @@
 }
 ```
 
-## `export_svg`
-
-```json
-{
-  "path": "example-export.svg",
-  "validate": true
-}
-```
-
 ## `export_timelapse`
 
 ```json
 {
   "path": "x"
-}
-```
-
-## `export_timelapse`
-
-```json
-{
-  "path": "process.mp4",
-  "fps": 30,
-  "frame_every": 10,
-  "width": 2048
 }
 ```
 
@@ -805,23 +692,6 @@
 {
   "layer_id": "L1",
   "data": {}
-}
-```
-
-## `fill`
-
-```json
-{
-  "layer_id": "layer_default",
-  "object_id": "bg",
-  "data": {
-    "color": {
-      "r": 240,
-      "g": 240,
-      "b": 240,
-      "a": 255
-    }
-  }
 }
 ```
 
@@ -863,22 +733,6 @@
 }
 ```
 
-## `fit_background_field`
-
-```json
-{
-  "layer_id": "L1",
-  "mask": {
-    "type": "rect",
-    "x": 120,
-    "y": 80,
-    "w": 160,
-    "h": 140
-  },
-  "degree": 2
-}
-```
-
 ## `frequency_separation`
 
 ```json
@@ -894,57 +748,6 @@
 {
   "object_id": "o1"
 }
-```
-
-## `get_ancestors`
-
-```json
-[
-  {
-    "tool": "draw_stroke",
-    "arguments": {
-      "layer_id": "L1",
-      "data": {}
-    }
-  },
-  {
-    "tool": "get_ancestors",
-    "arguments": {
-      "object_id": "L1"
-    }
-  }
-]
-```
-
-## `get_ancestors`
-
-```json
-[
-  {
-    "tool": "draw_shape",
-    "arguments": {
-      "layer_id": "layer_default",
-      "object_id": "p2",
-      "data": {
-        "geometry": {
-          "kind": "rect",
-          "bbox": {
-            "x": 40,
-            "y": 40,
-            "w": 30,
-            "h": 30
-          }
-        }
-      }
-    }
-  },
-  {
-    "tool": "get_ancestors",
-    "arguments": {
-      "object_id": "p2"
-    }
-  }
-]
 ```
 
 ## `get_anchors`
@@ -1005,94 +808,12 @@
 }
 ```
 
-## `get_dependency_graph`
-
-```json
-[
-  {
-    "tool": "draw_shape",
-    "arguments": {
-      "layer_id": "layer_default",
-      "object_id": "p0",
-      "data": {
-        "geometry": {
-          "kind": "rect",
-          "bbox": {
-            "x": 40,
-            "y": 40,
-            "w": 30,
-            "h": 30
-          }
-        }
-      }
-    }
-  },
-  {
-    "tool": "get_dependency_graph",
-    "arguments": {
-      "object_id": "p0"
-    }
-  }
-]
-```
-
 ## `get_descendants`
 
 ```json
 {
   "object_id": "o1"
 }
-```
-
-## `get_descendants`
-
-```json
-[
-  {
-    "tool": "draw_stroke",
-    "arguments": {
-      "layer_id": "L1",
-      "data": {}
-    }
-  },
-  {
-    "tool": "get_descendants",
-    "arguments": {
-      "object_id": "L1"
-    }
-  }
-]
-```
-
-## `get_descendants`
-
-```json
-[
-  {
-    "tool": "draw_shape",
-    "arguments": {
-      "layer_id": "layer_default",
-      "object_id": "p3",
-      "data": {
-        "geometry": {
-          "kind": "rect",
-          "bbox": {
-            "x": 40,
-            "y": 40,
-            "w": 30,
-            "h": 30
-          }
-        }
-      }
-    }
-  },
-  {
-    "tool": "get_descendants",
-    "arguments": {
-      "object_id": "p3"
-    }
-  }
-]
 ```
 
 ## `get_diff`
@@ -1113,19 +834,6 @@
 
 ```json
 {}
-```
-
-## `get_histogram`
-
-```json
-{
-  "region": {
-    "x": 0,
-    "y": 0,
-    "w": 200,
-    "h": 150
-  }
-}
 ```
 
 ## `get_inflight`
@@ -1156,72 +864,12 @@
 }
 ```
 
-## `get_object`
-
-```json
-{
-  "object_id": "o1",
-  "include_history": true
-}
-```
-
 ## `get_object_history`
 
 ```json
 {
   "object_id": "o1"
 }
-```
-
-## `get_object_history`
-
-```json
-[
-  {
-    "tool": "draw_stroke",
-    "arguments": {
-      "layer_id": "L1",
-      "data": {}
-    }
-  },
-  {
-    "tool": "get_object_history",
-    "arguments": {
-      "object_id": "L1"
-    }
-  }
-]
-```
-
-## `get_object_history`
-
-```json
-[
-  {
-    "tool": "draw_shape",
-    "arguments": {
-      "layer_id": "layer_default",
-      "object_id": "s1",
-      "data": {
-        "geometry": {
-          "kind": "rect",
-          "bbox": {
-            "x": 40,
-            "y": 40,
-            "w": 30,
-            "h": 30
-          }
-        }
-      }
-    }
-  },
-  {
-    "tool": "get_object_history",
-    "arguments": {
-      "object_id": "s1"
-    }
-  }
-]
 ```
 
 ## `get_path`
@@ -1262,37 +910,6 @@
 }
 ```
 
-## `get_resolved_state`
-
-```json
-[
-  {
-    "tool": "draw_shape",
-    "arguments": {
-      "layer_id": "layer_default",
-      "object_id": "p1",
-      "data": {
-        "geometry": {
-          "kind": "rect",
-          "bbox": {
-            "x": 40,
-            "y": 40,
-            "w": 30,
-            "h": 30
-          }
-        }
-      }
-    }
-  },
-  {
-    "tool": "get_resolved_state",
-    "arguments": {
-      "object_id": "p1"
-    }
-  }
-]
-```
-
 ## `get_state`
 
 ```json
@@ -1322,28 +939,6 @@
   "layer_id": "L1",
   "from": {},
   "to": {}
-}
-```
-
-## `gradient_fill`
-
-```json
-{
-  "layer_id": "L1",
-  "from": {
-    "r": 255,
-    "g": 0,
-    "b": 0,
-    "a": 255
-  },
-  "to": {
-    "r": 0,
-    "g": 0,
-    "b": 255,
-    "a": 255
-  },
-  "kind": "linear",
-  "angle": 0
 }
 ```
 
@@ -1471,14 +1066,6 @@
 }
 ```
 
-## `list_assets`
-
-```json
-{
-  "kind": "brush"
-}
-```
-
 ## `list_atoms`
 
 ```json
@@ -1567,18 +1154,6 @@
 {}
 ```
 
-## `list_selections`
-
-```json
-{}
-```
-
-## `list_stashes`
-
-```json
-{}
-```
-
 ## `list_stashes`
 
 ```json
@@ -1586,12 +1161,6 @@
 ```
 
 ## `list_suggestions`
-
-```json
-{}
-```
-
-## `list_textures`
 
 ```json
 {}
@@ -1646,17 +1215,6 @@
 {
   "width": 1,
   "height": 1
-}
-```
-
-## `new_document`
-
-```json
-{
-  "height": 640,
-  "width": 900,
-  "background": {},
-  "doc_id": "demo"
 }
 ```
 
@@ -1747,32 +1305,6 @@
 
 ```json
 {}
-```
-
-## `redo_last`
-
-```json
-[
-  {
-    "tool": "draw_stroke",
-    "arguments": {
-      "layer_id": "L1",
-      "data": {}
-    }
-  },
-  {
-    "tool": "undo_last",
-    "arguments": {
-      "count": 1
-    }
-  },
-  {
-    "tool": "redo_last",
-    "arguments": {
-      "count": 1
-    }
-  }
-]
 ```
 
 ## `reject_annotation`
@@ -2033,18 +1565,6 @@
 }
 ```
 
-## `select_opaque_pixels`
-
-```json
-{
-  "layer_id": "L1",
-  "selection_id": "s_opaque",
-  "min_alpha": 0.5,
-  "binarize": false,
-  "close_pinholes": true
-}
-```
-
 ## `set_anchor`
 
 ```json
@@ -2052,17 +1572,6 @@
   "name": "x",
   "x": 1,
   "y": 1
-}
-```
-
-## `set_anchor`
-
-```json
-{
-  "name": "left_eye",
-  "x": 268,
-  "y": 286,
-  "note": "外眼角偏 2px"
 }
 ```
 
@@ -2105,16 +1614,6 @@
 }
 ```
 
-## `set_preferences`
-
-```json
-{
-  "values": {
-    "reference.blob_hash": null
-  }
-}
-```
-
 ## `set_property`
 
 ```json
@@ -2144,33 +1643,6 @@
 }
 ```
 
-## `smart_blend`
-
-```json
-{
-  "layer_id": "L1",
-  "shape": {
-    "type": "rect",
-    "x": 40,
-    "y": 40,
-    "w": 120,
-    "h": 80
-  },
-  "color_a": [
-    0.86,
-    0.24,
-    0.16,
-    1
-  ],
-  "color_b": [
-    0.16,
-    0.24,
-    0.86,
-    1
-  ]
-}
-```
-
 ## `smart_edge_soften`
 
 ```json
@@ -2192,31 +1664,6 @@
 {
   "layer_id": "L1",
   "shape": {}
-}
-```
-
-## `smart_erase_shape`
-
-```json
-{
-  "layer_id": "L1",
-  "shape": {
-    "type": "polygon",
-    "points": [
-      [
-        100,
-        100
-      ],
-      [
-        200,
-        100
-      ],
-      [
-        150,
-        180
-      ]
-    ]
-  }
 }
 ```
 
@@ -2249,27 +1696,6 @@
   "shape": {},
   "color": [],
   "layer_id": "L1"
-}
-```
-
-## `smart_glaze`
-
-```json
-{
-  "layer_id": "L1",
-  "shape": {
-    "type": "rect",
-    "x": 60,
-    "y": 60,
-    "w": 100,
-    "h": 60
-  },
-  "color": [
-    0.86,
-    0.24,
-    0.16,
-    1
-  ]
 }
 ```
 
@@ -2533,26 +1959,6 @@
 
 ```json
 {}
-```
-
-## `undo_last`
-
-```json
-[
-  {
-    "tool": "draw_stroke",
-    "arguments": {
-      "layer_id": "L1",
-      "data": {}
-    }
-  },
-  {
-    "tool": "undo_last",
-    "arguments": {
-      "count": 1
-    }
-  }
-]
 ```
 
 ## `unlock_layer`
