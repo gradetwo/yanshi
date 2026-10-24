@@ -137,6 +137,16 @@ fn full_render_reference(workspace: &mut Workspace) -> Vec<u8> {
 #[test]
 fn reopened_document_reuses_the_persisted_preview_instead_of_rendering_the_canvas() {
     let root = temp_root("reuse");
+    // **跑完即删** ✓（第 835 轮；`/tmp` 是 1.9 GB tmpfs ✓）
+    //   **⇒ 守卫必须绑在**测试体内**、且绑**辅助函数返回的子目录** ✓
+    //     —— 绑在辅助函数里会在返回时立刻删 ✗（CI 就是这么红的 ✓）；绑 `temp_dir()` 会删整个 `/tmp` ✗✗
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup_1 = Cleanup(root.clone());
     let mut workspace = file_workspace(&root);
     new_document(&mut workspace);
     draw(
@@ -231,6 +241,16 @@ fn reopened_document_reuses_the_persisted_preview_instead_of_rendering_the_canva
 #[test]
 fn current_persisted_full_frame_is_served_without_rendering() {
     let root = temp_root("current");
+    // **跑完即删** ✓（第 835 轮；`/tmp` 是 1.9 GB tmpfs ✓）
+    //   **⇒ 守卫必须绑在**测试体内**、且绑**辅助函数返回的子目录** ✓
+    //     —— 绑在辅助函数里会在返回时立刻删 ✗（CI 就是这么红的 ✓）；绑 `temp_dir()` 会删整个 `/tmp` ✗✗
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup_2 = Cleanup(root.clone());
     let mut workspace = file_workspace(&root);
     new_document(&mut workspace);
     draw(
@@ -285,6 +305,16 @@ fn current_persisted_full_frame_is_served_without_rendering() {
 #[test]
 fn stale_persisted_render_is_never_served_as_the_current_canvas() {
     let root = temp_root("stale");
+    // **跑完即删** ✓（第 835 轮；`/tmp` 是 1.9 GB tmpfs ✓）
+    //   **⇒ 守卫必须绑在**测试体内**、且绑**辅助函数返回的子目录** ✓
+    //     —— 绑在辅助函数里会在返回时立刻删 ✗（CI 就是这么红的 ✓）；绑 `temp_dir()` 会删整个 `/tmp` ✗✗
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup_3 = Cleanup(root.clone());
     let mut workspace = file_workspace(&root);
     new_document(&mut workspace);
     draw(
@@ -344,6 +374,16 @@ fn stale_persisted_render_is_never_served_as_the_current_canvas() {
 #[test]
 fn persisted_thumbnail_is_not_mistaken_for_a_full_frame_render() {
     let root = temp_root("thumb");
+    // **跑完即删** ✓（第 835 轮；`/tmp` 是 1.9 GB tmpfs ✓）
+    //   **⇒ 守卫必须绑在**测试体内**、且绑**辅助函数返回的子目录** ✓
+    //     —— 绑在辅助函数里会在返回时立刻删 ✗（CI 就是这么红的 ✓）；绑 `temp_dir()` 会删整个 `/tmp` ✗✗
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup_4 = Cleanup(root.clone());
     let mut workspace = file_workspace(&root);
     new_document(&mut workspace);
     draw(

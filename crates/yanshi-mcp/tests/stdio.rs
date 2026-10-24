@@ -79,6 +79,14 @@ fn temp_root(tag: &str) -> std::path::PathBuf {
 #[test]
 fn stdio_handshake_draw_render_and_persist() {
     let root = temp_root("e2e");
+    // **跑完即删** ✓（第 835 轮；守卫绑在**测试体内**、绑**辅助函数返回的子目录** ✓）
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup_1 = Cleanup(root.clone());
     let root_str = root.to_string_lossy().into_owned();
     let mut process = McpProcess::start(&[
         "--root",
@@ -211,6 +219,14 @@ fn stdio_handshake_draw_render_and_persist() {
 #[test]
 fn new_document_honours_size_and_reports_created_for_fresh_ids() {
     let root = temp_root("newdoc");
+    // **跑完即删** ✓（第 835 轮；守卫绑在**测试体内**、绑**辅助函数返回的子目录** ✓）
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup_2 = Cleanup(root.clone());
     let root_str = root.to_string_lossy().into_owned();
     let mut process = McpProcess::start(&[
         "--root",

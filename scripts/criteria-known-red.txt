@@ -28277,14 +28277,3 @@ tool-single-point-rejected.mjs  # **类型：环境红（本机 0、CI 1，原�
 #   ＋ **∴ 第 821 轮转绿 ✓**：227/227 个用 `temp_dir()` 的测试文件都带 `Drop` 清理器 ✓
 #     ⇒ 已从名单移出 ✓。（路径：42 → 40 → 10 → 6 → 5 → 2 → 0，每步都跑过对应测试 ✓）
 
-# **★★★ 第 833 轮：CI 红在我自己的清理守卫上（三处作用域错 ✓）★★★**
-#   ＋ **∴ 症状**：`test (stable)`／`test (beta)` 红在 `vector_layer_end_to_end` ✓：
-#     `写文件失败：/tmp/yanshi_vector_test_10591/vec.png ⇒ No such file or directory` ✓
-#   ＋ **∴ 根因**：我把 `Cleanup` 绑在**辅助函数体内**（`fn temp_file()` ✓）
-#     ⇒ 函数一返回就 drop ⇒ **目录被删** ✗ ⇒ 后面的导出必然失败 ✓
-#   ＋ **∴ 同类危险还有两处更糟**（已删 ✓）：`stdio.rs`／`coldstart_reuse.rs` 的 `temp_root` 里
-#     `Cleanup(root.clone())` 绑的是 **`std::env::temp_dir()` 本身** ⇒ drop 会**删掉整个 `/tmp`** ✗✗
-#   ＋ **∴ 现状**：这 3 个文件 + `vector_layer` 的**辅助函数内守卫**已删 ✓；
-#     `vector_layer` 改成**测试体内**绑定 ✓（已跑 `2 passed` ✓）；另外 3 个**暂时不清理** ✓
-#     ⇒ 重新登记为已知红 ✓（等下一轮在**测试体**里绑，不是辅助函数里 ✓）。
-check-tests-clean-temp.mjs  # **类型：已知红（3 个文件的守卫曾绑在辅助函数里 ⇒ /tmp 会被提前删或整个删掉）**
