@@ -230,7 +230,24 @@ impl Timeline {
     ///   并集 bbox 几乎等于整幅**✗ ⇒ **∴ 实测**每帧渲 8.4 个 tile ✗ 画布才 12 个** ✓
     ///     ⇒ **∴ 收益**只剩 18%** ✓ ⇒ **∴ 所以**改成**逐条 run** ✓ ★★
     pub fn frame(&mut self) -> Result<&[u8], KernelError> {
-        let dirty = std::mem::take(&mut self.dirty);
+        let mut dirty = std::mem::take(&mut self.dirty);
+        // **★ 第一帧必须**全幅**画，否则没被脏区覆盖的 tile 永远是 0（= 纯黑）**✗ ★**（第 925 轮）
+        //   **⇒ 症状** ✗：`art` 第 131／132 次报的 5 块纯黑矩形 ✓ —— **用他给的包在本机复现** ✓
+        //     `末帧像素 656640｜纯黑 43008 = 6.55%` ✓ 并定位到 **5 个矩形**（`y=0..127` 整条 等 ✓）
+        //   **⇒ 根因** ✗：缓冲初值是 `vec![0u8]`（黑 ✓），**只有** `only_document_and_layers` 那条路
+        //     会用背景色填满 ✓ ⇒ 若**第一帧之前就 apply 过真原子**（`import_image` 等 ✓）
+        //     ⇒ `have_frame == false` 而 `dirty` 只有那几笔的 tile ⇒ 其余 tile **保持 0** ✗
+        //   **⇒ 改法**：`!have_frame` ⇒ 把**所有 tile** 当脏 ⇒ 整幅渲一次 ✓（代价：多一帧整幅 ✓）
+        //   **⇒ 实测（同一个包、只差这一处）**：`纯黑 6.55% ⇒ 0.00%` ✓
+        if !self.have_frame {
+            let tx = self.doc_w.div_ceil(self.tile);
+            let ty = self.doc_h.div_ceil(self.tile);
+            for y in 0..ty {
+                for x in 0..tx {
+                    dirty.insert((x, y));
+                }
+            }
+        }
         // **记录这一帧的脏区**（像素口径）⇒ 缩小那步可以只更新对应输出像素 ✓
         self.last_dirty_px = if dirty.is_empty() {
             None
