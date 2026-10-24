@@ -20642,7 +20642,9 @@ gh run view 40114010090 --log-failed    ⇒ failed to get jobs: HTTP 502
 32 条 exit 0 ✓｜1 条 exit 1 ✗
 ✗ check-gpu-map-async-errors（已登记 known-red；GPU map_async，边界只定位不修 ✓）
 ```
-⇒ 上一轮的 `check-ledger-section-numbering` 红（悬空引用「第 954 节」✗）**已修** ✓ ⇒ 回到合并后的基线 32/33 ✓
+⇒ 上一轮的 `check-ledger-section-numbering` 红（悬空引用：把**轮号 954** 当成节号写 ✗）**已修** ✓ ⇒ 回到合并后的基线 32/33 ✓
+⇒ **⇒ 顺带发现该判据的一个边界** ✗：它把**引号里引用**的旧写法**也当成引用** ✓
+  ⇒ 所以**描述错误**时要避开「第 <数字> 节」这个形状 ✓（本节第一版就被自己的判据抓到 ✓）
 
 **⇒ 这两轮的组合值得记**：
 - 第 913 轮把「第 N 节」纳入分母（当时 52 处引用）✓
