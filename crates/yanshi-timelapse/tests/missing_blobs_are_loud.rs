@@ -272,10 +272,18 @@ fn shrink_time_is_accounted_separately_from_apply() {
             [value, value / 2, 255 - value, 255]
         })
         .collect();
-    let hash = yanshi_core::BlobHash::from_bytes(&blob).as_str().to_owned();
-    let blob_dir = dir.join("blobs/sha256").join(&hash[..2]).join(&hash[2..4]);
+    let hash = yanshi_core::BlobHash::from_bytes(&blob);
+    // **`as_str()` 带 `sha256:` 前缀** ✓ 而**包里的文件名是裸十六进制** ✓（第 852 轮查清）
+    //   **⇒ 缺陷（我的夹具）**：我原来用 `as_str()` 去拼目录名与文件名 ✗
+    //     ⇒ 文件名成了 `sha256:…` ✓ 而 `main.rs` 把「路径最后一段」当 key ✓
+    //       ⇒ key = `sha256:…` 而查表时会**剥掉前缀** ✓ ⇒ **永远查不到** ✗
+    //         ⇒ `shrink_atom` 对**每一行**都返回 `None` ⇒ `SHRINK=1` 空转 ✓
+    //           （`shrink 放弃 1 个原子（原因 blob 查不到×1）` 就是这么来的 ✓）
+    let hex = hash.hex().to_owned();
+    let blob_dir = dir.join("blobs/sha256").join(&hex[..2]).join(&hex[2..4]);
     std::fs::create_dir_all(&blob_dir).expect("blob 目录");
-    std::fs::write(blob_dir.join(&hash), &blob).expect("blob");
+    std::fs::write(blob_dir.join(&hex), &blob).expect("blob");
+    let hash = hash.as_str().to_owned();
     std::fs::write(
         dir.join("meta.json"),
         serde_json::json!({"width": w, "height": h, "doc_id": "d_acct", "fps": 24}).to_string(),
@@ -292,7 +300,12 @@ fn shrink_time_is_accounted_separately_from_apply() {
         serde_json::json!({"id": "a2", "seq": 3, "kind": "import_image", "actor": "human:t",
             "session": "s", "timestamp": 0, "schema_version": 1,
             "payload": {"layer_id": "L1", "object_id": "o1",
+                        // **`shrink_atom` 要 `region` + `width`/`height`** ✓（第 852 轮）
+                        //   ⇒ 这个夹具原来只有 `bbox` ✗ ⇒ `size_of("width")?` 直接 `None` ✓
+                        //     ⇒ 分段账显示 `放弃 …（原因 无）` —— 因为那一处我还没分桶 ✓
                         "bbox": [0.0, 0.0, f64::from(bw), f64::from(bh)],
+                        "region": {"x": 0.0, "y": 0.0, "w": f64::from(bw), "h": f64::from(bh)},
+                        "width": bw, "height": bh,
                         "bitmap": {"blob_hash": hash, "mime_type": "image/x-yanshi-raw",
                                    "size": blob.len()}}}),
     ];
@@ -342,6 +355,14 @@ fn shrink_time_is_accounted_separately_from_apply() {
     //   **⇒ 所以这里先**不断言 0** ✓：断言 0 现在会红，而红的是**产品**不是判据 ✓
     //     ⇒ 下一步是把原因分桶（`shrink_skips` 按 `None` 的出处拆开 ✓）⇒ 那时才能断言"健康包 = 0" ✓
     // **原因分桶必须打印** ✓（第 851 轮）：`shrink 放弃 N 个原子（原因 …）`
+    // **夹具修好之后：健康的包必须 `放弃 0`** ✓（第 852 轮）
+    //   **⇒ 为什么这条现在能断言 0**：第 851 轮实测是「放弃 1（原因 blob 查不到）」✓
+    //     ⇒ 根因是**我的夹具**把 blob 文件命名成 `sha256:…`（`as_str()` 带前缀 ✗）而包里是裸 hex ✓
+    //     ⇒ 修好夹具之后，`shrink_atom` 应当**每一行都能缩** ✓
+    assert!(
+        stdout.contains("shrink 放弃 0 个原子（原因 无）"),
+        "修好夹具之后，健康的包不许再有放弃的原子：\n{stdout}"
+    );
     assert!(
         stdout.contains("（原因 "),
         "分段账里必须打印 `shrink 放弃 N 个原子`（它是「缩样到底生效没有」的唯一直接信号）：\n{stdout}"
