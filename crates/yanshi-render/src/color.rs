@@ -27,6 +27,38 @@ pub fn linear_to_srgb(value: f32) -> f32 {
     }
 }
 
+/// **扩展（保符号）sRGB 编码**：线性 → 显示，定义域为全体实数。
+///
+/// 与 [`linear_to_srgb`] 的区别只在**不钳 `[0, 1]`**：`> 1` 的 HDR 线性值沿
+/// 幂段自然延拓（编码值 > 1），负值镜像延拓（`enc(−v) = −enc(v)`，保符号）。
+/// 显示空间算子（期 3 A 族：brightness_contrast／color_balance／
+/// selective_color／clarity／vignette）必须走这一对函数——若在编码前钳
+/// `[0, 1]`，第一个显示算子就会把 HDR 高光压成 1.0 后再也回不来
+/// （专家 Q1-a 红线）。`[0, 1]` 内与 [`linear_to_srgb`] **逐位一致**。
+pub fn srgb_encode_extended(value: f32) -> f32 {
+    if value < 0.0 {
+        -srgb_encode_extended(-value)
+    } else if value <= 0.003_130_8 {
+        value * 12.92
+    } else {
+        1.055 * libm::powf(value, 1.0 / 2.4) - 0.055
+    }
+}
+
+/// **扩展（保符号）sRGB 解码**：[`srgb_encode_extended`] 的逆。
+///
+/// `[0, 1]` 内与 [`srgb_to_linear`] **逐位一致**；显示值 > 1 解出 > 1 的
+/// 线性值，负显示值镜像（保符号）。
+pub fn srgb_decode_extended(value: f32) -> f32 {
+    if value < 0.0 {
+        -srgb_decode_extended(-value)
+    } else if value <= 0.040_45 {
+        value / 12.92
+    } else {
+        libm::powf((value + 0.055) / 1.055, 2.4)
+    }
+}
+
 /// 解码方向 sRGB 查找表的项数：输入是 **u8** ⇒ 定义域只有 **256** 个值。
 ///
 /// 与编码方向的 [`SRGB_ENCODE_LUT_SIZE`]（4097 项、属 D1 显示路径、允许 ±1 LSB）本质不同：
@@ -290,6 +322,24 @@ mod tests {
         assert!((linear_to_srgb(1.0) - 1.0).abs() < 1e-6);
         // 中灰：sRGB 0.5 ≈ 线性 0.2140。
         assert!((srgb_to_linear(0.5) - 0.214_041).abs() < 1e-4);
+    }
+
+    /// 扩展传递：[0,1] 内与钳制版逐位一致；域外不钳、保符号、往返恒等。
+    /// 变异：给 enc/dec 加回 clamp(0,1) ⇒ HDR 与负值两组断言立刻红。
+    #[test]
+    fn extended_transfer_matches_clamped_inside_and_extends_outside() {
+        for v in [0.0f32, 0.003_130_8, 0.040_45, 0.214_041, 0.5, 0.735_4, 1.0] {
+            assert_eq!(srgb_encode_extended(v), linear_to_srgb(v), "enc {v}");
+            assert_eq!(srgb_decode_extended(v), srgb_to_linear(v), "dec {v}");
+        }
+        // HDR：线性 4.0 编码 > 1（不被钳到 1），且往返还原。
+        let encoded = srgb_encode_extended(4.0);
+        assert!(encoded > 1.7, "HDR 编码不得钳到 1：{encoded}");
+        assert!((srgb_decode_extended(encoded) - 4.0).abs() < 1e-4);
+        // 负值镜像保符号。
+        assert_eq!(srgb_encode_extended(-0.5), -srgb_encode_extended(0.5));
+        assert!((srgb_decode_extended(-0.735_4) + 0.5).abs() < 1e-5);
+        assert!((srgb_decode_extended(srgb_encode_extended(-2.5)) + 2.5).abs() < 1e-4);
     }
 
     #[test]
