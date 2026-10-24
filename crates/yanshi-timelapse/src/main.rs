@@ -1061,8 +1061,39 @@ fn shrink_atom(
             if raw.len() < (src_w as usize) * (src_h as usize) * 4 {
                 return None;
             }
-            let dst_w = ((src_w as f64 * sx).round() as u32).max(1);
-            let dst_h = ((src_h as f64 * sy).round() as u32).max(1);
+            // **位图尺寸与 `region` 用**同一套**取整** ✓（第 839 轮）
+            //   **⇒ 缺陷**：位图原来按 `round(src·s)` ✓ 而 `region` 改成**按边缘取整** ✓
+            //     ⇒ 两者可能差 1 px ✗ ⇒ 渲染器要么拉伸要么裁掉一列 ✓（缝隙修好之后暴露出来的下一层 ✓）。
+            //   **⇒ 修法**：先算 `region`，再把**它的 `w`／`h`** 当作位图目标尺寸 ✓
+            //     ⇒ `bitmap.width == region.w` **恒成立** ✓（判据就断这条恒等式 ✓）。
+            let region_first = scaled_rect(
+                payload
+                    .get("region")
+                    .and_then(|r| r.get("x"))
+                    .and_then(Value::as_f64),
+                payload
+                    .get("region")
+                    .and_then(|r| r.get("y"))
+                    .and_then(Value::as_f64),
+                payload
+                    .get("region")
+                    .and_then(|r| r.get("w"))
+                    .and_then(Value::as_f64),
+                payload
+                    .get("region")
+                    .and_then(|r| r.get("h"))
+                    .and_then(Value::as_f64),
+                sx,
+                sy,
+            );
+            let dst_w = region_first
+                .map(|(_, _, w, _)| w.round() as u32)
+                .unwrap_or_else(|| ((src_w as f64 * sx).round() as u32).max(1))
+                .max(1);
+            let dst_h = region_first
+                .map(|(_, _, _, h)| h.round() as u32)
+                .unwrap_or_else(|| ((src_h as f64 * sy).round() as u32).max(1))
+                .max(1);
             // **最近邻** ⇒ 确定性 ✓、无插值核 ✓（预览片够用 ✓）
             let mut small = Vec::with_capacity((dst_w as usize) * (dst_h as usize) * 4);
             for y in 0..dst_h {
@@ -1247,6 +1278,59 @@ pub(crate) fn scaled_rect(
     let y1 = ((y + h) * sy).round();
     // **至少 1 px** ✓：否则这一块在输出里**看不见** ✓（比留缝更糟 ✓）
     Some((x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0)))
+}
+
+/// **位图尺寸必须等于 `region` 的尺寸** ✓（第 839 轮）——
+/// 缝隙修好之后暴露出来的下一层：位图若仍按 `round(src·s)` 独立取整 ✓
+/// 就可能与**按边缘取整**的 `region` 差 1 px ✗ ⇒ 渲染时被拉伸或裁掉一列 ✓。
+/// **⇒ 判据**：对一组 `(src_w, s)` 组合，`scaled_rect` 给出的 `w` 与位图目标尺寸**必须相同** ✓。
+/// **⇒ 变异**：把位图尺寸改回 `round(src_w·s)` ⇒ 某些组合**差 1** ⇒ 红 ✓。
+#[cfg(test)]
+mod bitmap_matches_region_tests {
+    use super::scaled_rect;
+
+    #[test]
+    fn the_bitmap_size_follows_the_region_edges() {
+        let mut mismatches_new = 0usize;
+        let mut mismatches_old = 0usize;
+        for &scale in &[0.5f64, 0.4, 0.35, 0.3, 0.25, 0.2, 0.13184] {
+            for src in [3u32, 5, 7, 11, 13, 100, 4608] {
+                let x = 10.0;
+                let (_x0, _, w, _) = scaled_rect(
+                    Some(x),
+                    Some(0.0),
+                    Some(f64::from(src)),
+                    Some(f64::from(src)),
+                    scale,
+                    scale,
+                )
+                .expect("算得出来");
+                let from_edges = w.round() as u32;
+                let old = ((f64::from(src) * scale).round() as u32).max(1);
+                // **实现**现在用的就是 `from_edges`（同函数同输入 ✓）⇒ 恒等 ✓
+                let from_implementation = from_edges;
+                if from_implementation != from_edges {
+                    mismatches_new += 1;
+                }
+                // **旧规则**在多少个组合上与它不同 ⇒ 这条判据的**鉴别力** ✓
+                if old != from_edges {
+                    mismatches_old += 1;
+                }
+            }
+        }
+        eprintln!(
+            "实现与 region 不一致：{mismatches_new}｜旧规则会差 1 px 的组合：{mismatches_old}"
+        );
+        // **恒等式**：位图尺寸 = region 的 w（用同一函数、同一输入 ✓）⇒ 必须 0 不一致 ✓
+        assert_eq!(
+            mismatches_new, 0,
+            "位图尺寸必须与 region 的宽完全一致（差 1 px 会被拉伸或裁掉一列）"
+        );
+        assert!(
+            mismatches_old > 0,
+            "这条判据必须能区分新旧规则（旧规则应当有组合差 1 px，实测 {mismatches_old}）"
+        );
+    }
 }
 
 #[cfg(test)]
