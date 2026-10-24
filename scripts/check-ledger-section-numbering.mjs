@@ -139,13 +139,39 @@ for (const m of text.matchAll(new RegExp(`第\\s*(\\d{1,4})\\s*节`, "g"))) {
 //     判据把它当真引用 ⇒ 报「悬空 1」⇒ **自己的判据被自己的说明绊倒** ✗（连踩两次 ✓）
 //   **⇒ 判法**：**同一行**里出现「引用／原文／写成」且该引用**紧跟在「或『之后** ⇒ 视为**说明** ✓
 //   **⇒ 变异**：删掉这个过滤 ⇒ 台账里那句说明又会被报悬空 ⇒ 红 ✓（下面 `--self-test` 可复核 ✓）
-const explained = (index) => {
-  const lineStart = text.lastIndexOf("\n", index) + 1;
-  const lineEnd = text.indexOf("\n", index);
-  const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
-  const before = text.slice(Math.max(0, index - 2), index);
+const explainedIn = (source, index) => {
+  const lineStart = source.lastIndexOf("\n", index) + 1;
+  const lineEnd = source.indexOf("\n", index);
+  const line = source.slice(lineStart, lineEnd === -1 ? source.length : lineEnd);
+  const before = source.slice(Math.max(0, index - 2), index);
   return /引用|原文|写成/.test(line) && /[「『]/.test(before);
 };
+const explained = (index) => explainedIn(text, index);
+// **⇒ 自测**（第 972 轮）：让"说明性引号"这条过滤**能红** ✓
+//   **⇒ 为什么需要** ✗：台账里已经没有被它救的那种句子 ⇒ **删掉过滤也不红** ✗
+//     ⇒ 那条改动就**无法证明自己必要** ✓ ⇒ 用三段小字符串把它钉住 ✓
+//   **⇒ 断言**：① 悬空且**没**引用标记 ⇒ **算引用**（会被报 ✗）
+//             ② 悬空但在「引用」行里且紧跟「 ⇒ **不算**（被跳过 ✓）
+//             ③ 指向真节 ⇒ 没人管 ✓
+//   **⇒ 变异**：把过滤删掉 ⇒ ② 会变成"算引用" ⇒ 本自测**红** ✓
+if (process.argv.includes("--self-test")) {
+  const cases = [
+    ["悬空且无标记", "见 §907 那段", "907", false],
+    ["悬空的说明性引号", "**引用**原文「§907」那段", "907", true],
+    ["指向真节的普通引用", "见 §554 那段", "554", false],
+  ];
+  let pass = 0;
+  for (const [label, source, num, wantSkip] of cases) {
+    const at = source.indexOf(num);
+    const got = explainedIn(source, at);
+    const okCase = got === wantSkip;
+    console.log(`  ${okCase ? "✓" : "✗"} ${label}：expected skip=${wantSkip} got=${got}`);
+    if (okCase) pass += 1;
+  }
+  console.log(`自测：${pass}/${cases.length} 通过`);
+  process.exit(pass === cases.length ? 0 : 1);
+}
+
 const refsReal = [];
 for (const m of text.matchAll(new RegExp(`§\\s*(${NUM}{2,6})(?!${NUM})`, "g"))) refsReal.push([m[1], m.index]);
 for (const m of text.matchAll(new RegExp(`\\[\\s*(${NUM}{2,6})(?!${NUM})\\s*\\]`, "g"))) refsReal.push([m[1], m.index]);
