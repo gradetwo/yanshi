@@ -178,21 +178,32 @@ impl Profile {
     /// - `Core` / `History` / `Changeset` / `Structure`：文档、历史、变更集与图层骨架，
     ///   任何工作面都离不开；
     /// - `Retouch`：调色 / 滤镜 / 修复——照片主线的核心工具层；
+    /// - `Annotation` / `Collab` / `Conflict`：标注、协作评论、冲突解决——
+    ///   Wang 2026-10-24 期 1 尾单裁定加回：查看器的评论 / 批注 / 冲突面板属必备面，
+    ///   缺省会话必须放行其工具（缺省不含这三层时面板会报「未知工具」，
+    ///   正是「界面做了、工具没放行」的历史教训，守卫来历见 yanshi-http 缺省测试）；
     /// - `Photo`：照片修图 workflow 预设，本项目当前的主线工作面。
     ///
-    /// **不含**：`Collab` / `Annotation` / `Conflict` / `Semantic` 等专用层，
-    /// 也不含 `Svg` 与 Oil / Watercolor / Sketch / Ink / Pastel 画风预设
+    /// **不含**：`Semantic`（按既定裁定只预留不开发），也不含 `Svg` 与
+    /// Oil / Watercolor / Sketch / Ink / Pastel 画风预设
     /// ——需要时由用户显式 `--profile` 点名。
     ///
     /// **Photo 在此只贡献成员资格**：缺省组成**不触发**白名单收窄（收窄只对最终用户
     /// 显式点名的子集请求生效，判据见 `ToolRegistry::with_profiles`），故缺省工具集
-    /// = 成员的分层并集，是注册表全量的真子集，且包含 `PHOTO_TOOLS` 全部工具
-    /// （由不变量测试钉死）。
-    pub const DEFAULT: [Profile; 6] = [
+    /// = 成员的分层并集，且包含 `PHOTO_TOOLS` 全部工具（由不变量测试钉死）。
+    /// 三层加回后实测缺省工具数与注册表全量相等（2026-10-24 实测 183 → 200，
+    /// 与全量同数：已注册工具全部落在成员层内——`Semantic` 无工具、其余 workflow
+    /// 预设的工具都住在基底层）——DEFAULT 与 ALL 的区别在 **profile 成员资格**
+    /// （Semantic / Svg / 画风预设仍不在缺省内，点名 `--profile` 的语义与收窄
+    /// 判据不变），不在工具数。
+    pub const DEFAULT: [Profile; 9] = [
         Profile::Core,
         Profile::History,
         Profile::Changeset,
         Profile::Retouch,
+        Profile::Annotation,
+        Profile::Collab,
+        Profile::Conflict,
         Profile::Structure,
         Profile::Photo,
     ];

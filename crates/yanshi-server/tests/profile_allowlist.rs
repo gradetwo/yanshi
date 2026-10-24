@@ -7,8 +7,10 @@
 //! 1. `Profile::ALL`：含全部 profile；`with_profiles(&ALL)` 与 `full()` 恒等于
 //!    注册表全量，任何情况下不收窄；
 //! 2. `Profile::DEFAULT`（新）：缺省会话（mcp/http）常用集，成员为基底层
-//!    Core/History/Changeset/Retouch/Structure + Photo；不触发白名单收窄，
-//!    工具集 = 成员分层并集（全量的真子集，且包含 `PHOTO_TOOLS` 全部）；
+//!    Core/History/Changeset/Retouch/Structure + Annotation/Collab/Conflict
+//!    （2026-10-24 期 1 尾单裁定加回：查看器面板属必备面）+ Photo；不触发
+//!    白名单收窄，工具集 = 成员分层并集（包含 `PHOTO_TOOLS` 全部；三层加回
+//!    后实测 200 个、与注册表全量同数——区别在 profile 成员资格，不在工具数）；
 //! 3. 白名单收窄只对最终用户显式点名的子集请求生效：`[Photo]` 恰为
 //!    `PHOTO_TOOLS`、`[Svg]` 恰为 `SVG_TOOLS`，显式混合按设计 §7 公式
 //!    （分层展开集 ∩ 白名单并集）。
@@ -122,9 +124,14 @@ fn all_and_full_never_narrow() {
 }
 
 /// 不变量 2（新口径）：缺省组成 DEFAULT 不触发收窄 —— 工具集为成员分层并集，
-/// 是全量的真子集，且包含 PHOTO_TOOLS 全部工具（Photo 只贡献成员资格）。
+/// 且包含 PHOTO_TOOLS 全部工具（Photo 只贡献成员资格）。
+/// 三层（Annotation/Collab/Conflict）加回后（Wang 2026-10-24 期 1 尾单裁定，
+/// 查看器面板属必备面），实测工具集与注册表全量同名同数（200）：全部已注册
+/// 工具都落在 DEFAULT 成员层内（`Semantic` 无工具、其余 workflow 预设的工具
+/// 住在基底层）——DEFAULT 与 ALL 的区别落在成员资格
+/// （`composition_membership_is_pinned` 逐项钉死），不落在工具数。
 #[test]
-fn default_composition_is_unnarrowed_common_subset() {
+fn default_composition_is_unnarrowed_and_panel_complete() {
     let default = ToolRegistry::with_profiles(&Profile::DEFAULT);
     let full = ToolRegistry::full();
     let default_names = names(&default);
@@ -134,13 +141,14 @@ fn default_composition_is_unnarrowed_common_subset() {
             "缺省常用集必须包含 PHOTO_TOOLS 全部工具，缺 {name}"
         );
     }
-    assert!(
-        default.tools().len() < full.tools().len(),
-        "缺省常用集必须是全量的真子集"
+    assert_eq!(
+        default_names,
+        names(&full),
+        "三层加回后缺省工具集应与注册表全量同名（实测同为 200 个）"
     );
     // 缺省集必须严格大于照片名单本身：若 DEFAULT 被误收窄到 PHOTO_TOOLS，
     // 下面这些「在成员分层内、但不在照片白名单」的工具会整批消失
-    // （变异验证实测：只断言「包含 PHOTO_TOOLS + 真子集」时收窄版也能假过，
+    // （变异验证实测：只断言「包含 PHOTO_TOOLS + 计数」时收窄版也能假过，
     // 故在此钉死并集语义）。
     assert!(
         default.tools().len() > PHOTO_TOOLS.len(),
@@ -157,11 +165,13 @@ fn default_composition_is_unnarrowed_common_subset() {
         default.get("begin_changeset").is_some(),
         "缺省常用集必须含 Changeset 层（begin_changeset）"
     );
-    // 专用层不得混入缺省：评论 / 批注 / 冲突消解。
-    for excluded in ["comment", "create_annotation", "resolve_conflict"] {
+    // 面板三层必须在缺省内（Wang 期 1 尾单裁定）：评论 / 批注 / 冲突消解。
+    // 三层初版曾退出缺省，查看器面板随之报「未知工具」——裁定加回后在此钉死，
+    // 与 yanshi-http 缺省测试里恢复的组级守卫互为表里。
+    for panel_tool in ["comment", "create_annotation", "resolve_conflict"] {
         assert!(
-            default.get(excluded).is_none(),
-            "专用层工具 {excluded} 不得出现在缺省常用集"
+            default.get(panel_tool).is_some(),
+            "面板工具 {panel_tool} 必须出现在缺省常用集（查看器面板为必备面）"
         );
     }
 }
@@ -170,12 +180,17 @@ fn default_composition_is_unnarrowed_common_subset() {
 /// Wang 日后调整成员时，本测试的 diff 即成员表 diff。
 #[test]
 fn composition_membership_is_pinned() {
-    // DEFAULT 成员表（裁定原文：「default 只包含常用的」；基底层 + Photo 主线）。
+    // DEFAULT 成员表（裁定原文：「default 只包含常用的」；基底层 + Photo 主线；
+    // Annotation/Collab/Conflict 由 Wang 2026-10-24 期 1 尾单裁定加回——
+    // 查看器评论/批注/冲突面板属必备面）。
     let expected_default = [
         Profile::Core,
         Profile::History,
         Profile::Changeset,
         Profile::Retouch,
+        Profile::Annotation,
+        Profile::Collab,
+        Profile::Conflict,
         Profile::Structure,
         Profile::Photo,
     ];

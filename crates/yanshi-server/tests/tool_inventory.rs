@@ -11,7 +11,7 @@ use yanshi_server::{Profile, ToolRegistry};
 /// 两入口（mcp/http）服务端默认启用的 profile 集 —— 直接引用
 /// `Profile::DEFAULT`（Wang 2026-10-24 裁定的常用集），按构造与真实缺省
 /// 一致，不再手抄成员（手抄副本正是防漂移最容易漏掉的一环）。
-const DEFAULT_PROFILES: [Profile; 6] = Profile::DEFAULT;
+const DEFAULT_PROFILES: [Profile; 9] = Profile::DEFAULT;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

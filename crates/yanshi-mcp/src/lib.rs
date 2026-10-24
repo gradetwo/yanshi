@@ -99,7 +99,7 @@ impl Default for McpOptions {
             height: 1024,
             // **缺省 = `default` 常用集** ✓（Wang 2026-10-24 裁定：「增加一个 default
             // 作为和 ALL 区分，ALL 包含系统所有功能和工具，default 只包含常用的」✓）：
-            // = `Profile::DEFAULT`（Core/History/Changeset/Retouch/Structure + Photo）✓。
+            // = `Profile::DEFAULT`（Core/History/Changeset/Retouch/Annotation/Collab/Conflict/Structure + Photo）✓。
             // `--profile all` 仍是全量（`IMPLEMENTED`）✓，与缺省不再同义 ✓。
             profiles: Profile::DEFAULT.to_vec(),
             wait_for_render: true,
@@ -183,7 +183,7 @@ impl McpOptions {
            --width <n>           自动创建文档的宽（缺省 1024）\n\
            --height <n>          自动创建文档的高（缺省 1024）\n\
            --profile <list>      启用工具组，逗号分隔，可选：all,core,history,changeset,retouch,semantic,conflict,annotation,collab,structure,oil,watercolor,sketch,ink,pastel,photo,svg\n\
-                                 （all = 全部已实现的组，即除 semantic 外；缺省 = default 常用集：core,history,changeset,retouch,structure,photo；photo/svg 单独点名时按白名单收窄）\n\
+                                 （all = 全部已实现的组，即除 semantic 外；缺省 = default 常用集：core,history,changeset,retouch,annotation,collab,conflict,structure,photo；photo/svg 单独点名时按白名单收窄）\n\
            --no-wait             不等待渲染（立即返回 job_pending，由 Agent 轮询）\n\
            --wait-budget <ms>    wait_for_render 的等待预算（缺省 500）\n\
                                  **注意**：默认的等待只覆盖「这一笔的渲染」（rendered/job_status）\n\
