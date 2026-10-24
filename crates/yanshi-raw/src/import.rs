@@ -81,13 +81,14 @@ pub struct ImportPlan {
 }
 
 /// `raw_options` 的合法键全集（多一个键即报错——拼写错误不许静默吞掉）。
-const RAW_OPTION_KEYS: [&str; 6] = [
+const RAW_OPTION_KEYS: [&str; 7] = [
     "wb",
     "demosaic",
     "pre_exposure_ev",
     "lens_correction",
     "lens_override",
     "highlight_recovery",
+    "preview_max_edge",
 ];
 
 /// 解析并校验 `raw_options`（设计 5.6 参数表）：枚举外／越界／类型不对
@@ -99,7 +100,7 @@ pub fn parse_raw_options(raw_options: Option<&Value>) -> Result<ParsedRawOptions
     };
     let Some(object) = value.as_object() else {
         return Err(RawError::InvalidOption(
-            "raw_options 必须是对象 {wb, demosaic, pre_exposure_ev, lens_correction, lens_override}"
+            "raw_options 必须是对象 {wb, demosaic, pre_exposure_ev, lens_correction, lens_override, highlight_recovery, preview_max_edge}"
                 .to_string(),
         ));
     };
@@ -140,6 +141,22 @@ pub fn parse_raw_options(raw_options: Option<&Value>) -> Result<ParsedRawOptions
             )));
         };
         parsed.develop.pre_exposure_ev = ev as f32;
+    }
+    // 预览档（C1-b，期 2）：导入即按预览档落账时用——record 会记
+    // developed_max_edge，此后每次取图都按预览档重展开（要成品
+    // 须以全档重新导入/改档，不许拿预览记录冒充全档）。
+    if let Some(edge) = object.get("preview_max_edge") {
+        let Some(edge) = edge.as_u64() else {
+            return Err(RawError::InvalidOption(format!(
+                "raw_options.preview_max_edge 必须是整数，实际为 {edge}"
+            )));
+        };
+        if !(64..=8192).contains(&edge) {
+            return Err(RawError::InvalidOption(format!(
+                "raw_options.preview_max_edge={edge} 越界（允许 64–8192）"
+            )));
+        }
+        parsed.develop.max_output_edge = Some(edge as u32);
     }
     parsed.develop.validate()?;
     if let Some(lens_correction) = object.get("lens_correction") {

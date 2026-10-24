@@ -1090,7 +1090,69 @@ pub fn assemble_record(
         lens_exif: ctx.lens_exif.clone(),
         lens_match,
         applied_lens_profile,
+        developed_max_edge: options.max_output_edge,
     }
+}
+
+/// C1-b 预览档的链尾降采样：面积加权盒式滤波把三元组平面压到
+/// 长边 ≤ `max_edge`。新尺寸用整数口径（dim × edge ÷ max_dim，
+/// 向下取整、至少 1）⇒ 长边恰为 edge、短边不越界；逐输出像素对
+/// 源矩形做面积加权平均，f64 累加且求和次序固定（行→列）⇒
+/// 确定性（NF1：只用算术，不用超越函数）。输入长边已 ≤ edge
+/// 时原样返回（档位仍由 `assemble_record` 记进 record——记的是
+/// 「按预览档展开」这件事实，不只是「缩了」）。
+fn downscale_rgb_to_edge(
+    rgb: Vec<f32>,
+    width: usize,
+    height: usize,
+    max_edge: u32,
+) -> (usize, usize, Vec<f32>) {
+    let max_dim = width.max(height);
+    if max_dim <= max_edge as usize {
+        return (width, height, rgb);
+    }
+    let new_w = ((width as u64 * u64::from(max_edge)) / max_dim as u64).max(1) as usize;
+    let new_h = ((height as u64 * u64::from(max_edge)) / max_dim as u64).max(1) as usize;
+    let scale_x = width as f64 / new_w as f64;
+    let scale_y = height as f64 / new_h as f64;
+    let mut out = vec![0.0f32; new_w * new_h * 3];
+    for oy in 0..new_h {
+        let y0 = oy as f64 * scale_y;
+        let y1 = (oy + 1) as f64 * scale_y;
+        let sy_from = y0.floor() as usize;
+        let sy_to = (y1.ceil() as usize).min(height);
+        for ox in 0..new_w {
+            let x0 = ox as f64 * scale_x;
+            let x1 = (ox + 1) as f64 * scale_x;
+            let sx_from = x0.floor() as usize;
+            let sx_to = (x1.ceil() as usize).min(width);
+            let mut acc = [0.0f64; 3];
+            let mut wsum = 0.0f64;
+            for sy in sy_from..sy_to {
+                let wy = (y1.min((sy + 1) as f64) - y0.max(sy as f64)).max(0.0);
+                if wy == 0.0 {
+                    continue;
+                }
+                for sx in sx_from..sx_to {
+                    let wx = (x1.min((sx + 1) as f64) - x0.max(sx as f64)).max(0.0);
+                    if wx == 0.0 {
+                        continue;
+                    }
+                    let wgt = wx * wy;
+                    let src = (sy * width + sx) * 3;
+                    for (c, slot) in acc.iter_mut().enumerate() {
+                        *slot += f64::from(rgb[src + c]) * wgt;
+                    }
+                    wsum += wgt;
+                }
+            }
+            let dst = (oy * new_w + ox) * 3;
+            for (c, slot) in out[dst..dst + 3].iter_mut().enumerate() {
+                *slot = (acc[c] / wsum) as f32;
+            }
+        }
+    }
+    (new_w, new_h, out)
 }
 
 // ---------------------------------------------------------------------------
@@ -1238,10 +1300,25 @@ pub fn develop_with_lens(
     // 对 1 档本就是逐值复制）；转置／翻转类保留一份输出拷贝——设计
     // C1-a 的低风险支（⑧ 前上游缓冲已全部释放，峰值只剩输入＋输出
     // 两份 12 B/px），不做原地重排的高风险索引手术。
-    let (out_w, out_h, mut rgb) = if orientation == 1 {
+    let (out_w, out_h, rgb) = if orientation == 1 {
         (frame.width, frame.height, rgb)
     } else {
         apply_orientation_rgb(&rgb, frame.width, frame.height, orientation)
+    };
+    // C1-b（期 2）：预览档在链尾降采样（⑧ 之后、⑨ 之前——把
+    // 「全档／预览」的分界钉在最后一步，record 的
+    // `developed_max_edge` 与这里的实际输出同源）。全档（None）
+    // 整步跳过、逐位不变；预览档在注记里点名，不许冒充成品。
+    let (out_w, out_h, mut rgb) = match options.max_output_edge {
+        Some(edge) => {
+            let shrunk = downscale_rgb_to_edge(rgb, out_w, out_h, edge);
+            notes.push(format!(
+                "预览档展开（max_output_edge={edge}）：输出 {}×{}，预览像素与全档成品不同源，勿当成品用",
+                shrunk.0, shrunk.1
+            ));
+            shrunk
+        }
+        None => (out_w, out_h, rgb),
     };
     // ⑨ 出口截零（全程唯一截零点）。
     clamp_exit(&mut rgb)?;

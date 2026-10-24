@@ -237,6 +237,12 @@ pub struct DevelopOptions {
     /// 高光恢复档位（缺省 Floor：`develop()` 的历史行为逐位不变；
     /// 新导入由导入计划显式置 Chroma 并落账，取图侧按记录重展开）。
     pub highlight: HighlightMode,
+    /// 预览档长边上限（C1-b，期 2）：`Some(edge)` 时展开链尾把输出
+    /// 压到长边 ≤ edge（面积加权降采样），且 record 记
+    /// `developed_max_edge` —— 预览是**有标记的近似**，不许冒充
+    /// 成品。`None`（缺省）= 全档，现行行为逐位不变。合法域
+    /// 64–8192，`validate` 守（越界响亮报错、不 clamp）。
+    pub max_output_edge: Option<u32>,
 }
 
 impl DevelopOptions {
@@ -247,6 +253,13 @@ impl DevelopOptions {
                 "pre_exposure_ev={} 越界（允许 [-4.0, +4.0]）",
                 self.pre_exposure_ev
             )));
+        }
+        if let Some(edge) = self.max_output_edge {
+            if !(64..=8192).contains(&edge) {
+                return Err(RawError::InvalidOption(format!(
+                    "max_output_edge={edge} 越界（允许 64–8192）"
+                )));
+            }
         }
         Ok(())
     }
@@ -339,6 +352,13 @@ pub struct RawDevelopRecord {
     /// 本包不做镜头匹配，恒为 `None`（镜头包填），不许冒充 unmatched。
     pub lens_match: Option<String>,
     pub applied_lens_profile: Option<AppliedLensProfile>,
+    /// 本次展开的档位（C1-b，期 2）：`Some(edge)` = 按预览档展开
+    /// （输出长边被压到 ≤ edge），`None` = 全档。旧记录无此字段
+    /// ⇒ `serde(default)` 解析为 `None` = 全档，与旧回放口径一致。
+    /// 取图侧重展开时凭它复原档位、渲染缓存凭它分键——预览与
+    /// 成品永不共用一份缓存。
+    #[serde(default)]
+    pub developed_max_edge: Option<u32>,
 }
 
 impl RawDevelopRecord {

@@ -4534,11 +4534,21 @@ impl Renderer {
                     }
                     // 缓存键含 raw_develop 记录本身：同一源 blob 挂不同展开
                     // 参数的对象展开结果不同，键不带记录会串味（第二包）。
+                    // C1-b（期 2）：预览档记录再加 `|preview<edge>` 后缀——
+                    // 档位是键的**语义维**，不许只埋在 record JSON 里
+                    // （预览与成品永不共用一份缓存条目）。
                     let cache_key = match &raw_develop {
-                        Some(record) => format!(
-                            "{blob}|{width}x{height}|{mime_type}|raw={}",
-                            serde_json::to_string(record).unwrap_or_default()
-                        ),
+                        Some(record) => {
+                            let preview_suffix = record
+                                .get("developed_max_edge")
+                                .and_then(serde_json::Value::as_u64)
+                                .map(|edge| format!("|preview{edge}"))
+                                .unwrap_or_default();
+                            format!(
+                                "{blob}|{width}x{height}|{mime_type}|raw={}{preview_suffix}",
+                                serde_json::to_string(record).unwrap_or_default()
+                            )
+                        }
                         None => format!("{blob}|{width}x{height}|{mime_type}"),
                     };
                     let mut t_decode = stage_probe::Stage::start();
@@ -5506,6 +5516,34 @@ pub fn develop_raw_source_recorded(
     raw_develop: Option<&serde_json::Value>,
     warnings: &mut Vec<String>,
 ) -> Result<yanshi_raw::DevelopedImage> {
+    develop_raw_source_tiered(bytes, raw_develop, None, warnings)
+}
+
+/// RAW 预览取图（C1-b，期 2）：在记录参数之上**强制预览档**
+/// （`max_output_edge` 覆盖记录档位），产物 record 的
+/// `developed_max_edge` 记本次的 edge——调用方（如 D2-1 的像素级
+/// 预览）按渲染目标长边决定档位，预览结果走带 `|preview<edge>`
+/// 后缀的缓存键空间，永不与全档成品串味。
+#[cfg(feature = "raw")]
+pub fn develop_raw_source_preview(
+    bytes: &[u8],
+    raw_develop: Option<&serde_json::Value>,
+    max_output_edge: u32,
+    warnings: &mut Vec<String>,
+) -> Result<yanshi_raw::DevelopedImage> {
+    develop_raw_source_tiered(bytes, raw_develop, Some(max_output_edge), warnings)
+}
+
+/// 取图展开的共用实现：`record_tier_override = Some(edge)` 时把展开
+/// 档位强制为预览档；`None` 时档位凭记录自身（`developed_max_edge`，
+/// 旧记录缺省 None = 全档）。
+#[cfg(feature = "raw")]
+fn develop_raw_source_tiered(
+    bytes: &[u8],
+    raw_develop: Option<&serde_json::Value>,
+    record_tier_override: Option<u32>,
+    warnings: &mut Vec<String>,
+) -> Result<yanshi_raw::DevelopedImage> {
     let decoded = yanshi_raw::decode_bytes(bytes).map_err(raw_error_as_invalid_argument)?;
     let (options, mut developed) = match raw_develop {
         Some(value) => {
@@ -5518,14 +5556,20 @@ pub fn develop_raw_source_recorded(
                         )),
                     )
                 })?;
-            let options = yanshi_raw::DevelopOptions {
+            let mut options = yanshi_raw::DevelopOptions {
                 wb: record.wb,
                 demosaic: record.demosaic,
                 pre_exposure_ev: record.pre_exposure_ev,
                 // 高光档位凭记录（第五包）：旧记录无此字段、反序列化
                 // 时已缺省 Floor，与当时导入的像素口径一致。
                 highlight: record.highlight_recovery,
+                // 档位凭记录（C1-b）：记录是预览档就按预览档重展开，
+                // 是全档就全档——重放保真与导入当时同档。
+                max_output_edge: record.developed_max_edge,
             };
+            if let Some(edge) = record_tier_override {
+                options.max_output_edge = Some(edge);
+            }
             let ctx = yanshi_raw::record_context(&decoded);
             // **记录自相矛盾必须先点名**（第 1440 轮审计）：`lens_match` 与
             // `applied_lens_profile` 不一致 ⇒ 重放像素与导入当时不同，不许闷着展开。
@@ -5576,7 +5620,11 @@ pub fn develop_raw_source_recorded(
             (options, developed)
         }
         None => {
-            let options = yanshi_raw::DevelopOptions::default();
+            let options = yanshi_raw::DevelopOptions {
+                // 无记录时档位只来自显式预览请求（C1-b），其余全缺省。
+                max_output_edge: record_tier_override,
+                ..yanshi_raw::DevelopOptions::default()
+            };
             // **警告要点名高光档位**（第 1440 轮审计）：缺省展开用的是
             // `DevelopOptions::default()` 的 `floor`，而**导入契约**的缺省是 `chroma` ⇒
             // 同一个源文件走导入与走重放可能出不同像素。旧文案只说「按缺省展开」，

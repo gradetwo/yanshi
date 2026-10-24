@@ -314,6 +314,8 @@ fn criterion1_full_develop_chain_neutralizes_saturated_frame() {
         // 本判据验的是第三包保底链：显式 Floor 档（第五包档位字段
         // 加入前的原口径），不让新档位改变本测试的语义。
         highlight: yanshi_raw::HighlightMode::Floor,
+        // C1-b 档位字段加入后补齐穷举字面量：本判据走全档。
+        max_output_edge: None,
     };
     let out = develop(&frame, &options, &RecordContext::default()).unwrap();
     for i in 0..w * h {
