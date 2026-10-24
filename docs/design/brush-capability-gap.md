@@ -19653,3 +19653,32 @@ node scripts/browser-offline-journal.mjs \
 - `web/viewer-app.js:653` `outboxEnqueue` 的**写入**与 `outboxAll`（695）／`outboxDelete`（704）的**读**是否**同一个 db／store／key 前缀** ✓
 - `775`／`801`／`869`／`897` 是 `outboxOffline` 的置位点 ✓；`959` 决定 UI 文案 ✓
 - 先加一条**结构判据**：`outboxEnqueue` 之后 `outboxAll().length` 必须 **≥1**（同一次求值里读 ✓）⇒ 变异：写入换 store ⇒ 红 ✓
+
+## 五百一十八、根因找到：**入队只在 `fetch` 抛错时发生**，而本地 API 回了 200（第 885 轮）
+
+**⇒ 代码路径（`web/viewer-app.js:1398-1419`）**：
+```
+try { response = mutating ? await fetchMutating(url, init) : await fetchOrLocal(url, init); }
+catch (error) {                    // ← **只有抛错才进这里** ✗
+  const outcome = await outboxEnqueue("tool", { tool: name, args });
+  …
+  return outboxQueuedResult(name, outcome, …);   // ← 「已排队」
+}
+```
+**⇒ 而断网时发生了什么** ✗：`/api/tools` 由**本地 API 层**（`web/api-local.js`）**接住并回 200** ✓
+⇒ **`fetch` 不抛错** ⇒ **`catch` 不执行** ⇒ **根本不入队** ✓
+⇒ 于是：**队列 0** ✓ ／ UI 走 `959` 行的 `state.outboxOffline===true || navigator.onLine===false` ⇒ **`offline`** ✓
+⇒ 而工具响应里的 `server:false` 正是**本地层**打的标 ✓（这就是上一轮我看到的 `{"ok":true,"seq":3,…,"server":false}` ✓）
+
+**⇒ 所以这是**设计级**缺陷，不是"写进去了读不出来" ✗（上一轮的猜测**在此撤回** ✓）：
+**「本地接住」被当成了「服务端收到了」** ✓ —— 正是本仓头号病根「静默降级」的**第六种形态**：
+> **∴ 本该"失败并排队"的动作，被一个本地兜底层接住并回了 200 ⇒ 调用方与用户都以为它已经落地。**
+
+**⇒ 下一轮的修法（二选一，需人裁定哪个）**：
+| 方案 | 做法 | 代价 |
+|---|---|---|
+| **A 本地层自己入队** | `api-local.js` 在**离线**改写类端点里调 `outboxEnqueue` ✓ 并回 `queued:true` ✓ | 本地层要知道 outbox ✓（它已有 IndexedDB 层 ✓）|
+| **B 本地层回 503** | 让 `fetchMutating` **抛错** ⇒ 走既有 `catch` ⇒ 现有入队逻辑复用 ✓ | 改动最小 ✓；但要确认**在线**时本地层不会误接 ✓ |
+
+**⇒ 判据（已有，无需新写）**：`scripts/browser-offline-journal.mjs` 那 28 条 ✓ —— 修好它会自己绿 ✓
+**⇒ 复现配方**见第 517 节（四步，本机 chromium 154 已复现 ✓）。
