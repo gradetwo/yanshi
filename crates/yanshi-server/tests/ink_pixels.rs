@@ -332,6 +332,14 @@ fn swatch_items_carry_the_same_ink_fields_as_a_committed_stroke() {
                 "足迹不可能超过印章面积（footprint={footprint}, painted={painted}）：{item}"
             );
         }
+        // **不透明的笔刷 ⇒ 足迹必须 > 0** ✓（第 863 轮）
+        //   **⇒ 为什么加**：原来只断"字段在"与"≤ 印章面积" ✓
+        //     ⇒ 一个**恒为 0** 的 `ink_footprint_pixels` **照样通过** ✗（安慰剂 ✓）
+        //     ⇒ 这两支笔都是**不透明**的 ⇒ 足迹一定 > 0 ✓
+        assert!(
+            footprint > 0,
+            "不透明的笔刷预览里，足迹必须 > 0（否则这个字段是恒零的安慰剂）：{item}"
+        );
     }
     assert!(
         checked > 0,
