@@ -137,3 +137,69 @@ fn kernel_render_cost_on_the_host() {
         result.warnings.len()
     );
 }
+
+/// **`apply` 的每 atom 耗时**必须与日志长度**近似无关**（第 792 轮；外部 `art` 第 120 次）
+///
+/// **⇒ 他们的实测**（`yanshi-timelapse` 侧）：每 atom 从 **33 ms → 209 → 299 ms** ✓，
+///   `test3` 直接**卡死**（3 轮停在 `12200/23472` ✓）。
+///
+/// **⇒ 我在代码里定到的原因**（`kernel.rs` 的 `apply_atom_json`）：
+///   每吃一个 atom 都 `self.folder.fold(&self.log, self.log.head_seq())` ✓
+///   而 `fold` 的第一步是 `compute_suppressed(atoms)` ＝ **扫全部原子** ✓
+///   ⇒ `apply` × 全日志扫描 ＝ **O(n²)** ✓。
+///
+/// **⇒ 本判据要钉的性质**：**`apply` 的单次耗时不随 n 线性增长** ✓。
+///   做法：在同一台机器上量 n≈100 与 n≈800 的**每 atom 中位耗时** ✓，断言比值 **< 4** ✓
+///   （线性会给出 ~8 ✓，二次会给出 ~60+ ✓；留足机器抖动余量 ✓）。
+///   **⇒ 为什么是比值不是毫秒**：绝对毫秒跨机器不可比 ✓，而**比值**是算法性质 ✓
+///   （与"别断像素数、要断相对关系"同一条规矩 ✓）。
+///
+/// **⇒ 变异**：把 `fold` 换回"每 atom 折全日志"（现状即如此 ⇒ 本判据**今天应当红** ✓）
+///   ⇒ 修好之后转绿 ✓ —— 这就是"先红后绿"的顺序 ✓。
+#[test]
+#[ignore = "性能参照：CI 用 --ignored 执行（内核原生计时）"]
+fn apply_cost_does_not_grow_with_log_length() {
+    fn per_atom_median(count: usize) -> Duration {
+        let mut kernel = Kernel::new("doc_apply_scale", 64, 256, 256, 16 * 1024 * 1024).unwrap();
+        let mut samples = Vec::with_capacity(count);
+        for index in 0..count {
+            let atom = json!({
+                "id": format!("a{index:06}"),
+                "seq": index as u64 + 2,
+                "kind": "draw_stroke",
+                "actor": "human:bench",
+                "session": "bench",
+                "timestamp": 0,
+                "schema_version": 1,
+                "payload": {
+                    "layer_id": "layer_default",
+                    "object_id": format!("o{index:06}"),
+                    "data": {
+                        "points": [[4.0 + (index % 32) as f64, 4.0 + (index % 16) as f64],
+                                   [20.0, 20.0]],
+                        "size": 2.0, "hardness": 1.0,
+                        "color": {"r": 10, "g": 20, "b": 30, "a": 255}
+                    }
+                }
+            });
+            let text = atom.to_string();
+            let started = Instant::now();
+            let _ = kernel.apply_atom_json(&text);
+            samples.push(started.elapsed());
+        }
+        samples.sort_unstable();
+        samples[samples.len() / 2]
+    }
+
+    let small = per_atom_median(100);
+    let large = per_atom_median(800);
+    let ratio = large.as_secs_f64() / small.as_secs_f64().max(f64::EPSILON);
+    eprintln!(
+        "apply 每 atom 中位：n=100 ⇒ {small:?}；n=800 ⇒ {large:?}；比值 {ratio:.2}（线性会 ~8，二次会 ~60）"
+    );
+    assert!(
+        ratio < 4.0,
+        "`apply` 的单次耗时随日志长度增长（n=100 {small:?} ⇒ n=800 {large:?}，比值 {ratio:.2}）\
+         ⇒ 这是 O(n²)：`apply_atom_json` 每 atom 都 `fold` 整份日志，而 `fold` 会 `compute_suppressed` 扫全部原子"
+    );
+}
