@@ -19572,3 +19572,33 @@ PWA／资产 **6 条全绿**✓（`tool-pwa-stamp-shape`／`tool-pwa-assets`／`
 **⇒ 仍未验证的（如实）**：`cargo test --workspace` **没有一次完整跑绿** ✓ ——
 首轮在第一个失败处中止（失败恰好只有那 1 个 ✓，已修并复跑 ✓）；**重跑全量要重新编译 wgpu**（本机极慢）
 ⇒ **全量结论交给 CI** ✓；那次编译把 `target/debug` 撑到 **58 G**（根分区 75%）⇒ 已清到 **940 M**（66 G 用／43 G 可用）✓。
+
+## 五百一十五、`browser-offline-journal` 在 CI 上**真的红了**（28 条断言），而且我**读错过一次**（第 881–882 轮）
+
+**⇒ 先撤回一个误读** ✗：runner 打印的那行
+`✗ browser-offline-journal.mjs｜负对照（未缓存接口必须失败）= {"failed":true,"status":0,…}`
+**不是**失败原因 ✓ —— 那只是 runner 的 `first_reason` **启发式**抓到的第一行含「失败」的诊断输出 ✓
+⇒ 而 `failed:true` 恰恰说明**负对照通过了** ✓（断网模拟**真的生效** ✓）
+⇒ **教训**：`first_reason` 是**给人看的线索**，不是**判据的结论** ✓ ⇒ 要找真结论必须读 `项│` 那一组 ✗。
+
+**⇒ 真结论（CI `criteria shard 6/6`，`fd554713`）**：`out.txt 行数 84｜含 ✗ 的行 28` ✓
+抽样：
+| 断言 | CI 实测 |
+|---|---|
+| 队列里恰好 1 条 | **0** ✗ |
+| 界面 `data-state` = `queued` | **`offline`** ✗ |
+| 有可见操作条且说清会自动补交 | `null` ✗ |
+| 调用方拿到「已排队」（`ok=false, queued=true`）| ✗ |
+| 队列 3 条／第 2 条是 `create_layer` | **0** ✗ |
+| 第 200 条之后开始拒绝（`refusedAt`）| **`null`** ✗ |
+
+⇒ 形态很清楚：**页面认为自己是 `offline`，于是根本没进 outbox** ✓
+⇒ 而 `Service Worker = active` ✓、负对照 `failed:true` ✓ ⇒ **不是前置失败**，是**行为** ✗
+
+**⇒ 与补丁包的关系**：他们改的 `web/` 文件只有 `assets-index.json` 与 7 张 `textures/*.png` ✓
+⇒ **没碰** `service-worker.js`／`api-local.js` ⇒ **不是他们改出来的**（除非通过 assets 索引间接影响 ✓）
+
+**⇒ 本机复现**：`run-criteria-local.sh` 报 `⊘ 不可判：browser-* 需要静态 PWA（…的编排）⇒ 设 YANSHI_LIVE_UI_URL`
+⇒ **本机入口不做那三步编排**（`pwa-sync-wasm`／`pwa-sync-viewer`／`mediums-sync` ✓，CI 在 `ci.yml` 里做 ✓）
+⇒ **下一轮的做法**（照 CI 的顺序）：跑那三步 ⇒ 起静态服务 ⇒ `YANSHI_LIVE_UI_URL=… bash scripts/run-criteria-local.sh scripts/browser-offline-journal.mjs`
+⇒ 复现出来再改；**复现不出来**就写清缺什么 ✓（**不写"不存在"** ✓）。
