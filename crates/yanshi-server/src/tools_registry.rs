@@ -1235,7 +1235,12 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "设置参考图（只记进偏好，**不写进文档**；查看器负责半透明叠加）；用 clear_reference 移除",
         mutating: false,
         params: &[
-            param!("blob_hash", String, true, "参考图的 blob 哈希（sha256:…）"),
+            // **前置条件必须写在参数说明里** ✓（第 875 轮）
+            //   **⇒ 为什么** ✗：`set_reference` **拒绝**存储里不存在的哈希 ✓（"存下来也永远比不了" ✓）
+            //     ⇒ 而这条**先前只写在错误信息里** ✗ ⇒ 调用方（**包括我自己写的判据** ✓）
+            //       可以照着 spec 传一个"形似"的 `sha256:000…0` ✓ ⇒ 被拒 ⇒ **误以为是功能缺失** ✓
+            //       （那条判据就这样误诊了三个多月 ✓ —— 第 867 轮才查明 ✓）
+            param!("blob_hash", String, true, "参考图的 blob 哈希（sha256:…）；**必须先在存储里**（用 `put_blob`／`import_image` 造出来）⇒ **不存在的哈希会被拒绝**（它存下来也永远比不了）"),
             param!("opacity", Number, false, "不透明度 0..1（缺省 0.5）"),
             param!("position", Object, false, "显示位置 {x, y, w, h}（缺省铺满画布）"),
         ],
