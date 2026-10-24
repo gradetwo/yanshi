@@ -34,7 +34,7 @@
 //       **必须**有一条专门问「上一次的残留去哪了**」✓**
 //
 // **∴ 用法 ✗**：`node scripts/tool-pwa-fonts-mirror.mjs`
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync, realpathSync, lstatSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -101,6 +101,43 @@ console.log("③ 行为：源里**没有**字体时 ⇒ 同步必须**跑完**�
 //   **∴ 为什么两个场景都要 ✗**：**A 断「不崩」✗ B 断「不谎」✓** ——**它们是同一段代码的两种坏法**✗
 //     **只测 A** 就放过了**「跑成功但报假数」**✓（**那比崩**更危险**，因为**它绿着 ✓**）
 const T = mkdtempSync(join(tmpdir(), "pwa-fonts-"));
+
+// **自带一个假介质 ✗ 不许继承真目录**✓（第 746 轮：干净 clone 上实测换来的 ✓）
+//   **∴ 环境事实**：`assets/mediums/*.wasm` **是发布流水线建的**✓（干净签出里只有 `README.md`✓）
+//     ⇒ **CI 的判据 job 会先跑 `node scripts/mediums-sync.mjs`**✓ **但一台没跑过的机器上不会**✓
+//   **∴ 于是**：同步脚本在**镜像**里以 `ERROR: 一个介质插件都没同步` **exit 1**✓
+//     ⇒ 那**不是产品失败 ✗ 是环境的缺前提**✓ ⇒ 却以**红**报出来 ✗（**违反本仓「前提不成立要用不同退出码」✓**）
+//   **∴ 解法**：**判据自己造那个前提**（§四百六十五「输入自造 ✗ 不靠机器」同族 ✓）：
+//     把 `assets/mediums` 换成**镜像里的真目录 ＋ 一个假 .wasm**✓（**本判据只管字体／展示图段 ✓**
+//     ⇒ **假介质的内容没有任何断言依赖它 ✓**）⇒ **换机器结果不变** ✓✓
+const seedMediums = (dir) => {
+  const target = join(dir, "assets", "mediums");
+  const trunk = realpathSync(resolve("assets", "mediums"));
+  const st = lstatSync(target, { throwIfNoEntry: false });
+  if (st && st.isSymbolicLink()) {
+    // **叶子本身是链接**⇒ `unlinkSync` **只断开链接**✓（**实测**：`rmSync(链接, {recursive:true})`
+    //   也只删链接 ✓ —— 两种写法在这里等价，用 `unlinkSync` 是因为**它按定义不跟随链接**✓）
+    unlinkSync(target);
+  } else {
+    // **硬闸：不许经过符号链接落到仓库真的 `assets/mediums`**✗（**第 746 轮踩过 ✓**）
+    //   **∴ 那次怎么坏的**：镜像里写的是 `symlinkSync(resolve("assets"), TC/assets)` ⇒
+    //     链接在**父级** ⇒ `TC/assets/mediums` 解析到**真目录** ⇒ 那个 `rmSync`
+    //     删的是**主干的文件**（`assets/mediums/README.md` ＋ 6 个 `.wasm` ✗ 事后 `git status` 才抓到 ✓）
+    //   **∴ 而判据照样报「12 条全绿」**✗ ——**破坏发生在断言之外的路径上 ⇒ 断言看不见 ✓**
+    //   **∴ 所以**：**动任何可能落到主干的路径之前，先把 realpath 算出来比一比**✓（**内核 ③ ✓**）
+    const real = existsSync(target) ? realpathSync(target)
+                                    : realpathSync(resolve(target, "..")) + "/mediums";
+    if (real === trunk) {
+      console.error("  ⊘ 不可判：镜像里的 `assets/mediums` 解析到了**仓库真目录**（" + target + " ⇒ " + real + "）✗");
+      console.error("     那是**判据自己把镜像搭错了**（链接不许出现在这一条路径上）**不是产品失败** ✓");
+      process.exit(3);
+    }
+    rmSync(target, { recursive: true, force: true });
+  }
+  mkdirSync(target, { recursive: true });
+  writeFileSync(join(target, "criterion-fake.wasm"),
+    Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]));
+};
 const buildMirror = (dir, { withFonts }) => {
   mkdirSync(join(dir, "assets", "fonts"), { recursive: true });
   for (const entry of readdirSync(resolve("assets"))) {
@@ -109,6 +146,7 @@ const buildMirror = (dir, { withFonts }) => {
   }
   symlinkSync(resolve("crates"), join(dir, "crates"));
   cpSync(resolve("web"), join(dir, "web"), { recursive: true });
+  seedMediums(dir);
   rmSync(join(dir, "web", "fonts"), { recursive: true, force: true });
   if (withFonts) {
     mkdirSync(join(dir, "web", "fonts"), { recursive: true });
@@ -158,9 +196,20 @@ try {
   //     **要靠「报出的数 == 源名单长度**」**才看得见 ✓**
   const TC = mkdtempSync(join(tmpdir(), "pwa-fonts-ok-"));
   try {
-    symlinkSync(resolve("assets"), join(TC, "assets"));
+    // **不再 `symlinkSync(resolve("assets"), TC/assets)`**✗（**第 746 轮：那一版把主干的
+    //   `assets/mediums/` 清空了**——链接在父级 ⇒ `TC/assets/mediums` 就是**真目录**✓）
+    //   ⇒ **规则**：**凡是要被写的路径**，它上面**一个指向仓库的链接都不许有**✓ ⇒ 逐条链接 ✓
+    mkdirSync(join(TC, "assets"), { recursive: true });
+    for (const e of readdirSync(resolve("assets"))) {
+      if (e === "mediums") continue;                       // 这一条由 `seedMediums` 自己造 ✓
+      symlinkSync(resolve("assets", e), join(TC, "assets", e));
+    }
     symlinkSync(resolve("crates"), join(TC, "crates"));
     cpSync(resolve("web"), join(TC, "web"), { recursive: true });
+    // 这一支链接的是**整个 `assets/`**⇒ 介质也在里面 ⇒ **只把介质那一条换成自造的假前提**✓
+    //（**实测**：`rmSync(链接, {recursive:true})` **只删链接**、**不动真目录**✓
+    //  ⇒ 所以 `seedMediums` 用在「链接了整个 assets」的镜像上也**不会碰仓库**✓ 第 746 轮当场验过）
+    seedMediums(TC);
     rmSync(join(TC, "web", "fonts"), { recursive: true, force: true });
     const c = runMirror(TC);
     const m = c.out.match(/本次同步预置字体 (\d+) 个/);

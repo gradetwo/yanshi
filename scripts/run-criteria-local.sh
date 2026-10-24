@@ -180,11 +180,35 @@ export YANSHI_EXPORT_DIR="$ROOT"
 # **★ 判据进程也要拿到 `YANSHI_EXPORT_DIR`** ✓（第 1267 轮）
 #   ⇒ 原来只有**服务进程**有（`:57` 的前缀赋值）⇒ 而判据要按它反推 `<root>`
 #     （我的 `tool-import-blob-decodable` 就是这么找 CAS 的）⇒ 没有它 ⇒ 写不进 root ⇒ 假红 ✗
+# **★ 跑判据之前先把工作区的状态记下来** ✓（第 746 轮：一条判据**删掉了主干的文件却报全绿**）
+#   **⇒ 那次**：`tool-pwa-showcase-append` 的镜像把 `symlinkSync(resolve("assets"), TC/assets)`
+#     写在**父级** ⇒ `TC/assets/mediums` 解析到**仓库真目录** ⇒ 它的 `rmSync` 删的是
+#     `assets/mediums/README.md` ＋ 6 个 `.wasm`✗ **而 12 条断言全绿**✓（**破坏在断言之外的路径上 ✓**）
+#   **⇒ 抓到它的不是判据，是我跑完手动看的那次 `git status`**✓（**同一纪律第三次救场 ✓**）
+#   **⇒ 所以把它变成入口脚本的一步**✓（**「靠记得」失败过 3 次 ⇒ 换「靠脚本」，AGENTS 第 834 轮同规 ✓**）
+#   **规则**：**删除** ⇒ 判据自己坏了 ⇒ 退出码 1（**改动/新增只报告，不判红**✓ 有些判据确实要写产物 ✓）
+PRE_STATUS=$(git status --porcelain 2>/dev/null | sort)
+
 if grep -qE 'argv\[3\]|argv\[4\]|argv\.slice\(2\)' "$CRIT" 2>/dev/null; then
   YANSHI_EXPORT_DIR="$ROOT/exports" node "$CRIT" "$BASE_URL" _bootstrap "$CRIT_TOKEN" "$@"
 else
   YANSHI_EXPORT_DIR="$ROOT/exports" node "$CRIT" "$BASE_URL" "$@"
 fi
 RC=$?
+
+# **★ 跑完之后核对工作区**（**与上面 PRE_STATUS 成对**✓）
+if [ -n "$PRE_STATUS" ] || [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+  DELTA=$(comm -13 <(printf '%s\n' "$PRE_STATUS") <(printf '%s\n' "$(git status --porcelain 2>/dev/null | sort)"))
+  if [ -n "$DELTA" ]; then
+    echo "  ⚠ 判据动过工作区（跑之前没有的条目）："
+    printf '%s\n' "$DELTA" | sed 's/^/      /'
+    if printf '%s\n' "$DELTA" | grep -qE '^( D|D |AD)'; then
+      echo "  ✗ **判据删除了主干跟踪的文件** ⇒ 这不是产品失败，**是判据自己坏了**✓"
+      echo "    （**内核 5：失败要有信号 ⇒ 而「全绿的判据删了文件」是最坏的那种静默 ✗**）"
+      RC=1
+    fi
+  fi
+fi
+
 echo "  ⇒ 判据退出码=$RC"
 exit $RC
