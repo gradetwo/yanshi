@@ -33,11 +33,20 @@ for (const root of roots) {
   }
 }
 
+// **⇒ 谓词抽成函数** ✅（第 1022 轮）：这样能**自测** ✓ —— 与台账那条判据同一做法 ✓
+//   **⇒ 为什么** ✗：判据若要靠"改仓库里的真文件"才能证明会红 ⇒ 每次验证都动仓库 ✗
+function classifyCleanup(text) {
+  const guarded = text.includes("struct Cleanup") || /impl Drop for \w+/.test(text);
+  const bound = /[\w_]+\s*=\s*(?:Temp)?Cleanup\s*\(/.test(text)
+    || /fn\s+\w*temp_dir\w*\s*\([^)]*\)\s*->\s*(?:Temp)\w+/.test(text);
+  return { guarded, bound };
+}
+
 const offenders = [];
 for (const file of files) {
   const text = readFileSync(file, "utf8");
   if (!text.includes("std::env::temp_dir()")) continue;
-  const guarded = text.includes("struct Cleanup") || /impl Drop for \w+/.test(text);
+  const { guarded, bound } = classifyCleanup(text);
   // **⇒ 只声明不够，还要**真的绑上** ✅（第 1003 轮：原版只证明"声明在" ✗）
   //   **⇒ 为什么** ✗：声明一个 `Drop` 类型却**从不实例化** ⇒ 目录照样不删 ✓
   //     （第 939 轮就是这么干的：先只加声明，后来才在 26 处调用点绑定 ✓）
@@ -48,8 +57,6 @@ for (const file of files) {
   //   ② **助手直接返回守卫**：`fn temp_dir(..) -> TempRoot { … TempRoot(path) }` ✓
   //      ⇒ 这时**绑定在调用方**（`let root = temp_dir(..)` ✓）⇒ 同样会 Drop ✓
   //   **⇒ 只看 ① 会误报** ✗（第 1003 轮实测误报 2 个 ✓）⇒ 所以两种都认 ✓
-  const bound = /[\w_]+\s*=\s*(?:Temp)?Cleanup\s*\(/.test(text)
-    || /fn\s+\w*temp_dir\w*\s*\([^)]*\)\s*->\s*(?:Temp)\w+/.test(text);
   if (!guarded) { offenders.push(`${file}（没有 Drop 清理器）`); continue; }
   if (!bound) offenders.push(`${file}（有 Drop 类型但**从未绑定**）`);
 }
@@ -63,3 +70,23 @@ if (offenders.length > 0) {
   process.exit(1);
 }
 console.log("✓ 每个用 `temp_dir()` 的测试都带了 Drop 清理器，**且守卫真的被绑定**（两种形态：调用点绑定／助手返回守卫）");
+// **⇒ 自测** ✅（第 1022 轮）：三段小字符串让谓词**自己能红** ✓（不必改仓库 ✓）
+//   **⇒ 变异**：把 `classifyCleanup` 的 `bound` 恒置 true ⇒ 中间那段变红 ✓
+if (process.argv.includes("--self-test")) {
+  const cases = [
+    ["只声明不绑定", "struct Cleanup(std::path::PathBuf);\nimpl Drop for Cleanup { fn drop(&mut self) {} }", true, false],
+    ["调用点绑定", "struct Cleanup(PathBuf);\nimpl Drop for Cleanup { fn drop(&mut self) {} }\nlet _g = Cleanup(root.clone());", true, true],
+    ["助手返回守卫", "struct TempRoot(PathBuf);\nimpl Drop for TempRoot { fn drop(&mut self) {} }\nfn temp_dir(n: &str) -> TempRoot { TempRoot(p) }", true, true],
+    ["两样都没有", "std::env::temp_dir()", false, false],
+  ];
+  let pass = 0;
+  for (const [label, text, wantGuarded, wantBound] of cases) {
+    const got = classifyCleanup(text);
+    const okCase = got.guarded === wantGuarded && got.bound === wantBound;
+    console.log(`  ${okCase ? "✓" : "✗"} ${label}：guarded=${got.guarded} bound=${got.bound}`);
+    if (okCase) pass += 1;
+  }
+  console.log(`自测：${pass}/${cases.length} 通过`);
+  process.exit(pass === cases.length ? 0 : 1);
+}
+
