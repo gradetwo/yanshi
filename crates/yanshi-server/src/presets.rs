@@ -693,6 +693,10 @@ fn effect_kind_of(op: &ExpandedOp) -> Result<EffectKind> {
 /// 已存在的同 id 对象类型/效果名一致）→ 按序落成。
 /// 新对象走 `write_add_effect`；已存在的确定性 id 走 `write_update_effect`
 /// （Supersede 合并；预设同一笔的参数键集恒定 ⇒ 合并即全量替换该笔参数）。
+/// **已删除的同 id 对象（墓碑）走复活路**（期 1 E-b）：一期先查类型/
+/// 效果名/图层一致，二期经 `write_add_effect` 的复活支路 Revert 墓碑 +
+/// 整组换新，响应以 `revived_object_ids` 点名——二次 apply 不再撞
+/// fold 的「已存在」整组失败。
 /// 任一校验不过 ⇒ 整组不落成，错误指明是哪套预设、哪一笔、什么错。
 pub(super) fn write_apply_preset(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let library = load_preset_library()?;
@@ -716,6 +720,15 @@ pub(super) fn write_apply_preset(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         .into_iter()
         .map(|object| (object.id.clone(), object))
         .collect();
+    // 墓碑对象（期 1 E-b）：确定性 id 撞已删除对象时二期走复活路，
+    // 但类型/效果名/图层一致性必须在一期就查完（整组不落成的口径
+    // 对复活同样成立）——不一致宁可整组拒绝，不许落一半才发现。
+    let tombstoned: BTreeMap<String, &yanshi_core::Object> = state
+        .objects
+        .values()
+        .filter(|object| object.is_deleted())
+        .map(|object| (object.id.clone(), object))
+        .collect();
     for op in &ops {
         let kind = effect_kind_of(op)?;
         validate_effect(kind, &op.type_name, &op.params).map_err(|e| {
@@ -727,7 +740,18 @@ pub(super) fn write_apply_preset(ctx: &mut ToolContext<'_>, args: &Value) -> Res
                 e.context.detail.clone().unwrap_or_default()
             ))
         })?;
-        if let Some(existing) = alive.get(&op.object_id) {
+        if let Some(existing) = tombstoned.get(&op.object_id) {
+            if existing.layer_id != layer_id {
+                return Err(preset_err(format!(
+                    "对象 {} 已被删除且属于图层 {}，与预设要落的图层 {layer_id} 不一致，拒绝复活；请先 restore_object 恢复后移层，或换图层/文档",
+                    op.object_id, existing.layer_id
+                )));
+            }
+        }
+        if let Some(existing) = alive
+            .get(&op.object_id)
+            .or_else(|| tombstoned.get(&op.object_id))
+        {
             let want_type = match kind {
                 EffectKind::Adjustment => ObjectType::Adjustment,
                 EffectKind::Filter => ObjectType::Filter,
@@ -754,9 +778,10 @@ pub(super) fn write_apply_preset(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         }
     }
 
-    // ---- 第二阶段：按序落成（新走 add、已有走 update）----
+    // ---- 第二阶段：按序落成（新走 add、已有走 update、墓碑走 add 的复活支路）----
     let mut created: Vec<String> = Vec::new();
     let mut updated: Vec<String> = Vec::new();
+    let mut revived: Vec<String> = Vec::new();
     let mut last: Option<Value> = None;
     for op in &ops {
         let kind = effect_kind_of(op)?;
@@ -785,7 +810,12 @@ pub(super) fn write_apply_preset(ctx: &mut ToolContext<'_>, args: &Value) -> Res
                 }),
                 kind,
             )?;
-            created.push(op.object_id.clone());
+            // 复活的对象单列点名（期 1 E-b）：不许混进 created 冒充新建。
+            if result["revived"] == json!(true) {
+                revived.push(op.object_id.clone());
+            } else {
+                created.push(op.object_id.clone());
+            }
             result
         };
         last = Some(value);
@@ -796,6 +826,8 @@ pub(super) fn write_apply_preset(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     value["include_correction"] = json!(include_correction);
     value["created_object_ids"] = json!(created);
     value["updated_object_ids"] = json!(updated);
+    value["revived_object_ids"] = json!(revived);
+    value["revived"] = json!(revived.len());
     value["created"] = json!(created.len());
     value["updated"] = json!(updated.len());
     value["op_count"] = json!(ops.len());

@@ -7583,6 +7583,73 @@ fn write_transform_object(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
     }))
 }
 
+/// 对象 id 在文档里的**槽位三态**（期 1 E-b）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObjectSlot {
+    /// 存活：走正常更新路。
+    Alive,
+    /// 从未存在：走正常新建路。
+    Absent,
+    /// **墓碑**：对象表里留着已删除条目——fold 的 CreateObject 用
+    /// `contains_key` 判冲突 ⇒ 同 id 新建必被拒；写入路径须先复活
+    /// （`revive_object`）再更新，不许把「已存在」错误甩给调用方。
+    Tombstoned,
+}
+
+/// 槽位判定（纯函数、只读状态）。对象 id 是**文档全局**的
+/// （`state.objects` 一张平表、fold 亦按全表判冲突），不按图层分。
+fn object_slot(state: &DocumentState, object_id: &str) -> ObjectSlot {
+    match state.objects.get(object_id) {
+        None => ObjectSlot::Absent,
+        Some(object) if object.is_deleted() => ObjectSlot::Tombstoned,
+        Some(_) => ObjectSlot::Alive,
+    }
+}
+
+/// `object_slot` 的 ctx 入口（写入路径的前置检查，期 1 E-b 设计名）。
+fn ensure_object_slot(ctx: &mut ToolContext<'_>, object_id: &str) -> Result<ObjectSlot> {
+    let state = document_state(ctx)?;
+    Ok(object_slot(&state, object_id))
+}
+
+/// 删掉某对象的全部 `Tombstone` 原子 id（日志序）——`restore_object`
+/// 与 E-b 复活共用这一份扫描，不许两处各写一套。
+fn tombstone_atom_ids(document: &crate::document::Document, object_id: &str) -> Vec<String> {
+    let mut tombstones = Vec::new();
+    for atom in document.log().iter() {
+        if atom.kind != AtomKind::Tombstone {
+            continue;
+        }
+        if atom.payload.get("object_id").and_then(Value::as_str) == Some(object_id) {
+            tombstones.push(atom.id.clone());
+        }
+    }
+    tombstones
+}
+
+/// **复活墓碑对象**（期 1 E-b 的 revive 半程）：逐条 `Revert` 其
+/// Tombstone 原子——与 `restore_object` 同一台机器（保原子血脉），
+/// 差别只在 changeset 归属由调用方统筹：复活与紧随的更新必须同属
+/// 一个变更集（见 `write_add_effect` 的复活支路）。返回被 revert 的
+/// 墓碑原子 id 清单。
+fn revive_object(ctx: &mut ToolContext<'_>, object_id: &str) -> Result<Vec<String>> {
+    let tombstones = {
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        tombstone_atom_ids(document, object_id)
+    };
+    let mut reverted = Vec::new();
+    for tombstone in &tombstones {
+        ctx.commit(AtomKind::Revert, json!({ "target": tombstone }))?;
+        reverted.push(tombstone.clone());
+    }
+    Ok(reverted)
+}
+
 /// **恢复已删除的对象** ✓（设计 783 的 `restore_object` ✓）。
 ///
 /// 做法 ✓：找到删掉它的那些 `tombstone` 原子 ✓，**逐条 `Revert`** ✓，并把这些 revert
@@ -7602,15 +7669,7 @@ fn write_restore_object(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
                 ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
             )
         })?;
-        let mut tombstones: Vec<String> = Vec::new();
-        for atom in document.log().iter() {
-            if atom.kind != AtomKind::Tombstone {
-                continue;
-            }
-            if atom.payload.get("object_id").and_then(Value::as_str) == Some(object_id.as_str()) {
-                tombstones.push(atom.id.clone());
-            }
-        }
+        let tombstones = tombstone_atom_ids(document, object_id.as_str());
         let state = document.state();
         let present = state.objects.contains_key(object_id.as_str());
         let alive = state
@@ -11034,6 +11093,22 @@ fn write_add_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind) -
         .and_then(Value::as_f64)
         .unwrap_or(1.0)
         .clamp(0.0, 1.0);
+    // 期 1 E-b：确定性 id 撞上墓碑 ⇒ 不走 CreateObject（fold 必拒），
+    // 转复活支路：Revert 墓碑 + 参数整组换新，响应以 revived 点名。
+    if ensure_object_slot(ctx, &object_id)? == ObjectSlot::Tombstoned {
+        return revive_effect_in_place(
+            ctx,
+            kind,
+            ReviveEffect {
+                layer_id: &layer_id,
+                object_id: &object_id,
+                name: &name,
+                params,
+                opacity,
+                label: optional_str(args, "name"),
+            },
+        );
+    }
     let mut data = json!({
         kind.key(): name,
         "params": params,
@@ -11070,6 +11145,128 @@ fn write_add_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind) -
     )?;
     let region = region_of(&result);
     finish_mutation(ctx, &result, region)
+}
+
+/// **复活并替换**（期 1 E-b）：`write_add_effect` 的墓碑支路。
+///
+/// 语义 = 「恢复旧身份 + 参数整组换新」：先 `revive_object` 撤销删除
+/// （保原子血脉），再一条 Supersede 把 `params` **整组替换**（不是
+/// `write_update_effect` 的键级合并——复活的调用方给的是完整新参数，
+/// 旧键残留就是语义错误）。成功响应带 `revived: true` 点名，不许
+/// 静默复活。
+///
+/// **一致性守卫**：对象类型／效果名／所属图层任一与墓碑旧身不一致
+/// ⇒ 拒绝（复活不是借尸还魂：换效果请先 `restore_object` 或换 id）。
+/// **changeset 统筹**：调用方已设/已开变更集则并入；否则自开一个、
+/// 收尾恢复——保证「复活 + 更新」同属一个可整体撤销的变更集。
+/// `revive_effect_in_place` 的入参束（本次新建的完整意图）。
+struct ReviveEffect<'a> {
+    /// 调用方指定的目标图层（须与墓碑旧身所属图层一致）。
+    layer_id: &'a str,
+    /// 撞上墓碑的确定性对象 id。
+    object_id: &'a str,
+    /// 本次要落的效果名（须与墓碑旧身的效果名一致）。
+    name: &'a str,
+    /// 完整新参数（整组替换旧参数）。
+    params: Value,
+    /// 不透明度。
+    opacity: f64,
+    /// 对象显示名（给了才覆盖）。
+    label: Option<String>,
+}
+
+fn revive_effect_in_place(
+    ctx: &mut ToolContext<'_>,
+    kind: EffectKind,
+    revive: ReviveEffect<'_>,
+) -> Result<Value> {
+    let ReviveEffect {
+        layer_id,
+        object_id,
+        name,
+        params,
+        opacity,
+        label,
+    } = revive;
+    let state = document_state(ctx)?;
+    let existing = state
+        .objects
+        .get(object_id)
+        .expect("墓碑支路已由 ensure_object_slot 确认对象在状态里");
+    let want_type = match kind {
+        EffectKind::Adjustment => ObjectType::Adjustment,
+        EffectKind::Filter => ObjectType::Filter,
+    };
+    if existing.object_type != want_type {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "对象 {object_id} 已被删除且不是{}对象（实际 {:?}），拒绝以复活名义改型；请先 restore_object 恢复或换 object_id",
+                kind.object_type(),
+                existing.object_type
+            )),
+        )
+        .with_object(object_id.to_owned()));
+    }
+    let existing_name = existing
+        .data
+        .get(kind.key())
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    if existing_name != name {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "对象 {object_id} 已被删除且效果是「{existing_name}」，与本次要落的「{name}」不一致，拒绝复活改名；请先 restore_object 恢复或换 object_id"
+            )),
+        )
+        .with_object(object_id.to_owned()));
+    }
+    if existing.layer_id != layer_id {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "对象 {object_id} 已被删除且属于图层 {}，与本次目标图层 {layer_id} 不一致，复活不跨层；请先 restore_object 恢复后移层，或换 object_id",
+                existing.layer_id
+            )),
+        )
+        .with_object(object_id.to_owned()));
+    }
+    let opened_here = ctx.changeset.is_none()
+        && ctx
+            .workspace
+            .open_changeset(&ctx.doc_id, &ctx.session)
+            .is_none();
+    let previous = if opened_here {
+        ctx.changeset.replace(yanshi_core::Changeset::new_id())
+    } else {
+        None
+    };
+    let outcome = (|| {
+        revive_object(ctx, object_id)?;
+        let state = document_state(ctx)?;
+        let object = state.objects.get(object_id).expect("复活后对象必在状态里");
+        let mut data = object.data.clone();
+        data["params"] = params;
+        data["opacity"] = json!(opacity);
+        if let Some(label) = &label {
+            data["name"] = json!(label);
+        }
+        let owner_layer = object.layer_id.clone();
+        let result = ctx.commit(
+            AtomKind::Supersede,
+            json!({"object_id": object_id, "layer_id": owner_layer, "data": data}),
+        )?;
+        let region = region_of(&result);
+        let mut value = finish_mutation(ctx, &result, region)?;
+        value["revived"] = json!(true);
+        Ok(value)
+    })();
+    if opened_here {
+        ctx.changeset = previous;
+    }
+    outcome
 }
 
 /// **批量配方 `apply_adjustments`**（包 B，2026-10-21）：一次调用按序建多个调整对象。
@@ -11159,11 +11356,30 @@ fn write_apply_adjustments(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
         validate_effect(EffectKind::Adjustment, &name, &params).map_err(wrap)?;
         let object_id = optional_str(&item_args, "object_id")
             .unwrap_or_else(|| format!("obj_{}", yanshi_core::Ulid::new().encode()));
-        if state.objects.contains_key(&object_id) || !seen_ids.insert(object_id.clone()) {
+        if !seen_ids.insert(object_id.clone()) {
             return Err(wrap(YanshiError::new(
                 ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!("object_id {object_id} 已存在或在配方内重复")),
+                ErrorContext::detail(format!("object_id {object_id} 在配方内重复")),
             )));
+        }
+        // 批量配方只收全新 id：存活撞名与墓碑撞名分开说清（期 1 E-b）——
+        // 墓碑不是「已存在」，且它有复活出路，必须点名。
+        match object_slot(&state, &object_id) {
+            ObjectSlot::Alive => {
+                return Err(wrap(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("object_id {object_id} 已存在")),
+                )));
+            }
+            ObjectSlot::Tombstoned => {
+                return Err(wrap(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "object_id {object_id} 已被删除（墓碑）；批量配方只收新 id——先用 restore_object 恢复，或用 add_adjustment 以同 id 复活并换新参数"
+                    )),
+                )));
+            }
+            ObjectSlot::Absent => {}
         }
         prepared.push(PreparedAdjustment {
             layer_id,

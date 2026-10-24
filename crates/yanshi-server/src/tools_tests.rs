@@ -1371,3 +1371,49 @@ fn inflight_tools_refuse_cross_document_targets_for_non_owner_tokens() {
     assert!(read_get_inflight(&mut ctx, &json!({"doc_id": "*"})).is_ok());
     assert!(write_cancel_operation(&mut ctx, &json!({"doc_id": "doc_b"})).is_ok());
 }
+
+// ---- 期 1 E-b：对象槽位三态 ----
+
+/// `ensure_object_slot` 必须分清三态（期 1 E-b）：Absent 走新建、
+/// Alive 走更新、Tombstoned 走复活——三态混同正是「同 id 删后不能
+/// 重建」的根源。变异：把 Tombstoned 判回 Alive/Absent ⇒ 本条红。
+#[test]
+fn ensure_object_slot_distinguishes_three_states() {
+    let mut workspace = Workspace::in_memory(crate::document::DocumentSettings::default());
+    workspace
+        .create_document(
+            crate::document::NewDocument::new("doc_slot", 32, 32),
+            "test:1",
+            "s",
+        )
+        .unwrap();
+    let mut ctx = ToolContext::new(&mut workspace, "doc_slot", "test:1", "s");
+    write_create_layer(&mut ctx, &json!({"layer_id": "L"})).unwrap();
+    assert_eq!(
+        ensure_object_slot(&mut ctx, "obj_x").unwrap(),
+        ObjectSlot::Absent,
+        "从未存在的 id 必须是 Absent"
+    );
+    write_add_effect(
+        &mut ctx,
+        &json!({
+            "layer_id": "L",
+            "adjustment_type": "exposure",
+            "object_id": "obj_x",
+            "params": {"ev": 0.5}
+        }),
+        EffectKind::Adjustment,
+    )
+    .unwrap();
+    assert_eq!(
+        ensure_object_slot(&mut ctx, "obj_x").unwrap(),
+        ObjectSlot::Alive,
+        "建出后必须是 Alive"
+    );
+    write_tombstone(&mut ctx, &json!({"object_id": "obj_x"}), "object_id").unwrap();
+    assert_eq!(
+        ensure_object_slot(&mut ctx, "obj_x").unwrap(),
+        ObjectSlot::Tombstoned,
+        "删除后对象表留墓碑条目，必须是 Tombstoned（不是 Absent）"
+    );
+}

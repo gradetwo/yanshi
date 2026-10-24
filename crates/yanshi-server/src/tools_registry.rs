@@ -1576,7 +1576,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "层内 z 序（缺省放到同层最上方，作用于全部下方内容）"
             ),
             param!("name", String, false, "对象名（元数据）"),
-            param!("object_id", String, false, "对象 id（缺省自动生成）"),
+            param!("object_id", String, false, "对象 id（缺省自动生成）；若该 id 是已删除对象（墓碑），将复活它并整组换新参数（响应带 revived: true）"),
         ],
     },
     ToolSpec {
@@ -1612,7 +1612,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "层内 z 序（缺省放到同层最上方，作用于全部下方内容）"
             ),
             param!("name", String, false, "对象名（元数据）"),
-            param!("object_id", String, false, "对象 id（缺省自动生成）"),
+            param!("object_id", String, false, "对象 id（缺省自动生成）；若该 id 是已删除对象（墓碑），将复活它并整组换新参数（响应带 revived: true）"),
         ],
     },
     ToolSpec {
@@ -1666,7 +1666,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "apply_preset",
         profile: Profile::Retouch,
-        summary: "把一套风格预设展开并落到图层上：先全量校验任一非法整组不落；确定性 object_id，二次应用同预设走更新（Supersede）不叠加；strength 0..1 插值（0=风格段恒等）、knobs 语义旋钮覆盖、include_correction 缺省 true",
+        summary: "把一套风格预设展开并落到图层上：先全量校验任一非法整组不落；确定性 object_id，二次应用同预设走更新（Supersede）不叠加；同 id 对象已被删除（墓碑）时复活并换新参数、响应以 revived_object_ids 点名；strength 0..1 插值（0=风格段恒等）、knobs 语义旋钮覆盖、include_correction 缺省 true",
         mutating: true,
         params: &[
             param!("preset_id", String, true, "预设 id（先用 list_presets 查）"),
