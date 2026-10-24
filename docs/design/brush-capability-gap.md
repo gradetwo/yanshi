@@ -19602,3 +19602,22 @@ PWA／资产 **6 条全绿**✓（`tool-pwa-stamp-shape`／`tool-pwa-assets`／`
 ⇒ **本机入口不做那三步编排**（`pwa-sync-wasm`／`pwa-sync-viewer`／`mediums-sync` ✓，CI 在 `ci.yml` 里做 ✓）
 ⇒ **下一轮的做法**（照 CI 的顺序）：跑那三步 ⇒ 起静态服务 ⇒ `YANSHI_LIVE_UI_URL=… bash scripts/run-criteria-local.sh scripts/browser-offline-journal.mjs`
 ⇒ 复现出来再改；**复现不出来**就写清缺什么 ✓（**不写"不存在"** ✓）。
+
+## 五百一十六、本机复现 `browser-offline-journal`：**卡在"静态同源 + doc/token"这一步**（第 883 轮）
+
+**⇒ 这轮做了什么（全部实测）**：
+1. 补丁包带来的三步编排：`pwa-sync-wasm.mjs` ⇒ **exit 2**（它要**先**编 wasm：它打印的用法就是那条 `cargo build --target wasm32…`）
+   ⇒ 而 `web/wasm/` **本机已存在** ✓（旧构建）⇒ 跳过；
+2. `pwa-sync-viewer.mjs` ⇒ **0** ✓；`mediums-sync.mjs` ⇒ **0** ✓；
+3. `node scripts/serve-web.mjs 14990 web` ⇒ `curl` 拿 **200** ✓；
+4. `YANSHI_LIVE_UI_URL=http://127.0.0.1:14990 bash scripts/run-criteria-local.sh scripts/browser-offline-journal.mjs`
+   ⇒ **`判据需要 ?doc=..&token=..（前置不成立 ⇒ 不当作通过 ✗）⇒ exit 1`** ✗
+
+**⇒ 根因（读码）**：`run-criteria.sh:331` 有 `VIEWER_BASE="${YANSHI_LIVE_UI_URL:-$BASE}"`
+⇒ **CI 里静态 PWA 与后端是**同一套编排**起的** ✓ ⇒ 于是 `doc`／`token` 由编排给出 ✓
+⇒ 而我只起了**静态服务**、**没起后端**、也**没建文档** ⇒ 判据拿不到 `doc`／`token` ✓。
+
+**⇒ 所以下一轮的正确做法（照 `run-criteria.sh` 的浏览器分支抄）**：
+① 起 `yanshi-serve`（临时根）✓ ② 用它的 API 建一个文档拿 `doc_id`／`token` ✓
+③ `serve-web.mjs` 起静态 ✓ ④ 带 `YANSHI_LIVE_UI_URL` 再跑判据 ✓
+**⇒ 不要再用"只起静态服务"这条捷径** ✗ —— 它连前置都过不了 ✓（本轮就白跑一次 ✓，如实记下 ✓）。
