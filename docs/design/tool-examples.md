@@ -3,7 +3,7 @@
 **这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，
 所以它不会与实现漂移；`--check` 模式会在文档过期时失败。
 
-当前共 196 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
+当前共 203 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
 
 ## `abort_changeset`
 
@@ -465,6 +465,14 @@
 }
 ```
 
+## `delete_document`
+
+```json
+{
+  "document_id": "sample-oil"
+}
+```
+
 ## `delete_layer`
 
 ```json
@@ -661,6 +669,14 @@
 ```json
 {
   "path": "exports/demo.yanshi"
+}
+```
+
+## `export_psd_layers`
+
+```json
+{
+  "filename": "yanshi-export.psd"
 }
 ```
 
@@ -926,6 +942,27 @@
 {}
 ```
 
+## `gradient_blend`
+
+```json
+{
+  "layer_id": "layer_default",
+  "from": {
+    "x": 40,
+    "y": 100,
+    "color": "#2040a0"
+  },
+  "to": {
+    "x": 260,
+    "y": 100,
+    "color": "#f0e0c0"
+  },
+  "brush": "classic-brush",
+  "size": 24,
+  "steps": 10
+}
+```
+
 ## `gradient_fill`
 
 ```json
@@ -987,6 +1024,24 @@
 ```json
 {
   "path": "exports/demo.yanshi"
+}
+```
+
+## `import_psd`
+
+```json
+{
+  "layer_id": "layer_default",
+  "blob_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}
+```
+
+## `import_psd_layers`
+
+```json
+{
+  "blob_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "name_prefix": "PSD·"
 }
 ```
 
@@ -1566,6 +1621,46 @@
   "name": "x",
   "x": 1,
   "y": 1
+}
+```
+
+## `set_brush_curve`
+
+```json
+{
+  "brush": "100%_Opaque",
+  "setting": "hardness",
+  "input": "pressure",
+  "points": [
+    [
+      0,
+      -0.2
+    ],
+    [
+      1,
+      0.2
+    ]
+  ]
+}
+```
+
+## `set_brush_dynamics`
+
+```json
+{
+  "brush": "100%_Opaque",
+  "curve": {
+    "size_pressure": [
+      [
+        0,
+        0.2
+      ],
+      [
+        1,
+        1
+      ]
+    ]
+  }
 }
 ```
 

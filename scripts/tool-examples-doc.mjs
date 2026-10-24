@@ -29,7 +29,18 @@ const path = "docs/design/tool-examples.md";
 //   **⇒ 代价（两面 ✓）**：文档会列出**需要前置状态**的示例 ✓ ⇒ 而"它们能不能直接抄"由
 //     `scripts/tool-example-acceptance.mjs` 判 ✓（本文件只保证**与源码一致** ✓）。
 const source = readFileSync("crates/yanshi-server/src/tools_examples.rs", "utf8");
-const withExample = [...source.matchAll(/\(\s*"([a-z][a-z0-9_]+)",\s*\n?\s*r#"([\s\S]*?)"#,?\s*\)/g)]
+// **⇒ 名字与 raw string 之间**可以有注释行** ✅（第 1011 轮修 ✓）
+//   **⇒ 原模式**（名字后直接要求 `r#"`）**漏掉**这种写法 ✗：
+//   ```rust
+//   (
+//       "set_brush_curve",
+//       // 原始偏移口径：…
+//       r#"{"brush":…}"#,
+//   ),
+//   ```
+//   ⇒ 实测后果**两个**：① 文档里**少一条示例**（`set_brush_curve` ✗）
+//     ② **重复检测漏报**（多行块它扫不到 ✓ 第 1010 轮就是因此才发现 2 个重复 ✗）
+const withExample = [...source.matchAll(/\(\s*"([a-z][a-z0-9_]+)"\s*,\s*(?:\/\/[^\n]*\n\s*)*r#+"([\s\S]*?)"#+,?\s*\)/g)]
   .map((m) => ({ name: m[1], example: m[2] }));
 // **⇒ 去重** ✅（第 951 轮）：示例表里**同一个工具出现多次**（生成器历史上重复追加过 ✓ 实测 **235 条 / 197 唯一** ✓）
 //   ⇒ 文档里会出现**两节同名** ✓ ⇒ 读者两份不同示例不知道该抄哪个 ✗
