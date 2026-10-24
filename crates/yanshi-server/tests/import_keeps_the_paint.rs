@@ -97,12 +97,31 @@ fn an_imported_package_still_has_the_paint_in_it() {
         .with_owner(true)
         .with_wait_for_render(true, 8_000);
     let after_path = root.join("after.png");
+    // **导入之前这个文件必须还不存在** ✓（证明它是这次导出写出来的，而不是我读了旧文件 ✓）
+    assert!(
+        !after_path.exists(),
+        "after.png 在导入前就已存在 ⇒ 这条判据读的可能是旧文件"
+    );
     let reexported = registry.call(
         &mut ctx2,
         "export_png",
         &json!({"path": after_path.to_string_lossy()}),
     );
     assert_eq!(reexported["ok"], json!(true), "{reexported}");
+    // **先证明"第二个文件是新的"** ✓（第 828 轮）：
+    //   **⇒ 为什么必须这句**：三次变异都不红 ⇒ 最可能的解释是**我把同一个文件读了两遍** ✗
+    //   ⇒ 所以先断：① 两个路径**不同**；② `after.png` 在导入**之前不存在** ✓（它必须是这次新写的 ✓）。
+    assert_ne!(before_path, after_path, "两次导出必须写到不同的文件");
+    assert!(before_path.exists(), "第一张必须存在");
+    assert!(
+        after_path.exists(),
+        "第二张必须存在（导出没写到这里就说明我在读旧文件）"
+    );
+    let before_len = std::fs::metadata(&before_path)
+        .expect("before 元数据")
+        .len();
+    let after_len = std::fs::metadata(&after_path).expect("after 元数据").len();
+    assert!(before_len > 0 && after_len > 0, "两张都不能是空文件");
     let after = std::fs::read(&after_path).expect("读 after");
     let after_paint = paint_pixels(&after);
     assert!(
