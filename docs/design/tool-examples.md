@@ -675,9 +675,7 @@
 ## `export_psd_layers`
 
 ```json
-{
-  "filename": "yanshi-export.psd"
-}
+{}
 ```
 
 ## `export_svg`
@@ -692,10 +690,7 @@
 
 ```json
 {
-  "fps": 30,
-  "frame_every": 10,
-  "path": "process.mp4",
-  "width": 2048
+  "path": "x"
 }
 ```
 
@@ -741,15 +736,8 @@
 
 ```json
 {
-  "degree": 2,
   "layer_id": "L1",
-  "mask": {
-    "h": 140,
-    "type": "rect",
-    "w": 160,
-    "x": 120,
-    "y": 80
-  }
+  "mask": {}
 }
 ```
 
@@ -853,14 +841,7 @@
 ## `get_histogram`
 
 ```json
-{
-  "region": {
-    "h": 150,
-    "w": 200,
-    "x": 0,
-    "y": 0
-  }
-}
+{}
 ```
 
 ## `get_inflight`
@@ -1627,11 +1608,7 @@
 
 ```json
 {
-  "binarize": false,
-  "close_pinholes": true,
-  "layer_id": "L1",
-  "min_alpha": 0.5,
-  "selection_id": "s_opaque"
+  "layer_id": "L1"
 }
 ```
 
@@ -1639,10 +1616,9 @@
 
 ```json
 {
-  "name": "left_eye",
-  "note": "外眼角偏 2px",
-  "x": 268,
-  "y": 286
+  "name": "x",
+  "x": 1,
+  "y": 1
 }
 ```
 
@@ -1747,26 +1723,10 @@
 
 ```json
 {
-  "color_a": [
-    0.86,
-    0.24,
-    0.16,
-    1
-  ],
-  "color_b": [
-    0.16,
-    0.24,
-    0.86,
-    1
-  ],
+  "color_a": [],
+  "color_b": [],
   "layer_id": "L1",
-  "shape": {
-    "h": 80,
-    "type": "rect",
-    "w": 120,
-    "x": 40,
-    "y": 40
-  }
+  "shape": {}
 }
 ```
 
@@ -1790,23 +1750,7 @@
 ```json
 {
   "layer_id": "L1",
-  "shape": {
-    "points": [
-      [
-        100,
-        100
-      ],
-      [
-        200,
-        100
-      ],
-      [
-        150,
-        180
-      ]
-    ],
-    "type": "polygon"
-  }
+  "shape": {}
 }
 ```
 
@@ -1836,20 +1780,9 @@
 
 ```json
 {
-  "color": [
-    0.86,
-    0.24,
-    0.16,
-    1
-  ],
+  "color": [],
   "layer_id": "L1",
-  "shape": {
-    "h": 60,
-    "type": "rect",
-    "w": 100,
-    "x": 60,
-    "y": 60
-  }
+  "shape": {}
 }
 ```
 
