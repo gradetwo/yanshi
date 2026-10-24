@@ -514,13 +514,20 @@ fn main() -> Result<()> {
                 started.elapsed().as_secs()
             );
         }
-        let t_apply = Instant::now();
+        // **`shrink` 与 `apply` 分开计时** ✓（第 804 轮；外部 `art` 第 121 次 / `qoder` D188 的连带）
+        //   **⇒ 缺陷（我自己的仪器）**：原来 `t_apply` 把 `shrink_atom`（每块位图最近邻降采样 ✓）
+        //     也算进 `apply` 区间 ✗ ⇒ `SHRINK=1` 下的「apply ms/atom」**混进降采样成本** ✓
+        //     ⇒ 他们据此推的"apply 是 O(n²)"里至少有一部分是这件事 ✓
+        //     （他们第 121 次撤回时怀疑"每帧 render 被算进 apply" ✓ —— 真实情况是 **`shrink`** ✓）。
+        let t_shrink = Instant::now();
         // **降采样回放** ✓：这一行的几何按输出尺寸改写（位图也一起降采样 ✓）
         let shrunk: Option<String> = if shrink {
             shrink_atom(line, &blobs, play_w, play_h, doc_w, doc_h, &mut timeline)
         } else {
             None
         };
+        account.shrink_ns += t_shrink.elapsed().as_nanos();
+        let t_apply = Instant::now();
         if shrink && shrunk.is_none() {
             eprintln!(
                 "  [debug] 这一行没能缩小 ⇒ 用原样：{}",
@@ -643,8 +650,9 @@ fn main() -> Result<()> {
         );
         println!("  ★ 缓存账 ★ below 克隆 {cloned} 条 tile（脏 tile 是 {dirty_tiles} 条 ⇒ 应当远小于它 ✓）");
         println!(
-            "  ★ 分段账（ms）★ apply {:.0}｜render {:.0}（每帧中位 {:.1}）｜scale {:.0}｜write {:.0}",
+            "  ★ 分段账（ms）★ apply {:.0}｜shrink {:.0}｜render {:.0}（每帧中位 {:.1}）｜scale {:.0}｜write {:.0}",
             ms(account.apply_ns),
+            ms(account.shrink_ns),
             ms(account.render_ns),
             median,
             ms(account.scale_ns),
@@ -713,6 +721,8 @@ struct Layout {
 struct Account {
     /// 喂 atom 的总纳秒 ✓。
     apply_ns: u128,
+    /// **降采样那一步的纳秒** ✓（第 804 轮）—— 它**不是**"应用原子"的成本 ✓
+    shrink_ns: u128,
     /// 内核渲染的总纳秒 ✓。
     render_ns: u128,
     /// 缩放 ＋ 去 alpha 的总纳秒 ✓。

@@ -234,3 +234,95 @@ fn the_max_dim_flag_changes_the_output_size() {
         "`--max-dim 512` 应当把宽收到 512：\n{small_out}"
     );
 }
+
+/// **`shrink` 的时间不许算进 `apply`**（第 804 轮；外部 `art` 第 121 次 / `qoder` D188）
+///
+/// **⇒ 我自己的仪器缺陷**：`t_apply` 原来把 `shrink_atom`（每块位图最近邻降采样 ✓）也算进去 ✗
+/// ⇒ `SHRINK=1` 下的「apply ms/atom」**混进降采样成本** ✓ ⇒ 他们那条 O(n²) 里至少一部分是这个 ✓。
+///
+/// **⇒ 判据**：分段账里必须**同时有 `apply` 与 `shrink`** ✓，且带位图的包在 `SHRINK=1` 下
+/// **`shrink` > 0 ms** ✓。
+/// **⚠ 上一轮我为什么没写成**：那段横幅在 **`if probe`** 里 ✓（`main.rs:628` ✓）
+/// ⇒ `probe` 来自 **`YANSHI_TIMELAPSE_PROBE=1`** ✓ ⇒ 不设它**根本没有这一行** ✓
+/// ⇒ 判据必红且原因是"没打印" ✗ —— **这一条就是那次教训的修复** ✓。
+/// **⇒ 变异**：把 `shrink` 并回 `apply` ⇒ 第一条红 ✓。
+#[test]
+fn shrink_time_is_accounted_separately_from_apply() {
+    let dir = std::env::temp_dir().join(format!("yanshi_shrink_acct_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("建目录");
+    let (w, h) = (2560u32, 2160u32);
+    // **位图要够大** ✓：64×64 的降采样**不到 1 ms** ⇒ 打印成 `shrink 0` ✗（第 804 轮实测）
+    //   ⇒ 1536×1536 ＝ 9.4 MB 裸 RGBA ⇒ 降采样 ≥ 几 ms ✓
+    let (bw, bh) = (1536u32, 1536u32);
+    let blob: Vec<u8> = (0..bw * bh)
+        .flat_map(|index| {
+            let value = (index % 251) as u8;
+            [value, value / 2, 255 - value, 255]
+        })
+        .collect();
+    let hash = yanshi_core::BlobHash::from_bytes(&blob).as_str().to_owned();
+    let blob_dir = dir.join("blobs/sha256").join(&hash[..2]).join(&hash[2..4]);
+    std::fs::create_dir_all(&blob_dir).expect("blob 目录");
+    std::fs::write(blob_dir.join(&hash), &blob).expect("blob");
+    std::fs::write(
+        dir.join("meta.json"),
+        serde_json::json!({"width": w, "height": h, "doc_id": "d_acct", "fps": 24}).to_string(),
+    )
+    .expect("meta");
+    std::fs::write(dir.join("blobs.encoding"), "none").expect("encoding");
+    let atoms = [
+        serde_json::json!({"id": "a0", "seq": 1, "kind": "create_document", "actor": "human:t",
+            "session": "s", "timestamp": 0, "schema_version": 1,
+            "payload": {"doc_id": "d_acct", "width": w, "height": h, "color_space": "srgb"}}),
+        serde_json::json!({"id": "a1", "seq": 2, "kind": "create_layer", "actor": "human:t",
+            "session": "s", "timestamp": 0, "schema_version": 1,
+            "payload": {"layer_id": "L1", "name": "L1", "type": "raster"}}),
+        serde_json::json!({"id": "a2", "seq": 3, "kind": "import_image", "actor": "human:t",
+            "session": "s", "timestamp": 0, "schema_version": 1,
+            "payload": {"layer_id": "L1", "object_id": "o1",
+                        "bbox": [0.0, 0.0, f64::from(bw), f64::from(bh)],
+                        "bitmap": {"blob_hash": hash, "mime_type": "image/x-yanshi-raw",
+                                   "size": blob.len()}}}),
+    ];
+    let text: String = atoms.iter().map(|atom| format!("{atom}\n")).collect();
+    std::fs::write(dir.join("atoms.jsonl"), text).expect("atoms");
+    assert!(
+        Command::new("tar")
+            .arg("-cf")
+            .arg(dir.join("acct.yanshi"))
+            .arg("-C")
+            .arg(&dir)
+            .args(["meta.json", "atoms.jsonl", "blobs.encoding", "blobs"])
+            .status()
+            .expect("tar")
+            .success(),
+        "打不出包"
+    );
+
+    let out = Command::new(env!("CARGO_BIN_EXE_yanshi-timelapse"))
+        .arg(dir.join("acct.yanshi"))
+        .arg(dir.join("out.mp4"))
+        .arg("1")
+        .env("YANSHI_TIMELAPSE_SHRINK", "1")
+        // **分段账只在 probe 下打印** ✓（这正是上一轮踩的坑 ✓）
+        .env("YANSHI_TIMELAPSE_PROBE", "1")
+        .env("YANSHI_TIMELAPSE_RAW_DIR", dir.join("frames"))
+        .output()
+        .expect("跑 timelapse");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("shrink"),
+        "分段账里必须**单独**列出 `shrink`（否则它会被算进 apply）：\n{stdout}"
+    );
+    // **不断言 `shrink > 0`** ✗（第 804 轮实测）：`shrink_atom` 对 `import_image` 只**改几何**
+    //   （bbox 换成输出尺寸 ✓）⇒ 位图缩放留给渲染器 ✓ ⇒ 它**本来就可能是 0 毫秒** ✓
+    //   （实测 1536² 的位图也是 `shrink 0` ✓，且 stderr 里**没有**「这一行没能缩小」✓）
+    //   ⇒ 所以判据只断**两个字段分开存在** ✓ —— 那才是"它没被算进 apply"的证据 ✓。
+    let has_apply = stdout.contains("apply ");
+    let has_shrink = stdout.contains("shrink ");
+    assert!(
+        has_apply && has_shrink,
+        "分段账必须把 `apply` 与 `shrink` **分开列**（否则降采样成本会被算进 apply）：\n{stdout}"
+    );
+}
