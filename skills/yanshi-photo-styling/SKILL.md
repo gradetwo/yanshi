@@ -161,11 +161,13 @@ yanshi 会有很多个方向的 skill（已有 `yanshi-painting` 管绘画笔触
   0.30；levels.black 不转换，有效显示黑点会被放大到意图的 3.5–7 倍）。现行数据里
   的点列已是转换后坐标（如小清新 curves 首点 y≈0.0049、且已按显示空间曲线形重采样
   到 17 点保形）。`levels.white` / `gamma` 跨空间近似不变，直通。
-- **`brightness_contrast` 是无枢轴线性**（绕黑缩放 + 线性加法）：brightness 在黑端的
-  实效约为著录值的 5–6 倍，只给 0–0.03 量级；fade 类组合（curves 抬黑 + bc 亮度）
-  必须在 style 段末尾自带 `levels` 黑点回锚，否则成图黑位全浮（retro_film 实测教训）。
-- **`color_balance` 别写进新配方**：它与 split_toning 同根（线性空间分档加法偏移），
-  目前无预设使用、且没有 amount 可收敛——属潜伏项，要用先补校准注记。
+- **`brightness_contrast` 已改为显示枢轴口径（期 3 A1）**：brightness ±0.5 ⇔ 中灰
+  显示 ±0.25、contrast 绕显示 0.5 枢轴、亮度比回写不扭色相；期 3 之前「无枢轴
+  线性、只给 0–0.03 量级」的旧注记作废，新刻度见定档记录。fade 类组合仍建议在
+  style 段末尾自带 `levels` 黑点回锚（retro_film 实测教训，与内核口径无关）。
+- **`color_balance` 已按显示口径修复（期 3 A2）**：Y' 分档 + 显示空间施加 +
+  `amount`（缺省 1.0），偏移刻度 ±0.25 显示单位，可正常写进配方；
+  期 3 之前的「线性分档、无 amount」警告作废。
 - 其余常用项（`exposure.ev`、`shadows_highlights`、`saturation` 等）与显示口径同阶，
   直通著录即可；完整审计结论与清白名单见展示册 AUDIT 与设计文档 §9/§9.1。
 

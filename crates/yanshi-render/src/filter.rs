@@ -4,11 +4,14 @@
 //! 的内容，符合设计文档「图层只做容器，调整对象化」的定义。
 //!
 //! 所有运算在**线性光、直通颜色**上执行，再回到预乘表示，保证与合成空间一致（D0 基线）。
+//! **期 3 A 族例外**：brightness_contrast／color_balance／selective_color／
+//! clarity／vignette 五个显示语义算子的**内部计算**在显示空间进行（扩展
+//! 保符号 sRGB 编解码进出），接口仍是线性直通缓冲——见各函数文档。
 //! 需要一个 `radius` 邻域的滤镜（模糊）要求调用方提供带 padding 的缓冲区；
 //! [`crate::render`] 会按文档内最大滤镜半径扩展渲染区域后再裁剪。
 
 use crate::buffer::Buffer;
-use crate::color::{linear_to_srgb, srgb_to_linear};
+use crate::color::{linear_to_srgb, srgb_decode_extended, srgb_encode_extended, srgb_to_linear};
 use crate::prng::Prng;
 use serde_json::Value;
 
@@ -670,13 +673,55 @@ fn corner_weight(offset: usize, frac: f32) -> f32 {
     }
 }
 
-/// 亮度/对比度（`brightness` 为 `-1..1` 的加性偏移，`contrast` 为 `0..2` 的乘性对比）。
+/// 亮度/对比度（**期 3 A1：显示空间枢轴口径，原地替换旧线性口径**）。
+///
+/// 旧实现是 `out = (c·contrast + brightness).clamp(0, 1)` 直接作用于线性
+/// 直通值：无枢轴、且把一切钳进 [0, 1]——HDR 高光在第一个 bc 处即被压
+/// 平。用户与预设数据给的都是 LR 显示口径参数，旧实现系统性偏离
+/// （设计文档 §2 A1；注：设计文档把旧式写成带 0.5 枢轴的形式，与代码
+/// 实测不符——实测无枢轴，见 phase3-notes 备忘）。
+///
+/// 新口径（Adobe 显示语义，与设计 §2 A1 定版一致）：
+/// 1. 每通道线性 → **扩展保符号 sRGB 编码**（[`srgb_encode_extended`]，
+///    编码前禁止钳 `[0, 1]`，HDR 高光与负值不被第一个显示算子销毁）；
+/// 2. 亮度平移 `d' = d + brightness·0.5`（规范刻度：brightness = ±0.5 ⇔
+///    中灰显示 ±0.25；此 ±0.25 探针即刻度定义）；
+/// 3. 对比绕**显示中灰枢轴 0.5** 缩放 `d'' = (d' − 0.5)·contrast + 0.5`；
+/// 4. **亮度比回写（hue-twist 防护）**：`out_lin = in_lin · (Y''(d'') /
+///    Y'(d))`，Y' 为 sRGB 亮度 0.2126/0.7152/0.0722 在显示值上的加权和；
+///    像素色相/饱和由原像素决定，对比只缩放其亮度。入亮度 ≤ 0（纯黑/
+///    负值像素）时无亮度可缩放 ⇒ 回退逐通道解码
+///    `srgb_decode_extended(d'')`（黑位抬升 brightness 仍生效）。
+///
+/// 参数契约不变：brightness ∈ [−1, 1]，contrast ∈ [0, 8]（越界在工具层
+/// 拒）。neutral（brightness = 0 且 contrast = 1）逐像素恒等（含 HDR 与
+/// 负值）。存量文档回放自本期起按新口径（甲案，发布说明明示）。
 pub fn brightness_contrast(buffer: &mut Buffer, brightness: f32, contrast: f32) {
-    let offset = brightness;
-    let scale = contrast.max(0.0);
-    for_each_straight_color(buffer, |color| {
-        for value in color.iter_mut() {
-            *value = (*value * scale + offset).clamp(0.0, 1.0);
+    if brightness == 0.0 && contrast == 1.0 {
+        return;
+    }
+    for_each_straight_color(buffer, |c| {
+        let d = [
+            srgb_encode_extended(c[0]),
+            srgb_encode_extended(c[1]),
+            srgb_encode_extended(c[2]),
+        ];
+        let lum_in = 0.2126 * d[0] + 0.7152 * d[1] + 0.0722 * d[2];
+        let shifted = [
+            (d[0] + brightness * 0.5 - 0.5) * contrast + 0.5,
+            (d[1] + brightness * 0.5 - 0.5) * contrast + 0.5,
+            (d[2] + brightness * 0.5 - 0.5) * contrast + 0.5,
+        ];
+        let lum_out = 0.2126 * shifted[0] + 0.7152 * shifted[1] + 0.0722 * shifted[2];
+        if lum_in > 0.0 {
+            let ratio = lum_out / lum_in;
+            *c = [c[0] * ratio, c[1] * ratio, c[2] * ratio];
+        } else {
+            *c = [
+                srgb_decode_extended(shifted[0]),
+                srgb_decode_extended(shifted[1]),
+                srgb_decode_extended(shifted[2]),
+            ];
         }
     });
 }
@@ -804,32 +849,57 @@ pub fn film_grain(buffer: &mut Buffer, amount: f32, size: u32, seed: u64) {
     }
 }
 
-/// 色彩平衡：按亮度分档（阴影 / 中间调 / 高光）分别做 RGB 偏移。
+/// 色彩平衡（**期 3 A2：显示空间施加 + Y' 分档 + amount，原地替换**）。
 ///
-/// 档位权重由线性亮度推导：`shadows = (1-luma)²`、`highlights = luma²`、
-/// `midtones = 1 - shadows - highlights`。每个分量取值 -1..1，按档位加权后加到直通通道上。
+/// 旧实现的问题（设计 §2 A2）：分档权重算在**线性**亮度上（与 LR 的感知
+/// 明度分档错位）、偏移以 ±1.0 全幅直接加到线性值再钳 [0, 1]（HDR 被
+/// 压平）、且**没有 amount**——预设要 30% 强度只能把三档偏移逐个手乘。
+/// （注：设计文档把旧权重写成三角形、旧偏移写成 ·0.25，与代码实测不符
+/// ——实测权重为二次式、偏移无缩放；见 phase3-notes 备忘。权重**形状**
+/// 本期保留实测的二次式，只换它读取的量。）
+/// 新口径：
+/// 1. 像素线性 → 扩展保符号 sRGB 编码得显示值 `d`（不钳 [0, 1]）；
+/// 2. 分档权重按**显示明度 Y'**（sRGB 亮度系数在显示值上的加权和，
+///    钳 [0, 1] 只用于权重）取原二次形状：`shadows = (1−Y')²`、
+///    `highlights = Y'²`、`midtones = 1 − shadows − highlights`；
+/// 3. 混合偏移按设计刻度 ±0.25 乘 `amount` 后**加在显示值上**，再扩展
+///    解码回线性。HDR 像素（显示值 > 1）全程不钳、偏移照常施加。
+///
+/// `amount` 由分发层缺省 1.0；三档全零或 amount ≤ 0 时逐像素恒等。
+/// 负 amount 在工具层拒（[0, 1]）。
 pub fn color_balance(
     buffer: &mut Buffer,
     shadows: [f32; 3],
     midtones: [f32; 3],
     highlights: [f32; 3],
+    amount: f32,
 ) {
     const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
+    if amount <= 0.0 || (shadows == [0.0; 3] && midtones == [0.0; 3] && highlights == [0.0; 3])
+    {
+        return;
+    }
     let clamp_component = |value: f32| value.clamp(-1.0, 1.0);
     let shadows = shadows.map(clamp_component);
     let midtones = midtones.map(clamp_component);
     let highlights = highlights.map(clamp_component);
     for_each_straight_color(buffer, |color| {
-        let luma = LUMA[0] * color[0] + LUMA[1] * color[1] + LUMA[2] * color[2];
-        let luma = luma.clamp(0.0, 1.0);
+        let d = [
+            srgb_encode_extended(color[0]),
+            srgb_encode_extended(color[1]),
+            srgb_encode_extended(color[2]),
+        ];
+        let luma = (LUMA[0] * d[0] + LUMA[1] * d[1] + LUMA[2] * d[2]).clamp(0.0, 1.0);
         let shadow_weight = (1.0 - luma) * (1.0 - luma);
         let highlight_weight = luma * luma;
         let midtone_weight = (1.0 - shadow_weight - highlight_weight).max(0.0);
         for channel in 0..3 {
-            let delta = shadows[channel] * shadow_weight
+            let delta = (shadows[channel] * shadow_weight
                 + midtones[channel] * midtone_weight
-                + highlights[channel] * highlight_weight;
-            color[channel] = (color[channel] + delta).clamp(0.0, 1.0);
+                + highlights[channel] * highlight_weight)
+                * 0.25
+                * amount;
+            color[channel] = srgb_decode_extended(d[channel] + delta);
         }
     });
 }
@@ -2726,6 +2796,8 @@ pub fn apply_adjustment(
             triple(params.get("shadows")),
             triple(params.get("midtones")),
             triple(params.get("highlights")),
+            // 期 3 A2 新增 amount：缺省 1.0（与 split_toning 同口径，钉成断言）。
+            params.get("amount").and_then(Value::as_f64).unwrap_or(1.0) as f32,
         ),
         AdjustmentKind::Posterize => posterize(
             &mut adjusted,
@@ -3534,17 +3606,57 @@ mod tests {
         buffer
     }
 
+    /// 期 3 A1 改写（原 `brightness_and_contrast_are_linear_in_straight_space`
+    /// 断言的是旧线性公式 `(c·k + b).clamp(0,1)`，语义已被甲案原地替换）：
+    /// 新断言钉**显示枢轴口径**——中灰刻度探针、枢轴不动点、HDR 不钳、
+    /// 亮度比回写的通道比恒等（hue 防护）。变异：改回线性公式 ⇒ 刻度
+    /// 探针（旧式同输入给 +0.468 显示位移）与 HDR 探针立刻红。
     #[test]
-    fn brightness_and_contrast_are_linear_in_straight_space() {
-        let mut buffer = filled([0.25, 0.25, 0.25, 1.0]);
-        brightness_contrast(&mut buffer, 0.25, 1.0);
-        assert!((buffer.pixel(0, 0)[0] - 0.5).abs() < 1e-5);
-        let mut buffer = filled([0.5, 0.5, 0.5, 1.0]);
+    fn brightness_contrast_uses_display_pivot_semantics() {
+        // neutral 恒等（含 HDR 与负值：扩展传递往返不钳）。
+        let mut buffer = filled([1.8, 0.4, -0.2, 1.0]);
+        brightness_contrast(&mut buffer, 0.0, 1.0);
+        let pixel = buffer.pixel(0, 0);
+        assert!((pixel[0] - 1.8).abs() < 1e-5 && (pixel[2] + 0.2).abs() < 1e-5, "{pixel:?}");
+        // 刻度探针：显示中灰 0.5（线性 ≈0.2140）+ brightness 0.5 ⇒ 显示 0.75。
+        let mut buffer = filled([0.214_041_14, 0.214_041_14, 0.214_041_14, 1.0]);
+        brightness_contrast(&mut buffer, 0.5, 1.0);
+        let shown = srgb_encode_extended(buffer.pixel(0, 0)[0]);
+        assert!((shown - 0.75).abs() < 0.01, "中灰显示应 +0.25：{shown}");
+        // 枢轴不动点：显示 0.5 在纯对比下不动；显示 0.75、contrast 0.5 ⇒ 0.625。
+        let mut buffer = filled([0.214_041_14, 0.214_041_14, 0.214_041_14, 1.0]);
         brightness_contrast(&mut buffer, 0.0, 2.0);
-        assert!((buffer.pixel(0, 0)[0] - 1.0).abs() < 1e-5, "对比度裁到 1.0");
-        let mut buffer = filled([0.5, 0.5, 0.5, 1.0]);
+        let shown = srgb_encode_extended(buffer.pixel(0, 0)[0]);
+        assert!((shown - 0.5).abs() < 0.01, "枢轴 0.5 应不动：{shown}");
+        let mut buffer = filled([0.522_521_74, 0.522_521_74, 0.522_521_74, 1.0]);
         brightness_contrast(&mut buffer, 0.0, 0.5);
-        assert!((buffer.pixel(0, 0)[0] - 0.25).abs() < 1e-5);
+        let shown = srgb_encode_extended(buffer.pixel(0, 0)[0]);
+        assert!((shown - 0.625).abs() < 0.01, "0.75 绕枢轴减半应得 0.625：{shown}");
+        // HDR 不钳 + 色相防护：(4, 1, 0.25) 加对比后 R 仍 > 1 且通道比不变。
+        let mut buffer = filled([4.0, 1.0, 0.25, 1.0]);
+        brightness_contrast(&mut buffer, 0.0, 1.5);
+        let pixel = buffer.pixel(0, 0);
+        assert!(pixel[0] > 4.5, "HDR 高光不得被钳到 1：{pixel:?}");
+        assert!(
+            (pixel[1] / pixel[0] - 0.25).abs() < 1e-3
+                && (pixel[2] / pixel[0] - 0.0625).abs() < 1e-3,
+            "亮度比回写应保持通道比（色相不扭）：{pixel:?}"
+        );
+    }
+
+    /// A1 双路一致：调整路径与滤镜路径同参数必须逐像素一致（同一函数）。
+    #[test]
+    fn brightness_contrast_adjustment_and_filter_paths_agree() {
+        let mut via_adjustment = filled([0.3, 0.6, 1.4, 1.0]);
+        let mut via_filter = filled([0.3, 0.6, 1.4, 1.0]);
+        let params = json!({"brightness": 0.3, "contrast": 1.4});
+        apply_adjustment(
+            &mut via_adjustment,
+            AdjustmentKind::BrightnessContrast,
+            &params,
+        );
+        apply_filter(&mut via_filter, FilterKind::BrightnessContrast, &params);
+        assert_eq!(via_adjustment.pixel(0, 0), via_filter.pixel(0, 0));
     }
 
     #[test]
@@ -4318,7 +4430,10 @@ mod tests {
         }
     }
 
-    /// 色彩平衡：阴影档只影响暗部、高光档只影响亮部，中间调影响两者之间的像素。
+    /// 色彩平衡（期 3 A2 改写：期望按新显示口径公式重算；旧断言钉的是
+    /// 线性分档 + 线性全幅相加 + 钳 [0,1]，其中「蓝推到饱和 1.0」一条
+    /// 正是旧钳制行为——新口径下高光蓝越过 1.0 保留 HDR，不再饱和到白）。
+    /// 阴影档只影响暗部、高光档只影响亮部，中间调影响两者之间。
     #[test]
     fn color_balance_affects_tone_bands_separately() {
         let make = || {
@@ -4328,35 +4443,40 @@ mod tests {
             buffer.set_pixel(2, 0, [0.95, 0.95, 0.95, 1.0]); // 亮
             buffer
         };
-        // 只加阴影档的红：暗部提升最多，亮部几乎不变。
+        // 只加阴影档的红：暗部提升最多，亮部几乎不变（增量按新公式手算：
+        // 暗 ≈0.0185、中 ≈0.0081、亮 ≈0.0001，量级远小于旧线性全幅相加）。
         let mut shadows = make();
-        color_balance(&mut shadows, [0.3, 0.0, 0.0], [0.0; 3], [0.0; 3]);
-        // 注意比较的是**增量**而不是绝对值：绝对值当然仍随底色增大。
+        color_balance(&mut shadows, [0.3, 0.0, 0.0], [0.0; 3], [0.0; 3], 1.0);
         let dark_delta = shadows.pixel(0, 0)[0] - 0.05;
         let mid_delta = shadows.pixel(1, 0)[0] - 0.5;
         let bright_delta = shadows.pixel(2, 0)[0] - 0.95;
-        assert!(dark_delta > 0.2, "暗部应被显著提升：{dark_delta}");
+        assert!(dark_delta > 0.012, "暗部应被显著提升：{dark_delta}");
         assert!(
             dark_delta > mid_delta && mid_delta > bright_delta,
             "阴影档增量应随亮度递减：{dark_delta}/{mid_delta}/{bright_delta}"
         );
-        assert!(bright_delta < 0.01, "亮部几乎不变：{bright_delta}");
+        assert!(bright_delta < 0.002, "亮部几乎不变：{bright_delta}");
 
-        // 只加高光档的蓝：亮部提升最多。
+        // 只加高光档的蓝：亮部提升最多，且**越过 1.0**（显示施加不钳）。
         let mut highlights = make();
-        color_balance(&mut highlights, [0.0; 3], [0.0; 3], [0.0, 0.0, 0.3]);
-        // 0.95 加 0.271 会触顶被钳到 1.0，因此断言「饱和到白」而不是比增量。
+        color_balance(&mut highlights, [0.0; 3], [0.0; 3], [0.0, 0.0, 0.3], 1.0);
         let bright_blue = highlights.pixel(2, 0)[2];
         let dark_blue_delta = highlights.pixel(0, 0)[2] - 0.05;
         assert!(
-            bright_blue > 0.999,
-            "亮部高光档应把蓝推到饱和：{bright_blue}"
+            bright_blue > 1.05,
+            "亮部高光档蓝应越过 1.0 保留 HDR（旧实现钳到 1.0）：{bright_blue}"
         );
-        assert!(dark_blue_delta < 0.01, "暗部几乎不变：{dark_blue_delta}");
+        assert!(dark_blue_delta < 0.005, "暗部几乎不变：{dark_blue_delta}");
 
-        // 中间调 + 越界参数不应产出非法值。
+        // 中间调 + 越界参数不应产出非法值（本组输入下输出仍在 [0,1]）。
         let mut extremes = make();
-        color_balance(&mut extremes, [9.0, -9.0, 0.0], [1.0; 3], [0.0, 0.0, -9.0]);
+        color_balance(
+            &mut extremes,
+            [9.0, -9.0, 0.0],
+            [1.0; 3],
+            [0.0, 0.0, -9.0],
+            1.0,
+        );
         for x in 0..3 {
             let pixel = extremes.pixel(x, 0);
             assert!(
@@ -4366,6 +4486,51 @@ mod tests {
                 "越界参数不得产出非法值：{pixel:?}"
             );
         }
+    }
+
+    /// A2 amount：显示域偏移随 amount 线性缩放（0.5 ⇒ 显示位移恰半），
+    /// amount = 0 恒等；分发缺省 amount 与显式 1.0 逐像素一致（缺省钉死）。
+    #[test]
+    fn color_balance_amount_scales_display_offset_and_defaults_to_one() {
+        let mut full = filled([0.05, 0.05, 0.05, 1.0]);
+        let mut half = filled([0.05, 0.05, 0.05, 1.0]);
+        color_balance(&mut full, [0.3, 0.0, 0.0], [0.0; 3], [0.0; 3], 1.0);
+        color_balance(&mut half, [0.3, 0.0, 0.0], [0.0; 3], [0.0; 3], 0.5);
+        let base = srgb_encode_extended(0.05);
+        let full_shift = srgb_encode_extended(full.pixel(0, 0)[0]) - base;
+        let half_shift = srgb_encode_extended(half.pixel(0, 0)[0]) - base;
+        assert!(
+            (half_shift - full_shift * 0.5).abs() < 1e-4,
+            "amount 0.5 的显示位移应恰为全量一半：{half_shift} vs {full_shift}"
+        );
+        let mut zero = filled([0.05, 0.4, 0.9, 1.0]);
+        color_balance(&mut zero, [0.3, 0.0, 0.0], [0.0; 3], [0.0; 3], 0.0);
+        assert_eq!(zero.pixel(0, 0), [0.05, 0.4, 0.9, 1.0], "amount=0 必须恒等");
+        // 分发缺省：不带 amount 的 JSON 与显式 amount=1 逐像素一致。
+        let mut implicit = filled([0.2, 0.5, 0.8, 1.0]);
+        let mut explicit = filled([0.2, 0.5, 0.8, 1.0]);
+        apply_adjustment(
+            &mut implicit,
+            AdjustmentKind::ColorBalance,
+            &json!({"shadows": [0.3, 0.0, 0.0]}),
+        );
+        apply_adjustment(
+            &mut explicit,
+            AdjustmentKind::ColorBalance,
+            &json!({"shadows": [0.3, 0.0, 0.0], "amount": 1.0}),
+        );
+        assert_eq!(implicit.pixel(0, 0), explicit.pixel(0, 0), "缺省 amount 必须 = 1.0");
+    }
+
+    /// A2 HDR：显示值 > 1 的通道偏移按显示刻度足额施加（旧实现先钳 1.0
+    /// 再加线性偏移，相对位移被腰斩且结果 ≤ 1）。变异：施加前加回
+    /// clamp(0,1) ⇒ 本断言红。
+    #[test]
+    fn color_balance_applies_full_offset_to_hdr_pixels() {
+        let mut buffer = filled([0.8, 0.8, 3.0, 1.0]);
+        color_balance(&mut buffer, [0.0; 3], [0.0; 3], [0.0, 0.0, -0.4], 1.0);
+        let blue = buffer.pixel(0, 0)[2];
+        assert!(blue > 2.0, "HDR 蓝减偏移后应仍为 HDR（新公式 ≈2.70）：{blue}");
     }
 
     /// 分通道色阶只影响指定通道；色调分离把通道量化到有限台阶。

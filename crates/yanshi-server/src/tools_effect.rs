@@ -59,8 +59,10 @@ pub(super) fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> R
         (EffectKind::Adjustment, "posterize") => &[("levels", 2.0, 64.0)],
         (EffectKind::Adjustment, "red_eye") => &[("strength", 0.0, 1.0), ("threshold", 0.5, 10.0)],
         (EffectKind::Adjustment, "vibrance") => &[("amount", 0.0, 2.0)],
-        // 色彩平衡 / 分离色调的档位是 [r,g,b]，分量范围在下面的逐项检查里完成。
-        (EffectKind::Adjustment, "color_balance") => &[],
+        // 色彩平衡的档位是 [r,g,b]（分量范围在下面的逐项检查里完成）；
+        // amount 是期 3 A2 新增的数值键 [0,1]（非空表会同时启用未知键拒绝，
+        // shadows/midtones/highlights 都在 NON_NUMERIC 白名单里，不受影响）。
+        (EffectKind::Adjustment, "color_balance") => &[("amount", 0.0, 1.0)],
         (EffectKind::Adjustment, "split_toning") => &[("balance", -1.0, 1.0), ("amount", 0.0, 1.0)],
         (EffectKind::Adjustment, "denoise") => &[
             ("luminance", 0.0, 1.0),

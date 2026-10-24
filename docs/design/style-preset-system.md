@@ -309,9 +309,9 @@ western_cool / lomo / forest / morandi 的现行观感已经包含此行为，
 真实语义复核各自的 (brightness, contrast) 对；给内核加枢轴 / 显示
 空间模式是内核语义变更，留 gradetwo 评审。
 
-**潜伏警告：`color_balance`**：与 split_toning 同为线性空间的加法
-分档偏移，当前无任何预设使用。将来一旦著录，三元组必须按线性量级
-取（约显示直觉的 1/3），否则会同形态翻车。
+**`color_balance`（期 3 A2 已修复）**：原为线性空间分档加法偏移、无
+amount 的潜伏项；期 3 已原地改为显示口径（Y' 分档 + 显示空间施加 +
+`amount` 缺省 1.0），可按显示直觉正常著录（偏移刻度 ±0.25 显示单位）。
 
 修正段只有 exposure / shadows_highlights / dehaze / clarity，不含
 curves、levels 与 brightness_contrast，已渲的原图 / 修正图不受影响，
