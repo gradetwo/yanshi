@@ -1087,16 +1087,26 @@ fn shrink_atom(
                 entry.insert("size".to_owned(), Value::from(small.len() as u64));
             }
             if let Some(region) = payload.get_mut("region").and_then(Value::as_object_mut) {
-                let mut scale = |key: &str, factor: f64| {
-                    if let Some(value) = region.get(key).and_then(Value::as_f64) {
-                        let scaled = value * factor;
-                        region.insert(key.to_owned(), json!(scaled));
-                    }
-                };
-                scale("x", sx);
-                scale("y", sy);
-                scale("w", sx);
-                scale("h", sy);
+                // **按**边缘**取整** ✓（第 838 轮；`art` 待上游的「`shrink` 方块缺口」）
+                //   **⇒ 缺陷**：原来 `x`／`w` **各自**乘 `sx` 再取整 ✗
+                //     ⇒ 相邻两块的 `x₁'+w₁'` 与 `x₂'` 可能差 1 px ⇒ **缝** ✓
+                //   **⇒ 修法**：`x₀' = round(x·s)`、`x₁' = round((x+w)·s)`、`w' = x₁' − x₀'` ✓
+                //     ⇒ 相邻块**首尾相接** ✓（同一组边缘点算出来的 ✓）。
+                //   **⇒ 判据**：`scaled_rect` 的纯算术单测 ✓（`#[cfg(test)] mod` 见文件末尾 ✓）。
+                let rect = scaled_rect(
+                    region.get("x").and_then(Value::as_f64),
+                    region.get("y").and_then(Value::as_f64),
+                    region.get("w").and_then(Value::as_f64),
+                    region.get("h").and_then(Value::as_f64),
+                    sx,
+                    sy,
+                );
+                if let Some((x0, y0, w0, h0)) = rect {
+                    region.insert("x".to_owned(), json!(x0));
+                    region.insert("y".to_owned(), json!(y0));
+                    region.insert("w".to_owned(), json!(w0));
+                    region.insert("h".to_owned(), json!(h0));
+                }
             }
         }
         _ => return None,
@@ -1213,5 +1223,75 @@ mod even_dimension_tests {
 
         // ④ 极小输入也不许退化成 0（`0 & !1 == 0` ⇒ 编码器会拒绝 0×0）
         assert!(even(0.4) >= 2, "极小输入也要 ≥2，实测 {}", even(0.4));
+    }
+}
+
+/// **把一个矩形按 `sx`／`sy` 缩到输出尺寸** ✓（第 838 轮）—— **按边缘取整** ✓
+///
+/// **⇒ 为什么单独抽出来**：`shrink_atom` 是二进制里的私有函数 ✓
+/// ⇒ 不抽出来就**没有不启动整个程序就能量的入口** ✗ ⇒ 也就**写不出能红的判据** ✗。
+/// **⇒ 口径**：`x0' = round(x·sx)`、`x1' = round((x+w)·sx)`、`w' = max(1, x1' − x0')`（y 同理 ✓）
+/// ⇒ 相邻两块用**同一组边缘点** ✓ ⇒ **不会因为分别取整而差 1 px** ✓。
+pub(crate) fn scaled_rect(
+    x: Option<f64>,
+    y: Option<f64>,
+    w: Option<f64>,
+    h: Option<f64>,
+    sx: f64,
+    sy: f64,
+) -> Option<(f64, f64, f64, f64)> {
+    let (x, y, w, h) = (x?, y?, w?, h?);
+    let x0 = (x * sx).round();
+    let x1 = ((x + w) * sx).round();
+    let y0 = (y * sy).round();
+    let y1 = ((y + h) * sy).round();
+    // **至少 1 px** ✓：否则这一块在输出里**看不见** ✓（比留缝更糟 ✓）
+    Some((x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0)))
+}
+
+#[cfg(test)]
+mod scaled_rect_tests {
+    use super::scaled_rect;
+
+    /// **相邻块必须首尾相接** ✓（`art` 待上游的「方尺缺口」）
+    ///
+    /// **⇒ 判据**：把一串**紧邻**的块（`x = 0,3,6,…,30`、`w = 3` ✓）按若干缩放比缩一遍 ✓
+    /// ⇒ 每一对相邻块都必须 `x_i' + w_i' >= x_{i+1}'` ✓（相接或重叠 ✓，**不许留缝** ✓）。
+    /// **⇒ 变异**：把 `w'` 换回「`round(w·sx)` 独立取整」⇒ 某些缩放比下**留缝** ⇒ 红 ✓。
+    #[test]
+    fn adjacent_blocks_never_leave_a_seam() {
+        let mut seams_new = 0usize;
+        let mut seams_old = 0usize;
+        for &scale in &[0.5f64, 0.4, 0.35, 0.3, 0.25, 0.2, 0.15, 0.13184] {
+            let mut previous_end: Option<f64> = None;
+            let mut previous_end_old: Option<f64> = None;
+            for index in 0..11 {
+                let x = f64::from(index) * 3.0;
+                let (x0, _, w, _) =
+                    scaled_rect(Some(x), Some(0.0), Some(3.0), Some(3.0), scale, scale)
+                        .expect("矩形必须算得出来");
+                if let Some(end) = previous_end {
+                    if x0 > end {
+                        seams_new += 1;
+                    }
+                }
+                previous_end = Some(x0 + w);
+                // **旧规则**（分别取整）—— 只用来**证明这条判据 discriminating** ✓
+                let x0_old = (x * scale).round();
+                let w_old = (3.0 * scale).round().max(1.0);
+                if let Some(end) = previous_end_old {
+                    if x0_old > end {
+                        seams_old += 1;
+                    }
+                }
+                previous_end_old = Some(x0_old + w_old);
+            }
+        }
+        eprintln!("接缝数：新规则 {seams_new} ／ 旧规则 {seams_old}（各 8 个缩放比 × 11 块）");
+        assert_eq!(seams_new, 0, "按边缘取整之后**不许再有接缝**");
+        assert!(
+            seams_old > 0,
+            "这条判据必须能区分新旧规则（旧规则应当留下接缝，实测 {seams_old}）"
+        );
     }
 }
