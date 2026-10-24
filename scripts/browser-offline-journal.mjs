@@ -181,8 +181,14 @@ const waitForPrecache = async (path, timeoutMs = Number(process.env.YANSHI_WAIT_
   //     否则补交会被拒——那测的就成了⑥ ✗**）。
   //   **⚠ 静态 PWA 页面没有这个开关**✗：**`__pwaLocalOnly` 在 URL 参数之前就把模式钉死为本地**
   //     （**viewer-app.js:59–60 ✓**）⇒ **分段必须在**服务端托管的页面**上做** ✓（**编排给 argv[2] ✓）。
-  const serverUrl = url.includes("render=client") ? url.replace("render=client", "render=server")
-    : (url.includes("?") ? url + "&render=server" : url + "?render=server");
+  // **⇒ 服务端托管页面（argv[3]）** ✓（第 896 轮修）
+  //   **⇒ 原错** ✗：`serverUrl` 是从 `url`（**静态 PWA** ✓）派生的 ✓ ⇒ 而静态页 **`__pwaLocalOnly`
+  //     在 URL 参数之前就把模式钉死为本地** ✗ ⇒ `&render=server` **被忽略** ✓
+  //     ⇒ 工具段全跑在**本地模式**页上 ⇒ **永不入队** ✗ ⇒ 这就是那 28 条红的根因 ✓（第 528 节 ✓）
+  //   **⇒ 改法**：直接拼**服务端**那份（`base` ＝ argv[3] ✓，`yanshi-serve` 在 `/` 上托管查看器 ✓）
+  //     ⇒ 于是 `serverRenderPreferred()` 才有机会为真 ✓。
+  //   **⇒ 仍给 `url` 的出处留注释**：`url`（静态 PWA）继续用于**断网/SW 段** ✓。
+  const serverUrl = `${base}/?doc=${encodeURIComponent(doc)}&token=${encodeURIComponent(token)}&debug=1&render=server`;
   const gotoUrl = async (target) => {
     await send("Page.navigate", { url: target });
     for (let i = 0; i < 40; i++) {
