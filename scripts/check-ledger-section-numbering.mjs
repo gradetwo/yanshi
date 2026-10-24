@@ -134,7 +134,28 @@ for (const m of text.matchAll(new RegExp(`第\\s*(\\d{1,4})\\s*节`, "g"))) {
   const cn = emitCn(Number(m[1]));
   if (cn) refs.push(cn);
 }
-const dangling = refs.filter((n) => !known.has(n));
+// **⇒ 描述"旧写法写错了"的句子里，被引号包住的形状**不该算引用** ✅（第 970 轮）
+//   **⇒ 实测** ✗：第 963 轮我为了说明「把轮号当节号写」这件事，引用了那个形状 ⇒
+//     判据把它当真引用 ⇒ 报「悬空 1」⇒ **自己的判据被自己的说明绊倒** ✗（连踩两次 ✓）
+//   **⇒ 判法**：**同一行**里出现「引用／原文／写成」且该引用**紧跟在「或『之后** ⇒ 视为**说明** ✓
+//   **⇒ 变异**：删掉这个过滤 ⇒ 台账里那句说明又会被报悬空 ⇒ 红 ✓（下面 `--self-test` 可复核 ✓）
+const explained = (index) => {
+  const lineStart = text.lastIndexOf("\n", index) + 1;
+  const lineEnd = text.indexOf("\n", index);
+  const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
+  const before = text.slice(Math.max(0, index - 2), index);
+  return /引用|原文|写成/.test(line) && /[「『]/.test(before);
+};
+const refsReal = [];
+for (const m of text.matchAll(new RegExp(`§\\s*(${NUM}{2,6})(?!${NUM})`, "g"))) refsReal.push([m[1], m.index]);
+for (const m of text.matchAll(new RegExp(`\\[\\s*(${NUM}{2,6})(?!${NUM})\\s*\\]`, "g"))) refsReal.push([m[1], m.index]);
+for (const m of text.matchAll(new RegExp(`第\\s*(\\d{1,4})\\s*节`, "g"))) {
+  const cn = emitCn(Number(m[1]));
+  if (cn) refsReal.push([cn, m.index]);
+}
+const kept = refsReal.filter(([, index]) => !explained(index));
+const explainedOut = refsReal.length - kept.length;
+const dangling = kept.map(([n]) => n).filter((n) => !known.has(n));
 check(
   dangling.length === 0,
   `每个「§号」与「[号]」都指向真存在的节（引用 ${refs.length} 处｜悬空 ${dangling.length}${dangling.length ? "：" + [...new Set(dangling)].slice(0, 5).join("｜") : ""}）`
@@ -197,6 +218,6 @@ console.log(`  ✓ 断言条数恒等式成立（跑到 ${ran}／应 ${EXPECTED}
 tailLine =
   `节 ${allHeaders.length}（格式对 ${headers.length}）｜号 ${counts.size} 种｜` +
   `撞号 ${dups.length}（登记内 ${dups.length - fresh.length}，新增 ${fresh.length}，登记过期 ${staleReg.length}）｜` +
-  `引用 ${refs.length}（悬空 ${dangling.length}）｜最大号 ${maxN}｜断言 ${ran}/${EXPECTED}`;
+  `引用 ${kept.length}（悬空 ${dangling.length}｜说明性引号 ${explainedOut}）｜最大号 ${maxN}｜断言 ${ran}/${EXPECTED}`;
 console.log(`↳ ${tailLine}`);
 process.exit(fail.length ? 1 : 0);
