@@ -140,20 +140,23 @@ impl Default for HttpOptions {
             doc_id: "default".to_owned(),
             width: 1024,
             height: 1024,
-            // Web 查看器/人类客户端默认启用全部已实现的工具组（10.2：Web 编辑器启用全量）。
+            // Web 查看器/人类客户端的缺省工具组。
             //
-            // **这一份列表原本少了两个组** ✗（本轮真机验收抓到的 ✓）：查看器已经有「变更集」面板 ✓，
-            // 而 `changeset` 组**不在列表里** ✗ ⇒ 界面上点「开始变更集」只会得到
+            // **历史教训（保留备查）**：这份缺省曾经少了 `changeset` 组 ✗（真机验收抓到的）：
+            // 查看器已经有「变更集」面板，而组不在缺省里 ⇒ 点「开始变更集」只会得到
             // 「**未知工具 begin_changeset（当前 profile 未启用或不存在）**」✗ ——
-            // **界面做了、工具没放行** ✓，这正是本项目"内核/工具先行"那条纪律要防的事 ✓
-            //（这次是**反着**撞上的 ✓：工具早就实现了 ✓、也放行了测试 ✓，只是**服务端没启用** ✗）。
-            // `conflict` 同理 ✓。
+            // **界面做了、工具没放行**，正是本项目"内核/工具先行"纪律要防的事。
+            // `Changeset` 在现行常用集里，这一类回归不会重演（有测试钉死）。
             //
-            // **`Semantic` 故意不在其中** ✓：语义工具需要外部模型服务 ✓，
-            // 按既定裁定"**先预留设计、先不开发**" ✓ ⇒ 这里**不启用** ✓（不是漏了 ✓）。
-            // **缺省 = `all`** ✓（用户裁定 ✓）：**∴ 一个词**就能**开全** ⇒ **∴ 而不**是**只**开 core ✓。
-            // ⇒ **∴ 与** `--profile all` **同**一份名单**✗** = `Profile::IMPLEMENTED` ✓。
-            profiles: Profile::IMPLEMENTED.to_vec(),
+            // **现行口径（Wang 2026-10-24 裁定）**：「增加一个 default 作为和 ALL 区分，
+            // ALL 包含系统所有功能和工具，default 只包含常用的」⇒ 缺省 = `Profile::DEFAULT`
+            // （Core/History/Changeset/Retouch/Structure + Photo），**不再**与
+            // `--profile all`（= `IMPLEMENTED` 全量）同义。
+            // **已知代价（裁定接受、在此明示）**：`Collab` / `Annotation` / `Conflict`
+            // 不在常用集里，查看器的评论/批注/冲突面板在缺省会话下会报「未知工具」
+            // ——需要时显式 `--profile all` 或点名对应组开启。
+            // `Semantic` 仍按既定裁定只预留不开发。
+            profiles: Profile::DEFAULT.to_vec(),
             max_connections: 64,
             push_interval_ms: 25,
             // **默认关** ✗（用户裁定 ✓）—— serve 侧判据 `serve-watch-ws.mjs` 的**负对照**靠它 ✓。
@@ -280,9 +283,9 @@ impl HttpOptions {
                               （**缺省关**；增量解析，冲突最后写赢；不监视 blob）\n\
            --width <n>        自动创建文档的宽（缺省 1024）\n\
            --height <n>       自动创建文档的高（缺省 1024）\n\
-           --profile <list>   启用工具组，逗号分隔，可选：all,core,history,changeset,retouch,semantic,conflict,annotation,collab,structure,oil,watercolor,sketch,ink,pastel\n\
-                              （all = 全部已实现的组，即除 semantic 外；缺省同 all）\n\
-                              （缺省启用除 semantic 外的全部；semantic 组按既定裁定只预留不开发）\n\
+           --profile <list>   启用工具组，逗号分隔，可选：all,core,history,changeset,retouch,semantic,conflict,annotation,collab,structure,oil,watercolor,sketch,ink,pastel,photo,svg\n\
+                              （all = 全部已实现的组，即除 semantic 外；photo/svg 为白名单工作面预设，单独点名时按白名单收窄）\n\
+                              （缺省 = default 常用集：core,history,changeset,retouch,structure,photo；semantic 组按既定裁定只预留不开发）\n\
            --wasm-dir <dir>   WASM 计算内核产物目录（缺省 crates/yanshi-wasm/pkg）
 --medium-dir <dir> 介质插件目录（缺省 assets/mediums；发布包里在 share/yanshi/mediums）\n\
            --no-wasm          不提供浏览器端 WASM 计算内核（查看器退化为服务端渲染）\n\
@@ -4275,11 +4278,22 @@ mod tests {
         );
     }
 
-    /// 回归：新增工具组必须同时纳入服务端默认 profile，否则会出现
-    /// 「工具存在但线上报未知工具」的割裂（`add_adjustment` 曾如此）。
+    /// 口径钉死：缺省会话 = `Profile::DEFAULT` 常用集（Wang 2026-10-24 裁定）。
+    ///
+    /// 本测试的前身守的是旧口径「缺省 = 已实现全量」：新增工具组必须同时纳入
+    /// 服务端默认 profile，否则会出现「工具存在但线上报未知工具」的割裂
+    /// （`add_adjustment`、变更集面板曾如此）。新裁定把缺省改成常用集后，
+    /// 本测试改守新口径，防两头漂移：常用集被悄悄收窄（面板类回归重演）
+    /// 与缺省被悄悄放回全量（裁定失效）。专用层退出缺省是裁定的明示代价，
+    /// 需要时显式 `--profile all` 或点名开启。
     #[test]
-    fn default_http_profiles_cover_every_implemented_group() {
+    fn default_http_profiles_match_default_composition() {
         let options = HttpOptions::default();
+        assert_eq!(
+            options.profiles,
+            Profile::DEFAULT.to_vec(),
+            "http 缺省组成必须是 Profile::DEFAULT"
+        );
         let registry = ToolRegistry::with_profiles(&options.profiles);
         let mut groups: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for tool in registry.tools() {
@@ -4287,24 +4301,40 @@ mod tests {
         }
         assert!(groups.contains("core"));
         assert!(groups.contains("history"));
-        assert!(groups.contains("annotation"));
-        assert!(groups.contains("collab"));
+        assert!(groups.contains("changeset"));
         assert!(groups.contains("structure"));
         assert!(
             groups.contains("retouch"),
             "retouch 组必须默认启用：{groups:?}"
+        );
+        assert!(
+            !groups.contains("annotation")
+                && !groups.contains("collab")
+                && !groups.contains("conflict"),
+            "专用层不得混入缺省常用集：{groups:?}"
         );
         for required in [
             "add_adjustment",
             "add_filter",
             "update_filter",
             "list_effects",
+            "begin_changeset",
         ] {
             assert!(
                 registry.get(required).is_some(),
                 "{required} 应在默认 profile 下可用"
             );
         }
+        for name in yanshi_server::PHOTO_TOOLS {
+            assert!(
+                registry.get(name).is_some(),
+                "缺省常用集必须包含 PHOTO_TOOLS 全部工具，缺 {name}"
+            );
+        }
+        assert!(
+            registry.tools().len() < ToolRegistry::full().tools().len(),
+            "缺省常用集必须是全量的真子集"
+        );
     }
 
     #[test]
