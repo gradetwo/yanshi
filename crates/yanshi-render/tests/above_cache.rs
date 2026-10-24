@@ -205,25 +205,33 @@ fn clearing_caches_stops_the_above_cache_from_hitting() {
     let mut renderer = Renderer::new(TileGrid::new(32, state.width, state.height).unwrap());
     renderer.set_active_layer(Some("L1".to_owned()));
 
-    // ① 先证明"会命中" ✓（否则下面那半是空断言 ✗）
+    // ① 先证明"缓存真的建起来了" ✓（否则下面那半是空断言 ✗）
     let _ = renderer.render_region(&state, &store, bbox).expect("first");
-    let before = renderer.above_reuse_count();
     let _ = renderer
         .render_region(&state, &store, bbox)
         .expect("second");
-    let primed = renderer.above_reuse_count();
+    let primed = renderer.above_cache_entries();
     assert!(
-        primed > before,
-        "连渲两次都没命中 above（{before} ⇒ {primed}）⇒ 这条判据测不到东西（先看夹具）"
+        primed > 0,
+        "连渲两次都没建立 above 缓存（{primed} 条）⇒ 这条判据测不到东西（先看夹具）"
     );
 
-    // ② 清掉全部缓存 ⇒ 再渲一次**不许**再命中 ✓
+    // ② 清掉全部缓存 ⇒ **缓存本体必须空** ✓
+    //   **⇒ 为什么不再用累积命中数** ✗：一次 `render_region` 内部可能**多遍**渲染 ✓
+    //     ⇒ CI 上实测「清完之后同一遍里又被填上并命中」⇒ `1 ⇒ 2` ⇒ **假红** ✓
+    //     （本机单遍 ⇒ 看不出来 ✗）。看**缓存条数**才是"清没清"的直接证据 ✓。
     renderer.clear_all_caches();
-    let after_clear_start = renderer.above_reuse_count();
-    let _ = renderer.render_region(&state, &store, bbox).expect("third");
-    let after_clear = renderer.above_reuse_count();
     assert_eq!(
-        after_clear, after_clear_start,
-        "清缓存之后 still 命中了 above（{after_clear_start} ⇒ {after_clear}）⇒ `clear_all_caches` 漏了 above"
+        renderer.above_cache_entries(),
+        0,
+        "`clear_all_caches` 之后 above 缓存必须为空（实测还有 {} 条）",
+        renderer.above_cache_entries()
+    );
+
+    // ③ 再渲一次 ⇒ 缓存会**重新建立** ✓（证明它不是"永远不再建" ✓）
+    let _ = renderer.render_region(&state, &store, bbox).expect("third");
+    assert!(
+        renderer.above_cache_entries() > 0,
+        "清完之后再渲一次，缓存应当重新建立（否则清缓存等于永久关掉 above）"
     );
 }

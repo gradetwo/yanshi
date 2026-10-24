@@ -1447,6 +1447,19 @@ impl Renderer {
         ABOVE_REUSE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// **`above` 缓存现在有几条** ✓（第 787 轮；给"清缓存"判据用）
+    ///
+    /// **⇒ 为什么需要这个出口** ✗：`above_reuse_count` 是**累积命中数** ✓
+    /// ⇒ 而"清缓存有没有生效"用它判**不可靠** ✓ —— 一次 `render_region` 内部可能**多遍**渲染 ✓
+    /// （CI 上实测：清完之后**同一遍**里又被填上并命中 ⇒ `1 ⇒ 2` ⇒ 判据假红 ✓，
+    ///  本机单遍就看不出来 ✓）⇒ 所以改看**缓存本体的条数** ✓（清完必须是 0 ✓）。
+    pub fn above_cache_entries(&self) -> usize {
+        self.above
+            .lock()
+            .map(|guard| guard.as_ref().map_or(0, |cache| cache.tiles.len()))
+            .unwrap_or(0)
+    }
+
     /// **above 复用次数 ✓**（第 682 轮 ✓，**纯观测 ✓**）：
     /// **∴ 它同时**读一次字段 ✗** ⇒ **∴ 于是 `above` 不会因"从未被读"而告警 ✓**
     ///（**∴ 且**这正是判据要的观测口 ✓**）。
