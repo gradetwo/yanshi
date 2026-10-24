@@ -473,7 +473,9 @@ fn map_blend(mode: ag_psd::psd::BlendMode) -> Option<&'static str> {
         M::Difference => "difference",
         M::LinearDodge => "linear_dodge",
         M::LinearBurn => "subtract", // **∴ 本仓最近的等价物 ✓**（如实：不是逐位等价 ✓）
-        M::PassThrough => "normal",  // **∴ 组用 ✓**（本仓没有 pass-through ✓）
+        M::SoftLight => "soft_light",
+        M::LinearLight => "linear_light",
+        M::PassThrough => "normal", // **∴ 组用 ✓**（本仓没有 pass-through ✓）
         _ => return None,
     })
 }
@@ -566,6 +568,8 @@ fn to_ag_blend(name: &str) -> ag_psd::psd::BlendMode {
         "lighten" => M::Lighten,
         "color_dodge" => M::ColorDodge,
         "difference" => M::Difference,
+        "soft_light" => M::SoftLight,
+        "linear_light" => M::LinearLight,
         "linear_dodge" => M::LinearDodge,
         "subtract" => M::LinearBurn,
         _ => M::Normal,
