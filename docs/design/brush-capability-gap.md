@@ -20346,3 +20346,25 @@ refs.blobs: [同一个哈希]
 
 **⇒ 下一轮**：在**一个图层里叠 3–5 笔半透明笔迹**（alpha 0.5 左右 ✓）⇒ 调 `frequency_separation` ✓
 ⇒ 期望复现 `均值误差 > 3/255` ✓ ⇒ 那就是**真实输入上的缺陷** ✓（修烘焙或重新标定阈值 ✓ 二者必居其一 ✓）
+
+## 五百五十一、两次探针**都没成功**（我自己的夹具错），如实记（第 937 轮）
+
+**⇒ 第一次**：用 `draw_stroke` 叠 4 笔半透明 ⇒ 工具报「图层 L1 **没有任何对象**」✗
+⇒ 说明**那 4 笔根本没落成对象**（参数不对 ✓：`draw_stroke` 的载荷形状我没核对 ✓）
+⇒ **⇒ 又一次「我的夹具比被测对象更容易错」**（第 888／904／905／935 轮之后 ✓）
+
+**⇒ 第二次**：改用两张 `alpha=128` 的棋盘 `import_image` 叠加 ⇒
+⇒ 我把新文件写成了 `probe_fs_alpha.rs` 但**没成功**（`cargo test --test probe_fs_alpha` 报"没有这个 target" ✗
+  ⇒ 文件确实存在过又被我 `unlink` 掉 ✓ ⇒ **顺序搞错** ✓）
+
+**⇒ 所以本轮没有新数据** ✗ —— 只有**已确认的三条**（第 550 节 ✓）：
+空层 ⇒ `precondition_failed` ✓；棋盘格（不透明）⇒ `ok=true` ✓；示例累积内容 ⇒ 自检失败（均值 0.0341 ✓）
+
+**⇒ 下一轮（写清楚再动手 ✓）**：一个文件、一次到位 ✓
+```rust
+// crates/yanshi-server/tests/probe_fs_alpha.rs
+// ① create_document(256×256) ② create_layer(L1)
+// ③ import_image：256×256 棋盘、RGBA **alpha=128**（半透明 ✓）铺满 L1
+// ④ 再叠第二张（相位错开 16px）⑤ frequency_separation(L1, radius 8)
+// ⑥ 打印 ok 与 detail（若 ok=false 且 detail 含"自检失败" ⇒ 复现 ✓）
+```
