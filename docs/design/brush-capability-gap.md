@@ -19826,3 +19826,22 @@ async function fetchMutating(url, options) {
 
 **⇒ 这条教训的普适形态（写进问句）**：**「我要改的这个文件，是源还是产物？」** ✗
 ⇒ 机检：`git ls-files <path>` **空** ⇒ **它是产物** ✗ ⇒ **别改它** ✓
+
+## 五百二十五、我的复现**用错了 URL 参数**：工具路径段要 `render=server`（第 892 轮）
+
+**⇒ 判据自己写着（`browser-offline-journal.mjs:172-180`）**：
+> **「写队列」只留在了服务端渲染一侧** ✓（`callTool → !serverRenderPreferred() ⇒ callToolLocal` ⇒ **直接进 IndexedDB** ✗ **永不入队** ✗）
+> **⇒ 所以**：**工具路径段（①②③⑤⑥⑦）在 `render=server` 的页面跑** ✓，**指针原子段（④）在 `render=client` 跑** ✓
+
+**⇒ 而我这 6 轮本机复现用的是 `render=client`** ✗ ⇒ **所有工具调用都进了本地层** ✓
+⇒ 于是 `队列 0`／`server:false` **是我配置出来的**，不是产品在那个配置下的缺陷 ✗
+
+**⇒ 这不否认 CI 是真红** ✓：CI 日志头部写着 `render=server` ✓ 而它**同样** 28 条红 ✓
+⇒ 所以 **CI 那条是真 bug** ✓，而**我的本机复现一直没在正确的配置上做** ✗ —— 这是我的方法错误 ✓
+
+**⇒ 下一轮（第一件事）**：用 `render=server` 重跑本机复现 ✓
+⇒ 若复现 ⇒ 再谈修（`fetchMutating` 的短路应生效 ⇒ 说明服务端渲染路径另有问题 ✓）
+⇒ 若**不复现** ⇒ 说明 CI 与我的差异在别处（chromium 版本／`--headless` 模式／视口 ✓）⇒ 按 AGENTS 写清构型差异 ✓。
+
+**⇒ 附带清理**：`pwa-sync-viewer.mjs` 会改 `web/index.html` 与 `web/assets-index.json`（**被跟踪** ✓）
+⇒ 跑完要 `git checkout -- web/index.html web/assets-index.json` ✓（本轮就脏了这两个 ✓）。
