@@ -13,6 +13,7 @@ process.on("uncaughtException", (error) => {
   process.exit(3);
 });
 import { readFileSync, writeFileSync } from "node:fs";
+import { parseExampleEntries } from "./lib/example-entries.mjs";
 
 const base = process.argv[2];
 const check = process.argv.includes("--check");
@@ -40,8 +41,9 @@ const source = readFileSync("crates/yanshi-server/src/tools_examples.rs", "utf8"
 //   ```
 //   ⇒ 实测后果**两个**：① 文档里**少一条示例**（`set_brush_curve` ✗）
 //     ② **重复检测漏报**（多行块它扫不到 ✓ 第 1010 轮就是因此才发现 2 个重复 ✗）
-const withExample = [...source.matchAll(/\(\s*"([a-z][a-z0-9_]+)"\s*,\s*(?:\/\/[^\n]*\n\s*)*r#+"([\s\S]*?)"#+,?\s*\)/g)]
-  .map((m) => ({ name: m[1], example: m[2] }));
+// **⇒ 解析规则**只在 `scripts/lib/example-entries.mjs` 一处** ✅（第 1013 轮；内核②✓）
+//   ⇒ 此前这里与我在命令行里的临时统计**各写一份** ⇒ 数出 197 与 203 两个数 ✗（追了两轮 ✓）
+const withExample = parseExampleEntries(source).map(({ name, payload }) => ({ name, example: payload }));
 // **⇒ 去重** ✅（第 951 轮）：示例表里**同一个工具出现多次**（生成器历史上重复追加过 ✓ 实测 **235 条 / 197 唯一** ✓）
 //   ⇒ 文档里会出现**两节同名** ✓ ⇒ 读者两份不同示例不知道该抄哪个 ✗
 // **⇒ 源里的重复条目要**报出来**，不能只靠去重遮住** ✅（第 959 轮）
