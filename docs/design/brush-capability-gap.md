@@ -20039,3 +20039,23 @@ kept_mismatch += 1;                                          // 否则**保留**
 ⇒ 若 kind 是别的 ⇒ 说明我的探针构造有误 ✓（**先怀疑探针** ✓ 第 888 轮教训 ✓）。
 
 **⇒ 注意**：`共引用 400 个` 与 `缺 200 个` 暗示**每个原子被记了两次引用** ✓（或两条路径各记一次 ✓）⇒ 也是下轮要看的 ✓。
+
+## 五百三十五、**撤回**上一条怀疑：`import_image` 的 blob **确实在包里**（第 906 轮）
+
+**⇒ 探针（3 个原子，最小）实测**：
+```
+PACK_EXPORT: blob_count=1｜blob_bytes_packed=19（zlib）｜blob_bytes_plain=768
+PACK_ENTRIES=7｜blobs=1
+PACK_ATOM kind=import_image｜bitmap=Some("sha256:04e6d13d…")｜refs=1｜**blob在包里=true** ✓
+```
+⇒ **`export_project` 把 `import_image` 的 blob 正确打进包了** ✓ ⇒ **第 533 节那条"导出漏 blob"的怀疑是错的** ✗ ⇒ **撤回** ✓
+
+**⇒ 那么 200 个原子的探针为什么报"缺 200 个"** ✗：**最可能是探针自己构造有误** ✓
+（那一次我传了 `bitmap.size` 但 `region` 与 `bitmap.width/height` 的**一致性**没核对过 ✓
+ ⇒ 服务端很可能**按 region 重新生成了位图** ⇒ 引用的哈希**不是**我 `put_blob` 的那个 ✓ ⇒ 包里自然没有 ✗）
+⇒ **⇒ 这又是「我的测量比被测对象更容易错」的第四次** ✓（第 888／904／905 轮之后 ✓）
+⇒ **规律**：**凡是"产品看起来坏了"而我只用一个自造夹具就下结论 ⇒ 先怀疑夹具** ✓。
+
+**⇒ 净收益（本轮仍未白做）**：留下了两条**可复核的基线**：
+- `import_image` 一个 16×12 raw 块 ⇒ `blob_bytes_plain=768`（16×12×4 ✓）／`blob_bytes_packed=19`（zlib ✓）
+- 包里 `blobs=1`、`PACK_ENTRIES=7` ✓ ⇒ **最小包的结构**（`atoms.jsonl`／`meta.json`／`blobs/…`／… ✓）
