@@ -557,9 +557,21 @@ fn mat3_inverse(m: &[[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
     }
     let s = 1.0 / det;
     Some([
-        [(e * i - f * h) * s, (c * h - b * i) * s, (b * f - c * e) * s],
-        [(f * g - d * i) * s, (a * i - c * g) * s, (c * d - a * f) * s],
-        [(d * h - e * g) * s, (b * g - a * h) * s, (a * e - b * d) * s],
+        [
+            (e * i - f * h) * s,
+            (c * h - b * i) * s,
+            (b * f - c * e) * s,
+        ],
+        [
+            (f * g - d * i) * s,
+            (a * i - c * g) * s,
+            (c * d - a * f) * s,
+        ],
+        [
+            (d * h - e * g) * s,
+            (b * g - a * h) * s,
+            (a * e - b * d) * s,
+        ],
     ])
 }
 
@@ -599,8 +611,20 @@ fn selective_weights(d: [f32; 3]) -> [f32; 9] {
     let mut hue = [0.0f32; 9];
     if span > 1e-6 {
         let med = d[0] + d[1] + d[2] - max - min;
-        let primary = if d[0] == max { 0 } else if d[1] == max { 2 } else { 4 };
-        let dual = if d[2] == min { 1 } else if d[0] == min { 3 } else { 5 };
+        let primary = if d[0] == max {
+            0
+        } else if d[1] == max {
+            2
+        } else {
+            4
+        };
+        let dual = if d[2] == min {
+            1
+        } else if d[0] == min {
+            3
+        } else {
+            5
+        };
         hue[primary] = (max - med) / span;
         hue[dual] = (med - min) / span;
     }
@@ -983,8 +1007,7 @@ pub fn color_balance(
     amount: f32,
 ) {
     const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
-    if amount <= 0.0 || (shadows == [0.0; 3] && midtones == [0.0; 3] && highlights == [0.0; 3])
-    {
+    if amount <= 0.0 || (shadows == [0.0; 3] && midtones == [0.0; 3] && highlights == [0.0; 3]) {
         return;
     }
     let clamp_component = |value: f32| value.clamp(-1.0, 1.0);
@@ -1534,11 +1557,7 @@ pub fn dehaze(buffer: &mut Buffer, air: [f32; 3], omega: f32, floor: f32) {
             }
             // 修正二：γ_t = 0.5 重映射 + 动态下限。
             let t = libm::sqrtf(transmission.pixel(x, y)[0].clamp(0.0, 1.0)).clamp(t_floor, 1.0);
-            let straight = [
-                pixel[0] / alpha,
-                pixel[1] / alpha,
-                pixel[2] / alpha,
-            ];
+            let straight = [pixel[0] / alpha, pixel[1] / alpha, pixel[2] / alpha];
             let lum_in = 0.2126 * straight[0] + 0.7152 * straight[1] + 0.0722 * straight[2];
             // 修正三：逐通道恢复 0.65 + 亮度恢复 β = 0.35 混合。
             let lum_recovered = (lum_in - air_luma) / t + air_luma;
@@ -1551,14 +1570,12 @@ pub fn dehaze(buffer: &mut Buffer, air: [f32; 3], omega: f32, floor: f32) {
             let chroma_in = straight[0].max(straight[1]).max(straight[2])
                 - straight[0].min(straight[1]).min(straight[2]);
             if chroma_in <= 0.03 && t >= 0.5 {
-                let lum_out = 0.2126 * recovered[0]
-                    + 0.7152 * recovered[1]
-                    + 0.0722 * recovered[2];
+                let lum_out = 0.2126 * recovered[0] + 0.7152 * recovered[1] + 0.0722 * recovered[2];
                 if lum_out > 1e-6 {
-                    for channel in 0..3 {
-                        if recovered[channel] > 1e-6 {
-                            let gain = (lum_out / recovered[channel]).clamp(0.90, 1.10);
-                            recovered[channel] *= gain;
+                    for value in recovered.iter_mut() {
+                        if *value > 1e-6 {
+                            let gain = (lum_out / *value).clamp(0.90, 1.10);
+                            *value *= gain;
                         }
                     }
                 }
@@ -2437,12 +2454,7 @@ fn guided_detail_adjust(
             buffer.set_pixel(
                 x,
                 y,
-                [
-                    pixel[0] * scale,
-                    pixel[1] * scale,
-                    pixel[2] * scale,
-                    alpha,
-                ],
+                [pixel[0] * scale, pixel[1] * scale, pixel[2] * scale, alpha],
             );
         }
     }
@@ -3808,7 +3820,10 @@ mod tests {
         let mut buffer = filled([1.8, 0.4, -0.2, 1.0]);
         brightness_contrast(&mut buffer, 0.0, 1.0);
         let pixel = buffer.pixel(0, 0);
-        assert!((pixel[0] - 1.8).abs() < 1e-5 && (pixel[2] + 0.2).abs() < 1e-5, "{pixel:?}");
+        assert!(
+            (pixel[0] - 1.8).abs() < 1e-5 && (pixel[2] + 0.2).abs() < 1e-5,
+            "{pixel:?}"
+        );
         // 刻度探针：显示中灰 0.5（线性 ≈0.2140）+ brightness 0.5 ⇒ 显示 0.75。
         let mut buffer = filled([0.214_041_14, 0.214_041_14, 0.214_041_14, 1.0]);
         brightness_contrast(&mut buffer, 0.5, 1.0);
@@ -3822,7 +3837,10 @@ mod tests {
         let mut buffer = filled([0.522_521_74, 0.522_521_74, 0.522_521_74, 1.0]);
         brightness_contrast(&mut buffer, 0.0, 0.5);
         let shown = srgb_encode_extended(buffer.pixel(0, 0)[0]);
-        assert!((shown - 0.625).abs() < 0.01, "0.75 绕枢轴减半应得 0.625：{shown}");
+        assert!(
+            (shown - 0.625).abs() < 0.01,
+            "0.75 绕枢轴减半应得 0.625：{shown}"
+        );
         // HDR 不钳 + 色相防护：(4, 1, 0.25) 加对比后 R 仍 > 1 且通道比不变。
         let mut buffer = filled([4.0, 1.0, 0.25, 1.0]);
         brightness_contrast(&mut buffer, 0.0, 1.5);
@@ -3841,8 +3859,20 @@ mod tests {
         let mut via_adjustment = filled([0.3, 0.6, 1.4, 1.0]);
         let mut via_filter = filled([0.3, 0.6, 1.4, 1.0]);
         let params = json!({"brightness": 0.3, "contrast": 1.4});
-        apply_adjustment(&mut via_adjustment, "brightness_contrast", &params, 1.0, (4.0, 4.0));
-        apply_filter(&mut via_filter, "brightness_contrast", &params, 1.0, (4.0, 4.0));
+        apply_adjustment(
+            &mut via_adjustment,
+            "brightness_contrast",
+            &params,
+            1.0,
+            (4.0, 4.0),
+        );
+        apply_filter(
+            &mut via_filter,
+            "brightness_contrast",
+            &params,
+            1.0,
+            (4.0, 4.0),
+        );
         assert_eq!(via_adjustment.pixel(0, 0), via_filter.pixel(0, 0));
     }
 
@@ -4807,7 +4837,11 @@ mod tests {
             1.0,
             (4.0, 4.0),
         );
-        assert_eq!(implicit.pixel(0, 0), explicit.pixel(0, 0), "缺省 amount 必须 = 1.0");
+        assert_eq!(
+            implicit.pixel(0, 0),
+            explicit.pixel(0, 0),
+            "缺省 amount 必须 = 1.0"
+        );
     }
 
     /// A2 HDR：显示值 > 1 的通道偏移按显示刻度足额施加（旧实现先钳 1.0
@@ -4818,7 +4852,10 @@ mod tests {
         let mut buffer = filled([0.8, 0.8, 3.0, 1.0]);
         color_balance(&mut buffer, [0.0; 3], [0.0; 3], [0.0, 0.0, -0.4], 1.0);
         let blue = buffer.pixel(0, 0)[2];
-        assert!(blue > 2.0, "HDR 蓝减偏移后应仍为 HDR（新公式 ≈2.70）：{blue}");
+        assert!(
+            blue > 2.0,
+            "HDR 蓝减偏移后应仍为 HDR（新公式 ≈2.70）：{blue}"
+        );
     }
 
     /// 分通道色阶只影响指定通道；色调分离把通道量化到有限台阶。
@@ -5606,7 +5643,10 @@ mod coloradj_tests {
         ] {
             let back = melissa_decode(melissa_encode(color), &inverse);
             for (a, b) in back.iter().zip(color.iter()) {
-                assert!((a - b).abs() < 2e-3, "Melissa 往返应恒等：{color:?} → {back:?}");
+                assert!(
+                    (a - b).abs() < 2e-3,
+                    "Melissa 往返应恒等：{color:?} → {back:?}"
+                );
             }
         }
     }
