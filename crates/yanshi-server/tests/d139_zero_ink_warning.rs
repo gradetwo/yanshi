@@ -11,9 +11,17 @@
 //! **⇒ 变异**：删掉那段检查 ⇒ ① 红 ✓；改成无条件警告 ⇒ ② 红 ✓。
 use serde_json::json;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
+/// **测试结束即删掉临时目录** ✓（第 814 轮；`/tmp` 是 1.9 GB 的 tmpfs ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 fn setup(tag: &str) -> Workspace {
     let root = std::env::temp_dir().join(format!("yanshi_d139_{tag}_{}", std::process::id()));
+    let _cleanup = Cleanup(root.clone());
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("建根");
     let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

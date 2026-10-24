@@ -15,6 +15,13 @@
 //! ⇒ 用 `CARGO_BIN_EXE_yanshi-timelapse` ✓；并且用 `YANSHI_TIMELAPSE_RAW_DIR`
 //! ⇒ **不需要 ffmpeg** ✓（落盘 RGB 帧 ✓）。
 use std::process::Command;
+/// **测试结束即删掉临时目录** ✓（第 814 轮；`/tmp` 是 1.9 GB 的 tmpfs ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 fn package_with_missing_blob(dir: &std::path::Path) -> std::path::PathBuf {
     let meta = serde_json::json!({"width": 64, "height": 64, "doc_id": "d_broken", "fps": 24});
@@ -59,6 +66,7 @@ fn package_with_missing_blob(dir: &std::path::Path) -> std::path::PathBuf {
 #[test]
 fn a_package_missing_a_referenced_blob_says_so() {
     let dir = std::env::temp_dir().join(format!("yanshi_missing_blob_{}", std::process::id()));
+    let _cleanup = Cleanup(dir.clone());
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("建目录");
     let pack = package_with_missing_blob(&dir);
@@ -103,6 +111,7 @@ fn a_package_missing_a_referenced_blob_says_so() {
 #[test]
 fn the_shrink_path_says_the_picture_will_change() {
     let dir = std::env::temp_dir().join(format!("yanshi_shrink_{}", std::process::id()));
+    let _cleanup = Cleanup(dir.clone());
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("建目录");
     // 画布要**大于** `MAX_W/MAX_H`（1920×1080）才会真的走降采样路径
@@ -163,6 +172,7 @@ fn the_shrink_path_says_the_picture_will_change() {
 #[test]
 fn the_max_dim_flag_changes_the_output_size() {
     let dir = std::env::temp_dir().join(format!("yanshi_maxdim_{}", std::process::id()));
+    let _cleanup = Cleanup(dir.clone());
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("建目录");
     let meta = serde_json::json!({"width": 2560, "height": 2160, "doc_id": "d_dim", "fps": 24});
@@ -249,6 +259,7 @@ fn the_max_dim_flag_changes_the_output_size() {
 #[test]
 fn shrink_time_is_accounted_separately_from_apply() {
     let dir = std::env::temp_dir().join(format!("yanshi_shrink_acct_{}", std::process::id()));
+    let _cleanup = Cleanup(dir.clone());
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("建目录");
     let (w, h) = (2560u32, 2160u32);

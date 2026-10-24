@@ -11,6 +11,13 @@
 //! **⇒ 变异**：导入时丢掉含 `tombstone` 的行 ⇒ `layers` 从 1 变 2 ⇒ 红 ✓。
 use serde_json::json;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
+/// **测试结束即删掉临时目录** ✓（第 814 轮；`/tmp` 是 1.9 GB 的 tmpfs ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 fn call(ws: &mut Workspace, tool: &str, args: serde_json::Value) -> serde_json::Value {
     let registry = ToolRegistry::with_profiles(&Profile::ALL);
@@ -31,6 +38,7 @@ fn summary(ws: &mut Workspace) -> serde_json::Value {
 #[test]
 fn a_package_with_a_tombstone_keeps_the_same_document_state() {
     let root = std::env::temp_dir().join(format!("yanshi_ts_{}", std::process::id()));
+    let _cleanup = Cleanup(root.clone());
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("建根");
     let mut ws = Workspace::with_file_store(root.clone(), DocumentSettings::default()).expect("ws");
@@ -109,6 +117,7 @@ fn a_round_tripped_document_renders_the_same_pixels() {
     use yanshi_render::tile::TileGrid;
 
     let root = std::env::temp_dir().join(format!("yanshi_ts_px_{}", std::process::id()));
+    let _cleanup = Cleanup(root.clone());
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("建根");
     // **这个测试用 `doc_px`** ✓ ⇒ `call()` 里写死了 `doc_ts` ✗ ⇒ 这里用专用 helper ✓
