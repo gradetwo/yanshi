@@ -127,8 +127,15 @@ pub(super) fn write_create_selection(ctx: &mut ToolContext<'_>, args: &Value) ->
             .or_else(|| shape.get("type"))
             .and_then(Value::as_str)
             .unwrap_or("rect");
-        const KNOWN: [&str; 4] = ["rect", "ellipse", "polygon", "bitmap"];
-        if !KNOWN.contains(&kind) {
+        // **已知集合必须与渲染层的解析分支逐一对齐** ✓（第 790 轮；CI 抓到的）
+        //   **⇒ 缺陷（我第 778 轮引入的）**：我只列了 `rect`／`ellipse`／`polygon`／`bitmap` ✗
+        //     ⇒ 把 **`path`**（按 `object_id` 引用的曲线路径 ✓）和 **`lasso`**、
+        //     **`circle`**（`selection.rs:215` 会把 `circle` 归一成 `ellipse` ✓）一起拒了 ✓
+        //     ⇒ `path_data_a1` 的 `selection_by_object_id_matches_inline_and_errors_explicitly` 红 ✓。
+        //   **⇒ 教训**：**"未知形状"的名单只能从渲染层的分支抄** ✓（`selection.rs:215-266` ✓），
+        //     不许凭印象写 ✓ —— 否则"防静默"的检查自己造新的静默失败 ✓。
+        const KNOWN: [&str; 6] = ["rect", "ellipse", "circle", "polygon", "lasso", "path"];
+        if !KNOWN.contains(&kind) && kind != "bitmap" {
             return Err(YanshiError::new(
                 ErrorCode::InvalidArgument,
                 ErrorContext::detail(format!(
