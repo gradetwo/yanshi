@@ -19919,3 +19919,22 @@ if (!serverRenderPreferred()) { return await callToolLocal(name, args, options);
 2. **让本地模式也入队**（产品改动）⇒ 断网写在本机也进 outbox ✓ ⇒ 但本地模式本来就把原子写进 IndexedDB ✓
    ⇒ 会**两条路都写** ⇒ 需要设计"本地已落库就不要重复入队" ✓
 **⇒ 我倾向 1** ✓：它**不改产品语义** ✓，只让判据在**它自己写着要的模式**里跑 ✓。
+
+## 五百二十九、修对 URL 之后：**28 条红 → 3 条红**（第 896 轮）
+
+**⇒ 改动（`scripts/browser-offline-journal.mjs:184`）**：`serverUrl` 原来从**静态 PWA**（`url`）派生 ✓
+⇒ 而静态页 `__pwaLocalOnly` **在 URL 参数之前**就把模式钉死为本地 ✗ ⇒ `&render=server` **被忽略** ✓
+⇒ 改成**直接拼服务端那份**：`${base}/?doc=…&token=…&debug=1&render=server` ✓
+
+**⇒ 实测（本机，CDP 9345）**：`含 ✗ 的行` **28 → 3** ✓：
+```
+入队返回 = {"ok":false,"queued":true,"offline":true,"error_code":"queued_offline",
+             "context":{"detail":"离线：已把「draw_stroke」记入本地队列（第 1 条，共 1 条…"}}
+界面 = {"state":"queued","text":"离线排队 1 条","banner":"离线排队 1 条，联网后自动按序补交"}
+上限 = 200｜第 200 次被拒｜排队 = 200｜界面 = full
+```
+⇒ `draw_stroke` **真的入了队** ✓、UI 真的显示「离线排队」✓、上限 200 真的会拒 ✓
+
+**⇒ 剩下 3 条（全是指针原子段 ④）**：`服务端里恰好一条那个客户端 ULID（0 条）` 等 ✓
+⇒ 段 ④ 按设计跑在 **`render=client`** 页 ✓ 而那个页是**本地模式** ⇒ 写进 IndexedDB **不进 outbox** ✓
+⇒ **⇒ 这 3 条就是第 528 节那条"本地模式不入队"** ✓ —— 真缺口在这里，不在 URL ✓
