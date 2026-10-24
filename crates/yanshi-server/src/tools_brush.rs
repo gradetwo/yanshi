@@ -1015,8 +1015,19 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     //     ⇒ 可执行的那一半是：**调用方要能一眼看出这个数是在哪个 regime 下量的** ✓。
     //   **⇒ 所以**：加一个字符串字段 ✓ —— `white_base`（没吃底图 ⇒ 合白底后与 255 比 ✓）
     //     ／`canvas_base`（吃了底图 ⇒ 与真底图比 ✓）✓。**文档写了，但字段比文档强** ✓。
+    // **背景是否真的读到** ✓（`paint_brush` 里那份用于比较 ✓；这里只为给 regime 贴标签 ✓）
+    let background_from_state = document_state(ctx)
+        .map(|state| state.background.get("r").and_then(Value::as_u64).is_some())
+        .unwrap_or(false);
+    // **三个 regime** ✓（第 810 轮）：吃了底图 ⇒ `canvas_base` ✓；
+    //   没吃底图但**读到了文档背景** ⇒ `document_background_base` ✓（第 809 轮改成比背景 ✓）；
+    //   连背景都没有（老日志／无背景）⇒ `white_base` ✓ 兜底 ✓。
+    //   **⇒ 为什么标签要分三种**：第 809 轮把比较基准换成背景之后，标签仍写 `white_base` 就是**错的** ✗
+    //     —— 实测（128 灰底）`delta_regime` 仍报 `white_base` ✓（本轮发现 ✓）。
     value["delta_regime"] = json!(if fed_base {
         "canvas_base"
+    } else if background_from_state {
+        "document_background_base"
     } else {
         "white_base"
     });

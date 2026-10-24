@@ -167,9 +167,15 @@ fn max_channel_delta_names_the_regime_it_was_measured_in() {
     assert_eq!(out["ok"], json!(true), "{out}");
     let regime = out["delta_regime"].as_str().unwrap_or_default();
     let fed = out["fed_base"].as_bool().unwrap_or(false);
+    // **三值**（第 810 轮）：吃底图 ⇒ `canvas_base`；否则**读到文档背景** ⇒
+    //   `document_background_base`；连背景都没有才 `white_base` ✓。
+    let expected = if fed {
+        "canvas_base"
+    } else {
+        "document_background_base"
+    };
     assert_eq!(
-        regime,
-        if fed { "canvas_base" } else { "white_base" },
+        regime, expected,
         "`delta_regime` 必须与 `fed_base` 一致（fed_base={fed}）⇒ 否则调用方会把"
     );
     assert!(
