@@ -9,6 +9,13 @@ a parameter name was to read the eleven thousand line tool source. The same rout
 what a missing tool meant: an unknown name and a tool whose group is disabled used to produce one identical message,
 and it now lists the enabled groups and points at the catalogue and at the all profiles switch.
 
+The alpha of the colour a caller passes to brush_stroke is currently ignored: the paint path keeps only the three
+colour channels, and brush alpha comes from the brush's own opacity and glaze. A stroke asking for a fully transparent
+colour therefore lands exactly as much ink as an opaque one, which was measured as identical stamp areas for alpha 0
+and alpha 255. Refusing a non-opaque alpha was tried and reverted, because export_small draws with alpha 220 and the
+refusal failed three of its tests and four criteria shards; honouring alpha instead would change how every existing
+stroke looks, so the behaviour is recorded in a test rather than changed silently.
+
 brush_stroke takes opacity and hardness as well, mapping them to MyPaint's opaque and hardness settings, so a painter
 no longer has to leave the brush engine to get a controllable soft stroke, which is what one agent reported doing
 after finding that draw_stroke had both parameters and the brush path had neither. Tests require the stored ink's
