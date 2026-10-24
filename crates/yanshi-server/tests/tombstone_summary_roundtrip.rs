@@ -91,3 +91,117 @@ fn a_package_with_a_tombstone_keeps_the_same_document_state() {
         "含 tombstone 的包往返之后文档状态变了（D174 的形态）：\n之前 {before}\n之后 {after}"
     );
 }
+
+/// **往返之后重渲染必须逐像素相同**（第 801 轮；外部 qoder D174 的**像素**那一半）
+///
+/// **⇒ 为什么不用 `export_png`** ✗：导入后它很可能直接给**包里带来的 `render.png`** ✓
+///   ⇒ 那比较的是"缓存搬没搬" ✗，不是"重放出来一样不一样" ✓（第 798 轮实测：变异不红 ✓）。
+/// **⇒ 这里绕开缓存**：直接拿**折叠后的 `DocumentState`** 交给 `Renderer::render_region` ✓
+///   ⇒ 比的是**引擎从状态渲出来的像素** ✓。
+///
+/// **⇒ 判据**：同尺寸同一 bbox 渲两次（源文档 vs 导入后的文档）⇒ **逐字节相同** ✓。
+/// **变异**：导入时丢掉 tombstone ⇒ 被删的层又活了 ⇒ 像素不同 ⇒ 红 ✓。
+#[test]
+fn a_round_tripped_document_renders_the_same_pixels() {
+    use std::sync::Arc;
+    use yanshi_core::blob::MemoryBlobStore;
+    use yanshi_render::render::Renderer;
+    use yanshi_render::tile::TileGrid;
+
+    let root = std::env::temp_dir().join(format!("yanshi_ts_px_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("建根");
+    // **这个测试用 `doc_px`** ✓ ⇒ `call()` 里写死了 `doc_ts` ✗ ⇒ 这里用专用 helper ✓
+    let mut ws = Workspace::with_file_store(root.clone(), DocumentSettings::default()).expect("ws");
+    let registry = ToolRegistry::with_profiles(&Profile::ALL);
+    let call_px = |ws: &mut Workspace, tool: &str, args: serde_json::Value| -> serde_json::Value {
+        let mut ctx = ToolContext::new(ws, "doc_px", "human:1", "s")
+            .with_owner(true)
+            .with_wait_for_render(true, 8_000);
+        registry.call(&mut ctx, tool, &args)
+    };
+    ws.create_document(NewDocument::new("doc_px", 96, 96), "human:1", "s")
+        .expect("create");
+    for (layer, object, color) in [
+        (
+            "layer_default",
+            "o_base",
+            json!({"r": 30, "g": 200, "b": 90, "a": 255}),
+        ),
+        (
+            "layer_default",
+            "o_l2",
+            json!({"r": 240, "g": 30, "b": 30, "a": 255}),
+        ),
+    ] {
+        let drawn = call_px(
+            &mut ws,
+            "draw_stroke",
+            json!({
+                "layer_id": layer, "object_id": object,
+                "data": {"points": [[8.0, 8.0], [88.0, 88.0]], "size": 8.0, "hardness": 1.0,
+                         "color": color},
+            }),
+        );
+        assert_eq!(drawn["ok"], json!(true), "{drawn}");
+    }
+    let tomb = call_px(
+        &mut ws,
+        "delete_layer",
+        json!({"layer_id": "layer_default"}),
+    );
+    assert_eq!(tomb["ok"], json!(true), "{tomb}");
+
+    let pack = root.join("doc_px.yanshi");
+    let exported = call_px(
+        &mut ws,
+        "export_project",
+        json!({"path": pack.to_string_lossy()}),
+    );
+    assert_eq!(exported["ok"], json!(true), "{exported}");
+    let bytes = std::fs::read(&pack).expect("读包");
+    let mut restored =
+        Workspace::with_file_store(root.join("restored"), DocumentSettings::default())
+            .expect("ws2");
+    restored
+        .import_project(&bytes, Some("doc_px"))
+        .expect("import");
+
+    let render = |workspace: &mut Workspace| -> Vec<u8> {
+        let state = Arc::new(
+            workspace
+                .document("doc_px")
+                .expect("已打开")
+                .state()
+                .clone(),
+        );
+        let store = MemoryBlobStore::new();
+        let mut renderer = Renderer::new(TileGrid::new(32, state.width, state.height).unwrap());
+        let out = renderer
+            .render_region(
+                &state,
+                &store,
+                yanshi_core::Bbox::new(0.0, 0.0, f64::from(state.width), f64::from(state.height)),
+            )
+            .expect("render");
+        out.rgba8
+    };
+    let before = render(&mut ws);
+    let after = render(&mut restored);
+    assert_eq!(
+        before.len(),
+        after.len(),
+        "往返之后帧缓冲大小变了：{} vs {}",
+        before.len(),
+        after.len()
+    );
+    assert!(
+        before == after,
+        "含 tombstone 的包往返之后**重渲染的像素不同**（D174 的形态）：不同字节 {}",
+        before
+            .iter()
+            .zip(after.iter())
+            .filter(|(a, b)| a != b)
+            .count()
+    );
+}
