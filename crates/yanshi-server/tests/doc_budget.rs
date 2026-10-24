@@ -15,6 +15,15 @@ fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
 
+/// **⇒ 临时目录必须在测试结束时删掉** ✓（第 930 轮；`check-tests-clean-temp` 抓到的 ✓）
+/// **⇒ 为什么** ✗：`/tmp` 是 **1.9 GB tmpfs** ✓ ⇒ 漏删会把 `bash` 都撑死 ✗
+pub struct TempCleanup(pub std::path::PathBuf);
+impl Drop for TempCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn temp_dir(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("yanshi_c2_{}_{}", name, std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
@@ -102,6 +111,7 @@ fn doc_budget_evicts_lru_idle_document() {
     let _guard = ENV_LOCK.lock().unwrap();
     clear_env();
     let root = temp_dir("lru");
+    let _cleanup = TempCleanup(root.clone());
     let mut workspace = Workspace::with_file_store(root, DocumentSettings::default()).unwrap();
     make_doc(&mut workspace, "doc_a", 12);
     make_doc(&mut workspace, "doc_b", 12);
@@ -149,6 +159,7 @@ fn doc_budget_never_evicts_busy_document() {
     let _guard = ENV_LOCK.lock().unwrap();
     clear_env();
     let root = temp_dir("busy");
+    let _cleanup = TempCleanup(root.clone());
     let mut workspace = Workspace::with_file_store(root, DocumentSettings::default()).unwrap();
     make_doc(&mut workspace, "doc_a", 12);
     make_doc(&mut workspace, "doc_b", 12);
@@ -193,6 +204,7 @@ fn doc_budget_exhausted_errors_with_numbers() {
     let _guard = ENV_LOCK.lock().unwrap();
     clear_env();
     let root = temp_dir("exhausted");
+    let _cleanup = TempCleanup(root.clone());
     let mut workspace = Workspace::with_file_store(root, DocumentSettings::default()).unwrap();
     make_doc(&mut workspace, "doc_a", 12);
     make_doc(&mut workspace, "doc_b", 12);
@@ -234,6 +246,7 @@ fn closed_document_reopens_identical() {
     let _guard = ENV_LOCK.lock().unwrap();
     clear_env();
     let root = temp_dir("reopen");
+    let _cleanup = TempCleanup(root.clone());
     let mut workspace = Workspace::with_file_store(root, DocumentSettings::default()).unwrap();
     make_doc(&mut workspace, "doc_a", 12);
     make_doc(&mut workspace, "doc_b", 12);

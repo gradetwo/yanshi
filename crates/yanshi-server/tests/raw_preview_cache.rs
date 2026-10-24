@@ -15,6 +15,15 @@ fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
 
+/// **⇒ 临时目录必须在测试结束时删掉** ✓（第 930 轮；`check-tests-clean-temp` 抓到的 ✓）
+/// **⇒ 为什么** ✗：`/tmp` 是 **1.9 GB tmpfs** ✓ ⇒ 漏删会把 `bash` 都撑死 ✗
+pub struct TempCleanup(pub std::path::PathBuf);
+impl Drop for TempCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn temp_dir(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("yanshi_c1b_{}_{}", name, std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
@@ -41,6 +50,7 @@ fn object_data(workspace: &Workspace, object_id: &str) -> Value {
 #[test]
 fn preview_and_full_have_distinct_cache_keys() {
     let root = temp_dir("keys");
+    let _cleanup = TempCleanup(root.clone());
     let mosaic: Vec<u16> = (0..240 * 160)
         .map(|i| 600 + ((i * 37) % 14000) as u16)
         .collect();

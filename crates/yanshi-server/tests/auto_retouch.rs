@@ -13,6 +13,15 @@ fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
 
+/// **⇒ 临时目录必须在测试结束时删掉** ✓（第 930 轮；`check-tests-clean-temp` 抓到的 ✓）
+/// **⇒ 为什么** ✗：`/tmp` 是 **1.9 GB tmpfs** ✓ ⇒ 漏删会把 `bash` 都撑死 ✗
+pub struct TempCleanup(pub std::path::PathBuf);
+impl Drop for TempCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn temp_dir(name: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("yanshi_auto_{}_{}", name, std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
@@ -107,6 +116,7 @@ fn auto_ids(workspace: &Workspace, doc: &str) -> Vec<String> {
 #[test]
 fn auto_retouch_zero_strength_and_dry_run_commit_nothing() {
     let root = temp_dir("dry");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_auto_dry";
     let (width, height) = (64, 48);
     let mut workspace = workspace(&root, doc, width, height);
@@ -155,6 +165,7 @@ fn auto_retouch_zero_strength_and_dry_run_commit_nothing() {
 #[test]
 fn auto_retouch_rerun_updates_in_place() {
     let root = temp_dir("rerun");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_auto_rerun";
     let (width, height) = (64, 48);
     let mut workspace = workspace(&root, doc, width, height);
@@ -219,6 +230,7 @@ fn auto_retouch_rerun_updates_in_place() {
 #[test]
 fn auto_retouch_refuses_manual_layer_without_force() {
     let root = temp_dir("manual");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_auto_manual";
     let (width, height) = (64, 48);
     let mut workspace = workspace(&root, doc, width, height);
@@ -262,6 +274,7 @@ fn auto_retouch_refuses_manual_layer_without_force() {
 #[test]
 fn auto_retouch_default_layer_resolution() {
     let root = temp_dir("default");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_auto_default";
     let (width, height) = (64, 48);
     let mut workspace = workspace(&root, doc, width, height);
@@ -285,6 +298,7 @@ fn auto_retouch_default_layer_resolution() {
     // 全文档无位图层：新建空文档调用 ⇒ 明确拒绝（此处不用 workspace()
     // helper：本函数内已有同名局部变量遮蔽 helper 函数名）。
     let root2 = temp_dir("default_empty");
+    let _cleanup = TempCleanup(root2.clone());
     let doc2 = "doc_auto_no_bitmap";
     let mut workspace2 =
         Workspace::with_file_store(root2.to_path_buf(), DocumentSettings::default())
@@ -310,6 +324,7 @@ fn auto_retouch_default_layer_resolution() {
 #[test]
 fn auto_retouch_groups_whitelist_and_skipped() {
     let root = temp_dir("groups");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_auto_groups";
     let (width, height) = (64, 48);
     let mut workspace = workspace(&root, doc, width, height);
@@ -345,6 +360,7 @@ fn auto_retouch_groups_whitelist_and_skipped() {
 #[test]
 fn auto_retouch_bad_args_rejected() {
     let root = temp_dir("badargs");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_auto_badargs";
     let (width, height) = (64, 48);
     let mut workspace = workspace(&root, doc, width, height);
@@ -397,6 +413,7 @@ fn object_ev(workspace: &Workspace, doc: &str, object_id: &str) -> f64 {
 #[test]
 fn auto_allows_untouched_raw_default_exposure_and_neutralizes_it() {
     let root = temp_dir("raw_default");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_auto_raw_default";
     let (width, height) = (64, 48);
     let mut workspace = workspace(&root, doc, width, height);
@@ -443,6 +460,7 @@ fn auto_allows_untouched_raw_default_exposure_and_neutralizes_it() {
 #[test]
 fn auto_refuses_edited_raw_default_exposure() {
     let root = temp_dir("raw_default_edited");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_auto_raw_default_edited";
     let (width, height) = (64, 48);
     let mut workspace = workspace(&root, doc, width, height);
@@ -480,6 +498,7 @@ fn auto_refuses_edited_raw_default_exposure() {
 #[test]
 fn auto_rerun_after_neutralization_still_allowed() {
     let root = temp_dir("raw_default_rerun");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_auto_raw_default_rerun";
     let (width, height) = (64, 48);
     let mut workspace = workspace(&root, doc, width, height);

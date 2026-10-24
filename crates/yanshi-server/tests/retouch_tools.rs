@@ -11,6 +11,15 @@ fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
 
+/// **⇒ 临时目录必须在测试结束时删掉** ✓（第 930 轮；`check-tests-clean-temp` 抓到的 ✓）
+/// **⇒ 为什么** ✗：`/tmp` 是 **1.9 GB tmpfs** ✓ ⇒ 漏删会把 `bash` 都撑死 ✗
+pub struct TempCleanup(pub std::path::PathBuf);
+impl Drop for TempCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn temp_dir(name: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("yanshi_retouch_{}_{}", name, std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
@@ -94,6 +103,7 @@ fn full_bbox(width: u32, height: u32) -> Bbox {
 #[test]
 fn frequency_separation_reconstructs_source() {
     let root = temp_dir("fs");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_fs";
     let (width, height) = (64, 48);
     let mut workspace = workspace(&root, doc, width, height);
@@ -170,6 +180,7 @@ fn frequency_separation_reconstructs_source() {
 #[test]
 fn frequency_separation_rejects_empty_layer() {
     let root = temp_dir("fs_empty");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_fs_empty";
     let mut workspace = workspace(&root, doc, 32, 32);
     let layer = call(
@@ -208,6 +219,7 @@ fn frequency_separation_rejects_empty_layer() {
 #[test]
 fn dodge_burn_curves_mode_creates_masked_pair() {
     let root = temp_dir("db_curves");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_db_curves";
     let (width, height) = (64, 48);
     let mut workspace = workspace(&root, doc, width, height);
@@ -272,6 +284,7 @@ fn dodge_burn_curves_mode_creates_masked_pair() {
 #[test]
 fn dodge_burn_gray_mode_creates_gray_layer() {
     let root = temp_dir("db_gray");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_db_gray";
     let (width, height) = (32, 32);
     let mut workspace = workspace(&root, doc, width, height);
@@ -313,6 +326,7 @@ fn dodge_burn_gray_mode_creates_gray_layer() {
 #[test]
 fn dodge_burn_setup_is_idempotent() {
     let root = temp_dir("db_idem");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_db_idem";
     let mut workspace = workspace(&root, doc, 32, 32);
     let src = setup_source(&mut workspace, doc, 32, 32);

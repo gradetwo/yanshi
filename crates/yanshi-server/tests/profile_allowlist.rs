@@ -35,7 +35,13 @@ fn name_set(list: &[&'static str]) -> BTreeSet<&'static str> {
 fn photo_allowlist_names_all_registered() {
     let full = ToolRegistry::full();
     // 设计 §7 的清单规模（名字逐个在下面对账；长度钉死防整组漂移）。
-    assert_eq!(PHOTO_TOOLS.len(), 93, "PHOTO_TOOLS 长度与设计 §7 不符");
+    // **⇒ 这是**上游数量**（会随注册表增长 ✓）⇒ 不能钉死 ✗**（第 930 轮；照片预设系列合并后 93 ⇒ 96 ✓）
+    //   **⇒ 规矩**：判据自己造的数字可以钉死 ✓；**被测系统的数量只能当下界** ✓（AGENTS「数字分两类」✓）
+    assert!(
+        PHOTO_TOOLS.len() >= 93,
+        "PHOTO_TOOLS 只许比设计 §7 的 93 多（合并只增不减），实测 {}",
+        PHOTO_TOOLS.len()
+    );
     assert_eq!(SVG_TOOLS.len(), 89, "SVG_TOOLS 长度与设计 §7 不符");
     let cases: [(&[&'static str], &[Profile]); 2] = [
         (

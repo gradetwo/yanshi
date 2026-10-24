@@ -14,6 +14,15 @@ fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
 
+/// **⇒ 临时目录必须在测试结束时删掉** ✓（第 930 轮；`check-tests-clean-temp` 抓到的 ✓）
+/// **⇒ 为什么** ✗：`/tmp` 是 **1.9 GB tmpfs** ✓ ⇒ 漏删会把 `bash` 都撑死 ✗
+pub struct TempCleanup(pub std::path::PathBuf);
+impl Drop for TempCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn temp_dir(name: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("yanshi_preview_{}_{}", name, std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
@@ -99,6 +108,7 @@ fn decode_preview_png(result: &Value) -> (u32, u32, Vec<u8>) {
 #[test]
 fn preview_preset_without_render_is_unchanged() {
     let root = temp_dir("no_render");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_plain";
     let (width, height) = (64, 48);
     let mut workspace = workspace(&root, doc, width, height);
@@ -139,6 +149,7 @@ fn preview_preset_without_render_is_unchanged() {
 #[test]
 fn preview_preset_render_returns_image_and_cleans_up() {
     let root = temp_dir("render");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_render";
     let (width, height) = (64, 48);
     let mut workspace = workspace(&root, doc, width, height);
@@ -183,6 +194,7 @@ fn preview_preset_render_returns_image_and_cleans_up() {
 #[test]
 fn preview_preset_render_matches_apply_at_proxy_scale() {
     let root = temp_dir("match");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_match";
     let (width, height) = (64, 48);
     let mut workspace = workspace(&root, doc, width, height);
@@ -216,6 +228,7 @@ fn preview_preset_render_matches_apply_at_proxy_scale() {
 #[test]
 fn preview_preset_render_notes_scale_sensitive_ops() {
     let root = temp_dir("notes");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_notes";
     let (width, height) = (64, 48);
     let mut workspace = workspace(&root, doc, width, height);
@@ -242,6 +255,7 @@ fn preview_preset_render_notes_scale_sensitive_ops() {
 #[test]
 fn preview_preset_render_defaults_to_jpeg() {
     let root = temp_dir("jpeg");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_jpeg";
     let (width, height) = (64, 48);
     let mut workspace = workspace(&root, doc, width, height);
@@ -267,6 +281,7 @@ fn preview_preset_render_defaults_to_jpeg() {
 #[test]
 fn preview_preset_render_rejects_bad_args() {
     let root = temp_dir("bad_args");
+    let _cleanup = TempCleanup(root.clone());
     let doc = "doc_bad";
     let (width, height) = (64, 48);
     let mut workspace = workspace(&root, doc, width, height);

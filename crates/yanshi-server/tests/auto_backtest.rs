@@ -253,6 +253,14 @@ fn auto_backtest_three_touchstones() {
             );
 
             let dir = temp_dir(photo.name);
+            // **⇒ 本仓规矩：用了 `temp_dir()` 就必须有 Drop 守卫** ✓（第 930 轮；`check-tests-clean-temp` 抓到的 ✓）
+            struct Cleanup(std::path::PathBuf);
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    let _ = std::fs::remove_dir_all(&self.0);
+                }
+            }
+            let _cleanup = Cleanup(dir.clone());
             let doc = format!("doc_backtest_{}", photo.name);
             let mut workspace =
                 Workspace::with_file_store(dir.clone(), DocumentSettings::default())
