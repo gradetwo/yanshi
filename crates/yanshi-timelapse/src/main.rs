@@ -1192,12 +1192,22 @@ fn shrink_atom(
                 .unwrap_or_else(|| ((src_h as f64 * sy).round() as u32).max(1))
                 .max(1);
             // **最近邻** ⇒ 确定性 ✓、无插值核 ✓（预览片够用 ✓）
+            // **最近邻降采样** ✓（第 858 轮：把每个像素的**两次整数除法**换成**查表**）
+            //   **⇒ 为什么改**：内层每像素做两次 `u64` 除法（`*src/dst`）✓
+            //     ⇒ 而在 4608×8192 的包上，`shrink` 是**唯一还在毫秒级线性增长**的段 ✓
+            //   **⇒ 为什么安全**：把 x／y 的映射**预计算成表** ✓ ⇒ 输出**逐字节不变** ✓
+            //     ⇒ 判据就是**与"每像素除法"的参考实现逐字节相同** ✓（`nearest_scale_tests` ✓）。
+            let x_map: Vec<usize> = (0..dst_w)
+                .map(|x| ((u64::from(x) * u64::from(src_w)) / u64::from(dst_w)) as usize)
+                .collect();
+            let y_map: Vec<usize> = (0..dst_h)
+                .map(|y| ((u64::from(y) * u64::from(src_h)) / u64::from(dst_h)) as usize)
+                .collect();
             let mut small = Vec::with_capacity((dst_w as usize) * (dst_h as usize) * 4);
-            for y in 0..dst_h {
-                let sy_src = ((u64::from(y) * u64::from(src_h)) / u64::from(dst_h)) as usize;
-                for x in 0..dst_w {
-                    let sx_src = ((u64::from(x) * u64::from(src_w)) / u64::from(dst_w)) as usize;
-                    let at = (sy_src * src_w as usize + sx_src) * 4;
+            for &sy_src in &y_map {
+                let row = sy_src * src_w as usize;
+                for &sx_src in &x_map {
+                    let at = (row + sx_src) * 4;
                     small.extend_from_slice(&raw[at..at + 4]);
                 }
             }
@@ -1484,5 +1494,74 @@ mod scaled_rect_tests {
             seams_old > 0,
             "这条判据必须能区分新旧规则（旧规则应当留下接缝，实测 {seams_old}）"
         );
+    }
+}
+
+/// **查表版最近邻必须与"每像素除法"版逐字节相同**（第 858 轮）
+///
+/// **⇒ 为什么要这条**：把除法换成查表是**性能改动** ✓ ⇒ 唯一可接受的证明是**输出完全不变** ✓
+///   （"快了多少毫秒"是机器相关的，**不能**当判据 ✓）。
+/// **⇒ 判据**：对一组 `(src_w, src_h, dst_w, dst_h)`，查表版与参考版**逐字节相同** ✓。
+/// **⇒ 变异**：把 `x_map` 写成 `x * src_w / (dst_w + 1)` ⇒ 某些输入上不同 ⇒ 红 ✓。
+#[cfg(test)]
+mod nearest_scale_tests {
+    /// **参考实现**：与改动前逐像素除法**一模一样** ✓
+    fn reference(raw: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+        let mut out = Vec::with_capacity((dst_w as usize) * (dst_h as usize) * 4);
+        for y in 0..dst_h {
+            let sy = ((u64::from(y) * u64::from(src_h)) / u64::from(dst_h)) as usize;
+            for x in 0..dst_w {
+                let sx = ((u64::from(x) * u64::from(src_w)) / u64::from(dst_w)) as usize;
+                let at = (sy * src_w as usize + sx) * 4;
+                out.extend_from_slice(&raw[at..at + 4]);
+            }
+        }
+        out
+    }
+
+    /// **查表实现**（与 `shrink_atom` 里的一致 ✓）
+    fn table(raw: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+        let x_map: Vec<usize> = (0..dst_w)
+            .map(|x| ((u64::from(x) * u64::from(src_w)) / u64::from(dst_w)) as usize)
+            .collect();
+        let y_map: Vec<usize> = (0..dst_h)
+            .map(|y| ((u64::from(y) * u64::from(src_h)) / u64::from(dst_h)) as usize)
+            .collect();
+        let mut out = Vec::with_capacity((dst_w as usize) * (dst_h as usize) * 4);
+        for &sy in &y_map {
+            let row = sy * src_w as usize;
+            for &sx in &x_map {
+                let at = (row + sx) * 4;
+                out.extend_from_slice(&raw[at..at + 4]);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_table_version_matches_the_division_version_byte_for_byte() {
+        let mut cases = 0;
+        for (src_w, src_h) in [(64u32, 64u32), (100, 60), (2560, 2160), (7, 3)] {
+            let raw: Vec<u8> = (0..(src_w * src_h * 4))
+                .map(|index| (index % 251) as u8)
+                .collect();
+            for scale in [2u32, 3, 5, 8] {
+                let dst_w = (src_w / scale).max(1);
+                let dst_h = (src_h / scale).max(1);
+                let a = reference(&raw, src_w, src_h, dst_w, dst_h);
+                let b = table(&raw, src_w, src_h, dst_w, dst_h);
+                assert_eq!(
+                    a.len(),
+                    b.len(),
+                    "长度必须相同（{src_w}×{src_h} ÷ {scale}）"
+                );
+                assert_eq!(
+                    a, b,
+                    "查表版必须与参考实现**逐字节相同**（{src_w}×{src_h} ÷ {scale}）"
+                );
+                cases += 1;
+            }
+        }
+        eprintln!("逐字节相同的组合数：{cases}");
     }
 }
