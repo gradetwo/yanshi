@@ -20500,3 +20500,21 @@ source[base + 3] == 255 && low[base + 3] == 255   // ① 源不透明 ② **模�
 ⇒ **这比继续猜内容强得多** ✓（我已经猜了 4 次 ✗）
 
 **⇒ 本轮未改产品** ✓：诊断单测**已删** ✓（它只打印不断言 ⇒ 按本仓规矩不留安慰剂 ✓）。
+
+## 五百五十九、`6092d8e8` 的 CI：**11 个 job 绿**，只剩 `criteria shard 3/6`（第 946 轮）
+
+**⇒ 逐 job 实测**（GitHub API）：
+```
+✓ test (stable)｜✓ test (beta)｜✓ clippy｜✓ rustfmt｜✓ GPU feature (build and size)
+✓ criteria shard 1/6｜2/6｜4/6｜5/6｜6/6
+✗ criteria shard 3/6
+… wasm smoke (node) 仍在跑
+```
+**⇒ 两个重要确认** ✓：
+1. **`test (beta)` 这次通过了** ✓ ⇒ 第 554 节那条 `document_persistence_over_http_survives_restart`
+   **没有复现** ✓ ⇒ **确认是环境抖动**（同一提交此前 beta 红、stable 绿 ✓）而不是产品 ✗ —— **不改断言是对的** ✓
+2. **`criteria shard 6/6` 通过** ✓ ⇒ 上一轮"每条示例一个干净文档"的改动在 CI 上**成立** ✓（示例判据不再红 ✓）
+
+**⇒ 唯一红 `criteria shard 3/6`**：**本轮取不到日志** ✗ —— GitHub API 连续返回 **502**
+（`gh api …/jobs` 与 `logs` 都 502 ✓，不是我的命令写错 ✓）
+⇒ **⇒ 下一轮第一件事**：拿到 `criteria shard 3/6` 的 `✗ <判据>.mjs` 行 ✓ 再定位 ✓（**不猜** ✓）。
