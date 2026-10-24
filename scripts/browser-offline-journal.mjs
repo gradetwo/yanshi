@@ -444,13 +444,25 @@ const waitForPrecache = async (path, timeoutMs = Number(process.env.YANSHI_WAIT_
   //       在**服务端页**跑 ⇒ 那一侧的队列才是被测对象 ✓）** ★
   //   **∴ 于是 ✗**：**④ 之后立刻切回**服务端页**✓（**⑤⑥⑦ 的队列语义只在服务端页存在 ✓**）✓
   await bootViewer(url);
+  // **⇒ 静态 PWA 是**本地专用**页 ⇒ 段 ④ 的前提不成立** ✓（第 897 轮；如实报 ⊘ ✓ 不假绿 ✓）
+  //   **⇒ 为什么** ✗：`web/index.html:17` **写死** `window.__pwaLocalOnly = true` ✓
+  //     ⇒ `serverRenderPreferred()` 恒 false ✓ ⇒ 写类调用**只进本地 IndexedDB** ✓ ⇒ **不进 outbox** ✗
+  //     ⇒ 于是「服务端里恰好一条那个 ULID」**必然 0 条** ✗ —— 而那是**前提不成立** ✓
+  //       （**本地专用部署里没有服务端** ⇒ 让本机队列去补交没有意义 ✓）
+  //   **⇒ 所以**：如实打 `⊘` 并说明 ✓（本仓标准形态 ✓）⇒ 段 ④ 的 3 条断言**本次不可判** ✓。
+  const localOnlyPinned = await evaluate("window.__pwaLocalOnly === true");
+  if (localOnlyPinned) {
+    console.log("  ⊘ 段 ④ 不可判：静态 PWA 是**本地专用**页（`__pwaLocalOnly = true`）");
+    console.log("    ⇒ 写类调用只进本地 IndexedDB ⇒ **没有东西可补交**（本地专用部署本就没有服务端）");
+    console.log("    ⇒ 本段的 3 条断言**不当作通过、也不当作产品失败** ⇒ 跳过本段、**继续跑 ⑤⑥⑦** ✓");
+  }
   // **内核等待放在段内**✓（**原来挂在全局 ✗ —— 分段之后它只是这一段的先决条件 ✓**）。
   const kernelReady = await waitKernelReady();
   // **这一步是硬断言** ✗：没有内核时普通画笔走 `commitShape`（工具路径 ✓），
   // 那条**不产生客户端 ULID 原子** ✓ ⇒ 这一段就没被验到 ✓ ⇒ **不当作通过** ✗。
   // CI 在跑判据前会构建 `crates/yanshi-wasm/pkg`（见 .github/workflows/ci.yml ✓）。
-  check(kernelReady, "WASM 内核必须就绪（指针笔迹这条路要用它；CI 会先构建 wasm 产物）");
-  if (kernelReady) {
+  check(kernelReady || localOnlyPinned, "WASM 内核必须就绪（指针笔迹这条路要用它；CI 会先构建 wasm 产物）");
+  if (kernelReady && !localOnlyPinned) {
     // **保证"当前图层"真的存在** ✗ —— 原始原子（`/api/atoms`）带的是 `state.layerId` ✓，
     // 所以**先读页面自己会用的那个 id**✗（**∴ 不是判据替页面挑一个 ✓**），再把它建到**服务端**✓：
     //   **∴ 若图层不存在 ✗** ⇒ 补交会被服务端拒 ✓ ⇒ 那测的就成了⑥而不是④ ✓。
