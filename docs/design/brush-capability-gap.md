@@ -20017,3 +20017,25 @@ if (!serverRenderPreferred()) { return await callToolLocal(name, args, options);
 1. 确认 `export_project` 是否**只打包笔刷类原子引用**的 blob ✓（读 `export_project` 的 blob 收集逻辑 ✓）
 2. 若是 ⇒ **修**：`import_image` 引用的 blob **必须**入包 ✓（它们不可重放 ✓）
 3. 修完再跑本探针（重建它 ✓ 代码在本节上面那段里 ✓）⇒ 期望：**缺 blob 0** ＋ 末帧纯黑 **0%** ✓
+
+## 五百三十四、`export_project` **只在"可证明能重放"时才省 blob** ⇒ 我的 200 个缺失**还没被解释**（第 905 轮）
+
+**⇒ 读码（`service.rs:2985-3016`）**：省略只发生在这一条路 ✓
+```
+let proof_key = export_proof_key(self, &source, &hash);      // 键＝配方＋.myb 字节＋引擎版本＋目标哈希
+if 命中记忆化 ⇒ omitted += 1; continue;
+let reproved = replay_brush_bitmap(self, doc_id, &source);   // 真重放一次
+if 重放结果哈希 == 期望 ⇒ omitted += 1; continue;
+kept_mismatch += 1;                                          // 否则**保留** ✓
+```
+⇒ 即：**"能按笔刷配方逐字节重放出来"才省** ✓ —— 这是**合理**的设计 ✓（第 39／365 轮的证明记忆化 ✓）
+
+**⇒ 于是我的探针结果变成**一个新的未解问题** ✗**：
+- 我的 `import_image` **带 `bitmap` 但没有 `source`** ✓ ⇒ `export_proof_key` 应为 `None` ✓ ⇒ 重放必失败 ✓ ⇒ **应当保留** ✓
+- **而实测**：`包里缺 200 个被原子引用的 blob（共引用 400 个）` ✗
+
+**⇒ 下一轮（一条命令级的诊断 ✓）**：在 `export_project` 里把**每个缺失哈希**连同**引用它的原子 kind** 打出来 ✓
+⇒ 若 kind 是 `import_image` ⇒ 说明 `refs_by_blob` 的收集漏了它 ✓（第 228 轮那一族的老坑 ✓）
+⇒ 若 kind 是别的 ⇒ 说明我的探针构造有误 ✓（**先怀疑探针** ✓ 第 888 轮教训 ✓）。
+
+**⇒ 注意**：`共引用 400 个` 与 `缺 200 个` 暗示**每个原子被记了两次引用** ✓（或两条路径各记一次 ✓）⇒ 也是下轮要看的 ✓。
