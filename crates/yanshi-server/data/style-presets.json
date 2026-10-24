@@ -701,7 +701,7 @@
    "id": "japanese_film",
    "name_zh": "日系胶片",
    "name_en": "Japanese Film",
-   "status": "needs_review",
+   "status": "established",
    "tags": [
     "人像",
     "胶片",
@@ -716,7 +716,7 @@
     "强顺光金色时刻（绿偏变脏）"
    ],
    "description": "清、淡、略青绿、皮肤偏白皙，Fuji 400H 系。",
-   "notes": "未在实测批次中，未目检。unsupported：颗粒的粗糙度参数 Yanshi film_grain 只有 amount/size/seed。",
+   "notes": "未在实测批次中，未目检。unsupported：颗粒的粗糙度参数 Yanshi film_grain 只有 amount/size/seed。期 5 目检成立：真照片三格行（d5600_night 夜街）已验收。",
    "correction": {
     "baseline": "full",
     "ops": [
@@ -1509,7 +1509,7 @@
    "id": "korean",
    "name_zh": "韩系",
    "name_en": "Korean Creamy",
-   "status": "needs_review",
+   "status": "established",
    "tags": [
     "人像",
     "高调",
@@ -1525,7 +1525,7 @@
     "男性/街头题材显假"
    ],
    "description": "奶油、粉彩、干净、白皙；柔焦比小清新敢下手。",
-   "notes": "实测批次蒙灰纱，换轻校正基线重渲 2 张，待最终目检。",
+   "notes": "实测批次蒙灰纱，换轻校正基线重渲 2 张，待最终目检。期 5 目检成立：真照片三格行（cl_chateau 城堡）已验收。",
    "correction": {
     "baseline": "light",
     "ops": [
@@ -2254,7 +2254,7 @@
    "id": "french",
    "name_zh": "法式",
    "name_en": "French Warm",
-   "status": "needs_review",
+   "status": "established",
    "tags": [
     "人像",
     "窗光",
@@ -2271,7 +2271,7 @@
     "色温与分级双暖会把白墙变黄墙"
    ],
    "description": "慵懒、琥珀、奶油、橄榄绿、午后窗光。",
-   "notes": "实测批次换轻校正基线重渲 2 张，待最终目检。",
+   "notes": "实测批次换轻校正基线重渲 2 张，待最终目检。期 5 目检成立：真照片三格行（cl_chateau 城堡）已验收。",
    "correction": {
     "baseline": "light",
     "ops": [
@@ -2972,7 +2972,7 @@
    "id": "dark_moody",
    "name_zh": "暗黑情绪",
    "name_en": "Dark Moody",
-   "status": "needs_review",
+   "status": "established",
    "tags": [
     "人像",
     "低调",
@@ -2989,7 +2989,7 @@
     "只有黑没有层次 = 左端撞墙"
    ],
    "description": "低调、压抑、戏剧，一束光打在主体上。",
-   "notes": "未在实测批次中，未目检。",
+   "notes": "未在实测批次中，未目检。期 5 目检成立：真照片三格行（ojigi_temple 夜庙（竖幅修正版））已验收。",
    "correction": {
     "baseline": "full",
     "ops": [
@@ -3408,7 +3408,7 @@
    "id": "cyberpunk",
    "name_zh": "赛博朋克",
    "name_en": "Cyberpunk",
-   "status": "needs_review",
+   "status": "established",
    "tags": [
     "夜景",
     "霓虹",
@@ -3421,7 +3421,7 @@
     "日光照片硬套只会得到紫天毒绿"
    ],
    "description": "青 + 品红、霓虹、高反差夜、湿地面反光；放大已有色光而非无中生有。",
-   "notes": "chatlog 点名未目检，须补目检才能升内置库。unsupported：LR 校准面板的越界移色用 channel_mixer 近似；霓虹 glow 复制层法用 glow 滤镜近似。",
+   "notes": "chatlog 点名未目检，须补目检才能升内置库。unsupported：LR 校准面板的越界移色用 channel_mixer 近似；霓虹 glow 复制层法用 glow 滤镜近似。期 5 目检成立：真照片三格行（d5600_night 夜街）已验收。",
    "correction": {
     "baseline": "full",
     "ops": [
@@ -3671,7 +3671,7 @@
    "id": "y2k",
    "name_zh": "Y2K",
    "name_en": "Y2K",
-   "status": "needs_review",
+   "status": "established",
    "tags": [
     "夜景",
     "派对",
@@ -3687,7 +3687,7 @@
     "不要做成暖胶片：Y2K 的黑是硬的、色是数码饱和的"
    ],
    "description": "闪光怼脸、低像素、饱和冷色；借 CCD 成像链再推一档。",
-   "notes": "待补图目检。unsupported：日期戳符号与 JPEG 压缩感（导出层的事）不在预设内。",
+   "notes": "待补图目检。unsupported：日期戳符号与 JPEG 压缩感（导出层的事）不在预设内。期 5 目检成立：真照片三格行（d700_tabletop 桌游货架）已验收。",
    "correction": {
     "baseline": "full",
     "ops": [
@@ -4404,7 +4404,7 @@
    "id": "sweet",
    "name_zh": "糖水",
    "name_en": "Sweet Portrait",
-   "status": "needs_review",
+   "status": "established",
    "tags": [
     "人像",
     "高调",
@@ -4420,7 +4420,7 @@
     "过度柔焦+过曝丢轮廓"
    ],
    "description": "甜、嫩、粉、亮——小清新的「肤色极大化」变体。",
-   "notes": "实测遗留：去辉光对照实验未跑完（定斜切边缘是否辉光滤镜所致）；本配方默认不带 glow 滤镜，glow 只作 knob 可选项，默认 0。换轻校正基线重渲 1 张。",
+   "notes": "实测遗留：去辉光对照实验未跑完（定斜切边缘是否辉光滤镜所致）；本配方默认不带 glow 滤镜，glow 只作 knob 可选项，默认 0。换轻校正基线重渲 1 张。期 5 目检成立：真照片三格行（verona_sunset 日落）已验收。",
    "correction": {
     "baseline": "light",
     "ops": [
@@ -4667,7 +4667,7 @@
    "id": "commercial",
    "name_zh": "商业",
    "name_en": "Commercial",
-   "status": "needs_review",
+   "status": "established",
    "tags": [
     "产品",
     "广告",
@@ -4682,7 +4682,7 @@
     "把情绪风格带进商业交付会被退片：黑点抬高=黑位不准、颗粒=噪点"
    ],
    "description": "准、净、贵——风格即「没有风格」；只纠偏不移色。",
-   "notes": "chatlog 点名未目检。unsupported：美妆类频率分离/中性灰 D&B 是 PS 像素级技法，Yanshi 无对应专用工具，不在预设内。",
+   "notes": "chatlog 点名未目检。unsupported：美妆类频率分离/中性灰 D&B 是 PS 像素级技法，Yanshi 无对应专用工具，不在预设内。期 5 目检成立：真照片三格行（z6_stilllife 桌面静物）已验收。",
    "correction": {
     "baseline": "full",
     "ops": [
@@ -5241,7 +5241,7 @@
    "id": "pastoral_cream",
    "name_zh": "田园奶油",
    "name_en": "Pastoral Cream",
-   "status": "needs_review",
+   "status": "established",
    "tags": [
     "田园",
     "人像",
@@ -5259,7 +5259,7 @@
     "黄提过头白裙/白墙泛奶黄"
    ],
    "description": "奶油田野、麦色阳光、柔绿、野餐布；法式的更亮更甜近亲，韩系的更暖更自然近亲。",
-   "notes": "待补图目检。修正段用 light 基线（与法式/韩系同族，避免灰纱）。",
+   "notes": "待补图目检。修正段用 light 基线（与法式/韩系同族，避免灰纱）。期 5 目检成立：真照片三格行（gredos_valley 河谷）已验收。",
    "correction": {
     "baseline": "light",
     "ops": [
