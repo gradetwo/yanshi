@@ -401,6 +401,25 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs sc
       timeout "$to" node "$script" "${ARG1:-$BASE}" "$doc" "$tok" >"$ROOT_DIR/out.txt" 2>&1 ;;
   esac
   code=$?
+  # **★ 判据跑完就核对工作区 ✗ ★**（第 880 轮；外部补丁包第九节登记的残余 ✓）
+  #   **⇒ 为什么** ✗：`run-criteria-local.sh`（本机入口）早就查了 ✓ 而**这一份（CI 用）没查** ✗
+  #     ⇒ 一条判据**删掉主干跟踪的文件却报全绿** ✓ ⇒ CI 上**没有任何信号** ✗
+  #     （那条纪律第一次救场是第 746 轮：一次误删把 `assets/mediums` 整个弄没了 ✓）
+  #   **⇒ 规则**：**删除**主干的文件 ⇒ 判据自己坏了 ⇒ 把 `code` 改成 1 ✓（改动/新增只报告 ✓）
+  #   **⇒ 与 `run-criteria-local.sh` 同一口径** ✓ —— 两处口径不一致比没有更糟 ✓。
+  if [ -n "$(git -C "$ROOT" rev-parse --git-dir 2>/dev/null)" ]; then
+    WS_DELTA=$(git -C "$ROOT" status --porcelain 2>/dev/null | grep -E '^( D|D |AD)' || true)
+    if [ -n "$WS_DELTA" ]; then
+      {
+        echo "  ✗ **判据删掉了主干跟踪的文件** ⇒ 这不是产品失败，**是判据自己坏了** ✓"
+        printf '%s\n' "$WS_DELTA" | sed 's/^/      /'
+      } >>"$ROOT_DIR/out.txt" 2>/dev/null || true
+      echo "  ✗ ${name}（**删了主干跟踪的文件** ⇒ 判据自己坏了，不是产品）"
+      printf '%s\n' "$WS_DELTA" | sed 's/^/      /'
+      git -C "$ROOT" checkout -- . 2>/dev/null || true
+      code=1
+    fi
+  fi
   if [ "$code" = 0 ]; then
     # 第 1010 轮：判据**自己**也可能"跳过"（例如某个行为不在设计内 ✓）——
     # 它用 ⊘ 前缀打印 ✓，这里在判定结果**之前**把它数进来 ✓（否则"跳过"会被当成"没跑到" ✗）。
