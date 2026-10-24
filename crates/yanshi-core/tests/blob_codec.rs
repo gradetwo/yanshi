@@ -10,6 +10,16 @@ use yanshi_core::blob::{BlobCodec, BlobStore, FsBlobStore};
 use yanshi_core::BlobHash;
 
 /// 给每个 blob 前面加一个标记字节 ⇒ "落盘 ≠ 明文"**可验证** ✓（长度会 +1 ✓）。
+/// **跑完即删临时目录／文件** ✓（第 820 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+/// **⇒ 绑的必须是**子目录或文件**，**绝不**是 `std::env::temp_dir()` 本身 ✓（那会删掉整个 `/tmp` ✗）。
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 #[derive(Debug)]
 struct Marked;
 
@@ -39,6 +49,7 @@ fn scratch(name: &str) -> std::path::PathBuf {
 #[test]
 fn the_hash_comes_from_the_plaintext_while_the_file_holds_the_encoded_form() {
     let dir = scratch("hash");
+    let _cleanup_1 = Cleanup(dir.clone());
     let store = FsBlobStore::open(&dir)
         .expect("打开")
         .with_codec(Arc::new(Marked));
@@ -69,6 +80,7 @@ fn the_hash_comes_from_the_plaintext_while_the_file_holds_the_encoded_form() {
 #[test]
 fn a_stored_form_the_codec_cannot_read_is_an_error_rather_than_garbage() {
     let dir = scratch("garbage");
+    let _cleanup_2 = Cleanup(dir.clone());
     // 先用"原样"写入（文件里就是明文 ✓），再用"标记"解码器去读 ⇒ 必须**报错** ✗
     let hash = {
         let plain_store = FsBlobStore::open(&dir).expect("打开");

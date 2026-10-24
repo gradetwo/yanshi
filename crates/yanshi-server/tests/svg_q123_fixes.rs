@@ -12,6 +12,16 @@
 use serde_json::{json, Value};
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **跑完即删临时目录／文件** ✓（第 820 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+/// **⇒ 绑的必须是**子目录或文件**，**绝不**是 `std::env::temp_dir()` 本身 ✓（那会删掉整个 `/tmp` ✗）。
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 fn workspace() -> Workspace {
     Workspace::in_memory(DocumentSettings::default())
 }
@@ -95,6 +105,7 @@ fn draw_e_stroke(workspace: &mut Workspace, doc: &str) {
 
 fn export_png_pixels(workspace: &mut Workspace, doc: &str, name: &str) -> (u32, u32, Vec<u8>) {
     let path = temp_path(name, "png");
+    let _cleanup_1 = Cleanup(path.clone());
     let _ = std::fs::remove_file(&path);
     let exported = call(
         workspace,
@@ -115,6 +126,7 @@ fn export_svg_text(
     flatten: bool,
 ) -> (Value, String) {
     let path = temp_path(name, "svg");
+    let _cleanup_2 = Cleanup(path.clone());
     let _ = std::fs::remove_file(&path);
     let exported = call(
         workspace,

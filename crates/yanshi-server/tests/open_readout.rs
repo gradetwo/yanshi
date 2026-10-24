@@ -14,6 +14,16 @@ use yanshi_core::{Atom, AtomKind, Seq};
 use yanshi_server::persist::FileStore;
 use yanshi_server::{Document, DocumentSettings, Workspace};
 
+/// **跑完即删临时目录／文件** ✓（第 820 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+/// **⇒ 绑的必须是**子目录或文件**，**绝不**是 `std::env::temp_dir()` 本身 ✓（那会删掉整个 `/tmp` ✗）。
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 fn atom(id: &str, seq: Seq, kind: AtomKind) -> Atom {
     let mut atom =
         Atom::new(kind, "human:1", "session:a", json!({"layer_id": "layer_1"})).with_id(id);
@@ -33,6 +43,7 @@ fn temp_root(tag: &str) -> std::path::PathBuf {
 #[test]
 fn atoms_read_on_open_equals_the_whole_log_without_a_snapshot() {
     let root = temp_root("who1e");
+    let _cleanup_1 = Cleanup(root.clone());
     let doc = "doc_readout";
     let store = FileStore::open(&root).unwrap();
     // 第一颗用 `CreateDocument`（真实文档的开头就是它 ✓），其余用 `CreateLayer` ✓。
@@ -62,6 +73,7 @@ fn atoms_read_on_open_equals_the_whole_log_without_a_snapshot() {
 #[test]
 fn load_atoms_since_returns_only_the_tail() {
     let root = temp_root("since7");
+    let _cleanup_2 = Cleanup(root.clone());
     let doc = "doc_since";
     let store = FileStore::open(&root).unwrap();
     store
@@ -94,6 +106,7 @@ fn load_atoms_since_returns_only_the_tail() {
 #[test]
 fn save_snapshot_is_idempotent_and_lands_on_disk() {
     let root = temp_root("snapw");
+    let _cleanup_3 = Cleanup(root.clone());
     let doc = "doc_snap";
     let store = FileStore::open(&root).unwrap();
     store
@@ -146,6 +159,7 @@ fn save_snapshot_is_idempotent_and_lands_on_disk() {
 #[test]
 fn a_commit_after_a_snapshot_writes_it_to_disk() {
     let root = temp_root("snapcommit");
+    let _cleanup_4 = Cleanup(root.clone());
     let doc = "doc_sc";
     // ① 预置一颗 CreateDocument（用 FileStore 直接写 ✓ —— 不依赖 create_document 的签名 ✓）
     let store = FileStore::open(&root).unwrap();
@@ -209,6 +223,7 @@ fn a_commit_after_a_snapshot_writes_it_to_disk() {
 #[test]
 fn fast_open_matches_a_full_open() {
     let root = temp_root("fastopen");
+    let _cleanup_5 = Cleanup(root.clone());
     let doc = "doc_fast";
     // ① 造一份有内容的日志 ✓（1 颗 CreateDocument ＋ 9 颗 CreateLayer ✓）
     let store = FileStore::open(&root).unwrap();
@@ -294,6 +309,7 @@ fn fast_open_matches_a_full_open() {
 #[test]
 fn load_latest_snapshot_returns_the_newest_one() {
     let root = temp_root("latest");
+    let _cleanup_6 = Cleanup(root.clone());
     let doc = "doc_latest";
     let store = FileStore::open(&root).unwrap();
     store
@@ -346,6 +362,7 @@ fn load_latest_snapshot_returns_the_newest_one() {
 #[test]
 fn opening_with_a_snapshot_reads_less() {
     let root = temp_root("shrinks");
+    let _cleanup_7 = Cleanup(root.clone());
     let doc = "doc_shrinks";
     let store = FileStore::open(&root).unwrap();
     let total: Seq = 10;
