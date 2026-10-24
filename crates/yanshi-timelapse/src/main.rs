@@ -158,6 +158,50 @@ fn main() -> Result<()> {
         .and_then(Value::as_str)
         .unwrap_or("timelapse")
         .to_owned();
+    // **原子引用的 blob 不在包里 ⇒ 必须响亮记账** ✓（第 780 轮；外部 `qoder` 报告 D172）
+    //   **⇒ 他们的实测**：`yanshi-timelapse` 吃一个"原子引用的 blob 不在包里"的包
+    //     ⇒ **`rc=0`、一笔不落、一句警告都没有** ✗ ⇒ 产出一条**看起来正常的空影片** ✓
+    //     （14,950 个原子跑完、退出码 0，而唯一那条全局汇总 `⚠️ N 个 atom 没被内核接受`
+    //     **从未出现** ✓ —— 因为内核**接受了**这些原子 ✓，只是它们引用的像素**不存在** ✓）。
+    //   **⇒ 为什么难发现**：失败发生在**数据缺失**这一侧，不在"应用原子"那一侧 ✓
+    //     ⇒ 任何只看 apply 失败数的汇总都会报"一切正常" ✓（这正是"静默降级"的教科书形态 ✓）。
+    //   **⇒ 做法**：把 `atoms.jsonl` 里出现的 64 位十六进制串当**引用** ✓，逐个看包里有没有 ✓
+    //     ⇒ 缺的**计数 ＋ 举第一个例子** ✓，写进 stderr **和**最后的汇总行 ✓。
+    //   **⇒ 为什么用正则扫文本**：净荷形状太多（`bitmap.blob_hash`／`blobs[]`／`mask.blobs` ✓），
+    //     逐个字段识别会**漏** ✓；而"64 位十六进制"在本包里**只可能是 blob 哈希** ✓。
+    let referenced: Vec<String> = {
+        let mut seen = std::collections::BTreeSet::new();
+        let bytes = atoms_text.as_bytes();
+        let is_hex = |b: u8| b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
+        let mut index = 0usize;
+        while index + 64 <= bytes.len() {
+            if is_hex(bytes[index]) && (index == 0 || !is_hex(bytes[index - 1])) {
+                let candidate = &bytes[index..index + 64];
+                let after_ok = bytes.get(index + 64).is_none_or(|next| !is_hex(*next));
+                if after_ok && candidate.iter().all(|byte| is_hex(*byte)) {
+                    if let Ok(text) = std::str::from_utf8(candidate) {
+                        seen.insert(text.to_owned());
+                    }
+                    index += 64;
+                    continue;
+                }
+            }
+            index += 1;
+        }
+        seen.into_iter().collect()
+    };
+    let missing_blobs: Vec<&String> = referenced
+        .iter()
+        .filter(|hash| !blobs.contains_key(*hash))
+        .collect();
+    if !missing_blobs.is_empty() {
+        eprintln!(
+            "⚠️ 包里缺 {} 个被原子引用的 blob（首个：{}，共引用 {} 个）⇒ 那些笔触会渲染成空白，而退出码仍是 0 ⇒ 这不是「没有内容」，是「内容不在包里」",
+            missing_blobs.len(),
+            missing_blobs[0],
+            referenced.len()
+        );
+    }
     let read_ms = t_read.elapsed().as_millis();
     let scale = f64::min(
         1.0,
@@ -189,9 +233,12 @@ fn main() -> Result<()> {
     // **读包/解码的开销也报出来** ✓（第 612 轮；外部第 91 次要"阶段计时"）
     //   ⇒ 他们的包 0.3 GB / 400 blob ⇒ **如果时间花在读包上**，那么"渲染慢"这个结论就是错的 ✓
     //   ⇒ 打印到 **stderr** ✓（与进度行同一路 ✓，被 timeout 杀掉时也能看到 ✓）。
+    // **缺 blob 的个数也进这一行** ✓（第 780 轮；外部 D172）：只在上面喊一次不够 ✓ ——
+    //   被 `timeout` 杀掉时**只有 stderr 前几行能看到** ✓ ⇒ 数量必须出现在**第一行汇总**里 ✓。
     eprintln!(
-        "读包 {read_ms} ms｜blob {} 个（编码 {encoding}）｜忽略条目 {skipped_entries}",
-        blobs.len()
+        "读包 {read_ms} ms｜blob {} 个（编码 {encoding}）｜忽略条目 {skipped_entries}｜**缺 blob {} 个**",
+        blobs.len(),
+        missing_blobs.len()
     );
 
     let layout = Layout {
