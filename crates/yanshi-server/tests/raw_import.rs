@@ -12,6 +12,14 @@ use yanshi_core::Bbox;
 use yanshi_raw::dng_fixture::{write_synthetic_dng, SyntheticDng, SyntheticExif};
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
@@ -106,6 +114,7 @@ fn layer_object_ids(workspace: &Workspace) -> Vec<String> {
 #[test]
 fn end_to_end_raw_import_records_metadata_and_renders_like_direct_develop() {
     let root = temp_dir("e2e");
+    let _cleanup_1 = Cleanup(root.clone());
     let bytes = fixture_bytes();
     std::fs::write(root.join("shot.dng"), &bytes).unwrap();
     let mut workspace = file_workspace(&root);

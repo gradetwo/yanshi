@@ -8,6 +8,14 @@
 use serde_json::json;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
@@ -65,6 +73,7 @@ fn shape(workspace: &mut Workspace, object_id: &str, y: f64, color: serde_json::
 #[test]
 fn undo_last_removes_exactly_the_last_gesture() {
     let root = temp_dir("last");
+    let _cleanup_1 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
@@ -125,6 +134,7 @@ fn undo_last_removes_exactly_the_last_gesture() {
 #[test]
 fn undo_last_can_take_several_and_says_when_there_is_nothing_left() {
     let root = temp_dir("several");
+    let _cleanup_2 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
@@ -219,6 +229,7 @@ fn undo_last_can_take_several_and_says_when_there_is_nothing_left() {
 #[test]
 fn redo_last_brings_back_exactly_one_gesture() {
     let root = temp_dir("redo");
+    let _cleanup_3 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],

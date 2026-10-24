@@ -7,6 +7,14 @@
 use serde_json::json;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
@@ -41,6 +49,7 @@ fn call(workspace: &mut Workspace, args: serde_json::Value) -> serde_json::Value
 #[test]
 fn the_bundled_open_colors_palette_reads_all_its_colors() {
     let root = temp_dir("open_color");
+    let _cleanup_1 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     let got = call(
         &mut workspace,
@@ -74,6 +83,7 @@ fn the_bundled_open_colors_palette_reads_all_its_colors() {
 #[test]
 fn a_gimp_palette_parses_with_names_and_skips_metadata() {
     let root = temp_dir("gpl");
+    let _cleanup_2 = Cleanup(root.clone());
     let cache = root.join("palettes");
     std::fs::create_dir_all(&cache).unwrap();
     std::fs::write(
@@ -98,6 +108,7 @@ fn a_gimp_palette_parses_with_names_and_skips_metadata() {
 #[test]
 fn every_bundled_sk1_palette_parses() {
     let root = temp_dir("sk1");
+    let _cleanup_3 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     let listed = {
         let mut ctx = ToolContext::new(&mut workspace, "doc_pal", "human:1", "session:test");
@@ -132,6 +143,7 @@ fn every_bundled_sk1_palette_parses() {
 #[test]
 fn truncation_is_reported_rather_than_hidden() {
     let root = temp_dir("limit");
+    let _cleanup_4 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     let got = call(
         &mut workspace,
@@ -150,6 +162,7 @@ fn truncation_is_reported_rather_than_hidden() {
 #[test]
 fn a_file_that_is_not_a_palette_is_reported_not_treated_as_empty() {
     let root = temp_dir("garbage");
+    let _cleanup_5 = Cleanup(root.clone());
     let cache = root.join("palettes");
     std::fs::create_dir_all(&cache).unwrap();
     std::fs::write(cache.join("junk.gpl"), "这根本不是调色板\n随便写点什么\n").unwrap();
@@ -169,6 +182,7 @@ fn a_file_that_is_not_a_palette_is_reported_not_treated_as_empty() {
 #[test]
 fn an_unknown_palette_lists_the_available_ones() {
     let root = temp_dir("unknown");
+    let _cleanup_6 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     let got = call(&mut workspace, json!({ "palette": "nope", "limit": 0 }));
     assert_eq!(got["ok"], json!(false), "{got}");

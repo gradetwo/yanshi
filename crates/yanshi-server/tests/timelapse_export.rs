@@ -12,6 +12,14 @@
 use serde_json::json;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
@@ -297,6 +305,7 @@ fn e2e_real_encode_matches_probe_and_stage_renders() {
     draw_phase(&mut workspace, 10.0, 80);
     // 阶段一结束：atoms = create(1) + layer(1) + 5 = 7。先存一张阶段图。
     let dir = std::env::temp_dir().join(format!("yanshi_timelapse_e2e_{}", std::process::id()));
+    let _cleanup_1 = Cleanup(dir.clone());
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let stage_png = dir.join("stage.png");
@@ -431,6 +440,7 @@ fn e2e_thousand_atom_document_timing() {
     );
 
     let dir = std::env::temp_dir().join(format!("yanshi_timelapse_perf_{}", std::process::id()));
+    let _cleanup_2 = Cleanup(dir.clone());
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let video = dir.join("process.mp4");

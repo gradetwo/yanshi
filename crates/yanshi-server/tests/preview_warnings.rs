@@ -15,6 +15,14 @@ use serde_json::{json, Value};
 use yanshi_server::archive::{read_tar, write_tar};
 use yanshi_server::{DocumentSettings, PreviewInfo, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
@@ -52,6 +60,7 @@ fn call(workspace: &mut Workspace, doc: &str, tool: &str, args: Value) -> Value 
 #[test]
 fn document_preview_reports_patches_it_could_not_draw() {
     let root = temp_dir("src");
+    let _cleanup_1 = Cleanup(root.clone());
     let doc = "doc_preview_warn";
     let mut source = workspace(&root, doc, 400, 300);
     assert_eq!(

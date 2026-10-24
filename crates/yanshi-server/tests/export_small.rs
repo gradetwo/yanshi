@@ -24,6 +24,14 @@ use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolReg
 /// （142.1 MiB）根本没有 `source`** ✓、**369/376 条带 `source` 的笔触用的是读画布的笔刷**
 /// （`oil-03-paint.myb` 的 `smudge = 0.9` ✓）⇒ **重放不出来** ✓ ⇒ 两者都必须照装 ✓。
 /// 这条界**只对"笔触全部可重放"的文档**成立 ✓（下面造的正是这种 ✓）。
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 const SMALL_PACKAGE_BOUND: usize = 256 * 1024;
 
 fn registry() -> ToolRegistry {
@@ -136,6 +144,7 @@ fn build_doc_with_blobs(root: &std::path::Path, doc: &str) -> Workspace {
 #[test]
 fn every_package_blob_round_trips_through_the_package_codec() {
     let root = temp_dir("roundtrip");
+    let _cleanup_1 = Cleanup(root.clone());
     let mut workspace = build_doc_with_blobs(&root, "doc_rt");
     let pack = root.join("doc_rt.yanshi");
     // **`include_bitmaps: true`** ✓：这条判据测的是**编码**，所以要保证每个 blob 都在包里 ✓。
@@ -189,6 +198,7 @@ fn every_package_blob_round_trips_through_the_package_codec() {
 #[test]
 fn a_small_export_omits_bitmaps_and_replays_within_one_channel_step() {
     let root = temp_dir("small");
+    let _cleanup_2 = Cleanup(root.clone());
     let mut workspace = build_doc_with_blobs(&root, "doc_small");
     // 再补 6 笔 ✓ ⇒ "把位图加回来"那一版**必然**超过界 ✓（否则变异测不出来 ✓）。
     for index in 0..6 {
@@ -460,6 +470,7 @@ fn a_small_export_omits_bitmaps_and_replays_within_one_channel_step() {
 #[test]
 fn a_canvas_reading_brush_blob_is_never_omitted() {
     let root = temp_dir("smudge");
+    let _cleanup_3 = Cleanup(root.clone());
     let mut workspace = workspace(&root, "doc_smudge", 400, 300);
     assert_eq!(
         call(
@@ -525,6 +536,7 @@ fn a_canvas_reading_brush_blob_is_never_omitted() {
 #[test]
 fn a_blob_whose_recorded_recipe_does_not_reproduce_it_is_kept() {
     let root = temp_dir("fake_recipe");
+    let _cleanup_4 = Cleanup(root.clone());
     let mut workspace = workspace(&root, "doc_fake", 400, 300);
     assert_eq!(
         call(
@@ -611,6 +623,7 @@ fn a_blob_whose_recorded_recipe_does_not_reproduce_it_is_kept() {
 #[test]
 fn a_package_with_a_missing_blob_still_opens_and_warns() {
     let root = temp_dir("missing");
+    let _cleanup_5 = Cleanup(root.clone());
     let mut workspace = workspace(&root, "doc_missing_blob", 400, 300);
     assert_eq!(
         call(
@@ -715,6 +728,7 @@ fn a_package_with_a_missing_blob_still_opens_and_warns() {
 #[test]
 fn a_package_restores_through_root_and_renders_identically() {
     let root = temp_dir("root_restore");
+    let _cleanup_6 = Cleanup(root.clone());
     let mut workspace = build_doc_with_blobs(&root, "doc_root");
     // 再加几笔 ✓ ⇒ 缺省导出会省掉它们的位图 ✓ ⇒ 这条路必须**重放**出来 ✓。
     for index in 0..3 {

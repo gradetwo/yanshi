@@ -21,9 +21,18 @@ use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolReg
 /// ⇒ 所以**不该**把它改成报错 ✓（那会把一个能用的功能关掉 ✓）。
 /// **⇒ 但有一个形状真的不可用**：未知 `kind` ✓ ⇒ 它**必须当场报错** ✓，
 ///   否则就是"建成功、之后无人认领"的同一类坑 ✓。本判据钉住这一点 ✓。
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn an_unknown_selection_shape_is_refused_at_creation() {
     let root = std::env::temp_dir().join(format!("yanshi_rectsel_bad_{}", std::process::id()));
+    let _cleanup_1 = Cleanup(root.clone());
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("建根");
     let mut workspace =
@@ -60,6 +69,7 @@ fn an_unknown_selection_shape_is_refused_at_creation() {
 #[test]
 fn every_shape_the_renderer_supports_can_be_created() {
     let root = std::env::temp_dir().join(format!("yanshi_shapes_{}", std::process::id()));
+    let _cleanup_2 = Cleanup(root.clone());
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("建根");
     let mut workspace =

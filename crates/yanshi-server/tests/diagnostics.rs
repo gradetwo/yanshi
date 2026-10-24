@@ -16,6 +16,14 @@ use yanshi_server::{DocumentSettings, Profile, ToolContext, ToolRegistry, Worksp
 
 /// **碰全局 stderr 环的测试必须串行** ✓：环是**进程级**的 ✓（那正是它能救命的性质 ✓），
 /// 而 cargo 默认并发跑测试 ✓ ⇒ 不串行的话，一个测试的 `clear_logs` 会把另一个的哨兵洗掉 ✗。
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 static RING_TESTS: Mutex<()> = Mutex::new(());
 
 /// **这条判据自己抄一份必需条目清单** ✓（**不**引用 `ENTRY_NAMES` ✓）。
@@ -112,6 +120,7 @@ fn names_of(entries: &[(String, Vec<u8>)]) -> Vec<String> {
 #[test]
 fn archive_is_a_real_zip_with_every_required_entry() {
     let root = temp_dir("c1");
+    let _cleanup_1 = Cleanup(root.clone());
     let doc = "doc_diag";
     let mut ws = workspace(&root, doc, 320, 240);
     let made = call(
@@ -235,6 +244,7 @@ fn stderr_ring_is_bounded_and_pre_collection_lines_are_in_the_archive() {
     );
 
     let root = temp_dir("c2");
+    let _cleanup_2 = Cleanup(root.clone());
     let doc = "doc_ring";
     let ws = workspace(&root, doc, 64, 64);
     let bundle = diagnostics::collect(
@@ -290,6 +300,7 @@ fn archive_contains_no_tokens_secrets_or_home_paths() {
     );
 
     let root = temp_dir("c3");
+    let _cleanup_3 = Cleanup(root.clone());
     let doc = "doc_secret";
     let ws = workspace(&root, doc, 64, 64);
     let facts = SurfaceFacts {
@@ -358,6 +369,7 @@ fn archive_contains_no_tokens_secrets_or_home_paths() {
 #[test]
 fn skipped_patch_warnings_are_in_the_archive() {
     let root = temp_dir("c4src");
+    let _cleanup_4 = Cleanup(root.clone());
     let doc = "doc_skipped";
     let mut source = workspace(&root, doc, 400, 300);
     assert_eq!(
@@ -467,6 +479,7 @@ fn skipped_patch_warnings_are_in_the_archive() {
 #[test]
 fn entry_list_does_not_depend_on_the_surface() {
     let root = temp_dir("c5");
+    let _cleanup_5 = Cleanup(root.clone());
     let doc = "doc_parity";
     let ws = workspace(&root, doc, 64, 64);
     let mcp = diagnostics::collect(
@@ -514,6 +527,7 @@ fn entry_list_does_not_depend_on_the_surface() {
 #[test]
 fn oversized_content_is_trimmed_and_metadata_stays_consistent() {
     let root = temp_dir("c6");
+    let _cleanup_6 = Cleanup(root.clone());
     let doc = "doc_budget";
     let mut ws = workspace(&root, doc, 64, 64);
     for index in 0..200 {

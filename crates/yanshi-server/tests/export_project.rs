@@ -9,6 +9,14 @@
 use serde_json::json;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
@@ -27,6 +35,7 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 #[test]
 fn a_project_package_contains_the_log_the_blobs_and_a_current_preview() {
     let root = temp_dir("export");
+    let _cleanup_1 = Cleanup(root.clone());
     let mut workspace = Workspace::with_file_store(root.clone(), DocumentSettings::default())
         .expect("落盘工作区应当能建");
     workspace

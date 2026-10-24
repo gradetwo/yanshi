@@ -8,6 +8,14 @@
 use serde_json::json;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn workspace() -> Workspace {
     Workspace::in_memory(DocumentSettings::default())
 }
@@ -159,6 +167,7 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 #[test]
 fn an_on_disk_document_is_opened_and_never_resized() {
     let root = temp_dir("disk");
+    let _cleanup_1 = Cleanup(root.clone());
     let mut workspace =
         Workspace::with_file_store(root.clone(), DocumentSettings::default()).expect("落盘工作区");
     workspace

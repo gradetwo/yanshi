@@ -11,6 +11,14 @@
 use serde_json::json;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn workspace(root: &std::path::Path) -> Workspace {
     Workspace::with_file_store(root.to_path_buf(), DocumentSettings::default()).expect("落盘工作区")
 }
@@ -39,6 +47,7 @@ fn draw(workspace: &mut Workspace, object_id: &str) {
 #[test]
 fn two_writers_on_the_same_root_do_not_duplicate_sequences() {
     let root = std::env::temp_dir().join(format!("yanshi_two_writers_{}", std::process::id()));
+    let _cleanup_1 = Cleanup(root.clone());
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("建根");
 
@@ -164,6 +173,7 @@ fn two_writers_on_the_same_root_do_not_duplicate_sequences() {
 #[test]
 fn deleting_a_document_clears_its_journal_length_cache() {
     let root = std::env::temp_dir().join(format!("yanshi_disklen_{}", std::process::id()));
+    let _cleanup_2 = Cleanup(root.clone());
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("建根");
     let mut workspace = workspace(&root);

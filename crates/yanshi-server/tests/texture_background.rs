@@ -8,6 +8,14 @@
 use serde_json::json;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
@@ -59,6 +67,7 @@ fn layer_order(workspace: &mut Workspace) -> Vec<String> {
 #[test]
 fn the_background_layer_goes_to_the_bottom() {
     let root = temp_dir("bottom");
+    let _cleanup_1 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     // 先用一个正常图层占住"上面" ✓。
     assert_eq!(
@@ -100,6 +109,7 @@ fn the_background_layer_goes_to_the_bottom() {
 #[test]
 fn giving_a_layer_does_not_create_or_reorder_anything() {
     let root = temp_dir("given");
+    let _cleanup_2 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     assert_eq!(
         call(
@@ -127,6 +137,7 @@ fn all_three_modes_cover_the_whole_canvas() {
         // **每种铺法各自一个工作区** ✗ —— 共用根目录会撞上"文档已存在" ✓
         //（`new_document` 的既定语义就是拒绝覆盖 ✓）；这正是我第一版写错的地方 ✓。
         let root = temp_dir(&format!("modes_{mode}"));
+        let _cleanup_3 = Cleanup(root.clone());
         let mut workspace = workspace(&root);
         let made = call(
             &mut workspace,
@@ -148,6 +159,7 @@ fn all_three_modes_cover_the_whole_canvas() {
 #[test]
 fn bad_arguments_report_the_available_choices() {
     let root = temp_dir("bad");
+    let _cleanup_4 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     let bad_mode = call(
         &mut workspace,
@@ -190,6 +202,7 @@ fn bad_arguments_report_the_available_choices() {
 #[test]
 fn the_warning_about_a_non_empty_layer_actually_fires() {
     let root = temp_dir("warn");
+    let _cleanup_5 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     assert_eq!(
         call(
@@ -246,6 +259,7 @@ fn the_warning_about_a_non_empty_layer_actually_fires() {
 #[test]
 fn a_region_makes_a_patch_that_does_not_get_pushed_to_the_bottom() {
     let root = temp_dir("patch");
+    let _cleanup_6 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     // 先有一层"作品" ✓，补丁应当**留在它上面** ✓，不该跑到它下面 ✗。
     assert_eq!(
@@ -291,6 +305,7 @@ fn a_region_makes_a_patch_that_does_not_get_pushed_to_the_bottom() {
 #[test]
 fn a_region_larger_than_the_canvas_is_clipped() {
     let root = temp_dir("clip");
+    let _cleanup_7 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     let made = call(
         &mut workspace,
@@ -311,6 +326,7 @@ fn a_region_larger_than_the_canvas_is_clipped() {
 #[test]
 fn without_a_region_it_is_still_a_background() {
     let root = temp_dir("still_bg");
+    let _cleanup_8 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     let made = call(
         &mut workspace,

@@ -7,6 +7,14 @@
 use serde_json::{json, Value};
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
@@ -43,6 +51,7 @@ fn stroke(data_extra: Value) -> Value {
 
 fn temp_file(name: &str) -> String {
     let dir = std::env::temp_dir().join(format!("yanshi_vector_test_{}", std::process::id()));
+    let _cleanup_1 = Cleanup(dir.clone());
     std::fs::create_dir_all(&dir).unwrap();
     dir.join(name).to_string_lossy().into_owned()
 }

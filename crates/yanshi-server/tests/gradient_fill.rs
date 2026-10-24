@@ -8,6 +8,14 @@
 use serde_json::json;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
@@ -73,6 +81,7 @@ fn close(a: [u8; 4], b: [u8; 4], tolerance: u8, what: &str) {
 #[test]
 fn a_zero_degree_linear_gradient_runs_left_to_right() {
     let root = temp_dir("linear0");
+    let _cleanup_1 = Cleanup(root.clone());
     let mut workspace = workspace(&root, 100, 20);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
@@ -118,6 +127,7 @@ fn a_zero_degree_linear_gradient_runs_left_to_right() {
 #[test]
 fn ninety_degrees_runs_top_to_bottom() {
     let root = temp_dir("linear90");
+    let _cleanup_2 = Cleanup(root.clone());
     let mut workspace = workspace(&root, 20, 100);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
@@ -147,6 +157,7 @@ fn ninety_degrees_runs_top_to_bottom() {
 #[test]
 fn a_radial_gradient_starts_at_its_centre() {
     let root = temp_dir("radial");
+    let _cleanup_3 = Cleanup(root.clone());
     let mut workspace = workspace(&root, 80, 80);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
@@ -184,6 +195,7 @@ fn a_radial_gradient_starts_at_its_centre() {
 #[test]
 fn the_same_gradient_is_identical_twice() {
     let root = temp_dir("determinism");
+    let _cleanup_4 = Cleanup(root.clone());
     let mut workspace = workspace(&root, 60, 60);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "a" }))["ok"],
@@ -221,6 +233,7 @@ fn the_same_gradient_is_identical_twice() {
 #[test]
 fn a_region_fills_only_that_part() {
     let root = temp_dir("region");
+    let _cleanup_5 = Cleanup(root.clone());
     let mut workspace = workspace(&root, 100, 60);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
@@ -266,6 +279,7 @@ fn a_region_fills_only_that_part() {
 #[test]
 fn an_unknown_kind_lists_the_supported_ones() {
     let root = temp_dir("badkind");
+    let _cleanup_6 = Cleanup(root.clone());
     let mut workspace = workspace(&root, 20, 20);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
@@ -297,6 +311,7 @@ fn an_unknown_kind_lists_the_supported_ones() {
 #[test]
 fn exporting_one_layer_leaves_the_other_layer_out() {
     let root = temp_dir("one_layer");
+    let _cleanup_7 = Cleanup(root.clone());
     let mut workspace = workspace(&root, 60, 40);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "red" }))["ok"],

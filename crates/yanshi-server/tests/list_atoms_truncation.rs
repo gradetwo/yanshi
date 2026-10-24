@@ -15,6 +15,14 @@
 use serde_json::json;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn workspace() -> Workspace {
     Workspace::in_memory(DocumentSettings::default())
 }
@@ -99,6 +107,7 @@ fn list_atoms_only_reports_truncation_when_something_is_left() {
 #[test]
 fn list_atoms_reports_the_total_number_of_matches() {
     let root = std::env::temp_dir().join(format!("yanshi_atoms_total_{}", std::process::id()));
+    let _cleanup_1 = Cleanup(root.clone());
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("建根");
     let mut workspace =

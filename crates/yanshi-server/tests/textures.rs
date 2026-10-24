@@ -11,6 +11,14 @@
 use serde_json::json;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
@@ -65,6 +73,7 @@ fn call(workspace: &mut Workspace, args: serde_json::Value) -> serde_json::Value
 #[test]
 fn an_empty_cache_is_an_empty_list_with_a_hint_not_an_error() {
     let root = temp_dir("empty");
+    let _cleanup_1 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     let got = call(&mut workspace, json!({}));
     assert_eq!(got["ok"], json!(true), "空缓存不该报错：{got}");
@@ -84,6 +93,7 @@ fn an_empty_cache_is_an_empty_list_with_a_hint_not_an_error() {
 #[test]
 fn the_list_reports_name_size_and_usability() {
     let root = temp_dir("list");
+    let _cleanup_2 = Cleanup(root.clone());
     let cache = root.join("textures");
     std::fs::create_dir_all(&cache).unwrap();
     // 8 位、非隔行、RGB ⇒ **真的能用** ✓（与解码器判据一致 ✓）。
@@ -202,6 +212,7 @@ fn an_in_memory_workspace_lists_bundled_assets_but_says_importing_needs_a_root()
 #[test]
 fn a_directory_name_cannot_escape_the_workspace() {
     let root = temp_dir("escape");
+    let _cleanup_3 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     for bad in ["../etc", "/etc", "a/../../b"] {
         let got = call(&mut workspace, json!({ "dir": bad }));

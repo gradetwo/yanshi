@@ -7,6 +7,14 @@
 use serde_json::json;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
@@ -43,6 +51,7 @@ fn call(workspace: &mut Workspace, tool: &str, args: serde_json::Value) -> serde
 #[test]
 fn a_sparse_myb_stroke_paints_a_continuous_band() {
     let root = temp_dir("continuous");
+    let _cleanup_1 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
@@ -74,6 +83,7 @@ fn a_sparse_myb_stroke_paints_a_continuous_band() {
 #[test]
 fn the_same_stroke_is_byte_identical_twice() {
     let root = temp_dir("determinism");
+    let _cleanup_2 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
@@ -104,6 +114,7 @@ fn the_same_stroke_is_byte_identical_twice() {
 #[test]
 fn an_unknown_brush_lists_what_is_available() {
     let root = temp_dir("unknown");
+    let _cleanup_3 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     let got = call(
         &mut workspace,
@@ -123,6 +134,7 @@ fn an_unknown_brush_lists_what_is_available() {
 #[test]
 fn a_brush_imported_into_the_cache_shadows_the_bundled_one() {
     let root = temp_dir("shadow");
+    let _cleanup_4 = Cleanup(root.clone());
     let source = root.join("incoming");
     std::fs::create_dir_all(&source).unwrap();
     // 从仓库里复制一支真笔刷 ✓ 换个名字导入 ✓。
@@ -184,6 +196,7 @@ fn a_smudge_brush_is_deterministic_and_works_over_paint() {
     //（也就是本轮修掉的那个矩形 artifact ✓）⇒ 那个数恒定 ✓、什么都不能证明 ✗。
     let run = |name: &str| -> (u64, Vec<u8>) {
         let root = temp_dir(name);
+        let _cleanup_5 = Cleanup(root.clone());
         let mut workspace = workspace(&root);
         assert_eq!(
             call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
@@ -243,6 +256,7 @@ fn a_smudge_brush_is_deterministic_and_works_over_paint() {
 #[test]
 fn brush_stroke_accepts_a_colour_and_two_colours_differ() {
     let root = temp_dir("colour");
+    let _cleanup_6 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
@@ -335,6 +349,7 @@ fn brush_stroke_accepts_a_colour_and_two_colours_differ() {
 #[test]
 fn brush_stroke_colours_without_a_size() {
     let root = temp_dir("colour_no_size");
+    let _cleanup_7 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     // 两笔各画一层 ✓（同层会互相稀释 ✗ —— 这个坑上面那条已经踩过 ✓）。
     let paint =
@@ -418,6 +433,7 @@ fn brush_stroke_colours_without_a_size() {
 #[test]
 fn a_stroke_does_not_bake_its_region_rectangle_into_the_object() {
     let root = temp_dir("no_bake");
+    let _cleanup_8 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
@@ -508,6 +524,7 @@ fn a_stroke_does_not_bake_its_region_rectangle_into_the_object() {
 #[test]
 fn a_smudge_brush_works_at_the_canvas_edge_too() {
     let root = temp_dir("smudge_edge");
+    let _cleanup_9 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
@@ -590,6 +607,7 @@ fn a_smudge_brush_works_at_the_canvas_edge_too() {
 #[test]
 fn brush_stroke_ramps_from_one_colour_to_another() {
     let root = temp_dir("ramp");
+    let _cleanup_10 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
@@ -682,6 +700,7 @@ fn brush_stroke_ramps_from_one_colour_to_another() {
 #[test]
 fn brush_stroke_refuses_colour_to_without_colour() {
     let root = temp_dir("ramp_no_from");
+    let _cleanup_11 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
@@ -717,6 +736,7 @@ fn brush_stroke_refuses_colour_to_without_colour() {
 #[test]
 fn a_semi_transparent_stroke_stores_the_pure_colour_not_a_premultiplied_one() {
     let root = temp_dir("premultiply");
+    let _cleanup_12 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     let probe = |workspace: &mut Workspace, object: &str, size: f64| -> (u8, u8, u8, u8) {
         assert_eq!(
@@ -780,6 +800,7 @@ fn a_semi_transparent_stroke_stores_the_pure_colour_not_a_premultiplied_one() {
 #[test]
 fn brush_stroke_opacity_and_hardness_reach_the_engine() {
     let root = temp_dir("opacity_hardness");
+    let _cleanup_13 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     let probe = |workspace: &mut Workspace, object: &str, extra: serde_json::Value| -> f64 {
         assert_eq!(
@@ -847,6 +868,7 @@ fn brush_stroke_opacity_and_hardness_reach_the_engine() {
 #[test]
 fn a_stroke_lands_exactly_where_the_caller_asked() {
     let root = temp_dir("lands_where_asked");
+    let _cleanup_14 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
@@ -910,6 +932,7 @@ fn a_stroke_lands_exactly_where_the_caller_asked() {
 #[test]
 fn a_stroke_entirely_outside_the_canvas_says_so_instead_of_blaming_the_brush() {
     let root = temp_dir("outside_canvas");
+    let _cleanup_15 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],

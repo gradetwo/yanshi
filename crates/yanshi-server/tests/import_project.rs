@@ -8,6 +8,14 @@
 use serde_json::json;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
@@ -134,6 +142,7 @@ fn a_project_package_round_trips_to_identical_pixels() {
 #[test]
 fn importing_never_overwrites_an_existing_document() {
     let root = temp_dir("no_overwrite");
+    let _cleanup_1 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     let pack = root.join("pack.yanshi");
     assert_eq!(
@@ -160,6 +169,7 @@ fn importing_never_overwrites_an_existing_document() {
 #[test]
 fn a_corrupted_package_is_refused_with_a_checksum_reason() {
     let root = temp_dir("corrupt");
+    let _cleanup_2 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     let pack = root.join("pack.yanshi");
     assert_eq!(
@@ -189,6 +199,7 @@ fn a_corrupted_package_is_refused_with_a_checksum_reason() {
 #[test]
 fn something_that_is_not_a_project_package_says_what_it_contains() {
     let root = temp_dir("not_a_pack");
+    let _cleanup_3 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     // **自己造一个 tar** ✓：只有一个说明文件 ✓ ⇒ 缺 atoms.jsonl ✓。
     let tar = yanshi_server::archive::write_tar(&[yanshi_server::archive::TarEntry {
@@ -215,6 +226,7 @@ fn something_that_is_not_a_project_package_says_what_it_contains() {
 #[test]
 fn a_blob_whose_content_does_not_match_its_hash_is_refused() {
     let root = temp_dir("bad_blob");
+    let _cleanup_4 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     let tar = yanshi_server::archive::write_tar(&[
         yanshi_server::archive::TarEntry {
@@ -259,6 +271,7 @@ fn a_blob_whose_content_does_not_match_its_hash_is_refused() {
 #[test]
 fn a_package_with_blobs_but_no_encoding_manifest_is_refused() {
     let root = temp_dir("no_manifest");
+    let _cleanup_5 = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     let tar = yanshi_server::archive::write_tar(&[
         yanshi_server::archive::TarEntry {

@@ -7,6 +7,14 @@
 use serde_json::json;
 use yanshi_server::{DocumentSettings, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
@@ -26,6 +34,7 @@ fn call(workspace: &mut Workspace, tool: &str, args: serde_json::Value) -> serde
 #[test]
 fn preferences_merge_delete_and_filter_by_key() {
     let root = temp_dir("merge");
+    let _cleanup_1 = Cleanup(root.clone());
     let mut workspace =
         Workspace::with_file_store(root.clone(), DocumentSettings::default()).unwrap();
     let written = call(
@@ -87,6 +96,7 @@ fn preferences_merge_delete_and_filter_by_key() {
 #[test]
 fn preferences_survive_reopening_the_workspace() {
     let root = temp_dir("reopen");
+    let _cleanup_2 = Cleanup(root.clone());
     {
         let mut workspace =
             Workspace::with_file_store(root.clone(), DocumentSettings::default()).unwrap();

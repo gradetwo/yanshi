@@ -16,6 +16,14 @@ use yanshi_server::{
     DocumentSettings, NewDocument, Profile, Role, ToolContext, ToolRegistry, Workspace,
 };
 
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
@@ -124,6 +132,7 @@ fn sum_of_measured_phases(timings: &Value) -> f64 {
 #[test]
 fn a_write_response_carries_a_self_consistent_timing_breakdown() {
     let root = temp_dir("timings");
+    let _cleanup_1 = Cleanup(root.clone());
     let mut workspace = brush_workspace(&root, "doc_timings");
     assert_eq!(
         call_on(
@@ -414,6 +423,7 @@ fn a_cancelled_batch_stops_and_rolls_its_changeset_back() {
 #[test]
 fn a_deferred_batch_says_so_instead_of_pretending_it_finished() {
     let root = temp_dir("deferred");
+    let _cleanup_2 = Cleanup(root.clone());
     let mut workspace = brush_workspace(&root, "doc_deferred");
     // **两台文档** ✓：job 队列是**按文档**的 ✓ ⇒ 推迟那一档遗留的 pending job
     // 不会污染同步那一档的判定 ✓（否则测的就不是 `wait_for_render` 而是"前面的残留"✗）。

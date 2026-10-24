@@ -16,6 +16,14 @@ use serde_json::{json, Value};
 use yanshi_core::Bbox;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 const DOC: &str = "doc_scope";
 
 fn call(workspace: &mut Workspace, tool: &str, args: Value) -> Value {
@@ -50,6 +58,7 @@ fn stroke(
 ///   （**∴ 实测**：`找不到 brush「100%_Opaque.myb」⇒ 共 0 支` ✓）★
 fn workspace() -> (Workspace, std::path::PathBuf) {
     let root = std::env::temp_dir().join(format!("yanshi_scope_{}", std::process::id()));
+    let _cleanup_1 = Cleanup(root.clone());
     let _ = std::fs::remove_dir_all(&root);
     let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
     let mut workspace = Workspace::with_file_store(root.clone(), DocumentSettings::default())
