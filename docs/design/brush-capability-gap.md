@@ -20141,3 +20141,17 @@ PAIR 载荷键 = [bitmap, height, layer_id, object_id, origin, refs, region, typ
 - 我的**每一种**可自造构型（1／3／8 层、16／200 原子、大画布、省位图包）⇒ **黑块 0** ✓
 - 他们的包（22,926 原子／4608×8192）⇒ **6.55% 纯黑、5 块** ✓
 ⇒ **⇒ 缺的仍然是**他们那份包（或那三个数：`黑块 A/B`／`放弃`）✓ —— 这条路**不再靠我猜** ✓
+
+## 五百四十、`check-*` 全族复跑：**32/33 绿**，唯一红是已登记的 GPU 那条（第 911 轮）
+
+**⇒ 实测（逐条走 `run-criteria-local.sh`，共 33 条）**：
+```
+32 条 exit 0 ✓｜1 条 exit 1 ✗
+✗ check-gpu-map-async-errors（已登记 known-red；GPU `map_async`，边界：只定位不修 ✓）
+```
+⇒ **新加的两条也在这 32 里**：`check-tests-have-asserts`（143 个声称有判据的测试文件全有断言 ✓）
+＋ `check-skill-tool-names`（3 个 skill 文档／24 处标识符／0 未知 ✓）
+⇒ **⇒ 所以「这一场加的机检没有连带破坏」这句话，现在有 32 个绿做支撑** ✓
+
+**⇒ 记录一次增量**：上一轮同类扫描是 **31/32**（当时 32 条），现在是 **32/33** ✓
+⇒ 多出来的两条正是这一场新增的（`check-tests-have-asserts` ＋ `check-skill-tool-names`）✓
