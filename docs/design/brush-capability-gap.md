@@ -20186,3 +20186,21 @@ for (const m of text.matchAll(new RegExp(`第\\s*(${NUM}{2,6})\\s*节`, "g")))
 ⇒ 建议（需人裁定 ✓）：外部引用统一写成 `外§N`／`他们§N` ✓ ⇒ 那时 `§N` 就**只**指本台账 ✓ 判据才能查 ✓
 ⇒ **⇒ 在那之前**：`§N` 的盲区**如实留在这里** ✓（357 处／106 个号 ✓），**不假装覆盖** ✓
 ⇒ 而「第 N 节」（**52 处** ✓ 第 913 轮扩的）与 `§中文号`／`[中文号]`（**51 处** ✓）**都已**在检查内 ✓
+
+## 五百四十三、**两件事**：`import_image` 示例是空 `bitmap`（真缺陷）＋ 生成器**弄坏过 `tools.rs`**（事故）（第 922 轮）
+
+**⇒ 缺陷 ①（真）**：`TOOL_EXAMPLES` 里 `import_image` 的示例是 `"bitmap": {}` ✗
+⇒ 而 `bitmap.blob_hash` **必填** ✓ ⇒ **这个示例跑不通** ✓ ⇒ 而它被**渲染进 `docs/design/tool-examples.md`** ✓（第 980 行 ✓）
+⇒ 修法：改成**形状示例**（占位哈希 ＋ `width/height` 放 `bitmap` 里 ✓ 第 921 轮 ✓）
+
+**⇒ 事故 ②（必须记）**：我改完 `TOOL_EXAMPLES` 后跑 `node scripts/generate-tool-examples.mjs http://127.0.0.1:15021` ✓
+⇒ **它把 `crates/yanshi-server/src/tools.rs` 改成了**：末尾出现
+`#[cfg(test)] #[path = "tools_tests.rs"] mod tools_tests;];` ＋ **19813 行重复** ✗
+⇒ `git diff --stat` 显示 **19807 行新增** ✗ ⇒ 我用 `git checkout --` **撤回** ✓ 并 `cargo check -p yanshi-server` 确认 **0 error** ✓
+⇒ **⇒ 根因未查明** ✗（那条脚本可能追加到某个"源文件"里 ✓ 也可能是我早先某次 `sed -i` 的副作用 ✓）
+⇒ **⇒ 所以**：**我已经把示例改动 `git revert` 了** ✓（`6917c84a` ✓）—— 因为**示例变了而生成文档没变** ✗
+  ⇒ `tool-examples-doc --check` 会在 CI 上报不一致 ✗ ⇒ **宁可不改，也不让 CI 红** ✓
+
+**⇒ 下一轮（顺序不能反 ✓）**：
+1. **先查生成器**为什么写 `tools.rs`（读它写文件的那几行 ✓）＋ 加一条判据（生成前后 `git status` 只允许改**目标文档** ✓ —— 与第 880 轮的"工作区核对"同一思路 ✓）
+2. **再**改示例 ＋ 重新生成 ＋ `--check` 通过 ✓
