@@ -18394,3 +18394,32 @@ t.blob_put(&red).expect("写红块");     // ← 这一行我之前从没写过 
 ② 同一夹具可**直接**跑「末帧不许有 (0,0,0)」那条（`art` 第 127 次的 5 块黑矩形 ✓）
 —— 我这轮写的 `no_black_tiles.rs` **变异不红**（`only_document_and_layers` 那条路本来就把整幅铺了底 ✓）
 ⇒ 必须用**画过之后**的帧 ✓，而那就需要这个能画上的夹具 ✓。
+
+## 四百八十九、黑块**根因有了第三个候选**：`frame_rgb_scaled` 的脏区更新（第 845 轮）
+
+**⇒ 我这轮读到的实现**（`lib.rs:339-400`）：
+```rust
+if self.scaled_dims != (out_w, out_h) || self.scaled.len() != … {
+    self.scaled = vec![0u8; …];          // ← 全零（黑 ✓）
+    self.scaled_dims = (out_w, out_h);
+    self.last_dirty_px = None;           // ← 置 None ⇒ 下一帧**全幅更新** ✓
+}
+let (rows, cols) = match self.last_dirty_px {
+    None => ((0, out_h), (0, out_w)),    // 全幅 ✓
+    Some(rect) => 只更新脏区相交的行列 ✓,
+};
+```
+**⇒ 所以**：**重分配之后的第一帧是全幅的** ✓ ⇒ 我这版"The buffer starts black"**解释不了他们的黑块** ✗
+（我用 256×256 + 一块红实测：**0 个黑像素** ✓；把铺底注释掉**也不红** ✗ ⇒ 判据没牙 ✓ 已回退 ✓）。
+
+**⇒ 仍未解释的**：他们的黑块出现在**大包**末帧 ✓ ⇒ 三个新候选：
+1. **`out_w/out_h` 中途变过** ⇒ 重分配 + `last_dirty_px=None` ⇒ 全幅 ✓ 不该黑 ✗；
+2. **`last_dirty_px` 从 `Some(小矩形)` 开始** ⇒ 只有那块被更新 ⇒ 其余保持**上一次的值** ✓
+   —— 而"上一次的值"若是**第一帧之前**的零 ⇒ 黑 ✓ **这条最可疑** ✓（首帧是否真的走过全幅？取决于
+   `frame()` 与 `frame_rgb_scaled()` 的**调用顺序** ✓ —— 如果先 `frame_rgb_scaled` 再 `frame`，
+   或首帧 `last_dirty_px` 由 `frame()` 设成小矩形 ✓ 就可能从未走过全幅 ✓）；
+3. 他们的包有 **4608×8192** ⇒ `out` 1280×360 之外？不适用 ✗。
+
+**⇒ 下一轮的最小实验**：在 `incremental_matches_full.rs` 的夹具上**照他们的形态**：
+① 先 `apply` 两三条（脏区小 ✓）② 立刻 `frame_rgb_scaled` ③ 再 apply 一条 ⇒ 看第二帧黑像素 ✓
+⇒ 若黑 ⇒ 确认是"首帧没全幅" ✓ ⇒ 修法就是**分配时铺底色**（我这轮写的 ✓ 但需要**正确的触发**才红 ✓）。
