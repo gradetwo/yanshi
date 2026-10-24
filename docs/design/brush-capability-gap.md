@@ -18303,3 +18303,30 @@ known-red 那条已**标注为转绿**（保留原始理由与 42 → 0 的历�
 
 **⇒ 也记一条判据诚实性**：这条端到端判据**没提交** ✓（它现在会红，红的却不是产品 ✓）
 —— 与"算术单测已绿、且变异会红"的那两条（`922d8ce5`／`ae2627ed`）**互不替代** ✓。
+
+## 四百八十五、**真实 `import_image` 净荷拿到了** —— 端到端夹具下次照着抄（第 841 轮）
+
+**⇒ 方法**：跑一个临时测试：画一笔 ⇒ `export_project` ⇒ `tar -xOf p.yanshi atoms.jsonl` ⇒ 打印含
+`import_image` 的那一行 ✓（比猜快得多 ✓，也印证上一轮写的"照着真包抄" ✓）。
+
+**⇒ 真实净荷（原样，已去掉 id／时间戳）**：
+```json
+{"kind":"import_image","payload":{
+  "bitmap":{"blob_hash":"sha256:6aa0cf…c4356","mime_type":"image/x-yanshi-raw","size":44944},
+  "height":106,"width":106,"layer_id":"layer_default","object_id":"o1","origin":"drawn",
+  "refs":{"blobs":["sha256:6aa0cf…c4356"]},
+  "region":{"h":106.0,"w":106.0,"x":2.0,"y":2.0},
+  "source":{"brush":"8B_Pencil#1.myb","color":{...},"color_to":null}}}
+```
+
+**⇒ 与我上一轮凭印象写的那份，**三处不同**（这解释了「黑 0｜白 1920」）**：
+1. **`blob_hash` 带 `sha256:` 前缀** ✓（我写的是裸十六进制 ✗）⇒ 查不到 blob ⇒ **原子被静默丢掉** ✗；
+2. **没有 `bbox`** ✓，只有 **`region`** ✓（我加了 `bbox` 是多写的 ✗）；
+3. `width`／`height` 在 **payload 顶层** ✓（这一点我写对了 ✓）。
+
+**⇒ 下一轮**（三步，都短）：① 夹具改成 `blob_hash: "sha256:…"` ✓、blob 落在
+`blobs/sha256/<h[..2]>/<h[2..]>` ✓、只给 `region` ✓；② 跑端到端（约 80 秒 ✓）看白像素是否 0 ✓；
+③ 绿了之后补变异（把 `scaled_rect` 换回分别取整 ⇒ 应当出现白缝 ✓）。
+
+**⇒ 这条净荷形状本身也是资产**：以后再造任何 `import_image` 夹具都不必猜 ✓
+（尤其是那三处差异 ✓ —— 其中 **`sha256:` 前缀**是最容易静默失败的一处 ✓）。
