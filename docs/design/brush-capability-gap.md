@@ -19733,3 +19733,28 @@ window.fetch = async (input, init) => {
    **代价**：要设计冲突判定（`base_head` 已有 ✓）＋ 幂等键 ✓ ⇒ **一轮做不完** ✓
 
 **⇒ 本轮产出**：把这条从"28 条红断言"提升为**一个架构级判断 ＋ 两条可选路线**（都可复核：`api-local.js:4844` 那段没有 `onLine` 判断 ✓）。
+
+## 五百二十一、试了修法 A（离线时写类工具放行给真 fetch）⇒ **守卫没生效**，已撤回（第 888 轮）
+
+**⇒ 改动**（已 `git checkout` 撤回 ✓）：在 `installLocalApi` 的 `isLocalPath` 之后加
+「`navigator.onLine === false` ＋ 路径是 `/api/tools/<写类工具>` ⇒ `return original(...)`」✓
+⇒ 目的是让真 `fetch` 在断网时**抛错** ⇒ 走 `viewer-app.js:1403` 的 `catch` ⇒ **入队** ✓
+
+**⇒ 实测（有复现栈，chromium 154，CDP 9334）**：**27 条 ✗**（只比之前少 1 条 ✓ 噪声级 ✓）
+```
+入队返回 = {"ok":true,"seq":3,"server":false,…}      ← **仍然是本地层回答的**
+界面 = {"state":"offline",…}
+✗ 队列里恰好 1 条（拿到了 0）
+```
+⇒ **守卫没有拦到那次调用** ✗
+
+**⇒ 三个候选原因（下一轮按序排除，别猜 ✓）**：
+1. **路径形状不对**：我按 `url.pathname.indexOf("/api/tools/") === 0` 判 ✓，而实际请求**可能是**
+   `/api/tools` ＋ body 里的 `tool` ✗ —— 但本地层里出现 `path === "/api/tools/get_preferences"` ✓
+   说明**两种都存在** ✓ ⇒ 我的前缀判据**只覆盖了一种** ✓ ⇒ **下一轮先打印 `url.pathname`** ✗（一条 `console.log` 在 wrapper 里 ✓）
+2. **Service Worker 先答**：页面 `window.fetch` 覆盖**在 SW 之前** ✓ 理论上不会 ✗，但**陈旧预缓存**可能让页面仍跑**旧** `api-local.js` ✓
+   ⇒ 排除法：`?nosw=1` 或先 `unregister` ✓ 再跑 ✓
+3. `navigator.onLine` 在**那次调用时**仍是 `true`（CDP 断网是**之后**才生效 ✓）⇒ 日志里 `onLine:false` 是**负对照**读的 ✓ 时间点不同 ✓
+
+**⇒ 本轮产出**：一条**已撤回的改动** ＋ **三个按序可排除的原因**（每个都给了判据：打印 pathname／`?nosw=1`／时序）✓
+**⇒ 我没有把"守卫生效"当成结论** ✓ —— 它**没生效**就是没生效 ✓。
