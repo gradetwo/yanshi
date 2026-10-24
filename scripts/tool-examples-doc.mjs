@@ -60,7 +60,7 @@ for (const tool of withExample) {
   lines.push(`## \`${tool.name}\``);
   lines.push("");
   lines.push("```json");
-  lines.push(JSON.stringify(tool.example, null, 2));
+  lines.push(JSON.stringify(JSON.parse(tool.example), null, 2));
   lines.push("```");
   lines.push("");
 }
