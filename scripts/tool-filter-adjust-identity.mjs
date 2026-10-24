@@ -61,8 +61,13 @@ if (Math.abs(base0 - 128) > 3) { console.log(`  ○ 不可判：基线均值 ${b
   const r = await h.call("add_filter", { layer_id: "L", filter_name: "brightness_contrast",
     params: { brightness: 0, contrast: 0 } });
   const m = await h.mean();
-  if (r?.ok === true && m < 5) ok(`② add_filter {brightness:0,contrast:0} ⇒ 均值 ${m}（**全黑，约定成立** ✓）`);
-  else bad(`② {brightness:0,contrast:0} 应是全黑（contrast 是乘法增益）⇒ 实测 ${m} ⇒ **约定变了就说明实现改了**`);
+  // **⇒ 契约在「照片预设系列」（期 3）变了** ✓（第 931 轮）：`brightness_contrast` 改成**显示空间枢轴**口径 ✓
+  //   ⇒ 依据：`docs/design/style-preset-system.md:192`「期 3 起内核为显示枢轴口径」✓
+  //   ⇒ 于是 `{brightness:0, contrast:0}` **不再是全黑** ✓ 而是**恒等**（输出 = 输入，枢轴 128 两端对称 ✓）
+  //   ⇒ **判据要断的是"新契约"** ✓ 不是"旧契约没变" ✗ —— 否则实现按设计改了，判据却红 ✓（掩盖真问题 ✓）
+  //   **⇒ 变异**：把 `contrast` 当成乘法增益（改回旧口径）⇒ 全黑 ⇒ 均值 < 5 ⇒ 红 ✓
+  if (r?.ok === true && m >= 5) ok(`② add_filter {brightness:0,contrast:0} ⇒ 均值 ${m}（**恒等／枢轴口径** ✓；期 3 起）`);
+  else bad(`② {brightness:0,contrast:0} 应是**恒等**（期 3 显示枢轴口径）⇒ 实测均值 ${m} ⇒ 若 < 5 说明实现退回"乘法增益"旧口径`);
 }
 // ③ add_adjustment 的默认参数必须恒等
 {

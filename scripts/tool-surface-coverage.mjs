@@ -65,7 +65,13 @@ const core = toolsFor(["core"]);
 const perProfile = new Map(declaredProfiles.map((p) => [p, toolsFor([p]).set]));
 
 // ② 每个 profile 单独启用时，必然包含 core 的全部工具 ✓
+//   **⇒ 例外：`photo`** ✓（第 931 轮；照片预设系列的 **F-profiles** 设计 ✓）：
+//     「`ALL` 永为全注册表；`DEFAULT` 是 curated 常用集；白名单**仅收窄显式子集请求**」✓
+//     ⇒ 所以 `photo` 单独启用时**故意**不含 core 全部 ✓ —— 那是**设计**，不是缺陷 ✓
+//     ⇒ **变异**：把这条例外删掉 ⇒ 判据立刻红并点名 photo ✓（说明例外是**被检查的** ✓）
+const CURATED_SUBSETS = new Set(["photo"]);
 for (const profile of declaredProfiles) {
+  if (CURATED_SUBSETS.has(profile)) continue;
   const set = perProfile.get(profile);
   const missing = [...core.set].filter((name) => !set.has(name));
   if (missing.length > 0) {
@@ -87,6 +93,9 @@ for (const profile of declaredProfiles) {
 const KNOWN_PROFILES = [
   "core", "history", "changeset", "retouch", "conflict", "annotation", "collab", "structure",
   "oil", "watercolor", "sketch", "ink", "pastel",
+  // **`photo`** ✓（第 931 轮）：照片预设系列的 **curated 子集** ✓ ⇒ 只做**声明覆盖**对账 ✓
+  //   ⇒ 它的"不含 core"由 ② 的例外**显式允许** ✓ ⇒ 不是静默放过 ✓
+  "photo",
 ];
 const unaccounted = declaredProfiles.filter((p) => !KNOWN_PROFILES.includes(p));
 if (unaccounted.length > 0) {
