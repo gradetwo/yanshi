@@ -20927,3 +20927,28 @@ grep -c "assert" <被变异的文件>     # 期望 0 才算真的"变异到位" 
 
 **⇒ ⇒ 这与第 888／904／916／945／983 轮同源**：**我的测量比被测对象更容易错**（第 11 次 ✓）
 ⇒ **⇒ 而这次的漏步是可以机检的** ✓：变异脚本最后**必须**打印 `grep -c` 的结果 ✓
+
+## 五百八十二、示例覆盖率 **197/203** —— 缺的 **6 个**列出来了，生成器**补不上**（第 1008 轮）
+
+**⇒ 实测**：
+```
+注册表 203｜有示例 197｜缺示例 6
+delete_document、gradient_blend、import_psd、import_psd_layers、set_brush_curve、set_brush_dynamics
+```
+
+**⇒ 试着让生成器自动补**（`generate-tool-examples.mjs` 对着活服务端跑 ✓）：
+```
+✗ try_stroke 示例被拒 ⇒ 缺少必填参数 layer_id
+⊙ update_layer 需要前置状态（不收录）
+✗ update_sync_policy 被拒 ⇒ 本片只支持 policy: all/none（partial 需设计 9.3 的依赖图）
+✗ vector_erase 被拒 ⇒ 图层 L1 是 Raster，矢量工具不作用于它
+✗ vector_hit_test 同上
+本轮新增 0 条
+```
+⇒ **⇒ 生成器补不上这 6 个** ✗ —— 它们各自缺**前置**（PSD 文件／矢量层／笔刷曲线参数 ✓）
+
+**⇒ 所以这是一个**能度量、但不能自动修**的缺口** ✓：**197/203（97.0%）**
+⇒ 下一轮（预算足时）：**逐个手写**这 6 条示例 ✓ 顺序按收益：
+`set_brush_curve`／`set_brush_dynamics`（纯参数 ✓ 最容易）→ `gradient_blend`（两色 ✓）
+→ `delete_document`（要自建文档 ✓）→ `import_psd*`（需夹具 ✗ 最后）
+⇒ 然后**加一条判据**：`示例覆盖 == 注册表工具数`（变异：删一条示例 ⇒ 红 ✓）
