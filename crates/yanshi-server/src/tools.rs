@@ -18618,8 +18618,14 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         //     ⇒ 正好有 `limit` 条匹配、**后面没东西了**，也报 `truncated: true` ✓（假阳性 ✓）；
         //     且 `limit: 0` ⇒ `0 >= 0` ⇒ 同样报截断 ✓（与 `next_since`/`offset` 一起构成矛盾 ✓）。
         //   **⇒ 修法**：**收到 limit+1 条**才停 ⇒ `has_more = 收进来的 > limit` ✓ 精确 ✓。
+        // **收到 limit+1 条之后不再收，但**继续数总数** ✓（第 779 轮；外部 D7）
+        //   **⇒ 缺陷**：原来是 `break` ✗ ⇒ 循环提前结束 ⇒ `matched` 只到 `limit+1` ✗
+        //     ⇒ 我第一版把 `total` 接在 `matched` 上，实测**3 笔只报 2** ✓（limit=1 ⇒ 收到 2 条就 break ✓）
+        //     ⇒ **那样加出来的 `total` 比没有更坏**：它看起来像真总数 ✓ 而实际是"本页 + 1" ✓。
+        //   **⇒ 修法**：不收新条，但**继续走完过滤** ⇒ `matched` 才是真总数 ✓。
         if hits.len() > limit {
-            break;
+            matched += 1;
+            continue;
         }
         if let Some(min) = since_seq {
             if (atom.seq) <= min {
@@ -18776,6 +18782,13 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     Ok(json!({
         "atoms": hits,
         "count": hits.len(),
+        // **`total` ＝ 过滤之后的匹配总数** ✓（第 779 轮；外部 `qoder` 报告 D7）
+        //   **⇒ 他们的实测**：`list_atoms(limit=2000)` ⇒ `returned=500 total=None truncated=True` ✗
+        //     ⇒ **只看得见最新 500 条，而回执不说总数也不说被截断** ✓
+        //     ⇒ 于是首次审计会跑出「500 笔 PASS」的假象 ✓（他们真的这么误判过 ✓）。
+        //   **⇒ 为什么原来没有**：`count` 是**这一页**的条数 ✓，与"总共有多少"是两件事 ✓
+        //     ⇒ 大图上二者差几十倍 ✓ ⇒ 只给 `count` 等于**不给** ✓。
+        "total": matched,
         "offset": offset,
         "truncated": truncated,
         "has_more": truncated,

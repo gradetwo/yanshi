@@ -87,3 +87,69 @@ fn list_atoms_only_reports_truncation_when_something_is_left() {
         );
     }
 }
+
+/// **`list_atoms` 必须给出过滤之后的匹配总数**（第 779 轮；外部 `qoder` 报告 D7）
+///
+/// **⇒ 他们的实测**：`list_atoms(limit=2000)` ⇒ `returned=500 total=None truncated=True`
+/// ⇒ **只看得见最新 500 条**、回执**不说总数** ⇒ 大图审计跑出「500 笔 PASS」的假象 ✓。
+///
+/// **⇒ 判据**：3 条原子、`limit=1` ⇒ `count=1` **且 `total=3`** ✓（`truncated=true` ✓）；
+/// 再 `limit=10` ⇒ `count=3`、**`total=3`**、`truncated=false` ✓。
+/// **⇒ 变异**：把 `total` 换成 `count`（或省略）⇒ 第一条 `total=1≠3` ⇒ 红 ✓。
+#[test]
+fn list_atoms_reports_the_total_number_of_matches() {
+    let root = std::env::temp_dir().join(format!("yanshi_atoms_total_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("建根");
+    let mut workspace =
+        Workspace::with_file_store(root, DocumentSettings::default()).expect("落盘工作区");
+    workspace
+        .create_document(NewDocument::new("doc_tot", 64, 64), "human:1", "s")
+        .expect("create_document");
+    let registry = ToolRegistry::with_profiles(&Profile::ALL);
+    for index in 0..3 {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_tot", "human:1", "s")
+            .with_owner(true)
+            .with_wait_for_render(true, 4_000);
+        let response = registry.call(
+            &mut ctx,
+            "draw_stroke",
+            &json!({
+                "layer_id": "layer_default", "object_id": format!("s{index}"),
+                "data": {"points": [[2.0, 2.0], [40.0, 40.0]], "size": 3.0, "hardness": 1.0,
+                         "color": {"r": 10, "g": 20, "b": 30, "a": 255}},
+            }),
+        );
+        assert_eq!(response["ok"], json!(true), "{response}");
+    }
+
+    let mut ctx = ToolContext::new(&mut workspace, "doc_tot", "human:1", "s").with_owner(true);
+    let page = registry.call(
+        &mut ctx,
+        "list_atoms",
+        &json!({"limit": 1, "include_non_stroke": true}),
+    );
+    assert_eq!(page["count"], json!(1), "一页应当只给 1 条：{page}");
+    assert_eq!(
+        page["total"],
+        json!(4),
+        "`total` 必须是过滤后的匹配总数（3 笔 ＋ 建图层等记账原子）：{page}"
+    );
+    assert_eq!(
+        page["truncated"],
+        json!(true),
+        "还有更多 ⇒ truncated 必须为真：{page}"
+    );
+
+    let mut ctx = ToolContext::new(&mut workspace, "doc_tot", "human:1", "s").with_owner(true);
+    let all = registry.call(
+        &mut ctx,
+        "list_atoms",
+        &json!({"limit": 50, "include_non_stroke": true}),
+    );
+    assert_eq!(
+        all["total"], all["count"],
+        "一页装得下时 `total` 与 `count` 必须相等：{all}"
+    );
+    assert_eq!(all["truncated"], json!(false), "装得下就不许报截断：{all}");
+}
