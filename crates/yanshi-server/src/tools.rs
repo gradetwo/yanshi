@@ -1926,6 +1926,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "estimate_dehaze" => read_estimate_dehaze(ctx),
         "frequency_separation" => write_frequency_separation(ctx, args),
         "dodge_burn_setup" => write_dodge_burn_setup(ctx, args),
+        "auto_retouch" => write_auto_retouch(ctx, args),
         "liquify_push" => write_liquify(ctx, args, "push"),
         "liquify_twirl" => write_liquify(ctx, args, "twirl"),
         "liquify_pinch" => write_liquify(ctx, args, "pinch"),
@@ -20218,6 +20219,10 @@ use tools_effect::*;
 #[path = "tools_retouch.rs"]
 mod tools_retouch;
 use tools_retouch::*;
+// **期 4 D3**：自动模式（Retouch 层工具，见 tools_auto.rs）
+#[path = "tools_auto.rs"]
+mod tools_auto;
+use tools_auto::*;
 #[path = "presets.rs"]
 mod presets;
 use presets::*;

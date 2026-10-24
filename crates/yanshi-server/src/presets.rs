@@ -739,7 +739,12 @@ fn parse_preview_render(args: &Value) -> Result<Option<PreviewRender>> {
 /// 保证“原生即 ≤max_edge 的图预览与 apply 逐像素相等”的测试前提）；
 /// 超出时按盒平均降采样（每个输出像素 = 覆盖源像素的均值，向零取整）。
 /// 输入尺寸为 0 时不做除法，直接原样返回，调用方随后响亮拒绝。
-fn box_downsample(pixels: &[u8], width: u32, height: u32, max_edge: u32) -> (Vec<u8>, u32, u32) {
+pub(super) fn box_downsample(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    max_edge: u32,
+) -> (Vec<u8>, u32, u32) {
     if width == 0 || height == 0 {
         return (Vec::new(), width, height);
     }
@@ -882,7 +887,9 @@ fn render_preview_in_temp_doc(
     // 与 apply_preset 同一份落成循环（不是复制品）：临时文档全新，
     // alive 为空 ⇒ 全走 add。
     let alive: BTreeMap<String, &yanshi_core::Object> = BTreeMap::new();
-    let landed = land_expanded_ops(&mut temp_ctx, &base_layer_id, &preset.id, ops, &alive)?;
+    let landed = land_expanded_ops(&mut temp_ctx, &base_layer_id, ops, &alive, &|_| {
+        format!("preset:{}", preset.id)
+    })?;
     let bbox = Bbox::new(0.0, 0.0, proxy.width as f64, proxy.height as f64);
     let (width, height, rendered) = temp_ctx.workspace.render_region_raw(temp_id, bbox)?;
     let (bytes, format_name) = match render.format {
@@ -1046,12 +1053,15 @@ pub(super) struct LandedOps {
 /// 按序落成一串已展开操作（新走 add、已有走 update、墓碑走 add 的
 /// 复活支路）。调用方须先做全量校验（apply 侧的第一阶段）；preview
 /// 渲染侧对全新临时文档调用，alive 为空 ⇒ 全走 add。
-fn land_expanded_ops(
+/// 对象名由 namer 闭包给：apply/preview 传 preset 名闭包，期 4 D3
+/// 的 `auto_retouch` 传 object_id→中文组名查表闭包（落成循环仍只
+/// 有一份，不许为 auto 复制第二份）。
+pub(super) fn land_expanded_ops(
     ctx: &mut ToolContext<'_>,
     layer_id: &str,
-    preset_id: &str,
     ops: &[ExpandedOp],
     alive: &BTreeMap<String, &yanshi_core::Object>,
+    namer: &dyn Fn(&ExpandedOp) -> String,
 ) -> Result<LandedOps> {
     let mut created: Vec<String> = Vec::new();
     let mut updated: Vec<String> = Vec::new();
@@ -1079,7 +1089,7 @@ fn land_expanded_ops(
                     kind.key(): op.type_name,
                     "params": op.params,
                     "object_id": op.object_id,
-                    "name": format!("preset:{preset_id}"),
+                    "name": namer(op),
                     "opacity": 1.0,
                 }),
                 kind,
@@ -1192,7 +1202,9 @@ pub(super) fn write_apply_preset(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     }
 
     // ---- 第二阶段：按序落成（抽出 land_expanded_ops，与 preview 渲染共用）----
-    let landed = land_expanded_ops(ctx, &layer_id, &preset.id, &ops, &alive)?;
+    let landed = land_expanded_ops(ctx, &layer_id, &ops, &alive, &|_| {
+        format!("preset:{}", preset.id)
+    })?;
     let LandedOps {
         created,
         updated,
