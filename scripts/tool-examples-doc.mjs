@@ -18,14 +18,31 @@ const base = process.argv[2];
 const check = process.argv.includes("--check");
 if (!base) { console.error("用法: node scripts/tool-examples-doc.mjs <server-base> [--check]"); process.exit(2); }
 const path = "docs/design/tool-examples.md";
-const doc = "doc1";
-const created = await fetch(`${base}/api/documents`, {
-  method: "POST", headers: { "content-type": "application/json" },
-  body: JSON.stringify({ doc_id: doc, width: 900, height: 640 }),
-}).then((r) => r.json());
-if (!created.token) { console.error("建文档没拿到 token ⇒ 判据无法运行（不是通过）"); process.exit(1); }
-const catalogue = await fetch(`${base}/api/tools?doc=${doc}&token=${created.token}`).then((r) => r.json());
-const withExample = (catalogue.tools || []).filter((tool) => tool.example).sort((a, b) => a.name.localeCompare(b.name));
+// **⇒ 清单取自**源码**，不再取自运行中的服务端** ✅（第 950 轮；**这是判据在 CI 上抖的真因** ✓）
+//   **⇒ 症状** ✗：CI 报「第 678 行应为 `{}` / 第 679 行文档有 `filename`」✓
+//     而**本机**重建服务端再生成 ⇒ 与提交**逐字节相同**、`--check` 过 ✗
+//   **⇒ 根因** ✗：旧版从 `GET /api/tools` 取 `tool.example` ✓ ⇒ 而 `tool.example` 是**注册表里有没有**的镜像 ✓
+//     ＋ **有些示例依赖前置状态**（`export_psd_layers` 要已有图层内容 ✓）
+//     ⇒ 于是"带示例的工具集合"**随环境变** ✗ ⇒ 文档变 ✗ ⇒ `--check` 天生会抖 ✗
+//   **⇒ 改法**：直接解析 **`crates/yanshi-server/src/tools_examples.rs`** 的
+//     `("name", r#"json"#)` 对子 ✓ ⇒ **纯静态** ✓ ⇒ 同一份源码 ⇒ 同一份文档 ✓（与运行环境无关 ✓）
+//   **⇒ 代价（两面 ✓）**：文档会列出**需要前置状态**的示例 ✓ ⇒ 而"它们能不能直接抄"由
+//     `scripts/tool-example-acceptance.mjs` 判 ✓（本文件只保证**与源码一致** ✓）。
+const source = readFileSync("crates/yanshi-server/src/tools_examples.rs", "utf8");
+const withExample = [...source.matchAll(/\(\s*"([a-z][a-z0-9_]+)",\s*\n?\s*r#"([\s\S]*?)"#,?\s*\)/g)]
+  .map((m) => ({ name: m[1], example: m[2] }))
+  .sort((a, b) => a.name.localeCompare(b.name));
+if (withExample.length === 0) { console.error("  ⊘ 从源码里没解析出任何示例 ⇒ 判据无法运行（不是通过）"); process.exit(3); }
+// **⇒ 还要与**注册表**对齐** ✅（第 950 轮）：示例表里可能有**注册表没有的工具**（改名/删除的残留 ✓）
+//   ⇒ 那正是"文档会漂移"的形态 ✓ ⇒ **静态解析注册表的 `name: "…"`** ✓ 再**求交** ✓
+//   ⇒ 与运行时无关 ✓ 而仍是"两份源码互相对账" ✓ ⇒ 比"取活目录"稳 ✓ 且**照样能抓到漂移** ✓
+const registrySource = readFileSync("crates/yanshi-server/src/tools_registry.rs", "utf8");
+const registered = new Set([...registrySource.matchAll(/name:\s*"([a-z][a-z0-9_]+)"/g)].map((m) => m[1]));
+const orphans = withExample.filter((tool) => !registered.has(tool.name)).map((tool) => tool.name);
+if (orphans.length > 0) {
+  console.error(`  ✗ 示例表里有 ${orphans.length} 个工具**不在注册表**：${orphans.slice(0, 6).join("、")} ⇒ 文档会教一个不存在的工具`);
+  process.exit(1);
+}
 const lines = [
   "# 每个工具的可复制调用示例",
   "",
