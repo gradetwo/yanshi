@@ -155,8 +155,13 @@ check(
 // ⑦ **`§数字` 的棘轮**：那种写法**不能**被检查（两套编号混用 ✓ 第 914 轮查明 ✓）
 //   ⇒ **唯一能做的**：**不许再增长** ✓（棘轮 ✓ —— 与 `check-vendor-determinism-ratchet` 同一形态 ✓）
 //   ⇒ **变异**：往台账里再加一处 `§数字` ⇒ 红 ✓
+// **⇒ 但**明确标了出处的**不算**：`外§N`／`他们§N`／`对方§N` ✅（第 916 轮）
+//   **⇒ 为什么**：那是**外部报告的节号** ✓ 与台账无关 ✓ ⇒ 允许写 ✓ 而**未标注**的才算盲区 ✓
+//   **⇒ 于是有了一条**可执行的改写方向**：把 `§N` 写成 `外§N` ⇒ **棘轮基数不会涨** ✓
+//     （棘轮本身**不降** —— 降要靠把旧的那些逐个改标 ✓ 那是后续的活 ✓）
+const DIGIT_REF_UNMARKED = /(?<!外|他们|对方)§[0-9]/g;
 const DIGIT_REF_RATCHET = 430;
-const digitRefs = (text.match(/§[0-9]/g) || []).length;
+const digitRefs = (text.match(DIGIT_REF_UNMARKED) || []).length;
 check(
   digitRefs <= DIGIT_REF_RATCHET,
   `「§数字」引用不许再增长（棘轮 ${DIGIT_REF_RATCHET}｜实测 ${digitRefs}）⇒ 新增的请改写成「第 N 节」或「外§N」`
