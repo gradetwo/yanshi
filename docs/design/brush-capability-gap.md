@@ -19806,3 +19806,23 @@ async function fetchMutating(url, options) {
 ⇒ 判据会自己绿 ✓（因为链已存在 ✓）；变异：把 `fetchMutating` 的短路删掉 ⇒ 队列回到 0 ⇒ 红 ✓
 **⇒ 附带发现**：`fetchMutating` 的短路在 775 行**早就写着** ✓ —— 我前两轮加守卫是**在错误的层修**
 （产品里已经有正确逻辑 ✓，缺的是**调用点没用它** ✓）⇒ 这正是「读码比猜快」的又一次 ✓。
+
+## 五百二十四、**我改的是构建产物**：`web/viewer-app.js` 是 `crates/yanshi-http/assets/` 的副本（第 891 轮）
+
+**⇒ 决定性事实**：
+- `.gitignore:62-67` 忽略 `web/wasm/`、`web/brushes/`、`web/mediums/`、**`web/viewer-app.js`**、`web/viewer.css`、**`web/service-worker.js`** ✓
+- 它们的**真身**是 `crates/yanshi-http/assets/viewer-app.js` ✓，由 `scripts/pwa-sync-viewer.mjs` **拷到 `web/`** ✓
+  （那个脚本 `:66` 的清单里就写着 `"viewer-app.js", "viewer.css", "index.html"` ✓）
+
+**⇒ 所以本轮与上一轮的那次改动**：我改的是 `web/viewer-app.js` ✓ = **副本** ✗
+⇒ `git checkout -- web/viewer-app.js` 报「未匹配任何 Git 已知文件」✓ —— **它根本不在版本控制里** ✓
+⇒ 而 `web/api-local.js` **是**被跟踪的 ✓（所以那两轮对它的改动能 `git checkout` 回去 ✓）
+⇒ **⇒ 这解释了为什么"改都没效果"** ✗：改的是**产物**，而**真源没动** ✓
+（产物在 `pwa-sync-viewer.mjs` 一跑就**被覆盖** ✓ —— 本轮复现前刚好跑过它 ✓ 于是改动消失了 ✓）
+
+**⇒ 下一轮的正确改法（两处，都必须在**真源**里）**：
+1. `crates/yanshi-http/assets/viewer-app.js` ⇒ `callTool` 的"离线 ＋ 改文档 ⇒ 不走本地分支" ✓
+2. 改完 **`node scripts/pwa-sync-viewer.mjs`** ⇒ 再起静态服务跑判据 ✓
+
+**⇒ 这条教训的普适形态（写进问句）**：**「我要改的这个文件，是源还是产物？」** ✗
+⇒ 机检：`git ls-files <path>` **空** ⇒ **它是产物** ✗ ⇒ **别改它** ✓
