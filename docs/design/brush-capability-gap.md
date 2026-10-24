@@ -19962,7 +19962,11 @@ if (!serverRenderPreferred()) { return await callToolLocal(name, args, options);
 ⇒ 而 `browser-layout.mjs:197` 只在**注释**里提到它 ✓（**不构造 URL** ✓）
 ⇒ **⇒ 所以"把 `render=server` 拼到静态 PWA 上"这个错误**只有 `browser-offline-journal` 一条 ✓（已修 ✓）
 
-**⇒ 它不在 known-red 里** ✓（`grep -c` ＝ **0**）⇒ 所以它是**意外失败**（CI 上真实红 ✓）
+**⇒ 它**不是**活跃的 known-red 条目** ✓（`grep -cE "^browser-offline-journal\.mjs" scripts/criteria-known-red.txt` ＝ **0** ✓）
+⇒ 所以它是**意外失败**（CI 上真实红 ✓）
+**⇒ 更正一处我自己的读数** ✗：先前我用 `grep -c "browser-offline-journal"` 得到 **29** ✓
+⇒ 那 **29 行是注释里提到它**（那份文件是"带长注解的清单" ✓）⇒ **`grep -c` 不区分"条目"与"注释"** ✗
+⇒ **⇒ 判"是不是条目"必须用 `^名字\.mjs` 锚定** ✓（这就是第 888 轮"尺子要先被测量"的同一类 ✓）。
 ⇒ 修好后应当**转绿**，而不是被"登记"绕过 ✓。
 
 **⇒ 仍未验证的**：`4c08d7ff` 的 CI 结论**还没出**（本机已 exit 0 ✓）
