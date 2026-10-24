@@ -536,6 +536,14 @@ fn main() -> Result<()> {
             None
         };
         account.shrink_ns += t_shrink.elapsed().as_nanos();
+        // **`shrink_atom` 放弃的次数** ✓（第 850 轮；外部 `art` 第 127 次 / `D188`）
+        //   **⇒ 为什么要数它**：第 848 轮造了 5 块故意全零的位图 ⇒ 计数器读到 **0** ✓
+        //     ⇒ 只可能是 `shrink_atom` **对每个原子都返回 `None`** ✓（`None` ⇒ 用原样回放 ✓）
+        //     ⇒ 那 `SHRINK=1` 就等于**空转** ✓ —— 这正好解释他们「缩样不是缩样」✓
+        //   **⇒ 这个数就是**判据**：健康的包应当 `放弃 0` ✓；若 `放弃 == 原子数` ⇒ 缩样根本没生效 ✓。
+        if shrink && shrunk.is_none() {
+            account.shrink_skips += 1;
+        }
         let t_apply = Instant::now();
         if shrink && shrunk.is_none() {
             eprintln!(
@@ -660,7 +668,7 @@ fn main() -> Result<()> {
         println!("  ★ 缓存账 ★ below 克隆 {cloned} 条 tile（脏 tile 是 {dirty_tiles} 条 ⇒ 应当远小于它 ✓）");
         println!(
             "  ★ 分段账（ms）★ apply {:.0}｜shrink {:.0}｜render {:.0}（每帧中位 {:.1}）｜scale {:.0}｜write {:.0}｜\
-             黑块 {}（缩小前全零 {}／缩小后全零 {}）",
+             黑块 {}（缩小前全零 {}／缩小后全零 {}）｜shrink 放弃 {} 个原子",
             ms(account.apply_ns),
             ms(account.shrink_ns),
             ms(account.render_ns),
@@ -669,7 +677,8 @@ fn main() -> Result<()> {
             ms(account.write_ns),
             account.shrink_black_blocks[0] + account.shrink_black_blocks[1],
             account.shrink_black_blocks[0],
-            account.shrink_black_blocks[1]
+            account.shrink_black_blocks[1],
+            account.shrink_skips
         );
     }
     if apply_failures > 0 {
@@ -738,6 +747,8 @@ struct Account {
     shrink_ns: u128,
     /// **黑块计数** ✓（第 847 轮）：`[0]` 缩小前就全零／`[1]` 缩小后全零 ✓
     shrink_black_blocks: [u64; 2],
+    /// **`shrink_atom` 放弃的次数** ✓（第 850 轮）—— 它放弃 ⇒ 这一行**用原样回放** ✓
+    shrink_skips: u64,
     /// 内核渲染的总纳秒 ✓。
     render_ns: u128,
     /// 缩放 ＋ 去 alpha 的总纳秒 ✓。
