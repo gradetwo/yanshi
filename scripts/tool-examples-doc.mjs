@@ -33,6 +33,17 @@ const withExample = [...source.matchAll(/\(\s*"([a-z][a-z0-9_]+)",\s*\n?\s*r#"([
   .map((m) => ({ name: m[1], example: m[2] }));
 // **⇒ 去重** ✅（第 951 轮）：示例表里**同一个工具出现多次**（生成器历史上重复追加过 ✓ 实测 **235 条 / 197 唯一** ✓）
 //   ⇒ 文档里会出现**两节同名** ✓ ⇒ 读者两份不同示例不知道该抄哪个 ✗
+// **⇒ 源里的重复条目要**报出来**，不能只靠去重遮住** ✅（第 959 轮）
+//   **⇒ 为什么** ✗：去重让文档看起来正常 ✓ 而**源里仍有 38 个重复块**（第 958 轮实测 ✓）
+//     ⇒ 那说明生成器历史上重复追加过 ✓ ⇒ **没有信号** ✗ ⇒ 会再次累积 ✓
+//   **⇒ 所以**：**发现重复 ⇒ 在 `--check` 模式直接红并点名** ✓（生成模式仍去重写出 ✓）
+const dupNames = [...withExample.reduce((m, t) => m.set(t.name, (m.get(t.name) || 0) + 1), new Map())]
+  .filter(([, count]) => count > 1)
+  .map(([name, count]) => `${name}×${count}`);
+if (dupNames.length > 0) {
+  console.error(`  ✗ 示例表里有 ${dupNames.length} 个工具**重复**：${dupNames.slice(0, 6).join("、")} ⇒ 删掉多余块（每工具一条）`);
+  process.exit(1);  // **⇒ 两种模式都红** ✓（生成模式也不许从脏表写出文档 ✓）
+}
 const seenNames = new Set();
 withExample.splice(0, withExample.length, ...withExample.filter((tool) => {
   if (seenNames.has(tool.name)) return false;
