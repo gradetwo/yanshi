@@ -19621,3 +19621,35 @@ PWA／资产 **6 条全绿**✓（`tool-pwa-stamp-shape`／`tool-pwa-assets`／`
 ① 起 `yanshi-serve`（临时根）✓ ② 用它的 API 建一个文档拿 `doc_id`／`token` ✓
 ③ `serve-web.mjs` 起静态 ✓ ④ 带 `YANSHI_LIVE_UI_URL` 再跑判据 ✓
 **⇒ 不要再用"只起静态服务"这条捷径** ✗ —— 它连前置都过不了 ✓（本轮就白跑一次 ✓，如实记下 ✓）。
+
+## 五百一十七、`browser-offline-journal` **本机复现成功**（第 884 轮）：入队说 `ok`，队列却是 0
+
+**⇒ 复现配方（可照抄，四步）**：
+```bash
+./target/release/yanshi-serve --root /tmp/… --bind 127.0.0.1:14991 &      # ① 后端
+TOK=$(curl -s -X POST http://127.0.0.1:14991/api/documents -H 'content-type: application/json' \
+       -d '{"doc_id":"crit_boj","width":320,"height":240}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+node scripts/serve-web.mjs 14992 web &                                     # ② 静态
+chromium --headless=new --no-sandbox --disable-gpu --remote-debugging-port=9333 \
+         --user-data-dir=/tmp/… about:blank &                              # ③ CDP
+node scripts/browser-offline-journal.mjs \
+  "http://127.0.0.1:14992/?doc=crit_boj&token=$TOK&debug=1&render=client" \
+  http://127.0.0.1:14991                                                   # ④ 判据
+```
+**⇒ 三个坑（本轮各撞一次）**： 的端口参数是 **`--bind 127.0.0.1:PORT`**（不是 `--port` ✓）；
+判据的第 1 个参数是**带 `?doc&token` 的 viewer URL**（不是纯 origin ✓）；**必须**给 CDP（否则 `exit 3` ✓）。
+
+**⇒ 复现结果＝CI 同一形态** ✓（本机 chromium 154）：`队列 0`／`data-state=offline` ✓
+
+**⇒ 关键新证据（CI 日志里被截掉的那一行）**：
+```
+入队返回 = {"ok":true,"seq":3,"server":false,"bytes":29440,"blob_hash":"sha256:066b76…"}
+界面 = {"state":"offline","text":"离线","banner":null}
+```
+⇒ **入队自称成功**（`ok:true` ＋ `seq:3`）✓ 而**紧接着读队列是 0** ✗ ⇒ **"写进去了但读不出来"** ✓
+⇒ 这就是**静默降级**：调用方拿到 `ok:true`，而队列里没有 ⇒ 断网时那一笔**会丢** ✗
+
+**⇒ 下一步（下一轮从这里开始）**：
+- `web/viewer-app.js:653` `outboxEnqueue` 的**写入**与 `outboxAll`（695）／`outboxDelete`（704）的**读**是否**同一个 db／store／key 前缀** ✓
+- `775`／`801`／`869`／`897` 是 `outboxOffline` 的置位点 ✓；`959` 决定 UI 文案 ✓
+- 先加一条**结构判据**：`outboxEnqueue` 之后 `outboxAll().length` 必须 **≥1**（同一次求值里读 ✓）⇒ 变异：写入换 store ⇒ 红 ✓
