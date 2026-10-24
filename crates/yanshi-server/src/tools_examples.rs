@@ -19,6 +19,18 @@
 /// 形状：`(工具名, 一段可直接粘贴的 JSON 参数)`。**先给日常最常用的三个**，
 /// 其余工具按同一模式补齐（每加一个，测试自动替它把关）。
 pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
+    ("smart_glaze", r#"{"shape":{},"color":[],"layer_id":"L1"}"#),
+    ("smart_erase_shape", r#"{"layer_id":"L1","shape":{}}"#),
+    (
+        "smart_blend",
+        r#"{"shape":{},"color_a":[],"color_b":[],"layer_id":"L1"}"#,
+    ),
+    ("set_anchor", r#"{"name":"x","x":1,"y":1}"#),
+    ("select_opaque_pixels", r#"{"layer_id":"L1"}"#),
+    ("get_histogram", r#"{}"#),
+    ("fit_background_field", r#"{"layer_id":"L1","mask":{}}"#),
+    ("export_timelapse", r#"{"path":"x"}"#),
+    ("export_psd_layers", r#"{}"#),
     // **原生矢量（路线甲 Phase 2）**：先建矢量层、在矢量层上落笔，
     // 之后才能用脊线橡皮截断、用命中测试按脊线选笔 ✓。
     (

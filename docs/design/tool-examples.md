@@ -3,7 +3,7 @@
 **这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，
 所以它不会与实现漂移；`--check` 模式会在文档过期时失败。
 
-当前共 196 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
+当前共 203 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
 
 ## `abort_changeset`
 
@@ -100,11 +100,29 @@
 }
 ```
 
+## `apply_preset`
+
+```json
+{
+  "layer_id": "layer_default",
+  "preset_id": "hong_kong",
+  "strength": 0.8
+}
+```
+
 ## `apply_stash`
 
 ```json
 {
   "stash_id": "st1"
+}
+```
+
+## `auto_retouch`
+
+```json
+{
+  "layer_id": "L1"
 }
 ```
 
@@ -517,6 +535,15 @@
 }
 ```
 
+## `dodge_burn_setup`
+
+```json
+{
+  "layer_id": "L1",
+  "mode": "curves"
+}
+```
+
 ## `draw_shape`
 
 ```json
@@ -726,6 +753,15 @@
 }
 ```
 
+## `frequency_separation`
+
+```json
+{
+  "layer_id": "L1",
+  "radius": 8
+}
+```
+
 ## `get_ancestors`
 
 ```json
@@ -875,6 +911,14 @@
 
 ```json
 {}
+```
+
+## `get_preset`
+
+```json
+{
+  "preset_id": "hong_kong"
+}
 ```
 
 ## `get_render_status`
@@ -1162,6 +1206,14 @@
 }
 ```
 
+## `list_presets`
+
+```json
+{
+  "tag": "夜景"
+}
+```
+
 ## `list_selections`
 
 ```json
@@ -1278,6 +1330,18 @@
 {
   "object_id": "L1",
   "op": "reverse"
+}
+```
+
+## `preview_preset`
+
+```json
+{
+  "knobs": {
+    "teal": 0.3
+  },
+  "preset_id": "hong_kong",
+  "strength": 0.6
 }
 ```
 
