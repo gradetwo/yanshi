@@ -28274,7 +28274,5 @@ tool-single-point-rejected.mjs  # **类型：环境红（本机 0、CI 1，原�
 #       而 `df -h /` 仍显示 44 G 空闲 ✓ —— **根分区没问题，是 /tmp 这个 tmpfs** ✓。
 #   ＋ **∴ 本轮已修**：我自己新加的 4 个（`d139_zero_ink_warning`／`tombstone_summary_roundtrip`／
 #     `ink_pixels`／`missing_blobs_are_loud` ✓）⇒ 42 → 38 ✓。
-#   ＋ **∴ 转绿条件**：剩下 38 个都补上 `struct Cleanup`（`Drop` 里 `remove_dir_all` ✓）
-#     ⇒ 那时从名单移出 ✓。**一次改一个、改完跑 `cargo test -p yanshi-server --test <名字>`** ✓
-#     —— 38 个一次改会让编译错误混在一起，反而更慢 ✓。
-check-tests-clean-temp.mjs  # **类型：规格先行（38 个测试不删临时目录 ⇒ /tmp 会被写满）**
+#   ＋ **∴ 第 821 轮转绿 ✓**：227/227 个用 `temp_dir()` 的测试文件都带 `Drop` 清理器 ✓
+#     ⇒ 已从名单移出 ✓。（路径：42 → 40 → 10 → 6 → 5 → 2 → 0，每步都跑过对应测试 ✓）

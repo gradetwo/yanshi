@@ -16,6 +16,17 @@ use std::path::{Path, PathBuf};
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
 /// 1×1 透明 PNG（标准测试图，正文带 `=` 填充，顺带覆盖填充解码路径）。
+/// **跑完即删临时目录** ✓（第 821 轮；`/tmp` 是 1.9 GB tmpfs ✓）
+/// **⇒ 只绑每个测试自己的 `root`** ✓ —— `exports_root()` 是**进程级共享**目录（`Once` ✓）
+///   ⇒ 给它绑守卫会在某个测试结束时删掉别的测试还要用的东西 ✗
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 const PNG_B64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
@@ -143,6 +154,7 @@ fn serve(routes: Vec<(&'static str, u16, &'static str, Vec<u8>)>) -> String {
 #[test]
 fn put_blob_three_channels_land_on_the_same_hash() {
     let root = temp_dir("putblob3");
+    let _cleanup_1 = Cleanup(root.clone());
     let mut ws = workspace(&root);
     std::fs::write(root.join("in.png"), png_bytes()).unwrap();
 
@@ -185,6 +197,7 @@ fn put_blob_three_channels_land_on_the_same_hash() {
 #[test]
 fn put_blob_rejects_conflicts_and_bad_base64() {
     let root = temp_dir("putblob_bad");
+    let _cleanup_2 = Cleanup(root.clone());
     let mut ws = workspace(&root);
     std::fs::write(root.join("in.png"), png_bytes()).unwrap();
 
@@ -310,6 +323,7 @@ fn fetch_follows_redirects_and_classifies_failures() {
 #[test]
 fn import_asset_accepts_base64_and_rejects_mixed_sources() {
     let root = temp_dir("asset_b64");
+    let _cleanup_3 = Cleanup(root.clone());
     let mut ws = workspace(&root);
 
     let by_b64 = call(
@@ -363,6 +377,7 @@ fn import_asset_accepts_base64_and_rejects_mixed_sources() {
 #[test]
 fn render_region_output_path_matches_the_inline_bytes() {
     let root = temp_dir("region_out");
+    let _cleanup_4 = Cleanup(root.clone());
     let mut ws = workspace(&root);
     let exports = exports_root();
 
@@ -494,6 +509,7 @@ fn swatch_output_path_writes_one_file_per_swatch() {
 #[test]
 fn export_psd_layers_output_path_writes_the_same_bytes_as_the_blob() {
     let root = temp_dir("psd_out");
+    let _cleanup_5 = Cleanup(root.clone());
     let mut ws = workspace(&root);
     let exports = exports_root();
 

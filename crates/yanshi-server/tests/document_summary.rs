@@ -9,6 +9,16 @@
 use serde_json::json;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **跑完即删临时目录** ✓（第 821 轮；`/tmp` 是 1.9 GB tmpfs ✓）
+/// **⇒ 守卫绑 `root`（已经 `push` 过子目录 ✓）**，绑的是**子目录**而不是 `/tmp` 本身 ✓。
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 fn workspace() -> Workspace {
     Workspace::in_memory(DocumentSettings::default())
 }
@@ -152,6 +162,7 @@ fn closed_documents_report_their_real_counts() {
         yanshi_core::now_ms()
     ));
     let _ = std::fs::remove_dir_all(&root);
+    let _cleanup_1 = Cleanup(root.clone());
     let mut workspace = Workspace::with_file_store(&root, DocumentSettings::default()).unwrap();
     workspace
         .create_document(
@@ -201,6 +212,7 @@ fn closed_documents_report_their_real_counts() {
     );
     assert!(while_closed.persisted, "磁盘上仍然保留 ✓");
     let _ = std::fs::remove_dir_all(&root);
+    let _cleanup_2 = Cleanup(root.clone());
 }
 
 /// **三条路的计数必须是同一个数** ✓（打开中 / 关闭后 / `get_document` ✓）。
@@ -219,6 +231,7 @@ fn list_and_summary_agree_on_live_counts_for_open_and_closed_documents() {
         yanshi_core::now_ms()
     ));
     let _ = std::fs::remove_dir_all(&root);
+    let _cleanup_3 = Cleanup(root.clone());
     let mut workspace = Workspace::with_file_store(&root, DocumentSettings::default()).unwrap();
     workspace
         .create_document(
@@ -292,4 +305,5 @@ fn list_and_summary_agree_on_live_counts_for_open_and_closed_documents() {
         "关闭后与打开中必须一致 ✓"
     );
     let _ = std::fs::remove_dir_all(&root);
+    let _cleanup_4 = Cleanup(root.clone());
 }
