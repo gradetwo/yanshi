@@ -63,6 +63,14 @@ const NOT_CRITERIA = [
   "generate-brush-previews.mjs",
   "generate-tool-examples.mjs",
   "make-samples.mjs",
+  // **`pwa-stamp.mjs` ✓**（第 881 轮；外部补丁包带进来的 ✓）：**它是**生成器**✗，不是判据 ✓
+  //   ＋ **∴ 它做什么 ✗**：往构建产物里**写构建戳**（build id／commit／时间 ✓）
+  //     而**判它**的是 `tool-pwa-stamp-shape.mjs`（断言戳的形状 ✓）
+  //   ＋ **∴ 为什么没有 `tool-`／`check-` 前缀 ✗**：它是**被调用的工具**✓（`pwa-sync-*` 之后跑 ✓），
+  //     **不自己产出红／绿** ✗ ⇒ 枚举它只会让 CI 多跑一条"永远 exit 0"的假判据 ✗
+  //   ＋ **∴ 代价**：补丁包合并后**漏登记了**它 ⇒ `tool-criteria-coverage` 立刻红并点名 ✓
+  //     （**⇒ 这正是那条判据存在的意义 ✓** —— 而不是我自己想起来 ✓）。
+  "pwa-stamp.mjs",
   // **∴ `pwa-sync-wasm.mjs` ✓**（第 610 轮 ✓）：**它**改产物**✗（**把 `crates/yanshi-wasm/pkg/`
   // 拷到 `web/wasm/` ✓**）⇒ **∴ 本就不该当判据 ✓**；**∴ 而"产物是否完整"由
   // `tool-pwa-assets.mjs` 判 ✓**（**它断言 wasm 存在且非空 ✓**）** ✓✓。
