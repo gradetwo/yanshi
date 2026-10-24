@@ -28,7 +28,19 @@ else
   echo "     ✓"
 fi
 
-# ③ **脚本卫生测试**（第 1059 轮加）—— **只在 scripts/*.sh 有改动时跑** ✓
+# ③ **台账引用**（第 998 轮加）—— **我三次把轮号写成「第 N 节」⇒ 三次都是 CI 先抓到** ✗
+#   **⇒ 判据**：`check-ledger-section-numbering.mjs`（悬空引用／撞号／棘轮 ✓）
+#   **⇒ 为什么放到提交前**：它**只读 docs**（毫秒级 ✓）而**CI 抓到要等 20–40 分钟** ✗
+#     ⇒ 三次的代价一共是 **三个 run** ✗ ⇒ 挪到提交前就**不可绕过** ✓
+if node scripts/check-ledger-section-numbering.mjs > /tmp/precommit-ledger.log 2>&1; then
+  echo "     ✓"
+else
+  echo "     ✗ 台账引用有问题（把轮号写成节号了？）"
+  grep -E "✗|悬空" /tmp/precommit-ledger.log | head -4
+  fail=1
+fi
+
+# ④ **脚本卫生测试**（第 1059 轮加）—— **只在 scripts/*.sh 有改动时跑** ✓
 #   **∴ 为什么**：本仓已有两组测试专门查脚本卫生：
 #     · shell_scripts        —— \$VAR 被引用但没赋值（1057 轮抓到我的 watch-ci.sh）
 #     · script_portability   —— \$VAR 紧跟非 ASCII（1014）+ bash 4+ 写法（1018）
