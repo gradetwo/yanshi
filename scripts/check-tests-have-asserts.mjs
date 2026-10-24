@@ -32,6 +32,13 @@ for (const crate of readdirSync("crates")) {
 //   ⇒ 这条豁免**写死在这里**（而不是靠文件名约定心照不宣）✓
 const MEASUREMENT = /(bench|probe|sweep)/;
 
+// **⇒ 谓词抽成函数** ✅（第 1023 轮）：与 temp 判据同一做法 ⇒ **可自测** ✓
+//   **⇒ 规则**：**剥掉注释后**仍要有 `assert!`／`assert_eq!`／`assert_ne!`／`panic!` ✓
+function hasAssertionInCode(text) {
+  const stripped = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  return /assert!|assert_eq!|assert_ne!|panic!/.test(stripped);
+}
+
 const offenders = [];
 let claiming = 0;
 for (const file of files) {
@@ -46,8 +53,7 @@ for (const file of files) {
   //     **剥离后剩余 assert! 计数 = 0** ⇒ 判据红：`✗ … 提到「判据」但没有任何断言` ✓
   //   **⇒ 注意**：验证时**必须用同一条谓词量残量** ✗ —— `grep -c assert` 会把**注释行**也数进去
   //     （第 1005 轮我就被它骗过一次 ✗）
-  const stripped = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
-  const has_assert = /assert!|assert_eq!|assert_ne!|panic!/.test(stripped);
+  const has_assert = hasAssertionInCode(text);
   if (!has_assert) offenders.push(file);
 }
 
@@ -58,3 +64,22 @@ if (offenders.length > 0) {
   process.exit(1);
 }
 console.log("✓ 每个声称有判据的测试文件都**在代码里**（不是注释里）至少有一条断言");
+// **⇒ 自测** ✅（第 1023 轮）：三段小字符串证明这条判据**会红** ✓（不必动仓库 ✓）
+//   **⇒ 变异**：让 `hasAssertionInCode` 直接返回 `true` ⇒ 中间那段变红 ✓
+if (process.argv.includes("--self-test")) {
+  const cases = [
+    ["代码里有断言", "fn t() { assert!(x, \"y\"); }", true],
+    ["断言只在注释里", "// assert!(x);\n/// assert!(y);\nfn t() {}", false],
+    ["完全没有", "fn t() {}", false],
+  ];
+  let pass = 0;
+  for (const [label, text, want] of cases) {
+    const got = hasAssertionInCode(text);
+    const okCase = got === want;
+    console.log(`  ${okCase ? "✓" : "✗"} ${label}：expected ${want} got ${got}`);
+    if (okCase) pass += 1;
+  }
+  console.log(`自测：${pass}/${cases.length} 通过`);
+  process.exit(pass === cases.length ? 0 : 1);
+}
+
