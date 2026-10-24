@@ -18125,3 +18125,31 @@ n=1600 ⇒ 中位 27.90 µs｜末 20 个平均 28.79 µs
 
 **⇒ 我这边的结论（可复核 ✓）**：**内核 `apply` 在五个维度上都是 O(1) 级** ✓
 ⇒ 任何"`apply` 随规模增长"的说法，**在我能构造的输入上都复现不出来** ✓。
+
+## 四百七十八、D139 **第一次复现成功**（用他们给的调用），以及两个跟着露出来的问题（第 810 轮）
+
+**⇒ 他们给的调用（原样可粘）**：800×800、背景 128 灰、`oil-06-paint`、`size 2.0`、
+`color #848484`／`color_to #828282`、`opacity 0.35`、`hardness 0.62`、
+`points [[400,400,0.9],[400.5,400,0.8]]`、`dabs_per_actual_radius=dabs_per_basic_radius=3`、`humanize=false`。
+
+**⇒ 我这边实测（加了 `brush_params` 那一半之后）**：
+```
+ok=true｜painted_pixels=8｜ink_footprint_pixels=6｜steps=2｜**max_channel_delta=0**
+delta_regime = "document_background_base"
+```
+⇒ **静默零墨复现** ✓：参数合法、`ok=true`、印章面积 8、足迹 6，**画面一个像素都没变** ✓
+⇒ 这正是他们说的"回执成功而画布无变化" ✓ —— **我第一次拿到这个案例** ✓。
+
+**⇒ 关键的一半步**：**不加 `brush_params` 时我们的代码会**响亮拒绝** ✓
+（`size=2.0 ⇒ painted_pixels=0 ⇒ 「size 太小」`）⇒ 所以"静默"只在**他们那组 dabs 覆盖**下出现 ✓
+—— 这也解释了为什么我 785 轮那 20 组扫描**0 命中** ✓。
+
+**⇒ 两个跟着露出来的问题**：
+1. **`delta_regime` 标签错** ✗（已修 ✓ `6b33aae5`）：第 809 轮把比较基准换成**文档背景**，
+   标签却仍写 `white_base` ✓ ⇒ 现在是三值 `canvas_base`／`document_background_base`／`white_base` ✓
+   （128 灰底实测标签 = `document_background_base` ✓，判据已同步 ✓）。
+2. **我写的"零可见墨警告"发不出来** ✗ ⇒ **已回退** ✓：条件
+   `ink_footprint_pixels > 0 && max_channel_delta == 0`（6 与 0 ✓）**本应成立** ✓
+   但把断点放在 `Ok(value)` 前仍不触发 ✓ ⇒ **下一步要查清"这两个字段在这一刻是否已是最终值"** ✓
+   （最可能：`value` 在别处被合并／覆盖 ✓，或 `max_delta` 在此处是另一份 ✓）——
+   这属于"断言读的是哪条路径"的老问题 ✓，下一轮先打印 `value` 的 key 集合与两个字段的**当下值** ✓。
