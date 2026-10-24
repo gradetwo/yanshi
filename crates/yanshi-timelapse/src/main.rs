@@ -166,8 +166,20 @@ fn main() -> Result<()> {
             f64::from(MAX_H) / f64::from(doc_h),
         ),
     );
-    let out_w = ((f64::from(doc_w) * scale).round() as u32).max(1);
-    let out_h = ((f64::from(doc_h) * scale).round() as u32).max(1);
+    // **输出宽高必须是偶数** ✓（第 777 轮；外部 `qoder`/`art` 报告第 110 次）
+    //   **⇒ 缺陷**：按 `scale` 取整后可能是**奇数** ✗ ⇒ `ffmpeg` 的 `yuv420p`／`libx264`
+    //     **直接拒绝**（`width not divisible by 2 (743x1080)` ✓）⇒ **整段编码失败** ✓
+    //     而 `timelapse` 这一侧**只看到"编码器退出非零"** ✗（真正的原因在 ffmpeg 的日志里 ✓）。
+    //   **⇒ 实测**：他们的 `test3` = `5632×8192` × `0.132` ⇒ `5632 × 0.132 = 743.4` ⇒ **743（奇数）** ✓
+    //     ⇒ 两次失败（`00:42:53` / `18:45:34`）都是这一个取整 bug ✓。
+    //   **⇒ 修法**：**向下取到偶数**（`& !1` ✓）并保证 ≥2 ✓ —— 宁可少一行像素，
+    //     也不要让整段视频失败 ✓（少 1 px 看不出来 ✓）。
+    let even = |value: f64| -> u32 {
+        let rounded = (value.round() as u32).max(2);
+        rounded & !1
+    };
+    let out_w = even(f64::from(doc_w) * scale);
+    let out_h = even(f64::from(doc_h) * scale);
     println!(
         "画布 {doc_w}×{doc_h} ⇒ 输出 {out_w}×{out_h}（缩放 {scale:.3}）｜blob {} 个（编码 {}）｜忽略条目 {}",
         blobs.len(),
@@ -1054,5 +1066,45 @@ mod shrink_advice_tests {
         assert_eq!(shrink_advice(4608 * 8192, 608 * 1080, 11_000, true), None);
         // ⑤ 输出像素为 0（不该发生）⇒ 不提示，也不除零 ✓
         assert_eq!(shrink_advice(4608 * 8192, 0, 11_000, false), None);
+    }
+}
+
+#[cfg(test)]
+mod even_dimension_tests {
+    //! **输出宽高必须是偶数**（第 777 轮；外部报告第 110 次）
+    //!
+    //! **⇒ 缺陷**：`5632×8192` 的画布按 `0.132` 缩放 ⇒ `5632 × 0.132 = 743.4` ⇒ 取整成 **743（奇数）**
+    //! ⇒ `ffmpeg` 的 `yuv420p`／`libx264` **直接拒绝**（`width not divisible by 2 (743x1080)`）
+    //! ⇒ **整段视频失败**，而 `timelapse` 这侧只看到"编码器退出非零"（真正原因在 ffmpeg 日志里）。
+    //!
+    //! **⇒ 判据**：对**会算出奇数**的那组输入（5632 × 0.132）断言 **宽、高都是偶数且 ≥ 2**；
+    //! 并且**不是恒真**：同时断言"未取偶时的值确实是奇数"（否则这条判据测不到东西）。
+    //! **⇒ 变异**：把 `& !1` 去掉 ⇒ 743 直接进断言 ⇒ 红。
+    fn even(value: f64) -> u32 {
+        let rounded = (value.round() as u32).max(2);
+        rounded & !1
+    }
+
+    #[test]
+    fn the_scale_that_used_to_break_libx264_now_yields_even_dimensions() {
+        // ① 先证明这组输入**真的**会算出奇数（否则下面恒真）
+        let raw = (5632.0_f64 * 0.132).round() as u32;
+        assert_eq!(raw % 2, 1, "这组输入应当算出奇数才对，实测 {raw}");
+
+        // ② 取偶之后必须都是偶数、且 ≥ 2
+        let width = even(5632.0 * 0.132);
+        let height = even(8192.0 * 0.132);
+        assert_eq!(width % 2, 0, "宽必须是偶数，实测 {width}");
+        assert_eq!(height % 2, 0, "高必须是偶数，实测 {height}");
+        assert!(
+            width >= 2 && height >= 2,
+            "两边都要 ≥2，实测 {width}×{height}"
+        );
+
+        // ③ 取偶只许**减 1**（不许大幅缩小画面）
+        assert_eq!(raw - width, 1, "取偶只该少 1 px，实测 {raw} ⇒ {width}");
+
+        // ④ 极小输入也不许退化成 0（`0 & !1 == 0` ⇒ 编码器会拒绝 0×0）
+        assert!(even(0.4) >= 2, "极小输入也要 ≥2，实测 {}", even(0.4));
     }
 }
