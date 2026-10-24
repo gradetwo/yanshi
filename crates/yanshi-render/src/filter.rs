@@ -4449,6 +4449,39 @@ mod tests {
         );
     }
 
+    /// A4-3 修正一的直接断言：dehaze 内部先阻尼大气光 ⇒ 传原始色度
+    /// air 与传手工阻尼后的 air，恢复输出应一致（容差 2e-3：阻尼在
+    /// 阻尼后的点上再作用有 ~5e-4 的不动点漂移）。变异：去掉内部
+    /// 阻尼 ⇒ 两路输出按 1/t 放大分叉 ⇒ 红。
+    #[test]
+    fn dehaze_damps_air_chromaticity_internally() {
+        let make = || {
+            let mut buffer = Buffer::new(0, 0, 32, 8);
+            for y in 0..8 {
+                for x in 0..32 {
+                    let v = if x < 16 { 0.45f32 } else { 0.62 };
+                    buffer.set_pixel(x, y, [v, v, v, 1.0]);
+                }
+            }
+            buffer
+        };
+        let air_raw = [0.90, 0.80, 0.625];
+        let mut via_raw = make();
+        dehaze(&mut via_raw, air_raw, 0.9, 0.1);
+        let mut via_damped = make();
+        dehaze(&mut via_damped, damp_air_chromaticity(air_raw), 0.9, 0.1);
+        for x in [4u32, 28] {
+            let a = via_raw.pixel(x, 4);
+            let b = via_damped.pixel(x, 4);
+            for channel in 0..3 {
+                assert!(
+                    (a[channel] - b[channel]).abs() < 2e-3,
+                    "内部阻尼应使两路一致（x={x} 通道 {channel}）：{a:?} vs {b:?}"
+                );
+            }
+        }
+    }
+
     /// 局部对比度：软边变陡、平坦区不变、极暗处抑制（中间调加权）。
     #[test]
     fn clarity_steepens_soft_edges_and_spares_flats() {
