@@ -30,6 +30,7 @@ import { readFileSync, readdirSync, mkdtempSync, writeFileSync, rmSync } from "n
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve, basename } from "node:path";
+import { trackTemp } from "./lib/temp-dirs.mjs";
 
 const SCRIPTS = "scripts";
 const HARNESS = join(SCRIPTS, "run-criteria-local.sh");
@@ -76,7 +77,7 @@ ok("输入能触发：存在「文件名不是 mcp-* 但要 spawn MCP」的判�
 // ───────── ③ 行为层：造两个夹具，真的把入口脚本跑起来 ─────────
 // 夹具只做两件事：把 `process.env.YANSHI_MCP_BIN` 报出来 ⇒ 退出 0。
 // ⇒ 于是本判据测的是**入口脚本的行为**，不依赖任何产品判据（跑得快，也不会被别的判据带红）。
-const T = mkdtempSync(join(tmpdir(), "mcp-refresh-"));
+const T = trackTemp(mkdtempSync(join(tmpdir(), "mcp-refresh-")));
 const makeFixture = (name, mentionMcp) => {
   const p = join(T, name);
   // **夹具自己不许写出那两个拼法**✗ —— 否则「不该开火」那一支会因为**打印环境变量的那行**

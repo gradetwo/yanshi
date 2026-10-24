@@ -39,6 +39,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { trackTemp } from "./lib/temp-dirs.mjs";
 
 const SRC = "assets/fonts";
 const DST = "web/fonts";
@@ -100,7 +101,7 @@ console.log("③ 行为：源里**没有**字体时 ⇒ 同步必须**跑完**�
 //     ⇒ **∴ 而且**：旧代码**只拷不删**✓ ⇒ 源里删掉的字体**在 `web/` 里赖着不走**✓（**镜像变追加 ✓**）
 //   **∴ 为什么两个场景都要 ✗**：**A 断「不崩」✗ B 断「不谎」✓** ——**它们是同一段代码的两种坏法**✗
 //     **只测 A** 就放过了**「跑成功但报假数」**✓（**那比崩**更危险**，因为**它绿着 ✓**）
-const T = mkdtempSync(join(tmpdir(), "pwa-fonts-"));
+const T = trackTemp(mkdtempSync(join(tmpdir(), "pwa-fonts-")));
 
 // **自带一个假介质 ✗ 不许继承真目录**✓（第 746 轮：干净 clone 上实测换来的 ✓）
 //   **∴ 环境事实**：`assets/mediums/*.wasm` **是发布流水线建的**✓（干净签出里只有 `README.md`✓）
@@ -174,7 +175,7 @@ try {
       : (dirA.length ? `里面还有 ${dirA.join(",")} ⇒ 那是上一次的残留 ✓` : "目录在、且空 ✓"));
 
   // **场景 B ✗**：空源 ＋ **目标目录里留着上一次的字体**（**压「报假数」与「不删旧」两条 ✓**）
-  const TB = mkdtempSync(join(tmpdir(), "pwa-fonts-stale-"));
+  const TB = trackTemp(mkdtempSync(join(tmpdir(), "pwa-fonts-stale-")));
   try {
     buildMirror(TB, { withFonts: true });
     const before = readdirSync(join(TB, "web", "fonts")).length;
@@ -194,7 +195,7 @@ try {
   // **场景 C ✗（正向对照 ✓）**：**源正常** ⇒ 报的数**必须等于源里的名单**✗
   //   **∴ 为什么要有这条 ✗**：A/B 只压「空源」✗ **漏拷**（**源有 3 个而只拷到 2 个 ✓）**
   //     **要靠「报出的数 == 源名单长度**」**才看得见 ✓**
-  const TC = mkdtempSync(join(tmpdir(), "pwa-fonts-ok-"));
+  const TC = trackTemp(mkdtempSync(join(tmpdir(), "pwa-fonts-ok-")));
   try {
     // **不再 `symlinkSync(resolve("assets"), TC/assets)`**✗（**第 746 轮：那一版把主干的
     //   `assets/mediums/` 清空了**——链接在父级 ⇒ `TC/assets/mediums` 就是**真目录**✓）

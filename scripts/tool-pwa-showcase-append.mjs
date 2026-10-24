@@ -30,6 +30,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { trackTemp } from "./lib/temp-dirs.mjs";
 
 const SRC = "assets/showcase";
 const DST = "web/showcase";
@@ -83,7 +84,7 @@ check(lost.length === 0, "源里的展示图**都**得在包里（**同步漏了
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("");
 console.log("②③ 行为（临时镜像里跑真同步，三个场景）：");
-const T = mkdtempSync(join(tmpdir(), "pwa-showcase-"));
+const T = trackTemp(mkdtempSync(join(tmpdir(), "pwa-showcase-")));
 let verdict = 0;
 
 // **自带一个假介质 ✗ 不许继承真目录**✓（第 746 轮：干净 clone 上实测换来的 ✓）

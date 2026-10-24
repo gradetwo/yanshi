@@ -35,6 +35,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { setStamp, STAMP_TOKEN, STAMP_PREFIXES } from "./pwa-stamp.mjs";
+import { trackTemp } from "./lib/temp-dirs.mjs";
 
 const SYNC = "scripts/pwa-sync-viewer.mjs";
 // **∴ 产物清单 = 同步脚本**最后那组**打 `yanshi-shell-` 戳的文件**✗（**第 745 轮核对 ✓）**
@@ -156,7 +157,7 @@ check(offenders.length === 0,
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("");
 console.log("③ 端到端（临时镜像跑 pwa-sync-viewer）：");
-const T = mkdtempSync(join(tmpdir(), "pwa-stamp-shape-"));
+const T = trackTemp(mkdtempSync(join(tmpdir(), "pwa-stamp-shape-")));
 let verdict = 0;
 try {
   // **∴ 前提 ✗**：`web/` 与两个源目录必须在 ✗ 缺任何一个 ⇒ **退出码 3**（**不冒充产品失败 ✓**）
