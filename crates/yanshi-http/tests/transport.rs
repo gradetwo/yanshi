@@ -1461,3 +1461,46 @@ fn an_oversized_content_length_is_refused_before_any_body_is_read() {
         "服务端花了 {elapsed:?} 才回应 ⇒ 它在**等**那 32 MiB 正文（应当只看 Content-Length 就拒）"
     );
 }
+
+/// **`Transfer-Encoding: chunked` 必须被明确拒绝，而不是"当空体"处理**（第 775 轮）
+///
+/// **⇒ 风险**：`http.rs:132` 写着「暂不支持 chunked 请求体」并报错 ✓ —— 若哪天它改成
+/// "**当作没有正文**"（看起来更宽容 ✓）⇒ 客户端以为工具收到了数据 ✓
+/// ⇒ **实际什么都没传进去** ✗ ⇒ 这正是「**静默降级**」的一种 ✓（失败没有信号 ✓）。
+///
+/// **⇒ 判据**：发 `Transfer-Encoding: chunked`（带一个合法分块）✓
+/// ⇒ 必须**回错或关连接** ✓，**不许 200** ✓。**变异**：把那条 `return Err(...)` 删掉
+/// ⇒ 请求体被当空 ⇒ 服务端回 400（缺参数）而不是"不支持 chunked" ⇒ 响应码仍非 200 ✗
+/// ⇒ **所以本判据还要断"文案或状态与'不支持'一致"** ✓（见下）。
+#[test]
+fn chunked_request_bodies_are_refused_rather_than_treated_as_empty() {
+    use std::io::Write as _;
+    let handle = start_server();
+    let addr = handle.addr;
+    let mut stream = std::net::TcpStream::connect(addr).expect("连接");
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .expect("设超时");
+    let body = "5\r\nhello\r\n0\r\n\r\n";
+    let head = format!(
+        "POST /api/tools/put_blob HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{body}"
+    );
+    stream.write_all(head.as_bytes()).expect("写请求");
+    let (status, _headers, response) = read_response(&mut stream);
+    let text = String::from_utf8_lossy(&response).into_owned();
+    assert_ne!(status, 200, "chunked 请求体不许被当成合法请求：{text}");
+    assert!(
+        status == 0 || (400..500).contains(&status),
+        "chunked 必须被明确拒绝（4xx 或关连接），实测 {status}"
+    );
+    // **★ 只断"非 200"不够** ✗（第 775 轮实测过 ✓）：把 chunked 当空体时服务端**也会回 4xx**
+    //   （缺参数 ✓）⇒ 那样判据**抓不到"静默降级"** ✗。
+    //   **⇒ 实测到的真区别**：解析期拒绝 ⇒ **直接关连接、一个字节都不回**（`status == 0` ✓）；
+    //     "当空体"⇒ 会走完工具调用 ⇒ **有响应体** ✓（哪怕是 4xx ✓）。
+    //   ⇒ 所以断 **`status == 0` 且响应体为空** ✓；**变异**（当空体）⇒ 有响应 ⇒ 红 ✓。
+    assert_eq!(
+        status, 0,
+        "解析期拒绝应当是关连接（实测 {status}，正文 {text}）"
+    );
+    assert!(text.is_empty(), "解析期拒绝不许回正文，实测：{text}");
+}
