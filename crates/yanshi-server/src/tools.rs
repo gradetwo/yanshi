@@ -8511,6 +8511,15 @@ fn write_set_reference(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 
 fn write_clear_reference(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let _ = args;
+    // **清之前先看"到底有没有"** ✓（第 876 轮）
+    //   **⇒ 缺陷**：原来**无条件**返回 `cleared: true` ✗ ⇒ 没设过参考图时也报"清掉了" ✓
+    //     ⇒ 那是本仓头号病根「**假成功**」的形态 ✓（与"做了 0 次冒充不需要做"同族 ✓）
+    //   **⇒ 修法**：读一次偏好里有没有 `reference.blob_hash` ✓ ⇒ 有 ⇒ `cleared: true`／没有 ⇒ `false` ✓
+    let was_set = ctx
+        .workspace
+        .preferences(Some(&["reference.blob_hash".to_owned()]))
+        .get("reference.blob_hash")
+        .is_some_and(|value| !value.is_null());
     // **值为 null ⇒ 删除该键** ✓（`set_preferences` 的既有语义 ✓，见它的 hint ✓）。
     let stored = write_set_preferences(
         ctx,
@@ -8520,7 +8529,12 @@ fn write_clear_reference(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
             "reference.position": Value::Null,
         }}),
     )?;
-    Ok(json!({"ok": true, "cleared": true, "stored": stored}))
+    Ok(json!({
+        "ok": true,
+        // **`cleared` 必须说真话** ✓：没设过参考图 ⇒ `false` ✓（不是 `true` ✓）
+        "cleared": was_set,
+        "stored": stored,
+    }))
 }
 
 fn write_set_preferences(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
