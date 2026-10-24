@@ -125,6 +125,15 @@ const NUM = "[零一二三四五六七八九十百千]";
 const refs = [];
 for (const m of text.matchAll(new RegExp(`§\\s*(${NUM}{2,6})(?!${NUM})`, "g"))) refs.push(m[1]);
 for (const m of text.matchAll(new RegExp(`\\[\\s*(${NUM}{2,6})(?!${NUM})\\s*\\]`, "g"))) refs.push(m[1]);
+// **「第 133 节」这种**阿拉伯数字**引用也要查** ✓（第 913 轮；补上外部补丁包登记的那条残余 ✓）
+//   **⇒ 两处都要动** ✗（第 912 轮白试两次的教训 ✓）：
+//     ① `NUM` 是**中文数字类** ✗ ⇒ 阿拉伯数字用 `\d{1,4}` 单独抓 ✓
+//     ② `known` 的键是**中文数字** ✓ ⇒ 用**已有的 `emitCn`**（第 47 行 ✓）转回中文再查 ✓
+//   **⇒ 变异**：把台账里某处「第 N 节」写成不存在的号 ⇒ 必红 ✓（下一轮验 ✓）。
+for (const m of text.matchAll(new RegExp(`第\\s*(\\d{1,4})\\s*节`, "g"))) {
+  const cn = emitCn(Number(m[1]));
+  if (cn) refs.push(cn);
+}
 const dangling = refs.filter((n) => !known.has(n));
 check(
   dangling.length === 0,
