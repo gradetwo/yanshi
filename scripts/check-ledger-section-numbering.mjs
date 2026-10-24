@@ -2,7 +2,7 @@
 // 台账的「节号」是 append-only 而**两个作者各自数自己的** ⇒ 必然撞（第 746 轮第三次踩中）
 //   而这一件事一直只靠人 grep ⇒ 是「规矩要能自检」的欠账，本条把它钉成判据
 // 默认读主干台账；`YANSHI_LEDGER=<路径>` 可换输入 ⇒ 变异不必弄脏主干
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 const LEDGER = process.env.YANSHI_LEDGER || "docs/design/brush-capability-gap.md";
 // 已登记的撞号：主干本来就有的两处上游漂移（第 745 轮登记，不在我族范围）
@@ -160,8 +160,28 @@ check(
 //   **⇒ 于是有了一条**可执行的改写方向**：把 `§N` 写成 `外§N` ⇒ **棘轮基数不会涨** ✓
 //     （棘轮本身**不降** —— 降要靠把旧的那些逐个改标 ✓ 那是后续的活 ✓）
 const DIGIT_REF_UNMARKED = /(?<!外|他们|对方)§[0-9]/g;
-const DIGIT_REF_RATCHET = 430;
+// **⇒ 基数存在文件里，而不是写在代码里** ✅（第 918 轮）
+//   **⇒ 为什么** ✗：写死在代码里 ⇒ 想降就得改代码 ✓ 而"棘轮只降不升"这件事**没人核** ✗
+//     ⇒ 改成：**文件里是上次的记录** ✓；**本次更少 ⇒ 自动写回更小的值** ✓（self-tightening ✓）
+//     ⇒ **本次更多 ⇒ 红** ✓ ⇒ **于是"只降不升"由判据自己保证** ✓。
+const RATCHET_FILE = "scripts/criteria-ledger-digit-refs.json";
+let DIGIT_REF_RATCHET = 430;
+try {
+  DIGIT_REF_RATCHET = JSON.parse(readFileSync(RATCHET_FILE, "utf8")).unmarked_digit_refs;
+} catch (_) {
+  console.log(`  ⊘ 读不到棘轮基数文件（${RATCHET_FILE}）⇒ 用内建值 ${DIGIT_REF_RATCHET}`);
+}
 const digitRefs = (text.match(DIGIT_REF_UNMARKED) || []).length;
+// **自动收紧**：本次更少 ⇒ 写回更小的基数 ✓（棘轮只降不升 ✓）
+if (digitRefs < DIGIT_REF_RATCHET) {
+  try {
+    writeFileSync(RATCHET_FILE, JSON.stringify({ unmarked_digit_refs: digitRefs }, null, 0) + "\n");
+    console.log(`  ✓ 棘轮自动收紧：${DIGIT_REF_RATCHET} ⇒ ${digitRefs}（已写回 ${RATCHET_FILE}）`);
+    DIGIT_REF_RATCHET = digitRefs;
+  } catch (_) {
+    console.log(`  ⊘ 想收紧到 ${digitRefs} 但写不回文件 ⇒ 本次按旧基数 ${DIGIT_REF_RATCHET} 判`);
+  }
+}
 check(
   digitRefs <= DIGIT_REF_RATCHET,
   `「§数字」引用不许再增长（棘轮 ${DIGIT_REF_RATCHET}｜实测 ${digitRefs}）⇒ 新增的请改写成「第 N 节」或「外§N」`
