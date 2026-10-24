@@ -4755,7 +4755,9 @@ mod tests {
             1.0,
             (2.0, 1.0)
         ));
-        assert!((buffer.pixel(0, 0)[0] - 0.4).abs() < 1e-5);
+        // 期 3 A1 连带改写：invert 作用在上面 bc 的结果上——旧链 1 − 0.6 = 0.4，
+        // 新链 1 − 0.5795 = 0.4205（invert 自身语义未变）。
+        assert!((buffer.pixel(0, 0)[0] - 0.420_5).abs() < 1e-3);
         assert!(!apply_filter(
             &mut buffer,
             "unknown",
