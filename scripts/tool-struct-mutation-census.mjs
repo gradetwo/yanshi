@@ -121,7 +121,15 @@ for (const st of structs) {
   for (const f of st.fields) {
     const w = [...new Set(writes.get(f))];
     console.log(`   · ${f.padEnd(20)} 写入于 ${w.length} 个函数${w.length ? "：" + w.join(", ") : "（★ 从不写入 ⇒ 只读或漏更新）"}`);
-    if (w.length === 0) suspicious += 1;
+    // **0 个写入者 ⇒ **信息**，不再算可疑** ✓（第 872 轮）
+    //   **⇒ 为什么** ✗：`Tile::size` 就是这种字段 ✓ —— 它在**构造期固定** ✓（`new`／`from_f32` 各写一次 ✓）
+    //     而普查**不数构造函数** ⇒ 它永远显示"0 个写入者" ✗
+    //     ⇒ 把它算可疑 ⇒ 这条普查**永远**报可疑 ✓ ⇒ 而 `size` 一辈子都不会变 ✓（**误报** ✗）
+    //   **⇒ 改法**：仍然**打印**这一行（信息有用 ✓），但**不计入可疑** ✓
+    //     ⇒ 真正的"漏同步"形态是**有写入者、但少了一个** ✓（下面那条"差异 ≥ 2"管的就是它 ✓）。
+    if (w.length === 0) {
+      console.log("     ↑ 构造期固定（普查不数构造函数）⇒ 只作为信息，**不计可疑**");
+    }
   }
   // **∴ 可疑：某个字段只被**极少数**函数写 ⇒ **∴ 而**那些函数**也改别的字段 ✓
   const counts = st.fields.map((f) => new Set(writes.get(f)).size).filter((n) => n > 0);
