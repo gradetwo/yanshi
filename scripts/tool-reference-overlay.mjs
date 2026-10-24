@@ -32,10 +32,28 @@ const painted = await call("brush_stroke", {
 });
 if (painted.ok !== true) { console.log("  ✗ 先画一笔都失败 ⇒ 判据无效"); process.exit(1); }
 const before = await shot();
-// **一张最小的参考图**：用导出工具现造一个 blob 太重 ✗ ⇒ 直接给一个 `blob_hash` 形状即可 ✓
-// （这一轮判的是"参考图不许动文档"✓，不是"参考图能显示"✗ —— 后者要查看器，判据管不了 ✓）。
+// **一张最小的参考图**：先**真的放进存储** ✓（第 867 轮修）
+//   **⇒ 原来的缺陷（判据自己）**：这里直接给 `sha256:000…0` 这个**形似而根本不存在的哈希** ✗
+//     ⇒ 服务端的 `set_reference` **拒绝**它（"这个 blob 不在存储里 ⇒ 存下来也永远比不了" ✓ 合理 ✓）
+//     ⇒ 于是判据报「参考图功能不存在」**误诊**了 3 个多月 ✓（功能一直在 ✓，缺的是**一个真 blob** ✓）
+//   **⇒ 改法**：用 `put_blob` 造一个 **2×2 的裸 RGBA** ✓（64 字节 ✓），拿它返回的 `blob_hash` ✓
+const tiny = Buffer.alloc(16, 200).toString("base64"); // 2×2 RGBA，每通道 200 ⇒ 合法 PNG 不重要，裸字节即可
+const put = await call("put_blob", {
+  data_base64: tiny,
+  mime_type: "image/x-yanshi-raw",
+});
+if (put && put.ok !== true) {
+  console.log("  put_blob ⇒ " + JSON.stringify((put.context || {}).detail || put.error_code || put).slice(0, 170));
+  console.log("  ⊘ 造不出 blob ⇒ 判据前提不成立（不是产品问题）");
+  process.exit(3);
+}
+const refHash = put.blob_hash;
+if (typeof refHash !== "string" || !refHash.startsWith("sha256:")) {
+  console.log("  put_blob 没返回 blob_hash ⇒ 判据前提不成立：" + JSON.stringify(put).slice(0, 170));
+  process.exit(3);
+}
 const set = await call("set_reference", {
-  blob_hash: "sha256:" + "0".repeat(64),
+  blob_hash: refHash,
   opacity: 0.5,
   position: { x: 10, y: 10, w: 180, h: 130 },
 });
