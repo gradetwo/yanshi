@@ -153,8 +153,9 @@ yanshi 会有很多个方向的 skill（已有 `yanshi-painting` 管绘画笔触
 时必须先换算，否则会原样复现展示册制作时抓到的三轮翻车：
 
 - **`split_toning` 必须带 `amount`**：三元组是线性空间的加法偏移，显示空间的「轻染」
-  量级会被放大 2–4 倍。现行定档：亮场景约 0.35；**暗场景必须更小**——forest 0.05、
-  cinema 0.06、hong_kong 0.08、guofeng / retro_film 0.12（规律：amount 随场景亮度缩放）。
+  量级会被放大 2–4 倍。现行定档（期 3 重著录后）：亮场景约 0.35；**暗场景必须更小**——forest 0.12、
+  cinema 0.13、hong_kong 0.16、guofeng 0.14、retro_film 0.10（规律：amount 随场景亮度缩放，
+  期 3 值由新内核渲染视觉判定，期 0 的 0.05/0.06/0.08 旧档作废）。
   `amount` 是固定参数，strength 不动它；染色还重先查 amount 与场景是否匹配，别只降 strength。
 - **`curves` 控制点与 `levels.black` 是位置型参数**：写新值先把显示直觉值逐点过
   sRGB EOTF 换成线性坐标（显示 0.07 的 fade 黑点不转换，等于在线性里把黑位抬到约
@@ -168,6 +169,11 @@ yanshi 会有很多个方向的 skill（已有 `yanshi-painting` 管绘画笔触
 - **`color_balance` 已按显示口径修复（期 3 A2）**：Y' 分档 + 显示空间施加 +
   `amount`（缺省 1.0），偏移刻度 ±0.25 显示单位，可正常写进配方；
   期 3 之前的「线性分档、无 amount」警告作废。
+- **期 3 重著录迁移通则（旧数据往新语义搬时用）**：`selective_color` 偏移
+  ×~1.8–1.9（PS 差值权重稀释 × ProPhoto 阻尼；期 3 起为差值权重 +
+  矩阵往返，旧线性硬扇区口径作废）；`vignette` 强值约 ×0.8（显示乘算
+  更强）；`brightness` 旧线性值 ×1.7；`dehaze` 正向 ×~1.35；`bc` 的
+  contrast 大体保留、仅过暗者下调；`clarity`/`texture` 数值保留。
 - 其余常用项（`exposure.ev`、`shadows_highlights`、`saturation` 等）与显示口径同阶，
   直通著录即可；完整审计结论与清白名单见展示册 AUDIT 与设计文档 §9/§9.1。
 

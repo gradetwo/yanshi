@@ -187,7 +187,7 @@ textures/render_params/seed_policy），是绘画侧的笔触样式，**不是�
 | LR 口径 | Yanshi 落法 |
 |---|---|
 | 曝光 ±EV | `exposure.ev` 直通（Yanshi 是精确 2^ev，量级同阶） |
-| 对比滑杆 −100..+100 | `brightness_contrast.contrast = 1 + v/100` |
+| 对比滑杆 −100..+100 | `brightness_contrast.contrast = 1 + v/100`（期 3 起内核为显示枢轴口径，映射更贴切；`brightness` 著录值 = 目标显示位移 ×2，因 brightness ±0.5 ⇔ 显示 ±0.25） |
 | 饱和滑杆 | `saturation.amount = 1 + v/100` |
 | 自然饱和度 | `vibrance.amount ≈ v/50`（Yanshi 量程 0..2，0 为中性） |
 | 高光/阴影滑杆 | `shadows_highlights` ÷100（−1..1） |
@@ -197,12 +197,12 @@ textures/render_params/seed_policy），是绘画侧的笔触样式，**不是�
 | 抬黑点 fade（输出 5–15/255） | 曲线首点 y ÷255 后同样过 EOTF 换线性（**只能走曲线**：`levels.black` 是输入黑点、方向相反，写它只会压暗部——2026-10-23 修订，原稿把两者并列是错的） |
 | 色阶输入黑点（0–255） | `levels.black` ÷255 后**过 EOTF 换线性**（内核 black 是线性输入黑点位置，不转换有效显示黑点会被放大到 0.15–0.35，见 §9.1 续；white / gamma 跨空间近似不变，直通） |
 | 分离色调/色彩分级（H/S 两轮） | `split_toning` 三元组：按目标色的 RGB 偏移方向近似，量级 ≤0.15/分量（速查通则：分级宁小勿大，两轮之和 ≤25 的口径映射为三元组小量）；v2 四套再减半 |
-| HSL 逐通道（H/S/L） | **无逐通道 HSL**：全局 `hsl` 只动整体；逐通道意图改用 `selective_color` 的 CMYK 偏移近似，或写入 unsupported |
+| HSL 逐通道（H/S/L） | **无逐通道 HSL**：全局 `hsl` 只动整体；逐通道意图改用 `selective_color` 的 CMYK 偏移近似，或写入 unsupported（期 3 起 selective 为 PS 差值权重 + sRGB→ProPhoto 往返，偏移量级约旧线性硬扇区口径的 ×1.8，期 3 试点推导，期 5 复核） |
 | 校准面板移色 | `channel_mixer` 矩阵近似（赛博朋克），或 unsupported |
-| 清晰度/纹理/去朦胧 | 调整版 `clarity` / `texture` / `dehaze` 的 amount = LR 值 ÷100 |
+| 清晰度/纹理/去朦胧 | 调整版 `clarity` / `texture` / `dehaze` 的 amount = LR 值 ÷100（期 3 起 clarity 为 sRGB Y' 平面 + 中间调掩模 + 亮度比回写，量级同阶；dehaze 正向约 ×1.3，因 γ_t 重映射后有效强度下降，期 3 试点推导，期 5 复核） |
 | 颗粒（量/大小/粗糙度） | `film_grain.amount` ≈ 量÷40 钳到 0..1；size 取 2–3；**粗糙度无对应**（unsupported 标注） |
 | 数字噪点（CCD） | 滤镜 `noise.amount` 小量 + 关降噪类操作；彩噪的红绿斑块质地无精确对应（notes 标注） |
-| 暗角（量） | 滤镜 `vignette.strength` ≈ |v|/100×0.6，radius/softness 给固定常用值 |
+| 暗角（量） | 滤镜 `vignette.strength` ≈ |v|/100×0.5（期 3 起显示乘算，旧线性强度 → 新显示强度 ≈ ×0.8，故因子 0.6 → 0.5；期 3 试点推导，期 5 复核），radius/softness 给固定常用值 |
 | 柔焦/glow | 滤镜 `glow.intensity` 小量；或 clarity/texture 负值（糖水的辉光教训：默认关，见其 notes） |
 | 锐化（量/半径） | 滤镜 `sharpen` amount ≈ 量÷80、radius 取整 |
 
@@ -374,6 +374,50 @@ retro_film（暮色剪影）与 hdr_landscape（大光比风光）被逐图 QA �
   ≳ 0.5）等于亲手把动态范围压平，HDR 类预设的 s_h 预算以 ±0.3
   为限，扩张动态范围靠 levels/curves 的端点而非 s_h 的中段抬升**。
 
+**续五：A 族语义原地变更 + 22 套重著录（2026-10-24，期 3 甲案）。**
+§9.1 前文「`brightness_contrast` 只点名、本次不动数据」一条作废——
+期 3 已按 Wang 甲案裁定（原地改语义、一步到位、该重录的就重录）
+改了内核并全量重著录，存量文档回放会变样（接受的代价，发布说明
+明示）。内核定版（`filter.rs` / `color.rs`，提交序列见期 3 包说明）：
+
+- **通则**：显示空间 ops 一律扩展（保符号）sRGB 传递，编码前不钳
+  [0,1]；HDR 编码 >1.7 不钳、负值镜像；[0,1] 内与旧钳制版逐位一致。
+- **A1 `brightness_contrast`**：编码 → brightness 平移（±0.5 ⇔ 显示
+  ±0.25）→ contrast 绕显示 0.5 枢轴 → 线性亮度比回写（灰像素与逐
+  通道显示映射恰等价、彩色标量保色相、HDR 成立）；neutral 快速返回。
+- **A2 `color_balance`**：权重改读显示 Y'（二次式形状保留）、偏移按
+  ±0.25 显示刻度 × amount 加在显示值上、扩展解码；新增 `amount`
+ （分发缺省 1.0，工具层键表已启用未知键拒绝）。
+- **A3 `selective_color`**：全面重写——分类用 PS 差值权重法（排序通道
+  权重，禁用色相角硬切；明度三档以显示 0.25/0.75 为锚；色度门控
+  span/0.08 交叉淡化），为对齐 LR 来源数据加内部 sRGB→ProPhoto
+  矩阵往返（不做强度偏大约 35–50%），CMYK 剩余量（room）模型施加、
+  本 op 专用不钳输出；零有效偏移先行短路逐位恒等。
+- **A4-1 `clarity`**（仅 `guided_detail_adjust`）：Y' 平面（逐通道扩展
+  编码加权和、不钳）+ 掩模中心回显示中灰 + 线性亮度比回写；平坦区
+  逐位不动（引导滤波常数平面浮点残差零守卫）；半径/epsilon 数值不变。
+- **A4-2 `vignette`**：显示空间乘算 `out_d = d·(1 − strength·smoothstep(t))`
+  （逐通道扩展编解码、HDR 不钳；几何不变；乘子 = 1 中心区逐位不动）。
+- **A4-3 `dehaze`**：保留线性 DCP + 四修正（大气光色度钳 [0.95,1.05]、
+  γ_t=0.5 重映射 + t0 动态底 0.20–0.25、β=0.35 亮度权重混合、前景
+  中性再锚定增益钳 [0.90,1.10]）。
+- **不动项**：`curves` 内核不改（期 0 的 EOTF 换算线性坐标值继续有效，
+  本节 curves / levels.black 的转换规则全部沿用）；`split_toning`
+  内核不改（本节 split 量纲注记与 amount 随场景缩放规则全部沿用；
+  设计 §9.2 第 1 项未决，待 Wang 确认是否后续纳入）；`shadows_highlights`
+  不动；滤镜版 `clarity()` 不在本期。
+
+**重著录迁移通则（试点验证，3 套试点 + 12 展示行逐行渲染判定）**：
+bc 数值大体保留（仅过暗者下调，如 lomo 1.25→1.15）；vignette 强值
+约 ×0.8（lomo 0.38→0.30）；selective 偏移 ×~1.8–1.9（权重稀释 ×
+ProPhoto 阻尼）；brightness 旧线性值 ×1.7（中调等效解析推导，期 5
+复核 morandi/guofeng 两行）；dehaze 正向 ×~1.35（hdr 0.22→0.30）；
+split_toning 仅 STYLE_SPEC 点名弱者上调（cinema 0.06→0.13、forest
+0.05→0.12、hong_kong 0.08→0.16、guofeng 0.12→0.14、retro_film
+0.12→0.10 暗场暖染收一档）；其余 op 数值沿用。册外 10 套按同一通则
+定值（无展示行渲染，期 5 三格重渲时复核）。试点与批量逐套改动见
+期 3 包说明；对照渲染（旧内核成图 vs 新内核成图，12 行）随包。
+
 ## 10. 测试门与三期划分
 
 **测试门**（`crates/yanshi-server/tests/style_preset_package.rs` + 展开器内单元测试）：
@@ -427,6 +471,9 @@ retro_film（暮色剪影）与 hdr_landscape（大光比风光）被逐图 QA �
 图例：状态按 2026-10-23 实测与找回的截图证据如实标注。修正段基线：
 full = 全量基线、light = 轻校正基线（配方均以 strength=1 记，参数细节以
 `style-presets.json` 为单一事实来源，本附录记要点与旋钮）。
+**期 3 注（2026-10-24）**：22 套数据已按新显示空间语义全量重著录
+（§9.1 续五）；本附录各条的配方要点文字是期 0–期 2 的著录，数值以
+JSON 为准，status 字段未随重著录改动（评审工作流状态归 gradetwo）。
 
 ### 1. 小清新 `japanese_airy` — established（已验证）
 - 题材：晴日户外人像、海边、白建筑、校园；慎：夜景、肤色易被青污染。
