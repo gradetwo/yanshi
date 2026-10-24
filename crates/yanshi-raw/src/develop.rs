@@ -313,68 +313,343 @@ fn demosaic_bayer(
 /// `kind`（MHC／Bilinear 固定核）是 Bayer 专用标定，本路不消费。
 /// 已知边界：细密高频纹理的分辨力弱于 Markesteijn 类 X-Trans 专用
 /// 算法——属质量边界、非正确性边界（颜色与几何由构造保证）。
+///
+/// **期 2 C3 的性能形态（语义不变）**：原实现每像素三趟全窗扫描、
+/// 每 tap 现算 `chan()`／`sample()`（各带 reflect + 取模）+ `&dyn Fn`
+/// 分发，是「展开 18 s vs 解码 0.15 s」的根因。现改为：
+/// (a) **相位抽表**（C3-a）：CFA 周期内 period² 种相位，每相位每
+/// 目标通道预compute tap 表 `[(dx, dy, w)]`，**按现行 dy/dx 升序
+/// 排列**——内部区域（整窗不越界）直索引累加，与旧路加法次序逐项
+/// 相同 ⇒ 同平台逐位一致；边界带（reflect 会改变 tap 的实际
+/// 通道归属，表覆盖不了）保留逐 tap 现算的慢路，口径与旧实现
+/// 逐字对齐。(b) **行带并行**（C3-b）：两趟都按输出行切带，
+/// `std::thread::scope` 并行；带间只读共享输入、无跨像素归约
+/// ⇒ 与带数无关地逐位一致。wasm 目标整条切除线程路、标量兜底。
 fn demosaic_grid(plane: &[f32], width: usize, height: usize, cfa: &CfaGrid) -> Vec<f32> {
-    debug_assert_eq!(plane.len(), width * height);
-    let radius = cfa.period().div_ceil(2) as isize;
-    let sample = |x: isize, y: isize| -> f32 {
-        plane[reflect_index(y, height) * width + reflect_index(x, width)]
-    };
-    let chan = |x: isize, y: isize| -> Channel {
-        cfa.channel_at(reflect_index(x, width), reflect_index(y, height))
-    };
-    // 窗内同通道距离加权均值；value 给出每个采样点的待平均量。
-    let weighted =
-        |x: isize, y: isize, want: Channel, value: &dyn Fn(isize, isize) -> f32| -> f32 {
-            let mut sum = 0.0f32;
-            let mut wsum = 0.0f32;
-            for dy in -radius..=radius {
-                for dx in -radius..=radius {
-                    if chan(x + dx, y + dy) == want {
-                        let w = 1.0 / (1.0 + (dx * dx + dy * dy) as f32);
-                        sum += w * value(x + dx, y + dy);
-                        wsum += w;
+    demosaic_grid_impl(
+        plane,
+        width,
+        height,
+        cfa,
+        GridTapSet::Full,
+        grid_band_count(height),
+    )
+}
+
+/// C3-d 预览快速档：简化 tap 集（d²≤5、空集回退全窗），只供
+/// C1-b 预览档展开（record 已记 `developed_max_edge`，预览像素
+/// 本就不冒充成品）。全档路径永不走这里。
+fn demosaic_grid_quick(plane: &[f32], width: usize, height: usize, cfa: &CfaGrid) -> Vec<f32> {
+    demosaic_grid_impl(
+        plane,
+        width,
+        height,
+        cfa,
+        GridTapSet::Quick,
+        grid_band_count(height),
+    )
+}
+
+/// 网格路的 tap 集：Full = 全窗（位精确口径）；Quick = 预览简化集。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GridTapSet {
+    Full,
+    Quick,
+}
+
+/// 相位 tap 表：一相位 × 三目标通道的 `(dx, dy, w)` 列表，
+/// 恒按 dy→dx 升序（= 旧路的累加次序，逐位一致的命门）。
+type PhaseTaps = [Vec<(isize, isize, f32)>; 3];
+
+/// 预compute 全部相位的 tap 表。权重表达式与旧路逐字相同
+/// （`1.0 / (1.0 + (dx*dx + dy*dy) as f32)`）。Quick 集先按
+/// d²≤5 过滤；某（相位，通道）过滤后为空 ⇒ 回退该（相位，
+/// 通道）的全窗表（差分面没有同色采样时不许编造 0 值）。
+fn build_phase_taps(cfa: &CfaGrid, set: GridTapSet) -> Vec<PhaseTaps> {
+    let period = cfa.period();
+    let radius = period.div_ceil(2) as isize;
+    let mut phases: Vec<PhaseTaps> = Vec::with_capacity(period * period);
+    for py in 0..period as isize {
+        for px in 0..period as isize {
+            let mut per_channel: PhaseTaps = [Vec::new(), Vec::new(), Vec::new()];
+            for target in [Channel::R, Channel::G, Channel::B] {
+                let mut full: Vec<(isize, isize, f32)> = Vec::new();
+                let mut quick: Vec<(isize, isize, f32)> = Vec::new();
+                for dy in -radius..=radius {
+                    for dx in -radius..=radius {
+                        // 相位内的通道归属只看相对坐标取模——与
+                        // channel_at 对窗内坐标的求值一致。
+                        let cx = (px + dx).rem_euclid(period as isize) as usize;
+                        let cy = (py + dy).rem_euclid(period as isize) as usize;
+                        if cfa.channel_at(cx, cy) == target {
+                            let w = 1.0 / (1.0 + (dx * dx + dy * dy) as f32);
+                            full.push((dx, dy, w));
+                            if dx * dx + dy * dy <= 5 {
+                                quick.push((dx, dy, w));
+                            }
+                        }
                     }
                 }
-            }
-            if wsum > 0.0 {
-                sum / wsum
-            } else {
-                0.0
-            }
-        };
-    // 1) G 全场：G 采样位取原值，其余位置同色加权均值。
-    let mut green = vec![0.0f32; width * height];
-    for y in 0..height as isize {
-        for x in 0..width as isize {
-            green[y as usize * width + x as usize] = if chan(x, y) == Channel::G {
-                sample(x, y)
-            } else {
-                weighted(x, y, Channel::G, &|sx, sy| sample(sx, sy))
-            };
-        }
-    }
-    let g_at = |x: isize, y: isize| -> f32 {
-        green[reflect_index(y, height) * width + reflect_index(x, width)]
-    };
-    // 2) R／B：差分面插值后加回 G；本通道采样位取原值。
-    let mut out = vec![0.0f32; width * height * 3];
-    for y in 0..height as isize {
-        for x in 0..width as isize {
-            let here = chan(x, y);
-            let g = g_at(x, y);
-            let mut rgb = [0.0f32; 3];
-            rgb[Channel::G.index()] = g;
-            for target in [Channel::R, Channel::B] {
-                rgb[target.index()] = if here == target {
-                    sample(x, y)
-                } else {
-                    g + weighted(x, y, target, &|sx, sy| sample(sx, sy) - g_at(sx, sy))
+                per_channel[target.index()] = match set {
+                    GridTapSet::Full => full,
+                    GridTapSet::Quick => {
+                        if quick.is_empty() {
+                            full
+                        } else {
+                            quick
+                        }
+                    }
                 };
             }
-            rgb[here.index()] = sample(x, y);
-            let o = (y as usize * width + x as usize) * 3;
-            out[o..o + 3].copy_from_slice(&rgb);
+            phases.push(per_channel);
         }
+    }
+    phases
+}
+
+/// 慢路（边界带专用，与旧实现逐字同口径）：reflect 坐标下逐 tap
+/// 现算通道归属与采样。`diff` = 差分面（采样 − G 面）；Quick 集
+/// 过滤后无 tap ⇒ 整窗重扫（与抽表的回退口径一致）。
+#[allow(clippy::too_many_arguments)]
+fn grid_weighted_slow(
+    plane: &[f32],
+    green: Option<&[f32]>,
+    width: usize,
+    height: usize,
+    cfa: &CfaGrid,
+    radius: isize,
+    x: isize,
+    y: isize,
+    want: Channel,
+    diff: bool,
+    set: GridTapSet,
+) -> f32 {
+    let sample = |sx: isize, sy: isize| -> f32 {
+        plane[reflect_index(sy, height) * width + reflect_index(sx, width)]
+    };
+    let value = |sx: isize, sy: isize| -> f32 {
+        let base = sample(sx, sy);
+        if diff {
+            let g = green.expect("差分面必须带 G 面")
+                [reflect_index(sy, height) * width + reflect_index(sx, width)];
+            base - g
+        } else {
+            base
+        }
+    };
+    let mut sum = 0.0f32;
+    let mut wsum = 0.0f32;
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            if set == GridTapSet::Quick && dx * dx + dy * dy > 5 {
+                continue;
+            }
+            let cx = reflect_index(x + dx, width);
+            let cy = reflect_index(y + dy, height);
+            if cfa.channel_at(cx, cy) == want {
+                let w = 1.0 / (1.0 + (dx * dx + dy * dy) as f32);
+                sum += w * value(x + dx, y + dy);
+                wsum += w;
+            }
+        }
+    }
+    if wsum == 0.0 && set == GridTapSet::Quick {
+        // 过滤后无同色采样 ⇒ 回退全窗（与抽表口径一致）。
+        return grid_weighted_slow(
+            plane,
+            green,
+            width,
+            height,
+            cfa,
+            radius,
+            x,
+            y,
+            want,
+            diff,
+            GridTapSet::Full,
+        );
+    }
+    if wsum > 0.0 {
+        sum / wsum
+    } else {
+        0.0
+    }
+}
+
+/// 行带数：原生目标按可用并行度（上限 8）与高度决定（矮帧不值
+/// 得起线程）；wasm 目标恒 1（线程路整条 cfg 切除）。
+#[cfg(not(target_arch = "wasm32"))]
+fn grid_band_count(height: usize) -> usize {
+    if height < 64 {
+        return 1;
+    }
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(8);
+    threads.min((height / 32).max(1))
+}
+
+/// wasm 目标：无线程，标量单带（C3-b 的 wasm 纪律）。
+#[cfg(target_arch = "wasm32")]
+fn grid_band_count(_height: usize) -> usize {
+    1
+}
+
+/// 按行带执行 `job(y0, chunk)`：chunk 是该带对应的可变切片
+/// （由调用方以 chunks_mut 切出，带间不重叠）。原生多带时走
+/// `std::thread::scope`；单带与 wasm 直调。
+fn run_row_bands<T: Send>(chunks: Vec<&mut [T]>, job: impl Fn(&mut [T], usize) + Sync) {
+    if chunks.len() <= 1 {
+        for (index, chunk) in chunks.into_iter().enumerate() {
+            job(chunk, index);
+        }
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let job_ref = &job;
+        std::thread::scope(|scope| {
+            for (index, chunk) in chunks.into_iter().enumerate() {
+                scope.spawn(move || job_ref(chunk, index));
+            }
+        });
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        for (index, chunk) in chunks.into_iter().enumerate() {
+            job(chunk, index);
+        }
+    }
+}
+
+/// 网格路共用实现：两趟（G 全场 → R／B 差分）× 行带并行；
+/// 像素级 interior 走相位表、边界带走慢路。`bands` 由入口按
+/// `grid_band_count` 给定（判据可显式指定带数验逐位一致）。
+fn demosaic_grid_impl(
+    plane: &[f32],
+    width: usize,
+    height: usize,
+    cfa: &CfaGrid,
+    set: GridTapSet,
+    bands: usize,
+) -> Vec<f32> {
+    debug_assert_eq!(plane.len(), width * height);
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+    let period = cfa.period();
+    let radius = period.div_ceil(2) as isize;
+    let taps = build_phase_taps(cfa, set);
+    let bands = bands.max(1).min(height.max(1));
+    let band_rows = height.div_ceil(bands);
+    let (w_i, h_i) = (width as isize, height as isize);
+    // interior 判定：整窗不越界 ⇒ reflect 恒等、tap 归属只看相位。
+    let interior = |x: isize, y: isize| -> bool {
+        x - radius >= 0 && x + radius < w_i && y - radius >= 0 && y + radius < h_i
+    };
+
+    // 1) G 全场：G 采样位取原值，其余位置同色加权均值。
+    let mut green = vec![0.0f32; width * height];
+    {
+        let chunks: Vec<&mut [f32]> = green.chunks_mut(band_rows * width).collect();
+        run_row_bands(chunks, |chunk, band| {
+            let y_start = band * band_rows;
+            let rows = chunk.len() / width;
+            for ly in 0..rows {
+                let y = (y_start + ly) as isize;
+                for x in 0..width as isize {
+                    let idx = ly * width + x as usize;
+                    chunk[idx] = if cfa.channel_at(x as usize, y as usize) == Channel::G {
+                        plane[y as usize * width + x as usize]
+                    } else if interior(x, y) {
+                        let phase = &taps[cfa.phase_at(x as usize, y as usize)];
+                        let mut sum = 0.0f32;
+                        let mut wsum = 0.0f32;
+                        for &(dx, dy, w) in &phase[Channel::G.index()] {
+                            sum += w * plane[(y + dy) as usize * width + (x + dx) as usize];
+                            wsum += w;
+                        }
+                        if wsum > 0.0 {
+                            sum / wsum
+                        } else {
+                            0.0
+                        }
+                    } else {
+                        grid_weighted_slow(
+                            plane,
+                            None,
+                            width,
+                            height,
+                            cfa,
+                            radius,
+                            x,
+                            y,
+                            Channel::G,
+                            false,
+                            set,
+                        )
+                    };
+                }
+            }
+        });
+    }
+
+    // 2) R／B：差分面插值后加回 G；本通道采样位取原值。
+    let green_ref = &green;
+    let mut out = vec![0.0f32; width * height * 3];
+    {
+        let chunks: Vec<&mut [f32]> = out.chunks_mut(band_rows * width * 3).collect();
+        run_row_bands(chunks, |chunk, band| {
+            let y_start = band * band_rows;
+            let rows = chunk.len() / (width * 3);
+            for ly in 0..rows {
+                let y = (y_start + ly) as isize;
+                for x in 0..width as isize {
+                    let here = cfa.channel_at(x as usize, y as usize);
+                    let center = y as usize * width + x as usize;
+                    let g = green_ref[center];
+                    let mut rgb = [0.0f32; 3];
+                    rgb[Channel::G.index()] = g;
+                    for target in [Channel::R, Channel::B] {
+                        rgb[target.index()] = if here == target {
+                            plane[center]
+                        } else if interior(x, y) {
+                            let phase = &taps[cfa.phase_at(x as usize, y as usize)];
+                            let mut sum = 0.0f32;
+                            let mut wsum = 0.0f32;
+                            for &(dx, dy, w) in &phase[target.index()] {
+                                let at = (y + dy) as usize * width + (x + dx) as usize;
+                                sum += w * (plane[at] - green_ref[at]);
+                                wsum += w;
+                            }
+                            // 与旧路逐字同形：g + weighted，weighted
+                            // 无 tap 时为 0.0（不许写成条件回 g——
+                            // -0.0 + 0.0 的位级差异不许引入）。
+                            let delta = if wsum > 0.0 { sum / wsum } else { 0.0 };
+                            g + delta
+                        } else {
+                            g + grid_weighted_slow(
+                                plane,
+                                Some(green_ref),
+                                width,
+                                height,
+                                cfa,
+                                radius,
+                                x,
+                                y,
+                                target,
+                                true,
+                                set,
+                            )
+                        };
+                    }
+                    rgb[here.index()] = plane[center];
+                    let o = (ly * width + x as usize) * 3;
+                    chunk[o..o + 3].copy_from_slice(&rgb);
+                }
+            }
+        });
     }
     out
 }
@@ -1090,7 +1365,69 @@ pub fn assemble_record(
         lens_exif: ctx.lens_exif.clone(),
         lens_match,
         applied_lens_profile,
+        developed_max_edge: options.max_output_edge,
     }
+}
+
+/// C1-b 预览档的链尾降采样：面积加权盒式滤波把三元组平面压到
+/// 长边 ≤ `max_edge`。新尺寸用整数口径（dim × edge ÷ max_dim，
+/// 向下取整、至少 1）⇒ 长边恰为 edge、短边不越界；逐输出像素对
+/// 源矩形做面积加权平均，f64 累加且求和次序固定（行→列）⇒
+/// 确定性（NF1：只用算术，不用超越函数）。输入长边已 ≤ edge
+/// 时原样返回（档位仍由 `assemble_record` 记进 record——记的是
+/// 「按预览档展开」这件事实，不只是「缩了」）。
+fn downscale_rgb_to_edge(
+    rgb: Vec<f32>,
+    width: usize,
+    height: usize,
+    max_edge: u32,
+) -> (usize, usize, Vec<f32>) {
+    let max_dim = width.max(height);
+    if max_dim <= max_edge as usize {
+        return (width, height, rgb);
+    }
+    let new_w = ((width as u64 * u64::from(max_edge)) / max_dim as u64).max(1) as usize;
+    let new_h = ((height as u64 * u64::from(max_edge)) / max_dim as u64).max(1) as usize;
+    let scale_x = width as f64 / new_w as f64;
+    let scale_y = height as f64 / new_h as f64;
+    let mut out = vec![0.0f32; new_w * new_h * 3];
+    for oy in 0..new_h {
+        let y0 = oy as f64 * scale_y;
+        let y1 = (oy + 1) as f64 * scale_y;
+        let sy_from = y0.floor() as usize;
+        let sy_to = (y1.ceil() as usize).min(height);
+        for ox in 0..new_w {
+            let x0 = ox as f64 * scale_x;
+            let x1 = (ox + 1) as f64 * scale_x;
+            let sx_from = x0.floor() as usize;
+            let sx_to = (x1.ceil() as usize).min(width);
+            let mut acc = [0.0f64; 3];
+            let mut wsum = 0.0f64;
+            for sy in sy_from..sy_to {
+                let wy = (y1.min((sy + 1) as f64) - y0.max(sy as f64)).max(0.0);
+                if wy == 0.0 {
+                    continue;
+                }
+                for sx in sx_from..sx_to {
+                    let wx = (x1.min((sx + 1) as f64) - x0.max(sx as f64)).max(0.0);
+                    if wx == 0.0 {
+                        continue;
+                    }
+                    let wgt = wx * wy;
+                    let src = (sy * width + sx) * 3;
+                    for (c, slot) in acc.iter_mut().enumerate() {
+                        *slot += f64::from(rgb[src + c]) * wgt;
+                    }
+                    wsum += wgt;
+                }
+            }
+            let dst = (oy * new_w + ox) * 3;
+            for (c, slot) in out[dst..dst + 3].iter_mut().enumerate() {
+                *slot = (acc[c] / wsum) as f32;
+            }
+        }
+    }
+    (new_w, new_h, out)
 }
 
 // ---------------------------------------------------------------------------
@@ -1164,13 +1501,29 @@ pub fn develop_with_lens(
     let multipliers = renormalized_wb_multipliers(frame)?;
     apply_wb(&mut plane, frame, multipliers);
     // ④ 解马赛克（纯整数网格 MHC／双线性基线）。
-    let mut rgb_camera = demosaic(
-        &plane,
-        frame.width,
-        frame.height,
-        frame.cfa.clone(),
-        options.demosaic,
-    );
+    // C3-d（期 2）：预览档 + 网格 CFA ⇒ 简化 tap 快速路（预览像素
+    // 本就记档、勿当成品）；Bayer 路与全档网格路口径不变。
+    let quick_grid = options.max_output_edge.is_some() && frame.cfa.bayer().is_none();
+    if quick_grid {
+        notes.push(
+            "预览档快速解马赛克（C3-d 简化 tap 集）：预览像素与全档成品不同源，勿当成品用"
+                .to_string(),
+        );
+    }
+    let mut rgb_camera = if quick_grid {
+        demosaic_grid_quick(&plane, frame.width, frame.height, &frame.cfa)
+    } else {
+        demosaic(
+            &plane,
+            frame.width,
+            frame.height,
+            frame.cfa.clone(),
+            options.demosaic,
+        )
+    };
+    // C1-a（期 2）：马赛克平面在此之后再无用处，显式释放——不然它的
+    // 4 B/px 会陪 ⑥／⑧ 的大缓冲一路活到函数尾，白抬峰值。
+    drop(plane);
     // ④′ 高光恢复（保底机制，第三包）：已白平衡相机 RGB 域、无条件
     // 环节（不进 raw_options）。天花板里的 g_vig 即 ② 的增益场。
     highlight_recover(
@@ -1191,6 +1544,9 @@ pub fn develop_with_lens(
             vig_field.as_deref(),
         )?;
     }
+    // C1-a（期 2）：暗角增益场的最后一位消费者是 ④′′，此处释放
+    // （理由同上，4 B/px）。
+    drop(vig_field);
     // ⑤ 畸变 + TCA 复合重采样（第四包）：一次重采样、逐通道源坐标；
     // 排在色彩矩阵之前（相机 RGB 域的几何才是镜头几何）。
     let rgb_camera = match lens_plan.and_then(|plan| plan.warp.as_ref()) {
@@ -1202,10 +1558,14 @@ pub fn develop_with_lens(
     let composite = composite_color_matrix(&frame.color_matrices, neutral, &mut notes)?;
     let m_total = composite.matrix;
     let alpha = composite.alpha;
-    let mut rgb = vec![0.0f32; rgb_camera.len()];
-    for (dst, src) in rgb.chunks_exact_mut(3).zip(rgb_camera.chunks_exact(3)) {
-        let out = mat3_mul_vec(&m_total, [src[0], src[1], src[2]]);
-        dst.copy_from_slice(&out);
+    // C1-a（期 2）：色彩矩阵是逐像素独立运算 ⇒ 原地变换（三元先读进
+    // 局部量再写回同一槽位），省掉与 rgb_camera 并存的第二份
+    // 12 B/px 缓冲。每像素的算式与旧双缓冲形态逐项同式同序 ⇒
+    // 逐位守恒（tests/buffer_reuse_golden.rs 的金值守这条）。
+    let mut rgb = rgb_camera;
+    for pixel in rgb.chunks_exact_mut(3) {
+        let out = mat3_mul_vec(&m_total, [pixel[0], pixel[1], pixel[2]]);
+        pixel.copy_from_slice(&out);
     }
     // ⑦ pre_exposure = 2^(BaselineExposure + user)（必须在高光恢复之后——
     //    ④′ 是后续包，注入时勿把本步提前；Baseline 缺失按 0 并注明）。
@@ -1224,8 +1584,30 @@ pub fn develop_with_lens(
     }
     // ⑧ EXIF 方向变换（设计 5.7）：置于 ⑦ 之后、⑨ 之前；5–8 时宽高互换。
     let orientation = effective_orientation(frame.orientation);
-    let (out_w, out_h, mut rgb) =
-        apply_orientation_rgb(&rgb, frame.width, frame.height, orientation);
+    // C1-a（期 2）：恒等方向不再整幅拷一份（`apply_orientation_rgb`
+    // 对 1 档本就是逐值复制）；转置／翻转类保留一份输出拷贝——设计
+    // C1-a 的低风险支（⑧ 前上游缓冲已全部释放，峰值只剩输入＋输出
+    // 两份 12 B/px），不做原地重排的高风险索引手术。
+    let (out_w, out_h, rgb) = if orientation == 1 {
+        (frame.width, frame.height, rgb)
+    } else {
+        apply_orientation_rgb(&rgb, frame.width, frame.height, orientation)
+    };
+    // C1-b（期 2）：预览档在链尾降采样（⑧ 之后、⑨ 之前——把
+    // 「全档／预览」的分界钉在最后一步，record 的
+    // `developed_max_edge` 与这里的实际输出同源）。全档（None）
+    // 整步跳过、逐位不变；预览档在注记里点名，不许冒充成品。
+    let (out_w, out_h, mut rgb) = match options.max_output_edge {
+        Some(edge) => {
+            let shrunk = downscale_rgb_to_edge(rgb, out_w, out_h, edge);
+            notes.push(format!(
+                "预览档展开（max_output_edge={edge}）：输出 {}×{}，预览像素与全档成品不同源，勿当成品用",
+                shrunk.0, shrunk.1
+            ));
+            shrunk
+        }
+        None => (out_w, out_h, rgb),
+    };
     // ⑨ 出口截零（全程唯一截零点）。
     clamp_exit(&mut rgb)?;
     let (lens_match, applied) = match &lens {
@@ -1297,5 +1679,174 @@ mod tests {
         assert_eq!(values, [0.0, 0.5, 0.0, 2.0]);
         let mut with_inf = [1.0, f32::INFINITY];
         assert!(clamp_exit(&mut with_inf).is_err());
+    }
+
+    // -----------------------------------------------------------------
+    // C3 判据（期 2）：相位抽表 + 行带并行与旧实现逐位一致。
+    // 参考实现 = 期 2 改造前的 demosaic_grid 原样拷贝（每像素三趟
+    // 全窗扫描 + 闭包现算），只许测试引用、不许生产路径调用。
+    // -----------------------------------------------------------------
+
+    fn xtrans_grid_for_test() -> CfaGrid {
+        let pattern = "GGRGGBGGBGGRBRGRBGGGBGGRGGRGGBRBGBRG";
+        let cells: Vec<Channel> = pattern
+            .chars()
+            .map(|c| match c {
+                'R' => Channel::R,
+                'G' => Channel::G,
+                'B' => Channel::B,
+                other => panic!("pattern 含未知字符 {other}"),
+            })
+            .collect();
+        CfaGrid::new(6, cells, pattern.to_string()).expect("6×6 网格必须可构造")
+    }
+
+    fn random_plane(w: usize, h: usize, seed: u32) -> Vec<f32> {
+        // xorshift32 确定性伪随机（不引依赖、跨平台同序列）。
+        let mut state = seed.max(1);
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state % 10_000) as f32 / 10_000.0
+        };
+        (0..w * h).map(|_| next()).collect()
+    }
+
+    fn demosaic_grid_reference(
+        plane: &[f32],
+        width: usize,
+        height: usize,
+        cfa: &CfaGrid,
+    ) -> Vec<f32> {
+        let radius = cfa.period().div_ceil(2) as isize;
+        let sample = |x: isize, y: isize| -> f32 {
+            plane[reflect_index(y, height) * width + reflect_index(x, width)]
+        };
+        let chan = |x: isize, y: isize| -> Channel {
+            cfa.channel_at(reflect_index(x, width), reflect_index(y, height))
+        };
+        let weighted =
+            |x: isize, y: isize, want: Channel, value: &dyn Fn(isize, isize) -> f32| -> f32 {
+                let mut sum = 0.0f32;
+                let mut wsum = 0.0f32;
+                for dy in -radius..=radius {
+                    for dx in -radius..=radius {
+                        if chan(x + dx, y + dy) == want {
+                            let w = 1.0 / (1.0 + (dx * dx + dy * dy) as f32);
+                            sum += w * value(x + dx, y + dy);
+                            wsum += w;
+                        }
+                    }
+                }
+                if wsum > 0.0 {
+                    sum / wsum
+                } else {
+                    0.0
+                }
+            };
+        let mut green = vec![0.0f32; width * height];
+        for y in 0..height as isize {
+            for x in 0..width as isize {
+                green[y as usize * width + x as usize] = if chan(x, y) == Channel::G {
+                    sample(x, y)
+                } else {
+                    weighted(x, y, Channel::G, &|sx, sy| sample(sx, sy))
+                };
+            }
+        }
+        let g_at = |x: isize, y: isize| -> f32 {
+            green[reflect_index(y, height) * width + reflect_index(x, width)]
+        };
+        let mut out = vec![0.0f32; width * height * 3];
+        for y in 0..height as isize {
+            for x in 0..width as isize {
+                let here = chan(x, y);
+                let g = g_at(x, y);
+                let mut rgb = [0.0f32; 3];
+                rgb[Channel::G.index()] = g;
+                for target in [Channel::R, Channel::B] {
+                    rgb[target.index()] = if here == target {
+                        sample(x, y)
+                    } else {
+                        g + weighted(x, y, target, &|sx, sy| sample(sx, sy) - g_at(sx, sy))
+                    };
+                }
+                rgb[here.index()] = sample(x, y);
+                let o = (y as usize * width + x as usize) * 3;
+                out[o..o + 3].copy_from_slice(&rgb);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn demosaic_grid_phase_table_bit_identical() {
+        let grid = xtrans_grid_for_test();
+        // 尺寸覆盖：全边界小帧（无 interior）、窄带帧、多 interior 帧。
+        for (w, h, seed) in [
+            (7usize, 5usize, 11u32),
+            (13, 11, 22),
+            (36, 24, 33),
+            (61, 47, 44),
+        ] {
+            let plane = random_plane(w, h, seed);
+            let reference = demosaic_grid_reference(&plane, w, h, &grid);
+            let tabled = demosaic_grid_impl(&plane, w, h, &grid, GridTapSet::Full, 1);
+            assert_eq!(
+                tabled, reference,
+                "相位表路径与旧实现必须逐位一致（{w}×{h}）"
+            );
+            // 公开入口（自动带数）同样逐位一致。
+            let via_entry = demosaic_grid(&plane, w, h, &grid);
+            assert_eq!(via_entry, reference, "公开入口必须逐位一致（{w}×{h}）");
+        }
+    }
+
+    #[test]
+    fn demosaic_grid_parallel_bit_identical() {
+        let grid = xtrans_grid_for_test();
+        let (w, h) = (120usize, 90usize);
+        let plane = random_plane(w, h, 77);
+        let reference = demosaic_grid_reference(&plane, w, h, &grid);
+        for bands in [1usize, 2, 4, 7] {
+            let out = demosaic_grid_impl(&plane, w, h, &grid, GridTapSet::Full, bands);
+            assert_eq!(out, reference, "带数 {bands} 必须与标量旧实现逐位一致");
+        }
+    }
+
+    #[test]
+    fn demosaic_grid_quick_keeps_constant_field_and_differs_on_texture() {
+        let grid = xtrans_grid_for_test();
+        // 恒色场：简化 tap 集平均的仍是同一常数 ⇒ 逐像素精确。
+        let (w, h) = (24usize, 18usize);
+        let mut plane = vec![0.0f32; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                plane[y * w + x] = match grid.channel_at(x, y) {
+                    Channel::R => 0.8,
+                    Channel::G => 0.5,
+                    Channel::B => 0.3,
+                };
+            }
+        }
+        let quick = demosaic_grid_impl(&plane, w, h, &grid, GridTapSet::Quick, 2);
+        for pixel in quick.chunks_exact(3) {
+            // 与既有 xtrans 恒色场判据同口径（1e-6）：加权平均对
+            // 常数场只保证舍入级精确（差分面 s−g 的浮点抵消），
+            // 全档旧路亦然——这里断的是「快速档不系统性改色」。
+            assert!(
+                (pixel[0] - 0.8).abs() < 1e-6
+                    && (pixel[1] - 0.5).abs() < 1e-6
+                    && (pixel[2] - 0.3).abs() < 1e-6,
+                "快速档恒色场应逐像素 ≈ [0.8, 0.5, 0.3]，实得 {pixel:?}"
+            );
+        }
+        // 随机纹理：快速档必须真的少用 tap（与全档有别）——
+        // 若过滤失效（快速档退化为全档），这里会逐位相等而红。
+        let plane = random_plane(48, 36, 99);
+        let full = demosaic_grid_impl(&plane, 48, 36, &grid, GridTapSet::Full, 1);
+        let quick = demosaic_grid_impl(&plane, 48, 36, &grid, GridTapSet::Quick, 1);
+        assert_ne!(quick, full, "快速档在纹理上应与全档不同（过滤未生效？）");
     }
 }

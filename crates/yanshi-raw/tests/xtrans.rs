@@ -275,3 +275,39 @@ fn synthetic_xtrans_dng_decodes_to_grid_frame() {
     assert_eq!((image.width, image.height), (w, h));
     assert!(image.rgb_linear.iter().all(|v| v.is_finite()));
 }
+
+#[test]
+fn xtrans_preview_tier_uses_quick_demosaic_and_names_it() {
+    // C3-d（期 2）：预览档 + 网格 CFA ⇒ 快速解马赛克，且注记
+    // 点名；全档展开不许出现快速路注记。
+    let (w, h) = (48usize, 36usize);
+    let mut mosaic = vec![0.0f32; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            mosaic[y * w + x] = 2000.0 + ((x * 31 + y * 57) % 9000) as f32;
+        }
+    }
+    let frame = xtrans_frame(w, h, mosaic);
+    let options = DevelopOptions {
+        max_output_edge: Some(64),
+        ..DevelopOptions::default()
+    };
+    let image = develop(&frame, &options, &RecordContext::default()).expect("预览档展开");
+    assert_eq!(image.record.developed_max_edge, Some(64));
+    assert!(
+        image.notes.iter().any(|n| n.contains("快速解马赛克")),
+        "预览档注记必须点名快速解马赛克：{:?}",
+        image.notes
+    );
+    let full = develop(
+        &frame,
+        &DevelopOptions::default(),
+        &RecordContext::default(),
+    )
+    .expect("全档展开");
+    assert!(
+        !full.notes.iter().any(|n| n.contains("快速解马赛克")),
+        "全档不许走快速路：{:?}",
+        full.notes
+    );
+}

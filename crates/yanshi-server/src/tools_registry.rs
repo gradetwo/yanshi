@@ -3,7 +3,8 @@
 //! **为什么拆出来**（色彩体系规划 **Phase 2** + 外部评审报告第 15 项）。
 //! 本模块是**纯搬运**：行为**零变化**（全量测试通过即验收）。
 //!
-//! **边界**：`ID_ARGS` / `LAYER_ID` 两个参数常量 + `pub const ALL_TOOLS: &[ToolSpec]`。
+//! **边界**：`ID_ARGS` / `LAYER_ID` 两个参数常量、`pub const ALL_TOOLS: &[ToolSpec]`，
+//! 以及 `PHOTO_TOOLS` / `SVG_TOOLS` 两个 workflow 预设白名单常量（设计 §7 F 族）。
 //! `dispatch` **留在 `tools.rs`**（它含逻辑）。
 //!
 //! **可见性**：`ALL_TOOLS` 保持 `pub`（父模块 `use tools_registry::*` 即可用 ✓）。
@@ -1589,7 +1590,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "层内 z 序（缺省放到同层最上方，作用于全部下方内容）"
             ),
             param!("name", String, false, "对象名（元数据）"),
-            param!("object_id", String, false, "对象 id（缺省自动生成）"),
+            param!("object_id", String, false, "对象 id（缺省自动生成）；若该 id 是已删除对象（墓碑），将复活它并整组换新参数（响应带 revived: true）"),
         ],
     },
     ToolSpec {
@@ -1616,7 +1617,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[
             param!("layer_id", String, true, "目标图层"),
             param!("filter_name", String, true, "滤镜名（见工具说明）。**`relief`（厚涂浮雕）的参数与实测范围**（第 254 轮修过一处设计缺陷后**重测** ✓）：`strength` **0.5–10** 都可用且**均值不漂**（实测漂移 ≤0.4/255 ✓），**越大只是浮雕越强**（对比 +0.0 ⇒ +2.2 ✓）—— **0.5 轻微／2 明显／5–10 强烈** ✓；`height_gain` 10–30 常见；`azimuth` 0–360（缺省 135）、`elevation` 1–89（缺省 45）✓ ★需要额外参数的：`dehaze` 必须给 `air: [r,g,b]`（可用 `estimate_dehaze` 估计）✓；其余 13 个不需要 ✓。"),
-            param!("params", Object, false, "滤镜参数（按 `filter_name` 取；每个滤镜的键见工具说明）。\n**`brightness_contrast` 的**两套约定**（第 1515 轮实测，外部被它坑过）**：\n· `brightness`：**加法偏移，恒等值是 `0`**（`0.1` 约等于提亮 25.5/255）\n· `contrast`：**乘法增益，恒等值是 `1`**（`0` 会**全黑**、`2` 则对比翻倍）\n**⇒ 于是 `{brightness:0, contrast:0}` 不是**不变**，而是**全黑**** ——\n要**不变**请**省略参数**或写 `{brightness:0, contrast:1}`。\n**⇒ 若你要的是**零点即恒等**那种语义**，请用 **`add_adjustment` + `adjustment_type: brightness_contrast`**。\n（两者**实测都恒等**；只是 `add_filter` 这条路的**恒等值不同**）"),
+            param!("params", Object, false, "滤镜参数（按 `filter_name` 取；每个滤镜的键见工具说明）。\n**`brightness_contrast` 约定（期 3 A1 起，滤镜/调整两条路同一实现、同一约定）**：显示空间枢轴口径——先平移亮度、再绕显示中灰 0.5 缩放对比、按亮度比回写（色相不扭、HDR 不钳）。\n· `brightness`：**显示平移，恒等值 `0`**（`±0.5` ⇔ 中灰显示 ±0.25）\n· `contrast`：**绕枢轴缩放，恒等值 `1`**（`0` = 全图压平为显示中灰，**不再是全黑**）\n要**不变**请**省略参数**或写 `{brightness:0, contrast:1}`。"),
             param!("opacity", Number, false, "整体不透明度 0-1（缺省 1）"),
             param!(
                 "z_index",
@@ -1625,7 +1626,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "层内 z 序（缺省放到同层最上方，作用于全部下方内容）"
             ),
             param!("name", String, false, "对象名（元数据）"),
-            param!("object_id", String, false, "对象 id（缺省自动生成）"),
+            param!("object_id", String, false, "对象 id（缺省自动生成）；若该 id 是已删除对象（墓碑），将复活它并整组换新参数（响应带 revived: true）"),
         ],
     },
     ToolSpec {
@@ -1657,6 +1658,52 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: false,
         params: &[param!("layer_id", String, false, "按图层过滤")],
     },
+    // ---- 风格预设系统（设计 docs/design/style-preset-system.md；展开器在 presets.rs）----
+    ToolSpec {
+        name: "list_presets",
+        profile: Profile::Retouch,
+        summary: "列出照片风格预设（22 套内置 + YANSHI_PRESET_DIR 外挂）：id/中英文名/状态（established/fixed_v2/needs_review）/标签/适用与慎用题材/旋钮；选风格前先读它，不要盲选",
+        mutating: false,
+        params: &[
+            param!("tag", String, false, "按标签筛（如 夜景 / 人像 / 风光）"),
+            param!("subject", String, false, "按适用题材子串筛（如 霓虹 / 森林）"),
+            param!("status", String, false, "按状态筛（established / fixed_v2 / needs_review）"),
+        ],
+    },
+    ToolSpec {
+        name: "get_preset",
+        profile: Profile::Retouch,
+        summary: "读一套预设的完整定义：修正段（full/light 基线）+ 风格段配方与中性值、旋钮映射、实测结论与 unsupported 说明，并附 strength=1 的展开预览",
+        mutating: false,
+        params: &[param!("preset_id", String, true, "预设 id（先用 list_presets 查）")],
+    },
+    ToolSpec {
+        name: "apply_preset",
+        profile: Profile::Retouch,
+        summary: "把一套风格预设展开并落到图层上：先全量校验任一非法整组不落；确定性 object_id，二次应用同预设走更新（Supersede）不叠加；同 id 对象已被删除（墓碑）时复活并换新参数、响应以 revived_object_ids 点名；strength 0..1 插值（0=风格段恒等）、knobs 语义旋钮覆盖、include_correction 缺省 true",
+        mutating: true,
+        params: &[
+            param!("preset_id", String, true, "预设 id（先用 list_presets 查）"),
+            param!("layer_id", String, true, "目标图层"),
+            param!("strength", Number, false, "全局强度 0..1（缺省 1；0 时风格段逐参数等于中性值）"),
+            param!("knobs", Object, false, "语义旋钮覆盖 {旋钮id: 数值}（可用旋钮见 list_presets / get_preset；越界或未知旋钮报错）"),
+            param!("include_correction", Boolean, false, "是否同时落修正段（缺省 true；只调风格时给 false）"),
+        ],
+    },
+    ToolSpec {
+        name: "preview_preset",
+        profile: Profile::Retouch,
+        summary: "只展开不落原文档：按 strength/knobs 算出将要落的全部操作清单（含确定性 object_id 与实际参数），供迭代调风格时先看再 apply_preset；可选 render 走临时文档渲染出代理图（临时文档在所有出口删除，净状态变化为零，故仍为只读工具）",
+        mutating: false,
+        params: &[
+            param!("preset_id", String, true, "预设 id（先用 list_presets 查）"),
+            param!("strength", Number, false, "全局强度 0..1（缺省 1）"),
+            param!("knobs", Object, false, "语义旋钮覆盖 {旋钮id: 数值}"),
+            param!("include_correction", Boolean, false, "展开清单是否含修正段（缺省 true）"),
+            param!("layer_id", String, false, "render 时必填：源图层 id（不给 render 时忽略）"),
+            param!("render", Object, false, "可选渲染：{max_edge 缺省 512（128–2048）, format png|jpeg 缺省 jpeg}；不给则只展开不渲染"),
+        ],
+    },
     // ---- 扩展：retouch（修图）----
     ToolSpec {
         name: "estimate_dehaze",
@@ -1664,6 +1711,43 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "估计去雾参数（只读）：扫描当前画面给出建议大气光 air 与暗通道均值，供 add_filter(dehaze) 使用",
         mutating: false,
         params: &[],
+    },
+    ToolSpec {
+        name: "frequency_separation",
+        profile: Profile::Retouch,
+        summary: "频率分离（期 4 D1）：把源图层烘焙成低频层 + 高频层（linear_light）+ 两层绘画空层，装进一个组；低频修色调、高频修细节互不干扰。低频/高频是导入时刻的像素快照：源图层此后的修改不传播（与 raster patch 同类）。高频层的中性灰是 188（线性 0.5 的 sRGB 编码），不是 PS 式的 128，在高频层上涂抹请用 188 作中性色。半透明像素的组 alpha 不精确保持源 alpha，按不透明照片层设计。重建刻画（实测）：中高调（源字节 ≥ 128）≤ 2 LSB；暗部受 8 位 HF 字节网格限制，近黑强细节处可达约 16 LSB，均值 ≤ 3 LSB；自检只计全不透明邻域像素。空层/纯调整层会明确拒绝，不留半套组",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "源图层 id（必填）"),
+            param!("radius", Number, false, "分离半径（高斯 sigma，缺省 8.0，域 [1, 64]）"),
+            param!("name", String, false, "组名前缀（缺省源图层名）"),
+        ],
+    },
+    ToolSpec {
+        name: "dodge_burn_setup",
+        profile: Profile::Retouch,
+        summary: "减淡加深建组（期 4 D1）：curves 变体（缺省）建两个带全黑蒙版的曲线层（减淡中点上凸、加深中点下凹，中点参数给显示空间值、工具按 §9.1 EOTF 转线性落盘），用 paint_mask 以白色低不透明度笔刷涂抹生效区；gray 变体建一个 50% 灰 soft_light 层，用黑/白低流量笔触涂抹。curves 变体零烘焙、可反复调曲线；gray 变体单层直观、代价是灰层为烘焙快照。重复调用同名组返回 already_exists，不叠第二套",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层 id（必填；新组落在它上方，组名缺省取它的名字）"),
+            param!("mode", String, false, "curves（缺省）或 gray"),
+            param!("dodge_mid", Number, false, "减淡曲线显示空间中点（缺省 0.62，域 [0.05, 0.95]，0.5 = 无效果）"),
+            param!("burn_mid", Number, false, "加深曲线显示空间中点（缺省 0.38，域 [0.05, 0.95]）"),
+            param!("name", String, false, "组名前缀（缺省源图层名）"),
+        ],
+    },
+    ToolSpec {
+        name: "auto_retouch",
+        profile: Profile::Retouch,
+        summary: "自动模式（期 4 D3）：从图像统计里用有原理的算法求出每组参数并落成一组确定性对象（曝光/色阶/影调/白平衡/色彩/细节/降噪，细节组含 clarity/texture/dehaze，降噪组含 denoise/sharpen）；甜点带只作收缩先验与钳制。估计取自目标层位图/RAW 源对象的子集渲染（调整/滤镜对象排除在外），故重跑幂等、已落成的 auto 对象不污染估计。白平衡估的是显影后残余偏色（RAW 机内白平衡已在显影时施加）。每项 rationale 点名估计数字与收缩原因；skipped 逐对象列出原因（含未请求的组）。同层重跑原地更新（确定性 id + 复活路）；目标层已有人工调整/滤镜对象时拒绝（除非 force=true）；RAW 导入的缺省曝光对象例外：未动过（名 + ev 0.5 全匹配）或已被 auto 置零（ev 0.0）的不触发拒绝，曝光落成时先把它置零防叠加（回执 neutralized_default_exposure 点名），改过 ev 的视为人工照常拒绝。dry_run 或 strength=0 时只报告不落成（applied 为空，planned 给收缩后估计值）。重跑时某组新跳过不会删掉旧对象（v1 已知局限）。",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, false, "目标图层 id（缺省：按 z 序首个含位图/RAW 对象的图层）"),
+            param!("strength", Number, false, "强度 0–1（缺省 1.0；0 = 只报告不落成；各参数向中性值缩放，denoise detail 与 sharpen radius 为模式常数不缩放）"),
+            param!("groups", Array, false, "组白名单字符串数组（缺省全部 7 组：exposure/levels/tone/wb/color/detail/noise；去雾挂在 detail 组下）"),
+            param!("dry_run", Boolean, false, "只报告不落成（缺省 false）"),
+            param!("force", Boolean, false, "目标层已有人工调整/滤镜对象时仍执行（缺省 false = 拒绝）"),
+        ],
     },
     ToolSpec {
         name: "liquify_push",
@@ -2938,6 +3022,233 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             ),
         ],
     },
+];
+
+// ---------------------------------------------------------------------------
+// workflow 预设白名单（Photo / Svg，设计 §7 F 族）
+// ---------------------------------------------------------------------------
+
+/// **Photo（修图）预设的工具白名单** ✓ —— 与 `ALL_TOOLS` 同源同文件 ✓。
+///
+/// **它是什么** ✗：`Profile::Photo` 不展开为「加层」✗ ⇒ 它贡献这份名单 ✓，
+/// `ToolRegistry::with_profiles` 在**显式子集请求**时用它与分层展开集求交 ✓
+/// （**触发口径**见 `tools.rs` 的 `with_profiles` ✓：ALL 全集组成与缺省会话
+/// **不**触发收窄 ✓ —— Wang 2026-10-24 裁定「ALL 要包含所有的」✓）。
+///
+/// **维护纪律** ✓：名单里每个名字**必须**存在于 `ALL_TOOLS` 且分层 ∈ Photo
+/// 基底集 {Core, History, Changeset, Retouch, Structure} ✓ ⇒ 由测试
+/// `photo_allowlist_names_all_registered` 守 ✗（塞不存在的名字 ⇒ 红 ✓）。
+/// 新工具进预设 = **只改这一处** ✓。
+pub const PHOTO_TOOLS: &[&str] = &[
+    // ---- 文档与会话 ----
+    "new_document",
+    "list_documents",
+    "get_document",
+    "delete_document",
+    "get_state",
+    "get_log",
+    "list_atoms",
+    "get_atom",
+    "export_project",
+    "import_project",
+    "get_job",
+    "get_render_status",
+    "cancel_job",
+    "batch",
+    "collect_diagnostics",
+    "explain_tool",
+    "list_engine_capabilities",
+    // ---- 导入与资产 ----
+    "put_blob",
+    "import_image",
+    "import_asset",
+    "list_assets",
+    // ---- 图层与对象 ----
+    "create_layer",
+    "update_layer",
+    "delete_layer",
+    "reorder_layers",
+    "list_layers",
+    "duplicate_layer",
+    "lock_layer",
+    "unlock_layer",
+    "set_layer_blend",
+    "list_objects",
+    "get_object",
+    "update_object",
+    "delete_object",
+    "restore_object",
+    "move_object",
+    "replace_object_data",
+    "transform_object",
+    "set_property",
+    // ---- 修图（Retouch 全层） ----
+    "resample",
+    "add_adjustment",
+    "apply_adjustments",
+    "add_filter",
+    "update_adjustment",
+    "update_filter",
+    "list_effects",
+    "list_presets",
+    "get_preset",
+    "apply_preset",
+    "preview_preset",
+    "estimate_dehaze",
+    "frequency_separation",
+    "dodge_burn_setup",
+    "auto_retouch",
+    "liquify_push",
+    "liquify_twirl",
+    "liquify_pinch",
+    "patch",
+    "smudge",
+    "heal_stamp",
+    "clone_stamp",
+    // ---- 蒙版与选区 ----
+    "create_mask",
+    "paint_mask",
+    "delete_mask",
+    "create_selection",
+    "delete_selection",
+    "list_selections",
+    "transform_selection",
+    "select_opaque_pixels",
+    // ---- 分析取样 ----
+    "get_histogram",
+    "sample_color",
+    "sample_colors",
+    "analyze_region",
+    "render_region",
+    "describe_canvas",
+    // ---- 历史与变更集 ----
+    "undo_last",
+    "redo_last",
+    "get_undo_status",
+    "revert",
+    "revert_atoms",
+    "revert_to_seq",
+    "begin_changeset",
+    "commit_changeset",
+    "abort_changeset",
+    "begin_transaction",
+    "commit_transaction",
+    "get_changesets",
+    "revert_changeset",
+    // ---- 导出 ----
+    "export_png",
+    "export_book_pngs",
+    // ---- 精修最小绘画 ----
+    "draw_stroke",
+    "fill_region",
+    "erase",
+    "list_brushes",
+    "get_brush_settings",
+    "set_brush_setting",
+];
+
+/// **Svg（矢量）预设的工具白名单** ✓ —— 维护纪律同 [`PHOTO_TOOLS`] ✓：
+/// 每个名字必须存在于 `ALL_TOOLS` 且分层 ∈ Svg 基底集
+/// {Core, History, Changeset, Structure} ✓（**不含任何 Retouch 照片面** ✓），
+/// 由测试 `svg_allowlist_names_all_registered` 守 ✓。
+pub const SVG_TOOLS: &[&str] = &[
+    // ---- 文档与会话（同 Photo） ----
+    "new_document",
+    "list_documents",
+    "get_document",
+    "delete_document",
+    "get_state",
+    "get_log",
+    "list_atoms",
+    "get_atom",
+    "export_project",
+    "import_project",
+    "get_job",
+    "get_render_status",
+    "cancel_job",
+    "batch",
+    "collect_diagnostics",
+    "explain_tool",
+    "list_engine_capabilities",
+    // ---- 导入与资产（同 Photo） ----
+    "put_blob",
+    "import_image",
+    "import_asset",
+    "list_assets",
+    // ---- 图层与对象（Photo 同组去 replace_object_data，加组操作） ----
+    "create_layer",
+    "update_layer",
+    "delete_layer",
+    "reorder_layers",
+    "list_layers",
+    "duplicate_layer",
+    "lock_layer",
+    "unlock_layer",
+    "set_layer_blend",
+    "list_objects",
+    "get_object",
+    "update_object",
+    "delete_object",
+    "restore_object",
+    "move_object",
+    "transform_object",
+    "set_property",
+    "create_group",
+    "add_to_group",
+    "remove_from_group",
+    "set_group_transform",
+    "revert_group",
+    // ---- 矢量著录 ----
+    "get_path",
+    "edit_path",
+    "path_edit",
+    "draw_shape",
+    "stroke_path",
+    "combine_shapes",
+    "convert_to_shape",
+    "convert_to_path",
+    "vector_erase",
+    "vector_hit_test",
+    "draw_stroke",
+    "fill",
+    "fill_region",
+    "erase",
+    "gradient_fill",
+    "gradient_blend",
+    "create_selection",
+    "delete_selection",
+    "list_selections",
+    "transform_selection",
+    "select_opaque_pixels",
+    // ---- 文本 ----
+    "draw_text",
+    "list_fonts",
+    // ---- 实例 ----
+    "create_instance",
+    "detach_instance",
+    "link_to_master",
+    "get_dependency_graph",
+    "get_resolved_state",
+    "update_override",
+    "update_sync_policy",
+    // ---- 历史与变更集（同 Photo） ----
+    "undo_last",
+    "redo_last",
+    "get_undo_status",
+    "revert",
+    "revert_atoms",
+    "revert_to_seq",
+    "begin_changeset",
+    "commit_changeset",
+    "abort_changeset",
+    "begin_transaction",
+    "commit_transaction",
+    "get_changesets",
+    "revert_changeset",
+    // ---- 导出 ----
+    "export_svg",
+    "export_png",
+    "export_book_pngs",
 ];
 
 // ---------------------------------------------------------------------------

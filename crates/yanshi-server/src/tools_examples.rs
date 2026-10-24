@@ -161,6 +161,13 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         r#"{"layer_id": "L1", "from": {"r": 255, "g": 0, "b": 0, "a": 255}, "to": {"r": 0, "g": 0, "b": 255, "a": 255}, "kind": "linear", "angle": 0}"#,
     ),
     ("estimate_dehaze", r#"{}"#),
+    // **期 4 D1 频率分离 / D&B**：参数面见工具注册表（layer_id 必填，
+    // radius 域 [1,64]，mode 仅 curves/gray）。
+    ("frequency_separation", r#"{"layer_id":"L1","radius":8}"#),
+    ("dodge_burn_setup", r#"{"layer_id":"L1","mode":"curves"}"#),
+    // **期 4 D3 自动模式**：参数面见工具注册表（layer_id 可缺省，
+    // strength 域 [0, 1]，groups 为 7 组白名单子集）。
+    ("auto_retouch", r#"{"layer_id":"L1"}"#),
     (
         "erase",
         r#"{"layer_id":"L1","data":{"region":{"x":40,"y":40,"w":120,"h":80},"size":32.0,"hardness":1.0,"opacity":1.0}}"#,
@@ -608,6 +615,17 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     (
         "apply_adjustments",
         r#"{"layer_id":"layer_default","adjustments":[{"adjustment_type":"exposure","params":{"ev":0.3}},{"adjustment_type":"vibrance","params":{"amount":0.6}}]}"#,
+    ),
+    // **风格预设系统**：先 list 查 id、再 get/preview 看展开、最后 apply 落成（二次 apply 同参走更新不叠加）。
+    ("list_presets", r#"{"tag":"夜景"}"#),
+    ("get_preset", r#"{"preset_id":"hong_kong"}"#),
+    (
+        "preview_preset",
+        r#"{"preset_id":"hong_kong","strength":0.6,"knobs":{"teal":0.3}}"#,
+    ),
+    (
+        "apply_preset",
+        r#"{"preset_id":"hong_kong","layer_id":"layer_default","strength":0.8}"#,
     ),
     // **`suggest`**（✓）：唯一必填参数 `patch` 是**非空的工具步骤数组** ✓ ⇒
     // 这里填一步 `add_filter` ✓，**参数就是上面那条示例里验证过的那组** ✓（`invert` 不需要额外参数 ✓）。

@@ -54,7 +54,7 @@ canvas. Two stale claims were corrected rather than left to mislead: draw_text's
 item while it renders Chinese today, and this file said convert_to_shape, convert_to_path, split, merge and boolean
 were refused because no path model existed, which stopped being true when the path object model landed.
 
-The tool layer registers **123 core tools**, and with every implemented group enabled there are **196 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
+The tool layer registers **123 core tools**, and with every implemented group enabled there are **200 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
 
 > **完整工具列表**：本文档是散文式概述，不逐个列出全部工具。完整、实时的工具目录（含参数表）由注册表生成，见 `GET /api/tools` 或 MCP 的 `tools/list`。
 
@@ -571,6 +571,39 @@ are rejected rather than ignored).
 This file is checked by `crates/yanshi-render/tests/doc_consistency.rs` (every adjustment and
 filter name) and `crates/yanshi-server/tests/tool_inventory.rs` (the counts), so it cannot drift
 from the kernel and registry silently.
+
+## Style presets (22 built-in)
+
+Four tools in the `retouch` group turn named photo styles into reusable, tunable
+operations (design: `docs/design/style-preset-system.md`; data:
+`crates/yanshi-server/data/style-presets.json`; expander: `presets.rs`):
+
+- `list_presets` — summaries (id, Chinese/English names, status
+  `established` / `fixed_v2` / `needs_review`, tags, suitable/caution subjects,
+  knobs), filterable by `tag` / `subject` / `status`. Read this before choosing
+  a style; `needs_review` presets have not passed visual inspection yet.
+- `get_preset` — one preset's full two-segment recipe (correction segment with
+  a `full` / `light` baseline, then the style segment), its neutral values, its
+  knob mappings, the measured notes, and a strength-1 expansion.
+- `preview_preset` — expansion only: the exact operations (deterministic
+  `object_id`s and interpolated parameters) that a given
+  `strength` / `knobs` / `include_correction` would commit. Nothing is written
+  and nothing is rendered.
+- `apply_preset` — validates the whole expansion first (any invalid operation
+  aborts the group), then commits in order. Object ids are deterministic
+  (`preset_<id>_<c|s>_<index>_<type>`), so applying the same preset again
+  updates the same objects through `update_adjustment` / `update_filter`
+  (Supersede) instead of stacking a second copy. `strength` interpolates every
+  style-segment parameter from its declared neutral value
+  (`value = neutral + (recipe − neutral) × strength`), so strength 0 makes the
+  style segment an exact identity; parameters without a declared neutral
+  (seed / size / radius / channel …) are fixed. Each preset also declares two
+  semantic `knobs` that map onto specific parameters.
+
+External preset files: setting `YANSHI_PRESET_DIR` to a directory containing a
+`style-presets.json` in the same format merges it over the built-in library
+(same id replaces, new id is added); a set-but-missing file is an error, never
+a silent fallback.
 
 ## Adjustments (25)
 

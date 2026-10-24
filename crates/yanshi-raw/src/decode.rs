@@ -13,6 +13,13 @@
 //!   本模块如实返回 `baseline_exposure_ev: None`，不许硬编、不许猜。
 //! - `RawImage::cropped_cfa()` 在 0.7.2 是 `todo!()`，相位对齐在本模块
 //!   按 rawler 自家口径手工完成（见 `map_frame` 的相位换算注释）。
+//! - **方向（Orientation）**：rawler 0.7.2 的 `RawImage` 构造器把
+//!   orientation 写死 Normal（旁注 TODO fixme），构造后只有 DNG 与
+//!   QTK 解码器回填——其余格式（RW2／ORF／CR2／NEF／ARW…）的真值只在
+//!   EXIF 里。本模块以 `resolve_orientation` 拾取（EXIF 优先、字段
+//!   回退），frame 与 file_meta 同源同值。⚠️ 迁移注记：导入期即展开
+//!   落盘，**修复前已导入的竖拍文档位图已经是横的**，本修复只对新
+//!   导入生效，存量文档的正解是重新导入。
 
 use rawler::decoders::RawDecodeParams;
 use rawler::imgop::Rect;
@@ -140,30 +147,36 @@ fn map_decoded(
             raw.cpp
         )));
     }
+    let (full_w, full_h) = (raw.width, raw.height);
+    // active area 裁剪（设计 5.2：展开坐标系 = active area）。裁剪窗
+    // 先算（C1-a，期 2）：像素只物化裁剪区——直接从整数源逐行转 f32
+    // 进目标 Vec，不再先整幅转 f32 再拷一份裁剪（旧形态下全幅 f32 与
+    // 裁剪 f32 同时存活，大图多吃一整幅 4 B/px）。转换是逐值恒等
+    // 映射（u16 → f32 精确），产物与旧路逐位相同。
+    let (ax, ay, crop_w, crop_h, mut notes) = active_crop(&raw, full_w, full_h);
     // 马赛克像素：整数读数原样进 f32；浮点读数一期不支持（HDR 浮点 DNG 等，
     // 量纲约定未定版，不许拍脑袋选缩放），响亮报错、记 README 缺口。
-    let full: Vec<f32> = match &raw.data {
-        RawImageData::Integer(values) => values.iter().map(|&v| v as f32).collect(),
+    let mosaic: Vec<f32> = match &raw.data {
+        RawImageData::Integer(values) => {
+            if values.len() != full_w * full_h {
+                return Err(RawError::InvalidFrame(format!(
+                    "解码像素数 {} 与全幅尺寸 {full_w}×{full_h} 对不上",
+                    values.len()
+                )));
+            }
+            let mut mosaic = Vec::with_capacity(crop_w * crop_h);
+            for y in 0..crop_h {
+                let start = (ay + y) * full_w + ax;
+                mosaic.extend(values[start..start + crop_w].iter().map(|&v| v as f32));
+            }
+            mosaic
+        }
         RawImageData::Float(_) => {
             return Err(RawError::UnsupportedData(
                 "浮点马赛克数据（float DNG 等）一期不支持".to_string(),
             ));
         }
     };
-    let (full_w, full_h) = (raw.width, raw.height);
-    if full.len() != full_w * full_h {
-        return Err(RawError::InvalidFrame(format!(
-            "解码像素数 {} 与全幅尺寸 {full_w}×{full_h} 对不上",
-            full.len()
-        )));
-    }
-    // active area 裁剪（设计 5.2：展开坐标系 = active area）。
-    let (ax, ay, crop_w, crop_h, mut notes) = active_crop(&raw, full_w, full_h);
-    let mut mosaic = Vec::with_capacity(crop_w * crop_h);
-    for y in 0..crop_h {
-        let start = (ay + y) * full_w + ax;
-        mosaic.extend_from_slice(&full[start..start + crop_w]);
-    }
     // CFA 相位对齐（关键）：rawler 的 `camera.cfa` 锚在**全幅数据原点**
     // （DNG 解码器会把文件内 active-area 相对的 CFAPattern 反向平移回全幅
     // 口径，见 rawler dng.rs `get_cfa`），黑／白电平的四相位数组同理锚在
@@ -247,6 +260,22 @@ fn map_decoded(
         calibrations = vec![first, last];
         notes.push("色彩标定矩阵超过两组，仅保留色温两端".to_string());
     }
+    // 方向拾取（期 1 B 项）：EXIF 优先、解码器字段回退，frame 与
+    // file_meta 同源同值。回退发生时把事实写进 notes——尤其非 DNG
+    // 文件 EXIF 缺失时，解码器字段恒为 Normal、未必是真值，不许
+    // 静默按 1 糊过去。
+    let exif_orientation = metadata.and_then(|m| m.exif.orientation);
+    let orientation = resolve_orientation(raw.orientation, exif_orientation);
+    if !matches!(exif_orientation, Some(v) if (1..=8).contains(&v)) {
+        notes.push(match exif_orientation {
+            Some(v) => format!(
+                "EXIF Orientation 值 {v} 超出 1–8，已忽略；方向按解码器字段取 {orientation}"
+            ),
+            None => format!(
+                "文件无可用 EXIF Orientation，方向按解码器字段取 {orientation}（rawler 0.7.2 对非 DNG／QTK 格式该字段恒为 Normal，未必是真值）"
+            ),
+        });
+    }
     let frame = RawFrame {
         width: crop_w,
         height: crop_h,
@@ -260,9 +289,9 @@ fn map_decoded(
         // rawler 0.7.2 未暴露 BaselineExposure（本文件头注的实测缺口）：
         // 如实 None；develop 会按 0 处理并写进展开注记，不许在此硬编。
         baseline_exposure_ev: None,
-        orientation: orientation_u8(raw.orientation),
+        orientation,
     };
-    let file_meta = map_file_meta(&raw, metadata, source_format);
+    let file_meta = map_file_meta(&raw, metadata, source_format, orientation);
     Ok(DecodedRaw {
         frame,
         file_meta,
@@ -442,6 +471,7 @@ fn map_file_meta(
     raw: &RawImage,
     metadata: Option<&rawler::decoders::RawMetadata>,
     source_format: &str,
+    orientation: u32,
 ) -> RawFileMeta {
     let exif = metadata.map(|m| &m.exif);
     let lens_from_desc = metadata.and_then(|m| m.lens.as_ref()).map(|lens| {
@@ -487,9 +517,24 @@ fn map_file_meta(
         fnumber,
         focal_mm,
         date_time_original: exif.and_then(|e| e.date_time_original.clone()),
-        orientation: orientation_u8(raw.orientation),
+        // 与 frame 同源：用 map_decoded 已解析的方向值，不许在此另算一遍。
+        orientation,
         bit_depth: Some(raw.bps as u32),
         source_format: source_format.to_string(),
+    }
+}
+
+/// 方向解析（期 1 B 项）：EXIF Orientation 优先，解码器字段回退。
+///
+/// rawler 0.7.2 的 `RawImage.orientation` 只对 DNG／QTK 可信（构造器
+/// 写死 Normal、两解码器回填），其余格式的真值在
+/// `metadata.exif.orientation`。EXIF 值合法（1–8）即采用；缺失或
+/// 非法 ⇒ 回退解码器字段（`Unknown` 经 `orientation_u8` 兜底为 1）。
+/// 纯函数 ⇒ 解析口径可单测钉死，不依赖任何真文件。
+fn resolve_orientation(raw_orientation: Orientation, exif_tag: Option<u16>) -> u32 {
+    match exif_tag {
+        Some(v) if (1..=8).contains(&v) => u32::from(v),
+        _ => orientation_u8(raw_orientation),
     }
 }
 
@@ -539,16 +584,38 @@ fn sniff_format(bytes: &[u8]) -> String {
         }
         return "bmff".to_string();
     }
+    if bytes.len() >= 4 && &bytes[0..4] == b"II\x55\x00" {
+        return "rw2".to_string();
+    }
+    if bytes.len() >= 4 && &bytes[0..4] == b"IIRO" {
+        return "orf".to_string();
+    }
     if bytes.len() >= 4 && (&bytes[0..4] == b"II\x2a\x00" || &bytes[0..4] == b"MM\x00\x2a") {
         return "tiff".to_string();
     }
     "raw".to_string()
 }
 
+/// RAW 容器 magic 签名白名单（探针第一道门；过门还要 rawler 认得出）。
+///
+/// TIFF 家族之外必须显式列变体签名，否则真 RAW 在第一道门就被误杀：
+/// Panasonic RW2 的版本字是 0x55（`II\x55\x00`）、Olympus ORF 是
+/// `IIRO`——两者都不是 TIFF 42（`II\x2a\x00`），rawler 本可解码
+/// （2026-10-24 展示册选材实测：两格式真文件在此被拒、展开链无此门）。
+fn has_raw_magic(bytes: &[u8]) -> bool {
+    (bytes.len() >= 4
+        && (&bytes[0..4] == b"II\x2a\x00"
+            || &bytes[0..4] == b"MM\x00\x2a"
+            || &bytes[0..4] == b"II\x55\x00"
+            || &bytes[0..4] == b"IIRO"))
+        || (bytes.len() >= 16 && &bytes[0..16] == b"FUJIFILMCCD-RAW ")
+        || (bytes.len() >= 12 && &bytes[4..8] == b"ftyp" && &bytes[8..12] == b"crx ")
+}
+
 /// 入库识别探针（设计 5.3，第二包）：判断一份字节是不是相机 RAW。
 ///
 /// 口径 = **magic 签名 ∧ 解码器认得出**，两条都过才算：
-/// - magic 只认 RAW 容器签名（TIFF 家族／FUJIFILMCCD-RAW／CR3 的 ftyp crx）；
+/// - magic 只认 RAW 容器签名（TIFF 家族含 RW2／ORF 变体签名／FUJIFILMCCD-RAW／CR3 的 ftyp crx）；
 /// - 再让 rawler 的解码器查找认一次——普通 TIFF 位图（截图等）魔数相同但
 ///   解码器不认 ⇒ 不命中，不许把位图误判成 RAW 存成 rawsrc（存了读不出
 ///   比当场拒绝更糟，NF2）。
@@ -557,11 +624,7 @@ fn sniff_format(bytes: &[u8]) -> String {
 /// 时 make/model 给 `None`，识别本身不失败（设计 5.7：像素才是主语）。
 /// 不命中 ⇒ `None`（调用方按「不是 RAW」走既有路径，不报错）。
 pub fn probe_raw(bytes: &[u8]) -> Option<crate::frame::RawProbe> {
-    let has_raw_magic = (bytes.len() >= 4
-        && (&bytes[0..4] == b"II\x2a\x00" || &bytes[0..4] == b"MM\x00\x2a"))
-        || (bytes.len() >= 16 && &bytes[0..16] == b"FUJIFILMCCD-RAW ")
-        || (bytes.len() >= 12 && &bytes[4..8] == b"ftyp" && &bytes[8..12] == b"crx ");
-    if !has_raw_magic {
+    if !has_raw_magic(bytes) {
         return None;
     }
     let source = RawSource::new_from_slice(bytes);
@@ -657,6 +720,48 @@ mod tests {
             version_line.contains(DECODER_VERSION),
             "DECODER_VERSION={DECODER_VERSION} 与 Cargo.lock 的 {version_line} 不一致"
         );
+    }
+
+    #[test]
+    fn resolve_orientation_prefers_valid_exif_over_decoder_field() {
+        // 期 1 B 项钉子：EXIF 合法值压过解码器字段——变异成「只用
+        // raw.orientation」时本条即红（ojigi RW2 的实测形态：
+        // 解码器写死 Normal、EXIF 是 8）。
+        assert_eq!(resolve_orientation(Orientation::Normal, Some(8)), 8);
+        assert_eq!(resolve_orientation(Orientation::Rotate90, Some(8)), 8);
+        assert_eq!(resolve_orientation(Orientation::Rotate270, Some(3)), 3);
+        assert_eq!(resolve_orientation(Orientation::Normal, Some(1)), 1);
+        // EXIF 缺失 ⇒ 回退解码器字段（DNG 回填路靠这条）。
+        assert_eq!(resolve_orientation(Orientation::Rotate90, None), 6);
+        assert_eq!(resolve_orientation(Orientation::Rotate270, None), 8);
+        // EXIF 非法值（0／9）不许采用，回退字段；字段 Unknown 兜底 1。
+        assert_eq!(resolve_orientation(Orientation::Normal, Some(0)), 1);
+        assert_eq!(resolve_orientation(Orientation::Rotate90, Some(9)), 6);
+        assert_eq!(resolve_orientation(Orientation::Unknown, None), 1);
+        assert_eq!(resolve_orientation(Orientation::Unknown, Some(5)), 5);
+    }
+
+    #[test]
+    fn raw_magic_covers_rw2_and_orf_headers() {
+        // Panasonic RW2：TIFF 魔数变体 II\x55\x00（版本字 0x55 而非 0x2a）。
+        assert!(has_raw_magic(b"II\x55\x00\x08\x00\x00\x00rest"));
+        // Olympus ORF：IIRO 签名（版本字 'RO'）。
+        assert!(has_raw_magic(b"IIRO\x08\x00\x00\x00rest"));
+        // 既有签名不许回退。
+        assert!(has_raw_magic(b"II\x2a\x00rest"));
+        assert!(has_raw_magic(b"MM\x00\x2arest"));
+        assert!(has_raw_magic(b"FUJIFILMCCD-RAW rest"));
+        let mut cr3 = b"\x00\x00\x00\x18".to_vec();
+        cr3.extend_from_slice(b"ftypcrx ");
+        assert!(has_raw_magic(&cr3));
+        // 非 RAW 容器不许命中。
+        assert!(!has_raw_magic(b"\x89PNG\r\n\x1a\nrest"));
+        assert!(!has_raw_magic(b"\xff\xd8\xff\xe0jpeg"));
+        assert!(!has_raw_magic(b""));
+        assert!(!has_raw_magic(b"II"));
+        // sniff 与探针同口径：新签名给出真格式名，不许笼统落 "raw"。
+        assert_eq!(sniff_format(b"II\x55\x00rest"), "rw2");
+        assert_eq!(sniff_format(b"IIROrest"), "orf");
     }
 
     #[test]

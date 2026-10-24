@@ -76,10 +76,10 @@ pub fn srgb_hex(linear_rgb: [f32; 3]) -> String {
 
 /// 混合模式 → CSS `mix-blend-mode` 名（**映射不上的返回 `None`** ⇒ 调用方回退位图 ✓）。
 ///
-/// 本引擎共 10 种（[`BlendMode::ALL`] ✓）：其中 `add`（线性减淡）与 `subtract`
-/// **没有 CSS 对应值**（Figma 也不支持 `feComposite` 拼法）⇒ `None` ✓。
-/// 专家答复里的映射表还列了 `exclusion`／`color_burn`／`hard_light`／`soft_light`，
-/// **本引擎没有这四种** ⇒ 不在表里（以代码为准 ✓）。
+/// 本引擎共 12 种（[`BlendMode::ALL`] ✓）：其中 `add`（线性减淡）、`subtract`
+/// 与 `linear_light` **没有 CSS 对应值**（Figma 也不支持 `feComposite` 拼法）⇒ `None` ✓。
+/// 专家答复里的映射表还列了 `exclusion`／`color_burn`／`hard_light`，
+/// **本引擎没有这三种** ⇒ 不在表里（以代码为准 ✓）；`soft_light` 期 4 已补 ⇒ 有对应值 ✓。
 pub fn blend_css(mode: BlendMode) -> Option<&'static str> {
     match mode {
         BlendMode::Normal => Some("normal"),
@@ -90,7 +90,8 @@ pub fn blend_css(mode: BlendMode) -> Option<&'static str> {
         BlendMode::Lighten => Some("lighten"),
         BlendMode::Difference => Some("difference"),
         BlendMode::ColorDodge => Some("color-dodge"),
-        BlendMode::Add | BlendMode::Subtract => None,
+        BlendMode::SoftLight => Some("soft-light"),
+        BlendMode::Add | BlendMode::Subtract | BlendMode::LinearLight => None,
     }
 }
 
@@ -2213,20 +2214,25 @@ mod tests {
     }
 
     #[test]
-    fn blend_mapping_covers_all_but_add_and_subtract() {
+    fn blend_mapping_covers_all_but_unmapped_modes() {
         let mut mapped = 0;
         for mode in BlendMode::ALL {
             match blend_css(mode) {
                 Some(_) => mapped += 1,
-                None => assert!(matches!(mode, BlendMode::Add | BlendMode::Subtract)),
+                None => assert!(matches!(
+                    mode,
+                    BlendMode::Add | BlendMode::Subtract | BlendMode::LinearLight
+                )),
             }
         }
-        assert_eq!(mapped, 8);
-        assert_eq!(BlendMode::ALL.len(), 10);
+        assert_eq!(mapped, 9);
+        assert_eq!(BlendMode::ALL.len(), 12);
         // 字符串入口同表 ✓。
         assert_eq!(blend_css_name("multiply"), Some("multiply"));
         assert_eq!(blend_css_name("add"), None);
         assert_eq!(blend_css_name("linear_dodge"), None);
+        assert_eq!(blend_css_name("soft_light"), Some("soft-light"));
+        assert_eq!(blend_css_name("linear_light"), None);
     }
 
     /// **校准恒等式**：`effective_alpha` 的公式必须与引擎实测一致（≤ 0.01）✓。

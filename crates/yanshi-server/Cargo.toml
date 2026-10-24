@@ -37,6 +37,19 @@ ab_glyph = "0.2"
 # 只开 `deflate-flate2-zlib-rs`（纯 Rust 的 zlib-rs 后端 ✓）⇒ **不引** zopfli / bzip2 /
 # zstd / lzma / aes 那一整套默认特性（默认特性会把它们与七八种压缩后端全拉进来）。
 zip = { version = "7", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# **预览渲染的 JPEG 编码器**（期 4 D2-1）：本仓此前只有 JPEG 解码
+# （`jpeg-decoder` 在 render 侧）、无编码器；`preview_preset` 的默认
+# 渲染格式是 jpeg（base64 体积约为 PNG 的十分之一，工具响应不宜
+# 塞大图），故需一个编码器。
+# **∴ 两面（**按 AGENTS.md 的清单 ✓）**：
+#   ＋ **收益**：512px 代理图的 base64 从约 1MB（PNG）降到约 80KB（JPEG）。
+#   ＋ **代价**：零新增 crate——`image` 0.25 已在 lock 里（经 rawler 间接
+#     引入），其 JPEG 编码器是 crate 内实现；此处只开 `jpeg` 特性，
+#     lock 实测只多一行（yanshi-server → image 边）；只加在
+#     `yanshi-server`，不进 `yanshi-render`／`yanshi-wasm`。
+#   ＋ **确定性**：同一输入 ⇒ 同一 JPEG 字节（固定质量 85、无元数据）。
+#   ＋ **平台**：纯 Rust，服务端 native；wasm 不参与。
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 # **URL 拉取的 HTTP 客户端**（设计文档第 4 章：`put_blob` 的 `path` 增加 http(s) 形态）。
 # 选 `ureq` 3 + rustls/ring：同步 API、无 async 运行时（**不引 tokio 级依赖** ✓）。
 #

@@ -237,6 +237,11 @@ pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         if yanshi_render::is_raw_source_mime(declared_mime) {
             let outcome = build_raw_import_plan(ctx, &bitmap, args.get("raw_options"))?;
             payload["raw_develop"] = outcome.record_json.clone();
+            // 期 4 D3 回测发现：raw_meta（EXIF，含 iso）此前只进响应回显、
+            // 不进对象 ⇒ auto 的 ISO 先验（读对象 data["raw_meta"]["iso"]）
+            // 在真实 RAW 导入上永远取不到。对象上同源补一份（加法字段，
+            // 解析侧只读已知键，不影响旧对象与渲染；响应回显不变）。
+            payload["raw_meta"] = outcome.meta_json.clone();
             raw_import = Some(outcome);
         } else if let Some(options) = args.get("raw_options") {
             if !options.is_null() {
@@ -431,8 +436,12 @@ fn build_raw_import_plan(
 /// 25% 满量程均匀场展开后中间调显示约 sRGB 112（EV 0，偏暗）；+0.5 EV 到
 /// 约 132（中灰区下沿）；+1.0 EV 时该场最强通道已触顶 255。故定 **+0.5** 为
 /// 保守起始值（对象可见、可改、可删），不是「正确曝光」断言。
-#[cfg(feature = "raw")]
-const DEFAULT_RAW_EXPOSURE_EV: f64 = 0.5;
+/// 两个常量不 gate 在 `raw` 后面（纯数值，不拉 raw 依赖），供
+/// `tools_auto` 的缺省对象豁免判定共用同一来源。
+pub(super) const DEFAULT_RAW_EXPOSURE_EV: f64 = 0.5;
+
+/// RAW 导入缺省曝光对象的名（与 `tools_auto` 豁免判定共用）。
+pub(super) const RAW_DEFAULT_EXPOSURE_NAME: &str = "RAW 缺省曝光（自动生成，可改可删）";
 
 /// D1（2026-10-22 定版）：RAW 导入自动生成一条缺省 exposure 调整——走既有
 /// 调整架构的原生入口（`write_add_effect`，与 `add_adjustment` 工具同一条
@@ -446,7 +455,7 @@ fn spawn_default_exposure_adjustment(ctx: &mut ToolContext<'_>, layer_id: &str) 
         "object_id": adjustment_id,
         "adjustment_type": "exposure",
         "params": {"ev": DEFAULT_RAW_EXPOSURE_EV},
-        "name": "RAW 缺省曝光（自动生成，可改可删）",
+        "name": RAW_DEFAULT_EXPOSURE_NAME,
     });
     write_add_effect(ctx, &args, EffectKind::Adjustment)?;
     Ok(json!({

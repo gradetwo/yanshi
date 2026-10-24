@@ -483,7 +483,20 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
                 // 保证"是不是环"**只有一处判定** ✓，不会两处各判一套 ✓）。
                 check_instance_cycle(state, object_id, &master)?;
             }
-            if state.objects.contains_key(object_id) {
+            if let Some(existing) = state.objects.get(object_id) {
+                // **撞墓碑与撞存活是两回事，文案必须分开** ✓（期 1 E-b）：
+                // 墓碑 id 不是「已存在」——再对它落笔会报「已被删除」，
+                // 笼统说「已存在」两句自相矛盾（与 CreateLayer 的教训同形）。
+                // fold 层不做复活（复活是工具层的 revive-and-replace），
+                // 但出路要在这里点名 ✓。
+                if existing.is_deleted() {
+                    return Err(err(
+                        ErrorCode::PreconditionFailed,
+                        format!(
+                            "对象 {object_id} 已被删除；可用 restore_object 恢复，或经支持复活的写入路径（add_adjustment／add_filter／apply_preset 等）以同 id 重建"
+                        ),
+                    ));
+                }
                 return Err(err(
                     ErrorCode::PreconditionFailed,
                     format!("对象 {object_id} 已存在"),
@@ -1928,6 +1941,39 @@ mod tests {
         assert_eq!(result.state.head_atom.as_deref(), Some("a_obj"));
         assert!(result.state.is_consistent());
         assert_eq!(result.applied.len(), 3);
+    }
+
+    #[test]
+    fn create_object_on_tombstone_error_names_the_way_out() {
+        // 期 1 E-b 顺带修：fold 层 CreateObject 撞墓碑时，文案必须点名
+        // 状态（已被删除）与出路（restore_object／支持复活的写入路径），
+        // 不许再笼统报「已存在」——那与「落笔报已删除」自相矛盾。
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::Tombstone,
+                "a_obj_del",
+                json!({"object_id": "obj_1"}),
+            ),
+        );
+        let state = fold(&atoms).state;
+        let recreate = atom(
+            AtomKind::CreateObject,
+            "a_obj_again",
+            json!({"object_id": "obj_1", "layer_id": "layer_1", "type": "stroke"}),
+        );
+        let error = precondition(&state, &recreate)
+            .expect_err("墓碑 id 的 CreateObject 必须在 fold 层被拒（复活只走工具层）");
+        let detail = error.context.detail.clone().unwrap_or_default();
+        assert!(
+            detail.contains("已被删除"),
+            "文案必须点名墓碑状态，实得：{detail}"
+        );
+        assert!(
+            detail.contains("restore_object"),
+            "文案必须给出恢复出路，实得：{detail}"
+        );
     }
 
     #[test]

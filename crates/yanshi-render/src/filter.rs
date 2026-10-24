@@ -4,11 +4,14 @@
 //! 的内容，符合设计文档「图层只做容器，调整对象化」的定义。
 //!
 //! 所有运算在**线性光、直通颜色**上执行，再回到预乘表示，保证与合成空间一致（D0 基线）。
+//! **期 3 A 族例外**：brightness_contrast／color_balance／selective_color／
+//! clarity／vignette 五个显示语义算子的**内部计算**在显示空间进行（扩展
+//! 保符号 sRGB 编解码进出），接口仍是线性直通缓冲——见各函数文档。
 //! 需要一个 `radius` 邻域的滤镜（模糊）要求调用方提供带 padding 的缓冲区；
 //! [`crate::render`] 会按文档内最大滤镜半径扩展渲染区域后再裁剪。
 
 use crate::buffer::Buffer;
-use crate::color::{linear_to_srgb, srgb_to_linear};
+use crate::color::{linear_to_srgb, srgb_decode_extended, srgb_encode_extended, srgb_to_linear};
 use crate::prng::Prng;
 use serde_json::Value;
 
@@ -392,23 +395,38 @@ impl FilterKind {
 }
 
 /// **黑白转换**：`gray = Σ w·c`（权重由参数给、缺省 Rec709），可选 `tint` 着色
-/// （输出 `gray × tint`），无 `tint` 时三通道同值。
+/// （输出 `gray × tint`），无 `tint` 时三通道同值；再按 `amount` 与输入混合
+/// （`out = mix(input, bw_result, amount)`，期 4 D2-2）。
+///
+/// `amount` 钳 [0,1]：`amount = 0` ⇒ **逐位** = 输入（恒等）；
+/// `amount = 1` ⇒ 逐位 = 现行实现输出（存量零影响：无 amount 键的老文档 = 1.0）。
 ///
 /// 断言应写**关系**而不是单点 ✓：灰像素（r=g=b）且 `Σw = 1` 时原样返回；
 /// 纯红配 `weights=[1,0,0]` ⇒ 输出 = 红通道值 ✓。
-pub fn black_and_white(buffer: &mut Buffer, weights: [f32; 3], tint: Option<[f32; 3]>) {
+pub fn black_and_white(
+    buffer: &mut Buffer,
+    weights: [f32; 3],
+    tint: Option<[f32; 3]>,
+    amount: f32,
+) {
+    let amount = amount.clamp(0.0, 1.0);
     for_each_straight_color(buffer, |color| {
+        let input = *color;
         let gray = weights[0] * color[0] + weights[1] * color[1] + weights[2] * color[2];
-        match tint {
-            Some(tint) => {
-                color[0] = (gray * tint[0]).clamp(0.0, 1.0);
-                color[1] = (gray * tint[1]).clamp(0.0, 1.0);
-                color[2] = (gray * tint[2]).clamp(0.0, 1.0);
-            }
+        let bw = match tint {
+            Some(tint) => [
+                (gray * tint[0]).clamp(0.0, 1.0),
+                (gray * tint[1]).clamp(0.0, 1.0),
+                (gray * tint[2]).clamp(0.0, 1.0),
+            ],
             None => {
                 let gray = gray.clamp(0.0, 1.0);
-                *color = [gray, gray, gray];
+                [gray, gray, gray]
             }
+        };
+        // 混合方向：amount = 0 ⇒ 输入、amount = 1 ⇒ 黑白结果（反了则两端断言都红）。
+        for i in 0..3 {
+            color[i] = input[i] * (1.0 - amount) + bw[i] * amount;
         }
     });
 }
@@ -525,59 +543,185 @@ pub const SELECTIVE_COLOR_RANGES: [&str; 9] = [
     "reds", "yellows", "greens", "cyans", "blues", "magentas", "whites", "neutrals", "blacks",
 ];
 
-/// **可选颜色**（PS 相对模式的简化版）：RGB → CMYK 后，按像素色类取出**唯一**一档的
-/// `[c,m,y,k]` 偏移（下标见 [`SELECTIVE_COLOR_RANGES`]）施加，再转回 RGB。
-///
-/// 色类判定（硬扇区、不羽化）：低饱和（色度 < 0.08）按 HSL 明度分
-/// whites（> 0.75）／blacks（< 0.25）／neutrals；否则按色相 60° 扇区
-/// （扇区中心对齐红/黄/绿/青/蓝/品红）。
-///
-/// **相对模式的口径**：偏移 δ 加到分量 v 上时按「到目标端的剩余量」缩放——
-/// `v' = v + δ·(δ ≥ 0 ? 1 − v : v)`。若按 PS 字面 `δ·v` 算，纯红的 c 恒为 0 ⇒
-/// reds 的 cyan 滑杆永远无效（静默失效 ✗）；剩余量口径下它生效，
-/// 且结果天然落在 [0,1]。全零偏移 ⇒ CMYK 往返恒等 ✓。
-pub fn selective_color(buffer: &mut Buffer, ranges: &[[f32; 4]; 9]) {
-    for_each_straight_color(buffer, |color| {
-        let offset = ranges[selective_range_index(color)];
-        if offset == [0.0; 4] {
-            return;
+/// 线性 sRGB → 线性 ProPhoto（ROMM）复合矩阵：sRGB→XYZ(D65) ∘ Bradford
+/// D65→D50 ∘ XYZ→ProPhoto。白点自检：三行和 = 1±0.001（D50 白在
+/// ProPhoto 里恰为 (1,1,1)）；往返一致性由测试钉死。A3 的 Melissa 口径用。
+const SRGB_TO_PROPHOTO: [[f32; 3]; 3] = [
+    [0.529_201, 0.330_110, 0.140_653],
+    [0.098_394, 0.873_509, 0.028_148],
+    [0.016_861, 0.117_561, 0.864_617],
+];
+
+fn mat3_apply(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+    [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    ]
+}
+
+/// 3×3 求逆（伴随矩阵／行列式）。只对上面的常量矩阵用（可逆性由测试
+/// 钉死）；行列式近零返回 None。
+fn mat3_inverse(m: &[[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
+    let (a, b, c) = (m[0][0], m[0][1], m[0][2]);
+    let (d, e, f) = (m[1][0], m[1][1], m[1][2]);
+    let (g, h, i) = (m[2][0], m[2][1], m[2][2]);
+    let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let s = 1.0 / det;
+    Some([
+        [
+            (e * i - f * h) * s,
+            (c * h - b * i) * s,
+            (b * f - c * e) * s,
+        ],
+        [
+            (f * g - d * i) * s,
+            (a * i - c * g) * s,
+            (c * d - a * f) * s,
+        ],
+        [
+            (d * h - e * g) * s,
+            (b * g - a * h) * s,
+            (a * e - b * d) * s,
+        ],
+    ])
+}
+
+/// 线性 sRGB → **Melissa 显示值**：经线性 ProPhoto 后以 sRGB TRC 编码
+/// （LR 的 Melissa 口径 = ProPhoto 原色 + sRGB 曲线；专家裁定 LR TRC =
+/// sRGB TRC）。扩展保符号编码，不钳 [0, 1]。
+fn melissa_encode(color: [f32; 3]) -> [f32; 3] {
+    let pp = mat3_apply(&SRGB_TO_PROPHOTO, color);
+    [
+        srgb_encode_extended(pp[0]),
+        srgb_encode_extended(pp[1]),
+        srgb_encode_extended(pp[2]),
+    ]
+}
+
+/// [`melissa_encode`] 的逆（逆矩阵由调用方按整图算一次传入）。
+fn melissa_decode(d: [f32; 3], inverse: &[[f32; 3]; 3]) -> [f32; 3] {
+    let pp = [
+        srgb_decode_extended(d[0]),
+        srgb_decode_extended(d[1]),
+        srgb_decode_extended(d[2]),
+    ];
+    mat3_apply(inverse, pp)
+}
+
+/// A3 的九档权重（**PS 差值权重法**的连续化，见 [`selective_color`]）：
+/// 与 [`SELECTIVE_COLOR_RANGES`] 同序、和为 1。
+fn selective_weights(d: [f32; 3]) -> [f32; 9] {
+    let max = d[0].max(d[1]).max(d[2]);
+    let min = d[0].min(d[1]).min(d[2]);
+    let span = max - min;
+    // 色相六档：PS 标度——(max−med) 给 max 通道的原色档、(med−min) 给
+    // min 通道对偶的复色档——**按跨度归一化**：权重只依赖色相构成、
+    // 不随饱和缩放（FFmpeg selectivecolor 逆向分析里的原始标度是
+    // max−med／med−min 本身；归一化是设计探针「同色不同亮 Δ 相等」
+    // 的硬要求）。通道并列 max/min 时对应权重恒为 0，不受下标选择影响。
+    let mut hue = [0.0f32; 9];
+    if span > 1e-6 {
+        let med = d[0] + d[1] + d[2] - max - min;
+        let primary = if d[0] == max {
+            0
+        } else if d[1] == max {
+            2
+        } else {
+            4
+        };
+        let dual = if d[2] == min {
+            1
+        } else if d[0] == min {
+            3
+        } else {
+            5
+        };
+        hue[primary] = (max - med) / span;
+        hue[dual] = (med - min) / span;
+    }
+    // 明度三档：按设计的 0.25/0.75 锚点回归本意——blacks 在 L ≤ 0.25
+    // 满权、0.375 归零；whites 在 L ≥ 0.75 满权、0.625 起升；neutrals
+    // 取余（三档单位分解）。纯 PS 标度在 L = 0.4 给 blacks 0.2 ≠ 0，
+    // 与设计探针「0.4 近灰入 neutrals」冲突 ⇒ 以设计探针为准。
+    let lightness = (max + min) / 2.0;
+    let blacks = ((0.375 - lightness) / 0.125).clamp(0.0, 1.0);
+    let whites = ((lightness - 0.625) / 0.125).clamp(0.0, 1.0);
+    let neutrals = 1.0 - blacks - whites;
+    // 色度门控交叉淡化：近灰（span → 0）由明度组主导、饱和像素由色相
+    // 组主导；0.08 沿用旧实现的低饱和界，改在显示（Melissa）口径上判。
+    let q = (span / 0.08).clamp(0.0, 1.0);
+    let mut w = [0.0f32; 9];
+    for (i, h) in hue.iter().enumerate() {
+        w[i] = h * q;
+    }
+    w[6] += (1.0 - q) * whites;
+    w[7] += (1.0 - q) * neutrals;
+    w[8] += (1.0 - q) * blacks;
+    w
+}
+
+/// 在显示值上施加九档 ranges：权重混合得有效偏移 → CMYK 剩余量模型。
+/// 有效偏移为零时**逐位**返回原值（恒等不靠浮点往返碰运气）。
+fn selective_apply_display(d: [f32; 3], ranges: &[[f32; 4]; 9]) -> [f32; 3] {
+    let w = selective_weights(d);
+    let mut offset = [0.0f32; 4];
+    for (range, weight) in ranges.iter().zip(w.iter()) {
+        if *weight != 0.0 {
+            for (slot, value) in offset.iter_mut().zip(range.iter()) {
+                *slot += value * weight;
+            }
         }
-        let mut cmyk = rgb_to_cmyk(*color);
-        for (slot, delta) in cmyk.iter_mut().zip(offset.iter()) {
+    }
+    if offset == [0.0; 4] {
+        return d;
+    }
+    let mut cmyk = rgb_to_cmyk(d);
+    for (slot, delta) in cmyk.iter_mut().zip(offset.iter()) {
+        if *delta != 0.0 {
             let value = *slot;
             let room = if *delta >= 0.0 { 1.0 - value } else { value };
             *slot = (value + delta * room).clamp(0.0, 1.0);
         }
-        *color = cmyk_to_rgb(cmyk);
-    });
+    }
+    cmyk_to_rgb_display(cmyk)
 }
 
-/// 色类下标：规则见 [`selective_color`] 的文档。
-fn selective_range_index(color: &[f32; 3]) -> usize {
-    let (r, g, b) = (color[0], color[1], color[2]);
-    let max = r.max(g).max(b);
-    let min = r.min(g).min(b);
-    let chroma = max - min;
-    if chroma < 0.08 {
-        let lightness = (max + min) / 2.0;
-        return if lightness > 0.75 {
-            6 // whites
-        } else if lightness < 0.25 {
-            8 // blacks
-        } else {
-            7 // neutrals
-        };
+/// **可选颜色**（**期 3 A3：全面显示空间重写，原地替换旧线性硬分类版**）。
+///
+/// 旧实现的问题（设计 §2 A3）：分类（唯一一档）算在**线性**值上、色相
+/// 60° 硬扇区、偏移在**线性** CMYK 上施加——路由与 LR（显示数据）系统
+/// 性错位：33–36° 暖黄在线性分类下被吞进 reds（LR 口径下 yellows 为主
+/// 权重）、同参数强度与 LR 参考系统性偏差、扇区边界处偏移突变。
+///
+/// 新口径（PS 差值权重法 + Melissa 空间，专家 Q1 定版）：
+/// 1. 像素线性 sRGB → **Melissa 显示值**（线性 ProPhoto + sRGB TRC，
+///    扩展保符号不钳）——为对齐 LR 来源数据而设：LR 的可选颜色工作在
+///    Melissa 空间；省掉这步矩阵往返，同参数 Δ 会系统性偏大约
+///    35–50%（参照带断言钉死）；
+/// 2. 权重 = [`selective_weights`]：色相六档用排序通道差值权重
+///    （**禁止色相角硬切**）、明度三档按 0.25/0.75 锚点、两组以色度
+///    门控交叉淡化，九档同时加权求和（PS 的多档可重叠语义）；
+/// 3. 有效偏移在显示值上经 CMYK 剩余量（相对）模型施加：
+///    `v' = v + δ·(δ ≥ 0 ? 1 − v : v)`——纯红的 c 恒为 0 时 reds 的
+///    cyan 滑杆仍生效（旧注记的静默失效防线保留），被改分量钳 [0, 1]；
+/// 4. 逆矩阵回线性 sRGB。全零 ranges 或像素有效偏移为零 ⇒ 逐位恒等。
+pub fn selective_color(buffer: &mut Buffer, ranges: &[[f32; 4]; 9]) {
+    if ranges.iter().all(|range| *range == [0.0; 4]) {
+        return;
     }
-    // 色相（0..6，整数位对齐红/黄/绿/青/蓝/品红）。
-    let hue = if max == r {
-        ((g - b) / chroma).rem_euclid(6.0)
-    } else if max == g {
-        (b - r) / chroma + 2.0
-    } else {
-        (r - g) / chroma + 4.0
-    };
-    // 扇区以原色为中心 ⇒ 把色相平移半格再取整。
-    ((hue + 0.5) % 6.0) as usize
+    let inverse = mat3_inverse(&SRGB_TO_PROPHOTO)
+        .expect("SRGB_TO_PROPHOTO 是常量矩阵且可逆（由 melissa 往返测试钉死）");
+    for_each_straight_color(buffer, |color| {
+        let d = melissa_encode(*color);
+        let out = selective_apply_display(d, ranges);
+        if out != d {
+            *color = melissa_decode(out, &inverse);
+        }
+    });
 }
 
 /// RGB → CMYK（朴素减色模型）：`k = 1 − max`，其余 `(1 − c − k)/(1 − k)`；
@@ -597,13 +741,15 @@ fn rgb_to_cmyk(color: [f32; 3]) -> [f32; 4] {
     ]
 }
 
-/// CMYK → RGB：[`rgb_to_cmyk`] 的逆（`(1 − c)(1 − k)`）⇒ 无偏移时往返恒等 ✓。
-fn cmyk_to_rgb(cmyk: [f32; 4]) -> [f32; 3] {
+/// CMYK → RGB（显示值版）：[`rgb_to_cmyk`] 的代数逆（`(1 − c)(1 − k)`）。
+/// **不钳 [0, 1]**——A3 在 Melissa 显示值上用它，HDR 显示值（> 1）必须
+/// 原样往返；代数上对 max > 0 的任意输入逐位逆（未改分量保真）。
+fn cmyk_to_rgb_display(cmyk: [f32; 4]) -> [f32; 3] {
     let keep = 1.0 - cmyk[3];
     [
-        ((1.0 - cmyk[0]) * keep).clamp(0.0, 1.0),
-        ((1.0 - cmyk[1]) * keep).clamp(0.0, 1.0),
-        ((1.0 - cmyk[2]) * keep).clamp(0.0, 1.0),
+        (1.0 - cmyk[0]) * keep,
+        (1.0 - cmyk[1]) * keep,
+        (1.0 - cmyk[2]) * keep,
     ]
 }
 
@@ -670,13 +816,59 @@ fn corner_weight(offset: usize, frac: f32) -> f32 {
     }
 }
 
-/// 亮度/对比度（`brightness` 为 `-1..1` 的加性偏移，`contrast` 为 `0..2` 的乘性对比）。
+/// 亮度/对比度（**期 3 A1：显示空间枢轴口径，原地替换旧线性口径**）。
+///
+/// 旧实现是 `out = (c·contrast + brightness).clamp(0, 1)` 直接作用于线性
+/// 直通值：无枢轴、且把一切钳进 [0, 1]——HDR 高光在第一个 bc 处即被压
+/// 平。用户与预设数据给的都是 LR 显示口径参数，旧实现系统性偏离
+/// （设计文档 §2 A1；注：设计文档把旧式写成带 0.5 枢轴的形式，与代码
+/// 实测不符——实测无枢轴，见 phase3-notes 备忘）。
+///
+/// 新口径（Adobe 显示语义，与设计 §2 A1 定版一致）：
+/// 1. 每通道线性 → **扩展保符号 sRGB 编码**（[`srgb_encode_extended`]，
+///    编码前禁止钳 `[0, 1]`，HDR 高光与负值不被第一个显示算子销毁）；
+/// 2. 亮度平移 `d' = d + brightness·0.5`（规范刻度：brightness = ±0.5 ⇔
+///    中灰显示 ±0.25；此 ±0.25 探针即刻度定义）；
+/// 3. 对比绕**显示中灰枢轴 0.5** 缩放 `d'' = (d' − 0.5)·contrast + 0.5`；
+/// 4. **亮度比回写（hue-twist 防护）**：`out_lin = in_lin · (L'' / L)`，
+///    其中 `L = Σ wᵢ·cᵢ` 是入像素的**线性**亮度、`L'' = Σ wᵢ·dec(d''ᵢ)`
+///    是影调映射后像素的线性亮度（w = 0.2126/0.7152/0.0722）。比值在
+///    同一量纲（线性）里取——灰像素上它与逐通道显示映射**恰好等价**
+///    （刻度探针因此精确成立），彩色像素上只缩放亮度、色相由原像素
+///    决定。`L ≤ 0`（纯黑/负亮度像素）时无亮度可缩放 ⇒ 回退逐通道
+///    解码（黑位抬升 brightness 仍生效）；`L'' ≤ 0` 时比值钳 0（压黑）。
+///
+/// 参数契约不变：brightness ∈ [−1, 1]，contrast ∈ [0, 8]（越界在工具层
+/// 拒）。neutral（brightness = 0 且 contrast = 1）逐像素恒等（含 HDR 与
+/// 负值）。存量文档回放自本期起按新口径（甲案，发布说明明示）。
 pub fn brightness_contrast(buffer: &mut Buffer, brightness: f32, contrast: f32) {
-    let offset = brightness;
-    let scale = contrast.max(0.0);
-    for_each_straight_color(buffer, |color| {
-        for value in color.iter_mut() {
-            *value = (*value * scale + offset).clamp(0.0, 1.0);
+    if brightness == 0.0 && contrast == 1.0 {
+        return;
+    }
+    for_each_straight_color(buffer, |c| {
+        let d = [
+            srgb_encode_extended(c[0]),
+            srgb_encode_extended(c[1]),
+            srgb_encode_extended(c[2]),
+        ];
+        let lum_in = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        let shifted = [
+            (d[0] + brightness * 0.5 - 0.5) * contrast + 0.5,
+            (d[1] + brightness * 0.5 - 0.5) * contrast + 0.5,
+            (d[2] + brightness * 0.5 - 0.5) * contrast + 0.5,
+        ];
+        let lum_out = 0.2126 * srgb_decode_extended(shifted[0])
+            + 0.7152 * srgb_decode_extended(shifted[1])
+            + 0.0722 * srgb_decode_extended(shifted[2]);
+        if lum_in > 0.0 {
+            let ratio = (lum_out / lum_in).max(0.0);
+            *c = [c[0] * ratio, c[1] * ratio, c[2] * ratio];
+        } else {
+            *c = [
+                srgb_decode_extended(shifted[0]),
+                srgb_decode_extended(shifted[1]),
+                srgb_decode_extended(shifted[2]),
+            ];
         }
     });
 }
@@ -804,40 +996,68 @@ pub fn film_grain(buffer: &mut Buffer, amount: f32, size: u32, seed: u64) {
     }
 }
 
-/// 色彩平衡：按亮度分档（阴影 / 中间调 / 高光）分别做 RGB 偏移。
+/// 色彩平衡（**期 3 A2：显示空间施加 + Y' 分档 + amount，原地替换**）。
 ///
-/// 档位权重由线性亮度推导：`shadows = (1-luma)²`、`highlights = luma²`、
-/// `midtones = 1 - shadows - highlights`。每个分量取值 -1..1，按档位加权后加到直通通道上。
+/// 旧实现的问题（设计 §2 A2）：分档权重算在**线性**亮度上（与 LR 的感知
+/// 明度分档错位）、偏移以 ±1.0 全幅直接加到线性值再钳 [0, 1]（HDR 被
+/// 压平）、且**没有 amount**——预设要 30% 强度只能把三档偏移逐个手乘。
+/// （注：设计文档把旧权重写成三角形、旧偏移写成 ·0.25，与代码实测不符
+/// ——实测权重为二次式、偏移无缩放；见 phase3-notes 备忘。权重**形状**
+/// 本期保留实测的二次式，只换它读取的量。）
+/// 新口径：
+/// 1. 像素线性 → 扩展保符号 sRGB 编码得显示值 `d`（不钳 [0, 1]）；
+/// 2. 分档权重按**显示明度 Y'**（sRGB 亮度系数在显示值上的加权和，
+///    钳 [0, 1] 只用于权重）取原二次形状：`shadows = (1−Y')²`、
+///    `highlights = Y'²`、`midtones = 1 − shadows − highlights`；
+/// 3. 混合偏移按设计刻度 ±0.25 乘 `amount` 后**加在显示值上**，再扩展
+///    解码回线性。HDR 像素（显示值 > 1）全程不钳、偏移照常施加。
+///
+/// `amount` 由分发层缺省 1.0；三档全零或 amount ≤ 0 时逐像素恒等。
+/// 负 amount 在工具层拒（[0, 1]）。
 pub fn color_balance(
     buffer: &mut Buffer,
     shadows: [f32; 3],
     midtones: [f32; 3],
     highlights: [f32; 3],
+    amount: f32,
 ) {
     const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
+    if amount <= 0.0 || (shadows == [0.0; 3] && midtones == [0.0; 3] && highlights == [0.0; 3]) {
+        return;
+    }
     let clamp_component = |value: f32| value.clamp(-1.0, 1.0);
     let shadows = shadows.map(clamp_component);
     let midtones = midtones.map(clamp_component);
     let highlights = highlights.map(clamp_component);
     for_each_straight_color(buffer, |color| {
-        let luma = LUMA[0] * color[0] + LUMA[1] * color[1] + LUMA[2] * color[2];
-        let luma = luma.clamp(0.0, 1.0);
+        let d = [
+            srgb_encode_extended(color[0]),
+            srgb_encode_extended(color[1]),
+            srgb_encode_extended(color[2]),
+        ];
+        let luma = (LUMA[0] * d[0] + LUMA[1] * d[1] + LUMA[2] * d[2]).clamp(0.0, 1.0);
         let shadow_weight = (1.0 - luma) * (1.0 - luma);
         let highlight_weight = luma * luma;
         let midtone_weight = (1.0 - shadow_weight - highlight_weight).max(0.0);
         for channel in 0..3 {
-            let delta = shadows[channel] * shadow_weight
+            let delta = (shadows[channel] * shadow_weight
                 + midtones[channel] * midtone_weight
-                + highlights[channel] * highlight_weight;
-            color[channel] = (color[channel] + delta).clamp(0.0, 1.0);
+                + highlights[channel] * highlight_weight)
+                * 0.25
+                * amount;
+            color[channel] = srgb_decode_extended(d[channel] + delta);
         }
     });
 }
 
 /// 分离色调：阴影与高光分别着色，`balance` 移动分界点，`amount` 控制总强度。
 ///
-/// 权重用 smoothstep 在 `mid ± 0.25` 之间过渡（`mid = 0.5 + balance × 0.25`），
+/// 期 5 Q1-c 口径（设计 §2 第 4 条）：权重取自 **sRGB 亮度 Y'**（显示空间，
+/// 通道先扩展编码再加权），着色在显示空间做，解码回线性后按**线性亮度比回写**
+/// （恢复原亮度，只留色度变化；黑像素亮度为 0 ⇒ 着色后仍为黑）。
+/// 权重仍用 smoothstep 在 `mid ± 0.25` 之间过渡（`mid = 0.5 + balance × 0.25`），
 /// 因此权重单调、确定，且 `balance` 的语义直观（正值把分界推向亮部）。
+/// 输出域钳 [0,1] 与旧内核一致（显示指涉域；HDR 负值与旧内核同处理）。
 pub fn split_toning(
     buffer: &mut Buffer,
     shadows: [f32; 3],
@@ -854,13 +1074,30 @@ pub fn split_toning(
     let highlights = highlights.map(|value| value.clamp(-1.0, 1.0));
     let mid = 0.5 + balance.clamp(-1.0, 1.0) * 0.25;
     for_each_straight_color(buffer, |color| {
-        let luma = (LUMA[0] * color[0] + LUMA[1] * color[1] + LUMA[2] * color[2]).clamp(0.0, 1.0);
-        let t = ((luma - (mid - 0.25)) / 0.5).clamp(0.0, 1.0);
+        let orig = *color;
+        let orig_luma = LUMA[0] * orig[0] + LUMA[1] * orig[1] + LUMA[2] * orig[2];
+        let d = [
+            srgb_encode_extended(orig[0]),
+            srgb_encode_extended(orig[1]),
+            srgb_encode_extended(orig[2]),
+        ];
+        let y = LUMA[0] * d[0] + LUMA[1] * d[1] + LUMA[2] * d[2];
+        let t = ((y - (mid - 0.25)) / 0.5).clamp(0.0, 1.0);
         let highlight_weight = t * t * (3.0 - 2.0 * t);
         let shadow_weight = 1.0 - highlight_weight;
+        let mut lin = [0.0; 3];
         for channel in 0..3 {
             let tint = shadows[channel] * shadow_weight + highlights[channel] * highlight_weight;
-            color[channel] = (color[channel] + amount * tint).clamp(0.0, 1.0);
+            lin[channel] = srgb_decode_extended(d[channel] + amount * tint);
+        }
+        let new_luma = LUMA[0] * lin[0] + LUMA[1] * lin[1] + LUMA[2] * lin[2];
+        let scale = if new_luma > 1e-6 {
+            orig_luma / new_luma
+        } else {
+            1.0
+        };
+        for channel in 0..3 {
+            color[channel] = (lin[channel] * scale).clamp(0.0, 1.0);
         }
     });
 }
@@ -958,6 +1195,116 @@ pub fn hsl(buffer: &mut Buffer, hue_degrees: f32, saturation: f32, lightness: f3
         let s = (s * saturation).clamp(0.0, 1.0);
         let l = (l + lightness).clamp(0.0, 1.0);
         *color = hsl_compose(h, s, l);
+    });
+}
+
+/// **逐通道 HSL 的 8 个色档名**（固定白名单；工具层校验与渲染层共用 ⇒ 只此一处）。
+pub const HSL_RANGE_NAMES: [&str; 8] = [
+    "reds", "oranges", "yellows", "greens", "aquas", "blues", "purples", "magentas",
+];
+
+/// 8 档中心角（度，LR 式）：红 0、橙 30、黄 60、绿 120、青 180、蓝 240、紫 280、品红 315。
+const HSL_RANGE_CENTERS: [f32; 8] = [0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 280.0, 315.0];
+
+/// 单档偏移（期 4 D2-3）：`hue` 为度（加性）；`saturation` / `lightness` 为
+/// LR 式百分比：饱和度以因子 `(1 + saturation/100)` 乘（灰像素 s = 0 时仍为 0，
+/// 不会凭空染色——加性饱和度会把无色像素染上色，那是缺陷不是特性）；
+/// 明度以 `lightness/100` 加性偏移。缺省三键均为 0（无效果）。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct HslRangeOffset {
+    /// 色相偏移（度，加性）。
+    pub hue: f32,
+    /// 饱和度偏移（百分比，以因子 `(1 + saturation/100)` 乘）。
+    pub saturation: f32,
+    /// 明度偏移（百分比，以 `lightness/100` 加性偏移）。
+    pub lightness: f32,
+}
+
+/// 色相角的三角窗权重（期 4 D2-3）：权重在档中心为 1、向两侧线性衰减、
+/// **在相邻中心处恰好到 0**（中点两档各半——设计自家的边界测试定版；
+/// 若按「半宽 = 相邻中心距的一半」字面算，中点两档权重同为 0、归一化除零，
+/// 与该测试冲突 ⇒ 以测试为准）。权重和恒为 1（仍做归一化，防浮点漂移）。
+fn hsl_range_weights(hue_degrees: f32) -> [f32; 8] {
+    let h = hue_degrees.rem_euclid(360.0);
+    let mut weights = [0.0f32; 8];
+    for (i, center) in HSL_RANGE_CENTERS.iter().enumerate() {
+        // 到档中心的有向圆周差（−180, 180]。
+        let diff = (h - center + 540.0).rem_euclid(360.0) - 180.0;
+        let side_dist = if diff >= 0.0 {
+            let next = HSL_RANGE_CENTERS[(i + 1) % 8];
+            (next - center).rem_euclid(360.0)
+        } else {
+            let prev = HSL_RANGE_CENTERS[(i + 7) % 8];
+            (center - prev).rem_euclid(360.0)
+        };
+        weights[i] = if side_dist > 0.0 {
+            (1.0 - diff.abs() / side_dist).max(0.0)
+        } else {
+            0.0
+        };
+    }
+    let sum: f32 = weights.iter().sum();
+    if sum > 0.0 {
+        for weight in weights.iter_mut() {
+            *weight /= sum;
+        }
+    }
+    weights
+}
+
+/// **逐通道 HSL**（期 4 D2-3）：在**显示编码空间**分类与运算（照
+/// `shadows_highlights` 的「编码→算→解码」结构，编码用期 3 的扩展传递）：
+/// 编码后取色相角、按三角窗加权得档位偏移，与全局偏移合成后用既有
+/// `hsl_decompose` / `hsl_compose` 施加，再解码回线性。
+///
+/// 全局参数语义与标量路同形（色相度数加性、饱和度乘子、明度加性），
+/// 只是同样移到编码空间施加；档位饱和度为百分比因子、档位明度为百分比偏移。
+/// 全部偏移为零时像素**逐位不动**（短路——守「绿块逐位不变」与无用功）。
+pub fn hsl_with_ranges(
+    buffer: &mut Buffer,
+    hue_degrees: f32,
+    saturation: f32,
+    lightness: f32,
+    ranges: &[HslRangeOffset; 8],
+) {
+    let hue_shift = hue_degrees.clamp(-360.0, 360.0) / 360.0;
+    let saturation = saturation.clamp(0.0, 8.0);
+    let lightness = lightness.clamp(-1.0, 1.0);
+    for_each_straight_color(buffer, |color| {
+        let enc = [
+            srgb_encode_extended(color[0]),
+            srgb_encode_extended(color[1]),
+            srgb_encode_extended(color[2]),
+        ];
+        let (h, s, l) = hsl_decompose(&enc);
+        let weights = hsl_range_weights(h * 360.0);
+        let mut range_hue = 0.0f32;
+        let mut range_sat_factor = 1.0f32;
+        let mut range_light = 0.0f32;
+        for (weight, offset) in weights.iter().zip(ranges.iter()) {
+            range_hue += weight * offset.hue.clamp(-180.0, 180.0);
+            range_sat_factor += weight * (offset.saturation.clamp(-100.0, 100.0) / 100.0);
+            range_light += weight * (offset.lightness.clamp(-100.0, 100.0) / 100.0);
+        }
+        // 全零偏移 ⇒ 逐位不动（不经过 decompose/compose 的浮点往返）。
+        if hue_shift == 0.0
+            && saturation == 1.0
+            && lightness == 0.0
+            && range_hue == 0.0
+            && range_sat_factor == 1.0
+            && range_light == 0.0
+        {
+            return;
+        }
+        let h = (h + hue_shift + range_hue / 360.0).rem_euclid(1.0);
+        let s = (s * saturation * range_sat_factor).clamp(0.0, 1.0);
+        let l = (l + lightness + range_light).clamp(0.0, 1.0);
+        let composed = hsl_compose(h, s, l);
+        *color = [
+            srgb_decode_extended(composed[0]),
+            srgb_decode_extended(composed[1]),
+            srgb_decode_extended(composed[2]),
+        ];
     });
 }
 
@@ -1298,6 +1645,15 @@ pub fn clarity(buffer: &mut Buffer, amount: f32, radius: u32) {
     }
 }
 
+/// 大气光色度阻尼（**期 3 A4-3 修正一**，专家 Q5）：各通道对亮度的
+/// 比值钳 [0.95, 1.05]。估计出的大气光带色度时，逐通道恢复会把色度
+/// 误差按 1/t 放大成前景色偏（中性灰反例可达 R/B 比 7×）；阻尼把
+/// 估计色度限制在 ±5% 内。两个估计器与恢复入口共用同一阻尼。
+fn damp_air_chromaticity(air: [f32; 3]) -> [f32; 3] {
+    let luma = (0.2126 * air[0] + 0.7152 * air[1] + 0.0722 * air[2]).max(1e-3);
+    air.map(|value| luma * (value / luma).clamp(0.95, 1.05))
+}
+
 /// 去雾（暗通道先验）：`air` 为**调用方给定**的大气光，`omega` 控制去雾强度，
 /// `floor` 是透射率下限（避免除零与过度放大噪声）。
 ///
@@ -1305,21 +1661,35 @@ pub fn clarity(buffer: &mut Buffer, amount: f32, radius: u32) {
 /// 不同的全局统计量，`分块 == 整幅` 立刻失效（这类问题此前已踩过）。只读工具
 /// `estimate_dehaze` 负责扫描文档给出建议值，再由调用方写进原子参数——这与
 /// Phase 4b 的「先预览/估计、再作为 patch 应用」是同一套思路。
+///
+/// **期 3 A4-3：保留线性 DCP + 专家四修正**（设计 §2 A4-3 / 专家 Q5）：
+/// ① 大气光进恢复前过 [`damp_air_chromaticity`]（色度比钳 [0.95, 1.05]）；
+/// ② 透射率先做 γ_t = 0.5 重映射（`t ← √t`，抬升低透射区、防暗部被
+/// 1/t 过度放大），再过动态下限 `max(floor, 0.25 − 0.05·omega)`
+/// （∈ [0.20, 0.25]；调用方的 floor 仍是下限语义、只许更高）；
+/// ③ 恢复走亮度/通道混合：逐通道恢复为主（0.65），混入 β = 0.35 的
+/// 「中性大气光（= air 亮度）亮度恢复」——通道色度误差被亮度锚稀释，
+/// 但主体仍是逐通道恢复（反过来以亮度为主会把通道对比一并冲淡，
+/// 既有对比度回归实测不允许，见 phase3-notes）；
+/// ④ 前景中性再锚定：输入近中性（色度 ≤ 0.03）且 t ≥ 0.5（前景）的
+/// 像素，恢复后逐通道增益拉回自身亮度，增益钳 [0.90, 1.10]。
 pub fn dehaze(buffer: &mut Buffer, air: [f32; 3], omega: f32, floor: f32) {
     let omega = omega.clamp(0.0, 1.0);
     let floor = floor.clamp(0.02, 0.8);
-    let air = air.map(|value| value.clamp(0.05, 1.0));
+    let air = damp_air_chromaticity(air.map(|value| value.clamp(0.05, 1.0)));
     let air_luma = (0.2126 * air[0] + 0.7152 * air[1] + 0.0722 * air[2]).max(1e-3);
+    // 修正二的动态下限（[0.20, 0.25] 带内随 omega 线性取）。
+    let t_floor = floor.max(0.25 - 0.05 * omega);
     let width = buffer.width();
     let height = buffer.height();
-    // 透射率图（先算再模糊，抑制块状伪影）。
+    // 透射率图（先算再模糊，抑制块状伪影）；γ 重映射与动态下限在取用时施加。
     let mut transmission = Buffer::new(buffer.origin().0, buffer.origin().1, width, height);
     for y in 0..height {
         for x in 0..width {
             let pixel = buffer.pixel(x, y);
             // 暗通道：直通空间的最小通道值。
             let dark = pixel[0].min(pixel[1]).min(pixel[2]);
-            let t = (1.0 - omega * dark / air_luma).clamp(floor, 1.0);
+            let t = (1.0 - omega * dark / air_luma).clamp(0.0, 1.0);
             transmission.set_pixel(x, y, [t, t, t, 1.0]);
         }
     }
@@ -1331,14 +1701,35 @@ pub fn dehaze(buffer: &mut Buffer, air: [f32; 3], omega: f32, floor: f32) {
             if alpha <= 0.0 {
                 continue;
             }
-            let t = transmission.pixel(x, y)[0].clamp(floor, 1.0);
+            // 修正二：γ_t = 0.5 重映射 + 动态下限。
+            let t = libm::sqrtf(transmission.pixel(x, y)[0].clamp(0.0, 1.0)).clamp(t_floor, 1.0);
+            let straight = [pixel[0] / alpha, pixel[1] / alpha, pixel[2] / alpha];
+            let lum_in = 0.2126 * straight[0] + 0.7152 * straight[1] + 0.0722 * straight[2];
+            // 修正三：逐通道恢复 0.65 + 亮度恢复 β = 0.35 混合。
+            let lum_recovered = (lum_in - air_luma) / t + air_luma;
+            let mut recovered = [0.0f32; 3];
+            for channel in 0..3 {
+                let per_channel = (straight[channel] - air[channel]) / t + air[channel];
+                recovered[channel] = 0.65 * per_channel + 0.35 * lum_recovered;
+            }
+            // 修正四：前景中性再锚定（近中性输入 + 高透射 ⇒ 增益拉回亮度）。
+            let chroma_in = straight[0].max(straight[1]).max(straight[2])
+                - straight[0].min(straight[1]).min(straight[2]);
+            if chroma_in <= 0.03 && t >= 0.5 {
+                let lum_out = 0.2126 * recovered[0] + 0.7152 * recovered[1] + 0.0722 * recovered[2];
+                if lum_out > 1e-6 {
+                    for value in recovered.iter_mut() {
+                        if *value > 1e-6 {
+                            let gain = (lum_out / *value).clamp(0.90, 1.10);
+                            *value *= gain;
+                        }
+                    }
+                }
+            }
             let mut out = [0.0f32; 4];
             out[3] = alpha;
             for channel in 0..3 {
-                // 直通空间恢复后重新预乘。
-                let straight = pixel[channel] / alpha;
-                let recovered = (straight - air[channel]) / t + air[channel];
-                out[channel] = (recovered.clamp(0.0, 1.0)) * alpha;
+                out[channel] = recovered[channel].clamp(0.0, 1.0) * alpha;
             }
             buffer.set_pixel(x, y, out);
         }
@@ -1383,10 +1774,19 @@ pub fn estimate_atmospheric_light(
     for value in air.iter_mut() {
         *value = (*value * scale).clamp(0.05, 1.0);
     }
-    Some((air, sum / count as f32))
+    // 期 3 A4-3 修正一：估计值先过色度阻尼再报告（与恢复入口同口径）。
+    Some((damp_air_chromaticity(air), sum / count as f32))
 }
 
 /// 暗角：按到画布中心的归一化距离做平滑衰减。
+///
+/// **期 3 A4-2 口径**：衰减乘子作用在**显示空间**（`out_d = d ·
+/// (1 − strength·smoothstep(t))`，扩展保符号编解码、HDR 不钳）。旧实现
+/// 在线性空间乘同一乘子——中灰处视觉效果约差一倍（乘子 0.7：线性乘
+/// 使显示 0.5 → 约 0.43，显示乘直接得 0.35），预设 strength 数据是
+/// 按显示直觉定的，旧实现系统性偏弱（设计 §2 A4-2）。几何（文档中心/
+/// 对角线归一、smoothstep 形状）不变；乘子 = 1 的像素（中心区）逐位
+/// 不动；strength = 0 恒等。
 pub fn vignette(
     buffer: &mut Buffer,
     strength: f32,
@@ -1415,17 +1815,22 @@ pub fn vignette(
             let distance = (nx * nx + ny * ny).sqrt();
             let t = ((distance - radius) / softness).clamp(0.0, 1.0);
             let falloff = 1.0 - strength * (t * t * (3.0 - 2.0 * t));
+            if falloff == 1.0 {
+                continue;
+            }
             let pixel = buffer.pixel(x, y);
-            buffer.set_pixel(
-                x,
-                y,
-                [
-                    pixel[0] * falloff,
-                    pixel[1] * falloff,
-                    pixel[2] * falloff,
-                    pixel[3],
-                ],
-            );
+            let alpha = pixel[3];
+            if alpha <= 0.0 {
+                continue;
+            }
+            let mut out = [0.0f32; 4];
+            out[3] = alpha;
+            for channel in 0..3 {
+                let straight = pixel[channel] / alpha;
+                out[channel] =
+                    srgb_decode_extended(srgb_encode_extended(straight) * falloff) * alpha;
+            }
+            buffer.set_pixel(x, y, out);
         }
     }
 }
@@ -2089,14 +2494,16 @@ fn estimate_air_from_buffer(buffer: &Buffer) -> [f32; 3] {
     for value in air.iter_mut() {
         *value = (*value * scale).clamp(0.05, 1.0);
     }
-    air
+    // 期 3 A4-3 修正一：估计值先过色度阻尼（与恢复入口同口径）。
+    damp_air_chromaticity(air)
 }
 
 /// **去雾调整（Presence）**：`amount` −1..1，0 = 逐位恒等 ✓。
 ///
 /// 正值走暗通道先验（复用滤镜版 [`dehaze`] 内核）：大气光由
 /// [`estimate_air_from_buffer`] 在**当前缓冲内**估计，`omega = amount × 0.95`、
-/// 透射率下限 0.1。**与滤镜版的口径差**：滤镜版要求调用方给 `air` 以保证
+/// 透射率下限名义 0.1（期 3 A4-3 后有效下限为动态值，见 [`dehaze`] 文档）。
+/// **与滤镜版的口径差**：滤镜版要求调用方给 `air` 以保证
 /// 分块 == 整幅；调整版在缓冲内估计 ⇒ 跨 tile 的大气光可能不同（README 已标注，
 /// 这是与 Lightroom 全图估计实现的主要差距之一）。
 /// 负值反向加雾：直通色朝大气光混合 `|amount| × 0.6`，对比单调下降（可做雾效/柔化背景）。
@@ -2118,16 +2525,25 @@ pub fn dehaze_adjustment(buffer: &mut Buffer, amount: f32) {
     }
 }
 
-/// **引导滤波细节调整（clarity / texture 共用底座）**：
-/// 明度（线性 Rec709）跑一趟自引导滤波（复用降噪的 [`guided_filter_self`]，保边 ✓），
-/// `detail = luma − base`，`new_luma = luma + amount × detail × weight`，
-/// 三通道按 `new_luma / luma` 等比缩放（保色相、灰度样本下与分通道版逐位一致 ✓）。
-/// `amount` −1..1（0 = 逐位恒等 ✓；负值压细节 ⇒ 柔化）。纯黑（luma≈0）不动
-/// （detail 恒 0，缩放无意义，数学上恒等 ✓）。输出钳制 [0,1]，
-/// 预乘不变量保持 ✓。运算在线性光直通空间（与全管线坐标口径一致 ✓）。
+/// **引导滤波细节调整（clarity / texture 共用底座）**。
 ///
-/// **只跑一趟引导滤波**（性能：第 1 版三通道各一趟是主要瓶颈 ✗；明度细节 + 等比
-/// 缩放也是 Lightroom 语义下更保色相的做法，一举两得 ✓）。
+/// **期 3 A4-1 口径（专家 Q1 定版）**：细节必须在 **sRGB 明度 Y'** 上算——
+/// 旧实现在线性明度上跑：中间调掩模的「中间」落在线性 0.5 ≈ 显示 0.735
+/// （偏高光一档）、线性明度与输出双双钳 [0, 1]（HDR 细节被压平）、
+/// epsilon 的量纲也随错空间漂移。新口径：
+/// 1. 直通色逐通道扩展编码得显示值，`Y' = 0.2126/0.7152/0.0722` 加权和
+///    （不钳：HDR 的 Y' 可 > 1、负值保符号）；
+/// 2. Y' 平面跑一趟自引导滤波（复用降噪的 [`guided_filter_self`]，保边），
+///    `detail = Y' − base`；
+/// 3. 中间调掩模 `1 − (2ŷ − 1)²`，ŷ = Y' 钳 [0, 1]——掩模中心回到
+///    **显示中灰**；`new_Y' = Y' + amount·detail·weight`；
+/// 4. **亮度比回写**：`scale = new_Y' / Y'`（Y' > 0 时），直通线性色等比
+///    缩放——保色相、且**不钳 [0, 1]**（HDR 细节增强后仍是 HDR）。
+///    Y' ≤ 0 的像素（纯黑/负亮度）无亮度可缩放 ⇒ 不动（其 detail 在
+///    平坦黑场里恒为 0，数学上一致）。
+///
+/// `amount` −1..1（0 = 逐位恒等 ✓；负值压细节 ⇒ 柔化）。半径/epsilon
+/// 数值不变（epsilon 的量纲随平面换成 Y'——这正是刻度重标定的一部分）。
 fn guided_detail_adjust(
     buffer: &mut Buffer,
     amount: f32,
@@ -2148,7 +2564,10 @@ fn guided_detail_adjust(
     for (i, pixel) in buffer.pixels().chunks_exact(4).enumerate() {
         let a = pixel[3];
         if a > 0.0 {
-            luma[i] = (0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2]) / a;
+            let straight = [pixel[0] / a, pixel[1] / a, pixel[2] / a];
+            luma[i] = 0.2126 * srgb_encode_extended(straight[0])
+                + 0.7152 * srgb_encode_extended(straight[1])
+                + 0.0722 * srgb_encode_extended(straight[2]);
         }
     }
     let mut base = luma.clone();
@@ -2161,27 +2580,27 @@ fn guided_detail_adjust(
             if alpha <= 0.0 {
                 continue;
             }
-            let l = luma[i].clamp(0.0, 1.0);
-            if l < 1e-6 {
+            let l = luma[i];
+            if l <= 0.0 {
                 continue;
             }
             let weight = if midtone_weighted {
-                let centered = 2.0 * l - 1.0;
+                let centered = 2.0 * l.clamp(0.0, 1.0) - 1.0;
                 (1.0 - centered * centered).clamp(0.0, 1.0)
             } else {
                 1.0
             };
-            let new_luma = (l + amount * (l - base[i]) * weight).clamp(0.0, 1.0);
-            let scale = new_luma / l;
+            let new_luma = l + amount * (l - base[i]) * weight;
+            let scale = (new_luma / l).max(0.0);
+            // 数值零守卫：引导滤波在常数平面上的浮点残差（实测 scale 偏差
+            // ~2.4e-7）不得改写像素——「平坦区逐位不动」是既有不变量。
+            if (scale - 1.0).abs() <= 1e-6 {
+                continue;
+            }
             buffer.set_pixel(
                 x,
                 y,
-                [
-                    (pixel[0] * scale).min(alpha),
-                    (pixel[1] * scale).min(alpha),
-                    (pixel[2] * scale).min(alpha),
-                    alpha,
-                ],
+                [pixel[0] * scale, pixel[1] * scale, pixel[2] * scale, alpha],
             );
         }
     }
@@ -2189,8 +2608,8 @@ fn guided_detail_adjust(
 
 /// **局部对比调整（Presence Clarity）**：`amount` −1..1，0 = 逐位恒等 ✓。
 ///
-/// 大半径（16）自引导滤波保边细节 + 中间调加权 `1 − (2L − 1)²`（与滤镜版 clarity
-/// 同一加权口径：中间调最强、极暗/极亮抑制防光晕 ✓）。
+/// 大半径（16）自引导滤波保边细节 + 中间调加权 `1 − (2ŷ − 1)²`（ŷ 为显示
+/// 明度 Y'，期 3 A4-1：掩模中心在显示中灰；中间调最强、极暗/极亮抑制防光晕 ✓）。
 /// 正值增强中频局部对比；负值压中频 ⇒ 柔化（Orton 柔光的那一半靠它近似 ✓）。
 pub fn clarity_adjustment(buffer: &mut Buffer, amount: f32) {
     guided_detail_adjust(buffer, amount, 16, 0.005, true);
@@ -2294,6 +2713,62 @@ pub fn gaussian_blur(buffer: &mut Buffer, sigma: f32) {
     }
     convolve_horizontal(buffer, &kernel, radius);
     convolve_vertical(buffer, &kernel, radius);
+}
+
+/// 对显示编码 RGBA8 缓冲施加高斯模糊（期 4 D1，频率分离的低频层用）。
+///
+/// **薄封装，不写第二份模糊**：只做「直 RGBA8 → 预乘 f32 缓冲 →
+/// [`gaussian_blur`] → 反预乘回 u8」的往返；模糊核本身就是
+/// [`gaussian_blur`]（含其 feature-gated GPU 分支，GPU 与 CPU 在 u8 上
+/// 差 ≤1 LSB，见该函数的逐位口径说明——频率分离的重建容差 2/255 覆盖它）。
+/// 关键：**不在此做 sRGB 编解码**——输入字节就是显示编码值，模糊
+/// 作用在显示编码值上（与设计「对 RGBA8 缓冲施加」同形）；线性空间
+/// 的换算由调用方（频率分离的载荷公式）负责，两处不要混。
+/// 全透明像素（a = 0）反预乘时按 0 处理，不产生 NaN。
+pub fn gaussian_blur_rgba8(pixels: &[u8], width: u32, height: u32, sigma: f32) -> Vec<u8> {
+    let count = (width as usize).saturating_mul(height as usize);
+    assert_eq!(
+        pixels.len(),
+        count * 4,
+        "gaussian_blur_rgba8 输入长度必须是 width × height × 4"
+    );
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+    let mut buffer = Buffer::new(0, 0, width, height);
+    for (index, chunk) in pixels.chunks_exact(4).enumerate() {
+        let x = (index % width as usize) as u32;
+        let y = (index / width as usize) as u32;
+        let a = chunk[3] as f32 / 255.0;
+        buffer.set_pixel(
+            x,
+            y,
+            [
+                chunk[0] as f32 / 255.0 * a,
+                chunk[1] as f32 / 255.0 * a,
+                chunk[2] as f32 / 255.0 * a,
+                a,
+            ],
+        );
+    }
+    gaussian_blur(&mut buffer, sigma);
+    let mut out = vec![0u8; count * 4];
+    for (index, chunk) in out.chunks_exact_mut(4).enumerate() {
+        let x = (index % width as usize) as u32;
+        let y = (index / width as usize) as u32;
+        let pixel = buffer.pixel(x, y);
+        let a = pixel[3];
+        let straight = if a > 0.0 {
+            [pixel[0] / a, pixel[1] / a, pixel[2] / a]
+        } else {
+            [0.0, 0.0, 0.0]
+        };
+        chunk[0] = (straight[0].clamp(0.0, 1.0) * 255.0).round() as u8;
+        chunk[1] = (straight[1].clamp(0.0, 1.0) * 255.0).round() as u8;
+        chunk[2] = (straight[2].clamp(0.0, 1.0) * 255.0).round() as u8;
+        chunk[3] = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+    }
+    out
 }
 
 /// 水平方向方框模糊（**滑动窗口**，O(1)/像素）。
@@ -2726,6 +3201,8 @@ pub fn apply_adjustment(
             triple(params.get("shadows")),
             triple(params.get("midtones")),
             triple(params.get("highlights")),
+            // 期 3 A2 新增 amount：缺省 1.0（与 split_toning 同口径，钉成断言）。
+            params.get("amount").and_then(Value::as_f64).unwrap_or(1.0) as f32,
         ),
         AdjustmentKind::Posterize => posterize(
             &mut adjusted,
@@ -2743,18 +3220,43 @@ pub fn apply_adjustment(
                 .unwrap_or(0.0) as f32,
             params.get("tint").and_then(Value::as_f64).unwrap_or(0.0) as f32,
         ),
-        AdjustmentKind::Hsl => hsl(
-            &mut adjusted,
-            params.get("hue").and_then(Value::as_f64).unwrap_or(0.0) as f32,
-            params
+        AdjustmentKind::Hsl => {
+            let hue = params.get("hue").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+            let saturation = params
                 .get("saturation")
                 .and_then(Value::as_f64)
-                .unwrap_or(1.0) as f32,
-            params
+                .unwrap_or(1.0) as f32;
+            let lightness = params
                 .get("lightness")
                 .and_then(Value::as_f64)
-                .unwrap_or(0.0) as f32,
-        ),
+                .unwrap_or(0.0) as f32;
+            // 期 4 D2-3：无 `ranges` 键 ⇒ 走现行标量路，逐位不变（分支在分发处
+            // 判断，不许新代码路径碰老行为）；有 ⇒ 走显示编码空间的逐通道路。
+            match params.get("ranges").and_then(Value::as_object) {
+                None => hsl(&mut adjusted, hue, saturation, lightness),
+                Some(ranges_obj) => {
+                    let mut ranges = [HslRangeOffset::default(); 8];
+                    for (index, name) in HSL_RANGE_NAMES.iter().enumerate() {
+                        if let Some(range) = ranges_obj.get(*name).and_then(Value::as_object) {
+                            ranges[index] = HslRangeOffset {
+                                hue: range.get("hue").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+                                saturation: range
+                                    .get("saturation")
+                                    .and_then(Value::as_f64)
+                                    .unwrap_or(0.0)
+                                    as f32,
+                                lightness: range
+                                    .get("lightness")
+                                    .and_then(Value::as_f64)
+                                    .unwrap_or(0.0)
+                                    as f32,
+                            };
+                        }
+                    }
+                    hsl_with_ranges(&mut adjusted, hue, saturation, lightness, &ranges)
+                }
+            }
+        }
         AdjustmentKind::Curves => curves(
             &mut adjusted,
             &curve_points(params),
@@ -2766,7 +3268,9 @@ pub fn apply_adjustment(
         AdjustmentKind::BlackAndWhite => {
             let tint =
                 fixed_floats(params.get("tint"), 3).map(|values| [values[0], values[1], values[2]]);
-            black_and_white(&mut adjusted, bw_weights(params), tint)
+            // 无 amount 键的老文档 = 1.0 = 现行像素（存量零影响）；越界由函数内钳制。
+            let amount = params.get("amount").and_then(Value::as_f64).unwrap_or(1.0) as f32;
+            black_and_white(&mut adjusted, bw_weights(params), tint, amount)
         }
         AdjustmentKind::ChannelMixer => {
             let constants = match fixed_floats(params.get("constants"), 3) {
@@ -3534,17 +4038,71 @@ mod tests {
         buffer
     }
 
+    /// 期 3 A1 改写（原 `brightness_and_contrast_are_linear_in_straight_space`
+    /// 断言的是旧线性公式 `(c·k + b).clamp(0,1)`，语义已被甲案原地替换）：
+    /// 新断言钉**显示枢轴口径**——中灰刻度探针、枢轴不动点、HDR 不钳、
+    /// 亮度比回写的通道比恒等（hue 防护）。变异：改回线性公式 ⇒ 刻度
+    /// 探针（旧式同输入给 +0.468 显示位移）与 HDR 探针立刻红。
     #[test]
-    fn brightness_and_contrast_are_linear_in_straight_space() {
-        let mut buffer = filled([0.25, 0.25, 0.25, 1.0]);
-        brightness_contrast(&mut buffer, 0.25, 1.0);
-        assert!((buffer.pixel(0, 0)[0] - 0.5).abs() < 1e-5);
-        let mut buffer = filled([0.5, 0.5, 0.5, 1.0]);
+    fn brightness_contrast_uses_display_pivot_semantics() {
+        // neutral 恒等（含 HDR 与负值：扩展传递往返不钳）。
+        let mut buffer = filled([1.8, 0.4, -0.2, 1.0]);
+        brightness_contrast(&mut buffer, 0.0, 1.0);
+        let pixel = buffer.pixel(0, 0);
+        assert!(
+            (pixel[0] - 1.8).abs() < 1e-5 && (pixel[2] + 0.2).abs() < 1e-5,
+            "{pixel:?}"
+        );
+        // 刻度探针：显示中灰 0.5（线性 ≈0.2140）+ brightness 0.5 ⇒ 显示 0.75。
+        let mut buffer = filled([0.214_041_14, 0.214_041_14, 0.214_041_14, 1.0]);
+        brightness_contrast(&mut buffer, 0.5, 1.0);
+        let shown = srgb_encode_extended(buffer.pixel(0, 0)[0]);
+        assert!((shown - 0.75).abs() < 0.01, "中灰显示应 +0.25：{shown}");
+        // 枢轴不动点：显示 0.5 在纯对比下不动；显示 0.75、contrast 0.5 ⇒ 0.625。
+        let mut buffer = filled([0.214_041_14, 0.214_041_14, 0.214_041_14, 1.0]);
         brightness_contrast(&mut buffer, 0.0, 2.0);
-        assert!((buffer.pixel(0, 0)[0] - 1.0).abs() < 1e-5, "对比度裁到 1.0");
-        let mut buffer = filled([0.5, 0.5, 0.5, 1.0]);
+        let shown = srgb_encode_extended(buffer.pixel(0, 0)[0]);
+        assert!((shown - 0.5).abs() < 0.01, "枢轴 0.5 应不动：{shown}");
+        let mut buffer = filled([0.522_521_74, 0.522_521_74, 0.522_521_74, 1.0]);
         brightness_contrast(&mut buffer, 0.0, 0.5);
-        assert!((buffer.pixel(0, 0)[0] - 0.25).abs() < 1e-5);
+        let shown = srgb_encode_extended(buffer.pixel(0, 0)[0]);
+        assert!(
+            (shown - 0.625).abs() < 0.01,
+            "0.75 绕枢轴减半应得 0.625：{shown}"
+        );
+        // HDR 不钳 + 色相防护：(4, 1, 0.25) 加对比后 R 仍 > 1 且通道比不变。
+        let mut buffer = filled([4.0, 1.0, 0.25, 1.0]);
+        brightness_contrast(&mut buffer, 0.0, 1.5);
+        let pixel = buffer.pixel(0, 0);
+        assert!(pixel[0] > 4.5, "HDR 高光不得被钳到 1：{pixel:?}");
+        assert!(
+            (pixel[1] / pixel[0] - 0.25).abs() < 1e-3
+                && (pixel[2] / pixel[0] - 0.0625).abs() < 1e-3,
+            "亮度比回写应保持通道比（色相不扭）：{pixel:?}"
+        );
+    }
+
+    /// A1 双路一致：调整路径与滤镜路径同参数必须逐像素一致（同一函数）。
+    #[test]
+    fn brightness_contrast_adjustment_and_filter_paths_agree() {
+        let mut via_adjustment = filled([0.3, 0.6, 1.4, 1.0]);
+        let mut via_filter = filled([0.3, 0.6, 1.4, 1.0]);
+        let params = json!({"brightness": 0.3, "contrast": 1.4});
+        apply_adjustment(
+            &mut via_adjustment,
+            "brightness_contrast",
+            &params,
+            1.0,
+            (4.0, 4.0),
+        );
+        apply_filter(
+            &mut via_filter,
+            "brightness_contrast",
+            &params,
+            1.0,
+            (4.0, 4.0),
+        );
+        assert_eq!(via_adjustment.pixel(0, 0), via_filter.pixel(0, 0));
     }
 
     #[test]
@@ -3882,6 +4440,29 @@ mod tests {
         let _ = params;
     }
 
+    /// A4-2 显示刻度探针（设计 §2 A4-2）：乘子在显示空间施加——均匀
+    /// 显示中灰 0.5 图、角落满衰减（t=1）且 strength=0.3（乘子 0.7）时
+    /// 角落显示输出 = 0.5 × 0.7 = 0.35 ± 0.01。旧线性乘子同输入给
+    /// enc(0.2140×0.7) ≈ 0.430 ⇒ 变异回线性立刻红。中心（t=0）逐位不动。
+    #[test]
+    fn vignette_multiplies_in_display_space() {
+        let mut buffer = Buffer::new(0, 0, 4, 4);
+        let lin = srgb_to_linear(0.5);
+        for y in 0..4 {
+            for x in 0..4 {
+                buffer.set_pixel(x, y, [lin, lin, lin, 1.0]);
+            }
+        }
+        vignette(&mut buffer, 0.3, 0.2, 0.6, (4.0, 4.0));
+        let corner = srgb_encode_extended(buffer.pixel(0, 0)[0]);
+        assert!(
+            (corner - 0.35).abs() < 0.01,
+            "角落显示输出应 = 0.35（显示乘子 0.7）：{corner}"
+        );
+        let center = buffer.pixel(2, 2);
+        assert_eq!(center, [lin, lin, lin, 1.0], "中心 t=0 应逐位不动");
+    }
+
     /// 运动模糊：结果必须等于「按角度/距离/采样数取样的源像素均值」——
     /// 这条断言把采样偏移与舍入语义**独立重算**一遍并比对，
     /// 因此它同时守护「把偏移提到循环外」这类等价改写（改了语义就会红）。
@@ -4086,6 +4667,84 @@ mod tests {
         assert!(estimated[0] > 0.7, "大气光应接近亮部：{estimated:?}");
     }
 
+    /// A4-3 中性灰反例（专家 Q5 的回归）：大面积暗中性前景 + 小块亮暖色
+    /// 区域（误导大气光估计偏暖）+ 中性大气光真雾。旧实现下估计 air
+    /// (0.875, 0.825, 0.725) 未经阻尼、t 无 γ 重映射，暗前景恢复成
+    /// ≈(0, 0.056, 0.176)——中性面被染成蓝色（R/B 比塌到 0）。四修正后
+    /// 恢复应近中性：R/B ∈ [0.95, 1.05]、且不被压到 0。
+    #[test]
+    fn dehaze_neutral_foreground_is_not_cast_blue() {
+        let air_true = [0.85f32, 0.85, 0.85];
+        let mut buffer = Buffer::new(0, 0, 32, 8);
+        for y in 0..8 {
+            for x in 0..32 {
+                let scene = if x < 24 {
+                    [0.10, 0.10, 0.10] // 暗中性前景
+                } else {
+                    [0.90, 0.80, 0.60] // 亮暖色块（误导估计）
+                };
+                buffer.set_pixel(
+                    x,
+                    y,
+                    [
+                        scene[0] * 0.5 + air_true[0] * 0.5,
+                        scene[1] * 0.5 + air_true[1] * 0.5,
+                        scene[2] * 0.5 + air_true[2] * 0.5,
+                        1.0,
+                    ],
+                );
+            }
+        }
+        dehaze_adjustment(&mut buffer, 1.0);
+        let out = buffer.pixel(4, 4);
+        assert!(
+            out[0] > 0.15 && out[2] > 0.15,
+            "暗前景不应被压到近 0（旧实现 R 通道 ≈0）：{out:?}"
+        );
+        let ratio = out[0] / out[2];
+        assert!(
+            (0.95..=1.05).contains(&ratio),
+            "中性前景恢复后 R/B 应回到 [0.95, 1.05]：{ratio}（{out:?}）"
+        );
+    }
+
+    /// A4-3 修正一的直接断言：dehaze 内部先阻尼大气光 ⇒ 传原始色度
+    /// air 与传手工阻尼后的 air，恢复输出应一致（容差 2e-3：阻尼在
+    /// 阻尼后的点上再作用有 ~5e-4 的不动点漂移）。变异：去掉内部
+    /// 阻尼 ⇒ 两路输出按 1/t 放大分叉 ⇒ 红。
+    #[test]
+    fn dehaze_damps_air_chromaticity_internally() {
+        let make = || {
+            let mut buffer = Buffer::new(0, 0, 32, 8);
+            for y in 0..8 {
+                for x in 0..32 {
+                    let v = if x < 16 { 0.45f32 } else { 0.62 };
+                    buffer.set_pixel(x, y, [v, v, v, 1.0]);
+                }
+            }
+            buffer
+        };
+        let air_raw = [0.90, 0.80, 0.625];
+        // 阻尼结果按公式手算写死（luma = 0.8086，比值 1.113/0.989/0.772
+        // 钳后 1.05/原值/0.95）——不能调用生产 helper 算，否则变异
+        // helper 时两路同变、断言测不到（变异验证实测教训）。
+        let air_damped = [0.849_056, 0.80, 0.768_194];
+        let mut via_raw = make();
+        dehaze(&mut via_raw, air_raw, 0.9, 0.1);
+        let mut via_damped = make();
+        dehaze(&mut via_damped, air_damped, 0.9, 0.1);
+        for x in [4u32, 28] {
+            let a = via_raw.pixel(x, 4);
+            let b = via_damped.pixel(x, 4);
+            for channel in 0..3 {
+                assert!(
+                    (a[channel] - b[channel]).abs() < 2e-3,
+                    "内部阻尼应使两路一致（x={x} 通道 {channel}）：{a:?} vs {b:?}"
+                );
+            }
+        }
+    }
+
     /// 局部对比度：软边变陡、平坦区不变、极暗处抑制（中间调加权）。
     #[test]
     fn clarity_steepens_soft_edges_and_spares_flats() {
@@ -4264,6 +4923,8 @@ mod tests {
     }
 
     /// 分离色调：暗部取阴影色、亮部取高光色；`balance` 移动分界。
+    /// 期 5 Q1-c 语义：权重取自 sRGB Y'，着色后线性亮度恢复——故暗部偏蓝
+    /// 只断方向（恢复把蓝拉回，量级不再是旧线性加色的 +0.2），亮度本身断恢复。
     #[test]
     fn split_toning_tints_shadows_and_highlights() {
         let make = || {
@@ -4274,14 +4935,25 @@ mod tests {
             buffer.set_pixel(2, 0, [0.6, 0.6, 0.6, 1.0]);
             buffer
         };
+        let luma = |px: [f32; 4]| 0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2];
         // 阴影加蓝、高光加黄。
         let mut toned = make();
         split_toning(&mut toned, [0.0, 0.0, 0.3], [0.3, 0.3, 0.0], 0.0, 1.0);
         let dark = toned.pixel(0, 0);
         let bright = toned.pixel(2, 0);
-        assert!(dark[2] > dark[0] + 0.2, "暗部应偏蓝：{dark:?}");
-        // 高光权重在该亮度约 0.78，所以通道差约 0.17（不是满额 0.3）。
+        assert!(dark[2] > dark[0], "暗部应偏蓝：{dark:?}");
+        assert!(
+            (luma(dark) - 0.05).abs() < 0.005,
+            "暗部亮度应恢复：{} vs 0.05",
+            luma(dark)
+        );
+        // 高光在该 Y' 下为满权（显示 0.80 → t 触顶），通道差约 0.32。
         assert!(bright[0] > bright[2] + 0.1, "亮部应偏黄：{bright:?}");
+        assert!(
+            (luma(bright) - 0.6).abs() < 0.005,
+            "亮部亮度应恢复：{} vs 0.6",
+            luma(bright)
+        );
 
         // balance 把分界点推向亮部（mid 0.5 → 0.75），因此中间灰落入**阴影侧**。
         let mut shifted = make();
@@ -4318,7 +4990,37 @@ mod tests {
         }
     }
 
-    /// 色彩平衡：阴影档只影响暗部、高光档只影响亮部，中间调影响两者之间的像素。
+    /// 期 5 Q1-c：权重取自 sRGB Y' 而非线性亮度——线性中灰 0.5（Y' ≈ 0.735）
+    /// 在新口径下落入高光侧（黄胜），旧口径下两色均分（R ≈ B）。
+    /// 变异：权重改回线性亮度 ⇒ R ≈ B ⇒ 红。
+    #[test]
+    fn split_toning_weights_follow_display_luma() {
+        let mut buffer = Buffer::new(0, 0, 1, 1);
+        buffer.set_pixel(0, 0, [0.5, 0.5, 0.5, 1.0]);
+        split_toning(&mut buffer, [0.0, 0.0, 0.3], [0.3, 0.3, 0.0], 0.0, 1.0);
+        let px = buffer.pixel(0, 0);
+        assert!(px[0] > px[2] + 0.05, "Y' 权重下中灰应取高光黄：{px:?}");
+    }
+
+    /// 期 5 Q1-c：亮度恢复——纯黑像素着色后仍为黑（亮度 0 乘任何比仍为 0）。
+    /// 变异：去掉亮度恢复 ⇒ 黑被阴影色染蓝 ⇒ 红。
+    #[test]
+    fn split_toning_black_stays_black() {
+        let mut buffer = Buffer::new(0, 0, 1, 1);
+        buffer.set_pixel(0, 0, [0.0, 0.0, 0.0, 1.0]);
+        split_toning(&mut buffer, [0.0, 0.0, 0.3], [0.3, 0.3, 0.0], 0.0, 1.0);
+        let px = buffer.pixel(0, 0);
+        assert_eq!(
+            [px[0], px[1], px[2]],
+            [0.0, 0.0, 0.0],
+            "黑像素不应被着色：{px:?}"
+        );
+    }
+
+    /// 色彩平衡（期 3 A2 改写：期望按新显示口径公式重算；旧断言钉的是
+    /// 线性分档 + 线性全幅相加 + 钳 [0,1]，其中「蓝推到饱和 1.0」一条
+    /// 正是旧钳制行为——新口径下高光蓝越过 1.0 保留 HDR，不再饱和到白）。
+    /// 阴影档只影响暗部、高光档只影响亮部，中间调影响两者之间。
     #[test]
     fn color_balance_affects_tone_bands_separately() {
         let make = || {
@@ -4328,35 +5030,40 @@ mod tests {
             buffer.set_pixel(2, 0, [0.95, 0.95, 0.95, 1.0]); // 亮
             buffer
         };
-        // 只加阴影档的红：暗部提升最多，亮部几乎不变。
+        // 只加阴影档的红：暗部提升最多，亮部几乎不变（增量按新公式手算：
+        // 暗 ≈0.0185、中 ≈0.0081、亮 ≈0.0001，量级远小于旧线性全幅相加）。
         let mut shadows = make();
-        color_balance(&mut shadows, [0.3, 0.0, 0.0], [0.0; 3], [0.0; 3]);
-        // 注意比较的是**增量**而不是绝对值：绝对值当然仍随底色增大。
+        color_balance(&mut shadows, [0.3, 0.0, 0.0], [0.0; 3], [0.0; 3], 1.0);
         let dark_delta = shadows.pixel(0, 0)[0] - 0.05;
         let mid_delta = shadows.pixel(1, 0)[0] - 0.5;
         let bright_delta = shadows.pixel(2, 0)[0] - 0.95;
-        assert!(dark_delta > 0.2, "暗部应被显著提升：{dark_delta}");
+        assert!(dark_delta > 0.012, "暗部应被显著提升：{dark_delta}");
         assert!(
             dark_delta > mid_delta && mid_delta > bright_delta,
             "阴影档增量应随亮度递减：{dark_delta}/{mid_delta}/{bright_delta}"
         );
-        assert!(bright_delta < 0.01, "亮部几乎不变：{bright_delta}");
+        assert!(bright_delta < 0.002, "亮部几乎不变：{bright_delta}");
 
-        // 只加高光档的蓝：亮部提升最多。
+        // 只加高光档的蓝：亮部提升最多，且**越过 1.0**（显示施加不钳）。
         let mut highlights = make();
-        color_balance(&mut highlights, [0.0; 3], [0.0; 3], [0.0, 0.0, 0.3]);
-        // 0.95 加 0.271 会触顶被钳到 1.0，因此断言「饱和到白」而不是比增量。
+        color_balance(&mut highlights, [0.0; 3], [0.0; 3], [0.0, 0.0, 0.3], 1.0);
         let bright_blue = highlights.pixel(2, 0)[2];
         let dark_blue_delta = highlights.pixel(0, 0)[2] - 0.05;
         assert!(
-            bright_blue > 0.999,
-            "亮部高光档应把蓝推到饱和：{bright_blue}"
+            bright_blue > 1.05,
+            "亮部高光档蓝应越过 1.0 保留 HDR（旧实现钳到 1.0）：{bright_blue}"
         );
-        assert!(dark_blue_delta < 0.01, "暗部几乎不变：{dark_blue_delta}");
+        assert!(dark_blue_delta < 0.005, "暗部几乎不变：{dark_blue_delta}");
 
-        // 中间调 + 越界参数不应产出非法值。
+        // 中间调 + 越界参数不应产出非法值（本组输入下输出仍在 [0,1]）。
         let mut extremes = make();
-        color_balance(&mut extremes, [9.0, -9.0, 0.0], [1.0; 3], [0.0, 0.0, -9.0]);
+        color_balance(
+            &mut extremes,
+            [9.0, -9.0, 0.0],
+            [1.0; 3],
+            [0.0, 0.0, -9.0],
+            1.0,
+        );
         for x in 0..3 {
             let pixel = extremes.pixel(x, 0);
             assert!(
@@ -4366,6 +5073,62 @@ mod tests {
                 "越界参数不得产出非法值：{pixel:?}"
             );
         }
+    }
+
+    /// A2 amount：显示域偏移随 amount 线性缩放（0.5 ⇒ 显示位移恰半），
+    /// amount = 0 恒等；分发缺省 amount 与显式 1.0 逐像素一致（缺省钉死）。
+    #[test]
+    fn color_balance_amount_scales_display_offset_and_defaults_to_one() {
+        let mut full = filled([0.05, 0.05, 0.05, 1.0]);
+        let mut half = filled([0.05, 0.05, 0.05, 1.0]);
+        color_balance(&mut full, [0.3, 0.0, 0.0], [0.0; 3], [0.0; 3], 1.0);
+        color_balance(&mut half, [0.3, 0.0, 0.0], [0.0; 3], [0.0; 3], 0.5);
+        let base = srgb_encode_extended(0.05);
+        let full_shift = srgb_encode_extended(full.pixel(0, 0)[0]) - base;
+        let half_shift = srgb_encode_extended(half.pixel(0, 0)[0]) - base;
+        assert!(
+            (half_shift - full_shift * 0.5).abs() < 1e-4,
+            "amount 0.5 的显示位移应恰为全量一半：{half_shift} vs {full_shift}"
+        );
+        let mut zero = filled([0.05, 0.4, 0.9, 1.0]);
+        color_balance(&mut zero, [0.3, 0.0, 0.0], [0.0; 3], [0.0; 3], 0.0);
+        assert_eq!(zero.pixel(0, 0), [0.05, 0.4, 0.9, 1.0], "amount=0 必须恒等");
+        // 分发缺省：不带 amount 的 JSON 与显式 amount=1 逐像素一致。
+        let mut implicit = filled([0.2, 0.5, 0.8, 1.0]);
+        let mut explicit = filled([0.2, 0.5, 0.8, 1.0]);
+        apply_adjustment(
+            &mut implicit,
+            "color_balance",
+            &json!({"shadows": [0.3, 0.0, 0.0]}),
+            1.0,
+            (4.0, 4.0),
+        );
+        apply_adjustment(
+            &mut explicit,
+            "color_balance",
+            &json!({"shadows": [0.3, 0.0, 0.0], "amount": 1.0}),
+            1.0,
+            (4.0, 4.0),
+        );
+        assert_eq!(
+            implicit.pixel(0, 0),
+            explicit.pixel(0, 0),
+            "缺省 amount 必须 = 1.0"
+        );
+    }
+
+    /// A2 HDR：显示值 > 1 的通道偏移按显示刻度足额施加（旧实现先钳 1.0
+    /// 再加线性偏移，相对位移被腰斩且结果 ≤ 1）。变异：施加前加回
+    /// clamp(0,1) ⇒ 本断言红。
+    #[test]
+    fn color_balance_applies_full_offset_to_hdr_pixels() {
+        let mut buffer = filled([0.8, 0.8, 3.0, 1.0]);
+        color_balance(&mut buffer, [0.0; 3], [0.0; 3], [0.0, 0.0, -0.4], 1.0);
+        let blue = buffer.pixel(0, 0)[2];
+        assert!(
+            blue > 2.0,
+            "HDR 蓝减偏移后应仍为 HDR（新公式 ≈2.70）：{blue}"
+        );
     }
 
     /// 分通道色阶只影响指定通道；色调分离把通道量化到有限台阶。
@@ -4464,7 +5227,10 @@ mod tests {
             1.0,
             (4.0, 4.0)
         ));
-        assert!((buffer.pixel(0, 0)[0] - 0.6).abs() < 1e-5);
+        // 期 3 A1 改写：旧期望 0.6 是旧线性公式（0.5 + 0.1）；新显示口径下
+        // 同输入 = dec(enc(0.5) + 0.05) ≈ 0.5795（灰像素上亮度比回写与
+        // 逐通道显示映射等价）。
+        assert!((buffer.pixel(0, 0)[0] - 0.579_5).abs() < 1e-3);
         assert!(!apply_adjustment(
             &mut buffer,
             "unknown",
@@ -4479,7 +5245,9 @@ mod tests {
             1.0,
             (2.0, 1.0)
         ));
-        assert!((buffer.pixel(0, 0)[0] - 0.4).abs() < 1e-5);
+        // 期 3 A1 连带改写：invert 作用在上面 bc 的结果上——旧链 1 − 0.6 = 0.4，
+        // 新链 1 − 0.5795 = 0.4205（invert 自身语义未变）。
+        assert!((buffer.pixel(0, 0)[0] - 0.420_5).abs() < 1e-3);
         assert!(!apply_filter(
             &mut buffer,
             "unknown",
@@ -4883,7 +5651,7 @@ mod coloradj_tests {
     #[test]
     fn black_and_white_red_only_weights_extract_the_red_channel() {
         let mut buffer = filled([0.7, 0.2, 0.1, 1.0]);
-        black_and_white(&mut buffer, [1.0, 0.0, 0.0], None);
+        black_and_white(&mut buffer, [1.0, 0.0, 0.0], None, 1.0);
         let out = px(&buffer);
         assert_eq!(out[0], out[1], "输出必须三通道同值");
         assert_eq!(out[1], out[2], "输出必须三通道同值");
@@ -4898,7 +5666,7 @@ mod coloradj_tests {
     fn black_and_white_gray_pixels_are_fixed_points_for_any_unit_sum_weights() {
         for weights in [[0.2126, 0.7152, 0.0722], [1.0, 0.0, 0.0], [0.5, 0.25, 0.25]] {
             let mut buffer = filled([0.42, 0.42, 0.42, 1.0]);
-            black_and_white(&mut buffer, weights, None);
+            black_and_white(&mut buffer, weights, None, 1.0);
             assert_rgb_close(px(&buffer), [0.42, 0.42, 0.42], "灰像素应不变");
         }
     }
@@ -4911,8 +5679,155 @@ mod coloradj_tests {
             &mut buffer,
             [0.2126, 0.7152, 0.0722],
             Some([0.5, 0.25, 0.0]),
+            1.0,
         );
         assert_rgb_close(px(&buffer), [0.5, 0.25, 0.0], "白经 tint 后应等于 tint");
+    }
+
+    /// **amount = 0 逐位恒等**（期 4 D2-2）：混合方向反了 ⇒ 这里给黑白值而非输入 ⇒ 红。
+    #[test]
+    fn bw_amount_zero_is_identity() {
+        let mut buffer = filled([0.7, 0.2, 0.1, 1.0]);
+        black_and_white(&mut buffer, [0.2126, 0.7152, 0.0722], None, 0.0);
+        assert_eq!(px(&buffer), [0.7, 0.2, 0.1], "amount=0 必须逐位等于输入");
+    }
+
+    /// **amount = 1 逐位等于现行实现输出**（期 4 D2-2 金样本）：
+    /// Rec709 灰阶 0.2126·0.7 + 0.7152·0.2 + 0.0722·0.1 = 0.29908。
+    #[test]
+    fn bw_amount_one_matches_legacy() {
+        let mut buffer = filled([0.7, 0.2, 0.1, 1.0]);
+        black_and_white(&mut buffer, [0.2126, 0.7152, 0.0722], None, 1.0);
+        assert_rgb_close(
+            px(&buffer),
+            [0.29908, 0.29908, 0.29908],
+            "amount=1 应等于旧输出",
+        );
+    }
+
+    /// **amount = 0.5 为中点**（期 4 D2-2）：输出 = (输入 + 旧输出) / 2 ± 浮点容差。
+    #[test]
+    fn bw_amount_half_is_midpoint() {
+        let mut buffer = filled([0.7, 0.2, 0.1, 1.0]);
+        black_and_white(&mut buffer, [0.2126, 0.7152, 0.0722], None, 0.5);
+        assert_rgb_close(
+            px(&buffer),
+            [0.49954, 0.24954, 0.19954],
+            "amount=0.5 应为输入与黑白结果的中点",
+        );
+    }
+
+    /// **amount 越界钳制**（期 4 D2-2）：2.0 ⇒ 1.0、−1.0 ⇒ 0.0。
+    #[test]
+    fn bw_amount_out_of_range_is_clamped() {
+        let mut buffer = filled([0.7, 0.2, 0.1, 1.0]);
+        black_and_white(&mut buffer, [0.2126, 0.7152, 0.0722], None, 2.0);
+        assert_rgb_close(
+            px(&buffer),
+            [0.29908, 0.29908, 0.29908],
+            "amount=2 应钳为 1",
+        );
+        let mut buffer = filled([0.7, 0.2, 0.1, 1.0]);
+        black_and_white(&mut buffer, [0.2126, 0.7152, 0.0722], None, -1.0);
+        assert_eq!(px(&buffer), [0.7, 0.2, 0.1], "amount=−1 应钳为 0");
+    }
+
+    // ── hsl ranges ────────────────────────────────────────────────
+
+    /// **无 `ranges` 键 ⇒ 走现行标量路，逐位不变**（期 4 D2-3 金样本回归）：
+    /// 分发路径（opacity = 1 时直接写回）与直接调 `hsl` 的结果必须逐位相等。
+    #[test]
+    fn hsl_ranges_absent_bit_identical() {
+        let mut via_scalar = filled([0.31, 0.57, 0.83, 1.0]);
+        hsl(&mut via_scalar, 20.0, 1.3, 0.1);
+        let mut via_dispatch = filled([0.31, 0.57, 0.83, 1.0]);
+        let applied = apply_adjustment(
+            &mut via_dispatch,
+            "hsl",
+            &json!({"hue": 20.0, "saturation": 1.3, "lightness": 0.1}),
+            1.0,
+            (4.0, 4.0),
+        );
+        assert!(applied, "hsl 调整必须被分发识别");
+        assert_eq!(
+            via_dispatch.pixel(0, 0),
+            via_scalar.pixel(0, 0),
+            "无 ranges 时分发路径必须逐位等于标量路"
+        );
+        assert_eq!(
+            via_dispatch.pixel(3, 3),
+            via_scalar.pixel(3, 3),
+            "无 ranges 时分发路径必须逐位等于标量路（角像素）"
+        );
+    }
+
+    /// **reds 档只动红块**（期 4 D2-3）：红块（编码色相 0°）饱和上升、
+    /// 绿块（编码色相 120°）逐位不变。变异：权重窗写成全宽 ⇒ 绿块被动 ⇒ 红；
+    /// 实现忽略 ranges ⇒ 红块不动 ⇒ 红。
+    #[test]
+    fn hsl_range_reds_only_moves_reds() {
+        let mut buffer = Buffer::new(0, 0, 2, 1);
+        buffer.set_pixel(0, 0, [0.6, 0.05, 0.05, 1.0]);
+        buffer.set_pixel(1, 0, [0.05, 0.6, 0.05, 1.0]);
+        let mut ranges = [HslRangeOffset::default(); 8];
+        ranges[0] = HslRangeOffset {
+            hue: 0.0,
+            saturation: 50.0,
+            lightness: 0.0,
+        };
+        hsl_with_ranges(&mut buffer, 0.0, 1.0, 0.0, &ranges);
+        // 红块：编码饱和度应从约 0.575 升到约 0.863（×1.5）。
+        let red = buffer.pixel(0, 0);
+        let red_enc = [
+            srgb_encode_extended(red[0]),
+            srgb_encode_extended(red[1]),
+            srgb_encode_extended(red[2]),
+        ];
+        let (_, red_s, _) = hsl_decompose(&red_enc);
+        assert!(
+            (red_s - 0.863).abs() < 0.02,
+            "红块饱和度应升到约 0.863，实测 {red_s}"
+        );
+        // 绿块：逐位不变。
+        assert_eq!(
+            buffer.pixel(1, 0),
+            [0.05, 0.6, 0.05, 1.0],
+            "绿块在 reds 档下必须逐位不变"
+        );
+    }
+
+    /// **档间边界混合**（期 4 D2-3）：编码色相 15°（红/橙正中）的像素，
+    /// reds +30° 与 oranges +10° 各半权重 ⇒ 偏移为均值 +20°，输出色相 35°±2°。
+    /// 变异：改成硬分档 ⇒ 偏移为 30° 或 10° ⇒ 红。
+    #[test]
+    fn hsl_range_boundary_blends() {
+        let mut buffer = Buffer::new(0, 0, 1, 1);
+        // 线性 (1.0, 0.05087, 0.0) 编码后为 (1.0, 0.25, 0.0)，色相恰 15°。
+        buffer.set_pixel(0, 0, [1.0, 0.05087, 0.0, 1.0]);
+        let mut ranges = [HslRangeOffset::default(); 8];
+        ranges[0] = HslRangeOffset {
+            hue: 30.0,
+            saturation: 0.0,
+            lightness: 0.0,
+        };
+        ranges[1] = HslRangeOffset {
+            hue: 10.0,
+            saturation: 0.0,
+            lightness: 0.0,
+        };
+        hsl_with_ranges(&mut buffer, 0.0, 1.0, 0.0, &ranges);
+        let out = buffer.pixel(0, 0);
+        let out_enc = [
+            srgb_encode_extended(out[0]),
+            srgb_encode_extended(out[1]),
+            srgb_encode_extended(out[2]),
+        ];
+        let (hue, _, _) = hsl_decompose(&out_enc);
+        let hue_deg = hue * 360.0;
+        assert!(
+            (hue_deg - 35.0).abs() < 2.0,
+            "边界像素色相应为 35°±2°，实测 {hue_deg}°"
+        );
     }
 
     // ── channel_mixer ───────────────────────────────────────────────
@@ -5084,8 +5999,10 @@ mod coloradj_tests {
         }
     }
 
-    /// reds 加 cyan ⇒ 纯红的 c 从 0 涨上来（红通道被吃掉、变出青）；
-    /// 纯绿不属于 reds ⇒ 恰好不动。
+    /// reds 加 cyan ⇒ 纯红的 R 被大幅吃掉；纯绿在 reds 档权重为 0 ⇒ 不动。
+    /// 期 3 A3 改写：旧实现是线性硬分类（纯红 100% 入 reds ⇒ R < 0.01）；
+    /// 新实现 Melissa 显示口径下纯红的 reds 差值权重 ≈ 0.66（余下 0.34 在
+    /// yellows），R 降至 ≈0.031——断言按新公式手算值改写（< 0.05）。
     #[test]
     fn selective_color_reds_cyan_affects_red_not_green() {
         // SELECTIVE_COLOR_RANGES 的 reds 下标是 0。
@@ -5094,24 +6011,143 @@ mod coloradj_tests {
         selective_color(&mut red, &ranges);
         let out = px(&red);
         assert!(
-            out[0] < 0.01,
-            "纯红加满 cyan 后红通道应被吃光（c=1），实得 {out:?}"
+            out[0] < 0.05,
+            "纯红加满 cyan 后红通道应被吃到 ≈0.03（差值权重 0.66），实得 {out:?}"
         );
         let mut green = filled([0.0, 1.0, 0.0, 1.0]);
         selective_color(&mut green, &ranges);
         assert_eq!(px(&green), [0.0, 1.0, 0.0], "纯绿不属于 reds，必须恰好不动");
     }
 
-    /// 色类路由：中间灰属 neutrals——动 neutrals 有效、动 whites 无效。
+    /// 色类路由（设计探针）：**显示**明度 0.4 的近灰入 neutrals——动
+    /// neutrals 有效、动 whites／blacks 都无效。期 3 A3 改写：旧测试用
+    /// 线性 0.5 灰（显示 ≈0.735，在新口径下属 whites 主导），探针像素
+    /// 改按显示口径构造（线性 = srgb_to_linear(0.4) ≈ 0.1329）。
     #[test]
     fn selective_color_gray_routes_to_neutrals_not_whites() {
-        let mut via_neutrals = filled([0.5, 0.5, 0.5, 1.0]);
+        let gray = srgb_to_linear(0.4);
+        let mut via_neutrals = filled([gray, gray, gray, 1.0]);
         selective_color(&mut via_neutrals, &ranges_with(7, [0.0, 0.0, 0.0, 1.0]));
-        assert_eq!(px(&via_neutrals), [0.0, 0.0, 0.0], "中间灰加满 k 应变黑");
+        let out = px(&via_neutrals);
+        assert!(
+            out.iter().all(|v| *v < 0.01),
+            "显示 0.4 灰加满 neutrals 的 k 应近黑，实得 {out:?}"
+        );
+        for index in [6usize, 8] {
+            let mut untouched = filled([gray, gray, gray, 1.0]);
+            selective_color(&mut untouched, &ranges_with(index, [0.0, 0.0, 0.0, 1.0]));
+            assert_eq!(
+                px(&untouched),
+                [gray, gray, gray],
+                "显示 0.4 灰不入档 {index}（6=whites/8=blacks），必须恰好不动"
+            );
+        }
+    }
 
-        let mut via_whites = filled([0.5, 0.5, 0.5, 1.0]);
-        selective_color(&mut via_whites, &ranges_with(6, [0.0, 0.0, 0.0, 1.0]));
-        assert_eq!(px(&via_whites), [0.5, 0.5, 0.5], "中间灰不动 whites 档");
+    /// A3 Melissa 往返：矩阵对（含 HDR 与负值）往返 ≈ 恒等；白点 (1,1,1)
+    /// 在 ProPhoto 线性里仍是 (1,1,1)（行和自检）。变异：矩阵写错一位
+    /// ⇒ 白点或往返断言红。
+    #[test]
+    fn selective_color_melissa_round_trip_is_identity() {
+        let inverse = mat3_inverse(&SRGB_TO_PROPHOTO).expect("常量矩阵可逆");
+        let white = mat3_apply(&SRGB_TO_PROPHOTO, [1.0, 1.0, 1.0]);
+        for (i, v) in white.iter().enumerate() {
+            assert!((v - 1.0).abs() < 0.002, "白点第 {i} 分量应 ≈1：{white:?}");
+        }
+        for color in [
+            [0.13, 0.47, 0.91],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.5, 0.1],
+            [0.4, -0.1, 0.2],
+            [0.0, 0.0, 0.0],
+        ] {
+            let back = melissa_decode(melissa_encode(color), &inverse);
+            for (a, b) in back.iter().zip(color.iter()) {
+                assert!(
+                    (a - b).abs() < 2e-3,
+                    "Melissa 往返应恒等：{color:?} → {back:?}"
+                );
+            }
+        }
+    }
+
+    /// A3 路由探针：33–36° 暖黄（显示 (0.85, 0.55, 0.15)）在新口径下
+    /// yellows 为主权重——单独动 yellows 的 y 与单独动 reds 的 y，效果
+    /// 之比应 ≥ 1.2（手算权重 0.571/0.429 ⇒ ≈1.33）。旧线性硬分类把该
+    /// 像素整档吞进 reds（yellows 恒为 0）⇒ 变异回旧分类立刻红。
+    #[test]
+    fn selective_color_warm_yellow_routes_mainly_to_yellows() {
+        let pixel = [
+            srgb_to_linear(0.85),
+            srgb_to_linear(0.55),
+            srgb_to_linear(0.15),
+            1.0,
+        ];
+        let effect = |index: usize| {
+            let mut buffer = filled(pixel);
+            selective_color(&mut buffer, &ranges_with(index, [0.0, 0.0, -0.3, 0.0]));
+            let out = melissa_encode(px(&buffer));
+            let base = melissa_encode([pixel[0], pixel[1], pixel[2]]);
+            (out[0] - base[0]).abs() + (out[1] - base[1]).abs() + (out[2] - base[2]).abs()
+        };
+        let via_yellows = effect(1);
+        let via_reds = effect(0);
+        assert!(
+            via_yellows > 0.02 && via_yellows >= via_reds * 1.2,
+            "暖黄应以 yellows 为主：yellows {via_yellows} vs reds {via_reds}"
+        );
+    }
+
+    /// A3 均匀探针：显示 0.35 与 0.65 两灰（关于 0.5 对称 ⇒ neutrals
+    /// 权重同为 0.8）加 neutrals c=+0.4，显示 CMYK 的 c 槽位移应相等
+    /// （≈0.32）。旧线性分类下两灰的档归属/权重不同 ⇒ 位移不等。
+    #[test]
+    fn selective_color_neutrals_offset_is_uniform_across_lightness() {
+        let delta_c = |display_gray: f32| {
+            let lin = srgb_to_linear(display_gray);
+            let mut buffer = filled([lin, lin, lin, 1.0]);
+            selective_color(&mut buffer, &ranges_with(7, [0.4, 0.0, 0.0, 0.0]));
+            let before = rgb_to_cmyk(melissa_encode([lin, lin, lin]))[0];
+            let after = rgb_to_cmyk(melissa_encode(px(&buffer)))[0];
+            after - before
+        };
+        let dark = delta_c(0.35);
+        let bright = delta_c(0.65);
+        assert!(dark > 0.2, "位移必须非空（防安慰剂）：{dark}");
+        assert!(
+            (dark - bright).abs() < 0.02,
+            "同 neutrals 偏移在两亮度下 Δc 应相等：{dark} vs {bright}"
+        );
+    }
+
+    /// A3 参照带：同参数（reds c +0.3）在 Melissa 口径下的 Δ 应小于
+    /// 直接在 sRGB 显示空间施加的 Δ，比值落在专家所述的参照带内
+    /// （去掉矩阵往返偏大约 35–50% ⇒ 比值 ≈ 0.67–0.74；断言放宽为
+    /// [0.55, 0.85]）。变异：去掉矩阵往返 ⇒ 比值 = 1 ⇒ 红。
+    #[test]
+    fn selective_color_prophoto_round_trip_damps_delta_into_reference_band() {
+        let ranges = ranges_with(0, [0.3, 0.0, 0.0, 0.0]);
+        // 中间调红（显示口径构造）：Melissa 与 sRGB 显示值都可定义。
+        let lin = [
+            srgb_to_linear(0.72),
+            srgb_to_linear(0.45),
+            srgb_to_linear(0.32),
+        ];
+        let via_melissa = selective_apply_display(melissa_encode(lin), &ranges);
+        let base_melissa = melissa_encode(lin);
+        let delta_melissa = (via_melissa[0] - base_melissa[0]).abs()
+            + (via_melissa[1] - base_melissa[1]).abs()
+            + (via_melissa[2] - base_melissa[2]).abs();
+        let display = [0.72, 0.45, 0.32];
+        let via_srgb = selective_apply_display(display, &ranges);
+        let delta_srgb = (via_srgb[0] - display[0]).abs()
+            + (via_srgb[1] - display[1]).abs()
+            + (via_srgb[2] - display[2]).abs();
+        let ratio = delta_melissa / delta_srgb;
+        assert!(
+            (0.55..=0.85).contains(&ratio),
+            "Melissa/sRGB 的 Δ 比值应落在参照带 [0.55, 0.85]：{ratio}（{delta_melissa} vs {delta_srgb}）"
+        );
     }
 
     // ── color_lut ───────────────────────────────────────────────────
@@ -5918,6 +6954,142 @@ mod presence_tests {
         assert!(
             high_gain > mid_gain,
             "texture 应更偏向高频：高频增益 {high_gain} vs 中频增益 {mid_gain}"
+        );
+    }
+
+    /// 显示灰阶对（左/右两半）的 clarity 总响应（Σ|ΔY'|）。
+    fn clarity_step_response(dark: f32, bright: f32) -> f32 {
+        let mut buffer = Buffer::new(0, 0, 32, 16);
+        for y in 0..16u32 {
+            for x in 0..32u32 {
+                let d = if x < 16 { dark } else { bright };
+                let lin = srgb_to_linear(d);
+                buffer.set_pixel(x, y, [lin, lin, lin, 1.0]);
+            }
+        }
+        let before: Vec<f32> = buffer
+            .pixels()
+            .chunks_exact(4)
+            .map(|p| srgb_encode_extended(p[0]))
+            .collect();
+        clarity_adjustment(&mut buffer, 1.0);
+        buffer
+            .pixels()
+            .chunks_exact(4)
+            .zip(before.iter())
+            .map(|(p, b)| (srgb_encode_extended(p[0]) - b).abs())
+            .sum()
+    }
+
+    /// A4-1 掩模中心探针：小落差（0.04 显示）灰阶对，中心在显示 0.5 的
+    /// 一对（0.48/0.52）响应必须**大于**中心在显示 0.75 的一对
+    /// （0.73/0.77）。小落差使引导滤波落在 eps 主导区（detail ≈ 值 −
+    /// 均值、与平面无关），响应比只由掩模权重与回写导数决定：新口径
+    /// ≈ 0.020 vs 0.015（中 > 高）；旧线性平面下掩模中心在线性 0.5
+    /// ≈ 显示 0.735，两对权重排位反转（≈0.0147 vs 0.0217，中 < 高）
+    /// ⇒ 变异回线性平面红。**大落差不行**：eps 与方差的相互作用会
+    /// 把排位搅乱（第一版 0.2 落差探针实测抓不住线性变异，教训）。
+    #[test]
+    fn clarity_midtone_mask_is_centered_on_display_midgray() {
+        let mid = clarity_step_response(0.48, 0.52);
+        let high = clarity_step_response(0.73, 0.77);
+        assert!(
+            mid > high,
+            "掩模中心应在显示中灰：中间对响应 {mid} 应大于高光对 {high}"
+        );
+    }
+
+    /// A4-1 HDR 探针：线性 0.8（Y' ≈ 0.906）/ 2.0（Y' ≈ 1.354）灰阶对——
+    /// 边界低侧（掩模权重 > 0）必须有响应；高侧深处保持 2.0 不被钳回
+    /// [0, 1]（旧实现明度钳 1 ⇒ 高侧先被压成 1.0）。Y' ≥ 1 区域掩模
+    /// 权重为 0 是**设计语义**（clarity 抑制高光防光晕），不是钳制伪影：
+    /// 断言区分两者——值原样保留（2.0）而非被压平（1.0）。
+    #[test]
+    fn clarity_responds_in_hdr_without_clamping() {
+        let mut buffer = Buffer::new(0, 0, 32, 16);
+        for y in 0..16u32 {
+            for x in 0..32u32 {
+                let v = if x < 16 { 0.8 } else { 2.0 };
+                buffer.set_pixel(x, y, [v, v, v, 1.0]);
+            }
+        }
+        let before = buffer.clone();
+        clarity_adjustment(&mut buffer, 1.0);
+        assert_ne!(
+            before.pixel(12, 8),
+            buffer.pixel(12, 8),
+            "边界低侧（Y'≈0.906、掩模权重 ≈0.34）必须有响应"
+        );
+        let deep = buffer.pixel(28, 8);
+        assert!(
+            (deep[0] - 2.0).abs() < 1e-4,
+            "HDR 高侧应原样保留 2.0（掩模抑制 ≠ 钳到 1.0）：{deep:?}"
+        );
+    }
+
+    /// A4-1 参照能量带：平滑正弦 Y' 图案（周期 32、幅 0.2）上，生产实现
+    /// （引导滤波底座）的 ΔY' 能量与参照实现（高斯底座 + 同掩模 + 同
+    /// 亮度比回写）的能量之比应在 ±10% 内（设计 §2 A4-1）。σ = 3.63 为
+    /// 标定值：使高斯对本正弦的衰减与引导滤波（r=16、eps=0.005）的
+    /// 有效衰减一致（σ=3.4 时实测比 1.264，按衰减公式反推标定）。
+    #[test]
+    fn clarity_energy_matches_gaussian_reference_within_band() {
+        let (w, h) = (64u32, 64u32);
+        let plane = |x: u32| 0.5 + 0.2 * libm::sinf(2.0 * std::f32::consts::PI * x as f32 / 32.0);
+        let mut buffer = Buffer::new(0, 0, w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let lin = srgb_to_linear(plane(x));
+                buffer.set_pixel(x, y, [lin, lin, lin, 1.0]);
+            }
+        }
+        let mut prod = buffer.clone();
+        clarity_adjustment(&mut prod, 1.0);
+        let energy = |buf: &Buffer| -> f64 {
+            buf.pixels()
+                .chunks_exact(4)
+                .enumerate()
+                .map(|(i, p)| {
+                    let d = srgb_encode_extended(p[0]) - plane((i as u32) % w);
+                    (d * d) as f64
+                })
+                .sum()
+        };
+        let e_prod = energy(&prod);
+        // 参照：可分离高斯（σ=3.63，截断 ±3σ，边缘复制）+ 掩模 + 亮度比回写。
+        let sigma = 3.63f32;
+        let radius = (3.0 * sigma).ceil() as i32;
+        let kernel: Vec<f32> = (-radius..=radius)
+            .map(|t| libm::expf(-(t as f32) * (t as f32) / (2.0 * sigma * sigma)))
+            .collect();
+        let ksum: f32 = kernel.iter().sum();
+        let src: Vec<f32> = (0..w * h).map(|i| plane(i % w)).collect();
+        let mut blurred = vec![0.0f32; (w * h) as usize];
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                let mut acc = 0.0f32;
+                for (ki, t) in (-radius..=radius).enumerate() {
+                    let cx = (x + t).clamp(0, w as i32 - 1);
+                    acc += kernel[ki] * src[(y * w as i32 + cx) as usize];
+                }
+                blurred[(y * w as i32 + x) as usize] = acc / ksum;
+            }
+        }
+        // 图案只沿 x 变化，纵向高斯为恒等 ⇒ 只做横向一趟即可。
+        let mut e_ref = 0.0f64;
+        for (i, yv) in src.iter().enumerate() {
+            let detail = yv - blurred[i];
+            let centered = 2.0 * yv - 1.0;
+            let weight = (1.0 - centered * centered).clamp(0.0, 1.0);
+            let new_y = yv + detail * weight;
+            let lin = srgb_to_linear(*yv) * (new_y / yv);
+            let d = srgb_encode_extended(lin) - yv;
+            e_ref += (d * d) as f64;
+        }
+        let ratio = e_prod / e_ref;
+        assert!(
+            (0.9..=1.1).contains(&ratio),
+            "clarity ΔY' 能量与高斯参照之比应在 ±10% 内：{ratio}（prod {e_prod} vs ref {e_ref}）"
         );
     }
 }

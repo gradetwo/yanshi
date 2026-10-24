@@ -35,6 +35,12 @@ pub enum BlendMode {
     Difference,
     /// **颜色减淡**（测试报告 §三.4 ✓）：提亮高光刀痕用 ✓，规范公式 `Cb / (1 - Cs)` ✓。
     ColorDodge,
+    /// **线性光**（期 4 D1-1 频率分离 ✓）：`Cb + 2·Cs − 1` ✓ ——
+    /// 频率分离用它正是因为这个恒等式（`LF + 2·(HF − 0.5) = I` ✓）。
+    LinearLight,
+    /// **柔光**（期 4 D1-2 D&B 灰层法 ✓）：W3C Compositing and Blending Level 1
+    /// 的 `soft-light` 闭式（即 PS 柔光 ✓），以 `Cs = 0.5` 与 `Cb = 0.25` 分段 ✓。
+    SoftLight,
 }
 
 impl BlendMode {
@@ -44,7 +50,7 @@ impl BlendMode {
     //   ⇒ **∴ 于是**任何遍历 `ALL` 的地方（UI 下拉／文档生成／校验）都**漏掉它** ✓
     //   ⇒ **∴ 而**`list_engine_capabilities` 报 **11** 项（9 + `linear_dodge` 别名 + `color_dodge`）
     //     而 `ALL` 只有 **9** ⇒ **∴ 所以**两边对不上 ✓
-    pub const ALL: [BlendMode; 10] = [
+    pub const ALL: [BlendMode; 12] = [
         Self::Normal,
         Self::Multiply,
         Self::Screen,
@@ -55,13 +61,15 @@ impl BlendMode {
         Self::Subtract,
         Self::Difference,
         Self::ColorDodge,
+        Self::LinearLight,
+        Self::SoftLight,
     ];
 
     /// **受支持的全部混合模式名** ✓（真实用户报告里"非法值被静默写入" ✓ ⇒ 校验需要一份权威清单 ✓）。
     ///
     /// **为什么集中在这里** ✓：渲染层与工具层**必须用同一份** ✗ ——
     /// 各写一份必然漂移 ✓ ⇒ 于是"工具说合法、渲染不认"或反过来 ✗。
-    pub const NAMES: [&'static str; 11] = [
+    pub const NAMES: [&'static str; 13] = [
         "normal",
         "multiply",
         "screen",
@@ -73,6 +81,8 @@ impl BlendMode {
         "subtract",
         "color_dodge",
         "difference",
+        "linear_light",
+        "soft_light",
     ];
 
     /// **严格解析** ✓：不认识就返回 `None` ✓（供**入口**做校验 ✓）。
@@ -93,6 +103,8 @@ impl BlendMode {
             "subtract" => Some(Self::Subtract),
             "difference" => Some(Self::Difference),
             "color_dodge" => Some(Self::ColorDodge),
+            "linear_light" => Some(Self::LinearLight),
+            "soft_light" => Some(Self::SoftLight),
             _ => None,
         }
     }
@@ -115,6 +127,8 @@ impl BlendMode {
             Self::Subtract => "subtract",
             Self::Difference => "difference",
             Self::ColorDodge => "color_dodge",
+            Self::LinearLight => "linear_light",
+            Self::SoftLight => "soft_light",
         }
     }
 
@@ -147,6 +161,24 @@ impl BlendMode {
             Self::Add => (cb + cs).min(1.0),
             Self::Subtract => (cb - cs).max(0.0),
             Self::Difference => (cb - cs).abs(),
+            // **线性光** ✓：`Cb + 2·Cs − 1` ✓ —— 公式内**不做中间钳制** ✓；
+            // 这里唯一的钳制是本函数对**全部模式**统一的输出阶段钳制（与既有
+            // 输出阶段一致 ✓），`blend=0/1` 时即表现为 `base∓1` 的钳制 ✓。
+            Self::LinearLight => cb + 2.0 * cs - 1.0,
+            // **柔光**（W3C 闭式 ✓）：`Cs ≤ 0.5` 时减淡支、`Cs > 0.5` 时提亮支；
+            // 提亮支里的 `D(Cb)` 在 `Cb ≤ 0.25` 时用多项式支、大于时用平方根支 ✓。
+            Self::SoftLight => {
+                if cs <= 0.5 {
+                    cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb)
+                } else {
+                    let d = if cb <= 0.25 {
+                        ((16.0 * cb - 12.0) * cb.sqrt() + 4.0) * cb
+                    } else {
+                        cb.sqrt()
+                    };
+                    cb + (2.0 * cs - 1.0) * (d - cb)
+                }
+            }
         };
         out.clamp(0.0, 1.0)
     }
@@ -225,11 +257,11 @@ mod tests {
     /// **★ `NAMES` 与 `ALL` 的关系必须成立**（第 1002 轮加的恒等式）
     ///
     /// **∴ 事实**（第 1002 轮实测）：
-    ///   `ALL`   = 10 项（每个变体一个）
-    ///   `NAMES` = 11 项（= `ALL` 的 `as_str()` ＋ `linear_dodge` 这个**别名**）
+    ///   `ALL`   = 12 项（每个变体一个）
+    ///   `NAMES` = 13 项（= `ALL` 的 `as_str()` ＋ `linear_dodge` 这个**别名**）
     ///
     /// **∴ 为什么要断言关系，不只断言两个数**（内核 ②·恒等式优于单点）：
-    ///   单点断言「NAMES.len() == 11」在**新增变体**时也会红，但那是对的；
+    ///   单点断言「NAMES.len() == 13」在**新增变体**时也会红，但那是对的；
     ///   而**关系**断言能一次说清「差的那一个必须是别名」✓
     #[test]
     fn names_is_all_plus_aliases() {
@@ -266,7 +298,7 @@ mod tests {
         // **手工清单**（判据自己造的 ⇒ 可以写死 ✓）⇒ 每个变体的规范名。
         // **∴ 局限**：若**新增变体**而忘加进 `ALL`，这条测试**抓不到** ✗
         //   ⇒ 但它**能抓住**「已列出的变体漏进 ALL」这一类（第 999 轮的 `ColorDodge` ✓）。
-        const EXPECTED: [&str; 10] = [
+        const EXPECTED: [&str; 12] = [
             "normal",
             "multiply",
             "screen",
@@ -277,6 +309,8 @@ mod tests {
             "subtract",
             "difference",
             "color_dodge",
+            "linear_light",
+            "soft_light",
         ];
         let got: Vec<&str> = crate::blend::BlendMode::ALL
             .iter()
@@ -477,5 +511,98 @@ mod color_dodge_tests {
                 "{name} 规范化成 {canonical} 后应解析回同一个模式"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod linear_and_soft_light_tests {
+    use super::BlendMode;
+
+    /// **线性光**（期 4 D1-1）：`blend = 0.5` 时输出恒等于底色（全值域抽样）；
+    /// `blend = 0/1` 时为 `base∓1` 的钳制；f32 闭式误差须在专家容差内
+    ///（max < 5e-6、mean < 5e-7）——变异：公式改成 overlay 时中间值断言红。
+    #[test]
+    fn blend_linear_light_identity_endpoints() {
+        let mode = BlendMode::LinearLight;
+        // blend = 0.5 ⇒ out = base（全值域抽样）。
+        for i in 0..=20 {
+            let base = i as f32 / 20.0;
+            let out = mode.blend_channel(base, 0.5);
+            assert!(
+                (out - base).abs() < 1e-6,
+                "blend=0.5 时 base={base} 应原样返回，实测 {out}"
+            );
+        }
+        // blend = 0 ⇒ base − 1 钳制到 0；blend = 1 ⇒ base + 1 钳制到 1。
+        assert!((mode.blend_channel(0.3, 0.0) - 0.0).abs() < 1e-6);
+        assert!((mode.blend_channel(1.0, 0.0) - 0.0).abs() < 1e-6);
+        assert!((mode.blend_channel(0.3, 1.0) - 1.0).abs() < 1e-6);
+        assert!((mode.blend_channel(0.0, 1.0) - 1.0).abs() < 1e-6);
+        // 闭式本身：(0.3, 0.6) ⇒ 0.5；变异成 overlay 会给 0.36 ⇒ 红。
+        let out = mode.blend_channel(0.3, 0.6);
+        assert!(
+            (out - 0.5).abs() < 5e-6,
+            "线性光闭式 (0.3,0.6) 应为 0.5，实测 {out}"
+        );
+        assert!(
+            (BlendMode::Overlay.blend_channel(0.3, 0.6) - 0.5).abs() > 0.05,
+            "变异对照：overlay 在同点上必须与线性光拉开差距，否则本断言无区分力"
+        );
+        // f32 容差：不触发钳制的网格上 max < 5e-6、mean < 5e-7。
+        let mut max_err = 0.0f32;
+        let mut sum_err = 0.0f32;
+        let mut count = 0u32;
+        for bi in 0..=20 {
+            for si in 0..=20 {
+                let base = bi as f32 / 20.0;
+                let source = si as f32 / 20.0;
+                let expected = base + 2.0 * source - 1.0;
+                if !(0.0..=1.0).contains(&expected) {
+                    continue; // 钳制区不在闭式容差口径内（端点断言另守）。
+                }
+                let out = mode.blend_channel(base, source);
+                let err = (out - expected).abs();
+                max_err = max_err.max(err);
+                sum_err += err;
+                count += 1;
+            }
+        }
+        assert!(max_err < 5e-6, "线性光 max 误差 {max_err} 超 5e-6");
+        let mean_err = sum_err / count as f32;
+        assert!(mean_err < 5e-7, "线性光 mean 误差 {mean_err} 超 5e-7");
+    }
+
+    /// **柔光**（期 4 D1-2）：W3C 闭式的三组对照值（±1/255）——
+    /// (0.5, 0.25) 走 `Cs ≤ 0.5` 支；(0.5, 0.75) 走 `Cb > 0.25` 的平方根支；
+    /// (0.2, 0.8) 走 `Cb ≤ 0.25` 的多项式支。变异：漏掉任一分支 ⇒ 至少一组红。
+    #[test]
+    fn blend_soft_light_ps_reference_values() {
+        let mode = BlendMode::SoftLight;
+        let tol = 1.0f32 / 255.0;
+        // Cs ≤ 0.5 支：0.5 − (1 − 0.5)·0.5·0.5 = 0.375。
+        let out = mode.blend_channel(0.5, 0.25);
+        assert!(
+            (out - 0.375).abs() <= tol,
+            "柔光 (0.5,0.25) 应为 0.375，实测 {out}"
+        );
+        // Cb > 0.25 平方根支：0.5 + 0.5·(√0.5 − 0.5) ≈ 0.6036。
+        let out = mode.blend_channel(0.5, 0.75);
+        assert!(
+            (out - 0.6036).abs() <= tol,
+            "柔光 (0.5,0.75) 应为 ≈0.6036，实测 {out}"
+        );
+        // Cb ≤ 0.25 多项式支：D(0.2) ≈ 0.0129，0.2 + 0.6·(0.0129 − 0.2) ≈ 0.0877。
+        let out = mode.blend_channel(0.2, 0.8);
+        assert!(
+            (out - 0.0877).abs() <= tol,
+            "柔光 (0.2,0.8) 应为 ≈0.0877，实测 {out}"
+        );
+        // 分支区分力：若提亮支误用多项式公式，(0.5, 0.75) 会给 ≈0.543 ⇒ 与 0.6036 拉开。
+        let wrong_d = ((16.0 * 0.5 - 12.0) * 0.5f32.sqrt() + 4.0) * 0.5;
+        let wrong_out = 0.5 + 0.5 * (wrong_d - 0.5);
+        assert!(
+            (wrong_out - 0.6036).abs() > tol,
+            "变异对照：多项式支误用于 Cb=0.5 时必须与正确值拉开差距"
+        );
     }
 }

@@ -118,6 +118,13 @@ fn probe_recognises_raw_and_rejects_lookalikes() {
     let mut fake_tiff = b"II\x2a\x00".to_vec();
     fake_tiff.extend_from_slice(&[0u8; 64]);
     assert!(probe_raw(&fake_tiff).is_none());
+    // RW2／ORF 同理：魔数过门只是第一道，内容垃圾照样不许误判。
+    let mut fake_rw2 = b"II\x55\x00".to_vec();
+    fake_rw2.extend_from_slice(&[0u8; 64]);
+    assert!(probe_raw(&fake_rw2).is_none());
+    let mut fake_orf = b"IIRO".to_vec();
+    fake_orf.extend_from_slice(&[0u8; 64]);
+    assert!(probe_raw(&fake_orf).is_none());
     assert!(probe_raw(b"").is_none());
 }
 

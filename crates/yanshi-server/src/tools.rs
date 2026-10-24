@@ -61,11 +61,19 @@ pub enum Profile {
     Ink,
     /// 粉彩 workflow 预设：Core + History + Retouch，笔刷限粉彩/粉笔相关。
     Pastel,
+    /// 照片修图 workflow 预设：Core + History + Changeset + Retouch + Structure，
+    /// 再按 `PHOTO_TOOLS` 白名单收窄（正式设计文档 §7 / F 族）。
+    Photo,
+    /// 矢量插画 workflow 预设：Core + History + Changeset + Structure，
+    /// 再按 `SVG_TOOLS` 白名单收窄（正式设计文档 §7 / F 族）。
+    Svg,
 }
 
 impl Profile {
-    /// 全部 profile。
-    pub const ALL: [Profile; 14] = [
+    /// 全部 profile —— **ALL 包含系统所有功能和工具**（Wang 2026-10-24 裁定
+    /// 「ALL 要包含所有的，所以必须加进去」），Photo/Svg 两个 workflow 预设在内。
+    /// `with_profiles(&ALL)` 恒等于注册表全量，任何情况下不收窄。
+    pub const ALL: [Profile; 16] = [
         Self::Core,
         Self::History,
         Self::Changeset,
@@ -80,6 +88,8 @@ impl Profile {
         Self::Sketch,
         Self::Ink,
         Self::Pastel,
+        Self::Photo,
+        Self::Svg,
     ];
 
     /// 字符串名（MCP/HTTP/WS 会话的 `profile` 参数取值）。
@@ -99,6 +109,8 @@ impl Profile {
             Self::Sketch => "sketch",
             Self::Ink => "ink",
             Self::Pastel => "pastel",
+            Self::Photo => "photo",
+            Self::Svg => "svg",
         }
     }
 
@@ -119,6 +131,8 @@ impl Profile {
             "sketch" => Self::Sketch,
             "ink" => Self::Ink,
             "pastel" => Self::Pastel,
+            "photo" => Self::Photo,
+            "svg" => Self::Svg,
             other => {
                 return Err(YanshiError::new(
                     ErrorCode::InvalidArgument,
@@ -134,7 +148,11 @@ impl Profile {
     /// ⇒ **后期调色、滤镜、蒙版、修复类工具全都"看不见"** ✗；
     /// 而 CLI 又没有简写 ✓ ⇒ 得手敲几十个字符的完整列表才能激活全部工具 ✗
     /// ⇒ `--profile all` 就是他给的解法 ✓。
-    pub const IMPLEMENTED: [Profile; 13] = [
+    ///
+    /// **注意**：缺省会话组成已按 Wang 2026-10-24 新裁定改用 [`DEFAULT`](Self::DEFAULT)
+    /// （常用集，与 ALL 区分）；本常量保留为 `all` 简写的展开与「已实现全集」参照，
+    /// 不再是两入口的缺省值。
+    pub const IMPLEMENTED: [Profile; 15] = [
         Profile::Core,
         Profile::History,
         Profile::Changeset,
@@ -148,12 +166,53 @@ impl Profile {
         Profile::Sketch,
         Profile::Ink,
         Profile::Pastel,
+        Profile::Photo,
+        Profile::Svg,
+    ];
+
+    /// **缺省会话的常用集**（Wang 2026-10-24 裁定：「增加一个 default 作为和 ALL 区分，
+    /// ALL 包含系统所有功能和工具，default 只包含常用的」）。
+    ///
+    /// **成员**（基底层 + 本项目主线工作面；成员表由防漂移测试逐项钉死，
+    /// Wang 日后调整成员时先改这里、测试 diff 随之可见）：
+    /// - `Core` / `History` / `Changeset` / `Structure`：文档、历史、变更集与图层骨架，
+    ///   任何工作面都离不开；
+    /// - `Retouch`：调色 / 滤镜 / 修复——照片主线的核心工具层；
+    /// - `Annotation` / `Collab` / `Conflict`：标注、协作评论、冲突解决——
+    ///   Wang 2026-10-24 期 1 尾单裁定加回：查看器的评论 / 批注 / 冲突面板属必备面，
+    ///   缺省会话必须放行其工具（缺省不含这三层时面板会报「未知工具」，
+    ///   正是「界面做了、工具没放行」的历史教训，守卫来历见 yanshi-http 缺省测试）；
+    /// - `Photo`：照片修图 workflow 预设，本项目当前的主线工作面。
+    ///
+    /// **不含**：`Semantic`（按既定裁定只预留不开发），也不含 `Svg` 与
+    /// Oil / Watercolor / Sketch / Ink / Pastel 画风预设
+    /// ——需要时由用户显式 `--profile` 点名。
+    ///
+    /// **Photo 在此只贡献成员资格**：缺省组成**不触发**白名单收窄（收窄只对最终用户
+    /// 显式点名的子集请求生效，判据见 `ToolRegistry::with_profiles`），故缺省工具集
+    /// = 成员的分层并集，且包含 `PHOTO_TOOLS` 全部工具（由不变量测试钉死）。
+    /// 三层加回后实测缺省工具数与注册表全量相等（2026-10-24 实测 183 → 200，
+    /// 与全量同数：已注册工具全部落在成员层内——`Semantic` 无工具、其余 workflow
+    /// 预设的工具都住在基底层）——DEFAULT 与 ALL 的区别在 **profile 成员资格**
+    /// （Semantic / Svg / 画风预设仍不在缺省内，点名 `--profile` 的语义与收窄
+    /// 判据不变），不在工具数。
+    pub const DEFAULT: [Profile; 9] = [
+        Profile::Core,
+        Profile::History,
+        Profile::Changeset,
+        Profile::Retouch,
+        Profile::Annotation,
+        Profile::Collab,
+        Profile::Conflict,
+        Profile::Structure,
+        Profile::Photo,
     ];
 
     /// **解析逗号分隔的 profile 列表** ✓，支持 `all` 简写 ✓。
     ///
-    /// **`all` = 全部"已实现"的组** ✓（**不含 `semantic`** ✗）——
-    /// 与"缺省启用除 semantic 外的全部"是**同一条规矩** ✓ ⇒ 两处不会矛盾 ✓。
+    /// **`all` = 全部"已实现"的组** ✓（**不含 `semantic`** ✗）= [`IMPLEMENTED`](Self::IMPLEMENTED) ✓。
+    /// **缺省会话组成是另一回事** ✓：Wang 2026-10-24 裁定后缺省 = [`DEFAULT`](Self::DEFAULT)
+    /// （常用集）✓，**不再**与 `all` 同义 ✓。
     /// 想单独开 semantic 就显式写 ✓（它在册 ✓，只是没有工具 ✓）。
     pub fn parse_list(text: &str) -> Result<Vec<Profile>> {
         let mut out = Vec::new();
@@ -637,11 +696,71 @@ impl<'a> ToolContext<'a> {
     }
 }
 
+/// 白名单收窄的触发判据（Wang 2026-10-24 两轮裁定的合成口径）。
+///
+/// 返回 `Some(白名单并集)` 表示本次请求要收窄；`None` 表示不收窄：
+/// - 请求不含 Photo/Svg ⇒ 没有白名单可言，不收窄；
+/// - 请求恰为三层具名组成之一（[`Profile::ALL`] 全集 / [`Profile::IMPLEMENTED`]
+///   ——即 `--profile all` 的展开 / [`Profile::DEFAULT`] 缺省常用集）⇒ 属「全集 /
+///   缺省组成」而非「显式点名的子集」，不收窄（DEFAULT 里的 Photo 只贡献成员
+///   资格，其白名单不参与过滤——否则缺省会话会被收窄成照片名单，违背裁定）；
+/// - 其余含 Photo/Svg 的请求（最终用户显式点名的子集）⇒ 按设计 §7 公式收窄。
+fn whitelist_for(requested: &BTreeSet<Profile>) -> Option<BTreeSet<&'static str>> {
+    if !requested.contains(&Profile::Photo) && !requested.contains(&Profile::Svg) {
+        return None;
+    }
+    let named_compositions: [BTreeSet<Profile>; 3] = [
+        Profile::ALL.iter().copied().collect(),
+        Profile::IMPLEMENTED.iter().copied().collect(),
+        Profile::DEFAULT.iter().copied().collect(),
+    ];
+    if named_compositions.iter().any(|set| set == requested) {
+        return None;
+    }
+    let mut allowlist = BTreeSet::new();
+    if requested.contains(&Profile::Photo) {
+        allowlist.extend(PHOTO_TOOLS.iter().copied());
+    }
+    if requested.contains(&Profile::Svg) {
+        allowlist.extend(SVG_TOOLS.iter().copied());
+    }
+    Some(allowlist)
+}
+
+/// 把分层展开集与白名单求交（设计 §7 公式后半段）。
+///
+/// **求交为空必须响亮失败**：静默返回空注册表会让会话「一个工具都看不见」却
+/// 不报错，是本项目明令禁止的静默降级。正常组成下此路结构性不可达（每份白名单
+/// 都是其基底展开集的子集，由防漂移测试逐名钉死），故本断言只作纵深防御，
+/// 触发时点名冲突的请求方。
+fn apply_allowlist(
+    tools: Vec<ToolSpec>,
+    allowlist: &BTreeSet<&'static str>,
+    requested: &BTreeSet<Profile>,
+) -> Vec<ToolSpec> {
+    let narrowed: Vec<ToolSpec> = tools
+        .into_iter()
+        .filter(|tool| allowlist.contains(tool.name))
+        .collect();
+    assert!(
+        !narrowed.is_empty(),
+        "profile 组成冲突：请求 {:?} 的分层展开集与白名单求交为空（求交为空），拒绝生成空注册表",
+        requested
+            .iter()
+            .map(|profile| profile.as_str())
+            .collect::<Vec<_>>()
+    );
+    narrowed
+}
+
 /// 工具注册表。
 #[derive(Debug, Clone)]
 pub struct ToolRegistry {
     tools: Vec<ToolSpec>,
     profiles: BTreeSet<Profile>,
+    /// 本注册表生效的白名单：`Some` 表示构造时按 Photo/Svg 白名单收窄过
+    /// （仅显式子集请求，判据见 `whitelist_for`）；`None` 表示未收窄。
+    tool_allowlist: Option<BTreeSet<&'static str>>,
 }
 
 impl ToolRegistry {
@@ -654,6 +773,12 @@ impl ToolRegistry {
     ///
     /// 介质 profile（Oil/Watercolor/Sketch/Ink/Pastel）是 workflow 预设：
     /// 传了就自动展开成对应的功能组组合。
+    ///
+    /// **Photo/Svg 预设多一步白名单收窄**（设计 §7）：先按上表展开分层集，
+    /// 再与 `PHOTO_TOOLS` / `SVG_TOOLS` 的并集求交 —— 但收窄只对最终用户
+    /// 显式点名的子集请求生效；`ALL` / `IMPLEMENTED` / `DEFAULT` 三层具名
+    /// 组成不触发（判据与裁定出处见 `whitelist_for`）。生效的白名单可经
+    /// `tool_allowlist()` 读回。
     pub fn with_profiles(profiles: &[Profile]) -> Self {
         let mut enabled: BTreeSet<Profile> = BTreeSet::new();
         for profile in profiles.iter().copied() {
@@ -666,6 +791,17 @@ impl ToolRegistry {
                 Profile::Watercolor | Profile::Sketch | Profile::Ink => {
                     enabled.insert(Profile::History);
                 }
+                Profile::Photo => {
+                    enabled.insert(Profile::History);
+                    enabled.insert(Profile::Changeset);
+                    enabled.insert(Profile::Retouch);
+                    enabled.insert(Profile::Structure);
+                }
+                Profile::Svg => {
+                    enabled.insert(Profile::History);
+                    enabled.insert(Profile::Changeset);
+                    enabled.insert(Profile::Structure);
+                }
                 _ => {}
             }
         }
@@ -676,9 +812,17 @@ impl ToolRegistry {
             .filter(|tool| enabled.contains(&tool.profile))
             .collect();
         tools.sort_by_key(|tool| (tool.profile, tool.name));
+        // 白名单收窄（仅显式子集请求触发，判据见 `whitelist_for`）。
+        let requested: BTreeSet<Profile> = profiles.iter().copied().collect();
+        let tool_allowlist = whitelist_for(&requested);
+        let tools = match &tool_allowlist {
+            Some(allowlist) => apply_allowlist(tools, allowlist, &requested),
+            None => tools,
+        };
         Self {
             tools,
             profiles: enabled,
+            tool_allowlist,
         }
     }
 
@@ -695,6 +839,11 @@ impl ToolRegistry {
     /// 已启用的 profile。
     pub fn profiles(&self) -> &BTreeSet<Profile> {
         &self.profiles
+    }
+
+    /// 本注册表生效的白名单（`Some` = 构造时已按白名单收窄，见 `with_profiles`）。
+    pub fn tool_allowlist(&self) -> Option<&BTreeSet<&'static str>> {
+        self.tool_allowlist.as_ref()
     }
 
     /// 工具数量。
@@ -1760,6 +1909,10 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "update_adjustment" => write_update_effect(ctx, args, EffectKind::Adjustment),
         "update_filter" => write_update_effect(ctx, args, EffectKind::Filter),
         "list_effects" => read_list_effects(ctx, args),
+        "list_presets" => read_list_presets(ctx, args),
+        "get_preset" => read_get_preset(ctx, args),
+        "apply_preset" => write_apply_preset(ctx, args),
+        "preview_preset" => read_preview_preset(ctx, args),
         "create_mask" => write_create_mask(ctx, args),
         "paint_mask" => write_paint_mask(ctx, args),
         "delete_mask" => write_delete_mask(ctx, args),
@@ -1771,6 +1924,9 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "smudge" => write_retouch(ctx, args, "smudge"),
         "patch" => write_patch(ctx, args),
         "estimate_dehaze" => read_estimate_dehaze(ctx),
+        "frequency_separation" => write_frequency_separation(ctx, args),
+        "dodge_burn_setup" => write_dodge_burn_setup(ctx, args),
+        "auto_retouch" => write_auto_retouch(ctx, args),
         "liquify_push" => write_liquify(ctx, args, "push"),
         "liquify_twirl" => write_liquify(ctx, args, "twirl"),
         "liquify_pinch" => write_liquify(ctx, args, "pinch"),
@@ -7579,6 +7735,73 @@ fn write_transform_object(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
     }))
 }
 
+/// 对象 id 在文档里的**槽位三态**（期 1 E-b）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObjectSlot {
+    /// 存活：走正常更新路。
+    Alive,
+    /// 从未存在：走正常新建路。
+    Absent,
+    /// **墓碑**：对象表里留着已删除条目——fold 的 CreateObject 用
+    /// `contains_key` 判冲突 ⇒ 同 id 新建必被拒；写入路径须先复活
+    /// （`revive_object`）再更新，不许把「已存在」错误甩给调用方。
+    Tombstoned,
+}
+
+/// 槽位判定（纯函数、只读状态）。对象 id 是**文档全局**的
+/// （`state.objects` 一张平表、fold 亦按全表判冲突），不按图层分。
+fn object_slot(state: &DocumentState, object_id: &str) -> ObjectSlot {
+    match state.objects.get(object_id) {
+        None => ObjectSlot::Absent,
+        Some(object) if object.is_deleted() => ObjectSlot::Tombstoned,
+        Some(_) => ObjectSlot::Alive,
+    }
+}
+
+/// `object_slot` 的 ctx 入口（写入路径的前置检查，期 1 E-b 设计名）。
+fn ensure_object_slot(ctx: &mut ToolContext<'_>, object_id: &str) -> Result<ObjectSlot> {
+    let state = document_state(ctx)?;
+    Ok(object_slot(&state, object_id))
+}
+
+/// 删掉某对象的全部 `Tombstone` 原子 id（日志序）——`restore_object`
+/// 与 E-b 复活共用这一份扫描，不许两处各写一套。
+fn tombstone_atom_ids(document: &crate::document::Document, object_id: &str) -> Vec<String> {
+    let mut tombstones = Vec::new();
+    for atom in document.log().iter() {
+        if atom.kind != AtomKind::Tombstone {
+            continue;
+        }
+        if atom.payload.get("object_id").and_then(Value::as_str) == Some(object_id) {
+            tombstones.push(atom.id.clone());
+        }
+    }
+    tombstones
+}
+
+/// **复活墓碑对象**（期 1 E-b 的 revive 半程）：逐条 `Revert` 其
+/// Tombstone 原子——与 `restore_object` 同一台机器（保原子血脉），
+/// 差别只在 changeset 归属由调用方统筹：复活与紧随的更新必须同属
+/// 一个变更集（见 `write_add_effect` 的复活支路）。返回被 revert 的
+/// 墓碑原子 id 清单。
+fn revive_object(ctx: &mut ToolContext<'_>, object_id: &str) -> Result<Vec<String>> {
+    let tombstones = {
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        tombstone_atom_ids(document, object_id)
+    };
+    let mut reverted = Vec::new();
+    for tombstone in &tombstones {
+        ctx.commit(AtomKind::Revert, json!({ "target": tombstone }))?;
+        reverted.push(tombstone.clone());
+    }
+    Ok(reverted)
+}
+
 /// **恢复已删除的对象** ✓（设计 783 的 `restore_object` ✓）。
 ///
 /// 做法 ✓：找到删掉它的那些 `tombstone` 原子 ✓，**逐条 `Revert`** ✓，并把这些 revert
@@ -7598,15 +7821,7 @@ fn write_restore_object(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
                 ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
             )
         })?;
-        let mut tombstones: Vec<String> = Vec::new();
-        for atom in document.log().iter() {
-            if atom.kind != AtomKind::Tombstone {
-                continue;
-            }
-            if atom.payload.get("object_id").and_then(Value::as_str) == Some(object_id.as_str()) {
-                tombstones.push(atom.id.clone());
-            }
-        }
+        let tombstones = tombstone_atom_ids(document, object_id.as_str());
         let state = document.state();
         let present = state.objects.contains_key(object_id.as_str());
         let alive = state
@@ -11030,6 +11245,22 @@ fn write_add_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind) -
         .and_then(Value::as_f64)
         .unwrap_or(1.0)
         .clamp(0.0, 1.0);
+    // 期 1 E-b：确定性 id 撞上墓碑 ⇒ 不走 CreateObject（fold 必拒），
+    // 转复活支路：Revert 墓碑 + 参数整组换新，响应以 revived 点名。
+    if ensure_object_slot(ctx, &object_id)? == ObjectSlot::Tombstoned {
+        return revive_effect_in_place(
+            ctx,
+            kind,
+            ReviveEffect {
+                layer_id: &layer_id,
+                object_id: &object_id,
+                name: &name,
+                params,
+                opacity,
+                label: optional_str(args, "name"),
+            },
+        );
+    }
     let mut data = json!({
         kind.key(): name,
         "params": params,
@@ -11066,6 +11297,128 @@ fn write_add_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind) -
     )?;
     let region = region_of(&result);
     finish_mutation(ctx, &result, region)
+}
+
+/// **复活并替换**（期 1 E-b）：`write_add_effect` 的墓碑支路。
+///
+/// 语义 = 「恢复旧身份 + 参数整组换新」：先 `revive_object` 撤销删除
+/// （保原子血脉），再一条 Supersede 把 `params` **整组替换**（不是
+/// `write_update_effect` 的键级合并——复活的调用方给的是完整新参数，
+/// 旧键残留就是语义错误）。成功响应带 `revived: true` 点名，不许
+/// 静默复活。
+///
+/// **一致性守卫**：对象类型／效果名／所属图层任一与墓碑旧身不一致
+/// ⇒ 拒绝（复活不是借尸还魂：换效果请先 `restore_object` 或换 id）。
+/// **changeset 统筹**：调用方已设/已开变更集则并入；否则自开一个、
+/// 收尾恢复——保证「复活 + 更新」同属一个可整体撤销的变更集。
+/// `revive_effect_in_place` 的入参束（本次新建的完整意图）。
+struct ReviveEffect<'a> {
+    /// 调用方指定的目标图层（须与墓碑旧身所属图层一致）。
+    layer_id: &'a str,
+    /// 撞上墓碑的确定性对象 id。
+    object_id: &'a str,
+    /// 本次要落的效果名（须与墓碑旧身的效果名一致）。
+    name: &'a str,
+    /// 完整新参数（整组替换旧参数）。
+    params: Value,
+    /// 不透明度。
+    opacity: f64,
+    /// 对象显示名（给了才覆盖）。
+    label: Option<String>,
+}
+
+fn revive_effect_in_place(
+    ctx: &mut ToolContext<'_>,
+    kind: EffectKind,
+    revive: ReviveEffect<'_>,
+) -> Result<Value> {
+    let ReviveEffect {
+        layer_id,
+        object_id,
+        name,
+        params,
+        opacity,
+        label,
+    } = revive;
+    let state = document_state(ctx)?;
+    let existing = state
+        .objects
+        .get(object_id)
+        .expect("墓碑支路已由 ensure_object_slot 确认对象在状态里");
+    let want_type = match kind {
+        EffectKind::Adjustment => ObjectType::Adjustment,
+        EffectKind::Filter => ObjectType::Filter,
+    };
+    if existing.object_type != want_type {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "对象 {object_id} 已被删除且不是{}对象（实际 {:?}），拒绝以复活名义改型；请先 restore_object 恢复或换 object_id",
+                kind.object_type(),
+                existing.object_type
+            )),
+        )
+        .with_object(object_id.to_owned()));
+    }
+    let existing_name = existing
+        .data
+        .get(kind.key())
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    if existing_name != name {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "对象 {object_id} 已被删除且效果是「{existing_name}」，与本次要落的「{name}」不一致，拒绝复活改名；请先 restore_object 恢复或换 object_id"
+            )),
+        )
+        .with_object(object_id.to_owned()));
+    }
+    if existing.layer_id != layer_id {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "对象 {object_id} 已被删除且属于图层 {}，与本次目标图层 {layer_id} 不一致，复活不跨层；请先 restore_object 恢复后移层，或换 object_id",
+                existing.layer_id
+            )),
+        )
+        .with_object(object_id.to_owned()));
+    }
+    let opened_here = ctx.changeset.is_none()
+        && ctx
+            .workspace
+            .open_changeset(&ctx.doc_id, &ctx.session)
+            .is_none();
+    let previous = if opened_here {
+        ctx.changeset.replace(yanshi_core::Changeset::new_id())
+    } else {
+        None
+    };
+    let outcome = (|| {
+        revive_object(ctx, object_id)?;
+        let state = document_state(ctx)?;
+        let object = state.objects.get(object_id).expect("复活后对象必在状态里");
+        let mut data = object.data.clone();
+        data["params"] = params;
+        data["opacity"] = json!(opacity);
+        if let Some(label) = &label {
+            data["name"] = json!(label);
+        }
+        let owner_layer = object.layer_id.clone();
+        let result = ctx.commit(
+            AtomKind::Supersede,
+            json!({"object_id": object_id, "layer_id": owner_layer, "data": data}),
+        )?;
+        let region = region_of(&result);
+        let mut value = finish_mutation(ctx, &result, region)?;
+        value["revived"] = json!(true);
+        Ok(value)
+    })();
+    if opened_here {
+        ctx.changeset = previous;
+    }
+    outcome
 }
 
 /// **批量配方 `apply_adjustments`**（包 B，2026-10-21）：一次调用按序建多个调整对象。
@@ -11155,11 +11508,30 @@ fn write_apply_adjustments(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
         validate_effect(EffectKind::Adjustment, &name, &params).map_err(wrap)?;
         let object_id = optional_str(&item_args, "object_id")
             .unwrap_or_else(|| format!("obj_{}", yanshi_core::Ulid::new().encode()));
-        if state.objects.contains_key(&object_id) || !seen_ids.insert(object_id.clone()) {
+        if !seen_ids.insert(object_id.clone()) {
             return Err(wrap(YanshiError::new(
                 ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!("object_id {object_id} 已存在或在配方内重复")),
+                ErrorContext::detail(format!("object_id {object_id} 在配方内重复")),
             )));
+        }
+        // 批量配方只收全新 id：存活撞名与墓碑撞名分开说清（期 1 E-b）——
+        // 墓碑不是「已存在」，且它有复活出路，必须点名。
+        match object_slot(&state, &object_id) {
+            ObjectSlot::Alive => {
+                return Err(wrap(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("object_id {object_id} 已存在")),
+                )));
+            }
+            ObjectSlot::Tombstoned => {
+                return Err(wrap(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "object_id {object_id} 已被删除（墓碑）；批量配方只收新 id——先用 restore_object 恢复，或用 add_adjustment 以同 id 复活并换新参数"
+                    )),
+                )));
+            }
+            ObjectSlot::Absent => {}
         }
         prepared.push(PreparedAdjustment {
             layer_id,
@@ -19834,7 +20206,7 @@ use tools_brush::*;
 mod tools_registry;
 // **★ re-export** ✓（第 1268 轮）：外部（）从 `tools::ALL_TOOLS` 用它
 //   ⇒ 而 `use` 只把名字带进本模块 ⇒ 所以需要在**这里**再 `pub use` 一次 ✓
-pub use tools_registry::ALL_TOOLS;
+pub use tools_registry::{ALL_TOOLS, PHOTO_TOOLS, SVG_TOOLS};
 
 #[path = "tools_examples.rs"]
 mod tools_examples;
@@ -19843,6 +20215,17 @@ pub use tools_examples::TOOL_EXAMPLES;
 #[path = "tools_effect.rs"]
 mod tools_effect;
 use tools_effect::*;
+// **期 4 D1**：频率分离 / 减淡加深（Retouch 层工具，见 tools_retouch.rs）
+#[path = "tools_retouch.rs"]
+mod tools_retouch;
+use tools_retouch::*;
+// **期 4 D3**：自动模式（Retouch 层工具，见 tools_auto.rs）
+#[path = "tools_auto.rs"]
+mod tools_auto;
+use tools_auto::*;
+#[path = "presets.rs"]
+mod presets;
+use presets::*;
 #[path = "tools_read.rs"]
 mod tools_read;
 use tools_read::*;

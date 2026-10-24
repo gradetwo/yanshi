@@ -58,6 +58,12 @@ pub enum PreviewState {
 /// （那种猜法会把"解出来是垃圾"变成"悄悄导入了坏字节" ✗）。
 const PACKAGE_BLOB_ENCODING: &str = "zlib";
 
+/// **每原子的内存估算口径**（外部实测：3 600 原子 ⇒ RSS 1 088 MB
+/// ⇒ **≈300 KB/原子**）。两处共用同一份：blob GC 闸（估「全打开」
+/// 的代价）与 C2 文档预算闸（估「已载入」的驻留）——口径只许有
+/// 一个出处，两处各写一份必然漂移。
+const BYTES_PER_ATOM: u64 = 300 * 1_024;
+
 /// 文档缩略图尺寸档位（7.3 分级；`Skip` 表示不生成）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocThumbSize {
@@ -123,6 +129,38 @@ pub struct DocumentSummary {
     pub created_at: i64,
     /// 是否已持久化到磁盘。
     pub persisted: bool,
+}
+
+/// **已载入文档的内存观测**（C2，期 2）：`Workspace::loaded_documents`
+/// 的一行。`estimated_bytes` = 原子估算（BYTES_PER_ATOM 口径）+
+/// 位图缓存实测——与预算闸的判定同源，观测与处置不许两套数。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoadedDocumentInfo {
+    /// 文档 id。
+    pub doc_id: String,
+    /// 原子数。
+    pub atoms: usize,
+    /// 估算驻留字节（原子估算 + 位图缓存实测）。
+    pub estimated_bytes: u64,
+    /// 位图缓存实测字节。
+    pub cache_bytes: u64,
+    /// 最近使用序号（工作区单调递增；越大越新，LRU 卸载按它升序）。
+    pub last_used_seq: u64,
+}
+
+/// **文档卸载观测**（C2，期 2）：预算卸载不许静默——计数与最近
+/// 一次留痕经 `Workspace::doc_eviction_stats` 与诊断响应可见。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocEvictionStats {
+    /// 累计卸载次数。
+    pub evictions: u64,
+    /// 选候选时因 busy（inflight / 打开的 changeset / transaction）
+    /// 被跳过的累计次数。
+    pub skipped_busy: u64,
+    /// 最近一次被卸载的文档。
+    pub last_evicted_doc: Option<String>,
+    /// 最近一次卸载的原因。
+    pub last_reason: Option<String>,
 }
 
 /// **悬空变更集（Stash）** ✓ —— 设计 §12.4 ✓。
@@ -597,6 +635,19 @@ pub struct Workspace {
     /// **∴ 兜底依据 ✗**：**超过 `PREVIEW_PENDING_GRACE_MS` 仍未就绪 ⇒ 就地同步生成 ✓**
     ///（**∴ 否则只读不编辑的调用方会**永远 pending ✗**）。
     preview_pending_at: std::collections::BTreeMap<String, i64>,
+    /// **C2 文档预算（期 2）：每份已载入文档的最近使用序号**。
+    /// `open_document` / `create_document` 每次成功都刷新；预算闸按
+    /// 它升序选 LRU 卸载候选。序号只在内存里——它排序的是「本进程
+    /// 的使用热度」，重启后从空开始是对的。
+    doc_last_used: BTreeMap<String, u64>,
+    /// 最近使用序号的单调分配器（与 `doc_last_used` 同源）。
+    doc_use_seq: u64,
+    /// **C2 卸载留痕**：累计卸载数（不许静默卸载，诊断可见）。
+    doc_evictions: u64,
+    /// **C2 卸载留痕**：选候选时 busy 文档被跳过的累计数。
+    doc_evictions_skipped_busy: u64,
+    /// **C2 卸载留痕**：最近一次卸载的 (doc_id, 原因)。
+    doc_last_eviction: Option<(String, String)>,
 }
 
 impl std::fmt::Debug for Workspace {
@@ -832,8 +883,7 @@ impl Workspace {
             .values()
             .map(|document| document.log().len() as u64)
             .sum();
-        // **每个原子约 300 KB**（外部实测：3 600 原子 ⇒ RSS 1 088 MB ⇒ **≈ 300 KB/原子**）✓
-        const BYTES_PER_ATOM: u64 = 300 * 1_024;
+        // 估算口径 = 模块级 BYTES_PER_ATOM（与 C2 文档预算闸共用一份）。
         let estimate = (unloaded_atoms + loaded_atoms).saturating_mul(BYTES_PER_ATOM);
         if estimate > budget_bytes {
             return Err(YanshiError::new(
@@ -1129,6 +1179,11 @@ impl Workspace {
     pub fn in_memory(settings: DocumentSettings) -> Self {
         Self {
             preview_pending_at: std::collections::BTreeMap::new(),
+            doc_last_used: BTreeMap::new(),
+            doc_use_seq: 0,
+            doc_evictions: 0,
+            doc_evictions_skipped_busy: 0,
+            doc_last_eviction: None,
             store: Arc::new(MemoryBlobStore::new()),
             inflight: Arc::new(InflightRegistry::new()),
             documents: BTreeMap::new(),
@@ -1160,6 +1215,11 @@ impl Workspace {
         );
         Ok(Self {
             preview_pending_at: std::collections::BTreeMap::new(),
+            doc_last_used: BTreeMap::new(),
+            doc_use_seq: 0,
+            doc_evictions: 0,
+            doc_evictions_skipped_busy: 0,
+            doc_last_eviction: None,
             store,
             inflight: Arc::new(InflightRegistry::new()),
             documents: BTreeMap::new(),
@@ -1262,6 +1322,8 @@ impl Workspace {
             self.settings.clone(),
         )?;
         self.documents.insert(doc_id.clone(), document);
+        // C2：新建即载入、即「刚使用过」——记 LRU 序号。
+        self.touch_doc(&doc_id);
         self.created += 1;
         // **初始原子走提交路径的同一条咽喉** ✓（`flush_journal` ✓）⇒ 一份实现 ✓、
         // 水位与落盘同步推进 ✓（旧写法自己循环 `append_atom` ✗ ⇒ 水位会停在 0 ⇒ 下次提交**重复追加** ✓）。
@@ -1328,6 +1390,182 @@ impl Workspace {
         Ok(copied)
     }
 
+    /// **C2 预算读取**（期 2）：`YANSHI_DOC_MEMORY_BUDGET_MB`
+    /// （缺省 2048 MB）——沿 GC 闸形态：调用时现读、解析失败回退
+    /// 缺省（可调才可测；小内存部署可调低，宁可拒绝不被 OOM 杀）。
+    pub(crate) fn memory_budget_bytes() -> u64 {
+        std::env::var("YANSHI_DOC_MEMORY_BUDGET_MB")
+            .ok()
+            .and_then(|text| text.trim().parse::<u64>().ok())
+            .map(|mb| mb.saturating_mul(1_024 * 1_024))
+            .unwrap_or(2_048 * 1_024 * 1_024)
+    }
+
+    /// **C2 数量护栏读取**（期 2）：`YANSHI_DOC_MAX_LOADED`
+    /// （缺省 64）——预算闸之外的第二道廉价护栏，防句柄泄漏型
+    /// 累积；软闸：无空闲文档可卸时放行，不把服务卡死。
+    fn doc_max_loaded() -> usize {
+        std::env::var("YANSHI_DOC_MAX_LOADED")
+            .ok()
+            .and_then(|text| text.trim().parse::<usize>().ok())
+            .filter(|count| *count >= 1)
+            .unwrap_or(64)
+    }
+
+    /// 一份已载入文档的估算驻留：原子口径 + 位图缓存**实测**
+    /// （300 KB/原子对位图-heavy 文档低估明显，必须叠实测——
+    /// 设计 C2 的硬要求）。
+    fn estimate_loaded_doc_bytes(document: &Document) -> u64 {
+        (document.atom_count() as u64)
+            .saturating_mul(BYTES_PER_ATOM)
+            .saturating_add(document.bitmap_cache_stats().bytes as u64)
+    }
+
+    /// 文档是否「使用中」：有 inflight 操作、或有打开的
+    /// changeset / transaction ⇒ 预算卸载必须跳过（卸掉正在
+    /// 编辑的文档等于把用户手里的工作抽走）。
+    fn document_is_busy(&self, doc_id: &str) -> bool {
+        self.inflight.op(doc_id).is_some()
+            || self
+                .open_changesets
+                .keys()
+                .any(|(doc, _session)| doc == doc_id)
+            || self
+                .transactions
+                .keys()
+                .any(|(doc, _session)| doc == doc_id)
+    }
+
+    /// 刷新某文档的最近使用序号（LRU 的时钟）。
+    fn touch_doc(&mut self, doc_id: &str) {
+        self.doc_use_seq += 1;
+        let seq = self.doc_use_seq;
+        self.doc_last_used.insert(doc_id.to_owned(), seq);
+    }
+
+    /// 选卸载候选：已载入文档里**最久未用且空闲**的一份（不含
+    /// `exclude`）；途经的 busy 文档逐个计数后跳过（跳过并计数，
+    /// 卸载行为全程可观测）。无候选 ⇒ `None`。
+    fn lru_idle_candidate(&mut self, exclude: &str) -> Option<String> {
+        let mut by_age: Vec<(u64, String)> = self
+            .documents
+            .keys()
+            .filter(|id| id.as_str() != exclude)
+            .map(|id| (self.doc_last_used.get(id).copied().unwrap_or(0), id.clone()))
+            .collect();
+        by_age.sort();
+        for (_seq, id) in by_age {
+            if self.document_is_busy(&id) {
+                self.doc_evictions_skipped_busy += 1;
+                continue;
+            }
+            return Some(id);
+        }
+        None
+    }
+
+    /// 执行一次预算卸载（纯内存动作：持久化在盘，下次打开从
+    /// 原子日志重载）并留痕。
+    fn evict_document_for_budget(&mut self, doc_id: &str, reason: &str) {
+        self.documents.remove(doc_id);
+        self.doc_last_used.remove(doc_id);
+        self.doc_evictions += 1;
+        self.doc_last_eviction = Some((doc_id.to_owned(), reason.to_owned()));
+    }
+
+    /// **C2 预算闸**（期 2）：在真正装入一份**尚未载入**的文档
+    /// 之前调用。先过数量护栏（软），再过内存预算（硬）：估算
+    /// 总量超预算 ⇒ 按 LRU 卸载空闲文档腾位；全部不可卸载且仍
+    /// 超 ⇒ `ResourceExhausted` 并给出估算与上限两个数字
+    /// （不许硬开到 OOM，与 GC 闸同一处置哲学）。
+    fn enforce_doc_budget_for_open(&mut self, incoming_doc_id: &str) -> Result<()> {
+        let max_loaded = Self::doc_max_loaded();
+        while self.documents.len() >= max_loaded {
+            match self.lru_idle_candidate(incoming_doc_id) {
+                Some(victim) => self.evict_document_for_budget(
+                    &victim,
+                    "数量护栏：已载入文档数达到 YANSHI_DOC_MAX_LOADED 上限",
+                ),
+                None => break,
+            }
+        }
+        let budget_bytes = Self::memory_budget_bytes();
+        // 待载入文档按其磁盘原子数估算（位图缓存尚未产生，按 0）；
+        // 与 GC 闸一样先读一遍原子计数，不为估算另开近似通道。
+        let incoming_atoms = match &self.persist {
+            Some(persist) => persist
+                .load_atoms(incoming_doc_id)
+                .map(|atoms| atoms.len() as u64)
+                .unwrap_or(0),
+            None => 0,
+        };
+        let incoming_estimate = incoming_atoms.saturating_mul(BYTES_PER_ATOM);
+        loop {
+            let loaded_estimate: u64 = self
+                .documents
+                .values()
+                .map(Self::estimate_loaded_doc_bytes)
+                .sum();
+            if loaded_estimate.saturating_add(incoming_estimate) <= budget_bytes {
+                return Ok(());
+            }
+            match self.lru_idle_candidate(incoming_doc_id) {
+                Some(victim) => self.evict_document_for_budget(
+                    &victim,
+                    "内存预算：估算总量超过 YANSHI_DOC_MEMORY_BUDGET_MB 上限",
+                ),
+                None => {
+                    return Err(YanshiError::new(
+                        ErrorCode::ResourceExhausted,
+                        ErrorContext::detail(format!(
+                            "打开文档 {incoming_doc_id} 后已载入文档估算内存将达 {} MB\
+                             （已载入 {} MB + 待载入约 {} MB），超过上限 {} MB\
+                             （YANSHI_DOC_MEMORY_BUDGET_MB），且其余已载入文档都在使用中\
+                             （inflight / 打开的 changeset / transaction）无法卸载\
+                             ⇒ 已拒绝，避免进程被 OOM 杀掉。\
+                             出路：先 close_document 掉不用的文档，或调高预算。",
+                            (loaded_estimate + incoming_estimate) / (1_024 * 1_024),
+                            loaded_estimate / (1_024 * 1_024),
+                            incoming_estimate / (1_024 * 1_024),
+                            budget_bytes / (1_024 * 1_024),
+                        )),
+                    ));
+                }
+            }
+        }
+    }
+
+    /// **已载入文档的内存观测**（C2 只读出口）：每文档的原子数、
+    /// 估算驻留（与预算闸同源）、位图缓存实测、最近使用序号。
+    pub fn loaded_documents(&self) -> Vec<LoadedDocumentInfo> {
+        self.documents
+            .iter()
+            .map(|(doc_id, document)| LoadedDocumentInfo {
+                doc_id: doc_id.clone(),
+                atoms: document.atom_count(),
+                estimated_bytes: Self::estimate_loaded_doc_bytes(document),
+                cache_bytes: document.bitmap_cache_stats().bytes as u64,
+                last_used_seq: self.doc_last_used.get(doc_id).copied().unwrap_or(0),
+            })
+            .collect()
+    }
+
+    /// **卸载观测**（C2）：累计卸载数、busy 跳过数、最近一次留痕。
+    pub fn doc_eviction_stats(&self) -> DocEvictionStats {
+        DocEvictionStats {
+            evictions: self.doc_evictions,
+            skipped_busy: self.doc_evictions_skipped_busy,
+            last_evicted_doc: self
+                .doc_last_eviction
+                .as_ref()
+                .map(|(doc_id, _reason)| doc_id.clone()),
+            last_reason: self
+                .doc_last_eviction
+                .as_ref()
+                .map(|(_doc_id, reason)| reason.clone()),
+        }
+    }
+
     /// 打开（或返回已打开的）文档：从磁盘加载日志并重建状态。
     /// **打开文档（计时包装 ✓）** —— 第 71 轮 ✓：把整段耗时记进文档 ✓，
     /// 供 `get_document` 以 `open_ms` 报出 ✓（**加载在工具开始之前 ⇒ 装不进 `total_ms`** ✗）。
@@ -1337,6 +1575,8 @@ impl Workspace {
         let started = std::time::Instant::now();
         // 第一次调用**真正做加载** ✓（第二次只是 map 查找 ✓ ⇒ 极快 ✓）。
         self.open_document_inner(doc_id)?;
+        // C2：打开即「使用」——刷新 LRU 序号（冷开、热开都算）。
+        self.touch_doc(doc_id);
         let ms = started.elapsed().as_millis() as u64;
         let document = self.open_document_inner(doc_id)?;
         // **只在"冷开"时写入** ✗：已打开的文档走的是"取出来"那条 ✓ ⇒ 不该覆盖真实读数 ✓。
@@ -1348,6 +1588,9 @@ impl Workspace {
 
     fn open_document_inner(&mut self, doc_id: &str) -> Result<&mut Document> {
         if !self.documents.contains_key(doc_id) {
+            // C2 预算闸（期 2）：装入前先腾位/拒绝——闸只对「新
+            // 装入」触发，已载入文档的热开不重复过闸。
+            self.enforce_doc_budget_for_open(doc_id)?;
             // **打开路径的分阶段计时** ✓（第 1493 轮 ✓）—— 外部报告实测 15.1 MB 文档
             // `get_document` 要 **294.6 s** ✗，但报告自己说**没做 profiling** ✗。
             // 读代码只能把候选排到 `load_atoms`／`load_render`／`load_preview`／`load_meta`
@@ -1687,6 +1930,8 @@ impl Workspace {
 
     /// 关闭文档（释放内存；持久化内容保留）。
     pub fn close_document(&mut self, doc_id: &str) -> bool {
+        // C2：LRU 记账随文档一并摘除（序号本身单调，不复用）。
+        self.doc_last_used.remove(doc_id);
         self.documents.remove(doc_id).is_some()
     }
 
