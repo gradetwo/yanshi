@@ -40,21 +40,12 @@ use yanshi_server::{
 };
 
 /// 判据用的文档 id。
-/// **跑完即删临时目录** ✓（第 818 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
-struct Cleanup(std::path::PathBuf);
-impl Drop for Cleanup {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 const DOC: &str = "doc_cold";
 /// 画布边长（够小 ⇒ 判据秒级；够大 ⇒ 缩略图有 8×8 块，脏区只会覆盖其中几块）。
 const SIDE: u32 = 512;
 
 fn temp_root(tag: &str) -> PathBuf {
     let mut root = std::env::temp_dir();
-    let _cleanup_1 = Cleanup(root.clone());
     root.push(format!("yanshi-coldstart-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     root

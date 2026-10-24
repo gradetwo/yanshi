@@ -7,14 +7,6 @@
 use serde_json::{json, Value};
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
-/// **跑完即删临时目录** ✓（第 817 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
-struct Cleanup(std::path::PathBuf);
-impl Drop for Cleanup {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
@@ -51,7 +43,10 @@ fn stroke(data_extra: Value) -> Value {
 
 fn temp_file(name: &str) -> String {
     let dir = std::env::temp_dir().join(format!("yanshi_vector_test_{}", std::process::id()));
-    let _cleanup_1 = Cleanup(dir.clone());
+    // **守卫不能放在这个辅助函数里** ✗（第 833 轮；CI 就是在这里红的 ✓）
+    //   **⇒ 缺陷**：`_cleanup` 在 `temp_file` 返回时立刻 drop ⇒ **把目录删了** ✗
+    //     ⇒ 后面 `export_png` 报 `写文件失败：…/vec.png ⇒ No such file or directory` ✓
+    //   **⇒ 修法**：守卫留给**测试函数**（它调用方 ✓），这里只返回路径 ✓。
     std::fs::create_dir_all(&dir).unwrap();
     dir.join(name).to_string_lossy().into_owned()
 }
@@ -248,6 +243,15 @@ fn vector_layer_end_to_end() {
 
     // ⑩ 导出：PNG 正常落盘；SVG 里 4 笔全计入原生直出、事后转换 0 ✓。
     let png_path = temp_file("vec.png");
+    // **删目录的守卫绑在测试里** ✓（辅助函数返回时不能删 ✓）
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup_dir =
+        Cleanup(std::env::temp_dir().join(format!("yanshi_vector_test_{}", std::process::id())));
     let png = call(&mut ws, doc, "export_png", json!({"path": png_path}));
     assert_eq!(png["ok"], json!(true), "{png}");
     let svg_path = temp_file("vec.svg");

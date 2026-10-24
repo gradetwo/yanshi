@@ -9,21 +9,12 @@ use serde_json::json;
 use yanshi_core::{Atom, AtomKind};
 use yanshi_server::{persist::FileStore, DocumentSettings, NewDocument, Workspace};
 
-/// **跑完即删临时目录** ✓（第 818 轮；`/tmp` 是 1.9 GB tmpfs ✓，夹具留着会写满 ✓）
-struct Cleanup(std::path::PathBuf);
-impl Drop for Cleanup {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 fn temp_root(name: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!(
         "yanshi_conflict_durability_{}_{}",
         name,
         std::process::id()
     ));
-    let _cleanup_1 = Cleanup(path.clone());
     let _ = std::fs::remove_dir_all(&path);
     path
 }
