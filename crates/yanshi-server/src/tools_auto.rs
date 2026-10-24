@@ -129,11 +129,22 @@ const DEHAZE_COEF: f32 = 1.2;
 const DEHAZE_MAX: f32 = 0.45;
 
 /// 降噪：σ̂ → luminance 系数与上限；ISO 先验档位。
-const DENOISE_SIGMA_COEF: f32 = 6.0;
+/// 系数 20.0 由期 4 回测定版（2026-10-24）：旧初值 6.0 在三张金
+/// 参考上系统性偏小 3.3–7.3 倍（中位 3.8 倍）；×20 使 luminance
+/// 中位偏差由 0.185 降到 0.032（欠曝 0.218/金 0.25、过曝
+/// 0.152/0.15，夜景 ORF 0.137/0.30 仍低，属暗景提亮后噪声放大的
+/// 结构残差，不靠再放大全局系数追——低 ISO 上限 0.25 与高 ISO
+/// 地板 0.32/0.45 继续兜底两端）。
+const DENOISE_SIGMA_COEF: f32 = 20.0;
 /// 降噪 luminance 上限。
 const DENOISE_MAX: f32 = 0.8;
 /// 降噪 color = luminance × 系数；detail 为模式常数（不随强度缩放）。
-const DENOISE_COLOR_COEF: f32 = 0.8;
+/// 系数 1.5 由期 4 回测定版（2026-10-24）：旧值 0.8 下三张金
+/// color/luminance 比恒为 1.4/2.0/1.5（中位 1.5），auto 派生值
+/// 系统性偏低（中位差 0.178）；×1.5 后中位差 0.071（欠曝
+/// 0.327/0.35、过曝 0.229/0.30，夜景 0.206/0.45 仍低，同 luminance
+/// 的暗景结构残差）；color 仍受 min(…, 1.0) 封顶。
+const DENOISE_COLOR_COEF: f32 = 1.5;
 /// 降噪 detail 模式常数。
 const DENOISE_DETAIL: f32 = 0.6;
 /// 锐化：amount = clamp(0.9 − σ̂ × 系数，域)；σ̂ 超门限 ⇒ 跳过锐化。
@@ -743,18 +754,28 @@ fn estimate_noise(
             radius: 1,
         }),
     };
+    let night_clause = if scene.night {
+        "（夜景档位 ×2）"
+    } else {
+        ""
+    };
     let rationale = format!(
-        "σ̂={}、ISO={}（夜景档位 ×2）⇒ 降噪 luminance={}、color=×{}、detail={}（模式常数）；\
+        "σ̂={}、ISO={}{}⇒ 降噪 luminance={}、color=×{}、detail={}（模式常数）；\
          锐化={}{}",
         sigma.map_or("缺失".to_owned(), |value| format!("{value:.4}")),
         iso.map_or("未知".to_owned(), |value| value.to_string()),
-        denoise.as_ref().map_or("跳过".to_owned(), |d| format!("{:.3}", d.luminance)),
+        night_clause,
+        denoise
+            .as_ref()
+            .map_or("跳过".to_owned(), |d| format!("{:.3}", d.luminance)),
         DENOISE_COLOR_COEF,
         DENOISE_DETAIL,
-        sharpen.as_ref().map_or("跳过（σ̂ > 0.28）".to_owned(), |s| format!(
-            "amount {:.3}、radius {}",
-            s.amount, s.radius
-        )),
+        sharpen
+            .as_ref()
+            .map_or("跳过（σ̂ > 0.28）".to_owned(), |s| format!(
+                "amount {:.3}、radius {}",
+                s.amount, s.radius
+            )),
         confidence_note,
     );
     (denoise, sharpen, rationale)
