@@ -29,6 +29,16 @@ fn root() -> std::path::PathBuf {
 #[test]
 fn oversized_canvases_are_refused_instead_of_exhausting_memory() {
     let root = root();
+    // **跑完就删** ✓（第 816 轮；`/tmp` 是 1.9 GB 的 tmpfs ✓，夹具留着会写满 ✓）
+    //   **⇒ 为什么守卫定义在函数体内**：这个文件的取路径入口是 `fn root()`（不是 `let root = temp_dir(..)` ✓）
+    //   ⇒ 守卫必须绑在**调用点** ✓，否则 clippy 会报 `Cleanup` never constructed ✓（上一轮就是这样红的 ✗）。
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup_root = Cleanup(root.clone());
     let mut workspace = workspace(&root);
 
     // ① 单边 20,000 > 16,384 ⇒ 必须被拒 ✓

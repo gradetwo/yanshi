@@ -36,6 +36,14 @@ fn call(workspace: &mut Workspace, tool: &str, args: serde_json::Value) -> serde
 #[test]
 fn all_three_kinds_import_from_a_path_and_then_list() {
     let root = temp_dir("three");
+    // **跑完就删** ✓（第 816 轮；`/tmp` 是 1.9 GB tmpfs ✓）
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
     let source = root.join("incoming");
     std::fs::create_dir_all(&source).unwrap();
     std::fs::write(source.join("charcoal.myb"), b"{\"name\": \"charcoal\"}").unwrap();
@@ -76,6 +84,14 @@ fn all_three_kinds_import_from_a_path_and_then_list() {
 #[test]
 fn the_extension_must_match_the_kind() {
     let root = temp_dir("ext");
+    // **跑完就删** ✓（第 816 轮；`/tmp` 是 1.9 GB tmpfs ✓）
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
     let source = root.join("incoming");
     std::fs::create_dir_all(&source).unwrap();
     std::fs::write(source.join("photo.jpg"), b"jpeg").unwrap();
@@ -107,6 +123,14 @@ fn the_extension_must_match_the_kind() {
 #[test]
 fn importing_twice_conflicts_unless_overwrite_is_asked_for() {
     let root = temp_dir("overwrite");
+    // **跑完就删** ✓（第 816 轮；`/tmp` 是 1.9 GB tmpfs ✓）
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
     let source = root.join("incoming");
     std::fs::create_dir_all(&source).unwrap();
     std::fs::write(source.join("a.png"), b"first").unwrap();
@@ -146,6 +170,14 @@ fn importing_twice_conflicts_unless_overwrite_is_asked_for() {
 #[test]
 fn a_name_cannot_escape_the_asset_directory() {
     let root = temp_dir("name");
+    // **跑完就删** ✓（第 816 轮；`/tmp` 是 1.9 GB tmpfs ✓）
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
     let source = root.join("incoming");
     std::fs::create_dir_all(&source).unwrap();
     std::fs::write(source.join("x.png"), b"x").unwrap();
@@ -167,6 +199,14 @@ fn a_name_cannot_escape_the_asset_directory() {
 #[test]
 fn an_unknown_kind_lists_the_supported_ones() {
     let root = temp_dir("kind");
+    // **跑完就删** ✓（第 816 轮；`/tmp` 是 1.9 GB tmpfs ✓）
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     let got = call(&mut workspace, "list_assets", json!({ "kind": "sticker" }));
     assert_eq!(got["ok"], json!(false), "{got}");
@@ -188,6 +228,14 @@ fn an_unknown_kind_lists_the_supported_ones() {
 #[test]
 fn every_bundled_asset_is_actually_usable() {
     let root = temp_dir("bundled_usable");
+    // **跑完就删** ✓（第 816 轮；`/tmp` 是 1.9 GB tmpfs ✓）
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
     let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
     let mut workspace = workspace(&root).with_assets_dir(Some(assets));
 
@@ -234,6 +282,14 @@ fn every_bundled_asset_is_actually_usable() {
 #[test]
 fn a_path_source_respects_the_same_sandbox_as_put_blob() {
     let root = temp_dir("sandbox");
+    // **跑完就删** ✓（第 816 轮；`/tmp` 是 1.9 GB tmpfs ✓）
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     let outside =
         std::env::temp_dir().join(format!("yanshi_asset_outside_{}.png", std::process::id()));
@@ -305,6 +361,14 @@ fn a_path_source_respects_the_same_sandbox_as_put_blob() {
 #[test]
 fn the_server_writing_tools_do_not_borrow_the_path_channel() {
     let root = temp_dir("internal_round_trip");
+    // **跑完就删** ✓（第 816 轮；`/tmp` 是 1.9 GB tmpfs ✓）
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
     let mut workspace = workspace(&root);
     let temp = std::env::temp_dir();
     let leftovers = || -> Vec<String> {
