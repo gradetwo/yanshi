@@ -350,5 +350,9 @@ jobs:
             echo "✗ 校验和条目数与归档数不一致 ⇒ 不许发布（宁可红，不发无法校验的包 ✗）" >&2
             exit 1
           fi
-          gh release upload "$TAG" SHA256SUMS --clobber
+          # **⇒ 必须显式给 `--repo`** ✗（v0.3.0 实测）：本作业**只下载产物、没 checkout** ✓
+          #   ⇒ 而 `gh` 会去**当前目录**找 `.git` 推断仓库 ⇒
+          #   `failed to run git: fatal: not a git repository` ✗ ⇒ 上传失败 ⇒ 整个发布红 ✓
+          #   ⇒ 而自检那一步（条目 4 ｜归档 4）**是过的** ✓ ⇒ 所以失败**只在最后一条命令** ✓
+          gh release upload "$TAG" SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
           echo "== 全部 $n_entries 个平台的校验和已汇总上传 ✓ =="

@@ -21013,3 +21013,27 @@ if sy1 > y0 && sy0 < y1 { row_lo = row_lo.min(oy); row_hi = row_hi.max(oy + 1); 
   跑他的包，**逐帧**记两个数：① **输出里真正变化的像素数** ② **blit 覆盖的输出像素数**
   ⇒ 若 ② ≥ ① **每帧都成立** ⇒ **没有缺口** ✓ ⇒ 回给他这个数 ✓
   ⇒ 若某帧 ② < ① ⇒ **那才是缺口** ✓ 再定位 ✓
+
+## 五百八十六、发布流程的真缺陷：`checksums` 作业**没 checkout** ⇒ `gh` 找不到 `.git`（第 1043 轮）
+
+**⇒ v0.3.0 的 Release 工作流实测**：
+```
+✓ prepare the matrix｜✓ package (linux-x86_64)｜✓ package (macos-arm64)
+✓ package (macos-x86_64)｜✓ package (windows-x86_64)
+✗ checksums (all platforms)   ← 只有它红
+```
+**⇒ 日志（决定性两行）**：
+```
+条目 4 ｜归档 4                     ← 自检**过了**（4 个包 4 条校验和 ✓）
+failed to run git: fatal: not a git repository (or any of the parent directories): .git
+##[error]Process completed with exit code 1.
+```
+⇒ **⇒ 根因**：`checksums` 作业**只 `actions/download-artifact`、没有 `actions/checkout`** ✓
+   ⇒ 而 `gh release upload` 会去**当前目录**找 `.git` 推断仓库 ✗ ⇒ 上传失败 ⇒ 整个发布红 ✓
+⇒ **⇒ 修法**：给那条命令加 `--repo "$GITHUB_REPOSITORY"` ✓（`gh release upload --help` 确认该标志存在 ✓）
+
+**⇒ 为什么这条值得修** ✗：**包都打出来了、校验和也自检通过** ✓ 却因为**最后一条命令**失败 ⇒
+   ⇒ 用户拿不到**多平台汇总的 SHA256SUMS** ✗ —— 而这块在 v0.2.1 就有"只有一行"的历史问题 ✓
+
+**⇒ 验证边界（如实 ✓）**：工作流改动**只能在下一个 tag 上验证** ✓（`--repo` 是文档标志，本机 `--help` 已确认 ✓）
+⇒ 同理 **v0.2.2 也是同一处红** ✓ ⇒ **不是 0.3.0 引入的** ✓
