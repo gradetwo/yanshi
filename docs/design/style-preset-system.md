@@ -112,9 +112,11 @@ x 相同、只插 y。布尔/字符串等非数值出现在 neutral 里且两端
 | sharpen（滤镜） | amount | 0 | 同上口径 |
 | curves | points | [[x, x], …] 恒等线 | 缺省恒等曲线 |
 
-**没有中性态的效果不许进风格段**：`black_and_white`（任何权重都全幅去色）、
-`invert`、`posterize`、`gradient_map`、`color_lut` 等没有「量」的效果，
-strength 插值对它们无定义。需要去色时用 saturation 插值到 0（见黑白预设的 notes）。
+**没有中性态的效果不许进风格段**：`invert`、`posterize`、`gradient_map`、
+`color_lut` 等没有「量」的效果，strength 插值对它们无定义。
+需要去色时用 saturation 插值到 0（见黑白预设的 notes）。
+注：`black_and_white` 自期 4 起有 `amount` 中性值（0 = 恒等），已不在此列；
+`black_white` 仍用 saturation 0.0 是期 5 像素等价 QA 的结论，非不得已。
 
 ### 5.3 钳制
 
@@ -418,6 +420,22 @@ split_toning 仅 STYLE_SPEC 点名弱者上调（cinema 0.06→0.13、forest
 定值（无展示行渲染，期 5 三格重渲时复核）。试点与批量逐套改动见
 期 3 包说明；对照渲染（旧内核成图 vs 新内核成图，12 行）随包。
 
+**续六：期 5 复核与 split_toning 内核落地（2026-10-24）。**
+- **split_toning 内核改 Q1-c**：通道先扩展 sRGB 编码、权重在显示 Y'
+  （Rec709 加权和）上取（mid ± 0.25 smoothstep，mid = 0.5 + balance × 0.25）、
+  着色在显示空间做（d + amount × tint）、解码回线性后按线性亮度比回写
+  （黑像素仍为黑）。实测门（灰阶 10 点 + 5 色块 × 7 套，显示空间 Δ）：
+  7 套现行参数 mean / max 全部过门（mean ≥ 0.004 或 max ≥ 0.01），故落地；
+  变体 A（显示空间）与变体 B（线性着色）互差亦大，选 A 的依据是 A 族
+  显示空间通则而非数值大小。设计 §9.2 第 1 项至此关闭。
+  14 套受影响预设的数据回调经 12 展示行 + 册外行目检否决：0.35 量组
+  （western_cool、lomo）未过强，其余行观感皆正，数据不动。
+- **brightness ×1.7 复核**：morandi / guofeng 两行中调皆落舒适带，无需改；
+  续五迁移通则中的「期 5 复核」句至此兑现。
+- **§9 新因子复核**：vignette ×0.5、dehaze ×1.3 皆不应用（行目检已接受现行值，
+  期 3 已兑现过同量级放大，再乘即超调）；selective ×1.8 不应用（期 3
+  重著录已按 ×~1.8–1.9 兑现，再乘为二次叠加）。
+
 ## 10. 测试门与三期划分
 
 **测试门**（`crates/yanshi-server/tests/style_preset_package.rs` + 展开器内单元测试）：
@@ -541,10 +559,13 @@ JSON 为准，status 字段未随重著录改动（评审工作流状态归 grad
 - 题材：黄昏/阴天人像、咖啡馆、静物、男性肖像；慎：明快题材、左端撞墙丢层次。
 - 旋钮：`dark` 压暗、`vignette` 暗角。
 
-### 13. 黑白 `black_white` — needs_review
+### 13. 黑白 `black_white` — established（已验证）
 - 题材：建筑、街头、纹理人像、形态强的风光；慎：靠色彩叙事的题材。
 - 配方要点：saturation 插值到 0 去色 + 强 S + clarity + 银盐颗粒。
-- unsupported：B&W Mix 逐色权重无中性态（会破坏 strength=0 恒等），列三期。
+- 期 5 目检（d700 桌游货架真照片三格行）：全幅真黑白、灰阶分离优秀；
+  saturation 0.0 与真 `black_and_white` op（amount 1.0、缺省 Rec709 权重）
+  双配方对照像素等价（mean_abs_diff 0.0001），故保留 saturation 实现。
+  逐色 B&W Mix 权重仍为未来选项。
 
 ### 14. 赛博朋克 `cyberpunk` — needs_review
 - 题材：雨夜霓虹（原片须真有光源）；慎：日光硬套 = 紫天毒绿。
