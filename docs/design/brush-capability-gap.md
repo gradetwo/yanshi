@@ -20059,3 +20059,22 @@ PACK_ATOM kind=import_image｜bitmap=Some("sha256:04e6d13d…")｜refs=1｜**blo
 **⇒ 净收益（本轮仍未白做）**：留下了两条**可复核的基线**：
 - `import_image` 一个 16×12 raw 块 ⇒ `blob_bytes_plain=768`（16×12×4 ✓）／`blob_bytes_packed=19`（zlib ✓）
 - 包里 `blobs=1`、`PACK_ENTRIES=7` ✓ ⇒ **最小包的结构**（`atoms.jsonl`／`meta.json`／`blobs/…`／… ✓）
+
+## 五百三十六、`缺 blob` 的计数器怎么算的 —— 下轮只需比**两个哈希**（第 907 轮）
+
+**⇒ 代码（`crates/yanshi-timelapse/src/main.rs:215-240`）**：它**扫 `atoms.jsonl` 里所有 64 位十六进制串** ✓
+```rust
+let missing_blobs = referenced.iter().filter(|h| !blobs.contains_key(*h)).collect();
+```
+⇒ `referenced` ＝ 扫出来的**所有** 64-hex ✓；`blobs` ＝ 包里 `blobs/` 的文件名（**plain hex** ✓，第 853 轮查明 ✓）
+
+**⇒ 于是 200 原子那次 `共引用 400 个／缺 200 个` 只可能是**：**每个原子贡献了 2 个哈希，其中 1 个不在包里** ✗
+⇒ 我的探针 `import_image` 里可能同时有 `bitmap.blob_hash` **和** 服务端补的 `refs.blobs` ✓
+⇒ 若这两个**字符串不同**（例如一个是 `sha256:<hex>`、另一个是**另一个哈希** ✓）⇒ 计数就会这样 ✓
+
+**⇒ 下一轮（一条断言就能定论 ✓）**：最小探针里把 `bitmap.blob_hash` 与 `refs.blobs[0]` **打出来比一比** ✓
+- **相等** ⇒ 那 400 是扫描器把**同一个哈希数了两遍**（`blob_hash` 与 `refs` 各一次 ✓）而 `missing` 的 200 另有原因 ✓
+- **不等** ⇒ **真缺陷**：原子里的两个引用指向不同 blob ✓（一个在包里、一个不在 ✓）
+
+**⇒ 这条的价值**：把「黑块」的调查从"渲染"移到"**清单**" ✓ —— 因为 `缺失 ⇒ 不画 ⇒ 缓冲区留零 ⇒ 黑矩形` ✅
+  这正是 `art` 第 131 次怀疑的方向 ✓（**"判据测的不是同一件事"** ✓）。
