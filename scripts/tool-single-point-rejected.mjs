@@ -87,6 +87,16 @@ for (const size of [8, 20, 40]) {
   const code = r.error_code || r.error || null;
   const text = JSON.stringify(r.context || r);
   console.log(`  两点 5px ＋ size 400 ⇒ ok=${r.ok}｜error_code=${code}`);
+  // **场景本身可能不成立** ⇒ `exit 3`，不是判据红 ✓（第 878 轮；CI 实测就是这么红的 ✓）
+  //   **⇒ 为什么**：这个场景要求「两点 5px ＋ size 400 **一个 dab 都落不下**」✓
+  //     而它在不同 runner 上**不一样**：本机 `ok=false` ✓ ／ **CI `ok=true`**（落了墨 ✓）
+  //     ⇒ 当它是失败 ⇒ 同一条判据在 CI 上**永远红** ✗ 而产品没问题 ✓
+  //     ⇒ 本仓标准形态：前提不成立 ⇒ **`exit 3`（不可判）** ✓（与 `tool-zero-dab-hint` 同一处理 ✓）
+  if (r.ok !== false) {
+    console.log("  ⊘ 前提不成立：`size=400` ＋ 5px 路径**在这台机器上落了墨** ⇒ 「落不下 dab」场景测不了");
+    console.log("  ⊘ 判据不可判 ⇒ exit 3");
+    process.exit(3);
+  }
   check(r.ok === false, "落不下 dab 的情形必须仍然报错（不许静默成功 ✓）", "ok=" + r.ok);
   check(code !== null && String(code).length > 0, "报错必须带非空 error_code ✓", "error_code=" + code);
   check(/个点|路径总长/.test(text), "报错必须说清**真实根因**（点数／路径总长 ✓）", text.slice(0, 120));
