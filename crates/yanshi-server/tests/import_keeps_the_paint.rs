@@ -90,9 +90,27 @@ fn an_imported_package_still_has_the_paint_in_it() {
                     .join("..")
                     .join("assets"),
             ));
-    restored
+    let imported = restored
         .import_project(&bytes, Some("doc_paint"))
         .expect("import_project");
+    // **明确说出"像素是从哪条路来的"** ✓（第 860 轮）
+    //   **⇒ 为什么**：我三次变异（不装位图／不补位图／不拷 blob）都**没能让这条判据红** ✓
+    //     ⇒ 说明"导入后有墨"至少有**两条**通路 ✓ ⇒ 那就把两条的计数**断言出来** ✓
+    //       · `blobs` ＝ 从包里**拷进 store** 的 blob 数 ✓
+    //       · `blobs_replayed` ＝ 依据原子里的笔刷参数**重放**出来的 blob 数 ✓
+    //     ⇒ **两者之和必须 ≥ 1** ✓（否则"有墨"没有来源 ✓）
+    let copied = imported["blobs"].as_u64().unwrap_or(0);
+    let replayed = imported["blobs_replayed"].as_u64().unwrap_or(0);
+    let unreplayable = imported["blobs_unreplayable"].as_u64().unwrap_or(0);
+    eprintln!("导入来源：包里拷入 {copied}｜重放 {replayed}｜补不回来 {unreplayable}");
+    assert!(
+        copied + replayed >= 1,
+        "导入后画面有墨，那墨必须**有来源**（拷入 {copied} ＋ 重放 {replayed}）：{imported}"
+    );
+    assert_eq!(
+        unreplayable, 0,
+        "这个包里每一块都应当能补回来（补不回来的会少一笔）：{imported}"
+    );
     let mut ctx2 = ToolContext::new(&mut restored, "doc_paint", "human:1", "s")
         .with_owner(true)
         .with_wait_for_render(true, 8_000);
