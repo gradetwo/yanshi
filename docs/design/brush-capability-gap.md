@@ -18529,3 +18529,21 @@ apply 2 后 frame()：黑 0
 2. 或者他们用**当前 tip** 重跑一次，把带 `YANSHI_TIMELAPSE_PROBE=1` 的**分段账那一行**贴回来 ✓
    （那行现在会打印 `黑块 M（缩小前全零 A／缩小后全零 B）｜shrink 放弃 K 个原子（原因 …）` ✓）；
 3. 或者他们的**输出帧文件名**与 `(x,y)` 位置（黑块在哪几个 tile ✓）⇒ 我能反推是"没写"还是"写黑" ✓。
+
+## 四百九十五、known-red 审计：**28 → 27**，其余三条实测仍红（第 864–865 轮）
+
+**⇒ 方法**：`bash scripts/run-criteria-local.sh scripts/<名字>.mjs` ⇒ 看**退出码** ✓
+（`run-criteria.sh` 自己会把"名单里但没失败"的报成**陈旧候选** ✓ —— 而陈旧的会**藏住将来的真红** ✗）
+
+| 条目 | 退出码 | 结论 |
+|---|---|---|
+| `tool-single-point-rejected.mjs` | **0** ✓ | **已修好** ⇒ **移出名单** ✓（`painted_pixels=696` ✓）|
+| `tool-bitmap-decode-scope.mjs` | 1 | 仍红 ✓：`解码 1,195,520 B ＝ 73× 区域像素` ⇒ **整幅预解码** ✓ 留着 ✓ |
+| `tool-struct-mutation-census.mjs` | 1 | 仍红 ✓ 留着 ✓ |
+| `tool-reference-overlay.mjs` | 1 | 仍红 ✓：`参考图功能不存在`（`set_reference` 收下参数但功能不存在 ✓）⇒ 留着 ✓ |
+
+**⇒ 名单条数：28 → 27** ✓（可复核：`grep -cE "^[a-z][a-z0-9._-]+\.mjs" scripts/criteria-known-red.txt` ✓）
+
+**⇒ 下一步（按性价比）**：`tool-reference-overlay` 是**真缺功能**（不是环境）✓ ——
+它比"再猜黑块"更值得做：判据已经在，缺的是实现 ✓。
+但**它是一整个功能**（参考图叠加）⇒ 要独立一轮设计（存哪儿、跟不跟着文档走 ✓、导出时要不要合成 ✓）。
