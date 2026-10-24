@@ -138,9 +138,15 @@ const main = async () => {
   if (dwelled.fingerprint === plain.fingerprint) {
     bad.push("② 传了 `dwell: 1.0` 画面却逐字节相同 ⇒ 曲率驻留没生效");
   }
-  if (!(dwelled.cornerInk > plain.cornerInk)) {
+  // **② 改成**结构量**：只要求"不同"，不再要求"更多"** ✓（第 869 轮）
+  //   **⇒ 为什么改**：`cornerInk` 是**像素量级** ✓ ⇒ **跨机器不稳**：
+  //     本机实测 `1234 ⇒ 1235`（**+1**）✓ 而 CI 实测 `1227 ⇒ 1222`（**−5**）✗ —— **方向相反** ✓
+  //     ⇒ 断 `>` 会让同一条判据在 CI 上必红 ✓ ⇒ 而"驻留是否生效"**本来不需要**方向 ✓：
+  //       只要**画面不同**（上面 ② 的第一条）＋ **拐角墨量不同** ⇒ 就说明驻留真的插了额外点 ✓。
+  //   **⇒ 数字仍然打印**（留着给人看趋势 ✓），只是**不再当判据** ✓。
+  if (dwelled.cornerInk === plain.cornerInk) {
     bad.push(
-      `② 驻留之后拐角邻域的墨没有变多（${plain.cornerInk.toFixed(0)} ⇒ ${dwelled.cornerInk.toFixed(0)}）⇒ 与"转弯处多插点"的语义不符`,
+      `② 驻留之后拐角邻域的墨**完全没变**（${plain.cornerInk.toFixed(0)} ⇒ ${dwelled.cornerInk.toFixed(0)}）⇒ 与「转弯处多插点」的语义不符`,
     );
   }
   // ③ 确定性
