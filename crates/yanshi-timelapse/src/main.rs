@@ -522,7 +522,16 @@ fn main() -> Result<()> {
         let t_shrink = Instant::now();
         // **降采样回放** ✓：这一行的几何按输出尺寸改写（位图也一起降采样 ✓）
         let shrunk: Option<String> = if shrink {
-            shrink_atom(line, &blobs, play_w, play_h, doc_w, doc_h, &mut timeline)
+            shrink_atom(
+                line,
+                &blobs,
+                play_w,
+                play_h,
+                doc_w,
+                doc_h,
+                &mut timeline,
+                &mut account.shrink_black_blocks,
+            )
         } else {
             None
         };
@@ -650,13 +659,17 @@ fn main() -> Result<()> {
         );
         println!("  ★ 缓存账 ★ below 克隆 {cloned} 条 tile（脏 tile 是 {dirty_tiles} 条 ⇒ 应当远小于它 ✓）");
         println!(
-            "  ★ 分段账（ms）★ apply {:.0}｜shrink {:.0}｜render {:.0}（每帧中位 {:.1}）｜scale {:.0}｜write {:.0}",
+            "  ★ 分段账（ms）★ apply {:.0}｜shrink {:.0}｜render {:.0}（每帧中位 {:.1}）｜scale {:.0}｜write {:.0}｜\
+             黑块 {}（缩小前全零 {}／缩小后全零 {}）",
             ms(account.apply_ns),
             ms(account.shrink_ns),
             ms(account.render_ns),
             median,
             ms(account.scale_ns),
-            ms(account.write_ns)
+            ms(account.write_ns),
+            account.shrink_black_blocks[0] + account.shrink_black_blocks[1],
+            account.shrink_black_blocks[0],
+            account.shrink_black_blocks[1]
         );
     }
     if apply_failures > 0 {
@@ -723,6 +736,8 @@ struct Account {
     apply_ns: u128,
     /// **降采样那一步的纳秒** ✓（第 804 轮）—— 它**不是**"应用原子"的成本 ✓
     shrink_ns: u128,
+    /// **黑块计数** ✓（第 847 轮）：`[0]` 缩小前就全零／`[1]` 缩小后全零 ✓
+    shrink_black_blocks: [u64; 2],
     /// 内核渲染的总纳秒 ✓。
     render_ns: u128,
     /// 缩放 ＋ 去 alpha 的总纳秒 ✓。
@@ -1012,6 +1027,11 @@ mod encoder_tests {
 ///   所以调用方在预检查里就该拦住，这里再兜一层 ✓。
 ///
 /// 返回 `None` ⇒ 这一行不能缩 ⇒ 调用方用原始行（**几何不再一致** ⇒ 因此只在预检查通过时才会走到这里 ✓）。
+// **参数多一个（8 个）** ⇒ clippy 的 `too_many_arguments` 会报 ✓
+//   ⇒ 这不是"能读懂的边界"问题，而是**这一版只加了一个计数出口** ✓
+//   ⇒ 用 `allow` 而不是拆结构体：拆了会把 8 个参数变成 1 个结构体 + 8 个字段的搬运 ✓
+//     （下一轮若再加参数，就该拆成 `ShrinkCtx` ✓ —— 那时 `allow` 也一并删掉 ✓）
+#[allow(clippy::too_many_arguments)]
 fn shrink_atom(
     line: &str,
     blobs: &HashMap<String, Vec<u8>>,
@@ -1020,6 +1040,9 @@ fn shrink_atom(
     doc_w: u32,
     doc_h: u32,
     timeline: &mut yanshi_timelapse::Timeline,
+    // **黑块计数** ✓（第 847 轮；外部 `art` 第 127 次的「5 块纯黑矩形」）
+    //   `[0]` = **缩小前**就全零的块数 ✓；`[1]` = **缩小后**全零的块数 ✓
+    black_blocks: &mut [u64; 2],
 ) -> Option<String> {
     let sx = f64::from(play_w) / f64::from(doc_w);
     let sy = f64::from(play_h) / f64::from(doc_h);
@@ -1116,6 +1139,16 @@ fn shrink_atom(
                 entry.insert("width".to_owned(), Value::from(dst_w));
                 entry.insert("height".to_owned(), Value::from(dst_h));
                 entry.insert("size".to_owned(), Value::from(small.len() as u64));
+                // **黑块计数** ✓：位图**本来**就全零 ⇒ [0]；**缩完**变全零 ⇒ [1] ✓
+                //   **⇒ 为什么需要**：他们的末帧是 **5 块纯黑矩形** ✓ —— 与"5 个位图缩成全零"吻合 ✓
+                //     而现有保护只拦"`raw` 太短"✗ ⇒ **长度够但内容全零拦不住** ✗
+                //     ⇒ 有了这两个数，就能把他们的「5」与我的计数对账 ✓。
+                if raw.iter().all(|byte| *byte == 0) {
+                    black_blocks[0] += 1;
+                }
+                if small.iter().all(|byte| *byte == 0) {
+                    black_blocks[1] += 1;
+                }
             }
             if let Some(region) = payload.get_mut("region").and_then(Value::as_object_mut) {
                 // **按**边缘**取整** ✓（第 838 轮；`art` 待上游的「`shrink` 方块缺口」）

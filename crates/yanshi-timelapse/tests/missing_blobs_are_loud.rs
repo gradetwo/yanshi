@@ -326,6 +326,13 @@ fn shrink_time_is_accounted_separately_from_apply() {
         stdout.contains("shrink"),
         "分段账里必须**单独**列出 `shrink`（否则它会被算进 apply）：\n{stdout}"
     );
+    // **黑块计数必须在分段账里** ✓（第 847 轮；`art` 第 127 次的「5 块纯黑矩形」）
+    //   ⇒ 他们说末帧有 5 块纯黑，而"5 个位图缩成全零"是最吻合的解释 ✓
+    //   ⇒ 这两个数让他们那个「5」能与我的计数**对账** ✓。
+    assert!(
+        stdout.contains("黑块") && stdout.contains("缩小前全零") && stdout.contains("缩小后全零"),
+        "分段账里必须有**黑块**计数（缩小前全零／缩小后全零）：\n{stdout}"
+    );
     // **不断言 `shrink > 0`** ✗（第 804 轮实测）：`shrink_atom` 对 `import_image` 只**改几何**
     //   （bbox 换成输出尺寸 ✓）⇒ 位图缩放留给渲染器 ✓ ⇒ 它**本来就可能是 0 毫秒** ✓
     //   （实测 1536² 的位图也是 `shrink 0` ✓，且 stderr 里**没有**「这一行没能缩小」✓）
