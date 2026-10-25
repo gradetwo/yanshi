@@ -6569,3 +6569,35 @@ if sy1 > y0 && sy0 < y1 { … }                                        // 判"�
 3. **你期望的颜色 vs 实际颜色**
 
 ⇒ 有了这三样，我可以在那个包上**逐帧比对**并给出"该像素何时被写"的账 ✓
+
+## 对 `qoder` 那份报告（`yanshi_issue.md`）的**逐条实测答复**（第 1099 轮；版本 ≥ 0.3.0）
+
+**⇒ 说明**：我此前**一直在读 `art` 的文件，没有真正比对过 `qoder` 那份** ✗ ——
+基线存的是**截断抓取**（33 KB），而真文件 **141,575 字节**。第 1088 轮已换基线并加了规矩（报"未变"必须附两侧 md5）。
+**⇒ 本轮起逐条实测**，下面每条都附**命令**与**数字**，你可以直接复跑。
+
+| 编号 | 你的结论 | 我在 0.3.0 上的实测 | 判定 |
+|---|---|---|---|
+| **D172** | 缺 blob 的包 ⇒ `rc=0`、一笔不落、无警告 ⇒ 空影片 | 改前：`rc=0`、mp4 **3,726 字节**、画面全空；**改后 `rc=2`**，并打印「包缺 400 个被引用的 blob ⇒ 画面必然不完整 ⇒ 不交付」 | ✅ **成立，已修**（`6ebdf162`）|
+| **D10** | `get_document` 对不存在的 `doc_id` **创建**文档 | `POST /api/tools?doc=b1_never` ⇒ `error_code=reference_not_found`、`ok=false`；`list_documents` 里**没有** `b1_never`（计数 **0**） | ❌ **当前版本不成立**（请用 ≥0.3.0 复测）|
+| **D5** | `kind` 对笔触也报 `import_image` ⇒ 不能作来源证明 | `list_atoms` 响应自带说明：「**`kind` 是存储形态**（笔触在库里也是 `import_image`）⇒ 判来源请看 **`origin`**（drawn/imported/generated/system）」 | ✅ **已给对策**（请改用 `origin`）|
+| **D7** | `list_atoms(limit=2000)` ⇒ `returned=500 total=None truncated=True` | 实测回执含 **`limit: 500`**（夹紧后自报）、`has_more`、以及 **`total`**（= 匹配总数） | ❌ **不成立**（`total` 早已加；我上一轮曾误报"没有 total"，原因是我 `head -c 400` 截断了输出，键按字母序排 `total` 在最后 ✗ 已纠正）|
+| **D12** | `classic-knife` 在 `hardness=1.0` ＋ `opacity=1.0` ⇒ 一笔不落、仍 `ok=true` | `hardness=1.0` ⇒ **6494 px**、`hardness=0.2` ⇒ **3237 px**（同笔同尺寸同路径） | ❌ **不成立**（且参数确实被读：两数不同）|
+
+**⇒ 新增的判据**（防回归）：
+```rust
+// crates/yanshi-server/tests/brush_stroke.rs
+classic_knife_paints_at_full_hardness_and_reads_hardness
+  ① painted > 0        // 合法参数 + 成功回执 + 零产出 = 静默失败
+  ② soft < hard        // 证明 hardness 真的被读（被忽略 ⇒ 相等 ⇒ 红）
+```
+```rust
+// crates/yanshi-timelapse：缺 blob ⇒ exit(2)（不再产出"看起来正常的空影片"）
+```
+
+**⇒ 我需要你做的两件事**：
+1. **D12 请给一次完整调用**（工具名 + 全部参数 + 笔刷文件版本）：我的 `oil` 名称**解析不到**（`ok=false`），
+   说明你那侧用的**参数名或笔刷名与我不同** ⇒ 若你的 `hardness` 是**按笔刷设置对象**传的（而不是顶层参数），
+   那我们测的**不是同一条路径** ✓ ⇒ **请贴出那一次请求体**。
+2. **其余条目**（`D139` 静默区、`D15` 椭圆 dab 非旋转等变、`D188` SHRINK 说明）我按顺序继续实测，
+   但**请标注每条你实测的版本或提交号** —— 这次 5 条里有 3 条在新版上已经不成立 ✓
