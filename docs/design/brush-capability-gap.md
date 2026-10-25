@@ -21412,3 +21412,22 @@ D12：knife painted=Number(6494) ok=Bool(true)｜oil painted=Null ok=Bool(false)
 **⇒ 下一轮（决定性）**：同一支笔，`hardness=0.2` 与 `hardness=1.0` 各跑一次 ✓
 ⇒ 若**像素数不同** ⇒ 参数确实被读 ✓ ⇒ 那么 D12 = **不成立** ✓（回给他：knife 落 6494 px，请用 ≥0.3.0 复测 ✓）
 ⇒ 若**完全相同** ⇒ 参数被忽略 ✗ ⇒ **那是比 D12 更严重的问题**（另一类静默降级 ✓）
+
+## 六百零五、**D15 还没测到**：`elliptical_dab_*` 不是**顶层** `brush_stroke` 参数（第 1100 轮）
+
+**⇒ 探针（`d15_elliptical_angle_is_relative_or_absolute`，只打印 ✓）实测**：
+```
+D15：横笔 0° painted=Null ok=Bool(false)｜竖笔 90° painted=Null ok=Bool(false)
+```
+⇒ **两组都 `ok=false`** ✗ ⇒ 说明我把 `elliptical_dab_ratio` / `elliptical_dab_angle` 当**顶层参数**传**不被接受** ✓
+⇒ 而 `tools.rs:10809` 有 `"verified_settings": ["elliptical_dab_ratio", "elliptical_dab_angle"]` ✓
+   ⇒ 所以它们是**笔刷设置**（`settings` 对象／按笔刷覆盖 ✓），不是本次笔画的参数 ✓
+
+**⇒ 所以这一轮**没有**对 D15 下任何结论** ✓（**没测到 ≠ 不存在** ✓，按本仓规矩写清"我还缺什么"）✓
+
+**⇒ 下一轮**：
+1. 读 `tools.rs:10800` 附近，找到**设置覆盖**的正确参数形状（`settings`？`brush_overrides`？）✓
+2. 用**两条等价笔画**（横＋0° vs 竖＋90°，同笔同参数同长度 ✓）各测 `painted_pixels`：
+   - **相等** ⇒ 角度是**相对笔画方向** ✓ ⇒ **D15 不成立**
+   - **差 ~2.7 倍** ⇒ 角度是**绝对角** ✗ ⇒ **D15 成立** ⇒ 先写判据（同笔旋转 90° ⇒ 落墨量相同 ±5%）再改 ✓
+3. 顺便：把 `d15_*` 那个探针**改成判据**或**删掉**（探针不该长期留在测试里 ✓）
