@@ -98,7 +98,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     // **附录五（P0）**：试笔触 —— 批量但只给一支也能跑（示例拿最小可用形状）。
     (
         "swatch_brush_strokes",
-        r#"{"brushes":["Blender"],"size":24}"#,
+        // **`Blender` 是涂抹类** ⇒ 空画布上没有颜色可抹 ⇒ A6 之后这个示例会 `ok=false` ✗
+        //   （第 1132 轮整合实测：`tool-example-acceptance` 唯一被拒的示例就是它）
+        //   ⇒ 换成能沉积的 `Classic_Paint` ✓（示例要演示"试笔触"，不是"试涂抹"）。
+        r#"{"brushes":["Classic_Paint"],"size":24}"#,
     ),
     // **示例必须是"语法合法"的哈希** ✗（第 41 轮实测 ✓）：原来是占位符 `"x"` ✗
     // ⇒ 被 `write_set_reference` 的**形状校验**拒掉（"blob_hash 必须是 sha256:<64 位十六进制>" ✓）

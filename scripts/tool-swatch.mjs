@@ -52,7 +52,10 @@ const main = async () => {
   const args = {
     // **∴ 别用纯揉合笔刷 ✗**（`Blender` 在空画布上什么都不沉积 ✓ 那是**预期**行为 ✓
     //   ⇒ 产品对单个失败会如实记在该条上、继续跑其余 ✓）⇒ **∴ 这里用能沉积颜色的 ✓** ★
-    brushes: ["Classic_Paint", "blending", "100%_Opaque"],
+    // **`blending` 是涂抹类** ✗（第 1132 轮实测）：空画布上没有颜色可抹 ⇒ 4 条 precondition_failed
+    //   ⇒ A6 之后顶层 `ok=false` / HTTP 400 ⇒ 判据连 ② 都走不到 ✗。
+    //   ⇒ 换成三支**都能沉积**的（`Classic_Paint` / `2B_pencil` / `100%_Opaque`）✓。
+    brushes: ["Classic_Paint", "2B_pencil.myb", "100%_Opaque"],
     colors: ["#2e4d8f", "#c8a06a"],
     paths: [
       [[40, 60, 0.2], [120, 50, 0.9], [200, 70, 0.3]],

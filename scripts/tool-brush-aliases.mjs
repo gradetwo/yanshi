@@ -19,7 +19,22 @@ const swatch = async (params) => {
   const reply = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ brushes: ["oil-mop"], brush_params: params }),
+    // **必须用能**沉积**的笔刷** ✓（第 1132 轮整合 A6 后）：
+    //   `oil-mop` 是涂抹类（smudge）⇒ 空画布上**没有颜色可抹** ⇒ 单条 precondition_failed
+    //   ⇒ A6 之后顶层 `ok=false` / HTTP 400 ⇒ 这里连图都拿不到 ✗。
+    //   ⇒ 换成 `Classic_Paint`（能沉积 ✓）⇒ 四组 alias/真名都 200、可逐字节比 ✓。
+    // **读画布 ＋ 一条跨边界的路径** ✓（第 1132 轮）：`smudge_amount` 组会把笔刷
+    //   变成涂抹类 ⇒ 必须要**有变化的**底色才抹得出东西（纯灰底＝抹了也没变化 ⇒
+    //   仍是 `precondition_failed` ✗，实测过）。
+    //   ⇒ 判据自己先铺**左右两半不同灰度**，再 `read_canvas:true` ＋ 一条跨边界的路径 ✓。
+    //   ⇒ swatch 现在会透传 `read_canvas`（本轮补的入口）✓。
+    body: JSON.stringify({
+      brushes: ["Classic_Paint"],
+      brush_params: params,
+      read_canvas: true,
+      size: 24,
+      paths: [[[130, 120, 0.8], [190, 120, 0.8]]],
+    }),
   });
   return { status: reply.status, body: await reply.json() };
 };
@@ -56,6 +71,22 @@ let bad = 0;
     console.log(`  ${same ? "✓" : "✗"} ${alias} 的展开项：源码 ${JSON.stringify(declared)}｜期望 ${JSON.stringify(expected)}`);
     if (!same) bad += 1;
   }
+}
+// **铺一块"有变化"的底** ✓（第 1132 轮）：涂抹类（smudge>0）只在**有颜色差**的地方
+//   抹得出东西 ⇒ 纯灰底会让它仍然报 precondition_failed ✗。
+//   这块底只属于本判据的夹具；swatch 本身仍不写文档（`tool-swatch.mjs` ③ 守）。
+{
+  const call = async (tool, args) => {
+    const r = await fetch(`${base}/api/tools/${tool}?doc=${encodeURIComponent(doc)}&token=${encodeURIComponent(token)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(args),
+    });
+    return r.json();
+  };
+  await call("create_layer", { layer_id: "alias_base", name: "alias_base" });
+  await call("fill", { layer_id: "alias_base", data: { color: { r: 20, g: 20, b: 20, a: 255 }, region: { x: 0, y: 0, w: 160, h: 240 } } });
+  await call("fill", { layer_id: "alias_base", data: { color: { r: 230, g: 230, b: 230, a: 255 }, region: { x: 160, y: 0, w: 160, h: 240 } } });
 }
 for (const [alias, real] of GROUPS) {
   const viaAlias = await swatch({ [alias]: 0.8 });

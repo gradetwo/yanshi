@@ -9,6 +9,14 @@ a parameter name was to read the eleven thousand line tool source. The same rout
 what a missing tool meant: an unknown name and a tool whose group is disabled used to produce one identical message,
 and it now lists the enabled groups and points at the catalogue and at the all profiles switch.
 
+Two reply fields come from the entry layer rather than from any tool: created and opened. A write tool that may
+create its document on demand now reports created when this call is what created the document and opened when it
+already existed; tools that create or import documents themselves carry their own values and are not overwritten.
+They describe which document the call ran against, not what the tool produced, so they are documented here once
+instead of in every one of the tool descriptions. The same holds for the framework level request fields doc_id,
+actor and session: every tool schema accepts them, the entry point consumes them before the tool runs, and an
+explicit value sticks as the default for later calls without a document.
+
 The field that looks like "how much ink landed" measures a footprint, not a change. brush_stroke reports
 ink_footprint_pixels, the number of pixels whose alpha is not zero after compositing, and keeps ink_pixels as an alias
 with the same value for callers who already read it. Because alpha there comes from coverage times opacity, a stroke

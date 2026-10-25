@@ -21916,3 +21916,24 @@ esac
 B4 fail-closed、B3 响亮报错都**留给上游裁决**；
 B2 抬上限后 80MP 整幅导入在 8GB 盒上 OOM（≈7GB anon-rss），需大内存机；
 B4 仍有 4 支镜头 unmatched（3 支是 rawler 不上报镜头名、1 支上游 Lensfun 无条目）。
+
+### 622-补：合并后的**首跑 CI 红了 6 条**，逐条查明并修（第 1132 轮）
+
+**⇒ 没有一条是"补丁写错了"** ✓，全是**补丁进本仓后的衔接**（A6 新语义／文档口径／编排目录）：
+
+| # | 判据 | 症状 | 根因 | 修法 |
+|---|---|---|---|---|
+| 1 | `tool-swatch` | 12 组合里 4 条 `precondition_failed`，A6 后顶层 400 | `blending` 是**涂抹类**，空画布上没有颜色可抹 | 换成 `2B_pencil.myb`（三支都能沉积）✓ |
+| 2 | `tool-brush-aliases` | `smudge_amount` 组 400 | 同上；且**纯灰底**抹了也没变化 ⇒ 仍算零墨 | 换成 `Classic_Paint` ＋ 判据自铺**左右两半不同灰度** ＋ `read_canvas:true` ＋ 跨边界路径 ✓ |
+| 3 | `tool-example-acceptance` | `swatch_brush_strokes` 示例唯一被拒 | 示例写的是 `Blender`（涂抹类） | 改成 `Classic_Paint` ✓（现在 137 跑通／0 被拒／66 前置）|
+| 4 | `tool-export-missing-body` | 7 条断言红，`precondition_failed: 只能写进导出目录` | 判据用 `YANSHI_EXPORT_DIR`（`run-criteria.sh` 给的是 `$ROOT_DIR`），而**服务端沙箱**是 `$ROOT_DIR/work/exports` ⇒ 两侧不同目录；本机 runner 恰好同目录 ⇒ **假绿** | 判据改用**系统临时目录**（产品明确允许）＋ `trackTemp` ✓ |
+| 5 | `tool-engine-capabilities` | `medium_params` 少 `color_space` | C1 给 `medium_stroke` 加了参数，但**能力表那张手写清单没同步** | `tools.rs` 的 `medium_params.names` 补 `color_space`（＋枚举说明）✓ |
+| 6 | `tool-fit-background-field` | ⑬ 有字段没写进说明：`created`/`opened` | B6 的入口层字段没有逐工具描述（203 个工具不该重复写） | 判据把二者归入**框架字段** ＋ `docs/tools.md` 全局写一段 ✓ |
+
+**⇒ 顺带补的一个真入口**：涂抹类笔刷的错误消息一直写着「用 `swatch_brush_strokes` 试它之前，也先铺一层底色」**✗
+而 swatch 原来没有任何参数能铺底/读画布** ⇒ 那条建议**做不到** ✓（**"文档写了一个不存在的入口"**）
+⇒ swatch 现在透传 `background`／`read_canvas`／`opacity`／`hardness`／`color_to` 给 `brush_preview` ✓
+（缺省行为一字不变 ✓）。判据 ② 正是靠它 ✓。
+
+**⇒ 本机复跑**：上表 6 条全 **RC=0**（含 `tool-example-acceptance` 的 137/0/66）；
+`tool-swatch` 12 组合全出图、`tool-brush-aliases` 四组逐字节等价、`tool-schema-params-census` 223 名全分类 ✓。

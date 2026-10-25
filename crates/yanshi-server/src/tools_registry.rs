@@ -2529,6 +2529,13 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("colors", Array, false, "要试的颜色（#RRGGBB 或 {r,g,b,a}；缺省用当前/默认色）"),
             param!("paths", Array, false, "要试的路径（每条是 [[x,y,pressure],…]；缺省用内置试笔路径）"),
             param!("size", Number, false, "笔尖直径（像素，缺省 24，上限 512）"),
+            // **涂抹类笔刷要先有颜色可抹** ⇒ 试笔这一层也要能铺底/读画布 ✓
+            //   （第 1132 轮补：此前给涂抹笔刷的错误消息写着"先铺底色再试"，而这里没有入口 ✗）
+            param!("background", Any, false, "预览底色（写法同 color）：**先把预览区铺满它再落笔** ⇒ 涂抹类笔刷（如 `oil-mop`）在试笔时也有东西可抹 ✓；缺省纯白底（与以前逐字节相同 ✓）"),
+            param!("read_canvas", Boolean, false, "true ⇒ 预览读**文档已有的可见像素**（同 brush_preview.read_canvas ✓）⇒ 涂抹/混色笔刷能在「已画的画面」上试 ✓；缺省 false"),
+            param!("opacity", Number, false, "不透明度覆盖 0–1（同 brush_stroke ✓）"),
+            param!("hardness", Number, false, "硬度覆盖 0–1（同 brush_stroke ✓）"),
+            param!("color_to", Any, false, "末端色（同 brush_stroke 的 color_to ✓）⇒ 预览里也能试一笔多色"),
             param!("smooth", Boolean, false, "把路径当 Catmull-Rom 平滑（同 brush_stroke.smooth）"),
             param!("include_image", Boolean, false, "true ⇒ 每个 swatch 额外给一个 `image` 块（base64 PNG ✓）⇒ **MCP Agent 能直接看到图** ✓（外部复测 QY-G01；**最多 8 张**，超了给 `image_skipped` ✓）"),
             param!("output_path", String, false, "给了（**目录**，须在导出目录或系统临时目录内，守卫同 export_png）⇒ 每支试笔的 PNG 落盘为 swatch_<序号>.png（仍受 8 张上限），每条给 `image_file` 而非内嵌 base64；与 include_image 同给时文件形态优先"),

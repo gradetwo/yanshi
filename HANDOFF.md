@@ -53,6 +53,11 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    CI 补 stable-only 的 `raw` 测试步（否则 `raw_import.rs` 编成空文件）。
    本机：workspace clippy ＋ fmt 绿；server lib 186、定向 32、raw/render/http(86)/mcp 全过；**14 条新判据全 RC=0**。
    **全量 workspace 测试留 CI**（提交信息已写）。
+   **⇒ 首跑 CI 红了 6 条，已全部修**（不是补丁写错，是衔接；逐条见台账 §622-补）：
+   `tool-swatch`（blending 是涂抹类）、`tool-brush-aliases`（同类，另需**有变化**的底图）、
+   `tool-example-acceptance`（示例用了 Blender）、`tool-export-missing-body`（导出目录 env 与服务端沙箱不同）、
+   `tool-engine-capabilities`（`medium_params` 少 `color_space`）、`tool-fit-background-field`（`created`/`opened` 是框架字段）。
+   顺带补了 swatch 的 `background`/`read_canvas` 透传（错误消息早就建议"先铺底再试"，但原来没有入口 ✗）。
 
 ## 三、下一步（按优先序，都有精确入口）
 

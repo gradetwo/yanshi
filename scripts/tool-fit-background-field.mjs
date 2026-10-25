@@ -528,8 +528,13 @@ if (outsideBefore && outsideAfter && outsideBefore[0] === outsideAfter[0]) {
     const rr = await pD("fit_background_field", {
       layer_id: "L", mask: { type: "rect", x: 150, y: 100, w: 100, h: 80 }, degree: 2 });
     // 标准变更字段不算业务字段
+    // **`created` / `opened` 是入口层框架字段** ✓（第 1132 轮整合 B6）：
+    //   ⇒ MCP/HTTP 在**会预建文档**的工具回执里插它们（`created:!existed` / `opened:existed`）
+    //     ⇒ 它们回答"这次调用是不是新建/打开了一份文档"，不是这个工具的业务输出 ✓
+    //     ⇒ 与 `doc_id`/`actor`/`session`（C2）同类：**全局写一次**（`docs/tools.md`）✓
+    //       ⇒ 不是每个工具的 description 各写一遍（203 个工具 × 2 个字段 ✗）
     const standard = new Set(["ok", "timings", "atom_id", "changeset_id", "head",
-      "dirty_bbox", "object_id", "layer_id", "objects"]);
+      "dirty_bbox", "object_id", "layer_id", "objects", "created", "opened"]);
     const keys = Object.keys(rr || {}).filter((k) => !standard.has(k));
     const missing = keys.filter((k) => !desc.includes(k));
     if (keys.length > 0 && missing.length === 0) {

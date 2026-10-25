@@ -10841,10 +10841,13 @@ fn read_list_engine_capabilities(_ctx: &mut ToolContext<'_>, _args: &Value) -> R
         // **介质那条路的参数** ✓（**∴ 与 `brush_stroke` 的 `.myb` 规范名是两套 ✓**）。
         // **∴ 判据 `tool-engine-capabilities.mjs` 会读 `medium_stroke` 的 schema 与这里逐项比 ✓**（防漂移 ✓）。
         "medium_params": {
-            "names": ["color", "color_mixing", "color_to", "layer_id", "load", "medium", "object_id", "points", "size", "smooth", "symmetry", "texture", "wetness"],
+            // **C1（第 1132 轮整合）**：`medium_stroke` 的 schema 加了 `color_space`
+            //   ⇒ 这张表**必须同步**，否则 `tool-engine-capabilities.mjs` 会红 ✓
+            "names": ["color", "color_mixing", "color_space", "color_to", "layer_id", "load", "medium", "object_id", "points", "size", "smooth", "symmetry", "texture", "wetness"],
             "load": "0..1（缺省 1；越画越少）",
             "wetness": "0..1（缺省 0.4）",
             "color_mixing": ["rgb", "linear", "pigment"],
+            "color_space": ["srgb", "linear"],
         },
         "brush_settings": brush_settings,
         "counts": {
@@ -18108,6 +18111,23 @@ fn write_swatch_brush_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result
                 //   `preview_size` 那条判据传了 `brush_params` 却拿不到图 => 退出码 3 ✗）。
                 if let Some(params) = args.get("brush_params") {
                     sub.insert("brush_params".to_owned(), params.clone());
+                }
+                // **★ 透传"铺底/读画布"这几个预览开关** ✓（第 1132 轮整合 A6 后补）：
+                //   ⇒ `brush_preview` 早就有 `background`／`read_canvas`／`opacity`／`hardness`／`color_to` ✓
+                //     ＋ **涂抹类笔刷的错误消息自己就写着"用 swatch 试它之前先铺一层底色"** ✗
+                //       ⇒ 而 swatch **没有**任何参数能铺底 ⇒ **那条建议当时是做不到的** ✗
+                //   ⇒ 现在透传 ⇒ "先铺后揉"在试笔这一层也能做 ✓
+                //   **代价**：不给这些参数时行为一字不变 ✓（缺省仍白底、不读画布 ✓）。
+                for key in [
+                    "background",
+                    "read_canvas",
+                    "opacity",
+                    "hardness",
+                    "color_to",
+                ] {
+                    if let Some(value) = args.get(key) {
+                        sub.insert(key.to_owned(), value.clone());
+                    }
                 }
                 // 外部复测 QY-G01：把 include_image 透传下去，但**最多 8 张**（超了不说"没有"，说原因）
                 // 外部复测 QY-G01：把 include_image 透传下去，但**最多 8 张**

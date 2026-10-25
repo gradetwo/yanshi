@@ -44,7 +44,14 @@ if (!base) {
   process.exit(2);
 }
 const tag = `b2exp-${process.pid}-${Date.now() % 100000}`;
-const exportDir = process.env.YANSHI_EXPORT_DIR || join(process.cwd(), "exports");
+// **导出目录必须是本判据自己造的临时目录** ✓（第 1132 轮整合时修）：
+//   ⇒ 原来用 `YANSHI_EXPORT_DIR`（`run-criteria.sh` 给判据导出的是 `$ROOT_DIR`）
+//     而**服务端**的导出沙箱是 `$ROOT_DIR/work/exports` ✗ ⇒ 两侧不是同一个目录
+//     ⇒ 产品如实拒绝（`precondition_failed: 只能写进导出目录…`）✗ ⇒ 判据假红
+//     （CI 实测 7 条断言全红；本机 `run-criteria-local.sh` 恰好两边同一目录 ⇒ 假绿 ✗）
+//   ⇒ 改用**系统临时目录**（产品允许："…或系统临时目录" ✓）⇒ 两侧口径一致 ✓
+//   ⇒ 且用 `trackTemp` 登记，结束自动清 ✓
+const exportDir = trackTemp(mkdtempSync(join(tmpdir(), "b2exp-out-")));
 
 const fails = [];
 const check = (ok, msg) => {
