@@ -148,7 +148,6 @@ browser-canvas-handfeel.mjs  # 类型：产品缺陷（客户端落笔一族：�
 browser-brush-preview.mjs    # 类型：产品缺陷（客户端落笔一族：预览图 0×0 的同一条根——本地日志缺 create_document ⇒ state 0×0 ⇒ render_region_png 给空字节；第 742 轮换新内核后仍复现（NC_EXIT=1，121 秒），证据引台账第 455 节）
 browser-i18n.mjs             # 类型：待定位（effectsList／history 两处中文串；样本含 endpoint_not_local）
 browser-cs-render-switch.mjs  # 类型：待定位（**抖动**：同一份代码在 3 次 run 里红、在 5 次里绿 ⇒ 见文末「第 246 轮（抖动）」一段）
-browser-open-list.mjs        # 类型：同上（抖动；只在 run 38357275400 红过）
 # **★★★ 第 775 轮登记；依据是**用户第 576 轮的裁定 ②「既有红 ⇒ 继续『记』」** ★★★**
 #
 # **∴ 它报什么 ✗**（**CI 实测 ✓）★**：
@@ -28219,7 +28218,6 @@ browser-layout.mjs  第 742 轮核实：判据要求「400% 缩放时画布溢�
 #     ⇒ 修好后这判据应恢复「30 次全绿」⇒ 届时可移除本登记
 # 【第 739 轮移除】browser-live-ui.mjs —— 定案换人：断言全过，是成功之后看门狗开火（不是 GPU 合成）
 #   （修法与双向证据：brush-capability-gap.md 第 452 节 ✓；上限可配 180s ＋ 两条出口 clearTimeout/exit ✓）
-browser-new-doc-size.mjs  # 环境红：同上（要真实 chromium 的视口与合成）。AGENTS.md「已知的 3 条环境红」第 2 条。
 
 # ===== 第 1495 轮：**撤回上面的假红**（`combine_shapes` 是**正确的**）=====
 # **⇒ 我第 1494 轮登记它，是因为三个期望值都算错了** ✗：
