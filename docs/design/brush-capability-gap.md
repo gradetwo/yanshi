@@ -21876,3 +21876,43 @@ esac
 
 **⇒ 仍未做（下一轮）**：`browser-export-full-document` 与本轮无关，但它上一跑已通过
 （`✓ 默认导出 = 整幅 1024×1024…离线也是`）⇒ 可考虑下一轮从名单移出（先把这一跑的证据留住 ✓）。
+
+## 六百二十二、三条外部期 1 补丁线**已合并**（第 1132 轮）
+
+**⇒ 三个包**（`~/patch/`，2026-10-25 收）：
+
+| 包 | 内容 | 基线 | 结果 |
+|---|---|---|---|
+| `yanshi-paint-期1交付包.zip` | **7 个 patch**（A1–A6／B1–B6／C1–C3；14 条新判据）| `dbe1160`（已重接）| **7/7 干净应用**（含 0004 的 `serve()` 手工重接版）|
+| `yanshi-photo-期1交付包.zip` | **1 个 patch**（B2 上传上限 64→256MiB；B4 lensfun 6→12 支 ＋ `lens_match`/`lens_correction_applied` 回显；B3 裁剪量回显；C5-8 残留 id；C5-9 删除警告）| `1690f3b` | 干净应用（1 处 lensfun XML 行尾空白，逐字摘录 ✓）|
+| `yanshi-photo-G08-notes交付包.zip` | **1 个 patch**（`japanese_airy` 的 notes 一句话：引擎已有 8 段 HSL）| `1690f3b` | 干净应用（1 行 JSON）|
+
+**⇒ 顺序**：paint → photo → G08；落在 `period1-merge`，`main` 快进 ⇒ **HEAD `35656ee9`** ✓。
+作者 commit 原样保留（9 笔：7＋1＋1 加上整合一笔）。
+
+**⇒ 整合时查到三处**（不是作者的错，是**进本仓 CI 才暴露**的衔接）：
+
+1. `tool-ink-mass.mjs` 用了 `fetch(` 却**没有 `process.exit(3)`** ⇒ `check-criteria-have-exit3` 会红
+   ⇒ 补 `uncaughtException` / `unhandledRejection` 两个守卫（与全仓同形 ✓）。
+2. **三条新判据 spawn `target/release/yanshi-mcp`**（`tool-applied-echo`／`tool-created-opened`／
+   `tool-empty-brush-library`），而 criteria job **只 build debug workspace**
+   ⇒ 它们会 `⊘ 不可判`（**不红，所以是静默丢覆盖** ✗）⇒ 在 `Build the release server…` 步骤补
+   `cargo build --release -p yanshi-mcp` ✓。
+3. **`raw` 缺省关** ⇒ `cargo test --workspace` 把 `tests/raw_import.rs` **编成空文件**（0 测试 ✓）
+   ⇒ 照片期 1 改的 RAW 代码在 CI **一次都不跑** ✗ ⇒ 加 `Run RAW-feature tests`（仅 stable）：
+   `cargo test -p yanshi-raw` ＋ `cargo test -p yanshi-server --features raw --test raw_import --test file_transfer` ✓。
+
+**⇒ 本机验证（合并树上）**：
+- `cargo clippy -p yanshi-raw -p yanshi-server -p yanshi-http -p yanshi-mcp --all-targets --features raw -- -D warnings` ⇒ **0**；workspace clippy（pre-commit）⇒ **0**；`fmt --check` ⇒ **0**。
+- `yanshi-server --lib --features raw`：**186 passed**；定向 `export_small` 6／`file_transfer` 10／`raw_import` 6／`auto_retouch` 10 ⇒ 全过。
+- `yanshi-raw` 全套过（含 `lens_pkg4` 10）；`yanshi-render` 全套过；`yanshi-http` **86 passed**；`yanshi-mcp` 过。
+- **14 条新判据**在**新编的 release 服务端**上逐条跑 ⇒ **全 RC=0**（`tool-ink-mass`／`tool-export-missing-body`／
+  `tool-empty-brush-library`／`tool-color-space`／`tool-schema-params-census` 等）✓。
+- 全量 `cargo test --workspace` 按用户口径**留 CI** ✓（提交信息里已写明）。
+
+**⇒ 作者自己记的未决（保留，不替他们决定）**：
+`#RRGGBBAA` 的 alpha 仍被静默丢掉（B4 的 `color.a` 警告只认对象式/数组式）；
+`color_space` 不进 `try_stroke`/`brush_preview`/`update_stroke` core；
+B4 fail-closed、B3 响亮报错都**留给上游裁决**；
+B2 抬上限后 80MP 整幅导入在 8GB 盒上 OOM（≈7GB anon-rss），需大内存机；
+B4 仍有 4 支镜头 unmatched（3 支是 rawler 不上报镜头名、1 支上游 Lensfun 无条目）。

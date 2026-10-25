@@ -18,7 +18,8 @@
 ## 二、当前状态
 
 ```
-CI：784362cc **success ✓**（run 40183983484；12 个可跑 job 全 success，brush parity skipped）
+CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §二-7 与台账 §622）
+    784362cc **success ✓**（run 40183983484；12 个可跑 job 全 success，brush parity skipped）
     ⇒ 这一跑验过：`browser-project-download`／`brush-panel`／`layout`／`i18n` 全 ✓（前三条已移出 known-red）
       ＋ 新判据 `check-blank-overwrite-guard` ✓（shard 1：通过 57｜意外失败 0｜已知红 3｜跳过 3）
     dbe1160b failure ⇒ 唯一意外失败是 `browser-i18n`（运行时 `<option>` 7 条中文）⇒ 784362cc 修
@@ -44,7 +45,21 @@ CI：784362cc **success ✓**（run 40183983484；12 个可跑 job 全 success�
    - **known-red 18 → 14**（上面四条移出，理由写在名单里）。
    - **Y-01 复查＋新判据**：`viewer-app.js:2245` 的 `skipped-blank-over-ink` 已按**内容**挡住"全透明覆盖"⇒ 审计说的"新序号空帧"已覆盖；残余只是"`knownSeq` 自身可能旧"（记在台账 §621-四）。另加 **`scripts/check-blank-overwrite-guard.mjs`**：守「守卫在、且先判后落帧、且跳过有计数、行为侧判据仍在读」；变异（`if (false)`）⇒ 红 ✓、复原 ⇒ 绿 ✓；自测 5 例 ✓。
 
+7. **三条外部期 1 补丁线已合并**（`35656ee9`；台账 §622 有逐项账）：
+   - **paint 期 1**（7 patch：A1–A6／B1–B6／C1–C3，14 条新判据）；
+   - **photo 期 1**（1 patch：上传上限 64→256MiB、lensfun 6→12 支 ＋ `lens_match` 回显、裁剪量回显、C5-8/C5-9）；
+   - **photo G08 notes**（1 patch：`japanese_airy` notes 一句话）。
+   **整合三处**：`tool-ink-mass` 补 exit(3)；CI 补 `cargo build --release -p yanshi-mcp`（否则三条 MCP 判据静默跳过）；
+   CI 补 stable-only 的 `raw` 测试步（否则 `raw_import.rs` 编成空文件）。
+   本机：workspace clippy ＋ fmt 绿；server lib 186、定向 32、raw/render/http(86)/mcp 全过；**14 条新判据全 RC=0**。
+   **全量 workspace 测试留 CI**（提交信息已写）。
+
 ## 三、下一步（按优先序，都有精确入口）
+
+0. **读 `35656ee9` 的 CI 结论**（新判据共 14 条，分片号会变 ⇒ 认判据名）。
+   若红先看是不是：`raw` 测试步、release mcp、或某条新判据的环境假设。
+   另：照片期 1 的已知未决（hex alpha 静默丢、`color_space` 不进 try_stroke/preview、80MP OOM、4 支镜头 unmatched）
+   与 paint 期 1 的未决（WS 入口 uncovered、失败导出不删旧目标、B4 fail-closed 留裁决）都写在台账 §622。
 
 1. **qoder 剩余条目**：`D139`（静默零覆盖，需他给完整参数；我 6 点网格未复现）、`D188` 的量级说明（差随原子数增长：200 图块 ≈0.6 lv/通道、22,926 原子 ≈16 lv ⇒ 写进那条 `⚠️` 警告）。
 2. `shrink` blit（`art` 第 12 项）：最小包上对照判据实测 均值 1.89／>30 占 0.22% ⇒ 无缺口；要他用同判据跑 0.30 GB 的 `test1full`。
