@@ -21182,3 +21182,29 @@ target/release/yanshi-timelapse  2026-10-25 04:57:49   ← 二进制**早 5 秒*
 **⇒ 给他的判据（比"底色块数"可靠 ✓）**：
 > **同一包跑两次（开/不开 SHRINK），末帧逐像素差：均值 < 5 且 >30 的像素 < 1%**
 ⇒ 这正是我刚才做的实验 ✓ 可直接复用 ✓ **而"与底色相近的像素占比"不能当判据** ✗
+
+## 五百九十四、0.3.0 发布**补齐完成**：资产 4 → 5（含 4 行 `SHA256SUMS`）✓（第 1069 轮）
+
+**⇒ 发布现状（`gh release view v0.3.0` 实测 ✓）**：
+```
+tag v0.3.0｜资产 5 个
+  SHA256SUMS ✓（4 行）
+  yanshi-0.3.0-a720cad-aarch64-apple-darwin.tar.gz           16.0 MB
+  yanshi-0.3.0-a720cad-x86_64-apple-darwin.tar.gz            17.0 MB
+  yanshi-0.3.0-a720cad-x86_64-pc-windows-msvc.tar.gz         17.8 MB
+  yanshi-0.3.0-a720cad-x86_64-unknown-linux-gnu-static.tar.gz 17.2 MB
+```
+**⇒ 缺的 `SHA256SUMS` 是怎么补的（不新开 tag ✓ 不动公开标签 ✓）**：
+1. `gh release download v0.3.0 -p '*.tar.gz'` ⇒ 取回 4 个包 ✓
+2. `sha256sum *.tar.gz | sort -k2 > SHA256SUMS` ⇒ **4 行** ✓（**本地重算**，不是抄日志 ✓）
+3. `gh release upload v0.3.0 SHA256SUMS --clobber --repo gradetwo/yanshi` ✓
+   ⇒ **用的正是第 1043 轮修的那条命令形态**（`--repo` ✓）⇒ 一次成功 ✓
+
+**⇒ 所以"发布红"的两种善后路径都走通了** ✓：
+| 路径 | 结果 |
+|---|---|
+| **流水线修好**（`--repo` 进 `release.yml` ＋ 判据守住 ✓）| 下次发版自动带 `SHA256SUMS` ✓ |
+| **本次手工补齐**（下载 → 重算 → 上传 ✓）| 0.3.0 现在**完整可校验** ✓ |
+
+**⇒ 这一条与第 1046／1051 轮的关系**：判据（`check-release-workflow-gh-repo`）防**下次**，
+而**这次的缺口**用一次幂等的手工操作补上 ✓ —— 两者都做完，才算"发布完成" ✓
