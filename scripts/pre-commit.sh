@@ -53,7 +53,18 @@ for probe in check-tests-clean-temp check-tests-have-asserts; do
   fi
 done
 
-# ⑤ **脚本卫生测试**（第 1059 轮加）—— **只在 scripts/*.sh 有改动时跑** ✓
+# ⑤ **发布工作流的 `gh` 命令形态**（第 1051 轮加）—— **毫秒级、只读 yml** ✓
+#   **⇒ 为什么**：v0.3.0 的发布红在「`checksums` 作业没 checkout 却跑 `gh`」✗
+#     而那条错误**只能在发布时暴露**（要等 40 分钟 + 一个 tag ✗）⇒ 挪到提交前 ✓
+if node scripts/check-release-workflow-gh-repo.mjs > /tmp/precommit-relwf.log 2>&1; then
+  echo "     ✓"
+else
+  echo "     ✗ 发布工作流里有「无 checkout 却没给 --repo」的 gh 命令"
+  tail -3 /tmp/precommit-relwf.log
+  fail=1
+fi
+
+# ⑥ **脚本卫生测试**（第 1059 轮加）—— **只在 scripts/*.sh 有改动时跑** ✓
 #   **∴ 为什么**：本仓已有两组测试专门查脚本卫生：
 #     · shell_scripts        —— \$VAR 被引用但没赋值（1057 轮抓到我的 watch-ci.sh）
 #     · script_portability   —— \$VAR 紧跟非 ASCII（1014）+ bash 4+ 写法（1018）
