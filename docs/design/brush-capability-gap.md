@@ -21208,3 +21208,19 @@ tag v0.3.0｜资产 5 个
 
 **⇒ 这一条与第 1046／1051 轮的关系**：判据（`check-release-workflow-gh-repo`）防**下次**，
 而**这次的缺口**用一次幂等的手工操作补上 ✓ —— 两者都做完，才算"发布完成" ✓
+
+## 五百九十五、0.3.0 的**发布包内容**已实测（不止哈希对，还真能解开）✓（第 1079 轮）
+
+**⇒ 做法**：`gh release download v0.3.0 -p '*linux-gnu-static*'` ⇒ `tar -tzf` 列内容 ✓
+**⇒ 实测**：
+```
+条目 509｜bin/ 3 个｜wasm 相关 14 个｜mediums/ 有｜share/yanshi/brushes/*.myb 有
+wasm/snippets/yanshi-wasm-126a097ed3866fbc/inline0.js ✓   ← 正是 tool-wasm-pkg-refs 守的那个子目录
+share/yanshi/brand/render.sh ✓
+```
+⇒ **⇒ 所以 0.3.0 的包是**自包含**的** ✓：二进制 ＋ WASM 内核（含 snippets 子目录 ✓）＋ 介质插件 ＋ 笔刷 ✓
+⇒ 而 `snippets/…/inline0.js` 在包里**恰好说明**那条判据（递归同步 ✓）在发布产物上**也成立** ✓
+
+**⇒ 为什么值得单独测** ✗：此前我只验证了**哈希一致**（文件没变）✓
+⇒ 而"**哈希对**"不等于"**包能解开、内容齐**" ✓ —— 后者才是用户拿到手能不能跑 ✓
+⇒ 两者都测过，才算"发布可交付" ✓
