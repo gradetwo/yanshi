@@ -21937,3 +21937,112 @@ B4 仍有 4 支镜头 unmatched（3 支是 rawler 不上报镜头名、1 支上�
 
 **⇒ 本机复跑**：上表 6 条全 **RC=0**（含 `tool-example-acceptance` 的 137/0/66）；
 `tool-swatch` 12 组合全出图、`tool-brush-aliases` 四组逐字节等价、`tool-schema-params-census` 223 名全分类 ✓。
+
+## 六百二十三、照片线**期 1 扩展（0002）＋ 期 3a**合并（第 1132 轮）
+
+**⇒ 收包**：`yanshi-photo-期1交付包-2.zip`（0001 **与已合的 6a51019e 逐字相同**，只有
+`Subject: [PATCH]` 改成 `[PATCH 1/2]`；新增 `0002`）＋ `yanshi-photo-期3a交付包.zip`（1 个 patch）。
+
+| 包 | 内容 | 结果 |
+|---|---|---|
+| 期 1 扩展 `0002` | 8 项：Y-09 `raw_develop` 回显；Y-06/G-09 schema 文案（恒等值／hsl ranges／levels channel）；Y-04 缺省 +0.5EV 警告；Y-05 wb=auto 钉住；Y-01 白边警告；Y-07 报错指路；**G-03 `Object.enabled` bypass（加法字段，缺省启用）** | 干净应用 ✓ |
+| 期 3a `2482e10` | C2/A-02 高光护栏**面积感知**（P99.5／P99／P95，长尾下界 0.75）＋ `linear_p99`；C5-6 `T_mid 0.12→0.09`；C3/A-04 `DEHAZE_MAX 0.45→0.15`；A-05 暖调豁免；stats 回显 4 项 | 干净应用 ✓ |
+
+**⇒ 合并顺序**：`5b9dbd51` → 0002 → 期 3a → 整合两笔 → `7fc8e658`。
+
+**⇒ 整合时修的三处**（都不是作者错，是进本仓 CI 才暴露）：
+1. **`push_response_warning` 在默认 feature 下是死代码** ✗：两个调用点都在 `#[cfg(feature="raw")]` 里，
+   函数本身没 gate ⇒ **默认 clippy `-D warnings` 直接红**（"never used"）⇒ 加 `#[cfg(feature="raw")]` ✓。
+2. **期 3a 的 `tools_auto.rs` 不是本机 rustfmt 的格式**（作者盒上是 1.99.0）⇒ `fmt --check` 红 ⇒ 本机 `cargo fmt` 后单独一笔 ✓。
+3. **`browser-i18n` 在上一跑红了 1 条**：`已按设置跳过（用服务端渲染）` —— 它只在**服务端渲染模式**出现
+   （分片顺序变了，前一条判据把页面留在服务端模式）；`setWasmState` 的三个终态都没词条 ⇒ 已补
+   `已按设置跳过（用服务端渲染）`／`不可用`／`版本不匹配` ✓。这与上一轮 `正常/正片叠底…` 同族：
+   **运行时才出现的文案，静态模板判据抓不到** ✓。
+
+**⇒ 本机验证**（合并后，release 口径）：
+- `cargo test -p yanshi-core -p yanshi-render -p yanshi-wasm`：**74 个 suite 全 ok** ✓
+- `yanshi-server --lib --features raw`：**189 passed**；定向 `raw_import` **9**／`tool_validation_audit` **7**／
+  `auto_retouch` **10**／`file_transfer` **10** ⇒ 全过 ✓
+- `yanshi-raw --test pkg2_chain`：7 passed ✓
+- clippy：`core/raw/render/server/wasm/http/mcp --all-targets --features raw` ⇒ **0**；默认 feature 的
+  `yanshi-server` clippy ⇒ **0**（修了上面第 1 条）；`fmt --check` ⇒ **0** ✓
+
+**⇒ ★ 证据缺口已补（期 3a 交付包-2，2026-10-25 21:31）★**：补丁内容与已合的 `a0e65d9d`
+**逐字相同**（我在 `0f039d0` 的 worktree 上应用新 patch 后，与 `a0e65d9d` 比那两个文件，
+diff 为空 ⇒ **只补了说明**，不产生新代码提交 ✓）。补上的三节：
+- **测试**：render lib `stats::` 5 通过、server lib `tools_auto` 11 通过；两 crate clippy 干净；
+  `cargo fmt --check` 干净；三触点回测 `auto_backtest`（`--features raw`）**1 通过、0 失败（388.54s）**。
+- **变异 5/5**：锚比 0.90→0.50、长尾下界 0.75→0.0、`T_mid` 0.09→0.12、`DEHAZE_MAX` 0.15→0.45、
+  暖调门限 0.5→2.0 —— 各自红 ✓。
+- **回测三触点（全部通过）**：underexposed 0.227→**0.235**（金 0.247，p50 距金 0.020→0.012）；
+  overexposed 0.196→**0.200**（金 0.275，dehaze 0.214→0.150）；colorcast **0.192 不变**
+  （road R−B 降 43.0%、facade 变化 0.0132，与基线逐数一致 ⇒ 长尾保护有效 ✓）。
+
+**⇒ 仍然要提醒**：这些数是**作者盒上**的；我们本机能复核的是**代码与测试**（189＋定向全过 ✓），
+`auto_backtest` 的 6 张 ARW 夹具不在本机（仓外）⇒ 回测数字**按作者报告采信**，不冒充本机实测 ✓。
+
+## 六百二十四、vector-tracing **v3 技能包暂不能合**：缺 v2 前置（第 1132 轮）
+
+**⇒ 包内 6 个 patch 的基线是 v2 `bb7b1cb`（blob `54f11e2`）** ✓
+**⇒ 而本仓的 `skills/yanshi-vector-tracing/SKILL.md` 是 v1**：blob `7d8577c4`、
+82 行、正文只提企鹅与 DeepSeek（2026-10-21）✓
+**⇒ `~/patch/yanshi-skill-vector-tracing.patch` 也只是 v1 的 create**（在 `34d5b3d6^` 上应用
+得到的文件与当前**逐字相同** ✓）⇒ **v2 不在本仓、也不在 `~/patch`** ✗
+
+**⇒ 实测**：`git am` 0001 立刻失败（hunk 上下文是 v2 的 "fox trace (v1–v2)" 与
+"Vector-first…" 段；本仓没有）✓ ⇒ 不能靠模糊匹配硬合（会丢掉整段 v2 改动）✗
+
+**⇒ 需要的输入**（二选一）：
+1. v2 补丁（`bb7b1cb`）⇒ 打上 v2 再按顺序 `git am` 6 个 patch ✓；
+2. 或直接给 **v1 → v3** 的完整合并 diff（当前 `合并.diff` 的 index 是 `54f11e2..505da95`，
+   即 **v2 → v3** ✗）。
+
+**⇒ 暂时记在这里**：不猜、不硬拼 ✓（"先确认，再动手" ✓）。
+
+## 六百二十五、照片线**期 2**合并（levels 显示口径、s_h 亮度比、MakerNote 交叉校验）（第 1132 轮）
+
+**⇒ 包**：`yanshi-photo-期2交付包.zip`（3 个 patch，基线 `dbe1160`，在 `1690f3b` 上复核可应用）
+⇒ 在本仓 `7fc8e658`（含期 1 扩展＋期 3a＋web 补丁前）上 **3/3 干净应用** ✓。
+
+| 提交 | 内容 |
+|---|---|
+| A1 | `levels` 改**显示空间**口径（扩展 sRGB 编码 → 黑白点/gamma → 解码回写）；6 套预设值翻回显示尺度；auto `estimate_levels` 发射显示值 |
+| A2 | `shadows_highlights` 改**亮度比回写**（先算显示亮度 toward，再 RGB×luma'/luma）⇒ 灰像素逐位等价、彩色通道比守恒；`style_preset_package` 探针改 `[100,90,80]` |
+| Y-02 | RAW MakerNote **方向交叉校验**：Sony 0x9400 加密块 / Pentax 两表；与 EXIF 冲突只写 `notes` 警告，**不改取值** |
+
+**⇒ 本机验证**：`yanshi-render --lib filter::` **106**；`style_preset_package` **5**；
+`yanshi-raw --lib decode::` **14**；`yanshi-server --lib levels_` **2** ⇒ 全过 ✓；
+clippy（render/server/raw）**0**；fmt **0** ✓。
+
+**⇒ 已知与未做（照抄作者，不替他们决定）**：
+- **auto backtest 触点 3（colorcast）会红**：A2 保住了色度 ⇒ R−B 只降到 28.6%（门限 40%）⇒
+  **门限数字须重标或接受新行为，由上游裁决**（作者不单方面改门限、不回滚 A2）✓。
+- 22 套预设对照渲染（目检 + 度量）在包里标 `[ ]` 未勾选；`renders/` 有 10 张 base/p2 对比图
+  ⇒ **我本机没有那套 6 张 ARW 夹具**，只能复核代码与测试 ✓。
+- Y-02 的 ILCE-7M5/7RM6 −1 偏移、Pentax 两表均按 ExifTool 表证实现，**无实物验证** ✓。
+
+## 六百二十六、Web 审计包（15 个工具入口）合并（第 1132 轮）
+
+**⇒ 包**：`yanshi-web-audit-2026-10-25.zip`（基线 `784362cc`；补丁 5 文件 + CDP 验证脚本）。
+**⇒ 我们的应用**：`git apply --exclude=web/index.html`（生成物冲突：我们改过戳）⇒
+`node scripts/pwa-sync-viewer.mjs` 重新生成 `web/index.html` ✓ ⇒ 合并到照片期 2 分支 ✓。
+
+**⇒ 内容**：对象卡 8 个入口（details/resolved/detach/sync/master/group/note）、调色板保存、
+参考图卡（选图 → `/api/blob` → `set_reference`/`clear_reference`，overlay 本地 dataURL）、
+任意尺寸 `export_png`、批量接受/拒绝建议、资产导入卡；修 `tool-surface-coverage` 的 `svg`
+curated profile；`/api/blob` MIME 嗅探（PNG/JPEG/GIF/WEBP）；画布尺寸读数；`applyBrushFilter` 去重；
+i18n 动态模式 `（导入的）→ (imported)`。
+
+**⇒ 本机实测**（release 新编；CDP 9490）：
+- 作者的 `tools/verify-new-ui.mjs`：**ALL_STEPS_PASS**（13 步）——**但脚本硬编码
+  `/home/polar/yanshi/web/samples/sample-brush.png`** ✗ ⇒ 本机把它换成仓内
+  `web/brand/png/favicon-180.png` 后重跑（**夹具路径不是产品差异** ✓，要跟他们说一声）。
+- `browser-i18n`（render=client）：**distinct 0、exit 0** ✓；`ui-i18n-coverage` ✓；
+  `tool-surface-coverage` ✓（203 工具三面对账）。
+- 注意：verify 脚本**不能在同一个 doc 上重跑**（会消耗掉实例/建议/调色板等前置状态 ⇒
+  第二次一堆步骤红）⇒ 每次用**全新 doc** ✓（本机第二次踩到，第三次换 doc 即全绿）。
+
+**⇒ 顺带修**：`tool-schema-params-census` 的未分类 2 个名（`saturation`、`amount`）——
+`Y-06` 的 schema 文案把**效果名**写成反引号名，而旧分类器只认工具名/参数名/笔刷名 ✗
+⇒ 现在从 `list_engine_capabilities` **动态取** `filters∪adjustments`，并给 `amount`
+一个显式的 `effectParam`（它是 `params.amount` 键）✓（CI shard 2 第一次红就是这个）。

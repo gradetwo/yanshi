@@ -59,7 +59,31 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    `tool-engine-capabilities`（`medium_params` 少 `color_space`）、`tool-fit-background-field`（`created`/`opened` 是框架字段）。
    顺带补了 swatch 的 `background`/`read_canvas` 透传（错误消息早就建议"先铺底再试"，但原来没有入口 ✗）。
 
+8. **照片线期 1 扩展（0002）＋ 期 3a 已合并**（`7fc8e658`；台账 §623）：
+   - 期 1 扩展 8 项（Y-09/Y-06/G-09/Y-04/Y-05/Y-01/Y-07/**G-03 `Object.enabled` bypass**）；
+   - 期 3a 7 项（高光护栏面积感知、`T_mid 0.09`、`DEHAZE_MAX 0.15`、暖调豁免、stats 回显）；
+   - 整合三处：`push_response_warning` 默认 feature 死代码（加 `cfg(raw)`）、期 3a 文件 rustfmt、
+     `browser-i18n` 的 WASM 状态三条词条（`已按设置跳过…`／`不可用`／`版本不匹配`）。
+   - **证据缺口（如实记）**：期 3a 说明的「测试数字／回测对比／重放结果」三节仍是 `TODO` 占位 ⇒
+     代码测试我跑了（189＋定向＋clippy 全绿），但**标定/回测表没有** ⇒ 要他们补，别把口述当实测。
+
+9. **照片线期 2 已合并**（台账 §625）：A1 levels 显示口径（6 套预设翻回显示尺度）、
+   A2 shadows_highlights 亮度比回写（保色度）、Y-02 MakerNote 方向交叉校验（冲突只进 notes）。
+   本机：render filter 106／style_preset_package 5／raw decode 14／server levels_ 2 全过；clippy/fmt 绿。
+   **已知须上游裁决**：auto backtest 触点 3（colorcast）R−B 只降 28.6% < 40% 门限（A2 保住色度的必然）
+   ⇒ 门限重标或接受新行为；22 套预设目检在包里**未勾选**（我本机没有那 6 张 ARW 夹具）。
+10. **Web 审计包已合并**（台账 §626）：15 个工具入口 + 参考图卡/任意尺寸导出/批量建议 + MIME 嗅探等。
+   本机 CDP 验证 **ALL_STEPS_PASS**（把作者脚本里写死的 `/home/polar/...` 夹具换成仓内 PNG；
+   每次用**全新 doc**，否则前置状态被消耗）；browser-i18n / ui-i18n / tool-surface-coverage 全绿。
+   顺带修了 census 的 `saturation`/`amount` 分类（CI shard 2 第一次红的原因）。
+11. **vector-tracing v3 技能包未合**（台账 §624）：6 个 patch 的基线是 v2 `bb7b1cb`（blob `54f11e2`），
+   而本仓是 v1（blob `7d8577c4`），`~/patch/yanshi-skill-vector-tracing.patch` 也只是 v1 ⇒
+   **需要 v2 补丁或 v1→v3 的完整 diff**，不硬拼。
+
 ## 三、下一步（按优先序，都有精确入口）
+
+-0. **读本轮 CI**（照片期 2＋web＋census 的那一跑）：重点看 browser 判据、`tool-surface-coverage`、
+   `tool-schema-params-census`、以及 A1/A2 是否顶到既有像素判据（`tool-effect-*` 等）。
 
 0. **读 `35656ee9` 的 CI 结论**（新判据共 14 条，分片号会变 ⇒ 认判据名）。
    若红先看是不是：`raw` 测试步、release mcp、或某条新判据的环境假设。
