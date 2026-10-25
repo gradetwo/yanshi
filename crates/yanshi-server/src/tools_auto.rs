@@ -66,11 +66,28 @@ use super::{document_state, optional_str, write_update_effect, EffectKind, ToolC
 // 标定常数（回测前为初值，见 phase4-notes.md「D3 待标定」）
 // ---------------------------------------------------------------------------
 
-/// 曝光中调目标（线性中位，初值 0.12；夜景 0.08、雪景 0.18、
+/// 曝光中调目标（线性中位；夜景 0.08、雪景 0.18、
 /// 舞台 ×0.9 均为结构调整，不是权重收缩）。
-const EXPOSURE_T_MID: f32 = 0.12;
+///
+/// 0.09 由 3a 期标定（2026-10-25）：旧值 0.12 作纯增益目标时渲染 p50
+/// 系统性高于金成图（中位分支三张 +0.04/+0.09/+0.16；金 p50 中心 0.33
+/// 对应线性 ≈0.09；levels 白点拉伸 ×1/0.75 是放大器，见 p3a-DESIGN.md）。
+const EXPOSURE_T_MID: f32 = 0.09;
 /// 曝光高光护栏目标（线性 P99.5，初值 0.95）。
 const EXPOSURE_T_CLIP: f32 = 0.95;
+/// 高光护栏锚点饱和门限：P99.5 ≥ 此值时锚点已触顶、失信息量，
+/// 回退到 P99（再饱和则退 P95），见 C5-2。
+const EXPOSURE_ANCHOR_SATURATED: f32 = 0.98;
+/// 高光护栏小亮斑判据：P99 < 此比 × P99.5 时顶部 0.5% 是孤立亮斑
+/// （灯池/太阳盘），不应用它帽死整图，改用 P99 作锚，见 C2。
+/// 标定：01242 线性比 ≈0.85，其余 5 张 ≥0.94。
+const EXPOSURE_ANCHOR_PATCH_RATIO: f32 = 0.90;
+/// 小亮斑判据的下界（长尾保护）：P99 < 此比 × P99.5 时顶部 0.5%
+/// 横跨很宽的亮度带（钠灯街面/立面那种成片亮区），不是孤立亮斑，
+/// 护栏正在做真功——沿用 P99.5，不放松。标定（三点）：colorcast
+/// 0.52 放松即坏（ev 0.755→1.2 夜景上钳，road 门破）；01242
+/// ≈0.85、underexposed 0.89 放松即好；下界取 0.75 留裕量。
+const EXPOSURE_ANCHOR_TAIL_MIN: f32 = 0.75;
 /// 曝光 ΔEV 钳制域。
 const EXPOSURE_EV_RANGE: (f32, f32) = (-1.5, 2.0);
 /// 夜景曝光上钳（保守）。
@@ -98,6 +115,10 @@ const WB_MIN_CANDIDATES: usize = 100;
 const COLOR_VIBRANCE_TRIGGER: f32 = 0.34;
 /// 色彩：saturation 触发带上沿。
 const COLOR_SATURATION_TRIGGER: f32 = 0.50;
+/// 色彩：暖调豁免门限——S̄ > 0.50 时暖色相占比（hue_histogram 桶 0–5 与 35 号
+/// 之和，S·V 加权）超此值即判定暖调内容，跳过 saturation 回落
+/// （A-05：暖调场景的高饱和是内容，不是过饱和）；非暖场景仍回落。
+const COLOR_WARM_EXEMPT: f32 = 0.5;
 /// vibrance 系数与上限；肤色代理高时上限收紧。
 const COLOR_VIBRANCE_COEF: f32 = 1.6;
 /// vibrance 上限（常规）。
@@ -124,11 +145,19 @@ const DETAIL_TEXTURE_RANGE: (f32, f32) = (-0.15, 0.25);
 const DETAIL_FLAT_E: f32 = 0.001;
 
 /// 去雾：暗通道均值触发点与系数、上限。
+///
+/// 本期只做上限 0.45 → 0.15 止血（C3/A-04）：金参考最大值 0.16，旧上限
+/// 放任 3–10 倍过量（A-04 的 0.421 即上限产物）。触发改看暗通道低百分位
+/// （dark_p10）的重设计推迟到期 4（与 C1 WB 重设计同批）：回测证明当前
+/// colorcast 触点的 road 门全靠旧均值公式的 dehaze 0.039 在撑（金配方
+/// 该处用分区 WB、dehaze 为 0；auto 的 WB 估计 (0, 0) 已坏），p10 触发
+/// 一上就把 road 门从 −43.0% 打回 −0.7%。待 C1 给出真 WB 杠杆后再换
+/// 触发变量；`dark_p10` 统计量与回显已就位，供期 4 标定复用，见 p3a-DESIGN.md。
 const DEHAZE_TRIGGER: f32 = 0.04;
 /// 去雾系数。
 const DEHAZE_COEF: f32 = 1.2;
 /// 去雾上限。
-const DEHAZE_MAX: f32 = 0.45;
+const DEHAZE_MAX: f32 = 0.15;
 
 /// 降噪：σ̂ → luminance 系数与上限；ISO 先验档位。
 /// 系数 20.0 由期 4 回测定版（2026-10-24）：旧初值 6.0 在三张金
@@ -314,15 +343,28 @@ struct AutoPlan {
 // 纯估计器
 // ---------------------------------------------------------------------------
 
+/// 主导色相桶（桶号，占比）：色相直方图最大桶；并列时取小编号
+/// （确定性输出）。分类器与回显共用。
+fn dominant_hue(stats: &ImageStats) -> (usize, f32) {
+    stats
+        .hue_histogram
+        .iter()
+        .enumerate()
+        .fold((0usize, 0.0f32), |(best_bucket, best), (bucket, share)| {
+            if *share > best {
+                (bucket, *share)
+            } else {
+                (best_bucket, best)
+            }
+        })
+}
+
 /// 场景分类（纯函数；门限见模块常量）。
 fn classify_scene(stats: &ImageStats) -> SceneFlags {
     let p50 = stats.luma_p50 as f32 / 255.0;
     let p5 = stats.luma_p5 as f32 / 255.0;
     let p95 = stats.luma_p95 as f32 / 255.0;
-    let max_hue_share = stats
-        .hue_histogram
-        .iter()
-        .fold(0.0f32, |max, share| max.max(*share));
+    let (_, max_hue_share) = dominant_hue(stats);
     SceneFlags {
         monochrome: stats.mean_saturation < SCENE_MONOCHROME_S,
         stage: max_hue_share > SCENE_STAGE_HUE && p50 < SCENE_STAGE_P50,
@@ -363,13 +405,32 @@ fn estimate_exposure(stats: &ImageStats, scene: &SceneFlags) -> (f32, Confidence
     }
     let p50 = stats.linear_p50;
     let p995 = stats.linear_p995;
+    // 高光护栏锚点选择（C2 + C5-2）：P99.5 触顶失信息量、或被孤立亮斑
+    // （灯池/太阳盘）抬高时，改用更低百分位作锚；否则沿用 P99.5。
+    // 小亮斑放松只在带内（0.75 ≤ P99/P99.5 < 0.90）：比值过低是长尾
+    // （成片亮区，护栏正在做真功），放松会把 ev 放过大（colorcast
+    // 实测 0.52 ⇒ ev 1.2、road 门破）。锚点只决定「护栏看哪一档亮度」，
+    // T_clip=0.95 本身不动。
+    let (anchor, anchor_name) = if p995 >= EXPOSURE_ANCHOR_SATURATED {
+        if stats.linear_p99 < EXPOSURE_ANCHOR_SATURATED {
+            (stats.linear_p99, "P99（P99.5 已触顶回退）")
+        } else {
+            (stats.linear_p95, "P95（P99.5/P99 皆触顶回退）")
+        }
+    } else if stats.linear_p99 < EXPOSURE_ANCHOR_PATCH_RATIO * p995
+        && stats.linear_p99 >= EXPOSURE_ANCHOR_TAIL_MIN * p995
+    {
+        (stats.linear_p99, "P99（顶部亮斑孤立，P99.5 失代表性）")
+    } else {
+        (p995, "P99.5")
+    };
     let mid_ratio = if p50 > 0.0 {
         t_mid / p50
     } else {
         f32::INFINITY
     };
-    let clip_ratio = if p995 > 0.0 {
-        EXPOSURE_T_CLIP / p995
+    let clip_ratio = if anchor > 0.0 {
+        EXPOSURE_T_CLIP / anchor
     } else {
         f32::INFINITY
     };
@@ -396,7 +457,7 @@ fn estimate_exposure(stats: &ImageStats, scene: &SceneFlags) -> (f32, Confidence
     }
     let shrunk = shrink(ev, 0.0, confidence.weight());
     let rationale = format!(
-        "线性 P50={p50:.4}、P99.5={p995:.4}，目标中位 {t_mid}（{target_note}）\
+        "线性 P50={p50:.4}、P99.5={p995:.4}（护栏锚 {anchor_name}={anchor:.4}），目标中位 {t_mid}（{target_note}）\
          + 高光护栏 {}，取小者（{}）⇒ ΔEV={ev:.3}；置信 {}（clip_hi={:.3}）\
          ⇒ 权重 {} 收缩后 {shrunk:.3}{}",
         EXPOSURE_T_CLIP,
@@ -603,8 +664,16 @@ fn estimate_color(stats: &ImageStats, scene: &SceneFlags) -> (f32, f32, String) 
         );
         branch = "S̄ < 0.34 ⇒ vibrance 优先";
     } else if mean_s > COLOR_SATURATION_TRIGGER {
-        saturation = 1.0 + clamp((0.46 - mean_s) * 0.8, (-0.3, 0.0));
-        branch = "S̄ > 0.50 ⇒ saturation 回落（乘子口径，1.0 = 恒等）";
+        // 暖调豁免（A-05）：暖色相占多数时高饱和是内容（日落/钨丝灯/
+        // 暖木），不是过饱和，不抽 saturation；非暖场景仍回落。
+        let warm_share: f32 =
+            stats.hue_histogram[0..6].iter().sum::<f32>() + stats.hue_histogram[35];
+        if warm_share > COLOR_WARM_EXEMPT {
+            branch = "S̄ > 0.50 但暖调占多数 ⇒ 暖调豁免，saturation 不动";
+        } else {
+            saturation = 1.0 + clamp((0.46 - mean_s) * 0.8, (-0.3, 0.0));
+            branch = "S̄ > 0.50 ⇒ saturation 回落（乘子口径，1.0 = 恒等）";
+        }
     }
     let weight = if scene.stage { 0.5 } else { 1.0 };
     let shrunk_v = shrink(vibrance, 0.0, weight);
@@ -647,6 +716,9 @@ fn estimate_detail(
         texture = Some(shrink(texture_raw, 0.0, Confidence::Low.weight()));
     }
     let _ = scene;
+    // 去雾（C3/A-04）：本期只压上限 0.45 → 0.15 止血，触发仍用均值公式
+    // (dark_mean−0.04)×1.2。p10 触发推迟到期 4：回测证明 colorcast 的 road
+    // 门全靠均值公式的 dehaze 0.039 在撑（见上常量注释），现阶段不可换。
     let dehaze = if stats.dark_mean <= DEHAZE_TRIGGER {
         0.0
     } else {
@@ -658,7 +730,7 @@ fn estimate_detail(
     let rationale = format!(
         "微对比 E={:.4}（目标 E*={}，未标定初值）⇒ clarity={}；高频比 R={:.3}\
          （目标 R*={}，未标定初值）⇒ texture={}；细节置信恒低 ⇒ 权重 0.5；\
-         暗通道均值 {:.3} ⇒ dehaze={:.3}（触发点 {}）{}",
+         暗通道均值 {:.3}（p10 {:.3}）⇒ dehaze={:.3}（触发点 {}，上限 {}）{}",
         stats.micro_contrast,
         DETAIL_E_TARGET,
         clarity.map_or("跳过（画面近乎平坦）".to_owned(), |value| format!(
@@ -670,8 +742,10 @@ fn estimate_detail(
             "{value:.3}"
         )),
         stats.dark_mean,
+        stats.dark_p10,
         dehaze,
         DEHAZE_TRIGGER,
+        DEHAZE_MAX,
         if flat {
             "；画面近乎平坦，clarity/texture 跳过"
         } else {
@@ -1387,15 +1461,22 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         })
         .collect();
     let scene_json: Vec<Value> = plan.scene.names().iter().map(|name| json!(name)).collect();
+    // 回显新锚点与分类依据（3a 期新增字段；旧字段不动）：护栏锚 P99、
+    // 去雾下沿 dark_p10、主导色相桶与占比（分类误触可复核）。
+    let (hue_max_bucket, hue_max_share) = dominant_hue(&stats);
     let stats_json = json!({
         "luma_p50": stats.luma_p50,
         "linear_p50": stats.linear_p50,
+        "linear_p99": stats.linear_p99,
         "linear_p995": stats.linear_p995,
         "clip_high_ratio": stats.clip_high_ratio,
         "mean_saturation": stats.mean_saturation,
         "saturation_p90": stats.saturation_p90,
         "skin_proxy_ratio": stats.skin_proxy_ratio,
         "dark_mean": stats.dark_mean,
+        "dark_p10": stats.dark_p10,
+        "hue_max_bucket": hue_max_bucket,
+        "hue_max_share": hue_max_share,
         "micro_contrast": stats.micro_contrast,
         "hf_ratio": stats.hf_ratio,
         "noise_sigma": noise_sigma,
@@ -1641,6 +1722,7 @@ mod tests {
             linear_p25: 0.0,
             linear_p50: 0.0,
             linear_p95: 0.0,
+            linear_p99: 0.0,
             linear_p995: 0.0,
             linear_p998: 0.0,
             mean_saturation: 0.3,
@@ -1656,6 +1738,7 @@ mod tests {
             wb_sarle_bc: 0.0,
             wb_rho: 1.0,
             dark_mean: 0.0,
+            dark_p10: 0.0,
             micro_contrast: 0.04,
             hf_ratio: 0.5,
         };
@@ -1664,31 +1747,81 @@ mod tests {
     }
 
     /// 曝光闭式：中位分支与高光护栏分支各取小者（变异：护栏分支
-    /// 被删 ⇒ 第二组算出 +1.0 而非 −0.06 ⇒ 红）。
+    /// 被删 ⇒ 第二组算出 +1.0 而非 −0.06 ⇒ 红）；另覆锚点选择
+    /// （C2 小亮斑回退 P99、长尾保护沿用 P99.5、C5-2 触顶回退 P99）。
     #[test]
     fn exposure_closed_form_branches() {
         let no_scene = SceneFlags::default();
-        // 中位分支：P50=0.03 ⇒ 0.12/0.03=4.0；P99.5=0.5 ⇒ 0.95/0.5=1.9；
-        // 取小 1.9 ⇒ log2 = 0.926。
+        // 中位分支：P50=0.03 ⇒ 0.09/0.03=3.0；P99.5=0.5、P99=0.49（宽亮区，
+        // 锚 P99.5）⇒ 0.95/0.5=1.9；取小 1.9 ⇒ log2 = 0.926。
         let stats = stats_with(|stats| {
             stats.linear_p50 = 0.03;
+            stats.linear_p99 = 0.49;
             stats.linear_p995 = 0.5;
         });
-        let (ev, _, _, _) = estimate_exposure(&stats, &no_scene);
+        let (ev, _, rationale, _) = estimate_exposure(&stats, &no_scene);
         assert!(
             (ev - 1.9f32.log2()).abs() < 1e-4,
             "中位分支应取 1.9，实得 {ev}"
         );
-        // 高光护栏分支：P50=0.12 ⇒ 1.0；P99.5=0.99 ⇒ 0.9596；
-        // 取小 0.9596 ⇒ log2 = −0.0595。
+        assert!(
+            rationale.contains("护栏锚 P99.5=0.5000"),
+            "宽亮区应沿用 P99.5 作锚，实得：{rationale}"
+        );
+        // 高光护栏分支 + C5-2 回退：P50=0.06 ⇒ 0.09/0.06=1.5；
+        // P99.5=0.99 已触顶 ⇒ 回退 P99=0.9 作锚 ⇒ 0.95/0.9=1.0556；
+        // 取小 1.0556 ⇒ log2 = 0.0782（变异：回退被删 ⇒ 锚 0.99 ⇒
+        // 0.9596 ⇒ log2 = −0.0595 ⇒ 红）。
         let stats = stats_with(|stats| {
-            stats.linear_p50 = 0.12;
+            stats.linear_p50 = 0.06;
+            stats.linear_p99 = 0.9;
             stats.linear_p995 = 0.99;
         });
-        let (ev, _, _, _) = estimate_exposure(&stats, &no_scene);
+        let (ev, _, rationale, _) = estimate_exposure(&stats, &no_scene);
         assert!(
-            (ev - 0.9596f32.log2()).abs() < 1e-3,
-            "护栏分支应取 0.9596，实得 {ev}"
+            (ev - 1.0556f32.log2()).abs() < 1e-3,
+            "触顶回退后护栏分支应取 1.0556，实得 {ev}"
+        );
+        assert!(
+            rationale.contains("P99（P99.5 已触顶回退）"),
+            "rationale 应点名回退锚，实得：{rationale}"
+        );
+        // C2 小亮斑（01242 实测数）：P50=0.0464 ⇒ 0.09/0.0464=1.94；
+        // P99.5=0.6874、P99=0.586（0.586 < 0.90×0.6874）⇒ 锚 P99 ⇒
+        // 0.95/0.586=1.621；取小 1.621 ⇒ log2 = 0.697（变异：松绑被删 ⇒
+        // 锚 0.6874 ⇒ 1.382 ⇒ log2 = 0.467 ⇒ 红）。
+        let stats = stats_with(|stats| {
+            stats.linear_p50 = 0.0464;
+            stats.linear_p99 = 0.586;
+            stats.linear_p995 = 0.6874;
+        });
+        let (ev, _, rationale, _) = estimate_exposure(&stats, &no_scene);
+        assert!(
+            (ev - 1.621f32.log2()).abs() < 1e-3,
+            "小亮斑回退后护栏分支应取 1.621，实得 {ev}"
+        );
+        assert!(
+            rationale.contains("顶部亮斑孤立"),
+            "rationale 应点名小亮斑回退，实得：{rationale}"
+        );
+        // C2 长尾保护（colorcast 实测数）：P50=0.0054 ⇒ 中位比 16.7；
+        // P99.5=0.5630、P99=0.2931（比 0.52 < 下界 0.75，成片亮区，
+        // 非孤立亮斑）⇒ 沿用 P99.5 ⇒ 0.95/0.5630=1.6874；取小 1.6874
+        // ⇒ log2 = 0.755（变异：下界被删 ⇒ 锚 P99 ⇒ 1.696 ⇒ 红；
+        // 回测里该变异使 ev 0.755→1.2、road 门破）。
+        let stats = stats_with(|stats| {
+            stats.linear_p50 = 0.0054;
+            stats.linear_p99 = 0.2931;
+            stats.linear_p995 = 0.5630;
+        });
+        let (ev, _, rationale, _) = estimate_exposure(&stats, &no_scene);
+        assert!(
+            (ev - 1.6874f32.log2()).abs() < 1e-3,
+            "长尾应沿用 P99.5 作锚，护栏分支应取 1.6874，实得 {ev}"
+        );
+        assert!(
+            rationale.contains("护栏锚 P99.5=0.5630"),
+            "长尾应沿用 P99.5 作锚，实得：{rationale}"
         );
     }
 
@@ -1777,10 +1910,12 @@ mod tests {
         let scene = SceneFlags::default();
         let base = stats_with(|stats| {
             stats.linear_p50 = 0.06;
+            stats.linear_p99 = 0.49;
             stats.linear_p995 = 0.5;
         });
         let perturbed = stats_with(|stats| {
             stats.linear_p50 = 0.061;
+            stats.linear_p99 = 0.49;
             stats.linear_p995 = 0.5;
         });
         let (ev0, _, _, _) = estimate_exposure(&base, &scene);
@@ -1911,6 +2046,95 @@ mod tests {
         assert!(
             !is_raw_default_exposure(ObjectType::Filter, &wrong_type),
             "滤镜类型即使名与值全中也不豁免"
+        );
+    }
+
+    /// T_mid 标定（C5-6）：01244 实测数（P50=0.0438、P99.5=0.2612、
+    /// P99=0.25，宽亮区锚 P99.5）⇒ 中位分支 0.09/0.0438=2.055 ⇒
+    /// ev=1.039（旧 T_mid 0.12 时为 1.453，过曝 0.8 档；变异：T_mid
+    /// 改回 0.12 ⇒ 1.453 ⇒ 红）。
+    #[test]
+    fn t_mid_recalibrated_mid_branch() {
+        let stats = stats_with(|stats| {
+            stats.linear_p50 = 0.0438;
+            stats.linear_p99 = 0.25;
+            stats.linear_p995 = 0.2612;
+        });
+        let (ev, _, _, _) = estimate_exposure(&stats, &SceneFlags::default());
+        assert!(
+            (ev - 2.0548f32.log2()).abs() < 1e-3,
+            "T_mid=0.09 时中位分支应取 2.055，实得 {ev}"
+        );
+    }
+
+    /// 去雾上限止血（C3/A-04）：01242 实测 dark_mean=0.224 ⇒ 均值公式
+    /// (0.224−0.04)×1.2=0.221，钳到上限 0.15（旧上限 0.45 时放任 0.221，
+    /// 金 0.03；A-04 的 0.421 同理不可再现。变异：上限改回 0.45 ⇒
+    /// 0.221 ⇒ 红）；colorcast 实测 dark_mean=0.072 ⇒ 0.0384，上限下
+    /// 不着——回测 road 门全靠该值在撑（金配方该处用分区 WB），本期不
+    /// 动触发只压上限正是为此。触发改看 dark_p10 的重设计推迟到期 4
+    /// （与 C1 WB 同批，见常量注释与 p3a-DESIGN.md）。
+    #[test]
+    fn dehaze_cap_bounds_systematic_overuse() {
+        let indoor = stats_with(|stats| {
+            stats.dark_mean = 0.224;
+            stats.dark_p10 = 0.027;
+        });
+        let (_, _, dehaze, rationale) = estimate_detail(&indoor, &SceneFlags::default());
+        assert!(
+            (dehaze - 0.15).abs() < 1e-6,
+            "室内 dark_mean=0.224 时 dehaze 应钳到上限 0.15，实得 {dehaze}"
+        );
+        assert!(
+            rationale.contains("暗通道均值 0.224"),
+            "rationale 应点名暗通道均值，实得：{rationale}"
+        );
+        let street = stats_with(|stats| {
+            stats.dark_mean = 0.072;
+            stats.dark_p10 = 0.004;
+        });
+        let (_, _, kept, _) = estimate_detail(&street, &SceneFlags::default());
+        assert!(
+            (kept - 0.0384).abs() < 1e-4,
+            "colorcast dark_mean=0.072 时 dehaze 应保持 0.0384（road 门所依），实得 {kept}"
+        );
+        let clear = stats_with(|stats| {
+            stats.dark_mean = 0.04;
+            stats.dark_p10 = 0.01;
+        });
+        let (_, _, zero, _) = estimate_detail(&clear, &SceneFlags::default());
+        assert!(
+            zero == 0.0,
+            "dark_mean 在触发点 0.04 时 dehaze 应为 0，实得 {zero}"
+        );
+    }
+
+    /// 暖调豁免（A-05）：S̄=0.55 且暖色相占多数 ⇒ saturation 留 1.0；
+    /// 同 S̄ 但主导冷色相 ⇒ 仍按原式回落 0.928（变异：豁免被删 ⇒ 暖调组
+    /// 也给 0.928 ⇒ 红）。
+    #[test]
+    fn warm_exemption_skips_saturation_cut() {
+        let warm = stats_with(|stats| {
+            stats.mean_saturation = 0.55;
+            stats.hue_histogram[3] = 0.9;
+        });
+        let (_, saturation, rationale) = estimate_color(&warm, &SceneFlags::default());
+        assert!(
+            (saturation - 1.0).abs() < 1e-6,
+            "暖调 S̄=0.55 时 saturation 应豁免留 1.0，实得 {saturation}"
+        );
+        assert!(
+            rationale.contains("暖调豁免"),
+            "rationale 应点名暖调豁免，实得：{rationale}"
+        );
+        let cool = stats_with(|stats| {
+            stats.mean_saturation = 0.55;
+            stats.hue_histogram[20] = 0.9;
+        });
+        let (_, saturation, _) = estimate_color(&cool, &SceneFlags::default());
+        assert!(
+            (saturation - 0.928).abs() < 1e-4,
+            "冷调 S̄=0.55 时 saturation 应回落到 0.928，实得 {saturation}"
         );
     }
 }

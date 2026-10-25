@@ -82,6 +82,9 @@ pub struct ImageStats {
     pub linear_p50: f32,
     /// 线性亮度 p95（0–1 线性标度）。
     pub linear_p95: f32,
+    /// 线性亮度 p99（0–1 线性标度；曝光高光护栏的回退锚：P99.5 饱和或
+    /// 被孤立亮斑抬高时改用本值，见 `tools_auto` 锚点选择）。
+    pub linear_p99: f32,
     /// 线性亮度 p99.5（0–1 线性标度，曝光高光护栏用）。
     pub linear_p995: f32,
     /// 线性亮度 p99.8（0–1 线性标度；曝光后显示白点同黑点理）。
@@ -122,6 +125,10 @@ pub struct ImageStats {
     /// 不透明图上两者相等，透明像素口径不同：本统计跳过 alpha == 0，
     /// 而 `estimate_atmospheric_light` 按 RGB 计入）。
     pub dark_mean: f32,
+    /// 暗通道 p10（显示空间 min(R, G, B)/255 的低百分位，去雾第二证据：
+    /// 雾均匀抬起整图暗通道下沿，内容亮区只抬均值不抬下沿，故触发看
+    /// 下沿不看均值；与 `dark_mean` 同定义、同源）。
+    pub dark_p10: f32,
     /// 微对比量 E：显示亮度（0–1）的平均 |Laplacian|（代理图，
     /// clarity 估计用；边界 1 像素不参与）。
     pub micro_contrast: f32,
@@ -154,6 +161,7 @@ impl ImageStats {
             linear_p25: 0.0,
             linear_p50: 0.0,
             linear_p95: 0.0,
+            linear_p99: 0.0,
             linear_p995: 0.0,
             linear_p998: 0.0,
             mean_saturation: 0.0,
@@ -169,6 +177,7 @@ impl ImageStats {
             wb_sarle_bc: 0.0,
             wb_rho: 0.0,
             dark_mean: 0.0,
+            dark_p10: 0.0,
             micro_contrast: 0.0,
             hf_ratio: 0.0,
         }
@@ -250,6 +259,7 @@ pub fn image_stats_rgba8(pixels: &[u8], width: u32, height: u32) -> ImageStats {
     let mut hue_weight_total = 0.0f32;
     let mut skin_count = 0u64;
     let mut dark_sum = 0.0f32;
+    let mut dark_channel: Vec<f32> = Vec::new();
     let mut count = 0usize;
     for pixel in pixels.chunks_exact(4) {
         let (r, g, b, a) = (pixel[0], pixel[1], pixel[2], pixel[3]);
@@ -282,7 +292,9 @@ pub fn image_stats_rgba8(pixels: &[u8], width: u32, height: u32) -> ImageStats {
         if (8.0..=50.0).contains(&hue) && (0.15..=0.75).contains(&s) && (0.15..=0.95).contains(&v) {
             skin_count += 1;
         }
-        dark_sum += (r.min(g).min(b)) as f32 / 255.0;
+        let dark = (r.min(g).min(b)) as f32 / 255.0;
+        dark_sum += dark;
+        dark_channel.push(dark);
     }
     if count == 0 {
         return stats;
@@ -314,6 +326,7 @@ pub fn image_stats_rgba8(pixels: &[u8], width: u32, height: u32) -> ImageStats {
     stats.linear_p25 = sorted_percentile(&linear_luma, 25.0);
     stats.linear_p50 = sorted_percentile(&linear_luma, 50.0);
     stats.linear_p95 = sorted_percentile(&linear_luma, 95.0);
+    stats.linear_p99 = sorted_percentile(&linear_luma, 99.0);
     stats.linear_p995 = sorted_percentile(&linear_luma, 99.5);
     stats.linear_p998 = sorted_percentile(&linear_luma, 99.8);
     stats.mean_saturation = saturations.iter().sum::<f32>() / nf;
@@ -326,6 +339,8 @@ pub fn image_stats_rgba8(pixels: &[u8], width: u32, height: u32) -> ImageStats {
     }
     stats.skin_proxy_ratio = skin_count as f32 / nf;
     stats.dark_mean = dark_sum / nf;
+    dark_channel.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    stats.dark_p10 = sorted_percentile(&dark_channel, 10.0);
     let wb_count = wb_channels[0].len();
     stats.wb_candidate_count = wb_count;
     stats.wb_candidate_ratio = wb_count as f32 / nf;
@@ -658,10 +673,35 @@ mod tests {
         }
         let stats = image_stats_rgba8(&pixels, 100, 1);
         assert_eq!(stats.linear_p50, 0.0, "下分位 P50 落在黑半");
+        assert_eq!(stats.linear_p99, 1.0, "P99 落在白半");
         assert_eq!(stats.linear_p995, 1.0, "P99.5 落在白半");
         assert_eq!(stats.linear_p02, 0.0, "P0.2 落在黑半");
         assert_eq!(stats.linear_p25, 0.0, "P25 落在黑半");
         assert_eq!(stats.linear_p998, 1.0, "P99.8 落在白半");
+    }
+
+    /// 暗通道 p10：灰阶分布 0×5、100×45、200×50 ⇒ p10 取第 10 个样本
+    /// （下分位口径，秩 ⌈10⌉ = 10）= 100/255；均值 145/255 作对照
+    /// （变异：p10 用均值代替 ⇒ 0.569 ≠ 0.392 ⇒ 红）。
+    #[test]
+    fn dark_p10_low_percentile_shape() {
+        let mut pixels = Vec::new();
+        for (value, count) in [(0u8, 5usize), (100, 45), (200, 50)] {
+            for _ in 0..count {
+                pixels.extend_from_slice(&[value, value, value, 255]);
+            }
+        }
+        let stats = image_stats_rgba8(&pixels, 100, 1);
+        assert!(
+            (stats.dark_p10 - 100.0 / 255.0).abs() < 1e-6,
+            "dark_p10 应为 100/255，实得 {}",
+            stats.dark_p10
+        );
+        assert!(
+            (stats.dark_mean - 145.0 / 255.0).abs() < 1e-6,
+            "dark_mean 应为 145/255，实得 {}",
+            stats.dark_mean
+        );
     }
 
     /// 注入 σ 已知的高斯噪声到平坦图：新估计（Anscombe + stride-3
