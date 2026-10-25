@@ -30,6 +30,11 @@ pub struct BlockKey {
     /// 区域高 ✓ —— **区域级用法必须有它** ✗：请求的 bbox 会被裁剪到画布内 ✓，
     /// 只按宽做键会让"被裁剪过的请求"与"存进去的那份"**永不匹配** ✗（我第一版就是这么写的 ✗）。
     pub h: u32,
+    /// **期 4 `lod`**：取样档位（0 = 全分辨率）。键的 `w`/`h` 是**该档位的输出像素数**
+    /// （`ceil(请求宽 / 2^lod)`），不是文档像素——否则 `lod: 1` 的 50×50 与
+    /// `lod: 0` 的 50×50 会共用一个键、像素互串；`lod` 维本身也进键（同尺寸不同档
+    /// 也不能串）。判据：同 `(region, lod, fingerprint)` 二次导出命中。
+    pub lod: u32,
     /// **★★★ 第 247 轮：**这块字节是**哪个图层范围**渲出来的 ✗ ★★★**
     ///   ＋ **∴ 为什么必须进键 ✗**（**`render_region_raw_layer` 的注释写着 ✓）**：
     ///     **∴ 只画一层 ⇒ **像素与整幅合成不同**✗
@@ -43,13 +48,23 @@ pub struct BlockKey {
 impl BlockKey {
     /// 由浮点 bbox 归一化出键 ✓（取整规则与渲染的像素栅格一致 ✓）。
     pub fn from_bbox(x: f64, y: f64, w: f64, h: f64) -> Self {
+        Self::from_bbox_lod(x, y, w, h, 0)
+    }
+
+    /// 由浮点 bbox 与 `lod` 档位归一化出键（期 4）：`w`/`h` 是该档位的输出像素数
+    /// （`ceil(请求宽 / 2^lod)`）；`lod == 0` 时与 [`BlockKey::from_bbox`] 相同。
+    /// `lod` 必须 ≤ 3（调用方 `export_png` 已校验）。
+    pub fn from_bbox_lod(x: f64, y: f64, w: f64, h: f64, lod: u32) -> Self {
+        debug_assert!(lod <= 3, "BlockKey::from_bbox_lod: lod 必须 ≤ 3");
+        let step = 1u32 << lod;
         Self {
             x: x.round() as i64,
             y: y.round() as i64,
-            w: w.round().max(0.0) as u32,
-            h: h.round().max(0.0) as u32,
+            w: (w.round().max(0.0) as u32).div_ceil(step),
+            h: (h.round().max(0.0) as u32).div_ceil(step),
             // **∴ 缺省是**全幅**✗ ⇒ **∴ 既有调用点的语义**一个字都不变** ✓（**第 247 轮 ✓）★
             scope: 0,
+            lod,
         }
     }
 

@@ -2656,6 +2656,7 @@ CLIP_TO_SELECTION_PARAM,
                 "输出文件路径（含 .png）。**只能写进导出目录**（缺省 ./exports，可用 YANSHI_EXPORT_DIR 改）\n                 或系统临时目录 ✓；也可以给相对路径 ✓；**不接受其它绝对路径** ✗（安全沙箱：见 0b862a4 审计 P0#1 \n                 —— 原先可写任意路径，等于一个文件写漏洞 ✗）。要放到别处请自己 `cp` ✓，\n                 推荐设 `YANSHI_EXPORT_DIR` 指向你的交付目录 ✓（那样就不必再 cp ✓）"
             ),
             param!("region", Any, false, "只导出该区域 {x,y,w,h}；缺省整幅"),
+            param!("lod", Integer, false, "取样档位 0|1|2|3（缺省 0 = 全分辨率）：lod:k ⇒ 渲染取样密度 1/2^k，输出尺寸 ceil(区域宽/2^k)×ceil(区域高/2^k)，不经过全分辨率中间缓冲；与 width/height/max_edge 正交（可同给：先降采样再缩放）；超出 0..=3 或非整数 ⇒ invalid_argument"),
             param!("width", Integer, false, "输出宽（与 height 一起给；不给就按原尺寸）"),
             param!("height", Integer, false, "输出高"),
             param!("max_edge", Integer, false, "限制最长边（按比例缩放；与 width/height 二选一）"),

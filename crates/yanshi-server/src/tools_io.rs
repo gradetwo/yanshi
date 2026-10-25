@@ -399,6 +399,21 @@ pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
             yanshi_core::Bbox::new(0.0, 0.0, state.width as f64, state.height as f64)
         }
     };
+    // **期 4 `lod`**：取样档位（0 = 全分辨率；1/2/3 ⇒ 输出尺寸逐档减半）。
+    // 非整数／超出 0..=3 ⇒ `invalid_argument`（不静默钳制；`optional_count`
+    // 本来就把负数／小数报成 `invalid_argument`，整数值浮点按既有口径接受）。
+    let lod = match optional_count(args, "lod")? {
+        None => 0,
+        Some(value) if value <= 3 => value as u32,
+        Some(value) => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "lod 必须是 0..=3 的整数（收到 {value}）⇒ 0 = 全分辨率，1/2/3 逐档减半"
+                )),
+            ));
+        }
+    };
     // **给了 `layer_id` ⇒ 只渲染那一层** ✓（用户报过的缺口 ✓）。
     // **"忽略可见性"是有意的** ✓ —— 导出某一层是明确要求 ✓（隐藏层也应当能导出 ✓）。
     // **注意它会绕过区域字节缓存** ✓：那张缓存的键里**没有图层** ✗ ⇒
@@ -409,10 +424,15 @@ pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
     // 那会把同一段重复累计成两倍 ✓）。
     let render_started = std::time::Instant::now();
     let (width, height, pixels) = match optional_str(args, "layer_id") {
-        Some(layer_id) => ctx
+        Some(layer_id) => ctx.workspace.render_region_raw_layer_with_lod(
+            &ctx.doc_id,
+            region,
+            &layer_id,
+            lod,
+        )?,
+        None => ctx
             .workspace
-            .render_region_raw_layer(&ctx.doc_id, region, &layer_id)?,
-        None => ctx.workspace.render_region_raw(&ctx.doc_id, region)?,
+            .render_region_raw_with_lod(&ctx.doc_id, region, lod)?,
     };
     ctx.time(Phase::Render, render_started);
     // **落盘的图也必须把"被跳过的东西"带出去** ✗：这条路同样返回裸像素 ✓，
@@ -604,8 +624,9 @@ pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
             ErrorContext::detail(format!("写文件失败：{} ⇒ {error}", path.display())),
         )
     })?;
-    if covers_frame && target_w == width && target_h == height {
-        // 只在**原尺寸整幅**时写缓存 ✓（缩放过的图不该当成"打开即图片" ✗）。
+    if covers_frame && lod == 0 && target_w == width && target_h == height {
+        // 只在**原尺寸整幅**时写缓存 ✓（缩放过的图不该当成"打开即图片" ✗；
+        // 期 4：`lod > 0` 的图是降采样的，同样不许当成全幅缓存 ✗）。
         let _ = ctx.workspace.cache_full_frame_png(&ctx.doc_id, &png);
     }
     // **★ 必须报告「这张图是不是落后于 head」** ✓（第 1346 轮；外部 **X-03** 换来的）
@@ -637,7 +658,10 @@ pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         "sha256": yanshi_core::BlobHash::from_bytes(&png).to_string(),
         "source_width": width,
         "source_height": height,
-        "scaled": target_w != width || target_h != height,
+        // **期 4 `lod`**：回显生效档位（缺省 0）；`scaled` =（目标尺寸 ≠ 渲染尺寸）
+        // 或（`lod > 0`——输出本来就是降采样的像素）。
+        "lod": lod,
+        "scaled": target_w != width || target_h != height || lod > 0,
         // **★ 这里**不许**给 `raster_pending`** ✗（第 1364 轮自查推翻第 1346 轮）
         //   **⇒ 我原先加的 `raster_pending = rendered_seq < head_seq` 是**误报**：
         //     `rendered_seq` 是**文档渲染水位**（预览/缩略图那条线），而 `export_png` 是

@@ -1467,6 +1467,18 @@ impl Document {
     /// 与 `render_region` 的区别：不编码 PNG、不写渲染缓存/缩略图状态，
     /// 因为调用方要的是像素而不是可展示的产物。
     pub fn render_region_raw(&mut self, bbox: Bbox) -> Result<(u32, u32, Vec<u8>)> {
+        self.render_region_raw_with_lod(bbox, 0)
+    }
+
+    /// 与 [`Self::render_region_raw`] 相同，但取样步长为 `1 << lod`（期 4 `export_png`
+    /// 的 `lod`）：输出像素 `(i, j)` 采样文档坐标 `(x0 + i * 2^lod, y0 + j * 2^lod)`，
+    /// 输出尺寸 `ceil(区域宽 / 2^lod) × ceil(区域高 / 2^lod)`；区域字节缓存的键含
+    /// `lod` 维（同区域不同档不互串）。`lod` 必须 ≤ 3（调用方已校验）。
+    pub fn render_region_raw_with_lod(
+        &mut self,
+        bbox: Bbox,
+        lod: u32,
+    ) -> Result<(u32, u32, Vec<u8>)> {
         if let Ok(path) = std::env::var("YANSHI_REGION_PROBE") {
             use std::io::Write;
             if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -1493,7 +1505,8 @@ impl Document {
         // **∴ 第 247 轮 ✗**：**这一句**搬到 `region_block_get`／`region_block_put` 里了** ✓
         //   ＋ **∴ 为什么 ✗**：**两条渲染路**都要同一套开关语义**✗ ⇒ **∴ 各读一次环境 ✗ 不各写一份判定 ✓ ★
         let version = yanshi_render::region_block::region_fingerprint(&self.state);
-        let key = yanshi_render::region_block::BlockKey::from_bbox(bbox.x, bbox.y, bbox.w, bbox.h);
+        let key =
+            yanshi_render::region_block::BlockKey::from_bbox_lod(bbox.x, bbox.y, bbox.w, bbox.h, lod);
         // **★ 探针 ✓**（第 552 轮 ✓，**查明后删 ✓**）：**打印**是否命中外层 ＋ 键 ＋ 版本**✗** ⇒
         // **∴ 一次看出**我的区域是否到了这里 ✗、命中与否 ✗、键是否漂移 ✗****。
         if let Ok(path) = std::env::var("YANSHI_REGION_PROBE") {
@@ -1524,7 +1537,7 @@ impl Document {
         }
         let rendered = self
             .renderer
-            .render_region(&self.state, &*self.store, bbox)?;
+            .render_region_with_lod(&self.state, &*self.store, bbox, lod)?;
         // **跳过的东西必须留下痕迹** ✗（否则裸像素出口 = 静默的不完整画面 ✗）。
         self.note_render_stats(&rendered.stats);
         let data = rendered.rgba8.clone();
@@ -1583,6 +1596,17 @@ impl Document {
         bbox: Bbox,
         layer_id: &str,
     ) -> Result<(u32, u32, Vec<u8>)> {
+        self.render_region_raw_layer_with_lod(bbox, layer_id, 0)
+    }
+
+    /// 与 [`Self::render_region_raw_layer`] 相同，但取样步长为 `1 << lod`
+    /// （期 4 `export_png` 的 `lod`；键含 `lod` 维 + 图层 scope，不互串）。
+    pub fn render_region_raw_layer_with_lod(
+        &mut self,
+        bbox: Bbox,
+        layer_id: &str,
+        lod: u32,
+    ) -> Result<(u32, u32, Vec<u8>)> {
         // **★★★ 第 247 轮：**单层渲染**也接上区域缓存**✗ 但**必须带图层 scope**✗ ★★★**
         //   ＋ **∴ 判据（**`tool-region-cache-reuse.mjs` 场景二 ✓）✗**：
         //     **∴ 同一层同一区域连渲两次 ⇒ **第二次必须快一个量级**（**`t4 <= t3 / 5` ✓）★
@@ -1595,13 +1619,17 @@ impl Document {
         //   ＋ **∴ 版本 ✗**：**仍是 `region_fingerprint(state)`**✗（**与全幅那条同一个口径 ✓）
         //     ⇒ **∴ 内容一变 ⇒ 指纹变 ⇒ 不命中** ✓（**保守但绝不撒谎 ✓）★
         let version = yanshi_render::region_block::region_fingerprint(&self.state);
-        let key = yanshi_render::region_block::BlockKey::from_bbox(bbox.x, bbox.y, bbox.w, bbox.h)
-            .with_scope(yanshi_render::region_block::BlockKey::layer_scope(layer_id));
+        let key = yanshi_render::region_block::BlockKey::from_bbox_lod(
+            bbox.x, bbox.y, bbox.w, bbox.h, lod,
+        )
+        .with_scope(yanshi_render::region_block::BlockKey::layer_scope(layer_id));
         if let Some((w, h, data)) = self.region_block_get(key, version) {
             return Ok((w, h, data));
         }
         let previous = self.renderer.set_only_layer(Some(layer_id.to_owned()));
-        let rendered = self.renderer.render_region(&self.state, &*self.store, bbox);
+        let rendered =
+            self.renderer
+                .render_region_with_lod(&self.state, &*self.store, bbox, lod);
         // **无论成功失败都要还原** ✓（否则这个"只画一层"的开关会**泄漏到下一次渲染** ✗）。
         self.renderer.set_only_layer(previous);
         let rendered = rendered?;

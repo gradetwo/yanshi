@@ -1577,12 +1577,26 @@ impl Renderer {
         )
     }
 
-    /// 渲染指定区域（文档坐标）。
+    /// 渲染指定区域（文档坐标）；`lod` 缺省 0（全分辨率），见 [`Self::render_region_with_lod`]。
     pub fn render_region(
         &mut self,
         state: &DocumentState,
         store: &dyn BlobStore,
         bbox: Bbox,
+    ) -> Result<RegionRender> {
+        self.render_region_with_lod(state, store, bbox, 0)
+    }
+
+    /// 渲染指定区域（文档坐标），取样步长 `1 << lod`（期 4 `export_png` 的 `lod`）：
+    /// 输出像素 `(i, j)` 采样文档坐标 `(x0 + i * (1 << lod), y0 + j * (1 << lod))`，
+    /// 不经过全分辨率中间缓冲；输出尺寸 `ceil(区域宽 / 2^lod) × ceil(区域高 / 2^lod)`。
+    /// `lod` 必须 ≤ 3（调用方 `export_png` 已校验）。
+    pub fn render_region_with_lod(
+        &mut self,
+        state: &DocumentState,
+        store: &dyn BlobStore,
+        bbox: Bbox,
+        lod: u32,
     ) -> Result<RegionRender> {
         // **★ 门控计时（第 537 轮）★**：Drop 守卫 ⇒ 无论哪条出口都打印整体耗时（零生产开销）
         struct TotalTimer {
@@ -1609,6 +1623,9 @@ impl Renderer {
             on: probe_on_reg,
         };
         let region = clamp_region(state, &bbox)?;
+        // **期 4 `lod`**：取样步长（`lod` 必须 ≤ 3，调用方 `export_png` 已校验）。
+        debug_assert!(lod <= 3, "render_region_with_lod: lod 必须 ≤ 3");
+        let step = 1u32 << lod;
         // 位图选区（`smart_select`）：渲染准备阶段确保 blob 已解码注册。
         // `SelectionShape::from_value` 是纯函数、拿不到存储；这里统一预热一次，
         // fold 重放 / 跨进程重载后也不静默退化为空选区。无位图选区时零开销。
@@ -1643,6 +1660,10 @@ impl Renderer {
         } else {
             0
         };
+        // **期 4 `lod`**：外扩必须是步长的整数倍，否则累积缓冲的原点会偏离取样网格
+        // （输出像素整体平移）；向上取整（多给 ≤ step−1 px 外扩；`declared > padding`
+        // 的截断告警仍按取整后的值判断——取整只会多给，不会少给）。
+        let padding = padding.div_ceil(step) * step;
         // 报告用的外扩框（口径与 `render_accumulation` 内部完全一致）。
         let padded = Bbox::new(
             region.x - padding as f64,
@@ -1679,8 +1700,9 @@ impl Renderer {
         // **串行与并行在这里分派**：并行分块同样调用 `render_accumulation`（见其说明）⇒
         // 两条路径算的是同一件事，区别只是"谁来算哪几行"。
         let workers = parallel_impl::workers(self.max_workers);
-        let region_pixels =
-            (region.w.ceil().max(0.0) as usize).saturating_mul(region.h.ceil().max(0.0) as usize);
+        // **期 4 `lod`**：分派阈值按 LOD 像素数算（`step == 1` 时与今天相同）。
+        let region_pixels = ((region.w.ceil().max(0.0) as u32).div_ceil(step) as usize)
+            .saturating_mul((region.h.ceil().max(0.0) as u32).div_ceil(step) as usize);
         if probe_on_reg {
             eprintln!(
                 "PROBE 分派前 区域={}x{} 总={:?}",
@@ -1692,7 +1714,7 @@ impl Renderer {
         let cropped = if workers > 1 && region_pixels >= PARALLEL_MIN_PIXELS {
             // 区域足够大且核数 > 1：按行分块并行。**顺序无关性**见 `parallel_impl` 的说明。
             let (buffer, chunk_stats, chunk_probe, chunks) = parallel_impl::render_region(
-                self, state, store, &region, padding, background, workers,
+                self, state, store, &region, padding, background, workers, step,
             )?;
             stats.layers = chunk_stats.layers;
             stats.objects = chunk_stats.objects;
@@ -1735,6 +1757,7 @@ impl Renderer {
                 &mut probe,
                 &self.bitmaps,
                 &self.below,
+                step,
             )?;
             stats.absorb(&track);
             stats.parallel_workers = 1;
@@ -1750,7 +1773,13 @@ impl Renderer {
 
         // 切片入缓存（串行：缓存是 &mut self；见 `store_tiles` 的说明）。
         let mut probe_stage = stage_probe::Stage::start();
-        let tiles = self.store_tiles(&cropped);
+        // **期 4 `lod`**：`step > 1` 时不写 tile 缓存（tile 键是文档坐标，LOD tile 会
+        // 毒化全分辨率复用；且 tile 组合是全分辨率语义）。
+        let tiles = if step == 1 {
+            self.store_tiles(&cropped)
+        } else {
+            Vec::new()
+        };
         stats.tiles_rendered = tiles.len();
         let probe_crop = probe_stage.stop();
         // 输出像素先按 **f16 量化**（14.1：内存 tile 用 f16 线性，合成正确性以 tile 为准），
@@ -1818,6 +1847,7 @@ impl Renderer {
         probe: &mut RenderProbe,
         bitmaps: &BitmapCache,
         below: &std::sync::Mutex<Option<BelowTiles>>,
+        step: u32,
     ) -> Result<Buffer> {
         // **★ Drop 计时守卫（**门控 ✓）✗ ★**（**第 535 轮 ✓）
         //   **∴ 为什么用守卫 ✗**：**这个函数**有多个出口**✗
@@ -1883,19 +1913,25 @@ impl Renderer {
         );
         let origin_x = padded.x.floor() as i64;
         let origin_y = padded.y.floor() as i64;
-        let width = ((padded.x + padded.w).ceil() as i64 - origin_x).max(0) as u32;
-        let height = ((padded.y + padded.h).ceil() as i64 - origin_y).max(0) as u32;
+        // **期 4 `lod`**：宽高是 **LOD 像素数**（文档宽向上取整除以 step；格点锚在 `origin`；
+        // `step == 1` 时与今天逐字等价）。
+        let step_i = step as i64;
+        let width =
+            (((padded.x + padded.w).ceil() as i64 - origin_x).max(0).div_ceil(step_i)) as u32;
+        let height =
+            (((padded.y + padded.h).ceil() as i64 - origin_y).max(0).div_ceil(step_i)) as u32;
 
         let mut probe_fill_stage = stage_probe::Stage::start();
         let mut accumulation = match background {
-            Some(color) if color[3] > 0 => Buffer::filled(
+            Some(color) if color[3] > 0 => Buffer::filled_stepped(
                 origin_x,
                 origin_y,
                 width,
                 height,
                 u8x4_to_linear_premul(color),
+                step,
             ),
-            _ => Buffer::new(origin_x, origin_y, width, height),
+            _ => Buffer::new_stepped(origin_x, origin_y, width, height, step),
         };
         probe.fill += probe_fill_stage.stop();
 
@@ -2071,7 +2107,9 @@ impl Renderer {
         // ⇒ **∴ 宁慢勿错：无法证明 ⇒ 不缓存 ✓**（**lazy 绝不许变成撒谎 ✓**）。
         // **∴ 本次渲染的 id ✗**（**∴ 探针按它配对 ✓**）。
         let req_id = RENDER_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let cacheable = split > 0 && !except_seen;
+        // **期 4 `lod`**：`step > 1` 时 below/above 复用停用（tile 键是文档坐标、存的是
+        // 全分辨率 f16 块，LOD 像素写进去会毒化全分辨率复用）；只影响缓存，不影响输出。
+        let cacheable = step == 1 && split > 0 && !except_seen;
         // **★ `above` 的全部声明 ✗ ★**（第 711 轮 ✓；**目标第 4 条 ✓**）：**∴ 必须在
         //   **`if cacheable` 块**之前** ✓**（**∴ 块内赋值、**块后的循环与收尾都要用 ✓）。
         let above_wanted = cacheable && visible_opacity.get(split).is_some_and(|o| *o < 1.0);
@@ -2686,7 +2724,8 @@ impl Renderer {
             // 租约在本次迭代结束时 Drop ⇒ 本层的渲染与合成都用它，之后才归还。
             // **★ 每层三处门控计时（第 553 轮）★**：后半段未归入 ~1650 ms 的嫌疑
             let t_layer = crate::probe::ProbeClock::now();
-            let mut layer_buffer = self.buffer_pool.acquire(origin_x, origin_y, width, height);
+            let mut layer_buffer =
+                self.buffer_pool.acquire_stepped(origin_x, origin_y, width, height, step);
             let pass_no = PASS_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             let d_acquire = t_layer.elapsed();
             let t_objects = crate::probe::ProbeClock::now();
@@ -2830,7 +2869,9 @@ impl Renderer {
                 match above_acc.as_mut() {
                     Some(acc) => acc.composite_with_layer(&layer_buffer, mode, opacity),
                     None => {
-                        let mut b = crate::buffer::Buffer::new(origin_x, origin_y, width, height);
+                        let mut b = crate::buffer::Buffer::new_stepped(
+                            origin_x, origin_y, width, height, step,
+                        );
                         b.composite_with_layer(&layer_buffer, mode, opacity);
                         above_acc = Some(b);
                     }
@@ -3766,7 +3807,9 @@ impl Renderer {
                     // `Normal` 混合（非 Normal 的逐 dab 混合对目标像素敏感 ✗）、
                     // 无外观（载墨/混色要读目标像素 ✗）、无选区裁剪 ✓。
                     // 不满足 ⇒ 原路径，与未接入前逐字一致 ✓。
-                    let via_cache = layer.layer_type == yanshi_core::LayerType::Vector
+                    // **期 4 `lod`**：`step > 1` 时不走单笔光栅缓存（缓存的是全分辨率光栅）。
+                    let via_cache = layer_buffer.step() == 1
+                        && layer.layer_type == yanshi_core::LayerType::Vector
                         && object.object_type == yanshi_core::ObjectType::Stroke
                         && brush.blend_mode == BlendMode::Normal
                         && !appearance.active
@@ -4963,14 +5006,27 @@ impl Renderer {
                         affected_max_x = affected_max_x.max(px + radius);
                         affected_max_y = affected_max_y.max(py + radius);
                     }
-                    let start_x =
-                        ((affected_min_x - origin.0 as f64).floor().max(0.0) as u32).min(width);
-                    let start_y =
-                        ((affected_min_y - origin.1 as f64).floor().max(0.0) as u32).min(height);
-                    let end_x =
-                        ((affected_max_x - origin.0 as f64).ceil().max(0.0) as u32 + 1).min(width);
-                    let end_y =
-                        ((affected_max_y - origin.1 as f64).ceil().max(0.0) as u32 + 1).min(height);
+                    // **期 4 `lod`**：起止是**局部**坐标（文档偏移除以步长；`step == 1` 时与
+                    // 今天逐字等价；取 floor/ceil 的超集，圈外像素的位移恒为 0，不改动）。
+                    let step_f = layer_buffer.step() as f64;
+                    let start_x = (((affected_min_x - origin.0 as f64) / step_f)
+                        .floor()
+                        .max(0.0) as u32)
+                        .min(width);
+                    let start_y = (((affected_min_y - origin.1 as f64) / step_f)
+                        .floor()
+                        .max(0.0) as u32)
+                        .min(height);
+                    let end_x = (((affected_max_x - origin.0 as f64) / step_f)
+                        .ceil()
+                        .max(0.0) as u32
+                        + 1)
+                        .min(width);
+                    let end_y = (((affected_max_y - origin.1 as f64) / step_f)
+                        .ceil()
+                        .max(0.0) as u32
+                        + 1)
+                        .min(height);
                     // 有选区时快照**目标区域**的操作前像素 ✓（直接按下标取 ✓，
                     // 不做坐标换算与夹取 —— 之前用影响圈快照做换算，边界处会取到错值 ✗）。
                     let pre_targets: Option<Vec<LinearRgba>> = liquify_clip.as_ref().map(|_| {
@@ -4986,9 +5042,9 @@ impl Renderer {
                     let row = (end_x - start_x) as usize;
                     for y in start_y..end_y {
                         for x in start_x..end_x {
-                            // 目标像素的文档坐标。
-                            let document_x = origin.0 as f64 + x as f64;
-                            let document_y = origin.1 as f64 + y as f64;
+                            // 目标像素的文档坐标（期 4：局部坐标 × 步长）。
+                            let document_x = origin.0 as f64 + x as f64 * step_f;
+                            let document_y = origin.1 as f64 + y as f64 * step_f;
                             let mut shift_x = 0.0f64;
                             let mut shift_y = 0.0f64;
                             for (px, py) in &points {
@@ -5032,8 +5088,11 @@ impl Renderer {
                                 continue;
                             }
                             // 反向映射：目标像素取「源 − 位移」处的**双线性**采样。
-                            let sample_x = document_x - shift_x - source_origin.0 as f64;
-                            let sample_y = document_y - shift_y - source_origin.1 as f64;
+                            // **期 4 `lod`**：采样位置换算成快照的**局部**坐标（除以步长）。
+                            let sample_x =
+                                (document_x - shift_x - source_origin.0 as f64) / step_f;
+                            let sample_y =
+                                (document_y - shift_y - source_origin.1 as f64) / step_f;
                             if sample_x < -1.0
                                 || sample_y < -1.0
                                 || sample_x > width as f64
@@ -5849,10 +5908,14 @@ pub(crate) mod parallel_impl {
         padding: u32,
         background: Option<[u8; 4]>,
         workers: usize,
+        step: u32,
     ) -> Result<(Buffer, RenderStats, RenderProbe, usize)> {
         // `region` 来自 `clamp_region`，已是整数框。
         let rx = region.x.floor() as i64;
         let ry = region.y.floor() as i64;
+        // **期 4 `lod`**：输出是 LOD 像素（`lw × lh`），分带按 LOD 行分；`step == 1`
+        // 时与今天逐字等价（`div_ceil(1)` 是恒等）。
+        let step_i = step as i64;
         // **宽高要用"右/下边界 − 原点"**（不是 `w − x`）：`x`/`y` 是绝对文档坐标，
         // 偏移区域（例如脏区 (301,361)）若按 `w − x` 算会被算成 0 宽 ⇒ 整块渲染成空。
         // 这个缺陷被 `crates/yanshi-server/tests/coldstart_reuse.rs` 抓住（脏区渲染返回 0×0）。
@@ -5864,16 +5927,18 @@ pub(crate) mod parallel_impl {
         };
         if rw == 0 || rh == 0 {
             return Ok((
-                Buffer::new(rx, ry, 0, 0),
+                Buffer::new_stepped(rx, ry, 0, 0, step),
                 empty_stats,
                 RenderProbe::default(),
                 0,
             ));
         }
+        let lw = rw.div_ceil(step);
+        let lh = rh.div_ceil(step);
         // 每块至少 `MIN_BAND_ROWS` 行、块数不超过上限 ⇒ 块不是越薄越好。
         let wanted = workers.min(MAX_WORKERS);
-        let by_rows = (rh / MIN_BAND_ROWS).max(1) as usize;
-        let bands = split_bands(rh, wanted.min(by_rows));
+        let by_rows = (lh / MIN_BAND_ROWS).max(1) as usize;
+        let bands = split_bands(lh, wanted.min(by_rows));
         let chunks = bands.len();
         // **告诉缓冲池本轮的真实并发块数**：池的字节预算 = 并发数 × 每块工作集
         // （下界 `MIN_POOLED_BYTES`），这样 8K/4 worker 那种"每块 126.56 MiB、合计 506 MiB"
@@ -5896,7 +5961,7 @@ pub(crate) mod parallel_impl {
         }
 
         let t_alloc = crate::probe::ProbeClock::now();
-        let mut out = Buffer::new(rx, ry, rw, rh);
+        let mut out = Buffer::new_stepped(rx, ry, lw, lh, step);
         if probe_on_par {
             eprintln!(
                 "PROBE 输出分配 区域={}x{} 总={:?}",
@@ -5905,7 +5970,7 @@ pub(crate) mod parallel_impl {
                 t_alloc.elapsed()
             );
         }
-        let stride = rw as usize * 4;
+        let stride = lw as usize * 4;
         // 把输出按行切成互不重叠的可变切片：这是"块之间没有共享像素"的机器保证。
         let mut slices: Vec<(&mut [f32], (u32, u32))> = Vec::with_capacity(chunks);
         {
@@ -5929,11 +5994,13 @@ pub(crate) mod parallel_impl {
                 // 传引用（不是把缓存 move 进第一个闭包）⇒ 各块共享同一份缓存。
                 let bitmaps_ref = bitmaps;
                 for (destination, (row_start, rows)) in slices {
+                    // **期 4 `lod`**：带是 LOD 行（`row_start`/`rows` 已是 LOD 行数），
+                    // 文档框 = 起始格点 × 步长。
                     let band = Bbox::new(
                         rx as f64,
-                        (ry + row_start as i64) as f64,
+                        (ry + row_start as i64 * step_i) as f64,
                         rw as f64,
-                        rows as f64,
+                        rows as f64 * step as f64,
                     );
                     if probe_on_par {
                         eprintln!(
@@ -6003,12 +6070,15 @@ pub(crate) mod parallel_impl {
                                 &mut probe,
                                 bitmaps_ref,
                                 &renderer.below,
+                                step,
                             )?;
                             stats.absorb(&track);
                             // 只把本块对应的行拷回输出；外扩出来的行丢弃。
                             let (origin_x, origin_y) = buffer.origin();
-                            let source_x = (rx - origin_x) as usize;
-                            let source_y = (band.y as i64 - origin_y) as usize;
+                            // **期 4 `lod`**：源局部行／列 = 文档偏移除以步长（带原点与累积
+                            // 原点都在取样网格上，整除；`step == 1` 时与今天相同）。
+                            let source_x = ((rx - origin_x) / step_i) as usize;
+                            let source_y = ((band.y as i64 - origin_y) / step_i) as usize;
                             let source_width = buffer.width() as usize;
                             let source = buffer.as_f32();
                             for row in 0..rows as usize {
@@ -6201,6 +6271,7 @@ pub(crate) mod parallel_impl {
         padding: u32,
         background: Option<[u8; 4]>,
         _workers: usize,
+        step: u32,
     ) -> Result<(Buffer, RenderStats, RenderProbe, usize)> {
         let mut stats = RenderStats {
             filter_padding: padding,
@@ -6221,6 +6292,7 @@ pub(crate) mod parallel_impl {
             &mut probe,
             &renderer.bitmaps,
             &renderer.below,
+            step,
         )?;
         stats.absorb(&track);
         Ok((buffer.crop(region), stats, probe, 1))
@@ -6813,11 +6885,13 @@ fn apply_layer_mask_warn(
             masks.get_or_build(mask, state.width as i32, state.height as i32, &load_blob);
         let (origin_x, origin_y) = layer_buffer.origin();
         let width = layer_buffer.width() as usize;
+        let step = layer_buffer.step() as i32;
         let data = layer_buffer.pixels_mut();
         for (index, pixel) in data.chunks_exact_mut(4).enumerate() {
             let x = (index % width) as i32;
             let y = (index / width) as i32;
-            let alpha = compiled.sample(origin_x as i32 + x, origin_y as i32 + y);
+            // **期 4 `lod`**：`x`/`y` 是局部坐标，文档坐标 = 原点 + 局部 × 步长。
+            let alpha = compiled.sample(origin_x as i32 + x * step, origin_y as i32 + y * step);
             for value in pixel.iter_mut() {
                 *value *= alpha;
             }
@@ -6828,11 +6902,12 @@ fn apply_layer_mask_warn(
         return;
     }
     let (origin_x, origin_y) = layer_buffer.origin();
-    let mut mask_buffer = Buffer::new(
+    let mut mask_buffer = Buffer::new_stepped(
         origin_x,
         origin_y,
         layer_buffer.width(),
         layer_buffer.height(),
+        layer_buffer.step(),
     );
     let coverage = if mask.shape.get("kind").and_then(Value::as_str) == Some("path") {
         // 二期（mask 源 = path）：来源解析需要文档状态（object_id 引用），且
@@ -7099,7 +7174,7 @@ pub fn render_region_unquantized(
     background: Option<[u8; 4]>,
     workers: usize,
 ) -> Result<(Buffer, RenderStats, RenderProbe, usize)> {
-    parallel_impl::render_region(renderer, state, store, region, padding, background, workers)
+    parallel_impl::render_region(renderer, state, store, region, padding, background, workers, 1)
 }
 
 #[cfg(test)]

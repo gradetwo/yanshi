@@ -2346,8 +2346,19 @@ impl Workspace {
         bbox: Bbox,
         layer_id: &str,
     ) -> Result<(u32, u32, Vec<u8>)> {
+        self.render_region_raw_layer_with_lod(doc_id, bbox, layer_id, 0)
+    }
+
+    /// 与 [`Self::render_region_raw_layer`] 相同，但取样步长为 `1 << lod`（期 4 `export_png` 的 `lod`）。
+    pub fn render_region_raw_layer_with_lod(
+        &mut self,
+        doc_id: &str,
+        bbox: Bbox,
+        layer_id: &str,
+        lod: u32,
+    ) -> Result<(u32, u32, Vec<u8>)> {
         self.document_mut(doc_id)?
-            .render_region_raw_layer(bbox, layer_id)
+            .render_region_raw_layer_with_lod(bbox, layer_id, lod)
     }
 
     /// **只渲染某一层里的一个对象子集** ✓（一行转调，语义见 `Document` 侧 ✓）。
@@ -2373,7 +2384,18 @@ impl Workspace {
     ///（`Workspace` ✓、`export_project` 两次 ✓、`with_assets_dir` ✓ ⇒ 这次是第四次 ✓）
     /// ⇒ **插代码前先看它上面是不是文档注释** ✓ 这条纪律要当真 ✓。
     pub fn render_region_raw(&mut self, doc_id: &str, bbox: Bbox) -> Result<(u32, u32, Vec<u8>)> {
-        self.document_mut(doc_id)?.render_region_raw(bbox)
+        self.render_region_raw_with_lod(doc_id, bbox, 0)
+    }
+
+    /// 与 [`Self::render_region_raw`] 相同，但取样步长为 `1 << lod`（期 4 `export_png` 的 `lod`）。
+    pub fn render_region_raw_with_lod(
+        &mut self,
+        doc_id: &str,
+        bbox: Bbox,
+        lod: u32,
+    ) -> Result<(u32, u32, Vec<u8>)> {
+        self.document_mut(doc_id)?
+            .render_region_raw_with_lod(bbox, lod)
     }
 
     /// **★ 同上，但指定"当前层"作切点 ✓ ★**（第 521 轮 ✓）：**一行转调 ✓**。
