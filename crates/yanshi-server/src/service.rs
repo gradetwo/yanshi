@@ -684,15 +684,27 @@ pub struct ExportStats {
     pub kept_no_recipe: usize,
     /// **有配方但重放对不上** ⇒ 照装 ✓ 的个数（宁可包大，也要能打开 ✓）。
     pub kept_mismatch: usize,
-    /// **引用了但存储里没有** ✗ ⇒ **跳过 ＋ 告警** ✓ 的个数（第 70 轮 ✓，真实用户报告 ✓）。
+    /// **引用了但存储里没有** ✗ 的**本体**位图个数（第 70 轮 ✓，真实用户报告 ✓）。
     ///
-    /// **为什么不能整单失败** ✗：用户实测（15MB 真实文档 ✓）**导出直接报错退出** ✗ ——
-    /// 文档引用了那个 blob 2 次 ✓ ⇒ `store.get(&hash)?` 上抛 ⇒ **整包作废** ✗。
-    /// 而**渲染路径早有先例** ✓（`missing_blob_is_skipped_with_a_warning_not_fatal` ✓）
-    /// ⇒ **∴ export 对齐它** ✓：**降级而非整单失败** ✓；**但必须报出来** ✗（静默＝撒谎 ✓）。
+    /// **B2 改了第 70 轮的结论** ✓：那时"降级而非整单失败"是怕 15MB 真实文档
+    /// 整个导出报错退出 ✗ —— 但降级产出的缺本体包**看起来正常**，调用方
+    /// 拿去重放才发现是空的 ✗ ⇒ 所以现在**本体缺 ⇒ 整个导出失败**
+    /// （`ReferenceNotFound` ✓，不产包 ✓）；只缺派生 tile 时仍照常导出 ✓。
+    /// 成功返回的统计里它恒为 0 ✓；失败时个数进报错文案 ✓。
     pub kept_missing: usize,
-    /// **缺 blob 的具体清单** ✓（哪些位图没装进包 ✓）—— **必须报出来** ✗，静默就是撒谎 ✓。
+    /// **缺本体 blob 的具体清单** ✓（哪些本体位图没装进包 ✓）—— **必须报出来** ✗，静默就是撒谎 ✓。
     pub missing: Vec<String>,
+    /// **缺本体 blob 的个数** ✓（B2 ✓）：引用了但存储里没有的本体位图数 ✓。
+    ///
+    /// 与 `missing` 清单同数 ✓（恒等式 `missing_body == missing.len()` ✓）；
+    /// `> 0` ⇒ 导出直接失败（`ReferenceNotFound` ✓），不产包 ✓。
+    pub missing_body: usize,
+    /// **缺派生 tile 的个数** ✓（B2 ✓）：引用了但存储里没有的派生 tile 索引数 ✓。
+    ///
+    /// 口径与 `check_package.py` 一致：`payload.tiles` 里藏的引用 ⇒ 派生 ✓；
+    /// tile 索引由本体位图重建 ✓，缺了它渲染落回整幅路 ✓ ⇒ 只缺派生时
+    /// 仍可导出 ✓，但数字必须报出来 ✓。
+    pub missing_derived: usize,
 }
 
 /// **导出"可重放证明"的进程内缓存** ✓（第 39 轮 ✓）。
@@ -3082,6 +3094,11 @@ impl Workspace {
         // 是不是都带着可重放的配方" ✓（只被一条没有配方的原子引用 ⇒ **必须装** ✗）。
         _e3("read_atoms");
         let mut wanted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        // **派生 tile 索引的引用** ✓（B2 ✓）：净荷 `tiles` 里藏的那个哈希 ✓
+        // —— 与 `check_package.py` 的结构口径一致：`payload.tiles` ⇒ 派生 ✓，
+        // `bitmap.blob_hash`／`refs.blobs` ⇒ 本体 ✓。tile 索引**只计数、不装包**
+        // （由本体位图重建 ✓，见下面的 tile 循环 ✓）。
+        let mut tile_wanted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut refs_by_blob: std::collections::BTreeMap<String, Vec<serde_json::Value>> =
             std::collections::BTreeMap::new();
         let mut broken_lines = 0usize;
@@ -3125,6 +3142,16 @@ impl Workspace {
                                     .push(payload.clone());
                             }
                         }
+                    }
+                    // **派生 tile 索引也收进来** ✓（B2 ✓）：只认净荷 `tiles` 里的
+                    // 字符串哈希 ✓ —— 索引 blob 的内容（各分块哈希）不在原子日志里 ✓，
+                    // 也不在这里展开 ✓（`check_package.py` 同款：只扫 `atoms.jsonl` ✓）。
+                    if let Some(tiles) = atom
+                        .get("payload")
+                        .and_then(|payload| payload.get("tiles"))
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        tile_wanted.insert(tiles.to_owned());
                     }
                 }
                 Err(_) => broken_lines += 1,
@@ -3182,6 +3209,9 @@ impl Workspace {
         let mut kept_mismatch = 0usize;
         let mut kept_missing = 0usize;
         let mut missing: Vec<String> = Vec::new();
+        // **B2 的两栏计数** ✓：本体缺（`missing_body`）与派生缺（`missing_derived`）分开数 ✓。
+        let mut missing_body = 0usize;
+        let mut missing_derived = 0usize;
         _e3("pack_headers");
         // **★ 临时：打印两个集合的大小 ✗ ★**（第 229 轮 ✓；**∴ 一行定位 ✓）
         //   **∴ 为什么 ✗**：**实测**（**第 225–228 轮 ✓）**✗**：
@@ -3264,14 +3294,16 @@ impl Workspace {
                 }
             }
             // 到这里才真的需要字节 ✓（下面要把它按十六进制路径放进 tar ✓）。
-            // **缺 blob ⇒ 降级** ✓（第 70 轮 ✓）：**跳过这一条 ＋ 记数 ＋ 告警** ✓，**不**让整包作废 ✗
-            //（用户实测：15MB 文档引用了一个不存在的 blob ⇒ 导出整个失败 ✗）。
+            // **B2：本体缺不再降级** ✓ —— 第 70 轮的"跳过这一条 ＋ 记数 ＋ 告警"
+            // 已被推翻 ✓：缺本体时整个导出在循环后直接失败（`ReferenceNotFound` ✓），
+            // 这里只记数、记清单 ✓，不产包 ✓（见循环后的检查 ✓）。
             let bytes = match store.get(&hash) {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     kept_missing += 1;
+                    missing_body += 1;
                     missing.push(format!(
-                        "位图 {hash} 在存储里不存在 ⇒ 这一条**没有**装进包（其余照装）: {}",
+                        "位图 {hash} 在存储里不存在 ⇒ 这一条**没有**装进包: {}",
                         error
                             .context
                             .detail
@@ -3290,6 +3322,38 @@ impl Workspace {
                 bytes: packed,
             });
             blob_count += 1;
+        }
+        // **派生 tile 只计数、不装包** ✓（B2 ✓）：tile 索引由本体位图重建 ✓
+        // —— 渲染时索引取不到就落回整幅路（`render.rs` 的分块路取不到索引 ⇒
+        // `None` ⇒ 整幅重算 ✓）⇒ 缺派生不致命 ✓，但数字必须报出来 ✓
+        //（与 `check_package.py` 的两栏口径对齐 ✓）。
+        // **本体优先** ✓：同一个哈希既是本体引用又是 tile 引用 ⇒ 按本体算 ✓
+        //（`check_package.py` 同款聚合：本体胜出 ✓）—— 只认 `exists` ✓，
+        // 不读字节 ✓（索引只是小 JSON，但"在不在"不需要内容 ✓）。
+        for hash_text in &tile_wanted {
+            if wanted.contains(hash_text) {
+                continue;
+            }
+            let hash: yanshi_core::BlobHash = hash_text.parse().map_err(|_| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("日志里有一个不合法的 tile 引用：{hash_text}")),
+                )
+            })?;
+            if !store.exists(&hash) {
+                missing_derived += 1;
+            }
+        }
+        // **B2：本体缺 ⇒ 整个导出失败** ✓（`ReferenceNotFound` ✓）——
+        // tar 字节此刻还没组装（`write_tar` 在后面的 `Ok` 里 ✓）、文件还没写 ✓、
+        // CAS 也还没入 ✓ ⇒ 不留半成品包 ✓。只缺派生时照常往下走 ✓。
+        if missing_body > 0 {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!(
+                    "工程包缺本体 blob ⇒ 无法导出（missing_body={missing_body}，missing_derived={missing_derived}）⇒ 补齐被引用的本体 blob 再导出；只缺派生 tile 时仍可导出"
+                )),
+            ));
         }
         entries.push(crate::archive::TarEntry {
             path: "BUILD-INFO".to_owned(),
@@ -3335,6 +3399,10 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
                 kept_mismatch,
                 kept_missing,
                 missing,
+                // **B2 的两栏** ✓：到这里 `missing_body` 恒为 0 ✓（`> 0` 已在上面
+                // 直接失败 ✓）—— 字段仍要填 ✓（成功回执的两栏数字是契约 ✓）。
+                missing_body,
+                missing_derived,
             },
         ))
     }

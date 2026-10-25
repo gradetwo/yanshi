@@ -16495,8 +16495,12 @@ pub(crate) fn brush_source_is_replayable(workspace: &Workspace, source: &Value) 
 // 一旦需要打包（存储参与了 ✓）⇒ **不缓存** ✓ ⇒ **∴ 不可能返回旧包** ✓。
 // 代价：8K 有 70 个必须打包的 blob ⇒ 不缓存 ⇒ 保持 ~618 ms（**正确** ✓）。
 //
+// **B2 补的第二处** ✓：上面"完备"的说法只在**同一份文档**内成立 ✗ ——
+// `head_seq` 只标识日志**长度**，不标识内容 ✓；两份不同文档原子数相同就撞键 ✓，
+// 后导出的那份会拿到前一份的包 ✓（缺本体的重导入文档会直接命中健康包的缓存，
+// B2 的失败永远到不了调用方 ✓）⇒ 键里必须再加 `doc_id` ✓。
 // **护栏** ✓：`tool-export-idempotent.mjs` 的第⑤条（"改动之后哈希必须改变"）。
-type ExportResultKey = (String, u64, bool);
+type ExportResultKey = (String, String, u64, bool);
 type ExportResultValue = (Vec<u8>, crate::service::ExportStats);
 type ExportResultMap = std::collections::HashMap<ExportResultKey, ExportResultValue>;
 static EXPORT_RESULT_CACHE: std::sync::OnceLock<std::sync::Mutex<ExportResultMap>> =

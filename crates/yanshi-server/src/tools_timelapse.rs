@@ -321,6 +321,112 @@ struct ReplayOutcome {
     frames: usize,
     /// 重放时被临时内核拒收的 atom（照 Web 端口径：警告 + 跳过，不中断导出）。
     warnings: Vec<String>,
+    /// **缺本体 blob 的个数** ✓（B2 ✓）：重放渲染时报"缺少 blob"的本体引用数 ✓，
+    /// 加上提交时因本体 blob 不在存储里被拒的原子数 ✓（见重放循环的 `Err` 分支 ✓）。
+    missing_body: usize,
+    /// **缺派生 tile 的个数** ✓（B2 ✓）：重放渲染时报"缺少 blob"的派生引用数 ✓，
+    /// 加上提交时因派生 tile 不在存储里被拒的原子数 ✓
+    ///（实测里 tile 缺是静默落回整幅路的 ✓，这一栏通常是 0 ✓，但口径必须在 ✓）。
+    missing_derived: usize,
+}
+
+/// **blob 引用的本体/派生分类** ✓（B2 ✓，口径与 `check_package.py` 同源 ✓）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum BlobSource {
+    /// 笔画自己的 dab 位图 / 真导入的原图（`bitmap`／`refs`／`mask`／`patch` 路径下）。
+    Body,
+    /// 派生 tile 索引（`tiles` 路径下）。
+    Tile,
+    /// 既不在本体路径、也不在 tile 路径下的引用（分类器不认识的落点）。
+    Other,
+}
+
+/// **按值扫原子日志，给每个 blob 哈希标出来源** ✓（B2 ✓）。
+///
+/// 走法与 `check_package.py` 的 `blob_refs` 相同：递归走 JSON，路径里含
+/// `tiles` ⇒ 派生，含 `bitmap`／`refs`／`mask`／`patch` ⇒ 本体，其余 ⇒ 其它；
+/// 一个哈希出现在多处时**本体胜出** ✓（与脚本同款聚合 ✓）。
+/// 不猜键名 ✓ —— 任何 `sha256:`＋64 位十六进制的字符串值都算引用 ✓
+///（只认 `blob_hash` 键的朴素写法会把 `payload.tiles` 整个漏掉 ✓，正是脚本 C3 的教训 ✓）。
+fn classify_blob_refs(atoms: &[Atom]) -> std::collections::HashMap<String, BlobSource> {
+    fn walk(
+        value: &serde_json::Value,
+        path: &str,
+        sink: &mut std::collections::HashMap<String, std::collections::HashSet<BlobSource>>,
+    ) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, child) in map {
+                    walk(child, &format!("{path}.{key}"), sink);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for child in items {
+                    walk(child, &format!("{path}[]"), sink);
+                }
+            }
+            serde_json::Value::String(text) => {
+                let bare = text.strip_prefix("sha256:").unwrap_or(text.as_str());
+                if bare.len() == 64 && bare.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    let lowered = path.to_lowercase();
+                    let class = if lowered.contains("tiles") {
+                        BlobSource::Tile
+                    } else if lowered.contains("bitmap")
+                        || lowered.contains("refs")
+                        || lowered.contains("mask")
+                        || lowered.contains("patch")
+                    {
+                        BlobSource::Body
+                    } else {
+                        BlobSource::Other
+                    };
+                    sink.entry(bare.to_owned()).or_default().insert(class);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut classes: std::collections::HashMap<String, std::collections::HashSet<BlobSource>> =
+        std::collections::HashMap::new();
+    for atom in atoms {
+        if let Ok(value) = serde_json::to_value(atom) {
+            walk(&value, "", &mut classes);
+        }
+    }
+    classes
+        .into_iter()
+        .map(|(hash, kinds)| {
+            let class = if kinds.contains(&BlobSource::Body) {
+                BlobSource::Body
+            } else if kinds.contains(&BlobSource::Tile) {
+                BlobSource::Tile
+            } else {
+                BlobSource::Other
+            };
+            (hash, class)
+        })
+        .collect()
+}
+
+/// **从一段警告文字里抠出 64 位十六进制哈希** ✓（B2 ✓；`sha256:` 前缀有无都认 ✓）。
+fn extract_hex64(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut run = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_hexdigit() {
+            run.push(ch);
+        } else {
+            if run.len() == 64 {
+                found.push(std::mem::take(&mut run));
+            } else {
+                run.clear();
+            }
+        }
+    }
+    if run.len() == 64 {
+        found.push(run);
+    }
+    found
 }
 
 /// **单趟增量重放抓帧**：把源文档的 atom 依次提交进一份临时文档，
@@ -350,7 +456,16 @@ fn replay_frames(
     let mut outcome = ReplayOutcome {
         frames: 0,
         warnings: Vec::new(),
+        missing_body: 0,
+        missing_derived: 0,
     };
+    // **B2：先给每个 blob 哈希标出来源** ✓（本体/派生/其它，口径与
+    // `check_package.py` 同源 ✓）—— 渲染警告里只带哈希，不带来源 ✓。
+    let blob_classes = classify_blob_refs(atoms);
+    let mut missing_body_hashes: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    let mut missing_derived_hashes: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     // 持久帧缓冲（文档分辨率 RGBA）+ 自上次抓帧以来的待处理脏区。
     let mut frame: Option<(u32, u32, Vec<u8>)> = None;
     let mut pending: Option<Bbox> = None;
@@ -379,6 +494,32 @@ fn replay_frames(
                     atom.kind.as_str(),
                     error.context.detail.as_deref().unwrap_or("")
                 ));
+                // **B2：提交时就被拒的缺 blob 原子** ✓ —— `validate_blobs`
+                // （`crates/yanshi-core/src/log.rs` ✓）在 `append_validated` 里
+                // 先于折叠挡住它 ✓：引用的 blob 不在存储里 ⇒ 原子进不了临时
+                // 文档 ✓，渲染层永远看不到它、告警也就永远不会出现 ✓ ⇒ 只扫
+                // 渲染告警会漏掉这一路 ✓。错误自带缺的那个哈希
+                // （`error.context.blob_hash` ✓），按与渲染告警同一口径分类 ✓：
+                // 本体 ⇒ 计入 `missing_body`（失败）✓；派生 tile ⇒ 计入
+                // `missing_derived`（仍可出片）✓；查不到来源 ⇒ 按本体处理
+                // （fail safe ✓）。只有带哈希的 `ReferenceNotFound` 才计数 ✓
+                // —— 别的拒因（引用悬空等）不是缺 blob，不在此列 ✓。
+                // （`all_blob_refs` 只收 `blob_hash`／`blob` 键下的值 ✓，
+                // `payload.tiles` 不在其中 ✓ ⇒ 这里报的只能是本体哈希 ✓，
+                // tile 缺走渲染的静默落回路 ✓，与口径一致 ✓。）
+                if error.code == ErrorCode::ReferenceNotFound {
+                    if let Some(hash) = error.context.blob_hash.as_deref() {
+                        let bare = hash.strip_prefix("sha256:").unwrap_or(hash);
+                        match blob_classes.get(bare) {
+                            Some(BlobSource::Tile) => {
+                                missing_derived_hashes.insert(bare.to_string());
+                            }
+                            _ => {
+                                missing_body_hashes.insert(bare.to_string());
+                            }
+                        }
+                    }
+                }
                 continue;
             }
         }
@@ -410,6 +551,32 @@ fn replay_frames(
                 paste_region(buffer, *frame_w, x0 as u32, y0 as u32, width, height, &rgba);
             }
         }
+        // **B2：抓帧渲染的缺 blob 告警必须并入 outcome** ✓ —— 渲染层缺本体时
+        // 只把警告挂在临时文档的 `last_render_warnings` 里 ✓（`document.rs` 的
+        // `note_render_stats` ✓），不读它就等于产出"看起来正常的缺块影片" ✓。
+        // 同一条警告每帧都出现 ⇒ 按字符串去重 ✓；缺件按哈希去重 ✓。
+        for warning in scratch.last_render_warnings() {
+            if !outcome.warnings.contains(warning) {
+                outcome.warnings.push(warning.clone());
+            }
+            // **只有"缺少 blob"那一类警告才算缺件** ✓：尺寸不符／全透明回退
+            // 那些警告里的 blob 是在的 ✓，不能算缺 ✓。
+            if warning.contains("缺少 blob") {
+                for hash in extract_hex64(warning) {
+                    match blob_classes.get(&hash) {
+                        Some(BlobSource::Tile) => {
+                            missing_derived_hashes.insert(hash);
+                        }
+                        // **查不到来源 ⇒ 按本体处理** ✓（fail safe：静默是最坏结果 ✓）——
+                        // 比如 tile 索引里的分块哈希（从不在原子日志里出现）或已被删的
+                        // 原子引用的 blob；`Other` 同款（脚本的 verdict 也把其它当本体失败 ✓）。
+                        Some(BlobSource::Body) | Some(BlobSource::Other) | None => {
+                            missing_body_hashes.insert(hash);
+                        }
+                    }
+                }
+            }
+        }
         pending = None;
         pending_full = false;
         let (_, _, buffer) = frame.as_ref().expect("抓帧前帧缓冲必然已建");
@@ -436,6 +603,21 @@ fn replay_frames(
         sink(&flatten_to_rgb24(&scaled))?;
         outcome.frames += 1;
         on_progress(outcome.frames, capture_counts.len());
+    }
+    outcome.missing_body = missing_body_hashes.len();
+    outcome.missing_derived = missing_derived_hashes.len();
+    // **B2：本体缺 ⇒ 重放失败、不产片** ✓（`ReferenceNotFound` ✓）——
+    // 调用方（`write_export_timelapse` 的 `run` 闭包）收到 `Err` 后删
+    // `.part.mp4` 并把 job 标失败 ✓，与既有的失败清理路同一条 ✓。
+    // 只缺派生时照常返回 `Ok` ✓（两栏数字进回执 ✓）。
+    if outcome.missing_body > 0 {
+        return Err(YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!(
+                "过程视频缺本体 blob ⇒ 无法导出（missing_body={}，missing_derived={}）⇒ 补齐被引用的本体 blob 再导出；只缺派生 tile 时仍可导出",
+                outcome.missing_body, outcome.missing_derived
+            )),
+        ));
     }
     Ok(outcome)
 }
@@ -611,6 +793,10 @@ pub(super) fn write_export_timelapse(ctx: &mut ToolContext<'_>, args: &Value) ->
         "bytes": bytes,
         "elapsed_ms": started.elapsed().as_millis() as u64,
         "warnings": outcome.warnings,
+        // **B2 的两栏** ✓：本体缺（`missing_body`）与派生缺（`missing_derived`）分开数 ✓；
+        // 成功回执里 `missing_body` 恒为 0 ✓（`> 0` 时重放已直接失败 ✓）。
+        "missing_body": outcome.missing_body,
+        "missing_derived": outcome.missing_derived,
     });
     if let Ok(document) = ctx.workspace.document_mut(&doc_id) {
         let _ = document
@@ -815,6 +1001,78 @@ mod tests {
             &flatten_to_rgb24(&full_rgba),
             last,
             "脏区增量帧必须与整幅渲染逐像素一致"
+        );
+    }
+
+    #[test]
+    fn blob_refs_are_classified_by_json_path_like_check_package() {
+        // **B2 的分类口径** ✓：与 `check_package.py` 的 `blob_refs` 同款 ——
+        // `bitmap`／`refs` 路径 ⇒ 本体，`tiles` 路径 ⇒ 派生，其余 ⇒ 其它；
+        // 一个哈希出现在多处时本体胜出 ✓。变异：把 `tiles` 判成本体 ⇒
+        // 下面第二条红 ✓；把 `bitmap` 判成其它 ⇒ 第一条红 ✓。
+        let body = "a".repeat(64);
+        let tile = "b".repeat(64);
+        let other = "c".repeat(64);
+        let both = "d".repeat(64);
+        let atoms = vec![
+            Atom::new(
+                AtomKind::ImportImage,
+                "human:1".to_owned(),
+                "session:test".to_owned(),
+                json!({
+                    "layer_id": "L1", "object_id": "o1",
+                    "bitmap": {"blob_hash": format!("sha256:{body}"), "mime_type": "image/x-yanshi-raw"},
+                    "tiles": format!("sha256:{tile}"),
+                    "refs": {"blobs": [format!("sha256:{both}")]}
+                }),
+            ),
+            Atom::new(
+                AtomKind::ImportImage,
+                "human:1".to_owned(),
+                "session:test".to_owned(),
+                json!({
+                    "layer_id": "L1", "object_id": "o2",
+                    "tiles": format!("sha256:{both}"),
+                    "note": format!("sha256:{other}")
+                }),
+            ),
+        ];
+        let classes = classify_blob_refs(&atoms);
+        assert_eq!(
+            classes.get(&body),
+            Some(&BlobSource::Body),
+            "bitmap 路径 ⇒ 本体"
+        );
+        assert_eq!(
+            classes.get(&tile),
+            Some(&BlobSource::Tile),
+            "tiles 路径 ⇒ 派生"
+        );
+        assert_eq!(
+            classes.get(&other),
+            Some(&BlobSource::Other),
+            "无落点 ⇒ 其它"
+        );
+        assert_eq!(
+            classes.get(&both),
+            Some(&BlobSource::Body),
+            "同一哈希既在 refs 又在 tiles ⇒ 本体胜出"
+        );
+    }
+
+    #[test]
+    fn warning_hashes_are_extracted_with_or_without_prefix() {
+        // 带 `sha256:` 前缀的告警原文（`fetch_raster_patch` 的写法 ✓）与裸哈希都认 ✓；
+        // 短于 64 位的十六进制串（对象 id、"a256" 这类前缀碎片）不算 ✓。
+        let hash = "e".repeat(64);
+        let warning =
+            format!("位图补丁缺少 blob ⇒ 这一块**没有画**（对象 o1，blob sha256:{hash}）：找不到");
+        assert_eq!(extract_hex64(&warning), vec![hash.clone()]);
+        assert_eq!(extract_hex64(&hash), vec![hash]);
+        assert_eq!(
+            extract_hex64("对象 01M5R960Z6599AZW81JSHEY000 没有哈希"),
+            Vec::<String>::new(),
+            "ULID 不是 64 位十六进制 ⇒ 不能误认成 blob"
         );
     }
 }

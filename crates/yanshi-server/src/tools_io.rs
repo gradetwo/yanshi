@@ -63,6 +63,11 @@ pub(super) fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> R
         .unwrap_or(0);
     let cache_key: ExportResultKey = (
         env!("CARGO_PKG_VERSION").to_owned(),
+        // **键里必须有 `doc_id`** ✓（B2 的配套修正 ✓）：旧键只有版本／`head_seq`／
+        // `include_bitmaps` ⇒ 两份不同文档只要原子数相同就撞键 ✓，后导出的那份
+        // 会拿到前一份的包 ✓ —— 缺本体的重导入文档会直接命中健康包的缓存，
+        // B2 的失败永远到不了调用方 ✓。`head_seq` 只标识日志长度，不标识内容 ✓。
+        doc_id.clone(),
         head_seq,
         include_bitmaps,
     );
@@ -259,6 +264,10 @@ pub(super) fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> R
         // 用户实测：15MB 文档引用了一个不存在的 blob ⇒ 从前**整个导出失败** ✗。
         "kept_missing": stats.kept_missing,
         "missing": stats.missing,
+        // **B2 的两栏** ✓：本体缺（`missing_body`）与派生缺（`missing_derived`）分开数 ✓；
+        // 成功回执里 `missing_body` 恒为 0 ✓（`> 0` 时上面已直接失败 ✓）。
+        "missing_body": stats.missing_body,
+        "missing_derived": stats.missing_derived,
     });
     if let Some(path) = &path {
         value["path"] = json!(path);
