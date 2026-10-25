@@ -1582,7 +1582,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "params",
                 Object,
                 false,
-                "类型参数，如 {brightness:0.1, contrast:1.2}。恒等值：saturation 的 amount 是乘子（1.0 = 不变，0 = 灰度，>1 增强）；vibrance 的 amount 是加量（0 = 不变）。hsl 支持 ranges：8 段 reds/oranges/yellows/greens/aquas/blues/purples/magentas，每段 {hue, saturation, lightness}；levels 支持 channel: rgb|r|g|b（缺省 rgb，分通道色阶）"
+                "类型参数，如 {brightness:0.1, contrast:1.2}。恒等值：saturation 的 amount 是乘子（1.0 = 不变，0 = 灰度，>1 增强）；vibrance 的 amount 是加量（0 = 不变）。hsl 支持 params.ranges.<档>={hue, saturation, lightness}，8 段 reds/oranges/yellows/greens/aquas/blues/purples/magentas；档内三键与全局三键同名不同义——全局 hue ±360、saturation 是乘子 0..8（恒等 1.0）、lightness ±1，档内 hue ±180、saturation 是百分比因子 ±100（恒等 0）、lightness ±100（恒等 0）；selective_color 用 params.adjust.<档>=[c,m,y,k]，9 档 reds/yellows/greens/cyans/blues/magentas/whites/neutrals/blacks（每分量 [-1,1]）；levels 支持 channel: rgb|r|g|b（缺省 rgb，分通道色阶）"
             ),
             param!("opacity", Number, false, "整体不透明度 0-1（缺省 1）"),
             param!(
