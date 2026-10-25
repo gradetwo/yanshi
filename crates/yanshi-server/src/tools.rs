@@ -15299,9 +15299,17 @@ fn expand_degenerate_points(
 /// 退化点的环相位：**只由坐标决定**（⇒ 可重放、可复现 ✓ 与 `path_guide`/`style` 那套确定性纪律一致 ✓）。
 /// 混列用大质数 ＋ 黄金比例乘法（`splitmix` 的形状 ✓）⇒ 相邻坐标的相位不会成比例地挨在一起 ✗。
 fn dot_phase(x: f64, y: f64) -> f64 {
-    let bits = (x * 73856093.0 + y * 19349663.0) as i64;
-    let mixed = (bits as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    ((mixed >> 32) as f64 / u32::MAX as f64) * std::f64::consts::TAU
+    // **⇒ 混列走**位模式**，不走数值** ✅（第 1126 轮，质量修正）：
+    //   ⇒ 原来写 `(x * 73856093.0 + y * 19349663.0) as i64` ✗
+    //     ⇒ 坐标大到 `x·7.4e7 > i64::MAX`（约 `x > 1.2e11`）时 `as` **饱和** ⇒ **整片相位相同** ✗
+    //       ⇒ 于是"不显人造整齐感"这条**静默退化**（可重放性仍在 ✓ ⇒ 更难发现 ✗）
+    //   ⇒ 改成对 `f64::to_bits()` 做 wrapping 乘法 ⇒ **任何有限坐标都不饱和** ✓
+    //     且仍**只由坐标决定**（同坐标永远同相位 ✓ 确定性纪律不变 ✓）
+    let mut h = x.to_bits().wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    h ^= y.to_bits().wrapping_add(0x1656_67B1_9E37_79F9);
+    h = h.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    h ^= h >> 29;
+    (h as f64 / u64::MAX as f64) * std::f64::consts::TAU
 }
 
 fn parse_brush_points(args: &Value) -> Result<Vec<(f64, f64, f64)>> {
@@ -20309,3 +20317,27 @@ pub(super) fn delta_note() -> &'static str {
 #[cfg(test)]
 #[path = "tools_tests.rs"]
 mod tools_tests;
+
+#[cfg(test)]
+mod dot_phase_tests {
+    use super::dot_phase;
+
+    /// **⇒ 同坐标 ⇒ 同相位**（可重放 ✓ 与 `path_guide`／`style` 那套确定性纪律一致 ✓）。
+    #[test]
+    fn phase_is_deterministic() {
+        assert_eq!(dot_phase(200.0, 100.0), dot_phase(200.0, 100.0));
+    }
+
+    /// **⇒ 坐标再大，相位也不能**塌成一片** ✅（第 1126 轮）：
+    ///   ⇒ 旧实现 `(x*73856093.0 + y*19349663.0) as i64` 在 `x > 1.2e11` 时**饱和**
+    ///     ⇒ `1e12` 与 `1e12+1` 得到**同一个**相位 ✗ ⇒ 点彩会显出人造的整齐感 ✗
+    ///   **变异**：把那行换回 `as i64` 的写法 ⇒ 本断言**红** ✓（两值相等）
+    #[test]
+    fn huge_coordinates_do_not_collapse_the_phase() {
+        let a = dot_phase(1.0e12, 1.0e12);
+        let b = dot_phase(1.0e12 + 1.0, 1.0e12);
+        assert_ne!(a, b, "超大坐标下相位塌成同一个值 ⇒ 点彩会显整齐 ✗");
+        assert!((0.0..std::f64::consts::TAU).contains(&a));
+        assert!((0.0..std::f64::consts::TAU).contains(&b));
+    }
+}
