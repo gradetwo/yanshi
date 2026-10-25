@@ -55,6 +55,15 @@ fn call(workspace: &mut Workspace, doc: &str, tool: &str, args: Value) -> Value 
 
 /// 建 doc（黑底）+ 图层 L + 整幅填充 [160,150,140]（中等明度、带色，多数风格对它非恒等）。
 fn doc_with_fill(workspace: &mut Workspace, doc: &str) {
+    doc_with_fill_color(workspace, doc, [160, 150, 140]);
+}
+
+/// 同上，填充色由调用方定。测试 ② 用 [100,90,80]：小清新修正段（曝光 +0.05
+/// 叠加 s_h 0.1/−0.1）在 [160,150,140] 上的净效应只有约 +0.4/255（两步几乎
+/// 抵消），u8 取整后恰好恒等，守卫断言只剩 1 LSB 余量；期 2 A2 改亮度比回写
+/// 后蓝通道从 140.6 滑到 140.4、守卫翻红——探针本身太弱，不是产品退化。
+/// [100,90,80] 上净效应约 +4~+5/255，新旧口径下都明显非恒等，守卫有余量。
+fn doc_with_fill_color(workspace: &mut Workspace, doc: &str, color: [i64; 3]) {
     workspace
         .create_document(
             NewDocument::new(doc, 16, 16)
@@ -72,7 +81,7 @@ fn doc_with_fill(workspace: &mut Workspace, doc: &str) {
         json!({
             "layer_id": "L",
             "shape": {"type": "rect", "x": 0, "y": 0, "w": 16, "h": 16},
-            "color": [160, 150, 140],
+            "color": color,
             "opacity": 1.0
         }),
     );
@@ -180,9 +189,10 @@ fn all_22_presets_apply_land_objects_and_change_pixels() {
 /// 且与原图不同（证明修正段确实落了，不是整组空转）。
 #[test]
 fn strength_zero_style_segment_is_identity_over_correction() {
-    // 实验组：整套预设 strength=0（含修正段）。
+    // 实验组：整套预设 strength=0（含修正段）。探针用 [100,90,80]（见
+    // doc_with_fill_color 注释：[160,150,140] 上修正段净效应亚 LSB）。
     let mut ws_a = workspace();
-    doc_with_fill(&mut ws_a, "doc_a");
+    doc_with_fill_color(&mut ws_a, "doc_a", [100, 90, 80]);
     let applied = call(
         &mut ws_a,
         "doc_a",
@@ -194,7 +204,7 @@ fn strength_zero_style_segment_is_identity_over_correction() {
 
     // 对照组：按 preview 的展开清单，只把修正段逐笔用既有工具落成。
     let mut ws_b = workspace();
-    doc_with_fill(&mut ws_b, "doc_b");
+    doc_with_fill_color(&mut ws_b, "doc_b", [100, 90, 80]);
     let base = center_pixel(&mut ws_b, "doc_b");
     let preview = call(
         &mut ws_b,

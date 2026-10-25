@@ -488,7 +488,8 @@ fn gradient_sample(stops: &[(f32, [f32; 3])], x: f32) -> [f32; 3] {
 /// 掩码按**显示空间（sRGB 编码）明度**：暗部权重 `(1−L)²`、高光权重 `L²` ⇒ 白色处暗部权重**恰好 0**、
 /// 黑色处高光权重**恰好 0**（不是近似 ✓）⇒
 /// 「shadows>0 只提暗部」「highlights<0 只压高光」两条性质精确成立 ✓。
-/// 每通道朝目标端移动 `参数 × 权重 × 剩余距离 × 0.5` ⇒ 移动量不超过半程、永不越界 ✓。
+/// 显示亮度朝目标端移动 `参数 × 权重 × 剩余距离 × 0.5` ⇒ 移动量不超过半程、永不越界 ✓
+///（期 2 A2 起亮度比回写：亮度先动、三通道等比跟随，见下）。
 ///
 /// **作用空间（缺陷修复）**：权重与幅度是按**显示参照值**标定的（参数语义即
 /// 「0.15 只把黑抬到约 0.075」），而缓冲是**线性光**——旧实现直接在线性域套这套
@@ -499,7 +500,18 @@ fn gradient_sample(stops: &[(f32, [f32; 3])], x: f32) -> [f32; 3] {
 /// 「线性域单次」模型逐点误差 0、与「两次」差达 21 ⇒ 每像素只施加了一次，病在空间。
 /// 现先把直通色编码到显示空间算权重与 `toward()`、再解码回线性写回 ⇒
 /// 渲染结果与文档数学**单次**一致；管线其余部分（线性合成）不动。
-/// `shadows` 与 `highlights` 两分支同在此闭包内，一并按此口径计算（同病同修）。
+/// **施加方式（photo-bugfix 期 2 A2：亮度比回写，原地替换逐通道 toward）**：
+/// 旧实现把 toward() 逐通道加在显示值上：三通道被拉向同一端点、通道差
+/// 被 `(1 − amount·weight·0.5)` 压缩，相对饱和双重下跌（阴影提亮在数学
+/// 上就是向灰拉；A/B 对照：shadows 每 +0.2，中间调饱和 −12~−14pp）。
+/// 新口径先对显示亮度本身用同一 toward() 公式算目标亮度 `luma'`，再以
+/// 亮度比 `r = luma'/luma` 等比缩放三通道显示值——通道比不变，相对饱和
+/// 与色相守恒，只有明度按原曲线提升（通则 2，`brightness_contrast`
+/// 同款机制）。参数、权重、剂量曲线全不动；灰像素上与旧实现逐位等价
+///（回归测试数值不变）。`luma = 0` 的纯黑像素无亮度可缩放 ⇒ 回退逐通道
+/// toward（黑位抬升行为不变）。编解码仍用钳制版 `linear_to_srgb` /
+/// `srgb_to_linear`（与旧实现一致，HDR 高光行为不动；扩展传递的评估
+/// 留后，不随本项改）。
 pub fn shadows_highlights(buffer: &mut Buffer, shadows: f32, highlights: f32) {
     const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
     let shadows = shadows.clamp(-1.0, 1.0);
@@ -517,11 +529,23 @@ pub fn shadows_highlights(buffer: &mut Buffer, shadows: f32, highlights: f32) {
             (LUMA[0] * display[0] + LUMA[1] * display[1] + LUMA[2] * display[2]).clamp(0.0, 1.0);
         let shadow_weight = (1.0 - luma) * (1.0 - luma);
         let highlight_weight = luma * luma;
-        for value in display.iter_mut() {
-            let current = *value;
-            let mut next = current + toward(shadows, shadow_weight, current);
-            next += toward(highlights, highlight_weight, current);
-            *value = next.clamp(0.0, 1.0);
+        let target_luma = (luma
+            + toward(shadows, shadow_weight, luma)
+            + toward(highlights, highlight_weight, luma))
+        .clamp(0.0, 1.0);
+        if luma > 0.0 {
+            let ratio = target_luma / luma;
+            for value in display.iter_mut() {
+                *value = (*value * ratio).clamp(0.0, 1.0);
+            }
+        } else {
+            // 纯黑像素无亮度可缩放：回退逐通道 toward，黑位抬升行为与现行一致。
+            for value in display.iter_mut() {
+                let current = *value;
+                let mut next = current + toward(shadows, shadow_weight, current);
+                next += toward(highlights, highlight_weight, current);
+                *value = next.clamp(0.0, 1.0);
+            }
         }
         *color = [
             srgb_to_linear(display[0]),
@@ -533,6 +557,7 @@ pub fn shadows_highlights(buffer: &mut Buffer, shadows: f32, highlights: f32) {
 
 /// 朝向移动量：正参数朝 1、负参数朝 0，幅度 = `参数 × 权重 × 到该端的距离 × 0.5`
 /// （参数自带符号 ⇒ 负参数的结果自然为负 ✓）。
+/// 期 2 A2 起对显示亮度调用一次（`luma = 0` 时逐通道回退），不再逐通道调用。
 fn toward(amount: f32, weight: f32, value: f32) -> f32 {
     let room = if amount >= 0.0 { 1.0 - value } else { value };
     amount * weight * room * 0.5
@@ -6033,6 +6058,58 @@ mod coloradj_tests {
         assert!(
             (display - 0.5375).abs() <= 0.004,
             "显示值应为单次公式 0.5375，实得 {display}"
+        );
+    }
+
+    /// **亮度比回写（回归，期 2 A2）**：彩色像素过 s_h 后通道比与相对饱和
+    /// 不变，只有明度按原曲线提升。旧逐通道 toward 下相对饱和会从 1.5 跌
+    /// 到约 0.85 ⇒ 红。探针：显示 (0.5, 0.2, 0.1)，shadows=+0.6、
+    /// highlights=−0.6 双向同开（目标亮度 0.2566→0.3748，比值 1.46）。
+    #[test]
+    fn shadows_highlights_preserves_chroma_ratios() {
+        let display = [0.5f32, 0.2, 0.1];
+        let linear = [
+            srgb_to_linear(display[0]),
+            srgb_to_linear(display[1]),
+            srgb_to_linear(display[2]),
+        ];
+        let rel_sat = |px: [f32; 3]| {
+            let max = px[0].max(px[1]).max(px[2]);
+            let min = px[0].min(px[1]).min(px[2]);
+            (max - min) / ((px[0] + px[1] + px[2]) / 3.0)
+        };
+        let mut buffer = filled([linear[0], linear[1], linear[2], 1.0]);
+        shadows_highlights(&mut buffer, 0.6, -0.6);
+        let out = px(&buffer);
+        let out_display = [
+            linear_to_srgb(out[0]),
+            linear_to_srgb(out[1]),
+            linear_to_srgb(out[2]),
+        ];
+        // 通道比守恒：R:B = 5、G:B = 2 不变（容差 1e-3）。
+        assert!(
+            (out_display[0] / out_display[2] - 5.0).abs() < 1e-3,
+            "R:B 应守恒为 5，实得 {:?}",
+            out_display
+        );
+        assert!(
+            (out_display[1] / out_display[2] - 2.0).abs() < 1e-3,
+            "G:B 应守恒为 2，实得 {:?}",
+            out_display
+        );
+        // 相对饱和守恒（输入 1.5）。
+        assert!(
+            (rel_sat(out_display) - 1.5).abs() < 1e-3,
+            "相对饱和应守恒为 1.5，实得 {}（{:?}）",
+            rel_sat(out_display),
+            out_display
+        );
+        // 明度确实动了（不是恒等）：显示亮度应从 0.2566 提到约 0.3748。
+        let luma = |px: [f32; 3]| 0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2];
+        assert!(
+            (luma(out_display) - 0.3748).abs() < 1e-3,
+            "显示亮度应提到约 0.3748，实得 {}",
+            luma(out_display)
         );
     }
 
