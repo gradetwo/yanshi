@@ -21092,3 +21092,25 @@ test result: ok. 6 passed; 0 failed; 2.13s
 **⇒ 下一轮**：再取**一次** CI 的分片日志 ✓
 ⇒ 若三条**再次**未失败 ⇒ 从名单移除并附两次观测的证据 ✓
 ⇒ 若有一条又失败 ⇒ 保留，并把它归到"环境相关" ✓
+
+## 五百九十、移出已知红**不会自证**：`paths-ignore` 让这两笔**根本不跑 CI**（第 1060 轮）
+
+**⇒ 现象**：`fa668dba`（只改 docs）与 `daa16baa`（只改 `scripts/criteria-known-red.txt`）
+⇒ **`gh run list` 里查不到它们的任何 run** ✗（既不是 pending 也不是 cancelled ✓）
+
+**⇒ 查 `ci.yml:63` 的 `paths-ignore`** ✓ 三行解释了全部：
+```yaml
+paths-ignore:
+  - 'docs/**'
+  - '**/*.md'
+  - 'scripts/criteria-known-red.txt'   ← 已知红名单**被显式忽略** ✓
+```
+⇒ 这是**刻意的**（第 398 轮：纯文档提交占并发位 ⇒ 让最新一轮排不到 ✗）
+⇒ 而 `criteria-known-red.txt` 被忽略是因为它**只影响"哪条算已知红"**，不改任何被判条件 ✓
+
+**⇒ 于是我这次**没有 CI 判决** ✗**：移出 `browser-new-doc-size`／`browser-open-list` 两笔
+**不会**被自己验证 ✓ ⇒ 只有**下一笔动 `crates/**` 或 `scripts/*.mjs` 的提交**才会在 shard 里见分晓 ✓
+
+**⇒ 结论（写下来 ✓）**：
+1. **`paths-ignore` 里的路径 = "改了也不会被验证"** ✓ ⇒ 改它们时要知道自己处在"无判据区间" ✓
+2. 我上两轮把它当成"队列堵住" ✗ ⇒ **又一次"我的观察先错"**（第 N 次 ✓，这次代价两轮轮询 ✓）
