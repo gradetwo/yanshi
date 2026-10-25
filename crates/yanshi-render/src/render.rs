@@ -5904,6 +5904,7 @@ pub(crate) mod parallel_impl {
     }
 
     /// 并行渲染 `region`：返回**恰好覆盖 `region`** 的缓冲、合并后的统计、各阶段耗时、实际块数。
+    #[allow(clippy::too_many_arguments)]
     pub fn render_region(
         renderer: &Renderer,
         state: &DocumentState,
@@ -6267,6 +6268,7 @@ pub(crate) mod parallel_impl {
 
     /// 串行回退（本目标上 `workers()` 恒为 1，因此调用点不会走到这里；保留它是为了让
     /// 强行抬高 worker 数的调用仍然得到**正确画面**而不是 panic）。
+    #[allow(clippy::too_many_arguments)]
     pub fn render_region(
         renderer: &Renderer,
         state: &DocumentState,
