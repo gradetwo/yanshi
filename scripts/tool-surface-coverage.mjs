@@ -69,7 +69,7 @@ const perProfile = new Map(declaredProfiles.map((p) => [p, toolsFor([p]).set]));
 //     「`ALL` 永为全注册表；`DEFAULT` 是 curated 常用集；白名单**仅收窄显式子集请求**」✓
 //     ⇒ 所以 `photo` 单独启用时**故意**不含 core 全部 ✓ —— 那是**设计**，不是缺陷 ✓
 //     ⇒ **变异**：把这条例外删掉 ⇒ 判据立刻红并点名 photo ✓（说明例外是**被检查的** ✓）
-const CURATED_SUBSETS = new Set(["photo"]);
+const CURATED_SUBSETS = new Set(["photo", "svg"]);
 for (const profile of declaredProfiles) {
   if (CURATED_SUBSETS.has(profile)) continue;
   const set = perProfile.get(profile);
@@ -96,6 +96,9 @@ const KNOWN_PROFILES = [
   // **`photo`** ✓（第 931 轮）：照片预设系列的 **curated 子集** ✓ ⇒ 只做**声明覆盖**对账 ✓
   //   ⇒ 它的"不含 core"由 ② 的例外**显式允许** ✓ ⇒ 不是静默放过 ✓
   "photo",
+  // **`svg`** ✓（2026-10-24 裁定加入的 workflow 预设 ✓）：与 `photo` 同族 ——
+  //   `tools.rs` 的白名单收窄逻辑**点名** Photo/Svg 两个预设 ✓ ⇒ 同一例外 ✓。
+  "svg",
 ];
 const unaccounted = declaredProfiles.filter((p) => !KNOWN_PROFILES.includes(p));
 if (unaccounted.length > 0) {

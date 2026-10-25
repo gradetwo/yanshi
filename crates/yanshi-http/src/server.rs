@@ -2353,9 +2353,29 @@ fn blob_by_hash(state: &ServerState, request: &Request, hash: &str) -> Response 
         return crate::http::not_found(format!("blob {hash} 不存在"));
     }
     match store.get(&hash) {
-        Ok(bytes) => Response::bytes(200, "image/png", bytes)
+        // **content-type 必须按魔数说话** ✓（三方对照实测的红点 ✓）：
+        // CAS 里存的不一定是 PNG —— HTTP 上传会把图片**归一化成裸 RGBA** ✓、
+        // `put_blob` 工具**原样存字节** ✓ ⇒ 以前一律标 `image/png` ✗
+        // 等于让 `<img>` 对着裸像素流"看起来有图、实际永远解不开" ✓（静默失败 ✗）。
+        Ok(bytes) => Response::bytes(200, sniff_blob_mime(&bytes), bytes)
             .with_header("Cache-Control", "public, max-age=31536000, immutable"),
         Err(error) => Response::from_error(&error),
+    }
+}
+
+/// 按**前几个字节**判 blob 的真实类型 ✓；认不出来就如实说 `application/octet-stream` ✓，
+/// **绝不再谎报 image/png** ✗（谎报会让浏览器解码失败且不报错 ✓——静默吞掉那一类 ✗）。
+fn sniff_blob_mime(bytes: &[u8]) -> &'static str {
+    if bytes.len() >= 8 && bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if bytes.len() >= 3 && bytes.starts_with(b"\xff\xd8\xff") {
+        "image/jpeg"
+    } else if bytes.len() >= 6 && (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) {
+        "image/gif"
+    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else {
+        "application/octet-stream"
     }
 }
 

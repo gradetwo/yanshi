@@ -1525,6 +1525,10 @@ async function refreshThumb() {
       const next = { w: value.width, h: value.height };
       const changed = !state.docSize || state.docSize.w !== next.w || state.docSize.h !== next.h;
       state.docSize = next;
+      // **状态栏「画布」以前永远是「—」**✗（`#canvasSize` 在模板里有、JS 里零引用 ✓）
+      // ⇒ 尺寸在这里第一次被读到 ⇒ 就在这里写出去 ✓。
+      const sizeLabel = $("canvasSize");
+      if (sizeLabel) sizeLabel.textContent = next.w + "×" + next.h;
       if (changed) {
         sizeBoards(next.w, next.h);
         clampViewport();
@@ -5060,6 +5064,197 @@ async function groupCheckedObjects() {
   await refreshObjects();
 }
 
+/// **三方对照补齐** ✓：下面这些工具在系统注册表与 MCP 默认档里都有 ✓，
+/// 查看器此前**够不到** ✗ —— `get_object` / `get_resolved_state` / `detach_instance` /
+/// `update_sync_policy` / `link_to_master` / `add_to_group` / `remove_from_group` /
+/// `update_object`（metadata 补丁 ✓）。**不新增能力** ⇒ 只补入口 ✓。
+async function describeCheckedObject(tool, what) {
+  const ids = checkedObjects();
+  if (ids.length === 0) { log("先勾选一个对象 ✓（" + what + "）", "#c33"); return; }
+  const value = await callToolChecked(tool, { object_id: ids[0] }, what);
+  if (value && value.ok !== false) log(what + "：" + JSON.stringify(value));
+}
+
+async function detachCheckedInstances() {
+  const ids = checkedObjects();
+  if (ids.length === 0) { log("先勾选要脱离的实例 ✓", "#c33"); return; }
+  for (const instanceId of ids) {
+    await callToolChecked("detach_instance", { instance_id: instanceId }, "脱离实例");
+  }
+  await refreshObjects();
+}
+
+async function applySyncPolicyChecked() {
+  const ids = checkedObjects();
+  if (ids.length === 0) { log("先勾选实例 ✓", "#c33"); return; }
+  const policy = (($("objectSyncPolicy") || {}).value) || "all";
+  for (const instanceId of ids) {
+    await callToolChecked("update_sync_policy", { instance_id: instanceId, policy }, "设同步策略");
+  }
+}
+
+async function linkCheckedToMaster() {
+  const ids = checkedObjects();
+  const masterId = (($("objectMasterId") || {}).value || "").trim();
+  if (ids.length === 0 || !masterId) { log("需要勾选实例并在「主图」里填 master id ✓", "#c33"); return; }
+  for (const instanceId of ids) {
+    await callToolChecked("link_to_master", { instance_id: instanceId, master_id: masterId }, "换主图");
+  }
+  await refreshObjects();
+}
+
+async function moveCheckedGroup(tool, what) {
+  const ids = checkedObjects();
+  const groupId = (($("objectGroupId") || {}).value || "").trim();
+  if (ids.length === 0 || !groupId) { log("需要勾选对象并在「组」里填 group id ✓", "#c33"); return; }
+  for (const objectId of ids) {
+    await callToolChecked(tool, { group_id: groupId, object_id: objectId }, what);
+  }
+  await refreshObjects();
+}
+
+async function noteCheckedObjects() {
+  const ids = checkedObjects();
+  if (ids.length === 0) { log("先勾选要写备注的对象 ✓", "#c33"); return; }
+  const note = (($("objectNote") || {}).value || "").trim();
+  for (const objectId of ids) {
+    await callToolChecked("update_object", { object_id: objectId, patch: { metadata: { note } } }, "写备注");
+  }
+  await refreshObjects();
+}
+
+/// **存为调色板** ✓（`save_palette` ✓）：把当前色块（最多 256 个 ✓）原样存成 .gpl ✓。
+async function savePaletteFromSwatches() {
+  const box = $("paletteSwatches");
+  const chips = box ? Array.from(box.querySelectorAll("[data-hex]")) : [];
+  if (chips.length === 0) { log("当前调色板是空的，没有可保存的颜色 ✓", "#c33"); return; }
+  const name = (($("paletteSaveName") || {}).value || "").trim()
+    || (($("palettePick") || {}).value || "").trim();
+  if (!name) { log("给一个调色板名（如 my.gpl）✓", "#c33"); return; }
+  const colors = chips.map((chip) => {
+    const hex = String(chip.dataset.hex || "").replace("#", "");
+    return {
+      r: parseInt(hex.slice(0, 2), 16),
+      g: parseInt(hex.slice(2, 4), 16),
+      b: parseInt(hex.slice(4, 6), 16),
+      a: 255,
+    };
+  });
+  const saved = await callToolChecked("save_palette", { name, colors }, "存为调色板");
+  if (saved && saved.ok) log("已保存调色板 " + name + "（" + colors.length + " 色 ✓）");
+}
+
+/// **上传参考图** ✓（`set_reference` ✓）：上传走与导入图片同一条 CAS 路 ✓（`/api/blob` 裸 RGBA ✓）。
+/// **本地留一份 dataURL** ✓：存储里是裸 RGBA ✓，`<img>` 解不开 ✗ ⇒ 本会话的 overlay 用 dataURL 显示 ✓。
+async function setReferenceImage() {
+  const input = $("referenceFile");
+  const file = input && input.files && input.files[0];
+  if (!file) { log("先选一张图片 ✓", "#c33"); return; }
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+  const bitmap = await createImageBitmap(file);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const context = canvas.getContext("2d");
+  context.drawImage(bitmap, 0, 0);
+  const bytes = new Uint8Array(context.getImageData(0, 0, canvas.width, canvas.height).data.buffer);
+  const upload = await fetchOrLocal(api("/api/blob"), {
+    method: "POST",
+    headers: { "content-type": "image/x-yanshi-raw" },
+    body: bytes,
+  }).then((response) => response.json()).catch(() => ({ ok: false }));
+  if (!upload || !upload.ok || !upload.blob_hash) {
+    log("参考图上传失败：" + String((upload && (upload.error_code || upload.reason)) || "unknown"), "#c33");
+    return;
+  }
+  const args = { blob_hash: upload.blob_hash };
+  const opacity = Number(($("referenceOpacity") || {}).value);
+  if (Number.isFinite(opacity) && opacity > 0 && opacity <= 1) args.opacity = opacity;
+  const set = await callToolChecked("set_reference", args, "设为参考图");
+  if (set && set.ok) {
+    state.referenceLocal = { hash: String(upload.blob_hash), url: dataUrl };
+    const info = $("referenceInfo");
+    if (info) info.textContent = "参考图已就位（" + canvas.width + "×" + canvas.height + "）";
+    // **不能直接调 `refreshReferenceOverlay()`** ✗：它在**另一个块作用域**里 ✓
+    //（直接调 = ReferenceError ⇒ 静默失败 ✓ —— 正是本项目禁止的那类 ✗）
+    // ⇒ 走它**自己已经挂上的 resize 监听** ✓（同一处理函数 ✓、零新接口 ✓）。
+    window.dispatchEvent(new Event("resize"));
+    if (input) input.value = "";
+  }
+}
+
+async function clearReferenceImage() {
+  const done = await callToolChecked("clear_reference", {}, "清除参考图");
+  if (done && done.ok) {
+    delete state.referenceLocal;
+    const info = $("referenceInfo");
+    if (info) info.textContent = "已清除参考图";
+    window.dispatchEvent(new Event("resize"));
+  }
+}
+
+/// **资产导入** ✓（`import_asset` 的 `data_base64` 支 ✓）：从本机选文件 ⇒ base64 ⇒ 入资产目录 ✓。
+async function importAssetFile() {
+  const input = $("assetFile");
+  const file = input && input.files && input.files[0];
+  if (!file) return;
+  const kind = (($("assetKind") || {}).value) || "brush";
+  const name = (($("assetName") || {}).value || "").trim() || file.name;
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  const done = await callToolChecked("import_asset", { kind, name, data_base64: btoa(bin) }, "导入资产");
+  const info = $("assetInfo");
+  if (done && done.ok) {
+    if (info) info.textContent = "已导入 " + kind + "：" + name;
+    log("资产已导入（" + kind + " · " + name + "）");
+  } else if (info) {
+    info.textContent = "导入失败：" + String((done && (done.error_code || done.reason)) || "unknown");
+  }
+  if (input) input.value = "";
+}
+
+/// **任意尺寸整幅导出** ✓（`export_png` ✓）：服务端把图**落盘在导出沙箱**（`./exports` ✓，
+/// `YANSHI_EXPORT_DIR` 可改）并回 `path/sha256` ✓ —— **实测：服务端不回 base64** ✗
+/// （`archive_base64` 只有**本地 PWA** 的同名实现才回 ✓），所以这里两条都接：
+/// 本地模式 ⇒ 直接下载；服务端模式 ⇒ 如实报落盘路径 ✓（绝不假称"已下载" ✗）。
+async function serverExportPng() {
+  const w = Number(($("exportServerW") || {}).value || 0);
+  const h = Number(($("exportServerH") || {}).value || 0);
+  const args = { path: "web_export_" + Date.now() + ".png" };
+  if (w > 0 && h > 0) { args.width = w; args.height = h; }
+  const value = await callToolChecked("export_png", args, "任意尺寸导出");
+  const info = $("exportServerInfo");
+  if (!value || !value.ok) return;
+  if (value.archive_base64) {
+    const bin = atob(value.archive_base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+    const isZip = bytes.length > 1 && bytes[0] === 0x50 && bytes[1] === 0x4b;
+    const href = URL.createObjectURL(new Blob([bytes], { type: isZip ? "application/zip" : "image/png" }));
+    triggerPngDownload(href, state.docId, true);
+    if (info) info.textContent = "已导出并下载 " + (value.width || "?") + "×" + (value.height || "?");
+    return;
+  }
+  if (value.url) {
+    triggerPngDownload(value.url, state.docId, String(value.url).startsWith("blob:"));
+    if (info) info.textContent = "已导出并下载 " + (value.width || "?") + "×" + (value.height || "?");
+    return;
+  }
+  if (info) {
+    info.textContent = "服务端已落盘：" + String(value.path || "") +
+      "（" + (value.width || "?") + "×" + (value.height || "?") +
+      "，" + (value.bytes || 0) + " 字节）";
+  }
+}
+
 /// **矢量互转** ✓（设计 §792 / 目标①把"矢量"列为介质之一 ✓）——
 /// `convert_to_shape` 与 `convert_to_path` 此前在查看器里**零引用** ✗ ⇒ 用户够不到 ✓。
 ///
@@ -5161,6 +5356,7 @@ function setupCommentPanel() {
 /// **它是"标注"的另一半** ✓：标注负责"哪里不对" ✓，建议负责"**怎么改，而且是可执行的**" ✓
 /// ⇒ 两者合起来才是设计 §12.6 的评审闭环 ✓。
 let suggestionCache = [];
+const suggestionChecked = new Set();
 
 function renderSuggestionList() {
   const list = $("suggestionList");
@@ -5179,9 +5375,20 @@ function renderSuggestionList() {
     const head = document.createElement("div");
     head.className = "annotation-head";
     const steps = Array.isArray(item.patch) ? item.patch.length : 0;
-    head.textContent = "#" + String(item.suggestion_id || item.id || "").slice(-8) +
+    const sid = String(item.suggestion_id || item.id || "");
+    // **勾选框** ✓：批量接受/拒绝（`accept_suggestions` / `reject_suggestions` ✓）以勾选为准 ✓。
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.checked = suggestionChecked.has(sid);
+    check.addEventListener("change", () => {
+      if (check.checked) suggestionChecked.add(sid);
+      else suggestionChecked.delete(sid);
+    });
+    const labelText = document.createElement("span");
+    labelText.textContent = "#" + sid.slice(-8) +
       " · 优先级 " + (item.priority === undefined ? "?" : item.priority) +
       " · " + steps + " 步" + (item.status ? " · " + item.status : "");
+    head.append(check, labelText);
     const text = document.createElement("div");
     text.className = "hint";
     text.textContent = item.summary || "（没有说明 ✓）";
@@ -5255,6 +5462,31 @@ function setupSuggestionPanel() {
   if (reload) reload.addEventListener("click", () => { void refreshSuggestions(); });
   const box = $("suggestionStatus");
   if (box) box.addEventListener("change", () => { void refreshSuggestions(); });
+  // **批量** ✓（复数工具此前 web 够不到 ✗）：一次请求处理所有勾选 ✓。
+  const acceptAll = $("suggestionAcceptChecked");
+  if (acceptAll) acceptAll.addEventListener("click", async () => {
+    const ids = Array.from(suggestionChecked);
+    if (ids.length === 0) { log("先勾选要批量接受的建议 ✓", "#c33"); return; }
+    const done = await callToolChecked("accept_suggestions", { suggestion_ids: ids }, "批量接受建议");
+    if (done && done.ok) {
+      log("已批量接受 " + ids.length + " 条 ✓（补丁按序重放 ✓）");
+      suggestionChecked.clear();
+      await resync();
+    }
+    await refreshSuggestions();
+  });
+  const rejectAll = $("suggestionRejectChecked");
+  if (rejectAll) rejectAll.addEventListener("click", async () => {
+    const ids = Array.from(suggestionChecked);
+    if (ids.length === 0) { log("先勾选要批量拒绝的建议 ✓", "#c33"); return; }
+    const reason = (($("suggestionReason") || {}).value || "").trim() || "编辑器里批量拒绝";
+    const done = await callToolChecked("reject_suggestions", { suggestion_ids: ids, reason }, "批量拒绝建议");
+    if (done && done.ok) {
+      log("已批量拒绝 " + ids.length + " 条 ✓：原因「" + reason + "」");
+      suggestionChecked.clear();
+    }
+    await refreshSuggestions();
+  });
 }
 
 /// **存储 / 维护** ✓（设计 §6.3 的 Blob 三级生命周期 ✓）—— `blob_gc` 此前**零引用** ✗。
@@ -5537,6 +5769,44 @@ function setupObjectPanel() {
   if (toPath) toPath.addEventListener("click", () => {
     void convertCheckedObjects("convert_to_path", "转为路径", "path_id", "path_");
   });
+  // **对照表补齐的新按钮** ✓（详情/解析/脱离/组/主图/同步/备注 ✓）。
+  const detail = $("objectDetail");
+  if (detail) detail.addEventListener("click", () => { void describeCheckedObject("get_object", "对象详情"); });
+  const resolved = $("objectResolved");
+  if (resolved) resolved.addEventListener("click", () => { void describeCheckedObject("get_resolved_state", "解析状态"); });
+  const detach = $("objectDetach");
+  if (detach) detach.addEventListener("click", () => { void detachCheckedInstances(); });
+  const addGroup = $("objectAddGroup");
+  if (addGroup) addGroup.addEventListener("click", () => { void moveCheckedGroup("add_to_group", "加入组"); });
+  const removeGroup = $("objectRemoveGroup");
+  if (removeGroup) removeGroup.addEventListener("click", () => { void moveCheckedGroup("remove_from_group", "移出组"); });
+  const linkMaster = $("objectLinkMaster");
+  if (linkMaster) linkMaster.addEventListener("click", () => { void linkCheckedToMaster(); });
+  const syncApply = $("objectSyncApply");
+  if (syncApply) syncApply.addEventListener("click", () => { void applySyncPolicyChecked(); });
+  const noteApply = $("objectNoteApply");
+  if (noteApply) noteApply.addEventListener("click", () => { void noteCheckedObjects(); });
+  // **调色板保存 / 参考图 / 资产导入 / 任意尺寸导出** ✓（同样只补入口 ✓）。
+  const paletteSave = $("paletteSave");
+  if (paletteSave) paletteSave.addEventListener("click", () => { void savePaletteFromSwatches(); });
+  const referenceSet = $("referenceSet");
+  if (referenceSet) referenceSet.addEventListener("click", () => {
+    const picker = $("referenceFile");
+    if (picker) picker.click();
+  });
+  const referenceFile = $("referenceFile");
+  if (referenceFile) referenceFile.addEventListener("change", () => { void setReferenceImage(); });
+  const referenceClear = $("referenceClear");
+  if (referenceClear) referenceClear.addEventListener("click", () => { void clearReferenceImage(); });
+  const assetImport = $("assetImport");
+  if (assetImport) assetImport.addEventListener("click", () => {
+    const picker = $("assetFile");
+    if (picker) picker.click();
+  });
+  const assetFile = $("assetFile");
+  if (assetFile) assetFile.addEventListener("change", () => { void importAssetFile(); });
+  const exportServer = $("exportServerPng");
+  if (exportServer) exportServer.addEventListener("click", () => { void serverExportPng(); });
 }
 
 /// 面板上的两个开关 ✓（刷新 ✓ / 显示已解决 ✓）。
@@ -8890,93 +9160,53 @@ function setupPanels() {
   // ⇒ 以后改 UI 时，这层只需跟着改**选择器** ✓，而不是两套行为各自漂移 ✗。
   //
   // **同时提供"读"** ✓：自动化最需要的是**断言当前设置** ✓（"我设的颜色真的生效了吗" ✓）。
-  /// **把 `.myb` 笔刷装进下拉** ✓（用户硬要求：**Web 与 MCP 都要能用** ✓）。
+/// **按搜索词过滤笔刷下拉** ✓（目标 ⑥ ✓）。
+///
+/// **要点** ✓：过滤后**把空的分组也藏起来** ✗ —— 否则用户会看到一串**空标题** ✓，
+/// 那比"没过滤"更让人困惑 ✓（"这里有组却没有笔刷" ✓）。
+/// **另外** ✓：当前选中项若被过滤掉 ⇒ **自动选第一支可见的** ✓ ——
+/// 否则会出现"下拉里看不到它、但落笔用的还是它" ✗（界面与事实不一致 ✓）。
+function applyBrushFilter() {
+  const select = $("brush");
+  const box = $("brushSearch");
+  if (!select) return;
+  const needle = (box && box.value ? box.value : "").trim().toLowerCase();
+  let visible = 0;
+  const all = Array.from(select.options);
+  for (const option of all) {
+    // 第一个"（内置画笔）"永远留着 ✓（它是"不用 .myb"的意思 ✓）。
+    const keepAlways = option.value === "";
+    const hit = keepAlways || needle === "" || option.value.toLowerCase().includes(needle);
+    option.hidden = !hit;
+    if (hit) visible += 1;
+  }
+  for (const child of Array.from(select.children)) {
+    if (child.tagName === "OPTGROUP") {
+      const hasVisible = Array.from(child.children).some((option) => !option.hidden);
+      child.hidden = !hasVisible;
+      child.disabled = !hasVisible;
+    }
+  }
+  const current = select.selectedOptions && select.selectedOptions[0];
+  if (current && current.hidden) {
+    const first = all.find((option) => !option.hidden);
+    if (first) select.value = first.value;
+  }
+  const hint = $("brushSearchHint");
+  if (hint) {
+    hint.textContent = needle
+      ? `匹配 ${Math.max(0, visible - 1)} 支（共 ${Math.max(0, all.length - 1)} 支）`
+      : `共 ${Math.max(0, all.length - 1)} 支，分 ${select.querySelectorAll("optgroup:not([hidden])").length} 组`;
+  }
+}
+
+/// **把 `.myb` 笔刷装进下拉** ✓（用户硬要求：**Web 与 MCP 都要能用** ✓）。
 ///
 /// **为什么懒加载** ✓：196 支笔刷的下拉在**首次点开时**才拉 ✓（免得每次开页面都多一次请求 ✓
 /// 也免得 196 个 `<option>` 拖慢首屏 ✓）；`title` 里已经写明这一点 ✓。
 ///
 /// **为什么按名字、而不是按路径** ✓：工具层按"缓存优先、内置其次"解析 ✓
 /// ⇒ 用户导入的同名笔刷**自动生效** ✓（与 `list_assets` 的优先级一致 ✓）。
-/// **按搜索词过滤笔刷下拉** ✓（目标 ⑥ ✓）。
-///
-/// **要点** ✓：过滤后**把空的分组也藏起来** ✗ —— 否则用户会看到一串**空标题** ✓，
-/// 那比"没过滤"更让人困惑 ✓（"这里有组却没有笔刷" ✓）。
-/// **另外** ✓：当前选中项若被过滤掉 ⇒ **自动选第一支可见的** ✓ ——
-/// 否则会出现"下拉里看不到它、但落笔用的还是它" ✗（界面与事实不一致 ✓）。
-function applyBrushFilter() {
-  const select = $("brush");
-  const box = $("brushSearch");
-  if (!select) return;
-  const needle = (box && box.value ? box.value : "").trim().toLowerCase();
-  let visible = 0;
-  const all = Array.from(select.options);
-  for (const option of all) {
-    // 第一个"（内置画笔）"永远留着 ✓（它是"不用 .myb"的意思 ✓）。
-    const keepAlways = option.value === "";
-    const hit = keepAlways || needle === "" || option.value.toLowerCase().includes(needle);
-    option.hidden = !hit;
-    if (hit) visible += 1;
-  }
-  for (const child of Array.from(select.children)) {
-    if (child.tagName === "OPTGROUP") {
-      const hasVisible = Array.from(child.children).some((option) => !option.hidden);
-      child.hidden = !hasVisible;
-      child.disabled = !hasVisible;
-    }
-  }
-  const current = select.selectedOptions && select.selectedOptions[0];
-  if (current && current.hidden) {
-    const first = all.find((option) => !option.hidden);
-    if (first) select.value = first.value;
-  }
-  const hint = $("brushSearchHint");
-  if (hint) {
-    hint.textContent = needle
-      ? `匹配 ${Math.max(0, visible - 1)} 支（共 ${Math.max(0, all.length - 1)} 支）`
-      : `共 ${Math.max(0, all.length - 1)} 支，分 ${select.querySelectorAll("optgroup:not([hidden])").length} 组`;
-  }
-}
-
-/// **按搜索词过滤笔刷下拉** ✓（目标 ⑥ ✓）。
-///
-/// **要点** ✓：过滤后**把空的分组也藏起来** ✗ —— 否则用户会看到一串**空标题** ✓，
-/// 那比"没过滤"更让人困惑 ✓（"这里有组却没有笔刷" ✓）。
-/// **另外** ✓：当前选中项若被过滤掉 ⇒ **自动选第一支可见的** ✓ ——
-/// 否则会出现"下拉里看不到它、但落笔用的还是它" ✗（界面与事实不一致 ✓）。
-function applyBrushFilter() {
-  const select = $("brush");
-  const box = $("brushSearch");
-  if (!select) return;
-  const needle = (box && box.value ? box.value : "").trim().toLowerCase();
-  let visible = 0;
-  const all = Array.from(select.options);
-  for (const option of all) {
-    // 第一个"（内置画笔）"永远留着 ✓（它是"不用 .myb"的意思 ✓）。
-    const keepAlways = option.value === "";
-    const hit = keepAlways || needle === "" || option.value.toLowerCase().includes(needle);
-    option.hidden = !hit;
-    if (hit) visible += 1;
-  }
-  for (const child of Array.from(select.children)) {
-    if (child.tagName === "OPTGROUP") {
-      const hasVisible = Array.from(child.children).some((option) => !option.hidden);
-      child.hidden = !hasVisible;
-      child.disabled = !hasVisible;
-    }
-  }
-  const current = select.selectedOptions && select.selectedOptions[0];
-  if (current && current.hidden) {
-    const first = all.find((option) => !option.hidden);
-    if (first) select.value = first.value;
-  }
-  const hint = $("brushSearchHint");
-  if (hint) {
-    hint.textContent = needle
-      ? `匹配 ${Math.max(0, visible - 1)} 支（共 ${Math.max(0, all.length - 1)} 支）`
-      : `共 ${Math.max(0, all.length - 1)} 支，分 ${select.querySelectorAll("optgroup:not([hidden])").length} 组`;
-  }
-}
-
 async function refreshBrushOptions() {
   // 离线诊断计数（临时）：入口/出口各计一次，判据里读出来即可区分
   // 「上游抛了 ⇒ entered=0」与「中途抛了 ⇒ entered>=1 且 exited=0」。
@@ -9366,7 +9596,13 @@ async function refreshReferenceOverlay() {
       document.body.appendChild(overlay);
     }
     overlay.dataset.blob = String(hash);
-    overlay.src = "/api/blob/" + String(hash).replace(/^sha256:/, "sha256:");
+    // **两处旧错一起修** ✓：① URL 不带 token/doc ⇒ 开鉴权的服务端 `<img>` 拿到 401 ✗、图永远不显示 ✓
+    // ⇒ 走 `api()` ✓；② 存储里可能是**裸 RGBA**（HTTP 上传会被归一化成裸 RGBA ✓），
+    // `<img>` 解不开 ✗ ⇒ 本会话上传过就优先用留底的 dataURL ✓（跨会话仍拿不到 ⇒ 安静降级 ✓）。
+    const local = state.referenceLocal;
+    overlay.src = local && local.hash === String(hash)
+      ? local.url
+      : api("/api/blob/" + String(hash));
     overlay.style.left = rect.left + "px";
     overlay.style.top = rect.top + "px";
     overlay.style.width = rect.width + "px";
@@ -10778,6 +11014,33 @@ $("importFile").addEventListener("change", async (event) => {
 // 而且**表里没有的文案保持原样**（安全降级）。**默认中文** ⇒ 既有行为与既有检查脚本都不受影响；
 // 英文是**显式切换**（顶栏开关 / `?lang=en` / 记住的选择）。日志与诊断**不翻译**（它们是给人看的长句）。
 const I18N_EN_TEXT = {
+  // **★ 内核卡片的服务端渲染提示（browser-i18n 实测红 ✓）★**：
+  //   `setWasmState("已按设置跳过（用服务端渲染）")` 写进 DOM ⇒ 英文模式下必须有词条 ✓。
+  "已按设置跳过（用服务端渲染）": "Skipped per setting (server-side rendering)",
+  // **三方对照补齐新增的固定文案** ✓（`ui-i18n-coverage` 要求模板里每个中文文本节点都有词条 ✓）。
+  "解析": "Resolve",
+  "脱离实例": "Detach",
+  "组": "Group",
+  "加入组": "Add to group",
+  "移出组": "Remove from group",
+  "主图": "Master",
+  "换主图": "Link master",
+  "全部同步": "Sync all",
+  "停止同步": "No sync",
+  "设同步策略": "Set sync policy",
+  "备注": "Note",
+  "写备注": "Save note",
+  "存为调色板": "Save as palette",
+  "接受所选": "Accept selected",
+  "拒绝所选": "Reject selected",
+  "参考图": "Reference",
+  "上传参考图": "Upload reference",
+  "清除参考图": "Clear reference",
+  "资产导入": "Import asset",
+  "选文件导入": "Choose file",
+  "宽": "W",
+  "高": "H",
+  "任意尺寸导出": "Export at size",
   // **∴ 字体选择器的分组标题（Phase 4 ✓）✗**：**族名不翻译 ✗ 只有这个标题要词条** ✓
   "系统字体": "System fonts",
   // **∴ 预置字体名（**Inter／JetBrains Mono ✓）**不在这里** ✗ ★**：
@@ -11145,6 +11408,9 @@ function i18nText(node) {
     const m5 = /^离线排队 (\d+) 条$/.exec(zh);
     const m6 = /^被拒 (\d+) 条$/.exec(zh);
     const m7 = /^冲突待处理 (\d+)$/.exec(zh);
+    // **资产下拉的"（导入的）"徽标是拼接的动态文案** ✓（名字随用户导入变 ✗）
+    // ⇒ 字典匹配不到 ⇒ 必须有模式词条，否则英文模式下留着中文（browser-i18n 实测抓到过 ✓）。
+    const m8 = /^(.+)（导入的）$/.exec(zh);
     if (m1) en = "Layer " + m1[1];
     else if (m2) en = "Layer " + m2[1] + " (#" + m2[2] + ")";
     else if (m3) en = m3[1] + " colours";
@@ -11152,6 +11418,7 @@ function i18nText(node) {
     else if (m5) en = "Offline queue: " + m5[1];
     else if (m6) en = m6[1] + " rejected";
     else if (m7) en = m7[1] + " conflict(s)";
+    else if (m8) en = m8[1] + " (imported)";
   }
   node.nodeValue = (uiLang === "en" && en) ? original.replace(zh, en) : original;
 }
