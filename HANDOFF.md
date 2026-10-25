@@ -18,7 +18,8 @@
 ## 二、当前状态
 
 ```
-CI：ca58be70 已推送（D172 闭环；见 §三-1）
+CI：40175183140（ca58be70）completed/**failure** ⇒ 唯一意外失败是 `tool-repo-root-clean`（`HANDOFF.md` 不在顶层白名单）
+    ⇒ 已加白名单（见 §三-1）｜其余 job 全绿；shard 3/6 里的 browser 红都在 known-red（通过 50｜意外失败 1｜已知红 4｜跳过 7）
     2e70615b success ✓（dab ×3 注释；**补丁线收工**）
     26ba9483 success ✓（F 的 Default 派生修正）
 ```
@@ -37,7 +38,7 @@ CI：ca58be70 已推送（D172 闭环；见 §三-1）
 
 ## 三、下一步（按优先序，都有精确入口）
 
-1. **读 `ca58be70` 的 CI 结论**（若红：先看是哪一 job；本轮本机 `cargo test -p yanshi-timelapse` = **26 passed**、workspace clippy 绿）。
+1. **读"白名单修正"那一笔的 CI 结论**（`ca58be70` 的 run 已查：唯一意外失败是 `tool-repo-root-clean` 报 `HANDOFF.md` 不在顶层白名单 ⇒ 已把 `HANDOFF.md` 加进 `scripts/tool-repo-root-clean.mjs` 的 `ALLOWED`，本机重跑该判据绿）。本机 `cargo test -p yanshi-timelapse` = **26 passed**、workspace clippy 绿。
 2. **qoder 剩余条目**：`D139`（静默零覆盖，需他给完整参数；我 6 点网格未复现）、`D188` 的量级说明（差随原子数增长：200 图块 ≈0.6 lv/通道、22,926 原子 ≈16 lv ⇒ 写进那条 `⚠️` 警告）。
 3. `shrink` blit（`art` 第 12 项）：最小包上对照判据实测 均值 1.89／>30 占 0.22% ⇒ 无缺口；要他用同判据跑 0.30 GB 的 `test1full`。
 4. （可选，第二口径）`scripts/tool-export-bitmaps.mjs` 加一段：`include_bitmaps: true` 导出的包直接喂 `target/release/yanshi-timelapse` ⇒ `rc=0`。
@@ -62,3 +63,6 @@ CI：ca58be70 已推送（D172 闭环；见 §三-1）
    - **断言的输入必须能触发它**：原测试用 `8B_Pencil#1`，这支笔**不可省** ⇒ `omitted == 0` 恒真 ⇒ 把 `include_bitmaps: true` 删掉测试**照样绿** ✗。换成 `2B_pencil.myb`（`export_small` 已证可省）后，删参数 ⇒ `omitted: 3` ⇒ 红 ✓。
    - **顺序**：`exit(2)` 必须在"导出侧能装全"之后（第 1089 轮先加 `exit(2)` ⇒ 拒收自产包 ⇒ 回归过）。现在的顺序是 导出侧 `include_bitmaps` ✓ → 测试/文档传 `true` ✓ → 才 `exit(2)` ✓。
 4. **改行为前先 grep 谁依赖它**（这条欠账的代价是一轮红）。
+5. **新增仓库**顶层**条目（含 `.md`）要同步加进 `scripts/tool-repo-root-clean.mjs` 的 `ALLOWED`**：
+   `HANDOFF.md` 在 `ab7a1114` 提交后**第一次**跑 CI 才红（`2e70615b` 的 run 早于它）
+   ⇒ 这类红**不在产品侧**，但会阻塞"CI 绿" ✓。判据自己会指出"有意的就加白名单"。

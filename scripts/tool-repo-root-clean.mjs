@@ -24,6 +24,14 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ALLOWED = new Set([
   ".github", ".gitignore",
   "AGENTS.md", "CONTRIBUTING.md", "LICENSE", "Makefile", "README.md", "README.zh-CN.md",
+  // **★ `HANDOFF.md` 加进白名单 ★**（第 1131 轮 CI 报出来的）：
+  //   **∴ 它是什么 ✗**：**每次交接给下一个 session 的现状／下一步／坑** ✓
+  //     ⇒ **∴ 用户**在仓库根目录**直接 `@HANDOFF.md` 引用它** ✓ ⇒ **∴ 它必须留在顶层 ✓**
+  //   **∴ 证据 ✗**：`ab7a1114 docs: handoff for the next session with state, next steps and the traps to avoid` ✓
+  //   **∴ 为什么本轮才红 ✗**：**那条提交之后**才第一次跑 CI ✓
+  //     （`2e70615b` 的 run 早于它 ✓）⇒ **∴ 不是产品回归，是白名单漏了一项 ✓**。
+  //   **∴ 代价 ✗**：白名单多一项 ✓ —— **与 `skills`／`vendor` 同一处理 ✓**（有明确理由 ✓）。
+  "HANDOFF.md",
   "SECURITY.md", "Cargo.toml", "Cargo.lock", "rustfmt.toml", "rust-toolchain.toml",
   "assets", "crates", "deploy", "docs", "scripts", "target",
   // **★ `skills` 加进白名单 ✗ ★**（第 1000+ 轮 ✓）：
