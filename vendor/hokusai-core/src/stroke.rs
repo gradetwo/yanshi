@@ -1308,10 +1308,11 @@ fn build_dab(    brush: &Brush,
         let hardness_new = (optical - aa_min * 0.5) / (optical + aa_min * 0.5);
         // libmypaint applies the result unconditionally; sub-pixel dabs end
         // up with negative hardness, which `draw_dab_default` rejects to
-        // match the upstream `op->hardness == 0` early-out. We only guard
-        // against `hardness_new == 1` here to avoid div-by-zero on the
-        // radius assignment.
-        if hardness_new < 1.0 {
+        // match the upstream `op->hardness == 0` early-out. **P2-13**：负值时
+        // 跳过 AA 调整、保留原半径/硬度（小 dab 不做 AA 即可，淡出带比 dab 本身
+        // 还宽时 AA 无意义；不把 dab 吹大成 aa_min 半径的软斑，避免改 stroke 宽度）。
+        // 只在 `0 < hardness_new < 1` 时应用调整（`== 1` 时跳过，避免半径赋值除零）。
+        if hardness_new > 0.0 && hardness_new < 1.0 {
             radius = aa_min / (1.0 - hardness_new);
             hardness = hardness_new;
         }

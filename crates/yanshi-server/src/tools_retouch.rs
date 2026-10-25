@@ -50,6 +50,72 @@ fn fs_rebuild_byte(low_linear: f32, high_byte: u8) -> u8 {
     (srgb_encode_extended(out).clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
+/// FS 查表（P2-14）：三张 64K 字节表，把 `fs_bake` 里两轮逐像素 f32 循环
+/// （每像素每通道两次 `powf` 级编解码）换成查表 + 整数运算，输出逐位不变。
+///
+/// 精确性的根据：每张表的表项都由**同一个**原函数逐项生成（`OnceLock` 只算一次，
+/// 与 `color.rs` 的 256 项精确解码表同构）——查表只是省掉重复计算，不引入任何
+/// 新算式；循环里剩下的整数比较/取整与原式相同。
+/// * HF 最近编码字节：键 `(src_byte, low_byte)` → `nearest`（原 HF 循环的
+///   `round(encode((decode(src) − decode(low))/2 + 0.5))`）。
+/// * 重建字节：键 `(low_byte, candidate)` → [`fs_rebuild_byte`]（`low_linear` =
+///   `decode(low_byte)`，与 HF 循环传的值相同）。
+/// * 自检重建字节：键 `(high_byte, low_byte)` → 自检循环的 `rebuilt`——只计
+///   全不透明像素（`alpha_s = alpha_b = 1.0`），故重建字节只依赖这两个字节；
+///   表项按自检循环原样调用 [`blend_pixel`]（`linear_light`）算出。
+fn fs_hf_nearest_table() -> &'static [u8; 65536] {
+    static TABLE: std::sync::OnceLock<[u8; 65536]> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut table = [0u8; 65536];
+        for src in 0..256usize {
+            for low in 0..256usize {
+                let input = srgb_decode_extended(src as f32 / 255.0);
+                let low_value = srgb_decode_extended(low as f32 / 255.0);
+                let hf = (input - low_value) / 2.0 + 0.5;
+                table[(src << 8) | low] =
+                    (srgb_encode_extended(hf).clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+        }
+        table
+    })
+}
+
+fn fs_rebuild_table() -> &'static [u8; 65536] {
+    static TABLE: std::sync::OnceLock<[u8; 65536]> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut table = [0u8; 65536];
+        for low in 0..256usize {
+            let low_linear = srgb_decode_extended(low as f32 / 255.0);
+            for candidate in 0..256usize {
+                table[(low << 8) | candidate] = fs_rebuild_byte(low_linear, candidate as u8);
+            }
+        }
+        table
+    })
+}
+
+fn fs_check_rebuild_table() -> &'static [u8; 65536] {
+    static TABLE: std::sync::OnceLock<[u8; 65536]> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut table = [0u8; 65536];
+        for high in 0..256usize {
+            for low in 0..256usize {
+                // 与自检循环原样（`alpha_s = alpha_b = 1.0` ⇒ 预乘 = 解码值本身）；
+                // 三通道填同一值 ⇒ 任一通道的 `out` 都相同，取 `out[0]` 即可。
+                let decoded_high = srgb_decode_extended(high as f32 / 255.0);
+                let decoded_low = srgb_decode_extended(low as f32 / 255.0);
+                let source_premul = [decoded_high, decoded_high, decoded_high, 1.0];
+                let backdrop_premul = [decoded_low, decoded_low, decoded_low, 1.0];
+                let out = blend_pixel(BlendMode::LinearLight, source_premul, backdrop_premul);
+                let straight = if out[3] > 0.0 { out[0] / out[3] } else { 0.0 };
+                table[(high << 8) | low] =
+                    (srgb_encode_extended(straight).clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+        }
+        table
+    })
+}
+
 /// 频率分离烘焙（纯函数，可单测）：源显示编码 RGBA8 ⇒（低频，高频，
 /// 重建最大误差，重建均值误差，中高调最大误差，不透明像素占比）。
 ///
@@ -75,7 +141,7 @@ fn fs_rebuild_byte(low_linear: f32, high_byte: u8) -> u8 {
 /// 制造假失败；占比随结果回带，调用方一眼可见统计覆盖了多少。
 /// 零合格像素 ⇒ PreconditionFailed（见自检段）。
 ///
-/// `fs_bake` 的输出：低频/高频烘焙字节 + 重建误差统计。
+/// `fs_bake` 的输出：低频/高频烘焙字节 + 重建误差统计 + 分段耗时（P2-14）。
 #[derive(Debug)]
 pub(super) struct FsBakeOutput {
     /// 低频层字节（显示编码 RGBA8）。
@@ -90,6 +156,12 @@ pub(super) struct FsBakeOutput {
     pub bright_max_error: f32,
     /// 被统计的全不透明邻域像素占比。
     pub opaque_ratio: f32,
+    /// 低频模糊耗时（毫秒）。
+    pub blur_ms: f64,
+    /// 高频载荷循环耗时（毫秒）。
+    pub hf_ms: f64,
+    /// 自检循环耗时（毫秒）。
+    pub check_ms: f64,
 }
 
 pub(super) fn fs_bake(source: &[u8], width: u32, height: u32, sigma: f32) -> Result<FsBakeOutput> {
@@ -103,18 +175,25 @@ pub(super) fn fs_bake(source: &[u8], width: u32, height: u32, sigma: f32) -> Res
             )),
         ));
     }
+    let blur_start = std::time::Instant::now();
     let low = gaussian_blur_rgba8(source, width, height, sigma);
+    let blur_ms = blur_start.elapsed().as_secs_f64() * 1000.0;
+    // 查表在循环外取一次（`OnceLock` 的原子检查只付一次；与 `color.rs` 的
+    // `srgb_decode_table` 同一动机）。
+    let nearest_table = fs_hf_nearest_table();
+    let rebuild_table = fs_rebuild_table();
+    let hf_start = std::time::Instant::now();
     let mut high = vec![0u8; count * 4];
     for index in 0..count {
         let base = index * 4;
         for channel in 0..3 {
-            let input = srgb_decode_extended(source[base + channel] as f32 / 255.0);
-            let low_value = srgb_decode_extended(low[base + channel] as f32 / 255.0);
-            let hf = (input - low_value) / 2.0 + 0.5;
-            let nearest = (srgb_encode_extended(hf).clamp(0.0, 1.0) * 255.0).round() as u8;
             let src_byte = source[base + channel];
-            let nearest_error =
-                (fs_rebuild_byte(low_value, nearest) as i32 - src_byte as i32).unsigned_abs();
+            let low_byte = low[base + channel];
+            let nearest = nearest_table[((src_byte as usize) << 8) | low_byte as usize];
+            let nearest_error = (rebuild_table[((low_byte as usize) << 8) | nearest as usize]
+                as i32
+                - src_byte as i32)
+                .unsigned_abs();
             if nearest_error <= 2 {
                 high[base + channel] = nearest;
             } else {
@@ -125,7 +204,9 @@ pub(super) fn fs_bake(source: &[u8], width: u32, height: u32, sigma: f32) -> Res
                     if candidate == nearest {
                         continue;
                     }
-                    let error = (fs_rebuild_byte(low_value, candidate) as i32 - src_byte as i32)
+                    let error = (rebuild_table[((low_byte as usize) << 8) | candidate as usize]
+                        as i32
+                        - src_byte as i32)
                         .unsigned_abs();
                     if error < best_error
                         || (error == best_error
@@ -143,12 +224,15 @@ pub(super) fn fs_bake(source: &[u8], width: u32, height: u32, sigma: f32) -> Res
         // 合成规则见模块卷首的局限说明）。
         high[base + 3] = source[base + 3];
     }
+    let hf_ms = hf_start.elapsed().as_secs_f64() * 1000.0;
     // 自检：用引擎合成函数把烘焙字节重新合成，与源字节比对。
     // 口径（实测修正）：只计「全不透明邻域」像素——源 alpha = 255 且
     // 模糊后 alpha = 255。半透明邻域的组 alpha 本就无法精确保持
     // （out_alpha = αs + αb(1−αs) ≠ 源 alpha），把那里的像素计入
     // 只会让工具在任何带羽化边缘的图层上都自检失败（实测：透明
     // 边界处误差可达 0.51）。零合格像素 ⇒ 前置失败（不是自检失败）。
+    let check_table = fs_check_rebuild_table();
+    let check_start = std::time::Instant::now();
     let mut max_error = 0.0f32;
     let mut bright_max_error = 0.0f32;
     let mut sum_error = 0.0f32;
@@ -158,27 +242,11 @@ pub(super) fn fs_bake(source: &[u8], width: u32, height: u32, sigma: f32) -> Res
         if source[base + 3] != 255 || low[base + 3] != 255 {
             continue;
         }
-        let alpha_s = high[base + 3] as f32 / 255.0;
-        let alpha_b = low[base + 3] as f32 / 255.0;
-        let mut source_premul = [0.0f32; 4];
-        let mut backdrop_premul = [0.0f32; 4];
         for channel in 0..3 {
-            source_premul[channel] =
-                srgb_decode_extended(high[base + channel] as f32 / 255.0) * alpha_s;
-            backdrop_premul[channel] =
-                srgb_decode_extended(low[base + channel] as f32 / 255.0) * alpha_b;
-        }
-        source_premul[3] = alpha_s;
-        backdrop_premul[3] = alpha_b;
-        let out = blend_pixel(BlendMode::LinearLight, source_premul, backdrop_premul);
-        let out_alpha = out[3];
-        for channel in 0..3 {
-            let straight = if out_alpha > 0.0 {
-                out[channel] / out_alpha
-            } else {
-                0.0
-            };
-            let rebuilt = (srgb_encode_extended(straight).clamp(0.0, 1.0) * 255.0).round() as u8;
+            // 只计全不透明像素 ⇒ `alpha_s = alpha_b = 1.0`，重建字节只依赖
+            // `(high 字节，low 字节)`，查表（表项即原式，见 `fs_check_rebuild_table`）。
+            let rebuilt =
+                check_table[((high[base + channel] as usize) << 8) | low[base + channel] as usize];
             let error =
                 (rebuilt as i32 - source[base + channel] as i32).unsigned_abs() as f32 / 255.0;
             max_error = max_error.max(error);
@@ -191,6 +259,7 @@ pub(super) fn fs_bake(source: &[u8], width: u32, height: u32, sigma: f32) -> Res
             counted += 1;
         }
     }
+    let check_ms = check_start.elapsed().as_secs_f64() * 1000.0;
     if counted == 0 {
         return Err(YanshiError::new(
             ErrorCode::PreconditionFailed,
@@ -222,6 +291,9 @@ pub(super) fn fs_bake(source: &[u8], width: u32, height: u32, sigma: f32) -> Res
         mean_error,
         bright_max_error,
         opaque_ratio,
+        blur_ms,
+        hf_ms,
+        check_ms,
     })
 }
 
@@ -393,6 +465,7 @@ pub(super) fn write_frequency_separation(ctx: &mut ToolContext<'_>, args: &Value
     // 整幅源像素（只拍这一层；空层/纯调整层 ⇒ 渲染侧 ReferenceNotFound
     // 或全透明 ⇒ 一律转 PreconditionFailed 并说清缺什么）。
     let bbox = Bbox::new(0.0, 0.0, canvas_w as f64, canvas_h as f64);
+    let render_start = std::time::Instant::now();
     let (width, height, source) =
         match ctx
             .workspace
@@ -409,6 +482,7 @@ pub(super) fn write_frequency_separation(ctx: &mut ToolContext<'_>, args: &Value
             }
             Err(error) => return Err(error),
         };
+    let render_ms = render_start.elapsed().as_secs_f64() * 1000.0;
     if source.chunks_exact(4).all(|pixel| pixel[3] == 0) {
         return Err(YanshiError::new(
             ErrorCode::PreconditionFailed,
@@ -426,6 +500,9 @@ pub(super) fn write_frequency_separation(ctx: &mut ToolContext<'_>, args: &Value
         mean_error,
         bright_max_error,
         opaque_ratio,
+        blur_ms,
+        hf_ms,
+        check_ms,
     } = baked;
     // blob 先落（原子引用它们；放 blob 失败 ⇒ 同样零原子）。
     let low_hash = ctx.workspace.put_blob(&low)?;
@@ -503,6 +580,12 @@ pub(super) fn write_frequency_separation(ctx: &mut ToolContext<'_>, args: &Value
         "reconstruction_mean_error": mean_error,
         "reconstruction_max_error_bright": bright_max_error,
         "reconstruction_pixel_ratio": opaque_ratio,
+        "fs_timings": {
+            "render_ms": render_ms,
+            "blur_ms": blur_ms,
+            "hf_ms": hf_ms,
+            "check_ms": check_ms,
+        },
         "note": "低频/高频是导入时刻的像素快照（烘焙）：源图层此后的修改不传播，与 raster patch 同类；半透明像素的组 alpha 不精确保持源 alpha，频率分离按不透明照片层设计。高频层的中性灰是 188（线性 0.5 的 sRGB 编码），不是 PS 式的 128——在高频层上涂抹请用 188 作中性色，用 128 会压暗。重建刻画（实测）：中高调（源字节 ≥ 128）≤ 2 LSB；暗部受 8 位 HF 字节网格限制，残差随暗度增大，近黑强细节处可达约 16 LSB，均值 ≤ 3 LSB；自检统计只计全不透明邻域像素，占比见 reconstruction_pixel_ratio。",
     }))
 }
@@ -743,7 +826,10 @@ pub(super) fn write_dodge_burn_setup(ctx: &mut ToolContext<'_>, args: &Value) ->
 
 #[cfg(test)]
 mod retouch_tests {
-    use super::{db_curve_points, fs_bake, FsBakeOutput};
+    use super::{
+        db_curve_points, fs_bake, fs_check_rebuild_table, fs_hf_nearest_table, fs_rebuild_byte,
+        fs_rebuild_table, FsBakeOutput,
+    };
     use yanshi_render::{
         blend_pixel,
         color::{srgb_decode_extended, srgb_encode_extended},
@@ -790,6 +876,7 @@ mod retouch_tests {
             mean_error,
             bright_max_error,
             opaque_ratio: ratio,
+            ..
         } = baked;
         // 实测刻画界（见 fs_bake 说明）：严苛合成图上整体最大误差受 8 位
         // 物理极限约束；中高调（源字节 ≥ 128）仍应 ≤ 2 LSB，均值 ≤ 3 LSB。
@@ -907,5 +994,51 @@ mod retouch_tests {
         );
         assert_ne!(x, 0.5, "x 仍是显示 0.5 ⇒ EOTF 转换被漏掉");
         assert_ne!(y, 0.62, "y 仍是显示 0.62 ⇒ EOTF 转换被漏掉");
+    }
+
+    /// P2-14：三张 FS 查表与原函数逐项相同（全 65536 项，不抽检）。
+    ///
+    /// 表项既然就是原函数的值，查表只是省掉重复计算；本条把"逐项相同"钉死：
+    /// 任一表项算错（索引错位、公式抄错）⇒ 本条红。`fs_bake` 的端到端测试
+    /// （误差界 + 独立重算）是第二道网。
+    #[test]
+    fn fs_lookup_tables_match_original_functions() {
+        let nearest_table = fs_hf_nearest_table();
+        let rebuild_table = fs_rebuild_table();
+        let check_table = fs_check_rebuild_table();
+        for src in 0..256usize {
+            for low in 0..256usize {
+                let src_byte = src as u8;
+                let low_byte = low as u8;
+                let input = srgb_decode_extended(src_byte as f32 / 255.0);
+                let low_value = srgb_decode_extended(low_byte as f32 / 255.0);
+                let hf = (input - low_value) / 2.0 + 0.5;
+                let expected = (srgb_encode_extended(hf).clamp(0.0, 1.0) * 255.0).round() as u8;
+                assert_eq!(
+                    nearest_table[(src << 8) | low],
+                    expected,
+                    "HF 最近字节表在 (src={src_byte}, low={low_byte}) 与原式不符"
+                );
+                let expected_rebuild = fs_rebuild_byte(low_value, src_byte);
+                assert_eq!(
+                    rebuild_table[(low << 8) | src],
+                    expected_rebuild,
+                    "重建表在 (low={low_byte}, candidate={src_byte}) 与原函数不符"
+                );
+                let decoded_high = srgb_decode_extended(src_byte as f32 / 255.0);
+                let decoded_low = srgb_decode_extended(low_byte as f32 / 255.0);
+                let source_premul = [decoded_high, decoded_high, decoded_high, 1.0];
+                let backdrop_premul = [decoded_low, decoded_low, decoded_low, 1.0];
+                let out = blend_pixel(BlendMode::LinearLight, source_premul, backdrop_premul);
+                let straight = if out[3] > 0.0 { out[0] / out[3] } else { 0.0 };
+                let expected_check =
+                    (srgb_encode_extended(straight).clamp(0.0, 1.0) * 255.0).round() as u8;
+                assert_eq!(
+                    check_table[(src << 8) | low],
+                    expected_check,
+                    "自检重建表在 (high={src_byte}, low={low_byte}) 与原式不符"
+                );
+            }
+        }
     }
 }

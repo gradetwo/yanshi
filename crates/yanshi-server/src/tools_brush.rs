@@ -1978,7 +1978,7 @@ pub(super) fn paint_brush(
         // （间距 ≈ 半径 / dabs_per_basic_radius），路径总长撑不满一枚 dab 间距时就是 0 dab。
         // ★ **`dabs_basic <= 0` 不等于「整支笔刷不可用」✗** ★**（外部复测 QY-D02 ✓）
         //
-        // **∴ 他们实测 ✓**：**∴ 同一支 `calligraphy` ✗ ⇒ **∴ `size=3.456` ＋ 33 点 ⇒ **3/3 无像素**✗
+        // **∴ 他们实测 ✓**（P2-13 之前；修后小 size 也能落墨）：**∴ 同一支 `calligraphy` ✗ ⇒ **∴ `size=3.456` ＋ 33 点 ⇒ **3/3 无像素**✗
         //   而 `size=8／16` **都成功**✗** ⇒ **∴ 所以**我原来那句「它在当前引擎下画不出来，**换一支**」✗
         //   ⇒ **∴ 是**把"本笔条件不满足"✗ 说成了**"整支笔刷不可用"**✗** ⇒ **∴ 会误导创作者换笔 ✓**
         // ⇒ **∴ 所以 ✓**：**∴ 只描述**本次笔触未产生像素**✗ ＋ **摆出本笔参数**✗ ＋
@@ -1987,25 +1987,23 @@ pub(super) fn paint_brush(
         //   **⇒ 他们的实测**：`size=120`、两点、路径总长 **15.2px** 的笔被拒画，
         //     而报错首推「加大 size 到 4 以上」⇒ **对 `size=120` 是无效建议** ✗
         //     （**真实原因是路径太短** ⇒ `length / size = 0.13`）
-        //   **⇒ ⇒ 所以**：**比值 < 1 ⇒ 首推"加长路径"**；**`size < 4` 时**才首推"加大 size"** ✓
-        //     （`size < 4` 那档的原因**不同**：抗锯齿把小半径的 `hardness` 压成负数）
+        //   **⇒ ⇒ 所以**：**比值 < 1 ⇒ 首推"加长路径"**（P2-13 之后不分 size 档：
+        //     抗锯齿那档的原因已修掉——`hardness_new <= 0` 时跳过 AA 调整，
+        //     小 size 也能落墨 ⇒ 剩下的 0 墨一律是路径撑不满 dab 间距）。
         let hint: String = if dabs_basic <= 0.0 {
             let n = points.len();
             let path_len: f64 = points
                 .windows(2)
                 .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
                 .sum();
-            // **按比值给两条不同的排序** ✓
+            // **按比值给两条不同的排序** ✓（P2-13 之后不分 size 档：路径太短是
+            //   唯一剩下的 0 墨原因 ⇒ `path_len < size` 一律首推"加长路径" ✓）。
             let advice: String = match size {
-                Some(sz) if sz >= 4.0 && path_len < sz => format!(
+                Some(sz) if path_len < sz => format!(
                     "① **加长路径**（本笔 {n} 点、总长 {path_len:.1}px，而 size={sz}px ⇒ 比值 {:.2} ⇒ \
                      **路径撑不满一个 dab 间距**）✓；② 若确实想用大笔刷，再**加大 size**（但对本笔无用）；\
                      ③ 换一支能画的笔刷",
                     path_len / sz
-                ),
-                Some(sz) if sz < 4.0 => format!(
-                    "① **加大 size 到 4 以上**（本笔 size={sz}px ⇒ 抗锯齿把小半径的 `hardness` \
-                     压成负数）✓；② 加长路径（本笔 {n} 点、总长 {path_len:.1}px）；③ 换一支能画的笔刷"
                 ),
                 _ => format!(
                     "① **加长路径**（本笔 {n} 点、总长 {path_len:.1}px）✓；② 加大 size；③ 换一支能画的笔刷"
@@ -2013,27 +2011,24 @@ pub(super) fn paint_brush(
             };
             // **结论句要跟着**真实原因**走** ✓（外部 `B3` ✗）：`size=120` ＋ 15px 路径时，
             //   首推"加大 size"是**无效建议** ✓ ⇒ 而**表头**原先仍写"几乎都是 size 太小" ✗
-            //   ⇒ 现在表头与建议**同一个判据**（`size >= 4 && path_len < size` ⇒ 路径太短）✓。
+            //   ⇒ 现在表头与建议**同一个判据**（`path_len < size` ⇒ 路径太短，不分 size 档）✓。
             //   另：外壳已经写了「这一笔没落下任何像素 ⇒ 笔刷「X」」✗ ⇒ 这里**不再重复**那句话 ✓
             //   （实测原来会打印成「…没落下任何像素 ⇒ 笔刷「calligraphy.myb」这一笔没落下任何像素…」✗）。
             let cause: String = match size {
-                Some(sz) if sz >= 4.0 && path_len < sz => format!(
+                Some(sz) if path_len < sz => format!(
                     "**路径太短**（撑不满一个 dab 间距：总长 {path_len:.1}px，size={sz}px ⇒ 比值 {:.2}）",
                     path_len / sz
-                ),
-                Some(sz) if sz < 4.0 => format!(
-                    "**size 太小**（{sz}px：抗锯齿把小半径的 `hardness` 压成负数）"
                 ),
                 _ => "**这一笔没落下任何像素**".to_string(),
             };
             format!(
                 "（`painted_pixels=0`）⇒ {cause} ⇒ \
-                 `size={size:?}` ⇒ 半径约 size/2 px ⇒ 笔刷的抗锯齿分支（`stroke.rs` 的 `current_fadeout < aa_min`）\
-                 会把 `hardness` 调成**负数** ⇒ `draw_dab_default` 在 `hardness <= 0` 时整 dab 拒画。\
-                 **已实测**（第 731 轮）：`calligraphy` 在 `size=1/2/3` 全不落墨、`size=4` 起正常；\
-                 同一 size=3 下 `2B_pencil`／`100%_Opaque`／`Round_Bl` 都能落墨 ⇒ **不是 size 本身的问题**，\
-                 是那支笔的 `hardness`／抗锯齿参数在小半径下被推到负值。\
-                 **这不代表整支笔刷不可用** ✗：同一支笔在**更大的 size 或更长路径**上通常能落墨 \
+                 `size={size:?}` ⇒ 半径约 size/2 px ⇒ 0 墨的原因是**路径撑不满 dab 间距** \
+                 （间距 ≈ 半径 / dabs_per_basic_radius，本笔 dabs_per_basic_radius=0 时间距钳在下限 1.0px）。\
+                 **不是抗锯齿**：P2-13 已修掉 AA 那档——`stroke.rs` 的抗锯齿分支在 `hardness` 将变负时\
+                 **跳过调整**，保留原半径/硬度，小 size 也能落墨 \
+                 （`calligraphy` size=1/2/3 在短/长路径上都落墨，见 `tool-calligraphy-small-size.mjs`）。\
+                 **这不代表整支笔刷不可用** ✗：同一支笔在**更长路径**上通常能落墨 \
                  （本次 {n} 个点、路径总长 {path_len:.1}px）。\
                  **怎么改（按**本笔的真实比值**排序，不是一律先加大 size）**：{advice}\
                  注：`dabs_per_basic_radius=0` **不是**原因 —— `stroke.rs` 把间距钳在下限 1.0，不会趋于无穷。"

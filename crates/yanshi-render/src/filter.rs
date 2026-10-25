@@ -2891,7 +2891,8 @@ fn blur_vertical(buffer: &mut Buffer, radius: u32) {
     }
 }
 
-fn convolve_horizontal(buffer: &mut Buffer, kernel: &[f32], radius: i32) {
+/// 水平卷积的串行实现（原实现原样保留；wasm 与小图回退都走它）。
+fn convolve_horizontal_serial(buffer: &mut Buffer, kernel: &[f32], radius: i32) {
     let width = buffer.width();
     let height = buffer.height();
     for y in 0..height {
@@ -2911,7 +2912,76 @@ fn convolve_horizontal(buffer: &mut Buffer, kernel: &[f32], radius: i32) {
     }
 }
 
-fn convolve_vertical(buffer: &mut Buffer, kernel: &[f32], radius: i32) {
+/// 水平卷积的行带实现：`pixels` 是连续若干行的 f32 切片（行主序，每像素 4 个 f32）。
+///
+/// 每行先快照再写回（与串行版同一读后写顺序）；每输出像素的抽头累加顺序与串行版
+/// 相同 ⇒ 逐位不变。行与行之间无依赖 ⇒ 行带怎么切都不改变任何字节。
+fn convolve_horizontal_band(pixels: &mut [f32], width: usize, kernel: &[f32], radius: i32) {
+    let row_len = width * 4;
+    let rows = pixels.len() / row_len;
+    let mut snapshot = vec![0.0f32; row_len];
+    for r in 0..rows {
+        snapshot.copy_from_slice(&pixels[r * row_len..(r + 1) * row_len]);
+        let out_row = &mut pixels[r * row_len..(r + 1) * row_len];
+        for x in 0..width {
+            let mut acc = [0.0f32; 4];
+            for (index, weight) in kernel.iter().enumerate() {
+                let source_x = x as i64 + index as i64 - radius as i64;
+                let clamped = source_x.clamp(0, width as i64 - 1) as usize;
+                let pixel = &snapshot[clamped * 4..clamped * 4 + 4];
+                for channel in 0..4 {
+                    acc[channel] += pixel[channel] * weight;
+                }
+            }
+            out_row[x * 4..x * 4 + 4].copy_from_slice(&acc);
+        }
+    }
+}
+
+/// 水平高斯卷积：大图上按行带并行（`crate::rows` 的切法与上限），小图/单核/wasm 走串行。
+///
+/// 分派条件与 [`crate::Buffer::to_rgba8`] 的并行版同形（worker 数、像素阈值、切得出多块）。
+fn convolve_horizontal(buffer: &mut Buffer, kernel: &[f32], radius: i32) {
+    let width = buffer.width() as usize;
+    let height = buffer.height() as usize;
+    if width == 0 || height == 0 {
+        return;
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        convolve_horizontal_serial(buffer, kernel, radius);
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let workers = crate::render::workers(None).min(crate::rows::MAX_WORKERS);
+        if workers <= 1
+            || width * height < crate::rows::PARALLEL_MIN_PIXELS
+            || crate::rows::split_bands(height as u32, workers).len() <= 1
+        {
+            convolve_horizontal_serial(buffer, kernel, radius);
+            return;
+        }
+        let bands = crate::rows::split_bands(height as u32, workers);
+        let pixels = buffer.pixels_mut();
+        let mut jobs: Vec<&mut [f32]> = Vec::with_capacity(bands.len());
+        let mut rest: &mut [f32] = pixels;
+        for (_, rows) in &bands {
+            let len = *rows as usize * width * 4;
+            let (head, tail) = rest.split_at_mut(len);
+            jobs.push(head);
+            rest = tail;
+        }
+        std::thread::scope(|scope| {
+            for band in jobs {
+                scope.spawn(move || convolve_horizontal_band(band, width, kernel, radius));
+            }
+        });
+    }
+}
+
+/// 垂直卷积的串行实现（原实现原样保留；wasm 与小图回退都走它）。
+fn convolve_vertical_serial(buffer: &mut Buffer, kernel: &[f32], radius: i32) {
     let width = buffer.width();
     let height = buffer.height();
     for x in 0..width {
@@ -2928,6 +2998,88 @@ fn convolve_vertical(buffer: &mut Buffer, kernel: &[f32], radius: i32) {
             }
             buffer.set_pixel(x, y, acc);
         }
+    }
+}
+
+/// 垂直卷积的行带实现：从整幅输入快照 `snapshot` 读、往 `out_pixels` 的连续行写。
+///
+/// 串行版是逐列快照：写列 x′ 不影响读列 x（读/写集不交），且列内快照在写之前取 ⇒
+/// 整幅快照与逐列快照读到的值相同；每输出像素的抽头累加顺序与串行版相同 ⇒ 逐位不变。
+/// 快照是一份整幅 f32 副本（4K 上约 205MB 瞬时，纵向并行换取；横向不需要它）。
+fn convolve_vertical_band(
+    out_pixels: &mut [f32],
+    snapshot: &[f32],
+    width: usize,
+    height: usize,
+    row_start: usize,
+    kernel: &[f32],
+    radius: i32,
+) {
+    let row_len = width * 4;
+    let rows = out_pixels.len() / row_len;
+    for r in 0..rows {
+        let y = row_start + r;
+        for x in 0..width {
+            let mut acc = [0.0f32; 4];
+            for (index, weight) in kernel.iter().enumerate() {
+                let source_y = y as i64 + index as i64 - radius as i64;
+                let clamped = source_y.clamp(0, height as i64 - 1) as usize;
+                let base = (clamped * width + x) * 4;
+                let pixel = &snapshot[base..base + 4];
+                for channel in 0..4 {
+                    acc[channel] += pixel[channel] * weight;
+                }
+            }
+            let dst = &mut out_pixels[(r * width + x) * 4..(r * width + x) * 4 + 4];
+            dst.copy_from_slice(&acc);
+        }
+    }
+}
+
+/// 垂直高斯卷积：大图上按行带并行（先整幅输入快照一次，再按行带并行写），小图/单核/wasm 走串行。
+///
+/// 分派条件与 [`crate::Buffer::to_rgba8`] 的并行版同形（worker 数、像素阈值、切得出多块）。
+fn convolve_vertical(buffer: &mut Buffer, kernel: &[f32], radius: i32) {
+    let width = buffer.width() as usize;
+    let height = buffer.height() as usize;
+    if width == 0 || height == 0 {
+        return;
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        convolve_vertical_serial(buffer, kernel, radius);
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let workers = crate::render::workers(None).min(crate::rows::MAX_WORKERS);
+        if workers <= 1
+            || width * height < crate::rows::PARALLEL_MIN_PIXELS
+            || crate::rows::split_bands(height as u32, workers).len() <= 1
+        {
+            convolve_vertical_serial(buffer, kernel, radius);
+            return;
+        }
+        // 整幅输入快照一次（见 convolve_vertical_band 的说明），再按行带并行写。
+        let snapshot = buffer.pixels().to_vec();
+        let bands = crate::rows::split_bands(height as u32, workers);
+        let pixels = buffer.pixels_mut();
+        let mut jobs: Vec<(usize, &mut [f32])> = Vec::with_capacity(bands.len());
+        let mut rest: &mut [f32] = pixels;
+        for (row_start, rows) in &bands {
+            let len = *rows as usize * width * 4;
+            let (head, tail) = rest.split_at_mut(len);
+            jobs.push((*row_start as usize, head));
+            rest = tail;
+        }
+        std::thread::scope(|scope| {
+            for (row_start, band) in jobs {
+                let snapshot = &snapshot;
+                scope.spawn(move || {
+                    convolve_vertical_band(band, snapshot, width, height, row_start, kernel, radius)
+                });
+            }
+        });
     }
 }
 
@@ -3958,7 +4110,9 @@ pub fn reset_blur_sentinel_failures() {
 }
 
 /// **∴ 与 `gaussian_blur` **同一份**核 ✗**（**∴ 公式 ＋ 归一化顺序逐字相同 ✓）★
-#[cfg(feature = "gpu")]
+/// **∴ P2-14**：测试也要用它搭串行对照核 ⇒ 门控放宽到 `gpu 或 test`（生产
+/// 非 gpu 构建仍不编译它，不留死代码）。
+#[cfg(any(feature = "gpu", test))]
 #[must_use]
 fn gaussian_kernel(sigma: f32) -> Option<Vec<f32>> {
     if sigma <= 0.0 {
@@ -5498,6 +5652,86 @@ mod tests {
         assert!(
             ADJUSTMENT_NAMES.contains(&"red_eye"),
             "「ADJUSTMENT_NAMES 应包含 red_eye」"
+        );
+    }
+
+    /// P2-14：并行高斯卷积与串行逐位相同（分带/快照不改任何字节）。
+    ///
+    /// 两臂：① 生产入口 `gaussian_blur`（大图上走并行分带）对串行两向卷积；
+    /// ② 行带函数本身（手动切两带，不依赖核数 ⇒ 单核机器上也验得到带内数学）。
+    /// 变异：任一带函数改累加顺序/边界钳制 ⇒ 逐位比较立刻红。
+    #[test]
+    fn gaussian_blur_parallel_matches_serial_bitwise() {
+        // 256×192（49152 像素 ≥ PARALLEL_MIN_PIXELS），内容含渐变、硬边、HDR 与半透明。
+        let (width, height) = (256u32, 192u32);
+        let mut source = Buffer::new(0, 0, width, height);
+        for y in 0..height {
+            for x in 0..width {
+                let edge = if (x / 32) % 2 == 0 { 1.6 } else { 0.05 };
+                let alpha = if (y / 48) % 2 == 0 { 1.0 } else { 0.5 };
+                source.set_pixel(
+                    x,
+                    y,
+                    [
+                        (x as f32 / width as f32) * edge,
+                        (y as f32 / height as f32) * 0.9,
+                        0.3 + 0.2 * ((x + y) % 7) as f32,
+                        alpha,
+                    ],
+                );
+            }
+        }
+        let sigma = 8.0f32;
+        let kernel = gaussian_kernel(sigma).expect("sigma=8 应有核");
+        let radius = ((kernel.len() - 1) / 2) as i32;
+        // ① 生产入口对串行。
+        let mut via_entry = source.clone();
+        gaussian_blur(&mut via_entry, sigma);
+        let mut via_serial = source.clone();
+        convolve_horizontal_serial(&mut via_serial, &kernel, radius);
+        convolve_vertical_serial(&mut via_serial, &kernel, radius);
+        assert_eq!(
+            via_entry.pixels(),
+            via_serial.pixels(),
+            "并行高斯模糊必须与串行逐位相同"
+        );
+        // ② 行带函数本身（手动切两带）。
+        let mut via_bands = source.clone();
+        let row_len = width as usize * 4;
+        let split_row = height as usize / 2;
+        {
+            let pixels = via_bands.pixels_mut();
+            let (top, bottom) = pixels.split_at_mut(split_row * row_len);
+            convolve_horizontal_band(top, width as usize, &kernel, radius);
+            convolve_horizontal_band(bottom, width as usize, &kernel, radius);
+        }
+        let snapshot = via_bands.pixels().to_vec();
+        {
+            let pixels = via_bands.pixels_mut();
+            let (top, bottom) = pixels.split_at_mut(split_row * row_len);
+            convolve_vertical_band(
+                top,
+                &snapshot,
+                width as usize,
+                height as usize,
+                0,
+                &kernel,
+                radius,
+            );
+            convolve_vertical_band(
+                bottom,
+                &snapshot,
+                width as usize,
+                height as usize,
+                split_row,
+                &kernel,
+                radius,
+            );
+        }
+        assert_eq!(
+            via_bands.pixels(),
+            via_serial.pixels(),
+            "手动两带卷积必须与串行逐位相同"
         );
     }
 }
