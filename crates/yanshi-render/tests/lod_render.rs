@@ -120,13 +120,12 @@ fn lod_zero_is_byte_identical_to_plain_render_region() {
         .render_region_with_lod(&state, &store, bbox, 0)
         .expect("lod:0 渲染应成功");
     assert_eq!(
-        (lod0.0.width, lod0.0.height),
-        (plain.0.width, plain.0.height),
+        (lod0.width, lod0.height),
+        (plain.width, plain.height),
         "lod:0 的输出尺寸必须与今天相同"
     );
     assert_eq!(
-        lod0.0.to_rgba8(Some([255, 255, 255, 255])),
-        plain.0.to_rgba8(Some([255, 255, 255, 255])),
+        lod0.rgba8, plain.rgba8,
         "lod:0 的像素必须与今天逐字节相同"
     );
 }
@@ -140,20 +139,18 @@ fn lod_output_matches_bilinear_downsample_within_one_lsb() {
     let full = renderer(&state)
         .render_region(&state, &store, bbox)
         .expect("整幅渲染应成功")
-        .0
-        .to_rgba8(Some([255, 255, 255, 255]));
+        .rgba8;
     assert_eq!(full.len(), 64 * 64 * 4);
     for (lod, expect_w, expect_h) in [(1u32, 32u32, 32u32), (2u32, 16u32, 16u32)] {
         let got = renderer(&state)
             .render_region_with_lod(&state, &store, bbox, lod)
-            .expect("lod 渲染应成功")
-            .0;
+            .expect("lod 渲染应成功");
         assert_eq!(
             (got.width, got.height),
             (expect_w, expect_h),
             "lod:{lod} 的输出尺寸必须是 ceil(64/2^{lod})"
         );
-        let got_rgba = got.to_rgba8(Some([255, 255, 255, 255]));
+        let got_rgba = got.rgba8;
         assert_eq!(got_rgba.len(), (expect_w * expect_h * 4) as usize);
         let reference = resample_rgba(
             &full,
@@ -185,14 +182,12 @@ fn region_render_matches_cropped_full_frame() {
     let full = renderer(&state)
         .render_region(&state, &store, Bbox::new(0.0, 0.0, 64.0, 64.0))
         .expect("整幅渲染应成功")
-        .0
-        .to_rgba8(Some([255, 255, 255, 255]));
+        .rgba8;
     let region = renderer(&state)
         .render_region(&state, &store, Bbox::new(16.0, 16.0, 32.0, 32.0))
-        .expect("区域渲染应成功")
-        .0;
+        .expect("区域渲染应成功");
     assert_eq!((region.width, region.height), (32, 32));
-    let region_rgba = region.to_rgba8(Some([255, 255, 255, 255]));
+    let region_rgba = region.rgba8;
     let mut cropped = Vec::with_capacity(32 * 32 * 4);
     for y in 16..48 {
         let start = (y * 64 + 16) * 4;
