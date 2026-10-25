@@ -92,6 +92,9 @@ fn a_stroke_that_leaves_the_picture_untouched_says_so() {
     );
 
     // ② 对照：正常不透明的一笔不许带警告
+    //   **对照笔的颜色不带 `a`**（B4）：`color.a` 出现就会触发 B4 的"被忽略"警告 ⇒
+    //   对照笔若带 `a`，量的就是新信号而不是 D139 这一条 ✗。`a` 与本测试的目的无关
+    //   （它只验"改了画面的笔不带零墨警告"），去掉它，对照的本意不变 ✓。
     let mut ctx = ToolContext::new(&mut workspace, "doc_d139", "human:1", "s")
         .with_owner(true)
         .with_wait_for_render(true, 8_000);
@@ -103,7 +106,7 @@ fn a_stroke_that_leaves_the_picture_untouched_says_so() {
             "brush": "8B_Pencil#1",
             "points": [[100.0, 100.0, 1.0], [200.0, 200.0, 1.0]],
             "size": 20.0,
-            "color": {"r": 255, "g": 255, "b": 255, "a": 255},
+            "color": {"r": 255, "g": 255, "b": 255},
         }),
     );
     assert_eq!(loud["ok"], json!(true), "{loud}");

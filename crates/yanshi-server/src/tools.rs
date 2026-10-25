@@ -10682,7 +10682,7 @@ fn write_set_brush_dynamics(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
         applied.push(json!({"curve": key, "setting": setting, "input": input}));
     }
     // 任意 {设置}_{输入} 键：静态表只覆盖 3.7%（7/187），这里按名字解析，覆盖率直接到 100%。
-    // 规则：从键里找 `_`，取前缀当设置名；前缀必须在 63 个规范名里，且该设置真的带这个 inputs 键。
+    // 规则：从键里找 `_`，取前缀当设置名；前缀必须在规范名里，且该设置真的带这个 inputs 键。
     {
         let rest: Vec<(String, Value)> = curve
             .as_object()
@@ -10756,7 +10756,7 @@ fn write_set_brush_dynamics(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
             ErrorContext::detail(
-                "curve 里没有可识别的键 ⇒ 两种写法：① 七个语义键 size_pressure ／ opacity_pressure ／ tilt_size ／ size_speed ／ opacity_speed ／ opacity_multiply_pressure ／ smudge_stroke ✓；② **任意 `{设置}_{输入}`**（例 `radius_logarithmic_speed1`、`hardness_pressure`）✓ —— 设置名取自 63 个规范名（见 `docs/design/brush-params.md`），输入名沿用该笔 `inputs` 里的键 ✓"
+                "curve 里没有可识别的键 ⇒ 两种写法：① 七个语义键 size_pressure ／ opacity_pressure ／ tilt_size ／ size_speed ／ opacity_speed ／ opacity_multiply_pressure ／ smudge_stroke ✓；② **任意 `{设置}_{输入}`**（例 `radius_logarithmic_speed1`、`hardness_pressure`）✓ —— 设置名取自 MyPaint 动力学规范名（见 `docs/design/brush-params.md`），输入名沿用该笔 `inputs` 里的键 ✓"
                     .to_string(),
             ),
         ));
@@ -10776,7 +10776,7 @@ fn write_set_brush_dynamics(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
 ///
 /// **每个列表都引用引擎自己的常量** ✗（不是硬编码 ✓）：
 /// `BlendMode::NAMES`（11 ✓）／`FILTER_NAMES`（14 ✓）／`ADJUSTMENT_NAMES`（22 ✓）／
-/// `RETOUCH_KINDS`（4 ✓）／`LIQUIFY_KINDS`（3 ✓）／`BrushSetting::ALL`（63 ✓）
+/// `RETOUCH_KINDS`（4 ✓）／`LIQUIFY_KINDS`（3 ✓）／`BrushSetting::ALL`
 /// ⇒ **∴ 以后加一种混合模式/滤镜/修图/液化，只改一处，这里自动跟上 ✓**。
 ///
 /// **介质**目前仍写在 `medium_stroke` 的参数说明里 ✗ ⇒ 这里**显式列出** ✓，并标注 `example-dab` 是**示例** ✓
@@ -10829,7 +10829,7 @@ fn read_list_engine_capabilities(_ctx: &mut ToolContext<'_>, _args: &Value) -> R
         "filters_needing_params": {
             "dehaze": ["air"],
         },
-        // **介质那条路的参数** ✓（**∴ 与 `brush_stroke` 的 `.myb` 63 项是两套 ✓**）。
+        // **介质那条路的参数** ✓（**∴ 与 `brush_stroke` 的 `.myb` 规范名是两套 ✓**）。
         // **∴ 判据 `tool-engine-capabilities.mjs` 会读 `medium_stroke` 的 schema 与这里逐项比 ✓**（防漂移 ✓）。
         "medium_params": {
             "names": ["color", "color_mixing", "color_to", "layer_id", "load", "medium", "object_id", "points", "size", "smooth", "symmetry", "texture", "wetness"],
@@ -10850,14 +10850,14 @@ fn read_list_engine_capabilities(_ctx: &mut ToolContext<'_>, _args: &Value) -> R
     }))
 }
 
-/// **`get_brush_settings`** ✓：把引擎真正实现的 **63 项**动力学读出来 ✓。
+/// **`get_brush_settings`** ✓：把引擎真正实现的全部动力学读出来 ✓。
 ///
 /// **为什么要它**：MCP 侧此前只能控 `size`/`opacity`/`hardness`/`color` 四项 ✗，
-/// 而 `hokusai` 实现了 63 项 ✓ ⇒ agent 无法逐项调笔速、手抖、一笔内变色、厚涂涂抹
+/// 而 `hokusai` 实现了全部规范名 ✓ ⇒ agent 无法逐项调笔速、手抖、一笔内变色、厚涂涂抹
 /// ⇒ **画出来的笔迹"数学般干净"** ✗。本工具把能力面**完整暴露** ✓。
 ///
 /// **未知项单列** ✓：`hokusai` 解析时把不认识的设置存进 `unknown_settings`（无损往返 ✓），
-/// 但那是从**结构体**读的；这里改从**原始 JSON** 比对 ✓ —— 更直接：`settings` 里有、而 63 项里没有的键
+/// 但那是从**结构体**读的；这里改从**原始 JSON** 比对 ✓ —— 更直接：`settings` 里有、而规范名里没有的键
 /// ⇒ **就是引擎忽略的** ✓（**∴ 这就是「高级特效没被使用」的实测证据 ✓**）。
 fn read_get_brush_settings(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let brush_name = require_str(args, "brush")?;
@@ -10886,7 +10886,7 @@ fn read_get_brush_settings(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
             json!({"base_value": parsed.get(*setting).base_value}),
         );
     }
-    // **引擎不认识的（原始 JSON 里有、63 项里没有）** ✓
+    // **引擎不认识的（原始 JSON 里有、规范名里没有）** ✓
     let mut unknown: Vec<Value> = Vec::new();
     if let Some(map) = raw.get("settings").and_then(Value::as_object) {
         for key in map.keys() {
@@ -10901,7 +10901,7 @@ fn read_get_brush_settings(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Va
         "count": settings.len(),
         "settings": settings,
         "unknown": unknown,
-        "note": "63 项即引擎（hokusai）实现的全部 MyPaint 动力学 ✓；unknown 是引擎不认识、会被忽略的键 ✓",
+        "note": "全部规范名即引擎（hokusai）实现的 MyPaint 动力学 ✓；unknown 是引擎不认识、会被忽略的键 ✓",
     }))
 }
 
@@ -16631,7 +16631,7 @@ pub(crate) fn replay_brush_bitmap(
 ///   ⇒ **∴ 所以**报错时顺带给出**前缀相近的规范名**当候选 ✓ ★★
 /// **语义别名 → `.myb` 真名组** ✓（第 1000+ 轮 ✓）。
 ///
-/// **为什么要有** ✗：`brush_params` 早已能覆盖全部 63 项 ✓，但 agent 必须记住
+/// **为什么要有** ✗：`brush_params` 早已能覆盖全部规范名 ✓，但 agent 必须记住
 /// `slow_tracking`／`speed1_gamma`／`change_color_hsl_s` 这些**规范名** ✗ —— **∴ 这层糖就是为这个 ✓**。
 ///
 /// **每组取的都是**同一件事的若干面**✗**：例如手抖 = 慢跟踪 ＋ 跟踪噪声 ＋ 随机偏移 ✓
@@ -16693,7 +16693,7 @@ fn apply_brush_params(brush: &mut hokusai::Brush, params: &Value) -> Result<usiz
             )
         })? as f32;
         // **★ 语义别名 ✗ ★**（第 1000+ 轮 ✓）：`hand_jitter` 这类**组名**展开成 `.myb` 的真名组 ✓
-        // ⇒ **∴ agent 不必记住 63 个规范名 ✓**；**∴ 而底层仍是同一套 `base_value` ⇒ 行为可判据 ✓**。
+        // ⇒ **∴ agent 不必记住全部规范名 ✓**；**∴ 而底层仍是同一套 `base_value` ⇒ 行为可判据 ✓**。
         if let Some(group) = semantic_brush_alias(key) {
             for name in group {
                 if let Some(setting) = hokusai::BrushSetting::from_cname(name) {
@@ -16721,7 +16721,7 @@ fn apply_brush_params(brush: &mut hokusai::Brush, params: &Value) -> Result<usiz
                     hints = vec![
                         "smudge",
                         "opaque",
-                        "dabs_per_radius",
+                        "dabs_per_actual_radius",
                         "elliptical_dab_ratio",
                     ];
                 }

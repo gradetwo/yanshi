@@ -2146,13 +2146,13 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         // 才发现这个工具才是"真笔刷" ✓ —— 因为描述里只说了"怎么调"，**没说"什么时候该用它"** ✗）。
         // **行业做法** ✓：好的工具/API 文档第一句就是"**何时用它、而不是用它的邻居**" ✓
         //（MCP 官方对工具描述的要求也是这一条 ✓：模型靠它选工具 ✓）。
-        summary: "**要 MyPaint 笔刷物理（dab / 笔毛 / 干湿 / 压感）就用这个** ✓：**要载墨量／湿度／光谱混色（一笔蘸多少颜料、湿画法 vs 干笔）⇒ 用 `medium_stroke` 的 `load`／`wetness`／`color_mixing=pigment`，不是这里的 `brush_params`** ✓（**∵ `.myb` 的 63 项里没有这两项** ✓）；201 支 .myb 笔刷，可带 color 画彩色、带 color_to 画**一笔多色**（Loaded Brush ✓）。                  与邻居的分工：要**介质插件**（油画 / 水彩 / 马克笔 / 铅笔 / 像素的我们自己的模拟）用 medium_stroke；                  要**纯几何、无物理**的矢量笔迹用 draw_stroke。                  **★ ⚠️ 切换笔刷或改 `brush_params` 之前，先用 `swatch_brush_strokes` 批量试 3–5 支，选最好的再真画 ★**（实测教训：AI 直接真画试错 ⇒ 画坏要 undo ⇒ 效率低一半 ✗。真画一笔 = 写文档 + 生成 atom + 污染历史；**swatch 不写文档、不生成 atom ⇒ 试 10 支也不心疼** ✓）。                  工作流：`list_brushes` 查 → `swatch_brush_strokes` 批量试 → 选一支 `brush_stroke` 真画 → 看缩略图 → 不满意再 swatch 换 ✓（**不要只试一次就开画** ✗）。                  **★ 压感指南 ★**：`points` 的第三个分量是 **pressure 0..1** ✓，它**按点生效**（不是整笔一个值 ✓）。**每一笔都该起伏**：起笔 **0.2–0.3** → 行笔 **0.8–1.0** → 收笔 **0.2–0.3** ✓；转折/顿笔处可以**短距离内压低再抬起**（形成「顿」✓）。**全程 0.8 会让笔触像矢量图** ✗（粗细一致、边缘生硬 ✓）—— 可直接抄的示例：`points: [[40,100,0.25],[110,96,0.9],[180,104,0.95],[250,100,0.3]]` ✓。**⚠️ `pressure_curve: 「auto」` 只对「压感敏感」的笔刷有效** ✓ —— 先用 `list_brushes` 的 `pressure_sensitive`／`pressure_settings` 确认（实测 `2B_pencil` 墨量 **1023→3470** ✓，而 `100%_Opaque` 几乎看不出差别 ✗）。                  **每条笔触只作用于它自己的图层** ✓：跨图层只是普通叠加；介质的湿搅 / 混色**不跨图层** ✓（先把底下那层画完，或用同一层叠 ✓）。                  **覆盖率／落墨量以 clipped 为准** ✓：`painted_pixels` 只是裁剪前的铺开面积（同值字段 `painted_pixels_raw`），真实落墨看 `painted_pixels_clipped`；顶层 `landed`／`landed_reason` 直接给结论。",
+        summary: "**要 MyPaint 笔刷物理（dab / 笔毛 / 干湿 / 压感）就用这个** ✓：**要载墨量／湿度／光谱混色（一笔蘸多少颜料、湿画法 vs 干笔）⇒ 用 `medium_stroke` 的 `load`／`wetness`／`color_mixing=pigment`，不是这里的 `brush_params`** ✓（**∵ `.myb` 的规范名里没有这两项** ✓）；201 支 .myb 笔刷，可带 color 画彩色、带 color_to 画**一笔多色**（Loaded Brush ✓）。                  与邻居的分工：要**介质插件**（油画 / 水彩 / 马克笔 / 铅笔 / 像素的我们自己的模拟）用 medium_stroke；                  要**纯几何、无物理**的矢量笔迹用 draw_stroke。                  **★ ⚠️ 切换笔刷或改 `brush_params` 之前，先用 `swatch_brush_strokes` 批量试 3–5 支，选最好的再真画 ★**（实测教训：AI 直接真画试错 ⇒ 画坏要 undo ⇒ 效率低一半 ✗。真画一笔 = 写文档 + 生成 atom + 污染历史；**swatch 不写文档、不生成 atom ⇒ 试 10 支也不心疼** ✓）。                  工作流：`list_brushes` 查 → `swatch_brush_strokes` 批量试 → 选一支 `brush_stroke` 真画 → 看缩略图 → 不满意再 swatch 换 ✓（**不要只试一次就开画** ✗）。                  **★ 压感指南 ★**：`points` 的第三个分量是 **pressure 0..1** ✓，它**按点生效**（不是整笔一个值 ✓）。**每一笔都该起伏**：起笔 **0.2–0.3** → 行笔 **0.8–1.0** → 收笔 **0.2–0.3** ✓；转折/顿笔处可以**短距离内压低再抬起**（形成「顿」✓）。**全程 0.8 会让笔触像矢量图** ✗（粗细一致、边缘生硬 ✓）—— 可直接抄的示例：`points: [[40,100,0.25],[110,96,0.9],[180,104,0.95],[250,100,0.3]]` ✓。**⚠️ `pressure_curve: 「auto」` 只对「压感敏感」的笔刷有效** ✓ —— 先用 `list_brushes` 的 `pressure_sensitive`／`pressure_settings` 确认（实测 `2B_pencil` 墨量 **1023→3470** ✓，而 `100%_Opaque` 几乎看不出差别 ✗）。                  **每条笔触只作用于它自己的图层** ✓：跨图层只是普通叠加；介质的湿搅 / 混色**不跨图层** ✓（先把底下那层画完，或用同一层叠 ✓）。                  **覆盖率／落墨量以 clipped 为准** ✓：`painted_pixels` 只是裁剪前的铺开面积（同值字段 `painted_pixels_raw`），真实落墨看 `painted_pixels_clipped`；顶层 `landed`／`landed_reason` 直接给结论。",
         mutating: true,
         params: &[
             // **预览开关** ✓（第 5 轮 ✓，P0 ✓）：连续作画时 `preview: false` ⇒ 这一笔不编预览 PNG ✓
             // ⇒ 省下实测 ~130 ms/笔（4K、`Clouds.myb`、`size 180` ✓）✓；默认 `true` ⇒ 行为不变 ✓。
             // **★ P0 #4：覆盖 `.myb` 的任意字段 ✗ ★**（**名字用 libmypaint 规范名 ✓ ＝ `.myb` 的 JSON 键 ✓）
-            //   ⇒ **∴ AI 不必换笔刷文件就能调** `smudge`／`opaque`／`dabs_per_radius` 这类** ✓ ★★★
+            //   ⇒ **∴ AI 不必换笔刷文件就能调** `smudge`／`opaque`／`dabs_per_actual_radius` 这类** ✓ ★★★
             // **★ 但 `dabs_per_basic_radius` 在本引擎里**不会生效 ★**（第 1589 轮实测 + 根因）
             //   **⇒ 为什么**：服务端把路径**每 2 px 切一段**、每段调一次内核
             //     （`divisions = distance / 2.0`）⇒ **有效 dab 间距被 2 px 钉死** ⇒
@@ -2165,7 +2165,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "brush_params",
                 Object,
                 false,
-                "覆盖 .myb 字段：{规范名: 数值}，如 {\"smudge\":1.0,\"opaque\":0.2}；**注意 `dabs_per_basic_radius` 在本引擎里不生效**（路径每 2px 采样一次，有效 dab 间距被钉死；实测三档零差异）⇒ 要更密请加笔数／加 size／用 smudge；字段名就是 .myb 的 JSON 键**也可直接用四组语义别名**：hand_jitter／speed_gain／color_variance／smudge_amount ✓（一个词管一组 .myb 项 ✓）；，拼错会报错并给候选。**常见字段与合理范围**（多为 0..1，除注明外）：`opaque`／`smudge`／`smudge_length`（0..5）／`dabs_per_radius`（1..20，越大越密；>20 明显变慢）／**`dabs_per_second`（0..500；>0 才会按时间出 dab ⇒ 它决定 `time_ms` 有没有用）**／`speed1_slowness`／`speed1_gamma`（速度映射的形状）／`hardness`／`elliptical_dab_angle`（度）。**`radius` 是对数**（想改笔尖大小请用 `size`）✓"
+                "覆盖 .myb 字段：{规范名: 数值}，如 {\"smudge\":1.0,\"opaque\":0.2}；**注意 `dabs_per_basic_radius` 在本引擎里不生效**（路径每 2px 采样一次，有效 dab 间距被钉死；实测三档零差异）⇒ 要更密请加笔数／加 size／用 smudge；字段名就是 .myb 的 JSON 键**也可直接用四组语义别名**：hand_jitter／speed_gain／color_variance／smudge_amount ✓（一个词管一组 .myb 项 ✓）；，拼错会报错并给候选。**常见字段与合理范围**（多为 0..1，除注明外）：`opaque`／`smudge`／`smudge_length`（0..5）／`dabs_per_actual_radius`（1..20，越大越密；>20 明显变慢）／**`dabs_per_second`（0..500；>0 才会按时间出 dab ⇒ 它决定 `time_ms` 有没有用）**／`speed1_slowness`／`speed1_gamma`（速度映射的形状）／`hardness`／`elliptical_dab_angle`（度）。**`radius` 是对数**（想改笔尖大小请用 `size`）✓"
             ),
             param!(
                 "hand_tremor",
@@ -2521,7 +2521,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "试笔触（swatch）：笔刷 × 颜色 × 路径**批量**试画，一次返回多张对比图；**不写文档、不生成 atom** => 满意了再用 brush_stroke 真画。                  **★ 工作流（必读）★**：**每次落笔前 —— 尤其切换笔刷或改 `brush_params` 时 —— 先 swatch 试 3–5 支，选最好的再真画；不要只试一次就开画** ✗（实测教训：只在开画前试过一次 => 之后全是盲选；真画一笔 = 写文档 + 生成 atom + 画坏要 undo，而 **swatch 试 10 支也不心疼** ✓）。                  批量用法：**一次给 N 支笔刷 × M 组参数**（例：3 支 × opaque 0.5/0.9 = 6 张对比图）=> 一次看完再选 ✓。                  **⚠️ 小图好看 ≠ 大面积好用** ✗（实测：某水彩笔在小预览上轻盈好看，大面积平涂 6 笔几乎看不见 ✓）：铺大色前**多试几笔叠加**，或先在小区域真画一笔看覆盖力 ✓。                  **⚠️ 涂抹类笔刷（如 `oil-mop`）要求画布上先有颜色** => 空画布上试会报「没有可抹的像素」✓：先铺底色再试 ✓。                  顶层 `ok` 即全成（与 `all_ok` 一致 ✓，A6 方案 ①）：有试笔失败 ⇒ `ok:false`，逐项的错误在 `swatches[].error` ✓。",
         params: &[
             param!("brushes", Array, true, "要试的笔刷名（.myb，可省扩展名；也可给单个字符串）"),
-            param!("brush_params", Object, false, "覆盖 .myb 字段（与 `brush_stroke` 同一套 ✓）：**批量试「同一支笔刷的不同参数」就用它** ✓（例：`brushes: [\"Classic_Paint\"]` ＋ `brush_params: {\"opaque\": 0.5}`，再换成 0.9 各试一次 ✓） ★**这里没有 `load`／`wetness`／`color_mixing`！** 要载墨量／湿度／光谱混色 ⇒ 用 **`medium_stroke`** 的 `load`／`wetness`／`color_mixing=pigment`（清单见 `list_engine_capabilities.medium_params` ✓）；这 63 项是 `.myb`（MyPaint 动力学）的，见 `docs/design/brush-params.md` ✓。"),
+            param!("brush_params", Object, false, "覆盖 .myb 字段（与 `brush_stroke` 同一套 ✓）：**批量试「同一支笔刷的不同参数」就用它** ✓（例：`brushes: [\"Classic_Paint\"]` ＋ `brush_params: {\"opaque\": 0.5}`，再换成 0.9 各试一次 ✓） ★**这里没有 `load`／`wetness`／`color_mixing`！** 要载墨量／湿度／光谱混色 ⇒ 用 **`medium_stroke`** 的 `load`／`wetness`／`color_mixing=pigment`（清单见 `list_engine_capabilities.medium_params` ✓）；这些是 `.myb`（MyPaint 动力学）的，见 `docs/design/brush-params.md` ✓。"),
             param!("preview_size", String, false, "预览形态：**single**（缺省 = 单笔触，看「这支笔长什么样」✓）/ **area**（**同一区域来回 5 趟** ⇒ 看**覆盖力 / 叠加 / 透明度累积** ✓ —— 铺大色前用它，避免「小图好看、大面积太透明」✗）。给了 `paths` 时以 `paths` 为准 ✓"),
             param!("colors", Array, false, "要试的颜色（#RRGGBB 或 {r,g,b,a}；缺省用当前/默认色）"),
             param!("paths", Array, false, "要试的路径（每条是 [[x,y,pressure],…]；缺省用内置试笔路径）"),
@@ -2702,7 +2702,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "试一笔：算出这一笔的效果但**不写入文档**（不产生原子、不改 seq、不改文件）⇒ 看一眼满意再 commit",
         mutating: false,
         params: &[
-            param!("layer_id", String, false, "落在哪个图层（只用于取该图的上下文，不写入）"),
+            param!("layer_id", String, false, "落在哪个图层（只用于取该图的上下文，不写入）；无 `based_on` 时必填"),
             param!("brush", String, false, "笔刷名"),
             param!("points", Any, false, "控制点 [[x, y, pressure?], …]（文档像素）"),
             param!("size", Number, false, "笔尖直径（像素；缺省用 .myb 自带）"),
@@ -2923,7 +2923,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         profile: Profile::Core,
         // **为什么要它** ✗：能力面此前**散落各处** —— 滤镜/调整/混合各有 `NAMES` 常量 ✓，
         // 修图/液化只是渲染器里的字符串比较 ✗（本轮才提成 `RETOUCH_KINDS`/`LIQUIFY_KINDS` ✓），
-        // 笔刷 63 项要靠 `get_brush_settings` 读**某一支笔**才知道 ✓，介质又只写在参数说明里 ✗
+        // 笔刷动力学要靠 `get_brush_settings` 读**某一支笔**才知道 ✓，介质又只写在参数说明里 ✗
         // ⇒ **∴ agent 无法"先看有什么、再决定画什么"** ✗。
         // **本工具一处导出全部 ✓，且每个列表都**引用引擎自己的常量**✗**（不是硬编码 ✗）⇒ **∴ 加一种只改一处 ✓**。
         summary: "列出引擎的全部能力面：混合模式／滤镜／调整／修图种类／液化模式／介质／笔刷动力学名字",
@@ -2933,13 +2933,13 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "get_brush_settings",
         profile: Profile::Core,
-        // **为什么需要它**：引擎（`hokusai`）实现了 **63 项** MyPaint 动力学 ✓，
+        // **为什么需要它**：引擎（`hokusai`）实现了全部 MyPaint 动力学 ✓，
         // 而 MCP 侧此前只有 `size`/`opacity`/`hardness`/`color` 四个旋钮 ✗
         // ⇒ agent 无法逐项调 `speed1_gamma`／`slow_tracking`／`change_color_*`／`smudge_length` 等
         // ⇒ 只能从 199 支固定预设里挑 ⇒ **画不出真实笔速、手抖与一笔内变色** ✗
-        // **本工具把 63 项全部读出来** ✓，并**单独列出引擎不认识的项** ✓
+        // **本工具把全部规范名读出来** ✓，并**单独列出引擎不认识的项** ✓
         //（`hokusai` 会保留未知项做无损往返 ✓ ⇒ 那一栏就是「引擎忽略了什么」的实测证据 ✓）。
-        summary: "读出一支笔刷的全部 MyPaint 动力学（63 项 base_value），并单独列出引擎不认识的设置",
+        summary: "读出一支笔刷的全部 MyPaint 动力学（逐项读 `base_value`），并单独列出引擎不认识的设置",
         mutating: false,
         params: &[param!("brush", String, true, "笔刷名（同 brush_stroke，可省 .myb）")],
     },

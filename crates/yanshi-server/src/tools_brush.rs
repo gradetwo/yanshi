@@ -67,6 +67,15 @@ pub(super) fn brush_sensors_from_value(value: &Value) -> Result<BrushSensors> {
     })
 }
 
+/// **`color` 里带了会被忽略的 alpha 吗（B4）**：对象式含 `a` 键，或数组 4 元。
+/// （只认 `color.a` 这一处：`#RRGGBBAA` 的 alpha 是颜色值的一部分，不叫 `color.a`。）
+fn color_has_alpha(value: &Value) -> bool {
+    if let Some(object) = value.as_object() {
+        return object.contains_key("a");
+    }
+    value.as_array().is_some_and(|items| items.len() == 4)
+}
+
 pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **裁剪一共吃掉多少像素**（跨选区累计，供 `painted_pixels_clipped` 用）✓
     let mut clipped_away = 0usize;
@@ -271,6 +280,34 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         true
     } else {
         matches!(pressure_curve.as_str(), "auto") && points_are_flat(&points)
+    };
+    // **B4：包络没补上时要出声**（只回显，不改行为、不改缺省）——**必须在套包络之前算**：
+    //   `apply_humanize_envelope` 就地改压力，算晚了就看不出原来是起伏还是恒定。
+    //   只在显式传了才信号（缺省调用不刷警告）：
+    //   * 显式 `pressure_curve:"auto"` + 点里压力有起伏 ⇒ `auto` 不生效；
+    //   * 显式 `humanize:true` + 点里带压力 + 包络未生效 ⇒ 与上一条合并为一条，注明原因
+    //     （起伏压力 / 恒定压力 + `flat` 缺省）；`humanize:false` 是显式关包络，不出声。
+    let envelope_warning: Option<String> = {
+        let auto_explicit = args.get("pressure_curve").and_then(Value::as_str) == Some("auto");
+        let humanize_explicit = optional_bool(args, "humanize") == Some(true);
+        let has_pressure = all_points_have_pressure(args);
+        let flat = points_are_flat(&points);
+        let envelope_applied = optional_bool(args, "humanize").unwrap_or(true) && envelope_wanted;
+        if auto_explicit && has_pressure && !flat {
+            Some(if humanize_explicit {
+                "`pressure_curve:auto` 不生效：点里压力已有起伏，包络只在恒定压力时补；`humanize:true` 也因此不生效".to_owned()
+            } else {
+                "`pressure_curve:auto` 不生效：点里压力已有起伏，包络只在恒定压力时补".to_owned()
+            })
+        } else if humanize_explicit && has_pressure && !envelope_applied {
+            Some(if flat {
+                "`humanize:true` 不生效：点里压力恒定但 `pressure_curve` 不是 `auto`（缺省 `flat`），包络只在恒定压力 + `auto` 时补".to_owned()
+            } else {
+                "`humanize:true` 不生效：点里压力已有起伏，包络只在恒定压力 + `pressure_curve:auto` 时补".to_owned()
+            })
+        } else {
+            None
+        }
     };
     if optional_bool(args, "humanize").unwrap_or(true) && envelope_wanted {
         apply_humanize_envelope(&mut points);
@@ -1172,6 +1209,26 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             "笔迹有一部分在画布外 ⇒ 已被裁掉 ✓（画布 {doc_width}×{doc_height}，笔迹范围 \
              x {x0}..{x1}、y {y0}..{y1}）—— 画布外的墨不会落上，这不是坐标偏移 ✗"
         )]);
+    }
+    // **B4：传了却不生效的参数进 `warnings`**（与上面"部分越界"那条同一形态：已有就 push，没有就建）。
+    //   `color`/`color_to` 里带 `a` ⇒ alpha 被忽略（透明度只认 `opacity`，见 `paint_brush` 的注释）。
+    let mut b4_notes: Vec<String> = Vec::new();
+    if let Some(note) = envelope_warning {
+        b4_notes.push(note);
+    }
+    for (name, slot) in [
+        ("color", args.get("color")),
+        ("color_to", args.get("color_to")),
+    ] {
+        if slot.is_some_and(color_has_alpha) {
+            b4_notes.push(format!("`{name}.a` 目前被忽略，透明度用 `opacity`"));
+        }
+    }
+    if !b4_notes.is_empty() {
+        match value.get_mut("warnings") {
+            Some(Value::Array(items)) => items.extend(b4_notes.into_iter().map(|note| json!(note))),
+            _ => value["warnings"] = json!(b4_notes),
+        }
     }
     // **D139 的静默零墨：印章落了、画面没变** ✓（第 811 轮；探针确认此处两个值已就位 ✓）
     //   **⇒ 实测（他们的调用）**：`ink_footprint_pixels=6`、`max_channel_delta=0` ✓
