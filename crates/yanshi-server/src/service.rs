@@ -133,17 +133,23 @@ pub struct DocumentSummary {
 
 /// **已载入文档的内存观测**（C2，期 2）：`Workspace::loaded_documents`
 /// 的一行。`estimated_bytes` = 原子估算（BYTES_PER_ATOM 口径）+
-/// 位图缓存实测——与预算闸的判定同源，观测与处置不许两套数。
+/// 渲染侧常驻缓存实测——与预算闸的判定同源，观测与处置不许两套数。
+/// （RSS 修复 paint-rss：实测口径从"只看位图"扩到"全部渲染缓存"，见
+/// `estimate_loaded_doc_bytes`；`retained_bytes` 把其中渲染侧那份单列，
+/// 判据据此算"待载入文档的原子口径"而不必反推常量。）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LoadedDocumentInfo {
     /// 文档 id。
     pub doc_id: String,
     /// 原子数。
     pub atoms: usize,
-    /// 估算驻留字节（原子估算 + 位图缓存实测）。
+    /// 估算驻留字节（原子估算 + 渲染侧常驻缓存实测）。
     pub estimated_bytes: u64,
     /// 位图缓存实测字节。
     pub cache_bytes: u64,
+    /// 渲染侧常驻缓存实测字节（池保留 + tile + 位图 + 区域块 +
+    /// below/above + 蒙版 + 矢量光栅；`estimated_bytes` 里渲染侧那份）。
+    pub retained_bytes: u64,
     /// 最近使用序号（工作区单调递增；越大越新，LRU 卸载按它升序）。
     pub last_used_seq: u64,
 }
@@ -1578,6 +1584,7 @@ impl Workspace {
                 atoms: document.atom_count(),
                 estimated_bytes: Self::estimate_loaded_doc_bytes(document),
                 cache_bytes: document.bitmap_cache_stats().bytes as u64,
+                retained_bytes: document.renderer_retained_bytes() as u64,
                 last_used_seq: self.doc_last_used.get(doc_id).copied().unwrap_or(0),
             })
             .collect()

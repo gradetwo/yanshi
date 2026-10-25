@@ -729,12 +729,15 @@ mod tests {
         drop(lease);
 
         // 边界：恰为 64 MiB 的缓冲不算"大"，两张都应留下（小缓冲走原有预算）。
+        // 两张必须同时在借再一起归还（否则第二张会复用第一张，测不到"留两张"）。
         let small_pool = BufferPool::with_limits(MAX_POOLED_BUFFERS, usize::MAX);
         let edge_bytes = 2048usize * 2048 * 16;
         assert_eq!(edge_bytes, MAX_RETAINED_PER_BUFFER_BYTES);
-        for _ in 0..2 {
-            drop(small_pool.acquire(0, 0, 2048, 2048));
-        }
+        let edge_leases: Vec<_> = (0..2)
+            .map(|_| small_pool.acquire(0, 0, 2048, 2048))
+            .collect();
+        assert_eq!(small_pool.stats().allocated, 2, "两张同时在借应全是新建");
+        drop(edge_leases);
         let edge_stats = small_pool.stats();
         assert_eq!(
             edge_stats.retained_large_buffers, 0,

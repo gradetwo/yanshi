@@ -7,7 +7,10 @@
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
+use yanshi_server::{
+    DocumentSettings, LoadedDocumentInfo, NewDocument, Profile, ToolContext, ToolRegistry,
+    Workspace,
+};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -76,6 +79,15 @@ fn set_budget_mb(mb: u64) {
     std::env::set_var("YANSHI_DOC_MEMORY_BUDGET_MB", mb.to_string());
 }
 
+/// **待载入文档的原子口径估算**（RSS 修复 paint-rss）：预算闸算"待载入"时
+/// 只读磁盘原子数（位图/渲染缓存尚未产生，按 0）⇒ 这里必须取
+/// `estimated_bytes - retained_bytes`，不能直接拿另一份已载入文档的
+/// `estimated_bytes` 当入量——后者含渲染侧保留量（4K 文档可达数百 MB），
+/// 会把预算算大、闸不触发（2026-10-26 本文件首测即因此红过）。
+fn atoms_only_estimate(info: &LoadedDocumentInfo) -> u64 {
+    info.estimated_bytes.saturating_sub(info.retained_bytes)
+}
+
 fn clear_env() {
     std::env::remove_var("YANSHI_DOC_MEMORY_BUDGET_MB");
     std::env::remove_var("YANSHI_DOC_MAX_LOADED");
@@ -125,7 +137,7 @@ fn doc_budget_evicts_lru_idle_document() {
         .loaded_documents()
         .into_iter()
         .next()
-        .map(|info| info.estimated_bytes)
+        .map(atoms_only_estimate)
         .unwrap();
     let mb = budget_forcing_one_eviction(&workspace, incoming);
     set_budget_mb(mb);
@@ -172,7 +184,7 @@ fn doc_budget_never_evicts_busy_document() {
         .loaded_documents()
         .into_iter()
         .next()
-        .map(|info| info.estimated_bytes)
+        .map(atoms_only_estimate)
         .unwrap();
     let mb = budget_forcing_one_eviction(&workspace, incoming);
     set_budget_mb(mb);
@@ -261,7 +273,7 @@ fn closed_document_reopens_identical() {
         .loaded_documents()
         .into_iter()
         .find(|info| info.doc_id == "doc_b")
-        .map(|info| info.estimated_bytes)
+        .map(atoms_only_estimate)
         .unwrap();
     assert!(workspace.close_document("doc_b"));
     let mb = budget_forcing_one_eviction(&workspace, b_estimate);
