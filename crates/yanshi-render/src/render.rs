@@ -9455,6 +9455,7 @@ mod raw_boundary_tests {
         let store = MemoryBlobStore::new();
         let blob = store.put(&bytes).unwrap();
         let mut warnings = Vec::new();
+        let mut missing = Vec::new();
         let got = super::fetch_raster_patch(
             &store,
             &blob,
@@ -9464,9 +9465,11 @@ mod raw_boundary_tests {
             "obj_raw",
             None,
             &mut warnings,
+            &mut missing,
         )
         .unwrap()
         .expect("feature 开时 rawsrc 应展开而不是跳过");
+        assert!(missing.is_empty(), "展开成功时不应记缺失 blob：{missing:?}");
         let super::DecodedPixels::Linear(width, height, values) = got else {
             panic!("rawsrc 必须走线性载荷，不许量化回 RGBA8");
         };

@@ -1741,3 +1741,56 @@ fn applied_echo_values_effective_space_with_explicit_param() {
         "不传 ⇒ 量级切换推导（浮点 ⇒ linear）"
     );
 }
+
+/// **P2-7**：batch 水位谓词（纯函数）—— 每条分支都要能红 ✓。
+///   变异：把 `>` 改成 `>=`（边界）或把阈值改大 ⇒ 对应断言红 ✓。
+#[test]
+fn batch_watermark_fires_on_high_rss() {
+    let reason = batch_watermark_reason_for(Some(4 * 1024 + 1), Some(8 * 1024));
+    assert!(
+        reason.as_deref().unwrap_or("").contains("RSS"),
+        "RSS 超 4 GiB 应当触发：{reason:?}"
+    );
+}
+
+#[test]
+fn batch_watermark_fires_on_low_mem_available() {
+    let reason = batch_watermark_reason_for(Some(100), Some(511));
+    assert!(
+        reason.as_deref().unwrap_or("").contains("可用内存"),
+        "MemAvailable 低于 512MB 应当触发：{reason:?}"
+    );
+}
+
+#[test]
+fn batch_watermark_stays_quiet_within_limits() {
+    assert_eq!(
+        batch_watermark_reason_for(Some(100), Some(8 * 1024)),
+        None,
+        "两项都在限内时不应当触发"
+    );
+    // 边界值本身不触发（`>` / `<`，不是 `>=` / `<=` ✓）。
+    assert_eq!(
+        batch_watermark_reason_for(Some(4 * 1024), Some(512)),
+        None,
+        "恰好等于阈值时不应当触发"
+    );
+}
+
+#[test]
+fn batch_watermark_fails_open_when_unreadable() {
+    assert_eq!(
+        batch_watermark_reason_for(None, None),
+        None,
+        "两项都读不到时检查跳过（fail-open），不拦批次"
+    );
+    assert_eq!(
+        batch_watermark_reason_for(None, Some(8 * 1024)),
+        None,
+        "RSS 读不到、内存充足时不应当触发"
+    );
+    assert!(
+        batch_watermark_reason_for(None, Some(100)).is_some(),
+        "RSS 读不到、内存不足时仍应当由另一项触发"
+    );
+}

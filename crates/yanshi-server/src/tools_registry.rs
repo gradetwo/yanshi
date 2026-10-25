@@ -1370,16 +1370,17 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         name: "batch",
         profile: Profile::Core,
         summary: "批量调用（同一变更集，可整体撤销）。\
-                 **连续作画提速** ✓：`silent: true` 时子调用**不产出预览图** ✓\
+                 **连续作画提速** ✓：缺省**静默**（`silent` 缺省 `true` ✓，D1 期 2 块 4）⇒ 子调用**不产出预览图** ✓\
                  ⇒ 也就**不编码 PNG** ✓（实测每笔省 ~50 ms ✓，4K / `Clouds.myb` / size 180 ✓）。\
                  需要中途看进展就用 `preview_every_n_strokes: N`（每 N 笔放行一次 ✓）\
                  或 `preview_interval_ms: M`（每 M 毫秒放行一次 ✓）—— 放行的那一次**照常产出预览** ✓。\
+                 显式传 `silent: false` 可恢复旧行为（每笔带预览）。\
                  **单笔绘制**请用 `brush_stroke(preview: false)` ✓（同一条免编码路 ✓），\
                  要图时**不传**它即可 ✓（默认行为不变 ✓）。\
                  顶层 `ok` 即全成（与 `all_ok` 一致 ✓，A6 方案 ①）：有子调用失败 ⇒ `ok:false` + `error` 指路 `failed_calls` ✓。",
         mutating: true,
         params: &[
-            param!("calls", Array, true, "[{tool, arguments}]"),
+            param!("calls", Array, true, "[{tool, arguments}]（一次最多 500 个调用，超了拆成多个 batch；每 100 个一段，段边界做内存水位检查，触发即提前停）"),
             param!("preview_every_n_strokes", Number, false, "每 N 个调用放行一次预览（长批次中途给 AI 看进展；缺省 0 = 不放行，行为不变）"),
             param!("preview_interval_ms", Number, false, "每 M 毫秒放行一次预览（与上一个参数是「或」的关系；缺省 0 = 不放行）"),
             param!(
@@ -1393,7 +1394,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "silent",
                 Boolean,
                 false,
-                "true = 不生成每次调用的预览（大批量排线时省下大量临时 IO；缺省 false，行为不变）"
+                "true = 不生成每次调用的预览（大批量排线时省下大量临时 IO；缺省 true，D1 期 2 块 4；显式 false 恢复每笔带预览的旧行为）"
             ),
         ],
     },
@@ -2327,7 +2328,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("size", Number, false, "笔刷大小，缺省 15"),
             param!("mode", String, false, "hatch（单向排线，缺省）/ cross_hatch（交叉）/ contour（沿轮廓收缩，仅 rect/circle）"),
             param!("layer_id", String, true, "图层 id（必填）"),
-            CLIP_TO_SELECTION_PARAM,
+                        param!("wait_for_render", Boolean, false, "内层每条笔触是否等渲染完成（缺省 false = 只落原子、不等渲染；显式 true = 逐笔等渲染，代价是回执变慢）"),
+CLIP_TO_SELECTION_PARAM,
         ],
     },
     ToolSpec {
@@ -2345,7 +2347,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("brush", String, false, "笔刷名，缺省 calligraphy"),
             param!("size", Number, false, "笔刷大小，缺省 15"),
             param!("layer_id", String, true, "图层 id（必填）"),
-            CLIP_TO_SELECTION_PARAM,
+                        param!("wait_for_render", Boolean, false, "内层每条笔触是否等渲染完成（缺省 false = 只落原子、不等渲染；显式 true = 逐笔等渲染，代价是回执变慢）"),
+CLIP_TO_SELECTION_PARAM,
         ],
     },
     ToolSpec {
@@ -2365,7 +2368,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("direction_jitter", Number, false, "方向抖动 ±度数，缺省 8"),
             param!("direction_rotate", Number, false, "层间角度摆动幅度（度），缺省 12；不要用等差旋转，会产生摩尔纹"),
             param!("layer_id", String, true, "图层 id（必填）"),
-            CLIP_TO_SELECTION_PARAM,
+                        param!("wait_for_render", Boolean, false, "内层每条笔触是否等渲染完成（缺省 false = 只落原子、不等渲染；显式 true = 逐笔等渲染，代价是回执变慢）"),
+CLIP_TO_SELECTION_PARAM,
         ],
     },
     ToolSpec {
@@ -2385,7 +2389,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("brush", String, false, "笔刷名，缺省 calligraphy"),
             param!("size", Number, false, "笔刷大小，缺省 12"),
             param!("layer_id", String, true, "图层 id（必填）"),
-            CLIP_TO_SELECTION_PARAM,
+                        param!("wait_for_render", Boolean, false, "内层每条笔触是否等渲染完成（缺省 false = 只落原子、不等渲染；显式 true = 逐笔等渲染，代价是回执变慢）"),
+CLIP_TO_SELECTION_PARAM,
         ],
     },
     ToolSpec {
@@ -2404,10 +2409,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("color", Array, false, "肌理基准色 [r,g,b] 0..1；缺省或 \"auto\" 时自动采样图层平均色"),
             param!("brush", String, false, "笔刷名，缺省 calligraphy"),
             param!("layer_id", String, true, "图层 id（必填）"),
-            // **`wait_for_render`：透传给每条内层笔触** ✓（第 639 轮；外部 D6 ✓）
-            //   ⇒ 缺省 `true`（行为不变）；给 `false` ⇒ 内层不再每笔等渲染 ✓
-            //   （实测 22.4 ms/笔 ⇒ 6.6 ms/笔，**3.4×**）
-            param!("wait_for_render", Boolean, false, "内层每条笔触是否等渲染完成（缺省 true；给 false 可明显加速，代价是回执可能早于画面就绪）"),
+            // **P2-6**：缺省改 `false`（见 `set_inner_wait_for_render`；此前缺省 `true`，
+            //   内层每笔等渲染 —— tex_fold 实测 22.4 ms/笔 ⇒ 6.6 ms/笔，**3.4×**）。
+            param!("wait_for_render", Boolean, false, "内层每条笔触是否等渲染完成（缺省 false = 只落原子、不等渲染；显式 true = 逐笔等渲染，代价是回执变慢）"),
             CLIP_TO_SELECTION_PARAM,
         ],
     },
@@ -2462,7 +2466,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             //   ⇒ **传 `brush` 就 `invalid_argument`** ⇒ 用户**没法换笔刷** ✓（能力不可达 ✓）。
             param!("brush", String, false, "用哪支笔刷画这些笔触（缺省 calligraphy ✓）"),
             param!("layer_id", String, true, "目标绘制图层 id（必填）"),
-            CLIP_TO_SELECTION_PARAM,
+                        param!("wait_for_render", Boolean, false, "内层每条笔触是否等渲染完成（缺省 false = 只落原子、不等渲染；显式 true = 逐笔等渲染，代价是回执变慢）"),
+CLIP_TO_SELECTION_PARAM,
         ],
     },
     ToolSpec {
@@ -2493,7 +2498,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("color", Array, true, "颜色 [r,g,b,a]（必填）"),
             param!("brush", String, false, "笔刷名，缺省 calligraphy"),
             param!("layer_id", String, true, "图层 id（必填）"),
-            CLIP_TO_SELECTION_PARAM,
+                        param!("wait_for_render", Boolean, false, "内层每条笔触是否等渲染完成（缺省 false = 只落原子、不等渲染；显式 true = 逐笔等渲染，代价是回执变慢）"),
+CLIP_TO_SELECTION_PARAM,
         ],
     },
     ToolSpec {

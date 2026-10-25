@@ -25,7 +25,7 @@ use yanshi_core::{
 use yanshi_render::dirty::{plan_dirty_with_log, DirtyKind, DirtySet};
 use yanshi_render::png::encode_png;
 use yanshi_render::render::{RegionRender, RenderStats, Renderer};
-use yanshi_render::thumb::{render_thumbnail, Thumb, ThumbKind};
+use yanshi_render::thumb::{render_thumbnail, Thumb, ThumbKind, THUMB_BLOCK};
 use yanshi_render::tile::{TileGrid, TileKey};
 use yanshi_render::Buffer;
 
@@ -1745,6 +1745,96 @@ impl Document {
         })
     }
 
+    /// **P2-7**：按缩略图块行分带刷新缩略图 —— 首层峰值的修法 ✓。
+    ///
+    /// **靶点** ✓：每文档第一次 `create_layer` 时 `render_document_preview` 曾同时握着
+    /// 两块全幅 f32 缓冲（`linear_premul_from_u8x4` 的返回值 + `Buffer::from_f32` 内部的
+    /// `to_vec` 全拷，4K 上约 460MB ⇒ 实测 HWM 468MB）✓。
+    /// **修法** ✓：每带只转 32 个缩略图像素行对应的渲染行（4K 上约 400 行 ⇒ f32 约 25.6MB），
+    /// 用 `Buffer::from_f32_vec`（move，不拷）建小 Buffer，逐带调 `update_blocks_from_region` ✓。
+    /// **带与带重叠一行** ✓：某缩略图像素的源窗口 `ceil` 可能恰好取到带界那一行 ⇒
+    /// 重叠保证它仍在带内（否则那一行的平均会少算一行 ⇒ 与整幅结果差 1 LSB）✓。
+    /// **像素等价性** ✓：带内映射与整幅调用同一套公式（`update_blocks_from_region` 内部算，
+    /// 带的 `source_doc` 按渲染像素密度反推）⇒ 同一文档两种走法算出的 `thumb.rgba8` 逐字节相同
+    /// （测试 `document_preview_thumb_banded_matches_whole` 守着 ✓ —— 若验出 1 LSB 差异，
+    /// 退回只做 `from_f32_vec` 的 move 语义（峰值约 256MB），见那条测试的注释 ✓）。
+    /// **stats 恢复** ✓：`update_blocks_from_region` 每调一次就重写 `stats` ⇒ 全部带跑完后
+    /// 把合计值恢复成整幅调用会给的值（`blocks_rendered` = 脏块总数，`source_pixels` = 区域像素数 ✓）。
+    fn refresh_thumb_banded(
+        thumb: &mut Thumb,
+        render: &RegionRender,
+        region: Bbox,
+        doc_size: Bbox,
+        blocks: &std::collections::BTreeSet<(u32, u32)>,
+    ) -> Result<()> {
+        // 空集时照整幅调用的 stats 走（它对空集也写一次 stats ✓）⇒ 直接返回 ✓。
+        if blocks.is_empty() {
+            let content = thumb.content_box(doc_size);
+            thumb.stats.blocks_rendered = 0;
+            if content.w > 0.0 && content.h > 0.0 {
+                thumb.stats.source_pixels = (render.width * render.height) as usize;
+            }
+            return Ok(());
+        }
+        let content = thumb.content_box(doc_size);
+        // 渲染像素密度（文档 px / 渲染 px）：带在文档里的 y 范围按它反推 ✓。
+        let px = if render.height > 0 {
+            region.h / render.height as f64
+        } else {
+            0.0
+        };
+        // 按块行分组（`BTreeSet` 已按 (bx, by) 排序 ⇒ 同 by 的块连续 ✓）。
+        // 注意：`(bx, by)` 的字典序是 bx 优先 ⇒ 迭代时 by 交错出现
+        // （0,1,2,…,7,0,1,2,…）⇒ 必须先排序，`dedup()` 否则是空操作
+        // （只删连续重复项），每带会被重复转换 8 次（M-P7c 变异轮实测发现）。
+        let mut rows: Vec<u32> = blocks.iter().map(|(_, by)| *by).collect();
+        rows.sort_unstable();
+        rows.dedup();
+        for by in rows {
+            let ty0 = by * THUMB_BLOCK;
+            let ty1 = ((by + 1) * THUMB_BLOCK).min(thumb.size);
+            // 该块行在文档里的 y 范围（与 `update_blocks_from_region` 内部的 v→doc 公式同一口径 ✓）。
+            let doc_y0 = doc_size.y + ((ty0 as f64 - content.y) / content.h) * doc_size.h;
+            let doc_y1 = doc_size.y + ((ty1 as f64 - content.y) / content.h) * doc_size.h;
+            // 对应的渲染行（像素行取整：下取整/上取整 ⇒ 带一定盖住该块行所有源窗口 ✓）。
+            let r0 = ((doc_y0 - region.y) / region.h * render.height as f64)
+                .floor()
+                .max(0.0) as u32;
+            let r1 = ((doc_y1 - region.y) / region.h * render.height as f64)
+                .ceil()
+                .max(1.0) as u32;
+            let r0 = r0.min(render.height);
+            let r1 = r1.min(render.height);
+            if r0 >= render.height || r1 <= r0 {
+                continue;
+            }
+            // 带含重叠行：`[r0, r1]`（`r1` 是下一带的第 0 行）⇒ 行数 `r1 - r0 + 1` ✓。
+            let band_rows = (r1 - r0 + 1).min(render.height - r0);
+            let band_doc = Bbox::new(
+                region.x,
+                region.y + r0 as f64 * px,
+                region.w,
+                band_rows as f64 * px,
+            );
+            let row_bytes = render.width as usize * 4;
+            let start = r0 as usize * row_bytes;
+            let len = band_rows as usize * row_bytes;
+            let f32_pixels = linear_premul_from_u8x4(&render.rgba8[start..start + len]);
+            let buffer = Buffer::from_f32_vec(0, 0, render.width, band_rows, f32_pixels)
+                .ok_or_else(|| internal("预览缓冲区尺寸与像素数不匹配"))?;
+            let band_blocks: std::collections::BTreeSet<(u32, u32)> = blocks
+                .iter()
+                .filter(|(_, block_by)| *block_by == by)
+                .copied()
+                .collect();
+            thumb.update_blocks_from_region(&buffer, band_doc, doc_size, &band_blocks);
+        }
+        // **stats 恢复** ✓（见函数头注释）。
+        thumb.stats.blocks_rendered = blocks.len();
+        thumb.stats.source_pixels = (render.width * render.height) as usize;
+        Ok(())
+    }
+
     /// 提交收尾用的**文档级预览**：生成 256² 缩略图（小 PNG），并推进渲染水位。
     ///
     /// 与 [`Self::render_region`] 的区别：不落盘整幅 PNG。显式导出仍走 `render_region`。
@@ -1868,16 +1958,8 @@ impl Document {
                 .document_thumb
                 .get_or_insert_with(|| Thumb::new(ThumbKind::Doc256));
             if let (Some(region), Some(render)) = (region, render.as_ref()) {
-                let buffer = Buffer::from_f32(
-                    0,
-                    0,
-                    render.width,
-                    render.height,
-                    &linear_premul_from_u8x4(&render.rgba8),
-                )
-                .ok_or_else(|| internal("预览缓冲区尺寸与像素数不匹配"))?;
                 let blocks = thumb.dirty_blocks_for(&region, doc_size);
-                thumb.update_blocks_from_region(&buffer, region, doc_size, &blocks);
+                Self::refresh_thumb_banded(thumb, render, region, doc_size, &blocks)?;
             }
             (thumb.size, thumb.rgba8.clone())
         };
@@ -3142,5 +3224,85 @@ mod tests {
         assert_eq!(report.deleted.len(), 0, "没有孤儿可清理");
         assert_eq!(plan.historical.len(), 0, "当前状态没有历史级 blob");
         assert_eq!(head_before, document.head_seq());
+    }
+
+    /// **P2-7**：分块刷新缩略图必须与整幅刷新**逐字节相同** ✓。
+    ///
+    /// **⇒ 为什么必须逐字节** ✓：缩略图是用户看到的图 —— 差 1 LSB 也是"改了画面" ✗，
+    /// 而分块只该省内存、不该改像素 ✓。
+    /// **⇒ 怎么做** ✓：同一份合成 `RegionRender`（梯度 + 棋盘高频内容，专治平均窗口），
+    /// 分别走整幅路（`Buffer::from_f32` + `update_blocks_from_region`）与分带路
+    /// （`refresh_thumb_banded`），比 `thumb.rgba8` 与 `stats` ✓。
+    /// **⇒ 覆盖** ✓：4K（首层峰值的尺寸）/ 2K / 非正方形奇数尺寸 / 小尺寸 / 局部区域
+    /// （增量 `Region` 路，`region != doc_size` ✓）。
+    /// **⇒ 若这条红了** ✓：说明分带映射与整幅映射在某处差了 1 LSB ⇒ **退回只做
+    /// `from_f32_vec` 的 move 语义**（峰值约 256MB，仍比 468MB 好）⇒ 不要调松断言 ✗。
+    #[test]
+    fn document_preview_thumb_banded_matches_whole() {
+        fn synthetic_render(width: u32, height: u32) -> RegionRender {
+            let mut rgba8 = Vec::with_capacity((width * height * 4) as usize);
+            for y in 0..height {
+                for x in 0..width {
+                    // 梯度 + 棋盘：每个像素都不同，且相邻像素差得大 ⇒ 平均窗口算错一行就露馅 ✓。
+                    let checker = if (x / 3 + y / 3) % 2 == 0 { 0u8 } else { 255u8 };
+                    rgba8.extend_from_slice(&[
+                        ((x * 7 + y * 13) % 256) as u8 ^ checker,
+                        ((x * 3 + y * 11) % 256) as u8,
+                        ((x * 5 + y * 17) % 256) as u8 ^ checker,
+                        255,
+                    ]);
+                }
+            }
+            RegionRender {
+                bbox: Bbox::new(0.0, 0.0, width as f64, height as f64),
+                width,
+                height,
+                rgba8,
+                buffer: None,
+                tiles: Vec::new(),
+                stats: RenderStats::default(),
+            }
+        }
+
+        fn check_case(doc_w: u32, doc_h: u32, region: Bbox, render: &RegionRender) {
+            let doc_size = Bbox::new(0.0, 0.0, doc_w as f64, doc_h as f64);
+            // 整幅路（旧行为）✓。
+            let mut whole = Thumb::new(ThumbKind::Doc256);
+            let blocks = whole.dirty_blocks_for(&region, doc_size);
+            let buffer = Buffer::from_f32(
+                0,
+                0,
+                render.width,
+                render.height,
+                &linear_premul_from_u8x4(&render.rgba8),
+            )
+            .expect("整幅缓冲尺寸应当匹配");
+            whole.update_blocks_from_region(&buffer, region, doc_size, &blocks);
+            // 分带路（P2-7）✓。
+            let mut banded = Thumb::new(ThumbKind::Doc256);
+            let blocks = banded.dirty_blocks_for(&region, doc_size);
+            Document::refresh_thumb_banded(&mut banded, render, region, doc_size, &blocks)
+                .expect("分带刷新应当成功");
+            assert_eq!(
+                banded.rgba8, whole.rgba8,
+                "分带与整幅的缩略图像素必须逐字节相同（{doc_w}×{doc_h}，region {region:?}）"
+            );
+            assert_eq!(
+                banded.stats, whole.stats,
+                "分带与整幅的 stats 必须相同（{doc_w}×{doc_h}，region {region:?}）"
+            );
+        }
+
+        // 冷启动整幅：4K / 2K / 奇数尺寸 / 小尺寸 ✓。
+        for (w, h) in [(4000, 3200), (2000, 1600), (1999, 1237), (64, 48)] {
+            let render = synthetic_render(w, h);
+            let region = Bbox::new(0.0, 0.0, w as f64, h as f64);
+            check_case(w, h, region, &render);
+        }
+        // 增量局部区域：文档 2000×1600，只刷 (500, 400, 1000, 800) 这一块 ✓。
+        let render = synthetic_render(1000, 800);
+        let mut partial = render;
+        partial.bbox = Bbox::new(500.0, 400.0, 1000.0, 800.0);
+        check_case(2000, 1600, partial.bbox, &partial);
     }
 }

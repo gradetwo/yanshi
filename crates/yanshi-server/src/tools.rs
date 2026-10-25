@@ -3079,6 +3079,19 @@ fn proc_rss_mb() -> Option<u64> {
     None
 }
 
+/// **本机可用内存（MB）** ✓ —— 读 `/proc/meminfo` 的 `MemAvailable`（Linux）。
+///   非 Linux 或读不到 ⇒ `None`（不编数字 ✓，见 `proc_rss_mb`）。
+fn proc_mem_available_mb() -> Option<u64> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in meminfo.lines() {
+        if let Some(rest) = line.strip_prefix("MemAvailable:") {
+            let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
+            return Some(kb / 1_024);
+        }
+    }
+    None
+}
+
 fn read_list_layers(ctx: &mut ToolContext<'_>) -> Result<Value> {
     let state = document_state(ctx)?;
     Ok(json!({
@@ -20031,6 +20044,47 @@ fn write_restore_checkpoint(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
     finish_mutation(ctx, &result, None)
 }
 
+/// **P2-7**：batch 上限与分段 ——
+///   · `BATCH_MAX_CALLS = 500`：硬拒（`InvalidArgument`，指路"拆成多个 batch"）；
+///     probe2 最大批 150，技能安全线 25/批，500 是 3 倍以上余量 ✓。
+///   · `BATCH_SEGMENT_CALLS = 100`：每 100 个调用一段，段边界（含第 0 段之前）做水位检查 ✓；
+///     **分段只是处理/水位检查单位，变更集仍为整批一个** ✓ —— 取消仍整体回滚，
+///     `changeset_id` 语义不变（单字段不动，避免"只撤一段"的静默局部回滚陷阱 ✓）。
+const BATCH_MAX_CALLS: usize = 500;
+const BATCH_SEGMENT_CALLS: usize = 100;
+
+/// **P2-7**：batch 段边界水位检查 —— 任一触发即提前停止（已提交的保留，不回滚 ✓）：
+///   · 进程 RSS > 4 GiB（`proc_rss_mb`）；
+///   · 系统 MemAvailable < 512MB（`proc_mem_available_mb`，保护小内存机器，如 1.27GB 的 Colab 会话 ✓）。
+///   非 Linux / 读不到 ⇒ `None`（fail-open：检查跳过，不拦批次 ✓）。
+fn batch_watermark_reason() -> Option<String> {
+    batch_watermark_reason_for(proc_rss_mb(), proc_mem_available_mb())
+}
+
+/// **P2-7**：水位谓词（纯函数，可单测 ✓）—— 读数是参数，`batch_watermark_reason` 只负责取数 ✓。
+fn batch_watermark_reason_for(
+    rss_mb: Option<u64>,
+    mem_available_mb: Option<u64>,
+) -> Option<String> {
+    const RSS_LIMIT_MB: u64 = 4 * 1024;
+    const MEM_AVAILABLE_FLOOR_MB: u64 = 512;
+    if let Some(rss) = rss_mb {
+        if rss > RSS_LIMIT_MB {
+            return Some(format!(
+                "进程 RSS {rss}MB 超过 {RSS_LIMIT_MB}MB 上限 ⇒ 提前停止，不再开始新子调用（已提交的保留）"
+            ));
+        }
+    }
+    if let Some(available) = mem_available_mb {
+        if available < MEM_AVAILABLE_FLOOR_MB {
+            return Some(format!(
+                "系统可用内存 {available}MB 低于 {MEM_AVAILABLE_FLOOR_MB}MB 下限 ⇒ 提前停止，不再开始新子调用（已提交的保留）"
+            ));
+        }
+    }
+    None
+}
+
 fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let calls = require_object(args, "calls")?;
     let calls = calls.as_array().ok_or_else(|| missing("calls"))?;
@@ -20040,12 +20094,26 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             ErrorContext::detail("batch 至少需要一个调用"),
         ));
     }
+    // **P2-7**：batch 上限（硬拒）—— 超了就拆成多个 batch（不要一次塞几千个调用进来 ✓）。
+    if calls.len() > BATCH_MAX_CALLS {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "batch 一次最多 {BATCH_MAX_CALLS} 个调用，得到 {} ⇒ 拆成多个 batch 再调",
+                calls.len()
+            )),
+        ));
+    }
     let registry = ToolRegistry::full();
     let changeset = Changeset::new_id();
     // **静默批处理** ✓（用户 §五-5 ✓）：`batch` 里的子调用**共用这个 `ctx`** ✓
     // ⇒ 在这里置一次 ✓ ⇒ **所有子调用都不再生成预览** ✓（一处生效、全部受益 ✓）。
+    // **D1（期 2 块 4）**：`silent` 缺省改为 `true` ✓ —— 一等批量工具的缺省就是
+    //   "不返图、不产预览" ✓，调用方不必再自己拼 `silent:true` + `preview:false` 两个开关 ✓。
+    //   显式传 `silent:false` 可恢复旧行为（中途要看进展仍可用
+    //   `preview_every_n_strokes` / `preview_interval_ms` 放行 ✓）。
     let previous_silent = ctx.silent;
-    if optional_bool(args, "silent").unwrap_or(false) {
+    if optional_bool(args, "silent").unwrap_or(true) {
         ctx.silent = true;
     }
     // **长批次中途的预览**（测试报告 §一.4）✓：`batch` 在一个循环里跑完 ✓ ⇒ 单线程服务下
@@ -20067,6 +20135,8 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let mut cancelled: Option<YanshiError> = None;
     // 失败要留痕（第 1000+ 轮）：子调用失败时 ok 仍是 true ⇒ 静默吞掉 ⇒ 收集它们，返回里给 failed_calls。
     let mut failed_calls: Vec<Value> = Vec::new();
+    // **P2-7**：水位提前停的原因（`None` = 没触发）—— 与 `cancelled` 互斥（先触发的那个 break ✓）。
+    let mut stopped_early: Option<String> = None;
     // **★ 全批汇总"保留像素"★**（第 1569 轮；外部在 `2073a4f7` 之后的补记）
     //   **⇒ 他们的原话**：「建议 `batch` 的返回里**汇总**"总保留像素数/总尝试数"⇒
     //     那样 `4000/4000` 会**是 0** 而 `6000/6000` 会**是 ~500000** ⇒ **一眼可辨**」✓
@@ -20085,6 +20155,14 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         if let Err(error) = ctx.check_cancelled() {
             cancelled = Some(error);
             break;
+        }
+        // **P2-7**：段边界水位检查 —— 每 100 个调用一段，段边界（含第 0 段之前）检查一次 ✓；
+        //   触发即提前停止：不再开始新子调用，已提交的保留（append-only，不回滚 ✓）。
+        if call_index % BATCH_SEGMENT_CALLS == 0 {
+            if let Some(reason) = batch_watermark_reason() {
+                stopped_early = Some(reason);
+                break;
+            }
         }
         // **每 N 个调用 / 每 M 毫秒**放行一次预览 ✓：临时清掉 `silent` ✓ ⇒ 这一子调用照常产出预览 ✓
         //（`silent` 在**共享** `ctx` 上 ✓ ⇒ 用完**必须还原** ✓ —— 与 `changeset` 同一条规矩 ✓）。
@@ -20241,6 +20319,29 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         .document(&ctx.doc_id)
         .map(|document| document.head_seq())
         .unwrap_or(0);
+    // **P2-7**：水位提前停 —— 返回错误形状的 JSON（`ok:false`，与取消路径同构 ✓）：
+    //   已提交的保留（append-only，不回滚 ✓），`calls` 里是已完成的子调用结果 ✓，
+    //   调用方按 `completed_calls` / `total_calls` 续跑剩余部分 ✓。
+    if let Some(reason) = stopped_early {
+        let mut response = error_response(&YanshiError::new(
+            ErrorCode::ResourceExhausted,
+            ErrorContext::detail(reason),
+        ));
+        response["stopped_early"] = json!(true);
+        response["completed_calls"] = json!(results.len());
+        response["total_calls"] = json!(calls.len());
+        response["segments_completed"] = json!(results.len() / BATCH_SEGMENT_CALLS);
+        response["changeset_id"] = json!(changeset);
+        response["calls"] = json!(results);
+        response["count"] = json!(results.len());
+        response["ok_count"] = json!(results.len().saturating_sub(failed_calls.len()));
+        response["fail_count"] = json!(failed_calls.len());
+        response["all_ok"] = json!(failed_calls.is_empty());
+        response["atom_ids"] = json!(atom_ids);
+        response["head"] = json!(head);
+        response["execution"] = execution_report(ctx);
+        return Ok(response);
+    }
     // **`preview: true`：批处理完直接带回一张图** ✓（需求文档 P0-2「实时预览流」✓；
     // 画师报告："batch → 手动 render_region → 存文件 → 看，4 步 30 秒"✗）。
     // **复用既有的 `read_render_region`** ✓（不另写渲染 ✓，含它已有的内嵌语义 ✓）。
@@ -20322,6 +20423,10 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
 
         "preview": preview_value,
         "changeset_id": changeset,
+        // **P2-7**：分段与水位 —— `segments_completed` 是完整跑完的 100-调用段数 ✓；
+        //   `stopped_early` 恒 false（提前停的那条路走上面的错误形状返回 ✓）。
+        "segments_completed": results.len() / BATCH_SEGMENT_CALLS,
+        "stopped_early": false,
         "calls": results,
         "count": results.len(),
         "atom_ids": atom_ids,

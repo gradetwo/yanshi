@@ -386,6 +386,9 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     // 取值不需要猜 ⇒ 一次补齐。（`add_adjustment`/`add_filter`/`set_property` 等仍不写：取值说明不足。）
     ("export_project", r#"{"path":"exports/demo.yanshi"}"#),
     ("import_project", r#"{"path":"exports/demo.yanshi"}"#),
+    // **期 2 块 3（D2）漏了示例**：`verify_package` 注册时没进 TOOL_EXAMPLES，
+    // pre-commit 的注册表清单检查当场红 ⇒ 补上（与 import_project 同一路徑写法）。
+    ("verify_package", r#"{"path":"exports/demo.yanshi"}"#),
     ("update_stroke", r#"{"object_id":"L1"}"#),
     ("transform_object", r#"{"object_id":"L1"}"#),
     ("restore_object", r#"{"object_id":"L1"}"#),

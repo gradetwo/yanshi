@@ -236,6 +236,29 @@ impl Buffer {
         })
     }
 
+    /// 由 f32 线性预乘像素构造（**move 语义，不拷**）✓ —— 与 `from_f32` 同一校验 ✓。
+    ///
+    /// **P2-7**：`render_document_preview` 分块转换时用它 ✓ —— 整幅 `Vec<f32>` 再拷一份
+    /// 是首层峰值的一半（4K 上约 204.8MB）⇒ 小带直接 move 进来，不再多占一份 ✓。
+    pub fn from_f32_vec(
+        origin_x: i64,
+        origin_y: i64,
+        width: u32,
+        height: u32,
+        pixels: Vec<f32>,
+    ) -> Option<Self> {
+        if pixels.len() != (width * height * 4) as usize {
+            return None;
+        }
+        Some(Self {
+            origin_x,
+            origin_y,
+            width,
+            height,
+            pixels,
+        })
+    }
+
     /// 只读访问底层 f32 像素（行优先，RGBA 预乘线性）。
     pub fn as_f32(&self) -> &[f32] {
         &self.pixels

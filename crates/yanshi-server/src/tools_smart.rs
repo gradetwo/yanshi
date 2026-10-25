@@ -13,6 +13,65 @@
 
 use super::*;
 
+/// **P2-6（期 2 块 4）**：`smart_*` 前置图层校验 —— fail-fast。
+///
+/// **为什么必须在工具层先查** ✓：折叠是**容错**的 ⇒ 图层不存在时，`write_brush_stroke`
+///   只在**落笔提交**时才报 `ReferenceNotFound` ✗ ⇒ 一个 `smart_hatch_follow` 要先算完
+///   1259 笔（`raster_ms=41586`）才报错 ⇒ **50s 空烧** ✗（probe2 实测）。
+///   在这里先查 ⇒ 不存在的 `layer_id` **秒级**报错 ✓，一笔都不算 ✓。
+/// **错误码与落笔时一致** ✓（`ReferenceNotFound`）⇒ 调用方按同一码处理 ✓；
+///   文案附现有图层（照 `write_delete_anchor` 的写法 ✓），免得调用方再查一遍 ✓。
+/// **位置** ✓：各 `smart_*` 的**第一行**（在选区缓存预热与任何计算之前 ✓）。
+fn require_smart_layer_alive(ctx: &mut ToolContext<'_>, layer_id: &str) -> Result<()> {
+    let (alive, existing) = {
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        let state = document.state();
+        (
+            state.layer_alive(layer_id),
+            state
+                .alive_layers()
+                .iter()
+                .map(|layer| layer.id.clone())
+                .collect::<Vec<_>>(),
+        )
+    };
+    if alive {
+        return Ok(());
+    }
+    Err(YanshiError::new(
+        ErrorCode::ReferenceNotFound,
+        ErrorContext::detail(format!(
+            "图层 {layer_id} 不存在（smart_* 落笔前校验）⇒ 现有图层：{}",
+            if existing.is_empty() {
+                "（一个都没有）".to_string()
+            } else {
+                existing.join(", ")
+            }
+        )),
+    ))
+}
+
+/// **P2-6**：内层笔触缺省不等渲染 ✓ —— `preview:false` 只省 PNG 编码，不省每笔的
+///   脏区渲染（`finish_mutation` 里 `preview:false` 的 else 支仍跑
+///   `render_region_complete_jobs`，且记进 `preview_ms` ✓）；tex_fold 66 笔
+///   `preview_ms=180021`（占墙钟 94%）正是这段 ✓ —— 定位清单写「内层不关预览」是
+///   旧假设：`preview:false` 自 2026-10-22 起已在 7 处内层调用里，probe2 的 180s
+///   仍发生在它之后 ⇒ 靶点是每笔等渲染，不是编码 ✓。
+///   缺省 `false` ⇒ 内层只落原子、不等渲染 ✓；调用方显式传 `wait_for_render:true` 可恢复 ✓。
+///   （`ctx` 随本次调用丢弃，不必还原 ✓。）
+fn set_inner_wait_for_render(ctx: &mut ToolContext<'_>, args: &Value) {
+    ctx.set_wait_for_render(
+        args.get("wait_for_render")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    );
+}
+
 /// 三种模式：
 /// - `hatch`：单向平行排线（素描调子、水彩平涂）
 /// - `cross_hatch`：交叉排线（加深调子，两遍垂直）
@@ -34,13 +93,17 @@ use super::*;
 /// 5. 生理微弧：0.015×L 的微拱，消除直尺感
 /// 6. 相位偏移：每笔 color_breath 相位 += i×0.618034，防同步条纹
 pub(super) fn write_smart_fill(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **P2-6**：先验图层（fail-fast，见 `require_smart_layer_alive`）—— 在选区预热之前 ✓。
+    let layer_id = require_str(args, "layer_id")?;
+    require_smart_layer_alive(ctx, &layer_id)?;
+    // **P2-6**：内层笔触缺省不等渲染（见 `set_inner_wait_for_render`）。
+    set_inner_wait_for_render(ctx, args);
     // Q4：`clip_to_selection` 透传 + 缓存预热（失败时忽略，走慢路径）。
     let clip_sel = optional_str(args, "clip_to_selection").unwrap_or_default();
     if !clip_sel.is_empty() {
         let _ = precompute_clip_mask(ctx, &clip_sel);
     }
 
-    let layer_id = require_str(args, "layer_id")?;
     let brush_name = optional_str(args, "brush").unwrap_or_else(|| "calligraphy".to_owned());
     let size = args.get("size").and_then(Value::as_f64).unwrap_or(15.0);
     let fill_direction_deg = args
@@ -574,13 +637,17 @@ pub(super) fn write_smart_fill(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
 /// - 不用纯 smoothstep(t)（中段导数 1.5 加重条带），用 80% linear + 20% smoothstep
 /// - time_ms 用 u + 0.15*sin(2πu)（两头慢中段快，且单调；0.19 会导致中段导数为负！）
 pub(super) fn write_smart_blend(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **P2-6**：先验图层（fail-fast，见 `require_smart_layer_alive`）—— 在选区预热之前 ✓。
+    let layer_id = require_str(args, "layer_id")?;
+    require_smart_layer_alive(ctx, &layer_id)?;
+    // **P2-6**：内层笔触缺省不等渲染（见 `set_inner_wait_for_render`）。
+    set_inner_wait_for_render(ctx, args);
     // Q4：`clip_to_selection` 透传 + 缓存预热（失败时忽略，走慢路径）。
     let clip_sel = optional_str(args, "clip_to_selection").unwrap_or_default();
     if !clip_sel.is_empty() {
         let _ = precompute_clip_mask(ctx, &clip_sel);
     }
 
-    let layer_id = require_str(args, "layer_id")?;
     let brush_name = optional_str(args, "brush").unwrap_or_else(|| "calligraphy".to_owned());
     let size = args.get("size").and_then(Value::as_f64).unwrap_or(15.0);
     let blend_direction_opt = args.get("blend_direction").and_then(Value::as_f64); // 缺省 0 = 从左到右（解析形状后，若传了 guides 则取其平均角）
@@ -1094,13 +1161,17 @@ pub(super) fn glaze_ellipse_layer_radii(rx: f64, ry: f64, inset_px: f64) -> Opti
 /// 核心铁律：paint_push = 0.0 —— 罩染是「干透叠色」（光学滤镜效应），
 /// 绝不能搅动底色（搅动是 smart_blend 干的事）。
 pub(super) fn write_smart_glaze(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **P2-6**：先验图层（fail-fast，见 `require_smart_layer_alive`）—— 在选区预热之前 ✓。
+    let layer_id = require_str(args, "layer_id")?;
+    require_smart_layer_alive(ctx, &layer_id)?;
+    // **P2-6**：内层笔触缺省不等渲染（见 `set_inner_wait_for_render`）。
+    set_inner_wait_for_render(ctx, args);
     // Q4：`clip_to_selection` 透传 + 缓存预热（失败时忽略，走慢路径）。
     let clip_sel = optional_str(args, "clip_to_selection").unwrap_or_default();
     if !clip_sel.is_empty() {
         let _ = precompute_clip_mask(ctx, &clip_sel);
     }
 
-    let layer_id = require_str(args, "layer_id")?;
     let brush_name = optional_str(args, "brush").unwrap_or_else(|| "watercolor_glazing".to_owned());
     let size = args.get("size").and_then(Value::as_f64).unwrap_or(15.0);
     let base_direction = args
@@ -1556,13 +1627,17 @@ pub(super) fn write_smart_glaze(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
 }
 
 pub(super) fn write_smart_edge_soften(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **P2-6**：先验图层（fail-fast，见 `require_smart_layer_alive`）—— 在选区预热之前 ✓。
+    let layer_id = require_str(args, "layer_id")?;
+    require_smart_layer_alive(ctx, &layer_id)?;
+    // **P2-6**：内层笔触缺省不等渲染（见 `set_inner_wait_for_render`）。
+    set_inner_wait_for_render(ctx, args);
     // Q4：`clip_to_selection` 透传 + 缓存预热（失败时忽略，走慢路径）。
     let clip_sel = optional_str(args, "clip_to_selection").unwrap_or_default();
     if !clip_sel.is_empty() {
         let _ = precompute_clip_mask(ctx, &clip_sel);
     }
 
-    let layer_id = require_str(args, "layer_id")?;
     let brush_name = optional_str(args, "brush").unwrap_or_else(|| "calligraphy".to_owned());
     let size = args
         .get("size")
@@ -2605,13 +2680,17 @@ pub(super) fn plan_texture_strokes(
 ///    有效尺寸，保证任何输入下规划可控；
 /// 5. 双尺度：20% 骨相层（size×2.0、Alpha×0.45）+ 80% 肌理层，同预算不翻倍。
 pub(super) fn write_smart_texture(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **P2-6**：先验图层（fail-fast，见 `require_smart_layer_alive`）—— 在选区预热之前 ✓。
+    let layer_id = require_str(args, "layer_id")?;
+    require_smart_layer_alive(ctx, &layer_id)?;
+    // **P2-6**：内层笔触缺省不等渲染（见 `set_inner_wait_for_render`）。
+    set_inner_wait_for_render(ctx, args);
     // Q4：`clip_to_selection` 透传 + 缓存预热（失败时忽略，走慢路径）。
     let clip_sel = optional_str(args, "clip_to_selection").unwrap_or_default();
     if !clip_sel.is_empty() {
         let _ = precompute_clip_mask(ctx, &clip_sel);
     }
 
-    let layer_id = require_str(args, "layer_id")?;
     let brush_name = optional_str(args, "brush").unwrap_or_else(|| "calligraphy".to_owned());
     let size = args
         .get("size")
@@ -2857,13 +2936,8 @@ pub(super) fn write_smart_texture(ctx: &mut ToolContext<'_>, args: &Value) -> Re
             })
             .collect();
         let c = stroke.color;
-        // **内层笔触是否等渲染** ✓（第 639 轮；外部 D6 ✓）：不透传 ⇒ 客户端无从关闭 ✗（实测 3.4×）
-        //   ⚠️ **不能塞进 `stroke_args`** ✗：`wait_for_render` 是**框架级**参数，
-        //   塞进去会被 `validate_args` 当成"未知参数"拒收（实测 39 笔全失败 ✗）
-        //   ⇒ 正确做法是改**上下文**（`ToolContext::set_wait_for_render` ✓）⇒ 内层调用自然继承 ✓。
-        if let Some(wait) = args.get("wait_for_render").and_then(Value::as_bool) {
-            ctx.set_wait_for_render(wait);
-        }
+        // **P2-6**：内层是否等渲染已在函数入口由 `set_inner_wait_for_render` 定好，
+        //   每笔重读 `args` 是冗余的（`ctx` 随本次调用丢弃，值不会漏到别的调用）。
         let stroke_args = json!({
             "layer_id": layer_id,
             "brush": brush_name,
@@ -3256,6 +3330,10 @@ pub(super) fn read_reference_rgba(
 /// - Pass 2：梯度加权特征肌理笔触（40~120 笔），落笔概率 ∝ ‖∇L‖，方向取等明度切向。
 pub(super) fn write_smart_sample(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
+    // **P2-6**：先验图层（fail-fast，见 `require_smart_layer_alive`）。
+    require_smart_layer_alive(ctx, &layer_id)?;
+    // **P2-6**：内层笔触缺省不等渲染（见 `set_inner_wait_for_render`）。
+    set_inner_wait_for_render(ctx, args);
     let ref_src = require_str(args, "ref")?;
     let brush_name = optional_str(args, "brush").unwrap_or_else(|| "calligraphy".to_owned());
     let samples = args
@@ -3690,6 +3768,8 @@ pub(super) fn erase_shape_runs(
 /// 合并为单次 `AtomKind::Erase` 提交 ⇒ 1 个 Tool Call = 1 个 Undo 原子。
 pub(super) fn write_smart_erase_shape(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
+    // **P2-6**：先验图层（fail-fast，见 `require_smart_layer_alive`）。
+    require_smart_layer_alive(ctx, &layer_id)?;
     let invert = args.get("invert").and_then(Value::as_bool).unwrap_or(false);
     let feather = args
         .get("feather")
@@ -3995,6 +4075,10 @@ impl GuideTable {
 
 pub(super) fn write_smart_hatch_follow(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
+    // **P2-6**：先验图层（fail-fast，见 `require_smart_layer_alive`）—— probe2 在此空烧 50s 才报错 ✓。
+    require_smart_layer_alive(ctx, &layer_id)?;
+    // **P2-6**：内层笔触缺省不等渲染（见 `set_inner_wait_for_render`）。
+    set_inner_wait_for_render(ctx, args);
     let brush_name = optional_str(args, "brush").unwrap_or_else(|| "calligraphy".to_owned());
     let color = args.get("color").ok_or_else(|| {
         YanshiError::new(
@@ -5214,6 +5298,10 @@ pub(super) fn write_smart_select(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         .and_then(Value::as_bool)
         .unwrap_or(true);
     let layer_id = optional_str(args, "layer_id");
+    // **P2-6**：给了图层就先验（fail-fast，见 `require_smart_layer_alive`）。
+    if let Some(layer_id) = layer_id.as_deref() {
+        require_smart_layer_alive(ctx, layer_id)?;
+    }
     let mode = optional_str(args, "mode").unwrap_or_else(|| "new".to_owned());
     if !["new", "add", "subtract", "intersect"].contains(&mode.as_str()) {
         return Err(YanshiError::new(

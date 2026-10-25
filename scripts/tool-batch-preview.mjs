@@ -37,9 +37,10 @@ const workspace = process.env.YANSHI_WORKSPACE;
 const renderPath = workspace ? `${workspace}/docs/${doc}/render.png` : null;
 const mtimeBefore = renderPath ? (() => { try { return statSync(renderPath).mtimeMs; } catch { return null; } })() : null;
 
-// **必须连同 `silent: true` 一起用** ✓（第 329 轮更正 ✗）：不给 `silent` 时，
-// 每个子调用**本来就带预览** ✓ ⇒ 那时"数出 12 个"是**默认行为**，不是特性生效 ✗。
-// 这个参数的用途是"**给静默的长批次中途放行预览**" ✓（长批次正为省临时 IO 才静默 ✓）。
+// **必须连同 `silent: true` 一起用** ✓（第 329 轮更正 ✗）：`preview_every_n_strokes` 只在
+// 静默的批次里放行预览 ✓ —— D1（期 2 块 4）之后 `silent` 缺省就是 `true`，
+// 所以这里显式写 `silent: true` 是把"缺省静默"钉死、不是改行为 ✓；
+// 想在**不静默**的批次里看进展，传 `silent: false` + 这两个放行参数 ✓。
 const streamed = await call(doc, token, "batch", { silent: true, preview_every_n_strokes: 4,
   calls: Array.from({ length: 12 }, (_, i) => strokeCall(i)) });
 const results = (streamed && streamed.calls) || (streamed && streamed.results) || [];

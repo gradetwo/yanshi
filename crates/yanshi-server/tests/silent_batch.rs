@@ -5,8 +5,10 @@
 //!
 //! **本测试的判据** ✓：`batch` 里**每一个子结果**带不带 `preview` ✓ ——
 //! 那是"省下来了没有"最直接的观测点 ✓（不用去数 IO ✓）。
-//! **而且必须验"不静默时仍然有"** ✓ —— 否则我可能只是把预览**整个删掉了** ✗，
+//! **而且必须验"显式 `silent: false` 时仍然有"** ✓ —— 否则我可能只是把预览**整个删掉了** ✗，
 //! 那会静默改变所有既有调用方的返回 ✓（比不做更糟 ✗）。
+//! **D1（期 2 块 4）**：缺省改为静默 ⇒ 不写 `silent` 时子结果**不带**预览 ✓，
+//! 显式 `silent: false` 才恢复每笔带预览 ✓。
 
 use serde_json::json;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
@@ -72,17 +74,18 @@ fn run_batch(workspace: &mut Workspace, silent: Option<bool>) -> (bool, Vec<bool
     (ok, missing)
 }
 
-/// **`silent: true` ⇒ 子结果不带预览** ✓；**不写这个键 ⇒ 照旧带** ✓（行为不变 ✓）。
+/// **`silent: true` ⇒ 子结果不带预览** ✓；**不写这个键 ⇒ 缺省静默（D1 期 2 块 4）** ✓；
+/// **显式 `silent: false` ⇒ 恢复每笔带预览的旧行为** ✓。
 #[test]
 fn a_silent_batch_skips_the_per_call_previews() {
     let mut workspace = workspace();
-    // ① **缺省（不写 silent）** ✓：每个子结果**都应当有预览** ✓ —— 这条是"没把功能删掉"的护栏 ✓。
+    // ① **缺省（不写 silent）** ✓：D1 之后缺省就是静默 ⇒ 每个子结果都**不该**带预览 ✓。
     let (ok, missing) = run_batch(&mut workspace, None);
     assert!(ok, "缺省 batch 应当成功");
     assert_eq!(missing.len(), 2, "应当有两个子结果");
     assert!(
-        missing.iter().all(|absent| !absent),
-        "缺省时每个子结果都应当带预览（否则我可能把预览整个删了 ✗）：{missing:?}"
+        missing.iter().all(|absent| *absent),
+        "缺省静默时每个子结果都不该带预览：{missing:?}"
     );
     // ② **`silent: true`** ✓：两个都**不该**带预览 ✓。
     let (ok, missing) = run_batch(&mut workspace, Some(true));
@@ -91,12 +94,12 @@ fn a_silent_batch_skips_the_per_call_previews() {
         missing.iter().all(|absent| *absent),
         "静默时每个子结果都不该带预览：{missing:?}"
     );
-    // ③ **`silent: false`** ✓：显式关掉 ⇒ 与缺省一致 ✓。
+    // ③ **`silent: false`** ✓：显式关掉 ⇒ 每个子结果**都应当带预览** ✓ —— 这条是"没把功能删掉"的护栏 ✓。
     let (ok, missing) = run_batch(&mut workspace, Some(false));
     assert!(ok);
     assert!(
         missing.iter().all(|absent| !absent),
-        "显式 false 应当与缺省一致：{missing:?}"
+        "显式 false 时每个子结果都应当带预览（否则我可能把预览整个删了 ✗）：{missing:?}"
     );
 }
 
