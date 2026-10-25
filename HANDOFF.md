@@ -18,11 +18,12 @@
 ## 二、当前状态
 
 ```
-CI：bf0c6e5a **success ✓**（run 40176610440；12 个可跑的 job 全 success，brush parity skipped）
-    ⇒ D172 闭环 ＋ `HANDOFF.md` 白名单修正**都在这一跑里验过** ✓
-    40175183140（ca58be70）failure ⇒ 唯一意外失败是 `tool-repo-root-clean`（已在 bf0c6e5a 修）
+CI：784362cc **success ✓**（run 40183983484；12 个可跑 job 全 success，brush parity skipped）
+    ⇒ 这一跑验过：`browser-project-download`／`brush-panel`／`layout`／`i18n` 全 ✓（前三条已移出 known-red）
+      ＋ 新判据 `check-blank-overwrite-guard` ✓（shard 1：通过 57｜意外失败 0｜已知红 3｜跳过 3）
+    dbe1160b failure ⇒ 唯一意外失败是 `browser-i18n`（运行时 `<option>` 7 条中文）⇒ 784362cc 修
+    bf0c6e5a success ✓（D172 闭环 ＋ `HANDOFF.md` 白名单）
     2e70615b success ✓（dab ×3 注释；**补丁线收工**）
-    26ba9483 success ✓（F 的 Default 派生修正）
 ```
 
 **已落地（都过了 CI 或本机验证）**：
@@ -38,7 +39,7 @@ CI：bf0c6e5a **success ✓**（run 40176610440；12 个可跑的 job 全 succes
 5. **判据补强（前几轮）**：台账引用 430 处（棘轮 333→0）、注释里的断言不算、临时目录守卫必须被绑定、示例 205→203＋静态生成、`omitted` 可见判据、D12 knife 判据。
 6. **第 1131 轮（本轮，未推）**：
    - **D188 量级**写进 `yanshi-timelapse` 降采样警告（「差随原子数增长：200 图块 ≈0.6 lv/通道 ⇒ 22,926 原子 ≈16 lv」）＋ 断言；变异「随规模变化」⇒ 红 ✓。
-   - **四条浏览器 known-red 归因**：`browser-project-download`／`browser-brush-panel`／`browser-i18n` 是 `run-criteria.sh` 的**一刀切 `render=client`** 把它们换成了"本地内核 + 服务端资产"这种不存在的组合 ⇒ 加 `RENDER_PARAM` 例外；三条**本机 server 模式全部通过**（project：下载 10,752 B、SHA 相同、导入 4 atoms/1 blob；brush-panel：`closedAfterPick=true`；i18n：整页中文 0）。
+   - **四条浏览器 known-red 归因**：`browser-project-download`／`browser-brush-panel`／`browser-i18n` 是 `run-criteria.sh` 的**一刀切 `render=client`** 把它们换成了"本地内核 + 服务端资产"这种不存在的组合 ⇒ 加 `RENDER_PARAM` 例外；**CI 实测**：`project-download ✓`（shard 1）、`brush-panel ✓`（shard 3）、`layout ✓`（shard 3）。**而 `i18n` 本机是假绿** ✗（CI shard 1 报 7 条中文：`正常/正片叠底/滤色/叠加/变暗/变亮`）⇒ 那是**运行时**建的 `<option>`（`modeLabels`，`viewer-app.js:5740`），本机那次还没建出来 ⇒ 已加 7 条 `I18N_EN_TEXT` 词条，CDP 探 DOM 复核为 `Normal/Multiply/Screen/Overlay/Darken/Lighten/Add` ✓。
    - **`browser-layout` 判据改成结构量**：旧断「400% 溢出舞台 > 10px」量的是**视口宽**（CI 854px）✗；产品机制是**视口平移**，不是 `.stage` 滚动条 ⇒ 改断 `state.zoom ≈ 4` ＋ `viewport.w < 文档宽`（适配时 == 文档宽）○ 本机 client 模式通过 ✓。
    - **known-red 18 → 14**（上面四条移出，理由写在名单里）。
    - **Y-01 复查＋新判据**：`viewer-app.js:2245` 的 `skipped-blank-over-ink` 已按**内容**挡住"全透明覆盖"⇒ 审计说的"新序号空帧"已覆盖；残余只是"`knownSeq` 自身可能旧"（记在台账 §621-四）。另加 **`scripts/check-blank-overwrite-guard.mjs`**：守「守卫在、且先判后落帧、且跳过有计数、行为侧判据仍在读」；变异（`if (false)`）⇒ 红 ✓、复原 ⇒ 绿 ✓；自测 5 例 ✓。
@@ -48,8 +49,9 @@ CI：bf0c6e5a **success ✓**（run 40176610440；12 个可跑的 job 全 succes
 1. **qoder 剩余条目**：`D139`（静默零覆盖，需他给完整参数；我 6 点网格未复现）、`D188` 的量级说明（差随原子数增长：200 图块 ≈0.6 lv/通道、22,926 原子 ≈16 lv ⇒ 写进那条 `⚠️` 警告）。
 2. `shrink` blit（`art` 第 12 项）：最小包上对照判据实测 均值 1.89／>30 占 0.22% ⇒ 无缺口；要他用同判据跑 0.30 GB 的 `test1full`。
 3. （可选，第二口径）`scripts/tool-export-bitmaps.mjs` 加一段：`include_bitmaps: true` 导出的包直接喂 `target/release/yanshi-timelapse` ⇒ `rc=0`。
-4. **下一轮先读本轮 CI 的 browser 判据**：`browser-project-download`／`brush-panel`／`i18n`／`layout` 已移出 known-red ⇒
-   若仍红就是**意外失败**（先看是不是 `RENDER_PARAM` 没生效）。另：`browser-export-full-document` 上一跑已通过（`✓ 离线也是 1024×1024`）⇒ 可考虑下一轮移出名单。
+4. **浏览器 known-red 只剩真产品缺陷**：客户端落笔一族（本地 IndexedDB 日志缺 `create_document` ⇒ `0×0`）、
+   `browser-ui-check`（夹具/时序）、`cs-render-switch`（抖动）等。`browser-project-download`／`brush-panel`／`i18n`／`layout` **已移出名单且 CI 绿** ✓。
+   `browser-export-full-document` 仍登记（产品那句「整幅，离线本地合成」已满足；只因**偶发内核超时**留着）。
 
 ## 四、纪律与环境（别重犯）
 

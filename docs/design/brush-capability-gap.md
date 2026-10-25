@@ -21804,7 +21804,7 @@ run 0c58d523：completed/**success**｜success=12｜failure=0｜skipped=1
 |---|---|---|
 | `browser-project-download` | 走 `api-local.js` 的 **JSON 工程包**（`<doc>.yanshi.json`，`api-local.js:2833`）⇒ HTTP url／`blob_hash`／服务端导入**全都不成立** | ✓ 下载 `bpd_632578.yanshi`（**10,752 B**）→ 与服务端 URL **SHA-256 相同** → 服务端导入回 **4 atoms / 1 blob** |
 | `browser-brush-panel` | 本地模式**没有服务端资产** ⇒ 调色板 0 块 ⇒ CI 实测 `⏱ 等待超时：调色板色块` ⇒ "用完即收"**没机会跑** | ✓ `closedAfterPick=true`、`staysOpenWhenOff=true` |
-| `browser-i18n` | 本地模式把 `endpoint_not_local` 等噪声算进整页中文 | ✓ 切英文后整页中文 **0** 条、切回正常 |
+| `browser-i18n` | 本地模式把 `endpoint_not_local` 等噪声算进整页中文 | 本机 server 模式 0 条 —— **但这是假绿** ✗（见下） |
 
 **⇒ 修法**：`run-criteria.sh` 里加一个 `RENDER_PARAM`（第 1131 轮）——
 ```bash
@@ -21816,6 +21816,18 @@ esac
 ```
 ⇒ 四处 URL（`/json/new`、`YANSHI_VIEWER_URL`、`argv[2]`）**都改用它** ✓
 ⇒ **这不是放松断言** ✗：判据一条没改，改的是**它们测哪个模式** ✓（原先测的是"本地内核 + 服务端资产"这种**不存在的组合** ✓）。
+
+**⇒ ★ 而 `i18n` 这条**本机是假绿** ✗ ★**（第 1131 轮，CI 才照出来）：
+本机 server 模式跑出「整页中文 0」 ✓ ⇒ 我据此把它移出名单 ✓ ⇒ **下一跑 shard 1 红** ✗：
+```
+✗ 英文模式下整页仍有 7 条中文：["正常","正片叠底","滤色","叠加","变暗","变亮"]
+```
+⇒ 根因：混合模式下拉的 7 个 `<option>` 是 `modeLabels`（`viewer-app.js:5740`）**运行时**建的 ✓
+⇒ 本机那次**它们还没建出来**（页面时序）⇒ 判据量到的是"还没有"✗ 不是"已翻译"✓。
+⇒ **修法**：给 7 条加 `I18N_EN_TEXT` 词条 ✓；CDP 直接探 DOM 复核：
+`Normal/Multiply/Screen/Overlay/Darken/Lighten/Add` ✓。
+⇒ **教训**：**本机绿 ≠ CI 绿**，当被测对象是**异步建出来的 DOM** 时，判据要**等它存在**再断 ✓
+（`i18n` 的探针不等 ✓；`brush-panel` 等了 ✓ ⇒ 所以它没假绿 ✓）。
 
 ### 二、`browser-layout` 的 ③ 在问错对象
 
