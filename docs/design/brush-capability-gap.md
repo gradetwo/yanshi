@@ -22155,3 +22155,30 @@ server lib 含 `tools_timelapse` 12；clippy/fmt 绿 ✓。
 **⇒ 本机最终验证**：clippy workspace 绿（pre-commit）；server lib **203**；20 个定向集成 suite；
 render **59**；hokusai **35**；timelapse **30**；**17 条**新/相关判据全 0（census 256 名、surface 204、
 examples 204、verify-package 篡改翻转、batch 上限/静默/取证、smart 前置、calligraphy、频率分离、color_space、dodge 等）✓。
+
+## 六百三十三、paint 期 2/2b/E2 首跑 CI 的**四类红**及处置（第 1132 轮）
+
+**⇒ 首跑 `40241760575`：`test (beta)` + shard 1 + shard 2 红** ✓ 逐条：
+
+1. **★ `test (beta)`：`brush_asset_route_rejects_encoded_traversal` 的正例得 404（期望 200）★**
+   **⇒ 不是产品**：`transport.rs` 里 4 个测试都写 `let mut root = std::env::temp_dir();
+   let _cleanup = Cleanup(root.clone()); root.push(...)` ⇒ **`Cleanup` 拿到的是 `/tmp` 本身** ✗
+   ⇒ 哪个测试先结束，`Drop` 就 `remove_dir_all("/tmp")` ✗ ⇒ 并行测试的资产文件被**别的测试删掉** ✗
+   ⇒ 正例 404 ✓。stable 碰巧没撞上、beta 撞上（**同一种调度差异** ✓）。
+   **修法**：4 处都改成 **先 `push` 后缀、再 `Cleanup(那个子目录)`** ✓（只删自己的目录）。
+   ⇒ 这同时消除了「测试删整个 /tmp」的破坏性副作用 ✓（比红本身更值得修）。
+
+2. **`tool-thin-stroke-not-global`**：P2-13 修好 calligraphy 小 size 后，`size=3.456` 的细笔
+   **已能落墨**（实测 `painted=2354`）⇒ 旧判据「细笔 3/3 零像素、看零墨消息」的**前提被产品修掉了** ✗
+   ⇒ 判据假红。**修法**：① 细笔能落墨改成**回归断言**（旧缺陷是 3/3 零像素）✓；
+   ② 零墨消息改用**真零墨样本**（size=3.456、2 点、路径 0.4px）⇒ 仍断言
+   「不代表整支」＋报 size/点数/路径长 ✓。再跑 exit 0 ✓。
+
+3. **`kernel-wasm-allowlist`**：P2-14 的模糊并行在 `filter.rs` 有两处
+   `#[cfg(target_arch = "wasm32")]` 串行回退（横向/纵向）未登记 ✗
+   ⇒ 按锚点登记两条，理由：wasm 无共享内存线程、串行累加顺序不变 ⇒ **逐位一致**，
+   已有 `gaussian_blur_parallel_matches_serial_bitwise` 钉住 ✓。判据转绿 ✓。
+
+4. **`tool-color-schema`**：`gradient_blend` 的 `from` 描述承诺收 `#RRGGBB(AA)`／数组／对象 ✓，
+   而 `param!("from", Object, …)` 把 schema 收窄成对象 ✗ ⇒ 调用方按描述传字符串会在 schema 层被拒 ✗
+   ⇒ 实现本来就收（P2-5）⇒ **改 schema 为 `Any`** ✓（判据转绿）。

@@ -2054,7 +2054,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
-            param!("from", Object, true, "起点 {x, y, color}（color 与 brush_stroke 同口径：数组 [r,g,b,(a)]／对象 {r,g,b,a}／\"#RRGGBB\"／\"#RRGGBBAA\" 都收）"),
+            param!("from", Any, true, "起点 {x, y, color}（color 与 brush_stroke 同口径：数组 [r,g,b,(a)]／对象 {r,g,b,a}／\"#RRGGBB\"／\"#RRGGBBAA\" 都收）"),
             param!("to", Object, true, "终点 {x, y, color}（与 from 同口径）"),
             param!("brush", String, true, "笔刷名（同 brush_stroke）"),
             param!("size", Number, true, "笔尖直径（像素）"),

@@ -95,6 +95,14 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    `tool-examples.md` 重新生成；**`tool-verify-package` 判据自身用 `tar --delete` 篡改手写 tar 会重排坏**
    ⇒ 改成解包-删-重打包（只删本体），判据转绿（不是产品问题）。
 
+19. **首跑 CI 的四类红已修**（台账 633）：
+   - `test (beta)`：`transport.rs` 4 个测试的 `Cleanup(std::env::temp_dir())` **会删整个 /tmp**
+     ⇒ 并行测试互删资产 ⇒ 正例 404；改成**先 push 后缀再 Cleanup 子目录** ✓。
+   - `tool-thin-stroke-not-global`：P2-13 已让 size=3.456 落墨（2354px）⇒ 旧「零墨」前提失效；
+     改成「细笔必须落墨」+ 真零墨样本（2 点 0.4px）验消息 ✓。
+   - `kernel-wasm-allowlist`：filter.rs 两处 wasm 串行回退登记（逐位一致）✓。
+   - `tool-color-schema`：`gradient_blend.from` 的 Object→`Any`（实现收数组/hex）✓。
+
 ## 三、下一步（按优先序，都有精确入口）
 
 -0. **读本轮 CI**（paint 期 2/2b/E2＋skill 后续＋衔接修复）：重点 `tool-surface-coverage`、

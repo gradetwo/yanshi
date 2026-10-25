@@ -43,6 +43,14 @@ const ALLOWED = [
     why: "wasm32 的哑计时器（struct 之前的 derive）：该目标不支持 std::time::Instant ⇒ 用空结构体替代；它只服务于性能观测 ⇒ **没有任何数值进入像素路径** ✓" },
   { file: "crates/yanshi-core/src/probe.rs", anchor: "impl ProbeClock {",
     why: "wasm32 的哑计时器（impl）：now() 返回 Self、elapsed() 与 duration_since() 恒为 Duration::ZERO ⇒ 与上一条是同一件事的实现体；取值恒零 ⇒ **不改变任何像素** ✓" },
+  // **★★ 模糊并行（P2-14，画画线期 2）的两处 wasm 回退 ✗ ★★**（第 1132 轮登记 ✓）
+  //   ⇒ wasm32 没有共享内存线程 ⇒ 横向/纵向的并行分派被 cfg 掉，回退为**纯串行** ✓；
+  //     并行只是把同一卷积按行带切分，每个输出像素的累加顺序**与原串行实现相同** ⇒
+  //     **逐位不变** ✓，且已由 `gaussian_blur_parallel_matches_serial_bitwise` 钉住 ✓。
+  { file: "crates/yanshi-render/src/filter.rs", anchor: "convolve_horizontal_serial(buffer, kernel, radius);",
+    why: "高斯模糊的横向 wasm32 回退：wasm32 无共享内存线程 ⇒ 串行。逐输出像素的累加顺序与原实现相同 ⇒ 与并行**逐位一致**，有 gaussian_blur_parallel_matches_serial_bitwise 判据钉住 ✓" },
+  { file: "crates/yanshi-render/src/filter.rs", anchor: "convolve_vertical_serial(buffer, kernel, radius);",
+    why: "高斯模糊的纵向 wasm32 回退：同横向，wasm32 串行；输入整幅快照一次、按行带写，累加顺序不变 ⇒ 逐位一致 ✓" },
   { file: "crates/yanshi-render/src/render.rs", anchor: "mod parallel_impl",
     why: "并行分块渲染的执行器：wasm32 没有共享内存线程 ⇒ 该目标下 workers() 恒为 1、整条 std::thread 路径被 cfg 掉（不参与编译），回退是**纯串行**；并行只是把同一段 render_accumulation 分块，块的像素由该像素自己的输入决定 ⇒ 与串行逐字节一致（仅滑动窗口方框模糊有项目已批准的 ±1 LSB D1 例外）" },
 ];

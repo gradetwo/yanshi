@@ -577,8 +577,8 @@ fn websocket_pushes_control_flow_globally_and_data_flow_by_viewport() {
 #[test]
 fn document_persistence_over_http_survives_restart() {
     let mut root = std::env::temp_dir();
-    let _cleanup_1 = Cleanup(root.clone());
     root.push(format!("yanshi-http-it-{}", std::process::id()));
+    let _cleanup_1 = Cleanup(root.clone());
     let _ = std::fs::remove_dir_all(&root);
 
     let token;
@@ -749,8 +749,8 @@ fn client_supplied_atom_ids_are_idempotent() {
 #[test]
 fn wasm_assets_are_served_from_the_configured_directory() {
     let mut root = std::env::temp_dir();
-    let _cleanup_2 = Cleanup(root.clone());
     root.push(format!("yanshi-wasm-assets-{}", std::process::id()));
+    let _cleanup_2 = Cleanup(root.clone());
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(
@@ -937,8 +937,8 @@ fn viewer_exposes_the_contact_mailbox() {
 #[test]
 fn brand_assets_are_served_from_the_configured_directory() {
     let mut root = std::env::temp_dir();
-    let _cleanup_3 = Cleanup(root.clone());
     root.push(format!("yanshi-brand-{}", std::process::id()));
+    let _cleanup_3 = Cleanup(root.clone());
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("svg")).unwrap();
     std::fs::create_dir_all(root.join("png")).unwrap();
@@ -1180,8 +1180,8 @@ fn the_served_viewer_script_encodes_brush_names() {
 #[test]
 fn brush_asset_route_rejects_encoded_traversal() {
     let mut root = std::env::temp_dir();
-    let _cleanup_4 = Cleanup(root.clone());
     root.push(format!("yanshi-brush-traversal-{}", std::process::id()));
+    let _cleanup_4 = Cleanup(root.clone());
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("brushes")).unwrap();
     // brushes/ 里一个合法笔刷；brushes/ **之外**一个同扩展名的哨兵（只在守卫失效时可达）。
