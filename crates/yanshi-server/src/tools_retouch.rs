@@ -567,6 +567,20 @@ pub(super) fn write_dodge_burn_setup(ctx: &mut ToolContext<'_>, args: &Value) ->
             .filter(|layer| layer_ids.contains(&layer.id))
             .filter_map(|layer| layer.mask_id.clone())
             .collect();
+        // **P2-10**（期 2 块 2）：`mask_ids` 只有数组、无角色——调用方只能按
+        //   `[dodge, burn]` 顺序猜 ✗。⇒ 回执加 `masks: {dodge, burn}`，按**图层名**认角色
+        //   （复用路径上数组顺序不可靠——这里是按 id 排过的集合，不能反推角色 ✗）；
+        //   gray 组没有蒙版 ⇒ 两格都是 null。数组本身不动（兼容）。
+        let mask_of = |role: &str| -> Value {
+            state
+                .layers
+                .values()
+                .filter(|layer| layer_ids.contains(&layer.id))
+                .find(|layer| layer.name == role)
+                .and_then(|layer| layer.mask_id.clone())
+                .map(Value::String)
+                .unwrap_or(Value::Null)
+        };
         return Ok(json!({
             "ok": true,
             "already_exists": true,
@@ -574,6 +588,7 @@ pub(super) fn write_dodge_burn_setup(ctx: &mut ToolContext<'_>, args: &Value) ->
             "layer_ids": layer_ids,
             "object_ids": object_ids,
             "mask_ids": mask_ids,
+            "masks": {"dodge": mask_of("减淡 · Dodge"), "burn": mask_of("加深 · Burn")},
             "note": "同名减淡加深组已存在 ⇒ 复用既有组，没有新建（删掉旧组后可重建）。",
         }));
     }
@@ -702,6 +717,17 @@ pub(super) fn write_dodge_burn_setup(ctx: &mut ToolContext<'_>, args: &Value) ->
     };
     let changeset = Changeset::new_id();
     ctx.commit_changeset(atoms, changeset)?;
+    // **P2-10**（期 2 块 2）：新鲜建组时按建层顺序认角色——curves 循环先减淡后加深 ⇒
+    //   `mask_ids[0]` 是 dodge、`[1]` 是 burn；gray 变体没有蒙版 ⇒ 两格 null。
+    //   （与复用路径的按名认角色互为印证：同一组的两次调用必须给出同一张映射。）
+    let masks = if mode == "curves" {
+        json!({
+            "dodge": mask_ids.first().cloned(),
+            "burn": mask_ids.get(1).cloned(),
+        })
+    } else {
+        json!({"dodge": Value::Null, "burn": Value::Null})
+    };
     Ok(json!({
         "ok": true,
         "already_exists": false,
@@ -709,6 +735,7 @@ pub(super) fn write_dodge_burn_setup(ctx: &mut ToolContext<'_>, args: &Value) ->
         "layer_ids": layer_ids,
         "object_ids": object_ids,
         "mask_ids": mask_ids,
+        "masks": masks,
         "mode": mode,
         "note": note,
     }))

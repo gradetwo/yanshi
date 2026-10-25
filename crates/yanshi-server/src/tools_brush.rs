@@ -1260,6 +1260,23 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             _ => value["warnings"] = json!([note]),
         }
     }
+    // **P2-8：`#RRGGBBAA` 的 alpha 被静默丢掉** ✓（期 2 块 2）：
+    //   画笔颜色只取 RGB（`brush_color_to_srgb_bytes` 回 `[u8; 3]`）⇒ 8 位 hex 的
+    //   alpha 在此丢掉；B4 的回显只认对象式 `a` 键与数组 4 元，hex 写法没信号 ✗。
+    //   ⇒ 半透明 alpha（< 255）时进 `warnings`，说清"被忽略、透明度请用 `opacity`" ✓；
+    //   不透明 `FF` 与 6 位 hex 不报（没损失信息 ✓）。
+    for (key, source) in [("color", &color_source), ("color_to", &color_to_source)] {
+        if let Some(alpha) = hex_alpha_dropped(source) {
+            let note = format!(
+                "`{key}` 用的 `#RRGGBBAA` 带半透明 alpha（{alpha}/255）⇒ 画笔颜色只取 RGB，\
+                 这个 alpha **被忽略**（画面不会变透明）；透明度请用 `opacity` 参数"
+            );
+            match value.get_mut("warnings") {
+                Some(Value::Array(items)) => items.push(json!(note)),
+                _ => value["warnings"] = json!([note]),
+            }
+        }
+    }
     Ok(value)
 }
 

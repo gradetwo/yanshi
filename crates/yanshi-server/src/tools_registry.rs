@@ -1728,7 +1728,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "dodge_burn_setup",
         profile: Profile::Retouch,
-        summary: "减淡加深建组（期 4 D1）：curves 变体（缺省）建两个带全黑蒙版的曲线层（减淡中点上凸、加深中点下凹，中点参数给显示空间值、工具按 §9.1 EOTF 转线性落盘），用 paint_mask 以白色低不透明度笔刷涂抹生效区；gray 变体建一个 50% 灰 soft_light 层，用黑/白低流量笔触涂抹。curves 变体零烘焙、可反复调曲线；gray 变体单层直观、代价是灰层为烘焙快照。重复调用同名组返回 already_exists，不叠第二套",
+        summary: "减淡加深建组（期 4 D1）：curves 变体（缺省）建两个带全黑蒙版的曲线层（减淡中点上凸、加深中点下凹，中点参数给显示空间值、工具按 §9.1 EOTF 转线性落盘），用 paint_mask 以白色低不透明度笔刷涂抹生效区；gray 变体建一个 50% 灰 soft_light 层，用黑/白低流量笔触涂抹。curves 变体零烘焙、可反复调曲线；gray 变体单层直观、代价是灰层为烘焙快照。重复调用同名组返回 already_exists，不叠第二套。回执另给 `masks: {dodge, burn}`（按角色标注蒙版，`mask_ids` 数组本身保留；gray 组两格为 null）",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层 id（必填；新组落在它上方，组名缺省取它的名字）"),
@@ -2041,8 +2041,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
-            param!("from", Object, true, "起点 {x, y, color}"),
-            param!("to", Object, true, "终点 {x, y, color}"),
+            param!("from", Object, true, "起点 {x, y, color}（color 与 brush_stroke 同口径：数组 [r,g,b,(a)]／对象 {r,g,b,a}／\"#RRGGBB\"／\"#RRGGBBAA\" 都收）"),
+            param!("to", Object, true, "终点 {x, y, color}（与 from 同口径）"),
             param!("brush", String, true, "笔刷名（同 brush_stroke）"),
             param!("size", Number, true, "笔尖直径（像素）"),
             param!("steps", Number, false, "生成几笔（缺省 10，含首末两点）"),

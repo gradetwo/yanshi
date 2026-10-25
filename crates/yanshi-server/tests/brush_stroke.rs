@@ -1139,3 +1139,63 @@ fn a_degenerate_dot_is_a_round_blob_rather_than_a_vertical_brick() {
     // **变异说明**：把展开改回 `(x, y±reach)` 那条竖线 ⇒ ② 红（比例 1.84 ✗）✓
     //   把环半径改成 0 ⇒ ①④ 红 ✓（本判据三层各自能红 ✓）。
 }
+
+/// **P2-8：`#RRGGBBAA` 的半透明 alpha 被静默丢掉**（期 2 块 2）
+///
+/// **⇒ 缺陷**：画笔颜色只取 RGB（`brush_color_to_srgb_bytes` 回 `[u8; 3]`）⇒ 8 位 hex 的
+///   alpha 在此丢掉；B4 的回显只认对象式 `a` 键与数组 4 元，hex 写法没信号 ✗。
+///
+/// **⇒ 判据**：半透明 `#ff000080` ⇒ 回执 `warnings` 里有 alpha 被忽略的信号 ✓；
+///   不透明 `#ff0000ff` 与 6 位 `#ff0000` ⇒ 没有这条信号（没损失信息，不许误报）✓。
+/// **⇒ 变异**：`hex_alpha_dropped` 恒回 `None` ⇒ 半透明臂红 ✓。
+#[test]
+fn hex_alpha_warns_only_when_semi_transparent() {
+    let root = temp_dir("hex_alpha");
+    let _cleanup_1 = Cleanup(root.clone());
+    let mut workspace = workspace(&root);
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
+        json!(true)
+    );
+    let stroke = |workspace: &mut Workspace, color: serde_json::Value| {
+        call(
+            workspace,
+            "brush_stroke",
+            json!({
+                "layer_id": "L", "brush": "2B_pencil", "size": 24,
+                "points": [[40.0, 60.0, 0.8], [200.0, 60.0, 0.8]],
+                "color": color, "preview": false, "wait_for_render": false,
+            }),
+        )
+    };
+    let has_alpha_note = |result: &serde_json::Value| {
+        result["warnings"]
+            .as_array()
+            .map(|items| {
+                items.iter().any(|item| {
+                    item.as_str()
+                        .map(|text| text.contains("alpha") && text.contains("被忽略"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+    };
+    let semi = stroke(&mut workspace, json!("#ff000080"));
+    assert_eq!(semi["ok"], json!(true), "{semi}");
+    assert!(
+        has_alpha_note(&semi),
+        "半透明 #RRGGBBAA 必须进 warnings（alpha 被忽略）：{semi}"
+    );
+    let opaque = stroke(&mut workspace, json!("#ff0000ff"));
+    assert_eq!(opaque["ok"], json!(true), "{opaque}");
+    assert!(
+        !has_alpha_note(&opaque),
+        "不透明 FF 没丢信息，不许报 alpha 警告：{opaque}"
+    );
+    let hex6 = stroke(&mut workspace, json!("#ff0000"));
+    assert_eq!(hex6["ok"], json!(true), "{hex6}");
+    assert!(
+        !has_alpha_note(&hex6),
+        "6 位 hex 没有 alpha，不许报 alpha 警告：{hex6}"
+    );
+}

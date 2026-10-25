@@ -664,3 +664,49 @@ fn a_smoothed_medium_stroke_hands_more_points_to_the_plugin() {
         "`smooth: true` 必须改到画面 ✗（实测两条路径逐字节相同 ✓ ⇒ 平滑没生效 ✓）"
     );
 }
+
+/// **P2-8（介质笔触臂）**：`medium_stroke` 的 `color`／`color_to` 同样只取 RGB ⇒
+/// `#RRGGBBAA` 的半透明 alpha 被静默丢掉（`color` 只认对象式 `a`，`color_to` 只取 RGB）⇒
+/// 进 `warnings`，与 `brush_stroke` 同一条信号。
+/// **⇒ 变异**：`hex_alpha_dropped` 恒回 `None` ⇒ 半透明臂红 ✓。
+#[test]
+fn medium_stroke_warns_on_semi_transparent_hex_alpha() {
+    let mut workspace = workspace();
+    setup(&mut workspace);
+    let stroke = |workspace: &mut Workspace, color: serde_json::Value| {
+        let mut ctx = context(workspace);
+        registry().call(
+            &mut ctx,
+            "medium_stroke",
+            &json!({
+                "layer_id": "L", "medium": "oil",
+                "points": [[20.0, 20.0, 1.0], [40.0, 30.0, 0.6], [60.0, 44.0, 0.3]],
+                "size": 22, "color": color,
+            }),
+        )
+    };
+    let has_alpha_note = |result: &serde_json::Value| {
+        result["warnings"]
+            .as_array()
+            .map(|items| {
+                items.iter().any(|item| {
+                    item.as_str()
+                        .map(|text| text.contains("alpha") && text.contains("被忽略"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+    };
+    let semi = stroke(&mut workspace, json!("#ff000080"));
+    assert_eq!(semi["ok"], json!(true), "{semi}");
+    assert!(
+        has_alpha_note(&semi),
+        "半透明 #RRGGBBAA 必须进 warnings（alpha 被忽略）：{semi}"
+    );
+    let hex6 = stroke(&mut workspace, json!("#ff0000"));
+    assert_eq!(hex6["ok"], json!(true), "{hex6}");
+    assert!(
+        !has_alpha_note(&hex6),
+        "6 位 hex 没有 alpha，不许报 alpha 警告：{hex6}"
+    );
+}

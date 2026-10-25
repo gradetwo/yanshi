@@ -361,3 +361,92 @@ fn dodge_burn_setup_is_idempotent() {
     let after = workspace.document(doc).unwrap().state().head_seq;
     assert_eq!(before, after, "幂等复用时零原子落账");
 }
+
+/// **P2-10：`dodge_burn_setup` 的 `mask_ids` 标注 dodge/burn 角色**（期 2 块 2）
+///
+/// **⇒ 缺陷**：`mask_ids` 只有数组、无角色——调用方只能按 `[dodge, burn]` 顺序猜 ✗；
+///   复用路径上数组还是按 id 排过的集合，顺序更不可靠 ✗。
+///
+/// **⇒ 判据**：新建 curves 组 ⇒ `masks.dodge == mask_ids[0]`、`masks.burn == mask_ids[1]` ✓，
+///   且按 `mask_id` 找到的图层名字对得上（dodge ⇒「减淡 · Dodge」）✓；
+///   二次调用（already_exists）⇒ 同一张映射 ✓；gray 组 ⇒ 两格都是 null ✓。
+/// **⇒ 变异**：`masks` 的两格对调 ⇒ 名字断言红 ✓；复用路径不给 `masks` ⇒ 二次调用断言红 ✓。
+#[test]
+fn dodge_burn_setup_masks_label_roles() {
+    let root = temp_dir("db_masks");
+    let _cleanup = TempCleanup(root.clone());
+    let doc = "doc_db_masks";
+    let mut ws = workspace(&root, doc, 64, 48);
+    let src = setup_source(&mut ws, doc, 64, 48);
+    let first = call(
+        &mut ws,
+        doc,
+        "dodge_burn_setup",
+        json!({"layer_id": src, "mode": "curves"}),
+    );
+    assert_eq!(first["ok"], json!(true), "{first}");
+    let mask_ids = first["mask_ids"].as_array().expect("回蒙版 id");
+    assert_eq!(mask_ids.len(), 2, "curves 变体应建 2 张蒙版：{first}");
+    assert_eq!(
+        first["masks"]["dodge"], mask_ids[0],
+        "masks.dodge 必须等于 mask_ids[0]：{first}"
+    );
+    assert_eq!(
+        first["masks"]["burn"], mask_ids[1],
+        "masks.burn 必须等于 mask_ids[1]：{first}"
+    );
+    // 角色必须名副其实：按 mask_id 找到图层，名字对得上。
+    let state = ws.document(doc).unwrap().state().clone();
+    let layer_named = |mask: &str| {
+        state
+            .layers
+            .values()
+            .find(|layer| layer.mask_id.as_deref() == Some(mask))
+            .map(|layer| layer.name.clone())
+    };
+    assert_eq!(
+        layer_named(first["masks"]["dodge"].as_str().unwrap()),
+        Some("减淡 · Dodge".to_owned()),
+        "masks.dodge 指的图层必须是减淡层"
+    );
+    assert_eq!(
+        layer_named(first["masks"]["burn"].as_str().unwrap()),
+        Some("加深 · Burn".to_owned()),
+        "masks.burn 指的图层必须是加深层"
+    );
+    // 复用路径给出同一张映射（按名认角色，不靠数组顺序）。
+    let second = call(
+        &mut ws,
+        doc,
+        "dodge_burn_setup",
+        json!({"layer_id": src, "mode": "curves"}),
+    );
+    assert_eq!(second["already_exists"], json!(true), "{second}");
+    assert_eq!(
+        second["masks"], first["masks"],
+        "复用路径的 masks 必须与新建时一致：{second}"
+    );
+    // gray 变体没有蒙版 ⇒ 两格 null（另起根目录，免得两个落盘工作区共用一处）。
+    let gray_root = temp_dir("db_masks_gray");
+    let _cleanup_gray = TempCleanup(gray_root.clone());
+    let gray_doc = "doc_db_masks_gray";
+    let mut gray_workspace = workspace(&gray_root, gray_doc, 32, 32);
+    let gray_src = setup_source(&mut gray_workspace, gray_doc, 32, 32);
+    let gray = call(
+        &mut gray_workspace,
+        gray_doc,
+        "dodge_burn_setup",
+        json!({"layer_id": gray_src, "mode": "gray"}),
+    );
+    assert_eq!(gray["ok"], json!(true), "{gray}");
+    assert_eq!(
+        gray["masks"]["dodge"],
+        json!(null),
+        "gray 组没有 dodge 蒙版：{gray}"
+    );
+    assert_eq!(
+        gray["masks"]["burn"],
+        json!(null),
+        "gray 组没有 burn 蒙版：{gray}"
+    );
+}

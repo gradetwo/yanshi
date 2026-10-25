@@ -13877,6 +13877,25 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         import_args["object_id"] = json!(object_id);
     }
     let mut value = write_import_image(ctx, &import_args)?;
+    // **P2-8**：与 `brush_stroke` 同一条——`#RRGGBBAA` 的半透明 alpha 在这里也被丢掉
+    //   （`color` 只认对象式 `a`，`color_to` 只取 RGB）⇒ 进 `warnings`，说清被忽略。
+    for (key, source) in [
+        ("color", args.get("color")),
+        ("color_to", args.get("color_to")),
+    ] {
+        if let Some(source) = source.filter(|value| !value.is_null()) {
+            if let Some(alpha) = hex_alpha_dropped(source) {
+                let note = format!(
+                    "`{key}` 用的 `#RRGGBBAA` 带半透明 alpha（{alpha}/255）⇒ 介质颜色只取 RGB，\
+                     这个 alpha **被忽略**（画面不会变透明）；透明度请用 `opacity` 参数"
+                );
+                match value.get_mut("warnings") {
+                    Some(Value::Array(items)) => items.push(json!(note)),
+                    _ => value["warnings"] = json!([note]),
+                }
+            }
+        }
+    }
     if symmetry != yanshi_render::Symmetry::None {
         // **∴ `planned.w/h` 是 `f64`（**区域用浮点 ✓）⇒ **取整再镜像** ✓ ★
         let mirrored = mirror_rgba(&rgba, planned.w as u32, planned.h as u32, symmetry);
@@ -14437,33 +14456,34 @@ fn write_gradient_blend(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
     let (from_x, from_y, from_color) = point_of("from")?;
     let (to_x, to_y, to_color) = point_of("to")?;
 
-    let rgb_of = |value: &Value, key: &str| -> Result<[f64; 3]> {
-        if let (Some(r), Some(g), Some(b)) = (
-            value.get("r").and_then(Value::as_f64),
-            value.get("g").and_then(Value::as_f64),
-            value.get("b").and_then(Value::as_f64),
-        ) {
-            return Ok([r, g, b]);
-        }
-        if let Some(text) = value.as_str() {
-            let hex = text.trim_start_matches('#');
-            if hex.len() == 6 {
-                let parse = |range: std::ops::Range<usize>| {
-                    u8::from_str_radix(&hex[range], 16).ok().map(f64::from)
-                };
-                if let (Some(r), Some(g), Some(b)) = (parse(0..2), parse(2..4), parse(4..6)) {
-                    return Ok([r, g, b]);
-                }
-            }
-        }
-        Err(YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail(format!("{key} 既不是 {{r,g,b,a}} 也不是 #rrggbb")),
+    // **颜色三臂同口径** ✓（P2-5；期 2 块 2）：`from`/`to` 的 color 与 `brush_stroke` 走
+    //   **同一个解析器**（`parse_spec_color`）⇒ 数组／对象／hex 三种写法都收，且量级切换
+    //   与画笔一致（数组任一分量 > 1 ⇒ 0..255 字节，否则 0..1 线性浮点 ⇒ 转回 sRGB 字节）。
+    //   以前这里自写了一套只认对象与 `#rrggbb` 的解析 ⇒ 数组色被拒（`invalid_argument`）✗，
+    //   且 `#RRGGBBAA` 与数组 4 元的 alpha 被静默丢掉（`alpha_of` 只读对象 `a` 键）✗。
+    //   现在 RGB 与 alpha 都取解析结果：子笔的 `{"r","g","b","a"}` 是 sRGB 字节 ⇒
+    //   线性浮点要先 `linear_to_byte_exact` 回字节（与 `medium_stroke` 同一条换算 ✓）。
+    let rgba_of = |value: &Value, key: &str| -> Result<([f64; 3], f64)> {
+        let rgba = yanshi_render::color::parse_spec_color(value).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(
+                    yanshi_render::color::color_error(value)
+                        .unwrap_or_else(|| format!("{key} 颜色格式非法")),
+                ),
+            )
+        })?;
+        Ok((
+            [
+                f64::from(yanshi_render::color::linear_to_byte_exact(rgba[0])),
+                f64::from(yanshi_render::color::linear_to_byte_exact(rgba[1])),
+                f64::from(yanshi_render::color::linear_to_byte_exact(rgba[2])),
+            ],
+            f64::from((rgba[3].clamp(0.0, 1.0) * 255.0).round()),
         ))
     };
-    let from_rgb = rgb_of(&from_color, "from")?;
-    let to_rgb = rgb_of(&to_color, "to")?;
-    let alpha_of = |value: &Value| value.get("a").and_then(Value::as_f64).unwrap_or(255.0);
+    let (from_rgb, from_alpha) = rgba_of(&from_color, "from")?;
+    let (to_rgb, to_alpha) = rgba_of(&to_color, "to")?;
 
     // 单位方向（用于给两点足够间距；两点重合时取 (1,0)）。
     let span = ((to_x - from_x).powi(2) + (to_y - from_y).powi(2)).sqrt();
@@ -14490,7 +14510,7 @@ fn write_gradient_blend(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
             mix(from_rgb[1], to_rgb[1]),
             mix(from_rgb[2], to_rgb[2]),
         );
-        let a = mix(alpha_of(&from_color), alpha_of(&to_color));
+        let a = mix(from_alpha, to_alpha);
         let hex = format!("#{:02x}{:02x}{:02x}", r as u8, g as u8, b as u8);
         if index == 0 {
             first_color = hex.clone();
@@ -15606,6 +15626,23 @@ fn brush_color_to_hsv_with_space(
     Ok(yanshi_render::color::rgb_to_hsv(
         bytes[0], bytes[1], bytes[2],
     ))
+}
+
+/// **`#RRGGBBAA` 的 alpha 被丢掉时要说出来** ✓（P2-8；期 2 块 2）：
+/// `brush_color_to_srgb_bytes` 只回 `[u8; 3]` ⇒ 8 位 hex 的 alpha 在此丢掉，且
+/// B4 的运行时回显只认对象式 `a` 键与数组 4 元、覆盖不到 hex 写法 ✗。
+/// 返回 `Some(alpha 字节)` 当且仅当颜色是 8 位 hex 且 alpha < 255（半透明）；
+/// 不透明（`FF`）与 6 位 hex 不报——调用方没损失任何信息 ✓。
+/// 对象式／数组的 alpha 是期 1 B4 的范围，不在这里重复报。
+fn hex_alpha_dropped(value: &Value) -> Option<u8> {
+    let text = value.as_str()?;
+    let hex = text.strip_prefix('#').unwrap_or(text);
+    if hex.len() != 8 {
+        return None;
+    }
+    let rgba = yanshi_render::color::parse_hex_color(text)?;
+    let alpha = (rgba[3].clamp(0.0, 1.0) * 255.0).round() as u8;
+    (alpha < 255).then_some(alpha)
 }
 
 /// **颜色 → sRGB 字节（带显式空间）**（C1）：不传空间（`None`）⇒ 与既有量级切换逐字节相同；
