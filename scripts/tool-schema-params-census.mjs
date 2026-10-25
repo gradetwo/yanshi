@@ -74,6 +74,10 @@ const ALLOWLIST = {
     "image_skipped", "anchors", "clipped", "rendered_region",
     "requested_region", "tag_source", "tags", "warnings", "pressure_sensitive",
     "pressure_settings", "image_file",
+    // **D1（期 2b）**：`batch` 的 `stroke_evidence` 摘要字段 + 它组装的取证字段
+    //   （`ink_mass` / `max_channel_delta` 是 `brush_stroke` 回执本来的字段 ✓；
+    //    `paint_delta` 是 `medium_stroke` 回执的同义字段 ✓；此前都没进过文案）。
+    "stroke_evidence", "ink_mass", "max_channel_delta", "paint_delta",
   ]),
   value: new Set([
     "auto", "flat", "hex", "linear", "srgb", "srgb_bytes", "dual",

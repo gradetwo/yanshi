@@ -1379,7 +1379,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                  显式传 `silent: false` 可恢复旧行为（每笔带预览）。\
                  **单笔绘制**请用 `brush_stroke(preview: false)` ✓（同一条免编码路 ✓），\
                  要图时**不传**它即可 ✓（默认行为不变 ✓）。\
-                 顶层 `ok` 即全成（与 `all_ok` 一致 ✓，A6 方案 ①）：有子调用失败 ⇒ `ok:false` + `error` 指路 `failed_calls` ✓。",
+                 顶层 `ok` 即全成（与 `all_ok` 一致 ✓，A6 方案 ①）：有子调用失败 ⇒ `ok:false` + `error` 指路 `failed_calls` ✓。\
+                 每笔另有取证摘要 `stroke_evidence`（与 `calls` 同下标 ✓）：笔触类子调用给 `landed` / `painted_pixels_clipped` / `ink_mass` / `max_channel_delta`（与 `brush_stroke` 回执同字段 ✓；`medium_stroke` 的 `paint_delta` 在此归一为 `max_channel_delta` ✓）；失败的子调用带完整 `error` ✓。",
         mutating: true,
         params: &[
             param!("calls", Array, true, "[{tool, arguments}]（一次最多 500 个调用，超了拆成多个 batch；每 100 个一段，段边界做内存水位检查，触发即提前停）"),

@@ -1794,3 +1794,66 @@ fn batch_watermark_fails_open_when_unreadable() {
         "RSS 读不到、内存不足时仍应当由另一项触发"
     );
 }
+
+/// **D1（期 2b）：`batch_stroke_evidence` 的字段归一** ✓。
+///
+/// 断的是**组装逻辑本身**（不经过 `batch` 的循环 ✓）：brush 回执原样取四字段、
+/// medium 回执由同义字段归一、非笔触不编数字、失败带完整 `error`、缺失字段给 `null`。
+#[test]
+fn batch_stroke_evidence_maps_brush_and_medium_receipts() {
+    // **brush 回执** ✓：四字段原样取（`painted_pixels_clipped` 本来就有 ✓）。
+    let brush = json!({
+        "ok": true, "landed": true, "painted_pixels": 1000,
+        "painted_pixels_clipped": 800, "ink_mass": 123456, "max_channel_delta": 178,
+    });
+    let entry = batch_stroke_evidence(0, "brush_stroke", &brush, false);
+    assert_eq!(
+        entry,
+        json!({
+            "index": 0, "tool": "brush_stroke", "ok": true, "landed": true,
+            "painted_pixels_clipped": 800, "ink_mass": 123456, "max_channel_delta": 178,
+        }),
+        "brush 摘要应原样取四字段"
+    );
+    // **medium 回执** ✓：`painted_pixels` 即 clipped、`paint_delta` 即 delta（只在 batch 路径归一 ✓）。
+    let medium = json!({
+        "ok": true, "landed": true, "painted_pixels": 900,
+        "ink_mass": 9999, "paint_delta": 106,
+    });
+    let entry = batch_stroke_evidence(1, "medium_stroke", &medium, false);
+    assert_eq!(
+        entry["painted_pixels_clipped"],
+        json!(900),
+        "medium 没有 painted_pixels_clipped ⇒ 回落到 painted_pixels"
+    );
+    assert_eq!(
+        entry["max_channel_delta"],
+        json!(106),
+        "medium 没有 max_channel_delta ⇒ 回落到 paint_delta"
+    );
+    // **非笔触** ✓：不编数字（只有 index/tool/ok ✓）。
+    let shape = json!({"ok": true, "object_id": "s1"});
+    assert_eq!(
+        batch_stroke_evidence(2, "draw_shape", &shape, false),
+        json!({"index": 2, "tool": "draw_shape", "ok": true}),
+        "非笔触摘要不应编取证数字"
+    );
+    // **失败** ✓：带完整 `error`（调用方传进来的渲染错误原样带走 ✓）。
+    let failed = json!({
+        "ok": false, "error_code": "reference_not_found",
+        "retryable": false, "context": {"detail": "找不到 brush「x.myb」"},
+    });
+    let entry = batch_stroke_evidence(3, "brush_stroke", &failed, true);
+    assert_eq!(entry["ok"], json!(false));
+    assert_eq!(entry["error"], failed, "失败摘要的 error 应是完整渲染错误");
+    // **缺失字段给 `null`** ✓（可观测：断言断数值时 `null` 会红，0 会谎报 ✓）。
+    let sparse = json!({"ok": true, "painted_pixels": 5});
+    let entry = batch_stroke_evidence(4, "brush_stroke", &sparse, false);
+    assert!(entry["landed"].is_null(), "缺 landed ⇒ null，不编 false");
+    assert_eq!(entry["painted_pixels_clipped"], json!(5));
+    assert!(entry["ink_mass"].is_null(), "缺 ink_mass ⇒ null，不编 0");
+    assert!(
+        entry["max_channel_delta"].is_null(),
+        "缺 delta ⇒ null，不编 0"
+    );
+}

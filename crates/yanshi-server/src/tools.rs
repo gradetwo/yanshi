@@ -20114,6 +20114,48 @@ fn batch_watermark_reason_for(
     None
 }
 
+/// **每笔取证摘要**（D1，期 2b）：`batch` 响应顶层 `stroke_evidence` 的一项 ——
+/// 与 `calls` 同下标（`stroke_evidence.len() == count` 本身就是一条恒等式 ✓）。
+///
+/// 字段名与 `brush_stroke` 回执一致（A1/A2 的定义，不另起名字 ✓）：
+/// `landed` + `painted_pixels_clipped` + `ink_mass`（墨量，Σalpha）+
+/// `max_channel_delta`。`medium_stroke` 的同义词**只在 batch 路径组装时归一**
+///（不改 medium 的回执 ✓）：`painted_pixels` 即 clipped（无选区裁剪）、
+/// `paint_delta` 即 `max_channel_delta`。
+/// 非笔触类子调用只有 `{index, tool, ok: true}`（不是笔，没取证可言 ⇒ 不编数字 ✓）；
+/// 失败的子调用带完整 `error`（与 `failed_calls` 里的同一份渲染错误 ✓）。
+/// 字段缺失时给 `null` 而不是 0（**可观测** ✓：断言断数值时 `null` 会红，0 会谎报 ✓）。
+fn batch_stroke_evidence(index: usize, name: &str, value: &Value, failed: bool) -> Value {
+    if failed {
+        return json!({
+            "index": index,
+            "tool": name,
+            "ok": false,
+            "error": value.clone(),
+        });
+    }
+    let Some(_) = value.get("painted_pixels").and_then(Value::as_u64) else {
+        return json!({"index": index, "tool": name, "ok": true});
+    };
+    let clipped = value
+        .get("painted_pixels_clipped")
+        .and_then(Value::as_u64)
+        .or_else(|| value.get("painted_pixels").and_then(Value::as_u64));
+    let delta = value
+        .get("max_channel_delta")
+        .and_then(Value::as_u64)
+        .or_else(|| value.get("paint_delta").and_then(Value::as_u64));
+    json!({
+        "index": index,
+        "tool": name,
+        "ok": true,
+        "landed": value.get("landed").cloned().unwrap_or(Value::Null),
+        "painted_pixels_clipped": clipped.map(Value::from).unwrap_or(Value::Null),
+        "ink_mass": value.get("ink_mass").cloned().unwrap_or(Value::Null),
+        "max_channel_delta": delta.map(Value::from).unwrap_or(Value::Null),
+    })
+}
+
 fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let calls = require_object(args, "calls")?;
     let calls = calls.as_array().ok_or_else(|| missing("calls"))?;
@@ -20166,6 +20208,9 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let mut failed_calls: Vec<Value> = Vec::new();
     // **P2-7**：水位提前停的原因（`None` = 没触发）—— 与 `cancelled` 互斥（先触发的那个 break ✓）。
     let mut stopped_early: Option<String> = None;
+
+    // **每笔取证摘要**（D1，期 2b）：与 `calls` 同下标，`len() == count` 本身就是恒等式 ✓。
+    let mut stroke_evidence: Vec<Value> = Vec::new();
     // **★ 全批汇总"保留像素"★**（第 1569 轮；外部在 `2073a4f7` 之后的补记）
     //   **⇒ 他们的原话**：「建议 `batch` 的返回里**汇总**"总保留像素数/总尝试数"⇒
     //     那样 `4000/4000` 会**是 0** 而 `6000/6000` 会**是 ~500000** ⇒ **一眼可辨**」✓
@@ -20221,6 +20266,9 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             .or_else(|| call.get("args"))
             .cloned()
             .unwrap_or_else(|| json!({}));
+        // **取证摘要要不要带 `error`** ✓（D1）：失败只发生在下面的 match 里 ⇒
+        // 记下 `failed_calls` 进来时的长度，出来时变长了就是这一笔失败了 ✓。
+        let failed_before = failed_calls.len();
         let value = match registry.get(name) {
             // **★ 子调用也要走**参数面校验** ✓（第 1402 轮修）
             //   **⇒ 原缺陷** ✗：`ToolRegistry::call`（HTTP 入口）里有 `validate_args`，
@@ -20282,6 +20330,13 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 .and_then(Value::as_u64)
                 .unwrap_or(painted);
         }
+        // **每笔取证摘要**（D1，期 2b）：与 `results` 同步入列 ⇒ 长度恒等式 ✓。
+        stroke_evidence.push(batch_stroke_evidence(
+            call_index,
+            name,
+            &value,
+            failed_calls.len() > failed_before,
+        ));
         results.push(json!({"tool": name, "result": value}));
         if want_preview {
             // 预览次数不在这里汇总 ✓：**判据直接数"逐项结果里有没有 `preview`"** ✓
@@ -20411,6 +20466,7 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         //   **⇒ A6 方案 ① 之后** ✓：`ok` 不再是「这次批量请求本身跑完了」⇒ 它就是 `all_ok` ✓
         //     （整批全成才是 `ok:true` ✓；旧的两层语义见 §7 第 1 条裁定，已废弃 ✓）
         //   **⇒ ⇒ 三个数互为恒等式**：`ok_count + fail_count == count`，且 `all_ok == (fail_count == 0)` ✓
+        //   **⇒ ⇒ ⇒ 取证摘要同下标**（D1，期 2b）：`stroke_evidence.len() == count` ✓
         // **★ 全批落墨汇总**（第 1569 轮；外部在 `clip_coverage` 之后的补记）
         //   **⇒ 恒等式**：`stroke_calls > 0` **且** `painted_total == 0`
         //     ⇒ **这一批一笔都没画**（典型：`size` 太小、或选区把墨全裁掉）✓
@@ -20457,6 +20513,7 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         "segments_completed": results.len() / BATCH_SEGMENT_CALLS,
         "stopped_early": false,
         "calls": results,
+        "stroke_evidence": stroke_evidence,
         "count": results.len(),
         "atom_ids": atom_ids,
         "head": head,
