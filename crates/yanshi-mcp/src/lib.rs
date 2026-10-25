@@ -389,6 +389,11 @@ impl Server {
                 return Ok(tool_error(&error.to_response()));
             }
         }
+        // **B6：写路径建文档要回显** ✓：`open_or_create` 之前快照存在性（内存或磁盘任一存在即真 ✓，
+        //   见 `Workspace::document_exists` ✓）—— 返回值（`&mut Document`）不带新建／打开信息 ✓，
+        //   只能调用前快照 ✓。`new_document`／`import_project`（`pre_create == false`）跳过 ✓：
+        //   它们自带 `created`／`opened`，入口不覆盖 ✓。
+        let existed = pre_create && self.workspace.document_exists(&doc_id);
         if pre_create {
             let spec = yanshi_server::NewDocument::new(
                 doc_id.clone(),
@@ -455,7 +460,13 @@ impl Server {
         // ⇒ 包内条目与 HTTP 面**不会漂移** ✓（各写一份必然漂移 ✗）。
         .with_diagnostics_facts(facts);
 
-        let result = self.registry.call(&mut context, name, &arguments);
+        let mut result = self.registry.call(&mut context, name, &arguments);
+        if pre_create {
+            if let Value::Object(map) = &mut result {
+                map.insert("created".to_owned(), json!(!existed));
+                map.insert("opened".to_owned(), json!(existed));
+            }
+        }
         Ok(tool_result(result, self.options.inline_images))
     }
 

@@ -1040,6 +1040,10 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     );
     value["landed"] = json!(landed);
     value["landed_reason"] = json!(landed_reason);
+    // **本次调用生效参数的回显** ✓（A5）：`wait_for_render`／`wait_budget_ms`／`preview`／
+    //   `silent`／`doc_id` 读 `ctx`（本函数开头已把当次调用的 `wait_for_render`／`preview`
+    //   写进 `ctx` ✓），`color_space` 从 `args["color"]` 推导 ✓（见 `applied_echo` ✓）。
+    value["applied"] = applied_echo(ctx, args);
     // **`max_channel_delta` 的 regime 必须**机器可读**** ✓（第 808 轮；外部 `qoder` 的 D193）
     //   **⇒ 他们的实测**：`reads_canvas=false` 的那一支**先把补丁合成到白底**再与 `255` 比 ✓
     //     ⇒ 在**非白底文档**上 `delta = (255 − patch_rgb) × alpha/255` ✓

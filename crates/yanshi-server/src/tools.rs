@@ -13928,6 +13928,10 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     );
     value["landed"] = json!(landed);
     value["landed_reason"] = json!(landed_reason);
+    // **本次调用生效参数的回显** ✓（A5，与 `brush_stroke` 同例）：`wait_for_render`／
+    //   `wait_budget_ms`／`preview`／`silent`／`doc_id` 读 `ctx`（本工具不读当次调用的
+    //   `wait_for_render`／`preview` 参数 ⇒ 回显构造期值 ✓），`color_space` 从 `args["color"]` 推导 ✓。
+    value["applied"] = applied_echo(ctx, args);
     // ★ **`paint_delta`：真正的落墨幅度 ✗** ★**（第 71 轮 ✓；**∴ 报告 §40 要用它做薄涂的"看得见"门 ✓**）
     //
     // **∴ 为什么叫 `paint_delta` 而不叫 `max_channel_delta` ✗**：**∴ 因为 `medium_stroke` 里
@@ -15410,6 +15414,76 @@ fn brush_points_from_json(value: Option<&Value>) -> Result<Vec<(f64, f64, f64)>>
         points.push((x, y, pressure_raw));
     }
     Ok(points)
+}
+
+/// **颜色输入值实际走了哪个解释空间** ✓（A5 回显 `applied.color_space` ✓；C1 的参数在第 6 块加）。
+///
+/// 与 [`yanshi_render::color::parse_spec_color`] 的量级切换**同一条规则** ✓，不另起口径 ✓：
+/// 浮点数组（任一分量都不 > 1）⇒ `"linear"`；字节数组（任一分量 > 1）／对象式 ⇒ `"srgb_bytes"`；
+/// hex 字符串 ⇒ `"hex"`。
+///
+/// **C1 后续只加参数覆盖分支** ✓：显式 `color_space` 参数来了之后，这里仍是"无参数时的推导" ✓，
+/// 回显词汇不改 ✓（调用方按这三个值写断言，不会因 C1 而变 ✓）。
+///
+/// **没给 `color` 时不调用它** ✓（见 [`applied_echo_values`] ✓）：不编一个缺省空间 ✓。
+pub(crate) fn color_space_of(value: &Value) -> &'static str {
+    match value {
+        Value::String(text) if text.starts_with('#') => "hex",
+        Value::Array(items)
+            if items
+                .iter()
+                .any(|item| item.as_f64().is_some_and(|number| number > 1.0)) =>
+        {
+            "srgb_bytes"
+        }
+        Value::Array(_) => "linear",
+        _ => "srgb_bytes",
+    }
+}
+
+/// **本次调用生效参数的回显对象** ✓（A5：只加在 `brush_stroke`／`medium_stroke` 回执 ✓）。
+///
+/// 取值一律是**实际生效**的，不是调用方原话的复述 ✓：`wait_for_render`／`wait_budget_ms`／
+/// `preview`／`silent`／`doc_id` 读 `ctx`（handler 已把当次调用的参数写进 `ctx` ✓，
+/// 如画笔侧的 `wait_for_render`／`preview` 就地改写 ✓）；`color_space` 按
+/// [`color_space_of`] 从 `args["color"]` 推导 ✓。
+///
+/// **`wait_budget_ms` 是构造期配置值，不是实测等待** ✓：全仓没有消费点 ⇒ 诚实回显
+/// 构造期值（缺省 500），不装成"这次等了多久" ✓。
+///
+/// **`color_space` 只在给了 `color` 时出现** ✓：没给颜色 ⇒ 笔刷用自带色、介质用缺省黑，
+/// 那是笔刷／介质内部的事实，不由回显认领一个空间 ✓（与 `sensors_applied` 同例：传了才出现 ✓）。
+pub(crate) fn applied_echo_values(
+    wait_for_render: bool,
+    wait_budget_ms: u64,
+    preview: bool,
+    silent: bool,
+    doc_id: &str,
+    color: Option<&Value>,
+) -> Value {
+    let mut applied = json!({
+        "wait_for_render": wait_for_render,
+        "wait_budget_ms": wait_budget_ms,
+        "preview": preview,
+        "silent": silent,
+        "doc_id": doc_id,
+    });
+    if let Some(color) = color.filter(|value| !value.is_null()) {
+        applied["color_space"] = json!(color_space_of(color));
+    }
+    applied
+}
+
+/// [`applied_echo_values`] 的调用方形态 ✓：从 `ctx` 与 `args` 取值 ✓。
+pub(crate) fn applied_echo(ctx: &ToolContext<'_>, args: &Value) -> Value {
+    applied_echo_values(
+        ctx.wait_for_render,
+        ctx.wait_budget_ms,
+        ctx.preview,
+        ctx.silent,
+        &ctx.doc_id,
+        args.get("color"),
+    )
 }
 
 /// **色彩写法与其它绘制工具统一** ✓：`{r,g,b,a}`（0..255 ✓）、`[r,g,b,(a)]`（0..1 线性或 0..255 字节 ✓）、
@@ -18009,6 +18083,12 @@ fn write_swatch_brush_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result
         .filter(|s| s.get("ok") == Some(&Value::Bool(true)))
         .count();
     Ok(json!({
+        // **A6 方案 ①** ✓（Wang 2026-10-25 裁定；与 `batch` 同款）：顶层 `ok` 即全成，
+        //   与 `all_ok` 同值 ✓（有试笔失败 ⇒ `ok:false`；不另加 `error` 字段 ⇒
+        //   逐项的错误已在 `swatches[].error` ✓）。`ok_response` 先插 `ok:true` 再逐键覆盖 ⇒
+        //   这里自带的 `false` 能胜出 ✓（不动 `ok_response` ✓）。
+        "ok": ok_n == count,
+        "all_ok": ok_n == count,
         "swatches": swatches,
         "count": count,
         "ok_count": ok_n,
@@ -19909,14 +19989,22 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     } else {
         Value::Null
     };
-    Ok(json!({
-        // 失败留痕（第 1000+ 轮）：空数组 = 全成功；非空 = 有子调用失败（ok 仍是 true）。
+    // **A6 方案 ①** ✓（Wang 2026-10-25 裁定）：顶层 `ok` 即全成，与 `all_ok` 一致 ✓。
+    //   `ok_response` 先插 `ok:true` 再逐键覆盖 ⇒ 这里自带的 `false` 能胜出 ✓（不动 `ok_response` ✓）。
+    //   **行为变更**：部分失败时顶层 `ok` 由 `true` 变 `false` ⇒ MCP `isError:true`、
+    //   HTTP 状态由 200 变 400（无 `error_code` 时走缺省臂 ✓）。
+    let failed_n = failed_calls.len();
+    let total_n = results.len();
+    let mut response = json!({
+        // 失败留痕（第 1000+ 轮）：空数组 = 全成功；非空 = 有子调用失败（此时顶层 `ok` 是 `false` ✓）。
+        // **顶层 `ok` 即全成** ✓（A6 方案 ①）：与下面的 `all_ok` 同值 ✓。
+        "ok": failed_n == 0,
         "failed_calls": failed_calls,
         // **★ 一个布尔说清「整批都成了吗」** ✓（第 1402 轮加）
         //   **⇒ 为什么加** ✗：外部把 **1495 个子调用**的参数传错 ⇒ 每个子调用都被**静默忽略**
         //     （那时 `batch` 连校验都不做 ⇒ 已在本轮修好 ✓）⇒ 而当时他们只看了 `ok: true` ✗
-        //   **⇒ `ok` 的语义保持不动** ✓（=「这次批量请求本身跑完了」，与 `swatch` 的 per-item 一致 ✓）
-        //     ⇒ 但**再给一个 `all_ok`** ⇒ 调用方看一个布尔就知道**整批是否全成** ✓
+        //   **⇒ A6 方案 ① 之后** ✓：`ok` 不再是「这次批量请求本身跑完了」⇒ 它就是 `all_ok` ✓
+        //     （整批全成才是 `ok:true` ✓；旧的两层语义见 §7 第 1 条裁定，已废弃 ✓）
         //   **⇒ ⇒ 三个数互为恒等式**：`ok_count + fail_count == count`，且 `all_ok == (fail_count == 0)` ✓
         // **★ 全批落墨汇总**（第 1569 轮；外部在 `clip_coverage` 之后的补记）
         //   **⇒ 恒等式**：`stroke_calls > 0` **且** `painted_total == 0`
@@ -19940,16 +20028,17 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         //   **⇒ 外部实测**：`batch` 里 `medium_stroke` 的 `medium` 传成**笔刷名** `oil-01-paint`
         //     ⇒ 子调用**确实失败**了（`fail_count=1`、`failed_calls[0]` 带完整错误 ✓）
         //     ⇒ **而他们看到的是** `ok: true` ⇒ **以为"成功了但一笔没画"** ✗✗
-        //   **⇒ 根因不是校验缺失**（枚举校验有 ✓ handler 自己就拒）⇒ **是顶层 `ok` 的语义**
-        //     （`ok` = 「请求跑完了」✓，**不是**「每个子调用都成功」✗）⇒ 只读 `ok` 时没有信号 ✗
-        //   **⇒ ⇒ 所以**：`fail_count > 0` 时在 `warnings` 里明说，并指路 `all_ok` ✓
-        //     （`ok` 的语义**不改** —— 改它会破坏既有调用方 ✓）
+        //   **⇒ 根因是顶层 `ok` 的语义** ✓（当时 `ok` = 「请求跑完了」✓，
+        //     **不是**「每个子调用都成功」✗）⇒ 只读 `ok` 时没有信号 ✗
+        //   **⇒ A6 方案 ① 之后** ✓：`ok` 即全成 ⇒ 顶层 `ok:false` 本身就是信号 ✓，
+        //     但 `warnings` 仍保留并明说（老调用方可能只读 `warnings` ✓），
+        //     另加顶层 `error` 指路 `failed_calls` ✓（见本函数末尾 ✓）。
         "warnings": if failed_calls.is_empty() {
             Value::Null
         } else {
             json!([format!(
-                "{}/{} 个子调用失败 ⇒ 顶层 ok 只表示「请求跑完了」，**不代表每个子调用都成功**；\
-                 看 all_ok（现在是 {}）与 failed_calls（含每个的错误）",
+                "{}/{} 个子调用失败 ⇒ 顶层 ok 即全成（ok == all_ok，现在是 {}）；\
+                 看 failed_calls（含每个的错误）",
                 failed_calls.len(),
                 results.len(),
                 failed_calls.is_empty()
@@ -19966,7 +20055,15 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         // 报告实测：`scatter_strokes` 在 `batch` 里 0 s 返回 ✓，真正的光栅合成发生在下一次渲染 ✓
         // ⇒ 日志里的"每笔耗时"是假的 ✗、调用方也不知道活干完没有 ✗。
         "execution": execution_report(ctx),
-    }))
+    });
+    // **部分失败时顶层加 `error` 指路 `failed_calls`** ✓（A6 方案 ①）：`ok:false` 本身已是信号 ✓，
+    //   但调用方不该只靠它反查 ⇒ 一句话说清"几分之几失败、去哪看每条的错误" ✓。
+    if failed_n > 0 {
+        response["error"] = json!(format!(
+            "{failed_n}/{total_n} 个子调用失败，见 failed_calls"
+        ));
+    }
+    Ok(response)
 }
 
 /// **这次调用是"同步做完"还是"把活留到下一次渲染"** ✓（外部测试报告 P1 的相关项）。

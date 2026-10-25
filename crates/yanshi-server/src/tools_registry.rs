@@ -1374,7 +1374,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                  需要中途看进展就用 `preview_every_n_strokes: N`（每 N 笔放行一次 ✓）\
                  或 `preview_interval_ms: M`（每 M 毫秒放行一次 ✓）—— 放行的那一次**照常产出预览** ✓。\
                  **单笔绘制**请用 `brush_stroke(preview: false)` ✓（同一条免编码路 ✓），\
-                 要图时**不传**它即可 ✓（默认行为不变 ✓）。",
+                 要图时**不传**它即可 ✓（默认行为不变 ✓）。\
+                 顶层 `ok` 即全成（与 `all_ok` 一致 ✓，A6 方案 ①）：有子调用失败 ⇒ `ok:false` + `error` 指路 `failed_calls` ✓。",
         mutating: true,
         params: &[
             param!("calls", Array, true, "[{tool, arguments}]"),
@@ -2517,7 +2518,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: false,
         // **需求文档附录五（P0）**：画家术语「swatch」＝试色试笔。与 `brush_preview` 同一条落笔
         // 实现，但**批量**（笔刷 × 颜色 × 路径）且**不写文档、不生成 atom** => 可以放心试。
-        summary: "试笔触（swatch）：笔刷 × 颜色 × 路径**批量**试画，一次返回多张对比图；**不写文档、不生成 atom** => 满意了再用 brush_stroke 真画。                  **★ 工作流（必读）★**：**每次落笔前 —— 尤其切换笔刷或改 `brush_params` 时 —— 先 swatch 试 3–5 支，选最好的再真画；不要只试一次就开画** ✗（实测教训：只在开画前试过一次 => 之后全是盲选；真画一笔 = 写文档 + 生成 atom + 画坏要 undo，而 **swatch 试 10 支也不心疼** ✓）。                  批量用法：**一次给 N 支笔刷 × M 组参数**（例：3 支 × opaque 0.5/0.9 = 6 张对比图）=> 一次看完再选 ✓。                  **⚠️ 小图好看 ≠ 大面积好用** ✗（实测：某水彩笔在小预览上轻盈好看，大面积平涂 6 笔几乎看不见 ✓）：铺大色前**多试几笔叠加**，或先在小区域真画一笔看覆盖力 ✓。                  **⚠️ 涂抹类笔刷（如 `oil-mop`）要求画布上先有颜色** => 空画布上试会报「没有可抹的像素」✓：先铺底色再试 ✓。",
+        summary: "试笔触（swatch）：笔刷 × 颜色 × 路径**批量**试画，一次返回多张对比图；**不写文档、不生成 atom** => 满意了再用 brush_stroke 真画。                  **★ 工作流（必读）★**：**每次落笔前 —— 尤其切换笔刷或改 `brush_params` 时 —— 先 swatch 试 3–5 支，选最好的再真画；不要只试一次就开画** ✗（实测教训：只在开画前试过一次 => 之后全是盲选；真画一笔 = 写文档 + 生成 atom + 画坏要 undo，而 **swatch 试 10 支也不心疼** ✓）。                  批量用法：**一次给 N 支笔刷 × M 组参数**（例：3 支 × opaque 0.5/0.9 = 6 张对比图）=> 一次看完再选 ✓。                  **⚠️ 小图好看 ≠ 大面积好用** ✗（实测：某水彩笔在小预览上轻盈好看，大面积平涂 6 笔几乎看不见 ✓）：铺大色前**多试几笔叠加**，或先在小区域真画一笔看覆盖力 ✓。                  **⚠️ 涂抹类笔刷（如 `oil-mop`）要求画布上先有颜色** => 空画布上试会报「没有可抹的像素」✓：先铺底色再试 ✓。                  顶层 `ok` 即全成（与 `all_ok` 一致 ✓，A6 方案 ①）：有试笔失败 ⇒ `ok:false`，逐项的错误在 `swatches[].error` ✓。",
         params: &[
             param!("brushes", Array, true, "要试的笔刷名（.myb，可省扩展名；也可给单个字符串）"),
             param!("brush_params", Object, false, "覆盖 .myb 字段（与 `brush_stroke` 同一套 ✓）：**批量试「同一支笔刷的不同参数」就用它** ✓（例：`brushes: [\"Classic_Paint\"]` ＋ `brush_params: {\"opaque\": 0.5}`，再换成 0.9 各试一次 ✓） ★**这里没有 `load`／`wetness`／`color_mixing`！** 要载墨量／湿度／光谱混色 ⇒ 用 **`medium_stroke`** 的 `load`／`wetness`／`color_mixing=pigment`（清单见 `list_engine_capabilities.medium_params` ✓）；这 63 项是 `.myb`（MyPaint 动力学）的，见 `docs/design/brush-params.md` ✓。"),

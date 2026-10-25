@@ -1542,3 +1542,99 @@ fn landed_reason_precedence_and_boundaries() {
         );
     }
 }
+
+/// `color_space_of` 三臂（A5）：与 `parse_spec_color` 的量级切换**同一条规则** ✓。
+///
+/// 浮点数组（任一分量都不 > 1）⇒ `linear`；字节数组（任一分量 > 1）／对象式 ⇒ `srgb_bytes`；
+/// hex 字符串 ⇒ `hex`。
+#[test]
+fn color_space_of_three_arms() {
+    assert_eq!(
+        color_space_of(&json!([0.2, 0.4, 0.9, 1.0])),
+        "linear",
+        "浮点数组 ⇒ linear（alpha 恰为 1.0 也不 reroute，与 parse_spec_color 同口径）"
+    );
+    assert_eq!(
+        color_space_of(&json!([115, 97, 77])),
+        "srgb_bytes",
+        "字节数组 ⇒ srgb_bytes（任一分量 > 1 即字节分支）"
+    );
+    assert_eq!(
+        color_space_of(&json!([200, 200, 200, 1])),
+        "srgb_bytes",
+        "混合域 [200,200,200,1] ⇒ srgb_bytes（RGB 是字节域，alpha 的 1.0 不改分支）"
+    );
+    assert_eq!(
+        color_space_of(&json!({"r": 115, "g": 97, "b": 77})),
+        "srgb_bytes",
+        "对象式 ⇒ srgb_bytes（恒为字节）"
+    );
+    assert_eq!(color_space_of(&json!("#73391F")), "hex", "hex 字符串 ⇒ hex");
+}
+
+/// `applied_echo_values` 回显的是**传入的值**，不是写死的缺省（A5）。
+///
+/// **变异**：把回显恒写缺省（`wait_for_render` 恒 `true`、`wait_budget_ms` 恒 500）
+/// ⇒ 下面这组非缺省输入立刻红 ✓。
+#[test]
+fn applied_echo_values_echoes_given_values_not_defaults() {
+    let applied = applied_echo_values(
+        false,
+        2000,
+        false,
+        true,
+        "doc-x",
+        Some(&json!([0.2, 0.4, 0.9, 1.0])),
+    );
+    assert_eq!(
+        applied.get("wait_for_render").and_then(Value::as_bool),
+        Some(false),
+        "wait_for_render:false 必须原样回显，不能恒写缺省 true"
+    );
+    assert_eq!(
+        applied.get("wait_budget_ms").and_then(Value::as_u64),
+        Some(2000),
+        "wait_budget_ms 必须回显传入的 2000，不能恒写缺省 500"
+    );
+    assert_eq!(
+        applied.get("preview").and_then(Value::as_bool),
+        Some(false),
+        "preview:false 必须原样回显"
+    );
+    assert_eq!(
+        applied.get("silent").and_then(Value::as_bool),
+        Some(true),
+        "silent:true 必须原样回显"
+    );
+    assert_eq!(
+        applied.get("doc_id").and_then(Value::as_str),
+        Some("doc-x"),
+        "doc_id 必须原样回显"
+    );
+    assert_eq!(
+        applied.get("color_space").and_then(Value::as_str),
+        Some("linear"),
+        "浮点数组 ⇒ color_space linear"
+    );
+}
+
+/// 没给 `color` 时不编 `color_space`（A5）：缺省色是笔刷／介质内部的事实，回显不认领。
+#[test]
+fn applied_echo_values_omits_color_space_without_color() {
+    let applied = applied_echo_values(true, 500, true, false, "doc-x", None);
+    assert!(
+        applied.get("color_space").is_none(),
+        "没给 color ⇒ applied 里不该出现 color_space（实测 {:?}）",
+        applied.get("color_space")
+    );
+    assert_eq!(
+        applied.get("wait_for_render").and_then(Value::as_bool),
+        Some(true),
+        "缺省值仍要回显：wait_for_render true"
+    );
+    assert_eq!(
+        applied.get("wait_budget_ms").and_then(Value::as_u64),
+        Some(500),
+        "缺省值仍要回显：wait_budget_ms 500"
+    );
+}

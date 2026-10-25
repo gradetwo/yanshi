@@ -2450,6 +2450,10 @@ fn tool_call_with(
             );
         }
     }
+    // **B6：写路径建文档要回显** ✓（与 MCP 入口同一份规矩）：`open_or_create` 之前快照存在性
+    //   （内存或磁盘任一存在即真 ✓）—— 返回值不带新建／打开信息，只能调用前快照 ✓。
+    //   `new_document`／`import_project`（`pre_create == false`）跳过：它们自带字段，不覆盖 ✓。
+    let existed = pre_create && workspace.document_exists(&doc_id);
     if pre_create && workspace.document(&doc_id).is_none() {
         let spec = NewDocument::new(doc_id.clone(), state.options.width, state.options.height);
         if let Err(error) = workspace.open_or_create(spec, &principal.actor, "session:http") {
@@ -2472,7 +2476,7 @@ fn tool_call_with(
     .with_wait_for_render(true, 500)
     .with_diagnostics_facts(diagnostics_facts);
     let value = state.registry.call(&mut context, name, &arguments);
-    let value = if state.options.rewrite_blob_urls {
+    let mut value = if state.options.rewrite_blob_urls {
         let origin = request_origin(state, request);
         rewrite_blob_urls(
             value,
@@ -2483,6 +2487,14 @@ fn tool_call_with(
     } else {
         value
     };
+    // **B6：写路径建文档要回显** ✓：`registry.call` 之后、状态映射之前插字段 ✓
+    //   （`created` = 本次调用前不存在 ⇒ 刚才是入口替调用方建的 ✓）。
+    if pre_create {
+        if let Value::Object(map) = &mut value {
+            map.insert("created".to_owned(), json!(!existed));
+            map.insert("opened".to_owned(), json!(existed));
+        }
+    }
     if value.get("ok").and_then(Value::as_bool) == Some(false) {
         // 工具级错误：HTTP 状态按 5.7 错误码映射，响应体保持 10.1/5.7 形状。
         let status = match value.get("error_code").and_then(Value::as_str) {
