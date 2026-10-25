@@ -14,7 +14,7 @@
 
 use std::collections::BTreeSet;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use yanshi_core::Bbox;
 use yanshi_wasm::{Kernel, KernelError};
 
@@ -184,13 +184,9 @@ impl Timeline {
         self.kernel.blob_put(bytes)
     }
 
-    /// **吃一个 atom ✗ 并把它的脏 tile 并进待渲集合** ✓ ★
-    ///
-    /// **∴ 为什么在这里并 ✗**：**内核报的是**这一个 atom**脏了哪些 tile**✗
-    ///   ＋ **∴ 而**两次出帧之间可能吃了**很多**个 atom**✗ ⇒ **∴ 只取最后一个**会漏内容 ✓
-    ///     ⇒ **∴ 于是**：**自己并 ✗ 不假设内核替我们累积** ✓ ★★
-    pub fn apply(&mut self, atom_json: &str) -> Result<Value, KernelError> {
-        // **记背景色 ＋ 判断"还没放过对象"** ✓（第 620 轮）
+    /// **记背景色 ＋ 判断"还没放过对象"** ✓（第 620 轮）：`apply` 与
+    /// `apply_segment` 共用——它是 O(1) 的 JSON 读，不进热路径，段内仍逐原子记。
+    fn note_atom_json(&mut self, atom_json: &str) {
         if let Ok(atom) = serde_json::from_str::<Value>(atom_json) {
             match atom.get("kind").and_then(Value::as_str) {
                 Some("create_document") => {
@@ -212,12 +208,50 @@ impl Timeline {
                 Some(_) | None => self.only_document_and_layers = false,
             }
         }
+    }
+
+    /// **吃一个 atom ✗ 并把它的脏 tile 并进待渲集合** ✓ ★
+    ///
+    /// **∴ 为什么在这里并 ✗**：**内核报的是**这一个 atom**脏了哪些 tile**✗
+    ///   ＋ **∴ 而**两次出帧之间可能吃了**很多**个 atom**✗ ⇒ **∴ 只取最后一个**会漏内容 ✓
+    ///     ⇒ **∴ 于是**：**自己并 ✗ 不假设内核替我们累积** ✓ ★★
+    pub fn apply(&mut self, atom_json: &str) -> Result<Value, KernelError> {
+        self.note_atom_json(atom_json);
         let out = self.kernel.apply_atom_json(atom_json)?;
         for key in self.kernel.last_dirty_tiles() {
             // **∴ 只**记下 tile 坐标 ✗ 不在这里算 bbox** ✓（**∴ 出帧时才按行并 run ✓）★
             self.dirty.insert((key.x, key.y));
         }
         Ok(out)
+    }
+
+    /// **E2：吃一段 atom**（`main.rs` 按 `frame_every` 切段后调；段长缺省
+    /// = `frame_every`，不另引参数）。
+    ///
+    /// 记账仍逐原子做（见 [`Self::note_atom_json`]）；折叠与脏区一次走
+    /// `Kernel::apply_segment`（段内不克隆状态、脏 tile 一次并进待渲集合），
+    /// `frame()`／`frame_rgb_scaled()`／`stats` 的语义与逐原子路完全相同。
+    pub fn apply_segment(&mut self, atom_jsons: &[String]) -> Result<Value, KernelError> {
+        let mut atoms = Vec::with_capacity(atom_jsons.len());
+        for atom_json in atom_jsons {
+            self.note_atom_json(atom_json);
+            let atom: yanshi_core::Atom = serde_json::from_str(atom_json).map_err(|error| {
+                KernelError::new("invalid_argument", format!("原子解析失败：{error}"))
+            })?;
+            atoms.push(atom);
+        }
+        let report = self.kernel.apply_segment(atoms)?;
+        for key in self.kernel.last_dirty_tiles() {
+            self.dirty.insert((key.x, key.y));
+        }
+        Ok(json!({"ok": true, "report": report}))
+    }
+
+    /// **E2 仪器**：折叠器计数（增量／续折／全量／重放原子数），见
+    /// [`yanshi_wasm::Kernel::fold_counters`]。
+    #[must_use]
+    pub fn fold_counters(&self) -> (usize, usize, usize, usize) {
+        self.kernel.fold_counters()
     }
 
     /// **出一帧 ✗ 返回持久缓冲的 RGBA8（**整幅 ✓）★

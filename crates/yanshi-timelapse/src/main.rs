@@ -580,6 +580,16 @@ fn main() -> Result<()> {
     //   ⇒ 所以每 25 个 atom 往 **stderr** 打一行 ✓（被杀之后仍能看出卡在哪一段 ✓）。
     let progress_every = 25usize;
     let started = Instant::now();
+    // **E2：段长缺省 = `frame_every`，不另引参数**。`YANSHI_TIMELAPSE_SEGMENT_LEN`
+    // 只是校验钩子（段长置 1 ⇒ 退化为现状，指数应回 ~2.5；见期 3 E2 说明），
+    // 正常重放不设它；设了也只影响段切分，出帧节奏仍由 `frame_every` 定。
+    let segment_len = std::env::var("YANSHI_TIMELAPSE_SEGMENT_LEN")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(frame_every);
+    // **E2**：攒段的缓冲（行号 + shrink 改写后的行），到出帧边界或满段长时一次喂。
+    let mut segment: Vec<(usize, String)> = Vec::new();
     for (i, line) in atom_lines.iter().enumerate() {
         if i >= end_idx {
             break;
@@ -625,7 +635,6 @@ fn main() -> Result<()> {
         if shrink && shrunk.is_none() {
             account.shrink_skips += 1;
         }
-        let t_apply = Instant::now();
         if shrink && shrunk.is_none() {
             eprintln!(
                 "  [debug] 这一行没能缩小 ⇒ 用原样：{}",
@@ -633,18 +642,18 @@ fn main() -> Result<()> {
             );
         }
         let line_to_apply = shrunk.as_deref().unwrap_or(line);
-        if let Err(error) = timeline.apply(line_to_apply) {
-            apply_failures += 1;
-            if first_failure.is_none() {
-                first_failure = Some(format!("第 {i} 行：{} {}", error.code, error.detail));
+        if i < 10 {
+            // **前 10 个 atom 仍逐个喂**（第 615 轮的卡点诊断原样保留：每个都打印
+            // kind + apply 耗时）；之后的 atom 按段攒着，到出帧边界一次喂。
+            let t_apply = Instant::now();
+            if let Err(error) = timeline.apply(line_to_apply) {
+                apply_failures += 1;
+                if first_failure.is_none() {
+                    first_failure = Some(format!("第 {i} 行：{} {}", error.code, error.detail));
+                }
             }
-        }
-        let atom_apply_ns = t_apply.elapsed().as_nanos();
-        account.apply_ns += atom_apply_ns;
-        // **★ 逐个 atom 的 apply 耗时 ★**（第 615 轮；外部第 92 次实测）
-        //   他们的日志停在 `进度 0/209` 之后 ⇒ 说明**卡在第 1~10 个 atom 之间** ✓
-        //   ⇒ 前 10 个 atom **每个都打印**（带 kind）✓；之后**只打印超过 2 秒的** ✓（避免刷屏 ✓）
-        if i < 10 || atom_apply_ns >= 2_000_000_000 {
+            let atom_apply_ns = t_apply.elapsed().as_nanos();
+            account.apply_ns += atom_apply_ns;
             let kind = serde_json::from_str::<Value>(line)
                 .ok()
                 .and_then(|atom| atom.get("kind").and_then(Value::as_str).map(str::to_owned))
@@ -653,8 +662,26 @@ fn main() -> Result<()> {
                 "    atom {i}（{kind}）apply {} ms",
                 atom_apply_ns / 1_000_000
             );
+        } else {
+            segment.push((i, line_to_apply.to_owned()));
+            if segment.len() >= segment_len {
+                flush_segment(
+                    &mut timeline,
+                    &mut segment,
+                    &mut account,
+                    &mut apply_failures,
+                    &mut first_failure,
+                );
+            }
         }
         if i >= start_idx && (i + 1 - start_idx) % frame_every == 0 {
+            flush_segment(
+                &mut timeline,
+                &mut segment,
+                &mut account,
+                &mut apply_failures,
+                &mut first_failure,
+            );
             push_frame(
                 &mut timeline,
                 &mut sink,
@@ -679,6 +706,14 @@ fn main() -> Result<()> {
             }
         }
     }
+    // **E2**：收尾段（最后一帧之后剩下的原子）一次喂完，再出收尾帧。
+    flush_segment(
+        &mut timeline,
+        &mut segment,
+        &mut account,
+        &mut apply_failures,
+        &mut first_failure,
+    );
     let frames_before_tail = frames;
     push_frame(
         &mut timeline,
@@ -781,6 +816,13 @@ fn main() -> Result<()> {
             }
         );
     }
+    // **E2 折叠账**：段路下 `replayed_atoms ≈ 总原子`、`full_steps = 1`、
+    // `incremental_steps` 为段数级（段长置 1 时退回 N 量级 ⇒ 仪器量的是同一量）。
+    let (fold_inc, fold_rebase, fold_full, fold_replayed) = timeline.fold_counters();
+    println!(
+        "  ★ 折叠账 ★ 增量 {fold_inc} 次｜续折 {fold_rebase} 次｜全量 {fold_full} 次｜重放原子 {fold_replayed}（总原子 {}）★",
+        atom_lines.len().min(end_idx)
+    );
     if apply_failures > 0 {
         eprintln!(
             "⚠️ {apply_failures} 个 atom 没被内核接受（首个：{}）⇒ 视频可能缺内容",
@@ -810,6 +852,56 @@ fn main() -> Result<()> {
         yanshi_render::render::tiles_actually_copied()
     );
     Ok(())
+}
+
+/// **E2**：把攒着的一段原子一次喂给 `Timeline::apply_segment`，计时进 `apply` 段。
+///
+/// 段调用失败时退回逐原子 `apply`（与原来逐个喂完全相同的失败计数口径；
+/// 只有 `fold` 失败后才可能出现"重复原子不再重复折叠"的差异——那时下一段
+/// 的 `fold` 会把它们一并算入，帧不丢内容）。慢段（≥2s）打一行，与原来
+/// "慢 atom 打一行"的卡点诊断同口径。
+fn flush_segment(
+    timeline: &mut yanshi_timelapse::Timeline,
+    segment: &mut Vec<(usize, String)>,
+    account: &mut Account,
+    apply_failures: &mut usize,
+    first_failure: &mut Option<String>,
+) {
+    if segment.is_empty() {
+        return;
+    }
+    let lines: Vec<(usize, String)> = std::mem::take(segment);
+    let first_i = lines.first().map(|(i, _)| *i).unwrap_or(0);
+    let last_i = lines.last().map(|(i, _)| *i).unwrap_or(0);
+    let count = lines.len();
+    let texts: Vec<String> = lines.iter().map(|(_, line)| line.clone()).collect();
+    let t_apply = Instant::now();
+    let result = timeline.apply_segment(&texts);
+    let segment_ns = t_apply.elapsed().as_nanos();
+    account.apply_ns += segment_ns;
+    match result {
+        Ok(_) => {
+            if segment_ns >= 2_000_000_000 {
+                eprintln!(
+                    "    段 [{first_i}..{last_i}]（{count} 个原子）apply {} ms",
+                    segment_ns / 1_000_000
+                );
+            }
+        }
+        Err(_) => {
+            for (i, line) in &lines {
+                let t_atom = Instant::now();
+                if let Err(error) = timeline.apply(line) {
+                    *apply_failures += 1;
+                    if first_failure.is_none() {
+                        *first_failure =
+                            Some(format!("第 {i} 行：{} {}", error.code, error.detail));
+                    }
+                }
+                account.apply_ns += t_atom.elapsed().as_nanos();
+            }
+        }
+    }
 }
 
 /// **∴ 渲一帧并送进 ffmpeg ✗**（**∴ 写成自由函数 ✗ 不用闭包 ✓）★

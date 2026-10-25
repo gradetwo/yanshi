@@ -123,6 +123,50 @@ impl FoldEngine {
     }
 }
 
+/// **E2 段折叠的落点说明**：段原语就是 [`crate::seq::IncrementalFolder::fold`]
+/// —— 每段调一次、而不是每原子调一次。
+///
+/// 为什么不另造一个 `fold_segment(base, atoms)`：`fold_slice` 只看得见段内原子，
+/// 段内 `revert` 指向段首之前的目标时，它算不出"目标的效果要从 base 里去掉"
+/// （`compute_suppressed` 的视野只有本段）；而 `IncrementalFolder::fold`
+/// 本来就有三条路——前推／续折（`resume_before`）／完整求值——且不变量是
+/// "无论走哪条路都与 `state_at` 完整求值逐字段一致"，段折叠直接复用它，
+/// 跨段 revert 走续折、段内 `declare_head` 走完整求值，**同一事实只写一处**。
+///
+/// 段折叠的脏区并集不在这里算：它由调用方（`Kernel`／`Document`）对段内原子
+/// 逐个 `plan_dirty_with_log(末态, Some(段首态), …)` 再并起来（见下）。
+/// 段首态只保留最新一份（滚动 checkpoint），不随段数增长。
+///
+/// **但有一类段不能走段折叠**：见 [`segment_needs_atomic_path`]。
+/// 该原子种类的提交/脏区需要"提交前的状态"（与服务端提交路径同一张表）。
+///
+/// 与 `crates/yanshi-server/src/document.rs` 的 `needs_previous_state` 是
+/// **同一张表**——那边的本地函数已改为调这里，表只写一处。
+pub fn atom_needs_previous_state(kind: AtomKind) -> bool {
+    matches!(
+        kind,
+        AtomKind::Tombstone
+            | AtomKind::Supersede
+            | AtomKind::Move
+            | AtomKind::Transform
+            | AtomKind::SetProperty
+            | AtomKind::Revert
+            | AtomKind::Reapply
+            | AtomKind::ReorderLayers
+    )
+}
+
+/// **该段是否必须走逐原子路径**（E2 回退条件）：段内含 `declare_head`，
+/// 或含任一需要"提交前状态"的结构类原子（[`atom_needs_previous_state`]）
+/// 时，段折叠的保守脏区并集不再可信——段内一次差分可能漏掉中间态才脏的
+/// tile（`move` 的旧位置、被删对象的旧包围盒都只在逐原子差分里出现）
+/// ⇒ 整段回退逐原子 `apply`／`commit`，正确性与逐原子路径完全相同。
+pub fn segment_needs_atomic_path(atoms: &[Atom]) -> bool {
+    atoms
+        .iter()
+        .any(|atom| atom.kind == AtomKind::DeclareHead || atom_needs_previous_state(atom.kind))
+}
+
 /// 计算被有效 revert 撤销的原子集合（设计文档 5.3 有效集）。
 pub fn compute_suppressed(atoms: &[Atom]) -> BTreeSet<AtomId> {
     EffectiveActions::from_atoms(atoms).suppressed().clone()

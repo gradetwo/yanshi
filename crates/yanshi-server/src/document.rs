@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use yanshi_core::blob::{plan_gc, run_gc, BlobStore, GcPlan, GcReport};
 use yanshi_core::{
-    fold::{FoldResult, WarningKind},
+    fold::{fold_atoms, segment_needs_atomic_path, FoldResult, FoldWarning, WarningKind},
     Atom, AtomId, AtomKind, AtomLog, Bbox, BlobHash, ChangesetId, CommitContext, DocumentState,
     ErrorCode, ErrorContext, FoldEngine, HeadBase, IncrementalFolder, Result, Seq, Snapshot,
     SnapshotBase, SnapshotDecision, SnapshotStore, StateAt, YanshiError,
@@ -121,6 +121,33 @@ pub struct CommitResult {
     pub job_id: Option<JobId>,
     /// 是否触发了快照。
     pub snapshotted: bool,
+}
+
+/// **E2**：一段提交里单个原子的结果（`replay_frames` 按段消费，与
+/// [`CommitResult`] 的对应字段同口径；`error` 非空时该原子未进日志）。
+#[derive(Debug, Clone)]
+pub struct SegmentAtomOutcome {
+    /// 原子 id。
+    pub atom_id: AtomId,
+    /// 权威序号（被拒的原子为 0，占位）。
+    pub seq: Seq,
+    /// 是否幂等命中（重复提交）。
+    pub duplicate: bool,
+    /// 受影响区域 `[x, y, w, h]`（被拒／重复时为 `None`）。
+    pub dirty_bbox: Option<[f64; 4]>,
+    /// 被拒的原因（`None` 表示已提交）。
+    pub error: Option<YanshiError>,
+}
+
+/// **E2**：一段提交的汇总（[`Document::commit_segment_as`] 的返回）。
+#[derive(Debug, Clone)]
+pub struct SegmentCommitResult {
+    /// 段内每个原子的结果（与输入顺序一一对应）。
+    pub atoms: Vec<SegmentAtomOutcome>,
+    /// 整段折叠的警告（与 [`CommitResult::warnings`] 同一映射）。
+    pub warnings: Vec<Value>,
+    /// 提交后的 head seq。
+    pub head_seq: Seq,
 }
 
 /// 渲染预览结果（7.5：默认返回 URL，不返回 base64）。
@@ -1038,18 +1065,7 @@ impl Document {
             }
         }
 
-        let warnings = folded
-            .warnings
-            .iter()
-            .map(|warning| {
-                let label = match warning.kind {
-                    WarningKind::CascadeInvalidation => "cascade_invalidation",
-                    WarningKind::PreconditionFailed => "precondition_failed",
-                    WarningKind::DeclareHeadOutsideFormula => "declare_head_outside_formula",
-                };
-                json!({"atom_id": warning.atom_id, "seq": warning.seq, "kind": label, "detail": warning.detail})
-            })
-            .collect();
+        let warnings = warnings_to_json(&folded.warnings);
 
         Ok(CommitResult {
             atom_id,
@@ -1064,6 +1080,253 @@ impl Document {
             job_id,
             snapshotted,
         })
+    }
+
+    /// **E2：一段原子一次折叠**（`export_timelapse` 的 `replay_frames` 用；
+    /// 交互提交仍走逐原子的 [`Self::commit_as`]）。
+    ///
+    /// 平方根因与内核路同源：每原子一次 `IncrementalFolder::fold` 里的
+    /// `remember()` 全状态深拷贝。这里每段只付一次：段内原子逐个
+    /// `append_validated`（校验口径与逐原子路径相同，见下），再调一次
+    /// `fold`；脏区取段内逐原子 `plan_dirty_with_log(末态, Some(段首态))`
+    /// 的并集、tile 一次失效；快照判定、广播、Job 与预览脏区按段收一次尾。
+    ///
+    /// **校验状态随段推进**：校验要看折叠后状态（引用存在性等），所以段内
+    /// 维护一份 `work_state`，每提交一个原子就用 `fold_atoms` 把它推进一格
+    /// （按值移动、**不克隆**；段内无 `revert`——见回退规则——所以单原子
+    /// `fold_atoms` 与折叠器的推进逐字等价）。校验被拒的原子不进日志、
+    /// 不推进 `work_state`，后继原子继续（与逐原子路径的拒收语义相同）。
+    ///
+    /// 回退：段内含 `declare_head` 或结构类原子
+    /// （`yanshi_core::fold::segment_needs_atomic_path`）时整段走逐原子
+    /// `commit_as_timed`。快路里 `Conflict` 错误**不**调
+    /// `ensure_conflict_layer`（它要追加系统原子并立即折叠，会打断段内的
+    /// 状态推进；重放包里冲突本就不会出现）——错误原样进结果，由调用方
+    /// 按警告处理，与其它拒收同口径。
+    ///
+    /// 段首状态只克隆一次（脏区规划的 `previous`）；滚动 checkpoint 是
+    /// folder 自己的 `last`，只留最新一份。
+    /// 段内每个原子的 actor 取自原子自身的 `actor` 字段（与 `replay_frames`
+    /// 原来逐原子传 `atom.actor` 同口径）；`owner` 与 `commit_as` 同义。
+    pub fn commit_segment_as(
+        &mut self,
+        atoms: Vec<Atom>,
+        owner: bool,
+        phases: &mut CommitPhases,
+    ) -> Result<SegmentCommitResult> {
+        if atoms.is_empty() {
+            return Ok(SegmentCommitResult {
+                atoms: Vec::new(),
+                warnings: Vec::new(),
+                head_seq: self.log.head_seq(),
+            });
+        }
+        if segment_needs_atomic_path(&atoms) {
+            let mut outcomes = Vec::with_capacity(atoms.len());
+            for atom in atoms {
+                let atom_id = atom.id.clone();
+                let actor = atom.actor.clone();
+                match self.commit_as_timed(atom, &actor, owner, None, phases) {
+                    Ok(result) => outcomes.push(SegmentAtomOutcome {
+                        atom_id,
+                        seq: result.seq,
+                        duplicate: result.duplicate,
+                        dirty_bbox: result.dirty_bbox,
+                        error: None,
+                    }),
+                    Err(error) => outcomes.push(SegmentAtomOutcome {
+                        atom_id,
+                        seq: 0,
+                        duplicate: false,
+                        dirty_bbox: None,
+                        error: Some(error),
+                    }),
+                }
+            }
+            return Ok(SegmentCommitResult {
+                atoms: outcomes,
+                warnings: Vec::new(),
+                head_seq: self.log.head_seq(),
+            });
+        }
+        // 段首状态：克隆一份作脏区规划的 `previous`（每段一次），再把
+        // `self.state` 移出来作随段推进的校验工作状态（不克隆）。
+        let previous = self.state.clone();
+        let mut work_state = std::mem::replace(&mut self.state, DocumentState::empty());
+        let mut outcomes: Vec<SegmentAtomOutcome> = Vec::with_capacity(atoms.len());
+        let mut committed: Vec<Atom> = Vec::new();
+        // 与 `committed` 平行的 outcome 下标（脏区回填用，避免按 id 反查）。
+        let mut committed_outcome_idx: Vec<usize> = Vec::new();
+        let log_started = std::time::Instant::now();
+        for atom in atoms {
+            let atom_session = atom.session.clone();
+            let atom_id = atom.id.clone();
+            let actor = atom.actor.clone();
+            let validation = {
+                let exists = |hash: &BlobHash| self.store.exists(hash);
+                let mut context = CommitContext::new(&work_state, &exists, &actor, &atom_session);
+                if owner {
+                    context = context.allow_cross_actor_revert(true);
+                }
+                self.log.append_validated(atom, &context)
+            };
+            let outcome = match validation {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    outcomes.push(SegmentAtomOutcome {
+                        atom_id,
+                        seq: 0,
+                        duplicate: false,
+                        dirty_bbox: None,
+                        error: Some(error),
+                    });
+                    continue;
+                }
+            };
+            self.commits += 1;
+            let seq = outcome.seq();
+            let duplicate = !outcome.is_appended();
+            if duplicate {
+                outcomes.push(SegmentAtomOutcome {
+                    atom_id,
+                    seq,
+                    duplicate: true,
+                    dirty_bbox: None,
+                    error: None,
+                });
+                continue;
+            }
+            let appended = self
+                .log
+                .by_seq(seq)
+                .cloned()
+                .ok_or_else(|| internal("刚追加的原子不在日志中"))?;
+            // 只推进校验工作状态（警告丢弃——权威警告由段末一次折叠给）。
+            work_state = fold_atoms(work_state, std::slice::from_ref(&appended)).state;
+            committed.push(appended);
+            committed_outcome_idx.push(outcomes.len());
+            outcomes.push(SegmentAtomOutcome {
+                atom_id,
+                seq,
+                duplicate: false,
+                dirty_bbox: None,
+                error: None,
+            });
+        }
+        phases.log_us = phases
+            .log_us
+            .saturating_add(log_started.elapsed().as_micros() as u64);
+        if committed.is_empty() {
+            // 整段都被拒／重复：状态原样恢复（`work_state` 就是段首态）。
+            self.state = work_state;
+            return Ok(SegmentCommitResult {
+                atoms: outcomes,
+                warnings: Vec::new(),
+                head_seq: self.log.head_seq(),
+            });
+        }
+        // 折叠段（6.6）：一次 `fold`，`remember()` 只克隆一次。
+        let fold_started = std::time::Instant::now();
+        let folded = match self.folder.fold(&self.log, self.log.head_seq()) {
+            Ok(folded) => folded,
+            Err(error) => {
+                self.state = previous;
+                return Err(error);
+            }
+        };
+        self.state = folded.state;
+        if self.state.width > 1 {
+            if let Ok(grid) = self.grid_for_state() {
+                if grid.width() != self.renderer.grid().width()
+                    || grid.height() != self.renderer.grid().height()
+                    || grid.tile_size() != self.renderer.grid().tile_size()
+                {
+                    let cache_bytes = self.settings.render_cache_bytes;
+                    self.renderer = Renderer::with_budget(grid, cache_bytes);
+                    self.render_watermark = 0;
+                }
+            }
+        }
+        phases.fold_us = phases
+            .fold_us
+            .saturating_add(fold_started.elapsed().as_micros() as u64);
+
+        // 脏区段：段内逐原子规划，**按 tile 键取并集**（与内核路同理：
+        // `DirtySet` 并的是 bbox，散落补丁会松成整幅；`apply_dirty` 只做
+        // 缓存失效不渲染，逐原子调一次的代价是 O(脏 tile) 的集合操作）。
+        let dirty_started = std::time::Instant::now();
+        let mut tile_set: std::collections::BTreeSet<TileKey> = std::collections::BTreeSet::new();
+        for (committed_index, appended) in committed.iter().enumerate() {
+            let dirty = plan_dirty_with_log(&self.state, Some(&previous), &self.log, appended);
+            let tiles = self.renderer.apply_dirty(&self.state, &dirty);
+            let preview_dirty = if tiles.is_empty() && atom_cannot_change_pixels(appended.kind) {
+                PreviewDirty::Clean
+            } else {
+                planned_preview_dirty(&dirty)
+            };
+            self.preview_dirty = self.preview_dirty.merged(preview_dirty);
+            if let Some(outcome) = committed_outcome_idx
+                .get(committed_index)
+                .and_then(|index| outcomes.get_mut(*index))
+            {
+                outcome.dirty_bbox = dirty.bbox.map(|bbox| [bbox.x, bbox.y, bbox.w, bbox.h]);
+            }
+            for tile in tiles {
+                tile_set.insert(tile);
+            }
+        }
+        let dirty_tiles: Vec<TileKey> = tile_set.into_iter().collect();
+        // 控制流广播（6.8）：原子逐个发，tile 并集一次发。
+        for appended in &committed {
+            self.broadcaster.publish_atom(appended);
+        }
+        if !dirty_tiles.is_empty() {
+            self.broadcaster
+                .publish_tiles(self.renderer.grid().tile_size(), &dirty_tiles);
+        }
+        // 重型原子创建 Job（6.7）。
+        for appended in &committed {
+            if appended.is_heavy() {
+                let _ = self.jobs.submit(
+                    appended.kind.as_str(),
+                    appended.session.clone(),
+                    yanshi_core::now_ms(),
+                );
+            }
+        }
+        phases.dirty_us = phases
+            .dirty_us
+            .saturating_add(dirty_started.elapsed().as_micros() as u64);
+
+        // 快照策略（6.5）：每段判定一次（重放用的临时文档不读快照，口径与
+        // 逐原子路径相同、次数只是从每原子一次降到每段一次）。
+        let now = yanshi_core::now_ms();
+        let decision: SnapshotDecision = yanshi_core::snapshot::snapshot_decision(
+            &self.log,
+            self.last_snapshot_seq,
+            self.last_snapshot_at,
+            now,
+        );
+        if decision.needed && decision.lag_atoms >= self.settings.snapshot_lag_atoms {
+            let _ = self.snapshot_now(now);
+        }
+
+        Ok(SegmentCommitResult {
+            atoms: outcomes,
+            warnings: warnings_to_json(&folded.warnings),
+            head_seq: self.log.head_seq(),
+        })
+    }
+
+    /// **E2 仪器**：折叠器计数（增量／续折／全量／重放原子数），见
+    /// [`yanshi_wasm::Kernel::fold_counters`] 同口径。
+    pub fn fold_counters(&self) -> (usize, usize, usize, usize) {
+        (
+            self.folder.incremental_steps(),
+            self.folder.rebase_steps(),
+            self.folder.full_steps(),
+            self.folder.replayed_atoms(),
+        )
     }
 
     /// 确保冲突图层存在（12.3）：不存在则以系统 actor（`system:conflict`）追加 `create_layer`。
@@ -2711,22 +2974,28 @@ fn covers_canvas(region: Bbox, width: u32, height: u32) -> bool {
     region.x <= 0.0 && region.y <= 0.0 && region.w >= width as f64 && region.h >= height as f64
 }
 
+/// **E2**：表只写一处，见 `yanshi_core::fold::atom_needs_previous_state`。
 fn needs_previous_state(kind: AtomKind) -> bool {
-    matches!(
-        kind,
-        AtomKind::Tombstone
-            | AtomKind::Supersede
-            | AtomKind::Move
-            | AtomKind::Transform
-            | AtomKind::SetProperty
-            | AtomKind::Revert
-            | AtomKind::Reapply
-            | AtomKind::ReorderLayers
-    )
+    yanshi_core::fold::atom_needs_previous_state(kind)
 }
 
 fn dirty_kind_str(dirty: &DirtySet) -> &'static str {
     dirty.kind.as_str()
+}
+
+/// 折叠警告 → 工具层 JSON（`commit_as_timed` 与 `commit_segment_as` 共用同一映射）。
+fn warnings_to_json(warnings: &[FoldWarning]) -> Vec<Value> {
+    warnings
+        .iter()
+        .map(|warning| {
+            let label = match warning.kind {
+                WarningKind::CascadeInvalidation => "cascade_invalidation",
+                WarningKind::PreconditionFailed => "precondition_failed",
+                WarningKind::DeclareHeadOutsideFormula => "declare_head_outside_formula",
+            };
+            json!({"atom_id": warning.atom_id, "seq": warning.seq, "kind": label, "detail": warning.detail})
+        })
+        .collect()
 }
 
 /// 两个文档区域的**并集** ✓（累积脏区用，第 1040 轮）。

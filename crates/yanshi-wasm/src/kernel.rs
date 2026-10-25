@@ -708,6 +708,185 @@ impl Kernel {
         })
     }
 
+    /// **E2：一段原子一次折叠**（timelapse 段重放；交互落笔仍走逐原子的 [`Self::apply_atom`]）。
+    ///
+    /// 平方根因在每原子一次的全状态深拷贝（`remember()` + `previous` 克隆）；
+    /// 这里每段只付一次：段内原子先逐个 `log.append`（O(1) 摊还，日志完整性、
+    /// `head_seq`、幂等去重语义与逐原子路径相同），再调一次
+    /// `IncrementalFolder::fold`（段内不克隆状态；滚动 checkpoint 是
+    /// folder 自己的 `last`，只留最新一份），脏区取段内逐原子
+    /// `plan_dirty_with_log(末态, Some(段首态))` 的并集、tile 一次失效。
+    ///
+    /// 回退：段内含 `declare_head` 或结构类原子
+    /// （`yanshi_core::fold::segment_needs_atomic_path`）时整段走逐原子
+    /// `apply_atom`；`fold` 出错时状态恢复到段首、错误原样返回（日志里已进
+    /// 的原子由下一段的 `fold` 续折时一并算入，不丢状态）。
+    ///
+    /// 调用方喂的是带权威 seq 的已提交原子（timelapse 重放包）；报告里的
+    /// `atom_id`／`seq` 取段内最后一个原子，`dirty_*` 是全段并集。
+    pub fn apply_segment(&mut self, atoms: Vec<Atom>) -> Result<ApplyReport, KernelError> {
+        if atoms.is_empty() {
+            return Ok(ApplyReport {
+                atom_id: String::new(),
+                seq: self.log.head_seq(),
+                duplicate: false,
+                dirty_kind: DirtyKind::None.as_str().to_owned(),
+                dirty_bbox: None,
+                dirty_tiles: Vec::new(),
+                warnings: Vec::new(),
+                head: self.log.head_seq(),
+            });
+        }
+        if yanshi_core::fold::segment_needs_atomic_path(&atoms) {
+            return self.apply_segment_atom_by_atom(atoms);
+        }
+        // 预检 seq 连续性（与 `apply_atom` 同一条规则），**不改任何状态**：
+        // 失败时调用方可对本段做逐原子回放，行为与原来逐个 apply 完全相同。
+        // 已在日志里的 id 不推进 `expected`（`append` 会返回 `Duplicate`）。
+        let mut expected = self.log.head_seq() + 1;
+        for atom in &atoms {
+            if self.log.get(&atom.id).is_some() {
+                continue;
+            }
+            if atom.is_submitted() && atom.seq != expected {
+                return Err(KernelError::new(
+                    "out_of_order",
+                    format!(
+                        "原子 seq={} 与本地 HEAD={expected} 不连续，需要重新同步",
+                        atom.seq
+                    ),
+                ));
+            }
+            expected += 1;
+        }
+        // 段首状态**移出**而不是克隆：它是脏区规划的 `previous`，用完即丢；
+        // 段内唯一一次全状态深拷贝是下面 `fold` 里的 `remember()`。
+        let segment_start = std::mem::replace(&mut self.state, DocumentState::empty());
+        let mut appended: Vec<Atom> = Vec::with_capacity(atoms.len());
+        let mut duplicates = 0u64;
+        for atom in atoms {
+            match self.log.append(atom) {
+                Ok(yanshi_core::AppendOutcome::Appended { seq }) => {
+                    let stored = self.log.by_seq(seq).cloned().ok_or_else(|| {
+                        self.state = segment_start.clone();
+                        KernelError::new("internal", "原子未进入本地日志")
+                    })?;
+                    appended.push(stored);
+                }
+                Ok(yanshi_core::AppendOutcome::Duplicate { .. }) => {
+                    duplicates += 1;
+                }
+                Err(error) => {
+                    self.state = segment_start;
+                    return Err(KernelError::new("precondition_failed", error.to_string()));
+                }
+            }
+        }
+        let folded = match self.folder.fold(&self.log, self.log.head_seq()) {
+            Ok(folded) => folded,
+            Err(error) => {
+                self.state = segment_start;
+                return Err(KernelError::new("precondition_failed", error.to_string()));
+            }
+        };
+        self.state = folded.state;
+        // 脏区：段内逐原子规划，**按 tile 键取并集**——与逐原子路逐 tile 相等。
+        // 注意不能先并 `DirtySet` 再一次 `apply_dirty`：`DirtySet::union`
+        // 并的是 bbox，散落补丁的段并集 bbox 近乎整幅 ⇒ 会把没碰过的 tile
+        // 也失效、帧重渲整幅。`apply_dirty` 本身只做缓存失效（不渲染），
+        // 逐原子调一次的代价是 O(脏 tile) 的集合操作，不进平方项。
+        // （段首态作 `previous`；中间态才脏的 tile 在末态里也不脏——帧只渲
+        // 末态与上一帧的差，中间位置不进帧。）
+        let mut tile_set: BTreeSet<TileKey> = BTreeSet::new();
+        let mut bbox: Option<Bbox> = None;
+        let mut kind = DirtyKind::None;
+        for atom in &appended {
+            let dirty = plan_dirty_with_log(&self.state, Some(&segment_start), &self.log, atom);
+            for tile in self.renderer.apply_dirty(&self.state, &dirty) {
+                tile_set.insert(tile);
+            }
+            bbox = union_bbox(bbox, dirty.bbox);
+            kind = match (kind, dirty.kind) {
+                (DirtyKind::Full, _) | (_, DirtyKind::Full) => DirtyKind::Full,
+                (DirtyKind::Structure, _) | (_, DirtyKind::Structure) => DirtyKind::Structure,
+                (DirtyKind::Geometry, _) | (_, DirtyKind::Geometry) => DirtyKind::Geometry,
+                _ => DirtyKind::None,
+            };
+        }
+        let tiles: Vec<TileKey> = tile_set.into_iter().collect();
+        self.last_tiles = tiles.clone();
+        self.atoms_applied += appended.len() as u64;
+        if duplicates > 0 {
+            self.duplicates += duplicates;
+        }
+        self.enforce_watermark();
+        let (last_seq, last_id) = appended
+            .last()
+            .map(|atom| (atom.seq, atom.id.clone()))
+            .unwrap_or((self.log.head_seq(), String::new()));
+        Ok(ApplyReport {
+            atom_id: last_id,
+            seq: last_seq,
+            duplicate: appended.is_empty(),
+            dirty_kind: kind.as_str().to_owned(),
+            dirty_bbox: bbox.map(|bbox| [bbox.x, bbox.y, bbox.w, bbox.h]),
+            dirty_tiles: tiles,
+            warnings: folded.warnings,
+            head: self.log.head_seq(),
+        })
+    }
+
+    /// `apply_segment` 的逐原子回退：段内含结构类原子／`declare_head` 时用。
+    /// 行为与调用方逐个调 `apply_atom` 完全相同（每原子一次 `previous`
+    /// 克隆与 `remember()`）；报告里的脏区是全段并集（tile 并集、bbox
+    /// 并集、类型取最重者），与快路报告同一口径。
+    fn apply_segment_atom_by_atom(&mut self, atoms: Vec<Atom>) -> Result<ApplyReport, KernelError> {
+        let mut tiles: Vec<TileKey> = Vec::new();
+        let mut bbox: Option<Bbox> = None;
+        let mut kind = DirtyKind::None;
+        let mut last_report: Option<ApplyReport> = None;
+        for atom in atoms {
+            let report = self.apply_atom(atom)?;
+            for tile in &report.dirty_tiles {
+                if !tiles.contains(tile) {
+                    tiles.push(*tile);
+                }
+            }
+            bbox = match (bbox, report.dirty_bbox) {
+                (Some(a), Some([x, y, w, h])) => Some(a.union(&Bbox::new(x, y, w, h))),
+                (Some(a), None) => Some(a),
+                (None, Some([x, y, w, h])) => Some(Bbox::new(x, y, w, h)),
+                (None, None) => None,
+            };
+            kind = match (kind, report.dirty_kind.as_str()) {
+                (DirtyKind::Full, _) | (_, "full") => DirtyKind::Full,
+                (DirtyKind::Structure, _) | (_, "structure") => DirtyKind::Structure,
+                (DirtyKind::Geometry, _) | (_, "geometry") => DirtyKind::Geometry,
+                _ => DirtyKind::None,
+            };
+            last_report = Some(report);
+        }
+        let mut report =
+            last_report.ok_or_else(|| KernelError::new("internal", "空段不应走到逐原子回退"))?;
+        report.dirty_tiles = tiles.clone();
+        report.dirty_bbox = bbox.map(|bbox| [bbox.x, bbox.y, bbox.w, bbox.h]);
+        report.dirty_kind = kind.as_str().to_owned();
+        self.last_tiles = tiles;
+        Ok(report)
+    }
+
+    /// **E2 仪器**：折叠器计数（增量／续折／全量／重放原子数），供 timelapse
+    /// 分段账自证：段路下 `replayed_atoms ≈ N`、`full_steps = 1`、
+    /// `incremental_steps` 为段数级（段长置 1 时退回 N 量级）。
+    pub fn fold_counters(&self) -> (usize, usize, usize, usize) {
+        (
+            self.folder.incremental_steps(),
+            self.folder.rebase_steps(),
+            self.folder.full_steps(),
+            self.folder.replayed_atoms(),
+        )
+    }
+
     /// 渲染区域（乐观渲染 / 校正渲染都用它）。
     ///
     /// **★ 异步渲染（**GPU 量化路 ✓）✗ ★**（**第 487 轮 ✓；**目标第 6 条 ✓）

@@ -6,8 +6,9 @@
 //! **ffmpeg 子进程**（libx264）出 MP4。
 //!
 //! **快是硬指标，两条禁令**：
-//! - **严禁每帧从零重放、严禁每帧整幅重渲** —— 用一份临时 [`Document`] 逐
-//!   atom `commit`（折叠是增量的），状态只前进；抓帧走**脏区增量**：累积每条
+//! - **严禁每帧从零重放、严禁每帧整幅重渲** —— 用一份临时 [`Document`] 按
+//!   抓帧点切段提交（E2：段内一次折叠，`remember()` 的全状态深拷贝从每原子
+//!   一次降到每段一次），状态只前进；抓帧走**脏区增量**：累积每条
 //!   atom 的 `dirty_bbox`，到抓帧点只渲脏区、贴回持久帧缓冲（实测整幅重渲
 //!   ~2.4 s/帧 ⇒ 千笔文档会到分钟级；脏区渲染与面积成正比，紧框约 55 ms）。
 //!   脏区规划与产品自己的增量预览共用同一套 `plan_dirty` ⇒ 可信度同源。
@@ -470,60 +471,90 @@ fn replay_frames(
     let mut frame: Option<(u32, u32, Vec<u8>)> = None;
     let mut pending: Option<Bbox> = None;
     let mut pending_full = true;
+    // **E2：按抓帧点切段**（段边界对齐抓帧点，与二进制路的 `frame_every`
+    // 对齐同理）：段内一次 `commit_segment_as`，段末再抓帧；`ReplayOutcome`
+    // 字段不动，B2 的缺本体失败语义不受段切分影响（分类仍逐原子做）。
+    let mut segment: Vec<Atom> = Vec::new();
+    let mut segment_start = 0usize;
     for (index, atom) in atoms.iter().enumerate() {
         let committed = index + 1;
-        let actor = atom.actor.clone();
-        match scratch.commit_as(atom.clone(), &actor, true, None) {
+        segment.push(atom.clone());
+        let is_capture = capture_counts.contains(&committed);
+        let is_last = index + 1 == atoms.len();
+        if !is_capture && !is_last {
+            continue;
+        }
+        match scratch.commit_segment_as(
+            std::mem::take(&mut segment),
+            true,
+            &mut crate::timings::CommitPhases::default(),
+        ) {
             Ok(result) => {
-                if !result.duplicate {
-                    match result.dirty_bbox {
-                        Some([x, y, w, h]) => {
-                            let dirty = Bbox::new(x, y, w, h);
-                            pending = Some(match pending {
-                                Some(previous) => union_bbox(previous, dirty),
-                                None => dirty,
-                            });
+                for (offset, seg_outcome) in result.atoms.iter().enumerate() {
+                    let atom_committed = segment_start + offset + 1;
+                    let atom_kind = atoms[segment_start + offset].kind.as_str();
+                    match &seg_outcome.error {
+                        Some(error) => {
+                            outcome.warnings.push(format!(
+                                "第 {atom_committed} 个 atom（{atom_kind}）重放时被拒：{}",
+                                error.context.detail.as_deref().unwrap_or("")
+                            ));
+                            // **B2：提交时就被拒的缺 blob 原子** ✓ —— `validate_blobs`
+                            // （`crates/yanshi-core/src/log.rs` ✓）在 `append_validated` 里
+                            // 先于折叠挡住它 ✓：引用的 blob 不在存储里 ⇒ 原子进不了临时
+                            // 文档 ✓，渲染层永远看不到它、告警也就永远不会出现 ✓ ⇒ 只扫
+                            // 渲染告警会漏掉这一路 ✓。错误自带缺的那个哈希
+                            // （`error.context.blob_hash` ✓），按与渲染告警同一口径分类 ✓：
+                            // 本体 ⇒ 计入 `missing_body`（失败）✓；派生 tile ⇒ 计入
+                            // `missing_derived`（仍可出片）✓；查不到来源 ⇒ 按本体处理
+                            // （fail safe ✓）。只有带哈希的 `ReferenceNotFound` 才计数 ✓
+                            // —— 别的拒因（引用悬空等）不是缺 blob，不在此列 ✓。
+                            // （`all_blob_refs` 只收 `blob_hash`／`blob` 键下的值 ✓，
+                            // `payload.tiles` 不在其中 ✓ ⇒ 这里报的只能是本体哈希 ✓，
+                            // tile 缺走渲染的静默落回路 ✓，与口径一致 ✓。）
+                            if error.code == ErrorCode::ReferenceNotFound {
+                                if let Some(hash) = error.context.blob_hash.as_deref() {
+                                    let bare = hash.strip_prefix("sha256:").unwrap_or(hash);
+                                    match blob_classes.get(bare) {
+                                        Some(BlobSource::Tile) => {
+                                            missing_derived_hashes.insert(bare.to_string());
+                                        }
+                                        _ => {
+                                            missing_body_hashes.insert(bare.to_string());
+                                        }
+                                    }
+                                }
+                            }
                         }
-                        None => pending_full = true,
+                        None => {
+                            if !seg_outcome.duplicate {
+                                match seg_outcome.dirty_bbox {
+                                    Some([x, y, w, h]) => {
+                                        let dirty = Bbox::new(x, y, w, h);
+                                        pending = Some(match pending {
+                                            Some(previous) => union_bbox(previous, dirty),
+                                            None => dirty,
+                                        });
+                                    }
+                                    None => pending_full = true,
+                                }
+                            }
+                        }
                     }
                 }
             }
             Err(error) => {
+                // 整段折叠失败（逐原子路里会是每原子各一条拒收警告）：记一段警告，
+                // 继续抓帧；段内原子已进日志、未折叠，下一段 `fold` 会一并算入。
                 outcome.warnings.push(format!(
-                    "第 {committed} 个 atom（{}）重放时被拒：{}",
-                    atom.kind.as_str(),
+                    "第 {}..{committed} 个 atom 段提交失败：{}",
+                    segment_start + 1,
                     error.context.detail.as_deref().unwrap_or("")
                 ));
-                // **B2：提交时就被拒的缺 blob 原子** ✓ —— `validate_blobs`
-                // （`crates/yanshi-core/src/log.rs` ✓）在 `append_validated` 里
-                // 先于折叠挡住它 ✓：引用的 blob 不在存储里 ⇒ 原子进不了临时
-                // 文档 ✓，渲染层永远看不到它、告警也就永远不会出现 ✓ ⇒ 只扫
-                // 渲染告警会漏掉这一路 ✓。错误自带缺的那个哈希
-                // （`error.context.blob_hash` ✓），按与渲染告警同一口径分类 ✓：
-                // 本体 ⇒ 计入 `missing_body`（失败）✓；派生 tile ⇒ 计入
-                // `missing_derived`（仍可出片）✓；查不到来源 ⇒ 按本体处理
-                // （fail safe ✓）。只有带哈希的 `ReferenceNotFound` 才计数 ✓
-                // —— 别的拒因（引用悬空等）不是缺 blob，不在此列 ✓。
-                // （`all_blob_refs` 只收 `blob_hash`／`blob` 键下的值 ✓，
-                // `payload.tiles` 不在其中 ✓ ⇒ 这里报的只能是本体哈希 ✓，
-                // tile 缺走渲染的静默落回路 ✓，与口径一致 ✓。）
-                if error.code == ErrorCode::ReferenceNotFound {
-                    if let Some(hash) = error.context.blob_hash.as_deref() {
-                        let bare = hash.strip_prefix("sha256:").unwrap_or(hash);
-                        match blob_classes.get(bare) {
-                            Some(BlobSource::Tile) => {
-                                missing_derived_hashes.insert(bare.to_string());
-                            }
-                            _ => {
-                                missing_body_hashes.insert(bare.to_string());
-                            }
-                        }
-                    }
-                }
-                continue;
             }
         }
-        if !capture_counts.contains(&committed) {
+        segment_start = committed;
+        if !is_capture {
             continue;
         }
         let state = scratch.state();
@@ -1006,6 +1037,182 @@ mod tests {
             &flatten_to_rgb24(&full_rgba),
             last,
             "脏区增量帧必须与整幅渲染逐像素一致"
+        );
+    }
+
+    /// **E2：段提交的终态必须与逐原子提交逐字段一致**（`replay_frames` 的
+    /// 段路与原来逐原子 `commit_as` 同源）；折叠器计数按段走（`open()` 的
+    /// `rebuild()` 已做一次空全量折叠，3 段各一次增量），`replayed_atoms ≈ N`。
+    ///
+    /// **变异**：把 `commit_segment_as` 快路里的 `work_state` 推进去掉
+    /// （校验总看段首态）⇒ 第二段起引用新建图层的原子被拒 ⇒ 终态不等 ⇒ 红；
+    /// 把段末一次 `fold` 改成每原子一次 ⇒ `incremental_steps` 回到 N 量级 ⇒ 红。
+    #[test]
+    fn commit_segment_as_matches_commit_as_and_counts_folds_by_segment() {
+        let store = std::sync::Arc::new(yanshi_core::MemoryBlobStore::new());
+        let mut source = Document::create(
+            store.clone(),
+            crate::document::NewDocument::new("doc_tl_seg", 64, 48),
+            "human:1",
+            "session:test",
+            DocumentSettings::default(),
+        )
+        .unwrap();
+        source
+            .commit(Atom::new(
+                AtomKind::CreateLayer,
+                "human:1".to_owned(),
+                "session:test".to_owned(),
+                json!({"layer_id": "L1", "name": "图层1"}),
+            ))
+            .unwrap();
+        for index in 0..9 {
+            source
+                .commit(rect_atom(
+                    "L1",
+                    &format!("s{index}"),
+                    4.0 + index as f64 * 6.0,
+                    8.0,
+                    5.0,
+                    24.0,
+                    (30 + index * 20) as u8,
+                ))
+                .unwrap();
+        }
+        let atoms = source.log().atoms().to_vec();
+        let source_state = source.state().clone();
+
+        let mut scratch = Document::open(
+            store,
+            "doc_tl_seg·scratch",
+            Vec::new(),
+            DocumentSettings::default(),
+        )
+        .unwrap();
+        let mut phases = crate::timings::CommitPhases::default();
+        let mut submitted = 0usize;
+        for chunk in atoms.chunks(5) {
+            let result = scratch
+                .commit_segment_as(chunk.to_vec(), true, &mut phases)
+                .unwrap();
+            assert!(
+                result.warnings.is_empty(),
+                "段提交不应有折叠警告：{:?}",
+                result.warnings
+            );
+            assert_eq!(
+                result.atoms.len(),
+                chunk.len(),
+                "结果必须与段内原子一一对应"
+            );
+            assert!(
+                result.atoms.iter().all(|outcome| outcome.error.is_none()),
+                "段内原子不应被拒"
+            );
+            submitted += result.atoms.len();
+        }
+        assert_eq!(submitted, atoms.len());
+        assert_eq!(
+            scratch.state(),
+            &source_state,
+            "段提交终态必须与逐原子提交逐字段一致"
+        );
+        let (inc, _reb, full, replayed) = scratch.fold_counters();
+        assert_eq!(
+            full, 1,
+            "`open()` 的 `rebuild()` 做一次空全量折叠 ⇒ 全量恰好 1 次（实测 {full}）"
+        );
+        assert_eq!(inc, 3, "3 段 ⇒ 增量步数应为 3（每段一次，实测 {inc}）");
+        assert_eq!(
+            replayed,
+            atoms.len(),
+            "重放原子数必须 ≈ N（实测 {replayed}，N={}）",
+            atoms.len()
+        );
+    }
+
+    /// **E2：含 revert 的段走逐原子回退，终态仍须一致**。
+    #[test]
+    fn commit_segment_with_revert_falls_back_and_still_matches() {
+        let store = std::sync::Arc::new(yanshi_core::MemoryBlobStore::new());
+        let mut source = Document::create(
+            store.clone(),
+            crate::document::NewDocument::new("doc_tl_rev", 64, 48),
+            "human:1",
+            "session:test",
+            DocumentSettings::default(),
+        )
+        .unwrap();
+        source
+            .commit(Atom::new(
+                AtomKind::CreateLayer,
+                "human:1".to_owned(),
+                "session:test".to_owned(),
+                json!({"layer_id": "L1", "name": "图层1"}),
+            ))
+            .unwrap();
+        let first = rect_atom("L1", "s0", 4.0, 8.0, 5.0, 24.0, 30);
+        let target = first.id.clone();
+        source.commit(first).unwrap();
+        for index in 1..5 {
+            source
+                .commit(rect_atom(
+                    "L1",
+                    &format!("s{index}"),
+                    4.0 + index as f64 * 6.0,
+                    8.0,
+                    5.0,
+                    24.0,
+                    (30 + index * 20) as u8,
+                ))
+                .unwrap();
+        }
+        source
+            .commit_as(
+                Atom::new(
+                    AtomKind::Revert,
+                    "human:1".to_owned(),
+                    "session:test".to_owned(),
+                    json!({"target": target}),
+                ),
+                "human:1",
+                true,
+                None,
+            )
+            .unwrap();
+        for index in 5..9 {
+            source
+                .commit(rect_atom(
+                    "L1",
+                    &format!("s{index}"),
+                    4.0 + index as f64 * 6.0,
+                    8.0,
+                    5.0,
+                    24.0,
+                    (30 + index * 20) as u8,
+                ))
+                .unwrap();
+        }
+        let atoms = source.log().atoms().to_vec();
+        let source_state = source.state().clone();
+
+        let mut scratch = Document::open(
+            store,
+            "doc_tl_rev·scratch",
+            Vec::new(),
+            DocumentSettings::default(),
+        )
+        .unwrap();
+        let mut phases = crate::timings::CommitPhases::default();
+        // 整包一段提交：段内含 revert ⇒ 整段回退逐原子。
+        let result = scratch
+            .commit_segment_as(atoms.clone(), true, &mut phases)
+            .unwrap();
+        assert_eq!(result.atoms.len(), atoms.len());
+        assert_eq!(
+            scratch.state(),
+            &source_state,
+            "含 revert 的段回退逐原子后，终态必须与逐原子提交一致"
         );
     }
 
