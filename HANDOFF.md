@@ -41,7 +41,7 @@ CI：bf0c6e5a **success ✓**（run 40176610440；12 个可跑的 job 全 succes
    - **四条浏览器 known-red 归因**：`browser-project-download`／`browser-brush-panel`／`browser-i18n` 是 `run-criteria.sh` 的**一刀切 `render=client`** 把它们换成了"本地内核 + 服务端资产"这种不存在的组合 ⇒ 加 `RENDER_PARAM` 例外；三条**本机 server 模式全部通过**（project：下载 10,752 B、SHA 相同、导入 4 atoms/1 blob；brush-panel：`closedAfterPick=true`；i18n：整页中文 0）。
    - **`browser-layout` 判据改成结构量**：旧断「400% 溢出舞台 > 10px」量的是**视口宽**（CI 854px）✗；产品机制是**视口平移**，不是 `.stage` 滚动条 ⇒ 改断 `state.zoom ≈ 4` ＋ `viewport.w < 文档宽`（适配时 == 文档宽）○ 本机 client 模式通过 ✓。
    - **known-red 18 → 14**（上面四条移出，理由写在名单里）。
-   - **Y-01 复查**：`viewer-app.js:2245` 的 `skipped-blank-over-ink` 已按**内容**挡住"全透明覆盖"⇒ 审计说的"新序号空帧"已覆盖；残余只是"`knownSeq` 自身可能旧"（记在台账 §621-四）。
+   - **Y-01 复查＋新判据**：`viewer-app.js:2245` 的 `skipped-blank-over-ink` 已按**内容**挡住"全透明覆盖"⇒ 审计说的"新序号空帧"已覆盖；残余只是"`knownSeq` 自身可能旧"（记在台账 §621-四）。另加 **`scripts/check-blank-overwrite-guard.mjs`**：守「守卫在、且先判后落帧、且跳过有计数、行为侧判据仍在读」；变异（`if (false)`）⇒ 红 ✓、复原 ⇒ 绿 ✓；自测 5 例 ✓。
 
 ## 三、下一步（按优先序，都有精确入口）
 

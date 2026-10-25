@@ -10852,6 +10852,19 @@ const I18N_EN_TEXT = {
   "出问题时一键下载排查包（zip）": "Download a diagnostic bundle (zip) in one click when something goes wrong",
   "下载诊断包": "Download diagnostics bundle",
   "操作": "Actions",
+  // **混合模式下拉的 7 个选项**（第 1131 轮；CI 的 `browser-i18n` 实测漏了它们）：
+  //   ⇒ 它们是 `modeLabels`（`:5740`）在**运行时**创建的 `<option>` ✓ ⇒ 不在模板里
+  //     ⇒ `ui-i18n-coverage`（只看模板文本节点）**抓不到** ✗
+  //     ⇒ 只能靠运行时判据 `browser-i18n` ✓ —— 而它上一跑在 CI 上报了 7 条中文 ✓。
+  //   **⇒ 修法**：加词条（`i18nWalk` 会遍历 `<option>` 的文本节点 ✓；面板重建后
+  //     `MutationObserver` 还会再走一遍 ✓）。
+  "正常": "Normal",
+  "正片叠底": "Multiply",
+  "滤色": "Screen",
+  "叠加": "Overlay",
+  "变暗": "Darken",
+  "变亮": "Lighten",
+  "相加": "Add",
   "一致性自检": "Consistency check",
   "＋ 图层": "＋ Layer",
   // **★ `browser-i18n` 报到的那一条**漏翻 ✗ ★**（第 89 轮 ✓）：
