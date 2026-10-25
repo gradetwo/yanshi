@@ -197,7 +197,7 @@ textures/render_params/seed_policy），是绘画侧的笔触样式，**不是�
 | 色调（绿↔品红） | `white_balance.tint`，正 = 品红 |
 | 曲线点 (输入→输出，0–255) | `curves.points` ÷255 归一后**逐点过 sRGB EOTF 换成线性坐标**（内核曲线直接作用于线性 RGB，不转换量级会被放大，见 §9.1 续；点列须含首尾） |
 | 抬黑点 fade（输出 5–15/255） | 曲线首点 y ÷255 后同样过 EOTF 换线性（**只能走曲线**：`levels.black` 是输入黑点、方向相反，写它只会压暗部——2026-10-23 修订，原稿把两者并列是错的） |
-| 色阶输入黑点（0–255） | `levels.black` ÷255 后**过 EOTF 换线性**（内核 black 是线性输入黑点位置，不转换有效显示黑点会被放大到 0.15–0.35，见 §9.1 续；white / gamma 跨空间近似不变，直通） |
+| 色阶输入黑点（0–255） | `levels.black` ÷255 后**直通**（期 2 起内核 black/white/gamma 均为显示空间值，著录直接写显示值；旧线性口径见 §9.1 续三，2026-10-24 前的换算规则已作废） |
 | 分离色调/色彩分级（H/S 两轮） | `split_toning` 三元组：按目标色的 RGB 偏移方向近似，量级 ≤0.15/分量（速查通则：分级宁小勿大，两轮之和 ≤25 的口径映射为三元组小量）；v2 四套再减半 |
 | HSL 逐通道（H/S/L） | **无逐通道 HSL**：全局 `hsl` 只动整体；逐通道意图改用 `selective_color` 的 CMYK 偏移近似，或写入 unsupported（期 3 起 selective 为 PS 差值权重 + sRGB→ProPhoto 往返，偏移量级约旧线性硬扇区口径的 ×1.8，期 3 试点推导，期 5 复核） |
 | 校准面板移色 | `channel_mixer` 矩阵近似（赛博朋克），或 unsupported |
@@ -296,6 +296,19 @@ strength = 0 恒等不受影响。本条与旋钮归属问题（22290c4）相互
 金丝雀口径）；本册另三行 cinema / ins_minimal / hdr_landscape 赶在
 渲染前落数据，省整行重渲。
 
+**续：`levels` 内核改显示口径（2026-10-25，photo-bugfix 期 2 A1，方案 K）。**
+上表是数据侧权宜（只修数据不修内核），次日 QA 整改就在 retro_film 又
+引入一处显示尺度 0.02，证明「只修数据」防不住重犯。本期按甲案原地改
+内核：`levels_channel` 扩展 sRGB 编码 → 显示空间做黑白点与 gamma →
+扩展解码回写（通则 1）；6 套线性值翻回显示尺度（上表「著录 black」列
+即现行值），retro_film 0.02 本就是显示意图、不动；white 0.99 /
+gamma 1.0–1.05 不动（前文清白结论仍成立，效应二阶，靠 7 套对照渲染
+复核）；auto 的 `estimate_levels` 改发显示值（百分位端点物理位置不
+变，只改发射编码）。6 套翻回后渲染应与现状逐像素一致（转换可逆，浮点
+误差 <1e-4 量级），retro_film 一处变开（暗部释放，约等于 retro r3b 的
+修正方向）。自此 §9 的 levels 行改为直通，本节「black_kernel =
+lin(black_著录）」的转换规则作废；curves 的 EOTF 转换规则沿用。
+
 **`brightness_contrast` 只点名、本次不动数据（2026-10-24 审计数据补全）**：
 它是无枢轴线性运算（`out = clamp(v·contrast + brightness)`，对比绕
 黑点 0 缩放、亮度为线性加法），与 §9 的著录直觉（显示空间绕 0.5 枢轴
@@ -365,7 +378,8 @@ retro_film（暮色剪影）与 hdr_landscape（大光比风光）被逐图 QA �
   抬起的黑染成棕（暗带 B−R Δ −0.111）。修法：curves 抬黑偏差减半、
   s_h shadows 0.2 → 0.05、bc brightness → 0、exposure 0.3 → 0.1、
   split amount 按续三降到 0.12，并在 style 段**末尾追加 levels 黑
-  位回锚**（black 0.02 线性）——新配方 p2 0.118、std 0.125（反超修
+  位回锚**（black 0.02，显示值——原文误标「线性」，943a9e6 落的本就是
+  显示尺度值；期 2 起内核亦按显示口径读，正相符）——新配方 p2 0.118、std 0.125（反超修
   正图），剪影沉回、红霞透出。著录规范：**fade/matte 类预设必须自带
   黑位回锚或等效的下压项，只抬不锚的配方在暗场景必翻**。
 - hdr_landscape 的白雾罩主犯是 shadows_highlights 单 op：旧值
@@ -404,7 +418,8 @@ retro_film（暮色剪影）与 hdr_landscape（大光比风光）被逐图 QA �
   γ_t=0.5 重映射 + t0 动态底 0.20–0.25、β=0.35 亮度权重混合、前景
   中性再锚定增益钳 [0.90,1.10]）。
 - **不动项**：`curves` 内核不改（期 0 的 EOTF 换算线性坐标值继续有效，
-  本节 curves / levels.black 的转换规则全部沿用）；`split_toning`
+  本节 curves 的转换规则全部沿用；`levels.black` 的转换规则自期 2 起
+  作废，见 §9.1 续三续）；`split_toning`
   内核不改（本节 split 量纲注记与 amount 随场景缩放规则全部沿用；
   设计 §9.2 第 1 项未决，待 Wang 确认是否后续纳入）；`shadows_highlights`
   不动；滤镜版 `clarity()` 不在本期。

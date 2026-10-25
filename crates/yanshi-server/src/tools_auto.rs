@@ -473,15 +473,18 @@ fn estimate_exposure(stats: &ImageStats, scene: &SceneFlags) -> (f32, Confidence
     (shrunk, confidence, rationale, transfer)
 }
 
-/// 色阶估计：曝光缩放后的显示黑/白点（单调变换下百分位可换算，
-/// 故直接用线性 p0.2/p99.8 × 2^ev，不必重排样本），再按 §9.1
-/// EOTF 映射落线性参数（decode∘encode 抵消 ⇒ 即缩放后线性值）。
+/// 色阶估计：曝光缩放后的黑/白点。百分位是单调变换下的分位数（显示
+/// 编码单调 ⇒ 显示 p0.2 = 编码(线性 p0.2)），故直接用线性 p0.2/p99.8
+/// × 2^ev、不必重排样本；钳制与中性/钉死判定仍在线性域做（端点物理
+/// 位置与旧口径一致），**发射时才编码成显示值**（期 2 A1：内核 levels
+/// 已改显示口径，auto 须发显示值，否则黑点会被再压约 12×）。
 /// 返回 None（整组恒等 ⇒ 跳过）或 (black, white, 白点是否被钳到 1.0)。
 fn estimate_levels(
     stats: &ImageStats,
     ev: f32,
     confidence: Confidence,
 ) -> Option<(f32, f32, bool, String)> {
+    use yanshi_render::color::srgb_encode_extended;
     let scale = 2.0f32.powf(ev);
     let black_raw = scale * stats.linear_p02;
     let white_raw = scale * stats.linear_p998;
@@ -496,10 +499,13 @@ fn estimate_levels(
     let white_final = if white_pinned { 1.0 } else { white };
     let shrunk_black = shrink(black_final, 0.0, confidence.weight());
     let shrunk_white = shrink(white_final, 1.0, confidence.weight());
+    // 发射显示值：端点是同一物理点，只是内核现在按显示空间插值。
+    let black_out = srgb_encode_extended(shrunk_black);
+    let white_out = srgb_encode_extended(shrunk_white);
     let rationale = format!(
         "曝光缩放 ×{scale:.3} 后线性 p0.2={black_raw:.4}、p99.8={white_raw:.4}，\
-         钳制黑 [{:.2}, {:.2}]、白 [{:.2}, {:.2}] ⇒ 黑 {black_final:.4}、白 {white_final:.4}\
-         （白点 ≥0.995 时钉 1.0、黑点 ≤0.01 时钉 0；置信 {} 权重 {}）",
+         钳制黑 [{:.2}, {:.2}]、白 [{:.2}, {:.2}] ⇒ 线性黑 {black_final:.4}、白 {white_final:.4}\
+         （白点 ≥0.995 时钉 1.0、黑点 ≤0.01 时钉 0；置信 {} 权重 {}）⇒ 发显示黑 {black_out:.4}、白 {white_out:.4}",
         LEVELS_BLACK_RANGE.0,
         LEVELS_BLACK_RANGE.1,
         LEVELS_WHITE_RANGE.0,
@@ -507,7 +513,7 @@ fn estimate_levels(
         confidence.as_str(),
         confidence.weight(),
     );
-    Some((shrunk_black, shrunk_white, white_pinned, rationale))
+    Some((black_out, white_out, white_pinned, rationale))
 }
 
 /// 影调估计：曝光后显示 p25（同上理：encode(2^ev × 线性 p25)）
@@ -1826,6 +1832,9 @@ mod tests {
 
     /// 色阶取曝光缩放后百分位：同一统计、两个 ev ⇒ 黑白点跟着动
     /// （变异：色阶用缩放前百分位 ⇒ 两组相同 ⇒ 红）。
+    /// 期 2 A1 改写：发射的是**显示值**（线性百分位编码后发出）——
+    /// ev=0：线性黑 0.02 → 显示 0.1517、白 0.9 → 0.9547；
+    /// ev=1：线性黑 0.04 → 显示 0.2209、白钳 1.0。
     #[test]
     fn levels_follow_exposure_scaling() {
         // 黑点取 0.02（0.01 按规则视为中性 ⇒ 0.0，故不用 0.01 作缩放断言）。
@@ -1838,16 +1847,16 @@ mod tests {
         let (black1, white1, _, _) =
             estimate_levels(&stats, 1.0, Confidence::High).expect("非恒等应落成");
         assert!(
-            (black0 - 0.02).abs() < 1e-6,
-            "ev=0 时黑点应为 0.02，实得 {black0}"
+            (black0 - 0.1517).abs() < 1e-4,
+            "ev=0 时黑点应为显示 0.1517（线性 0.02），实得 {black0}"
         );
         assert!(
-            (white0 - 0.9).abs() < 1e-6,
-            "ev=0 时白点应为 0.9，实得 {white0}"
+            (white0 - 0.9547).abs() < 1e-4,
+            "ev=0 时白点应为显示 0.9547（线性 0.9），实得 {white0}"
         );
         assert!(
-            (black1 - 0.04).abs() < 1e-6,
-            "ev=1 时黑点应为 0.04，实得 {black1}"
+            (black1 - 0.2209).abs() < 1e-4,
+            "ev=1 时黑点应为显示 0.2209（线性 0.04），实得 {black1}"
         );
         assert!(
             (white1 - 1.0).abs() < 1e-6,

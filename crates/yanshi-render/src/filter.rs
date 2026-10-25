@@ -897,13 +897,25 @@ pub fn invert(buffer: &mut Buffer) {
 
 /// 色阶：`black`/`white` 为输入黑白点（`0..1`），`gamma` 为中间调。
 /// 色阶：`channel` 为 `rgb` / `r` / `g` / `b`，可按通道单独调整。
+///
+/// **作用空间（photo-bugfix 期 2 A1，方案 K：显示口径，原地替换旧线性口径）**：
+/// 旧实现直接把 `black`/`white` 当作线性光缓冲上的位置，而著录直觉是显示空间
+/// 黑点——显示意图 0.06 实效显示黑点 0.27（错位约 12×）。新口径仿
+/// `brightness_contrast`：每通道扩展 sRGB 编码到显示空间做
+/// `((d−black)/(white−black))^gamma`、再扩展解码回写；参数键与取值域不变。
+/// `black`/`white`/`gamma` 现均为显示空间值：著录直接写显示值，不再经 EOTF
+/// 换线性（7b62936 的 6 套线性值已随本期翻回显示尺度；retro_film 0.02 本
+/// 就是显示意图，不动）。单通道模式（`r`/`g`/`b`）只编解码该通道。
+/// HDR：编码前不钳 `[0, 1]`（通则 1），显示值高于白点的归一化仍钳 1 再解码，
+/// 与旧线性版「高于白点 ⇒ 白点」的边界行为一致。
 pub fn levels_channel(buffer: &mut Buffer, black: f32, white: f32, gamma: f32, channel: &str) {
     let black = black.clamp(0.0, 0.999);
     let white = white.clamp(black + 1e-3, 1.0);
     let inverse_gamma = 1.0 / gamma.max(1e-3);
     let map = |value: f32| {
-        let normalized = ((value - black) / (white - black)).clamp(0.0, 1.0);
-        libm::powf(normalized, inverse_gamma)
+        let display = srgb_encode_extended(value);
+        let normalized = ((display - black) / (white - black)).clamp(0.0, 1.0);
+        srgb_decode_extended(libm::powf(normalized, inverse_gamma))
     };
     for_each_straight_color(buffer, |color| match channel {
         "r" => color[0] = map(color[0]),
@@ -5167,16 +5179,69 @@ mod tests {
         }
     }
 
+    /// 期 2 A1 改写：黑白点是**显示空间**值——输入以显示值 0.25/0.5/0.75
+    /// 给（线性 `srgb_to_linear(d)`），`levels(0.25, 0.75, 1.0)` 后显示值
+    /// 应为 0/0.5/1。旧线性期望（线性 0.25→0）在此输入下不再成立。
     #[test]
     fn levels_maps_black_and_white_points() {
+        let gray = |display: f32| {
+            let linear = srgb_to_linear(display);
+            [linear, linear, linear, 1.0]
+        };
         let mut buffer = Buffer::new(0, 0, 3, 1);
-        buffer.set_pixel(0, 0, [0.25, 0.25, 0.25, 1.0]);
-        buffer.set_pixel(1, 0, [0.5, 0.5, 0.5, 1.0]);
-        buffer.set_pixel(2, 0, [0.75, 0.75, 0.75, 1.0]);
+        buffer.set_pixel(0, 0, gray(0.25));
+        buffer.set_pixel(1, 0, gray(0.5));
+        buffer.set_pixel(2, 0, gray(0.75));
         levels(&mut buffer, 0.25, 0.75, 1.0);
         assert!(buffer.pixel(0, 0)[0].abs() < 1e-5);
-        assert!((buffer.pixel(1, 0)[0] - 0.5).abs() < 1e-5);
+        assert!((buffer.pixel(1, 0)[0] - srgb_to_linear(0.5)).abs() < 1e-5);
         assert!((buffer.pixel(2, 0)[0] - 1.0).abs() < 1e-5);
+    }
+
+    /// **作用空间（回归，期 2 A1）**：显示意图 `black=0.06` 必须把显示 0.06
+    /// 压成黑、而显示 0.27 只压到 `(0.27−0.06)/(1−0.06)`。旧线性口径下
+    /// 显示 0.27（线性 0.059）会被同一个 0.06 黑点压成 0 ⇒ 红。
+    #[test]
+    fn levels_black_point_is_in_display_space() {
+        let gray = |display: f32| {
+            let linear = srgb_to_linear(display);
+            [linear, linear, linear, 1.0]
+        };
+        let mut buffer = Buffer::new(0, 0, 2, 1);
+        buffer.set_pixel(0, 0, gray(0.06));
+        buffer.set_pixel(1, 0, gray(0.27));
+        levels(&mut buffer, 0.06, 1.0, 1.0);
+        assert!(
+            buffer.pixel(0, 0)[0].abs() < 1e-5,
+            "显示黑点 0.06 应压成黑，实得 {:?}",
+            buffer.pixel(0, 0)
+        );
+        let expected = srgb_to_linear((0.27 - 0.06) / (1.0 - 0.06));
+        assert!(
+            (buffer.pixel(1, 0)[0] - expected).abs() < 1e-4,
+            "显示 0.27 过 black=0.06 应为线性 {expected:.4}，实得 {:?}",
+            buffer.pixel(1, 0)
+        );
+    }
+
+    /// HDR/负值边界与旧线性版一致：高于白点 ⇒ 白点、低于黑点 ⇒ 黑点
+    ///（编码前不钳，但归一化钳 `[0, 1]` 后再解码）。
+    #[test]
+    fn levels_clamps_out_of_range_display_values() {
+        let mut buffer = Buffer::new(0, 0, 2, 1);
+        buffer.set_pixel(0, 0, [2.0, 2.0, 2.0, 1.0]);
+        buffer.set_pixel(1, 0, [-0.5, -0.5, -0.5, 1.0]);
+        levels(&mut buffer, 0.0, 1.0, 1.0);
+        assert!(
+            (buffer.pixel(0, 0)[0] - 1.0).abs() < 1e-5,
+            "HDR 高光应钳到白点，实得 {:?}",
+            buffer.pixel(0, 0)
+        );
+        assert!(
+            buffer.pixel(1, 0)[0].abs() < 1e-5,
+            "负值应钳到黑点，实得 {:?}",
+            buffer.pixel(1, 0)
+        );
     }
 
     #[test]
