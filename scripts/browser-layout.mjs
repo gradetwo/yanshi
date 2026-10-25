@@ -380,11 +380,18 @@ const metrics = () =>
     stage.scrollLeft = 60;
     const canScroll = stage.scrollLeft !== before;
     stage.scrollLeft = before;
+    const live = window.yanshi && window.yanshi.state ? window.yanshi.state() : null;
     return {
       boardWidth: width,
       stageClient: client,
       overflow: width - client,
       canScroll,
+      docW: live && live.docSize ? live.docSize.w : board.width,
+      // **缩放的结构量**：state.zoom 是「适配 × 用户缩放」后的显示比例 ✓
+      //   ⇒ 400% 时它必须 ≈4 ✓（与视口多宽无关 ✓）
+      zoom: live ? live.zoom : null,
+      // **视口（文档像素）** ✓：放大后它必须**小于文档** ✓ ⇒ 画布内部可以平移 ✓
+      viewport: live ? live.viewport : null,
       pageStillLocked: document.documentElement.scrollHeight - window.innerHeight <= 2,
     };
   })()`);
@@ -399,9 +406,38 @@ console.log(
   `  ③ 缩放：400% ⇒ 画布 ${zoomed.boardWidth}px vs 舞台 ${zoomed.stageClient}px（溢出 ${zoomed.overflow}，能滚=${zoomed.canScroll}）` +
     `；适配 ⇒ 画布 ${fitted.boardWidth}px vs 舞台 ${fitted.stageClient}px（溢出 ${fitted.overflow}）`,
 );
-if (!(zoomed.overflow > 10) || !zoomed.canScroll) {
-  console.error("❌ 放大之后画布没有超出舞台 / 舞台滚不动 ⇒「画布内部独立滚动」没做到 ✗");
-  await capture("layout-no-stage-scroll");
+// **★★ 判据要**与视口无关** ✗ ★★**（第 1131 轮；CI 实测 854px 视口 ⇒ 400% 时画布 852 vs 舞台 854
+//   ⇒ 旧断言「溢出 > 10px」把**视口尺寸**当成了产品缺陷 ✗ ⇒ 同一份代码在宽视口绿、窄视口红 ✓）
+//   **⇒ 而「舞台滚动条」本来就不是这个产品的机制** ✗：`applyDisplaySize`（viewer-app.js:1078）
+//     把画布 CSS 尺寸限制在**视口 × 缩放**，放大时 `clampViewport` 把 `viewport` 缩成文档的一块 ✓
+//     ⇒ **"画布内部独立滚动" ＝ 平移视口** ✓，不是 `.stage` 的 `overflow: auto` ✓。
+//   **⇒ 所以改成两条结构量**：
+//     ① 400% ⇒ `state.zoom ≈ 4` ✓（与视口多宽无关 ✓；封顶/没生效照样红 ✓）；
+//     ② 400% ⇒ `viewport.w < 文档宽` ✓（只显示文档的一部分 ⇒ 可以在内部平移 ✓）。
+//   **⇒ 适配后**：`viewport.w == 文档宽` ✓ ＋ 溢出 ≤ 2 ✓（与视口无关 ✓）。
+const zoomedView = zoomed.viewport;
+const fittedView = fitted.viewport;
+console.log(
+  `  ③ 结构：文档 ${zoomed.docW}px｜400% zoom=${zoomed.zoom}、viewport=${zoomedView && zoomedView.w}px；` +
+    `适配 zoom=${fitted.zoom}、viewport=${fittedView && fittedView.w}px`,
+);
+if (typeof zoomed.zoom !== "number" || Math.abs(zoomed.zoom - 4) > 0.05) {
+  console.error(`❌ 400% 没有把显示比例变成 4×（实测 ${zoomed.zoom}）⇒ 数值入口没生效 ✗`);
+  await capture("layout-zoom-not-applied");
+  process.exit(1);
+}
+if (!zoomedView || !(zoomedView.w < zoomed.docW)) {
+  console.error(
+    `❌ 放大后视口仍覆盖整幅文档（viewport.w=${zoomedView && zoomedView.w}、docW=${zoomed.docW}）⇒ 画布内部无处可平移 ✗`,
+  );
+  await capture("layout-no-inner-viewport");
+  process.exit(1);
+}
+if (!fittedView || fittedView.w !== fitted.docW) {
+  console.error(
+    `❌ 适配后视口没有覆盖整幅文档（viewport.w=${fittedView && fittedView.w}、docW=${fitted.docW}）✗`,
+  );
+  await capture("layout-fit-not-whole");
   process.exit(1);
 }
 if (!zoomed.pageStillLocked) {

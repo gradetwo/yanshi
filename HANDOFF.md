@@ -36,12 +36,20 @@ CI：bf0c6e5a **success ✓**（run 40176610440；12 个可跑的 job 全 succes
    - 新判据 `a_missing_tile_index_alone_is_not_fatal`：只缺 tiles ⇒ `rc=0`，但 stderr 仍要看见「N 个 tiles 索引缺失」（豁免 ≠ 静默）。
    - 三条变异都实测过（见 §五-3）。
 5. **判据补强（前几轮）**：台账引用 430 处（棘轮 333→0）、注释里的断言不算、临时目录守卫必须被绑定、示例 205→203＋静态生成、`omitted` 可见判据、D12 knife 判据。
+6. **第 1131 轮（本轮，未推）**：
+   - **D188 量级**写进 `yanshi-timelapse` 降采样警告（「差随原子数增长：200 图块 ≈0.6 lv/通道 ⇒ 22,926 原子 ≈16 lv」）＋ 断言；变异「随规模变化」⇒ 红 ✓。
+   - **四条浏览器 known-red 归因**：`browser-project-download`／`browser-brush-panel`／`browser-i18n` 是 `run-criteria.sh` 的**一刀切 `render=client`** 把它们换成了"本地内核 + 服务端资产"这种不存在的组合 ⇒ 加 `RENDER_PARAM` 例外；三条**本机 server 模式全部通过**（project：下载 10,752 B、SHA 相同、导入 4 atoms/1 blob；brush-panel：`closedAfterPick=true`；i18n：整页中文 0）。
+   - **`browser-layout` 判据改成结构量**：旧断「400% 溢出舞台 > 10px」量的是**视口宽**（CI 854px）✗；产品机制是**视口平移**，不是 `.stage` 滚动条 ⇒ 改断 `state.zoom ≈ 4` ＋ `viewport.w < 文档宽`（适配时 == 文档宽）○ 本机 client 模式通过 ✓。
+   - **known-red 18 → 14**（上面四条移出，理由写在名单里）。
+   - **Y-01 复查**：`viewer-app.js:2245` 的 `skipped-blank-over-ink` 已按**内容**挡住"全透明覆盖"⇒ 审计说的"新序号空帧"已覆盖；残余只是"`knownSeq` 自身可能旧"（记在台账 §621-四）。
 
 ## 三、下一步（按优先序，都有精确入口）
 
 1. **qoder 剩余条目**：`D139`（静默零覆盖，需他给完整参数；我 6 点网格未复现）、`D188` 的量级说明（差随原子数增长：200 图块 ≈0.6 lv/通道、22,926 原子 ≈16 lv ⇒ 写进那条 `⚠️` 警告）。
 2. `shrink` blit（`art` 第 12 项）：最小包上对照判据实测 均值 1.89／>30 占 0.22% ⇒ 无缺口；要他用同判据跑 0.30 GB 的 `test1full`。
 3. （可选，第二口径）`scripts/tool-export-bitmaps.mjs` 加一段：`include_bitmaps: true` 导出的包直接喂 `target/release/yanshi-timelapse` ⇒ `rc=0`。
+4. **下一轮先读本轮 CI 的 browser 判据**：`browser-project-download`／`brush-panel`／`i18n`／`layout` 已移出 known-red ⇒
+   若仍红就是**意外失败**（先看是不是 `RENDER_PARAM` 没生效）。另：`browser-export-full-document` 上一跑已通过（`✓ 离线也是 1024×1024`）⇒ 可考虑下一轮移出名单。
 
 ## 四、纪律与环境（别重犯）
 
@@ -63,6 +71,8 @@ CI：bf0c6e5a **success ✓**（run 40176610440；12 个可跑的 job 全 succes
    - **断言的输入必须能触发它**：原测试用 `8B_Pencil#1`，这支笔**不可省** ⇒ `omitted == 0` 恒真 ⇒ 把 `include_bitmaps: true` 删掉测试**照样绿** ✗。换成 `2B_pencil.myb`（`export_small` 已证可省）后，删参数 ⇒ `omitted: 3` ⇒ 红 ✓。
    - **顺序**：`exit(2)` 必须在"导出侧能装全"之后（第 1089 轮先加 `exit(2)` ⇒ 拒收自产包 ⇒ 回归过）。现在的顺序是 导出侧 `include_bitmaps` ✓ → 测试/文档传 `true` ✓ → 才 `exit(2)` ✓。
 4. **改行为前先 grep 谁依赖它**（这条欠账的代价是一轮红）。
-5. **新增仓库**顶层**条目（含 `.md`）要同步加进 `scripts/tool-repo-root-clean.mjs` 的 `ALLOWED`**：
+5. **「一刀切给判据加参数」会把被测对象换掉**（第 1131 轮）：`run-criteria.sh` 给全体 `browser-*` 加 `render=client` 是为了让**需要内核**的判据拿到内核 ✓，但 `project-download`（服务端包）／`brush-panel`（服务端资产）／`i18n`（静态文案）**正好要服务端** ⇒ 加了参数就在测"本地内核 + 服务端资产"这种不存在的组合 ✗。本机 server 模式三条全过 ⇒ 用 `RENDER_PARAM` 例外 ✓。**⇒ 问句：这条判据的"被测对象"是哪个模式？**
+6. **判据断的若是"溢出多少像素"，先问"这个量由谁决定"**（第 1131 轮）：`browser-layout` 的 400% 溢出 = **视口宽 - 画布宽**，而画布 CSS 尺寸本来就被限制在视口 × 缩放 ⇒ 溢出恒≈0 ⇒ 它永远只能报视口尺寸。产品机制是**视口平移**（`state.viewport`），不是 `.stage` 滚动条 ⇒ 判据要断 `state.zoom ≈ 4` 与 `viewport.w < 文档宽`。
+7. **新增仓库**顶层**条目（含 `.md`）要同步加进 `scripts/tool-repo-root-clean.mjs` 的 `ALLOWED`**：
    `HANDOFF.md` 在 `ab7a1114` 提交后**第一次**跑 CI 才红（`2e70615b` 的 run 早于它）
    ⇒ 这类红**不在产品侧**，但会阻塞"CI 绿" ✓。判据自己会指出"有意的就加白名单"。

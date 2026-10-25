@@ -141,12 +141,19 @@ browser-offline-reload.mjs   # 类型：产品缺陷（客户端落笔一族：�
 browser-stroke-refresh.mjs   # 类型：产品缺陷（客户端落笔之后画布不更新）
 browser-no-stale-read.mjs    # 类型：产品缺陷（重载后读到旧状态：0 ≤ 0）
 browser-offline-brush.mjs    # 类型：产品缺陷（离线那一笔没挺过刷新：blobs=0／replay=0）
-browser-brush-panel.mjs      # 类型：产品缺陷（勾着「用完即收」时取色浮层不收）
-browser-project-download.mjs # 类型：产品缺陷（下载名是 <doc>.yanshi.json，判据要求 .yanshi）
+# **已移出名单（第 1131 轮）**：`browser-brush-panel.mjs` 的根因是**编排**给它加了 `render=client`
+#   ⇒ 本地模式**没有服务端资产** ⇒ 调色板 0 块 ⇒ CI 实测 `⏱ 等待超时：调色板色块`
+#   ⇒ 而"用完即收"那段**根本没机会跑** ✗。本机 **server 模式**实测通过（`autoClose: closedAfterPick=true`）
+#   ⇒ 已加进 `run-criteria.sh` 的「不加 `render=client`」例外 ✓
+# **已移出名单（第 1131 轮）**：`browser-project-download.mjs` 测的是**服务端工程包**（HTTP url／`blob_hash`），
+#   而 `render=client` 把它换成了**本地 JSON 包**（`.yanshi.json`）⇒ 被测对象错了 ✗。
+#   本机 **server 模式**实测通过（下载 `bpd_*.yanshi`、哈希相同、导入还原 4 atoms/1 blob）✓
+#   ⇒ 已加进 `run-criteria.sh` 的例外 ✓
 browser-live-brush.mjs       # 类型：产品缺陷（客户端落笔一族：官方接线下画布墨 1203 而服务端对象 0 ⇒ 0、重载后墨 0 ⇒ 这一笔没落成服务端原子；机理引台账第 449/451 节的渲染模式分叉，不是判据接线问题——第 740 轮实测改判，原「kernel-brush-parity 同源」的注不准确）
 browser-canvas-handfeel.mjs  # 类型：产品缺陷（客户端落笔一族：「图层行增加」超时只是症状，第 742 轮测到根因——本地层用 IndexedDB 的残缺日志重建内核，服务端建的 create_document 不在里面 ⇒ 折叠出的 state 是 0×0 ⇒ 任何区域渲染都 needs_render；机理与逐行证据引台账第 455 节，此处不再重述）
 browser-brush-preview.mjs    # 类型：产品缺陷（客户端落笔一族：预览图 0×0 的同一条根——本地日志缺 create_document ⇒ state 0×0 ⇒ render_region_png 给空字节；第 742 轮换新内核后仍复现（NC_EXIT=1，121 秒），证据引台账第 455 节）
-browser-i18n.mjs             # 类型：待定位（effectsList／history 两处中文串；样本含 endpoint_not_local）
+# **已移出名单（第 1131 轮）**：`browser-i18n.mjs` 的 `endpoint_not_local` 噪声来自 `render=client`
+#   ⇒ 本机 **server 模式**实测：切英文后整页中文 **0** 条、切回正常 ✓ ⇒ 已加进例外 ✓
 browser-cs-render-switch.mjs  # 类型：待定位（**抖动**：同一份代码在 3 次 run 里红、在 5 次里绿 ⇒ 见文末「第 246 轮（抖动）」一段）
 # **★★★ 第 775 轮登记；依据是**用户第 576 轮的裁定 ②「既有红 ⇒ 继续『记』」** ★★★**
 #
@@ -28200,7 +28207,11 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
 - **∴ 下一步**：**先解释"当初为什么红"**（查 git 历史／找那次复现的提交）⇒ 再决定删不删 ✓
 # ===== 第 1596 轮：**工具那一行已能绿**（连跑两次 = 0），从名单移除 =====
 #   ⇒ 转绿条件「引擎侧可重放构造」现在具备 ⇒ 实测通过 ✓
-browser-layout.mjs  第 742 轮核实：判据要求「400% 缩放时画布溢出舞台 > 10px」，而 CI 视口 854px、400% 时画布 852px（溢出 −2）⇒ 视口刚好塞满 ⇒ 依赖视口尺寸的环境红，不是产品缺陷。第 830 轮登记（此前只写在 AGENTS.md 表格里、没进这个机检名单 ⇒ shard 3 一直报「意外失败 1」）
+# **已移出名单（第 1131 轮）**：`browser-layout.mjs` 的 ③ 原来断「400% 时画布溢出舞台 > 10px」
+#   ⇒ 那是**视口尺寸**（CI 854px）不是产品缺陷 ✗。已改成**结构量**：
+#     ① 400% ⇒ `state.zoom ≈ 4`；② 400% ⇒ `viewport.w < 文档宽`（内部可平移）；
+#     ③ 适配 ⇒ `viewport.w == 文档宽` ＋ 溢出 ≤ 2 ✓。本机 client 模式实测通过 ✓
+#   （产品机制本来就是"视口平移"，不是 `.stage` 滚动条 ⇒ 旧判据在问错对象 ✓）
 #   第 503 轮的注释（本文件 :604-642）说：「红线判据 tool-stamp-parity 跑 30 次应全绿」
 #   而实测（CI，criteria shard 1/6）：
 #     「第 6 次: test result: FAILED. 308 passed; 1 failed」

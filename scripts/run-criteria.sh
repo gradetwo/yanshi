@@ -297,12 +297,25 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs sc
       timeout 600 node "$script" "$BASE" "$doc" "$tok" "$ROOT/crates/yanshi-wasm/pkg/yanshi_wasm.js" \
         >"$ROOT_DIR/out.txt" 2>&1 ;;
     browser-*)
+      # **★ 少数浏览器判据**不能**加 `render=client`** ✗ ★（第 1131 轮）：
+      #   ⇒ **project-download** 测的是**服务端工程包**下载（HTTP url／`blob_hash` 只有服务端有；
+      #     本地模式的包是 `.yanshi.json` ⇒ 加了参数就**换了被测对象** ✗）
+      #   ⇒ **brush-panel** 的色块来自**服务端资产**（`list_palette_colors`；本地没有资产
+      #     ⇒ CI 实测 `⏱ 等待超时：调色板色块` ⇒ 自动收起**根本没机会跑** ✗）
+      #   ⇒ **i18n** 测**静态文案**（本地模式会把 `endpoint_not_local` 等噪声算进整页中文）
+      #   ⇒ **render-switch／cs-render-switch** 自己设偏好（既有例外）
+      #   **∴ 它们测的是服务端/静态界面，不是本地内核** ⇒ **不加参数才是测对对象** ✓
+      case "$name" in
+        browser-render-switch.mjs|browser-cs-render-switch.mjs|browser-project-download.mjs|browser-brush-panel.mjs|browser-i18n.mjs)
+          RENDER_PARAM="" ;;
+        *) RENDER_PARAM="&render=client" ;;
+      esac
       # **先让调试浏览器打开被测地址** ✓（第 967 轮）：这一族约定"页面已经打开"✓（见 :73-74 ✓），
       # 而 :43 只起了 about:blank ✗ ⇒ 判据会去连别的页面 ⇒ 前置不成立（第 966 轮实测 ✓）。
       # CDP 的 /json/new 可以新开一个标签页并直接导航；新版 Chromium 要求 PUT ✓。
       if [ -n "${CHROME_PID:-}" ]; then
         # **∴ 同上：调试浏览器也要求客户端渲染 ✓**（**第 778 轮 ✓）
-        curl -sf -X PUT "http://127.0.0.1:$CDP_PORT/json/new?$BASE/?doc=$doc&token=$tok&render=client" >/dev/null 2>&1 ||
+        curl -sf -X PUT "http://127.0.0.1:$CDP_PORT/json/new?$BASE/?doc=$doc&token=$tok$RENDER_PARAM" >/dev/null 2>&1 ||
           echo "  ⚠ 无法让浏览器打开被测地址（/json/new 失败）⇒ 浏览器判据可能报前置不成立"
         sleep 1
       fi
@@ -348,12 +361,7 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs sc
       #     ＋ **∴ 例外（**自己管渲染开关的判据 ✓）**✗**：**`browser-render-switch`／
       #       `browser-cs-render-switch` **会**自己设偏好**来对比两种模式**✗
       #         ⇒ **∴ 给它们加参数**会把开关钉死** ✗ ⇒ **∴ 所以**它们**保持现状** ✓ ★
-      case "$name" in
-        browser-render-switch.mjs|browser-cs-render-switch.mjs)
-          export YANSHI_VIEWER_URL="$VIEWER_BASE/?doc=$doc&token=$tok&debug=1" ;;
-        *)
-          export YANSHI_VIEWER_URL="$VIEWER_BASE/?doc=$doc&token=$tok&debug=1&render=client" ;;
-      esac
+      export YANSHI_VIEWER_URL="$VIEWER_BASE/?doc=$doc&token=$tok&debug=1$RENDER_PARAM"
       # **★ `argv[2]` **恢复**成**服务端 URL** ✗ ★**（第 87 轮 ✓；**上一轮一刀切错了 ✓）：
       #   **∴ 证据 ✗**：`browser-no-stale-read`／`browser-offline-reload` 报
       #     `SyntaxError: Unexpected token 'o', "not found" is not valid JSON`**✗
@@ -376,12 +384,7 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs sc
       #     ＋ **∴ 例外（**自己管渲染开关的判据 ✓）**✗**：**`browser-render-switch`／
       #       `browser-cs-render-switch` **会**自己设偏好**来对比两种模式**✗
       #         ⇒ **∴ 给它们加参数**会把开关钉死** ✗ ⇒ **∴ 所以**它们**保持现状** ✓ ★
-      case "$name" in
-        browser-render-switch.mjs|browser-cs-render-switch.mjs)
-          CDP_PORT="$CDP_PORT" timeout "${BROWSER_TIMEOUT:-420}" node "$script" "$BASE/?doc=$doc&token=$tok" "$BASE" "$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
-        *)
-          CDP_PORT="$CDP_PORT" timeout "${BROWSER_TIMEOUT:-420}" node "$script" "$BASE/?doc=$doc&token=$tok&render=client" "$BASE" "$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
-      esac ;;
+      CDP_PORT="$CDP_PORT" timeout "${BROWSER_TIMEOUT:-420}" node "$script" "$BASE/?doc=$doc&token=$tok$RENDER_PARAM" "$BASE" "$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
     *)
       # **统一传三个参数** ✓：有的判据要 <base> <doc> <token> ✓（如 tool-brush-tag-filter ✓），
       # 只收 base 的会忽略多余参数 ✓ ⇒ 一条约定覆盖两种 ✓（CI 第一轮就是这里漏了 ✗）。

@@ -170,6 +170,13 @@ fn the_shrink_path_says_the_picture_will_change() {
         stderr.contains("画会变") || stderr.contains("不是同一幅"),
         "降采样回放必须说清「画会变」，实测 stderr：\n{stderr}"
     );
+    // **⇒ 而且必须给**量级**（D188 追记；第 1131 轮）**：小包只差半级、交付尺度差十几级 ✓
+    //   ⇒ 只说"会变"不够 ✓（用户会以为只是细节糊一点 ✗）
+    //   **变异**：把警告里「随原子数增长」与两档数删掉 ⇒ 这条红 ✓
+    assert!(
+        stderr.contains("原子数") && stderr.contains("22,926"),
+        "降采样警告必须给出**随原子数增长**的两档量级（D188），实测 stderr：\n{stderr}"
+    );
 }
 
 /// **`--max-dim` 必须真的改输出尺寸**（第 795 轮；外部 `qoder` D188 的建议）

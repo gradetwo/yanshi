@@ -21789,3 +21789,68 @@ run 0c58d523：completed/**success**｜success=12｜failure=0｜skipped=1
 **⇒ 仍未做（留给下一轮 ✓）**：`scripts/tool-export-bitmaps.mjs` 只测"不可重放的位图照装" ✓
 ⇒ **可以再加一段**：`include_bitmaps: true` 导出的包直接喂 `target/release/yanshi-timelapse` ⇒ `rc=0` ✓
 （本轮用 Rust 测试覆盖了同一条链 ✓；MJS 侧是**补第二口径**，不是缺判据 ✓）。
+
+## 六百二十一、四条浏览器「已知红」其实是**编排**在测错对象；`layout` 的判据也在问错对象（第 1131 轮）
+
+**⇒ 起点**：上一跑 shard 3 的「已知红 4」= `browser-brush-panel`／`browser-layout`／`browser-offline-brush`／`browser-ui-check`。
+前两条本机复现后查明**不是产品缺陷** ✓。
+
+### 一、`render=client` 把三条判据的被测对象换掉了
+
+`run-criteria.sh` 给**全体** `browser-*` 加了 `render=client`（第 778／780 轮，治"内核没加载"✓），
+但这三条**要的正好是服务端**：
+
+| 判据 | 加 `render=client` 的后果 | 本机 **server 模式**实测 |
+|---|---|---|
+| `browser-project-download` | 走 `api-local.js` 的 **JSON 工程包**（`<doc>.yanshi.json`，`api-local.js:2833`）⇒ HTTP url／`blob_hash`／服务端导入**全都不成立** | ✓ 下载 `bpd_632578.yanshi`（**10,752 B**）→ 与服务端 URL **SHA-256 相同** → 服务端导入回 **4 atoms / 1 blob** |
+| `browser-brush-panel` | 本地模式**没有服务端资产** ⇒ 调色板 0 块 ⇒ CI 实测 `⏱ 等待超时：调色板色块` ⇒ "用完即收"**没机会跑** | ✓ `closedAfterPick=true`、`staysOpenWhenOff=true` |
+| `browser-i18n` | 本地模式把 `endpoint_not_local` 等噪声算进整页中文 | ✓ 切英文后整页中文 **0** 条、切回正常 |
+
+**⇒ 修法**：`run-criteria.sh` 里加一个 `RENDER_PARAM`（第 1131 轮）——
+```bash
+case "$name" in
+  browser-render-switch.mjs|browser-cs-render-switch.mjs|browser-project-download.mjs|browser-brush-panel.mjs|browser-i18n.mjs)
+    RENDER_PARAM="" ;;
+  *) RENDER_PARAM="&render=client" ;;
+esac
+```
+⇒ 四处 URL（`/json/new`、`YANSHI_VIEWER_URL`、`argv[2]`）**都改用它** ✓
+⇒ **这不是放松断言** ✗：判据一条没改，改的是**它们测哪个模式** ✓（原先测的是"本地内核 + 服务端资产"这种**不存在的组合** ✓）。
+
+### 二、`browser-layout` 的 ③ 在问错对象
+
+旧断言：「400% ⇒ 画布溢出舞台 **> 10px** 且舞台能滚」。
+⇒ **而产品的机制根本不是舞台滚动条** ✗：`applyDisplaySize`（`viewer-app.js:1078`）
+把画布 CSS 尺寸限制在**视口 × 缩放**，放大时 `clampViewport` 把 `viewport` 缩成文档的一块 ✓
+⇒ **"画布内部独立滚动" ＝ 平移视口** ✓。
+⇒ 所以旧断言量到的是 **视口多宽**（CI 854px ⇒ 画布 852 ⇒ 溢出 −2 ✗），
+本机视口不同 ⇒ **同一份代码两台机器相反** ✓（正是 AGENTS「断像素数跨不了机器」那条 ✓）。
+
+**⇒ 改成结构量**（本机 client 模式实测）：
+```
+400% ⇒ zoom=4、viewport.w=213px（文档 1024px）✓
+适配 ⇒ zoom=0.824、viewport.w=1024px（= 文档宽）✓
+```
+判据：① `state.zoom ≈ 4`；② 400% 时 `viewport.w < 文档宽`（内部可平移）；
+③ 适配时 `viewport.w == 文档宽` ＋ 溢出 ≤ 2 ✓。
+
+**⇒ 两条都实测过**：本机 server/client 模式各跑一遍 ✓；`node --check` 过 ✓。
+**⇒ 已知红 18 → 14**（`grep -cE '^[a-z]' scripts/criteria-known-red.txt`）。
+
+### 三、`D188` 的量级终于是**可读**的（同轮）
+
+外部追记：差**随原子数增长**（200 图块 ≈0.6 lv/通道、22,926 原子 ≈16 lv）。
+⇒ 已写进 `yanshi-timelapse` 的降采样警告 ✓，并加断言（`stderr` 必须含「原子数」＋「22,926」）✓。
+**⇒ 变异**：把「随原子数增长」改成「随规模变化」⇒ 该断言红 ✓（实测）。
+
+### 四、`Y-01` 的现状（复查，不改代码）
+
+`viewer-app.js` 已有一条**基于内容**的守卫（`:2245` 起）：
+`serverInk === 0` **且** 画布该区已有墨 ⇒ **`skipped-blank-over-ink`**，不 `putImageData` ✓。
+⇒ 它**已经覆盖**审计说的「新序号但全透明」✓（不依赖 `patchSeq`，比按序号更保守 ✓），
+判据 `browser-stroke-refresh` 会读 `blankBlitsSkipped` ✓。
+**⇒ 残余**：`knownSeq` 自身可能是旧的（审计原话）⇒ 旧补丁仍可能被贴；
+但那需要"序号比已知的还旧"，与"新序号空帧"是两件事 ⇒ 记在这里，不与本轮混。
+
+**⇒ 仍未做（下一轮）**：`browser-export-full-document` 与本轮无关，但它上一跑已通过
+（`✓ 默认导出 = 整幅 1024×1024…离线也是`）⇒ 可考虑下一轮从名单移出（先把这一跑的证据留住 ✓）。
