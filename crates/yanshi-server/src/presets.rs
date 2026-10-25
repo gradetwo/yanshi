@@ -376,8 +376,8 @@ fn clamp_params(kind: &str, type_name: &str, params: &mut Value) {
             ("gamma", 0.01, 10.0),
         ],
         (_, "hsl") => &[
-            ("hue", -180.0, 180.0),
-            ("saturation", 0.0, 4.0),
+            ("hue", -360.0, 360.0),
+            ("saturation", 0.0, 8.0),
             ("lightness", -1.0, 1.0),
         ],
         (_, "split_toning") => &[("balance", -1.0, 1.0), ("amount", 0.0, 1.0)],
@@ -1299,6 +1299,28 @@ mod preset_expander_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn clamp_params_hsl_keeps_renderer_domain() {
+        // G-09 补充件：clamp_params 的 hsl 表是 validate_effect 标量表的镜像
+        // （同口径），须同幅放宽；否则 hue 270 / sat 6 会在展开时被静默钳回 180/4。
+        let mut params = json!({"hue": 270.0, "saturation": 6.0, "lightness": 0.5});
+        clamp_params("adjustment", "hsl", &mut params);
+        assert_eq!(params["hue"].as_f64(), Some(270.0), "hue 270 不应被钳制");
+        assert_eq!(
+            params["saturation"].as_f64(),
+            Some(6.0),
+            "saturation 6 不应被钳制"
+        );
+        let mut over = json!({"hue": 400.0, "saturation": 9.0});
+        clamp_params("adjustment", "hsl", &mut over);
+        assert_eq!(over["hue"].as_f64(), Some(360.0), "hue 400 应钳到 360");
+        assert_eq!(
+            over["saturation"].as_f64(),
+            Some(8.0),
+            "saturation 9 应钳到 8"
+        );
     }
 
     /// 数值感知的深比较：JSON 里 `0` 与 `0.0` 是不同表示但同一个数，

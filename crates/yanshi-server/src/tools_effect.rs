@@ -96,8 +96,8 @@ pub(super) fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> R
         (EffectKind::Adjustment, "texture") => &[("amount", -1.0, 1.0)],
         (EffectKind::Adjustment, "curves") => &[],
         (EffectKind::Adjustment, "hsl") => &[
-            ("hue", -180.0, 180.0),
-            ("saturation", 0.0, 4.0),
+            ("hue", -360.0, 360.0),
+            ("saturation", 0.0, 8.0),
             ("lightness", -1.0, 1.0),
         ],
         (EffectKind::Filter, "box_blur") => &[("radius", 1.0, 128.0), ("passes", 1.0, 8.0)],
@@ -897,6 +897,42 @@ mod presence_validation_tests {
             .is_ok(),
             "合法 ranges 应通过"
         );
+    }
+
+    #[test]
+    fn hsl_scalar_bounds_align_with_renderer() {
+        // G-09 补充件：标量表须与渲染器 `hsl_with_ranges` 的钳制逐值对齐
+        // （hue ±360、saturation 0..8、lightness ±1）；旧表 hue ±180 / sat 0..4
+        // 会把渲染器接得住的合法调用先拒了。
+        for (params, what) in [
+            (json!({"hue": 270.0}), "hue 270 应通过（渲染器钳 ±360）"),
+            (json!({"hue": -360.0}), "hue -360 应通过（边界）"),
+            (
+                json!({"saturation": 6.0}),
+                "saturation 6 应通过（渲染器钳 0..8）",
+            ),
+            (json!({"saturation": 8.0}), "saturation 8 应通过（边界）"),
+            (
+                json!({"lightness": 1.0}),
+                "lightness 1 应通过（边界，未动）",
+            ),
+        ] {
+            assert!(
+                validate_effect(EffectKind::Adjustment, "hsl", &params).is_ok(),
+                "{what}"
+            );
+        }
+        for (params, what) in [
+            (json!({"hue": 361.0}), "hue 361 应被拒绝"),
+            (json!({"saturation": 8.1}), "saturation 8.1 应被拒绝"),
+            (json!({"saturation": -0.1}), "saturation -0.1 应被拒绝"),
+            (json!({"lightness": 1.1}), "lightness 1.1 应被拒绝"),
+        ] {
+            assert!(
+                validate_effect(EffectKind::Adjustment, "hsl", &params).is_err(),
+                "{what}"
+            );
+        }
     }
 
     #[test]
