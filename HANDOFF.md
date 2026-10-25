@@ -103,6 +103,14 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    - `kernel-wasm-allowlist`：filter.rs 两处 wasm 串行回退登记（逐位一致）✓。
    - `tool-color-schema`：`gradient_blend.from` 的 Object→`Any`（实现收数组/hex）✓。
 
+20. **画画线期 4 已合**（台账 634）：`export_png` 加 region/LOD（修法 A，8 patch）。
+   Buffer/brush/font 步长感知（step==1 逐字等价）、`render_region_with_lod`、`export_png.lod 0..=3`、
+   i64 div_ceil 手写、并行 8 参豁免。本机：render lod 3/above 3/quantize 2/tile_parallel 23，
+   server export_png 9/tombstones 1/export_small 6/region_cache 1 全过；clippy/fmt 绿。
+   **整合修**：期 2 的 `Buffer::from_f32_vec` 缺 `step` 字段（E0063）⇒ 补 `step:1`；测试 rustfmt 差异。
+   **像素口径**：点采样 vs bilinear 超差，但 vs 全幅格点点采样**逐字节相同** ⇒ 总协调裁决**接受点采样**（设计已改）。
+   已知：lod:1 暖提速 2.67×（未达面积比 ~4×，固定成本）；8K 真实文档缓存 hits 恒 0（落回告警，非本期）。
+
 ## 三、下一步（按优先序，都有精确入口）
 
 -0. **读本轮 CI**（paint 期 2/2b/E2＋skill 后续＋衔接修复）：重点 `tool-surface-coverage`、

@@ -124,10 +124,7 @@ fn lod_zero_is_byte_identical_to_plain_render_region() {
         (plain.width, plain.height),
         "lod:0 的输出尺寸必须与今天相同"
     );
-    assert_eq!(
-        lod0.rgba8, plain.rgba8,
-        "lod:0 的像素必须与今天逐字节相同"
-    );
+    assert_eq!(lod0.rgba8, plain.rgba8, "lod:0 的像素必须与今天逐字节相同");
 }
 
 /// **② `lod: k` ≈ 全幅同倍率 bilinear 下采样，最大单通道差 ≤ 1** ✓。
@@ -152,15 +149,8 @@ fn lod_output_matches_bilinear_downsample_within_one_lsb() {
         );
         let got_rgba = got.rgba8;
         assert_eq!(got_rgba.len(), (expect_w * expect_h * 4) as usize);
-        let reference = resample_rgba(
-            &full,
-            64,
-            64,
-            expect_w,
-            expect_h,
-            ResampleFilter::Bilinear,
-        )
-        .expect("下采样参照应可算");
+        let reference = resample_rgba(&full, 64, 64, expect_w, expect_h, ResampleFilter::Bilinear)
+            .expect("下采样参照应可算");
         let max_diff = got_rgba
             .iter()
             .zip(reference.iter())

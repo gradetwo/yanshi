@@ -22182,3 +22182,39 @@ examples 204、verify-package 篡改翻转、batch 上限/静默/取证、smart 
 4. **`tool-color-schema`**：`gradient_blend` 的 `from` 描述承诺收 `#RRGGBB(AA)`／数组／对象 ✓，
    而 `param!("from", Object, …)` 把 schema 收窄成对象 ✗ ⇒ 调用方按描述传字符串会在 schema 层被拒 ✗
    ⇒ 实现本来就收（P2-5）⇒ **改 schema 为 `Any`** ✓（判据转绿）。
+
+## 六百三十四、画画线**期 4**合并：`export_png` 的 region/LOD（修法 A）（第 1132 轮）
+
+**⇒ 包**：`yanshi-paint-期4交付包.zip`（8 patch，基线 `ac526a7`，tip `f6b40e8`）。
+8/8 在 `29d50948` 上干净应用 ✓（`git am --3way` 无冲突）。
+
+**⇒ 内容**：
+- `Buffer` 加 `step`（缺省 1；`step==1` 走原路 verbatim，`step>1` 点采样）；
+  `blit`/`fill_coverage`/`crop`/`copy_region_into`/`composite`/`multiply_alpha_by`/文字/`stamp_mask_cached` 都按步长；
+  `buffer_pool::acquire_stepped`。
+- `render_region_with_lod`（串行+并行同语义）；step>1 时停用 below/above 复用与 `store_tiles`；
+  `BlockKey` 加 lod 维；`export_png` 加 `lod`（0..=3，>3 `invalid_argument`）、回执 `lod`、
+  `source_width/height` = 本次实际渲染尺寸、`scaled` 规则、全幅缓存刷新加 `lod == 0` 守卫。
+- i64 `div_ceil`/`div_floor` 手写（标准库有符号版未稳定）；并行 8 参 `too_many_arguments` 豁免。
+- 新测试：`lod_render` 3、`export_png` 5 新、缓存/报错/回执等。
+
+**⇒ 本机验证**：`lod_render` **3**、`above_cache` **3**、`quantize_no_copy` **2**、`tile_parallel` **23**（+1 ignored）；
+server `export_png` **9**、`export_png_sees_tombstones` **1**、`export_small` **6**、`region_cache_layer_scope` **1** ⇒ 全过 ✓；
+clippy（render/server）0、fmt 0 ✓。
+
+**⇒ 提速（作者盒，8K 330 原子，暖）**：lod:1 2.67×（4384→1640ms）、lod:2 4.63×、lod:3 5.73×；
+region 1/4 面积 2.41×。未达 1/4 面积 ≈4× 的目标（固定成本：Shape/Text 覆盖率仍全密度、逐带 setup、
+step>1 停用复用）✓ 如实记。
+
+**⇒ ★ 像素口径裁决（总协调 2026-10-26）★**：LOD 输出 vs bilinear 下采样**超差**（lod:1 max 148、83.2% 像素超 1 LSB），
+但 vs **全幅在格点上的点采样最大差 0、逐字节相同** ⇒ 实现严格符合设计公式，超差是**点采样 vs 面积采样的语义差**。
+⇒ **裁决：接受点采样**（验收改为点采样精确性 + 目检；设计第 2 节 E1 验收 ② 与第 10 节已同步修订）✓。
+**⇒ 缓存**：同 (region,lod) 二次导出 hits+1、字节相同（干净文档）；8K 真实文档 hits 恒 0
+（每次导出都有落回告警 ⇒ `region_block_put` 既有硬规矩拒收，非期 4 引入）✓。
+
+**⇒ 未做（按任务）**：修法 B（帧缓存/增量重放）、修法一（掉回/分块直出，设计禁令）、服务端 RSS（另立项）✓。
+
+**⇒ ★ 整合修的两处 ★**：
+1. **`Buffer::from_f32_vec` 缺 `step`** ✗ —— 它是**期 2 P2-7** 新加的构造器，期 4 给 `Buffer` 加字段时
+   只改了原有构造器 ⇒ 编译 `E0063` ✗ ⇒ 补 `step: 1` ✓（期 2 的分带缩略图就是 step=1 语义 ✓）。
+2. **测试文件的 rustfmt 差异**（`lod_render.rs`、`export_png.rs`）⇒ 本机 `cargo fmt --all` 后一并提交 ✓。

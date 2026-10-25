@@ -301,7 +301,11 @@ fn lod_is_read_and_reported() {
         )
     };
     assert_eq!(exported["ok"], json!(true), "{exported}");
-    assert_eq!(exported["lod"], json!(1), "回执必须回显生效档位：{exported}");
+    assert_eq!(
+        exported["lod"],
+        json!(1),
+        "回执必须回显生效档位：{exported}"
+    );
     assert_eq!(
         (exported["width"].as_u64(), exported["height"].as_u64()),
         (Some(400), Some(300)),
@@ -315,7 +319,11 @@ fn lod_is_read_and_reported() {
         (Some(400), Some(300)),
         "source_width/source_height 是本次实际渲染出的像素尺寸：{exported}"
     );
-    assert_eq!(exported["scaled"], json!(true), "lod > 0 ⇒ scaled 必须真：{exported}");
+    assert_eq!(
+        exported["scaled"],
+        json!(true),
+        "lod > 0 ⇒ scaled 必须真：{exported}"
+    );
     let bytes = std::fs::read(&path).expect("导出文件应当存在");
     assert_eq!(bytes.len() as u64, exported["bytes"].as_u64().unwrap_or(0));
     let (w, h, rgba) = yanshi_render::png::decode_png(&bytes).expect("应当是合法 PNG");
@@ -337,7 +345,11 @@ fn lod_is_read_and_reported() {
             (Some(800), Some(600)),
             "lod:0 必须是全分辨率：{exported}"
         );
-        assert_eq!(exported["scaled"], json!(false), "lod:0 且无尺寸参数 ⇒ scaled 假：{exported}");
+        assert_eq!(
+            exported["scaled"],
+            json!(false),
+            "lod:0 且无尺寸参数 ⇒ scaled 假：{exported}"
+        );
     }
     let _ = std::fs::remove_file(&path);
 }
@@ -349,18 +361,34 @@ fn lod_rejects_out_of_range_and_fractional() {
     setup(&mut workspace);
     let path = temp_path("lod_bad");
     let cases: Vec<(&str, serde_json::Value, &str)> = vec![
-        ("lod: 4 超出上限", json!({ "path": path.to_string_lossy(), "lod": 4 }), "0..=3"),
-        ("lod: -1 负数", json!({ "path": path.to_string_lossy(), "lod": -1 }), "不小于 0 的整数"),
+        (
+            "lod: 4 超出上限",
+            json!({ "path": path.to_string_lossy(), "lod": 4 }),
+            "0..=3",
+        ),
+        (
+            "lod: -1 负数",
+            json!({ "path": path.to_string_lossy(), "lod": -1 }),
+            "不小于 0 的整数",
+        ),
         // **小数在更早的 schema 层就被拒**（`ParamKind::Integer` 的类型检查）⇒
         // 文案是「类型应为 integer」，但错误码同样是 `invalid_argument` ✓。
-        ("lod: 1.5 小数", json!({ "path": path.to_string_lossy(), "lod": 1.5 }), "integer"),
+        (
+            "lod: 1.5 小数",
+            json!({ "path": path.to_string_lossy(), "lod": 1.5 }),
+            "integer",
+        ),
     ];
     for (label, args, expected) in cases {
         let refused = {
             let mut ctx = context(&mut workspace);
             registry().call(&mut ctx, "export_png", &args)
         };
-        assert_eq!(refused["ok"], json!(false), "「{label}」应当被拒：{refused}");
+        assert_eq!(
+            refused["ok"],
+            json!(false),
+            "「{label}」应当被拒：{refused}"
+        );
         assert_eq!(
             refused["error_code"],
             json!("invalid_argument"),
@@ -389,7 +417,11 @@ fn region_fully_outside_is_refused() {
                      "region": {"x": 900, "y": 700, "w": 100, "h": 100} }),
         )
     };
-    assert_eq!(refused["ok"], json!(false), "完全在画布外的区域应当被拒：{refused}");
+    assert_eq!(
+        refused["ok"],
+        json!(false),
+        "完全在画布外的区域应当被拒：{refused}"
+    );
     assert_eq!(
         refused["error_code"],
         json!("invalid_argument"),
@@ -496,8 +528,10 @@ fn lod_pixel_equivalence_on_real_content() {
     assert_eq!(lod["ok"], json!(true), "{lod}");
     let full_bytes = std::fs::read(&full_path).expect("全幅导出应当落盘");
     let lod_bytes = std::fs::read(&lod_path).expect("lod:1 导出应当落盘");
-    let (fw, fh, full_rgba) = yanshi_render::png::decode_png(&full_bytes).expect("全幅应当是合法 PNG");
-    let (lw, lh, lod_rgba) = yanshi_render::png::decode_png(&lod_bytes).expect("lod:1 应当是合法 PNG");
+    let (fw, fh, full_rgba) =
+        yanshi_render::png::decode_png(&full_bytes).expect("全幅应当是合法 PNG");
+    let (lw, lh, lod_rgba) =
+        yanshi_render::png::decode_png(&lod_bytes).expect("lod:1 应当是合法 PNG");
     assert_eq!((fw, fh), (800, 600));
     assert_eq!((lw, lh), (400, 300));
     let reference = resample_rgba(&full_rgba, fw, fh, lw, lh, ResampleFilter::Bilinear)

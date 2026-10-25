@@ -317,6 +317,7 @@ impl Buffer {
             width,
             height,
             pixels,
+            step: 1,
         })
     }
 
