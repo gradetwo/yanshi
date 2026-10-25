@@ -1006,3 +1006,42 @@ fn classic_knife_paints_at_full_hardness_and_reads_hardness() {
         "`hardness` 必须真的被读：{hard_px}（1.0）与 {soft_px}（0.2）相等 ⇒ 参数被忽略 ✗"
     );
 }
+
+/// **诊断（不是判据）**：`painted_pixels == 0` 时，回执**有没有**说明原因？
+/// ⇒ 外部 `qoder` 的 **D139**：引擎只在 **0 dab** 时说"这笔没落下任何像素" ✗
+///   而"**有 dab、覆盖 0 像素**"时**什么都不说** ⇒ 静默区是 (size, 色偏移) 的**二维区域** ✓
+/// ⇒ 本探针扫一张小网格，按 **(size, 颜色)** 打印 `painted` 与回执里**是否带解释字段** ✓
+#[test]
+fn d139_silent_zero_coverage_grid() {
+    let root = temp_dir("d139_grid");
+    let mut workspace = workspace(&root);
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
+        json!(true)
+    );
+    for size in [0.5_f64, 1.0, 2.0] {
+        for (label, colour) in [
+            ("green", json!({"r": 0, "g": 255, "b": 0, "a": 255})),
+            ("white", json!({"r": 255, "g": 255, "b": 255, "a": 255})),
+        ] {
+            let object_id = format!("g_{size}_{label}");
+            let r = call(
+                &mut workspace,
+                "brush_stroke",
+                json!({
+                    "layer_id": "L", "object_id": object_id, "brush": "classic-knife",
+                    "size": size, "color": colour,
+                    "points": [[20.0, 20.0, 0.9], [40.0, 40.0, 0.9]]
+                }),
+            );
+            let keys: Vec<&str> = r
+                .as_object()
+                .map(|m| m.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            println!(
+                "D139：size={size} {label} painted={:?} ok={:?} keys={keys:?}",
+                r["painted_pixels"], r["ok"]
+            );
+        }
+    }
+}

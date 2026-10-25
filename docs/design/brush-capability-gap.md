@@ -21451,3 +21451,26 @@ D15：横笔 0° painted=Null ok=Bool(false)｜竖笔 90° painted=Null ok=Bool(
 ⇒ 而本仓已有"**能力缺口 ≠ bug**"的分类（他报告第 7 节就是"不是 bug，是没有接口" ✓）⇒ 应归到那里 ✓
 
 **⇒ 顺带**：把上一轮那个 `d15_*` 探针**删掉** ✓（它传错了参数层，留着是噪音 ✓）
+
+## 六百零七、**D139 未复现**：6 组 (size × 颜色) **全部** `painted > 0`（第 1102 轮）
+
+**⇒ 他的说法**：引擎只在 **0 dab** 时说「这笔没落下任何像素」✗
+⇒ 而「**有 dab、覆盖 0 像素**」时**什么都不说** ⇒ 静默区是 **(size, 色偏移) 的二维区域** ✓
+
+**⇒ 我的网格（`classic-knife`，两点笔画 20,20→40,40 ✓）**：
+```
+size=0.5 green painted=21｜size=0.5 white painted=21
+size=1.0 green painted=21｜size=1.0 white painted=21
+size=2.0 green painted=63｜size=2.0 white painted=63
+```
+⇒ **6 组全部 `ok=true` 且 `painted > 0`** ✓ ⇒ **没有出现"有 dab 覆盖 0"** ✗
+
+**⇒ 但我只扫了 6 个点** ✗ ⇒ 他的静默区若落在**别的笔／别的色偏移**上，我这个网格**碰不到** ✓
+⇒ 另：回执**字段很多**（`anchors`／`dirty_tiles`／`delta_regime`／`clipped`／`dupli…` ⇒ 已截断 ✓）
+   ⇒ 所以"什么都不说"这条**也要按字段逐个核**，不能只看 `painted_pixels` ✓
+
+**⇒ 下一轮（要他的输入才高效 ✓）**：
+1. 请他给 **D139 那一次的具体参数**（笔名／size／色／缩放／paper ✓）—— 他自己写过 `steps=2 / stamp_px=8 / ink=0.000` ✓
+2. 或我按"**色偏移**"这条思路扫：同色 vs 背景色（写进同色区域 ⇒ 视觉无变化但 `painted` 仍应 >0 ✓）
+⇒ 判据的样子（若复现 ✓）：
+   **`ok=true` 且 `painted_pixels == 0` 时，回执必须带一个"为什么是 0"的字段**（否则静默失败 ✗）
