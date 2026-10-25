@@ -74,6 +74,7 @@ fn object(id: &str, ty: ObjectType, z: i64, data: serde_json::Value) -> Object {
         object_type: ty,
         z_index: z,
         visible: true,
+        enabled: true,
         locked: false,
         metadata: serde_json::Value::Null,
         transform: Transform::IDENTITY,

@@ -635,7 +635,7 @@ impl AtomLog {
             .with_atom(atom.id.clone()))
         };
         match key {
-            "visible" | "locked" | "alpha_lock" | "clipping_mask" => {
+            "visible" | "locked" | "alpha_lock" | "clipping_mask" | "enabled" => {
                 if !value.is_boolean() {
                     return reject("布尔");
                 }

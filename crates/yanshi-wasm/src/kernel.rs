@@ -386,6 +386,11 @@ impl Kernel {
                 .get("visible")
                 .and_then(Value::as_bool)
                 .unwrap_or(true),
+            // G-03 bypass：预览对象也可由调用方传 enabled:false 停用。
+            enabled: value
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
             locked: false,
             metadata: Value::Null,
             transform: yanshi_core::Transform::IDENTITY,

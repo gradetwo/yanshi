@@ -3644,7 +3644,9 @@ impl Renderer {
             }
         }
         for object in __order {
-            if !object.visible {
+            // G-03 bypass：`enabled: false` 的对象渲染时跳过（与 `visible`
+            // 同门——调整/滤镜对象也走这条循环，停用即整项不生效）。
+            if !object.visible || !object.enabled {
                 continue;
             }
             // 几何裁剪：包围盒与渲染区域不相交的对象直接跳过。
@@ -7110,6 +7112,7 @@ mod tests {
             object_type,
             z_index: z,
             visible: true,
+            enabled: true,
             locked: false,
             metadata: Value::Null,
             transform: Transform::IDENTITY,
@@ -7162,6 +7165,83 @@ mod tests {
         let store = MemoryBlobStore::new();
         let out = renderer().render_document(&state, &store).unwrap();
         assert_eq!(out.pixel(0, 0), Some([0, 0, 0, 0]));
+    }
+
+    /// G-03 bypass：停用的笔触不画出来（与没有这支笔一致）。
+    #[test]
+    fn disabled_stroke_is_skipped_in_render() {
+        let mut state = white_document();
+        state.objects.insert(
+            "obj_1".to_owned(),
+            object(
+                "obj_1",
+                "layer_1",
+                ObjectType::Stroke,
+                0,
+                json!({
+                    "points": [[4.0, 4.0], [12.0, 4.0]],
+                    "size": 4.0,
+                    "color": [0.0, 0.0, 0.0, 1.0],
+                }),
+            ),
+        );
+        let store = MemoryBlobStore::new();
+        let out = renderer().render_document(&state, &store).unwrap();
+        assert!(out.pixel(8, 4).unwrap()[0] < 60, "启用时应画出黑笔");
+        let mut disabled = state.clone();
+        disabled.objects.get_mut("obj_1").unwrap().enabled = false;
+        let out = renderer().render_document(&disabled, &store).unwrap();
+        assert_eq!(
+            out.pixel(8, 4),
+            Some([255, 255, 255, 255]),
+            "停用后同位置应恢复白底"
+        );
+    }
+
+    /// G-03 bypass：停用的调整不生效（与没有这项调整一致）。
+    /// invert 在笔触之上（z=1）：启用时黑笔反成白，停用时黑笔还在。
+    #[test]
+    fn disabled_adjustment_is_skipped_in_render() {
+        let mut state = white_document();
+        state.objects.insert(
+            "obj_1".to_owned(),
+            object(
+                "obj_1",
+                "layer_1",
+                ObjectType::Stroke,
+                0,
+                json!({
+                    "points": [[4.0, 4.0], [12.0, 4.0]],
+                    "size": 4.0,
+                    "color": [0.0, 0.0, 0.0, 1.0],
+                }),
+            ),
+        );
+        state.objects.insert(
+            "adj_1".to_owned(),
+            object(
+                "adj_1",
+                "layer_1",
+                ObjectType::Adjustment,
+                1,
+                json!({"adjustment_type": "invert", "params": {}}),
+            ),
+        );
+        let store = MemoryBlobStore::new();
+        let out = renderer().render_document(&state, &store).unwrap();
+        assert!(
+            out.pixel(8, 4).unwrap()[0] > 200,
+            "启用 invert 时黑笔应反成白：{:?}",
+            out.pixel(8, 4)
+        );
+        let mut disabled = state.clone();
+        disabled.objects.get_mut("adj_1").unwrap().enabled = false;
+        let out = renderer().render_document(&disabled, &store).unwrap();
+        assert!(
+            out.pixel(8, 4).unwrap()[0] < 60,
+            "停用 invert 后黑笔应回来：{:?}",
+            out.pixel(8, 4)
+        );
     }
 
     #[test]

@@ -55,6 +55,7 @@ fn object(id: &str, layer_id: &str, z: i64, data: serde_json::Value) -> Object {
         object_type: ObjectType::Shape,
         z_index: z,
         visible: true,
+        enabled: true,
         locked: false,
         metadata: serde_json::Value::Null,
         transform: Transform::IDENTITY,

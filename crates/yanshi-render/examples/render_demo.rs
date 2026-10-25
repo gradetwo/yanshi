@@ -247,6 +247,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         object_type: yanshi_core::ObjectType::Stroke,
         z_index: 99,
         visible: true,
+        enabled: true,
         locked: false,
         metadata: json!(null),
         transform: yanshi_core::Transform::IDENTITY,

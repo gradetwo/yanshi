@@ -430,6 +430,105 @@ fn import_image_echoes_crop_and_padding_amounts() {
     );
 }
 
+/// Y-09 回显（photo-bugfix-p1）：`raw_develop` 记录此前只进对象数据，
+/// 回执里没有。响应里的 `raw_develop` 必须与对象数据里的同源一致。
+#[test]
+fn import_image_echoes_raw_develop() {
+    let mut workspace = memory_workspace();
+    create_layer(&mut workspace);
+    let bytes = fixture_bytes();
+    let raw_hash = workspace.store().put(&bytes).unwrap().to_string();
+    let response = call(
+        &mut workspace,
+        "import_image",
+        json!({
+            "layer_id": "L", "object_id": "raw_dev_echo",
+            "bitmap": {"blob_hash": raw_hash, "size": bytes.len(), "mime_type": "image/x-yanshi-rawsrc"},
+            "region": {"x": 0.0, "y": 0.0, "w": 24.0, "h": 16.0},
+        }),
+    );
+    assert_eq!(response["ok"], json!(true), "{response}");
+    let echoed = response["raw_develop"].clone();
+    assert!(
+        echoed.is_object(),
+        "响应必须带 raw_develop 记录：{response}"
+    );
+    assert_eq!(
+        echoed,
+        object_data(&workspace, "raw_dev_echo")["raw_develop"],
+        "响应里的 raw_develop 必须与对象数据同源"
+    );
+    assert_eq!(echoed["lens_match"], response["lens_match"], "{response}");
+}
+
+/// Y-04 警告（photo-bugfix-p1）：RAW 导入缺省烘焙 +0.5EV 是行为，
+/// 回执此前不点名。warnings 里必须有一行说清这件事。
+#[test]
+fn import_image_warns_about_default_raw_exposure() {
+    let mut workspace = memory_workspace();
+    create_layer(&mut workspace);
+    let bytes = fixture_bytes();
+    let raw_hash = workspace.store().put(&bytes).unwrap().to_string();
+    let response = call(
+        &mut workspace,
+        "import_image",
+        json!({
+            "layer_id": "L", "object_id": "raw_ev_warn",
+            "bitmap": {"blob_hash": raw_hash, "size": bytes.len(), "mime_type": "image/x-yanshi-rawsrc"},
+            "region": {"x": 0.0, "y": 0.0, "w": 24.0, "h": 16.0},
+        }),
+    );
+    assert_eq!(response["ok"], json!(true), "{response}");
+    assert!(response["default_adjustment"].is_object(), "{response}");
+    let warnings = response["warnings"].as_array().cloned().unwrap_or_default();
+    assert!(
+        warnings.iter().any(
+            |w| w.as_str().unwrap_or_default().contains("已按 RAW 缺省曝光")
+                && w.as_str().unwrap_or_default().contains("EV 烘焙")
+        ),
+        "warnings 必须点名缺省曝光烘焙：{response}"
+    );
+}
+
+/// Y-01 白边回显（photo-bugfix-p1，D-1 回显部分）：留白（padded_px > 0）
+/// 时 warnings 必须点名「导出压平时呈白边」；干净导入没有这行。
+#[test]
+fn import_image_warns_about_white_edge_when_padded() {
+    let mut workspace = memory_workspace();
+    create_layer(&mut workspace);
+    let bytes = fixture_bytes();
+    let raw_hash = workspace.store().put(&bytes).unwrap().to_string();
+    let mut import = |object_id: &str, w: f64, h: f64| {
+        call(
+            &mut workspace,
+            "import_image",
+            json!({
+                "layer_id": "L", "object_id": object_id,
+                "bitmap": {"blob_hash": raw_hash, "size": bytes.len(), "mime_type": "image/x-yanshi-rawsrc"},
+                "region": {"x": 0.0, "y": 0.0, "w": w, "h": h},
+            }),
+        )
+    };
+    let big = import("raw_edge_big", 30.0, 20.0);
+    assert_eq!(big["ok"], json!(true), "{big}");
+    let warnings = big["warnings"].as_array().cloned().unwrap_or_default();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap_or_default().contains("白边提示")),
+        "留白导入必须点名白边后果：{big}"
+    );
+    let exact = import("raw_edge_exact", 24.0, 16.0);
+    assert_eq!(exact["ok"], json!(true), "{exact}");
+    let warnings = exact["warnings"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.as_str().unwrap_or_default().contains("白边提示")),
+        "干净导入不该有白边提示：{exact}"
+    );
+}
+
 #[test]
 fn registry_diff_is_exactly_the_raw_options_group() {
     let registry = registry();

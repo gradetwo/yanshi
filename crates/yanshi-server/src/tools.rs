@@ -2796,6 +2796,7 @@ fn summary_object(object: &yanshi_core::Object) -> Value {
         "type": object.object_type,
         "z_index": object.z_index,
         "visible": object.visible,
+        "enabled": object.enabled,
         "locked": object.locked,
         "current_version": object.current_version,
         "versions": object.versions.len(),
@@ -5523,12 +5524,12 @@ fn write_stroke_path(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     }))
 }
 
-const OBJECT_PATCH_KEYS: [&str; 6] = [
-    "visible", "locked", "z_index", "layer_id", "metadata", "type",
+const OBJECT_PATCH_KEYS: [&str; 7] = [
+    "visible", "enabled", "locked", "z_index", "layer_id", "metadata", "type",
 ];
 
 /// 通用「替换对象数据」✓ —— 设计把"修改对象内容"交给 `supersede`（5.2 修改类 ✓），
-/// 而 `update_object` 只覆盖 6 个属性键（visible/locked/z_index/layer_id/metadata/type ✓），
+/// 而 `update_object` 只覆盖 7 个属性键（visible/enabled/locked/z_index/layer_id/metadata/type ✓），
 /// 不覆盖内容 ✗。此前想改文本内容只能自己构造原子 ✓（`text_stays_an_editable_object` 就是这么做的 ✓），
 /// 这个工具把那条路补成正式入口 ✓，让查看器与 Agent 不必手写原子 ✓。
 ///
@@ -11648,9 +11649,21 @@ fn write_update_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind
             EffectKind::Filter => ObjectType::Filter,
         }
     {
+        // Y-07 指路（photo-bugfix-p1）：打错对象类型时只说「不是 XX 对象」
+        // 不够——调用方不知道该换哪个工具。仿 `ensure_stroke_restylable`
+        // 口径，按对象的实际类型指路（两类效果对象互指，别的类型给双向）。
+        let pointer = match object.object_type {
+            ObjectType::Filter => "请用 update_filter",
+            ObjectType::Adjustment => "请用 update_adjustment",
+            _ => "请用 update_filter / update_adjustment",
+        };
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
-            ErrorContext::detail(format!("{object_id} 不是{}对象", kind.object_type())),
+            ErrorContext::detail(format!(
+                "{object_id} 不是{}对象（它是{}对象）；{pointer}",
+                kind.object_type(),
+                object_type_name(object.object_type)
+            )),
         ));
     }
     let existing_name = object
@@ -12299,6 +12312,7 @@ fn read_list_effects(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 "filter_name": object.data.get("filter_name"),
                 "params": object.data.get("params"),
                 "opacity": object.data.get("opacity"),
+                "enabled": object.enabled,
             })
         })
         .collect();

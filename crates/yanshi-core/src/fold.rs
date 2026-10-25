@@ -951,6 +951,7 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
                     .map(|z| z as i64)
                     .unwrap_or(0),
                 visible: payload_bool(&atom.payload, "visible").unwrap_or(true),
+                enabled: payload_bool(&atom.payload, "enabled").unwrap_or(true),
                 locked: payload_bool(&atom.payload, "locked").unwrap_or(false),
                 metadata: atom.payload.get("metadata").cloned().unwrap_or(Value::Null),
                 transform: transform_from_payload(&atom.payload),
@@ -987,6 +988,7 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
                         .map(|z| z as i64)
                         .unwrap_or(0),
                     visible: payload_bool(&atom.payload, "visible").unwrap_or(true),
+                    enabled: payload_bool(&atom.payload, "enabled").unwrap_or(true),
                     locked: payload_bool(&atom.payload, "locked").unwrap_or(false),
                     metadata: atom.payload.get("metadata").cloned().unwrap_or(Value::Null),
                     transform: transform_from_payload(&atom.payload),
@@ -1680,6 +1682,12 @@ fn apply_property_to_object(object: &mut Object, key: &str, value: &Value) {
                 object.visible = flag;
             }
         }
+        // G-03 bypass：与 `visible` 同纪律，非布尔保持旧值。
+        "enabled" => {
+            if let Some(flag) = value.as_bool() {
+                object.enabled = flag;
+            }
+        }
         "locked" => {
             if let Some(flag) = value.as_bool() {
                 object.locked = flag;
@@ -2093,6 +2101,46 @@ mod tests {
             result.state.objects["obj_1"].data,
             json!({"v": 2}),
             "a_super 被抑制 ⇒ data 不许是它的版本"
+        );
+    }
+
+    /// G-03 bypass：`SetProperty` 能开关 `enabled`；缺省启用；非法值保持旧值。
+    /// 变异：把 `apply_property_to_object` 的 enabled 分支删掉 ⇒ 红 ✓。
+    #[test]
+    fn set_property_enabled_toggles_bypass() {
+        let mut atoms = chain();
+        let result = fold(&atoms);
+        assert!(
+            result.state.objects["obj_1"].enabled,
+            "新建对象缺省启用（enabled=true）"
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::SetProperty,
+                "a_disable",
+                json!({"object_id": "obj_1", "key": "enabled", "value": false}),
+            ),
+        );
+        let result = fold(&atoms);
+        assert!(
+            !result.state.objects["obj_1"].enabled,
+            "enabled=false 必须落到对象上"
+        );
+        // 手工日志里的非法值（提交层会拒绝，这里是重放纵深防御 ✓）：
+        // 与 visible 同纪律，非布尔保持旧值，不许猜默认。
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::SetProperty,
+                "a_junk",
+                json!({"object_id": "obj_1", "key": "enabled", "value": "yes"}),
+            ),
+        );
+        let result = fold(&atoms);
+        assert!(
+            !result.state.objects["obj_1"].enabled,
+            "非法值必须保持旧值（停用），不许猜默认 ✗"
         );
     }
 

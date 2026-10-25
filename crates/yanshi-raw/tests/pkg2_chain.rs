@@ -200,6 +200,26 @@ fn plan_import_d5_branches() {
     );
 }
 
+/// Y-05 警告（photo-bugfix-p1）：wb=auto 一期等同 as_shot 不是静默的——
+/// plan 的 warnings 里必须有一行说清（响应经 `import_image` 原样回显）。
+/// 真 auto WB 进期 4 C1，本期只钉住警告。
+#[test]
+fn plan_import_wb_auto_warns_it_equals_as_shot() {
+    let decoded = decode_bytes(&exif_fixture(1)).unwrap();
+    let plan = plan_import(&decoded, Some(&json!({"wb": "auto"}))).unwrap();
+    assert!(
+        plan.warnings.iter().any(|w| w.contains("一期等同 as_shot")),
+        "wb=auto 必须进 warnings：{:?}",
+        plan.warnings
+    );
+    let plan = plan_import(&decoded, Some(&json!({"wb": "as_shot"}))).unwrap();
+    assert!(
+        !plan.warnings.iter().any(|w| w.contains("一期等同 as_shot")),
+        "wb=as_shot 不该有这行警告：{:?}",
+        plan.warnings
+    );
+}
+
 #[test]
 fn plan_record_matches_develop_record_field_by_field() {
     let decoded = decode_bytes(&exif_fixture(1)).unwrap();

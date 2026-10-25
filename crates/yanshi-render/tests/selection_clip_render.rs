@@ -67,6 +67,7 @@ fn base_object(id: &str, layer_id: &str, object_type: ObjectType, created_by: &s
         object_type,
         z_index: 0,
         visible: true,
+        enabled: true,
         locked: false,
         metadata: serde_json::Value::Null,
         transform: Transform::IDENTITY,

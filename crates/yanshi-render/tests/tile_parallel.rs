@@ -117,6 +117,7 @@ fn object(id: &str, layer_id: &str, kind: ObjectType, z: i64, data: serde_json::
         object_type: kind,
         z_index: z,
         visible: true,
+        enabled: true,
         locked: false,
         metadata: serde_json::Value::Null,
         transform: Transform::IDENTITY,

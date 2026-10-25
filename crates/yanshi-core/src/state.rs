@@ -231,6 +231,10 @@ pub struct Object {
     /// 可见性。
     #[serde(default = "default_true")]
     pub visible: bool,
+    /// 启用（bypass 开关，G-03）：false 的对象渲染时跳过；缺省启用，
+    /// 老文档无此键时按 true 读（与 `visible` 同口径）。
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     /// 锁定。
     #[serde(default)]
     pub locked: bool,
@@ -968,6 +972,7 @@ mod tests {
             object_type: ObjectType::Stroke,
             z_index: z,
             visible: true,
+            enabled: true,
             locked: false,
             metadata: Value::Null,
             transform: Transform::IDENTITY,
@@ -1002,6 +1007,32 @@ mod tests {
         assert_eq!(in_l1, vec!["o1", "o2"]);
         assert_eq!(state.alive_objects().len(), 3);
         assert!(!state.layer_alive("l3"));
+    }
+
+    /// G-03 bypass：老文档（无 `enabled` 键）反序列化后缺省启用；
+    /// 显式 false 读回 false（往返不丢）。
+    #[test]
+    fn object_enabled_defaults_to_true_for_old_documents() {
+        let old: Object = serde_json::from_value(json!({
+            "id": "o1",
+            "layer_id": "l1",
+            "type": "shape",
+            "created_by": "a1",
+        }))
+        .unwrap();
+        assert!(old.enabled, "老文档无 enabled 键时必须按启用读");
+        let disabled: Object = serde_json::from_value(json!({
+            "id": "o1",
+            "layer_id": "l1",
+            "type": "shape",
+            "created_by": "a1",
+            "enabled": false,
+        }))
+        .unwrap();
+        assert!(!disabled.enabled, "显式 false 必须读回 false");
+        let roundtrip: Object =
+            serde_json::from_value(serde_json::to_value(&disabled).unwrap()).unwrap();
+        assert!(!roundtrip.enabled, "序列化往返不许丢 enabled");
     }
 
     #[test]

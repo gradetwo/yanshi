@@ -46,6 +46,7 @@ fn stroke_object(id: &str, seq: u64, points: serde_json::Value, size: f64) -> Ob
         object_type: ObjectType::Stroke,
         z_index: 0,
         visible: true,
+        enabled: true,
         locked: false,
         metadata: serde_json::Value::Null,
         transform: Transform::IDENTITY,

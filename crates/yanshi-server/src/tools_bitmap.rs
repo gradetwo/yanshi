@@ -131,6 +131,21 @@ pub(super) fn write_put_blob(ctx: &mut ToolContext<'_>, args: &Value) -> Result<
     Ok(value)
 }
 
+/// 向响应对象的 `warnings` 数组追加一条（不存在时新建）。
+///
+/// Y-04/Y-01（photo-bugfix-p1）用：`write_import_image` 的 RAW 分支里，
+/// 计划警告（`outcome.warnings`）已在前面插进响应，这两条是导入期之后
+/// 才知道的事（缺省曝光对象已落成、留白量已算出），只能在这里追加。
+fn push_response_warning(object: &mut serde_json::Map<String, Value>, warning: String) {
+    let mut warnings = object
+        .get("warnings")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    warnings.push(Value::String(warning));
+    object.insert("warnings".to_owned(), Value::Array(warnings));
+}
+
 pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let bitmap = require_object(args, "bitmap")?.clone();
@@ -355,6 +370,10 @@ pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     if let Some(outcome) = raw_import {
         if let Some(object) = out.as_object_mut() {
             object.insert("raw_meta".to_owned(), outcome.meta_json.clone());
+            // Y-09 回显（photo-bugfix-p1）：`raw_develop` 记录此前只进对象
+            // 数据（`payload["raw_develop"]`），回执里没有——调用方看不到
+            // 展开参数。`raw_meta` 的同源邻行，一行补齐。
+            object.insert("raw_develop".to_owned(), outcome.record_json.clone());
             if !outcome.warnings.is_empty() {
                 object.insert("warnings".to_owned(), json!(outcome.warnings));
             }
@@ -383,10 +402,23 @@ pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Res
                 "cropped_px".to_owned(),
                 json!({"w": (developed_w - declared_w).max(0.0), "h": (developed_h - declared_h).max(0.0)}),
             );
+            let padded_w = (declared_w - developed_w).max(0.0);
+            let padded_h = (declared_h - developed_h).max(0.0);
             object.insert(
                 "padded_px".to_owned(),
-                json!({"w": (declared_w - developed_w).max(0.0), "h": (declared_h - developed_h).max(0.0)}),
+                json!({"w": padded_w, "h": padded_h}),
             );
+            // Y-01 白边回显（photo-bugfix-p1，D-1 回显部分）：B3 的
+            // `padded_px` 已量化留白，这里只点名后果——留白区透明、导出
+            // 压平时呈白边。响亮报错/边缘复制另期，不做。
+            if padded_w > 0.0 || padded_h > 0.0 {
+                push_response_warning(
+                    object,
+                    format!(
+                        "白边提示：声明 region 比展开图大，留白 {padded_w}×{padded_h}px 透明、导出压平时呈白边（见 padded_px）"
+                    ),
+                );
+            }
             // B4 结构化回显（photo-bugfix-p1）：`lens_match` 此前只在
             // `raw_develop` 记录与 warnings 文本里，批量驱动无法据此
             // gating；顶层再给一份 + `lens_correction_applied` 布尔（有
@@ -409,6 +441,13 @@ pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         let adjustment = spawn_default_exposure_adjustment(ctx, &layer_id)?;
         if let Some(object) = out.as_object_mut() {
             object.insert("default_adjustment".to_owned(), adjustment);
+            // Y-04 警告（photo-bugfix-p1）：RAW 导入缺省烘焙 +0.5EV——
+            // 行为不变（对象照常生成），只让回执点名这件事，调用方不再
+            // 以为「零调整」。数值取常量，不写死。
+            push_response_warning(
+                object,
+                format!("已按 RAW 缺省曝光 +{DEFAULT_RAW_EXPOSURE_EV}EV 烘焙"),
+            );
         }
     }
     Ok(out)

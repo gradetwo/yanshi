@@ -54,6 +54,7 @@ fn rect(id: &str, layer_id: &str, z: i64, bbox: (f64, f64, f64, f64), colour: [u
         object_type: ObjectType::Shape,
         z_index: z,
         visible: true,
+        enabled: true,
         locked: false,
         metadata: serde_json::Value::Null,
         transform: Transform::IDENTITY,

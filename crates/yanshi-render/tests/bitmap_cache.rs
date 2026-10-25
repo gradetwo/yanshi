@@ -72,6 +72,7 @@ fn background_document(side: u32) -> (DocumentState, MemoryBlobStore) {
             object_type: ObjectType::RasterPatch,
             z_index: 0,
             visible: true,
+            enabled: true,
             locked: false,
             metadata: serde_json::Value::Null,
             transform: Transform::IDENTITY,

@@ -956,6 +956,7 @@ mod tests {
             object_type: ObjectType::Shape,
             z_index: z,
             visible: true,
+            enabled: true,
             locked: false,
             metadata: Value::Null,
             transform: Transform::IDENTITY,

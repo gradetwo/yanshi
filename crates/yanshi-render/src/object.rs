@@ -1606,6 +1606,7 @@ mod tests {
             object_type,
             z_index: 0,
             visible: true,
+            enabled: true,
             locked: false,
             metadata: Value::Null,
             transform: Transform::IDENTITY,

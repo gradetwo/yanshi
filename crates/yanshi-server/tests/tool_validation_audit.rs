@@ -380,3 +380,145 @@ fn malformed_arguments_are_rejected() {
         silent.join("\n")
     );
 }
+
+/// Y-07 指路（photo-bugfix-p1）：`update_adjustment` 打到 filter 对象
+/// （反之亦然）时，报错除「不是 XX 对象」外必须指路到正确的工具。
+#[test]
+fn update_effect_on_wrong_object_type_points_to_the_right_tool() {
+    let registry = registry();
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_audit", 64, 64),
+            "human:1",
+            "session:audit",
+        )
+        .unwrap();
+    let mut ctx = context(&mut workspace, "doc_audit");
+    let created = registry.call(&mut ctx, "create_layer", &json!({"layer_id": "layer_1"}));
+    assert_eq!(created["ok"], json!(true), "{created}");
+    let filter = registry.call(
+        &mut ctx,
+        "add_filter",
+        &json!({"layer_id": "layer_1", "object_id": "fx_filter", "filter_name": "saturation", "params": {"amount": 1.2}}),
+    );
+    assert_eq!(filter["ok"], json!(true), "{filter}");
+    let adjustment = registry.call(
+        &mut ctx,
+        "add_adjustment",
+        &json!({"layer_id": "layer_1", "object_id": "fx_adjustment", "adjustment_type": "exposure", "params": {"ev": 0.2}}),
+    );
+    assert_eq!(adjustment["ok"], json!(true), "{adjustment}");
+    // update_adjustment 打 filter 对象 ⇒ 指路 update_filter。
+    let wrong = registry.call(
+        &mut ctx,
+        "update_adjustment",
+        &json!({"object_id": "fx_filter", "params": {"ev": 0.3}}),
+    );
+    assert_eq!(wrong["ok"], json!(false), "{wrong}");
+    let detail = wrong["context"]["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("请用 update_filter"),
+        "报错必须指路：{wrong}"
+    );
+    // update_filter 打 adjustment 对象 ⇒ 指路 update_adjustment。
+    let wrong = registry.call(
+        &mut ctx,
+        "update_filter",
+        &json!({"object_id": "fx_adjustment", "params": {"amount": 1.5}}),
+    );
+    assert_eq!(wrong["ok"], json!(false), "{wrong}");
+    let detail = wrong["context"]["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("请用 update_adjustment"),
+        "报错必须指路：{wrong}"
+    );
+}
+
+/// Y-06/G-09 schema 文案（photo-bugfix-p1）：恒等值与 hsl ranges、
+/// levels channel 必须写进工具 schema，不许只存在于实现注释里。
+#[test]
+fn effect_schema_states_identity_values_and_ranges() {
+    let registry = registry();
+    let adjustment = registry
+        .get("add_adjustment")
+        .expect("add_adjustment 应注册");
+    let params = adjustment
+        .params
+        .iter()
+        .find(|param| param.name == "params")
+        .expect("add_adjustment 应有 params 参数");
+    for needle in [
+        "1.0 = 不变",
+        "0 = 不变",
+        "ranges",
+        "reds",
+        "magentas",
+        "channel: rgb|r|g|b",
+    ] {
+        assert!(
+            params.description.contains(needle),
+            "add_adjustment 的 params 说明必须提到 {needle}：{}",
+            params.description
+        );
+    }
+    let filter = registry.get("add_filter").expect("add_filter 应注册");
+    let params = filter
+        .params
+        .iter()
+        .find(|param| param.name == "params")
+        .expect("add_filter 应有 params 参数");
+    assert!(
+        params.description.contains("恒等值 `1`"),
+        "add_filter 的 params 说明必须写 saturation 恒等值 1：{}",
+        params.description
+    );
+}
+
+/// G-03 bypass（photo-bugfix-p1）：`update_object` 能开关 enabled，
+/// 停用的对象在 `list_effects` 与 `get_object` 回显里可见。
+#[test]
+fn update_object_toggles_enabled_and_echoes_it() {
+    let registry = registry();
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_audit", 64, 64),
+            "human:1",
+            "session:audit",
+        )
+        .unwrap();
+    let mut ctx = context(&mut workspace, "doc_audit");
+    let created = registry.call(&mut ctx, "create_layer", &json!({"layer_id": "layer_1"}));
+    assert_eq!(created["ok"], json!(true), "{created}");
+    let added = registry.call(
+        &mut ctx,
+        "add_adjustment",
+        &json!({"layer_id": "layer_1", "object_id": "fx_bypass", "adjustment_type": "exposure", "params": {"ev": 0.2}}),
+    );
+    assert_eq!(added["ok"], json!(true), "{added}");
+    // 缺省启用。
+    let listed = registry.call(&mut ctx, "list_effects", &json!({}));
+    assert_eq!(listed["effects"][0]["enabled"], json!(true), "{listed}");
+    // 停用 ⇒ 两处回显都变 false。
+    let toggled = registry.call(
+        &mut ctx,
+        "update_object",
+        &json!({"object_id": "fx_bypass", "patch": {"enabled": false}}),
+    );
+    assert_eq!(toggled["ok"], json!(true), "{toggled}");
+    assert_eq!(toggled["count"], json!(1), "{toggled}");
+    let listed = registry.call(&mut ctx, "list_effects", &json!({}));
+    assert_eq!(listed["effects"][0]["enabled"], json!(false), "{listed}");
+    let got = registry.call(&mut ctx, "get_object", &json!({"object_id": "fx_bypass"}));
+    assert_eq!(got["enabled"], json!(false), "{got}");
+    // 再启用 ⇒ 回来。
+    let toggled = registry.call(
+        &mut ctx,
+        "update_object",
+        &json!({"object_id": "fx_bypass", "patch": {"enabled": true}}),
+    );
+    assert_eq!(toggled["ok"], json!(true), "{toggled}");
+    let got = registry.call(&mut ctx, "get_object", &json!({"object_id": "fx_bypass"}));
+    assert_eq!(got["enabled"], json!(true), "{got}");
+}

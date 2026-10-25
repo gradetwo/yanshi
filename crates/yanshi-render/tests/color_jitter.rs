@@ -65,6 +65,7 @@ fn render_stroke(jitter: Option<f64>) -> Vec<u8> {
         object_type: ObjectType::Stroke,
         z_index: 0,
         visible: true,
+        enabled: true,
         locked: false,
         metadata: serde_json::Value::Null,
         transform: Transform::IDENTITY,
