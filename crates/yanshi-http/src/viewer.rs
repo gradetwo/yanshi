@@ -538,6 +538,26 @@ const PAGE_TAIL_A: &str = r##"</style>
         <button id="objectPath" type="button">执行路径算子</button>
         <button id="objectRestyle" type="button">改笔触</button>
         <button id="objectHistory" type="button" title="查看选中对象的版本历史（原子版本链）">版本历史</button>
+        <button id="objectDetail" type="button" title="读回选中对象的完整记录（get_object）">详情</button>
+        <button id="objectResolved" type="button" title="选中对象解析后的生效状态（get_resolved_state）">解析</button>
+        <button id="objectDetach" type="button" title="把勾选的实例从 master 断开（detach_instance）">脱离实例</button>
+      </div>
+      <!-- **实例 / 组 / metadata 的第二排** ✓（三方对照补齐 ✓）——
+           `update_sync_policy` / `link_to_master` / `add_to_group` / `remove_from_group` /
+           `update_object` 在系统注册表与 MCP 默认档里都有 ✓，查看器此前**零引用** ✗。 -->
+      <div class="toolbar" style="gap:6px; flex-wrap:wrap">
+        <label>组 <input id="objectGroupId" type="text" placeholder="group_id" style="width:120px" /></label>
+        <button id="objectAddGroup" type="button" title="把勾选对象加入该组（add_to_group）">加入组</button>
+        <button id="objectRemoveGroup" type="button" title="把勾选对象移出该组（remove_from_group）">移出组</button>
+        <label>主图 <input id="objectMasterId" type="text" placeholder="master_id" style="width:120px" /></label>
+        <button id="objectLinkMaster" type="button" title="把勾选实例改挂到该 master（link_to_master）">换主图</button>
+        <select id="objectSyncPolicy">
+          <option value="all">全部同步</option>
+          <option value="none">停止同步</option>
+        </select>
+        <button id="objectSyncApply" type="button" title="给勾选实例设置同步策略（update_sync_policy）">设同步策略</button>
+        <label>备注 <input id="objectNote" type="text" placeholder="metadata.note" style="width:120px" /></label>
+        <button id="objectNoteApply" type="button" title="写进对象的 metadata.note（update_object 的 patch）">写备注</button>
       </div>
       <div style="display:flex; gap:8px; margin:8px 0; flex-wrap:wrap; align-items:center">
         <label>角度 <input id="transformRotate" type="number" value="0" step="15" style="width:64px" /></label>
@@ -612,7 +632,39 @@ const PAGE_TAIL_A: &str = r##"</style>
         <option value="gradTo">渐变终点</option>
       </select></label>
       <div id="paletteSwatches" class="toolbar" style="flex-wrap:wrap;gap:4px"></div>
+      <!-- **存为调色板** ✓ —— `save_palette` 此前只有工具层入口 ✗（系统+MCP 有、web 没有 ✓）。 -->
+      <div class="toolbar" style="gap:6px">
+        <input id="paletteSaveName" type="text" placeholder="my.gpl" style="width:120px" />
+        <button id="paletteSave" type="button" title="把当前色块存成 .gpl 调色板资产（save_palette）">存为调色板</button>
+      </div>
       <div id="paletteInfo" class="hint"></div>
+    </div>
+    <!-- **参考图** ✓ —— `set_reference` / `clear_reference` 此前在查看器里**零引用** ✗
+         （overlay 只会被动读 preferences ✓，没有任何 UI 能**写入**它 ✗ ⇒ 对照表"系统+MCP"一类 ✓）。 -->
+    <div class="card" data-panel="assets" id="cardReference">
+      <h2>参考图</h2>
+      <label>不透明 <input id="referenceOpacity" type="number" value="0.5" min="0" max="1" step="0.1" style="width:56px" /></label>
+      <div class="toolbar" style="gap:6px">
+        <button id="referenceSet" type="button" title="上传一张图，半透明铺在画布下层用于临摹（set_reference）">上传参考图</button>
+        <button id="referenceClear" type="button" title="清除当前参考图（clear_reference）">清除参考图</button>
+        <input id="referenceFile" type="file" accept="image/png,image/jpeg,image/webp" hidden />
+      </div>
+      <div id="referenceInfo" class="hint"></div>
+    </div>
+    <!-- **资产导入** ✓ —— `import_asset`（brush / texture / palette）此前只有工具层入口 ✗。 -->
+    <div class="card" data-panel="assets" id="cardAsset">
+      <h2>资产导入</h2>
+      <div class="toolbar" style="gap:6px; flex-wrap:wrap">
+        <select id="assetKind">
+          <option value="brush">笔刷</option>
+          <option value="texture">纹理</option>
+          <option value="palette">调色板</option>
+        </select>
+        <input id="assetName" type="text" placeholder="name.ext" style="width:120px" />
+        <button id="assetImport" type="button" title="从本机选文件，走 data_base64 上传（import_asset）">选文件导入</button>
+        <input id="assetFile" type="file" hidden />
+      </div>
+      <div id="assetInfo" class="hint"></div>
     </div>
     <!-- **纹理** ✓（目标第 ② 件 ✓）—— `texture_background` 同样此前只有工具层入口 ✗。 -->
     <div class="card" data-panel="assets" id="cardTexture">
@@ -672,6 +724,14 @@ const PAGE_TAIL_A: &str = r##"</style>
         <button id="timelapseExport" type="button" title="把从第一笔到现在的过程渲染成视频（本地内核 ＋ WebCodecs，不需要联网）">导出过程视频</button>
       </div>
       <div class="hint" id="timelapseInfo"></div>
+      <!-- **任意尺寸整幅导出** ✓ —— `export_png` 的 width/height 能力（服务端渲染、不受 512px 限制 ✓）
+           此前查看器只做"按文档原尺寸"导出 ✗ ⇒ 补齐入口 ✓（不落盘、base64 直接下载 ✓）。 -->
+      <div class="toolbar" style="gap:6px">
+        <label>宽 <input id="exportServerW" type="number" min="0" step="1" placeholder="px" style="width:72px" /></label>
+        <label>高 <input id="exportServerH" type="number" min="0" step="1" placeholder="px" style="width:72px" /></label>
+        <button id="exportServerPng" type="button" title="服务端整幅渲染并按给定尺寸缩放，结果直接下载到本机（export_png）">任意尺寸导出</button>
+      </div>
+      <div id="exportServerInfo" class="hint"></div>
       <label>导入为 <input id="projectImportName" type="text" placeholder="留空 ⇒ 用包里的 id" style="width:180px" /></label>
       <div class="toolbar">
         <button id="projectImport" type="button">导入 .yanshi…</button>
@@ -694,6 +754,10 @@ const PAGE_TAIL_A: &str = r##"</style>
           <option value="">全部</option>
         </select>
         <button id="suggestionReload" type="button">刷新</button>
+        <!-- **批量** ✓ —— `accept_suggestions` / `reject_suggestions`（复数 ✓）此前零引用 ✗：
+             逐条"接受"在面对一屏建议时是酷刑 ✓。勾选行 ⇒ 一键处理所选 ✓。 -->
+        <button id="suggestionAcceptChecked" type="button" title="一次性接受所有勾选的建议（accept_suggestions）">接受所选</button>
+        <button id="suggestionRejectChecked" type="button" title="一次性拒绝所有勾选的建议（reject_suggestions）">拒绝所选</button>
       </div>
       <div id="suggestionList" class="annotation-list"></div>
       <div class="hint" id="suggestionPreviewHint">点「预览」先看清补丁会被怎么执行 ✓（预览**不应用** ✓）</div>
