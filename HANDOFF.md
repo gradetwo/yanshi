@@ -76,9 +76,13 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    本机 CDP 验证 **ALL_STEPS_PASS**（把作者脚本里写死的 `/home/polar/...` 夹具换成仓内 PNG；
    每次用**全新 doc**，否则前置状态被消耗）；browser-i18n / ui-i18n / tool-surface-coverage 全绿。
    顺带修了 census 的 `saturation`/`amount` 分类（CI shard 2 第一次红的原因）。
-11. **vector-tracing v3 技能包未合**（台账 §624）：6 个 patch 的基线是 v2 `bb7b1cb`（blob `54f11e2`），
-   而本仓是 v1（blob `7d8577c4`），`~/patch/yanshi-skill-vector-tracing.patch` 也只是 v1 ⇒
-   **需要 v2 补丁或 v1→v3 的完整 diff**，不硬拼。
+11. **vector-tracing v3 已合**（完整包，台账 §627）：7 个 patch 从本仓 v1 直达 v3（旧差量包作废）；
+   结果 blob `505da95` 与 `合并.diff` 逐字一致，`check-skill-tool-names` 73 处全过。
+12. **照片线 G-09 补充件已合**（台账 §627）：hsl 校验域放宽到 hue ±360／sat 0..8（含 `clamp_params`
+   镜像同幅放宽）；`selective_color`/hsl 嵌套键名与同名不同义写进 schema 文案。
+   本机 hsl 3／preset_expander 13／presence 5 全过，clippy/fmt 绿，census（225 名）绿。
+13. **期 3a 回填版**：作者重跑确认测试/回测/重放数字逐数复现；唯一修正「fmt 干净」不实 ⇒
+   与本仓 `7fc8e658` 的 rustfmt 正好对上（台账 §627 末）。
 
 ## 三、下一步（按优先序，都有精确入口）
 

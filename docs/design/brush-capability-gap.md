@@ -22052,3 +22052,29 @@ i18n 动态模式 `（导入的）→ (imported)`。
 `Y-06` 的 schema 文案把**效果名**写成反引号名，而旧分类器只认工具名/参数名/笔刷名 ✗
 ⇒ 现在从 `list_engine_capabilities` **动态取** `filters∪adjustments`，并给 `amount`
 一个显式的 `effectParam`（它是 `params.amount` 键）✓（CI shard 2 第一次红就是这个）。
+
+## 六百二十七、vector-tracing **v1→v3 完整包**已合（第 624 节的缺口解除）＋ G-09 补充件（第 1132 轮）
+
+**⇒ 作者补了完整包**：`yanshi-skill-vector-tracing-v1-v3完整包.zip` —— 7 个 patch 从**本仓 v1**
+（blob `7d8577c4`）直接打到 v3，不再需要 v2 前置 ✓；旧的 v3 差量包**作废** ✓。
+- 7/7 `git am` 干净 ✓；结果 `SKILL.md` blob `505da955…`（117 行）✓
+- **与 `合并.diff` 等价**：在 `main` 的 worktree 上应用 `合并.diff` 得到同一 blob `505da955…` ✓
+- `node scripts/check-skill-tool-names.mjs`：73 处标识符全部能在 203 工具/252 参数里找到 ✓
+- 内容要点：矢量优先→**像素量、矢量画**（锚点取实测曲率极值，禁逐点拟合像素链）、
+  目检唯一放行、眼睛单列且两只分开验、通用化（不带个案数字）、字标同色重叠/稀疏锚点/像素中心偏差 ✓
+
+**⇒ G-09 补充件**（2 个 patch，基线 `93a32fa`；在本仓 `04d6aab6` 上干净应用）：
+| 提交 | 内容 |
+|---|---|
+| `cde6974` | **校验表与渲染器域对齐**：`validate_effect` 的 hsl 标量 hue ±180→**±360**、saturation 0..4→**0..8**；`presets.rs::clamp_params` 的镜像表**同幅放宽**（否则预设展开会把 hue 270 静默钳成 180）|
+| `c33c49c` | **schema 文案**：`selective_color` 的 `params.adjust.<档>=[c,m,y,k]` 9 档；hsl 的 `params.ranges.<档>.{hue,saturation,lightness}` 8 段；并写明**同名不同义**（档内 sat 百分比因子 ±100/恒等 0 vs 全局乘子 0..8/恒等 1.0）|
+
+**⇒ 本机验证**：`cargo test -p yanshi-server --lib hsl` **3**；`preset_expander` **13**；
+`presence_validation` **5**；clippy（server）**0**；fmt **0** ✓
+⇒ `tool-schema-params-census` 在新 schema 文案上 **exit 0**（225 名全分类 ✓）——
+这正是上一轮刚加的动态 `effect-name`/`effectParam` 分类器起作用的证据 ✓。
+
+**⇒ 期 3a 回填版（`说明-期3a-回填.md`）**：作者在 yanshi-3 同一树上完整重跑三节 ⇒
+测试/回测/重放数字**逐数复现** ✓；**唯一修正**：原文说 `fmt --check` 干净**不实**
+（原轮与重跑都是 rc=1，`tools_auto.rs:346`）⇒ 与本仓 `7fc8e658` 的「期 3a 文件 rustfmt」
+**正好对上** ✓ ⇒ 该缺口关闭 ✓。
