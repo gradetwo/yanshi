@@ -23,7 +23,7 @@
     "肤色易被青污染"
    ],
    "description": "高调、青绿环境、透肤、空气感；比韩系更通透、比糖水更克制。",
-   "notes": "已验证（补充找回的截图证据，2026-10-23）：以「JP LIGHT FINAL」在三素材上深挖验证——圣托里尼·伊亚小镇、罗弗敦·红房子（雾天变体格标注 JP CLEAN fog adapt）、树荫下人像。此前『蒙灰纱』问题已换轻校正基线。unsupported：逐通道 HSL（绿向青/提明）Yanshi 无逐通道 HSL，用全局 hsl + selective_color 近似；局部眼睛锐化需蒙版工具，不在预设内。截图为 1170px 参考图，非原始渲染。",
+   "notes": "已验证（补充找回的截图证据，2026-10-23）：以「JP LIGHT FINAL」在三素材上深挖验证——圣托里尼·伊亚小镇、罗弗敦·红房子（雾天变体格标注 JP CLEAN fog adapt）、树荫下人像。此前『蒙灰纱』问题已换轻校正基线。unsupported：局部眼睛锐化需蒙版工具，不在预设内。逐通道 HSL（绿向青/提明）并非引擎缺失（2026-10-25 纠错）：引擎已有 8 段 HSL（hsl_with_ranges，filter.rs:1263），本预设未使用，仍用全局 hsl + selective_color 近似。【全库说明】22 套预设 ops 里 ranges 与 hsl 类型均为零使用；重写 ops 真正用 ranges/hsl 待 v5 批量收尾 + 期 2 落地后另行。截图为 1170px 参考图，非原始渲染。",
    "correction": {
     "baseline": "light",
     "ops": [
