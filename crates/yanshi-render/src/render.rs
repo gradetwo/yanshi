@@ -2155,10 +2155,7 @@ impl Renderer {
         // 快照只是背景色（单色填充就能重算），存它等于每文档白占一幅 f32 整幅
         // （4K 实测 132,710,400 字节）。没内容 ⇒ 不取快照（连 `clone` 也省了）、
         // 不写缓存；下次命中缺失时重算背景即可，像素结果不变（只是少一次复用）。
-        let below_has_content = visible_has_objects
-            .iter()
-            .take(split)
-            .any(|has| *has);
+        let below_has_content = visible_has_objects.iter().take(split).any(|has| *has);
         // **★ 临时探针 ✓**（第 531 轮 ✓，**查明后删 ✓**）：**打印层 id 列表与当前层**✗** ⇒
         // **∴ 一眼看出**是**名字不同 ✗**（(a)／(c) ✓）还是**列表里没有 ✗**（(b) ✓）**。
         if let Ok(probe) = std::env::var("YANSHI_BELOW_PROBE") {
@@ -2956,10 +2953,7 @@ impl Renderer {
             // **∴ 切点 ✗**：**`index_here` 从 0 数已合成的可见层 ✓ ⇒ **∴ `+ 1 == split`**
             //   ⇒ **∴ 此刻 `accumulation` **正好**只有下方层 ✓ ⇒ **∴ 这就是缓存要存的内容 ✓**** ✓✓
             //   （RSS 修复 paint-rss：下方全空时不取快照 ⇒ 也不写缓存，见 `below_has_content` ✓。）
-            if cacheable
-                && below_snapshot.is_none()
-                && below_has_content
-                && index_here + 1 == split
+            if cacheable && below_snapshot.is_none() && below_has_content && index_here + 1 == split
             {
                 below_snapshot = Some(accumulation.clone());
             }

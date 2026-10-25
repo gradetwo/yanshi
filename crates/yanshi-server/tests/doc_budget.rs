@@ -84,7 +84,7 @@ fn set_budget_mb(mb: u64) {
 /// `estimated_bytes - retained_bytes`，不能直接拿另一份已载入文档的
 /// `estimated_bytes` 当入量——后者含渲染侧保留量（4K 文档可达数百 MB），
 /// 会把预算算大、闸不触发（2026-10-26 本文件首测即因此红过）。
-fn atoms_only_estimate(info: &LoadedDocumentInfo) -> u64 {
+fn atoms_only_estimate(info: LoadedDocumentInfo) -> u64 {
     info.estimated_bytes.saturating_sub(info.retained_bytes)
 }
 

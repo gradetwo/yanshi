@@ -13,11 +13,12 @@ use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolReg
 ///
 /// 4K 全配方文档（8 笔 + 1 次位图补丁 + 1 次导出）落定后的
 /// `renderer_retained_bytes()`。修前同配方约 260MB（定位报告 §1，
-/// 驱动臂 A1 实测每文档 +132–321MB，均值 ~260MB）；修后由池大缓冲只留一张
-/// （≤132.7MB）+ tile 64MB + 位图 + 区域块等组成。**本数是上限不是均值**：
-/// 取实测值上浮约 25% 的余量；若实现改动让它系统性抬高，先修实现、再改数，
-/// 不要直接放宽（放宽等于把判据改成安慰剂）。
-const MAX_RETAINED_BYTES_PER_DOC: usize = 220 * 1024 * 1024;
+/// 驱动臂 A1 实测每文档 +132–321MB，均值 ~260MB）；修后由 tile 64MB + 区域块
+/// ~42MB + 池 ~18.5MB + 位图 ~7MB 组成（实测落定 134,298,280 字节；
+/// below 已归零——下方层全空时不存背景 tile，见 render.rs `below_has_content`）。
+/// **本数是上限不是均值**：取实测值上浮约 25% 的余量；若实现改动让它系统性抬高，
+/// 先修实现、再改数，不要直接放宽（放宽等于把判据改成安慰剂）。
+const MAX_RETAINED_BYTES_PER_DOC: usize = 160 * 1024 * 1024;
 
 struct Cleanup(std::path::PathBuf);
 impl Drop for Cleanup {
