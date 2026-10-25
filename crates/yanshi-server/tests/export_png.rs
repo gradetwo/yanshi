@@ -277,3 +277,239 @@ fn a_full_frame_export_refreshes_the_render_cache() {
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// **期 4 `lod`**：`export_png` 的回执必须**真的读 `lod`** ✓（不是只在 schema 里声明 ✓）。
+///
+/// **∴ 为什么要有这条 ✗**：`lod` 若被静默忽略 ⇒ 回执照样回显 `lod: 1`（写死）或
+///   `lod: 0`（缺省）✓，而画面仍是全分辨率 ✗ —— **回执撒谎**（静默降级形态 ✓）。
+///   **∴ 所以**：断**尺寸**（`width`/`height` 真的减半 ✓）＋ 断**恒等式**
+///   （`len == w*h*4` ✓、`scaled` 规则 ✓）—— 尺寸是 `lod` 被读过的**证据** ✓。
+///   **变异**：把 `render_region_raw_with_lod` 的 `lod` 写死成 0 ⇒ `width` 仍 800 ⇒ 红 ✓。
+#[test]
+fn lod_is_read_and_reported() {
+    let mut workspace = workspace();
+    setup(&mut workspace);
+    // ① `lod: 1`：800×600 ⇒ 400×300，`scaled` 必须真 ✓
+    let path = temp_path("lod1");
+    let _ = std::fs::remove_file(&path);
+    let exported = {
+        let mut ctx = context(&mut workspace);
+        registry().call(
+            &mut ctx,
+            "export_png",
+            &json!({ "path": path.to_string_lossy(), "lod": 1 }),
+        )
+    };
+    assert_eq!(exported["ok"], json!(true), "{exported}");
+    assert_eq!(exported["lod"], json!(1), "回执必须回显生效档位：{exported}");
+    assert_eq!(
+        (exported["width"].as_u64(), exported["height"].as_u64()),
+        (Some(400), Some(300)),
+        "lod:1 必须真的减半渲染：{exported}"
+    );
+    assert_eq!(
+        (
+            exported["source_width"].as_u64(),
+            exported["source_height"].as_u64()
+        ),
+        (Some(400), Some(300)),
+        "source_width/source_height 是本次实际渲染出的像素尺寸：{exported}"
+    );
+    assert_eq!(exported["scaled"], json!(true), "lod > 0 ⇒ scaled 必须真：{exported}");
+    let bytes = std::fs::read(&path).expect("导出文件应当存在");
+    assert_eq!(bytes.len() as u64, exported["bytes"].as_u64().unwrap_or(0));
+    let (w, h, rgba) = yanshi_render::png::decode_png(&bytes).expect("应当是合法 PNG");
+    assert_eq!((w, h), (400, 300), "PNG 尺寸必须与回执一致");
+    assert_eq!(rgba.len(), 400 * 300 * 4, "像素数恒等式 len == w*h*4");
+    // ② `lod: 0` 与不给 `lod`：与今天相同（`scaled` 假、`lod` 回显 0 ✓）
+    for args in [
+        json!({ "path": temp_path("lod0").to_string_lossy(), "lod": 0 }),
+        json!({ "path": temp_path("loddef").to_string_lossy() }),
+    ] {
+        let exported = {
+            let mut ctx = context(&mut workspace);
+            registry().call(&mut ctx, "export_png", &args)
+        };
+        assert_eq!(exported["ok"], json!(true), "{exported}");
+        assert_eq!(exported["lod"], json!(0), "缺省档位是 0：{exported}");
+        assert_eq!(
+            (exported["width"].as_u64(), exported["height"].as_u64()),
+            (Some(800), Some(600)),
+            "lod:0 必须是全分辨率：{exported}"
+        );
+        assert_eq!(exported["scaled"], json!(false), "lod:0 且无尺寸参数 ⇒ scaled 假：{exported}");
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+/// **期 4 `lod`**：超出 0..=3 / 非整数 ⇒ `invalid_argument`（不静默钳制 ✓）。
+#[test]
+fn lod_rejects_out_of_range_and_fractional() {
+    let mut workspace = workspace();
+    setup(&mut workspace);
+    let path = temp_path("lod_bad");
+    let cases: Vec<(&str, serde_json::Value, &str)> = vec![
+        ("lod: 4 超出上限", json!({ "path": path.to_string_lossy(), "lod": 4 }), "0..=3"),
+        ("lod: -1 负数", json!({ "path": path.to_string_lossy(), "lod": -1 }), "不小于 0 的整数"),
+        ("lod: 1.5 小数", json!({ "path": path.to_string_lossy(), "lod": 1.5 }), "不小于 0 的整数"),
+    ];
+    for (label, args, expected) in cases {
+        let refused = {
+            let mut ctx = context(&mut workspace);
+            registry().call(&mut ctx, "export_png", &args)
+        };
+        assert_eq!(refused["ok"], json!(false), "「{label}」应当被拒：{refused}");
+        assert_eq!(
+            refused["error_code"],
+            json!("invalid_argument"),
+            "「{label}」必须是 invalid_argument：{refused}"
+        );
+        let detail = refused["context"]["detail"].as_str().unwrap_or_default();
+        assert!(
+            detail.contains("lod") && detail.contains(expected),
+            "「{label}」的原因应当提到 lod 与「{expected}」，实测：{detail}"
+        );
+    }
+}
+
+/// **期 4 `region`**：完全在画布外 ⇒ 现有 `invalid_argument` 文案（行为不变，只补判据 ✓）。
+#[test]
+fn region_fully_outside_is_refused() {
+    let mut workspace = workspace();
+    setup(&mut workspace);
+    let path = temp_path("region_out");
+    let refused = {
+        let mut ctx = context(&mut workspace);
+        registry().call(
+            &mut ctx,
+            "export_png",
+            &json!({ "path": path.to_string_lossy(),
+                     "region": {"x": 900, "y": 700, "w": 100, "h": 100} }),
+        )
+    };
+    assert_eq!(refused["ok"], json!(false), "完全在画布外的区域应当被拒：{refused}");
+    assert_eq!(
+        refused["error_code"],
+        json!("invalid_argument"),
+        "必须是 invalid_argument：{refused}"
+    );
+    let detail = refused["context"]["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("不相交"),
+        "原因应当是现有「渲染区域与文档不相交」文案，实测：{detail}"
+    );
+}
+
+/// **期 4 缓存**：同 `(region, lod, fingerprint)` 二次导出 ⇒ 命中 +1 且告警一致 ✓，
+/// 且 `lod: 0` 的条目**不得**替 `lod: 1` 命中（键含 lod 维 ✓）。
+///
+/// **变异**：把 `BlockKey` 的 `lod` 维去掉 ⇒ 第二次 `lod: 1` 导出命中 `lod: 0` 的条目 ⇒
+/// 像素尺寸错（200×150 的位置上是 400×300 的字节）⇒ `width` 断言红 ✓。
+#[test]
+fn lod_cache_hit_identity() {
+    let mut workspace = workspace();
+    setup(&mut workspace);
+    let region = json!({"x": 0, "y": 0, "w": 400, "h": 300});
+    let export = |workspace: &mut Workspace, lod: u64| -> serde_json::Value {
+        let path = temp_path(&format!("cache_lod{lod}_{}", std::process::id()));
+        let mut ctx = context(workspace);
+        registry().call(
+            &mut ctx,
+            "export_png",
+            &json!({ "path": path.to_string_lossy(), "region": region.clone(), "lod": lod }),
+        )
+    };
+    let stats_before = workspace.region_cache_stats("doc_png").unwrap();
+    let first = export(&mut workspace, 1);
+    assert_eq!(first["ok"], json!(true), "{first}");
+    let first_bytes = std::fs::read(temp_path(&format!("cache_lod1_{}", std::process::id())))
+        .expect("第一次导出应当落盘");
+    let stats_first = workspace.region_cache_stats("doc_png").unwrap();
+    let second = export(&mut workspace, 1);
+    assert_eq!(second["ok"], json!(true), "{second}");
+    let stats_second = workspace.region_cache_stats("doc_png").unwrap();
+    // ① 第二次命中：hits +1 ✓
+    assert_eq!(
+        stats_second.hits,
+        stats_first.hits + 1,
+        "同 (region, lod) 二次导出必须命中（hits {} ⇒ {}）",
+        stats_first.hits,
+        stats_second.hits
+    );
+    // ② 告警一致 ✓ 且字节相同 ✓（命中返回的是同一条目 ✓）
+    assert_eq!(
+        first["warnings"], second["warnings"],
+        "命中时的告警必须与第一次一致"
+    );
+    let second_bytes = std::fs::read(temp_path(&format!("cache_lod1_{}", std::process::id())))
+        .expect("第二次导出应当落盘");
+    assert_eq!(first_bytes, second_bytes, "命中必须返回同一份字节");
+    // ③ 中间插一次 `lod: 0`：不同键 ⇒ 不命中（hits 不变 ✓），再导 `lod: 1` 又命中 +1 ✓
+    let _zero = export(&mut workspace, 0);
+    let stats_after_zero = workspace.region_cache_stats("doc_png").unwrap();
+    assert_eq!(
+        stats_after_zero.hits, stats_second.hits,
+        "lod:0 的条目不得替 lod:1 命中（hits 应当不变）"
+    );
+    let _third = export(&mut workspace, 1);
+    let stats_third = workspace.region_cache_stats("doc_png").unwrap();
+    assert_eq!(
+        stats_third.hits,
+        stats_second.hits + 1,
+        "第三次 lod:1 导出应当再次命中"
+    );
+    assert!(stats_before.hits <= stats_first.hits, "首轮统计应当单调");
+}
+
+/// **期 4 像素等价（server 路）**：`lod: 1` 的导出 ≈ 全幅同倍率 bilinear 下采样，
+/// 最大单通道差 ≤ 1（设计 §2 E1 验收 ② ✓）。
+///
+/// **夹具**：`setup` 的矩形边全在偶数坐标（40/340/40/240）⇒ 点采样与 bilinear 在边处
+/// 数学上一致（见 `crates/yanshi-render/tests/lod_render.rs` 文件头的取舍说明 ✓）。
+/// 笔触/纹理等真实内容上的实测最大差见 8K 文档量测（包说明）。
+#[test]
+fn lod_pixel_equivalence_on_real_content() {
+    use yanshi_core::resample::{resample_rgba, ResampleFilter};
+    let mut workspace = workspace();
+    setup(&mut workspace);
+    let full_path = temp_path("equiv_full");
+    let full = {
+        let mut ctx = context(&mut workspace);
+        registry().call(
+            &mut ctx,
+            "export_png",
+            &json!({ "path": full_path.to_string_lossy(), "deterministic": true }),
+        )
+    };
+    assert_eq!(full["ok"], json!(true), "{full}");
+    let lod_path = temp_path("equiv_lod1");
+    let lod = {
+        let mut ctx = context(&mut workspace);
+        registry().call(
+            &mut ctx,
+            "export_png",
+            &json!({ "path": lod_path.to_string_lossy(), "lod": 1, "deterministic": true }),
+        )
+    };
+    assert_eq!(lod["ok"], json!(true), "{lod}");
+    let full_bytes = std::fs::read(&full_path).expect("全幅导出应当落盘");
+    let lod_bytes = std::fs::read(&lod_path).expect("lod:1 导出应当落盘");
+    let (fw, fh, full_rgba) = yanshi_render::png::decode_png(&full_bytes).expect("全幅应当是合法 PNG");
+    let (lw, lh, lod_rgba) = yanshi_render::png::decode_png(&lod_bytes).expect("lod:1 应当是合法 PNG");
+    assert_eq!((fw, fh), (800, 600));
+    assert_eq!((lw, lh), (400, 300));
+    let reference = resample_rgba(&full_rgba, fw, fh, lw, lh, ResampleFilter::Bilinear)
+        .expect("下采样参照应可算");
+    let max_diff = lod_rgba
+        .iter()
+        .zip(reference.iter())
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .unwrap_or(0);
+    assert!(
+        max_diff <= 1,
+        "lod:1 与 bilinear 下采样参照的最大单通道差是 {max_diff}，超出 ≤1 的验收"
+    );
+    let _ = std::fs::remove_file(&full_path);
+    let _ = std::fs::remove_file(&lod_path);
+}
