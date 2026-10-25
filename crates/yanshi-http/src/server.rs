@@ -409,7 +409,7 @@ pub fn build_short() -> String {
 }
 
 /// 启动服务（`bind` 支持端口 0，便于测试）。
-pub fn serve(options: HttpOptions) -> std::io::Result<ServerHandle> {
+pub fn serve(mut options: HttpOptions) -> std::io::Result<ServerHandle> {
     // **★ 存下 `--cache-bust` ✗ ★**（第 408 轮 ✓）：**SW 路由**拿不到 options**✗
     //   ⇒ **∴ 所以**在这里**存一次**✗ ⇒ **∴ 于是**路由能算缓存名后缀** ✓
     //     **∴ 空串 ⇒ **启动时**取时间戳** ✗ ⇒ **∴ 每次运行**都换缓存名** ✓ ★**** ✓✓
@@ -423,6 +423,36 @@ pub fn serve(options: HttpOptions) -> std::io::Result<ServerHandle> {
         let _ = CACHE_BUST.set(token);
     }
     let settings = DocumentSettings::default();
+    // **同一个「资产目录」被两处读，而只有一处解析过** ✓（缺陷 F ✓ 本机实测 ✓）：
+    //   工具层走 `resolve_assets_dir` ⇒ 换工作目录启动也找得到资产 ✓；
+    //   而 `GET /brand/*`、`/brush-previews/*`、`/textures/*`、`/fonts/*` **直接读**
+    //   `options.assets_dir` / `options.brand_dir` ⇒ 那还是**相对当前工作目录**的缺省值 ✗
+    //   ⇒ **∴ 在仓库外启动 ⇒ 查看器的品牌图、全部笔刷缩略图、全部纸纹静默 404** ✗
+    //     （浏览器只留一行 console，创作者看不出「素材区为什么是空的」⇒ 本库唯一的对手 ✓）。
+    // 修法：把解析结果**写回 `options`** ⇒ 两处读同一个绝对路径 ✓（不再两套口径 ✓）；
+    // 品牌与介质目录跟着资产根走，**只在仍是缺省值时**替换 ⇒ 不覆盖用户显式 `--brand-dir` ✓。
+    let (assets_resolved, assets_note) =
+        yanshi_server::service::resolve_assets_dir(options.assets_dir.clone());
+    yanshi_server::diagnostics::log_line(format!("  {assets_note}"));
+    if options.assets_dir.is_some() {
+        options.assets_dir = assets_resolved.clone();
+    }
+    for (dir, sub, default) in [
+        (
+            &mut options.brand_dir,
+            "brand",
+            PathBuf::from("assets/brand"),
+        ),
+        (
+            &mut options.medium_dir,
+            "mediums",
+            PathBuf::from("assets/mediums"),
+        ),
+    ] {
+        if dir.as_ref() == Some(&default) {
+            *dir = assets_resolved.as_ref().map(|root| root.join(sub));
+        }
+    }
     let workspace = match &options.root {
         Some(root) => Workspace::with_file_store(root.clone(), settings.clone())
             .unwrap_or_else(|_| Workspace::in_memory(settings)),
@@ -430,14 +460,7 @@ pub fn serve(options: HttpOptions) -> std::io::Result<ServerHandle> {
     }
     // **内置纹理目录接进工具层** ✓ ⇒ `list_textures` 会同时报内置与缓存 ✓，
     // 而 MCP 与查看器**都**经工具层 ✓ ⇒ 两边一致 ✓（用户那条硬要求 ✓）。
-    // **资产目录要解析成真实存在的那个** ✓（真实用户报告 ✓：换工作目录启动 ⇒ 三类资产全空 ✗）。
-    // 解析结果**打印出来** ✓ ⇒ 以后这类问题一眼可查 ✓。
-    .with_assets_dir({
-        let (resolved, note) =
-            yanshi_server::service::resolve_assets_dir(options.assets_dir.clone());
-        yanshi_server::diagnostics::log_line(format!("  {note}"));
-        resolved
-    });
+    .with_assets_dir(assets_resolved);
     // **启动即记一行** ✓：`--bind 0.0.0.0` 这种部署细节、
     // 以及"这是哪个 commit"——都从这一刻起进环形缓冲 ✓，随诊断包一起交出去 ✓。
     yanshi_server::diagnostics::log_line(format!(

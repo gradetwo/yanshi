@@ -15259,11 +15259,49 @@ fn expand_degenerate_points(
     //   而视觉上仍是"一枚点"（路径只有笔尖的尺度 ✓）。
     let reach = size.unwrap_or(24.0).mul_add(0.6, 0.0).max(2.0);
     let pressure = first.2;
-    vec![
-        (first.0, first.1 - reach, pressure),
-        (first.0, first.1 + reach, pressure),
-        (first.0, first.1, pressure),
-    ]
+    // **★ 展开的形状要各向同性 ✗ ★**（第 12 轮实测 ✓）：上面这条 `reach` 的推导没错 ✓
+    //   （路径必须撑得起 dab 间距 ✓），但**实现把它用成了一条竖线** ✗
+    //   —— `(x, y±reach)` 加回中间点 ⇒ 三点共线、横向零跨度 ✗
+    //   ⇒ 引擎沿**短轴**铺 dab：一枚 `size=24` 的"点"实测墨迹 **46×84**（宽高比 1.84 ✗）
+    //   ⇒ 几万笔点彩画出来是**一整片乐高积木** ✗（本仓唯一的对手是"不报错但结果不对" ✓）
+    //   **做法**：改成**闭合等弧长环**（8 个顶点 ＋ 回到起点 ⇒ 9 个点 ✓）
+    //   **∴ 为什么等弧长**：环的总弧长 = 原来的 `3 × reach` ✓ ⇒ 上面那条"dab 撑得满"的
+    //     推导**逐字不变** ✓（只换形状，不换预算 ⇒ 不会退回"路径撑不满"那个红 ✓）
+    //   **∴ 为什么要有相位**：全用 `angle = i·τ/8` ⇒ 每个点的主轴都是同一条水平线 ✗
+    //     （点彩会显出人造的整齐感 ✓ 而真人不会）⇒ 相位取自坐标哈希 ✓
+    //     **确定性**（同坐标永远同一环 ✓ 与"偏移是固定值、不引入随机"那条纪律同例 ✓）
+    const VERTICES: usize = 8;
+    let arc_budget = 3.0 * reach;
+    let radius =
+        arc_budget / (2.0 * VERTICES as f64 * (std::f64::consts::PI / VERTICES as f64).sin());
+    let phase = dot_phase(first.0, first.1);
+    (0..VERTICES)
+        .map(|i| {
+            let angle = phase + (i as f64) * std::f64::consts::TAU / (VERTICES as f64);
+            (
+                first.0 + radius * angle.cos(),
+                first.1 + radius * angle.sin(),
+                pressure,
+            )
+        })
+        // **闭合**：最后一个顶点回到起点 ⇒ 引擎收到的是"一圈"而不是一条开弧 ✓
+        .chain(std::iter::once({
+            let angle = phase;
+            (
+                first.0 + radius * angle.cos(),
+                first.1 + radius * angle.sin(),
+                pressure,
+            )
+        }))
+        .collect()
+}
+
+/// 退化点的环相位：**只由坐标决定**（⇒ 可重放、可复现 ✓ 与 `path_guide`/`style` 那套确定性纪律一致 ✓）。
+/// 混列用大质数 ＋ 黄金比例乘法（`splitmix` 的形状 ✓）⇒ 相邻坐标的相位不会成比例地挨在一起 ✗。
+fn dot_phase(x: f64, y: f64) -> f64 {
+    let bits = (x * 73856093.0 + y * 19349663.0) as i64;
+    let mixed = (bits as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    ((mixed >> 32) as f64 / u32::MAX as f64) * std::f64::consts::TAU
 }
 
 fn parse_brush_points(args: &Value) -> Result<Vec<(f64, f64, f64)>> {

@@ -1045,3 +1045,97 @@ fn d139_silent_zero_coverage_grid() {
         }
     }
 }
+
+/// **★ 退化成一枚点的笔触必须是「圆斑」而不是「竖条」✗ ★**（外部第 12 轮 · 缺陷 H ✓）
+///
+/// **事故**：`brush_stroke` 对「所有点同坐标」的笔触会**自动展开**成 rescue 点列 ✓
+/// （真机报告 P2 #1 ✓ 这条本身是对的 ✓），但展开出来的是**一条竖线** ✗
+/// ⇒ 实测 `2B_pencil`／`size=24` 的「点」墨迹外框 **46×84**（宽高比 1.84 ✗）
+/// ⇒ 几万笔点彩＝一整片乐高积木 ✗ **而每一笔都回 `ok:true`** ✓（本仓唯一的对手 ✓）。
+///
+/// **为什么断形状而不断 `painted_pixels`** ✓：后者**能被廉价满足**（一条竖线也「上了色」✓）
+/// ⇒ 按纪律「一条指标若能被廉价满足就不能单独验收」✗ ⇒ 这里断**外框宽高比**与**中心**✓。
+/// **为什么不读 `region`** ✗：`region` 按 64px 瓦片量化 ⇒ 竖条和圆斑会报同一个框 ✓ 判不出来 ✓。
+#[test]
+fn a_degenerate_dot_is_a_round_blob_rather_than_a_vertical_brick() {
+    let root = temp_dir("dot_shape");
+    let _cleanup_dot = Cleanup(root.clone());
+    let mut workspace = workspace(&root);
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "D" }))["ok"],
+        json!(true)
+    );
+    let (cx, cy) = (200.0, 100.0);
+    let made = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "D", "brush": "2B_pencil", "size": 24,
+            "color": {"r": 20, "g": 20, "b": 20, "a": 255},
+            "points": [[cx, cy, 1.0]]
+        }),
+    );
+    // ① **先证明这一笔真的上了墨** ✓（否则下面三条全在空数组上恒真 ✗）。
+    assert_eq!(made["ok"], json!(true), "画点应当成功：{made}");
+    assert!(
+        made["painted_pixels"].as_u64().unwrap_or(0) > 0,
+        "这一笔必须落下像素：{made}"
+    );
+    let path = root.join("dot.png");
+    assert_eq!(
+        call(
+            &mut workspace,
+            "export_png",
+            json!({ "path": path.display().to_string(), "layer_id": "D" })
+        )["ok"],
+        json!(true)
+    );
+    let (width, _height, rgba) =
+        yanshi_render::png::decode_png(&std::fs::read(&path).unwrap()).unwrap();
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
+    let mut ink = 0usize;
+    for (idx, pixel) in rgba.chunks(4).enumerate() {
+        if pixel[0] == 255 && pixel[1] == 255 && pixel[2] == 255 {
+            continue; // 白底不是墨 ✓
+        }
+        // **行主序 ✓**：`decode_png` 给的是 `y * width + x` ✓
+        //   （第一版这里写反成 `/ height` ⇒ 外框量出 91×200 ✗ 而**产品没错**✓
+        //   ⇒ 判据自己要先被测量 ✓）
+        let x = (idx % width as usize) as u32;
+        let y = (idx / width as usize) as u32;
+        x0 = x0.min(x);
+        y0 = y0.min(y);
+        x1 = x1.max(x);
+        y1 = y1.max(y);
+        ink += 1;
+    }
+    assert!(ink > 0, "导出图里必须找得到墨迹");
+    let w = x1 - x0 + 1;
+    let h = y1 - y0 + 1;
+    eprintln!(
+        "  点的外框 {w}×{h}（比例 {:.2}）中心 ({:.1}, {:.1}) 墨 {}px",
+        f64::from(h) / f64::from(w),
+        (x0 + x1) as f64 / 2.0,
+        (y0 + y1) as f64 / 2.0,
+        ink
+    );
+    // ② **各向同性** ✓：宽高比必须接近 1 ✓（竖条实测 1.84 ✗ ⇒ 这条就是能红的地方 ✓）。
+    assert!(
+        f64::from(h) / f64::from(w) <= 1.35,
+        "一枚「点」的外框必须近似正方 ✓（实测 {w}×{h} ⇒ 横向被压成一条竖线 ✗ 这是乐高积木的形状）"
+    );
+    // ③ **中心不许漂** ✓：展开只能改形状 ✗ 不能把点画到别处去 ✓。
+    let (mx, my) = ((x0 + x1) as f64 / 2.0, (y0 + y1) as f64 / 2.0);
+    assert!(
+        (mx - cx).abs() <= 3.0 && (my - cy).abs() <= 3.0,
+        "点心必须在请求坐标 ±3px 内 ✓（实测心 ({mx:.1}, {my:.1}) vs 要求 ({cx}, {cy})）"
+    );
+    // ④ **rescue 仍然有效** ✓：路径撑得起 dab ⇒ 补间步数不许退回个位数 ✗
+    //   （第一次改坏时实测步数不够 ⇒「这一笔没落下任何像素」✓ 这条钉住那个反例 ✓）。
+    assert!(
+        made["steps"].as_u64().unwrap_or(0) >= 20,
+        "展开后的路径必须仍然撑得起 dab 间距 ✓（实测 {made}）"
+    );
+    // **变异说明**：把展开改回 `(x, y±reach)` 那条竖线 ⇒ ② 红（比例 1.84 ✗）✓
+    //   把环半径改成 0 ⇒ ①④ 红 ✓（本判据三层各自能红 ✓）。
+}
