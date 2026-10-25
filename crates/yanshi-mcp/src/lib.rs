@@ -22,7 +22,13 @@
 //! input.push(b'\n');
 //!
 //! let mut output = Vec::new();
-//! serve(Cursor::new(input), &mut output, McpOptions::default()).unwrap();
+//! // **资产目录要显式给** ✓（B3：`Server::new` 在找不到资产时失败 ✓）——
+//! // rustdoc 把示例拷到临时目录下跑 ⇒ 可执行文件旁的候选全 miss ⇒
+//! // 只剩这里给的仓库资产目录能命中 ✓。
+//! let mut options = McpOptions::default();
+//! options.assets_dir =
+//!     Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets"));
+//! serve(Cursor::new(input), &mut output, options).unwrap();
 //! let text = String::from_utf8(output).unwrap();
 //! assert!(text.contains("\"protocolVersion\""));
 //! assert!(text.contains("\"tools\""));
@@ -60,6 +66,9 @@ pub mod error_code {
 pub struct McpOptions {
     /// 持久化根目录（`None` 表示纯内存）。
     pub root: Option<std::path::PathBuf>,
+    /// 资产目录（`--assets-dir` / `YANSHI_ASSETS_DIR` / 缺省 `"assets"`）——
+    /// 启动时由 `resolve_assets_dir` 解析，找遍候选无一命中 ⇒ `Server::new` 失败。
+    pub assets_dir: Option<std::path::PathBuf>,
     /// 默认文档 id（工具参数里的 `doc_id` 优先）。
     pub doc_id: String,
     /// 自动创建文档时的画布尺寸。
@@ -94,6 +103,7 @@ impl Default for McpOptions {
     fn default() -> Self {
         Self {
             root: None,
+            assets_dir: Some(std::path::PathBuf::from("assets")),
             doc_id: "default".to_owned(),
             width: 1024,
             height: 1024,
@@ -119,6 +129,7 @@ impl McpOptions {
         S: AsRef<str>,
     {
         let mut options = Self::default();
+        let mut assets_dir_from_cli = false;
         let mut iter = args.into_iter();
         while let Some(arg) = iter.next() {
             let arg = arg.as_ref();
@@ -129,6 +140,10 @@ impl McpOptions {
             };
             match arg {
                 "--root" => options.root = Some(take_value("--root")?.into()),
+                "--assets-dir" => {
+                    options.assets_dir = Some(take_value("--assets-dir")?.into());
+                    assets_dir_from_cli = true;
+                }
                 "--doc" => options.doc_id = take_value("--doc")?,
                 "--width" => {
                     options.width = take_value("--width")?
@@ -168,6 +183,15 @@ impl McpOptions {
                 other => return Err(format!("未知参数 {other}")),
             }
         }
+        // **优先级：CLI > 环境变量 > 缺省 `"assets"`** ✓ —— 环境变量只在 CLI
+        // 没给 `--assets-dir` 时生效（`Default` 已给缺省 `"assets"` ✓）。
+        if !assets_dir_from_cli {
+            if let Ok(env_dir) = std::env::var("YANSHI_ASSETS_DIR") {
+                if !env_dir.is_empty() {
+                    options.assets_dir = Some(env_dir.into());
+                }
+            }
+        }
         Ok(options)
     }
 
@@ -179,6 +203,7 @@ impl McpOptions {
          \n\
          选项：\n\
            --root <dir>          持久化根目录（缺省纯内存）\n\
+           --assets-dir <dir>    资产目录（缺省 assets；也可设 YANSHI_ASSETS_DIR 环境变量）\n\
            --doc <id>            默认文档 id（缺省 default）\n\
            --width <n>           自动创建文档的宽（缺省 1024）\n\
            --height <n>          自动创建文档的高（缺省 1024）\n\
@@ -210,7 +235,10 @@ pub struct Server {
 
 impl Server {
     /// 以选项构造（文件存储失败时回退内存并给出警告）。
-    pub fn new(options: McpOptions) -> Self {
+    ///
+    /// **资产目录找不到 ⇒ 失败** ✓（B3：空笔刷库启动即报错 ✓）——
+    /// 返回的错误信息就是 `resolve_assets_dir` 的注记串（含找过的路径 ✓）。
+    pub fn new(options: McpOptions) -> Result<Self, String> {
         let settings = DocumentSettings::default();
         let workspace = match &options.root {
             // **回退必须留痕**（第 1440 轮审计）：文档注释承诺「给出警告」而原来没给 ⇒
@@ -228,12 +256,15 @@ impl Server {
         // **与 HTTP 用同一个默认** ✓：内置纹理随仓库与发行包走 ✓。
         // **这条正是"MCP 与 Web 都要能用"的落法** ✓ —— 两边都经**工具层** ✓ ⇒ 结果一致 ✓。
         // **与 HTTP 用同一个解析器** ✓（真实用户报告 ✓：相对路径 `assets` 换个工作目录就找不到 ✓）。
-        .with_assets_dir({
-            let (resolved, note) = yanshi_server::service::resolve_assets_dir(Some(
-                std::path::PathBuf::from("assets"),
-            ));
-            yanshi_server::diagnostics::log_line(&note);
-            resolved
+        // **找不到 ⇒ 启动失败** ✓（B3 ✓）：`--no-assets` 不存在于 MCP 侧，
+        // 资产目录是必需品 ⇒ `None` 没有"显式不要"的合法情形 ✓。
+        .with_assets_dir(match yanshi_server::service::resolve_assets_dir(options.assets_dir.clone())
+        {
+            (Some(resolved), note) => {
+                yanshi_server::diagnostics::log_line(&note);
+                Some(resolved)
+            }
+            (None, note) => return Err(note),
         });
         // **启动即记一行** ✓：MCP stdio 模式的 stderr 会被客户端丢掉 ✗ ⇒
         // 这一行是"这个进程是什么时候、以什么身份起来的"的**唯一**证据 ✓，
@@ -251,13 +282,13 @@ impl Server {
             options.wait_for_render,
         ));
         let registry = ToolRegistry::with_profiles(&options.profiles);
-        Self {
+        Ok(Self {
             options,
             registry,
             workspace,
             initialized: false,
             requests: 0,
-        }
+        })
     }
 
     /// 注册表。
@@ -278,6 +309,14 @@ impl Server {
     /// 已处理请求数。
     pub const fn requests(&self) -> u64 {
         self.requests
+    }
+
+    /// 工具清单（不建工作区、不解析资产目录；`--list-tools` 用）。
+    ///
+    /// **为什么单列** ✓：`--list-tools` 只列工具名 ⇒ 不该因为资产目录找不到而失败 ✓
+    ///（`main.rs` 的 `--list-tools` 分支走这里，不走 `Server::new` ✓）。
+    pub fn tools_list_for(profiles: &[Profile]) -> Value {
+        ToolRegistry::with_profiles(profiles).tools_list_json()
     }
 
     /// 工具清单（`tools/list`）。
@@ -643,7 +682,7 @@ pub fn serve<R: Read, W: Write>(
     let watch_on = options.watch;
     let watch_root = options.root.clone();
     let watch_doc = options.doc_id.clone();
-    let mut server = Server::new(options);
+    let mut server = Server::new(options).map_err(std::io::Error::other)?;
     // **★ `--watch`（2026-10-15 ✓）：每行处理前先看原子日志有没有前进 ✓ ★**
     //   **语义** ✓（用户裁定）：别的进程直接往 `docs/<doc>/atoms.jsonl` 追加的内容，本进程也要看得见 ✓；
     //     **增量解析** ✓（`TailFollower` 只读新增的那段 ✓）；冲突**最后写赢** ✓；**不监视 blob** ✗。
@@ -724,6 +763,7 @@ mod tests {
             height: 32,
             ..McpOptions::default()
         })
+        .expect("测试用的 Server 应能建成")
     }
 
     fn call(server: &mut Server, id: u64, method: &str, params: Value) -> Value {
@@ -905,7 +945,8 @@ mod tests {
         let mut server = Server::new(McpOptions {
             profiles: vec![Profile::Core, Profile::Annotation, Profile::History],
             ..McpOptions::default()
-        });
+        })
+        .expect("测试用的 Server 应能建成");
         let response = call(&mut server, 1, "tools/list", json!({}));
         let tools = response["result"]["tools"].as_array().unwrap().len();
         assert!(tools > 27, "启用扩展组后工具应更多：{tools}");
@@ -991,7 +1032,8 @@ mod tests {
             profiles: vec![Profile::Core, Profile::History],
             wait_for_render: false,
             ..McpOptions::default()
-        });
+        })
+        .expect("测试用的 Server 应能建成");
         tool(&mut server, "create_layer", json!({"layer_id": "layer_1"}));
         tool(
             &mut server,
@@ -1115,7 +1157,8 @@ mod tests {
             root: Some(root.clone()),
             doc_id: "doc_fallback".to_owned(),
             ..McpOptions::default()
-        });
+        })
+        .expect("测试用的 Server 应能建成");
         let lines = yanshi_server::diagnostics::log_lines();
         assert!(
             lines.len() > before,

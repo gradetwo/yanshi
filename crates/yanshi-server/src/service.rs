@@ -253,9 +253,12 @@ pub struct BlobLifecycle {
 ///    这正是 `make release` 打出来的包的结构 ✓（`bin/yanshi-serve` + `share/yanshi/*` ✓）；
 /// 3. `<exe>/assets` ✓ —— 覆盖"可执行文件与资产目录并列"的布局 ✓；
 /// 4. **可执行文件的祖父目录**下的 `assets` ✓：`<exe>/../../assets` ✓ ——
-///    覆盖"从 `target/release/` 直接跑"这个**开发时最常见**的情形 ✓。
+///    覆盖"从 `target/release/` 直接跑"这个**开发时最常见**的情形 ✓；
+/// 5. `<exe>/../../../assets` ✓ —— 覆盖测试二进制与 `cargo` 中间产物
+///    再深一级的布局（`target/debug/deps/yanshi_mcp-<hash>` ✓）。
 ///
-/// **一个都找不到就返回原值** ✓（保持既有错误信息不变 ✓），**而且不管找到没找到都要有一段说明** ✓
+/// **一个都找不到就返回 `(None, 注记)`** ✓（调用方据此启动失败 ✓，
+/// 不再悄悄拿一个不存在的目录继续跑 ✓），**而且不管找到没找到都要有一段说明** ✓
 /// ⇒ 下一次这类问题**一眼就能查** ✓，而不是再花一小时 ✗。
 pub fn resolve_assets_dir(
     configured: Option<std::path::PathBuf>,
@@ -292,7 +295,7 @@ pub fn resolve_assets_dir(
         .map(|candidate| candidate.display().to_string())
         .collect::<Vec<_>>()
         .join(" / ");
-    (configured, format!("资产目录：未找到（找过：{tried}）"))
+    (None, format!("资产目录：未找到（找过：{tried}）"))
 }
 
 /// **调色板里的一个颜色** ✓。

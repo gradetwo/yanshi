@@ -29,8 +29,9 @@ fn main() {
                 std::process::exit(2);
             }
         };
-        let server = yanshi_mcp::Server::new(options);
-        println!("{}", server.tools_list());
+        // **不建 Server** ✓：只列工具名 ⇒ 资产目录找不到也不该失败 ✓
+        //（`Server::new` 会在空笔刷库时报错，`--list-tools` 不受它管 ✓）。
+        println!("{}", yanshi_mcp::Server::tools_list_for(&options.profiles));
         return;
     }
 

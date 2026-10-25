@@ -3340,6 +3340,8 @@ fn read_list_brushes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     Ok(json!({
         "brushes": brushes,
         "count": count,
+        // **能力边界用布尔说** ✓：0 支时调用方不用猜"是不是资产目录丢了" ✓。
+        "brushes_available": count > 0,
         "filter": filter,
         "canonical_param_names": hokusai::BrushSetting::ALL
             .iter()

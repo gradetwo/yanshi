@@ -184,6 +184,7 @@ impl HttpOptions {
         S: AsRef<str>,
     {
         let mut options = Self::default();
+        let mut assets_dir_from_cli = false;
         let mut iter = args.into_iter();
         while let Some(arg) = iter.next() {
             let arg = arg.as_ref();
@@ -198,8 +199,14 @@ impl HttpOptions {
                 "--no-wasm" => options.wasm_dir = None,
                 "--brand-dir" => options.brand_dir = Some(value_of("--brand-dir")?.into()),
                 "--medium-dir" => options.medium_dir = Some(value_of("--medium-dir")?.into()),
-                "--assets-dir" => options.assets_dir = Some(value_of("--assets-dir")?.into()),
-                "--no-assets" => options.assets_dir = None,
+                "--assets-dir" => {
+                    options.assets_dir = Some(value_of("--assets-dir")?.into());
+                    assets_dir_from_cli = true;
+                }
+                "--no-assets" => {
+                    options.assets_dir = None;
+                    assets_dir_from_cli = true;
+                }
                 "--no-mediums" => options.medium_dir = None,
                 "--no-brand" => options.brand_dir = None,
                 "--root" => options.root = Some(value_of("--root")?.into()),
@@ -268,6 +275,15 @@ impl HttpOptions {
                 .map_err(|error| format!("写静态页失败 {path:?}：{error}"))?;
             std::process::exit(0);
         }
+        // **优先级：CLI > 环境变量 > 缺省 `"assets"`** ✓ —— 环境变量只在 CLI
+        // 既没给 `--assets-dir`、也没给 `--no-assets` 时生效 ✓。
+        if !assets_dir_from_cli {
+            if let Ok(env_dir) = std::env::var("YANSHI_ASSETS_DIR") {
+                if !env_dir.is_empty() {
+                    options.assets_dir = Some(env_dir.into());
+                }
+            }
+        }
         Ok(options)
     }
 
@@ -289,6 +305,7 @@ impl HttpOptions {
                               （all = 全部已实现的组，即除 semantic 外；photo/svg 为白名单工作面预设，单独点名时按白名单收窄）\n\
                               （缺省 = default 常用集：core,history,changeset,retouch,annotation,collab,conflict,structure,photo；semantic 组按既定裁定只预留不开发）\n\
            --wasm-dir <dir>   WASM 计算内核产物目录（缺省 crates/yanshi-wasm/pkg）
+           --assets-dir <dir> 资产目录（缺省 assets；也可设 YANSHI_ASSETS_DIR 环境变量；--no-assets 显式不要资产）\n\
 --medium-dir <dir> 介质插件目录（缺省 assets/mediums；发布包里在 share/yanshi/mediums）\n\
            --no-wasm          不提供浏览器端 WASM 计算内核（查看器退化为服务端渲染）\n\
            --brand-dir <dir>  品牌资源目录（缺省 assets/brand）\n\
@@ -434,6 +451,14 @@ pub fn serve(mut options: HttpOptions) -> std::io::Result<ServerHandle> {
     let (assets_resolved, assets_note) =
         yanshi_server::service::resolve_assets_dir(options.assets_dir.clone());
     yanshi_server::diagnostics::log_line(format!("  {assets_note}"));
+    // **给了资产路径却找不到 ⇒ 启动失败** ✓（B3，与 MCP 同规则 ✓）；
+    // `--no-assets`（`assets_dir` 为 `None`）显式不要资产时允许 `None` ✓。
+    if options.assets_dir.is_some() && assets_resolved.is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            assets_note,
+        ));
+    }
     if options.assets_dir.is_some() {
         options.assets_dir = assets_resolved.clone();
     }
