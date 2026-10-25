@@ -13,6 +13,17 @@
 //   ④ `ink_mass` 与 `ink_footprint_pixels` 不恒等（0.5 档上两者数值不同）。
 //
 // **变异**：墨量改成足迹数 ⇒ ② 红（足迹比值 ≈ 1，不进 0.5）；恒等式改成 `≤ footprint` ⇒ ③ 红 ✓。
+// **判据自身出错 ⇒ 退出码 3（不是产品失败）** ✓（第 1132 轮整合时补）：
+//   ⇒ 本判据用了 `fetch(` ⇒ 服务没起时异常会以**退出码 1** 冒出去 ✓
+//   ⇒ 那与"产品失败"同码 ⇒ `check-criteria-have-exit3` 会红 ✓（整合时实测：本文件缺它）。
+process.on("uncaughtException", (error) => {
+  console.error(`  ⊘ 判据自身出错（不是产品问题）：${String(error).slice(0, 200)} ⇒ 退出码 3`);
+  process.exit(3);
+});
+process.on("unhandledRejection", (error) => {
+  console.error(`  ⊘ 判据自身出错（不是产品问题）：${String(error).slice(0, 200)} ⇒ 退出码 3`);
+  process.exit(3);
+});
 const [base, doc, token] = process.argv.slice(2);
 if (!base || !doc || !token) {
   console.error("用法: node scripts/tool-ink-mass.mjs <base> <doc> <token>");

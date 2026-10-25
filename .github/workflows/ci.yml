@@ -164,6 +164,18 @@ jobs:
       - name: Run tests
         # 不含 `--ignored`：长任务在 heavy.yml。
         run: cargo test --workspace
+      # **★ RAW 路径在 `--workspace` 下不编译** ✗（第 1132 轮整合照片期 1 时补）：
+      #   ⇒ `yanshi-server` 的 `raw` **默认关** ⇒ `tests/raw_import.rs` 是
+      #     `#![cfg(feature = "raw")]` ⇒ **整文件编空**（0 测试 ✓ 不红也不验 ✗）
+      #   ⇒ 照片期 1 改了 `crates/yanshi-raw/src/{develop,lens_db}.rs` 与 server 的
+      #     RAW 回显 ⇒ **必须在 CI 里真跑一次** ✓
+      #   ⇒ 只跑直接相关的那几套（全套会翻倍；`--all-features` 的构建面太大 ✗）
+      #   ⇒ 两次 rust 版本只跑一次（同一份代码，beta 不增加覆盖 ✓）
+      - name: Run RAW-feature tests
+        if: matrix.rust == 'stable'
+        run: |
+          cargo test -p yanshi-raw
+          cargo test -p yanshi-server --features raw --test raw_import --test file_transfer
 
   # **★ `--features gpu` 的**构建与体积** ✗ ★**（第 290 轮 ✓；**目标第 10 条 ✓）：
   #   **∴ 为什么必须交给 CI ✗**：
@@ -514,6 +526,12 @@ jobs:
           cargo build --release -p yanshi-http --bin yanshi-serve
           # **`check-timelapse-produces-frames.mjs` 要真跑这个二进制** ✓（外部第 86 次：空 mp4 + exit 0）
           cargo build --release -p yanshi-timelapse
+          # **★ 三个新判据 spawn `target/release/yanshi-mcp`** ✓（第 1132 轮整合时补）：
+          #   `tool-applied-echo`／`tool-created-opened`／`tool-empty-brush-library`
+          #   ⇒ 本 job 原来只 build **debug** workspace ⇒ 它们会 `⊘ 不可判`
+          #     ⇒ **覆盖静默消失** ✗（不是红，所以最危险 ✓）
+          #   ⇒ 代价：rust-cache 命中后是增量 ✓（`yanshi-mcp` 本身很小 ✓）
+          cargo build --release -p yanshi-mcp
       # ★ **环境诊断 ✗**（第五十七节 ✓）
       #   **∴ 为什么加 ✗**：有 **3 条**红只在 runner 上出现 ✓（本机全绿 ✓、且我没改过相关代码 ✓）：
       #     · `background_stroke_cost` 的 `other_ms`（CI 486ms vs 本机 7.3ms ✓）
