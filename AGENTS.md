@@ -697,12 +697,6 @@ bash scripts/run-criteria-local.sh scripts/tool-xxx.mjs
 服务起不来就 `exit(3)`（判据前提不成立 ≠ 产品失败）。
 
 **规则**：本机跑任何 `scripts/tool-*.mjs` / `browser-*.mjs` 之前，**先确认二进制比源码新**：
-**⇒ 反面同样成立：**恢复源码**之后也必须重建**（第 1065 轮实测）** ✗
-⇒ 我做完变异实验后 `cp` 回了原版 `lib.rs`，**但没有重建** ⇒ 源码时间戳比二进制**新 5 秒** ✓
-⇒ 于是接着量的数字**全部来自变异版二进制**（读成 `6.5%` 纯黑，而真值是 `0.00%`）✗
-⇒ **⇒ 判据**：`ls -l --time-style=full-iso <binary> <source>` ⇒ **源码不得比二进制新** ✗
-
-
 ```bash
 # 方案 ①（最稳）：强制重建再跑
 cargo build --release -p yanshi-http 2>&1 | tail -1
@@ -712,6 +706,10 @@ cargo build --release -p yanshi-http 2>&1 | tail -1
 
 **自检**：`ls -l --time-style=+%H:%M:%S target/release/yanshi-serve` 与
 `ls -l --time-style=+%H:%M:%S crates/yanshi-server/src/tools.rs` —— **后者不该更新**。
+**⇒ 反面同样成立：**恢复源码**之后也必须重建**（第 1065 轮实测）** ✗
+⇒ 我做完变异实验后 `cp` 回了原版 `lib.rs`，**但没有重建** ⇒ 源码时间戳比二进制**新 5 秒** ✓
+⇒ 于是接着量的数字**全部来自变异版二进制**（读成 `6.5%` 纯黑，而真值是 `0.00%`）✗
+⇒ **⇒ 判据**：`ls -l --time-style=full-iso <binary> <source>` ⇒ **源码不得比二进制新** ✗
 
 **⇒ 这与「重计算交给 CI」不冲突**：CI 里永远是从源码 build 的，所以 **CI 上的数字是可信的**；
 **不可信的只有「本机复用旧二进制」这一种情况**。
