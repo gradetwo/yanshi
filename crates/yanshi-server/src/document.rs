@@ -1505,8 +1505,9 @@ impl Document {
         // **∴ 第 247 轮 ✗**：**这一句**搬到 `region_block_get`／`region_block_put` 里了** ✓
         //   ＋ **∴ 为什么 ✗**：**两条渲染路**都要同一套开关语义**✗ ⇒ **∴ 各读一次环境 ✗ 不各写一份判定 ✓ ★
         let version = yanshi_render::region_block::region_fingerprint(&self.state);
-        let key =
-            yanshi_render::region_block::BlockKey::from_bbox_lod(bbox.x, bbox.y, bbox.w, bbox.h, lod);
+        let key = yanshi_render::region_block::BlockKey::from_bbox_lod(
+            bbox.x, bbox.y, bbox.w, bbox.h, lod,
+        );
         // **★ 探针 ✓**（第 552 轮 ✓，**查明后删 ✓**）：**打印**是否命中外层 ＋ 键 ＋ 版本**✗** ⇒
         // **∴ 一次看出**我的区域是否到了这里 ✗、命中与否 ✗、键是否漂移 ✗****。
         if let Ok(path) = std::env::var("YANSHI_REGION_PROBE") {
@@ -1535,9 +1536,9 @@ impl Document {
         if let Some((cached_w, cached_h, cached_data)) = self.region_block_get(key, version) {
             return Ok((cached_w, cached_h, cached_data));
         }
-        let rendered = self
-            .renderer
-            .render_region_with_lod(&self.state, &*self.store, bbox, lod)?;
+        let rendered =
+            self.renderer
+                .render_region_with_lod(&self.state, &*self.store, bbox, lod)?;
         // **跳过的东西必须留下痕迹** ✗（否则裸像素出口 = 静默的不完整画面 ✗）。
         self.note_render_stats(&rendered.stats);
         let data = rendered.rgba8.clone();
@@ -1627,9 +1628,9 @@ impl Document {
             return Ok((w, h, data));
         }
         let previous = self.renderer.set_only_layer(Some(layer_id.to_owned()));
-        let rendered =
-            self.renderer
-                .render_region_with_lod(&self.state, &*self.store, bbox, lod);
+        let rendered = self
+            .renderer
+            .render_region_with_lod(&self.state, &*self.store, bbox, lod);
         // **无论成功失败都要还原** ✓（否则这个"只画一层"的开关会**泄漏到下一次渲染** ✗）。
         self.renderer.set_only_layer(previous);
         let rendered = rendered?;

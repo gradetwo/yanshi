@@ -662,7 +662,8 @@ impl Buffer {
                 if local_x % self_step != 0 || local_y % self_step != 0 {
                     continue;
                 }
-                let (local_x, local_y) = ((local_x / self_step) as u32, (local_y / self_step) as u32);
+                let (local_x, local_y) =
+                    ((local_x / self_step) as u32, (local_y / self_step) as u32);
                 if local_x >= self.width || local_y >= self.height {
                     continue;
                 }
@@ -1550,8 +1551,7 @@ impl Buffer {
             // **期 4 `lod`**：`x_lo`／`x_hi` 是 self **局部**坐标（文档坐标除以 self.step
             // 再向格点对齐）；`step == 1` 时与今天逐字等价。
             let mask_y = mask_y_rel / mask_step;
-            let x_lo =
-                div_ceil_i64(mask.origin_x - self.origin_x, self.step as i64).max(0);
+            let x_lo = div_ceil_i64(mask.origin_x - self.origin_x, self.step as i64).max(0);
             let x_hi = (self.width as i64).min(div_ceil_i64(
                 mask.origin_x + mask.doc_width() as i64 - self.origin_x,
                 self.step as i64,
@@ -2163,7 +2163,8 @@ impl Buffer {
                 if local_x % self_step != 0 || local_y % self_step != 0 {
                     continue;
                 }
-                let (local_x, local_y) = ((local_x / self_step) as u32, (local_y / self_step) as u32);
+                let (local_x, local_y) =
+                    ((local_x / self_step) as u32, (local_y / self_step) as u32);
                 if local_x >= self.width || local_y >= self.height {
                     continue;
                 }

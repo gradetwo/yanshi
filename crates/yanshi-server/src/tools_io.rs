@@ -424,12 +424,10 @@ pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
     // 那会把同一段重复累计成两倍 ✓）。
     let render_started = std::time::Instant::now();
     let (width, height, pixels) = match optional_str(args, "layer_id") {
-        Some(layer_id) => ctx.workspace.render_region_raw_layer_with_lod(
-            &ctx.doc_id,
-            region,
-            &layer_id,
-            lod,
-        )?,
+        Some(layer_id) => {
+            ctx.workspace
+                .render_region_raw_layer_with_lod(&ctx.doc_id, region, &layer_id, lod)?
+        }
         None => ctx
             .workspace
             .render_region_raw_with_lod(&ctx.doc_id, region, lod)?,

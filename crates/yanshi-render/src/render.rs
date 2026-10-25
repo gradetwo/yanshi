@@ -2728,8 +2728,9 @@ impl Renderer {
             // 租约在本次迭代结束时 Drop ⇒ 本层的渲染与合成都用它，之后才归还。
             // **★ 每层三处门控计时（第 553 轮）★**：后半段未归入 ~1650 ms 的嫌疑
             let t_layer = crate::probe::ProbeClock::now();
-            let mut layer_buffer =
-                self.buffer_pool.acquire_stepped(origin_x, origin_y, width, height, step);
+            let mut layer_buffer = self
+                .buffer_pool
+                .acquire_stepped(origin_x, origin_y, width, height, step);
             let pass_no = PASS_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             let d_acquire = t_layer.elapsed();
             let t_objects = crate::probe::ProbeClock::now();
@@ -5025,12 +5026,12 @@ impl Renderer {
                         .ceil()
                         .max(0.0) as u32
                         + 1)
-                        .min(width);
+                    .min(width);
                     let end_y = (((affected_max_y - origin.1 as f64) / step_f)
                         .ceil()
                         .max(0.0) as u32
                         + 1)
-                        .min(height);
+                    .min(height);
                     // 有选区时快照**目标区域**的操作前像素 ✓（直接按下标取 ✓，
                     // 不做坐标换算与夹取 —— 之前用影响圈快照做换算，边界处会取到错值 ✗）。
                     let pre_targets: Option<Vec<LinearRgba>> = liquify_clip.as_ref().map(|_| {
@@ -5093,10 +5094,8 @@ impl Renderer {
                             }
                             // 反向映射：目标像素取「源 − 位移」处的**双线性**采样。
                             // **期 4 `lod`**：采样位置换算成快照的**局部**坐标（除以步长）。
-                            let sample_x =
-                                (document_x - shift_x - source_origin.0 as f64) / step_f;
-                            let sample_y =
-                                (document_y - shift_y - source_origin.1 as f64) / step_f;
+                            let sample_x = (document_x - shift_x - source_origin.0 as f64) / step_f;
+                            let sample_y = (document_y - shift_y - source_origin.1 as f64) / step_f;
                             if sample_x < -1.0
                                 || sample_y < -1.0
                                 || sample_x > width as f64
@@ -7180,7 +7179,9 @@ pub fn render_region_unquantized(
     background: Option<[u8; 4]>,
     workers: usize,
 ) -> Result<(Buffer, RenderStats, RenderProbe, usize)> {
-    parallel_impl::render_region(renderer, state, store, region, padding, background, workers, 1)
+    parallel_impl::render_region(
+        renderer, state, store, region, padding, background, workers, 1,
+    )
 }
 
 #[cfg(test)]
