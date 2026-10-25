@@ -37,8 +37,8 @@ const cases = [
   ["smart_edge_soften", { layer_id: "p", shape }, "edge_points"],
 ];
 
-// **不能用 `after.count > before.count`**：`list_atoms` 的 limit 上限是 500，
-// 当原子数超过 500 后两边都是 500 ⇒ 断言恒假（第 677 轮实测：smart_edge_soften 把它顶到 500）。
+// **不能用 `after.count > before.count`**：`list_atoms` 的 limit 上限是 5000，
+// 当原子数超过 5000 后两边都是 5000 ⇒ 断言恒假（第 677 轮实测：smart_edge_soften 把它顶到 500）。
 // 改用 `since_seq`：只数"这一笔新增的"，不受总量上限影响。
 for (const [tool, args, key] of cases) {
   // **不传 order**：那是 list_suggestions 的参数，list_atoms 没有它（第 678 轮踩过）。

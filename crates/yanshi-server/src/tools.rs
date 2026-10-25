@@ -19319,7 +19319,7 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
         )
     })?;
-    let limit = optional_count(args, "limit")?.unwrap_or(20).min(500) as usize;
+    let limit = optional_count(args, "limit")?.unwrap_or(20).min(5000) as usize;
     let want_label = optional_str(args, "label");
     let want_layer = optional_str(args, "layer_id");
     let want_brush = optional_str(args, "brush").map(|value| value.to_lowercase());
@@ -19398,10 +19398,10 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         //     ⇒ 我第一版把 `total` 接在 `matched` 上，实测**3 笔只报 2** ✓（limit=1 ⇒ 收到 2 条就 break ✓）
         //     ⇒ **那样加出来的 `total` 比没有更坏**：它看起来像真总数 ✓ 而实际是"本页 + 1" ✓。
         //   **⇒ 修法**：不收新条，但**继续走完过滤** ⇒ `matched` 才是真总数 ✓。
-        if hits.len() > limit {
-            matched += 1;
-            continue;
-        }
+        //   **⇒ 顺序不能反**（P2-4；期 2 块 1）：这条"不再收"的判断**必须在全部过滤之后**——
+        //     第 779 轮把它放在过滤之前，页满之后所有原子都被**无过滤**计入 `matched`：
+        //     无 offset 时 `limit=20` 很快填满，随后记账原子（建文档／建图层）也被数进 `total`，
+        //     实测虚高 +3/+4 ✗。所以这里**只过滤、不数**；数与收都挪到过滤之后 ✓。
         if let Some(min) = since_seq {
             if (atom.seq) <= min {
                 continue;
@@ -19459,6 +19459,11 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         // **过滤之后的第几条** ✓：先跳 `offset`，再收 `limit` ✓
         matched += 1;
         if matched <= offset {
+            continue;
+        }
+        // **探针上限**：`hits` 收到 `limit+1` 条之后不再收新条（`has_more` 的探针），
+        //   但循环继续走完过滤 ⇒ `matched` 仍是真总数 ✓。
+        if hits.len() > limit {
             continue;
         }
         // **`origin`：来源，不是存储形态** ✓（第 642 轮；外部 `report.md` 的 D5 ✓）
@@ -19545,9 +19550,11 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **`truncated` 的诚实口径** ✓（第 636 轮；外部 D7 ✓）：
     //   **满页** ⇒ 说"可能还有" ✓（`truncated`/`has_more` 为真 ✓）；
     //   **不满页** ⇒ 说"到这儿就没了" ✓（倒序扫描是完整的，没被截断 ✓）。
-    //   **为什么不给 `total`** ✗：那要在**同一套过滤链**（`label/layer/brush/group/bbox/since_seq/已撤销`）
+    //   **为什么第 636 轮不给 `total`** ✗：那要在**同一套过滤链**（`label/layer/brush/group/bbox/since_seq/已撤销`）
     //   下数总数 ⇒ 复制一份过滤逻辑**必然漂移** ✗（仓规：同一事实只写一处 ✓）
     //   ⇒ 与其给一个**可能不准的精确数字**，不如给一个**不会说谎的布尔** ✓。
+    //   **⇒ 第 779 轮已推翻这条**：`total` 改成在**同一趟循环里**顺手数（不复制过滤逻辑 ✓），
+    //   下面回执的 `"total": matched` 就是它 ✓。
     // **`has_more` / `truncated` 用"多收的那一条"算** ✓（精确，不是"满页就当还有" ✗）
     // **`limit: 0` 不许报截断** ✓（与 `find_atom` 同一条口径 ✓，第 731 轮）：
     //   一条都没给 ⇒ "还有更多"对调用方没有意义 ✓，且会与 `count: 0` 构成矛盾 ✓。

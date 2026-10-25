@@ -2788,7 +2788,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "按 label／layer_id／brush／since_seq 筛出笔迹原子（带 seq 与 label）⇒ 先找到「哪一笔坏了」，再 revert；**每条带 `origin`**（drawn／imported／generated／system）—— ⚠️ `kind` 说的是**像素存在哪**（存储形态），**不是来源**：笔触原子在库里恒为 `import_image`，拿 `kind` 当来源证明会把「画出来的笔」误判成「导入了一张图」",
         mutating: false,
         params: &[
-            param!("limit", Integer, false, "最多返回几条（缺省 20，上限 500）"),
+            param!("limit", Integer, false, "最多返回几条（缺省 20，上限 5000）"),
             param!("offset", Integer, false, "跳过前面几条匹配（翻页用；回执里有 `offset`/`truncated`/`has_more`）"),
             param!("label", String, false, "只列该标签的原子（brush_stroke 的 label 参数写入）"),
             param!("layer_id", String, false, "只列该图层的原子"),

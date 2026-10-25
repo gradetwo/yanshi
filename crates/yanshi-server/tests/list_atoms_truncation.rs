@@ -162,3 +162,204 @@ fn list_atoms_reports_the_total_number_of_matches() {
     );
     assert_eq!(all["truncated"], json!(false), "装得下就不许报截断：{all}");
 }
+
+/// 落盘工作区 + 内置资产目录指向**仓库里的 `assets/`** ✓（要画**真笔刷**的笔迹，缺省过滤才列得出 ✓）。
+fn brush_workspace(root: &std::path::Path, doc_id: &str, width: u32, height: u32) -> Workspace {
+    let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+    let mut workspace = Workspace::with_file_store(root.to_path_buf(), DocumentSettings::default())
+        .expect("落盘工作区")
+        .with_assets_dir(Some(assets));
+    workspace
+        .create_document(NewDocument::new(doc_id, width, height), "human:1", "s")
+        .expect("create_document");
+    workspace
+}
+
+fn brush_call(
+    workspace: &mut Workspace,
+    doc_id: &str,
+    tool: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    let mut ctx = ToolContext::new(workspace, doc_id, "human:1", "s").with_owner(true);
+    registry().call(&mut ctx, tool, &args)
+}
+
+/// **P2-4：`total` 只数过滤后的匹配，页满之后记账原子不许混进来**（期 2 块 1）
+///
+/// **⇒ 缺陷**：`read_list_atoms` 里"收到 limit+1 条就不再收"的判断放在**全部过滤器之前** ⇒
+///   页满之后所有原子都被**无过滤**计入 `matched`：无 offset 时 `limit=20` 很快填满，随后
+///   记账原子（建文档／建图层）也被数进 `total`，实测虚高 +3/+4 ✗。
+///
+/// **⇒ 判据**：3 笔真笔刷 + 记账原子，`limit=1`（缺省只列笔迹）⇒ `count=1` **且 `total=3`** ✓；
+///   再逐页翻完 ⇒ 各页条数之和 `== total` 且 `atom_id` 无重无漏 ✓。
+/// **⇒ 变异**：把"不再收"的判断移回过滤器之前 ⇒ `total=5`（2 个记账原子被数进来）⇒ 红 ✓。
+#[test]
+fn list_atoms_total_counts_only_filtered_atoms() {
+    let root = std::env::temp_dir().join(format!("yanshi_atoms_p24_{}", std::process::id()));
+    let _cleanup_1 = Cleanup(root.clone());
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("建根");
+    let mut workspace = brush_workspace(&root, "doc_p24", 64, 64);
+    assert_eq!(
+        brush_call(
+            &mut workspace,
+            "doc_p24",
+            "create_layer",
+            json!({"layer_id": "L", "name": "L"})
+        )["ok"],
+        json!(true)
+    );
+    for index in 0..3 {
+        let drawn = brush_call(
+            &mut workspace,
+            "doc_p24",
+            "brush_stroke",
+            json!({
+                "layer_id": "L", "object_id": format!("s{index}"), "brush": "2B_pencil", "size": 8,
+                "points": [[8.0, 8.0 + index as f64 * 12.0, 0.8], [24.0, 8.0 + index as f64 * 12.0, 0.8]],
+                "color": {"r": 10, "g": 20, "b": 30, "a": 255},
+                "preview": false, "wait_for_render": false,
+            }),
+        );
+        assert_eq!(drawn["ok"], json!(true), "{drawn}");
+    }
+
+    let all = brush_call(
+        &mut workspace,
+        "doc_p24",
+        "list_atoms",
+        json!({"limit": 5000}),
+    );
+    assert_eq!(all["ok"], json!(true), "{all}");
+    assert_eq!(all["count"], json!(3), "缺省只列笔迹：3 笔 ⇒ {all}");
+    assert_eq!(
+        all["total"],
+        json!(3),
+        "全量时 total 必须是过滤后的匹配数：{all}"
+    );
+
+    let page = brush_call(&mut workspace, "doc_p24", "list_atoms", json!({"limit": 1}));
+    assert_eq!(page["count"], json!(1), "一页只给 1 条：{page}");
+    assert_eq!(
+        page["total"],
+        json!(3),
+        "小页时 total 仍必须是 3（页满之后记账原子不许被数进 total）：{page}"
+    );
+    assert_eq!(
+        page["truncated"],
+        json!(true),
+        "还有更多 ⇒ truncated 必须为真：{page}"
+    );
+
+    let mut ids = std::collections::HashSet::new();
+    let mut sum = 0u64;
+    for offset in 0..3 {
+        let p = brush_call(
+            &mut workspace,
+            "doc_p24",
+            "list_atoms",
+            json!({"limit": 1, "offset": offset}),
+        );
+        assert_eq!(p["ok"], json!(true), "offset={offset}：{p}");
+        sum += p["count"].as_u64().unwrap_or(99);
+        for atom in p["atoms"].as_array().unwrap() {
+            assert!(
+                ids.insert(atom["atom_id"].as_str().unwrap_or("").to_owned()),
+                "翻页取到重复原子：{p}"
+            );
+        }
+    }
+    assert_eq!(sum, 3, "各页条数之和必须 == total（3）");
+    assert_eq!(ids.len(), 3, "翻页无重无漏");
+}
+
+/// **D3：上限 500 → 5000，600 笔文档一次取完**（期 2 块 1）
+///
+/// **⇒ 判据**：600 笔真笔刷、`limit=2000` ⇒ `count=600`、`total=600`、`truncated=false` ✓；
+///   `offset` 翻页（每页 200）各页条数之和 `== 600` 且无重无漏 ✓。
+/// **⇒ 变异**：上限改回 500 ⇒ `count=500`、`truncated=true` ⇒ 红 ✓；
+///   `total` 改成恒等于返回条数 ⇒ 小页上 `total=1≠600` 红（见上一条）✓。
+#[test]
+fn list_atoms_limit_5000_returns_600_strokes() {
+    let root = std::env::temp_dir().join(format!("yanshi_atoms_d3_{}", std::process::id()));
+    let _cleanup_1 = Cleanup(root.clone());
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("建根");
+    let mut workspace = brush_workspace(&root, "doc_d3", 400, 400);
+    assert_eq!(
+        brush_call(
+            &mut workspace,
+            "doc_d3",
+            "create_layer",
+            json!({"layer_id": "L", "name": "L"})
+        )["ok"],
+        json!(true)
+    );
+    for index in 0..600 {
+        let x = 20.0 + (index % 20) as f64 * 18.0;
+        let y = 20.0 + (index / 20) as f64 * 12.0;
+        let drawn = brush_call(
+            &mut workspace,
+            "doc_d3",
+            "brush_stroke",
+            json!({
+                "layer_id": "L", "object_id": format!("s{index}"), "brush": "2B_pencil", "size": 8,
+                "points": [[x, y, 0.8], [x + 10.0, y, 0.8]],
+                "color": {"r": 10, "g": 20, "b": 30, "a": 255},
+                "preview": false, "wait_for_render": false,
+            }),
+        );
+        assert_eq!(drawn["ok"], json!(true), "第 {index} 笔：{drawn}");
+    }
+
+    let all = brush_call(
+        &mut workspace,
+        "doc_d3",
+        "list_atoms",
+        json!({"limit": 2000, "want_thumb": false}),
+    );
+    assert_eq!(all["ok"], json!(true), "{all}");
+    // **大包不打印整包 JSON**：600 条原子刷屏 ✓，只摘要三个数。
+    let summary = format!(
+        "count={} total={} truncated={}",
+        all["count"], all["total"], all["truncated"]
+    );
+    assert_eq!(
+        all["count"],
+        json!(600),
+        "limit=2000 必须返回全部 600 笔（上限已提至 5000）：{summary}"
+    );
+    assert_eq!(all["total"], json!(600), "total 必须是 600：{summary}");
+    assert_eq!(
+        all["truncated"],
+        json!(false),
+        "装得下就不许报截断：{summary}"
+    );
+
+    let mut ids = std::collections::HashSet::new();
+    let mut sum = 0u64;
+    for offset in (0..600).step_by(200) {
+        let p = brush_call(
+            &mut workspace,
+            "doc_d3",
+            "list_atoms",
+            json!({"limit": 200, "offset": offset, "want_thumb": false}),
+        );
+        assert_eq!(
+            p["ok"],
+            json!(true),
+            "offset={offset}：count={}",
+            p["count"]
+        );
+        sum += p["count"].as_u64().unwrap_or(9999);
+        for atom in p["atoms"].as_array().unwrap() {
+            assert!(
+                ids.insert(atom["atom_id"].as_str().unwrap_or("").to_owned()),
+                "翻页取到重复原子：{p}"
+            );
+        }
+    }
+    assert_eq!(sum, 600, "各页条数之和必须 == total（600）");
+    assert_eq!(ids.len(), 600, "翻页无重无漏");
+}
