@@ -16,8 +16,8 @@ process.on("uncaughtException", (error) => {
   console.error(`  ⊘ 判据自身出错（不是产品问题）：${String(error).slice(0, 200)}`);
   process.exit(3);
 });
-import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, existsSync, statSync, rmSync, writeFileSync, copyFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, existsSync, statSync, rmSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -182,12 +182,28 @@ try {
   }
 
   // **剔一个真在用本体** ⇒ `missing_body` +1 且 `complete` 翻转。
-  const blobMember = members.find((m) => m.includes("blobs/"));
+  // **不要用 `tar --delete`** ✗（第 1132 轮整合实测）：本仓的包是**手写 tar**
+  //（无目录条目）⇒ GNU tar 的 `--delete` 会把归档重排坏（实测：要删的那条还在、
+  //  另一条被复制成两份）⇒ `missing_body` 永远是 0 ⇒ **判据假红** ✗。
+  // ⇒ 改成「解包 → 删文件 → 重新打包」；成员列表保持原样（不带 `./` 前缀 ✓）。
+  // ⇒ 并**排除 tile 索引**：只挑本体（`tiles` 集合里的不算 ✓），否则删的是派生 ⇒ 该红的是另一条 ✓。
+  const bodyMember = members.find((m) => {
+    if (!m.includes("blobs/")) return false;
+    const h = m.split("/").pop();
+    return h.length === 64 && !tiles.has(h);
+  });
+  if (!bodyMember) {
+    console.error("  ⊘ 不可判：包内找不到本体 blob（不是产品问题）");
+    process.exit(3);
+  }
   const doctored = join(ROOT, "doctored.yanshi");
-  copyFileSync(pack, doctored);
-  const del = spawnSync("tar", ["--delete", "-f", doctored, blobMember], { encoding: "utf8", timeout: 90_000 });
-  if (del.status !== 0) { console.error(`  ✗ 判据自身出错：tar --delete 失败 ⇒ ${String(del.stderr).slice(0, 160)}`); process.exit(3); }
-  const droppedHash = blobMember.split("/").pop();
+  const work = join(ROOT, "doctored-dir");
+  mkdirSync(work, { recursive: true });
+  execFileSync("tar", ["-xf", pack, "-C", work], { timeout: 90_000 });
+  unlinkSync(join(work, bodyMember));
+  const keep = members.filter((m) => m !== bodyMember);
+  execFileSync("tar", ["-cf", doctored, "-C", work, ...keep], { timeout: 90_000 });
+  const droppedHash = bodyMember.split("/").pop();
   const after = await call("verify_package", { path: doctored });
   check(after.ok === true, "篡改包仍能体检（不是读包失败）", JSON.stringify(after).slice(0, 120));
   check(after.complete === false, "剔本体后 complete 必须翻转", `complete=${after.complete}`);
