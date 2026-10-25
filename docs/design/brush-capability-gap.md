@@ -21557,3 +21557,30 @@ size=2.0 green painted=63｜size=2.0 white painted=63
 2. 查它**遍历哪些 blob**（可能只收了 `blob` 索引里的某类 ✓ 而笔触的位图走 `import_image` 通道 ✓）
 3. 修：**凡是原子引用的 blob 都必须进包** ✓ ＋ **判据**：`pack` 后 `list_package_blobs` 覆盖所有原子引用 ✓
    变异：漏收一类 ⇒ 判据红 ✓
+
+## 六百一十二、`export_project` **是"故意省掉"那些 blob 的**（第 1109 轮；`document.rs:402` 的注释）
+
+**⇒ 定位结果**：测试用的工具名是 **`export_project`**（不是 `pack`）✓
+⇒ 而 `crates/yanshi-server/src/document.rs:402` 的注释写着：
+> **「打开这一份文档时重放回来的位图数 ✓（`export_project` **省掉的那些** ✓）」**
+
+⇒ **⇒ 所以"省掉"是**设计意图**，不是漏写** ✓
+⇒ 但那正是 `real_package_shrinks` 红的原因 ✗：**省掉的 blob 里包含笔触写下的位图** ✓
+   ⇒ 于是导出的包**不可回放**（`yanshi-timelapse` 报「缺 3 个被引用的 blob」✗）
+
+**⇒ 这不是二选一，而是**两类读者需求冲突** ✓**：
+| 读者 | 需要什么 |
+|---|---|
+| **查看器/编辑器**（`export_project` 原本的目标）| **省掉**位图 ⇒ 包小 ✓（笔触参数可重放 ✓）|
+| **`yanshi-timelapse` 回放** | **必须**有那些位图 ✗（它只按 atom 引用的 blob 出帧 ✓）|
+
+**⇒ 修法（下一轮定）**：
+1. **首选**：`export_project` 加参数 `include_blobs: bool`（默认**现在的行为** ✓ 不破坏别人 ✓），
+   timelapse 的测试与文档改成传 `true` ✓；
+2. 或：`export_project` **总是**带上原子引用的 blob（**改变默认** ✗ 会让包变大 ⇒ 需权衡 ✓）；
+3. 无论哪种，**都要一条判据**：`include_blobs=true` 导出的包 ⇒ `yanshi-timelapse` **rc=0** ✓
+   变异：把 blob 收集去掉 ⇒ rc=2 ⇒ 红 ✓
+
+**⇒ 另**：`real_package_shrinks` 现在**红着** ✓（我第 1089 轮的 `exit(2)` 把它照出来的 ✓）
+⇒ 所以**要么**修 `export_project`（1 或 2 ✓）**要么**先把它登记为 known-red ✓
+⇒ **我不登记 known-red** ✗ —— 那是"把已定位的真缺陷藏起来" ✓ ⇒ 我选**修** ✓
