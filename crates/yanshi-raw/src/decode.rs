@@ -17,7 +17,10 @@
 //!   orientation 写死 Normal（旁注 TODO fixme），构造后只有 DNG 与
 //!   QTK 解码器回填——其余格式（RW2／ORF／CR2／NEF／ARW…）的真值只在
 //!   EXIF 里。本模块以 `resolve_orientation` 拾取（EXIF 优先、字段
-//!   回退），frame 与 file_meta 同源同值。⚠️ 迁移注记：导入期即展开
+//!   回退），frame 与 file_meta 同源同值。期 2 Y-02：MakerNote 厂商
+//!   方向（Sony 0x9400／Pentax ShotInfo）与 EXIF 交叉校验，冲突只进
+//!   `notes` 警告、不改取值（胜负未定，见 `orientation_conflict_note`）。
+//!   ⚠️ 迁移注记：导入期即展开
 //!   落盘，**修复前已导入的竖拍文档位图已经是横的**，本修复只对新
 //!   导入生效，存量文档的正解是重新导入。
 
@@ -70,7 +73,16 @@ pub fn decode_bytes(bytes: &[u8]) -> Result<DecodedRaw> {
             }
         }
     }
-    let mut decoded = map_decoded(raw, metadata.as_ref(), &source_format)?;
+    // Y-02 交叉校验（期 2）：MakerNote 厂商方向与 EXIF 对照。
+    // 读不到/不识别 ⇒ None（无校验，与今日一致）；失败不阻断解码。
+    let model = metadata.as_ref().map(|m| m.model.as_str()).unwrap_or("");
+    let makernote_orientation = read_makernote_orientation(decoder.as_ref(), bytes, model);
+    let mut decoded = map_decoded(
+        raw,
+        metadata.as_ref(),
+        &source_format,
+        makernote_orientation,
+    )?;
     attach_file_lens_and_crop(&mut decoded, decoder.as_ref(), metadata.as_ref());
     Ok(decoded)
 }
@@ -140,6 +152,7 @@ fn map_decoded(
     raw: RawImage,
     metadata: Option<&rawler::decoders::RawMetadata>,
     source_format: &str,
+    makernote_orientation: Option<u16>,
 ) -> Result<DecodedRaw> {
     if raw.cpp != 1 {
         return Err(RawError::UnsupportedData(format!(
@@ -275,6 +288,12 @@ fn map_decoded(
                 "文件无可用 EXIF Orientation，方向按解码器字段取 {orientation}（rawler 0.7.2 对非 DNG／QTK 格式该字段恒为 Normal，未必是真值）"
             ),
         });
+    }
+    // Y-02：MakerNote 冲突只警告、不改取值（胜负未定，见函数注）。
+    if let Some(note) =
+        orientation_conflict_note(exif_orientation, makernote_orientation, orientation)
+    {
+        notes.push(note);
     }
     let frame = RawFrame {
         width: crop_w,
@@ -524,6 +543,186 @@ fn map_file_meta(
     }
 }
 
+/// MakerNote 厂商方向读取（期 2 Y-02）：经解码器公开的 `ifd()` 接口取
+/// EXIF IFD，再用 rawler 自家的 `parse_makernote`（ARW／PEF 解码器内部
+/// 同款调用，`OffsetMode::Absolute`）解析厂商块。`bytes` 是完整文件字节
+/// （解析器要在文件绝对偏移上取外联值，`Cursor` 复用它）。
+/// 读不到 EXIF IFD／无 MakerNote／块过短／解析失败 ⇒ `None`（无校验，
+/// 与今日一致）；失败只丢校验，不丢解码。`model` 只用于 Pentax 表选择
+/// 与 ILCE-7M5/7RM6 的偏移修正，Sony 表选择看块首字节、自识别。
+fn read_makernote_orientation(
+    decoder: &dyn rawler::decoders::Decoder,
+    bytes: &[u8],
+    model: &str,
+) -> Option<u16> {
+    use rawler::decoders::WellKnownIFD;
+    use rawler::formats::tiff::ifd::OffsetMode;
+    use rawler::formats::tiff::Value;
+    use rawler::tags::ExifTag;
+    let exif_ifd = decoder.ifd(WellKnownIFD::Exif).ok()??;
+    // 厂商块过短（<16 字节）不可能是真 MakerNote，且 rawler 的
+    // parse_makernote 会对短数据越界取片——先拦住。
+    let entry = exif_ifd.get_entry(ExifTag::MakerNotes)?;
+    let mn_len = match &entry.value {
+        Value::Undefined(data) | Value::Byte(data) => data.len(),
+        _ => return None,
+    };
+    if mn_len < 16 {
+        return None;
+    }
+    let mn_ifd = exif_ifd
+        .parse_makernote(&mut std::io::Cursor::new(bytes), OffsetMode::Absolute, &[])
+        .ok()??;
+    makernote_orientation_from_ifd(&mn_ifd, model)
+}
+
+/// 已解析的 MakerNote IFD → 厂商方向（EXIF 式 1/3/6/8），纯函数。
+/// Sony 优先（0x9400 加密块），其次 Pentax ShotInfo 0x0226、LevelInfoK3III
+/// 0x022b；三者皆无或值非法 ⇒ `None`。
+fn makernote_orientation_from_ifd(mn_ifd: &rawler::formats::tiff::IFD, model: &str) -> Option<u16> {
+    if let Some(blob) = undefined_bytes(mn_ifd, 0x9400) {
+        if let Some(v) = sony_camera_orientation(blob, model) {
+            return Some(v);
+        }
+    }
+    if is_pentax_shotinfo_model(model) {
+        if let Some(block) = undefined_bytes(mn_ifd, 0x0226) {
+            if let Some(v) = pentax_shotinfo_orientation(block) {
+                return Some(v);
+            }
+        }
+    }
+    if model.contains("K-3 Mark III") {
+        if let Some(block) = undefined_bytes(mn_ifd, 0x022b) {
+            if let Some(v) = pentax_levelinfo_orientation(block) {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+/// MakerNote IFD 里取某标签的原始字节（UNDEFINED／BYTE 型）；类型不符 ⇒ `None`。
+fn undefined_bytes(mn_ifd: &rawler::formats::tiff::IFD, tag: u16) -> Option<&[u8]> {
+    match mn_ifd.entries.get(&tag)?.value {
+        rawler::formats::tiff::Value::Undefined(ref bytes)
+        | rawler::formats::tiff::Value::Byte(ref bytes) => Some(bytes),
+        _ => None,
+    }
+}
+
+/// Sony `CameraOrientation`（ExifTool Sony.pm Tag9400a/b/c）：MakerNote
+/// 标签 0x9400 是一段加密二进制块，表选择看**加密后首字节**——0x07／0x09／
+/// 0x0a → 9400a（偏移 0x0028）、0x0c → 9400b（0x0024）、0x23／0x24／0x26／
+/// 0x28／0x31／0x32／0x33／0x41／0x43 → 9400c（0x0029）；三表值均为 EXIF
+/// 式 1／3／6／8。首字节 0x5e／0xe7／0x04 是双重加密（ExifTool 9.04–9.10
+/// 的写 bug），需解两次、按 9400a 读。ILCE-7M5／7RM6 在 0x001e 之后的偏移
+/// −1（Tag9400c 0x001e Hook 注明），`CameraOrientation` 落在 0x0028。
+/// 老 DSLR 表 Tag9400 的 0x0018（掩码 0x30）／NEX 初代 0x0016（掩码 0xc0）
+/// 在现行 ExifTool 里未接线，不做。首字节未识别／块太短／值不在 1／3／6／8
+/// ⇒ `None`。
+/// 实证（2026-10-25，`p2/probe_9400.py`）：ILCE-6000×2 首字节 0x23、
+/// 解密[0x0029]=1；ILCE-7RM3 首字节 0x26、解密[0x0029]=8，均与 IFD0 一致。
+fn sony_camera_orientation(blob: &[u8], model: &str) -> Option<u16> {
+    let (offset, double) = match blob.first() {
+        Some(0x07) | Some(0x09) | Some(0x0a) => (0x0028, false),
+        Some(0x0c) => (0x0024, false),
+        Some(0x23) | Some(0x24) | Some(0x26) | Some(0x28) | Some(0x31) | Some(0x32)
+        | Some(0x33) | Some(0x41) | Some(0x43) => (0x0029, false),
+        Some(0x5e) | Some(0xe7) | Some(0x04) => (0x0028, true),
+        _ => return None,
+    };
+    let dec = sony_decipher(blob);
+    let dec = if double { sony_decipher(&dec) } else { dec };
+    let mut offset = offset;
+    if offset == 0x0029 && (model.starts_with("ILCE-7M5") || model.starts_with("ILCE-7RM6")) {
+        offset = 0x0028;
+    }
+    let v = *dec.get(offset)?;
+    if matches!(v, 1 | 3 | 6 | 8) {
+        Some(u16::from(v))
+    } else {
+        None
+    }
+}
+
+/// Sony 0x9400 块解密（ExifTool Sony.pm `Decipher`：置换密码 c = b³ % 249）。
+/// 字节 2..=247 按逆表还原，其余直通；立方 mod 249 在 0..=248 上是双射，
+/// 逆表唯一（249–255 从不参与加密，直通即是原值）。
+fn sony_decipher(data: &[u8]) -> Vec<u8> {
+    let mut inv = [0u8; 256];
+    for b in 0..=248u32 {
+        inv[((b * b * b) % 249) as usize] = b as u8;
+    }
+    data.iter()
+        .map(|&c| {
+            if (2..=247).contains(&c) {
+                inv[c as usize]
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// Pentax 机型门：ShotInfo 表只对 K-5／K-7／K-r／K-x 有效（ExifTool
+/// 条件 `Model =~ /K-(5|7|r|x)\b/`）。按空白切词精确匹配，`K-50` 这类
+/// 不命中。
+fn is_pentax_shotinfo_model(model: &str) -> bool {
+    model
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .any(|t| matches!(t, "K-5" | "K-7" | "K-r" | "K-x"))
+}
+
+/// Pentax ShotInfo（MakerNote 标签 0x0226，ExifTool Pentax.pm）：字节 1
+/// 是方向传感器读数——0x10 横／0x20 转 180／0x30 转 90 CW／0x40 转 270 CW；
+/// 0x50／0x60（朝上／朝下）无 EXIF 等价 ⇒ 无信号。块短于 2 字节 ⇒ `None`。
+fn pentax_shotinfo_orientation(block: &[u8]) -> Option<u16> {
+    match block.get(1) {
+        Some(0x10) => Some(1),
+        Some(0x20) => Some(3),
+        Some(0x30) => Some(6),
+        Some(0x40) => Some(8),
+        _ => None,
+    }
+}
+
+/// Pentax LevelInfoK3III（MakerNote 标签 0x022b，仅 K-3 Mark III）：
+/// 字节 1：0 横／1 转 270 CW／2 转 180／3 转 90 CW；4／5（朝上／朝下）
+/// 无 EXIF 等价 ⇒ 无信号。
+fn pentax_levelinfo_orientation(block: &[u8]) -> Option<u16> {
+    match block.get(1) {
+        Some(0) => Some(1),
+        Some(1) => Some(8),
+        Some(2) => Some(3),
+        Some(3) => Some(6),
+        _ => None,
+    }
+}
+
+/// 方向冲突警告（期 2 Y-02，纯函数）。**只警告、不改取值**：IFD0 是标准
+/// 字段，编辑器旋转只改 IFD0 不改 MakerNote，单一样本（原文件未随附、
+/// 无法独立验真）不足以翻转胜负——合并计划 D-3 批的也是「交叉校验 +
+/// 冲突进 warnings」。两路都合法且不同 ⇒ 冲突警告；EXIF 缺失／非法且
+/// MakerNote 与回退值不同 ⇒ 追加提示（应用值仍是回退值）；一致或
+/// MakerNote 无信号 ⇒ `None`。
+fn orientation_conflict_note(
+    exif: Option<u16>,
+    maker: Option<u16>,
+    orientation: u32,
+) -> Option<String> {
+    let maker = maker?;
+    match exif.filter(|v| (1..=8).contains(v)) {
+        Some(exif) if u32::from(exif) != u32::from(maker) => Some(format!(
+            "方向元数据冲突：EXIF Orientation 为 {exif}，MakerNote CameraOrientation 为 {maker}；已按 EXIF 取 {orientation}，请人工确认"
+        )),
+        None if u32::from(maker) != orientation => Some(format!(
+            "EXIF Orientation 缺失或非法，方向按解码器字段取 {orientation}；MakerNote CameraOrientation 为 {maker}，与回退值不一致，请人工确认"
+        )),
+        _ => None,
+    }
+}
+
 /// 方向解析（期 1 B 项）：EXIF Orientation 优先，解码器字段回退。
 ///
 /// rawler 0.7.2 的 `RawImage.orientation` 只对 DNG／QTK 可信（构造器
@@ -727,6 +926,8 @@ mod tests {
         // 期 1 B 项钉子：EXIF 合法值压过解码器字段——变异成「只用
         // raw.orientation」时本条即红（ojigi RW2 的实测形态：
         // 解码器写死 Normal、EXIF 是 8）。
+        // 期 2 Y-02：MakerNote 层在 orientation_conflict_note——冲突只警告，
+        // 不改此处口径（resolve_orientation 本身未动，本条原样成立）。
         assert_eq!(resolve_orientation(Orientation::Normal, Some(8)), 8);
         assert_eq!(resolve_orientation(Orientation::Rotate90, Some(8)), 8);
         assert_eq!(resolve_orientation(Orientation::Rotate270, Some(3)), 3);
@@ -802,5 +1003,198 @@ mod tests {
         assert_eq!(remap_levels(&[7.0], 1, 1, 6, 3, 4).unwrap(), vec![7.0; 36]);
         assert!(remap_levels(&[1.0, 2.0, 3.0, 4.0], 2, 2, 6, 0, 0).is_err());
         assert!(remap_levels(&full, 6, 6, 2, 0, 0).is_err());
+    }
+
+    // ---- 期 2 Y-02：MakerNote 方向交叉校验 ----
+    /// 测试用加密：Sony 置换密码的加密方向（c = b³ % 249），与
+    /// `sony_decipher` 互逆（实现侧只提供解密，加密只在测试里造块）。
+    fn enc(b: u8) -> u8 {
+        (u32::from(b).pow(3) % 249) as u8
+    }
+
+    /// 造一段加密的 0x9400 块：首字节（加密后）定表，`at` 处放加密后的方向值。
+    fn sony_blob(first_byte: u8, at: usize, orientation: u8) -> Vec<u8> {
+        let mut blob = vec![0u8; 64];
+        blob[0] = first_byte;
+        blob[at] = enc(orientation);
+        blob
+    }
+
+    /// 造一个只含 `tag` → UNDEFINED 块的 MakerNote IFD（测 IFD 层分发）。
+    fn mn_ifd_with(tag: u16, blob: Vec<u8>) -> rawler::formats::tiff::IFD {
+        use rawler::formats::tiff::{Entry, Value};
+        let mut entries = std::collections::BTreeMap::new();
+        entries.insert(
+            tag,
+            Entry {
+                tag,
+                value: Value::Undefined(blob),
+                embedded: Some(0),
+            },
+        );
+        rawler::formats::tiff::IFD {
+            offset: 0,
+            base: 0,
+            corr: 0,
+            next_ifd: 0,
+            entries,
+            endian: Default::default(),
+            sub: std::collections::HashMap::new(),
+            chain: vec![],
+        }
+    }
+
+    #[test]
+    fn sony_9400c_reads_orientation_at_0x0029() {
+        // 实测锚点：ILCE-6000 首字节 0x23、[0x0029]=1；ILCE-7RM3 首字节
+        // 0x26、[0x0029]=8（probe_9400.py，三文件均与 IFD0 一致）。
+        assert_eq!(
+            sony_camera_orientation(&sony_blob(0x24, 0x0029, 8), ""),
+            Some(8)
+        );
+        assert_eq!(
+            sony_camera_orientation(&sony_blob(0x23, 0x0029, 1), ""),
+            Some(1)
+        );
+        // 偏移错一位就读到 0 ⇒ None：变异「0x0029→0x0028」时本条即红。
+        assert_eq!(
+            sony_camera_orientation(&sony_blob(0x24, 0x0028, 8), ""),
+            None
+        );
+    }
+
+    #[test]
+    fn sony_9400a_and_9400b_offsets() {
+        // 9400a（首字节 0x0a）：0x0028；9400b（首字节 0x0c）：0x0024。
+        assert_eq!(
+            sony_camera_orientation(&sony_blob(0x0a, 0x0028, 6), ""),
+            Some(6)
+        );
+        assert_eq!(
+            sony_camera_orientation(&sony_blob(0x0c, 0x0024, 3), ""),
+            Some(3)
+        );
+        // 反向：9400a 的块在 0x0029 放值也不许读（那是 Quality2 的位置）。
+        assert_eq!(
+            sony_camera_orientation(&sony_blob(0x0a, 0x0029, 8), ""),
+            None
+        );
+    }
+
+    #[test]
+    fn sony_9400_rejects_unknown_first_byte_and_invalid_value() {
+        assert_eq!(
+            sony_camera_orientation(&sony_blob(0x99, 0x0029, 8), ""),
+            None
+        );
+        // 2 是合法 EXIF 值但 Sony 表里没有（只出 1/3/6/8）⇒ 无信号，不许猜。
+        assert_eq!(
+            sony_camera_orientation(&sony_blob(0x24, 0x0029, 2), ""),
+            None
+        );
+        // 块短于偏移 ⇒ None，不许越界。
+        assert_eq!(
+            sony_camera_orientation(&sony_blob(0x24, 0x0029, 8)[..0x20], ""),
+            None
+        );
+    }
+
+    #[test]
+    fn sony_double_cipher_deciphers_twice() {
+        // 首字节 0x5e = 双重加密的 0x07；方向值也须加两次密。
+        let mut blob = vec![0u8; 64];
+        blob[0] = 0x5e;
+        blob[0x0028] = enc(enc(6));
+        assert_eq!(sony_camera_orientation(&blob, ""), Some(6));
+        // 对照：单层加密的 0x07 首字节同样走 9400a。变异「双重加密只解一次」
+        // 时上条读到 enc(6)=216 ⇒ 不在 1/3/6/8 ⇒ None，即红。
+        assert_eq!(
+            sony_camera_orientation(&sony_blob(0x07, 0x0028, 6), ""),
+            Some(6)
+        );
+    }
+
+    #[test]
+    fn sony_7m5_shifts_offset_by_minus_one() {
+        // ExifTool Tag9400c 0x001e Hook 注明：ILCE-7M5／7RM6 在 0x001e 之后
+        // 的偏移 −1（无实物验证，按表证钉死；若实测不符，以实物为准改表）。
+        assert_eq!(
+            sony_camera_orientation(&sony_blob(0x24, 0x0028, 6), "ILCE-7M5"),
+            Some(6)
+        );
+        assert_eq!(
+            sony_camera_orientation(&sony_blob(0x24, 0x0029, 8), "ILCE-7M5"),
+            None
+        );
+        assert_eq!(
+            sony_camera_orientation(&sony_blob(0x24, 0x0029, 8), "ILCE-7RM3"),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn pentax_shotinfo_and_levelinfo_maps() {
+        // ShotInfo 0x0226 字节 1：0x10 横／0x30 转 90 CW；0x50 朝上无信号。
+        assert_eq!(pentax_shotinfo_orientation(&[0xf0, 0x10]), Some(1));
+        assert_eq!(pentax_shotinfo_orientation(&[0xf0, 0x30]), Some(6));
+        assert_eq!(pentax_shotinfo_orientation(&[0xf0, 0x50]), None);
+        assert_eq!(pentax_shotinfo_orientation(&[0xf0]), None);
+        // LevelInfoK3III 0x022b 字节 1：0 横／1 转 270 CW／3 转 90 CW；4 无信号。
+        assert_eq!(pentax_levelinfo_orientation(&[0, 0]), Some(1));
+        assert_eq!(pentax_levelinfo_orientation(&[0, 1]), Some(8));
+        assert_eq!(pentax_levelinfo_orientation(&[0, 3]), Some(6));
+        assert_eq!(pentax_levelinfo_orientation(&[0, 4]), None);
+    }
+
+    #[test]
+    fn pentax_model_gate_is_exact() {
+        assert!(is_pentax_shotinfo_model("PENTAX K-5"));
+        assert!(is_pentax_shotinfo_model("PENTAX K-7"));
+        assert!(is_pentax_shotinfo_model("PENTAX K-r"));
+        assert!(!is_pentax_shotinfo_model("PENTAX K-50"));
+        assert!(!is_pentax_shotinfo_model("PENTAX K-3 Mark III"));
+        assert!(!is_pentax_shotinfo_model(""));
+    }
+
+    #[test]
+    fn makernote_orientation_from_ifd_dispatches_by_tag() {
+        // Sony 0x9400 不看机型门；Pentax 两表看机型门。
+        let sony = mn_ifd_with(0x9400, sony_blob(0x24, 0x0029, 8));
+        assert_eq!(makernote_orientation_from_ifd(&sony, ""), Some(8));
+        let pentax = mn_ifd_with(0x0226, vec![0xf0, 0x30]);
+        assert_eq!(
+            makernote_orientation_from_ifd(&pentax, "PENTAX K-5"),
+            Some(6)
+        );
+        assert_eq!(makernote_orientation_from_ifd(&pentax, ""), None);
+        let k3 = mn_ifd_with(0x022b, vec![0, 1]);
+        assert_eq!(
+            makernote_orientation_from_ifd(&k3, "PENTAX K-3 Mark III"),
+            Some(8)
+        );
+        assert_eq!(makernote_orientation_from_ifd(&k3, "PENTAX K-5"), None);
+        let empty = mn_ifd_with(0x9405, vec![0; 64]);
+        assert_eq!(makernote_orientation_from_ifd(&empty, ""), None);
+    }
+
+    #[test]
+    fn orientation_conflict_note_warns_without_changing_value() {
+        // 冲突（EXIF 3 vs MakerNote 8，报告 Y-02 的 EXTA99 形态）：警告带双方值。
+        let note = orientation_conflict_note(Some(3), Some(8), 3).expect("冲突须警告");
+        assert!(
+            note.contains('3') && note.contains('8'),
+            "警告须带双方值：{note}"
+        );
+        assert!(note.contains("EXIF"), "警告须点名 EXIF：{note}");
+        // 一致 ⇒ 静默；MakerNote 无信号 ⇒ 静默。
+        assert_eq!(orientation_conflict_note(Some(8), Some(8), 8), None);
+        assert_eq!(orientation_conflict_note(Some(1), None, 1), None);
+        // EXIF 缺失、回退值 1 与 MakerNote 8 不一致 ⇒ 追加提示（值仍是回退值）。
+        let note = orientation_conflict_note(None, Some(8), 1).expect("回退不一致须提示");
+        assert!(note.contains('8'), "提示须带 MakerNote 值：{note}");
+        // 回退值恰与 MakerNote 一致 ⇒ 不必多说。
+        assert_eq!(orientation_conflict_note(None, Some(1), 1), None);
+        // EXIF 非法值（0）按缺失走回退分支。
+        assert!(orientation_conflict_note(Some(0), Some(8), 1).is_some());
     }
 }
