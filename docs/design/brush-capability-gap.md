@@ -21606,3 +21606,24 @@ cargo test -p yanshi-timelapse --test real_package_shrinks ⇒ **1 passed** ✓�
 
 **⇒ 现状**：警告已比原来强（原来只在汇总行里报个数 ✓ 现在有独立两行 + 指出 `export_project` 的原因 ✓），
 而**不误伤自产包** ✓ ⇒ **这是当前约束下的正确中间态** ✓
+
+## 六百一十四、**红 → 绿 的 CI 侧证据到手**：`0c58d523` **completed/success**（第 1114 轮）
+
+```
+run 0c58d523：completed/**success**｜success=12｜failure=0｜skipped=1
+```
+⇒ 而**同一棵树的前一笔**（`7e1306bd`，含 `exit(2)`）**本机** `real_package_shrinks` = **FAILED** ✓
+⇒ 所以「**红 → 绿**」这条链**两边都有证据**：
+| 状态 | 本机 | CI |
+|---|---|---|
+| 加 `exit(2)` 后 | `real_package_shrinks` **FAILED** | （`7e1306bd` 那次被后代顶掉，未跑）|
+| 改成大声警告后 | **1 passed** | **`0c58d523` success（0 失败）** ✓ |
+
+**⇒ 这条也顺带证明**：`missing_blobs_are_loud` 的断言（stderr 必须含「缺 blob」＋ 个数 ✓）
+在**新文案**下仍然成立 ✓ —— 因为新警告里保留了「包缺 N 个被引用的 blob」✓
+
+**⇒ 剩下的（D172 的完整闭环 ✓）**：
+1. `export_project` 加 `include_blobs`（默认 false ＝**现行为** ✓，走 8 处清单 ✓）
+2. timelapse 的测试与文档传 `true` ✓
+3. 把警告**换回** `exit(2)` ＋ 判据（不带 blob ⇒ rc=2；带 blob ⇒ rc=0 ✓）
+   ⇒ 变异：去掉 `exit(2)` ⇒ 红 ✓
