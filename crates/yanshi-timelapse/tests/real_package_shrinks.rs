@@ -56,6 +56,14 @@ fn a_real_package_shrinks_and_has_no_black_blocks() {
         &json!({"path": pack.to_string_lossy()}),
     );
     assert_eq!(packed["ok"], json!(true), "{packed}");
+    // **⇒ 导出必须**明说**"省了几条 blob"** ✅（第 1118 轮）：
+    //   ⇒ `export_project` **故意省掉笔触位图** ✓（`document.rs:402` ✓），但它**报 `omitted`** ✓
+    //   ⇒ 这条断言守的是**"省略始终可见"**：若哪天字段没了 ⇒ 静默 ✗ ⇒ 红 ✓
+    //   **变异**：把 `tools_io.rs` 响应里的 `"omitted": stats.omitted` 删掉 ⇒ 红 ✓
+    assert!(
+        packed["omitted"].is_number(),
+        "导出必须报出「省了几条 blob」（否则省略变成静默）：{packed}"
+    );
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_yanshi-timelapse"))
         .arg(&pack)
         .arg(root.join("out.mp4"))
