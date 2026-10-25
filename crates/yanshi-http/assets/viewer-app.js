@@ -10960,6 +10960,13 @@ const I18N_EN_TEXT = {
   "WASM 计算内核": "WASM compute kernel",
   "本地乐观渲染": "Local optimistic rendering",
   "已加载": "loaded",
+  // **WASM 状态卡的三种终态**（第 1132 轮；CI 的 `browser-i18n` 实测漏了第一条）：
+  //   ⇒ 之前只在**服务端渲染模式**下出现 ✓ ⇒ 客户端模式的判据从没见过它们 ✗
+  //     ⇒ 分片顺序一变（前面的判据把页面留在服务端模式）⇒ 整页中文 1 条 ⇒ 红 ✗
+  //   ⇒ 三种都补上；`版本不匹配`／`不可用` 是失败态，判据不常走到，但同样要能翻译 ✓。
+  "已按设置跳过（用服务端渲染）": "Skipped by setting (server rendering)",
+  "不可用": "unavailable",
+  "版本不匹配": "version mismatch",
   "首笔": "first stroke",
   "首帧": "first frame",
   "内核预热": "kernel warm-up",
