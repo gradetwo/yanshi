@@ -545,7 +545,7 @@ const PAGE_TAIL_A: &str = r##"</style>
       <!-- **实例 / 组 / metadata 的第二排** ✓（三方对照补齐 ✓）——
            `update_sync_policy` / `link_to_master` / `add_to_group` / `remove_from_group` /
            `update_object` 在系统注册表与 MCP 默认档里都有 ✓，查看器此前**零引用** ✗。 -->
-      <div class="toolbar" style="gap:6px; flex-wrap:wrap">
+      <div class="toolbar" style="gap:8px; flex-wrap:wrap">
         <label>组 <input id="objectGroupId" type="text" placeholder="group_id" style="width:120px" /></label>
         <button id="objectAddGroup" type="button" title="把勾选对象加入该组（add_to_group）">加入组</button>
         <button id="objectRemoveGroup" type="button" title="把勾选对象移出该组（remove_from_group）">移出组</button>
@@ -633,7 +633,7 @@ const PAGE_TAIL_A: &str = r##"</style>
       </select></label>
       <div id="paletteSwatches" class="toolbar" style="flex-wrap:wrap;gap:4px"></div>
       <!-- **存为调色板** ✓ —— `save_palette` 此前只有工具层入口 ✗（系统+MCP 有、web 没有 ✓）。 -->
-      <div class="toolbar" style="gap:6px">
+      <div class="toolbar" style="gap:8px">
         <input id="paletteSaveName" type="text" placeholder="my.gpl" style="width:120px" />
         <button id="paletteSave" type="button" title="把当前色块存成 .gpl 调色板资产（save_palette）">存为调色板</button>
       </div>
@@ -644,7 +644,7 @@ const PAGE_TAIL_A: &str = r##"</style>
     <div class="card" data-panel="assets" id="cardReference">
       <h2>参考图</h2>
       <label>不透明 <input id="referenceOpacity" type="number" value="0.5" min="0" max="1" step="0.1" style="width:56px" /></label>
-      <div class="toolbar" style="gap:6px">
+      <div class="toolbar" style="gap:8px">
         <button id="referenceSet" type="button" title="上传一张图，半透明铺在画布下层用于临摹（set_reference）">上传参考图</button>
         <button id="referenceClear" type="button" title="清除当前参考图（clear_reference）">清除参考图</button>
         <input id="referenceFile" type="file" accept="image/png,image/jpeg,image/webp" hidden />
@@ -654,7 +654,7 @@ const PAGE_TAIL_A: &str = r##"</style>
     <!-- **资产导入** ✓ —— `import_asset`（brush / texture / palette）此前只有工具层入口 ✗。 -->
     <div class="card" data-panel="assets" id="cardAsset">
       <h2>资产导入</h2>
-      <div class="toolbar" style="gap:6px; flex-wrap:wrap">
+      <div class="toolbar" style="gap:8px; flex-wrap:wrap">
         <select id="assetKind">
           <option value="brush">笔刷</option>
           <option value="texture">纹理</option>
@@ -726,7 +726,7 @@ const PAGE_TAIL_A: &str = r##"</style>
       <div class="hint" id="timelapseInfo"></div>
       <!-- **任意尺寸整幅导出** ✓ —— `export_png` 的 width/height 能力（服务端渲染、不受 512px 限制 ✓）
            此前查看器只做"按文档原尺寸"导出 ✗ ⇒ 补齐入口 ✓（不落盘、base64 直接下载 ✓）。 -->
-      <div class="toolbar" style="gap:6px">
+      <div class="toolbar" style="gap:8px">
         <label>宽 <input id="exportServerW" type="number" min="0" step="1" placeholder="px" style="width:72px" /></label>
         <label>高 <input id="exportServerH" type="number" min="0" step="1" placeholder="px" style="width:72px" /></label>
         <button id="exportServerPng" type="button" title="服务端整幅渲染并按给定尺寸缩放，结果直接下载到本机（export_png）">任意尺寸导出</button>
