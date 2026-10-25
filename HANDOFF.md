@@ -18,8 +18,9 @@
 ## 二、当前状态
 
 ```
-CI：40175183140（ca58be70）completed/**failure** ⇒ 唯一意外失败是 `tool-repo-root-clean`（`HANDOFF.md` 不在顶层白名单）
-    ⇒ 已加白名单（见 §三-1）｜其余 job 全绿；shard 3/6 里的 browser 红都在 known-red（通过 50｜意外失败 1｜已知红 4｜跳过 7）
+CI：bf0c6e5a **success ✓**（run 40176610440；12 个可跑的 job 全 success，brush parity skipped）
+    ⇒ D172 闭环 ＋ `HANDOFF.md` 白名单修正**都在这一跑里验过** ✓
+    40175183140（ca58be70）failure ⇒ 唯一意外失败是 `tool-repo-root-clean`（已在 bf0c6e5a 修）
     2e70615b success ✓（dab ×3 注释；**补丁线收工**）
     26ba9483 success ✓（F 的 Default 派生修正）
 ```
@@ -38,10 +39,9 @@ CI：40175183140（ca58be70）completed/**failure** ⇒ 唯一意外失败是 `t
 
 ## 三、下一步（按优先序，都有精确入口）
 
-1. **读"白名单修正"那一笔的 CI 结论**（`ca58be70` 的 run 已查：唯一意外失败是 `tool-repo-root-clean` 报 `HANDOFF.md` 不在顶层白名单 ⇒ 已把 `HANDOFF.md` 加进 `scripts/tool-repo-root-clean.mjs` 的 `ALLOWED`，本机重跑该判据绿）。本机 `cargo test -p yanshi-timelapse` = **26 passed**、workspace clippy 绿。
-2. **qoder 剩余条目**：`D139`（静默零覆盖，需他给完整参数；我 6 点网格未复现）、`D188` 的量级说明（差随原子数增长：200 图块 ≈0.6 lv/通道、22,926 原子 ≈16 lv ⇒ 写进那条 `⚠️` 警告）。
-3. `shrink` blit（`art` 第 12 项）：最小包上对照判据实测 均值 1.89／>30 占 0.22% ⇒ 无缺口；要他用同判据跑 0.30 GB 的 `test1full`。
-4. （可选，第二口径）`scripts/tool-export-bitmaps.mjs` 加一段：`include_bitmaps: true` 导出的包直接喂 `target/release/yanshi-timelapse` ⇒ `rc=0`。
+1. **qoder 剩余条目**：`D139`（静默零覆盖，需他给完整参数；我 6 点网格未复现）、`D188` 的量级说明（差随原子数增长：200 图块 ≈0.6 lv/通道、22,926 原子 ≈16 lv ⇒ 写进那条 `⚠️` 警告）。
+2. `shrink` blit（`art` 第 12 项）：最小包上对照判据实测 均值 1.89／>30 占 0.22% ⇒ 无缺口；要他用同判据跑 0.30 GB 的 `test1full`。
+3. （可选，第二口径）`scripts/tool-export-bitmaps.mjs` 加一段：`include_bitmaps: true` 导出的包直接喂 `target/release/yanshi-timelapse` ⇒ `rc=0`。
 
 ## 四、纪律与环境（别重犯）
 
