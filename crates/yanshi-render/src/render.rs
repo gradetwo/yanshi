@@ -1519,6 +1519,35 @@ impl Renderer {
         self.bitmaps.stats()
     }
 
+    /// **below 缓存当前占的字节** ✓（RSS 修复 paint-rss 的观测口：分账用）。
+    pub fn below_cache_bytes(&self) -> usize {
+        self.below
+            .lock()
+            .map(|guard| below_tiles_bytes(&guard))
+            .unwrap_or(0)
+    }
+
+    /// **above 缓存当前占的字节** ✓（RSS 修复 paint-rss 的观测口：分账用）。
+    pub fn above_cache_bytes(&self) -> usize {
+        self.above
+            .lock()
+            .map(|guard| below_tiles_bytes(&guard))
+            .unwrap_or(0)
+    }
+
+    /// **蒙版编译缓存当前占的字节** ✓（RSS 修复 paint-rss 的观测口：分账用）。
+    pub fn mask_cache_bytes(&self) -> usize {
+        self.masks.bytes()
+    }
+
+    /// **矢量单笔光栅缓存当前占的字节** ✓（RSS 修复 paint-rss 的观测口：分账用）。
+    pub fn vector_raster_cache_bytes(&self) -> usize {
+        self.vector_raster
+            .lock()
+            .map(|cache| cache.bytes())
+            .unwrap_or(0)
+    }
+
     /// **渲染器侧常驻缓存保留字节之和（RSS 修复 paint-rss）**：
     ///
     /// BufferPool 保留 + TileCache 已用 + BitmapCache 明文 + below/above tile +
@@ -1531,22 +1560,10 @@ impl Renderer {
         let pool = self.buffer_pool.stats().retained_bytes;
         let tiles = self.cache.stats().used_bytes;
         let bitmaps = self.bitmaps.stats().bytes;
-        let below = self
-            .below
-            .lock()
-            .map(|guard| below_tiles_bytes(&guard))
-            .unwrap_or(0);
-        let above = self
-            .above
-            .lock()
-            .map(|guard| below_tiles_bytes(&guard))
-            .unwrap_or(0);
-        let masks = self.masks.bytes();
-        let vector = self
-            .vector_raster
-            .lock()
-            .map(|cache| cache.bytes())
-            .unwrap_or(0);
+        let below = self.below_cache_bytes();
+        let above = self.above_cache_bytes();
+        let masks = self.mask_cache_bytes();
+        let vector = self.vector_raster_cache_bytes();
         pool.saturating_add(tiles)
             .saturating_add(bitmaps)
             .saturating_add(below)

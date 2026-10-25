@@ -1766,6 +1766,17 @@ impl Document {
         self.renderer.buffer_pool().stats()
     }
 
+    /// below/above/蒙版/矢量四项缓存各占的字节 ✓（RSS 修复 paint-rss 的
+    /// 观测口：`renderer_retained_bytes` 的分账）。
+    pub fn cache_breakdown_bytes(&self) -> (usize, usize, usize, usize) {
+        (
+            self.renderer.below_cache_bytes(),
+            self.renderer.above_cache_bytes(),
+            self.renderer.mask_cache_bytes(),
+            self.renderer.vector_raster_cache_bytes(),
+        )
+    }
+
     /// **解码位图缓存的统计** ✓（判据据此断言"同一块补丁没有被重复解码" ✓）。
     ///
     /// `misses` 就是真正 `store.get` + 解码的次数 ✓ ⇒

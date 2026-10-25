@@ -115,6 +115,11 @@ fn retained_breakdown(workspace: &mut Workspace, doc: &str) -> (usize, usize, us
     let bitmap = document.bitmap_cache_stats().bytes;
     let region = document.region_cache_bytes();
     let total = document.renderer_retained_bytes();
+    let (below, above, masks, vector) = document.cache_breakdown_bytes();
+    eprintln!(
+        "RSS-SPLIT {doc} below={below} above={above} masks={masks} vector={vector} sum_check={}",
+        pool.retained_bytes + tile + bitmap + region + below + above + masks + vector
+    );
     (total, pool.retained_bytes, tile, bitmap, region)
 }
 
