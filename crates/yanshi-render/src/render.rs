@@ -2020,6 +2020,9 @@ impl Renderer {
 
         // **★ below 复用判定 ✓**（目标第 4 条 ✓）：先算"可见层"的签名 ✓，再看缓存是否仍然有效 ✓。
         let mut visible_ids: Vec<String> = Vec::new();
+        // **★ 同时记下每层有没有对象 ✓**（RSS 修复 paint-rss：下方层全空 ⇒ below
+        // 只是背景 ⇒ 不值得存整幅 f32 tile；见下面的 `below_has_content` ✓）。
+        let mut visible_has_objects: Vec<bool> = Vec::new();
         // **★ 同时记下**层 id 的顺序 ✓**（**指纹串里没有 id ✗**）⇒ **∴ 用它定位"当前层"✓**。
         let mut visible_layer_ids: Vec<String> = Vec::new();
         // **★ `above` 需要知道"当前层透不透"✗ ★**（第 692 轮 ✓；**目标第 4 条 ✓**）：
@@ -2107,6 +2110,7 @@ impl Renderer {
             let color_space = format!("{:?}", state.color_space);
             visible_layer_ids.push(layer.id.clone());
             visible_opacity.push(layer.opacity);
+            visible_has_objects.push(!objs.is_empty());
             visible_ids.push(format!(
                 "{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 layer.id,
@@ -2147,6 +2151,14 @@ impl Renderer {
             None => visible_layer_ids.len().saturating_sub(1),
         };
         let sig: Vec<String> = visible_ids.iter().take(split).cloned().collect();
+        // **★ 下方集合有没有真内容 ✓**（RSS 修复 paint-rss）：下方层全空时 below
+        // 快照只是背景色（单色填充就能重算），存它等于每文档白占一幅 f32 整幅
+        // （4K 实测 132,710,400 字节）。没内容 ⇒ 不取快照（连 `clone` 也省了）、
+        // 不写缓存；下次命中缺失时重算背景即可，像素结果不变（只是少一次复用）。
+        let below_has_content = visible_has_objects
+            .iter()
+            .take(split)
+            .any(|has| *has);
         // **★ 临时探针 ✓**（第 531 轮 ✓，**查明后删 ✓**）：**打印层 id 列表与当前层**✗** ⇒
         // **∴ 一眼看出**是**名字不同 ✗**（(a)／(c) ✓）还是**列表里没有 ✗**（(b) ✓）**。
         if let Ok(probe) = std::env::var("YANSHI_BELOW_PROBE") {
@@ -2943,7 +2955,12 @@ impl Renderer {
             }
             // **∴ 切点 ✗**：**`index_here` 从 0 数已合成的可见层 ✓ ⇒ **∴ `+ 1 == split`**
             //   ⇒ **∴ 此刻 `accumulation` **正好**只有下方层 ✓ ⇒ **∴ 这就是缓存要存的内容 ✓**** ✓✓
-            if cacheable && below_snapshot.is_none() && index_here + 1 == split {
+            //   （RSS 修复 paint-rss：下方全空时不取快照 ⇒ 也不写缓存，见 `below_has_content` ✓。）
+            if cacheable
+                && below_snapshot.is_none()
+                && below_has_content
+                && index_here + 1 == split
+            {
                 below_snapshot = Some(accumulation.clone());
             }
             // **★ 同时累积一份 `above` ✗ ★**（第 692 轮 ✓）：**∴ `index_here > split` ⇒ 该层在
