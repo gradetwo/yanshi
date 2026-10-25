@@ -693,7 +693,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "core",
                 Object,
                 false,
-                "核心参数 {points|points_patch,brush,color,size,opacity,blend_mode}"
+                "核心参数 {points|points_patch,brush,color,color_space,size,opacity,blend_mode}；\
+                 `color_space: \"srgb\"|\"linear\"`（P2-9）：显式颜色解释空间，只认这两个值，\
+                 不传 ⇒ 沿用落笔时记的空间（老笔触没记 ⇒ 量级切换）；非法值 ⇒ 报错拒绝（invalid_argument）"
             ),
             param!("preset", String, false, "命名预设"),
             param!(
@@ -2569,6 +2571,7 @@ CLIP_TO_SELECTION_PARAM,
             param!("color", Any, false, "试色：写法同 brush_stroke 的 color ✓（**任一分量 > 1 即按 0..255 字节解释** ✓；不给则用 .myb 自带色）"),
             param!("points", Array, false, "自定义采样笔迹 [[x,y,pressure],…]；不给则用一条固定的缓 S 形 ✓（同一支笔刷 ⇒ 可复现 ✓）"),
             param!("color_to", Any, false, "末端颜色（**写法同 color** ✓ ⇒ 任一分量 > 1 即按 0..255 字节解释 ✓）⇒ 预览里也能看到**一笔多色** ✓（与落笔同一条实现 ✓）"),
+            param!("color_space", String, false, "颜色解释空间（P2-9，与 `brush_stroke` 同口径）：`srgb` ⇒ 0..1 浮点数组按 sRGB 字节解释（`v*255` 取整再解码）；`linear` ⇒ 浮点数组按线性直通（即使分量 > 1 也不按字节解释）；不传 ⇒ 现行量级切换（任一分量 > 1 即字节，否则线性）。作用于 `color` 与 `color_to`；对象式 / hex 恒为字节，不受本参数影响。回执 `applied.color_space` 回显输入色的实际解释空间（`linear` / `srgb_bytes` / `hex`）；顶层 `color_space` 仍是混色与输出的空间（恒 `srgb`），两者不要混淆"),
             param!("smooth", Boolean, false, "true ⇒ 与 brush_stroke 的 smooth 同一条平滑 ✓（预览所见 = 落笔所得）"),
             // **这两个实现里一直在读、参数面里却没有** ✗ —— 实测报错原话：
             // "brush_preview 不接受参数 hardness（拼写错误？）；可用参数：brush, si…" ✓
@@ -2732,6 +2735,7 @@ CLIP_TO_SELECTION_PARAM,
             param!("points", Any, false, "控制点 [[x, y, pressure?], …]（文档像素）"),
             param!("size", Number, false, "笔尖直径（像素；缺省用 .myb 自带）"),
             param!("color", Any, false, "笔尖颜色 {r,g,b,a} 或 [r,g,b,(a)]"),
+            param!("color_space", String, false, "颜色解释空间（P2-9，与 `brush_stroke` 同口径）：`srgb` ⇒ 0..1 浮点数组按 sRGB 字节解释（`v*255` 取整再解码）；`linear` ⇒ 浮点数组按线性直通（即使分量 > 1 也不按字节解释）；不传 ⇒ 现行量级切换（任一分量 > 1 即字节，否则线性）。作用于 `color`；对象式 / hex 恒为字节，不受本参数影响。回执 `applied.color_space` 回显实际生效的单位（`linear` / `srgb_bytes` / `hex`）"),
             param!("opacity", Number, false, "整笔不透明度 0..1"),
             param!("hardness", Number, false, "笔尖硬度 0..1"),
             // **`sensors` 之前漏声明** ✓（第 719 轮；外部审计 S-02 第 ② 组）

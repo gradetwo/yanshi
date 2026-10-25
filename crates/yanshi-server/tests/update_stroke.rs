@@ -345,7 +345,184 @@ fn update_stroke_refuses_a_raster_without_a_source() {
     assert_eq!(got["versions"], json!(1), "拒绝之后版本链不该涨：{got}");
 }
 
-/// **画笔笔触只认 color / size / opacity** ✓ —— 别的键**明确拒绝** ✗（不许静默忽略 ✓）。
+/// **P2-9：`update_stroke` 认 `color_space`（光栅重跑）** ✓
+///
+/// 判据 ✓：① 换色 + `color_space:"srgb"` ⇒ 新 blob 哈希与线性臂不同（重跑真的按新空间解释了颜色 ✓）；
+/// ② `source.color_space` 记成 `"srgb"`；③ 再换色不给空间 ⇒ 仍按 srgb 解释（新空间已记进 source ✓）。
+///
+/// **为什么不断画布像素** ✗：光栅重跑的像素不落地是**既有已知红**（`update_stroke_recolours_a_brush_stroke`
+/// 已 `#[ignore]`：换色后画布仍是旧色、红 3662 / 蓝 0，本期不修）⇒ 本测试只断"重跑产出了什么"
+///（blob 哈希 + source 记录），不断"画布显示了什么"；矢量路径的像素断言见下一条测试。
+#[test]
+fn update_stroke_accepts_color_space_on_a_brush_stroke() {
+    let mut workspace = asset_workspace("color_space");
+    call(&mut workspace, "create_layer", json!({ "layer_id": "L" }));
+    let made = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "object_id": "B3", "brush": "100%_Opaque", "size": 24,
+            "color": [0.45, 0.38, 0.30, 1.0],
+            "points": [[40.0, 60.0, 0.8], [180.0, 60.0, 0.8]]
+        }),
+    );
+    assert_eq!(made["ok"], json!(true), "{made}");
+    let old_hash = call(&mut workspace, "get_object", json!({ "object_id": "B3" }))["data"]
+        ["bitmap"]["blob_hash"]
+        .clone();
+    let updated = call(
+        &mut workspace,
+        "update_stroke",
+        json!({ "object_id": "B3", "core": { "color": [0.45, 0.38, 0.30, 1.0], "color_space": "srgb" } }),
+    );
+    assert_eq!(updated["ok"], json!(true), "{updated}");
+    let got = call(&mut workspace, "get_object", json!({ "object_id": "B3" }));
+    let srgb_hash = got["data"]["bitmap"]["blob_hash"].clone();
+    assert_ne!(
+        srgb_hash, old_hash,
+        "换色 + srgb 必须产出新 blob（重跑真的跑了）：{got}"
+    );
+    assert_eq!(
+        got["data"]["source"]["color_space"],
+        json!("srgb"),
+        "来源里要记下新空间（下次重跑沿用）：{got}"
+    );
+    // 同色换 linear ⇒ 另一枚 blob（两空间解释出的字节不同 ✓）。
+    let relined = call(
+        &mut workspace,
+        "update_stroke",
+        json!({ "object_id": "B3", "core": { "color": [0.45, 0.38, 0.30, 1.0], "color_space": "linear" } }),
+    );
+    assert_eq!(relined["ok"], json!(true), "{relined}");
+    let got = call(&mut workspace, "get_object", json!({ "object_id": "B3" }));
+    let linear_hash = got["data"]["bitmap"]["blob_hash"].clone();
+    assert_ne!(
+        linear_hash, srgb_hash,
+        "同色不同空间 ⇒ blob 必须不同（否则空间没生效）：{got}"
+    );
+    assert_eq!(got["data"]["source"]["color_space"], json!("linear"));
+    // 再换色不给空间 ⇒ 仍是 linear（source 里记的空间被沿用 ✓）。
+    let again = call(
+        &mut workspace,
+        "update_stroke",
+        json!({ "object_id": "B3", "core": { "color": [0.45, 0.38, 0.30, 1.0] } }),
+    );
+    assert_eq!(again["ok"], json!(true), "{again}");
+    let got = call(&mut workspace, "get_object", json!({ "object_id": "B3" }));
+    assert_eq!(
+        got["data"]["source"]["color_space"],
+        json!("linear"),
+        "再换色不给空间 ⇒ source 里仍是上次的空间：{got}"
+    );
+    assert_eq!(
+        got["data"]["bitmap"]["blob_hash"], linear_hash,
+        "同色同空间重跑 ⇒ blob 应与 linear 臂相同（重跑是确定性的）"
+    );
+}
+
+/// **P2-9：`update_stroke` 非法 `color_space` ⇒ `invalid_argument`** ✓
+///
+/// 两条路共用入口校验：光栅重跑与矢量路径都在写进 `data` 之前拒绝 ✓。
+#[test]
+fn update_stroke_rejects_an_unknown_color_space() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_us", 32, 32),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    call(&mut workspace, "create_layer", json!({ "layer_id": "L" }));
+    draw(&mut workspace, "S3", json!([1.0, 0.0, 0.0, 1.0]));
+    let bad = call(
+        &mut workspace,
+        "update_stroke",
+        json!({ "object_id": "S3", "core": { "color_space": "lab" } }),
+    );
+    assert_eq!(bad["ok"], json!(false), "非法值必须失败：{bad}");
+    assert_eq!(bad["error_code"], json!("invalid_argument"), "{bad}");
+    let detail = bad["context"]["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("srgb") && detail.contains("linear"),
+        "报错里要列出两个允许值：{detail}"
+    );
+}
+
+/// **P2-9：`update_stroke` 的 `color_space` 在矢量笔迹上生效** ✓
+///
+/// 判据 ✓：缺省浮点色 ⇒ (179,166,149)；换色 + `color_space:"srgb"` ⇒ (115,97,77)；
+/// `data.color_space` 记成 `"srgb"`（渲染侧 `BrushSpec::from_value` 读它 ✓）。
+#[test]
+fn update_stroke_color_space_changes_a_vector_stroke() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_us", 32, 32),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    call(&mut workspace, "create_layer", json!({ "layer_id": "L" }));
+    draw(&mut workspace, "S4", json!([0.45, 0.38, 0.30, 1.0]));
+    let before = sample_median(&mut workspace, 32, 32, &[(10, 8), (16, 8), (22, 8)]);
+    assert!(
+        (170..=188).contains(&before[0]),
+        "缺省浮点色 R 通道应 ≈179（实测 {before:?}）"
+    );
+    let updated = call(
+        &mut workspace,
+        "update_stroke",
+        json!({ "object_id": "S4", "core": { "color": [0.45, 0.38, 0.30, 1.0], "color_space": "srgb" } }),
+    );
+    assert_eq!(updated["ok"], json!(true), "{updated}");
+    let after = sample_median(&mut workspace, 32, 32, &[(10, 8), (16, 8), (22, 8)]);
+    assert!(
+        (108..=122).contains(&after[0]) && (90..=104).contains(&after[1]),
+        "换色 + srgb 后应 ≈(115,97,77)（实测 {after:?}，缺省臂 {before:?}）"
+    );
+    let got = call(&mut workspace, "get_object", json!({ "object_id": "S4" }));
+    assert_eq!(
+        got["data"]["color_space"],
+        json!("srgb"),
+        "矢量对象的 data 里要记下空间：{got}"
+    );
+    // 只换空间回 linear（不换颜色）⇒ 像素回到线性色（空间是笔的配方 ✓）。
+    let back = call(
+        &mut workspace,
+        "update_stroke",
+        json!({ "object_id": "S4", "core": { "color_space": "linear" } }),
+    );
+    assert_eq!(back["ok"], json!(true), "{back}");
+    let restored = sample_median(&mut workspace, 32, 32, &[(10, 8), (16, 8), (22, 8)]);
+    assert!(
+        (170..=188).contains(&restored[0]),
+        "只换空间回 linear 后 R 通道应 ≈179（实测 {restored:?}）"
+    );
+}
+
+/// **指定像素点的中位色** ✓（沿线取 3 点，免得单点落在 dab 缝里 ✓）。
+fn sample_median(
+    workspace: &mut Workspace,
+    width: usize,
+    height: usize,
+    points: &[(usize, usize)],
+) -> [u8; 3] {
+    let region = pixels(workspace, width as f64, height as f64);
+    let mut channels: [Vec<u8>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    for (x, y) in points {
+        let at = (y * width + x) * 4;
+        for c in 0..3 {
+            channels[c].push(region[at + c]);
+        }
+    }
+    let mut out = [0u8; 3];
+    for c in 0..3 {
+        channels[c].sort_unstable();
+        out[c] = channels[c][channels[c].len() / 2];
+    }
+    out
+}
 #[test]
 fn update_stroke_refuses_unsupported_keys_on_a_brush_stroke() {
     let mut workspace = asset_workspace("unsupported_key");

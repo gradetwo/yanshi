@@ -5690,12 +5690,13 @@ fn restyle_baked_brush_stroke(
         for key in core.keys() {
             if key != "color"
                 && key != "color_to"
+                && key != "color_space"
                 && key != "size"
                 && key != "opacity"
                 && key != "hardness"
             {
                 return refuse(format!(
-                    "画笔笔触的重跑只认 color / color_to / size / opacity / hardness ✓（收到 {key} ✗）——                      其它项（点列 / 混合模式…）请撤销后重画一笔 ✓"
+                    "画笔笔触的重跑只认 color / color_to / color_space / size / opacity / hardness ✓（收到 {key} ✗）——                      其它项（点列 / 混合模式…）请撤销后重画一笔 ✓"
                 ));
             }
         }
@@ -5762,7 +5763,17 @@ fn restyle_baked_brush_stroke(
     // **重跑也要带上落笔时记的 `color_space`**（C1）：source 里记的是调用方给的原话
     //（`"srgb"` / `"linear"` / 缺省 `null`）；`core` 换色时也沿用它 —— 空间是这支笔的配方，
     // 不是某一次颜色值的附庸；老笔触没记 ⇒ `None` ⇒ 量级切换，与落笔时一致。
-    let color_space = color_space_from_value(source.get("color_space"))?;
+    // **显式 `color_space`**（P2-9）：`core.color_space` 给了 ⇒ 本次重跑用它解释新颜色，
+    // 且写进新 `source`（下一次重跑沿用新空间）；只换空间不换颜色也会重跑出不同像素。
+    // 非法值在 `write_update_stroke` 入口已校验过，这里只解析、不再报错。
+    let explicit_space = match core.and_then(|core| core.get("color_space")) {
+        Some(value) => color_space_from_value(Some(value))?,
+        None => None,
+    };
+    let color_space = match explicit_space {
+        Some(space) => Some(space),
+        None => color_space_from_value(source.get("color_space"))?,
+    };
     let paint = paint_brush(
         ctx,
         &brush,
@@ -5804,7 +5815,12 @@ fn restyle_baked_brush_stroke(
         "color": color.clone().unwrap_or(Value::Null),
         "color_to": color_to.clone().unwrap_or(Value::Null),
         // **显式 `color_space` 也要进 `source`**（C1）：否则下一次重跑会丢掉空间、笔变色。
-        "color_space": source.get("color_space").cloned().unwrap_or(Value::Null),
+        // P2-9：`core` 给了新空间 ⇒ 记新空间（下一次重跑沿用它）；没给 ⇒ 沿用落笔时记的。
+        "color_space": match explicit_space {
+            Some(yanshi_render::color::ColorSpace::Srgb) => json!("srgb"),
+            Some(yanshi_render::color::ColorSpace::Linear) => json!("linear"),
+            None => source.get("color_space").cloned().unwrap_or(Value::Null),
+        },
         "smooth": smooth,
         "opacity": opacity.map(|value| json!(value)).unwrap_or(Value::Null),
         "hardness": hardness.map(|value| json!(value)).unwrap_or(Value::Null),
@@ -5827,6 +5843,12 @@ fn restyle_baked_brush_stroke(
 
 fn write_update_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let object_id = require_str(args, "object_id")?;
+    // **`color_space` 先校验**（P2-9）：`core` 里的非法值要在写进 `data` 之前就
+    // `invalid_argument` —— 笔迹路径把它原样写进 `data`、渲染时才解释，晚校验等于静默收下；
+    // 光栅重跑路径随后还会再解析一次（取值用），同一条校验、不另起口径。
+    if let Some(core) = args.get("core").and_then(Value::as_object) {
+        let _ = color_space_from_value(core.get("color_space"))?;
+    }
     let state = document_state(ctx)?;
     let object = state.objects.get(&object_id).ok_or_else(|| {
         YanshiError::new(
@@ -18016,9 +18038,10 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         // **预览不带传感器**（回答的是"这支笔长什么样"，与 brush_stroke 的
         // sensors 是两回事；缺省全 0 ⇒ 与历史预览逐位一致 ✓）。
         BrushSensors::default(),
-        // **预览不接 `color_space`**（C1 只做 brush_stroke / medium_stroke）⇒
-        // 缺省量级切换，与以前逐位一致。
-        None,
+        // **显式 `color_space`**（P2-9）：与 `brush_stroke` 同口径 —— 只认 `"srgb"` / `"linear"`，
+        // 不传 ⇒ 量级切换；非法值在这里就 `invalid_argument`（预览前拒绝，与落笔同一条校验）。
+        // 它只改**输入色**的解释（`color` / `color_to`），混色与输出仍恒为 sRGB（见下面的注）。
+        parse_color_space_arg(args)?,
     )?;
     let (width, height) = (paint.width as u32, paint.height as u32);
     let png = yanshi_render::png::encode_png(width, height, &paint.rgba).ok_or_else(|| {
@@ -18093,7 +18116,10 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     value["target_layer_supported"] = json!(false);
     value["target_layer_note"] = json!("预览不支持只读某一层（没有 layer_id 参数）：`render_region_raw` 读的是文档合成。要做这种预览，需要渲染层提供按层读取；这与「底图内容仍未读入」是同一处限制。要只看一层，用 export_png 的 layer_id（它走文档合成，能按层导出）。");
     value["color_space"] = json!("srgb");
-    value["color_space_note"] = json!("`brush_preview` 恒在 **sRGB 字节空间**混色（`ColorMixing::Rgb` 直接对 u8 插值；`Pigment` 也以 `ks_to_srgb` 结束）⇒ **不是 linear**。所以 `max_channel_delta` 这类差值也在 sRGB 里量；若你的参考图或计算在 linear/LAB/HSV 里，**Δ 不能直接比**。");
+    value["color_space_note"] = json!("`brush_preview` 恒在 **sRGB 字节空间**混色（`ColorMixing::Rgb` 直接对 u8 插值；`Pigment` 也以 `ks_to_srgb` 结束）⇒ **不是 linear**。所以 `max_channel_delta` 这类差值也在 sRGB 里量；若你的参考图或计算在 linear/LAB/HSV 里，**Δ 不能直接比**。输入色的解释空间另见 `applied.color_space`（`color_space` 参数：`srgb`/`linear`，不传 ⇒ 量级切换；只改输入解释，不改混色与输出）。");
+    // **本次调用生效参数的回显**（P2-9，与 `brush_stroke` 同口径）：`applied.color_space`
+    // 回显输入色的实际解释空间（`color` 没给时不出现）；顶层 `color_space` 仍是混色与输出的空间。
+    value["applied"] = applied_echo(ctx, args);
     // **出参 path 形态**（设计文档第 4 章 4.2/4.5）：给了 `output_path` ⇒ 同一份 PNG
     // 落盘（守卫与 export_png 共用 `guarded_output_path`），响应给 `image_file`
     // 元数据而**不内嵌 base64**；不给 ⇒ 与旧行为逐字一致。
@@ -19295,9 +19321,9 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
         &[],
         None,
         sensors,
-        // **`try_stroke` 不接 `color_space`**（C1 只做 brush_stroke / medium_stroke）⇒
-        // 缺省量级切换，与以前逐位一致。
-        None,
+        // **显式 `color_space`**（P2-9）：与 `brush_stroke` 同口径 —— 只认 `"srgb"` / `"linear"`，
+        // 不传 ⇒ 量级切换；非法值在这里就 `invalid_argument`（试画前拒绝，与落笔同一条校验）。
+        parse_color_space_arg(args)?,
     )?;
     let bbox = [
         paint.x0,
@@ -19389,6 +19415,9 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
         "height": paint.height,
         "note": "试画不写入文档：没有原子、seq 不变、文件字节数不变",
     });
+    // **本次调用生效参数的回显**（P2-9，与 `brush_stroke` 同口径）：`applied.color_space`
+    // 回显输入色的实际解释空间（`color` 没给时不出现）；其余字段是构造期值（同 `medium_stroke`）。
+    out["applied"] = applied_echo(ctx, args);
     // **出参 path 形态**（设计文档第 4 章 4.2/4.5）：给了 `output_path` ⇒ PNG 落盘
     // （守卫与 export_png 共用 `guarded_output_path`）、响应给 `image_file` 元数据；
     // 它本身即「要图」的表示，不必再传 `want_image`。不给 ⇒ 与旧行为逐字一致。

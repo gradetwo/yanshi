@@ -248,9 +248,11 @@ impl Default for BrushSpec {
 }
 
 impl BrushSpec {
-    /// 由对象 `data` 解析（键：size/color/opacity/flow/hardness/spacing/jitter/seed/blend_mode）。
+    /// 由对象 `data` 解析（键：size/color/color_space/opacity/flow/hardness/spacing/jitter/seed/blend_mode）。
     ///
     /// `color` 可以是 `[r, g, b, a]`（线性直通）或 `{"r": 0-255, "g": ..., "b": ..., "a": ...}`（sRGB 字节）。
+    /// `color_space`（P2-9，与 `update_stroke` 的 `core.color_space` 同名）显式改写数组的解释：
+    /// `"srgb"` ⇒ 0..1 浮点数组按 sRGB 字节解释，`"linear"` ⇒ 按线性直通；不给 ⇒ 既有量级切换。
     pub fn from_value(value: &Value) -> Self {
         let mut spec = Self::default();
         if let Some(size) = value.get("size").and_then(Value::as_f64) {
@@ -288,9 +290,13 @@ impl BrushSpec {
             spec.symmetry = Symmetry::from_name(symmetry);
         }
         if let Some(color) = value.get("color") {
-            // 统一走 `color::parse_spec_color`：数组 > 0-1 视为 sRGB 字节，
-            // 对象与十六进制同样接受（详见该函数文档里的历史事故说明）。
-            if let Some(parsed) = crate::color::parse_spec_color(color) {
+            // **显式空间**（P2-9）：`data.color_space` 是 `update_stroke` 写进来的原话；
+            // 不给 / 不认 ⇒ `None` ⇒ 既有量级切换（与 `parse_spec_color_with_space` 同口径）。
+            let space = value
+                .get("color_space")
+                .and_then(Value::as_str)
+                .and_then(crate::color::ColorSpace::from_name);
+            if let Some(parsed) = crate::color::parse_spec_color_with_space(color, space) {
                 spec.color = parsed;
             }
         }
@@ -1635,6 +1641,39 @@ mod tests {
         let defaults = BrushSpec::from_value(&json!({}));
         assert_eq!(defaults.blend_mode, BlendMode::Normal);
         assert_eq!(defaults.opacity, 1.0);
+    }
+
+    #[test]
+    fn brush_spec_honors_explicit_color_space() {
+        // **P2-9**：`data.color_space` 改写浮点数组的解释（与 `update_stroke` 同口径）。
+        let color = json!([0.5, 0.25, 0.0, 1.0]);
+        let linear = BrushSpec::from_value(&json!({"color": color}));
+        assert_eq!(
+            linear.color,
+            [0.5, 0.25, 0.0, 1.0],
+            "不给空间 ⇒ 既有量级切换（浮点 = 线性）"
+        );
+        let srgb = BrushSpec::from_value(&json!({"color": color.clone(), "color_space": "srgb"}));
+        assert!(
+            (srgb.color[0] - linear.color[0]).abs() > 0.2,
+            "srgb 臂必须与线性臂分开：实测 {:?} vs {:?}",
+            srgb.color,
+            linear.color
+        );
+        let bytes = BrushSpec::from_value(&json!({"color": {"r": 128, "g": 64, "b": 0, "a": 255}}));
+        assert!(
+            (srgb.color[0] - bytes.color[0]).abs() < 1e-6
+                && (srgb.color[1] - bytes.color[1]).abs() < 1e-6,
+            "srgb 浮点臂应与字节臂逐通道一致：实测 {:?} vs {:?}",
+            srgb.color,
+            bytes.color
+        );
+        let explicit_linear =
+            BrushSpec::from_value(&json!({"color": color.clone(), "color_space": "linear"}));
+        assert_eq!(
+            explicit_linear.color, linear.color,
+            "显式 linear 与缺省同一条路"
+        );
     }
 
     #[test]

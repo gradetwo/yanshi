@@ -425,6 +425,21 @@ pub enum ColorSpace {
     Linear,
 }
 
+impl ColorSpace {
+    /// **按名解析**（P2-9）：`update_stroke` 写进对象 `data.color_space` 的字符串，
+    /// 渲染侧（`BrushSpec::from_value`）读回时用它 —— 与服务端
+    /// `color_space_from_value` 认同一套名字（`"srgb"` / `"linear"`），
+    /// 其它值 ⇒ `None`（调用方那一层已在写进 `data` 之前校验过非法值，
+    /// 这里只做防御性回落：不认的名字按缺省量级切换解释，不静默编一个空间）。
+    pub fn from_name(text: &str) -> Option<Self> {
+        match text {
+            "srgb" => Some(Self::Srgb),
+            "linear" => Some(Self::Linear),
+            _ => None,
+        }
+    }
+}
+
 /// 带显式空间的颜色解析（C1）：`parse_spec_color` 的带参形态。
 pub fn parse_spec_color_with_space(
     value: &serde_json::Value,
