@@ -824,11 +824,20 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
                 1.0
             };
             if inside <= 0.0 {
+                // **只数真正落过墨的像素** ✓（A3）：`painted` 数的是补丁里**任一通道非零**的像素 ⇒
+                //   被裁掉的透明像素本来就没画，数进来会让 `painted_pixels_clipped = painted - dropped`
+                //   偏小（实测：半裁一笔报 0.32 而不是 ~0.5 ✗，差的正是裁掉区域里的透明像素 ✓）。
+                if rgba[index] != 0
+                    || rgba[index + 1] != 0
+                    || rgba[index + 2] != 0
+                    || rgba[index + 3] != 0
+                {
+                    dropped += 1;
+                }
                 rgba[index] = 0;
                 rgba[index + 1] = 0;
                 rgba[index + 2] = 0;
                 rgba[index + 3] = 0;
-                dropped += 1;
             } else if inside < 1.0 {
                 rgba[index + 3] = (f64::from(rgba[index + 3]) * inside)
                     .round()
@@ -966,6 +975,9 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     value["brush"] = json!(name);
     value["steps"] = json!(steps);
     value["painted_pixels"] = json!(painted);
+    // **同值字段 `painted_pixels_raw`** ✓（A3 并存方案）：`painted_pixels` 是**裁剪前**的铺开面积，
+    //   与 `painted_pixels_raw` 完全同值 ⇒ 老调用方不用改，新调用方一眼看出"这是 raw 口径" ✓。
+    value["painted_pixels_raw"] = json!(painted);
     // **裁剪后的真实落墨量** ✓（第 1553 轮；外部 `B6`）
     //   **⇒ 为什么两个都要**：`painted_pixels` 是**印章面积**（裁剪前）⇒ 用它算覆盖率
     //     会得出「笔触都落上了」的错觉（他们实测：选区 166 万像素、累计报 793 万）✗
@@ -991,8 +1003,20 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     //   **⇒ 为什么现在只给数、不给 warning** ✗：**warning 那条分支我暂时造不出触发条件** ✓
     //     （`color.a=0` 实测**不是**全透明 ✓：`painted=324 / ink=324` ✓）⇒ 按规矩
     //     **不提交没有判据的分支** ✓ ⇒ 先只加字段 ✓，warning 等能复现了再加 ✓。
-    let ink_footprint_pixels = rgba.chunks_exact(4).filter(|px| px[3] != 0).count();
+    // **墨量 `ink_mass` 与足迹同一遍遍历** ✓（A2）：`Σalpha`（落墨像素 alpha 字节之和，u64）⇒
+    //   恒等式 `0 ≤ ink_mass ≤ ink_footprint_pixels × 255`；`rgba` 在这里已是**裁剪后**的缓冲 ⇒
+    //   Σalpha 天然与 `painted_pixels_clipped` 同口径，对称合并也在此之前 ⇒ 镜像一半已含在内 ✓。
+    let (ink_footprint_pixels, ink_mass) =
+        rgba.chunks_exact(4)
+            .fold((0usize, 0u64), |(footprint, mass), px| {
+                if px[3] != 0 {
+                    (footprint + 1, mass + u64::from(px[3]))
+                } else {
+                    (footprint, mass)
+                }
+            });
     value["ink_footprint_pixels"] = json!(ink_footprint_pixels);
+    value["ink_mass"] = json!(ink_mass);
     // **兼容别名** ✓：值完全相同 ✓，只在注释里说明"同源、语义是足迹" ✓
     value["ink_pixels"] = json!(ink_footprint_pixels);
     // **覆盖率只在裁剪时出现**（不裁剪时不出现，而不是给个 1.0 让人以为是量出来的）✓
@@ -1007,6 +1031,15 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         value["clip_coverage"] = json!(coverage);
     }
     value["max_channel_delta"] = json!(max_delta);
+    // **落笔顶层结论** ✓（A1/B1）：`landed` + `landed_reason` ⇒ 调用方不用再自己读五个字段拼结论 ✓。
+    //   判定见 `landed_reason`（`tools.rs`，与 `medium_stroke` 共用同一函数 ✓）。
+    let (landed_reason, landed) = landed_reason(
+        painted.saturating_sub(clipped_away) as u64,
+        ink_footprint_pixels as u64,
+        u64::from(max_delta),
+    );
+    value["landed"] = json!(landed);
+    value["landed_reason"] = json!(landed_reason);
     // **`max_channel_delta` 的 regime 必须**机器可读**** ✓（第 808 轮；外部 `qoder` 的 D193）
     //   **⇒ 他们的实测**：`reads_canvas=false` 的那一支**先把补丁合成到白底**再与 `255` 比 ✓
     //     ⇒ 在**非白底文档**上 `delta = (255 − patch_rgb) × alpha/255` ✓

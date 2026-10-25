@@ -8,8 +8,14 @@
 //   ① 画一笔（`brush_stroke`）⇒ 那条原子的 `origin` 必须是 **`drawn`** ✓（**不管 `kind` 是什么** ✓）；
 //   ② 建图层那类记账原子 ⇒ `origin` 必须是 **`system`** ✓；
 //   ③ 每条原子都必须带 `origin` 字段（不许缺 ⇒ 缺失会让调用方又退回去看 `kind` ✗）。
+//   ④ `import_image` 导入一张图 ⇒ 对应原子的 `origin` 与 `stored_origin` 都必须是 **`imported`** ✓
+//      （`put_blob` 先造 blob，再 `import_image`；导入臂与 ① 的 drawn 臂互为对照）。
 //
-// **变异**：把 `origin` 恒写成 `"imported"`（或删掉该字段）⇒ ① / ③ 红 ✓。
+// **变异**：把 `origin` 恒写成 `"imported"`（或删掉该字段）⇒ ① / ③ 红 ✓；
+//   把 import 的 `origin` 写成 `"drawn"` ⇒ ④ 红 ✓。
+import { writeFileSync, rmSync } from "node:fs";
+import { join, dirname } from "node:path";
+import zlib from "node:zlib";
 const [base, doc, token] = process.argv.slice(2);
 if (!base || !doc || !token) {
   console.error("用法: node scripts/tool-atom-origin.mjs <base> <doc> <token>");
@@ -74,7 +80,94 @@ const system = atoms.filter((atom) => atom.origin === "system");
 if (system.length === 0) {
   fail(`建图层那类记账原子没有 origin=system ⇒ 来源分类不成立`);
 }
+// **④ 导入臂**：`import_image` 导入一张图 ⇒ 对应原子 `origin` 与 `stored_origin` 都必须是 `imported`
+//   ⇒ 构造法与 `tool-import-blob-decodable.mjs` 同款：先写一张 8×8 纯红 PNG 到 root，
+//     `put_blob` 造 blob，再 `import_image`。
+const exportDir = process.env.YANSHI_EXPORT_DIR;
+if (!exportDir) {
+  console.log("  ⊘ 不可判：没设 YANSHI_EXPORT_DIR（导入臂要靠它反推 root）");
+  process.exit(3);
+}
+const root = dirname(exportDir);
+const crcTable = (() => {
+  const t = new Int32Array(256);
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c;
+  }
+  return t;
+})();
+const crc32 = (buf) => {
+  let c = 0xffffffff;
+  for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+};
+const chunk = (type, data) => {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length);
+  const td = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(td));
+  return Buffer.concat([len, td, crc]);
+};
+const W = 8;
+const H = 8;
+const ihdr = Buffer.alloc(13);
+ihdr.writeUInt32BE(W, 0);
+ihdr.writeUInt32BE(H, 4);
+ihdr[8] = 8;
+ihdr[9] = 6;
+const rawRows = Buffer.alloc(H * (1 + W * 4));
+for (let y = 0; y < H; y += 1) {
+  for (let x = 0; x < W; x += 1) {
+    const off = y * (1 + W * 4) + 1 + x * 4;
+    rawRows[off] = 200;
+    rawRows[off + 1] = 40;
+    rawRows[off + 2] = 40;
+    rawRows[off + 3] = 255;
+  }
+}
+const png = Buffer.concat([
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  chunk("IHDR", ihdr),
+  chunk("IDAT", zlib.deflateSync(rawRows)),
+  chunk("IEND", Buffer.alloc(0)),
+]);
+const pngPath = join(root, `probe_import_${process.pid}.png`);
+try {
+  writeFileSync(pngPath, png);
+} catch (e) {
+  console.log(`  ⊘ 不可判：写不进 root（${e.message}）`);
+  process.exit(3);
+}
+const put = await call("put_blob", { path: pngPath });
+if (put.ok !== true || !put.blob_hash) {
+  console.log(`  ⊘ 不可判：put_blob 失败 ⇒ 导入臂的前提不成立（${JSON.stringify(put).slice(0, 120)}）`);
+  process.exit(3);
+}
+const imported = await call("import_image", {
+  layer_id: "layer_default",
+  bitmap: { blob_hash: put.blob_hash, size: 0, mime_type: "image/png" },
+  region: { x: 10, y: 10, w: W, h: H },
+});
+if (imported.ok !== true) fail(`④ import_image ⇒ ${JSON.stringify(imported).slice(0, 160)}`);
+try {
+  rmSync(pngPath);
+} catch {
+  /* 清理失败不影响判据 */
+}
+const listedAfter = await call("list_atoms", { limit: 50, offset: 0, include_non_stroke: true });
+if (listedAfter.ok !== true) fail(`④ list_atoms ⇒ ${JSON.stringify(listedAfter).slice(0, 160)}`);
+const importedAtoms = (listedAfter.atoms ?? []).filter(
+  (atom) => atom.origin === "imported" && atom.stored_origin === "imported",
+);
+if (importedAtoms.length === 0) {
+  fail(
+    `④ import_image 导入的图没有 origin=imported / stored_origin=imported 的原子 ⇒ 来源不可机械复核（清单：${(listedAfter.atoms ?? []).map((a) => `${a.kind}/${a.origin}/${a.stored_origin}`).slice(0, 6).join(", ")}）`,
+  );
+}
 const importedWithSource = drawn.filter((atom) => atom.kind === "import_image");
 console.log(
-  `✓ origin 可复核：${drawn.length} 条 drawn（其中 ${importedWithSource.length} 条 kind 仍是 import_image ⇒ 正是 D5 说的"存储形态≠来源"）、${system.length} 条 system、共 ${atoms.length} 条`,
+  `✓ origin 可复核：${drawn.length} 条 drawn（其中 ${importedWithSource.length} 条 kind 仍是 import_image ⇒ 正是 D5 说的"存储形态≠来源"）、${system.length} 条 system、${importedAtoms.length} 条 imported、共 ${(listedAfter.atoms ?? []).length} 条`,
 );

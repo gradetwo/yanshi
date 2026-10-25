@@ -13894,9 +13894,12 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     //     与 `brush_stroke` 的 `painted_pixels` 同一个意思 ✓（两族工具报同一件事 ✓）。
     //   **∴ 只报不判 ✗**：**绝不用它改变返回语义** ✗（台账 §十 记录过：那条"变了就报错"的检查
     //     上过一次、**从未生效**、已回退 ✓）⇒ 这里**只补一个数** ✓，**像素逐字节不变** ✓。
-    // ★ **一遍遍历同时算两个量** ✗**（第 100 轮 ✓；**∴ 原来 `paint_delta` 自己又扫了一遍 ✓
+    // ★ **一遍遍历同时算四个量** ✗**（第 100 轮 ✓；**∴ 原来 `paint_delta` 自己又扫了一遍 ✓
     //   ⇒ **∴ 在 4K 上那是 **67,108,864** 字节 ✗ ⇒ **∴ 实测 `brush_stroke` 中位 101.6 → 235.0 ms ✗**）
-    let (painted_pixels, paint_delta) = count_painted_and_delta(base.as_deref(), &rgba);
+    //   **⇒ A2 再添足迹与墨量** ✓：同一遍里多算 `ink_footprint_pixels` 与 `ink_mass`（Σalpha）⇒
+    //     零额外遍历 ✓（与 `brush_stroke` 同口径 ✓）。
+    let (painted_pixels, paint_delta, ink_footprint_pixels, ink_mass) =
+        count_painted_and_delta(base.as_deref(), &rgba);
     // **截断可见** ✓（第 1416 轮；外部 D-09）：两个数都给，且被夹紧时加一句说明
     value["size_requested"] = json!(size_requested);
     value["size_used"] = json!(size);
@@ -13910,7 +13913,21 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         ));
     }
     value["painted_pixels"] = json!(painted_pixels);
+    // **同值字段 `painted_pixels_raw`** ✓（A3 并存方案，与 `brush_stroke` 同例 ✓）。
+    value["painted_pixels_raw"] = json!(painted_pixels);
     value["paint_delta"] = json!(paint_delta);
+    // **足迹与墨量** ✓（A2）：与 `brush_stroke` 的 `ink_footprint_pixels`／`ink_mass` 同口径 ✓。
+    value["ink_footprint_pixels"] = json!(ink_footprint_pixels);
+    value["ink_mass"] = json!(ink_mass);
+    // **落笔顶层结论** ✓（A1/B1）：与 `brush_stroke` 共用 `landed_reason` ✓；本工具无选区裁剪 ⇒
+    //   `painted_pixels` 即 clipped 值 ✓。
+    let (landed_reason, landed) = landed_reason(
+        painted_pixels as u64,
+        ink_footprint_pixels as u64,
+        u64::from(paint_delta),
+    );
+    value["landed"] = json!(landed);
+    value["landed_reason"] = json!(landed_reason);
     // ★ **`paint_delta`：真正的落墨幅度 ✗** ★**（第 71 轮 ✓；**∴ 报告 §40 要用它做薄涂的"看得见"门 ✓**）
     //
     // **∴ 为什么叫 `paint_delta` 而不叫 `max_channel_delta` ✗**：**∴ 因为 `medium_stroke` 里
@@ -13956,20 +13973,36 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 ///
 /// **只是报数** ✓：调用方可以据此报警 ✓，但**不改变** `ok` 语义 ✗
 ///（台账 §十：那条"变了就报错"的检查上过又回退 ✓，因为它**从未生效**过 ✓）。
-/// ★ **一遍遍历同时算两个量** ✗**（第 100 轮 ✓；**∴ 性能修复 ✓**）
+/// ★ **一遍遍历同时算四个量** ✗**（第 100 轮 ✓；**∴ 性能修复 ✓**；A2 再添足迹与墨量 ✓）
 ///
 /// **∴ 为什么要合并 ✗**：`max_channel_delta` 原先**自己又扫了一遍**✗ 整块区域
 /// ⇒ **∴ 在 4K 上那是 **67,108,864** 字节 ✗** ⇒ **∴ 实测 `brush_stroke` 中位
 /// **101.6 → 235.0 ms** ✗（**∴ +133 ms ✓，台账第一百一十三节 ✓**）
 /// ⇒ **∴ 而 `count_painted_pixels` **本来就在扫同一块**✗** ⇒ **∴ 合并后**零额外遍历 ✓**。
 ///
-/// **∴ 两个量的语义**各自不变 ✗**（**∴ 不能因为合并而改 ✓**）：
-/// · **`painted`** ✓ ⇒ **有 `base` 逐字节比较 ✓／无 `base` 判 `!= [0,0,0,0]` ✓**（**∴ 原语义 ✓**）
-/// · **`delta`** ✓ ⇒ **有 `base` 用之 ✓／无 `base` 按**白底 255**✗**（**∴ 与 `brush_stroke` 一致 ✓**）
-fn count_painted_and_delta(base: Option<&[u8]>, produced: &[u8]) -> (usize, u8) {
+/// **∴ 四个量的语义**（A1 修过 `painted`／`delta` 的透明像素口径 ✓；足迹与墨量是新增 ✓）：
+/// · **`painted`** ✓ ⇒ **先跳过 alpha==0 的未触碰像素**（稀疏覆盖层 ✓）⇒ 再有 `base` 逐字节比较 ✓／
+///   无 `base` 判 `!= [0,0,0,0]` ✓（**∴ 旧口径只在无 `base` 时跳过 ⇒ 有基准时白底会数出假落墨 ✗**）
+/// · **`delta`** ✓ ⇒ 产出按 alpha **合成到底色再比 RGB** ✓（无 `base` 按**白底 255**合成 ✗）；
+///   alpha 通道不参与（不是可见颜色 ✓）⇒ **白上画白为 0** ✓（与 `brush_stroke` 的 `max_channel_delta` 同义 ✓）
+/// · **`footprint`** ✓ ⇒ 产出里 **alpha 非零**的像素数（与 `brush_stroke` 的 `ink_footprint_pixels` 同义 ✓）
+/// · **`mass`** ✓ ⇒ 落墨像素的 **alpha 字节之和（Σalpha，u64）** ⇒ 恒等式
+///   `0 ≤ mass ≤ footprint × 255`；与 `brush_stroke` 的 `ink_mass` 同口径 ✓
+fn count_painted_and_delta(base: Option<&[u8]>, produced: &[u8]) -> (usize, u8, usize, u64) {
     let mut painted = 0usize;
     let mut delta_max = 0u8;
+    let mut footprint = 0usize;
+    let mut mass = 0u64;
     for (index, pixel) in produced.chunks_exact(4).enumerate() {
+        // **未触碰的透明像素不参与任何一个量** ✓（A1）：插件产出是**稀疏覆盖层**，
+        //   alpha==0 即"这里没落笔" ⇒ 拿它跟底色比是假信号（白底 ⇒ 差 255 ✗）：
+        //   白上画白的介质笔也会报 `paint_delta=255` ⇒ `landed` 恒真 ✗。
+        //   旧代码只在 `base.is_none()` 时跳过（照抄画笔"无基准时"那句 ✓），
+        //   但画笔的补丁是**喂过底图的密 patch**（没碰过的地方读回的就是底色 ✓），
+        //   介质的补丁是**稀疏层** ⇒ 没碰过的地方是透明 ⇒ 有基准时也必须跳过 ✓。
+        if pixel[3] == 0 {
+            continue;
+        }
         let at = index * 4;
         let before = base.and_then(|pixels| pixels.get(at..at + 4));
         // **`painted` 的语义**照抄 `count_painted_pixels` ✗**（**∴ 一字不改 ✓**）
@@ -13980,20 +14013,26 @@ fn count_painted_and_delta(base: Option<&[u8]>, produced: &[u8]) -> (usize, u8) 
         if is_painted {
             painted += 1;
         }
-        // **`delta` 的语义**照抄原来的 `max_channel_delta` ✗**（**∴ 白底 255 ✓**）
-        // **∴ 而**同样**跳过未触碰的透明像素**✗**（**∴ 第 118 轮 ✓；**∴ QY-D03 ✓**）
-        if base.is_none() && pixel[3] == 0 {
-            continue;
+        // **足迹与墨量同一遍** ✓（A2）：alpha 非零即足迹，alpha 字节之和即墨量 ✓。
+        if pixel[3] != 0 {
+            footprint += 1;
+            mass += u64::from(pixel[3]);
         }
-        for channel in 0..4 {
+        // **`delta` 量"合成后可见的 RGB 差"** ✓（A1；与画笔侧第 118 轮同一病 ✓）：
+        //   产出是稀疏覆盖层 ⇒ 直接比 RGB 会把**半透明边缘的 alpha**当成颜色差
+        //   （白笔仍报 254 ✗：边缘像素 RGB 近白而 alpha 很低 ⇒ 与底色差 254，但肉眼不可见 ✗）。
+        //   ⇒ 先把产出按 alpha 合成到底色上，再比 RGB；**alpha 通道不参与**（不是可见颜色 ✓，
+        //     与画笔 `max_delta` 的无基准臂同例 ✓）。无基准时按白底 255 合成（旧口径 ✓）。
+        for channel in 0..3 {
             let old = before.map_or(255, |bytes| bytes[channel]);
-            let diff = (i32::from(pixel[channel]) - i32::from(old))
-                .unsigned_abs()
-                .min(255) as u8;
+            let alpha = i32::from(pixel[3]);
+            let base_c = i32::from(old);
+            let composited = (i32::from(pixel[channel]) * alpha + base_c * (255 - alpha)) / 255;
+            let diff = (composited - base_c).unsigned_abs().min(255) as u8;
             delta_max = delta_max.max(diff);
         }
     }
-    (painted, delta_max)
+    (painted, delta_max, footprint, mass)
 }
 
 /// **`export_project`** ✓ —— 一键打成 `.yanshi` 工程包 ✓（真实用户提的缺口 ✓）。
@@ -16099,6 +16138,37 @@ fn prime_stroke_total_length(state: &mut hokusai::BrushState, points: &[(f64, f6
     //     ⇒ **`pressure_shape` / `stroke_taper` 在 wasm 里不生效** ⇒ 双宿主输出不一致 ✗
     //   ⇒ 现在两宿主都调 `yanshi_core::stroke_length::total_length` ⇒ 同一事实只写一处 ✓
     state.stroke_total_length = yanshi_core::stroke_length::total_length(points);
+}
+
+/// **落笔顶层结论的唯一口径** ✓（A1/B1；`brush_stroke` 与 `medium_stroke` 共用）
+///
+/// **判定顺序**（先判定的优先）：
+/// - `clipped == 0` ⇒ `clipped_empty` —— 选区／画布把整笔裁掉了，一像素都没落；
+/// - `ink_footprint == 0` ⇒ `zero_ink` —— 落了面积但足迹为 0（全透明一笔）；
+/// - `max_delta == 0` ⇒ `invisible_on_background` —— 落了墨但画面一个像素都没变（白上画白）；
+/// - 其余 ⇒ `painted`。
+///
+/// **保留值**：`brush_missing`（笔刷不存在）与 `out_of_canvas`（整笔在画布外）
+///
+/// 只是枚举里的保留项 —— 前者走"找不到笔刷"的错误出口、后者走 0 墨短路径的
+/// `PreconditionFailed`，都不经过回执 ⇒ 这里没有可达臂，只在文档里留名，免得调用方
+/// 以为枚举只有四项。
+///
+/// 返回 `(reason, landed)`：`landed` 为真当且仅当 `reason == "painted"`。
+pub(crate) fn landed_reason(
+    clipped: u64,
+    ink_footprint: u64,
+    max_delta: u64,
+) -> (&'static str, bool) {
+    if clipped == 0 {
+        ("clipped_empty", false)
+    } else if ink_footprint == 0 {
+        ("zero_ink", false)
+    } else if max_delta == 0 {
+        ("invisible_on_background", false)
+    } else {
+        ("painted", true)
+    }
 }
 
 /// **纯涂抹笔刷（opaque = 0 ✓）在这里是空的** ✓ —— 那没关系 ✓：

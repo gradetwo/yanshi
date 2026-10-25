@@ -1480,3 +1480,65 @@ fn whitelist_trigger_only_for_explicit_subsets() {
         whitelist_for(&as_set(&[Profile::Photo, Profile::Svg])).expect("[Photo, Svg] 必须收窄");
     assert!(union_list.len() > photo_list.len());
 }
+
+/// **落笔顶层结论的判定顺序**（A1/B1）：四臂全覆盖 + 边界。
+///
+/// 判定顺序钉死：`clipped == 0` ⇒ `clipped_empty`；`ink_footprint == 0` ⇒ `zero_ink`；
+/// `max_delta == 0` ⇒ `invisible_on_background`；其余 ⇒ `painted`。
+/// `landed` 为真当且仅当 reason 是 `painted`。
+#[test]
+fn landed_reason_four_arms() {
+    assert_eq!(
+        landed_reason(0, 5, 10),
+        ("clipped_empty", false),
+        "clipped 为 0 ⇒ 裁空，与足迹／delta 无关"
+    );
+    assert_eq!(
+        landed_reason(10, 0, 10),
+        ("zero_ink", false),
+        "落了面积但足迹为 0 ⇒ 零墨"
+    );
+    assert_eq!(
+        landed_reason(10, 5, 0),
+        ("invisible_on_background", false),
+        "落了墨但 delta 为 0 ⇒ 白上画白"
+    );
+    assert_eq!(
+        landed_reason(10, 5, 10),
+        ("painted", true),
+        "三者皆非零 ⇒ 落上了"
+    );
+}
+
+#[test]
+fn landed_reason_precedence_and_boundaries() {
+    // **顺序即优先级**：三个零同时出现时，先判定的赢。
+    assert_eq!(
+        landed_reason(0, 0, 0),
+        ("clipped_empty", false),
+        "三者全零 ⇒ 裁空先赢"
+    );
+    assert_eq!(
+        landed_reason(5, 0, 0),
+        ("zero_ink", false),
+        "足迹与 delta 同零 ⇒ 零墨先于白上画白"
+    );
+    // **边界**：最小非零输入即落上。
+    assert_eq!(landed_reason(1, 1, 1), ("painted", true), "1/1/1 ⇒ 落上了");
+    // **`landed` 与 reason 恒一致**：为真当且仅当 reason 是 `painted`。
+    for (clipped, footprint, delta) in [
+        (0, 0, 0),
+        (0, 1, 1),
+        (1, 0, 0),
+        (1, 1, 0),
+        (1, 1, 1),
+        (u64::MAX, u64::MAX, u64::MAX),
+    ] {
+        let (reason, landed) = landed_reason(clipped, footprint, delta);
+        assert_eq!(
+            landed,
+            reason == "painted",
+            "landed 须与 reason 一致：({clipped}, {footprint}, {delta}) ⇒ {reason}/{landed}"
+        );
+    }
+}

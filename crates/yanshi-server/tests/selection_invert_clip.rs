@@ -86,6 +86,11 @@ fn an_inverted_selection_clips_the_inside_out_not_everything() {
             "brush_stroke 失败：{drawn}"
         );
         // 另一笔落在矩形**内部**（y=48）：反选语义下**不许有墨**。
+        //   注意：笔触的落点要离矩形边留足余量 —— `2B_pencil` 的印章比点坐标
+        //   向外伸约 10px（上一版点从 x=46 起 ⇒ 印章伸到 x=36，出了矩形左缘 ⇒
+        //   反选语义下那 5 个边缘像素是**真落在矩形外**的墨，`clipped` 报 5 才对；
+        //   旧计数把透明像素也算进 `dropped` ⇒ 649−880 饱和成 0，才显得"全裁掉" ✗）。
+        //   点取 [54,48]→[66,48] ⇒ 印章约 x=44..76，整笔都在矩形 (40..80) 内 ✓。
         let inside = call(
             &mut ctx,
             "brush_stroke",
@@ -95,7 +100,7 @@ fn an_inverted_selection_clips_the_inside_out_not_everything() {
                 "clip_to_selection": "sel_inv",
                 "brush": "2B_pencil",
                 "size": 12,
-                "points": [[46.0, 48.0, 1.0], [74.0, 48.0, 1.0]]
+                "points": [[54.0, 48.0, 1.0], [66.0, 48.0, 1.0]]
             }),
         );
         assert_eq!(
