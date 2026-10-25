@@ -275,6 +275,18 @@ fn main() -> Result<()> {
         blobs.len(),
         missing_blobs.len()
     );
+    // **⇒ 缺 blob ⇒ rc≠0** ✅（第 1089 轮；外部 qoder 的 D172）
+    //   **⇒ 为什么** ✗：此前只在汇总里报个数、**照样 rc=0 出一条空影片** ✓
+    //     ⇒ 实测（我把 400 个 blob 全删掉）：`rc=0`、mp4 只有 **3,726 字节**、画面全空 ✗
+    //     ⇒ 而"报了个数"**不等于**"这次产出可信" ✓ —— 按本仓「静默降级是唯一对手」那条 ✓
+    //   **⇒ 判据**：`missing_blobs_are_loud` 里加一条 `code != 0` ✓（变异：把 exit 去掉 ⇒ 红 ✓）
+    if !missing_blobs.is_empty() {
+        eprintln!(
+            "✗ 包缺 {} 个被引用的 blob ⇒ 画面必然不完整 ⇒ 不交付（rc=2）",
+            missing_blobs.len()
+        );
+        std::process::exit(2);
+    }
 
     let layout = Layout {
         doc_w,
