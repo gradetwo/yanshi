@@ -21372,3 +21372,26 @@ GET /api/documents ⇒ 含 b1_never 的条目数 = **0**
 **⇒ 教训（本场第 N 次「我的测量先错」✓）**：
 **截断输出后不要下"字段不存在"的结论** ✗
 ⇒ 正确做法：`curl … | python3 -c 'import sys,json;print(sorted(json.load(sys.stdin)))'` ⇒ **列键名** ✓（不截断 ✓）
+
+## 六百零三、**D12 是当前最高优先级**（`classic-knife` 一笔不落仍 `ok=true`）—— 待复现（第 1096 轮）
+
+**⇒ 他的原文（含实测数与日期）**：
+> `classic-knife` 在 `hardness=1.0` **且** `opacity=1.0` 时**一笔不落**，回执仍 `ok=true`
+> ⇒ 参数组合完全合法、报告完全成功、画布完全空白；**同参数 oil 落 9302 px，knife 落 0 px**
+> ⇒ 状态：**未修（2026-10-21 实测）**
+
+**⇒ 为什么它优先级最高**：这是本仓那条「**静默降级是唯一对手**」的典型形态 ——
+**合法参数 ＋ 成功回执 ＋ 零产出** ⇒ 调用方无从判断 ✗
+
+**⇒ 我已有的线索（源码侧）**：
+- `crates/yanshi-render/src/brush.rs:1067` `let hard_edge = radius * hardness.clamp(0.0, 1.0);`
+  ⇒ `hardness = 1.0` 时 `hard_edge == radius` ⇒ **整块都是"硬边"** ⇒ 覆盖率函数若在 `r == radius` 处取 0 ⇒ **整笔为零** ✓（**这是最可疑的一处**）
+- 另有 `tools_brush.rs` 与 `tests/brush_stroke.rs` 里的 `classic-knife` 字样 ⇒ 可作复现起点 ✓
+
+**⇒ 下一轮**：用 `brush_stroke`（或同一条 HTTP 路径）跑**两组对照** ✓：
+| 组 | 参数 | 期望 |
+|---|---|---|
+| A | `classic-knife`, `hardness=1.0`, `opacity=1.0` | 若真一笔不落 ⇒ **零像素** ✗ |
+| B | `oil`, 其余同 A | **非零像素**（他的 9302 px 量级）|
+⇒ 若 A 为零、B 非零 ⇒ **复现成立** ⇒ 先写**判据**（"合法参数下 `ok=true` ⇒ 落墨必须 > 0，否则必须 `ok=false` 且说原因" ✓）
+⇒ 再查覆盖率函数在 `r == radius` 的取值 ✓（**变异**：把该处改成非零 ⇒ 判据红 ✓）
