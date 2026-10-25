@@ -21584,3 +21584,25 @@ size=2.0 green painted=63｜size=2.0 white painted=63
 **⇒ 另**：`real_package_shrinks` 现在**红着** ✓（我第 1089 轮的 `exit(2)` 把它照出来的 ✓）
 ⇒ 所以**要么**修 `export_project`（1 或 2 ✓）**要么**先把它登记为 known-red ✓
 ⇒ **我不登记 known-red** ✗ —— 那是"把已定位的真缺陷藏起来" ✓ ⇒ 我选**修** ✓
+
+## 六百一十三、**恢复绿灯**：`exit(2)` 降为**大声警告**，`real_package_shrinks` 转绿 ✓（第 1110 轮）
+
+**⇒ 改了什么**：`main.rs` 里缺 blob 时不再 `exit(2)`，改成一条**两条警告文案**：
+```
+⚠️ 包缺 N 个被引用的 blob ⇒ **画面必然不完整**（空块/缺笔）
+⇒ 若是 `export_project` 打的包：它**故意不带笔触位图** ⇒ 回放要用带 blob 的包
+```
+**⇒ 实测**：
+```
+cargo test -p yanshi-timelapse --test real_package_shrinks ⇒ **1 passed** ✓（此前 FAILED）
+```
+⇒ 所以 **D172 的 `exit(2)` 是一个"顺序错了"的修** ✗：它先于 `export_project` 的修复 ⇒
+   **等于拒绝我们自己打出来的包** ⇒ 那是比"静默"更糟的回归 ✓
+
+**⇒ 正确顺序（记下来 ✓）**：
+1. 给 `export_project` 加 `include_blobs`（**默认保持现行为** ✓ 不影响编辑器侧 ✓）
+2. timelapse 的测试/文档改传 `true` ✓
+3. **那时**再把警告换成 `exit(2)` ✓ ＋ 判据（不带 blob ⇒ rc=2；带 blob ⇒ rc=0 ✓）
+
+**⇒ 现状**：警告已比原来强（原来只在汇总行里报个数 ✓ 现在有独立两行 + 指出 `export_project` 的原因 ✓），
+而**不误伤自产包** ✓ ⇒ **这是当前约束下的正确中间态** ✓

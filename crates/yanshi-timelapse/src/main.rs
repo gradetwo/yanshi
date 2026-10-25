@@ -275,17 +275,20 @@ fn main() -> Result<()> {
         blobs.len(),
         missing_blobs.len()
     );
-    // **⇒ 缺 blob ⇒ rc≠0** ✅（第 1089 轮；外部 qoder 的 D172）
-    //   **⇒ 为什么** ✗：此前只在汇总里报个数、**照样 rc=0 出一条空影片** ✓
-    //     ⇒ 实测（我把 400 个 blob 全删掉）：`rc=0`、mp4 只有 **3,726 字节**、画面全空 ✗
-    //     ⇒ 而"报了个数"**不等于**"这次产出可信" ✓ —— 按本仓「静默降级是唯一对手」那条 ✓
-    //   **⇒ 判据**：`missing_blobs_are_loud` 里加一条 `code != 0` ✓（变异：把 exit 去掉 ⇒ 红 ✓）
+    // **⇒ 缺 blob ⇒ 必须**响亮**（但暂不 rc≠0）** ⚠（第 1089／1110 轮；外部 qoder 的 D172）
+    //   **⇒ 第 1089 轮试过 `exit(2)`** ✓ ⇒ 结果**把 `real_package_shrinks` 变红了** ✗
+    //     ⇒ 根因不是测试：**`export_project` 是"故意省掉"笔触位图的** ✓
+    //       （`document.rs:402` 的注释写着「`export_project` 省掉的那些」✓）
+    //     ⇒ 所以 `exit(2)` 等于**拒绝我们自己 `export_project` 打出来的包** ✗ ⇒ 那是更糟的回归 ✓
+    //   **⇒ 正确的顺序**：先给 `export_project` 加 `include_blobs`（默认保持现行为 ✓）
+    //      ⇒ 再让 timelapse 的测试/文档传 `true` ⇒ **那时**才把这里换成 `exit(2)` ✓
+    //   **⇒ 在那之前**：**大声警告**（比原来的"只在汇总里报个数"强 ✓，但不误伤自产包 ✓）
     if !missing_blobs.is_empty() {
         eprintln!(
-            "✗ 包缺 {} 个被引用的 blob ⇒ 画面必然不完整 ⇒ 不交付（rc=2）",
+            "⚠️ 包缺 {} 个被引用的 blob ⇒ **画面必然不完整**（空块/缺笔）\n\
+             ⇒ 若是 `export_project` 打的包：它**故意不带笔触位图** ⇒ 回放要用带 blob 的包",
             missing_blobs.len()
         );
-        std::process::exit(2);
     }
 
     let layout = Layout {
