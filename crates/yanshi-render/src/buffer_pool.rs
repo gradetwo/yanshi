@@ -692,8 +692,8 @@ mod tests {
     fn large_buffers_retain_at_most_one_but_still_reuse() {
         // 字节预算给满（只留个数上限与大缓冲规则做主），避免预算先挡住。
         let pool = BufferPool::with_limits(MAX_POOLED_BUFFERS, usize::MAX);
-        // 2049×2048×16 B ≈ 64.03 MiB：刚过 64 MiB 的"大"线；2048×2048 恰为 64 MiB，不算大。
-        let large_w = 2049u32;
+        // 2050×2048×16 B ≈ 64.06 MiB：刚过 64 MiB 的"大"线；2048×2048 恰为 64 MiB，不算大。
+        let large_w = 2050u32;
         let large_h = 2048u32;
         let large_bytes = (large_w as usize) * (large_h as usize) * 16;
         assert!(

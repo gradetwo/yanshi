@@ -64,17 +64,6 @@ const PACKAGE_BLOB_ENCODING: &str = "zlib";
 /// 一个出处，两处各写一份必然漂移。
 const BYTES_PER_ATOM: u64 = 300 * 1_024;
 
-/// glibc 的 `malloc_trim`（仅 Linux；RSS 修复 paint-rss）。
-///
-/// `close`/`delete` 丢掉文档后，堆里约 60% 仍滞留 arena（定位报告 §3.2：
-/// 关完 12 文档仍滞留 2,073MB）——`malloc_trim(0)` 让 glibc 把堆顶连续空闲
-/// 收缩归还 OS。非 Linux 目标不声明它（`release_heap_to_os` 的非 Linux
-/// 版是空操作）；不引入 `libc` 依赖，一个 `extern` 声明就够了。
-#[cfg(target_os = "linux")]
-extern "C" {
-    fn malloc_trim(pad: usize) -> std::os::raw::c_int;
-}
-
 /// 文档缩略图尺寸档位（7.3 分级；`Skip` 表示不生成）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocThumbSize {
@@ -1424,27 +1413,6 @@ impl Workspace {
         Ok(copied)
     }
 
-    /// **把 glibc 堆里已空闲的 arena 归还给 OS（RSS 修复 paint-rss，Linux）**。
-    ///
-    /// `close`/`delete`/预算卸载丢掉文档后，`Document` 及其缓存确实已释放，
-    /// 但 glibc malloc 只把 ~40% 及时归还，约 60% 滞留堆 arena（定位报告
-    /// §3.2）。`malloc_trim(0)` 要求 glibc 尽量归还堆顶连续空闲；返回 `true`
-    /// 表示确实归还了一部分。调用点只在"刚丢掉一整份文档"之后（不是热路径），
-    /// 每次至多毫秒级。若 arena 已碎片化、归还不足，再评估换分配器——
-    /// 不要先换分配器（定位报告 §5 第 2 条）。
-    #[cfg(target_os = "linux")]
-    fn release_heap_to_os() -> bool {
-        // SAFETY：`malloc_trim(0)` 是 glibc 的公开 API；`pad = 0` 表示"尽量归还"，
-        // 无非法输入、无指针传递，调用本身不触碰任何 Rust 对象。
-        unsafe { malloc_trim(0) == 1 }
-    }
-
-    /// **把堆里已空闲的 arena 归还给 OS（非 Linux：空操作）**。
-    #[cfg(not(target_os = "linux"))]
-    fn release_heap_to_os() -> bool {
-        false
-    }
-
     /// **C2 预算读取**（期 2）：`YANSHI_DOC_MEMORY_BUDGET_MB`
     /// （缺省 2048 MB）——沿 GC 闸形态：调用时现读、解析失败回退
     /// 缺省（可调才可测；小内存部署可调低，宁可拒绝不被 OOM 杀）。
@@ -1535,7 +1503,7 @@ impl Workspace {
         self.doc_last_eviction = Some((doc_id.to_owned(), reason.to_owned()));
         // RSS 修复 paint-rss：只丢文档不归还堆，卸载的内存仍有 ~60% 滞留 arena
         // （与 close 同一分配器层，定位报告 §3.2）⇒ 卸完即归还一次。
-        Self::release_heap_to_os();
+        yanshi_heap::release_heap_to_os();
     }
 
     /// **C2 预算闸**（期 2）：在真正装入一份**尚未载入**的文档
@@ -2001,7 +1969,7 @@ impl Workspace {
         if removed {
             // RSS 修复 paint-rss：只丢文档不归还堆，关完仍有 ~60% 滞留 arena
             // （定位报告 §3.2：关完 12 文档静置后仍滞留 2,073MB）⇒ 关完即归还一次。
-            Self::release_heap_to_os();
+            yanshi_heap::release_heap_to_os();
         }
         removed
     }
@@ -2107,7 +2075,7 @@ impl Workspace {
         if removed_from_memory {
             // RSS 修复 paint-rss：与 `close_document` 同理——删完即归还一次堆
             // （定位报告 §3.2：DELETE 删完仍滞留 59.5%，与 close 同形）。
-            Self::release_heap_to_os();
+            yanshi_heap::release_heap_to_os();
         }
         // **删除时也要清掉"上次看到的盘上长度"** ✓（第 767 轮）
         //   **⇒ 缺陷（我自己第 762 轮引入的）**：`disk_len_seen` 按 `doc_id` 记 ✓

@@ -1,0 +1,12 @@
+[package]
+name = "yanshi-heap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "把 glibc 堆里已空闲的 arena 归还给 OS（malloc_trim 的安全包装；RSS 修复 paint-rss）"
+
+[dependencies]

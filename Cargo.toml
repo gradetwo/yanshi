@@ -6,6 +6,7 @@ members = [
     "crates/yanshi-server",
     "crates/yanshi-mcp",
     "crates/yanshi-gpu",
+    "crates/yanshi-heap",
     "crates/yanshi-http",
     "crates/yanshi-wasm",
     "crates/yanshi-medium-example",
