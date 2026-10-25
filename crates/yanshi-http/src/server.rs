@@ -437,19 +437,20 @@ pub fn serve(mut options: HttpOptions) -> std::io::Result<ServerHandle> {
     if options.assets_dir.is_some() {
         options.assets_dir = assets_resolved.clone();
     }
+    // **⇒ 与 `HttpOptions::default()` 比，而不是与字面量比** ✅（第 1122 轮，质量修正）：
+    //   ⇒ 原来写的是 `PathBuf::from("assets/brand")` ⇒ **缺省值一变就静默失效** ✗
+    //     （比较恒假 ⇒ 品牌/介质目录**不再跟随资产根** ⇒ 又回到"仓库外启动 404"那个缺陷 ✓）
+    //   ⇒ 现在从 `Default` 取 ⇒ **缺省值改了这里跟着改** ✓（单一来源 ✓）
+    let defaults = HttpOptions::default();
     for (dir, sub, default) in [
-        (
-            &mut options.brand_dir,
-            "brand",
-            PathBuf::from("assets/brand"),
-        ),
+        (&mut options.brand_dir, "brand", defaults.brand_dir.clone()),
         (
             &mut options.medium_dir,
             "mediums",
-            PathBuf::from("assets/mediums"),
+            defaults.medium_dir.clone(),
         ),
     ] {
-        if dir.as_ref() == Some(&default) {
+        if dir.as_ref() == default.as_ref() {
             *dir = assets_resolved.as_ref().map(|root| root.join(sub));
         }
     }
