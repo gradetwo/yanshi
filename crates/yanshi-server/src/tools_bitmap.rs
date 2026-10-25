@@ -136,6 +136,7 @@ pub(super) fn write_put_blob(ctx: &mut ToolContext<'_>, args: &Value) -> Result<
 /// Y-04/Y-01（photo-bugfix-p1）用：`write_import_image` 的 RAW 分支里，
 /// 计划警告（`outcome.warnings`）已在前面插进响应，这两条是导入期之后
 /// 才知道的事（缺省曝光对象已落成、留白量已算出），只能在这里追加。
+#[cfg(feature = "raw")]
 fn push_response_warning(object: &mut serde_json::Map<String, Value>, warning: String) {
     let mut warnings = object
         .get("warnings")

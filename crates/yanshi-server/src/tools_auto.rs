@@ -346,17 +346,16 @@ struct AutoPlan {
 /// 主导色相桶（桶号，占比）：色相直方图最大桶；并列时取小编号
 /// （确定性输出）。分类器与回显共用。
 fn dominant_hue(stats: &ImageStats) -> (usize, f32) {
-    stats
-        .hue_histogram
-        .iter()
-        .enumerate()
-        .fold((0usize, 0.0f32), |(best_bucket, best), (bucket, share)| {
+    stats.hue_histogram.iter().enumerate().fold(
+        (0usize, 0.0f32),
+        |(best_bucket, best), (bucket, share)| {
             if *share > best {
                 (bucket, *share)
             } else {
                 (best_bucket, best)
             }
-        })
+        },
+    )
 }
 
 /// 场景分类（纯函数；门限见模块常量）。
