@@ -351,7 +351,9 @@ fn lod_rejects_out_of_range_and_fractional() {
     let cases: Vec<(&str, serde_json::Value, &str)> = vec![
         ("lod: 4 超出上限", json!({ "path": path.to_string_lossy(), "lod": 4 }), "0..=3"),
         ("lod: -1 负数", json!({ "path": path.to_string_lossy(), "lod": -1 }), "不小于 0 的整数"),
-        ("lod: 1.5 小数", json!({ "path": path.to_string_lossy(), "lod": 1.5 }), "不小于 0 的整数"),
+        // **小数在更早的 schema 层就被拒**（`ParamKind::Integer` 的类型检查）⇒
+        // 文案是「类型应为 integer」，但错误码同样是 `invalid_argument` ✓。
+        ("lod: 1.5 小数", json!({ "path": path.to_string_lossy(), "lod": 1.5 }), "integer"),
     ];
     for (label, args, expected) in cases {
         let refused = {
