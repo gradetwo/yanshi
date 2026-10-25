@@ -1006,38 +1006,3 @@ fn classic_knife_paints_at_full_hardness_and_reads_hardness() {
         "`hardness` 必须真的被读：{hard_px}（1.0）与 {soft_px}（0.2）相等 ⇒ 参数被忽略 ✗"
     );
 }
-
-/// **诊断（不是判据）**：椭圆 dab 的**角度是绝对角还是随笔画方向**？
-/// ⇒ 外部 `qoder` 的 **D15**：`elliptical_dab_angle` 被当**屏幕绝对倾角** ⇒ 长轴躺平时只落 1/2.7 颜料
-/// ⇒ 若角度是**相对笔画方向** ⇒ 横笔 + 0° 与 竖笔 + 90° **应当等价**（同一支笔、同参数、同长度）✓
-#[test]
-fn d15_elliptical_angle_is_relative_or_absolute() {
-    let root = temp_dir("d15_ellipse");
-    let mut workspace = workspace(&root);
-    assert_eq!(
-        call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
-        json!(true)
-    );
-    let stroke = |workspace: &mut Workspace, object_id: &str, angle: f64, horizontal: bool| {
-        let points = if horizontal {
-            json!([[60.0, 120.0, 0.9], [240.0, 120.0, 0.9]])
-        } else {
-            json!([[120.0, 60.0, 0.9], [120.0, 240.0, 0.9]])
-        };
-        call(
-            workspace,
-            "brush_stroke",
-            json!({
-                "layer_id": "L", "object_id": object_id, "brush": "classic-knife", "size": 40,
-                "elliptical_dab_ratio": 3.0, "elliptical_dab_angle": angle,
-                "points": points
-            }),
-        )
-    };
-    let along_x = stroke(&mut workspace, "e1", 0.0, true);
-    let along_y = stroke(&mut workspace, "e2", 90.0, false);
-    println!(
-        "D15：横笔 0° painted={:?} ok={:?}｜竖笔 90° painted={:?} ok={:?}",
-        along_x["painted_pixels"], along_x["ok"], along_y["painted_pixels"], along_y["ok"]
-    );
-}
