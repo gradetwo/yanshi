@@ -29,6 +29,17 @@ if (files.length === 0) {
   process.exit(3);
 }
 
+// **⇒ 两个纯函数** ✅（第 1061 轮）：抽出来后能**自测** ✓（不必改工作流 ✓）
+//   ⇒ 「gh 命令」= 含 gh 词、且不是注释 ✓
+//   ⇒ 「有 --repo」= 命令行里出现 --repo 或 -R ✓
+function isGhCommand(line) {
+  if (/^\s*#/.test(line)) return false;
+  return /(^|\s)gh\s/.test(line);
+}
+function hasRepoFlag(line) {
+  return /--repo\s|-R\s/.test(line);
+}
+
 const offenders = [];
 let jobsChecked = 0;
 let ghCommands = 0;
@@ -48,18 +59,18 @@ for (const file of files) {
     if (hasCheckout) continue;
     jobsChecked += 1;
     body.forEach((line, k) => {
-      if (!/(^|\s)gh\s/.test(line)) return;
-      if (/^\s*#/.test(line)) return; // 注释不算 ✓
+      if (!isGhCommand(line)) return;
       ghCommands += 1;
-      if (!/--repo\s|-R\s/.test(line)) {
-        offenders.push(`${file} › ${name}（第 ${from + k + 1} 行）`);
+      if (!hasRepoFlag(line)) {
+        offenders.push({ file, job: name, line: from + k + 1 });
       }
     });
   }
 }
 
 for (const spot of offenders) {
-  console.error(`  ✗ ${spot}：这个作业**没有 checkout**，「gh」命令却**没给 「--repo」** ⇒ 运行时会去当前目录找 .git 🔴`);
+  const label = `${spot.file} › ${spot.job}（第 ${spot.line} 行）`;
+  console.error(`  ✗ ${label}：这个作业**没有 checkout**，「gh」命令却**没给 「--repo」** ⇒ 运行时会去当前目录找 .git 🔴`);
 }
 if (offenders.length > 0) {
   console.error(`  ✗ ${offenders.length} 处 \`gh\` 命令在无 checkout 的作业里缺少 \`--repo\``);
@@ -67,3 +78,23 @@ if (offenders.length > 0) {
 }
 console.log(`  扫描 ${files.length} 个工作流｜无 checkout 的作业 ${jobsChecked} 个｜其中「gh」命令 ${ghCommands} 条，全部显式给了 \`--repo\` ✓`);
 console.log("✓ 无 checkout 的作业里，`gh` 命令都显式指定了仓库（结构检查：只证明命令形态）");
+
+// **⇒ 自测** ✅（第 1061 轮）：三段命令行让两个谓词**自己能红** ✓（不必改工作流 ✓）
+//   **⇒ 变异**：把 `hasRepoFlag` 恒返回 `true` ⇒ 中间那段变红 ✓
+if (process.argv.includes("--self-test")) {
+  const cases = [
+    ["带 --repo 的命令", "          gh release upload v1 f --repo o/r", true],
+    ["不带 --repo 的命令", "          gh release upload v1 f", false],
+    ["注释里的 gh", "  #  gh release upload v1 f", true],
+  ];
+  let pass = 0;
+  for (const [label, line, wantOk] of cases) {
+    const isGh = isGhCommand(line);
+    const ok = !isGh || hasRepoFlag(line);
+    console.log("  " + (ok === wantOk ? "✓" : "✗") + " " + label + "：gh=" + isGh + " ok=" + ok);
+    if (ok === wantOk) pass += 1;
+  }
+  console.log("自测：" + pass + "/" + cases.length + " 通过");
+  process.exit(pass === cases.length ? 0 : 1);
+}
+

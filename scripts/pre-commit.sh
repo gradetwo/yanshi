@@ -43,7 +43,7 @@ fi
 # ④ **判据自己的自测**（第 1024 轮加）—— **毫秒级** ＋ **不触碰仓库** ✓
 #   **⇒ 为什么**：这两条判据的谓词现在都有 `--self-test`（小字符串 ⇒ 期望值 ⇒ 变异可红 ✓）
 #     ⇒ 放进提交前 ⇒ **它们不会退化成装饰** ✓（谁改坏了谓词，提交就被拦 ✓）
-for probe in check-tests-clean-temp check-tests-have-asserts; do
+for probe in check-tests-clean-temp check-tests-have-asserts check-release-workflow-gh-repo; do
   if node "scripts/${probe}.mjs" --self-test > "/tmp/precommit-${probe}.log" 2>&1; then
     echo "     ✓ ${probe}"
   else
