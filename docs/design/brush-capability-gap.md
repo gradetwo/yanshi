@@ -21536,3 +21536,24 @@ size=2.0 green painted=63｜size=2.0 white painted=63
 2. 再跑一次该测试 ⇒ 绿 ✓
 
 **⇒ 顺带**：`7e1306bd` 那次 CI 若红，**红的就是这条** ✓（不是新代码，是我的 D172 修复与旧夹具冲突 ✓）
+
+## 六百一十一、🎯 **找到真 bug：`pack` 打出的包里缺 3 个 blob**（第 1108 轮，由 D172 修复照出）
+
+**⇒ 链条（`real_package_shrinks` 为什么红）**：
+1. 测试建文档 → **3 次 `brush_stroke`** ✓ → 调 `pack` 打成 `real.yanshi` ✓
+2. 再跑 `yanshi-timelapse` 读那个包 ⇒ **「缺 3 个被引用的 blob」** ✗
+⇒ **3 笔 ⇒ 缺 3 个 blob** ⇒ **一笔对应一块位图，而 `pack` 一个都没带上** ✓
+
+**⇒ 所以这是**产品 bug**，不是测试夹具问题 ✓**：
+> **`pack` 产出的 `.yanshi` 少带了原子引用的 blob** ⇒ 用**自家 `pack`** 打出来的包，
+> 拿 `yanshi-timelapse` 回放就是**空影片** ✗（而他 D172 描述的正是这个场景 ✓）
+
+**⇒ 这条为什么此前没暴露** ✗：`yanshi-timelapse` 对缺 blob **只报个数、仍 rc=0** ⇒
+**包不完整也能"成功"出片** ⇒ 于是 `real_package_shrinks` 只断言"没有黑块"⇒ **空片也过** ✓
+⇒ **⇒ 我的 `exit(2)` 把这个一直存在的缺陷变成了响声** ✓ —— 这是"让静默变响"的直接收益 ✓
+
+**⇒ 下一轮（最高优先）**：
+1. 读 `pack` 的实现（`tools.rs`／`tools_package.rs` 里的 `pack`／`export_package` ✓）
+2. 查它**遍历哪些 blob**（可能只收了 `blob` 索引里的某类 ✓ 而笔触的位图走 `import_image` 通道 ✓）
+3. 修：**凡是原子引用的 blob 都必须进包** ✓ ＋ **判据**：`pack` 后 `list_package_blobs` 覆盖所有原子引用 ✓
+   变异：漏收一类 ⇒ 判据红 ✓
