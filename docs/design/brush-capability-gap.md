@@ -21334,3 +21334,24 @@ GET /api/documents ⇒ 含 b1_never 的条目数 = **0**
 
 **⇒ 顺带发现**：`server.rs:2422` 那句「只读工具不会替调用方新建文档」是**另一条**分支的文案 ✓
 ⇒ 而实际命中的是「文档 X 未打开」那条 ✓ ⇒ 两条都**拒绝**，只是措辞不同 ✓（不影响结论）
+
+## 六百零一、**D5 与 D7 的现状都比他的报告好**：`origin` 已在、`limit` 被夹紧且自报（第 1094 轮）
+
+**⇒ 实测（真起服务 ✓，`list_atoms` 空文档）**：
+```json
+{"atoms":[],"count":0,"has_more":false,"limit":500,"offset":0,"ok":true,
+ "note":"按 seq 倒序（新的在前）；用 `offset` 翻页，`truncated`/`has_more` 为真表示满页；
+         **`kind` 是存储形态**（笔触在库里也是 `import_image`）⇒ 判来源请看 `origin`（drawn/imported/generated/system）"}
+```
+⇒ **⇒ 所以两条都已经有了对策** ✓：
+| 他的条目 | 他的说法 | 当前实测 |
+|---|---|---|
+| **D5** | `kind` 对笔触也报 `import_image` ⇒ **不能作来源证明** | 响应里**明写**这件事，并指向 **`origin`**（drawn/imported/generated/system）✓ |
+| **D7** | `limit=2000` ⇒ `returned=500 total=None truncated=True` ⇒ 回执不说总数也不说被截断 | 实测 `limit: **500**`（**夹紧后自报** ✓）＋ `has_more` ✓ |
+
+**⇒ 但两处**仍可改进**（我承认的差距 ✓）**：
+1. **没有 `total`** ⇒ 调用方仍无法知道"总共有多少条" ✓（`count` 是**本页**条数 ✗）
+2. `truncated` 出现在他的输出、我这次是 `has_more` ⇒ **两个名字并存** ⇒ 应统一或都保留说明 ✓
+
+**⇒ 下一轮**：造 **>500** 个原子再测一次 ⇒ 看 `has_more=true` 时**是否给出 total** ✓
+⇒ 若仍没有 ⇒ 加 `total`（一次 `SELECT COUNT(*)` ✓）＋ 判据（造 600 条 ⇒ 断言 `total===600` 且 `atoms.length===limit` ✓）
