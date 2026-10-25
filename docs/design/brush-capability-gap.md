@@ -21224,3 +21224,24 @@ share/yanshi/brand/render.sh ✓
 **⇒ 为什么值得单独测** ✗：此前我只验证了**哈希一致**（文件没变）✓
 ⇒ 而"**哈希对**"不等于"**包能解开、内容齐**" ✓ —— 后者才是用户拿到手能不能跑 ✓
 ⇒ 两者都测过，才算"发布可交付" ✓
+
+## 五百九十六、发布包**端到端跑通**：解开 → `bin/yanshi-serve --version` ⇒ `yanshi 0.3.0` ✓（第 1080 轮）
+
+**⇒ 做法（比"哈希对"和"能解开"更强 ✓）**：下载 → `tar -xzf` → **直接执行解出来的二进制** ✓
+**⇒ 实测**：
+```
+解包目录 yanshi-0.3.0-a720cad-x86_64-unknown-linux-gnu-static/
+顶层：bin/ BUILD-INFO LICENSE README.md share/
+bin/：yanshi-mcp yanshi-serve
+$ bin/yanshi-serve --version
+yanshi 0.3.0 (commit a720cad-df27c0f2, built 2026-10-24 23:19 UTC)   ✓
+```
+⇒ **⇒ 所以 0.3.0 的 Linux 包**真能跑** ✓，且**自报版本与提交**都与标签一致 ✓**（`0.3.0` ＋ `a720cad` ✓）
+⇒ 而 `BUILD-INFO` 在包内 ⇒ 构建信息可追溯 ✓
+
+**⇒ 三层验证到此齐了** ✓：
+| 层 | 手段 | 结果 |
+|---|---|---|
+| 文件没变 | `SHA256SUMS` 重下载比对 | `fed99acf…` 一致 ✓ |
+| 内容齐 | `tar -tzf` | 509 条目／3 二进制／wasm 含 snippets／mediums／brushes ✓ |
+| **真能跑** | **解包执行 `--version`** | **`yanshi 0.3.0 (commit a720cad…)`** ✓ |
