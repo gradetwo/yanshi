@@ -2459,6 +2459,18 @@ impl Workspace {
             .unwrap_or_default()
     }
 
+    /// **最近一次渲染里缺失的本体 blob 哈希**（期 2 块 3，P2-11）。
+    ///
+    /// 与 `last_render_warnings` **同一条 funnel**（`Document::note_render_stats`
+    /// 里一起记）：告警是人读的句子，这里是机读的哈希 —— `export_png`
+    /// 靠它判定「缺的是本体还是派生」，**不解析告警文本**（人话会变，哈希不会）。
+    /// 渲染没缺东西 ⇒ 空；区域缓存命中 ⇒ 与告警一起被清空（那次没渲染）。
+    pub fn last_missing_blobs(&self, doc_id: &str) -> Vec<String> {
+        self.document(doc_id)
+            .map(|document| document.last_missing_blobs().to_vec())
+            .unwrap_or_default()
+    }
+
     /// **导入一个 `.yanshi` 工程包** ✓（真实用户报过的另一半 ✓：导出有了 ✓，导入一直没有 ✗）。
     ///
     /// **和 `export_project` 是配对的两个方向** ✓ —— 于是"备份 / 搬到另一台机器 / 给人复现问题"
@@ -3215,6 +3227,11 @@ impl Workspace {
         // **B2 的两栏计数** ✓：本体缺（`missing_body`）与派生缺（`missing_derived`）分开数 ✓。
         let mut missing_body = 0usize;
         let mut missing_derived = 0usize;
+        // **缺席本体的裸哈希**（与上面 `missing` 里的人话清单并存）：
+        // `verify_package` 靠它区分「存储里就没有」（真缺）与「导出时有意省掉」
+        // （`omitted`）—— 只看计数分不出来，必须有名有姓的清单。
+        // 写进包里 `BUILD-INFO` 的 `missing_blobs:` 行（期 2 块 3，D2）。
+        let mut missing_hashes: Vec<String> = Vec::new();
         _e3("pack_headers");
         // **★ 临时：打印两个集合的大小 ✗ ★**（第 229 轮 ✓；**∴ 一行定位 ✓）
         //   **∴ 为什么 ✗**：**实测**（**第 225–228 轮 ✓）**✗**：
@@ -3304,7 +3321,9 @@ impl Workspace {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     kept_missing += 1;
+                    kept_missing += 1;
                     missing_body += 1;
+                    missing_hashes.push(hash_text.clone());
                     missing.push(format!(
                         "位图 {hash} 在存储里不存在 ⇒ 这一条**没有**装进包: {}",
                         error
@@ -3358,12 +3377,22 @@ impl Workspace {
                 )),
             ));
         }
+        // **机读行（期 2 块 3，D2）**：`verify_package` 的 `omitted≠missing`
+        // 判定要读它们 —— `include_bitmaps` 决定「省掉」合不合法，
+        // `missing_blobs:` 逐行记导出时存储里就没有的本体（老包没有这两行
+        // 时，`verify_package` 一律按「真缺」保守处理）。
+        let missing_lines = missing_hashes
+            .iter()
+            .map(|hash| format!("missing_blobs: {hash}\n"))
+            .collect::<String>();
         entries.push(crate::archive::TarEntry {
             path: "BUILD-INFO".to_owned(),
             // **版本与 commit 一起进包** ✓（用户提过的排查需求 ✓）：拿到包就知道是哪一版产的 ✓。
             bytes: format!(
                 "name: yanshi\ndoc_id: {doc_id}\nhead_seq: {head}\nblobs: {blob_count}\n\
                  blobs_omitted_replayable: {omitted}\n\
+                 include_bitmaps: {include_bitmaps}\n\
+                 {missing_lines}\
                  blobs_kept_no_replayable_recipe: {kept_no_recipe}\n\
                  blobs_kept_replay_mismatch: {kept_mismatch}\n\
                  blob_encoding: {PACKAGE_BLOB_ENCODING}\n\

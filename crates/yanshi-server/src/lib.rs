@@ -37,6 +37,7 @@ pub mod service;
 pub mod timings;
 pub mod token;
 pub mod tools;
+pub mod verify;
 
 pub use annotations::{
     Annotation, AnnotationFilter, AnnotationId, AnnotationIntent, AnnotationStatus,

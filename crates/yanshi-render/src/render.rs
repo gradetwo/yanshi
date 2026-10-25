@@ -90,6 +90,13 @@ pub struct RenderStats {
     pub objects_smudge_scanned: usize,
     /// 未实现类型/格式的告警。
     pub unsupported: Vec<String>,
+    /// **本次渲染里缺失的本体 blob 哈希**（期 2 块 3，P2-11）。
+    ///
+    /// 与 `unsupported` **同一来源**（`fetch_raster_patch` 的 `store.get`
+    /// 失败处）：告警是人读的句子，这里是机读的哈希 —— `export_png`
+    /// 靠它判定「缺的是本体还是派生」，不解析告警文本。
+    /// 去重：同一哈希一次渲染只记一次（缓存未命中时会重复取，见 `fetch`）。
+    pub missing_blobs: Vec<String>,
     /// 写入缓存的 tile 数。
     pub tiles_rendered: usize,
     /// 复用缓存的 tile 数。
@@ -840,6 +847,8 @@ struct ObjectTrack {
     culled: std::collections::BTreeSet<String>,
     /// 未实现/缺失资源的告警（串行时无重复；并行时按块合并去重）。
     unsupported: Vec<String>,
+    /// 本次渲染里缺失的本体 blob 哈希（与 `unsupported` 同源，去重口径相同）。
+    missing_blobs: Vec<String>,
 }
 
 impl ObjectTrack {
@@ -854,6 +863,11 @@ impl ObjectTrack {
         for warning in other.unsupported {
             if !self.unsupported.contains(&warning) {
                 self.unsupported.push(warning);
+            }
+        }
+        for blob in other.missing_blobs {
+            if !self.missing_blobs.contains(&blob) {
+                self.missing_blobs.push(blob);
             }
         }
     }
@@ -874,6 +888,8 @@ impl RenderStats {
             .count()
             .saturating_sub(track.rendered.len());
         self.unsupported.extend(track.unsupported.iter().cloned());
+        self.missing_blobs
+            .extend(track.missing_blobs.iter().cloned());
     }
 }
 
@@ -1696,6 +1712,7 @@ impl Renderer {
             stats.below_tiles_missing = chunk_stats.below_tiles_missing;
             stats.below_recompute_bbox = chunk_stats.below_recompute_bbox;
             stats.unsupported.extend(chunk_stats.unsupported);
+            stats.missing_blobs.extend(chunk_stats.missing_blobs);
             stats.parallel_workers = chunks;
             stats.parallel_chunks = chunks;
             probe = chunk_probe;
@@ -3925,6 +3942,7 @@ impl Renderer {
                                     &object.id,
                                     None,
                                     &mut track.unsupported,
+                                    &mut track.missing_blobs,
                                 )
                             })?
                             else {
@@ -4564,6 +4582,7 @@ impl Renderer {
                             &object.id,
                             raw_develop.as_ref(),
                             &mut track.unsupported,
+                            &mut track.missing_blobs,
                         )
                     })?
                     else {
@@ -5383,6 +5402,10 @@ fn quilt_patches(
 
 /// 读取并解码一个位图补丁（`Ok(None)` ⇒ 该对象应被跳过，告警已写入 `warnings`）。
 ///
+/// `Ok(None)` **当且仅当** `store.get` 失败（缺 blob）：解码失败走 `Err`。
+/// ⇒ 缺失的哈希同时记进 `missing_blobs`（去重），供 `export_png` 机读判定
+/// （期 2 块 3，P2-11）；未实现格式那条 `Ok(None)` 不记（它不是缺 blob）。
+///
 /// 抽出来是为了让"缓存未命中"那条路径也能在 [`BitmapCache`] 的锁内执行
 /// （保证同一 blob 一次渲染只读/解码一次）。
 #[allow(clippy::too_many_arguments)]
@@ -5395,6 +5418,7 @@ fn fetch_raster_patch(
     object_id: &str,
     raw_develop: Option<&serde_json::Value>,
     warnings: &mut Vec<String>,
+    missing_blobs: &mut Vec<String>,
 ) -> Result<Option<DecodedPixels>> {
     let bytes = match store.get(blob) {
         Ok(bytes) => bytes,
@@ -5403,6 +5427,12 @@ fn fetch_raster_patch(
                 "位图补丁缺少 blob ⇒ 这一块**没有画**（对象 {object_id}，blob {blob}）：{error} \
                  —— 工程包可能省略了它而本地又重放不出来；画面因此可能不完整 ✓"
             ));
+            // **机读的缺失哈希**（与上面那句人话告警同源、同一次失败）：
+            // `None` 不进缓存 ⇒ 同一 blob 被多个对象引用时会重复取到这里 ⇒ 去重。
+            let missing = blob.to_string();
+            if !missing_blobs.contains(&missing) {
+                missing_blobs.push(missing);
+            }
             return Ok(None);
         }
     };
@@ -7693,6 +7723,7 @@ mod tests {
             "obj_jpeg",
             None,
             &mut warnings,
+            &mut Vec::new(),
         )
         .unwrap()
         .expect("JPEG 位图补丁应被解码，而不是当作未实现格式跳过");
@@ -7727,6 +7758,7 @@ mod tests {
             "obj_bad",
             None,
             &mut warnings,
+            &mut Vec::new(),
         );
         assert!(result.is_err(), "损坏的 JPEG 应报错，实测 {result:?}");
         // 真未实现的格式仍走「告警 + 跳过」（行为锁定 ✓）。
@@ -7741,6 +7773,7 @@ mod tests {
             "obj_webp",
             None,
             &mut warnings,
+            &mut Vec::new(),
         )
         .unwrap();
         assert!(skipped.is_none());
@@ -8794,6 +8827,14 @@ mod tests {
             "告警要说清缺了哪个 blob、以及那一块没画：{:?}",
             out.stats.unsupported
         );
+        // **机读的缺失哈希**（期 2 块 3，P2-11）：与告警同源，但 `export_png`
+        // 的缺本体判定靠它，不解析告警文本。变异：去掉 `fetch` 里的 push ⇒ 红。
+        assert_eq!(
+            out.stats.missing_blobs,
+            vec![missing],
+            "缺块的哈希必须进结构化字段：{:?}",
+            out.stats.missing_blobs
+        );
         // **什么都没画** ✓：那一块保持白底 ✓（不是别的像素 ✓）。
         assert_eq!(out.pixel(0, 0), Some([255, 255, 255, 255]));
     }
@@ -9387,6 +9428,7 @@ mod raw_boundary_tests {
             "obj_raw",
             None,
             &mut warnings,
+            &mut Vec::new(),
         );
         let error = result.expect_err("feature 关时 rawsrc 取图必须报错");
         let text = error.to_string();

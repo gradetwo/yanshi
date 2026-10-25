@@ -1990,6 +1990,15 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "verify_package",
+        profile: Profile::Core,
+        summary: "体检一个 .yanshi 工程包（未压缩 tar）：读 atoms.jsonl 的全部 blob 引用，按 canonical 规则分本体/派生 tile，与包内 blobs/ 对账；回 missing_body/missing_derived 两栏 + 恒等式（missing_body + missing_derived == missing_total）；complete 为真 ⇔ 缺本体为 0（只缺派生 ⇒ 完整，可重放）；有意省掉的可重放位图单列 omitted，不算缺失",
+        mutating: false,
+        params: &[
+            param!("path", String, true, "工程包路径（.yanshi）"),
+        ],
+    },
+    ToolSpec {
         name: "delete_document",
         profile: Profile::Core,
         // **产品负责人要的是"真删"** ✓ —— 原来的 `DELETE` 路由只关内存 ✗
@@ -3062,6 +3071,7 @@ pub const PHOTO_TOOLS: &[&str] = &[
     "get_atom",
     "export_project",
     "import_project",
+    "verify_package",
     "get_job",
     "get_render_status",
     "cancel_job",
@@ -3174,6 +3184,7 @@ pub const SVG_TOOLS: &[&str] = &[
     "get_atom",
     "export_project",
     "import_project",
+    "verify_package",
     "get_job",
     "get_render_status",
     "cancel_job",

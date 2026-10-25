@@ -8,7 +8,8 @@
 //! * (c) `a_canvas_reading_brush_blob_is_never_omitted` —— 读画布的笔刷（涂抹类 ✓）
 //!   **必须照装** ✓（把它也省掉 ⇒ 这条红 ✓）；
 //! * (d) `a_package_with_a_missing_blob_still_opens_and_warns` —— 真缺一个 blob 时
-//!   **文档照开、渲染不整体失败、告警说清缺了谁** ✓（把容忍改回 `?` ⇒ 这条红 ✓）。
+//!   **文档照开、渲染不整体失败、告警说清缺了谁** ✓（把容忍改回 `?` ⇒ 这条红 ✓）；
+//!   `export_png` 自期 2 块 3（P2-11）起缺本体即失败、不产图（渲染路仍降级）。
 //!
 //! **为什么单独一个文件** ✓：体积专题的取舍（省什么、绝不省什么 ✓）是**一组**判据 ✓，
 //! 分散进别的测试会看不出它们是**同一条约束的四个面** ✗。
@@ -620,6 +621,10 @@ fn a_blob_whose_recorded_recipe_does_not_reproduce_it_is_kept() {
 /// **(d) 真缺一个 blob 时：文档照开、渲染不整体失败、告警说清缺了谁** ✓。
 ///
 /// 变异：把渲染里那句"跳过 + 记 `unsupported`"改回 `store.get(&blob)?` ⇒ 渲染整体报错 ⇒ 红 ✓。
+/// **P2-11（期 2 块 3）改了后半段**：`render_region` 仍降级出图 + 告警（渲染
+/// 路的契约不变），但 `export_png` 纳入 B2 —— 缺本体 ⇒ 失败、不产图
+/// （旧断言 `ok: true` 已随行为变更改掉；`export_png` 的 `warnings`
+/// 仍在，只缺派生 tile 时才走它）。
 #[test]
 fn a_package_with_a_missing_blob_still_opens_and_warns() {
     let root = temp_dir("missing");
@@ -698,20 +703,33 @@ fn a_package_with_a_missing_blob_still_opens_and_warns() {
         warnings.contains("缺少 blob") && warnings.contains(&dropped_hash),
         "告警必须说清缺的是哪一个 blob（要找 {dropped_hash}；实际告警：{warnings}）"
     );
-    // **裸像素那条出口也必须说** ✗（`export_png` 走 `render_region_raw` ✓ —— 它的返回类型
-    // 没有告警位 ✓ ⇒ 必须靠 `Document::last_render_warnings` ✓ 带出去 ✓）。
-    // 变异：把 `export_png` 的 `"warnings"` 去掉 ⇒ 这条红 ✓。
+    // **P2-11（期 2 块 3）：`export_png` 纳入 B2** —— 缺本体 ⇒ 失败、不产图
+    // （渲染路 `render_region` 仍降级出图，那是另一条契约；出文件的那条不许
+    // 把缺块的图当成品交出去）。变异：把 `export_png` 的缺本体检查去掉 ⇒ 这条红。
+    let png_path = restore_root.join("missing.png");
     let exported_png = call(
         &mut restored,
         "doc_missing_blob",
         "export_png",
-        json!({"path": restore_root.join("missing.png").to_string_lossy(), "doc_id": "doc_missing_blob"}),
+        json!({"path": png_path.to_string_lossy(), "doc_id": "doc_missing_blob"}),
     );
-    assert_eq!(exported_png["ok"], json!(true), "{exported_png}");
-    let png_warnings = exported_png["warnings"].to_string();
+    assert_eq!(
+        exported_png["ok"],
+        json!(false),
+        "缺本体时 export_png 必须失败：{exported_png}"
+    );
+    assert_eq!(
+        exported_png["error_code"],
+        json!("reference_not_found"),
+        "缺的是被引用的本体 blob，不是调用参数错：{exported_png}"
+    );
     assert!(
-        png_warnings.contains("缺少 blob") && png_warnings.contains(&dropped_hash),
-        "裸像素出口（export_png）也必须把缺块报出来（实际：{png_warnings}）"
+        exported_png.to_string().contains(&dropped_hash),
+        "错误必须点名缺的是哪一个 blob（要找 {dropped_hash}；实际：{exported_png}）"
+    );
+    assert!(
+        !png_path.exists(),
+        "失败时目标路径不许留下文件（P2-12：旧文件也不留，免得冒充新产物）"
     );
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&restore_root);

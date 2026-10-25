@@ -384,6 +384,12 @@ pub struct Document {
     /// —— 那正是不能接受的那一种 ✓。⇒ 把告警**挂在文档上** ✓，
     /// 裸像素出口的调用方渲染完读一次即可 ✓（[`Document::last_render_warnings`] ✓）。
     last_render_warnings: Vec<String>,
+    /// **最近一次渲染里缺失的本体 blob 哈希**（期 2 块 3，P2-11）。
+    ///
+    /// 与 `last_render_warnings` **同一条 funnel**（`note_render_stats` 里
+    /// 一起记、一起清）：告警是人读的句子，这里是机读的哈希 —— `export_png`
+    /// 靠它判定「缺的是本体还是派生」，不解析告警文本。
+    last_missing_blobs: Vec<String>,
     /// **★ 最近一次渲染的 below tile 账目 ✗ ★**（第 2 轮 ✓；**纯观测 ✓）：
     /// `(想要几格, 缓存里已有几格, 实际用上几格)` ✓。
     ///
@@ -608,6 +614,7 @@ impl Document {
             // 16 块：够覆盖 1024² 的四个 512² 区域 ✓，又不会让老块赖着不走 ✓。
             region_cache: yanshi_render::region_block::RegionBlockCache::new(16),
             last_render_warnings: Vec::new(),
+            last_missing_blobs: Vec::new(),
             last_below_tiles: (0, 0, 0, 0),
             replayed_blobs: 0,
             unreplayable_blobs: 0,
@@ -1156,6 +1163,7 @@ impl Document {
             .map(|block| (block.key.w, block.key.h, block.data.clone()));
         if found.is_some() {
             self.last_render_warnings.clear();
+            self.last_missing_blobs.clear();
         }
         found
     }
@@ -1397,6 +1405,7 @@ impl Document {
     ///     ⇒ **★ 那正是"**lazy 变成撒谎 ✓"的经典形态 ✓ ★**** ✓✓
     fn note_render_stats(&mut self, stats: &RenderStats) {
         self.last_render_warnings = stats.unsupported.clone();
+        self.last_missing_blobs = stats.missing_blobs.clone();
         // **★ 只有"**真的做过 below 判定**"的渲染**才能写这三格 ✗ ★**（第 2 轮 ✓）：
         //   **∴ 为什么 ✗**：**同一请求里**可能渲染**多次**✗
         //     ⇒ **∴ 后一次**（**如**只画一层／整幅命中 ✓）**没有账目**✗
@@ -1422,6 +1431,11 @@ impl Document {
     /// **最近一次渲染里被跳过的东西** ✓（**裸像素出口的告警通道 ✓，见字段说明 ✓**）。
     pub fn last_render_warnings(&self) -> &[String] {
         &self.last_render_warnings
+    }
+
+    /// 最近一次渲染里缺失的本体 blob 哈希（期 2 块 3，P2-11；与告警同一 funnel）。
+    pub fn last_missing_blobs(&self) -> &[String] {
+        &self.last_missing_blobs
     }
 
     /// **打开时重放回来的位图数** ✓（0 ＝ 包里本来就都带着 ✓，或没有可重放的配方 ✓）。
@@ -1810,6 +1824,7 @@ impl Document {
                         }
                         // **告警照旧留空** ✓：没渲染 ⇒ 没有"不支持的特性"要报 ✓。
                         self.last_render_warnings.clear();
+                        self.last_missing_blobs.clear();
                         // **★ 纯填充路 ⇒ 未量化 buffer 给 `None` ✗ ★**（**第 487 轮 ✓）：
                         //   **∴ 为什么 ✗**：**这条路**只有**显示空间的 u8**✗
                         //     ⇒ **∴ 而** `Buffer` **要求**线性 f32** ✓

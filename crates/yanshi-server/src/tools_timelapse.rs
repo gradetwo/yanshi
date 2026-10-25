@@ -626,6 +626,9 @@ fn replay_frames(
 pub(super) fn write_export_timelapse(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let started = std::time::Instant::now();
     let path = guarded_output_path(&require_str(args, "path")?)?;
+    // **导出失败删目标文件**（P2-12）：`.part` 临时文件那条清理路本来就有，
+    // 这里补的是**最终目标** —— 任何 `Err` 返回都删掉它（旧的也不留）。
+    let mut delete_on_failure = DeleteTargetOnFailure::new(Some(path.clone()));
     let doc_id = optional_str(args, "doc_id").unwrap_or_else(|| ctx.doc_id.clone());
 
     // 参数（越界值钳到可用范围，而不是让 ffmpeg 去报错）。
@@ -777,6 +780,8 @@ pub(super) fn write_export_timelapse(ctx: &mut ToolContext<'_>, args: &Value) ->
         wrapped
     })?;
     let bytes = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+    // 改名成功 ⇒ 目标文件是这次的产物，守卫解除。
+    delete_on_failure.disarm();
     let result = json!({
         "path": path,
         "job_id": job_id,

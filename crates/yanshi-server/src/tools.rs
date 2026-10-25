@@ -1940,6 +1940,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "new_document" => write_new_document(ctx, args),
         "medium_stroke" => write_medium_stroke(ctx, args),
         "export_project" => write_export_project(ctx, args),
+        "verify_package" => write_verify_package(ctx, args),
         "list_textures" => write_list_textures(ctx, args),
         "list_assets" => write_list_assets(ctx, args),
         "brush_stroke" => write_brush_stroke(ctx, args),
@@ -14141,6 +14142,54 @@ fn count_painted_and_delta(base: Option<&[u8]>, produced: &[u8]) -> (usize, u8, 
 /// 这与多数图形软件的"默认渐变"一致 ✓、也与本项目的像素语义一致 ✓；
 /// **物理上更"对"的是线性光空间** ✗ ⇒ 那会明显改变中间的亮度 ✓
 /// ⇒ 留作**将来的可选参数** ✓，不在这里偷偷做掉 ✓（"悄悄改了效果"比"没做"更糟 ✗）。
+/// **体检一个 `.yanshi` 工程包**（期 2 块 3，D2）—— 只读，不改包、不改文档。
+///
+/// **回执是报告，不是开关**：缺本体时也回 `ok: true` + 完整计数，
+///
+/// 由 `complete` 布尔做裁决 —— 体检工具的职责是**把状态说清楚**，
+/// 而不是替调用方决定「能不能用」（那是导出/重放那两处的 B2 做的事）。
+/// 字段口径见 `crate::verify`：`missing_body` / `missing_derived` 两栏 +
+/// 恒等式 `missing_body + missing_derived == missing_total` 与
+/// `referenced == present_and_referenced + missing_total + omitted`；
+/// `complete` 为真 ⇔ `missing_body == 0`（只缺派生 tile ⇒ 完整，可重放）。
+/// `path` 是包文件路径（与 `import_project` 同一路：直接 `fs::read`，
+/// 读不到 ⇒ `reference_not_found`）。
+fn write_verify_package(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let path = require_str(args, "path")?;
+    let bytes = std::fs::read(&path).map_err(|error| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("读不到工程包 {path}：{error}")),
+        )
+    })?;
+    // **`omitted` 判定要真配方**（`verify` 模块只认回调，不碰工作区）：
+    // 引用净荷的 `source` 是笔刷配方且笔刷不读画布 ⇒ 可重放 ⇒ 省掉不算缺。
+    let workspace = &*ctx.workspace;
+    let report = crate::verify::verify_package_bytes(&bytes, &|payload| {
+        payload
+            .get("source")
+            .is_some_and(|source| brush_source_is_replayable(workspace, source))
+    })?;
+    Ok(json!({
+        "ok": true,
+        "path": path,
+        "complete": report.complete,
+        "referenced": report.referenced,
+        "present": report.present,
+        "present_and_referenced": report.present_and_referenced,
+        "missing_total": report.missing_total,
+        "missing_body": report.missing_body,
+        "missing_derived": report.missing_derived,
+        "omitted": report.omitted,
+        "omitted_declared": report.omitted_declared,
+        "unparsable_lines": report.unparsable_lines,
+        "missing_body_hashes": report.missing_body_hashes,
+        "missing_derived_hashes": report.missing_derived_hashes,
+        "omitted_hashes": report.omitted_hashes,
+        "warnings": report.warnings,
+    }))
+}
+
 /// **导入 `.yanshi` 工程包** ✓（与 `export_project` 配对 ✓）。
 ///
 /// **放在工具层** ✓ ⇒ **MCP 与 Web 都能用** ✓（用户那条硬要求 ✓）——
@@ -18623,6 +18672,40 @@ fn guarded_output_path(raw: &str) -> Result<std::path::PathBuf> {
         ));
     }
     Ok(root.join(candidate.strip_prefix("exports").unwrap_or(candidate)))
+}
+
+/// **导出失败删目标文件**（P2-12 的 RAII 守卫）。
+///
+/// **为什么需要它**：导出失败时，目标路径上若留着上一次成功的旧文件，
+/// 调用方按「文件存在」判断就会把**旧文件当成这次的新产物**（期 1 说明 §4：
+/// 「只有全新路径能保证『不产包』」）。修法不是「写前先删」（那会让
+/// 「写一半失败」也丢文件 —— 一样坏），而是：建守卫时**记下路径**，
+/// 任何 `Err` 返回都触发 `Drop` 删文件，成功时 `disarm`。
+/// 删失败（如文件已被别人删掉）**不报错** —— 守卫是清理，不是主流程。
+/// **代价如实写**：一次失败的导出会删掉该路径上已有的旧产物（它本可从
+/// 文档重新导出，包/图/视频都是可再生的）；换来的是「文件存在 ⇔ 这次
+/// 导出成功」这条恒成立的不变量。
+pub(crate) struct DeleteTargetOnFailure {
+    path: Option<std::path::PathBuf>,
+}
+
+impl DeleteTargetOnFailure {
+    pub(crate) fn new(path: Option<std::path::PathBuf>) -> Self {
+        Self { path }
+    }
+
+    /// 成功时调用：此后 `Drop` 不再删文件。
+    pub(crate) fn disarm(&mut self) {
+        self.path = None;
+    }
+}
+
+impl Drop for DeleteTargetOnFailure {
+    fn drop(&mut self) {
+        if let Some(path) = &self.path {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 /// **读取一条原子的完整记录（含净荷）** ✓ —— 补的是"**日志看得到、却不知道改了什么**"这个缺口 ✓。

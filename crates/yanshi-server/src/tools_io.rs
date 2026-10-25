@@ -18,6 +18,9 @@ pub(super) fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> R
         Some(text) => Some(guarded_output_path(&text)?),
         None => None,
     };
+    // **导出失败删目标文件**（P2-12）：守卫在成功返回前 `disarm`，
+    // 任何 `Err` 返回都删掉该路径上的文件（旧的也不留 —— 旧文件会冒充新产物）。
+    let mut delete_on_failure = DeleteTargetOnFailure::new(path.clone());
     let doc_id = optional_str(args, "doc_id").unwrap_or_else(|| ctx.doc_id.clone());
     if ctx.workspace.document(&doc_id).is_none() {
         return Err(YanshiError::new(
@@ -272,6 +275,7 @@ pub(super) fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> R
     if let Some(path) = &path {
         value["path"] = json!(path);
     }
+    delete_on_failure.disarm();
     Ok(value)
 }
 
@@ -379,6 +383,8 @@ pub(super) fn write_export_book_pngs(ctx: &mut ToolContext<'_>, args: &Value) ->
 
 pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let path = guarded_output_path(&require_str(args, "path")?)?;
+    // **导出失败删目标文件**（P2-12）：见 `write_export_project` 的守卫说明。
+    let mut delete_on_failure = DeleteTargetOnFailure::new(Some(path.clone()));
     // 缺省整幅 ✓：区域没给就用文档尺寸 ✓。
     let region = match args.get("region") {
         Some(value) if !value.is_null() => parse_bbox(value)?,
@@ -412,6 +418,61 @@ pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
     // **落盘的图也必须把"被跳过的东西"带出去** ✗：这条路同样返回裸像素 ✓，
     // 缺块时**不能**默默写一张不完整的 PNG 却不提 ✓。
     let render_warnings = ctx.workspace.last_render_warnings(&ctx.doc_id);
+    // **缺本体 ⇒ 导出失败、不产图**（P2-11：`export_png` 纳入 B2）。
+    //
+    // **定夺**（期 2 块 3）：`export_png` 与 `export_project` /
+    // `export_timelapse` 同列 —— 缺本体 blob 时不产文件（期 1 B2 已把
+    // 另两处改成失败；`export_png` 是期 1 说明 §4 的已知缺口，本期补上）。
+    // 只缺派生 tile 时渲染落回整幅路、画面完整 ⇒ 照常出图（告警已在回执里）。
+    // 判定用结构化缺失哈希 + canonical 分类（`crate::verify`），
+    // **不解析告警文本**（人话会变，哈希不会）；认不出的哈希按本体处理。
+    let missing_blobs = ctx.workspace.last_missing_blobs(&ctx.doc_id);
+    if !missing_blobs.is_empty() {
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        let mut classes: std::collections::BTreeMap<
+            String,
+            std::collections::BTreeSet<crate::verify::RefClass>,
+        > = std::collections::BTreeMap::new();
+        for atom in document.log().atoms() {
+            let refs: Vec<String> = atom
+                .refs
+                .blobs
+                .iter()
+                .map(|hash| hash.to_string())
+                .collect();
+            crate::verify::collect_atom_classes(&atom.payload, &refs, &mut classes);
+        }
+        let missing_body: Vec<String> = missing_blobs
+            .iter()
+            .filter(|hash| match crate::verify::hash_from_str(hash) {
+                Some(bare) => {
+                    classes
+                        .get(&bare)
+                        .map(crate::verify::resolve_class)
+                        .unwrap_or(crate::verify::RefClass::Body)
+                        == crate::verify::RefClass::Body
+                }
+                // 认不出的哈希 ⇒ 按本体处理（fail-safe：宁可不产图，不可放过）。
+                None => true,
+            })
+            .cloned()
+            .collect();
+        if !missing_body.is_empty() {
+            return Err(YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!(
+                    "缺本体 blob {} 个（首个 {}）⇒ 这张 PNG 会缺一块，不产图；只缺派生 tile 时照常出图",
+                    missing_body.len(),
+                    missing_body[0]
+                )),
+            ));
+        }
+    }
     if width == 0 || height == 0 {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
@@ -559,6 +620,7 @@ pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         .document(&ctx.doc_id)
         .map(|document| (document.head_seq(), document.render_watermark()))
         .unwrap_or((0, 0));
+    delete_on_failure.disarm();
     Ok(json!({
         "path": path,
         "width": target_w,
