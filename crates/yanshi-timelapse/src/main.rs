@@ -567,11 +567,13 @@ fn main() -> Result<()> {
     let mut scaled: Vec<u8> = vec![0u8; (layout.out_w as usize) * (layout.out_h as usize) * 3];
     let mut apply_failures = 0usize;
     let mut first_failure: Option<String> = None;
-    // **★★★ 第 249 轮：**先立账 ✗ 再谈优化** ★★★**（**门控 `YANSHI_TIMELAPSE_PROBE` ✓）
+    // **★★★ 第 249 轮：**先立账 ✗ 再谈优化** ★★★**（**E3：分段账不再门控，默认打印；
+    //   `YANSHI_TIMELAPSE_PROBE` 只留作兼容 ✓）
     //   ＋ **∴ 分四段 ✗**：**apply（**喂 atom ✓）｜render（**内核渲 ✓）｜scale（**缩放＋去 alpha ✓）
     //     ｜write（**写进 ffmpeg ✓）⇒ **∴ 一眼看出**钱花在哪一段** ✓ ★★
     //   ＋ **∴ 为什么**必须自己量 ✗**：**交付版说"Rust 单线程 pipe 最快、rayon 反而慢 28%"** ✓
     //     ＋ **∴ 而**那套数**是在**它自己的简化合成**上量的**✗ ⇒ **∴ 与真管线**不可比** ✓ ★★
+    // **E3：只留作兼容** —— `★ 渲染账／缓存账` 仍在 probe 下打，分段账不再门控 ✓。
     let probe = std::env::var_os("YANSHI_TIMELAPSE_PROBE").is_some();
     let mut account = Account::default();
 
@@ -738,6 +740,17 @@ fn main() -> Result<()> {
             );
         }
     }
+    // **E3：进度末行必现** —— 循环在 `i >= end_idx` 先 break ⇒ `i % 25 == 0` 的定期行
+    //   永远打不出 `进度 <end>/<end>` ⇒ 跑完在这里补打终行（与定期行同格式 ✓，
+    //   `grep '进度 <end>/'` 的完成判据从此成立 ✓）。放在收尾帧之后 ⇒
+    //   「已渲 N 帧」与后面那行总结的帧数一致 ✓。
+    let total = atom_lines.len().min(end_idx);
+    eprintln!(
+        "  进度 {total}/{total}｜已渲 {frames} 帧｜apply {} ms｜render {} ms｜累计 {} s",
+        account.apply_ns / 1_000_000,
+        account.render_ns / 1_000_000,
+        started.elapsed().as_secs()
+    );
     drop(sink);
     // **落盘模式没有编码器** ✓ ⇒ `status` 为 `None`，但**后面那套账照打** ✓
     //   （判据要读 `渲染账` 里的 tile 数 ✓ —— 我第一版在这里 `return Ok(())` ⇒ 账没打 ⇒ 判据拿不到 ✗）
@@ -765,57 +778,59 @@ fn main() -> Result<()> {
         layout.out_w,
         layout.out_h,
     )?;
+    // **E3：分段账默认打印** —— `YANSHI_TIMELAPSE_PROBE` 不再门控分段账（变量只留作兼容：
+    //   `★ 渲染账／缓存账` 仍只在 probe 下打一行，行为不变）；不带变量也打五段账 ✓。
+    let ms = |ns: u128| ns as f64 / 1e6;
+    account.frame_render_ns.sort_unstable();
+    let median = account
+        .frame_render_ns
+        .get(account.frame_render_ns.len() / 2)
+        .map_or(0.0, |v| ms(*v));
+    // **∴ 语义证据 ✗**（**∴ 不看墙钟也能看出"脏区路真的走了" ✓）★
+    let (full_renders, dirty_renders, dirty_tiles, dirty_runs) = timeline.stats();
+    // **`below` 缓存的克隆量** ✓（第 671 轮）：这是"每次渲染都整份拷 37 MB"那个 bug 的**结构量** ✓
+    //   ⇒ 正常应当是**几十条**（≈ 不同签名的个数 × 一份表 ✓），
+    //     而不是"脏 tile 数量"级别（那说明又退回**每渲一次拷一份** ✗）。
+    let cloned = yanshi_render::render::below_cache_tiles_cloned();
     if probe {
-        let ms = |ns: u128| ns as f64 / 1e6;
-        account.frame_render_ns.sort_unstable();
-        let median = account
-            .frame_render_ns
-            .get(account.frame_render_ns.len() / 2)
-            .map_or(0.0, |v| ms(*v));
-        // **∴ 语义证据 ✗**（**∴ 不看墙钟也能看出"脏区路真的走了" ✓）★
-        let (full_renders, dirty_renders, dirty_tiles, dirty_runs) = timeline.stats();
-        // **`below` 缓存的克隆量** ✓（第 671 轮）：这是"每次渲染都整份拷 37 MB"那个 bug 的**结构量** ✓
-        //   ⇒ 正常应当是**几十条**（≈ 不同签名的个数 × 一份表 ✓），
-        //     而不是"脏 tile 数量"级别（那说明又退回**每渲一次拷一份** ✗）。
-        let cloned = yanshi_render::render::below_cache_tiles_cloned();
         println!(
             "  ★ 渲染账 ★ 整幅 {full_renders} 次｜脏区 {dirty_renders} 次（**共 {dirty_tiles} 个 tile ✗ {dirty_runs} 条 run ✓）★"
         );
         println!("  ★ 缓存账 ★ below 克隆 {cloned} 条 tile（脏 tile 是 {dirty_tiles} 条 ⇒ 应当远小于它 ✓）");
-        println!(
-            "  ★ 分段账（ms）★ apply {:.0}｜shrink {:.0}｜render {:.0}（每帧中位 {:.1}）｜scale {:.0}｜write {:.0}｜\
-             黑块 {}（缩小前全零 {}／缩小后全零 {}）｜shrink 放弃 {} 个原子（原因 {}）",
-            ms(account.apply_ns),
-            ms(account.shrink_ns),
-            ms(account.render_ns),
-            median,
-            ms(account.scale_ns),
-            ms(account.write_ns),
-            account.shrink_black_blocks[0] + account.shrink_black_blocks[1],
-            account.shrink_black_blocks[0],
-            account.shrink_black_blocks[1],
-            account.shrink_skips,
-            {
-                let names = [
-                    "解析失败", "无 kind", "无 payload", "无 bitmap", "mime 不对",
-                    "无 blob_hash", "blob 查不到", "无宽高", "raw 太短", "其它",
-                ];
-                let mut text = String::new();
-                for (index, count) in account.shrink_skip_reasons.iter().enumerate() {
-                    if *count > 0 {
-                        if !text.is_empty() {
-                            text.push('、');
-                        }
-                        text.push_str(&format!("{}×{}", names[index], count));
-                    }
-                }
-                if text.is_empty() {
-                    text.push('无');
-                }
-                text
-            }
-        );
     }
+    println!(
+        "  ★ 分段账（ms）★ apply {:.0}｜shrink {:.0}｜render {:.0}（每帧中位 {:.1}）｜scale {:.0}｜write {:.0}｜\
+             黑块 {}（缩小前全零 {}／缩小后全零 {}）｜shrink 放弃 {} 个原子（原因 {}）",
+        ms(account.apply_ns),
+        ms(account.shrink_ns),
+        ms(account.render_ns),
+        median,
+        ms(account.scale_ns),
+        ms(account.write_ns),
+        account.shrink_black_blocks[0] + account.shrink_black_blocks[1],
+        account.shrink_black_blocks[0],
+        account.shrink_black_blocks[1],
+        account.shrink_skips,
+        {
+            let names = [
+                "解析失败", "无 kind", "无 payload", "无 bitmap", "mime 不对",
+                "无 blob_hash", "blob 查不到", "无宽高", "raw 太短", "其它",
+            ];
+            let mut text = String::new();
+            for (index, count) in account.shrink_skip_reasons.iter().enumerate() {
+                if *count > 0 {
+                    if !text.is_empty() {
+                        text.push('、');
+                    }
+                    text.push_str(&format!("{}×{}", names[index], count));
+                }
+            }
+            if text.is_empty() {
+                text.push('无');
+            }
+            text
+        }
+    );
     // **E2 折叠账**：段路下 `replayed_atoms ≈ 总原子`、`full_steps = 1`、
     // `incremental_steps` 为段数级（段长置 1 时退回 N 量级 ⇒ 仪器量的是同一量）。
     let (fold_inc, fold_rebase, fold_full, fold_replayed) = timeline.fold_counters();

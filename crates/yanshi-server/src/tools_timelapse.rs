@@ -329,6 +329,13 @@ struct ReplayOutcome {
     /// 加上提交时因派生 tile 不在存储里被拒的原子数 ✓
     ///（实测里 tile 缺是静默落回整幅路的 ✓，这一栏通常是 0 ✓，但口径必须在 ✓）。
     missing_derived: usize,
+    /// **E3：重放分段账（ms）** —— `apply` 是 `commit_as` 喂原子的累计耗时，
+    /// `render` 是 `render_region_raw` 的累计耗时，`shrink` 是原子级降采样耗时。
+    /// MCP 重放全分辨率应用原子、没有原子级 shrink ⇒ `shrink_ms` 恒为 0
+    /// （帧缩放到输出尺寸的 resample 对应二进制的 `scale` 段，不在这三段内）。
+    apply_ms: u64,
+    render_ms: u64,
+    shrink_ms: u64,
 }
 
 /// **blob 引用的本体/派生分类** ✓（B2 ✓，口径与 `check_package.py` 同源 ✓）。
@@ -459,6 +466,10 @@ fn replay_frames(
         warnings: Vec::new(),
         missing_body: 0,
         missing_derived: 0,
+        apply_ms: 0,
+        render_ms: 0,
+        // **E3：`shrink_ms` 恒为 0** —— MCP 路没有原子级 shrink（见字段注释 ✓）。
+        shrink_ms: 0,
     };
     // **B2：先给每个 blob 哈希标出来源** ✓（本体/派生/其它，口径与
     // `check_package.py` 同源 ✓）—— 渲染警告里只带哈希，不带来源 ✓。
@@ -476,6 +487,10 @@ fn replay_frames(
     // 字段不动，B2 的缺本体失败语义不受段切分影响（分类仍逐原子做）。
     let mut segment: Vec<Atom> = Vec::new();
     let mut segment_start = 0usize;
+    // **E3：分段计时** —— apply（`commit_segment_as`）与 render（`render_region_raw`）
+    //   分开累，单位毫秒（与 `yanshi-timelapse` 二进制的五段账同口径 ✓）。
+    let mut apply_ns: u128 = 0;
+    let mut render_ns: u128 = 0;
     for (index, atom) in atoms.iter().enumerate() {
         let committed = index + 1;
         segment.push(atom.clone());
@@ -484,11 +499,14 @@ fn replay_frames(
         if !is_capture && !is_last {
             continue;
         }
-        match scratch.commit_segment_as(
+        let t_apply = std::time::Instant::now();
+        let committed_result = scratch.commit_segment_as(
             std::mem::take(&mut segment),
             true,
             &mut crate::timings::CommitPhases::default(),
-        ) {
+        );
+        apply_ns += t_apply.elapsed().as_nanos();
+        match committed_result {
             Ok(result) => {
                 for (offset, seg_outcome) in result.atoms.iter().enumerate() {
                     let atom_committed = segment_start + offset + 1;
@@ -568,7 +586,9 @@ fn replay_frames(
             .unwrap_or(false);
         if pending_full || size_changed || frame.is_none() {
             let region = Bbox::new(0.0, 0.0, doc_w as f64, doc_h as f64);
+            let t_render = std::time::Instant::now();
             let (width, height, rgba) = scratch.render_region_raw(region)?;
+            render_ns += t_render.elapsed().as_nanos();
             frame = Some((width, height, rgba));
         } else if let (Some(dirty), Some((frame_w, _, buffer))) = (pending, &mut frame) {
             // 脏区取整并外扩 1px，再钳进画布（区域渲染在整数坐标上才逐像素可信）。
@@ -578,7 +598,9 @@ fn replay_frames(
             let y1 = ((dirty.y + dirty.h).ceil() as i64 + 1).min(doc_h as i64);
             if x1 > x0 && y1 > y0 {
                 let region = Bbox::new(x0 as f64, y0 as f64, (x1 - x0) as f64, (y1 - y0) as f64);
+                let t_render = std::time::Instant::now();
                 let (width, height, rgba) = scratch.render_region_raw(region)?;
+                render_ns += t_render.elapsed().as_nanos();
                 paste_region(buffer, *frame_w, x0 as u32, y0 as u32, width, height, &rgba);
             }
         }
@@ -637,6 +659,9 @@ fn replay_frames(
     }
     outcome.missing_body = missing_body_hashes.len();
     outcome.missing_derived = missing_derived_hashes.len();
+    // **E3：分段账落袋** —— 纳秒累计转毫秒（与回执的 `elapsed_ms` 同单位 ✓）。
+    outcome.apply_ms = (apply_ns / 1_000_000) as u64;
+    outcome.render_ms = (render_ns / 1_000_000) as u64;
     // **B2：本体缺 ⇒ 重放失败、不产片** ✓（`ReferenceNotFound` ✓）——
     // 调用方（`write_export_timelapse` 的 `run` 闭包）收到 `Err` 后删
     // `.part.mp4` 并把 job 标失败 ✓，与既有的失败清理路同一条 ✓。
@@ -828,6 +853,11 @@ pub(super) fn write_export_timelapse(ctx: &mut ToolContext<'_>, args: &Value) ->
         "source_height": source_h,
         "bytes": bytes,
         "elapsed_ms": started.elapsed().as_millis() as u64,
+        // **E3：分段账回传** ✓：与 `yanshi-timelapse` 二进制同口径（ms）——
+        // `apply`/`render` 是重放实测，`shrink` 在 MCP 路恒为 0（无原子级 shrink）。
+        "apply_ms": outcome.apply_ms,
+        "render_ms": outcome.render_ms,
+        "shrink_ms": outcome.shrink_ms,
         "warnings": outcome.warnings,
         // **B2 的两栏** ✓：本体缺（`missing_body`）与派生缺（`missing_derived`）分开数 ✓；
         // 成功回执里 `missing_body` 恒为 0 ✓（`> 0` 时重放已直接失败 ✓）。
@@ -1285,6 +1315,96 @@ mod tests {
             extract_hex64("对象 01M5R960Z6599AZW81JSHEY000 没有哈希"),
             Vec::<String>::new(),
             "ULID 不是 64 位十六进制 ⇒ 不能误认成 blob"
+        );
+    }
+
+    #[test]
+    fn replay_outcome_carries_apply_render_shrink_ms() {
+        // **E3：`ReplayOutcome` 回传分段账（apply／render／shrink 三段 ms）**。
+        //
+        // **四层齐**：
+        // - 实现：`replay_frames` 里 `commit_as` 计进 apply、`render_region_raw`
+        //   计进 render；MCP 路无原子级 shrink ⇒ `shrink_ms` 恒为 0；
+        // - 输入能触发：400 个矩形原子 + 41 次抓帧的真重放（apply 与 render
+        //   都有实打实的工作量，毫秒级）；
+        // - 断言：三段都在 outcome 里；apply＋render > 0（真的量到了时间）；
+        //   每段 ≤ 整趟墙钟（单位是 ms 不是 ns）；shrink 恒为 0（口径所定）；
+        // - 变异：计时改成纳秒上报 ⇒ 「≤ 墙钟」红；把 resample 计进 shrink
+        //   ⇒ 「shrink == 0」红；删掉任一段计时 ⇒ 「> 0」红。
+        let store = std::sync::Arc::new(yanshi_core::MemoryBlobStore::new());
+        let mut source = Document::create(
+            store.clone(),
+            crate::document::NewDocument::new("doc_tl_seg", 1024, 768),
+            "human:1",
+            "session:test",
+            DocumentSettings::default(),
+        )
+        .unwrap();
+        source
+            .commit(Atom::new(
+                AtomKind::CreateLayer,
+                "human:1".to_owned(),
+                "session:test".to_owned(),
+                json!({"layer_id": "L1", "name": "图层1"}),
+            ))
+            .unwrap();
+        for index in 0..400 {
+            source
+                .commit(rect_atom(
+                    "L1",
+                    &format!("s{index}"),
+                    f64::from(index % 40) * 25.0 + 4.0,
+                    f64::from(index / 40) * 70.0 + 8.0,
+                    5.0,
+                    24.0,
+                    (30 + index % 200) as u8,
+                ))
+                .unwrap();
+        }
+        let atoms = source.log().atoms().to_vec();
+        // atoms = create + layer + 400 shape = 402；step 10 ⇒ 41 个抓帧点。
+        let capture: BTreeSet<usize> = plan_capture_counts(atoms.len(), 10).into_iter().collect();
+        assert_eq!(capture.len(), 41);
+        let mut frames: Vec<Vec<u8>> = Vec::new();
+        let wall = std::time::Instant::now();
+        let outcome = replay_frames(
+            &atoms,
+            store,
+            DocumentSettings::default(),
+            "doc_tl_seg·timelapse-test",
+            &capture,
+            1024,
+            768,
+            &mut |_, _| {},
+            &mut |rgb| {
+                frames.push(rgb.to_vec());
+                Ok(())
+            },
+        )
+        .unwrap();
+        let wall_ms = wall.elapsed().as_millis() as u64;
+        assert_eq!(outcome.frames, 41);
+        assert!(
+            outcome.apply_ms + outcome.render_ms > 0,
+            "400 原子 + 41 帧的重放必须量到时间（apply {} ms + render {} ms）：\
+             否则这条断言测不出计时",
+            outcome.apply_ms,
+            outcome.render_ms
+        );
+        assert!(
+            outcome.apply_ms <= wall_ms,
+            "apply 段不能超过整趟墙钟（单位错成纳秒就会爆：apply {} ms vs 墙钟 {wall_ms} ms）",
+            outcome.apply_ms
+        );
+        assert!(
+            outcome.render_ms <= wall_ms,
+            "render 段不能超过整趟墙钟（单位错成纳秒就会爆：render {} ms vs 墙钟 {wall_ms} ms）",
+            outcome.render_ms
+        );
+        assert_eq!(
+            outcome.shrink_ms, 0,
+            "MCP 重放全分辨率应用原子、没有原子级 shrink ⇒ shrink_ms 恒为 0\
+             （帧 resample 对应二进制的 scale 段，不在这三段内）"
         );
     }
 }

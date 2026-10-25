@@ -467,3 +467,74 @@ fn e2e_thousand_atom_document_timing() {
         "{probe}"
     );
 }
+
+/// **E3：`export_timelapse` 回执回传分段账（apply／render／shrink 三段 ms）**。
+///
+/// **四层齐**：实现（`ReplayOutcome` 三段 + 回执三字段）／输入能触发
+/// （有 ffmpeg 时 6 形状真编码一趟）／断言（三字段是 u64、apply＋render
+/// ≤ 总 `elapsed_ms`、shrink 恒为 0）／变异（回执里删任一字段 ⇒ `is_u64`
+/// 红；计时改纳秒上报 ⇒ 「≤ elapsed」红）。
+/// 没 ffmpeg 时跳过（缺失路径已由常驻用例覆盖）；小工作量下 apply／render
+/// 可能为 0 ms ⇒ 这里不断 `> 0`（强断言在 `tools_timelapse` 的单元测试里）。
+#[test]
+fn export_timelapse_receipt_carries_segment_ms() {
+    if !ffmpeg_available() {
+        eprintln!("skip: 没有 ffmpeg ⇒ 回执分段账不可判（缺失路径已由常驻用例覆盖）");
+        return;
+    }
+    let mut workspace = workspace_with_doc("doc_seg", 320, 240);
+    assert_eq!(
+        call(
+            &mut workspace,
+            "doc_seg",
+            "create_layer",
+            json!({"layer_id": "L1"})
+        )["ok"],
+        json!(true)
+    );
+    for index in 0..6 {
+        let made = call(
+            &mut workspace,
+            "doc_seg",
+            "draw_shape",
+            json!({
+                "layer_id": "L1",
+                "data": {
+                    "geometry": {"kind": "rect", "bbox": {"x": 10 + index * 40, "y": 60, "w": 30, "h": 100}},
+                    "color": {"r": 220, "g": 60 + index * 20, "b": 50, "a": 255},
+                },
+            }),
+        );
+        assert_eq!(made["ok"], json!(true), "{made}");
+    }
+    let out = temp_output("seg");
+    let result = call(
+        &mut workspace,
+        "doc_seg",
+        "export_timelapse",
+        json!({"path": out.display().to_string(), "frame_every": 2}),
+    );
+    assert_eq!(result["ok"], json!(true), "{result}");
+    // atoms = create + layer + 6 shape = 8；step 2 ⇒ 帧点 {2,4,6,8} = 4 帧。
+    assert_eq!(result["frames"], json!(4), "{result}");
+    let elapsed = result["elapsed_ms"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("回执要有 elapsed_ms（u64）：{result}"));
+    for field in ["apply_ms", "render_ms", "shrink_ms"] {
+        assert!(
+            result[field].is_u64(),
+            "回执必须有 `{field}`（u64 ms）：{result}"
+        );
+    }
+    let apply = result["apply_ms"].as_u64().unwrap();
+    let render = result["render_ms"].as_u64().unwrap();
+    assert!(
+        apply + render <= elapsed,
+        "分段账是总耗时的一部分（apply {apply} + render {render} ≤ elapsed {elapsed}）：{result}"
+    );
+    assert_eq!(
+        result["shrink_ms"],
+        json!(0),
+        "MCP 路无原子级 shrink ⇒ shrink_ms 恒为 0：{result}"
+    );
+}
