@@ -84,7 +84,21 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
 13. **期 3a 回填版**：作者重跑确认测试/回测/重放数字逐数复现；唯一修正「fmt 干净」不实 ⇒
    与本仓 `7fc8e658` 的 rustfmt 正好对上（台账 §627 末）。
 
+14. **画画线期 2 已合**（台账 628）：`verify_package`、list_atoms 5000/total 修正、gradient 数组色、
+    hex alpha 告警、batch 缺省静默/上限/水位、smart 前置、calligraphy 小 size、频率分离查表+并行（4.25×）。
+   本机：server lib 203、20 个定向 suite、render 59、hokusai 35、timelapse 30、clippy workspace 绿。
+15. **画画线期 2b 已合**（台账 629）：P2-9 color_space 三路；D1 batch `stroke_evidence`。
+   与期 2 在 batch 声明/测试同锚点**手工解冲突**（两边都留；补回被公共上下文吃掉的收尾 `}` 两处）。
+16. **画画线期 3 E2（v2）已合**（台账 630）：timelapse 分段重放 checkpoint；timelapse 30（含 segment 4）。
+17. **vector-tracing v3 后续包（8 条回填）已合**（台账 631）：blob `4a5e1880` 与 `合并.diff` 逐字一致。
+18. **四包衔接修复**（台账 632）：工具数 124/204（tools.rs+两 guide）、census 的 `mask_ids`、
+   `tool-examples.md` 重新生成；**`tool-verify-package` 判据自身用 `tar --delete` 篡改手写 tar 会重排坏**
+   ⇒ 改成解包-删-重打包（只删本体），判据转绿（不是产品问题）。
+
 ## 三、下一步（按优先序，都有精确入口）
+
+-0. **读本轮 CI**（paint 期 2/2b/E2＋skill 后续＋衔接修复）：重点 `tool-surface-coverage`、
+   `tool-schema-params-census`、`tool-examples-doc-check`、17 条新画线判据、browser 判据。
 
 -0. **读本轮 CI**（照片期 2＋web＋census 的那一跑）：重点看 browser 判据、`tool-surface-coverage`、
    `tool-schema-params-census`、以及 A1/A2 是否顶到既有像素判据（`tool-effect-*` 等）。

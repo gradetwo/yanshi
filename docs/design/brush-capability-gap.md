@@ -22078,3 +22078,80 @@ i18n 动态模式 `（导入的）→ (imported)`。
 测试/回测/重放数字**逐数复现** ✓；**唯一修正**：原文说 `fmt --check` 干净**不实**
 （原轮与重跑都是 rc=1，`tools_auto.rs:346`）⇒ 与本仓 `7fc8e658` 的「期 3a 文件 rustfmt」
 **正好对上** ✓ ⇒ 该缺口关闭 ✓。
+
+## 六百二十八、画画线**期 2**合并：D3/P2-4、P2-5/8/10、D2/P2-11/12、D1/P2-6/P2-7、P2-13/14（第 1132 轮）
+
+**⇒ 包**：`yanshi-paint-期2交付包.zip`（5 patch，交付版基于 `ac526a7`；另有原基线版与 rebase 注记）。
+5/5 在 `ac526a76` 上 `git am` 干净 ✓（作者已 rebase 并验证树一致）。
+
+| 块 | 内容 |
+|---|---|
+| 1 | `list_atoms` 上限 500→**5000**；`total` 改**过滤后**计数（修虚高）|
+| 2 | `gradient_blend` 收数组色；`#RRGGBBAA` 告警（alpha 不再静默丢）；dodge/burn 角色标注 |
+| 3 | **`verify_package` 服务端实现**（canonical tile 规则；`omitted≠missing` 三段判定；BUILD-INFO 机读行）；`export_png` 纳入 B2 缺体检查；导出失败**删目标** |
+| 4 | `batch` 缺省 **silent=true**；smart_* 前置校验（9 工具）+ 内层不等渲染（7 工具）；batch 上限 500/分段 100/水位（RSS 4GiB 或 MemAvailable<512MB）+ **首层峰值**分带缩略图（467MB→102MB）|
+| 5 | calligraphy AA 钳制（size<4 不落墨的根因）；频率分离 HF/自检**查表化** + 模糊并行 + 四段计时（热 115.2s→27.1s，4.25×）|
+
+**⇒ 本机验证**：server lib **203**；定向 20 个 suite（batch_limits／silent_batch／smart_layer_prefail／
+calligraphy_small_size／zero_ink_advice／gradient_blend_color／list_atoms_truncation／verify_package／
+color_space_p2_9／batch_stroke_evidence／update_stroke／export_small／brush_stroke／hokusai_brushes／
+retouch_tools／medium_stroke／profile_allowlist／tool_validation_audit／timelapse_export／d139）全过；
+render **59** suite；hokusai-core **35**；timelapse **30**（含新 segment 4）；clippy workspace 绿 ✓。
+
+**⇒ 已知（照作者，不替他们改）**：`stopped_early:true` 的真实水位端到端测不到（阈值不可触发，纯函数单测覆盖）；
+P2-14 实测 27.1s 未达任务书 15–20s（模糊是内存带宽 bound，2 带膝点）；R-1/R-2/R-3 只进说明；
+`update_stroke` 光栅重跑像素不落地仍是已知红（`criteria-known-red` 里，P2-9 光栅臂只断 blob 哈希+source）✓。
+
+## 六百二十九、画画线**期 2b**合并：P2-9 `color_space` 三路 + D1 `stroke_evidence`（第 1132 轮）
+
+**⇒ 包**：`yanshi-paint-期2b交付包.zip`（2 patch，基于 `ac526a7`）。
+- **P2-9**：`try_stroke`／`brush_preview`／`update_stroke` 补齐 `color_space`（声明+校验+生效+回显+继承+持久化）；
+  缺省仍是**量级切换**（期 1 实际口径，不是强制 srgb）✓。
+- **D1**：`batch` 顶层 `stroke_evidence` 与 `calls` 同下标（`landed`/`painted_pixels_clipped`/`ink_mass`/
+  `max_channel_delta`；medium 只在 batch 路径归一；非笔触不编数；失败带完整 error；缺失给 `null`）✓。
+
+**⇒ ★ 与期 2 的两处真冲突（手工解，不是自动）**：patch 0002 在 3-way 下与期 2 的 batch 改造撞车 ✓
+1. `tools.rs`：期 2 的 P2-7 常量/水位函数 与 2b 的 `batch_stroke_evidence` 插在同一锚点 ⇒ **两边都留**
+   （并补回被公共上下文吃掉的 `batch_watermark_reason_for` 收尾 `}` ✓）。
+2. `tools_tests.rs`：期 2 的 `batch_watermark_*` 4 测 与 2b 的摘要单测 同锚点 ⇒ **两边都留**
+   （同样补回 HEAD 侧被公共 `);}` 吃掉的收尾 ✓ —— 与作者 rebase 时踩的是同一个坑 ✓）。
+⇒ 解完 `cargo check` + `fmt` 绿；`stroke_evidence` 的响应/depth 字段确认在 ✓。
+
+**⇒ 本机验证**：`color_space_p2_9` 判据、`batch_stroke_evidence` 判据、server lib（含新单测）全过 ✓。
+
+## 六百三十、画画线**期 3 E2**（v2）合并：timelapse 分段重放（第 1132 轮）
+
+**⇒ 包**：`yanshi-paint-期3-E2交付包-v2.zip`（1 patch，基线 `ac526a7`；v1 作废）。
+分段重放 + 段首状态缓存（段长=frame_every=250，`YANSHI_TIMELAPSE_SEGMENT_LEN` 验证用）；
+`Kernel::apply_segment`（预检 seq/段首态移出/一次 fold/逐原子脏区并集）+ 逐原子回退；
+`Document::commit_segment_as`；`Timeline::apply_segment`；折叠账打印。**不动**交互落笔逐原子路径。
+
+**⇒ 本机验证**：`yanshi-timelapse` **30**（lib 6 + main 8 + incremental 6 + missing 5 + real 1 + segment **4**）✓；
+server lib 含 `tools_timelapse` 12；clippy/fmt 绿 ✓。
+**⇒ 已知**：指数 1.447 是 N≤4000 拟合（2000→4000 斜率 1.88，平方项已抬头）；revert/declare_head 段路与 K=1 折叠计数不同但帧哈希全同；`commit_segment_as` 的 Conflict 快路不建冲突层（回放包无冲突）✓。
+
+## 六百三十一、vector-tracing v3 **后续包**合并（8 条回填）（第 1132 轮）
+
+**⇒ 包**：`yanshi-skill-vector-tracing-v3后续包.zip`（8 patch，基线 `ac526a7`；在 v3 `12604ab` 状态上只加回填条目）。
+8/8 干净；结果 `SKILL.md` blob **`4a5e1880…`** 与 `合并.diff` 在 `ac526a76` 上应用所得**逐字一致** ✓；
+`check-skill-tool-names` 73 处全过（工具 204／参数 252）✓。
+内容：老虎 50% 覆盖阈值/画序切割/实心度、GitHub 段起点/陡边扫描/平边光栅/尖顶 Hausdorff、狐狸脸隐藏几何、
+猫头鹰可见-隐藏分离、蝴蝶环缝双向、狮子零宽尖刺/中心线行走、野玫瑰光滑形链截断、纹章兽弓形短链/亚像素发丝 ✓。
+
+## 六百三十二、四个包合并后的**衔接修复**（第 1132 轮）
+
+**⇒ 都是"新东西撞旧基线"，不是补丁逻辑错**：
+1. **工具数过期**：`verify_package` 让 core 123→**124**、全量 203→**204** ⇒
+   `tool-surface-coverage` 点名 5 处（`tools.rs`×3、`docs/guide.md`、`docs/guide.zh-CN.md`）⇒ 全部对齐 ✓。
+2. **census 未分类 1 个**：`dodge_burn_setup` 文案里的 `mask_ids`（回执字段）⇒ 进 `ALLOWLIST.response` ✓。
+3. **示例文档过期**：新工具没有示例行 ⇒ `tool-examples.md` 重新生成（**204** 工具）✓。
+4. **★ `tool-verify-package` 判据自身坏了（不是产品）**：它用 `tar --delete` 篡改包，而本仓包是
+   **手写 tar（无目录条目）** ⇒ GNU tar 的 `--delete` 把归档重排坏（要删的还在、另一条被复制成两份，
+   实测 `tar -tf` 6a 行仍在、8c 行出现两遍）⇒ `missing_body` 恒 0 ⇒ 假红 ✓。
+   修法：**解包 → 删文件 → 重新打包**，并且只挑**本体**（排除 `tiles` 集合里的哈希），
+   `execFileSync` 漏 import 一并补 ✓；修后判据 exit 0（篡改包 missing_body 1、complete 翻转）✓。
+   ⇒ 这正是"测量工具要先被测量"的又一例：**判据的红不一定是产品的红** ✓。
+
+**⇒ 本机最终验证**：clippy workspace 绿（pre-commit）；server lib **203**；20 个定向集成 suite；
+render **59**；hokusai **35**；timelapse **30**；**17 条**新/相关判据全 0（census 256 名、surface 204、
+examples 204、verify-package 篡改翻转、batch 上限/静默/取证、smart 前置、calligraphy、频率分离、color_space、dodge 等）✓。
