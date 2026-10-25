@@ -226,6 +226,83 @@ fn auto_retouch_rerun_updates_in_place() {
     );
 }
 
+/// C5-8（photo-bugfix-p1）：重跑时某组新跳过，旧 `auto_*` 对象不自动
+/// 删除，但响应必须在 `skipped` 项里点名残留 id（`stale_object_id`）并
+/// 提示手动删；从未落成的对象不得带该字段；旧对象本身仍在（只回显、不删）。
+#[test]
+fn auto_retouch_rerun_skipped_names_stale_objects() {
+    let root = temp_dir("stale");
+    let _cleanup = TempCleanup(root.clone());
+    let doc = "doc_auto_stale";
+    let (width, height) = (64, 48);
+    let mut workspace = workspace(&root, doc, width, height);
+    let src = setup_source(&mut workspace, doc, width, height);
+
+    let first = call(
+        &mut workspace,
+        doc,
+        "auto_retouch",
+        json!({"layer_id": src}),
+    );
+    assert_eq!(first["ok"], json!(true), "{first}");
+    let mut landed: Vec<String> = first["applied"]
+        .as_array()
+        .expect("applied 应为数组")
+        .iter()
+        .map(|item| {
+            item["object_id"]
+                .as_str()
+                .expect("applied 项应有 id")
+                .to_owned()
+        })
+        .collect();
+    assert!(
+        !landed.is_empty(),
+        "合成图上至少应落成一个对象，否则本条什么也没验：{first}"
+    );
+    landed.sort();
+
+    // 第二跑一个组都不请求：全部走「未请求」跳过，run-1 落成的对象全成残留。
+    let second = call(
+        &mut workspace,
+        doc,
+        "auto_retouch",
+        json!({"layer_id": src, "groups": []}),
+    );
+    assert_eq!(second["ok"], json!(true), "{second}");
+    let skipped = second["skipped"].as_array().expect("skipped 应为数组");
+    for id in &landed {
+        let item = skipped
+            .iter()
+            .find(|item| item["object_id"] == json!(id))
+            .unwrap_or_else(|| panic!("落成过的 {id} 应出现在 skipped 里：{second}"));
+        assert_eq!(
+            item["stale_object_id"],
+            json!(id),
+            "残留对象必须在 skipped 项里点名：{second}"
+        );
+        let reason = item["reason"].as_str().unwrap_or_default();
+        assert!(
+            reason.contains("仍存活") && reason.contains("手动删除"),
+            "残留原因须提示仍存活 + 手动删：{reason}"
+        );
+    }
+    for item in skipped {
+        let id = item["object_id"].as_str().unwrap_or_default();
+        if !landed.iter().any(|landed_id| landed_id == id) {
+            assert!(
+                item.get("stale_object_id").is_none(),
+                "从未落成的 {id} 不得带 stale_object_id：{second}"
+            );
+        }
+    }
+    assert_eq!(
+        auto_ids(&workspace, doc),
+        landed,
+        "只回显、不删：旧对象必须仍在"
+    );
+}
+
 /// 人工调过的层：无 force 拒绝（点名人工对象），有 force 放行。
 #[test]
 fn auto_retouch_refuses_manual_layer_without_force() {

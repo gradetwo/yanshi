@@ -541,4 +541,60 @@ mod tests {
         assert_eq!(via, "exact");
         assert!(find_lens(&db, None, Some("不存在的镜头 50mm")).is_none());
     }
+
+    #[test]
+    fn bundled_subset_covers_v5_lenses_and_rejects_unknown_sigma() {
+        let db = bundled_db();
+        assert_eq!(db.version, BUNDLED_SUBSET_VERSION);
+        assert_eq!(db.skipped_entries, 0);
+        assert!(db.lenses.len() >= 12);
+        // 2026-10-25（photo-bugfix-p1）增补的 6 支：每支都在库里且至少有一条标定。
+        let added = [
+            "Nikkor Z 24-70mm f/4 S",
+            "Nikkor Z 24-120mm f/4 S",
+            "XF23mmF2 R WR",
+            "Ricoh GR III & compatibles + GW-4",
+            "Olympus M.Zuiko Digital ED 14-42mm f/3.5-5.6 EZ",
+            "Lumix G Vario 14-140mm f/3.5-5.6",
+        ];
+        for name in added {
+            let (entry, _) = find_lens(&db, None, Some(name))
+                .unwrap_or_else(|| panic!("bundled subset 缺少镜头：{name}"));
+            let items = entry.distortion.len() + entry.tca.len() + entry.vignetting.len();
+            assert!(items > 0, "镜头 {name} 无标定条目");
+        }
+        // M.Zuiko EZ 上游只有畸变标定（无 tca/vignetting）：只做畸变校正。
+        let (ez, _) = find_lens(
+            &db,
+            Some("Olympus"),
+            Some("M.Zuiko Digital ED 14-42mm F3.5-5.6 EZ"),
+        )
+        .unwrap();
+        assert!(!ez.distortion.is_empty());
+        assert!(ez.tca.is_empty() && ez.vignetting.is_empty());
+        // 三支实拍可匹配的口径（rawler 上报的厂商+型号）：
+        let (_, via) = find_lens(&db, Some("Nikon"), Some("Nikkor Z 24-70mm f/4 S")).unwrap();
+        assert_eq!(via, "exact");
+        let (_, via) = find_lens(
+            &db,
+            Some("Olympus"),
+            Some("M.Zuiko Digital ED 14-42mm F3.5-5.6 EZ"),
+        )
+        .unwrap();
+        assert_eq!(via, "exact");
+        let (_, via) = find_lens(
+            &db,
+            Some("Lumix"),
+            Some("G Vario 14-140mm F3.5-5.6 Asph. Power OIS"),
+        )
+        .unwrap();
+        assert_eq!(via, "contains");
+        // Sigma APO 170-500mm 上游无此条目：不许误匹配到别的 Sigma 镜头。
+        assert!(find_lens(
+            &db,
+            Some("Sigma"),
+            Some("APO 170-500mm F5-6.3 Aspherical RF")
+        )
+        .is_none());
+    }
 }

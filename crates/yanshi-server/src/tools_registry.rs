@@ -442,7 +442,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         // **不是 `mutating`**：它只写 blob 存储，**不动文档状态**（不产生原子）✓
         mutating: false,
         params: &[
-            param!("path", String, false, "服务端本地文件路径（相对 --root，或 root 下的绝对路径）；**也可以直接给 http(s) URL** ⇒ 先拉取再入库（连接 10s／总 30s 超时、重定向 ≤5 跳且禁 https→http 降级、体积上限与上传同源 64MiB、五类失败分开报错）；与 data_base64 二选一，同给报错"),
+            param!("path", String, false, "服务端本地文件路径（相对 --root，或 root 下的绝对路径）；**也可以直接给 http(s) URL** ⇒ 先拉取再入库（连接 10s／总 30s 超时、重定向 ≤5 跳且禁 https→http 降级、体积上限与上传同源 256MiB、五类失败分开报错）；与 data_base64 二选一，同给报错"),
             param!("data_base64", String, false, "与 path 二选一（同给报错）：文件字节的 base64 正文（**不带 `data:` 前缀**）；解码后与 path 通道走同一入库与同一体积上限"),
             param!("mime_type", String, false, "写进返回的 mime_type（缺省 image/png）；不影响存储编码"),
         ],

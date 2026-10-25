@@ -911,10 +911,28 @@ fn render_preview_in_temp_doc(
     }))
 }
 
+/// 错误路径上把临时文档删除失败的警告拼进错误 detail（C5-9）。
+/// `outcome?` 会丢弃已收集的 `warnings`，须在传播前合并，否则残留
+/// 临时文档的 id 与原因无法回带；无警告时原样返回错误。
+fn with_delete_warnings(mut error: YanshiError, warnings: &[String]) -> YanshiError {
+    if warnings.is_empty() {
+        return error;
+    }
+    let detail = error.context.detail.clone().unwrap_or_default();
+    let joined = warnings.join("；");
+    error.context.detail = Some(if detail.is_empty() {
+        joined
+    } else {
+        format!("{detail}；{joined}")
+    });
+    error
+}
+
 /// 渲染路径的外层：取源像素、降采样、建临时文档、渲染，并在**所有
 /// 出口**删除临时文档。删除失败只在成功响应里以 `warnings` 留痕；
-/// 错误路径上删除同样会尝试，但错误响应没有 warnings 槽位，删失败
-/// 的信息此时无法回带（残留临时文档须手动删除）——如实记录于此。
+/// 错误路径上删除同样会尝试，删失败的信息拼进错误 detail 回带
+/// （C5-9：`outcome?` 会丢弃已收集的 warnings，须在传播前合并；
+/// 残留临时文档仍须手动删除）。
 fn render_preview_image(
     ctx: &mut ToolContext<'_>,
     preset: &StylePreset,
@@ -964,7 +982,12 @@ fn render_preview_image(
             "临时文档 {temp_id} 删除失败：{error}（残留文档需手动删除）"
         ));
     }
-    let mut rendered = outcome?;
+    // C5-9：错误路径上 `outcome?` 会丢弃已收集的 warnings，须先合并
+    // 再传播，否则删失败的临时文档 id 与原因无法回带。
+    let mut rendered = match outcome {
+        Ok(rendered) => rendered,
+        Err(error) => return Err(with_delete_warnings(error, &warnings)),
+    };
     rendered["warnings"] = json!(warnings);
     Ok(rendered)
 }
@@ -1599,6 +1622,37 @@ mod preset_expander_tests {
             preview_scale_notes(&clean_ops),
             "",
             "不含尺度敏感操作时 scale_notes 必须为空"
+        );
+    }
+
+    /// C5-9：错误路径上删除失败的警告必须拼进错误 detail（否则残留
+    /// 临时文档的 id 与原因无法回带）；无警告时错误原样返回。
+    /// 注：渲染失败 + 删除失败同时发生经公开工具 API 无法确定性触发，
+    /// 故本条钉住合并语义本身；调用处接线（`render_preview_image` 的
+    /// `match outcome`）靠审查 + 手动复核，见包说明。
+    #[test]
+    fn delete_warnings_are_appended_to_error_detail() {
+        let error = preset_err("渲染失败".to_owned());
+        let warnings =
+            vec!["临时文档 preview_abc 删除失败：文档正在使用中（残留文档需手动删除）".to_owned()];
+        let merged = with_delete_warnings(error, &warnings);
+        let detail = merged.context.detail.clone().unwrap_or_default();
+        assert!(
+            detail.contains("渲染失败"),
+            "原错误 detail 不得丢失：{detail}"
+        );
+        assert!(
+            detail.contains("preview_abc") && detail.contains("删除失败"),
+            "删除失败的临时文档 id 与原因必须进 detail：{detail}"
+        );
+        assert_eq!(merged.code, ErrorCode::InvalidArgument, "合并不得改错误码");
+        // 无警告 ⇒ 原样返回（变异：无条件改写 detail ⇒ 本条红）。
+        let plain = preset_err("渲染失败".to_owned());
+        let untouched = with_delete_warnings(plain, &[]);
+        assert_eq!(
+            untouched.context.detail.as_deref(),
+            Some("渲染失败"),
+            "无警告时 detail 不得动"
         );
     }
 }

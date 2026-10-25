@@ -109,7 +109,12 @@ fn fixture_db() -> LensDb {
 #[test]
 fn bundled_subset_matches_common_lenses() {
     let db = bundled_db();
-    assert_eq!(db.lenses.len(), 6, "打包子集应含 6 支摘录镜头");
+    // 下界断言（不钉死总数）：6 支常用镜头 + 6 支 v5 增补（2026-10-25，
+    // photo-bugfix-p1）；总数只会随增补变大，变小即有人误删了条目。
+    assert!(
+        db.lenses.len() >= 12,
+        "打包子集应含 6 支常用镜头 + 6 支 v5 增补镜头"
+    );
     // EXIF 常见写法：无厂商前缀、无空格。
     let (entry, via) = find_lens(&db, None, Some("EF-S18-135mm f/3.5-5.6 IS USM"))
         .expect("EF-S 18-135 应在子集中命中");

@@ -345,6 +345,91 @@ fn lens_correction_auto_records_unmatched_without_blocking() {
     );
 }
 
+/// B4 结构化回显（photo-bugfix-p1）：`lens_match` 与
+/// `lens_correction_applied` 必须在 `import_image` 响应顶层可读（驱动
+/// gating 用），而不只藏在 `raw_develop` 记录与 warnings 文本里。夹具
+/// 镜头不在子集里 ⇒ `unmatched` + 未施加校正；不阻断口径不变。
+#[test]
+fn lens_match_and_correction_applied_are_top_level_fields() {
+    let mut workspace = memory_workspace();
+    create_layer(&mut workspace);
+    let bytes = fixture_bytes();
+    let raw_hash = workspace.store().put(&bytes).unwrap().to_string();
+    let imported = call(
+        &mut workspace,
+        "import_image",
+        json!({
+            "layer_id": "L", "object_id": "raw_auto_echo",
+            "bitmap": {"blob_hash": raw_hash, "size": bytes.len(), "mime_type": "image/x-yanshi-rawsrc"},
+            "region": {"x": 0.0, "y": 0.0, "w": 24.0, "h": 16.0},
+            "raw_options": {"lens_correction": "auto"},
+        }),
+    );
+    assert_eq!(imported["ok"], json!(true), "{imported}");
+    assert_eq!(
+        imported["lens_match"],
+        json!("unmatched"),
+        "顶层 lens_match 应与 record 一致：{imported}"
+    );
+    assert_eq!(
+        imported["lens_correction_applied"],
+        json!(false),
+        "未匹配时不得谎称已校正：{imported}"
+    );
+    // 恒等式：顶层回显与落账记录同值（两处各自合法却互相矛盾是最坏的漂移）。
+    let data = object_data(&workspace, "raw_auto_echo");
+    assert_eq!(
+        imported["lens_match"], data["raw_develop"]["lens_match"],
+        "顶层与 record 的 lens_match 不一致：{imported}"
+    );
+}
+
+/// B3 回显（photo-bugfix-p1）：声明 region 与方向换算后实际尺寸不匹配
+/// 时，回执必须点名裁剪/留边量（只回显、不改语义）。夹具 24×16、方向 1。
+#[test]
+fn import_image_echoes_crop_and_padding_amounts() {
+    let mut workspace = memory_workspace();
+    create_layer(&mut workspace);
+    let bytes = fixture_bytes();
+    let raw_hash = workspace.store().put(&bytes).unwrap().to_string();
+    let mut import = |object_id: &str, w: f64, h: f64| {
+        call(
+            &mut workspace,
+            "import_image",
+            json!({
+                "layer_id": "L", "object_id": object_id,
+                "bitmap": {"blob_hash": raw_hash, "size": bytes.len(), "mime_type": "image/x-yanshi-rawsrc"},
+                "region": {"x": 0.0, "y": 0.0, "w": w, "h": h},
+            }),
+        )
+    };
+    // region 小于实际：展开图超出部分被裁（ojigi 竖拍的同构：横 region
+    // 套竖图，下部裁掉）。
+    let small = import("raw_crop_small", 10.0, 10.0);
+    assert_eq!(small["ok"], json!(true), "{small}");
+    assert_eq!(
+        small["developed_dimensions"],
+        json!({"width": 24, "height": 16})
+    );
+    assert_eq!(small["cropped_px"], json!({"w": 14.0, "h": 6.0}), "{small}");
+    assert_eq!(small["padded_px"], json!({"w": 0.0, "h": 0.0}), "{small}");
+    // region 大于实际：声明区内没有像素的部分留白。
+    let big = import("raw_crop_big", 30.0, 20.0);
+    assert_eq!(big["ok"], json!(true), "{big}");
+    assert_eq!(big["cropped_px"], json!({"w": 0.0, "h": 0.0}), "{big}");
+    assert_eq!(big["padded_px"], json!({"w": 6.0, "h": 4.0}), "{big}");
+    // region 与实际一致：两组都为 0（干净导入也有回显，不是缺字段）。
+    let exact = import("raw_crop_exact", 24.0, 16.0);
+    assert_eq!(exact["ok"], json!(true), "{exact}");
+    assert_eq!(exact["cropped_px"], json!({"w": 0.0, "h": 0.0}), "{exact}");
+    assert_eq!(exact["padded_px"], json!({"w": 0.0, "h": 0.0}), "{exact}");
+    assert_eq!(
+        exact["declared_region"],
+        json!({"x": 0.0, "y": 0.0, "w": 24.0, "h": 16.0}),
+        "{exact}"
+    );
+}
+
 #[test]
 fn registry_diff_is_exactly_the_raw_options_group() {
     let registry = registry();

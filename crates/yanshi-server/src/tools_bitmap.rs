@@ -358,6 +358,53 @@ pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             if !outcome.warnings.is_empty() {
                 object.insert("warnings".to_owned(), json!(outcome.warnings));
             }
+            // B3 回显（photo-bugfix-p1）：声明 region 与方向换算后实际尺寸
+            // 的差只回显、不改语义——调用方自给 region 与方向后尺寸不匹配
+            // 时，`blit` 相交夹紧静默丢像素（ojigi 竖拍实测：下部裁掉、右
+            // 25% 留白），此前回执里没有任何观测出口。`cropped_px` 是展开
+            // 图超出声明 region 的像素（分块路被裁），`padded_px` 是声明
+            // region 内没有像素的留白；两组都为 0 即干净。只在 RAW 导入上
+            // 回显（非 RAW 不在导入期解码，实际尺寸导入时不可得）；region
+            // 尺寸以文档单位计，正常导入流 1 单位 = 1 像素。
+            // active-area 裁剪已含在展开尺寸里（meta 宽高即裁后帧口径）。
+            let declared_w = region.w.max(0.0);
+            let declared_h = region.h.max(0.0);
+            let developed_w = outcome.developed_width as f64;
+            let developed_h = outcome.developed_height as f64;
+            object.insert(
+                "declared_region".to_owned(),
+                json!({"x": region.x, "y": region.y, "w": region.w, "h": region.h}),
+            );
+            object.insert(
+                "developed_dimensions".to_owned(),
+                json!({"width": outcome.developed_width, "height": outcome.developed_height}),
+            );
+            object.insert(
+                "cropped_px".to_owned(),
+                json!({"w": (developed_w - declared_w).max(0.0), "h": (developed_h - declared_h).max(0.0)}),
+            );
+            object.insert(
+                "padded_px".to_owned(),
+                json!({"w": (declared_w - developed_w).max(0.0), "h": (declared_h - developed_h).max(0.0)}),
+            );
+            // B4 结构化回显（photo-bugfix-p1）：`lens_match` 此前只在
+            // `raw_develop` 记录与 warnings 文本里，批量驱动无法据此
+            // gating；顶层再给一份 + `lens_correction_applied` 布尔（有
+            // 实际施加的校正项才为真，`matched` 但三项皆空时为假——不许
+            // 拿空 profile 冒充校正过）。不阻断口径不变（fail-closed 须
+            // 上游定，见 raw_import.rs:313 钉死的判据）。
+            if let Some(lens_match) = outcome
+                .record_json
+                .get("lens_match")
+                .and_then(Value::as_str)
+            {
+                object.insert("lens_match".to_owned(), json!(lens_match));
+                let applied = outcome
+                    .record_json
+                    .get("applied_lens_profile")
+                    .is_some_and(|profile| !profile.is_null());
+                object.insert("lens_correction_applied".to_owned(), json!(applied));
+            }
         }
         let adjustment = spawn_default_exposure_adjustment(ctx, &layer_id)?;
         if let Some(object) = out.as_object_mut() {
@@ -373,6 +420,10 @@ struct RawImportOutcome {
     record_json: Value,
     meta_json: Value,
     warnings: Vec<String>,
+    /// 方向换算后（+ 预览档降采样后）的展开尺寸（B3 回显用，与 `develop()`
+    /// 的 ⑧⑨ 两步同口径，见 `yanshi_raw::develop::developed_dimensions`）。
+    developed_width: u32,
+    developed_height: u32,
 }
 
 /// 取 RAW 源字节 → 解码一次 → 组装导入计划（设计 5.6/5.7）。
@@ -425,10 +476,18 @@ fn build_raw_import_plan(
             ErrorContext::detail(format!("raw_meta 序列化失败：{error}")),
         )
     })?;
+    let (developed_width, developed_height) = yanshi_raw::develop::developed_dimensions(
+        plan.meta.width,
+        plan.meta.height,
+        plan.meta.orientation,
+        plan.record.developed_max_edge,
+    );
     Ok(RawImportOutcome {
         record_json,
         meta_json,
         warnings: plan.warnings,
+        developed_width,
+        developed_height,
     })
 }
 

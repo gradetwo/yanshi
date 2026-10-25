@@ -245,6 +245,25 @@ fn put_blob_rejects_conflicts_and_bad_base64() {
     );
 }
 
+/// B2（photo-bugfix-p1）：缺省上限由 64MiB 上调至 256MiB 后，70MiB 文件
+/// 经 path 通道 `put_blob` 必须成功——旧缺省下同一文件报 `ResourceExhausted`
+///（80MP 实测 `put_blob` 503 的同根）。写零字节文件即可验上限，不必是真图。
+#[test]
+fn put_blob_accepts_file_over_old_64mib_cap() {
+    let root = temp_dir("putblob_big");
+    let _cleanup = Cleanup(root.clone());
+    let mut ws = workspace(&root);
+    let size = 70 * 1024 * 1024;
+    std::fs::write(root.join("big.bin"), vec![0u8; size]).unwrap();
+    let resp = call(
+        &mut ws,
+        "put_blob",
+        json!({ "path": root.join("big.bin").display().to_string() }),
+    );
+    assert_eq!(resp["ok"], json!(true), "70MiB 文件应放行：{resp}");
+    assert_eq!(resp["size"], json!(size), "应回显实际字节数：{resp}");
+}
+
 // ───────────────────────── URL 拉取细则（fetch 层） ─────────────────────────
 
 #[test]

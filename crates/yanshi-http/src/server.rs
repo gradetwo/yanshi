@@ -1694,7 +1694,7 @@ const _: () = assert!(DEFAULT_MAX_IMPORT_TOTAL_BYTES > 349 * 1024 * 1024);
 /// 解析不出按缺省（与 `file_source::max_upload_bytes` 的口径逐字一致 ✓）。
 ///
 /// **为什么这是另一个数、而不是复用 `max_upload_bytes`** ✓：后者限的是**单个素材源**
-///（一张 PNG、一份 LUT），这里限的是**整个工程包的累计** ⇒ 量级不同（素材 64 MiB ✗
+///（一张 PNG、一份 LUT），这里限的是**整个工程包的累计** ⇒ 量级不同（素材 256 MiB ✗
 /// vs 工程包几百 MB ✓）。**不设限的后果**：单片有 `MAX_BODY_BYTES` 32 MiB 封顶 ✓，
 /// 但分片可以一直追加 ⇒ 24 小时清理窗内，一个放弃或恶意的会话能**把磁盘写满** ✗。
 fn max_import_total_bytes() -> u64 {
@@ -2204,7 +2204,7 @@ fn delete_document(state: &ServerState, request: &Request, doc_id: &str) -> Resp
 /// 上传 blob（`POST /api/blob?doc=..&token=..`，请求体即字节）。
 ///
 /// 返回 `{ok, blob_hash, size, mime_type}`，供 `import_image` 等工具引用。
-/// 大小上限与设计的画布规模相称（默认 64MiB，可用 `YANSHI_MAX_UPLOAD_BYTES` 覆盖）。
+/// 大小上限与设计的画布规模相称（默认 256MiB，可用 `YANSHI_MAX_UPLOAD_BYTES` 覆盖）。
 /// RAW 上传识别探针（设计 5.3）：feature `raw` 开时经 render 挂接点识别
 /// RAW 字节并组装 `decoded_from` 概要；关时恒 `None`（调用方走既有分派，
 /// 行为与基线逐字一致）。

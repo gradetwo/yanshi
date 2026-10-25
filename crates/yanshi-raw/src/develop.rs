@@ -1369,6 +1369,39 @@ pub fn assemble_record(
     }
 }
 
+/// 展开输出尺寸（B3 回显用）：与 `develop()` 的 ⑧⑨ 两步同口径——先按
+/// EXIF 方向换算（5–8 换宽高，`yanshi_core::orientation::output_size`），
+/// 再按预览档降采样（`downscale_dimensions` 的整数口径）。`max_edge` 为
+/// `None`（全档）时不降采样。active-area 裁剪已含在输入尺寸里（`RawMeta`
+/// 的宽高就是裁后帧口径），此处不再另算。
+pub fn developed_dimensions(
+    width: u32,
+    height: u32,
+    orientation: u32,
+    max_edge: Option<u32>,
+) -> (u32, u32) {
+    let (w, h) =
+        yanshi_core::orientation::output_size(width as usize, height as usize, orientation);
+    let (w, h) = match max_edge {
+        Some(edge) => downscale_dimensions(w, h, edge),
+        None => (w, h),
+    };
+    (w as u32, h as u32)
+}
+
+/// 预览档降采样的尺寸口径（`downscale_rgb_to_edge` 与
+/// `developed_dimensions` 共用一份）：新尺寸 `dim × edge ÷ max_dim` 向下
+/// 取整、至少 1 ⇒ 长边恰为 edge、短边不越界；输入长边已 ≤ edge 时原样返回。
+fn downscale_dimensions(width: usize, height: usize, max_edge: u32) -> (usize, usize) {
+    let max_dim = width.max(height);
+    if max_dim <= max_edge as usize {
+        return (width, height);
+    }
+    let new_w = ((width as u64 * u64::from(max_edge)) / max_dim as u64).max(1) as usize;
+    let new_h = ((height as u64 * u64::from(max_edge)) / max_dim as u64).max(1) as usize;
+    (new_w, new_h)
+}
+
 /// C1-b 预览档的链尾降采样：面积加权盒式滤波把三元组平面压到
 /// 长边 ≤ `max_edge`。新尺寸用整数口径（dim × edge ÷ max_dim，
 /// 向下取整、至少 1）⇒ 长边恰为 edge、短边不越界；逐输出像素对
@@ -1386,8 +1419,7 @@ fn downscale_rgb_to_edge(
     if max_dim <= max_edge as usize {
         return (width, height, rgb);
     }
-    let new_w = ((width as u64 * u64::from(max_edge)) / max_dim as u64).max(1) as usize;
-    let new_h = ((height as u64 * u64::from(max_edge)) / max_dim as u64).max(1) as usize;
+    let (new_w, new_h) = downscale_dimensions(width, height, max_edge);
     let scale_x = width as f64 / new_w as f64;
     let scale_y = height as f64 / new_h as f64;
     let mut out = vec![0.0f32; new_w * new_h * 3];
@@ -1848,5 +1880,23 @@ mod tests {
         let full = demosaic_grid_impl(&plane, 48, 36, &grid, GridTapSet::Full, 1);
         let quick = demosaic_grid_impl(&plane, 48, 36, &grid, GridTapSet::Quick, 1);
         assert_ne!(quick, full, "快速档在纹理上应与全档不同（过滤未生效？）");
+    }
+
+    #[test]
+    fn developed_dimensions_applies_orientation_then_preview_edge() {
+        // B3 回显的尺寸口径：方向换算（5–8 换宽高）先、预览档降采样后，
+        // 与 `develop()` 的 ⑧⑨ 两步同源；任一步算错都会让回显的裁剪量失真。
+        assert_eq!(developed_dimensions(24, 16, 1, None), (24, 16));
+        assert_eq!(developed_dimensions(24, 16, 8, None), (16, 24));
+        assert_eq!(developed_dimensions(24, 16, 5, None), (16, 24));
+        assert_eq!(developed_dimensions(24, 16, 3, None), (24, 16));
+        // 非法方向按 1（恒等）兜底，与 `output_size` 同口径。
+        assert_eq!(developed_dimensions(24, 16, 9, None), (24, 16));
+        // 预览档：长边压到 edge、短边同比向下取整（24×16 → edge 12 ⇒ 12×8）。
+        assert_eq!(developed_dimensions(24, 16, 1, Some(12)), (12, 8));
+        // 方向 + 预览档叠加：先换成 16×24，再压到长边 12 ⇒ 8×12。
+        assert_eq!(developed_dimensions(24, 16, 8, Some(12)), (8, 12));
+        // 长边已 ≤ edge 时不变。
+        assert_eq!(developed_dimensions(24, 16, 1, Some(64)), (24, 16));
     }
 }

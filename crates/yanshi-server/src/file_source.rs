@@ -11,7 +11,7 @@
 //!   其余 scheme 的 `://` 一律拒绝（本地文件走路径形态，不要用 `file://` 绕）；
 //!   再其余就是本地路径，沙箱沿用 `put_blob` 已落地的口径（拒 `..` 组件 +
 //!   canonicalize 后必须落在工作区 root 内），实现只此一份（[`resolve_local_path`]）。
-//! - **体积上限同源**（4.3）：[`max_upload_bytes`] 是全仓唯一出处——缺省 64MiB，
+//! - **体积上限同源**（4.3）：[`max_upload_bytes`] 是全仓唯一出处——缺省 256MiB，
 //!   可用环境变量 `YANSHI_MAX_UPLOAD_BYTES` 覆盖；`yanshi-http` 的 `blob_upload`
 //!   也调它，不在两处各写一份。三条通道都受它约束。
 //! - **URL 拉取细则**（4.3）：协议白名单只有 http/https；连接超时
@@ -33,8 +33,12 @@ use std::time::Duration;
 use serde_json::Value;
 use yanshi_core::{ErrorCode, ErrorContext, Result, YanshiError};
 
-/// 上传／拉取的体积上限缺省值（64MiB）——与 `yanshi-http` 的 `blob_upload` 同源。
-pub const DEFAULT_MAX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
+/// 上传／拉取的体积上限缺省值（256MiB）——与 `yanshi-http` 的 `blob_upload` 同源。
+/// 2026-10-25 由 64MiB 上调：未压缩 14-bit RAW 约 38MP 即撞旧线，80MP 文件
+/// （131,372,032 字节）`put_blob` 直接 503；256MiB 覆盖全部 80MP 未压缩 RAW
+/// 与绝大多数 42MP 文件。仍是单素材源的防护值，不是协议限制——超限报错
+/// 文案仍带两个数字（实际字节 + 上限）；更大文件用 `YANSHI_MAX_UPLOAD_BYTES` 覆盖。
+pub const DEFAULT_MAX_UPLOAD_BYTES: usize = 256 * 1024 * 1024;
 
 /// 全仓唯一的体积上限出处：环境变量 `YANSHI_MAX_UPLOAD_BYTES` 覆盖，缺省
 /// [`DEFAULT_MAX_UPLOAD_BYTES`]。解析不出的值按缺省处理（与 HTTP 上传端点
@@ -653,5 +657,24 @@ mod tests {
             Some("image/jpeg; charset=binary"),
             Some("png")
         ));
+    }
+
+    #[test]
+    fn default_cap_is_256mib_and_check_size_enforces_it() {
+        // B2（photo-bugfix-p1）：缺省由 64MiB 上调至 256MiB——80MP 文件
+        // 131,372,032 字节在旧缺省下 `put_blob` 直接 503，新缺省须放行；
+        // 上限本身仍生效，超限报错文案须带两个数字（实际字节 + 上限）。
+        assert_eq!(DEFAULT_MAX_UPLOAD_BYTES, 256 * 1024 * 1024);
+        // `max_upload_bytes()` 只有环境变量未设时才取缺省；设了则以变量为准。
+        if std::env::var("YANSHI_MAX_UPLOAD_BYTES").is_err() {
+            assert_eq!(max_upload_bytes(), DEFAULT_MAX_UPLOAD_BYTES);
+        }
+        assert!(check_size("文件", 131_372_032, DEFAULT_MAX_UPLOAD_BYTES).is_ok());
+        assert!(check_size("文件", 256 * 1024 * 1024, DEFAULT_MAX_UPLOAD_BYTES).is_ok());
+        let err = check_size("文件", 256 * 1024 * 1024 + 1, DEFAULT_MAX_UPLOAD_BYTES).unwrap_err();
+        assert_eq!(err.code, ErrorCode::ResourceExhausted);
+        let text = format!("{err}");
+        assert!(text.contains("268435457"), "{text}");
+        assert!(text.contains("268435456"), "{text}");
     }
 }

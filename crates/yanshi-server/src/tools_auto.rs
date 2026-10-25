@@ -47,9 +47,11 @@
 //! vibrance=0、saturation=1.0、clarity/texture=0、dehaze=0、
 //! denoise luminance=0、色阶/影调双中性）时不落该对象——
 //! `applied[]` 只含真正改变画面的对象；重跑时某组新跳过不会删掉
-//! 旧对象（v1 已知局限，见 phase4-notes.md），需手动删除。
+//! 旧对象（v1 已知局限，见 phase4-notes.md）：`skipped` 项里点名残留的
+//! `stale_object_id` 并提示手动删除（photo-bugfix-p1；默认删除的误删
+//! 风险是期 5 明确记录的否决理由，故只回显、不删）。
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::{json, Value};
 use yanshi_core::{Bbox, ErrorCode, ErrorContext, ObjectType, Result, YanshiError};
@@ -1247,6 +1249,15 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     let layer = state.layers.get(&layer_id).expect("图层已验存在");
     let layer_name = layer.name.clone();
     let alive = state.alive_objects();
+    // C5-8（photo-bugfix-p1）：重跑时新跳过的组若层上有旧 `auto_*` 对象
+    // 残留，响应须点名（只回显、不删——默认删除的误删风险是期 5 明确记录
+    // 的否决理由）。此处先取快照：其后只做渲染读，不落原子，`skipped`
+    // 组装时它仍是当前状态。
+    let stale_auto: HashSet<String> = alive
+        .iter()
+        .filter(|object| object.layer_id == layer_id && object.id.starts_with("auto_"))
+        .map(|object| object.id.clone())
+        .collect();
     // force 检查：非 auto 调整/滤镜对象里，RAW 缺省曝光对象（系统状态）
     // 豁免——其 id 留待落成时处理（曝光落成则置零，曝光跳过则原状）。
     let (raw_defaults, manual): (Vec<String>, Vec<String>) = alive
@@ -1358,11 +1369,21 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         .skipped
         .iter()
         .map(|entry| {
-            json!({
+            let mut item = json!({
                 "group": entry.group,
                 "object_id": entry.object_id,
                 "reason": entry.reason,
-            })
+            });
+            // C5-8（photo-bugfix-p1）：本次跳过、但层上旧对象仍存活——
+            // 点名残留 id + 提示手动删；不删（误删风险见上）。
+            if stale_auto.contains(&entry.object_id) {
+                item["stale_object_id"] = json!(entry.object_id);
+                item["reason"] = json!(format!(
+                    "{}；注意：层上旧对象 {} 仍存活并继续参与渲染，请手动删除（delete_object）",
+                    entry.reason, entry.object_id
+                ));
+            }
+            item
         })
         .collect();
     let scene_json: Vec<Value> = plan.scene.names().iter().map(|name| json!(name)).collect();
