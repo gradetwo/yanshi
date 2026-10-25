@@ -82,6 +82,13 @@ const ALLOWLIST = {
     "height_gain", "newest", "oldest", "desc", "false", "true", "image",
   ]),
   field: new Set(["a", "time_ms"]),
+  // **滤镜/调整的参数键** ✓（第 1132 轮整合时补）：
+  //   `amount` 是 `add_filter`/`add_adjustment` 的 `params.amount` ✓
+  //   ⇒ 它**不是**任何工具的顶层 inputSchema 属性（在 `params` 对象里）✗
+  //   ⇒ 旧分类器无处置 ⇒ 未分类 1 个 ⇒ 红 ✓
+  //   **⇒ 只放这一个** ✓：其余键（`black`/`white`/`gamma`/`ranges`…）若以后进文案，
+  //     也应按同一问句"它是引擎真有的键吗"补进来，不要放成通配 ✓。
+  effectParam: new Set(["amount"]),
   internal: new Set([
     "feed_base", "cp", "YANSHI_EXPORT_DIR", "canvas", "open", "close",
     "supersede",
@@ -150,6 +157,11 @@ const main = async () => {
     process.exit(3);
   }
   const brushNames = new Set(canonical);
+  // **滤镜/调整名动态取** ✓（第 1132 轮）：Y-06 的 schema 文案要写
+  //   「`saturation` 的恒等值是 1」⇒ `saturation` 是**引擎效果名** ✓，
+  //   不是工具名、不是参数名 ⇒ 旧分类器无处置 ✗。从能力表动态取，不写死。
+  const caps = await call("list_engine_capabilities", {});
+  const effectNames = new Set([...(caps?.filters ?? []), ...(caps?.adjustments ?? [])]);
 
   // **① 全表普查**。
   const perTool = new Map(); // tool -> {checked, unclassified: []}
@@ -161,6 +173,7 @@ const main = async () => {
     if (FRAMEWORK_PARAMS.includes(token)) return "framework";
     if (toolNames.has(token)) return "tool-name";
     if (brushNames.has(token)) return "brush-canonical";
+    if (effectNames.has(token)) return "effect-name";
     if (BRUSH_ALIASES.includes(token)) return "brush-alias";
     if (allParams.has(token)) return "other-tool-param";
     const allow = allowClassOf(token);
