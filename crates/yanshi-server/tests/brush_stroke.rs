@@ -964,3 +964,38 @@ fn a_stroke_entirely_outside_the_canvas_says_so_instead_of_blaming_the_brush() {
         "不许把「坐标在画布外」说成「这支笔刷画不出来」✗ —— 那正是把外部 agent 引偏的那句话 ✓：{detail}"
     );
 }
+
+/// **诊断（不是判据）**：`classic-knife` 在 `hardness=1.0` ＋ `opacity=1.0` 时**一笔不落**吗？
+/// ⇒ 外部 `qoder` 的 **D12**（2026-10-21 实测：同参数 oil 落 9302 px，knife 落 **0 px**，仍 `ok=true`）
+/// ⇒ 本测试只**打印**两组数，先确认现象，再决定写成什么样的判据 ✓
+#[test]
+fn d12_knife_at_full_hardness_and_opacity() {
+    let root = temp_dir("d12_knife");
+    let mut workspace = workspace(&root);
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
+        json!(true)
+    );
+    let knife = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "object_id": "k1", "brush": "classic-knife", "size": 40,
+            "hardness": 1.0, "opacity": 1.0,
+            "points": [[40.0, 60.0, 0.9], [200.0, 60.0, 0.9]]
+        }),
+    );
+    let oil = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "object_id": "o1", "brush": "oil", "size": 40,
+            "hardness": 1.0, "opacity": 1.0,
+            "points": [[40.0, 160.0, 0.9], [200.0, 160.0, 0.9]]
+        }),
+    );
+    println!(
+        "D12：knife painted={:?} ok={:?}｜oil painted={:?} ok={:?}",
+        knife["painted_pixels"], knife["ok"], oil["painted_pixels"], oil["ok"]
+    );
+}
