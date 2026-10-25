@@ -21604,8 +21604,10 @@ cargo test -p yanshi-timelapse --test real_package_shrinks ⇒ **1 passed** ✓�
 2. timelapse 的测试/文档改传 `true` ✓
 3. **那时**再把警告换成 `exit(2)` ✓ ＋ 判据（不带 blob ⇒ rc=2；带 blob ⇒ rc=0 ✓）
 
-**⇒ 现状**：警告已比原来强（原来只在汇总行里报个数 ✓ 现在有独立两行 + 指出 `export_project` 的原因 ✓），
-而**不误伤自产包** ✓ ⇒ **这是当前约束下的正确中间态** ✓
+**⇒ 当时的现状（已被第 1130 轮取代 ✓）**：警告已比原来强（原来只在汇总行里报个数 ✓ 现在有独立两行 + 指出 `export_project` 的原因 ✓），
+而**不误伤自产包** ✓ ⇒ 当时是正确中间态 ✓
+**⇒ 现在**：上面那个顺序已经走完 ✓（导出侧 `include_bitmaps: true` 早就真装全 ✓；本轮把测试/文档改传 `true` ✓
+⇒ 然后才在 `main.rs` 换回 `exit(2)` ✓）⇒ **见第六百二十节** ✓
 
 ## 六百一十四、**红 → 绿 的 CI 侧证据到手**：`0c58d523` **completed/success**（第 1114 轮）
 
@@ -21729,3 +21731,61 @@ run 0c58d523：completed/**success**｜success=12｜failure=0｜skipped=1
 
 ⇒ **⇒ 所以外部补丁 F 的两笔（合并 ＋ 质量修正）都已过 CI** ✓
 ⇒ 剩下 `2e70615b` 一跑 ⇒ 绿后**补丁线收工** ✓（它覆盖 `c7739c89` 的相位修正 ✓）
+
+## 六百二十、**D172 完整闭环**：带全位图的包 ⇒ `rc=0`；缺 blob ⇒ `rc=2`（第 1130 轮）
+
+**⇒ 先纠正一条**：交接里写的"要给 `export_project` 加 `include_blobs`"**已经存在** ✓ ——
+参数名是 **`include_bitmaps`** ✓（`tools_registry.rs:1971` ✓、`service.rs:3219` 的 `if !include_bitmaps` ✓，
+`include_bitmaps: true` ⇒ **每个被引用的位图都装** ✓）。⇒ 所以**导出侧不用再改** ✓。
+
+**⇒ 本轮只做"顺序"的后两步**（第 1110 轮那条顺序 ✓）：
+
+| 步 | 动作 | 文件 |
+|---|---|---|
+| ① | `real_package_shrinks` 导出时传 **`include_bitmaps: true`**，并断 `omitted == 0`、`blob_count > 0` | `crates/yanshi-timelapse/tests/real_package_shrinks.rs` |
+| ② | 同一测试断 timelapse 的 stderr 含 **`缺 blob 0 个`**（导出侧与回放侧的闭环 ✓）| 同上 |
+| ③ | 缺 blob ⇒ **`std::process::exit(2)`**（不再只警告 ⇒ 不再产出"看起来正常的空影片" ✓）| `crates/yanshi-timelapse/src/main.rs` |
+| ④ | `missing_blobs_are_loud` 加断 **`status.code() == Some(2)`** | `crates/yanshi-timelapse/tests/missing_blobs_are_loud.rs` |
+| ⑤ | 文档：README 退出码表 ＋ 包格式 §二"包不完整 ⇒ rc=2" | `crates/yanshi-timelapse/README.md`、`docs/timelapse-package-format.md` |
+
+**⇒ 为什么 `2` 不是 `1`**：`1` 是"渲染/编码失败"✓（产品跑过但出错）；
+`2` 是"**输入前提不成立**"（包不完整 ⇒ 出片必然缺内容 ✓）⇒ 两者可分辨 ✓，判据与脚本按退出码分流 ✓。
+
+**⇒ ★ 实测反转 ①：`exit(2)` 差点**拒绝自己的包** ✗ ★**
+
+第一次跑 `real_package_shrinks`：`rc=2`，stderr 说「缺 3 个被引用的 blob（共引用 6 个）」，
+而 `include_bitmaps: true` 明明已经把 3 个像素 blob 装进包了 ✓ ⇒ 多出来的 3 个是什么？
+⇒ 逐原子看：`import_image` 的净荷里还有 **`tiles`**（分块解码索引 ✓，`tools_bitmap.rs:304` ✓），
+它**不在** `refs.blobs` 里 ⇒ `export_project` 的 `wanted` **不装它** ✓（这是对的：索引可重建 ✓）
+⇒ 而 timelapse 原来用**正则扫全文**找 64 位 hex ⇒ 把 `tiles` 也算成"被引用的 blob" ✗
+⇒ 于是 **6 ＝ 3 像素 ＋ 3 索引** ⇒ 判成缺 3 个 ✗
+
+**⇒ 而 `tiles` 缺失**不是**画面缺口** ✓**：渲染侧契约是「索引取不到 ⇒ **落回整幅解码**」✓
+（`render.rs:4350` 的 `store.get(&hash).ok()?` ⇒ `None` ⇒ 走整幅 ✓）
+⇒ 所以修法：**把 `tiles` 排除出"必需 blob"** ✓（`tile_index_hashes` ✓），
+但仍**打印**它缺几个 ✓（**豁免 ≠ 静默** ✓：汇总行里有「另有 N 个 `tiles` 解码索引缺失」✓）。
+
+**⇒ 新判据**：`a_missing_tile_index_alone_is_not_fatal` ✓
+（只缺 tiles ⇒ `rc=0` ＋「缺 blob 0 个」＋ tiles 仍可见 ✓）。
+
+**⇒ ★ 实测反转 ②：`omitted == 0` 这条断言**差点是安慰剂** ✗ ★**
+
+原测试用 `8B_Pencil#1` ✓ ⇒ 把 `include_bitmaps: true` **去掉**后测试**照样绿** ✗
+（实测响应：`omitted: 0`、`blob_count: 3` ⇒ 那支笔**本来就不可省** ✓）
+⇒ 所以「`omitted == 0`」测的**不是参数**，而是"这支笔恰好不可重放" ✗。
+⇒ 换成 `2B_pencil.myb`（`export_small` 里已被证明可省 ✓）之后再删参数 ⇒
+`omitted: 3`、`blob_count: 0`、`bytes: 10752` ⇒ **`omitted == 0` 红** ✓。
+
+**⇒ 变异（四层齐的第四层 ✓，三条都实测过 ✓）**：
+
+| 变异 | 观察 | 哪条断言红 |
+|---|---|---|
+| 测试里去掉 `include_bitmaps: true` | `omitted: 3`、`blob_count: 0`、`bytes: 10752` | `omitted == 0` ✓ |
+| `main.rs` 去掉 `std::process::exit(2)` | `rc=Some(0)` | `status.code() == Some(2)` ✓ |
+| 去掉 `tile_index_hashes` 的排除 | `rc=Some(2)`（`缺 blob 1 个`） | `a_missing_tile_index_alone_is_not_fatal` 的 `rc=0` ✓ |
+
+**⇒ 本机实测**：`cargo test -p yanshi-timelapse` ⇒ **26 passed**（6＋8＋6＋5＋1，0 failed ✓）。
+
+**⇒ 仍未做（留给下一轮 ✓）**：`scripts/tool-export-bitmaps.mjs` 只测"不可重放的位图照装" ✓
+⇒ **可以再加一段**：`include_bitmaps: true` 导出的包直接喂 `target/release/yanshi-timelapse` ⇒ `rc=0` ✓
+（本轮用 Rust 测试覆盖了同一条链 ✓；MJS 侧是**补第二口径**，不是缺判据 ✓）。

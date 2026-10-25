@@ -51,6 +51,53 @@ const KERNEL_MEMORY_LIMIT: usize = 2 * 1024 * 1024 * 1024;
 /// 内核算术的 tile 尺寸（**与浏览器同一档 ✓**）。
 const TILE_SIZE: u32 = 64;
 
+/// **`tiles` 解码索引 blob 的哈希集合** ✓（第 1130 轮；D172 闭环的**必要条件**）
+///
+/// **⇒ 为什么必须把它们**排除在"必需 blob"之外** ✗**：
+///   `import_image` 的净荷里除了 `bitmap.blob_hash`（**像素本体** ✓）还有一个 `tiles`
+///   （**分块解码索引** ✓，`tools_bitmap.rs:304` 写的 ✓）。
+///   而渲染侧对索引的契约是「**索引缺失／块取不到 ⇒ 落回整幅解码**」✓（`render.rs:4350` ✓）
+///   ⇒ 所以包里没有 `tiles` **不会**让画面缺东西 ✓，只会慢一点 ✓。
+///   ⇒ 若把它算成"缺 blob" ⇒ 会把**完全可回放的包**判成不完整 ✗
+///     （本仓 `export_project` 的 `wanted` 只收 `refs.blobs` ✓，**不装** tiles ✓
+///      ⇒ **我们自己的包会被自己拒绝** ✗ —— 第 1130 轮实测就是这样 ✓）。
+///
+/// **⇒ 只认 `tiles` 这个键**（不按正则扫全文 ✓）—— 同一个哈希出现在别处**必须**照常算必需 ✓
+/// （`tiles` 指向的是**索引 JSON** ✓，与像素 blob 内容不同 ⇒ 实践中不会重合 ✓）。
+fn tile_index_hashes(atoms_text: &str) -> std::collections::BTreeSet<String> {
+    fn walk(value: &Value, key: Option<&str>, out: &mut std::collections::BTreeSet<String>) {
+        match value {
+            Value::String(text) => {
+                if key == Some("tiles") {
+                    let bare = text.strip_prefix("sha256:").unwrap_or(text);
+                    let is_hex = |b: u8| b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
+                    if bare.len() == 64 && bare.bytes().all(is_hex) {
+                        out.insert(bare.to_owned());
+                    }
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    walk(item, key, out);
+                }
+            }
+            Value::Object(map) => {
+                for (name, child) in map {
+                    walk(child, Some(name), out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = std::collections::BTreeSet::new();
+    for line in atoms_text.lines() {
+        if let Ok(atom) = serde_json::from_str::<Value>(line) {
+            walk(&atom, None, &mut out);
+        }
+    }
+    out
+}
+
 fn main() -> Result<()> {
     // **读包计时起点** ✓（第 612 轮）：外部要"阶段计时"，而"读包"是**最容易被误判成渲染**的一段 ✓
     let t_read = std::time::Instant::now();
@@ -225,13 +272,20 @@ fn main() -> Result<()> {
         }
         seen.into_iter().collect()
     };
+    let tile_hashes = tile_index_hashes(&atoms_text);
+    // **⇒ 必需 blob ＝ 被引用的 － tiles 解码索引** ✓（第 1130 轮；见 `tile_index_hashes` 的说明）
+    //   ⇒ **只有必需 blob 缺失才致命** ✗；`tiles` 缺失只影响解码速度 ✓（渲染侧会退回整幅 ✓）
     let missing_blobs: Vec<&String> = referenced
         .iter()
-        .filter(|hash| !blobs.contains_key(*hash))
+        .filter(|hash| !blobs.contains_key(*hash) && !tile_hashes.contains(*hash))
         .collect();
+    let missing_tile_indexes = referenced
+        .iter()
+        .filter(|hash| !blobs.contains_key(*hash) && tile_hashes.contains(*hash))
+        .count();
     if !missing_blobs.is_empty() {
         eprintln!(
-            "⚠️ 包里缺 {} 个被原子引用的 blob（首个：{}，共引用 {} 个）⇒ 那些笔触会渲染成空白，而退出码仍是 0 ⇒ 这不是「没有内容」，是「内容不在包里」",
+            "⚠️ 包里缺 {} 个被原子引用的 blob（首个：{}，共引用 {} 个）⇒ 那些笔触会渲染成空白 ⇒ 这不是「没有内容」，是「内容不在包里」；读完包后会**拒不出片**（退出码 2）",
             missing_blobs.len(),
             missing_blobs[0],
             referenced.len()
@@ -271,24 +325,31 @@ fn main() -> Result<()> {
     // **缺 blob 的个数也进这一行** ✓（第 780 轮；外部 D172）：只在上面喊一次不够 ✓ ——
     //   被 `timeout` 杀掉时**只有 stderr 前几行能看到** ✓ ⇒ 数量必须出现在**第一行汇总**里 ✓。
     eprintln!(
-        "读包 {read_ms} ms｜blob {} 个（编码 {encoding}）｜忽略条目 {skipped_entries}｜**缺 blob {} 个**",
+        "读包 {read_ms} ms｜blob {} 个（编码 {encoding}）｜忽略条目 {skipped_entries}｜**缺 blob {} 个**（另有 {missing_tile_indexes} 个 `tiles` 解码索引缺失 ⇒ 渲染侧会退回整幅 ✓，不影响画面 ✓）",
         blobs.len(),
         missing_blobs.len()
     );
-    // **⇒ 缺 blob ⇒ 必须**响亮**（但暂不 rc≠0）** ⚠（第 1089／1110 轮；外部 qoder 的 D172）
-    //   **⇒ 第 1089 轮试过 `exit(2)`** ✓ ⇒ 结果**把 `real_package_shrinks` 变红了** ✗
-    //     ⇒ 根因不是测试：**`export_project` 是"故意省掉"笔触位图的** ✓
-    //       （`document.rs:402` 的注释写着「`export_project` 省掉的那些」✓）
-    //     ⇒ 所以 `exit(2)` 等于**拒绝我们自己 `export_project` 打出来的包** ✗ ⇒ 那是更糟的回归 ✓
-    //   **⇒ 正确的顺序**：先给 `export_project` 加 `include_blobs`（默认保持现行为 ✓）
-    //      ⇒ 再让 timelapse 的测试/文档传 `true` ⇒ **那时**才把这里换成 `exit(2)` ✓
-    //   **⇒ 在那之前**：**大声警告**（比原来的"只在汇总里报个数"强 ✓，但不误伤自产包 ✓）
+    // **⇒ 缺 blob ⇒ 拒不出片（退出码 2）** ✓（第 1130 轮；外部 qoder 的 D172 完整闭环）
+    //   **⇒ 上一轮为什么只警告**：`exit(2)` 会**拒绝我们自己 `export_project` 打的包** ✗
+    //     ⇒ 根因是导出侧缺参数（只能省、不能全装）✓ ⇒ 那条已在 `include_bitmaps: true` 补上 ✓
+    //   **⇒ 顺序**（上一轮踩过，别再反过来做 ✓）：
+    //     ① `export_project` 的 `include_bitmaps: true` 真装全部位图 ✓（已有 ✓）
+    //     ② 本仓的测试/文档传 `true` ✓（本轮 ✓）
+    //     ③ **然后**这里才拒绝 ✗ —— 且**只拒绝真缺的包** ✓（自产包传 true 后缺 0 个 ✓）
+    //   **⇒ 什么**不**算缺**：`tiles` 解码索引**不算** ✓（渲染侧取不到索引就落回整幅解码 ✓，
+    //     见 `tile_index_hashes` 与 `render.rs:4350` ✓）⇒ 否则会把本仓自己的包判成不完整 ✗
+    //     —— 第 1130 轮实测：自产包 6 个引用里 3 个是 tiles ⇒ 全被算成"缺"✗
+    //   **⇒ 为什么是 2 不是 1**：1 ＝ 渲染/编码失败（产品跑过但出错）；2 ＝ **输入前提不成立**
+    //     （包不完整 ⇒ 出片必然缺内容 ✓）⇒ 两者可分辨 ✓，判据按退出码分流 ✓
+    //   **⇒ 为什么必须非 0**：缺 blob 时跑完退出码 0 会产出一条"看起来正常的空影片" ✗
+    //     ⇒ 那正是"静默降级"的教科书形态 ✓（qoder D172 实测过 ✓）。
     if !missing_blobs.is_empty() {
         eprintln!(
-            "⚠️ 包缺 {} 个被引用的 blob ⇒ **画面必然不完整**（空块/缺笔）\n\
-             ⇒ 若是 `export_project` 打的包：它**故意不带笔触位图** ⇒ 回放要用带 blob 的包",
+            "⚠️ 包缺 {} 个被引用的 blob ⇒ **画面必然不完整**（空块/缺笔）⇒ 拒不出片（退出码 2）\n\
+             ⇒ 用 `export_project` 且带 `include_bitmaps: true` 重打一份带全位图的包",
             missing_blobs.len()
         );
+        std::process::exit(2);
     }
 
     let layout = Layout {

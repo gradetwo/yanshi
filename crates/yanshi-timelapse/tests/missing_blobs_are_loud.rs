@@ -1,4 +1,4 @@
-//! **原子引用的 blob 不在包里 ⇒ 必须响亮记账，不许"跑完退出码 0、画面全空"**（第 780 轮）
+//! **原子引用的 blob 不在包里 ⇒ 必须响亮记账 ＋ 拒不出片，不许"跑完退出码 0、画面全空"**（第 780／1130 轮）
 //!
 //! **⇒ 外部（`qoder` 的 D172）实测**：`yanshi-timelapse` 吃一个"原子引用的 blob 不在包里"的包
 //! ⇒ **`rc=0`、一笔不落、一句警告都没有** ⇒ 产出一条**看起来正常的空影片**
@@ -8,8 +8,9 @@
 //! ⇒ 任何只看 apply 失败数的汇总都报"一切正常" ✓ ⇒ **静默降级** ✓。
 //!
 //! **⇒ 判据**：造一个包——`atoms.jsonl` 里有 `import_image` 原子引用某个 64 位哈希，
-//! 而包里**没有**那个 blob 文件 ⇒ 跑二进制 ⇒ **stderr 必须提到「缺」＋「blob」** ✓。
-//! **⇒ 变异**：把那段审计删掉 ⇒ stderr 里没有任何提示 ⇒ 红 ✓。
+//! 而包里**没有**那个 blob 文件 ⇒ 跑二进制 ⇒ **stderr 必须提到「缺」＋「blob」** ✓
+//! ＋ **退出码必须是 2**（拒不出片 ✓，第 1130 轮补上：只喊不改退出码 = 调用方照样拿到空影片 ✗）。
+//! **⇒ 变异**：把那段审计删掉 ⇒ stderr 里没有任何提示 ⇒ 红 ✓；去掉 `exit(2)` ⇒ 退出码断言红 ✓。
 //!
 //! **⇒ 为什么跑二进制而不是库**：包读取与警告都在 `main.rs`（可执行文件）里 ✓
 //! ⇒ 用 `CARGO_BIN_EXE_yanshi-timelapse` ✓；并且用 `YANSHI_TIMELAPSE_RAW_DIR`
@@ -93,6 +94,16 @@ fn a_package_missing_a_referenced_blob_says_so() {
     assert!(
         combined.contains("缺 blob") || combined.contains("缺 1 个"),
         "文案要给出**个数**，实测：\n{combined}"
+    );
+    // **⇒ 而且必须拒不出片（rc=2）** ✓（第 1130 轮；D172 的完整闭环）：
+    //   ⇒ 只"喊一句"但仍 `rc=0` ⇒ 调用方脚本会把那条空影片当真 ✓（＝静默降级 ✓）
+    //   ⇒ **变异**：去掉 `std::process::exit(2)` ⇒ 这里红 ✓
+    //   **⇒ 为什么 2 不是 1**：1 是"渲染/编码失败"✓；2 是"输入前提不成立"（包不完整 ✓）
+    assert_eq!(
+        result.status.code(),
+        Some(2),
+        "缺 blob 的包必须拒不出片（退出码 2），实测 {:?}：\n{combined}",
+        result.status.code()
     );
 }
 
@@ -380,5 +391,99 @@ fn shrink_time_is_accounted_separately_from_apply() {
     assert!(
         has_apply && has_shrink,
         "分段账必须把 `apply` 与 `shrink` **分开列**（否则降采样成本会被算进 apply）：\n{stdout}"
+    );
+}
+
+/// **只缺 `tiles` 解码索引 ⇒ **不许**致命**（第 1130 轮；D172 闭环的必要条件）
+///
+/// **⇒ 为什么**：`tiles` 是**分块解码索引** ✓，渲染侧的契约是「索引缺失／块取不到 ⇒ **落回整幅**」✓
+///   （`render.rs:4350` ✓）⇒ 所以缺它**不会**让画面缺内容 ✓，只会慢一点 ✓。
+///   ⇒ 而本仓 `export_project` 的 `wanted` **只收 `refs.blobs`** ✓ ⇒ **自产包永远不带 tiles** ✓
+///     ⇒ 若把它算成"缺 blob" ⇒ **拒绝自己的包** ✗
+///       （第 1130 轮 `real_package_shrinks` 实测：6 个引用里 3 个是 tiles ⇒ `rc=2` ✗）。
+///
+/// **⇒ 判据（三条）**：① `rc=0` ✓ ② 「缺 blob」是 **0 个** ✓
+///   ③ 「tiles 索引缺失」**仍要可见**（不许因为这个豁免而变成静默 ✗）✓
+/// **⇒ 变异**：把 `tile_index_hashes` 的排除去掉 ⇒ ① 变 `rc=2` ⇒ 红 ✓。
+#[test]
+fn a_missing_tile_index_alone_is_not_fatal() {
+    let dir = std::env::temp_dir().join(format!("yanshi_tile_only_{}", std::process::id()));
+    let _cleanup = Cleanup(dir.clone());
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("建目录");
+    let (w, h) = (64u32, 64u32);
+    let mut blob = vec![0u8; (w * h * 4) as usize];
+    for px in blob.chunks_exact_mut(4) {
+        px.copy_from_slice(&[10, 200, 30, 255]);
+    }
+    let hash = yanshi_core::BlobHash::from_bytes(&blob);
+    let hex = hash.hex().to_owned();
+    let blob_dir = dir.join("blobs/sha256").join(&hex[..2]).join(&hex[2..4]);
+    std::fs::create_dir_all(&blob_dir).expect("blob 目录");
+    std::fs::write(blob_dir.join(&hex), &blob).expect("blob");
+    // **tiles 指向一个**不存在**的索引 blob** ✓（渲染侧应当退回整幅 ✓）
+    let tile_hash = "b".repeat(64);
+    std::fs::write(
+        dir.join("meta.json"),
+        serde_json::json!({"width": w, "height": h, "doc_id": "d_tiles", "fps": 24}).to_string(),
+    )
+    .expect("meta");
+    std::fs::write(dir.join("blobs.encoding"), "none").expect("encoding");
+    let atoms = [
+        serde_json::json!({"id": "a0", "seq": 1, "kind": "create_document", "actor": "human:t",
+            "session": "s", "timestamp": 0, "schema_version": 1,
+            "payload": {"doc_id": "d_tiles", "width": w, "height": h, "color_space": "srgb"}}),
+        serde_json::json!({"id": "a1", "seq": 2, "kind": "create_layer", "actor": "human:t",
+            "session": "s", "timestamp": 0, "schema_version": 1,
+            "payload": {"layer_id": "L1", "name": "L1", "type": "raster"}}),
+        serde_json::json!({"id": "a2", "seq": 3, "kind": "import_image", "actor": "human:t",
+            "session": "s", "timestamp": 0, "schema_version": 1,
+            "payload": {"layer_id": "L1", "object_id": "o1",
+                        "region": {"x": 0.0, "y": 0.0, "w": f64::from(w), "h": f64::from(h)},
+                        "width": w, "height": h, "type": "raster_patch",
+                        "tiles": format!("sha256:{tile_hash}"),
+                        "bitmap": {"blob_hash": hash.as_str(), "mime_type": "image/x-yanshi-raw",
+                                   "size": blob.len()}}}),
+    ];
+    let text: String = atoms.iter().map(|atom| format!("{atom}\n")).collect();
+    std::fs::write(dir.join("atoms.jsonl"), text).expect("atoms");
+    assert!(
+        Command::new("tar")
+            .arg("-cf")
+            .arg(dir.join("tiles.yanshi"))
+            .arg("-C")
+            .arg(&dir)
+            .args(["meta.json", "atoms.jsonl", "blobs.encoding", "blobs"])
+            .status()
+            .expect("tar")
+            .success(),
+        "打不出包"
+    );
+    let frames = dir.join("frames");
+    let result = Command::new(env!("CARGO_BIN_EXE_yanshi-timelapse"))
+        .arg(dir.join("tiles.yanshi"))
+        .arg(dir.join("out.mp4"))
+        .arg("1")
+        .env("YANSHI_TIMELAPSE_RAW_DIR", &frames)
+        .output()
+        .expect("跑 timelapse");
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let combined = format!("{stdout}\n{stderr}");
+    // ① **不许因为它缺就拒绝**（像素本体在 ⇒ 画面完整 ✓）
+    assert!(
+        result.status.success(),
+        "只缺 tiles 索引的包必须能出片（实测 rc={:?}）：\n{combined}",
+        result.status.code()
+    );
+    // ② **必需 blob 的缺口是 0** ✓
+    assert!(
+        stderr.contains("缺 blob 0 个"),
+        "只缺 tiles 索引时，必需 blob 必须是 0 缺：\n{stderr}"
+    );
+    // ③ **但仍然要看见它** ✓（豁免 ≠ 静默）
+    assert!(
+        stderr.contains("tiles") && stderr.contains("1 个"),
+        "tiles 索引缺失必须仍然可见（豁免不等于静默）：\n{stderr}"
     );
 }
