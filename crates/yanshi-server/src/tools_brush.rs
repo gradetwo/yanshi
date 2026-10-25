@@ -365,6 +365,9 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     //     并把它记进台账 ✓（`D139` 的"色偏移"那一维很可能就是这里 ✓）。
 
     // **落笔走唯一的实现** ✓（`paint_brush` ✓，与 `brush_preview` 共用 ✓）。
+    // **显式 `color_space`**（C1）：只认 `"srgb"` / `"linear"`，不传 ⇒ 量级切换；
+    // 作用于 `color` 与 `color_to` 两处；非法值在这里就 `invalid_argument`（落笔前拒绝）。
+    let color_space = parse_color_space_arg(args)?;
     let paint = paint_brush(
         ctx,
         &brush_name,
@@ -382,6 +385,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         &dtimes,
         None,
         sensors,
+        color_space,
     )?;
     let BrushPaint {
         name,
@@ -982,6 +986,9 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             "size": size_source,
             "color": color_source,
             "color_to": color_to_source,
+            // **显式 `color_space` 也要进 `source`**（C1）：否则 `update_stroke` / 重放时
+            // 丢掉空间、笔变色；没传记 `null`，与其它来源字段同例。
+            "color_space": args.get("color_space").cloned().unwrap_or(Value::Null),
             "smooth": smooth_source,
             "opacity": opacity_source,
             "hardness": hardness_source,
@@ -1079,7 +1086,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     value["landed_reason"] = json!(landed_reason);
     // **本次调用生效参数的回显** ✓（A5）：`wait_for_render`／`wait_budget_ms`／`preview`／
     //   `silent`／`doc_id` 读 `ctx`（本函数开头已把当次调用的 `wait_for_render`／`preview`
-    //   写进 `ctx` ✓），`color_space` 从 `args["color"]` 推导 ✓（见 `applied_echo` ✓）。
+    //   写进 `ctx` ✓），`color_space` 按显式参数与 `args["color"]` 推导 ✓（C1；见 `applied_echo` ✓）。
     value["applied"] = applied_echo(ctx, args);
     // **`max_channel_delta` 的 regime 必须**机器可读**** ✓（第 808 轮；外部 `qoder` 的 D193）
     //   **⇒ 他们的实测**：`reads_canvas=false` 的那一支**先把补丁合成到白底**再与 `255` 比 ✓
@@ -1504,6 +1511,9 @@ pub(super) fn paint_brush(
     // **真实传感器**（缺省全 0 ⇒ 与历史行为逐位一致；xtilt/ytilt 在落笔时传给
     // `stamp_stroke_from`，viewzoom / barrel_rotation 在下面写到 Brush 宿主字段）。
     sensors: BrushSensors,
+    // **显式颜色单位**（C1）：`Some` ⇒ 按该空间解释 `color` / `color_to`；
+    // `None` ⇒ 量级切换（缺省，与以前逐位一致）。
+    color_space: Option<yanshi_render::color::ColorSpace>,
 ) -> Result<BrushPaint> {
     let (name, mut brush) = load_brush(ctx.workspace, brush_name)?;
     brush.viewzoom = sensors.viewzoom;
@@ -1530,7 +1540,7 @@ pub(super) fn paint_brush(
     //（而半径那处不该清曲线 ✓ —— 两者语义不同 ✓）。
     if let Some(value) = color {
         if !value.is_null() {
-            let (hue, sat, value) = brush_color_to_hsv(value)?;
+            let (hue, sat, value) = brush_color_to_hsv_with_space(value, color_space)?;
             brush.set(
                 hokusai::BrushSetting::ColorH,
                 hokusai::SettingValue::constant(hue),
@@ -1700,8 +1710,8 @@ pub(super) fn paint_brush(
                     ),
                 ));
             };
-            let from_bytes = brush_color_to_srgb_bytes(from)?;
-            let to_bytes = brush_color_to_srgb_bytes(color_to)?;
+            let from_bytes = brush_color_to_srgb_bytes_with_space(from, color_space)?;
+            let to_bytes = brush_color_to_srgb_bytes_with_space(color_to, color_space)?;
             // 每段约 4px ✓、最多 128 段 ✓（再多也看不出来 ✓，却白花时间 ✗）。
             let dense = densify_for_ramp(points, 4.0, 128);
             let seats = dense.len().saturating_sub(1);

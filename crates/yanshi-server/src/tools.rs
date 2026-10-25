@@ -5744,6 +5744,10 @@ fn restyle_baked_brush_stroke(
         Some(value) => brush_sensors_from_value(value)?,
         None => BrushSensors::default(),
     };
+    // **重跑也要带上落笔时记的 `color_space`**（C1）：source 里记的是调用方给的原话
+    //（`"srgb"` / `"linear"` / 缺省 `null`）；`core` 换色时也沿用它 —— 空间是这支笔的配方，
+    // 不是某一次颜色值的附庸；老笔触没记 ⇒ `None` ⇒ 量级切换，与落笔时一致。
+    let color_space = color_space_from_value(source.get("color_space"))?;
     let paint = paint_brush(
         ctx,
         &brush,
@@ -5759,6 +5763,7 @@ fn restyle_baked_brush_stroke(
         &[],
         None,
         sensors,
+        color_space,
     )?;
     let hash = ctx.workspace.store().put(&paint.rgba)?;
     let mut new_data = data.clone();
@@ -5783,6 +5788,8 @@ fn restyle_baked_brush_stroke(
         "size": size.map(|value| json!(value)).unwrap_or(Value::Null),
         "color": color.clone().unwrap_or(Value::Null),
         "color_to": color_to.clone().unwrap_or(Value::Null),
+        // **显式 `color_space` 也要进 `source`**（C1）：否则下一次重跑会丢掉空间、笔变色。
+        "color_space": source.get("color_space").cloned().unwrap_or(Value::Null),
         "smooth": smooth,
         "opacity": opacity.map(|value| json!(value)).unwrap_or(Value::Null),
         "hardness": hardness.map(|value| json!(value)).unwrap_or(Value::Null),
@@ -8676,6 +8683,8 @@ fn read_get_preferences(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
 /// **`set_reference` / `clear_reference`**（AI 画家需求 P2-9 ✓）：**薄包装** ✓ ——
 /// 直接把键写进**既有的偏好**（`write_set_preferences` ✓）⇒ **文档一个字节都不碰** ✓
 /// ⇒ "参考图不许改文档""清掉必须可逆"两条**结构性成立** ✓（不是靠"我记得别写"✗，而是**根本没有写的路** ✓）。
+/// **落点必须明示**（C3）：参考图只记进偏好、**不跟着文档走** ⇒ 换进程需重设 ——
+/// 回执 `note` 与 registry summary 都写这句（同一事实三处同步：summary、这里、响应 note）。
 fn write_set_reference(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let blob_hash = require_str(args, "blob_hash")?;
     // **先校验，再记下来** ✓（A① 配套修复 ✓，第 298 轮 ✓）：
@@ -8722,7 +8731,7 @@ fn write_set_reference(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         "ok": true,
         "reference": {"blob_hash": blob_hash, "opacity": opacity, "position": position},
         "stored": stored,
-        "note": "参考图只记在偏好里 ⇒ 文档未被改动（查看器据此叠一层半透明图）",
+        "note": "参考图只记在偏好里 ⇒ 文档未被改动（换进程需重设；查看器据此叠一层半透明图）",
     }))
 }
 
@@ -13720,9 +13729,12 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     // **路径与以前逐字节等价** ✓：老写法（对象 0..255）经 `parse_spec_color` 变线性 ✓、
     // 再 `linear_to_byte_exact` 变回**同一个字节** ✓ ⇒ `/255` 之后与旧代码**同一个浮点** ✓
     //（这一点有测试钉住：两种写法必须给出**逐字节相同**的画面 ✓）。
+    // **显式 `color_space`**（C1）：只认 `"srgb"` / `"linear"`，不传 ⇒ 量级切换；
+    // 作用于 `color` 与 `color_to` 两处；非法值在这里就 `invalid_argument`（落笔前拒绝）。
+    let color_space = parse_color_space_arg(args)?;
     let color = match args.get("color") {
         Some(value) if !value.is_null() => {
-            let bytes = brush_color_to_srgb_bytes(value)?;
+            let bytes = brush_color_to_srgb_bytes_with_space(value, color_space)?;
             [
                 f32::from(bytes[0]) / 255.0,
                 f32::from(bytes[1]) / 255.0,
@@ -13797,7 +13809,7 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     //   ⇒ 渐变根本没出现 ✗；见 `medium_gradient_points` 的注释）。
     let (points, point_colors) = match args.get("color_to") {
         Some(value) if !value.is_null() => {
-            let bytes = brush_color_to_srgb_bytes(value)?;
+            let bytes = brush_color_to_srgb_bytes_with_space(value, color_space)?;
             let mixing = yanshi_render::color::ColorMixing::parse(
                 args.get("color_mixing")
                     .and_then(Value::as_str)
@@ -13932,7 +13944,8 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     value["landed_reason"] = json!(landed_reason);
     // **本次调用生效参数的回显** ✓（A5，与 `brush_stroke` 同例）：`wait_for_render`／
     //   `wait_budget_ms`／`preview`／`silent`／`doc_id` 读 `ctx`（本工具不读当次调用的
-    //   `wait_for_render`／`preview` 参数 ⇒ 回显构造期值 ✓），`color_space` 从 `args["color"]` 推导 ✓。
+    //   `wait_for_render`／`preview` 参数 ⇒ 回显构造期值 ✓），`color_space` 按显式参数与
+    //   `args["color"]` 推导（C1；见 `applied_echo` ✓）。
     value["applied"] = applied_echo(ctx, args);
     // ★ **`paint_delta`：真正的落墨幅度 ✗** ★**（第 71 轮 ✓；**∴ 报告 §40 要用它做薄涂的"看得见"门 ✓**）
     //
@@ -15418,14 +15431,57 @@ fn brush_points_from_json(value: Option<&Value>) -> Result<Vec<(f64, f64, f64)>>
     Ok(points)
 }
 
+/// **显式 `color_space` 参数的解析**（C1）—— 只认 `"srgb"` / `"linear"` 两个值。
+///
+/// * 不传 / `null` ⇒ `None`（缺省：量级切换原样保留，浮点 = 线性）；
+/// * 其它字符串 / 非字符串 ⇒ `invalid_argument`，报错里列出两个允许值
+///   （非法输入不许看起来正常：静默回落到缺省等于撒谎）。
+/// * 与 `color_mixing`（渐变插值空间）是两回事，不要混淆。
+pub(crate) fn parse_color_space_arg(
+    args: &Value,
+) -> Result<Option<yanshi_render::color::ColorSpace>> {
+    color_space_from_value(args.get("color_space"))
+}
+
+/// **从一个 JSON 值读 `color_space`**（C1）：`parse_color_space_arg` 的值形态，
+///
+/// 供重放路径复用 —— `source` 里记的就是调用方给的原话（`"srgb"` / `"linear"` / 缺省 `null`），
+/// 重放时按同一空间再解释一次，否则带显式空间落的一笔在 `update_stroke` / 重放时会变色。
+pub(crate) fn color_space_from_value(
+    value: Option<&Value>,
+) -> Result<Option<yanshi_render::color::ColorSpace>> {
+    use yanshi_render::color::ColorSpace;
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) => match text.as_str() {
+            "srgb" => Ok(Some(ColorSpace::Srgb)),
+            "linear" => Ok(Some(ColorSpace::Linear)),
+            other => Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "color_space 只认「srgb」/「linear」（收到「{other}」）⇒ \
+                     「srgb」= 0..1 浮点数组按 sRGB 字节解释，「linear」= 浮点数组按线性直通"
+                )),
+            )),
+        },
+        Some(other) => Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "color_space 必须是字符串「srgb」/「linear」（收到 {other}）"
+            )),
+        )),
+    }
+}
+
 /// **颜色输入值实际走了哪个解释空间** ✓（A5 回显 `applied.color_space` ✓；C1 的参数在第 6 块加）。
 ///
 /// 与 [`yanshi_render::color::parse_spec_color`] 的量级切换**同一条规则** ✓，不另起口径 ✓：
 /// 浮点数组（任一分量都不 > 1）⇒ `"linear"`；字节数组（任一分量 > 1）／对象式 ⇒ `"srgb_bytes"`；
 /// hex 字符串 ⇒ `"hex"`。
 ///
-/// **C1 后续只加参数覆盖分支** ✓：显式 `color_space` 参数来了之后，这里仍是"无参数时的推导" ✓，
-/// 回显词汇不改 ✓（调用方按这三个值写断言，不会因 C1 而变 ✓）。
+/// **C1 已落地**：显式 `color_space` 参数来了之后，这里仍是"无参数时的推导" ✓，
+/// 由 [`effective_color_space`] 在显式参数时覆盖；回显词汇不改 ✓
+///（调用方按这三个值写断言，不会因 C1 而变 ✓）。
 ///
 /// **没给 `color` 时不调用它** ✓（见 [`applied_echo_values`] ✓）：不编一个缺省空间 ✓。
 pub(crate) fn color_space_of(value: &Value) -> &'static str {
@@ -15443,18 +15499,43 @@ pub(crate) fn color_space_of(value: &Value) -> &'static str {
     }
 }
 
+/// **显式 `color_space` 下实际生效的解释空间**（C1 回显）—— 回显词汇与
+/// [`color_space_of`] 同一套（`"linear"` / `"srgb_bytes"` / `"hex"`）。
+///
+/// 显式参数只改**数组**的解释：对象式 / hex 恒为字节，不受参数影响 ⇒ 回显也不认领参数
+///（传了 `"linear"` 也照实报 `"srgb_bytes"` / `"hex"`，回显的是**生效值**不是原话）。
+pub(crate) fn effective_color_space(
+    value: &Value,
+    space: Option<yanshi_render::color::ColorSpace>,
+) -> &'static str {
+    use yanshi_render::color::ColorSpace;
+    match value {
+        Value::String(text) if text.starts_with('#') => "hex",
+        Value::Object(_) => "srgb_bytes",
+        Value::Array(_) => match space {
+            Some(ColorSpace::Srgb) => "srgb_bytes",
+            Some(ColorSpace::Linear) => "linear",
+            None => color_space_of(value),
+        },
+        _ => "srgb_bytes",
+    }
+}
+
 /// **本次调用生效参数的回显对象** ✓（A5：只加在 `brush_stroke`／`medium_stroke` 回执 ✓）。
 ///
 /// 取值一律是**实际生效**的，不是调用方原话的复述 ✓：`wait_for_render`／`wait_budget_ms`／
 /// `preview`／`silent`／`doc_id` 读 `ctx`（handler 已把当次调用的参数写进 `ctx` ✓，
 /// 如画笔侧的 `wait_for_render`／`preview` 就地改写 ✓）；`color_space` 按
-/// [`color_space_of`] 从 `args["color"]` 推导 ✓。
+/// [`effective_color_space`] 从 `args["color"]` 与显式 `color_space` 参数推导 ✓。
 ///
 /// **`wait_budget_ms` 是构造期配置值，不是实测等待** ✓：全仓没有消费点 ⇒ 诚实回显
 /// 构造期值（缺省 500），不装成"这次等了多久" ✓。
 ///
 /// **`color_space` 只在给了 `color` 时出现** ✓：没给颜色 ⇒ 笔刷用自带色、介质用缺省黑，
 /// 那是笔刷／介质内部的事实，不由回显认领一个空间 ✓（与 `sensors_applied` 同例：传了才出现 ✓）。
+///
+/// **显式 `color_space` 来了之后**（C1）：`color_space` 参数是**本次调用实际生效的空间**
+///（`effective_color_space`：显式值只改数组的解释，对象式 / hex 照实报 `"srgb_bytes"` / `"hex"`）。
 pub(crate) fn applied_echo_values(
     wait_for_render: bool,
     wait_budget_ms: u64,
@@ -15462,6 +15543,7 @@ pub(crate) fn applied_echo_values(
     silent: bool,
     doc_id: &str,
     color: Option<&Value>,
+    color_space: Option<yanshi_render::color::ColorSpace>,
 ) -> Value {
     let mut applied = json!({
         "wait_for_render": wait_for_render,
@@ -15471,13 +15553,16 @@ pub(crate) fn applied_echo_values(
         "doc_id": doc_id,
     });
     if let Some(color) = color.filter(|value| !value.is_null()) {
-        applied["color_space"] = json!(color_space_of(color));
+        applied["color_space"] = json!(effective_color_space(color, color_space));
     }
     applied
 }
 
 /// [`applied_echo_values`] 的调用方形态 ✓：从 `ctx` 与 `args` 取值 ✓。
 pub(crate) fn applied_echo(ctx: &ToolContext<'_>, args: &Value) -> Value {
+    // **显式 `color_space` 在此解析**（C1）：走到回显时 handler 已校验过它
+    //（非法值在落笔前就 `invalid_argument`）⇒ 这里解析失败时回落到无参数推导，不编一个假空间。
+    let space = parse_color_space_arg(args).ok().flatten();
     applied_echo_values(
         ctx.wait_for_render,
         ctx.wait_budget_ms,
@@ -15485,33 +15570,46 @@ pub(crate) fn applied_echo(ctx: &ToolContext<'_>, args: &Value) -> Value {
         ctx.silent,
         &ctx.doc_id,
         args.get("color"),
+        space,
     )
 }
 
 /// **色彩写法与其它绘制工具统一** ✓：`{r,g,b,a}`（0..255 ✓）、`[r,g,b,(a)]`（0..1 线性或 0..255 字节 ✓）、
 /// `"#RRGGBB"` / `"#RGB"` / `"#RRGGBBAA"` ✓ —— 全部交给渲染层的**同一个**解析器 ✓
-/// （`yanshi_render::color::parse_spec_color` ✓；各写一套必然漂移 ✓）。
+/// （`yanshi_render::color::parse_spec_color_with_space` ✓；各写一套必然漂移 ✓）。
 ///
 /// 返回 `(hue, sat, value)` ✓（引擎要的 0..1 圆周分数 ✓，见 [`rgb_to_hsv`] ✓）。
-fn brush_color_to_hsv(value: &Value) -> Result<(f32, f32, f32)> {
-    let bytes = brush_color_to_srgb_bytes(value)?;
+/// **颜色 → HSV（带显式空间）**（C1）：不传空间（`None`）⇒ 与既有量级切换逐字节相同；
+/// 显式空间 ⇒ 按 `parse_spec_color_with_space` 解释。
+fn brush_color_to_hsv_with_space(
+    value: &Value,
+    space: Option<yanshi_render::color::ColorSpace>,
+) -> Result<(f32, f32, f32)> {
+    let bytes = brush_color_to_srgb_bytes_with_space(value, space)?;
     Ok(yanshi_render::color::rgb_to_hsv(
         bytes[0], bytes[1], bytes[2],
     ))
 }
 
-/// **颜色 → sRGB 字节** ✓（三种写法都收 ✓）—— 一笔多色的**插值必须在显示空间**做 ✓：
-/// 在 HSV 里插值会让"红 → 蓝"**绕道绿** ✗（色相 0° → 240° 的直线穿过 120° ✓）。
-fn brush_color_to_srgb_bytes(value: &Value) -> Result<[u8; 3]> {
-    let rgba = yanshi_render::color::parse_spec_color(value).ok_or_else(|| {
-        YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail(
-                yanshi_render::color::color_error(value)
-                    .unwrap_or_else(|| "颜色格式非法".to_owned()),
-            ),
-        )
-    })?;
+/// **颜色 → sRGB 字节（带显式空间）**（C1）：不传空间（`None`）⇒ 与既有量级切换逐字节相同；
+/// 显式空间 ⇒ 按 `parse_spec_color_with_space` 解释。
+///
+/// 一笔多色的**插值必须在显示空间**做 ✓：在 HSV 里插值会让"红 → 蓝"**绕道绿** ✗
+///（色相 0° → 240° 的直线穿过 120° ✓）。
+fn brush_color_to_srgb_bytes_with_space(
+    value: &Value,
+    space: Option<yanshi_render::color::ColorSpace>,
+) -> Result<[u8; 3]> {
+    let rgba =
+        yanshi_render::color::parse_spec_color_with_space(value, space).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(
+                    yanshi_render::color::color_error(value)
+                        .unwrap_or_else(|| "颜色格式非法".to_owned()),
+                ),
+            )
+        })?;
     Ok([
         yanshi_render::color::linear_to_byte_exact(rgba[0]),
         yanshi_render::color::linear_to_byte_exact(rgba[1]),
@@ -16589,6 +16687,9 @@ pub(crate) fn replay_brush_bitmap(
         Some(value) => brush_sensors_from_value(value)?,
         None => BrushSensors::default(),
     };
+    // **`color_space` 也随 source 一起重放**（C1）：带显式空间落的一笔，打开 / 重放时
+    // 必须按同一空间再解释一次，否则笔变色；老笔触没记 ⇒ `None` ⇒ 量级切换。
+    let color_space = color_space_from_value(source.get("color_space"))?;
     let paint = paint_brush(
         &mut ctx,
         &brush,
@@ -16605,6 +16706,7 @@ pub(crate) fn replay_brush_bitmap(
         &[],
         None,
         sensors,
+        color_space,
     )?;
     Ok(paint.rgba)
 }
@@ -17798,6 +17900,9 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         // **预览不带传感器**（回答的是"这支笔长什么样"，与 brush_stroke 的
         // sensors 是两回事；缺省全 0 ⇒ 与历史预览逐位一致 ✓）。
         BrushSensors::default(),
+        // **预览不接 `color_space`**（C1 只做 brush_stroke / medium_stroke）⇒
+        // 缺省量级切换，与以前逐位一致。
+        None,
     )?;
     let (width, height) = (paint.width as u32, paint.height as u32);
     let png = yanshi_render::png::encode_png(width, height, &paint.rgba).ok_or_else(|| {
@@ -19023,6 +19128,9 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
         &[],
         None,
         sensors,
+        // **`try_stroke` 不接 `color_space`**（C1 只做 brush_stroke / medium_stroke）⇒
+        // 缺省量级切换，与以前逐位一致。
+        None,
     )?;
     let bbox = [
         paint.x0,

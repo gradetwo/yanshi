@@ -1585,6 +1585,7 @@ fn applied_echo_values_echoes_given_values_not_defaults() {
         true,
         "doc-x",
         Some(&json!([0.2, 0.4, 0.9, 1.0])),
+        None,
     );
     assert_eq!(
         applied.get("wait_for_render").and_then(Value::as_bool),
@@ -1621,7 +1622,7 @@ fn applied_echo_values_echoes_given_values_not_defaults() {
 /// 没给 `color` 时不编 `color_space`（A5）：缺省色是笔刷／介质内部的事实，回显不认领。
 #[test]
 fn applied_echo_values_omits_color_space_without_color() {
-    let applied = applied_echo_values(true, 500, true, false, "doc-x", None);
+    let applied = applied_echo_values(true, 500, true, false, "doc-x", None, None);
     assert!(
         applied.get("color_space").is_none(),
         "没给 color ⇒ applied 里不该出现 color_space（实测 {:?}）",
@@ -1636,5 +1637,107 @@ fn applied_echo_values_omits_color_space_without_color() {
         applied.get("wait_budget_ms").and_then(Value::as_u64),
         Some(500),
         "缺省值仍要回显：wait_budget_ms 500"
+    );
+}
+
+/// `parse_color_space_arg` 只认两个值（C1）：非法值报错并列出允许值；不传 / null ⇒ None。
+///
+/// **变异**：非法值回落到 `None`（不报错）⇒ 下面 `unwrap_err` 拿不到错 ⇒ 红 ✓。
+#[test]
+fn parse_color_space_arg_accepts_only_srgb_and_linear() {
+    use yanshi_render::color::ColorSpace;
+    assert_eq!(
+        parse_color_space_arg(&json!({})).unwrap(),
+        None,
+        "不传 ⇒ None（缺省量级切换）"
+    );
+    assert_eq!(
+        parse_color_space_arg(&json!({"color_space": null})).unwrap(),
+        None,
+        "null ⇒ None"
+    );
+    assert_eq!(
+        parse_color_space_arg(&json!({"color_space": "srgb"})).unwrap(),
+        Some(ColorSpace::Srgb),
+        "srgb ⇒ Srgb"
+    );
+    assert_eq!(
+        parse_color_space_arg(&json!({"color_space": "linear"})).unwrap(),
+        Some(ColorSpace::Linear),
+        "linear ⇒ Linear"
+    );
+    let err = parse_color_space_arg(&json!({"color_space": "lab"})).unwrap_err();
+    let text = format!("{err:?}");
+    assert!(text.contains("srgb"), "非法值报错必须列出 srgb：{text}");
+    assert!(text.contains("linear"), "非法值报错必须列出 linear：{text}");
+    assert!(
+        parse_color_space_arg(&json!({"color_space": 3})).is_err(),
+        "非字符串也必须拒绝"
+    );
+    // **重放侧共用同一解析**：source 里记的原话（"srgb" / "linear" / 缺省 null）都能读回。
+    assert_eq!(
+        color_space_from_value(Some(&json!("srgb"))).unwrap(),
+        Some(ColorSpace::Srgb),
+        "source 里的 \"srgb\" 读回 Srgb"
+    );
+    assert_eq!(
+        color_space_from_value(None).unwrap(),
+        None,
+        "source 里没记 ⇒ None（老笔触）"
+    );
+    assert_eq!(
+        color_space_from_value(Some(&json!(null))).unwrap(),
+        None,
+        "source 里记 null ⇒ None"
+    );
+}
+
+/// 显式 `color_space` 下的回显（C1）：回显的是**生效值**，不是原话 ——
+/// 对象式 / hex 传了显式空间也不认领它。
+///
+/// **变异**：回显恒写 `color_space_of` 的推导（无视显式参数）⇒ srgb 臂红；
+/// 回显恒写 `"srgb_bytes"` ⇒ linear 臂与 hex 臂红。
+#[test]
+fn applied_echo_values_effective_space_with_explicit_param() {
+    use yanshi_render::color::ColorSpace;
+    let echo = |color: Value, space: Option<ColorSpace>| {
+        applied_echo_values(true, 500, true, false, "doc-x", Some(&color), space)
+            .get("color_space")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    assert_eq!(
+        echo(json!([0.45, 0.38, 0.30]), Some(ColorSpace::Srgb)).as_deref(),
+        Some("srgb_bytes"),
+        "浮点数组 + 显式 srgb ⇒ srgb_bytes"
+    );
+    assert_eq!(
+        echo(json!([0.45, 0.38, 0.30]), Some(ColorSpace::Linear)).as_deref(),
+        Some("linear"),
+        "浮点数组 + 显式 linear ⇒ linear"
+    );
+    assert_eq!(
+        echo(json!([115, 97, 77]), Some(ColorSpace::Linear)).as_deref(),
+        Some("linear"),
+        "字节数组 + 显式 linear ⇒ linear（直通口径，分量 > 1 也不 reroute）"
+    );
+    assert_eq!(
+        echo(json!("#73391F"), Some(ColorSpace::Srgb)).as_deref(),
+        Some("hex"),
+        "hex + 显式 srgb ⇒ 仍是 hex（hex 不受参数影响）"
+    );
+    assert_eq!(
+        echo(
+            json!({"r": 115, "g": 97, "b": 77}),
+            Some(ColorSpace::Linear)
+        )
+        .as_deref(),
+        Some("srgb_bytes"),
+        "对象式 + 显式 linear ⇒ 仍是 srgb_bytes（对象式恒为字节）"
+    );
+    assert_eq!(
+        echo(json!([0.45, 0.38, 0.30]), None).as_deref(),
+        Some("linear"),
+        "不传 ⇒ 量级切换推导（浮点 ⇒ linear）"
     );
 }

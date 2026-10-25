@@ -408,6 +408,80 @@ mod tests {
     }
 }
 
+/// **显式颜色单位**（C1）：调用方用 `color_space` 参数说清浮点数组是什么空间。
+///
+/// 只有**数组写法**受它影响 —— 对象式 `{r,g,b,a}` 与 hex 字符串恒为 sRGB 字节，
+/// 与参数无关（与 `parse_spec_color` 的既有口径一致）：
+/// * `None`（不传参数）⇒ 就是 `parse_spec_color` 本身：量级切换原样保留；
+/// * `Srgb` ⇒ 数组按 sRGB 解释：分量 ≤ 1 时 `v*255` 取整再走字节分支，
+///   已有分量 > 1 时直接就是字节分支（与不传时同一条路）；
+/// * `Linear` ⇒ 数组按线性直通：**即使分量 > 1 也不 reroute 到字节分支**，
+///   浮点原样取（负值 / 非有限仍拒绝，与既有线性分支同一条校验）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ColorSpace {
+    /// 0..1 浮点数组按 sRGB 字节解释（`v*255` 取整再解码）。
+    Srgb,
+    /// 浮点数组按线性直通（即使分量 > 1 也不 reroute 到字节分支）。
+    Linear,
+}
+
+/// 带显式空间的颜色解析（C1）：`parse_spec_color` 的带参形态。
+pub fn parse_spec_color_with_space(
+    value: &serde_json::Value,
+    space: Option<ColorSpace>,
+) -> Option<LinearRgba> {
+    use serde_json::Value;
+    let space = match space {
+        None => return parse_spec_color(value),
+        Some(space) => space,
+    };
+    // **对象式 / hex 不受参数影响**：直接走既有解析（恒为字节）。
+    if !matches!(value, Value::Array(_)) {
+        return parse_spec_color(value);
+    }
+    let items = value.as_array()?;
+    let numbers: Vec<f64> = items.iter().filter_map(Value::as_f64).collect();
+    if numbers.len() < 3 || numbers.len() != items.len() {
+        return None;
+    }
+    match space {
+        ColorSpace::Srgb => {
+            // **分量全 ≤ 1 ⇒ 先 `v*255` 取整，再走既有字节分支**（含 `a=1.0` 按不透明
+            // 处理的那条特殊情形 ⇒ 复用 `parse_spec_color`，不另写一份字节解析）。
+            // 已有分量 > 1 ⇒ 本来就是字节写法 ⇒ 直接走既有解析。
+            if numbers.iter().all(|component| *component <= 1.0) {
+                // **不夹紧**：负分量要留给字节分支的范围校验去拒绝（夹紧会把它静默吃成 0）。
+                let bytes: Vec<Value> = numbers
+                    .iter()
+                    .map(|component| Value::from((component * 255.0).round()))
+                    .collect();
+                parse_spec_color(&Value::Array(bytes))
+            } else {
+                parse_spec_color(value)
+            }
+        }
+        ColorSpace::Linear => {
+            // **线性直通**：与 `parse_spec_color` 线性分支同一段逻辑，唯独**不做量级切换**。
+            let channel = |index: usize, default: f32| {
+                numbers.get(index).copied().unwrap_or(default as f64) as f32
+            };
+            let color = [
+                channel(0, 0.0),
+                channel(1, 0.0),
+                channel(2, 0.0),
+                channel(3, 1.0),
+            ];
+            if color
+                .iter()
+                .any(|component| !component.is_finite() || *component < 0.0)
+            {
+                return None;
+            }
+            Some(color)
+        }
+    }
+}
+
 /// 解析工具/原子里的颜色描述，统一为**直通线性** RGBA（`0..1`）。
 ///
 /// 接受三种写法（工具层与渲染层共用同一实现，避免出现两套解析）：
@@ -616,6 +690,114 @@ mod spec_color_tests {
             assert!(color_error(&bad).is_some(), "{bad} 应给出错误说明");
         }
         assert!(color_error(&json!([30, 30, 40, 255])).is_none());
+    }
+
+    /// **C1：显式 `color_space` 的三路语义**（变异：把 `Srgb` 分支改成直通线性
+    /// ⇒ srgb 臂红；把 `Linear` 分支改成量级切换 ⇒ linear 大分量臂红；
+    /// 把 `None` 改成 `Srgb` ⇒ 缺省臂红）。
+    #[test]
+    fn color_space_explicit_srgb_matches_bytes() {
+        // srgb 浮点 [0.45,0.38,0.30] ⇒ 与字节 [115,97,77] **逐位相同**。
+        let srgb = parse_spec_color_with_space(&json!([0.45, 0.38, 0.30]), Some(ColorSpace::Srgb))
+            .unwrap();
+        let bytes = parse_spec_color(&json!([115, 97, 77])).unwrap();
+        assert_eq!(
+            srgb, bytes,
+            "srgb 浮点臂必须与字节臂逐位相同：{srgb:?} vs {bytes:?}"
+        );
+        // srgb + 已是字节的数组 ⇒ 与不传时同一条路。
+        assert_eq!(
+            parse_spec_color_with_space(&json!([115, 97, 77]), Some(ColorSpace::Srgb)).unwrap(),
+            bytes,
+            "srgb + 字节数组 ⇒ 就是字节分支"
+        );
+        // srgb + 4 元浮点：alpha 1.0 ⇒ 不透明（复用字节分支的特殊情形）。
+        let with_alpha =
+            parse_spec_color_with_space(&json!([0.45, 0.38, 0.30, 1.0]), Some(ColorSpace::Srgb))
+                .unwrap();
+        assert!(
+            (with_alpha[3] - 1.0).abs() < 1e-6,
+            "srgb 4 元、a=1.0 ⇒ 不透明：{with_alpha:?}"
+        );
+    }
+
+    #[test]
+    fn color_space_explicit_linear_passes_through() {
+        // linear + 浮点 ⇒ 与不传时相同（量级切换的线性分支）。
+        let linear =
+            parse_spec_color_with_space(&json!([0.45, 0.38, 0.30]), Some(ColorSpace::Linear))
+                .unwrap();
+        assert_eq!(
+            linear,
+            parse_spec_color(&json!([0.45, 0.38, 0.30])).unwrap(),
+            "linear + 浮点 ⇒ 就是既有线性分支"
+        );
+        // linear + 分量 > 1 ⇒ **不 reroute 到字节分支**：原样直通。
+        let big =
+            parse_spec_color_with_space(&json!([200.0, 100.0, 50.0]), Some(ColorSpace::Linear))
+                .unwrap();
+        assert_eq!(
+            big[0..3],
+            [200.0f32, 100.0, 50.0][..],
+            "linear 大分量必须直通：{big:?}"
+        );
+        assert_ne!(
+            big,
+            parse_spec_color(&json!([200, 100, 50])).unwrap(),
+            "linear 大分量绝不能等于字节分支的解码值"
+        );
+    }
+
+    #[test]
+    fn color_space_default_is_magnitude_switch() {
+        // 不传 ⇒ 就是 parse_spec_color 本身（缺省行为一位不动）。
+        for value in [
+            json!([0.45, 0.38, 0.30]),
+            json!([115, 97, 77]),
+            json!({"r": 115, "g": 97, "b": 77}),
+            json!("#73391F"),
+        ] {
+            assert_eq!(
+                parse_spec_color_with_space(&value, None).unwrap(),
+                parse_spec_color(&value).unwrap(),
+                "不传 color_space ⇒ 与既有解析逐位相同：{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn color_space_leaves_object_and_hex_alone() {
+        // 对象式 / hex 不受参数影响（恒为字节）。
+        for space in [Some(ColorSpace::Srgb), Some(ColorSpace::Linear)] {
+            assert_eq!(
+                parse_spec_color_with_space(&json!({"r": 115, "g": 97, "b": 77}), space).unwrap(),
+                parse_spec_color(&json!({"r": 115, "g": 97, "b": 77})).unwrap(),
+                "对象式 + {space:?} ⇒ 仍是字节解释"
+            );
+            assert_eq!(
+                parse_spec_color_with_space(&json!("#73391F"), space).unwrap(),
+                parse_spec_color(&json!("#73391F")).unwrap(),
+                "hex + {space:?} ⇒ 仍是字节解释"
+            );
+        }
+    }
+
+    #[test]
+    fn color_space_rejects_bad_components() {
+        // 负分量：srgb（交给字节分支拒）与 linear（线性分支拒）都拒绝。
+        assert!(
+            parse_spec_color_with_space(&json!([-0.1, 0.5, 0.5]), Some(ColorSpace::Srgb)).is_none(),
+            "srgb 负分量应被拒绝"
+        );
+        assert!(
+            parse_spec_color_with_space(&json!([-0.1, 0.5, 0.5]), Some(ColorSpace::Linear))
+                .is_none(),
+            "linear 负分量应被拒绝"
+        );
+        assert!(
+            parse_spec_color_with_space(&json!([0.0, 0.0]), Some(ColorSpace::Srgb)).is_none(),
+            "srgb 2 元应被拒绝"
+        );
     }
 }
 

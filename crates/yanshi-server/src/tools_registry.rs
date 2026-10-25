@@ -1244,9 +1244,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         profile: Profile::Core,
         // **AI 画家需求 P2-9**：临摹时**半透明看参考图** ✓，不用来回切窗口 ✓。
         // **关键取舍** ✓：参考图**只记进偏好** ✓（`reference.blob_hash/opacity/position` ✓），
-        // **绝不写进任何图层** ✗ ⇒ 文档**逐字节不受影响** ✓（判据断言的正是这条 ✓）⇒ `mutating: false` ✓。
+        // **绝不写进任何图层** ✗ ⇒ 文档**逐字节不受影响** ✓（判据断言的正是这条 ✓）⇒ `mutating: false` ✓；
+        // 偏好不跟着文档走 ⇒ **换进程需重设**（C3：summary 与回执 note 同写这句）。
         // 显示由查看器负责 ✓（在画布上叠一层半透明图 ✓，服务端不参与绘制 ✓）。
-        summary: "设置参考图（只记进偏好，**不写进文档**；查看器负责半透明叠加）；用 clear_reference 移除",
+        summary: "设置参考图（只记进偏好，不写进文档；换进程需重设；查看器负责半透明叠加）；用 clear_reference 移除",
         mutating: false,
         params: &[
             // **前置条件必须写在参数说明里** ✓（第 875 轮）
@@ -1944,8 +1945,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("points", Array, true, "笔迹采样点 [[x,y,pressure?], ...]（pressure 0..1）"),
             param!("size", Number, false, "笔尖大小（缺省 24）"),
             // **写法与画笔 / 形状 / 笔迹统一** ✓：同一个解析器 ✓ ⇒ 用户不必记三套 ✓。
-            param!("color", Any, false, "笔尖色：{r,g,b,a}（0..255）/ [r,g,b,(a)]（0..1 线性或 0..255 字节） ⇒ **任一分量 > 1 即按 0..255 字节解释**（想要近黑请用 `#RRGGBB` 或 `{r:1,…}`） / \"#RRGGBB\"（缺省不透明黑）"),
-            param!("color_to", Any, false, "**末端颜色**（写法同 color）⇒ 一笔之内从 color 渐变到它（**介质也能画渐变了** ✓，第 254 轮补：验收实测过它缺失 ✗）；给了它就必须同时给 color ✓"),
+            param!("color", Any, false, "笔尖色：{r,g,b,a}（0..255）/ [r,g,b,(a)]（0..1 线性或 0..255 字节） ⇒ **任一分量 > 1 即按 0..255 字节解释**（想要近黑请用 `#RRGGBB` 或 `{r:1,…}`） / \"#RRGGBB\"（缺省不透明黑）；显式空间见 `color_space`（不传 ⇒ 量级切换）"),
+            param!("color_to", Any, false, "**末端颜色**（写法同 color）⇒ 一笔之内从 color 渐变到它（**介质也能画渐变了** ✓，第 254 轮补：验收实测过它缺失 ✗）；给了它就必须同时给 color ✓（解释空间同 `color_space`）"),
+            param!("color_space", String, false, "颜色解释空间（C1）：`srgb` ⇒ 0..1 浮点数组按 sRGB 字节解释（`v*255` 取整再解码）；`linear` ⇒ 浮点数组按线性直通（即使分量 > 1 也不按字节解释）；不传 ⇒ 现行量级切换（任一分量 > 1 即字节，否则线性）。作用于 `color` 与 `color_to`；对象式 / hex 恒为字节，不受本参数影响。回执 `applied.color_space` 回显实际生效的单位（`linear` / `srgb_bytes` / `hex`）"),
             param!("color_mixing", String, false, "颜色混合模式：rgb（**缺省**，sRGB 空间插值）/ linear（**线性光混色**，物理正确：红+蓝各 50% 比 rgb 亮 **35 级**）/ pigment（**光谱 K/S 混色**：黄+蓝混出绿而不是灰）；**三种都走 `mix_colors` 同一处实现** ✓"),
             param!("smooth", Boolean, false, "true ⇒ 控制点按 **Catmull-Rom** 重采样（与 brush_stroke / draw_stroke 同一条实现 ✓）⇒ 手写的折线不再有硬角；缺省 false ⇒ 与前完全一致"),
             param!("symmetry", String, false, "★ 对称模式（第 253 轮）：none（缺省）/ vertical / horizontal ⇒ 一笔画两份（镜像那份与原笔像素相同，轴取画布中心线）"),
@@ -2283,9 +2285,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // **写法与其它绘制工具统一** ✓（本轮 ✓）：`parse_spec_color` ✓ 收 `{r,g,b,a}` /
             // `[r,g,b,(a)]`（0..1 线性或 0..255 字节）/ `"#RRGGBB"` ✓ ——
             // Web 的颜色选择器给的就是 `"#RRGGBB"` ✓（此前查看器只传 `undefined` ✗ ⇒ 选了色也画不上 ✗）。
-            param!("color", Any, false, "笔尖颜色：{r,g,b,a}（0..255）/ [r,g,b,(a)]（0..1 线性或 0..255 字节） ⇒ **任一分量 > 1 即按 0..255 字节解释**（想要近黑请用 `#RRGGBB` 或 `{r:1,…}`） / \"#RRGGBB\" ⇒ **覆盖 .myb 默认色** ✓；不给则用笔刷自带色。**`a` 目前被忽略**（笔触透明度用 `opacity` ✓；实测 `a=0` 与 `a=255` 落墨量相同 ✓，判据 `ink_pixels` 那条钉着） ✓"),
+            param!("color", Any, false, "笔尖颜色：{r,g,b,a}（0..255）/ [r,g,b,(a)]（0..1 线性或 0..255 字节） ⇒ **任一分量 > 1 即按 0..255 字节解释**（想要近黑请用 `#RRGGBB` 或 `{r:1,…}`） / \"#RRGGBB\" ⇒ **覆盖 .myb 默认色** ✓；不给则用笔刷自带色。**`a` 目前被忽略**（笔触透明度用 `opacity` ✓；实测 `a=0` 与 `a=255` 落墨量相同 ✓，判据 `ink_pixels` 那条钉着） ✓；显式空间见 `color_space`（不传 ⇒ 量级切换）"),
             param!("color_mixing", String, false, "`color` → `color_to` 的**混色空间**：`rgb`（缺省，sRGB 空间插值 ⇒ 与以前逐字节相同）/ `linear`（线性光混色，物理正确：红+蓝各 50% 比 rgb **亮 35 级**）/ `pigment`（光谱 K/S 混合：黄+蓝混出绿）。**不给 `color_to` 时无意义**"),
-            param!("color_to", Any, false, "**末端颜色**（写法同 color）⇒ 一笔之内从 color 渐变到它（Loaded Brush ✓）：花瓣 / 叶尖那种渐变**一笔就能画** ✓，不必分两笔（交界不会有硬边 ✓）；给了它就必须同时给 color ✓"),
+            param!("color_to", Any, false, "**末端颜色**（写法同 color）⇒ 一笔之内从 color 渐变到它（Loaded Brush ✓）：花瓣 / 叶尖那种渐变**一笔就能画** ✓，不必分两笔（交界不会有硬边 ✓）；给了它就必须同时给 color ✓（解释空间同 `color_space`）"),
+            param!("color_space", String, false, "颜色解释空间（C1）：`srgb` ⇒ 0..1 浮点数组按 sRGB 字节解释（`v*255` 取整再解码）；`linear` ⇒ 浮点数组按线性直通（即使分量 > 1 也不按字节解释）；不传 ⇒ 现行量级切换（任一分量 > 1 即字节，否则线性）。作用于 `color` 与 `color_to`；对象式 / hex 恒为字节，不受本参数影响。回执 `applied.color_space` 回显实际生效的单位（`linear` / `srgb_bytes` / `hex`）"),
             // **与 `draw_stroke` 对齐** ✓（外部绘画 agent 实测痛点 ✓："要 MyPaint 物理"和"要能控透明度"
             // 以前**无法同时满足** ✗ ⇒ 它只能放弃画笔/介质引擎、改用 `draw_stroke` 画云 ✓）。
             param!("opacity", Number, false, "整笔不透明度 0..1（映射到 MyPaint 的 `opaque` = **每枚 dab 的不透明度** ✓）；缺省用 `.myb` 自带的 ✓"),
