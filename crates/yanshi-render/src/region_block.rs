@@ -129,19 +129,42 @@ pub struct RegionBlockStats {
 }
 
 /// **区域字节缓存** ✓（容量按块数计 ✓；`version_atom` 变了即视为失效 ✓）。
+///
+/// **★ 字节上限（RSS 修复 paint-rss，2026-10-26）★**：只按块数封顶是漏洞——
+/// 全幅块 4K 是 33MB、8K 是 132MB，16 块可达 528MB。现为**块数 + 字节双上限**
+/// （缺省 `DEFAULT_MAX_BYTES = 64 MiB`）：超字节时按版本最旧淘汰；单块本身超
+/// 预算时仍保留这一块（与 `BufferPool` 的"至少保留一张"同理——缓存"有"比"全无"
+/// 好，超预算的块只影响本块，不会把别的块挤光）。
 #[derive(Debug)]
 pub struct RegionBlockCache {
     blocks: BTreeMap<BlockKey, RegionBlock>,
     capacity: usize,
+    /// 当前所有块 `data` 字节之和（`put`／`get` 的过期丢弃／`invalidate_before`／
+    /// `clear` 都同步维护——`bytes()` 读它，不遍历）。
+    bytes: usize,
+    /// 字节上限（见模块说明）。
+    max_bytes: usize,
     stats: RegionBlockStats,
 }
 
+/// 区域字节缓存的缺省字节上限：64 MiB（4K 全幅块 33MB 能进一块；8K 全幅块
+/// 132MB 靠"单块超预算仍保留"例外进一块；两块 4K 全幅 66MB > 上限 ⇒ 旧的被汰）。
+pub const DEFAULT_REGION_BLOCK_MAX_BYTES: usize = 64 * 1024 * 1024;
+
 impl RegionBlockCache {
-    /// 新建 ✓（`capacity` 是**块数**上限 ✓，至少 1 ✓）。
+    /// 新建 ✓（`capacity` 是**块数**上限 ✓，至少 1 ✓；字节上限取缺省
+    /// [`DEFAULT_REGION_BLOCK_MAX_BYTES`] ✓）。
     pub fn new(capacity: usize) -> Self {
+        Self::new_with_byte_budget(capacity, DEFAULT_REGION_BLOCK_MAX_BYTES)
+    }
+
+    /// 新建 ✓（块数上限 + 字节上限都显式给；测试用小字节上限证明"有界" ✓）。
+    pub fn new_with_byte_budget(capacity: usize, max_bytes: usize) -> Self {
         Self {
             blocks: BTreeMap::new(),
             capacity: capacity.max(1),
+            bytes: 0,
+            max_bytes: max_bytes.max(1),
             stats: RegionBlockStats::default(),
         }
     }
@@ -154,6 +177,12 @@ impl RegionBlockCache {
     /// 当前块数 ✓。
     pub fn len(&self) -> usize {
         self.blocks.len()
+    }
+
+    /// 当前所有块的字节之和 ✓（C2 预算闸的估算口径之一，见
+    /// `Document::renderer_retained_bytes` ✓）。
+    pub fn bytes(&self) -> usize {
+        self.bytes
     }
 
     /// 是否为空 ✓。
@@ -197,14 +226,43 @@ impl RegionBlockCache {
         }
         if self.blocks.contains_key(&key) {
             // 键在、版本不对 ⇒ 丢掉它 ✓（留着只会一直不命中 ✓）。
-            self.blocks.remove(&key);
+            if let Some(old) = self.blocks.remove(&key) {
+                self.bytes = self.bytes.saturating_sub(old.data.len());
+            }
             self.stats.stale += 1;
         }
         self.stats.misses += 1;
         None
     }
 
-    /// 放一块 ✓（超容量时按**版本最旧**淘汰 ✓）。
+    /// 淘汰版本锚最旧的一块（确定性：并列时按键序 ✓，不用 HashMap 的随机序 ✗）。
+    /// `except` 指定的键不参与（`put` 的字节淘汰不能把刚放进的块自己汰掉 ✓）。
+    /// 返回是否真淘汰了一块。
+    fn evict_oldest(&mut self, except: Option<BlockKey>) -> bool {
+        let victim = self
+            .blocks
+            .values()
+            .filter(|block| Some(block.key) != except)
+            .min_by(|left, right| {
+                left.version_atom
+                    .cmp(&right.version_atom)
+                    .then(left.key.cmp(&right.key))
+            })
+            .map(|block| block.key);
+        match victim {
+            Some(key) => {
+                if let Some(old) = self.blocks.remove(&key) {
+                    self.bytes = self.bytes.saturating_sub(old.data.len());
+                }
+                self.stats.evicted += 1;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 放一块 ✓（超容量时按**版本最旧**淘汰 ✓；超字节上限时同样淘汰，
+    /// 直到字节达标或只剩刚放进的这一块 ✓）。
     pub fn put(&mut self, block: RegionBlock) {
         if let Ok(path) = std::env::var("YANSHI_REGION_PROBE") {
             use std::io::Write;
@@ -221,34 +279,45 @@ impl RegionBlockCache {
             }
         }
         if self.blocks.len() >= self.capacity && !self.blocks.contains_key(&block.key) {
-            // 淘汰版本锚最旧的一块 ✓（确定性：并列时按键序 ✓，不用 HashMap 的随机序 ✗）。
-            let victim = self
-                .blocks
-                .values()
-                .min_by(|left, right| {
-                    left.version_atom
-                        .cmp(&right.version_atom)
-                        .then(left.key.cmp(&right.key))
-                })
-                .map(|block| block.key);
-            if let Some(key) = victim {
-                self.blocks.remove(&key);
-                self.stats.evicted += 1;
+            // 块数超限 ⇒ 淘汰版本锚最旧的一块 ✓。
+            self.evict_oldest(None);
+        }
+        // 同键覆盖 ⇒ 先扣掉旧块的字节（否则 `bytes()` 会虚增 ✓）。
+        if let Some(old) = self.blocks.get(&block.key) {
+            self.bytes = self.bytes.saturating_sub(old.data.len());
+        }
+        self.bytes = self.bytes.saturating_add(block.data.len());
+        let inserted_key = block.key;
+        self.blocks.insert(block.key, block);
+        // 字节超限 ⇒ 淘汰版本最旧的块直到达标；但至少保留刚放进的这一块
+        // （单块超预算也保留——见模块说明；`except` 保证不汰掉自己 ✓）。
+        while self.bytes > self.max_bytes && self.blocks.len() > 1 {
+            if !self.evict_oldest(Some(inserted_key)) {
+                break;
             }
         }
-        self.blocks.insert(block.key, block);
     }
 
     /// **丢弃所有比给定版本旧的块** ✓（提交之后调用 ✓）。
     pub fn invalidate_before(&mut self, version: u64) -> usize {
         let before = self.blocks.len();
-        self.blocks.retain(|_, block| block.version_atom >= version);
+        let mut freed = 0usize;
+        self.blocks.retain(|_, block| {
+            if block.version_atom >= version {
+                true
+            } else {
+                freed = freed.saturating_add(block.data.len());
+                false
+            }
+        });
+        self.bytes = self.bytes.saturating_sub(freed);
         before - self.blocks.len()
     }
 
     /// 清空 ✓。
     pub fn clear(&mut self) {
         self.blocks.clear();
+        self.bytes = 0;
     }
 }
 
@@ -476,5 +545,59 @@ mod tests {
             fp_before,
             "只改 z_index 也必须让指纹变（否则缓存命中旧块）"
         );
+    }
+
+    /// **RSS 修复 paint-rss：字节上限淘汰最旧的块，且 `bytes()` 与内容一致**。
+    ///
+    /// 变异：去掉 `put` 末尾的字节淘汰循环 ⇒ 第三块放进后 `bytes()` 仍是 3 MiB ⇒ 红。
+    #[test]
+    fn byte_budget_evicts_the_oldest_block() {
+        // 预算 2 MiB；每块 1 MiB（512×512×4 B）。
+        let mut cache = RegionBlockCache::new_with_byte_budget(16, 2 * 1024 * 1024);
+        let a = BlockKey::from_bbox(0.0, 0.0, 512.0, 512.0);
+        let b = BlockKey::from_bbox(512.0, 0.0, 512.0, 512.0);
+        let c = BlockKey::from_bbox(1024.0, 0.0, 512.0, 512.0);
+        cache.put(block(a, 1, 10));
+        cache.put(block(b, 5, 20));
+        assert_eq!(cache.bytes(), 2 * 1024 * 1024, "两块 1 MiB 应正好占满预算");
+        cache.put(block(c, 9, 30));
+        assert_eq!(cache.len(), 2, "超字节后只能留两块");
+        assert_eq!(cache.bytes(), 2 * 1024 * 1024, "字节数必须回到预算内");
+        assert!(cache.get(a, 1).is_none(), "版本最旧的 a 应被淘汰");
+        assert!(cache.get(b, 5).is_some(), "较新的 b 应还在");
+        assert!(cache.get(c, 9).is_some(), "刚放进的 c 应还在");
+        assert_eq!(cache.stats().evicted, 1);
+    }
+
+    /// **RSS 修复 paint-rss：单块本身超预算也保留**（不把别的块挤光、不丢刚放的块）。
+    #[test]
+    fn single_oversize_block_is_kept() {
+        let mut cache = RegionBlockCache::new_with_byte_budget(16, 2 * 1024 * 1024);
+        let small = BlockKey::from_bbox(0.0, 0.0, 512.0, 512.0);
+        let big = BlockKey::from_bbox(0.0, 0.0, 2048.0, 2048.0); // 16 MiB
+        cache.put(block(small, 1, 10));
+        cache.put(block(big, 2, 20));
+        assert_eq!(cache.len(), 1, "大块进来后小块应被汰掉、只剩大块");
+        assert!(cache.get(big, 2).is_some(), "超预算的单块本身必须保留");
+        assert_eq!(cache.bytes(), 16 * 1024 * 1024);
+    }
+
+    /// **RSS 修复 paint-rss：同键覆盖与过期丢弃都要维护 `bytes()`**（恒等式：
+    /// `bytes()` 恒等于各块 `data.len()` 之和，判据不靠"数一遍"而靠记账一致）。
+    #[test]
+    fn bytes_accounting_survives_overwrite_and_stale_drop() {
+        let mut cache = RegionBlockCache::new(16);
+        let key = BlockKey::from_bbox(0.0, 0.0, 512.0, 512.0);
+        cache.put(block(key, 7, 200));
+        assert_eq!(cache.bytes(), 1024 * 1024);
+        // 同键同尺寸覆盖：字节数不变。
+        cache.put(block(key, 7, 201));
+        assert_eq!(cache.bytes(), 1024 * 1024, "同键覆盖不得虚增字节");
+        // 版本一变再取：旧块被当过期丢弃，字节归零。
+        assert!(cache.get(key, 8).is_none());
+        assert_eq!(cache.bytes(), 0, "过期丢弃后字节应归零");
+        assert_eq!(cache.len(), 0);
+        cache.clear();
+        assert_eq!(cache.bytes(), 0);
     }
 }

@@ -1755,6 +1755,17 @@ impl Document {
         self.region_cache.stats()
     }
 
+    /// 区域字节缓存当前占的字节 ✓（RSS 修复 paint-rss 的观测口）。
+    pub fn region_cache_bytes(&self) -> usize {
+        self.region_cache.bytes()
+    }
+
+    /// 图层缓冲池的计数快照 ✓（RSS 修复 paint-rss 的观测口：`retained_bytes` /
+    /// `retained_large_buffers` 读这里）。
+    pub fn buffer_pool_stats(&self) -> yanshi_render::buffer_pool::BufferPoolStats {
+        self.renderer.buffer_pool().stats()
+    }
+
     /// **解码位图缓存的统计** ✓（判据据此断言"同一块补丁没有被重复解码" ✓）。
     ///
     /// `misses` 就是真正 `store.get` + 解码的次数 ✓ ⇒
@@ -1762,6 +1773,17 @@ impl Document {
     /// 而不必靠墙钟读数去猜 ✓。
     pub fn bitmap_cache_stats(&self) -> yanshi_render::render::BitmapCacheStats {
         self.renderer.bitmap_cache_stats()
+    }
+
+    /// **本份文档渲染侧常驻缓存保留字节（RSS 修复 paint-rss）**：
+    ///
+    /// 渲染器六项（见 `Renderer::retained_bytes`）+ 本文档的区域字节缓存。
+    /// C2 预算闸用它估算单文档驻留（见 `Workspace::estimate_loaded_doc_bytes`）；
+    /// 纯文档状态（原子）另计，不在这里。
+    pub fn renderer_retained_bytes(&self) -> usize {
+        self.renderer
+            .retained_bytes()
+            .saturating_add(self.region_cache.bytes())
     }
 
     /// **收集当前仍被缓存指针引用的 blob** ✓（淘汰时的"保留名单" ✓）。

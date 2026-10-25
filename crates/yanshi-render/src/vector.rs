@@ -548,6 +548,15 @@ impl VectorRasterCache {
         }
     }
 
+    /// 当前缓存的单笔光栅字节之和（按缓冲容量计；RSS 修复 paint-rss：
+    /// C2 预算闸估算口径的一部分）。
+    pub fn bytes(&self) -> usize {
+        self.entries
+            .values()
+            .map(|entry| entry.buffer.capacity_bytes())
+            .sum()
+    }
+
     /// 取一笔的光栅：指纹一致 ⇒ 命中直接返回缓存（不盖章 ✓）；
     /// 否则走引擎盖章路径（[`svg::render_stroke_buffer`]，与渲染器同源 ✓）
     /// 重新光栅化并入缓存。笔完全在画布外 ⇒ `None`（无可缓存之物 ✓）。

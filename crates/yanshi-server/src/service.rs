@@ -64,6 +64,17 @@ const PACKAGE_BLOB_ENCODING: &str = "zlib";
 /// 一个出处，两处各写一份必然漂移。
 const BYTES_PER_ATOM: u64 = 300 * 1_024;
 
+/// glibc 的 `malloc_trim`（仅 Linux；RSS 修复 paint-rss）。
+///
+/// `close`/`delete` 丢掉文档后，堆里约 60% 仍滞留 arena（定位报告 §3.2：
+/// 关完 12 文档仍滞留 2,073MB）——`malloc_trim(0)` 让 glibc 把堆顶连续空闲
+/// 收缩归还 OS。非 Linux 目标不声明它（`release_heap_to_os` 的非 Linux
+/// 版是空操作）；不引入 `libc` 依赖，一个 `extern` 声明就够了。
+#[cfg(target_os = "linux")]
+extern "C" {
+    fn malloc_trim(pad: usize) -> std::os::raw::c_int;
+}
+
 /// 文档缩略图尺寸档位（7.3 分级；`Skip` 表示不生成）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocThumbSize {
@@ -1329,6 +1340,14 @@ impl Workspace {
                 ));
             }
         }
+        // **★ C2 预算闸（RSS 修复 paint-rss）：新建也是"装入" ★**：
+        // 修前闸只接在 `open_document_inner` 里，新建走 `create_document` 全程
+        // 绕闸 ⇒ 连续新建 30 个文档、预算 2GB 也一次不触发卸载，直接顶到 OOM
+        // （定位报告 §5 第 3 条）。新建文档磁盘原子数为 0、入量估算为 0，
+        // 闸按已载入总量腾位（LRU 卸载空闲文档）；全 busy 且仍超 ⇒ 拒绝新建。
+        // 注意顺序：先过闸、再创建——闸拒绝时新文档尚未创建，无半截状态；
+        // 闸里卸载的是**别的**文档，不含本 id。
+        self.enforce_doc_budget_for_open(&doc_id)?;
         let document = Document::create(
             Arc::clone(&self.store),
             spec.clone(),
@@ -1405,6 +1424,27 @@ impl Workspace {
         Ok(copied)
     }
 
+    /// **把 glibc 堆里已空闲的 arena 归还给 OS（RSS 修复 paint-rss，Linux）**。
+    ///
+    /// `close`/`delete`/预算卸载丢掉文档后，`Document` 及其缓存确实已释放，
+    /// 但 glibc malloc 只把 ~40% 及时归还，约 60% 滞留堆 arena（定位报告
+    /// §3.2）。`malloc_trim(0)` 要求 glibc 尽量归还堆顶连续空闲；返回 `true`
+    /// 表示确实归还了一部分。调用点只在"刚丢掉一整份文档"之后（不是热路径），
+    /// 每次至多毫秒级。若 arena 已碎片化、归还不足，再评估换分配器——
+    /// 不要先换分配器（定位报告 §5 第 2 条）。
+    #[cfg(target_os = "linux")]
+    fn release_heap_to_os() -> bool {
+        // SAFETY：`malloc_trim(0)` 是 glibc 的公开 API；`pad = 0` 表示"尽量归还"，
+        // 无非法输入、无指针传递，调用本身不触碰任何 Rust 对象。
+        unsafe { malloc_trim(0) == 1 }
+    }
+
+    /// **把堆里已空闲的 arena 归还给 OS（非 Linux：空操作）**。
+    #[cfg(not(target_os = "linux"))]
+    fn release_heap_to_os() -> bool {
+        false
+    }
+
     /// **C2 预算读取**（期 2）：`YANSHI_DOC_MEMORY_BUDGET_MB`
     /// （缺省 2048 MB）——沿 GC 闸形态：调用时现读、解析失败回退
     /// 缺省（可调才可测；小内存部署可调低，宁可拒绝不被 OOM 杀）。
@@ -1427,13 +1467,20 @@ impl Workspace {
             .unwrap_or(64)
     }
 
-    /// 一份已载入文档的估算驻留：原子口径 + 位图缓存**实测**
+    /// 一份已载入文档的估算驻留：原子口径 + 渲染侧常驻缓存**实测**
     /// （300 KB/原子对位图-heavy 文档低估明显，必须叠实测——
     /// 设计 C2 的硬要求）。
+    ///
+    /// **★ RSS 修复 paint-rss：实测口径从"只看位图"扩到"全部渲染缓存" ★**：
+    /// 修前这里只加 `bitmap_cache_stats().bytes`（位图约 5–15MB），4K 全配方
+    /// 文档估 ~17MB、实测 ~260MB ⇒ 2GB 预算下 30 个文档全程不触发卸载
+    /// （定位报告 §5 第 3 条）。现加 `renderer_retained_bytes()`（池保留 +
+    /// tile + 位图 + 区域块 + below/above + 蒙版 + 矢量光栅），估算与实测同量级，
+    /// 预算闸才能接住。`LoadedDocumentInfo.cache_bytes` 仍只报位图（字段语义不变）。
     fn estimate_loaded_doc_bytes(document: &Document) -> u64 {
         (document.atom_count() as u64)
             .saturating_mul(BYTES_PER_ATOM)
-            .saturating_add(document.bitmap_cache_stats().bytes as u64)
+            .saturating_add(document.renderer_retained_bytes() as u64)
     }
 
     /// 文档是否「使用中」：有 inflight 操作、或有打开的
@@ -1486,6 +1533,9 @@ impl Workspace {
         self.doc_last_used.remove(doc_id);
         self.doc_evictions += 1;
         self.doc_last_eviction = Some((doc_id.to_owned(), reason.to_owned()));
+        // RSS 修复 paint-rss：只丢文档不归还堆，卸载的内存仍有 ~60% 滞留 arena
+        // （与 close 同一分配器层，定位报告 §3.2）⇒ 卸完即归还一次。
+        Self::release_heap_to_os();
     }
 
     /// **C2 预算闸**（期 2）：在真正装入一份**尚未载入**的文档
@@ -1947,7 +1997,13 @@ impl Workspace {
     pub fn close_document(&mut self, doc_id: &str) -> bool {
         // C2：LRU 记账随文档一并摘除（序号本身单调，不复用）。
         self.doc_last_used.remove(doc_id);
-        self.documents.remove(doc_id).is_some()
+        let removed = self.documents.remove(doc_id).is_some();
+        if removed {
+            // RSS 修复 paint-rss：只丢文档不归还堆，关完仍有 ~60% 滞留 arena
+            // （定位报告 §3.2：关完 12 文档静置后仍滞留 2,073MB）⇒ 关完即归还一次。
+            Self::release_heap_to_os();
+        }
+        removed
     }
 
     /// **★ 重新从磁盘加载某文档（`--watch` 用 ✓，2026-10-15 ✓）★**
@@ -2048,6 +2104,11 @@ impl Workspace {
             }
         }
         let removed_from_memory = self.documents.remove(doc_id).is_some();
+        if removed_from_memory {
+            // RSS 修复 paint-rss：与 `close_document` 同理——删完即归还一次堆
+            // （定位报告 §3.2：DELETE 删完仍滞留 59.5%，与 close 同形）。
+            Self::release_heap_to_os();
+        }
         // **删除时也要清掉"上次看到的盘上长度"** ✓（第 767 轮）
         //   **⇒ 缺陷（我自己第 762 轮引入的）**：`disk_len_seen` 按 `doc_id` 记 ✓
         //     ⇒ 文档删掉后**条目留着** ✗ ⇒ ①**小内存泄漏**（每个删过的 id 一条 ✓）；

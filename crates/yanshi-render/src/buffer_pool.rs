@@ -107,6 +107,18 @@ pub const MIN_POOLED_BYTES: usize = 192 * 1024 * 1024;
 /// ② 判据里**加上 `tool-stroke-latency-4k.mjs`** ✓（本轮漏了它 ✗ ⇒ 代价没在本机暴露 ✓）。
 pub const MAX_RETAINED_PER_BUFFER_BYTES: usize = 64 * 1024 * 1024;
 
+/// **★ 大缓冲最多保留几张（RSS 修复 paint-rss，2026-10-26）★**
+///
+/// 2026-10-15 那版的教训是"**一张都不留** ⇒ 每笔重分配 ⇒ 延迟变红"；本规则是
+/// 同一常数的另一半用法——**只留一张**：`release` 里容量超过
+/// [`MAX_RETAINED_PER_BUFFER_BYTES`] 的缓冲，空闲表里已有同级大缓冲时就丢弃
+/// （小缓冲仍走原有字节预算）。一笔的复用只需要**一张**全幅／带缓冲（串行全幅路
+/// 与并行带路各自同时在用的也就一两张），第 2 张起只是跨渲染、跨文档的滞留：
+/// 4K 全配方文档实测每文档滞留 ~260MB（RSS 定位报告 §1），池里多张 66–133MB
+/// 缓冲是其中最大头。验收必须同时跑 `tool-stroke-latency-4k.mjs`（只看内存
+/// 数会重蹈 2026-10-15 的覆辙）。
+pub const MAX_RETAINED_LARGE_BUFFERS: usize = 1;
+
 // **★ 保留字节的绝对上限 —— **试过、已撤**（第 254 轮 A/B 实测）★**
 //
 // **当时为什么加**：预算公式只有下界 ＋ 并发 × 单块 => 全幅渲染时
@@ -163,6 +175,10 @@ pub struct BufferPoolStats {
     pub retained_buffers: usize,
     /// 当前空闲表里保留的字节数（按容量计）。
     pub retained_bytes: usize,
+    /// 当前空闲表里保留的**大**缓冲个数（容量超过
+    /// [`MAX_RETAINED_PER_BUFFER_BYTES`] 的张数；RSS 修复 paint-rss
+    /// 的观测口——正常应 ≤ [`MAX_RETAINED_LARGE_BUFFERS`]）。
+    pub retained_large_buffers: usize,
 }
 
 #[derive(Debug)]
@@ -472,7 +488,19 @@ impl BufferPool {
         //   例如保留**一张**整幅（沿用本文件既有的"至少保留一张"例外 ✓）、
         //   或**边合成边释放**（把峰值降在**持有**那一侧，而不是靠"不保留" ✗）✓；
         //   并且**验证必须包含 `tool-stroke-latency-4k.mjs`** ✓（本轮漏了它 ✗）。
-        let retain = self.enabled.load(Ordering::SeqCst) && count_ok && bytes_ok;
+        //   **★ 2026-10-26（RSS 修复 paint-rss）已落地"保留一张"这半 ✓ ★**：见下面的
+        //   `large_ok`——超过 64 MiB 的缓冲最多保留一张（`MAX_RETAINED_LARGE_BUFFERS`），
+        //   第 2 张起丢弃；"一张都不留"那半仍是禁区（延迟硬约束 ✓）。小缓冲不受此限。
+        let large_ok = bytes <= MAX_RETAINED_PER_BUFFER_BYTES
+            || inner
+                .free
+                .iter()
+                .filter(|(_, buffer)| {
+                    buffer.capacity_bytes() > MAX_RETAINED_PER_BUFFER_BYTES
+                })
+                .count()
+                < MAX_RETAINED_LARGE_BUFFERS;
+        let retain = self.enabled.load(Ordering::SeqCst) && count_ok && bytes_ok && large_ok;
         if retain {
             inner.retained_bytes += bytes;
             inner.free.push((id, buffer));
@@ -493,6 +521,13 @@ impl BufferPool {
             alias_violations: inner.counters.alias_violations,
             retained_buffers: inner.free.len(),
             retained_bytes: inner.retained_bytes,
+            retained_large_buffers: inner
+                .free
+                .iter()
+                .filter(|(_, buffer)| {
+                    buffer.capacity_bytes() > MAX_RETAINED_PER_BUFFER_BYTES
+                })
+                .count(),
         }
     }
 }
@@ -642,5 +677,69 @@ mod tests {
         let lease = clamped.acquire(0, 0, 64, 64); // 记下本轮工作集
         assert_eq!(clamped.retained_byte_budget(), 2 * per_buffer);
         drop(lease);
+    }
+
+    /// **RSS 修复 paint-rss：大缓冲最多保留一张，但留下的那张必须复用**。
+    ///
+    /// 2026-10-15 的教训是两半："一张都不留" ⇒ 每笔重分配 268 MB ⇒
+    /// `tool-stroke-latency-4k` 变红；"留多张" ⇒ 每文档滞留数百 MB。
+    /// 本判据钉住中间态：3 次归还 3 张 64 MiB 以上的缓冲 ⇒ 只留 1 张；
+    /// 随后同尺寸取用必须命中留下的那张（`was_reused`），否则延迟不变量已丢。
+    ///
+    /// 变异：把 `MAX_RETAINED_LARGE_BUFFERS` 改回 4 ⇒ `retained_large_buffers`
+    /// 变 3 ⇒ 红；把大缓冲判定改成"一张都不留" ⇒ 第二轮 `was_reused` 为假 ⇒ 红。
+    #[test]
+    fn large_buffers_retain_at_most_one_but_still_reuse() {
+        // 字节预算给满（只留个数上限与大缓冲规则做主），避免预算先挡住。
+        let pool = BufferPool::with_limits(MAX_POOLED_BUFFERS, usize::MAX);
+        // 2049×2048×16 B ≈ 64.03 MiB：刚过 64 MiB 的"大"线；2048×2048 恰为 64 MiB，不算大。
+        let large_w = 2049u32;
+        let large_h = 2048u32;
+        let large_bytes = (large_w as usize) * (large_h as usize) * 16;
+        assert!(
+            large_bytes > MAX_RETAINED_PER_BUFFER_BYTES,
+            "测试前设：{large_bytes} 必须超过大缓冲线"
+        );
+        // 三张必须**同时在借**再一起归还：逐张借还会在第二张就命中复用，
+        // 测不到"归还第 2 张大缓冲时丢弃"这条规则。
+        let leases: Vec<_> = (0..3)
+            .map(|_| pool.acquire(0, 0, large_w, large_h))
+            .collect();
+        assert_eq!(pool.stats().allocated, 3, "三张同时在借应全是新建");
+        drop(leases);
+        let stats = pool.stats();
+        assert_eq!(
+            stats.retained_large_buffers, MAX_RETAINED_LARGE_BUFFERS,
+            "3 张大缓冲归还后只能留 {MAX_RETAINED_LARGE_BUFFERS} 张：{stats:?}"
+        );
+        assert_eq!(
+            stats.retained_buffers, MAX_RETAINED_LARGE_BUFFERS,
+            "本轮只有大缓冲归还，留下的张数应与大缓冲张数一致：{stats:?}"
+        );
+        assert_eq!(stats.retained_bytes, large_bytes);
+
+        // 留下的那张必须能复用：下一轮同尺寸取用不得新建（否则就是"一张都不留"的回退）。
+        let allocated_before = pool.stats().allocated;
+        let lease = pool.acquire(0, 0, large_w, large_h);
+        assert!(
+            lease.was_reused(),
+            "保留的那张大缓冲必须被复用，否则 4K 一笔要重分配 {large_bytes} 字节"
+        );
+        assert_eq!(pool.stats().allocated, allocated_before, "复用轮不得新建");
+        drop(lease);
+
+        // 边界：恰为 64 MiB 的缓冲不算"大"，两张都应留下（小缓冲走原有预算）。
+        let small_pool = BufferPool::with_limits(MAX_POOLED_BUFFERS, usize::MAX);
+        let edge_bytes = 2048usize * 2048 * 16;
+        assert_eq!(edge_bytes, MAX_RETAINED_PER_BUFFER_BYTES);
+        for _ in 0..2 {
+            drop(small_pool.acquire(0, 0, 2048, 2048));
+        }
+        let edge_stats = small_pool.stats();
+        assert_eq!(
+            edge_stats.retained_large_buffers, 0,
+            "恰为 64 MiB 不算大：{edge_stats:?}"
+        );
+        assert_eq!(edge_stats.retained_buffers, 2, "两张 64 MiB 都应留下");
     }
 }

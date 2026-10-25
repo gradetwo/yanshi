@@ -1349,6 +1349,16 @@ impl MaskCache {
         guard.insert(mask.id.clone(), (fingerprint, Arc::clone(&compiled)));
         compiled
     }
+
+    /// 当前缓存的编译蒙版字节之和（`grid` 按分配容量计；RSS 修复 paint-rss：
+    /// C2 预算闸估算口径的一部分——单张全画布蒙版即数十 MB，不可漏记）。
+    pub fn bytes(&self) -> usize {
+        let guard = self.inner.lock().expect("蒙版缓存锁中毒");
+        guard
+            .values()
+            .map(|(_, compiled)| compiled.grid.capacity())
+            .sum()
+    }
 }
 
 #[cfg(test)]

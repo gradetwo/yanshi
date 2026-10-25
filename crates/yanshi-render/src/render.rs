@@ -1208,6 +1208,36 @@ type SigTiles = (
 //   **∴ 从**空**开始累积 ✗**（**∴ 因为它**叠在当前结果之上**✓，**而**不是从背景开始 ✓**）。
 type AboveTiles = BelowTiles;
 
+/// **一份 below/above 缓存占的字节（RSS 修复 paint-rss）**：
+///
+/// `tiles`（旧字段）与 `by_sig` 各组可能共享同一份 `Arc`（第 683 轮的去重），
+/// 按指针去重只计一次；空 tile 只记键、不占内存。`Buffer` 按容量计（与
+/// `BufferPool` 的记账口径一致）。
+fn below_tiles_bytes(cache: &Option<BelowTiles>) -> usize {
+    let Some(cache) = cache else {
+        return 0;
+    };
+    let mut seen: Vec<*const Vec<((i64, i64), crate::buffer::Buffer)>> = Vec::new();
+    let mut total = 0usize;
+    let mut add = |arc: &std::sync::Arc<Vec<((i64, i64), crate::buffer::Buffer)>>| {
+        let ptr = std::sync::Arc::as_ptr(arc);
+        if seen.contains(&ptr) {
+            return;
+        }
+        seen.push(ptr);
+        total = total.saturating_add(
+            arc.iter()
+                .map(|(_, buffer)| buffer.capacity_bytes())
+                .sum(),
+        );
+    };
+    add(&cache.tiles);
+    for (tiles, _) in cache.by_sig.values() {
+        add(tiles);
+    }
+    total
+}
+
 /// **渲染器** ✓：把图层与对象渲染成像素 ✓，并持有各类**跨帧复用**的缓存 ✓
 ///（图层缓冲池 ✓、位图补丁缓存 ✓、below 缓存 ✓）。
 pub struct Renderer {
@@ -1491,6 +1521,42 @@ impl Renderer {
     /// （修复记录：插入 `below_reuse_count` 时把本方法的注释"抢"走了 ✗ ⇒ 已补 ✓。）
     pub fn bitmap_cache_stats(&self) -> BitmapCacheStats {
         self.bitmaps.stats()
+    }
+
+    /// **渲染器侧常驻缓存保留字节之和（RSS 修复 paint-rss）**：
+    ///
+    /// BufferPool 保留 + TileCache 已用 + BitmapCache 明文 + below/above tile +
+    /// 蒙版编译缓存 + 矢量单笔光栅缓存。RegionBlockCache 在 `Document` 侧
+    /// （见 `Document::renderer_retained_bytes`）。这是 C2 预算闸"一份文档
+    /// 占多少"的估算口径——修前它只看原子数 + 位图字节（4K 全配方文档估
+    /// ~17MB，实测 ~260MB），预算闸 30 个文档全程不触发；修后估算与实测同量级，
+    /// 闸才能接住。
+    pub fn retained_bytes(&self) -> usize {
+        let pool = self.buffer_pool.stats().retained_bytes;
+        let tiles = self.cache.stats().used_bytes;
+        let bitmaps = self.bitmaps.stats().bytes;
+        let below = self
+            .below
+            .lock()
+            .map(|guard| below_tiles_bytes(&guard))
+            .unwrap_or(0);
+        let above = self
+            .above
+            .lock()
+            .map(|guard| below_tiles_bytes(&guard))
+            .unwrap_or(0);
+        let masks = self.masks.bytes();
+        let vector = self
+            .vector_raster
+            .lock()
+            .map(|cache| cache.bytes())
+            .unwrap_or(0);
+        pool.saturating_add(tiles)
+            .saturating_add(bitmaps)
+            .saturating_add(below)
+            .saturating_add(above)
+            .saturating_add(masks)
+            .saturating_add(vector)
     }
 
     /// 设置渲染选项。

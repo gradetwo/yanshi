@@ -284,3 +284,47 @@ fn closed_document_reopens_identical() {
     assert_eq!(head_before, workspace.document("doc_a").unwrap().head_seq());
     clear_env();
 }
+
+/// **RSS 修复 paint-rss：预算闸也接在新建上**.
+///
+/// 修前闸只在 `open_document_inner` 里，新建走 `create_document` 全程绕闸 ⇒
+/// 连续新建 30 个文档、预算 2GB 也一次不触发卸载，直接顶到 OOM（定位报告
+/// §5 第 3 条）。本判据钉住：预算恰好"卸一份即达标"时，新建一份必须卸载
+/// 最久未用的空闲文档（而不是等打开时才卸、更不是直接放行到 OOM）。
+#[test]
+fn doc_budget_evicts_lru_idle_document_on_create() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    clear_env();
+    let root = temp_dir("create");
+    let _cleanup = TempCleanup(root.clone());
+    let mut workspace = Workspace::with_file_store(root, DocumentSettings::default()).unwrap();
+    make_doc(&mut workspace, "doc_a", 12);
+    make_doc(&mut workspace, "doc_b", 12);
+    make_doc(&mut workspace, "doc_c", 12);
+    // 新建文档磁盘原子数为 0、入量估算为 0：预算取"已载入总量 - 最小一份 + 1 字节"
+    // 的下取整——新建时已载入总量超预算，卸最久未用的一份即达标。
+    let incoming = 0u64;
+    let mb = budget_forcing_one_eviction(&workspace, incoming);
+    set_budget_mb(mb);
+
+    workspace
+        .create_document(NewDocument::new("doc_new", 64, 64), "human:1", "session:test")
+        .unwrap_or_else(|error| panic!("预算内新建应成功：{error}"));
+
+    let ids = loaded_ids(&workspace);
+    assert!(
+        !ids.contains(&"doc_a".to_string()),
+        "新建时最久未用的 A 应被卸载，实际在场：{ids:?}"
+    );
+    for kept in ["doc_b", "doc_c", "doc_new"] {
+        assert!(ids.contains(&kept.to_string()), "{kept} 应在场：{ids:?}");
+    }
+    let stats = workspace.doc_eviction_stats();
+    assert_eq!(stats.evictions, 1, "恰好卸载一份：{stats:?}");
+    assert!(stats
+        .last_reason
+        .as_deref()
+        .unwrap_or("")
+        .contains("内存预算"));
+    clear_env();
+}
