@@ -1916,10 +1916,14 @@ impl Renderer {
         // **期 4 `lod`**：宽高是 **LOD 像素数**（文档宽向上取整除以 step；格点锚在 `origin`；
         // `step == 1` 时与今天逐字等价）。
         let step_i = step as i64;
-        let width =
-            (((padded.x + padded.w).ceil() as i64 - origin_x).max(0).div_ceil(step_i)) as u32;
-        let height =
-            (((padded.y + padded.h).ceil() as i64 - origin_y).max(0).div_ceil(step_i)) as u32;
+        let width = (crate::buffer::div_ceil_i64(
+            ((padded.x + padded.w).ceil() as i64 - origin_x).max(0),
+            step_i,
+        )) as u32;
+        let height = (crate::buffer::div_ceil_i64(
+            ((padded.y + padded.h).ceil() as i64 - origin_y).max(0),
+            step_i,
+        )) as u32;
 
         let mut probe_fill_stage = stage_probe::Stage::start();
         let mut accumulation = match background {

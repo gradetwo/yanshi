@@ -107,6 +107,20 @@ pub fn clear_quantizer_cache_for_test() -> bool {
     was_empty
 }
 
+/// 有符号整数的上取整除法（`a` 可为负，`b` 必须 > 0；取样步长恒 > 0）。
+///
+/// 标准库的 `i64::div_ceil` 仍是不稳定特性（`int_roundings`，Rust 1.99 未稳定），
+/// 这里用稳定的 [`i64::div_euclid`] 手写（`b > 0` 时：整除取商，否则 floor 商 + 1）。
+pub(crate) fn div_ceil_i64(a: i64, b: i64) -> i64 {
+    debug_assert!(b > 0, "div_ceil_i64: 除数必须 > 0");
+    let q = a.div_euclid(b);
+    if a % b == 0 {
+        q
+    } else {
+        q + 1
+    }
+}
+
 /// 线性光、预乘 alpha 的区域缓冲区（行主序）。
 ///
 /// **取样步长 `step`**（期 4，`export_png` 的 `lod`）：缓冲像素 `(lx, ly)` 对应文档坐标
@@ -464,8 +478,8 @@ impl Buffer {
             return;
         }
         // 取样格点锚在本缓冲原点：第一个格点 ≥ 相交左／上界。
-        let first_lx = (ix0 - self.origin_x).div_ceil(step);
-        let first_ly = (iy0 - self.origin_y).div_ceil(step);
+        let first_lx = div_ceil_i64(ix0 - self.origin_x, step);
+        let first_ly = div_ceil_i64(iy0 - self.origin_y, step);
         let last_lx = (ix1 - 1 - self.origin_x) / step;
         let last_ly = (iy1 - 1 - self.origin_y) / step;
         for ly in first_ly..=last_ly {
@@ -584,8 +598,8 @@ impl Buffer {
             return;
         }
         let opacity = opacity.clamp(0.0, 1.0);
-        let first_lx = (ix0 - self.origin_x).div_ceil(step);
-        let first_ly = (iy0 - self.origin_y).div_ceil(step);
+        let first_lx = div_ceil_i64(ix0 - self.origin_x, step);
+        let first_ly = div_ceil_i64(iy0 - self.origin_y, step);
         let last_lx = (ix1 - 1 - self.origin_x) / step;
         let last_ly = (iy1 - 1 - self.origin_y) / step;
         for ly in first_ly..=last_ly {
@@ -776,8 +790,8 @@ impl Buffer {
         if ix1 <= ix0 || iy1 <= iy0 {
             return;
         }
-        let first_lx = (ix0 - self.origin_x).div_ceil(step);
-        let first_ly = (iy0 - self.origin_y).div_ceil(step);
+        let first_lx = div_ceil_i64(ix0 - self.origin_x, step);
+        let first_ly = div_ceil_i64(iy0 - self.origin_y, step);
         let last_lx = (ix1 - 1 - self.origin_x) / step;
         let last_ly = (iy1 - 1 - self.origin_y) / step;
         for ly in first_ly..=last_ly {
@@ -823,8 +837,8 @@ impl Buffer {
         if ix1 <= ix0 || iy1 <= iy0 {
             return;
         }
-        let first_lx = (ix0 - self.origin_x).div_ceil(step);
-        let first_ly = (iy0 - self.origin_y).div_ceil(step);
+        let first_lx = div_ceil_i64(ix0 - self.origin_x, step);
+        let first_ly = div_ceil_i64(iy0 - self.origin_y, step);
         let last_lx = (ix1 - 1 - self.origin_x) / step;
         let last_ly = (iy1 - 1 - self.origin_y) / step;
         for ly in first_ly..=last_ly {
@@ -860,8 +874,8 @@ impl Buffer {
         if x1 <= x0 || y1 <= y0 {
             return Buffer::new_stepped(x0, y0, 0, 0, self.step);
         }
-        let first_x = (x0 - self.origin_x).div_ceil(step);
-        let first_y = (y0 - self.origin_y).div_ceil(step);
+        let first_x = div_ceil_i64(x0 - self.origin_x, step);
+        let first_y = div_ceil_i64(y0 - self.origin_y, step);
         let width = ((x1 - 1 - self.origin_x) / step - first_x + 1) as u32;
         let height = ((y1 - 1 - self.origin_y) / step - first_y + 1) as u32;
         let mut out = Buffer::new_stepped(
@@ -908,8 +922,8 @@ impl Buffer {
         let (width, height, first_x, first_y) = if x1 <= x0 || y1 <= y0 {
             (0, 0, 0, 0)
         } else {
-            let first_x = (x0 - self.origin_x).div_ceil(step);
-            let first_y = (y0 - self.origin_y).div_ceil(step);
+            let first_x = div_ceil_i64(x0 - self.origin_x, step);
+            let first_y = div_ceil_i64(y0 - self.origin_y, step);
             let width = ((x1 - 1 - self.origin_x) / step - first_x + 1) as u32;
             let height = ((y1 - 1 - self.origin_y) / step - first_y + 1) as u32;
             (width, height, first_x, first_y)
@@ -1536,13 +1550,12 @@ impl Buffer {
             // **期 4 `lod`**：`x_lo`／`x_hi` 是 self **局部**坐标（文档坐标除以 self.step
             // 再向格点对齐）；`step == 1` 时与今天逐字等价。
             let mask_y = mask_y_rel / mask_step;
-            let x_lo = (mask.origin_x - self.origin_x)
-                .div_ceil(self.step as i64)
-                .max(0);
-            let x_hi = (self.width as i64).min(
-                (mask.origin_x + mask.doc_width() as i64 - self.origin_x)
-                    .div_ceil(self.step as i64),
-            );
+            let x_lo =
+                div_ceil_i64(mask.origin_x - self.origin_x, self.step as i64).max(0);
+            let x_hi = (self.width as i64).min(div_ceil_i64(
+                mask.origin_x + mask.doc_width() as i64 - self.origin_x,
+                self.step as i64,
+            ));
             let row = (y as usize) * (self.width as usize) * 4;
             // **∴ 区间左侧（**alpha ＝ 0 ✓）★
             if x_lo > 0 {

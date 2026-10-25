@@ -1057,15 +1057,15 @@ fn for_each_covered_pixel(
 
     // 裁剪到缓冲区范围（局部坐标）。
     // **期 4 `lod`**：局部坐标只取落在取样格点上的（格点锚在缓冲原点）；`step == 1` 时
-    // 与今天逐字等价（`div_ceil`／`div_floor` 在步长 1 时就是恒等）。
+    // 与今天逐字等价（`div_ceil_i64`／`div_euclid` 在步长 1 时就是恒等）。
     let step = buffer.step() as i64;
-    let start_x = (document_x0 - origin_x).div_ceil(step).max(0);
-    let start_y = (document_y0 - origin_y).div_ceil(step).max(0);
+    let start_x = crate::buffer::div_ceil_i64(document_x0 - origin_x, step).max(0);
+    let start_y = crate::buffer::div_ceil_i64(document_y0 - origin_y, step).max(0);
     let end_x = (document_x1 - origin_x)
-        .div_floor(step)
+        .div_euclid(step)
         .min(buffer.width() as i64 - 1);
     let end_y = (document_y1 - origin_y)
-        .div_floor(step)
+        .div_euclid(step)
         .min(buffer.height() as i64 - 1);
     if end_x < 0 || end_y < 0 || start_x > end_x || start_y > end_y {
         return;
@@ -2571,10 +2571,10 @@ fn stamp_mask_cached(
     // **期 4 `lod`**：只访问取样格点（局部坐标遍历，文档坐标由格点算出）；`step == 1`
     // 时访问的像素集合与今天相同（顺序也是行主序）。
     let step = buffer.step() as i64;
-    let lx0 = (x0 - origin_x).div_ceil(step).max(0);
-    let ly0 = (y0 - origin_y).div_ceil(step).max(0);
-    let lx1 = (x1 - origin_x).div_floor(step).min(bw - 1);
-    let ly1 = (y1 - origin_y).div_floor(step).min(bh - 1);
+    let lx0 = crate::buffer::div_ceil_i64(x0 - origin_x, step).max(0);
+    let ly0 = crate::buffer::div_ceil_i64(y0 - origin_y, step).max(0);
+    let lx1 = (x1 - origin_x).div_euclid(step).min(bw - 1);
+    let ly1 = (y1 - origin_y).div_euclid(step).min(bh - 1);
     DAB_CACHE.with(|cell| {
         let mut cache = cell.borrow_mut();
         let (mask, w, h) = cache.get_or_compute(radius, hardness, sub_x, sub_y, pressure);
