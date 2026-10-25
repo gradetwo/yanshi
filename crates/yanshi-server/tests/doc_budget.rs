@@ -320,7 +320,11 @@ fn doc_budget_evicts_lru_idle_document_on_create() {
     set_budget_mb(mb);
 
     workspace
-        .create_document(NewDocument::new("doc_new", 64, 64), "human:1", "session:test")
+        .create_document(
+            NewDocument::new("doc_new", 64, 64),
+            "human:1",
+            "session:test",
+        )
         .unwrap_or_else(|error| panic!("预算内新建应成功：{error}"));
 
     let ids = loaded_ids(&workspace);

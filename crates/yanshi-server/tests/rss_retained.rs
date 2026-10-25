@@ -44,7 +44,12 @@ fn workspace(root: &std::path::Path) -> Workspace {
         .with_assets_dir(Some(assets))
 }
 
-fn call(workspace: &mut Workspace, doc: &str, tool: &str, args: serde_json::Value) -> serde_json::Value {
+fn call(
+    workspace: &mut Workspace,
+    doc: &str,
+    tool: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
     let mut ctx = ToolContext::new(workspace, doc, "human:1", "session:test")
         .with_owner(true)
         .with_wait_for_render(true, 30_000);
@@ -55,10 +60,7 @@ fn call(workspace: &mut Workspace, doc: &str, tool: &str, args: serde_json::Valu
 struct Lcg(u32);
 impl Lcg {
     fn next(&mut self) -> f64 {
-        self.0 = self
-            .0
-            .wrapping_mul(1664525)
-            .wrapping_add(1013904223);
+        self.0 = self.0.wrapping_mul(1664525).wrapping_add(1013904223);
         f64::from(self.0) / 4294967296.0
     }
 }
@@ -117,7 +119,11 @@ fn retained_breakdown(workspace: &mut Workspace, doc: &str) -> (usize, usize, us
 }
 
 /// 建一份 4K 全配方文档并跑到导出落定，返回落定保留量（字节）。
-fn build_full_recipe_doc(workspace: &mut Workspace, doc: &str, export_path: &std::path::Path) -> usize {
+fn build_full_recipe_doc(
+    workspace: &mut Workspace,
+    doc: &str,
+    export_path: &std::path::Path,
+) -> usize {
     workspace
         .create_document(NewDocument::new(doc, 3840, 2160), "human:1", "session:test")
         .unwrap_or_else(|error| panic!("建文档 {doc} 失败：{error}"));
@@ -128,7 +134,10 @@ fn build_full_recipe_doc(workspace: &mut Workspace, doc: &str, export_path: &std
         json!({ "layer_id": "L1", "name": "paint" }),
     );
     assert_eq!(out["ok"], json!(true), "建层失败：{out}");
-    for (index, stroke) in make_strokes(3840.0, 2160.0, 8, 1000).into_iter().enumerate() {
+    for (index, stroke) in make_strokes(3840.0, 2160.0, 8, 1000)
+        .into_iter()
+        .enumerate()
+    {
         let out = call(workspace, doc, "brush_stroke", stroke);
         assert_eq!(out["ok"], json!(true), "第 {index} 笔失败：{out}");
     }
@@ -184,10 +193,7 @@ fn full_recipe_doc_retained_is_bounded_and_estimated() {
         .document_mut("rss-doc-0")
         .map(|d| d.buffer_pool_stats().retained_large_buffers)
         .unwrap_or(usize::MAX);
-    assert!(
-        large <= 1,
-        "池里大缓冲只能留 1 张，实测 {large} 张"
-    );
+    assert!(large <= 1, "池里大缓冲只能留 1 张，实测 {large} 张");
     // 预算闸估算必须覆盖实测保留量（估算 = 原子×300KB + 保留量，恒 ≥ 保留量）。
     let infos = workspace.loaded_documents();
     assert_eq!(infos.len(), 1, "应只有一份已载入文档");
@@ -211,7 +217,10 @@ fn close_then_rebuild_does_not_ratchet() {
     let export_dir = root.join("exports");
     std::fs::create_dir_all(&export_dir).unwrap();
     let first = build_full_recipe_doc(&mut workspace, "rss-doc-0", &export_dir.join("a.png"));
-    assert!(first <= MAX_RETAINED_BYTES_PER_DOC, "首文档保留 {first} 超上限");
+    assert!(
+        first <= MAX_RETAINED_BYTES_PER_DOC,
+        "首文档保留 {first} 超上限"
+    );
     assert!(workspace.close_document("rss-doc-0"), "关闭应成功");
     assert!(
         workspace.loaded_documents().is_empty(),

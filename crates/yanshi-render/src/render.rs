@@ -1225,11 +1225,7 @@ fn below_tiles_bytes(cache: &Option<BelowTiles>) -> usize {
             return;
         }
         seen.push(ptr);
-        total = total.saturating_add(
-            arc.iter()
-                .map(|(_, buffer)| buffer.capacity_bytes())
-                .sum(),
-        );
+        total = total.saturating_add(arc.iter().map(|(_, buffer)| buffer.capacity_bytes()).sum());
     };
     add(&cache.tiles);
     for (tiles, _) in cache.by_sig.values() {

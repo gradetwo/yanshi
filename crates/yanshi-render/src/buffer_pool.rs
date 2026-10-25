@@ -495,9 +495,7 @@ impl BufferPool {
             || inner
                 .free
                 .iter()
-                .filter(|(_, buffer)| {
-                    buffer.capacity_bytes() > MAX_RETAINED_PER_BUFFER_BYTES
-                })
+                .filter(|(_, buffer)| buffer.capacity_bytes() > MAX_RETAINED_PER_BUFFER_BYTES)
                 .count()
                 < MAX_RETAINED_LARGE_BUFFERS;
         let retain = self.enabled.load(Ordering::SeqCst) && count_ok && bytes_ok && large_ok;
@@ -524,9 +522,7 @@ impl BufferPool {
             retained_large_buffers: inner
                 .free
                 .iter()
-                .filter(|(_, buffer)| {
-                    buffer.capacity_bytes() > MAX_RETAINED_PER_BUFFER_BYTES
-                })
+                .filter(|(_, buffer)| buffer.capacity_bytes() > MAX_RETAINED_PER_BUFFER_BYTES)
                 .count(),
         }
     }

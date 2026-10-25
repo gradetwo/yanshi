@@ -2711,6 +2711,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "yanshi-heap"
+version = "0.3.0"
+
+[[package]]
 name = "yanshi-http"
 version = "0.3.0"
 dependencies = [
@@ -2819,6 +2823,7 @@ dependencies = [
  "serde_json",
  "ureq",
  "yanshi-core",
+ "yanshi-heap",
  "yanshi-medium-host",
  "yanshi-raw",
  "yanshi-render",
