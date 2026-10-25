@@ -8,7 +8,7 @@
 | 路径 | 参数来自 | 数量 |
 |---|---|---|
 | `brush_stroke` 的 `brush_params` | `.myb`（MyPaint 动力学） | **66** |
-| `medium_stroke` | 介质插件（油画／水彩／…） | **13**（含 `load`／`wetness`／`color_mixing`） |
+| `medium_stroke` | 介质插件（油画／水彩／…） | **14**（含 `load`／`wetness`／`color_mixing`） |
 
 **∴ 要载墨量／湿度／光谱混色 ⇒ 走 `medium_stroke`** ✓（**∵ `.myb` 的清单里没有它们** ✗）。
 

@@ -1958,7 +1958,7 @@
 ```json
 {
   "brushes": [
-    "Blender"
+    "Classic_Paint"
   ],
   "size": 24
 }
