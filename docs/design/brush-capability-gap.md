@@ -21355,3 +21355,20 @@ GET /api/documents ⇒ 含 b1_never 的条目数 = **0**
 
 **⇒ 下一轮**：造 **>500** 个原子再测一次 ⇒ 看 `has_more=true` 时**是否给出 total** ✓
 ⇒ 若仍没有 ⇒ 加 `total`（一次 `SELECT COUNT(*)` ✓）＋ 判据（造 600 条 ⇒ 断言 `total===600` 且 `atoms.length===limit` ✓）
+
+## 六百零二、⚠ 上一节写错了：**`total` 本来就有**，是我把响应 `head -c 400` 截掉了（第 1095 轮）
+
+**⇒ 事实**：`tools.rs` 的 `list_atoms` 响应里有 **`"total": matched`** ✓（第 19218 行附近 ✓）
+⇒ 而源码注释里**已经写明**正是为了回应这条报告：
+> 「`count` 是**这一页**的条数 ⇒ 与"总共有多少"是两件事 ⇒ 大图上二者差几十倍 ⇒ 只给 `count` 等于**不给**」
+
+**⇒ 那为什么我上一节实测里没看到 `total`** ✗：
+1. 我用 `curl … | head -c 400` 截断输出 ✓
+2. 而 JSON 键**按字母序**：`atoms, count, has_more, limit, note, offset, ok, thumbnail_count, thumbnail_skipped, timings, **total**`
+   ⇒ **`total` 排在最后** ⇒ 被 400 字节切掉 ✗
+
+**⇒ 所以 D7 也不成立** ✓（`limit` 夹紧且自报 ✓ ＋ `has_more` ✓ ＋ `total` ✓）
+
+**⇒ 教训（本场第 N 次「我的测量先错」✓）**：
+**截断输出后不要下"字段不存在"的结论** ✗
+⇒ 正确做法：`curl … | python3 -c 'import sys,json;print(sorted(json.load(sys.stdin)))'` ⇒ **列键名** ✓（不截断 ✓）
