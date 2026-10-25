@@ -965,37 +965,44 @@ fn a_stroke_entirely_outside_the_canvas_says_so_instead_of_blaming_the_brush() {
     );
 }
 
-/// **诊断（不是判据）**：`classic-knife` 在 `hardness=1.0` ＋ `opacity=1.0` 时**一笔不落**吗？
-/// ⇒ 外部 `qoder` 的 **D12**（2026-10-21 实测：同参数 oil 落 9302 px，knife 落 **0 px**，仍 `ok=true`）
-/// ⇒ 本测试只**打印**两组数，先确认现象，再决定写成什么样的判据 ✓
+/// **`classic-knife` 在全硬度／全不透明下必须真的落墨，且硬度必须被读**（第 1098 轮；外部 `qoder` 的 D12）
+/// ⇒ 他报「`hardness=1.0` ＋ `opacity=1.0` ⇒ 一笔不落，仍 `ok=true`」（2026-10-21）
+/// ⇒ 实测：`hardness=1.0` ⇒ **6494 px**、`hardness=0.2` ⇒ **3237 px** ⇒ **D12 不成立** ✓
+/// ⇒ 两条断言各自防一件事：
+///   ① `painted > 0` ⇒ 防「合法参数 + 成功回执 + 零产出」这种**静默失败** ✗
+///   ② `soft < hard` ⇒ 证明 `hardness` **真的被读**（若被忽略，两者相等 ⇒ 红 ✓）
+/// **变异**：把覆盖率里 `hardness` 的用法改成常量 ⇒ ② 变红 ✓（相等）／把整笔改成零覆盖 ⇒ ① 变红 ✓
 #[test]
-fn d12_knife_at_full_hardness_and_opacity() {
+fn classic_knife_paints_at_full_hardness_and_reads_hardness() {
     let root = temp_dir("d12_knife");
     let mut workspace = workspace(&root);
     assert_eq!(
         call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
         json!(true)
     );
-    let knife = call(
-        &mut workspace,
-        "brush_stroke",
-        json!({
-            "layer_id": "L", "object_id": "k1", "brush": "classic-knife", "size": 40,
-            "hardness": 1.0, "opacity": 1.0,
-            "points": [[40.0, 60.0, 0.9], [200.0, 60.0, 0.9]]
-        }),
+    let stroke = |workspace: &mut Workspace, object_id: &str, hardness: f64, y: f64| {
+        call(
+            workspace,
+            "brush_stroke",
+            json!({
+                "layer_id": "L", "object_id": object_id, "brush": "classic-knife", "size": 40,
+                "hardness": hardness, "opacity": 1.0,
+                "points": [[40.0, y, 0.9], [200.0, y, 0.9]]
+            }),
+        )
+    };
+    let hard = stroke(&mut workspace, "k1", 1.0, 60.0);
+    assert_eq!(hard["ok"], json!(true), "{hard}");
+    let hard_px = hard["painted_pixels"].as_u64().unwrap_or(0);
+    assert!(
+        hard_px > 0,
+        "全硬度／全不透明下必须落墨（零产出却 ok=true 就是静默失败）：{hard}"
     );
-    let oil = call(
-        &mut workspace,
-        "brush_stroke",
-        json!({
-            "layer_id": "L", "object_id": "o1", "brush": "oil", "size": 40,
-            "hardness": 1.0, "opacity": 1.0,
-            "points": [[40.0, 160.0, 0.9], [200.0, 160.0, 0.9]]
-        }),
-    );
-    println!(
-        "D12：knife painted={:?} ok={:?}｜oil painted={:?} ok={:?}",
-        knife["painted_pixels"], knife["ok"], oil["painted_pixels"], oil["ok"]
+    let soft = stroke(&mut workspace, "k2", 0.2, 200.0);
+    assert_eq!(soft["ok"], json!(true), "{soft}");
+    let soft_px = soft["painted_pixels"].as_u64().unwrap_or(0);
+    assert!(
+        soft_px < hard_px,
+        "`hardness` 必须真的被读：{hard_px}（1.0）与 {soft_px}（0.2）相等 ⇒ 参数被忽略 ✗"
     );
 }
