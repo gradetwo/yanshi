@@ -922,13 +922,16 @@ fn composite_within(
     let src_sub = src.crop(&same);
     sub.composite(&src_sub, mode, opacity);
     // **∴ 原样贴回 ✗**（**纯像素搬运 ⇒ **∴ 不重采样、不换色 ✓）** ✓✓
+    // **期 4 `lod`**：拷回按**像素**宽高与局部偏移算（`bbox().w/h` 是文档像素，
+    // `step > 1` 时比像素数大 `step` 倍；`step == 1` 时与今天逐字等价）。
     let sub_box = sub.bbox();
     let dst_box = dst.bbox();
-    let dx = (sub_box.x as i64 - dst_box.x as i64) as usize;
-    let dy = (sub_box.y as i64 - dst_box.y as i64) as usize;
-    let dst_w = dst_box.w as usize;
-    let sub_w = sub_box.w as usize;
-    let rows = sub_box.h as usize;
+    let step = dst.step() as i64;
+    let dx = ((sub_box.x as i64 - dst_box.x as i64) / step) as usize;
+    let dy = ((sub_box.y as i64 - dst_box.y as i64) / step) as usize;
+    let dst_w = dst.width() as usize;
+    let sub_w = sub.width() as usize;
+    let rows = sub.height() as usize;
     let src_pixels = sub.pixels_mut();
     let dst_pixels = dst.pixels_mut();
     for y in 0..rows {

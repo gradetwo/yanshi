@@ -108,12 +108,23 @@ pub fn clear_quantizer_cache_for_test() -> bool {
 }
 
 /// 线性光、预乘 alpha 的区域缓冲区（行主序）。
+///
+/// **取样步长 `step`**（期 4，`export_png` 的 `lod`）：缓冲像素 `(lx, ly)` 对应文档坐标
+/// `(origin_x + lx * step, origin_y + ly * step)`。`step == 1` 即今天的行为（逐像素）；
+/// `step == 2^k` 时缓冲只有 `ceil(文档宽 / step) × ceil(文档高 / step)` 个像素，渲染取样
+/// 密度即 `1 / step`——输出像素 `(i, j)` 采样文档坐标 `(x0 + i * step, y0 + j * step)` 的
+/// 那个文档像素（点采样），不经过全分辨率中间缓冲。`bbox()` 恒返回**文档范围**
+/// （`width * step`），局部索引方法（`pixel`／`set_pixel`／`blend`／`fill`／`to_rgba8`）
+/// 只认局部坐标，与步长无关；文档坐标与局部坐标的换算只发生在 `blit_*`／`fill_coverage*`／
+/// `crop`／`copy_region_into`／`composite*` 里。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Buffer {
     origin_x: i64,
     origin_y: i64,
     width: u32,
     height: u32,
+    /// 取样步长（文档像素／缓冲像素），缺省 1。
+    step: u32,
     /// **∴ 第 308 轮**放宽为 `pub`**✗（**判据要用它当输入 ✓）
     pub pixels: Vec<f32>,
 }
@@ -122,11 +133,18 @@ impl Buffer {
     /// 全透明缓冲区，原点为文档坐标 `(origin_x, origin_y)`。
     #[track_caller]
     pub fn new(origin_x: i64, origin_y: i64, width: u32, height: u32) -> Self {
+        Self::new_stepped(origin_x, origin_y, width, height, 1)
+    }
+
+    /// 与 [`Buffer::new`] 相同，但取样步长为 `step`（期 4 `lod` 用；`step` 必须 ≥ 1）。
+    #[track_caller]
+    pub fn new_stepped(origin_x: i64, origin_y: i64, width: u32, height: u32, step: u32) -> Self {
         Self {
             origin_x,
             origin_y,
             width,
             height,
+            step: step.max(1),
             pixels: {
                 // **分配探针**：`Buffer::new` 绕过池的那些路径（直接 `vec!`）。
                 let len = (width * height * 4) as usize;
@@ -142,6 +160,21 @@ impl Buffer {
         }
     }
 
+    /// 取样步长（文档像素／缓冲像素）：1 = 逐像素，`2^k` = LOD 档位。
+    pub const fn step(&self) -> u32 {
+        self.step
+    }
+
+    /// 缓冲覆盖的文档宽（像素）=`width * step`。
+    pub const fn doc_width(&self) -> u32 {
+        self.width * self.step
+    }
+
+    /// 缓冲覆盖的文档高（像素）=`height * step`。
+    pub const fn doc_height(&self) -> u32 {
+        self.height * self.step
+    }
+
     /// 单色填充缓冲区。
     pub fn filled(
         origin_x: i64,
@@ -150,7 +183,19 @@ impl Buffer {
         height: u32,
         pixel: LinearRgba,
     ) -> Self {
-        let mut buffer = Self::new(origin_x, origin_y, width, height);
+        Self::filled_stepped(origin_x, origin_y, width, height, pixel, 1)
+    }
+
+    /// 与 [`Buffer::filled`] 相同，但取样步长为 `step`（期 4 `lod` 用）。
+    pub fn filled_stepped(
+        origin_x: i64,
+        origin_y: i64,
+        width: u32,
+        height: u32,
+        pixel: LinearRgba,
+        step: u32,
+    ) -> Self {
+        let mut buffer = Self::new_stepped(origin_x, origin_y, width, height, step);
         buffer.fill(pixel);
         buffer
     }
@@ -170,13 +215,14 @@ impl Buffer {
         (self.origin_x, self.origin_y)
     }
 
-    /// 缓冲区覆盖的文档范围。
+    /// 缓冲区覆盖的文档范围（`step > 1` 时宽高是文档像素数 `width * step`，
+    /// 不是缓冲像素数——凡按文档坐标裁剪／求交的代码都读它）。
     pub fn bbox(&self) -> Bbox {
         Bbox::new(
             self.origin_x as f64,
             self.origin_y as f64,
-            self.width as f64,
-            self.height as f64,
+            self.doc_width() as f64,
+            self.doc_height() as f64,
         )
     }
 
@@ -232,6 +278,7 @@ impl Buffer {
             origin_y,
             width,
             height,
+            step: 1,
             pixels: pixels.to_vec(),
         })
     }
@@ -338,6 +385,15 @@ impl Buffer {
             color[2].clamp(0.0, 1.0),
             color[3].clamp(0.0, 1.0),
         ];
+        let opacity = opacity.clamp(0.0, 1.0);
+        // **期 4 `lod`**：`step > 1` 时只取落在取样格点上的文档像素（点采样）——
+        // 输出像素 `(lx, ly)` 采样文档坐标 `(origin_x + lx * step, origin_y + ly * step)`；
+        // 覆盖率网格本身仍是全密度算的（`shape_coverage_in` 那一步不省），这里只省
+        // 「填」的遍历。`step == 1` 走下面原路（逐字节与 686 轮的切片优化一致）。
+        if self.step > 1 {
+            self.fill_coverage_strided(coverage, base, mode, opacity);
+            return;
+        }
         // 只遍历「覆盖率网格 ∩ 本缓冲」——未裁剪的调用方（例如蒙版）也不会白跑。
         let doc_x0 = coverage.bbox.x as i64;
         let doc_y0 = coverage.bbox.y as i64;
@@ -348,7 +404,6 @@ impl Buffer {
         if end_x <= start_x as i64 || end_y <= start_y as i64 {
             return;
         }
-        let opacity = opacity.clamp(0.0, 1.0);
         for y in start_y..end_y as u32 {
             let local_y = (doc_y0 + y as i64 - self.origin_y) as u32;
             let row = (y * coverage.width) as usize;
@@ -389,6 +444,55 @@ impl Buffer {
         }
     }
 
+    /// `fill_coverage` 的步长分支（`step > 1` 才调用）：只访问取样格点上的覆盖率。
+    fn fill_coverage_strided(
+        &mut self,
+        coverage: &Coverage,
+        base: [f32; 4],
+        mode: BlendMode,
+        opacity: f32,
+    ) {
+        let step = self.step as i64;
+        let doc_x0 = coverage.bbox.x as i64;
+        let doc_y0 = coverage.bbox.y as i64;
+        // 相交的文档范围（半开）。
+        let ix0 = self.origin_x.max(doc_x0);
+        let iy0 = self.origin_y.max(doc_y0);
+        let ix1 = (self.origin_x + self.width as i64 * step).min(doc_x0 + coverage.width as i64);
+        let iy1 = (self.origin_y + self.height as i64 * step).min(doc_y0 + coverage.height as i64);
+        if ix1 <= ix0 || iy1 <= iy0 {
+            return;
+        }
+        // 取样格点锚在本缓冲原点：第一个格点 ≥ 相交左／上界。
+        let first_lx = (ix0 - self.origin_x).div_ceil(step);
+        let first_ly = (iy0 - self.origin_y).div_ceil(step);
+        let last_lx = (ix1 - 1 - self.origin_x) / step;
+        let last_ly = (iy1 - 1 - self.origin_y) / step;
+        for ly in first_ly..=last_ly {
+            let doc_y = self.origin_y + ly * step;
+            let row = ((doc_y - doc_y0) as usize) * coverage.width as usize;
+            for lx in first_lx..=last_lx {
+                let doc_x = self.origin_x + lx * step;
+                let coverage_value = coverage.data[row + (doc_x - doc_x0) as usize];
+                if coverage_value <= 0.0 {
+                    continue;
+                }
+                let (local_x, local_y) = (lx as u32, ly as u32);
+                let alpha = base[3] * coverage_value * opacity;
+                let source = premultiply([base[0], base[1], base[2], alpha]);
+                if alpha <= 0.0 {
+                    // **∴ `over` 返回 backdrop ⇒ 不改动 ✓
+                } else if alpha >= 1.0 {
+                    self.set_pixel(local_x, local_y, source);
+                } else if mode == BlendMode::Normal {
+                    self.blend_at(local_x, local_y, source);
+                } else {
+                    self.blend_mode(local_x, local_y, source, mode);
+                }
+            }
+        }
+    }
+
     /// **按像素取色填充**（第 1621 轮；外部 `fill_region(texture=)` 的渲染腿）
     ///
     /// **⇒ 与 [`Self::fill_coverage`] 的唯一差别**：颜色不是常数，而是
@@ -410,6 +514,12 @@ impl Buffer {
         mode: BlendMode,
         opacity: f32,
     ) {
+        // **期 4 `lod`**：`step > 1` 时只在取样格点上问 `sample`（点采样，文档坐标仍是
+        // 被采的那个文档像素的坐标）；`step == 1` 走下面原路。
+        if self.step > 1 {
+            self.fill_coverage_sampled_strided(coverage, sample, mode, opacity);
+            return;
+        }
         let doc_x0 = coverage.bbox.x as i64;
         let doc_y0 = coverage.bbox.y as i64;
         let start_x = (self.origin_x - doc_x0).max(0) as u32;
@@ -455,9 +565,66 @@ impl Buffer {
         }
     }
 
+    /// `fill_coverage_sampled` 的步长分支（`step > 1` 才调用）。
+    fn fill_coverage_sampled_strided(
+        &mut self,
+        coverage: &Coverage,
+        sample: impl Fn(i32, i32) -> LinearRgba,
+        mode: BlendMode,
+        opacity: f32,
+    ) {
+        let step = self.step as i64;
+        let doc_x0 = coverage.bbox.x as i64;
+        let doc_y0 = coverage.bbox.y as i64;
+        let ix0 = self.origin_x.max(doc_x0);
+        let iy0 = self.origin_y.max(doc_y0);
+        let ix1 = (self.origin_x + self.width as i64 * step).min(doc_x0 + coverage.width as i64);
+        let iy1 = (self.origin_y + self.height as i64 * step).min(doc_y0 + coverage.height as i64);
+        if ix1 <= ix0 || iy1 <= iy0 {
+            return;
+        }
+        let opacity = opacity.clamp(0.0, 1.0);
+        let first_lx = (ix0 - self.origin_x).div_ceil(step);
+        let first_ly = (iy0 - self.origin_y).div_ceil(step);
+        let last_lx = (ix1 - 1 - self.origin_x) / step;
+        let last_ly = (iy1 - 1 - self.origin_y) / step;
+        for ly in first_ly..=last_ly {
+            let doc_y = self.origin_y + ly * step;
+            let row = ((doc_y - doc_y0) as usize) * coverage.width as usize;
+            for lx in first_lx..=last_lx {
+                let doc_x = self.origin_x + lx * step;
+                let coverage_value = coverage.data[row + (doc_x - doc_x0) as usize];
+                if coverage_value <= 0.0 {
+                    continue;
+                }
+                let (local_x, local_y) = (lx as u32, ly as u32);
+                let texel = sample(doc_x as i32, doc_y as i32);
+                let rgb = [
+                    texel[0].clamp(0.0, 1.0),
+                    texel[1].clamp(0.0, 1.0),
+                    texel[2].clamp(0.0, 1.0),
+                ];
+                let alpha = texel[3].clamp(0.0, 1.0) * coverage_value * opacity;
+                let source = premultiply([rgb[0], rgb[1], rgb[2], alpha]);
+                if alpha <= 0.0 {
+                    // `over` 返回 backdrop ⇒ 不改动 ✓
+                } else if alpha >= 1.0 {
+                    self.set_pixel(local_x, local_y, source);
+                } else if mode == BlendMode::Normal {
+                    self.blend_at(local_x, local_y, source);
+                } else {
+                    self.blend_mode(local_x, local_y, source, mode);
+                }
+            }
+        }
+    }
+
     /// 以 `mode` 把整块 `source` 合成到自身对应位置（按文档坐标对齐）。
     pub fn composite(&mut self, source: &Buffer, mode: BlendMode, opacity: f32) {
         let factor = opacity.clamp(0.0, 1.0);
+        // **期 4 `lod`**：源像素的文档坐标是 `origin + local * source.step`；目标局部坐标
+        // 是 `(doc - self.origin) / self.step`，整除才落点（两路同原点同步长时恒成立，
+        // `step == 1` 时退化为今天的 1:1 映射）。
         for y in 0..source.height {
             for x in 0..source.width {
                 let pixel = source.pixel(x, y);
@@ -470,14 +637,18 @@ impl Buffer {
                 if scaled[3] <= 0.0 && mode == BlendMode::Normal {
                     continue;
                 }
-                let document_x = source.origin_x + x as i64;
-                let document_y = source.origin_y + y as i64;
+                let document_x = source.origin_x + x as i64 * source.step as i64;
+                let document_y = source.origin_y + y as i64 * source.step as i64;
                 let local_x = document_x - self.origin_x;
                 let local_y = document_y - self.origin_y;
                 if local_x < 0 || local_y < 0 {
                     continue;
                 }
-                let (local_x, local_y) = (local_x as u32, local_y as u32);
+                let self_step = self.step as i64;
+                if local_x % self_step != 0 || local_y % self_step != 0 {
+                    continue;
+                }
+                let (local_x, local_y) = ((local_x / self_step) as u32, (local_y / self_step) as u32);
                 if local_x >= self.width || local_y >= self.height {
                     continue;
                 }
@@ -499,6 +670,11 @@ impl Buffer {
         opacity: f32,
     ) {
         let factor = opacity.clamp(0.0, 1.0);
+        // **期 4 `lod`**：`step > 1` 时只取落在取样格点上的源像素（点采样）。
+        if self.step > 1 {
+            self.blit_rgba8_strided(x, y, width, height, rgba8, factor);
+            return;
+        }
         // **只遍历与自身相交的行列**：过去整块补丁（例如覆盖全画布的 import_image）在每个
         // 分块里都被完整扫一遍，逐像素才发现越界 ⇒ 分块渲染时成本 `∝ 补丁面积`（不是 `∝ 相交面积`）。
         // 被跳过的迭代在旧实现里本来就因越界而不写任何像素 ⇒ 结果逐字节相同。
@@ -550,6 +726,11 @@ impl Buffer {
         opacity: f32,
     ) {
         let factor = opacity.clamp(0.0, 1.0);
+        // **期 4 `lod`**：`step > 1` 时只取落在取样格点上的源像素（点采样）。
+        if self.step > 1 {
+            self.blit_linear_strided(x, y, width, height, rgb_linear, factor);
+            return;
+        }
         // 相交裁剪与 blit_rgba8 同口径（只遍历相交行列，跳过的迭代本就不写）。
         let col_start = (self.origin_x - x).max(0);
         let row_start = (self.origin_y - y).max(0);
@@ -577,19 +758,123 @@ impl Buffer {
         }
     }
 
+    /// `blit_rgba8` 的步长分支（`step > 1` 才调用）：源补丁是全密度的，只采格点。
+    fn blit_rgba8_strided(
+        &mut self,
+        x: i64,
+        y: i64,
+        width: u32,
+        height: u32,
+        rgba8: &[u8],
+        factor: f32,
+    ) {
+        let step = self.step as i64;
+        let ix0 = self.origin_x.max(x);
+        let iy0 = self.origin_y.max(y);
+        let ix1 = (self.origin_x + self.width as i64 * step).min(x + width as i64);
+        let iy1 = (self.origin_y + self.height as i64 * step).min(y + height as i64);
+        if ix1 <= ix0 || iy1 <= iy0 {
+            return;
+        }
+        let first_lx = (ix0 - self.origin_x).div_ceil(step);
+        let first_ly = (iy0 - self.origin_y).div_ceil(step);
+        let last_lx = (ix1 - 1 - self.origin_x) / step;
+        let last_ly = (iy1 - 1 - self.origin_y) / step;
+        for ly in first_ly..=last_ly {
+            let doc_y = self.origin_y + ly * step;
+            let row = doc_y - y;
+            for lx in first_lx..=last_lx {
+                let doc_x = self.origin_x + lx * step;
+                let col = doc_x - x;
+                let index = ((row * width as i64 + col) * 4) as usize;
+                if index + 3 >= rgba8.len() {
+                    return;
+                }
+                let bytes = [
+                    rgba8[index],
+                    rgba8[index + 1],
+                    rgba8[index + 2],
+                    rgba8[index + 3],
+                ];
+                let mut pixel = crate::color::u8x4_to_linear_premul(bytes);
+                for value in pixel.iter_mut() {
+                    *value *= factor;
+                }
+                self.blend(lx as u32, ly as u32, pixel);
+            }
+        }
+    }
+
+    /// `blit_linear` 的步长分支（`step > 1` 才调用）：源补丁是全密度的，只采格点。
+    fn blit_linear_strided(
+        &mut self,
+        x: i64,
+        y: i64,
+        width: u32,
+        height: u32,
+        rgb_linear: &[f32],
+        factor: f32,
+    ) {
+        let step = self.step as i64;
+        let ix0 = self.origin_x.max(x);
+        let iy0 = self.origin_y.max(y);
+        let ix1 = (self.origin_x + self.width as i64 * step).min(x + width as i64);
+        let iy1 = (self.origin_y + self.height as i64 * step).min(y + height as i64);
+        if ix1 <= ix0 || iy1 <= iy0 {
+            return;
+        }
+        let first_lx = (ix0 - self.origin_x).div_ceil(step);
+        let first_ly = (iy0 - self.origin_y).div_ceil(step);
+        let last_lx = (ix1 - 1 - self.origin_x) / step;
+        let last_ly = (iy1 - 1 - self.origin_y) / step;
+        for ly in first_ly..=last_ly {
+            let doc_y = self.origin_y + ly * step;
+            let row = doc_y - y;
+            for lx in first_lx..=last_lx {
+                let doc_x = self.origin_x + lx * step;
+                let col = doc_x - x;
+                let index = ((row * width as i64 + col) * 3) as usize;
+                if index + 2 >= rgb_linear.len() {
+                    return;
+                }
+                let pixel = [
+                    rgb_linear[index] * factor,
+                    rgb_linear[index + 1] * factor,
+                    rgb_linear[index + 2] * factor,
+                    factor,
+                ];
+                self.blend(lx as u32, ly as u32, pixel);
+            }
+        }
+    }
+
     /// 裁剪到文档坐标范围（不相交则返回空缓冲区）。
     pub fn crop(&self, bbox: &Bbox) -> Buffer {
+        // **期 4 `lod`**：输出像素是落在相交文档范围内的取样格点（格点锚在本缓冲原点），
+        // 像素数 = 格点数；`step == 1` 时退化为今天的 `x1 - x0`（原点与像素数都一致）。
+        let step = self.step as i64;
         let x0 = (bbox.x.floor() as i64).max(self.origin_x);
         let y0 = (bbox.y.floor() as i64).max(self.origin_y);
-        let x1 = ((bbox.x + bbox.w).ceil() as i64).min(self.origin_x + self.width as i64);
-        let y1 = ((bbox.y + bbox.h).ceil() as i64).min(self.origin_y + self.height as i64);
-        let width = (x1 - x0).max(0) as u32;
-        let height = (y1 - y0).max(0) as u32;
-        let mut out = Buffer::new(x0, y0, width, height);
+        let x1 = ((bbox.x + bbox.w).ceil() as i64).min(self.origin_x + self.doc_width() as i64);
+        let y1 = ((bbox.y + bbox.h).ceil() as i64).min(self.origin_y + self.doc_height() as i64);
+        if x1 <= x0 || y1 <= y0 {
+            return Buffer::new_stepped(x0, y0, 0, 0, self.step);
+        }
+        let first_x = (x0 - self.origin_x).div_ceil(step);
+        let first_y = (y0 - self.origin_y).div_ceil(step);
+        let width = ((x1 - 1 - self.origin_x) / step - first_x + 1) as u32;
+        let height = ((y1 - 1 - self.origin_y) / step - first_y + 1) as u32;
+        let mut out = Buffer::new_stepped(
+            self.origin_x + first_x * step,
+            self.origin_y + first_y * step,
+            width,
+            height,
+            self.step,
+        );
         for y in 0..height {
             for x in 0..width {
-                let source_x = (x0 + x as i64 - self.origin_x) as u32;
-                let source_y = (y0 + y as i64 - self.origin_y) as u32;
+                let source_x = (first_x + x as i64) as u32;
+                let source_y = (first_y + y as i64) as u32;
                 out.set_pixel(x, y, self.pixel(source_x, source_y));
             }
         }
@@ -613,19 +898,29 @@ impl Buffer {
     /// 那正是"从池里按这个尺寸借"要保证的事。
     /// **本函数自己不分配** ✓（这就是重点）。
     pub fn copy_region_into(&self, bbox: &Bbox, out: &mut Buffer) -> bool {
+        // **期 4 `lod`**：与 `crop` 同口径——输出像素是落在相交文档范围内的取样格点；
+        // `step == 1` 时退化为今天的行为。
+        let step = self.step as i64;
         let x0 = (bbox.x.floor() as i64).max(self.origin_x);
         let y0 = (bbox.y.floor() as i64).max(self.origin_y);
-        let x1 = ((bbox.x + bbox.w).ceil() as i64).min(self.origin_x + self.width as i64);
-        let y1 = ((bbox.y + bbox.h).ceil() as i64).min(self.origin_y + self.height as i64);
-        let width = (x1 - x0).max(0) as u32;
-        let height = (y1 - y0).max(0) as u32;
+        let x1 = ((bbox.x + bbox.w).ceil() as i64).min(self.origin_x + self.doc_width() as i64);
+        let y1 = ((bbox.y + bbox.h).ceil() as i64).min(self.origin_y + self.doc_height() as i64);
+        let (width, height, first_x, first_y) = if x1 <= x0 || y1 <= y0 {
+            (0, 0, 0, 0)
+        } else {
+            let first_x = (x0 - self.origin_x).div_ceil(step);
+            let first_y = (y0 - self.origin_y).div_ceil(step);
+            let width = ((x1 - 1 - self.origin_x) / step - first_x + 1) as u32;
+            let height = ((y1 - 1 - self.origin_y) / step - first_y + 1) as u32;
+            (width, height, first_x, first_y)
+        };
         if out.width() != width || out.height() != height {
             return false;
         }
         for y in 0..height {
             for x in 0..width {
-                let source_x = (x0 + x as i64 - self.origin_x) as u32;
-                let source_y = (y0 + y as i64 - self.origin_y) as u32;
+                let source_x = (first_x + x as i64) as u32;
+                let source_y = (first_y + y as i64) as u32;
                 out.set_pixel(x, y, self.pixel(source_x, source_y));
             }
         }
@@ -1186,10 +1481,12 @@ impl Buffer {
     ///   ＋ **∴ alpha 的来源仍是**同一 mask 像素的通道 3** ✓
     ///     ＋ **∴ 判据**：`multiply_alpha_by_parity`（**对拍朴素实现 ✓）★
     pub fn multiply_alpha_by(&mut self, mask: &Buffer) {
+        // **期 4 `lod`**：快路径还要求同步长（否则像素逐位 zip 会错位）。
         let same_origin_and_size = self.origin_x == mask.origin_x
             && self.origin_y == mask.origin_y
             && self.width == mask.width
-            && self.height == mask.height;
+            && self.height == mask.height
+            && self.step == mask.step;
         let mask_w = mask.width as usize;
         if same_origin_and_size {
             // **∴ 快路径 ✗**：**无任何越界检查 ⇒ **连续遍历** ✓ ★
@@ -1206,9 +1503,16 @@ impl Buffer {
             return;
         }
         // **∴ 一般路径 ✗**：**行级算越界 ⇒ 行内算有效区间** ✓ ★
+        // **期 4 `lod`**：行／列都按文档坐标换算（各自除以自己的 step）；文档行不在
+        // 掩膜格点上时整行 alpha ＝ 0；`step == 1` 时与今天逐字等价。
         for y in 0..self.height {
-            let mask_y = (self.origin_y + y as i64) - mask.origin_y;
-            if mask_y < 0 || mask_y >= mask.height as i64 {
+            let doc_y = self.origin_y + y as i64 * self.step as i64;
+            let mask_y_rel = doc_y - mask.origin_y;
+            let mask_step = mask.step as i64;
+            if mask_y_rel < 0
+                || mask_y_rel % mask_step != 0
+                || mask_y_rel / mask_step >= mask.height as i64
+            {
                 // **∴ 整行 alpha ＝ 0**（**与原逻辑等价 ✓）★
                 let row = (y as usize) * (self.width as usize) * 4;
                 let end = row + (self.width as usize) * 4;
@@ -1229,9 +1533,16 @@ impl Buffer {
             //       （**`base_dx = mask.origin_x − self.origin_x` ✓）
             //         ＋ **∴ 第 642 轮的 bug ✗**：**我漏了这一步** ✗
             //           ⇒ **∴ 判据（**对拍朴素实现 ✓）当场抓到越界** ✓ ★
-            let base_dx = mask.origin_x - self.origin_x;
-            let x_lo = base_dx.max(0);
-            let x_hi = (self.width as i64).min(base_dx + mask.width as i64);
+            // **期 4 `lod`**：`x_lo`／`x_hi` 是 self **局部**坐标（文档坐标除以 self.step
+            // 再向格点对齐）；`step == 1` 时与今天逐字等价。
+            let mask_y = mask_y_rel / mask_step;
+            let x_lo = (mask.origin_x - self.origin_x)
+                .div_ceil(self.step as i64)
+                .max(0);
+            let x_hi = (self.width as i64).min(
+                (mask.origin_x + mask.doc_width() as i64 - self.origin_x)
+                    .div_ceil(self.step as i64),
+            );
             let row = (y as usize) * (self.width as usize) * 4;
             // **∴ 区间左侧（**alpha ＝ 0 ✓）★
             if x_lo > 0 {
@@ -1256,10 +1567,19 @@ impl Buffer {
                 let dst_start = row + (x_lo as usize) * 4;
                 let n = (x_hi - x_lo) as usize;
                 for i in 0..n {
-                    // **∴ mask 内局部 x ✗**：`x_lo + i − base_dx` ✓ ★
-                    let mask_x_local = (x_lo + i as i64 - base_dx) as usize;
-                    let alpha = mask.pixels[mask_row + mask_x_local * 4 + 3];
+                    // **∴ mask 内局部 x ✗**：文档坐标换算（须落在掩膜格点上，否则 alpha ＝ 0）★
+                    // **期 4 `lod`**：`step == 1` 时 `rel / 1` 与旧式 `x_lo + i − base_dx` 相同。
+                    let doc_x = self.origin_x + (x_lo + i as i64) * self.step as i64;
+                    let rel = doc_x - mask.origin_x;
                     let base = dst_start + i * 4;
+                    if rel % mask_step != 0 {
+                        for value in self.pixels[base..base + 4].iter_mut() {
+                            *value *= 0.0;
+                        }
+                        continue;
+                    }
+                    let mask_x_local = (rel / mask_step) as usize;
+                    let alpha = mask.pixels[mask_row + mask_x_local * 4 + 3];
                     for value in self.pixels[base..base + 4].iter_mut() {
                         *value *= alpha;
                     }
@@ -1273,11 +1593,12 @@ impl Buffer {
     /// 与 [`Buffer::new`] 的唯一区别是**不新建底层分配**（容量够时 `Vec` 原地复用）：
     /// `clear` + `resize(len, 0.0)` 会把新长度的**每一个元素**都写成 `0.0`
     /// ⇒ 起点与 `vec![0.0; len]` 完全相同 ✓（判据 `buffer_pool_matches_fresh...` 逐字节比对）。
-    pub fn reset(&mut self, origin_x: i64, origin_y: i64, width: u32, height: u32) {
+    pub fn reset(&mut self, origin_x: i64, origin_y: i64, width: u32, height: u32, step: u32) {
         self.origin_x = origin_x;
         self.origin_y = origin_y;
         self.width = width;
         self.height = height;
+        self.step = step.max(1);
         let len = width as usize * height as usize * 4;
         // 先清空再按新长度填充：`resize` 从 len = 0 长到 len ⇒ **每个元素都被写入 0.0**。
         // 容量足够时 `Vec` 不会重新分配 ⇒ 这正是池化的收益来源。
@@ -1814,18 +2135,22 @@ impl Buffer {
                     pixel[2] * factor,
                     pixel[3] * factor,
                 ];
-                // **∴ 照抄 `composite` 的跳过与坐标逻辑** ✓
+                // **∴ 照抄 `composite` 的跳过与坐标逻辑** ✓（期 4：步长感知，见 `composite`）
                 if scaled[3] <= 0.0 && mode == crate::BlendMode::Normal {
                     continue;
                 }
-                let document_x = layer.origin_x + x as i64;
-                let document_y = layer.origin_y + y as i64;
+                let document_x = layer.origin_x + x as i64 * layer.step as i64;
+                let document_y = layer.origin_y + y as i64 * layer.step as i64;
                 let local_x = document_x - self.origin_x;
                 let local_y = document_y - self.origin_y;
                 if local_x < 0 || local_y < 0 {
                     continue;
                 }
-                let (local_x, local_y) = (local_x as u32, local_y as u32);
+                let self_step = self.step as i64;
+                if local_x % self_step != 0 || local_y % self_step != 0 {
+                    continue;
+                }
+                let (local_x, local_y) = ((local_x / self_step) as u32, (local_y / self_step) as u32);
                 if local_x >= self.width || local_y >= self.height {
                     continue;
                 }

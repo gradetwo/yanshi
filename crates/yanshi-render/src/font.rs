@@ -316,12 +316,20 @@ pub fn draw_text_clipped(
                         for dx in 0..scale {
                             let document_x = pen_x + i64::from(col * scale + dx);
                             let document_y = line_y + i64::from(row as u32 * scale + dy);
+                            // **期 4 `lod`**：文档坐标须落在取样格点上（格点锚在缓冲原点），
+                            // 否则跳过；`step == 1` 时与今天逐字等价。
+                            let step = buffer.step() as i64;
                             let local_x = document_x - buffer_x;
                             let local_y = document_y - buffer_y;
-                            if local_x < 0 || local_y < 0 {
+                            if local_x < 0
+                                || local_y < 0
+                                || local_x % step != 0
+                                || local_y % step != 0
+                            {
                                 continue;
                             }
-                            let (local_x, local_y) = (local_x as u32, local_y as u32);
+                            let (local_x, local_y) =
+                                ((local_x / step) as u32, (local_y / step) as u32);
                             if local_x >= buffer_width || local_y >= buffer_height {
                                 continue;
                             }
@@ -1260,12 +1268,20 @@ fn draw_atlas_text(
                         for dx in 0..scale {
                             let document_x = pen_x + i64::from(col * scale + dx);
                             let document_y = line_y + i64::from(row * scale + dy);
+                            // **期 4 `lod`**：文档坐标须落在取样格点上（格点锚在缓冲原点），
+                            // 否则跳过；`step == 1` 时与今天逐字等价。
+                            let step = buffer.step() as i64;
                             let local_x = document_x - buffer_x;
                             let local_y = document_y - buffer_y;
-                            if local_x < 0 || local_y < 0 {
+                            if local_x < 0
+                                || local_y < 0
+                                || local_x % step != 0
+                                || local_y % step != 0
+                            {
                                 continue;
                             }
-                            let (local_x, local_y) = (local_x as u32, local_y as u32);
+                            let (local_x, local_y) =
+                                ((local_x / step) as u32, (local_y / step) as u32);
                             if local_x >= buffer_width || local_y >= buffer_height {
                                 continue;
                             }

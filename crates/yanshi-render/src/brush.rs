@@ -1056,17 +1056,22 @@ fn for_each_covered_pixel(
     let document_y1 = (center_y + radius).ceil() as i64;
 
     // 裁剪到缓冲区范围（局部坐标）。
-    let start_x = (document_x0 - origin_x).max(0) as u32;
-    let start_y = (document_y0 - origin_y).max(0) as u32;
+    // **期 4 `lod`**：局部坐标只取落在取样格点上的（格点锚在缓冲原点）；`step == 1` 时
+    // 与今天逐字等价（`div_ceil`／`div_floor` 在步长 1 时就是恒等）。
+    let step = buffer.step() as i64;
+    let start_x = (document_x0 - origin_x).div_ceil(step).max(0);
+    let start_y = (document_y0 - origin_y).div_ceil(step).max(0);
     let end_x = (document_x1 - origin_x)
-        .min(buffer.width() as i64 - 1)
-        .max(-1);
+        .div_floor(step)
+        .min(buffer.width() as i64 - 1);
     let end_y = (document_y1 - origin_y)
-        .min(buffer.height() as i64 - 1)
-        .max(-1);
-    if end_x < 0 || end_y < 0 || start_x as i64 > end_x || start_y as i64 > end_y {
+        .div_floor(step)
+        .min(buffer.height() as i64 - 1);
+    if end_x < 0 || end_y < 0 || start_x > end_x || start_y > end_y {
         return;
     }
+    let start_x = start_x as u32;
+    let start_y = start_y as u32;
     let end_x = end_x as u32;
     let end_y = end_y as u32;
 
@@ -1088,10 +1093,10 @@ fn for_each_covered_pixel(
     let hard_edge_squared = hard_edge * hard_edge;
 
     for local_y in start_y..=end_y {
-        let document_y = origin_y + local_y as i64;
+        let document_y = origin_y + local_y as i64 * step;
         let dy = document_y as f64 + 0.5 - center_y;
         for local_x in start_x..=end_x {
-            let document_x = origin_x + local_x as i64;
+            let document_x = origin_x + local_x as i64 * step;
             let dx = document_x as f64 + 0.5 - center_x;
             let distance_squared = dx * dx + dy * dy;
             if distance_squared > radius_squared {
@@ -1176,6 +1181,7 @@ pub(crate) fn erase_stamp_clipped_with_pressure(
     }
     let mut updates: Vec<(u32, u32, [f32; 4])> = Vec::new();
     let (origin_x, origin_y) = buffer.origin();
+    let step = buffer.step() as f64;
     stamp_mask_cached(
         buffer,
         center_x,
@@ -1184,8 +1190,9 @@ pub(crate) fn erase_stamp_clipped_with_pressure(
         hardness,
         pressure,
         |x, y, stamp_coverage| {
-            let document_x = origin_x as f64 + x as f64 + 0.5;
-            let document_y = origin_y as f64 + y as f64 + 0.5;
+            // **期 4 `lod`**：被采像素的文档中心是 `origin + local * step + 0.5`。
+            let document_x = origin_x as f64 + x as f64 * step + 0.5;
+            let document_y = origin_y as f64 + y as f64 * step + 0.5;
             let selection = coverage(document_x, document_y).clamp(0.0, 1.0);
             if selection <= 0.0 {
                 return;
@@ -1250,6 +1257,7 @@ pub(crate) fn draw_stamp_clipped_with_pressure(
     let use_fast_path = mode == BlendMode::Normal;
     let mut updates: Vec<(u32, u32, LinearRgba)> = Vec::new();
     let (origin_x, origin_y) = buffer.origin();
+    let step = buffer.step() as f64;
     stamp_mask_cached(
         buffer,
         center_x,
@@ -1258,8 +1266,9 @@ pub(crate) fn draw_stamp_clipped_with_pressure(
         hardness,
         pressure,
         |x, y, stamp_coverage| {
-            let document_x = origin_x as f64 + x as f64 + 0.5;
-            let document_y = origin_y as f64 + y as f64 + 0.5;
+            // **期 4 `lod`**：被采像素的文档中心是 `origin + local * step + 0.5`。
+            let document_x = origin_x as f64 + x as f64 * step + 0.5;
+            let document_y = origin_y as f64 + y as f64 * step + 0.5;
             let selection = coverage(document_x, document_y).clamp(0.0, 1.0);
             if selection <= 0.0 {
                 return;
@@ -2559,6 +2568,13 @@ fn stamp_mask_cached(
     let (origin_x, origin_y) = buffer.origin();
     let bw = buffer.width() as i64;
     let bh = buffer.height() as i64;
+    // **期 4 `lod`**：只访问取样格点（局部坐标遍历，文档坐标由格点算出）；`step == 1`
+    // 时访问的像素集合与今天相同（顺序也是行主序）。
+    let step = buffer.step() as i64;
+    let lx0 = (x0 - origin_x).div_ceil(step).max(0);
+    let ly0 = (y0 - origin_y).div_ceil(step).max(0);
+    let lx1 = (x1 - origin_x).div_floor(step).min(bw - 1);
+    let ly1 = (y1 - origin_y).div_floor(step).min(bh - 1);
     DAB_CACHE.with(|cell| {
         let mut cache = cell.borrow_mut();
         let (mask, w, h) = cache.get_or_compute(radius, hardness, sub_x, sub_y, pressure);
@@ -2572,20 +2588,20 @@ fn stamp_mask_cached(
         //         ＋ **∴ 实测 ✗**：**「**反转路径不改变曲线**」的不变量判据因此红** ✓ ★
         //   **∴ 现在 ✗**：**范围照原路**✗ ＋ **∴ 掩膜**只当**覆盖度查表**✗
         //     ＋ **∴ 掩膜不够大时**跳过**✗（**∴ 与原路"**超出即 0**"一致 ✓）★
-        for document_y in y0..=y1 {
-            for document_x in x0..=x1 {
+        if lx1 < lx0 || ly1 < ly0 {
+            return;
+        }
+        for ly in ly0..=ly1 {
+            let document_y = origin_y + ly * step;
+            let my = document_y - y0;
+            for lx in lx0..=lx1 {
+                let document_x = origin_x + lx * step;
                 let mx = document_x - x0;
-                let my = document_y - y0;
                 if mx < 0 || my < 0 || mx >= w as i64 || my >= h as i64 {
                     continue;
                 }
                 let coverage = mask[(my as usize) * w + (mx as usize)];
                 if coverage <= 0.0 {
-                    continue;
-                }
-                let lx = document_x - origin_x;
-                let ly = document_y - origin_y;
-                if lx < 0 || ly < 0 || lx >= bw || ly >= bh {
                     continue;
                 }
                 visit(lx as u32, ly as u32, coverage);

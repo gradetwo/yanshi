@@ -359,6 +359,20 @@ impl BufferPool {
         width: u32,
         height: u32,
     ) -> BufferLease<'_> {
+        self.acquire_stepped(origin_x, origin_y, width, height, 1)
+    }
+
+    /// 与 [`BufferPool::acquire`] 相同，但取样步长为 `step`（期 4 `lod` 用）：
+    /// 复用块的容量按**像素数**算（`width × height` 已是 LOD 像素数），`reset` 时
+    /// 把步长写进缓冲，池化复用不会把 `step == 1` 的旧缓冲错进 LOD 渲染。
+    pub fn acquire_stepped(
+        &self,
+        origin_x: i64,
+        origin_y: i64,
+        width: u32,
+        height: u32,
+        step: u32,
+    ) -> BufferLease<'_> {
         let needed = (width as usize).saturating_mul(height as usize);
         let mut inner = self
             .inner
@@ -387,7 +401,7 @@ impl BufferPool {
                     inner.counters.alias_violations += 1;
                 }
                 inner.retained_bytes = inner.retained_bytes.saturating_sub(buffer.capacity_bytes());
-                buffer.reset(origin_x, origin_y, width, height);
+                buffer.reset(origin_x, origin_y, width, height, step);
                 inner.counters.reused += 1;
                 inner.in_use.insert(id);
                 inner.counters.max_in_use = inner.counters.max_in_use.max(inner.in_use.len());
@@ -405,7 +419,7 @@ impl BufferPool {
             }
         }
 
-        let buffer = Buffer::new(origin_x, origin_y, width, height);
+        let buffer = Buffer::new_stepped(origin_x, origin_y, width, height, step);
         // **分配探针**：池里没有合适的块 => 这里才是**真的新分配**。
         crate::alloc_probe::record(
             crate::alloc_probe::AllocPoint::PoolFresh,
