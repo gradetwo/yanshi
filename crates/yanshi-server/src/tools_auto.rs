@@ -228,10 +228,41 @@ const WB_SARLE_TRIGGER: f32 = 0.555;
 /// ρ 下限。
 const WB_RHO_TRIGGER: f32 = 0.015;
 
-/// 组白名单（设计固定 7 组；去雾挂在细节组下，不另立组）。
-const GROUPS: [&str; 7] = [
-    "exposure", "levels", "tone", "wb", "color", "detail", "noise",
+/// 组白名单（设计固定 8 组；去雾挂在细节组下，不另立组；曲线组 p3b-2
+/// 新增，落 WB 之后、色彩之前）。
+const GROUPS: [&str; 8] = [
+    "exposure", "levels", "tone", "wb", "curves", "color", "detail", "noise",
 ];
+
+/// 色阶黑点中性门限（线性标度；p3b-2 A-03：由 0.01 降为 0.001——
+/// 金黑点 ≈ 线性 p0.1（≈0.0015），0.01 门限把一切真黑点都钉成 0）。
+const LEVELS_BLACK_NEUTRAL: f32 = 0.001;
+
+/// 影调高光审美压基底（p3b-2：金高光压是审美性的，clip=0 时金仍压
+/// −0.25；非夜景一律先压基底，再按 clip 分档附加）。
+const TONE_HIGHLIGHT_AESTHETIC_BASE: f32 = 0.25;
+/// 高光 clip 附加压（clip_high_ratio > 0.02 时附加）。
+const TONE_HIGHLIGHT_CLIP_HIGH: f32 = 0.20;
+/// 高光 clip 附加压（clip_high_ratio > 0.005 时附加）。
+const TONE_HIGHLIGHT_CLIP_MID: f32 = 0.05;
+
+/// 曲线暗端 lift 系数（p3b-2 C4：L = 系数 × 曝光前显示 p25）。
+const CURVES_LIFT_COEF: f32 = 0.40;
+/// 曲线暗端 lift 上限。
+const CURVES_LIFT_MAX: f32 = 0.05;
+/// 曲线顶端压缩基底（金共有的审美顶压，clip=0 的欠曝金顶压 −0.045）。
+const CURVES_TOP_BASE: f32 = 0.045;
+/// 曲线顶端压缩 clip 系数（C = 基底 + 系数 × sqrt(clip)，次线性——
+/// clip 比饱和快，顶压不应随 clip 线性疯长）。
+const CURVES_TOP_CLIP_COEF: f32 = 0.40;
+/// 曲线顶端压缩上限。
+const CURVES_TOP_MAX: f32 = 0.20;
+/// 逐通道曲线顶端门限（channel_clip_high 超过它才发该通道曲线）。
+const CURVES_CHANNEL_CLIP_GATE: f32 = 0.02;
+/// 逐通道曲线顶端下拉系数（D = 系数 × clip_c）。
+const CURVES_CHANNEL_TOP_COEF: f32 = 1.1;
+/// 逐通道曲线顶端下拉上限。
+const CURVES_CHANNEL_TOP_MAX: f32 = 0.12;
 
 /// 置信：高 ⇒ 权重 1；低 ⇒ 权重 0.5（设计「减半施加」统一规则）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,7 +341,7 @@ struct EstimateInputs<'a> {
 
 /// 一笔计划对象（收缩后、强度缩放前；工具层缩放后落成）。
 struct PlannedObject {
-    /// 组名（7 组之一）。
+    /// 组名（8 组之一）。
     group: &'static str,
     /// 确定性对象 id（`auto_<group>` 或多对象组的 `auto_<type>`）。
     object_id: String,
@@ -495,12 +526,12 @@ fn estimate_levels(
 ) -> Option<(f32, f32, bool, String)> {
     use yanshi_render::color::srgb_encode_extended;
     let scale = 2.0f32.powf(ev);
-    let black_raw = scale * stats.linear_p02;
+    let black_raw = scale * stats.linear_p01;
     let white_raw = scale * stats.linear_p998;
     let black = clamp(black_raw, LEVELS_BLACK_RANGE);
     let white = clamp(white_raw, LEVELS_WHITE_RANGE);
     let white_pinned = white_raw >= 0.995;
-    let black_neutral = black_raw <= 0.01;
+    let black_neutral = black_raw <= LEVELS_BLACK_NEUTRAL;
     if black_neutral && white_pinned {
         return None;
     }
@@ -512,9 +543,9 @@ fn estimate_levels(
     let black_out = srgb_encode_extended(shrunk_black);
     let white_out = srgb_encode_extended(shrunk_white);
     let rationale = format!(
-        "曝光缩放 ×{scale:.3} 后线性 p0.2={black_raw:.4}、p99.8={white_raw:.4}，\
+        "曝光缩放 ×{scale:.3} 后线性 p0.1={black_raw:.4}、p99.8={white_raw:.4}，\
          钳制黑 [{:.2}, {:.2}]、白 [{:.2}, {:.2}] ⇒ 线性黑 {black_final:.4}、白 {white_final:.4}\
-         （白点 ≥0.995 时钉 1.0、黑点 ≤0.01 时钉 0；置信 {} 权重 {}）⇒ 发显示黑 {black_out:.4}、白 {white_out:.4}",
+         （白点 ≥0.995 时钉 1.0、黑点 ≤0.001 时钉 0；置信 {} 权重 {}）⇒ 发显示黑 {black_out:.4}、白 {white_out:.4}",
         LEVELS_BLACK_RANGE.0,
         LEVELS_BLACK_RANGE.1,
         LEVELS_WHITE_RANGE.0,
@@ -525,8 +556,78 @@ fn estimate_levels(
     Some((black_out, white_out, white_pinned, rationale))
 }
 
-/// 影调估计：曝光后显示 p25（同上理：encode(2^ev × 线性 p25)）
-/// 与 clip_hi；夜景 highlights 归零；逆光 shadows 叠加转移量。
+/// 曲线估计（p3b-2 C4：新增第 8 组）：全局 RGB S 曲线 + 逐通道顶端曲线。
+///
+/// RGB S（5 个控制点，x 固定）：暗端 lift `L = 0.40 × p25_pre`（钳
+/// [0, 0.05]）——p25_pre 量暗部有多暗，暗部越暗暗端越要提起来立结构；
+/// 顶端压缩 `C = 0.045 + 0.40 × sqrt(clip)`（钳 [0, 0.20]）——基底
+/// 0.045 是金共有的审美顶压，clip 项次线性（clip 比饱和快，顶压不应
+/// 随 clip 线性疯长）。控制点 y 单调增（L ≤ 0.05、C ≤ 0.20 时恒成立，
+/// 最紧一段 0.5→0.75 差 0.25−0.5L−0.3C ≥ 0.165），内核单调插值安全。
+/// 逐通道只做顶端：`clip_c > 0.02` 时发 `[[0,0],[0.75,0.75],[1,1−D]]`，
+/// `D = min(1.1 × clip_c, 0.12)`；暗端留恒等（金修正 0.005–0.008，
+/// 但 WB 残差不可测、锚点失衡解释不了，无可验证的驱动量——已知边界）。
+/// RGB 曲线恒发（C 基底 0.045 保证非恒等）；逐通道无触发时只发 RGB。
+struct CurvesEstimate {
+    /// RGB S 曲线 5 个控制点（[x, y]）。
+    rgb_points: [[f32; 2]; 5],
+    /// 逐通道顶端曲线：(通道名，顶端下拉 D)。
+    channel_curves: Vec<(&'static str, f32)>,
+    /// 估值说明（点名 L/C 的统计来源与数值）。
+    rationale: String,
+}
+
+fn estimate_curves(stats: &ImageStats) -> CurvesEstimate {
+    use yanshi_render::color::srgb_encode_extended;
+    let p25_pre = srgb_encode_extended(stats.linear_p25);
+    let lift = clamp(CURVES_LIFT_COEF * p25_pre, (0.0, CURVES_LIFT_MAX));
+    let top = clamp(
+        CURVES_TOP_BASE + CURVES_TOP_CLIP_COEF * stats.clip_high_ratio.sqrt(),
+        (0.0, CURVES_TOP_MAX),
+    );
+    let rgb_points = [
+        [0.0, 0.0],
+        [0.25, 0.25 + lift],
+        [0.5, 0.5 + 0.5 * lift - 0.1 * top],
+        [0.75, 0.75 - 0.4 * top],
+        [1.0, 1.0 - top],
+    ];
+    let mut channel_curves = Vec::new();
+    for (channel, clip_c) in [
+        ("r", stats.channel_clip_high[0]),
+        ("b", stats.channel_clip_high[2]),
+    ] {
+        if clip_c > CURVES_CHANNEL_CLIP_GATE {
+            channel_curves.push((
+                channel,
+                (CURVES_CHANNEL_TOP_COEF * clip_c).min(CURVES_CHANNEL_TOP_MAX),
+            ));
+        }
+    }
+    let channel_note = if channel_curves.is_empty() {
+        "逐通道顶端：各通道 clip ≤ 0.02，不发".to_owned()
+    } else {
+        channel_curves
+            .iter()
+            .map(|(ch, d)| format!("{ch} 顶 −{d:.3}"))
+            .collect::<Vec<_>>()
+            .join("、")
+    };
+    let rationale = format!(
+        "曝光前显示 p25={p25_pre:.3} ⇒ 暗 lift L={lift:.3}；clip_hi={:.3} ⇒ 顶压 C={top:.3}；{channel_note}",
+        stats.clip_high_ratio,
+    );
+    CurvesEstimate {
+        rgb_points,
+        channel_curves,
+        rationale,
+    }
+}
+
+/// 影调估计：曝光前显示 p25（p3b-2 解耦：shadows 量「暗部结构再立起来」，
+/// 不是「提亮后还暗不暗」——曝光一提亮，曝光后 p25 过触发点就把 shadows
+/// 压到 0 是旧 bug）与 clip_hi；夜景 highlights 归零；逆光 shadows
+/// 叠加转移量；highlights 另有审美压基底 −0.25（金亮而不爆也压）。
 fn estimate_tone(
     stats: &ImageStats,
     ev: f32,
@@ -535,30 +636,33 @@ fn estimate_tone(
     confidence: Confidence,
 ) -> (f32, f32, String) {
     use yanshi_render::color::srgb_encode_extended;
-    let p25_post = srgb_encode_extended(2.0f32.powf(ev) * stats.linear_p25);
+    let p25_pre = srgb_encode_extended(stats.linear_p25);
     let mut shadows = clamp(
-        (TONE_SHADOW_TRIGGER - p25_post) / TONE_SHADOW_TRIGGER,
+        (TONE_SHADOW_TRIGGER - p25_pre) / TONE_SHADOW_TRIGGER,
         (0.0, 1.0),
     ) * TONE_BUDGET;
     shadows = (shadows + backlit_transfer).min(TONE_BUDGET);
-    let mut highlights = if stats.clip_high_ratio > 0.02 {
-        -0.3
-    } else if stats.clip_high_ratio > 0.005 {
-        -0.18
-    } else {
+    let highlights = if scene.night {
         0.0
+    } else {
+        let clip_extra = if stats.clip_high_ratio > 0.02 {
+            TONE_HIGHLIGHT_CLIP_HIGH
+        } else if stats.clip_high_ratio > 0.005 {
+            TONE_HIGHLIGHT_CLIP_MID
+        } else {
+            0.0
+        };
+        -TONE_HIGHLIGHT_AESTHETIC_BASE - clip_extra
     };
-    if scene.night {
-        highlights = 0.0;
-    }
     let shrunk_shadows = shrink(shadows, 0.0, confidence.weight());
     let shrunk_highlights = shrink(highlights, 0.0, confidence.weight());
     let rationale = format!(
-        "曝光后显示 p25={p25_post:.3}（触发点 {}）⇒ shadows={shadows:.3}\
-         （逆光转移 +{backlit_transfer:.3}，预算 ±{}）；clip_hi={:.3} ⇒ highlights={highlights:.3}\
+        "曝光前显示 p25={p25_pre:.3}（触发点 {}；曝光 ev={ev:.2} 不参与触发，p3b-2 解耦）⇒ shadows={shadows:.3}\
+         （逆光转移 +{backlit_transfer:.3}，预算 ±{}）；审美压基底 −{} + clip_hi={:.3} 附加 ⇒ highlights={highlights:.3}\
          （夜景归零）；置信 {} 权重 {}",
         TONE_SHADOW_TRIGGER,
         TONE_BUDGET,
+        TONE_HIGHLIGHT_AESTHETIC_BASE,
         stats.clip_high_ratio,
         confidence.as_str(),
         confidence.weight(),
@@ -923,6 +1027,22 @@ fn scale_params(type_name: &str, params: &mut Value, strength: f32) {
     let Some(map) = params.as_object_mut() else {
         return;
     };
+    // 曲线组（p3b-2）：params 是非数值的 points 数组 + channel 字符串，
+    // 上面通用数值循环碰不到；按点把 y 向恒等线（y=x）插值缩放。
+    if type_name == "curves" {
+        if let Some(Value::Array(points)) = map.get_mut("points") {
+            for point in points.iter_mut() {
+                if let Value::Array(pair) = point {
+                    if pair.len() == 2 {
+                        if let (Some(x), Some(y)) = (pair[0].as_f64(), pair[1].as_f64()) {
+                            pair[1] = json!(x + (y - x) * (strength as f64));
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
     let neutral = |key: &str| -> f32 {
         match (type_name, key) {
             ("levels", "white") | ("levels", "gamma") | ("saturation", "amount") => 1.0,
@@ -1000,7 +1120,7 @@ fn plan_auto(inputs: &EstimateInputs, requested: &[String]) -> AutoPlan {
             None => skipped.push(SkippedEntry {
                 group: "levels",
                 object_id: "auto_levels".to_owned(),
-                reason: "黑点 ≤0.01 且白点 ≥0.995，色阶已在中性位".to_owned(),
+                reason: "黑点 ≤0.001 且白点 ≥0.995，色阶已在中性位".to_owned(),
             }),
         }
     } else {
@@ -1065,6 +1185,36 @@ fn plan_auto(inputs: &EstimateInputs, requested: &[String]) -> AutoPlan {
         }
     } else {
         skip_unrequested("wb", "auto_white_balance", &mut skipped);
+    }
+
+    // 曲线（p3b-2 C4：第 8 组；RGB S 恒发，逐通道顶端按 clip 门限发；
+    // 位置在 WB 之后、色彩之前，与金 recipe 顺序一致）。
+    if want("curves") {
+        let curves = estimate_curves(stats);
+        objects.push(PlannedObject {
+            group: "curves",
+            object_id: "auto_curves".to_owned(),
+            label: "自动基线 · 曲线".to_owned(),
+            kind: "adjustment",
+            type_name: "curves",
+            params: json!({"channel": "rgb", "points": curves.rgb_points}),
+            confidence: ev_confidence,
+            rationale: curves.rationale.clone(),
+        });
+        for (channel, top) in curves.channel_curves {
+            objects.push(PlannedObject {
+                group: "curves",
+                object_id: format!("auto_curves_{channel}"),
+                label: format!("自动基线 · 曲线 · {channel} 通道"),
+                kind: "adjustment",
+                type_name: "curves",
+                params: json!({"channel": channel, "points": [[0.0, 0.0], [0.75, 0.75], [1.0, 1.0 - top]]}),
+                confidence: ev_confidence,
+                rationale: curves.rationale.clone(),
+            });
+        }
+    } else {
+        skip_unrequested("curves", "auto_curves", &mut skipped);
     }
 
     // 色彩（单色硬跳过；vibrance 与 saturation 各一对象）。
@@ -1525,6 +1675,7 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     let (hue_max_bucket, hue_max_share) = dominant_hue(&stats);
     let stats_json = json!({
         "luma_p50": stats.luma_p50,
+        "linear_p01": stats.linear_p01,
         "linear_p02": stats.linear_p02,
         "linear_p5": stats.linear_p5,
         "linear_p25": stats.linear_p25,
@@ -1785,6 +1936,7 @@ mod tests {
             clip_low_ratio: 0.0,
             clip_high_ratio: 0.0,
             channel_clip_high: [0.0; 3],
+            linear_p01: 0.0,
             linear_p02: 0.0,
             linear_p5: 0.0,
             linear_p25: 0.0,
@@ -1898,11 +2050,12 @@ mod tests {
     /// 期 2 A1 改写：发射的是**显示值**（线性百分位编码后发出）——
     /// ev=0：线性黑 0.02 → 显示 0.1517、白 0.9 → 0.9547；
     /// ev=1：线性黑 0.04 → 显示 0.2209、白钳 1.0。
+    /// p3b-2 A-03：黑点统计量由线性 p0.2 改为 p0.1（金黑点 ≈ p0.1）。
     #[test]
     fn levels_follow_exposure_scaling() {
-        // 黑点取 0.02（0.01 按规则视为中性 ⇒ 0.0，故不用 0.01 作缩放断言）。
+        // 黑点取 0.02（0.001 按规则视为中性 ⇒ 0.0，故不用 0.001 作缩放断言）。
         let stats = stats_with(|stats| {
-            stats.linear_p02 = 0.02;
+            stats.linear_p01 = 0.02;
             stats.linear_p998 = 0.9;
         });
         let (black0, white0, _, _) =
@@ -2520,5 +2673,307 @@ mod tests {
     #[ignore]
     fn wb_decoupled_axes_todo_stage2() {
         todo!("阶段 2（S3）实现，见 C1-WB-REDESIGN.md §5.4 R6");
+    }
+
+    /// p3b-2 tone：shadows 触发用曝光前 p25（解耦）。合成：linear_p25
+    /// =0.015、ev=1.0 ⇒ 曝光前显示 p25=0.128 < 0.16 < 曝光后 0.190，
+    /// 旧公式（曝光后）给 0，新公式给 (0.16−0.128)/0.16×0.3≈0.0593。
+    /// 变异：触发改回曝光后 p25 ⇒ shadows=0 ⇒ 红。
+    #[test]
+    fn tone_shadows_uses_pre_exposure_p25() {
+        let stats = stats_with(|stats| {
+            stats.linear_p25 = 0.015;
+            stats.clip_high_ratio = 0.0;
+        });
+        let (shadows, _, _) =
+            estimate_tone(&stats, 1.0, 0.0, &SceneFlags::default(), Confidence::High);
+        assert!(
+            shadows > 0.0,
+            "曝光前 p25 在触发点下时 shadows 不许为 0，实得 {shadows}"
+        );
+        assert!(
+            (shadows - 0.0593).abs() < 1e-3,
+            "shadows 应≈0.0593（曝光前公式），实得 {shadows}"
+        );
+    }
+
+    /// p3b-2 tone：highlights 审美压基底 −0.25 + clip 分档附加。
+    /// clip=0 ⇒ −0.25（金亮而不爆也压）；clip=0.01 ⇒ −0.30；
+    /// clip=0.0725 ⇒ −0.45；夜景 ⇒ 0（clip 再大也归零）。
+    /// 变异：基底删掉 ⇒ clip=0 时 highlights=0 ⇒ 红；分档改回
+    /// 旧档位（−0.3/−0.18）⇒ clip=0.0725 时 −0.3 ≠ −0.45 ⇒ 红。
+    #[test]
+    fn tone_highlights_aesthetic_base_and_clip_tiers() {
+        let no_scene = SceneFlags::default();
+        let no_clip = stats_with(|stats| {
+            stats.linear_p25 = 0.5;
+            stats.clip_high_ratio = 0.0;
+        });
+        let (_, highlights, _) = estimate_tone(&no_clip, 0.0, 0.0, &no_scene, Confidence::High);
+        assert!(
+            (highlights + 0.25).abs() < 1e-4,
+            "clip=0 时 highlights 应为审美基底 −0.25，实得 {highlights}"
+        );
+        let mid_clip = stats_with(|stats| {
+            stats.linear_p25 = 0.5;
+            stats.clip_high_ratio = 0.01;
+        });
+        let (_, highlights, _) = estimate_tone(&mid_clip, 0.0, 0.0, &no_scene, Confidence::High);
+        assert!(
+            (highlights + 0.30).abs() < 1e-4,
+            "clip=0.01 时 highlights 应为 −0.30，实得 {highlights}"
+        );
+        let high_clip = stats_with(|stats| {
+            stats.linear_p25 = 0.5;
+            stats.clip_high_ratio = 0.0725;
+        });
+        let (_, highlights, _) = estimate_tone(&high_clip, 0.0, 0.0, &no_scene, Confidence::High);
+        assert!(
+            (highlights + 0.45).abs() < 1e-4,
+            "clip=0.0725 时 highlights 应为 −0.45，实得 {highlights}"
+        );
+        let night = SceneFlags {
+            night: true,
+            ..SceneFlags::default()
+        };
+        let (_, highlights, _) = estimate_tone(&high_clip, 0.0, 0.0, &night, Confidence::High);
+        assert!(
+            highlights == 0.0,
+            "夜景时 highlights 应归零，实得 {highlights}"
+        );
+    }
+
+    /// p3b-2 C4：RGB S 曲线 L/C 公式（欠曝/过曝两组金统计量拟合）。
+    /// 欠曝（p25=0.00381、clip=0）：L=0.0194、C=0.045；过曝
+    /// （p25=0.009638、clip=0.0725）：L=0.0390、C=0.1527。
+    /// 另断关系：y 单调增、y(0.25)>0.25（暗 lift）、y(1)<1（顶压）。
+    /// 变异：L/C 公式常量化 ⇒ 控制点 y 偏离 ⇒ 红。
+    #[test]
+    fn curves_rgb_lift_and_top_formula() {
+        let under = stats_with(|stats| {
+            stats.linear_p25 = 0.00381;
+            stats.clip_high_ratio = 0.0;
+        });
+        let estimate = estimate_curves(&under);
+        let expected_under = [
+            [0.0, 0.0],
+            [0.25, 0.26943],
+            [0.5, 0.50522],
+            [0.75, 0.732],
+            [1.0, 0.955],
+        ];
+        for (got, want) in estimate.rgb_points.iter().zip(expected_under.iter()) {
+            assert!(
+                (got[0] - want[0]).abs() < 1e-4 && (got[1] - want[1]).abs() < 1e-3,
+                "欠曝 RGB 曲线控制点应≈{want:?}，实得 {got:?}"
+            );
+        }
+        assert!(
+            estimate.channel_curves.is_empty(),
+            "欠曝各通道 clip 为 0 时不应发逐通道曲线"
+        );
+        let over = stats_with(|stats| {
+            stats.linear_p25 = 0.009638;
+            stats.clip_high_ratio = 0.0725;
+        });
+        let estimate = estimate_curves(&over);
+        let expected_over = [
+            [0.0, 0.0],
+            [0.25, 0.28900],
+            [0.5, 0.50423],
+            [0.75, 0.68892],
+            [1.0, 0.84730],
+        ];
+        for (got, want) in estimate.rgb_points.iter().zip(expected_over.iter()) {
+            assert!(
+                (got[0] - want[0]).abs() < 1e-4 && (got[1] - want[1]).abs() < 1e-3,
+                "过曝 RGB 曲线控制点应≈{want:?}，实得 {got:?}"
+            );
+        }
+        // 关系断言：单调增（内核单调插值的前提）、暗 lift、顶压。
+        for window in estimate.rgb_points.windows(2) {
+            assert!(
+                window[1][1] > window[0][1],
+                "RGB 曲线 y 必须单调增，实得 {window:?}"
+            );
+        }
+        assert!(
+            estimate.rgb_points[1][1] > 0.25 && estimate.rgb_points[4][1] < 1.0,
+            "RGB 曲线应暗 lift（y(0.25)>0.25）且顶压（y(1)<1），实得 {:?}",
+            estimate.rgb_points
+        );
+    }
+
+    /// p3b-2 C4：逐通道顶端门限与下拉。过曝 channel_clip_high
+    /// [0.0832, 0.0733, 0.0987] ⇒ r D=0.0915、b D=0.1086（G 通道
+    /// 不发——金 r/b 顶端下拉，G 恒等）；全通道 clip ≤ 0.02 ⇒ 不发。
+    /// 变异：门限 0.02 改 0 ⇒ 全通道都发 ⇒ 红；系数 1.1 改 1.0 ⇒
+    /// D 值偏离 ⇒ 红。
+    #[test]
+    fn curves_channel_top_gate_and_pull_down() {
+        let over = stats_with(|stats| {
+            stats.linear_p25 = 0.009638;
+            stats.clip_high_ratio = 0.0725;
+            stats.channel_clip_high = [0.0832, 0.0733, 0.0987];
+        });
+        let estimate = estimate_curves(&over);
+        assert_eq!(
+            estimate.channel_curves.len(),
+            2,
+            "过曝应发 r、b 两条逐通道曲线，实得 {:?}",
+            estimate.channel_curves
+        );
+        assert_eq!(estimate.channel_curves[0].0, "r");
+        assert!(
+            (estimate.channel_curves[0].1 - 0.0915).abs() < 1e-3,
+            "r 顶端下拉应≈0.0915，实得 {}",
+            estimate.channel_curves[0].1
+        );
+        assert_eq!(estimate.channel_curves[1].0, "b");
+        assert!(
+            (estimate.channel_curves[1].1 - 0.1086).abs() < 1e-3,
+            "b 顶端下拉应≈0.1086，实得 {}",
+            estimate.channel_curves[1].1
+        );
+        let quiet = stats_with(|stats| {
+            stats.linear_p25 = 0.00381;
+            stats.clip_high_ratio = 0.0;
+            stats.channel_clip_high = [0.000126, 0.0, 0.0];
+        });
+        let estimate = estimate_curves(&quiet);
+        assert!(
+            estimate.channel_curves.is_empty(),
+            "各通道 clip ≤ 0.02 时不应发逐通道曲线，实得 {:?}",
+            estimate.channel_curves
+        );
+    }
+
+    /// p3b-2 A-03：黑点用线性 p0.1 + 中性门限 0.001。p0.1=0.0015、
+    /// ev=0 ⇒ 发显示黑 ≈0.0194（旧 p0.2 公式在 p02=0 时给 0）；
+    /// p0.1=0.0005 且白点顶 ⇒ 跳过（旧公式在 p02=0.02 时会发）；
+    /// p0.1=0.005（新门限之上、旧门限之下）⇒ 落成 ≈0.0610。
+    /// 变异：统计量改回 p0.2 ⇒ 第一组黑 0 ⇒ 红；门限改回 0.01 ⇒
+    /// 第三组变 None ⇒ 红。
+    #[test]
+    fn levels_black_uses_p01() {
+        let dark = stats_with(|stats| {
+            stats.linear_p01 = 0.0015;
+            stats.linear_p02 = 0.0;
+            stats.linear_p998 = 0.5;
+        });
+        let (black, _, _, _) = estimate_levels(&dark, 0.0, Confidence::High).expect("黑点应落成");
+        assert!(
+            (black - 0.01938).abs() < 1e-3,
+            "p0.1=0.0015 时显示黑应≈0.0194，实得 {black}"
+        );
+        assert!(black > 0.0, "真黑点不许被钉成 0");
+        let neutral = stats_with(|stats| {
+            stats.linear_p01 = 0.0005;
+            stats.linear_p02 = 0.02;
+            stats.linear_p998 = 1.0;
+        });
+        assert!(
+            estimate_levels(&neutral, 0.0, Confidence::High).is_none(),
+            "p0.1=0.0005 且白点顶时色阶应整体跳过"
+        );
+        // 门限分界：p0.1=0.005 在新门限（0.001）之上、在旧门限（0.01）
+        // 之下 ⇒ 新规则落成、旧规则跳过（变异：门限改回 0.01 ⇒
+        // 本组变 None ⇒ 红）。
+        let mid = stats_with(|stats| {
+            stats.linear_p01 = 0.005;
+            stats.linear_p02 = 0.0;
+            stats.linear_p998 = 1.0;
+        });
+        let (black, _, _, _) =
+            estimate_levels(&mid, 0.0, Confidence::High).expect("p0.1=0.005 时黑点应落成");
+        assert!(
+            (black - 0.0610).abs() < 1e-3,
+            "p0.1=0.005 时显示黑应≈0.0610，实得 {black}"
+        );
+    }
+
+    /// p3b-2 scale_params：curves 按点向恒等线插值缩放。strength=0.5
+    /// 时 y' = x + (y−x)×0.5；strength=0 时全回恒等。
+    /// 变异：删掉 curves 分支 ⇒ strength=0.5 时点不动 ⇒ 红。
+    #[test]
+    fn scale_params_curves_interpolates_toward_identity() {
+        let mut params = json!({"channel": "rgb", "points": [[0, 0], [0.25, 0.3], [0.5, 0.5], [0.75, 0.7], [1, 0.9]]});
+        scale_params("curves", &mut params, 0.5);
+        let points = params["points"].as_array().expect("points 应为数组");
+        let ys: Vec<f64> = points
+            .iter()
+            .map(|point| point[1].as_f64().expect("y 应为数"))
+            .collect();
+        let expected = [0.0, 0.275, 0.5, 0.725, 0.95];
+        for (got, want) in ys.iter().zip(expected.iter()) {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "strength=0.5 时 y 应≈{want}，实得 {got}"
+            );
+        }
+        let mut params = json!({"channel": "rgb", "points": [[0, 0], [0.25, 0.3], [0.5, 0.5], [0.75, 0.7], [1, 0.9]]});
+        scale_params("curves", &mut params, 0.0);
+        let points = params["points"].as_array().expect("points 应为数组");
+        for point in points {
+            let (x, y) = (
+                point[0].as_f64().expect("x 应为数"),
+                point[1].as_f64().expect("y 应为数"),
+            );
+            assert!(
+                (y - x).abs() < 1e-9,
+                "strength=0 时曲线应回恒等，实得 ({x}, {y})"
+            );
+        }
+    }
+
+    /// p3b-2 plan_auto：curves 组在 WB 之后、色彩之前落成；GROUPS
+    /// 共 8 组且含 curves。变异：删掉 curves 块 ⇒ 无 auto_curves ⇒
+    /// 红；挪到色彩后 ⇒ 顺序断言红。
+    #[test]
+    fn plan_auto_curves_after_wb_before_color() {
+        assert_eq!(GROUPS.len(), 8, "GROUPS 应为 8 组");
+        assert!(GROUPS.contains(&"curves"), "GROUPS 应含 curves");
+        let stats = stats_with(|stats| {
+            stats.linear_p25 = 0.00381;
+            stats.linear_p50 = 0.01208;
+            stats.linear_p95 = 0.14856;
+            stats.linear_p998 = 0.40539;
+            stats.clip_high_ratio = 0.0;
+            stats.channel_clip_high = [0.000126, 0.0, 0.0];
+            stats.mean_saturation = 0.3;
+        });
+        let inputs = EstimateInputs {
+            stats: &stats,
+            noise_sigma: None,
+            iso: None,
+        };
+        let plan = plan_auto(
+            &inputs,
+            &GROUPS
+                .iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>(),
+        );
+        let index = |object_id: &str| {
+            plan.objects
+                .iter()
+                .position(|object| object.object_id == object_id)
+        };
+        let tone = index("auto_tone").expect("影调应落成");
+        let curves = index("auto_curves").expect("曲线应落成");
+        let vibrance = index("auto_vibrance").expect("vibrance 应落成");
+        assert!(
+            tone < curves && curves < vibrance,
+            "curves 应在 tone 之后、vibrance 之前，实得 tone={tone} curves={curves} vibrance={vibrance}"
+        );
+        let object = &plan.objects[curves];
+        assert_eq!(object.group, "curves");
+        assert_eq!(object.type_name, "curves");
+        assert_eq!(object.params["channel"], json!("rgb"));
+        assert_eq!(
+            object.params["points"].as_array().map(Vec::len),
+            Some(5),
+            "RGB S 曲线应有 5 个控制点"
+        );
     }
 }

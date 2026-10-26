@@ -180,6 +180,36 @@ fn num(value: &Value) -> Option<f64> {
     value.as_f64()
 }
 
+/// 在曲线控制点上做分段线性采样（内核用单调插值，此处为偏差表近似；
+/// 控制点处两者一致，点间差在 0.005 量级内）。
+fn sample_curve(points: &Value, x: f64) -> Option<f64> {
+    let pts: Vec<(f64, f64)> = points
+        .as_array()?
+        .iter()
+        .filter_map(|point| {
+            let (px, py) = (num(&point[0])?, num(&point[1])?);
+            Some((px, py))
+        })
+        .collect();
+    if pts.len() < 2 {
+        return None;
+    }
+    if x <= pts[0].0 {
+        return Some(pts[0].1);
+    }
+    for window in pts.windows(2) {
+        let (x0, y0) = window[0];
+        let (x1, y1) = window[1];
+        if x <= x1 {
+            if (x1 - x0).abs() < 1e-9 {
+                return Some(y1);
+            }
+            return Some(y0 + (y1 - y0) * (x - x0) / (x1 - x0));
+        }
+    }
+    Some(pts[pts.len() - 1].1)
+}
+
 #[test]
 fn auto_backtest_three_touchstones() {
     let Ok(root) = std::env::var("YANSHI_AUTO_BACKTEST_DIR") else {
@@ -580,11 +610,51 @@ fn auto_backtest_three_touchstones() {
                     photo.name
                 );
             }
-            if gold.iter().any(|(name, _)| name == "curves") {
-                eprintln!(
-                    "DEVIATION {} curves 金有 curves 组，auto 无（非可比）",
-                    photo.name
-                );
+            // curves（p3b-2：auto 有 curves 组后逐项可比）：rgb 在金控制
+            // 点 x 处采样 auto 曲线 y 逐点比；逐通道只比顶端下拉
+            // D = 1 − y(1.0)（暗端 auto 留恒等，金修正 0.005–0.008，
+            // 不强制）。
+            for (name, params) in gold.iter().filter(|(name, _)| name == "curves") {
+                let _ = name;
+                let channel = params["channel"].as_str().unwrap_or("?");
+                let auto_id = match channel {
+                    "rgb" => "auto_curves",
+                    "r" => "auto_curves_r",
+                    "b" => "auto_curves_b",
+                    _ => continue,
+                };
+                let Some(gold_points) = params["points"].as_array() else {
+                    continue;
+                };
+                if channel == "rgb" {
+                    for point in gold_points {
+                        let (Some(x), Some(gold_y)) = (num(&point[0]), num(&point[1])) else {
+                            continue;
+                        };
+                        let auto_y =
+                            auto_param(&auto, auto_id).and_then(|p| sample_curve(&p["points"], x));
+                        deviation_row(photo.name, &format!("curves.rgb@{x:.4}"), gold_y, auto_y);
+                    }
+                } else {
+                    let gold_top = gold_points
+                        .last()
+                        .and_then(|point| num(&point[1]))
+                        .map(|y| 1.0 - y)
+                        .unwrap_or(0.0);
+                    let auto_top = auto_param(&auto, auto_id).and_then(|p| {
+                        p["points"]
+                            .as_array()
+                            .and_then(|points| points.last())
+                            .and_then(|point| num(&point[1]))
+                            .map(|y| 1.0 - y)
+                    });
+                    deviation_row(
+                        photo.name,
+                        &format!("curves.{channel}.top"),
+                        gold_top,
+                        auto_top,
+                    );
+                }
             }
             if !recipe["locals"]
                 .as_array()

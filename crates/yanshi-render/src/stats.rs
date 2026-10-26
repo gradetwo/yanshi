@@ -70,6 +70,10 @@ pub struct ImageStats {
     pub clip_high_ratio: f32,
     /// 分通道 ≥ 253 的像素比（[R, G, B]）。
     pub channel_clip_high: [f32; 3],
+    /// 线性亮度 p0.1（0–1 线性标度；A-03 黑点用——金黑点 ≈ 线性 p0.1，
+    /// 不是 p0.2；曝光缩放与 EOTF 均为单调变换，曝光后显示黑点 =
+    /// encode(2^ev × 本值），色阶估计直接用它，不必重排样本）。
+    pub linear_p01: f32,
     /// 线性亮度 p0.2（0–1 线性标度；曝光缩放与 EOTF 均为单调变换，
     /// 故曝光后显示黑点 = encode(2^ev × 本值），色阶估计直接用它，
     /// 不必重排样本）。
@@ -156,6 +160,7 @@ impl ImageStats {
             clip_low_ratio: 0.0,
             clip_high_ratio: 0.0,
             channel_clip_high: [0.0; 3],
+            linear_p01: 0.0,
             linear_p02: 0.0,
             linear_p5: 0.0,
             linear_p25: 0.0,
@@ -321,6 +326,7 @@ pub fn image_stats_rgba8(pixels: &[u8], width: u32, height: u32) -> ImageStats {
         *clip = (buckets[253] + buckets[254] + buckets[255]) as f32 / nf;
     }
     linear_luma.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    stats.linear_p01 = sorted_percentile(&linear_luma, 0.1);
     stats.linear_p02 = sorted_percentile(&linear_luma, 0.2);
     stats.linear_p5 = sorted_percentile(&linear_luma, 5.0);
     stats.linear_p25 = sorted_percentile(&linear_luma, 25.0);

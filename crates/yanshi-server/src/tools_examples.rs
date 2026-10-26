@@ -152,7 +152,7 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("frequency_separation", r#"{"layer_id":"L1","radius":8}"#),
     ("dodge_burn_setup", r#"{"layer_id":"L1","mode":"curves"}"#),
     // **期 4 D3 自动模式**：参数面见工具注册表（layer_id 可缺省，
-    // strength 域 [0, 1]，groups 为 7 组白名单子集）。
+    // strength 域 [0, 1]，groups 为 8 组白名单子集）。
     ("auto_retouch", r#"{"layer_id":"L1"}"#),
     (
         "erase",

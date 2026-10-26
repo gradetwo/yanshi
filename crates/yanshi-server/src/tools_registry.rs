@@ -1760,7 +1760,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[
             param!("layer_id", String, false, "目标图层 id（缺省：按 z 序首个含位图/RAW 对象的图层）"),
             param!("strength", Number, false, "强度 0–1（缺省 1.0；0 = 只报告不落成；各参数向中性值缩放，denoise detail 与 sharpen radius 为模式常数不缩放）"),
-            param!("groups", Array, false, "组白名单字符串数组（缺省全部 7 组：exposure/levels/tone/wb/color/detail/noise；去雾挂在 detail 组下）"),
+            param!("groups", Array, false, "组白名单字符串数组（缺省全部 8 组：exposure/levels/tone/wb/curves/color/detail/noise；去雾挂在 detail 组下）"),
             param!("dry_run", Boolean, false, "只报告不落成（缺省 false）"),
             param!("force", Boolean, false, "目标层已有人工调整/滤镜对象时仍执行（缺省 false = 拒绝）"),
         ],
