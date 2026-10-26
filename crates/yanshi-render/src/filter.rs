@@ -637,6 +637,13 @@ fn melissa_decode(d: [f32; 3], inverse: &[[f32; 3]; 3]) -> [f32; 3] {
     mat3_apply(inverse, pp)
 }
 
+/// 白档保底 ε（O4）：`selective_weights` 里 whites 的 `(1 − q)` 因子
+/// 下限。现行门控在 span ≥ 0.08 时把 whites 权重精确截到零，亮饱和
+/// 像素吃不到 whites 修正（forest 唇口探针 ③a 证实）；ε=0.20 经
+/// §6.1 的交换曲线标定（唇口顽固 15.5%、4 预设波及面 ≤0.52%）。
+/// neutrals/blacks 不保底：那两档尚无观测失效，留待后议。
+const SELECTIVE_COLOR_WHITES_FLOOR: f32 = 0.20;
+
 /// A3 的九档权重（**PS 差值权重法**的连续化，见 [`selective_color`]）：
 /// 与 [`SELECTIVE_COLOR_RANGES`] 同序、和为 1。
 fn selective_weights(d: [f32; 3]) -> [f32; 9] {
@@ -678,14 +685,27 @@ fn selective_weights(d: [f32; 3]) -> [f32; 9] {
     let neutrals = 1.0 - blacks - whites;
     // 色度门控交叉淡化：近灰（span → 0）由明度组主导、饱和像素由色相
     // 组主导；0.08 沿用旧实现的低饱和界，改在显示（Melissa）口径上判。
+    //
+    // 白档保底（O4）：现行 `(1 − q)` 在 span ≥ 0.08 时把 whites 权重
+    // 精确截到零，亮饱和像素吃不到 whites 修正（forest 唇口探针 ③a
+    // 证实：顽固像素 w[6] 中位 0，65.1% 恰好为零）。只给 whites 的
+    // `(1 − q)` 因子一个保底 ε——亮饱和像素恢复 ≥ ε·whites 的去色
+    // 杠杆，多出来的权重从色相档扣（九档和仍为 1）。neutrals/blacks
+    // 不动：那两档尚无观测失效，留待后议（本次只修已观测到的 whites
+    // 失效）。`hue_share` 的 `.max(0.0)` 是 f32 舍入 guard：三档和
+    // 在数学上 ≤ 1，浮点下可能差 1ulp，钳到 0 防微负权重。
     let q = (span / 0.08).clamp(0.0, 1.0);
+    let w6 = whites * (1.0 - q).max(SELECTIVE_COLOR_WHITES_FLOOR);
+    let w7 = neutrals * (1.0 - q);
+    let w8 = blacks * (1.0 - q);
+    let hue_share = (1.0 - w6 - w7 - w8).max(0.0);
     let mut w = [0.0f32; 9];
     for (i, h) in hue.iter().enumerate() {
-        w[i] = h * q;
+        w[i] = h * hue_share;
     }
-    w[6] += (1.0 - q) * whites;
-    w[7] += (1.0 - q) * neutrals;
-    w[8] += (1.0 - q) * blacks;
+    w[6] = w6;
+    w[7] = w7;
+    w[8] = w8;
     w
 }
 
@@ -6523,6 +6543,81 @@ mod coloradj_tests {
         assert!(
             (0.55..=0.85).contains(&ratio),
             "Melissa/sRGB 的 Δ 比值应落在参照带 [0.55, 0.85]：{ratio}（{delta_melissa} vs {delta_srgb}）"
+        );
+    }
+
+    /// 白档保底（O4）：亮饱和像素的 whites 权重不再被门控精确截到零。
+    /// 唇口类像素（Melissa span ≥ 0.08 且 lightness > 0.625）：现行
+    /// w[6] = 0，改后 w[6] = ε·whites（ε=0.20）。变异：把保底改回
+    /// 0（或删掉 `.max(...)`）⇒ 本测试红。
+    #[test]
+    fn selective_color_whites_floor_reaches_bright_saturated_pixels() {
+        // 唇口类：span 0.35、L 0.775 ⇒ whites 满权 1.0、q = 1。
+        let w = selective_weights([0.95, 0.75, 0.60]);
+        assert!(
+            (w[6] - 0.20).abs() < 1e-6,
+            "亮饱和像素的 whites 权重应被保底到 ε=0.20，实得 w[6]={}",
+            w[6]
+        );
+        // 中饱和：span 0.25、L 0.725 ⇒ whites 0.8、q = 1 ⇒ w[6] = 0.16。
+        let w = selective_weights([0.85, 0.70, 0.60]);
+        assert!(
+            (w[6] - 0.16).abs() < 1e-6,
+            "whites 0.8 的亮饱和像素 w[6] 应为 0.16，实得 {}",
+            w[6]
+        );
+        // 门下像素不动：span 0.04、L 0.8 ⇒ whites 1.0、q = 0.5 ⇒
+        // (1−q) = 0.5 > ε，保底不触发，w[6] 与现行一致为 0.5。
+        let w = selective_weights([0.82, 0.80, 0.78]);
+        assert!(
+            (w[6] - 0.50).abs() < 1e-6,
+            "门下像素的 whites 权重应仍为 (1−q)=0.5，实得 {}",
+            w[6]
+        );
+    }
+
+    /// 九档权重和恒为 1（O4 仍须保的不变量；保底多出来的权重从色相
+    /// 档扣，构造保证）。灰／暗／亮饱和／中饱和各取一点。变异：色相
+    /// 档仍乘 q 而不按余量分配 ⇒ 和 ≠ 1，本测试红。
+    #[test]
+    fn selective_color_weights_sum_to_one() {
+        for d in [
+            [0.4, 0.4, 0.4],
+            [0.1, 0.08, 0.05],
+            [0.95, 0.75, 0.60],
+            [0.85, 0.70, 0.60],
+            [0.30, 0.55, 0.90],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ] {
+            let w = selective_weights(d);
+            let sum: f32 = w.iter().sum();
+            assert!(
+                (sum - 1.0).abs() < 1e-6,
+                "九档权重和应为 1，像素 {d:?} 实得 {sum}（{w:?}）"
+            );
+            assert!(
+                w.iter().all(|v| *v >= 0.0),
+                "权重不许为负，像素 {d:?} 实得 {w:?}"
+            );
+        }
+    }
+
+    /// 白档保底的功能证明：whites M+ 现在能动亮饱和像素。现行门控
+    /// 下该像素的 w[6]=0 且色相档 ranges 全零 ⇒ 偏移为零 ⇒ 输出逐
+    /// 位等于输入；改后 whites M+1.0 生效，绿通道被压下。变异：保
+    /// 底改回 0 ⇒ 输出恒等，本测试红。
+    #[test]
+    fn selective_color_whites_magnet_moves_bright_saturated_pixel() {
+        // 显示值 [0.95, 0.75, 0.60]：唇口类亮饱和像素。
+        let d = [0.95, 0.75, 0.60];
+        let ranges = ranges_with(6, [0.0, 1.0, 0.0, 0.0]);
+        let out = selective_apply_display(d, &ranges);
+        assert_ne!(out, d, "whites M+ 应动亮饱和像素，输出却逐位等于输入");
+        assert!(
+            out[1] < d[1],
+            "whites M+（品红 +1）应压下绿通道，实得 {out:?} vs {d:?}"
         );
     }
 
