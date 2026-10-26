@@ -597,9 +597,7 @@ fn auto_retouch_batched_landing_single_preview() {
             );
         }
     }
-    let preview_calls = first["timings"]["preview_calls"]
-        .as_u64()
-        .unwrap_or(0);
+    let preview_calls = first["timings"]["preview_calls"].as_u64().unwrap_or(0);
     assert_eq!(
         preview_calls, 1,
         "打包落成应只渲 1 次预览，实得 {preview_calls}：{first}"
@@ -627,9 +625,7 @@ fn auto_retouch_batched_landing_single_preview() {
             );
         }
     }
-    let preview_calls2 = second["timings"]["preview_calls"]
-        .as_u64()
-        .unwrap_or(0);
+    let preview_calls2 = second["timings"]["preview_calls"].as_u64().unwrap_or(0);
     assert_eq!(
         preview_calls2, 1,
         "重跑打包落成应只渲 1 次预览，实得 {preview_calls2}：{second}"
