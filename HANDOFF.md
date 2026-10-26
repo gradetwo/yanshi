@@ -175,6 +175,14 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
 45. **CI 已绿**：`40345152775`（`504b975a`：Web 频率分离/混合模式 ＋ 带截断）**全 job success** ✓
    （前一轮 `40340042575` 的文本密度修复也已 success ✓）。
 
+46. **C1 stage1/2/3 已合**（台账 642）：S1 色度锚 + S2 Planck + S3 分轴反解 + 阈值定版/Q5 断代。
+   **D-WB2 诚实结论：Ti 收敛、T 未收**（机制/光源歧义）⇒ 是否立 (b) 光源估计由 Wang 定。
+47. **C1 Y-05 已合**：`wb=auto` 导入期真估计并落成 `default_white_balance`；护栏跳过有原因。
+48. **dodge-burn 已合**：纯调整层从下方内容播种（D&B curves 不再 no-op）；only_layer/clipping 不播种。
+49. **D1-c 已合**：`calibrate_primaries`（6 参数，不新增工具）；全零逐位单位阵。
+50. **magenta-softknee 已合**：s_h 色度软拐点（品红 2.97%→0.05%）；+0.6/korean 3x 为已知限制。
+51. **airy-half-dose 已合**：japanese_airy 半量烘焙为 strength-1 缺省。
+
 ## 三、下一步（按优先序，都有精确入口）
 
 -0. 待上游裁决的仍是：期 2 的 **auto backtest colorcast 门限**（A2 保色度 ⇒ R−B 只降 28.6% < 40%）、

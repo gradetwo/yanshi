@@ -22434,3 +22434,33 @@ server lib（--features raw）**222**（5 ignored）、定向 11 个集成 suite
   **0 字节差**；串行输出逐字节不变 ✓。
 - **范围**：不修 `MAX_EFFECT_PADDING` 本身（画布/区域边缘超限截断仍在）；声明值不设上限 ⇒
   极端羽化（10000）8K 每带缓冲约 +1.2GB，作者刻意选择（任何上限都会重新引入本 bug）✓。
+
+## 六百四十二、八包合并：C1 三阶段＋Y-05、D&B 播种、D1-c、品红软拐点、日系半量（第 1132 轮）
+
+### C1 白平衡重设计（stage1 → stage2 → stage3 → y05，叠包顺序）
+- **stage1（`fb6a598`）S1+S2**：`stats.rs` 新增信号带 `[0.02,0.50]` 内逐像素 (u,v)=ln(R/G),ln(B/G)
+  流式直方图（桶宽 0.001）、锚点/召回/散布；Planck 前置 `|u+v|/√2 < 0.12`；旧字段标 deprecated；
+  `estimate_wb` 用锚点色度中位反解增益（几何均值归一），锚点<100/召回<0.5/散布>0.15 跳过。
+- **stage2（`8e1560f`）S3**：`invert_wb_gains` 改**分轴**反解（T 只看 R/B 比、Ti 只看 G/√(RB) 比），
+  取消阶段 1 的联合 Gauss–Newton 修正步（它把共模残差倒进 Ti）。**D-WB2 诚实结论：Ti 收敛、T 未收敛**
+  （0.290/0.498 带外；灰世界/光源歧义，不是轴耦合）。
+- **stage3（`be70417`）**：阈值定版（= 初值，双侧失守证据在标定报告）；Q5 删 7 个旧字段回显；
+  `WbAnchorParams` 参数化；新增 `wb_calibration.rs`（8 图 ×27 组合）。**T 带仍未收**：01244 全组合
+  最小 |ΔT| 0.493、bathroom 最小 0.232；01242 仅 δ=0.08 进带但 bathroom 整组跳过
+  ⇒ **数据依据交给"是否立 (b) 光源估计"的裁决** ✓。
+- **y05（`8148710`）**：`wb=auto` 不再等同 as_shot —— 导入期用阶段 1 估计器真估计、落成
+  `default_white_balance` 对象、auto 先置零再落成不叠加；护栏触发时**跳过并点名原因**；两处旧注记删除。
+**本机验证**：render lib **572**、server lib（--features raw）**228**、`wb_calibration` **1**、
+`raw_import` **12**、`retouch_tools` 6、`style_preset_package` 5、`tool_inventory` 2、`tool_validation_audit` 7、
+`profile_allowlist` 8；clippy/fmt 绿 ✓。
+
+### 其余四包
+| 包 | 内容 | 验证/已知 |
+|---|---|---|
+| **dodge-burn** | `render.rs`：**纯调整层从下方已合成内容播种**（`layer_is_adjustment_only`；D&B curves 层原先是永久 no-op）；分段缓存例外⑧；`only_layer` 预览与 clipping_mask **不播种**（已知范围） | render lib 572（含新回归）、`retouch_tools` 6 ✓ |
+| **d1c** | 新调整 `calibrate_primaries`（6 参数、域 ±100）：D65 色度面旋转（0.5°/单位，守白）+ 饱和度矩阵；全零逐位单位阵；**不新增工具**（206 不变） | render lib 572 含新测；clippy/fmt ✓；Adobe 内部实现未公开 ⇒ 只对齐用户可见语义 |
+| **magenta-softknee** | `shadows_highlights` 暗部**色度差距**过有理软拐点（R0=1.5、GMAX=2.2，C¹）；品红 forest +0.4：**2.97%→0.05%**（gate ≤0.10%）、岩壁 5.24%→0.01%、rel_sat P99 0.904→0.476 | render lib 572 ✓；**已知**：+0.6 剂量档/korean 3x 残留（0.60%/0.82%）；GMAX 2.0 实验反方向（+0.4 判据红）⇒ 父 agent 裁决按 2.2 发；③ 插值形态留后续 |
+| **airy-half-dose** | `japanese_airy` 9 个风格 op 逐项取半烘焙成 **strength-1 新缺省**（ev 0.45→0.225、vib 0.35→0.175、s_h ±0.3→±0.15、levels 0.04→0.02…） | `style_preset_package` 5 ✓；依据：Lstd 1.0 −32.0% vs 0.5 −17.5%，p2 0.317 vs 0.240 |
+
+**⇒ 整合**：八包按叠包顺序 `git am` **全部干净**（y05 与 stage2/3 的 tools_auto 三路自动合并，无手工冲突）；
+无工具数/文案计数变化；census **206/258 全分类**、surface 三面一致、examples **206**、brush-params 绿 ✓。
