@@ -36,6 +36,8 @@
 //! 落成复用 D2-1 的 `land_expanded_ops`（展开器与落成循环各一份，
 //! 不许复制第二份）：auto 的操作串以 `ExpandedOp` 表达，名字由
 //! namer 闭包按 object_id 查表给（apply/preview 仍传 preset 名闭包）。
+//! P-01 M2：落成期间暂置 `silent` + `wait_for_render`（不产中间预览），
+//! 落成后只渲一次终态预览；对象集合与参数值与改前完全一致。
 //! 单 changeset：调用方已打开变更集时并入（不关闭）；否则 auto
 //! 自己 `begin_changeset`，成功后关闭，失败时只关闭标记——原子回滚
 //! 由注册表事务层负责（与 `apply_preset` 同机制；本函数不手动
@@ -61,6 +63,7 @@ use super::presets::{box_downsample, land_expanded_ops, ExpandedOp, LandedOps};
 use super::tools_bitmap::{DEFAULT_RAW_EXPOSURE_EV, RAW_DEFAULT_EXPOSURE_NAME};
 use super::tools_effect::validate_effect;
 use super::{document_state, optional_str, write_update_effect, EffectKind, ToolContext};
+use crate::timings::Phase;
 
 // ---------------------------------------------------------------------------
 // 标定常数（回测前为初值，见 phase4-notes.md「D3 待标定」）
@@ -1795,11 +1798,26 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     drop(state);
 
     // ---- 落成（单 changeset；谁打开谁关闭）----
+    // P-01 M2：打包落成——落成循环里每笔 `write_add/update_effect`
+    // 都以 `finish_mutation` 收尾渲一次预览（N 笔 ⇒ N 次全栈预览，
+    // 24MP 上 ≈ 73–85 s），其中 `auto_sharpen` 还是 filter 对象
+    //（CreateObject 的 `type == "filter"` 是 heavy 原子、带 job，
+    // 见 `Atom::is_heavy`）——光置 `silent` 压不住它：`finish_mutation`
+    // 见 job 仍会走 `render_region_complete_jobs` 再渲一次。因此
+    // 落成期间同时暂置 `silent = true` 与 `wait_for_render = false`
+    //（batch 置 `silent` 的既定做法 + 同一规矩：共享上下文上的标志，
+    // 用完必须还原）；落成后只渲一次终态预览（它收尾完成全部 job，
+    // 见 `Document::render_region_preview` 的 `complete_render_jobs`）。
+    // 对象集合与参数值与改前完全一致，只少中间预览。
     let exposure_lands = ops.iter().any(|op| op.object_id == "auto_exposure");
     let opened_here = ctx
         .workspace
         .begin_changeset(&ctx.doc_id, &ctx.session)
         .is_some();
+    let prev_silent = ctx.silent;
+    let prev_wait_for_render = ctx.wait_for_render;
+    ctx.silent = true;
+    ctx.wait_for_render = false;
     let landed: Result<(LandedOps, Vec<String>)> = (|| {
         // RAW 缺省曝光置零（曝光落成时）：未动过的缺省对象（ev 0.5）
         // 必须先置零，否则缺省 +0.5 与自动估计叠加，落成结果 ≠ 源上
@@ -1848,6 +1866,8 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         drop(state_now);
         result.map(|landed| (landed, neutralized))
     })();
+    ctx.silent = prev_silent;
+    ctx.wait_for_render = prev_wait_for_render;
     let (landed, neutralized) = match landed {
         Ok(landed) => {
             if opened_here {
@@ -1865,6 +1885,27 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             return Err(error);
         }
     };
+
+    // ---- 终态预览（一次；P-01 M2）----
+    // 与改前每笔 `finish_mutation` 同一条渲染路，只做一次。调用方
+    // 不等渲染（`wait_for_render = false`）⇒ 不渲（与改前每笔一致）；
+    // 等渲染且要图 ⇒ 降采样预览（M1 路）；等渲染但不要图 ⇒ 只渲染
+    // 跑完 job（轻原子无 job 也走这条：一次全幅脏区渲染，`preview_calls`
+    // 同样记 1 次——与 `finish_mutation` 两分支都记 `Phase::Preview`
+    // 同口径）。零对象时不渲（与改前一致：循环没跑 ⇒ 一次预览也没
+    // 有）。失败路径已在上面提前返回，不渲（回滚后旧预览仍有效，比
+    // 留中间态预览更正确）。
+    if !ops.is_empty() && ctx.wait_for_render {
+        let preview_started = std::time::Instant::now();
+        let region = Bbox::new(0.0, 0.0, doc_width as f64, doc_height as f64);
+        if ctx.preview && !ctx.silent {
+            ctx.workspace.render_region_preview(&ctx.doc_id, region)?;
+        } else {
+            ctx.workspace
+                .render_region_complete_jobs(&ctx.doc_id, region)?;
+        }
+        ctx.time(Phase::Preview, preview_started);
+    }
 
     // ---- 回执（applied 只含落成对象，含更新/复活路径点名）----
     let mut applied: Vec<Value> = Vec::new();
