@@ -111,10 +111,14 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    **像素口径**：点采样 vs bilinear 超差，但 vs 全幅格点点采样**逐字节相同** ⇒ 总协调裁决**接受点采样**（设计已改）。
    已知：lod:1 暖提速 2.67×（未达面积比 ~4×，固定成本）；8K 真实文档缓存 hits 恒 0（落回告警，非本期）。
 
+21. **CI 已绿**：`40244250728`（paint 期 2/2b/E2＋skill 后续＋衔接修复，`29d50948`）与
+   `40246037263`（期 4，`96460361`）**全 job success**（`brush parity` 仍 skipped）✓。
+   四个包（期 2、2b、E2、期 4）与 skill 后续均已合入 `main`，工作树干净。
+
 ## 三、下一步（按优先序，都有精确入口）
 
--0. **读本轮 CI**（paint 期 2/2b/E2＋skill 后续＋衔接修复）：重点 `tool-surface-coverage`、
-   `tool-schema-params-census`、`tool-examples-doc-check`、17 条新画线判据、browser 判据。
+-0. 待上游裁决的仍是：期 2 的 **auto backtest colorcast 门限**（A2 保色度 ⇒ R−B 只降 28.6% < 40%）、
+   期 2 的 22 套预设目检（作者未勾选）、B4 剩余 4 支镜头识别、80MP 整幅导入需大内存机。
 
 -0. **读本轮 CI**（照片期 2＋web＋census 的那一跑）：重点看 browser 判据、`tool-surface-coverage`、
    `tool-schema-params-census`、以及 A1/A2 是否顶到既有像素判据（`tool-effect-*` 等）。
