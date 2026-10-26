@@ -23,7 +23,7 @@
     "肤色易被青污染"
    ],
    "description": "高调、青绿环境、透肤、空气感；比韩系更通透、比糖水更克制。",
-   "notes": "已验证（补充找回的截图证据，2026-10-23）：以「JP LIGHT FINAL」在三素材上深挖验证——圣托里尼·伊亚小镇、罗弗敦·红房子（雾天变体格标注 JP CLEAN fog adapt）、树荫下人像。此前『蒙灰纱』问题已换轻校正基线。unsupported：局部眼睛锐化需蒙版工具，不在预设内。逐通道 HSL（绿向青/提明）并非引擎缺失（2026-10-25 纠错）：引擎已有 8 段 HSL（hsl_with_ranges，filter.rs:1263），本预设未使用，仍用全局 hsl + selective_color 近似。【全库说明】22 套预设 ops 里 ranges 与 hsl 类型均为零使用；重写 ops 真正用 ranges/hsl 待 v5 批量收尾 + 期 2 落地后另行。截图为 1170px 参考图，非原始渲染。",
+   "notes": "已验证（补充找回的截图证据，2026-10-23）：以「JP LIGHT FINAL」在三素材上深挖验证——圣托里尼·伊亚小镇、罗弗敦·红房子（雾天变体格标注 JP CLEAN fog adapt）、树荫下人像。此前『蒙灰纱』问题已换轻校正基线。unsupported：局部眼睛锐化需蒙版工具，不在预设内。逐通道 HSL（绿向青/提明）并非引擎缺失（2026-10-25 纠错）：引擎已有 8 段 HSL（hsl_with_ranges，filter.rs:1263），本预设未使用，仍用全局 hsl + selective_color 近似。【全库说明】22 套预设 ops 里 ranges 与 hsl 类型均为零使用；重写 ops 真正用 ranges/hsl 待 v5 批量收尾 + 期 2 落地后另行。截图为 1170px 参考图，非原始渲染。半量烘焙为 strength-1 默认（2026-10-26）：1.0 在新语义下仍过强（风格步 Lstd −32.0%、p2 0.317 超 0.30 警告、1:1 一眼发灰发雾），风格段 9 ops 取半（levels black 0.04→0.02，其余与 v5 半量 ops 相同），修正段不动。",
    "correction": {
     "baseline": "light",
     "ops": [
@@ -56,7 +56,7 @@
      "kind": "adjustment",
      "type": "exposure",
      "params": {
-      "ev": 0.45
+      "ev": 0.225
      },
      "neutral": {
       "ev": 0
@@ -67,7 +67,7 @@
      "type": "brightness_contrast",
      "params": {
       "brightness": 0.0,
-      "contrast": 0.88
+      "contrast": 0.94
      },
      "neutral": {
       "brightness": 0,
@@ -82,71 +82,71 @@
       "points": [
        [
         0.0,
-        0.0049
+        0.00245
        ],
        [
         0.0052,
-        0.0153
+        0.010249999999999999
        ],
        [
         0.0143,
-        0.032
+        0.02315
        ],
        [
         0.0293,
-        0.0549
+        0.0421
        ],
        [
         0.0509,
-        0.0835
+        0.06720000000000001
        ],
        [
         0.0796,
-        0.1161
+        0.09784999999999999
        ],
        [
         0.116,
-        0.1523
+        0.13415
        ],
        [
         0.1607,
-        0.1936
+        0.17715
        ],
        [
         0.214,
-        0.2429
+        0.22845
        ],
        [
         0.2765,
-        0.3031
+        0.2898
        ],
        [
         0.3485,
-        0.3737
+        0.3611
        ],
        [
         0.4304,
-        0.453
+        0.4417
        ],
        [
         0.5225,
-        0.5382
+        0.53035
        ],
        [
         0.6252,
-        0.6283
+        0.6267499999999999
        ],
        [
         0.7388,
-        0.7245
+        0.73165
        ],
        [
         0.8637,
-        0.8262
+        0.8449500000000001
        ],
        [
         1.0,
-        0.9331
+        0.96655
        ]
       ]
      },
@@ -227,7 +227,7 @@
      "kind": "adjustment",
      "type": "saturation",
      "params": {
-      "amount": 0.92
+      "amount": 0.96
      },
      "neutral": {
       "amount": 1
@@ -237,7 +237,7 @@
      "kind": "adjustment",
      "type": "vibrance",
      "params": {
-      "amount": 0.35
+      "amount": 0.175
      },
      "neutral": {
       "amount": 0
@@ -247,8 +247,8 @@
      "kind": "adjustment",
      "type": "white_balance",
      "params": {
-      "temperature": 0.06,
-      "tint": 0.04
+      "temperature": 0.03,
+      "tint": 0.02
      },
      "neutral": {
       "temperature": 0,
@@ -259,8 +259,8 @@
      "kind": "adjustment",
      "type": "shadows_highlights",
      "params": {
-      "shadows": 0.35,
-      "highlights": -0.3
+      "shadows": 0.175,
+      "highlights": -0.15
      },
      "neutral": {
       "shadows": 0,
@@ -271,9 +271,9 @@
      "kind": "adjustment",
      "type": "levels",
      "params": {
-      "black": 0.04,
+      "black": 0.02,
       "white": 1.0,
-      "gamma": 1.02
+      "gamma": 1.01
      },
      "neutral": {
       "black": 0,
@@ -285,7 +285,7 @@
      "kind": "adjustment",
      "type": "texture",
      "params": {
-      "amount": -0.06
+      "amount": -0.03
      },
      "neutral": {
       "amount": 0
