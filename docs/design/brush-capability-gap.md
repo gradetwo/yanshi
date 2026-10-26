@@ -22464,3 +22464,9 @@ server lib（--features raw）**222**（5 ignored）、定向 11 个集成 suite
 
 **⇒ 整合**：八包按叠包顺序 `git am` **全部干净**（y05 与 stage2/3 的 tools_auto 三路自动合并，无手工冲突）；
 无工具数/文案计数变化；census **206/258 全分类**、surface 三面一致、examples **206**、brush-params 绿 ✓。
+
+**⇒ 首跑 CI `40408732584` 三红（同一根因）**：`doc_consistency` 的 `every_effect_name_is_documented` /
+`documented_effect_counts_match_the_kernel` 在 test stable/beta/GPU 全红 ✗ —— D1-c 给内核加了
+`calibrate_primaries`（调整 25→**26**），而 `docs/design/implementation-notes.md` 的算子表没加行、
+总数行还写 25 ✗（`docs/tools.md` 已由 D1-c 更新 ✓）。
+⇒ 补一行 `calibrate_primaries` + 总数改 **26** ✓；`doc_consistency` 3 通过/3 ignored ✓。

@@ -183,6 +183,10 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
 50. **magenta-softknee 已合**：s_h 色度软拐点（品红 2.97%→0.05%）；+0.6/korean 3x 为已知限制。
 51. **airy-half-dose 已合**：japanese_airy 半量烘焙为 strength-1 缺省。
 
+52. **首跑 CI 三红已修**（同一根因）：D1-c 的 `calibrate_primaries` 让调整数 25→26，
+   `docs/design/implementation-notes.md` 的算子表/总数行没同步 ⇒ `doc_consistency` 在
+   test stable/beta/GPU 全红；补行 + 改 26 后 3 通过 ✓。
+
 ## 三、下一步（按优先序，都有精确入口）
 
 -0. 待上游裁决的仍是：期 2 的 **auto backtest colorcast 门限**（A2 保色度 ⇒ R−B 只降 28.6% < 40%）、
