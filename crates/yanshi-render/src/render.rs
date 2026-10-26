@@ -651,6 +651,25 @@ fn merge_by_rows(
     out
 }
 
+/// **本带自有区域与 tile 的交集**（修进程级非确定性 ✓）：
+/// 并行分带时，每带的累积缓冲都含 `padding` 外扩；相邻两带在重叠区各算一份，
+/// 而羽化半径大于 `MAX_EFFECT_PADDING` 时两份的值不同（各截一侧邻域）。
+/// 若两份都写入 below/above 缓存，`merge_by_rows` 按写顺序取胜
+/// ⇒ 写顺序（线程调度）决定像素 ⇒ 跨进程非确定。
+/// 只写自有区域 ⇒ 各带贡献的行互不重叠 ⇒ 合并结果与写顺序无关，
+/// 且与冷渲染（无缓存）的逐带自有行逐位一致。
+fn owned_tile_bbox(tile: &Bbox, owned: &Bbox) -> Option<Bbox> {
+    let x0 = tile.x.max(owned.x);
+    let y0 = tile.y.max(owned.y);
+    let x1 = tile.right().min(owned.right());
+    let y1 = tile.bottom().min(owned.bottom());
+    if x1 <= x0 || y1 <= y0 {
+        None
+    } else {
+        Some(Bbox::new(x0, y0, x1 - x0, y1 - y0))
+    }
+}
+
 /// **★ below 的**分块**缓存 ✓ ★**（规格 §6.2 ✓／第 481 轮 ✓）：
 /// **每个 tile 只存一份 ✓，与"谁请求"无关 ✓** —— **∴ 整块 ✓／行带 ✓／并行 chunk ✓ 键都相同 ✓**。
 ///
@@ -3055,12 +3074,17 @@ impl Renderer {
                             for ty in y0..=y1 {
                                 for tx in x0..=x1 {
                                     let key = (tx * BELOW_TILE, ty * BELOW_TILE);
-                                    let bbox = yanshi_core::Bbox::new(
+                                    let tile_bbox = yanshi_core::Bbox::new(
                                         key.0 as f64,
                                         key.1 as f64,
                                         BELOW_TILE as f64,
                                         BELOW_TILE as f64,
                                     );
+                                    // **只写本带自有行**（修进程级非确定性 ✓）：
+                                    // 不交 ⇒ 本带不拥有该 tile 的任何行 ⇒ 跳过（不写片、不记空）。
+                                    let Some(bbox) = owned_tile_bbox(&tile_bbox, region) else {
+                                        continue;
+                                    };
                                     let piece = accumulation.crop(&bbox);
                                     let pb = piece.bbox();
                                     if pb.w > 0.0 && pb.h > 0.0 {
@@ -3298,12 +3322,17 @@ impl Renderer {
                             for ty in y0..=y1 {
                                 for tx in x0..=x1 {
                                     let key = (tx * BELOW_TILE, ty * BELOW_TILE);
-                                    let bbox = yanshi_core::Bbox::new(
+                                    let tile_bbox = yanshi_core::Bbox::new(
                                         key.0 as f64,
                                         key.1 as f64,
                                         BELOW_TILE as f64,
                                         BELOW_TILE as f64,
                                     );
+                                    // **只写本带自有行**（修进程级非确定性 ✓）：
+                                    // 不交 ⇒ 本带不拥有该 tile 的任何行 ⇒ 跳过（不写片、不记空）。
+                                    let Some(bbox) = owned_tile_bbox(&tile_bbox, region) else {
+                                        continue;
+                                    };
                                     let piece = above_acc.crop(&bbox);
                                     let pb = piece.bbox();
                                     if pb.w > 0.0 && pb.h > 0.0 {
@@ -9261,6 +9290,45 @@ mod tests {
         assert_eq!(merged.pixel(2, 2), fresh.pixel(0, 0), "重叠处应当取 new");
         // ⑤ `old` 独有处取 `old` ✓
         assert_eq!(merged.pixel(0, 0), old.pixel(0, 0), "old 独有处应当取 old");
+    }
+
+    /// **两带对同一 tile 的自有交集互不重叠**（修进程级非确定性 ✓）：
+    /// tile 跨带界时，上带只拥有上半行、下带只拥有下半行；两份交集拼起来
+    /// 恰好是整 tile，且无重叠 ⇒ `merge_by_rows` 的合并结果与写顺序无关。
+    /// 变异：把 `owned_tile_bbox` 改成返回整 tile ⇒ ③（无重叠）红 ✓。
+    #[test]
+    fn owned_tile_bbox_splits_a_boundary_tile_without_overlap() {
+        // 带界 y=700 的 tile（256 格，行 512–767），上带拥有行 [0,700)，下带 [700,1400)。
+        let tile = Bbox::new(0.0, 512.0, 256.0, 256.0);
+        let top = Bbox::new(0.0, 0.0, 700.0, 700.0);
+        let bottom = Bbox::new(0.0, 700.0, 700.0, 700.0);
+        // ① 上带只取上半 ✓
+        assert_eq!(
+            owned_tile_bbox(&tile, &top),
+            Some(Bbox::new(0.0, 512.0, 256.0, 188.0)),
+            "上带应当只拥有行 512–699"
+        );
+        // ② 下带只取下半 ✓
+        assert_eq!(
+            owned_tile_bbox(&tile, &bottom),
+            Some(Bbox::new(0.0, 700.0, 256.0, 68.0)),
+            "下带应当只拥有行 700–767"
+        );
+        // ③ 两份无重叠、拼起来是整 tile ✓（写顺序无关的根基）
+        let a = owned_tile_bbox(&tile, &top).unwrap();
+        let b = owned_tile_bbox(&tile, &bottom).unwrap();
+        assert!(!a.intersects(&b), "两带的自有交集不得重叠");
+        assert_eq!(a.union(&b), tile, "两份拼起来应当是整 tile");
+        // ④ 完全在带外的 tile ⇒ None（不写片、不记空）✓
+        let far = Bbox::new(0.0, 1024.0, 256.0, 256.0);
+        assert_eq!(owned_tile_bbox(&far, &top), None, "带外 tile 应当返回 None");
+        // ⑤ 完全在带内的 tile ⇒ 原样返回 ✓
+        let inside = Bbox::new(0.0, 256.0, 256.0, 256.0);
+        assert_eq!(
+            owned_tile_bbox(&inside, &top),
+            Some(inside),
+            "带内 tile 应当原样返回"
+        );
     }
 
     /// **`brightness_match` 无参考时必须留下可读痕迹** ✓（第 1440 轮审计 ✓）。
