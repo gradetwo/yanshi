@@ -7014,6 +7014,34 @@ fn apply_layer_mask_warn(
         layer_buffer.height(),
         layer_buffer.step(),
     );
+    // 渐变遮罩（D1-b）：不走下面的 `coverage_from_shape_clipped`——它只认
+    // rect/ellipse/polygon，未知 kind 静默落进 rect 回退（线性无 bbox ⇒
+    // 零面积 ⇒ 全 0；径向有 bbox ⇒ 硬矩形 ⇒ 看似能用却是错的形状）。
+    // 直接用 `SelectionShape::coverage` 逐像素求值（与 CompiledMask 同口径；
+    // `from_selection` 并入顶层 invert；feather 对渐变不生效，
+    // `create_mask` 入口已保证渐变 feather 为 0）。
+    if matches!(
+        mask.shape.get("kind").and_then(Value::as_str),
+        Some("linear_gradient") | Some("radial_gradient")
+    ) {
+        let shape = crate::selection::SelectionShape::from_selection(mask);
+        let width = layer_buffer.width() as usize;
+        let step = layer_buffer.step() as i32;
+        for (index, pixel) in mask_buffer.pixels_mut().chunks_exact_mut(4).enumerate() {
+            let x = (index % width) as i32;
+            let y = (index / width) as i32;
+            let c = shape.coverage(
+                (origin_x as i32 + x * step) as f64,
+                (origin_y as i32 + y * step) as f64,
+            );
+            pixel[0] = 0.0;
+            pixel[1] = 0.0;
+            pixel[2] = 0.0;
+            pixel[3] = c;
+        }
+        layer_buffer.multiply_alpha_by(&mask_buffer);
+        return;
+    }
     let coverage = if mask.shape.get("kind").and_then(Value::as_str) == Some("path") {
         // 二期（mask 源 = path）：来源解析需要文档状态（object_id 引用），且
         // 失败必须留告警——不走 `coverage_from_shape_clipped` 的无状态口径，

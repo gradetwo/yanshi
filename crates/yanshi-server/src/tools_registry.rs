@@ -1550,7 +1550,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // **不是必填** ✓（外部第 10 轮 `selection-mask-flat-rect` 实测 ✓）：给了 `from_selection`
             // 时形状从选区克隆 ✓，而这里原来标 `required: true` ✗ ⇒ **派发前的必填校验**直接拦下
             // ⇒ **文档里写的「此时 shape 可省略」一次也用不了** ✗（"描述说支持、schema 拒绝"家族 ✓）。
-            param!("shape", Object, false, "几何 {kind:rect|ellipse|polygon|path, bbox, points?}；**与 `from_selection` 二选一**（后者会把选区的形状/羽化/反选/位图一并克隆过来）。kind 与 type 互为别名（只有 type 时按 type 走）；kind=path 时三选一：subpaths（内联子路径，与 draw_shape 的 path geometry 同格式）、d（SVG path 字符串，入口转 subpaths）或 object_id（引用已有 path 形状对象），覆盖率走 path 填充同一条路"),
+            param!("shape", Object, false, "几何 {kind:rect|ellipse|polygon|path/bitmap/linear_gradient/radial_gradient, bbox, points?}；**与 `from_selection` 二选一**（后者会把选区的形状/羽化/反选/位图一并克隆过来）。kind 与 type 互为别名（只有 type 时按 type 走）；kind=path 时三选一：subpaths（内联子路径，与 draw_shape 的 path geometry 同格式）、d（SVG path 字符串，入口转 subpaths）或 object_id（引用已有 path 形状对象），覆盖率走 path 填充同一条路；kind=linear_gradient 时给 start/end（[x,y] 或 {x,y}，start 一侧为 1、end 一侧为 0，过渡带就是 start→end 的距离）；kind=radial_gradient 时给 bbox + falloff（0–1，过渡带占半径比例，0=硬边、1=全程渐变）；渐变 kind 不收 feather（传非零会报错）"),
             param!("feather", Number, false, "羽化过渡宽度（像素，缺省 0）"),
             param!("invert", Boolean, false, "反选（缺省 false）"),
             param!("mode", String, false, "缺省 new = 新建（id 已存在则报错）。add/subtract/intersect 现在**只能对一个已存在的 id** 放行，但落盘是**覆盖**旧形状，**不是**布尔合并 ⇒ 结果等于最后那个形状。真正的合并尚未实现（见 docs/design/brush-capability-gap.md 三百二十七节）"),
@@ -1582,6 +1582,23 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "删除蒙版（tombstone；blobs/patches 保留，撤销可回退）",
         mutating: true,
         params: &[param!("mask_id", String, true, "目标蒙版 id")],
+    },
+    ToolSpec {
+        name: "create_range_mask",
+        profile: Profile::Structure,
+        summary: "范围遮罩（D1-a）：按像素值烘焙亮度带 / 颜色带遮罩。采样源是 layer_id 的全画布渲染（sRGB 编码 RGBA8）；遮罩是烘焙快照，源图层此后的修改不传播。明度为显示空间 Rec709 加权；颜色带按色相窗取，近灰像素（饱和度 < 0.1）恒不选；invert 烤进网格。烘焙结果以 L8 PNG + ReplaceAll patch 落库；挂接用 set_property 把 mask_id 挂到调整层。回执带烘焙后的有效参数与覆盖统计（coverage_matched_pixels / coverage_mean），为 0 即该带内没有像素",
+        mutating: true,
+        params: &[
+            param!("mask_id", String, true, "蒙版 id"),
+            param!("layer_id", String, true, "采样源图层 id（必填；取该层当前渲染的像素）"),
+            param!("range", String, false, "luminance（缺省，明度带）或 color（色相带）"),
+            param!("low", Number, false, "luminance：带下限 0–1（缺省 0）"),
+            param!("high", Number, false, "luminance：带上限 0–1（缺省 1）；必须 ≥ low"),
+            param!("hue", Number, false, "color：中心色相 0–360（必填，无缺省）"),
+            param!("hue_width", Number, false, "color：窗全宽（度，缺省 60，域 (0, 360]）"),
+            param!("smoothness", Number, false, "带边软化：luminance 为明度单位（缺省 0.05，域 [0, 0.5]）；color 为窗宽中用作软边的比例（缺省 0.25，域 [0, 1]）"),
+            param!("invert", Boolean, false, "反选（缺省 false；烤进网格）"),
+        ],
     },
     // ---- 扩展：retouch（调色与滤镜；内核已实现的子集）----
     ToolSpec {
@@ -3153,6 +3170,7 @@ pub const PHOTO_TOOLS: &[&str] = &[
     "create_mask",
     "paint_mask",
     "delete_mask",
+    "create_range_mask",
     "create_selection",
     "delete_selection",
     "list_selections",

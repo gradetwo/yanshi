@@ -111,6 +111,28 @@ pub enum SelectionGeom {
         /// 外接盒 `(x, y, w, h)`。
         bbox: (f64, f64, f64, f64),
     },
+    /// 线性渐变遮罩（D1-b）：沿 `start`→`end` 的投影做 smoothstep 过渡。
+    ///
+    /// `start` 一侧为 1、`end` 一侧为 0；过渡带就是 `start`→`end` 的距离本身，
+    /// 不另设羽化（顶层 `feather` 不作用于渐变 kind，见 [`SelectionShape::coverage`]；
+    /// `create_mask` 入口要求渐变 kind 的 `feather` 为 0）。
+    LinearGradient {
+        /// 渐变起点（覆盖度 1 的一侧），文档坐标。
+        start: (f64, f64),
+        /// 渐变终点（覆盖度 0 的一侧），文档坐标。
+        end: (f64, f64),
+    },
+    /// 径向渐变遮罩（D1-b）：`bbox` 内切椭圆，中心为 1、边缘外为 0。
+    ///
+    /// `falloff` ∈ [0, 1] 是过渡带占半径的比例（LR feather 口径）：
+    /// 0 = 半径处硬边，1 = 从中心到边缘全程渐变；顶层 `feather` 同样不作用于
+    /// 渐变 kind（与 [`SelectionGeom::LinearGradient`] 同例）。
+    RadialGradient {
+        /// 外接盒 `(x, y, w, h)`，文档坐标。
+        bbox: (f64, f64, f64, f64),
+        /// 过渡带占半径比例，`0..=1`。
+        falloff: f64,
+    },
     /// 任意多边形（`polygon` / `lasso`），顶点数 `>= 3`。
     Polygon {
         /// 顶点序列，按输入顺序，隐式闭合。
@@ -240,6 +262,37 @@ impl SelectionShape {
                     SelectionGeom::Polygon { points }
                 }
             }
+            "linear_gradient" => {
+                // 已识别 kind 但载荷坏掉 ⇒ 空（宁可不选、不可错选；与 path/bitmap 同例）。
+                // 起点/终点缺失、非有限、或重合（零长轴）都算坏载荷。
+                let (Some(start), Some(end)) =
+                    (parse_point(value, "start"), parse_point(value, "end"))
+                else {
+                    return SelectionGeom::Empty;
+                };
+                if start == end {
+                    return SelectionGeom::Empty;
+                }
+                SelectionGeom::LinearGradient { start, end }
+            }
+            "radial_gradient" => {
+                // bbox 缺失/零面积 ⇒ 空；falloff 缺失按 0（硬边），非法值钳到 [0, 1]。
+                let Some(bbox) = parse_bbox(value) else {
+                    return SelectionGeom::Empty;
+                };
+                if !has_area(bbox) {
+                    return SelectionGeom::Empty;
+                }
+                let falloff = value.get("falloff").and_then(Value::as_f64).unwrap_or(0.0);
+                SelectionGeom::RadialGradient {
+                    bbox,
+                    falloff: if falloff.is_finite() {
+                        falloff.clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    },
+                }
+            }
             "path" => {
                 // 与一期 path 形状共用同一份校验（`object::parse_path_subpaths`，
                 // 禁止再写第二套）；展平只在解析期做一次（`path::FLATTEN_TOL`）。
@@ -299,6 +352,9 @@ impl SelectionShape {
     ///
     /// 形状内为 `1.0`、远离形状为 `0.0`；`feather > 0` 时在边界内外各
     /// `feather / 2` 的带宽内用 smoothstep 平滑过渡。`x` / `y` 为 `NaN` 时返回 0。
+    ///
+    /// 渐变 kind（`linear_gradient` / `radial_gradient`）与位图一样不走羽化：
+    /// 过渡带由形状自身定义（线性：`start`→`end` 的距离；径向：`falloff` 比例）。
     pub fn coverage(&self, x: f64, y: f64) -> f32 {
         if x.is_nan() || y.is_nan() {
             // 无法定位的采样点：视为未覆盖（反选后为全覆盖）。
@@ -308,6 +364,18 @@ impl SelectionShape {
         // `feather` 已烘焙进位图（`feather_baked`），这里不再重复羽化。
         if let SelectionGeom::Bitmap { bbox, mask } = &self.geom {
             let base = bitmap_coverage(bbox, mask.as_deref(), x, y);
+            let value = if self.invert { 1.0 - base } else { base };
+            return clamp01(value);
+        }
+        // 渐变遮罩（D1-b）：过渡带就是渐变本身，顶层 `feather` 不再重复作用
+        // （与位图同例；`create_mask` 入口要求渐变 kind 的 `feather` 为 0）。
+        if let SelectionGeom::LinearGradient { start, end } = &self.geom {
+            let base = linear_gradient_coverage(*start, *end, x, y);
+            let value = if self.invert { 1.0 - base } else { base };
+            return clamp01(value);
+        }
+        if let SelectionGeom::RadialGradient { bbox, falloff } = &self.geom {
+            let base = radial_gradient_coverage(*bbox, *falloff, x, y);
             let value = if self.invert { 1.0 - base } else { base };
             return clamp01(value);
         }
@@ -338,6 +406,11 @@ impl SelectionShape {
             // 位图选区不走有符号距离（`coverage` 直接查表）；这里返回 +∞
             // 表示「无穷远外部」，避免任何调用方误算出覆盖。
             SelectionGeom::Bitmap { .. } => f64::INFINITY,
+            // 渐变遮罩不走有符号距离（`coverage` 直接按渐变求值）；这里返回 +∞
+            // 表示「无穷远外部」，避免任何调用方误算出覆盖。
+            SelectionGeom::LinearGradient { .. } | SelectionGeom::RadialGradient { .. } => {
+                f64::INFINITY
+            }
         }
     }
 }
@@ -448,6 +521,9 @@ impl SelectionGeom {
     fn bbox(&self) -> Option<(f64, f64, f64, f64)> {
         match self {
             SelectionGeom::Rect { bbox } | SelectionGeom::Ellipse { bbox } => Some(*bbox),
+            // 线性渐变无界（覆盖度 1 的半平面延伸到画布外）：与 CoverAll 同例返回 None。
+            SelectionGeom::LinearGradient { .. } => None,
+            SelectionGeom::RadialGradient { bbox, .. } => Some(*bbox),
             SelectionGeom::Polygon { points } => {
                 let mut min_x = f64::INFINITY;
                 let mut min_y = f64::INFINITY;
@@ -495,6 +571,51 @@ fn combine(base: f32, shape: f32, mode: SelectionMode) -> f32 {
         SelectionMode::Add => base.max(shape),
         SelectionMode::Subtract => (base - shape).max(0.0),
         SelectionMode::Intersect => base * shape,
+    }
+}
+
+/// `t` ∈ [0, 1] 上的 smoothstep（`3t² - 2t³`）：单调、连续，两端导数为 0。
+fn smoothstep01(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// 线性渐变覆盖度（D1-b）：沿 `start`→`end` 轴的投影 `t`（`start` 处 0、`end` 处 1），
+/// 覆盖度 = `1 - smoothstep(t)`：`start` 一侧为 1、`end` 一侧为 0。
+/// 零长轴（解析期已判为空，防御性再判）返回 0。
+fn linear_gradient_coverage(start: (f64, f64), end: (f64, f64), x: f64, y: f64) -> f32 {
+    let dx = end.0 - start.0;
+    let dy = end.1 - start.1;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq <= 0.0 || !len_sq.is_finite() {
+        return 0.0;
+    }
+    let t = ((x - start.0) * dx + (y - start.1) * dy) / len_sq;
+    (1.0 - smoothstep01(t)) as f32
+}
+
+/// 径向渐变覆盖度（D1-b）：归一化椭圆距离 `d`（中心 0、边缘 1），
+/// `falloff` ∈ [0, 1] 为过渡带占半径比例：`d ≤ 1 - falloff` 时为 1，
+/// `d ≥ 1` 时为 0，中间 smoothstep。`falloff` = 0 为半径处硬边，
+/// = 1 为从中心到边缘全程渐变。
+fn radial_gradient_coverage(bbox: (f64, f64, f64, f64), falloff: f64, x: f64, y: f64) -> f32 {
+    let (bx, by, bw, bh) = bbox;
+    let a = bw / 2.0;
+    let b = bh / 2.0;
+    if a <= 0.0 || b <= 0.0 || !a.is_finite() || !b.is_finite() {
+        return 0.0;
+    }
+    let nx = (x - (bx + a)) / a;
+    let ny = (y - (by + b)) / b;
+    let d = (nx * nx + ny * ny).sqrt();
+    let f = falloff.clamp(0.0, 1.0);
+    if d <= 1.0 - f {
+        1.0
+    } else if d >= 1.0 {
+        0.0
+    } else {
+        // 此处必有 f > 0（d > 1 - f 且 d < 1 ⇒ f > 0），除法安全。
+        (1.0 - smoothstep01((d - (1.0 - f)) / f)) as f32
     }
 }
 
@@ -717,6 +838,32 @@ fn parse_points(value: &Value) -> Vec<(f64, f64)> {
     points
 }
 
+/// 解析单个点：`{key: [x, y]}` 或 `{key: {x, y}}`；缺失/非数值/非有限返回 `None`。
+fn parse_point(value: &Value, key: &str) -> Option<(f64, f64)> {
+    let point = value.get(key)?;
+    if let Some(pair) = point.as_array() {
+        if pair.len() >= 2 {
+            if let (Some(x), Some(y)) = (pair[0].as_f64(), pair[1].as_f64()) {
+                if x.is_finite() && y.is_finite() {
+                    return Some((x, y));
+                }
+            }
+        }
+        return None;
+    }
+    if let Some(object) = point.as_object() {
+        if let (Some(x), Some(y)) = (
+            object.get("x").and_then(Value::as_f64),
+            object.get("y").and_then(Value::as_f64),
+        ) {
+            if x.is_finite() && y.is_finite() {
+                return Some((x, y));
+            }
+        }
+    }
+    None
+}
+
 /// 钳到 `0..=1`，把 `NaN` 归为 0（保证覆盖度永远是有限值）。
 fn clamp01(value: f32) -> f32 {
     if value.is_nan() {
@@ -925,6 +1072,9 @@ fn geom_bbox_extent(
         SelectionGeom::CoverAll => Some((0.0, 0.0, canvas_w as f64, canvas_h as f64)),
         SelectionGeom::Empty => None,
         SelectionGeom::Rect { bbox } | SelectionGeom::Ellipse { bbox } => Some(*bbox),
+        // 线性渐变：覆盖度 1 的半平面无界 ⇒ 取全画布（与 CoverAll 同口径）。
+        SelectionGeom::LinearGradient { .. } => Some((0.0, 0.0, canvas_w as f64, canvas_h as f64)),
+        SelectionGeom::RadialGradient { bbox, .. } => Some(*bbox),
         SelectionGeom::Polygon { points } => {
             let mut min_x = f64::INFINITY;
             let mut min_y = f64::INFINITY;
@@ -2471,6 +2621,132 @@ mod tests {
         assert!((c1 - c2).abs() < 1e-6, "circle={c1} ellipse={c2}");
         // 中心都应为 1。
         assert!((c1 - 1.0).abs() < 1e-6);
+    }
+
+    // ========== D1-b：渐变遮罩 ==========
+
+    #[test]
+    fn linear_gradient_coverage_ramps_along_axis() {
+        // 轴 (0,0)→(10,0)：start 一侧 1、end 一侧 0、中点 0.5；离轴距离不影响投影。
+        let s = shape(json!({"kind": "linear_gradient", "start": [0.0, 0.0], "end": [10.0, 0.0]}));
+        assert_eq!(s.coverage(-5.0, 0.0), 1.0);
+        assert_eq!(s.coverage(0.0, 0.0), 1.0);
+        assert_near(s.coverage(5.0, 0.0), 0.5);
+        assert_eq!(s.coverage(10.0, 0.0), 0.0);
+        assert_eq!(s.coverage(15.0, 0.0), 0.0);
+        assert_near(s.coverage(5.0, 7.0), 0.5); // 离轴点投影相同
+                                                // smoothstep(0.25) = 0.15625 ⇒ 覆盖度 0.84375。
+        assert_near(s.coverage(2.5, 0.0), 0.84375);
+        // 斜轴：(10,0) 在 (0,0)→(10,10) 轴上的投影也是 0.5。
+        let diag =
+            shape(json!({"kind": "linear_gradient", "start": [0.0, 0.0], "end": [10.0, 10.0]}));
+        assert_near(diag.coverage(10.0, 0.0), 0.5);
+        assert_near(diag.coverage(5.0, 5.0), 0.5);
+        // 反选翻转。
+        let inv = shape(
+            json!({"kind": "linear_gradient", "start": [0.0, 0.0], "end": [10.0, 0.0], "invert": true}),
+        );
+        assert_eq!(inv.coverage(0.0, 0.0), 0.0);
+        assert_eq!(inv.coverage(10.0, 0.0), 1.0);
+        assert_near(inv.coverage(5.0, 0.0), 0.5);
+    }
+
+    #[test]
+    fn linear_gradient_bad_payload_is_empty_not_cover_all() {
+        // 已识别 kind 但载荷坏掉 ⇒ 空（不是覆盖全部）：缺 end、重合轴。
+        // 对照：未知 kind 仍退化为覆盖全部（既有行为不动）。
+        let missing = shape(json!({"kind": "linear_gradient", "start": [0.0, 0.0]}));
+        assert_eq!(missing.coverage(5.0, 5.0), 0.0);
+        let zero =
+            shape(json!({"kind": "linear_gradient", "start": [3.0, 3.0], "end": [3.0, 3.0]}));
+        assert_eq!(zero.coverage(3.0, 3.0), 0.0);
+        let unknown = shape(json!({"kind": "no_such_kind"}));
+        assert_eq!(unknown.coverage(5.0, 5.0), 1.0);
+    }
+
+    #[test]
+    fn radial_gradient_coverage_falloff_bands() {
+        // bbox 10×10、中心 (5,5)、半径 5。
+        let hard = shape(
+            json!({"kind": "radial_gradient", "bbox": {"x": 0.0, "y": 0.0, "w": 10.0, "h": 10.0}, "falloff": 0.0}),
+        );
+        assert_eq!(hard.coverage(5.0, 5.0), 1.0);
+        assert_eq!(hard.coverage(9.0, 5.0), 1.0); // d=0.8 < 1
+        assert_eq!(hard.coverage(10.0, 5.0), 1.0); // 边界算内（与椭圆同例）
+        assert_eq!(hard.coverage(10.5, 5.0), 0.0); // d=1.1 > 1
+        assert_eq!(hard.coverage(0.0, 0.0), 0.0); // 角落 d≈1.41
+                                                  // falloff=1：从中心到边缘全程渐变：d=0.5 → 0.5。
+        let full = shape(
+            json!({"kind": "radial_gradient", "bbox": {"x": 0.0, "y": 0.0, "w": 10.0, "h": 10.0}, "falloff": 1.0}),
+        );
+        assert_eq!(full.coverage(5.0, 5.0), 1.0);
+        assert_near(full.coverage(7.5, 5.0), 0.5); // d=0.5
+        assert_eq!(full.coverage(10.0, 5.0), 0.0);
+        // falloff=0.5：d ≤ 0.5 为 1，d=0.75 → 0.5，d ≥ 1 为 0。
+        let half = shape(
+            json!({"kind": "radial_gradient", "bbox": {"x": 0.0, "y": 0.0, "w": 10.0, "h": 10.0}, "falloff": 0.5}),
+        );
+        assert_eq!(half.coverage(7.0, 5.0), 1.0); // d=0.4
+        assert_near(half.coverage(8.75, 5.0), 0.5); // d=0.75
+        assert_eq!(half.coverage(10.0, 5.0), 0.0);
+        // falloff 缺失按 0；越界值钳到 [0,1]（2.0 ⇒ 1.0 全程渐变）。
+        let def = shape(
+            json!({"kind": "radial_gradient", "bbox": {"x": 0.0, "y": 0.0, "w": 10.0, "h": 10.0}}),
+        );
+        assert_eq!(def.coverage(9.0, 5.0), 1.0);
+        let clamped = shape(
+            json!({"kind": "radial_gradient", "bbox": {"x": 0.0, "y": 0.0, "w": 10.0, "h": 10.0}, "falloff": 2.0}),
+        );
+        assert_near(clamped.coverage(7.5, 5.0), 0.5);
+        // 坏载荷 ⇒ 空：缺 bbox、零面积。
+        let no_bbox = shape(json!({"kind": "radial_gradient"}));
+        assert_eq!(no_bbox.coverage(5.0, 5.0), 0.0);
+        let flat = shape(
+            json!({"kind": "radial_gradient", "bbox": {"x": 0.0, "y": 0.0, "w": 10.0, "h": 0.0}}),
+        );
+        assert_eq!(flat.coverage(5.0, 5.0), 0.0);
+    }
+
+    #[test]
+    fn compiled_mask_linear_gradient_spans_full_canvas() {
+        // 线性渐变无界 ⇒ union bbox 取全画布；grid 按投影取值（u8 量化 ±1/255）。
+        let mask =
+            test_mask(json!({"kind": "linear_gradient", "start": [0.0, 0.0], "end": [64.0, 0.0]}));
+        let load = |_s: &str| None;
+        let compiled = CompiledMask::build(&mask, 64, 64, &load);
+        assert_eq!(compiled.bbox, [0, 0, 64, 64]);
+        assert_eq!(compiled.sample(0, 32), 1.0); // start 一侧
+        assert!((compiled.sample(32, 32) - 0.5).abs() < 0.01); // 中点
+        assert_eq!(compiled.sample(63, 32), 0.0); // end 一侧
+                                                  // 恒等式：沿轴单调不增（左 ≥ 中 ≥ 右）。
+        assert!(compiled.sample(0, 32) >= compiled.sample(32, 32));
+        assert!(compiled.sample(32, 32) >= compiled.sample(63, 32));
+        // 反选翻转两端，bbox 仍为全画布。
+        let mut inv_mask =
+            test_mask(json!({"kind": "linear_gradient", "start": [0.0, 0.0], "end": [64.0, 0.0]}));
+        inv_mask.invert = true;
+        let inv = CompiledMask::build(&inv_mask, 64, 64, &load);
+        assert_eq!(inv.bbox, [0, 0, 64, 64]);
+        assert_eq!(inv.sample(0, 32), 0.0);
+        assert_eq!(inv.sample(63, 32), 1.0);
+    }
+
+    #[test]
+    fn compiled_mask_radial_gradient_uses_bbox() {
+        // 径向渐变 union bbox 即椭圆 bbox；bbox 外为 default_outside。
+        let mask = test_mask(
+            json!({"kind": "radial_gradient", "bbox": {"x": 8.0, "y": 8.0, "w": 48.0, "h": 48.0}, "falloff": 0.5}),
+        );
+        let load = |_s: &str| None;
+        let compiled = CompiledMask::build(&mask, 64, 64, &load);
+        assert_eq!(compiled.bbox, [8, 8, 48, 48]);
+        assert_eq!(compiled.sample(32, 32), 1.0); // 中心
+        assert_eq!(compiled.sample(0, 0), 0.0); // bbox 外
+                                                // 恒等式：沿半径单调不增（中心 ≥ 中途 > 边缘）。
+        let mid = compiled.sample(52, 32); // d≈0.833 ⇒ 约 0.26
+        assert!(compiled.sample(32, 32) > mid);
+        assert!(mid > compiled.sample(56, 32)); // d=1.0 ⇒ 0
+        assert_eq!(compiled.sample(56, 32), 0.0);
     }
 }
 

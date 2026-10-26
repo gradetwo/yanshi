@@ -60,6 +60,11 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         r#"{"mask_id":"m1","mode":"paint","size":60,"points":[[150,20,1],[150,280,1]]}"#,
     ),
     ("delete_mask", r#"{"mask_id":"m1"}"#),
+    // **D1-a 范围遮罩**：亮度带示例（暗部 0–0.4 段）；颜色带见工具注册表（hue 必填）。
+    (
+        "create_range_mask",
+        r#"{"mask_id":"m1","layer_id":"L1","range":"luminance","low":0.0,"high":0.4}"#,
+    ),
     // `texture_type` 不是 `texture`；`density` 严格单调（第 750 轮实测 10/21/28/37/41）。
     (
         "smart_texture",

@@ -421,6 +421,110 @@ pub(super) fn validate_mask_path_shape(ctx: &mut ToolContext<'_>, shape: &Value)
     }
 }
 
+/// `create_mask` 的形状 kind 白名单校验（D1-b）+ 渐变 kind 的形状参数校验。
+///
+/// 渲染层对未知 kind 静默退化为覆盖全部（`SelectionGeom::parse_geom` 的安全侧选择，
+/// 选区路径需要它）；但蒙版入口必须把拼错的名字拦下来，否则「拼错 kind ⇒ 全画布
+/// 蒙版」是静默降级。渐变 kind 的参数同样在入口验完（与 kind=path 同例：
+/// 建得出来 ⇒ 渲得出）。
+fn validate_mask_shape_kind(kind: &str, shape: &Value) -> Result<()> {
+    let invalid = |message: String| {
+        YanshiError::new(ErrorCode::InvalidArgument, ErrorContext::detail(message))
+    };
+    match kind {
+        // 解析器认的几何 kind 全集（`selection.rs parse_geom`）：circle/lasso 是
+        // ellipse/polygon 的同义词，照认。
+        "rect" | "ellipse" | "circle" | "polygon" | "lasso" | "path" | "bitmap" => Ok(()),
+        "linear_gradient" => {
+            if !shape_point_ok(shape.get("start")) || !shape_point_ok(shape.get("end")) {
+                return Err(invalid(
+                    "linear_gradient 的 shape 必须给 start/end（[x, y] 数组或 {x, y} 对象，均为有限数）"
+                        .to_owned(),
+                ));
+            }
+            let (sx, sy) = shape_point_coords(shape.get("start").expect("已验存在"));
+            let (ex, ey) = shape_point_coords(shape.get("end").expect("已验存在"));
+            if sx == ex && sy == ey {
+                return Err(invalid(
+                    "linear_gradient 的 start 与 end 重合（零长轴），渐变没有方向".to_owned(),
+                ));
+            }
+            Ok(())
+        }
+        "radial_gradient" => {
+            let bbox = shape.get("bbox").and_then(Value::as_object);
+            let Some(bbox) = bbox else {
+                return Err(invalid(
+                    "radial_gradient 的 shape 必须给 bbox（{x, y, w, h}，w/h 大于 0）".to_owned(),
+                ));
+            };
+            let w = bbox
+                .get("w")
+                .or_else(|| bbox.get("width"))
+                .and_then(Value::as_f64);
+            let h = bbox
+                .get("h")
+                .or_else(|| bbox.get("height"))
+                .and_then(Value::as_f64);
+            if !matches!((w, h), (Some(w), Some(h)) if w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0)
+            {
+                return Err(invalid(
+                    "radial_gradient 的 bbox 宽高必须大于 0".to_owned(),
+                ));
+            }
+            if let Some(falloff) = shape.get("falloff").and_then(Value::as_f64) {
+                if !falloff.is_finite() || !(0.0..=1.0).contains(&falloff) {
+                    return Err(invalid(format!(
+                        "radial_gradient 的 falloff 必须在 [0, 1] 内，得到 {falloff}"
+                    )));
+                }
+            }
+            Ok(())
+        }
+        other => Err(invalid(format!(
+            "未知蒙版形状 kind「{other}」⇒ 可用：rect / ellipse / polygon / path / bitmap / linear_gradient / radial_gradient"
+        ))),
+    }
+}
+
+/// 单点是否合法：`[x, y]` 数组或 `{x, y}` 对象，坐标均为有限数
+///（与 `selection.rs parse_point` 同口径）。
+fn shape_point_ok(point: Option<&Value>) -> bool {
+    let Some(point) = point else {
+        return false;
+    };
+    if let Some(pair) = point.as_array() {
+        return pair.len() >= 2
+            && pair[0].as_f64().is_some_and(|x| x.is_finite())
+            && pair[1].as_f64().is_some_and(|y| y.is_finite());
+    }
+    if let Some(object) = point.as_object() {
+        return object
+            .get("x")
+            .and_then(Value::as_f64)
+            .is_some_and(|x| x.is_finite())
+            && object
+                .get("y")
+                .and_then(Value::as_f64)
+                .is_some_and(|y| y.is_finite());
+    }
+    false
+}
+
+/// 单点坐标（调用方已验 `shape_point_ok`，此处缺失分量按 0 计）。
+fn shape_point_coords(point: &Value) -> (f64, f64) {
+    if let Some(pair) = point.as_array() {
+        return (
+            pair[0].as_f64().unwrap_or(0.0),
+            pair[1].as_f64().unwrap_or(0.0),
+        );
+    }
+    (
+        point.get("x").and_then(Value::as_f64).unwrap_or(0.0),
+        point.get("y").and_then(Value::as_f64).unwrap_or(0.0),
+    )
+}
+
 pub(super) fn write_create_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let mask_id = require_str(args, "mask_id")?;
     // Q2：`from_selection` 一键转换（传 selection_id 或 "latest"）：克隆该选区的
@@ -493,7 +597,7 @@ pub(super) fn write_create_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
             ErrorContext::detail(
-                "shape 必须带 kind 或 type（rect/ellipse/polygon/path），from_selection 时可省略"
+                "shape 必须带 kind 或 type（rect/ellipse/polygon/path/bitmap/linear_gradient/radial_gradient），from_selection 时可省略"
                     .to_owned(),
             ),
         ));
@@ -528,6 +632,28 @@ pub(super) fn write_create_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
             }
         }
         validate_mask_path_shape(ctx, &shape)?;
+    }
+    // D1-b：kind 白名单 + 渐变形状参数在入口验完（与 kind=path 同例）。
+    validate_mask_shape_kind(&effective_kind, &shape)?;
+    if matches!(
+        effective_kind.as_str(),
+        "linear_gradient" | "radial_gradient"
+    ) {
+        // 渐变 kind 的过渡带就是渐变本身（线性：start→end 的距离；径向：falloff 比例），
+        // 顶层 feather 不作用（见 selection.rs）；传了非零 feather 必须报错，不能静默忽略。
+        // 生效值 = 显式 feather，否则 from_selection 克隆来的 feather，否则 0。
+        let effective_feather = args
+            .get("feather")
+            .and_then(Value::as_f64)
+            .unwrap_or_else(|| from_sel.as_ref().map(|(_, f, _, _, _)| *f).unwrap_or(0.0));
+        if effective_feather != 0.0 {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "渐变遮罩（{effective_kind}）不收 feather（过渡带就是渐变本身），得到 feather={effective_feather}"
+                )),
+            ));
+        }
     }
     let feather = args
         .get("feather")
@@ -572,4 +698,431 @@ pub(super) fn write_create_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
     let result = ctx.commit(AtomKind::CreateMask, payload)?;
     let region = region_of(&result);
     finish_mutation(ctx, &result, region)
+}
+
+/// 范围遮罩的烘焙参数（D1-a）：工具层解析一次，烘焙函数只读它。
+enum RangeBake {
+    /// 明度带：`low..=high`（0..1，sRGB 编码值的 Rec709 加权），
+    /// `smoothness` 为带边软化（明度单位）。
+    Luminance {
+        low: f32,
+        high: f32,
+        smoothness: f32,
+    },
+    /// 色相带：中心色相 `hue`（度，0..360），窗全宽 `width`（度），
+    /// `smoothness` 为窗宽中用作软边的比例（0..1）。
+    Color {
+        hue: f32,
+        width: f32,
+        smoothness: f32,
+    },
+}
+
+/// `t` ∈ [0, 1] 上的 smoothstep（`3t² - 2t³`，与 `selection.rs` 同式）。
+fn smoothstep01(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// sRGB 编码字节的显示空间明度（Rec709 加权，与 A 族显示空间语义一致）。
+fn srgb_luma(r: u8, g: u8, b: u8) -> f32 {
+    (0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)) / 255.0
+}
+
+/// 明度窗函数（D1-a）：`low..=high` 带内为 1，带外为 0，`smoothness`
+/// 在上下边各做 smoothstep 过渡。`smoothness` 先钳到 `(high - low) / 2`，
+/// 保证带内仍有平顶（否则窄带会被过渡吃掉、峰值到不了 1）。
+fn luminance_window(luma: f32, low: f32, high: f32, smoothness: f32) -> f32 {
+    let s = smoothness.clamp(0.0, (high - low) / 2.0);
+    if s <= 0.0 {
+        return if (low..=high).contains(&luma) {
+            1.0
+        } else {
+            0.0
+        };
+    }
+    let up = smoothstep01((luma - (low - s)) / (2.0 * s));
+    let down = 1.0 - smoothstep01((luma - (high - s)) / (2.0 * s));
+    (up * down).clamp(0.0, 1.0)
+}
+
+/// 像素色相（度，0..360）与 HSV 饱和度（0..1）：标准 max/min 公式。
+/// 无彩色（max == min）时色相无定义，返回 (0.0, 0.0)（调用方按饱和度门限滤掉）。
+fn rgb_hue_sat(r: u8, g: u8, b: u8) -> (f32, f32) {
+    let (r, g, b) = (
+        f32::from(r) / 255.0,
+        f32::from(g) / 255.0,
+        f32::from(b) / 255.0,
+    );
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let delta = max - min;
+    let sat = if max <= 0.0 { 0.0 } else { delta / max };
+    if delta <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let hue = if (max - r).abs() < f32::EPSILON {
+        60.0 * ((g - b) / delta).rem_euclid(6.0)
+    } else if (max - g).abs() < f32::EPSILON {
+        60.0 * ((b - r) / delta + 2.0)
+    } else {
+        60.0 * ((r - g) / delta + 4.0)
+    };
+    (hue.rem_euclid(360.0), sat)
+}
+
+/// 色相窗函数（D1-a）：到中心色相的环形距离 `d`；`width` 为窗全宽（度），
+/// `smoothness` 为窗宽中用作软边的比例（0..1）。
+/// 近灰像素（饱和度 < 0.1）恒为 0——无彩色没有稳定色相，不参与色相选。
+fn hue_window(hue: f32, sat: f32, center: f32, width: f32, smoothness: f32) -> f32 {
+    if sat < 0.1 {
+        return 0.0;
+    }
+    let mut d = (hue - center).abs();
+    if d > 180.0 {
+        d = 360.0 - d;
+    }
+    let half = width / 2.0;
+    let inner = half * (1.0 - smoothness.clamp(0.0, 1.0));
+    if d <= inner {
+        1.0
+    } else if d >= half {
+        0.0
+    } else {
+        // 此处必有 half > inner（inner < d < half ⇒ smoothness > 0 且 half > 0），除法安全。
+        1.0 - smoothstep01((d - inner) / (half - inner))
+    }
+}
+
+/// 按 `range` 模式把一幅 RGBA8 烘焙成 L8 覆盖网格（D1-a）。
+/// `invert` 在此烤进网格（`CompiledMask` 的 invert 只作用于几何阶段，不翻转 patch）。
+/// alpha == 0 的像素恒为 0（无图像即无遮罩；反选也不复活它）。
+fn bake_range_grid(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    range: &RangeBake,
+    invert: bool,
+) -> Vec<u8> {
+    let mut grid = vec![0u8; width * height];
+    for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+        let (r, g, b, a) = (pixel[0], pixel[1], pixel[2], pixel[3]);
+        if a == 0 {
+            continue;
+        }
+        let coverage = match range {
+            RangeBake::Luminance {
+                low,
+                high,
+                smoothness,
+            } => luminance_window(srgb_luma(r, g, b), *low, *high, *smoothness),
+            RangeBake::Color {
+                hue,
+                width,
+                smoothness,
+            } => {
+                let (h, s) = rgb_hue_sat(r, g, b);
+                hue_window(h, s, *hue, *width, *smoothness)
+            }
+        };
+        let value = if invert { 1.0 - coverage } else { coverage };
+        grid[index] = (value * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+    grid
+}
+
+/// `create_range_mask`（D1-a）：按像素值烘焙范围遮罩（亮度带 / 颜色带）。
+///
+/// 采样源是 `layer_id` 的全画布渲染（sRGB 编码 RGBA8，与 `frequency_separation`
+/// 同一入口）；遮罩是**烘焙快照**：源图层此后的修改不传播（与 raster patch 同类）。
+/// 烘焙结果以 L8 PNG + `ReplaceAll` patch 落库（`CompiledMask` 的 patch 重放口径），
+/// 挂接沿用既有范式：`set_property` 把 `mask_id` 挂到调整层（见 `dodge_burn_setup`）。
+/// 回执带烘焙后的有效参数与覆盖统计（`coverage_matched_pixels` / `coverage_mean`），
+/// 供调用方核对「选到了多少」——为 0 时即「该带内没有像素」，不是静默成功。
+pub(super) fn write_create_range_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let mask_id = require_str(args, "mask_id")?;
+    let layer_id = require_str(args, "layer_id")?;
+    let range_name = optional_str(args, "range").unwrap_or_else(|| "luminance".to_owned());
+    let invalid = |message: String| {
+        YanshiError::new(ErrorCode::InvalidArgument, ErrorContext::detail(message))
+    };
+    let number_in = |key: &str, lo: f64, hi: f64, default: Option<f64>| -> Result<f64> {
+        match args.get(key).and_then(Value::as_f64) {
+            Some(value) if value.is_finite() && (lo..=hi).contains(&value) => Ok(value),
+            Some(value) => Err(invalid(format!(
+                "{key} 必须在 [{lo}，{hi}] 内，得到 {value}"
+            ))),
+            None => match default {
+                Some(value) => Ok(value),
+                None => Err(invalid(format!("{key} 是必填参数"))),
+            },
+        }
+    };
+    let range = match range_name.as_str() {
+        "luminance" => {
+            let low = number_in("low", 0.0, 1.0, Some(0.0))? as f32;
+            let high = number_in("high", 0.0, 1.0, Some(1.0))? as f32;
+            if low > high {
+                return Err(invalid(format!(
+                    "low 必须 ≤ high，得到 low={low}、high={high}"
+                )));
+            }
+            let smoothness = number_in("smoothness", 0.0, 0.5, Some(0.05))? as f32;
+            RangeBake::Luminance {
+                low,
+                high,
+                smoothness,
+            }
+        }
+        "color" => {
+            let hue = number_in("hue", 0.0, 360.0, None)? as f32;
+            let width = number_in("hue_width", 0.0, 360.0, Some(60.0))? as f32;
+            if width <= 0.0 {
+                return Err(invalid(format!(
+                    "hue_width 必须大于 0（窗全宽），得到 {width}"
+                )));
+            }
+            let smoothness = number_in("smoothness", 0.0, 1.0, Some(0.25))? as f32;
+            RangeBake::Color {
+                hue,
+                width,
+                smoothness,
+            }
+        }
+        other => {
+            return Err(invalid(format!(
+                "range 只收 luminance / color，得到 {other}"
+            )));
+        }
+    };
+    let invert = args.get("invert").and_then(Value::as_bool).unwrap_or(false);
+    let state = document_state(ctx)?;
+    require_alive_layer(&state, &layer_id)?;
+    let (canvas_w, canvas_h) = (state.width, state.height);
+    // 对象级空层检查（渲染级检查不够：空层单层渲染会落到文档背景
+    // ——缺省不透明白底——于是"空层"会伪装成一张纯色图通过自检；与
+    // frequency_separation 同口径，对象级才是真空）。
+    let alive = state.alive_objects();
+    let layer_objects: Vec<_> = alive
+        .iter()
+        .filter(|object| object.layer_id == layer_id)
+        .collect();
+    if layer_objects.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!("图层 {layer_id} 没有任何对象 ⇒ 没有可采样的像素")),
+        ));
+    }
+    if layer_objects.iter().all(|object| {
+        matches!(
+            object.object_type,
+            ObjectType::Adjustment | ObjectType::Filter
+        )
+    }) {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!(
+                "图层 {layer_id} 只有调整/滤镜对象，没有可采样的像素"
+            )),
+        ));
+    }
+    // 内存闸（C2 口径，沿 frequency_separation）：源图 4 B/px + 网格 1 B/px。
+    let pixels = (canvas_w as u64).saturating_mul(canvas_h as u64);
+    let estimated = pixels.saturating_mul(5);
+    let budget = Workspace::memory_budget_bytes();
+    if estimated > budget {
+        return Err(YanshiError::new(
+            ErrorCode::ResourceExhausted,
+            ErrorContext::detail(format!(
+                "范围遮罩估算内存 {} MB 超过文档内存预算 {} MB（{}×{} 像素 × 5 B/px）⇒ \
+                 拒绝烘焙（调大 YANSHI_DOC_MEMORY_BUDGET_MB 或先缩小画布）",
+                estimated / 1_024 / 1_024,
+                budget / 1_024 / 1_024,
+                canvas_w,
+                canvas_h,
+            )),
+        ));
+    }
+    // 渲染源图层（只拍这一层）。对象级空层检查在前；这里的
+    // ReferenceNotFound / 全透明是兜底（渲染侧真空时仍拒绝，不烘焙
+    // 一张背景色假图），与 frequency_separation 同口径。
+    let bbox = Bbox::new(0.0, 0.0, canvas_w as f64, canvas_h as f64);
+    let (width, height, source) =
+        match ctx
+            .workspace
+            .render_region_raw_layer(&ctx.doc_id, bbox, &layer_id)
+        {
+            Ok(rendered) => rendered,
+            Err(error) if error.code == ErrorCode::ReferenceNotFound => {
+                return Err(YanshiError::new(
+                    ErrorCode::PreconditionFailed,
+                    ErrorContext::detail(format!(
+                        "图层 {layer_id} 渲染为空 ⇒ 它是空层或纯调整层，没有可采样的像素：{error}"
+                    )),
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+    if source.chunks_exact(4).all(|pixel| pixel[3] == 0) {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!("图层 {layer_id} 全幅透明 ⇒ 没有可采样的像素")),
+        ));
+    }
+    let grid = bake_range_grid(&source, width as usize, height as usize, &range, invert);
+    let matched = grid.iter().filter(|&&v| v > 0).count();
+    let mean = grid.iter().map(|&v| f64::from(v)).sum::<f64>() / (grid.len() as f64 * 255.0);
+    // blob 先落（原子引用它；放 blob 失败 ⇒ 零原子）。
+    let png =
+        yanshi_render::png::encode_png_l8(width, height, &grid).expect("内存 PNG 编码不会失败");
+    let blob_hash = ctx.workspace.put_blob(&png)?;
+    let payload = json!({
+        "mask_id": mask_id,
+        "shape": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": canvas_w, "h": canvas_h}},
+        "feather": 0.0,
+        "mode": "new",
+        "invert": false,
+        "patches": [{
+            "bbox": [0, 0, width as i32, height as i32],
+            "target_u8": 255,
+            "op": "replace_all",
+            "blob": blob_hash,
+        }],
+        "refs": { "blobs": [blob_hash] },
+    });
+    let result = ctx.commit(AtomKind::CreateMask, payload)?;
+    let region = region_of(&result);
+    let mut response = finish_mutation(ctx, &result, region)?;
+    response["range"] = json!(range_name);
+    response["source_layer_id"] = json!(layer_id);
+    response["coverage_matched_pixels"] = json!(matched);
+    response["coverage_matched_ratio"] = json!(matched as f64 / grid.len() as f64);
+    response["coverage_mean"] = json!(mean);
+    match &range {
+        RangeBake::Luminance {
+            low,
+            high,
+            smoothness,
+        } => {
+            response["baked"] = json!({
+                "range": "luminance",
+                "low": low,
+                "high": high,
+                "smoothness": smoothness,
+                "invert": invert,
+            });
+        }
+        RangeBake::Color {
+            hue,
+            width,
+            smoothness,
+        } => {
+            response["baked"] = json!({
+                "range": "color",
+                "hue": hue,
+                "hue_width": width,
+                "smoothness": smoothness,
+                "invert": invert,
+            });
+        }
+    }
+    response["note"] = json!(
+        "烘焙快照：遮罩取自源图层当前渲染的像素，源图层此后的修改不传播；明度为 sRGB 编码值的 Rec709 加权（显示空间）；invert 已烤进网格。挂到调整层：set_property{layer_id, key: \"mask_id\", value: <mask_id>}。"
+    );
+    Ok(response)
+}
+
+#[cfg(test)]
+mod range_mask_tests {
+    use super::{bake_range_grid, hue_window, luminance_window, rgb_hue_sat, srgb_luma, RangeBake};
+
+    #[test]
+    fn luminance_window_band_plateau_and_smooth_edges() {
+        // 带内平顶、带外 0、边上 smoothstep 中点 0.5。
+        assert_eq!(luminance_window(0.3, 0.2, 0.4, 0.05), 1.0);
+        assert_eq!(luminance_window(0.1, 0.2, 0.4, 0.05), 0.0);
+        assert_eq!(luminance_window(0.5, 0.2, 0.4, 0.05), 0.0);
+        assert!((luminance_window(0.2, 0.2, 0.4, 0.05) - 0.5).abs() < 1e-6);
+        assert!((luminance_window(0.4, 0.2, 0.4, 0.05) - 0.5).abs() < 1e-6);
+        // smoothness=0 时退化为硬窗。
+        assert_eq!(luminance_window(0.2, 0.2, 0.4, 0.0), 1.0);
+        assert_eq!(luminance_window(0.199, 0.2, 0.4, 0.0), 0.0);
+        assert_eq!(luminance_window(0.4, 0.2, 0.4, 0.0), 1.0);
+        assert_eq!(luminance_window(0.401, 0.2, 0.4, 0.0), 0.0);
+        // 窄带：smoothness 钳到 (high-low)/2，带内仍有平顶（无钳制时峰值到不了 1）。
+        assert_eq!(luminance_window(0.32, 0.3, 0.34, 0.05), 1.0);
+        assert!((luminance_window(0.3, 0.3, 0.34, 0.05) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn srgb_luma_rec709_weights() {
+        assert!((srgb_luma(255, 255, 255) - 1.0).abs() < 1e-6);
+        assert_eq!(srgb_luma(0, 0, 0), 0.0);
+        assert!((srgb_luma(255, 0, 0) - 0.2126).abs() < 1e-6);
+        assert!((srgb_luma(0, 255, 0) - 0.7152).abs() < 1e-6);
+        assert!((srgb_luma(0, 0, 255) - 0.0722).abs() < 1e-6);
+    }
+
+    #[test]
+    fn bake_luminance_grid_selects_dark_band_only() {
+        // 4×1：黑 / 暗灰（≈0.30） / 白 / 透明红。
+        let rgba = vec![
+            0, 0, 0, 255, // 明度 0
+            77, 77, 77, 255, // 明度 ≈0.302
+            255, 255, 255, 255, // 明度 1
+            255, 0, 0, 0, // 透明 ⇒ 恒 0（红本身明度 0.21 在带内也不选）
+        ];
+        let grid = bake_range_grid(
+            &rgba,
+            4,
+            1,
+            &RangeBake::Luminance {
+                low: 0.2,
+                high: 0.4,
+                smoothness: 0.0,
+            },
+            false,
+        );
+        assert_eq!(grid, vec![0, 255, 0, 0]);
+        // 反选烤进网格，但透明像素不复活。
+        let inv = bake_range_grid(
+            &rgba,
+            4,
+            1,
+            &RangeBake::Luminance {
+                low: 0.2,
+                high: 0.4,
+                smoothness: 0.0,
+            },
+            true,
+        );
+        assert_eq!(inv, vec![255, 0, 255, 0]);
+    }
+
+    #[test]
+    fn hue_window_selects_hue_band_and_rejects_gray() {
+        // 红在窗内、绿/蓝在窗外、灰（无彩色）恒为 0。
+        let (red_h, red_s) = rgb_hue_sat(255, 0, 0);
+        assert!((red_h - 0.0).abs() < 1e-6);
+        assert!((red_s - 1.0).abs() < 1e-6);
+        assert_eq!(hue_window(red_h, red_s, 0.0, 60.0, 0.25), 1.0);
+        let (green_h, green_s) = rgb_hue_sat(0, 255, 0);
+        assert!((green_h - 120.0).abs() < 1e-6);
+        assert_eq!(hue_window(green_h, green_s, 0.0, 60.0, 0.25), 0.0);
+        let (gray_h, gray_s) = rgb_hue_sat(128, 128, 128);
+        assert_eq!(gray_s, 0.0);
+        assert_eq!(hue_window(gray_h, gray_s, 0.0, 60.0, 0.25), 0.0);
+        // 环形距离：359° 的红离中心 0° 只有 1°。
+        let (near_red_h, near_red_s) = rgb_hue_sat(255, 0, 5);
+        assert!(
+            near_red_h > 355.0,
+            "近红的色相应在 355° 以上，实测 {near_red_h}"
+        );
+        assert_eq!(hue_window(near_red_h, near_red_s, 0.0, 60.0, 0.25), 1.0);
+        // 过渡带内取值严格在 (0, 1) 之间（不硬跳）。
+        let (yellow_h, yellow_s) = rgb_hue_sat(255, 255, 0);
+        assert!((yellow_h - 60.0).abs() < 1e-6);
+        let mid = hue_window(yellow_h, yellow_s, 0.0, 140.0, 0.25);
+        assert!(mid > 0.0 && mid < 1.0, "过渡带内应为中间值，实测 {mid}");
+    }
 }

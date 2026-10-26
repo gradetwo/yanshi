@@ -1920,6 +1920,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "create_mask" => write_create_mask(ctx, args),
         "paint_mask" => write_paint_mask(ctx, args),
         "delete_mask" => write_delete_mask(ctx, args),
+        "create_range_mask" => write_create_range_mask(ctx, args),
         "create_selection" => write_create_selection(ctx, args),
         "delete_selection" => write_delete_selection(ctx, args),
         "list_selections" => read_list_selections(ctx),

@@ -309,8 +309,11 @@ fn db_curve_points(mid_display: f64) -> Value {
     json!([[0.0, 0.0], [x, y], [1.0, 1.0]])
 }
 
-/// 目标层存在且存活，否则按名报错（FS / D&B 共用）。
-fn require_alive_layer(state: &yanshi_core::DocumentState, layer_id: &str) -> Result<()> {
+/// 目标层存在且存活，否则按名报错（FS / D&B / 范围遮罩共用）。
+pub(super) fn require_alive_layer(
+    state: &yanshi_core::DocumentState,
+    layer_id: &str,
+) -> Result<()> {
     match state.layers.get(layer_id) {
         None => Err(YanshiError::new(
             ErrorCode::ReferenceNotFound,
