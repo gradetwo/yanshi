@@ -534,6 +534,108 @@ fn auto_allows_untouched_raw_default_exposure_and_neutralizes_it() {
     );
 }
 
+/// P-01 M2：auto 落成打包——一次 `auto_retouch` 只渲一次终态预览，且
+/// 落成的对象集（组/id/类型/参数）与 `dry_run` 计划逐项一致；重跑
+/// （全部走更新路径）同样只渲一次。判据用 `timings.preview_calls`
+///（语义计数，与墙钟无关 ⇒ 跨机器稳定）；缺省曝光置零路径也包进来
+///（置零本身不许再多一次预览）。
+#[test]
+fn auto_retouch_batched_landing_single_preview() {
+    let root = temp_dir("m2");
+    let _cleanup = TempCleanup(root.clone());
+    let doc = "doc_auto_m2";
+    let (width, height) = (64, 48);
+    let mut workspace = workspace(&root, doc, width, height);
+    let src = setup_source(&mut workspace, doc, width, height);
+    let default = call(
+        &mut workspace,
+        doc,
+        "add_adjustment",
+        json!({"layer_id": src, "adjustment_type": "exposure", "params": {"ev": 0.5}, "name": RAW_DEFAULT_NAME, "object_id": "raw_default_1"}),
+    );
+    assert_eq!(default["ok"], json!(true), "{default}");
+
+    let planned = call(
+        &mut workspace,
+        doc,
+        "auto_retouch",
+        json!({"layer_id": src, "dry_run": true}),
+    );
+    assert_eq!(planned["ok"], json!(true), "{planned}");
+    let planned_items = planned["planned"]
+        .as_array()
+        .expect("planned 应为数组")
+        .clone();
+    assert!(
+        planned_items.len() > 1,
+        "合成图上计划对象须多于 1 个，单对象测不出打包：{planned}"
+    );
+
+    let first = call(
+        &mut workspace,
+        doc,
+        "auto_retouch",
+        json!({"layer_id": src}),
+    );
+    assert_eq!(first["ok"], json!(true), "{first}");
+    assert_eq!(
+        first["neutralized_default_exposure"],
+        json!(["raw_default_1"]),
+        "缺省曝光置零路径应走通：{first}"
+    );
+    let applied = first["applied"].as_array().expect("applied 应为数组");
+    assert_eq!(
+        applied.len(),
+        planned_items.len(),
+        "落成对象数应与计划一致：{first}"
+    );
+    for (got, want) in applied.iter().zip(planned_items.iter()) {
+        for key in ["group", "object_id", "type", "params"] {
+            assert_eq!(
+                got[key], want[key],
+                "applied[{key}] 应与 dry_run 计划一致：{first}"
+            );
+        }
+    }
+    let preview_calls = first["timings"]["preview_calls"]
+        .as_u64()
+        .unwrap_or(0);
+    assert_eq!(
+        preview_calls, 1,
+        "打包落成应只渲 1 次预览，实得 {preview_calls}：{first}"
+    );
+
+    // 重跑（全部走更新路径）同样只渲一次，对象集与计划一致。
+    let second = call(
+        &mut workspace,
+        doc,
+        "auto_retouch",
+        json!({"layer_id": src}),
+    );
+    assert_eq!(second["ok"], json!(true), "{second}");
+    let applied2 = second["applied"].as_array().expect("applied 应为数组");
+    assert_eq!(
+        applied2.len(),
+        planned_items.len(),
+        "重跑对象数应与计划一致：{second}"
+    );
+    for (got, want) in applied2.iter().zip(planned_items.iter()) {
+        for key in ["group", "object_id", "type", "params"] {
+            assert_eq!(
+                got[key], want[key],
+                "重跑 applied[{key}] 应与计划一致：{second}"
+            );
+        }
+    }
+    let preview_calls2 = second["timings"]["preview_calls"]
+        .as_u64()
+        .unwrap_or(0);
+    assert_eq!(
+        preview_calls2, 1,
+        "重跑打包落成应只渲 1 次预览，实得 {preview_calls2}：{second}"
+    );
+}
+
 #[test]
 fn auto_refuses_edited_raw_default_exposure() {
     let root = temp_dir("raw_default_edited");
