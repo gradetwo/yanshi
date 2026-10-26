@@ -2470,6 +2470,20 @@ impl Workspace {
         document.render_region_complete_jobs(bbox)
     }
 
+    /// 变更后预览：降采样渲染并返回可展示的预览（P-01 M1 ✓）。
+    ///
+    /// 与 [`Self::render_region`] 的区别：**不写磁盘 `render.png`** ✓（降采样图
+    /// 不许进整幅缓存）；改为调既有的 `cache_document_preview`，把新鲜的 256²
+    /// `preview.png` 落盘（「打开即图片」的基座保持新鲜，费用几十 KB）。
+    pub fn render_region_preview(&mut self, doc_id: &str, bbox: Bbox) -> Result<RenderedPreview> {
+        let preview = {
+            let document = self.document_mut(doc_id)?;
+            document.render_region_preview(bbox)?
+        };
+        let _ = self.cache_document_preview(doc_id);
+        Ok(preview)
+    }
+
     /// 渲染区域、写入渲染缓存并返回可展示的预览（含 PNG blob 与取回地址）。
     pub fn render_region(&mut self, doc_id: &str, bbox: Bbox) -> Result<RenderedPreview> {
         let (preview, head, png, full_frame) = {

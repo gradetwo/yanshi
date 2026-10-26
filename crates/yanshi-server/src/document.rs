@@ -268,6 +268,23 @@ fn atom_cannot_change_pixels(kind: yanshi_core::atom::AtomKind) -> bool {
     )
 }
 
+/// **变更后预览的长边上限** ✓（P-01 M1 ✓）：每次变更后的文档级预览改为降采样渲染 ✓，
+/// 长边不超过这个值 ✓（查看器与精修流本来就看这个尺寸 ✓）；全幅只在导出／像素读数时算 ✓。
+/// 取样步长是 2 的幂（期 4 的 `lod`）⇒ 实际长边取 `≤ 1600` 的最大档位（如 6064 → 1516）✓。
+pub const PREVIEW_MAX_EDGE: u32 = 1600;
+
+/// **预览降采样档位** ✓（P-01 M1 ✓）：满足 `ceil(长边 / 2^lod) ≤ PREVIEW_MAX_EDGE`
+/// 的最小 `lod`，上 cap 3（`render_region_with_lod` 的上限 ✓）。
+/// 小区域／小画布 → 0（与今天全分辨率行为一致 ✓）。
+pub fn preview_lod_for(bbox: Bbox) -> u32 {
+    let longest = bbox.w.max(bbox.h).max(0.0);
+    let mut lod = 0u32;
+    while lod < 3 && (longest / (1u32 << lod) as f64).ceil() > PREVIEW_MAX_EDGE as f64 {
+        lod += 1;
+    }
+    lod
+}
+
 fn planned_preview_dirty(dirty: &DirtySet) -> PreviewDirty {
     if dirty.kind == DirtyKind::Full || (dirty.kind == DirtyKind::Structure && dirty.bbox.is_none())
     {
@@ -1852,6 +1869,63 @@ impl Document {
         }
     }
 
+    /// **变更后预览：降采样渲染** ✓（P-01 M1 ✓）—— `finish_mutation` 要图的那条路。
+    ///
+    /// 与 [`Self::render_region`] 的区别（**三处禁区**，见 `p01-AUDIT-M1.md`）：
+    /// * 脏区按 `preview_lod_for` 档位渲染（24MP 上 1516 边），不经过全分辨率中间缓冲；
+    /// * **不晋升 `full_frame_render`** ✓：降采样图绝不能冒充整幅缓存 ——
+    ///   下一次真全幅请求（`current_full_frame_preview`）不命中，照常真渲染；
+    /// * **不写磁盘 `render.png`** ✓（那是 `Workspace::render_region` 的事）——
+    ///   降采样图写进去会让重开时的整幅缓存校验失效（尺寸 ≠ 画布）。
+    ///
+    /// 256² 文档缩略图照常从这次渲染刷新（与 `render_document_preview` 同源），
+    /// `document_thumbnail` 仍与 HEAD 一致 ⇒ `get_document` 不触发全幅重渲染。
+    /// 像素读数与导出不受影响（它们走 `render_region_raw`，现渲）。
+    pub fn render_region_preview(&mut self, bbox: Bbox) -> Result<RenderedPreview> {
+        yanshi_render::begin_render();
+        let region = bbox;
+        let doc_size = Bbox::new(0.0, 0.0, self.state.width as f64, self.state.height as f64);
+        let lod = preview_lod_for(region);
+        let rendered =
+            self.renderer
+                .render_region_with_lod(&self.state, &*self.store, region, lod)?;
+        self.document_preview_renders += 1;
+        // **告警照旧留档** ✓（不因为降采样就静默 ✓）。
+        self.note_render_stats(&rendered.stats);
+        let previous = self.cached_preview_hashes();
+        let png = encode_png(rendered.width, rendered.height, &rendered.rgba8)
+            .ok_or_else(|| internal("PNG 编码失败（尺寸与像素数不匹配）"))?;
+        let blob_hash = self.store.put(&png)?;
+        self.last_render_blob = Some(blob_hash.clone());
+        self.render_watermark = self.log.head_seq();
+        // 缩略图与这次渲染同源（256²；`document_thumbnail` 仍与 HEAD 一致）。
+        let _thumb_blob =
+            self.refresh_thumb_from_render(Some(region), Some(&rendered), doc_size)?;
+        self.preview_dirty = PreviewDirty::Clean;
+        self.complete_render_jobs()?;
+        // **淘汰必须放在「指针都更新完」之后** ✓（与 `render_region` 同序）。
+        self.evict_replaced_previews(&previous);
+        Ok(RenderedPreview {
+            rgba8: Some(rendered.rgba8),
+            bbox: [
+                rendered.bbox.x,
+                rendered.bbox.y,
+                rendered.bbox.w,
+                rendered.bbox.h,
+            ],
+            width: rendered.width,
+            height: rendered.height,
+            blob_hash: blob_hash.clone(),
+            url: preview_url(&blob_hash),
+            mime_type: "image/png".to_owned(),
+            bytes: png.len(),
+            tiles: rendered.tiles.len(),
+            thumb_kind: None,
+            filter_padding: rendered.stats.filter_padding,
+            warnings: rendered.stats.unsupported,
+        })
+    }
+
     /// 渲染区域并编码为 PNG 写入 CAS（7.2）；整幅覆盖时同时更新文档级缩略图。
     ///
     /// **冷启动复用** ✓（14.5 / 本专题）：若请求覆盖整幅画布 ✓、且磁盘上那份**整幅**渲染
@@ -2160,6 +2234,47 @@ impl Document {
         Ok(())
     }
 
+    /// 从一次区域渲染刷新 256² 文档缩略图并更新文档级预览指针（P-01 M1 抽出）。
+    ///
+    /// `render_document_preview` 与 `render_region_preview` 共用：缩略图的块平均
+    /// 按渲染像素密度反推（`refresh_thumb_banded`），与渲染分辨率无关 ⇒
+    /// LOD 渲染与全分辨率渲染走同一段代码，缩略图语义不变。
+    /// 只更新缩略图侧指针（`document_thumbnail` / `last_thumb_blob` /
+    /// `render_watermark` / `document_thumbnail_seq`）；`last_render_blob`
+    /// 由调用方按自己的渲染结果写（缩略图路是 256 blob，LOD 预览路是 LOD blob）。
+    /// **淘汰不在这里** ✓：必须等调用方把全部指针更新完再淘汰（见 `render_region`
+    /// 的注释 —— 提前淘汰会把「仍被旧指针指着」的 blob 误留下来）。
+    fn refresh_thumb_from_render(
+        &mut self,
+        region: Option<Bbox>,
+        render: Option<&RegionRender>,
+        doc_size: Bbox,
+    ) -> Result<BlobHash> {
+        // 只刷新与 `region` 相交的块 ✓；其余块**保留上一版像素** ✓。
+        let (thumb_size, thumb_rgba) = {
+            let thumb = self
+                .document_thumb
+                .get_or_insert_with(|| Thumb::new(ThumbKind::Doc256));
+            if let (Some(region), Some(render)) = (region, render) {
+                let blocks = thumb.dirty_blocks_for(&region, doc_size);
+                Self::refresh_thumb_banded(thumb, render, region, doc_size, &blocks)?;
+            }
+            (thumb.size, thumb.rgba8.clone())
+        };
+        let png = encode_png(thumb_size, thumb_size, &thumb_rgba)
+            .ok_or_else(|| internal("PNG 编码失败（缩略图尺寸不匹配）"))?;
+        // **缩略图是可重建的缓存** ✓（设计 `:572`✗ ⇒ **∴ 改为**按需产生 ✓）
+        // ⇒ **∴ 所以用 `put_cache`✗（**∴ 跳过 `fsync` ✓）⇒ **∴ 而**权威数据（**∴ 原子日志 ✗／位图 ✓**）
+        // 仍走 `put`✗ ⇒ **∴ `/health`✗ 的 `blob_fsync`✗ 语义不变 ✓**。
+        let blob_hash = self.store.put_cache(&png)?;
+        self.last_thumb_blob = Some(blob_hash.clone());
+        self.document_thumbnail = Some(blob_hash.clone());
+        self.render_watermark = self.log.head_seq();
+        self.document_thumbnail_seq = self.render_watermark;
+        self.broadcaster.publish_thumbnail(ThumbKind::Doc256);
+        Ok(blob_hash)
+    }
+
     /// 提交收尾用的**文档级预览**：生成 256² 缩略图（小 PNG），并推进渲染水位。
     ///
     /// 与 [`Self::render_region`] 的区别：不落盘整幅 PNG。显式导出仍走 `render_region`。
@@ -2257,9 +2372,14 @@ impl Document {
                         })
                     }
                     None => {
-                        let rendered =
-                            self.renderer
-                                .render_region(&self.state, &*self.store, region)?;
+                        // **P-01 M1**：缩略图只需要 256² 像素 ⇒ 脏区按预览档位渲染
+                        //（`preview_lod_for`；24MP 上 lod 2 ⇒ 1516 边），不经过全分辨率中间缓冲。
+                        let rendered = self.renderer.render_region_with_lod(
+                            &self.state,
+                            &*self.store,
+                            region,
+                            preview_lod_for(region),
+                        )?;
                         // **"这条路真的走了"** ✓（判据用它 ✓，与区域大小、与墙钟都无关 ✓）。
                         self.document_preview_renders += 1;
                         if covers_canvas(region, self.state.width, self.state.height) {
@@ -2277,34 +2397,13 @@ impl Document {
             }
             None => None,
         };
-        // 只刷新与 `region` 相交的块 ✓；其余块**保留上一版像素** ✓。
-        let (thumb_size, thumb_rgba) = {
-            let thumb = self
-                .document_thumb
-                .get_or_insert_with(|| Thumb::new(ThumbKind::Doc256));
-            if let (Some(region), Some(render)) = (region, render.as_ref()) {
-                let blocks = thumb.dirty_blocks_for(&region, doc_size);
-                Self::refresh_thumb_banded(thumb, render, region, doc_size, &blocks)?;
-            }
-            (thumb.size, thumb.rgba8.clone())
-        };
         // **渲染完必清污** ✓：不清的话下一次预览会把同一块再渲染一遍 ✗；
         // 而写回 `Unknown`/`None` 又会**误判成冷启动** ✗ ⇒ 下一笔直接整幅 ✗（旧实现的坑 ✓）。
         self.preview_dirty = PreviewDirty::Clean;
-        let png = encode_png(thumb_size, thumb_size, &thumb_rgba)
-            .ok_or_else(|| internal("PNG 编码失败（缩略图尺寸不匹配）"))?;
         let previous = self.cached_preview_hashes();
-        // **缩略图是可重建的缓存** ✓（设计 `:572`✗ ⇒ **∴ 改为**按需产生 ✓）
-        // ⇒ **∴ 所以用 `put_cache`✗（**∴ 跳过 `fsync` ✓）⇒ **∴ 而**权威数据（**∴ 原子日志 ✗／位图 ✓**）
-        // 仍走 `put`✗ ⇒ **∴ `/health`✗ 的 `blob_fsync`✗ 语义不变 ✓**。
-        let blob_hash = self.store.put_cache(&png)?;
-        self.last_thumb_blob = Some(blob_hash.clone());
-        self.document_thumbnail = Some(blob_hash.clone());
-        self.render_watermark = self.log.head_seq();
-        self.document_thumbnail_seq = self.render_watermark;
+        let blob_hash = self.refresh_thumb_from_render(region, render.as_ref(), doc_size)?;
         self.last_render_blob = Some(blob_hash.clone());
         self.evict_replaced_previews(&previous);
-        self.broadcaster.publish_thumbnail(ThumbKind::Doc256);
         self.complete_render_jobs()?;
         // 本次预览渲染跳过了什么 ✓（没有渲染（`region == None`）⇒ 空 ✓：
         // 那时没有新信息，`last_render_warnings` 保留上一次的值 ✓）。
@@ -3262,6 +3361,26 @@ mod tests {
                 }),
             ),
         ]
+    }
+
+    /// 预览降采样档位表（P-01 M1）：档位由长边决定，与短边无关。
+    ///
+    /// 变异方向：把 `PREVIEW_MAX_EDGE` 改大／把 `lod < 3` 的 cap 改小 ⇒
+    /// 6064 那一行先红（档位变 1 或 3）。
+    #[test]
+    fn preview_lod_for_caps_long_edge_at_1600() {
+        // 24MP 照片画布：6064 / 4 = 1516 ≤ 1600 ⇒ lod 2。
+        assert_eq!(preview_lod_for(Bbox::new(0.0, 0.0, 6064.0, 4040.0)), 2);
+        // 恰好在上限上 ⇒ 不降采样。
+        assert_eq!(preview_lod_for(Bbox::new(0.0, 0.0, 1600.0, 900.0)), 0);
+        // 刚超上限 ⇒ 降一档。
+        assert_eq!(preview_lod_for(Bbox::new(0.0, 0.0, 1601.0, 900.0)), 1);
+        // 小画布／小区域 ⇒ 不降采样。
+        assert_eq!(preview_lod_for(Bbox::new(0.0, 0.0, 800.0, 600.0)), 0);
+        // 8K 画布：8192 / 8 = 1024 ⇒ lod 3（cap）。
+        assert_eq!(preview_lod_for(Bbox::new(0.0, 0.0, 8192.0, 8192.0)), 3);
+        // 长边说了算：窄长条也按长边算。
+        assert_eq!(preview_lod_for(Bbox::new(0.0, 0.0, 100.0, 5000.0)), 2);
     }
 
     /// 预览落后超过上限 ⇒ `dirty_since` 必须直接返回 `Unknown`（第 191 轮）。

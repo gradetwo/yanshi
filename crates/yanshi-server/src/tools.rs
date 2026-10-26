@@ -1651,7 +1651,10 @@ fn finish_mutation(
             // **∴ 不换路** ✓ —— 我上一轮"去掉渲染条件"的尝试把长笔触推进了整幅 job 分支
             // ⇒ 实测 **962 ms/笔** ✗（比 264 ms 更差 ✓），教训已记档 ✓。
             if ctx.preview && !ctx.silent {
-                let rendered = ctx.workspace.render_region(&ctx.doc_id, region)?;
+                // **P-01 M1**：变更后预览降采样渲染（长边 ≤1600；24MP 上 1516 边）——
+                // 响应只带 `thumb_url`，展示不需要全幅像素；导出与像素读数走
+                // `render_region_raw`，不受影响。
+                let rendered = ctx.workspace.render_region_preview(&ctx.doc_id, region)?;
                 ctx.time(Phase::Preview, preview_started);
                 caller_render_done = true;
                 preview = Some(PreviewInfo::Fresh(Box::new(rendered)));
