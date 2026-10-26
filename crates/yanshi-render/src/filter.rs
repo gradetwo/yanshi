@@ -530,6 +530,28 @@ fn gradient_sample(stops: &[(f32, [f32; 3])], x: f32) -> [f32; 3] {
     stops[stops.len() - 1].1
 }
 
+// 阴影/高光色度差距软拐点（photo-bugfix magenta-fix，探针 P6；设计文档
+// `yanshi-fix-research/photo-bugfix/magenta-fix-DESIGN.md` §2.5/§3）。
+// R0 是线性直通阈值（ratio ≤ R0 时 gap = ratio，与现行亮度比回写逐位一致）；
+// GMAX 是色度差距放大倍数的渐近上界（ratio → ∞ 时 gap → GMAX）。
+// 定量依据：C¹ 连续（ratio = R0 处左右导数均为 1.0）+ 增益预算 + P6 实测
+//（forest 品红 0.05%/0.01%，无噪色卡保持率 100%/78%/44%）。
+const SHADOWS_HIGHLIGHTS_KNEE_R0: f32 = 1.5;
+const SHADOWS_HIGHLIGHTS_KNEE_GMAX: f32 = 2.2;
+
+/// 有理软拐点：把亮度比 `ratio` 映射为色度差距放大倍数 `gap`。
+/// ratio ≤ R0 时 gap = ratio（逐位一致）；ratio > R0 时 gap 平滑趋近 GMAX，
+/// 在 ratio = R0 处左右导数均为 1.0（C¹ 连续，无马赫带折角）。
+fn soft_knee_gap(ratio: f32) -> f32 {
+    if ratio <= SHADOWS_HIGHLIGHTS_KNEE_R0 {
+        ratio
+    } else {
+        let excess = ratio - SHADOWS_HIGHLIGHTS_KNEE_R0;
+        let span = SHADOWS_HIGHLIGHTS_KNEE_GMAX - SHADOWS_HIGHLIGHTS_KNEE_R0;
+        SHADOWS_HIGHLIGHTS_KNEE_R0 + (excess * span) / (excess + span)
+    }
+}
+
 /// **阴影/高光恢复**：`shadows`／`highlights` 各 -1..1，0 = 不动（恒等 ✓）。
 ///
 /// 掩码按**显示空间（sRGB 编码）明度**：暗部权重 `(1−L)²`、高光权重 `L²` ⇒ 白色处暗部权重**恰好 0**、
@@ -559,6 +581,16 @@ fn gradient_sample(stops: &[(f32, [f32; 3])], x: f32) -> [f32; 3] {
 /// toward（黑位抬升行为不变）。编解码仍用钳制版 `linear_to_srgb` /
 /// `srgb_to_linear`（与旧实现一致，HDR 高光行为不动；扩展传递的评估
 /// 留后，不随本项改）。
+///
+/// **色度差距软拐点（photo-bugfix magenta-fix，探针 P6；设计文档 §2.5/§3）**：
+/// 亮度照 `target_luma` 提满，通道与亮度的差距按有理软拐点钳制放大：
+/// `gap = ratio`（ratio ≤ 1.5 时逐位一致）／
+/// `gap = 1.5 + (r−1.5)·0.7/((r−1.5)+0.7)`（ratio > 1.5 时平滑趋近 2.2）。
+/// 暗部色度噪声不再被亮度比 2.5~4.4× 放大越过品红阈值，而提亮量、色相角、
+/// 中浅暗部（ratio ≤ 1.5）逐位不动。软拐点在 ratio = 1.5 处左右导数均为 1.0
+///（C¹ 连续，无马赫带折角）；顺带修复 `luma→0+` 与 `luma=0` 的分支跳变
+///（`lim_{luma→0+} display[i] = target_luma`，与纯黑回退分支连续）。
+/// `luma = 0` 的纯黑回退分支不动；highlights 侧 ratio < 1 时 gap = ratio，逐位不变。
 pub fn shadows_highlights(buffer: &mut Buffer, shadows: f32, highlights: f32) {
     const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
     let shadows = shadows.clamp(-1.0, 1.0);
@@ -582,8 +614,13 @@ pub fn shadows_highlights(buffer: &mut Buffer, shadows: f32, highlights: f32) {
         .clamp(0.0, 1.0);
         if luma > 0.0 {
             let ratio = target_luma / luma;
+            // 色度差距放大倍数按有理软拐点钳制（magenta-fix，探针 P6）：
+            // ratio ≤ R0 时 gap = ratio（与现行亮度比回写逐位一致）；
+            // ratio > R0 时 gap 平滑趋近 GMAX。亮度恒等于 target_luma
+            //（提亮量不动），色相角严格不变。
+            let gap = soft_knee_gap(ratio);
             for value in display.iter_mut() {
-                *value = (*value * ratio).clamp(0.0, 1.0);
+                *value = (target_luma + (*value - luma) * gap).clamp(0.0, 1.0);
             }
         } else {
             // 纯黑像素无亮度可缩放：回退逐通道 toward，黑位抬升行为与现行一致。
@@ -6776,6 +6813,73 @@ mod coloradj_tests {
         assert_eq!(px(&buffer), [0.25, 0.5, 0.75], "明度 0.5 应命中中间色标");
     }
 
+    /// 显示亮度（Rec.709 权重，与 `shadows_highlights` 内同一口径）。
+    fn display_luma(px: [f32; 3]) -> f32 {
+        0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2]
+    }
+
+    /// 相对饱和 `(max−min)/mean`（与 `shadows_highlights_preserves_chroma_ratios` 同口径）。
+    fn rel_sat_of(px: [f32; 3]) -> f32 {
+        let max = px[0].max(px[1]).max(px[2]);
+        let min = px[0].min(px[1]).min(px[2]);
+        (max - min) / ((px[0] + px[1] + px[2]) / 3.0)
+    }
+
+    /// 合成色卡像素（显示空间）：给定显示亮度与相对饱和，构造 R 高 B 低、
+    /// G 为中值的三通道像素。rel_sat = 2p、luma = m·(1 + 0.1404p)，
+    /// 其中 0.1404 = 0.2126 − 0.0722（Rec.709 权重差）。
+    fn card_pixel(luma: f32, rel_sat: f32) -> [f32; 3] {
+        let p = rel_sat / 2.0;
+        let m = luma / (1.0 + 0.1404 * p);
+        [(1.0 + p) * m, m, (1.0 - p) * m]
+    }
+
+    /// 对单个显示空间像素跑 `shadows_highlights`，返回显示空间输出。
+    fn run_sh_display(display: [f32; 3], shadows: f32, highlights: f32) -> [f32; 3] {
+        let linear = [
+            srgb_to_linear(display[0]),
+            srgb_to_linear(display[1]),
+            srgb_to_linear(display[2]),
+        ];
+        let mut buffer = filled([linear[0], linear[1], linear[2], 1.0]);
+        shadows_highlights(&mut buffer, shadows, highlights);
+        let out = px(&buffer);
+        [
+            linear_to_srgb(out[0]),
+            linear_to_srgb(out[1]),
+            linear_to_srgb(out[2]),
+        ]
+    }
+
+    /// 旧亮度比回写（期 2 A2 原式，供剂量矩阵对照）：显示空间等比缩放。
+    /// 纯黑回退逐通道 toward，与现行一致。
+    fn ratio_scaled(display: [f32; 3], shadows: f32, highlights: f32) -> [f32; 3] {
+        let luma = display_luma(display);
+        let shadow_weight = (1.0 - luma) * (1.0 - luma);
+        let highlight_weight = luma * luma;
+        let target = (luma
+            + toward(shadows, shadow_weight, luma)
+            + toward(highlights, highlight_weight, luma))
+        .clamp(0.0, 1.0);
+        if luma > 0.0 {
+            let ratio = target / luma;
+            [
+                (display[0] * ratio).clamp(0.0, 1.0),
+                (display[1] * ratio).clamp(0.0, 1.0),
+                (display[2] * ratio).clamp(0.0, 1.0),
+            ]
+        } else {
+            let mut out = display;
+            for value in out.iter_mut() {
+                let current = *value;
+                let mut next = current + toward(shadows, shadow_weight, current);
+                next += toward(highlights, highlight_weight, current);
+                *value = next.clamp(0.0, 1.0);
+            }
+            out
+        }
+    }
+
     // ── shadows_highlights ──────────────────────────────────────────
 
     /// 0/0 ⇒ 恒等（任意像素）。
@@ -6890,6 +6994,273 @@ mod coloradj_tests {
             (luma(out_display) - 0.3748).abs() < 1e-3,
             "显示亮度应提到约 0.3748，实得 {}",
             luma(out_display)
+        );
+    }
+
+    /// **软拐点 gap 四档钉死（magenta-fix，设计文档 §4.3(a)）**：
+    /// r=1.5/2.0/2.456/4.429 ⇒ g=1.50/1.7917/1.9041/2.0650（容差 1e-3）。
+    /// 注：设计文档 §2.5 写的 "2.07" 是 2.065 的两位小数显示取整，测试钉精确值。
+    #[test]
+    fn shadows_highlights_soft_knee_gap_four_grades() {
+        for (ratio, expected) in [
+            (1.5f32, 1.5f32),
+            (2.0, 1.7917),
+            (2.456, 1.9041),
+            (4.429, 2.0650),
+        ] {
+            let got = soft_knee_gap(ratio);
+            assert!(
+                (got - expected).abs() < 1e-3,
+                "r={ratio} 时 gap 应为 {expected}，实得 {got}"
+            );
+        }
+    }
+
+    /// **拐点以下逐位一致**：ratio ≤ 1.5 时 gap 恒等于 ratio（同一值返回），
+    /// 含压暗侧（r<1）——软拐点只动提亮侧，不动压暗侧与高光侧。
+    #[test]
+    fn shadows_highlights_soft_knee_gap_is_identity_below_knee() {
+        for ratio in [0.0f32, 0.3, 0.9, 1.0, 1.2, 1.5] {
+            assert_eq!(
+                soft_knee_gap(ratio),
+                ratio,
+                "r={ratio} ≤ 1.5 时 gap 必须恒等于 ratio"
+            );
+        }
+    }
+
+    /// **C¹ 连续（magenta-fix，设计文档 §2.5）**：ratio=1.5 处左导数应为 1.0
+    ///（线性区；容差 1e-4 覆盖 f32 表示误差——1.5−h 本身的舍入使割线
+    /// 偏离 1.0 至多 0.5·ulp(1.5)/h ≈ 6e-5，实测 4.7e-5）；右割线在
+    /// h=1e-3 时为 0.99857，与 1.0 的差 ≈ |g''|·h/2 ≈ 1.43e-3
+    ///（g''(1.5+) = −2·0.7²/0.7³ ≈ −2.86），极限为 1.0。
+    /// 硬 min(2.0) 在此处导数从 1 突变为 0 ⇒ 该测试会红。
+    #[test]
+    fn shadows_highlights_soft_knee_is_c1_at_knee() {
+        let h = 1e-3f32;
+        let left = (soft_knee_gap(1.5) - soft_knee_gap(1.5 - h)) / h;
+        assert!(
+            (left - 1.0).abs() < 1e-4,
+            "左导数应为 1.0（容差 1e-4，f32 表示误差），实得 {left}"
+        );
+        let right = (soft_knee_gap(1.5 + h) - soft_knee_gap(1.5)) / h;
+        assert!(
+            (right - 1.0).abs() < 2e-3,
+            "右割线（h=1e-3）应在 1.0 附近（实得 {right}）；极限 1.0"
+        );
+    }
+
+    /// **提亮量守恒（magenta-fix §4.2 的单元层）**：ratio>R0 的暗彩像素，
+    /// 输出显示亮度等于 target_luma（容差 1e-3；逐通道 [0,1] 钳制除外，
+    /// 本探针三通道均不触顶）。
+    #[test]
+    fn shadows_highlights_luma_conserved_above_knee() {
+        let display = [0.06f32, 0.03, 0.02];
+        let luma = display_luma(display);
+        let shadow_weight = (1.0 - luma) * (1.0 - luma);
+        let target = (luma + toward(0.4, shadow_weight, luma)).clamp(0.0, 1.0);
+        let ratio = target / luma;
+        assert!(ratio > 1.5, "探针像素 ratio 应 > 1.5，实得 {ratio}");
+        let out = run_sh_display(display, 0.4, 0.0);
+        assert!(
+            out.iter().all(|v| (0.0..=1.0).contains(v)),
+            "探针像素不得触顶钳制，实得 {out:?}"
+        );
+        let out_luma = display_luma(out);
+        assert!(
+            (out_luma - target).abs() < 1e-3,
+            "输出亮度应等于 target_luma {target}，实得 {out_luma}"
+        );
+    }
+
+    /// **shadows≤0 逐位一致（magenta-fix §4.3(a)）**：shadows≤0 时 ratio≤1，
+    /// gap=ratio 数学恒等——输出与旧亮度比回写逐位一致（容差 1e-5，
+    /// 覆盖 f32 的 sRGB 往返噪声）。若实现误把软拐点用到压暗侧，此处红。
+    #[test]
+    fn shadows_highlights_nonpositive_shadows_matches_main() {
+        for display in [
+            [0.5f32, 0.2, 0.1],
+            [0.05, 0.03, 0.02],
+            [0.9, 0.7, 0.5],
+            [0.2, 0.2, 0.2],
+        ] {
+            for (shadows, highlights) in [(-0.4f32, 0.0), (-1.0, 0.0), (0.0, -0.5), (-0.2, -0.2)] {
+                let got = run_sh_display(display, shadows, highlights);
+                let want = ratio_scaled(display, shadows, highlights);
+                for channel in 0..3 {
+                    assert!(
+                        (got[channel] - want[channel]).abs() < 1e-5,
+                        "({shadows},{highlights}) 像素 {display:?}：shadows≤0 应与现行逐位一致，\
+                         通道 {channel} 实得 {} 期望 {}",
+                        got[channel],
+                        want[channel]
+                    );
+                }
+            }
+        }
+    }
+
+    /// **剂量矩阵（magenta-fix §4.3(a) Q6）**：六组 (shadows, highlights)，
+    /// 凡使探针像素 ratio ≤ 1.5，输出与旧亮度比回写（期 2 A2 原式）一致
+    ///（容差 1e-5，覆盖 f32 的 sRGB 往返噪声；数学上恒等）。
+    /// 含压暗侧 (−0.4,0) 与 (0,−0.5)——软拐点只动提亮侧。
+    /// 每组至少要有一个像素真正参与对照（空集恒真防线）。
+    #[test]
+    fn shadows_highlights_dose_matrix_below_knee_matches_main() {
+        let probes = [
+            [0.2f32, 0.2, 0.2],
+            [0.5, 0.5, 0.5],
+            [0.8, 0.8, 0.8],
+            [0.5, 0.2, 0.1],
+            [0.05, 0.03, 0.02],
+            [0.9, 0.7, 0.5],
+        ];
+        for (shadows, highlights) in [
+            (0.2f32, 0.0),
+            (0.4, -0.35),
+            (0.8, 0.0),
+            (-0.4, 0.0),
+            (0.0, 0.5),
+            (0.0, -0.5),
+        ] {
+            let mut checked = 0;
+            for display in probes {
+                let luma = display_luma(display);
+                if luma == 0.0 {
+                    continue;
+                }
+                let shadow_weight = (1.0 - luma) * (1.0 - luma);
+                let highlight_weight = luma * luma;
+                let target = (luma
+                    + toward(shadows, shadow_weight, luma)
+                    + toward(highlights, highlight_weight, luma))
+                .clamp(0.0, 1.0);
+                let ratio = target / luma;
+                if ratio > 1.5 {
+                    continue;
+                }
+                let got = run_sh_display(display, shadows, highlights);
+                let want = ratio_scaled(display, shadows, highlights);
+                for channel in 0..3 {
+                    assert!(
+                        (got[channel] - want[channel]).abs() < 1e-5,
+                        "({shadows},{highlights}) 像素 {display:?} ratio={ratio:.4}：\
+                         r≤1.5 时应与现行一致，通道 {channel} 实得 {} 期望 {}",
+                        got[channel],
+                        want[channel]
+                    );
+                }
+                checked += 1;
+            }
+            assert!(
+                checked > 0,
+                "({shadows},{highlights}) 组一个像素都没对照上 ⇒ 测试恒真无效"
+            );
+        }
+    }
+
+    /// **判据 A（magenta-fix §4.3(b)）**：无噪合成色卡，shadows=+0.4，
+    /// rel_sat0=0.40，三档保持率门限 L=0.25/0.10/0.05 ⇒ ≥98%/≥75%/≥40%。
+    /// （按公式算得约 100%/77%/46%；门限取设计值。）
+    #[test]
+    fn shadows_highlights_color_card_retention() {
+        for (luma_in, floor) in [(0.25f32, 0.98f32), (0.10, 0.75), (0.05, 0.40)] {
+            let display = card_pixel(luma_in, 0.40);
+            let rel_in = rel_sat_of(display);
+            assert!(
+                (rel_in - 0.40).abs() < 1e-3,
+                "色卡 L={luma_in} 的 rel_sat 应为 0.40，实得 {rel_in}"
+            );
+            let out = run_sh_display(display, 0.4, 0.0);
+            let retention = rel_sat_of(out) / rel_in;
+            assert!(
+                retention >= floor,
+                "色卡 L={luma_in} 保持率应 ≥ {floor}，实得 {retention:.4}"
+            );
+        }
+    }
+
+    /// **渐变带一阶差分（magenta-fix §4.3(a) Q6-1）**：L∈[0,0.35]、
+    /// rel_sat=0.30 的无噪平滑渐变，shadows=+0.4；rel_sat(L) 的分窗斜率
+    /// 应连续递减、中间窗不塌陷（硬 min(2.0) 在中间窗塌到 ≈0.01 ⇒ 红）。
+    #[test]
+    fn shadows_highlights_gradient_slope_has_no_hard_kink() {
+        let n = 71usize;
+        let mut buffer = Buffer::new(0, 0, n as u32, 1);
+        let mut lumas = Vec::with_capacity(n);
+        for x in 0..n {
+            let luma = 0.35 * (x as f32) / ((n - 1) as f32);
+            lumas.push(luma);
+            let display = card_pixel(luma, 0.30);
+            let linear = [
+                srgb_to_linear(display[0]),
+                srgb_to_linear(display[1]),
+                srgb_to_linear(display[2]),
+            ];
+            buffer.set_pixel(x as u32, 0, [linear[0], linear[1], linear[2], 1.0]);
+        }
+        shadows_highlights(&mut buffer, 0.4, 0.0);
+        let mut rel_sats = Vec::with_capacity(n);
+        for x in 0..n {
+            let p = buffer.pixel(x as u32, 0);
+            let display = [
+                linear_to_srgb(p[0]),
+                linear_to_srgb(p[1]),
+                linear_to_srgb(p[2]),
+            ];
+            rel_sats.push(rel_sat_of(display));
+        }
+        // 分窗斜率：窗内 rel_sat 对 L 的最小二乘斜率。
+        let slope = |lo: f32, hi: f32| -> f32 {
+            let pts: Vec<(f32, f32)> = lumas
+                .iter()
+                .zip(rel_sats.iter())
+                .filter(|(l, _)| **l >= lo && **l < hi)
+                .map(|(l, r)| (*l, *r))
+                .collect();
+            assert!(pts.len() >= 3, "窗口 [{lo},{hi}) 内点太少");
+            let (count, sx, sy, sxx, sxy) = pts.iter().fold(
+                (0f32, 0f32, 0f32, 0f32, 0f32),
+                |(count, sx, sy, sxx, sxy), (x, y)| {
+                    (count + 1.0, sx + x, sy + y, sxx + x * x, sxy + x * y)
+                },
+            );
+            (count * sxy - sx * sy) / (count * sxx - sx * sx)
+        };
+        let s_low = slope(0.08, 0.12);
+        let s_mid = slope(0.14, 0.18);
+        let s_high = slope(0.18, 0.22);
+        assert!(
+            s_mid > 0.1,
+            "中间窗斜率应 > 0.1（硬钳制塌到 ≈0.01），实得 {s_mid:.3}（低窗 {s_low:.3}，高窗 {s_high:.3}）"
+        );
+        assert!(
+            s_low > s_mid && s_mid > s_high,
+            "斜率应连续递减（低 {s_low:.3} > 中 {s_mid:.3} > 高 {s_high:.3}），无单步塌陷"
+        );
+    }
+
+    /// **luma→0 连续性（magenta-fix §4.3(a) Q6）**：luma=1e-6 的近黑彩像素
+    /// 与 luma=0 的纯黑像素，shadows=+0.4 下输出应在 1e-3 内连续
+    ///（目标值均为 target_luma ≈ 0.2）。现行代码在此处把微小非零通道
+    /// 炸到 ≈0.34 ⇒ 该测试在旧代码上红。
+    #[test]
+    fn shadows_highlights_luma_zero_continuity() {
+        let near_black = run_sh_display([2e-6, 1e-6, 0.5e-6], 0.4, 0.0);
+        let black = run_sh_display([0.0, 0.0, 0.0], 0.4, 0.0);
+        for channel in 0..3 {
+            assert!(
+                (near_black[channel] - black[channel]).abs() < 1e-3,
+                "近黑与纯黑输出应在 1e-3 内连续，通道 {channel}：近黑 {}，纯黑 {}",
+                near_black[channel],
+                black[channel]
+            );
+        }
+        // 目标值本身：纯黑回退 toward(0.4, 1.0, 0.0) = 0.2。
+        assert!(
+            (black[0] - 0.2).abs() < 1e-3,
+            "纯黑输出应为 0.2，实得 {}",
+            black[0]
         );
     }
 
