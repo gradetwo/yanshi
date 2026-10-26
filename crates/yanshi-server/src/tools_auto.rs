@@ -112,15 +112,18 @@ const TONE_BUDGET: f32 = 0.3;
 const WB_RANGE: (f32, f32) = (-0.85, 0.85);
 /// 白平衡候选过少时的置信低门限（设计三触发之外的扩展，见估计器注）。
 const WB_MIN_CANDIDATES: usize = 100;
-/// 白平衡护栏 G1：锚点有效下限（C1 §6；与 `log_chromaticity_confidence`
-/// 内既有的对数地板 0.005 取同一值——低于此值的锚点像素本就进不了
-/// 置信计算，锚点与置信的「可见集」由此对齐；高于 01242/01244 的锚点
-/// 0.0009–0.0033，能覆盖已知的两例 F1）。
-const WB_ANCHOR_MIN: f32 = 0.005;
 /// 白平衡护栏 G2：钳制饱和检测边（C1 §6；钳制域 ±0.85，留 0.01 容差——
 /// 反解落在 0.84–0.85 之间即视为「顶到边」；反解天然算出 0.845 而未被
 /// 钳制时同样是「诉求近表达域边界」，同等处理）。
+/// **永久保留**（C1 §6.5）：分轴反解后每轴仍有钳制边，饱和检测是 A3
+/// 教训的制度化，不随重设计废止；阈值 0.84 由阶段 2 复核。
 const WB_SATURATION_EDGE: f32 = 0.84;
+/// C1 阶段 1（S1+S2）：锚点集质量门——锚点召回率低于此值 ⇒ 置信 low
+/// （初值，阶段 3 以回测标定复核；锚点数门沿用 `WB_MIN_CANDIDATES`）。
+const WB_ANCHOR_MIN_INLIER_RATIO: f32 = 0.5;
+/// C1 阶段 1（S1+S2）：锚点集质量门——色度散布（MAD）高于此值 ⇒
+/// 置信 low（初值，阶段 3 以回测标定复核）。
+const WB_ANCHOR_MAX_SPREAD: f32 = 0.15;
 
 /// 色彩：vibrance 触发带（S̄ < 0.34 加 vibrance；S̄ > 0.50 减 saturation；
 /// 其间为甜点带，不动）。
@@ -223,13 +226,6 @@ const SCENE_BACKLIT_P50: (f32, f32) = (0.3, 0.6);
 /// 代理图长边上限（设计 D3：统计在 ≤1024 代理上算；噪声例外，
 /// 全分辨率另算，见 `noise_sigma_rgba8` 文档）。
 const PROXY_MAX_EDGE: u32 = 1024;
-
-/// 白平衡置信三触发（设计 Q2-c）：Planck 距离中位、Sarle BC、ρ。
-const WB_PLANCK_TRIGGER: f32 = 0.12;
-/// Sarle BC 双峰门限。
-const WB_SARLE_TRIGGER: f32 = 0.555;
-/// ρ 下限。
-const WB_RHO_TRIGGER: f32 = 0.015;
 
 /// 组白名单（设计固定 8 组；去雾挂在细节组下，不另立组；曲线组 p3b-2
 /// 新增，落 WB 之后、色彩之前）。
@@ -712,66 +708,95 @@ enum WbOutcome {
     Skipped(String),
 }
 
-/// 白平衡估计（线性域、掩码后候选的低百分位 p2.5；定位说明：
-/// RAW 的机内白平衡已在 develop 时施加，本组估的是**显影后残余
+/// 由锚点色度中位 (u, v) = (ln(R/G), ln(B/G)) 求目标增益（几何均值
+/// 归一，与旧 `mu` 路径同构：R = e^u、G = 1、B = e^v，几何均值
+/// e^((u+v)/3)；中性锚点 (0, 0) ⇒ 增益 [1, 1, 1]）。
+fn wb_gains_from_anchor_chroma(chroma_median: [f32; 2]) -> [f32; 3] {
+    let (u, v) = (chroma_median[0], chroma_median[1]);
+    [
+        ((v - 2.0 * u) / 3.0).exp(),
+        ((u + v) / 3.0).exp(),
+        ((u - 2.0 * v) / 3.0).exp(),
+    ]
+}
+
+/// 白平衡估计（C1 阶段 1，S1+S2：逐像素色度锚 + Planck 滤波提前；
+/// 定位说明：RAW 的机内白平衡已在 develop 时施加，本组估的是**显影后残余
 /// 色偏**，不是重做机内白平衡）。
-/// 过渡期护栏（C1 §6，不代替重设计）：G1 锚点有效下限、G2 钳制饱和
-/// 检测、G3 reason 点名；组合处置——G1 单触强制 low + 权重 0.5、
-/// G2 单触强制 low + 权重 0.25、双触跳过整组；与舞台收缩取更小者。
+/// 输入是新锚点集统计（信号带内过 Planck 门的逐像素近中性集的色度中位）；
+/// 增益反解仍走 `invert_wb_gains`（阶段 1 不动反解，只换输入——
+/// 一次只换一层，便于归因）。
+/// 置信重定义（取代现行三量触发）：锚点数 < 100 / 召回率低 / 散布大 ⇒ low；
+/// 锚点集为空 ⇒ `wb_no_neutral_anchor` 诚实跳过（D-WB3 的合格形态之一；
+/// 旧"增益无定义"跳过是不合格形态，不许再报）。
+/// 护栏继承（C1 §6.5）：G2（钳制饱和检测）永久保留；G1 的 0.005 锚点下限
+/// 由信号带下沿 0.02 + 对数地板接替；G3（reason / rationale 点名）永久保留。
 /// 返回落成或跳过（跳过必带 reason，点名门编号与事实数值）。
 fn estimate_wb(stats: &ImageStats, scene: &SceneFlags) -> WbOutcome {
     if scene.monochrome {
         return WbOutcome::Skipped("单色画面，白平衡无物理意义".to_owned());
     }
-    let mu = stats.wb_channel_p25;
-    if mu.iter().any(|value| *value <= 1e-6) {
+    if stats.wb_anchor_count == 0 {
         return WbOutcome::Skipped(format!(
-            "线性低百分位通道为零，增益无定义；G1：锚点 p2.5=[{:.4}, {:.4}, {:.4}] < {}",
-            mu[0], mu[1], mu[2], WB_ANCHOR_MIN
+            "wb_no_neutral_anchor：信号带 [{:.2}, {:.2}] 内 {} 像素、过 Planck 门者 0，锚点集为空，白平衡整组跳过",
+            stats.wb_anchor_luma_band.0,
+            stats.wb_anchor_luma_band.1,
+            stats.wb_anchor_band_count
         ));
     }
-    let geomean = (mu[0] * mu[1] * mu[2]).powf(1.0 / 3.0);
-    let gains = [geomean / mu[0], geomean / mu[1], geomean / mu[2]];
+    let gains = wb_gains_from_anchor_chroma(stats.wb_anchor_chroma_median);
     let (temperature, tint) = invert_wb_gains(gains);
-    // 护栏 G1/G2（§6.2）：锚点无信号 / 反解顶到钳制边。
-    let g1 = mu.iter().any(|value| *value < WB_ANCHOR_MIN);
-    let g2 = temperature.abs() >= WB_SATURATION_EDGE || tint.abs() >= WB_SATURATION_EDGE;
-    if g1 && g2 {
+    // 护栏 G2（§6.5 永久保留）：反解顶到钳制边 = 诉求超出表达域。
+    let saturated = temperature.abs() >= WB_SATURATION_EDGE || tint.abs() >= WB_SATURATION_EDGE;
+    // 锚点集质量（§4.3，取代现行三量触发）：锚点数 / 召回率 / 散布。
+    let small = stats.wb_anchor_count < WB_MIN_CANDIDATES;
+    let low_inlier = stats.wb_anchor_inlier_ratio < WB_ANCHOR_MIN_INLIER_RATIO;
+    let wide_spread = stats.wb_anchor_chroma_spread > WB_ANCHOR_MAX_SPREAD;
+    let quality_low = small || low_inlier || wide_spread;
+    // 锚点不可信且反解已饱和 ⇒ 任何落成值都是错的，跳过（§6.3 G1+G2
+    // 组合处置在新锚点下的形态：G1 的 0.005 下限由信号带下沿接替）。
+    if saturated && quality_low {
         return WbOutcome::Skipped(format!(
-            "G1+G2 双触发：锚点 p2.5=[{:.4}, {:.4}, {:.4}] < {} 且反解 (T, Ti)=({:.3}, {:.3}) 顶到钳制边，白平衡整组跳过",
-            mu[0], mu[1], mu[2], WB_ANCHOR_MIN, temperature, tint
+            "锚点质量低（锚点数 {}（门 {}）、召回率 {:.3}（门 {}）、散布 {:.3}（门 {}））且反解 (T, Ti)=({:.3}, {:.3}) 顶到钳制边（G2），白平衡整组跳过",
+            stats.wb_anchor_count,
+            WB_MIN_CANDIDATES,
+            stats.wb_anchor_inlier_ratio,
+            WB_ANCHOR_MIN_INLIER_RATIO,
+            stats.wb_anchor_chroma_spread,
+            WB_ANCHOR_MAX_SPREAD,
+            temperature,
+            tint
         ));
     }
-    let log_chrom_low = stats.wb_planck_distance_median > WB_PLANCK_TRIGGER
-        || stats.wb_sarle_bc > WB_SARLE_TRIGGER
-        || stats.wb_rho < WB_RHO_TRIGGER;
-    let candidates_low = stats.wb_candidate_count < WB_MIN_CANDIDATES;
-    let mut confidence = if log_chrom_low || candidates_low {
+    let mut confidence = if quality_low {
         Confidence::Low
     } else {
         Confidence::High
     };
-    // 护栏处置（§6.3）：单触强制 low 并收紧权重；双触已在上跳过。
     let mut weight = confidence.weight();
     let mut guard_note = String::new();
-    if g1 {
+    if saturated {
         confidence = Confidence::Low;
-        weight = 0.5;
-        guard_note = format!(
-            "；G1：锚点 p2.5=[{:.4}, {:.4}, {:.4}] < {}（锚点无信号），强制 low、权重 0.5",
-            mu[0], mu[1], mu[2], WB_ANCHOR_MIN
-        );
-    } else if g2 {
-        confidence = Confidence::Low;
-        weight = 0.25;
+        weight = weight.min(0.25);
         guard_note = format!(
             "；G2：反解 (T, Ti)=({:.3}, {:.3}) 顶到钳制边（诉求超出 (T, Ti) 表达域），强制 low、权重 0.25",
             temperature, tint
         );
+        if quality_low {
+            guard_note = format!(
+                "；锚点质量低（锚点数 {}、召回率 {:.3}、散布 {:.3}）{guard_note}",
+                stats.wb_anchor_count, stats.wb_anchor_inlier_ratio, stats.wb_anchor_chroma_spread
+            );
+        }
+    } else if quality_low {
+        guard_note = format!(
+            "；锚点质量低（锚点数 {}、召回率 {:.3}、散布 {:.3}），强制 low、权重 0.5",
+            stats.wb_anchor_count, stats.wb_anchor_inlier_ratio, stats.wb_anchor_chroma_spread
+        );
     }
     let mut scene_note = String::new();
     if scene.stage {
-        let stage_weight = if log_chrom_low { 0.2 } else { 0.5 };
+        let stage_weight = if quality_low { 0.2 } else { 0.5 };
         weight = weight.min(stage_weight);
         scene_note = if guard_note.is_empty() {
             format!("；舞台场景收缩权重 {weight}")
@@ -782,25 +807,19 @@ fn estimate_wb(stats: &ImageStats, scene: &SceneFlags) -> WbOutcome {
     let shrunk_t = shrink(temperature, 0.0, weight);
     let shrunk_ti = shrink(tint, 0.0, weight);
     let rationale = format!(
-        "显影后残余色偏：掩码后候选 {} 像素（占比 {:.3}），线性低百分位 \
-         p2.5=[{:.4}, {:.4}, {:.4}] ⇒ 目标增益 [{:.3}, {:.3}, {:.3}] ⇒ \
-         (T, Ti)=({temperature:.3}, {tint:.3})（一次修正后）；置信 {}（Planck 距离中位 {:.3}、\
-         Sarle BC {:.3}、ρ {:.4}、候选数 {}）⇒ 权重 {weight} 收缩后 \
-         ({shrunk_t:.3}, {shrunk_ti:.3}){guard_note}{scene_note}；RAW 机内白平衡已在显影时施加，\
-         本组只纠残余偏色",
-        stats.wb_candidate_count,
-        stats.wb_candidate_ratio,
-        mu[0],
-        mu[1],
-        mu[2],
+        "显影后残余色偏：信号带 [{:.2}, {:.2}] 内 {} 像素，过 Planck 门锚点 {} 像素（召回率 {:.3}），锚点色度中位 (u, v)=({:.3}, {:.3})、散布 {:.3} ⇒ 目标增益 [{:.3}, {:.3}, {:.3}] ⇒ (T, Ti)=({temperature:.3}, {tint:.3})（一次修正后）；置信 {} ⇒ 权重 {weight} 收缩后 ({shrunk_t:.3}, {shrunk_ti:.3}){guard_note}{scene_note}；RAW 机内白平衡已在显影时施加，本组只纠残余偏色",
+        stats.wb_anchor_luma_band.0,
+        stats.wb_anchor_luma_band.1,
+        stats.wb_anchor_band_count,
+        stats.wb_anchor_count,
+        stats.wb_anchor_inlier_ratio,
+        stats.wb_anchor_chroma_median[0],
+        stats.wb_anchor_chroma_median[1],
+        stats.wb_anchor_chroma_spread,
         gains[0],
         gains[1],
         gains[2],
         confidence.as_str(),
-        stats.wb_planck_distance_median,
-        stats.wb_sarle_bc,
-        stats.wb_rho,
-        stats.wb_candidate_count,
     );
     WbOutcome::Applied(shrunk_t, shrunk_ti, confidence, rationale)
 }
@@ -1156,8 +1175,8 @@ fn plan_auto(inputs: &EstimateInputs, requested: &[String]) -> AutoPlan {
         skip_unrequested("tone", "auto_tone", &mut skipped);
     }
 
-    // 白平衡（单色硬跳过；低百分位为零 ⇒ 增益无定义 ⇒ 跳过；
-    // G1+G2 双触 ⇒ 护栏跳过整组（reason 点名门编号与事实数值）；
+    // 白平衡（单色硬跳过；锚点集为空 ⇒ `wb_no_neutral_anchor` 诚实跳过；
+    // 锚点质量低 + 反解饱和 ⇒ 护栏跳过整组（reason 点名门编号与事实数值）；
     // 估计恰为 (0, 0) ⇒ 恒等跳过）。
     if want("wb") {
         match estimate_wb(stats, &scene) {
@@ -1707,6 +1726,12 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         "wb_planck_distance_median": stats.wb_planck_distance_median,
         "wb_sarle_bc": stats.wb_sarle_bc,
         "wb_rho": stats.wb_rho,
+        "wb_anchor_count": stats.wb_anchor_count,
+        "wb_anchor_band_count": stats.wb_anchor_band_count,
+        "wb_anchor_inlier_ratio": stats.wb_anchor_inlier_ratio,
+        "wb_anchor_chroma_median": stats.wb_anchor_chroma_median,
+        "wb_anchor_chroma_spread": stats.wb_anchor_chroma_spread,
+        "wb_anchor_luma_band": stats.wb_anchor_luma_band,
     });
 
     // ---- 只报告（dry_run / strength=0）：零原子 ----
@@ -1995,6 +2020,12 @@ mod tests {
             wb_channel_p20: [0.0; 3],
             wb_channel_p25: [0.0; 3],
             wb_channel_p30: [0.0; 3],
+            wb_anchor_count: 1000,
+            wb_anchor_band_count: 1000,
+            wb_anchor_inlier_ratio: 1.0,
+            wb_anchor_chroma_median: [0.0, 0.0],
+            wb_anchor_chroma_spread: 0.0,
+            wb_anchor_luma_band: (0.02, 0.5),
             wb_planck_distance_median: 0.0,
             wb_sarle_bc: 0.0,
             wb_rho: 1.0,
@@ -2150,23 +2181,43 @@ mod tests {
         );
     }
 
-    /// 白平衡 log-chromaticity 触发 ⇒ 置信低 + 收缩权重进 rationale
-    /// （变异：触发条件被删 ⇒ 置信 high ⇒ 红）。
+    /// 白平衡锚点质量触发 ⇒ 置信低 + 收缩权重进 rationale（C1 阶段 1：
+    /// 旧 log-chromaticity 三量触发已退役——置信改算锚点集自身质量，
+    /// 见 `estimate_wb`；本测试由 `wb_log_chromaticity_trigger_shrinks`
+    /// 改写，口径变更记入提交说明，不许静默放宽）。
+    /// 对照组（散布 0）应 high + 全额；触发组（散布 0.3 > 0.15 门）
+    /// 应 low + 权重 0.5（变异：散布门被删 ⇒ 触发组 high ⇒ 红）。
     #[test]
-    fn wb_log_chromaticity_trigger_shrinks() {
-        let stats = stats_with(|stats| {
-            stats.wb_channel_p25 = [0.45, 0.5, 0.55];
-            stats.wb_planck_distance_median = 0.2;
+    fn wb_anchor_quality_trigger_shrinks() {
+        // 锚点色度中位 (0, ln 0.8)：目标增益 [0.928, 0.928, 1.161]，
+        // 反解 (T, Ti) ≈ (−0.332, 0.356)，未顶钳制边。
+        let base = stats_with(|stats| {
+            stats.wb_anchor_chroma_median = [0.0, -0.2231];
         });
         let scene = SceneFlags::default();
-        let (confidence, rationale) = match estimate_wb(&stats, &scene) {
-            WbOutcome::Applied(_, _, confidence, rationale) => (confidence, rationale),
-            WbOutcome::Skipped(reason) => panic!("非单色应估出，实得跳过：{reason}"),
+        let (t0, ti0, confidence0, _) = match estimate_wb(&base, &scene) {
+            WbOutcome::Applied(temperature, tint, confidence, rationale) => {
+                (temperature, tint, confidence, rationale)
+            }
+            WbOutcome::Skipped(reason) => panic!("门上统计应落成，实得跳过：{reason}"),
         };
-        assert_eq!(confidence, Confidence::Low, "Planck 距离 0.2 应触发低置信");
+        assert_eq!(confidence0, Confidence::High, "散布 0 时应 high");
         assert!(
-            rationale.contains("权重 0.5"),
-            "rationale 应点名收缩权重，实得：{rationale}"
+            (t0 - (-0.332)).abs() < 0.01 && (ti0 - 0.356).abs() < 0.01,
+            "门上统计输出应 ≈ (−0.332, 0.356)，实得 ({t0:.3}, {ti0:.3})"
+        );
+        let wide = stats_with(|stats| {
+            stats.wb_anchor_chroma_median = [0.0, -0.2231];
+            stats.wb_anchor_chroma_spread = 0.3;
+        });
+        let (confidence, rationale) = match estimate_wb(&wide, &scene) {
+            WbOutcome::Applied(_, _, confidence, rationale) => (confidence, rationale),
+            WbOutcome::Skipped(reason) => panic!("散布大应 low 落成、不是跳过，实得跳过：{reason}"),
+        };
+        assert_eq!(confidence, Confidence::Low, "散布 0.3 应触发低置信");
+        assert!(
+            rationale.contains("权重 0.5") && rationale.contains("锚点质量低"),
+            "rationale 应点名锚点质量低与收缩权重，实得：{rationale}"
         );
     }
 
@@ -2406,29 +2457,36 @@ mod tests {
         );
     }
 
-    /// 护栏 §6.4-1：01242 实测数（锚点 [0.0018, 0.0015, 0.0009] +
-    /// 反解双顶钳制边）⇒ G1+G2 双触发 ⇒ 跳过整组，reason 点名 G1+G2；
-    /// `plan_auto` 的 skipped 项须原样带出该 reason（变异：双触跳过
-    /// 被删 ⇒ 落成 (−0.425, 0.383) ⇒ 红；G1 门被删 ⇒ G2 单触 low +
-    /// 0.25 落成 ⇒ 红；G2 门被删 ⇒ G1 单触 low + 0.5 落成 ⇒ 红）。
+    /// 护栏 §6.4-1（C1 阶段 1 改写）：01242 实测锚点色度（旧 p2.5
+    /// [0.0018, 0.0015, 0.0009] 的 (u, v) = (ln 1.2, ln 0.6) ≈
+    /// (0.182, −0.511)，反解双顶钳制边 (−0.850, 0.765)）+ 锚点集过小
+    /// ⇒ 质量低 + 饱和 ⇒ 跳过整组，reason 点名 G2 与锚点事实；`plan_auto`
+    /// 的 skipped 项须原样带出该 reason（变异：跳过被删 ⇒ 落成 ⇒ 红；
+    /// G2 门被删 ⇒ 质量低单触 low + 0.5 落成 ⇒ 红；小锚点门被删 ⇒
+    /// G2 单触 low + 0.25 落成 ⇒ 红）。
+    /// 口径变更（记入提交说明）：G1 的 0.005 锚点下限已由信号带下沿
+    /// 接替（§6.5 复核），本测试的"双触"现为"锚点质量低 + G2 饱和"。
     #[test]
     fn wb_guardrail_both_gates_skip() {
         let stats = stats_with(|stats| {
-            stats.wb_channel_p25 = [0.0018, 0.0015, 0.0009];
+            stats.wb_anchor_chroma_median = [0.1823, -0.5108];
+            stats.wb_anchor_count = 50;
+            stats.wb_anchor_band_count = 60;
+            stats.wb_anchor_inlier_ratio = 50.0 / 60.0;
         });
         let reason = match estimate_wb(&stats, &SceneFlags::default()) {
             WbOutcome::Skipped(reason) => reason,
             WbOutcome::Applied(temperature, tint, _, _) => {
-                panic!("01242 锚点 + 饱和反解应双触跳过，实得落成 ({temperature:.3}, {tint:.3})")
+                panic!("01242 锚点 + 饱和反解应跳过，实得落成 ({temperature:.3}, {tint:.3})")
             }
         };
         assert!(
-            reason.contains("G1") && reason.contains("G2"),
-            "跳过原因须点名 G1+G2，实得：{reason}"
+            reason.contains("G2") && reason.contains("顶到钳制边"),
+            "跳过原因须点名 G2 与钳制饱和，实得：{reason}"
         );
         assert!(
-            reason.contains("0.005"),
-            "跳过原因须写明 G1 事实数值，实得：{reason}"
+            reason.contains("锚点数 50"),
+            "跳过原因须写明锚点过小事实，实得：{reason}"
         );
         let inputs = EstimateInputs {
             stats: &stats,
@@ -2455,23 +2513,23 @@ mod tests {
             .find(|entry| entry.object_id == "auto_white_balance")
             .expect("双触跳过时白平衡应有 skipped 项");
         assert!(
-            skipped.reason.contains("G1") && skipped.reason.contains("G2"),
-            "响应里的跳过原因须点名 G1+G2，实得：{}",
+            skipped.reason.contains("G2") && skipped.reason.contains("顶到钳制边"),
+            "响应里的跳过原因须点名 G2 与钳制饱和，实得：{}",
             skipped.reason
         );
     }
 
-    /// 护栏 §6.4-2：锚点 ≥ 0.005 + 反解双顶钳制边 ⇒ G2 单触 ⇒ 强制
+    /// 护栏 §6.4-2：锚点质量好 + 反解双顶钳制边 ⇒ G2 单触 ⇒ 强制
     /// low + 权重 0.25，rationale 点名 G2（变异：G2 门被删 ⇒ high +
     /// (−0.850, 0.850) 全额落成 ⇒ 红；权重 0.25 被改回 0.5 ⇒
     /// (−0.425, 0.425) ⇒ 红）。
     #[test]
     fn wb_guardrail_clamp_only_forces_low_quarter_weight() {
-        // 锚点 [0.02, 0.02, 0.006]：几何均值归一 ⇒ 目标增益
+        // 锚点色度中位 (0, ln 0.3)：几何均值归一 ⇒ 目标增益
         // [0.669, 0.669, 2.232]，反解 (T, Ti) = (−0.850, 0.850)
-        // 双顶钳制边；锚点最小值 0.006 ≥ 0.005，G1 不触发。
+        // 双顶钳制边；锚点集质量好，G2 单触。
         let stats = stats_with(|stats| {
-            stats.wb_channel_p25 = [0.02, 0.02, 0.006];
+            stats.wb_anchor_chroma_median = [0.0, -1.2040];
         });
         let (temperature, tint, confidence, rationale) =
             match estimate_wb(&stats, &SceneFlags::default()) {
@@ -2495,15 +2553,21 @@ mod tests {
         );
     }
 
-    /// 护栏 G1 单触：锚点 < 0.005、反解未饱和 ⇒ 强制 low + 权重 0.5
-    ///（沿用现行 low 规则），rationale 点名 G1（变异：G1 门被删 ⇒
-    /// high + 全额 (0, 0.346) 落成 ⇒ 红）。
+    /// 护栏 G1 的阶段 1 形态：锚点集过小（< 100）、反解未饱和 ⇒
+    /// 强制 low + 权重 0.5（沿用现行 low 规则），rationale 点名锚点
+    /// 质量低（变异：小锚点门被删 ⇒ high + 全额 (0, 0.346) 落成 ⇒ 红）。
+    /// 口径变更（记入提交说明）：旧 G1 是"锚点 p2.5 < 0.005"，已由
+    /// 信号带下沿接替；本测试改钉"锚点数 < 100 ⇒ low + 0.5"。
     #[test]
     fn wb_guardrail_anchor_only_forces_low_half_weight() {
-        // 锚点 [0.004, 0.0045, 0.004]：反解 (T, Ti) ≈ (0, 0.346)，
-        // 未顶钳制边；锚点最小值 0.004 < 0.005，G1 触发。
+        // 锚点色度中位 (ln(0.004/0.0045), ln(0.004/0.0045)) ≈
+        // (−0.118, −0.118)：反解 (T, Ti) ≈ (0, 0.346)，未顶钳制边；
+        // 锚点数 50 < 100，质量低单触。
         let stats = stats_with(|stats| {
-            stats.wb_channel_p25 = [0.004, 0.0045, 0.004];
+            stats.wb_anchor_chroma_median = [-0.1178, -0.1178];
+            stats.wb_anchor_count = 50;
+            stats.wb_anchor_band_count = 50;
+            stats.wb_anchor_inlier_ratio = 1.0;
         });
         let (temperature, tint, confidence, rationale) =
             match estimate_wb(&stats, &SceneFlags::default()) {
@@ -2512,30 +2576,32 @@ mod tests {
                 }
                 WbOutcome::Skipped(reason) => panic!("G1 单触应落成，实得跳过：{reason}"),
             };
-        assert_eq!(confidence, Confidence::Low, "G1 单触应强制 low");
+        assert_eq!(confidence, Confidence::Low, "小锚点单触应强制 low");
         assert!(
             temperature.abs() < 1e-6,
-            "G1 单触温度应 ≈ 0，实得 {temperature}"
+            "小锚点单触温度应 ≈ 0，实得 {temperature}"
         );
         assert!(
             (tint - 0.1729).abs() < 0.002,
-            "G1 单触 tint 应 ≈ 0.346 × 0.5 = 0.173，实得 {tint}"
+            "小锚点单触 tint 应 ≈ 0.346 × 0.5 = 0.173，实得 {tint}"
         );
         assert!(
-            rationale.contains("G1") && rationale.contains("权重 0.5"),
-            "rationale 应点名 G1 与权重 0.5，实得：{rationale}"
+            rationale.contains("锚点质量低") && rationale.contains("权重 0.5"),
+            "rationale 应点名锚点质量低与权重 0.5，实得：{rationale}"
         );
     }
 
     /// 护栏 × 舞台（§6.3）：stage 收缩与护栏收缩取更小者，不许叠加。
-    /// G2 单触（护栏 0.25）+ 舞台 log-chrom 正常（舞台 0.5）⇒ 0.25；
-    /// G2 单触 + 舞台 log-chrom 低（舞台 0.2）⇒ 0.2（变异：取更小者
-    /// 被改成只取护栏 ⇒ 第二组给 0.25 ⇒ 红；被改成只取舞台 ⇒ 第一组
-    /// 给 0.5 ⇒ 红）。
+    /// G2 单触（护栏 0.25）+ 舞台锚点质量好（舞台 0.5）⇒ 0.25；
+    /// 锚点质量低（护栏 0.5）+ 舞台低（0.2）⇒ 0.2；G2 + 锚点质量低
+    /// ⇒ 护栏跳过整组（§6.3 G1+G2 组合处置的新锚点形态——反解已饱和
+    /// 且锚点不可信时任何落成值都是错的）。
+    /// （变异：取更小者被改成只取护栏 ⇒ 第二组给 0.5 ⇒ 红；被改成
+    /// 只取舞台 ⇒ 第一组给 0.5 ⇒ 红；跳过被删 ⇒ 第三组落成 ⇒ 红。）
     #[test]
     fn wb_guardrail_stage_takes_min_weight() {
         let stats = stats_with(|stats| {
-            stats.wb_channel_p25 = [0.02, 0.02, 0.006];
+            stats.wb_anchor_chroma_median = [0.0, -1.2040];
         });
         let stage = SceneFlags {
             stage: true,
@@ -2553,42 +2619,83 @@ mod tests {
             rationale.contains("与护栏取更小者"),
             "rationale 应点名取更小者，实得：{rationale}"
         );
+        // 锚点质量低（散布 0.3）+ 反解未饱和 + 舞台低 ⇒ min(0.5, 0.2) = 0.2。
         let low_stats = stats_with(|stats| {
-            stats.wb_channel_p25 = [0.02, 0.02, 0.006];
-            stats.wb_planck_distance_median = 0.2;
+            stats.wb_anchor_chroma_median = [0.0, -0.2231];
+            stats.wb_anchor_chroma_spread = 0.3;
         });
         let (temperature, tint) = match estimate_wb(&low_stats, &stage) {
             WbOutcome::Applied(temperature, tint, _, _) => (temperature, tint),
             WbOutcome::Skipped(reason) => {
-                panic!("G2 单触 + 舞台低置信应落成，实得跳过：{reason}")
+                panic!("质量低 + 舞台低（未饱和）应落成，实得跳过：{reason}")
             }
         };
         assert!(
-            (temperature - (-0.17)).abs() < 1e-6 && (tint - 0.17).abs() < 1e-6,
-            "min(0.25, 0.2) 应为 0.2 ⇒ (−0.17, 0.17)，实得 ({temperature}, {tint})"
+            (temperature - (-0.0664)).abs() < 0.01 && (tint - 0.0712).abs() < 0.01,
+            "min(0.5, 0.2) 应为 0.2 ⇒ (−0.332, 0.356) × 0.2，实得 ({temperature}, {tint})"
         );
+        // G2 + 锚点质量低 ⇒ 跳过（不是 min 落成）。
+        let saturated_low = stats_with(|stats| {
+            stats.wb_anchor_chroma_median = [0.0, -1.2040];
+            stats.wb_anchor_chroma_spread = 0.3;
+        });
+        match estimate_wb(&saturated_low, &stage) {
+            WbOutcome::Skipped(reason) => assert!(
+                reason.contains("G2") && reason.contains("顶到钳制边"),
+                "跳过原因须点名 G2 与钳制饱和，实得：{reason}"
+            ),
+            WbOutcome::Applied(temperature, tint, _, _) => {
+                panic!("G2 + 锚点质量低应跳过，实得落成 ({temperature:.3}, {tint:.3})")
+            }
+        };
     }
 
     /// R5 `wb_sodium_no_clamp_high_confidence`：钠灯合成统计（B 锚点
-    /// ≈0、目标 B 增益 ≈7.4×）⇒ 不以 high 置信顶到钳制边落成：本组
-    /// 锚点 0.0005 < 0.005 且反解双顶钳制边 ⇒ G1+G2 双触跳过并点名
-    /// 饱和（变异：去掉饱和检测 ⇒ G1 单触 low + 0.5 落成 ⇒ 红；
-    /// 两门都去掉 ⇒ high + (−0.850, 0.850) ⇒ 红）。
+    /// ≈0、目标 B 增益 ≈7.4×）⇒ 不以 high 置信顶到钳制边落成。
+    /// 两档（皆为合格）：(A) 统计层诚实路径——钠灯像素过不了 Planck
+    /// 门，锚点集为空 ⇒ `wb_no_neutral_anchor` 跳过（D-WB3）；
+    /// (B) 估计层应力——锚点色度中位 (0, ln 0.05) 迫使反解双顶钳制边
+    /// ⇒ low + 权重 0.25 落成，rationale 点名 G2 饱和
+    /// （变异：去掉饱和检测 ⇒ (B) high + (−0.850, 0.850) 全额 ⇒ 红；
+    /// 去掉空锚点跳过 ⇒ (A) 落成 ⇒ 红）。
     #[test]
     fn wb_sodium_no_clamp_high_confidence() {
-        let stats = stats_with(|stats| {
-            stats.wb_channel_p25 = [0.01, 0.01, 0.0005];
+        let empty = stats_with(|stats| {
+            stats.wb_anchor_count = 0;
+            stats.wb_anchor_band_count = 5000;
+            stats.wb_anchor_inlier_ratio = 0.0;
         });
-        let reason = match estimate_wb(&stats, &SceneFlags::default()) {
+        let reason = match estimate_wb(&empty, &SceneFlags::default()) {
             WbOutcome::Skipped(reason) => reason,
             WbOutcome::Applied(temperature, tint, confidence, _) => panic!(
-                "钠灯统计应跳过，实得落成 ({temperature:.3}, {tint:.3}) 置信 {}",
+                "钠灯空锚点应跳过，实得落成 ({temperature:.3}, {tint:.3}) 置信 {}",
                 confidence.as_str()
             ),
         };
         assert!(
-            reason.contains("G1") && reason.contains("G2") && reason.contains("顶到钳制边"),
-            "钠灯跳过原因须点名 G1+G2 与钳制饱和，实得：{reason}"
+            reason.contains("wb_no_neutral_anchor"),
+            "钠灯空锚点跳过原因须点名 wb_no_neutral_anchor，实得：{reason}"
+        );
+        let saturated = stats_with(|stats| {
+            stats.wb_anchor_chroma_median = [0.0, -2.9957];
+        });
+        let (temperature, tint, confidence, rationale) =
+            match estimate_wb(&saturated, &SceneFlags::default()) {
+                WbOutcome::Applied(temperature, tint, confidence, rationale) => {
+                    (temperature, tint, confidence, rationale)
+                }
+                WbOutcome::Skipped(reason) => {
+                    panic!("锚点质量好时饱和应 low 落成，实得跳过：{reason}")
+                }
+            };
+        assert_eq!(confidence, Confidence::Low, "饱和反解不许报 high");
+        assert!(
+            (temperature - (-0.2125)).abs() < 1e-6 && (tint - 0.2125).abs() < 1e-6,
+            "饱和应为 (−0.85, 0.85) × 0.25，实得 ({temperature:.3}, {tint:.3})"
+        );
+        assert!(
+            rationale.contains("G2") && rationale.contains("权重 0.25"),
+            "rationale 应点名 G2 与权重 0.25，实得：{rationale}"
         );
     }
 
@@ -2596,17 +2703,18 @@ mod tests {
     /// 时输出连续变化（无隐藏台阶）；门触发本身是显式台阶，必须在
     /// rationale 里点名，不能静默跳变。单色跳过部分沿用既有断言
     /// `scene_shrinkage_no_hidden_steps`，此处不重复。
+    /// 口径变更（记入提交说明）：旧"G1 下限"显式台阶现为"锚点数 100 门"。
     /// （变异：估计值改成常量 ⇒ 两组输出相同 ⇒ 红；门触发不点名 ⇒
-    /// 第二组 rationale 无 G1 ⇒ 红。）
+    /// 第二组 rationale 无"锚点质量低" ⇒ 红。）
     #[test]
     fn wb_confidence_uses_anchor_set() {
-        // 连续变化：锚点比值微扰 5%（R 通道 0.01 → 0.0105），两组皆在
-        // 门上（≥ 0.005）且反解未饱和 ⇒ 输出应连续变化、无跳变。
+        // 连续变化：锚点色度微扰（u 0 → ln 1.05），两组皆在门上且反解
+        // 未饱和 ⇒ 输出应连续变化、无跳变。
         let base = stats_with(|stats| {
-            stats.wb_channel_p25 = [0.01, 0.01, 0.008];
+            stats.wb_anchor_chroma_median = [0.0, -0.2231];
         });
         let perturbed = stats_with(|stats| {
-            stats.wb_channel_p25 = [0.0105, 0.01, 0.008];
+            stats.wb_anchor_chroma_median = [0.0488, -0.2231];
         });
         let (t0, ti0, confidence0, _) = match estimate_wb(&base, &SceneFlags::default()) {
             WbOutcome::Applied(temperature, tint, confidence, rationale) => {
@@ -2633,13 +2741,17 @@ mod tests {
             (t1 - t0).abs() > 1e-6 || (ti1 - ti0).abs() > 1e-6,
             "输出须随锚点变化（常量估计即红）"
         );
-        // 显式台阶：同比例缩小锚点越过 G1 下限（0.007 → 0.004）⇒
-        // 强制 low + 权重 0.5，rationale 点名 G1（不是静默跳变）。
+        // 显式台阶：同一色度中位，锚点数越过 100 门（1000 → 50）⇒
+        // 强制 low + 权重 0.5，rationale 点名锚点质量低（不是静默跳变）。
         let above = stats_with(|stats| {
-            stats.wb_channel_p25 = [0.007, 0.007, 0.0056];
+            stats.wb_anchor_chroma_median = [0.0, -0.2231];
+            stats.wb_anchor_count = 1000;
         });
         let below = stats_with(|stats| {
-            stats.wb_channel_p25 = [0.004, 0.004, 0.0032];
+            stats.wb_anchor_chroma_median = [0.0, -0.2231];
+            stats.wb_anchor_count = 50;
+            stats.wb_anchor_band_count = 50;
+            stats.wb_anchor_inlier_ratio = 1.0;
         });
         let (_, _, confidence_above, _) = match estimate_wb(&above, &SceneFlags::default()) {
             WbOutcome::Applied(temperature, tint, confidence, rationale) => {
@@ -2653,58 +2765,31 @@ mod tests {
                 WbOutcome::Applied(temperature, tint, confidence, rationale) => {
                     (temperature, tint, confidence, rationale)
                 }
-                WbOutcome::Skipped(reason) => panic!("G1 单触应落成，实得跳过：{reason}"),
+                WbOutcome::Skipped(reason) => {
+                    panic!("小锚点应 low 落成、不是跳过，实得跳过：{reason}")
+                }
             };
-        assert_eq!(confidence_below, Confidence::Low, "越过 G1 下限应强制 low");
+        assert_eq!(
+            confidence_below,
+            Confidence::Low,
+            "越过锚点数下限应强制 low"
+        );
         assert!(
-            rationale_below.contains("G1"),
-            "越过 G1 下限时 rationale 应点名 G1，实得：{rationale_below}"
+            rationale_below.contains("锚点质量低"),
+            "越过锚点数下限时 rationale 应点名锚点质量低，实得：{rationale_below}"
         );
         assert!(
             (temperature_below - (-0.166)).abs() < 0.01 && (tint_below - 0.178).abs() < 0.01,
-            "G1 单触应为 (−0.332, 0.356) × 0.5，实得 ({temperature_below:.3}, {tint_below:.3})"
+            "小锚点应为 (−0.332, 0.356) × 0.5，实得 ({temperature_below:.3}, {tint_below:.3})"
         );
     }
 
-    /// R1 `wb_anchor_is_per_pixel`（阶段 1 占位 TODO）：合成图（左半纯
-    /// 黑块 + 右半中性灰阶）的新锚点色度应 = 右半灰阶的中位色度，与黑块
-    /// 无关。阶段 1（S1+S2 锚点重定义，`stats.rs` 新字段）实现；本期
-    /// （阶段 0 护栏）不改 `stats.rs`，故只占位、不跳过。
-    /// 变异：改回逐通道独立 p2.5 ⇒ 黑块通道混入 ⇒ 红。
-    #[test]
-    #[ignore]
-    fn wb_anchor_is_per_pixel_todo_stage1() {
-        todo!("阶段 1（S1+S2）实现，见 C1-WB-REDESIGN.md §5.4 R1");
-    }
-
-    /// R2 `wb_anchor_excludes_no_signal`（阶段 1 占位 TODO）：全图通道
-    /// < 0.005 的合成近黑图 ⇒ 锚点集为空。阶段 1 实现；本期只占位。
-    /// 变异：信号带下沿被拿掉 ⇒ 锚点集非空 ⇒ 红。
-    #[test]
-    #[ignore]
-    fn wb_anchor_excludes_no_signal_todo_stage1() {
-        todo!("阶段 1（S1+S2）实现，见 C1-WB-REDESIGN.md §5.4 R2");
-    }
-
-    /// R3 `wb_planck_prefilter_excludes_green`（阶段 1 占位 TODO）：
-    /// 绿林合成图（暗部纯绿 + 中部中性灰）⇒ 锚点集不含暗部绿像素。
-    /// 阶段 1 实现；本期只占位。变异：去掉 Planck 前置门 ⇒ 绿像素
-    /// 进入 ⇒ 红。
-    #[test]
-    #[ignore]
-    fn wb_planck_prefilter_excludes_green_todo_stage1() {
-        todo!("阶段 1（S1+S2）实现，见 C1-WB-REDESIGN.md §5.4 R3");
-    }
-
-    /// R4 `wb_anchor_stats_streaming_exact`（阶段 1 占位 TODO）：已知
-    /// 分布小图，流式聚合的 (u, v) 中位与散布与暴力全量计算逐位一致。
-    /// 阶段 1 实现；本期只占位。变异：直方图 / 蓄水池近似误差超容差
-    /// ⇒ 红。
-    #[test]
-    #[ignore]
-    fn wb_anchor_stats_streaming_exact_todo_stage1() {
-        todo!("阶段 1（S1+S2）实现，见 C1-WB-REDESIGN.md §5.4 R4");
-    }
+    // R1–R4（阶段 1，统计层）：已在 `yanshi-render/src/stats.rs` 的测试
+    // 模块落实为真测试（`wb_anchor_is_per_pixel` /
+    // `wb_anchor_excludes_no_signal` /
+    // `wb_planck_prefilter_excludes_green` /
+    // `wb_anchor_stats_streaming_exact`）；此处的阶段 0 占位随阶段 1
+    // 落地删除，不留 `todo!` 占位。
 
     /// R6 `wb_decoupled_axes`（阶段 2 占位 TODO）：合成锚点（R/B 证据
     /// 足、G 证据缺）⇒ T 轴正常落成、Ti 轴收缩到 0 且 rationale 分轴写
