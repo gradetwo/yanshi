@@ -90,6 +90,16 @@ fn pinned_blob_survives_preview_eviction() {
         }
         // **④ 再落一笔** ⇒ **∴ 新预览取而代之 ⇒ **∴ 触发 `evict_replaced_previews` ✓**** ✓✓
         full_canvas_fill(&mut workspace, "b_second", 220);
+        // **P-01（M1）之后，变更预览不再顺手替换 256² 文档缩略图** ✗：
+        //   它只写 `last_render_blob`（降采样图不能冒充文档缩略图）⇒ 旧缩略图仍被
+        //   `document_thumbnail` 指着 ⇒ 不会进 `previous` ⇒ 淘汰不发生 ✓（本测试的
+        //   对照组因此假红）。⇒ 显式走一次**文档级预览**（256²，真替换缩略图），
+        //   这才是"新预览取而代之"的真实触发点 ✓。
+        workspace
+            .document_mut("doc_pin")
+            .expect("文档在")
+            .render_document_preview()
+            .expect("文档级预览应当成功");
         let store = workspace.store();
         let alive = store.exists(&hash);
         if pinned {
