@@ -46,6 +46,9 @@ pub enum AdjustmentKind {
     BlackAndWhite,
     /// 通道混合器（3×3 矩阵 + 常数）。
     ChannelMixer,
+    /// 校准原色（LR 校准面板式：红/绿/蓝原色色相 ± / 饱和度；矩阵见
+    /// `calibrate_primaries_matrix`；显示空间，薄封装于 `channel_mixer` 之上）。
+    CalibratePrimaries,
     /// 渐变映射（按明度在色带间插值）。
     GradientMap,
     /// 阴影/高光恢复。
@@ -92,6 +95,7 @@ impl AdjustmentKind {
             "vibrance" | "vibrance_natural" => Some(Self::Vibrance),
             "black_and_white" => Some(Self::BlackAndWhite),
             "channel_mixer" => Some(Self::ChannelMixer),
+            "calibrate_primaries" => Some(Self::CalibratePrimaries),
             "gradient_map" => Some(Self::GradientMap),
             "shadows_highlights" => Some(Self::ShadowsHighlights),
             "selective_color" => Some(Self::SelectiveColor),
@@ -124,6 +128,7 @@ impl AdjustmentKind {
             Self::Vibrance => "vibrance",
             Self::BlackAndWhite => "black_and_white",
             Self::ChannelMixer => "channel_mixer",
+            Self::CalibratePrimaries => "calibrate_primaries",
             Self::GradientMap => "gradient_map",
             Self::ShadowsHighlights => "shadows_highlights",
             Self::SelectiveColor => "selective_color",
@@ -139,7 +144,7 @@ impl AdjustmentKind {
     }
 
     /// 全部类型。
-    pub const ALL: [AdjustmentKind; 25] = [
+    pub const ALL: [AdjustmentKind; 26] = [
         Self::BrightnessContrast,
         Self::Saturation,
         Self::Invert,
@@ -154,6 +159,7 @@ impl AdjustmentKind {
         Self::Vibrance,
         Self::BlackAndWhite,
         Self::ChannelMixer,
+        Self::CalibratePrimaries,
         Self::GradientMap,
         Self::ShadowsHighlights,
         Self::SelectiveColor,
@@ -3167,7 +3173,7 @@ fn for_each_straight_color(buffer: &mut Buffer, mut transform: impl FnMut(&mut [
 }
 
 /// 内核支持的调整类型名（工具层据此校验参数，避免造出无法渲染的对象）。
-pub const ADJUSTMENT_NAMES: [&str; 25] = [
+pub const ADJUSTMENT_NAMES: [&str; 26] = [
     "brightness_contrast",
     "saturation",
     "invert",
@@ -3182,6 +3188,7 @@ pub const ADJUSTMENT_NAMES: [&str; 25] = [
     "vibrance",
     "black_and_white",
     "channel_mixer",
+    "calibrate_primaries",
     "gradient_map",
     "shadows_highlights",
     "selective_color",
@@ -3324,6 +3331,142 @@ fn mixer_matrix(params: &Value) -> [[f32; 3]; 3] {
     for (index, row) in rows.iter().take(3).enumerate() {
         if let Some(values) = fixed_floats(Some(row), 3) {
             matrix[index] = [values[0], values[1], values[2]];
+        }
+    }
+    matrix
+}
+
+/// sRGB 编码（符号保持）：线性负值保持为负（越界矩阵元不取 NaN）。
+fn srgb_encode_signed(value: f64) -> f64 {
+    if value < 0.0 {
+        -srgb_encode_signed(-value)
+    } else if value <= 0.0031308 {
+        12.92 * value
+    } else {
+        1.055 * libm::pow(value, 1.0 / 2.4) - 0.055
+    }
+}
+
+/// 解 3×3 线性方程（列向量形式）：M·x = rhs，M 的列由 `cols` 给出。
+/// 行列式过小（|det| < 1e-9）返回 None（调用方回退）。
+fn solve_3x3_cols(cols: &[[f64; 3]; 3], rhs: [f64; 3]) -> Option<[f64; 3]> {
+    let det_of = |m: &[[f64; 3]; 3]| {
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            - m[1][0] * (m[0][1] * m[2][2] - m[0][2] * m[2][1])
+            + m[2][0] * (m[0][1] * m[1][2] - m[0][2] * m[1][1])
+    };
+    let determinant = det_of(cols);
+    if determinant.abs() < 1e-9 {
+        return None;
+    }
+    let mut out = [0.0; 3];
+    for index in 0..3 {
+        let mut replaced = *cols;
+        replaced[index] = rhs;
+        out[index] = det_of(&replaced) / determinant;
+    }
+    Some(out)
+}
+
+/// **校准原色**（LR 校准面板式薄封装）：红/绿/蓝原色色相 ± / 饱和度 → 3×3 矩阵，
+/// 交给 `channel_mixer`（常数零）；显示空间，不动内核混合 math。
+///
+/// 构造（设计文档 `d1c-DESIGN.md` §2，全 f64、末尾转 f32）：
+/// - 色相矩阵 H：CIE xy 色度面、D65 白点；每原色相对白点的色度向量旋转
+///   θ = 0.5 × hue slider（1 单位 = 0.5°）；亮度求解后得新原色矩阵 B，
+///   H = A⁻¹·B（A 为标准 sRGB 矩阵）。H 精确守白（行和 = 1）。
+/// - 饱和度矩阵 S：色相取 0，只动饱和度；`f = 1 + sat/100` 缩放色度向量，
+///   列 = 固定亮度 × 线性新原色再 sRGB 编码；`sat = −100` ⇒ 该原色塌到亮度灰。
+/// - T = S·H（先转色相、后调饱和）。全零参数短路返回精确单位阵。
+pub fn calibrate_primaries_matrix(params: &Value) -> [[f32; 3]; 3] {
+    const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    const IDENTITY_64: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    // sRGB 原色 xy 与 D65 白点；原色亮度；白点 XYZ（与 `color.rs` 同组常数）。
+    const PRIMARIES: [(f64, f64); 3] = [(0.640, 0.330), (0.300, 0.600), (0.150, 0.060)];
+    const WHITE: (f64, f64) = (0.3127, 0.3290);
+    const WHITE_XYZ: [f64; 3] = [0.95047, 1.0, 1.08883];
+    const LUMINANCE: [f64; 3] = [0.2126, 0.7152, 0.0722];
+    const XYZ_TO_RGB: [[f64; 3]; 3] = [
+        [3.2406, -1.5372, -0.4986],
+        [-0.9689, 1.8758, 0.0415],
+        [0.0557, -0.2040, 1.0570],
+    ];
+    let num = |key: &str| params.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+    let (red_hue, red_sat, green_hue, green_sat, blue_hue, blue_sat) = (
+        num("red_hue"),
+        num("red_sat"),
+        num("green_hue"),
+        num("green_sat"),
+        num("blue_hue"),
+        num("blue_sat"),
+    );
+    if red_hue == 0.0
+        && red_sat == 0.0
+        && green_hue == 0.0
+        && green_sat == 0.0
+        && blue_hue == 0.0
+        && blue_sat == 0.0
+    {
+        return IDENTITY;
+    }
+    // 色相矩阵 H（色相全零时短路为单位阵，避免浮点往返误差）。
+    let hue_matrix = if red_hue == 0.0 && green_hue == 0.0 && blue_hue == 0.0 {
+        IDENTITY_64
+    } else {
+        let mut xyz_cols = [[0.0f64; 3]; 3];
+        for (index, &(px, py)) in PRIMARIES.iter().enumerate() {
+            let theta = [red_hue, green_hue, blue_hue][index] * 0.5 * std::f64::consts::PI / 180.0;
+            let (dx, dy) = (px - WHITE.0, py - WHITE.1);
+            let (sin, cos) = (libm::sin(theta), libm::cos(theta));
+            let (rx, ry) = (dx * cos - dy * sin, dx * sin + dy * cos);
+            let (nx, ny) = (WHITE.0 + rx, WHITE.1 + ry);
+            let (nx, ny) = if ny.abs() < 1e-9 { (px, py) } else { (nx, ny) };
+            xyz_cols[index] = [nx / ny, 1.0, (1.0 - nx - ny) / ny];
+        }
+        let luminance = solve_3x3_cols(&xyz_cols, WHITE_XYZ).unwrap_or(LUMINANCE);
+        let mut hue = [[0.0f64; 3]; 3];
+        for col in 0..3 {
+            let b = [
+                luminance[col] * xyz_cols[col][0],
+                luminance[col] * xyz_cols[col][1],
+                luminance[col] * xyz_cols[col][2],
+            ];
+            for row in 0..3 {
+                hue[row][col] = XYZ_TO_RGB[row][0] * b[0]
+                    + XYZ_TO_RGB[row][1] * b[1]
+                    + XYZ_TO_RGB[row][2] * b[2];
+            }
+        }
+        hue
+    };
+    // 饱和度矩阵 S（饱和度全零时短路为单位阵；列向量形式）。
+    let sat_cols = if red_sat == 0.0 && green_sat == 0.0 && blue_sat == 0.0 {
+        IDENTITY_64
+    } else {
+        let mut cols = [[0.0f64; 3]; 3];
+        for (index, &(px, py)) in PRIMARIES.iter().enumerate() {
+            let factor = 1.0 + [red_sat, green_sat, blue_sat][index] / 100.0;
+            let (dx, dy) = (px - WHITE.0, py - WHITE.1);
+            let (nx, ny) = (WHITE.0 + factor * dx, WHITE.1 + factor * dy);
+            let (nx, ny) = if ny.abs() < 1e-9 { (px, py) } else { (nx, ny) };
+            let xyz = [nx / ny, 1.0, (1.0 - nx - ny) / ny];
+            for row in 0..3 {
+                let linear = LUMINANCE[index]
+                    * (XYZ_TO_RGB[row][0] * xyz[0]
+                        + XYZ_TO_RGB[row][1] * xyz[1]
+                        + XYZ_TO_RGB[row][2] * xyz[2]);
+                cols[index][row] = srgb_encode_signed(linear);
+            }
+        }
+        cols
+    };
+    // T = S·H（S 以列向量给出：S[row][k] = sat_cols[k][row]）。
+    let mut matrix = [[0.0f32; 3]; 3];
+    for row in 0..3 {
+        for col in 0..3 {
+            matrix[row][col] = (sat_cols[0][row] * hue_matrix[0][col]
+                + sat_cols[1][row] * hue_matrix[1][col]
+                + sat_cols[2][row] * hue_matrix[2][col]) as f32;
         }
     }
     matrix
@@ -3552,6 +3695,9 @@ pub fn apply_adjustment(
                 None => [0.0, 0.0, 0.0],
             };
             channel_mixer(&mut adjusted, mixer_matrix(params), constants)
+        }
+        AdjustmentKind::CalibratePrimaries => {
+            channel_mixer(&mut adjusted, calibrate_primaries_matrix(params), [0.0; 3])
         }
         AdjustmentKind::GradientMap => gradient_map(&mut adjusted, &gradient_stops(params)),
         AdjustmentKind::ShadowsHighlights => shadows_highlights(
@@ -6436,6 +6582,158 @@ mod coloradj_tests {
         assert_rgb_close(px(&buffer), [0.2, 0.3, 0.4], "零矩阵输出应等于常数");
     }
 
+    // ── calibrate_primaries ─────────────────────────────────────────────
+
+    /// 文档值断言的容差：设计文档 §2.4/§4 的钉死值是 3 位小数（原型 f64 算出），
+    /// 与实现 f32 值的差在 2e-3 内；构造改动会让它们动 0.01 以上，故 2e-3 既不误报
+    /// 也不放过真回归。
+    fn assert_rgb_close_doc(actual: [f32; 3], expected: [f32; 3], label: &str) {
+        for channel in 0..3 {
+            assert!(
+                (actual[channel] - expected[channel]).abs() < 2e-3,
+                "{label} 通道 {channel}：期望 {}，实得 {}",
+                expected[channel],
+                actual[channel]
+            );
+        }
+    }
+
+    /// 全零参数 ⇒ 逐位单位阵（短路；恒等渲染的根基）。
+    #[test]
+    fn calibrate_primaries_zero_params_is_exact_identity() {
+        let matrix = calibrate_primaries_matrix(&json!({}));
+        assert_eq!(
+            matrix,
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            "全零参数必须逐位单位阵"
+        );
+        let matrix = calibrate_primaries_matrix(&json!({
+            "red_hue": 0.0,
+            "red_sat": 0.0,
+            "green_hue": 0.0,
+            "green_sat": 0.0,
+            "blue_hue": 0.0,
+            "blue_sat": 0.0,
+        }));
+        assert_eq!(
+            matrix,
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            "显式全零也必须逐位单位阵"
+        );
+    }
+
+    /// 只动色相 ⇒ 每行行和 = 1（白精确守恒），含全部 ±100 档与组合极端；
+    /// 矩阵元有限且有界（max|T| ≤ 3）。变异：删掉亮度求解 ⇒ 行和立刻偏离 1。
+    #[test]
+    fn calibrate_primaries_hue_only_preserves_white() {
+        for params in [
+            json!({"red_hue": 100.0}),
+            json!({"blue_hue": -100.0}),
+            json!({"red_hue": 25.0, "blue_hue": -100.0}),
+            json!({"red_hue": 100.0, "green_hue": 100.0, "blue_hue": 100.0}),
+            json!({"red_hue": -100.0, "green_hue": -100.0, "blue_hue": -100.0}),
+        ] {
+            let matrix = calibrate_primaries_matrix(&params);
+            for (row, values) in matrix.iter().enumerate() {
+                let sum: f32 = values.iter().sum();
+                assert!(
+                    (sum - 1.0).abs() < 1e-3,
+                    "只动色相时第 {row} 行行和应为 1，实得 {sum}（{params:?}）"
+                );
+                for value in values {
+                    assert!(value.is_finite(), "矩阵元必须有限：{value}（{params:?}）");
+                    assert!(value.abs() <= 3.0, "矩阵元应有界 ≤3：{value}（{params:?}）");
+                }
+            }
+        }
+    }
+
+    /// 只动饱和度 ⇒ 蓝 sat −100 时纯蓝变亮度灰、纯红/纯绿不动；白出钉死文档值。
+    /// 变异：饱和度改走亮度求解 ⇒ 纯红变黑（设计文档 §2.3 否决的 (A) 构造）。
+    #[test]
+    fn calibrate_primaries_blue_sat_minus_100_grays_blue() {
+        let matrix = calibrate_primaries_matrix(&json!({"blue_sat": -100.0}));
+        // 白出（= 行和）：设计文档 §2.4 的文档值。
+        let white_out: [f32; 3] = [
+            matrix[0].iter().sum(),
+            matrix[1].iter().sum(),
+            matrix[2].iter().sum(),
+        ];
+        assert_rgb_close_doc(white_out, [1.298, 1.299, 0.298], "蓝 sat −100 的白出");
+        let mut blue = filled([0.0, 0.0, 1.0, 1.0]);
+        channel_mixer(&mut blue, matrix, [0.0; 3]);
+        assert_rgb_close_doc(px(&blue), [0.298, 0.298, 0.298], "纯蓝应变亮度灰");
+        let mut red = filled([1.0, 0.0, 0.0, 1.0]);
+        channel_mixer(&mut red, matrix, [0.0; 3]);
+        assert_rgb_close_doc(px(&red), [1.0, 0.0, 0.0], "纯红应不动");
+        let mut green = filled([0.0, 1.0, 0.0, 1.0]);
+        channel_mixer(&mut green, matrix, [0.0; 3]);
+        assert_rgb_close_doc(px(&green), [0.0, 1.0, 0.0], "纯绿应不动");
+        // sat −50 的白出同样钉死。
+        let matrix = calibrate_primaries_matrix(&json!({"blue_sat": -50.0}));
+        let white_out: [f32; 3] = [
+            matrix[0].iter().sum(),
+            matrix[1].iter().sum(),
+            matrix[2].iter().sum(),
+        ];
+        assert_rgb_close_doc(white_out, [1.274, 1.275, 0.502], "蓝 sat −50 的白出");
+    }
+
+    /// 红/绿 sat −100 同理：纯红塌到 enc(0.2126) 灰、纯绿塌到 enc(0.7152) 灰
+    /// （每个声明的参数都有一条判据证明它被读过）。
+    #[test]
+    fn calibrate_primaries_red_and_green_sat_minus_100_gray_their_primary() {
+        let matrix = calibrate_primaries_matrix(&json!({"red_sat": -100.0}));
+        let mut red = filled([1.0, 0.0, 0.0, 1.0]);
+        channel_mixer(&mut red, matrix, [0.0; 3]);
+        assert_rgb_close_doc(px(&red), [0.4984, 0.4984, 0.4984], "纯红应变亮度灰");
+        let matrix = calibrate_primaries_matrix(&json!({"green_sat": -100.0}));
+        let mut green = filled([0.0, 1.0, 0.0, 1.0]);
+        channel_mixer(&mut green, matrix, [0.0; 3]);
+        assert_rgb_close_doc(px(&green), [0.8625, 0.8625, 0.8625], "纯绿应变亮度灰");
+    }
+
+    /// 色相方向（sat = 0）：蓝 hue −100 ⇒ 蓝列 XYZ 色度角 ≈188.7°；
+    /// 红 hue +25 ⇒ 红列 ≈12.8°（LR 方向约定：负值色相角减小）。
+    /// 变异：旋转方向写反 ⇒ 两角各偏约 100°/25°，立刻红。
+    #[test]
+    fn calibrate_primaries_hue_direction_matches_lr_convention() {
+        // 标准 sRGB 矩阵 A：列向量 → XYZ。
+        const RGB_TO_XYZ: [[f64; 3]; 3] = [
+            [0.4124, 0.3576, 0.1805],
+            [0.2126, 0.7152, 0.0722],
+            [0.0193, 0.1192, 0.9505],
+        ];
+        let col_angle = |matrix: [[f32; 3]; 3], col: usize| -> f64 {
+            let c = [
+                matrix[0][col] as f64,
+                matrix[1][col] as f64,
+                matrix[2][col] as f64,
+            ];
+            let xyz = [
+                RGB_TO_XYZ[0][0] * c[0] + RGB_TO_XYZ[0][1] * c[1] + RGB_TO_XYZ[0][2] * c[2],
+                RGB_TO_XYZ[1][0] * c[0] + RGB_TO_XYZ[1][1] * c[1] + RGB_TO_XYZ[1][2] * c[2],
+                RGB_TO_XYZ[2][0] * c[0] + RGB_TO_XYZ[2][1] * c[1] + RGB_TO_XYZ[2][2] * c[2],
+            ];
+            let sum = xyz[0] + xyz[1] + xyz[2];
+            let (x, y) = (xyz[0] / sum, xyz[1] / sum);
+            let degrees = libm::atan2(y - 0.3290, x - 0.3127) * 180.0 / std::f64::consts::PI;
+            (degrees + 360.0) % 360.0
+        };
+        let blue = calibrate_primaries_matrix(&json!({"blue_hue": -100.0}));
+        let angle = col_angle(blue, 2);
+        assert!(
+            (angle - 188.7).abs() < 2.0,
+            "蓝 hue −100 的色度角应为 188.7°±2°，实测 {angle}°"
+        );
+        let red = calibrate_primaries_matrix(&json!({"red_hue": 25.0}));
+        let angle = col_angle(red, 0);
+        assert!(
+            (angle - 12.8).abs() < 2.0,
+            "红 hue +25 的色度角应为 12.8°±2°，实测 {angle}°"
+        );
+    }
+
     // ── gradient_map ────────────────────────────────────────────────
 
     /// 黑白两 stop：输出 = Rec709 明度的灰（纯红 ⇒ 0.2126 的灰，三通道同值）。
@@ -6914,7 +7212,7 @@ mod coloradj_tests {
     /// 6 个新名字都能被 apply_adjustment 认出来（返回 true），且空参数不改像素的期望：
     /// black_and_white 例外——它空参数 = 默认 Rec709 转灰阶，断言输出三通道同值。
     #[test]
-    fn apply_adjustment_recognises_the_six_new_names() {
+    fn apply_adjustment_recognises_the_seven_new_names() {
         for name in [
             "black_and_white",
             "channel_mixer",
@@ -6922,6 +7220,7 @@ mod coloradj_tests {
             "shadows_highlights",
             "selective_color",
             "color_lut",
+            "calibrate_primaries",
         ] {
             let mut buffer = filled([0.5, 0.3, 0.1, 1.0]);
             assert!(
@@ -6939,6 +7238,19 @@ mod coloradj_tests {
             (4.0, 4.0)
         ));
         assert_rgb_close(px(&buffer), [0.5, 0.3, 0.1], "channel_mixer 缺省应恒等");
+        let mut buffer = filled([0.5, 0.3, 0.1, 1.0]);
+        assert!(apply_adjustment(
+            &mut buffer,
+            "calibrate_primaries",
+            &json!({}),
+            1.0,
+            (4.0, 4.0)
+        ));
+        assert_rgb_close(
+            px(&buffer),
+            [0.5, 0.3, 0.1],
+            "calibrate_primaries 缺省应恒等",
+        );
         let mut buffer = filled([0.5, 0.3, 0.1, 1.0]);
         assert!(apply_adjustment(
             &mut buffer,
@@ -7464,8 +7776,8 @@ mod presence_tests {
             (AdjustmentKind::Clarity, "clarity"),
             (AdjustmentKind::Texture, "texture"),
         ];
-        assert_eq!(AdjustmentKind::ALL.len(), 25);
-        assert_eq!(ADJUSTMENT_NAMES.len(), 25);
+        assert_eq!(AdjustmentKind::ALL.len(), 26);
+        assert_eq!(ADJUSTMENT_NAMES.len(), 26);
         for (kind, name) in cases {
             assert_eq!(kind.as_str(), name);
             assert_eq!(

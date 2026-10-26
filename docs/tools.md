@@ -614,10 +614,10 @@ External preset files: setting `YANSHI_PRESET_DIR` to a directory containing a
 (same id replaces, new id is added); a set-but-missing file is an error, never
 a silent fallback.
 
-## Adjustments (25)
+## Adjustments (26)
 
 brightness_contrast, saturation, invert, levels, exposure, white_balance, curves, hsl, posterize,
-color_balance, split_toning, vibrance, black_and_white, channel_mixer, gradient_map,
+color_balance, split_toning, vibrance, black_and_white, channel_mixer, calibrate_primaries, gradient_map,
 shadows_highlights, selective_color, color_lut, red_eye, denoise, lens, perspective,
 dehaze, clarity, texture.
 
@@ -730,7 +730,10 @@ smooths fine texture.
 `split_toning` takes `shadows` / `highlights` triples plus `balance` and `amount`. `vibrance`
 boosts low-saturation pixels more than saturated ones. `black_and_white` takes optional `weights`
 `[wr,wg,wb]` (default Rec709) and optional `tint` `[r,g,b]` (0..1) for toning. `channel_mixer`
-takes `matrix` 3×3 (default identity) and `constants` `[k,k,k]` (default 0).
+takes `matrix` 3×3 (default identity) and `constants` `[k,k,k]` (default 0). `calibrate_primaries`
+takes six optional numbers in [-100, 100] (default 0): `red_hue` / `red_sat` / `green_hue` /
+`green_sat` / `blue_hue` / `blue_sat` — Lightroom-style camera calibration (hue rotates each primary
+around the D65 white point, saturation scales its chroma; white is preserved by hue-only changes).
 `gradient_map` takes `stops` as `[[position, [r,g,b]], ...]` (position 0..1, at least two stops).
 `shadows_highlights` takes `shadows` / `highlights` in -1..1 (0 = no-op). `selective_color`
 takes `adjust` mapping any of reds/yellows/greens/cyans/blues/magentas/whites/neutrals/blacks to

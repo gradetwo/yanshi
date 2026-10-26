@@ -1604,7 +1604,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "add_adjustment",
         profile: Profile::Retouch,
-        summary: "新增调整图层对象（调色）：brightness_contrast / saturation / vibrance / invert / levels（可分通道）/ exposure / white_balance / curves / hsl / posterize / color_balance / split_toning / black_and_white / channel_mixer / gradient_map / shadows_highlights / selective_color / color_lut / red_eye / denoise / lens / perspective / dehaze / clarity / texture（Presence 三件套，amount −1..1，0=恒等）",
+        summary: "新增调整图层对象（调色）：brightness_contrast / saturation / vibrance / invert / levels（可分通道）/ exposure / white_balance / curves / hsl / posterize / color_balance / split_toning / black_and_white / channel_mixer / calibrate_primaries / gradient_map / shadows_highlights / selective_color / color_lut / red_eye / denoise / lens / perspective / dehaze / clarity / texture（Presence 三件套，amount −1..1，0=恒等）",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),

@@ -658,6 +658,33 @@ pub(super) fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> R
             }
         }
     }
+    if name == "calibrate_primaries" {
+        for key in [
+            "red_hue",
+            "red_sat",
+            "green_hue",
+            "green_sat",
+            "blue_hue",
+            "blue_sat",
+        ] {
+            if let Some(value) = object.get(key) {
+                let Some(number) = value.as_f64() else {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!("calibrate_primaries 的 {key} 必须是数字")),
+                    ));
+                };
+                if !number.is_finite() || !(-100.0..=100.0).contains(&number) {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "calibrate_primaries 的 {key} 必须在 [-100, 100] 之间，得到 {number}"
+                        )),
+                    ));
+                }
+            }
+        }
+    }
     if name == "gradient_map" {
         if let Some(stops) = object.get("stops") {
             let Some(array) = stops.as_array() else {
@@ -1050,6 +1077,51 @@ mod presence_validation_tests {
             )
             .is_ok(),
             "滤镜版 dehaze 给了 air 应通过"
+        );
+    }
+
+    #[test]
+    fn calibrate_primaries_params_are_validated_in_minus_100_to_100() {
+        // D1-c：六个参数各可选、数字且在 [-100, 100] 内；越界/非数字报错，不静默钳制。
+        assert!(
+            validate_effect(
+                EffectKind::Adjustment,
+                "calibrate_primaries",
+                &json!({"red_hue": 25.0, "blue_hue": -100.0})
+            )
+            .is_ok(),
+            "合法参数应通过"
+        );
+        assert!(
+            validate_effect(
+                EffectKind::Adjustment,
+                "calibrate_primaries",
+                &json!({"red_sat": 100.0, "green_sat": -100.0})
+            )
+            .is_ok(),
+            "边界 ±100 应通过"
+        );
+        assert!(
+            validate_effect(EffectKind::Adjustment, "calibrate_primaries", &json!({})).is_ok(),
+            "无参数（全缺省 0）应通过"
+        );
+        assert!(
+            validate_effect(
+                EffectKind::Adjustment,
+                "calibrate_primaries",
+                &json!({"blue_hue": 100.5})
+            )
+            .is_err(),
+            "blue_hue=100.5 超出 [-100,100] 应被拒绝"
+        );
+        assert!(
+            validate_effect(
+                EffectKind::Adjustment,
+                "calibrate_primaries",
+                &json!({"red_sat": "high"})
+            )
+            .is_err(),
+            "red_sat 非数字应被拒绝"
         );
     }
 }
