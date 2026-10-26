@@ -669,32 +669,28 @@ fn estimate_tone(
     (shrunk_shadows, shrunk_highlights, rationale)
 }
 
-/// 白平衡增益反推：由目标增益 ĝ 求 (T, Ti)，再做一次线性空间
-/// Gauss–Newton 修正（见函数内推导）。
+/// 白平衡增益反推：由目标增益 ĝ 求 (T, Ti)，分轴比值反解（C1 阶段 2，S3）。
 ///
 /// 内核增益（filter.rs white_balance）：R×(1+0.35T+0.15Ti)、
-/// G×(1−0.15Ti)、B×(1−0.35T+0.15Ti)。初值取 G 定 Ti、
-/// R−B 差定 T（此二约束在初值处精确成立）；残差
-/// rC = ĝC − gC 的最小二乘一步：JᵀJ 对角（T 列与 Ti 列正交：
-/// 0.35×0.15 + 0×(−0.15) + (−0.35)×0.15 = 0）⇒
-/// ΔT = (rR − rB)/0.7，ΔTi = (rR − rG + rB)/0.45。
-/// 三通道 2 自由度本就超定，修正后残差是结构剩余（见测试），
-/// 不是公式错误——测试断言修正后增益与目标差 < 0.01。
+/// G×(1−0.15Ti)、B×(1−0.35T+0.15Ti)。两轴各取自己的比值、互不借用
+/// 对方的信息：T 轴只看 R/B 比 ρ = ĝR/ĝB，取 Ti = 0 时的精确反解
+/// T = (ρ−1)/(0.35(ρ+1))；Ti 轴只看 G/√(RB) 比 s = ĝG/√(ĝR·ĝB)，
+/// 取 T = 0 时的精确反解 Ti = (1−s)/(0.15(1+s))。
+/// 阶段 1 的联合 Gauss–Newton 修正被取消：它把三通道共模残差（增益
+/// 整体缩放）倒进 Ti——中性锚点 (u, v) = (0.2, −0.2) 本无 G 方向偏色，
+/// 联合反解却给出 Ti ≈ +0.089（R6）；分轴反解给 Ti = 0（精确）。
+/// 代价是系统偏差：真实 (T0, Ti0) 下两轴互相污染对方的比值，
+/// |T0|, |Ti0| ≤ 0.25 时每轴偏差 ≤ 0.02，极值 (±0.5, ∓0.5) 时 Ti
+/// 偏差达 −0.060——见 `wb_synthetic_bias_decoupled` 的实测分档断言，
+/// 不是推理值。偏差随 |Ti| 增大而增大（T 轴公式忽略 Ti 对 R/B 的
+/// 影响），但温和区（auto 的实际工作区）内 ≤ 0.02。
+/// 返回值逐轴钳制到 `WB_RANGE`；饱和检测由调用方逐轴做。
 fn invert_wb_gains(target: [f32; 3]) -> (f32, f32) {
     let (gr, gg, gb) = (target[0], target[1], target[2]);
-    let mut temperature = (gr - gb) / 0.7;
-    let mut tint = (1.0 - gg) / 0.15;
-    let gains = |t: f32, ti: f32| -> [f32; 3] {
-        [
-            1.0 + 0.35 * t + 0.15 * ti,
-            1.0 - 0.15 * ti,
-            1.0 - 0.35 * t + 0.15 * ti,
-        ]
-    };
-    let predicted = gains(temperature, tint);
-    let residual = [gr - predicted[0], gg - predicted[1], gb - predicted[2]];
-    temperature += (residual[0] - residual[2]) / 0.7;
-    tint += (residual[0] - residual[1] + residual[2]) / 0.45;
+    let rho = gr / gb;
+    let temperature = (rho - 1.0) / (0.35 * (rho + 1.0));
+    let s = gg / (gr * gb).sqrt();
+    let tint = (1.0 - s) / (0.15 * (1.0 + s));
     (clamp(temperature, WB_RANGE), clamp(tint, WB_RANGE))
 }
 
@@ -720,17 +716,23 @@ fn wb_gains_from_anchor_chroma(chroma_median: [f32; 2]) -> [f32; 3] {
     ]
 }
 
-/// 白平衡估计（C1 阶段 1，S1+S2：逐像素色度锚 + Planck 滤波提前；
-/// 定位说明：RAW 的机内白平衡已在 develop 时施加，本组估的是**显影后残余
-/// 色偏**，不是重做机内白平衡）。
+/// 白平衡估计（C1 阶段 2，S3：分轴反解 + 分轴置信；S1 逐像素色度锚 +
+/// S2 Planck 滤波提前不变；定位说明：RAW 的机内白平衡已在 develop 时施加，
+/// 本组估的是**显影后残余色偏**，不是重做机内白平衡）。
 /// 输入是新锚点集统计（信号带内过 Planck 门的逐像素近中性集的色度中位）；
-/// 增益反解仍走 `invert_wb_gains`（阶段 1 不动反解，只换输入——
-/// 一次只换一层，便于归因）。
+/// 增益反解走分轴 `invert_wb_gains`：T 只看 R/B 比、Ti 只看 G/√(RB) 比，
+/// 各轴独立（阶段 1 的联合 Gauss–Newton 修正已取消，见该函数注）。
+/// 置信分轴（S3）：锚点集质量（数 / 召回率 / 散布）是两轴共用的证据，
+/// 质量低 ⇒ 两轴各收缩 0.5；G2 饱和是逐轴的证据，饱和轴收缩 0.25、
+/// 另一轴不受影响；舞台收缩逐轴取更小者。组置信 high 当且仅当质量好且
+/// 两轴皆未饱和。
 /// 置信重定义（取代现行三量触发）：锚点数 < 100 / 召回率低 / 散布大 ⇒ low；
 /// 锚点集为空 ⇒ `wb_no_neutral_anchor` 诚实跳过（D-WB3 的合格形态之一；
 /// 旧"增益无定义"跳过是不合格形态，不许再报）。
-/// 护栏继承（C1 §6.5）：G2（钳制饱和检测）永久保留；G1 的 0.005 锚点下限
-/// 由信号带下沿 0.02 + 对数地板接替；G3（reason / rationale 点名）永久保留。
+/// 护栏继承（C1 §6.5）：G2（钳制饱和检测）永久保留，分轴后每轴各有钳制边
+/// （阈值 0.84 由阶段 2 复核：保留——阶段 1 的护栏结果在分轴下逐项复现，
+/// 见 `wb_guardrail_*`）；G1 的 0.005 锚点下限由信号带下沿 0.02 + 对数地板
+/// 接替；G3（reason / rationale 点名）永久保留。
 /// 返回落成或跳过（跳过必带 reason，点名门编号与事实数值）。
 fn estimate_wb(stats: &ImageStats, scene: &SceneFlags) -> WbOutcome {
     if scene.monochrome {
@@ -747,7 +749,10 @@ fn estimate_wb(stats: &ImageStats, scene: &SceneFlags) -> WbOutcome {
     let gains = wb_gains_from_anchor_chroma(stats.wb_anchor_chroma_median);
     let (temperature, tint) = invert_wb_gains(gains);
     // 护栏 G2（§6.5 永久保留）：反解顶到钳制边 = 诉求超出表达域。
-    let saturated = temperature.abs() >= WB_SATURATION_EDGE || tint.abs() >= WB_SATURATION_EDGE;
+    // 分轴检测（S3）：每轴各有一条钳制边，饱和只认定在顶到的那条轴上。
+    let t_saturated = temperature.abs() >= WB_SATURATION_EDGE;
+    let ti_saturated = tint.abs() >= WB_SATURATION_EDGE;
+    let saturated = t_saturated || ti_saturated;
     // 锚点集质量（§4.3，取代现行三量触发）：锚点数 / 召回率 / 散布。
     let small = stats.wb_anchor_count < WB_MIN_CANDIDATES;
     let low_inlier = stats.wb_anchor_inlier_ratio < WB_ANCHOR_MIN_INLIER_RATIO;
@@ -755,9 +760,16 @@ fn estimate_wb(stats: &ImageStats, scene: &SceneFlags) -> WbOutcome {
     let quality_low = small || low_inlier || wide_spread;
     // 锚点不可信且反解已饱和 ⇒ 任何落成值都是错的，跳过（§6.3 G1+G2
     // 组合处置在新锚点下的形态：G1 的 0.005 下限由信号带下沿接替）。
+    // 跳过仍是整组（S3 不改跳过规则，只改落成时的权重分配）。
     if saturated && quality_low {
+        let saturated_axes = match (t_saturated, ti_saturated) {
+            (true, true) => "T 轴与 Ti 轴均",
+            (true, false) => "T 轴",
+            (false, true) => "Ti 轴",
+            (false, false) => unreachable!(),
+        };
         return WbOutcome::Skipped(format!(
-            "锚点质量低（锚点数 {}（门 {}）、召回率 {:.3}（门 {}）、散布 {:.3}（门 {}））且反解 (T, Ti)=({:.3}, {:.3}) 顶到钳制边（G2），白平衡整组跳过",
+            "锚点质量低（锚点数 {}（门 {}）、召回率 {:.3}（门 {}）、散布 {:.3}（门 {}））且反解 (T, Ti)=({:.3}, {:.3}) {saturated_axes}顶到钳制边（G2），白平衡整组跳过",
             stats.wb_anchor_count,
             WB_MIN_CANDIDATES,
             stats.wb_anchor_inlier_ratio,
@@ -768,26 +780,38 @@ fn estimate_wb(stats: &ImageStats, scene: &SceneFlags) -> WbOutcome {
             tint
         ));
     }
-    let mut confidence = if quality_low {
+    // 分轴置信与权重（S3）：组置信 high 当且仅当质量好且两轴皆未饱和；
+    // 每轴权重 = min（该轴 G2 0.25（若饱和）、质量 0.5（若质量低）、
+    // 舞台权重），一轴饱和不拖带另一轴。
+    let confidence = if quality_low || saturated {
         Confidence::Low
     } else {
         Confidence::High
     };
-    let mut weight = confidence.weight();
+    let mut weight_t = 1.0f32;
+    let mut weight_ti = 1.0f32;
+    if t_saturated {
+        weight_t = weight_t.min(0.25);
+    }
+    if ti_saturated {
+        weight_ti = weight_ti.min(0.25);
+    }
+    if quality_low {
+        weight_t = weight_t.min(0.5);
+        weight_ti = weight_ti.min(0.5);
+    }
     let mut guard_note = String::new();
     if saturated {
-        confidence = Confidence::Low;
-        weight = weight.min(0.25);
+        let saturated_desc = match (t_saturated, ti_saturated) {
+            (true, true) => "T 轴与 Ti 轴均顶到钳制边，强制 low、权重 0.25（两轴各）",
+            (true, false) => "T 轴顶到钳制边，强制 low、T 轴权重 0.25，Ti 轴不受影响",
+            (false, true) => "Ti 轴顶到钳制边，强制 low、Ti 轴权重 0.25，T 轴不受影响",
+            (false, false) => unreachable!(),
+        };
         guard_note = format!(
-            "；G2：反解 (T, Ti)=({:.3}, {:.3}) 顶到钳制边（诉求超出 (T, Ti) 表达域），强制 low、权重 0.25",
+            "；G2：反解 (T, Ti)=({:.3}, {:.3}) {saturated_desc}",
             temperature, tint
         );
-        if quality_low {
-            guard_note = format!(
-                "；锚点质量低（锚点数 {}、召回率 {:.3}、散布 {:.3}）{guard_note}",
-                stats.wb_anchor_count, stats.wb_anchor_inlier_ratio, stats.wb_anchor_chroma_spread
-            );
-        }
     } else if quality_low {
         guard_note = format!(
             "；锚点质量低（锚点数 {}、召回率 {:.3}、散布 {:.3}），强制 low、权重 0.5",
@@ -797,17 +821,22 @@ fn estimate_wb(stats: &ImageStats, scene: &SceneFlags) -> WbOutcome {
     let mut scene_note = String::new();
     if scene.stage {
         let stage_weight = if quality_low { 0.2 } else { 0.5 };
-        weight = weight.min(stage_weight);
+        weight_t = weight_t.min(stage_weight);
+        weight_ti = weight_ti.min(stage_weight);
         scene_note = if guard_note.is_empty() {
-            format!("；舞台场景收缩权重 {weight}")
+            format!("；舞台场景收缩权重 {weight_t}")
+        } else if (weight_t - weight_ti).abs() < f32::EPSILON {
+            format!("；舞台场景收缩权重 {stage_weight}，与护栏取更小者 ⇒ {weight_t}")
         } else {
-            format!("；舞台场景收缩权重 {stage_weight}，与护栏取更小者 ⇒ {weight}")
+            format!(
+                "；舞台场景收缩权重 {stage_weight}，与护栏取更小者 ⇒ T {weight_t} / Ti {weight_ti}"
+            )
         };
     }
-    let shrunk_t = shrink(temperature, 0.0, weight);
-    let shrunk_ti = shrink(tint, 0.0, weight);
+    let shrunk_t = shrink(temperature, 0.0, weight_t);
+    let shrunk_ti = shrink(tint, 0.0, weight_ti);
     let rationale = format!(
-        "显影后残余色偏：信号带 [{:.2}, {:.2}] 内 {} 像素，过 Planck 门锚点 {} 像素（召回率 {:.3}），锚点色度中位 (u, v)=({:.3}, {:.3})、散布 {:.3} ⇒ 目标增益 [{:.3}, {:.3}, {:.3}] ⇒ (T, Ti)=({temperature:.3}, {tint:.3})（一次修正后）；置信 {} ⇒ 权重 {weight} 收缩后 ({shrunk_t:.3}, {shrunk_ti:.3}){guard_note}{scene_note}；RAW 机内白平衡已在显影时施加，本组只纠残余偏色",
+        "显影后残余色偏：信号带 [{:.2}, {:.2}] 内 {} 像素，过 Planck 门锚点 {} 像素（召回率 {:.3}），锚点色度中位 (u, v)=({:.3}, {:.3})、散布 {:.3} ⇒ 目标增益 [{:.3}, {:.3}, {:.3}] ⇒ (T, Ti)=({temperature:.3}, {tint:.3})（分轴反解：T 由 R/B 比、Ti 由 G/√(RB) 比，各轴独立）；置信 {} ⇒ 权重 T {weight_t} / Ti {weight_ti} 收缩后 ({shrunk_t:.3}, {shrunk_ti:.3}){guard_note}{scene_note}；RAW 机内白平衡已在显影时施加，本组只纠残余偏色",
         stats.wb_anchor_luma_band.0,
         stats.wb_anchor_luma_band.1,
         stats.wb_anchor_band_count,
@@ -2152,14 +2181,23 @@ mod tests {
         );
     }
 
-    /// 白平衡反推：掩码后低百分位 ⇒ (T, Ti) ⇒ 内核增益与目标差 < 0.01
-    /// （变异：修正步被删 ⇒ 残差 0.003 级仍过？本组 μ 选得使初值
-    /// 残差已 < 0.01，故另断言修正后 G 通道不被修坏 + 修正步存在
-    /// 性由 `invert_wb_gains` 的 R−B 差分断言覆盖，见下）。
+    /// 白平衡反推：目标增益 ⇒ (T, Ti) ⇒ 内核增益与目标差 < 0.01。
+    /// 阶段 2（S3）改写：反解是分轴比值公式（T 只看 R/B 比、Ti 只看
+    /// G/√(RB) 比），不再是阶段 1 的联合 Gauss–Newton 修正。断言按分轴
+    /// 重写：除逐通道增益差 < 0.01 外，另钉分轴精确值——目标
+    /// [1.1073, 0.9966, 0.9060] 的分轴反解为 (T, Ti) ≈ (0.286, 0.017)，
+    /// 联合反解在此目标上给出 (0.288, 0.037)（Ti 被共模残差拖带
+    /// +0.020），故精确值断言同时是分轴/联合的判别器。
+    /// （变异：改回联合反解 ⇒ Ti ≈ 0.037 ⇒ 红；T 公式系数 0.35 改
+    /// 0.30 ⇒ T ≈ 0.333 ⇒ 红。）
     #[test]
     fn wb_inversion_reproduces_kernel_gains() {
         let target = [1.1073f32, 0.9966, 0.9060];
         let (temperature, tint) = invert_wb_gains(target);
+        assert!(
+            (temperature - 0.286).abs() < 0.002 && (tint - 0.017).abs() < 0.002,
+            "分轴反解应 ≈ (0.286, 0.017)，实得 ({temperature:.4}, {tint:.4})"
+        );
         let gains = [
             1.0 + 0.35 * temperature + 0.15 * tint,
             1.0 - 0.15 * tint,
@@ -2173,8 +2211,8 @@ mod tests {
                 target[channel]
             );
         }
-        // 初值约束的精确性：G 定 Ti、R−B 差定 T——修正步是最小二乘，
-        // 不应把已精确的约束修坏到 0.01 外（与上断言同界，互为印证）。
+        // 分轴比值在单轴为 0 时精确：R−B 差由 T 单独决定，修正后
+        // R−B 差不应被另一轴的残差带偏到 0.01 外（与上断言同界，互为印证）。
         assert!(
             (gains[0] - gains[2] - (target[0] - target[2])).abs() < 0.01,
             "R−B 差应保持"
@@ -2190,7 +2228,8 @@ mod tests {
     #[test]
     fn wb_anchor_quality_trigger_shrinks() {
         // 锚点色度中位 (0, ln 0.8)：目标增益 [0.928, 0.928, 1.161]，
-        // 反解 (T, Ti) ≈ (−0.332, 0.356)，未顶钳制边。
+        // 分轴反解 (T, Ti) ≈ (−0.317, 0.371)，未顶钳制边（阶段 2 改写：
+        // 阶段 1 的联合反解给 (−0.332, 0.356)，Ti 被共模残差拖带）。
         let base = stats_with(|stats| {
             stats.wb_anchor_chroma_median = [0.0, -0.2231];
         });
@@ -2203,8 +2242,8 @@ mod tests {
         };
         assert_eq!(confidence0, Confidence::High, "散布 0 时应 high");
         assert!(
-            (t0 - (-0.332)).abs() < 0.01 && (ti0 - 0.356).abs() < 0.01,
-            "门上统计输出应 ≈ (−0.332, 0.356)，实得 ({t0:.3}, {ti0:.3})"
+            (t0 - (-0.317)).abs() < 0.01 && (ti0 - 0.371).abs() < 0.01,
+            "门上统计输出应 ≈ (−0.317, 0.371)，实得 ({t0:.3}, {ti0:.3})"
         );
         let wide = stats_with(|stats| {
             stats.wb_anchor_chroma_median = [0.0, -0.2231];
@@ -2555,13 +2594,15 @@ mod tests {
 
     /// 护栏 G1 的阶段 1 形态：锚点集过小（< 100）、反解未饱和 ⇒
     /// 强制 low + 权重 0.5（沿用现行 low 规则），rationale 点名锚点
-    /// 质量低（变异：小锚点门被删 ⇒ high + 全额 (0, 0.346) 落成 ⇒ 红）。
+    /// 质量低（变异：小锚点门被删 ⇒ high + 全额 (0, 0.392) 落成 ⇒ 红）。
     /// 口径变更（记入提交说明）：旧 G1 是"锚点 p2.5 < 0.005"，已由
     /// 信号带下沿接替；本测试改钉"锚点数 < 100 ⇒ low + 0.5"。
+    /// 阶段 2 改写：分轴反解给 (T, Ti) ≈ (0, 0.392)，阶段 1 的联合反解
+    /// 给 (0, 0.346)（Ti 被共模残差压低），tint 期望随之 0.173 → 0.196。
     #[test]
     fn wb_guardrail_anchor_only_forces_low_half_weight() {
         // 锚点色度中位 (ln(0.004/0.0045), ln(0.004/0.0045)) ≈
-        // (−0.118, −0.118)：反解 (T, Ti) ≈ (0, 0.346)，未顶钳制边；
+        // (−0.118, −0.118)：分轴反解 (T, Ti) ≈ (0, 0.392)，未顶钳制边；
         // 锚点数 50 < 100，质量低单触。
         let stats = stats_with(|stats| {
             stats.wb_anchor_chroma_median = [-0.1178, -0.1178];
@@ -2582,8 +2623,8 @@ mod tests {
             "小锚点单触温度应 ≈ 0，实得 {temperature}"
         );
         assert!(
-            (tint - 0.1729).abs() < 0.002,
-            "小锚点单触 tint 应 ≈ 0.346 × 0.5 = 0.173，实得 {tint}"
+            (tint - 0.196).abs() < 0.002,
+            "小锚点单触 tint 应 ≈ 0.392 × 0.5 = 0.196，实得 {tint}"
         );
         assert!(
             rationale.contains("锚点质量低") && rationale.contains("权重 0.5"),
@@ -2631,8 +2672,8 @@ mod tests {
             }
         };
         assert!(
-            (temperature - (-0.0664)).abs() < 0.01 && (tint - 0.0712).abs() < 0.01,
-            "min(0.5, 0.2) 应为 0.2 ⇒ (−0.332, 0.356) × 0.2，实得 ({temperature}, {tint})"
+            (temperature - (-0.0635)).abs() < 0.002 && (tint - 0.0743).abs() < 0.002,
+            "min(0.5, 0.2) 应为 0.2 ⇒ (−0.317, 0.371) × 0.2，实得 ({temperature}, {tint})"
         );
         // G2 + 锚点质量低 ⇒ 跳过（不是 min 落成）。
         let saturated_low = stats_with(|stats| {
@@ -2724,8 +2765,8 @@ mod tests {
         };
         assert_eq!(confidence0, Confidence::High, "门上统计应 high");
         assert!(
-            (t0 - (-0.332)).abs() < 0.01 && (ti0 - 0.356).abs() < 0.01,
-            "门上统计输出应 ≈ (−0.332, 0.356)，实得 ({t0:.3}, {ti0:.3})"
+            (t0 - (-0.317)).abs() < 0.01 && (ti0 - 0.371).abs() < 0.01,
+            "门上统计输出应 ≈ (−0.317, 0.371)，实得 ({t0:.3}, {ti0:.3})"
         );
         let (t1, ti1, _, _) = match estimate_wb(&perturbed, &SceneFlags::default()) {
             WbOutcome::Applied(temperature, tint, confidence, rationale) => {
@@ -2779,8 +2820,8 @@ mod tests {
             "越过锚点数下限时 rationale 应点名锚点质量低，实得：{rationale_below}"
         );
         assert!(
-            (temperature_below - (-0.166)).abs() < 0.01 && (tint_below - 0.178).abs() < 0.01,
-            "小锚点应为 (−0.332, 0.356) × 0.5，实得 ({temperature_below:.3}, {tint_below:.3})"
+            (temperature_below - (-0.159)).abs() < 0.002 && (tint_below - 0.186).abs() < 0.002,
+            "小锚点应为 (−0.317, 0.371) × 0.5，实得 ({temperature_below:.3}, {tint_below:.3})"
         );
     }
 
@@ -2791,14 +2832,156 @@ mod tests {
     // `wb_anchor_stats_streaming_exact`）；此处的阶段 0 占位随阶段 1
     // 落地删除，不留 `todo!` 占位。
 
-    /// R6 `wb_decoupled_axes`（阶段 2 占位 TODO）：合成锚点（R/B 证据
-    /// 足、G 证据缺）⇒ T 轴正常落成、Ti 轴收缩到 0 且 rationale 分轴写
-    /// 明。阶段 2（S3 分轴反解）实现；本期只占位、不跳过。
-    /// 变异：改回一次反解 ⇒ Ti 被拖带 ⇒ 红。
+    /// R6 `wb_decoupled_axes`（C1 阶段 2，S3 落地）：合成锚点（R/B 证据
+    /// 足、G 证据缺）⇒ T 轴正常落成、Ti 轴精确为 0 且 rationale 分轴写明。
+    /// 锚点 (u, v) = (0.2, −0.2)：u + v = 0 ⇒ 无 G 方向偏色（目标增益
+    /// G/√(RB) = 1）；分轴反解 T ≈ −0.564、Ti = 0。阶段 1 的联合反解
+    /// 在此锚点上给出 Ti ≈ +0.089（Gauss–Newton 步把共模残差倒进 Ti），
+    /// 是 T→Ti 的拖带；分轴反解消除它。
+    /// （变异：改回联合反解 ⇒ Ti ≈ 0.089 ⇒ 红；T 公式改回 (R−B)/0.7
+    /// 初值 ⇒ T ≈ −0.575 ⇒ 红。）
     #[test]
-    #[ignore]
-    fn wb_decoupled_axes_todo_stage2() {
-        todo!("阶段 2（S3）实现，见 C1-WB-REDESIGN.md §5.4 R6");
+    fn wb_decoupled_axes_r6() {
+        let stats = stats_with(|stats| {
+            stats.wb_anchor_chroma_median = [0.2, -0.2];
+        });
+        let (temperature, tint, confidence, rationale) =
+            match estimate_wb(&stats, &SceneFlags::default()) {
+                WbOutcome::Applied(temperature, tint, confidence, rationale) => {
+                    (temperature, tint, confidence, rationale)
+                }
+                WbOutcome::Skipped(reason) => panic!("R6 锚点应落成，实得跳过：{reason}"),
+            };
+        assert_eq!(
+            confidence,
+            Confidence::High,
+            "R6 锚点质量好且未饱和，应 high"
+        );
+        assert!(
+            (temperature - (-0.564)).abs() < 0.002,
+            "R6 的 T 应 ≈ −0.564（分轴比值反解），实得 {temperature:.4}"
+        );
+        assert!(
+            tint.abs() < 1e-6,
+            "R6 的 Ti 应精确为 0（锚点无 G 方向偏色），实得 {tint:.6}"
+        );
+        assert!(
+            rationale.contains("分轴反解"),
+            "rationale 应点名分轴反解，实得：{rationale}"
+        );
+    }
+
+    /// S3 分轴权重：T 轴饱和、Ti 轴未饱和时，T 轴收缩 0.25、Ti 轴全额
+    /// 落成——一轴饱和不拖带另一轴（阶段 1 的共享权重会把 Ti 也压到
+    /// 0.25）。锚点 (u, v) = (0.2468, −0.3668)：R/B 比迫使 T 顶到
+    /// −0.85，G/√(RB) 比给出 Ti ≈ 0.200。
+    /// （变异：权重改回共享 ⇒ Ti = 0.05 ⇒ 红；饱和检测改回整组 ⇒
+    /// Ti 也 0.25 ⇒ 红。）
+    #[test]
+    fn wb_decoupled_axes_single_axis_saturation() {
+        let stats = stats_with(|stats| {
+            stats.wb_anchor_chroma_median = [0.2468, -0.3668];
+        });
+        let (temperature, tint, confidence, rationale) =
+            match estimate_wb(&stats, &SceneFlags::default()) {
+                WbOutcome::Applied(temperature, tint, confidence, rationale) => {
+                    (temperature, tint, confidence, rationale)
+                }
+                WbOutcome::Skipped(reason) => panic!("单轴饱和应落成，实得跳过：{reason}"),
+            };
+        assert_eq!(confidence, Confidence::Low, "一轴饱和应强制 low");
+        assert!(
+            (temperature - (-0.2125)).abs() < 1e-6,
+            "饱和的 T 轴应为 −0.85 × 0.25 = −0.2125，实得 {temperature:.4}"
+        );
+        assert!(
+            (tint - 0.200).abs() < 0.002,
+            "未饱和的 Ti 轴应全额 ≈ 0.200，实得 {tint:.4}"
+        );
+        assert!(
+            rationale.contains("T 轴顶到钳制边") && rationale.contains("Ti 轴不受影响"),
+            "rationale 应分轴点名 T 轴饱和、Ti 轴不受影响，实得：{rationale}"
+        );
+    }
+
+    /// §4.4 合成图断言先行（阶段 2）：已知 (T0, Ti0) 的合成中性渐变
+    /// ⇒ 锚点色度中位反推目标增益 ⇒ 分轴反解的系统偏差实测分档。
+    /// 温和档 |T0|, |Ti0| ≤ 0.25（auto 的实际工作区）：每轴偏差 ≤ 0.02；
+    /// 极值档 |T0|, |Ti0| ≤ 0.5：偏差 ≤ 0.065（实测最坏 Ti 偏差 −0.060，
+    /// 在 (T0, Ti0) = (±0.5, −0.5)；分轴公式忽略另一轴对比值的影响，
+    /// 偏差随 |Ti| 增大而增大——这是分轴的已知代价，不是 bug）。
+    /// 合成统计经 `estimate_wb` 全程（锚点中位 → 目标增益 → 分轴反解 →
+    /// 权重），两档的反解皆未饱和、质量好，权重 1.0 不掩盖偏差。
+    /// （变异：T 公式系数 0.35 改 0.30 ⇒ 温和档 T 偏差在 (0.25, 0.25)
+    /// 处达 0.031 ⇒ 红；Ti 公式系数 0.15 改 0.10 ⇒ 温和档 Ti 偏差
+    /// 达 0.107 ⇒ 红；偏差界放宽到 0.1 ⇒ 极值档不再钉住实测值 ⇒ 红。）
+    #[test]
+    fn wb_synthetic_bias_decoupled() {
+        // 已知 (T0, Ti0) 的内核增益 → 锚点色度中位 (u, v) 的逆映射：
+        // u = ln(ĝG/ĝR)，v = ln(ĝG/ĝB)（`wb_gains_from_anchor_chroma` 的逆）。
+        fn synthetic_stats(t0: f32, ti0: f32) -> ImageStats {
+            let gains = [
+                1.0 + 0.35 * t0 + 0.15 * ti0,
+                1.0 - 0.15 * ti0,
+                1.0 - 0.35 * t0 + 0.15 * ti0,
+            ];
+            let u = (gains[1] / gains[0]).ln();
+            let v = (gains[1] / gains[2]).ln();
+            stats_with(|stats| {
+                stats.wb_anchor_chroma_median = [u, v];
+            })
+        }
+        let scene = SceneFlags::default();
+        let mut worst_moderate = 0.0f32;
+        for t0 in [-0.25f32, -0.125, 0.0, 0.125, 0.25] {
+            for ti0 in [-0.25f32, -0.125, 0.0, 0.125, 0.25] {
+                let stats = synthetic_stats(t0, ti0);
+                let (temperature, tint, _, _) = match estimate_wb(&stats, &scene) {
+                    WbOutcome::Applied(temperature, tint, confidence, rationale) => {
+                        (temperature, tint, confidence, rationale)
+                    }
+                    WbOutcome::Skipped(reason) => {
+                        panic!("合成 ({t0}, {ti0}) 应落成，实得跳过：{reason}")
+                    }
+                };
+                let bias_t = (temperature - t0).abs();
+                let bias_ti = (tint - ti0).abs();
+                worst_moderate = worst_moderate.max(bias_t).max(bias_ti);
+                assert!(
+                    bias_t <= 0.02 && bias_ti <= 0.02,
+                    "温和档合成 ({t0}, {ti0}) 分轴偏差应 ≤ 0.02，实得 ({temperature:.4}, {tint:.4})"
+                );
+            }
+        }
+        assert!(
+            worst_moderate > 0.005,
+            "温和档最坏偏差应 > 0.005（断言须真的量到分轴偏差，不是恒 0 的安慰剂），实得 {worst_moderate:.4}"
+        );
+        let mut worst_wide = 0.0f32;
+        for t0 in [-0.5f32, -0.3, 0.3, 0.5] {
+            for ti0 in [-0.5f32, -0.3, 0.3, 0.5] {
+                let stats = synthetic_stats(t0, ti0);
+                let (temperature, tint, _, _) = match estimate_wb(&stats, &scene) {
+                    WbOutcome::Applied(temperature, tint, confidence, rationale) => {
+                        (temperature, tint, confidence, rationale)
+                    }
+                    WbOutcome::Skipped(reason) => {
+                        panic!("合成 ({t0}, {ti0}) 应落成，实得跳过：{reason}")
+                    }
+                };
+                let bias_t = (temperature - t0).abs();
+                let bias_ti = (tint - ti0).abs();
+                worst_wide = worst_wide.max(bias_t).max(bias_ti);
+                assert!(
+                    bias_t <= 0.065 && bias_ti <= 0.065,
+                    "极值档合成 ({t0}, {ti0}) 分轴偏差应 ≤ 0.065，实得 ({temperature:.4}, {tint:.4})"
+                );
+            }
+        }
+        assert!(
+            (0.04..0.065).contains(&worst_wide),
+            "极值档最坏偏差应落在 [0.04, 0.065]（钉住实测值 0.060），实得 {worst_wide:.4}"
+        );
     }
 
     /// p3b-2 tone：shadows 触发用曝光前 p25（解耦）。合成：linear_p25
