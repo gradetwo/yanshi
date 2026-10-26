@@ -226,9 +226,23 @@ pub enum HighlightMode {
     Chroma,
 }
 
+/// 基调曲线档位（Y-03，⑧′）：显影期默认基调曲线的行为选择。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ToneMode {
+    /// 不应用基调曲线（= 现行链，N1）。结构体缺省：旧记录、旧调用方、
+    /// 测试脚手架重展开逐位不变（N5）；导入缺省是 Standard，
+    /// 只在 `parse_raw_options` 里给（两个缺省值须分清）。
+    #[default]
+    #[serde(rename = "off")]
+    Off,
+    /// 应用 §3.3 的标准 S 曲线，强度 `tone_strength`（缺省 1.0）。
+    #[serde(rename = "standard")]
+    Standard,
+}
+
 /// 展开参数（设计 5.6 的 `raw_options` 子集；镜头意图在 `import` 层
 /// 解析为 `LensCorrectionPlan` 后经 `develop_with_lens` 注入，不进本结构体）。
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DevelopOptions {
     pub wb: WbMode,
     pub demosaic: Demosaic,
@@ -237,12 +251,36 @@ pub struct DevelopOptions {
     /// 高光恢复档位（缺省 Floor：`develop()` 的历史行为逐位不变；
     /// 新导入由导入计划显式置 Chroma 并落账，取图侧按记录重展开）。
     pub highlight: HighlightMode,
+    /// 基调曲线档位（Y-03，⑧′）：缺省 Off（结构体缺省，N5）；
+    /// 新导入由导入计划显式置 Standard（见 `import::ParsedRawOptions`）。
+    pub tone: ToneMode,
+    /// 基调曲线强度（Y-03）：连续标量，域 [0, 1]，缺省 1.0；
+    /// 0 ≡ 关（N2），越界响亮报错、不 clamp（`pre_exposure_ev` 同口径）。
+    /// `tone = Off` 时本值无意义（取图侧以 `tone` 为准，见 record 字段口径）。
+    pub tone_strength: f32,
     /// 预览档长边上限（C1-b，期 2）：`Some(edge)` 时展开链尾把输出
     /// 压到长边 ≤ edge（面积加权降采样），且 record 记
     /// `developed_max_edge` —— 预览是**有标记的近似**，不许冒充
     /// 成品。`None`（缺省）= 全档，现行行为逐位不变。合法域
     /// 64–8192，`validate` 守（越界响亮报错、不 clamp）。
     pub max_output_edge: Option<u32>,
+}
+
+impl Default for DevelopOptions {
+    /// 结构体缺省（N5：旧行为）：`tone = Off`、`tone_strength = 1.0`
+    /// （`f32` 的派生缺省是 0.0，与设计 §5.1 的强度缺省 1.0 不符，
+    /// 故手写 `Default`；新增字段时须同步改这里）。
+    fn default() -> Self {
+        Self {
+            wb: WbMode::default(),
+            demosaic: Demosaic::default(),
+            pre_exposure_ev: 0.0,
+            highlight: HighlightMode::default(),
+            tone: ToneMode::default(),
+            tone_strength: 1.0,
+            max_output_edge: None,
+        }
+    }
 }
 
 impl DevelopOptions {
@@ -252,6 +290,12 @@ impl DevelopOptions {
             return Err(RawError::InvalidOption(format!(
                 "pre_exposure_ev={} 越界（允许 [-4.0, +4.0]）",
                 self.pre_exposure_ev
+            )));
+        }
+        if !self.tone_strength.is_finite() || !(0.0..=1.0).contains(&self.tone_strength) {
+            return Err(RawError::InvalidOption(format!(
+                "tone_strength={} 越界（允许 [0, 1]）",
+                self.tone_strength
             )));
         }
         if let Some(edge) = self.max_output_edge {
@@ -359,6 +403,16 @@ pub struct RawDevelopRecord {
     /// 成品永不共用一份缓存。
     #[serde(default)]
     pub developed_max_edge: Option<u32>,
+    /// 基调曲线档位（Y-03）：旧记录无此字段 ⇒ `serde(default)` = Off，
+    /// 保证旧对象按当时的零调整基线重展开、像素不漂移（N5）。
+    #[serde(default)]
+    pub tone: ToneMode,
+    /// 基调曲线强度（Y-03）：旧记录无此字段 ⇒ `serde(default)` = 0.0——
+    /// 必须与 `tone = Off` 配对解释：取图侧重展开时以 `tone` 为准，
+    /// `tone = Off` 时本值无意义，不许把旧记录的 0.0 误读成
+    /// 「强度 0 的 standard」。
+    #[serde(default)]
+    pub tone_strength: f32,
 }
 
 impl RawDevelopRecord {

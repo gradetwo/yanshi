@@ -5750,6 +5750,11 @@ fn develop_raw_source_tiered(
                 // 高光档位凭记录（第五包）：旧记录无此字段、反序列化
                 // 时已缺省 Floor，与当时导入的像素口径一致。
                 highlight: record.highlight_recovery,
+                // 基调档位凭记录（Y-03）：旧记录无此字段、反序列化
+                // 时已缺省 Off（强度 0.0 配对），与当时导入的零调整
+                // 基线口径一致；新记录按落账的档位与强度重展开。
+                tone: record.tone,
+                tone_strength: record.tone_strength,
                 // 档位凭记录（C1-b）：记录是预览档就按预览档重展开，
                 // 是全档就全档——重放保真与导入当时同档。
                 max_output_edge: record.developed_max_edge,
@@ -5812,17 +5817,22 @@ fn develop_raw_source_tiered(
                 max_output_edge: record_tier_override,
                 ..yanshi_raw::DevelopOptions::default()
             };
-            // **警告要点名高光档位**（第 1440 轮审计）：缺省展开用的是
-            // `DevelopOptions::default()` 的 `floor`，而**导入契约**的缺省是 `chroma` ⇒
-            // 同一个源文件走导入与走重放可能出不同像素。旧文案只说「按缺省展开」，
-            // 读者无从判断是哪一档 ⇒ 差异不可见。
+            // **警告要点名高光档位与基调档位**（第 1440 轮审计）：缺省展开用的是
+            // `DevelopOptions::default()` 的 `floor`／`off`，而**导入契约**的缺省是
+            // `chroma`／`standard` ⇒ 同一个源文件走导入与走重放可能出不同像素。
+            // 旧文案只说「按缺省展开」，读者无从判断是哪一档 ⇒ 差异不可见。
             let highlight = match options.highlight {
                 yanshi_raw::HighlightMode::Chroma => "chroma",
                 yanshi_raw::HighlightMode::Floor => "floor",
             };
+            let tone = match options.tone {
+                yanshi_raw::ToneMode::Standard => "standard",
+                yanshi_raw::ToneMode::Off => "off",
+            };
             warnings.push(format!(
                 "RAW 源对象缺少 raw_develop 记录，已按缺省展开参数展开（设计 5.3）；\
-                 高光档位 = {highlight}（导入契约缺省为 chroma ⇒ 与当年导入的像素可能不一致）"
+                 高光档位 = {highlight}（导入契约缺省为 chroma ⇒ 与当年导入的像素可能不一致）；\
+                 基调 = {tone}（导入契约缺省为 standard ⇒ 与当年导入的像素可能不一致）"
             ));
             let ctx = yanshi_raw::record_context(&decoded);
             let developed = yanshi_raw::develop(&decoded.frame, &options, &ctx)

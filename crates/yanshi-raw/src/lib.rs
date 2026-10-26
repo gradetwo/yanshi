@@ -37,6 +37,6 @@ pub use frame::{
     AppliedLensProfile, CalibrationMatrix, CfaGrid, CfaPattern, Channel, DecodedRaw, Demosaic,
     DevelopOptions, DevelopedImage, FileLensCorrection, HighlightMode, LensCorrectionPlan,
     LensExif, RawDevelopRecord, RawFileMeta, RawFrame, RawMeta, RawProbe, RecordContext, TcaParams,
-    VignetteModel, WarpModel, WarpRectilinearSet, WbMode,
+    ToneMode, VignetteModel, WarpModel, WarpRectilinearSet, WbMode,
 };
 pub use import::{plan_import, plan_import_with_db, ImportPlan, LensCorrection, ParsedRawOptions};

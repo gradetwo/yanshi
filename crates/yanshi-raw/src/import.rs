@@ -17,6 +17,11 @@
 //! 高光档位（第五包）：`highlight_recovery` 缺省 `"chroma"`——新导入
 //! 走真色度恢复并把档位落进 record；`"floor"` 回到第三包保底机制。
 //! 旧对象无此字段、按 Floor 重展开（见 frame 的字段口径）。
+//!
+//! 基调曲线（Y-03）：`tone` 缺省 `"standard"`——新导入带基调曲线并把
+//! 档位与强度落进 record；`"off"` 回到现行零调整链（N1）。
+//! 旧对象无此字段、按 Off 重展开（见 frame 的字段口径）。
+//! `tone_strength` 缺省 1.0，域 [0, 1]，越界响亮报错、不 clamp。
 
 use serde_json::Value;
 
@@ -27,7 +32,7 @@ use crate::develop::{
 use crate::error::{RawError, Result};
 use crate::frame::{
     AppliedLensProfile, DecodedRaw, Demosaic, DevelopOptions, HighlightMode, LensCorrectionPlan,
-    RawDevelopRecord, RawMeta, WbMode,
+    RawDevelopRecord, RawMeta, ToneMode, WbMode,
 };
 use crate::lens;
 use crate::lens_db::{self, LensDb};
@@ -51,11 +56,13 @@ pub struct ParsedRawOptions {
 
 impl Default for ParsedRawOptions {
     fn default() -> Self {
-        // 导入缺省与 DevelopOptions::default 的区别只在高光档位：
-        // 新导入缺省 chroma（第五包），而 develop() 的库级缺省保持
-        // Floor——旧记录/旧调用方的像素口径不许被缺省值偷偷改掉。
+        // 导入缺省与 DevelopOptions::default 的区别只在高光档位与基调：
+        // 新导入缺省 chroma（第五包）与 tone=standard（Y-03），而 develop()
+        // 的库级缺省保持 Floor / Off——旧记录/旧调用方的像素口径不许被
+        // 缺省值偷偷改掉。
         let develop = DevelopOptions {
             highlight: HighlightMode::Chroma,
+            tone: ToneMode::Standard,
             ..DevelopOptions::default()
         };
         Self {
@@ -81,7 +88,7 @@ pub struct ImportPlan {
 }
 
 /// `raw_options` 的合法键全集（多一个键即报错——拼写错误不许静默吞掉）。
-const RAW_OPTION_KEYS: [&str; 7] = [
+const RAW_OPTION_KEYS: [&str; 9] = [
     "wb",
     "demosaic",
     "pre_exposure_ev",
@@ -89,6 +96,8 @@ const RAW_OPTION_KEYS: [&str; 7] = [
     "lens_override",
     "highlight_recovery",
     "preview_max_edge",
+    "tone",
+    "tone_strength",
 ];
 
 /// 解析并校验 `raw_options`（设计 5.6 参数表）：枚举外／越界／类型不对
@@ -100,7 +109,7 @@ pub fn parse_raw_options(raw_options: Option<&Value>) -> Result<ParsedRawOptions
     };
     let Some(object) = value.as_object() else {
         return Err(RawError::InvalidOption(
-            "raw_options 必须是对象 {wb, demosaic, pre_exposure_ev, lens_correction, lens_override, highlight_recovery, preview_max_edge}"
+            "raw_options 必须是对象 {wb, demosaic, pre_exposure_ev, lens_correction, lens_override, highlight_recovery, preview_max_edge, tone, tone_strength}"
                 .to_string(),
         ));
     };
@@ -157,6 +166,27 @@ pub fn parse_raw_options(raw_options: Option<&Value>) -> Result<ParsedRawOptions
             )));
         }
         parsed.develop.max_output_edge = Some(edge as u32);
+    }
+    // 基调曲线（Y-03，⑧′）：缺省 standard（导入缺省，见 ParsedRawOptions）；
+    // `tone_strength` 的域检查由下面的 `validate()` 守（越界响亮报错、不 clamp）。
+    if let Some(tone) = object.get("tone") {
+        parsed.develop.tone = match tone.as_str() {
+            Some("off") => ToneMode::Off,
+            Some("standard") => ToneMode::Standard,
+            _ => {
+                return Err(RawError::InvalidOption(format!(
+                    "raw_options.tone 非法：{tone}（可选 \"off\" | \"standard\"）"
+                )))
+            }
+        };
+    }
+    if let Some(strength) = object.get("tone_strength") {
+        let Some(strength) = strength.as_f64() else {
+            return Err(RawError::InvalidOption(format!(
+                "raw_options.tone_strength 必须是数字，实际为 {strength}"
+            )));
+        };
+        parsed.develop.tone_strength = strength as f32;
     }
     parsed.develop.validate()?;
     if let Some(lens_correction) = object.get("lens_correction") {
@@ -562,6 +592,12 @@ mod tests {
         assert_eq!(parsed.develop.pre_exposure_ev, 0.0);
         assert_eq!(parsed.lens_correction, LensCorrection::Off);
         assert_eq!(parsed.lens_override, None);
+        // Y-03：导入缺省 tone=standard / strength=1.0；结构体缺省
+        // 仍是 Off（N5），两者分清。
+        assert_eq!(parsed.develop.tone, ToneMode::Standard);
+        assert_eq!(parsed.develop.tone_strength, 1.0);
+        assert_eq!(DevelopOptions::default().tone, ToneMode::Off);
+        assert_eq!(DevelopOptions::default().tone_strength, 1.0);
     }
 
     #[test]
@@ -573,6 +609,10 @@ mod tests {
             (json!({"pre_exposure_ev": "1"}), "pre_exposure_ev"),
             (json!({"lens_correction": "on"}), "lens_correction"),
             (json!({"lens_overrid": "x"}), "lens_overrid"),
+            (json!({"tone": "mild"}), "tone"),
+            (json!({"tone_strength": 1.5}), "tone_strength"),
+            (json!({"tone_strength": "1"}), "tone_strength"),
+            (json!({"tone_strength": -0.1}), "tone_strength"),
         ] {
             let error = parse_raw_options(Some(&options)).unwrap_err();
             assert!(

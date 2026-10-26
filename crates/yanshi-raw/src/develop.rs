@@ -1,6 +1,6 @@
 //! 展开管线（设计 v3 第 5 章）：归一化 → ② 暗角 → WB → 解马赛克 →
 //! 高光恢复（④′ 保底 + ④′′ 真色度）→ ⑤ 畸变/TCA 复合重采样 →
-//! 复合色彩链 → pre_exposure → 方向 → 出口截零。纯函数、无 IO、
+//! 复合色彩链 → pre_exposure → 方向 → ⑧′ 基调曲线 → 出口截零。纯函数、无 IO、
 //! 确定性（NF1）：浮点超越函数只走 `libm::` 自由函数，禁止平台
 //! 相关的 method 调用（交付前 grep 自查）。
 //!
@@ -16,7 +16,7 @@ use crate::error::{RawError, Result};
 use crate::frame::{
     AppliedLensProfile, CalibrationMatrix, CfaGrid, CfaPattern, Channel, Demosaic, DevelopOptions,
     DevelopedImage, HighlightMode, LensCorrectionPlan, RawDevelopRecord, RawFrame, RecordContext,
-    WarpModel, WbMode,
+    ToneMode, WarpModel, WbMode,
 };
 
 /// Bradford 锥响应矩阵（DNG Specification 1.6 第 6 章，设计 5.5 写死常数）。
@@ -1366,6 +1366,8 @@ pub fn assemble_record(
         lens_match,
         applied_lens_profile,
         developed_max_edge: options.max_output_edge,
+        tone: options.tone,
+        tone_strength: options.tone_strength,
     }
 }
 
@@ -1463,9 +1465,79 @@ fn downscale_rgb_to_edge(
 }
 
 // ---------------------------------------------------------------------------
-// 主链：① → ② → ③ → ④ → ④′（+④′′）→ ⑤ → ⑥ → ⑦ → ⑧ → ⑨。
+// ⑧′ 基调曲线（Y-03）：方向之后、出口截零之前的一步逐像素 S 曲线，
+//    作用于线性 sRGB。形式冻结为单调分段线性（设计 §3.3），逐通道同曲线。
+//    与 `curves` op 的 `monotone_curve`（`yanshi-render`，Fritsch–Carlson
+//    三次插值、端点钳制）不是同一求值器——两者不能逐位一致：§3.3 冻结的
+//    是分段线性 + 末段斜率外推（R4），而 `monotone_curve` 是三次插值且
+//    在 x ≥ 1 时钳到 1.0；R6 的字面要求与 §3.3/R4 互斥。本步骤用下面
+//    这只分段线性求值器（公开、可单测），不在别处再写第二套。
+// ---------------------------------------------------------------------------
+
+/// 基调曲线控制点（设计 §3.3 初值表，线性域）：温和 S 形——暗部在恒等线
+/// 之下（微压提对比）、中高部在恒等线之上、顶部滚降。**诚实标注**：
+/// 本表是设计的校准起点、尚未经 §6.3 标定程序（6 张 ARW 金参考 + v5
+/// 9 行）定版；标定定版后以标定报告改表（另立提交，不静默改数）。
+/// 形态约束（设计冻结）：单调不减、过 (0,0)/(1,1)、toe 不压死
+/// （y(0.02) ≥ 0.01）、肩部不削顶（y(0.9) ≥ 0.85）。
+pub const TONE_CURVE_POINTS: &[(f32, f32)] = &[
+    (0.00, 0.000),
+    (0.02, 0.015),
+    (0.05, 0.038),
+    (0.18, 0.175),
+    (0.40, 0.415),
+    (0.70, 0.725),
+    (0.90, 0.885),
+    (1.00, 1.000),
+];
+
+/// 基调曲线求值：分段线性插值 + 强度混合 `lerp(in, curve(in), strength)`。
+/// 定义域外（N3）：输入 < 0 直通；NaN / +Inf 直通（由 ⑨ `clamp_exit`
+/// 守门）；输入 > 1 按末段斜率线性外推，不钳到 1（R4）。`strength = 0`
+/// 时输出 ≡ 输入（N2，直接返回、不靠浮点恒等式——`-0.0` 会变号）。
+/// 只用 f32 算术（NF1）。
+pub fn tone_curve_value(x: f32, strength: f32) -> f32 {
+    if strength == 0.0 || !x.is_finite() || x < 0.0 {
+        return x;
+    }
+    let points = TONE_CURVE_POINTS;
+    let curved = if x <= 1.0 {
+        // 分段线性插值（控制点单调，表只有 8 点，线性搜索即可）。
+        let mut y = points[points.len() - 1].1;
+        for w in points.windows(2) {
+            let (x0, y0) = w[0];
+            let (x1, y1) = w[1];
+            if x >= x0 && x <= x1 {
+                let t = (x - x0) / (x1 - x0);
+                y = y0 + t * (y1 - y0);
+                break;
+            }
+        }
+        y
+    } else {
+        // 末段斜率外推（R4）：不钳到 1，高光层次不压平。
+        let (x0, y0) = points[points.len() - 2];
+        let (x1, y1) = points[points.len() - 1];
+        y1 + (x - x1) * (y1 - y0) / (x1 - x0)
+    };
+    x + (curved - x) * strength
+}
+
+/// ⑧′ 把基调曲线作用于线性 RGB 三元组平面（原地，不新增缓冲，
+/// C1-a 口径）。`tone = Off` 或 `strength = 0` 时调用方整步跳过——
+/// 本函数不负责判 Off，只算曲线（逐位一致靠「跳过」保证，不靠
+/// 「强度 0 的曲线 ≡ 恒等」这种浮点恒等式）。
+pub fn apply_baseline_tone(rgb: &mut [f32], strength: f32) {
+    for v in rgb.iter_mut() {
+        *v = tone_curve_value(*v, strength);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 主链：① → ② → ③ → ④ → ④′（+④′′）→ ⑤ → ⑥ → ⑦ → ⑧ → ⑧′ → ⑨。
 // 无镜头 plan 时 ②/⑤ 整步跳过、④′ 的增益场传 None，與前三包逐位
 // 一致；④′′ 由 options.highlight 档位控制（缺省 Floor = 不启用）。
+// ⑧′ 由 options.tone 档位控制（缺省 Off = 不启用，N1）。
 // ---------------------------------------------------------------------------
 
 /// 展开一帧（无镜头校正）：设计 5.1 主链，行为与前三包逐位一致。
@@ -1620,11 +1692,31 @@ pub fn develop_with_lens(
     // 对 1 档本就是逐值复制）；转置／翻转类保留一份输出拷贝——设计
     // C1-a 的低风险支（⑧ 前上游缓冲已全部释放，峰值只剩输入＋输出
     // 两份 12 B/px），不做原地重排的高风险索引手术。
-    let (out_w, out_h, rgb) = if orientation == 1 {
+    let (out_w, out_h, mut rgb) = if orientation == 1 {
         (frame.width, frame.height, rgb)
     } else {
         apply_orientation_rgb(&rgb, frame.width, frame.height, orientation)
     };
+    // ⑧′ 基调曲线（Y-03）：方向之后、出口截零之前，逐像素 S 曲线作用于
+    // 线性 sRGB；`tone = Off` 或强度 0 时整步跳过（N1：与现行链逐位一致，
+    // 不靠浮点恒等式）。降采样（C1-b）在 tone 之后：预览与全档同源 tone。
+    if options.tone == ToneMode::Standard && options.tone_strength != 0.0 {
+        apply_baseline_tone(&mut rgb, options.tone_strength);
+        notes.push(format!(
+            "基调曲线 standard 已应用（tone_strength={}）",
+            options.tone_strength
+        ));
+    } else if options.tone == ToneMode::Off
+        && options.tone_strength != 0.0
+        && options.tone_strength != 1.0
+    {
+        // tone=off 时 strength 被忽略，须点名（设计 §3.1）：0.0 是旧记录
+        // 的缺省值、1.0 是结构体缺省值，两者都算「没给」，不注记。
+        notes.push(format!(
+            "tone=off：已给 tone_strength={}，已忽略",
+            options.tone_strength
+        ));
+    }
     // C1-b（期 2）：预览档在链尾降采样（⑧ 之后、⑨ 之前——把
     // 「全档／预览」的分界钉在最后一步，record 的
     // `developed_max_edge` 与这里的实际输出同源）。全档（None）
@@ -1880,6 +1972,136 @@ mod tests {
         let full = demosaic_grid_impl(&plane, 48, 36, &grid, GridTapSet::Full, 1);
         let quick = demosaic_grid_impl(&plane, 48, 36, &grid, GridTapSet::Quick, 1);
         assert_ne!(quick, full, "快速档在纹理上应与全档不同（过滤未生效？）");
+    }
+
+    #[test]
+    fn tone_curve_is_monotone_anchored() {
+        // R2：曲线单调不减、过 (0,0) 与 (1,1)、强度 0 ≡ 关。
+        // 控制点处用 1e-6 容差（插值 + lerp 的 f32 舍入），端点 0 精确。
+        assert_eq!(tone_curve_value(0.0, 1.0).to_bits(), 0.0f32.to_bits());
+        for (x, y) in TONE_CURVE_POINTS {
+            let got = tone_curve_value(*x, 1.0);
+            assert!(
+                (got - y).abs() < 1e-6,
+                "控制点 ({x}, {y}) 处应 ≈ {y}，实得 {got}"
+            );
+        }
+        // 密扫单调：相邻点只许舍入级回落（1e-6）。
+        let mut prev = tone_curve_value(0.0, 1.0);
+        for i in 1..=1000 {
+            let x = i as f32 / 1000.0;
+            let y = tone_curve_value(x, 1.0);
+            assert!(y + 1e-6 >= prev, "曲线在 x={x} 处回落：{prev} → {y}");
+            prev = y;
+        }
+        // 强度 0 ≡ 关：逐位一致（含 -0.0、负值、NaN、+Inf）。
+        for x in [
+            -0.0f32,
+            -1.5,
+            0.0,
+            0.18,
+            0.5,
+            1.0,
+            2.0,
+            f32::NAN,
+            f32::INFINITY,
+        ] {
+            assert_eq!(
+                tone_curve_value(x, 0.0).to_bits(),
+                x.to_bits(),
+                "强度 0 时 x={x} 应逐位直通"
+            );
+        }
+        // 冻结约束（设计 §3.3）：单调、过端点、toe 不压死、肩部不削顶。
+        let pts = TONE_CURVE_POINTS;
+        assert_eq!(pts.first(), Some(&(0.0, 0.0)));
+        assert_eq!(pts.last(), Some(&(1.0, 1.0)));
+        for w in pts.windows(2) {
+            assert!(
+                w[1].0 > w[0].0 && w[1].1 >= w[0].1,
+                "控制点表必须单调：{w:?}"
+            );
+        }
+        let y_at = |x: f32| tone_curve_value(x, 1.0);
+        assert!(y_at(0.02) >= 0.01, "toe 不许把近黑压成 0");
+        assert!(y_at(0.9) >= 0.85, "肩部滚降不许吃掉一档以上");
+    }
+
+    #[test]
+    fn tone_preserves_signed_passthrough() {
+        // R3：负值、NaN、+Inf 直通 tone 步骤（+Inf 由 ⑨ clamp_exit
+        // 响亮报错、NaN 被 0 吃掉——那是出口的职责，这里只断直通）。
+        let mut buf = [-0.5f32, -0.0, 0.25, f32::NAN, f32::INFINITY];
+        let before = buf;
+        apply_baseline_tone(&mut buf, 1.0);
+        assert_eq!(buf[0].to_bits(), before[0].to_bits(), "负值须直通");
+        assert_eq!(buf[1].to_bits(), before[1].to_bits(), "-0.0 须直通");
+        assert!(buf[3].is_nan(), "NaN 须直通");
+        assert_eq!(buf[4], f32::INFINITY, "+Inf 须直通");
+        // +Inf 走到出口必须响亮报错（不是被 tone 悄悄吃掉）。
+        let mut out = buf.to_vec();
+        assert!(
+            clamp_exit(&mut out).is_err(),
+            "+Inf 到出口应报错，实得 {out:?}"
+        );
+        // NaN 到出口被 0 吃掉（既有 clamp_exit 口径）。
+        let mut nan_only = [f32::NAN];
+        clamp_exit(&mut nan_only).unwrap();
+        assert_eq!(nan_only[0], 0.0);
+    }
+
+    #[test]
+    fn tone_extrapolates_above_one() {
+        // R4：输入 > 1 时末段斜率外推，不钳到 1；有限输入 ⇒ 有限输出。
+        // 末段斜率 = (1.0 − 0.885) / (1.0 − 0.90) = 1.15。
+        let v15 = tone_curve_value(1.5, 1.0);
+        let v20 = tone_curve_value(2.0, 1.0);
+        assert!((v15 - 1.575).abs() < 1e-6, "x=1.5 应 ≈ 1.575，实得 {v15}");
+        assert!((v20 - 2.15).abs() < 1e-6, "x=2.0 应 ≈ 2.15，实得 {v20}");
+        assert!((v20 - v15 - 0.575).abs() < 1e-6, "外推斜率应为 1.15");
+        assert!(v15.is_finite() && v20.is_finite(), "有限输入 ⇒ 有限输出");
+        assert!(v15 > 1.0, "外推值不许钳到 1");
+    }
+
+    #[test]
+    fn tone_strength_is_continuous() {
+        // R5：强度连续变化 ⇒ 输出连续变化，无跳变台阶。
+        let mut prev = tone_curve_value(0.4, 0.0);
+        for i in 1..=100 {
+            let s = i as f32 / 100.0;
+            let y = tone_curve_value(0.4, s);
+            assert!((y - prev).abs() < 0.01, "强度 {s} 处跳变：{prev} → {y}");
+            prev = y;
+        }
+        // 输入连续变化 ⇒ 输出连续变化（密扫最大步长远小于曲线斜率 × 步长）。
+        let mut prev = tone_curve_value(0.0, 1.0);
+        for i in 1..=1000 {
+            let y = tone_curve_value(i as f32 / 1000.0, 1.0);
+            assert!(
+                (y - prev).abs() < 0.005,
+                "x={} 处跳变：{prev} → {y}",
+                i as f32 / 1000.0
+            );
+            prev = y;
+        }
+    }
+
+    #[test]
+    fn tone_evaluator_matches_its_control_table() {
+        // R6 的单测钉死形态：tone 求值只有这一只公开求值器
+        // （`tone_curve_value`），`develop()` 的 ⑧′ 步直接调它——
+        // 不存在第二套曲线求值器。注：R6 字面「与 `curves` op 的
+        // `monotone_curve` 逐位一致」与设计 §3.3（分段线性）+ R4
+        // （末段外推）互斥——`monotone_curve` 是 Fritsch–Carlson
+        // 三次插值且在 x ≥ 1 时钳到 1.0；本测试钉死的是 §3.3 的
+        // 分段线性求值器本身（见 `apply_baseline_tone` 上方注释）。
+        let mut buf: Vec<f32> = (0..=20).map(|i| i as f32 / 20.0).collect();
+        let mut expected = buf.clone();
+        for v in expected.iter_mut() {
+            *v = tone_curve_value(*v, 1.0);
+        }
+        apply_baseline_tone(&mut buf, 1.0);
+        assert_eq!(buf, expected, "⑧′ 步必须与 tone_curve_value 逐位一致");
     }
 
     #[test]

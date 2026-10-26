@@ -74,7 +74,8 @@ yanshi 会有很多个方向的 skill（已有 `yanshi-painting` 管绘画笔触
   `raw_options` 只对 RAW 源有效，给到普通图会**响亮报错**（不是静默忽略）。常用键：
   `wb`（as_shot/auto）、`demosaic`（malvar/bilinear，缺省 malvar）、pre_exposure_ev（−4..4，越界报错不钳制）、
   lens_correction（off/auto，缺省 off）、lens_override（点名镜头库中的镜头，查无此镜报错）、
-  highlight_recovery（chroma/floor，缺省 chroma）。导入响应会回显 raw_meta——相机、镜头、
+  highlight_recovery（chroma/floor，缺省 chroma）、`tone`（off/standard，缺省 standard，显影期基调曲线；
+  off = 现行零调整链）、tone_strength（0..1，缺省 1.0，越界报错不钳制；tone=off 时忽略）。导入响应会回显 raw_meta——相机、镜头、
   实际生效的展开参数都在里面，**先读它**再往下走。
 - 大图警告：约 3300 万像素的 RAW 导入展开有内存峰值，小机器上服务端会被杀。
   先确认机器内存，或先降尺寸/换机器，**不要反复硬撞同一个文件**（撞一次记一次，没用）。
