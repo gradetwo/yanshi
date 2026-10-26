@@ -3,7 +3,7 @@
 本文回答一个问题：**同一份能力，系统实现了没有、人在 Web 查看器里够不够得到、Agent 通过 MCP 看不看得见。**
 三面各自"实际暴露了什么"都来自**运行命令或读源码**，不来自记忆；每个数字都写了出处。
 
-* **日期**：2026-10-05（Asia/Shanghai）；**2026-10-26 追加**一节「追加（2026-10-26）— Web 面计数与逐行更正」，那一节的数字**重测于 `ef2494de` + 本地未提交改动**（`2a86cf7d` 那一轮的读数已被替换），其余各节仍是 10-05 的读数。
+* **日期**：2026-10-05（Asia/Shanghai）；**2026-10-26 追加**一节「追加（2026-10-26）— Web 面计数与逐行更正」，那一节的数字**重测于 `ef2494de` + 本地未提交改动**（`2a86cf7d` 那一轮的读数已被替换），其余各节仍是 10-05 的读数。**同日第二轮**再追加一节「追加（2026-10-26 第二轮）— 范围遮罩 / 渐变蒙版的 Web 入口，与五条登记」✓ 口径是 `0bddba26` + 本地未提交改动 ✓。
 * **被测版本**：工具面在 `f5835cb`（`main`，工作树干净）上实测；截至 `3b71267`，`crates/yanshi-server/src/tools.rs`、`crates/yanshi-http/src/viewer.rs`、`crates/yanshi-mcp/src/lib.rs`、`docs/tools.md`、`docs/guide*.md`、`scripts/criteria-known-red.txt` 自 `f5835cb` 起**无改动**（`git diff --stat f5835cb..HEAD -- <上述文件>` 为空），并在 `3b71267` 的工作树上复核过全部计数，读数一致。
 * **口径定义**（本文三张表都按它）：
   * `系统实现` = `ToolRegistry`（`crates/yanshi-server/src/tools.rs`）里注册的工具；`已在` / `计划中` / `无` 三态。
@@ -127,6 +127,7 @@
 | `fill_region`（羽化 + 位图纹理填充） | core | Web 只有 `fill`（纯色矩形）与 `gradient_fill`；`fill_region` 的 `feather` 与 `texture:{type:"bitmap",…}` 两条能力页面无入口（`grep fill_region` 在 `assets/viewer-app.js` 与 `src/viewer.rs` 里 **0 命中**） |
 | `dodge_burn_setup`、`export_svg`、`export_timelapse` | 已在缺省面内 | 曲线/SVG/延时工程包都无入口（`export_timelapse` 的格式文档见 `docs/timelapse-package-format.md`）；**`get_histogram` 本轮已补**（诊断面板的「直方图」卡 ✓，见"本轮之后"下面的✓段落） |
 | 预设库的**内容**只有中文 | — | `list_presets` 返回 `name_en`（本轮已接进面板 ✓），但 `tags` / `suitable` / `caution` 与旋钮标签**服务端只有中文** ⇒ 英文界面下这三段仍必是中文。不是 i18n 判据能修的，属 `crates/yanshi-server/src/presets.rs` 的内容缺口 |
+| `delete_mask` | structure（已在缺省面内） | 页面无入口 ✓ 而且**它根本不该做"取消蒙版"那件事** ✗：它只删本体 ✓ 层上的 `mask_id` 引用还留着 ✓（见"追加（2026-10-26 第二轮）"登记 ① ✓）⇒ 真正的"取消"是 `set_property mask_id = null` ✓ 本轮已做成「取下蒙版」按钮 ✓ |
 | `window.yanshiCallTool` 强制 `refresh: false` | — | 外部脚本（检查脚本 / 自动化）经它调工具后**页面不重读状态** ⇒ 验证者以为没生效。位置 `assets/viewer-app.js:2914`；下一轮要么加可选参数，要么在文档里写清"调用后需手动刷新" |
 
 **复现第 8 条**（Web 面计数，本轮口径，只读源码、不需要服务端）：
@@ -146,6 +147,69 @@ target/release/yanshi-mcp --list-tools \
 
 ---
 
+## 追加（2026-10-26 第二轮）— 范围遮罩 / 渐变蒙版的 Web 入口，与五条登记
+
+本轮口径：基线 `0bddba26`，服务端 `yanshi 0.3.0 (commit 0bddba26-dirty-…)`，`--root /tmp/yanshi-root`（**必须给 `--root`** ✗ 纯内存部署下 `create_range_mask` 写不了 blob ⇒ `precondition_failed` ✓ 实测踩过 ✓）。
+
+### 本轮补掉的"系统已在 + MCP 缺省面内 + Web 零入口"
+
+| 能力 | 页面入口 | 关键行为 |
+|---|---|---|
+| `create_range_mask`（D1-a ✓ `Profile::Structure`） | 「绘制」面板的**范围遮罩**卡：采样层 / 挂到层两个下拉（都由 `list_layers` 填 ✓）＋亮度带 / 色相带两套控件＋「烘焙并挂载」＋**「取下蒙版」**＋「该层当前蒙版」读数 | **覆盖为 0 时拒绝挂载** ✓（工具本身回 `ok:true` ✓ 挂上去就是"改了参数、画面纹丝不动"✓）；下限 > 上限就地拒绝 ⇒ 不产生废原子 ✓；覆盖数 / 占比 / 均值**全部取服务端回执** ✓ |
+| `create_mask` 的 `linear_gradient` / `radial_gradient`（D1-b） | 工具栏两支新笔（线性 / 径向渐变蒙版）＋**渐变蒙版**卡（径向衰减、反选） | 拖动中只画**矢量预览**（虚线 / 内切椭圆 + 覆盖为 1 那一端的实心点 ✓）⇒ 提交的是文档坐标 ✓；**羽化对这两种 kind 无效 ⇒ 忽略并出声** ✓（服务端对非零羽化直接报错 ✓）；起收笔重合就地拒绝 ✓ |
+| 挂上去的蒙版怎么断开的口径 | 同上「取下蒙版」按钮 | 见登记 ① ✓ 只有 JSON `null` 这一条路 ✓ |
+
+Web 调用面（第 8 条复现命令的同一口径）：**93 → 94**（新增 `create_range_mask` ✓ `create_mask` 本来就有 ✓）。
+判据：`scripts/browser-range-mask.mjs`（九项 ✓ 每条前提都有 `exit(3)` ✓ 变异测试见下）。
+截图：`screenshots/rangemask-zh/`、`screenshots/rangemask-en/`（真浏览器 ✓ 含挂上前后同一画布的对照 ✓）。
+
+### 登记 ① 取下蒙版：**能取，但只有 JSON `null` 这一条路**（三条都被实测过）
+
+| 试的形状 | 结果 |
+|---|---|
+| `set_property {layer_id, key:"mask_id", value: null}` | **成功** ✓ 层上 `mask_id` 变回 `null` ✓ |
+| `set_property {layer_id, key:"mask_id", value: ""}`（空串） | `reference_not_found` ✓ detail 是 `set_property mask_id 引用的实体  不存在或已删除` —— 中间那两个空格就是空串被插进模板的证据 ✓ |
+| `update_layer {layer_id, patch:{mask_id: null}}` | 成功 ✓（同一条原子语义的另一种形状 ✓） |
+| `delete_mask {mask_id}` | 回 `ok:true` ✓ **但 `list_layers[].mask_id` 仍指着那个已删的 id** ✓ 悬空引用 |
+
+⇒ 界面因此送 `null` ✓ 且把"这一层现在挂着什么"照服务端事实显示出来 ✓（不显示的话 ✗ 取下与"本来就没有"在界面上长得一样 ✓）。
+⇒ **待定位（服务端）**：`delete_mask` 删本体时应否一并清掉引用 ✗ 或在"仍被引用"时拒绝删除 ✓。渲染结果与"没挂"相同（blob 比对已证 ✓）⇒ 只有引用在说谎 ⇒ 本轮没有据此做按钮 ✓。
+
+### 登记 ② `create_range_mask` 在本地内核（PWA）里**没有端点**
+
+- 症状 ✓：勾掉「服务器渲染」⇒ 请求由 `api-local.js` 就地接管 ✓ 而它没有这个端点 ⇒ `api-local.js:4810` 如实抛 `endpoint_not_local` ✓（`viewer-app.js:1415` 把它降级成一次工具失败 ✓ 不再打断整页初始化 ✓）。
+- 本轮修的是**归因** ✗：卡片原来一律写「服务端拒绝了这次烘焙」✓ 而**请求根本没出门** ⇒ 人会去翻服务端日志 ✗。现在分两句说 ✓ 并给出下一步（勾回开关 ✓）。
+- 缺口本身（在本地实现这个端点）留给 PWA 那一轮 ✓ 不在本轮范围。
+- 同一模式下 `mask_rect` 拖动还会刷一屏「错误 needs_render：内核未产出字节」✓ —— 与本轮改动无关 ✓ 未据此写判据。
+
+### 登记 ③ 判据环境：`localStorage` 是**按源共享**的
+
+`yanshi.serverRender` 与 `yanshi.lang` 会跨脚本留在同一个 chromium profile 里 ✓ 于是"上一个脚本改过勾选"会让下一个判据在没人预期的模式下跑 ✗（本轮实测：残留 `"0"` ⇒ 范围遮罩整批判据红 ✗ 而产品没变 ✓）。
+`browser-range-mask.mjs` 的写法 ✓：先开一次同源页面擦掉这两个 key ⇒ 再进被测文档 ⇒ 并**核实**「服务器渲染」确实生效 ✓ 擦不动就是前提失败 ⇒ `exit(3)` ✓ 不拿环境毛病判产品。
+建议：凡依赖渲染模式或语言的判据都照这个写法 ✓。
+
+### 登记 ④ `browser-ui-check.mjs` 自上游 `dab8a1c5` 起恒红（**判据腐烂** ✗ 不是产品缺陷）
+
+- 它等的是 `window.yanshiKernelReady` ✓ 而 `dab8a1c5 fix(web): store an explicit off value so the server render switch stays effective` 把缺省设成"服务器渲染" ⇒ 内核**按设置故意不加载** ✓ ⇒ 等到 `YANSHI_WAIT_MS`（缺省 120 s）超时 ✗（`scripts/browser-ui-check.mjs:340` 与 `:347`）。
+- 实测对照 ✓：勾选在 ⇒ `kernelReady=undefined`、`kernelHead=0`、wasm 状态「已按设置跳过（用服务端渲染）」✓；把勾去掉 ⇒ `ready=true`、`head=4`、「已加载」✓。
+- 该条**不在** `scripts/criteria-known-red.txt` ⇒ 要么改判据（自己取消勾选 ✓ 或接受服务端路径 ✓），要么登记已知红 ✓。本轮**未修**（不是 web 功能缺口 ✓ 且改它要连带决定"这条判据到底测哪条渲染路径"✓）。
+
+### 登记 ⑤ 改动选择器漏报查看器改动（本轮已修）
+
+- `scripts/criteria-for-changes.sh` 原来只有 `web/*|assets/*` ⇒ 那匹配的是**仓库根**目录 ✗ 而查看器的本体在 `crates/yanshi-http/assets/viewer-app.js` 与 `crates/yanshi-http/src/viewer.rs` ✓ ⇒ 改页面却报「受影响的判据：0 个 ⇒ 直接推 CI」✓（正是该脚本自己在第 1299 / 1352 轮批评的那类漏报 ✓）。
+- 实测（同一份工作区改动 `--since HEAD`）✓：修之前报 **39** 条其中 `browser-*` / `tool-pwa-*` **各 0 条** ✗ 修之后报 **91** 条（`browser-*` 44 + `tool-pwa-*` 8 ⇒ 新覆盖 **52** 条 ✓）。
+- 顺带确认的既有纪律 ✓：改完查看器**必须**跑 `node scripts/pwa-sync-viewer.mjs` ✗ 否则 `tool-pwa-assets.mjs` 报"两条部署分叉"✓。
+- 该判据在本机仍剩一条与本轮无关的红：`web/mediums/*.wasm` 是 gitignore 的构建产物 ✓ 本机没建 ⇒ 需先跑介质构建 + `mediums-sync.mjs`（属环境前提 ✗ 不是缺陷 ✓）。
+
+### 登记 ⑥ `web/index.html` 这面镜像**不属于功能补丁**（本轮实测后撤回）
+
+- 上游自己已经分叉：`git log -1 -- web/index.html` = `04d6aab6`（布局卡那轮）✗ 而 `git log -1 -- crates/yanshi-http/assets/viewer-app.js` = `0ba66fd9` ⇒ 即 **HEAD 上的镜像比查看器本体旧一个提交** ✓（`0ba66fd9` 提交时没跑 `pwa-sync-viewer.mjs`）。
+- 本机跑同步**能**消掉"两条部署分叉"这条红 ✓ **但**它把带机器状态的唯一戳写进了受版本控制的文件：`caches.open("yanshi-shell-0bddba26-dirty-de862dcb")` ✗（`-dirty-` 与本机 worktree 的哈希都跟着进 `web/index.html`）⇒ 一个功能补丁里出现这种字节 = 无法复核、也无法在别人机器上复现 ✗。
+- CI 不会因此红：`.github/workflows/ci.yml:509-510` 在 PWA 作业里**重新生成**这面镜像 ✓ 所以"镜像落后"在上游是**被容忍的状态** ✓ 由发布/PWA 那一步收敛 ✗ 不是每轮功能改动该带的东西 ✓。
+- 本轮结论：改查看器时**跑**同步、验证 `tool-pwa-assets.mjs` 的分叉条目确实转绿 ✓ 然后 `git checkout -- web/index.html` 撤回镜像 ✗ 并把这件事登记在这里 ✓。**要用户决策的**：镜像的唯一戳该不该由"内容哈希 + 提交号"构成（去掉 `-dirty-` 与本机因素）⇒ 那属于 PWA 缓存策略，不是本轮能顺手改的。
+
+---
+
 ## 需要用户决策
 
 以下不是实现者能单方面决定的（措辞取自仓库自己的待办记录，不是本文作者的取舍）：
@@ -158,6 +222,7 @@ target/release/yanshi-mcp --list-tools \
 6. **`docs/tools.md:24` 的 125 与 `docs/guide.md:7` 的 137 哪个是权威口径。** 两者都自称"全部已实现组"，但 profile 集不同（6 vs 8）；修哪一边取决于"已实现组"是否包含 `changeset` / `conflict`。
 7. **参考图偏好是"工作区级"还是"文档级"。** 实测：`set_reference` 写进 `<工作区根>/preferences.json` ⇒ 给文档 A 设的位置/图，切到新建文档 B 仍在（`get_preferences` 的 `where` 字段自证）。作为"临摹底图"跨文档常驻可能是有意的 ✗，但**位置是某个文档的像素矩形** ⇒ 换文档后那块矩形落在别处；页面能做的只有"照实显示 + 提供清除"（本轮已做 ✓）。要不要改成按文档存（`reference.<doc>.position`）属服务端数据模型决策。
 8. **参考图原图要不要以可显示的形式留一份。** 存储是内容寻址的**裸 RGBA**（`POST /api/blob` 先把 PNG 解码成 RGBA ✓），`GET /api/blob/{hash}` 的 MIME 嗅探对裸像素只给 `application/octet-stream` ✓ ⇒ `<img>` 永远解不开 ✗。本轮的对策是"浏览器自己缓存上传时的 dataURL"（超过 1.5MB 或配额不足就没辙 ✓，信息条会说明 ✓）。彻底解法要么在服务端留原图/记录宽高（`reference.width/height` ⇒ 前端可用 `ImageData` 重建成 PNG ✓），要么产品接受"换浏览器需重传"。
+9. **`web/index.html` 的缓存唯一戳该不该去掉本机状态。** 见「登记 ⑥」：`pwa-sync-viewer.mjs` 把 `0bddba26-dirty-de862dcb`（含 `-dirty-` 与本机 worktree 哈希）写进受版本控制的镜像 ⇒ 同一份改动在别人机器上生成不同字节。改成"提交号 + 内容哈希"是 PWA 缓存失效策略的决策 ✗ 不属于一轮功能补丁顺手改的范围 ✓。
 
 ---
 

@@ -6046,6 +6046,7 @@ function setupObjectPanel() {
   setupChangesetPanel();
   setupAnchorPanel();
   setupPresetPanel();
+  setupRangeMaskPanel();
   const fresh = $("effectNew");
   if (fresh) fresh.addEventListener("click", () => {
     clearEffectEditing();
@@ -6647,6 +6648,7 @@ async function refreshLayers() {
   state.layerId = select.value || "layer_paint";
   select.onchange = () => { state.layerId = select.value; renderLayerPanel(value.layers || []); };
   renderLayerPanel(value.layers || []);
+  renderRangeMaskLayers(value.layers || []);
   return value.layers || [];
 }
 
@@ -7953,6 +7955,34 @@ function redraw() {
     octx.setLineDash([6, 4]);
     octx.strokeRect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
     octx.restore();
+  } else if (state.points.length === 2 && GRADIENT_MASK_TOOLS.has(state.tool)) {
+    // **预览画的是"那一条向量 / 那个圈"** ✓，不是外接框 ✗：线性渐变的过渡带就是起笔 → 收笔 ✓
+    // 拿框来预览会让人以为"拖出来的框内才是蒙版"✓（与提交后的实际覆盖不符 ✓）。
+    const [a, b] = state.points;
+    const pa = toCanvas(a);
+    const pb = toCanvas(b);
+    octx.save();
+    octx.strokeStyle = "#4a7dff";
+    octx.lineWidth = 1;
+    octx.setLineDash([6, 4]);
+    octx.beginPath();
+    if (state.tool === "mask_radial_gradient") {
+      octx.ellipse((pa.x + pb.x) / 2, (pa.y + pb.y) / 2, Math.abs(pb.x - pa.x) / 2, Math.abs(pb.y - pa.y) / 2, 0, 0, Math.PI * 2);
+    } else {
+      octx.moveTo(pa.x, pa.y);
+      octx.lineTo(pb.x, pb.y);
+    }
+    octx.stroke();
+    // 起笔那一侧 = 覆盖率 1 ⇒ 点上画一个实心点 ✓（径向画在中心 ✓ 收笔那一侧空着 ✓
+    // ⇒ 一眼分得清"哪边是 1 ✓"）。
+    octx.setLineDash([]);
+    octx.fillStyle = "#4a7dff";
+    octx.beginPath();
+    octx.arc(state.tool === "mask_radial_gradient" ? (pa.x + pb.x) / 2 : pa.x,
+             state.tool === "mask_radial_gradient" ? (pa.y + pb.y) / 2 : pa.y,
+             3, 0, Math.PI * 2);
+    octx.fill();
+    octx.restore();
   } else if (state.points.length === 2 && (state.tool === "rect" || MASK_TOOLS.has(state.tool))) {
     const [a, b] = state.points;
     const pa = toCanvas(a);
@@ -8388,6 +8418,12 @@ function drawSelectionBox() {
 /// 把 `mask_id` 挂到**当前图层**（工具摘要里写的正是这个工作流 ✓）。
 const MASK_TOOLS = new Set(["mask_rect", "mask_ellipse"]);
 
+/// 渐变蒙版 ✓（`create_mask` 的 `linear_gradient` / `radial_gradient` 两种 kind ✓）：
+/// 拖出来的**不是框** ✓ —— 线性是"起笔 → 收笔"那条向量 ✓（起笔一侧覆盖率 1 ✓、收笔一侧 0 ✓
+/// ⇒ 过渡带就是这条线的长度 ✓）；径向仍用那个外接框 ✓，多一个 `falloff`（过渡带占半径的比例 ✓）。
+/// **挂接口径与形状蒙版一模一样** ✓（同一个 `set_property` 的 `mask_id` ✓）⇒ 一条代码路径 ✓ 不漂移 ✓。
+const GRADIENT_MASK_TOOLS = new Set(["mask_linear_gradient", "mask_radial_gradient"]);
+
 async function commitMask() {
   const points = state.points;
   if (points.length < 2) {
@@ -8401,14 +8437,45 @@ async function commitMask() {
     w: Math.max(1, Math.abs(b.x - a.x)),
     h: Math.max(1, Math.abs(b.y - a.y)),
   };
-  const kind = state.tool === "mask_ellipse" ? "ellipse" : "rect";
-  const maskId = "mask_" + ulid();
+  const gradient = GRADIENT_MASK_TOOLS.has(state.tool);
   const feather = Number($("feather").value) || 0;
-  const created = await callTool(
-    "create_mask",
-    { mask_id: maskId, shape: { kind, bbox }, feather, invert: false, linked_layer: state.layerId },
-    { refresh: false }
-  );
+  const maskId = "mask_" + ulid();
+  const args = { mask_id: maskId, linked_layer: state.layerId };
+  let done;
+  if (state.tool === "mask_ellipse" || state.tool === "mask_rect") {
+    const kind = state.tool === "mask_ellipse" ? "ellipse" : "rect";
+    args.shape = { kind, bbox };
+    args.feather = feather;
+    args.invert = false;
+    done = (kind === "ellipse" ? "椭圆" : "矩形") + "蒙版（羽化 " + feather + "）";
+  } else if (state.tool === "mask_linear_gradient") {
+    // **零长度是服务端硬错误** ✓（`start` 与 `end` 重合 ⇒ `invalid_argument` ✓）：
+    // 就地拒绝比抛一句服务端错误码有用得多 ✓（"你刚才那一下是点了一下，不是拖 ✓"）。
+    if (Math.hypot(b.x - a.x, b.y - a.y) < 2) {
+      log("线性渐变蒙版要拖出长度 ⇒ 过渡带就是这条线的长度，起笔与收笔不能重合", "#c33");
+      return;
+    }
+    args.shape = { kind: "linear_gradient", start: [a.x, a.y], end: [b.x, b.y] };
+    args.invert = !!($("maskGradientInvert") || {}).checked;
+    done = "线性渐变蒙版（起 " + Math.round(a.x) + "," + Math.round(a.y)
+         + " → 收 " + Math.round(b.x) + "," + Math.round(b.y) + "）";
+  } else {
+    const falloff = Number(($("maskFalloff") || {}).value);
+    if (!Number.isFinite(falloff) || falloff < 0 || falloff > 1) {
+      log("径向衰减要在 0–1 之间（0 = 硬边、1 = 整条半径都在过渡），得到 " +
+          ($("maskFalloff") || {}).value, "#c33");
+      return;
+    }
+    args.shape = { kind: "radial_gradient", bbox, falloff };
+    args.invert = !!($("maskGradientInvert") || {}).checked;
+    done = "径向渐变蒙版（" + Math.round(bbox.w) + "×" + Math.round(bbox.h) + "，衰减 " + falloff + "）";
+  }
+  // **渐变 kind 不收羽化** ✓（服务端传非零直接报错 ✓）⇒ 这里**忽略它并出声** ✗
+  // 而不是把工具栏那个数字照抄上去 ✓：抄上去的结局是"拖了一下、什么也没发生"✓。
+  if (gradient && feather > 0) {
+    log("渐变蒙版不使用羽化 ⇒ 已忽略「羽化 " + feather + "」（过渡带就是渐变本身）", "#c93");
+  }
+  const created = await callTool("create_mask", args, { refresh: false });
   if (!created.ok) {
     log("创建蒙版失败：" + (created.error_code || "unknown") + " " +
         ((created.context && created.context.detail) || ""), "#c33");
@@ -8424,10 +8491,12 @@ async function commitMask() {
         ((attached.context && attached.context.detail) || ""), "#c33");
     return;
   }
-  log("已为图层 " + state.layerId + " 添加" + (kind === "ellipse" ? "椭圆" : "矩形") +
-      "蒙版（羽化 " + feather + "）");
+  log("已为图层 " + state.layerId + " 添加" + done);
   // 同 `commitMaskBrush`：`create_mask` / `set_property` 不在本地乐观内核的覆盖范围内 ✓，
   // 必须从服务端重放才会把蒙版算进画布像素 ✓。
+  // **`resync()` 只管像素 ✗ 不重读 `list_layers`** ✓ ⇒ 不补这一下 ✗
+  // 「范围遮罩」卡那句"该层当前蒙版"会一直停在挂接之前的样子 ✓（实测 ✓）。
+  await refreshLayers();
   await resync();
 }
 
@@ -8488,6 +8557,174 @@ async function commitMaskBrush() {
   // `paint_mask` 落的是 `update_mask` 原子 ✓ —— 只 `refreshPreview()` 的话
   // 原子进了文档、**画布却按旧蒙版渲染**（实测：涂完右半边像素纹丝不动 ✓）。
   await resync();
+}
+
+/// **范围遮罩** ✓（`create_range_mask` ✓ D1-a ✓）：按**像素值**挑出受影响的一块 ——
+/// 亮度带（显示空间的明度 ✓ 0–1 ✓）或色相带（按色相窗取 ✓ 近灰像素恒不选 ✓）。
+/// 烤出来的是**快照** ✓：源图层往后的改动不会传播进这张蒙版 ✓（回执的 `note` 明说 ✓）
+/// ⇒ 这句必须写在卡片上 ✗ 否则人会以为蒙版跟着图层走 ✓。
+///
+/// **覆盖为 0 时绝不挂载** ✓：带内一个像素都没有时工具**仍然回 `ok: true`** ✓（实测 ✓
+/// —— 它老老实实烤了一张全零蒙版 ✓）⇒ 挂上去的观感是"参数改了、画面纹丝不动"✓
+/// 而日志里只留下一句成功 ✗ —— 正是本项目反复出现的**静默无操作** ✓。
+/// 这里**拒绝挂载并给出下一步**（放宽带 / 去掉反选 ✓）：蒙版还在文档里 ✓ 但没挂到任何层上 ✓
+/// ⇒ 对渲染零影响 ✓。
+async function commitRangeMask() {
+  const info = $("rangeMaskInfo");
+  const say = (line, red) => {
+    if (info) info.textContent = line;
+    if (red) log(line, "#c33");
+  };
+  const number = (id) => Number(($(id) || {}).value);
+  const kind = ($("rangeMaskKind") || {}).value || "luminance";
+  const source = ($("rangeMaskSource") || {}).value || state.layerId;
+  const target = ($("rangeMaskTarget") || {}).value || state.layerId;
+  const maskId = "mask_" + ulid();
+  const args = { mask_id: maskId, layer_id: source, range: kind, invert: !!($("rangeMaskInvert") || {}).checked };
+  if (kind === "luminance") {
+    const low = number("rangeMaskLow");
+    const high = number("rangeMaskHigh");
+    const smooth = number("rangeMaskSmoothLum");
+    if (!(low >= 0 && low <= 1 && high >= 0 && high <= 1)) {
+      say("亮度带的上下限都要在 0–1 之间。", true);
+      return;
+    }
+    if (low > high) { say("下限必须不大于上限（要挑带外请勾「反选」，不要把区间反过来填）。", true); return; }
+    if (!(smooth >= 0 && smooth <= 0.5)) { say("软边超出允许范围：亮度带是 0–0.5（明度单位）。", true); return; }
+    args.low = low;
+    args.high = high;
+    args.smoothness = smooth;
+  } else {
+    const hue = number("rangeMaskHue");
+    const width = number("rangeMaskHueWidth");
+    const smooth = number("rangeMaskSmoothColor");
+    if (!(hue >= 0 && hue <= 360)) { say("色相要在 0–360 之间（度）。", true); return; }
+    if (!(width > 0 && width <= 360)) { say("窗宽必须大于 0 且不超过 360（度）。", true); return; }
+    if (!(smooth >= 0 && smooth <= 1)) { say("软边超出允许范围：色相带是 0–1（占窗宽的比例）。", true); return; }
+    args.hue = hue;
+    args.hue_width = width;
+    args.smoothness = smooth;
+  }
+  const baked = await callTool("create_range_mask", args, { refresh: false });
+  if (!baked.ok) {
+    // 失败的具体原因（`precondition_failed` 那句"这一层没有可采样的像素"之类 ✗）进日志 ✓
+    // —— 那里放得下整句服务端 `detail` ✓，卡片上只留一句结论 ✓。
+    log("范围遮罩烘焙失败：" + (baked.error_code || "unknown") + " " +
+        ((baked.context && baked.context.detail) || ""), "#c33");
+    // **`endpoint_not_local` 不是"服务端拒绝"** ✗（第 542 轮 ✓）：勾掉「服务器渲染」后请求由
+    // `api-local.js` 就地接管 ✓，而它**没有这个端点** ⇒ 请求**根本没出门** ✓。
+    // 把这一句也写成"服务端拒绝"⇒ 人会去查服务端日志 ✗ 而该改的是那个勾选 ✓。
+    say(baked.error_code === "endpoint_not_local"
+        ? "未挂载：本地内核没有这个端点（这次请求没到服务端）⇒ 勾回「服务器渲染」再试。"
+        : "未挂载：服务端拒绝了这次烘焙（原因见下方日志）。", false);
+    return;
+  }
+  const matched = Number(baked.coverage_matched_pixels || 0);
+  if (!(matched > 0)) {
+    say("带内没有像素 ⇒ 未挂载：把上下限拉开（如 0–1），或去掉反选再试。", true);
+    return;
+  }
+  const attached = await callTool(
+    "set_property",
+    { layer_id: target, key: "mask_id", value: maskId },
+    { refresh: false }
+  );
+  if (!attached.ok) {
+    log("挂载范围遮罩失败：" + (attached.error_code || "unknown") + " " +
+        ((attached.context && attached.context.detail) || ""), "#c33");
+    say("已烘焙但未挂载：挂接那一步失败了（原因见下方日志）。", false);
+    return;
+  }
+  const ratio = Number(baked.coverage_matched_ratio || 0);
+  const fmt = (v) => (typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(3)) : "?");
+  say("覆盖 " + matched + " 像素（占 " + Math.round(ratio * 100) + "%）· 均值 " +
+      fmt(baked.coverage_mean) + " · 已挂到 " + target);
+  // 蒙版走的是 `update_mask` / `set_property` 原子 ✓ 本地乐观内核表示不了它 ✗
+  // ⇒ 必须服务端重放才会把"只影响带内"算进画布像素 ✓（与 `commitMask` 同一条理由 ✓）。
+  // 像素之外还要重读一次图层 ✓：「该层当前蒙版」那句与"取下"这一步的依据都是 `list_layers`
+  // 里的 `mask_id` ✗ 拿挂接前的旧值就会把"刚挂上"说成"本来就没有" ✓（判据当场抓到 ✓）。
+  await refreshLayers();
+  await resync();
+}
+
+/// **范围遮罩卡那两个图层选择框** ✓：数据源只有一个 —— `refreshLayers()` 拿回来的 `list_layers` ✓
+///（与图层面板、隐藏的 `#layer` 同一份 ✓ 各维护一份选择必然漂移 ✗）。
+/// **必须保住当前选择** ✓：`innerHTML = ""` 之后 `select.value` 会落到第一项 ✓
+///（`refreshLayers` 里那个"刷新就把正在编辑的图层换掉"的旧 bug ✓ 同一个坑 ✓）。
+let rangeMaskRecords = [];
+function renderRangeMaskLayers(layers) {
+  rangeMaskRecords = layers || [];
+  for (const id of ["rangeMaskSource", "rangeMaskTarget"]) {
+    const select = $(id);
+    if (!select) continue;
+    const wanted = select.value || state.layerId;
+    select.innerHTML = "";
+    for (const layer of layers) {
+      const option = document.createElement("option");
+      option.value = layer.layer_id;
+      option.textContent = layer.name + " (#" + layer.layer_id + ")";
+      // 图层名是**用户数据** ✓ 不参与界面翻译 ✓（与 `#layer`、图层面板同一条口径 ✓）。
+      option.dataset.i18n = "off";
+      select.appendChild(option);
+    }
+    if (wanted && [...select.options].some((item) => item.value === wanted)) select.value = wanted;
+  }
+  renderRangeMaskCurrent();
+}
+
+/// **"这一层现在挂着什么"必须写在界面上** ✓：挂接与取下都是 `set_property mask_id` ✓
+/// 看不见现状就只能凭记忆操作 ✗（`delete_mask` 那种"本体删了、引用还留在层上"的坑 ✓
+/// 也只有照服务端事实读回来才看得出来 ✓）。
+function renderRangeMaskCurrent() {
+  const out = $("rangeMaskCurrent");
+  if (!out) return;
+  const target = ($("rangeMaskTarget") || {}).value;
+  const record = rangeMaskRecords.find((layer) => layer.layer_id === target);
+  out.textContent = record && record.mask_id ? "该层当前蒙版 " + record.mask_id : "该层当前没有蒙版";
+}
+
+/// 取下"挂到"那一层的蒙版 ✓。**送的是 JSON `null`** ✓（实测 ✓）：
+/// 送空串 ⇒ `reference_not_found`（那句 `引用的实体  不存在或已删除` 中间还是个空插值 ✓）✗
+/// 而 `delete_mask` 只删本体 ⇒ 层上的引用还留着 ✓ 都不是"断开这一层"。
+async function detachRangeMask() {
+  const info = $("rangeMaskInfo");
+  const target = ($("rangeMaskTarget") || {}).value || state.layerId;
+  const record = rangeMaskRecords.find((layer) => layer.layer_id === target);
+  const current = record ? record.mask_id : null;
+  if (!current) {
+    // 本来就没有 ⇒ **一个原子都不写** ✓（"点了没变化"和"点了写了一条空改动"是两回事 ✓）。
+    if (info) info.textContent = "那一层本来就没有蒙版 ⇒ 没有可取下的东西（没有写入任何改动）。";
+    return;
+  }
+  const done = await callTool("set_property", { layer_id: target, key: "mask_id", value: null }, { refresh: false });
+  if (!done.ok) {
+    log("取下蒙版失败：" + (done.error_code || "unknown") + " " +
+        ((done.context && done.context.detail) || ""), "#c33");
+    if (info) info.textContent = "没取下：那一步失败了（原因见下方日志）。";
+    return;
+  }
+  if (info) info.textContent = "已取下 " + current + "（蒙版本体仍在历史里，只是这一层不再受它限定）。";
+  await refreshLayers();
+  await resync();
+}
+
+function setupRangeMaskPanel() {
+  const kind = $("rangeMaskKind");
+  const syncRows = () => {
+    const color = (kind || {}).value === "color";
+    const lum = $("rangeMaskLumRow");
+    const col = $("rangeMaskColorRow");
+    if (lum) lum.style.display = color ? "none" : "";
+    if (col) col.style.display = color ? "" : "none";
+  };
+  if (kind) kind.addEventListener("change", syncRows);
+  syncRows();
+  const apply = $("rangeMaskApply");
+  if (apply) apply.addEventListener("click", () => { void commitRangeMask(); });
+  const detach = $("rangeMaskDetach");
+  if (detach) detach.addEventListener("click", () => { void detachRangeMask(); });
+  const target = $("rangeMaskTarget");
+  if (target) target.addEventListener("change", renderRangeMaskCurrent);
 }
 
 /// 这些工具不走 `draw_stroke` 原子，而是调用同名工具（工具层会构造正确的原子）。
@@ -9148,7 +9385,8 @@ board.addEventListener("pointermove", (event) => {
   // 它们提交时都取 `points[0], points[1]` ✓：形状 ✓、**选区** ✓、**蒙版** ✓。
   // 此前只有形状这样做 ✗，选区/蒙版一路 `push` ✗ ⇒ 提交拿到的是**前两次移动事件** ✓
   //（子 agent 实测：拖 (64,372)→(432,500) 十步，得到 `{w:36.8,h:12.8}` 而不是 368×128 ✓）。
-  const TWO_CORNER_TOOLS = new Set(["rect", "ellipse", "select_rect", "mask_rect", "mask_ellipse"]);
+  const TWO_CORNER_TOOLS = new Set(["rect", "ellipse", "select_rect", "mask_rect", "mask_ellipse",
+                                    "mask_linear_gradient", "mask_radial_gradient"]);
   if (TWO_CORNER_TOOLS.has(state.tool)) state.points = [state.points[0], point];
   else state.points.push(point);
   if (liveStroke) octx.clearRect(0, 0, overlay.width, overlay.height);
@@ -9273,7 +9511,7 @@ board.addEventListener("pointerup", async (event) => {
     redraw();
     return;
   }
-  if (MASK_TOOLS.has(state.tool)) {
+  if (MASK_TOOLS.has(state.tool) || GRADIENT_MASK_TOOLS.has(state.tool)) {
     state.points.push(localPoint(event));
     await commitMask();
     state.points = [];
@@ -9840,6 +10078,10 @@ const TOOL_ICONS = {
   // 蒙版涂抹 ✓：一个虚线框（=蒙版）里加一支笔 ✓ / 减一支笔 ✓（一眼分清"加"与"减" ✓）。
   mask_paint: '<rect x="4" y="4" width="16" height="16" rx="2" stroke-dasharray="3 2"/><path d="M8 15l4-4 3 3-4 4h-3z"/><path d="M12 12l3-3"/>',
   mask_erase: '<rect x="4" y="4" width="16" height="16" rx="2" stroke-dasharray="3 2"/><path d="M8 15l4-4 3 3-4 4h-3z"/><path d="M13 7h5"/>',
+  // 渐变蒙版 ✓：虚线框 = 蒙版外接范围 ✓；实线那条**向量**（线性 ✓）或那个**内切椭圆**（径向 ✓）
+  // 才是真正拖出来的东西 ✓（与 `redraw()` 里的拖动预览同一个画法 ✓ 两处读起来一致 ✓）。
+  mask_linear_gradient: '<rect x="4" y="6" width="16" height="12" stroke-dasharray="3 2"/><path d="M6 16L18 8"/><circle cx="6" cy="16" r="1.5"/>',
+  mask_radial_gradient: '<rect x="4" y="4" width="16" height="16" stroke-dasharray="3 2"/><ellipse cx="12" cy="12" rx="6" ry="4"/><circle cx="12" cy="12" r="1.5"/>',
   fillLayer: '<path d="M5 12l7-7 7 7-7 7z"/><path d="M20 15c1 2 1 3 0 4"/>',
 };
 // 顺序按用途分组 ✓：绘制 → 修图 → 液化 → 取色/移动 → 选区/蒙版 → 文本/介质 → 填充。
@@ -9873,6 +10115,9 @@ const TOOL_DEFS = [
   { tool: "anchor", label: "锚点", key: "k" },
   { tool: "mask_rect", label: "矩形蒙版", key: "" },
   { tool: "mask_ellipse", label: "椭圆蒙版", key: "" },
+  // 渐变蒙版 ✓（`create_mask` 的两种渐变 kind ✓）：拖一条向量 / 拖一个圈 ⇒ "这一带渐渐失效" ✓。
+  { tool: "mask_linear_gradient", label: "线性渐变蒙版", key: "" },
+  { tool: "mask_radial_gradient", label: "径向渐变蒙版", key: "" },
   // 在**已有蒙版**上拿笔画 ✓（`paint_mask` ✓）：加选 / 减选 ✓。
   { tool: "mask_paint", label: "蒙版画笔", key: "" },
   { tool: "mask_erase", label: "蒙版擦除", key: "" },
@@ -11875,6 +12120,52 @@ $("importFile").addEventListener("change", (event) => {
 // 而且**表里没有的文案保持原样**（安全降级）。**默认中文** ⇒ 既有行为与既有检查脚本都不受影响；
 // 英文是**显式切换**（顶栏开关 / `?lang=en` / 记住的选择）。日志与诊断**不翻译**（它们是给人看的长句）。
 const I18N_EN_TEXT = {
+  // **范围遮罩卡 + 渐变蒙版卡** ✓（本轮新增 ✓）：模板文本节点 ✓ 与卡片上那几句固定回执 ✗
+  // 都在 `ui-i18n-coverage` / `browser-i18n` 的扫描范围内 ✓（`#rangeMaskInfo` 不是 `#log` ✓）。
+  "范围遮罩": "Range mask",
+  "按像素值挑出受影响的一块：亮度带或色相带。烤出来的是快照，源图层往后的改动不会传播进来。":
+    "Pick the affected pixels by value: a luminance band or a hue band. The baked result is a snapshot — later edits to the source layer do not propagate into it.",
+  "采样": "Sample",
+  "挂到": "Attach to",
+  "带": "Band",
+  "亮度带": "Luminance band",
+  "色相带": "Hue band",
+  "反选": "Invert",
+  "下限": "Low",
+  "上限": "High",
+  "软边": "Feather edge",
+  "色相": "Hue",
+  "窗宽": "Window",
+  "烘焙并挂载": "Bake and attach",
+  "渐变蒙版": "Gradient mask",
+  "在工具栏选「线性渐变蒙版」或「径向渐变蒙版」，再在画布上拖：线性的起笔一侧为 1、收笔一侧为 0；径向的圈心为 1、内切椭圆之外为 0。":
+    "Pick Linear gradient mask or Radial gradient mask in the toolbar, then drag on the canvas: for a linear one the start side is 1 and the end side is 0; for a radial one the centre is 1 and everything outside the inscribed ellipse is 0.",
+  "径向衰减": "Radial falloff",
+  "渐变蒙版不使用「羽化」：过渡带就是渐变本身。挂上去的蒙版要断开：在「范围遮罩」卡的「挂到」里选这一层，点「取下蒙版」。":
+    "Gradient masks do not use Feather — the transition band is the gradient itself. To unlink a mask you attached: pick the layer under Attach to in the Range mask card and press Detach mask.",
+  "亮度带的上下限都要在 0–1 之间。": "Both ends of a luminance band must be within 0–1.",
+  "下限必须不大于上限（要挑带外请勾「反选」，不要把区间反过来填）。":
+    "The low end must not exceed the high end (to select outside the band, tick Invert instead of reversing the range).",
+  "软边超出允许范围：亮度带是 0–0.5（明度单位）。":
+    "Feather edge out of range: a luminance band accepts 0–0.5 (in luma units).",
+  "色相要在 0–360 之间（度）。": "Hue must be within 0–360 degrees.",
+  "窗宽必须大于 0 且不超过 360（度）。": "The window must be greater than 0 and at most 360 degrees.",
+  "软边超出允许范围：色相带是 0–1（占窗宽的比例）。":
+    "Feather edge out of range: a hue band accepts 0–1 (as a fraction of the window width).",
+  "未挂载：服务端拒绝了这次烘焙（原因见下方日志）。":
+    "Not attached: the server rejected this bake (see the log below for the reason).",
+  "未挂载：本地内核没有这个端点（这次请求没到服务端）⇒ 勾回「服务器渲染」再试。":
+    "Not attached: the local kernel has no such endpoint (this request never reached the server) ⇒ tick Server render back on and retry.",
+  "取下蒙版": "Detach mask",
+  "该层当前没有蒙版": "This layer has no mask right now",
+  "那一层本来就没有蒙版 ⇒ 没有可取下的东西（没有写入任何改动）。":
+    "That layer has no mask to begin with ⇒ nothing to detach (no change was written).",
+  "没取下：那一步失败了（原因见下方日志）。":
+    "Not detached: that step failed (see the log below for the reason).",
+  "带内没有像素 ⇒ 未挂载：把上下限拉开（如 0–1），或去掉反选再试。":
+    "No pixels fall in this band ⇒ not attached: widen the range (for example 0–1), or untick Invert and try again.",
+  "已烘焙但未挂载：挂接那一步失败了（原因见下方日志）。":
+    "Baked but not attached: the attach step failed (see the log below for the reason).",
   // **★ 内核卡片的服务端渲染提示（browser-i18n 实测红 ✓）★**：
   //   `setWasmState("已按设置跳过（用服务端渲染）")` 写进 DOM ⇒ 英文模式下必须有词条 ✓。
   "已按设置跳过（用服务端渲染）": "Skipped per setting (server-side rendering)",
@@ -12271,6 +12562,36 @@ const I18N_EN_TEXT = {
   "★ 收藏": "★ Favourites"
 };
 const I18N_EN_ATTR = {
+  // **范围遮罩卡 + 渐变蒙版卡** ✓（本轮新增 ✓）：`ui-i18n-coverage` 现在也查模板属性 ✓。
+  "读哪一层的像素：这一层的当前渲染就是采样的全部来源":
+    "Which layer's pixels are read: that layer's current render is the only sampling source",
+  "把蒙版挂到哪一层：只有这一层的效果被它限定":
+    "Which layer carries the mask: only that layer's effect is limited by it",
+  "亮度带按显示空间的明度取值；色相带按色相窗取值，近灰的像素恒不选":
+    "A luminance band selects by luma in display space; a hue band selects by hue window, and near-grey pixels are never selected",
+  "反选：把带内变成带外（反选烤进网格，不是挂上去再翻）":
+    "Invert: select outside the band instead (the inversion is baked into the grid, not applied when attaching)",
+  "亮度带下限（0–1，显示空间）": "Lower end of the luminance band (0–1, display space)",
+  "亮度带上限（0–1，必须不小于下限）": "Upper end of the luminance band (0–1, must not be below the lower end)",
+  "带边过渡的宽度（明度单位，0–0.5）": "Width of the band-edge transition (luma units, 0–0.5)",
+  "色相窗的中心（0–360 度）": "Centre of the hue window (0–360 degrees)",
+  "色相窗的全宽（度，大于 0 且不超过 360）": "Full width of the hue window (degrees, above 0 and at most 360)",
+  "拿窗宽的多少来做软边（0–1）": "How much of the window width becomes the soft edge (0–1)",
+  "烘焙范围遮罩并挂到所选图层；带内一个像素都没有时不会挂载":
+    "Bake the range mask and attach it to the chosen layer; nothing is attached when the band holds no pixels",
+  "取下「挂到」那一层当前的蒙版；蒙版本体留在历史里，只断开这一层":
+    "Detach the current mask of the layer named in Attach to; the mask itself stays in history, only this layer is unlinked",
+  "径向渐变：过渡带占半径的比例（0 = 硬边，1 = 整条半径都在过渡）":
+    "Radial gradient: the transition band as a fraction of the radius (0 = hard edge, 1 = the whole radius fades)",
+  "反选：起笔一侧变成 0": "Invert: the side you started on becomes 0",
+  // **工具栏那两支新蒙版笔** ✓：`renderToolStrip()` 运行时把标签写进 `title` / `aria-label` ✓
+  // ⇒ 静态判据看不到 ✗（它只读模板 ✓）⇒ 补词条才不会被"英文界面 + 中文 tooltip"打脸 ✓。
+  "矩形蒙版": "Rectangle mask",
+  "椭圆蒙版": "Ellipse mask",
+  "线性渐变蒙版": "Linear gradient mask",
+  "径向渐变蒙版": "Radial gradient mask",
+  "蒙版画笔": "Mask brush",
+  "蒙版擦除": "Mask eraser",
   // **直方图卡 + 整组撤销**（本轮补齐 ✓）：四个新 tooltip。
   // 静态判据 `ui-i18n-coverage` 不查属性 ✗，但 `browser-i18n` 在英文模式下会看到 ✗ ⇒ 都要有词条 ✓。
   "统计整文档的合成结果，还是只统计当前图层":
@@ -12463,6 +12784,14 @@ function i18nText(node) {
     // **读取失败的回执带服务端错误码** ✓（`reference_not_found` 之类 ✗）⇒ 整句拼了数据
     //   ⇒ 字典按整句匹配不到 ⇒ 必须模式词条（browser-i18n 在 ef2494de 基线上实测抓到 ✓）。
     const m19 = /^读取失败：(\S+)$/.exec(zh);
+    // **范围遮罩的覆盖回执** ✓（本轮新增 ✓）：整句拼了服务端给的像素数、占比、均值 ✗
+    //   和图层 id ⇒ 字典按整句匹配不到 ⇒ 必须模式词条（`#rangeMaskInfo` **不在** `#log` 里 ✓
+    //   ⇒ 没有词条就会在英文模式下留着中文 ✓）。
+    const m20 = /^覆盖 (\d+) 像素（占 (\d+)%）· 均值 (\S+) · 已挂到 (\S+)$/.exec(zh);
+    // **蒙版现状与取下回执** ✓：两句都拼了服务端的蒙版 id ⇒ 整句查字典必然落空 ✓
+    //（`#rangeMaskCurrent` / `#rangeMaskInfo` 都不在 `#log` 那批跳过名单里 ✓）。
+    const m21 = /^该层当前蒙版 (\S+)$/.exec(zh);
+    const m22 = /^已取下 (\S+)（蒙版本体仍在历史里，只是这一层不再受它限定）。$/.exec(zh);
     if (m1) en = "Layer " + m1[1];
     else if (m2) en = "Layer " + m2[1] + " (#" + m2[2] + ")";
     else if (m3) en = m3[1] + " colours";
@@ -12490,6 +12819,12 @@ function i18nText(node) {
         + " · luma mean " + m18[3] + " median " + m18[4] + " p5 " + m18[5] + " p95 " + m18[6];
     }
     else if (m19) en = "Read failed: " + m19[1];
+    else if (m20) {
+      en = "Covers " + m20[1] + " pixels (" + m20[2] + "%) · mean " + m20[3]
+        + " · attached to " + m20[4];
+    }
+    else if (m21) en = "This layer's current mask: " + m21[1];
+    else if (m22) en = "Detached " + m22[1] + " (the mask itself stays in history; this layer is simply no longer limited by it).";
   }
   node.nodeValue = (uiLang === "en" && en) ? original.replace(zh, en) : original;
 }

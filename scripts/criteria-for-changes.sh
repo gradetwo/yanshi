@@ -111,6 +111,14 @@ for f in $CHANGED; do
     crates/yanshi-render/src/*)                  add_all 'tool-*.mjs'; add_all 'browser-*.mjs' ;;
     crates/yanshi-core/src/*)                    add_all 'tool-*.mjs' ;;
     web/*|assets/*)                              add_all 'browser-*.mjs'; add_all 'tool-pwa-*.mjs' ;;
+    # **★ 查看器自己的资产与模板** ✓（第 543 轮补）：`crates/yanshi-http/assets/*.js` 与
+    #   `crates/yanshi-http/src/viewer.rs` 是**页面本体**（`include_str!` 进二进制 ✓）✗
+    #   而上面那条 `assets/*` 只匹配**仓库根**的 `assets/` ⇒ 改查看器时报「0 个 ⇒ 直接推 CI」✗
+    #   （实测：本轮改了 `viewer-app.js` + `viewer.rs` ⇒ 报 0 ✓ 这正是本脚本自己
+    #    在第 1299 / 1352 轮批评过的那类漏报 ✓）。查看器改动**必须**跑 browser-* ✓。
+    crates/yanshi-http/assets/*)                 add_all 'browser-*.mjs'; add_all 'tool-pwa-*.mjs' ;;
+    crates/yanshi-http/src/viewer.rs)            add_all 'browser-*.mjs' ;;
+    crates/yanshi-http/src/*)                    add_all 'serve-*.mjs' ;;
     docs/*)                                      add_all 'check-*.mjs'; add_all 'tool-*-doc.mjs' ;;
     # **★ `vendor/hokusai-core` 是**笔刷引擎本身** ⇒ 改它影响**所有**笔刷判据** ✓（第 1299 轮实测漏过）
     #   **当时的错**：改了 `stroke.rs`/`color.rs` ⇒ 本工具报「0 个」⇒ 而那是**最重要的一类改动** ✗

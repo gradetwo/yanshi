@@ -558,6 +558,62 @@ const PAGE_TAIL_A: &str = r##"</style>
       <div id="anchorList" class="annotation-list"></div>
     </div>
 
+    <!-- **范围遮罩** ✓（`create_range_mask` ✓ D1-a ✓）：工具早已在服务端 ✓ 且在 MCP 缺省面里 ✓，
+         查看器却**零引用** ✗ ⇒ "按明暗 / 按颜色挑出受影响的一块"这件修图最基本的事 ✓
+         人只能靠 Agent 才做得到 ✗。
+         挂接口径与 `create_mask` **完全一致** ✓（`set_property` 的 `mask_id` ✓）⇒
+         "采样哪一层"与"挂到哪一层"是**两个独立选择** ✓（拿这层的像素去限定另一层的效果 ✓）。
+         **为什么必须页面上自己判一次覆盖** ✓：`coverage_matched_pixels === 0` 时工具**仍回 `ok: true`** ✓
+         （实测 ✓ —— 它确实烘焙了一张全零蒙版 ✓）⇒ 挂上去之后效果一点不见 ✗ 却处处显示"成功" ✓。
+         这种"成功但什么都没发生"正是本项目禁止的静默 ✗ ⇒ **覆盖为 0 就拒绝挂载并说清** ✓。
+         **取下蒙版走的是 `set_property` 的 JSON `null`** ✓（实测 ✓）：填**空串**会被引用检查拒掉 ✓
+         （`reference_not_found` ⇒ 那句 `引用的实体  不存在或已删除` 中间还是个空的插值 ✓）⇒
+         界面这里必须送 `null` ✗ 不能送 `""` ✓ 也不能像 `delete_mask` 那样只删本体、把引用留在层上 ✓。 -->
+    <div class="card" data-panel="paint" id="cardRangeMask">
+      <h2>范围遮罩</h2>
+      <div class="hint">按像素值挑出受影响的一块：亮度带或色相带。烤出来的是快照，源图层往后的改动不会传播进来。</div>
+      <div class="toolbar" style="gap:8px;flex-wrap:wrap">
+        <label>采样 <select id="rangeMaskSource" title="读哪一层的像素：这一层的当前渲染就是采样的全部来源"></select></label>
+        <label>挂到 <select id="rangeMaskTarget" title="把蒙版挂到哪一层：只有这一层的效果被它限定"></select></label>
+        <label>带 <select id="rangeMaskKind" title="亮度带按显示空间的明度取值；色相带按色相窗取值，近灰的像素恒不选">
+          <option value="luminance">亮度带</option>
+          <option value="color">色相带</option>
+        </select></label>
+        <label title="反选：把带内变成带外（反选烤进网格，不是挂上去再翻）"><input id="rangeMaskInvert" type="checkbox" /> 反选</label>
+      </div>
+      <div class="toolbar" id="rangeMaskLumRow" style="gap:8px;flex-wrap:wrap">
+        <label>下限 <input id="rangeMaskLow" type="number" min="0" max="1" step="0.05" value="0" style="width:64px" title="亮度带下限（0–1，显示空间）" /></label>
+        <label>上限 <input id="rangeMaskHigh" type="number" min="0" max="1" step="0.05" value="0.5" style="width:64px" title="亮度带上限（0–1，必须不小于下限）" /></label>
+        <label>软边 <input id="rangeMaskSmoothLum" type="number" min="0" max="0.5" step="0.01" value="0.05" style="width:64px" title="带边过渡的宽度（明度单位，0–0.5）" /></label>
+      </div>
+      <div class="toolbar" id="rangeMaskColorRow" style="gap:8px;flex-wrap:wrap;display:none">
+        <label>色相 <input id="rangeMaskHue" type="number" min="0" max="360" step="1" value="0" style="width:64px" title="色相窗的中心（0–360 度）" /></label>
+        <label>窗宽 <input id="rangeMaskHueWidth" type="number" min="1" max="360" step="1" value="60" style="width:64px" title="色相窗的全宽（度，大于 0 且不超过 360）" /></label>
+        <label>软边 <input id="rangeMaskSmoothColor" type="number" min="0" max="1" step="0.05" value="0.25" style="width:64px" title="拿窗宽的多少来做软边（0–1）" /></label>
+      </div>
+      <div class="toolbar" style="gap:8px">
+        <button id="rangeMaskApply" type="button" title="烘焙范围遮罩并挂到所选图层；带内一个像素都没有时不会挂载">烘焙并挂载</button>
+        <button id="rangeMaskDetach" type="button" title="取下「挂到」那一层当前的蒙版；蒙版本体留在历史里，只断开这一层">取下蒙版</button>
+        <span class="hint" id="rangeMaskCurrent"></span>
+      </div>
+      <div class="hint" id="rangeMaskInfo"></div>
+    </div>
+
+    <!-- **渐变蒙版** ✓（`create_mask` 的 `linear_gradient` / `radial_gradient` 两种 kind ✓ D1-b ✓）：
+         形状蒙版只有矩形 / 椭圆 ✓，想"这一带渐渐失效"必须拖一条向量或一个衰减圈 ✗ 页面上没有 ✗。
+         **羽化对这两种 kind 是无效输入** ✓：服务端传非零羽化直接 `invalid_argument` ✗
+         （实测 ✓）⇒ 工具栏那个「羽化」在这里**必须被忽略并且说清** ✗
+         否则人只会看到"拖了没反应" ✓（改 `create_mask` 的语义是后端的事 ✗ 这里先把话说清楚 ✓）。 -->
+    <div class="card" data-panel="paint" id="cardGradientMask">
+      <h2>渐变蒙版</h2>
+      <div class="hint">在工具栏选「线性渐变蒙版」或「径向渐变蒙版」，再在画布上拖：线性的起笔一侧为 1、收笔一侧为 0；径向的圈心为 1、内切椭圆之外为 0。</div>
+      <div class="toolbar" style="gap:8px;flex-wrap:wrap">
+        <label>径向衰减 <input id="maskFalloff" type="number" min="0" max="1" step="0.05" value="0.6" style="width:64px" title="径向渐变：过渡带占半径的比例（0 = 硬边，1 = 整条半径都在过渡）" /></label>
+        <label title="反选：起笔一侧变成 0"><input id="maskGradientInvert" type="checkbox" /> 反选</label>
+      </div>
+      <div class="hint" id="maskGradientInfo">渐变蒙版不使用「羽化」：过渡带就是渐变本身。挂上去的蒙版要断开：在「范围遮罩」卡的「挂到」里选这一层，点「取下蒙版」。</div>
+    </div>
+
     <!-- **风格预设** ✓（`list_presets` / `preview_preset` / `apply_preset` 此前在查看器里**零引用** ✗）。
          这 22 套内置预设是**落成一串可调对象**的 ✓（不是一次性烘焙像素 ✗）⇒ 人在界面上
          只能靠 MCP 才够得到 ✓。三段流程与成熟软件一致 ✓：按题材筛 ✓ → **先看代理图**（临时文档渲染 ✓
