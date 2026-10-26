@@ -670,6 +670,24 @@ fn owned_tile_bbox(tile: &Bbox, owned: &Bbox) -> Option<Bbox> {
     }
 }
 
+/// **分带用的外扩：声明值，不钳**（修带截断 ✓）：
+/// 每带的累积缓冲必须覆「带 ± 声明外扩」，否则羽化/模糊半径大于
+/// `MAX_EFFECT_PADDING` 时，带界附近 `radius − padding` 行内的模糊窗口越出
+/// 缓冲边、缺失行被边行复制值替代（`box_blur` 的 clamp 复制边界语义），
+/// 并行与串行差出已批准的 D1（±1 LSB）之外（复现见
+/// `tests/band_truncation.rs`：羽化 400 时最大差 12 LSB，差异行 629–771）。
+/// 串行路径仍用钳制后的 `padding` ⇒ 串行输出逐位不变；分带路径用这里的
+/// 声明外扩 ⇒ 每带邻域完整 ⇒ 并行收敛到串行（只剩滑动窗口浮点求和顺序的
+/// D1 噪声）。步长取整与 `render_region_with_lod` 的 `padding` 同口径
+/// （累积缓冲原点须落在取样网格上）；`expand_for_filters` 关时为 0。
+fn band_padding_for(declared: u32, expand_for_filters: bool, step: u32) -> u32 {
+    if !expand_for_filters {
+        0
+    } else {
+        declared.div_ceil(step) * step
+    }
+}
+
 /// **★ below 的**分块**缓存 ✓ ★**（规格 §6.2 ✓／第 481 轮 ✓）：
 /// **每个 tile 只存一份 ✓，与"谁请求"无关 ✓** —— **∴ 整块 ✓／行带 ✓／并行 chunk ✓ 键都相同 ✓**。
 ///
@@ -1762,6 +1780,9 @@ impl Renderer {
         // （输出像素整体平移）；向上取整（多给 ≤ step−1 px 外扩；`declared > padding`
         // 的截断告警仍按取整后的值判断——取整只会多给，不会少给）。
         let padding = padding.div_ceil(step) * step;
+        // **分带外扩用声明值**（修带截断 ✓）：见 `band_padding_for` 的说明。
+        // 串行路径继续用钳制后的 `padding`（逐位不变）；并行分带用声明外扩。
+        let band_padding = band_padding_for(declared, self.options.expand_for_filters, step);
         // 报告用的外扩框（口径与 `render_accumulation` 内部完全一致）。
         let padded = Bbox::new(
             region.x - padding as f64,
@@ -1779,9 +1800,11 @@ impl Renderer {
             ..RenderStats::default()
         };
         if declared > padding {
-            // 历史原子可能声明了超限外扩：必须可观测，否则表现为「分块与整幅静默不一致」。
+            // 历史原子可能声明了超限外扩：必须可观测。分块带界已按声明外扩
+            // （修带截断后与整幅一致），截断只剩画布/区域边缘处大半径效果的
+            // 邻域不完整——仍报出来，不静默。
             stats.unsupported.push(format!(
-                "区域外扩被截断：声明 {declared}px，上限 {}px；该区域的分块渲染可能与整幅渲染不一致",
+                "区域外扩被截断：声明 {declared}px，上限 {}px；带界已按声明外扩（与整幅一致），边缘处大半径效果的邻域仍不完整",
                 self.options.max_filter_padding
             ));
         }
@@ -1812,7 +1835,15 @@ impl Renderer {
         let cropped = if workers > 1 && region_pixels >= PARALLEL_MIN_PIXELS {
             // 区域足够大且核数 > 1：按行分块并行。**顺序无关性**见 `parallel_impl` 的说明。
             let (buffer, chunk_stats, chunk_probe, chunks) = parallel_impl::render_region(
-                self, state, store, &region, padding, background, workers, step,
+                self,
+                state,
+                store,
+                &region,
+                padding,
+                band_padding,
+                background,
+                workers,
+                step,
             )?;
             stats.layers = chunk_stats.layers;
             stats.objects = chunk_stats.objects;
@@ -6032,6 +6063,9 @@ pub(crate) mod parallel_impl {
     }
 
     /// 并行渲染 `region`：返回**恰好覆盖 `region`** 的缓冲、合并后的统计、各阶段耗时、实际块数。
+    ///
+    /// `padding` 是区域级（钳制后）外扩，只用于统计口径；每带累积缓冲实际用
+    /// `band_padding`（声明外扩，见 `band_padding_for`）外扩 ⇒ 带界邻域完整。
     #[allow(clippy::too_many_arguments)]
     pub fn render_region(
         renderer: &Renderer,
@@ -6039,6 +6073,7 @@ pub(crate) mod parallel_impl {
         store: &dyn BlobStore,
         region: &Bbox,
         padding: u32,
+        band_padding: u32,
         background: Option<[u8; 4]>,
         workers: usize,
         step: u32,
@@ -6196,7 +6231,7 @@ pub(crate) mod parallel_impl {
                                 state,
                                 store,
                                 &band,
-                                padding,
+                                band_padding,
                                 background,
                                 &mut stats,
                                 &mut track,
@@ -6396,6 +6431,8 @@ pub(crate) mod parallel_impl {
 
     /// 串行回退（本目标上 `workers()` 恒为 1，因此调用点不会走到这里；保留它是为了让
     /// 强行抬高 worker 数的调用仍然得到**正确画面**而不是 panic）。
+    ///
+    /// `_band_padding`：wasm 恒串行、无带界 ⇒ 忽略，仍用钳制后的 `padding`。
     #[allow(clippy::too_many_arguments)]
     pub fn render_region(
         renderer: &Renderer,
@@ -6403,6 +6440,7 @@ pub(crate) mod parallel_impl {
         store: &dyn BlobStore,
         region: &Bbox,
         padding: u32,
+        _band_padding: u32,
         background: Option<[u8; 4]>,
         _workers: usize,
         step: u32,
@@ -7336,8 +7374,10 @@ pub fn render_region_unquantized(
     background: Option<[u8; 4]>,
     workers: usize,
 ) -> Result<(Buffer, RenderStats, RenderProbe, usize)> {
+    // 转发器只收到一份 `padding`：原样同时当带外扩传（行为与修前一致；
+    // 外扩的「声明 vs 钳制」由调用方决定，服务端走 `render_region_with_lod`）。
     parallel_impl::render_region(
-        renderer, state, store, region, padding, background, workers, 1,
+        renderer, state, store, region, padding, padding, background, workers, 1,
     )
 }
 
@@ -9329,6 +9369,29 @@ mod tests {
             Some(inside),
             "带内 tile 应当原样返回"
         );
+    }
+
+    /// **分带外扩取声明值、不钳**（修带截断 ✓）：
+    /// 声明 201（羽化 400）时带外扩就是 201，不是钳后的 128；`expand` 关时为 0；
+    /// 步长取整向上（`lod` 步长 2 时 201 ⇒ 202）。变异：把 `band_padding_for`
+    /// 改成钳到 `MAX_EFFECT_PADDING` ⇒ 第一条断言红 ✓（`tests/band_truncation.rs`
+    /// 的端到端判据也会红——最大差回到 12 LSB）。
+    #[test]
+    fn band_padding_for_uses_declared_value_unclamped() {
+        // ① 声明值原样通过（修前的钳制值 128 在这里必须红）✓
+        assert_eq!(
+            band_padding_for(201, true, 1),
+            201,
+            "声明 201 时带外扩应当是 201，不是上限 128"
+        );
+        // ② 声明 ≤ 上限时与钳制值相同（不改变小半径文档的行为）✓
+        assert_eq!(band_padding_for(128, true, 1), 128, "声明 128 时不变");
+        assert_eq!(band_padding_for(0, true, 1), 0, "声明 0 时不变");
+        // ③ `expand_for_filters` 关 ⇒ 0（与 `padding` 同口径）✓
+        assert_eq!(band_padding_for(201, false, 1), 0, "不外扩时带外扩应当是 0");
+        // ④ 步长取整向上（`lod` 步长 2 时 201 ⇒ 202，不可少给）✓
+        assert_eq!(band_padding_for(201, true, 2), 202, "步长 2 时向上取整");
+        assert_eq!(band_padding_for(200, true, 2), 200, "整除时不变");
     }
 
     /// **`brightness_match` 无参考时必须留下可读痕迹** ✓（第 1440 轮审计 ✓）。
