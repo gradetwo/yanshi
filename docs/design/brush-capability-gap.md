@@ -22399,3 +22399,38 @@ server lib（--features raw）**222**（5 ignored）、定向 11 个集成 suite
 ⇒ 拆成**短可见句** + `title=` 里放完整几何说明 ✓；同时补 `I18N_EN_TEXT`（短句）与
 `I18N_EN_ATTR`（title）两条词条 ✓（`ui-i18n-coverage` 现在也查 title ✓，不补会漏中文）。
 ⇒ `ui-text-density` 与 `ui-i18n-coverage` 本机均转绿 ✓。
+
+## 六百四十一、Web 第四轮（频率分离 ＋ 混合模式清单）＋ 渲染带截断（第 1132 轮）
+
+### Web freqsep/blend（基线 `0bddba26`，5 文件 + 两新判据）
+
+- **频率分离卡**：源层下拉（`list_layers` 真实数据）、半径 1–64、图层名、分离按钮；
+  建 5 层（组 + 低频 / 低频绘画 / 高频（`linear_light`）/ 高频绘画）；四个误差读数
+  **全部取服务端回执**；**五条拒绝路径都不静默**（空层/半径越界/源层消失/服务端自检失败/
+  本地内核缺端点）✓。
+- **混合模式清单**：图层面板原先只有 7 项、内核 **13** 项 ⇒ `set_layer_blend` 写成功但下拉倒回「正常」✗
+  ⇒ 提升为模块级 `BLEND_MODE_LABELS`（13 项 + 中文），**未知模式也照原名显示**（内核加第 14 个
+  不退化成 normal）；`linear_dodge` 作为 `add` 别名单列并注明 ✓。
+- **新判据**：`browser-frequency-separation`（八项）、`browser-blend-modes`（六项）✓。
+- **本机验证**：两条新判据、`browser-range-mask`、`ui-i18n-coverage`、`ui-text-density` 全 0 ✓。
+
+**⇒ ★ 整合修的五处（都是"判据自己/环境"，不是产品）**：
+1. 两条新判据把 `argv[3]` 当 CDP 端口 ✗（run-criteria 传的是 base URL）⇒ 改读 `CDP_PORT` ✓。
+2. 两条都必须**服务器渲染**（要调服务端工具、且自己验本地内核那一臂）⇒ 加进 `run-criteria.sh`
+   的 browser 例外（与 render-switch/range-mask 同组）✓。
+3. 判据**过早点击**：本地模式初始化先填下拉、后 `setup*Panel()` 绑 click ⇒ 只等下拉会在监听前
+   点击（空回执）⇒ 等 checkbox 就位 + 固定 900ms settle ✓。
+4. `ui-text-density`：频率分离卡两句长 hint ⇒ 拆成短可见句 + `title=` ✓。
+5. `ui-i18n-coverage` 也查 title ⇒ 短句与 title 都补 `I18N_EN_TEXT`/`I18N_EN_ATTR` ✓。
+
+### 渲染带截断（`photo-bugfix-render-bandtrunc`，1 patch，基线 `47c1065`）
+
+- 根因：并行分带按**钳制后的** `MAX_EFFECT_PADDING=128` 分配每带缓冲，而蒙版羽化/模糊
+  的声明外扩可到 201/501 ⇒ 带界附近模糊窗口缺真邻域 ⇒ 并行 vs 串行差 12–16 LSB（D1 之外）。
+- 修法：`band_padding_for(declared, …)` —— **分带按声明值外扩、不钳**；串行仍用钳制值（逐位不变）；
+  告警文案改为「带界已按声明外扩，边缘处大半径效果邻域仍不完整」；wasm 串行签名同步但忽略。
+- **验证**：`band_truncation` **3**、`tile_parallel` **23**；render lib **553**；clippy/fmt 绿 ✓。
+  修后 700×1400 羽化 400：**114 字节差、max 1 LSB**（修前 156,280 字节、max 12）；羽化 1000 应力
+  **0 字节差**；串行输出逐字节不变 ✓。
+- **范围**：不修 `MAX_EFFECT_PADDING` 本身（画布/区域边缘超限截断仍在）；声明值不设上限 ⇒
+  极端羽化（10000）8K 每带缓冲约 +1.2GB，作者刻意选择（任何上限都会重新引入本 bug）✓。
