@@ -1884,7 +1884,6 @@ impl Document {
     pub fn render_region_preview(&mut self, bbox: Bbox) -> Result<RenderedPreview> {
         yanshi_render::begin_render();
         let region = bbox;
-        let doc_size = Bbox::new(0.0, 0.0, self.state.width as f64, self.state.height as f64);
         let lod = preview_lod_for(region);
         let rendered =
             self.renderer
@@ -1898,11 +1897,13 @@ impl Document {
         let blob_hash = self.store.put(&png)?;
         self.last_render_blob = Some(blob_hash.clone());
         self.render_watermark = self.log.head_seq();
-        // 只刷新 256² 像素基座，不提升 `document_thumbnail` 指针（与 `render_region`
-        // 的 7.3 规则一致：局部 dirty 渲染不是「文档级」预览 ⇒ 缩略图指针仍落后，
-        // 由下一次 `render_document_preview`（如 `get_document`）兑现并落盘）。
-        let _ = self.refresh_thumb_from_render(Some(region), Some(&rendered), doc_size)?;
-        self.preview_dirty = PreviewDirty::Clean;
+        // **不碰 256² 缩略图、不改 `preview_dirty`** ✓（与 `render_region` 一致）：
+        // 缩略图只由 `render_document_preview` 刷新——它会把脏区**外扩到整块**再渲
+        // 染合并，逐像素与整幅重算一致（`coldstart_reuse` 判据 1 守着）；这里若用
+        // 未外扩的脏区直接合块，块内脏区外的像素会被边界 clamp 采样污染，基座就
+        // 错了（2026-10-26 第三次红）。`preview_dirty` 也保持追加时留下的值，
+        // 下一次文档级预览才知道"哪块脏了"、去重渲染合并（旧 `render_region` 同样
+        // 不动它；置 `Clean` 会让下一次预览误以为"没变化"而直接编旧缩略图）。
         self.complete_render_jobs()?;
         // **淘汰必须放在「指针都更新完」之后** ✓（与 `render_region` 同序）。
         self.evict_replaced_previews(&previous);
@@ -2237,9 +2238,9 @@ impl Document {
 
     /// 从一次区域渲染刷新 256² 文档缩略图并更新文档级预览指针（P-01 M1 抽出）。
     ///
-    /// `render_document_preview` 与 `render_region_preview` 共用：缩略图的块平均
-    /// 按渲染像素密度反推（`refresh_thumb_banded`），与渲染分辨率无关 ⇒
-    /// LOD 渲染与全分辨率渲染走同一段代码，缩略图语义不变。
+    /// `render_document_preview` 的缩略图刷新步骤：块平均按渲染像素密度反推
+    /// （`refresh_thumb_banded`），与渲染分辨率无关 ⇒ LOD 渲染与全分辨率渲染
+    /// 走同一段代码，缩略图语义不变。
     /// 只刷新 256² 像素基座（`document_thumb`）并写 `last_thumb_blob`；
     /// **`document_thumbnail` / `document_thumbnail_seq` 的提升是调用方的事** ✓
     /// （`render_region` 的 7.3 规则：只有覆盖整幅画布的渲染才是「文档级」预览，
