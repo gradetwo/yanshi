@@ -612,6 +612,37 @@ const PAGE_TAIL_A: &str = r##"</style>
         <label title="反选：起笔一侧变成 0"><input id="maskGradientInvert" type="checkbox" /> 反选</label>
       </div>
       <div class="hint" id="maskGradientInfo">渐变蒙版不使用「羽化」：过渡带就是渐变本身。挂上去的蒙版要断开：在「范围遮罩」卡的「挂到」里选这一层，点「取下蒙版」。</div>
+
+    </div>
+
+    <!-- **频率分离** ✓（`frequency_separation` ✓ 在 HTTP 缺省面内的 `retouch` 组 ✓）：
+         本轮之前 `grep frequency_separation crates/yanshi-http/` 命中 **0** ✗（实测 ✓）
+         ⇒ "把色调与细节分成两层来修"这件修图最常用的事 ✓ 人只能靠 Agent 才做得到 ✗。
+         **界面必须照服务端回执说话** ✓：工具自带**重建自检** ✓
+         （`reconstruction_mean_error` / `_max_error` / `_max_error_bright` / `reconstruction_pixel_ratio` ✓
+         实测回执 ✓）⇒ 那四个数是"这组层还原得有多准"的唯一权威读数 ✗ 界面不许自算 ✓。
+         **为什么这里连"画面没变"都不能当成一句话带过** ✓：实测分离后的整幅合成与源层**并非逐像素相同** ✓
+         （`export_png` 解码比对：32×24 上 124 个通道差、单通道最大 10/255 ✓ 与回执 `max_error` 同量级 ✓）
+         ⇒ 卡片只能说"误差多少"✓ 不能说"看起来一样"✗。
+         **两种拒绝都不留半套层** ✓（实测 ✓）：空层 ⇒ `precondition_failed`
+         （`图层 X 没有任何对象 ⇒ 没有可分离的像素` ✓）；自检不过 ⇒ `invalid_argument`
+         （`…⇒ 烘焙没有重建回源图，拒绝落组（不留半套层）` ✓）⇒ 界面**先读 `list_layers` 的 `objects` 就地拦** ✓
+         不发送注定被拒的请求 ✓ 也不产生任何原子 ✓。
+         **为什么没有「整组撤销」按钮** ✓：`revert_group` 对分离建出的组回 `ok: true` **但
+         `reverted_count: 0`** ✓ 层数一层没少 ✗（实测 ✓ —— 那五层没被打原子级 `group_id` ✓）
+         ⇒ 按钮按下去"成功而什么都没撤"正是本项目禁止的静默 ✗ 所以这里只教人用历史卡 ✓。 -->
+    <div class="card" data-panel="paint" id="cardFreqSep">
+      <h2>频率分离</h2>
+      <div class="hint" title="低频修色调、高频修细节互不干扰；烤出来的是此刻的像素快照，源图层往后的改动不会传播进来">把源图层分离成低频与高频两层，装进一个组。</div>
+      <div class="toolbar" style="gap:8px;flex-wrap:wrap">
+        <label style="white-space:nowrap">源图层 <select id="freqSepSource" title="读哪一层烘焙：这一层的当前渲染就是分离的全部来源"></select></label>
+        <label>半径 <input id="freqSepRadius" type="number" min="1" max="64" step="1" value="8" style="width:64px" title="高斯 sigma（1–64）：越大低频越糊、留给高频的细节越少" /></label>
+        <label>组名前缀 <input id="freqSepName" type="text" placeholder="缺省用源图层名" style="width:170px" title="生成「前缀 · 频率分离」组与前缀 · 低频 / 高频 / 低频绘画 / 高频绘画 四层" /></label>
+        <button id="freqSepRun" type="button" title="烘焙并建组；源图层没有对象或半径越界时不发送请求、不写入任何改动">分离</button>
+      </div>
+      <div class="hint" id="freqSepCurrent"></div>
+      <div class="hint" id="freqSepInfo"></div>
+      <div class="hint" title="在「高频绘画」层上涂抹用 188 作中性色（128 会压暗）；源图层保持可见，新组盖在它上面；要整组撤掉请用「历史（原子日志）」卡逐条回退">高频层的中性灰是 188（不是 128）。</div>
     </div>
 
     <!-- **风格预设** ✓（`list_presets` / `preview_preset` / `apply_preset` 此前在查看器里**零引用** ✗）。

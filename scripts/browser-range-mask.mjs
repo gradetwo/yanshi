@@ -350,6 +350,9 @@ for (let i = 0; i < 60; i += 1) {
   if (rebooted) break;
   await sleep(250);
 }
+// **让 init 把点击监听接上**（第 1132 轮）：本地模式初始化的顺序是「先填下拉、后
+// `setupRangeMaskPanel()` 绑 click」⇒ 只等下拉会在监听绑定前点击 ⇒ 点了什么都没发生（空回执）✗。
+await sleep(900);
 const kernelMode = await evaluate(`(() => { const b = document.getElementById("useServerRender"); return b ? b.checked === true : null; })()`);
 if (!rebooted || kernelMode !== false) {
   console.error("❌ 判据前提失败：切不到本地内核模式（服务器渲染勾选实为 " + JSON.stringify(kernelMode) + "）");
@@ -371,7 +374,7 @@ await evaluate(`(() => {
 // **等回执出现**（第 1132 轮）：本地内核首次调用要初始化/可能慢 ⇒ 固定 2s 会读到空串 ✗
 //（本机实测：2.5s 才有字 ✓）。轮询到有字或 10s 超时。
 let infoKernel = "";
-for (let i = 0; i < 40; i += 1) {
+for (let i = 0; i < 160; i += 1) {
   infoKernel = (await evaluate(`document.getElementById("rangeMaskInfo").textContent`)) || "";
   if (infoKernel) break;
   await sleep(250);

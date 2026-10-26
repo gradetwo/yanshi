@@ -104,7 +104,15 @@ if (client.hasWasm !== true) failures.push(`关掉开关之后内核句柄 = ${c
 if (server.count < client.count) {
   console.log(`  · 参考：服务端请求数 ${server.count} < 客户端 ${client.count} ⇒ **只记录** ✓（次数受合并影响，不作判定 ✓）`);
 }
-if (failures.length) { console.log("  ✗ " + failures.join("；")); socket.close(); process.exit(1); }
+// **★ 收尾必须把偏好擦回缺省** ✓（本轮实测换来的 ✓）：本判据最后一步是 `setPref("0")` ✗
+//   而 `localStorage` 是**按源共享**的 ✓ ⇒ 它**退出时把 "0" 留在这个 chromium profile 里** ✓
+//   ⇒ 下一条**没自己擦**的 `browser-*` 判据会在**内核模式**下跑 ✓
+//   实测的代价：`browser-canvas-handfeel` 报 `endpoint_not_local: /api/tools/list_effects`
+//   ＋「新建之后没有切到新图层」⇒ **一条产品没变的判据假红** ✓（与 登记 ③ 同一族 ✓）。
+//   ⇒ **∴ 谁改了环境 ✗ 谁负责还原** ✓（两条退出路径都要还原 ✗ 不能只还原绿的那条 ✓）。
+const restorePref = async () => { try { await setPref(null); } catch (_) { /* 擦不动也只是回到原状 ✗ 不影响结论 */ } };
+if (failures.length) { console.log("  ✗ " + failures.join("；")); await restorePref(); socket.close(); process.exit(1); }
 console.log("  ✓ 显式开关：服务端模式确实多走服务端像素，客户端模式更少");
+await restorePref();
 socket.close();
 process.exit(0);

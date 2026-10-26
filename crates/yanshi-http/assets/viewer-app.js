@@ -6047,6 +6047,7 @@ function setupObjectPanel() {
   setupAnchorPanel();
   setupPresetPanel();
   setupRangeMaskPanel();
+  setupFreqSepPanel();
   const fresh = $("effectNew");
   if (fresh) fresh.addEventListener("click", () => {
     clearEffectEditing();
@@ -6649,6 +6650,7 @@ async function refreshLayers() {
   select.onchange = () => { state.layerId = select.value; renderLayerPanel(value.layers || []); };
   renderLayerPanel(value.layers || []);
   renderRangeMaskLayers(value.layers || []);
+  renderFreqSepLayers(value.layers || []);
   return value.layers || [];
 }
 
@@ -6662,6 +6664,32 @@ async function refreshLayers() {
 //    上下移动按钮因此也要按"屏幕方向"换算回 z 序 ✓（这里是**最容易搞反**的地方 ✗）。
 // ③ **按钮只接线一次** ✓（在 `setupLayerPanel` 里 ✓）：`refreshLayers()` 每次都会重画列表 ✓，
 //    若把监听器写在重画里 ✓ ⇒ 点一次会触发多次 ✗（本项目的检查脚本抓到过同类问题 ✓）。
+/// **界面这份混合模式清单必须与内核同源** ✓（权威是 `list_engine_capabilities.blend_modes` ✓
+/// 也就是 `crates/yanshi-render/src/blend.rs` 的 `NAMES` ✓）。
+/// **为什么要写下来** ✓：第 1131 轮这里只有 **7** 个选项 ✓ 而内核后来长到 **13** 个 ✗ 没人回来改这里 ✓
+/// ⇒ 实测：`subtract` / `difference` / `color_dodge` / `linear_light` / `soft_light` / `linear_dodge`
+/// 六种模式**在列表里显示成「正常」**（`<select>` 找不到匹配项就退回第一项 ✓）✗
+/// ⇒ **频率分离建出的高频层是 `linear_light`** ✓ 卡片说 linear_light ✗ 图层列表说正常 ✓
+/// ⇒ 同一份事实两个读数 ✓ 正是本项目禁止的静默 ✗。
+/// 判据 `scripts/browser-blend-modes.mjs` 逐条比对两边 ✓ 漏一个就红 ✓。
+const BLEND_MODE_LABELS = {
+  normal: "正常",
+  multiply: "正片叠底",
+  screen: "滤色",
+  overlay: "叠加",
+  darken: "变暗",
+  lighten: "变亮",
+  add: "相加",
+  // **`linear_dodge` 是 `add` 的别名** ✓（内核 `NAMES` 里两个都在 ✓ 存储**照原样留** ✗ 不归一 ✓）
+  // ⇒ 界面也必须各给一项 ✓ 否则"服务端说 linear_dodge、界面显示 add"又是一处不同源 ✓。
+  linear_dodge: "线性减淡（相加的别名）",
+  subtract: "相减",
+  color_dodge: "颜色减淡",
+  difference: "差值",
+  linear_light: "线性光",
+  soft_light: "柔光",
+};
+
 function renderLayerPanel(layers) {
   const list = $("layerList");
   if (!list) return;
@@ -6704,18 +6732,21 @@ function renderLayerPanel(layers) {
     name.textContent = layer.name + suffix + (layer.medium ? " · " + layer.medium : "");
     name.title = layer.layer_id;
     // **混合模式下拉** ✓：MCP 有 `set_layer_blend`，Web 之前沒有入口。
-    // 7 種模式：normal/multiply/screen/overlay/darken/lighten/add
+    // 选项来自 `BLEND_MODE_LABELS`（与内核 `blend_modes` 同源 ✓ 见那份清单上的说明 ✓）。
     const blend = document.createElement("select");
     blend.className = "layer-blend";
     blend.title = "混合模式";
     blend.dataset.action = "blend";
-    const modes = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "add"];
-    const modeLabels = { normal: "正常", multiply: "正片叠底", screen: "滤色", overlay: "叠加", darken: "变暗", lighten: "变亮", add: "相加" };
-    for (const mode of modes) {
+    const currentMode = layer.blend_mode || "normal";
+    // **当前值不在清单里也要能显示** ✓（内核将来加模式 ✗ 界面不许倒退回「显示成 normal」✓）：
+    // 宁可把服务端的**原值**摊在人面前（不认识 ✗ 但不错 ✓），也不给一个假的「正常」✓。
+    const modes = Object.keys(BLEND_MODE_LABELS);
+    const modeList = modes.includes(currentMode) ? modes : modes.concat(currentMode);
+    for (const mode of modeList) {
       const opt = document.createElement("option");
       opt.value = mode;
-      opt.textContent = modeLabels[mode] || mode;
-      if ((layer.blend_mode || "normal") === mode) opt.selected = true;
+      opt.textContent = BLEND_MODE_LABELS[mode] || mode;
+      if (currentMode === mode) opt.selected = true;
       blend.appendChild(opt);
     }
     blend.addEventListener("change", async (e) => {
@@ -8725,6 +8756,97 @@ function setupRangeMaskPanel() {
   if (detach) detach.addEventListener("click", () => { void detachRangeMask(); });
   const target = $("rangeMaskTarget");
   if (target) target.addEventListener("change", renderRangeMaskCurrent);
+}
+
+/// **频率分离卡的图层选择框** ✓：与范围遮罩同一份数据（`refreshLayers()` 的 `list_layers` ✓）
+/// ⇒ `objects` 是服务端给的"这一层有几个对象" ✓ 界面据此**就地拦住空层** ✗ 而不是发一次注定被拒的请求 ✓。
+let freqSepRecords = [];
+function renderFreqSepLayers(layers) {
+  freqSepRecords = layers || [];
+  const select = $("freqSepSource");
+  if (select) {
+    const wanted = select.value || state.layerId;
+    select.innerHTML = "";
+    for (const layer of layers) {
+      const option = document.createElement("option");
+      option.value = layer.layer_id;
+      option.textContent = layer.name + " (#" + layer.layer_id + ")";
+      // 图层名是**用户数据** ✓ 不参与界面翻译 ✓（与 `#layer`、图层面板同一口径 ✓）。
+      option.dataset.i18n = "off";
+      select.appendChild(option);
+    }
+    if (wanted && [...select.options].some((item) => item.value === wanted)) select.value = wanted;
+  }
+  renderFreqSepCurrent();
+}
+
+/// **"这一层能不能分离"要写在界面上** ✓：工具对空层直接 `precondition_failed` ✓
+///（`图层 X 没有任何对象 ⇒ 没有可分离的像素` ✓ 实测 ✓）⇒ 与其让人按下去才知道 ✗
+/// 不如把服务端那个 `objects` 读数摊开 ✓（数字本身不许界面自己数 ✗）。
+function renderFreqSepCurrent() {
+  const out = $("freqSepCurrent");
+  if (!out) return;
+  const source = ($("freqSepSource") || {}).value;
+  const record = freqSepRecords.find((layer) => layer.layer_id === source);
+  if (!record) { out.textContent = "请选择要分离的图层"; return; }
+  const count = Number(record.objects || 0);
+  out.textContent = count > 0
+    ? "该层有 " + count + " 个对象 ⇒ 可以分离"
+    : "该层没有对象 ⇒ 服务端会直接拒绝（没有可分离的像素）";
+}
+
+async function runFrequencySeparation() {
+  const info = $("freqSepInfo");
+  const say = (line, red) => {
+    if (info) info.textContent = line;
+    if (red) log(line, "#c33");
+  };
+  const number = (id) => Number(($(id) || {}).value);
+  const source = ($("freqSepSource") || {}).value || state.layerId;
+  const radius = number("freqSepRadius");
+  if (!(radius >= 1 && radius <= 64)) {
+    say("半径要在 1–64 之间（高斯 sigma）⇒ 未分离，没有发送请求、没有写入任何改动。", true);
+    return;
+  }
+  const record = freqSepRecords.find((layer) => layer.layer_id === source);
+  if (!record) { say("那一层不在服务端的图层清单里（可能刚被删）⇒ 未分离。", true); return; }
+  if (!(Number(record.objects || 0) > 0)) {
+    say("「" + record.name + "」没有对象 ⇒ 没有可分离的像素，未分离（服务端也会这样拒 ✓ 这次没发送请求）。", true);
+    return;
+  }
+  const args = { layer_id: source, radius };
+  const prefix = (($("freqSepName") || {}).value || "").trim();
+  if (prefix) args.name = prefix;
+  const built = await callTool("frequency_separation", args, { refresh: false });
+  if (!built || !built.ok) {
+    const code = (built && built.error_code) || "unknown";
+    log("频率分离失败：" + code + " " + ((built && built.context && built.context.detail) || ""), "#c33");
+    // `endpoint_not_local` 与上一轮同一条口径 ✓：**请求根本没出门** ✗ 不是"服务端拒绝"✓
+    // 说成服务端拒绝 ⇒ 人去翻服务端日志 ✓ 而该改的是那个勾选 ✓。
+    say(code === "endpoint_not_local"
+        ? "未分离：本地内核没有这个端点（这次请求没到服务端）⇒ 勾回「服务器渲染」再试。"
+        : "未分离：服务端拒绝了这次分离（原因见下方日志）。它拒绝时不建组 ⇒ 不会留下半套层。", false);
+    await refreshLayers();
+    return;
+  }
+  const fmt = (v) => (typeof v === "number" ? v.toFixed(4) : "?");
+  // 四个误差读数**全部取服务端回执** ✓：界面自算就变成"第二个真值"✗（与范围遮罩那条覆盖数同一口径 ✓）。
+  say("半径 " + fmt(built.radius) + " · 低频 " + built.low_layer_id + " · 高频 " + built.high_layer_id +
+      "（linear_light）· 重建误差 均值 " + fmt(built.reconstruction_mean_error) +
+      " / 最大 " + fmt(built.reconstruction_max_error) +
+      " · 中高调最大 " + fmt(built.reconstruction_max_error_bright), false);
+  if (built.note) log("频率分离说明：" + built.note, "#888");
+  // 建的是**新图层与图层组**（结构改动）✓ 本地乐观内核表示不了 ✗ ⇒ 必须服务端重放；
+  // 而 `resync()` 只刷像素 ✗ 不重读 `list_layers` ⇒ 先 `refreshLayers()` 才能让下拉与新组一致 ✓。
+  await refreshLayers();
+  await resync();
+}
+
+function setupFreqSepPanel() {
+  const run = $("freqSepRun");
+  if (run) run.addEventListener("click", () => { void runFrequencySeparation(); });
+  const source = $("freqSepSource");
+  if (source) source.addEventListener("change", renderFreqSepCurrent);
 }
 
 /// 这些工具不走 `draw_stroke` 原子，而是调用同名工具（工具层会构造正确的原子）。
@@ -12166,6 +12288,30 @@ const I18N_EN_TEXT = {
     "No pixels fall in this band ⇒ not attached: widen the range (for example 0–1), or untick Invert and try again.",
   "已烘焙但未挂载：挂接那一步失败了（原因见下方日志）。":
     "Baked but not attached: the attach step failed (see the log below for the reason).",
+  // **频率分离卡** ✓（本轮新增 ✓）：静态文案进这张表 ✓ 带数字的动句走 `i18nText()` 的模式 ✓。
+  "频率分离": "Frequency separation",
+  "把源图层分离成低频与高频两层，装进一个组。":
+    "Separate the source layer into a Low and a High layer inside one group.",
+  "高频层的中性灰是 188（不是 128）。": "The neutral grey of the high layer is 188 (not 128).",
+  "把源图层烤成「低频 + 高频」两层（外加两层空白绘画层），装进一个组：低频修色调、高频修细节互不干扰。烤出来的是此刻的像素快照，源图层往后的改动不会传播进来。":
+    "Bake the source layer into a Low and a High layer (plus two blank paint layers) inside one group: fix colour on the low layer and detail on the high layer without disturbing each other. What you get is a pixel snapshot of this moment — later edits to the source layer do not propagate in.",
+  "源图层": "Source layer",
+  "半径": "Radius",
+  "组名前缀": "Group name prefix",
+  "分离": "Separate",
+  "请选择要分离的图层": "Pick the layer to separate",
+  "该层没有对象 ⇒ 服务端会直接拒绝（没有可分离的像素）":
+    "This layer holds no objects ⇒ the server would refuse it outright (there are no pixels to separate)",
+  "高频层的中性灰是 188（不是 Photoshop 式的 128）：在「高频绘画」层上涂抹要用 188 作中性色，用 128 会压暗。源图层保持可见，新组盖在它上面；要整组撤掉请用「历史（原子日志）」卡逐条回退。":
+    "The neutral grey of the high layer is 188 (not Photoshop's 128): to paint on the High paint layer use 188 as neutral — 128 darkens. The source layer stays visible with the new group on top of it; to undo the whole group, revert the entries one by one in the History (atom log) card.",
+  "半径要在 1–64 之间（高斯 sigma）⇒ 未分离，没有发送请求、没有写入任何改动。":
+    "Radius must be within 1–64 (gaussian sigma) ⇒ not separated: no request was sent and no change was written.",
+  "那一层不在服务端的图层清单里（可能刚被删）⇒ 未分离。":
+    "That layer is not in the server's layer list (it may have just been deleted) ⇒ not separated.",
+  "未分离：本地内核没有这个端点（这次请求没到服务端）⇒ 勾回「服务器渲染」再试。":
+    "Not separated: the local kernel has no such endpoint (this request never reached the server) ⇒ tick Server render back on and retry.",
+  "未分离：服务端拒绝了这次分离（原因见下方日志）。它拒绝时不建组 ⇒ 不会留下半套层。":
+    "Not separated: the server rejected this separation (see the log below for the reason). It builds no group when it refuses ⇒ no half-finished layers are left behind.",
   // **★ 内核卡片的服务端渲染提示（browser-i18n 实测红 ✓）★**：
   //   `setWasmState("已按设置跳过（用服务端渲染）")` 写进 DOM ⇒ 英文模式下必须有词条 ✓。
   "已按设置跳过（用服务端渲染）": "Skipped per setting (server-side rendering)",
@@ -12294,12 +12440,14 @@ const I18N_EN_TEXT = {
   "出问题时一键下载排查包（zip）": "Download a diagnostic bundle (zip) in one click when something goes wrong",
   "下载诊断包": "Download diagnostics bundle",
   "操作": "Actions",
-  // **混合模式下拉的 7 个选项**（第 1131 轮；CI 的 `browser-i18n` 实测漏了它们）：
-  //   ⇒ 它们是 `modeLabels`（`:5740`）在**运行时**创建的 `<option>` ✓ ⇒ 不在模板里
+  // **混合模式下拉的选项**（第 1131 轮加了 7 个 ✓ CI 的 `browser-i18n` 实测漏了它们 ✓）：
+  //   ⇒ 它们是 `BLEND_MODE_LABELS` 在**运行时**创建的 `<option>` ✓ ⇒ 不在模板里
   //     ⇒ `ui-i18n-coverage`（只看模板文本节点）**抓不到** ✗
   //     ⇒ 只能靠运行时判据 `browser-i18n` ✓ —— 而它上一跑在 CI 上报了 7 条中文 ✓。
   //   **⇒ 修法**：加词条（`i18nWalk` 会遍历 `<option>` 的文本节点 ✓；面板重建后
   //     `MutationObserver` 还会再走一遍 ✓）。
+  //   **本轮补上内核后来长的六种** ✓（清单与内核同源 ⇒ 词条也必须同源 ✗
+  //   少一条就是英文模式下的中文残留 ✓ `browser-blend-modes.mjs` 会连着查 ✓）。
   "正常": "Normal",
   "正片叠底": "Multiply",
   "滤色": "Screen",
@@ -12307,6 +12455,12 @@ const I18N_EN_TEXT = {
   "变暗": "Darken",
   "变亮": "Lighten",
   "相加": "Add",
+  "线性减淡（相加的别名）": "Linear dodge (alias of Add)",
+  "相减": "Subtract",
+  "颜色减淡": "Color dodge",
+  "差值": "Difference",
+  "线性光": "Linear light",
+  "柔光": "Soft light",
   "一致性自检": "Consistency check",
   "＋ 图层": "＋ Layer",
   // **★ `browser-i18n` 报到的那一条**漏翻 ✗ ★**（第 89 轮 ✓）：
@@ -12578,7 +12732,11 @@ const I18N_EN_ATTR = {
   "色相窗的全宽（度，大于 0 且不超过 360）": "Full width of the hue window (degrees, above 0 and at most 360)",
   "拿窗宽的多少来做软边（0–1）": "How much of the window width becomes the soft edge (0–1)",
   "线性：起笔一侧为 1、收笔一侧为 0；径向：圈心为 1、内切椭圆之外为 0":
-    "Linear: the start side is 1, the end side is 0; radial: the centre is 1, outside the inscribed ellipse is 0",
+"Linear: the start side is 1, the end side is 0; radial: the centre is 1, outside the inscribed ellipse is 0",
+  "低频修色调、高频修细节互不干扰；烤出来的是此刻的像素快照，源图层往后的改动不会传播进来":
+    "Fix colour on the low layer and detail on the high layer without disturbing each other; what you get is a pixel snapshot of this moment — later edits to the source layer do not propagate in",
+  "在「高频绘画」层上涂抹用 188 作中性色（128 会压暗）；源图层保持可见，新组盖在它上面；要整组撤掉请用「历史（原子日志）」卡逐条回退":
+    "Paint on the High paint layer with 188 as neutral (128 darkens); the source layer stays visible with the new group on top; to undo the whole group revert the entries one by one in the History (atom log) card",
   "烘焙范围遮罩并挂到所选图层；带内一个像素都没有时不会挂载":
     "Bake the range mask and attach it to the chosen layer; nothing is attached when the band holds no pixels",
   "取下「挂到」那一层当前的蒙版；蒙版本体留在历史里，只断开这一层":
@@ -12586,6 +12744,18 @@ const I18N_EN_ATTR = {
   "径向渐变：过渡带占半径的比例（0 = 硬边，1 = 整条半径都在过渡）":
     "Radial gradient: the transition band as a fraction of the radius (0 = hard edge, 1 = the whole radius fades)",
   "反选：起笔一侧变成 0": "Invert: the side you started on becomes 0",
+  // **频率分离卡** ✓ 的属性文案 ✓。
+  "读哪一层烘焙：这一层的当前渲染就是分离的全部来源":
+    "Which layer is baked: that layer's current render is the only source for the separation",
+  "高斯 sigma（1–64）：越大低频越糊、留给高频的细节越少":
+    "Gaussian sigma (1–64): larger means a blurrier low layer and less detail left for the high layer",
+  "生成「前缀 · 频率分离」组与前缀 · 低频 / 高频 / 低频绘画 / 高频绘画 四层":
+    "Creates a \"prefix · Frequency separation\" group with four layers: prefix · Low / High / Low paint / High paint",
+  "烘焙并建组；源图层没有对象或半径越界时不发送请求、不写入任何改动":
+    "Bake and build the group; when the source layer holds no objects or the radius is out of range, no request is sent and nothing is written",
+  // **译文要塞得下那个框** ✓（实机截图看到的 ✗ 长句在 170 px 的输入框里被截成 "Defaults to the source l"✓）：
+  // 意思不减 ✗ 只是把"the … layer name"这种从句写法压成一行 ✓。
+  "缺省用源图层名": "Layer name by default",
   // **工具栏那两支新蒙版笔** ✓：`renderToolStrip()` 运行时把标签写进 `title` / `aria-label` ✓
   // ⇒ 静态判据看不到 ✗（它只读模板 ✓）⇒ 补词条才不会被"英文界面 + 中文 tooltip"打脸 ✓。
   "矩形蒙版": "Rectangle mask",
@@ -12794,6 +12964,11 @@ function i18nText(node) {
     //（`#rangeMaskCurrent` / `#rangeMaskInfo` 都不在 `#log` 那批跳过名单里 ✓）。
     const m21 = /^该层当前蒙版 (\S+)$/.exec(zh);
     const m22 = /^已取下 (\S+)（蒙版本体仍在历史里，只是这一层不再受它限定）。$/.exec(zh);
+    // **频率分离卡的三句动句** ✓：数字与 id 都来自服务端回执或 `list_layers` ✓
+    // 界面不许自算 ⇒ 这里只做句式翻译 ✗ 不改一个数 ✓。
+    const m23 = /^该层有 (\d+) 个对象 ⇒ 可以分离$/.exec(zh);
+    const m24 = /^半径 (\S+) · 低频 (\S+) · 高频 (\S+)（linear_light）· 重建误差 均值 (\S+) \/ 最大 (\S+) · 中高调最大 (\S+)$/.exec(zh);
+    const m25 = /^「(.+)」没有对象 ⇒ 没有可分离的像素，未分离（服务端也会这样拒 ✓ 这次没发送请求）。$/.exec(zh);
     if (m1) en = "Layer " + m1[1];
     else if (m2) en = "Layer " + m2[1] + " (#" + m2[2] + ")";
     else if (m3) en = m3[1] + " colours";
@@ -12827,6 +13002,13 @@ function i18nText(node) {
     }
     else if (m21) en = "This layer's current mask: " + m21[1];
     else if (m22) en = "Detached " + m22[1] + " (the mask itself stays in history; this layer is simply no longer limited by it).";
+    else if (m23) en = "This layer holds " + m23[1] + " object(s) ⇒ it can be separated";
+    else if (m24) {
+      en = "Radius " + m24[1] + " · Low " + m24[2] + " · High " + m24[3] + " (linear_light)"
+        + " · reconstruction error mean " + m24[4] + " / max " + m24[5]
+        + " · bright max " + m24[6];
+    }
+    else if (m25) en = "\"" + m25[1] + "\" holds no objects \u21d2 there are no pixels to separate, so nothing was separated (the server would refuse it the same way \u2713 no request was sent).";
   }
   node.nodeValue = (uiLang === "en" && en) ? original.replace(zh, en) : original;
 }

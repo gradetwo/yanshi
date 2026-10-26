@@ -120,7 +120,7 @@
 | 缺口 | 服务端状态 | 为什么算缺口 |
 |---|---|---|
 | `import_psd_layers` | core | Web 只有 `import_psd`（整包栅格化）；按图层入库（PSD 分层进画布）无入口 |
-| `frequency_separation` | retouch（已在缺省面内） | 修图最常用的分离磨皮，页面无按钮 |
+| ~~`frequency_separation`~~ | retouch（已在缺省面内） | **第三轮已补** ✓（「绘制」面板的**频率分离**卡 ⇒ 见"追加（2026-10-26 第三轮）"✓）；同一轮还修了**混合模式清单与内核漂移**那条显示缺陷 ✓ |
 | `smart_*` 9 个（`smart_fill` / `smart_select` / `smart_sample` / `smart_edge_soften` / `smart_erase_shape` / `smart_blend` / `smart_glaze` / `smart_hatch_follow` / `smart_texture`） | 已在缺省面内 | 一整套"以选区/内容驱动"的能力只有 Agent 用得到 |
 | stash 三件套（`list_stashes` / `apply_stash` / `discard_stash`） | 已在缺省面内 | 暂存区完全没有 UI |
 | `commit_batch` / `try_batch` | 已在缺省面内 | 见"作业与批处理"行 |
@@ -210,6 +210,69 @@ Web 调用面（第 8 条复现命令的同一口径）：**93 → 94**（新增
 
 ---
 
+## 追加（2026-10-26 第三轮）— 频率分离的 Web 入口，与"界面混合模式清单只有一半"那条显示缺陷
+
+本轮口径：基线 `0bddba26`，服务端 `--root /tmp/yanshi-root`，chromium（CDP 9490）真浏览器 + 真截图；构建 `cargo build --release -p yanshi-http -j 2`（单 crate ✓ 防 OOM ✓）。
+
+### 本轮补掉的两件事
+
+| 能力 | 页面入口 | 关键行为（全部以服务端回执为源 ✓） |
+|---|---|---|
+| `frequency_separation`（`Profile::Retouch` ✓ 缺省面内） | 「绘制」面板的**频率分离**卡：源图层下拉（由 `list_layers` 填 ✓）＋半径（1–64 ✓ 高斯 sigma）＋图层名（留空用源层名 ✓）＋「分离」按钮 | 建出 5 层（组「X · 频率分离」＋低频 / 低频绘画 / 高频（`linear_light`）/ 高频绘画）✓；回执里的 `radius` / `low_layer_id` / `high_layer_id` / 三项重建误差**原样打印** ✓ 页面不自己算 ✗。**四条拒绝路径都不静默** ✓：空层（`precondition_failed` ✓ 就地拦下、请求都不发 ✓）、半径越界（`invalid_argument` ✓ 就地拦下）、源层不在服务端清单里（刚被删 ✓ 拦下）、**服务端自检失败**（`invalid_argument` ✓ 发得出 ✗ 它拒绝时不建组 ⇒ 不留半套层 ✓）；外加**本地内核没有这个端点**单独一句 ✓（见登记 ⑨） |
+| 图层混合模式的**显示清单** | 图层面板每行的混合模式下拉 | 原来**只有 7 个选项** ✗ 而内核有 **13 个** ⇒ 用 `set_layer_blend` 成功写下 `soft_light` 之后**下拉倒回「正常」** ✓ 人以为没生效 ✗（详见登记 ⑦）。本轮改成与内核同源的一张表 ✓ 并且**当前值不在清单里也照原名显示** ✓（内核将来加模式 ✗ 界面不许倒退） |
+
+Web 调用面（第 8 条复现命令的同一口径）：**94 → 95**（新增 `frequency_separation` ✓ 实测该命令输出 95 ✓）。
+判据：`scripts/browser-frequency-separation.mjs`（八项 ✓）、`scripts/browser-blend-modes.mjs`（六项 ✓）；两条的前提失败都走 `exit(3)` ✓ 用法错误 `exit(2)` ✓；调用口径与同级脚本一致 ⇒ `node scripts/<name>.mjs <viewer-url> [cdp-port]`。
+变异测试 ✓：频率分离注入 4 处产品改动 ⇒ 恰好 5 条预期红（多一条是"拒绝时不许留层"被连带击穿 ✓ 已核对是同一处产品）；混合模式回退到 7 项清单 ⇒ 恰好 5 条预期红 ✗ 其中英文残留那条**正确地保持绿**（回退清单不含新英文串 ✓ 说明它不是被顺带红出来的）。两条测完都已恢复全绿。
+截图：`screenshots/freqsep-zh/`、`screenshots/freqsep-en/`（各 14 张 ✓ 含分离前后同一文档的图层列表对照、四条拒绝路径、内核模式那一句）✓ `screenshots/blend-before/`、`screenshots/blend-after/`（同一层同一模式的对照 ✓ 修前那张下拉是「正常」）。
+
+### 登记 ⑦ 界面那份混合模式清单与内核**漂移**（本轮修 ✓ 但它暴露的是结构性问题）
+
+- 权威清单：`list_engine_capabilities.blend_modes` ⇐ `crates/yanshi-render/src/blend.rs:72-86` 的 `BlendMode::NAMES` ⇒ **13** 个（`normal, multiply, screen, overlay, darken, lighten, add, linear_dodge, subtract, color_dodge, difference, linear_light, soft_light`）。
+- 本轮实测到的缺陷面 ✓：`set_layer_blend` **写成功**（`ok:true` ✓ 服务端 `list_layers` 也存着新值 ✓）⇒ **只有显示在说谎** ✗。误报的 6 种是 `subtract` / `color_dodge` / `difference` / `linear_light` / `soft_light` / `linear_dodge`。
+- **最刺眼的一例**：`linear_light` 正是**频率分离建出来的高频层**所用的模式 ⇒ 人用同一面板做频率分离 ✗ 看到的却是「正常」✓（本轮截图里修前就是这幅样子）。
+- 两条写入语义不同 ✓ 值得记下来：工具层 `BlendMode::parse` **严格**（未知值 ⇒ `invalid_argument` ✓）而渲染层 `from_name` **宽松**（未知值 ⇒ `Normal` ✓）⇒ 所以"界面显示成 normal"这类降级**只可能来自读到一份外部/旧文档** ✗ 不可能由 HTTP 写出来 ✓（三条写路径 `create_layer` / `update_layer` / `set_property` 都校验 ✓）。这也是 `browser-blend-modes.mjs` 自己承认测不到该回退分支的原因 ✓。
+- 顺带确认 ✓：`linear_dodge` 是 `add` 的**别名** ✗ 但**原样存**（不归一）⇒ 界面把它单列一项 ✓ 标签写明是别名 ✓ 不冒充第 14 种模式。
+
+### 登记 ⑧ `revert_group` **撤销不了**频率分离建出来的层
+
+- 实测：对刚建好的分离组调 `revert_group` ⇒ `reverted_count: 0` ✓ 五个层一个没掉 ✗。
+- 原因口径：那五个层不是"原子组"（`frequency_separation` 自己逐条建 ✗ 没有 `group` 语义把它们的原子收在一起 ✓）。
+- 本轮因此**没有**给"一键撤销分离"做按钮 ✗（做了就是假承诺 ✓）；页面文案只说"服务端拒绝时不建组 ⇒ 不留半套层"✓。要真正可撤销需要服务端把这次工具调用整体收成一个可回退批次 ⇒ 属工具层改动 ✗ 不在本轮。
+
+### 登记 ⑨ `frequency_separation` 在本地内核（PWA）里**没有端点**
+
+勾掉「服务器渲染」⇒ `api-local.js` 就地接管并如实抛 `endpoint_not_local` ⇒ 页面单独一句「本地内核没有这个端点（这次请求没到服务端）⇒ 勾回「服务器渲染」再试」✓。与登记 ② 同一族（`create_range_mask` 也缺）✓ 缺口本身留给 PWA 那一轮 ✓。
+
+### 登记 ⑩ 分离后的合成结果**不逐像素等于**原图
+
+实测（平色 `#3f7fbf` ✓ 半径 8 ✓）：工具自检回执 `reconstruction_mean_error 0.0092` / `max 0.0157` / `bright max 0.0039` ✓ 而它**在限内**（工具的限是均值 0.01176 / 最大 0.07843 ✓）。另一次对照里页面合成与原图有 **124 个通道差**、最大 **10/255** ⇒ 与工具的自检限不矛盾 ✗ 但**本轮没有据此写"必须逐像素相同"的判据** ✓（那要先把两处的容差对齐 ✗ 属服务端口径）。
+
+### 登记 ⑪ 判据环境（延伸登记 ③）：**改过 `localStorage` 的判据必须自己还原**
+
+- 实测代价 ✓：`browser-render-switch.mjs` 收尾时把偏好停在 `"0"`（客户端渲染）✗ 且从不还原 ⇒ 下一个共用同一 profile 的脚本 `browser-canvas-handfeel.mjs` 报 `endpoint_not_local: /api/tools/list_effects` ＋「新建之后没有切到新图层」✗ **一条产品没变的判据假红** ✓。
+- 本轮修法 ✓：两条退出路径（红 / 绿）都先 `setPref(null)` 回到缺省 ⇒ 复现链已证：改前 handfeel 红 ✓ render-switch 加还原后 rc=0 ✓ profile 里 `sr:null` ✓ handfeel rc=0（`consoleErrors: 0`）。
+- 与登记 ③ 的分工 ✓：③说"每条判据进来先擦"✗ 本条说"**出去也要擦**"✗ 两头都做到 ✗ profile 才是可预期的。
+
+### 登记 ⑫ 判据环境：泄漏的 CDP **page target** 会让判据假红
+
+`browser-frequency-separation.mjs` 第 ⑧ 项一度报 `page:""`（点「分离」什么都没发生）✗ 而产品未变 ✓。排查：共用 chromium 上积了 **18 个**没关的 page target（`http://127.0.0.1:9490/json/list` 数出 21 个目标）⇒ 逐个 `json/close/{id}` 关掉（21 → 3）后同一条判据 rc=0 ✓。
+本轮动作 ✓：在该项的失败详情里带上 `jsErrorsSoFar`（头两条页面错误）⇒ 下次一眼能分清"产品坏了"还是"浏览器被用坏了" ✗ 不再靠人猜。
+建议：凡自己 `Target.createTarget` 的判据 ⇒ `Target.closeTarget` + `ws.close()` + 显式 `process.exit` 三件都要有 ✓。
+
+### 登记 ⑬ 本轮自己触发的那条分叉红（照登记 ⑥ 的流程走完）
+
+改 `assets/viewer-app.js` 后 `tool-pwa-assets.mjs` 报「防分叉：viewer-app.js 与单一源不同（除戳外）」✗ —— **这条红是真的** ✓（我改了单一源 ✗ 没同步镜像）。跑 `node scripts/pwa-sync-viewer.mjs` ⇒ 该条目转绿 ✓ 然后按登记 ⑥ 撤回带机器戳的 `web/index.html`（`git checkout -- web/index.html` ✓ `git status` 已干净 ✓）。
+该判据本机仍剩的那条红与本轮无关：`assets/mediums/*.wasm` 在本机**一个都不存在**（`ls` 实证）⇒ 介质产物缺失属环境前提 ✗ 与登记 ⑤ 末尾那条同因 ✓ 由 CI 收敛。
+
+### 本轮两处**只有看真截图才发现**的界面问题
+
+- 「源图层」这个标签在卡片里**折成两行**（中间断词）⇒ `viewer.rs:637` 加 `white-space:nowrap` ✓。
+- 英文界面下图层名输入框的 placeholder 被 170px 宽的框**裁掉尾字** ⇒ 输入框定宽 170px ＋ 把译文从 "Defaults to the source layer name" 收成 "Layer name by default" ✓（`I18N_EN_ATTR` 里留了原因注释 ✓）。
+两条都不是任何判据能报的 ✗ 记在这里是为了留住"截图检查"这件事的成本与收益 ✓。
+
+---
+
 ## 需要用户决策
 
 以下不是实现者能单方面决定的（措辞取自仓库自己的待办记录，不是本文作者的取舍）：
@@ -223,6 +286,7 @@ Web 调用面（第 8 条复现命令的同一口径）：**93 → 94**（新增
 7. **参考图偏好是"工作区级"还是"文档级"。** 实测：`set_reference` 写进 `<工作区根>/preferences.json` ⇒ 给文档 A 设的位置/图，切到新建文档 B 仍在（`get_preferences` 的 `where` 字段自证）。作为"临摹底图"跨文档常驻可能是有意的 ✗，但**位置是某个文档的像素矩形** ⇒ 换文档后那块矩形落在别处；页面能做的只有"照实显示 + 提供清除"（本轮已做 ✓）。要不要改成按文档存（`reference.<doc>.position`）属服务端数据模型决策。
 8. **参考图原图要不要以可显示的形式留一份。** 存储是内容寻址的**裸 RGBA**（`POST /api/blob` 先把 PNG 解码成 RGBA ✓），`GET /api/blob/{hash}` 的 MIME 嗅探对裸像素只给 `application/octet-stream` ✓ ⇒ `<img>` 永远解不开 ✗。本轮的对策是"浏览器自己缓存上传时的 dataURL"（超过 1.5MB 或配额不足就没辙 ✓，信息条会说明 ✓）。彻底解法要么在服务端留原图/记录宽高（`reference.width/height` ⇒ 前端可用 `ImageData` 重建成 PNG ✓），要么产品接受"换浏览器需重传"。
 9. **`web/index.html` 的缓存唯一戳该不该去掉本机状态。** 见「登记 ⑥」：`pwa-sync-viewer.mjs` 把 `0bddba26-dirty-de862dcb`（含 `-dirty-` 与本机 worktree 哈希）写进受版本控制的镜像 ⇒ 同一份改动在别人机器上生成不同字节。改成"提交号 + 内容哈希"是 PWA 缓存失效策略的决策 ✗ 不属于一轮功能补丁顺手改的范围 ✓。
+10. **界面的混合模式清单该由谁供。** 本轮的修法是**把 13 个模式与中文名内置成一张与 `BlendMode::NAMES` 同源的表**（`viewer-app.js` 的 `BLEND_MODE_LABELS` ✓）——它当场止住了"6 种模式显示成「正常」"✓ 但**下一次内核再加模式仍会漂移** ✗（判据 `browser-blend-modes.mjs` 会把这种漂移报红 ✓ 也就是"靠判据追"）。彻底解法是页面下拉直接取 `list_engine_capabilities.blend_modes` ＋**服务端供中文名（含英文）** ⇒ 那是 HTTP 返回结构与 i18n 数据模型的改动（模式名与标签同源在一处 ✓ 就不会再有第三份）✗ 属服务端契约决策 ✗ 不由本轮顺手改。
 
 ---
 
@@ -287,4 +351,12 @@ tok=$(curl -s -X POST http://127.0.0.1:15900/api/documents -H 'content-type: app
   -d '{"doc_id":"boot","width":512,"height":512}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
 CDP_PORT=9490 node scripts/browser-brush-preview-local.mjs \
   "http://127.0.0.1:15900/?doc=boot&token=$tok"
+
+# 8) 第三轮的两条新判据（需 chromium 在 9490 ＋ 服务端带 --root）
+#    注意调用口径：这两条取 argv ✗ 不读 CDP_PORT 环境变量 ✓（与同级 browser-* 一致）
+node scripts/browser-frequency-separation.mjs "http://127.0.0.1:15900/?doc=boot&token=$tok" 9490
+node scripts/browser-blend-modes.mjs "http://127.0.0.1:15900/?doc=boot&token=$tok" 9490
+# 改完查看器必须同步镜像 ✗ 否则 tool-pwa-assets 报分叉（见登记 ⑬ / 登记 ⑥）
+node scripts/tool-pwa-assets.mjs                       # 本机仍红一条：assets/mediums/*.wasm 未构建
+node scripts/pwa-sync-viewer.mjs && git checkout -- web/index.html
 ```
