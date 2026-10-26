@@ -22218,3 +22218,43 @@ step>1 停用复用）✓ 如实记。
 1. **`Buffer::from_f32_vec` 缺 `step`** ✗ —— 它是**期 2 P2-7** 新加的构造器，期 4 给 `Buffer` 加字段时
    只改了原有构造器 ⇒ 编译 `E0063` ✗ ⇒ 补 `step: 1` ✓（期 2 的分带缩略图就是 step=1 语义 ✓）。
 2. **测试文件的 rustfmt 差异**（`lod_render.rs`、`export_png.rs`）⇒ 本机 `cargo fmt --all` 后一并提交 ✓。
+
+## 六百三十五、五包合并：p3b-1、photo 期 4、E3 v2、paint RSS、photo P-01（第 1132 轮）
+
+**⇒ 基线都是 `2a86cf7`/`9646036` 附近**；五包按风险从低到高叠加，两台手工解冲突（见末）。
+
+| 包 | 内容 | 本机验证 |
+|---|---|---|
+| **p3b-1** | C1 过渡护栏 **G1**（锚点 p2.5 < 0.005）/ **G2**（钳制饱和 0.84）/ **G3**（跳过必带 reason）；`estimate_wb` 改 `WbOutcome`；stats 回显 9 字段 | server lib `tools_auto` 17 过/5 ignored（阶段 1/2 占位）；clippy/fmt 绿 |
+| **photo 期 4** | `Op::ReorderObjects` + `reorder_objects`（125/205 工具）；fold 前置校验/稠密 z；`region_fingerprint` 补 `z_index`（修"排了但画面不动"）；dirty 整文档 | core 全套过（136）；render lib 537；`reorder_objects` 5；`layer_z_index`/`tool_validation_audit`/`profile_allowlist`/`tool_inventory` 全过 |
+| **E3 v2** | 分段账默认打印（去 probe 门控）、进度末行必现、MCP `apply_ms/render_ms/shrink_ms` | timelapse **31**（含 e3 新 1）；`timelapse_export` 5；server lib `tools_timelapse` 13 ✓ |
+| **paint RSS** | 每文档 Renderer 常驻硬上限（大缓冲 1 张/区域块 64MiB 字节+16 块/下方空集不缓存）；`close`/`delete` 后 `yanshi-heap::release_heap_to_os()`（新微 crate，唯一 unsafe 落点）；C2 预算接入 `create_document`；`retained_bytes` 记账 | `rss_retained` 2、`doc_budget` 5、`buffer_pool`/`region_block` 单测、`below_*`/`above_cache`/`tile_parallel` 全过；release 实测 30 文档峰值 2.46GB（基线 19 就 OOM 5.6GB）|
+| **photo P-01** | 变更后预览改 LOD（长边 ≤1600）；`preview_lod_for` + `Document::render_region_preview`；**不写 preview.png、不提升缩略图指针、不改 preview_dirty**；导出/像素读数仍全分辨率 | `preview_downsample` 2；`coldstart_reuse` 4、`preview_storage` 3、`preview_wait_decoupled` 3、`service_flow` 31、`export_png` 9 全过 |
+
+**⇒ 提速（作者盒，非干净盒）**：P-01 打包轮 359.1s→74.1s（推算干净盒 ~48s），auto 141.6→11.7s，精修 146.4→5.7s；
+RSS 每文档落定增量 ~271MB→~131MB、30 文档峰值 2.46GB；P-01 变更预览 24–51s→0.9–1.8s ✓。
+
+**⇒ 已知（照作者，不替他们改）**：
+- p3b-1：**基线三触点本身就没过**（colorcast road 28.6% < 40%，A2 保色度的必然）；本包不改变该结论，
+  01242/01244 的服务端 R10 重跑因 yanshi-2 被占**未跑**（单测用实测锚点覆盖）。
+- RSS：每文档 ≤100MB 的"建议值"**未达**（~131MB）；关完 +60s 回落**字面未达**（滞留 3.5%/1.7%/3.0%，
+  glibc arena 碎片，非活数据）；后续可选 jemalloc/mimalloc，本期不做。
+- P-01：干净盒复测**未排上**（48s 是推算）；改后 `render.png` 不随每次变更刷新，重开首次全幅要付一次真渲染。
+- photo 期 4：跨层移动/相对移动不做；dirty 整文档 v1 保守；设计文档两处失实已按实测修正（缺省 z=0；
+  `Object` 无 `updated_by`）。
+
+**⇒ ★ 整合修的三处 ★**：
+1. **工具数 125/205**：期 4 只改了 `docs/tools.md`，`tools.rs`×3 与两个 guide 仍 124/204 ⇒ 全对齐；
+   `tool-examples.md` 重新生成（**205** 工具）。
+2. **RSS 与期 4 在 `region_block.rs` 的测试冲突**：一边加「只改 z_index 指纹必须变」（photo p4）、
+   一边加「字节上限淘汰/单块超预算保留/记账恒等式」（RSS）⇒ **两边都留**（并补回被公共上下文
+   吃掉的 HEAD 侧收尾 `}`）。
+3. **CI 规则两处**：`rss_retained` 的 `for k in 0..6 { pressures[k] }` ⇒ clippy `needless_range_loop`
+   ⇒ 改 `enumerate().take(6)`；`preview_downsample` 用 `temp_dir()` 但无 Drop 清理器 ⇒ 加 `Cleanup`
+   （否则 `/tmp` 是 1.9GB tmpfs，panic 时会写满）✓。
+
+**⇒ 本机最终**：core 全套（含 fold_properties 9）✓；render lib **537**；server lib（--features raw）**211**（5 ignored）；
+`reorder_objects` 5／`doc_budget` 5／`rss_retained` 2／`preview_downsample` 2／`coldstart_reuse` 4／
+`preview_storage` 3／`preview_wait_decoupled` 3／`service_flow` 31／`export_png` 9／`timelapse_export` 5／
+`tool_inventory` 2／`profile_allowlist` 8／`layer_z_index` 1／`tool_validation_audit` 7 全过 ✓；
+census **205 工具/256 名全分类**、surface 三面一致 ✓；clippy workspace + fmt 绿 ✓。

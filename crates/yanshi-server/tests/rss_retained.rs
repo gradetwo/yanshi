@@ -85,11 +85,11 @@ fn make_strokes(width: f64, height: f64, count: usize, seed: u32) -> Vec<serde_j
         let ang = rnd.next() * std::f64::consts::PI * 2.0;
         let len = (0.25 + rnd.next() * 0.45) * width.min(height);
         let mut points = Vec::with_capacity(6);
-        for k in 0..6 {
+        for (k, pressure) in pressures.iter().enumerate().take(6) {
             let t = k as f64 / 5.0;
             let x = (x0 + ang.cos() * len * t + (t * 9.0 + i as f64).sin() * 60.0).round();
             let y = (y0 + ang.sin() * len * t + (t * 7.0 + i as f64).cos() * 60.0).round();
-            points.push(json!([x, y, pressures[k]]));
+            points.push(json!([x, y, pressure]));
         }
         let color = palette[i % palette.len()];
         out.push(json!({

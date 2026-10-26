@@ -115,6 +115,15 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    `40246037263`（期 4，`96460361`）**全 job success**（`brush parity` 仍 skipped）✓。
    四个包（期 2、2b、E2、期 4）与 skill 后续均已合入 `main`，工作树干净。
 
+22. **p3b-1 已合**（台账 635）：C1 护栏 G1/G2/G3 + WB 回显 9 字段；`tools_auto` 17 过/5 ignored。
+   注意：**基线三触点本身未过**（colorcast 28.6% < 40%），本包不改变结论；01242/01244 服务端重跑未做。
+23. **photo 期 4 已合**（台账 635）：`Op::ReorderObjects` + `reorder_objects`（125/205）；`region_fingerprint`
+   补 `z_index` 修"排了但画面不动"；root 全套/ render 537 / reorder 5 全过。
+24. **E3 v2 已合**（台账 635）：timelapse 分段账默认打印、进度末行、MCP 三段 ms；timelapse 31。
+25. **paint RSS 已合**（台账 635）：每文档保留上限 + `yanshi-heap` 的 `malloc_trim` + C2 预算接 create；
+   30 文档峰值 2.46GB（基线 19 就 OOM）。已知：每文档 ~131MB（未达 100MB 建议）、关完残留 1.7–3.5% arena。
+26. **photo P-01 已合**（台账 635）：变更后预览 LOD ≤1600（打包轮 359s→74s）；不碰 preview.png/缩略图/preview_dirty。
+
 ## 三、下一步（按优先序，都有精确入口）
 
 -0. 待上游裁决的仍是：期 2 的 **auto backtest colorcast 门限**（A2 保色度 ⇒ R−B 只降 28.6% < 40%）、

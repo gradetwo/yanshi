@@ -7,6 +7,15 @@ use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolReg
 const W: u32 = 2048;
 const H: u32 = 1536;
 
+/// 临时导出文件（`std::env::temp_dir()`）的 Drop 清理器 —— 仓规要求：
+/// 用了 `temp_dir()` 的测试必须有清理器（否则 panic 时文件留在 1.9GB 的 /tmp tmpfs 上）。
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 fn workspace() -> Workspace {
     Workspace::in_memory(DocumentSettings::default())
 }
@@ -147,6 +156,7 @@ fn mutation_preview_does_not_change_full_export() {
             "yanshi_preview_down_{name}_{}.png",
             std::process::id()
         ));
+        let _cleanup = Cleanup(path.clone());
         let _ = std::fs::remove_file(&path);
         let mut ctx = context(workspace, doc);
         let exported = registry().call(
