@@ -23,7 +23,12 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 const url = process.argv[2];
-const port = process.argv[3] || "9222";
+// **CDP 端口来源**（第 1132 轮整合）：`run-criteria.sh` 的 browser 分支传的是
+// `<viewer-url> <base> <token> <cdpPort>`（argv[3] 是 **base URL**，不是端口 ✗）——
+// 本判据首跑就把它当端口 ⇒ `http://127.0.0.1:http://127.0.0.1:13990/json/version` ✗。
+// ⇒ 优先读导出的 `CDP_PORT`（run-criteria 顶部 export ✓），其次只接受**纯数字**的 argv[3]。
+const rawPort = process.env.CDP_PORT || process.argv[3] || "";
+const port = /^\d+$/.test(rawPort) ? rawPort : "9222";
 const base = new URL(url).origin;
 if (!url) {
   console.error("用法: node scripts/browser-boot-panels.mjs <viewer-url> [cdp-port]");

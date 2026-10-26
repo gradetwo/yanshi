@@ -145,6 +145,10 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    **★ 发的是设计初值表，不是标定定版**：§6.3 未做 ⇒ v5/预设/auto/harness 需重标，勿当最终基线。
 36. **D1-a/b 已合**：`create_range_mask` + linear/radial gradient；工具总数 206（core 125）；定向全过。
 
+37. **八包首跑 CI 两处红已修**（台账 638）：
+   - `browser-boot-panels` 的 CDP 端口来源错（argv[3] 是 base、不是端口）⇒ 改读 `CDP_PORT`；
+   - `raster_patch_fixed_cost_*` 的下界 0.4 在 beta 负载下抖红（实测 37.1%）⇒ 改 0.25。
+
 ## 三、下一步（按优先序，都有精确入口）
 
 -0. 待上游裁决的仍是：期 2 的 **auto backtest colorcast 门限**（A2 保色度 ⇒ R−B 只降 28.6% < 40%）、
