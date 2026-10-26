@@ -489,8 +489,38 @@ fn import_image_warns_about_default_raw_exposure() {
         warnings.iter().any(
             |w| w.as_str().unwrap_or_default().contains("已按 RAW 缺省曝光")
                 && w.as_str().unwrap_or_default().contains("EV 烘焙")
+                && w.as_str().unwrap_or_default().contains("（基调 standard）")
         ),
-        "warnings 必须点名缺省曝光烘焙：{response}"
+        "warnings 必须点名缺省曝光烘焙与缺省基调 standard：{response}"
+    );
+    // Y-03：显式 tone=off 时警告必须如实写 off，不许还写 standard
+    // （真机验证 DSC00264 off 变体当场抓到的假话）。
+    let off_response = call(
+        &mut workspace,
+        "import_image",
+        json!({
+            "layer_id": "L", "object_id": "raw_ev_warn_off",
+            "bitmap": {"blob_hash": raw_hash, "size": bytes.len(), "mime_type": "image/x-yanshi-rawsrc"},
+            "region": {"x": 0.0, "y": 0.0, "w": 24.0, "h": 16.0},
+            "raw_options": {"tone": "off"},
+        }),
+    );
+    assert_eq!(off_response["ok"], json!(true), "{off_response}");
+    let off_warnings = off_response["warnings"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        off_warnings
+            .iter()
+            .any(|w| w.as_str().unwrap_or_default().contains("（基调 off）")),
+        "tone=off 时警告必须写（基调 off）：{off_response}"
+    );
+    assert!(
+        !off_warnings
+            .iter()
+            .any(|w| w.as_str().unwrap_or_default().contains("（基调 standard）")),
+        "tone=off 时警告不许写（基调 standard）：{off_response}"
     );
 }
 

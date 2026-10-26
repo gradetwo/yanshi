@@ -444,11 +444,18 @@ pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             object.insert("default_adjustment".to_owned(), adjustment);
             // Y-04 警告（photo-bugfix-p1）：RAW 导入缺省烘焙 +0.5EV——
             // 行为不变（对象照常生成），只让回执点名这件事，调用方不再
-            // 以为「零调整」。数值取常量，不写死。Y-03 同步：基调缺省
-            // standard 也是缺省烘焙的一部分，警告里一并点名（设计 §4⑥）。
+            // 以为「零调整」。数值取常量，不写死。Y-03 同步：基调也是缺省
+            // 烘焙的一部分，警告里一并点名（设计 §4⑥）——但必须读记录
+            // 里实际生效的档位：`tone=off` 时还写 "standard" 就是假话
+            // （本次真机验证 DSC00264 off 变体当场抓到这句）。
+            let tone = outcome
+                .record_json
+                .get("tone")
+                .and_then(Value::as_str)
+                .unwrap_or("standard");
             push_response_warning(
                 object,
-                format!("已按 RAW 缺省曝光 +{DEFAULT_RAW_EXPOSURE_EV}EV 烘焙（基调 standard）"),
+                format!("已按 RAW 缺省曝光 +{DEFAULT_RAW_EXPOSURE_EV}EV 烘焙（基调 {tone}）"),
             );
         }
     }
