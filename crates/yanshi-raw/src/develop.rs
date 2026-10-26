@@ -16,7 +16,7 @@ use crate::error::{RawError, Result};
 use crate::frame::{
     AppliedLensProfile, CalibrationMatrix, CfaGrid, CfaPattern, Channel, Demosaic, DevelopOptions,
     DevelopedImage, HighlightMode, LensCorrectionPlan, RawDevelopRecord, RawFrame, RecordContext,
-    ToneMode, WarpModel, WbMode,
+    ToneMode, WarpModel,
 };
 
 /// Bradford 锥响应矩阵（DNG Specification 1.6 第 6 章，设计 5.5 写死常数）。
@@ -1580,12 +1580,10 @@ pub fn develop_with_lens(
         )));
     }
     let mut notes = Vec::new();
-    if options.wb == WbMode::Auto {
-        notes.push(
-            "wb=auto：一期等同 as_shot（rawler 0.7.2 无独立 daylight 估计入口，设计 5.5 定版）"
-                .to_string(),
-        );
-    }
+    // Y-05：wb=auto 不再在此注记「等同 as_shot」——显影本身仍用 as-shot
+    // 乘子，但自动估计已由导入期落成缺省白平衡对象（见 tools_bitmap），
+    // 「等同」的说法在系统层面不再成立；估计事实（锚点数/(T, Ti)）
+    // 由导入响应回显，不再由展开注记背。
     // ① 归一化（下界不钳）。
     let mut plane = normalize_mosaic(frame)?;
     // ② 暗角增益（第四包）：马赛克域逐像素乘增益场——对饱和像素

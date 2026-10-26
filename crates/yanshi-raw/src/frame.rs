@@ -204,8 +204,9 @@ pub enum WbMode {
     #[default]
     #[serde(rename = "as_shot")]
     AsShot,
-    /// 相机自动估计。一期解码器未提供独立 daylight 估计入口，
-    /// 按设计 5.5 定版**等同 as-shot 并在展开注记中注明**，不自研估计算法。
+    /// 相机自动估计。显影步本身仍用 as-shot 乘子（解码器未提供独立
+    /// daylight 估计入口）；自动估计由导入期接 C1 估计器、落成一条
+    /// 缺省 white_balance 对象（Y-05），不再是「等同 as-shot」。
     #[serde(rename = "auto")]
     Auto,
 }
@@ -365,8 +366,9 @@ pub struct RawDevelopRecord {
     pub camera_make: Option<String>,
     pub camera_model: Option<String>,
     pub lens: Option<String>,
-    /// 生效的 WB 来源（请求的模式；auto 回退 as-shot 时仍记请求值，
-    /// 回退事实记在展开注记里，不许靠本字段猜）。
+    /// 生效的 WB 来源（请求的模式；auto 时仍记请求值，不许靠本字段猜
+    /// 实际乘子——显影乘子见 `wb_multipliers`，导入期估计事实见导入
+    /// 响应 `default_white_balance` 与 warnings）。
     pub wb: WbMode,
     /// 高光恢复档位（第五包补字段）：第三／四包写出的记录无此字段，
     /// `serde(default)` = Floor，保证旧对象按当时的保底机制重展开、

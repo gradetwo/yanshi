@@ -458,6 +458,68 @@ pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Res
                 format!("已按 RAW 缺省曝光 +{DEFAULT_RAW_EXPOSURE_EV}EV 烘焙（基调 {tone}）"),
             );
         }
+        // Y-05：wb=auto 时把 C1 阶段 1 估计器接进来——导入期在 as-shot
+        // 显影之后算新锚点统计、调 estimate_wb，落成的 (T, Ti) 是一条
+        // 真实 white_balance 对象（与 auto 的 (T, Ti) 同源同值）；估计
+        // 为 (0, 0) 时不落对象（与 auto 的恒等跳过同口径）；跳过与渲染
+        // 失败都不阻断导入，但必须在 warnings 里点名原因，不许静默
+        // 回落 as-shot。as_shot 导入不进这支（outcome.wb_auto）。
+        if outcome.wb_auto {
+            match estimate_import_white_balance(ctx, &layer_id, &object_id) {
+                Ok(super::tools_auto::WbOutcome::Applied(
+                    temperature,
+                    tint,
+                    confidence,
+                    rationale,
+                )) => {
+                    if temperature == 0.0 && tint == 0.0 {
+                        if let Some(object) = out.as_object_mut() {
+                            push_response_warning(
+                                object,
+                                "wb=auto：估计为 (0, 0)，已无残余偏色，不落缺省白平衡对象"
+                                    .to_owned(),
+                            );
+                        }
+                    } else {
+                        let adjustment = spawn_default_white_balance_adjustment(
+                            ctx,
+                            &layer_id,
+                            temperature,
+                            tint,
+                        )?;
+                        if let Some(object) = out.as_object_mut() {
+                            let mut echo = adjustment.as_object().cloned().unwrap_or_default();
+                            echo.insert("confidence".to_owned(), json!(confidence.as_str()));
+                            echo.insert("rationale".to_owned(), json!(rationale));
+                            object.insert("default_white_balance".to_owned(), Value::Object(echo));
+                            push_response_warning(
+                                object,
+                                format!(
+                                    "wb=auto：已按 C1 估计落成缺省白平衡 (T, Ti)=({temperature:.3}, {tint:.3})，置信 {}（锚点数/召回率/散布见 default_white_balance.rationale）",
+                                    confidence.as_str()
+                                ),
+                            );
+                        }
+                    }
+                }
+                Ok(super::tools_auto::WbOutcome::Skipped(reason)) => {
+                    if let Some(object) = out.as_object_mut() {
+                        push_response_warning(
+                            object,
+                            format!("wb=auto：估计跳过（{reason}），白平衡保持 as-shot"),
+                        );
+                    }
+                }
+                Err(error) => {
+                    if let Some(object) = out.as_object_mut() {
+                        push_response_warning(
+                            object,
+                            format!("wb=auto：估计失败（{error}），白平衡保持 as-shot"),
+                        );
+                    }
+                }
+            }
+        }
     }
     Ok(out)
 }
@@ -472,6 +534,10 @@ struct RawImportOutcome {
     /// 的 ⑧⑨ 两步同口径，见 `yanshi_raw::develop::developed_dimensions`）。
     developed_width: u32,
     developed_height: u32,
+    /// 请求的 WB 模式是否为 auto（Y-05）：`plan.record.wb` 的原样转述，
+    /// 导入期凭它决定要不要跑 C1 估计器；as_shot 时不跑、不落对象、
+    /// 不改任何像素（R12 的 as_shot 不变性就靠这一位）。
+    wb_auto: bool,
 }
 
 /// 取 RAW 源字节 → 解码一次 → 组装导入计划（设计 5.6/5.7）。
@@ -536,6 +602,7 @@ fn build_raw_import_plan(
         warnings: plan.warnings,
         developed_width,
         developed_height,
+        wb_auto: plan.record.wb == yanshi_raw::WbMode::Auto,
     })
 }
 
@@ -549,6 +616,9 @@ pub(super) const DEFAULT_RAW_EXPOSURE_EV: f64 = 0.5;
 
 /// RAW 导入缺省曝光对象的名（与 `tools_auto` 豁免判定共用）。
 pub(super) const RAW_DEFAULT_EXPOSURE_NAME: &str = "RAW 缺省曝光（自动生成，可改可删）";
+
+/// RAW 导入缺省白平衡对象的名（Y-05，与 `tools_auto` 豁免判定共用）。
+pub(super) const RAW_DEFAULT_WB_NAME: &str = "RAW 缺省白平衡（自动生成，可改可删）";
 
 /// D1（2026-10-22 定版）：RAW 导入自动生成一条缺省 exposure 调整——走既有
 /// 调整架构的原生入口（`write_add_effect`，与 `add_adjustment` 工具同一条
@@ -569,5 +639,77 @@ fn spawn_default_exposure_adjustment(ctx: &mut ToolContext<'_>, layer_id: &str) 
         "object_id": adjustment_id,
         "adjustment_type": "exposure",
         "params": {"ev": DEFAULT_RAW_EXPOSURE_EV},
+    }))
+}
+
+/// Y-05：wb=auto 导入的白平衡估计（C1 阶段 1 估计器接线）。
+///
+/// 在导入原子已落账后，对源对象单独渲染（keep 只含该对象——调整/滤镜
+/// 对象排除在外，与 `write_auto_retouch` 的统计口径同源：全幅 bbox、
+/// `box_downsample` 到 `PROXY_MAX_EDGE`、`image_stats_rgba8`、再调
+/// 阶段 1 `estimate_wb`；同一份统计 auto 干跑会算出同一份 (T, Ti)，
+/// R12 的逐位相等断言就钉这一条）。
+/// 渲染失败不阻断导入：返回 `Err`（调用方转响亮警告，白平衡保持
+/// as-shot——估计是导入的增值，不是导入本身）。估计跳过
+/// （`WbOutcome::Skipped`）也经 `Ok` 回去，reason 原样进警告。
+#[cfg(feature = "raw")]
+fn estimate_import_white_balance(
+    ctx: &mut ToolContext<'_>,
+    layer_id: &str,
+    object_id: &str,
+) -> std::result::Result<super::tools_auto::WbOutcome, String> {
+    let state = document_state(ctx).map_err(|error| format!("读文档状态失败：{error:?}"))?;
+    let (doc_width, doc_height) = (state.width, state.height);
+    drop(state);
+    let mut keep = std::collections::BTreeSet::new();
+    keep.insert(object_id.to_owned());
+    let bbox = Bbox::new(0.0, 0.0, doc_width as f64, doc_height as f64);
+    let (src_width, src_height, full_pixels) = ctx
+        .workspace
+        .render_layer_objects_subset(&ctx.doc_id, bbox, layer_id, &keep)
+        .map_err(|error| format!("源对象渲染失败：{error:?}"))?;
+    if src_width == 0 || src_height == 0 || full_pixels.is_empty() {
+        return Err("源对象渲染尺寸为零".to_owned());
+    }
+    let (proxy_pixels, proxy_width, proxy_height) = super::presets::box_downsample(
+        &full_pixels,
+        src_width,
+        src_height,
+        super::tools_auto::PROXY_MAX_EDGE,
+    );
+    let stats = yanshi_render::stats::image_stats_rgba8(&proxy_pixels, proxy_width, proxy_height);
+    if stats.count == 0 {
+        return Err("代理图无不透明像素".to_owned());
+    }
+    let scene = super::tools_auto::classify_scene(&stats);
+    Ok(super::tools_auto::estimate_wb(&stats, &scene))
+}
+
+/// Y-05：RAW 导入（wb=auto）自动生成一条缺省 white_balance 调整——
+/// 走既有调整架构的原生入口（`write_add_effect`，与 `add_adjustment`
+/// 工具同一条路），对象数据形态与手工添加逐字一致，只多一个
+/// `raw_default_wb` 存值（落成估计原样，`is_raw_default_white_balance`
+/// 凭它认「未动过」）。生成失败响亮上抛（与缺省曝光同口径）。
+#[cfg(feature = "raw")]
+fn spawn_default_white_balance_adjustment(
+    ctx: &mut ToolContext<'_>,
+    layer_id: &str,
+    temperature: f32,
+    tint: f32,
+) -> Result<Value> {
+    let adjustment_id = format!("obj_{}", yanshi_core::Ulid::new().encode());
+    let args = json!({
+        "layer_id": layer_id,
+        "object_id": adjustment_id,
+        "adjustment_type": "white_balance",
+        "params": {"temperature": temperature, "tint": tint},
+        "name": RAW_DEFAULT_WB_NAME,
+        "raw_default_wb": {"temperature": temperature, "tint": tint},
+    });
+    write_add_effect(ctx, &args, EffectKind::Adjustment)?;
+    Ok(json!({
+        "object_id": adjustment_id,
+        "adjustment_type": "white_balance",
+        "params": {"temperature": temperature, "tint": tint},
     }))
 }

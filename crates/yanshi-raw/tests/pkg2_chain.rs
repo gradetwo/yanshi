@@ -8,7 +8,7 @@ use serde_json::json;
 use yanshi_raw::decode::{probe_raw, raw_meta};
 use yanshi_raw::develop::apply_orientation_rgb;
 use yanshi_raw::dng_fixture::{write_synthetic_dng, SyntheticDng, SyntheticExif};
-use yanshi_raw::{decode_bytes, plan_import, DevelopOptions, RecordContext};
+use yanshi_raw::{decode_bytes, plan_import, DevelopOptions, RecordContext, WbMode};
 
 /// 带完整 EXIF 的夹具（6×4，马赛克为常量场 1024）。
 fn exif_fixture(orientation: u16) -> Vec<u8> {
@@ -200,18 +200,23 @@ fn plan_import_d5_branches() {
     );
 }
 
-/// Y-05 警告（photo-bugfix-p1）：wb=auto 一期等同 as_shot 不是静默的——
-/// plan 的 warnings 里必须有一行说清（响应经 `import_image` 原样回显）。
-/// 真 auto WB 进期 4 C1，本期只钉住警告。
+/// Y-05（C1 阶段 1.5）：wb=auto 不再等同 as_shot——自动估计由导入期
+/// （import_image）落成缺省白平衡对象，plan 的 warnings 里不许再出现
+/// 「一期等同 as_shot」的说法（旧 photo-bugfix-p1 的警告随等同本身
+/// 一起退役；估计事实见导入响应的 `default_white_balance` 与 warnings，
+/// 钉在 server 侧 `raw_import.rs` 的 R12 测试里）。
 #[test]
-fn plan_import_wb_auto_warns_it_equals_as_shot() {
+fn plan_import_wb_auto_no_longer_warns_it_equals_as_shot() {
     let decoded = decode_bytes(&exif_fixture(1)).unwrap();
     let plan = plan_import(&decoded, Some(&json!({"wb": "auto"}))).unwrap();
     assert!(
-        plan.warnings.iter().any(|w| w.contains("一期等同 as_shot")),
-        "wb=auto 必须进 warnings：{:?}",
+        !plan.warnings.iter().any(|w| w.contains("一期等同 as_shot")),
+        "wb=auto 不许再称等同 as_shot：{:?}",
         plan.warnings
     );
+    // 恒等式：wb=auto 的 record 仍记请求值 "auto"（不许靠本字段猜乘子，
+    // 见 frame.rs），显影乘子本身仍是 as-shot（显影步未动）。
+    assert_eq!(plan.record.wb, WbMode::Auto, "record 应记请求值 auto");
     let plan = plan_import(&decoded, Some(&json!({"wb": "as_shot"}))).unwrap();
     assert!(
         !plan.warnings.iter().any(|w| w.contains("一期等同 as_shot")),

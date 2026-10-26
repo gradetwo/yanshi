@@ -60,7 +60,9 @@ use yanshi_core::{Bbox, ErrorCode, ErrorContext, ObjectType, Result, YanshiError
 use yanshi_render::stats::{image_stats_rgba8, noise_sigma_rgba8, ImageStats, NOISE_KAPPA};
 
 use super::presets::{box_downsample, land_expanded_ops, ExpandedOp, LandedOps};
-use super::tools_bitmap::{DEFAULT_RAW_EXPOSURE_EV, RAW_DEFAULT_EXPOSURE_NAME};
+use super::tools_bitmap::{
+    DEFAULT_RAW_EXPOSURE_EV, RAW_DEFAULT_EXPOSURE_NAME, RAW_DEFAULT_WB_NAME,
+};
 use super::tools_effect::validate_effect;
 use super::{document_state, optional_str, write_update_effect, EffectKind, ToolContext};
 use crate::timings::Phase;
@@ -229,7 +231,8 @@ const SCENE_BACKLIT_P50: (f32, f32) = (0.3, 0.6);
 
 /// 代理图长边上限（设计 D3：统计在 ≤1024 代理上算；噪声例外，
 /// 全分辨率另算，见 `noise_sigma_rgba8` 文档）。
-const PROXY_MAX_EDGE: u32 = 1024;
+/// 代理图长边上限（Y-05：`pub(super)`——导入期统计与 auto 同口径）。
+pub(super) const PROXY_MAX_EDGE: u32 = 1024;
 
 /// 组白名单（设计固定 8 组；去雾挂在细节组下，不另立组；曲线组 p3b-2
 /// 新增，落 WB 之后、色彩之前）。
@@ -268,8 +271,10 @@ const CURVES_CHANNEL_TOP_COEF: f32 = 1.1;
 const CURVES_CHANNEL_TOP_MAX: f32 = 0.12;
 
 /// 置信：高 ⇒ 权重 1；低 ⇒ 权重 0.5（设计「减半施加」统一规则）。
+/// Y-05：`pub(super)`——导入期（`tools_bitmap`）复用同一估计器，
+/// 回显里要读 `as_str`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Confidence {
+pub(super) enum Confidence {
     /// 高置信。
     High,
     /// 低置信。
@@ -286,7 +291,7 @@ impl Confidence {
     }
 
     /// 响应里的字符串。
-    const fn as_str(self) -> &'static str {
+    pub(super) const fn as_str(self) -> &'static str {
         match self {
             Confidence::High => "high",
             Confidence::Low => "low",
@@ -295,8 +300,9 @@ impl Confidence {
 }
 
 /// 场景旗标（全部进 `scene_flags`；除单色外一律收缩、不硬跳过）。
+/// Y-05：`pub(super)`——导入期复用 `classify_scene` + `estimate_wb`。
 #[derive(Debug, Clone, Copy, Default)]
-struct SceneFlags {
+pub(super) struct SceneFlags {
     /// 单色（S̄ < 0.045）：wb/color 硬跳过的唯一保留情形。
     monochrome: bool,
     /// 舞台（单色相桶 > 0.45 且 p50 < 0.25）。
@@ -402,7 +408,8 @@ fn dominant_hue(stats: &ImageStats) -> (usize, f32) {
 }
 
 /// 场景分类（纯函数；门限见模块常量）。
-fn classify_scene(stats: &ImageStats) -> SceneFlags {
+/// Y-05：`pub(super)`——导入期复用。
+pub(super) fn classify_scene(stats: &ImageStats) -> SceneFlags {
     let p50 = stats.luma_p50 as f32 / 255.0;
     let p5 = stats.luma_p5 as f32 / 255.0;
     let p95 = stats.luma_p95 as f32 / 255.0;
@@ -701,7 +708,8 @@ fn invert_wb_gains(target: [f32; 3]) -> (f32, f32) {
 /// `estimate_wb` 的出口：落成或跳过。跳过必带 reason（点名触发的门编号
 /// 与事实数值，C1 §6 G3——不许静默降级；`plan_auto` 的跳过组仍走既有
 /// `skipped` 路径，只 reason 来源改由本枚举提供）。
-enum WbOutcome {
+/// Y-05：`pub(super)`——导入期复用。
+pub(super) enum WbOutcome {
     /// 落成：(temperature, tint, confidence, rationale)。
     Applied(f32, f32, Confidence, String),
     /// 跳过整组：reason 点名门编号与事实数值。
@@ -738,7 +746,8 @@ fn wb_gains_from_anchor_chroma(chroma_median: [f32; 2]) -> [f32; 3] {
 /// 见 `wb_guardrail_*`）；G1 的 0.005 锚点下限由信号带下沿 0.02 + 对数地板
 /// 接替；G3（reason / rationale 点名）永久保留。
 /// 返回落成或跳过（跳过必带 reason，点名门编号与事实数值）。
-fn estimate_wb(stats: &ImageStats, scene: &SceneFlags) -> WbOutcome {
+/// Y-05：`pub(super)`——导入期（`tools_bitmap`）复用同一估计器。
+pub(super) fn estimate_wb(stats: &ImageStats, scene: &SceneFlags) -> WbOutcome {
     if scene.monochrome {
         return WbOutcome::Skipped("单色画面，白平衡无物理意义".to_owned());
     }
@@ -1521,6 +1530,65 @@ fn is_raw_default_exposure(object_type: ObjectType, data: &Value) -> bool {
         )
 }
 
+/// 缺省白平衡的一对 (temperature, tint) 读数（可能缺失）。
+type WbPair = (Option<f64>, Option<f64>);
+
+/// 缺省白平衡对象的当前 params 与落成存值（豁免谓词与落成置零共用
+/// 同一次读取，免得两处各算一遍漂移；不用裸嵌套元组——clippy
+/// type_complexity 不许）。
+struct RawDefaultWbValues {
+    current: WbPair,
+    landed: WbPair,
+}
+
+fn raw_default_wb_values(data: &Value) -> RawDefaultWbValues {
+    let params = data.get("params");
+    let current = (
+        params
+            .and_then(|params| params.get("temperature"))
+            .and_then(Value::as_f64),
+        params
+            .and_then(|params| params.get("tint"))
+            .and_then(Value::as_f64),
+    );
+    let stored = data.get("raw_default_wb");
+    let landed = (
+        stored
+            .and_then(|marker| marker.get("temperature"))
+            .and_then(Value::as_f64),
+        stored
+            .and_then(|marker| marker.get("tint"))
+            .and_then(Value::as_f64),
+    );
+    RawDefaultWbValues { current, landed }
+}
+
+/// RAW 缺省白平衡豁免判定（Y-05，`is_raw_default_exposure` 的同类扩展）：
+/// RAW 导入（wb=auto）时在源图层生成一条缺省 white_balance 对象
+/// （名见 `tools_bitmap` 同名常量）。它是显影管线的一部分，不是人工
+/// 精修，故 force 检查不把它当「人工对象」；但只认「系统状态」：
+/// 类型 white_balance + 名全匹配 + params 等于对象上存的落成估计
+/// （`data["raw_default_wb"]`，导入期随对象写下）或 (0, 0)（已被 auto
+/// 置零过的同一对象——重跑仍豁免；用户手动置零亦无害：该对象对渲染
+/// 的贡献本就为零，无叠加）。曝光的落成值是常量 0.5、可直接比值，
+/// 白平衡的落成值逐张照片不同，必须靠存值比对——名 + 类型 alone 不够：
+/// 否则用户改过 params 的缺省对象也会被 auto 静默置零（与曝光谓词
+/// 「其余一切一律视为人工」同一条防线）。其余一切一律视为人工。
+fn is_raw_default_white_balance(object_type: ObjectType, data: &Value) -> bool {
+    if object_type != ObjectType::Adjustment
+        || data.get("adjustment_type").and_then(Value::as_str) != Some("white_balance")
+        || data.get("name").and_then(Value::as_str) != Some(RAW_DEFAULT_WB_NAME)
+    {
+        return false;
+    }
+    let values = raw_default_wb_values(data);
+    let (current, landed) = (values.current, values.landed);
+    if current == (Some(0.0), Some(0.0)) {
+        return true;
+    }
+    matches!(landed, (Some(_), Some(_))) && current == landed
+}
+
 /// `auto_retouch`：统计 → 估计 →（校验 →）落成 → 报告。
 pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // ---- 参数解析（非法值一律报错，不静默默认）----
@@ -1594,9 +1662,10 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         .filter(|object| object.layer_id == layer_id && object.id.starts_with("auto_"))
         .map(|object| object.id.clone())
         .collect();
-    // force 检查：非 auto 调整/滤镜对象里，RAW 缺省曝光对象（系统状态）
-    // 豁免——其 id 留待落成时处理（曝光落成则置零，曝光跳过则原状）。
-    let (raw_defaults, manual): (Vec<String>, Vec<String>) = alive
+    // force 检查：非 auto 调整/滤镜对象里，RAW 缺省曝光/白平衡对象
+    // （系统状态）豁免——其 id 留待落成时处理（对应组落成则置零，
+    // 未落成则原状）。
+    let (raw_defaults, raw_default_wb, manual): (Vec<String>, Vec<String>, Vec<String>) = alive
         .iter()
         .filter(|object| {
             object.layer_id == layer_id
@@ -1608,21 +1677,26 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         })
         .map(|object| {
             if is_raw_default_exposure(object.object_type, &object.data) {
-                (Some(object.id.clone()), None)
+                (Some(object.id.clone()), None, None)
+            } else if is_raw_default_white_balance(object.object_type, &object.data) {
+                (None, Some(object.id.clone()), None)
             } else {
-                (None, Some(object.id.clone()))
+                (None, None, Some(object.id.clone()))
             }
         })
         .fold(
-            (Vec::new(), Vec::new()),
-            |(mut defaults, mut manual), (default, manual_one)| {
+            (Vec::new(), Vec::new(), Vec::new()),
+            |(mut defaults, mut defaults_wb, mut manual), (default, default_wb, manual_one)| {
                 if let Some(id) = default {
                     defaults.push(id);
+                }
+                if let Some(id) = default_wb {
+                    defaults_wb.push(id);
                 }
                 if let Some(id) = manual_one {
                     manual.push(id);
                 }
-                (defaults, manual)
+                (defaults, defaults_wb, manual)
             },
         );
     if !manual.is_empty() && !force {
@@ -1775,6 +1849,9 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         if !raw_defaults.is_empty() {
             note.push_str("；目标层有导入缺省曝光（ev 0.5），落成时若自动曝光落成会先置零");
         }
+        if !raw_default_wb.is_empty() {
+            note.push_str("；目标层有导入缺省白平衡，落成时若自动白平衡落成会先置零");
+        }
         return Ok(json!({
             "layer_id": layer_id,
             "layer_name": layer_name,
@@ -1784,6 +1861,7 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             "scene_flags": scene_json,
             "stats": stats_json,
             "neutralized_default_exposure": [],
+            "neutralized_default_white_balance": [],
             "note": note,
         }));
     }
@@ -1861,6 +1939,7 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     // 见 `Document::render_region_preview` 的 `complete_render_jobs`）。
     // 对象集合与参数值与改前完全一致，只少中间预览。
     let exposure_lands = ops.iter().any(|op| op.object_id == "auto_exposure");
+    let wb_lands = ops.iter().any(|op| op.object_id == "auto_white_balance");
     let opened_here = ctx
         .workspace
         .begin_changeset(&ctx.doc_id, &ctx.session)
@@ -1869,7 +1948,7 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     let prev_wait_for_render = ctx.wait_for_render;
     ctx.silent = true;
     ctx.wait_for_render = false;
-    let landed: Result<(LandedOps, Vec<String>)> = (|| {
+    let landed: Result<(LandedOps, Vec<String>, Vec<String>)> = (|| {
         // RAW 缺省曝光置零（曝光落成时）：未动过的缺省对象（ev 0.5）
         // 必须先置零，否则缺省 +0.5 与自动估计叠加，落成结果 ≠ 源上
         // 估计；已被置零过的（ev 0.0）无需再动。置零与落成同属一个
@@ -1900,6 +1979,38 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
                 }
             }
         }
+        // RAW 缺省白平衡置零（白平衡落成时）：未动过的缺省对象（params
+        // == 对象上存的落成估计）必须先置零，否则缺省估计与自动估计
+        // 叠加，落成结果 ≠ 源上估计；已被置零过的（(0, 0)）无需再动。
+        // 置零与落成同属一个 changeset，失败时注册表事务层一并回滚。
+        // 比对以对象上存的 `raw_default_wb` 为准（逐张照片的落成值
+        // 不同，不能写死常量）；`write_update_effect` 只换 params，
+        // 存值本身保留，重跑仍认得（见 `raw_default_wb_values`）。
+        let mut neutralized_wb: Vec<String> = Vec::new();
+        if wb_lands {
+            for default_id in &raw_default_wb {
+                let state_now = document_state(ctx)?;
+                let values = state_now
+                    .alive_objects()
+                    .iter()
+                    .find(|object| object.id == *default_id)
+                    .map(|object| raw_default_wb_values(&object.data))
+                    .unwrap_or(RawDefaultWbValues {
+                        current: (None, None),
+                        landed: (None, None),
+                    });
+                let (current, landed) = (values.current, values.landed);
+                drop(state_now);
+                if matches!(landed, (Some(_), Some(_))) && current == landed {
+                    write_update_effect(
+                        ctx,
+                        &json!({"object_id": default_id, "params": {"temperature": 0.0, "tint": 0.0}}),
+                        EffectKind::Adjustment,
+                    )?;
+                    neutralized_wb.push(default_id.clone());
+                }
+            }
+        }
         // 落成循环要的是「当前 alive 且在目标层」的映射；第一阶段的
         // 映射不复用（其间状态可能已变），此处重新读。
         let state_now = document_state(ctx)?;
@@ -1915,11 +2026,11 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             labels.get(&op.object_id).cloned().unwrap_or_default()
         });
         drop(state_now);
-        result.map(|landed| (landed, neutralized))
+        result.map(|landed| (landed, neutralized, neutralized_wb))
     })();
     ctx.silent = prev_silent;
     ctx.wait_for_render = prev_wait_for_render;
-    let (landed, neutralized) = match landed {
+    let (landed, neutralized, neutralized_wb) = match landed {
         Ok(landed) => {
             if opened_here {
                 ctx.workspace.close_changeset(&ctx.doc_id, &ctx.session);
@@ -1977,6 +2088,13 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
                 neutralized.join("、")
             ));
         }
+        if object.object_id == "auto_white_balance" && !neutralized_wb.is_empty() {
+            let rationale = entry["rationale"].as_str().unwrap_or_default().to_owned();
+            entry["rationale"] = json!(format!(
+                "{rationale}；已将导入缺省白平衡对象（{}）置零，避免与本估计叠加",
+                neutralized_wb.join("、")
+            ));
+        }
         applied.push(entry);
     }
     let mut note =
@@ -1990,6 +2108,14 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     } else if !raw_defaults.is_empty() && !exposure_lands {
         note.push_str("；导入缺省曝光（ev 0.5）保持原状（自动曝光未落成）");
     }
+    if !neutralized_wb.is_empty() {
+        note.push_str(&format!(
+            "；已将导入缺省白平衡对象（{}）置零，避免与自动白平衡叠加",
+            neutralized_wb.join("、")
+        ));
+    } else if !raw_default_wb.is_empty() && !wb_lands {
+        note.push_str("；导入缺省白平衡保持原状（自动白平衡未落成）");
+    }
     Ok(json!({
         "layer_id": layer_id,
         "layer_name": layer_name,
@@ -2001,6 +2127,7 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         "scene_flags": scene_json,
         "stats": stats_json,
         "neutralized_default_exposure": neutralized,
+        "neutralized_default_white_balance": neutralized_wb,
         "note": note,
     }))
 }
@@ -2392,6 +2519,73 @@ mod tests {
         });
         assert!(
             !is_raw_default_exposure(ObjectType::Filter, &wrong_type),
+            "滤镜类型即使名与值全中也不豁免"
+        );
+    }
+
+    /// Y-05：缺省白平衡豁免判定：名 + 类型 + params==存值/(0, 0)
+    /// 全匹配才豁免（存值是逐张照片的落成估计，见
+    /// `is_raw_default_white_balance`）。
+    #[test]
+    fn raw_default_white_balance_predicate() {
+        let name = RAW_DEFAULT_WB_NAME;
+        let untouched = json!({
+            "adjustment_type": "white_balance",
+            "name": name,
+            "params": {"temperature": -0.276, "tint": 0.067},
+            "raw_default_wb": {"temperature": -0.276, "tint": 0.067},
+        });
+        assert!(
+            is_raw_default_white_balance(ObjectType::Adjustment, &untouched),
+            "未动过的缺省对象（params == 存值）应豁免"
+        );
+        let already_zeroed = json!({
+            "adjustment_type": "white_balance",
+            "name": name,
+            "params": {"temperature": 0.0, "tint": 0.0},
+            "raw_default_wb": {"temperature": -0.276, "tint": 0.067},
+        });
+        assert!(
+            is_raw_default_white_balance(ObjectType::Adjustment, &already_zeroed),
+            "已被 auto 置零过的同一对象重跑时仍应豁免（存值还在）"
+        );
+        let edited = json!({
+            "adjustment_type": "white_balance",
+            "name": name,
+            "params": {"temperature": -0.1, "tint": 0.067},
+            "raw_default_wb": {"temperature": -0.276, "tint": 0.067},
+        });
+        assert!(
+            !is_raw_default_white_balance(ObjectType::Adjustment, &edited),
+            "改过 params 的缺省对象应视为人工（变异：豁免条件丢掉存值比对即红）"
+        );
+        let no_marker = json!({
+            "adjustment_type": "white_balance",
+            "name": name,
+            "params": {"temperature": -0.276, "tint": 0.067},
+        });
+        assert!(
+            !is_raw_default_white_balance(ObjectType::Adjustment, &no_marker),
+            "没有存值的同名对象不豁免（名 + 类型 alone 不够）"
+        );
+        let renamed = json!({
+            "adjustment_type": "white_balance",
+            "name": "我自己调的白平衡",
+            "params": {"temperature": -0.276, "tint": 0.067},
+            "raw_default_wb": {"temperature": -0.276, "tint": 0.067},
+        });
+        assert!(
+            !is_raw_default_white_balance(ObjectType::Adjustment, &renamed),
+            "换过名的同值对象应视为人工"
+        );
+        let wrong_type = json!({
+            "adjustment_type": "white_balance",
+            "name": name,
+            "params": {"temperature": -0.276, "tint": 0.067},
+            "raw_default_wb": {"temperature": -0.276, "tint": 0.067},
+        });
+        assert!(
+            !is_raw_default_white_balance(ObjectType::Filter, &wrong_type),
             "滤镜类型即使名与值全中也不豁免"
         );
     }

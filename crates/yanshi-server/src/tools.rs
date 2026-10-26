@@ -11416,6 +11416,14 @@ fn write_add_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind) -
     if let Some(label) = optional_str(args, "name") {
         data["name"] = json!(label);
     }
+    // Y-05：RAW 缺省白平衡的落成估计随对象存一份（`is_raw_default_white_balance`
+    // 凭它认「未动过」：params == 存值或 (0, 0) 才豁免；用户改过 params 即
+    // 失认、视同人工）。只在调用方显式给 `raw_default_wb` 对象时才写；
+    // 其余调用方（手工 add_adjustment、auto 落成）不受影响。`write_update_effect`
+    // 只换 params、不动其余 data，存值挺过 auto 置零、重跑仍认得。
+    if let Some(marker) = args.get("raw_default_wb").and_then(Value::as_object) {
+        data["raw_default_wb"] = Value::Object(marker.clone());
+    }
     // 调整/滤镜只作用于**同层下方**内容（6.6），因此缺省把效果放在同层最上方：
     // 否则默认 z 序会让它排在底图之前，表现为「加了调整却没有任何变化」。
     let z_index = match args.get("z_index").and_then(Value::as_i64) {

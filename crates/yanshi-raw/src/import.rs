@@ -266,12 +266,10 @@ pub fn plan_import_with_db(
     let mut color_notes = Vec::new();
     let composite = composite_color_matrix(&frame.color_matrices, neutral, &mut color_notes)?;
     warnings.extend(color_notes);
-    if options.develop.wb == WbMode::Auto {
-        warnings.push(
-            "wb=auto：一期等同 as_shot（rawler 0.7.2 无独立 daylight 估计入口，设计 5.5 定版）"
-                .to_string(),
-        );
-    }
+    // Y-05：wb=auto 不再在此警告「等同 as_shot」——显影本身仍用 as-shot
+    // 乘子，但自动估计已由导入期（import_image）落成缺省白平衡对象，
+    // 估计事实（锚点数/(T, Ti)/跳过原因）由导入响应回显；本计划只组
+    // 装 record，不再替导入期背「等同」的说法。
     let baseline = match frame.baseline_exposure_ev {
         Some(ev) => ev,
         None => {
