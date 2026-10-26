@@ -1956,6 +1956,31 @@ impl Renderer {
         })
     }
 
+    /// **纯调整层**：本层所有活动且可见/启用的对象都是 Adjustment 或 Filter，
+    /// 且至少有一个。这样的层自身不产生任何像素——按本文件顶部的语义，调整
+    /// 只作用于“同层中位于其下方的内容”，而空缓冲里没有内容可调；渲染时须
+    /// 先用下方已合成的内容播种（见 `render_accumulation` 的图层循环），否则
+    /// 它就是永久 no-op（dodge_burn_setup curves 变体即此例：减淡/加深层各
+    /// 只有一条 curves 对象 + 一张全黑蒙版）。
+    ///
+    /// 保守口径：不可见/禁用的对象不计入（渲染循环同样跳过它们）；Instance、
+    /// Group、未知类型一律按“有内容”处理（不播种），只留 Adjustment/Filter。
+    fn layer_is_adjustment_only(state: &DocumentState, layer: &Layer) -> bool {
+        let mut any = false;
+        for obj in state.objects_in_layer(&layer.id) {
+            if !obj.visible || !obj.enabled {
+                continue;
+            }
+            match obj.object_type {
+                yanshi_core::ObjectType::Adjustment | yanshi_core::ObjectType::Filter => {
+                    any = true;
+                }
+                _ => return false,
+            }
+        }
+        any
+    }
+
     /// **区域渲染的公共内核**：在「区域 + 外扩」的缓冲上跑完整的图层循环，返回该缓冲（不裁剪）。
     ///
     /// **串行整幅与并行分块都调用它** ⇒ 两条路径只有"算多大一块"的区别，没有"两套合成逻辑"，
@@ -2092,6 +2117,12 @@ impl Renderer {
             // ⇒ **∴ 命中任一 ⇒ 整片不走缓存 ✓**（**宁慢勿错 ✓；lazy 不许撒谎 ✓**）。
             if layer.clipping_mask {
                 // **④ 剪贴蒙版 ✓**：**用下方内容的 alpha 裁剪本层 ⇒ 它不是层的函数 ✗**。
+                except_seen = true;
+            }
+            // **⑧ 纯调整层 ✓**（dodge_burn_setup curves 变体）：本层只有
+            //   Adjustment/Filter 对象 ⇒ 渲染时用下方内容播种 ⇒ 输出是下方内容
+            //   的函数 ⇒ 与 ④ 同例：整片不走分段缓存（**宁慢勿错 ✓**）。
+            if Self::layer_is_adjustment_only(state, layer) {
                 except_seen = true;
             }
             // **⑦ path 引用蒙版 ✓**（二期 mask 源 = path）：蒙版以 `object_id` 引用
@@ -2876,6 +2907,22 @@ impl Renderer {
                 stats.layer_buffers_reused += 1;
             } else {
                 stats.layer_buffers_allocated += 1;
+            }
+            // **纯调整层播种 ✓**（dodge_burn_setup curves 变体 no-op 的根因）：
+            //   本层只有 Adjustment/Filter 对象 ⇒ 空缓冲里没有内容可调 ⇒ 先把
+            //   下方已合成的内容拷进来，调整再作用于它。蒙版随后照常把 alpha
+            //   乘进缓冲（蒙版 0 处缓冲归零、合成时下方原样保留），所以 D&B 的
+            //   全黑蒙版仍是“先涂白再生效”，只是涂白后真的有效。
+            //   不播种的情形：`only_layer` 预览（下方未渲染，播种只能拿到背景，
+            //   会改预览语义）；`clipping_mask`（`multiply_alpha_by` 会把 RGB
+            //   再乘一次下方 alpha，已预乘的播种内容会被二次压暗）。
+            if self.only_layer.is_none()
+                && !layer.clipping_mask
+                && Self::layer_is_adjustment_only(state, layer)
+            {
+                layer_buffer
+                    .pixels_mut()
+                    .copy_from_slice(accumulation.pixels());
             }
             self.render_layer_objects(state, store, layer, &mut layer_buffer, track, bitmaps)?;
 
@@ -7953,6 +8000,140 @@ mod tests {
         let warned = renderer.render_document(&state, &store).unwrap();
         assert_eq!(warned.stats.unsupported.len(), 1);
         assert_eq!(warned.pixel(5, 5).unwrap()[0], 255, "未识别时不改动像素");
+    }
+
+    /// **dodge_burn_setup curves 变体疑似 no-op 的探针（回归）**：曲线调整对象
+    /// 单独落在空图层上（D&B curves 变体的结构：减淡/加深层各只有一条 curves
+    /// 对象 + 全黑蒙版）时，是否作用于下方图层的内容。
+    ///
+    /// 夹具：layer_1 中灰矩形（128），layer_2 上只有一条 dodge 曲线对象
+    /// （points 即 `db_curve_points(0.62)`：[[0,0],[0.214,0.3425],[1,1]]）。
+    /// 对照组把同一曲线对象放在 layer_1（与矩形同层）——按 render.rs:9 的
+    /// “调整只作用于同层下方内容”，对照组应提亮、探针组若也提亮则调整层
+    /// 看得到下方内容；若探针组仍是 128，则 curves 变体是 no-op。
+    #[test]
+    fn curves_adjustment_on_empty_layer_above_affects_content_below() {
+        let gray_rect = json!({
+            "geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 32, "h": 32}},
+            "color": {"r": 128, "g": 128, "b": 128, "a": 255},
+        });
+        let dodge_curves = json!({
+            "adjustment_type": "curves",
+            "params": {
+                "channel": "rgb",
+                "points": [[0.0, 0.0], [0.214, 0.3425], [1.0, 1.0]],
+            },
+        });
+        let store = MemoryBlobStore::new();
+        // 对照组：同层曲线 → 中灰应被提亮（128 → 约 160）。
+        let mut control = white_document();
+        control.objects.insert(
+            "obj_gray".to_owned(),
+            object(
+                "obj_gray",
+                "layer_1",
+                ObjectType::Shape,
+                0,
+                gray_rect.clone(),
+            ),
+        );
+        control.objects.insert(
+            "obj_curves".to_owned(),
+            object(
+                "obj_curves",
+                "layer_1",
+                ObjectType::Adjustment,
+                5,
+                dodge_curves.clone(),
+            ),
+        );
+        let out = renderer().render_document(&control, &store).unwrap();
+        let px = out.pixel(5, 5).unwrap();
+        assert!(px[0] > 145, "同层曲线应提亮中灰：{px:?}");
+        assert!(out.stats.unsupported.is_empty());
+        // 探针组：曲线单独在上层空图层 → 应提亮下方中灰（D&B 结构）。
+        let mut probe = white_document();
+        probe.objects.insert(
+            "obj_gray".to_owned(),
+            object(
+                "obj_gray",
+                "layer_1",
+                ObjectType::Shape,
+                0,
+                gray_rect.clone(),
+            ),
+        );
+        probe.objects.insert(
+            "obj_curves".to_owned(),
+            object(
+                "obj_curves",
+                "layer_2",
+                ObjectType::Adjustment,
+                5,
+                dodge_curves.clone(),
+            ),
+        );
+        let out = renderer().render_document(&probe, &store).unwrap();
+        let px = out.pixel(5, 5).unwrap();
+        assert!(
+            px[0] > 145,
+            "上层空图层上的曲线应提亮下方中灰（D&B 结构）：{px:?}"
+        );
+        assert!(out.stats.unsupported.is_empty());
+        // 蒙版变体（D&B 真实结构）：白蒙版 ⇒ 曲线全效；黑蒙版（invert:true，
+        // 即 setup 刚建好时的状态）⇒ 仍无效果，须先涂白才生效。
+        for (invert, want_lift) in [(false, true), (true, false)] {
+            let mut masked = white_document();
+            masked.objects.insert(
+                "obj_gray".to_owned(),
+                object(
+                    "obj_gray",
+                    "layer_1",
+                    ObjectType::Shape,
+                    0,
+                    gray_rect.clone(),
+                ),
+            );
+            masked.objects.insert(
+                "obj_curves".to_owned(),
+                object(
+                    "obj_curves",
+                    "layer_2",
+                    ObjectType::Adjustment,
+                    5,
+                    dodge_curves.clone(),
+                ),
+            );
+            masked.layers.get_mut("layer_2").unwrap().mask_id = Some("mask_1".to_owned());
+            masked.masks.insert(
+                "mask_1".to_owned(),
+                yanshi_core::Mask {
+                    id: "mask_1".to_owned(),
+                    shape: json!({"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 32, "h": 32}}),
+                    feather: 0.0,
+                    mode: "new".to_owned(),
+                    invert,
+                    linked_layer: None,
+                    refined_edges: false,
+                    blobs: Vec::new(),
+                    patches: Vec::new(),
+                    created_by: "a1".to_owned(),
+                    deleted_by: None,
+                },
+            );
+            let out = renderer().render_document(&masked, &store).unwrap();
+            let px = out.pixel(5, 5).unwrap();
+            if want_lift {
+                assert!(px[0] > 145, "白蒙版下曲线应提亮下方中灰：{px:?}");
+            } else {
+                assert_eq!(
+                    px,
+                    [128, 128, 128, 255],
+                    "黑蒙版下曲线仍不应生效（须先涂白）：{px:?}"
+                );
+            }
+            assert!(out.stats.unsupported.is_empty());
+        }
     }
 
     /// **JPEG 位图补丁必须被内核解码**（缺陷：`image/jpeg` 曾走「格式未实现」分支被静默跳过
