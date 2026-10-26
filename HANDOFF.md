@@ -149,6 +149,8 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    - `browser-boot-panels` 的 CDP 端口来源错（argv[3] 是 base、不是端口）⇒ 改读 `CDP_PORT`；
    - `raster_patch_fixed_cost_*` 的下界 0.4 在 beta 负载下抖红（实测 37.1%）⇒ 改 0.25。
 
+38. **CI 已绿**：`40318415147`（`d552fe85`：八包＋两处判据修正）**全 job success** ✓。
+
 ## 三、下一步（按优先序，都有精确入口）
 
 -0. 待上游裁决的仍是：期 2 的 **auto backtest colorcast 门限**（A2 保色度 ⇒ R−B 只降 28.6% < 40%）、
