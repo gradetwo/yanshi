@@ -174,9 +174,12 @@ fn tone_record_roundtrip() {
     assert_eq!(old_options.tone, ToneMode::Off);
     assert_eq!(old_options.tone_strength, 0.0);
     let old = develop(&decoded.frame, &old_options, &ctx).unwrap();
+    // 对照组须与记录的其它档位一致：记录来自 plan_import 缺省
+    // （highlight=chroma），只把 tone 换成 Off——否则差的是高光档
+    // 位，不是 tone（本判据第一次写错就栽在这里）。
     let off = DevelopOptions {
         tone: ToneMode::Off,
-        highlight: HighlightMode::Floor,
+        highlight: HighlightMode::Chroma,
         ..DevelopOptions::default()
     };
     let current = develop(&decoded.frame, &off, &ctx).unwrap();
