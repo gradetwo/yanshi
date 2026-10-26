@@ -128,6 +128,10 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    吃到 whites 杠杆）；render filter 110、style_preset_package 5、clippy/fmt 绿。
    **不修 forest 唇口**（whites 钝杠杆/剂量倒置，阶段 3 另案）；4 套预设重放轻微变化（均值 ≤0.0014）。
 
+28. **CI 已绿**：`40272398250`（`fe644770`：五包＋O4＋两处判据修正）**全 job success** ✓。
+   此前 `40269293870` 的两处红都修了：`pinned_blob_eviction`（P-01 语义：显式 `render_document_preview`
+   触发淘汰）、`tool-example-acceptance`（`reorder_objects` 示例须匹配夹具 `L1/o1`）。
+
 ## 三、下一步（按优先序，都有精确入口）
 
 -0. 待上游裁决的仍是：期 2 的 **auto backtest colorcast 门限**（A2 保色度 ⇒ R−B 只降 28.6% < 40%）、
