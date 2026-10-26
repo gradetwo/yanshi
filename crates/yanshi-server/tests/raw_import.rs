@@ -201,7 +201,10 @@ fn end_to_end_raw_import_records_metadata_and_renders_like_direct_develop() {
     assert_eq!(adjustment["params"]["ev"], json!(0.5));
 
     // 删掉缺省调整（D1 可删）后渲染：像素与直接 develop 一致（±1 LSB，
-    // PNG/显示量化口径，color.rs 头注）。
+    // PNG/显示量化口径，color.rs 头注）。直接 develop 须用导入计划的
+    // 同一份参数（Y-03：tone 导入缺省 standard，与
+    // `DevelopOptions::default()` 的 Off 不同——两个缺省值分清；
+    // 与高光档位 chroma/floor 的既有分歧同口径）。
     let deleted = call(
         &mut workspace,
         "delete_object",
@@ -212,8 +215,7 @@ fn end_to_end_raw_import_records_metadata_and_renders_like_direct_develop() {
         .render_region_raw("doc_raw", Bbox::new(0.0, 0.0, 24.0, 16.0))
         .unwrap();
     assert_eq!((w, h), (24, 16));
-    let direct =
-        yanshi_render::develop_raw_source(&bytes, &yanshi_raw::DevelopOptions::default()).unwrap();
+    let direct = yanshi_render::develop_raw_source(&bytes, &expected.options.develop).unwrap();
     for y in 0..16usize {
         for x in 0..24usize {
             let src = (y * 24 + x) * 3;
