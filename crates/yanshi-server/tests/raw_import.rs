@@ -263,6 +263,8 @@ fn raw_options_on_non_raw_blob_and_illegal_values_are_loud_errors() {
     for (options, needle) in [
         (json!({"wb": "daylight"}), "wb"),
         (json!({"pre_exposure_ev": 4.5}), "pre_exposure_ev"),
+        (json!({"tone": "mild"}), "tone"),
+        (json!({"tone_strength": 1.5}), "tone_strength"),
         (
             json!({"lens_override": "FixtureOptics Fixture 24mm f/2.8"}),
             "lens_override",
