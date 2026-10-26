@@ -12,8 +12,8 @@
 //     **作为文本节点出现**的中文串 ✓ —— 按运行时**同一套 skip 规则**排除
 //     （`#log` / `pre` / `code` / `textarea` / `script` / `style` / `[data-i18n=off]` ✓）。
 //   * **不覆盖** ✗：
-//       ① `title=` / `placeholder=` / `aria-label=` —— 那是 `I18N_EN_ATTR` 的事 ✓，
-//          本判据**不检查**它 ⇒ 英文模式下 tooltip 仍可能是中文 ✓（要守它得另加一段 ✓）；
+//       ① ~~`title=` / `placeholder=` / `aria-label=`~~ —— **现已覆盖** ✓（见下面「属性文案也要有词条」那一段 ✓：
+//          原先这一段明说不查属性 ✓ ⇒ 模板里 41 条中文 tooltip 一条词条都没有 ✓ 而判据是绿的 ✗）；
 //       ② `viewer-app.js` 在**运行时拼出来**的文案（如 `"已删除文档 " + id` ✓）
 //          与**模式翻译**（`m1…m7` ✓）—— 那些只有真浏览器能验 ✓；
 //       ③ 翻译**质量** ✗ —— 本判据只看"有没有"，外加三条廉价的合法性（非空 / 不等于中文 / 不含汉字 ✓）。
@@ -139,10 +139,20 @@ if (textStart < 0 || attrStart < 0 || attrStart <= textStart) {
   process.exit(2);
 }
 const entryRe = /"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+// **键要按 JS 字符串字面量解转义** ✓：表里写 `"…快捷键 \\ 也可…"` ✓ ⇒ 运行时那个键**是一个反斜杠** ✓
+// 而模板里的属性值也是**一个反斜杠** ✓ ⇒ 只把 `\"` 还原成 `"` 会把 `\\` 留在串里 ✗
+// ⇒ 判据报"漏词条"的**假红** ✓（实测抓到过 ✗）。解不出来就退回原串 ✓（宁可多报一条 ✓，不静默 ✓）。
+const decodeKey = (literal) => {
+  try {
+    return JSON.parse('"' + literal + '"');
+  } catch {
+    return literal.replace(/\\"/g, '"');
+  }
+};
 const dict = new Map();
 let entry;
 while ((entry = entryRe.exec(js.slice(textStart, attrStart)))) {
-  dict.set(entry[1].replace(/\\"/g, '"'), entry[2]);
+  dict.set(decodeKey(entry[1]), entry[2]);
 }
 if (dict.size === 0) {
   console.error("❌ 双语覆盖率判据无法运行：I18N_EN_TEXT 一条词条都没解析出来（表被改写了？）");
@@ -185,8 +195,63 @@ for (const [zh, en] of dict) {
   else if (CJK.test(en)) problems.push(`词条非法：${JSON.stringify(zh)} ⇒ ${JSON.stringify(en)} 里仍有汉字`);
 }
 
+// ★ **属性文案也要有词条** ✓（`title` / `placeholder` / `aria-label` ✓）。
+//
+// **为什么这一段是后加的** ✗：本判据原先**明说不查属性**（见文件头 ✓）⇒ 于是模板里
+// **41 条中文 tooltip 一条英文词条都没有** ✓ 而判据**一直是绿的** ✗ ——
+// 英文界面下按钮文字翻成了英文 ✓、**鼠标悬停整句中文** ✗。
+// `browser-i18n.mjs` 也抓不到它 ✗：它同样只看**可见文本** ✓，tooltip 不进 DOM 文本 ✓。
+// ⇒ "不检查"写进注释 ≠ 安全 ✓：**没判据守的那一半就是会烂掉** ✓（本项目的老病 ✓）。
+const attrEnd = js.indexOf("\n};", attrStart);
+if (attrEnd < 0) {
+  console.error("❌ 双语覆盖率判据无法运行：I18N_EN_ATTR 的表尾找不到");
+  process.exit(2);
+}
+const attrDict = new Map();
+entryRe.lastIndex = 0;
+while ((entry = entryRe.exec(js.slice(attrStart, attrEnd)))) {
+  attrDict.set(decodeKey(entry[1]), entry[2]);
+}
+if (attrDict.size === 0) {
+  console.error("❌ 双语覆盖率判据无法运行：I18N_EN_ATTR 一条词条都没解析出来（表被改写了？）");
+  process.exit(2);
+}
+const decodeEntities = (value) =>
+  value
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#(\d+);/g, (_all, code) => String.fromCodePoint(Number(code)))
+    .replace(/&amp;/g, "&");
+const attrCandidates = new Map(); // 属性文案 ⇒ 行号 ✓
+const attrRe = /(?:^|\s)(title|placeholder|aria-label)\s*=\s*"([^"]*[\u4e00-\u9fff][^"]*)"/g;
+let attrHit;
+while ((attrHit = attrRe.exec(visible))) {
+  const decoded = decodeEntities(attrHit[2]).trim();
+  if (!decoded || attrCandidates.has(decoded)) continue;
+  const at = visibleFrom[attrHit.index + (attrHit[0].length - attrHit[2].length - 2)];
+  attrCandidates.set(decoded, at === null || at === undefined ? null : rs.slice(0, at).split("\n").length);
+}
+// **自检**：抽不到足够多的属性文案 ⇒ 解析与模板脱节 ⇒ 报错，不给"0 条 ⇒ 绿" ✗。
+if (attrCandidates.size < 20) {
+  console.error("❌ 双语覆盖率判据无法运行：只从模板里抽出 " + attrCandidates.size + " 条中文属性文案（预期远多于此）⇒ 抽取逻辑已与模板脱节");
+  process.exit(2);
+}
+for (const [text, line] of attrCandidates) {
+  if (attrDict.has(text)) continue;
+  problems.push(`属性漏词条：${line ? VIEWER_RS + ":" + line + " " : ""}${JSON.stringify(text)}`);
+}
+for (const [zh, en] of attrDict) {
+  if (!en.trim()) problems.push(`属性词条非法：${JSON.stringify(zh)} 的英文是空的`);
+  else if (en === zh) problems.push(`属性词条非法：${JSON.stringify(zh)} 的英文与中文一模一样（等于没翻 ✓）`);
+  else if (CJK.test(en)) problems.push(`属性词条非法：${JSON.stringify(zh)} ⇒ ${JSON.stringify(en)} 里仍有汉字`);
+}
+
 console.log(`  模板里会进文本节点的中文文案：${candidates.size} 条｜I18N_EN_TEXT 词条：${dict.size} 条｜运行时会改写的初值：${DYNAMIC.length} 条`);
-console.log("  ⚠️ 覆盖范围：只看文本节点 ✓；**不看** title/placeholder/aria-label（那是 I18N_EN_ATTR）✗，也不看 viewer-app.js 运行时拼的文案 ✗。");
+console.log(`  模板里的中文属性文案：${attrCandidates.size} 条｜I18N_EN_ATTR 词条：${attrDict.size} 条`);
+console.log("  ⚠️ 覆盖范围：模板的文本节点 ✓ 与 title/placeholder/aria-label 属性 ✓；**不看** viewer-app.js 运行时拼的文案 ✗（那只有真浏览器能验 ✓）。");
 if (problems.length) {
   console.log(`  ✗ 界面文案的双语覆盖率不合格（${problems.length} 条）：`);
   for (const problem of problems.slice(0, 20)) console.log("     - " + problem);

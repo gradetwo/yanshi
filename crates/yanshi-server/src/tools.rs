@@ -8587,29 +8587,49 @@ fn collect_gestures(
         .iter()
         .map(|object| object.id.clone())
         .collect();
-    let mut atoms: Vec<&yanshi_core::Atom> = document.log().atoms().iter().collect();
+    // **`UpdateMask` 的"活着"是另一个意思** ✓：它的对象（蒙版）撤掉一次涂抹后**依然存在** ✓
+    // ⇒ 判据换成"这条原子还有效吗" ✓（折叠层对 `revert` 的目标是**整条跳过** ✓，
+    // 所以有效集就是 `compute_suppressed` 的补集 ✓）。一次 O(n) 扫描 ✓：`undo_last`
+    // 本来就要把整条日志倒序走一遍 ✓，不多一个数量级 ✓。
+    let all_atoms = document.log().atoms();
+    let suppressed = yanshi_core::compute_suppressed(all_atoms);
+    let mut atoms: Vec<&yanshi_core::Atom> = all_atoms.iter().collect();
     atoms.sort_by_key(|atom| atom.seq);
     for atom in atoms.iter().rev() {
         // 文档创建本身不算一笔（撤掉它等于把文档删了——那是另一个工具的事）。
         if atom.kind == yanshi_core::AtomKind::CreateDocument {
             continue;
         }
-        // 结构原子不碰 ⇒ 数一数、报出去，但不进候选。
-        let Some(object) = atom.object_id().map(str::to_owned) else {
+        let entry = (atom.seq, atom.id.to_string(), format!("{:?}", atom.kind));
+        // **没有 `object_id` ⟹ 默认是结构原子 ✓，不进候选** ✗（见上面的教训 ✓），
+        // **唯一的例外是 `UpdateMask`** ✓：它带 `mask_id` ✓，是一次可见的涂抹笔迹 ✓
+        //（实测教训：把它当结构原子跳过 ⇒ 撤销"最后一笔"会去撤更早的填充原子 ✓
+        // —— 整个图层消失 ✓，而用户刚涂的蒙版纹丝不动 ✗）。
+        let Some(object) = atom.object_id().map(str::to_owned).or_else(|| {
+            if atom.kind == AtomKind::UpdateMask {
+                atom.payload
+                    .get("mask_id")
+                    .and_then(Value::as_str)
+                    .map(|id| format!("mask:{id}"))
+            } else {
+                None
+            }
+        }) else {
             ignored += 1;
             continue;
         };
-        // want_alive=true ⇒ 只要**还活着**的（undo）；false ⇒ 只要**已被撤掉**的（redo）。
-        let matches = if want_alive {
-            alive.contains(&object)
+        // want_alive=true ⇒ 只要**还生效**的（undo）；false ⇒ 只要**已被撤掉**的（redo）。
+        // 内容对象看状态 ✓，蒙版涂抹看有效性 ✓（理由见上面 `suppressed` ✓）。
+        let current = if object.starts_with("mask:") {
+            !suppressed.contains(&atom.id)
         } else {
-            !alive.contains(&object)
+            alive.contains(&object)
         };
+        let matches = if want_alive { current } else { !current };
         if !matches {
             ignored += 1;
             continue;
         }
-        let entry = (atom.seq, atom.id.to_string(), format!("{:?}", atom.kind));
         match gestures.last_mut() {
             Some((last_object, items)) if *last_object == Some(object.clone()) => {
                 items.push(entry);
@@ -11503,15 +11523,43 @@ fn revive_effect_in_place(
         .with_object(object_id.to_owned()));
     }
     if existing.layer_id != layer_id {
-        return Err(YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail(format!(
-                "对象 {object_id} 已被删除且属于图层 {}，与本次目标图层 {layer_id} 不一致，复活不跨层；请先 restore_object 恢复后移层，或换 object_id",
-                existing.layer_id
-            )),
-        )
-        .with_object(object_id.to_owned()));
+        // **"复活不跨层"守的是歧义 ✓，不是墓碑本身** ✓：源图层还在 ⇒ 调用方说"把它落到 L2"
+        // 有两种读法（搬过去 / 放回原层）✗ ⇒ 这里拒绝、让人自己确认 ✓。
+        // **但源图层已经被删掉时没有歧义** ✓：那个旧身份用户再也看不见了 ✗
+        //（实测事故 ✓：删掉预设落过的图层 ⇒ 这些确定性 id 变成孤儿墓碑 ⇒
+        // 之后**任何图层**上再应用同一套预设都永久失败 ✗，
+        // 而提示里的"换图层"对预设根本无用 ✗——id 是预设定的、换到哪一层都撞同一块碑 ✓）。
+        // ⇒ 孤儿墓碑按调用方要的目标层落位 ✓（`Supersede` 本来就携带 `layer_id` ✓，
+        //  折叠层照它改归属 ✓ —— 不是新发明的通道 ✓）。
+        if state.layer_alive(&existing.layer_id) {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "对象 {object_id} 已被删除且属于图层 {}（它还在），与本次目标图层 {layer_id} 不一致，复活不跨层；请先 restore_object 恢复后移层，或换 object_id",
+                    existing.layer_id
+                )),
+            )
+            .with_object(object_id.to_owned()));
+        }
     }
+    // **孤儿墓碑**（源图层已被删除 ✓，理由见上面那道守卫 ✓）要先把"级联删除"解开 ✓。
+    //
+    // **为什么还要多做一步** ✓：`delete_layer` 只提交**一条图层 Tombstone** ✗，
+    // 层里的对象是折叠层**级联标记**的 ✓（`Object::deleted_by` 指向那条图层原子 ✓）
+    // ⇒ `revive_object` 按 `object_id` 找 Tombstone 原子**什么也找不到** ✗
+    //（实测：复活"成功"，紧接着的 Supersede 被「已被 tombstone」拒 ✗）。
+    // ⇒ 要撤的是**那条图层 Tombstone** ✓；为了让用户"删掉这一层"的原意保持不变 ✓，
+    //   对象落到目标层之后**再把那一层删回去** ✓。三步同属这一个变更集 ⇒ 可整体撤销 ✓。
+    let orphan: Option<(String, String)> =
+        if existing.layer_id != layer_id && !state.layer_alive(&existing.layer_id) {
+            state
+                .layers
+                .get(existing.layer_id.as_str())
+                .and_then(|layer| layer.deleted_by.clone())
+                .map(|atom| (existing.layer_id.clone(), atom.to_string()))
+        } else {
+            None
+        };
     let opened_here = ctx.changeset.is_none()
         && ctx
             .workspace
@@ -11523,6 +11571,19 @@ fn revive_effect_in_place(
         None
     };
     let outcome = (|| {
+        if let Some((_, cascade_atom)) = &orphan {
+            ctx.commit(AtomKind::Revert, json!({ "target": cascade_atom }))
+                .map_err(|error| {
+                    YanshiError::new(
+                        error.code,
+                        ErrorContext::detail(format!(
+                            "对象 {object_id} 的删除来自图层 {} 的级联墓碑 ✗ 而那次级联撤不开 ✗：{}",
+                            existing.layer_id, error.context.detail.clone().unwrap_or_default()
+                        )),
+                    )
+                    .with_object(object_id.to_owned())
+                })?;
+        }
         revive_object(ctx, object_id)?;
         let state = document_state(ctx)?;
         let object = state.objects.get(object_id).expect("复活后对象必在状态里");
@@ -11532,11 +11593,21 @@ fn revive_effect_in_place(
         if let Some(label) = &label {
             data["name"] = json!(label);
         }
-        let owner_layer = object.layer_id.clone();
+        // **孤儿墓碑 ⇒ 落位到调用方要的图层** ✓：复活回来的对象还带着已删图层的归属 ✓，
+        // 直接沿用就会造出"挂在不存在图层上的对象" ✗。
+        let owner_layer = if orphan.is_some() {
+            layer_id.to_owned()
+        } else {
+            object.layer_id.clone()
+        };
         let result = ctx.commit(
             AtomKind::Supersede,
             json!({"object_id": object_id, "layer_id": owner_layer, "data": data}),
         )?;
+        // **把用户删掉的那一层重新删掉** ✓（对象已经搬到目标层了 ✓ 不受影响 ✓）。
+        if let Some((dead_layer, _)) = &orphan {
+            ctx.commit(AtomKind::Tombstone, json!({ "layer_id": dead_layer }))?;
+        }
         let region = region_of(&result);
         let mut value = finish_mutation(ctx, &result, region)?;
         value["revived"] = json!(true);
@@ -13482,23 +13553,12 @@ fn kind_label(kind: &AtomKind) -> String {
 /// 从"手工删目录"变成"一次调用" ✓。想彼此隔离就**用不同的 doc_id** ✓（默认值已由 `--doc` 提供 ✓）。
 fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let doc_id = optional_str(args, "doc_id").unwrap_or_else(|| ctx.doc_id.clone());
-    // 尺寸：缺了就给一句**能照做**的错 ✓（本轮刚给"不存在"加过可用值 ✓，同一个道理 ✓）。
-    let width = optional_count(args, "width")?
-        .ok_or_else(|| {
-            YanshiError::new(
-                ErrorCode::InvalidArgument,
-                ErrorContext::detail("new_document 需要 width ✓（例如 1024）"),
-            )
-        })?
-        .clamp(1, 65536) as u32;
-    let height = optional_count(args, "height")?
-        .ok_or_else(|| {
-            YanshiError::new(
-                ErrorCode::InvalidArgument,
-                ErrorContext::detail("new_document 需要 height ✓（例如 1024）"),
-            )
-        })?
-        .clamp(1, 65536) as u32;
+    // **尺寸只在"真的要新建"时才是必填** ✓（真实使用探针 2026-10-25 ✓）：
+    // 同 id 已存在 ⇒ 语义是"打开" ✓（见下），此时宽度由**既有文档**决定 ✓ ⇒
+    // 若像以前那样在打开分支**之前**就强制 width ✗，"打开已存在文档"这条
+    // 契约路径会拿 `缺少必填参数 width` ✗ 而根本走不到 `opened:true` ✓。
+    let width = optional_count(args, "width")?.map(|value| value.clamp(1, 65536) as u32);
+    let height = optional_count(args, "height")?.map(|value| value.clamp(1, 65536) as u32);
     let background = match args.get("background") {
         Some(value) if !value.is_null() => {
             let channel = |name: &str, fallback: i64| {
@@ -13587,7 +13647,17 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             }));
         }
     }
-    let mut request = crate::document::NewDocument::new(&doc_id, width, height);
+    // 走到这里 ⇒ 确实要**新建**一块画布 ✓ ⇒ 尺寸缺了就给一句**能照做**的错 ✓。
+    let need = |name: &str, value: Option<u32>| -> Result<u32> {
+        value.ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("new_document 新建画布时需要 {name} ✓（例如 1024）；若只是想打开已存在的文档，本参数可不传 ✓")),
+            )
+        })
+    };
+    let mut request =
+        crate::document::NewDocument::new(&doc_id, need("width", width)?, need("height", height)?);
     request.background = background;
     // **"已经有同 id 的文档"要给出下一步** ✓（本轮刚给"不存在"做过同样的事 ✓）：
     // 底层那句只写"文档 X 已打开" ✗ ⇒ 调用方还是不知道该干什么 ✓

@@ -287,7 +287,7 @@ const PAGE_TAIL_A: &str = r##"</style>
          浮到画布上方 ✓ —— 点一下开 ✓、再点一下收 ✓；卡本身是**搬过去再搬回来**，
          不是重建 ✗（上一版把面板弄空 ✓ 就是栽在"重建/丢了原来的位置"上 ✓）。 -->
     <button id="brushLibraryOpen" class="brush-control" type="button" aria-pressed="false"
-            title="笔刷库：每支笔刷都带**真实落笔**的效果图（滚到哪画到哪）；点一行就换那支笔">笔刷库</button>
+            title="笔刷库：每支笔刷都带真实落笔的效果图（滚到哪画到哪）；点一行就换那支笔">笔刷库</button>
     <button id="assetFloat" class="brush-control" type="button" aria-pressed="false"
             title="把调色板 / 纹理浮到画布上（再点一次收回，卡片会回到原来的位置）">素材</button>
     <span id="brushPreviewWrap" class="brush-control" title="这支笔刷真实落一小笔的样子（服务端 brush_preview，与落笔同一条实现）">
@@ -497,6 +497,22 @@ const PAGE_TAIL_A: &str = r##"</style>
       <h2>最近一次响应</h2>
       <div id="last" style="font-family:ui-monospace,monospace;font-size:11px"></div>
     </div>
+    <!-- **直方图** ✓ —— `get_histogram`（只读 ✓、MCP 缺省面里就有 ✓）此前在查看器里**零引用** ✗
+         ⇒ 人在页面上只能"看着像过了/欠了"，取不到 Agent 拿到的同一份读数 ✗（两边各说各话 ✓）。
+         作用域三选一与工具规格一致 ✓：整文档 / 当前图层 / 只统计选区（选区来自服务端事实 ✓）。 -->
+    <div class="card" data-panel="diag" id="cardHistogram">
+      <h2>直方图</h2>
+      <div class="toolbar">
+        <select id="histogramScope" title="统计整文档的合成结果，还是只统计当前图层">
+          <option value="document">整文档</option>
+          <option value="layer">当前图层</option>
+        </select>
+        <label title="只统计当前选区那块矩形（选区来自服务端事实，不是本地猜测）"><input id="histogramUseSelection" type="checkbox" /> 只统计选区</label>
+        <button id="histogramReload" type="button" title="读取直方图（get_histogram，只读，不改画面）">读取</button>
+      </div>
+      <canvas id="histogramCanvas" width="256" height="96" title="纵轴按对数画：平涂文档里那几笔颜色的桶只有几十个像素，线性轴下会被压成看不见（数值本身仍是服务端给的 ✓）" style="width:100%;height:96px;background:#0d0f12;border:1px solid var(--line);border-radius:4px"></canvas>
+      <div id="histogramInfo" class="hint"></div>
+    </div>
     <div class="card" data-panel="diag">
       <h2>反馈</h2>
       <div class="status" style="flex-direction:column; align-items:flex-start; gap:8px">
@@ -516,6 +532,52 @@ const PAGE_TAIL_A: &str = r##"</style>
         <button id="annotationShowResolved" type="button">显示已解决</button>
       </div>
       <div id="annotationList" class="annotation-list"></div>
+    </div>
+
+    <!-- **锚点** ✓（`set_anchor` / `get_anchors` / `delete_anchor` 此前在查看器里**零引用** ✗）。
+         这三个工具解决的是**真机报告 2026-10-15** 的错位问题 ✓（起稿定死关键点 ✓、
+         每个新会话读回**同一组坐标** ✗ 不许重新目测 ✓）——
+         但**只有 MCP 侧够得到** ⇒ 人在界面上画时**仍然在靠目测对齐** ✓。
+         坐标有三个来源 ✓：手填 ✓、**选区中心**（选区本身来自服务端事实 ✓）✓、
+         或者**开着「锚点」工具直接在画布上点** ✓（点一下就填好 x/y ✓，再点「钉住」✓）。 -->
+    <div class="card" data-panel="paint">
+      <h2>锚点</h2>
+      <div class="hint">把关键点钉死在文档里 ⇒ 换会话、重启服务都读回同一组坐标，不必重新目测。</div>
+      <div class="toolbar" style="gap:8px;flex-wrap:wrap">
+        <label>名 <input id="anchorName" type="text" placeholder="left_eye" style="width:104px" /></label>
+        <label>x <input id="anchorX" type="number" step="1" style="width:68px" /></label>
+        <label>y <input id="anchorY" type="number" step="1" style="width:68px" /></label>
+        <label>备注 <input id="anchorNote" type="text" placeholder="可留空" style="width:104px" /></label>
+      </div>
+      <div class="toolbar" style="gap:8px;flex-wrap:wrap">
+        <button id="anchorSet" type="button" title="写一个命名锚点（set_anchor）；同名再设 = 覆盖，不必先删">钉住</button>
+        <button id="anchorFromSelection" type="button" title="用当前选区的中心填充 x / y（选区来自服务端事实）">用选区中心</button>
+        <button id="anchorRefresh" type="button" title="读回文档里全部锚点（get_anchors）">刷新</button>
+      </div>
+      <div class="hint" id="anchorInfo"></div>
+      <div id="anchorList" class="annotation-list"></div>
+    </div>
+
+    <!-- **风格预设** ✓（`list_presets` / `preview_preset` / `apply_preset` 此前在查看器里**零引用** ✗）。
+         这 22 套内置预设是**落成一串可调对象**的 ✓（不是一次性烘焙像素 ✗）⇒ 人在界面上
+         只能靠 MCP 才够得到 ✓。三段流程与成熟软件一致 ✓：按题材筛 ✓ → **先看代理图**（临时文档渲染 ✓
+         不动原文档 ✓）→ 再落到当前图层 ✓；`强度` 与预设自带的**语义旋钮**都能调 ✓。 -->
+    <div class="card" data-panel="paint">
+      <h2>风格预设</h2>
+      <div class="hint">挑一套风格落到当前图层：落的是可调对象，不是一次性烘焙。先点「刷新」读回预设，题材可筛。</div>
+      <div class="toolbar" style="gap:8px;flex-wrap:wrap">
+        <label>题材 <input id="presetSubject" type="text" placeholder="如 夜景 / 人像" style="width:112px" /></label>
+        <label>强度 <input id="presetStrength" type="range" min="0" max="100" value="100" style="width:104px" /></label>
+        <span class="hint" id="presetStrengthOut">100%</span>
+        <button id="presetReload" type="button" title="读回可用预设（list_presets）；题材框留空 = 全部">刷新</button>
+      </div>
+      <div class="toolbar" style="gap:8px;flex-wrap:wrap">
+        <label><input id="presetCorrection" type="checkbox" checked />带修正段</label>
+        <span class="hint" id="presetInfo"></span>
+      </div>
+      <div id="presetKnobs"></div>
+      <img id="presetShot" alt="" style="display:none;max-width:100%" />
+      <div id="presetList" class="annotation-list"></div>
     </div>
 
     <!-- **对象** ✓（设计 §9：复制/实例化/组引用 ✓）—— 目标③点名的"实例/组" ✓。
@@ -549,6 +611,13 @@ const PAGE_TAIL_A: &str = r##"</style>
         <label>组 <input id="objectGroupId" type="text" placeholder="group_id" style="width:120px" /></label>
         <button id="objectAddGroup" type="button" title="把勾选对象加入该组（add_to_group）">加入组</button>
         <button id="objectRemoveGroup" type="button" title="把勾选对象移出该组（remove_from_group）">移出组</button>
+        <!-- **整组撤销** ✓ —— `revert_group` 此前 Web **零引用** ✗：页面上撤群只能逐对象撤 ✓
+             （而"同一次操作产生的所有笔"正是它的语义 ✓）⇒ 组级回退在界面上不可达。 -->
+        <button id="objectRevertGroup" type="button" title="把该组同一次操作产生的所有笔一次撤掉（revert_group，只撤这一组，不碰别的）">整组撤销</button>
+        <!-- **对象重排** ✓ —— `reorder_objects` 是 Core 工具、MCP 默认档里有 ✓，查看器此前**零引用** ✗：
+             页面上人能改**图层**的上下顺序 ✓，却改不了**同一图层内**谁盖住谁 ✗（只能删掉重画 ✓）。 -->
+        <button id="objectUp" type="button" title="把勾选的对象上移一层（reorder_objects，一次只动一个对象）">对象上移</button>
+        <button id="objectDown" type="button" title="把勾选的对象下移一层（reorder_objects，一次只动一个对象）">对象下移</button>
         <label>主图 <input id="objectMasterId" type="text" placeholder="master_id" style="width:120px" /></label>
         <button id="objectLinkMaster" type="button" title="把勾选实例改挂到该 master（link_to_master）">换主图</button>
         <select id="objectSyncPolicy">
@@ -644,6 +713,10 @@ const PAGE_TAIL_A: &str = r##"</style>
     <div class="card" data-panel="assets" id="cardReference">
       <h2>参考图</h2>
       <label>不透明 <input id="referenceOpacity" type="number" value="0.5" min="0" max="1" step="0.1" style="width:56px" /></label>
+      <!-- **位置** ✓：`set_reference` 收 `position:{x,y,w,h}`（文档像素 ✓），叠加层也**按它摆** ✓。
+           以前页面只会铺满整幅 ⇒ Agent 用 MCP 设了位置人却看不见 ✓（同一份数据两种读法 ✗）；
+           留空 ⇒ 铺满（与从前一致 ✓）。 -->
+      <label title="参考图摆在文档的哪个矩形（像素）；留空 = 铺满整幅">位置 <input id="referenceX" type="number" min="0" step="1" placeholder="x" style="width:52px" /> <input id="referenceY" type="number" min="0" step="1" placeholder="y" style="width:52px" /> <input id="referenceW" type="number" min="1" step="1" placeholder="w" style="width:52px" /> <input id="referenceH" type="number" min="1" step="1" placeholder="h" style="width:52px" /></label>
       <div class="toolbar" style="gap:8px">
         <button id="referenceSet" type="button" title="上传一张图，半透明铺在画布下层用于临摹（set_reference）">上传参考图</button>
         <button id="referenceClear" type="button" title="清除当前参考图（clear_reference）">清除参考图</button>
@@ -729,7 +802,20 @@ const PAGE_TAIL_A: &str = r##"</style>
       <div class="toolbar" style="gap:8px">
         <label>宽 <input id="exportServerW" type="number" min="0" step="1" placeholder="px" style="width:72px" /></label>
         <label>高 <input id="exportServerH" type="number" min="0" step="1" placeholder="px" style="width:72px" /></label>
-        <button id="exportServerPng" type="button" title="服务端整幅渲染并按给定尺寸缩放，结果直接下载到本机（export_png）">任意尺寸导出</button>
+        <!-- **期 4 的 region/LOD 能力补齐** ✓（上游 44db088c 给 `export_png` 加了
+             region + lod 0..=3 ✓，而查看器停在 width/height ✗ ⇒ web 用户够不到"只导这块 / 低清预览" ✓）。 -->
+        <label title="留空 ⇒ 整幅；填齐 x,y,w,h 才生效">区域 <input id="exportRegionX" type="number" min="0" step="1" placeholder="x" style="width:52px" /> <input id="exportRegionY" type="number" min="0" step="1" placeholder="y" style="width:52px" /> <input id="exportRegionW" type="number" min="0" step="1" placeholder="w" style="width:52px" /> <input id="exportRegionH" type="number" min="0" step="1" placeholder="h" style="width:52px" /></label>
+        <button id="exportRegionFromSelection" type="button" title="用当前选区的包围盒填充区域四个框（选区来自服务端事实）">用选区</button>
+        <label>档位 <select id="exportLod" title="取样档位：lod:k ⇒ 输出尺寸 = 区域 ÷ 2^k（向上取整），不经过全分辨率中间缓冲">
+          <option value="">缺省</option>
+          <option value="0">0 全分辨率</option>
+          <option value="1">1 一半</option>
+          <option value="2">2 1/4</option>
+          <option value="3">3 1/8</option>
+        </select></label>
+        <!-- **单图层导出** ✓（`export_png.layer_id` 早已实现 ✗ web 够不到 ✓）：勾选 ⇒ 只导当前层。 -->
+        <label><input id="exportLayerOnly" type="checkbox" title="只导当前图层（隐藏层也照导——导出某一层是明确要求）" />只导当前层</label>
+        <button id="exportServerPng" type="button" title="服务端渲染（可只导一个区域、可降档取样、可按尺寸缩放），结果直接下载到本机（export_png）">任意尺寸导出</button>
       </div>
       <div id="exportServerInfo" class="hint"></div>
       <label>导入为 <input id="projectImportName" type="text" placeholder="留空 ⇒ 用包里的 id" style="width:180px" /></label>
@@ -742,10 +828,13 @@ const PAGE_TAIL_A: &str = r##"</style>
     <!-- **建议** ✓（设计 §12.6 ✓）—— `suggest` / `list_suggestions` / `accept_suggestion` /
          `reject_suggestion` 此前在查看器里**零引用** ✗ ⇒ 用户看不到 AI 提出的可执行补丁 ✓、
          也无法接受或拒绝 ✓。它与上面的「标注」配对：**标注说明问题 ✓、建议给出可执行的修法 ✓**
-         （`accept_suggestion` 会**按序重放 patch** ✓，并把关联标注置为 resolved ✓）。 -->
+         （`accept_suggestion` 会**按序重放 patch** ✓，并把关联标注置为 resolved ✓）。
+         ★ **可见文本里不许写 markdown** ✓（截图巡检抓到 ✗）：`**粗体**` 与反引号是给读源码的人看的 ✓，
+         浏览器**不解析 HTML 里的 markdown** ✗ ⇒ 用户真的看到一串星号 ✓。
+         注释里照旧用 ✓，**面向用户的那句话必须写成纯文本** ✓。 -->
     <div class="card" data-panel="diag">
       <h2>建议</h2>
-      <div class="hint">建议来自 `suggest`（含**可执行补丁**）✓；接受会**按序重放**补丁 ✓。</div>
+      <div class="hint">建议来自 suggest 工具（含可执行补丁 ✓）；接受会按序重放补丁 ✓。</div>
       <div class="toolbar">
         <select id="suggestionStatus">
           <option value="pending">待处理</option>
@@ -760,7 +849,7 @@ const PAGE_TAIL_A: &str = r##"</style>
         <button id="suggestionRejectChecked" type="button" title="一次性拒绝所有勾选的建议（reject_suggestions）">拒绝所选</button>
       </div>
       <div id="suggestionList" class="annotation-list"></div>
-      <div class="hint" id="suggestionPreviewHint">点「预览」先看清补丁会被怎么执行 ✓（预览**不应用** ✓）</div>
+      <div class="hint" id="suggestionPreviewHint">点「预览」先看清补丁会被怎么执行 ✓（预览不改动画面 ✓）</div>
       <pre id="suggestionPreview" style="font-size:11px;white-space:pre-wrap;max-height:140px;overflow:auto;margin:4px 0 0"></pre>
     </div>
     <!-- **评论** ✓（设计 §12.6 的协作通道 ✓）—— `comment` 此前在查看器里**零引用** ✗。
@@ -784,7 +873,7 @@ const PAGE_TAIL_A: &str = r##"</style>
          实测现状：滚轮/触摸板**什么都不做** ✓ —— 这是**有意**的 ✓（用户实测"一碰就误缩放" ✗，
          注释见 `viewer.rs:5592` 一带 ✓）。所以这里不再说"滚轮只平移" ✗（那是更早一版的写法 ✓）。 -->
     <span>缩放 <input id="zoomInput" type="number" min="5" max="1600" step="25" value="100"
-                     style="width:64px" title="画布显示比例（%）；回车或失焦生效 —— 滚轮**不缩放也不平移**（防误触）" />%</span>
+                     style="width:64px" title="画布显示比例（%）；回车或失焦生效 —— 滚轮不缩放也不平移（防误触）" />%</span>
     <span id="zoom" class="hint">100%</span>
     <span id="undoDepth">撤销 0 / 重做 0</span>
   <span id="selectionHint">无选区</span>
@@ -800,7 +889,7 @@ const PAGE_TAIL_B: &str = r##"</script>
 <div id="fileMenu" hidden>
   <div class="file-menu-head">
     <strong>文件</strong>
-    <span class="hint">`Esc` 收起</span>
+    <span class="hint">Esc 收起</span>
     <button id="fileMenuClose" type="button">收起</button>
   </div>
   <div id="fileMenuBody"></div>
@@ -818,7 +907,7 @@ const PAGE_TAIL_B: &str = r##"</script>
     <strong>素材</strong>
     <!-- **快捷键** ✓（用户："点击或者快捷键，调色盘/纹理的窗口就可以浮出"✓）：
          `P` ⇒ 调色板、`T` ⇒ 纹理、`Esc` ⇒ 收起 ✓。 -->
-    <span class="hint">`P` 调色板 · `T` 纹理 · `Esc` 收起</span>
+    <span class="hint">P 调色板 · T 纹理 · Esc 收起</span>
     <!-- **用完即收** ✓（用户："设置完毕就关闭或者隐藏"✓）—— 默认**勾上** ✓（这就是他要的手感 ✓），
          但可关 ✓（想连点几个色块试的时候别被收走 ✗）。 -->
     <label class="hint" title="勾上：取完色就把浮层收起（想连续试色就取消勾选）">

@@ -111,3 +111,132 @@ fn selection_arguments_are_validated() {
     );
     assert_eq!(bad_feather["ok"], json!(false), "{bad_feather}");
 }
+
+/// **删掉的选区，id 必须能再用** ✓（真机复现的 bug ✓）。
+///
+/// **症状 ✗**：`delete_selection` 之后 ✓
+/// `list_selections` 报 0 条 ✓、`get_document` 报 `selections: 0` ✓ ——
+/// 但用**同一个 id** 再 `create_selection` 却回「选区 Q1 已存在」✗
+/// ⇒ 两句互相矛盾 ✓、而且**没有任何出路** ✓（换 id 只是绕开 ✓、
+/// 对一个固定工作流（比如总用 "sel_main"）就是永久报废这个名字 ✓）。
+///
+/// **根因 ✗**：`CreateSelection` 的"不许重名"检查写的是 `contains_key` ✓ ⇒
+/// **把墓碑也算成占用** ✗；而 `CreateLayer` 早就改成"只与存活的冲突" ✓
+///（`fold.rs` 的 `CreateLayer` 注释里记着一模一样的教训 ✓）。
+/// **蒙版／风格同形** ✓（`create_mask` 撞墓碑也会永久报废 id ✓）。
+#[test]
+fn a_deleted_selection_id_can_be_reused() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_sel", 128, 128),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    let shape = |x: f64| json!({"kind": "rect", "bbox": {"x": x, "y": x, "w": 20.0, "h": 20.0}});
+
+    let first = {
+        let mut ctx = context(&mut workspace);
+        registry.call(
+            &mut ctx,
+            "create_selection",
+            &json!({"selection_id": "sel_main", "shape": shape(10.0), "mode": "new"}),
+        )
+    };
+    assert_eq!(first["ok"], json!(true), "首次创建应成功：{first}");
+
+    let deleted = {
+        let mut ctx = context(&mut workspace);
+        registry.call(
+            &mut ctx,
+            "delete_selection",
+            &json!({"selection_id": "sel_main"}),
+        )
+    };
+    assert_eq!(deleted["ok"], json!(true), "删除应成功：{deleted}");
+
+    // **删除必须是"列表里没有"** ✓（否则下面的重建就没有自相矛盾的参照物 ✓）。
+    let listed = {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "list_selections", &json!({}))
+    };
+    assert_eq!(
+        listed["count"],
+        json!(0),
+        "删除后不该再列出该选区：{listed}"
+    );
+
+    // 同一个 id **重建必须成功** ✓（本条就是回归点 ✗：修复前这里 ok:false）。
+    let again = {
+        let mut ctx = context(&mut workspace);
+        registry.call(
+            &mut ctx,
+            "create_selection",
+            &json!({"selection_id": "sel_main", "shape": shape(40.0), "mode": "new"}),
+        )
+    };
+    assert_eq!(
+        again["ok"],
+        json!(true),
+        "墓碑不该占用选区 id（与图层同规则）：{again}"
+    );
+
+    let relisted = {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "list_selections", &json!({}))
+    };
+    assert_eq!(relisted["count"], json!(1), "重建后应重新列出：{relisted}");
+
+    // 但**存活**的那一个仍须拒绝重名 ✗ —— 否则就是无声覆盖用户正在用的选区 ✓。
+    let duplicate = {
+        let mut ctx = context(&mut workspace);
+        registry.call(
+            &mut ctx,
+            "create_selection",
+            &json!({"selection_id": "sel_main", "shape": shape(70.0), "mode": "new"}),
+        )
+    };
+    assert_eq!(
+        duplicate["ok"],
+        json!(false),
+        "存活选区必须拒绝同名：{duplicate}"
+    );
+    assert_eq!(
+        duplicate["error_code"],
+        json!("precondition_failed"),
+        "应报前置条件失败：{duplicate}"
+    );
+}
+
+/// **删掉的蒙版，id 必须能再用** ✓（与选区同一类 ✓）。
+#[test]
+fn a_deleted_mask_id_can_be_reused() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_sel", 128, 128),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let registry = registry();
+    let mask_args = json!({"mask_id": "mask_main",
+                           "shape": {"kind": "rect", "bbox": {"x": 4.0, "y": 4.0, "w": 16.0, "h": 16.0}}});
+    let first = {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_mask", &mask_args)
+    };
+    assert_eq!(first["ok"], json!(true), "首次创建蒙版应成功：{first}");
+    let deleted = {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "delete_mask", &json!({"mask_id": "mask_main"}))
+    };
+    assert_eq!(deleted["ok"], json!(true), "删除蒙版应成功：{deleted}");
+    let again = {
+        let mut ctx = context(&mut workspace);
+        registry.call(&mut ctx, "create_mask", &mask_args)
+    };
+    assert_eq!(again["ok"], json!(true), "墓碑不该占用蒙版 id：{again}");
+}

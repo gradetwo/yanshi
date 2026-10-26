@@ -1187,9 +1187,13 @@ pub(super) fn write_apply_preset(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             ))
         })?;
         if let Some(existing) = tombstoned.get(&op.object_id) {
-            if existing.layer_id != layer_id {
+            // **只有"源图层还在"才拒绝跨层复活** ✓（与 `revive_effect_in_place` 同一口径 ✓，
+            // 两边各判一套必然漂移 ✓）：删掉预设落过的图层 ⇒ 这些确定性 id 成了孤儿墓碑 ✓，
+            // 旧代码在这里就把整组预设永久判死 ✗（实测：换新图层再应用同一套预设 ⇒ 失败 ✗，
+            // 而提示"换图层/文档"对预设无用 ✗——id 由预设展开决定 ✓）。
+            if existing.layer_id != layer_id && state.layer_alive(&existing.layer_id) {
                 return Err(preset_err(format!(
-                    "对象 {} 已被删除且属于图层 {}，与预设要落的图层 {layer_id} 不一致，拒绝复活；请先 restore_object 恢复后移层，或换图层/文档",
+                    "对象 {} 已被删除且属于图层 {}（它还在），与预设要落的图层 {layer_id} 不一致，拒绝复活；请先 restore_object 恢复后移层，或换图层/文档",
                     op.object_id, existing.layer_id
                 )));
             }

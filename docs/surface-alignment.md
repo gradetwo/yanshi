@@ -3,7 +3,7 @@
 本文回答一个问题：**同一份能力，系统实现了没有、人在 Web 查看器里够不够得到、Agent 通过 MCP 看不看得见。**
 三面各自"实际暴露了什么"都来自**运行命令或读源码**，不来自记忆；每个数字都写了出处。
 
-* **日期**：2026-10-05（Asia/Shanghai）。
+* **日期**：2026-10-05（Asia/Shanghai）；**2026-10-26 追加**一节「追加（2026-10-26）— Web 面计数与逐行更正」，那一节的数字**重测于 `ef2494de` + 本地未提交改动**（`2a86cf7d` 那一轮的读数已被替换），其余各节仍是 10-05 的读数。
 * **被测版本**：工具面在 `f5835cb`（`main`，工作树干净）上实测；截至 `3b71267`，`crates/yanshi-server/src/tools.rs`、`crates/yanshi-http/src/viewer.rs`、`crates/yanshi-mcp/src/lib.rs`、`docs/tools.md`、`docs/guide*.md`、`scripts/criteria-known-red.txt` 自 `f5835cb` 起**无改动**（`git diff --stat f5835cb..HEAD -- <上述文件>` 为空），并在 `3b71267` 的工作树上复核过全部计数，读数一致。
 * **口径定义**（本文三张表都按它）：
   * `系统实现` = `ToolRegistry`（`crates/yanshi-server/src/tools.rs`）里注册的工具；`已在` / `计划中` / `无` 三态。
@@ -20,6 +20,8 @@
 ---
 
 ## 表 1 — 汇总计数
+
+> ⚠️ **本表的 MCP 与 Web 两行已过期**（缺省 profile 集在 2026-10-24 被改成 `Profile::DEFAULT`，本轮又给查看器加了入口）。当前实测数字见文末「追加（2026-10-26）」一节；本表保留原样，是为了留下"哪个版本读到什么"的证据，不是为了给现状。
 
 | 面 | 数量 | 口径 | 证据 |
 |---|---|---|---|
@@ -57,7 +59,7 @@
 | 修图：仿制 / 修复 / 涂抹 / 补丁（retouch） | 已在 | 有：`clone_stamp` / `heal_stamp` / `smudge`@viewer.rs:6002、`resample`@4387；`patch` / `estimate_dehaze` 无 UI | 有，但需 `--profile retouch`（默认无） | 系统+Web | 原因：`retouch` 非默认。下一步：等 MCP 默认决策；`patch` / `estimate_dehaze` 是否要 UI 属产品决策 |
 | 液化（retouch） | 已在 | 有：`liquify_push` / `liquify_twirl` / `liquify_pinch`@viewer.rs:6002 | 有，但需 `--profile retouch`（默认无） | 系统+Web | 原因同上 |
 | 调整与滤镜（retouch） | 已在 | 有：`add_adjustment` / `add_filter`@viewer.rs:3404、`update_adjustment` / `update_filter`@3396、`list_effects`@3428 | 有，但需 `--profile retouch`（默认无） | 系统+Web | 原因同上 |
-| 参考图（`set_reference` / `clear_reference`） | 已在（core） | **无**：查看器只用 `get_preferences`@viewer.rs:7344 读出 `reference.*` 并叠一层半透明图（viewer.rs:7336-7372），没有设置/移除入口 | 默认有（core：`set_reference` / `clear_reference` / `get_preferences`） | 系统+MCP | 人只能用 MCP 设参考图，页面只能显示。下一步：加"上传参考图"按钮，或产品决定参考图只由 Agent 设置 |
+| 参考图（`set_reference` / `clear_reference`） | 已在（core） | **有**（本行原文"无"已过期 ⇒ 见"追加"一节 ✓）：上传 / 清除按钮 + 不透明度 + `x/y/w/h` 位置框，改完即生效 | 默认有（core：`set_reference` / `clear_reference` / `get_preferences`） | 三方齐 | 位置与不透明度以服务端偏好为唯一真源 ⇒ 页面与 MCP 读同一份数据 ✓（实测几何 ±2px 内相符 ✓）。剩余限制：裸像素 blob 换浏览器解不开（页面会说明并提示重传 ✓）、偏好是工作区级不是文档级 ⇒ 两条均入"需要用户决策"第 7 / 8 条 |
 | 画布采样与区域分析（`sample_color` / `analyze_region`） | 已在（core） | **无**：吸管走客户端 WASM 内核 `state.kernel.render_region_rgba`（viewer.rs:5642-5664），不调 `sample_color` / `analyze_region` | 默认有（core：`sample_color`、`analyze_region`） | 系统+MCP | 两条取色路径并存（客户端内核 vs 服务端 `sample_color`，`tools.rs:963` 规格、`:2642` 调度、`:2795` 实现）⇒ 可能漂移。下一步：吸管改调 `sample_color`，或加一条"两条路径读数一致"的判据 |
 | 笔刷库与预览 | 已在 | 有：`brush_preview`@viewer.rs:7264（入库图缺失时的回退）、`list_assets`@4956、`list_palette_colors`@5022；入库预览 `/brush-previews/`@7137,7254 | 默认有（core：`brush_preview` / `list_assets` / `list_palette_colors` / `save_palette` / `set_brush_dynamics`）；`list_brushes` 需 `--profile structure` | 三方齐 | `list_brushes`（内置光栅笔刷参数）Web 无、默认 MCP 也无；`save_palette` / `set_brush_dynamics` 无 UI。另一条实测见"本次未测"：`browser-brush-preview-local.mjs` 的已知红理由已过时 |
 | 介质插件模拟（油画/水彩/马克笔/铅笔/像素） | 已在（`medium_stroke` core；`assets/mediums` 6 个 wasm） | 有，但**走另一条实现**：浏览器 WASM 插件出 RGBA，再 `import_image` 入库（viewer.rs:2945-2980）；**未调用** `medium_stroke` | 默认有（core：`medium_stroke`） | 三方齐 | 同一能力有两份实现（浏览器 WASM 与服务端插件），Web 与 MCP 走的不是同一条路；两者是否逐字节一致**未测**。相关已知红：`tool-impasto-plateau.mjs`（报告 2.3：修法已把偏差从 34.85% 降到 0.59%，差 0.09 个百分点，待产品决策）。下一步：先测两条路的中等笔迹是否同像素 |
@@ -72,6 +74,78 @@
 
 ---
 
+## 追加（2026-10-26）— Web 面计数与逐行更正
+
+上面两张表的数字测于 `f5835cb`（2026-10-05）。此后上游把 HTTP/MCP 的缺省 profile 集从"core 一组"改成 `Profile::DEFAULT`（`crates/yanshi-server/src/tools.rs:100-155`、`crates/yanshi-http/src/server.rs:152-161`，并由 `server.rs:4364-4382` 的断言钉死「http 缺省组成必须是 `Profile::DEFAULT`」）；本轮又给查看器补了锚点、风格预设、蒙版涂抹三块入口。**所以表 1 / 表 2 里的 MCP 计数与 Web 计数都已过期**，本节是**当前基线 `ef2494de` + 本地未提交改动**的实测（`2a86cf7d` 那一轮的读数已被下面的数字取代），口径与上面一致（「JS 真的会调到」= `callTool` / `callToolChecked` / `callToolQuiet` / `window.yanshiCallTool` 的字符串实参去重）。
+
+| 项 | 2026-10-05 | 2026-10-26 实测 | 出处 |
+|---|---|---|---|
+| MCP 缺省工具数 | 109（= core） | **205**（缺省 9 组：core,history,changeset,retouch,conflict,annotation,collab,structure,photo） | `target/release/yanshi-mcp --list-tools \| python3 -c 'import sys,json;print(len(json.load(sys.stdin)["tools"]))'`（测于 `ef2494de` + 本地改动，二进制重新构建 ✓） |
+| 系统实现（全开） | 181 | **205**（`--profile all` = `Profile::IMPLEMENTED` 15 组） | 实测 `curl -s http://127.0.0.1:15900/api/tools`（`--profile all`）⇒ `profiles` 15 组、`tools` 205；`core` 单组 = **125**。**HTTP 缺省面与全开同数**（另起一台不带 `--profile` 的实例实测 = 9 组 / 205 ✓）⇒ 介质与 svg 那 6 组只放行资产/预设，不放行新工具 |
+| Web 工具条条目 | 22（20 真工具） | **25**（23 真工具；新增 `anchor` / `mask_paint` / `mask_erase`） | `const TOOL_DEFS`（`crates/yanshi-http/assets/viewer-app.js:9551`）；注意 JS 已从 `viewer.rs` 拆到 `assets/viewer-app.js` ⇒ 本文早先"行号在 viewer.rs"的出处整体平移 |
+| Web 真正调到的工具 | 78（另一算法 83） | **93**（补 `get_histogram` / `revert_group` 前 90，再补 `reorder_objects` 前 92） | 提取命令见文末第 8 条 |
+| Web 调用 ∩ MCP 缺省 | 34 / 78 | **93 / 93**（Web 用到的每一个工具都在缺省面内）| 与 `/api/tools` 返回的名字求交，`web - http = ∅` ✓ |
+| 缺面覆盖率（Web / MCP 缺省） | 43.6%（另一口径 31%） | **45.4%**（93 / 205） | 由上两行相除 |
+
+**表 2 里本轮失效的行**（只列结论，逐行重测留待下一轮三面对账）：
+
+* 「参考图」行：原文写 Web **无** `set_reference` / `clear_reference` 入口 ⇒ **已过期**（上传/清除两个按钮都在）；**2026-10-26 第二轮把这一行整体推到"三方齐"** ✓：
+  * **位置**：卡片新增 `x / y / w / h` 四个框（`viewer.rs` 的 `#cardReference`）⇒ 真的发 `set_reference.position` ✓，叠加层按它摆（`applyReferenceGeometry()`，与选区/参考线同一时刻重算 ✓）。此前服务端收 position、页面只能铺满 ⇒ **同一份数据两种读法** ✗ 已消除。
+  * **改数字即生效**：五个输入框挂 `change` ⇒ 重发一次 `set_reference`（同一条工具路 ✓）。此前它们只在"下一次上传"被读到 ⇒ 控件存在但不反应 ✗。
+  * **跨会话可见**：`<img>` 解不开存储里的裸 RGBA（`/api/blob` 的 `sniff_blob_mime` 对裸像素只给 octet-stream ✓）⇒ 上传时把原始 dataURL 另存进 `localStorage`（上限 1.5MB ✓，超了就在信息条说明），F5 之后参考图不再消失 ✓。
+  * **MCP/HTTP 设的参考图，页面看得见**：位置/不透明度一律以服务端偏好为准（实测 `set_reference` 后重开页面 ⇒ 叠加层几何与 `reference.position` 相符 ✓）。
+  * 仍缺：参考图的**混合模式 / 可见性开关 / 锁定**（服务端也没有这三样 ⇒ 属"计划中"而非"web 缺"）；以及**裸像素无法跨浏览器显示**这条结构性限制（要彻底解决需服务端存原图或给出尺寸 ⇒ 见「需要用户决策」）。
+* **判据自身的假红（本轮发现并修）** ✓：`scripts/browser-reference-overlay.mjs` 写死 `blob_hash = sha256:aaaa…`，而 `set_reference` 自上游 `84d15439` 起会校验"blob 必须真在存储里" ⇒ 该判据**每次都停在 exit 3**（"我自己坏了"）✓ —— 也就是说**"参考图看得见"那一半其实已经六天没被真正判过** ✗。改法：先用**只读**的 `render_region` 产出当前文档的真 blob 再设 ⇒ 判据恢复真判（本轮实测 exit 0 ✓）。同类写死假 hash 的判据已排查：`tool-pwa-gc-references` / `tool-gpu-pure-parity` 的假 hash 属"引用计数/参数形状"用途 ⇒ 不受该校验影响 ✓（两者本轮复跑 exit 0）。
+* **参考图偏好是工作区级、不是文档级** ✓（实测：给文档 A 设 `reference.position` 后，新建文档 B 的 `get_preferences` 回执里 `where = <工作区根>/preferences.json`，B 直接读到同一份 ⇒ 换文档时参考图与它的矩形会跟过去 ✗）。这是服务端数据模型如此（`clear_reference` 才能清 ⇒ 页面「清除参考图」按钮因此是**全局**清除）。要不要改成按文档存 ⇒ 见「需要用户决策」。
+* **本轮又补掉两个"系统 + MCP 缺省有、人够不到"的缺口** ✓（验证一律以**服务端返回**为准，不比"看起来差不多"✗）：
+  * `get_histogram` ⇒ 诊断面板新增「直方图」卡：作用域与工具规格一致（整文档 / 当前图层 / 只统计选区 ✓，选区来自 `list_selections` 写进 `state.selectionShape` 的服务端事实 ✓）；**读数行显示的 `scope` 取服务端回的那个**（勾了选区又切图层 ⇒ 回 `layer_region`，页面照写"图层×选区"✓，不拿界面控件状态猜 ✗）。实测页面读数与直接调 `get_histogram` **逐字段相等**（`pixels` / `scope` / `summary.luma` 的均值·中位·p5·p95 ✓）。
+  * `revert_group` ⇒ 对象工具条新增「整组撤销」：只要 `group_id`，不需要先勾选对象 ✓（提示里写清了这点，否则会以为要勾 ✓）。**`reverted_count` 必须出口报数** ✓：该工具对"这组没有可撤的原子"回的是 `ok:true` + `note`（幂等，不算错误 ✓）⇒ 页面只看 `ok` 就成了"点了没反应还显示成功"✗，故撤了几笔/一笔没撤都要说明 ✓。
+  * `reorder_objects` ⇒ 对象工具条新增「对象上移 / 对象下移」（`ef2494de` 这一轮补 ✓）。三条硬约束都必须在页面侧成立，否则服务端直接打回 ✗：
+    * **一次只动一个对象**：`reorder_objects` 要求提交**完整**的图层 z 序（`fold.rs` 校验"期望 N 个对象，实际 M 个；缺失：…"✓）⇒ 勾选数 ≠ 1 时页面出声拒绝，不去猜该动哪个 ✓。
+    * **必须带 `include_hidden: true` 去读对象**：`list_objects` 缺省**不返回隐藏对象**（`tools.rs:3125` ✓）⇒ 少读一根就拼出不完整的顺序，重排直接被判"顺序不完整"✗。真机验证特意在图层里留了一根隐藏笔迹 ✓，页面仍然排得动 ✓。
+    * **幂等也要说**：已经在最上/最下再点 ⇒ 明说"画面不变"，不静默 ✓。
+    * 验证不只看数据：探针在交叠处取像素，**红蓝互换**才算 z 序真的进了渲染（`render_region raw:true` ⇒ 逐像素数红蓝 ✓）；重排原子可用 `get_log` + `revert` 撤回来（`undo_last` 按设计只管笔迹类原子 ⇒ 拿它验结构变更是探针的前提错 ✗，不是产品的错 ✓）。
+* **本轮修掉的两个真实启动 bug（都不是"缺口"，是坏在脸上的东西）** ✗→✓：
+  * **打开文档后「对象」「标注」面板是空的**：两条启动路（`loadDocumentData()` 与带 token 的内联分支）都没调 `refreshObjects()` / `refreshAnnotations()` ⇒ 页面明明有 2 个对象却写着「当前图层还没有对象 ✓」（**一句假话** ✓），用户只能自己去点「刷新」。修法：两条路都补上，并按 `__appMarks` 纪律打点（`boot:before-refreshObjects` / `boot:refreshObjects-ok` / `…!err`），失败要留下可离线诊断的痕迹 ✓。
+  * **面板按钮要等 WASM 内核加载完才接线**：`warmKernel()` 里 `initWasm()` 排在面板接线之前 ⇒ 内核加载失败/慢时，图层、对象、锚点这些**与服务端工具对话、跟内核无关**的面板整片是死的 ✗（表现为"按钮点了没反应"，而页面看起来一切正常）。修法：接线提到 `initWasm()` 之前 ✓。
+  * 新增仓库判据 `scripts/browser-boot-panels.mjs` ✓：建一份"有对象、有标注"的一次性文档 ⇒ 打开页面**不点刷新** ⇒ 面板条数必须等于服务端条数、且不得出现"还没有对象"这类自相矛盾的提示。已做**变异测试**：把两处启动调用换成空表达式 ⇒ 判据红（面板 0 vs 服务端 2 ✓），恢复 ⇒ 绿 ✓。
+* **新入口必须连带过英文面**✓（`browser-i18n.mjs` 在真浏览器里逐条抓到，不是补完就自以为干净 ✓）：本轮补的词条分三类 —— ① 卡片静态名与 tooltip（「对象上移 / 对象下移」）；② **面板空态提示**（「还没有标注 ✓」「当前图层还没有对象 ✓」「还没有存档点 ✓」…）—— 这类以前只在中文里写过 ⇒ 启动 bug 一修好、它们第一次真的显示出来，英文面立刻露红 ✗→✓；③ **动态拼句**要加模式词条：`读取失败：reference_not_found` 这种"整句里带服务端错误码"的串，字典按整句匹配不到 ⇒ 新增 `i18nText()` 的 `m19` 模式（`/^读取失败：(\S+)$/`）✓。
+* 「笔刷库与预览」行里"`save_palette` / `set_brush_dynamics` 无 UI"⇒ **已过期**：两者都在 Web 调用集内（调色板保存、笔刷动态）。
+* 「导入导出」行里"**无** `export_png`"⇒ **已过期**：`export_png` 已在调用集内（服务端导出选项）。
+* 「画布采样」行的两条路径并存问题**未动**：吸管仍走客户端 WASM（`state.kernel.render_region_rgba`），`sample_color` / `sample_colors` / `analyze_region` 在 Web 零调用 ⇒ "读数可能漂移"的判断继续成立。
+* 「作业与批处理」行**未变**：`batch` 有、`cancel_job` / `get_job` 无；本轮另发现 `commit_batch` / `try_batch` 也无入口。
+
+**本轮之后仍然成立的 Web 缺口**（逐个 `grep` 过 `assets/viewer-app.js` + `src/viewer.rs`，命中数 0；这些是"系统已在、MCP 缺省也能调、人却够不到"的一类，按价值排序，逐条要不要补属产品决策，本文只登记）：
+
+| 缺口 | 服务端状态 | 为什么算缺口 |
+|---|---|---|
+| `import_psd_layers` | core | Web 只有 `import_psd`（整包栅格化）；按图层入库（PSD 分层进画布）无入口 |
+| `frequency_separation` | retouch（已在缺省面内） | 修图最常用的分离磨皮，页面无按钮 |
+| `smart_*` 9 个（`smart_fill` / `smart_select` / `smart_sample` / `smart_edge_soften` / `smart_erase_shape` / `smart_blend` / `smart_glaze` / `smart_hatch_follow` / `smart_texture`） | 已在缺省面内 | 一整套"以选区/内容驱动"的能力只有 Agent 用得到 |
+| stash 三件套（`list_stashes` / `apply_stash` / `discard_stash`） | 已在缺省面内 | 暂存区完全没有 UI |
+| `commit_batch` / `try_batch` | 已在缺省面内 | 见"作业与批处理"行 |
+| `fill_region`（羽化 + 位图纹理填充） | core | Web 只有 `fill`（纯色矩形）与 `gradient_fill`；`fill_region` 的 `feather` 与 `texture:{type:"bitmap",…}` 两条能力页面无入口（`grep fill_region` 在 `assets/viewer-app.js` 与 `src/viewer.rs` 里 **0 命中**） |
+| `dodge_burn_setup`、`export_svg`、`export_timelapse` | 已在缺省面内 | 曲线/SVG/延时工程包都无入口（`export_timelapse` 的格式文档见 `docs/timelapse-package-format.md`）；**`get_histogram` 本轮已补**（诊断面板的「直方图」卡 ✓，见"本轮之后"下面的✓段落） |
+| 预设库的**内容**只有中文 | — | `list_presets` 返回 `name_en`（本轮已接进面板 ✓），但 `tags` / `suitable` / `caution` 与旋钮标签**服务端只有中文** ⇒ 英文界面下这三段仍必是中文。不是 i18n 判据能修的，属 `crates/yanshi-server/src/presets.rs` 的内容缺口 |
+| `window.yanshiCallTool` 强制 `refresh: false` | — | 外部脚本（检查脚本 / 自动化）经它调工具后**页面不重读状态** ⇒ 验证者以为没生效。位置 `assets/viewer-app.js:2914`；下一轮要么加可选参数，要么在文档里写清"调用后需手动刷新" |
+
+**复现第 8 条**（Web 面计数，本轮口径，只读源码、不需要服务端）：
+
+```bash
+node -e '
+const fs=require("fs");
+const src=["crates/yanshi-http/assets/viewer-app.js","crates/yanshi-http/src/viewer.rs"].map((f)=>fs.readFileSync(f,"utf8")).join("");
+const called=new Set([...src.matchAll(/call(?:Tool|ToolChecked|ToolQuiet)\(\s*["\x27]([a-z_0-9]+)["\x27]/g)].map((m)=>m[1])
+  .concat([...src.matchAll(/yanshiCallTool\(\s*["\x27]([a-z_0-9]+)["\x27]/g)].map((m)=>m[1])));
+console.log(called.size);'                                   # ⇒ 93（补 `get_histogram` / `revert_group` 之前 90，再补 `reorder_objects` 之前 92）
+target/release/yanshi-mcp --list-tools \
+  | python3 -c 'import sys,json;print(len(json.load(sys.stdin)["tools"]))'   # ⇒ 205
+```
+
+上面那张缺口表在 `ef2494de` 上**逐条重新 `grep` 过**（每个名字在 `assets/viewer-app.js` + `src/viewer.rs` 里命中数仍为 0 ✓）；`reorder_objects` 本轮补了入口 ⇒ 命中 1 ✓，不再列入缺口。
+
+---
+
 ## 需要用户决策
 
 以下不是实现者能单方面决定的（措辞取自仓库自己的待办记录，不是本文作者的取舍）：
@@ -82,6 +156,8 @@
 4. **6 条 `semantic` 工具是否实现、以及 provider 契约。** `docs/semantic-tools.md` 明确把模型、端点协议、提示词成形、成本控制、缓存都留给"实现它的那一轮 + owner 输入"。
 5. **介质/厚涂（impasto）0.09 个百分点残差是否接受。** 已知红 `tool-impasto-plateau.mjs` 的理由末尾就是"待产品决策"。
 6. **`docs/tools.md:24` 的 125 与 `docs/guide.md:7` 的 137 哪个是权威口径。** 两者都自称"全部已实现组"，但 profile 集不同（6 vs 8）；修哪一边取决于"已实现组"是否包含 `changeset` / `conflict`。
+7. **参考图偏好是"工作区级"还是"文档级"。** 实测：`set_reference` 写进 `<工作区根>/preferences.json` ⇒ 给文档 A 设的位置/图，切到新建文档 B 仍在（`get_preferences` 的 `where` 字段自证）。作为"临摹底图"跨文档常驻可能是有意的 ✗，但**位置是某个文档的像素矩形** ⇒ 换文档后那块矩形落在别处；页面能做的只有"照实显示 + 提供清除"（本轮已做 ✓）。要不要改成按文档存（`reference.<doc>.position`）属服务端数据模型决策。
+8. **参考图原图要不要以可显示的形式留一份。** 存储是内容寻址的**裸 RGBA**（`POST /api/blob` 先把 PNG 解码成 RGBA ✓），`GET /api/blob/{hash}` 的 MIME 嗅探对裸像素只给 `application/octet-stream` ✓ ⇒ `<img>` 永远解不开 ✗。本轮的对策是"浏览器自己缓存上传时的 dataURL"（超过 1.5MB 或配额不足就没辙 ✓，信息条会说明 ✓）。彻底解法要么在服务端留原图/记录宽高（`reference.width/height` ⇒ 前端可用 `ImageData` 重建成 PNG ✓），要么产品接受"换浏览器需重传"。
 
 ---
 

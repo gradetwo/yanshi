@@ -998,6 +998,69 @@ async function loadPreview(url) {
   }
 }
 
+/// **参考图叠加层的几何**（文档像素 → 屏幕像素）✓ 单独成函数：
+/// 平移／缩放只改 `state.viewport` ✓，而 `syncOverlayGeometry()` 是那一刻唯一的公共出口 ✓
+/// ⇒ 参考图必须跟着一起重摆 ✓，否则"视口一动参考图就跑偏"✓。
+///
+/// **为什么挂在 window 上** ✓：`refreshReferenceOverlay()` 在**另一个块作用域**里 ✓（同一文件里
+/// 已有先例：`state.referenceLocal` 那段注释 ✓），直接互相调用会 ReferenceError ⇒ 静默失败 ✗。
+function applyReferenceGeometry() {
+  const el = document.getElementById("referenceOverlay");
+  if (!el) return;
+  const canvas = document.getElementById("board") || document.querySelector("canvas");
+  if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  const vp = state.viewport || { x: 0, y: 0, w: Math.max(1, rect.width), h: Math.max(1, rect.height) };
+  const perX = rect.width / Math.max(1, vp.w);
+  const perY = rect.height / Math.max(1, vp.h);
+  const pos = (window.__referenceView || {}).position || null;
+  if (pos && [pos.x, pos.y, pos.w, pos.h].every((n) => Number.isFinite(Number(n))) && Number(pos.w) > 0 && Number(pos.h) > 0) {
+    // **服务端存的位置说话** ✓：Agent 用 `set_reference` 把参考图钉在左上角一块 ✓，
+    // 页面却仍旧铺满整幅 ⇒ 同一份数据两种读法 ✗（这轮修的就是它 ✓）。
+    el.style.left = Math.round(rect.left + (Number(pos.x) - vp.x) * perX) + "px";
+    el.style.top = Math.round(rect.top + (Number(pos.y) - vp.y) * perY) + "px";
+    el.style.width = Math.round(Number(pos.w) * perX) + "px";
+    el.style.height = Math.round(Number(pos.h) * perY) + "px";
+    // 用户给的就是这块矩形 ⇒ 不再保比例 ✓（`contain` 会在矩形里留白 ✓，那不是"位置"的意思 ✓）。
+    el.style.objectFit = "fill";
+  } else {
+    el.style.left = Math.round(rect.left) + "px";
+    el.style.top = Math.round(rect.top) + "px";
+    el.style.width = Math.round(rect.width) + "px";
+    el.style.height = Math.round(rect.height) + "px";
+    el.style.objectFit = "contain";
+  }
+}
+window.__applyReferenceGeometry = applyReferenceGeometry;
+
+/// **参考图原图的本地缓存**（按 blob hash ✓）。
+/// 存在的理由：`POST /api/blob` 会把 PNG **解码成裸 RGBA** 再入库 ✓（服务端设计如此 ✗）⇒
+/// `GET /api/blob/…` 回来的是 `application/octet-stream` ✓、`<img>` 解不开 ✗
+/// ⇒ 真机症状是「上传参考图后一切正常 ✓，刷新一次就看不见参考图了 ✗」（数据还在偏好里 ✓）。
+/// 这里把**上传时的原始 dataURL**（还是 PNG/JPEG ✓）按内容地址存进 localStorage ⇒ 跨会话可解 ✓。
+/// 上限 1.5 MB：超了就不缓存 ✓（配额是浏览器的 ✗，不能为缓存把别的界面数据挤掉 ✓）；
+/// 写入失败（配额／隐私模式）静默降级 ✗——参考图不是关键路径 ✓。
+const REFERENCE_CACHE_PREFIX = "yanshi.reference.";
+const REFERENCE_CACHE_LIMIT = 1500000;
+function rememberReferenceBlob(hash, dataUrl) {
+  try {
+    if (!hash || !dataUrl || dataUrl.length > REFERENCE_CACHE_LIMIT) return false;
+    localStorage.setItem(REFERENCE_CACHE_PREFIX + hash, dataUrl);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+function recallReferenceBlob(hash) {
+  try {
+    return localStorage.getItem(REFERENCE_CACHE_PREFIX + String(hash)) || null;
+  } catch (error) {
+    return null;
+  }
+}
+window.__rememberReferenceBlob = rememberReferenceBlob;
+window.__recallReferenceBlob = recallReferenceBlob;
+
 /// 内容层尺寸变化时同步覆盖层的显示矩形（画布按 CSS 缩放，覆盖层必须精确对齐它）。
 function syncOverlayGeometry() {
   const stage = board.parentElement;
@@ -1011,6 +1074,8 @@ function syncOverlayGeometry() {
   kernel.style.top = Math.round(rect.top - stageRect.top) + "px";
   kernel.style.width = Math.round(rect.width) + "px";
   kernel.style.height = Math.round(rect.height) + "px";
+  // 参考图也是同一时刻的几何 ✓（不跟着走 ⇒ 平移后它钉在旧位置 ✗）。
+  applyReferenceGeometry();
 }
 
 /// 设定**视口**尺寸（内容画布与覆盖层同尺寸、同坐标系），并清空两层。
@@ -3025,9 +3090,14 @@ function documentRow(info) {
   const name = document.createElement("span");
   name.className = "doc-name";
   name.textContent = info.doc_id;
+  // **两行都是 ellipsis 定宽列** ✓（`viewer.css` 的 `.doc-name`／`.doc-meta` ✓）⇒ 长 id／元信息
+  // 会被裁断 ✗，裁断就必须给 `title` ✓（与 `#history .kind`／`.actor` 同一口径 ✓）。
+  // title 取**渲染结果** ✓，不重算一遍 ✓（重算就是"界面一句话、悬停另一句话"的漂移源 ✗）。
+  name.title = info.doc_id;
   const meta = document.createElement("span");
   meta.className = "doc-meta";
   meta.textContent = documentMetaText(info);
+  meta.title = meta.textContent;
   text.append(name, meta);
   const actions = document.createElement("div");
   actions.className = "doc-actions";
@@ -4196,6 +4266,17 @@ async function loadDocumentData() {
   //     **∴ 代价**：**前序步骤的异常**被**吞掉**✗ ⇒ **∴ 而**那**就是**「**启动尽量完成**」的取舍** ✓
   //       ⇒ **∴ 且**每一步**都留了标记**✗ ⇒ **∴ 异常**仍可查** ✓**** ✓✓
   try {
+    // **开机必须把「对象」与「批注」两个面板装出来** ✓（本轮修的真 bug ✗）：
+    //   这两步此前**只挂在** `switchDocument()` 的初始化链里 ✓，而开机的两条路都不走那里 ✗
+    //   ⇒ 带 token 打开一个**有对象**的文档 ⇒ 面板显示「当前图层还没有对象 ✓」**这句假话** ✗
+    //     （实测：`list_objects` 回 2 个对象 ✓ 而面板 0 行 ✗，只有手动点「刷新」才出来 ✓），
+    //   而挂在面板上的那些入口（重排、整组撤销、实例…）在人看来就像"全是坏的" ✗。
+    bootMark("before-refreshObjects");
+    await refreshObjects();
+    bootMark("refreshObjects-ok");
+    bootMark("before-refreshAnnotations");
+    await refreshAnnotations();
+    bootMark("refreshAnnotations-ok");
     bootMark("before-refreshPreview");
     await refreshPreview();
     bootMark("refreshPreview-ok");
@@ -4216,11 +4297,15 @@ async function loadDocumentData() {
 async function warmKernel() {
   (window.__appMarks = window.__appMarks || []).push("warm:enter");
   const started = performance.now();
-  await initWasm();
-  (window.__appMarks = window.__appMarks || []).push("warm:after-initWasm");
+  // **面板接线必须排在 `initWasm()` 之前** ✓（本轮修的第二处 ✗）：
+  // 这三步原先挂在 `await initWasm()` **后面** ✗ ⇒ 内核起不来（离线 / wasm 取不到 ✓）
+  // 就**整段不执行** ✓ ⇒ 「对象」「批注」「检查点」三个面板的按钮**全都点不动** ✗，
+  // 而它们与内核**没有任何关系** ✓（全部走 HTTP 工具 ✓）。接线本身是纯 DOM ✓，提前无害 ✓。
   setupAnnotationPanel();
   setupObjectPanel();
   setupCheckpointPanel();
+  await initWasm();
+  (window.__appMarks = window.__appMarks || []).push("warm:after-initWasm");
   if (!state.wasm) return;
   const ok = await loadKernel(0);
   window.yanshiStats.kernelWarmMs = performance.now() - started;
@@ -4659,8 +4744,15 @@ async function refreshHistory() {
     if (_pl && _pl.layer_id) {
       const layerLabel = document.createElement("span");
       layerLabel.className = "layer";
+      // 图层名是**用户数据** ✓ ⇒ 与上面的 `.layer-name`／图层下拉同一条口径 ✓。
+      layerLabel.dataset.i18n = "off";
       const _name = _layerNames[_pl.layer_id] || (state.layerNames && state.layerNames[_pl.layer_id]) || "";
       layerLabel.textContent = _name || String(_pl.layer_id);
+      // **这一格是 `max-width:80px` ＋ ellipsis 的定宽列** ✓（`viewer.css` 的 `#history .layer` ✓）
+      // ⇒ `layer_default` 这种 13 字符的 id **必然被裁成 "layer_defaul…"** ✗。
+      // `kind`／`actor` 两格都给了 `title` ✓，唯独这格没给 ✗ ⇒ 鼠标扫过看不出是哪一层。
+      // 名字和原始 id 一起放进 title ✓（看到裁断的名字时也能核对到底层 id ✓）。
+      layerLabel.title = _name ? _name + "（" + String(_pl.layer_id) + "）" : String(_pl.layer_id);
       row.appendChild(layerLabel);
     }
     if (_pl && _pl.width && _pl.height) {
@@ -5113,6 +5205,57 @@ async function moveCheckedGroup(tool, what) {
   await refreshObjects();
 }
 
+/// **整组撤销** ✓（`revert_group`）：撤的是"**同一次操作产生的所有笔**"✓ —— 与逐对象撤不是一回事 ✗
+///（组里对象再多也是一次撤干净 ✓，且**不碰**别的组/散笔 ✓）。所以它**不需要勾选对象** ✓，
+/// 只要「组」框里有 group id —— 这一点要在提示里说清楚，否则人会以为要先勾选 ✓。
+///
+/// **`reverted_count` 必须报出来** ✓：工具对"这个组没有可撤的原子"回的是 **`ok:true` + 一句 `note`** ✓
+///（幂等，不是错误 ✓）⇒ 页面若只看 `ok` 就是"点了什么都没发生还显示成功"✗
+///（本项目明令禁止的那类 ✓）。撤了几笔 / 一笔没撤，人都要看得见 ✓。
+async function revertCheckedGroup() {
+  const groupId = (($("objectGroupId") || {}).value || "").trim();
+  if (!groupId) { log("先在「组」里填 group id ✓（整组撤销撤的是这一组的全部笔，不用逐个勾选对象）", "#c33"); return; }
+  const done = await callToolChecked("revert_group", { group_id: groupId }, "整组撤销");
+  if (!done || done.ok !== true) return;
+  const count = typeof done.reverted_count === "number" ? done.reverted_count : 0;
+  if (count === 0) log("整组撤销：组「" + groupId + "」没有可撤销的原子 ⇒ 画面没变 ✓" + (done.note ? "（" + done.note + "）" : ""), "#c9a23a");
+  else log("整组撤销：撤掉了 " + count + " 笔（组「" + groupId + "」）✓");
+  await refreshObjects();
+}
+
+/// **对象重排** ✓（`reorder_objects`）：Core 工具 ✓、MCP 默认档里有 ✓，查看器此前**零引用** ✗
+/// ⇒ 页面上人能改**图层**的上下顺序 ✓，改不了**同一图层内**谁盖住谁 ✗。
+///
+/// **必须带 `include_hidden: true`** ✓：工具的契约是"该图层**完整** z 序、自底向上"✓，
+/// 而 `list_objects` **默认不含不可见对象** ✗（`tools.rs:3125` ✓）⇒ 直接用缺省读数拼顺序
+/// 会被 fold 以"期望 N 个、实际 M 个"打回 ✗（隐藏对象也是被排序的对象 ✓）。
+async function moveCheckedObjectZ(delta) {
+  const ids = checkedObjects();
+  if (ids.length !== 1) { log("对象重排一次只动一个 ⇒ 请只勾选一个对象 ✓", "#c33"); return; }
+  if (!state.layerId) return;
+  const listed = await callTool("list_objects", { layer_id: state.layerId, include_hidden: true }, { refresh: false });
+  const objects = (listed && (listed.objects || listed.items)) || [];
+  // 自底向上排 ✓；同 z_index 时保持服务端返回的先后 ✓（本地不该造出第二种顺序 ✗）。
+  const order = objects
+    .map((item, index) => ({ id: item.object_id, z: item.z_index || 0, index }))
+    .sort((a, b) => (a.z - b.z) || (a.index - b.index))
+    .map((row) => row.id);
+  const from = order.indexOf(ids[0]);
+  if (from < 0) { log("勾选的对象不在当前图层 ⇒ 先切到它所在的图层 ✓", "#c33"); return; }
+  const to = from + delta;
+  if (to < 0 || to >= order.length) {
+    log(delta < 0 ? "它已经是该图层最底下的一根 ✓（画面不变）" : "它已经是该图层最上面的一根 ✓（画面不变）", "#c9a23a");
+    return;
+  }
+  const swapped = order.slice();
+  [swapped[from], swapped[to]] = [swapped[to], swapped[from]];
+  const done = await callToolChecked("reorder_objects", { layer_id: state.layerId, order: swapped }, "对象重排");
+  if (!done || done.ok !== true) return;
+  log("对象已" + (delta < 0 ? "下移" : "上移") + "一层 ✓（整份 z 序提交 ✓，盖在它上面的那根换到下面）");
+  await refreshObjects();
+  await resync();
+}
+
 async function noteCheckedObjects() {
   const ids = checkedObjects();
   if (ids.length === 0) { log("先勾选要写备注的对象 ✓", "#c33"); return; }
@@ -5144,6 +5287,58 @@ async function savePaletteFromSwatches() {
   if (saved && saved.ok) log("已保存调色板 " + name + "（" + colors.length + " 色 ✓）");
 }
 
+/// **读参考图的显示参数**（不透明 + 位置）⇒ 上传时与"改完立刻生效"共用同一份口径 ✓
+///（两处各写一遍就会漂移 ✗，那是本仓反复踩过的"同一个教训只学一次"✓）。
+/// * 位置：四个都填、宽高为正 ⇒ `{x,y,w,h}`；**四个都空 ⇒ 不传**（服务端记成 `null` = 铺满 ✓）；
+///   **只填了一半 ⇒ 报错** ✓（默默退回铺满会比"画错位置"更难查 ✓）。
+function referenceDisplayArgs() {
+  const args = {};
+  const raw = Number(($("referenceOpacity") || {}).value);
+  args.opacity = Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : 0.5;
+  const ids = ["referenceX", "referenceY", "referenceW", "referenceH"];
+  const values = ids.map((id) => String((($(id) || {}).value || "")).trim());
+  const filled = values.filter((v) => v !== "").length;
+  if (filled === 0) return { args };
+  const nums = values.map((v) => Number(v));
+  if (filled < 4 || !nums.every((v) => Number.isFinite(v)) || nums[2] <= 0 || nums[3] <= 0) {
+    return { error: "参考图位置要 x / y / w / h 四个都填、宽高为正；四个都留空 = 铺满整幅 ✓" };
+  }
+  args.position = { x: Math.round(nums[0]), y: Math.round(nums[1]), w: Math.round(nums[2]), h: Math.round(nums[3]) };
+  return { args };
+}
+
+/// **改完数字立刻生效** ✓：参考图已经在的时候调这些框 ✓，以前只有"下一次上传"才读到它们 ✗
+///（控件写了却不动 ⇒ 用户以为坏了 ✓）。这里重发一次 `set_reference`（同一条工具路 ✓、幂等 ✓）。
+async function applyReferenceTweak() {
+  const overlay = document.getElementById("referenceOverlay");
+  const hash = String((overlay && overlay.dataset.blob) || (state.referenceLocal && state.referenceLocal.hash) || "");
+  if (!hash) return; // 还没有参考图 ⇒ 这些数字等上传时再生效 ✓
+  const built = referenceDisplayArgs();
+  if (built.error) { log(built.error, "#c33"); return; }
+  const set = await callToolChecked("set_reference", { blob_hash: hash, ...built.args }, "更新参考图显示");
+  if (set && set.ok) {
+    if (built.args.position) {
+      window.__referenceView = { hash, position: built.args.position };
+    } else {
+      window.__referenceView = { hash, position: null };
+    }
+    // 走 `resize` ⇒ 同一处理函数（重读偏好 + 重摆几何 ✓），不在这里复制一遍逻辑 ✓。
+    window.dispatchEvent(new Event("resize"));
+  }
+}
+
+/// **选文件这条路失败必须出声** ✓：读盘 / 解码在浏览器里会 reject（文件被移走、没有权限、格式不认 ✓），
+/// 而三处控件原先都是 `void fn()` ⇒ 失败时**页面毫无反应** ✗（用户以为坏了 ✓，正是本项目禁止的静默失败 ✓）。
+/// 实测踩过一次：`FileReader` 抛 `NotReadableError` ⇒ 点完文件什么都不发生，只能靠 CDP 抓异常才看得见 ✗。
+function onFilePicked(el, label, fn) {
+  if (!el) return;
+  el.addEventListener("change", () => {
+    void fn().catch((error) => {
+      log(label + "没走通：" + String((error && (error.name + ": " + error.message)) || error || "unknown"), "#c33");
+    });
+  });
+}
+
 /// **上传参考图** ✓（`set_reference` ✓）：上传走与导入图片同一条 CAS 路 ✓（`/api/blob` 裸 RGBA ✓）。
 /// **本地留一份 dataURL** ✓：存储里是裸 RGBA ✓，`<img>` 解不开 ✗ ⇒ 本会话的 overlay 用 dataURL 显示 ✓。
 async function setReferenceImage() {
@@ -5172,14 +5367,24 @@ async function setReferenceImage() {
     log("参考图上传失败：" + String((upload && (upload.error_code || upload.reason)) || "unknown"), "#c33");
     return;
   }
-  const args = { blob_hash: upload.blob_hash };
-  const opacity = Number(($("referenceOpacity") || {}).value);
-  if (Number.isFinite(opacity) && opacity > 0 && opacity <= 1) args.opacity = opacity;
+  const built = referenceDisplayArgs();
+  if (built.error) {
+    log(built.error, "#c33");
+    if (input) input.value = "";
+    return;
+  }
+  const args = { blob_hash: upload.blob_hash, ...built.args };
   const set = await callToolChecked("set_reference", args, "设为参考图");
   if (set && set.ok) {
     state.referenceLocal = { hash: String(upload.blob_hash), url: dataUrl };
+    // **顺手进本地缓存** ✓：否则刷新后 `<img>` 只剩裸像素可读 ✗（见 `rememberReferenceBlob` ✓）。
+    const cached = window.__rememberReferenceBlob(String(upload.blob_hash), dataUrl);
     const info = $("referenceInfo");
-    if (info) info.textContent = "参考图已就位（" + canvas.width + "×" + canvas.height + "）";
+    if (info) {
+      info.textContent = "参考图已就位（" + canvas.width + "×" + canvas.height + "）"
+        + (args.position ? " · 钉在 " + args.position.x + "," + args.position.y + " 的 " + args.position.w + "×" + args.position.h : "")
+        + (cached ? "" : " · 本浏览器没存下原图（超过 1.5MB 或配额不足）⇒ 刷新后需要重传");
+    }
     // **不能直接调 `refreshReferenceOverlay()`** ✗：它在**另一个块作用域**里 ✓
     //（直接调 = ReferenceError ⇒ 静默失败 ✓ —— 正是本项目禁止的那类 ✗）
     // ⇒ 走它**自己已经挂上的 resize 监听** ✓（同一处理函数 ✓、零新接口 ✓）。
@@ -5195,6 +5400,87 @@ async function clearReferenceImage() {
     const info = $("referenceInfo");
     if (info) info.textContent = "已清除参考图";
     window.dispatchEvent(new Event("resize"));
+  }
+}
+
+/// **直方图** ✓（`get_histogram` 此前在查看器里**零引用** ✗）。
+///
+/// **为什么值得补**：它是**只读**工具 ✓、MCP 缺省面里就有 ✓ ⇒ 属于对照表里"系统 + MCP 有、人够不到"那一类 ✓。
+/// 人在页面上只能"看着像过了 / 欠了" ✗，取不到 Agent 拿到的**同一份读数** ⇒ 两边各说各话 ✓。
+///
+/// **作用域与工具规格一致** ✓（三选一）：整文档合成结果 / 当前图层 / 只统计选区那块矩形 ✓
+///（选区来自 `list_selections` 写进 `state.selectionShape` 的**服务端事实** ✓，不是本地猜测 ✗）。
+///
+/// **作用域标签用服务端回的话，不用界面控件的状态** ✓：
+/// 勾了"只统计选区"又切到"当前图层"时，工具返回的是 `layer_region` ⇒ 页面上必须写实际统计了什么 ✗
+///（否则人和 Agent 又各说各话 ✓，正是这张卡要消除的那个差 ✓）。
+const HISTOGRAM_SCOPE_ZH = { document: "整文档", layer: "当前图层", region: "选区", layer_region: "图层×选区" };
+
+async function refreshHistogram() {
+  const scope = regionFromSelection("histogramUseSelection", "只统计选区");
+  if (scope.error) { log(scope.error, "#c33"); return; }
+  const args = {};
+  if (scope.region) args.region = scope.region;
+  if (($("histogramScope") || {}).value === "layer") args.layer_id = state.layerId;
+  const data = await callToolChecked("get_histogram", args, "直方图");
+  const info = $("histogramInfo");
+  if (!data || data.ok !== true) return;
+  drawHistogram(data);
+  const lum = (data.summary || {}).luma || {};
+  const num = (v) => (typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(1)) : "?");
+  if (info) {
+    info.textContent = "像素 " + (data.pixels || 0) + " · 作用域 " + (HISTOGRAM_SCOPE_ZH[data.scope] || data.scope || "?")
+      + " · 亮度 均值 " + num(lum.mean) + " 中位 " + num(lum.median)
+      + " p5 " + num(lum.p5) + " p95 " + num(lum.p95);
+  }
+}
+
+/// **画法**：r/g/b 三条用 `lighter` 叠加（重叠处发白 = 与一般图像软件的直方图同读法 ✓），
+/// 亮度再描一条白线 ✓。纵轴按**最大桶**归一（不是按像素数 ✓ —— 单通道爆表时其余通道不该被压平 ✗），
+/// 并且**取对数** ✓：真实截图里"整幅平涂 + 几笔颜色"是常态 ✓，那几笔的桶只有几十个像素 ⇒
+/// 线性轴下柱高 = 几十/几万 ≈ 1px ⇒ 页面上看着像"没画"✗（截图实测就是这样 ✓）。
+/// 对数只改**画法**，读数行里的数字仍是服务端原值 ✓。
+function drawHistogram(data) {
+  const canvas = $("histogramCanvas");
+  if (!canvas) return;
+  const context = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  context.clearRect(0, 0, width, height);
+  const channels = data.channels || {};
+  const series = [["r", "rgba(255,60,60,.75)"], ["g", "rgba(60,255,90,.75)"], ["b", "rgba(70,130,255,.75)"]];
+  let peak = 1;
+  for (const [key] of series) {
+    const buckets = channels[key] || [];
+    for (const value of buckets) if (value > peak) peak = value;
+  }
+  // `log1p` 让 0 落在 0、峰值落在满高 ✓；小桶被抬到肉眼可见 ✓（顺序与相对高低不变 ✗ 不撒谎 ✓）。
+  const scale = (value) => (Math.log1p(value) / Math.log1p(peak)) * (height - 2);
+  context.globalCompositeOperation = "lighter";
+  for (const [key, color] of series) {
+    const buckets = channels[key] || [];
+    if (buckets.length === 0) continue;
+    context.fillStyle = color;
+    const step = width / buckets.length;
+    for (let i = 0; i < buckets.length; i += 1) {
+      const h = Math.round(scale(buckets[i]));
+      if (h > 0) context.fillRect(Math.floor(i * step), height - h, Math.max(1, Math.ceil(step)), h);
+    }
+  }
+  context.globalCompositeOperation = "source-over";
+  const luma = data.luma || [];
+  if (luma.length > 0) {
+    let lumaPeak = 1;
+    for (const value of luma) if (value > lumaPeak) lumaPeak = value;
+    context.strokeStyle = "rgba(255,255,255,.85)";
+    context.lineWidth = 1;
+    context.beginPath();
+    for (let i = 0; i < luma.length; i += 1) {
+      const x = (i + 0.5) * (width / luma.length);
+      const y = height - (Math.log1p(luma[i]) / Math.log1p(lumaPeak)) * (height - 2);
+      if (i === 0) context.moveTo(x, y); else context.lineTo(x, y);
+    }
+    context.stroke();
   }
 }
 
@@ -5230,6 +5516,39 @@ async function serverExportPng() {
   const h = Number(($("exportServerH") || {}).value || 0);
   const args = { path: "web_export_" + Date.now() + ".png" };
   if (w > 0 && h > 0) { args.width = w; args.height = h; }
+  // **期 4 补齐**：region（四个框填齐才生效 ✓）＋ lod（取样档位 ✓）。
+  // 口径与服务端一致：**不静默夹** ✗ —— 空着就是不传（整幅 / 缺省 0）✓。
+  const regionNum = (id) => {
+    const raw = ($(id) || {}).value;
+    if (raw === undefined || raw === null || String(raw).trim() === "") return NaN;
+    return Number(raw);
+  };
+  const rx = regionNum("exportRegionX"), ry = regionNum("exportRegionY"), rw = regionNum("exportRegionW"), rh = regionNum("exportRegionH");
+  const given = [rx, ry, rw, rh].filter((v) => Number.isFinite(v)).length;
+  if (given === 4) {
+    if (!(rw > 0) || !(rh > 0)) {
+      const infoBad = $("exportServerInfo");
+      if (infoBad) infoBad.textContent = "区域宽/高必须大于 0";
+      return;
+    }
+    args.region = { x: rx, y: ry, w: rw, h: rh };
+  } else if (given > 0) {
+    const infoBad = $("exportServerInfo");
+    if (infoBad) infoBad.textContent = "区域要四个值填齐（x, y, w, h）才生效；当前只填了 " + given + " 个";
+    return;
+  }
+  const lodSel = ($("exportLod") || {}).value;
+  if (lodSel !== undefined && lodSel !== null && lodSel !== "") args.lod = Number(lodSel);
+  // **只导当前层** ✓（`export_png.layer_id` ✓）：隐藏层也照导 ✓（那是该工具的契约 ✓）。
+  const layerOnly = ($("exportLayerOnly") || {}).checked;
+  if (layerOnly) {
+    if (!state.layerId) {
+      const infoBad = $("exportServerInfo");
+      if (infoBad) infoBad.textContent = "没有当前图层 ⇒ 先选中一层再勾「只导当前层」";
+      return;
+    }
+    args.layer_id = state.layerId;
+  }
   const value = await callToolChecked("export_png", args, "任意尺寸导出");
   const info = $("exportServerInfo");
   if (!value || !value.ok) return;
@@ -5725,6 +6044,8 @@ function setupObjectPanel() {
   setupSuggestionPanel();
   setupCommentPanel();
   setupChangesetPanel();
+  setupAnchorPanel();
+  setupPresetPanel();
   const fresh = $("effectNew");
   if (fresh) fresh.addEventListener("click", () => {
     clearEffectEditing();
@@ -5780,6 +6101,18 @@ function setupObjectPanel() {
   if (addGroup) addGroup.addEventListener("click", () => { void moveCheckedGroup("add_to_group", "加入组"); });
   const removeGroup = $("objectRemoveGroup");
   if (removeGroup) removeGroup.addEventListener("click", () => { void moveCheckedGroup("remove_from_group", "移出组"); });
+  const revertGroup = $("objectRevertGroup");
+  if (revertGroup) revertGroup.addEventListener("click", () => { void revertCheckedGroup(); });
+  const objectUp = $("objectUp");
+  if (objectUp) objectUp.addEventListener("click", () => { void moveCheckedObjectZ(1); });
+  const objectDown = $("objectDown");
+  if (objectDown) objectDown.addEventListener("click", () => { void moveCheckedObjectZ(-1); });
+  const histogramReload = $("histogramReload");
+  if (histogramReload) histogramReload.addEventListener("click", () => { void refreshHistogram(); });
+  const histogramScope = $("histogramScope");
+  if (histogramScope) histogramScope.addEventListener("change", () => { void refreshHistogram(); });
+  const histogramUseSelection = $("histogramUseSelection");
+  if (histogramUseSelection) histogramUseSelection.addEventListener("change", () => { void refreshHistogram(); });
   const linkMaster = $("objectLinkMaster");
   if (linkMaster) linkMaster.addEventListener("click", () => { void linkCheckedToMaster(); });
   const syncApply = $("objectSyncApply");
@@ -5795,18 +6128,40 @@ function setupObjectPanel() {
     if (picker) picker.click();
   });
   const referenceFile = $("referenceFile");
-  if (referenceFile) referenceFile.addEventListener("change", () => { void setReferenceImage(); });
+  onFilePicked(referenceFile, "参考图", setReferenceImage);
   const referenceClear = $("referenceClear");
   if (referenceClear) referenceClear.addEventListener("click", () => { void clearReferenceImage(); });
+  // **数字改完就生效** ✓：以前这五个框只在"下一次上传"时被读到 ✗ ⇒ 参考图已经在、人却挪不动它 ✓
+  //（控件存在但不反应 = 用户以为坏了 ✓）。挂 `change` ⇒ 失焦／回车即重发一次 `set_reference` ✓。
+  for (const id of ["referenceOpacity", "referenceX", "referenceY", "referenceW", "referenceH"]) {
+    const el = $(id);
+    if (el) el.addEventListener("change", () => { void applyReferenceTweak(); });
+  }
   const assetImport = $("assetImport");
   if (assetImport) assetImport.addEventListener("click", () => {
     const picker = $("assetFile");
     if (picker) picker.click();
   });
   const assetFile = $("assetFile");
-  if (assetFile) assetFile.addEventListener("change", () => { void importAssetFile(); });
+  onFilePicked(assetFile, "资产导入", importAssetFile);
   const exportServer = $("exportServerPng");
   if (exportServer) exportServer.addEventListener("click", () => { void serverExportPng(); });
+  // **「用选区」填充** ✓（期 4 补齐 ✓）：读的是 `state.selectionShape` ——
+  // 那份状态由 `list_selections` 的**服务端事实**写入 ✓ ⇒ 界面外（MCP/工具层）
+  // 建的选区也能填 ✓；没有选区时**如实说没有** ✗，不清空已有四个值 ✓。
+  const exportRegionFill = $("exportRegionFromSelection");
+  if (exportRegionFill) exportRegionFill.addEventListener("click", () => {
+    const info = $("exportServerInfo");
+    const shape = state.selectionShape;
+    const bbox = shape && shape.bbox;
+    if (!bbox || !(bbox.w > 0) || !(bbox.h > 0)) {
+      if (info) info.textContent = "当前没有可用选区 ⇒ 先用选区工具拖一个（或清除选区后手填四个框）";
+      return;
+    }
+    const set = (id, v) => { const el = $(id); if (el) el.value = String(Math.round(v)); };
+    set("exportRegionX", bbox.x); set("exportRegionY", bbox.y); set("exportRegionW", bbox.w); set("exportRegionH", bbox.h);
+    if (info) info.textContent = "区域已按选区填充：x=" + Math.round(bbox.x) + " y=" + Math.round(bbox.y) + " w=" + Math.round(bbox.w) + " h=" + Math.round(bbox.h);
+  });
 }
 
 /// 面板上的两个开关 ✓（刷新 ✓ / 显示已解决 ✓）。
@@ -5847,6 +6202,346 @@ async function createAnnotationAt(x, y) {
     content: "",
   }, "新建标注");
   if (created && created.ok) await refreshAnnotations();
+}
+
+/// **命名锚点面板** ✓（`set_anchor` / `get_anchors` / `delete_anchor` ✓）。
+///
+/// **为什么值得** ✓：这三个工具解决的是**真机报告 2026-10-15** 的「跨会话错位」✓ ——
+/// 锚点**存在文档里** ⇒ 随原子日志持久化 ✓（清 `/tmp`、换 session、重启都不丢 ✓）。
+/// 此前**只有 MCP 侧够得到** ✗ ⇒ 人在界面上画时仍然在靠目测对齐 ✓。
+let anchorCache = {};
+
+async function refreshAnchors() {
+  const value = await callTool("get_anchors", {}, { refresh: false }).catch(() => null);
+  anchorCache = (value && value.ok && value.anchors) || {};
+  renderAnchorList();
+}
+
+function renderAnchorList() {
+  const list = $("anchorList");
+  if (!list) return;
+  list.innerHTML = "";
+  const names = Object.keys(anchorCache).sort();
+  if (names.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "hint";
+    empty.textContent = "还没有锚点 ✓（填好名字与坐标点「钉住」，或开着「锚点」工具在画布上点一下 ✓）";
+    list.appendChild(empty);
+    return;
+  }
+  for (const name of names) {
+    const anchor = anchorCache[name] || {};
+    const row = document.createElement("div");
+    row.className = "annotation-row";
+    const head = document.createElement("div");
+    head.className = "annotation-head";
+    head.textContent = name + " · (" + anchor.x + ", " + anchor.y + ")";
+    if (anchor.note) {
+      const note = document.createElement("div");
+      note.className = "hint";
+      note.textContent = anchor.note;
+      row.appendChild(head);
+      row.appendChild(note);
+    } else {
+      row.appendChild(head);
+    }
+    const actions = document.createElement("div");
+    actions.className = "toolbar";
+    const fill = document.createElement("button");
+    fill.type = "button";
+    fill.textContent = "填入";
+    fill.title = "把这条锚点的名字与坐标填回上面的框（改坐标时不必重新目测 ✓）";
+    fill.addEventListener("click", () => {
+      const nameBox = $("anchorName");
+      const xBox = $("anchorX");
+      const yBox = $("anchorY");
+      if (nameBox) nameBox.value = name;
+      if (xBox) xBox.value = anchor.x;
+      if (yBox) yBox.value = anchor.y;
+      note("已填入 " + name + " ✓（改完点「钉住」就是覆盖 ✓）");
+    });
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.textContent = "删除";
+    drop.title = "删掉这个锚点（delete_anchor；不存在会报错，不会静默成功 ✓）";
+    drop.addEventListener("click", async () => {
+      const done = await callToolChecked("delete_anchor", { name }, "删除锚点");
+      if (done && done.ok) {
+        note("已删除锚点 " + name + " ✓");
+        await refreshAnchors();
+      }
+    });
+    actions.append(fill, drop);
+    row.appendChild(actions);
+    list.appendChild(row);
+  }
+}
+
+/// 面板里的提示行 ✓（不动日志 ✓——锚点是高频小动作，全塞日志会把别的淹掉 ✓）。
+function note(text) {
+  const info = $("anchorInfo");
+  if (info) info.textContent = text;
+}
+
+/// 用当前选区的**中心**填 x/y ✓（选区来自服务端事实 ✓，与导出面板「用选区」同一口径 ✓）。
+function fillAnchorFromSelection() {
+  const shape = state.selectionShape;
+  if (!shape || !shape.bbox || !Number.isFinite(shape.bbox.x) || !Number.isFinite(shape.bbox.w)) {
+    note("当前没有可用选区 ⇒ 先用选区工具拖一个（或直接在框里手填 x / y ✓）");
+    return;
+  }
+  const bbox = shape.bbox;
+  const xBox = $("anchorX");
+  const yBox = $("anchorY");
+  if (xBox) xBox.value = Math.round(bbox.x + bbox.w / 2);
+  if (yBox) yBox.value = Math.round(bbox.y + bbox.h / 2);
+  note("已按选区中心填充：x=" + xBox.value + " y=" + yBox.value + "（改完点「钉住」✓）");
+}
+
+/// 「锚点」工具在画布上点一下 ⇒ 只把坐标填进框 ✓（**不直接写** ✗——名字还没给 ✗）。
+function fillAnchorFromPoint(x, y) {
+  const xBox = $("anchorX");
+  const yBox = $("anchorY");
+  if (xBox) xBox.value = Math.round(x);
+  if (yBox) yBox.value = Math.round(y);
+  const nameBox = $("anchorName");
+  note("坐标已填入 ✓（给个名字再点「钉住」）");
+  if (nameBox && !nameBox.value) nameBox.focus();
+}
+
+async function setAnchorFromPanel() {
+  const name = ($("anchorName").value || "").trim();
+  // **空框不能当 0** ✗（探针实测：`Number("") === 0` ✓ ⇒ 留空就等于"钉在 0 上" ✗）。
+  const rawX = ($("anchorX").value || "").trim();
+  const rawY = ($("anchorY").value || "").trim();
+  const x = rawX === "" ? Number.NaN : Number(rawX);
+  const y = rawY === "" ? Number.NaN : Number(rawY);
+  if (!name) {
+    note("✗ 要先给名字 ✓（建议用能自解释的英文名，如 left_eye）");
+    return;
+  }
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    note("✗ x / y 都要填数字 ✓（可在画布上点一下「锚点」工具，或用选区中心填充）");
+    return;
+  }
+  const args = { name, x: Math.round(x), y: Math.round(y) };
+  const detail = ($("anchorNote").value || "").trim();
+  if (detail) args.note = detail;
+  const done = await callToolChecked("set_anchor", args, "钉锚点");
+  if (done && done.ok) {
+    note("已钉住 " + name + " ✓（同名再设 = 覆盖 ✓）");
+    await refreshAnchors();
+  }
+}
+
+function setupAnchorPanel() {
+  const set = $("anchorSet");
+  if (set) set.addEventListener("click", () => { void setAnchorFromPanel(); });
+  const fromSelection = $("anchorFromSelection");
+  if (fromSelection) fromSelection.addEventListener("click", () => { fillAnchorFromSelection(); });
+  const reload = $("anchorRefresh");
+  if (reload) reload.addEventListener("click", () => { void refreshAnchors(); });
+  void refreshAnchors();
+}
+
+/// **风格预设面板** ✓（`list_presets` / `preview_preset` / `apply_preset` 的界面入口 ✓）。
+///
+/// **为什么值得给界面** ✓：预设落成的是**一串可调对象**（不是一次性烘焙像素 ✓）⇒
+/// 落完还能回头改强度、删掉单个对象 ✓；而此前这三件套**只有 MCP 够得到** ✗
+/// ⇒ 人在界面上想要"这组照片统一调性"只能自己拧十几个参数 ✓。
+/// **顺序与成熟软件一致** ✓：按题材筛 → **先看代理图**（临时文档渲染 ✓ 不动原文档 ✓）→ 再落 ✓。
+let presetCache = [];
+
+function presetNote(text) {
+  const box = $("presetInfo");
+  if (box) box.textContent = text || "";
+}
+
+function presetStrength() {
+  const slider = $("presetStrength");
+  const percent = Number(slider ? slider.value : 100);
+  return Math.min(1, Math.max(0, (Number.isFinite(percent) ? percent : 100) / 100));
+}
+
+async function refreshPresets() {
+  const subject = ($("presetSubject").value || "").trim();
+  // **点了就要有反应** ✓：首次 `list_presets` 要把预设库/笔刷库读一遍 ✓，
+  // 慢的时候好几秒 ✗ —— 不写这一行 ⇒ 用户按下「刷新」后界面**一动不动** ✓
+  //（实测：探针在 10 秒内数到 0 行 ⇒ 报"列不出预设"✗；人看到的是"点了没反应"✗）。
+  presetNote(subject ? "在题材「" + subject + "」里读取预设…" : "读取预设库…");
+  const got = await callToolChecked("list_presets", subject ? { subject } : {}, "读预设");
+  if (!got || !got.ok) {
+    presetCache = [];
+    renderPresetList();
+    // **失败要把话说完** ✓：`callToolChecked` 已经记了错误码 ✓，
+    // 但面板上不能停在"读取中…" ✓（那会被读成"还在加载"✗）。
+    presetNote("没读到预设 ⇒ 原因见日志");
+    return;
+  }
+  presetCache = got.presets || [];
+  renderPresetList();
+  presetNote(presetCache.length === 0
+    ? "没有匹配的预设 ⇒ 把题材清空再看"
+    : "共 " + presetCache.length + " 套（库 " + (got.library_version || "?") + "）");
+}
+
+function renderPresetList() {
+  const list = $("presetList");
+  if (!list) return;
+  list.innerHTML = "";
+  for (const preset of presetCache) {
+    const row = document.createElement("div");
+    row.className = "annotation-row";
+    const head = document.createElement("div");
+    head.className = "annotation-head";
+    // **名字按界面语言取** ✓（本轮抓的 ✗）：`list_presets` **本来就返回 `name_en`** ✓
+    // ⇒ 而面板写死 `name_zh` ⇒ 英文界面下 22 套预设**全是中文** ✓（数据在手边却不用 ✗）。
+    // 标签／适合／慎用**服务端只有中文** ✗ ⇒ **值**翻不出英文 ✓（不编造 ✓，那是预设库的内容缺口 ✓）。
+    // 但**字段名是界面文案** ✓ ⇒ 英文界面下写英文 ✓（否则 EN 模式下整行看着像漏翻 ✗）。
+    const en = uiLang === "en";
+    const label = (en ? preset.name_en : preset.name_zh) || preset.name_zh || preset.preset_id;
+    head.textContent = label + " · " + preset.preset_id;
+    const body = document.createElement("div");
+    body.className = "annotation-body";
+    const bits = [];
+    if ((preset.tags || []).length) bits.push((en ? "Tags " : "标签 ") + preset.tags.join("/"));
+    if ((preset.suitable || []).length) bits.push((en ? "Suits " : "适合 ") + preset.suitable.slice(0, 3).join("/"));
+    if ((preset.caution || []).length) bits.push((en ? "Careful " : "慎用 ") + preset.caution.slice(0, 3).join("/"));
+    if (preset.status) bits.push((en ? "Status " : "状态 ") + preset.status);
+    body.textContent = bits.join(en ? " | " : " ｜ ");
+    const actions = document.createElement("div");
+    actions.className = "annotation-actions";
+    const preview = document.createElement("button");
+    preview.type = "button";
+    preview.textContent = "预览";
+    preview.title = "不落原文档，先看代理图（preview_preset + render，用当前图层）";
+    preview.addEventListener("click", () => { void previewPresetFromPanel(preset); });
+    const use = document.createElement("button");
+    use.type = "button";
+    use.textContent = "应用";
+    use.title = "把这套预设落到当前图层（apply_preset）；强度与旋钮按上面的值";
+    use.addEventListener("click", () => { void applyPresetFromPanel(preset); });
+    actions.appendChild(preview);
+    actions.appendChild(use);
+    row.appendChild(head);
+    row.appendChild(body);
+    row.appendChild(actions);
+    list.appendChild(row);
+  }
+}
+
+/// 选中预设的**语义旋钮**渲染成滑杆 ✓（`list_presets` 给的就是 min/max/default ✓）。
+function renderPresetKnobs(preset) {
+  const box = $("presetKnobs");
+  if (!box) return;
+  box.innerHTML = "";
+  for (const knob of (preset && preset.knobs) || []) {
+    const label = document.createElement("label");
+    label.className = "toolbar";
+    const name = document.createElement("span");
+    name.textContent = knob.label || knob.id;
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = String(knob.min);
+    input.max = String(knob.max);
+    // 步长取量程的 1/100 ✓（整数旋钮也不会被打断 ✓：滑到的值仍落在 range 的默认步进上 ✓）。
+    input.step = "any";
+    input.value = String(knob.default);
+    input.dataset.knobId = knob.id;
+    const out = document.createElement("span");
+    out.className = "hint";
+    out.textContent = String(knob.default);
+    input.addEventListener("input", () => { out.textContent = input.value; });
+    label.appendChild(name);
+    label.appendChild(input);
+    label.appendChild(out);
+    box.appendChild(label);
+  }
+}
+
+function collectPresetKnobs() {
+  const knobs = {};
+  for (const input of document.querySelectorAll("#presetKnobs input[data-knob-id]")) {
+    const value = Number(input.value);
+    if (Number.isFinite(value)) knobs[input.dataset.knobId] = value;
+  }
+  return knobs;
+}
+
+function presetArgs(preset) {
+  const args = {
+    preset_id: preset.preset_id,
+    strength: presetStrength(),
+    include_correction: !!($("presetCorrection") || {}).checked,
+  };
+  const knobs = collectPresetKnobs();
+  if (Object.keys(knobs).length > 0) args.knobs = knobs;
+  return args;
+}
+
+async function previewPresetFromPanel(preset) {
+  renderPresetKnobs(preset);
+  if (!state.layerId) {
+    presetNote("还没有当前图层 ⇒ 先选一个图层再预览");
+    return;
+  }
+  presetNote("预览中（临时文档渲染，不动原文档）…");
+  const args = presetArgs(preset);
+  args.layer_id = state.layerId;
+  args.render = { max_edge: 512 };
+  const got = await callToolChecked("preview_preset", args, "预览预设");
+  if (!got || !got.ok) {
+    presetNote("预览失败（原因见日志）");
+    return;
+  }
+  const shot = $("presetShot");
+  if (shot && got.image_base64) {
+    shot.src = "data:image/" + (got.image_format || "jpeg") + ";base64," + got.image_base64;
+    shot.alt = (got.name_zh || preset.preset_id) + " 预览";
+    shot.style.display = "";
+  } else if (shot) {
+    shot.style.display = "none";
+  }
+  // **`scale_notes` 服务端给的是字符串** ✓（不是数组 ✓）：写死 `.join` ✗
+  // 会在**图都已经显示出来之后**抛 TypeError ⇒ 面板永远停在"预览中…" ✓
+  //（实测：代理图出来了 ✓ 回执却不出 ✓ —— 用户读成"卡住了"✗）。两种形状都接下来 ✓。
+  const rawScale = got.scale_notes;
+  const scale = Array.isArray(rawScale) ? rawScale.join(" ｜ ") : String(rawScale || "");
+  presetNote("代理图 " + (got.image_width || "?") + "×" + (got.image_height || "?") +
+    " ✓ 共 " + (got.op_count || 0) + " 个操作（" + Math.round(presetStrength() * 100) + "% 强度）" +
+    (scale ? " ⇒ " + scale : ""));
+}
+
+async function applyPresetFromPanel(preset) {
+  renderPresetKnobs(preset);
+  if (!state.layerId) {
+    presetNote("还没有当前图层 ⇒ 先选一个图层再应用");
+    return;
+  }
+  const args = presetArgs(preset);
+  args.layer_id = state.layerId;
+  const done = await callToolChecked("apply_preset", args, "应用预设");
+  if (!done || !done.ok) return;
+  const parts = [];
+  if (done.created) parts.push("新建 " + done.created);
+  if (done.updated) parts.push("更新 " + done.updated);
+  if (done.revived) parts.push("复活 " + done.revived);
+  log("已把「" + (done.name_zh || preset.name_zh || preset.preset_id) + "」落到 " + state.layerId +
+    "（" + Math.round(presetStrength() * 100) + "% ⇒ " + (parts.join(" / ") || "无变化") + "）");
+  // `apply_preset` 的原子在**服务端**构造 ✓（本地内核没拿到它们 ✓）
+  // ⇒ 必须重放才能看到效果 ✓（只 `refreshPreview()` 会按旧状态出像素 ✓）。
+  await resync();
+}
+
+function setupPresetPanel() {
+  const reload = $("presetReload");
+  if (reload) reload.addEventListener("click", () => { void refreshPresets(); });
+  const strength = $("presetStrength");
+  const out = $("presetStrengthOut");
+  if (strength && out) {
+    strength.addEventListener("input", () => { out.textContent = strength.value + "%"; });
+    out.textContent = strength.value + "%";
+  }
 }
 
 /// **保证"有图层可画"** ✓ —— 落笔兜底 ✓。
@@ -5930,6 +6625,10 @@ async function refreshLayers() {
     const option = document.createElement("option");
     option.value = layer.layer_id;
     option.textContent = layer.name + " (#" + layer.layer_id + ")";
+    // **图层名是用户数据 ✓ 不是界面文案** ✗ ⇒ 标 `data-i18n="off"` ✓（与字体名同一条口径 ✓：
+    // `viewer.rs` 里那句"字体名是专有名词 ✗ 不翻译 ✓"）。不标 ✗ 的话 `browser-i18n` 把
+    // "图层 R015" 当成漏翻 ✓ ⇒ 真漏翻被数据噪声埋掉 ✗（判据一响就没人看了 ✓）。
+    option.dataset.i18n = "off";
     select.appendChild(option);
   }
   if (!value.layers || value.layers.length === 0) {
@@ -5994,6 +6693,8 @@ function renderLayerPanel(layers) {
     lock.dataset.action = "locked";
     const name = document.createElement("span");
     name.className = "layer-name";
+    // 同上 ✓：图层名是**用户数据** ✓ ⇒ 不参与界面翻译 ✓（`browser-i18n` 的 skip 认这个标记 ✓）。
+    name.dataset.i18n = "off";
     // **同名图层加 ID 后缀区分** ✓：多个图层同名（如 5 个 source-parrot.png）时，
     // 只靠名字分不出 ✓ ⇒ 统计重名，重名的显示短 ID 后缀 ✓
     const nameCount = layers.filter((l) => l.name === layer.name).length;
@@ -6080,14 +6781,18 @@ async function refreshLayerThumbs() {
 ///（子 agent 报过的"遗留选区静默裁掉一切 ✓ 而界面还写着无选区" ✗ 就是这一类 ✓）。
 ///
 /// **区域取自服务端事实** ✓（`state.selectionShape` 由 `list_selections` 写入 ✓），不是本地猜测 ✓。
-function regionFromSelection(checkboxId) {
+///
+/// `label` = 该卡片上那个勾选框的**实际文字** ✓：直方图卡写的是「只统计选区」✗，
+/// 报错时若照着另一张卡的「只作用于选区」说 ⇒ 人在页面上找不到那个框 ✓（照错对象 ✗）。
+function regionFromSelection(checkboxId, label) {
   const box = $(checkboxId);
   if (!box || !box.checked) return { region: null, error: null };
+  const name = label || "只作用于选区";
   const shape = state.selectionShape;
   if (!shape || !shape.bbox) {
     return {
       region: null,
-      error: "勾了「只作用于选区」，但**当前没有选区** ✗ ⇒ 先用选区工具拖一个矩形（或在快捷面板里建一个 ✓）",
+      error: "勾了「" + name + "」，但**当前没有选区** ✗ ⇒ 先用选区工具拖一个矩形（或在快捷面板里建一个 ✓）",
     };
   }
   const bbox = shape.bbox;
@@ -6407,12 +7112,45 @@ const exportPngView = $("exportPngView");
   };
 }
 
+/// **裁断必须可 hover** ✓（与 `#history .kind`／`.actor`／`.layer-name` 同一条口径 ✓）。
+///
+/// **为什么在容器层补、不在八个渲染函数里各补一遍** ✗：八张列表（变更集／标注／存档点／对象／
+/// 评论／建议／锚点／预设）都往 `.annotation-list` 里塞 `.annotation-row` ✓，
+/// 而标题行与说明行现在是**省略号列** ✓（`viewer.css` 的 `.annotation-row .annotation-head` ✓）
+/// ⇒ 八处各写一行 `title` ✓，**漏一处就是老病复发** ✓（本项目"创建了不等于挂上了"的同一个形状 ✓）。
+/// 挂在容器上 ⇒ 以后**新增第九张列表也自动生效** ✓。
+///
+/// 只观察 `childList` ✓：写 `title` 改的是属性 ✓ ⇒ 不会再次触发本回调 ✗（不自激 ✓）。
+function setupClippedTitles() {
+  const aside = document.querySelector("aside");
+  if (!aside || aside.dataset.clipTitles === "1") return;
+  aside.dataset.clipTitles = "1";
+  const seal = (node) => {
+    if (!node || node.nodeType !== 1) return;
+    const boxes = node.matches(".annotation-head, .annotation-body")
+      ? [node]
+      : Array.from(node.querySelectorAll(".annotation-head, .annotation-body"));
+    for (const el of boxes) {
+      if (el.getAttribute("title")) continue;
+      const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+      if (text) el.setAttribute("title", text);
+    }
+  };
+  new MutationObserver((records) => {
+    for (const record of records) for (const added of record.addedNodes) seal(added);
+  }).observe(aside, { childList: true, subtree: true });
+  seal(aside);
+}
+
 async function setupAssetPanels() {
   // **先把"文件"那几样搬进顶栏菜单** ✓（要在分 tab 之前 ✓ —— 搬走之后「文件」这个 tab 就空了 ✓，
   // 分 tab 时它会因为**没有卡**而自动隐藏 ✓，不会留一个点进去什么都没有的空 tab ✗）。
   setupFileMenu();
   // **再把右栏分好 tab** ✓，**然后**把浮层挂上 ✓ —— 顺序不能反 ✗（浮层记的"原位"就是窗格 ✓）。
   setupRightTabs();
+  // **省略号列统一补 title** ✓（要在分 tab 之后 ✓：卡片被搬进窗格 ✓，观察器挂在 `aside` 上 ✓，
+  // 搬动只是移动节点 ✓、不重建 ✓ ⇒ 之后每张列表填内容都会被补上 ✓）。
+  setupClippedTitles();
   // **然后把浮层挂上** ✓ —— 与卡片内容的装载互不依赖 ✓（搬的是节点本身 ✓）。
   setupAssetDock();
   // **`setupBrushLibrary` 不在这儿调** ✗ —— 它的定义在**另一段 `<script>`** 里 ✓，
@@ -7688,7 +8426,68 @@ async function commitMask() {
   }
   log("已为图层 " + state.layerId + " 添加" + (kind === "ellipse" ? "椭圆" : "矩形") +
       "蒙版（羽化 " + feather + "）");
-  await refreshPreview();
+  // 同 `commitMaskBrush`：`create_mask` / `set_property` 不在本地乐观内核的覆盖范围内 ✓，
+  // 必须从服务端重放才会把蒙版算进画布像素 ✓。
+  await resync();
+}
+
+/// 蒙版涂抹工具 ✓（`paint_mask` 的界面入口 ✓）：拖动 = 在**当前图层的蒙版**上沉积灰度 ✓。
+/// 只有"形状"级的 `create_mask` 是不够的 ✗：那样只能得到矩形/椭圆蒙版 ✓
+/// ⇒ 想"只让这一块受影响"必须能**拿笔画** ✓（成熟软件都这么给 ✓）。
+const MASK_BRUSH_TOOLS = new Set(["mask_paint", "mask_erase"]);
+
+/// 当前图层挂着的蒙版 id ✓（`list_layers` 是服务端事实 ✓，不是本地缓存 ✓）。
+async function currentMaskId() {
+  const listed = await callTool("list_layers", {}, { refresh: false });
+  if (!listed.ok) {
+    log("读图层列表失败：" + (listed.error_code || "unknown") + " " +
+        ((listed.context && listed.context.detail) || ""), "#c33");
+    return null;
+  }
+  const layer = (listed.layers || []).find((item) => item.layer_id === state.layerId);
+  return layer && layer.mask_id ? layer.mask_id : null;
+}
+
+async function commitMaskBrush() {
+  const points = state.points.map((point) => [Math.round(point.x), Math.round(point.y)]);
+  if (points.length < 2) {
+    log("蒙版画笔要拖着画：按住、移动、再抬手", "#c33");
+    return;
+  }
+  const maskId = await currentMaskId();
+  if (!maskId) {
+    log("图层 " + state.layerId + " 还没有蒙版 ⇒ 先用「矩形蒙版」或「椭圆蒙版」拖一个，再回来涂抹", "#c33");
+    return;
+  }
+  const size = Number($("size").value) || 20;
+  const flow = Math.min(1, Math.max(0, (Number($("strength").value) || 40) / 100));
+  // 羽化是**像素** ✓，`paint_mask` 的 `softness` 是**笔尖半径里的比例** ✓
+  // ⇒ 用 半径=size/2 换算并夹到 [0,1] ✓（0=硬边 ✓，1=整支笔尖都是软边 ✓）。
+  const softness = Math.min(1, (Number($("feather").value) || 0) / Math.max(1, size / 2));
+  const mode = state.tool === "mask_erase" ? "erase" : "paint";
+  const value = await callTool(
+    "paint_mask",
+    { mask_id: maskId, points, mode, size, softness, flow },
+    { refresh: false }
+  );
+  if (!value.ok) {
+    log("涂抹蒙版失败：" + (value.error_code || "unknown") + " " +
+        ((value.context && value.context.detail) || ""), "#c33");
+    return;
+  }
+  if (value.deposited === false) {
+    // **这一笔什么都没留下** ✗ —— 服务端如实返回 `ok:true, deposited:false` ✓
+    // ⇒ 必须说出来 ✓（"静默无操作"是本项目反复出现的 bug 形态 ✓）。
+    log("这一笔在蒙版 " + maskId + " 上没有沉积（流量 " + flow +
+        "、尺寸 " + size + "）⇒ 试着按住多拖几像素", "#c93");
+    return;
+  }
+  log((mode === "erase" ? "已在蒙版 " : "已涂到蒙版 ") + maskId + " 上" +
+      (mode === "erase" ? "减选（流量 " + flow + "）" : "加选（流量 " + flow + "）"));
+  // **必须走服务端重放** ✗：本地乐观内核只为 `draw_stroke` 提供增量 ✓，
+  // `paint_mask` 落的是 `update_mask` 原子 ✓ —— 只 `refreshPreview()` 的话
+  // 原子进了文档、**画布却按旧蒙版渲染**（实测：涂完右半边像素纹丝不动 ✓）。
+  await resync();
 }
 
 /// 这些工具不走 `draw_stroke` 原子，而是调用同名工具（工具层会构造正确的原子）。
@@ -7983,6 +8782,14 @@ board.addEventListener("pointerdown", (event) => {
   if (state.tool === "annotate" && kernelReady()) {
     const point = localPoint(event);
     void createAnnotationAt(point.x, point.y);
+    event.preventDefault();
+    return;
+  }
+  // **锚点** ✓：点一下**只把坐标填进右侧面板**✗ 不写文档 ✓
+  // （名字得由人给 ✓；而且无意图的一点击不该产生一个**持久化**的原子 ✓）。
+  if (state.tool === "anchor") {
+    const point = localPoint(event);
+    fillAnchorFromPoint(point.x, point.y);
     event.preventDefault();
     return;
   }
@@ -8345,7 +9152,8 @@ board.addEventListener("pointermove", (event) => {
   if (TWO_CORNER_TOOLS.has(state.tool)) state.points = [state.points[0], point];
   else state.points.push(point);
   if (liveStroke) octx.clearRect(0, 0, overlay.width, overlay.height);
-  if (!liveStroke && pendingStroke && state.points.length >= 2 && !RETOUCH_TOOLS.has(state.tool)) {
+  if (!liveStroke && pendingStroke && state.points.length >= 2 &&
+      !RETOUCH_TOOLS.has(state.tool) && !MASK_BRUSH_TOOLS.has(state.tool)) {
     // 乐观渲染：拖动中只更新**本地覆盖层**（不进原子日志），落笔才提交最终原子。
     updatePreviewOverlay(pendingStroke);
   }
@@ -8468,6 +9276,13 @@ board.addEventListener("pointerup", async (event) => {
   if (MASK_TOOLS.has(state.tool)) {
     state.points.push(localPoint(event));
     await commitMask();
+    state.points = [];
+    redraw();
+    return;
+  }
+  if (MASK_BRUSH_TOOLS.has(state.tool)) {
+    state.points.push(localPoint(event));
+    await commitMaskBrush();
     state.points = [];
     redraw();
     return;
@@ -9000,6 +9815,8 @@ const TOOL_ICONS = {
   // `TOOL_ICONS[key] || ""` 会让按钮渲染成**空 svg** ✓ ⇒ **工具栏里有一个看不见的按钮** ✗。
   // 本轮的**结构性守卫**（`tool_icons.rs` ✓）会把这一类**在测试里挡住** ✓。
   annotate: '<path d="M12 3l5 5-6 6-2-2z"/><path d="M9 14l-4 7 7-4"/><circle cx="18" cy="6" r="2"/>',
+  // 船锚 ✓（「锚点」工具 ✓）：环 + 杆 + 两爪，和「标注」的图钉一眼能分开 ✓。
+  anchor: '<circle cx="12" cy="5" r="2"/><path d="M12 7v13"/><path d="M8 11h8"/><path d="M5 15c0 3 3 5 7 5s7-2 7-5"/>',
   rect: '<rect x="4" y="6" width="16" height="12" rx="1"/>',
   ellipse: '<ellipse cx="12" cy="12" rx="8" ry="6"/>',
   erase: '<path d="M8 17l-3-3 8-8 5 5-4 4z"/><path d="M4 20h16"/>',
@@ -9020,6 +9837,9 @@ const TOOL_ICONS = {
   medium_dab: '<path d="M12 3c4 5 6 7.5 6 10a6 6 0 0 1-12 0c0-2.5 2-5 6-10z"/>',
   mask_rect: '<rect x="4" y="6" width="16" height="12"/><path d="M4 12h16"/>',
   mask_ellipse: '<ellipse cx="12" cy="12" rx="8" ry="6"/><path d="M12 6v12"/>',
+  // 蒙版涂抹 ✓：一个虚线框（=蒙版）里加一支笔 ✓ / 减一支笔 ✓（一眼分清"加"与"减" ✓）。
+  mask_paint: '<rect x="4" y="4" width="16" height="16" rx="2" stroke-dasharray="3 2"/><path d="M8 15l4-4 3 3-4 4h-3z"/><path d="M12 12l3-3"/>',
+  mask_erase: '<rect x="4" y="4" width="16" height="16" rx="2" stroke-dasharray="3 2"/><path d="M8 15l4-4 3 3-4 4h-3z"/><path d="M13 7h5"/>',
   fillLayer: '<path d="M5 12l7-7 7 7-7 7z"/><path d="M20 15c1 2 1 3 0 4"/>',
 };
 // 顺序按用途分组 ✓：绘制 → 修图 → 液化 → 取色/移动 → 选区/蒙版 → 文本/介质 → 填充。
@@ -9048,8 +9868,14 @@ const TOOL_DEFS = [
   { tool: "medium_dab", label: "介质", key: "" },
   // **标注** ✓（设计 4.6 ✓）：点画布即在该处新建一条标注 ✓。
   { tool: "annotate", label: "标注", key: "n" },
+  // **锚点** ✓（`set_anchor` 的界面入口 ✓）：点画布**只把坐标填进面板** ✗
+  // （名字得由人给 ✓）—— 免得"点一下就写进文档"这种不可逆动作发生在无意图的点击上 ✓。
+  { tool: "anchor", label: "锚点", key: "k" },
   { tool: "mask_rect", label: "矩形蒙版", key: "" },
   { tool: "mask_ellipse", label: "椭圆蒙版", key: "" },
+  // 在**已有蒙版**上拿笔画 ✓（`paint_mask` ✓）：加选 / 减选 ✓。
+  { tool: "mask_paint", label: "蒙版画笔", key: "" },
+  { tool: "mask_erase", label: "蒙版擦除", key: "" },
   { id: "fillLayer", label: "填充图层", key: "g", icon: "fillLayer" },
 ];
 function renderToolStrip() {
@@ -9402,6 +10228,8 @@ function renderBrushLibrary() {
     const name = document.createElement("span");
     name.className = "name";
     name.textContent = entry.name;
+    // 同上 ✓：`.brush-lib-row .name` 是 ellipsis 列 ✓，长笔名会被裁 ⇒ 给 title ✓。
+    name.title = entry.name + (entry.group ? "（" + entry.group + "）" : "");
     const group = document.createElement("span");
     group.className = "group";
     group.textContent = entry.group;
@@ -9579,11 +10407,11 @@ async function refreshReferenceOverlay() {
     const existing = document.getElementById("referenceOverlay");
     if (!hash) {
       if (existing) existing.remove();   // **清掉即移除** ✓（文档本来就没被动过 ✓）
+      window.__referenceView = null;
       return;
     }
     const canvas = document.getElementById("board") || document.querySelector("canvas");
     if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
     const overlay = existing || document.createElement("img");
     if (!existing) {
       overlay.id = "referenceOverlay";
@@ -9596,19 +10424,42 @@ async function refreshReferenceOverlay() {
       document.body.appendChild(overlay);
     }
     overlay.dataset.blob = String(hash);
-    // **两处旧错一起修** ✓：① URL 不带 token/doc ⇒ 开鉴权的服务端 `<img>` 拿到 401 ✗、图永远不显示 ✓
-    // ⇒ 走 `api()` ✓；② 存储里可能是**裸 RGBA**（HTTP 上传会被归一化成裸 RGBA ✓），
-    // `<img>` 解不开 ✗ ⇒ 本会话上传过就优先用留底的 dataURL ✓（跨会话仍拿不到 ⇒ 安静降级 ✓）。
+    // **三处旧错一起修** ✓：① URL 不带 token/doc ⇒ 开鉴权的服务端 `<img>` 拿到 401 ✗ ⇒ 走 `api()` ✓；
+    // ② 存储里是**裸 RGBA**（`POST /api/blob` 把 PNG 解码成裸像素 ✓）⇒ `<img>` 解不开 ✗；
+    // ③ 以前只靠**本会话内存里**的 dataURL ⇒ **刷新一次参考图就"消失"** ✓（真机症状 ✓：
+    //    图还在偏好里 ✓、`referenceInfo` 也说"已就位"✓，画布上却什么都没有 ✗）。
+    // ⇒ 上传时把**原图字节**（还是 PNG/JPEG ✓ 能解 ✓）按 hash 存进 localStorage ✓，
+    //    刷新／换会话都还看得见 ✓；没缓存过（比如 Agent 设的参考图）才退回裸像素地址 ✗
+    //    ——那种情况 `sniff_blob_mime` 会如实给 `application/octet-stream` ✓，图解不开但不谎报 ✓。
     const local = state.referenceLocal;
-    overlay.src = local && local.hash === String(hash)
-      ? local.url
-      : api("/api/blob/" + String(hash));
-    overlay.style.left = rect.left + "px";
-    overlay.style.top = rect.top + "px";
-    overlay.style.width = rect.width + "px";
-    overlay.style.height = rect.height + "px";
+    const cached = window.__recallReferenceBlob(String(hash));
+    const src = local && local.hash === String(hash) ? local.url : (cached || api("/api/blob/" + String(hash)));
+    if (overlay.getAttribute("src") !== src) overlay.src = src;
+    overlay.dataset.source = src.startsWith("data:") ? (local && local.hash === String(hash) ? "session" : "cache") : "blob";
+    const position = prefs["reference.position"];
+    window.__referenceView = { hash: String(hash), position: position && position.x !== undefined ? position : null };
+    // **几何只由 `applyReferenceGeometry()` 管** ✓（视口变了它也要跟着重摆 ✓，不能只在这儿写一次 ✗）。
+    // 走 `window` 而不是直接调 ✓：这个函数在**更深的块作用域**里 ✓（同 `state.referenceLocal` 那条教训 ✓），
+    // 名字能不能直接看见取决于拼装顺序 ✗ ⇒ 用全局引用把它钉死 ✓。
+    if (window.__applyReferenceGeometry) window.__applyReferenceGeometry();
     const opacity = Number(prefs["reference.opacity"]);
     overlay.style.opacity = String(Number.isFinite(opacity) && opacity > 0 ? opacity : 0.5);
+    // **把服务端存的位置回填到输入框** ✓（空着才填 ⇒ 不盖掉人正在打的字 ✓）：
+    // Agent 用 MCP 设过位置后 ✓，人打开页面看得见"钉在哪一块"✓ 而不是看不见 ✗。
+    if (window.__referenceView.position) {
+      const fill = (id, v) => {
+        const el = $(id);
+        if (el && !String(el.value).trim() && Number.isFinite(Number(v))) el.value = String(Math.round(Number(v)));
+      };
+      fill("referenceX", window.__referenceView.position.x);
+      fill("referenceY", window.__referenceView.position.y);
+      fill("referenceW", window.__referenceView.position.w);
+      fill("referenceH", window.__referenceView.position.h);
+    }
+    const info = $("referenceInfo");
+    if (info && overlay.dataset.source === "blob") {
+      info.textContent = "参考图由外部设置，本浏览器没有它的原图（存储里是裸像素）⇒ 重新上传一次就能一直显示";
+    }
   } catch (error) {
     // **参考图不是关键路径** ✗：读不到就安静地不画 ✓（绝不因为它把查看器拖垮 ✓）。
   }
@@ -10945,12 +11796,15 @@ $("copyDoc").addEventListener("click", async () => {
   closeOpenDialog();
   await switchDocument(response.doc_id, response.token);
 });
-$("importFile").addEventListener("change", async (event) => {
+$("importFile").addEventListener("change", (event) => {
   const file = event.target.files && event.target.files[0];
   if (!file) return;
   closeOpenDialog();
-  await importLocalImage(file);
-  event.target.value = "";
+  // **失败要出声** ✓：`createImageBitmap` 对不认识的格式会 reject ✗
+  // 原先是 `async` 处理器 ⇒ reject 直接进"未处理的 Promise 拒绝"✓，页面只看到对话框关了 ✗。
+  void Promise.resolve(importLocalImage(file))
+    .catch((error) => log("导入图片没走通：" + String((error && (error.name + ": " + error.message)) || error || "unknown"), "#c33"))
+    .finally(() => { event.target.value = ""; });
 });
 
 (async () => {
@@ -10976,6 +11830,13 @@ $("importFile").addEventListener("change", async (event) => {
       (window.__appMarks = window.__appMarks || []).push("boot:before-refreshThumb");
       try { await refreshThumb(); (window.__appMarks = window.__appMarks || []).push("boot:refreshThumb-ok"); }
       catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshThumb!" + String(error && error.message || error).slice(0, 40)); }
+      // **同 `loadDocumentData`：开机也要装「对象」与「批注」面板** ✓（根因与后果见那里 ✓）。
+      (window.__appMarks = window.__appMarks || []).push("boot:before-refreshObjects");
+      try { await refreshObjects(); (window.__appMarks = window.__appMarks || []).push("boot:refreshObjects-ok"); }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshObjects!" + String(error && error.message || error).slice(0, 40)); }
+      (window.__appMarks = window.__appMarks || []).push("boot:before-refreshAnnotations");
+      try { await refreshAnnotations(); (window.__appMarks = window.__appMarks || []).push("boot:refreshAnnotations-ok"); }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshAnnotations!" + String(error && error.message || error).slice(0, 40)); }
       (window.__appMarks = window.__appMarks || []).push("boot:before-loadEffectCatalog");
       try { await loadEffectCatalog(); (window.__appMarks = window.__appMarks || []).push("boot:loadEffectCatalog-ok"); }
       catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:loadEffectCatalog!" + String(error && error.message || error).slice(0, 40)); }
@@ -11017,7 +11878,19 @@ const I18N_EN_TEXT = {
   // **★ 内核卡片的服务端渲染提示（browser-i18n 实测红 ✓）★**：
   //   `setWasmState("已按设置跳过（用服务端渲染）")` 写进 DOM ⇒ 英文模式下必须有词条 ✓。
   "已按设置跳过（用服务端渲染）": "Skipped per setting (server-side rendering)",
+  // **参考图降级提示** ✓（本轮补齐 ✓）：这句整句固定 ⇒ 走字典即可 ✓
+  //（它写在 `#referenceInfo` 里，不在 `#log` 的豁免范围内 ✓，英文模式必须有词条 ✗）。
+  "已清除参考图": "Reference cleared",
+  "参考图由外部设置，本浏览器没有它的原图（存储里是裸像素）⇒ 重新上传一次就能一直显示":
+    "The reference was set from outside; this browser has no copy of the original (the store keeps raw pixels) ⇒ upload it once more and it will keep showing",
   // **三方对照补齐新增的固定文案** ✓（`ui-i18n-coverage` 要求模板里每个中文文本节点都有词条 ✓）。
+  // **直方图卡 + 整组撤销**（本轮新增 ✓）：模板文本节点全部要有词条 ✗。
+  "直方图": "Histogram",
+  "整文档": "Whole document",
+  "当前图层": "Current layer",
+  "只统计选区": "Selection only",
+  "读取": "Read",
+  "整组撤销": "Revert group",
   "解析": "Resolve",
   "脱离实例": "Detach",
   "组": "Group",
@@ -11071,8 +11944,10 @@ const I18N_EN_TEXT = {
   "问题反馈、协作沟通、缺陷上报：": "Feedback, collaboration and defect reports:",
   "安全漏洞请勿开公开 issue，直接发邮件。": "Please do not open a public issue for a security problem; send mail instead.",
   "用工具栏的「标注」在画布上点一下就新建 ✓；点图钉可选中 ✓。": "Click once on the canvas with the Annotations tool to create one, and click a pin to select it.",
-  "建议来自 `suggest`（含**可执行补丁**）✓；接受会**按序重放**补丁 ✓。": "Suggestions come from suggest and carry an executable patch; accepting one replays it in order.",
-  "点「预览」先看清补丁会被怎么执行 ✓（预览**不应用** ✓）": "Preview first to see how a patch would be applied, since previewing does not apply it",
+  // **键必须与 `viewer.rs` 里面向用户的那句中文逐字相同** ✓（查表是**精确匹配** ✗）
+  // ⇒ 中文改了这里不改 ✓，英文界面就会退回中文 ✗。
+  "建议来自 suggest 工具（含可执行补丁 ✓）；接受会按序重放补丁 ✓。": "Suggestions come from the suggest tool and carry an executable patch; accepting one replays it in order.",
+  "点「预览」先看清补丁会被怎么执行 ✓（预览不改动画面 ✓）": "Preview first to see how a patch would be applied, since previewing does not change the picture",
   "✓ —— 不是从你电脑上选文件 ✗。": "✓ — and not a file picked from your computer ✗.",
   "刷新": "Refresh",
   "收起": "Collapse",
@@ -11095,7 +11970,20 @@ const I18N_EN_TEXT = {
   "调色板": "Palette",
   "纹理": "Texture",
   "已连接": "connected",
+  // **断线这一族此前只有"已连接"有词条** ✓（`browser-i18n` 实测红：英文顶栏里剩「已断开」✓）
+  // ⇒ 顶栏的连接状态是**运行时改写**的文本节点 ✓，不在 `#log` 的豁免范围内 ✗。
+  "已断开": "disconnected",
+  "已断开（不再重连）": "disconnected (no more retries)",
+  // **读取失败这一族的整句写法**（没有错误码时兜底 ✓）⇒ 也必须有词条 ✗。
+  "读取失败": "read failed",
+  "读取失败 ✓": "read failed ✓",
+  "缩略图不可用（本部署无服务端渲染）": "No thumbnail available (this deployment has no server-side rendering)",
+  "一张纹理都没找到 ⇒ 多半是服务端没找到资产目录（看启动日志的「资产目录：」一行 ✓，或用 --assets-dir 指定 ✓）":
+    "Not a single texture found ⇒ most likely the server did not find its asset directory (check the “asset directory:” line in the startup log ✓, or point at one with --assets-dir ✓)",
   "id 即名字": "the id is the name",
+  // **对象重排按钮** ✓（`reorder_objects` 的 Web 入口 ✓）：模板里的文本节点 ⇒ 必须有词条 ✗。
+  "对象上移": "Object up",
+  "对象下移": "Object down",
   "名称": "Name",
   // **新建文档对话框的尺寸**（用户：只有名称，想开 1920×1080 做不到 ✗）——
   // 这两个是**模板里的文本节点** ✓ ⇒ `ui-i18n-coverage` 要求有词条 ✓，否则静态判据立刻红 ✓。
@@ -11174,6 +12062,7 @@ const I18N_EN_TEXT = {
   "笔触色": "Stroke colour",
   "选中笔迹的粗细": "size of the selected stroke",
   "不透明": "Opacity",
+  "位置": "Position",
   "路径算子": "Path operator",
   "reverse 反向": "reverse",
   "close 闭合": "close",
@@ -11269,11 +12158,11 @@ const I18N_EN_TEXT = {
   "导入 .yanshi…": "Import .yanshi…",
   "导入为新文档": "Import as a new document",
   "用完即收": "Puts itself away",
-  "`Esc` 收起": "`Esc` collapses it",
+  "Esc 收起": "Esc collapses it",
   "滚到哪、画到哪 ✓": "painted as you scroll",
   "打包整个文档为": "Pack the whole document as",
   "路径是服务器上的路径": "the path is a path on the server",
-  "`P` 调色板 · `T` 纹理 · `Esc` 收起": "`P` palettes · `T` textures · `Esc` collapses",
+  "P 调色板 · T 纹理 · Esc 收起": "P palettes, T textures, Esc collapses",
   "偃师 Yanshi 查看器": "Yanshi Viewer",
   "偃师 Yanshi": "Yanshi",
   "文件 ▾": "File ▾",
@@ -11321,7 +12210,59 @@ const I18N_EN_TEXT = {
   "铅笔（v2）": "Pencil (v2)",
   "像素（v2）": "Pixel (v2)",
   "三条落笔路径 · 只作用于当前图层": "Three stroke paths, all constrained to the current layer",
+  // **导出面板 region/LOD 补齐**（期 4 ✓）：新增控件的静态文案。
+  "当前没有可用选区 ⇒ 先用选区工具拖一个（或清除选区后手填四个框）": "No selection available ⇒ drag a rectangle with the selection tool first (or clear it and fill the four boxes by hand)",
+  "区域宽/高必须大于 0": "Region width/height must be greater than 0",
+  "用选区": "Use selection",
+  "只导当前层": "Current layer only",
+  "没有当前图层 ⇒ 先选中一层再勾「只导当前层」": "No active layer ⇒ select a layer before ticking \"Current layer only\"",
+  "区域": "Region",
+  "档位": "Level",
+  "缺省": "Default",
+  "0 全分辨率": "0 full resolution",
+  "1 一半": "1 half",
+  "2 1/4": "2 quarter",
+  "3 1/8": "3 eighth",
+  // **命名锚点面板** ✓（`set_anchor` / `get_anchors` / `delete_anchor` 的 Web 入口 ✓）：静态文案。
+  "锚点": "Anchors",
+  "把关键点钉死在文档里 ⇒ 换会话、重启服务都读回同一组坐标，不必重新目测。":
+    "Pin key points into the document ⇒ the same coordinates come back after a new session or a restart, no re-eyeballing.",
+  "名": "Name",
+  "钉住": "Pin",
+  "用选区中心": "Use selection centre",
+  "还没有锚点 ✓（填好名字与坐标点「钉住」，或开着「锚点」工具在画布上点一下 ✓）":
+    "No anchors yet ✓ (fill in a name and coordinates and press Pin, or click the canvas with the Anchor tool ✓)",
+  // **各面板的"空态"这一族** ✓：它们由 JS 在运行时写进文本节点 ✓ ⇒ 英文模式真机扫得到 ✗
+  //（本轮把「对象」「批注」面板接进开机流程后 ✓，这两句第一次在英文模式下露出来 ✓）。
+  "还没有标注 ✓": "No annotations yet ✓",
+  "当前图层还没有对象 ✓": "No objects on this layer ✓",
+  "还没有存档点 ✓（上面那个按钮可以打一个 ✓）": "No checkpoints yet ✓ (the button above creates one ✓)",
+  "还没有变更集 ✓（点「开始变更集」再画 ✓）": "No changesets yet ✓ (press Start a changeset, then paint ✓)",
+  "还没有评论 ✓": "No comments yet ✓",
+  "还没有建议 ✓（AI 或代理可以用 suggest 提出 ✓）": "No suggestions yet ✓ (an AI or an agent can raise one with suggest ✓)",
+  "填入": "Fill in",
+  "坐标已填入 ✓（给个名字再点「钉住」）": "Coordinates filled in ✓ (give it a name, then press Pin)",
+  "✗ 要先给名字 ✓（建议用能自解释的英文名，如 left_eye）":
+    "✗ a name is required ✓ (prefer a self-explanatory English one, like left_eye)",
+  "✗ x / y 都要填数字 ✓（可在画布上点一下「锚点」工具，或用选区中心填充）":
+    "✗ both x and y must be numbers ✓ (click the canvas with the Anchor tool, or use the selection centre)",
+  "当前没有可用选区 ⇒ 先用选区工具拖一个（或直接在框里手填 x / y ✓）":
+    "No selection available ⇒ drag one with the selection tool first (or type x / y by hand ✓)",
+  // **风格预设面板** ✓（`list_presets` / `preview_preset` / `apply_preset` 的 Web 入口 ✓）。
+  "风格预设": "Style presets",
+  "挑一套风格落到当前图层：落的是可调对象，不是一次性烘焙。先点「刷新」读回预设，题材可筛。":
+    "Drop a look onto the current layer as editable objects, not a one-off bake. Press Refresh to read the library; the subject box filters it.",
+  "题材": "Subject",
+  "带修正段": "Include correction",
+  "预览": "Preview",
+  "预览中（临时文档渲染，不动原文档）…":
+    "Rendering a proxy (throwaway document — yours is untouched)…",
+  "预览失败（原因见日志）": "Preview failed (the log says why)",
+  "没有匹配的预设 ⇒ 把题材清空再看": "No matching presets ⇒ clear the subject and retry",
+  "还没有当前图层 ⇒ 先选一个图层再预览": "No current layer ⇒ pick a layer before previewing",
+  "还没有当前图层 ⇒ 先选一个图层再应用": "No current layer ⇒ pick a layer before applying",
   "画笔 ▾": "Brush ▾",
+
   "笔刷": "Brushes",
   "（内置画笔）": "(built-in brushes)",
   "笔刷库": "Brush library",
@@ -11330,6 +12271,47 @@ const I18N_EN_TEXT = {
   "★ 收藏": "★ Favourites"
 };
 const I18N_EN_ATTR = {
+  // **直方图卡 + 整组撤销**（本轮补齐 ✓）：四个新 tooltip。
+  // 静态判据 `ui-i18n-coverage` 不查属性 ✗，但 `browser-i18n` 在英文模式下会看到 ✗ ⇒ 都要有词条 ✓。
+  "统计整文档的合成结果，还是只统计当前图层":
+    "Statistics over the composited whole document, or over the current layer alone",
+  "只统计当前选区那块矩形（选区来自服务端事实，不是本地猜测）":
+    "Count only the rectangle of the current selection (the selection is server-side state, not a local guess)",
+  "读取直方图（get_histogram，只读，不改画面）":
+    "Read the histogram (get_histogram; read-only, it changes nothing on the canvas)",
+  "把该组同一次操作产生的所有笔一次撤掉（revert_group，只撤这一组，不碰别的）":
+    "Revert every stroke produced by that group's single operation (revert_group; only that group, nothing else)",
+  "把勾选的对象上移一层（reorder_objects，一次只动一个对象）":
+    "Move the checked object up one level (reorder_objects; one object at a time)",
+  "把勾选的对象下移一层（reorder_objects，一次只动一个对象）":
+    "Move the checked object down one level (reorder_objects; one object at a time)",
+  "纵轴按对数画：平涂文档里那几笔颜色的桶只有几十个像素，线性轴下会被压成看不见（数值本身仍是服务端给的 ✓）":
+    "The vertical axis is logarithmic: in a flatly painted document the colour buckets hold only tens of pixels and a linear axis crushes them out of sight (the numbers themselves come straight from the server ✓)",
+  // **命名锚点面板** ✓（属性文案：静态判据不查属性 ✓，但英文模式下的 tooltip 归这里 ✓）。
+  "写一个命名锚点（set_anchor）；同名再设 = 覆盖，不必先删":
+    "Write a named anchor (set_anchor); setting the same name again simply overwrites it — no need to delete first",
+  "用当前选区的中心填充 x / y（选区来自服务端事实）":
+    "Fill x / y with the centre of the current selection (the selection comes from server-side state)",
+  "读回文档里全部锚点（get_anchors）": "Read back every anchor stored in the document (get_anchors)",
+  "可留空": "optional",
+  // **风格预设面板** ✓（属性文案：按钮 tooltip + 题材 placeholder ✓）。
+  "读回可用预设（list_presets）；题材框留空 = 全部":
+    "Read the available presets (list_presets); leave the subject box empty for all of them",
+  "如 夜景 / 人像": "e.g. night / portrait",
+  "不落原文档，先看代理图（preview_preset + render，用当前图层）":
+    "Render a proxy first — a throwaway document, your document stays untouched (preview_preset + render on the current layer)",
+  "把这套预设落到当前图层（apply_preset）；强度与旋钮按上面的值":
+    "Apply this preset to the current layer (apply_preset); strength and knobs use the values above",
+  "把这条锚点的名字与坐标填回上面的框（改坐标时不必重新目测 ✓）":
+    "Put this anchor's name and coordinates back into the boxes above (adjusting a coordinate without re-eyeballing ✓)",
+  "删掉这个锚点（delete_anchor；不存在会报错，不会静默成功 ✓）":
+    "Delete this anchor (delete_anchor; a missing anchor is an error, never a silent success ✓)",
+  // **导出面板 region/LOD 补齐**（期 4 ✓）：两个新 title。
+  "留空 ⇒ 整幅；填齐 x,y,w,h 才生效": "Leave empty ⇒ whole canvas; all four of x, y, w, h must be filled to take effect",
+  "取样档位：lod:k ⇒ 输出尺寸 = 区域 ÷ 2^k（向上取整），不经过全分辨率中间缓冲": "Sampling level: lod:k ⇒ output size = region ÷ 2^k (rounded up), skipping the full-resolution intermediate buffer",
+  "用当前选区的包围盒填充区域四个框（选区来自服务端事实）": "Fill the four region boxes with the current selection's bounding box (the selection comes from server-side state)",
+  "只导当前图层（隐藏层也照导——导出某一层是明确要求）": "Export only the current layer (hidden layers export too — exporting a named layer is an explicit request)",
+  "服务端渲染（可只导一个区域、可降档取样、可按尺寸缩放），结果直接下载到本机（export_png）": "Server-side rendering (export one region, downsampled by level, or scaled to a size); the result downloads straight to this machine (export_png)",
   "文本字体：内置点阵走服务端位图图集；其余走浏览器 Canvas 渲染系统字体（支持中文、emoji、任意字号）": "Text font: the built-in bitmap uses the server-side glyph atlas; the others render system fonts with the browser canvas (Chinese, emoji and any size)",
   "导出成分层 PSD（图层/组/不透明度/可见性/混合模式都带出去）": "Export as a layered PSD (layers, groups, opacity, visibility and blend modes included)",
   "查看选中对象的版本历史（原子版本链）": "Show the version history of the selected object (its atom version chain)",
@@ -11363,11 +12345,59 @@ const I18N_EN_ATTR = {
   "折叠 / 展开画笔区（快捷键 \\ 也可；折叠只隐藏控件，不改你选好的笔与颜色）": "Collapse or expand the brush section (the backslash shortcut also works); collapsing hides controls without changing your brush or colour",
   "MyPaint .myb 笔刷（Hokusai 引擎 ⇒ 由服务端落笔；首次点开时载入）": "MyPaint .myb brushes on the Hokusai engine, so strokes are committed by the server and the list loads the first time you open it",
   "把落笔的点当平滑曲线（Catmull-Rom，曲线过这些点）——手绘的折线不再有硬角": "Treat the stamped points as a smooth curve (Catmull-Rom, so it passes through them), which removes the hard corners of a hand-drawn polyline",
-  "笔刷库：每支笔刷都带**真实落笔**的效果图（滚到哪画到哪）；点一行就换那支笔": "Brush library: every brush carries a preview of a real stroke, painted as you scroll; clicking a row switches to that brush",
+  "笔刷库：每支笔刷都带真实落笔的效果图（滚到哪画到哪）；点一行就换那支笔": "Brush library: every brush carries a preview of a real stroke, painted as you scroll; clicking a row switches to that brush",
   "把调色板 / 纹理浮到画布上（再点一次收回，卡片会回到原来的位置）": "Float the palettes and textures over the canvas; click again to put them back where they were",
   "这支笔刷真实落一小笔的样子（服务端 brush_preview，与落笔同一条实现）": "What a real stroke with this brush looks like, from the server's brush_preview, the same implementation that paints strokes",
   "名字片段，如 knife / pen": "part of a name, such as knife or pen",
-  "把当前选中的笔刷加入/移出收藏（存在工作区偏好里 ✓，MCP 也能读到 ✓）": "Add or remove the selected brush from favourites; kept in the workspace preferences and readable through MCP"
+  "把当前选中的笔刷加入/移出收藏（存在工作区偏好里 ✓，MCP 也能读到 ✓）": "Add or remove the selected brush from favourites; kept in the workspace preferences and readable through MCP",
+
+  // **属性文案（title / placeholder / aria-label）的英文词条补齐** ✓（本轮 i18n 属性覆盖巡检抓的 ✓）：
+  // 原来 `ui-i18n-coverage` **只查文本节点** ✗ ⇒ 模板里 41 条中文 tooltip **一条词条都没有** ✓
+  // ⇒ 英文界面下按钮文字是英文 ✓、**悬停提示整句中文** ✗（`browser-i18n` 也抓不到 ✓，
+  // 因为它同样只看可见文本 ✓）。判据已补成**属性也查** ✓（`scripts/ui-i18n-coverage.mjs` ✓）。
+  "一次性拒绝所有勾选的建议（reject_suggestions）": "Reject every checked suggestion at once (reject_suggestions)",
+  "一次性接受所有勾选的建议（accept_suggestions）": "Accept every checked suggestion at once (accept_suggestions)",
+  "一行一份作品：名字、尺寸、原子数与创建时间；点「打开」切换过去。": "One row per work: name, size, atom count and creation time; press Open to switch to it.",
+  "上传一张图，半透明铺在画布下层用于临摹（set_reference）": "Upload an image and lay it translucently under the canvas for tracing (set_reference)",
+  "上移一层": "Move layer up",
+  "下移一层": "Move layer down",
+  "丢弃本地队列里尚未补交的改动（需点两次确认）": "Drop the changes still queued in this browser (needs two clicks to confirm)",
+  "从本机选文件，走 data_base64 上传（import_asset）": "Pick a file from this machine and upload it as data_base64 (import_asset)",
+  "写一条评论…": "Write a comment\u2026",
+  "写进对象的 metadata.note（update_object 的 patch）": "Writes into the object's metadata.note (a patch for update_object)",
+  "删除图层（可撤销）": "Delete layer (undoable)",
+  "勾上：取完色就把浮层收起（想连续试色就取消勾选）": "Checked: the dock closes after every pick; uncheck to try several colours in a row",
+  "勾选对象后可「实例化」「编组」「变换」（实例与 master 联动，设计 9.1）。「重采样」只作用于光栅对象（导入的图片、PSD 合成图）——手画的笔迹是 stroke，服务端会明确拒绝并告知类型（先用「转为形状」或改为导入图片）。": "Select objects to instance, group or transform them (instances follow their master, design 9.1). Resample only applies to raster objects (imported pictures, PSD composites): a hand-drawn stroke is not raster, and the server refuses it and says why (convert it to a shape first, or import a picture instead).",
+  "参照 Met／NGA 的公有领域德加原作，只用来看风格：没有导入任何原作位图，每个像素都是笔刷/介质笔触。": "Modelled on public-domain Degas studies at the Met and the NGA, as a style reference only: no source bitmap is imported, every pixel comes from brush or medium strokes.",
+  "图层列表": "Layer list",
+  "复制图层（含对象）": "Duplicate the layer with its objects",
+  "孤儿是「上传过、但没有任何原子引用」的数据（设计 §6.3）；回收按 TTL 走。": "Orphans are blobs that were uploaded but no atom references (design 6.3); reclaiming follows the TTL.",
+  "导出直接把 .yanshi 下载到你的电脑；下面的路径留空即可（填了就在服务器上再存一份）。导入从你的电脑选 .yanshi 文件（分片上传，整包多大都行）。": "Export downloads the .yanshi straight to your computer; leave the path below empty (filling it keeps a second copy on the server). Import picks a .yanshi from your computer, uploaded in chunks so any package size works.",
+  "工具": "Tools",
+  "把 CC0 纸张 / 画布纹理铺成背景（会新建一层并沉到最底）。": "Lay a CC0 paper or canvas texture as the background; it adds a new layer at the very bottom.",
+  "把从第一笔到现在的过程渲染成视频（本地内核 ＋ WebCodecs，不需要联网）": "Render everything from the first stroke to now as a video (local kernel plus WebCodecs, no network needed)",
+  "把勾选实例改挂到该 master（link_to_master）": "Re-point the checked instances at this master (link_to_master)",
+  "把勾选对象加入该组（add_to_group）": "Add the checked objects to this group (add_to_group)",
+  "把勾选对象移出该组（remove_from_group）": "Take the checked objects out of this group (remove_from_group)",
+  "把勾选的实例从 master 断开（detach_instance）": "Detach the checked instances from their master (detach_instance)",
+  "把当前色块存成 .gpl 调色板资产（save_palette）": "Save the current swatches as a .gpl palette asset (save_palette)",
+  "把构建/平台/配置（已去密）、文档元数据、原子日志尾部（注明截断）、服务端 stderr 环形缓冲、渲染告警（含被跳过的补丁）、阶段耗时与当前缩略图打成一个 zip 下载；包内有 README 逐条说明。只读，不改文档。": "Bundles build, platform and configuration (secrets stripped), document metadata, the tail of the atom log (truncation noted), the server's stderr ring buffer, render warnings including skipped patches, stage timings and the current thumbnail into one zip; a README inside explains each part. Read-only: it changes no document.",
+  "把界面切成英文（English）": "Switch the interface to English",
+  "文档目录会被移除；它引用的 blob 里，只有它自己引用的会被删掉，被别的作品或离线变更集引用的一律保留。": "The document's directory is removed; of its blobs only the ones it alone references are deleted, and anything another work or an offline changeset references is kept.",
+  "新建图层": "New layer",
+  "清除当前参考图（clear_reference）": "Clear the current reference image (clear_reference)",
+  "点色块即取色（写回笔刷颜色）；来源是随包发布的，或你自己导入的。": "Click a swatch to take its colour (it writes back to the brush colour); palettes either ship with the package or come from your own imports.",
+  "画布显示比例（%）；回车或失焦生效 —— 滚轮不缩放也不平移（防误触）": "Canvas display scale (percent); Enter or blur applies it. The wheel neither zooms nor pans, so it cannot be nudged by accident",
+  "留空 ⇒ 只下载到本机": "Leave empty to download only to this machine",
+  "留空 ⇒ 用包里的 id": "Leave empty to use the id inside the package",
+  "离线时改动先写进浏览器本地队列，联网后按顺序补交；服务端上的这份文档若已变化则暂停补交": "While offline, changes go into a queue in this browser and are replayed in order once you are back online; replay pauses if the server's copy of this document has moved on",
+  "立刻把本地队列按顺序补交给服务端": "Replay the local queue to the server in order right now",
+  "给勾选实例设置同步策略（update_sync_policy）": "Set the sync policy of the checked instances (update_sync_policy)",
+  "给当前图层填一层渐变（天空 / 底色 / 光照过渡）——确定性：同样的输入永远同样的像素。": "Fill the current layer with a gradient (sky, ground colour, light falloff). Deterministic: the same input always yields the same pixels.",
+  "读回选中对象的完整记录（get_object）": "Read back the full record of the selected object (get_object)",
+  "选中对象解析后的生效状态（get_resolved_state）": "The resolved, effective state of the selected object (get_resolved_state)",
+  "参考图摆在文档的哪个矩形（像素）；留空 = 铺满整幅": "Which rectangle of the document (in pixels) the reference sits on; leave blank to cover the whole canvas"
+
 };
 const LANG_KEY = "yanshi.lang";
 const uiLang = (() => {
@@ -11411,6 +12441,28 @@ function i18nText(node) {
     // **资产下拉的"（导入的）"徽标是拼接的动态文案** ✓（名字随用户导入变 ✗）
     // ⇒ 字典匹配不到 ⇒ 必须有模式词条，否则英文模式下留着中文（browser-i18n 实测抓到过 ✓）。
     const m8 = /^(.+)（导入的）$/.exec(zh);
+    // **导出面板的动态回执** ✓（期 4 补齐 ✓）：填充/校验消息带数字 ⇒ 字典匹配不到
+    // ⇒ 必须模式词条，否则英文模式下留着中文（browser-i18n 的老教训 ✓）。
+    const m9 = /^区域要四个值填齐（x, y, w, h）才生效；当前只填了 (\d+) 个$/.exec(zh);
+    const m10 = /^区域已按选区填充：x=(-?\d+) y=(-?\d+) w=(\d+) h=(\d+)$/.exec(zh);
+    // **锚点面板的回执** ✓（同名补齐 ✓）：这几条都插入了**用户给的名字**或**数字** ✗
+    //   ⇒ 字典按整句匹配不到 ⇒ 必须模式词条（否则英文模式下留着中文 ✓）。
+    const m11 = /^已钉住 (.+) ✓（同名再设 = 覆盖 ✓）$/.exec(zh);
+    const m12 = /^已按选区中心填充：x=(-?\d+) y=(-?\d+)（改完点「钉住」✓）$/.exec(zh);
+    const m13 = /^已填入 (.+) ✓（改完点「钉住」就是覆盖 ✓）$/.exec(zh);
+    const m14 = /^已删除锚点 (.+) ✓$/.exec(zh);
+    // **风格预设面板的回执** ✓：整句里带数字 ⇒ 字典按整句匹配不到 ✗ ⇒ 必须给模式词条 ✓。
+    const m15 = /^共 (\d+) 套（库 (.+)）$/.exec(zh);
+    const m16 = /^代理图 (\d+)×(\d+) ✓ 共 (\d+) 个操作（(\d+)% 强度）(?: ⇒ .*)?$/.exec(zh);
+    // **参考图卡片的回执** ✓（本轮补齐 ✓）：整句里拼了尺寸、矩形、以及"没缓存上"的尾巴 ✗
+    //   ⇒ 字典按整句匹配不到 ⇒ 必须模式词条（英文模式下截图实测留着中文 ✓）。
+    const m17 = /^参考图已就位（(\d+)×(\d+)）(?: · 钉在 (-?\d+),(-?\d+) 的 (\d+)×(\d+))?(?: · 本浏览器没存下原图（超过 1\.5MB 或配额不足）⇒ 刷新后需要重传)?$/.exec(zh);
+    // **直方图读数行** ✓（本轮新增 ✓）：像素数、作用域、五个统计量全是数据 ✗
+    //   ⇒ 字典按整句匹配不到 ⇒ 必须模式词条（英文模式下截图实测会留着中文 ✓）。
+    const m18 = /^像素 (\d+) · 作用域 (\S+) · 亮度 均值 (\S+) 中位 (\S+) p5 (\S+) p95 (\S+)$/.exec(zh);
+    // **读取失败的回执带服务端错误码** ✓（`reference_not_found` 之类 ✗）⇒ 整句拼了数据
+    //   ⇒ 字典按整句匹配不到 ⇒ 必须模式词条（browser-i18n 在 ef2494de 基线上实测抓到 ✓）。
+    const m19 = /^读取失败：(\S+)$/.exec(zh);
     if (m1) en = "Layer " + m1[1];
     else if (m2) en = "Layer " + m2[1] + " (#" + m2[2] + ")";
     else if (m3) en = m3[1] + " colours";
@@ -11419,6 +12471,25 @@ function i18nText(node) {
     else if (m6) en = m6[1] + " rejected";
     else if (m7) en = m7[1] + " conflict(s)";
     else if (m8) en = m8[1] + " (imported)";
+    else if (m9) en = "Region needs all four values (x, y, w, h); only " + m9[1] + " filled";
+    else if (m10) en = "Region filled from selection: x=" + m10[1] + " y=" + m10[2] + " w=" + m10[3] + " h=" + m10[4];
+    else if (m11) en = "Pinned " + m11[1] + " ✓ (setting the same name again overwrites ✓)";
+    else if (m12) en = "Filled from selection centre: x=" + m12[1] + " y=" + m12[2] + " (press Pin to save ✓)";
+    else if (m13) en = "Filled in " + m13[1] + " ✓ (edit, then Pin overwrites ✓)";
+    else if (m14) en = "Deleted anchor " + m14[1] + " ✓";
+    else if (m15) en = m15[1] + " presets (library " + m15[2] + ")";
+    else if (m16) en = "Proxy " + m16[1] + "×" + m16[2] + " ✓ " + m16[3] + " operations at " + m16[4] + "% strength";
+    else if (m17) {
+      en = "Reference in place (" + m17[1] + "×" + m17[2] + ")"
+        + (m17[3] ? " · pinned at " + m17[3] + "," + m17[4] + " covering " + m17[5] + "×" + m17[6] : "")
+        + (/没存下原图/.test(zh) ? " · this browser has no copy of the original (over 1.5 MB or out of quota) ⇒ re-upload after a reload" : "");
+    }
+    else if (m18) {
+      const scopeEn = { "整文档": "whole document", "当前图层": "current layer", "选区": "selection", "图层×选区": "layer × selection" }[m18[2]] || m18[2];
+      en = "Pixels " + m18[1] + " · scope " + scopeEn
+        + " · luma mean " + m18[3] + " median " + m18[4] + " p5 " + m18[5] + " p95 " + m18[6];
+    }
+    else if (m19) en = "Read failed: " + m19[1];
   }
   node.nodeValue = (uiLang === "en" && en) ? original.replace(zh, en) : original;
 }

@@ -25,7 +25,7 @@ const url = process.argv[2];
 const port = process.env.CDP_PORT || "9333";
 if (!url) { console.error("用法: node scripts/browser-reference-overlay.mjs <viewer-url> [cdpPort]"); process.exit(2); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const hash = "sha256:" + "a".repeat(64);
+//（原来这里写死一个假 hash ✗ ⇒ 见下面 `render_region` 那段 ✓：blob 必须真在存储里 ✓）
 // ① 先经 API 设参考图（拿页面 URL 里的 doc/token ✓）
 const parsed = new URL(url);
 const doc = parsed.searchParams.get("doc"), token = parsed.searchParams.get("token");
@@ -43,7 +43,19 @@ const post = async (tool, args) => {
     process.exit(3);
   }
 };
-const set = await post("set_reference", { blob_hash: hash, opacity: 0.5, position: { x: 12, y: 14, w: 120, h: 90 } });
+const set0 = await post("get_document", {});
+const docW = Number((set0.document || set0).width), docH = Number((set0.document || set0).height);
+if (!(docW > 0 && docH > 0)) { console.log("  ✗ 读不到文档尺寸 ⇒ 判据自身前提不成立（不是产品问题）⇒ " + JSON.stringify(set0).slice(0, 160)); process.exit(3); }
+// **`hash` 必须是存储里真有的 blob** ✓（本轮修掉的**假红** ✗）：`set_reference` 会校验 blob 在不在 ✗
+//（回执原文：「是合法格式，但**这个 blob 不在存储里** ⇒ 参考图存下来也永远比不了」✓）。
+//   **∴ 原来的错 ✗**：这里写死 `sha256:aaaa…` ⇒ `set_reference` 被拒 ⇒ 判据**每次都停在 exit 3**
+//     （"我自己坏了"）✓ —— 后果是**参考图"看得见"那一半其实很久没被真正判过** ✗（红绿不分的反面：常红 ✓）。
+//   **∴ 现在 ✗→✓**：先用**只读**的 `render_region` 把当前文档渲染成一张真 blob ✓（不改文档 ✓）。
+const rendered = await post("render_region", { region: { x: 0, y: 0, w: Math.min(64, docW), h: Math.min(64, docH) } });
+const hash = rendered && rendered.blob_hash;
+if (!hash) { console.log("  ✗ 产不出真 blob ⇒ 判据自身前提不成立（不是产品问题）⇒ " + JSON.stringify(rendered.context || rendered.error_code || rendered).slice(0, 200)); process.exit(3); }
+const position = { x: 4, y: 4, w: Math.max(8, Math.min(120, docW - 8)), h: Math.max(8, Math.min(90, docH - 8)) };
+const set = await post("set_reference", { blob_hash: hash, opacity: 0.5, position });
 if (set.ok !== true) { console.log("  ✗ set_reference 失败 ⇒ 判据自身前提不成立（不是产品问题）⇒ " + JSON.stringify(set.context || set.error_code)); process.exit(3); }
 // **★ CDP 连接守卫 ✗ ★**（2026-10-16 ✓）：浏览器没起来时这里会抛未捕获异常 ⇒ **退 1 ✗，看着像产品失败** ✗
 //   **∴ 本仓约定**（AGENTS.md）：「判据必须能说**我自己坏了** ✓，用**与产品失败不同的退出码**报出来 ✓（现用 exit(3) ✓）」

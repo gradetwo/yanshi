@@ -830,7 +830,11 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
                 .get("mode")
                 .and_then(Value::as_str)
                 .unwrap_or("new");
-            if mode == "new" && state.selections.contains_key(selection_id) {
+            // **只与"存活"的选区冲突** ✓（与 `CreateLayer` 同一条教训 ✓）：
+            // 折叠层保留墓碑 ✓（删除可撤销的基础 ✓），但墓碑**不该占用 id** ✗ ——
+            // 原来这里是 `contains_key` ✓，于是 `delete_selection` 之后同一个 id
+            // **永远建不回来** ✗，而 `list_selections` 又说它不存在 ✗（两句自相矛盾 ✓）。
+            if mode == "new" && state.selection_alive(selection_id) {
                 return Err(err(
                     ErrorCode::PreconditionFailed,
                     format!("选区 {selection_id} 已存在（要改它请传 mode=add/subtract/intersect）"),
@@ -839,7 +843,8 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
         }
         AtomKind::CreateMask => {
             let mask_id = required(atom, "mask_id")?;
-            if state.masks.contains_key(mask_id) {
+            // 同 `CreateSelection` ✓：墓碑不占用 id ✓（实测 `delete_mask` 后重建会被拒 ✗）。
+            if state.mask_alive(mask_id) {
                 return Err(err(
                     ErrorCode::PreconditionFailed,
                     format!("蒙版 {mask_id} 已存在"),
@@ -856,7 +861,8 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
         }
         AtomKind::CreateStyle => {
             let style_id = required(atom, "style_id")?;
-            if state.styles.contains_key(style_id) {
+            // 同上 ✓：墓碑不占用 id ✓。
+            if state.style_alive(style_id) {
                 return Err(err(
                     ErrorCode::PreconditionFailed,
                     format!("风格 {style_id} 已存在"),
@@ -2040,6 +2046,94 @@ mod tests {
         assert!(
             selection.deleted_by.is_some(),
             "tombstone 必须把选区标记为已删除（deleted_by）"
+        );
+    }
+
+    /// **墓碑不该占用 id** ✓（真机复现的 bug ✓）：
+    /// `delete_selection` 之后 ✓ `list_selections` 报 0 条 ✓（正确 ✓）——
+    /// 但用**同一个 id** 再 `create_selection` 却回「选区 Q1 已存在」✗
+    /// ⇒ 两句自相矛盾 ✓、而且**没有任何出路**（只能弃用整个文档 ✓）。
+    /// 根因是这里的检查写成了 `contains_key` ✓ ⇒ **把墓碑也算成占用** ✗；
+    /// 而 `CreateLayer` 早就改成"只与存活的冲突" ✓（见本文件 `CreateLayer` 的注释 ✓）——
+    /// **本条测试锁住"同一个教训不能只学一次"** ✓（蒙版／风格同形 ✓）。
+    #[test]
+    fn a_deleted_selection_or_mask_frees_its_id_for_reuse() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateSelection,
+                "a_sel",
+                json!({"selection_id": "sel_1",
+                       "shape": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 8, "h": 8}}}),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::Tombstone,
+                "a_sel_del",
+                json!({"selection_id": "sel_1"}),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateMask,
+                "a_mask",
+                json!({"mask_id": "mask_1",
+                       "shape": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 8, "h": 8}}}),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::Tombstone,
+                "a_mask_del",
+                json!({"mask_id": "mask_1"}),
+            ),
+        );
+        let folded = fold(&atoms);
+        assert!(folded.is_clean(), "{:?}", folded.warnings);
+        let mut state = folded.state;
+        assert!(!state.selection_alive("sel_1"), "折叠后该选区应是墓碑");
+        assert!(!state.mask_alive("mask_1"), "折叠后该蒙版应是墓碑");
+
+        // 同一个 id **重新创建必须被接受** ✓（这才是"删除可撤销、但 id 不报废"的语义 ✓）。
+        let again = atom(
+            AtomKind::CreateSelection,
+            "a_sel_again",
+            json!({"selection_id": "sel_1",
+                   "shape": {"kind": "rect", "bbox": {"x": 4, "y": 4, "w": 6, "h": 6}}}),
+        );
+        precondition(&state, &again)
+            .expect("已删除的选区 id 必须可以重新创建（与 CreateLayer 同一条规则）");
+        apply(&mut state, &again).expect("重建选区应能应用");
+        assert!(
+            state.selection_alive("sel_1"),
+            "重建后必须复活（deleted_by 清掉）"
+        );
+
+        let mask_again = atom(
+            AtomKind::CreateMask,
+            "a_mask_again",
+            json!({"mask_id": "mask_1",
+                   "shape": {"kind": "rect", "bbox": {"x": 1, "y": 1, "w": 4, "h": 4}}}),
+        );
+        precondition(&state, &mask_again).expect("已删除的蒙版 id 必须可以重新创建");
+
+        // 但**存活**的那一个仍然要拒 ✗ —— 否则就是无声覆盖用户正在用的选区 ✓。
+        let alive = atom(
+            AtomKind::CreateSelection,
+            "a_sel_dup",
+            json!({"selection_id": "sel_1",
+                   "shape": {"kind": "rect", "bbox": {"x": 9, "y": 9, "w": 2, "h": 2}}}),
+        );
+        let error = precondition(&state, &alive).expect_err("存活的选区必须拒绝同名创建");
+        let detail = error.context.detail.clone().unwrap_or_default();
+        assert!(
+            detail.contains("已存在"),
+            "撞的是存活实体 ⇒ 文案应说「已存在」，实得：{detail}"
         );
     }
 

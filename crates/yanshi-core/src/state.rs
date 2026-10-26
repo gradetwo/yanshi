@@ -734,6 +734,29 @@ impl DocumentState {
         self.objects.get(object_id).is_some_and(|o| !o.is_deleted())
     }
 
+    /// 选区是否存活（未被 tombstone 删除）。
+    ///
+    /// **为什么必须有它** ✓：`CreateSelection` 的「不许重名」检查原来写的是
+    /// `selections.contains_key(id)` ✗ ⇒ **墓碑也算占用** ✓ ——
+    /// 删掉一个选区之后，同一个 id **永远再也建不回来** ✗
+    ///（实测：`list_selections` 报 0 条 ✓，`create_selection` 却回「选区 Q1 已存在」✗
+    /// ⇒ 两句互相矛盾 ✓，与 `CreateLayer` 早已修好的那条教训同形 ✓）。
+    pub fn selection_alive(&self, selection_id: &str) -> bool {
+        self.selections
+            .get(selection_id)
+            .is_some_and(|s| !s.is_deleted())
+    }
+
+    /// 蒙版是否存活（与 `selection_alive` 同一类检查 ✓：`create_mask` 也会撞墓碑 ✓）。
+    pub fn mask_alive(&self, mask_id: &str) -> bool {
+        self.masks.get(mask_id).is_some_and(|m| !m.is_deleted())
+    }
+
+    /// 风格是否存活（`create_style` 走的是同一套「主实体尚不存在」校验 ✓）。
+    pub fn style_alive(&self, style_id: &str) -> bool {
+        self.styles.get(style_id).is_some_and(|s| !s.is_deleted())
+    }
+
     /// 活跃 blob Manifest：当前折叠状态引用的全部 blob（设计文档 6.3）。
     ///
     /// Manifest 的角色是**活跃集标记与冷热迁移依据，不是 GC 根集**。

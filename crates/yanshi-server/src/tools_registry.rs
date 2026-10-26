@@ -1960,8 +1960,11 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("doc_id", String, false, "文档 id（缺省用当前会话的文档）"),
-            param!("width", Integer, true, "宽（像素）"),
-            param!("height", Integer, true, "高（像素）"),
+            // **尺寸只在"真的要新建"时必填** ✓（契约一致性修复 ✓）：打开已存在文档时
+            // 尺寸由既有文档决定 ✓ ⇒ 若标成必填 ✗，描述里的"已存在 ⇒ 打开它"这条路径
+            // 就会被参数校验拦下（"缺少必填参数 width" ✗），描述与行为互相矛盾 ✓。
+            param!("width", Integer, false, "宽（像素）——新建画布时必填；打开已存在文档时可不传"),
+            param!("height", Integer, false, "高（像素）——新建画布时必填；打开已存在文档时可不传"),
             param!("background", Object, false, "背景 {r,g,b,a}（0..255；缺省不透明白）"),
         ],
     },
@@ -2630,7 +2633,10 @@ CLIP_TO_SELECTION_PARAM,
     ToolSpec {
         name: "list_assets",
         profile: Profile::Core,
-        summary: "列出某类资产（**笔刷/纹理/调色板都从这里查 ✓**）：kind 取 brush ⇒ 201 支 .myb，                  texture ⇒ PNG 纹理，palette ⇒ 调色板。没有 list_brushes / list_textures 这类单独的工具 ✗。",
+        // **契约纠错** ✓（真实使用探针 2026-10-25 ✓）：原描述断言"没有 list_brushes /
+        // list_textures ✗" ⇒ 与实现相反 ✓（两者都在 dispatch ✓、list_brushes 有自己的
+        // ToolSpec ✓）⇒ 按这份描述行事的 Agent 会绕路 ✗。改成如实说明三者关系 ✓。
+        summary: "列出某类资产（**笔刷/纹理/调色板都从这里查 ✓**）：kind 取 brush ⇒ 201 支 .myb，                  texture ⇒ PNG 纹理，palette ⇒ 调色板。另有专用快捷入口：`list_brushes` ✓ 与 `list_textures` ✓（list_textures 就是本工具 kind=texture 的薄包装 ✓，口径一致 ✓）；不可直接使用的文件（如说明文档）会带 `usable:false` 原样列出 ✓ ⇒ 选材质请筛 usable ✓。",
         mutating: false,
         params: &[
             param!("kind", String, true, "brush / texture / palette"),

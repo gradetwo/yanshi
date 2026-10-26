@@ -47,13 +47,16 @@
      复选框**排除在外** ✓（它本来就是小方格 ✓）；色块若被压到 28px 会与调色板栅格不符 ⇒ 下一轮实测后再定 ✓。 */
   button, input:not([type="checkbox"]), select { height: var(--control-h); }
   /* **复选框也统一** ✓：实测有 3 个是 13px、2 个被容器撑到 26px ✗ ⇒ **同类控件之间**也不一致 ✓
-     （判据只看"总档数 ≤3" ⇒ 这类"同类内的不一致"要靠显式定尺寸消掉 ✓）。 */
+     （判据只看"总档数 ≤3" ⇒ 这类"同类内的不一致"要靠显式定尺寸消掉 ✓）。
+     **`.options` 那条 26px 下限不许盖到复选框上** ✓（本轮实测 ✗：`#duoTone`／`#smooth`
+     在 `.options` 里 ⇒ 被同一条规则撑成 26px ✓，而别处的复选框是 16px ⇒ **同类控件又分两档** ✓
+     ⇒ 下面那条选择器把 `input` 收窄成"非复选框" ✓）。 */
   input[type="checkbox"] { height: 16px; width: 16px; }
   /* 可点区域下限 ✓：界面控件不低于 26px 高 ✓（密集的深色界面里最影响手感 ✓）。
      **收窄到具体控件** ✓ —— 第一版写成裸 `button, select, input` ✗，实测两个介质用例的画布
      同时变空 ✗（可见它影响了画布/舞台的重绘路径 ✓）；现在只作用于界面控件 ✓，
      与检查里量高的那组选择器完全一致 ✓。 */
-  header button, #tools button, aside button, .options select, .options input,
+  header button, #tools button, aside button, .options select, .options input:not([type="checkbox"]),
   #quickPanel button, .statusbar button { min-height: 26px; }
   /* 滚动条跟随主题 ✓（否则深色界面里出现一条亮色滚动条，很扎眼 ✓）。 */
   * { scrollbar-color: var(--line) transparent; scrollbar-width: thin; }
@@ -225,6 +228,32 @@
   .layers-actions button { padding: 4px 8px; font-size: 12px; line-height: 1.4; }
   .layer-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto;
                 border: 1px solid var(--line); border-radius: 6px; padding: 4px; background: var(--bg, #fff); }
+  /* **侧栏里的列表统一限高、内部滚动** ✓（截图巡检抓到的排版事故 ✓）：
+     `.annotation-list` 此前**没有任何尺寸约束** ✗ ⇒ 风格预设一载入就是 22 行 ✓
+     ⇒ 那张卡片实测高 **2603px** ✓ ⇒ 侧栏被撑到要滚半屏 ✗、它下面所有面板都被推出视野 ✗。
+     图层列表早就"限高 + 内部滚动"✓ ⇒ 同一侧栏里的同类列表照**同一条规矩**办 ✓
+    （数值比图层宽一点 ✓：这些行是"标题 + 说明 + 两个按钮" ✓ 三行高 ✓）。 */
+  .annotation-list { max-height: 300px; overflow-y: auto; min-width: 0; }
+  /* **标注行的样式** ✓（同一轮截图巡检 ✓）：`.annotation-row` 此前**一条规则都没有** ✗
+     ⇒ 八张列表（变更集／标注／存档点／对象／评论／建议／锚点／预设）的行高完全由默认字号决定 ✓，
+     预设那行的"标签 ｜ 适合 ｜ 慎用 ｜ 状态"一长串在 310px 宽的侧栏里折成 **4 行** ✗
+     ⇒ 300px 的限高里只能看到 **2.7 套**预设 ✗（列表限高反而把内容藏得更狠 ✓）。
+     这里定三件事 ✓：整行压到 12px ✓、标题**单行省略** ✓、说明**最多两行** ✓
+    （**裁断必须可 hover** ⇒ `viewer-app.js` 的 `setupClippedTitles()` 统一补 `title` ✓）。 */
+  .annotation-row { display: flex; flex-direction: column; gap: 3px; padding: 5px 6px;
+                    border: 1px solid var(--line); border-radius: 6px; font-size: 12px; }
+  .annotation-row.selected { background: var(--accent-soft, rgba(43, 108, 176, .22)); }
+  .annotation-row .annotation-head { font-weight: 600; overflow: hidden; text-overflow: ellipsis;
+                                     white-space: nowrap; }
+  .annotation-row .annotation-body { opacity: .8; overflow: hidden; display: -webkit-box;
+                                     -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  .annotation-row .toolbar, .annotation-row .annotation-actions { margin: 0; gap: 4px; }
+  .annotation-row .toolbar button, .annotation-row .annotation-actions button {
+    padding: 0 8px; font-size: 11px; }
+  /* **代理图必须限高** ✓：`#presetShot` 只有 `max-width:100%` ✗ ⇒ 512×512 的预览在 310px 侧栏里
+     仍然占掉 ~430px 高 ✓（预设卡实测 952px ✓，1000px 的窗口里"应用"按钮已经贴到屏幕底边 ✓，
+     窗口再矮一点就点不到 ✓）。预览的作用是**看一眼** ⇒ 高度封顶、等比缩 ✓。 */
+  #presetShot { max-height: 200px; object-fit: contain; }
   .layer-row { display: flex; align-items: center; gap: 4px; padding: 4px 4px; border-radius: 4px;
                font-size: 12px; cursor: pointer; }
   .layer-row:hover { background: rgba(128, 128, 128, .12); }
@@ -313,6 +342,15 @@
   aside label { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
   aside select, aside input, aside button { max-width: 100%; min-width: 0; }
   aside label select, aside label input { flex: 1 1 auto; min-width: 0; }
+  /* **勾选框不能被拉宽** ✓：上面那条是给"下拉/输入框"用的（长选项名要能收缩 ✓），
+     但 `input` 也命中了 checkbox ⇒ 实测「只统计选区」这一行里勾在正中间、文字被推到最右边 ✓
+     （看起来像两个不相干的东西 ✗）。勾选框永远贴着它的文字 ✓。 */
+  aside label input[type="checkbox"], aside label input[type="radio"] { flex: 0 0 auto; }
+  /* **`.toolbar` 以前在样式表里没有任何规则** ✓（实测 `display:block` ✗）：
+     24 处工具条里有 8 处写着 `style="gap:8px;flex-wrap:wrap"` ⇒ 在块布局下**全是空声明** ✗
+     （作者要的是"横排 + 换行留缝"✓，页面给的却是"每行一个控件"✗）。
+     这里补上真正的 flex 行布局 ⇒ 那些声明开始生效 ✓，而不是逐张卡再抄一遍 inline ✗。 */
+  .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
   #history .row { min-width: 0; }
   /* 原生 <dialog> 在 top layer，宽度按内容撑开 ⇒ 会撑大 documentElement.scrollWidth
      （实测：body/main/aside 都在视口内，scrollWidth 却多出 742px ✗）。必须显式限宽。 */

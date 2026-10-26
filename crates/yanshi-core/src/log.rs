@@ -375,9 +375,15 @@ impl AtomLog {
             }
         }
         // 蒙版 / 选区 / 风格的主实体引用（创建类原子要求尚不存在）。
+        //
+        // **三条都必须用"存活"谓词** ✓（与上面 `CreateLayer` 同一条规则 ✓）：
+        // 折叠层保留**墓碑** ✓（删除可撤销的基础 ✓），原来这里写的是 `contains_key` ✓
+        // ⇒ 于是 `delete_selection`／`delete_mask` 之后**同一个 id 永远建不回来** ✗
+        //（真机复现：`list_selections` 说 0 条 ✓、`create_selection` 却回「选区 Q1 已存在」✗
+        // ⇒ 两句自相矛盾 ✓，而且没有任何出路 ✓ —— 只能整份文档重开 ✓）。
         if aux_ref_mode(atom.kind) == RefMode::MustNotExist {
             if let Some(mask_id) = crate::atom::payload_str(&atom.payload, "mask_id") {
-                if state.masks.contains_key(mask_id) {
+                if state.mask_alive(mask_id) {
                     return Err(YanshiError::new(
                         ErrorCode::PreconditionFailed,
                         ErrorContext::detail(format!("蒙版 {mask_id} 已存在")),
@@ -390,7 +396,7 @@ impl AtomLog {
                 // `intersect` 的语义就是「改一个已有的选区」⇒ 若这里一律拒绝，那三个值永远不可达。
                 // 注意 `atom.payload` 里的 `mode` 是 `tools.rs` 写进去的，缺省即 `new`。
                 let mode = crate::atom::payload_str(&atom.payload, "mode").unwrap_or("new");
-                if mode == "new" && state.selections.contains_key(selection_id) {
+                if mode == "new" && state.selection_alive(selection_id) {
                     return Err(YanshiError::new(
                         ErrorCode::PreconditionFailed,
                         ErrorContext::detail(format!(
@@ -401,7 +407,7 @@ impl AtomLog {
                 }
             }
             if let Some(style_id) = crate::atom::payload_str(&atom.payload, "style_id") {
-                if state.styles.contains_key(style_id) {
+                if state.style_alive(style_id) {
                     return Err(YanshiError::new(
                         ErrorCode::PreconditionFailed,
                         ErrorContext::detail(format!("风格 {style_id} 已存在")),

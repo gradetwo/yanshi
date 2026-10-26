@@ -338,3 +338,133 @@ fn redo_last_brings_back_exactly_one_gesture() {
         "要说清没有可重做的：{again}"
     );
 }
+
+/// **蒙版涂抹也算"一笔"** ✓ —— 实测逼出来的回归（网页里"撤销"按钮撤错了对象 ✓）。
+///
+/// ** bug 长这样** ✓：`paint_mask` 落的是 `UpdateMask` 原子 ✓，它的 payload 带 `mask_id` 而**没有
+/// `object_id`** ✓ ⇒ 归并"笔"时它被当成**结构原子跳过** ✗ ⇒ 用户点"撤销最后一笔" ✓
+/// 撤的却是**更早的那条笔迹** ✓ —— 整个内容消失 ✓，而刚涂的蒙版纹丝不动 ✗。
+/// **判据（像素 ✓）**：涂一笔 ⇒ 撤销 ⇒ 画面必须**逐字节回到"涂之前"** ✓（内容还在 ✓），
+/// 重做 ⇒ 再**逐字节回到"涂之后"** ✓。
+#[test]
+fn undo_last_reverts_the_mask_stroke_itself() {
+    let root = temp_dir("mask_stroke");
+    let _cleanup_4 = Cleanup(root.clone());
+    let mut workspace = workspace(&root);
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
+        json!(true)
+    );
+    // 一条横贯的笔触（给蒙版"有东西可遮" ✓）。
+    assert_eq!(
+        call(
+            &mut workspace,
+            "draw_stroke",
+            json!({
+                "layer_id": "L", "object_id": "s1",
+                "data": {
+                    "points": [[8.0, 60.0], [190.0, 60.0]],
+                    "size": 12.0, "hardness": 1.0,
+                    "color": {"r": 0, "g": 0, "b": 0, "a": 255}
+                }
+            })
+        )["ok"],
+        json!(true)
+    );
+    // 左半几何蒙版（右半本来就被遮掉 ⇒ 与"涂一笔"的效果区分开 ✓）。
+    assert_eq!(
+        call(
+            &mut workspace,
+            "create_mask",
+            json!({"mask_id": "m1",
+                   "shape": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 100, "h": 120}}})
+        )["ok"],
+        json!(true)
+    );
+    assert_eq!(
+        call(
+            &mut workspace,
+            "set_property",
+            json!({"layer_id": "L", "key": "mask_id", "value": "m1"})
+        )["ok"],
+        json!(true)
+    );
+
+    let base = render_raw(&mut workspace);
+    assert!(
+        pixel(&base, 60, 60)[0] < 120,
+        "蒙版内、涂之前应当是深色笔触：{:?}",
+        pixel(&base, 60, 60)
+    );
+
+    // **在可见区擦一笔** ✓（这就是要撤掉的那"一笔" ✓）。
+    let painted = call(
+        &mut workspace,
+        "paint_mask",
+        json!({"mask_id": "m1", "points": [[56.0, 60.0], [64.0, 60.0]], "mode": "erase", "size": 30.0}),
+    );
+    assert_eq!(painted["ok"], json!(true), "{painted}");
+    assert_eq!(
+        painted["deposited"],
+        json!(true),
+        "应当有实际沉积：{painted}"
+    );
+    let erased = render_raw(&mut workspace);
+    assert!(
+        pixel(&erased, 60, 60)[0] > 200,
+        "擦除区应当恢复背景：{:?}",
+        pixel(&erased, 60, 60)
+    );
+
+    // **撤销状态必须把它算成"一笔"** ✓（只读查询与 `undo_last` 同源 ✓）。
+    let status = call(&mut workspace, "get_undo_status", json!({}));
+    assert_eq!(status["ok"], json!(true), "{status}");
+    assert!(
+        status["remaining_gestures"].as_u64().unwrap_or(0) >= 2,
+        "笔迹 + 蒙版涂抹应当都算一笔：{status}"
+    );
+
+    let undone = call(&mut workspace, "undo_last", json!({}));
+    assert_eq!(undone["ok"], json!(true), "{undone}");
+    assert_eq!(undone["undone_count"], json!(1), "{undone}");
+    assert_eq!(
+        undone["undone"][0]["kind"],
+        json!("UpdateMask"),
+        "撤掉的必须是**刚涂的那一笔蒙版** ✓，不是更早的笔迹：{undone}"
+    );
+    // **逐字节回到"涂之前"** ✓（内容一个像素都不能少 ✓ —— 旧代码在这里把整条笔迹撤没了 ✗）。
+    assert_eq!(
+        render_raw(&mut workspace),
+        base,
+        "撤销一笔蒙版涂抹之后应当**恰好**回到涂抹前的画面 ✗"
+    );
+
+    // **重做对称** ✓：撤掉的那一笔最先回来 ✓，画面回到"涂之后" ✓。
+    let redone = call(&mut workspace, "redo_last", json!({}));
+    assert_eq!(redone["ok"], json!(true), "{redone}");
+    assert_eq!(redone["redone_count"], json!(1), "{redone}");
+    assert_eq!(redone["redone"][0]["kind"], json!("UpdateMask"), "{redone}");
+    assert_eq!(
+        render_raw(&mut workspace),
+        erased,
+        "重做应当把擦除恢复回来 ✗"
+    );
+}
+
+/// 直接取原始 RGBA（蒙版/撤销的像素判据不需要落盘 ✓）。
+fn render_raw(workspace: &mut Workspace) -> Vec<u8> {
+    workspace
+        .render_region_raw("doc_u", yanshi_core::Bbox::new(0.0, 0.0, 200.0, 120.0))
+        .expect("渲染应当成功")
+        .2
+}
+
+fn pixel(data: &[u8], x: usize, y: usize) -> [u8; 4] {
+    let index = (y * 200 + x) * 4;
+    [
+        data[index],
+        data[index + 1],
+        data[index + 2],
+        data[index + 3],
+    ]
+}

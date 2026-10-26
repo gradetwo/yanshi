@@ -268,3 +268,119 @@ fn add_adjustment_revives_tombstoned_object() {
         "复活换新是整组替换，旧键 contrast 不许残留（合并语义）：{params}"
     );
 }
+
+/// **删掉预设落过的图层 ⇒ 换个图层再落同一套预设必须成功** ✓（真机换来的事故 ✓）。
+///
+/// **症状** ✓：网页里把预设落到图层 A ✓ → 删掉 A ✓ → 新建 B ✓ → 再落同一套预设 ✗
+/// ⇒ `拒绝复活；请先 restore_object 恢复后移层，或换图层/文档` ✗。
+/// **为什么那句出路是谎话** ✗：预设展开的 `object_id` 是**确定性**的 ✓（`preset_<id>_…` ✓），
+/// 换到哪一层都撞同一块墓碑 ⇒ "换图层"根本走不通 ✓，"移层"也没有对应的工具 ✓
+/// ⇒ 这套预设在这个文档里**永久不可用** ✗。
+/// **判据** ✓：墓碑的**源图层已经不存在** ⇒ 没有歧义可言 ✓ ⇒ 按调用方要的目标层落位 ✓，
+/// 对象真的归属那一层 ✓（不是"报成功但其实挂在deleted层上" ✓）。
+#[test]
+fn apply_preset_lands_on_a_new_layer_after_its_old_layer_is_deleted() {
+    let mut ws = workspace();
+    doc_with_fill(&mut ws, "doc");
+    let first = call(
+        &mut ws,
+        "doc",
+        "apply_preset",
+        json!({"preset_id": "ccd", "layer_id": "L", "strength": 1.0}),
+    );
+    assert_eq!(first["ok"], json!(true), "{first}");
+    // **删层 = 级联墓碑** ✓（图层与它里面的对象一起进入删除态 ✓）。
+    let deleted = call(&mut ws, "doc", "delete_layer", json!({"layer_id": "L"}));
+    assert_eq!(deleted["ok"], json!(true), "{deleted}");
+    assert_eq!(
+        call(&mut ws, "doc", "create_layer", json!({"layer_id": "L2"}))["ok"],
+        json!(true)
+    );
+
+    let again = call(
+        &mut ws,
+        "doc",
+        "apply_preset",
+        json!({"preset_id": "ccd", "layer_id": "L2", "strength": 0.5}),
+    );
+    assert_eq!(
+        again["ok"],
+        json!(true),
+        "源图层已删除 ⇒ 必须落到新图层，而不是把这套预设永久判死：{again}"
+    );
+    let revived = again["revived_object_ids"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        revived.iter().any(|id| id == TARGET),
+        "复活的对象要在响应里点名：{again}"
+    );
+
+    // **落位是真的落位** ✓：对象归属 `L2` ✓，且 `list_objects` 在 L2 上能看见它 ✓。
+    let object = call(&mut ws, "doc", "get_object", json!({"object_id": TARGET}));
+    assert_eq!(object["ok"], json!(true), "{object}");
+    assert_eq!(
+        object["layer_id"],
+        json!("L2"),
+        "复活后必须归属调用方要的图层：{object}"
+    );
+    assert_eq!(object["deleted_by"], json!(null), "{object}");
+    let listed = call(&mut ws, "doc", "list_objects", json!({"layer_id": "L2"}));
+    assert_eq!(listed["ok"], json!(true), "{listed}");
+    let ids: Vec<String> = listed["objects"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|item| item["object_id"].as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        ids.iter().any(|id| id == TARGET),
+        "L2 的对象清单要含它：{listed}"
+    );
+
+    // **参数按本次请求（0.5 强度）整组换新** ✓，不是把旧参数原样搬过来 ✓。
+    assert_eq!(
+        object_params(&mut ws, "doc", TARGET),
+        call(&mut ws, "doc", "get_object", json!({"object_id": TARGET}),)["data"]["params"],
+        "params 取的就是对象当前版本（前提自查 ✓）"
+    );
+
+    // **歧义那一支仍要拒** ✓：源图层还活着时 ⇒ 跨层复活有两种读法 ✗（保持原语义 ✓）。
+    let mut ws2 = workspace();
+    doc_with_fill(&mut ws2, "doc2");
+    assert_eq!(
+        call(
+            &mut ws2,
+            "doc2",
+            "apply_preset",
+            json!({"preset_id": "ccd", "layer_id": "L", "strength": 1.0})
+        )["ok"],
+        json!(true)
+    );
+    assert_eq!(
+        call(
+            &mut ws2,
+            "doc2",
+            "delete_object",
+            json!({"object_id": TARGET})
+        )["ok"],
+        json!(true)
+    );
+    assert_eq!(
+        call(&mut ws2, "doc2", "create_layer", json!({"layer_id": "L2"}))["ok"],
+        json!(true)
+    );
+    let ambiguous = call(
+        &mut ws2,
+        "doc2",
+        "apply_preset",
+        json!({"preset_id": "ccd", "layer_id": "L2", "strength": 1.0}),
+    );
+    assert_eq!(
+        ambiguous["ok"],
+        json!(false),
+        "源图层还在 ⇒ 跨层复活仍应拒绝（不许静默搬走用户的对象）：{ambiguous}"
+    );
+}
