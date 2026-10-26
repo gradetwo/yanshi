@@ -132,6 +132,19 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    此前 `40269293870` 的两处红都修了：`pinned_blob_eviction`（P-01 语义：显式 `render_document_preview`
    触发淘汰）、`tool-example-acceptance`（`reorder_objects` 示例须匹配夹具 `L1/o1`）。
 
+29. **web-ef2494de 审计已合**（台账 637）：参考图位置/留存、直方图、整组撤销、对象重排；修两个真 bug
+   （开机对象/标注面板空 + 面板按钮晚接线）；新增 `browser-boot-panels`；本机 5 条浏览器判据全 0。
+30. **vector-tracing v4 后续已合**：10 条通用规则；blob `f7e0de88` 与合并 diff 逐字一致。
+31. **font-identification 新 skill 已合**：100 行、零反引号；blob `f9179e33` 一致。
+32. **展示册 v5：无仓库补丁，未合并**（只有 PDF/配方/notes；forest v5r3 预设在展示工作树、未提交；
+   日系半量补丁未出包）。forest 预设是否进仓库需单定（基线是 fix-phase5 `2917122`）。
+33. **p3b-2 已合**：C4 curves + A-03 p0.1 + tone 解耦/审美压；tools_auto 24、auto_retouch 10；
+   **colorcast 触点仍红**（基线本就红，road 27.4% < 40%）。
+34. **render-nondet 已合**：below/above 只写本带自有行 ⇒ 跨进程逐位一致；不修 padding 截断本身的 ≤13 微差。
+35. **Y-03 已合**：`raw_options.tone` 缺省 standard；raw 16 套件、render 546、raw_import 9 全过。
+   **★ 发的是设计初值表，不是标定定版**：§6.3 未做 ⇒ v5/预设/auto/harness 需重标，勿当最终基线。
+36. **D1-a/b 已合**：`create_range_mask` + linear/radial gradient；工具总数 206（core 125）；定向全过。
+
 ## 三、下一步（按优先序，都有精确入口）
 
 -0. 待上游裁决的仍是：期 2 的 **auto backtest colorcast 门限**（A2 保色度 ⇒ R−B 只降 28.6% < 40%）、

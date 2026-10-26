@@ -22278,3 +22278,58 @@ clippy（render）0；fmt 0 ✓。
 其余 18 套零使用预设逐位不变 ✓。
 **⇒ 基线注记**：v5 行建在 `fix-phase5` 尖（`2917122`，`2a86cf7` 不是其祖先）⇒ 本补丁发 main 后
 forest 行仍会带暗部品红噪点（2.29% vs 分支 0.0%），那是基线差、不是本补丁 ✓。
+
+## 六百三十七、八包合并：web 审计、两个 skill、展示册 v5、p3b-2、渲染非确定性、Y-03、D1（第 1132 轮）
+
+**⇒ 基线都是 `ef2494de`**；七包有代码/文档补丁，**展示册 v5 没有仓库补丁**（见第 5 小节）。按风险叠加，
+`nondet`/`web` 两处与既有代码手工核对过（web 补丁 16 文件 `git apply` 干净；nondet 单文件干净）。
+
+### 1. web-ef2494de 审计（16 文件，+2165/−96）
+补 **参考图位置/留存、直方图卡、整组撤销、对象上移/下移**四个入口；顺手修**两个真 bug**
+（打开文档后对象/标注面板是空的且写假话；面板按钮要等 WASM 加载完才接线）；新增判据
+`browser-boot-panels.mjs`；`docs/surface-alignment.md` 更新（Web 93/205，交集 93/93）。
+**本机验证**：`browser-boot-panels`（面板行数==服务端事实、空态文案、boot 留痕）✓；
+`browser-reference-overlay`（设后可见半透明、清后消失）✓；`browser-i18n` distinct 0 ✓；`browser-layout` ✓。
+
+### 2. vector-tracing **v4 后续**（1 patch）
+10 条通用规则（描边外侧/语义合并是物理的/带宽不是偏移/黑超限/环形描边/纹路改 fill/先证伪/仪器纪律/
+渐变取色/执行 agent 自己目检）；131→142 行。**blob `f7e0de88…` 与 `合并.diff` 逐字一致** ✓。
+
+### 3. **新 skill：font-identification**（1 patch，新文件）
+字体在线识别工作流（三家服务、交叉验证、本地 IoU 评比、三种结论句式、9 条坑）；100 行、**全文零反引号**。
+**blob `f9179e33…` 与 `合并.diff` 逐字一致** ✓；`check-skill-tool-names` 7 文档全过 ✓。
+
+### 4. 展示册 v5 —— **没有仓库补丁，未合并**
+包内是 PDF v5（10 页）、12 行定稿配方 `retouch_recipes_v5-final.json`、度量表、notes；**无 patch 文件**。
+两处预设例外**不在仓库里**：forest v5r3 只在展示工作树（附数据 `style-presets-forest-v5r3.json`），
+日系半量（0.5）补丁未出包。⇒ 按作者口径**无可合入代码**；forest 预设是否要进 `style-presets.json`
+需要单独决定（它建在 `fix-phase5` 尖 `2917122`，与 main 基线不同）✓。
+
+### 5. p3b-2（1 patch）
+C4 curves 组（第 8 组，WB 后/色彩前）、A-03 levels 黑点改 **p0.1**（`linear_p01` 回显）、
+tone 触发改曝光前 p25 + highlights 审美压基底。**验证**：`tools_auto` 24 过/5 ignored、`auto_retouch` 10、
+clippy/fmt 绿。**colorcast 触点仍红**（road 降 27.4% < 40%，基线本就红；本包要求与基线逐值相同）。
+
+### 6. render-nondet（1 patch）
+below/above tile 缓存**只写本带自有行**（`owned_tile_bbox`）⇒ 合并与写顺序无关、跨进程逐位一致。
+修前 8 进程 A/B 二态（270px 翻转/最大 84），修后 4 进程同 sha、与串行 >13 像素 **0**。
+**范围**：不修 `MAX_EFFECT_PADDING` 截断本身（并行 vs 串行 ≤13 的确定性微差另案）✓。
+
+### 7. Y-03 基调曲线（9 patch）
+`raw_options.tone` 缺省 **standard**（`ParsedRawOptions`）/ `DevelopOptions::default()` 仍 Off；
+分段线性 S 曲线、`tone_strength`、非法值报错、`RawDevelopRecord` 记档、Y-04 警告按记录读实际档位。
+**验证**：`yanshi-raw` **16 套件全过**（40 lib + 126 集成）、`render lib` **546**、`raw_import` 9、
+clippy/fmt 绿。**★ 必须说清**：发的是设计 3.3 节的**初值表，不是标定定版**；6.3 节标定未做 ⇒
+v5 配方/22 套预设/auto/harness 全部要在标定后重标，**不要当成可直接出片的最终基线** ✓。
+42MP 全链路在 8G 盒 OOM 是既有容量上限（tone 原地操作，不新增缓冲）✓。
+
+### 8. D1-a/b（1 patch）
+新工具 **`create_range_mask`**（luminance/color 范围遮罩，烘焙 L8 PNG + `ReplaceAll`；回执 coverage）+
+`create_mask` 的 **linear_gradient/radial_gradient**；渐变不收 feather、未知 kind 响亮报错；
+修 `coverage_from_shape_clipped` 对渐变 kind 的静默 rect 回退。**工具总数 205→206**（core 125 不变）。
+**验证**：`range_mask` 7、render `selection` 45、server lib `range_mask` 4、`profile_allowlist` 8、
+`retouch_tools` 6、`mask_paint` 3、`tool_inventory` 2、clippy/fmt 绿 ✓。
+
+**⇒ 整合**：`tool-examples.md` 重新生成（**206** 工具）；census **206 工具/258 名全分类**、surface 三面一致 ✓；
+fmt 统一（web 补丁的 Rust 测试与既有格式差一次）。**⇒ 本机最终**：raw 16 套件、render **546**、
+server lib（--features raw）**222**（5 ignored）、定向 11 个集成 suite 全过、5 条浏览器判据全 0 ✓。
