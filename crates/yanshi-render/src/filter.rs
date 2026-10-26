@@ -394,6 +394,61 @@ impl FilterKind {
     }
 }
 
+/// 黑白收尾（D2-2b 共用）：灰度 → `tint` → `amount` 混合，与现行 `black_and_white`
+/// 的收尾逐字同形；抽出来只为现行三权路与 8 档路共用，行为不变。
+fn bw_output(input: [f32; 3], gray: f32, tint: Option<[f32; 3]>, amount: f32) -> [f32; 3] {
+    let bw = match tint {
+        Some(tint) => [
+            (gray * tint[0]).clamp(0.0, 1.0),
+            (gray * tint[1]).clamp(0.0, 1.0),
+            (gray * tint[2]).clamp(0.0, 1.0),
+        ],
+        None => {
+            let gray = gray.clamp(0.0, 1.0);
+            [gray, gray, gray]
+        }
+    };
+    // 混合方向：amount = 0 ⇒ 输入、amount = 1 ⇒ 黑白结果（反了则两端断言都红）。
+    let mut out = input;
+    for i in 0..3 {
+        out[i] = input[i] * (1.0 - amount) + bw[i] * amount;
+    }
+    out
+}
+
+/// **8 色档黑白混合**（D2-2b）：在现行 RGB 三权灰度上，再按色相档权重缩放。
+/// 档权重 `ranges` 与 D2-3 的 hsl 档名一致（`HSL_RANGE_NAMES`），每档一个乘子，
+/// 域 [0, 2]、缺省 1.0。色相分类在显示编码空间（与 D2-3 同口径），乘子按像素
+/// 饱和度缩放——灰像素（s = 0）对任意档权重都是不动点。
+pub fn black_and_white_with_ranges(
+    buffer: &mut Buffer,
+    weights: [f32; 3],
+    tint: Option<[f32; 3]>,
+    amount: f32,
+    ranges: &[f32; 8],
+) {
+    let amount = amount.clamp(0.0, 1.0);
+    for_each_straight_color(buffer, |color| {
+        let input = *color;
+        let gray = weights[0] * color[0] + weights[1] * color[1] + weights[2] * color[2];
+        let enc = [
+            srgb_encode_extended(color[0]),
+            srgb_encode_extended(color[1]),
+            srgb_encode_extended(color[2]),
+        ];
+        let (h, s, _) = hsl_decompose(&enc);
+        let band_weights = hsl_range_weights(h * 360.0);
+        let mut band_mix = 0.0f32;
+        for (weight, range) in band_weights.iter().zip(ranges.iter()) {
+            band_mix += weight * range.clamp(0.0, 2.0);
+        }
+        // 乘子按饱和度缩放：灰像素 s = 0 ⇒ 乘子恒 1（不动点）；全饱和像素吃满档效应。
+        let multiplier = 1.0 + s * (band_mix - 1.0);
+        let gray = gray * multiplier;
+        *color = bw_output(input, gray, tint, amount);
+    });
+}
+
 /// **黑白转换**：`gray = Σ w·c`（权重由参数给、缺省 Rec709），可选 `tint` 着色
 /// （输出 `gray × tint`），无 `tint` 时三通道同值；再按 `amount` 与输入混合
 /// （`out = mix(input, bw_result, amount)`，期 4 D2-2）。
@@ -413,21 +468,7 @@ pub fn black_and_white(
     for_each_straight_color(buffer, |color| {
         let input = *color;
         let gray = weights[0] * color[0] + weights[1] * color[1] + weights[2] * color[2];
-        let bw = match tint {
-            Some(tint) => [
-                (gray * tint[0]).clamp(0.0, 1.0),
-                (gray * tint[1]).clamp(0.0, 1.0),
-                (gray * tint[2]).clamp(0.0, 1.0),
-            ],
-            None => {
-                let gray = gray.clamp(0.0, 1.0);
-                [gray, gray, gray]
-            }
-        };
-        // 混合方向：amount = 0 ⇒ 输入、amount = 1 ⇒ 黑白结果（反了则两端断言都红）。
-        for i in 0..3 {
-            color[i] = input[i] * (1.0 - amount) + bw[i] * amount;
-        }
+        *color = bw_output(input, gray, tint, amount);
     });
 }
 
@@ -3252,6 +3293,19 @@ fn fixed_floats(value: Option<&Value>, len: usize) -> Option<Vec<f32>> {
         .collect()
 }
 
+/// 黑白 8 档权重（D2-2b）：`ranges` 对象每档一个乘子，域 [0, 2]、缺省 1.0；
+/// 无 `ranges` 键 ⇒ `None`（分发处走现行三权路）。
+fn bw_ranges(params: &Value) -> Option<[f32; 8]> {
+    let ranges_obj = params.get("ranges")?.as_object()?;
+    let mut ranges = [1.0f32; 8];
+    for (index, name) in HSL_RANGE_NAMES.iter().enumerate() {
+        if let Some(value) = ranges_obj.get(*name).and_then(Value::as_f64) {
+            ranges[index] = value as f32;
+        }
+    }
+    Some(ranges)
+}
+
 /// 黑白转换的权重：缺省 Rec709（与内核多处 `LUMA` 同一组数 ✓）。
 fn bw_weights(params: &Value) -> [f32; 3] {
     match fixed_floats(params.get("weights"), 3) {
@@ -3479,7 +3533,18 @@ pub fn apply_adjustment(
                 fixed_floats(params.get("tint"), 3).map(|values| [values[0], values[1], values[2]]);
             // 无 amount 键的老文档 = 1.0 = 现行像素（存量零影响）；越界由函数内钳制。
             let amount = params.get("amount").and_then(Value::as_f64).unwrap_or(1.0) as f32;
-            black_and_white(&mut adjusted, bw_weights(params), tint, amount)
+            // D2-2b：无 `ranges` 键 ⇒ 走现行三权路，逐位不变（分支在分发处
+            // 判断，不许新代码路径碰老行为）；有 ⇒ 走 8 档权重路。
+            match bw_ranges(params) {
+                None => black_and_white(&mut adjusted, bw_weights(params), tint, amount),
+                Some(ranges) => black_and_white_with_ranges(
+                    &mut adjusted,
+                    bw_weights(params),
+                    tint,
+                    amount,
+                    &ranges,
+                ),
+            }
         }
         AdjustmentKind::ChannelMixer => {
             let constants = match fixed_floats(params.get("constants"), 3) {
@@ -6074,6 +6139,169 @@ mod coloradj_tests {
         let mut buffer = filled([0.7, 0.2, 0.1, 1.0]);
         black_and_white(&mut buffer, [0.2126, 0.7152, 0.0722], None, -1.0);
         assert_eq!(px(&buffer), [0.7, 0.2, 0.1], "amount=−1 应钳为 0");
+    }
+
+    /// **无 `ranges` 键 ⇒ 走现行三权路，逐位不变**（D2-2b 金样本回归）：
+    /// 分发路径与直接调 `black_and_white` 的结果必须逐位相等。
+    #[test]
+    fn bw_ranges_absent_bit_identical() {
+        let mut via_direct = filled([0.31, 0.57, 0.83, 1.0]);
+        black_and_white(&mut via_direct, [0.2126, 0.7152, 0.0722], None, 1.0);
+        let mut via_dispatch = filled([0.31, 0.57, 0.83, 1.0]);
+        let applied = apply_adjustment(
+            &mut via_dispatch,
+            "black_and_white",
+            &json!({"weights": [0.2126, 0.7152, 0.0722]}),
+            1.0,
+            (4.0, 4.0),
+        );
+        assert!(applied, "black_and_white 调整必须被分发识别");
+        assert_eq!(
+            via_dispatch.pixel(0, 0),
+            via_direct.pixel(0, 0),
+            "无 ranges 时分发路径必须逐位等于现行三权路"
+        );
+        assert_eq!(
+            via_dispatch.pixel(3, 3),
+            via_direct.pixel(3, 3),
+            "无 ranges 时分发路径必须逐位等于现行三权路（角像素）"
+        );
+    }
+
+    /// **reds 档只动红块**（D2-2b）：红块（编码色相 0°）灰度被压、绿块
+    /// （编码色相 120°）逐位不变。变异：权重窗写成全宽 ⇒ 绿块被动 ⇒ 红；
+    /// 实现忽略 ranges ⇒ 红块不动 ⇒ 红。
+    #[test]
+    fn bw_range_reds_only_moves_reds() {
+        let mut ranges = [1.0f32; 8];
+        ranges[0] = 0.0; // reds
+        let mut buffer = Buffer::new(0, 0, 2, 1);
+        buffer.set_pixel(0, 0, [0.6, 0.05, 0.05, 1.0]);
+        buffer.set_pixel(1, 0, [0.05, 0.6, 0.05, 1.0]);
+        black_and_white_with_ranges(&mut buffer, [0.2126, 0.7152, 0.0722], None, 1.0, &ranges);
+        // 红块：基础灰 0.16693 × 乘子 (1 − 编码饱和度 0.577) ≈ 0.071。
+        let red = buffer.pixel(0, 0);
+        assert!(
+            (red[0] - 0.071).abs() < 0.01,
+            "红块灰度应压到约 0.071，实得 {red:?}"
+        );
+        assert_eq!(red[0], red[1], "红块输出必须三通道同值");
+        assert_eq!(red[1], red[2], "红块输出必须三通道同值");
+        // 绿块：乘子恒 1 ⇒ 逐位等于现行三权路。
+        let mut legacy = Buffer::new(0, 0, 1, 1);
+        legacy.set_pixel(0, 0, [0.05, 0.6, 0.05, 1.0]);
+        black_and_white(&mut legacy, [0.2126, 0.7152, 0.0722], None, 1.0);
+        assert_eq!(
+            buffer.pixel(1, 0),
+            legacy.pixel(0, 0),
+            "绿块在 reds=0 下必须逐位等于现行输出"
+        );
+        // 分发 leg：经 apply_adjustment 的 ranges 与直接调用逐位一致。
+        let mut via_dispatch = Buffer::new(0, 0, 2, 1);
+        via_dispatch.set_pixel(0, 0, [0.6, 0.05, 0.05, 1.0]);
+        via_dispatch.set_pixel(1, 0, [0.05, 0.6, 0.05, 1.0]);
+        let applied = apply_adjustment(
+            &mut via_dispatch,
+            "black_and_white",
+            &json!({"ranges": {"reds": 0.0}}),
+            1.0,
+            (2.0, 1.0),
+        );
+        assert!(applied, "black_and_white 调整必须被分发识别");
+        assert_eq!(
+            via_dispatch.pixel(0, 0),
+            buffer.pixel(0, 0),
+            "分发 reds=0 必须与直接调用逐位一致"
+        );
+        assert_eq!(
+            via_dispatch.pixel(1, 0),
+            buffer.pixel(1, 0),
+            "分发 reds=0 必须与直接调用逐位一致（绿块）"
+        );
+    }
+
+    /// **档间边界混合**（D2-2b）：编码色相 15°（红/橙正中）的像素，
+    /// reds=0 与 oranges=1 各半权重 ⇒ 档混合 0.5、乘子 0.5（编码饱和度 1），
+    /// 灰度为基础灰的一半。变异：改成硬分档 ⇒ 乘子为 0 或 1 ⇒ 红。
+    #[test]
+    fn bw_range_boundary_blends() {
+        let mut buffer = Buffer::new(0, 0, 1, 1);
+        // 线性 (1.0, 0.05087, 0.0) 编码后为 (1.0, 0.25, 0.0)，色相恰 15°（照 D2-3）。
+        buffer.set_pixel(0, 0, [1.0, 0.05087, 0.0, 1.0]);
+        let mut ranges = [1.0f32; 8];
+        ranges[0] = 0.0; // reds（oranges 保持 1.0）
+        black_and_white_with_ranges(&mut buffer, [0.2126, 0.7152, 0.0722], None, 1.0, &ranges);
+        // 基础灰 0.2126 + 0.7152×0.05087 ≈ 0.24898，乘子 0.5 ⇒ 约 0.124。
+        let out = buffer.pixel(0, 0);
+        assert!(
+            (out[0] - 0.124).abs() < 0.01,
+            "边界像素灰度应为基础灰的一半（约 0.124），实得 {out:?}"
+        );
+    }
+
+    /// **灰像素对任意 ranges 不动**（D2-2b）：灰像素饱和度为 0 ⇒ 乘子恒 1。
+    /// 变异：乘子不乘饱和度 ⇒ 灰像素吃 reds 权重 ⇒ 红。
+    #[test]
+    fn bw_ranges_gray_pixels_unaffected() {
+        let mut ranges = [1.0f32; 8];
+        ranges[0] = 0.0; // reds
+        ranges[3] = 2.0; // greens
+        ranges[5] = 0.0; // blues
+        let mut buffer = filled([0.42, 0.42, 0.42, 1.0]);
+        black_and_white_with_ranges(&mut buffer, [0.2126, 0.7152, 0.0722], None, 1.0, &ranges);
+        assert_eq!(
+            px(&buffer),
+            [0.42, 0.42, 0.42],
+            "灰像素在任意 ranges 下都必须逐位不动"
+        );
+    }
+
+    /// **全档 1.0 ⇒ 与现行输出在 1e-5 内一致**（D2-2b）：档混合恒 1、
+    /// 乘子恒 1；三角窗归一化求和有浮点噪声级漂移，故不断言逐位。
+    #[test]
+    fn bw_ranges_all_ones_near_identical() {
+        let mut via_ranges = filled([0.31, 0.57, 0.83, 1.0]);
+        black_and_white_with_ranges(
+            &mut via_ranges,
+            [0.2126, 0.7152, 0.0722],
+            None,
+            1.0,
+            &[1.0; 8],
+        );
+        let mut via_legacy = filled([0.31, 0.57, 0.83, 1.0]);
+        black_and_white(&mut via_legacy, [0.2126, 0.7152, 0.0722], None, 1.0);
+        assert_rgb_close(
+            px(&via_ranges),
+            px(&via_legacy),
+            "全档 1.0 应与现行输出一致（1e-5 内）",
+        );
+    }
+
+    /// **ranges 路的 tint 与 amount 顺序与现行一致**（D2-2b，收尾共用）：
+    /// 红块 reds=0 ⇒ 灰约 0.071，tint [0.5, 1.0, 0.5] ⇒ [0.035, 0.071, 0.035]，
+    /// amount=0.5 ⇒ 与输入的中点（手算常数，容差 ±0.001）。
+    #[test]
+    fn bw_ranges_compose_with_tint_and_amount() {
+        let mut ranges = [1.0f32; 8];
+        ranges[0] = 0.0; // reds
+        let mut buffer = filled([0.6, 0.05, 0.05, 1.0]);
+        black_and_white_with_ranges(
+            &mut buffer,
+            [0.2126, 0.7152, 0.0722],
+            Some([0.5, 1.0, 0.5]),
+            0.5,
+            &ranges,
+        );
+        let out = px(&buffer);
+        let expected = [0.3177, 0.0604, 0.0427];
+        for channel in 0..3 {
+            assert!(
+                (out[channel] - expected[channel]).abs() < 0.001,
+                "tint + amount 在 ranges 路应与现行同顺序，通道 {channel}：期望 {}，实得 {}",
+                expected[channel],
+                out[channel]
+            );
+        }
     }
 
     // ── hsl ranges ────────────────────────────────────────────────

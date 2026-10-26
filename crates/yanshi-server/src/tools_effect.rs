@@ -502,6 +502,43 @@ pub(super) fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> R
                 }
             }
         }
+        // D2-2b：ranges 结构校验——档名白名单、每档一个乘子、域 [0, 2]；
+        // 未知档名/非数字/越界 ⇒ 报错且零落账（调用方在落成前全量校验）。
+        if let Some(ranges) = object.get("ranges") {
+            let Some(ranges_obj) = ranges.as_object() else {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("black_and_white 的 ranges 必须是对象"),
+                ));
+            };
+            for (range_name, range_value) in ranges_obj {
+                if !yanshi_render::filter::HSL_RANGE_NAMES.contains(&range_name.as_str()) {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "black_and_white 的 ranges 档名「{range_name}」不认识；可用：{}",
+                            yanshi_render::filter::HSL_RANGE_NAMES.join(" / ")
+                        )),
+                    ));
+                }
+                let Some(number) = range_value.as_f64() else {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "black_and_white 的 ranges.{range_name} 必须是数字"
+                        )),
+                    ));
+                };
+                if !number.is_finite() || !(0.0..=2.0).contains(&number) {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "black_and_white 的 ranges.{range_name} 必须在 [0, 2] 内，得到 {number}"
+                        )),
+                    ));
+                }
+            }
+        }
     }
     // 期 4 D2-3：hsl 的 ranges 结构校验——档名白名单、三键数值域；
     // 未知档名/未知键 ⇒ 报错且零落账（调用方在落成前全量校验）。
@@ -855,6 +892,65 @@ mod presence_validation_tests {
             )
             .is_err(),
             "amount 非数字应被拒绝"
+        );
+    }
+
+    #[test]
+    fn bw_ranges_unknown_key_rejected() {
+        // D2-2b：未知档名/非数字/越界值 ⇒ 报错（落成前全量校验 ⇒ 零落账）。
+        assert!(
+            validate_effect(
+                EffectKind::Adjustment,
+                "black_and_white",
+                &json!({"ranges": {"rose": 1.0}})
+            )
+            .is_err(),
+            "未知档名 rose 应被拒绝"
+        );
+        assert!(
+            validate_effect(
+                EffectKind::Adjustment,
+                "black_and_white",
+                &json!({"ranges": {"reds": "high"}})
+            )
+            .is_err(),
+            "非数字档值应被拒绝"
+        );
+        assert!(
+            validate_effect(
+                EffectKind::Adjustment,
+                "black_and_white",
+                &json!({"ranges": {"reds": 2.5}})
+            )
+            .is_err(),
+            "档值 2.5 超出 [0,2] 应被拒绝"
+        );
+        assert!(
+            validate_effect(
+                EffectKind::Adjustment,
+                "black_and_white",
+                &json!({"ranges": {"reds": -0.5}})
+            )
+            .is_err(),
+            "档值 -0.5 超出 [0,2] 应被拒绝"
+        );
+        assert!(
+            validate_effect(
+                EffectKind::Adjustment,
+                "black_and_white",
+                &json!({"ranges": {"reds": 1.5, "greens": 0.5}})
+            )
+            .is_ok(),
+            "合法 ranges 应通过"
+        );
+        assert!(
+            validate_effect(
+                EffectKind::Adjustment,
+                "black_and_white",
+                &json!({"ranges": {"reds": 2.0}})
+            )
+            .is_ok(),
+            "边界值 2.0 应通过"
         );
     }
 
