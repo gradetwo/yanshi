@@ -1898,7 +1898,9 @@ impl Document {
         let blob_hash = self.store.put(&png)?;
         self.last_render_blob = Some(blob_hash.clone());
         self.render_watermark = self.log.head_seq();
-        // 缩略图与这次渲染同源（256²；`document_thumbnail` 仍与 HEAD 一致）。
+        // 只刷新 256² 像素基座，不提升 `document_thumbnail` 指针（与 `render_region`
+        // 的 7.3 规则一致：局部 dirty 渲染不是「文档级」预览 ⇒ 缩略图指针仍落后，
+        // 由下一次 `render_document_preview`（如 `get_document`）兑现并落盘）。
         let _ = self.refresh_thumb_from_render(Some(region), Some(&rendered), doc_size)?;
         self.preview_dirty = PreviewDirty::Clean;
         self.complete_render_jobs()?;
@@ -2238,9 +2240,14 @@ impl Document {
     /// `render_document_preview` 与 `render_region_preview` 共用：缩略图的块平均
     /// 按渲染像素密度反推（`refresh_thumb_banded`），与渲染分辨率无关 ⇒
     /// LOD 渲染与全分辨率渲染走同一段代码，缩略图语义不变。
-    /// 只更新缩略图侧指针（`document_thumbnail` / `last_thumb_blob` /
-    /// `render_watermark` / `document_thumbnail_seq`）；`last_render_blob`
-    /// 由调用方按自己的渲染结果写（缩略图路是 256 blob，LOD 预览路是 LOD blob）。
+    /// 只刷新 256² 像素基座（`document_thumb`）并写 `last_thumb_blob`；
+    /// **`document_thumbnail` / `document_thumbnail_seq` 的提升是调用方的事** ✓
+    /// （`render_region` 的 7.3 规则：只有覆盖整幅画布的渲染才是「文档级」预览，
+    /// 局部 dirty 渲染不算 ⇒ 局部变更后预览绝不能把缩略图指针推到 HEAD，
+    /// 否则 `ensure_document_thumbnail` 会误判"磁盘基座已新鲜"而跳过落盘，
+    /// 破掉冷启动复用的"落后基座 + 增量补齐"前提——`coldstart_reuse` 判据 1 守着）。
+    /// `last_render_blob` 也由调用方按自己的渲染结果写（缩略图路是 256 blob，
+    /// LOD 预览路是 LOD blob）。
     /// **淘汰不在这里** ✓：必须等调用方把全部指针更新完再淘汰（见 `render_region`
     /// 的注释 —— 提前淘汰会把「仍被旧指针指着」的 blob 误留下来）。
     /// 返回（缩略图 blob，边长，PNG 字节数）—— 调用方填 `RenderedPreview` 用。
@@ -2268,9 +2275,6 @@ impl Document {
         // 仍走 `put`✗ ⇒ **∴ `/health`✗ 的 `blob_fsync`✗ 语义不变 ✓**。
         let blob_hash = self.store.put_cache(&png)?;
         self.last_thumb_blob = Some(blob_hash.clone());
-        self.document_thumbnail = Some(blob_hash.clone());
-        self.render_watermark = self.log.head_seq();
-        self.document_thumbnail_seq = self.render_watermark;
         self.broadcaster.publish_thumbnail(ThumbKind::Doc256);
         Ok((blob_hash, thumb_size, png.len()))
     }
@@ -2403,6 +2407,10 @@ impl Document {
         let previous = self.cached_preview_hashes();
         let (blob_hash, thumb_size, thumb_bytes) =
             self.refresh_thumb_from_render(region, render.as_ref(), doc_size)?;
+        // 文档级预览路才提升缩略图指针（与旧内联代码一致；必须在淘汰之前 ✓）。
+        self.document_thumbnail = Some(blob_hash.clone());
+        self.render_watermark = self.log.head_seq();
+        self.document_thumbnail_seq = self.render_watermark;
         self.last_render_blob = Some(blob_hash.clone());
         self.evict_replaced_previews(&previous);
         self.complete_render_jobs()?;

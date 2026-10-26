@@ -101,11 +101,15 @@ fn mutation_preview_is_downsampled_on_large_canvas() {
         (width as u32, height as u32),
         "预览 blob 的 PNG 尺寸应当与回执一致"
     );
-    // 文档级缩略图仍新鲜，且是 256²。
+    // 局部脏区渲染**不提升**文档缩略图指针（与 `render_region` 的 7.3 规则一致：
+    // 只有覆盖整幅画布的渲染才是「文档级」预览；局部变更后预览只刷新 256²
+    // 像素基座，指针仍落后——否则 `ensure_document_thumbnail` 会误判磁盘基座
+    // 已新鲜而跳过落盘，破掉冷启动复用的落后基座前提）。
     assert!(
-        workspace.document_thumbnail_is_current("doc_down"),
-        "变更后文档缩略图应当与 HEAD 一致"
+        !workspace.document_thumbnail_is_current("doc_down"),
+        "局部变更后文档缩略图指针应当仍落后（与 render_region 一致）"
     );
+    // 但下一次文档级预览（`get_document`）必须兑现出新鲜的 256² 缩略图。
     let document = {
         let mut ctx = context(&mut workspace, "doc_down");
         registry().call(&mut ctx, "get_document", &json!({ "preview_size": 256 }))
