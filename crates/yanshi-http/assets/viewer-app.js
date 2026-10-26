@@ -12138,8 +12138,8 @@ const I18N_EN_TEXT = {
   "窗宽": "Window",
   "烘焙并挂载": "Bake and attach",
   "渐变蒙版": "Gradient mask",
-  "在工具栏选「线性渐变蒙版」或「径向渐变蒙版」，再在画布上拖：线性的起笔一侧为 1、收笔一侧为 0；径向的圈心为 1、内切椭圆之外为 0。":
-    "Pick Linear gradient mask or Radial gradient mask in the toolbar, then drag on the canvas: for a linear one the start side is 1 and the end side is 0; for a radial one the centre is 1 and everything outside the inscribed ellipse is 0.",
+  "在工具栏选「线性渐变蒙版」或「径向渐变蒙版」，再在画布上拖。":
+    "Pick Linear gradient mask or Radial gradient mask in the toolbar, then drag on the canvas.",
   "径向衰减": "Radial falloff",
   "渐变蒙版不使用「羽化」：过渡带就是渐变本身。挂上去的蒙版要断开：在「范围遮罩」卡的「挂到」里选这一层，点「取下蒙版」。":
     "Gradient masks do not use Feather — the transition band is the gradient itself. To unlink a mask you attached: pick the layer under Attach to in the Range mask card and press Detach mask.",
@@ -12577,6 +12577,8 @@ const I18N_EN_ATTR = {
   "色相窗的中心（0–360 度）": "Centre of the hue window (0–360 degrees)",
   "色相窗的全宽（度，大于 0 且不超过 360）": "Full width of the hue window (degrees, above 0 and at most 360)",
   "拿窗宽的多少来做软边（0–1）": "How much of the window width becomes the soft edge (0–1)",
+  "线性：起笔一侧为 1、收笔一侧为 0；径向：圈心为 1、内切椭圆之外为 0":
+    "Linear: the start side is 1, the end side is 0; radial: the centre is 1, outside the inscribed ellipse is 0",
   "烘焙范围遮罩并挂到所选图层；带内一个像素都没有时不会挂载":
     "Bake the range mask and attach it to the chosen layer; nothing is attached when the band holds no pixels",
   "取下「挂到」那一层当前的蒙版；蒙版本体留在历史里，只断开这一层":

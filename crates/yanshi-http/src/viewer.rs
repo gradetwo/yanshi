@@ -606,7 +606,7 @@ const PAGE_TAIL_A: &str = r##"</style>
          否则人只会看到"拖了没反应" ✓（改 `create_mask` 的语义是后端的事 ✗ 这里先把话说清楚 ✓）。 -->
     <div class="card" data-panel="paint" id="cardGradientMask">
       <h2>渐变蒙版</h2>
-      <div class="hint">在工具栏选「线性渐变蒙版」或「径向渐变蒙版」，再在画布上拖：线性的起笔一侧为 1、收笔一侧为 0；径向的圈心为 1、内切椭圆之外为 0。</div>
+      <div class="hint" title="线性：起笔一侧为 1、收笔一侧为 0；径向：圈心为 1、内切椭圆之外为 0">在工具栏选「线性渐变蒙版」或「径向渐变蒙版」，再在画布上拖。</div>
       <div class="toolbar" style="gap:8px;flex-wrap:wrap">
         <label>径向衰减 <input id="maskFalloff" type="number" min="0" max="1" step="0.05" value="0.6" style="width:64px" title="径向渐变：过渡带占半径的比例（0 = 硬边，1 = 整条半径都在过渡）" /></label>
         <label title="反选：起笔一侧变成 0"><input id="maskGradientInvert" type="checkbox" /> 反选</label>

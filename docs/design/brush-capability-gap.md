@@ -22394,3 +22394,8 @@ server lib（--features raw）**222**（5 ignored）、定向 11 个集成 suite
 2. **必须服务器渲染**：该判据要调服务端 `create_range_mask`，并显式验"勾掉服务器渲染 ⇒ 本地缺端点"，
    ⇒ 不能预先注入 `render=client` ✗ ⇒ 加进 `run-criteria.sh` 的 browser 例外（与 render-switch 同组）✓。
 3. **本地模式等回执 2s 太短**：本机实测 2.5s 才有字 ⇒ 读到空串假红 ✗ ⇒ 轮询到有字或 10s ✓。
+
+**⇒ 首跑 CI `40335798202` 的 shard 2 红：`ui-text-density`** ✗ —— 渐变卡那句说明太长（viewer.rs:609）。
+⇒ 拆成**短可见句** + `title=` 里放完整几何说明 ✓；同时补 `I18N_EN_TEXT`（短句）与
+`I18N_EN_ATTR`（title）两条词条 ✓（`ui-i18n-coverage` 现在也查 title ✓，不补会漏中文）。
+⇒ `ui-text-density` 与 `ui-i18n-coverage` 本机均转绿 ✓。
