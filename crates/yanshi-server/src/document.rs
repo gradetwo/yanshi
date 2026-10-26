@@ -271,12 +271,12 @@ fn atom_cannot_change_pixels(kind: yanshi_core::atom::AtomKind) -> bool {
 /// **变更后预览的长边上限** ✓（P-01 M1 ✓）：每次变更后的文档级预览改为降采样渲染 ✓，
 /// 长边不超过这个值 ✓（查看器与精修流本来就看这个尺寸 ✓）；全幅只在导出／像素读数时算 ✓。
 /// 取样步长是 2 的幂（期 4 的 `lod`）⇒ 实际长边取 `≤ 1600` 的最大档位（如 6064 → 1516）✓。
-pub const PREVIEW_MAX_EDGE: u32 = 1600;
+pub(crate) const PREVIEW_MAX_EDGE: u32 = 1600;
 
 /// **预览降采样档位** ✓（P-01 M1 ✓）：满足 `ceil(长边 / 2^lod) ≤ PREVIEW_MAX_EDGE`
 /// 的最小 `lod`，上 cap 3（`render_region_with_lod` 的上限 ✓）。
 /// 小区域／小画布 → 0（与今天全分辨率行为一致 ✓）。
-pub fn preview_lod_for(bbox: Bbox) -> u32 {
+pub(crate) fn preview_lod_for(bbox: Bbox) -> u32 {
     let longest = bbox.w.max(bbox.h).max(0.0);
     let mut lod = 0u32;
     while lod < 3 && (longest / (1u32 << lod) as f64).ceil() > PREVIEW_MAX_EDGE as f64 {
