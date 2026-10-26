@@ -26,7 +26,7 @@ fn gradient_bytes() -> Vec<u8> {
     let (w, h) = (12u32, 8u32);
     let mut mosaic = Vec::with_capacity((w * h) as usize);
     for i in 0..w * h {
-        mosaic.push((u32::from(i) * 16383 / u32::from(w * h - 1)) as u16);
+        mosaic.push((i * 16383 / (w * h - 1)) as u16);
     }
     write_synthetic_dng(&SyntheticDng {
         width: w,
