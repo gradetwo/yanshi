@@ -248,7 +248,10 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs sc
       #     会**自己设偏好**来对比两种模式**✗ ⇒ **∴ 给它们加参数**会**把开关钉死** ✓
       #     ⇒ **∴ 所以**这两条**不加** `render=client` ✓（**∴ 它们靠自己的显式设置 ✓）** ★**** ✓✓
       case "$name" in
-        browser-render-switch.mjs|browser-cs-render-switch.mjs)
+        # **`browser-range-mask` 也要服务器渲染**（第 1132 轮）：它要调
+        # `create_range_mask`（服务端工具；本地内核没有这个端点 ✗），并显式验证
+        # 「勾掉服务器渲染 ⇒ 本地缺端点」那一臂 ⇒ 不能预先注入 `render=client` ✗。
+        browser-render-switch.mjs|browser-cs-render-switch.mjs|browser-range-mask.mjs)
           timeout 240 node "$script" "$BASE/?doc=$doc&token=$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
         *)
           timeout 240 node "$script" "$BASE/?doc=$doc&token=$tok&render=client" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;

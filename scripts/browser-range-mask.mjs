@@ -34,7 +34,11 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 const url = process.argv[2];
-const port = process.argv[3] || "9222";
+// **CDP 端口来源**（第 1132 轮整合）：`run-criteria.sh` 的 browser 分支传的是
+// `<viewer-url> <base> <token> <cdpPort>`（argv[3] 是 **base URL**，不是端口 ✗）——
+// 同 `browser-boot-panels` 的坑。⇒ 优先读导出的 `CDP_PORT`，argv[3] 只接受纯数字。
+const rawPort = process.env.CDP_PORT || process.argv[3] || "";
+const port = /^\d+$/.test(rawPort) ? rawPort : "9222";
 const base = url ? new URL(url).origin : "http://127.0.0.1:15900";
 if (!url) {
   console.error("用法: node scripts/browser-range-mask.mjs <viewer-url> [cdp-port]");
@@ -364,8 +368,14 @@ await evaluate(`(() => {
   q("rangeMaskApply").click();
   return 1;
 })()`);
-await sleep(2000);
-const infoKernel = (await evaluate(`document.getElementById("rangeMaskInfo").textContent`)) || "";
+// **等回执出现**（第 1132 轮）：本地内核首次调用要初始化/可能慢 ⇒ 固定 2s 会读到空串 ✗
+//（本机实测：2.5s 才有字 ✓）。轮询到有字或 10s 超时。
+let infoKernel = "";
+for (let i = 0; i < 40; i += 1) {
+  infoKernel = (await evaluate(`document.getElementById("rangeMaskInfo").textContent`)) || "";
+  if (infoKernel) break;
+  await sleep(250);
+}
 if (!/本地内核没有这个端点/.test(infoKernel)) bad("本地内核缺端点时仍报「服务端拒绝」（假归因）", infoKernel);
 else ok("本地内核缺端点时说清了是本地缺端点，并给出下一步", infoKernel);
 if (/服务端拒绝/.test(infoKernel)) bad("同一条回执里既说本地又说服务端", infoKernel);

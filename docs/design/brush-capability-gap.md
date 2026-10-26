@@ -22370,3 +22370,27 @@ server lib（--features raw）**222**（5 ignored）、定向 11 个集成 suite
 本批是在 M1 基线上再砍一半（~6s），**不要把 M1 的收益重复算成 M2** ✓。
 **已知**：每文件每版本仅 1 轮（效应 −50% 远大于 ±2% 波动）；失败路径不再留中间态预览（更正确方向）；
 调用方 `silent=true` 且无 sharpen 落成时会比改前多一次 `complete_jobs`（边缘情形）✓。
+
+## 六百四十、Web 第三轮：范围遮罩 / 渐变蒙版的页面入口（第 1132 轮）
+
+**⇒ 包**：`yanshi-web-0bddba26-2026-10-26.zip`（基线 `0bddba26`；5 文件 +855/−12）。
+在 `47c10654` 上 `git apply` 干净 ✓。
+
+**⇒ 内容**：「绘制」面板新增 `#cardRangeMask`（采样层/挂到层两套下拉、亮度带/色相带、
+烘焙并挂载、取下蒙版、该层当前蒙版读数）；`create_mask` 的 linear/radial 渐变笔
+（拖动预览 + 提交）；新判据 `scripts/browser-range-mask.mjs`（21 条）；
+`criteria-for-changes.sh` 修「改查看器本体却选不出浏览器判据」（39→91 条，browser 0→44）。
+**关键拒绝语义**：`coverage_matched_pixels==0` ⇒ **拒绝挂载**（工具本身仍回 `ok:true`，
+页面自己判）；下限>上限就地拒绝；本地内核缺端点 ⇒ 按 `endpoint_not_local` 分流，
+**不许归因给服务端** ✓；`resync()` 前补 `refreshLayers()`（否则刚挂上就点「取下」会说谎）✓。
+
+**⇒ 本机验证**：`browser-range-mask` **exit 0（21 条）**、`browser-boot-panels`／`browser-i18n`／
+`browser-layout` 全 0；`ui-i18n-coverage`、`check-criteria-have-exit3` 绿 ✓。
+
+**⇒ ★ 整合修的三处 ★**（新判据在 CI 形状下会假红，都是"判据自己"问题）：
+1. **CDP 端口来源**：脚本把 `argv[3]` 当端口 ✗，而 `run-criteria.sh` 的 browser 分支传的是
+   `<viewer-url> <base> <token> <cdpPort>` ⇒ 拼出 `http://127.0.0.1:http://...` ✗
+   ⇒ 改读导出的 `CDP_PORT`，argv[3] 只接受纯数字 ✓（与 `browser-boot-panels` 同一个坑）。
+2. **必须服务器渲染**：该判据要调服务端 `create_range_mask`，并显式验"勾掉服务器渲染 ⇒ 本地缺端点"，
+   ⇒ 不能预先注入 `render=client` ✗ ⇒ 加进 `run-criteria.sh` 的 browser 例外（与 render-switch 同组）✓。
+3. **本地模式等回执 2s 太短**：本机实测 2.5s 才有字 ⇒ 读到空串假红 ✗ ⇒ 轮询到有字或 10s ✓。
