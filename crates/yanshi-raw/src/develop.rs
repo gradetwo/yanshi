@@ -1492,12 +1492,13 @@ pub const TONE_CURVE_POINTS: &[(f32, f32)] = &[
 ];
 
 /// 基调曲线求值：分段线性插值 + 强度混合 `lerp(in, curve(in), strength)`。
-/// 定义域外（N3）：输入 < 0 直通；NaN / +Inf 直通（由 ⑨ `clamp_exit`
-/// 守门）；输入 > 1 按末段斜率线性外推，不钳到 1（R4）。`strength = 0`
+/// 定义域外（N3）：输入 ≤ 0 直通（含 `-0.0` 的符号位——`-0.0 < 0.0` 为假，
+/// 若放进插值会出来 `+0.0`，逐位直通须用 `<=`）；NaN / +Inf 直通（由
+/// ⑨ `clamp_exit` 守门）；输入 > 1 按末段斜率线性外推，不钳到 1（R4）。
 /// 时输出 ≡ 输入（N2，直接返回、不靠浮点恒等式——`-0.0` 会变号）。
 /// 只用 f32 算术（NF1）。
 pub fn tone_curve_value(x: f32, strength: f32) -> f32 {
-    if strength == 0.0 || !x.is_finite() || x < 0.0 {
+    if strength == 0.0 || !x.is_finite() || x <= 0.0 {
         return x;
     }
     let points = TONE_CURVE_POINTS;
