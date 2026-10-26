@@ -187,6 +187,8 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    `docs/design/implementation-notes.md` 的算子表/总数行没同步 ⇒ `doc_consistency` 在
    test stable/beta/GPU 全红；补行 + 改 26 后 3 通过 ✓。
 
+53. **CI 已绿**：`40412680604`（`04c7165e`：八包＋文档计数修复）**全 job success** ✓。
+
 ## 三、下一步（按优先序，都有精确入口）
 
 -0. 待上游裁决的仍是：期 2 的 **auto backtest colorcast 门限**（A2 保色度 ⇒ R−B 只降 28.6% < 40%）、
