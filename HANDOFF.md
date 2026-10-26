@@ -124,6 +124,10 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    30 文档峰值 2.46GB（基线 19 就 OOM）。已知：每文档 ~131MB（未达 100MB 建议）、关完残留 1.7–3.5% arena。
 26. **photo P-01 已合**（台账 635）：变更后预览 LOD ≤1600（打包轮 359s→74s）；不碰 preview.png/缩略图/preview_dirty。
 
+27. **photo crossfade O4 已合**（台账 636）：selective_color 白档保底 ε=0.20（亮饱和像素重新
+   吃到 whites 杠杆）；render filter 110、style_preset_package 5、clippy/fmt 绿。
+   **不修 forest 唇口**（whites 钝杠杆/剂量倒置，阶段 3 另案）；4 套预设重放轻微变化（均值 ≤0.0014）。
+
 ## 三、下一步（按优先序，都有精确入口）
 
 -0. 待上游裁决的仍是：期 2 的 **auto backtest colorcast 门限**（A2 保色度 ⇒ R−B 只降 28.6% < 40%）、

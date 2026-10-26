@@ -22258,3 +22258,23 @@ RSS 每文档落定增量 ~271MB→~131MB、30 文档峰值 2.46GB；P-01 变更
 `preview_storage` 3／`preview_wait_decoupled` 3／`service_flow` 31／`export_png` 9／`timelapse_export` 5／
 `tool_inventory` 2／`profile_allowlist` 8／`layer_z_index` 1／`tool_validation_audit` 7 全过 ✓；
 census **205 工具/256 名全分类**、surface 三面一致 ✓；clippy workspace + fmt 绿 ✓。
+
+## 六百三十六、photo **crossfade O4**：selective_color 白档保底 ε=0.20（第 1132 轮）
+
+**⇒ 包**：`photo-bugfix-crossfade-o4.zip`（1 patch，基线 `2a86cf7`，提交 `0d118e6`）。
+在 `29d50948` 之后（含期 2/2b/E2/期 4/五包）**干净应用** ✓。
+
+**⇒ 改了什么**：`crates/yanshi-render/src/filter.rs` 的 `selective_weights` ——
+`w[6]=whites·max(1−q, 0.20)`（其余档仍乘 `(1−q)`；九档和仍为 1，多出的从色相档扣）；
+门限 0.08、`neutrals`/`blacks`、`selective_apply_display`、参数表、预设文件都**不动** ✓。
+⇒ 让亮饱和像素重新吃得到 whites 去色杠杆（此前被精确截到 0）✓。
+
+**⇒ 本机验证**：`yanshi-render --lib filter::` **110** 过（含新 10 钉住/回归）；`style_preset_package` **5**；
+clippy（render）0；fmt 0 ✓。
+
+**⇒ 范围明示（照作者）**：**不修 forest 唇口绿弧** ✗（whites 是钝杠杆：剂量响应倒置，
+顽固像素保底 0.20 时已响应像素可到 1.0；14 组网格没有同时过 A3/A4 的组合 ⇒ 阶段 3 另案）✓。
+**⇒ 既有文档重放会轻微变化**（4 套用 selective_color 的预设、17 图：均值 ≤0.0014、|Δ|>0.05 ≤0.52%）；
+其余 18 套零使用预设逐位不变 ✓。
+**⇒ 基线注记**：v5 行建在 `fix-phase5` 尖（`2917122`，`2a86cf7` 不是其祖先）⇒ 本补丁发 main 后
+forest 行仍会带暗部品红噪点（2.29% vs 分支 0.0%），那是基线差、不是本补丁 ✓。
