@@ -231,6 +231,59 @@ proptest! {
         }
     }
 
+    /// Y-08 R13：模糊流里的每条 `ReorderObjects` 原子，在其 seq 处求值，
+    /// `objects_in_layer` 的顺序必须等于它提交的 `order`，且 z 稠密。
+    /// （生成器只产合法重排；前缀求值不受其后 revert 影响。）
+    #[test]
+    fn reorder_objects_in_fuzz_matches_submitted_order(seed in any::<u64>(), steps in 24usize..48) {
+        let scenario = scenario(seed, steps, 0);
+        let reorders: Vec<&Atom> = scenario
+            .log
+            .iter()
+            .filter(|atom| atom.kind == AtomKind::ReorderObjects)
+            .collect();
+        prop_assume!(!reorders.is_empty(), "本场景无重排原子，跳过");
+        for atom in reorders {
+            let layer_id = atom
+                .payload
+                .get("layer_id")
+                .and_then(|value| value.as_str())
+                .expect("重排原子须带 layer_id");
+            let order: Vec<String> = atom
+                .payload
+                .get("order")
+                .and_then(|value| value.as_array())
+                .expect("重排原子须带 order 数组")
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_owned))
+                .collect();
+            let at = state_at(&scenario.log, atom.seq, &mut StateAtCache::new()).unwrap();
+            let actual: Vec<String> = at
+                .state
+                .objects_in_layer(layer_id)
+                .iter()
+                .map(|object| object.id.clone())
+                .collect();
+            let n = order.len() as i64;
+            prop_assert_eq!(
+                actual, order,
+                "seq={} 的重排后顺序须等于提交的 order",
+                atom.seq
+            );
+            let zs: Vec<i64> = at
+                .state
+                .objects_in_layer(layer_id)
+                .iter()
+                .map(|object| object.z_index)
+                .collect();
+            prop_assert_eq!(
+                zs,
+                (0..n).collect::<Vec<_>>(),
+                "重排后 z_index 须稠密"
+            );
+        }
+    }
+
     /// 提交时校验：被拒绝的原子绝不进入日志，且 seq 连续。
     #[test]
     fn rejected_atoms_never_enter_the_log(seed in any::<u64>(), steps in 4usize..48) {

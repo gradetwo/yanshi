@@ -419,6 +419,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     // 仍不写的 7 个：`add_adjustment`/`add_filter`（"见工具说明"）、`set_reference`（占位哈希）、
     // `set_property`（key 未知）、`import_psd`（要先有 blob）、`suggest`（说明被截断）、`set_preferences`（键未知）。
     ("reorder_layers", r#"{"order":["L1"]}"#),
+    (
+        "reorder_objects",
+        r#"{"layer_id":"L1","order":["O1","O2"]}"#,
+    ),
     ("update_object", r#"{"object_id":"L1","patch":{}}"#),
     (
         "submit_offline",

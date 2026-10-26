@@ -1802,6 +1802,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "update_layer" => write_update_layer(ctx, args),
         "delete_layer" => write_delete_layer(ctx, args),
         "reorder_layers" => write_reorder_layers(ctx, args),
+        "reorder_objects" => write_reorder_objects(ctx, args),
         "duplicate_layer" => write_duplicate_layer(ctx, args),
         "put_blob" => write_put_blob(ctx, args),
         "import_image" => write_import_image(ctx, args),
@@ -3960,6 +3961,77 @@ fn write_reorder_layers(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
         ));
     }
     let result = ctx.commit(AtomKind::ReorderLayers, json!({ "order": ids }))?;
+    finish_mutation(ctx, &result, None)
+}
+
+fn write_reorder_objects(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let layer_id = require_str(args, "layer_id")?;
+    let order = require_object(args, "order")?;
+    let order = order.as_array().ok_or_else(|| missing("order"))?;
+    let ids: Vec<String> = order
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    if ids.len() != order.len() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("order 必须全部是对象 id 字符串"),
+        ));
+    }
+    // 工具层先校验完整性，给出比折叠级联失效更友好的错误（与 reorder_layers 同口径）。
+    let state = document_state(ctx)?;
+    if !state.layer_alive(layer_id.as_str()) {
+        return Err(YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("图层 {layer_id} 不存在")),
+        ));
+    }
+    let alive: Vec<String> = state
+        .objects_in_layer(layer_id.as_str())
+        .iter()
+        .map(|object| object.id.clone())
+        .collect();
+    if alive.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("图层 {layer_id} 没有对象，无可重排")),
+        ));
+    }
+    let alive_set: BTreeSet<String> = alive.iter().cloned().collect();
+    let provided: BTreeSet<String> = ids.iter().cloned().collect();
+    if ids.len() != provided.len() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("order 含重复对象 id（重排须携带完整目标 z 序，不许重复）"),
+        ));
+    }
+    if alive_set != provided {
+        let missing: Vec<&String> = alive_set.difference(&provided).collect();
+        let extra: Vec<&String> = provided.difference(&alive_set).collect();
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "order 必须是图层 {layer_id} 全部存活对象的完整顺序（期望 {} 个，实际 {} 个；缺失：{}；多余：{}）",
+                alive_set.len(),
+                provided.len(),
+                missing
+                    .iter()
+                    .map(|id| id.as_str())
+                    .collect::<Vec<_>>()
+                    .join("、"),
+                extra
+                    .iter()
+                    .map(|id| id.as_str())
+                    .collect::<Vec<_>>()
+                    .join("、"),
+            )),
+        ));
+    }
+    let result = ctx.commit(
+        AtomKind::ReorderObjects,
+        json!({ "layer_id": layer_id, "order": ids }),
+    )?;
     finish_mutation(ctx, &result, None)
 }
 
@@ -12884,7 +12956,10 @@ fn estimate_step_impact(tool: &str, args: &Value) -> (&'static str, Option<Bbox>
                 Some(Bbox::new(x, y, number("w")?, number("h")?))
             })
     };
-    if matches!(tool, "create_layer" | "reorder_layers" | "delete_layer") {
+    if matches!(
+        tool,
+        "create_layer" | "reorder_layers" | "reorder_objects" | "delete_layer"
+    ) {
         // 图层结构变化按内核语义是整文档失效。
         return ("document", None);
     }

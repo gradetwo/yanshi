@@ -434,6 +434,16 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[param!("order", Array, true, "完整图层 id 顺序（自底向上）")],
     },
+    ToolSpec {
+        name: "reorder_objects",
+        profile: Profile::Core,
+        summary: "重排同一图层内的对象（必须携带完整目标 z 序，自底向上；覆盖先前的单改 z_index）",
+        mutating: true,
+        params: &[
+            param!("layer_id", String, true, "目标图层"),
+            param!("order", Array, true, "完整对象 id 顺序（自底向上）"),
+        ],
+    },
     // ---- 导入 ----
     ToolSpec {
         name: "put_blob",
@@ -3101,6 +3111,7 @@ pub const PHOTO_TOOLS: &[&str] = &[
     "update_layer",
     "delete_layer",
     "reorder_layers",
+    "reorder_objects",
     "list_layers",
     "duplicate_layer",
     "lock_layer",
@@ -3214,6 +3225,7 @@ pub const SVG_TOOLS: &[&str] = &[
     "update_layer",
     "delete_layer",
     "reorder_layers",
+    "reorder_objects",
     "list_layers",
     "duplicate_layer",
     "lock_layer",

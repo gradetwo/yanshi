@@ -298,11 +298,17 @@ pub fn region_fingerprint(state: &yanshi_core::DocumentState) -> u64 {
             // 蒙版位图化后 `Debug` 字符串会爆炸 ⇒ 用结构化指纹。
             mask.hash_fingerprint(&mut h);
         }
+        // **★ `z_index` 必须进指纹（Y-08 期 4，R10）★**：重排（`ReorderObjects`）
+        //   与 `set_property z_index` 只改 `z_index`、不走 supersede
+        //   ⇒ `current_version` 不变 ⇒ 不含 z 的指纹在重排后不变
+        //   ⇒ 区域字节缓存命中旧块 ⇒ "排了但画面不动"。
+        //   （`set_property` 单改因 supersede 推 `current_version` 而
+        //   间接失效；只有重排这条路会漏，故此处只补 `z_index`。）
         let mut objs: Vec<String> = state
             .objects
             .values()
             .filter(|o| o.layer_id == l.id && o.deleted_by.is_none())
-            .map(|o| format!("{}:{:?}:{}", o.id, o.current_version, o.data))
+            .map(|o| format!("{}:{}:{:?}:{}", o.id, o.z_index, o.current_version, o.data))
             .collect();
         objs.sort();
         objs.hash(&mut h);
@@ -402,5 +408,73 @@ mod tests {
         cache.put(block(b, 9, 20));
         assert_eq!(cache.invalidate_before(5), 1, "应只丢掉版本 3 的那块 ✓");
         assert_eq!(cache.len(), 1);
+    }
+
+    /// **只改 `z_index`，指纹必须变（Y-08 期 4，R10）**：重排只改 z，
+    /// 不走 supersede ⇒ `current_version` 不变 ⇒ 旧指纹会把重排后的
+    /// 渲染当成缓存命中，发旧像素（"排了但画面不动"）。
+    #[test]
+    fn fingerprint_changes_when_only_z_index_changes() {
+        use serde_json::json;
+        use yanshi_core::fold::fold_atoms;
+        use yanshi_core::state::DocumentState;
+        use yanshi_core::{Atom, AtomKind};
+
+        fn atom(kind: AtomKind, id: &str, payload: serde_json::Value) -> Atom {
+            Atom::new(kind, "human:1", "session:a", payload).with_id(id)
+        }
+        let mut atoms = Vec::new();
+        let push = |atoms: &mut Vec<Atom>, atom: Atom| {
+            let mut atom = atom;
+            atom.seq = atoms.len() as u64 + 1;
+            atoms.push(atom);
+        };
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateDocument,
+                "a_doc",
+                json!({"doc_id": "doc_1", "width": 16, "height": 16}),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateLayer,
+                "a_layer",
+                json!({"layer_id": "layer_1"}),
+            ),
+        );
+        for (id, object_id) in [("a_o1", "obj_1"), ("a_o2", "obj_2")] {
+            push(
+                &mut atoms,
+                atom(
+                    AtomKind::CreateObject,
+                    id,
+                    json!({"object_id": object_id, "layer_id": "layer_1", "type": "stroke"}),
+                ),
+            );
+        }
+        let before = fold_atoms(DocumentState::empty(), &atoms).state;
+        let fp_before = region_fingerprint(&before);
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::ReorderObjects,
+                "a_reorder",
+                json!({"layer_id": "layer_1", "order": ["obj_2", "obj_1"]}),
+            ),
+        );
+        let after = fold_atoms(DocumentState::empty(), &atoms).state;
+        assert_eq!(
+            after.objects_in_layer("layer_1")[0].id,
+            "obj_2",
+            "前置：重排须真的改顺序"
+        );
+        assert_ne!(
+            region_fingerprint(&after),
+            fp_before,
+            "只改 z_index 也必须让指纹变（否则缓存命中旧块）"
+        );
     }
 }

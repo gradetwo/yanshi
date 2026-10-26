@@ -345,6 +345,8 @@ pub enum AtomKind {
     DeleteAnchor,
     /// 重排图层（携带完整目标 z 序）。
     ReorderLayers,
+    /// 重排同一图层内的对象（携带完整目标 z 序）。
+    ReorderObjects,
     // 删除类
     /// 墓碑删除。
     Tombstone,
@@ -399,6 +401,7 @@ impl AtomKind {
             Self::SetAnchor => "set_anchor",
             Self::DeleteAnchor => "delete_anchor",
             Self::ReorderLayers => "reorder_layers",
+            Self::ReorderObjects => "reorder_objects",
             Self::Tombstone => "tombstone",
             Self::Revert => "revert",
             Self::Reapply => "reapply",
@@ -470,6 +473,7 @@ impl AtomKind {
                 | Self::Transform
                 | Self::SetProperty
                 | Self::ReorderLayers
+                | Self::ReorderObjects
                 | Self::Tombstone
         )
     }
@@ -484,6 +488,7 @@ impl AtomKind {
                 | Self::Tombstone
                 | Self::DeclareHead
                 | Self::ReorderLayers
+                | Self::ReorderObjects
                 | Self::SetProperty
                 | Self::CreateLayer
                 | Self::CreateObject
@@ -517,7 +522,7 @@ impl AtomKind {
     }
 
     /// 全部原子类型，便于穷举测试。
-    pub const ALL: [AtomKind; 32] = [
+    pub const ALL: [AtomKind; 33] = [
         Self::CreateDocument,
         Self::CreateLayer,
         Self::CreateObject,
@@ -540,6 +545,7 @@ impl AtomKind {
         Self::Transform,
         Self::SetProperty,
         Self::ReorderLayers,
+        Self::ReorderObjects,
         Self::Tombstone,
         Self::Revert,
         Self::Reapply,

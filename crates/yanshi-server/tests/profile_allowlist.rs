@@ -10,7 +10,7 @@
 //!    Core/History/Changeset/Retouch/Structure + Annotation/Collab/Conflict
 //!    （2026-10-24 期 1 尾单裁定加回：查看器面板属必备面）+ Photo；不触发
 //!    白名单收窄，工具集 = 成员分层并集（包含 `PHOTO_TOOLS` 全部；三层加回
-//!    后实测 201 个、与注册表全量同数——区别在 profile 成员资格，不在工具数）；
+//!    后实测 205 个、与注册表全量同数——区别在 profile 成员资格，不在工具数）；
 //! 3. 白名单收窄只对最终用户显式点名的子集请求生效：`[Photo]` 恰为
 //!    `PHOTO_TOOLS`、`[Svg]` 恰为 `SVG_TOOLS`，显式混合按设计 §7 公式
 //!    （分层展开集 ∩ 白名单并集）。
@@ -44,8 +44,8 @@ fn photo_allowlist_names_all_registered() {
     );
     assert_eq!(
         SVG_TOOLS.len(),
-        90,
-        "SVG_TOOLS 长度与设计 §7 不符（期 2 块 3 加 verify_package 后 89→90）"
+        91,
+        "SVG_TOOLS 长度与设计 §7 不符（期 2 块 3 加 verify_package 后 89→90；Y-08 期 4 加 reorder_objects 后 90→91）"
     );
     let cases: [(&[&'static str], &[Profile]); 2] = [
         (
@@ -136,7 +136,7 @@ fn all_and_full_never_narrow() {
 /// 不变量 2（新口径）：缺省组成 DEFAULT 不触发收窄 —— 工具集为成员分层并集，
 /// 且包含 PHOTO_TOOLS 全部工具（Photo 只贡献成员资格）。
 /// 三层（Annotation/Collab/Conflict）加回后（Wang 2026-10-24 期 1 尾单裁定，
-/// 查看器面板属必备面），实测工具集与注册表全量同名同数（200）：全部已注册
+/// 查看器面板属必备面），实测工具集与注册表全量同名同数（205）：全部已注册
 /// 工具都落在 DEFAULT 成员层内（`Semantic` 无工具、其余 workflow 预设的工具
 /// 住在基底层）——DEFAULT 与 ALL 的区别落在成员资格
 /// （`composition_membership_is_pinned` 逐项钉死），不落在工具数。
@@ -154,7 +154,7 @@ fn default_composition_is_unnarrowed_and_panel_complete() {
     assert_eq!(
         default_names,
         names(&full),
-        "三层加回后缺省工具集应与注册表全量同名（实测同为 201 个）"
+        "三层加回后缺省工具集应与注册表全量同名（实测同为 205 个）"
     );
     // 缺省集必须严格大于照片名单本身：若 DEFAULT 被误收窄到 PHOTO_TOOLS，
     // 下面这些「在成员分层内、但不在照片白名单」的工具会整批消失

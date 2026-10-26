@@ -153,6 +153,7 @@ pub fn atom_needs_previous_state(kind: AtomKind) -> bool {
             | AtomKind::Revert
             | AtomKind::Reapply
             | AtomKind::ReorderLayers
+            | AtomKind::ReorderObjects
     )
 }
 
@@ -738,6 +739,87 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
                 ));
             }
         }
+        AtomKind::ReorderObjects => {
+            let layer_id = required(atom, "layer_id")?;
+            match state.layers.get(layer_id) {
+                Some(layer) if layer.is_deleted() => return Err(tombstone_error("图层", layer_id)),
+                Some(_) => {}
+                None => {
+                    return Err(missing_error(
+                        "图层",
+                        layer_id,
+                        state.layers.keys().filter(|id| state.layer_alive(id)),
+                    ))
+                }
+            }
+            let order = payload_ids(&atom.payload, "order")?;
+            // 重复 id 先报（比集合差更具体；变异：去掉本分支 ⇒ R4 红）。
+            let mut seen: BTreeSet<&String> = BTreeSet::new();
+            let mut duplicates: Vec<&String> = Vec::new();
+            for id in &order {
+                if !seen.insert(id) {
+                    duplicates.push(id);
+                }
+            }
+            if !duplicates.is_empty() {
+                return Err(err(
+                    ErrorCode::PreconditionFailed,
+                    format!(
+                        "reorder_objects 的 order 含重复对象 id：{}",
+                        duplicates
+                            .iter()
+                            .map(|id| id.as_str())
+                            .collect::<Vec<_>>()
+                            .join("、")
+                    ),
+                ));
+            }
+            // 该层全部存活对象的集合。
+            let alive: BTreeSet<&String> = state
+                .objects
+                .values()
+                .filter(|object| object.is_alive() && object.layer_id == layer_id)
+                .map(|object| &object.id)
+                .collect();
+            // 逐个分类 order 里的 id：未知 / 已删 / 跨层。
+            for id in &order {
+                match state.objects.get(id) {
+                    None => {
+                        return Err(missing_error("对象", id, alive.iter().copied()));
+                    }
+                    Some(object) if object.is_deleted() => {
+                        return Err(tombstone_error("对象", id));
+                    }
+                    Some(object) if object.layer_id != layer_id => {
+                        return Err(err(
+                            ErrorCode::PreconditionFailed,
+                            format!(
+                                "对象 {id} 属于图层 {}，不在目标图层 {layer_id} 内",
+                                object.layer_id
+                            ),
+                        ));
+                    }
+                    Some(_) => {}
+                }
+            }
+            let listed: BTreeSet<&String> = order.iter().collect();
+            if alive != listed {
+                let missing: Vec<&String> = alive.difference(&listed).copied().collect();
+                return Err(err(
+                    ErrorCode::PreconditionFailed,
+                    format!(
+                        "reorder_objects 必须携带完整目标 z 序（图层 {layer_id}：期望 {} 个对象，实际 {} 个；缺失：{}）",
+                        alive.len(),
+                        listed.len(),
+                        missing
+                            .iter()
+                            .map(|id| id.as_str())
+                            .collect::<Vec<_>>()
+                            .join("、")
+                    ),
+                ));
+            }
+        }
         AtomKind::CreateSelection => {
             let selection_id = required(atom, "selection_id")?;
             // **`mode != "new"` 时允许已存在**（外部 `E1027`，第 773 轮）：`add`/`subtract`/`intersect`
@@ -1195,6 +1277,16 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
                 if let Some(layer) = state.layers.get_mut(layer_id) {
                     layer.z_index = index as i64;
                     layer.updated_by = Some(atom.id.clone());
+                }
+            }
+        }
+        AtomKind::ReorderObjects => {
+            // 注意：`Object` 没有 `updated_by` 字段（只有 `Layer` 有），
+            // 故只改 z_index——与 `set_property z_index` 单改的对象分支同口径。
+            let order = payload_ids(&atom.payload, "order")?;
+            for (index, object_id) in order.iter().enumerate() {
+                if let Some(object) = state.objects.get_mut(object_id) {
+                    object.z_index = index as i64;
                 }
             }
         }
@@ -2585,6 +2677,335 @@ mod tests {
         );
         let result = fold(&atoms);
         assert_eq!(result.warning_count(WarningKind::CascadeInvalidation), 3);
+    }
+
+    /// Y-08 期 4：重排测试的底链——`layer_1` 内 3 对象（obj_1/obj_b/obj_c，
+    /// 创建缺省 z 0/1/2），另 `layer_2` 内 1 对象（obj_x，供跨层用例）。
+    fn chain_objects() -> Vec<Atom> {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateObject,
+                "a_obj_b",
+                json!({"object_id": "obj_b", "layer_id": "layer_1", "type": "stroke"}),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateObject,
+                "a_obj_c",
+                json!({"object_id": "obj_c", "layer_id": "layer_1", "type": "stroke"}),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateLayer,
+                "a_layer2",
+                json!({"layer_id": "layer_2"}),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateObject,
+                "a_obj_x",
+                json!({"object_id": "obj_x", "layer_id": "layer_2", "type": "stroke"}),
+            ),
+        );
+        atoms
+    }
+
+    /// 某图层内存活对象的 id 序列（自底向上）。
+    fn layer_order(state: &DocumentState, layer_id: &str) -> Vec<String> {
+        state
+            .objects_in_layer(layer_id)
+            .iter()
+            .map(|object| object.id.clone())
+            .collect()
+    }
+
+    fn reorder_objects(id: &str, layer_id: &str, order: Value) -> Atom {
+        atom(
+            AtomKind::ReorderObjects,
+            id,
+            json!({"layer_id": layer_id, "order": order}),
+        )
+    }
+
+    #[test]
+    fn reorder_objects_changes_render_order() {
+        let mut atoms = chain_objects();
+        push(
+            &mut atoms,
+            reorder_objects("a_reorder", "layer_1", json!(["obj_c", "obj_1", "obj_b"])),
+        );
+        let result = fold(&atoms);
+        assert!(result.is_clean(), "{:?}", result.warnings);
+        assert_eq!(
+            layer_order(&result.state, "layer_1"),
+            vec!["obj_c", "obj_1", "obj_b"],
+            "重排后对象顺序必须等于提交的 order"
+        );
+        let zs: Vec<i64> = result
+            .state
+            .objects_in_layer("layer_1")
+            .iter()
+            .map(|object| object.z_index)
+            .collect();
+        assert_eq!(zs, vec![0, 1, 2], "重排后 z_index 必须稠密 0..n-1");
+        assert!(result.state.is_consistent());
+    }
+
+    #[test]
+    fn reorder_objects_rejects_partial_order() {
+        let atoms = chain_objects();
+        let state = fold(&atoms).state;
+        let bad = reorder_objects("a_bad", "layer_1", json!(["obj_1", "obj_b"]));
+        let error = precondition(&state, &bad).expect_err("缺一个存活对象必须被拒");
+        let detail = error.context.detail.clone().unwrap_or_default();
+        assert!(
+            detail.contains("obj_c"),
+            "报错必须列出缺失的 id，实得：{detail}"
+        );
+        // 折叠层：坏原子只产生一条级联失效警告，顺序保持原样。
+        let mut atoms = atoms;
+        push(&mut atoms, bad);
+        let result = fold(&atoms);
+        assert_eq!(
+            result.warning_count(WarningKind::CascadeInvalidation),
+            1,
+            "坏原子应恰好产生一条级联失效警告，实得：{:?}",
+            result.warnings
+        );
+        assert_eq!(
+            layer_order(&result.state, "layer_1"),
+            vec!["obj_1", "obj_b", "obj_c"],
+            "坏重排不得改动顺序"
+        );
+    }
+
+    #[test]
+    fn reorder_objects_rejects_unknown_and_tombstoned() {
+        let atoms = chain_objects();
+        let state = fold(&atoms).state;
+        // 未知 id。
+        let unknown = reorder_objects(
+            "a_unknown",
+            "layer_1",
+            json!(["obj_1", "obj_b", "no_such_obj"]),
+        );
+        let error = precondition(&state, &unknown).expect_err("未知 id 必须被拒");
+        assert!(
+            error
+                .context
+                .detail
+                .clone()
+                .unwrap_or_default()
+                .contains("no_such_obj"),
+            "未知 id 的报错须点名该 id，实得：{error}"
+        );
+        // 已删对象。
+        let mut atoms = chain_objects();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::Tombstone,
+                "a_del_b",
+                json!({"object_id": "obj_b"}),
+            ),
+        );
+        let state = fold(&atoms).state;
+        let tombstoned = reorder_objects("a_tomb", "layer_1", json!(["obj_1", "obj_b", "obj_c"]));
+        let error = precondition(&state, &tombstoned).expect_err("已删对象必须被拒");
+        assert!(
+            error
+                .context
+                .detail
+                .clone()
+                .unwrap_or_default()
+                .contains("已被 tombstone"),
+            "已删对象的报错须点名墓碑状态，实得：{error}"
+        );
+        // 跨层 id：必须点名它所属的图层。
+        let state = fold(&chain_objects()).state;
+        let cross = reorder_objects("a_cross", "layer_1", json!(["obj_1", "obj_b", "obj_x"]));
+        let error = precondition(&state, &cross).expect_err("跨层 id 必须被拒");
+        let detail = error.context.detail.clone().unwrap_or_default();
+        assert!(
+            detail.contains("obj_x") && detail.contains("layer_2"),
+            "跨层 id 的报错须点名所属图层，实得：{detail}"
+        );
+    }
+
+    #[test]
+    fn reorder_objects_rejects_duplicate() {
+        let state = fold(&chain_objects()).state;
+        let bad = reorder_objects("a_dup", "layer_1", json!(["obj_1", "obj_1", "obj_c"]));
+        let error = precondition(&state, &bad).expect_err("重复 id 必须被拒");
+        assert!(
+            error
+                .context
+                .detail
+                .clone()
+                .unwrap_or_default()
+                .contains("重复"),
+            "重复 id 的报错须点名重复，实得：{error}"
+        );
+    }
+
+    #[test]
+    fn reorder_objects_revert_restores_order() {
+        let mut atoms = chain_objects();
+        push(
+            &mut atoms,
+            reorder_objects("a_reorder", "layer_1", json!(["obj_c", "obj_1", "obj_b"])),
+        );
+        let reordered = fold(&atoms);
+        assert_eq!(
+            layer_order(&reordered.state, "layer_1"),
+            vec!["obj_c", "obj_1", "obj_b"]
+        );
+        push(
+            &mut atoms,
+            atom(AtomKind::Revert, "a_revert", json!({"target": "a_reorder"})),
+        );
+        let reverted = fold(&atoms);
+        assert!(reverted.is_suppressed("a_reorder"));
+        assert_eq!(
+            layer_order(&reverted.state, "layer_1"),
+            vec!["obj_1", "obj_b", "obj_c"],
+            "revert 重排后顺序须回到排前"
+        );
+        assert!(reverted.state.is_consistent());
+    }
+
+    #[test]
+    fn reorder_objects_overwrites_single_z_edits() {
+        let mut atoms = chain_objects();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::SetProperty,
+                "a_single",
+                json!({"object_id": "obj_1", "key": "z_index", "value": 99}),
+            ),
+        );
+        let edited = fold(&atoms);
+        assert_eq!(
+            layer_order(&edited.state, "layer_1"),
+            vec!["obj_b", "obj_c", "obj_1"],
+            "前置：单改 z_index=99 应把 obj_1 顶到栈顶"
+        );
+        push(
+            &mut atoms,
+            reorder_objects("a_reorder", "layer_1", json!(["obj_c", "obj_1", "obj_b"])),
+        );
+        let result = fold(&atoms);
+        assert_eq!(
+            layer_order(&result.state, "layer_1"),
+            vec!["obj_c", "obj_1", "obj_b"],
+            "重排须覆盖先前的单改 z_index"
+        );
+        assert_eq!(
+            result.state.objects["obj_1"].z_index, 1,
+            "单改值须被重排覆盖"
+        );
+    }
+
+    #[test]
+    fn reorder_objects_revert_keeps_later_single_edits() {
+        let mut atoms = chain_objects();
+        push(
+            &mut atoms,
+            reorder_objects("a_reorder", "layer_1", json!(["obj_c", "obj_1", "obj_b"])),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::SetProperty,
+                "a_single",
+                json!({"object_id": "obj_c", "key": "z_index", "value": 99}),
+            ),
+        );
+        let edited = fold(&atoms);
+        assert_eq!(
+            layer_order(&edited.state, "layer_1"),
+            vec!["obj_1", "obj_b", "obj_c"],
+            "前置：排后单改应把 obj_c 顶到栈顶"
+        );
+        push(
+            &mut atoms,
+            atom(AtomKind::Revert, "a_revert", json!({"target": "a_reorder"})),
+        );
+        let result = fold(&atoms);
+        assert!(result.is_suppressed("a_reorder"));
+        // **钉死**：revert 重排后，排后的单改仍生效——obj_c 保持 z=99 在顶，
+        // 其余两对象回到排前的 z 值。注意 fold 层 `CreateObject` 缺省 z 是 0
+        //（max+1 是工具层 `write_add_effect` 的行为），故排前 z 全为 0。
+        // 这不是 bug，是日志折叠的既有语义。
+        assert_eq!(
+            result.state.objects["obj_c"].z_index, 99,
+            "revert 重排不得抹掉排后的单改 z_index"
+        );
+        assert_eq!(result.state.objects["obj_1"].z_index, 0);
+        assert_eq!(result.state.objects["obj_b"].z_index, 0);
+        assert_eq!(
+            layer_order(&result.state, "layer_1"),
+            vec!["obj_1", "obj_b", "obj_c"]
+        );
+    }
+
+    #[test]
+    fn reorder_objects_new_object_without_z_index_defaults_to_zero_at_fold_level() {
+        // 设计 R8 的"缺省 max+1 落栈顶"是**工具层**行为（`write_add_effect`）；
+        // fold 层 `CreateObject` 不给 z_index 时缺省就是 0——此处钉死该分工，
+        // 工具层的 max+1 由服务端测试 `reorder_objects_new_object_lands_on_top` 验收。
+        let mut atoms = chain_objects();
+        push(
+            &mut atoms,
+            reorder_objects("a_reorder", "layer_1", json!(["obj_c", "obj_1", "obj_b"])),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateObject,
+                "a_obj_d",
+                json!({"object_id": "obj_d", "layer_id": "layer_1", "type": "stroke"}),
+            ),
+        );
+        let result = fold(&atoms);
+        assert_eq!(
+            result.state.objects["obj_d"].z_index, 0,
+            "fold 层新建对象无 z_index 时缺省为 0（不是 max+1）"
+        );
+        assert_eq!(
+            layer_order(&result.state, "layer_1"),
+            vec!["obj_c", "obj_d", "obj_1", "obj_b"],
+            "z=0 的新对象按 (z_index, seq) 排在同 z 的 obj_c 之后、obj_1 之前"
+        );
+    }
+
+    #[test]
+    fn reorder_objects_empty_layer_empty_order_is_accepted_by_fold() {
+        // fold 认集合等式（空虚真），工具层才挡无意义调用——分工见设计 §3.3/§3.4。
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateLayer,
+                "a_empty",
+                json!({"layer_id": "layer_empty"}),
+            ),
+        );
+        let state = fold(&atoms).state;
+        let empty = reorder_objects("a_empty_reorder", "layer_empty", json!([]));
+        precondition(&state, &empty).expect("空图层 + 空 order 在 fold 层应接受");
+        push(&mut atoms, empty);
+        let result = fold(&atoms);
+        assert!(result.is_clean(), "{:?}", result.warnings);
     }
 
     #[test]

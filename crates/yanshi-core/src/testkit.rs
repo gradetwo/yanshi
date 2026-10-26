@@ -20,6 +20,7 @@ use crate::state::DocumentState;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 /// 场景配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -619,6 +620,28 @@ fn build_atom(
                 json!({ "order": order }),
             )
         }
+        Op::ReorderObjects => {
+            // 随机挑一个有 ≥2 个存活对象的图层，随机打乱其 order 生成原子。
+            let candidates: Vec<String> = state
+                .alive_layers()
+                .iter()
+                .filter(|layer| state.objects_in_layer(&layer.id).len() >= 2)
+                .map(|layer| layer.id.clone())
+                .collect();
+            let layer_id = rng.pick(&candidates).unwrap_or_default();
+            let mut order: Vec<String> = state
+                .objects_in_layer(&layer_id)
+                .iter()
+                .map(|object| object.id.clone())
+                .collect();
+            rng.shuffle(&mut order);
+            Atom::new(
+                AtomKind::ReorderObjects,
+                actor,
+                session,
+                json!({ "layer_id": layer_id, "order": order }),
+            )
+        }
         Op::CreateStyle => Atom::new(
             AtomKind::CreateStyle,
             actor,
@@ -842,6 +865,7 @@ enum Op {
     SetPropertyObject,
     SetPropertyLayer,
     ReorderLayers,
+    ReorderObjects,
     CreateStyle,
     StyledObject,
     CreateMask,
@@ -857,6 +881,15 @@ enum Op {
     Reapply,
     RevertStaleTarget,
     InvalidReference,
+}
+
+/// 模型里是否有某图层含 ≥2 个对象（`ReorderObjects` 的生成前提）。
+fn has_layer_with_two_objects(model: &Model) -> bool {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    model
+        .objects
+        .iter()
+        .any(|(_, layer_id)| !seen.insert(layer_id.as_str()))
 }
 
 fn choose_op(
@@ -906,7 +939,8 @@ fn choose_op(
         18..=19 if can_add_layer => Op::CreateLayer,
         20..=30 if can_add_object => Op::CreateObject,
         31..=36 if can_add_object => Op::DrawStroke,
-        37..=52 => Op::Supersede,
+        37..=50 => Op::Supersede,
+        51..=54 if has_layer_with_two_objects(model) => Op::ReorderObjects,
         53..=62 => Op::SetPropertyObject,
         63..=68 => Op::SetPropertyLayer,
         69..=73 if model.layers.len() > 1 => Op::ReorderLayers,

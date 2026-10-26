@@ -215,6 +215,11 @@ pub fn plan_dirty(
         AtomKind::ReorderLayers => {
             DirtySet::whole_document(state, format!("{} 改变图层结构", atom.kind))
         }
+        AtomKind::ReorderObjects => {
+            // v1 有意保守：重排改变层内所有对象的相对顺序，调整/滤镜的作用域
+            // 是"其下方的对象"，窄闭包可算但须证明不漏刷，另议（Y-08 Q5）。
+            DirtySet::whole_document(state, format!("{} 改变图层内对象结构", atom.kind))
+        }
         // 选区改变"其后的对象如何渲染"（路线 A：约束落笔）⇒ **必须整文档失效** ✓。
         // 此前它与 mask/style 一起落到 `none()` ✗ ⇒ 建立选区后画面不更新 ✓，
         // 删除选区后画面也**永远停在裁剪后的版本** ✓✓（真实浏览器验收发现的缺口 ✓）。

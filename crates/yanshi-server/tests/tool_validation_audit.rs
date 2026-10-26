@@ -48,6 +48,12 @@ fn bogus_id_cases() -> Vec<(&'static str, Value, Vec<&'static str>)> {
             json!({"order": ["no_such_layer"]}),
             vec!["reference_not_found", "invalid_argument"],
         ),
+        // `reorder_objects` 先查图层存在（不存在 ⇒ reference_not_found）。
+        (
+            "reorder_objects",
+            json!({"layer_id": "no_such_layer", "order": []}),
+            vec!["reference_not_found"],
+        ),
         (
             "set_property",
             json!({"layer_id": "no_such_layer", "key": "visible", "value": {"visible": false}}),
