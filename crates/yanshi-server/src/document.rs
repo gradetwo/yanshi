@@ -1899,8 +1899,7 @@ impl Document {
         self.last_render_blob = Some(blob_hash.clone());
         self.render_watermark = self.log.head_seq();
         // 缩略图与这次渲染同源（256²；`document_thumbnail` 仍与 HEAD 一致）。
-        let _thumb_blob =
-            self.refresh_thumb_from_render(Some(region), Some(&rendered), doc_size)?;
+        let _ = self.refresh_thumb_from_render(Some(region), Some(&rendered), doc_size)?;
         self.preview_dirty = PreviewDirty::Clean;
         self.complete_render_jobs()?;
         // **淘汰必须放在「指针都更新完」之后** ✓（与 `render_region` 同序）。
@@ -2244,12 +2243,13 @@ impl Document {
     /// 由调用方按自己的渲染结果写（缩略图路是 256 blob，LOD 预览路是 LOD blob）。
     /// **淘汰不在这里** ✓：必须等调用方把全部指针更新完再淘汰（见 `render_region`
     /// 的注释 —— 提前淘汰会把「仍被旧指针指着」的 blob 误留下来）。
+    /// 返回（缩略图 blob，边长，PNG 字节数）—— 调用方填 `RenderedPreview` 用。
     fn refresh_thumb_from_render(
         &mut self,
         region: Option<Bbox>,
         render: Option<&RegionRender>,
         doc_size: Bbox,
-    ) -> Result<BlobHash> {
+    ) -> Result<(BlobHash, u32, usize)> {
         // 只刷新与 `region` 相交的块 ✓；其余块**保留上一版像素** ✓。
         let (thumb_size, thumb_rgba) = {
             let thumb = self
@@ -2272,7 +2272,7 @@ impl Document {
         self.render_watermark = self.log.head_seq();
         self.document_thumbnail_seq = self.render_watermark;
         self.broadcaster.publish_thumbnail(ThumbKind::Doc256);
-        Ok(blob_hash)
+        Ok((blob_hash, thumb_size, png.len()))
     }
 
     /// 提交收尾用的**文档级预览**：生成 256² 缩略图（小 PNG），并推进渲染水位。
@@ -2401,7 +2401,8 @@ impl Document {
         // 而写回 `Unknown`/`None` 又会**误判成冷启动** ✗ ⇒ 下一笔直接整幅 ✗（旧实现的坑 ✓）。
         self.preview_dirty = PreviewDirty::Clean;
         let previous = self.cached_preview_hashes();
-        let blob_hash = self.refresh_thumb_from_render(region, render.as_ref(), doc_size)?;
+        let (blob_hash, thumb_size, thumb_bytes) =
+            self.refresh_thumb_from_render(region, render.as_ref(), doc_size)?;
         self.last_render_blob = Some(blob_hash.clone());
         self.evict_replaced_previews(&previous);
         self.complete_render_jobs()?;
@@ -2419,7 +2420,7 @@ impl Document {
             blob_hash: blob_hash.clone(),
             url: preview_url(&blob_hash),
             mime_type: "image/png".to_owned(),
-            bytes: png.len(),
+            bytes: thumb_bytes,
             tiles: 0,
             thumb_kind: Some(ThumbKind::Doc256),
             filter_padding: 0,
