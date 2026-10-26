@@ -739,7 +739,7 @@ fn parse_preview_render(args: &Value) -> Result<Option<PreviewRender>> {
 /// 保证“原生即 ≤max_edge 的图预览与 apply 逐像素相等”的测试前提）；
 /// 超出时按盒平均降采样（每个输出像素 = 覆盖源像素的均值，向零取整）。
 /// 输入尺寸为 0 时不做除法，直接原样返回，调用方随后响亮拒绝。
-pub(super) fn box_downsample(
+pub fn box_downsample(
     pixels: &[u8],
     width: u32,
     height: u32,

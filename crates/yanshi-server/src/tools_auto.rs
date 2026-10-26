@@ -110,7 +110,9 @@ const TONE_BUDGET: f32 = 0.3;
 
 /// 白平衡钳制域（内核 temperature/tint 域 [−1, 1] 内的保守域）。
 const WB_RANGE: (f32, f32) = (-0.85, 0.85);
-/// 白平衡候选过少时的置信低门限（设计三触发之外的扩展，见估计器注）。
+/// 白平衡锚点过少时的置信低门限（设计三触发之外的扩展，见估计器注）。
+/// 定值 100（C1 阶段 3 标定：回测集未触及——最小锚点数 53198，属退化
+/// 情形地板；无证据改动）。
 const WB_MIN_CANDIDATES: usize = 100;
 /// 白平衡护栏 G2：钳制饱和检测边（C1 §6；钳制域 ±0.85，留 0.01 容差——
 /// 反解落在 0.84–0.85 之间即视为「顶到边」；反解天然算出 0.845 而未被
@@ -119,10 +121,12 @@ const WB_MIN_CANDIDATES: usize = 100;
 /// 教训的制度化，不随重设计废止；阈值 0.84 由阶段 2 复核。
 const WB_SATURATION_EDGE: f32 = 0.84;
 /// C1 阶段 1（S1+S2）：锚点集质量门——锚点召回率低于此值 ⇒ 置信 low
-/// （初值，阶段 3 以回测标定复核；锚点数门沿用 `WB_MIN_CANDIDATES`）。
+/// （定值，C1 阶段 3 标定：0.4 使 forest 满权重 ⇒ ΔT 0.160 出带；
+/// 0.6 使 bathroom 召回 0.5695 < 0.6 且饱和 ⇒ 整组跳过）。
 const WB_ANCHOR_MIN_INLIER_RATIO: f32 = 0.5;
 /// C1 阶段 1（S1+S2）：锚点集质量门——色度散布（MAD）高于此值 ⇒
-/// 置信 low（初值，阶段 3 以回测标定复核）。
+/// 置信 low（定值，C1 阶段 3 标定：落在 beamcreek 0.1225 与
+/// overexposed 0.1935 之间的间隙内；0.12 会误标 beamcreek）。
 const WB_ANCHOR_MAX_SPREAD: f32 = 0.15;
 
 /// 色彩：vibrance 触发带（S̄ < 0.34 加 vibrance；S̄ > 0.50 减 saturation；
@@ -1748,13 +1752,6 @@ pub(super) fn write_auto_retouch(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         "hf_ratio": stats.hf_ratio,
         "noise_sigma": noise_sigma,
         "iso": iso,
-        "wb_candidate_ratio": stats.wb_candidate_ratio,
-        "wb_channel_p20": stats.wb_channel_p20,
-        "wb_channel_p25": stats.wb_channel_p25,
-        "wb_channel_p30": stats.wb_channel_p30,
-        "wb_planck_distance_median": stats.wb_planck_distance_median,
-        "wb_sarle_bc": stats.wb_sarle_bc,
-        "wb_rho": stats.wb_rho,
         "wb_anchor_count": stats.wb_anchor_count,
         "wb_anchor_band_count": stats.wb_anchor_band_count,
         "wb_anchor_inlier_ratio": stats.wb_anchor_inlier_ratio,
@@ -2044,20 +2041,12 @@ mod tests {
             saturation_p90: 0.0,
             hue_histogram: [0.0; 36],
             skin_proxy_ratio: 0.0,
-            wb_candidate_count: 1000,
-            wb_candidate_ratio: 1.0,
-            wb_channel_p20: [0.0; 3],
-            wb_channel_p25: [0.0; 3],
-            wb_channel_p30: [0.0; 3],
             wb_anchor_count: 1000,
             wb_anchor_band_count: 1000,
             wb_anchor_inlier_ratio: 1.0,
             wb_anchor_chroma_median: [0.0, 0.0],
             wb_anchor_chroma_spread: 0.0,
             wb_anchor_luma_band: (0.02, 0.5),
-            wb_planck_distance_median: 0.0,
-            wb_sarle_bc: 0.0,
-            wb_rho: 1.0,
             dark_mean: 0.0,
             dark_p10: 0.0,
             micro_contrast: 0.04,

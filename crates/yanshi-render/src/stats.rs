@@ -21,31 +21,47 @@
 
 use crate::color::srgb_decode_extended;
 
-/// 白平衡低百分位（期 4 D3 标定常数，设计带 [2, 3] 内取中值 2.5；
-/// 回测中以三档（2.0/2.5/3.0）的灵敏度报告复核）。
-/// **C1 阶段 1 起废止锚点用途**：锚点改为逐像素色度锚（见
-/// `WB_ANCHOR_LUMA_BAND`），本常量与 `wb_channel_p20/p25/p30` 只保留
-/// 一个版本供新旧对照（Q5 决议：阶段 3 再议删/留），不许再用它定锚点。
-pub const WB_LOW_PERCENTILE: f32 = 2.5;
-
 /// C1 阶段 1（S1+S2，见 C1-WB-REDESIGN.md §4.3）：白平衡锚点信号带
-/// （线性亮度，Rec.709，与 `linear_*` 同口径）——初值 [0.02, 0.5]，
-/// 阶段 3 以回测标定复核。下沿 0.02 高于 log-chromaticity 对数地板
+/// （线性亮度，Rec.709，与 `linear_*` 同口径）——定值 [0.02, 0.5]
+/// （C1 阶段 3 标定：5 金 + 3 触点 × 27 组合反事实；下沿 0.01 添暗噪
+/// 致 beamcreek 失守、0.03 在 δ=0.16 时破 forest；上沿在 [0.40, 0.60]
+/// 不敏感）。下沿 0.02 高于 log-chromaticity 对数地板
 /// 0.005 一个量级，留信噪比裕量；上沿 0.5 避开近饱和区。这不是期 5
 /// `c2b8877` 的掩码下限（那是"在最暗集合里换一批更亮的最暗像素"），
 /// 这是"放弃最暗集合、改以色度选像素"。
 pub const WB_ANCHOR_LUMA_BAND: (f32, f32) = (0.02, 0.5);
 
 /// C1 阶段 1（S2）：Planck 前置门 δ——候选像素先过 Planck 轴距离门
-/// 再进锚点集；初值 0.12 沿用旧置信机制的同值阈值（该阈值常量已随
-/// 旧三量置信退役，数值由本常量继承）。
+/// 再进锚点集；定值 0.12（C1 阶段 3 标定：δ=0.08 使 bathroom 召回
+/// 0.35 < 0.5 且饱和 ⇒ 整组跳过；δ=0.16 在 lo=0.03 时破 forest、
+/// 01242 Ti 恶化）。
 /// Planck 轴为过 D65 白点的直线近似（Q2 已决：沿用直线近似，不引
 /// CIE 1931 表；δ 标定时把近似误差算进裕量）。
 pub const WB_ANCHOR_PLANCK_DELTA: f32 = 0.12;
 
+/// C1 阶段 3：白平衡锚点参数（信号带 + Planck 门），供标定实验传参。
+/// 生产路径恒用 `WbAnchorParams::default()`（= 上述两常量），单一事实
+/// 来源仍在常量处；标定实验（`wb_calibration` 回测）用显式参数扫网格，
+/// 不改常量、不改生产行为。
+#[derive(Debug, Clone, Copy)]
+pub struct WbAnchorParams {
+    /// 信号带（线性亮度，Rec.709），缺省 `WB_ANCHOR_LUMA_BAND`。
+    pub luma_band: (f32, f32),
+    /// Planck 前置门 δ，缺省 `WB_ANCHOR_PLANCK_DELTA`。
+    pub planck_delta: f32,
+}
+
+impl Default for WbAnchorParams {
+    fn default() -> Self {
+        Self {
+            luma_band: WB_ANCHOR_LUMA_BAND,
+            planck_delta: WB_ANCHOR_PLANCK_DELTA,
+        }
+    }
+}
+
 /// C1 阶段 1：log-chromaticity 对数地板——任一通道低于此值者不算
-/// (u, v)（防对数爆炸），与 `log_chromaticity_confidence` 内既有的
-/// 0.005 取同一值。
+/// (u, v)（防对数爆炸）。
 pub const WB_ANCHOR_LOG_FLOOR: f32 = 0.005;
 
 /// C1 阶段 1：色度直方图口径——(u, v) ∈ [−5.2, 5.2]（通道 ∈
@@ -136,22 +152,6 @@ pub struct ImageStats {
     /// 肤色代理占比（色相 [8°, 50°]、S [0.15, 0.75]、V [0.15, 0.95]；
     /// 命名与文档都写明是**代理量**，不是肤色检测）。
     pub skin_proxy_ratio: f32,
-    /// 白平衡候选像素数（线性域 max ≤ 0.75 掩码后）。
-    pub wb_candidate_count: usize,
-    /// 白平衡候选像素占比。
-    pub wb_candidate_ratio: f32,
-    /// 白平衡候选线性通道的低百分位（[R, G, B]，p = 2.0/2.5/3.0
-    /// 三档，估计器默认用 p2.5 档）。
-    /// **已废止锚点用途（C1 阶段 1，Q5：保留一个版本供新旧对照，
-    /// 阶段 3 决议删/留）**：逐通道独立取分位后拼贴的三元组在物理上
-    /// 不是任何一个像素的色度（A2），不许再用它定锚点。
-    pub wb_channel_p20: [f32; 3],
-    /// 白平衡候选线性通道 p2.5（见 `wb_channel_p20`）。
-    /// **已废止锚点用途（C1 阶段 1）**，见上。
-    pub wb_channel_p25: [f32; 3],
-    /// 白平衡候选线性通道 p3.0（见 `wb_channel_p20`）。
-    /// **已废止锚点用途（C1 阶段 1）**，见上。
-    pub wb_channel_p30: [f32; 3],
     /// C1 阶段 1（S1+S2）：白平衡锚点像素数——信号带内过 Planck 门
     /// 的逐像素近中性像素数（新锚点集的大小）。
     pub wb_anchor_count: usize,
@@ -169,20 +169,6 @@ pub struct ImageStats {
     pub wb_anchor_chroma_spread: f32,
     /// C1 阶段 1：实际采用的信号带（回带以便复核）。
     pub wb_anchor_luma_band: (f32, f32),
-    /// 白平衡 log-chromaticity：候选点到 Planck 轴直线近似
-    /// （过 D65 白点、方向 (−1, +1)/√2，见模块内说明）的距离中位数。
-    /// **已废止置信用途（C1 阶段 1）**：置信改算锚点集自身质量
-    /// （锚点数 / 召回率 / 散布），本三量只保留供新旧对照。
-    pub wb_planck_distance_median: f32,
-    /// 白平衡 log-chromaticity：第一主成分上的 Sarle 双峰系数
-    /// （> 0.555 提示双峰 ⇒ 置信低）。
-    /// **已废止置信用途（C1 阶段 1）**，见上。
-    pub wb_sarle_bc: f32,
-    /// 白平衡 log-chromaticity：候选点中 Planck 距离 < 0.12 的
-    /// 占比（专家原文未展开 ρ 的确切定义，此为本实现的操作定义，
-    /// 待复核；< 1.5% ⇒ 置信低）。
-    /// **已废止置信用途（C1 阶段 1）**，见上。
-    pub wb_rho: f32,
     /// 暗通道均值（显示空间 min(R, G, B)/255 的均值，与
     /// `estimate_atmospheric_light` 的 dark_mean 同定义，去雾用；
     /// 不透明图上两者相等，透明像素口径不同：本统计跳过 alpha == 0，
@@ -232,20 +218,12 @@ impl ImageStats {
             saturation_p90: 0.0,
             hue_histogram: [0.0; 36],
             skin_proxy_ratio: 0.0,
-            wb_candidate_count: 0,
-            wb_candidate_ratio: 0.0,
-            wb_channel_p20: [0.0; 3],
-            wb_channel_p25: [0.0; 3],
-            wb_channel_p30: [0.0; 3],
             wb_anchor_count: 0,
             wb_anchor_band_count: 0,
             wb_anchor_inlier_ratio: 0.0,
             wb_anchor_chroma_median: [0.0; 2],
             wb_anchor_chroma_spread: 0.0,
             wb_anchor_luma_band: WB_ANCHOR_LUMA_BAND,
-            wb_planck_distance_median: 0.0,
-            wb_sarle_bc: 0.0,
-            wb_rho: 0.0,
             dark_mean: 0.0,
             dark_p10: 0.0,
             micro_contrast: 0.0,
@@ -336,6 +314,17 @@ fn histogram_median(buckets: &[u64], count: u64, lo: f32, width: f32) -> f32 {
 /// 对 RGBA8 像素（行优先、每像素 4 字节）算 `ImageStats`。
 /// 输入通常是长边 ≤ 1024 的代理图；不足 4 字节的尾巴不计。
 pub fn image_stats_rgba8(pixels: &[u8], width: u32, height: u32) -> ImageStats {
+    image_stats_rgba8_with_params(pixels, width, height, &WbAnchorParams::default())
+}
+
+/// `image_stats_rgba8` 的标定入口：锚点信号带与 Planck 门由参数传入。
+/// 生产路径恒走 `image_stats_rgba8`（即缺省参数），与常量逐位一致。
+pub fn image_stats_rgba8_with_params(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    wb: &WbAnchorParams,
+) -> ImageStats {
     let mut stats = ImageStats::zero(width, height);
     let w = width as usize;
     let h = height as usize;
@@ -346,7 +335,6 @@ pub fn image_stats_rgba8(pixels: &[u8], width: u32, height: u32) -> ImageStats {
     let mut luma_buckets = [0u64; 256];
     let mut channel_buckets = [[0u64; 256]; 3];
     let mut linear_luma: Vec<f32> = Vec::new();
-    let mut wb_channels: [Vec<f32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     let mut saturations: Vec<f32> = Vec::new();
     let mut hue_weighted = [0.0f32; 36];
     let mut hue_weight_total = 0.0f32;
@@ -378,18 +366,12 @@ pub fn image_stats_rgba8(pixels: &[u8], width: u32, height: u32) -> ImageStats {
         ];
         let lin_luma = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
         linear_luma.push(lin_luma);
-        // 白平衡候选掩码（线性域）：任一通道 > 0.75 者剔除。
-        if lin[0] <= 0.75 && lin[1] <= 0.75 && lin[2] <= 0.75 {
-            for channel in 0..3 {
-                wb_channels[channel].push(lin[channel]);
-            }
-        }
         // C1 阶段 1（S1+S2）：逐像素色度锚——信号带 + Planck 前置门，
         // 双重过滤后进锚点集（两层门是"与"关系，缺一不可：贴轴的黑点
         // 由信号带下沿筛掉，带内的有色主体由 Planck 门筛掉）。
         // 信号带内像素计入分母（锚点召回率）；任一通道低于对数地板者
         // 算不出 (u, v)，只计分母、不进锚点。
-        if (WB_ANCHOR_LUMA_BAND.0..=WB_ANCHOR_LUMA_BAND.1).contains(&lin_luma)
+        if (wb.luma_band.0..=wb.luma_band.1).contains(&lin_luma)
             && lin[0] <= 0.75
             && lin[1] <= 0.75
             && lin[2] <= 0.75
@@ -401,7 +383,7 @@ pub fn image_stats_rgba8(pixels: &[u8], width: u32, height: u32) -> ImageStats {
             {
                 let u = libm::log(f64::from(lin[0] / lin[1])) as f32;
                 let v = libm::log(f64::from(lin[2] / lin[1])) as f32;
-                if (u + v).abs() / std::f32::consts::SQRT_2 < WB_ANCHOR_PLANCK_DELTA {
+                if (u + v).abs() / std::f32::consts::SQRT_2 < wb.planck_delta {
                     wb_anchor_count += 1;
                     wb_hist_u[chroma_hist_index(
                         u,
@@ -476,30 +458,12 @@ pub fn image_stats_rgba8(pixels: &[u8], width: u32, height: u32) -> ImageStats {
     stats.dark_mean = dark_sum / nf;
     dark_channel.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     stats.dark_p10 = sorted_percentile(&dark_channel, 10.0);
-    let wb_count = wb_channels[0].len();
-    stats.wb_candidate_count = wb_count;
-    stats.wb_candidate_ratio = wb_count as f32 / nf;
-    if wb_count > 0 {
-        let mut sorted_channels: [Vec<f32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-        for channel in 0..3 {
-            sorted_channels[channel] = wb_channels[channel].clone();
-            sorted_channels[channel]
-                .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            stats.wb_channel_p20[channel] = sorted_percentile(&sorted_channels[channel], 2.0);
-            stats.wb_channel_p25[channel] = sorted_percentile(&sorted_channels[channel], 2.5);
-            stats.wb_channel_p30[channel] = sorted_percentile(&sorted_channels[channel], 3.0);
-        }
-        let (planck_median, sarle_bc, rho) = log_chromaticity_confidence(&wb_channels);
-        stats.wb_planck_distance_median = planck_median;
-        stats.wb_sarle_bc = sarle_bc;
-        stats.wb_rho = rho;
-    }
     // C1 阶段 1（S1+S2）：锚点集统计——(u, v) 中位由直方图流式聚合；
     // 色度散布（MAD）须先知中位，故第二遍重算 (u, v) 后取
     // max(|u−u中位|, |v−v中位|) 的中位（同样直方图聚合，不留数组）。
     stats.wb_anchor_count = wb_anchor_count;
     stats.wb_anchor_band_count = wb_band_count;
-    stats.wb_anchor_luma_band = WB_ANCHOR_LUMA_BAND;
+    stats.wb_anchor_luma_band = wb.luma_band;
     if wb_band_count > 0 {
         stats.wb_anchor_inlier_ratio = wb_anchor_count as f32 / wb_band_count as f32;
     }
@@ -520,7 +484,7 @@ pub fn image_stats_rgba8(pixels: &[u8], width: u32, height: u32) -> ImageStats {
                 srgb_decode_extended(b as f32 / 255.0),
             ];
             let lin_luma = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
-            if !(WB_ANCHOR_LUMA_BAND.0..=WB_ANCHOR_LUMA_BAND.1).contains(&lin_luma)
+            if !(wb.luma_band.0..=wb.luma_band.1).contains(&lin_luma)
                 || lin[0] > 0.75
                 || lin[1] > 0.75
                 || lin[2] > 0.75
@@ -532,7 +496,7 @@ pub fn image_stats_rgba8(pixels: &[u8], width: u32, height: u32) -> ImageStats {
             }
             let u = libm::log(f64::from(lin[0] / lin[1])) as f32;
             let v = libm::log(f64::from(lin[2] / lin[1])) as f32;
-            if (u + v).abs() / std::f32::consts::SQRT_2 >= WB_ANCHOR_PLANCK_DELTA {
+            if (u + v).abs() / std::f32::consts::SQRT_2 >= wb.planck_delta {
                 continue;
             }
             let d = (u - median_u).abs().max((v - median_v).abs());
@@ -545,101 +509,6 @@ pub fn image_stats_rgba8(pixels: &[u8], width: u32, height: u32) -> ImageStats {
     stats.micro_contrast = micro_contrast(pixels, w, h);
     stats.hf_ratio = hf_ratio(pixels, w, h);
     stats
-}
-
-/// log-chromaticity 置信三量（输入为白平衡候选线性通道样本）。
-///
-/// 坐标：u = ln(R/G)、v = ln(B/G)（任一通道 < 0.005 者跳过该点，
-/// 防对数爆炸）。Planck 轴取过 D65 白点（u = v = 0）、方向
-/// (−1, +1)/√2 的直线近似：黑体色温升高时 R/G 降、B/G 升，
-/// 故轨迹方向确为 (−1, +1)；精确 Planck 轨迹需 CIE 1931 表，
-/// 本直线为一阶近似，阈值 0.12 的行为以回测复核。
-/// 点到轴距离 = |u + v|/√2；Sarle BC 取第一主成分投影的
-/// 双峰系数；ρ = 距离 < 0.12 的点占比（操作定义，待复核）。
-fn log_chromaticity_confidence(wb_channels: &[Vec<f32>; 3]) -> (f32, f32, f32) {
-    let mut points: Vec<(f32, f32)> = Vec::new();
-    // 三通道样本等长（同一掩码下同步 push），zip 到最短即全量。
-    for ((r, g), b) in wb_channels[0]
-        .iter()
-        .zip(wb_channels[1].iter())
-        .zip(wb_channels[2].iter())
-    {
-        let (r, g, b) = (*r, *g, *b);
-        if r < 0.005 || g < 0.005 || b < 0.005 {
-            continue;
-        }
-        points.push((
-            libm::log(f64::from(r / g)) as f32,
-            libm::log(f64::from(b / g)) as f32,
-        ));
-    }
-    if points.is_empty() {
-        return (0.0, 0.0, 0.0);
-    }
-    let mut distances: Vec<f32> = points
-        .iter()
-        .map(|(u, v)| (u + v).abs() / std::f32::consts::SQRT_2)
-        .collect();
-    distances.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let median = sorted_percentile(&distances, 50.0);
-    let rho = distances.iter().filter(|d| **d < 0.12).count() as f32 / distances.len() as f32;
-    // 第一主成分：2×2 协方差的最大特征向量方向。
-    let count = points.len() as f32;
-    let mean_u = points.iter().map(|p| p.0).sum::<f32>() / count;
-    let mean_v = points.iter().map(|p| p.1).sum::<f32>() / count;
-    let mut cxx = 0.0f32;
-    let mut cyy = 0.0f32;
-    let mut cxy = 0.0f32;
-    for (u, v) in &points {
-        let du = u - mean_u;
-        let dv = v - mean_v;
-        cxx += du * du;
-        cyy += dv * dv;
-        cxy += du * dv;
-    }
-    cxx /= count;
-    cyy /= count;
-    cxy /= count;
-    let theta = 0.5 * libm::atan2(2.0 * f64::from(cxy), f64::from(cxx - cyy));
-    let (dx, dy) = (libm::cos(theta) as f32, libm::sin(theta) as f32);
-    let projected: Vec<f32> = points
-        .iter()
-        .map(|(u, v)| (u - mean_u) * dx + (v - mean_v) * dy)
-        .collect();
-    let sarle_bc = sarle_bimodality(&projected);
-    (median, sarle_bc, rho)
-}
-
-/// Sarle 双峰系数：BC = (skew² + 1) / (kurt + 3(n−1)²/((n−2)(n−3)))，
-/// 其中 kurt 为超值峰度（减 3 后）。n < 10 时返回 0（样本不足，
-/// 不判双峰）。BC > 0.555 提示双峰。
-fn sarle_bimodality(values: &[f32]) -> f32 {
-    let n = values.len();
-    if n < 10 {
-        return 0.0;
-    }
-    let nf = n as f32;
-    let mean = values.iter().sum::<f32>() / nf;
-    let mut m2 = 0.0f32;
-    let mut m3 = 0.0f32;
-    let mut m4 = 0.0f32;
-    for value in values {
-        let d = value - mean;
-        let d2 = d * d;
-        m2 += d2;
-        m3 += d2 * d;
-        m4 += d2 * d2;
-    }
-    m2 /= nf;
-    m3 /= nf;
-    m4 /= nf;
-    if m2 <= 0.0 {
-        return 0.0;
-    }
-    let skew = m3 / libm::pow(f64::from(m2), 1.5) as f32;
-    let kurt = m4 / (m2 * m2) - 3.0;
-    let correction = 3.0 * ((nf - 1.0) * (nf - 1.0)) / ((nf - 2.0) * (nf - 3.0));
-    (skew * skew + 1.0) / (kurt + correction)
 }
 
 /// 微对比量 E：显示亮度（0–1）的平均 |Laplacian|，核
@@ -1058,7 +927,7 @@ mod tests {
         let mut pixels = Vec::new();
         for index in 0..200 {
             let base = 90u8 + (index % 50) as u8;
-            let tint = (index % 7) as i32 - 3;
+            let tint = index % 7 - 3;
             let r = (base as i32 + tint * 3).clamp(0, 255) as u8;
             let g = base;
             let b = (base as i32 - tint * 3).clamp(0, 255) as u8;

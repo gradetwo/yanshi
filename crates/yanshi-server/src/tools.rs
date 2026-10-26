@@ -21057,6 +21057,7 @@ mod tools_auto;
 use tools_auto::*;
 #[path = "presets.rs"]
 mod presets;
+pub use presets::box_downsample;
 use presets::*;
 #[path = "tools_read.rs"]
 mod tools_read;
