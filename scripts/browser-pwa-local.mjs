@@ -386,5 +386,12 @@ await evaluate(`(() => { try { localStorage.setItem("yanshi.serverRender", "0");
 try { socket.close(); } catch {}
 chrome.kill(); server.close();
 
+// **★ 成功路径必须**撤掉看门狗** ✗ ★**（2026-10-28 实测 ✓）：
+//   **∴ 那条 `setTimeout` 是 ref'd 的 ✗** ⇒ **∴ 即使**四条断言全过、**已经打印了 ✓**✗，
+//   事件循环**仍被它占着** ⇒ **∴ 于是**进程**空等满 90 秒**才被自己的看门狗杀掉 ⇒ **`exit(3)`** ✗
+//   （CI 实测：23:11:31 打印 ✓，23:12:46 打印「判据超时」⇒ 每次成功都变红 ✗；本机逐秒复现同一时序 ✓）
+//   **∴ 清理调用**之前**不能撤 ✗**（**∴ 收尾**也可能挂住 ⇒ **∴ 那时**看门狗**正是该响的** ✓）
+//   ⇒ **∴ 所以**放在**收尾之后、成功打印之前** ✓。
+clearTimeout(__judgeTimeout);
 if (failures.length) { console.error("❌ " + failures.join("｜")); process.exit(1); }
 console.log("  ✓ PWA 在真实浏览器里成立：内核加载 ✓｜/health 如实 ✓｜未实现端点 501 ✓｜缺快照 needs_render ✓");
