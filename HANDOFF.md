@@ -22,6 +22,31 @@
 
 ## 二、当前状态
 
+**⇒ 本轮（2026-10-27 下半场，两份审计报告修复中）**：
+- **Batch 1（P0 鉴权）已合入并推上 CI**（`0bd7c06f`）：`atom_submit`／`create_document` 闸在落盘前、
+  viewer 令牌不许提交原子、viewer 源链接不许复制成可写副本、`list_documents` 过写闸、密钥常数时间比较。
+  CI 上 transport 新测试全过；那跑的 10 个红**没有一个是这次改动造成的**（都是合并遗留 ⇒ 下面三条已修）。
+- **合并 changes.patch 带来的四个静态红已修**（`6ae48635`）：census 白名单补 `fill_region` 的
+  texture 六个子键（逐个核对 `tools.rs` 真读它们）；`tool-examples.md` 是生成物 ⇒ 手写注释搬回
+  `tools_examples.rs` 源处再重生成；`render-box-first-paint.md` 补指向 `performance-notes.md` 的指针；
+  `tool-export-idempotent` 本机复跑绿（omitted=2，重放证明真在跑）。四条都经 `run-criteria-local.sh` 当场复验。
+- **xiaomi 审计 H-2（单一 SW 卫生）已修**（`96ed7057`）：删 `web/sw.js.bak`（平行实现以 `.bak` 形态回潮，
+  旧判据只查 `web/sw.js` 抓不到 ⇒ 现在拒 `web/sw.js*` 任一变体，变异验过红／绿）；`web/_headers` 的
+  `/sw.js` 条目改指真正注册的 `/service-worker.js`；pwa.yml 里跑**已删除脚本**
+  `tool-sw-stamp-idempotent.mjs` 的步骤换成 `check-service-worker-roles.mjs`；两个 HTML 的
+  `&& false` 死注册行与过期注释删掉。
+- **六个 browser 红正在本机复现**（`browser-dodge-burn`／`fill-region`／`frequency-separation`／
+  `range-mask`／`p0-entries`／`export-full-document`；CI 日志逐条摘出的失败行见台账本轮追加）。
+  已知症状：dodge-burn 是英文模式漏翻（`"图层 1 · Dodge and burn"`）；fill-region 断「宽 0 不写任何东西」；
+  export-full-document 是 known-red 曾登记过又移出的那句「离线默认导出日志没写明整幅」——**按规矩
+  不静默入名单，先复现再定性**。
+- **外部补丁包 `photo-bugfix-a2-interp后续包.zip` 已合入**（`d265897d`，只碰 `filter.rs`）：
+  `shadows_highlights` 提亮侧 gap 按品红分量 `m=min(R−G,B−G)` 调制（`t=1/(1+(m/0.005)²)`），
+  m≤0 与压暗侧逐位不动。本机定向验证：`-p yanshi-render --lib shadows_highlights` **15/15 绿**；
+  **变异独立复现**（调制改恒等 ⇒ 仅 `magenta_pixel_lift_reduced` FAILED）；clippy 干净。
+  全量 test 等 CI（合并补丁例外的最新口径：本机只跑 clippy＋定向 test）。
+  诚实记录（作者自述，未随本包修）：+0.6 档判据 A 色卡保持率失守仍是设计文档 §6 已知未决项。
+
 ```
 CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §二-7 与台账 §622）
     784362cc **success ✓**（run 40183983484；12 个可跑 job 全 success，brush parity skipped）
