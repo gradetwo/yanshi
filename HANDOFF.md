@@ -1,6 +1,6 @@
-# 工作交接（截至 2026-10-25 16:05 Asia/Shanghai）
+# 工作交接（截至 2026-10-27，vector-tracing v5 合并后）
 
-**仓库**：`/home/crow/yanshi`（分支 `main`）｜**HEAD**：`ca58be70`｜推送：`git push git@github.com:gradetwo/yanshi.git main`
+**仓库**：`/home/crow/yanshi`（分支 `main`）｜**HEAD**：`e544fa3a`（`docs:` 提交会再加一个）｜推送：`git push git@github.com:gradetwo/yanshi.git main`
 
 ## 一、每轮第一件事：比两份外部报告
 
@@ -9,9 +9,12 @@
 | `art`（apple2011）| `apple2011:/home/crow/work/art/YANSHI_ISSUES.md` | `~/.local/share/yanshi-external/issues_seen.md` | `scp` 下来后 `md5sum` **两侧都打印**，相同才说「未变」 |
 | `qoder` | `apple2011:~/work/qoder/yanshi_issue.md` | `~/.local/share/yanshi-external/qoder_issue_seen.md` | 同上 |
 
-**⇒ 2026-10-25 16:00 实测（两侧 md5 相同 ✓，基线已更新）**：
-- `art`：`42a993d78aafabfd279b9db47e3da1c3`（740,964 B）⇒ **只多了一条定时检查**（他复述 `c7739c89`／`2e70615b`／`1788080d`，无新缺口）。
-- `qoder`：`7dcd42c3a6e79e94eabc15b94b8e0bcb`（141,575 B）⇒ **未变**。
+**⇒ 2026-10-27 实测（基线已更新）**：
+- `art`：远端 `706a3499f00dd0cab673245631d42b32`（753,171 B）｜旧基线 `42a993d78aafabfd279b9db47e3da1c3`（740,964 B）⇒ **变了**：纯追加第 145–149 次检查。
+  要点：他已在 0.30 GB 的 `test1full`（4,608×8,192、22,926 atom、8 层）上跑了 shrink 对照 ⇒
+  **均值 12.29／`>30` 占 14.98%**（最小包 1.89／0.22%）；两版都是官方引擎、唯一差别是 `YANSHI_TIMELAPSE_SHRINK`。
+  另有一次自我更正（他以为报告从未送达上游；实际我们每轮 `scp` 读它）。
+- `qoder`：远端 `7dcd42c3a6e79e94eabc15b94b8e0bcb`（141,575 B）｜基线 `7dcd42c3a6e79e94eabc15b94b8e0bcb` ⇒ **未变** ✓（两侧相同）。
 
 **⇒ 规矩（我犯过）**：报「未变」**必须附两侧 md5**。此前 `qoder` 根本没被真正比对过（旧基线是 33 KB 的**截断抓取**），我报了十几轮"未变"，全是**断言恒真**。
 
@@ -189,6 +192,16 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
 
 53. **CI 已绿**：`40412680604`（`04c7165e`：八包＋文档计数修复）**全 job success** ✓。
 
+54. **vector-tracing v5 后续包已合**（`e544fa3a`，基线 `1231047b`，`git am` 干净）：
+   `skills/yanshi-vector-tracing/SKILL.md` 142 → 185 行（+50/−7）——Phase 3 十三条量测规则、
+   Phase 4 真渐变张力解决（组装 SVG 多止点 `linearGradient`，明确**不是**引擎 `gradient_fill`）、
+   新增 `## Iteration Economy (Time Discipline)`、交付核验脚本条目与 5 条失败模式。
+   **校验（本机，全部 ✓）**：包内定稿 blob `5ab17e85`／sha256 `d7391244…` 与本仓应用后**逐字一致**；
+   `check-skill-tool-names.mjs` ✓（7 文档／79 标识符／206 工具／259 参数）；
+   通用性 grep 零命中（`sofa/chest/wordmark` 5 处是 v4 原有）；`##` 12 个；`scripts/pre-commit.sh` 全绿。
+   **纯 `*.md` ⇒ 命中 `paths-ignore`，不触发 CI**（证据只是本机那几条，不是 CI）。
+   留待 v5.1/v6：交付核验脚本本体、patch–描边方法级修法、宝箱立体感收尾、冷启动实测。
+
 ## 三、下一步（按优先序，都有精确入口）
 
 -0. 待上游裁决的仍是：期 2 的 **auto backtest colorcast 门限**（A2 保色度 ⇒ R−B 只降 28.6% < 40%）、
@@ -203,7 +216,10 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    与 paint 期 1 的未决（WS 入口 uncovered、失败导出不删旧目标、B4 fail-closed 留裁决）都写在台账 §622。
 
 1. **qoder 剩余条目**：`D139`（静默零覆盖，需他给完整参数；我 6 点网格未复现）、`D188` 的量级说明（差随原子数增长：200 图块 ≈0.6 lv/通道、22,926 原子 ≈16 lv ⇒ 写进那条 `⚠️` 警告）。
-2. `shrink` blit（`art` 第 12 项）：最小包上对照判据实测 均值 1.89／>30 占 0.22% ⇒ 无缺口；要他用同判据跑 0.30 GB 的 `test1full`。
+2. `shrink` blit（`art` 第 12 项）：**他已作答**——`test1full` 上 均值 **12.29**／`>30` 占 **14.98%**（最小包 1.89／0.22%）。
+   **⇒ 我的读法：这不是默认路径的缺口**：`YANSHI_TIMELAPSE_SHRINK=1` 是显式 opt-in，源码与 stderr 都写明「代价是细节先丢后缩」
+   （`crates/yanshi-timelapse/src/main.rs:362-369`；`real_package_shrinks` 只断「缩不放弃、缺 blob 0」，不断像素等价）。
+   **待裁决**：是否把 12.29／14.98% 这种「按缩放比的量级」写进那条建议语（现在是定性的一句话），或干脆不改。
 3. （可选，第二口径）`scripts/tool-export-bitmaps.mjs` 加一段：`include_bitmaps: true` 导出的包直接喂 `target/release/yanshi-timelapse` ⇒ `rc=0`。
 4. **浏览器 known-red 只剩真产品缺陷**：客户端落笔一族（本地 IndexedDB 日志缺 `create_document` ⇒ `0×0`）、
    `browser-ui-check`（夹具/时序）、`cs-render-switch`（抖动）等。`browser-project-download`／`brush-panel`／`i18n`／`layout` **已移出名单且 CI 绿** ✓。
