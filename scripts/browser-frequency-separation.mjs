@@ -219,6 +219,31 @@ const pick = (layerId) => evaluate(`(() => {
 const setRadius = (value) => evaluate(`(() => { const i = document.getElementById("freqSepRadius"); i.value = ${JSON.stringify(String(value))}; return i.value; })()`);
 const run = () => evaluate(`(() => { const b = document.getElementById("freqSepRun"); if (!b) return "no-button"; b.click(); return 1; })()`);
 const layerRows = async () => (await callTool("list_layers", {})).layers;
+// **等面板接线完成**（与 browser-dodge-burn 同一处开机空窗 ✓ 2026-10-27 CI 实测）：
+//   下拉在 `refreshLayers` 里就填好了 ✓ 而 `freqSepRun` 的 click 与 `freqSepSource`
+//   的 change 要到 `warmKernel` 尾部的 `setupFreqSepPanel` 才挂 ⇒ 窗口内的点击是
+//   **空转**（CI ⑧ 红的 `{page:""}` 即此 ✓ 不是产品坏了 ✗）。两个监听在同一函数
+//   里同一刻挂上 ⇒ 探针：**换两次源图层、现状句必须跟着换**（开机时
+//   `renderFreqSepLayers` 自己会写一次现状 ⇒ "非空"不算接线证据 ✗ 第 62 轮实测
+//   本地臂就是被这个假阳性骗过去 ⇒ 点击空转、卡片全空）。两条不同图层给出
+//   **两句不同的话**只可能是 change 监听跑过 ⇒ 才算证明 click 也接好了。
+//   循环里顺手敲一次 `refreshLayers`：记录是开机快照 ✗ 场景原子的落库事件可能晚于它。
+const waitPanelWired = async () => {
+  for (let i = 0; i < 120; i += 1) {
+    await evaluate(`typeof refreshLayers === "function" ? (void refreshLayers(), 1) : 0`);
+    await pick("layer_empty");
+    const a = (await cardText()).current || "";
+    await pick("layer_ok");
+    const b = (await cardText()).current || "";
+    if (a !== b) return true;
+    await sleep(250);
+  }
+  return false;
+};
+if (!(await waitPanelWired())) {
+  console.error("❌ 判据前提失败：等了 30 秒换源图层仍不出现现状读数（面板监听始终没接线 ⇒ 后面的点击全是空转，判不下去了）");
+  process.exit(3);
+}
 
 // ---------- ① 卡片与下拉：读数取服务端 ----------
 const shell = await evaluate(`(() => {
@@ -239,7 +264,20 @@ if (JSON.stringify(shell.values) === JSON.stringify((await layerRows()).map((l) 
 }
 await pick("layer_ok");
 let read1 = await cardText();
-const serverObjects = await objectsOf("layer_ok");
+let serverObjects = await objectsOf("layer_ok");
+// **有界重试到与服务端一致**（第 62 轮定性 ✓ 本机实测 `server:1／page:该层没有对象` ✗）：
+//   下拉与 `freqSepRecords` 是**开机那一次** `refreshLayers` 的快照 ✓ 场景原子落库到界面
+//   生效有先后 ⇒ 单次读会量到**旧快照** ✗（CI 快、恰好赶上刷新就绿 ✓ 本机慢就红 ✗）。
+for (let i = 0; i < 80; i += 1) {
+  if (read1.current === "该层有 " + serverObjects + " 个对象 ⇒ 可以分离") break;
+  await sleep(250);
+  // **主动刷一次图层快照**（记录只在开机与 WS 事件时刷新 ✗ 场景提交若早于开机抓取、
+  // 又没有后续原子 ⇒ 旧快照不会自己追平 ⇒ 判据自己敲 `refreshLayers` 的门 ✓）。
+  await evaluate(`typeof refreshLayers === "function" ? (void refreshLayers(), 1) : 0`);
+  await pick("layer_ok");
+  read1 = await cardText();
+  serverObjects = await objectsOf("layer_ok");
+}
 if (read1.current === "该层有 " + serverObjects + " 个对象 ⇒ 可以分离") {
   ok("「该层有 N 个对象」用的是服务端给的 objects", { server: serverObjects, page: read1.current });
 } else {
@@ -345,7 +383,17 @@ if (/低频 layer_/.test(read1.info || "") && /高频 layer_/.test(read1.info ||
 if (pageErrors.length === 0) ok("全程 0 条 JS 错误");
 else bad("页面抛了 JS 错误", pageErrors.slice(0, 3));
 
-// ---------- ⑧ 本地内核（PWA）缺端点：归因必须是本地 ----------
+// ---------- ⑧ 勾掉「服务器渲染」：改文档的工具必须**如实落服务端**，界面不许假归因 ----------
+// **★ 这一臂断的契约变了 ✗ ★**（第 62 轮定性 ✓ 证据链：CI `3c8cf8cd` 全绿在前、
+//   `48f3190`（合入外部 changes.patch）把 `callTool` 路由改成「**勾掉服务器渲染只关像素
+//   路径** ⇒ 改文档的工具仍走服务端」（`viewer-app.js` 的 `localOnly || readOnly` 闸 ✓）
+//   ⇒ 本判据的页面在**服务端 origin、非 localOnly** ⇒ `frequency_separation` 必然出得了门 ✓
+//   旧断言「请求根本没出门 ⇒ 本地内核没有这个端点」**在这页永远触发不了** ✗（不是产品坏了，
+//   是判据钉的旧前提被设计变更撤销 ✓）。那句假归因防线只剩 localOnly PWA 部署能触发 ⇒
+//   要守它需要单独的 PWA 夹具轮次（已记 HANDOFF ✗ 本臂先按新契约判 ✓）。
+//   新契约下这一臂钉两件事：**①** 勾掉开关后分离**仍真的落到服务端**（卡片念得出服务端
+//   回执的半径 ⇒ 请求出了门且数字同源 ✓）；**②** 界面**不许反过来谎称**「本地内核没有
+//   这个端点」（请求明明出了门 ✗ 说了就是同类假归因 ✓ 与 542 轮那条同族、方向相反）。
 await evaluate(`(() => { localStorage.setItem("yanshi.serverRender", "0"); return 1; })()`);
 await send("Page.navigate", { url: `${base}/?doc=${docId}&token=${token}&lang=zh&v=${Date.now()}` });
 await waitEvent("Page.loadEventFired");
@@ -355,7 +403,7 @@ for (let i = 0; i < 60; i += 1) {
   if (booted2) break;
   await sleep(250);
 }
-// 这一臂**故意不钉** `render=server` ✓（登记 ⑭ ✓）⇒ 由 `localStorage` 决定走本地内核 ✓
+// 这一臂**故意不钉** `render=server` ✓（登记 ⑭ ✓）⇒ 由 `localStorage` 决定走本地像素路径 ✓
 //   **但有界等待**（登记 ⑰ 同族 ✓）：等到「当前 URL 不带 `render=server`」**且勾选 = false」✓
 let offState = null;
 for (let i = 0; i < 80; i += 1) {
@@ -368,26 +416,35 @@ for (let i = 0; i < 80; i += 1) {
   await sleep(250);
 }
 if (!booted2 || offState !== false) {
-  console.error("❌ 判据前提失败：切不到本地内核模式（booted=" + booted2 + " 勾选=" + JSON.stringify(offState) + "）");
+  console.error("❌ 判据前提失败：切不到本地像素路径（booted=" + booted2 + " 勾选=" + JSON.stringify(offState) + "）");
+  process.exit(3);
+}
+// 重新导航的页面 ⇒ 面板接线空窗重来（上面 ① 等到的只是上一个页面）。
+if (!(await waitPanelWired())) {
+  console.error("❌ 判据前提失败：本地臂等了 30 秒仍没接上面板监听（开机空窗同 ①，见上）");
   process.exit(3);
 }
 const atomsBefore8 = await atomCount();
 const layersBefore8 = (await layerRows()).length;
 await pick("layer_ok");
 await run();
-await sleep(1500);
-read1 = await cardText();
-if (/本地内核没有这个端点/.test(read1.info || "") && !/服务端拒绝/.test(read1.info || "") &&
-    (await atomCount()) === atomsBefore8 && (await layerRows()).length === layersBefore8) {
-  ok("本地内核缺端点时说清了是本地缺端点，并给出下一步", { page: read1.info });
+let info8 = "";
+for (let i = 0; i < 80; i += 1) {
+  read1 = await cardText();
+  info8 = read1.info || "";
+  if (info8) break;
+  await sleep(250);
+}
+const layers8 = (await layerRows()).length;
+if (/本地内核/.test(info8)) {
+  bad("请求会落到服务端，界面却谎称本地内核缺端点（新契约下的反向假归因）", info8);
+} else if (!/半径 /.test(info8)) {
+  bad("勾掉服务器渲染后分离没有念出服务端回执（卡片空或文案不对）", { page: info8 });
+} else if (!(layers8 > layersBefore8)) {
+  bad("勾掉服务器渲染后分离没有真的落到服务端（层数没变）", { layers: layersBefore8 + "⇒" + layers8, page: info8.slice(0, 60) });
 } else {
-  // **空回执单独说清** ✓（实测：CDP 里堆了 18 个残留页时 ✓ 这一次点击**什么都没写出来** ✗
-  // 于是这条会红 ✓ 而产品没变 ✓）⇒ 把"页面当时有没有 JS 错误"一起打出来 ✓
-  // 下次再红就能一眼分清是**判据自己的环境**还是**产品的归因**✗。
-  bad("本地内核那条归因不对（或它偷偷动了服务端）", {
-    page: read1.info, atoms: await atomCount(), layers: (await layerRows()).length,
-    jsErrorsSoFar: pageErrors.slice(0, 2),
-  });
+  ok("勾掉服务器渲染：改文档的分离仍如实落服务端、卡片念服务端回执（第 10 轮新契约）",
+     { page: info8.slice(0, 60), layers: "+" + (layers8 - layersBefore8), atoms: await atomCount() - atomsBefore8 });
 }
 await evaluate(`(() => { localStorage.removeItem("yanshi.serverRender"); return 1; })()`);
 

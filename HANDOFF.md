@@ -47,12 +47,30 @@
     `!== 7` 改下界 `< 7`（BLEND_MODE_LABELS 已 7→13，权威比对在
     `browser-blend-modes`）；③ 渐变坐标从页面 `state().docSize` 推导，不再写死
     （写死 120×96 在 320×240 夹具下踩到的判据前提）。本机复跑绿。
-  - `browser-dodge-burn` **CI 绿、本机 3/3 红 ⇒ 待归因**：红固定在①首条预测，
-    拿到的是「将新建组 「图层 1 · 减淡加深」（放在「图层 1」上方）」——像夹具的
-    SRC「底」层没建上。按规矩不静默入名单，先查是本机编排/二进制还是判据时序。
-  - `browser-range-mask`／`browser-frequency-separation` 早先本机红**疑似复现夹具污染**
-    （预开标签页把 A 判据的文档混进 B 的日志），等用无预开驱动重跑后再定性；
-    `browser-fill-region` 用无预开驱动重跑**已绿**（前一种红确认是污染，不是产品）。
+  - `browser-dodge-burn`／`browser-range-mask`／`browser-frequency-separation` **已定性、已修（判据侧接线）**：
+    红因是**开机接线窗口**——下拉在 `loadDocumentData()` 的 `refreshLayers` 里就填充，而
+    `setupRangeMaskPanel`／`setupFreqSepPanel`／`setupDodgeBurnPanel` 的监听器要到 `warmKernel()`
+    尾部（`await initWasm()` 之后）才挂 ⇒ 窗口内程序化 change/click 是**静默空操作**。
+    判据改成**先等前提、再下结论**：dodge-burn 用 `trioAndRead` 重试到回执出现；range-mask 用
+    「翻 `rangeMaskKind` 到 color 看亮度行隐藏、翻回看恢复」探针（syncRows 是监听器 ⇒ 换行成功
+    证明 click 也已挂）；freq-sep 用**差分探针**（`layer_empty`↔`layer_ok` 两次读数必须**不同**）——
+    第一版「读数非空即算挂上」是**假阳性**（`renderFreqSepLayers` 开机就调 `renderFreqSepCurrent`），
+    实测踩到后改正。**产品侧的窗口本身未修**（把 setup 提前要处理 `warmKernel` 第二个调用点
+    与重复监听，需单独一轮）⇒ 已记台账 §64。
+  - 同族另外两条：`browser-range-mask` ⑨／`browser-frequency-separation` ⑧ 的
+    「本地内核没有这个端点」断臂**已按新契约重写**——`48f3190`（changes.patch 的 callTool 路由）
+    把改文档的工具**一律送服务端**（`mutating: true` ∉ `LOCAL_READ_TOOLS`），勾掉「服务器渲染」
+    也如此 ⇒ 旧断臂在服务器来源页**结构性不可达**（CI 证据：`3c8cf8cd` 之前绿、`be9ed57f` 红）。
+    新断言：①界面不许谎称本地内核缺端点（反向假归因），②烘焙必须如实落服务端且卡片念服务端回执。
+    `endpoint_not_local` 那条**真guard现在只在 localOnly PWA 里可触发** ⇒ 要保住它需一个
+    单独的 PWA 夹具轮次（已记台账 §64，未开）。
+  - `tool-delete-document` **已修（判据侧计时）**：GC 隔离包（`39511fc6`）把 `delete_document`
+    改成只删年龄 ≥60 秒的 blob ⇒ 判据当场新建再删的 blob 永远是「新鲜的」⇒ 只可能拿到
+    `blobs_deferred_fresh`。修法是删前把专属 blob 的 mtime 回拨 120 秒（判据自己造输入），
+    并**双契约分支**：回拨成功 ⇒ 断 `deleted≥1`＋404；回拨失败 ⇒ 断 `deferred_fresh≥1`＋200。
+    本机 `blobs_deleted=1`、释 166 B、404 ✓。
+  - 上述四条**本机全绿**（无预开标签页驱动 `/tmp/browser-repro-noprefix.sh`＋debug 二进制）；
+    以 CI 为准。
   - `tool-export-idempotent` **CI 独有红**：CI 恒 `kept_no_recipe=3／omitted=0`，
     本机 release 与 debug（同 CI 参数）都是 `omitted=2／kept_no_recipe=0` ⇒
     CI 环境特有的分类差异，未决。
@@ -70,6 +88,14 @@
   诚实记录（作者自述＋我核对）：60 秒是启发式不是消除（put→import 超 60 秒仍可撞）；
   R1 无 Rust 单测（同进程撞不出跨进程撞名，写了是安慰剂），证据是盒上双服务复现红→绿；
   `run_gc` 根集只看本进程的同类缺口**未修**（要 7 天老 blob＋文档未加载两条件，窄得多）。
+- **外部补丁包 `photo-bugfix-orf-detect后续包.zip` 已合入**（`bc28716a`，`git am` 零冲突）：
+  RAW 嗅探补 `has_raw_magic`/`sniff_format` 对 ORF（IIRS）识别。本机验证与独立变异
+  （IIRS⇒IIRX ⇒ 必红、恢复 ⇒ 97 测试全绿）见提交信息与台账 §62。
+- **外部补丁包 `photo-bugfix-gc-rootset后续包.zip` 已合入**（`2f1e7748`，`git am` 零冲突）：
+  `gc_inputs` 的根集加**磁盘文档扫描**（`persist.list_documents()` → `load_atoms` →
+  `all_blob_refs`，fail-closed），补上 §61 记的「`run_gc` 根集只看本进程」缺口。
+  本机验证与变异（删掉磁盘扫描 ⇒ 复现作者声称的红；`gc_disk_doc_roots` 3/3、
+  `blob_gc` 5/5 等）见提交信息与台账 §63。
 - **外部补丁包 `photo-bugfix-a2-interp后续包.zip` 已合入**（`d265897d`，只碰 `filter.rs`）：
   `shadows_highlights` 提亮侧 gap 按品红分量 `m=min(R−G,B−G)` 调制（`t=1/(1+(m/0.005)²)`），
   m≤0 与压暗侧逐位不动。本机定向验证：`-p yanshi-render --lib shadows_highlights` **15/15 绿**；
@@ -423,3 +449,43 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    只删年龄 ≥60 秒的 blob（防别的服务 put→import 窗口），回执加 `blobs_deferred_fresh`。
    本机验证与独立变异见 §二 本轮条目与提交信息；**更正了 A2 日志的「启动期 GC」推断**（全仓没有启动期 GC）。
    未修记录：`run_gc` 根集同样只看本进程（7 天老 blob＋文档未加载才可能撞，窄 ⇒ 不在本包范围）。
+
+62. **photo-bugfix-orf-detect 后续包已合**（`bc28716a`，基线 `be9ed57f`＝当时 HEAD，`git am` 零冲突）：
+   ORF 的魔数是 **IIRS**（`0x5352`）而 `decode.rs` 的 `has_raw_magic`/`sniff_format` 只列了 IIRO ⇒
+   olyC5060 的合法 ORF 在 `put_blob` 被判 `image/png`、`import` 带 `raw_options` 报 `invalid_argument`。
+   修法：两处白名单各加 IIRS→orf，单测＋探针各加 IIRS 断言（假 IIRS 垃圾字节仍判 None）。
+   **本机独立验证**：修前复现红、修后盒上 release 二进制 5 张全过（olyC5060 2608×1949、E-3、NEF、CR2、DNG）；
+   `yanshi-raw` debug 全套 **97/0**；**变异 IIRS→IIRX ⇒ 目标单测红**（恢复后全绿）；fmt＋clippy 干净。
+   全量 `cargo test --workspace` 留 CI。rawler 下游本来就能解（TIFF 读数不校验魔数值，按 Make 标签分发）。
+
+63. **photo-bugfix-gc-rootset 后续包已合**（`2f1e7748`，基线 `bc28716a`＝当时 HEAD，`git am` 零冲突）：
+   补上 §61 记的缺口——`run_gc` 的根集只看本进程内存文档 ⇒ **磁盘上已落盘、本进程从未加载**的文档
+   引用的旧 blob（≥7 天 TTL）被判孤儿删掉，文档再打开缺像素。修法：`gc_inputs` 枚举落盘文档
+   （跳过已在内存的）`load_atoms` 并日志根进 `extra_roots`，**读失败即报错不回收（fail-closed）**。
+   **本机独立验证**：新测试 `gc_disk_doc_roots` **3/3**（修前 1 绿 2 红；**变异：撤磁盘扫描 ⇒ 主测试复红**；
+   真孤儿照删）；双服务复现（盒上 release）修前 `expiring=1` 且 confirm 后文件消失、修后 `expiring=0` 文件保留；
+   `delete_document_blob_grace` 2/2、`blob_gc` 5/5、`delete_with_subscriber` 1/1、`two_writers_seqs` 2/2 全绿。
+   范围说明（作者自述＋我核对）：日志引用是活跃 Manifest 的超集 ⇒ 只并日志根就够；
+   钉住 blob 纯内存、无落盘 ⇒ 不在本包范围。全量 test 留 CI。
+
+64. **六个 browser 红收尾：开机接线窗口（判据侧已修，产品侧未修）＋ ⑧/⑨ 路由契约重定性**：
+   - **接线窗口（真产品缺口，暂缓）**：面板监听器挂在 `warmKernel()` 尾部（`await initWasm()` 之后），
+     而下拉在 `loadDocumentData()` 就填好 ⇒ 窗口内程序化 change/click **静默空操作**
+     （用户手动点击不受影响，判据是程序化的 ⇒ 先红）。判据改成「等前提、不等结论」：
+     `trioAndRead`（dodge-burn）、`rangeMaskKind` 翻色回亮度验换行（range-mask）、
+     **差分探针**（freq-sep：`layer_empty`↔`layer_ok` 两次读数必须不同——「读数非空」是假阳性，
+     因 `renderFreqSepLayers` 开机就调 `renderFreqSepCurrent`，实测踩到后改正）。
+     **产品侧为何不随手修**：把 setup 提前要处理 `warmKernel` 第二个调用点
+     （`viewer-app.js:13190`）与重复监听风险 ⇒ 需单独一轮，不塞进本轮。
+   - **⑧/⑨ 的新契约**（`48f3190` changes.patch 的 callTool 路由：`!serverRenderPreferred()` 时也只有
+     `LOCAL_READ_TOOLS`＝`!mutating` 的工具走本地 ⇒ `create_range_mask`/`frequency_separation`
+     **一律落服务端**）⇒「本地内核没有这个端点」断臂在服务器来源页**结构性不可达**
+     （CI 证据：`3c8cf8cd` 该臂绿在 `48f3190` 之前、`be9ed57f` 红其后）。判据改为断
+     ①不许假归因（界面谎称本地内核缺端点 ⇒ 红）、②烘焙如实落服务端且卡片念服务端回执（覆盖数/半径）。
+     **代价**：`endpoint_not_local` 那条真guard现在只在 localOnly PWA 里可触发 ⇒
+     要保住它需要一个**单独的 PWA 夹具轮次**（未开，登记在此）。
+   - **`tool-delete-document` 跟 §61 的 60 秒门槛走**：判据把专属 blob mtime 回拨 120 秒（自己造输入），
+     双契约分支（回拨成功 ⇒ `deleted≥1`＋404；失败 ⇒ `deferred_fresh≥1`＋200）。本机
+     `blobs_deleted=1`、释 166 B、404 ✓。
+   - 四条修改（`browser-dodge-burn`／`browser-range-mask`／`browser-frequency-separation`／
+     `tool-delete-document`）**本机全绿**（无预开驱动＋新 debug 二进制）；CI 结果以 run 为准。

@@ -172,6 +172,26 @@ if (serverRenderOn !== true) {
   console.error("❌ 判据前提失败：「服务器渲染」那个勾选没生效（实为 " + JSON.stringify(serverRenderOn) + "）");
   process.exit(3);
 }
+// **等面板接线完成**（与 browser-dodge-burn 同一处开机空窗 ✓ 2026-10-27 CI 实测）：
+//   下拉在 `refreshLayers` 里就填好了 ✓ 而 `rangeMaskApply` 的 click 与 `rangeMaskKind`
+//   的 change 要到 `warmKernel` 尾部的 `setupRangeMaskPanel` 才挂 ⇒ 窗口内的点击是**空转**
+//   （CI 红「mask_id 仍为空」即此 ✓ 不是产品坏了 ✗）。`syncRows` 与 click 监听在同一个
+//   函数里同一刻挂上 ⇒ 用「种类 change 换行」当就绪探针 ✓ 探到即证明 click 也已接线。
+async function waitPanelWired() {
+  for (let i = 0; i < 120; i += 1) {
+    await evaluate(`(() => { const k = document.getElementById("rangeMaskKind"); k.value = "color"; k.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+    const flipped = await evaluate(`document.getElementById("rangeMaskLumRow").style.display === "none"`);
+    await evaluate(`(() => { const k = document.getElementById("rangeMaskKind"); k.value = "luminance"; k.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+    const restored = await evaluate(`document.getElementById("rangeMaskLumRow").style.display === ""`);
+    if (flipped && restored) return true;
+    await sleep(250);
+  }
+  return false;
+}
+if (!(await waitPanelWired())) {
+  console.error("❌ 判据前提失败：等了 30 秒「带种类」change 仍不换行（面板监听始终没接线 ⇒ 后面的点击全是空转，判不下去了）");
+  process.exit(3);
+}
 
 // ---------- ① 卡片、工具、行的显隐 ----------
 const shell = await evaluate(`(() => {
@@ -335,12 +355,17 @@ else ok("再点一次不写任何原子", { count: atomsAfter });
 if (pageErrors.length) bad("页面抛出 " + pageErrors.length + " 条 JS 错误", pageErrors.slice(0, 3));
 else ok("全程 0 条 JS 错误");
 
-// ---------- ⑨ 本地内核模式下不许把失败赖给服务端 ----------
-// **放在⑦之后** ✓：这一模式本身会刷一堆 `needs_render` 的内核日志 ✓（与本次改动无关 ✓
-// 已单独登记 ✗），混进"页面抛错"那条审计里就分不清是谁的责任了 ✓。
-// 要钉的东西 ✓：`api-local.js` **没有** `/api/tools/create_range_mask` 这个端点 ✓
-// ⇒ 请求**根本没出门** ✗ 这时卡片上一句「服务端拒绝了这次烘焙」会把人送去查服务端日志 ✓
-//（实测就是这个假归因 ✓）⇒ 必须说清"本地内核没有这个端点"并给出下一步 ✓。
+// ---------- ⑨ 勾掉「服务器渲染」：改文档的烘焙必须**如实落服务端**，不许假归因 ----------
+// **★ 这一臂断的契约变了 ✗ ★**（第 62 轮定性 ✓ 证据链：CI `3c8cf8cd` 全绿在前、
+//   `48f3190`（合入外部 changes.patch）把 `callTool` 路由改成「**勾掉服务器渲染只关像素
+//   路径** ⇒ 改文档的工具仍走服务端」（`viewer-app.js` 的 `localOnly || readOnly` 闸 ✓）
+//   ⇒ 本判据的页面在**服务端 origin、非 localOnly** ⇒ `create_range_mask` 必然出得了门 ✓
+//   旧断言「请求根本没出门 ⇒ 本地内核没有这个端点」**在这页永远触发不了** ✗（不是产品坏了，
+//   是判据钉的旧前提被设计变更撤销 ✓）。那句假归因防线只剩 localOnly PWA 部署能触发 ⇒
+//   要守它需要单独的 PWA 夹具轮次（已记 HANDOFF ✗ 本臂先按新契约判 ✓）。
+//   新契约下这一臂钉三件事：**①** 蒙版**真的挂到了服务端**（断服务端事实 ✓ 不看页面上的字）；
+//   **②** 卡片念的是**服务端回执的覆盖数**（数字同源 ✓）；**③** 界面**不许谎称**
+//   「本地内核没有这个端点」（请求明明出了门 ✗ 说了就是同类假归因 ✓ 与 542 轮那条同族、方向相反）。
 await evaluate(`localStorage.setItem("yanshi.serverRender", "0"); 1`);
 await send("Page.navigate", { url: `${base}/?doc=${docId}&token=${token}&lang=zh&v=${Date.now()}` });
 await waitEvent("Page.loadEventFired");
@@ -350,12 +375,13 @@ for (let i = 0; i < 60; i += 1) {
   if (rebooted) break;
   await sleep(250);
 }
-// **让 init 把点击监听接上**（第 1132 轮）：本地模式初始化的顺序是「先填下拉、后
-// `setupRangeMaskPanel()` 绑 click」⇒ 只等下拉会在监听绑定前点击 ⇒ 点了什么都没发生（空回执）✗。
-await sleep(900);
+// 重新导航 ⇒ 面板接线空窗重来（① 前那次 `waitPanelWired` 等到的是上一个页面）；
+// `syncRows` 与「烘焙并挂载」的 click 在 `setupRangeMaskPanel` 里同一刻挂上 ⇒ 再探一次。
+let wired9 = rebooted;
+if (wired9) wired9 = await waitPanelWired();
 const kernelMode = await evaluate(`(() => { const b = document.getElementById("useServerRender"); return b ? b.checked === true : null; })()`);
-if (!rebooted || kernelMode !== false) {
-  console.error("❌ 判据前提失败：切不到本地内核模式（服务器渲染勾选实为 " + JSON.stringify(kernelMode) + "）");
+if (!rebooted || !wired9 || kernelMode !== false) {
+  console.error("❌ 判据前提失败：切不到本地像素路径或面板没接线（rebooted=" + rebooted + " wired=" + wired9 + " 勾选=" + JSON.stringify(kernelMode) + "）");
   process.exit(3);
 }
 await evaluate(`(() => {
@@ -371,18 +397,24 @@ await evaluate(`(() => {
   q("rangeMaskApply").click();
   return 1;
 })()`);
-// **等回执出现**（第 1132 轮）：本地内核首次调用要初始化/可能慢 ⇒ 固定 2s 会读到空串 ✗
-//（本机实测：2.5s 才有字 ✓）。轮询到有字或 10s 超时。
+// **等回执出现**（第 1132 轮）：服务端往返有快慢 ⇒ 固定 2s 会读到空串 ✗。轮询到有字或 40s 超时。
 let infoKernel = "";
 for (let i = 0; i < 160; i += 1) {
   infoKernel = (await evaluate(`document.getElementById("rangeMaskInfo").textContent`)) || "";
   if (infoKernel) break;
   await sleep(250);
 }
-if (!/本地内核没有这个端点/.test(infoKernel)) bad("本地内核缺端点时仍报「服务端拒绝」（假归因）", infoKernel);
-else ok("本地内核缺端点时说清了是本地缺端点，并给出下一步", infoKernel);
-if (/服务端拒绝/.test(infoKernel)) bad("同一条回执里既说本地又说服务端", infoKernel);
-if (await maskOf(scenarioLayers.zero)) bad("本地内核模式下却挂上了服务端蒙版（判据前提变了）");
+if (/本地内核/.test(infoKernel)) {
+  bad("请求会落到服务端，界面却谎称本地内核缺端点（新契约下的反向假归因）", infoKernel);
+} else if (await maskOf(scenarioLayers.zero)) {
+  if (!/14400/.test(infoKernel)) bad("蒙版挂上了服务端、卡片却没念服务端回执的覆盖数", infoKernel);
+  else ok("勾掉服务器渲染：改文档的烘焙仍如实落服务端、卡片念服务端回执（第 10 轮新契约）", infoKernel);
+} else {
+  // **把「这一臂为什么没落地」的证据一起打出来** ✓：`localKernelUnusableNow` 会写
+  //   「本地内核装载失败：…」进 `#log` 并把勾选翻回 true ⇒ 那一行就是归因证据。
+  const kernelLog = (await logLines()).filter((l) => /本地内核|内核装载|kernel/i.test(l)).slice(-4);
+  bad("勾掉服务器渲染后烘焙既没挂上服务端、也没给出诚实的失败", { info: infoKernel, kernelLog });
+}
 // **擦回去** ✓：这个 key 是**按源共享**的 ✗ 留着会让后面别的判据在没人预期的模式下跑 ✓。
 await evaluate(`localStorage.removeItem("yanshi.serverRender"); 1`);
 

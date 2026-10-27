@@ -25,7 +25,7 @@ process.on("uncaughtException", (error) => {
   console.error(`  ⊘ 判据自身出错（不是产品问题）：${String(error).slice(0, 200)}`);
   process.exit(3);
 });
-import { existsSync } from "node:fs";
+import { existsSync, utimesSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createConnection } from "node:net";
 import { randomBytes } from "node:crypto";
@@ -370,18 +370,38 @@ check(
 );
 
 // 反方向：只属于它自己的 blob **必须真的被删掉**（否则引用计数只做了一半 ✗）。
+// **GC 隔离包（`39511fc6`）之后 `delete_document` 只删年龄 ≥60 秒的 blob**（新鲜的进
+// `blobs_deferred_fresh`，防别的服务 put→import 窗口）⇒ 判据造的 blob 永远是新鲜的，
+// 不回拨 mtime 就会测到「新鲜推迟」分支而不是「独占删除」分支（CI 上就是这么红的 ✓）。
+// 回拨不成就**明说**（⊘），并改断新契约：`blobs_deferred_fresh ≥ 1` 且 blob 还在 ⇒ 不许静默。
+const blobHex = String(uniqueBlob.blob_hash || "").replace(/^sha256:/, "");
+const blobFile = workspace && blobHex.length === 64
+  ? join(workspace, "blobs", "sha256", blobHex.slice(0, 2), blobHex.slice(2, 4), blobHex)
+  : null;
+let backdated = false;
+if (blobFile && existsSync(blobFile)) {
+  const old = new Date(Date.now() - 120000);
+  utimesSync(blobFile, old, old);
+  backdated = true;
+} else {
+  console.log("  ⊘ 没能回拨独占 blob 的 mtime（没有 YANSHI_WORKSPACE 或不在预期路径）⇒ 下面改测「新鲜推迟」契约（不是通过）");
+}
 const deleteOwner = await json(`/api/documents/${OWNER}?confirm=${OWNER}`, { method: "DELETE" });
 check(
-  "只有它引用的 blob 被**真的删掉**（回执计数 ≥1）",
-  deleteOwner.value && deleteOwner.value.blobs_deleted >= 1 && deleteOwner.value.blob_bytes_freed > 0,
+  backdated
+    ? "只有它引用的 blob 被**真的删掉**（回执计数 ≥1）"
+    : "没能回拨 mtime ⇒ 断新契约：新鲜的独占 blob 被 `blobs_deferred_fresh` 拦下（≥1）且没被删",
+  backdated
+    ? deleteOwner.value && deleteOwner.value.blobs_deleted >= 1 && deleteOwner.value.blob_bytes_freed > 0
+    : deleteOwner.value && deleteOwner.value.blobs_deleted === 0 && deleteOwner.value.blobs_deferred_fresh >= 1,
   JSON.stringify(deleteOwner.value).slice(0, 200),
 );
 const uniqueGone = await json(
   `/api/blob/${uniqueBlob.blob_hash}?doc=${S2}&token=${tokenS2}`,
 );
 check(
-  "那个独占 blob 在存储里**真的没了**（404）",
-  uniqueGone.status === 404,
+  backdated ? "那个独占 blob 在存储里**真的没了**（404）" : "没能回拨 mtime ⇒ 那个新鲜 blob 应当**还在**（200）",
+  backdated ? uniqueGone.status === 404 : uniqueGone.status === 200,
   "status=" + uniqueGone.status,
 );
 

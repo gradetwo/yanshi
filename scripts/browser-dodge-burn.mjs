@@ -217,6 +217,24 @@ const waitForInfo = async (pattern, tries = 40) => {
   }
   return cardText();
 };
+/** **面板接线落后于下拉「可见」**（本机实测：`setupDodgeBurnPanel` 挂在 boot 尾巴的
+ *  fire-and-forget 里 ⇒ 导航后头几秒 `dodgeBurnSource/Mode/Name` 的 change 监听与
+ *  「建组」按钮的 click 监听**都还不存在** ⇒ 改了选项预测句不动、点了按钮**静默 no-op**，
+ *  后面 ②③⑧⑨ 整片连锁红 ✓ 这正是本机 3/3 红而 CI 绿的根因）。
+ *  判据有界重试：每轮把三个字段**重新派发**一遍，接线一落地预测句必然带上该前缀；
+ *  80 轮（约 20 秒）还不带 ⇒ 预测句真的在说谎，`bad` 照常红 ✓ */
+const trioAndRead = async (nameValue) => {
+  let read = await cardText();
+  for (let i = 0; i < 80; i += 1) {
+    await pickSource(SRC);
+    await pickMode("gray");
+    await setName(nameValue);
+    read = await cardText();
+    if ((read.current || "").includes(nameValue)) break;
+    await sleep(250);
+  }
+  return read;
+};
 
 await gotoLang("zh");
 
@@ -230,13 +248,9 @@ if (!(await evaluate(`!!document.getElementById("cardDodgeBurn") && !!document.g
 const serverIds = (await layerRows()).map((l) => l.layer_id);
 if (JSON.stringify(shell.options) === JSON.stringify(serverIds)) ok("「源图层」下拉的 id 序列与 `list_layers` 逐一等", { count: serverIds.length });
 else bad("下拉与服务端图层清单不同源", { page: shell.options, server: serverIds });
-await pickSource(SRC);
-
 // ---------- ② 预测 → 兑现：组名逐字相同、且紧贴源之上 ----------
 const GROUP = "「p2 · 减淡加深」";
-await setName("p2");
-await pickMode("gray");
-let read = await cardText();
+let read = await trioAndRead("p2");
 if (read.current === "将新建组 " + GROUP + "（放在「底」上方）") ok("卡片先念出「这次会新建哪个组」，字符串与服务端命名规则一致", { page: read.current });
 else bad("建组前的预测句不对（界面在自拼字符串？）", { page: read.current });
 const atomsBefore2 = await atomCount();
@@ -355,9 +369,7 @@ if (curvesFresh.ok === true && curvesFresh.note && (read.log || "").includes(cur
 // ---------- ⑧ 同名二次点击：页面念"复用"，服务端一个都没多 ----------
 const atomsBefore8 = await atomCount();
 const layersBefore8 = (await layerRows()).length;
-await pickMode("gray");
-await setName("p2");
-read = await cardText();
+read = await trioAndRead("p2");
 if (read.current === "组名 " + GROUP + " 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）") ok("换成同名组前缀时，预测句跟着改成「会复用」", { page: read.current });
 else bad("同名组的预测句没改口", { page: read.current });
 await run();
@@ -373,10 +385,7 @@ if (/^复用既有组 \S+ · 方法 gray · /.test(read.info || "") && (await at
 
 // ---------- ⑨ 英文模式：三行动态句整句翻，且不留汉字 ----------
 await gotoLang("en");
-await pickSource(SRC);
-await pickMode("gray");
-await setName("p2");
-read = await cardText();
+read = await trioAndRead("p2");
 const HAN = /[\u4e00-\u9fff]/;
 if (read.current && /^Group name "p2 · Dodge and burn" already exists/.test(read.current) && !HAN.test(read.current)) {
   ok("英文模式下预测句整句翻译（组名尾巴翻 ✓ 用户填的前缀没被翻 ✓）", { page: read.current });

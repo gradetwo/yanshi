@@ -29,8 +29,7 @@ impl Drop for Cleanup {
 }
 
 fn temp_root(name: &str) -> std::path::PathBuf {
-    let path =
-        std::env::temp_dir().join(format!("yanshi_gcroot_{}_{}", name, std::process::id()));
+    let path = std::env::temp_dir().join(format!("yanshi_gcroot_{}_{}", name, std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
     std::fs::create_dir_all(&path).expect("建根");
     path
@@ -115,9 +114,7 @@ fn disk_doc_blob_survives_gc_from_unloading_workspace() {
     );
     // now 推后 8 天 ⇒ X 的年龄超过 7 天 TTL（service_flow.rs 同款做法）。
     let future = now_ms() + 8 * 24 * 60 * 60 * 1000;
-    let (report, _plan) = workspace_b
-        .collect_garbage(future)
-        .expect("GC 应能跑");
+    let (report, _plan) = workspace_b.collect_garbage(future).expect("GC 应能跑");
     assert!(
         !report.deleted.contains(&parsed),
         "磁盘文档引用的旧 blob 不得被 GC 删，删了：{report:?}"
@@ -141,9 +138,7 @@ fn opened_disk_doc_blob_survives_gc() {
         .open_document("doc_opened")
         .expect("B 打开 D 应成功");
     let future = now_ms() + 8 * 24 * 60 * 60 * 1000;
-    let (report, _plan) = workspace_b
-        .collect_garbage(future)
-        .expect("GC 应能跑");
+    let (report, _plan) = workspace_b.collect_garbage(future).expect("GC 应能跑");
     assert!(
         !report.deleted.contains(&parsed),
         "已打开文档引用的旧 blob 不得被 GC 删，删了：{report:?}"
@@ -172,9 +167,7 @@ fn true_orphan_still_collected() {
         .put(&orphan_bytes)
         .expect("孤儿 blob 应能入库");
     let future = now_ms() + 8 * 24 * 60 * 60 * 1000;
-    let (report, _plan) = workspace_b
-        .collect_garbage(future)
-        .expect("GC 应能跑");
+    let (report, _plan) = workspace_b.collect_garbage(future).expect("GC 应能跑");
     assert!(
         report.deleted.contains(&orphan),
         "真正的孤儿必须照删，删了：{report:?}"
