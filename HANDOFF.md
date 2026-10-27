@@ -88,6 +88,13 @@
   诚实记录（作者自述＋我核对）：60 秒是启发式不是消除（put→import 超 60 秒仍可撞）；
   R1 无 Rust 单测（同进程撞不出跨进程撞名，写了是安慰剂），证据是盒上双服务复现红→绿；
   `run_gc` 根集只看本进程的同类缺口**未修**（要 7 天老 blob＋文档未加载两条件，窄得多）。
+- **外部补丁包 `photo-bugfix-rw2-oom后续包.zip` 已合入**（`d686c622`）：81MP RW2 import OOM，
+  分块扩散（halo=64 ⇒ 中心行逐位一致、峰值 5.6GB→1.6GB）＋位图缓存单飞（认领+Condvar，wasm 门控）。
+  本机独立验证与两例变异复现见台账 §65；盒上 81MP 复现（7522MB 死 ⇒ 4054MB 活）为作者侧证据，
+  本机无原图与大内存盒子 ⇒ 未独立复跑。全量 test 留 CI。
+- **skill-vector-tracing v5.3 后续包已合入**（`764cba98`＋`4820c40e`）：SKILL.md 307→437 行，
+  P0 修正（`draw_shape` 没有 `fill` 键——**已对 HEAD 的 `parse_shape` 独立核对**）＋第 4 轮 13 条晋升，
+  B12/B13/B16 泛化门未过退回附录。校验见台账 §66。纯文档不触发 CI。
 - **外部补丁包 `photo-bugfix-orf-detect后续包.zip` 已合入**（`bc28716a`，`git am` 零冲突）：
   RAW 嗅探补 `has_raw_magic`/`sniff_format` 对 ORF（IIRS）识别。本机验证与独立变异
   （IIRS⇒IIRX ⇒ 必红、恢复 ⇒ 97 测试全绿）见提交信息与台账 §62。
@@ -496,3 +503,33 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
      **CI 已验（run `40502062240`）**：shard 2/6 与 6/6 里 range-mask／frequency-separation／
      dodge-burn／delete-document **全部转绿** ✓；剩余红＝`tool-export-idempotent`（CI 独有，
      未决，见上）＋ `browser-fill-region`（本轮新修，见上一条）。
+
+65. **photo-bugfix-rw2-oom 后续包已合**（`d686c622`，作者侧提交 `aac1e9d`，基线 `be9ed57`＝当时远端 HEAD，
+   `git am` 零冲突；patch pre-image blob `3ef57e8`/`17bb456` 与合入前 HEAD 逐一相符）：
+   81MP RW2（panaG9_P1000475，10402×7794）import 时 OOM-killer 杀服务（峰值 RSS 7522MB > 7.2GB 可用）。
+   两处叠加：①主因 `highlight_chroma_recover` 全幅数组 4.19GB ⇒ **按行分块**（中心 256 行 + halo=步长和 64，
+   reflect 钳读只污染将被丢弃的 halo 行 ⇒ 中心行逐位一致，块缓冲 ≈160MB）；
+   ②次因 `BitmapCache::get_or_decode` 锁外解码无单飞 ⇒ 4 条带同键并发各跑一遍全幅 develop ⇒
+   **在途认领 + Condvar 等候**（wasm 门控保持旧行为；RAII guard 兜底 panic 路径，等候者不饿死）。
+   **本机独立验证**：fmt＋`clippy -p yanshi-raw -p yanshi-render --all-targets -D warnings` 干净；
+   `chroma_pkg5` **5/5**（含 `tiled_matches_full_frame` 带触发断言，饱和行横跨 y=256/512 两块界）、
+   `buffer_reuse_golden`+`highlight` 15/15、单飞单测 1/1、`--test bitmap_cache`+`tile_parallel` 23 过 1 忽略；
+   **变异独立复现两例**：halo 改 0 ⇒ `tiled_matches_full_frame` FAILED；认领改恒真 ⇒ 单飞测试 FAILED；
+   恢复后全绿、`MUTATION-TEST` 标记 grep 为 0、工作树干净。
+   盒上证据（作者侧，本机无 81MP 原图与 7.2GB 盒子 ⇒ **未独立复跑**）：base 死在 import／7522MB，
+   fix50 与 rebase 峰值 4041/4054MB、PNG sha256 三轮逐位相同（确定性）。
+   作者自述边界（我核对认可）：预览降分辨率开发（`develop_raw_source_preview`）会改预览像素 ⇒ 另立项；
+   `warp_rgb` identity 拷贝未动（本文件无 warp plan）；>100MP 或更小内存机器仍可能吃紧。
+   全量 `cargo test --workspace` 留 CI。
+
+66. **skill-vector-tracing v5.3 后续包已合**（`764cba98`＋`4820c40e`，基线 `be9ed57`，`git am` 两提交零冲突）：
+   单文件 `skills/yanshi-vector-tracing/SKILL.md` 307→437 行（+152/−22）。
+   **校验（本机 ✓）**：0001 pre-image `a85dd5e`＝HEAD、末态 blob `543e516`＝patch `index` 行；
+   合入后文件 sha256 `1abc4398…` 与包内定稿 `SKILL.md` 一致；`check-skill-tool-names.mjs` ✓
+   （7 文档／标识符 105／工具 206／参数 260 全能找到）。
+   **P0 修正独立核对 ✓**：`object.rs::parse_shape`（HEAD 实测）确无 `fill` 键、`has_fill` 恒真起步 ⇒
+   `data.fill` 被静默接受但无效果，「填充色就是 `color`；非 path 省略 `color` 默认填黑」属实。
+   内容：第 4 轮 13 条 B 档晋升入正文（B20 正文已有原文）；**B12/B13/B16 泛化门未过退回附录 R4**
+   （第二验证都在企鹅同一张图，不构成独立图类）；诚实记录随包（Round 4 时间目标未达、
+   引擎静默接受未知字段未修——本轮只在 skill 侧改正）。
+   纯 skill 文档 ⇒ 不触发 CI（`paths-ignore`），随同批产品代码过 CI。
