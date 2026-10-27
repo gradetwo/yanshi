@@ -196,6 +196,25 @@ pub fn zlib_compress_best(raw: &[u8]) -> Vec<u8> {
     }
 }
 
+/// **解压输出的硬上限** ✓（**防解压炸弹** ✓，2026-10-28）：**1 GiB ＋ 1 MiB** ✓。
+///
+/// **∴ 口径从哪来 ✗**：本仓**允许解码**的最大图像是 [`MAX_DECODE_PIXELS`]（`1 << 28` 像素，
+/// 且解码器只收 `bit_depth = 8` ＋ 非隔行 ⇒ 每像素 ≤ 4 字节 ✓）
+/// ⇒ 原始扫描线 = **像素 × 4 ＋ 高度**（每行一个 filter 字节 ✓）≤ `1 GiB ＋ 65535` ✓
+/// ⇒ 再加 1 MiB 余量 ⇒ **合法的最大图不会被误判成炸弹** ✓。
+///
+/// **∴ 为什么必须有它 ✗**：上传端只限制**压缩字节**（缺省 256 MiB ✓）
+/// ⇒ 一个几 MB 的 zlib 流可以 inflate 成几十 GB ✗ ⇒ 进程被 OOM 杀掉 ✓
+/// （本机 3.8 GiB 内存，见 AGENTS.md 的实测账 ✓）。
+pub const MAX_INFLATE_BYTES: u64 = (1 << 30) + (1 << 20);
+
+// **恒等式（编译期）** ✓：上限必须**盖住**合法的最大 RGBA8 PNG 原始扫描线
+// （像素 × 4 ＋ 每行一个 filter 字节 ⇒ 高度 ≤ 边长）✓
+// ⇒ 谁把它调小到 `1 << 30`（刚好不含 filter 字节）⇒ **编译失败** ✓（比运行期判据更早 ✓）。
+const _: () = assert!(MAX_INFLATE_BYTES >= MAX_DECODE_PIXELS * 4 + MAX_DECODE_EDGE as u64);
+// 也不能大到失去意义（本机 3.8 GiB 内存 ⇒ 2 GiB 上限就会把它逼进 swap）。
+const _: () = assert!(MAX_INFLATE_BYTES < (1 << 31));
+
 /// **解压** [`zlib_compress`] 的输出 ✓；不是 zlib 流就回 `None` ✓（调用方据此按原样处理 ✓）。
 ///
 /// **错误映射** ✓：`flate2`/`zlib-rs` 的错误、zlib 头不合法、adler32 不匹配、
@@ -205,13 +224,26 @@ pub fn zlib_compress_best(raw: &[u8]) -> Vec<u8> {
 /// **完整性** ✓：`zlib-rs` 在流结束时会校验 adler32 ✓；这里另外要求**整段输入都被消费** ✓
 /// —— 旧实现把**最后 4 字节**当 adler32 ✓ ⇒ "有效 zlib + 垃圾尾巴"会被它拒绝 ✓，
 /// 这条严格性保留 ✓（不回退成"解出前缀就算成功" ✗）。
+///
+/// **∴ 上限**：输出超过 [`MAX_INFLATE_BYTES`] ⇒ `None` ✓（**不返回前 1 GiB 冒充成功** ✗）。
 pub fn zlib_decompress(stream: &[u8]) -> Option<Vec<u8>> {
+    zlib_decompress_capped(stream, MAX_INFLATE_BYTES)
+}
+
+/// [`zlib_decompress`] 的本体 ✓；`max_out` 参数化**只为让判据用小上限做变异** ✓
+/// （不可能为测炸弹真解 1 GiB ✓）。
+fn zlib_decompress_capped(stream: &[u8], max_out: u64) -> Option<Vec<u8>> {
     if stream.len() < 6 || stream[0] != 0x78 {
         return None;
     }
     let mut decoder = ZlibDecoder::new(stream);
     let mut out = Vec::new();
-    if decoder.read_to_end(&mut out).is_err() {
+    // **∴ 多读 1 字节 ⇒ 才知道"是否**恰好超过**上限" ✓**（`Take` 到上限为止会看不出越界 ✓）。
+    let mut limited = (&mut decoder).take(max_out.saturating_add(1));
+    if limited.read_to_end(&mut out).is_err() {
+        return None;
+    }
+    if out.len() as u64 > max_out {
         return None;
     }
     if decoder.total_in() as usize != stream.len() {
@@ -776,6 +808,22 @@ mod tests {
                 .unwrap_or_else(|| panic!("自己压的必须能解回来（原始 {} 字节）", raw.len()));
             assert_eq!(restored, raw, "往返不一致（原始 {} 字节）", raw.len());
         }
+    }
+
+    #[test]
+    fn zlib_decompress_refuses_output_over_the_cap() {
+        let payload = vec![0u8; 4096];
+        let stream = zlib_compress(&payload);
+        assert_eq!(
+            zlib_decompress_capped(&stream, 4096).map(|out| out.len()),
+            Some(4096),
+            "恰好等于上限必须能解"
+        );
+        assert!(
+            zlib_decompress_capped(&stream, 4095).is_none(),
+            "超过上限必须被拒绝（不许返回前 4095 字节冒充成功）"
+        );
+        // **∴ 变异哨兵** ✓：把 `>` 改成 `>=` ⇒ 上面第一条变红 ✓（上限等于输出时不该拒绝 ✓）。
     }
 
     #[test]

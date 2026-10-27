@@ -301,6 +301,11 @@ impl AtomLog {
         // `fold::precondition` 的那一份**保留** ✓ 作为重放期的纵深防御 ✓
         //（手工写进日志的环在折叠时也会被跳过并留下警告 ✓），但**判定提交与否的是这里** ✓。
         self.validate_instance_cycles(atom, commit.state)?;
+        // **图层父链成环也必须在这里挡** ✓（2026-10-28，审计 Batch 2）：
+        // 与实例成环同一条教训 ✓ —— 只放进 `fold::precondition` 的话，
+        // `append_validated` 会**接受**它 ✓，工具返回 `ok: true` ✓，
+        // 而折叠时只推一条警告并跳过 ✗ ⇒ 正是「接受了却没用」✗。
+        self.validate_layer_parent_cycles(atom, commit.state)?;
         self.validate_object_type(atom)?;
         self.validate_property_values(atom)?;
         self.validate_document_size(atom)?;
@@ -470,6 +475,34 @@ impl AtomLog {
             return Ok(());
         };
         crate::fold::check_instance_cycle(state, object_id, &master)
+    }
+
+    /// 图层父链成环（2026-10-28，审计 Batch 2）：`CreateLayer.parent_id` ✓ 与
+    /// `SetProperty(key="parent_id")` ✓ 两条入口共用 `fold::check_layer_parent_cycle` ✓。
+    ///
+    /// **为什么创建入口也要查** ✗：`CreateLayer` 先按"存活"挡 id 冲突 ✓，
+    /// 但**墓碑不占 id** ✓ ⇒ 同一个 id 可以重建 ✓ —— 重建时它的旧 `parent_id` 不在载荷里 ✓，
+    /// 环是**经由别人的父链**绕回来的 ✓（先重排父链、再重建本图层 ✓）。
+    fn validate_layer_parent_cycles(&self, atom: &Atom, state: &DocumentState) -> Result<()> {
+        let parent = match atom.kind {
+            AtomKind::CreateLayer => atom.payload.get("parent_id"),
+            AtomKind::SetProperty
+                if atom.payload.get("key").and_then(serde_json::Value::as_str)
+                    == Some("parent_id") =>
+            {
+                atom.payload.get("value")
+            }
+            _ => None,
+        };
+        let (Some(parent), Some(layer_id)) = (
+            parent.and_then(serde_json::Value::as_str),
+            atom.payload
+                .get("layer_id")
+                .and_then(serde_json::Value::as_str),
+        ) else {
+            return Ok(());
+        };
+        crate::fold::check_layer_parent_cycle(state, layer_id, parent)
     }
 
     fn validate_secondary_refs(&self, atom: &Atom, state: &DocumentState) -> Result<()> {
@@ -1403,6 +1436,92 @@ mod tests {
             log.append_validated(again, &ctx).unwrap_err().code,
             ErrorCode::PreconditionFailed
         );
+    }
+
+    /// **父链成环必须在提交期被拒** ✓（2026-10-28，审计 Batch 2）。
+    ///
+    /// 步骤：建 g1 ✓ → 把 g2 挂到 g1 下 ✓ → 想把 g1 挂到 g2 下 ✗。
+    /// 每一步单看都合法 ✓，合起来成环 ✓ ⇒ 必须在**写入**时返回 `Err` ✓
+    /// （只放进折叠期的话，原子被静默丢弃而工具返回 `ok: true` ✗）。
+    /// **变异**：删掉 `validate_layer_parent_cycles` 的调用 ⇒ 本测试拿到 `ok` ⇒ 红 ✓（实测过 ✓）。
+    #[test]
+    fn commit_rejects_a_parent_id_rewrite_that_closes_a_cycle() {
+        let mut log = log_with_head();
+        let none = |_: &BlobHash| false;
+        log.append(
+            Atom::new(
+                AtomKind::CreateLayer,
+                "human:1",
+                "session:a",
+                json!({"layer_id": "g1", "type": "layer_group"}),
+            )
+            .with_id("atom_g1"),
+        )
+        .unwrap();
+        log.append(
+            Atom::new(
+                AtomKind::CreateLayer,
+                "human:1",
+                "session:a",
+                json!({"layer_id": "g2", "type": "layer_group", "parent_id": "g1"}),
+            )
+            .with_id("atom_g2"),
+        )
+        .unwrap();
+        let state = state_at_head(&log);
+        let ctx = CommitContext::new(&state, &none, "human:1", "session:a");
+        let cycle = Atom::new(
+            AtomKind::SetProperty,
+            "human:1",
+            "session:a",
+            json!({"layer_id": "g1", "key": "parent_id", "value": "g2"}),
+        )
+        .with_id("atom_cycle");
+        let error = log.append_validated(cycle, &ctx).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument, "{error:?}");
+        assert_eq!(log.len(), 5, "校验失败不进日志");
+    }
+
+    /// **重建墓碑 id 时也要挡环** ✓（2026-10-28，审计 Batch 2）：`CreateLayer` 的
+    /// **另一条**入口 ✓ —— 墓碑不占 id ✓，所以 `g1` 可以重建 ✓；
+    /// 但 `g2.parent` 仍指着 `g1` ✓ ⇒ 重建 `g1` 时把它挂到 `g2` 下就成环 ✓。
+    #[test]
+    fn commit_rejects_recreating_a_layer_under_its_own_descendant() {
+        let mut log = log_with_head();
+        let none = |_: &BlobHash| false;
+        log.append(
+            Atom::new(
+                AtomKind::CreateLayer,
+                "human:1",
+                "session:a",
+                json!({"layer_id": "g1", "type": "layer_group"}),
+            )
+            .with_id("atom_g1"),
+        )
+        .unwrap();
+        log.append(
+            Atom::new(
+                AtomKind::CreateLayer,
+                "human:1",
+                "session:a",
+                json!({"layer_id": "g2", "type": "layer_group", "parent_id": "g1"}),
+            )
+            .with_id("atom_g2"),
+        )
+        .unwrap();
+        let mut state = state_at_head(&log);
+        // 折叠会把 g1 的墓碑级联到 g2 ✓ —— 这里只要"id 空出来"✓，直接标 g1 已删 ✓。
+        state.layers.get_mut("g1").unwrap().deleted_by = Some("atom_del_g1".to_owned());
+        let ctx = CommitContext::new(&state, &none, "human:1", "session:a");
+        let recreate = Atom::new(
+            AtomKind::CreateLayer,
+            "human:1",
+            "session:a",
+            json!({"layer_id": "g1", "type": "layer_group", "parent_id": "g2"}),
+        )
+        .with_id("atom_recreate");
+        let error = log.append_validated(recreate, &ctx).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument, "{error:?}");
     }
 
     #[test]

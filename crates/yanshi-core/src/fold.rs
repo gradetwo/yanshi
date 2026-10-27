@@ -493,6 +493,10 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
                         state.layers.keys().filter(|id| state.layer_alive(id)),
                     ));
                 }
+                // **∴ 存活不等于不成环** ✗：同名 id 的**墓碑**仍在（删除可撤销 ✓），
+                // 而 `layer_alive(layer_id)` 在墓碑上是 false ⇒ 允许重建 ✓
+                // ⇒ 于是"以自己为父"（或挂在自称后代的层下）可以构造出来 ✓ ⇒ 必须在这里挡 ✓。
+                check_layer_parent_cycle(state, layer_id, parent)?;
             }
         }
         AtomKind::CreateObject | AtomKind::ImportImage => {
@@ -643,6 +647,18 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
                         .and_then(Value::as_str),
                 ) {
                     check_instance_cycle(state, object_id, master)?;
+                }
+            }
+            // **★ `parent_id` 改写也要挡环 ✗ ★**（2026-10-28）：只挡创建是不够的 ✓
+            // （与 `master_ref` 那条同一个道理 ✓）—— 先 A⇐B、再 B⇐A，每一步单看都合法 ✓。
+            // **∴ 挂在**这里**而不是 `CreateLayer` 分支 ✓**：`SetProperty` 原子根本不走那里 ✓
+            // （上一段注释里已有同一个坑的教训 ✓）。
+            if atom.payload.get("key").and_then(Value::as_str) == Some("parent_id") {
+                if let (Some(layer_id), Some(parent)) = (
+                    payload_str(&atom.payload, "layer_id"),
+                    atom.payload.get("value").and_then(Value::as_str),
+                ) {
+                    check_layer_parent_cycle(state, layer_id, parent)?;
                 }
             }
             if let Some(object_id) = payload_str(&atom.payload, "object_id") {
@@ -1668,6 +1684,59 @@ pub(crate) fn check_instance_cycle(
     Ok(())
 }
 
+/// **图层父链的成环检查** ✓（2026-10-28，审计 Batch 2）：`parent_id` 由载荷直接写入 ✓
+/// ⇒ 不挡的话 `A.parent=B` ＋ `B.parent=A` 就是一个环 ✗ ——
+/// 删除级联（`tombstone_layer` ✓）、`violations()` 与渲染侧的组遍历都要走父链 ✓，
+/// 环会让它们**无限走**（`tombstone_layer` 实测会无限增长 `targets` ✗）。
+///
+/// **只在这里判定** ✓（与 `check_instance_cycle` 同形 ✓）：创建图层 ✓ 与 `SetProperty` 改写 ✓
+/// 两条入口共用一份 ✓。**自引用**（`parent == 自己` ✓）、**走到自己** ✓、**父链本身已环** ✓、
+/// **超过 64 层** ✓ 都按环拒绝 ✓（纵深防御与实例侧同口径 ✓）。
+///
+/// **∴ 两道闸都调它（与 `check_instance_cycle` 同形 ✓）**：
+/// **提交期**在 `log::AtomLog::validate_layer_parent_cycles` ✓（那里返回 `Err` 才是**拒绝提交** ✓），
+/// **重放期**在这里的 `precondition` ✓（手工写进日志的环会被跳过并留下警告 ✓）。
+/// 只有重放期那一份是不够的 ✗：`precondition` 失败只记警告 ⇒ 原子被静默丢弃而工具返回 `ok: true` ✗。
+///
+/// **∴ 为什么写入闸之外 `violations()` 仍保留环检测 ✗**：
+/// 它还得能指认**旧数据**里的环 ✓ ⇒ 两者不冲突 ✓。
+pub(crate) fn check_layer_parent_cycle(
+    state: &DocumentState,
+    layer_id: &str,
+    parent_id: &str,
+) -> Result<()> {
+    let mut cursor = parent_id.to_owned();
+    let mut visited = std::collections::BTreeSet::new();
+    loop {
+        if cursor == layer_id {
+            return Err(err(
+                ErrorCode::InvalidArgument,
+                format!("图层父链成环：{layer_id} 以 {parent_id} 为父层时会回到自己"),
+            ));
+        }
+        if !visited.insert(cursor.clone()) {
+            return Err(err(
+                ErrorCode::InvalidArgument,
+                format!("图层父链成环：{parent_id} 所在的父链已经成环"),
+            ));
+        }
+        if visited.len() > 64 {
+            return Err(err(
+                ErrorCode::InvalidArgument,
+                "图层父链过深（超过 64 层）—— 疑似成环".to_owned(),
+            ));
+        }
+        match state
+            .layers
+            .get(&cursor)
+            .and_then(|layer| layer.parent_id.clone())
+        {
+            Some(next) => cursor = next,
+            None => break,
+        }
+    }
+    Ok(())
+}
 /// 解析**平移**形式的组变换 ✓：`{dx, dy}` ✓（设计与 `move_object` 的增量命名一致 ✓）。
 ///
 /// 其它形式（一般仿射矩阵 ✓）**显式拒绝** ✓ —— 它们需要设计 9.2 的派生解析 ✓，
@@ -1917,13 +1986,19 @@ fn apply_property_to_layer(layer: &mut Layer, key: &str, value: &Value) {
 
 /// 图层 tombstone 级联：后代图层与其中的对象一并标记，避免产生孤儿引用。
 fn tombstone_layer(state: &mut DocumentState, layer_id: &str, atom_id: &str) {
+    // **★ 必须去重 ✗ ★**（2026-10-28，审计 Batch 2）：父链可以成环 ✓（旧数据／直接写日志的原子 ✓）
+    // ⇒ 没有 `seen` 时 `targets` 会**无限增长**（同一对父子每轮各加一次 ✓）⇒ 删除一个图层就把进程拖死 ✗。
+    // 写入闸（`check_layer_parent_cycle` ✓）只保证**新**原子不成环 ✗ —— 旧文档里的环仍会走到这里 ✓。
     let mut targets = vec![layer_id.to_owned()];
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    seen.insert(layer_id.to_owned());
     let mut cursor = 0;
     while cursor < targets.len() {
         let current = targets[cursor].clone();
         cursor += 1;
         for layer in state.layers.values() {
-            if layer.parent_id.as_deref() == Some(current.as_str()) {
+            if layer.parent_id.as_deref() == Some(current.as_str()) && seen.insert(layer.id.clone())
+            {
                 targets.push(layer.id.clone());
             }
         }
@@ -2720,6 +2795,144 @@ mod tests {
         assert!(!result.state.layer_alive("layer_child"));
         assert!(!result.state.object_alive("obj_child"));
         assert!(result.state.is_consistent());
+    }
+
+    /// **父链成环的改写必须在折叠期被跳过** ✓（2026-10-28，审计 Batch 2）。
+    ///
+    /// 提交闸（`log.rs` 的 `validate_layer_parent_cycles` ✓）挡新原子 ✓；
+    /// 这一条守的是**重放期** ✓：别的客户端／旧数据直接写进日志的环不许产生状态效果 ✓。
+    /// **变异**：删掉 `precondition` 里 `parent_id` 那一段 ⇒ `g1.parent_id` 变成 `Some("g2")` ⇒
+    /// 第一条断言红 ✓（实测过 ✓）。
+    #[test]
+    fn a_parent_id_rewrite_that_closes_a_cycle_is_skipped_by_the_fold() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateLayer,
+                "a_g1",
+                json!({"layer_id": "g1", "type": "layer_group"}),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateLayer,
+                "a_g2",
+                json!({"layer_id": "g2", "parent_id": "g1"}),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::SetProperty,
+                "a_cycle",
+                json!({"layer_id": "g1", "key": "parent_id", "value": "g2"}),
+            ),
+        );
+        let folded = fold(&atoms);
+        assert_eq!(
+            folded.state.layers["g1"].parent_id, None,
+            "成环的改写不许生效"
+        );
+        assert!(
+            folded.state.is_consistent(),
+            "{:?}",
+            folded.state.violations()
+        );
+        assert!(
+            folded
+                .warnings
+                .iter()
+                .any(|w| w.atom_id == "a_cycle" && w.detail.contains("成环")),
+            "{:?}",
+            folded.warnings
+        );
+    }
+
+    /// **旧数据里的环不许把删除拖死** ✓（2026-10-28，审计 Batch 2）。
+    ///
+    /// `tombstone_layer` 按父链收集后代 ✓；没有 `seen` 时环会让 `targets` **无限增长** ✗。
+    /// **变异**：把 `seen.insert(...)` 去掉 ⇒ 本测试**不返回**（实测：10 秒后仍在跑，被 `timeout` 杀掉 ✓）。
+    #[test]
+    fn tombstoning_over_a_preexisting_parent_cycle_terminates() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateLayer,
+                "a_g1",
+                json!({"layer_id": "g1", "type": "layer_group"}),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateLayer,
+                "a_g2",
+                json!({"layer_id": "g2", "parent_id": "g1"}),
+            ),
+        );
+        let folded = fold(&atoms);
+        let mut state = folded.state;
+        // 直接改内存状态模拟旧数据（写入闸不会让这条进日志 ✓，所以只能从这里造 ✓）。
+        state.layers.get_mut("g1").unwrap().parent_id = Some("g2".to_owned());
+        let result = fold_atoms(
+            state,
+            &[atom(
+                AtomKind::Tombstone,
+                "a_del_g1",
+                json!({"layer_id": "g1"}),
+            )],
+        );
+        assert!(result.state.layers["g1"].is_deleted());
+        assert!(
+            result.state.layers["g2"].is_deleted(),
+            "环上的另一个节点也必须被级联删除"
+        );
+    }
+
+    /// **成环检查自己的四条出口** ✓（2026-10-28，审计 Batch 2）：
+    /// 走到自己 ✓、父链本身已环 ✓、深度爆掉 ✓、正常 64 层放行 ✓。
+    /// **变异**：删掉 `visited` 判重 ⇒ 「父链本身已环」那条会变成走上限／死循环 ✗；
+    /// 删掉深度上限 ⇒ 65 层那条不报错 ⇒ 红 ✓。
+    #[test]
+    fn check_layer_parent_cycle_rejects_cycles_and_depth_bombs() {
+        let mut atoms = chain();
+        for i in 0..65 {
+            let payload = if i == 0 {
+                json!({"layer_id": "l0", "type": "layer_group"})
+            } else {
+                json!({"layer_id": format!("l{i}"), "type": "layer_group", "parent_id": format!("l{}", i - 1)})
+            };
+            push(
+                &mut atoms,
+                atom(AtomKind::CreateLayer, &format!("a_l{i}"), payload),
+            );
+        }
+        let state = fold(&atoms).state;
+
+        // ① 沿着父链走回自己：把 l0 挂到 l64 下面 ⇒ l64 → … → l0 回到自己。
+        let error = check_layer_parent_cycle(&state, "l0", "l64").unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument, "{error:?}");
+        let detail = error.context.detail.clone().unwrap_or_default();
+        assert!(detail.contains("回到自己"), "{detail}");
+
+        // ② 父链本身已环（旧数据）：l0 ⇐ l2、l2 ⇐ l0，从第三方挂上去也要报。
+        let mut cyclic = state.clone();
+        cyclic.layers.get_mut("l0").unwrap().parent_id = Some("l2".to_owned());
+        cyclic.layers.get_mut("l2").unwrap().parent_id = Some("l0".to_owned());
+        let error = check_layer_parent_cycle(&cyclic, "new_layer", "l1").unwrap_err();
+        let detail = error.context.detail.clone().unwrap_or_default();
+        assert!(detail.contains("已经成环"), "{detail}");
+
+        // ③ 深度：65 层父链 ⇒ 拒绝（上限 64）。
+        let error = check_layer_parent_cycle(&state, "new_layer", "l64").unwrap_err();
+        let detail = error.context.detail.clone().unwrap_or_default();
+        assert!(detail.contains("过深"), "{detail}");
+
+        // ④ 64 层父链（l0..l63）⇒ 放行。
+        assert!(check_layer_parent_cycle(&state, "new_layer", "l63").is_ok());
     }
 
     #[test]

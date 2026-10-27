@@ -690,3 +690,28 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    "single-page-application"` 回落成 `index.html`（200 ＋ 759113 字节 ＋ `text/html`）。
    原因：10-17 起的 PWA run 全失败（`2e711439`／`a720cad9`／`4b534cf1` 看门狗／`6a0d8ea9` 本核对）
    ⇒ 期间没有任何一次成功部署。修好的判据对线上如实报 exit 1 ✓（不是判据自己坏）。
+
+73. **审计 Batch 2（前半）：解压炸弹与图层父链成环**（2026-10-28 ✓）：
+   ① **`zlib_decompress` 没有输出上限** ✗：上传端只限**压缩**字节（缺省 256 MiB），
+   几 MB 的流可以 inflate 成几十 GB ⇒ OOM。**修法**：
+   `MAX_INFLATE_BYTES = 1 GiB + 1 MiB`，`take(cap + 1)` 有界读 ⇒ **超出即 `None`**
+   （不返回前缀冒充成功 ✗）；上限口径 = `MAX_DECODE_PIXELS × 4 + MAX_DECODE_EDGE`（合法最大 PNG 扫描线）＋ 余量。
+   **判据**：`zlib_decompress_refuses_output_over_the_cap`（恰好等于上限可解、少 1 字节即拒）＋
+   **编译期恒等式**（`const _: () = assert!(…)`：上限 ≥ 最大合法扫描线且 < 2 GiB）。
+   **变异**：`>` 改 `>=` ⇒ 运行期判据红 ✓；上限改成 `1 << 30`（少 1 MiB 余量）⇒ `cargo check` 报
+   `E0080: evaluation panicked: assertion failed` ⇒ 退出码 101 ✓（都是实测 ✓）。
+   ② **图层父链成环** ✗：`SetProperty(parent_id)` 与"墓碑 id 重建"都能造出 `A⇐B⇐A`，
+   而 `tombstone_layer` 收集后代时没有去重 ⇒ `targets` **无限增长**（删除一个图层拖死进程 ✗）。
+   **修法（三道）**：`check_layer_parent_cycle`（visited ＋ 64 层上限）同时挂**提交闸**
+   `validate_layer_parent_cycles`（`CreateLayer.parent_id` 与 `SetProperty(key=parent_id)` 两条入口 ✓）
+   与**折叠闸** `precondition`（重放期纵深防御 ✓）；`tombstone_layer` 加 `seen` 去重。
+   **判据**：`commit_rejects_a_parent_id_rewrite_that_closes_a_cycle`、
+   `commit_rejects_recreating_a_layer_under_its_own_descendant`、
+   `a_parent_id_rewrite_that_closes_a_cycle_is_skipped_by_the_fold`、
+   `tombstoning_over_a_preexisting_parent_cycle_terminates`、
+   `check_layer_parent_cycle_rejects_cycles_and_depth_bombs`。
+   **变异（四条，实测）**：删提交闸调用 ⇒ 两条 `commit_*` 红 ✓；删折叠闸 ⇒ 折叠测试红 ✓；
+   删深度上限 ⇒ 深度断言红 ✓；删 `seen` ⇒ 终止测试**不返回**（`timeout 5` ⇒ 退出码 124、无 `test result` 行 ✓）。
+   ③ **仍未做（Batch 2 后半）**：`plan_dirty_with_log` 迭代化 ＋ `MAX_REVERT_DEPTH`、
+   `buffer.rs` usize 饱和运算 ＋ 像素上限、`apply_filter`／padding 共用 clamp、
+   `ATTEMPTS` 上限与 `/tmp/yanshi-attempts` 启动清理、`EXPORT_RESULT_CACHE`／`EXPORT_PROOF_CACHE` 上限。
