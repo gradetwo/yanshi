@@ -120,7 +120,6 @@ Reproduce a raster illustration or logo as clean, vector-style artwork in yanshi
 ## Text Assembly
 
 - **Read the export receipt before assembling text — since draw-text ③ (2026-10-27) `export_svg` emits real `<text>` itself.** `draw_text` with a true font from the OFL allowlist records text provenance and the export inlines the font subset as `@font-face`; the receipt counts the three destinations (texts_vector / texts_raster_fallback / texts_builtin_raster) and warns per object with the reason. Text still rasterizes into `<image>` in three cases: `font=builtin` (bitmap glyphs, no outlines), a family outside the allowlist (font_license_unknown), and a non-translation object transform (text_transform_not_translation). Assemble manually (below) only for those; when the receipt reports every text as texts_vector, the raw engine export already carries real text. Text colour: only the hex form is verified sRGB — see the colour-space rule in Phase 3; do not carry the numeric-array rule over from `draw_shape` untested.
-- **Text fidelity with embedded subset fonts must be checked in a conformant renderer (a browser), not a rasterizer.** A rasterizer that cannot load embedded subset fonts silently falls back — thin glyphs, tofu boxes for non-Latin scripts — and the check then passes a broken render.
 - **Assembly procedure (only for the raster-fallback cases above).** (1) Drive the text with `draw_text` in the engine doc as usual — the raster placeholders give you the text's position and a rendered copy to measure against. (2) Export the engine SVG and locate the raster `<image>` elements (one per text call — identify each by its `y` attribute, which is the text's row). (3) Replace each image with real `<text>`: display lettering gets one `<text>` per letter; a CJK line gets one `<text>` per line. (4) Verify: assert 0 `<image>` remain and the `<text>` count equals the text inventory; render the assembled SVG locally (cairosvg) and check display letters' bboxes against the reference within ≤4 px and CJK lines pixel-identical to the reference. Measure with tight windows — a wide window's neighbouring pixels contaminate the measurement and fake a size error. The engine PNG and the assembled SVG's text layer are verified separately: the engine render never shows the real text.
 - **Letter placement (display lettering).** Measure each letter's reference bbox (x, y, w, h). The letter's centre x is the reference bbox centre (`text-anchor="middle"`); baseline y = glyph_top + K·size, where glyph_top is the letter's measured ink top and K is the ink-top-to-baseline fraction for that letter in that font. `font-weight="700"`, `font-size` = the calibrated size. K is per letter per font — measure it for the font you use (baseline − ink top, divided by size); never reuse another font's K. Measured K for Fredoka Bold: C 0.60; o/n/a/s/r 0.42–0.43; g 0.43; t 0.57; ! (Titan One) 0.70. The assembled `<text>` is rendered by a different renderer than the engine, and the two rulers differ: the same nominal size renders wider and taller in the assembly renderer — re-measure advance and height with the assembly renderer (one isolated render per text class) and fit width and height separately with scaleX/scaleY. And the engine scales glyphs by line height (ascent − descent), not by the nominal size: the assembled font-size is the effective size (nominal size × upem / line height), and the effective size (or the line-height ratio) is recorded in the text provenance.
 - **`draw_text` position semantics (needed to get from engine coordinates to assembly coordinates).** `position` is the **em-box top-left**, not the glyph box: the rendered glyph box sits offset from it by about +2·(size/120) horizontally and +2.5·(size/120) vertically (CJK about +3). A letter's centre x = draw_x + 2·(size/120) + render_w/2, where render_w is the rendered letter width. For CJK lines: x = the em-box left (the `draw_text` position), baseline y = glyph_top + 0.62·size. Both `[x, y]` and `{x, y}` are accepted on the true-font path (the object form used to be silently ignored — fixed 2026-10-27); the receipt echoes the normalized `position` so you can prove the argument was read.
@@ -142,7 +141,6 @@ Rules: colors sampled per region; a shading layer that pixel-sampling proves doe
 - **Small 3D props are drawn facet by facet.** For a small three-dimensional prop (a chest, a box, a cup), draw each face as its own measured flat fill — bright top, dark underside, side faces, shadow line under a band — and draw the hardware (clasps, gems, bands, buckles) as separate small measured shapes, back to front. Check at 3× that every face the reference shows is present; "reads as the prop at 1:1" is not the bar, every measured face is. A face's color is measured across the face — a single-pixel edge color is anti-aliasing, not a face; painting it as a face puts a false patch on the artwork.
 - **Form-defining shading is not decorative shading.** A soft shadow that gives a part its volume must be kept: add 1–2 mid-tone flat steps sampled from the measured light and dark ends, or a true gradient where the field supports it (see the next rule). Dropping it is allowed only if the triptych shows the part reads the same volume without it. "Clean beats strong" governs decoration; it never licenses removing volume.
 - **A true gradient is used only where the field is a measured smooth field — and it is an assembled-SVG gradient, never the engine's gradient tool.** Use it when the color field varies smoothly along one axis: measure the field along its gradient axis (value as a function of position along the axis, nearly independent of the cross-axis coordinate), and express it as one multi-stop linearGradient along that measured axis, with stops from smoothed measured values (bin medians, three-point smoothing, outliers beyond ~8 units replaced — never encode sensor noise as gradient jitter). The gradient lives in the assembled/exported SVG: the engine document holds a flat mid-tone color for the part, and assembly matches the part to its gradient by exact normalized path data (a bbox-and-color match collides with same-colored flat strips — verify the match count and assert the gradient parts matched). Clamp beyond the last stop — never extrapolate past the measured field. This does not contradict the vector-safe rule above: the engine's `gradient_fill` tool rasterizes and is never the mechanism; the multi-stop gradient in the exported SVG is. Acceptance for a gradient field: row-mean absolute difference against the reference, plus the widest ≥5-unit vertical run — a true horizontal line is a run tens of px wide, while a smooth vertical slope of ~2–3 units and narrow runs at a moving slanted edge are benign; do not confuse them.
-- **Stacked hard-edged translucent bands faking a smooth field leave step edges at 3× — use one shape with a multi-stop gradient.** Bands are not a smooth field: at zoom the steps read as stripes. This is the same gradient rule as above, applied as a negative diagnostic — if the field shows steps, the representation is wrong, not the stops.
 - **Recognize a dome field before choosing a representation — the recognition is the method, not the gradient.** The signals, checked before any band is drawn: (a) the part's color field varies smoothly along one axis — value as a function of position along the axis, nearly independent of the cross-axis coordinate (a measured S-curve, not a step); (b) the bright peak is a few px wide and drifts ~1 px per row — a highlight that moves as it runs down the part; (c) the part's form is a dome — a rounded top with a bright plateau falling to a darker base, judged from the silhouette and the field together. When those signals are present, go straight to the smooth-gradient dome representation (multi-stop linearGradient along the measured slanted axis, stops from smoothed measured values, edge-falloff covers measured per side after the occlusion check). Do not start with 1 px bands + pinned edges: the band representation has a proven limit at a sharp moving highlight, and the four pinning variants are dead ends — starting from bands costs a full round and ends at the same gradient. The failure mode to watch for is drawing a flat slab with a bright stripe where the reference has a rounded dome: if the bright region's silhouette is a dome, the shape itself must be a dome — a slab reads flat and angular at 3×, and no amount of feathering on the stripe fixes the form.
 - **Bands have a representation limit at a sharp moving highlight — when pinning fails, change the representation.** A highlight peak a few px wide that moves ~1 px per row defeats 1 px bands with pinned edges: pinned-edge consistency and vertical continuity cannot both be met. Four pinning variants are proven dead ends — pinning to the profile midpoint (consistency returns in full), narrowing the columns (continuity worsens), adaptive splitting (does not converge), birth feathering (both worsen) — do not retry them. Switch the representation to the smooth-gradient form above; do not try another pinning variant.
 - **A transition boundary is measured point by point, never fitted by a three-point line.** A boundary that curves (a U-shaped boundary can sit 10 rows off its straight fit) makes a straight-fitted base wrong by ~19 units at the edge. Measure the boundary position at intervals along its run and use the measured curve; a correction band (next rule but one) is the patch for a straight model, not a substitute for measuring.
@@ -156,7 +154,6 @@ Rules: colors sampled per region; a shading layer that pixel-sampling proves doe
 - Delete any traced version of the feature entirely. Rebuild generatively from measurements: footprint (center, radii, tilt) fitted to the reference's visible extent; color extrapolated from the sampled center color along its saturation falloff vector (pigment color is deeper than the rendered center, which is already diluted by the skin/base beneath).
 - Construction: ≥4 concentric tiers of low-opacity ellipses/shapes, outermost tier fading to invisibility against the base color. Size the footprint from the reference's measured halo extent — not from the feature's core: a blush's visible wash is far wider than its deepest core, and sizing by the core leaves a small hard sticker. Step the opacity down tier by tier and verify the falloff against the reference's measured falloff (e.g. a scanline's color-difference profile) at zoom. Path-mask feathering is not the softening mechanism here — it rasterizes on export (see Phase 4).
 - **Tier targets (measured).** A blush is 6 tiers, radii 0.30/0.45/0.60/0.74/0.87/1.00 of the footprint, per-tier alpha 69/56/43/33/23/13 (0–255), so the stacked composite opacity is ~0.65 at the centre fading to ~0.05 at the edge. If the centre reads too strong, lower the composite opacity, not the tier count — fewer tiers harden the falloff.
-- **A soft radial falloff needs small value steps between tiers (≤3 units) and enough tiers (≥8–10 for a wide field).** Six tiers with ~13-unit steps show rings at 3×. Step ≤3 is the key quantity — but it is necessary, not sufficient: faint concentric layering can remain visible at 3× even at step ≤3, so the falloff still needs its own 3× check. (The 6-tier schedule above was measured on a small feature with smaller alpha steps; for a wider field use ≥8–10 tiers with ≤3-unit steps.)
 - Acceptance: crop the feature at high zoom against the reference — hue, position, size, and falloff softness must all match; render-verify the composited center color against the reference center.
 - **Sample a soft feature's center away from neighboring strong colors.** Exclude neighboring strong-color parts' masks before sampling the center color, and if the center lands on a strong color, shift away from it until the target color's share in the sampling window is adequate — a center sampled on a neighboring strong part tints the whole feature with that part's color.
 - Draw facial features (eyes, beak) *above* the soft feature so it never tints them.
@@ -291,15 +288,15 @@ appendix only. C档 = decided, rule in the body.
 
 **B11. A thin stroke that renders thin is corrected by outlining outward 0.5 px — not by translating the shape.** Outer ring outward, hole ring toward the hole's center — both fatten the ink; translating the shape moves it off its measured position and measures worse (v5.3 correction of the v5.2 'offset by half a pixel' wording, which did not say which direction). → v5.3: promoted to Phase 3.
 
-**B12. Stacked hard-edged translucent bands faking a smooth field leave step edges at 3× — use one shape with a multi-stop gradient.** This confirms the existing Phase 4 gradient rule on a new illustration class (the rule itself was distilled from earlier dome work on the same image family — confirmation, not an independent second class for the rule). → v5.3: promoted to Phase 4. Evidence note: the second verification is the same image, second round (different parts) — an independent second image class is still owed; see R4.
+**B12. Stacked hard-edged translucent bands faking a smooth field leave step edges at 3× — use one shape with a multi-stop gradient.** This confirms the existing Phase 4 gradient rule on a new illustration class (the rule itself was distilled from earlier dome work on the same image family — confirmation, not an independent second class for the rule). → v5.3: stays in the appendix; see R4 for what verification is still missing.
 
-**B13. A soft radial falloff needs ≥8–10 tiers with small alpha steps; 6 tiers with ~13-unit steps show rings at 3×.** The key quantity is the value step between tiers (≤3 units); 8 tiers at step ~6–7 still ring at 3×, 10 tiers at step 2–3 largely smooths — but step ≤3 is necessary, not sufficient: faint concentric layering can remain visible at 3×. The existing Phase 5 6-tier schedule was measured on a small feature with smaller alpha steps; for a wider field use ≥8–10 tiers with ≤3-unit steps. → v5.3: promoted to Phase 5. Evidence note: the second verification is the same image, second round — an independent second image class is still owed; see R4.
+**B13. A soft radial falloff needs ≥8–10 tiers with small alpha steps; 6 tiers with ~13-unit steps show rings at 3×.** Tension with the existing Phase 5 blush rule (6 tiers, alpha 69/56/43/33/23/13): the blush tiers use smaller alpha steps and a different radius schedule, and the 6-tier rule was measured on blush. Needs a second class and a direct comparison against the Phase 5 schedule before any body change. → v5.3: stays in the appendix; see R4 for what verification is still missing.
 
 **B14. Fitting a smooth closed outline with a hard-corner threshold near 35° facets large shapes at 3× — raise it near 50° with a larger tolerance.** Tension with the existing Phase 3 table (large parts: corner_angle 30°). Needs a second class before the table is revised. → v5.3: stays in the appendix; see R4 for what verification is still missing.
 
 **B15. When a display face's cap/x-height ratio differs from the reference's by >1.3×, one size cannot match both height and width — use per-glyph geometric-mean sizing.** Per-glyph geometric-mean sizing splits the error. → v5.3: promoted to Text Assembly (second class: display lettering; third verification: a second text class).
 
-**B16. Text fidelity with embedded subset fonts must be checked in a conformant renderer (browser), not a rasterizer.** A rasterizer that cannot load embedded subset fonts silently falls back (thin glyphs, tofu boxes for non-Latin scripts). Verified by rasterizer-vs-browser renders of the same file (rasterizer: thin fallback + tofu; browser: correct). → v5.3: promoted to Text Assembly. Evidence note: the second verification is the same image, second round — an independent second image class is still owed; see R4.
+**B16. Text fidelity with embedded subset fonts must be checked in a conformant renderer (browser), not a rasterizer.** A rasterizer that cannot load embedded subset fonts silently falls back (thin glyphs, tofu boxes for non-Latin scripts). Verified by rasterizer-vs-browser renders of the same file (rasterizer: thin fallback + tofu; browser: correct). → v5.3: stays in the appendix; see R4 for what verification is still missing.
 
 **B17. A concave boundary makes the backing vulnerable — patch with a backing shape.** When a union's contour dips inward at a part boundary, a backing shape assumed covered can show through a 1 px gap; patch with a backing shape spanning the region. Wording correction (v5.3): 'concavity makes the backing vulnerable', not 'concavity = hole'. → v5.3: promoted to Phase 3.
 
@@ -353,7 +350,7 @@ contract, the correct writings, and the probe. The engine silently
 accepting unknown fields is an engine-side issue (loud rejection would
 be the fix); this round corrects the skill only.
 
-### Promoted to the body (16)
+### Promoted to the body (13)
 
 | 编号 | 并入位置 | 佐证图类 |
 |---|---|---|
@@ -366,15 +363,12 @@ be the fix); this round corrects the skill only.
 | B8 | Stop Rule | wordmark (round 3) + all GT images (round 4); anchor-robustness caveat added |
 | B9 | Phase 3 | gt3 (round 3) + wordmark (round 4); weak/conditional — trigger-gated (single-cubic maxerr > ~0.5 px) |
 | B11 | Phase 3 | gt3 (round 3) + wordmark (round 4); remedy corrected to outward outset 0.5 px, not translation |
-| B12 | Phase 4 | penguin (round 3) + penguin (round 4, different parts) — same image, NOT two independent classes; see the flag below |
-| B13 | Phase 5 | penguin (round 3) + penguin (round 4) — same image, NOT two independent classes; step ≤3 necessary not sufficient |
 | B15 | Text Assembly | penguin (round 3) + wordmark (round 4) + penguin re-verified (round 4, third verification) |
-| B16 | Text Assembly | penguin (round 3) + penguin (round 4) — same image, NOT two independent classes; see the flag below |
 | B17 | Phase 3 | penguin (round 3) + fox (round 4); wording corrected to "concavity makes the backing vulnerable" |
 | B19 | Phase 0 | github (round 3) + all GT images (round 4) |
 | B20 | — (already in Phase 3 verbatim; no new body text) | github (round 3) + gt3 (round 4); the ~0.25 px sub-assertion is withdrawn |
 
-### Held in the appendix (4) — what verification is still missing
+### Held in the appendix (7) — what verification is still missing
 
 **B5. Fine-dot density as an independent acceptance item.** Round-4
 evidence: the density term is NOT TESTABLE on the verification image —
@@ -390,6 +384,22 @@ to the edge, 6 neutral, 0 overshoot — overshoot not reproduced. Still
 missing: a targeted counter-example class where compensation measurably
 overshoots a concave vertex.
 
+**B12. Stacked hard-edged translucent bands faking a smooth field leave
+step edges at 3× — use one shape with a multi-stop gradient.** Round-4
+evidence: penguin round 3 + penguin round 4 (different parts) — same
+image, not two independent classes; the rule confirms the Phase 4
+gradient rule as a negative diagnostic. Still missing: a second image
+class with layered translucent bands faking a smooth field.
+
+**B13. A soft radial falloff needs ≥8–10 tiers with small alpha steps;
+6 tiers with ~13-unit steps show rings at 3×.** Round-4 evidence:
+penguin only; the key quantity was measured (value step ≤3 units; 8
+tiers at step ~6–7 still ring at 3×; 10 tiers at step 2–3 largely
+smooths) — but step ≤3 is necessary, not sufficient: faint concentric
+layering can remain visible at 3×. Still missing: a second image class
+with a soft radial falloff over a wide field, plus a direct comparison
+against the Phase 5 6-tier schedule.
+
 **B14. Fitting a smooth closed outline with a hard-corner threshold
 near 50°.** Round-4 evidence: 30° vs 50° showed no visible
 polygonization at 3× and 50° measured worse throughout; the angle must
@@ -397,6 +407,13 @@ be a run-split threshold, not a drop filter (the drop implementation was
 disproved by render: area −9.5%, max deviation 32 px). A single-class
 45° application does not confirm the general rule. Still missing: an arc
 whose chord angle falls in the 35–50° band.
+
+**B16. Text fidelity with embedded subset fonts must be checked in a
+conformant renderer (browser), not a rasterizer.** Round-4 evidence:
+penguin only (rasterizer-vs-browser renders of the same file:
+thin fallback + tofu vs correct). Still missing: a second image class
+with embedded subset-font text, checked in a conformant renderer
+against a rasterizer.
 
 **B18. Seemingly circular contours may not be ideal circles — fit arcs
 per segment.** Round-4 evidence: the verification disc is a true circle
@@ -407,12 +424,14 @@ Still missing: a non-circular / elliptical disc class.
 
 ### Honest notes (v5.3)
 
-- B12 / B13 / B16 are promoted per the round-4 report §3, but their
-  second verification is the same image in a second round (different
-  parts), not an independent image class — the ≥2-independent-classes
-  gate is not met for these three. A second image class is still owed;
-  the body rules carry their caveats and this appendix records the gap.
-- B9 is a weak/conditional promotion (trigger-gated); B13's step ≤3 is
-  necessary, not sufficient (faint layering can remain at 3×).
+- B12 / B13 / B16 stay in the appendix in v5.3: their second
+  verification is the same image in a second round (different parts),
+  not an independent image class — the ≥2-independent-classes gate is
+  not met. Promotion is deferred to the next version, after an
+  independent second image class verifies each rule; see the held
+  table above.
+- B9 is a weak/conditional promotion (trigger-gated). B13 (held) — its
+  step ≤3 is necessary, not sufficient (faint layering can remain
+  at 3×).
 - Round-4 quality: 8/9 independent eye PASS (penguin NOT PASS);
   round-4 time ~153' vs the <100' target (missed).
