@@ -19705,6 +19705,7 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     //   并且 `total` 是**过滤之后**的匹配总数 ✓（不是日志条数 ✓）。
     let offset = optional_count(args, "offset")?.unwrap_or(0) as usize;
     let mut matched = 0usize;
+    let mut hidden_non_stroke = 0usize;
     let mut hits: Vec<Value> = Vec::new();
     for atom in document.log().atoms().iter().rev() {
         // **多收一条**，用来判断"还有没有下一页" ✓（第 732 轮；外部审计 S-07 第 ② 项）
@@ -19743,9 +19744,7 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         }
         // **缺省只列笔迹** ✓（外部 §110 实测：`seq=2` 是 `create_layer`，没有笔刷名 ⇒ 让人误以为
         // 同一支笔有一笔记不上 brush ✗）⇒ **∴ 非笔迹原子**要**显式要**才列**✗** ✓
-        if !include_non_stroke && atom.payload.get("source").is_none() {
-            continue;
-        }
+        //   ⇒ 计数见下面全部过滤器之后的 `hidden_non_stroke`（位置不能提前，见该处注释）✓
         // 已撤销的不列（缺省行为；调用方找到坏笔后 revert，它就该消失）
         if reverted.contains(&atom.id.to_string()) {
             continue;
@@ -19774,6 +19773,17 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             if !brush.contains(needle.as_str()) {
                 continue;
             }
+        }
+        // **非笔迹原子缺省不列，但要数出来** ✓：`hidden_non_stroke` = 符合其余全部筛选、
+        //   只因缺省过滤被藏掉的原子数 ⇒ `total=0` 时调用方能看见「不是没有原子，
+        //   是被过滤藏掉了」，不再误判 drive 没落下而重驱叠加 ✓
+        //   **⇒ 不变量**：`total + hidden_non_stroke` = 加 `include_non_stroke=true` 时的
+        //     `total`（同一套其余筛选）✓；缺省值与过滤行为本身不动 ✓。
+        //   **⇒ 位置**：必须在**全部其余过滤器之后**（第 779 轮 P2-4 的教训：数只能落在
+        //     过滤之后，否则记账原子／框外原子会被多算进来）✓。
+        if !include_non_stroke && atom.payload.get("source").is_none() {
+            hidden_non_stroke += 1;
+            continue;
         }
         // **过滤之后的第几条** ✓：先跳 `offset`，再收 `limit` ✓
         matched += 1;
@@ -19890,6 +19900,11 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         //   **⇒ 为什么原来没有**：`count` 是**这一页**的条数 ✓，与"总共有多少"是两件事 ✓
         //     ⇒ 大图上二者差几十倍 ✓ ⇒ 只给 `count` 等于**不给** ✓。
         "total": matched,
+        // **`hidden_non_stroke` ＝ 被缺省过滤藏掉的非笔迹原子数** ✓（见循环内计数处）：
+        //   缺省调用 `total=0` 时它说清「不是没有原子，是被过滤藏掉了」⇒ 调用方
+        //   该传 `include_non_stroke=true` 再看，而不是重驱 ✓；`include_non_stroke=true`
+        //   时无物可藏，恒为 0 ✓。
+        "hidden_non_stroke": hidden_non_stroke,
         "offset": offset,
         "truncated": truncated,
         "has_more": truncated,

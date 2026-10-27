@@ -1949,6 +1949,11 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         "ok": true,
         "path": path.display().to_string(),
         "bytes": svg.len(),
+        // **`sha256` 与 `export_png` 对齐** ✓：同一套确定性校验（两次导出是否逐字节相同）
+        //   才能落在 SVG 上 ⇒ 不再出现「SVG 回执恒读空 sha256 ⇒ 以为导出失败」的
+        //   误读（第 1542 轮的 PNG 字段同款；`BlobHash::from_bytes` 是同一套 SHA-256 ✓）。
+        //   **⇒ 纯增量**：只多一个字段，**不改任何既有行为** ✓
+        "sha256": yanshi_core::BlobHash::from_bytes(svg.as_bytes()).to_string(),
         "width": canvas_w,
         "height": canvas_h,
         "validated": validate,

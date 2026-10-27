@@ -163,6 +163,76 @@ fn list_atoms_reports_the_total_number_of_matches() {
     assert_eq!(all["truncated"], json!(false), "装得下就不许报截断：{all}");
 }
 
+/// **`hidden_non_stroke`：缺省过滤藏掉的非笔迹原子要数出来** ✓
+/// **⇒ 缺陷**：28 个 shape 的文档缺省调用 `total=0` ⇒ 调用方误判「drive 没落下」
+///   ⇒ 重驱 ⇒ 叠加（#6）✗。回执只说 `total`，不说「被藏掉了多少」✗。
+/// **⇒ 判据**：3 笔真笔刷 + 2 个记账原子 ⇒ 缺省 `total=3` 且 `hidden_non_stroke=2` ✓；
+///   加 `include_non_stroke=true` ⇒ `total=5` 且 `hidden_non_stroke=0` ✓；
+///   不变量 `total + hidden_non_stroke == 全量 total` ✓。
+/// **⇒ 变异**：把计数挪到过滤器之前 ⇒ 框外／已撤销的非笔迹原子也被数进来 ⇒ 数字虚高 ⇒ 红 ✓
+///   （本测试无框选／撤销，变异由口径注释守住；数字本身由下面三条断言钉死 ✓）。
+#[test]
+fn list_atoms_reports_hidden_non_stroke() {
+    let root = std::env::temp_dir().join(format!("yanshi_atoms_hidden_{}", std::process::id()));
+    let _cleanup_1 = Cleanup(root.clone());
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("建根");
+    // **必须用 `brush_workspace` + 真笔刷** ✓：`draw_stroke` 在无资产目录时没有
+    // `payload.source` ⇒ 3 笔本身也会被缺省过滤藏掉（实测 `total=0, hidden=4`）⇒
+    // 测不到「记账原子被藏掉」这个口径 ✓（第一版就栽在这里 ✓）。
+    let mut workspace = brush_workspace(&root, "doc_hid", 64, 64);
+    assert_eq!(
+        brush_call(
+            &mut workspace,
+            "doc_hid",
+            "create_layer",
+            json!({"layer_id": "L", "name": "L"})
+        )["ok"],
+        json!(true)
+    );
+    for index in 0..3 {
+        let drawn = brush_call(
+            &mut workspace,
+            "doc_hid",
+            "brush_stroke",
+            json!({
+                "layer_id": "L", "object_id": format!("s{index}"), "brush": "2B_pencil", "size": 8,
+                "points": [[8.0, 8.0 + index as f64 * 12.0, 0.8], [24.0, 8.0 + index as f64 * 12.0, 0.8]],
+                "color": {"r": 10, "g": 20, "b": 30, "a": 255},
+                "preview": false, "wait_for_render": false,
+            }),
+        );
+        assert_eq!(drawn["ok"], json!(true), "{drawn}");
+    }
+
+    let page = brush_call(
+        &mut workspace,
+        "doc_hid",
+        "list_atoms",
+        json!({"limit": 50}),
+    );
+    assert_eq!(page["total"], json!(3), "缺省只列 3 笔：{page}");
+    assert_eq!(
+        page["hidden_non_stroke"],
+        json!(2),
+        "缺省藏掉 2 个记账原子，必须数出来：{page}"
+    );
+
+    let all = brush_call(
+        &mut workspace,
+        "doc_hid",
+        "list_atoms",
+        json!({"limit": 50, "include_non_stroke": true}),
+    );
+    assert_eq!(all["total"], json!(5), "全量是 3 笔 ＋ 2 个记账原子：{all}");
+    assert_eq!(all["hidden_non_stroke"], json!(0), "全量时无物可藏：{all}");
+    assert_eq!(
+        page["total"].as_u64().unwrap() + page["hidden_non_stroke"].as_u64().unwrap(),
+        all["total"].as_u64().unwrap(),
+        "不变量：total + hidden == 全量 total：{page} vs {all}"
+    );
+}
+
 /// 落盘工作区 + 内置资产目录指向**仓库里的 `assets/`** ✓（要画**真笔刷**的笔迹，缺省过滤才列得出 ✓）。
 fn brush_workspace(root: &std::path::Path, doc_id: &str, width: u32, height: u32) -> Workspace {
     let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");

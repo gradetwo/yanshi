@@ -274,6 +274,12 @@ fn vector_layer_end_to_end() {
     let second_bytes = std::fs::read(&svg_path2).unwrap();
     assert_eq!(first_bytes, second_bytes, "两次导出的 SVG 必须逐字节一致");
     assert!(!first_bytes.is_empty());
+
+    // ⑫ `export_svg` 回执带 `sha256`（与 `export_png` 对齐 ✓）：两次导出同一哈希，
+    //   且与落盘文件的实际哈希一致 ⇒ 调用方不必读文件就能断言确定性 ✓。
+    let expect_sha256 = yanshi_core::BlobHash::from_bytes(&first_bytes).to_string();
+    assert_eq!(svg["sha256"], json!(expect_sha256), "{svg}");
+    assert_eq!(svg2["sha256"], json!(expect_sha256), "{svg2}");
 }
 
 /// 对照组：**raster** 图层的笔在 export_svg 里仍走事后转换
