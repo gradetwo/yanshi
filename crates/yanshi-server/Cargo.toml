@@ -46,7 +46,7 @@ ab_glyph = "0.2"
 #     （体积仍远小于 512KB 上限 ✓）；CJK 子集 ~38KB。
 #   ＋ **确定性**：同一输入 ⇒ 同一子集字节（两次 sha256 相同，2026-10-27 实测 ✓）。
 #   ＋ **平台**：纯 Rust，只加在 `yanshi-server` ⇒ 不进 `yanshi-render`／`yanshi-wasm` ✓。
-#   ＋ **供应链**：`allsorts` 0.17（2026-05，MIT／Apache-2.0，Prince 自 2019 年生产使用 ✓）；
+#   ＋ **供应链**：`allsorts` 0.17（2026-05，Apache-2.0（crates.io 元数据；2026-10-27 核），Prince 自 2019 年生产使用 ✓）；
 #     备选 `subsetter`（Typst 血统）对照实测过：CFF 子集缺 cmap ⇒ `@font-face` 不可用 ✗，
 #     故不用；`hb-subset` 需 C++ 构建 ✗、`write-fonts` 不是子集器 ✗，均不进实测。
 #   ＋ **构建时间**：首次编译见提交信息（不如实报就不写 ✓）。
