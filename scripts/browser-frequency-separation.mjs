@@ -426,20 +426,28 @@ if (!(await waitPanelWired())) {
 }
 const atomsBefore8 = await atomCount();
 const layersBefore8 = (await layerRows()).length;
-await pick("layer_ok");
-await run();
+const picked8 = await pick("layer_ok");
+const clicked8 = await run();
 let info8 = "";
 for (let i = 0; i < 80; i += 1) {
   read1 = await cardText();
   info8 = read1.info || "";
   if (info8) break;
   await sleep(250);
+  // **有界再按**（与 fill-region ② 同族教训 ✓，CI `40505569696` 的 `{page:""}` 红）：
+  //   接线探针过了也可能有一瞬点击落在刷新忙窗里空转 ⇒ 每 1 秒补按一次 ✗→✓ ⇒
+  //   两次都空才算红。**分离是幂等建组**（每次新组）⇒ 补按不会伪造"层数变多"之外的证据 ✓。
+  if (i % 4 === 3) await run();
 }
 const layers8 = (await layerRows()).length;
 if (/本地内核/.test(info8)) {
   bad("请求会落到服务端，界面却谎称本地内核缺端点（新契约下的反向假归因）", info8);
 } else if (!/半径 /.test(info8)) {
-  bad("勾掉服务器渲染后分离没有念出服务端回执（卡片空或文案不对）", { page: info8 });
+  // **失败详情带方向证据** ✓（第 230 轮 ✓，CI `{page:""}` 那轮只给了空串读不出"没出门"还是"出了门没念"✗）：
+  //   `pick`／`click` 证明控件在不在位，`layers`／`atoms` 差值证明请求出没出门 ⇒ 下次红一眼定性 ✓。
+  bad("勾掉服务器渲染后分离没有念出服务端回执（卡片空或文案不对）",
+      { page: info8, pick: picked8, click: clicked8,
+        layers: layersBefore8 + "⇒" + layers8, atoms: (await atomCount()) - atomsBefore8 });
 } else if (!(layers8 > layersBefore8)) {
   bad("勾掉服务器渲染后分离没有真的落到服务端（层数没变）", { layers: layersBefore8 + "⇒" + layers8, page: info8.slice(0, 60) });
 } else {
