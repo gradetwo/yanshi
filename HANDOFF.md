@@ -1,6 +1,6 @@
 # 工作交接（截至 2026-10-27，vector-tracing v5.1、MCP receipts 与 draw_text 真文本合并后）
 
-**仓库**：`/home/crow/yanshi`（分支 `main`）｜**HEAD**：`1d251991`（`docs:` 提交会再加一个）｜推送：`git push git@github.com:gradetwo/yanshi.git main`
+**仓库**：`/home/crow/yanshi`（分支 `main`）｜**HEAD**：`3c8cf8cd`（draw_text 真文本 ＋ raw 注册表守卫修；CI `40460340849` **全绿**，仅 `brush parity` 按约定 skip）｜推送：`git push git@github.com:gradetwo/yanshi.git main`
 
 ## 一、每轮第一件事：比两份外部报告
 
@@ -263,6 +263,18 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    `check-skill-tool-names` ✓（93 标识符｜206 工具｜**260 参数**）。
    **本机未覆盖**：Fredoka／Baloo 本机未装 ⇒ 只对 Inter 与 Noto CJK SC 做了端到端；
    GPOS 字距丢失是已知代价；全量测试留 CI。
+   **★ 补丁漏改的第三处（本机测试口径没覆盖到 ⇒ CI 首跑才暴露）**：`raw_import.rs:594` 的
+   `registry_diff_is_exactly_the_raw_options_group` 仍期待 raw-on `import_image` 恰 6 个参数
+   （`bitmap/layer_id/medium/object_id/raw_options/region`），而补丁**同时**在两个变体注册了
+   `text_provenance` ⇒ 实到 7 个。作者只更新了 `raw_registry_guard_off`（关变体），漏了开变体。
+   **CI 首跑 `40460044012`（`125cce35`）**：`test (stable)` 的 **RAW-feature 步**红 ——
+   `left: [.., "text_provenance"]`（7 项）｜`right: [..]`（6 项）｜该文件 11 passed / 1 failed；
+   **其余 11 个 job 全绿**（含 `test (beta)` —— 因为 RAW 步带 `if: matrix.rust == 'stable'`），
+   `brush parity` skip。**修复 `3c8cf8cd`**：期望集加入 `text_provenance`（与实到集合逐项一致），
+   并把平台注释的「基线五项」改成「基线各项」（避免写会过期的数字）。
+   **CI `40460340849`（`3c8cf8cd`）**：**13/13 job 全绿**（`rustfmt`／`clippy`／`test (stable)`／
+   `test (beta)`／`GPU feature`／`wasm smoke`／criteria 6 片），仅 `brush parity` 按约定 skip
+   ⇒ **本包合并完成，主干绿**。
 
 ## 三、下一步（按优先序，都有精确入口）
 
