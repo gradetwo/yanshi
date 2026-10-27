@@ -71,9 +71,23 @@
     本机 `blobs_deleted=1`、释 166 B、404 ✓。
   - 上述四条**本机全绿**（无预开标签页驱动 `/tmp/browser-repro-noprefix.sh`＋debug 二进制）；
     以 CI 为准。
-  - `tool-export-idempotent` **CI 独有红**：CI 恒 `kept_no_recipe=3／omitted=0`，
-    本机 release 与 debug（同 CI 参数）都是 `omitted=2／kept_no_recipe=0` ⇒
-    CI 环境特有的分类差异，未决。
+  - `tool-export-idempotent` **CI 独有红：已上常驻观测，等下一次 CI 定性**：CI 恒
+    `kept_no_recipe=3／omitted=0`，本机 release 与 debug（同 CI 参数）都是 `omitted=2／kept_no_recipe=0`。
+    代码路径已逐一排除（debug/release、笔刷内容、git-lfs、笔触失败），剩下的只有"CI 上那三条
+    位图的配方被判不可重放"这一类 ⇒ **不再读代码猜**：`kept_no_recipe` 现在回执＋`BUILD-INFO`
+    里带**分类计数** `kept_no_recipe_reasons`（`no_source`／`kind_not_brush`／`brush_absent`／
+    `brush_unreadable`／`reads_canvas`／`unreferenced`），分类与判定**共用同一份实现**
+    （`brush_source_replay_rejection` 抽出 ⇒ bool 只是 `.is_none()` 包装 ✗ 无两份漂移）。
+    判据钉恒等式 `各原因之和 == kept_no_recipe` 并自造触发输入（夹具补一笔 `oil-03-paint`，
+    `smudge=0.9` ⇒ 读画布 ⇒ 本机 `reads_canvas=1` 不再是空集恒绿）。变异复现：摘掉分类计数
+    行 ⇒ 恰好两条新断言红 ✓ 其余不动 ✓。顺带修 `service.rs` 的 `kept_missing += 1` **写了两遍**
+    （`00220ddd`＋`e7a4402d` 各加一行）——诚实记录：它是**死写**（该路径随后整单 `Err`，统计不回执）
+    ⇒ 无断言可钉，仅删重复行。第 229 轮的临时 `YANSHI_TRACE_EXPORT_WANTED` 探针随之删除（观测已常驻）。
+    **CI 那侧真正的答案等下一跑**：看 `kept_no_recipe_reasons` 是 `unreferenced` 还是别的名字。
+  - `browser-frequency-separation` ⑧ **CI 复发红（`{page:""}`，run 40505569696；上一跑 40502062240 绿）
+    ⇒ 判据侧硬化**：接线差分探针过了而卡片 20 秒仍空 ⇒ 与 fill-region ② 同族的"点击落在忙窗"候选。
+    改成**有界补按**（每 1 秒补一次、两次都空才算红）＋失败详情带**方向证据**
+    （`pick`／`click` 在位读数＋`layers`／`atoms` 差值 ⇒ 下次红能分清"没出门"与"出了门没念"）。
 - **外部补丁包 `photo-bugfix-gc-isolation后续包.zip` 已合入**（`39511fc6`，`git am` 零冲突，
   基线 `02506181`＝当时 HEAD）：双服务同 root 的两个跨进程竞态——R1 `put_inner` 的 tmp 名
   拼上进程 id（每进程 counter 从 0 起 ⇒ 并发同哈希共用 tmp ⇒ 先 rename 者拿走、后一方

@@ -262,6 +262,10 @@ pub(super) fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> R
         // ⇒ 它**就是导出慢的来源有多少次** ✓（第 346 轮查明：那 2.65 s／12 s 主要是重放 ✓）。
         "omitted": stats.omitted,
         "kept_no_recipe": stats.kept_no_recipe,
+        // **`kept_no_recipe` 的原因分类** ✓（第 230 轮 ✓）：计数只说"装了几张"✗，
+        // 说不出"为什么装" ⇒ CI 独有红（`kept_no_recipe=3`／本机 `omitted=2`）无从定位 ✓。
+        // 恒等式 `各原因之和 == kept_no_recipe` 由判据钉住 ✓（分类与判定共用同一份实现 ✓）。
+        "kept_no_recipe_reasons": stats.kept_no_recipe_reasons,
         "kept_mismatch": stats.kept_mismatch,
         // **缺 blob 的读数** ✓（第 70 轮 ✓）：**降级了但必须报出来** ✗ ——
         // 用户实测：15MB 文档引用了一个不存在的 blob ⇒ 从前**整个导出失败** ✗。

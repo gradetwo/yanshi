@@ -15,10 +15,15 @@
 //      —— 记忆化若**错用**了证明 ✓，计数会漂移（或该重证的没重证 ✓）。
 //   ③ **防作弊** ✓：`omitted > 0` ✓（证明**真的在跑重放** ✓）—— 否则"完全不验证"✗
 //      也能让 ①② 通过 ✓，而那正是最坏的情况 ✗。
+//   ④ **`kept_no_recipe` 必须有名字** ✓（第 230 轮 ✓，为 CI 独有红定位）：回执带
+//      `kept_no_recipe_reasons` 分类计数 ✓，恒等式 `各原因之和 == kept_no_recipe` ✓；
+//      夹具自造一笔 `oil-03-paint`（`smudge=0.9` ⇒ 读画布 ✗ 不可重放 ✓）⇒ 断 `reads_canvas ≥ 1`
+//      （**输入能触发** ✓ —— 本机从前 `kept_no_recipe=0` ⇒ 新断言会恒绿成安慰剂 ✗）。
 //
 // **变异** ✓（打在**被判的那一处** ✗）：把 `replay_brush_bitmap` 的比对改成**恒不通过** ✗
 //   ⇒ `kept_mismatch` 增长／`omitted` 归零 ⇒ ③ 红 ✓（且 ② 也可能红 ✓）。
 //   **未来加记忆化后** ✓，另一条变异是"**把版本从键里去掉**"✗ ⇒ 若证明被错误复用 ⇒ ② 或 ① 红 ✓。
+//   第 230 轮对 ④ 的变异：**摘掉分类计数那一行** ✗ ⇒ 恒等式与 `reads_canvas` 两条同时红 ✓。
 //
 // **不写死观测** ✓：比的是"两次是否相同"（相等 ✓）与"是否大于 0"（语义边界 ✓），
 //   不看具体字节数、不看耗时 ✓。
@@ -63,7 +68,7 @@ if (layer.ok !== true) {
   console.error("✗ 前置不成立：建不出图层 ⇒ " + JSON.stringify(layer).slice(0, 160));
   process.exit(2);
 }
-// 画几笔**普通笔刷**（可重放 ✓ ⇒ 会产生 `omitted` ✓），并带一个 `fill_region`（另一类来源 ✓）。
+// 画几笔**普通笔刷**（可重放 ✓ ⇒ 会产生 `omitted` ✓）。
 for (let i = 0; i < 3; i++) {
   const y = 100 + i * 40;
   const r = await call("brush_stroke", {
@@ -73,6 +78,15 @@ for (let i = 0; i < 3; i++) {
   });
   if (r.ok !== true) console.error("  ⚠ 前置笔触未成功：" + JSON.stringify(r.context || {}).slice(0, 120));
 }
+// **补一笔读画布的笔刷** ✓（第 230 轮 ✓）：`oil-03-paint` 的 `smudge=0.9` ✓ ⇒ **不可重放** ⇒
+//   `kept_no_recipe` 在本机**不再恒为 0** ✓ —— 分类断言的"输入能触发"这一层以前是缺的 ✗
+//  （四层齐 ✓：本机 `kept_no_recipe=0` 时新断言会**恒绿**成安慰剂 ✗，这一笔让它真的在验 ✓）。
+const smudge = await call("brush_stroke", {
+  layer_id: "L1", object_id: "es", brush: "oil-03-paint", size: 30,
+  color: { r: 20, g: 60, b: 20, a: 255 }, preview: false,
+  points: [[100, 120, 1], [260, 140, 1]],
+});
+if (smudge.ok !== true) console.error("  ⚠ 读画布笔触未成功：" + JSON.stringify(smudge.context || {}).slice(0, 120));
 
 const first = await call("export_project", {});
 const second = await call("export_project", {});
@@ -83,6 +97,8 @@ if (first.ok !== true || second.ok !== true) {
 console.log(`  第一次：bytes=${first.bytes}｜blob_hash=${String(first.blob_hash).slice(0, 22)}…（hash=${String(first.blob_hash).slice(7, 23)}）`);
 console.log(`  第二次：bytes=${second.bytes}｜blob_hash=${String(second.blob_hash).slice(0, 22)}…`);
 console.log(`  重放计数：omitted=${first.omitted}／${second.omitted}｜kept_no_recipe=${first.kept_no_recipe}／${second.kept_no_recipe}｜kept_mismatch=${first.kept_mismatch}／${second.kept_mismatch}`);
+// **原因分类读数** ✓（第 230 轮 ✓）：CI 独有红只有计数读不出方向 ⇒ 分类常驻打印 ✓。
+console.log(`  kept_no_recipe 原因：${JSON.stringify(first.kept_no_recipe_reasons)}／${JSON.stringify(second.kept_no_recipe_reasons)}`);
 
 // ① 包字节与内容寻址哈希都必须相同
 check(first.bytes === second.bytes, "两次导出的**包字节数**必须相同",
@@ -100,7 +116,23 @@ check(sameCounts, "两次导出的**重放计数**必须完全相同（记忆化
 // ③ 防作弊：证明必须真的在跑
 check(Number(first.omitted) > 0,
   "必须**真的跑过重放证明**（`omitted > 0`）—— 否则“完全不验证”也能让上面两条通过",
-  "omitted=" + first.omitted);
+  "omitted=" + first.omitted + "｜原因=" + JSON.stringify(first.kept_no_recipe_reasons));
+
+// ④ **`kept_no_recipe` 必须有名字** ✓（第 230 轮 ✓）—— CI 独有红（`kept_no_recipe=3`／本机
+//   `omitted=2`）从前只能说"装了几张"✗ 说不出"为什么装"✓ ⇒ 分类计数进回执 ✓，
+//   这里钉**恒等式**：各原因之和 == `kept_no_recipe`（分类漂移／漏分类 ⇒ 和式立刻对不上 ✗）。
+const sumReasons = (r) => Object.values(r || {}).reduce((a, b) => a + Number(b), 0);
+check(first.kept_no_recipe_reasons !== undefined,
+  "回执必须有 `kept_no_recipe_reasons`（观测契约：没有它，计数说不清「为什么装」）",
+  "实测 " + JSON.stringify(first.kept_no_recipe_reasons));
+check(sumReasons(first.kept_no_recipe_reasons) === Number(first.kept_no_recipe),
+  "恒等式：各原因计数之和 == `kept_no_recipe`（分类与判定共用一份实现 ⇒ 和式对不上就是漏了或错了 ✗）",
+  `sum=${sumReasons(first.kept_no_recipe_reasons)} vs kept_no_recipe=${first.kept_no_recipe}`);
+// 夹具里那笔 `oil-03-paint`（`smudge=0.9` ✓）是**判据自己造的输入** ⇒ 可以钉具体原因名 ✓
+//（两类来源各占一位：可重放的 ⇒ `omitted`，读画布的 ⇒ `reads_canvas` ✓）。
+check(Number((first.kept_no_recipe_reasons || {}).reads_canvas || 0) >= 1,
+  "读画布的笔触必须被分类成 `reads_canvas`（夹具自造 `oil-03-paint` ⇒ 输入能触发 ✓）",
+  "实测 " + JSON.stringify(first.kept_no_recipe_reasons));
 
 // ⑤ **改动之后，包必须随之变化** ✓（第 81 轮补 ✓）—— **这是"导出结果缓存"的护栏** ✗：
 //   缓存的核心风险不是"两次相同"✗（幂等判据已守 ✓），而是"**内容变了却仍给旧包**"✗

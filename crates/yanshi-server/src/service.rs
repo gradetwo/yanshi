@@ -691,6 +691,13 @@ pub struct ExportStats {
     pub omitted: usize,
     /// **没有可重放配方** ⇒ 照装 ✓ 的个数（笔刷读画布／非笔刷来源 ✓）。
     pub kept_no_recipe: usize,
+    /// **`kept_no_recipe` 为什么成立** ✓，按位图分类计数（第 230 轮 ✓，为 CI 独有红定位 ✓）。
+    ///
+    /// 键是原因名（`no_source`／`kind_not_brush`／`brush_absent`／`brush_unreadable`／
+    /// `reads_canvas`／`unreferenced`／`all_replayable_but_kept` ✓），值是条数 ✓；
+    /// **恒等式 `values 之和 == kept_no_recipe`** 由判据 `tool-export-idempotent` 守着 ✓
+    ///（分类与 `brush_source_is_replayable` 共用同一判定 ✓ ⇒ 两份实现漂移不了 ✗）。
+    pub kept_no_recipe_reasons: std::collections::BTreeMap<&'static str, usize>,
     /// **有配方但重放对不上** ⇒ 照装 ✓ 的个数（宁可包大，也要能打开 ✓）。
     pub kept_mismatch: usize,
     /// **引用了但存储里没有** ✗ 的**本体**位图个数（第 70 轮 ✓，真实用户报告 ✓）。
@@ -3340,6 +3347,10 @@ impl Workspace {
         // 读画布的那一笔**仍然**因为"重跑哈希对不上"而照装 ✓ ⇒ 判据**照样绿** ✗。
         // ⇒ 把两个理由**分别**记进 `BUILD-INFO` ✓：判据才能钉住**判据本身** ✓）。
         let mut kept_no_recipe = 0usize;
+        // **`kept_no_recipe` 的原因分类** ✓（第 230 轮 ✓）：只有计数时 CI 独有红
+        // （`kept_no_recipe=3`／本机 `omitted=2`）**读不出方向** ✗ ⇒ 每类原因分别记数 ✓。
+        let mut kept_no_recipe_reasons: std::collections::BTreeMap<&'static str, usize> =
+            Default::default();
         let mut kept_mismatch = 0usize;
         let mut kept_missing = 0usize;
         let mut missing: Vec<String> = Vec::new();
@@ -3352,19 +3363,8 @@ impl Workspace {
         // 写进包里 `BUILD-INFO` 的 `missing_blobs:` 行（期 2 块 3，D2）。
         let mut missing_hashes: Vec<String> = Vec::new();
         _e3("pack_headers");
-        // **★ 临时：打印两个集合的大小 ✗ ★**（第 229 轮 ✓；**∴ 一行定位 ✓）
-        //   **∴ 为什么 ✗**：**实测**（**第 225–228 轮 ✓）**✗**：
-        //     **∴ 导出**丢位图**✗ ⇒ **∴ 包 `blobs/` ＝ **0 条**** ✓
-        //     **∴ 而**我**连着修了**两处**（**写 `refs` ✗ ＋ **读净荷** ✓）
-        //       ⇒ **∴ 判据**仍未转绿** ✓
-        //         ⇒ **∴ 所以**必须**直接看集合大小**✗（**∴ 不再**读代码猜** ✓）** ✓✓
-        if std::env::var_os("YANSHI_TRACE_EXPORT_WANTED").is_some() {
-            eprintln!(
-                "EXPORT_WANTED wanted={} refs_by_blob={}",
-                wanted.len(),
-                refs_by_blob.len()
-            );
-        }
+        // （第 229 轮的临时 `EXPORT_WANTED` 探针已删 ✓ —— 第 230 轮把它**规范化成常驻观测**：
+        //  回执与 `BUILD-INFO` 里的 `kept_no_recipe_reasons` 分类计数 ✓，不再需要环境变量 ✗。）
         for hash_text in &wanted {
             let hash: yanshi_core::BlobHash = hash_text.parse().map_err(|_| {
                 YanshiError::new(
@@ -3430,6 +3430,12 @@ impl Workspace {
                     kept_mismatch += 1;
                 } else {
                     kept_no_recipe += 1;
+                    *kept_no_recipe_reasons
+                        .entry(crate::tools::payloads_replay_rejection(
+                            self,
+                            refs_by_blob.get(hash_text),
+                        ))
+                        .or_insert(0) += 1;
                 }
             }
             // 到这里才真的需要字节 ✓（下面要把它按十六进制路径放进 tar ✓）。
@@ -3439,7 +3445,10 @@ impl Workspace {
             let bytes = match store.get(&hash) {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    kept_missing += 1;
+                    // **原先这里把 `kept_missing` 连加两次** ✗（`00220ddd` 与 `e7a4402d`
+                    // 各加了一行 ✓）⇒ 计数会翻倍。第 230 轮查明它是**死写**：本路径随后
+                    // `missing_body > 0` ⇒ 整个导出 `Err` ⇒ 统计根本不回执 ✓，所以从未见红 ✗。
+                    // 修法＝删重复行 ✓（行为不变 ⇒ 不需要变异；已在台账诚实记录）。
                     kept_missing += 1;
                     missing_body += 1;
                     missing_hashes.push(hash_text.clone());
@@ -3504,6 +3513,13 @@ impl Workspace {
             .iter()
             .map(|hash| format!("missing_blobs: {hash}\n"))
             .collect::<String>();
+        // **原因分类也进包** ✓（第 230 轮 ✓）：拿到包就能看出"照装的是哪一类配方问题" ✓，
+        // 不必再靠临时 `eprintln` 探针（下面原来那段已删 ✓）。
+        let reasons_line = kept_no_recipe_reasons
+            .iter()
+            .map(|(reason, n)| format!("{reason}={n}"))
+            .collect::<Vec<_>>()
+            .join("|");
         entries.push(crate::archive::TarEntry {
             path: "BUILD-INFO".to_owned(),
             // **版本与 commit 一起进包** ✓（用户提过的排查需求 ✓）：拿到包就知道是哪一版产的 ✓。
@@ -3513,6 +3529,7 @@ impl Workspace {
                  include_bitmaps: {include_bitmaps}\n\
                  {missing_lines}\
                  blobs_kept_no_replayable_recipe: {kept_no_recipe}\n\
+                 blobs_kept_no_replayable_recipe_reasons: {reasons_line}\n\
                  blobs_kept_replay_mismatch: {kept_mismatch}\n\
                  blob_encoding: {PACKAGE_BLOB_ENCODING}\n\
                  blob_bytes_plain: {plain_bytes}\nblob_bytes_packed: {packed_bytes}\n\
@@ -3547,6 +3564,7 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
                 // **重放验证的三个读数** ✓（第 35 轮 ✓，纯观测 ✓）。
                 omitted,
                 kept_no_recipe,
+                kept_no_recipe_reasons,
                 kept_mismatch,
                 kept_missing,
                 missing,

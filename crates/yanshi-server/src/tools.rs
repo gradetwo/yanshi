@@ -16963,16 +16963,52 @@ fn load_brush(workspace: &Workspace, brush_name: &str) -> Result<(String, hokusa
 /// **光看笔刷名不算数** ✗：调用方（`export_project`）必须再**真的重跑一遍并比对哈希** ✓ ——
 /// 这条函数只回答"值不值得试" ✓。
 pub(crate) fn brush_source_is_replayable(workspace: &Workspace, source: &Value) -> bool {
+    brush_source_replay_rejection(workspace, source).is_none()
+}
+
+/// **一个 `source` 为什么不可重放** ✓（`None` ＝ 可重放 ✓）—— 与
+/// [`brush_source_is_replayable`] **共用这一份判定** ✓（不是另写一遍 ✗ ⇒ 不会漂移 ✓）。
+/// 原因名是给**回执**看的定长标识 ✓（第 230 轮 ✓：CI 独有红只有计数没有原因 ⇒ 读不出方向 ✗）。
+fn brush_source_replay_rejection(workspace: &Workspace, source: &Value) -> Option<&'static str> {
     if source.get("kind").and_then(Value::as_str) != Some("brush") {
-        return false;
+        return Some("kind_not_brush");
     }
     let Some(brush) = source.get("brush").and_then(Value::as_str) else {
-        return false;
+        return Some("brush_absent");
     };
     match load_brush(workspace, brush) {
-        Ok((_, parsed)) => !brush_reads_the_canvas(&parsed),
-        Err(_) => false,
+        Ok((_, parsed)) => {
+            if brush_reads_the_canvas(&parsed) {
+                Some("reads_canvas")
+            } else {
+                None
+            }
+        }
+        Err(_) => Some("brush_unreadable"),
     }
+}
+
+/// **一类 `kept_no_recipe` 的唯一原因** ✓（第 230 轮 ✓，取**第一条不通过的净荷**的拒绝原因 ✓）：
+/// 判据据此能说清"是**没带配方**还是**笔刷读不出**"✗→✓ —— 以前只有个计数 ✓，
+/// CI 独有红（`kept_no_recipe=3`／本机 `omitted=2`）因此**无从定位** ✗。
+pub(crate) fn payloads_replay_rejection(
+    workspace: &Workspace,
+    payloads: Option<&Vec<Value>>,
+) -> &'static str {
+    let Some(payloads) = payloads.filter(|ps| !ps.is_empty()) else {
+        return "unreferenced";
+    };
+    for payload in payloads {
+        let Some(source) = payload.get("source") else {
+            return "no_source";
+        };
+        if let Some(reason) = brush_source_replay_rejection(workspace, source) {
+            return reason;
+        }
+    }
+    // `kept_no_recipe` 的分支上理论到不了这里（全可重放 ⇒ 走 omitted 路 ✓）；
+    // 真到了也**如实起名** ⇒ 恒等式照样能抓住分类错位 ✗。
+    "all_replayable_but_kept"
 }
 
 /// **按记录的 `source` 把一张位图重跑出来** ✓（工程包不带位图时，导入端用它补回来 ✓）。
