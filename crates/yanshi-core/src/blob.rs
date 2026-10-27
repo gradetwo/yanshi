@@ -29,6 +29,16 @@ use std::sync::Mutex;
 /// 孤儿 blob 的默认 TTL：7 天（设计文档 6.3）。
 pub const DEFAULT_ORPHAN_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
 
+/// **删除文档时删 blob 的年龄门槛（秒）**：只有比这更老的 blob 才随文档删除而删。
+///
+/// **为什么需要它**：`delete_document` 按**本进程**可见的引用集删 blob——
+/// 别的服务刚 `put`、还没 `import` 的 blob，在这里是"零引用"，一删对方的
+/// `import_image` 就取不到文件（双服务同 root 的 A2 并行梯度事故）。
+/// put→import 的窗口在驱动里是秒级 ⇒ 60 秒留足余量；超过门槛的 blob
+/// （正常情形：文档建了很久、blob 早已入库）照删，删文档立刻还空间的行为不变。
+/// 被门槛拦下的新鲜 blob 不丢：它成了孤儿，由 TTL GC（默认 7 天）回收。
+pub const DELETE_DOCUMENT_BLOB_GRACE_SECONDS: i64 = 60;
+
 /// 超过该字节数的 payload 必须走 CAS（设计文档 6.3），定义见 [`crate::atom`]。
 pub use crate::atom::CAS_THRESHOLD_BYTES;
 
@@ -719,10 +729,16 @@ impl FsBlobStore {
         fs::create_dir_all(dir).map_err(|error| io_error(dir, error))?;
         step("create_dir");
         // 并发写入安全：先写唯一 .tmp，再 rename（同哈希并发时 rename 幂等）。
+        // **tmp 名必须跨进程唯一** ✓：两个服务共用同一个 CAS 根时，
+        // 同一哈希的并发 put 若用同一个 tmp 路径 ⇒ 先 rename 的一方把 tmp 拿走，
+        // 后一方 rename 时 tmp 已不在 ⇒ ENOENT ⇒ HTTP 503「CAS IO 失败 <blob 路径>」
+        //（A2 并行梯度的 503 就是这么来的 ✓）。`counter` 是每进程 static，
+        // 从 0 起 ⇒ 跨进程一定撞名 ⇒ 必须再拼上进程 id ✓。
         static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
         let tmp = dir.join(format!(
-            ".{}.{}.tmp",
+            ".{}.{}.{}.tmp",
             hash.hex(),
+            std::process::id(),
             TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
         {

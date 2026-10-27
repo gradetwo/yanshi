@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use yanshi_core::blob::{BlobStore, MemoryBlobStore};
+use yanshi_core::blob::{BlobStore, MemoryBlobStore, DELETE_DOCUMENT_BLOB_GRACE_SECONDS};
 use yanshi_core::{Atom, Bbox, ChangesetId, ErrorCode, ErrorContext, Result, Seq, YanshiError};
 use yanshi_render::thumb::ThumbKind;
 
@@ -2061,6 +2061,35 @@ impl Workspace {
             .difference(&referenced_elsewhere)
             .map(|hash| hash.to_string())
             .collect();
+        // **跨服务误删防护**（GC 隔离分期）：`only_here` 是"只有这份文档引用"，
+        // 但"引用"只看**本进程**——别的服务刚 `put`、还没 `import` 的 blob
+        // 在这里也是"只有它引用"（甚或零引用）⇒ 不能跟着删。
+        // 只删年龄 ≥ 门槛的；新鲜的留下来当孤儿，由 TTL GC 回收。
+        // `list()` 失败或 blob 不在清单里时宁可全留（fail-safe），不可误删。
+        let now = yanshi_core::now_ms();
+        let ages: std::collections::BTreeMap<String, i64> = self
+            .store()
+            .list()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .map(|entry| (entry.blob_hash.to_string(), entry.age_seconds(now)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut deletable: Vec<String> = Vec::new();
+        let mut deferred_fresh = 0usize;
+        for hash in &only_here {
+            let old_enough = ages
+                .get(hash)
+                .map(|age| *age >= DELETE_DOCUMENT_BLOB_GRACE_SECONDS)
+                .unwrap_or(false);
+            if old_enough {
+                deletable.push(hash.clone());
+            } else {
+                deferred_fresh += 1;
+            }
+        }
         let mut freed_bytes = 0u64;
         if let Some(dir) = &dir {
             if persisted {
@@ -2092,7 +2121,8 @@ impl Workspace {
         self.disk_len_seen.remove(doc_id);
         // **真正删存储这一件事只有一处实现** ✓（`collect_orphan_blobs` ✓）——
         // 删除这层只负责**算出"哪些只有它引用"** ✓。
-        let (blobs_deleted, blob_bytes_freed) = self.collect_orphan_blobs(&only_here)?;
+        //（上面已按年龄筛过：`deletable` 才进删除，新鲜的留在 `deferred_fresh` 里。）
+        let (blobs_deleted, blob_bytes_freed) = self.collect_orphan_blobs(&deletable)?;
         Ok(json!({
             // **`ok` 必须有** ✗：本服务**每一个**回执都带它 ✓，而第一版这里漏了 ✓
             // ⇒ 查看器按 `value.ok` 判成败 ✓ ⇒ **删除其实成功了，界面却报 "unknown"** ✗
@@ -2105,8 +2135,11 @@ impl Workspace {
             "blobs_referenced": referenced_by_target.len(),
             "blobs_deleted": blobs_deleted,
             "blob_bytes_freed": blob_bytes_freed,
-            "blobs_shared_kept": referenced_by_target.len().saturating_sub(blobs_deleted),
-            "note": "文档目录已删；只删了**只有这份文档引用**的 blob，被别的文档或 Stash 引用的一律保留；**别的来源的孤儿不动**（孤儿回收是 collect_garbage 的事，不是删除的事）",
+            "blobs_shared_kept": referenced_by_target
+                .intersection(&referenced_elsewhere)
+                .count(),
+            "blobs_deferred_fresh": deferred_fresh,
+            "note": format!("文档目录已删；只删了**只有这份文档引用**的 blob，被别的文档或 Stash 引用的一律保留；**别的来源的孤儿不动**（孤儿回收是 collect_garbage 的事，不是删除的事）；刚写入不久（{} 秒内）的 blob 即使只有这份文档引用也暂不删（别的服务可能正要 import），留给 TTL GC 当孤儿回收，个数见 blobs_deferred_fresh", DELETE_DOCUMENT_BLOB_GRACE_SECONDS),
         }))
     }
 
