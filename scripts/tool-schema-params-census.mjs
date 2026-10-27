@@ -87,7 +87,11 @@ const ALLOWLIST = {
     "elevation", "dehaze", "brightness", "contrast", "brightness_contrast",
     "height_gain", "newest", "oldest", "desc", "false", "true", "image",
   ]),
-  field: new Set(["a", "time_ms"]),
+  // **`fill_region` 的 `texture` 对象子键** ✓（vector-tracing v5.2 文案补了
+  //   「region 类型会继承 `mode`/`patch`/`overlap`/`candidates`/`seam`/
+  //   `brightness_match`/`jitter`/`min_distance`」✓，逐条对过实现：
+  //   `tools.rs:4387-4464` 与 `tools_fill.rs` 真的读这些键 ✓ ⇒ 不是编出来的名字 ✗⇒✓）：
+  field: new Set(["a", "time_ms", "overlap", "candidates", "seam", "brightness_match", "jitter", "min_distance"]),
   // **滤镜/调整的参数键** ✓（第 1132 轮整合时补）：
   //   `amount` 是 `add_filter`/`add_adjustment` 的 `params.amount` ✓
   //   ⇒ 它**不是**任何工具的顶层 inputSchema 属性（在 `params` 对象里）✗

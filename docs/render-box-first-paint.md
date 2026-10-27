@@ -4,6 +4,8 @@
 `crates/yanshi-http/src/viewer.rs` 与 `crates/yanshi-http/assets/viewer-app.js`，
 红跑与绿跑之间没有别的产品改动）。
 
+> 本文里的毫秒数是**一次性实测快照**；跨轮次的权威数字只写在 `docs/performance-notes.md`。
+
 ---
 
 ## 1. 结论（一句话）

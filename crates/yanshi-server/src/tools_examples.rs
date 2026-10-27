@@ -155,7 +155,13 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     // **期 4 D1 频率分离 / D&B**：参数面见工具注册表（layer_id 必填，
     // radius 域 [1,64]，mode 仅 curves/gray）。
     ("frequency_separation", r#"{"layer_id":"L1","radius":8}"#),
-    ("dodge_burn_setup", r#"{"layer_id":"L1","mode":"curves"}"#),
+    // **mode 的历史（写在这里而不是文档里 ⇒ 文档是生成出来的，手写注释会被重生成抹掉）**：
+    // 示例原先用 `curves`，而当时 curves 那条路改不到像素（纯调整层落在没有像素的层里），
+    // 所以第五轮实测把它改成 `gray`；上游 `302d414d`「纯调整层渲染时用下方内容播种」之后
+    // curves 真的改得到画面了（截至该轮实测：dodge 蒙版涂白 128→159、burn 涂白 128→98、
+    // 端点 0 与 255 不动；权威断言在 `scripts/tool-dodge-burn-effective.mjs`）。
+    // 示例仍写 `gray` 只因为「涂就见效」这一条更短，**不再**是因为 curves 无效。
+    ("dodge_burn_setup", r#"{"layer_id":"L1","mode":"gray"}"#),
     // **期 4 D3 自动模式**：参数面见工具注册表（layer_id 可缺省，
     // strength 域 [0, 1]，groups 为 8 组白名单子集）。
     ("auto_retouch", r#"{"layer_id":"L1"}"#),
