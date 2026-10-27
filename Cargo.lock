@@ -2887,7 +2887,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "yanshi-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "proptest",
  "serde",
@@ -2898,7 +2898,7 @@ dependencies = [
 
 [[package]]
 name = "yanshi-gpu"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "libm",
  "wgpu",
@@ -2906,11 +2906,11 @@ dependencies = [
 
 [[package]]
 name = "yanshi-heap"
-version = "0.3.0"
+version = "0.3.1"
 
 [[package]]
 name = "yanshi-http"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "libc",
  "serde",
@@ -2925,7 +2925,7 @@ dependencies = [
 
 [[package]]
 name = "yanshi-mcp"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2936,11 +2936,11 @@ dependencies = [
 
 [[package]]
 name = "yanshi-medium-example"
-version = "0.3.0"
+version = "0.3.1"
 
 [[package]]
 name = "yanshi-medium-host"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "yanshi-core",
  "yanshi-medium-example",
@@ -2953,27 +2953,27 @@ dependencies = [
 
 [[package]]
 name = "yanshi-medium-marker"
-version = "0.3.0"
+version = "0.3.1"
 
 [[package]]
 name = "yanshi-medium-oil"
-version = "0.3.0"
+version = "0.3.1"
 
 [[package]]
 name = "yanshi-medium-pencil"
-version = "0.3.0"
+version = "0.3.1"
 
 [[package]]
 name = "yanshi-medium-pixel"
-version = "0.3.0"
+version = "0.3.1"
 
 [[package]]
 name = "yanshi-medium-watercolor"
-version = "0.3.0"
+version = "0.3.1"
 
 [[package]]
 name = "yanshi-raw"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "libm",
  "rawler",
@@ -2987,7 +2987,7 @@ dependencies = [
 
 [[package]]
 name = "yanshi-render"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ag-psd",
  "flate2",
@@ -3005,7 +3005,7 @@ dependencies = [
 
 [[package]]
 name = "yanshi-server"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ab_glyph",
  "allsorts",
@@ -3028,7 +3028,7 @@ dependencies = [
 
 [[package]]
 name = "yanshi-timelapse"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -3040,7 +3040,7 @@ dependencies = [
 
 [[package]]
 name = "yanshi-wasm"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "hokusai",
  "libm",
