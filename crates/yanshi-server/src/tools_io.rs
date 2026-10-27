@@ -676,6 +676,142 @@ pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
     }))
 }
 
+/// XML 文本转义（`<text>` 内容与属性值共用 ✓）：`& < > " '` 都转义、控制字符
+/// （`\t\n\r` 之外）直接去掉（SVG 里它们是非法的 ✓）。
+/// **∴ 没有现成 helper** ✓（**全仓搜过**：`tools_io` 与 `svg` 里都没有转义函数 ✓）⇒
+/// **新写一个**（**带单测** ✓）。
+fn xml_escape_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            c if (c as u32) < 0x20 && c != '\t' && c != '\n' && c != '\r' => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// `data.text_provenance`（draw_text 真字体路径落账的文本溯源，设计 §2.3 ✓）。
+struct TextProvenance {
+    /// 文本内容。
+    text: String,
+    /// 请求的族名（`data-yanshi-font` ✓）。
+    font: String,
+    /// SVG 用的有效字号（`size × upem ／ 行高` ✓）。
+    font_size_svg: f64,
+    /// 锚名（`start`／`middle`／`end` ⇒ `text-anchor` ✓）。
+    anchor: String,
+    /// 基线锚点 x（文档坐标 ✓）。
+    baseline_x: f64,
+    /// 基线锚点 y（文档坐标 ✓）。
+    baseline_y: f64,
+    /// sRGB 颜色（`[r,g,b,a]`，0–255 ✓）。
+    color_rgba: [u8; 4],
+    /// 子集 blob 哈希（`sha256:<hex>` ✓；`None` ⇒ 无子集、回退位图 ✓）。
+    subset_blob: Option<String>,
+    /// draw 时记下的回退原因（`font_license_unknown`／`subset_too_large`／
+    /// `font_unavailable` ✓；`None` ⇒ 未回退 ✓）。
+    fallback_reason: Option<String>,
+}
+
+/// 溯源的三种状态（**区分"不是文本"与"文本但不可用"** ✓——后者要计数 + 警告 ✓）。
+enum TextProvenanceState {
+    /// 无溯源 ⇒ 普通位图（不计数 ✓）。
+    Absent,
+    /// 有溯源但缺关键字段 ⇒ 回退位图（原因码 ✓）。
+    Broken(&'static str),
+    /// 可用 ⇒ 出真 `<text>` ✓。
+    Usable(TextProvenance),
+}
+
+/// 读 `object.data["text_provenance"]`（get-with-default ✓：缺字段 ⇒ `Broken`，
+/// 不 panic、不静默 ✓）。
+fn classify_text_provenance(data: &Value) -> TextProvenanceState {
+    use TextProvenanceState::{Absent, Broken, Usable};
+    let Some(prov) = data.get("text_provenance") else {
+        return Absent;
+    };
+    if prov.is_null() {
+        return Absent;
+    }
+    let Some(text) = prov.get("text").and_then(Value::as_str) else {
+        return Broken("provenance_incomplete");
+    };
+    let Some(font_size_svg) = prov.get("font_size_svg").and_then(Value::as_f64) else {
+        return Broken("provenance_incomplete");
+    };
+    let Some(anchor) = prov.get("anchor").and_then(Value::as_str) else {
+        return Broken("provenance_incomplete");
+    };
+    if !matches!(anchor, "start" | "middle" | "end") {
+        return Broken("provenance_incomplete");
+    }
+    let Some(baseline) = prov.get("baseline") else {
+        return Broken("provenance_incomplete");
+    };
+    let (Some(baseline_x), Some(baseline_y)) = (
+        baseline.get("x").and_then(Value::as_f64),
+        baseline.get("y").and_then(Value::as_f64),
+    ) else {
+        return Broken("provenance_incomplete");
+    };
+    let color_rgba = prov
+        .get("color_rgba")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            let mut rgba = [0u8; 4];
+            for (i, slot) in rgba.iter_mut().enumerate() {
+                *slot = arr.get(i).and_then(Value::as_u64).unwrap_or(0) as u8;
+            }
+            rgba
+        })
+        .unwrap_or([0, 0, 0, 255]);
+    Usable(TextProvenance {
+        text: text.to_owned(),
+        font: prov
+            .get("font")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        font_size_svg,
+        anchor: anchor.to_owned(),
+        baseline_x,
+        baseline_y,
+        color_rgba,
+        subset_blob: prov
+            .get("subset_blob")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        fallback_reason: prov
+            .get("fallback_reason")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
+/// 子集 blob 哈希 ⇒ `@font-face` 的族名（`Yanshi-<sha8>` ✓）。
+/// **∴ 哈希格式不对 ⇒ `None`** ✓（**∴ 调用方回退位图** ✓，不 panic ✓）。
+fn subset_family_name(subset_blob: &str) -> Option<String> {
+    let hex = subset_blob.strip_prefix("sha256:")?;
+    if hex.len() < 8 || !hex.chars().take(8).all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(format!("Yanshi-{}", &hex[..8]))
+}
+
+/// `@font-face` 定义（包进 `<style>` 再进 `<defs>` ✓——`@font-face` 裸放在 `<defs>`
+/// 里是无效的 ✓，必须包 `<style>` ✓）。
+fn font_face_def(family: &str, subset_base64: &str) -> String {
+    format!(
+        "<style>@font-face{{font-family:\"{family}\";src:url(data:font/ttf;base64,{subset_base64}) format('truetype');}}</style>"
+    )
+}
+
 /// SVG 场景节点（`export_svg` 服务端组装 ⇒ 递归序列化 ✓）。
 enum SvgNode {
     /// 矢量填充路径（一笔的一层 ✓）。
@@ -708,6 +844,29 @@ enum SvgNode {
         png_base64: String,
         /// CSS 混合模式（图层级回退时用 ✓）。
         blend: Option<&'static str>,
+    },
+    /// 真文本（`draw_text` 真字体路径的溯源对象 ✓；子集已嵌进 `<defs>` 的 `@font-face` ✓）。
+    Text {
+        /// 锚点 x（文档坐标 ✓）。
+        x: f64,
+        /// 基线 y（文档坐标 ✓）。
+        y: f64,
+        /// 有效字号（`size × upem ／ 行高` ✓）。
+        font_size: f64,
+        /// `text-anchor`（`start`／`middle`／`end` ✓）。
+        anchor: String,
+        /// `#rrggbb` 填充色（sRGB ✓）。
+        fill: String,
+        /// `fill-opacity`（恰为 1 时省略 ✓，与 Path 同规则 ✓）。
+        fill_opacity: f64,
+        /// `@font-face` 的族名（`Yanshi-<sha8>` ✓）。
+        font_family: String,
+        /// 请求的族名（`data-yanshi-font` ✓）。
+        font_name: String,
+        /// 子集 blob 哈希（`data-yanshi-subset` ✓）。
+        subset_hash: String,
+        /// 文本内容（序列化时转义 ✓）。
+        text: String,
     },
     /// 图层组（`isolation:isolate` ✓ + 图层不透明度/混合 ✓）。
     Group {
@@ -785,6 +944,46 @@ fn svg_write_node(node: &SvgNode, out: &mut String, defs: &mut Vec<String>) {
             }
             out.push_str("/>");
         }
+        SvgNode::Text {
+            x,
+            y,
+            font_size,
+            anchor,
+            fill,
+            fill_opacity,
+            font_family,
+            font_name,
+            subset_hash,
+            text,
+        } => {
+            // **∴ 填充色是 sRGB 的 `#rrggbb`** ✓（**draw 时的颜色原样** ✓）⇒ **不用
+            // `srgb_hex`**（那是线性 RGB → sRGB 的转换 ✓，这里颜色已经是 sRGB ✓）。
+            out.push_str("<text x=\"");
+            out.push_str(&fmt_num(*x));
+            out.push_str("\" y=\"");
+            out.push_str(&fmt_num(*y));
+            out.push_str("\" font-size=\"");
+            out.push_str(&fmt_num(*font_size));
+            out.push_str("\" text-anchor=\"");
+            out.push_str(anchor);
+            out.push_str("\" font-family=\"");
+            out.push_str(&xml_escape_text(font_family));
+            out.push_str("\" fill=\"");
+            out.push_str(fill);
+            out.push('"');
+            if *fill_opacity < 0.9995 {
+                out.push_str(" fill-opacity=\"");
+                out.push_str(&fmt_num(*fill_opacity));
+                out.push('"');
+            }
+            out.push_str(" data-yanshi-font=\"");
+            out.push_str(&xml_escape_text(font_name));
+            out.push_str("\" data-yanshi-subset=\"");
+            out.push_str(&xml_escape_text(subset_hash));
+            out.push_str("\">");
+            out.push_str(&xml_escape_text(text));
+            out.push_str("</text>");
+        }
         SvgNode::Group {
             opacity,
             blend,
@@ -839,6 +1038,12 @@ struct SvgCounts {
     strokes_empty: u32,
     shapes_vector: u32,
     images_embedded: u32,
+    /// 出真 `<text>` 的文本对象数（设计 §4.1 ✓）。
+    texts_vector: u32,
+    /// 有溯源但回退位图的文本对象数（原因见 `raster_reasons` ✓）。
+    texts_raster_fallback: u32,
+    /// builtin 文本对象数（继续走 raster `<image>` ✓，本轮不进 Text 臂 ✓）。
+    texts_builtin_raster: u32,
     erases_masked: u32,
     layers_collapsed: u32,
     objects_unsupported: u32,
@@ -1132,6 +1337,11 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
     let mut counts = SvgCounts::default();
     let mut mask_seq = 0usize;
     let mut root_children: Vec<SvgNode> = Vec::new();
+    // **★ 真文本的 `@font-face` 去重表** ✓（**族名 ⇒ `<style>` 定义**；同一子集只嵌一次 ✓）。
+    let mut font_faces: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    // **★ 文本回退警告** ✓（**对象 + 原因**，进回执 `warnings` ✓——回退不静默 ✓）。
+    let mut text_fallback_warnings: Vec<String> = Vec::new();
 
     // 背景：`{r,g,b,a}` sRGB 字节（与 `new_document` 的落盘形状一致 ✓）⇒ 矩形。
     // alpha = 0 或形状不认 ⇒ 不画（透明画布）✓，不猜。
@@ -1290,6 +1500,23 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                     pending.clear();
                 }
             };
+        }
+        // 文本回退位图（记数 + 原因码 + 警告，三件套一次写对 ✓；与 `flush_pending!`
+        // 同例：在循环内展开 ✓）。注意 `macro_rules!` 的卫生性：宏体内的标识符在宏
+        // **定义处**解析 ⇒ 循环变量 `object`／`index` 必须当参数传进来（直接写会
+        // E0425）；`counts`／`pending`／`text_fallback_warnings` 在宏定义前已声明，
+        // 可以直接用 ✓。
+        macro_rules! text_fallback {
+            ($object:expr, $index:expr, $reason:expr) => {{
+                let reason: &'static str = $reason;
+                counts.texts_raster_fallback += 1;
+                counts.note_reason(reason);
+                text_fallback_warnings.push(format!(
+                    "文本对象 {} 回退位图（原因：{reason}）",
+                    $object.id
+                ));
+                pending.push($index);
+            }};
         }
         // 整层效应对象（调整/滤镜/液化/非擦除修图，或软橡皮）：把**到它为止的
         // 全部对象**（含已发出的矢量笔）一起栅格化 ⇒ 语义与引擎一致 ✓。
@@ -1845,7 +2072,79 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                 | Prim::Retouch { .. } => {
                     collapse_through!(index);
                 }
-                Prim::RasterPatch { .. } | Prim::Text { .. } => {
+                Prim::RasterPatch { .. } => {
+                    match classify_text_provenance(&object.data) {
+                        TextProvenanceState::Absent => {
+                            pending.push(index);
+                        }
+                        TextProvenanceState::Broken(reason) => {
+                            text_fallback!(object, index, reason);
+                        }
+                        TextProvenanceState::Usable(prov) => {
+                            // **∴ 只有平移能进 Text 臂** ✓（**旋转／缩放的对象**回退位图 ✓——
+                            // 位图路径会正确应用变换，`<text>` 表达不了旋转 ✓；设计 §2.3 的
+                            // "translation only" ✓）。
+                            let Some((tx, ty)) = object.transform.translation() else {
+                                text_fallback!(object, index, "text_transform_not_translation");
+                                continue;
+                            };
+                            // **∴ 无子集 ⇒ 回退** ✓（**原因用 draw 时记下的那份** ✓；没记
+                            // 下就按 `font_unavailable` ✓）。
+                            let Some(subset_blob) = prov.subset_blob.as_deref() else {
+                                let reason = match prov.fallback_reason.as_deref() {
+                                    Some("font_license_unknown") => "font_license_unknown",
+                                    Some("subset_too_large") => "subset_too_large",
+                                    _ => "font_unavailable",
+                                };
+                                text_fallback!(object, index, reason);
+                                continue;
+                            };
+                            let Some(family) = subset_family_name(subset_blob) else {
+                                text_fallback!(object, index, "font_unavailable");
+                                continue;
+                            };
+                            // **∴ 同一子集只嵌一次** ✓（**族名已在表里 ⇒ blob 一定在** ✓，
+                            // 不用再取 ✓）。
+                            if !font_faces.contains_key(&family) {
+                                let Ok(parsed) = subset_blob.parse::<yanshi_core::BlobHash>()
+                                else {
+                                    text_fallback!(object, index, "font_unavailable");
+                                    continue;
+                                };
+                                let Ok(subset_bytes) = ctx.workspace.store().get(&parsed) else {
+                                    text_fallback!(object, index, "font_unavailable");
+                                    continue;
+                                };
+                                font_faces.insert(
+                                    family.clone(),
+                                    font_face_def(&family, &crate::base64::encode(&subset_bytes)),
+                                );
+                            }
+                            flush_pending!();
+                            counts.texts_vector += 1;
+                            nodes.push(SvgNode::Text {
+                                x: prov.baseline_x + tx,
+                                y: prov.baseline_y + ty,
+                                font_size: prov.font_size_svg,
+                                anchor: prov.anchor,
+                                fill: format!(
+                                    "#{:02x}{:02x}{:02x}",
+                                    prov.color_rgba[0], prov.color_rgba[1], prov.color_rgba[2]
+                                ),
+                                fill_opacity: f64::from(prov.color_rgba[3]) / 255.0,
+                                font_family: family,
+                                font_name: prov.font,
+                                subset_hash: subset_blob.to_owned(),
+                                text: prov.text,
+                            });
+                        }
+                    }
+                }
+                Prim::Text { .. } => {
+                    // **∴ builtin 文本本轮不进 Text 臂** ✓（**5×7／图集字形是位图**，
+                    // 没有矢量轮廓可嵌 ✓；写 `<text>` 是视觉谎言 ✓）⇒ **继续走 raster** ✓，
+                    // 单列计数（毕业时归零是验收信号 ✓）。
+                    counts.texts_builtin_raster += 1;
                     pending.push(index);
                 }
                 Prim::Unsupported { .. } => {
@@ -1899,6 +2198,9 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
     for node in &root_children {
         svg_write_node(node, &mut body, &mut defs);
     }
+    // **★ `@font-face` 放进 `<defs>` 最前面** ✓（**`font_faces` 是去重后的表** ✓；
+    // 顺序不影响语义，放前面只是可读 ✓）。
+    defs.splice(0..0, font_faces.into_values());
     let mut svg = String::with_capacity(body.len() + 512);
     svg.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     svg.push_str(&format!(
@@ -1942,6 +2244,8 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                 counts.flatten_stroke_skipped
             ));
         }
+        // **★ 文本回退警告也进回执** ✓（**对象 + 原因**，不静默 ✓）。
+        warnings.extend(text_fallback_warnings);
         warnings
     };
 
@@ -1980,6 +2284,13 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         "flatten_skipped": counts.flatten_skipped,
         "flatten_stroke_skipped": counts.flatten_stroke_skipped,
         "images_embedded": counts.images_embedded,
+        // **★ 真文本的账目** ✓（**每种去向都有数 ⇒ 没有静默降级** ✓）：
+        // `texts_vector` 出真 `<text>`、`texts_raster_fallback` 有溯源但回退位图
+        // （原因见 `raster_reasons` 与 `warnings` ✓）、`texts_builtin_raster` 是
+        // builtin 文本（本轮不进 Text 臂 ✓）。
+        "texts_vector": counts.texts_vector,
+        "texts_raster_fallback": counts.texts_raster_fallback,
+        "texts_builtin_raster": counts.texts_builtin_raster,
         "erases_masked": counts.erases_masked,
         "objects_unsupported": counts.objects_unsupported,
         "instances_unresolved": counts.instances_unresolved,

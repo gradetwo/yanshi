@@ -25,9 +25,19 @@ fn import_image_params_match_the_baseline_exactly() {
     let spec = registry.get("import_image").expect("import_image 应注册");
     let mut names: Vec<&str> = spec.params.iter().map(|param| param.name).collect();
     names.sort_unstable();
+    // `text_provenance` 是 draw-text ③ 轮加入基线的（设计 §2.3）：import_image
+    // 接受它，文本位图 + 溯源才能一次导入、导出出真 `<text>`；实现侧
+    // `write_import_image` 早已认它，只差注册表这一行（加参数必须同时登记）。
     assert_eq!(
         names,
-        vec!["bitmap", "layer_id", "medium", "object_id", "region"],
+        vec![
+            "bitmap",
+            "layer_id",
+            "medium",
+            "object_id",
+            "region",
+            "text_provenance",
+        ],
         "feature 关时 import_image 参数面必须与基线逐项一致"
     );
 }

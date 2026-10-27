@@ -1528,6 +1528,30 @@ fn missing(key: &str) -> YanshiError {
     )
 }
 
+/// 解析 `draw_text` 的 `data.position`：数组 `[x,y]` 与字典 `{x,y}` 都认。
+///
+/// **∴ 为什么两种都认** ✓：**内核 `parse_object` 的 Text 分支**（`yanshi-render/src/object.rs`）
+/// 两种形态都认（数组取 `pair[0]/pair[1]`，否则取 `value["x"]/value["y"]` ✓）⇒
+/// **同一工具的两条路**对同一输入必须一致 ✗ —— 真字体路径此前只认数组，字典被
+/// `.and_then(Value::as_array)` 吞掉、无声落到 `(0, 0)`（gt3 冷启动探针 2026-10-27 实测 ✓；
+/// 回执照样 `ok:true` ⇒ 是"静默降级"那一族 ✗）。
+/// **∴ 缺省 ⇒ `(0, 0)`** ✓（**与内核一致** ✓；畸形值（字符串／数字）同样落 `(0, 0)`，
+/// 与内核的 `unwrap_or(0.0)` 同口径，暂不收紧 ✓）。
+/// **∴ 先例** ✓：`parse_bbox` 同样同时接受 `{x,y,w,h}` 与 `[x,y,w,h]` ✓。
+fn parse_position(value: &Value) -> (f64, f64) {
+    if let Some(pair) = value.as_array() {
+        (
+            pair.first().and_then(Value::as_f64).unwrap_or(0.0),
+            pair.get(1).and_then(Value::as_f64).unwrap_or(0.0),
+        )
+    } else {
+        (
+            value.get("x").and_then(Value::as_f64).unwrap_or(0.0),
+            value.get("y").and_then(Value::as_f64).unwrap_or(0.0),
+        )
+    }
+}
+
 fn parse_bbox(value: &Value) -> Result<Bbox> {
     if let Some(bbox) = Bbox::from_value(value) {
         return Ok(bbox);
@@ -4135,6 +4159,17 @@ fn write_draw_text_with_font(
             ErrorContext::detail("data.text 不能为空（真字体那条路也要有文本 ✓）"),
         ));
     }
+    // **∴ 真字体路径只支持单行** ✓：**含 `\n` 时响亮拒绝**（设计 §2.3 ✓）——
+    // 以前会静默产出 `.notdef` 行为的位图（`rasterize` 按原样排字、换行符无字形 ⇒
+    // 空白），现在报错（响亮化，不是回归 ✓；工具描述要写清 ✓）。
+    if text.contains('\n') {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "真字体路径只支持单行文本（含换行符 \\n 时响亮拒绝 ⇒ 多行请分行调用，或用 font=builtin）",
+            ),
+        ));
+    }
     let size = data
         .get("size")
         .and_then(Value::as_f64)
@@ -4146,26 +4181,72 @@ fn write_draw_text_with_font(
         .unwrap_or("left")
         .to_owned();
     let color = parse_color_arg(data.get("color"), "data.color").unwrap_or([0, 0, 0, 255]);
-    let position = data
+    // **∴ `position` 两种形态都认** ✓（`[x,y]` 与 `{x,y}`，见 `parse_position` ✓）——
+    // 字典形态此前被静默忽略成 `(0, 0)`（gt3 探针 ✓），现在归一化成数组 ✓。
+    // **∴ 仍取整** ✓（**`region` 是整像素** ✓，与原来一致 ✓；锚点按取整后的位置算 ✓）。
+    let (pos_x, pos_y) = data
         .get("position")
-        .and_then(Value::as_array)
-        .map(|pair| {
-            (
-                pair.first().and_then(Value::as_f64).unwrap_or(0.0).round() as i64,
-                pair.get(1).and_then(Value::as_f64).unwrap_or(0.0).round() as i64,
-            )
-        })
-        .unwrap_or((0, 0));
+        .map(parse_position)
+        .unwrap_or((0.0, 0.0));
+    let position = (pos_x.round() as i64, pos_y.round() as i64);
     let db = crate::fonts::database(&[std::path::PathBuf::from("assets/fonts")]);
-    let (width, height, rgba) = crate::fonts::rasterize(db, text, family, size, color, &align)
-        .ok_or_else(|| {
-            YanshiError::new(
-                ErrorCode::ReferenceNotFound,
-                ErrorContext::detail(format!(
-                    "找不到字体族「{family}」⇒ 先用 list_fonts 看有哪些可用（builtin 是内置位图图集 ✓）"
-                )),
-            )
-        })?;
+    // **∴ 布局只算一次** ✓（**栅格化／子集／锚点共用**，见 `fonts::layout_text` ✓）。
+    let layout = crate::fonts::layout_text(db, text, family, size, &align).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!(
+                "找不到字体族「{family}」⇒ 先用 list_fonts 看有哪些可用（builtin 是内置位图图集 ✓）"
+            )),
+        )
+    })?;
+    let (width, height, rgba) = crate::fonts::rasterize_layout(&layout, color);
+    // **★ 文本溯源（**设计 §2.3 ✓）：**draw 时算好的基线锚点 + subset blob** ✓ ★**
+    //
+    // **∴ 为什么在 draw 时算** ✓：**导出时字体可能不在了**（环境换了 ✓）⇒ **锚点与子集
+    // 必须在 draw 那一刻落账** ✓（**导出只读账、不重新量字体** ✓）。
+    let (anchor_x, anchor_y, anchor) =
+        crate::fonts::text_anchor(&layout, (position.0 as f64, position.1 as f64), &align);
+    // **∴ 子集化** ✓（**只在 OFL allowlist 内的族上做** ✓；其余族不嵌子集 ⇒
+    // 导出回退 raster、原因 `font_license_unknown` ✓，**不是**静默 ✓）。
+    // **∴ 超过上限也不嵌** ✓（**原因 `subset_too_large` ✓**）。
+    let mut subset_blob: Option<String> = None;
+    let mut subset_format: Option<&str> = None;
+    let mut fallback_reason: Option<&str> = None;
+    if crate::fonts::is_subset_allowlisted(family) {
+        match crate::fonts::subset_layout(&layout) {
+            Some(bytes) if bytes.len() <= crate::fonts::SUBSET_MAX_BYTES => {
+                let hash = ctx.workspace.store().put(&bytes)?;
+                subset_blob = Some(hash.to_string());
+                subset_format = Some("ttf");
+            }
+            Some(_) => {
+                fallback_reason = Some("subset_too_large");
+            }
+            None => {
+                fallback_reason = Some("font_unavailable");
+            }
+        }
+    } else {
+        fallback_reason = Some("font_license_unknown");
+    }
+    // **∴ `subset_blob` 在下面被移进溯源 JSON** ✓ ⇒ **先把"有没有子集"记下来**（回执要用 ✓）。
+    let text_svg = subset_blob.is_some();
+    let provenance = json!({
+        "text": text,
+        "font": family,
+        "size": size,
+        "font_size_svg": crate::fonts::effective_font_size(&layout),
+        "color_rgba": [color[0], color[1], color[2], color[3]],
+        "align": align,
+        "position": [position.0, position.1],
+        "baseline": {"x": anchor_x, "y": anchor_y},
+        "anchor": anchor,
+        "units_per_em": layout.units_per_em,
+        "line_height_units": layout.line_height_units,
+        "subset_blob": subset_blob,
+        "subset_format": subset_format,
+        "fallback_reason": fallback_reason,
+    });
     // **∴ blob 先行 ✗**（**∴ 原子只能引用已经存在的 blob ✓ —— 与 Web 侧同一个次序 ✓）★
     let hash = ctx.workspace.store().put(&rgba)?;
     // **∴ `optional_str` 回来的**就是 `String`** ✗ 不用再 `.map(str::to_owned)`** ✓（**编译期就抓到 ✓）★
@@ -4176,16 +4257,27 @@ fn write_draw_text_with_font(
         "object_id": object_id,
         "bitmap": { "blob_hash": hash, "size": rgba.len(), "mime_type": "image/x-yanshi-raw" },
         "region": { "x": position.0, "y": position.1, "w": width, "h": height },
+        "text_provenance": provenance,
     });
     let mut reply = write_import_image(ctx, &import_args)?;
-    // **∴ 回执里把"这是位图"说清楚 ✗**（**∴ 否则用户以为拿到了可编辑文本 ✓）★
+    // **∴ 回执里把"这是什么"说清楚 ✗**（**∴ 否则用户以为拿到了可编辑文本 ✓）★
+    //   ＋ **`text_svg`**：**子集已嵌入 ⇒ 导出出真 `<text>`**；否则导出回退位图（原因见
+    //     `text_fallback_reason` ✓）。
+    //   ＋ **`position`**：**归一化后的位置**（字典 `{x,y}` 进来、数组 `[x,y]` 出去 ✓ ——
+    //     证明参数被读过、不是静默忽略 ✓）。
     if let Some(map) = reply.as_object_mut() {
         map.insert("font".to_owned(), json!(family));
         map.insert("rasterized".to_owned(), json!(true));
         map.insert("font_pixels".to_owned(), json!([width, height]));
+        map.insert("text_svg".to_owned(), json!(text_svg));
+        map.insert("position".to_owned(), json!([position.0, position.1]));
+        map.insert(
+            "text_fallback_reason".to_owned(),
+            fallback_reason.map_or(Value::Null, |reason| json!(reason)),
+        );
         map.insert(
             "note".to_owned(),
-            json!("真字体在服务端栅格化成位图 ⇒ 对象是 import_image；要可编辑文本用 font=builtin"),
+            json!("真字体在服务端栅格化成位图（引擎渲染用）+ 记文本溯源 ⇒ export_svg 出真 <text>（子集已嵌入时）；要可编辑文本用 font=builtin"),
         );
     }
     Ok(reply)

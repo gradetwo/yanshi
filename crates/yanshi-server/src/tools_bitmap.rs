@@ -166,6 +166,20 @@ pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     // 与原来"导入 + 替换"之后的**渲染相关字段逐字一致** ✓（只多一个描述符键 ✓ ——
     // 那正是设计要求记下的东西 ✓）；而 `data.blob_hash` 若被挪进子对象 ✓ 会让
     // `all_blob_refs` 的净荷扫描**找不到 blob** ✗ ⇒ 校验与保留都会出错 ✗。
+    // **★ 文本溯源的子集 blob 也要登记引用** ✓（设计 §2.3 ✓）：**子集 blob 随文档存** ⇒
+    // **GC 必须看见它**（否则子集被清掉、导出时取不到 ⇒ 文本回退位图 ✗）⇒ **与位图
+    // blob 同一个 `refs.blobs` 数组** ✓（**`all_blob_refs` 的净荷扫描认这个键** ✓）。
+    let mut blob_refs: Vec<Value> = vec![json!(bitmap
+        .get("blob_hash")
+        .and_then(Value::as_str)
+        .unwrap_or_default())];
+    if let Some(subset) = args
+        .get("text_provenance")
+        .and_then(|prov| prov.get("subset_blob"))
+        .and_then(Value::as_str)
+    {
+        blob_refs.push(json!(subset));
+    }
     let mut payload = json!({
         "object_id": object_id,
         "layer_id": layer_id,
@@ -203,10 +217,7 @@ pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         //   **∴ ②** GC／校验**也能看见**这个引用** ✓
         // **∴ 代价**：**净荷多一个数组**（**∴ 一个哈希字符串 ✓，**可忽略 ✓）** ✓✓
         "bitmap": bitmap,
-        "refs": {"blobs": [bitmap
-            .get("blob_hash")
-            .and_then(Value::as_str)
-            .unwrap_or_default()]},
+        "refs": {"blobs": blob_refs},
         // **★ `region` + `width`/`height` 都要写** ✗→✓（第 1242 轮：我第 1225 轮删它们**错了**）
         //   **第 1225 轮我的理由**：同一事实写两遍 ⇒ 单一来源 ⇒ 只留 `region`
         //   **那条理由被 CI 推翻了**（第 1242 轮）：两个测试直接断言净荷里的 `width`/`height`
@@ -226,6 +237,14 @@ pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     if let Some(medium) = args.get("medium") {
         if !medium.is_null() {
             payload["medium"] = medium.clone();
+        }
+    }
+    // **★ 文本溯源随原子记下** ✓（设计 §2.3 ✓）：**顶层放** ⇒ **对象数据 = 净荷**
+    // （与 `medium`／`source` 同一个规则 ✓）⇒ **导出时从 `object.data` 读它** ✓；
+    // `parse_raster_patch` 是 get-with-default ⇒ **旧文档与非文本对象不受影响** ✓。
+    if let Some(provenance) = args.get("text_provenance") {
+        if !provenance.is_null() {
+            payload["text_provenance"] = provenance.clone();
         }
     }
     // **"这一笔是用什么画出来的"也随原子记下** ✓（本轮 ✓）——

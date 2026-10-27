@@ -1857,3 +1857,19 @@ fn batch_stroke_evidence_maps_brush_and_medium_receipts() {
         "缺 delta ⇒ null，不编 0"
     );
 }
+
+#[test]
+fn draw_text_position_accepts_both_array_and_dict() {
+    // **gt3 冷启动探针（2026-10-27）**：字典 `{"x":..,"y":..}` 曾被真字体路径
+    // 静默忽略成 `(0, 0)`（回执照样 `ok:true` ✓）⇒ 现在两种形态都认 ✓。
+    // **变异**：把 `parse_position` 的字典分支删掉 ⇒ 字典用例红 ✓。
+    assert_eq!(parse_position(&json!([100.0, 200.0])), (100.0, 200.0));
+    assert_eq!(
+        parse_position(&json!({"x": 100.0, "y": 200.0})),
+        (100.0, 200.0)
+    );
+    assert_eq!(parse_position(&json!({"x": 100.0})), (100.0, 0.0));
+    assert_eq!(parse_position(&json!([100.0])), (100.0, 0.0));
+    assert_eq!(parse_position(&json!("nope")), (0.0, 0.0));
+    assert_eq!(parse_position(&json!(42)), (0.0, 0.0));
+}

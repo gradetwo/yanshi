@@ -34,6 +34,25 @@ hokusai = "0.3"
 #   ＋ **构建时间**：**实测首次编译见提交信息 ✓（**∴ 不如实报就不写 ✓）★
 fontdb = { version = "0.24", default-features = false, features = ["fs"] }
 ab_glyph = "0.2"
+# **★ 真字体子集化（draw_text 出真 `<text>`，设计文档 `yanshi-fix-research/draw-text-DESIGN.md` §2.1）★**：
+# `allsorts` 把文本用到的字形切成 TTF 子集（draw 时生成、随文档存 blob、导出内联 @font-face ✓）。
+# 只开 `flate2_rust`（纯 Rust 的 flate2 后端 ✓）⇒ 不引 `flate2_zlib` 的 C 库（`libz-sys` ✓）。
+#
+# **∴ 两面（**按 AGENTS.md 的清单 ✓）**：
+#   ＋ **收益**：纯 Rust、确定性（同一文本两次子集逐字节相同 ✓）、`Minimal` profile 含 OS/2
+#     ⇒ Chromium OTS 通过 ✓；CFF 字体也保留 cmap（`@font-face` 必须 ✓）。
+#   ＋ **代价**：约 20 个传递 crate；GPOS/GSUB 被丢掉 ⇒ 字距（kern）丢失
+#     （"Congrats!" 80pt 上 `r→a` −1.6px，CJK 不受影响 ✓）；产出是 TTF 子集不是 WOFF2
+#     （体积仍远小于 512KB 上限 ✓）；CJK 子集 ~38KB。
+#   ＋ **确定性**：同一输入 ⇒ 同一子集字节（两次 sha256 相同，2026-10-27 实测 ✓）。
+#   ＋ **平台**：纯 Rust，只加在 `yanshi-server` ⇒ 不进 `yanshi-render`／`yanshi-wasm` ✓。
+#   ＋ **供应链**：`allsorts` 0.17（2026-05，MIT／Apache-2.0，Prince 自 2019 年生产使用 ✓）；
+#     备选 `subsetter`（Typst 血统）对照实测过：CFF 子集缺 cmap ⇒ `@font-face` 不可用 ✗，
+#     故不用；`hb-subset` 需 C++ 构建 ✗、`write-fonts` 不是子集器 ✗，均不进实测。
+#   ＋ **构建时间**：首次编译见提交信息（不如实报就不写 ✓）。
+# **∴ 注意**：**`Pdf` profile 缺 OS/2 ⇒ Chromium OTS 拒绝** ✗（2026-10-27 实测 ✓）⇒
+#   **实现必须用 `Minimal`**（见 `fonts::subset_layout` ✓）。
+allsorts = { version = "0.17", default-features = false, features = ["flate2_rust"] }
 # **诊断包的 zip 容器** —— 取舍见 `src/diagnostics.rs` 头部：
 # 只开 `deflate-flate2-zlib-rs`（纯 Rust 的 zlib-rs 后端 ✓）⇒ **不引** zopfli / bzip2 /
 # zstd / lzma / aes 那一整套默认特性（默认特性会把它们与七八种压缩后端全拉进来）。

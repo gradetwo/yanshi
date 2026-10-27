@@ -42,6 +42,17 @@ const IMPORT_IMAGE_PARAMS: &[ParamSpec] = &[
         false,
         "{id,version} 介质描述符：随这条原子一并记录（设计 11.1）"
     ),
+    // **文本溯源（draw-text ③，设计 §2.3）**：与 `draw_text` 真字体路径产出的
+    // `text_provenance` 同形；给了 ⇒ 随原子记在对象顶层，`export_svg` 对它出真
+    // `<text>`（子集 blob 同时登记进 `refs.blobs`，GC 可见）；不给 ⇒ 普通位图，
+    // 行为不变。实现侧 `write_import_image` 早已认它，只差注册表这一行
+    // （加参数必须同时登记——本文件 import_image 条目下的注释 ✓）。
+    param!(
+        "text_provenance",
+        Object,
+        false,
+        "文本溯源对象 {text,font,size,font_size_svg,color_rgba,align,position,baseline,anchor,units_per_em,line_height_units,subset_blob,subset_format,fallback_reason}（设计 §2.3）"
+    ),
 ];
 /// import_image 的参数表（feature `raw` 开）：基线五项 + `raw_options` 一组。
 #[cfg(feature = "raw")]
@@ -55,6 +66,11 @@ const IMPORT_IMAGE_PARAMS: &[ParamSpec] = &[
     param!("region", Any, true, "放置区域 {x,y,w,h}"),
     param!("object_id", String, false, "对象 id（缺省自动生成）"),
     param!("medium", Object, false, "{id,version} 介质描述符：随这条原子一并记录（设计 11.1）"),
+    // **文本溯源（draw-text ③，设计 §2.3）**：与 `draw_text` 真字体路径产出的
+    // `text_provenance` 同形；给了 ⇒ 随原子记在对象顶层，`export_svg` 对它出真
+    // `<text>`（子集 blob 同时登记进 `refs.blobs`，GC 可见）；不给 ⇒ 普通位图，
+    // 行为不变（与关构建的基线逐项一致，只差 `raw_options` 一组 ✓）。
+    param!("text_provenance", Object, false, "文本溯源对象 {text,font,size,font_size_svg,color_rgba,align,position,baseline,anchor,units_per_em,line_height_units,subset_blob,subset_format,fallback_reason}（设计 §2.3）"),
     param!("raw_options", Object, false, "仅当 bitmap 是 RAW 源（mime image/x-yanshi-rawsrc）时可用：展开参数 {wb: as_shot|auto（缺省 as_shot）, demosaic: malvar|bilinear（缺省 malvar）, pre_exposure_ev: -4..4（缺省 0，不 clamp、越界报错）, lens_correction: off|auto（缺省 off，D5 定版；auto = 文件自带校正逐项优先 + Lensfun 库匹配）, lens_override: string|null（手动点名镜头库中的镜头，查无此镜报错）, highlight_recovery: chroma|floor（缺省 chroma 真色度恢复，floor = 第三包保底机制）, tone: off|standard（缺省 standard，显影期基调曲线；off = 现行零调整链）, tone_strength: 0..1（缺省 1.0，越界报错、不 clamp；tone=off 时忽略）}；给到非 RAW blob 报错"),
 ];
 
@@ -635,7 +651,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         // **实测纠正** ✓（外部绘画 agent 报 ✓）：它用 `draw_text{"text":"YANSHI 黄昏 ab"}` 一次就
         // **完整画出两个汉字** ✓，而描述里还写着"CJK 字体子集属后续项" ✗
         // ⇒ **过时的描述会让 agent 主动放弃可用的能力** ✗（与"参数被静默忽略"是同一类损失 ✓）。
-        summary: "绘制文本对象（内核用内置位图字体光栅化；ASCII 与常用 CJK 都能画）",
+        // **真字体路（2026-10-27）**：`font` 给真字体名时服务端栅格化 + 记文本溯源 ⇒
+        // `export_svg` 出真 `<text>`（OFL 字体子集内嵌 ✓）；含 `\n` 时响亮拒绝（单行 ✓）。
+        summary: "绘制文本对象：font=builtin 时内核用内置位图字体光栅化（ASCII 与常用 CJK 都能画）；font=真字体名时服务端栅格化（引擎渲染用）+ 记文本溯源，export_svg 出真 <text>（OFL 字体子集内嵌；含换行符时响亮拒绝，只支持单行）",
         mutating: true,
         params: &[
             param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
@@ -645,7 +663,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 "data",
                 Object,
                 true,
-                "{text,font,size,color,position,align}"
+                "{text,font,size,color,position,align}；position 可为 [x,y] 或 {x,y}（两种都认）"
             ),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
         ],
