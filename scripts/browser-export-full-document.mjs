@@ -392,7 +392,13 @@ if (fullFiles.length > 0) {
 } else {
   notes.push("默认导出：**下载目录里没有任何文件**");
 }
-const fullLog = await evaluate(`(() => { const t = document.getElementById("log").textContent || ""; return (t.split("\\n").filter((l) => l.includes("已导出 PNG")).pop() || "").trim().slice(0, 140); })()`);
+// **读日志必须按 `#log div` 逐条读** ✗（第 1601 轮 CI 红查出）：`viewer-app.js` 的 `log()`
+// 是 **prepend 兄弟 div**，条目里**没有 `\n`** ⇒ 旧写法 `textContent.split("\n")` 拿到的是
+// **一整条拼接行**，`slice(0,140)` 在到达目标消息前就截断 ⇒ **假红**（消息其实在场）。
+// `log()` 新条目在前 ⇒ 取**第一个**含关键字的 div 就是**最新**那条 ✓。
+const lastLogLine = async (needle) => await evaluate(
+  `(() => { const d = [...document.querySelectorAll("#log div")].find((x) => (x.textContent || "").includes(${JSON.stringify(needle)})); return d ? d.textContent.trim().slice(0, 240) : ""; })()`);
+const fullLog = await lastLogLine("已导出 PNG");
 notes.push("默认导出日志：" + JSON.stringify(fullLog));
 const fullStats = await evaluate(`window.yanshiStats.lastExport || null`);
 notes.push("默认导出 lastExport：" + JSON.stringify(fullStats));
@@ -426,7 +432,7 @@ if (viewButtonExists) {
   } else {
     notes.push("显式视口导出：**没有文件**");
   }
-  viewLog = await evaluate(`(() => { const t = document.getElementById("log").textContent || ""; return (t.split("\\n").filter((l) => l.includes("当前视图") || l.includes("视口")).pop() || "").trim().slice(0, 140); })()`);
+  viewLog = await evaluate(`(() => { const d = [...document.querySelectorAll("#log div")].find((x) => { const t = x.textContent || ""; return t.includes("当前视图") || t.includes("视口"); }); return d ? d.textContent.trim().slice(0, 240) : ""; })()`);
   notes.push("显式视口导出日志：" + JSON.stringify(viewLog));
   if (clickedView !== "clicked") failures.push("视口导出按钮点不到 ✗");
   else if (viewFiles.length === 0) failures.push("显式「导出当前视图」没有落下任何文件 ✗");
@@ -678,7 +684,7 @@ if (offlineFiles.length > 0) {
   notes.push("离线默认导出：**下载目录里没有任何文件**");
 }
 const offlineStats = await evaluate(`window.yanshiStats.lastExport || null`);
-const offlineLog = await evaluate(`(() => { const t = document.getElementById("log").textContent || ""; return (t.split("\\n").filter((l) => l.includes("已导出 PNG")).pop() || "").trim().slice(0, 140); })()`);
+const offlineLog = await lastLogLine("已导出 PNG");
 notes.push("离线 lastExport：" + JSON.stringify(offlineStats));
 notes.push("离线默认导出日志：" + JSON.stringify(offlineLog));
 if (clickedOffline !== "clicked") failures.push("离线时找不到默认导出按钮 ⇒ 判据无效 ✗");

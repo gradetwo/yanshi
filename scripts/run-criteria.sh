@@ -318,9 +318,13 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs sc
       #     / `delete_object` 与 `render_region` 整幅指纹 ✓ 判据自己按场景钉 `render=server` ✓
       #     而它**唯一**的本地那一臂（⑩/⑩b）走的是"URL 不带 `render` ⇒ 由勾选框说话"这条路 ✓
       #     外面再注入一个 `&render=client` 就成了**第二个真值** ✓ 与判据要问的事正好相反 ✗
+      #   ⇒ **p0-entries**（第 1601 轮 CI 红查清）测的是**服务端工具**的 Web 入口：
+      #     `set_brush_dynamics` 在本地 PWA 是**如实的** `not_implemented_locally`
+      #     （笔刷是随包静态资源 ⇒ 没有可写的笔刷缓存 ✓ 见 api-local.js 该分支 ✓）
+      #     ⇒ 注入 `render=client` 就换成"测本地内核不提供笔刷缓存" ✗ 而判据问的是"入口接上没有" ✓
       #   **∴ 它们测的是服务端/静态界面，不是本地内核** ⇒ **不加参数才是测对对象** ✓
       case "$name" in
-        browser-render-switch.mjs|browser-cs-render-switch.mjs|browser-project-download.mjs|browser-brush-panel.mjs|browser-i18n.mjs|browser-dodge-burn.mjs|browser-status-bar.mjs|browser-effect-card-truth.mjs)
+        browser-render-switch.mjs|browser-cs-render-switch.mjs|browser-project-download.mjs|browser-brush-panel.mjs|browser-i18n.mjs|browser-dodge-burn.mjs|browser-status-bar.mjs|browser-effect-card-truth.mjs|browser-p0-entries.mjs)
           RENDER_PARAM="" ;;
         *) RENDER_PARAM="&render=client" ;;
       esac

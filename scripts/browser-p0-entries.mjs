@@ -28,6 +28,12 @@ if (!viewerUrl) {
 const cdpPort = process.env.CDP_PORT || "9333";
 // **∴ 从 viewer URL 里兜底取 base/token ✗**（**∴ 有的调用只给一个参数 ✓）★
 const parsed = new URL(viewerUrl);
+// **★ 自己再钉一次 `render=server` ✗ ★**（第 1601 轮 CI 红 ✓ 与 dodge-burn 先例同族 ✓）：
+// 本判据测的是**服务端工具的 Web 入口**（set_brush_dynamics ／ gradient_blend ／
+// export_psd_layers ／ 混合模式）✓ 而本地内核对笔刷动力学**如实报**
+// `not_implemented_locally`（笔刷是随包静态资源 ⇒ 没有可写笔刷缓存 ✓）
+// ⇒ 编排若注入 `&render=client` 就换成"测本地内核不提供笔刷缓存" ✗ 不是本判据问的事 ✓
+parsed.searchParams.set("render", "server");
 const base = baseArg || parsed.origin;
 const token = tokenArg || parsed.searchParams.get("token") || "";
 const doc = parsed.searchParams.get("doc") || "";
@@ -167,7 +173,11 @@ const main = async () => {
   console.log(`  ① 图层行 ${p.rows} 个｜混合下拉 ${p.selects} 个（${p.options} 个选项）｜压感按钮 ${p.dyn}/3`);
   if (p.rows < 1) bad.push("① 图层面板里没有图层行（判据建不起来）");
   if (p.selects < 1) bad.push("① 图层行里没有混合模式下拉（新入口没接上）");
-  if (p.options !== 7) bad.push(`① 混合下拉应有 7 个模式，实测 ${p.options}`);
+  // **选项个数不在这里断** ✗（第 1601 轮 CI 红查清）：写死的 `=== 7` 是**上游数量** ⇒
+  // `BlendMode::ALL` 后来长到 13（第 1131 轮），逐条比对的权威判据是
+  // `browser-blend-modes.mjs`（界面清单 vs `list_engine_capabilities.blend_modes` 同源）✓
+  // ⇒ 本条只管「下拉存在」⇒ 取下界 7（最早的七种模式不许少）。
+  if (p.options < 7) bad.push(`① 混合下拉至少应有最早的 7 个模式，实测 ${p.options}`);
   if (p.dyn !== 3) bad.push(`① 压感预设按钮应有 3 个（柔/线性/硬），实测 ${p.dyn}`);
   // **★ 必须按**行的 layer id**配对 ✗ 不能拿 `list_layers[0]`** ✓ ★★★**（**CI 实测踩到 ✓）
   //   ＋ **∴ 症状 ✗**：**本地（只有一层 ✓）一切正常 ✗ CI 上"改成 multiply 却没生效"** ✓
@@ -319,10 +329,21 @@ const main = async () => {
   await new Promise((r) => setTimeout(r, 1200));
   const gradLog = await readLog();
   console.log(`  ④b 点「渐变混合」（当前笔刷=${picked || "?"}）：${gradLog.slice(0, 200)}`);
+  // **坐标必须从页面的 `docSize` 现算** ✗（第 1601 轮 CI 红查清）：原来写死 `y:400` ⇒
+  // 编排序文档是 320×240 ⇒ **整条笔迹落在画布外** ⇒ 服务端按契约拒绝（"一枚 dab 都不会落上"✓）
+  // ⇒ 判据自己造了非法输入还断 ok:true。取画布内两端点，与文档尺寸无关 ✓。
+  const docWH = await evaluate(`(() => { const s = window.yanshi && window.yanshi.state ? window.yanshi.state() : {}; const d = s.docSize || {}; return JSON.stringify({ w: d.w || 0, h: d.h || 0 }); })()`);
+  const dw = typeof docWH === "string" ? JSON.parse(docWH) : { w: 0, h: 0 };
+  if (!(dw.w > 40 && dw.h > 40)) {
+    bad.push(`④b 读不到页面 docSize（${JSON.stringify(dw)}）⇒ 无法在画布内放端点（判据前提，不是产品失败）`);
+  }
+  const gx0 = Math.max(10, Math.round(dw.w * 0.15));
+  const gy0 = Math.max(10, Math.round(dw.h * 0.4));
+  const gx1 = Math.max(gx0 + 1, Math.round(dw.w * 0.85));
   const gradContract = await api("gradient_blend", {
     layer_id: (await evaluate(`(window.yanshi.state().layerId)||"layer_default"`)) || "layer_default",
-    from: { x: 40, y: 400, color: { r: 255, g: 255, b: 255, a: 255 } },
-    to: { x: 400, y: 400, color: { r: 0, g: 0, b: 0, a: 255 } },
+    from: { x: gx0, y: gy0, color: { r: 255, g: 255, b: 255, a: 255 } },
+    to: { x: gx1, y: gy0, color: { r: 0, g: 0, b: 0, a: 255 } },
     brush: picked || "classic-brush",
     size: 20,
     steps: 5,
