@@ -111,6 +111,13 @@
 - **skill-vector-tracing v5.3 后续包已合入**（`764cba98`＋`4820c40e`）：SKILL.md 307→437 行，
   P0 修正（`draw_shape` 没有 `fill` 键——**已对 HEAD 的 `parse_shape` 独立核对**）＋第 4 轮 13 条晋升，
   B12/B13/B16 泛化门未过退回附录。校验见台账 §66。纯文档不触发 CI。
+- **外部补丁 `viewer-app.patch` 已合入工作树并验证**（本轮 ✓，台账 §69）：预镜像 `4efddbc4` 逐字节相同 ⇒
+  `git apply` 干净（85+/7−，七段各治一事）。**验证踩了两次 freshness 坑**：`viewer-app.js` 是
+  `include_str!` 内嵌进二进制的 ⇒ 必须重建才测得到补丁；而 `cargo build --debug` 非法参数被管道吃成退出码 0 ⇒
+  第一轮测的是昨天的旧二进制（8 项红恰好全在补丁要修的路径上 ⇒ 反证对象正确）。重建后（`29b7a014-dirty`）：
+  `browser-ui-check` **8→6**（「回到此处」跳转后指纹回拨成功 ✓、隐藏图层 10726→0→10726 恢复 ✓，
+  剩余 6 项全在 known-red 既有族里 ✓ 无新增回归）、**`browser-brush-preview` 本机转绿（EXIT=0）**——
+  它正是 CI 在 `29b7a014` 上那条「换笔刷没有换预览」独有红，补丁的 `refreshPreview()+resync()` 段对症 ✓。
 - **判据间污染查实：`tool-brush-settings` 不还原共享笔刷 ⇒ `tool-export-idempotent` 的"CI 独有红"真因**
   （本轮 ✓，台账 §70）：常驻观测下一跑即报 `原因={"reads_canvas":4}`；本机照 CI **分片编排**串跑两判据 ⇒
   逐字节复现（bytes=35840 一字不差）⇒ 定性完成：**不是环境差异，是共享工作区里写方不还完 `100%_Opaque` 的 smudge** ✗。
@@ -581,6 +588,23 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    —— 本机合并验证跑了定向 test 与变异、**没跑这条主题判据** ⇒ 教训：合并验证要连同
    **相关主题的既有判据**一起跑，不只是新测试。已登记（调度/等待簿记、不改解码字节 ⇒ 像素逐位一致 ✓），
    本机该判据绿（9 处＝9 条）。
+
+69. **viewer-app 补丁已合（前端一处七段）**（`~/patch/viewer-app.patch`，本轮 ✓）：
+   单文件 `crates/yanshi-http/assets/viewer-app.js`（85+/7−），预镜像 `4efddbc4` 与当时文件**逐字节相同** ✓
+   ⇒ `git apply` 干净落地。七段各治一件事：**wasm 借用中毒抛错 ⇒ 捕获后回收内核重开**（`resyncFallbacks`）、
+   撤销栈 `{kind:"head"}` 与 `{kind:"atom"}` 条目分开处理、**「回到此处」先回拨 head 再撤销**、
+   `atomIdOf` 统一 `get_log.atom_id` 与 `/api/atoms.id` 两种 id 字段（单源 ✓）、
+   拾取用例缺 bbox 时**不再谎报「此处没有对象」**、内置画笔提交后**显式 `refreshPreview()+resync()`**。
+   验证口径（纯 JS 资产，无 Rust 改动 ⇒ 不开 `cargo test --workspace` 例外）：`node --check` ✓、
+   标识符逐处对读（`atomIdOf` 定义与三处调用、`head` 契约、`failureCode`、`resyncFallbacks` 被
+   `browser-ui-check` 读数 ✓）、`check-viewer-unique-ids`（359 id 唯一/303 被引用 ✓）、
+   `check-blank-overwrite-guard` ✓、`pwa-sync-viewer` 重新生成 `web/`（tracked 的 `web/index.html` 随补丁一起提交 ✓）、
+   防分叉（`tool-pwa-assets` 的归一化字节比对部分）✓ —— 该判据本机 EXIT=1 只红在**六个介质 .wasm 产物过期**
+   （本机构建产物问题，CI 重建 ⇒ 与本补丁无关 ✓，如实记录）。**教训（freshness 双坑）**：
+   `viewer-app.js` 是 `include_str!` **内嵌进二进制**的 ⇒ 本机跑浏览器判据前必须**重建**才测得到补丁；
+   而 `cargo build --debug` **不是合法参数** ⇒ usage 错误被 `| tail` 吃成退出码 0，**测了昨天的旧二进制**
+   ✗（8 项红全部落在补丁正要修的路径上 ⇒ 反证补丁对象正确）。改完跑法＝先 `ls -l` 比时间戳再跑。
+   浏览器判据结果：见本轮 §二 bullet 与提交信息。
 
 70. **判据间污染：`tool-brush-settings` 改共享笔刷不还原 ⇒ 下游 `tool-export-idempotent` CI 独有红**（本轮 ✓）：
    `run-criteria.sh` 的分片是**一个临时工作区跑一串判据**，而 `set_brush_setting` 写的是**工作区笔刷缓存**

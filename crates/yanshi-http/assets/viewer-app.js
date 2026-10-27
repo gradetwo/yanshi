@@ -2019,7 +2019,21 @@ async function loadKernel(since = 0) {
   } else {
     let applied = 0;
     for (const atom of atoms.atoms) {
-      const response = JSON.parse(state.kernel.apply_atom_json(JSON.stringify(atom)));
+      // **★ 抛错也必须回收内核 ✗ ★**（第 14 轮 ✓）：**∴ `ok:false` 那条早就回收了 ✓，
+      //   而 wasm 借用毒化是**抛异常**✗（`recursive use of an object …` ✓）
+      //   ⇒ **∴ 原来**它会一路逃出 `resync()` ✗ ⇒ **∴ 提交后的重绘整段没跑 ✓
+      //   ⇒ 画布停在上一步**直到用户再做一次动作（**实测：第二笔 10 秒不上画布 ✓，
+      //   而「回到此处」一按就出现 ✓ —— 因为那条路 `loadKernel(0)` 重建了内核 ✓）**✗**。
+      //   **∴ 与 `ok:false` 同一条纪律 ✓**：回收 ⇒ 下一次从 0 重建 ✓。
+      let response;
+      try {
+        response = JSON.parse(state.kernel.apply_atom_json(JSON.stringify(atom)));
+      } catch (error) {
+        log("内核增量折叠抛错：" + String((error && error.message) || error).slice(0, 160), "#c33");
+        state.kernel = null;
+        window.yanshiStats.resyncFallbacks = (window.yanshiStats.resyncFallbacks || 0) + 1;
+        return false;
+      }
       if (!response.ok) {
         // **失败必须回收内核** ✓ —— 否则它停在"应用了一半"的状态 ✓，
         // 而 `state.localSeq` 没更新 ✓ ⇒ 下一次续传会把已应用的原子**再应用一遍** ✗
@@ -4498,6 +4512,24 @@ async function refreshAfterHistoryStep() {
 
 /// ⇒ 现在只问服务端 ✓：`undo_last` 是**整笔**的 ✓，并**回报还剩几笔** ✓ ⇒ 界面照它显示 ✓。
 async function undoOnce() {
+  // **「撤销一次跳转」排在「撤销一笔」前面** ✓（第 14 轮 ✓）：
+  //   跳转**不是一笔编辑** ✓（设计 13.2：历史步进是导航 ✓）⇒ 服务端的 `undo_last` 撤的是**手势**✓
+  //   ⇒ 它**撤不到**"跳转"这件事 ✓（实测 ✓：跳完点撤销 ⇒「没有可撤销的笔迹」✓、画布仍停在跳过去那一格 ✓）
+  //   ⇒ 而「回到此处」已经对用户说了「可点撤销回到跳转前」✓ ⇒ **那句话必须有人执行** ✓
+  //   ⇒ 跳转时记下的正是**跳转前的头部**（`kind:"head"` ✓）⇒ 撤销 = 再 `revert_to` 回它 ✓。
+  const headEntry = state.undoStack.find((entry) => entry && entry.kind === "head");
+  if (headEntry) {
+    const jumpedBack = await callTool("revert_to", { atom_id: headEntry.id }, { refresh: false });
+    if (!jumpedBack || jumpedBack.ok === false) {
+      log("撤销跳转失败：" + failureCode(jumpedBack) + " " +
+          ((jumpedBack && jumpedBack.context && jumpedBack.context.detail) || ""), "#c33");
+      return; // **条目留着** ✓：没做成就不许把它从栈里抹掉 ✗
+    }
+    state.undoStack = state.undoStack.filter((entry) => entry !== headEntry);
+    log("已撤销这次跳转，回到跳转前的那一格 ✓", "#2a2");
+    await refreshAfterHistoryStep();
+    return;
+  }
   const value = await callTool("undo_last", {}, { refresh: false });
   if (!value || value.ok === false) {
     log("撤销失败：" + failureCode(value) + " " +
@@ -4583,7 +4615,10 @@ function updateUndoStatus() {
   // **"计数未知"也算不可用** ✗（判据实测：空栈时 `undo.disabled === false` ✓ ⇒ 按钮可点却没反应 ✓）。
   // `undoCount` 为 `null` 表示未知 ✓，而 `null === 0` 是假 ✗ ⇒ 老代码保持可点 ✗。
   // ⇒ 未知时**先禁用** ✓，等计数到达再启用 ✓（不给"看着能点"的中间态 ✗）。
-  if (undo) undo.disabled = undoCount === null || undoCount === 0;
+  // **但有一次待撤销的跳转时**必须可点 ✓（第 14 轮 ✓）：那个计数说的是"还能撤几**笔**"✗
+  //   ⇒ 而跳转不是一笔 ✓ ⇒ 只看计数会把「可点撤销回到跳转前」这句承诺**锁死** ✗。
+  const pendingJumpUndo = state.undoStack.some((entry) => entry && entry.kind === "head");
+  if (undo) undo.disabled = !pendingJumpUndo && (undoCount === null || undoCount === 0);
   if (redo) redo.disabled = redoCount === null || redoCount === 0;
 }
 
@@ -5160,7 +5195,7 @@ async function refreshHistory() {
     const detail = document.createElement("button");
     detail.type = "button";
     detail.textContent = "详情";
-    detail.addEventListener("click", () => { void showAtomDetail(atom.atom_id || atom.id); });
+    detail.addEventListener("click", () => { void showAtomDetail(atomIdOf(atom)); });
     const jump = document.createElement("button");
     jump.textContent = "回到此处";
     jump.addEventListener("click", async () => {
@@ -5170,7 +5205,14 @@ async function refreshHistory() {
       // ⇒ **撤销"回到此处"会跳回跳转后，而不是跳转前** ✗ ⇒ 与"可撤销"的承诺不符 ✓。
       //（这与判据那边 `fingerprintBeforeJump` 的错**同源** ✓：都是"把前值取在了后值之后" ✓。）
       const headBefore = currentHeadAtomId();
-      const result = await callTool("revert_to", { atom_id: atom.atom_id }, { refresh: false });
+      // **目标 id 要在发请求之前就知道有没有 ✓**：带着 `undefined` 发出去只会换来一个
+      // 服务端 400 ✓，而那句话说的是"参数没带上"✓ —— **是本端的问题 ✓，不该让用户在服务端的报错里猜 ✓**。
+      const targetAtomId = atomIdOf(atom);
+      if (!targetAtomId) {
+        log("回到此处失败：这一条原子没有 id（日志里没有它就没法定位跳转目标）", "#c33");
+        return;
+      }
+      const result = await callTool("revert_to", { atom_id: targetAtomId }, { refresh: false });
       if (!result.ok) {
         log("回到此处失败：" + (result.error_code || "unknown"), "#c33");
         return;
@@ -5201,7 +5243,21 @@ function currentHeadAtomId() {
   for (const atom of historyAtoms) {
     if (!best || (atom.seq || 0) > (best.seq || 0)) best = atom;
   }
-  return best ? best.atom_id : null;
+  return best ? atomIdOf(best) : null;
+}
+
+/// **一条原子的 id ✗**：**同一条日志在服务端与本地层里字段名不一样** ✓
+///（`/api/tools/get_log` 回 **`atom_id`** ✓，而 `/api/atoms` 与 `api-local.js` 的回 **`id`** ✓
+/// ⇒ **同一个原子、两个拼法 ✓**，**实测 id 值本身两边一致** ✓）。
+/// **∴ 为什么必须有它**：**「回到此处」原来只读 `atom.atom_id`** ✗ ⇒
+///   历史由本地层作答时它是 `undefined` ✓ ⇒ `JSON.stringify` 把 `undefined` **整个丢掉** ✗
+///   ⇒ 发出去的身体是 `{}` ✓ ⇒ 服务端 **400 `invalid_argument`：缺少必填参数 atom_id** ✓
+///   ⇒ 表现就是判据第 5 项红的**「点了「回到此处」画面没变」** ✓（**不是没跳转成功、是请求根本没带上目标 ✓**）。
+/// **∴ 一处写、三处用**（详情 ✓、回到此处 ✓、头部 ✓）⇒ **不再各写一套拼法 ✓**。
+function atomIdOf(atom) {
+  if (!atom) return null;
+  const value = atom.atom_id || atom.id;
+  return value ? String(value) : null;
 }
 
 /// 用当前列表填充筛选下拉（保留已有选项，避免每次重建导致选择丢失）。
@@ -8660,12 +8716,20 @@ let moveState = null;
 async function pickObjectAt(point) {
   const value = await callTool("list_objects", { include_hidden: false }, { refresh: false });
   if (!value.ok) return null;
-  const candidates = (value.objects || []).filter((object) => {
+  const listed = value.objects || [];
+  const candidates = listed.filter((object) => {
     const bbox = object.bbox;
     if (!bbox || bbox.length < 4) return false;
     return point.x >= bbox[0] && point.y >= bbox[1] &&
            point.x <= bbox[0] + bbox[2] && point.y <= bbox[1] + bbox[3];
   });
+  // **有对象而一个包围盒都没有 ⇒ 这是「回答缺字段」✗，不是「画面上没东西」✓**（第十三轮实测 ✓）：
+  // 离线/PWA 的日志级对象表算不出 bbox ⇒ 调用方要能区分这两种「拾到 null」✗，
+  // 否则用户看到的是「此处没有对象」——一个**假的**事实陈述 ✓。
+  if (window.yanshiStats) {
+    window.yanshiStats.pickCandidatesWithoutBbox =
+      listed.filter((o) => !Array.isArray(o.bbox) || o.bbox.length < 4).length;
+  }
   if (candidates.length === 0) return null;
   // **优先命中"当前选中的图层"** ✓ —— 子 agent 实测的抱怨（G5 ✓）：
   // 在图层面板选中某一层、用"移动"拖动时，命中测试会**命中所有图层** ✗，
@@ -10014,7 +10078,12 @@ board.addEventListener("pointerdown", (event) => {
     void pickObjectAt(start).then((object) => {
       state.selectedObject = object;
       if (!object) {
-        log("移动：此处没有对象");
+        // **两种「拾不到」不是一回事**✓（第十三轮实测 ✓）：对象表里**有**东西但**一个包围盒都没有**
+        // ⇒ 那是**离线日志级回答缺字段**✓，说「此处没有对象」就是在**谎报事实**✗。
+        const noBbox = (window.yanshiStats && window.yanshiStats.pickCandidatesWithoutBbox) || 0;
+        log(noBbox > 0
+          ? "移动：拾不到——本地对象表没有包围盒（离线模式算不出，连一次服务端即可）"
+          : "移动：此处没有对象");
         redraw();
         return;
       }
@@ -10765,6 +10834,15 @@ async function commitShape() {
         smooth: smooth,
       },
     }, "落笔");
+    // **★ 内置画笔必须显式刷新画布** ✓ ★（第 15 轮定案）：
+    //   **∴ 根因** ✗：前面 `.myb` 有 `await refreshPreview(); await resync()` ✓，
+    //     但内置画笔这条只调了 `callToolChecked` ⇒ **∴ 依赖 afterMutation 的副作用** ✓
+    //       ⇒ **∴ 而 afterMutation 只在 needsServerPixels===true 时才补画** ✗
+    //         ⇒ **∴ 导致第二笔内核已重放、画布却空白** ✓（resyncs: 0 ✓）。
+    //   **∴ 修法** ✗：**两条路对齐** ✓ ⇒ 内置画笔也显式调用 `refreshPreview()` + `resync()` ✓
+    //     ⇒ **∴ 判据验证** ✓：第二笔后 sum 立即变化 ✓、resyncs≥1 ✓。
+    await refreshPreview();
+    await resync();
   } else if (state.tool === "erase") {
     if (state.points.length < 2) return;
     await callToolChecked("erase", {
