@@ -54,7 +54,7 @@ const IMPORT_IMAGE_PARAMS: &[ParamSpec] = &[
         "文本溯源对象 {text,font,size,font_size_svg,color_rgba,align,position,baseline,anchor,units_per_em,line_height_units,subset_blob,subset_format,fallback_reason}（设计 §2.3）"
     ),
 ];
-/// import_image 的参数表（feature `raw` 开）：基线五项 + `raw_options` 一组。
+/// import_image 的参数表（feature `raw` 开）：基线各项 + `raw_options` 一组。
 #[cfg(feature = "raw")]
 const IMPORT_IMAGE_PARAMS: &[ParamSpec] = &[
     param!("layer_id", String, true, "目标图层"),

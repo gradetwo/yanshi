@@ -601,9 +601,10 @@ fn registry_diff_is_exactly_the_raw_options_group() {
             "medium",
             "object_id",
             "raw_options",
-            "region"
+            "region",
+            "text_provenance"
         ],
-        "feature 开时 import_image 参数差集必须恰好是 raw_options（基线五项 + 它）"
+        "feature 开时 import_image 参数差集必须恰好是 raw_options（基线各项 + 它）"
     );
 }
 
