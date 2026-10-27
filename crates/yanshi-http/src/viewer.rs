@@ -81,6 +81,11 @@ const PAGE_TAIL_A: &str = r##"</style>
   <button id="outboxRetry" type="button" title="立刻把本地队列按顺序补交给服务端">补交</button>
   <button id="outboxDiscard" type="button" title="丢弃本地队列里尚未补交的改动（需点两次确认）">放弃</button>
 </div>
+<!-- **画布上的那句话说给看得见的人** ✓（第六轮实测 ✗）：往锁定的图层落笔 ⇒ 服务端回 403 ✓
+     而解释**只**写进 `#log` ⇒ 那块卡片在 `data-panel="history"` 里 ✓ 默认是藏着的 ✗
+     （实测 `logVisible:false`、`scrollHeight:0` ✗）⇒ 用户得到的就是"按了没反应"。
+     浮层**不进布局流** ✓（`position: fixed` ✓）⇒ 出现/消失都不会把画布顶得跳一下 ✗。 -->
+<div id="stageNotice" role="status" aria-live="polite" hidden></div>
 <button id="zenExit" type="button" title="退出全屏画布（Esc）">⛶ 退出全屏（Esc）</button>
 <dialog id="newDialog">
   <h2 style="margin-top:0">新建文档</h2>
@@ -404,7 +409,37 @@ const PAGE_TAIL_A: &str = r##"</style>
   <button id="exportPngView">导出当前视图</button>
   <!-- **显式渲染开关** ✓（(A)⑤）：勾上就走**服务端像素**那条 ✓（= 弱设备回退 ✓）。
        改了会**重载页面** ✓ —— 比热切换简单，也不会有"半客户端半服务端"的中间状态 ✓。 -->
-  <label style="display:block;margin-top:8px;font-size:12px"><input type="checkbox" id="useServerRender" /> 用服务端渲染（默认开启；取消勾选 ⇒ 改用内核离线渲染）</label>
+  <label style="display:block;margin-top:8px;font-size:12px"><input type="checkbox" id="useServerRender" /> 用服务端渲染（默认开启；取消勾选 ⇒ 改用内核离线渲染）<span id="serverRenderLocalOnlyHint" hidden>（本部署无服务端，不可用）</span></label>
+  <!-- **★ 首帧就说真话 ✗ ★**（第九轮 ✓）：勾选框的初值**必须**在解析到这一行时定下 ✓ ——
+       主脚本在页尾 ✓ 而它到 `setupFileMenu()` 才赋值 ✓ 而那里要等 `warmKernel()`
+       （= 启动尾部的一串网络 ✓）⇒ **∴ 默认（服务端 ✓）时首帧画的是**空框 ✗
+       而旁边的字写着"默认开启" ✓ ⇒ **屏幕自相矛盾** ✗
+       （实测：首绘 52 ms 时 `checked=false` ✓，到 ≈230 ms 才变 true ✓；慢网下窗口更长 ✗）。
+       **∴ 三档顺序**与 `serverRenderPreferred()`（`viewer-app.js` ✓）**逐档一致** ✓：
+       本地专用 ⇒ 关 ✓｜`?render=client` ⇒ 关 ✓｜`?render=server` ⇒ 开 ✓｜
+       存量偏好（缺省 ⇒ 开 ✓）✓。**改一档必须两处同改** ✓
+       （判据 `scripts/browser-render-box-truth.mjs` 逐组合盯 ✓）。
+       **∴ 不写 `checked` 属性** ✗：那会把客户端模式的首帧也说成服务端 ✓（反向说谎 ✗）。 -->
+  <script>
+  (function () {
+    var box = document.getElementById("useServerRender");
+    if (!box) return;
+    var server = true;
+    try {
+      if (window.__pwaLocalOnly === true) server = false;
+      else {
+        var want = new URLSearchParams(location.search).get("render");
+        if (want === "client") server = false;
+        else if (want === "server") server = true;
+        else {
+          var stored = localStorage.getItem("yanshi.serverRender");
+          server = stored === null ? true : stored === "1";
+        }
+      }
+    } catch (error) { /* 解析不了 ⇒ 按缺省（服务端）✓ */ }
+    box.checked = server;
+  })();
+  </script>
   <button id="zoomFit">适配</button>
   <button id="zoomActual">1:1</button>
       </div>
@@ -437,7 +472,42 @@ const PAGE_TAIL_A: &str = r##"</style>
         <span>bit-exact <b id="bitExact">—</b></span>
       </div>
     </div>
-    <div class="card" data-panel="paint">
+    <!-- **调整 / 滤镜** ✓（第七轮把这张卡"说的"与"发生的"对齐 ✓）：效果名列表本来就来自服务端
+         `/api/effects` ✓ 因此不会与内核漂移 ✓ —— 但**"已应用"这句是界面自己下的结论** ✗
+         本轮实测它不可信：
+         ① **默认参数 `{}` 下 26 个调整里 17 个是像素空操作**（`brightness_contrast` /
+           `saturation` / `levels` / `exposure` / `white_balance` / `curves` / `hsl` /
+           `color_balance` / `split_toning` / `channel_mixer` / `calibrate_primaries` /
+           `shadows_highlights` / `selective_color` / `lens` / `dehaze` / `clarity` / `texture` ✓
+           整幅合成逐字节不变）而 7 个默认就动画面（`invert` / `posterize` / `vibrance` /
+           `black_and_white` / `gradient_map` / `red_eye` / `denoise` ✓）⇒ 同一句「已应用 X」底下可能是"变了"也可能是"一点没变"✗ 用户无从分辨 ✓。
+           剩下 2 个（`color_lut` 要 `path` 或 `size + table` ✓ `perspective` 要 `quad: [[x,y]×4]`）
+           **连 `{}` 都建不出来** ⇒ 服务端直接 `invalid_argument` 拒绝 ✓ 页面念「未写入」且一根汗毛不动 ✓
+           （也就是"26 = 17 空操作 + 7 会动 + 2 非要有参数"✓ 三个数是同一轮实测出来的 ✓ 别把被拒的两个算进空操作）
+         ② **参数名拼错服务端照单收下**：`{"redhue":50}` ⇒ `ok:true` ✓ 回读也原样存着 ✓
+           而画面一字未动 ✗（内核只校验它**认识**的键 ✓ `tools_effect.rs` 的逐键区间校验
+           对不认识的键不置可否 ✗）。越界的真键才会被拒：`{"red_hue":150}` ⇒
+           `invalid_argument`「calibrate_primaries 的 red_hue 必须在 [-100, 100] 之间，得到 150」✓。
+         ③ 这两件当时**只写进 `log()`** ✗ 而日志在折叠的「历史」卡里 ⇒ 界面上等于没说 ✓
+           （与第五六轮 `effective` / 中性灰那条同族：**成功而画面不动，是必须说出来的那种成功**✓）。
+         **所以这张卡现在做四件事** ✓：
+         * 应用/更新/删除**之前之后各取一次服务端整幅合成的指纹** ✓（`render_region` 只读 ✓
+           实测同一状态两次调用哈希逐字节相同 ✓ 加了真参数就变 ✓ 且不产生原子 ✓）
+           ⇒「画面动没动」是**服务端字节比较**的结论 ✗ 界面不参与任何像素推算 ✗；
+         * 取样点取自**服务端 `list_objects` 报的对象外框**而非均匀网格 ✓：实测 1024×1024 白底
+           文档只在 (700,700) 有一块 40×40 的红 ⇒ 均匀五点全落在白底上 ✗ 加完真参数读数一字未动 ✓
+           而真内容处 `200,50,50 → 200,143,0` ✓ —— 用均匀网格下结论会把"动了"说成"没动"✗；
+         * 每行给一个「删」✓（`delete_object` 实测能删掉效果对象并让画面复原 ✓）：
+           此前效果**只进不出** ✗ 空操作叠五次也撤不掉 ✓；
+         * 失败那句话把责任说给**这一笔实际走过的那条路** ✓：`refusalVenue()` 读的正是路由
+           用的同一个 `serverRenderPreferred()` ✓。关掉「服务器渲染」后请求落在**本地内核**上 ✗
+           若还说成"服务端拒绝" ⇒ 把人送去翻服务端的日志 ✓ 而该看的是本地内核（第七轮判据
+           `browser-effect-card-truth.mjs` ⑩b 实测跑红抓出来的 ✗ 两臂各钉一句才看得见 ✓）。
+           同一处还漏读半格：服务端的码叫 `error_code` ✓ 本地那一臂叫 `error` ✓
+           ⇒ 只读前者就把具体码念成 `unknown` ✗（判据 ⑩c 拿页面**通用**失败分支写的日志比 ✓）。
+         **指纹拿不到时不许装作验证过** ✓：关掉「服务器渲染」后本地那条路回的是 PNG 字节 ✓
+         没有 JSON 回执 ⇒ 界面固定说一句"没法验证"✗ 而不是沿用上半句的"已应用"糊过去 ✓。 -->
+    <div class="card" data-panel="paint" id="cardEffects">
       <h2>调整 / 滤镜</h2>
       <div style="display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap">
         <select id="effectKind">
@@ -451,6 +521,26 @@ const PAGE_TAIL_A: &str = r##"</style>
       <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px">
         <input id="effectParams" value="{}" style="flex:1; font-family:ui-monospace,monospace" />
       </div>
+      <div class="hint" id="effectInfo"></div>
+      <!-- **这句不是常设说明 ✓ 是"只在它成立那一刻才挂"的一句** ✓（第七轮 ★ 看真截图复核才改的 ✗
+           本轮一开始只给它降了亮度 ✓ 以为"层级区分"就够了 —— 图上它仍在两种状态下说假话：
+           ① 「画面确实动了 · 实测 [200,50,50,255] → [200,143,0,255]」底下紧跟着「指纹没变 ⇒ 空操作」
+              ⇒ 同一张卡自相矛盾 ✓；② 「未写入：…拒绝了这一步」底下同一句 ⇒ 把"没写成"说成
+              "写成了但没效果"✗ 而这正是这张卡本轮一直在消灭的那类谎 ✓。
+           现在缺省 `hidden` ✓ 由 `sayEffect(line, {noOp})` 按**服务端那两个哈希比出来的**结果决定
+           挂不挂 ⇒ 只有"写成了而整幅合成逐字节没变"那一种情况它才出现 ✓（判据 ③′ 钉可见性 ✓）。
+           **而它现在只剩一句短的 ✓ 那两条"为什么"挪进 `title=`** ✓（同轮 `ui-text-density` 判据把它
+           判成"人类界面上的大段解释"✗ 它一开始**红着就被记成了绿** ✓ 见 docs ㊳/㊴ ⇒ 判据 prescribed 的
+           修法就是"进 title= 或只在 MCP 侧说清"✓ 这里取前者 ✓）。
+           **两个键都要英文词条 ✓ 但不是同一本字典**（本轮踩过一次：`title` 走 `I18N_EN_ATTR` ✓
+           文本节点走 `I18N_EN_TEXT` ✓ 塞错本 `ui-i18n-coverage` 当场红"属性漏词条"✓ 见 docs ㊴）✓
+           少任何一边就是英文模式下的中文残留 ✓（`ui-i18n-coverage` + `browser-tooltip-i18n` 两条都问得到 ✓）。
+           **末了文案也改了**（第二次看真截图 ✓ docs「只有看真截图」那条）：原先那句是
+           「这一笔对画面是空操作 ⇒ 原因见鼠标提示」✓ 而它**头顶那一行回执**刚说完
+           「… ⇒ 这一笔对画面是空操作」⇒ 相邻两行逐字重复一遍同一句结论 ✗ 既然可见那句只负责
+           "指一下提示" ✓ 就把它缩成「为什么？见鼠标提示」✓ 结论由回执那一行独占 ✓（判据 ③″ 只问
+           "密度合格 + 原因还在 `title` 里" ✓ 不问措辞 ⇒ 这句改字不影响它 ✓）。 -->
+      <div class="hint" id="effectNote" style="opacity:.62" hidden title="缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。">为什么？见鼠标提示</div>
       <div id="effectsList" style="font-family:ui-monospace,monospace;font-size:11px;max-height:120px;overflow:auto"></div>
     </div>
     <div class="card" data-panel="history">
@@ -643,6 +733,123 @@ const PAGE_TAIL_A: &str = r##"</style>
       <div class="hint" id="freqSepCurrent"></div>
       <div class="hint" id="freqSepInfo"></div>
       <div class="hint" title="在「高频绘画」层上涂抹用 188 作中性色（128 会压暗）；源图层保持可见，新组盖在它上面；要整组撤掉请用「历史（原子日志）」卡逐条回退">高频层的中性灰是 188（不是 128）。</div>
+    </div>
+
+    <!-- **减淡加深** ✓（`dodge_burn_setup` ✓ 在 HTTP 缺省面内的 `retouch` 组 ✓）：
+         本轮之前 `grep -c dodge_burn crates/yanshi-http/` 命中 **0** ✗（实测 ✓）
+         ⇒ "局部提亮/压暗而不改颜色"这件修图天天做的事 ✓ 人只能靠 Agent 才做得到 ✗。
+         **这张卡必须把服务端回执的诚实字段念出来** ✓：`effective` / `ineffective_reason` /
+         `neutral_gray` 是本轮**实测后补进回执**的三格 ✓（`tools_retouch.rs` ✓）⇒
+         界面不自算"这组有没有用"✗ 只转述服务端自己说的话 ✓。
+         **curves 那条 ⚠ 第六轮撤掉了**（写在这里免得有人照旧文案加回去）✓：第五轮实测它改不到画面
+         （调整对象只作用于**它自己图层的缓冲** ✓ 那两层除曲线外没有像素 ✓ 128 的底色涂满白仍 128 ✓）
+         ⇒ 当时在卡上面向用户警告 ✗ 回执也回 `effective:false` ✓ 两处都注明"谁修好跨层调整就同时撤"✓。
+         上游 `302d414d`（纯调整层渲染时先用下方内容播种）正是那次修复 ✓ 重测：dodge 蒙版涂白
+         `128→159` ✓ burn 涂白 `128→98` ✓ 端点 0/255 不动 ✓ ⇒ 两条臂都改得到画面 ✓
+         于是下拉那句 option 从「实测不改画面」换成「曲线可回改」✓ 中英词条一起改 ✓
+         （`ui-i18n-coverage` 会盯词条与模板是否同源 ✓）。
+         **为什么灰层的中性必须写在卡上** ✓：同一条实测路径抓到旧实现把灰层铺成 50% 显示灰 128 ✗
+         而本引擎的 `soft_light` 在**线性缓冲**上做 ⇒ 中性是线性 0.5 ＝ 字节 **188** ✓
+         ⇒ 铺 128 时 128 的底色被压到 **97**（整幅暗 31 级 ✗ 建组这一步自己就把画弄黑了 ✓）；
+         铺 188 时六个底色（0/60/128/200/255 与一个彩色）逐点**完全不变** ✓
+         ⇒ 服务端已改用 188 ✓ 卡片只转述回执 `neutral_gray` 这个数 ✗ 不在界面写死。
+         **界面先拦后送** ✓：中点必须在 [0.05，0.95]（服务端同域 ✓ 越界回 `invalid_argument`
+         且detail 逐字带区间 ✓ 实测 ✓）⇒ 越界时不发送请求 ✓ 不产生任何原子 ✓。
+         **不解读 HTTP 注入的字段** ✓：`created` / `opened` 由 HTTP 层加在**每条**回执上 ✓
+         说的是"这个文档有没有被本次请求打开/新建"✓（`server.rs` 那两处 ✓）
+         ⇒ 与工具本身的效果无关 ✗ 界面不许拿它当"建了几层"来念 ✓。 -->
+    <div class="card" data-panel="paint" id="cardDodgeBurn">
+      <h2>减淡加深</h2>
+      <div class="hint" title="只改明暗、不改颜色的局部提亮与压暗；建出来的是一个组，涂抹在组内的层上">给一块区域做减淡（提亮）与加深（压暗）。</div>
+      <div class="toolbar" style="gap:8px;flex-wrap:wrap">
+        <label style="white-space:nowrap">源图层 <select id="dodgeBurnSource" title="按它的名字建组并把新组放在它上方"></select></label>
+        <label>方法 <select id="dodgeBurnMode" title="两条路都会改变画面（实测）：灰层法涂就见效，曲线法留两条可回改的曲线">
+          <option value="gray">灰层法（涂就见效）</option>
+          <option value="curves">曲线法（曲线可回改）</option>
+        </select></label>
+        <label>减淡中点 <input id="dodgeBurnDodge" type="number" min="0.05" max="0.95" step="0.01" value="0.62" style="width:68px" title="曲线法的减淡强度（显示空间 0.05–0.95，0.5 = 无效果）；只对曲线法有意义" /></label>
+        <label>加深中点 <input id="dodgeBurnBurn" type="number" min="0.05" max="0.95" step="0.01" value="0.38" style="width:68px" title="曲线法的加深强度（显示空间 0.05–0.95，0.5 = 无效果）；只对曲线法有意义" /></label>
+        <label>组名前缀 <input id="dodgeBurnName" type="text" placeholder="缺省用源图层名" style="width:150px" title="建出「前缀 · 减淡加深」组；同名组已存在时复用而不叠第二套" /></label>
+        <button id="dodgeBurnRun" type="button" title="建组；中点越界时不发送请求、不写入任何改动">建组</button>
+      </div>
+      <div class="hint" id="dodgeBurnCurrent"></div>
+      <div class="hint" id="dodgeBurnInfo"></div>
+      <div class="hint" title="灰层本身是中性灰，涂抹才生效：用白色低流量笔触提亮、黑色压暗；灰层是此刻的快照，不跟随下方修改">灰层法的中性字节由服务端回执给出（本引擎是 188，不是 128）。</div>
+    </div>
+
+    <!-- **区域填充** ✓（第四轮 ✓）：`fill_region` 此前在页面上**零入口** ✗
+         （实测 `grep -rn fill_region crates/yanshi-http/src/viewer.rs crates/yanshi-http/assets/viewer-app.js`
+         在 HTML 与界面脚本里命中 **0** ✗ 只有 `api-local.js` 那条"本地内核已实现"✓）
+         ⇒ 工具栏那支「填充图层」走的是 `fill`（整层、无形状、无羽化 ✗）⇒ 不是这一张卡的替代品 ✓。
+         **为什么这张卡必须把回执念出来** ✓：本轮实测抓到 `fill_region` 的 `opacity`
+         在 `color` 写成 `"#rrggbb"` 时被**静默丢掉**（1.0／0.5／0.2 逐字节相同 ✗ 服务端修好了 ✓）
+         ⇒ 界面这里固定送**对象形态** `{r,g,b}` 并把服务端回显的 `opacity` 念回来 ✓
+         人一眼能核对"我给的 0.5 服务端认了没有"✗ 而不是信页面自己的数 ✓。
+         **`羽化` 在这张卡上是看得见的** ✓：渲染侧那条"羽化被裁到窄区域 ⇒ 同一个像素的 α 随区域大小变"
+         （实测整幅 255 ／ 1 行区域 194 ✗ 已修 ✓）正是**页面平移缩放与分块缓存**做的事 ✗
+         ⇒ 页面曾经会把羽化冲淡 ⇒ 这张卡也是那条缺陷在界面上的验收口 ✓。
+         **「取画面这块」= `texture.type:"region"`** ✓（第 2680 轮实现 ✓ 注册表描述当时还写着"尚未实现"✗
+         ⇒ 已按实测更正 ✓）：服务端把源矩形当前的合成**就地拍成 blob** 再走位图那条路 ✓
+         回执里 `texture.from_region:true` 与取纹理的 `layer_id` 都要念出来 ✓。
+         **警告不许咽下去** ✓：处理器返回顶层 `warnings`（与 `drawn.warnings` ✓）
+         ⇒ 有就整条摊开 ✗ 沉默即静默降级 ✓。 -->
+    <div class="card" data-panel="paint" id="cardFillRegion">
+      <h2>区域填充</h2>
+      <div class="hint">往一块形状里填色或铺纹理。落的是「一个形状对象」，不是一次性烘焙：之后还能选中它改羽化与不透明度。</div>
+      <div class="toolbar" style="gap:8px;flex-wrap:wrap">
+        <label>图层 <select id="fillRegionLayer" title="填到哪一层：那一层已有的对象不受这次影响"></select></label>
+        <label>形状 <select id="fillRegionShape" title="矩形给 x/y/w/h；椭圆给中心与两半径；折线给顶点；路径给 SVG 的 d">
+          <option value="rect">矩形</option>
+          <option value="ellipse">椭圆</option>
+          <option value="polygon">折线</option>
+          <option value="path">路径</option>
+        </select></label>
+        <button id="fillRegionFromSelection" type="button" title="读当前选区的外框（选区来自服务端事实，不是本地猜测）；没有选区时如实说没有">用选区</button>
+      </div>
+      <div class="toolbar" id="fillRegionRectRow" style="gap:8px;flex-wrap:wrap">
+        <label>x <input id="fillRegionX" type="number" step="1" value="24" style="width:64px" title="左上角 x（文档像素）" /></label>
+        <label>y <input id="fillRegionY" type="number" step="1" value="24" style="width:64px" title="左上角 y（文档像素）" /></label>
+        <label>宽 <input id="fillRegionW" type="number" min="1" step="1" value="120" style="width:64px" title="宽度（像素，要大于 0）" /></label>
+        <label>高 <input id="fillRegionH" type="number" min="1" step="1" value="80" style="width:64px" title="高度（像素，要大于 0）" /></label>
+      </div>
+      <div class="toolbar" id="fillRegionEllipseRow" style="gap:8px;flex-wrap:wrap;display:none">
+        <label>中心 x <input id="fillRegionCx" type="number" step="1" value="84" style="width:64px" title="椭圆中心 x" /></label>
+        <label>中心 y <input id="fillRegionCy" type="number" step="1" value="64" style="width:64px" title="椭圆中心 y" /></label>
+        <label>rx <input id="fillRegionRx" type="number" min="1" step="1" value="60" style="width:64px" title="横向半径（要大于 0）" /></label>
+        <label>ry <input id="fillRegionRy" type="number" min="1" step="1" value="40" style="width:64px" title="纵向半径（要大于 0）" /></label>
+      </div>
+      <div class="toolbar" id="fillRegionPolygonRow" style="gap:8px;flex-wrap:wrap;display:none">
+        <label>顶点 <input id="fillRegionPoints" type="text" placeholder="x,y 空格或分号分隔，至少 3 个" style="width:280px" title="多边形顶点，至少 3 个（开放路径按隐式闭合填充）" /></label>
+      </div>
+      <div class="toolbar" id="fillRegionPathRow" style="gap:8px;flex-wrap:wrap;display:none">
+        <label>d <input id="fillRegionD" type="text" placeholder="M 24 24 L 144 24 L 144 104 Z" style="width:280px" title="SVG 路径字符串（M/L/C/Q/H/V/Z，小写为相对命令）；也认 Bézier 曲线" /></label>
+        <label title="evenodd 按奇偶规则挖洞；nonzero 按绕数规则"><select id="fillRegionFillRule">
+          <option value="evenodd">奇偶</option>
+          <option value="nonzero">绕数</option>
+        </select></label>
+      </div>
+      <div class="toolbar" style="gap:8px;flex-wrap:wrap">
+        <label>颜色 <input id="fillRegionColor" type="color" value="#dc2828" title="填充色：送出的是 {r,g,b} 对象，服务端再把不透明度乘进 alpha" /></label>
+        <label>不透明 <input id="fillRegionOpacity" type="number" min="0" max="1" step="0.05" value="1" style="width:64px" title="0–1：服务端把它乘进颜色的 alpha" /></label>
+        <label>羽化 <input id="fillRegionFeather" type="number" min="0" max="128" step="1" value="0" style="width:64px" title="边缘过渡半径（文档像素，0 = 硬边）" /></label>
+        <label>填什么 <select id="fillRegionMode" title="纯色，或把画面另一块的像素当纹理铺进来">
+          <option value="color">纯色</option>
+          <option value="region">取画面这块</option>
+        </select></label>
+      </div>
+      <div class="toolbar" id="fillRegionSrcRow" style="gap:8px;flex-wrap:wrap;display:none">
+        <label>源 x <input id="fillRegionSrcX" type="number" step="1" value="0" style="width:64px" title="取纹理那块矩形的左上角 x" /></label>
+        <label>源 y <input id="fillRegionSrcY" type="number" step="1" value="0" style="width:64px" title="取纹理那块矩形的左上角 y" /></label>
+        <label>源宽 <input id="fillRegionSrcW" type="number" min="1" step="1" value="40" style="width:64px" title="取纹理那块矩形的宽（要大于 0）" /></label>
+        <label>源高 <input id="fillRegionSrcH" type="number" min="1" step="1" value="40" style="width:64px" title="取纹理那块矩形的高（要大于 0）" /></label>
+      </div>
+      <div class="toolbar" style="gap:8px">
+        <button id="fillRegionRun" type="button" title="落笔：形状尺寸不合法时不发送请求、不写入任何改动">填充</button>
+        <span class="hint" id="fillRegionSelection"></span>
+      </div>
+      <div class="hint" id="fillRegionInfo"></div>
+      <div class="hint" id="fillRegionSample"></div>
+      <div class="hint" title="「取画面这块」取的是此刻那块矩形的像素（服务端就地存成纹理），不是实时链接：先把那块画好再指它。羽化只作用于边缘的不透明度。">「取画面这块」烤的是此刻那块的像素，不跟随后续修改。</div>
     </div>
 
     <!-- **风格预设** ✓（`list_presets` / `preview_preset` / `apply_preset` 此前在查看器里**零引用** ✗）。
@@ -934,6 +1141,12 @@ const PAGE_TAIL_A: &str = r##"</style>
              逐条"接受"在面对一屏建议时是酷刑 ✓。勾选行 ⇒ 一键处理所选 ✓。 -->
         <button id="suggestionAcceptChecked" type="button" title="一次性接受所有勾选的建议（accept_suggestions）">接受所选</button>
         <button id="suggestionRejectChecked" type="button" title="一次性拒绝所有勾选的建议（reject_suggestions）">拒绝所选</button>
+        <!-- **拒绝原因** ✓（第五轮 ✓）：新判据 `scripts/check-viewer-unique-ids.mjs` 抓到
+             `$("suggestionReason")` 是一句**悬空引用** ✗（HTML 里从来没有这个 id ✓）
+             ⇒ 逐条拒绝与批量拒绝**恒送固定串**「编辑器里拒绝」✗ 用户想写的理由**根本没地方输入** ✓
+             ⇒ 而日志又回显「原因「编辑器里拒绝」」✓ ⇒ 看起来像用户自己写的 ✗
+             ⇒ 补上输入框 ✓ 空着时日志如实说"未填"✓（见 `viewer-app.js` 那两处 ✓）。 -->
+        <label style="white-space:nowrap">原因 <input id="suggestionReason" type="text" placeholder="为什么拒绝（可选）" style="width:180px" title="写进 reject_suggestion 的 reason：拒绝理由会留在历史里，供他人判断" /></label>
       </div>
       <div id="suggestionList" class="annotation-list"></div>
       <div class="hint" id="suggestionPreviewHint">点「预览」先看清补丁会被怎么执行 ✓（预览不改动画面 ✓）</div>

@@ -4130,6 +4130,22 @@ impl Renderer {
                     //     ＋ **∴ 而**形状外的覆盖率**恒为 0** ⇒ **∴ 整层范围**不改变结果** ✓ ★
                     let clip = if std::env::var_os("YANSHI_SHAPE_FULL_SCOPE").is_some() {
                         layer_bb
+                    } else if feather > 0.0 {
+                        // 羽化时不能裁到「本次要写的缓冲」：`feather_coverage` 把自己网格的**边界**
+                        // 当成形状外补零 ⇒ 窄区域（tile／页面平移缩放）会让同一个像素的 α 随区域大小变
+                        // （实测 100×80 的块：整幅渲染 α=255，1 像素高的区域读到 α=194）。
+                        // 取「scope ∩ 画布」⇒ 网格看到的是形状的真实范围 ⇒ 与区域无关。
+                        let canvas = Bbox::new(0.0, 0.0, state.width as f64, state.height as f64);
+                        let fx0 = scope.x.max(canvas.x);
+                        let fy0 = scope.y.max(canvas.y);
+                        let fx1 = (scope.x + scope.w).min(canvas.x + canvas.w);
+                        let fy1 = (scope.y + scope.h).min(canvas.y + canvas.h);
+                        Bbox {
+                            x: fx0,
+                            y: fy0,
+                            w: (fx1 - fx0).max(0.0),
+                            h: (fy1 - fy0).max(0.0),
+                        }
                     } else {
                         clip
                     };

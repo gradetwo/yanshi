@@ -4824,6 +4824,21 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             copy.push(json!(alpha));
         }
         Value::Array(copy)
+    } else if color.is_string() {
+        // **字符串形态（`"#rrggbb"`／`"#rrggbbaa"`）也要吃 `opacity`** ✓（第四轮修）
+        //   原来这里落到 `else { color }` ⇒ 而描述与 schema 都**明说**可以写 `#rrggbb` ✓
+        //     ⇒ 实测 `fill_region(color:"#dc2828", opacity=0.5)` 的中心 α 仍是 255
+        //       （1.0／0.5／0.2 三种给法逐字节相同）⇒ **参数被静默忽略** ✗✗
+        //     与第 1410 轮那条数组形态的缺陷同型 ✓ 那时只修了两种形态里的两种 ✗
+        //   **⇒ 修法**：解析交给既有 `parse_colour_value`（不再自己认 `#rgb`／比例／hsl）✓
+        //     归一成 `{r,g,b,a}` 对象后与上面两条走同一条乘 `opacity` 的路 ✓
+        let [r, g, b, a] = parse_colour_value(&color, "color")?;
+        json!({
+            "r": r,
+            "g": g,
+            "b": b,
+            "a": (a as f64 * opacity).round().clamp(0.0, 255.0)
+        })
     } else {
         color
     };

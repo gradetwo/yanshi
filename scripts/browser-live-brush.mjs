@@ -508,3 +508,10 @@ if (process.env.DIGEST_NOTE && process.env.PREVIOUS_DIGEST && process.env.PREVIO
   console.log("  ✗ 与上一次（另一支笔刷）的指纹**相同** ⇒ 笔刷很可能没真的换 ✗（这次的测量无效）");
   process.exitCode = 1;
 }
+// **★ 收尾必须**停掉总超时守卫 ✗ ★**（第 10 轮修 ✓）：
+//   **∴ 症状 ✗**：**全部断言都过了 ✓、JSON 也打了 ok:true ✓，进程还是**在 90 秒时**被守卫杀掉**✗
+//     ⇒ **∴ 报**「判据超时」**⇒ 退 3 ✗**（**看着像判据自己坏了 ✗，其实是**忘了 clearTimeout ✓**）
+//   **∴ 根因 ✗**：`setTimeout` **没人清**⇒ **∴ 它**撑住事件循环 90 秒 ✓
+//   **∴ 修法 ✗**：**正常收尾**时 `clearTimeout` ＋ **按**`process.exitCode` **显式退** ✓
+clearTimeout(__judgeTimeout);
+process.exit(process.exitCode || 0);

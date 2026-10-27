@@ -309,9 +309,18 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs sc
       #     ⇒ CI 实测 `⏱ 等待超时：调色板色块` ⇒ 自动收起**根本没机会跑** ✗）
       #   ⇒ **i18n** 测**静态文案**（本地模式会把 `endpoint_not_local` 等噪声算进整页中文）
       #   ⇒ **render-switch／cs-render-switch** 自己设偏好（既有例外）
+      #   ⇒ **dodge-burn**（第五轮）测的是**服务端工具** `dodge_burn_setup` 与回执同源的界面句 ✓
+      #     本地内核没这个端点 ⇒ 加了 `render=client` 就换成测本地缺端点 ✗ 判据自己也再钉一次
+      #     `render=server` ✓（双保险 ✓ 见该脚本抬头「口径」✓）
+      #   ⇒ **status-bar**（第五轮）测的是**服务端水位** `rendered_seq` 与顶栏显示 ✓
+      #     本地内核不去读服务端像素 ⇒ 水位永远不动 ✗ 加了参数就换成"测本地不读像素" ✓ 红得没道理 ✓
+      #   ⇒ **effect-card-truth**（第七轮）主体测的是**服务端** `add_adjustment` / `update_adjustment`
+      #     / `delete_object` 与 `render_region` 整幅指纹 ✓ 判据自己按场景钉 `render=server` ✓
+      #     而它**唯一**的本地那一臂（⑩/⑩b）走的是"URL 不带 `render` ⇒ 由勾选框说话"这条路 ✓
+      #     外面再注入一个 `&render=client` 就成了**第二个真值** ✓ 与判据要问的事正好相反 ✗
       #   **∴ 它们测的是服务端/静态界面，不是本地内核** ⇒ **不加参数才是测对对象** ✓
       case "$name" in
-        browser-render-switch.mjs|browser-cs-render-switch.mjs|browser-project-download.mjs|browser-brush-panel.mjs|browser-i18n.mjs)
+        browser-render-switch.mjs|browser-cs-render-switch.mjs|browser-project-download.mjs|browser-brush-panel.mjs|browser-i18n.mjs|browser-dodge-burn.mjs|browser-status-bar.mjs|browser-effect-card-truth.mjs)
           RENDER_PARAM="" ;;
         *) RENDER_PARAM="&render=client" ;;
       esac

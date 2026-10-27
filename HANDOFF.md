@@ -1,6 +1,6 @@
 # 工作交接（截至 2026-10-27，vector-tracing v5.1、MCP receipts 与 draw_text 真文本合并后）
 
-**仓库**：`/home/crow/yanshi`（分支 `main`）｜**HEAD**：`b608933a`（photo-bugfix 期 2 文档修正；`docs:` 提交会再加一个，纯文档 ⇒ `paths-ignore` 不触发 CI）｜推送：`git push git@github.com:gradetwo/yanshi.git main`
+**仓库**：`/home/crow/yanshi`（分支 `main`）｜**HEAD**：changes.patch 合并 + vector-tracing v5.2（见第 59／60 项；含产品代码 ⇒ 触发 CI）｜推送：`git push git@github.com:gradetwo/yanshi.git main`
 
 ## 一、每轮第一件事：比两份外部报告
 
@@ -341,3 +341,24 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
 7. **新增仓库**顶层**条目（含 `.md`）要同步加进 `scripts/tool-repo-root-clean.mjs` 的 `ALLOWED`**：
    `HANDOFF.md` 在 `ab7a1114` 提交后**第一次**跑 CI 才红（`2e70615b` 的 run 早于它）
    ⇒ 这类红**不在产品侧**，但会阻塞"CI 绿" ✓。判据自己会指出"有意的就加白名单"。
+
+59. **changes.patch 已合（工作树 → 提交）**：外部裸补丁 `~/patch/changes.patch`（基线 `bfe6189e`，
+   `git apply --check` 干净后落工作树），27 改 + 15 新。要点：
+   W3C `SoftLight` 多项式分支修正（`((16cb−12)cb+4)cb`，含 ps 参考值/接缝/白提/变异对照四组单测）；
+   feather 形状裁剪 scope∩canvas；`viewer.rs` 内联脚本让 `#useServerRender` **首帧说真话**；
+   `api-local.js` `__deflate` 死锁修复；C/S 双模 `atomsOf` 走 `/api/atoms`；本地折叠种子 `layer_default`；
+   `dodge_burn_setup` 回执（`effective`/`ineffective_reason`/`neutral_gray`/`mode`）；retouch/curves 播种行为改动；
+   新判据 12 条 + `check-viewer-unique-ids` + `tool-dodge-burn-effective` + 3 篇设计文档；
+   `run-criteria.sh` RENDER_PARAM 例外表扩充；`criteria-known-red.txt` 重写（4 条移出、
+   offline-reload 改归「判据接线」、offline-brush 改归「判据度量」）。
+   **本机验证**：`cargo clippy --workspace --all-targets -- -D warnings` 绿；
+   定向判据 14 条：**11 绿、3 红**（`browser-fill-region` ②「宽 0 就地拦」读到空消息、
+   `browser-dodge-burn` 英文模式预测/回执 2 条、`browser-frequency-separation` 3 条）——
+   新判据抓到的是**产品缺口还是判据接线**待查 ⇒ 进两份审计报告的同批修复（第 61 项起）。
+   CI 结果以 run 为准；若 3 红在 CI 复现，先归因再决定修产品或修判据，不静默入名单。
+
+60. **skill-vector-tracing v5.2 后续包已合**（`cc4d1759`，作者 `625593e`，基线 `bfe6189`＝当时 HEAD，`git am` 干净）：
+   单文件 `skills/yanshi-vector-tracing/SKILL.md` +90/−5（222→307 行）。
+   **校验（本机 ✓）**：pre-image blob `9cab355…`、am 后 blob `a85dd5e…` 均与补丁 `index` 行一致；
+   包内定稿 `SKILL.md` sha256 `fa3f8349…` 与说明一致；包内 `合并.diff` 与 patch 逐行一致。
+   纯 skill 文档 ⇒ 不触发 CI（`paths-ignore`），随本提交的产品代码一起过 CI。

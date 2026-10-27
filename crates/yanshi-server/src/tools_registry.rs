@@ -550,15 +550,19 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         // **复用既有的形状绘制** ✓：映射成 `draw_shape` 认的 `{kind, bbox}`（见 `object.rs:518` ✓ /
         // `selection.rs:14` ✓ 里记的 `rect | ellipse | polygon | lasso`）⇒ **不另写绘制** ✗。
         // **`texture` 已落地** ✓（外部第 71 次报告 ✓）：**bitmap 来源**（blob_hash + source 矩形）✓
-        // ⇒ 每像素按**最近源像素**取样 ✓（`fill_coverage_sampled` ✓）；`region` 来源**尚未实现** ✓
-        // ⇒ 给 `region` 会**报错说清** ✗，**绝不静默忽略** ✗（那是本仓库的头号病症 ✓）。
-        summary: "按形状填充一块区域（rect/ellipse/polygon；opacity 乘进颜色的 a）；texture 传对象即可用**位图纹理填充**（{type:\"bitmap\", blob_hash, source:{x,y,w,h}, width, height}，每像素按最近源像素取色、羽化只乘 alpha；region 来源未实现会给明确报错）。**要『整体压暗/提亮但保住对比度』请用图层混合模式**（不在这里）：建一层灰再 set_property(key=blend_mode, value=multiply) —— multiply 在 sRGB 空间做 new=old×k，均值和 std 同时按 k 缩；而 fill 的 opacity 是叠加式 new=old×(1−a)+c×a，std 会按 (1−a) 被压扁（第 833 轮，外部 §139）",
+        // ⇒ 每像素按**最近源像素**取样 ✓（`fill_coverage_sampled` ✓）。
+        // **`region` 来源也已落地** ✓（第 2680 轮 ⇒ 第四轮把描述补上 ✓）：把**文档当前合成**在
+        //   `source` 那块矩形的像素**就地拍成 blob** ⇒ 之后**完全走 bitmap 那条路** ✓
+        //   ⇒ 实测 `{type:"region", source:{x:4,y:4,w:8,h:8}}` 在目标处读到源块的 `[255,0,0]` ✓
+        //   ⇒ 而这里原本写着「region 来源尚未实现」✗ ⇒ **过时的描述让人主动放弃可用的能力** ✗
+        //     （同仓 `draw_text` 那条实测纠正的教训 ✓）
+        summary: "按形状填充一块区域（rect/ellipse/polygon/**path**；opacity 乘进颜色的 a，**对象／数组／`#rrggbb` 三种颜色写法都吃 `opacity`**）；texture 传对象即可用**位图纹理填充**（{type:\"bitmap\", blob_hash, source:{x,y,w,h}, width, height}，每像素按最近源像素取色、羽化只乘 alpha），或 {type:\"region\", source:{x,y,w,h}} **从文档当前画面就地取纹理**（先把源区域画好再指向它）。**要『整体压暗/提亮但保住对比度』请用图层混合模式**（不在这里）：建一层灰再 set_property(key=blend_mode, value=multiply) —— multiply 在 sRGB 空间做 new=old×k，均值和 std 同时按 k 缩；而 fill 的 opacity 是叠加式 new=old×(1−a)+c×a，std 会按 (1−a) 被压扁（第 833 轮，外部 §139）",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
             // **描述要跟上能力** ✓：本仓库的教训是"**过时的描述会让 agent 主动放弃可用的能力**" ✗
             // （见下面 `draw_text` 那条实测纠正 ✓）⇒ `feather` 在**同一句里**说清 ✓。
-            param!("shape", Object, true, "{type: rect|ellipse|polygon, x,y,w,h | cx,cy,rx,ry | points；可选 feather = 羽化半径（像素，缺省 0 = 不羽化）}"),
+            param!("shape", Object, true, "{type: rect|ellipse|polygon|path, x,y,w,h | cx,cy,rx,ry | points | path 给 d（SVG 路径字符串）或 subpaths，可带 fill_rule: evenodd|nonzero（缺省 evenodd）；可选 feather = 羽化半径（像素，缺省 0 = 不羽化）}"),
             param!("feather", Number, false, "羽化半径（像素；也可写进 shape.feather；缺省 0 = 不羽化）；实际模糊在渲染侧做，文档里存的是这个参数"),
             // **类型要与实现一致** ✗（第 842 轮 ✓，外部报告 #10 ✓）：实现走 `.and_then(Value::as_str)` ✓
             // ⇒ 它**接受** "#rrggbb" ✓，而这里原本声明成 `Object` ✗ ⇒ **字符串在 schema 层就被拒** ✓
@@ -566,7 +570,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // **"描述说支持、schema 拒绝"** ✓ ⇒ 与同仓 `brush_stroke` / `preview` / `test_color` 一致 ⇒ 用 `Any` ✓。
             param!("color", Any, false, "填充色 {r,g,b,a} 或 #rrggbb；**任一分量 > 1 即按字节**（0..255），否则按 0..1 的比例。**给了 `texture` 时可省略**（那时颜色全部来自源位图）"),
             param!("opacity", Number, false, "不透明度 0..1（乘进颜色的 a；缺省 1）"),
-            param!("texture", Any, false, "**纹理填充**（缺省 = 纯色；`\"smooth\"` 同缺省）⇒ 传对象：{\"type\":\"bitmap\", \"blob_hash\":\"<源位图哈希>\", \"source\":{x,y,w,h}（源矩形，文档坐标）, \"width\":…, \"height\":…（源位图像素尺寸）, \"mime_type\":\"image/x-yanshi-raw\"（可选）, \"min_distance\":25（也可写 min_distance_from_target；与目标的最小间距，缺省 0 = 不拦）, \"jitter\":0.3（**可选，0..1**：每个平铺块整体随机平移 ±jitter/2×源块边长 ⇒ **防「墙纸重复」**；缺省 0 = 原样平铺，逐字节等同旧行为）}。语义：**每个像素从源矩形按最近源像素取色**（**不是全图平均** —— 平均会让深处看不出纹理）；**羽化只乘 alpha**（颜色不被背景污染）；宽度/高度比源矩形大时**按模平铺**。**`type:\"region\"`（从图层形状取）尚未实现**，会给明确报错 ⇒ 先把源区域导出成位图再传 blob_hash"),
+            param!("texture", Any, false, "**纹理填充**（缺省 = 纯色；`\"smooth\"` 同缺省）⇒ 传对象：{\"type\":\"bitmap\", \"blob_hash\":\"<源位图哈希>\", \"source\":{x,y,w,h}（源矩形，文档坐标）, \"width\":…, \"height\":…（源位图像素尺寸）, \"mime_type\":\"image/x-yanshi-raw\"（可选）, \"min_distance\":25（也可写 min_distance_from_target；与目标的最小间距，缺省 0 = 不拦）, \"jitter\":0.3（**可选，0..1**：每个平铺块整体随机平移 ±jitter/2×源块边长 ⇒ **防「墙纸重复」**；缺省 0 = 原样平铺，逐字节等同旧行为）}。语义：**每个像素从源矩形按最近源像素取色**（**不是全图平均** —— 平均会让深处看不出纹理）；**羽化只乘 alpha**（颜色不被背景污染）；宽度/高度比源矩形大时**按模平铺**。**`type:\"region\"` 也已实现** ✓（第 2680 轮 ⇒ 第四轮把描述补上 ✓）：给 {\"type\":\"region\", \"source\":{x,y,w,h}} ⇒ 服务端把**文档当前合成**在那块矩形的像素**就地拍成 blob**（blob_hash/width/height 由服务端填 ✓），然后**完全走 bitmap 同一条路** ✓（`mode`/`patch`/`overlap`/`candidates`/`seam`/`brightness_match`/`jitter`/`min_distance` 都继承 ✓）⇒ **先把源那块画好再指向它**，不必自己导出位图 ✓"),
         ],
     },
     ToolSpec {
@@ -1777,13 +1781,13 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "dodge_burn_setup",
         profile: Profile::Retouch,
-        summary: "减淡加深建组（期 4 D1）：curves 变体（缺省）建两个带全黑蒙版的曲线层（减淡中点上凸、加深中点下凹，中点参数给显示空间值、工具按 §9.1 EOTF 转线性落盘），用 paint_mask 以白色低不透明度笔刷涂抹生效区；gray 变体建一个 50% 灰 soft_light 层，用黑/白低流量笔触涂抹。curves 变体零烘焙、可反复调曲线；gray 变体单层直观、代价是灰层为烘焙快照。重复调用同名组返回 already_exists，不叠第二套。回执另给 `masks: {dodge, burn}`（按角色标注蒙版，`mask_ids` 数组本身保留；gray 组两格为 null）",
+        summary: "减淡加深建组（期 4 D1）：gray 变体建一个柔光中性灰（字节 188 = 线性 0.5 ⇒ 建组后画面逐点不变）的烘焙层，用黑/白低流量笔触涂抹即减淡/加深；curves 变体建两个带全黑蒙版的曲线层，涂开蒙版即让那两条曲线作用于**下方内容**（自 `302d414d`「纯调整层用下方内容播种」起成立 ✓ 实测 128 底色：dodge 涂白 159 / burn 涂白 98 / 端点 0 与 255 不动 ✓ 两条臂都回 effective=true）。两臂的取舍是留痕方式：curves 留两条可调曲线对象、gray 把效果烘焙进一层。重复调用同名组返回 already_exists，不叠第二套。回执另给 masks: {dodge, burn}（按角色标注蒙版，mask_ids 数组本身保留；gray 组两格为 null）与 neutral_gray（灰层中性字节）",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层 id（必填；新组落在它上方，组名缺省取它的名字）"),
-            param!("mode", String, false, "curves（缺省）或 gray"),
-            param!("dodge_mid", Number, false, "减淡曲线显示空间中点（缺省 0.62，域 [0.05, 0.95]，0.5 = 无效果）"),
-            param!("burn_mid", Number, false, "加深曲线显示空间中点（缺省 0.38，域 [0.05, 0.95]）"),
+            param!("mode", String, false, "curves（缺省）或 gray；两条臂都会改变画面（差别见 summary：曲线可回改 vs 烘焙进一层）"),
+            param!("dodge_mid", Number, false, "减淡曲线显示空间中点（缺省 0.62，域 [0.05, 0.95]，0.5 = 无效果）；只对 curves 有意义"),
+            param!("burn_mid", Number, false, "加深曲线显示空间中点（缺省 0.38，域 [0.05, 0.95]）；只对 curves 有意义"),
             param!("name", String, false, "组名前缀（缺省源图层名）"),
         ],
     },

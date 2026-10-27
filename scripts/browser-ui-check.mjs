@@ -29,6 +29,15 @@ if (!url) {
   console.error("用法: node scripts/browser-ui-check.mjs <viewer-url>");
   process.exit(2);
 }
+// **判据自己的重载必须带上原 URL 的模式参数** ✓（第十二轮实测 ✗）：
+//   「打开已有作品」那段用 `Page.navigate` 跳到新文档 ✗ 而 URL 只拼了 `doc`/`token` ✗
+//   ⇒ 产品缺省是**服务端渲染** ✓（`serverRenderPreferred` 的 `stored === null ⇒ true` ✓）
+//   ⇒ `render=client` 一丢 ✓ ⇒ **之后整段都在服务端渲染下跑** ✗
+//   ⇒ 「增量续传 0 次」不是产品的错 ✓，是判据把**被测模式**丢了 ✗（介质落笔根本没有内核 ✓）。
+// ⇒ 从 argv 里取出 `render` 并原样带上 ✓（缺省时不加 ✗ 保持原行为 ✓）。
+let viewerRenderMode = null;
+try { viewerRenderMode = new URL(url).searchParams.get("render"); } catch (error) { viewerRenderMode = null; }
+const renderSuffix = viewerRenderMode ? `&render=${encodeURIComponent(viewerRenderMode)}` : "";
 
 // 第 965 轮：让失败说清自己 —— 把"连了哪个地址、拿到什么形状"打出来。
 const cdpListUrl = `http://127.0.0.1:${debugPort}/json/list`;
@@ -547,7 +556,7 @@ const invertToken = await fetch(`${origin}/api/documents`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ doc_id: invertDoc, width: 900, height: 640 }),
 }).then((r) => r.json()).then((v) => v.token);
-await send("Page.navigate", { url: `${origin}/?doc=${invertDoc}&token=${invertToken}` });
+await send("Page.navigate", { url: `${origin}/?doc=${invertDoc}&token=${invertToken}${renderSuffix}` });
 // **等图层面板就绪**（第 229 轮）：空文档可能**没有** layer_default ✓
 // ⇒ 原先等的是 kernelHead（空文档可能一直是 0 ✓）⇒ 等了 20 秒仍然没有可用图层 ✓
 // ⇒ 画笔落在不存在的层上 ⇒ 画不上 ⇒ 实测两次都报"前置不成立" ✓。
@@ -761,7 +770,7 @@ const maskToken = await fetch(`${origin}/api/documents`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ doc_id: maskDoc, width: 512, height: 512 }),
 }).then((r) => r.json()).then((v) => v.token);
-await send("Page.navigate", { url: `${origin}/?doc=${maskDoc}&token=${maskToken}&debug=1` });
+await send("Page.navigate", { url: `${origin}/?doc=${maskDoc}&token=${maskToken}&debug=1${renderSuffix}` });
 // 必须把标签页拉到前台（第 649 轮）：后台标签页的定时器会被节流，
 // 而本段有大量 setTimeout 等待，实测会拖到 promise 长时间不 resolve，
 // 外部于是拿到 undefined。本文件开头与其它三处都调了它，只有蒙版段漏了。
@@ -944,7 +953,7 @@ const moveToken = await fetch(`${origin}/api/documents`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ doc_id: moveDoc, width: 512, height: 512 }),
 }).then((r) => r.json()).then((v) => v.token);
-await send("Page.navigate", { url: `${origin}/?doc=${moveDoc}&token=${moveToken}&debug=1` });
+await send("Page.navigate", { url: `${origin}/?doc=${moveDoc}&token=${moveToken}&debug=1${renderSuffix}` });
 for (let i = 0; i < 80; i++) {
   if (await evaluate("window.yanshiStats && window.yanshiStats.kernelHead > 0")) break;
   await new Promise((r) => setTimeout(r, 250));
@@ -1040,8 +1049,20 @@ if (moveResult && moveResult.beforeBbox) {
   // 所以宽度取 min(bw, 新盒.x - 旧盒.x)，由实测 bbox 推出，不写死。
   const newX = moveResult.afterBbox && moveResult.afterBbox[0];
   const vacatedW = typeof newX === "number" && newX > bx ? Math.min(bw, newX - bx) : bw;
-  const region = { x: bx, y: by, w: Math.max(1, vacatedW), h: Math.max(1, bh) };
-  console.log("  残影量取区域：x=" + bx + " w=" + region.w + "（旧盒宽 " + bw + "，新盒 x=" + newX + "）");
+  // **四边各内缩 1px** ✓（第十一轮 ✓）：`render_region` 把请求矩形换算成**像素栅格**时
+  //   按 ceil/floor 取整 ⇒ 请求右沿正好落在**新对象左沿**（x=204.4）时，栅格把 x=204
+  //   这一整列也渲染进来 ✓ —— 而那列里有**新对象自己**的像素 ✗。
+  //   实测（API 直测，不经页面）：移动后 {x:102,y:51,w:102,h:52} 恰有 **52** 个红像素，
+  //   **全部在 x=102 列**（旧盒右沿被 ceil 进邻列的镜像情形）；内缩后为 **0** ✓。
+  //   不内缩 ⇒ 判据把"新对象的左沿"数成"旧位置的残影" ✗（产品侧 dirty 并集一直是对的 ✓）。
+  const region = {
+    x: bx + 1,
+    y: by + 1,
+    w: Math.max(1, vacatedW - 2),
+    h: Math.max(1, bh - 2),
+  };
+  console.log("  残影量取区域：x=" + region.x + " w=" + region.w + "（旧盒宽 " + bw + "，新盒 x=" + newX +
+    "；四边各内缩 1px，避开 render_region 的 ceil/floor 边界列）");
 // 第 986 轮：页面自己把发的位移打进日志（viewer.rs:6586 「已移动 …（dx=…, dy=…）」）⇒
 // 把它与 bbox 之差并排列出，就能分辨"页面算的 delta"与"服务端实际应用的位移"哪一个不是 102.7。
 try {
@@ -1293,7 +1314,7 @@ const selToken = await fetch(`${origin}/api/documents`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ doc_id: selDoc, width: 512, height: 512 }),
 }).then((r) => r.json()).then((v) => v.token);
-await send("Page.navigate", { url: `${origin}/?doc=${selDoc}&token=${selToken}` });
+await send("Page.navigate", { url: `${origin}/?doc=${selDoc}&token=${selToken}${renderSuffix}` });
 for (let i = 0; i < 80; i++) {
   if (await evaluate("window.yanshiStats && window.yanshiStats.kernelHead > 0")) break;
   await new Promise((r) => setTimeout(r, 250));
@@ -1638,7 +1659,7 @@ const eraserToken = await fetch(`${origin}/api/documents`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ doc_id: eraserDoc, width: 512, height: 512 }),
 }).then((r) => r.json()).then((v) => v.token);
-await send("Page.navigate", { url: `${origin}/?doc=${eraserDoc}&token=${eraserToken}` });
+await send("Page.navigate", { url: `${origin}/?doc=${eraserDoc}&token=${eraserToken}${renderSuffix}` });
 for (let i = 0; i < 80; i++) {
   if (await evaluate("window.yanshiStats && window.yanshiStats.kernelHead > 0")) break;
   await new Promise((r) => setTimeout(r, 250));
@@ -1709,7 +1730,7 @@ await fetch(`${origin}/api/tools/draw_stroke?doc=${reloadDoc}&token=${reloadToke
   body: JSON.stringify({ layer_id: "L", object_id: "o1",
     data: { points: [[80, 80], [400, 380]], size: 48, color: { r: 200, g: 30, b: 60, a: 255 } } }),
 });
-await send("Page.navigate", { url: `${origin}/?doc=${reloadDoc}&token=${reloadToken}` });
+await send("Page.navigate", { url: `${origin}/?doc=${reloadDoc}&token=${reloadToken}${renderSuffix}` });
 for (let i = 0; i < 80; i++) {
   if (await evaluate("window.yanshiStats && window.yanshiStats.kernelHead > 1")) break;
   await new Promise((r) => setTimeout(r, 250));
@@ -1739,7 +1760,7 @@ const pickToken = await fetch(`${origin}/api/documents`, {
   headers: { "content-type": "application/json" },
   body: JSON.stringify({ doc_id: pickDoc, width: 512, height: 512 }),
 }).then((r) => r.json()).then((v) => v.token);
-await send("Page.navigate", { url: `${origin}/?doc=${pickDoc}&token=${pickToken}` });
+await send("Page.navigate", { url: `${origin}/?doc=${pickDoc}&token=${pickToken}${renderSuffix}` });
 for (let i = 0; i < 80; i++) {
   if (await evaluate("window.yanshiStats && window.yanshiStats.kernelHead > 0")) break;
   await new Promise((r) => setTimeout(r, 250));
@@ -1839,7 +1860,7 @@ const retouchToken = await fetch(`${origin}/api/documents`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ doc_id: retouchDoc, width: 512, height: 512 }),
 }).then((r) => r.json()).then((v) => v.token);
-await send("Page.navigate", { url: `${origin}/?doc=${retouchDoc}&token=${retouchToken}` });
+await send("Page.navigate", { url: `${origin}/?doc=${retouchDoc}&token=${retouchToken}${renderSuffix}` });
 for (let i = 0; i < 80; i++) {
   if (await evaluate("window.yanshiStats && window.yanshiStats.kernelHead > 0")) break;
   await new Promise((r) => setTimeout(r, 250));
@@ -1957,7 +1978,7 @@ if (!process.env.UI_SKIP_HISTORY_FIXTURE) {
         })();`,
       });
     } catch (_) { /* 老版本 CDP 忽略 ✓ */ }
-    await send("Page.navigate", { url: `${origin}/?doc=${histDoc}&token=${histToken}` });
+    await send("Page.navigate", { url: `${origin}/?doc=${histDoc}&token=${histToken}${renderSuffix}` });
     await waitFor("!!document.querySelector('#history')", "导入后历史容器出现");
     // **★ 必须切到"历史"标签 ✗**（默认是"绘制"页 ⇒ 没有 `.row` ✗ —— 第 369 轮实测 ✓）。
     await evaluate(`(() => {
@@ -2197,8 +2218,13 @@ const jumpUndoResult = await evaluate(`(async () => {
   //   改像素的类型 = create_object / draw_stroke / draw_shape（reorder_layers 与 set_property 不改像素）；
   //   且排除最后一条（它可能正是当前状态）。
   const PAINTY = ["create_object", "draw_stroke", "draw_shape"];
+  // **行序是"从新到旧"** ✓（refreshHistory 用 order: desc ✓）⇒
+  //   paintyRows[0] 是**最近**那条 ✗ —— 跳到它等于跳到当前状态 ⇒ 画面当然不变 ✗
+  //   （判据曾经据此报「回到此处本身没有改变画面」✓ 而那是自己挑错了目标 ✓）。
+  // ⇒ **取最早那条** ✓（结束位置，一定早于当前 ✓；本段之前已经画过一笔 ✓）。
+  // 注意：本段在模板字面量里 ⇒ 注释里不能出现反引号 ✗（第 708 轮的同一条教训 ✓）。
   const paintyRows = rows.filter((row) => PAINTY.some((k) => (row.innerText || "").includes(k)));
-  const target = (paintyRows.length > 1 ? paintyRows[0] : null) || rows[0];
+  const target = paintyRows.length ? paintyRows[paintyRows.length - 1] : rows[rows.length - 1];
   const before = ${canvasFingerprint};
   // 必须点「回到此处」，而不是行内第一个按钮（第 707 轮）：实测行内依次是
   // 「详情」与「回到此处」两个按钮，而 querySelector("button") 取的是「详情」，
@@ -2619,7 +2645,7 @@ const wcToken = await fetch(`${origin}/api/documents`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ doc_id: wcDoc, width: 320, height: 240 }),
 }).then((response) => response.json()).then((value) => value.token);
-await send("Page.navigate", { url: `${origin}/?doc=${wcDoc}&token=${wcToken}&debug=1` });
+await send("Page.navigate", { url: `${origin}/?doc=${wcDoc}&token=${wcToken}&debug=1${renderSuffix}` });
 await new Promise((resolve) => setTimeout(resolve, 3500));
 const wcBefore = await evaluate(MEDIUM_INK) || 0;
 await evaluate(`(() => {
@@ -2880,7 +2906,11 @@ const panAudit = JSON.parse(await evaluate(`JSON.stringify((() => {
   // **先放大**（显式入口 ✓ —— 滚轮已改成平移 ✓）。
   {
     const box = document.getElementById("zoomInput");
-    box.value = "200";
+    // **200% 对小文档恰好等于「适配」** ✗（实测：320×240 文档在 640 CSS 宽时 fit=2.0 ✓）
+    //   ⇒ 视口仍盖满整幅 ⇒ clampViewport 正确地拒绝平移 ✗ ⇒ 判据误报「抓手没移动」✗。
+    // ⇒ 用 400% ✓：任何尺寸下视口都小于文档 ✓（320 宽 ⇒ 视口 160 ✓）。
+    // 注意：本段在模板字面量里 ⇒ 注释里不能出现反引号 ✗。
+    box.value = "400";
     box.dispatchEvent(new Event("change", { bubbles: true }));
   }
   const rect = board.getBoundingClientRect();
@@ -2990,7 +3020,7 @@ const themeAudit = JSON.parse(await evaluate(`JSON.stringify((() => {
       contrast = (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
     }
     const controls = [...document.querySelectorAll(
-      "header button, #tools button, aside button, .options select, .options input, #quickPanel button, .statusbar button")];
+      "header button, #tools button, aside button, .options select, .options input:not([type='checkbox']), #quickPanel button, .statusbar button")];
     const heights = controls.map((c) => Math.round(c.getBoundingClientRect().height)).filter((h) => h > 0);
     const minHeight = heights.length ? Math.min(...heights) : 0;
     let focusRule = false;
@@ -3232,7 +3262,7 @@ const textScaleAudit = JSON.parse(await evaluate(`JSON.stringify((() => {
   // **必须重载"当前这份文档"** ✓ —— 第一版用的是检查开头保存的 `url` ✗，
   // 而检查中途切过文档 ✓ ⇒ 重载回到的是**另一份** ✓，于是永远看不到刚画的水彩 ✓
   //（真机验证时用的是当前文档 ✓ 所以那边是通过的 ✓ —— 环境不一致会让假失败与假通过都出现 ✓）。
-  await send("Page.navigate", { url: `${origin}/?doc=${docInfo.docId}` });
+  await send("Page.navigate", { url: `${origin}/?doc=${docInfo.docId}${renderSuffix}` });
   await send("Page.bringToFront", {});
   for (let i = 0; i < 80; i++) {
     const ready = await evaluate(`document.readyState === "complete" && document.querySelectorAll("#tools button").length > 0`);
@@ -3253,8 +3283,16 @@ const textScaleAudit = JSON.parse(await evaluate(`JSON.stringify((() => {
   } else {
     console.log(`  界面还原：介质选择器 ← ${mediumValue}（须反映文档）｜撤销按钮 disabled=${undoDisabled}｜${undoLabel}`);
   }
-  if (undoDisabled !== true) {
-    problems.push(`空撤销栈时"撤销"按钮仍可点（disabled=${undoDisabled}｜${undoLabel}）`);
+  // **撤销按钮的状态必须与"服务端还剩多少手势"一致** ✓（不是"重载后必须禁用"✗）：
+  //   `refreshUndoStatusFromServer()` 的设计就是**重载后仍能撤销** ✓（F02 ✓）——
+  //   判据原来断言 `disabled === true` ✗ ⇒ 画过一笔的文档**必然**还剩手势 ⇒ **必然假红** ✗。
+  // ⇒ 断言换成恒等式：`disabled === (remaining === 0)` ✓（未知时也禁用 ✓ 与 `updateUndoStatus` 同口径 ✓）。
+  const undoState = JSON.parse(await evaluate(`JSON.stringify((() => ({
+    remaining: (typeof state !== "undefined" && typeof state.remainingUndo === "number") ? state.remainingUndo : null,
+  }))())`));
+  const expectedDisabled = undoState.remaining === null ? true : undoState.remaining === 0;
+  if (undoDisabled !== expectedDisabled) {
+    problems.push(`撤销按钮状态与撤销栈不一致（disabled=${undoDisabled}｜剩余手势 ${undoState.remaining}｜${undoLabel}）`);
   }
   void tool;
 }
@@ -3360,7 +3398,7 @@ for (const [key, id, label] of [["marker", "marker", "马克笔"], ["pencil", "p
     problems.push(`${label}用例：新建文档失败`);
     continue;
   }
-  await send("Page.navigate", { url: `${origin}/?doc=${docId}&token=${created.token}` });
+  await send("Page.navigate", { url: `${origin}/?doc=${docId}&token=${created.token}${renderSuffix}` });
   await send("Page.bringToFront", {});
   for (let i = 0; i < 80; i++) {
     const ready = await evaluate(`document.readyState === "complete" && document.querySelectorAll("#tools button").length > 0 && window.yanshiStats.wasm`);

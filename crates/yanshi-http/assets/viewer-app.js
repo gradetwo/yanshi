@@ -35,6 +35,14 @@ const blobUrl = (hash) => api("/api/blob/" + hash);
 // 含义 ✓：只在**打开含重内容的文档**或**刚发生 heavy 原子**时为真 ✓ ——
 // 此时服务端像素才是权威（内核表示不了 heavy 内容 ✓）；用户一开始画就清掉 ✓（乐观笔迹归内核 ✓）。
 let needsServerPixels = false;
+// **★ 下一次"服务端空白"补画是不是**权威结果 ✗ ★**（第 880 轮 ✓；**判据实测 ✓**）：
+//   **∴ 原来 ✗**：**服务端回空白 且 画布有墨 ⇒ 一律跳过** ✗（防"落笔后闪白" ✓）
+//     ⇒ **∴ 而**有些操作**本来就该让画面变空** ✗（隐藏图层 ✓、删除图层 ✓、撤销到底 ✓）
+//       ⇒ **∴ 于是**：**服务端已经回空白了 ✗，客户端却把这次补画丢掉** ✓
+//         ⇒ **∴ 画面**停在旧像素上 ✓（**判据实测：隐藏后 10726 → 10726 ✓**）
+//   **∴ 现在**：**由发起方**显式声明"这一张空白是权威的" ✓（`queueServerBlit(null, {allowBlank:true})` ✓）
+//     ⇒ **∴ 一次性** ✓：**用完即清** ✗（下一次落笔后的空白补画**照样**跳过 ✓ ⇒ 防闪白不受影响 ✓）。
+let serverBlitForceBlank = false;
 // **文档是否含 heavy 内容** ✓（第 308 轮 ✓）：由 `detectHeavyContent()` 异步写入 ✓，
 // **∴ 供同步路径（落笔 `pointerdown` ✓）读取 ✓** —— **∵ 那里不能 await ✗**。
 let heavyDocument = false;
@@ -53,6 +61,9 @@ const SERVER_RENDER_KEY = "yanshi.serverRender";
 //   —— **∴ 所以"用户显式关掉"仍能生效 ✓**（**∴ 它不是一个写死的开关 ✗**）。
 // **⚠️ 代价（**两面 ✓**）**：**① 弱设备／无服务器时**会先尝试服务器 ✗ ⇒ **∴ 失败才回退**（**见调用点 ✓**）；
 //   **② 而代价可接受 ✓**：**∵ 服务器渲染是当前更快的路径 ✓**（**用户实测 ✓**）。
+// **本地内核这一回合不可用**（会话内标记 ✓ 一个字都不写进 `localStorage` ✗）：
+//   由 `localKernelUnusableNow()` 置位 ✓ 见那上面的实测说明 ✓。
+let localKernelUnusable = false;
 const serverRenderPreferred = () => {
   // A static deployment has no server, so trying one first only wastes a retry cycle and
   // leaves the toolbar reporting "disconnected". The injected sentinel sets the flag.
@@ -68,6 +79,10 @@ const serverRenderPreferred = () => {
   //   **∴ 代价（**两面 ✓）**：**本地专用部署**里**没有**切换服务端的开关 ✓
   //     ⇒ **∴ 而**那是**如实**的 ✗（**确实没有服务端 ✓）** ⇒ **∴ 且**界面**会说明** ✓**。
   if (localOnly) return false;
+  // **这一回合本地内核靠不住 ⇒ 服务端渲染压过 URL 的 `?render=client`** ✓（第六轮实测 ✗）：
+  //   用户选哪条渲染路是**偏好** ✗ 但「白布一块」不是任何人的偏好 ✓
+  //   ⇒ 装载失败/装不齐之后 ✗ 本会话一律走服务端 ✓ 刷新后回到他选的那条（再失败再退回 ✓）。
+  if (localKernelUnusable) return true;
   // **★ URL 参数**最高优先**✗ ★**（第 381 轮 ✓）：**`?render=client` ⇒ 强制客户端内核** ✓、
   //   **`?render=server` ⇒ 强制服务端** ✓。**其他值／缺省** ⇒ 走下面的偏好逻辑 ✓。
   //   **∴ 为什么需要它 ✗**（**实测 ✓**）：**自动化判据**要测**需要内核**的路径**✗
@@ -1442,11 +1457,24 @@ async function callToolLocal(name, args, options = {}) {
 async function callTool(name, args, options = {}) {
   // **★ 服务器渲染开关**（用户显式二选一，默认开）：
   //   开 → 走服务端 POST（原有行为，不变）；
-  //   关 → 走本地 WASM 内核（复用 PWA 的 api-local.js 映射逻辑，不重写）。
-  //   注意：本地模式写 IndexedDB，与服务端文档状态可能分叉，切换回服务端模式时以服务端为准。
+  //   关 → 像素在本地内核出（复用 PWA 的 api-local.js 映射逻辑，不重写）。
+  //   **★ 关掉的是像素路径，不是文档存储 ✗ ★**（第 10 轮 ✓）：落笔本来就 `submitAtom`
+  //     POST `/api/atoms` ✓ ⇒ 文档状态始终在服务端 ✓ ⇒ **改文档的工具也必须走服务端** ✗。
+  //     原来连 `create_layer` 都写本地日志 ⇒ 服务端与内核都不知道新图层 ⇒
+  //     在新图层上落笔被内核拒绝（实测：`覆盖层应用失败：…文档没有存活图层` ✓、
+  //     `新建图层后画布 0 墨` ✓、图层面板不高亮 ✓）。⇒ 只有**只读**工具留在本地 ✓。
+  //     PWA（`__pwaLocalOnly` ✓）没有服务器 ⇒ 仍全部本地 ✓。
   if (!serverRenderPreferred()) {
-    return await callToolLocal(name, args, options);
+    const localOnly = typeof window !== "undefined" && window.__pwaLocalOnly === true;
+    const readOnly = LOCAL_READ_TOOLS.includes(name);
+    if (localOnly || readOnly) {
+      return await callToolLocal(name, args, options);
+    }
   }
+  return await callToolServer(name, args, options);
+}
+
+async function callToolServer(name, args, options = {}) {
     if (window.yanshiStats) window.yanshiStats.serverCalls += 1;
   // **只读工具在注入的清单里** ✓（服务端按 `ToolSpec.mutating` 生成 ✓ ⇒ 权威、不漏 ✓）；
   // 不在清单里 = **改文档** ✓ ⇒ 网络失败时要进离线队列 ✓，不能丢 ✗。
@@ -1528,6 +1556,16 @@ async function callTool(name, args, options = {}) {
 
 let thumbTimer = null;
 let thumbInFlight = false;
+// **★ 水位还落后时，必须再排一次读 ✓ ★**（本轮看整页截图才抓到 ✗）：
+//   顶栏 `#rendered` 有两个写者 ✓ —— `refreshPreview()` 里那句乐观的 `rendered = head` ✓
+//   以及本文件下面 `refreshThumb()` 抄服务端的 `rendered_seq` ✓ 而后者**一次性**（改动后 400 ms 去抖只读一回 ✓）。
+//   服务端的水位是在**它自己出那一块像素的那一刻**才推进的 ✓
+//   ⇒ 那一回正好读在"还没追上"的窗口里 ⇒ 顶栏就**永远停在那个旧数**上 ✗
+//   （实测：`head 25 / rendered 22 / dirty 0 / 已保存` ✓ 中英文两页都这样 ✓ 再等 6 秒也不动 ✓）。
+//   ⇒ 读到落后就再排一次 ✓ 上限 6 次 ⇒ 追平即停 ✓；一直追不平的文档（从未落过墨 ✓ 服务端本就不出预览）
+//     也不会把连接打满 ✓ —— 那一格是**水位** ✓ 不是进度条 ✓。
+let thumbLagReads = 0;
+let thumbLastHead; // 上一次读数时的 `head` ⇒ head 一变就是新的一轮 ✓ 计数归零 ✓
 // 去抖 + 合并：WS 缩略图事件可能密集到达，逐个 fetch 会把连接打满（曾出现成片 Failed to fetch）。
 function scheduleThumbRefresh() {
   if (thumbTimer) return;
@@ -1577,6 +1615,18 @@ async function refreshThumb() {
       }
     }
     if (value.head_seq !== undefined) setStatus({ head: value.head_seq, rendered: value.rendered_seq });
+    // **追平之前再读一回** ✓（上面那段注释讲的就是这件事 ✗ 本轮实测的缺陷 ✓）：
+    // 两格都给了才比 ✓ 缺任一格就不重读（本部署的 `get_document` 两格一直都有 ✓）。
+    // `head` 一变就是新的一轮 ⇒ 计数归零 ✓ 上限只约束"同一次落后反复追问"✓。
+    if (value.head_seq !== undefined && value.rendered_seq !== undefined) {
+      const headNow = Number(value.head_seq);
+      const renderedNow = Number(value.rendered_seq);
+      if (headNow !== thumbLastHead) { thumbLastHead = headNow; thumbLagReads = 0; }
+      if (renderedNow < headNow && thumbLagReads < 6) {
+        thumbLagReads += 1;
+        scheduleThumbRefresh();
+      }
+    }
     if (value.width && value.height) {
       // **尺寸变了就重设画板**（本轮修 ✗ → ✓）：
       // `switchDocument` 只在装载那一刻按**当时的** `state.docSize` 调一次 `sizeBoards` ✓，
@@ -1872,6 +1922,38 @@ async function repopulateKernelBlobs(kernel, atoms) {
   }
 }
 
+/// **本地内核这一回合靠不住 ⇒ 退回服务端渲染 + 当面谈清楚** ✓（第六轮实测 ✗）。
+///
+/// **∴ 症状 ✗**（探针 `/tmp/yanshi-web-r6/probe-first-client-open.mjs` ✓ 4 次「全新文档第一次
+///   以 `render=client` 打开」中了一次 ✓）：`load_atoms_json` 里 wasm 抛 `unreachable` ⇒
+///   内核是**空的**（`kernelStats().atoms:0` ✓ `used_bytes:0` ✓ `tiles:0`）✓ 画布**一片白** ✗
+///   日志刷一整屏「needs_render：内核未产出字节」✓ 而顶栏/诊断照旧报 **HEAD 已到位** ✓
+///   ⇒ **界面在谎报同步** ✓ 并且**永不自愈** ✗（装载是一次性的 ✓ 没人重试 ✓）。
+/// **∴ 做四件事 ✗**：①回收那个空内核（别再拿它画 ✓）②本会话改走服务端渲染 ⇒ **画面照常** ✓
+///   ③把这句话送到用户一定看得见的那一处（浮层 ✓ 不是收起来的 `#log` ✓）
+///   ④**绝不**把 `state.localSeq`／`kernelHead` 推到服务端的头部 ✓（调用方在这里直接 `return false` ✓）。
+/// **∴ 代价（两面 ✓）**：这是**热切换** ✗ 而用户自己那颗开关是 `location.reload()`（不热切 ✓）——
+///   区别在于：那颗是**用户主动改偏好** ✗ 这里是**页面已经不显示任何东西** ✓ 再要求用户手动刷新
+///   等于把「看不见画面」当成默认结果 ✗ 不可接受 ⇒ 宁可热切 ✓。
+/// **∴ 不写 `localStorage`** ✓：用户的偏好一个字都不改 ✓ 刷新后仍按他选的那条走 ✓
+///   若再次失败会再次退回 ✓。勾选框跟着翻只表示**当前生效的是哪条** ✓ 不是替用户做长期决定 ✗。
+function localKernelUnusableNow(why) {
+  state.kernel = null;
+  window.yanshiStats.kernelLoadFailures = (window.yanshiStats.kernelLoadFailures || 0) + 1;
+  const firstTime = !localKernelUnusable;
+  localKernelUnusable = true;
+  log("本地内核装载失败：" + why + " ⇒ 这一页改用服务端渲染", "#c33");
+  if (firstTime) stageNotice("本地内核没能把这份文档装进来 ⇒ 这一页先改用服务端渲染（画面照常，刷新后可再试本地）。");
+  const box = $("useServerRender");
+  if (box) box.checked = true;
+  // 服务端像素取回来之后再重绘 ✓ 顺序反了就把白布留在屏上了 ✗。
+  // `.catch` 兜住 ✓ 退回这一条自己再抛错就变成"页面坏了"✗ 而解释已经说过了 ✓。
+  Promise.resolve().then(() => refreshPreview(true))
+    .then(() => { renderViewport(); })
+    .catch(() => null);
+  return false;
+}
+
 async function loadKernel(since = 0) {
   if (!state.wasm) return false;
   const { w, h } = state.docSize;
@@ -1897,7 +1979,16 @@ async function loadKernel(since = 0) {
     //   **∴ 修法 ✗**：从原子里收集 blob hash ⇒ IndexedDB 取回 ⇒ `blob_put` 喂进新内核 ✓
     //   （**∴ hash 是**内容寻址**✓ ⇒ 喂回相同字节 ⇒ 相同 hash ✓ ⇒ 原子引用有效 ✓**）。
     await repopulateKernelBlobs(state.kernel, atoms.atoms);
-    const loaded = JSON.parse(state.kernel.load_atoms_json(JSON.stringify(atoms.atoms)));
+    // **装载这件事本身可能抛** ✓（第六轮实测 ✗）：wasm 里 `unreachable` 一类陷阱会以
+    //   `WebAssembly.RuntimeError` 的形式**从这一行逃出去** ✗ 而调用方是 `void warmKernel()` ✓
+    //   没人 await ✗ ⇒ 页面**一条错误都看不见** ✓ 只剩一块白布 ✗
+    //   ⇒ 必须在这里接住 ✓ 并走「退回服务端渲染 + 当面谈」那条路 ✓。
+    let loaded;
+    try {
+      loaded = JSON.parse(state.kernel.load_atoms_json(JSON.stringify(atoms.atoms)));
+    } catch (error) {
+      return localKernelUnusableNow("装载时内核抛了：" + String((error && error.message) || error).slice(0, 80));
+    }
     // 装载完成后立刻重绘：此前只有"内核就绪"的状态变化，没有触发重绘 ✗ ——
     // 打开已有作品时画面会是白布，直到用户落笔（用户报告的现象）。
     if (loaded.ok) {
@@ -1907,8 +1998,23 @@ async function loadKernel(since = 0) {
     }
     if (!loaded.ok) {
       log("内核装载失败：" + JSON.stringify(loaded).slice(0, 160), "#c33");
-      state.kernel = null;
-      return false;
+      return localKernelUnusableNow("内核说装不了：" + JSON.stringify(loaded).slice(0, 90));
+    }
+    // **装完必须核对「内核里到底有几条」** ✓（第六轮实测的那条谎 ✓）：`ok:true` 只说明这次调用
+    //   没报错 ✗ **不等于**内核里真有这些原子 ✓ 而下面 `state.localSeq = atoms.head_seq` 是照
+    //   **服务端的头部**写的 ⇒ 一旦对不上就是「顶栏说 HEAD 到位 ✓ 画布却是一片白」✗
+    //   而且**永远不会自愈**（装载是一次性的 ✗ 没人重试 ✓）。⇒ 装不够就当没装上 ✓ 走退回那条 ✓。
+    //   **只判「少了」不判「不等」** ✓：刚建的内核只有这一份日志 ⇒ 多出来不可能 ✓
+    //   而万一将来内核自己多算了 ✗ 拿"多"去打断一块**本来能看的画布**就是把检查写成回归 ✓ 不要 ✗。
+    const wantAtoms = (atoms.atoms || []).length;
+    let inKernel = null;
+    try {
+      inKernel = Number(JSON.parse(state.kernel.stats_json()).atoms);
+    } catch (error) {
+      return localKernelUnusableNow("装完读不到内核自报的原子数");
+    }
+    if (!(inKernel >= wantAtoms)) {
+      return localKernelUnusableNow("内核里只有 " + inKernel + " 条 ✓ 服务端给了 " + wantAtoms + " 条");
     }
   } else {
     let applied = 0;
@@ -2324,7 +2430,8 @@ async function blitServerBox(bbox) {
     for (let i = 0; i < before.length; i += 4) {
       if (before[i + 3] > 32 && !(before[i] > 245 && before[i + 1] > 245 && before[i + 2] > 245)) canvasInk += 1;
     }
-    if (canvasInk > 0) {
+    // **★ 发起方说过"这张空白是权威的"⇒ 不许跳过 ✗ ★**（见 `serverBlitForceBlank` ✓）。
+    if (canvasInk > 0 && !serverBlitForceBlank) {
       window.yanshiStats.blankBlitsSkipped = (window.yanshiStats.blankBlitsSkipped || 0) + 1;
       (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
         reason: "skipped-blank-over-ink " + JSON.stringify([x0, y0, w, h]),
@@ -2336,7 +2443,17 @@ async function blitServerBox(bbox) {
       window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
       return 0;
     }
+    if (canvasInk > 0 && serverBlitForceBlank) {
+      (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
+        reason: "applied-authoritative-blank " + JSON.stringify([x0, y0, w, h]),
+        area: w * h, at: Math.round(performance.now()),
+        serverInk, canvasInk,
+      });
+      window.yanshiStats.blitLog = window.yanshiStats.blitLog.slice(-40);
+    }
   }
+  // **一次性** ✓：这次补画的结论（空白或非空白）都已达到发起方的预期 ✓。
+  serverBlitForceBlank = false;
   // **过期补丁不许盖** ✗（第 390 轮 ✓，真实用户报告 ✓）：
   //   `putImageData` 是**替换**语义 ✓ —— 连补丁里的**透明像素**也一并替换 ✗
   //   ⇒ 贴一块**过期**补丁 ⇒ 把它之后画的内容抹掉 ⇒ **露出页面白底** ✓
@@ -2434,9 +2551,11 @@ const unionBox = (left, right) => {
   const y1 = Math.max(left[1] + left[3], right[1] + right[3]);
   return [x0, y0, x1 - x0, y1 - y0];
 };
-function queueServerBlit(bbox = null) {
+function queueServerBlit(bbox = null, options = {}) {
   // Document loading requests its first frame once the capability is available.
   if (!state.token) return Promise.resolve();
+  // **显式声明"空白也是权威"** ✓（见 `serverBlitForceBlank` 的说明 ✓）。
+  if (options && options.allowBlank) serverBlitForceBlank = true;
   // **整视口请求会"顶掉"脏区** ✓：宁可多画一点 ✓，也不能因为只画了脏区而留下空白 ✗。
   if (bbox) serverBlitBox = unionBox(serverBlitBox, bbox);
   else serverBlitWhole = true;
@@ -2478,6 +2597,11 @@ function queueServerBlit(bbox = null) {
     window.yanshiStats.lastServerMs = performance.now() - __blitStarted;
     serverBlitBusy = false;
     if (serverBlitPending) { serverBlitPending = false; queueServerBlit(); }
+    // **一次性许可不许泄漏到后续帧** ✗：`blitServerBox` 只在走到空白判定时清它 ✓
+    // ⇒ 若这一帧**提前返回**（空裁剪/无 url/字节不足 ✓）⇒ 许可会留在下一次补画上 ✓
+    // ⇒ 那次的"防闪烁跳过"就被误放行 ✗（与服务端空白擦掉笔迹是同一类事故 ✓）。
+    // 有 pending 再排时不在此清 ✓（那一次正是为响应"允许空白"的请求 ✓）。
+    else serverBlitForceBlank = false;
   });
   return serverBlitChain;
 }
@@ -2642,6 +2766,10 @@ function applyLocal(atom) {
 /// 绝不能静默停在半途 ✓ —— 半途的内核状态既缺原子 ✓ 又可能被下一次续传重复应用 ✗。
 async function resync() {
   window.yanshiStats.resyncs += 1;
+  // **参考图跟着重对齐** ✓（本轮补 ✗）：偏好改动不产生原子 ⇒ WS 不广播 ⇒ 只有页面自己刷新时
+  // 才会重新读一次 ✓（见 `window.__refreshReferenceOverlay` 那条注释 ✓）。不 await ✓：
+  // 参考图不在关键路径上 ✗ 不能因为它把整幅重绘拖慢 ✓。
+  if (window.__refreshReferenceOverlay) void window.__refreshReferenceOverlay();
   // **⚠️ 无内核时必须走服务端像素** ✓ —— 这里此前**什么都不做** ✗（真实用户报告 ✓）。
   //
   // **症状** ✓："点图层的小眼睛和锁 ⇒ 画布变白 ⇒ **手工刷新可以恢复**" ✓。
@@ -2976,7 +3104,12 @@ async function createNamedDocument() {
 // 都撞上过 `window.yanshiCallTool is not a function` ✓（子 agent 直接把它列为"与环境说明不符" ✗，
 // 我自己的检查脚本里也踩过一次 ✓）。它只是 HTTP 工具 API 的一层薄包装 ✓，
 // 而应用本来就把同一套工具暴露成 API ✓ ⇒ 没有理由只在 `?debug=1` 时存在 ✓。
-window.yanshiCallTool = (tool, args) => callTool(tool, args || {}, { refresh: false });
+// **第三参数是本轮补的缺口** ✗→✓：原先**硬写** `{refresh:false}` ⇒ 从这里落的一切都不重画 ✗
+//   ⇒ 脚本想验"画面上真的变了"必须自己再调一次刷新 ✓ 而那已经不是这个工具的行为 ✓。
+//   缺省仍然 `refresh:false` ✓（既有判据靠这条数请求次数 ✗ 不改它们 ✓）
+//   ⇒ 要同步重画就传 `{ refresh: true }` ✓。
+window.yanshiCallTool = (tool, args, options) =>
+  callTool(tool, args || {}, options || { refresh: false });
 
 /// 打开对话框：列出**服务器上的文档**（`GET /api/documents`，设计第 611 行提到文档列表用
 /// `doc_thumb` 缩略图），点击即切换；下方提供**本地图片导入**。
@@ -4274,6 +4407,14 @@ async function loadDocumentData() {
     bootMark("before-refreshObjects");
     await refreshObjects();
     bootMark("refreshObjects-ok");
+    // **介质选择器与 heavy 判定在两种渲染模式下都要认文档** ✓（第十一轮 ✓）：
+    //   `detectHeavyContent()` 原先只挂在 `resyncToServer()`（内核续传）末尾 ✓
+    //   ⇒ 服务端渲染模式里 `initWasm()` 直接返回、**根本没有续传** ✗
+    //     ⇒ 于是"重载后介质回到 example"（判据实测：文档最近一笔是 watercolor ✗）。
+    //   放在这里而不是 `warmKernel()` 里 ✓：这一步**两种模式都走到** ✓。
+    bootMark("before-detectHeavy");
+    await detectHeavyContent();
+    bootMark("detectHeavy-ok");
     bootMark("before-refreshAnnotations");
     await refreshAnnotations();
     bootMark("refreshAnnotations-ok");
@@ -4359,7 +4500,7 @@ async function refreshAfterHistoryStep() {
 async function undoOnce() {
   const value = await callTool("undo_last", {}, { refresh: false });
   if (!value || value.ok === false) {
-    log("撤销失败：" + ((value && value.error_code) || "unknown") + " " +
+    log("撤销失败：" + failureCode(value) + " " +
         ((value && value.context && value.context.detail) || ""), "#c33");
     return;
   }
@@ -4385,7 +4526,7 @@ async function undoOnce() {
 async function redoOnce() {
   const value = await callTool("redo_last", {}, { refresh: false });
   if (!value || value.ok === false) {
-    log("重做失败：" + ((value && value.error_code) || "unknown") + " " +
+    log("重做失败：" + failureCode(value) + " " +
         ((value && value.context && value.context.detail) || ""), "#c33");
     return;
   }
@@ -4473,16 +4614,28 @@ function fillEffectNames() {
 ///
 /// 参数缺省为 `{}` —— **不复制内核的默认值** ✓：缺参时由内核自己决定默认 ✓，
 /// 应用后再用 `list_effects` 读回**实际生效的参数**展示，做到零漂移。
+///
+/// **「已应用」不是结论 ✓「画面动没动」才是结论** ✓（第七轮 ✗→✓）：实测 26 个调整在默认参数下分三堆
+/// —— **17 个整幅合成逐字节不变**（`calibrate_primaries` 就是其一 ✓）✓ **7 个默认就动** ✓
+/// **2 个连 `{}` 都建不出来**（`color_lut`／`perspective` ⇒ 服务端直接拒 ✓ 一个原子都不落 ✗
+/// 所以"建成空操作"与"根本建不成"是两件事 ✓ 不许加成一堆），
+/// 而参数名拼错（`{"redhue":50}`）服务端也照单收下、回读原样存着、画面一字不动 ✗
+/// —— 过去这些只写进折叠的「历史」日志 ⇒ 卡上那句"已应用 X"底下空操作与真效果长得一样 ✓。
+/// 现在应用前后各取一次**服务端整幅合成的指纹**（`render_region` 只读 ✓ 不产生原子 ✓）✓
+/// 动没动按那两个哈希说 ✓ 界面一个像素都不自己算 ✗。
 async function applyEffect() {
   const kind = $("effectKind").value;
   const name = $("effectName").value;
   if (!name) return;
+  const label = kind === "adjustment" ? "调整" : "滤镜";
   let params = {};
   const text = $("effectParams").value.trim();
   if (text) {
     try {
       params = JSON.parse(text);
     } catch (error) {
+      // **先拦后送** ✓：语法不过就没出门 ⇒ 一个原子都不会有 ✗ 这话必须写在卡上而不只是日志。
+      sayEffect("参数不是合法 JSON ⇒ 没有发送请求、没有写入任何改动。");
       log("参数不是合法 JSON：" + error.message, "#c33");
       return;
     }
@@ -4491,12 +4644,17 @@ async function applyEffect() {
   //
   // `update_adjustment` / `update_filter`（设计 §792 一带的调整与滤镜 ✓）此前在查看器里**零引用** ✗
   // ⇒ 用户"加完想再调一调"做不到 ✓ —— 与"标注/实例组/检查点/矢量互转"是**同一类缺口** ✓。
-  // 两条工具的真实签名 ✓：`{object_id, params（覆盖）, opacity?}` ✓。
+  // 两条工具的真实签名 ✓：`{object_id, params（覆盖）, opacity?}` ✓（`enabled` **不吃** ✓
+  // 实测回「update_adjustment 不接受参数 enabled（拼写错误？）；可用参数：object_id, params, opacity」✓）。
+  const updating = editingEffectId !== null && editingEffectId !== undefined;
+  const probe = await effectProbeRegion();
+  const before = await effectReadback();
+  const hashBefore = await effectFingerprint(probe.region);
+  const pixelsBefore = await effectSamples(probe.points);
   let value;
-  if (editingEffectId) {
+  if (updating) {
     const update = kind === "adjustment" ? "update_adjustment" : "update_filter";
-    value = await callToolChecked(update, { object_id: editingEffectId, params }, "更新" + (kind === "adjustment" ? "调整" : "滤镜"));
-    if (value && value.ok) log("已更新「" + name + "」的参数 ✓");
+    value = await callTool(update, { object_id: editingEffectId, params }, { refresh: false });
   } else {
     const tool = kind === "adjustment" ? "add_adjustment" : "add_filter";
     const args =
@@ -4504,15 +4662,227 @@ async function applyEffect() {
         ? { layer_id: state.layerId, adjustment_type: name, params }
         : { layer_id: state.layerId, filter_name: name, params };
     value = await callTool(tool, args, { refresh: false });
-    if (!value.ok) {
-      log("应用失败：" + (value.error_code || "unknown") + " " +
-          ((value.context && value.context.detail) || ""), "#c33");
+  }
+  if (!value || !value.ok) {
+    const code = failureCode(value);
+    const detail = (value && value.context && value.context.detail) || (value && value.reason) || "";
+    log((updating ? "更新" : "应用") + "失败：" + code + (detail ? " " + detail : ""), "#c33");
+    if (code === "endpoint_not_local") {
+      // **请求根本没出门** ✓（与区域填充同一口径 ✓）：说成"服务端拒绝"会把人送去翻服务端日志 ✗
+      // 而该改的其实是那个勾选 ✓。
+      stageNotice("这一步没有成功：" + code);
+      sayEffect((updating ? "未更新" : "未写入") + "：本地内核没有这个端点（这次请求没到服务端）⇒ 勾回「服务器渲染」再试。");
       return;
     }
-    log("已应用" + (kind === "adjustment" ? "调整" : "滤镜") + " " + name);
+    stageNotice("这一步没有成功：" + code);
+    // **服务端的中文 detail 只进日志** ✓（与减淡加深同一口径 ✓）：贴上卡就成了英文界面夹整句中文 ✗。
+    sayEffect((updating ? "未更新" : "未写入") + "：" + refusalVenue() + "拒绝了这一步（错误码 " + code +
+      " · 完整原因见下方日志）。拒绝时不落原子 ⇒ 画面不会动。");
+    return;
   }
   await refreshEffects();
   await refreshPreview();
+  const after = await effectReadback();
+  const hashAfter = await effectFingerprint(probe.region);
+  const pixelsAfter = await effectSamples(probe.points);
+  // **新对象从两次回读的差集里认** ✓：`add_adjustment` 的回执里**没有** `object_id`（实测 ✗）
+  // ⇒ 界面不自己编号 ✗。更新那一条本来就有 id ⇒ 直接按 id 回读。
+  const target = updating ? after.byId[editingEffectId]
+    : after.list.find((effect) => effect && !before.byId[effect.object_id]);
+  if (!target) {
+    sayEffect("回执说成功了，但效果清单里没把它读回来 ⇒ 现在没法说它存成了什么参数（刷新页面再看，或看下方日志）。");
+    return;
+  }
+  const echoName = target.adjustment_type || target.filter_name || name;
+  const echoParams = JSON.stringify(target.params || {});
+  const layerOf = target.layer_id === undefined ? state.layerId : target.layer_id;
+  const onLayer = after.list.filter((effect) => String(effect.layer_id) === String(layerOf)).length;
+  // **动没动 = 服务端两个哈希比出来** ✓（界面不推算像素 ✗）；取不到哈希时**如实说没法验证**✓
+  // 绝不沿用上半句的"已新建"糊过去 ✗。
+  const verified = hashBefore.hash !== null && hashAfter.hash !== null;
+  const movedPicture = verified && hashBefore.hash !== hashAfter.hash;
+  let conclusion;
+  if (!verified) conclusion = "这一条路取不到整幅合成的服务端指纹 ⇒ 没法验证画面动没动";
+  else if (movedPicture) conclusion = "整幅合成的服务端指纹变了 ⇒ 画面确实动了";
+  else conclusion = "整幅合成逐字节没变 ⇒ 这一笔对画面是空操作";
+  const line = ["已" + (updating ? "更新" : "新建") + " " + label + " " + echoName +
+    "（参数 " + echoParams + "）⇒ " + conclusion];
+  if (movedPicture) {
+    // **给一个真数字** ✓：取第一个读数变了的服务端取样点（`sample_colors` 的合成读数 ✓）。
+    const moved = (pixelsBefore || []).findIndex((point, index) => {
+      const later = (pixelsAfter || [])[index];
+      return point && later && point.rgba && later.rgba && point.rgba !== later.rgba;
+    });
+    if (moved >= 0) {
+      const a = pixelsBefore[moved];
+      const b = pixelsAfter[moved];
+      line.push("实测 (" + a.x + "," + a.y + ") = [" + a.rgba + "] → [" + b.rgba + "]");
+    } else if ((pixelsBefore || []).length > 0 && (pixelsAfter || []).length > 0) {
+      line.push("取样点读数没变 ⇒ 变化在它们之外");
+    }
+  }
+  line.push("这一层共 " + onLayer + " 个效果");
+  const code = verified ? null : (hashBefore.code || hashAfter.code);
+  if (code) line.push("错误码 " + code);
+  sayEffect(line.join(" · "), { noOp: verified && !movedPicture });
+  log((updating ? "已更新「" : "已新建「") + echoName + "」的参数 ✓（" + echoParams + "）");
+}
+
+/// **把结论写在卡上** ✓：`#effectInfo` 与 `#dodgeBurnInfo` 同一家族 ✓（不在 `#log` 里 ⇒
+/// 英文模式必须有模式词条 ✓ `browser-i18n` 会抓到漏翻 ✓）。
+///
+/// `verdict.noOp` = **这一次服务端指纹确实没变** ✓ 只有这种情况才把 `#effectNote` 那句常设说明
+/// 挂着（见下面注释 ✗ 第七轮看真截图才改的）。
+function sayEffect(line, verdict) {
+  const out = $("effectInfo");
+  if (out) out.textContent = line;
+  // **「指纹没变 ⇒ 空操作」这句只在它成立的时候才许出现** ✓（第七轮 ★ 真截图抓出来的 ✓）：
+  // 它原本是**常设**挂在卡上的一句说明 ⇒ 于是三种状态里有两种它都在说假话——
+  // ① 画面**真的动了**（截图上「画面确实动了 · 实测 [200,50,50,255] → [200,143,0,255]」底下
+  //    紧接着一句「指纹没变 ⇒ 这一笔对画面是空操作」✗ 自相矛盾）；
+  // ② 这一步**被拒/没出门**（截图上「未写入…」底下同一句 ✗ 而"这一笔"根本没落原子 ✓
+  //    把"没写成"说成"写成了但没效果"正是这张卡本轮一直在消灭的那类谎）。
+  // 只降亮度（`opacity:.62`）挡不住 ✗ 它说的仍然是一句与此刻无关的话 ✓ 所以改成**按状态挂**：
+  // 缺省隐藏 ⇒ 只有"写成了而服务端整幅合成逐字节没变"那一种情况下才出现 ✓（判据 ③′ 钉住可见性）。
+  // 顺带一条：那句说明的**文案**后来被 `ui-text-density` 判成"界面上的大段解释"✗ 长解释已挪进
+  // `#effectNote` 的 `title=` ✓ 屏幕上只剩一句短的 ⇒ **这里管的只有"挂不挂"** ✓ 与文案无关 ✓。
+  const note = $("effectNote");
+  if (note) note.hidden = !(verdict && verdict.noOp);
+}
+
+// **拒绝这句话该把责任说给谁** ✓（第七轮实测抓出来的 ✓）：关掉「服务器渲染」之后 ✗
+// 请求走的是**本地内核** ✓ 那一臂的失败若还说成"**服务端**拒绝了这一步" ✗
+// 就会把人送去翻服务端日志 ✓ 而该看的是本地内核（判据 `browser-effect-card-truth.mjs` ⑩ 钉的就是这条 ✓）。
+// 路由由 `serverRenderPreferred()` 说了算 ✓ 界面不自作主张猜 ✗
+// 所以这里读的是**同一个函数**——话说的是这一笔**实际走过的路** ✓。
+function refusalVenue() {
+  return serverRenderPreferred() ? "服务端" : "本地内核";
+}
+
+// **错误码要从响应里读全** ✓（第七轮实测抓出来的同族缺陷 ✓）：服务端把码放在 `error_code` ✓
+// 而本地内核那一臂放在 `error` ✓（`api-local.js` 的 `p2Bad` 形状 ✓）。本页面**通用**的失败分支
+// 早就两个都读（`错误 invalid_argument：…` 那一句就是它写的 ✓）⇒ 只有这张卡只读 `error_code`
+// ✗ 于是本地那一臂念成「错误码 unknown」✗ 而日志里明明写着具体的码 ⇒ 同一事件两个码 ✗。
+function failureCode(value) {
+  return String((value && (value.error_code || value.error)) || "unknown");
+}
+
+/// 服务端整幅合成的**指纹**（`render_region` ✓ 实测只读：同一状态两次调用哈希逐字节相同 ✓
+/// 加了真参数就变 ✓ 而原子数不变 ✓）。界面只比这两个串 ✗ 不参与像素推算。
+/// `hash:null` = 这条路拿不到指纹：关掉「服务器渲染」后本地回的是 PNG 字节 ✓ 没有 JSON 回执 ✗
+/// ⇒ `code` 也随之为 `null` ✗ 那句话不许瞎报错误码。
+async function effectFingerprint(region) {
+  const value = await callTool("render_region", { region }, { refresh: false });
+  if (value && value.ok && typeof value.blob_hash === "string") return { hash: value.blob_hash, code: null };
+  return { hash: null, code: (value && value.error_code) || null };
+}
+
+/// 效果清单的**回读** ✓（`list_effects` 是权威 ✓ 界面不自己记账 ✓）。
+async function effectReadback() {
+  const value = await callTool("list_effects", {}, { refresh: false });
+  const list = value && value.ok && Array.isArray(value.effects) ? value.effects : [];
+  const byId = {};
+  for (const effect of list) if (effect && effect.object_id) byId[effect.object_id] = effect;
+  return { list, byId };
+}
+
+/// `sample_colors` 的**服务端合成读数** ✓（界面不自己算色 ✗）；拿不到就回 `null` 并在话里说明。
+async function effectSamples(points) {
+  if (!points || points.length === 0) return null;
+  const value = await callTool("sample_colors", { points }, { refresh: false });
+  const samples = value && Array.isArray(value.samples) ? value.samples : null;
+  if (!samples) return null;
+  return samples.map((sample) => ({
+    x: sample.x,
+    y: sample.y,
+    rgba: Array.isArray(sample.rgba) ? sample.rgba.join(",") : null,
+  }));
+}
+
+/// **取样窗口与取样点必须落在内容上** ✓：实测 1024×1024 的白底文档只在 (700,700) 有一块
+/// 40×40 的红 ⇒ 用均匀网格取五点全落在白底上 ✗ 加完真参数读数一字未动（`200,50,50 → 200,143,0`
+/// 只在内容里发生 ✓）⇒ 拿均匀网格下"没变"的结论就是新的谎 ✗。
+/// 所以外框取自服务端 `list_objects` 的 `bbox` ✓ 界面不猜内容在哪 ✗。
+/// 窗口上限 512×512 —— 整幅编码在大文档上太贵 ✗ 超限时取外框正中一块 ✓ 并如实带上限说明 ✓。
+async function effectProbeRegion() {
+  const listed = await callTool("list_objects", {}, { refresh: false });
+  const docW = Math.max(1, Math.round(Number((state.docSize || {}).w) || 1));
+  const docH = Math.max(1, Math.round(Number((state.docSize || {}).h) || 1));
+  let box = null;
+  for (const item of (listed && listed.ok && Array.isArray(listed.objects)) ? listed.objects : []) {
+    const raw = item && item.bbox;
+    if (!Array.isArray(raw) || raw.length !== 4) continue;
+    const x = Number(raw[0]);
+    const y = Number(raw[1]);
+    const w = Number(raw[2]);
+    const h = Number(raw[3]);
+    if (!(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(w) && Number.isFinite(h)) || w <= 0 || h <= 0) continue;
+    box = box ? [Math.min(box[0], x), Math.min(box[1], y), Math.max(box[2], x + w), Math.max(box[3], y + h)]
+      : [x, y, x + w, y + h];
+  }
+  // 文档里一个对象都没有 ⇒ 只能钉在画布中心（这话仍然只是"取样在哪"✓ 不是"画面没变"✓）。
+  if (!box) box = [Math.floor(docW / 2), Math.floor(docH / 2), Math.floor(docW / 2) + 1, Math.floor(docH / 2) + 1];
+  const left = Math.max(0, Math.min(docW - 1, Math.floor(box[0])));
+  const top = Math.max(0, Math.min(docH - 1, Math.floor(box[1])));
+  const right = Math.max(left + 1, Math.min(docW, Math.ceil(box[2])));
+  const bottom = Math.max(top + 1, Math.min(docH, Math.ceil(box[3])));
+  const width = Math.min(512, right - left);
+  const height = Math.min(512, bottom - top);
+  const x = Math.round(left + (right - left - width) / 2);
+  const y = Math.round(top + (bottom - top - height) / 2);
+  const within = (value, high) => Math.max(0, Math.min(high, Math.round(value)));
+  return {
+    region: [x, y, width, height],
+    points: [
+      [within(x + width / 2, docW - 1), within(y + height / 2, docH - 1)],
+      [within(x + width / 4, docW - 1), within(y + height / 4, docH - 1)],
+      [within(x + width * 0.75, docW - 1), within(y + height * 0.75, docH - 1)],
+    ],
+  };
+}
+
+/// **删掉一个效果对象** ✓（第七轮补的出口 ✓）：此前这张卡只进不出 ✗
+/// 空操作叠五次也撤不掉 ✓（实测服务端 `delete_object` 认效果对象、删掉后画面复原 ✓）。
+/// 删完同样用**服务端指纹**说它到底有没有影响画面 ✗ 而不是"删了"两个字就算交代 ✓。
+async function deleteEffect(objectId, name) {
+  if (!objectId) return;
+  const before = await effectReadback();
+  const gone = before.byId[objectId] || {};
+  const probe = await effectProbeRegion();
+  const hashBefore = await effectFingerprint(probe.region);
+  const value = await callTool("delete_object", { object_id: objectId }, { refresh: false });
+  if (!value || !value.ok) {
+    const code = failureCode(value);
+    const detail = (value && value.context && value.context.detail) || (value && value.reason) || "";
+    log("删除效果失败：" + code + (detail ? " " + detail : ""), "#c33");
+    stageNotice("这一步没有成功：" + code);
+    if (code === "endpoint_not_local") {
+      sayEffect("未删除：本地内核没有这个端点（这次请求没到服务端）⇒ 勾回「服务器渲染」再试。");
+      return;
+    }
+    sayEffect("未删除：" + refusalVenue() + "拒绝了这一步（错误码 " + code +
+      " · 完整原因见下方日志）。拒绝时不落原子 ⇒ 画面不会动。");
+    return;
+  }
+  clearEffectEditing();
+  await refreshEffects();
+  await refreshPreview();
+  const after = await effectReadback();
+  const hashAfter = await effectFingerprint(probe.region);
+  const layerOf = gone.layer_id === undefined ? state.layerId : gone.layer_id;
+  const left = after.list.filter((effect) => String(effect.layer_id) === String(layerOf)).length;
+  const verified = hashBefore.hash !== null && hashAfter.hash !== null;
+  const conclusion = !verified
+    ? "这一条路取不到整幅合成的服务端指纹 ⇒ 没法验证画面动没动"
+    : (hashBefore.hash === hashAfter.hash
+      ? "整幅合成逐字节没变 ⇒ 它原本就没参与画面"
+      : "整幅合成的服务端指纹变了 ⇒ 画面确实动了");
+  const line = ["已删掉 " + (gone.adjustment_type || gone.filter_name || name || "?") +
+    "（对象 " + objectId + "）⇒ " + conclusion, "这一层还剩 " + left + " 个效果"];
+  const code = verified ? null : (hashBefore.code || hashAfter.code);
+  if (code) line.push("错误码 " + code);
+  sayEffect(line.join(" · "), { noOp: verified && hashBefore.hash === hashAfter.hash });
+  log("已删掉效果对象 " + objectId + " ✓");
 }
 
 /// **当前正在编辑的效果** ✓（`null` = 新建模式 ✓）。
@@ -4530,7 +4900,12 @@ async function refreshEffects() {
   const value = await callTool("list_effects", {}, { refresh: false });
   const list = $("effectsList");
   if (!value.ok) {
-    list.textContent = "读取失败：" + (value.error_code || "unknown");
+    // **读取失败也要说清是"谁"没读到** ✓（第七轮 ★ 看真截图复核才补的 ✗）：本地那一臂的截图上 ✓
+    // 回执行已经说实话（「未写入：**本地内核**拒绝了这一步」✓ ㉟ 的成果）✓ 可**紧接底下那一行**只念
+    // 「读取失败：endpoint_not_local」⇒ 一个裸码 ✗ 人只能猜是"服务端读不到我的效果"还是"本机没这端点"✓
+    // 同一张卡上同一件事 ✗ 一句说责任一句不说 ⇒ 走 ㉟ 那一对 `refusalVenue()`／`failureCode()`
+    // （责任与码**同源** ✓ 英文那侧走 m40 模式词条 ✓ 两个 venue 词与 m39 用同一本映射 ✗ 不另发明）。
+    list.textContent = "读取失败（" + refusalVenue() + "）：" + failureCode(value);
     return;
   }
   const effects = value.effects || [];
@@ -4543,9 +4918,10 @@ async function refreshEffects() {
     const row = document.createElement("div");
     // 字段名以 `list_effects` 的响应为准：adjustment_type / filter_name / params / layer_id。
     const name = effect.adjustment_type || effect.filter_name || effect.name || "?";
-    row.textContent =
-      name + " " + JSON.stringify(effect.params || {}) +
-      " @" + (effect.layer_id || "-");
+    // **行内不写中文** ✓（对象号与不透明度是数据 ✓ 第七轮补上 ✓）：
+    // `opacity=0` 的调整**在画面上不起作用** ✗ 不写出来就又一条"看着挂着、其实没动"的谎 ✓。
+    row.textContent = name + " " + JSON.stringify(effect.params || {}) + " @" + (effect.layer_id || "-") +
+      " · obj=" + (effect.object_id || "-") + " · α=" + (effect.opacity === undefined ? "?" : effect.opacity);
     // **点一行就进入"编辑它"** ✓（这也是"更新"与"新建"的分界 ✓）。
     row.style.cursor = "pointer";
     row.title = "点一下：编辑这个" + (effect.type === "adjustment" ? "调整" : "滤镜") + " ✓";
@@ -4562,6 +4938,17 @@ async function refreshEffects() {
       log("正在编辑「" + name + "」✓ —— 改好参数后点「更新这个」✓");
       renderEffectsRowHighlight();
     });
+    // **每行一个出口** ✓（`delete_object` ✓ 实测能删效果对象并让画面复原 ✓）。
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "删";
+    remove.title = "删掉这个效果对象（服务端落一条原子，可以再用撤销退回来）";
+    remove.style.cssText = "margin-left:6px;font-size:11px;padding:0 6px";
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void deleteEffect(effect.object_id, name);
+    });
+    row.appendChild(remove);
     list.appendChild(row);
   }
 }
@@ -4698,7 +5085,11 @@ async function refreshHistory() {
   const value = await callTool("get_log", args, { refresh: false });
   const list = $("history");
   if (!value.ok) {
-    list.textContent = "读取失败：" + (value.error_code || "unknown");
+    // **与效果卡那一格同一对帮手** ✓（第八轮 ✓）：只念 `error_code` 时，
+    // 本地那一臂的码在 `error` 里 ⇒ 历史卡会念成裸码／`unknown` ✗；
+    // 而"哪条路"（服务端／本地内核）此前**根本没说** ✗ ⇒ 读的人得自己猜去哪翻日志 ✓。
+    // 整句走 `m40` 词条（`viewer-app.js` 的 `i18nText` ✓）⇒ 英文模式不新增翻译 ✓。
+    list.textContent = "读取失败（" + refusalVenue() + "）：" + failureCode(value);
     return;
   }
   // **从新到旧** ✓（用户要求 ✓／PWA 实测 P2 ✓）：`get_log` 按 seq 升序返回 ✓ ⇒ 这里反转 ✓。
@@ -5753,10 +6144,16 @@ function renderSuggestionList() {
     reject.textContent = "拒绝";
     reject.disabled = item.status === "rejected";
     reject.addEventListener("click", async () => {
-      const reason = (($("suggestionReason") || {}).value || "").trim() || "编辑器里拒绝";
+      // **理由必须是用户写的** ✓（第五轮：`suggestionReason` 此前是悬空引用 ✗
+      //   ⇒ 每条拒绝都恒记固定串 ✗ 而日志把它回显成"用户的原因"✗）。
+      const typed = $("suggestionReason").value.trim();
       const done = await callToolChecked("reject_suggestion",
-        { suggestion_id: item.suggestion_id || item.id, reason }, "拒绝建议");
-      if (done && done.ok) log("已拒绝建议 ✓：原因「" + reason + "」✓");
+        { suggestion_id: item.suggestion_id || item.id, reason: typed || "编辑器里拒绝（未填原因）" }, "拒绝建议");
+      if (done && done.ok) {
+        log(typed
+          ? "已拒绝建议 ✓：原因「" + typed + "」✓"
+          : "已拒绝建议 ✓：原因栏空着 ⇒ 历史里记的是「编辑器里拒绝（未填原因）」✓");
+      }
       await refreshSuggestions();
     });
     actions.append(preview, accept, reject);
@@ -5798,10 +6195,12 @@ function setupSuggestionPanel() {
   if (rejectAll) rejectAll.addEventListener("click", async () => {
     const ids = Array.from(suggestionChecked);
     if (ids.length === 0) { log("先勾选要批量拒绝的建议 ✓", "#c33"); return; }
-    const reason = (($("suggestionReason") || {}).value || "").trim() || "编辑器里批量拒绝";
-    const done = await callToolChecked("reject_suggestions", { suggestion_ids: ids, reason }, "批量拒绝建议");
+    const typed = $("suggestionReason").value.trim();
+    const done = await callToolChecked("reject_suggestions", { suggestion_ids: ids, reason: typed || "编辑器里批量拒绝（未填原因）" }, "批量拒绝建议");
     if (done && done.ok) {
-      log("已批量拒绝 " + ids.length + " 条 ✓：原因「" + reason + "」");
+      log(typed
+        ? "已批量拒绝 " + ids.length + " 条 ✓：原因「" + typed + "」"
+        : "已批量拒绝 " + ids.length + " 条 ✓：原因栏空着 ⇒ 历史里记的是「编辑器里批量拒绝（未填原因）」");
       suggestionChecked.clear();
     }
     await refreshSuggestions();
@@ -6048,6 +6447,8 @@ function setupObjectPanel() {
   setupPresetPanel();
   setupRangeMaskPanel();
   setupFreqSepPanel();
+  setupDodgeBurnPanel();
+  setupFillRegionPanel();
   const fresh = $("effectNew");
   if (fresh) fresh.addEventListener("click", () => {
     clearEffectEditing();
@@ -6577,6 +6978,19 @@ async function callToolChecked(name, args, what) {
     const detail = (result && result.context && result.context.detail) ||
                    (result && result.reason) || "";
     log(what + "失败：" + code + (detail ? " " + detail : ""), "#c33");
+    // **同时说在看得见的那一处** ✓（第六轮 ✗→✓）：上面那条 `log` 用户默认**看不见** ✗
+    //（`#log` 在收起的「历史」卡片里 ✓ 实测 `scrollHeight:0` ✗）。
+    // **只带 `code`（ASCII ✓）而不带 `detail`** ✓：`detail` 是服务端写的中文 ✓
+    // 贴到浮层上就成了"英文界面夹一整句中文"✗（与减淡加深那条同一口径 ✓）。
+    stageNotice("这一步没有成功：" + code);
+    // **被权限拒 ⇒ 立刻把图层状态读回来** ✓（第六轮实测的洞 ✓）：锁可能是**另一头**上的
+    //（同事也开着同一份文档 ✓ 或 MCP 那边锁的 ✗ 界面这边从没点过那颗 🔒）⇒ 预检读的缓存
+    // 还是"没锁" ✗ 于是每一笔都发一个**注定被拒**的请求 ✗ 而图层行上一直显示 🔓 ✗
+    // **界面在说谎**。实测（探针观察 24 s）：不主动读回来就**永远**停在 🔓 ⇒
+    // 补读一次之后缓存与那行 glyph 同时翻成 🔒 ⇒ 下一笔起预检就当面谈「先解锁」✓。
+    // **只在这一条 `code` 上补读** ✓：别的失败（参数不对／资产缺失／离线）不代表界面**看错了** ✗
+    // 变成"凡失败就重取"就只是噪声 ✓。`.catch` 兜住 ✗ 这次补读自己失败不能再冒一条 JS 错误 ✓。
+    if (code === "permission_denied") void refreshLayers().catch(() => null);
   }
   return result;
 }
@@ -6651,6 +7065,8 @@ async function refreshLayers() {
   renderLayerPanel(value.layers || []);
   renderRangeMaskLayers(value.layers || []);
   renderFreqSepLayers(value.layers || []);
+  renderDodgeBurnLayers(value.layers || []);
+  renderFillRegionLayers(value.layers || []);
   return value.layers || [];
 }
 
@@ -6690,7 +7106,20 @@ const BLEND_MODE_LABELS = {
   soft_light: "柔光",
 };
 
+/// **`list_layers` 里"这层锁不锁、叫什么"的抄录** ✓（`layer_id → {locked, name}` ✓）。
+/// 声明在 `renderLayerPanel` 之前 ✓：初始化时 `refreshLayers()` 可能先于文件后半段的代码跑到 ✓
+///（`let` 在这一条上会踩 TDZ ✗ 声明顺序就是它的正确性 ✓）。
+let layerLockById = new Map();
+
 function renderLayerPanel(layers) {
+  // **先把服务端说的锁记下来** ✓（落笔前的预检要用 ✓ 见 `refuseLockedLayer` ✓）：
+  // 这份 Map 只是 `list_layers` 的**抄录** ✗ 不是第二个真相源 ✓（`locked` 由服务端
+  // `summary_layer` 给 ✓ 界面不许自己判"这层算不算锁"✗）。清单里没有 ⇒ 预检**放行** ✓
+  // —— 边界永远在服务端 ✓ 这里只负责"把注定被拒的那一笔**事先说清楚**"✓。
+  layerLockById = new Map((layers || []).map((layer) => [
+    layer.layer_id,
+    { locked: !!layer.locked, name: layer.name || layer.layer_id },
+  ]));
   const list = $("layerList");
   if (!list) return;
   list.innerHTML = "";
@@ -7085,6 +7514,9 @@ function setupFileMenu() {
   exportWrap.className = "toolbar";
   const useServerRenderBox = $("useServerRender");
 if (useServerRenderBox) {
+  // **首帧的初值已在模板里定下** ✓（`viewer.rs` 的 `#useServerRender` 后那段内联脚本 ✓，
+  // 判定顺序与本函数逐档一致 ✓）—— 这里再赋一次是**对齐此刻**的生效值 ✓：
+  // 热回退（`localKernelUnusable` ✓）只可能发生在会话中途 ✓。
   useServerRenderBox.checked = serverRenderPreferred();
   // **本地专用部署 ⇒ 禁用并说明 ✗**（用户报告的 P0 ✓）：这个复选框**永远不可能生效** ✓
   //（**没有服务端 ✓**）⇒ **∴ 留着它可勾 ✗** ⇒ **∴ 界面**自相矛盾**
@@ -7096,10 +7528,11 @@ if (useServerRenderBox) {
     const label = useServerRenderBox.closest("label") || useServerRenderBox.parentElement;
     if (label) {
       label.title = "本部署没有服务端 ⇒ 只能用本地内核；此开关不可用";
-      const text = label.querySelector("span") || label;
-      if (text && text.textContent && text.textContent.trim().length > 0) {
-        text.textContent = text.textContent.trim() + "（本部署无服务端，不可用）";
-      }
+      // **说明写在模板里** ✓（`#serverRenderLocalOnlyHint` ✓；隐藏 ⇒ 这里只负责显示 ✓）：
+      // 原来用 `label.textContent = …` 追加 ✗ ⇒ **把 `<input>` 节点一起抹掉** ✓
+      // （第九轮 PWA 截图实证：只剩一句话、勾选框消失 ✗ ⇒ 判据 ③/④ 红 ✓）。
+      const hint = document.getElementById("serverRenderLocalOnlyHint");
+      if (hint) hint.hidden = false;
     }
   }
   useServerRenderBox.addEventListener("change", () => {
@@ -7613,7 +8046,12 @@ async function setupLayerPanel() {
       // **画布要走服务端权威路径** ✓：`afterMutation` 只刷缩略图与历史 ✓，不重画画布 ✗，
       // 而"图层可见性"这类属性在 WASM 内核里不一定被实现 ✓ ⇒ 只刷内核会出现
       // "隐藏了但画面还在 / 显示回来画面仍然是空的" ✗（检查脚本实测：10717 → 0 → **0** ✗）。
+      needsServerPixels = true;
       await resync();
+      // **隐藏/显示可能让画布"整片变空"** ✗ ⇒ 这一帧必须允许权威空白覆盖 ✓
+      //（否则防闪烁逻辑会把"服务端空白 vs 画布有墨"当成落笔后的竞态跳过 ✗ ——
+      //  实测日志 `skipped-blank-over-ink [0,0,420,320]:134400:773` ✓，画布纹丝不动 ✗）。
+      await queueServerBlit(null, { allowBlank: true });
       return;
     }
     // 点名字/行 = **选中** ✓（写回 `#layer` 与 `state.layerId` ✓ ⇒ 全查看器跟着切换 ✓）。
@@ -7837,6 +8275,12 @@ function connect() {
       const event = message.event;
       log("atom seq=" + event.seq + " " + event.kind + (event.heavy ? " [heavy]" : ""));
       setStatus({ head: event.seq });
+      // **别处的改动也必须把顶栏那三个数字重读一回** ✓（本轮实测的另一半 ✗）：
+      // 自己这一端提交原子时 `:2744` 会排一次读 ✓，而**经 WS 到达的原子**（另一个客户端 ✓
+      // 或自动化直接打 HTTP ✓）只把 `head` 往上推 ✓ 从此**没有任何人**再读过水位 ✓
+      // ⇒ 实测：开局 `head 1 / rendered 0` ⇒ 远端连建三层 ⇒ 顶栏停在 `4 / 0 / 0` ✓ 六秒不动 ✗
+      //   （服务端自己那一刻的 `rendered_seq` 早就等于 `head_seq` 了 ✓ 纯粹是页面没再读 ✓）。
+      scheduleThumbRefresh();
       // 13.3：其他客户端（以及自己）的原子经全局广播到达后增量折叠并重绘。
       //
       // **heavy 原子（`import_image`/`liquify`/`declare_head`…）本地内核应用不了** ✗ ——
@@ -8090,11 +8534,45 @@ let panState = null;
 
 /// 吸管（设计 13.3 基础工具）：点击画布 → 向内核要该**文档坐标**的 1×1 像素 → 设为当前颜色。
 /// 不读画布位图的原因：画布会被 CSS 缩放，而内核渲染是文档坐标 1:1 ✓。
+/// 画布上光标处的颜色（`#rrggbb` ✓）；光标在画布外返回 `null` ✓。
+/// **为什么要有这条**（第 11 轮 ✓）：客户端模式下**文档原子在服务端** ✓，
+/// 本地内核账本没有它们 ✗ ⇒ 内核渲染取色恒为空白（`#000000` ✓，ui-check 实测 ✓）。
+/// 画布本身就是"所见" ✓ ⇒ 吸管按"所见即所得"读它 ✓。
+function boardColorAt(event) {
+  const rect = board.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  const bx = Math.round((event.clientX - rect.left) * (board.width / rect.width));
+  const by = Math.round((event.clientY - rect.top) * (board.height / rect.height));
+  if (bx < 0 || by < 0 || bx >= board.width || by >= board.height) return null;
+  const d = ctx.getImageData(bx, by, 1, 1).data;
+  return "#" + [d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, "0")).join("");
+}
+
 function pickColorAt(event) {
   const point = localPoint(event);
   const x = Math.floor(point.x);
   const y = Math.floor(point.y);
   if (x < 0 || y < 0 || x >= state.docSize.w || y >= state.docSize.h) return;
+  // **★ 两种渲染模式都先读"所见即所得"的画布 ✗ ★**（第 880 轮 ✓；**判据实测 ✓**）：
+  //   **∴ 原来的错 ✗**：**只有客户端模式**读画布 ✗ ⇒ **∴ 服务端模式**落到内核分支 ✓
+  //     ⇒ **∴ 而服务端模式根本不加载内核**（`initWasm` 被跳过 ✓，`state.kernel === null` ✓）
+  //       ⇒ **∴ 于是** `render_region_rgba` 直接抛错 ✓ ⇒ **∴ 颜色**停在 `#000000` ✓
+  //         （**判据实测：期望 #c81e3c，实际 #000000 ✓**）
+  //   **∴ 现在**：**先**读画布（它承载用户看到的像素：服务端补画 ✓ 或内核绘制 ✓）
+  //     ⇒ **∴ 画布之外**（取不到像素）**才**退回内核路 ✓。
+  {
+    const hex = boardColorAt(event);
+    if (hex) {
+      $("color").value = hex;
+      log("吸管取色 " + hex + "（文档坐标 " + x + ", " + y + "）｜读画布像素");
+      return;
+    }
+  }
+  // **画布读不到又没有内核** ⇒ 说清楚 ✗（不静默停在一个旧颜色 ✓）。
+  if (!kernelReady()) {
+    log("吸管取色失败：画布在该点没有像素，且服务端渲染模式没有本地内核", "#c33");
+    return;
+  }
   // 取 3×3 的中心像素：单点取色容易被抗锯齿边缘影响，也让 1×1 区域渲染的边界情况暴露出来。
   const side = 3;
   const x0 = Math.max(0, Math.min(state.docSize.w - side, x - 1));
@@ -8849,12 +9327,421 @@ function setupFreqSepPanel() {
   if (source) source.addEventListener("change", renderFreqSepCurrent);
 }
 
+/// **减淡加深卡** ✓（第五轮 ✓）：`dodge_burn_setup` 此前在页面上**零入口** ✗
+///（实测 `grep -c dodge_burn crates/yanshi-http/` 命中 0 ✓）⇒ 局部提亮/压暗只能靠 Agent ✗。
+/// **界面只转述服务端的诚实字段** ✓：`effective` / `ineffective_reason` / `neutral_gray`
+/// 是本轮**实测后补进回执**的三格 ✓ ⇒ "这组会不会改变画面"由服务端说 ✗ 界面不自算 ✓。
+/// **为什么 curves 那一臂必须显眼地说出来** ✓：本引擎的调整对象只作用于自己图层的缓冲 ✓
+/// 而 curves 变体建的层除曲线外没有像素 ⇒ 实测建组、涂白蒙版、删蒙版三步后底色仍是同一个数 ✗
+/// ⇒ 按钮"成功而画面不动"正是本项目禁止的静默 ⇒ 界面把它当面向用户的一句话讲出来 ✓。
+let dodgeBurnRecords = [];
+function renderDodgeBurnLayers(layers) {
+  dodgeBurnRecords = layers || [];
+  const select = $("dodgeBurnSource");
+  if (select) {
+    const wanted = select.value || state.layerId;
+    select.innerHTML = "";
+    for (const layer of layers) {
+      const option = document.createElement("option");
+      option.value = layer.layer_id;
+      option.textContent = layer.name + " (#" + layer.layer_id + ")";
+      // 图层名是**用户数据** ✓ 不参与界面翻译 ✓（与频率分离卡同一口径 ✓）。
+      option.dataset.i18n = "off";
+      select.appendChild(option);
+    }
+    if (wanted && [...select.options].some((item) => item.value === wanted)) select.value = wanted;
+  }
+  renderDodgeBurnCurrent();
+}
+
+/// **"这次按下去会发生什么"要写在界面上** ✓：同名组是服务端唯一的复用键 ✓
+///（实测：第二次调用回 `already_exists: true` 且 `layer_ids` 一字不变 ✓ 零原子落账 ✓）
+/// ⇒ 与其让人以为"再点一次会多一套"✗ 不如把服务端会走哪条路先说出来 ✓。
+function renderDodgeBurnCurrent() {
+  const out = $("dodgeBurnCurrent");
+  if (!out) return;
+  const source = ($("dodgeBurnSource") || {}).value;
+  const record = dodgeBurnRecords.find((layer) => layer.layer_id === source);
+  if (!record) { out.textContent = "请选择源图层"; return; }
+  const prefix = (($("dodgeBurnName") || {}).value || "").trim() || record.name;
+  // **组名按服务端原样念** ✓：服务端把组命名成 `「前缀 · 减淡加深」`（`tools_retouch.rs` 的
+  // `format!` ✓ 带书名号 ✓）⇒ 界面这里必须用同一个字符串去比对 ✗ 自己拼别的形状就永远查不到既有组 ✓。
+  const groupName = "「" + prefix + " · 减淡加深」";
+  const existing = dodgeBurnRecords.find((layer) => layer.name === groupName);
+  out.textContent = existing
+    ? "组名 " + groupName + " 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）"
+    : "将新建组 " + groupName + "（放在「" + record.name + "」上方）";
+}
+
+async function runDodgeBurnSetup() {
+  const info = $("dodgeBurnInfo");
+  const say = (line) => { if (info) info.textContent = line; };
+  const number = (id) => Number(($(id) || {}).value);
+  const source = ($("dodgeBurnSource") || {}).value || state.layerId;
+  const mode = ($("dodgeBurnMode") || {}).value || "gray";
+  const dodgeMid = number("dodgeBurnDodge");
+  const burnMid = number("dodgeBurnBurn");
+  // **先拦后送** ✓：服务端同域是 [0.05，0.95] ✓ 越界回 `invalid_argument` 且 detail 逐字带区间 ✓
+  // （实测 ✓）⇒ 界面不发送注定被拒的请求 ✓ 也不产生任何原子 ✓。
+  const inRange = (value) => Number.isFinite(value) && value >= 0.05 && value <= 0.95;
+  if (mode === "curves" && (!inRange(dodgeMid) || !inRange(burnMid))) {
+    say("减淡/加深中点要在 0.05–0.95 之间（0.5 = 无效果）⇒ 未建组，没有发送请求、没有写入任何改动。");
+    log("减淡加深未发送：中点越界（服务端同域 0.05–0.95）✓", "#c33");
+    return;
+  }
+  const args = { layer_id: source, mode };
+  if (mode === "curves") {
+    args.dodge_mid = dodgeMid;
+    args.burn_mid = burnMid;
+  }
+  const prefix = (($("dodgeBurnName") || {}).value || "").trim();
+  if (prefix) args.name = prefix;
+  const built = await callTool("dodge_burn_setup", args, { refresh: false });
+  if (!built || !built.ok) {
+    const code = (built && built.error_code) || "unknown";
+    const detail = (built && built.context && built.context.detail) || "";
+    log("减淡加深失败：" + code + " " + detail, "#c33");
+    // **本地内核没有这个端点** ✓ 与频率分离同一口径 ✓：请求**根本没出门** ✗
+    // 说成"服务端拒绝"会把人送去翻服务端日志 ✓ 而该改的其实是那个勾选 ✓。
+    // **`say` 只带 `code`（ASCII ✓）而不带 `detail`** ✓：detail 是服务端写的中文 ✓
+    // 把它拼进这行 ⇒ 英文模式下这句必然留着中文 ✗（`browser-i18n` 会抓到 ✓）
+    // ⇒ 完整原因留在 `#log`（豁免区 ✓）里 ✓ 界面不复述服务端原话 ✗ 只指路 ✓。
+    say(code === "endpoint_not_local"
+      ? "未建组：本地内核没有 dodge_burn_setup 这个端点（这次请求没到服务端）⇒ 勾回「服务器渲染」再试。"
+      : "未建组：服务端拒绝了这次建组（错误码 " + code + " · 完整原因见下方日志）。拒绝时不落原子 ⇒ 不会留下半套层。");
+    await refreshLayers();
+    return;
+  }
+  const ids = (key) => ((built[key] && built[key].join) ? built[key].join(",") : "无");
+  const roles = built.masks || {};
+  const parts = [
+    (built.already_exists ? "复用既有组 " : "已建组 ") + built.group_id,
+    // **`mode` 缺失时不许念成 `undefined`** ✓（本轮实测：旧服务端在**复用路径**整格漏掉 `mode` ✗
+    // 于是界面念出"方法 undefined"/英文"method undefined" ✓ 那正是本项目禁止的**静默的坏数据** ✓
+    // ⇒ 服务端已补上 ✓ 界面这边留一句老实话兜住 ✗ 一个 `undefined` 都不该出现在界面上 ✓）。
+    "方法 " + (built.mode || "未知"),
+    "层 " + (built.layer_ids || []).length + " 个（" + ids("layer_ids") + "）",
+    "对象 " + (built.object_ids || []).length + " 个（" + ids("object_ids") + "）",
+    // 蒙版按**角色**念 ✓（服务端 P2-10 给的 `masks` ✓ 而不是让人猜 `mask_ids[0]` 是谁 ✓）：
+    "蒙版 减淡 " + (roles.dodge || "无") + " · 加深 " + (roles.burn || "无"),
+  ];
+  // **`neutral_gray` 取服务端回执** ✓：中性字节是渲染管线的事实 ✗ 界面不写死 128/188 ✓。
+  if (typeof built.neutral_gray === "number") parts.push("灰层中性字节 " + built.neutral_gray);
+  // **`created` / `opened` 不在这里念** ✓：那两格是 HTTP 层给每条回执加的 ✓
+  // 说的是"这个文档本次有没有被打开/新建"✓（`server.rs` ✓）⇒ 与建了几层无关 ✗ 界面不许误读 ✓。
+  say(parts.join(" · "));
+  if (built.note) log("减淡加深说明：" + built.note, "#888");
+  if (built.effective === false) {
+    // **成功而画面不动 ＝ 必须说出来的那种"成功"** ✓：照服务端的话讲 ✓ 界面不自判 ✓。
+    // 但**界面只说"服务端说了 effective=false"这件事** ✓ 逐字的中文理由走 `#log` ✓
+    // ⇒ 英文模式下这一行仍是英文 ✗ 而理由一个字都没丢（那条豁免区全量在 ✓）。
+    const reason = built.ineffective_reason || "服务端没说原因";
+    log("⚠ 这一步不会改变画面（服务端回执 effective=false）：" + reason, "#c33");
+    say("⚠ 组建好了，但服务端回执 effective=false ⇒ 这一臂不会改变画面（完整原因见下方日志）。");
+  }
+  // 建的是**新图层与图层组**（结构改动）✓ ⇒ 先 `refreshLayers()` 让下拉与新组一致 ✓ 再重取像素 ✓。
+  await refreshLayers();
+  await resync();
+}
+
+function setupDodgeBurnPanel() {
+  const run = $("dodgeBurnRun");
+  if (run) run.addEventListener("click", () => { void runDodgeBurnSetup(); });
+  const source = $("dodgeBurnSource");
+  if (source) source.addEventListener("change", renderDodgeBurnCurrent);
+  const mode = $("dodgeBurnMode");
+  if (mode) mode.addEventListener("change", renderDodgeBurnCurrent);
+  const name = $("dodgeBurnName");
+  if (name) name.addEventListener("input", renderDodgeBurnCurrent);
+}
+
+/// **区域填充卡** ✓（第四轮 ✓）：`fill_region` 在页面上原本**零入口** ✗
+///（工具栏那支「填充图层」是 `fill` ⇒ 整层、无形状、无羽化 ✗ 不是替代品 ✓）。
+/// **界面只念服务端的数** ✓：回执 `opacity`（生效值 ✓）／`shape`／`texture.from_region`
+/// ／`drawn.dirty_bbox`／`drawn.warnings` ✓ 以及**落笔后再读一次** `sample_colors` 的合成读数 ✓
+/// ⇒ 页面不自算颜色、不自算覆盖率 ✗（那会变成第二个真值 ✗ 与频率分离卡同一口径 ✓）。
+/// **为什么落笔后要再读一次** ✓：本轮抓到 `opacity` 在 `color:"#rrggbb"` 下被**静默丢掉** ✗
+/// ⇒ 只回执 `ok:true` 是不够的 ✓ 必须有一个"服务端自己看到的像素"摆在界面上 ✓
+/// 以后这类回归在页面上就能看出来 ✗ 不用回去翻 MCP 日志 ✓。
+/// **四种形状都要给行** ✓：`path` 是第 1558 轮才放行的 ✓ 而注册表那句"只收三种"本轮才更正 ✓
+/// ⇒ 少给一种就是"界面替服务端撒谎"✗。
+let fillRegionRecords = [];
+function renderFillRegionLayers(layers) {
+  fillRegionRecords = layers || [];
+  const select = $("fillRegionLayer");
+  if (!select) return;
+  const wanted = select.value || state.layerId;
+  select.innerHTML = "";
+  for (const layer of layers) {
+    const option = document.createElement("option");
+    option.value = layer.layer_id;
+    option.textContent = layer.name + " (#" + layer.layer_id + ")";
+    option.dataset.i18n = "off";
+    select.appendChild(option);
+  }
+  if (wanted && [...select.options].some((item) => item.value === wanted)) select.value = wanted;
+}
+
+/// 只显示当前形状那一行 ✓（藏起来的那行**不参与校验** ✗ 免得看不见的框拦住落笔 ✓）。
+function renderFillRegionRows() {
+  const kind = ($("fillRegionShape") || {}).value || "rect";
+  const rows = { rect: "fillRegionRectRow", ellipse: "fillRegionEllipseRow",
+                 polygon: "fillRegionPolygonRow", path: "fillRegionPathRow" };
+  for (const [name, id] of Object.entries(rows)) {
+    const el = $(id);
+    if (el) el.style.display = name === kind ? "" : "none";
+  }
+  const src = $("fillRegionSrcRow");
+  if (src) src.style.display = ($("fillRegionMode") || {}).value === "region" ? "" : "none";
+}
+
+const frNum = (id, fallback) => {
+  const el = $(id);
+  if (!el || el.value === "") return fallback;
+  const value = Number(el.value);
+  return Number.isFinite(value) ? value : fallback;
+};
+
+/// `#rrggbb` → **字节** `{r,g,b}` ✓（送对象形态 ✗ 不送字符串 ✓）。
+/// **为什么固定对象形态**：字符串那条路本轮之前会把 `opacity` 整个丢掉 ✗（服务端已修 ✓）
+/// ⇒ 界面走最直的一条 ✓ 并且把服务端的生效值念回来 ✓ 让这类丢掉参数的缺陷在页面上可见 ✓。
+function fillRegionColor() {
+  const hex = String((($("fillRegionColor") || {}).value || "#000000").replace("#", ""));
+  const int = Number.parseInt(hex.length === 3 ? hex.replace(/(.)/g, "$1$1") : hex, 16) || 0;
+  return { r: (int >> 16) & 255, g: (int >> 8) & 255, b: int & 255 };
+}
+
+/// 折线顶点：`x,y` 用空格／逗号／分号分隔均可 ✓ 少于 3 个点返回 `null`（服务端也会拒 ✓）。
+function fillRegionPoints() {
+  const raw = String((($("fillRegionPoints") || {}).value || "")).trim();
+  if (!raw) return null;
+  const points = [];
+  for (const chunk of raw.split(/[;\n]+/)) {
+    const pair = chunk.trim();
+    if (!pair) continue;
+    const parts = pair.split(/[,\s]+/).map(Number);
+    if (parts.length < 2 || !Number.isFinite(parts[0]) || !Number.isFinite(parts[1])) return null;
+    points.push([parts[0], parts[1]]);
+  }
+  return points.length >= 3 ? points : null;
+}
+
+async function runFillRegion() {
+  const info = $("fillRegionInfo");
+  const sampleOut = $("fillRegionSample");
+  const say = (line, red) => {
+    if (info) info.textContent = line;
+    if (red) log(line, "#c33");
+  };
+  const kind = ($("fillRegionShape") || {}).value || "rect";
+  const layerId = ($("fillRegionLayer") || {}).value || state.layerId;
+  const opacity = frNum("fillRegionOpacity", 1);
+  const feather = frNum("fillRegionFeather", 0);
+  const record = fillRegionRecords.find((layer) => layer.layer_id === layerId);
+  if (!record) { say("那一层不在服务端的图层清单里（可能刚被删）⇒ 未填充。", true); return; }
+  if (!(opacity >= 0 && opacity <= 1)) { say("不透明度要在 0 到 1 之间 ⇒ 未填充，没有发送请求、没有写入任何改动。", true); return; }
+  if (!(feather >= 0)) { say("羽化半径不能是负数 ⇒ 未填充。", true); return; }
+  const shape = { type: kind, feather };
+  let centre = null;
+  if (kind === "rect") {
+    const w = frNum("fillRegionW", 0), h = frNum("fillRegionH", 0);
+    if (!(w > 0 && h > 0)) { say("形状的尺寸要大于 0 ⇒ 未填充，没有发送请求、没有写入任何改动。", true); return; }
+    shape.x = frNum("fillRegionX", 0); shape.y = frNum("fillRegionY", 0); shape.w = w; shape.h = h;
+    centre = [shape.x + w / 2, shape.y + h / 2];
+  } else if (kind === "ellipse") {
+    const rx = frNum("fillRegionRx", 0), ry = frNum("fillRegionRy", 0);
+    if (!(rx > 0 && ry > 0)) { say("椭圆的两个半径都要大于 0 ⇒ 未填充。", true); return; }
+    shape.cx = frNum("fillRegionCx", 0); shape.cy = frNum("fillRegionCy", 0); shape.rx = rx; shape.ry = ry;
+    centre = [shape.cx, shape.cy];
+  } else if (kind === "polygon") {
+    const points = fillRegionPoints();
+    if (!points) { say("折线至少要 3 个顶点（形如 `x,y`，空格或分号分隔）⇒ 未填充。", true); return; }
+    shape.points = points;
+  } else {
+    const d = String((($("fillRegionD") || {}).value || "")).trim();
+    if (!d) { say("路径要写 `d`（SVG 路径字符串，M/L/C/Q/H/V/Z）⇒ 未填充。", true); return; }
+    shape.d = d;
+    shape.fill_rule = (($("fillRegionFillRule") || {}).value || "evenodd");
+  }
+  const args = { layer_id: layerId, shape, opacity, color: fillRegionColor() };
+  if (feather > 0) args.feather = feather;
+  const wantTexture = ($("fillRegionMode") || {}).value === "region";
+  if (wantTexture) {
+    const sw = frNum("fillRegionSrcW", 0), sh = frNum("fillRegionSrcH", 0);
+    if (!(sw > 0 && sh > 0)) { say("取纹理那块矩形的宽高都要大于 0 ⇒ 未填充。", true); return; }
+    args.texture = { type: "region", source: { x: frNum("fillRegionSrcX", 0), y: frNum("fillRegionSrcY", 0), w: sw, h: sh } };
+    // **`color` 照送** ✓（实测 ✓）：服务端给了 `texture` 时**颜色全部来自源那块** ✓
+    //   （红 + 绿色源 ⇒ 实测 `[0,200,0]` ✓ 送去的红被忽略 ✓）⇒ 送它不改行为 ✓；
+    //   而**本地内核要求 `color` 必填** ✗（缺了就 `invalid_argument` ✗）⇒ 留着才能让两种模式都落笔 ✓。
+  }
+  // **锁定与隐藏要分开说** ✓（实测 ✓）：锁定层上 `fill_region` 回 `permission_denied`
+  // （`不能在锁定的图层 … 上新建对象（先解锁）` ✓）⇒ **就地拦** ✓ 不发注定被拒的请求 ✓；
+  // 而隐藏层**照收** ✓（实测 `ok:true` 且报脏区 ✓）⇒ 只是画上看不到 ✗
+  // ⇒ 这一种**要落笔但要讲清** ✓ 否则人只会看到"按了没反应"✓ 那正是本项目禁止的沉默 ✗。
+  if (record.locked) {
+    say("「" + record.name + "」是锁定图层 ⇒ 服务端会拒绝（先解锁），这次没有发送请求。", true);
+    return;
+  }
+  const hidden = record.visible === false;
+  if (hidden) say("「" + record.name + "」当前是隐藏图层 ⇒ 会落笔但画上看不到（在图层面板打开眼睛）。", false);
+  const built = await callTool("fill_region", args, { refresh: false });
+  if (sampleOut) sampleOut.textContent = "";
+  if (!built || !built.ok) {
+    const code = (built && built.error_code) || "unknown";
+    log("区域填充失败：" + code + " " + ((built && built.context && built.context.detail) || ""), "#c33");
+    say(code === "endpoint_not_local"
+        ? "未填充：本地内核没有这个端点（这次请求没到服务端）⇒ 勾回「服务器渲染」再试。"
+        : "未填充：服务端拒绝了这次落笔（原因见下方日志）。它拒绝时不写原子 ⇒ 不会留下半个形状。", false);
+    return;
+  }
+  // **回执念服务端的话** ✓：`opacity` 是**生效值**（服务端 echo ✓ 不是页面输入值 ✓）
+  // 而 `drawn.dirty_bbox` 是服务端自己报的"这次动了哪块"✓。
+  // 本地内核那条路没有 `drawn` ✓ ⇒ 该句照写但把数写成 `?` ✓ 另在日志里点明"没过服务端"✗
+  // （固定句式 ⇒ `i18nText` 一条模式就能覆盖 ✓ 不带变量的中文残句才是英文界面的事故 ✓）。
+  const drawn = built.drawn || {};
+  const box = Array.isArray(drawn.dirty_bbox) ? drawn.dirty_bbox : null;
+  // **隐藏那句不许被这一行咽下去** ✓（本轮实测 ✗：先前在发送前 `say` 过一次"隐藏"✓
+  //   但这里把整个 `#fillRegionInfo` **重写**成回执句 ⇒ 人看到"已填充"✓ 画面又没变 ✓
+  //   ⇒ 那正是本项目禁止的"看起来成功了但解释消失了"✓ 所以把话**并进同一行** ✓
+  //   固定尾句（不是整句重排 ✓ `i18nText` 一条模式的可选组就覆盖 ✓）。
+  const hiddenTail = hidden ? " · 落笔的这一层当前隐藏 ⇒ 这一笔在画面上看不到" : "";
+  say("已填充 · 服务端回执 opacity=" + (built.opacity !== undefined ? built.opacity : "?")
+      + " · 形状 " + (built.shape || kind)
+      + " · 脏区 " + (box ? box.map((v) => Math.round(v)).join(",") : "?")
+      + " · 脏块 " + (drawn.dirty_tiles !== undefined ? drawn.dirty_tiles : "?")
+      + hiddenTail, false);
+  if (built.server === false) {
+    log("这一笔由本地内核回执（没经服务端）⇒ 路径形状与位图纹理在本地不支持；勾回「服务器渲染」再试这两样。", "#888");
+  }
+  for (const warning of [...(built.warnings || []), ...(drawn.warnings || [])]) {
+    log("区域填充警告：" + warning, "#c33");
+  }
+  if (wantTexture) {
+    const texture = built.texture || {};
+    if (texture.from_region === true) {
+      // 回执里**没有 `source`** ✓（实测键集合：`type/from_region/layer_id/tiles/jitter/mode/seam/…` ✓）
+      // ⇒ 界面只念有的那些 ✓ 不把自己填的四个框当服务端的话说 ✗。
+      // **`tiles` 不是"块数"而是"平铺次数"** ✓（读源码 ✓：`tiles = 目标面积 ÷ 源块面积` ✓
+      //   实测 40×30 的目标 ÷ 40×40 的源 ⇒ **0.75** ✓）⇒ 早先那句「平铺 0.75 块」✓ 是**中文病句**✗
+      //   人会以为服务端切了 0.75 块 ✗ ⇒ 说清它是倍数 ✓ 并在 ≥12 时把服务端的警告带到脸上 ✓。
+      say("纹理：服务端已把那块画面存成位图 · 源块平铺 "
+          + (texture.tiles === undefined ? "?" : texture.tiles) + " 倍（= 目标面积 ÷ 源块面积）· 取纹理图层 "
+          + (texture.layer_id === undefined || texture.layer_id === null ? "整幅合成" : texture.layer_id), false);
+      log("区域填充纹理：抖动 " + (texture.jitter === undefined ? "?" : texture.jitter)
+          + " · 拼贴模式 " + (texture.mode || "?") + " · 接缝 " + (texture.seam || "?")
+          + " · 生效 MIME " + (texture.mime_type || "raw"), "#888");
+    } else if (texture.error) {
+      log("区域填充纹理没按预期取到：" + texture.error, "#c33");
+    } else if (built.server === false) {
+      log("区域填充纹理：本地内核没实现「取画面这块」（回执里 `server:false`）⇒ 这一笔按纯色落了，勾回「服务器渲染」才是纹理。", "#c33");
+    } else {
+      log("区域填充纹理：回执 `texture` 为 " + JSON.stringify(texture).slice(0, 160), "#888");
+    }
+  }
+  // **落笔后实测** ✓：点取服务端报的脏区中心（没有脏区才退回形状中心）✓
+  // ⇒ 读的是 `sample_colors` 的**合成结果** ✓ 界面不参与任何颜色推算 ✗。
+  const point = box ? [box[0] + box[2] / 2, box[1] + box[3] / 2] : centre;
+  if (point) {
+    const probed = await callTool("sample_colors", { points: [[Math.round(point[0]), Math.round(point[1])]] },
+                                  { refresh: false });
+    const s = probed && Array.isArray(probed.samples) ? probed.samples[0] : null;
+    if (s && s.outside !== true && Array.isArray(s.rgba)) {
+      if (sampleOut) sampleOut.textContent = "实测 (" + s.x + "," + s.y + ") = [" + s.rgba.join(",") + "]（服务端合成读数）";
+    } else if (sampleOut) {
+      sampleOut.textContent = "该点不在画布内 ⇒ 没有实测读数";
+    }
+  }
+  await resync();
+}
+
+function fillRegionUseSelection() {
+  const note = $("fillRegionSelection");
+  const say = (line) => { if (note) note.textContent = line; };
+  const shape = state.selectionShape;
+  const bbox = shape && shape.bbox;
+  if (!bbox || !(bbox.w > 0) || !(bbox.h > 0)) {
+    say("当前没有可用选区 ⇒ 先用选区工具拖一块（外框来自服务端事实，不是本地猜测）");
+    return;
+  }
+  const set = (id, v) => { const el = $(id); if (el) el.value = String(Math.round(v)); };
+  const kind = ($("fillRegionShape") || {}).value || "rect";
+  if (kind === "ellipse") {
+    set("fillRegionCx", bbox.x + bbox.w / 2); set("fillRegionCy", bbox.y + bbox.h / 2);
+    set("fillRegionRx", bbox.w / 2); set("fillRegionRy", bbox.h / 2);
+  } else {
+    set("fillRegionX", bbox.x); set("fillRegionY", bbox.y);
+    set("fillRegionW", bbox.w); set("fillRegionH", bbox.h);
+  }
+  say("选区外框已读入：x=" + Math.round(bbox.x) + " y=" + Math.round(bbox.y)
+      + " w=" + Math.round(bbox.w) + " h=" + Math.round(bbox.h));
+}
+
+function setupFillRegionPanel() {
+  const shape = $("fillRegionShape");
+  if (shape) shape.addEventListener("change", renderFillRegionRows);
+  const mode = $("fillRegionMode");
+  if (mode) mode.addEventListener("change", renderFillRegionRows);
+  const run = $("fillRegionRun");
+  if (run) run.addEventListener("click", () => { void runFillRegion(); });
+  const useSelection = $("fillRegionFromSelection");
+  if (useSelection) useSelection.addEventListener("click", fillRegionUseSelection);
+  renderFillRegionRows();
+}
+
 /// 这些工具不走 `draw_stroke` 原子，而是调用同名工具（工具层会构造正确的原子）。
 /// 拖动中仍用覆盖层显示笔迹（不给本地乐观像素 —— 内核目前只为 `draw_stroke` 提供增量预览）。
 const RETOUCH_TOOLS = new Set([
   "clone_stamp", "heal_stamp", "smudge",
   "liquify_push", "liquify_twirl", "liquify_pinch",
 ]);
+
+/// **这一组工具在锁定的图层上一定会被服务端拒** ✓（矩阵是**实测**出来的 ✗ 不是读代码猜的 ✓）：
+/// 逐个打真服务端得到的结论（`/tmp/yanshi-web-r6/probe-lockmtx.mjs` ✓ 原始输出随包）——
+/// `draw_stroke` / `erase` / `draw_shape` / `draw_text` / `import_image`（介质落笔走的就是它 ✓）/
+/// `fill_region` / `clone_stamp` / `heal_stamp` / `smudge` / `liquify_*` / `move_object` /
+/// `transform_object` / `delete_object` ⇒ **HTTP 403 `permission_denied`** ✓；
+/// 而 `create_mask`（哪怕 `linked_layer` 指着锁定层）/ `paint_mask` / `update_layer`（含改不透明度与
+/// 锁本身）⇒ **放行** ✓ —— 所以这两类**绝不能拦** ✗ 拦了就是把一件合法的事变成做不了 ✗。
+/// `annotate` 的 `create_annotation` 不吃 `layer_id`（schema 实测 ✓）⇒ 与图层锁无关 ✓ 不拦。
+const LOCK_BLOCKED_TOOLS = new Set([
+  "brush", "rect", "ellipse", "erase",
+  "clone_stamp", "heal_stamp", "smudge",
+  "liquify_push", "liquify_twirl", "liquify_pinch",
+  "medium_dab", "text", "move_layer",
+]);
+
+let stageNoticeTimer = null;
+
+/// **把话说在看得见的那一处** ✓（第六轮 ✗→✓）：`log()` 写进 `#log` ✓ 而它在
+/// `data-panel="history"` 那张卡片里 ✓ 默认收起（实测 `logVisible:false`、`scrollHeight:0` ✗）
+/// ⇒ "失败"两个字用户**从来没看见过** ✓。浮层在 `</header>` 之后 ✓ 任何面板组合与全屏画布下都在 ✓。
+function stageNotice(text) {
+  const el = $("stageNotice");
+  if (!el) {
+    // 没有这块 DOM（老模板 / 半套静态页）⇒ 退回日志 ✗ **不许什么都不说** ✓。
+    log(text, "#c33");
+    return;
+  }
+  el.textContent = text;
+  el.hidden = false;
+  if (stageNoticeTimer) clearTimeout(stageNoticeTimer);
+  stageNoticeTimer = setTimeout(() => {
+    el.hidden = true;
+    el.textContent = "";
+    stageNoticeTimer = null;
+  }, 4000);
+}
+
+/// **落笔前的锁定预检** ✓：与 `fill_region` 那条**同句、同源**（见 i18n 的 m30 ✓）⇒
+/// 同一个界面里对同一件事只有一种说法 ✓ 词条也只有一份 ✓。
+/// 返回 `true` = 已经拦下并且已经说出来了 ✓ 调用方**直接 return** ✗ 不要再发请求 ✓。
+function refuseLockedLayer(layerId, what) {
+  const record = layerLockById.get(layerId);
+  if (!record || !record.locked) return false;
+  stageNotice("「" + record.name + "」是锁定图层 ⇒ 服务端会拒绝（先解锁），这次没有发送请求。");
+  log((what || "这一步") + "没有发送：「" + record.name + "」是锁定图层（服务端会回 permission_denied）⇒ 在「图层」面板点 🔓 解锁后再试", "#c33");
+  return true;
+}
 
 /// Alt+点击设置仿制/修复的源点。
 board.addEventListener("pointerdown", (event) => {
@@ -9079,6 +9966,15 @@ board.addEventListener("pointerdown", (event) => {
   // **手形（或中键、空格）时不许落笔** ✗ —— 用户实测："小手会像画笔一样画上去" ✓；
   // 与平移那条**共用同一个判定** ✓（详见 `wantsPanEvent` 的说明 ✓）。
   if (wantsPanEvent(event)) return;
+  // **锁定的图层 ⇒ 这一笔根本不该开始** ✓（第六轮实测 ✗）：以前这里不判 ✗ 于是
+  // 落笔 → 本地乐观像素画上去 → 服务端 403 → 回滚 → **而解释只写进收起的 `#log`** ✗
+  // ⇒ 用户看到的就剩"按了没反应"（更糟的是客户端内核那一份回滚不干净 ✓ 会留幻影像素 ✓）。
+  // 拦在**开始**这一刻 ✓：不发请求 ✓ 不建 `pendingStroke` ✓ 不进内核 ✓ 因而也没有幻影 ✓。
+  if (LOCK_BLOCKED_TOOLS.has(state.tool) &&
+      refuseLockedLayer(state.layerId, "画布上的一笔")) {
+    event.preventDefault();
+    return;
+  }
   if (state.tool === "text") {
     event.preventDefault();
     // ⚠️ **失败必须说出来** ✗（第 817 轮实测 ✓）：这里原本是 fire-and-forget ✗ ⇒
@@ -9122,6 +10018,14 @@ board.addEventListener("pointerdown", (event) => {
         redraw();
         return;
       }
+      // **命中的那个对象在锁着的层上 ⇒ 拖它一定被拒** ✓（实测 403「不能修改 …：所在图层已锁定」✓）：
+      // 命中测试允许**跨层**回退到别的图层 ✓（见 `pickObjectAt` 的说明 ✓）⇒ 这里判的是**对象所在层** ✗
+      // 不是工具栏那一层 ✓。
+      if (refuseLockedLayer(object.layer_id, "移动对象")) {
+        state.selectedObject = null;
+        redraw();
+        return;
+      }
       moveState = { objectId: object.object_id, start, bbox: object.bbox };
       log("已选中 " + object.object_id + "（拖动即可移动）");
       redraw();
@@ -9132,7 +10036,11 @@ board.addEventListener("pointerdown", (event) => {
     event.preventDefault();
     return;
   }
-  if (state.tool === "eyedropper" && kernelReady()) {
+  // **吸管不能只在内核就绪时可用** ✗（服务端渲染模式 `kernelReady()=false` ✓）——
+  // 原来这个 `&& kernelReady()` 让整条路**根本不进入** ✓ ⇒ 颜色停在 `#000000` ✓
+  //（判据实测 ✓）。现在**两种模式都进入** ✓；取色先读画布 ✓（`pickColorAt` ✓），
+  // 画布不可读且没有内核时它会明确报错 ✓（不静默 ✓）。
+  if (state.tool === "eyedropper") {
     pickColorAt(event);
     event.preventDefault();
     return;
@@ -9678,6 +10586,14 @@ board.addEventListener("pointerup", async (event) => {
     }
     pendingStroke = null;
   } else {
+    // **单击也必须落一个点** ✗（服务端模式没有内核 ✓ ⇒ 走不到上面的 `pendingStroke` ✓；
+    // 而 `commitShape` 的画笔/橡皮都要求 ≥2 个点 ✗ ⇒ 单击被**静默丢弃** ✗：
+    // 没有原子 ✓、历史不加行 ✓、判据"单击后历史 1→2"必红 ✗ —— 本会话实测 ✓）。
+    // 复制一个同坐标点 ⇒ 服务端接受重复点并画出圆点 ✓（`draw_stroke` 已实测 ✓）。
+    if (state.points.length === 1 && (state.tool === "brush" || state.tool === "erase")) {
+      const only = state.points[0];
+      state.points.push({ x: only.x, y: only.y, pressure: only.pressure });
+    }
     await commitShape();
   }
   state.points = [];
@@ -10768,7 +11684,8 @@ if (serverRenderPreferred()) {
 async function refreshReferenceOverlay() {
   if (!state.token) return;
   try {
-    const value = await callTool("get_preferences", { keys: ["reference.blob_hash", "reference.opacity", "reference.position"] });
+    const value = await callTool("get_preferences", { keys: ["reference.blob_hash", "reference.opacity", "reference.position"] },
+                                 { refresh: false });
     const prefs = (value && (value.preferences || (value.data || {}).preferences)) || {};
     const hash = prefs["reference.blob_hash"];
     const existing = document.getElementById("referenceOverlay");
@@ -10782,12 +11699,29 @@ async function refreshReferenceOverlay() {
     const overlay = existing || document.createElement("img");
     if (!existing) {
       overlay.id = "referenceOverlay";
+      // **`alt` 是要翻的界面文案** ✓（不是用户数据 ✓）：早先它写死 `"参考图"` ✗
+      //   ⇒ 英文模式下画布上冒出一个中文 alt（真机截图里看得见 ✓ 本轮修 ✓）。
       overlay.alt = "参考图";
       overlay.style.position = "fixed";
       overlay.style.pointerEvents = "none";
       overlay.style.zIndex = "9";
       overlay.style.objectFit = "contain";
       overlay.dataset.reference = "1";
+      // **解不开就不许留在画布上** ✓（本轮实测的真机症状 ✗）：存储里的参考图常常是**裸 RGBA**
+      //   （`POST /api/blob` 把 PNG 解码后入库 ✓ 本浏览器没缓存过原图时只能拿到那份裸像素 ✓
+      //   实测 `GET /api/blob/…` 回 `application/octet-stream` ✓ 16 字节 ✓）⇒ `<img>` 解不开 ✗
+      //   浏览器就在**画面正中**画一个破图图标 + 中文 alt ✓（参考图卡那句解释是对的 ✗
+      //   但画布被一个坏掉的占位符盖住了 ✗ 那是"叠层"变成了"脏东西"✓）。
+      // ⇒ `error` 时**收起这一层**并把话讲清 ✓ `load` 时再放回来 ✓（换 src 不用重建元素 ✓）。
+      overlay.addEventListener("error", () => {
+        overlay.dataset.decode = "failed";
+        overlay.style.display = "none";
+        referenceOverlayState();
+      });
+      overlay.addEventListener("load", () => {
+        overlay.dataset.decode = "ok";
+        overlay.style.display = "";
+      });
       document.body.appendChild(overlay);
     }
     overlay.dataset.blob = String(hash);
@@ -10827,13 +11761,38 @@ async function refreshReferenceOverlay() {
     if (info && overlay.dataset.source === "blob") {
       info.textContent = "参考图由外部设置，本浏览器没有它的原图（存储里是裸像素）⇒ 重新上传一次就能一直显示";
     }
+    // **解码结果异步** ✓：`src` 设下去之后 `load`/`error` 才决定看得见看不见 ✗
+    // ⇒ 这一句必须在**两种结果**下都说得出口 ✓ 不能只在 `source === "blob"` 那一刻写一次 ✓。
+    referenceOverlayState();
   } catch (error) {
     // **参考图不是关键路径** ✗：读不到就安静地不画 ✓（绝不因为它把查看器拖垮 ✓）。
+  }
+}
+
+/// 参考图叠加层**当前到底在不在画布上** ✓：把 `<img>` 的异步解码结果讲成一句界面文案 ✓。
+/// 单独成函数是因为 `error` 回调与 `refreshReferenceOverlay()` 都要写同一句 ✓
+/// （两处各写一份必然漂移 ✗ 这项目的老病 ✓）。
+function referenceOverlayState() {
+  const overlay = document.getElementById("referenceOverlay");
+  const info = $("referenceInfo");
+  if (!overlay || !info) return;
+  if (overlay.dataset.decode === "failed") {
+    info.textContent = "参考图叠不上去：存储里那份是裸像素（本浏览器没有它的原图）⇒ 已收起画布上的这一层，重新上传一次就能一直显示";
+  } else if (overlay.dataset.decode === "ok" && overlay.dataset.source === "blob") {
+    info.textContent = "参考图由外部设置，本浏览器没有它的原图（存储里是裸像素）⇒ 重新上传一次就能一直显示";
   }
 }
 void refreshReferenceOverlay();
 window.addEventListener("yanshi:document-ready", () => { void refreshReferenceOverlay(); });
 window.addEventListener("resize", () => { void refreshReferenceOverlay(); });
+/// **给 `resync()` 用的引用** ✓（与 `__applyReferenceGeometry` 同一套路 ✓ 定义在更深的块作用域里 ✗
+///   外面直接调会 ReferenceError ⇒ 静默失败 ✓）：
+/// **为什么要接进 `resync`** ✓（本轮补 ✗）：参考图**只记在偏好里** ✓ 而偏好改动**不产生原子** ✓
+///   ⇒ 服务端**没有 head 变化** ⇒ WS 也不广播 ✗ ⇒ Agent 用 MCP `clear_reference` / `set_reference`
+///   之后 ✓ 人的画布上那一层**一直停在旧状态**（实测：清掉之后 DOM 里那个 `<img>` 还在 ✓）。
+///   接进 `resync` ⇒ 页面上任何一次刷新／落笔之后 ✓ 参考图与偏好重新对齐 ✓。
+///   （它自己读偏好时带 `refresh:false` ✓ ⇒ 不会与 `resync` 互相触发 ✓。）
+window.__refreshReferenceOverlay = refreshReferenceOverlay;
 }
 }
 
@@ -11343,7 +12302,11 @@ window.addEventListener("keydown", (event) => {
 // 折叠靠 CSS class ✓，不改 DOM 结构 ✓ ⇒ 既有选取器与检查都不受影响 ✓。
 const DOCKER_PRESETS = {
   // 绘画：图层与内核常看 ✓，历史/调整/日志收起 ✓。
-  paint: { open: ["图层", "WASM 计算内核", "历史（原子日志）"], closed: ["标注", "调整 / 滤镜", "缩略图", "原子日志（控制流）", "最近一次响应", "反馈"] },
+  // **历史确实在 closed 里** ✓（第十一轮补 ✗）：此前注释这么写、表里却把它列在 open ✓
+  // ⇒ 用户点「绘画」后历史仍展开 ✓（判据实测 history=false ✗）。
+  // **启动时的例外**仍由 `applyCollapsed` 的第二参控制 ✓：开机强制展开历史 ✓（见 `initDockers` ✓），
+  //   只有**用户主动选预设**时才按这张表折叠它 ✓。
+  paint: { open: ["图层", "WASM 计算内核"], closed: ["历史（原子日志）", "标注", "调整 / 滤镜", "缩略图", "原子日志（控制流）", "最近一次响应", "反馈"] },
   // 修图：图层 + 调整展开 ✓。
   retouch: { open: ["图层", "调整 / 滤镜", "缩略图"], closed: ["WASM 计算内核", "历史（原子日志）", "原子日志（控制流）", "最近一次响应", "反馈"] },
   // 校对：历史 + 日志 + 反馈展开 ✓（核对与反馈用 ✓）。
@@ -11383,39 +12346,36 @@ function saveDockers() {
   } catch (_) { /* 隐私模式下忽略 ✓ */ }
 }
 
-function applyCollapsed(titles) {
+function applyCollapsed(titles, options = {}) {
   const wanted = titles.map(normalizeTitle);
   // NOTE: a probe placed inside the loop below prints nothing when the card
   // collection is empty, so it proves nothing; a probe before the loop was
   // tried in round 422 and also never printed, which is recorded in the audit
   // notes together with the contradiction it leaves (see section ninety one).
   for (const card of dockerCards()) {
-    // **★ 历史卡**永不由预设折叠**✗**（第 397 轮 ✓ —— **∴ 这是**不依赖时序**的修法 ✓**）：
+    // **★ 历史卡**默认不由预设折叠**✗**（第 397 轮 ✓ —— **∴ 这是**不依赖时序**的修法 ✓**）：
     // **∴ 前六轮我都在**展开它**✗**（**立即 ✓／两帧后 ✓／`load` 后 ✓／用 `data-panel` ✓**），
     // **∴ 而诊断始终读到 `collapsed: [true]` ✗** ⇒ **∴ 说明**折叠动作**发生在**我那次执行**之后 ✗**
     // （**`applyWorkspace` 末尾的 `saveDockers()` 会**回写**✓，**而页面上还有别处会再调 `applyCollapsed` ✓**）。
     // **∴ 所以改成**从源头排除**✓**：**不论谁调用本函数 ✓，它都不会把历史卡折上 ✓** ——
     // **∴ 用户仍可**手动点击**折叠它 ✓**（**`h2` 的点击走 `:8539` ✓，不经过本函数 ✓**）。
-    // TEMP PROBE (round 417, remove once the writer is identified).
-    try {
-      console.log("[ac] title=" + JSON.stringify(cardTitle(card)) +
-        " want=" + wanted.includes(cardTitle(card)) +
-        " collapsed=" + card.classList.contains("collapsed"));
-    } catch (_) { /* ignore */ }
-    if (/历史/.test(cardTitle(card))) {
+    // **第十一轮的例外** ✓：`options.collapseHistory` 为真时（= **用户主动选了工作区预设** ✓）
+    //   就按表折叠历史 ✓ —— 否则「绘画」预设的"历史收起"永远做不到 ✓（判据实测 ✗）。
+    //   开机走的三个分支都**不传**这个选项 ✓ ⇒ 启动时历史仍强制展开 ✓（用户报告的那条不变 ✓）。
+    if (/历史/.test(cardTitle(card)) && !(options && options.collapseHistory)) {
       continue;
     }
     card.classList.toggle("collapsed", wanted.includes(cardTitle(card)));
   }
 }
 
-function applyWorkspace(name) {
+function applyWorkspace(name, options = {}) {
   const preset = DOCKER_PRESETS[name];
   if (!preset) return;
   for (const card of dockerCards()) {
     card.classList.remove("collapsed");
   }
-  applyCollapsed(preset.closed);
+  applyCollapsed(preset.closed, options);
   try { localStorage.setItem(WORKSPACE_STORE, name); } catch (_) { /* 忽略 ✓ */ }
   const select = $("workspace");
   if (select) select.value = name;
@@ -11483,7 +12443,8 @@ function initDockers() {
   window.addEventListener("load", openHistoryCard);
   const select = $("workspace");
   if (select) {
-    select.addEventListener("change", () => applyWorkspace(select.value));
+    // **用户主动选预设** ⇒ 连历史卡也按表折叠 ✓（开机路径不传这个选项 ✓，见 `applyCollapsed`）。
+    select.addEventListener("change", () => applyWorkspace(select.value, { collapseHistory: true }));
   }
 }
 
@@ -12201,6 +13162,12 @@ $("importFile").addEventListener("change", (event) => {
       (window.__appMarks = window.__appMarks || []).push("boot:before-refreshObjects");
       try { await refreshObjects(); (window.__appMarks = window.__appMarks || []).push("boot:refreshObjects-ok"); }
       catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshObjects!" + String(error && error.message || error).slice(0, 40)); }
+      // **带 token 重载走的是这条分支 ✗ ⇒ 介质选择器也得在这里认文档** ✓：
+      //   同一段逻辑在 `loadDocumentData`（新建/切换文档）里已挂 ✓，而重载**不经过**它 ✗
+      //   ⇒ 判据实测：重载后 `#medium` 仍是 `example` ✗ 而文档最近一笔是 watercolor ✓。
+      (window.__appMarks = window.__appMarks || []).push("boot:before-detectHeavy");
+      try { await detectHeavyContent(); (window.__appMarks = window.__appMarks || []).push("boot:detectHeavy-ok"); }
+      catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:detectHeavy!" + String(error && error.message || error).slice(0, 40)); }
       (window.__appMarks = window.__appMarks || []).push("boot:before-refreshAnnotations");
       try { await refreshAnnotations(); (window.__appMarks = window.__appMarks || []).push("boot:refreshAnnotations-ok"); }
       catch (error) { (window.__appMarks = window.__appMarks || []).push("boot:refreshAnnotations!" + String(error && error.message || error).slice(0, 40)); }
@@ -12242,6 +13209,10 @@ $("importFile").addEventListener("change", (event) => {
 // 而且**表里没有的文案保持原样**（安全降级）。**默认中文** ⇒ 既有行为与既有检查脚本都不受影响；
 // 英文是**显式切换**（顶栏开关 / `?lang=en` / 记住的选择）。日志与诊断**不翻译**（它们是给人看的长句）。
 const I18N_EN_TEXT = {
+  // **本地内核退回服务端渲染那句**（第六轮新增的浮层 ✓ 见 `localKernelUnusableNow` ✓）：
+  //   固定整句 ⇒ 走精确键 ✓（不必造句式 ✓）。漏了这条 ✗ 英文界面就会夹一整句中文 ✓。
+  "本地内核没能把这份文档装进来 ⇒ 这一页先改用服务端渲染（画面照常，刷新后可再试本地）。":
+    "The local kernel could not load this document, so this page switched to server rendering. The picture is normal; reload to try the local kernel again.",
   // **范围遮罩卡 + 渐变蒙版卡** ✓（本轮新增 ✓）：模板文本节点 ✓ 与卡片上那几句固定回执 ✗
   // 都在 `ui-i18n-coverage` / `browser-i18n` 的扫描范围内 ✓（`#rangeMaskInfo` 不是 `#log` ✓）。
   "范围遮罩": "Range mask",
@@ -12312,6 +13283,79 @@ const I18N_EN_TEXT = {
     "Not separated: the local kernel has no such endpoint (this request never reached the server) ⇒ tick Server render back on and retry.",
   "未分离：服务端拒绝了这次分离（原因见下方日志）。它拒绝时不建组 ⇒ 不会留下半套层。":
     "Not separated: the server rejected this separation (see the log below for the reason). It builds no group when it refuses ⇒ no half-finished layers are left behind.",
+  // **减淡加深卡** ✓（本轮新增 ✓）：静态文案进这张表 ✓ 带数字的动句走 `i18nText()` 的模式 ✓。
+  // **两条短标签必须压到两三个词** ✓：`方法` 那一列和频率分离卡的数字列挤在同一行 toolbar 里 ✓
+  //（上一轮实机截图看到过长句被截断 ✗）。
+  "减淡加深": "Dodge and burn",
+  "给一块区域做减淡（提亮）与加深（压暗）。":
+    "Dodge (lighten) and burn (darken) an area.",
+  "方法": "Method",
+  "灰层法（涂就见效）": "Grey layer (paint and it works)",
+  "曲线法（曲线可回改）": "Curves (two editable curves)",
+  "减淡中点": "Dodge midpoint",
+  "加深中点": "Burn midpoint",
+  "建组": "Build group",
+  "灰层法的中性字节由服务端回执给出（本引擎是 188，不是 128）。":
+    "The grey layer's neutral byte comes from the server receipt (188 in this engine, not 128).",
+  // **减淡加深卡的四句固定动句** ✓：整句不含数据 ⇒ 走字典而不是模式 ✓
+  //（`#dodgeBurnCurrent` / `#dodgeBurnInfo` 都不在 `#log` 豁免名单里 ✓）。
+  "请选择源图层": "Pick the source layer",
+  "减淡/加深中点要在 0.05–0.95 之间（0.5 = 无效果）⇒ 未建组，没有发送请求、没有写入任何改动。":
+    "Dodge / burn midpoints must be within 0.05–0.95 (0.5 = no effect) ⇒ no group was built: no request was sent and no change was written.",
+  "未建组：本地内核没有 dodge_burn_setup 这个端点（这次请求没到服务端）⇒ 勾回「服务器渲染」再试。":
+    "No group built: the local kernel has no dodge_burn_setup endpoint (this request never reached the server) ⇒ tick Server render back on and retry.",
+  "⚠ 组建好了，但服务端回执 effective=false ⇒ 这一臂不会改变画面（完整原因见下方日志）。":
+    "⚠ The group was built, but the server receipt says effective=false ⇒ this route will not change the picture (full reason in the log below).",
+  // **区域填充卡** ✓（第四轮新增 ✓）：静态文案进这张表 ✓ 带数字的动句走 `i18nText()` 的模式 ✓。
+  // **判据只查模板**（`ui-i18n-coverage` ✓）⇒ 这里少一条 ✗ 英文模式下卡片就漏中文 ✓；
+  // 而"翻译要塞得下那个框" ✓（上一轮实机截图看到过长句被截断 ✗）⇒ 标签一律压到两三个词 ✓。
+  "区域填充": "Region fill",
+  "往一块形状里填色或铺纹理。落的是「一个形状对象」，不是一次性烘焙：之后还能选中它改羽化与不透明度。":
+    "Fill a shape with a colour or a texture. What lands is a single shape object, not a baked bitmap — you can select it later and still change its feather and opacity.",
+  "形状": "Shape",
+  "矩形": "Rectangle",
+  "椭圆": "Ellipse",
+  "折线": "Polygon",
+  "中心 x": "Centre x",
+  "中心 y": "Centre y",
+  "顶点": "Vertices",
+  "奇偶": "Even-odd",
+  "绕数": "Non-zero",
+  "填什么": "Fill with",
+  "纯色": "Flat colour",
+  "取画面这块": "Patch texture",
+  "源 x": "Source x",
+  "源 y": "Source y",
+  "源宽": "Source width",
+  "源高": "Source height",
+  // **可见句压短、长解释搬进 `title=`** ✓（第五轮 ✓）：`ui-text-density` 的界是"≥24 个汉字且带
+  // `；`/`（` ⇒ 红"✗ 上一轮这句 27 个汉字 ✓ 是它漏了没跑 ✗ 本轮跑到了 ⇒ 搬进属性 ✓
+  // 于是同一条句子改在 `I18N_EN_ATTR` 里 ✓ 这里只留短句 ✓。
+  "「取画面这块」烤的是此刻那块的像素，不跟随后续修改。":
+    "Patch texture bakes the pixels of that rectangle as of now — it does not follow later edits.",
+  // **卡片运行时写进 DOM 的固定句** ✓（`ui-i18n-coverage` 查不到这些 ✗ 只有 `browser-i18n` 会看到 ✓）：
+  // 校验没过、被拒、隐藏层提醒… 都在 `#fillRegionInfo` / `#fillRegionSelection` 里 ✗ 不在 `#log` 豁免名单 ✓。
+  "那一层不在服务端的图层清单里（可能刚被删）⇒ 未填充。":
+    "That layer is not in the server's layer list (it may have just been deleted) ⇒ not filled.",
+  "不透明度要在 0 到 1 之间 ⇒ 未填充，没有发送请求、没有写入任何改动。":
+    "Opacity must be within 0 to 1 ⇒ not filled: no request was sent and no change was written.",
+  "羽化半径不能是负数 ⇒ 未填充。": "The feather radius cannot be negative ⇒ not filled.",
+  "形状的尺寸要大于 0 ⇒ 未填充，没有发送请求、没有写入任何改动。":
+    "The shape size must be above 0 ⇒ not filled: no request was sent and no change was written.",
+  "椭圆的两个半径都要大于 0 ⇒ 未填充。": "Both ellipse radii must be above 0 ⇒ not filled.",
+  "折线至少要 3 个顶点（形如 `x,y`，空格或分号分隔）⇒ 未填充。":
+    "A polygon needs at least 3 vertices (written as `x,y`, space or semicolon separated) ⇒ not filled.",
+  "路径要写 `d`（SVG 路径字符串，M/L/C/Q/H/V/Z）⇒ 未填充。":
+    "A path needs its `d` (an SVG path string, M/L/C/Q/H/V/Z) ⇒ not filled.",
+  "取纹理那块矩形的宽高都要大于 0 ⇒ 未填充。": "The texture rectangle's width and height must both be above 0 ⇒ not filled.",
+  "未填充：本地内核没有这个端点（这次请求没到服务端）⇒ 勾回「服务器渲染」再试。":
+    "Not filled: the local kernel has no such endpoint (this request never reached the server) ⇒ tick Server render back on and retry.",
+  "未填充：服务端拒绝了这次落笔（原因见下方日志）。它拒绝时不写原子 ⇒ 不会留下半个形状。":
+    "Not filled: the server rejected this stroke (see the log below for the reason). It writes no atom when it refuses ⇒ no half-finished shape is left behind.",
+  "该点不在画布内 ⇒ 没有实测读数": "That point is outside the canvas ⇒ no measured reading",
+  "当前没有可用选区 ⇒ 先用选区工具拖一块（外框来自服务端事实，不是本地猜测）":
+    "There is no selection to read ⇒ drag one with the selection tool first (its box comes from server-side facts, not a local guess)",
+
   // **★ 内核卡片的服务端渲染提示（browser-i18n 实测红 ✓）★**：
   //   `setWasmState("已按设置跳过（用服务端渲染）")` 写进 DOM ⇒ 英文模式下必须有词条 ✓。
   "已按设置跳过（用服务端渲染）": "Skipped per setting (server-side rendering)",
@@ -12320,6 +13364,10 @@ const I18N_EN_TEXT = {
   "已清除参考图": "Reference cleared",
   "参考图由外部设置，本浏览器没有它的原图（存储里是裸像素）⇒ 重新上传一次就能一直显示":
     "The reference was set from outside; this browser has no copy of the original (the store keeps raw pixels) ⇒ upload it once more and it will keep showing",
+  // **破图收起那一句** ✓（本轮新增 ✓）：写在同一个 `#referenceInfo` 里 ✓ 不是 `#log` ✗
+  //   ⇒ 英文模式没有词条就是中文残留 ✓（`browser-reference-overlay` 判据扫的就是这条 ✓）。
+  "参考图叠不上去：存储里那份是裸像素（本浏览器没有它的原图）⇒ 已收起画布上的这一层，重新上传一次就能一直显示":
+    "The reference cannot be overlaid: the stored copy is raw pixels (this browser has no original) ⇒ that layer is folded away; upload it once more and it will keep showing",
   // **三方对照补齐新增的固定文案** ✓（`ui-i18n-coverage` 要求模板里每个中文文本节点都有词条 ✓）。
   // **直方图卡 + 整组撤销**（本轮新增 ✓）：模板文本节点全部要有词条 ✗。
   "直方图": "Histogram",
@@ -12385,6 +13433,8 @@ const I18N_EN_TEXT = {
   // ⇒ 中文改了这里不改 ✓，英文界面就会退回中文 ✗。
   "建议来自 suggest 工具（含可执行补丁 ✓）；接受会按序重放补丁 ✓。": "Suggestions come from the suggest tool and carry an executable patch; accepting one replays it in order.",
   "点「预览」先看清补丁会被怎么执行 ✓（预览不改动画面 ✓）": "Preview first to see how a patch would be applied, since previewing does not change the picture",
+  // **拒绝原因输入框** ✓（第五轮 ✓：`suggestionReason` 此前是悬空引用 ✗ ⇒ 见 `viewer.rs` 那张卡 ✓）
+  "原因": "Reason",
   "✓ —— 不是从你电脑上选文件 ✗。": "✓ — and not a file picked from your computer ✗.",
   "刷新": "Refresh",
   "收起": "Collapse",
@@ -12473,6 +13523,9 @@ const I18N_EN_TEXT = {
   //     ⇒ **∴ 因为** `I18N_EN_TEXT`**是**运行时**替换的 ✓**** ✓✓
   "用服务端渲染（默认开启；取消勾选 ⇒ 改用内核离线渲染）":
     "Render on the server (on by default; clear the box to use the offline kernel instead)",
+  // **本地专用部署的说明** ✓（`#serverRenderLocalOnlyHint` ✓ 模板里隐藏 ⇒ 运行到那里才显示 ✓）：
+  // 英文里前面那句以 ")" 收尾 ⇒ 值带一个前导空格 ✓（否则两个右括号会粘在一起 ✗）。
+  "（本部署无服务端，不可用）": " (no server in this deployment; unavailable)",
   "用服务端渲染（弱设备回退）": "Use server rendering (fallback for weak devices)",
   // **★ 作品展示（2026-10-16 ✓）★**：首页新加的那一节 ✓ —— **∴ 界面文案必须双语** ✓
   //   （判据 `ui-i18n-coverage.mjs` 只看**文本节点** ✓ ⇒ 「作品展示」＋ 四句图注都要词条 ✓；
@@ -12493,6 +13546,34 @@ const I18N_EN_TEXT = {
   "应用": "Apply",
   "＋新建": "＋ New",
   "（当前文档没有调整/滤镜）": "(this document has no adjustment or filter)",
+  // **历史卡那格空态** ✓（第七轮收尾被 `browser-i18n` 抓到 ✗ 不是新代码 ✗ 是**新走到的状态**）：
+  // `viewer-app.js:5143` 在"筛选后一条原子都不剩"时把整格写成这句中文 ✓ 而它**不在 `viewer.rs` 模板里**
+  // ⇒ 静态那条 `ui-i18n-coverage` 看不见（它只扫模板 ✓ 与 ㉚/㊲ 同族）✓ 英文模式下屏幕就留这一句中文 ✓。
+  "（没有匹配的原子）": "(no matching atoms)",
+  // **调整/滤镜卡的第七轮新句** ✓：`#effectInfo` 的**定式句**（不带数据的那几条 ✓）走文本词典 ✓
+  // 带数据的整句走模式词条（见下面 m37…m39 ✓）。卡上那句固定说明也是文本节点 ✗ 漏一条
+  // 英文模式就留一句中文（`browser-i18n` 会抓到 ✓）。
+  // **`ui-text-density` 把原来那句长说明判成"人类界面上的大段解释"** ✓（它先红着被记成了绿 ✗ 见 docs ㊴）
+  // ⇒ 屏幕上只留一句短的 ✓ 那两条"为什么"挪进 `#effectNote` 的 `title=`（判据 prescribed 的修法 ✓）
+  // ⇒ **长的那条归 `I18N_EN_ATTR`** ✗ 不放这张表（同一个键放错表错过一次 ✓ 见那张表开头那条注 ✓）。
+  // **第二次看真截图又把这句改短了一截** ✓（docs「只有看真截图」那条）：原先它开头把回执那句
+  // 「这一笔对画面是空操作」逐字重复了一遍 ⇒ 相邻两行说同一句 ⇒ 结论由回执独占 ✓ 这句只负责指路 ✓。
+  "为什么？见鼠标提示": "Why? See the hover hint",
+  "删": "Delete",
+  // **按钮切字那一处原本是漏的** ✓（第七轮实测 ✓）：点一行进入编辑态后 `button.textContent = "更新这个"`
+  // ⇒ 英文界面里那颗按钮变成中文 ✗ 而 `browser-i18n` 从不点那一行 ⇒ 静态与运行时都没人守 ✗。
+  "更新这个": "Update this one",
+  "参数不是合法 JSON ⇒ 没有发送请求、没有写入任何改动。":
+    "The parameters are not valid JSON ⇒ no request was sent and no change was written.",
+  "回执说成功了，但效果清单里没把它读回来 ⇒ 现在没法说它存成了什么参数（刷新页面再看，或看下方日志）。":
+    "The receipt says it worked, but the effect list did not read it back ⇒ there is nothing honest to say about the parameters it stored (reload the page, or check the log below).",
+  // **请求根本没出门 ≠ 服务端拒绝** ✓（与「区域填充」那张卡同一口径 ✓）：三种动作各一条固定句 ✓。
+  "未写入：本地内核没有这个端点（这次请求没到服务端）⇒ 勾回「服务器渲染」再试。":
+    "Nothing written: the local kernel has no such endpoint (this request never reached the server) ⇒ tick Server render back on and retry.",
+  "未更新：本地内核没有这个端点（这次请求没到服务端）⇒ 勾回「服务器渲染」再试。":
+    "Nothing updated: the local kernel has no such endpoint (this request never reached the server) ⇒ tick Server render back on and retry.",
+  "未删除：本地内核没有这个端点（这次请求没到服务端）⇒ 勾回「服务器渲染」再试。":
+    "Nothing deleted: the local kernel has no such endpoint (this request never reached the server) ⇒ tick Server render back on and retry.",
   "对象": "Objects",
   "勾选对象后可实例化 / 编组 / 变换": "select objects to instance, group or transform them",
   "实例化": "Instance",
@@ -12716,6 +13797,17 @@ const I18N_EN_TEXT = {
   "★ 收藏": "★ Favourites"
 };
 const I18N_EN_ATTR = {
+  // **效果卡那句"为什么"从可见长句改成 `title=`** ✓（第七轮 `ui-text-density` 红出来的 ✓ 见 docs ㊴）
+  // ⇒ 它是**属性文案** ⇒ 归这张表 ✗ 放 `I18N_EN_TEXT` 会被 `ui-i18n-coverage` 判"属性漏词条"（实测 ✓）。
+  "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。":
+    "Default parameters often have no effect at all, and a misspelled parameter name is simply stored as-is (the kernel only validates keys it recognises).",
+  // **参考图叠加层 `<img>` 的 alt** ✓（本轮把 `alt` 纳进 `I18N_ATTRS` ✓）：
+  // 图解不开时浏览器就把 alt 就地画在画布上 ✓ 那是**那块画面上唯一可见的字** ✓
+  // 不翻 ⇒ 英文界面在画布正中冒中文 ✓（真机截图里看得见 ✓）。
+  // **注意与 `I18N_EN_TEXT` 里那条「参考图」= "Reference" 不是一回事** ✗：
+  // 那一条是**卡片标题** ✓ 两条各自成立 ⇒ 必须放这张表 ✗ 放进文本表就是重复键 ✓
+  // 会把标题的译文悄悄顶掉 ✓（本轮第一次就放错了地方 ✓ 实测 alt 仍是中文 ✓）。
+  "参考图": "Reference image",
   // **范围遮罩卡 + 渐变蒙版卡** ✓（本轮新增 ✓）：`ui-i18n-coverage` 现在也查模板属性 ✓。
   "读哪一层的像素：这一层的当前渲染就是采样的全部来源":
     "Which layer's pixels are read: that layer's current render is the only sampling source",
@@ -12744,6 +13836,22 @@ const I18N_EN_ATTR = {
   "径向渐变：过渡带占半径的比例（0 = 硬边，1 = 整条半径都在过渡）":
     "Radial gradient: the transition band as a fraction of the radius (0 = hard edge, 1 = the whole radius fades)",
   "反选：起笔一侧变成 0": "Invert: the side you started on becomes 0",
+  // **减淡加深卡** ✓（第五轮 ✓）的属性文案 ✓。
+  "只改明暗、不改颜色的局部提亮与压暗；建出来的是一个组，涂抹在组内的层上":
+    "Local lightening and darkening that changes value, not colour; it builds a group and you paint inside its layers",
+  "按它的名字建组并把新组放在它上方": "Names the new group after this layer and places the group above it",
+  "两条路都会改变画面（实测）：灰层法涂就见效，曲线法留两条可回改的曲线":
+    "Both routes measurably change the picture: the grey layer works as you paint, curves leave two curve objects you can edit later",
+  "曲线法的减淡强度（显示空间 0.05–0.95，0.5 = 无效果）；只对曲线法有意义":
+    "Curves-route dodge strength (display space 0.05–0.95, 0.5 = no effect); only meaningful for the curves route",
+  "曲线法的加深强度（显示空间 0.05–0.95，0.5 = 无效果）；只对曲线法有意义":
+    "Curves-route burn strength (display space 0.05–0.95, 0.5 = no effect); only meaningful for the curves route",
+  "建出「前缀 · 减淡加深」组；同名组已存在时复用而不叠第二套":
+    "Builds a group named after the prefix; when a group of that name exists it is reused instead of stacking a second set",
+  "建组；中点越界时不发送请求、不写入任何改动":
+    "Build the group; when a midpoint is out of range nothing is sent and nothing is written",
+  "灰层本身是中性灰，涂抹才生效：用白色低流量笔触提亮、黑色压暗；灰层是此刻的快照，不跟随下方修改":
+    "The grey layer is neutral by itself and only painting makes it count: white low-flow strokes lighten, black darkens; the grey layer is a snapshot of now and does not follow later edits below it",
   // **频率分离卡** ✓ 的属性文案 ✓。
   "读哪一层烘焙：这一层的当前渲染就是分离的全部来源":
     "Which layer is baked: that layer's current render is the only source for the separation",
@@ -12756,6 +13864,44 @@ const I18N_EN_ATTR = {
   // **译文要塞得下那个框** ✓（实机截图看到的 ✗ 长句在 170 px 的输入框里被截成 "Defaults to the source l"✓）：
   // 意思不减 ✗ 只是把"the … layer name"这种从句写法压成一行 ✓。
   "缺省用源图层名": "Layer name by default",
+  // **区域填充卡** ✓（第四轮新增 ✓）的 `title` / `placeholder` 文案 ✓。
+  "填到哪一层：那一层已有的对象不受这次影响":
+    "Which layer receives the fill: the objects already on it are untouched this time",
+  "矩形给 x/y/w/h；椭圆给中心与两半径；折线给顶点；路径给 SVG 的 d":
+    "Rectangle takes x/y/w/h; an ellipse a centre and two radii; a polygon its vertices; a path an SVG d string",
+  "读当前选区的外框（选区来自服务端事实，不是本地猜测）；没有选区时如实说没有":
+    "Reads the bounding box of the current selection (a server-side fact, not a local guess); says so when there is none",
+  "左上角 x（文档像素）": "Top-left x (document pixels)",
+  "左上角 y（文档像素）": "Top-left y (document pixels)",
+  "宽度（像素，要大于 0）": "Width (pixels, must be above 0)",
+  "高度（像素，要大于 0）": "Height (pixels, must be above 0)",
+  "椭圆中心 x": "Ellipse centre x",
+  "椭圆中心 y": "Ellipse centre y",
+  "横向半径（要大于 0）": "Horizontal radius (must be above 0)",
+  "纵向半径（要大于 0）": "Vertical radius (must be above 0)",
+  "多边形顶点，至少 3 个（开放路径按隐式闭合填充）":
+    "Polygon vertices, at least 3 (an open path is filled as if closed)",
+  "x,y 空格或分号分隔，至少 3 个": "x,y pairs, space or semicolon separated, at least 3",
+  "SVG 路径字符串（M/L/C/Q/H/V/Z，小写为相对命令）；也认 Bézier 曲线":
+    "SVG path string (M/L/C/Q/H/V/Z, lowercase = relative); bezier segments accepted",
+  "evenodd 按奇偶规则挖洞；nonzero 按绕数规则":
+    "even-odd cuts holes by parity; nonzero by winding number",
+  "填充色：送出的是 {r,g,b} 对象，服务端再把不透明度乘进 alpha":
+    "Fill colour: sent as an {r,g,b} object, the server multiplies opacity into alpha",
+  "0–1：服务端把它乘进颜色的 alpha": "0–1: the server multiplies it into the colour's alpha",
+  "边缘过渡半径（文档像素，0 = 硬边）": "Edge transition radius (document pixels, 0 = hard edge)",
+  "纯色，或把画面另一块的像素当纹理铺进来": "A flat colour, or the pixels of another patch of the canvas tiled in as a texture",
+  "取纹理那块矩形的左上角 x": "Top-left x of the rectangle to take the texture from",
+  "取纹理那块矩形的左上角 y": "Top-left y of the rectangle to take the texture from",
+  "取纹理那块矩形的宽（要大于 0）": "Width of the texture rectangle (must be above 0)",
+  "取纹理那块矩形的高（要大于 0）": "Height of the texture rectangle (must be above 0)",
+  "落笔：形状尺寸不合法时不发送请求、不写入任何改动":
+    "Drop the stroke: when the shape size is invalid no request is sent and nothing is written",
+  // **从可见文本搬进 `title=` 的那句长解释** ✓（第五轮 ✓）：文案一个字没改 ✓ 只是换了位置 ✗
+  // 于是词条跟着从 `I18N_EN_TEXT` 挪到这里 ✓（判据按属性查表 ✓ 漏了就成"英文界面 + 中文 tooltip"✓）。
+  "「取画面这块」取的是此刻那块矩形的像素（服务端就地存成纹理），不是实时链接：先把那块画好再指它。羽化只作用于边缘的不透明度。":
+    "Patch texture reads that rectangle's pixels as they are right now (the server stores them into a texture on the spot) — it is not a live link: paint that patch first, then point at it. Feather only affects opacity along the edge.",
+
   // **工具栏那两支新蒙版笔** ✓：`renderToolStrip()` 运行时把标签写进 `title` / `aria-label` ✓
   // ⇒ 静态判据看不到 ✗（它只读模板 ✓）⇒ 补词条才不会被"英文界面 + 中文 tooltip"打脸 ✓。
   "矩形蒙版": "Rectangle mask",
@@ -12850,6 +13996,8 @@ const I18N_EN_ATTR = {
   // 因为它同样只看可见文本 ✓）。判据已补成**属性也查** ✓（`scripts/ui-i18n-coverage.mjs` ✓）。
   "一次性拒绝所有勾选的建议（reject_suggestions）": "Reject every checked suggestion at once (reject_suggestions)",
   "一次性接受所有勾选的建议（accept_suggestions）": "Accept every checked suggestion at once (accept_suggestions)",
+  "为什么拒绝（可选）": "why you rejected it (optional)",
+  "写进 reject_suggestion 的 reason：拒绝理由会留在历史里，供他人判断": "Goes into reject_suggestion's reason: a rejection's rationale stays in the history for others to judge",
   "一行一份作品：名字、尺寸、原子数与创建时间；点「打开」切换过去。": "One row per work: name, size, atom count and creation time; press Open to switch to it.",
   "上传一张图，半透明铺在画布下层用于临摹（set_reference）": "Upload an image and lay it translucently under the canvas for tracing (set_reference)",
   "上移一层": "Move layer up",
@@ -12889,9 +14037,83 @@ const I18N_EN_ATTR = {
   "给当前图层填一层渐变（天空 / 底色 / 光照过渡）——确定性：同样的输入永远同样的像素。": "Fill the current layer with a gradient (sky, ground colour, light falloff). Deterministic: the same input always yields the same pixels.",
   "读回选中对象的完整记录（get_object）": "Read back the full record of the selected object (get_object)",
   "选中对象解析后的生效状态（get_resolved_state）": "The resolved, effective state of the selected object (get_resolved_state)",
-  "参考图摆在文档的哪个矩形（像素）；留空 = 铺满整幅": "Which rectangle of the document (in pixels) the reference sits on; leave blank to cover the whole canvas"
+  "参考图摆在文档的哪个矩形（像素）；留空 = 铺满整幅": "Which rectangle of the document (in pixels) the reference sits on; leave blank to cover the whole canvas",
+  // **★ 图层面板那几颗 tooltip ✗ ★**（第六轮 ✓）：它们是 `renderLayerPanel` **运行时**建的 ✓
+  //   `ui-i18n-coverage` 只管模板文本节点 ⇒ **看不见这条路** ✓ 于是英文界面里鼠标停在眼睛／锁／混合模式
+  //   上冒出来的仍是中文 ✗（真机截图确认过：整页英文、tooltip 中文 ✓）。
+  "隐藏图层": "Hide this layer",
+  "显示图层": "Show this layer",
+  "解锁图层": "Unlock this layer",
+  "锁定图层（锁定后不能改内容）": "Lock this layer (a locked layer refuses content changes)",
+  "混合模式": "Blend mode",
+  // 批注输入框的占位符 ✓ 同一个盲区（`placeholder` 也在 `I18N_ATTRS` 里 ✓）。
+  "写点什么…": "Write something…",
+  // 没有服务端时那条说明 ✓（整句是常量 ⇒ 走精确键 ✓）。
+  "本部署没有服务端 ⇒ 只能用本地内核；此开关不可用":
+    "This deployment has no server ⇒ only the local kernel is available; this switch does nothing",
+  // 效果列表那两行 ✓：拼接的两段都是**已知常量** ⇒ 整句仍是确定字符串 ⇒ 精确键 ✓
+  "点一下：编辑这个调整 ✓": "Click to edit this adjustment ✓",
+  "点一下：编辑这个滤镜 ✓": "Click to edit this filter ✓",
+  "删掉这个效果对象（服务端落一条原子，可以再用撤销退回来）":
+    "Delete this effect object (the server writes one atom; undo brings it back)",
+
+  // **工具栏那 21 支笔的标签** ✓（第六轮实测 ✓）：`renderToolStrip()` 写的是
+  //   `label + " (快捷键)"` ⇒ **整句精确键永远配不上** ✗（括号里那个字母是键盘提示 ✓ 不是词 ✓）
+  //   ⇒ 于是英文界面里 24 颗按钮的 tooltip 与 `aria-label` 全是中文 ✓（无障碍读屏也跟着念中文 ✗）。
+  //   走下面 `attrEnglish` 里那条「标签 (KEY)」的拆解规则 ⇒ 只补**标签**这一层 ✓ 快捷键原样带过去 ✓。
+  "画笔": "Brush",
+  "矩形": "Rectangle",
+  "椭圆": "Ellipse",
+  "橡皮": "Eraser",
+  "仿制": "Clone stamp",
+  "修复": "Healing brush",
+  "涂抹": "Smudge",
+  "液化推": "Liquify push",
+  "液化旋": "Liquify twirl",
+  "液化缩": "Liquify pinch",
+  "吸管": "Eyedropper",
+  "移动对象": "Move object",
+  "移动图层": "Move layer",
+  "平移画布": "Pan canvas",
+  "选区": "Selection",
+  "清除选区": "Clear selection",
+  "文本": "Text",
+  "介质": "Medium",
+  "标注": "Annotation",
+  "锚点": "Anchor",
+  "填充图层": "Fill layer",
+  // 刷压强度那行的 tooltip ✓ 与缩略图的 alt ✓（同一条盲区里剩下的两个「整句常量」✓）。
+  "落笔强度": "Stroke strength",
+  "缩略图": "Thumbnail",
+  // **开机展示图那两张的 `alt`** ✓（第六轮判据抓的 ✓）：`viewer.rs:163/168` 把中文名**写死在模板里** ✓
+  //   ⇒ 这是**我们自己的文案** ✗ 不是用户数据 ✗ 与同名的 `figcaption`（走 `I18N_EN_TEXT` ✓ 已有词条 ✓）
+  //   是两处不同的位置 ✗ 必须在这张表里再立一条 ✓（`alt` 属于无障碍文本 ✓ 与 `aria-label` 同一类 ✓）。
+  "后台舞者": "Dancers backstage",
+  "四位舞者": "Four dancers",
 
 };
+/** **属性的参数化句式** ✓（第六轮 ✓）：`I18N_EN_ATTR` 是**整句精确匹配** ✓
+ *  而下面这几条 tooltip 形如「**数据 + 后缀**」✓（资产名／色号／预设名是**服务端数据** ✗ 不翻 ✓）
+ *  ⇒ 精确键永远配不上 ✗ 只能按句式认 ✓。
+ *  **与文本那侧的 `m1…m36` 同一条设计** ✓：只翻译框架 ✓ 数据原样带过去 ✓。 */
+const I18N_EN_ATTR_PATTERNS = [
+  // 「资产名（点击选中 ✓）」——纹理缩略图
+  [/^(.*)（点击选中 ✓）$/, (m) => m[1] + " (click to select ✓)"],
+  // 「资产名 ⇒ 缩略图没发出来（`/textures/` 路由或资产目录有问题 ✓）」——缩略图 404 那条
+  //   ⚠️ 原句里 `/textures/` 两侧**带反引号** ✓（产品文案就这么写 ✓）⇒ 句式必须照抄 ✗ 少写就永远配不上 ✓
+  [/^(.*) ⇒ 缩略图没发出来（`\/textures\/` 路由或资产目录有问题 ✓）$/,
+    (m) => m[1] + " ⇒ the thumbnail never arrived (the /textures/ route or the asset directory is broken ✓)"],
+  // 「色号（点击取色 ✓）」——调色板色块（前面可能带颜色名 ✓ 都算数据 ✓）
+  [/^(.*)（点击取色 ✓）$/, (m) => m[1] + " (click to pick this colour ✓)"],
+  // 「预设名 预览」——笔刷／预设的小图 alt
+  [/^(.*) 预览$/, (m) => m[1] + " preview"],
+  // 离线队列那条**带数字**的说明 ✓（上限 N 条 / M MB ✓ 可选的「其他文档还有 K 条」✓）
+  [/^离线时改动先写进浏览器本地队列，联网后按顺序补交；服务端上的这份文档若已变化则暂停补交（上限 (\d+) 条 \/ (\d+) MB）(。其他文档还有 (\d+) 条未补交)?$/,
+    (m) => "Offline edits are queued in this browser and replayed in order once you reconnect; " +
+      "if the server's copy of this document has changed, replaying pauses (limit " + m[1] +
+      " entries / " + m[2] + " MB)" +
+      (m[4] ? ". Another " + m[4] + " entries are still queued for other documents" : "")],
+];
 const LANG_KEY = "yanshi.lang";
 const uiLang = (() => {
   try {
@@ -12904,10 +14126,29 @@ const uiLang = (() => {
 })();
 const i18nOriginal = new WeakMap();
 const i18nAttrOriginal = new WeakMap();
-const I18N_ATTRS = ["title", "placeholder", "aria-label"];
+// **`alt` 也在其列** ✓（本轮补 ✗）：参考图叠加层是运行时建的 `<img>` ✓ 它的 alt 会**直接画在画布上**
+//   （图解不开时浏览器就地把 alt 文字显示出来 ✓ 真机截图里就是一个中文"参考图"盖在画上 ✓）
+//   ⇒ alt 属于无障碍文本 ✓ 与 `aria-label` 同一类 ✓ 不翻就是英文界面的中文残留 ✓。
+const I18N_ATTRS = ["title", "placeholder", "aria-label", "alt"];
 let i18nApplying = false;
 let i18nObserver = null;
 const i18nObserverOptions = { childList: true, subtree: true, characterData: true };
+/// **减淡加深组名的英文尾巴** ✓：服务端把组命名成 `「前缀 · 减淡加深」`（`tools_retouch.rs` ✓）
+/// ⇒ ` · 减淡加深` 是**界面词汇** ✓ 必须跟着翻 ✗ 而 `前缀` 是**用户数据** ✓ 一个字都不许动 ✓
+///（与 m27 那句"整幅合成"同一处理口径 ✓：只翻界面自己写的那部分 ✓）。
+function dbGroupNameEn(name) {
+  return name.replace(" · 减淡加深", " \u00b7 Dodge and burn");
+}
+/// **`无` 是界面自己写的占位** ✓（`ids()` 与蒙版那两格 ✓）⇒ 英文模式下必须变成 `none` ✓；
+/// 真 id 是数字 ✓ 原样通过 ✓。
+function dbNoneEn(value) {
+  return value === "无" ? "none" : value;
+}
+/// **`未知` 也是界面自己写的占位** ✓（回执漏掉 `mode` 时兜的那一句 ✓）⇒ 英文模式必须翻成
+/// `unknown` ✗ 否则一句英文里夹两个汉字（`gray` / `curves` 是服务端的枚举值 ✓ 原样通过 ✓）。
+function dbModeEn(value) {
+  return value === "未知" ? "unknown" : value;
+}
 function i18nSkip(node) {
   const el = node.nodeType === 1 ? node : node.parentElement;
   if (!el) return true;
@@ -12956,6 +14197,10 @@ function i18nText(node) {
     // **读取失败的回执带服务端错误码** ✓（`reference_not_found` 之类 ✗）⇒ 整句拼了数据
     //   ⇒ 字典按整句匹配不到 ⇒ 必须模式词条（browser-i18n 在 ef2494de 基线上实测抓到 ✓）。
     const m19 = /^读取失败：(\S+)$/.exec(zh);
+    // **效果卡那一行"读取失败"现在带责任归属** ✓（第七轮 ★ 真截图复核 ✗ 见 `refreshEffects()` 那段注释）
+    //   ⇒ 句式变了 ⇒ **必须另给一条模式词条**（m19 那条 `$` 锚在新句上匹配不到 ✗
+    //   漏了它英文模式就留一句中文 ✓ `browser-i18n` 会抓到 ✓）。
+    const m40 = /^读取失败（(服务端|本地内核)）：(\S+)$/.exec(zh);
     // **范围遮罩的覆盖回执** ✓（本轮新增 ✓）：整句拼了服务端给的像素数、占比、均值 ✗
     //   和图层 id ⇒ 字典按整句匹配不到 ⇒ 必须模式词条（`#rangeMaskInfo` **不在** `#log` 里 ✓
     //   ⇒ 没有词条就会在英文模式下留着中文 ✓）。
@@ -12969,6 +14214,43 @@ function i18nText(node) {
     const m23 = /^该层有 (\d+) 个对象 ⇒ 可以分离$/.exec(zh);
     const m24 = /^半径 (\S+) · 低频 (\S+) · 高频 (\S+)（linear_light）· 重建误差 均值 (\S+) \/ 最大 (\S+) · 中高调最大 (\S+)$/.exec(zh);
     const m25 = /^「(.+)」没有对象 ⇒ 没有可分离的像素，未分离（服务端也会这样拒 ✓ 这次没发送请求）。$/.exec(zh);
+    // **区域填充卡的六句动句** ✓（第四轮新增 ✓）：数与 id 全部来自服务端回执 ✓
+    //   `sample_colors` ✓ 或用户自己填的坐标 ⇒ 整句拼出来 ✗ 字典按整句必然落空 ✓
+    //   所以要走模式词条（`#fillRegionInfo` / `#fillRegionSample` / `#fillRegionSelection`
+    //   都不在 `#log` 豁免名单里 ✓ 英文模式下漏一句就是漏一句 ✗ `browser-i18n` 会抓到 ✓）。
+    const m26 = /^已填充 · 服务端回执 opacity=(\S+) · 形状 (\S+) · 脏区 (\S+) · 脏块 (\S+)( · 落笔的这一层当前隐藏 ⇒ 这一笔在画面上看不到)?$/.exec(zh);
+    const m27 = /^纹理：服务端已把那块画面存成位图 · 源块平铺 (\S+) 倍（= 目标面积 ÷ 源块面积）· 取纹理图层 (\S+)$/.exec(zh);
+    const m28 = /^实测 \((-?\d+),(-?\d+)\) = \[([\d,]+)\]（服务端合成读数）$/.exec(zh);
+    const m29 = /^选区外框已读入：x=(-?\d+) y=(-?\d+) w=(-?\d+) h=(-?\d+)$/.exec(zh);
+    const m30 = /^「(.+)」是锁定图层 ⇒ 服务端会拒绝（先解锁），这次没有发送请求。$/.exec(zh);
+    const m31 = /^「(.+)」当前是隐藏图层 ⇒ 会落笔但画上看不到（在图层面板打开眼睛）。$/.exec(zh);
+    // **减淡加深卡的四句动句** ✓（本轮新增 ✓）：组名、id、张数、中性字节全部来自服务端回执或
+    //   `list_layers` ✓ ⇒ 整句拼出来 ✗ 字典按整句必然落空 ✓ 所以要走模式词条
+    //   （`#dodgeBurnCurrent` / `#dodgeBurnInfo` 都不在 `#log` 豁免名单里 ✓）。
+    //   **组名服务端带书名号** ✓（`「前缀 · 减淡加深」` ✓）⇒ 这里把它当**一个整体**捕获 ✓
+    //   只翻框架和那句固定的 ` · 减淡加深` 尾巴 ✗ 用户自己填的前缀原样保留 ✓。
+    const m32 = /^组名 「(.+?)」 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）$/.exec(zh);
+    const m33 = /^将新建组 「(.+?)」（放在「(.+?)」上方）$/.exec(zh);
+    const m34 = /^未建组：服务端拒绝了这次建组（错误码 (\S+) · 完整原因见下方日志）。拒绝时不落原子 ⇒ 不会留下半套层。$/.exec(zh);
+    const m35 = /^(复用既有组|已建组) (\S+) · 方法 (\S+) · 层 (\d+) 个（(\S+)） · 对象 (\d+) 个（(\S+)） · 蒙版 减淡 (\S+) · 加深 (\S+?)(?: · 灰层中性字节 (\d+))?$/.exec(zh);
+    // **画布浮层的兜底那一句** ✓（第六轮新增 ✓）：错误码来自服务端 ✗ 整句拼了数据 ⇒ 字典按整句
+    // 匹配不到 ⇒ 必须模式词条（`#stageNotice` **不在** `#log` 跳过名单里 ✓ 没有词条就会在英文
+    // 模式下把中文留在浮层上 ✗ 而浮层是**唯一**用户一定看得见的报错去处 ✓）。
+    const m36 = /^这一步没有成功：(\S+)$/.exec(zh);
+    // **调整/滤镜卡的回执行** ✓（第七轮新增 ✓）：动作、效果名、服务端回读的参数、指纹结论、
+    //   取样数字、该层效果数全是数据 ✗ ⇒ 整句查字典必然落空 ✓ 必须走模式词条
+    //   （`#effectInfo` 不在 `#log` 豁免名单里 ✓ 漏一条英文界面就留一句中文 ✗）。
+    //   三个结论短语是**固定**的（"变了 / 逐字节没变 / 没法验证"✓ 界面不许自己造第四种说法 ✗）
+    //   ⇒ 把它们放进 alternation 里逐个映射 ✓ 数据部分原样带过去 ✓。
+    const m37 = /^已(新建|更新) (调整|滤镜) (\S+)（参数 (.+)）⇒ (整幅合成的服务端指纹变了 ⇒ 画面确实动了|整幅合成逐字节没变 ⇒ 这一笔对画面是空操作|这一条路取不到整幅合成的服务端指纹 ⇒ 没法验证画面动没动)(?: · 实测 \((-?\d+),(-?\d+)\) = \[([\d,]+)\] → \[([\d,]+)\])?(?: · (取样点读数没变 ⇒ 变化在它们之外))?(?: · 这一层共 (\d+) 个效果)?(?: · 错误码 (\S+))?$/.exec(zh);
+    const m38 = /^已删掉 (\S+)（对象 (\S+)）⇒ (整幅合成的服务端指纹变了 ⇒ 画面确实动了|整幅合成逐字节没变 ⇒ 它原本就没参与画面|这一条路取不到整幅合成的服务端指纹 ⇒ 没法验证画面动没动)(?: · 这一层还剩 (\d+) 个效果)?(?: · 错误码 (\S+))?$/.exec(zh);
+    const m39 = /^(未写入|未更新|未删除)：(服务端|本地内核)拒绝了这一步（错误码 (\S+) · 完整原因见下方日志）。拒绝时不落原子 ⇒ 画面不会动。$/.exec(zh);
+    const effectConclEn = {
+      "整幅合成的服务端指纹变了 ⇒ 画面确实动了": "the server's whole-composite fingerprint changed ⇒ the picture really moved",
+      "整幅合成逐字节没变 ⇒ 这一笔对画面是空操作": "the whole composite is byte-for-byte unchanged ⇒ this was a no-op on the picture",
+      "整幅合成逐字节没变 ⇒ 它原本就没参与画面": "the whole composite is byte-for-byte unchanged ⇒ it was never part of the picture",
+      "这一条路取不到整幅合成的服务端指纹 ⇒ 没法验证画面动没动": "this path cannot get the server's whole-composite fingerprint ⇒ whether the picture moved is unverified",
+    };
     if (m1) en = "Layer " + m1[1];
     else if (m2) en = "Layer " + m2[1] + " (#" + m2[2] + ")";
     else if (m3) en = m3[1] + " colours";
@@ -13009,8 +14291,75 @@ function i18nText(node) {
         + " · bright max " + m24[6];
     }
     else if (m25) en = "\"" + m25[1] + "\" holds no objects \u21d2 there are no pixels to separate, so nothing was separated (the server would refuse it the same way \u2713 no request was sent).";
+    else if (m26) {
+      en = "Filled · server receipt opacity=" + m26[1] + " · shape " + m26[2]
+        + " · dirty box " + m26[3] + " · dirty tiles " + m26[4]
+        + (m26[5] ? " · the layer you painted on is hidden ⇒ this stroke stays invisible on the canvas" : "");
+    }
+    else if (m27) {
+      // 「整幅合成」是界面替服务端补的词 ✓ 不是用户数据 ⇒ 必须跟着翻 ✗（与 m18 的 scope 同一处理 ✓）。
+      const layerEn = m27[2] === "整幅合成" ? "whole composite" : m27[2];
+      en = "Texture: the server stored that patch of the canvas as a bitmap · the tile repeats "
+        + m27[1] + "× (= target area ÷ source area) · texture layer " + layerEn;
+    }
+    else if (m28) en = "Measured (" + m28[1] + "," + m28[2] + ") = [" + m28[3] + "] (the server's composited reading)";
+    else if (m29) en = "Selection box read in: x=" + m29[1] + " y=" + m29[2] + " w=" + m29[3] + " h=" + m29[4];
+    else if (m30) en = "\"" + m30[1] + "\" is a locked layer ⇒ the server would refuse it (unlock it first); no request was sent this time.";
+    else if (m31) en = "\"" + m31[1] + "\" is hidden right now ⇒ the stroke lands but you will not see it on the canvas (turn its eye back on in the layer panel).";
+    else if (m32) en = "Group name \"" + dbGroupNameEn(m32[1]) + "\" already exists ⇒ this run reuses it and builds nothing new (delete it first if you want a fresh set)";
+    else if (m33) en = "Will build the group \"" + dbGroupNameEn(m33[1]) + "\" (right above \"" + m33[2] + "\")";
+    else if (m34) en = "No group built: the server refused this build (error code " + m34[1] + " \u00b7 full reason in the log below). It writes no atom when it refuses \u21d2 no half-finished layers are left behind.";
+    else if (m35) {
+      en = (m35[1] === "已建组" ? "Group built " : "Reusing existing group ") + m35[2]
+        + " \u00b7 method " + dbModeEn(m35[3])
+        + " \u00b7 layers " + m35[4] + " (" + dbNoneEn(m35[5]) + ")"
+        + " \u00b7 objects " + m35[6] + " (" + dbNoneEn(m35[7]) + ")"
+        + " \u00b7 masks dodge " + dbNoneEn(m35[8]) + " \u00b7 burn " + dbNoneEn(m35[9])
+        + (m35[10] ? " \u00b7 grey layer neutral byte " + m35[10] : "");
+    }
+    else if (m36) en = "This step did not go through: " + m36[1] + " (full reason in the History panel's log).";
+    else if (m37) {
+      en = (m37[1] === "更新" ? "Updated " : "Added ") + (m37[2] === "调整" ? "adjustment " : "filter ")
+        + m37[3] + " (params " + m37[4] + ") ⇒ " + effectConclEn[m37[5]];
+      if (m37[6]) en += " · measured (" + m37[6] + "," + m37[7] + ") = [" + m37[8] + "] → [" + m37[9] + "]";
+      if (m37[10]) en += " · the sampled readings are unchanged ⇒ the difference lies outside them";
+      if (m37[11]) en += " · this layer now holds " + m37[11] + " effect(s)";
+      if (m37[12]) en += " · error code " + m37[12];
+    }
+    else if (m38) {
+      en = "Deleted " + m38[1] + " (object " + m38[2] + ") ⇒ " + effectConclEn[m38[3]];
+      if (m38[4]) en += " · this layer now has " + m38[4] + " effect(s) left";
+      if (m38[5]) en += " · error code " + m38[5];
+    }
+    else if (m39) {
+      en = ({ "未写入": "Nothing written", "未更新": "Nothing updated", "未删除": "Nothing deleted" }[m39[1]])
+        + ": " + ({ "服务端": "the server", "本地内核": "the local kernel" }[m39[2]] || "the server")
+        + " refused this step (error code " + m39[3]
+        + " · full reason in the log below). It writes no atom when it refuses ⇒ the picture will not move.";
+    }
+    // **同一个 venue 映射** ✓ 不另发明第二份（`服务端`/`本地内核` 的英文与 m39 逐字一致 ⇒
+    // 两处说的话在两种语言下都对得上 ✓）。
+    else if (m40) en = "Read failed (" + ({ "服务端": "the server", "本地内核": "the local kernel" }[m40[1]] || "the server") + "): " + m40[2];
   }
   node.nodeValue = (uiLang === "en" && en) ? original.replace(zh, en) : original;
+}
+function attrEnglish(zh) {
+  const direct = I18N_EN_ATTR[zh];
+  if (direct) return direct;
+  for (const [pattern, toEnglish] of I18N_EN_ATTR_PATTERNS) {
+    const found = pattern.exec(zh);
+    if (found) return toEnglish(found);
+  }
+  // **「标签 (快捷键)」这一族** ✓（第六轮实测 ✓）：`renderToolStrip()` 把 21 支笔的 tooltip 写成
+  //   `label + " (B)"` ⇒ 整句精确键永远配不上 ✗ 于是英文界面里**整个工具栏**的 tooltip 与
+  //   `aria-label` 都是中文（读屏也跟着念中文 ✗）。括号里那个字母是**键盘提示** ✓ 不是词 ✗
+  //   ⇒ 拆出标签走词典 ✓ 快捷键原样带过去 ✓。
+  const withKey = /^(.*) \(([A-Z])\)$/.exec(zh);
+  if (withKey) {
+    const head = attrEnglish(withKey[1]);
+    if (head) return head + " (" + withKey[2] + ")";
+  }
+  return null;
 }
 function i18nAttrs(el) {
   let store = i18nAttrOriginal.get(el);
@@ -13020,7 +14369,7 @@ function i18nAttrs(el) {
     if (!store) { store = {}; i18nAttrOriginal.set(el, store); }
     if (store[name] === undefined) store[name] = current;
     const zh = store[name].trim();
-    const en = I18N_EN_ATTR[zh];
+    const en = attrEnglish(zh);
     el.setAttribute(name, (uiLang === "en" && en) ? store[name].replace(zh, en) : store[name]);
   }
 }

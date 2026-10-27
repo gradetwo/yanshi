@@ -548,6 +548,32 @@ if (swTarget) {
 if (swSocket) swSocket.close();
 notes.push("离线：页面由 SW 接管=" + controlled + "｜页面断网" +
   (swTarget ? (swStubbed ? " + SW 的 self.fetch 已打成必然失败 ✓" : "（SW 桩没装上 ✗）") : "（没有 SW 调试目标 ✗）"));
+// **桩必须还原** ✗（第 10 轮 ✓）：`self.fetch` 改的是 **SW 的全局作用域** ✓，SW 实例
+// **不随标签页关闭而销毁** ⇒ 同一浏览器里后跑的判据取 `/api/blob/...` 会全部
+// `Failed to fetch` ✗（实测：本判据之后 `browser-no-stale-read` 连红两次、画布墨 0；
+// 手动 unregister SW 后同一文档立刻墨 1594 ✓）⇒ **∴ 收尾（含提前失败）都必须还原** ✓。
+const restoreSwFetch = async () => {
+  if (!swTarget) return;
+  try {
+    const back = new WebSocket(swTarget.webSocketDebuggerUrl);
+    const backPending = new Map(); let backId = 1;
+    back.onmessage = (event) => { const m = JSON.parse(event.data);
+      if (m.id && backPending.has(m.id)) { backPending.get(m.id)(m); backPending.delete(m.id); } };
+    await new Promise((open) => { back.onopen = open; });
+    const backSend = (method, params) => new Promise((resolve) => {
+      const id = backId++; backPending.set(id, resolve); back.send(JSON.stringify({ id, method, params: params || {} })); });
+    await backSend("Runtime.enable");
+    await backSend("Runtime.evaluate", {
+      expression: `(() => {
+        if (self.__yanshiRealFetch) { self.fetch = self.__yanshiRealFetch; delete self.__yanshiRealFetch; }
+        return typeof self.fetch; })()`,
+      returnByValue: true,
+    });
+    back.close();
+  } catch (error) {
+    console.error("⚠ 还原 SW 的 self.fetch 失败：" + (error && error.message || error));
+  }
+};
 await send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
 // **真正的断网 = CDP 的 `Fetch` 请求级拦截** ✓（靠 `offline` 标志位是不够的 ✓ —— 实测：
 // 被 SW 接管的页面里 POST 照样能出去 ✓，`/tmp/probe-offline-cut2.mjs` 把这条钉住了 ✓）。
@@ -601,6 +627,7 @@ const offlineProbe = await evaluate(`(async () => {
 notes.push("离线基线探针（裸 fetch 整幅 render_region）⇒ " + offlineProbe);
 if (!/^threw:/.test(String(offlineProbe))) {
   console.error("❌ 断网没生效（裸 fetch 得到 " + offlineProbe + "）⇒ 这条离线结论不成立，判据自己作废");
+  await restoreSwFetch();
   process.exit(1);
 }
 // **再"毒化"本地 JSON 缓存里的整幅渲染** ✗ —— 页面**启动期**（内核还没就绪时 ✓）会走一次
@@ -669,6 +696,7 @@ await send("Network.emulateNetworkConditions", { offline: false, latency: 0, dow
 await send("Fetch.disable").catch(() => undefined);
 fetchCutHandler = null;
 if (swCut) swCut.close();
+await restoreSwFetch();
 
 // **控制台错误只算"在线那一段"** ✓ —— 离线阶段本来就会有一串"连不上服务端"的既有提示 ✓
 //（那是产品的**预期行为** ✓，不是缺陷 ✗）⇒ 把它们算成本判据的失败就是把产品正确行为判红 ✗。

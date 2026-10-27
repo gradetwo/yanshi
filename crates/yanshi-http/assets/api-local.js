@@ -117,6 +117,25 @@ export function p1LayerOrder(rows) {
   for (const r of rows || []) {
     const a = (r && r.atom) || {};
     const pl = (a && a.payload) || {};
+    if (a.kind === "create_document") {
+      // **新文档自带一个默认图层 ✗**（`yanshi-core/src/fold.rs:1004` ✓）：
+      //   **∴ 服务端 `list_layers` 从初始状态起就返回 `layer_default`** ✓
+      //     ⇒ **∴ 本地只从 `create_layer` 原子推导** ⇒ **凭空少一层** ✗
+      //       ⇒ **∴ 实测：新文档 `list_layers` 回 `count:0`** ✓
+      //         ⇒ **∴ 面板点眼睛时 `layers.find(id)` 找不到目标** ⇒ **`return` 掉** ✗
+      //           ⇒ **∴ 隐藏点了没反应** ✓（ui-check 第 11 轮：10726 → 10726 ✓）。
+      //   ⇒ **∴ 与初始状态对齐**：名字／z／默认值照 `fold.rs` 的 `Layer` ✓。
+      if (!layers.has("layer_default")) {
+        layers.set("layer_default", {
+          layer_id: "layer_default", name: "图层 1",
+          type: "raster", kind: "raster", parent_id: null, z_index: -1,
+          visible: true, opacity: 1, blend_mode: "normal", locked: false,
+          alpha_lock: false, clipping_mask: false, mask_id: null, objects: 0,
+        });
+        order.unshift("layer_default");
+      }
+      continue;
+    }
     if (a.kind === "create_layer") {
       // **★ 兼容旧原子**：顶层 `layer_id` 回退（判据 POST 的原子不带 `payload` 包装）。
       const id = (typeof pl.layer_id === "string" && pl.layer_id) ||
@@ -179,16 +198,23 @@ function __crc32(bytes) {
 }
 async function __deflate(bytes) {
   const cs = new CompressionStream("deflate");
+  // **★ 先**抽读端**✗ ★**（实测 ✓）：`CompressionStream` 的**写端**在**读端开始消费**之前
+  //   只会缓冲有限的输入 ✗ ⇒ 原来"**写完再读**"在真浏览器里**任何尺寸都挂死** ✓
+  //   （探针 `encodePngRgba(2,2)` 8 秒不返回 ✓ ⇒ `brush_preview` 超时 ⇒ 预览图永远空框 ✗）。
+  //   ⇒ 把读端**并行**抽起来 ✓，再写、关、等读端收完 ✓。
+  const chunks = [];
+  const pump = (async () => {
+    const r = cs.readable.getReader();
+    for (;;) {
+      const { done, value } = await r.read();
+      if (done) break;
+      chunks.push(value);
+    }
+  })();
   const w = cs.writable.getWriter();
   await w.write(bytes);
   await w.close();
-  const chunks = [];
-  const r = cs.readable.getReader();
-  for (;;) {
-    const { done, value } = await r.read();
-    if (done) break;
-    chunks.push(value);
-  }
+  await pump;
   const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
   let o = 0;
   for (const c of chunks) { out.set(c, o); o += c.length; }
@@ -231,9 +257,68 @@ export async function encodePngRgba(w, h, rgba) {
   return out;
 }
 export async function makeLocalApi(db) {
-  const { putAtom, atomsOf, open, wrap, tx, writeSnapshot } = await import("./store.js");
+  const { putAtom, atomsOf: atomsOfLocal, open, wrap, tx, writeSnapshot } = await import("./store.js");
   // **∴ 内核实例**按文档缓存**✗**（**`Map<doc, WasmKernel>` ✓**）。
   const kernels = new Map();
+
+  // **★ C/S 客户端渲染模式：文档状态在服务端 ✗ ★**（第 10 轮 ✓）
+  //   **∴ 「关闭服务器渲染」关的是**像素路径**✗**（落笔仍然 POST `/api/atoms` ✓ —— 见
+  //     `viewer-app.js` 的 `submitAtom`）⇒ **∴ 此时本地原子日志是**空的 / 陈旧的**✗
+  //     ⇒ **∴ 只折叠本地日志** ⇒ 内核拿到 **0 条原子** ⇒ 文档 **0×0**
+  //       ⇒ **∴ 于是**每次 `render_region` 都 `needs_render`（**实测 ✓**：落笔后补画流水
+  //         `no-url [143,117,26,8]` ✓、新建图层后面板 `state=` ✓、重载后 heavy 文档全白 ✓）。
+  //   **∴ 修法**：C/S 模式下**读原子以服务端权威日志为准**（同源 GET `/api/atoms` ✓，
+  //     带页面已有的 capability token ✓）；PWA（`__pwaLocalOnly === true`）仍读 IndexedDB ✓；
+  //     网络不可用（离线 ✓）⇒ 回落本地日志 ✓（与修之前行为一致 ✓，不新挂死 ✓）。
+  //   **∴ 为什么放在 `atomsOf` 这一层**：几十个只读端点都经它派生状态 ✓ ⇒
+  //     一处改 ⇒ `list_layers`／`list_objects`／`get_log`／`render_region` **一起**看到真文档 ✓。
+  const __csClientMode = () => {
+    try {
+      return typeof window !== "undefined" && window.__pwaLocalOnly !== true &&
+        !!window.yanshiStats && typeof window.yanshiStats.token === "string" &&
+        window.yanshiStats.token.length > 0;
+    } catch (e) { return false; }
+  };
+  /** **服务端权威日志 ⇒ `atomsOf` 同形**（`{atom, seq}` ✓）；失败返回 `null` ✓。 */
+  async function __serverAtoms(doc) {
+    try {
+      const stats = (typeof window !== "undefined" && window.yanshiStats) || {};
+      const token = stats.token || "";
+      if (!token || !doc) return null;
+      const init = {};
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+        init.signal = AbortSignal.timeout(8000);
+      }
+      const res = await fetch("/api/atoms?doc=" + encodeURIComponent(doc) +
+                              "&token=" + encodeURIComponent(token), init);
+      if (!res || !res.ok) return null;
+      const body = await res.json();
+      if (!body || body.ok !== true || !Array.isArray(body.atoms)) return null;
+      return body.atoms.map((atom) => ({ atom, seq: Number(atom.seq || 0) }));
+    } catch (e) {
+      return null; // 网络不可用 ⇒ 回落本地日志 ✓
+    }
+  }
+  async function atomsOf(db, doc) {
+    if (doc && __csClientMode()) {
+      const rows = await __serverAtoms(doc);
+      if (rows) return rows;
+    }
+    return await atomsOfLocal(db, doc);
+  }
+  /** **heavy 判定与服务端 `Atom::is_heavy` 同义** ✓（`yanshi-core/src/atom.rs:739` ✓）：
+   *  retouch／liquify／declare_head，以及 payload.type = raster_patch／filter 的
+   *  create_object／supersede／import_image。本地内核折叠 heavy 只会得到**空白补丁** ✗
+   *  ⇒ 这些文档的像素只能由**服务端**出 ✓。 */
+  function __atomHeavy(atom) {
+    const kind = atom && atom.kind;
+    if (kind === "retouch" || kind === "liquify" || kind === "declare_head") return true;
+    if (kind === "create_object" || kind === "supersede" || kind === "import_image") {
+      const type = atom.payload && atom.payload.type;
+      return type === "raster_patch" || type === "filter";
+    }
+    return false;
+  }
 
 // Serialise kernel calls per document: wasm-bindgen rejects a reentrant &mut self
 // borrow with the aliasing error the device log reported as needs_render, and the
@@ -1007,11 +1092,60 @@ async function withKernel(doc, fn) {
       // **★ `order` 也要从 POST body 读 ✗ ★**（PWA 鹦鹉测试 code review ✓）：
       //   **∴ 前端 `callTool("get_log", {order:"desc"})` 走 POST body ✗**（`callToolLocal` 的实现 ✓）
       //   ⇒ **∴ 只读 `q`（URL 参数）⇒ 本地层永远拿不到 `order` ✗** ⇒ 历史排序在 PWA 下仍是旧→新 ✗。
-      const order = (q && q.get("order")) || (body && body.order) || "";
+      //
+      // **★ `since_seq`／`limit`／`kind`／`actor` 四条参数 ✗ ★**（第 879 轮 ✓；**判据「按类型筛选」实测红 ✓**）：
+      //   **∴ 原来的错 ✗**：**这里**只认 `order` ✗** ⇒ **∴ 其余四条**被**静默忽略** ✓
+      //     ⇒ **∴ 于是**：**用户选「按类型筛选」✗** ⇒ **∴ 列表**纹丝不动 ✓**（**与「筛选没生效」完全同形 ✓）
+      //       ⇒ **∴ 而**服务端（`tools_read.rs:695` ✓）**是**认这四条**的 ✗**
+      //         ⇒ **∴ 于是**：**同一次点击**在服务端／本地**给出不同结果 ✗**（**两条接口不同形的老坑 ✓）
+      //   **∴ 现在**：**逐条对上服务端语义 ✓**：
+      //     `since_seq`（默认 0，严格大于 ✓）、`limit`（默认 200，上限 2000，**在筛选之后截断 ✓**）、
+      //     `kind`／`actor`（精确相等 ✓）、`order`（desc ⇒ 从新到旧 ✓）。
+      //   **∴ 且**补 `head_seq`／`next_since` **两个回执字段 ✓**（服务端有 ✓ ⇒ 本地不给自己造第二套形状 ✓）。
+      const pick = (name) => {
+        if (body && body[name] != null && body[name] !== "") return body[name];
+        if (q && q.get(name) != null && q.get(name) !== "") return q.get(name);
+        return undefined;
+      };
+      const countArg = (name, fallback, max) => {
+        const raw = pick(name);
+        if (raw == null) return { value: fallback };
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n < 0) return { error: name + " 必须是非负数" };
+        const v = Math.floor(n);
+        return { value: max == null ? v : Math.min(v, max) };
+      };
+      const sinceArg = countArg("since_seq", 0);
+      const limitArg = countArg("limit", 200, 2000);
+      const badArg = sinceArg.error || limitArg.error;
+      if (badArg) {
+        // **∴ 直接 400 ✗**（**不**抛 ✓）：**抛出去会被外层兜成 `not_implemented_locally` ✗**
+        //   ⇒ **∴ 那**会让调用方以为"本地没实现"✗，而事实是**参数错** ✓。
+        return json({ ok: false, error: "invalid_argument", detail: badArg, server: false }, 400);
+      }
+      const since = sinceArg.value;
+      const limit = limitArg.value;
+      const order = pick("order") || "";
       const newestFirst = order === "desc" || order === "newest_first";
+      const kind = pick("kind");
+      const actor = pick("actor");
+      const seqOf = (a) => Number(a && a.seq);
+      const headSeq = rows.reduce((m, r) => {
+        const s = seqOf(r && r.atom);
+        return Number.isFinite(s) && s > m ? s : m;
+      }, 0);
       let atoms = rows.map((r) => (r && r.atom) || null).filter(Boolean);
+      atoms = atoms.filter((a) => !(Number.isFinite(seqOf(a)) && seqOf(a) <= since));
+      if (kind != null) atoms = atoms.filter((a) => a.kind === kind);
+      if (actor != null) atoms = atoms.filter((a) => a.actor === actor);
       if (newestFirst) atoms = atoms.slice().reverse();
-      return json({ ok: true, atoms, count: atoms.length, server: false });
+      atoms = atoms.slice(0, limit);
+      const nextSince = atoms.reduce((m, a) => {
+        const s = seqOf(a);
+        return Number.isFinite(s) && s > m ? s : m;
+      }, since);
+      return json({ ok: true, atoms, count: atoms.length, head_seq: headSeq,
+                    next_since: nextSince, server: false });
     }
 
     // **③ `/api/tools/list_objects` ✗**：**对象列表** ✗** ⇒ **∴ 从**声明了 `object_id` 的原子**推导 ✓
@@ -2185,16 +2319,38 @@ async function withKernel(doc, fn) {
 
     // **P2c-04 `fill_region` ✗**：**照 `write_fill_region` ✓** ⇒ **把 `shape` 映射成
     //   `draw_shape` 认的 `geometry` ✓**（**`rect`／`ellipse`／`polygon` ✓，**与手画图形同一条路 ✓**）。
+    // **★ 第四轮补的三条本地／服务端口径差 ✗★**（`fill_region` 有了 Web 入口 ⇒ 这些从"看不见"变成"看得见"✓）：
+    //   ① **`opacity` 原先整个被丢掉** ✗ ⇒ 服务端把 `opacity` 乘进颜色的 `a` ✓（三种颜色写法都吃 ✓）
+    //      而这里原来只把 `color` 原样塞进 `data` ✗ ⇒ 关掉「服务器渲染」后同一个滑杆没有效果 ✗
+    //      ⇒ 现在同一套：`p2cParseColor` 归一后 `a ×= opacity` ✓ 并把生效值**回显**在回执里 ✓。
+    //   ② **`shape.type:"path"`** ✗：服务端第 1558 轮起认 `d`／`subpaths` ✓ 这里仍拒 ✗
+    //      ⇒ 拒得响亮 ✓ 但把"为什么"说清（本地没有 SVG 路径解析器 ✗ 勾回服务器渲染可用 ✓）。
+    //   ③ **`texture` 传对象**（位图／取画面这块）✗：服务端支持 ✓ 这里不支持 ✗
+    //      ⇒ 原来 `String({...})` 变成 `texture=[object Object]` ✓ 看着像拼写错误 ✗
+    //      ⇒ 现在分开说：那是**纹理来源**，不是笔触质感 ✓ 需要勾回「服务器渲染」✓。
     if (path === "/api/tools/fill_region") {
       const layerId = body.layer_id;
       if (typeof layerId !== "string" || !layerId) return p2Bad("layer_id 必填（字符串）");
       const shape = body.shape;
       if (!shape || typeof shape !== "object") return p2Bad("shape 必须是对象（必填）");
       if (body.color === undefined) return p2Bad("缺少 color（{r,g,b,a} 或 #rrggbb）");
-      const texture = body.texture !== undefined ? String(body.texture) : "smooth";
+      const texture = body.texture !== undefined ? body.texture : "smooth";
       if (texture !== "smooth") {
-        return p2Bad("texture=" + texture + " 暂不支持 ⇒ 目前只有缺省（= smooth）；厚涂/干刷肌理是独立的活，另行排期");
+        return p2Bad(typeof texture === "object" && texture !== null
+          ? "本地内核不支持纹理填充（`texture` 是**取色来源**：位图 blob 或画面那块矩形 ✓ 服务端才实现 ✓）"
+            + " ⇒ 勾回「服务器渲染」再填这一笔；笔触质感（厚涂/干刷）是另一件事，另行排期"
+          : "texture=" + String(texture) + " 暂不支持 ⇒ 目前只有缺省（= smooth）；厚涂/干刷肌理是独立的活，另行排期");
       }
+      const opacity = body.opacity !== undefined ? Number(body.opacity) : 1;
+      if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) return p2Bad("opacity 必须在 [0,1] 内");
+      const parsed = p2cParseColor(body.color);
+      if (!parsed) return p2Bad("color 解析不了 ⇒ 给 {r,g,b,a} / [r,g,b(,a)] / #rrggbb[aa]");
+      // **与服务端同一处落点** ✓：`opacity` 折进颜色的 `a` ⇒ 原子的 `data.color` 就是生效颜色 ✓
+      //   （服务端也没有单独的 `data.opacity` ✓ 两边逐字节同形 ⇒ 关掉服务器渲染不改变重放结果 ✓）。
+      const color = {
+        r: parsed[0], g: parsed[1], b: parsed[2],
+        a: Math.max(0, Math.min(255, Math.round(parsed[3] * opacity))),
+      };
       const num = (key, def) => {
         const v = shape[key] !== undefined ? Number(shape[key]) : def;
         return Number.isFinite(v) ? v : def;
@@ -2215,15 +2371,21 @@ async function withKernel(doc, fn) {
         const pts = shape.points;
         if (!Array.isArray(pts) || pts.length === 0) return p2Bad("polygon 需要 shape.points（[[x,y], ...]）");
         geometry = { kind: "polygon", points: pts, feather };
+      } else if (skind === "path") {
+        return p2Bad("本地内核不解析 SVG 路径（`shape.d` ⇒ 需要路径解析器 ✓ 服务端有 ✓）"
+          + " ⇒ 勾回「服务器渲染」再填这一笔，或改写成 polygon 顶点");
       } else {
-        return p2Bad("shape.type 必须是 rect/ellipse/polygon，得到 " + skind);
+        return p2Bad("shape.type 必须是 rect/ellipse/polygon（path 只有服务端认），得到 " + skind);
       }
       const objectId = (typeof body.object_id === "string" && body.object_id) ? body.object_id : p2cNewObjectId();
       const seq = await putAtom(handle, doc, p2Envelope("draw_shape", {
         object_id: objectId, layer_id: layerId, type: "shape",
-        data: { geometry, color: body.color },
+        data: { geometry, color },
       }));
+      // **回显生效值** ✓：`opacity` 与 `texture` 都写进回执 ✓ 与服务端同形 ✓
+      // ⇒ Web 那张卡念的是回执里的数 ✗ 不是自己输入框里的数 ✓（两边都能核对参数有没有被吃掉 ✓）。
       return json({ ok: true, seq, server: false, object_id: objectId, shape: skind,
+                    opacity, texture: null,
                     note: "已写入 draw_shape 原子（fill_region 与手画图形同一条路）" });
     }
 
@@ -4019,6 +4181,47 @@ async function withKernel(doc, fn) {
     }
 
     if (path === "/api/tools/render_region") {
+      // **★ C/S 客户端渲染：两类请求必须由**服务端**出图 ✗ ★**（第 10 轮 ✓）：
+      //   ① **heavy 文档**（介质笔画 = `import_image`/`raster_patch`、修图、液化…）——
+      //      本地内核折叠它只会得到**空白补丁** ✓（`heavyDocument` 那套注释 ✓）；
+      //   ② **单层缩略图**（带 `layer_id` ✓）—— 本地内核只有整幅渲染 ✓。
+      //   **∴ 其余（纯矢量文档的整幅/脏区）**在本地用**服务端原子日志**渲染 ✓（像素不出浏览器 ✓）。
+      //   **∴ 走同源代理** ⇒ `localCalls` 计数不变 ✓（它仍是"本地适配器"在应答 ✓），
+      //     而返回的 JSON 与服务端同形（`raw_url`／`thumb_url`／`head_seq` ✓）⇒ 调用方无需分叉 ✓。
+      if (__csClientMode()) {
+        const layerWanted = (body && body.layer_id) || q.get("layer_id") || null;
+        let heavy = !!layerWanted;
+        if (!heavy) {
+          try {
+            const rows0 = await atomsOf(handle, doc);
+            heavy = rows0.some((r) => __atomHeavy(r.atom));
+          } catch (e) { heavy = false; }
+        }
+        if (heavy) {
+          try {
+            const init = {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(body || {}),
+            };
+            if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+              init.signal = AbortSignal.timeout(20000);
+            }
+            const res = await fetch(url.pathname + url.search, init);
+            const text = await res.text();
+            const src = res.headers.get("content-type") || "application/json";
+            return new Response(text, {
+              status: res.status,
+              headers: { "content-type": src, "cache-control": "no-store",
+                         "x-yanshi-source": "server-proxy-heavy" },
+            });
+          } catch (e) {
+            return json({ ok: false, error: "needs_render", server: false,
+                          reason: "heavy 像素需服务端出图，但代理失败：" +
+                                  String((e && e.message) || e) });
+          }
+        }
+      }
       const { readSnapshot } = await import("./store.js");
       // **★ 未给 `seq` 时用**当前 head**✗ ★**（第 630 轮 ✓）：**∴ 若默认 0 ✗**
       // ⇒ **∴ 与存的快照 `seq` 永不相等 ⇒ **∴ 快照分支**永不命中 ✗****（**实测 ✓**）。
@@ -4083,6 +4286,31 @@ async function withKernel(doc, fn) {
             w: Math.max(1, Math.min(want.w, entry.w - Math.max(0, want.x))),
             h: Math.max(1, Math.min(want.h, entry.h - Math.max(0, want.y))),
           };
+          // **★ 补画路径（`raw:true`）必须回**原始 RGBA** ✗ ★**（第 10 轮 ✓）：
+          //   `blitServerBox` 的契约是"`raw_url` 里是 RGBA8" ✓（服务端 `raw:true` 同形 ✓）；
+          //   若这里给 PNG ⇒ 它按 `w*h*4` 长度检查 ⇒ 判定 `short-bytes` ⇒ 补画静默丢弃 ✗
+          //   （实测流水 `no-url`／`short-bytes` ✓，画布墨 0 ✗）。⇒ 只对 `raw:true` 走这条 ✓，
+          //   其余调用（缩略图之外的 PNG 用途 ✓）保持原行为 ✓。
+          const rawWanted = (body && body.raw === true) ||
+                            q.get("raw") === "1" || q.get("raw") === "true";
+          if (rawWanted) {
+            const bw = Math.ceil(box.w);
+            const bh = Math.ceil(box.h);
+            const rgba = k.render_region_rgba(Math.floor(box.x), Math.floor(box.y), bw, bh);
+            const need = bw * bh * 4;
+            if (!rgba || rgba.length < need) {
+              return json({ ok: false, error: "needs_render", server: false,
+                            reason: "内核未产出 RGBA 字节",
+                            atom_count: atoms.length,
+                            got: rgba ? rgba.length : 0, need });
+            }
+            return new Response(rgba, {
+              status: 200,
+              headers: { "content-type": "application/octet-stream",
+                         "cache-control": "no-store",
+                         "x-yanshi-source": "local-kernel-rgba" },
+            });
+          }
           const png = k.render_region_png(Math.floor(box.x), Math.floor(box.y), Math.ceil(box.w), Math.ceil(box.h));
           // **∴ 诊断：内核渲染元信息 ✗**（第 664 轮 ✓）：**∴ `k` 在此可见 ✓**。
           try { window.__renderInfo = k.render_region_info(box.x, box.y, box.w, box.h); window.__renderAtoms = atoms.length; } catch (e) { window.__renderInfo = "info 失败：" + e; }
@@ -4806,6 +5034,38 @@ async function withKernel(doc, fn) {
                     note: "已存入浏览器本地（localStorage）；服务端版会写成 .gpl 文件" });
     }
 
+    // **★ C/S 客户端渲染：本地没实现的端点 ⇒ **只读代理**到服务端 ✗ ★**（第 10 轮 ✓）
+    //   **∴ 为什么 ✗**：`list_effects`／`get_anchors` 等**只在服务端有** ⇒ 本地层原来抛
+    //     `endpoint_not_local` ✓ ⇒ 页面初始化／效果面板**每次**打一行红字 ✓（实测日志 ✓），
+    //     功能直接不可用 ✓。而 C/S 模式的文档本来就在服务端 ✓ ⇒ 这些**读**请求代理过去是
+    //     如实作答 ✓（响应头 `x-yanshi-source: server-proxy` ✓，不假装是本地算的 ✓）。
+    //   **∴ 只在这个模式**：PWA（`__pwaLocalOnly === true`）仍抛 `endpoint_not_local` ✓ ——
+    //     没有服务器可代理 ✓。**写**请求不会走到这里 ✓（C/S 的写工具在 `callTool` 已路由服务端 ✓）。
+    if (__csClientMode()) {
+      try {
+        const init = { method: req.method };
+        const ct = (req.headers && req.headers.get && req.headers.get("content-type")) || "";
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          init.headers = { "content-type": ct || "application/json" };
+          init.body = JSON.stringify(body || {});
+        }
+        if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+          init.signal = AbortSignal.timeout(15000);
+        }
+        const res = await fetch(url.pathname + url.search, init);
+        const buf = await res.arrayBuffer();
+        return new Response(buf, {
+          status: res.status,
+          headers: {
+            "content-type": res.headers.get("content-type") || "application/json",
+            "cache-control": "no-store",
+            "x-yanshi-source": "server-proxy",
+          },
+        });
+      } catch (e) {
+        // 代理失败（离线等）⇒ 落到下面的如实 501 ✓
+      }
+    }
     // **∴ 其余端点**一律抛给上层 ⇒ 上层如实 501 ＋ 原因 ✗**（**∴ 不假装成功 ✓**）。
     throw new Error(`endpoint_not_local: ${url.pathname}`);
   };

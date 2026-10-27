@@ -32,11 +32,18 @@
 //   例：node scripts/browser-frequency-separation.mjs http://127.0.0.1:15900 9490
 import { setTimeout as sleep } from "node:timers/promises";
 
+// **★ 总超时守卫 ✗ ★**（本仓约定 ✓）：要连 CDP 浏览器 ⇒ 起不来时会**一直等** ✗ 拖住 CI 分片 ✓。
+//   外层给 browser-* 的是 `timeout ${BROWSER_TIMEOUT:-420}` ⇒ 内层落在它之下 ✓（180 s ✓）。
+const __judgeTimeout = setTimeout(() => {
+  console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（CDP 浏览器可能没起来）⇒ 退出码 3");
+  process.exit(3);
+}, 180000);
+
 const url = process.argv[2];
-// **CDP 端口来源**（第 1132 轮整合）：run-criteria 的 browser 分支 argv[3] 是 base URL
-// （`<viewer-url> <base> <token> <cdpPort>`）⇒ 优先读导出的 CDP_PORT，argv[3] 只收纯数字。
-const rawPort = process.env.CDP_PORT || process.argv[3] || "";
-const port = /^\d+$/.test(rawPort) ? rawPort : "9222";
+// **★ 端口优先读环境变量 ✗ ★**（`browser-reference-overlay.mjs:20-25` 同一处教训 ✓）：
+//   `run-criteria.sh` 给 browser-* 传 `<viewer-url> <server-base> <token> <cdpPort>` ✓
+//   ⇒ argv[3] 是个 URL ✗ 拿它当端口 ⇒ CI 里**恒红** ✓（本轮自查发现 ✓）。
+const port = process.env.CDP_PORT || (/^\d+$/.test(process.argv[3] || "") ? process.argv[3] : "9333");
 const base = url ? new URL(url).origin : "http://127.0.0.1:15900";
 if (!url) {
   console.error("用法: node scripts/browser-frequency-separation.mjs <viewer-url> [cdp-port]");
@@ -153,11 +160,16 @@ async function evaluate(expression) {
   return body.result ? body.result.value : undefined;
 }
 // **擦偏好**✓ 再进被测文档 ✓（见抬头「口径」里那条实测教训 ✓）。
-await send("Page.navigate", { url: `${base}/?v=${Date.now()}` });
+// **★ 导航 URL 上钉死 `render=server` ✗ ★**（本轮 CI 接线自查发现 ✓）：
+//   `run-criteria.sh` 给 browser-* 一族**统一加 `&render=client`** ✓ 而 `viewer-app.js:83-88` 里
+//   **URL 参数优先级在 `localStorage` 之上** ✗ ⇒ 光擦存储擦不掉它 ✓ 页面照样走本地内核 ✓
+//   ⇒ 本判据**经服务端 API 写下去的状态**（图层/原子/偏好）在页面上**读不回来** ✓
+//   测的就不再是它要测的那一半 ✓（本机手工跑不带这个参数 ⇒ 看不出来 ✗ CI 里恒红 ✓）。
+await send("Page.navigate", { url: `${base}/?v=${Date.now()}&render=server` });
 await waitEvent("Page.loadEventFired");
 await sleep(800);
 await evaluate(`(() => { localStorage.removeItem("yanshi.serverRender"); localStorage.removeItem("yanshi.lang"); return 1; })()`);
-await send("Page.navigate", { url: `${base}/?doc=${docId}&token=${token}&lang=zh&v=${Date.now()}` });
+await send("Page.navigate", { url: `${base}/?doc=${docId}&token=${token}&lang=zh&render=server&v=${Date.now()}` });
 await waitEvent("Page.loadEventFired");
 let booted = false;
 for (let i = 0; i < 60; i += 1) {
@@ -173,13 +185,18 @@ if ((await evaluate(`document.documentElement.lang`)) !== "zh-CN") {
   console.error("❌ 判据前提失败：界面没落在中文（实为 " + JSON.stringify(await evaluate(`document.documentElement.lang`)) + "）");
   process.exit(3);
 }
-// **等勾选状态就位**（第 1132 轮）：面板填充与 `useServerRender.checked = …` 是两条
-// 初始化路 ⇒ 本机实测面板先满、勾选稍后才 true ⇒ 过早读会得到 false 假红。
+// **★ 有界等待这条前提 ✗ ★**（登记 ⑰ 同族 ✓）：**单次**读勾选可能读到**上一次**导航留下的页面 ✗
+//   （实测：同一条判据一次绿、一次假 `exit 3` ✓）⇒ **等前提、不等结论** ✓
+//   轮询到「勾选 = true」且**当前 URL 确实带着 `render=server`** 才认 ✓。
 let serverRenderOn = null;
-for (let i = 0; i < 20; i += 1) {
-  serverRenderOn = await evaluate(`(() => { const b = document.getElementById("useServerRender"); return b ? b.checked === true : null; })()`);
+for (let i = 0; i < 80; i += 1) {
+  serverRenderOn = await evaluate(`(() => {
+    if (!location.search.includes("render=server")) return "WRONG-PAGE";
+    const b = document.getElementById("useServerRender");
+    return b ? (b.checked === true ? true : false) : null;
+  })()`);
   if (serverRenderOn === true) break;
-  await sleep(150);
+  await sleep(250);
 }
 if (serverRenderOn !== true) {
   console.error("❌ 判据前提失败：「服务器渲染」那个勾选没生效（实为 " + JSON.stringify(serverRenderOn) + "）");
@@ -338,10 +355,18 @@ for (let i = 0; i < 60; i += 1) {
   if (booted2) break;
   await sleep(250);
 }
-// **让 init 绑好「分离」按钮的 click**（第 1132 轮）：本地模式先填下拉、后 setup ⇒
-// 只等下拉会点在监听绑定之前（空回执）✗。
-await sleep(900);
-const offState = await evaluate(`(() => { const b = document.getElementById("useServerRender"); return b ? b.checked : null; })()`);
+// 这一臂**故意不钉** `render=server` ✓（登记 ⑭ ✓）⇒ 由 `localStorage` 决定走本地内核 ✓
+//   **但有界等待**（登记 ⑰ 同族 ✓）：等到「当前 URL 不带 `render=server`」**且勾选 = false」✓
+let offState = null;
+for (let i = 0; i < 80; i += 1) {
+  offState = await evaluate(`(() => {
+    if (location.search.includes("render=server")) return "STILL-SERVER-PAGE";
+    const b = document.getElementById("useServerRender");
+    return b ? (b.checked === false ? false : true) : null;
+  })()`);
+  if (offState === false) break;
+  await sleep(250);
+}
 if (!booted2 || offState !== false) {
   console.error("❌ 判据前提失败：切不到本地内核模式（booted=" + booted2 + " 勾选=" + JSON.stringify(offState) + "）");
   process.exit(3);
@@ -350,12 +375,8 @@ const atomsBefore8 = await atomCount();
 const layersBefore8 = (await layerRows()).length;
 await pick("layer_ok");
 await run();
-// **等回执出现**（第 1132 轮）：本地内核首次调用要初始化 ⇒ 固定 1.5s 会读到空串假红。
-for (let i = 0; i < 80; i += 1) {
-  read1 = await cardText();
-  if ((read1.info || "").length > 0) break;
-  await sleep(250);
-}
+await sleep(1500);
+read1 = await cardText();
 if (/本地内核没有这个端点/.test(read1.info || "") && !/服务端拒绝/.test(read1.info || "") &&
     (await atomCount()) === atomsBefore8 && (await layerRows()).length === layersBefore8) {
   ok("本地内核缺端点时说清了是本地缺端点，并给出下一步", { page: read1.info });

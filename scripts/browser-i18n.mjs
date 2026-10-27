@@ -61,19 +61,49 @@ const bodyProbe = `JSON.stringify((() => {
   //（viewer.rs:629 的标题是「最近一次响应」✓）⇒ 页面里的 API JSON 会被算成「中文」✗ ⇒ 判据**间歇红** ✗。
   // 观测证据：where 报 div#last ✓、sample 是 API 的 JSON（count/ok/persisted 那些字段）✓。
   const skip = (el) => el.closest("#log, #last, pre, code, script, style, textarea, #langToggle, [data-i18n='off']");
+  // **★ 「这串是数据」由产品自己声明 ✓ 判据不猜 ✗ ★**（第六轮实测 ✓）：
+  //   减淡加深卡片会**把用户的图层名念进句子里** ✓（「将新建组 「图层 1 · 减淡加深」」✓）
+  //   ⇒ 英文模式下界面把它翻成 Will build the group "图层 1 · Dodge and burn" ✓
+  //   **框架全英文 ✓ 剩下的是用户起的名字** ✓ ⇒ 那不是漏翻 ✗ 判据原来却把它算成"整页还有中文" ✓
+  //   （同一条道理 browser-tooltip-i18n 早就用了 ✓：属性里带数据 ⇒ 只数框架 ✓）。
+  //   **⇒ 豁免的边界**：只认**产品自己标了 data-i18n="off" 的那些串** ✓（图层名、字体名 ✓
+  //     见 viewer-app.js 的 data-i18n="off" ✓ 与 viewer.rs 的字体 option ✓）
+  //     ⇒ 想蒙过这条判据 ✗ 得先在产品里公开把那段文字声明成数据 ✓ 那是可评审的动作 ✗ 不是判据自己放宽 ✗。
+  //   **反证**：若界面哪天真的漏了「减淡加深」没翻 ⇒ 剥掉图层名之后**还剩汉字** ⇒ 照样红 ✓。
+  const dataStrings = (() => {
+    const out = [];
+    for (const el of document.querySelectorAll("[data-i18n='off']")) {
+      if (el.closest("#log, pre, code, script, style, textarea")) continue;
+      const t = String(el.textContent || "").trim();
+      if (t && zh.test(t)) out.push(t);
+    }
+    // 长的先剥 ✓ 免得短的先剥掉把长的切成碎片 ✗
+    out.sort((a, b) => b.length - a.length);
+    return out;
+  })();
   const found = new Map();
+  const dataExempt = [];
   const where = [];
   const walk = (node) => {
     if (node.nodeType === 3) {
       const text = node.nodeValue.trim();
       if (text && zh.test(text) && !skip(node.parentElement)) {
-        const key = text.slice(0, 60);
-        found.set(key, (found.get(key) || 0) + 1);
+        let residue = text;
+        let hitData = null;
+        for (const d of dataStrings) {
+          if (residue.indexOf(d) >= 0) { hitData = d; residue = residue.split(d).join(""); }
+        }
+        if (!zh.test(residue)) {
+          if (hitData) dataExempt.push(text.slice(0, 60));
+        } else {
+          const key = text.slice(0, 60);
+          found.set(key, (found.get(key) || 0) + 1);
         // **第 926 轮：加观测看它到底在哪个元素里** ✓（**读数停滞时加观测** ✗，而不是继续猜 ✓）：
         // 「页面里还有 1 条中文」✗ 而那条是 **API 的 JSON 响应** ✓ ⇒ **它在哪个容器 ⇒ 决定 skip 该怎么补** ✓。
         const el = node.parentElement;
         // ⚠️ **这里不能再用反引号/嵌套模板** ✗（第 926 轮踩了两次 ✓）：bodyProbe 本身就是模板字符串 ✓。
         if (el) where.push("<" + el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + (el.className ? "." + String(el.className).split(" ")[0] : "") + ">");
+        }
       }
       return;
     }
@@ -86,6 +116,8 @@ const bodyProbe = `JSON.stringify((() => {
   // 所以这里直接打印那个面板此刻是否可见，一次就能判断 palette:false 的含义。
   const cardPalette = document.getElementById("cardPalette");
   return { distinct: found.size, where: where.slice(0, 6), sample: [...found.keys()].slice(0, 6),
+    dataMarks: dataStrings.length, dataExempt: dataExempt.slice(0, 3),
+
     paletteVisible: !!(cardPalette && cardPalette.offsetParent),
     // **为什么不可见** ✗ —— 只报布尔值无法定位（CI 实测 paletteVisible:false ✓，
     // 而 cardPalette **没有 hidden 属性** ✓、仓库里也**没有**会藏 data-panel=assets 的
@@ -107,6 +139,23 @@ const bodyProbe = `JSON.stringify((() => {
 })())`;
 
 const failures = [];
+// **★ 先擦语言偏好，再断言「默认是中文」✗ ★**（第六轮实测 ✓）：本判据第一条断言是**默认中文** ✓
+//   而 `viewer-app.js:13573-13811` 把选择记在 `localStorage.yanshi.lang`（**优先级高于默认值** ✓）
+//   ⇒ 同一个 CDP profile 里**上一条判据**切过英文 ⇒ 这里的「默认」就被污染 ✗
+//   （实测：连跑 `browser-layer-lock`（⑧ 要切英文）之后再跑本判据 ⇒【默认】读到 `htmlLang:"en"` ✓
+//    三条断言整体错位一位 ⇒ 看着像双语功能坏了 ✗ 其实功能是好的 ✓）。
+//   CI 每个分片**新 profile** ⇒ 看不出来 ⇒ 这正是「本机红 / CI 绿」那一类假红 ✓。
+//   ⇒ 口径与 `browser-fill-region` / `browser-layer-lock` 一致 ✓：**先落到壳页擦偏好 ✓ 再进目标 URL** ✓。
+//   ⚠️ **擦的是前置条件 ✗ 不是被判对象**：这里抹掉的是"用户存过的偏好" ✓
+//      而「没有偏好时**必须**默认中文」仍由下面的断言判 ✗（第 887 轮那条教训 ✓）。
+const shellUrl = url.split("?")[0].replace(/\/+$/, "") + "/?v=" + Date.now();
+await send("Page.navigate", { url: shellUrl });
+await sleep(700);
+const wiped = await evaluate(`(() => { try { localStorage.removeItem("yanshi.lang"); return localStorage.getItem("yanshi.lang") === null ? "clean" : "STILL-SET"; } catch (_) { return "NO-STORAGE"; } })()`);
+if (wiped !== "clean") {
+  console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 擦不掉 `yanshi.lang`（实为 " + JSON.stringify(wiped) + "）⇒ 「默认中文」这条断言的前提不成立 ⇒ 退出码 3");
+  process.exit(3);
+}
 await send("Page.navigate", { url });
 // **等到"页面真的就绪"，而不是固定睡 6 秒** ✗（第 886 轮 ✓）：
 // 本文件在**切换语言后**用的是"轮询 40×300ms 直到条件成立" ✓（见下面两处 ✓），
@@ -150,6 +199,12 @@ else {
   // **更强的一条**：英文模式下**整页**（除日志、代码示例、语言开关）**不应再有中文**。
   const probe = JSON.parse(await evaluate(bodyProbe));
   console.log("  【整页】" + JSON.stringify(probe));
+  // **豁免必须说出来 ✗ 不能悄悄少报** ✓：数到了几条"产品自己声明是数据"的串 ✓ 有几条文本因此不算漏翻 ✓
+  //（与 `browser-tooltip-i18n` 同一口径 ✓：那条会打「其中 N 条含产品自己标过的用户数据」✓）。
+  if (probe.dataExempt && probe.dataExempt.length > 0) {
+    console.log("  【数据豁免】产品标了 " + probe.dataMarks + " 条 `data-i18n=off` 的数据串 ✓ " +
+      "因此不算漏翻的文本 " + JSON.stringify(probe.dataExempt));
+  }
 // **调色板为何不可见** ✗（CI 实测 `paletteVisible:false` ✓）：打印**祖先链**的 `display`／`visibility` ✓
 // ⇒ 一眼看出是谁藏了它（**∴ 若整条链都正常显示 ⇒ 那就是 `offsetParent` 这类判据侧陷阱 ✓**）。
 if (!probe.paletteVisible) console.log("  【调色板祖先链】" + JSON.stringify(probe.paletteChain));

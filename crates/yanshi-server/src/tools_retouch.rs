@@ -41,6 +41,32 @@ const FS_BYTES_PER_PIXEL: u64 = 12;
 const FS_RADIUS_RANGE: (f64, f64) = (1.0, 64.0);
 /// D&B 曲线中点合法域（设计 D1-2：0.5 = 无效果）。
 const DB_MID_RANGE: (f64, f64) = (0.05, 0.95);
+/// 本引擎 `soft_light` 的**中性字节**（灰层法用它铺底）。
+///
+/// W3C 柔光闭式的中性点是 `Cs = 0.5`（见 `blend.rs` 的 `SoftLight` ✓
+/// 与 `blend_soft_light_ps_reference_values` ✓），而混合发生在**线性缓冲**上 ⇒
+/// 中性字节是「线性 0.5 编码回显示」= **188**，不是 50% 显示灰的 128 ✓
+/// （与同文件 `linear_light` 的高频中性同一个数 ✓）。
+///
+/// **实测**（15900 服务端 ✓ 底色 60/128/200/255/0 与一个彩色底各一点 ✓）：
+/// 铺 188 ⇒ 逐点与铺之前**完全相同** ✓；铺 128 ⇒ `128 → 97`（**整幅压暗 31 级** ✗）。
+const DB_NEUTRAL_GRAY: u8 = 188;
+// curves 变体**改得到画面**（第六轮实测推翻第五轮那条结论 ⇒ 记录为什么翻转）。
+//
+// 第五轮写下的是"曲线只作用于自己图层的缓冲 ⇒ 这两层除曲线外没有像素 ⇒ 改不到画面"✓
+// 那时**属实**（15900 实测：涂满白仍 128 ✓）。上游 `302d414d`
+// （`fix(render): seed adjustment-only layers from the content below`）把这件事改了：
+// **纯调整层**（本层活动对象全是 Adjustment/Filter ⇒ `layer_is_adjustment_only`）渲染时
+// **先用下方内容播种**再套调整 ⇒ curves 那两层没有像素也不再是死路 ✓。
+// 本引擎当前构建（`e0fd1052` + 本包）在 15900 上重测六个底色带：
+// 建组（两张蒙版全黑）⇒ 六点**逐字节不变** ✓（蒙版确实是闸门）；
+// dodge 蒙版涂白 ⇒ `60→77 / 128→159 / 200→216 / (200,30,30)→(216,40,40)` ✓ 变亮 ✓
+// 而 `0` 与 `255` 两个端点**不动** ✓；burn 蒙版涂白 ⇒ `60→42 / 128→98 / 200→187` ✓ 变暗 ✓
+// 端点同样不动 ✓。⇒ 两条臂都回 `effective: true`。
+//
+// ⚠ `effective` 说的是**这条路能不能作用到画面**（能力）✗ 不是"这一份文档此刻真的改了像素"✓
+// 后者由 `tests/retouch_tools.rs` 与 `scripts/tool-dodge-burn-effective.mjs` 用真像素钉住 ✓
+// ⇒ 渲染器若再次退回"调整层不播种"✗ 那两条会红（第五轮就是靠它们才发现的 ✓）。
 
 /// 给定低频线性值与候选高频字节，走一遍 linear_light 重建，
 /// 返回重建后的显示编码字节（与引擎合成同式，含输出钳制）。
@@ -667,6 +693,37 @@ pub(super) fn write_dodge_burn_setup(ctx: &mut ToolContext<'_>, args: &Value) ->
                 .map(Value::String)
                 .unwrap_or(Value::Null)
         };
+        // **复用路径报的是「这个组实际是哪条路建的」** ✓ 而不是本次请求想要的那条 ✗。
+        //   旧写法直接把请求的 `mode` 抄进回执 ⇒ 实测：先用 `gray` 建组、再用**同名**请求
+        //   `curves` ⇒ 回 `mode:"curves" / effective:false / neutral_gray:null` ✗ 而磁盘上那张
+        //   `soft_light` 灰层明明改得到画面 ✓ ⇒ **回执与事实相反**（说它不动、其实动 ✓）
+        //   这正是本项目禁止的那种静默 ✗。判别按图层本身：组里有 `soft_light` 的孩子 ⇒ 灰层法 ✓
+        //   有 `减淡 · Dodge` 的孩子 ⇒ 曲线法 ✓ 两者都没有（人把里面的层删了 ✓ 组名还活着 ✓）
+        //   ⇒ **说不出是哪条路** ⇒ `mode: null` 且老实回答"它改不到画面"✗ 不能假装是 curves ✓。
+        let kids: Vec<&_> = state
+            .layers
+            .values()
+            .filter(|layer| layer_ids.contains(&layer.id))
+            .collect();
+        let reused_mode: Option<&'static str> =
+            if kids.iter().any(|layer| layer.blend_mode == "soft_light") {
+                Some("gray")
+            } else if kids.iter().any(|layer| layer.name == "减淡 · Dodge") {
+                Some("curves")
+            } else {
+                None
+            };
+        let mismatch = reused_mode.is_some_and(|actual| actual != mode);
+        let mut note =
+            "同名减淡加深组已存在 ⇒ 复用既有组，没有新建（删掉旧组后可重建）。".to_owned();
+        if mismatch {
+            let actual = reused_mode.unwrap_or("未知");
+            note.push_str(&format!(
+                " ⚠ 本次请求的是 mode={mode}，但这个既有的组是按 mode={actual} 建的 ⇒ 用的是它、没有按本次请求重建。"
+            ));
+        } else if reused_mode.is_none() {
+            note.push_str(" ⚠ 这个同名组里已经没有减淡加深的层了（灰层或那两条曲线层被删过？）⇒ 它不会改变画面，要重做请先删掉这个组再建。");
+        }
         return Ok(json!({
             "ok": true,
             "already_exists": true,
@@ -675,7 +732,20 @@ pub(super) fn write_dodge_burn_setup(ctx: &mut ToolContext<'_>, args: &Value) ->
             "object_ids": object_ids,
             "mask_ids": mask_ids,
             "masks": {"dodge": mask_of("减淡 · Dodge"), "burn": mask_of("加深 · Burn")},
-            "note": "同名减淡加深组已存在 ⇒ 复用既有组，没有新建（删掉旧组后可重建）。",
+            // **复用路径与新鲜建组给同一套诚实字段** ✓（第五轮 ✓ 与 `masks` 同一口径 ✓）：
+            //   第二次调用同样必须说清"这组改不到画面"✗ 不能只有新建那次说 ✓。
+            //   `mode` 也在这套里 ✓ 漏它 ⇒ 界面念出"方法 undefined"（本轮实测抓到 ✗ 已修 ✓）。
+            //   `effective` 的**唯一**假分支是"组里已经没有减淡加深的层了"（人删过孩子 ✓ 组名还活着 ✓）
+            //   ⇒ 那才是"改不到画面"✓ 与 mode 无关（第六轮：curves 也改得到了 ✓ 见上面那段）。
+            "mode": reused_mode,
+            "effective": reused_mode.is_some(),
+            "ineffective_reason": if reused_mode.is_none() {
+                Value::String("这个同名组里已经没有减淡加深的图层了（灰层/曲线层被删过？）⇒ 它不会改变画面；要重做请先删掉这个组再建。".to_owned())
+            } else {
+                Value::Null
+            },
+            "neutral_gray": if reused_mode == Some("gray") { json!(DB_NEUTRAL_GRAY) } else { Value::Null },
+            "note": note,
         }));
     }
     let group_id = format!("layer_{}", yanshi_core::Ulid::new().encode());
@@ -689,10 +759,12 @@ pub(super) fn write_dodge_burn_setup(ctx: &mut ToolContext<'_>, args: &Value) ->
     )];
     let (layer_ids, object_ids, mask_ids, note) = match mode.as_str() {
         "gray" => {
-            // 50% 灰烘焙层（fill_region 在本仓同样落位图快照，见工具说明）+
+            // 中性灰烘焙层（fill_region 在本仓同样落位图快照，见工具说明）+
             // soft_light 混合：灰层本身不改变画面，黑/白涂抹即减淡/加深。
+            // **中性是 188 而不是 50% 显示灰的 128** ✓（见 `DB_NEUTRAL_GRAY` 那段 ✓
+            // 实测：铺 128 会把 128 的底压到 97 ✗ 铺 188 逐点不变 ✓）。
             let gray: Vec<u8> = (0..(canvas_w as usize) * (canvas_h as usize))
-                .flat_map(|_| [128u8, 128u8, 128u8, 255u8])
+                .flat_map(|_| [DB_NEUTRAL_GRAY, DB_NEUTRAL_GRAY, DB_NEUTRAL_GRAY, 255u8])
                 .collect();
             let gray_hash = ctx.workspace.put_blob(&gray)?;
             let gray_layer_id = format!("layer_{}", yanshi_core::Ulid::new().encode());
@@ -718,7 +790,7 @@ pub(super) fn write_dodge_burn_setup(ctx: &mut ToolContext<'_>, args: &Value) ->
                 vec![gray_layer_id],
                 vec![gray_object_id],
                 Vec::new(),
-                "灰层法：图层本身是 50% 灰烘焙快照（soft_light 下不改变画面）；用黑/白低流量笔触涂抹即加深/减淡。单层直观，代价是烘焙——灰层不跟随下方修改。",
+                "灰层法：图层本身是本引擎柔光的中性灰（字节 188 = 线性 0.5 ⇒ 建组后画面逐点不变 ✓ 实测 ✓），用黑/白低流量笔触涂抹即减淡/加深。单层直观，代价是烘焙——灰层不跟随下方修改。",
             )
         }
         _ => {
@@ -797,7 +869,7 @@ pub(super) fn write_dodge_burn_setup(ctx: &mut ToolContext<'_>, args: &Value) ->
                 layer_ids,
                 object_ids,
                 mask_ids,
-                "曲线法：两层初始全黑蒙版 ⇒ 曲线暂不生效；用 paint_mask 以白色低不透明度笔刷涂抹生效区（只改蒙版，不动曲线）。曲线中点已按 §9.1 EOTF 转线性落盘，工具参数里给的是显示空间值。",
+                "曲线法：两层各挂一条曲线 + 一张全黑蒙版 ⇒ 涂开蒙版才生效（实测 128 的底色：dodge 蒙版涂白到 159 ✓ burn 蒙版涂白到 98 ✓ 0 与 255 两个端点不动 ✓）。与灰层法的差别只在留痕：这条留两条可调曲线对象、那条把中性灰烘焙进一层。",
             )
         }
     };
@@ -814,6 +886,7 @@ pub(super) fn write_dodge_burn_setup(ctx: &mut ToolContext<'_>, args: &Value) ->
     } else {
         json!({"dodge": Value::Null, "burn": Value::Null})
     };
+    let is_curves = mode == "curves";
     Ok(json!({
         "ok": true,
         "already_exists": false,
@@ -822,6 +895,15 @@ pub(super) fn write_dodge_burn_setup(ctx: &mut ToolContext<'_>, args: &Value) ->
         "object_ids": object_ids,
         "mask_ids": mask_ids,
         "masks": masks,
+        // **回执自己说"这组会不会改变画面"** ✓（第五轮 ✓）：光一个 `ok: true` 不够 ✓ 界面与 Agent 都读这两格 ✓。
+        //   第六轮实测：两条臂都改得到画面（curves 靠上游 `302d414d` 的"纯调整层用下方内容播种"✓
+        //   数字见上面那段）⇒ 新鲜建组这一路**没有**"改不到画面"的情形可报 ✓ 两格恒为 true/null ✓
+        //   会改画面的那条**能力**断言由 `retouch_tools` + `tool-dodge-burn-effective.mjs` 用真像素守着 ✓。
+        "effective": true,
+        "ineffective_reason": Value::Null,
+        // 灰层法的中性字节念回来 ✓（界面据此教人"涂什么颜色算不动画面"✗ 不自己猜 128 ✓）：
+        // 实测铺 128 会把 128 的底压到 97 ✗ 铺 188 六个底色逐点不变 ✓。
+        "neutral_gray": if is_curves { Value::Null } else { json!(DB_NEUTRAL_GRAY) },
         "mode": mode,
         "note": note,
     }))

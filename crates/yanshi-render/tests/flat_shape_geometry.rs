@@ -7,7 +7,7 @@
 
 use serde_json::json;
 use yanshi_core::{
-    DocumentState, Layer, LayerType, MemoryBlobStore, Object, ObjectType, Transform,
+    Bbox, DocumentState, Layer, LayerType, MemoryBlobStore, Object, ObjectType, Transform,
 };
 use yanshi_render::render::Renderer;
 use yanshi_render::tile::TileGrid;
@@ -143,5 +143,74 @@ fn a_feathered_shape_spreads_outside_its_bbox() {
     assert!(
         is_background(120, 50),
         "离边 40 像素处仍有内容 ⇒ 羽化范围超过了 2×半径 ✗"
+    );
+}
+
+/// **同一个羽化形状、同一个像素：整幅渲染与窄区域渲染必须逐字节相同** ✓（第四轮 ✓）。
+///
+/// **实测到的缺陷** ✗：羽化半径 2 的 100×80 方块，中心（离四条边都 ≥40 像素 ⇒ 应当满覆盖 ✓）
+/// 在**整幅**渲染下 α=255 ✓ 而只请求**一行**（100×1）时 α=194 ✓ 请求 8 行时 255 ✗
+/// ⇒ **同一个文档在页面上pan/zoom 或按 tile 分块渲染时，羽化填充的浓度会跟着视口变** ✗✗
+/// （`render_region` 的调用方正是查看器与脏 tile 缓存 ✓）。
+/// **真因** ✓：`render.rs` 把覆盖率网格**裁到"本次要写的缓冲"**（性能优化：范围收窄 ✓）
+///   ＋ 而 `feather_coverage` 把自己网格的**边界当形状外补零** ✓ ⇒ 被裁掉的相邻行变成 0 ✗
+///   ⇒ 模糊把"区域的边"误读成"形状的边" ✓ 内部因此被冲淡 ✗。
+///   代码里原先断言"整层范围不改变结果"（理由：形状外覆盖率恒为 0 ✓）——**那句话在羽化之后不成立** ✗
+///   因为补零发生在**裁剪之后** ✓ 裁到哪儿就等于在哪儿造了一条假边 ✓。
+#[test]
+fn a_feathered_shape_renders_identically_in_a_narrow_region_and_in_the_full_document() {
+    let store = MemoryBlobStore::new();
+    let mut state = DocumentState::empty();
+    state.doc_id = Some("doc_fth_region".to_owned());
+    state.width = 200;
+    state.height = 200;
+    state.background = json!({"r": 0, "g": 0, "b": 0, "a": 0});
+    state.layers.insert("L".to_owned(), layer("L", 0));
+    let mut feathered = object_with_flat_geometry();
+    feathered.data["geometry"]["feather"] = json!(2.0);
+    state.objects.insert("flat".to_owned(), feathered);
+
+    // 矩形 x∈[20,80] y∈[30,70] ⇒ (50,50) 离四条边 30/30/20/20 ⇒ 半径 2 的羽化**碰不到它** ✓
+    let centre = (50usize, 50usize);
+    // 窄区域的**左上角与宽高**只写一次 ✓ 下面「取哪个像素」与「渲染哪一块」都从它推 ⇒ 不会一边改了另一边没改 ✗
+    const REGION_X: f64 = 20.0;
+    const REGION_Y: f64 = 50.0;
+    const REGION_W: usize = 60;
+    assert_eq!(
+        REGION_Y as usize, centre.1,
+        "自检失败：窄区域那一行没盖住要对比的像素 ⇒ 本判据无法运行（不是通过）"
+    );
+    let full = {
+        let mut renderer = Renderer::new(TileGrid::new(64, 200, 200).unwrap());
+        renderer.render_document(&state, &store).unwrap().rgba8
+    };
+    let narrow = {
+        let mut renderer = Renderer::new(TileGrid::new(64, 200, 200).unwrap());
+        renderer
+            .render_region(
+                &state,
+                &store,
+                Bbox::new(REGION_X, REGION_Y, REGION_W as f64, 1.0),
+            )
+            .unwrap()
+            .rgba8
+    };
+    let read_full = {
+        let i = (centre.1 * 200 + centre.0) * 4;
+        [full[i], full[i + 1], full[i + 2], full[i + 3]]
+    };
+    // 窄区域是 60×1 ⇒ 只有 1 行 ✓ 列下标 = 中心 x − 区域左边界 ✓
+    let read_narrow = {
+        let i = (centre.0 - REGION_X as usize) * 4;
+        [narrow[i], narrow[i + 1], narrow[i + 2], narrow[i + 3]]
+    };
+    assert!(
+        read_full[3] > 250,
+        "自检失败：整幅渲染里形状中心就不是满覆盖 ⇒ 本判据无法运行（不是通过）⇒ {read_full:?}"
+    );
+    assert_eq!(
+        read_full, read_narrow,
+        "同一个像素在整幅渲染与 1 行区域渲染下不一样 ⇒ 羽化的覆盖率被**裁到请求区域**了 ✗ \
+         （整幅 {read_full:?} ／ 窄区域 {read_narrow:?}）"
     );
 }

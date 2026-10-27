@@ -368,6 +368,44 @@ self.addEventListener("activate", (event) => {
     await self.clients.claim();
   })());
 });
+// ── ★ 第八轮：缓存记账**一律挪到响应之后** ★ ────────────────────────────────
+// **纪律** ✓：「开缓存 / 写缓存」不许站在"已经拿到答案"与"把答案交给页面"**中间** ✗
+// **实测依据**（同一份构建 ✓ 每格 sabotage 都读回确认生效 ✓ 每格还原后复测都 commit ✓）：
+//   · `Cache.prototype.put` 换成永不 settle ⇒ 导航 **122 ms 照样 commit** ✓
+//     ⇒ 第七轮我猜的"写 tee 反压住导航"那一版假设**被证伪** ✗（`probe-sw-tee.mjs` 与本次 A 格一致 ✓）；
+//   · `CacheStorage.prototype.open` 换成永不 settle ⇒ 导航 **停在半路 ✓ 21 s 都没有 commit** ✗
+//     ⇒ **旧代码那句 `const cache = await caches.open(CACHE)` 夹在 `fetch` 与 `return response` 中间 ✓
+//        就是它把已经拿到的网络响应扣住了** ✓ 而页面上一句责任都没有 ✗；
+//   · `open` 换成直接抛 `QuotaExceededError` ⇒ 导航 commit ✓（外层 `catch` 走 `caches.match` 兜住了 ✓）
+//     ⇒ **抛错不致命 ✓ 挂起才致命** ✓（而 ㊵ 那个现场恰恰是"配额／目录不可用"⇒ 两种都可能 ✓）。
+// **为什么写成 `event.waitUntil` 而不是旧那种"不 await 的发射后不管"** ✗：
+//   旧写法 `cache.put(...).catch(...)` 一旦 SW 在写入落地前被回收 ✓ 就**静默丢写** ✓；
+//   `waitUntil` 既不挡响应 ✓ 又保证写完整 ✓（第八轮同时修掉这条 ✓）。
+self.__swWriteFailures = self.__swWriteFailures || [];
+function swNoteWriteFailure(key, error) {
+  const item = {
+    key: String((key && key.url) || key),
+    error: String((error && error.message) || error),
+  };
+  self.__swWriteFailures.push(item);
+  // **只在真失败时出声** ✓（判据读 `__swWriteFailures` ✓ 与 `__swPrecacheFailures` 同一口径 ✓）
+  console.warn("SW 写缓存失败（本次响应不受影响 ✓）：" + JSON.stringify(item));
+}
+async function swTeeIntoCache(key, copy) {
+  try {
+    const cache = await caches.open(CACHE);
+    await cache.put(key, copy);
+  } catch (error) {
+    swNoteWriteFailure(key, error);
+  }
+}
+// **blob 那一支没法"先回答再读"** ✓（cache-first 的**读**本来就在回答之前 ✓）
+// ⇒ 退一步：**有界等待** ✓ 期限内 Cache Storage 没给答案就**放弃缓存这条路、直接走网络** ✓
+// ⇒ 挂起的后果从"每一个 `<img src=/api/blob/…>` 永远空白"✗ 变成"最多多等 1.5 s 仍能出图"✓。
+const CACHE_READ_DEADLINE_MS = 1500;
+function swWithDeadline(promise, ms) {
+  return Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(undefined), ms))]);
+}
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   if (request.method !== "GET") return;
@@ -380,15 +418,21 @@ self.addEventListener("fetch", (event) => {
   // ⇒ 交给 SW 做，**一处覆盖全部** ✓，不必去追十几个 `<img>` 赋值点 ✗。
   if (url.pathname.startsWith("/api/blob/")) {
     event.respondWith((async () => {
-      const cache = await caches.open(CACHE);
-      const hit = await cache.match(request, { ignoreSearch: true });
+      const opened = await swWithDeadline((async () => {
+        const cache = await caches.open(CACHE);
+        return { cache: cache, hit: await cache.match(request, { ignoreSearch: true }) };
+      })(), CACHE_READ_DEADLINE_MS);
+      const cache = opened && opened.cache;
+      const hit = opened && opened.hit;
       if (hit) return hit;
       try {
         const response = await fetch(request);
-        if (response && response.ok) cache.put(request, response.clone()).catch(() => undefined);
+        // **写入挪到响应之后** ✓（见上面那段纪律 ✓）：`clone()` 是同步的 ✓ 不碰磁盘 ✓
+        // 真正的 `open`/`put` 交给 `waitUntil` ⇒ 不再挡在这条 `<img>` 前面 ✓。
+        if (response && response.ok) event.waitUntil(swTeeIntoCache(request, response.clone()));
         return response;
       } catch (error) {
-        const fallback = await cache.match(request, { ignoreSearch: true });
+        const fallback = cache ? await cache.match(request, { ignoreSearch: true }) : undefined;
         if (fallback) return fallback;
         throw error;
       }
@@ -400,8 +444,9 @@ self.addEventListener("fetch", (event) => {
   // 缓存它可能**把旧版本钉住** ✗ —— 而"新 SW 才作废旧缓存"正是 (A)⑥ 的机制 ✓。
   const neverCache = url.pathname === "/service-worker.js";
   event.respondWith((async () => {
+    let response = null;
     try {
-      const response = await fetch(request);
+      response = await fetch(request);
       // **(A)②：同源静态资产"用到就存"** ✓（cache on first use ✓）——**为什么不全量预缓存** ✗：
       // 未预缓存的那几类可路由资产合计 **≈ 19.0 MiB**（实测：textures 12,601,760 ✓ ＋
       // samples 5,106,710 ✓ ＋ brush-previews 1,896,972 ✓ ＋ brand 159,817 ✓ ＋ mediums 159,873 ✓）
@@ -415,15 +460,13 @@ self.addEventListener("fetch", (event) => {
       // **同一份缓存仍不脏读** ✓：本分支**始终网络优先** ✓ ⇒ 构建标识不变时能上网就拿新的 ✓。
       // **只存 200/2xx 的完整响应** ✗：`206`（Range 部分响应 ✓）存下来会变成一个坏条目 ✓。
       if (response && response.ok && !neverCache && response.status !== 206) {
-        const cache = await caches.open(CACHE);
-        if (request.mode === "navigate") {
-          // 导航响应按外壳的键 `/` 存 ✓（离线打开页面的先决条件 ✓，与此前行为一致 ✓）。
-          cache.put("/", response.clone()).catch(() => undefined);
-        } else {
-          // 静态资产按**原请求**存 ✓ —— 与下面 `caches.match(request, …)` 的查法**对称** ✗
-          //（存 `url.pathname` 会丢掉查询串 ⇒ 存了也命中不了 ✓）。
-          cache.put(request, response.clone()).catch(() => undefined);
-        }
+        // **第八轮**：这一段整体挪到 `return response` **之后** ✓（`open` 挂起曾把导航扣住 21 s ✗
+        // 就是被这里原先那句 `await caches.open(CACHE)` 挡住的 ✓ 见上面那段纪律）。
+        // **键的取法不变** ✓：导航响应按外壳的键 `/` 存 ✓（离线打开页面的先决条件 ✓）；
+        // 静态资产按**原请求**存 ✓ —— 与下面 `caches.match(request, …)` 的查法**对称** ✗
+        //（存 `url.pathname` 会丢掉查询串 ⇒ 存了也命中不了 ✓）。
+        const key = request.mode === "navigate" ? "/" : request;
+        event.waitUntil(swTeeIntoCache(key, response.clone()));
       }
       return response;
     } catch (error) {

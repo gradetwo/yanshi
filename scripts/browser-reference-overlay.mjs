@@ -28,6 +28,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 //（原来这里写死一个假 hash ✗ ⇒ 见下面 `render_region` 那段 ✓：blob 必须真在存储里 ✓）
 // ① 先经 API 设参考图（拿页面 URL 里的 doc/token ✓）
 const parsed = new URL(url);
+// **本判据导航用的 URL** ✓：钉住 `render=server` ✓（理由见下面 `inspect()` 里那条 ✓）。
+const navUrl = new URL(url);
+navUrl.searchParams.set("render", "server");
 const doc = parsed.searchParams.get("doc"), token = parsed.searchParams.get("token");
 // **★ 服务端连接守卫 ✗ ★**（2026-10-16 ✓）：包在 helper 本体上 ⇒ **所有调用点一次性受保护** ✓
 //   （本仓约定：判据必须能说**我自己坏了** ✓，用**与产品失败不同的退出码**报出来 ✓（现用 exit(3) ✓）；
@@ -80,7 +83,14 @@ await send("Runtime.enable"); await send("Page.enable");
 //（**第 887 轮我犯过这个错** ✓）⇒ 这里只等"文档完成" ✓ ＋ 800ms 让叠加层画出来 ✓；
 // **"参考图可不可见"始终只由断言判** ✓ ✓。
 const inspect = async () => {
-  await send("Page.navigate", { url });
+  // **★ 自己把渲染模式钉成「服务器」✗ ★**（第四轮接线自查 ✓ 本机实测：带 `render=client` 时本判据**恒红** ✓）：
+  //   `run-criteria.sh` 给 browser-* 一族**统一加 `&render=client`** ✓ 而 `viewer-app.js:83-88` 里
+  //   **URL 参数优先级最高** ✗ ⇒ 页面改走本地内核 ⇒ `get_preferences` 打到 **IndexedDB** ✓
+  //   而本判据的参考图是**经服务端 API** 写进 `preferences.json` 的 ✗
+  //   ⇒ 页面永远读不到那个 hash ⇒「叠加元素不存在」⇒ **红的是接线 ✗ 不是产品** ✓。
+  //   偏好有**两份存储**（服务端 ✓ 与本地内核 ✓）⇒ 经服务端写状态就必须经服务端读 ✓
+  //   （与 `browser-brush-panel`／`browser-i18n` 那几条"测的是服务端/静态界面"的例外同理 ✓）★
+  await send("Page.navigate", { url: navUrl });
   for (let i = 0; i < 40; i++) {
     await sleep(300);
     try { if (await evaluate('document.readyState === "complete"')) { await sleep(800); break; } } catch (_) { /* 还没就绪 ⇒ 继续等 ✓ */ }

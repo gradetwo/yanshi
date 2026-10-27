@@ -219,6 +219,15 @@
              border-radius: 999px; padding: 8px 12px; font-size: 12px; cursor: pointer;
              backdrop-filter: blur(4px); }
   body.zen #zenExit { display: inline-flex; align-items: center; gap: 8px; }
+  /* **画布上的短句浮层** ✓（第六轮 ✗→✓）：与 `#zenExit` 同一条路 —— `position: fixed` ✓
+     不进布局流 ⇒ 它出现/消失**都不会把画布顶得跳一下** ✗（放在流里的那条 `#outboxBar` 会跳 ✓
+     但它是有按钮、需要常驻的操作条 ✗ 性质不同）。`pointer-events: none` ⇒ 绝不吃掉落笔 ✗。
+     间距只用已有的 4/8/12/16 档 ✓（`ui-layout-grid` 会数 ✓）。 */
+  #stageNotice { position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px; z-index: 41;
+                 max-width: min(640px, 92vw); padding: 8px 12px; border-radius: 999px;
+                 background: rgba(20, 20, 22, .86); color: #fff; border: 1px solid #c33;
+                 font-size: 12px; pointer-events: none; }
+  #stageNotice[hidden] { display: none; }
   /* **图层面板** ✓：顶部条 + 行列表 ✓。行里三个可点区域（眼睛 / 锁 / 名字 ✓），
      名字区最大以便点选 ✓；按钮用最小尺寸以免抢走注意力 ✓。 */
   .layers { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }

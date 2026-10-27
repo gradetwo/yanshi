@@ -37,12 +37,20 @@
 // 用法：node scripts/browser-blend-modes.mjs <viewer-url> [cdp-port]
 import { setTimeout as sleep } from "node:timers/promises";
 
+// **★ 总超时守卫 ✗ ★**（本仓约定 ✓）：本判据要连 CDP 浏览器 ⇒ 起不来时会**一直等** ✗ 拖住 CI 分片 ✓。
+//   外层给 browser-* 的是 `timeout ${BROWSER_TIMEOUT:-420}` ⇒ 内层落在它之下 ✓（180 s ✓）。
+const __judgeTimeout = setTimeout(() => {
+  console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（CDP 浏览器可能没起来）⇒ 退出码 3");
+  process.exit(3);
+}, 180000);
+
 // 用法与同目录那几条 `browser-*` 一致 ✓：第二个参数是**端口号**（不是 URL ✗ 传 URL 会拼出坏 URL ✓）。
 const url = process.argv[2];
-// **CDP 端口来源**（第 1132 轮整合）：run-criteria 的 browser 分支 argv[3] 是 base URL
-// （`<viewer-url> <base> <token> <cdpPort>`）⇒ 优先读导出的 CDP_PORT，argv[3] 只收纯数字。
-const rawPort = process.env.CDP_PORT || process.argv[3] || "";
-const port = /^\d+$/.test(rawPort) ? rawPort : "9222";
+// **★ 但 `run-criteria.sh` 传的 argv[3] 是 server-base ✗ ★**（`browser-reference-overlay.mjs:20-25`
+//   同一处教训 ✓）：那一族拿到的四个位置参数是 `<viewer-url> <server-base> <token> <cdpPort>` ✓
+//   ⇒ 端口**优先读环境变量** ✓ 只有 argv[3] 确实是数字时（本机手工传参 ✓）才用它 ✗
+//   否则 CI 里拼出 `http://127.0.0.1:http://…/json/list` ⇒ **恒红**（本轮自查发现 ✓）。
+const port = process.env.CDP_PORT || (/^\d+$/.test(process.argv[3] || "") ? process.argv[3] : "9333");
 const base = url ? new URL(url).origin : "http://127.0.0.1:15900";
 if (!url) {
   console.error("用法: node scripts/browser-blend-modes.mjs <viewer-url> [cdp-port]");
@@ -152,11 +160,16 @@ async function evaluate(expression) {
   return body.result ? body.result.value : undefined;
 }
 // **先把这个 profile 的偏好擦干净** ✓（`localStorage` 按源共享 ✗ 见文件头 ✓）。
-await send("Page.navigate", { url: `${base}/?v=${Date.now()}` });
+// **★ 导航 URL 上钉死 `render=server` ✗ ★**（本轮 CI 接线自查发现 ✓）：
+//   `run-criteria.sh` 给 browser-* 一族**统一加 `&render=client`** ✓ 而 `viewer-app.js:83-88` 里
+//   **URL 参数优先级在 `localStorage` 之上** ✗ ⇒ 光擦存储擦不掉它 ✓ 页面照样走本地内核 ✓
+//   ⇒ 本判据**经服务端 API 写下去的状态**（图层/原子/偏好）在页面上**读不回来** ✓
+//   测的就不再是它要测的那一半 ✓（本机手工跑不带这个参数 ⇒ 看不出来 ✗ CI 里恒红 ✓）。
+await send("Page.navigate", { url: `${base}/?v=${Date.now()}&render=server` });
 await waitEvent("Page.loadEventFired");
 await sleep(700);
 await evaluate(`(() => { localStorage.removeItem("yanshi.serverRender"); localStorage.removeItem("yanshi.lang"); return 1; })()`);
-await send("Page.navigate", { url: `${base}/?doc=${docId}&token=${token}&lang=zh&v=${Date.now()}` });
+await send("Page.navigate", { url: `${base}/?doc=${docId}&token=${token}&lang=zh&render=server&v=${Date.now()}` });
 await waitEvent("Page.loadEventFired");
 // **只按模式层的数量兜底** ✓（图层组的行**有没有**下拉不算 ✗ 那不是本判据要判的事 ✓）。
 const wantRows = serverModes.length;
@@ -174,15 +187,21 @@ if ((await evaluate(`document.documentElement.lang`)) !== "zh-CN") {
   console.error("❌ 判据前提失败：界面没落在中文（实为 " + JSON.stringify(await evaluate(`document.documentElement.lang`)) + "）");
   process.exit(3);
 }
-// **等勾选就位**（第 1132 轮）：图层行可能先装好、`useServerRender.checked` 稍后才设 ⇒ 过早读会假红。
-let serverOn = null;
-for (let i = 0; i < 20; i += 1) {
-  serverOn = await evaluate(`(() => { const b = document.getElementById("useServerRender"); return b ? b.checked === true : null; })()`);
-  if (serverOn === true) break;
-  await sleep(150);
+// **★ 有界等待这条前提 ✗ ★**（登记 ⑰ 同族 ✓）：`Page.loadEventFired` 可能属于**上一次**导航 ✓
+//   ⇒ 导航后**单次**读勾选会读到**旧页面**的状态 ✗（实测同一条判据一次绿、一次假 `exit 3` ✓）。
+//   **∴ 等前提、不等结论** ✓：轮询到「勾选 = true」**且当前 URL 确实带着 `render=server`** 才认 ✓。
+let serverRenderOn = null;
+for (let i = 0; i < 80; i += 1) {
+  serverRenderOn = await evaluate(`(() => {
+    if (!location.search.includes("render=server")) return "WRONG-PAGE";
+    const b = document.getElementById("useServerRender");
+    return b ? (b.checked === true ? true : false) : null;
+  })()`);
+  if (serverRenderOn === true) break;
+  await sleep(250);
 }
-if (serverOn !== true) {
-  console.error("❌ 判据前提失败：「服务器渲染」那个勾选没生效 ⇒ ③ 那次写回走的就不是服务端那条路径");
+if (serverRenderOn !== true) {
+  console.error("❌ 判据前提失败：「服务器渲染」那个勾选没生效（实为 " + JSON.stringify(serverRenderOn) + "）⇒ ③ 那次写回走的就不是服务端那条路径");
   process.exit(3);
 }
 
@@ -279,7 +298,7 @@ if (!rowHf.missing && rowHf.value === "linear_light" && rowHf.label === "线性�
 
 // ---------- ⑤ 英文模式：13 条文案都得有词条 ----------
 await evaluate(`(() => { localStorage.setItem("yanshi.lang", "en"); return 1; })()`);
-await send("Page.navigate", { url: `${base}/?doc=${docId}&token=${token}&lang=en&v=${Date.now()}` });
+await send("Page.navigate", { url: `${base}/?doc=${docId}&token=${token}&lang=en&render=server&v=${Date.now()}` });
 await waitEvent("Page.loadEventFired");
 let bootedEn = false;
 for (let i = 0; i < 80; i += 1) {
