@@ -1,6 +1,6 @@
 # 工作交接（截至 2026-10-27，vector-tracing v5.1、MCP receipts 与 draw_text 真文本合并后）
 
-**仓库**：`/home/crow/yanshi`（分支 `main`）｜**HEAD**：`3c8cf8cd`（draw_text 真文本 ＋ raw 注册表守卫修；CI `40460340849` **全绿**，仅 `brush parity` 按约定 skip）｜推送：`git push git@github.com:gradetwo/yanshi.git main`
+**仓库**：`/home/crow/yanshi`（分支 `main`）｜**HEAD**：`b608933a`（photo-bugfix 期 2 文档修正；`docs:` 提交会再加一个，纯文档 ⇒ `paths-ignore` 不触发 CI）｜推送：`git push git@github.com:gradetwo/yanshi.git main`
 
 ## 一、每轮第一件事：比两份外部报告
 
@@ -15,6 +15,8 @@
   **均值 12.29／`>30` 占 14.98%**（最小包 1.89／0.22%）；两版都是官方引擎、唯一差别是 `YANSHI_TIMELAPSE_SHRINK`。
   另有一次自我更正（他以为报告从未送达上游；实际我们每轮 `scp` 读它）。
 - `qoder`：远端 `7dcd42c3a6e79e94eabc15b94b8e0bcb`（141,575 B）｜基线 `7dcd42c3a6e79e94eabc15b94b8e0bcb` ⇒ **未变** ✓（两侧相同）。
+- **2026-10-27 本轮复核**：art `706a3499…`（753,171 B）／qoder `7dcd42c3…`（141,575 B）
+  两侧 md5 与基线**相同** ⇒ 两份都未变 ✓。
 
 **⇒ 规矩（我犯过）**：报「未变」**必须附两侧 md5**。此前 `qoder` 根本没被真正比对过（旧基线是 33 KB 的**截断抓取**），我报了十几轮"未变"，全是**断言恒真**。
 
@@ -275,6 +277,21 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    **CI `40460340849`（`3c8cf8cd`）**：**13/13 job 全绿**（`rustfmt`／`clippy`／`test (stable)`／
    `test (beta)`／`GPU feature`／`wasm smoke`／criteria 6 片），仅 `brush parity` 按约定 skip
    ⇒ **本包合并完成，主干绿**。
+
+58. **photo-bugfix 期 2 文档修正已合**（`b608933a`，作者 `a9bc410`，基线 `68adb93`，`git am` 干净、零冲突）：
+   纯文档 1 文件 +11/−6（`docs/design/style-preset-system.md`）：把 A1（levels 改显示口径、6 套预设翻回）
+   的「6 套翻回后渲染应与现状**逐像素一致**（转换可逆，浮点误差 <1e-4）」改正为
+   「**只保端点、不保曲线形状**」（显示仿射曲线整体低于线性仿射曲线，暗部差最大），
+   §9.1 续 与 续七 两处同文一起改。
+   **校验（本机 ✓）**：pre-image blob `e2510dd…` 与补丁 `index` 行一致；`git apply --check` 干净；
+   合入后 `git diff --check` 干净；全库 grep「逐像素一致／转换可逆」剩余命中都与 A1 无关
+   （`style_preset_package` 的 strength=0 恒等断言、timelapse 段重放等，各自是别的机制）。
+   **数字出处（未复测，已记录）**：japanese_airy mean|d| 6.45/255、L_p2 −0.026；
+   korean（黑点 0.1）mean|d| 12.16、mid_sat +75% —— 出自作者「期 2 包说明」；
+   **本机与仓库内都没有这些数**（`~/patch` 各 photo-* 包逐包 grep 也没有），只按作者实测记录。
+   自洽性旁证：按「黑点 0.1 ⇒ 中点位移 ≈ 0.9·0.5+0.1 − 0.5 = 0.05（线性光口径编码后 ≈0.023）」
+   粗算与 6.45/255≈0.025 同量级，修正方向与数值不矛盾 ✓。
+   **CI**：只改 `docs/**` ⇒ `paths-ignore` 不触发；证据是本机校验（与本仓 56／57 的 docs 合入同口径）。
 
 ## 三、下一步（按优先序，都有精确入口）
 
