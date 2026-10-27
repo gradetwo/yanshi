@@ -210,7 +210,8 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    `clippy -p yanshi-server --all-targets -D warnings` 干净；定向 `list_atoms_truncation` 5/5、
    `vector_layer` 2/2；**两处变异都红**（`hidden_non_stroke` 写 0 ⇒ 0≠2；sha 换成常量 ⇒ 不匹配）；
    活体判据 `tool-list-atoms` ✓、`tool-export-svg-validate-not-overrejecting` ✓。
-   **全量测试留给 CI**（本次改了 `crates/**` ⇒ 会跑）。
+   **CI 已绿**：`40444468624`（`ececf129`）⇒ **12 个 job 全 success**（`brush parity` skipped，已知）✓。
+   **全量测试留给 CI**（本次改了 `crates/**` ⇒ 会跑）——已由上面那跑验过。
    未在本包：③ `draw_text` 出真 `<text>`（只写了设计文档，未实现）。
 
 ## 三、下一步（按优先序，都有精确入口）
