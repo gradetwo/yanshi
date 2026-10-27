@@ -1,6 +1,6 @@
-# 工作交接（截至 2026-10-27，vector-tracing v5 与 MCP receipts 合并后）
+# 工作交接（截至 2026-10-27，vector-tracing v5.1 与 MCP receipts 合并后）
 
-**仓库**：`/home/crow/yanshi`（分支 `main`）｜**HEAD**：`26f4c801`（`docs:` 提交会再加一个）｜推送：`git push git@github.com:gradetwo/yanshi.git main`
+**仓库**：`/home/crow/yanshi`（分支 `main`）｜**HEAD**：`d68d6ce3`（`docs:` 提交会再加一个）｜推送：`git push git@github.com:gradetwo/yanshi.git main`
 
 ## 一、每轮第一件事：比两份外部报告
 
@@ -213,6 +213,28 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    **CI 已绿**：`40444468624`（`ececf129`）⇒ **12 个 job 全 success**（`brush parity` skipped，已知）✓。
    **全量测试留给 CI**（本次改了 `crates/**` ⇒ 会跑）——已由上面那跑验过。
    未在本包：③ `draw_text` 出真 `<text>`（只写了设计文档，未实现）。
+
+56. **vector-tracing v5.1 后续包已合**（`d68d6ce3`，作者 `26a9f7d`，基线 `bae5f7e`，`git am` 干净）：
+   `skills/yanshi-vector-tracing/SKILL.md` 185 → 222 行（+52/−15）——冷启动第二轮 7 图
+   36 条缺口归并的 33 条规则（弧命令预转贝塞尔、Catmull-Rom 参数化、量测边内收/AA 补偿、
+   共享边与遮挡顺序、Text Assembly 四条扩展、Hausdorff 采样口径、Known Failure Modes 新增 3 条等）。
+   **校验（本机 ✓）**：`git apply --check` 干净；pre/post blob `5ab17e85` → `151e55e1`、
+   sha256 `4eff25f6…` 与包内定稿逐字一致；222 行、13 个 `##`（与 v5 相同）；
+   `node scripts/check-skill-tool-names.mjs` ✓（7 文档｜92 标识符｜206 工具｜259 参数）；
+   新增行通用性 grep 零命中；提交钩子跑了完整 `scripts/pre-commit.sh`（fmt／workspace
+   clippy／台账／四条自测／发布工作流形态）**全绿**（clippy 走缓存 1.43 s）。
+   **衔接修（本包与 `26f4c801` 的直接冲突）**：包内 Phase 0 原写「`export_svg` 回执从不带
+   sha256（按设计，字段只在 PNG 路径）」＋ 对应 failure mode 一条——而 `26f4c801` 恰好给
+   `export_svg` 加了 sha256（`tools_io.rs:1956`，`tests/vector_layer.rs` 已断言、CI 绿）
+   ⇒ 已改写两处：正确导出（PNG/SVG）都带 sha256，只有失败调用没有；先看 `ok`。
+   **两处读取核对（写进交接，不阻塞）**：① 包内「`draw_text` position 字典形态被静默忽略」
+   属实但**只对自订字体路径**（`tools.rs:4124` 只认数组）——内置渲染路径
+   （`crates/yanshi-render/src/object.rs:273-289`）对象与数组都收；② 包内 64 KiB stdio
+   上限属实（`crates/yanshi-mcp/src/lib.rs:709`）。
+   **须带回 Wang 的冲突**：打包说明的「狐狸 GT 再核查」认为 6/7 图 GT 逐位成对、与 Wang
+   11:56「狐狸无 GT」相反；本包按 Wang 定义写规则、不把「狐狸无 GT」写成事实。此前该冲突
+   已随 v5 包记过一次，仍未裁决。
+   **CI**：只改 `.md` ⇒ `paths-ignore` 不触发；证据是本机本地校验。
 
 ## 三、下一步（按优先序，都有精确入口）
 
