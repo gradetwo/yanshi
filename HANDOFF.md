@@ -487,5 +487,12 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    - **`tool-delete-document` 跟 §61 的 60 秒门槛走**：判据把专属 blob mtime 回拨 120 秒（自己造输入），
      双契约分支（回拨成功 ⇒ `deleted≥1`＋404；失败 ⇒ `deferred_fresh≥1`＋200）。本机
      `blobs_deleted=1`、释 166 B、404 ✓。
-   - 四条修改（`browser-dodge-burn`／`browser-range-mask`／`browser-frequency-separation`／
-     `tool-delete-document`）**本机全绿**（无预开驱动＋新 debug 二进制）；CI 结果以 run 为准。
+   - `browser-fill-region` ② **CI 又红一次（`40502062240`，本机先前绿）**：`info=""` ⇒
+    与 §64 的接线窗口同族（`setupFillRegionPanel` 挂在 `warmKernel` 里、监听器可能尚未接上，
+    固定 400 ms 一把读在慢机上也不够）。判据改成**有界重点击 + 轮询**（最多 30 s；宽 0 这一路
+    不发请求 ⇒ 重点击不会写原子）。本机复跑全绿。
+  - 四条修改（`browser-dodge-burn`／`browser-range-mask`／`browser-frequency-separation`／
+     `tool-delete-document`）**本机全绿**（无预开驱动＋新 debug 二进制）；
+     **CI 已验（run `40502062240`）**：shard 2/6 与 6/6 里 range-mask／frequency-separation／
+     dodge-burn／delete-document **全部转绿** ✓；剩余红＝`tool-export-idempotent`（CI 独有，
+     未决，见上）＋ `browser-fill-region`（本轮新修，见上一条）。

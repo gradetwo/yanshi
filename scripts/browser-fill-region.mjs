@@ -313,14 +313,24 @@ const canvasPixel = (docX, docY) => evaluate(`(() => {
   await pickField("fillRegionShape", "rect");
   await field("fillRegionW", 0);
   await clickCard("fillRegionRun");
-  await sleep(400);
-  const read = await cardRead();
+  // **等前提、不等结论**（2026-10-27 CI 假红 ⇒ 本机 `info=""` 定性的复制品）：
+  // 这句「宽/高要大于 0」是**页面自己**在点击处理器里同步写的 ⇒ 读到空只可能是
+  // ①慢机上还没渲染，或②`setupFillRegionPanel` 挂在 `warmKernel` 里、监听器尚未接上 ✗
+  // ⇒ **有界重点击 + 轮询**（每轮 250 ms、最多 30 s）。重点击安全：宽 0 这一路
+  // **不发任何请求**（这正是本条断的内容），多点几次不会写原子。
+  let info = "";
+  for (let i = 0; i < 120; i += 1) {
+    info = (await cardRead()).info || "";
+    if (/大于 0/.test(info)) break;
+    await sleep(250);
+    if (i % 4 === 3) await clickCard("fillRegionRun");
+  }
   const atomsAfter = await atomCount();
   const objectsAfter = await objectsOf("layer_work");
-  if (atomsAfter === atomsBefore && objectsAfter === objectsBefore && /大于 0/.test(read.info || "")) {
-    ok(`② 宽 0 ⇒ 就地拦（原子 ${atomsBefore}→${atomsAfter} · 对象 ${objectsBefore}→${objectsAfter}）`, { info: read.info });
+  if (atomsAfter === atomsBefore && objectsAfter === objectsBefore && /大于 0/.test(info)) {
+    ok(`② 宽 0 ⇒ 就地拦（原子 ${atomsBefore}→${atomsAfter} · 对象 ${objectsBefore}→${objectsAfter}）`, { info });
   } else {
-    bad(`② 宽 0 应当不发请求、不写任何东西`, { info: read.info, atoms: [atomsBefore, atomsAfter], objects: [objectsBefore, objectsAfter] });
+    bad(`② 宽 0 应当不发请求、不写任何东西`, { info, atoms: [atomsBefore, atomsAfter], objects: [objectsBefore, objectsAfter] });
   }
   await field("fillRegionW", 120);
 }
