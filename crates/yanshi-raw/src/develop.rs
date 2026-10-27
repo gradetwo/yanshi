@@ -915,6 +915,12 @@ pub fn highlight_recover(
 /// ④′ 结果（见上「诚实边界」）。
 pub const CHROMA_DIFFUSION_STRIDES: [usize; 7] = [1, 1, 2, 4, 8, 16, 32];
 
+/// ④′′ 分块扩散：一个中心块的行数（halo 另计，halo = 步长和 =
+/// 1+1+2+4+8+16+32 = 64 行，见 `highlight_chroma_recover`）。
+/// 块缓冲 = (256 + 2×64) 行 × 宽 × 5 面 × 4 B × 2 份；81MP
+/// @10402 宽 ≈ 160 MB（旧版全幅 soft + field + next 共 4.19 GB）。
+pub const CHROMA_TILE_ROWS: usize = 256;
+
 /// 锚点影响的可信下限：扩散权重 W ≤ 此值视为无证据，像素不动。
 pub const CHROMA_MIN_ANCHOR_WEIGHT: f32 = 0.02;
 
@@ -958,107 +964,152 @@ pub fn highlight_chroma_recover(
             HIGHLIGHT_TAU_CLIP * g * wb[2],
         ]
     };
-    // 软饱和权重（与 ④′ 同源公式）。
-    let mut soft = vec![0.0f32; npix * 3];
+    // 软饱和权重（与 ④′ 同源公式）——只扫两遍布尔量，不再落全幅
+    // `soft` 数组（81MP = 973 MB）：softness 现算现用，rgb 在本
+    // 函数内扩散前不被改动 ⇒ 现算的值与数组版逐位相同。
     let mut any_clipped = false;
+    let mut any_anchor = false;
     for i in 0..npix {
         let t = ceiling_at(i);
-        for c in 0..3 {
-            let s = highlight_softness(rgb[i * 3 + c], t[c]);
-            soft[i * 3 + c] = s;
-            any_clipped |= s > 0.0;
+        let (r, g, b) = (rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
+        let s0 = highlight_softness(r, t[0]);
+        let s1 = highlight_softness(g, t[1]);
+        let s2 = highlight_softness(b, t[2]);
+        if s0 > 0.0 || s1 > 0.0 || s2 > 0.0 {
+            any_clipped = true;
+        } else if r.max(g).max(b) > 0.0 {
+            any_anchor = true;
         }
     }
     if !any_clipped {
         return Ok(()); // 无饱和：逐位不变，早退（常态路径零成本之外的保证）。
     }
-    // 扩散场：[q_R·W, q_G·W, q_B·W, L·W, W] 五平面，锚点处赋值、
-    // 其余为 0；每轮对五平面同做一遍 3×3 盒和平均（加权扩散的
-    // Jacobi 迭代，双缓冲防自污染）。
-    let mut field = vec![0.0f32; npix * 5];
-    let mut anchors = 0usize;
-    for i in 0..npix {
-        if soft[i * 3] == 0.0 && soft[i * 3 + 1] == 0.0 && soft[i * 3 + 2] == 0.0 {
-            let (r, g, b) = (rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
-            let l = r.max(g).max(b);
-            if l > 0.0 {
-                field[i * 5] = r / l;
-                field[i * 5 + 1] = g / l;
-                field[i * 5 + 2] = b / l;
-                field[i * 5 + 3] = l;
-                field[i * 5 + 4] = 1.0;
-                anchors += 1;
-            }
-        }
-    }
-    if anchors == 0 {
+    if !any_anchor {
         return Ok(()); // 整帧无锚点（全饱和）：无证据，保留 ④′ 结果。
     }
-    let mut next = vec![0.0f32; npix * 5];
-    for &stride in CHROMA_DIFFUSION_STRIDES.iter() {
-        let s = stride as isize;
-        for y in 0..height {
-            let ym = reflect_index(y as isize - s, height);
-            let yp = reflect_index(y as isize + s, height);
+    // 分块扩散（81MP 单图 OOM 的主因：旧版 soft + field + next 三
+    // 个全幅数组共 4.19 GB）。行向切块，块内含上下各 `halo` 行的
+    // 晕边；x 向不切块。晕边的作用是让中心行的 7 轮扩散读到与全
+    // 幅完全相同的邻域值：每轮只读 ±s 行，7 轮累计依赖半径 = 步
+    // 长和 = halo；晕边之外的值即使被钳住读错，也只污染将被丢
+    // 弃的晕边行，传不到中心行（每轮向内至多传 s 行）。逐位等
+    // 价的另一半：reflect 用帧尺寸与全局坐标、9 点求和顺序与全
+    // 幅版逐字相同 ⇒ 中心行输出逐位一致（对照见
+    // tests/chroma_pkg5.rs 的 `tiled_matches_full_frame`）。
+    // 块缓冲 = (256 + 2×64) 行 × 宽 × 5 面 × 4 B × 2 份；81MP
+    // @10402 宽 ≈ 160 MB，峰值从 4.19 GB 降到约 0.16 GB。
+    let halo: usize = CHROMA_DIFFUSION_STRIDES.iter().sum();
+    let mut y0 = 0usize;
+    while y0 < height {
+        let y1 = (y0 + CHROMA_TILE_ROWS).min(height);
+        let a = y0.saturating_sub(halo);
+        let b = (y1 + halo).min(height);
+        let trows = b - a;
+        // 扩散场：[q_R·W, q_G·W, q_B·W, L·W, W] 五平面，锚点处赋值、
+        // 其余为 0；每轮对五平面同做一遍 3×3 盒和平均（加权扩散的
+        // Jacobi 迭代，双缓冲防自污染）。
+        let mut field = vec![0.0f32; trows * width * 5];
+        for gy in a..b {
+            let ly = gy - a;
             for x in 0..width {
-                let xm = reflect_index(x as isize - s, width);
-                let xp = reflect_index(x as isize + s, width);
-                let mut acc = [0.0f32; 5];
-                for sy in [ym, y, yp] {
-                    for sx in [xm, x, xp] {
-                        let src = (sy * width + sx) * 5;
-                        for k in 0..5 {
-                            acc[k] += field[src + k];
-                        }
+                let i = gy * width + x;
+                let t = ceiling_at(i);
+                let (r, g, b) = (rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
+                if highlight_softness(r, t[0]) == 0.0
+                    && highlight_softness(g, t[1]) == 0.0
+                    && highlight_softness(b, t[2]) == 0.0
+                {
+                    let l = r.max(g).max(b);
+                    if l > 0.0 {
+                        let dst = (ly * width + x) * 5;
+                        field[dst] = r / l;
+                        field[dst + 1] = g / l;
+                        field[dst + 2] = b / l;
+                        field[dst + 3] = l;
+                        field[dst + 4] = 1.0;
                     }
                 }
-                let dst = (y * width + x) * 5;
-                for k in 0..5 {
-                    next[dst + k] = acc[k] / 9.0;
+            }
+        }
+        let mut next = vec![0.0f32; trows * width * 5];
+        for &stride in CHROMA_DIFFUSION_STRIDES.iter() {
+            let s = stride as isize;
+            for ly in 0..trows {
+                let y = (a + ly) as isize;
+                // reflect 先对帧高、再钳到块内：钳住的读数只污染晕边行。
+                let ym = reflect_index(y - s, height).clamp(a, b - 1) - a;
+                let yp = reflect_index(y + s, height).clamp(a, b - 1) - a;
+                for x in 0..width {
+                    let xm = reflect_index(x as isize - s, width);
+                    let xp = reflect_index(x as isize + s, width);
+                    let mut acc = [0.0f32; 5];
+                    for sy in [ym, ly, yp] {
+                        for sx in [xm, x, xp] {
+                            let src = (sy * width + sx) * 5;
+                            for k in 0..5 {
+                                acc[k] += field[src + k];
+                            }
+                        }
+                    }
+                    let dst = (ly * width + x) * 5;
+                    for k in 0..5 {
+                        next[dst + k] = acc[k] / 9.0;
+                    }
+                }
+            }
+            std::mem::swap(&mut field, &mut next);
+        }
+        // 重建：只动 s>0 的通道；无扩散证据处不动。
+        for gy in y0..y1 {
+            let ly = gy - a;
+            for x in 0..width {
+                let i = gy * width + x;
+                let t = ceiling_at(i);
+                let s = [
+                    highlight_softness(rgb[i * 3], t[0]),
+                    highlight_softness(rgb[i * 3 + 1], t[1]),
+                    highlight_softness(rgb[i * 3 + 2], t[2]),
+                ];
+                if s[0] == 0.0 && s[1] == 0.0 && s[2] == 0.0 {
+                    continue;
+                }
+                let base = (ly * width + x) * 5;
+                let w = field[base + 4];
+                if w <= CHROMA_MIN_ANCHOR_WEIGHT {
+                    continue;
+                }
+                let q = [
+                    (field[base] / w).max(0.0),
+                    (field[base + 1] / w).max(0.0),
+                    (field[base + 2] / w).max(0.0),
+                ];
+                let value = [rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]];
+                // 亮度估计：未（完全）饱和通道按 q̂ 反推、取最大；全饱和才
+                // 用扩散亮度。q̂_c 为 0 的通道不参与反推（无该通道色度证据）。
+                let mut l_est: Option<f32> = None;
+                for c in 0..3 {
+                    if s[c] < 1.0 && q[c] > 1e-6 {
+                        let candidate = value[c] / q[c];
+                        l_est = Some(l_est.map_or(candidate, |l: f32| l.max(candidate)));
+                    }
+                }
+                let l = match l_est {
+                    Some(l) => l,
+                    None => field[base + 3] / w,
+                };
+                if !l.is_finite() || l <= 0.0 {
+                    continue;
+                }
+                for c in 0..3 {
+                    if s[c] <= 0.0 {
+                        continue;
+                    }
+                    let estimate = value[c].max(l * q[c]);
+                    rgb[i * 3 + c] = (1.0 - s[c]) * value[c] + s[c] * estimate;
                 }
             }
         }
-        std::mem::swap(&mut field, &mut next);
-    }
-    // 重建：只动 s>0 的通道；无扩散证据处不动。
-    for i in 0..npix {
-        let s = [soft[i * 3], soft[i * 3 + 1], soft[i * 3 + 2]];
-        if s[0] == 0.0 && s[1] == 0.0 && s[2] == 0.0 {
-            continue;
-        }
-        let w = field[i * 5 + 4];
-        if w <= CHROMA_MIN_ANCHOR_WEIGHT {
-            continue;
-        }
-        let q = [
-            (field[i * 5] / w).max(0.0),
-            (field[i * 5 + 1] / w).max(0.0),
-            (field[i * 5 + 2] / w).max(0.0),
-        ];
-        let value = [rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]];
-        // 亮度估计：未（完全）饱和通道按 q̂ 反推、取最大；全饱和才
-        // 用扩散亮度。q̂_c 为 0 的通道不参与反推（无该通道色度证据）。
-        let mut l_est: Option<f32> = None;
-        for c in 0..3 {
-            if s[c] < 1.0 && q[c] > 1e-6 {
-                let candidate = value[c] / q[c];
-                l_est = Some(l_est.map_or(candidate, |l: f32| l.max(candidate)));
-            }
-        }
-        let l = match l_est {
-            Some(l) => l,
-            None => field[i * 5 + 3] / w,
-        };
-        if !l.is_finite() || l <= 0.0 {
-            continue;
-        }
-        for c in 0..3 {
-            if s[c] <= 0.0 {
-                continue;
-            }
-            let estimate = value[c].max(l * q[c]);
-            rgb[i * 3 + c] = (1.0 - s[c]) * value[c] + s[c] * estimate;
-        }
+        y0 = y1;
     }
     Ok(())
 }

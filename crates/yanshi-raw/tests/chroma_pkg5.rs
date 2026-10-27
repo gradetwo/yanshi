@@ -245,3 +245,190 @@ fn develop_chroma_differs_only_in_saturated_region() {
     }
     assert!(changed > 0, "过渡带内真色度恢复应实际改变像素");
 }
+
+// ---------------------------------------------------------------------------
+// 分块等价：生产实现（行向分块 + halo）与旧全幅实现逐位一致。
+// 参照是旧版 `highlight_chroma_recover` 的逐字复刻（soft/field/next
+// 三个全幅数组），只做测试用；生产代码不再保留全幅路径。
+// 触发条件（四层齐第 2 层）：图高 600 > CHROMA_TILE_ROWS(256) ⇒
+// 3 个中心块，边界 y=256/512；右半亮度锯齿让饱和带每 100 行出现
+// 一次、横跨两个边界 —— 晕边/钳制/求和顺序任一处错，边界附近
+// 的像素就会逐位不同，测试恒绿不了。
+// ---------------------------------------------------------------------------
+
+/// reflect-101（与 develop.rs 的 `reflect_index` 同式：周期 2n−2，
+/// 边缘不重复；测试内复刻，只为参照实现能独立跑）。
+fn reflect_101(i: isize, n: usize) -> usize {
+    if n == 1 {
+        return 0;
+    }
+    let period = (2 * n - 2) as isize;
+    let m = i.rem_euclid(period);
+    if m >= n as isize {
+        (period - m) as usize
+    } else {
+        m as usize
+    }
+}
+
+/// 旧全幅实现的逐字复刻（测试专用参照）。
+fn highlight_chroma_recover_full_frame_ref(
+    rgb: &mut [f32],
+    width: usize,
+    height: usize,
+    wb: [f32; 3],
+    vig: Option<&[f32]>,
+) {
+    use yanshi_raw::develop::{
+        highlight_softness, CHROMA_DIFFUSION_STRIDES, CHROMA_MIN_ANCHOR_WEIGHT, HIGHLIGHT_TAU_CLIP,
+    };
+    let npix = width * height;
+    let ceiling_at = |i: usize| -> [f32; 3] {
+        let g = vig.map_or(1.0, |field| field[i]);
+        [
+            HIGHLIGHT_TAU_CLIP * g * wb[0],
+            HIGHLIGHT_TAU_CLIP * g * wb[1],
+            HIGHLIGHT_TAU_CLIP * g * wb[2],
+        ]
+    };
+    let mut soft = vec![0.0f32; npix * 3];
+    let mut any_clipped = false;
+    for i in 0..npix {
+        let t = ceiling_at(i);
+        for c in 0..3 {
+            let s = highlight_softness(rgb[i * 3 + c], t[c]);
+            soft[i * 3 + c] = s;
+            any_clipped |= s > 0.0;
+        }
+    }
+    if !any_clipped {
+        return;
+    }
+    let mut field = vec![0.0f32; npix * 5];
+    let mut anchors = 0usize;
+    for i in 0..npix {
+        if soft[i * 3] == 0.0 && soft[i * 3 + 1] == 0.0 && soft[i * 3 + 2] == 0.0 {
+            let (r, g, b) = (rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
+            let l = r.max(g).max(b);
+            if l > 0.0 {
+                field[i * 5] = r / l;
+                field[i * 5 + 1] = g / l;
+                field[i * 5 + 2] = b / l;
+                field[i * 5 + 3] = l;
+                field[i * 5 + 4] = 1.0;
+                anchors += 1;
+            }
+        }
+    }
+    if anchors == 0 {
+        return;
+    }
+    let mut next = vec![0.0f32; npix * 5];
+    for &stride in CHROMA_DIFFUSION_STRIDES.iter() {
+        let s = stride as isize;
+        for y in 0..height {
+            let ym = reflect_101(y as isize - s, height);
+            let yp = reflect_101(y as isize + s, height);
+            for x in 0..width {
+                let xm = reflect_101(x as isize - s, width);
+                let xp = reflect_101(x as isize + s, width);
+                let mut acc = [0.0f32; 5];
+                for sy in [ym, y, yp] {
+                    for sx in [xm, x, xp] {
+                        let src = (sy * width + sx) * 5;
+                        for k in 0..5 {
+                            acc[k] += field[src + k];
+                        }
+                    }
+                }
+                let dst = (y * width + x) * 5;
+                for k in 0..5 {
+                    next[dst + k] = acc[k] / 9.0;
+                }
+            }
+        }
+        std::mem::swap(&mut field, &mut next);
+    }
+    for i in 0..npix {
+        let s = [soft[i * 3], soft[i * 3 + 1], soft[i * 3 + 2]];
+        if s[0] == 0.0 && s[1] == 0.0 && s[2] == 0.0 {
+            continue;
+        }
+        let w = field[i * 5 + 4];
+        if w <= CHROMA_MIN_ANCHOR_WEIGHT {
+            continue;
+        }
+        let q = [
+            (field[i * 5] / w).max(0.0),
+            (field[i * 5 + 1] / w).max(0.0),
+            (field[i * 5 + 2] / w).max(0.0),
+        ];
+        let value = [rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]];
+        let mut l_est: Option<f32> = None;
+        for c in 0..3 {
+            if s[c] < 1.0 && q[c] > 1e-6 {
+                let candidate = value[c] / q[c];
+                l_est = Some(l_est.map_or(candidate, |l: f32| l.max(candidate)));
+            }
+        }
+        let l = match l_est {
+            Some(l) => l,
+            None => field[i * 5 + 3] / w,
+        };
+        if !l.is_finite() || l <= 0.0 {
+            continue;
+        }
+        for c in 0..3 {
+            if s[c] <= 0.0 {
+                continue;
+            }
+            let estimate = value[c].max(l * q[c]);
+            rgb[i * 3 + c] = (1.0 - s[c]) * value[c] + s[c] * estimate;
+        }
+    }
+}
+
+#[test]
+fn tiled_matches_full_frame() {
+    let (w, h) = (64usize, 600usize);
+    // 左半锚点（亮度 0.8，不饱和）；右半亮度锯齿 0.9 → 2.3（每
+    // 100 行一个齿），只有 R 触顶。锯齿保证饱和带横跨 y=256/512
+    // 两个块边界（触发条件，见文件头注释）。
+    let ratio = [1.0f32, 0.419, 0.305];
+    let mut img = vec![0.0f32; w * h * 3];
+    for y in 0..h {
+        for x in 0..w {
+            let l = if x < w / 2 {
+                0.8
+            } else {
+                0.9 + ((y % 100) as f32 / 99.0) * 1.4
+            };
+            let truth = [l * ratio[0], l * ratio[1], l * ratio[2]];
+            let obs = observe(truth);
+            img[(y * w + x) * 3..(y * w + x) * 3 + 3].copy_from_slice(&obs);
+        }
+    }
+    // 先过保底（与判据 A 同口径），再分两路跑真色度恢复。
+    let mut floor = img.clone();
+    highlight_recover(&mut floor, w, h, WB_DAY, None).unwrap();
+    // 断言输入确实触发了要检查的情况：右半最右列确有饱和行、且
+    // 饱和带横跨两个块边界（否则测试恒绿）。
+    let clipped = |y: usize| img[(y * w + w - 1) * 3] >= WB_DAY[0];
+    assert!((0..h).any(clipped), "测试图右半应有饱和行（R 触顶）");
+    assert!(
+        (0..256).any(clipped) && (256..h).any(clipped),
+        "饱和带应横跨 y=256 块边界"
+    );
+    assert!(
+        (0..512).any(clipped) && (512..h).any(clipped),
+        "饱和带应横跨 y=512 块边界"
+    );
+    let mut tiled = floor.clone();
+    highlight_chroma_recover(&mut tiled, w, h, WB_DAY, None).unwrap();
+    let mut reference = floor.clone();
+    highlight_chroma_recover_full_frame_ref(&mut reference, w, h, WB_DAY, None);
+    assert_eq!(
+        tiled, reference,
+        "分块实现必须与全幅实现逐位一致（块边界/晕边处最先露馅）"
+    );
+}

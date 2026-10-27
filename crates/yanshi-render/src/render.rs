@@ -191,6 +191,11 @@ pub struct RenderStats {
 #[derive(Debug, Default)]
 struct BitmapCache {
     inner: std::sync::Mutex<BitmapCacheInner>,
+    /// 同 key 在途解码的会合点（单飞用，见 `get_or_decode`）。
+    /// wasm 上无并行分块、等候分支不可达 ⇒ 字段本身也不编译，
+    /// 免得 `Condvar::wait` 在单线程目标上留一个走不到的路径。
+    #[cfg(not(target_arch = "wasm32"))]
+    inflight_cv: std::sync::Condvar,
 }
 
 /// [`BitmapCache`] 的内部状态（单独成结构只为在锁内整体访问 ✓）。
@@ -210,6 +215,8 @@ struct BitmapCacheInner {
     missed_bytes: u64,
     /// 因超预算被淘汰的条目数。
     evictions: usize,
+    /// 正在锁外解码中的 key（单飞用）：后来者等同一份结果，不重复解码。
+    in_flight: std::collections::HashSet<String>,
 }
 
 /// 解码位图缓存能占用的**明文字节**上限（64 MiB ✓，理由见 [`BitmapCache`] 的说明 ✓）。
@@ -753,63 +760,149 @@ pub struct BitmapCacheStats {
     pub evictions: usize,
 }
 
+/// 在途解码的认领（单飞用）：持有期间 key 在 `in_flight` 里；
+/// 释放时摘除并唤醒等候者。显式 `release()` 走正常路径；`Drop`
+/// 兜底解码 panic 的路径 —— 认领者中途死掉也不能把等候线程饿死。
+/// 释放只在**锁不在手里**时做（调用点都先 `drop(inner)`），否则
+/// 同一线程两次上锁会死锁。
+struct InFlightClaim<'a> {
+    cache: &'a BitmapCache,
+    key: &'a str,
+    active: bool,
+}
+
+impl InFlightClaim<'_> {
+    fn release(&mut self) {
+        if !self.active {
+            return;
+        }
+        self.active = false;
+        let mut inner = self
+            .cache
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        inner.in_flight.remove(self.key);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.cache.inflight_cv.notify_all();
+    }
+}
+
+impl Drop for InFlightClaim<'_> {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 impl BitmapCache {
-    /// **取值，未命中则当场解码**（`decode` 在**锁内**执行 ✓）。
+    /// **取值，未命中则当场解码**（单飞：同一 key 只解一次 ✓）。
     ///
-    /// 为什么解码必须在锁内 ✗：并行分块会同时请求同一块补丁 ✓ ——
-    /// 若在锁外解码，四块会各解一遍 33 MiB 的背景 ✗（实测把"缓存"变成负优化 ✓）；
-    /// 锁内解码则**一次未命中 ⇒ 只解一次** ✓，其余各块命中同一份 `Arc` ✓。
+    /// 为什么解码不在锁内 ✗：并行分块会同时请求同一块补丁 ✓ ——
+    /// 锁内解码 ⇒ 4 条带完全串行 ✗（第 868 轮实测：1／2／4 条带 ⇒
+    /// 380／709／1434 ms ✓）⇒ 于是未命中时在**锁外**解码 ✗ ⇒
+    /// 多条带可并行读盘／解码 ✓（第 868 轮 ✓；目标第 8 条 ✓）。
+    ///
+    /// **∴ 但**锁外解码的旧代价（**如实** ✓）**：**未命中时**可能**
+    /// 重复解码 ✗**（**两个条带**同时**解同一块 ✓）—— 旧注释说
+    /// 「缓存键按 tile 分 ⇒ 重复极少」✗，**那只对 tile 键成立** ✗：
+    /// 相机 RAW 的全幅 Linear 是**单 key**（整幅 968 MB @81MP），
+    /// 4 条带会在同一瞬间都未命中、**各解一遍** ✗ ⇒ 81MP 单图
+    /// OOM 的第二推手（第一推手是 `highlight_chroma_recover`
+    /// 的全幅数组，见 yanshi-raw）。**∴ 所以**单飞 ✗：第一个
+    /// 未命中者认领解码，其余等候者**等同一份结果** ✓ —— 解码仍
+    /// 在锁外（**不同** key 照样并行 ✓，第 868 轮的教训不回退 ✓），
+    /// 只是**同一** key 不再重复解 ✓。
     ///
     /// `decode` 返回 `Ok(None)`（缺 blob / 格式未实现 ✓）⇒ 本函数也返回 `Ok(None)` ✓，
-    /// **且不写缓存** ✓ —— 否则下次会把"跳过"记成命中、把告警吞掉 ✗。
+    /// **且不写缓存** ✓ —— 否则下次会把\"跳过\"记成命中、把告警吞掉 ✗。
     /// `decode` 返回 `Err` ⇒ 原样上抛 ✓（与没有缓存时的行为**逐字一致** ✓，不静默降级 ✗）。
     fn get_or_decode<F>(&self, key: &str, decode: F) -> Result<Option<DecodedBitmap>>
     where
         F: FnOnce() -> Result<Option<DecodedPixels>>,
     {
-        // **★ 先做"快速命中"的只读检查 ✗ ★**（第 868 轮 ✓；**目标第 8 条 ✓**）：
-        //   **∴ 原来的错 ✗**：**`decode()` 在**锁内**执行 ✗**（**它**做 `store.get()` ⇒ **读盘 ＋ 整份解码 ✓）
-        //     ⇒ **∴ 于是**：**4 条带**并发 ⇒ **∴ 但**只有一条**能**持锁解码 ✗**
-        //       ⇒ **∴ 它们**完全**串行 ✓****（**实测：**1／2／4 条带 ⇒ 380／709／1434 ms ✓）
-        //   **∴ 现在 ✗**：**锁内**只查一次 ✗**（**命中就返回 ✓）
-        //     ⇒ **∴ 未命中时**在**锁外**解码 ✗** ⇒ **∴ 于是**：**多条带**可**并行**读盘／解码 ✓**** ✓✓
-        //   **∴ 代价（**如实 ✓）**：**未命中时**可能**重复解码 ✗**（**两个条带**同时**解同一块 ✓）
-        //     ⇒ **∴ 但**缓存键**按 tile 分**✗ ⇒ **∴ 重复**极少 ✓**** ✓✓
-        //     ⇒ **∴ 且**即使重复，**也**优于**全局串行 ✓**** ✓✓
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(entry) = inner.entries.get(key).cloned() {
-            inner.hits += 1;
-            if let Some(position) = inner.order.iter().position(|candidate| candidate == key) {
-                if let Some(moved) = inner.order.remove(position) {
-                    inner.order.push_back(moved);
+        // 在途认领：持有期间 key 在 `in_flight` 里；释放（显式或
+        // Drop）时摘除并唤醒等候者 —— 解码 panic 也不会把等候线程
+        // 饿死。释放只在**锁不在手里**时做（下面的调用点都先
+        // `drop(inner)`），否则同一线程两次上锁会死锁。
+        let mut claim = InFlightClaim {
+            cache: self,
+            key,
+            active: false,
+        };
+        let mut decode = Some(decode);
+        loop {
+            let mut inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(entry) = inner.entries.get(key).cloned() {
+                inner.hits += 1;
+                if let Some(position) = inner.order.iter().position(|candidate| candidate == key) {
+                    if let Some(moved) = inner.order.remove(position) {
+                        inner.order.push_back(moved);
+                    }
                 }
+                // **★ 只读探针（**命中 ✓）✗ ★**（第 946 轮 ✓；**照 `YANSHI_*_PROBE` 惯例 ✓）：
+                //   **∴ 为什么需要它 ✗**：**`export_small`** 那条**逐像素**判据
+                //     **矛盾未解 ✗**（**状态／位图数／设置／缓存／并行／实例**全排除 ✓）
+                //     ⇒ **∴ 排除法**到头了 ✓ ⇒ **∴ 换工具 ✗**：**让渲染器**自报
+                //       **它**到底读到了什么 ✓**** ✓✓
+                //   **∴ 未设变量 ⇒ 行为不变 ✗**（**∴ 只**多一次**环境变量查询 ✓）** ✓✓
+                probe_decoded("hit", key, &entry);
+                return Ok(Some(entry));
             }
-            // **★ 只读探针（**命中 ✓）✗ ★**（第 946 轮 ✓；**照 `YANSHI_*_PROBE` 惯例 ✓）：
-            //   **∴ 为什么需要它 ✗**：**`export_small`** 那条**逐像素**判据
-            //     **矛盾未解 ✗**（**状态／位图数／设置／缓存／并行／实例**全排除 ✓）
-            //     ⇒ **∴ 排除法**到头了 ✓ ⇒ **∴ 换工具 ✗**：**让渲染器**自报
-            //       **它**到底读到了什么 ✓**** ✓✓
-            //   **∴ 未设变量 ⇒ 行为不变 ✗**（**∴ 只**多一次**环境变量查询 ✓）** ✓✓
-            probe_decoded("hit", key, &entry);
-            return Ok(Some(entry));
+            if !inner.in_flight.contains(key) {
+                // 无人在途：认领，本线程去解码。
+                inner.in_flight.insert(key.to_owned());
+                claim.active = true;
+                drop(inner);
+                break;
+            }
+            // 有人在途：等它出结果再复查（不重复解码）。
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                inner = self
+                    .inflight_cv
+                    .wait(inner)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                // 单线程目标：不可能有他人在途；走到这里只可能是之前
+                // 一次解码 panic 残留的认领（正常路径 guard 的 Drop
+                // 会清掉）。直接接管，不等。
+                inner.in_flight.remove(key);
+                inner.in_flight.insert(key.to_owned());
+                claim.active = true;
+                drop(inner);
+                break;
+            }
         }
-        // **∴ 锁**在这里释放 ✗**（**`inner` 不再使用 ✓）⇒ **∴ 于是**下面的 `decode()` 在锁外 ✓**
-        drop(inner);
-        let Some(decoded) = decode()? else {
+        let decode = decode.take().expect("认领者必持有 decode 闭包");
+        // **∴ 锁**不在手里 ✓ ⇒ **∴ 于是** `decode()` 在锁外 ✓。
+        let decoded = match decode() {
+            Ok(decoded) => decoded,
+            Err(err) => {
+                claim.release();
+                return Err(err);
+            }
+        };
+        let Some(decoded) = decoded else {
+            claim.release();
             return Ok(None);
         };
         let entry = std::sync::Arc::new(decoded);
-        // **∴ 解码路径**也记一条 ✗**（**∴ 于是**：**两边**的"**读到什么**"**可以逐项比对 ✓）
+        // **∴ 解码路径**也记一条 ✗**（**∴ 于是**：**两边**的\"**读到什么**\"**可以逐项比对 ✓）
         probe_decoded("decode", key, &entry);
-        // **∴ 再拿锁写入 ✗**：**可能**另一个线程已经写好了 ⇒ **∴ 那时**直接用它的 ✓**
+        // **∴ 再拿锁写入 ✗**：单飞保证只有认领者会走到这里 ⇒ 另一
+        // 个线程已经写好的分支已不可达，但留着当护栏（零成本）。
         let mut inner = self
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(entry) = inner.entries.get(key).cloned() {
+            drop(inner);
+            claim.release();
             return Ok(Some(entry));
         }
         inner.misses += 1;
@@ -817,6 +910,8 @@ impl BitmapCache {
             .missed_bytes
             .saturating_add(decoded_byte_len(&entry) as u64);
         insert_locked(&mut inner, key.to_owned(), entry.clone());
+        drop(inner);
+        claim.release();
         Ok(Some(entry))
     }
 
@@ -9691,6 +9786,67 @@ mod tests {
             "有参考时不该警告：{:?}",
             matched.stats.unsupported
         );
+    }
+    /// 单飞：8 线程同时抢同一 key，只解一次（81MP RAW 全幅 Linear
+    /// 是单 key，4 条带同瞬未命中会各解一遍 —— 旧行为）。
+    /// 并发来自 `rows::for_each_band_mut`（其 scoped 线程在 cfg 门控的
+    /// 执行器函数里；本文件守卫测试 `thread_code_is_cfg_gated_out_of_wasm`
+    /// 只允许 `std::thread` 出现在 `parallel_impl` 内，测试里不直接写它，
+    /// 也不用 `std::thread::sleep`）。
+    /// 触发条件：decode 闭包里一段纯计算（约几十毫秒）拉长竞跑窗口，
+    /// 8 线程必须全挤进等候分支；否则只剩第一个线程在跑、测试恒绿。
+    /// 变异校验：把 `in_flight` 的认领改成恒真（永不等候）⇒
+    /// 解码次数 8 ⇒ 本测试变红。
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn bitmap_cache_single_flight_decodes_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier, Mutex};
+        let cache = BitmapCache::default();
+        let decoded_times = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(8));
+        let results = Arc::new(Mutex::new(Vec::new()));
+        let mut out = vec![0u8; 8];
+        crate::rows::for_each_band_mut(8, 1, 8, &mut out, |_, _, _| {
+            let decoded_times = decoded_times.clone();
+            let barrier = barrier.clone();
+            let results = results.clone();
+            barrier.wait();
+            let got = cache
+                .get_or_decode("same-key", || {
+                    decoded_times.fetch_add(1, Ordering::SeqCst);
+                    // 拉长竞跑窗口：纯计算顶住约几十毫秒，等候者在此期间到达并挂起。
+                    let mut acc = 0u64;
+                    for i in 0..30_000_000u64 {
+                        acc = acc.wrapping_add(i ^ (i << 7));
+                    }
+                    std::hint::black_box(acc);
+                    Ok(Some(DecodedPixels::Rgba8(4, 4, vec![7u8; 4 * 4 * 4])))
+                })
+                .unwrap();
+            results.lock().unwrap().push(got);
+        });
+        let results = results.lock().unwrap();
+        assert_eq!(
+            decoded_times.load(Ordering::SeqCst),
+            1,
+            "同一 key 只许解一次：8 线程竞跑也不许重复解码"
+        );
+        assert_eq!(results.len(), 8, "8 条带都应跑到并拿到结果");
+        assert!(
+            results.iter().all(|r| r.is_some()),
+            "8 线程都应拿到结果（等候者复用同一份 Arc）"
+        );
+        let first = results[0].as_ref().unwrap();
+        assert!(
+            results
+                .iter()
+                .all(|r| std::sync::Arc::ptr_eq(r.as_ref().unwrap(), first)),
+            "8 线程应拿到同一份 Arc（不是 8 份内容相同的拷贝）"
+        );
+        let stats = cache.stats();
+        assert_eq!(stats.misses, 1, "misses 只计真正解码的一次");
+        assert_eq!(stats.hits, 7, "其余 7 次都是命中（等候后命中）");
     }
 }
 
