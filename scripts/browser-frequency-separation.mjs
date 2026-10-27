@@ -218,6 +218,23 @@ const pick = (layerId) => evaluate(`(() => {
 })()`);
 const setRadius = (value) => evaluate(`(() => { const i = document.getElementById("freqSepRadius"); i.value = ${JSON.stringify(String(value))}; return i.value; })()`);
 const run = () => evaluate(`(() => { const b = document.getElementById("freqSepRun"); if (!b) return "no-button"; b.click(); return 1; })()`);
+/** 按下后**有界轮询到卡片说话**，每 1 秒补按一次（第 230 轮 ✓）：
+ *  点击落在刷新忙窗会**静默空转**（CI `40505569696` ⑧ 的 `{page:""}` 与本机 ② 的 `page:""` 同一族 ✓）；
+ *  本 helper 只给**拒绝路径**用——它们**不发请求、不写原子** ⇒ 补按**零副作用** ✓。
+ *  **先清卡片再按** ✓：不清的话"上一臂留下的同款文案"会让假阳性立刻通过 ✗
+ *  （半径 0 与半径 70 的拒绝句**完全相同**，旧判据的固定 sleep 就靠这个旧文本混过去的 ✓）。 */
+const runToInfo = async (pred) => {
+  await evaluate(`(() => { const el = document.getElementById("freqSepInfo"); if (el) el.textContent = ""; return 1; })()`);
+  await run();
+  let last = await cardText();
+  for (let i = 0; i < 40; i += 1) {
+    if (pred(last.info || "")) return last;
+    await sleep(250);
+    last = await cardText();
+    if (i % 4 === 3) await run();
+  }
+  return last;
+};
 const layerRows = async () => (await callTool("list_layers", {})).layers;
 // **等面板接线完成**（与 browser-dodge-burn 同一处开机空窗 ✓ 2026-10-27 CI 实测）：
 //   下拉在 `refreshLayers` 里就填好了 ✓ 而 `freqSepRun` 的 click 与 `freqSepSource`
@@ -284,7 +301,15 @@ if (read1.current === "该层有 " + serverObjects + " 个对象 ⇒ 可以分�
   bad("对象读数与服务端不一致", { server: serverObjects, page: read1.current });
 }
 await pick("layer_empty");
+// **等前提、不等结论**（第 230 轮 ✓，本机实测踩到"读太快"红 ✗）：change 监听是异步渲染，
+// 立即读会拿到旧行 ⇒ 有界轮询，每 1 秒补选一次（补选无副作用：只是换下拉值 ✓）。
 read1 = await cardText();
+for (let i = 0; i < 40; i += 1) {
+  if (/没有对象/.test(read1.current || "")) break;
+  await sleep(250);
+  read1 = await cardText();
+  if (i % 4 === 3) await pick("layer_empty");
+}
 if (/没有对象/.test(read1.current || "")) ok("换成空层时那句跟着变（不是留着上一位的读数）", { page: read1.current });
 else bad("选到空层后现状行没跟着走", read1);
 
@@ -292,9 +317,7 @@ else bad("选到空层后现状行没跟着走", read1);
 await pick("layer_ok");
 await setRadius("0");
 const atomsBefore2 = await atomCount();
-await run();
-await sleep(600);
-read1 = await cardText();
+read1 = await runToInfo((t) => /半径要在 1–64/.test(t));
 const layersAfter2 = (await layerRows()).length;
 const atomsAfter2 = await atomCount();
 if (/半径要在 1–64/.test(read1.info || "") && layersAfter2 === 4 && atomsAfter2 === atomsBefore2) {
@@ -303,9 +326,7 @@ if (/半径要在 1–64/.test(read1.info || "") && layersAfter2 === 4 && atomsA
   bad("半径越界没被就地拒绝（或它偷偷写了东西）", { page: read1.info, layers: layersAfter2, atoms: atomsBefore2 + "→" + atomsAfter2 });
 }
 await setRadius("70");
-await run();
-await sleep(600);
-read1 = await cardText();
+read1 = await runToInfo((t) => /半径要在 1–64/.test(t));
 if (/半径要在 1–64/.test(read1.info || "") && (await atomCount()) === atomsBefore2) {
   ok("半径 70（超上界）同样就地拒绝", { page: read1.info });
 } else {
@@ -316,9 +337,7 @@ await setRadius("8");
 // ---------- ③ 空层：就地拒绝并说清服务端也会这样拒 ----------
 const atomsBefore3 = await atomCount();
 await pick("layer_empty");
-await run();
-await sleep(600);
-read1 = await cardText();
+read1 = await runToInfo((t) => /没有可分离的像素/.test(t));
 if (/没有可分离的像素/.test(read1.info || "") && (await atomCount()) === atomsBefore3 && (await layerRows()).length === 4) {
   ok("空层被就地拒绝（不发请求），并说清服务端也会这样拒", { page: read1.info });
 } else {
@@ -328,9 +347,9 @@ if (/没有可分离的像素/.test(read1.info || "") && (await atomCount()) ===
 // ---------- ④ 服务端自检拒绝：说清是服务端拒绝，且不留半套层 ----------
 const atomsBefore4 = await atomCount();
 await pick("layer_selfcheck");
-await run();
-await sleep(2500);
-read1 = await cardText();
+// ④ 走真请求（服务端拒 ⇒ 不建组不写原子 ✓）；谓词收**两句拒绝文案的公共前缀**，
+// 补按最多**多问几次**、不改变任何状态 ✓。
+read1 = await runToInfo((t) => /未分离：/.test(t));
 const layersAfter4 = (await layerRows()).length;
 const serverLog = await callTool("get_log", {});
 const kindsSince = (serverLog.atoms || []).filter((a) => Number(a.seq) > atomsBefore4).map((a) => a.kind);

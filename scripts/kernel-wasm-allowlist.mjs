@@ -53,6 +53,11 @@ const ALLOWED = [
     why: "高斯模糊的纵向 wasm32 回退：同横向，wasm32 串行；输入整幅快照一次、按行带写，累加顺序不变 ⇒ 逐位一致 ✓" },
   { file: "crates/yanshi-render/src/render.rs", anchor: "mod parallel_impl",
     why: "并行分块渲染的执行器：wasm32 没有共享内存线程 ⇒ 该目标下 workers() 恒为 1、整条 std::thread 路径被 cfg 掉（不参与编译），回退是**纯串行**；并行只是把同一段 render_accumulation 分块，块的像素由该像素自己的输入决定 ⇒ 与串行逐字节一致（仅滑动窗口方框模糊有项目已批准的 ±1 LSB D1 例外）" },
+  // **单飞位图缓存（RW2 OOM 包 `d686c622`）的等待分支** ✗（CI `40508963270` 抓到未登记 ✓
+  //   —— 本机合并验证跑了定向 test 与两条变异，**没跑这条判据** ⇒ 记一笔：合并验证要跑
+  //   `run-criteria-local.sh` 里**相关主题**的判据，不只是新测试 ✓）
+  { file: "crates/yanshi-render/src/render.rs", anchor: "inner.in_flight.remove(key);",
+    why: "位图缓存单飞（BitmapCache::get_or_decode）的 wasm32 等待分支：wasm32 单线程 ⇒ 不可能有他人在途解码，走到这里只可能是解码 panic 残留的认领 ⇒ 直接接管不等（native 那侧是 Condvar wait）。这是**调度/等待簿记**，不改变解码字节本身 ⇒ 两端像素逐位一致 ✓" },
 ];
 
 const roots = ["crates/yanshi-core/src", "crates/yanshi-render/src"];

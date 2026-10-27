@@ -88,6 +88,9 @@
     ⇒ 判据侧硬化**：接线差分探针过了而卡片 20 秒仍空 ⇒ 与 fill-region ② 同族的"点击落在忙窗"候选。
     改成**有界补按**（每 1 秒补一次、两次都空才算红）＋失败详情带**方向证据**
     （`pick`／`click` 在位读数＋`layers`／`atoms` 差值 ⇒ 下次红能分清"没出门"与"出了门没念"）。
+    本机复跑**当场在同族两臂（① 现状行、② 半径 0 拒绝）复现同型红** ⇒ 修复推广到**全部
+    拒绝臂**（`runToInfo`：先清卡片再按——拒绝文案与上一臂相同时不清就是假阳性 ✓）；
+    本机 13/13 绿。另：RW2 遗留的 `kernel-wasm-allowlist` 未登记已补（台账 §68）。
 - **外部补丁包 `photo-bugfix-gc-isolation后续包.zip` 已合入**（`39511fc6`，`git am` 零冲突，
   基线 `02506181`＝当时 HEAD）：双服务同 root 的两个跨进程竞态——R1 `put_inner` 的 tmp 名
   拼上进程 id（每进程 counter 从 0 起 ⇒ 并发同哈希共用 tmp ⇒ 先 rename 者拿走、后一方
@@ -547,3 +550,31 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    （第二验证都在企鹅同一张图，不构成独立图类）；诚实记录随包（Round 4 时间目标未达、
    引擎静默接受未知字段未修——本轮只在 skill 侧改正）。
    纯 skill 文档 ⇒ 不触发 CI（`paths-ignore`），随同批产品代码过 CI。
+
+67. **`kept_no_recipe` 的原因分类常驻进回执**（第 230 轮 ✓，`15d04dfe`，为 CI 独有红定位）：
+   CI 恒 `kept_no_recipe=3／omitted=0`、本机恒 `omitted=2` —— debug/release、笔刷内容、
+   git-lfs、笔触成功率都排除后，只剩"CI 上配方**因何**被判不可重放"不可观测 ⇒ 按
+   「不再读代码猜」把观测做成**常驻**：`ExportStats`/回执/`BUILD-INFO` 增
+   `kept_no_recipe_reasons`（`no_source`／`kind_not_brush`／`brush_absent`／`brush_unreadable`／
+   `reads_canvas`／`unreferenced`／`all_replayable_but_kept`）。**分类与判定共用一份实现** ✓
+   （`brush_source_replay_rejection` 抽出，bool 只是 `.is_none()` 包装 ⇒ 无两份漂移 ✗）。
+   判据钉恒等式 `各原因之和 == kept_no_recipe` ＋ `reads_canvas ≥ 1`；**输入能触发**这一层
+   靠夹具补一笔 `oil-03-paint`（`smudge=0.9` ⇒ 读画布 ✓ —— 从前本机 `kept_no_recipe=0`
+   ⇒ 新断言会恒绿成安慰剂 ✗）。变异复现：摘掉分类计数行 ⇒ 恰好两条新断言红、其余不动 ✓。
+   顺带：删第 229 轮临时 `YANSHI_TRACE_EXPORT_WANTED` 探针（观测已常驻）；修
+   `service.rs` 的 `kept_missing += 1` **写两遍**（`00220ddd`＋`e7a4402d` 各加一行）——
+   诚实记录：该路径整单 `Err`、统计不回执 ⇒ 是**死写**，无断言可钉，仅删重复。
+   **下一跑 CI 看 `kept_no_recipe_reasons` 报的是哪个名字**，那是这个红的真答案。
+
+68. **freq-sep 判据的「点击落忙窗」整族修复 ＋ RW2 遗留的 wasm 白名单登记**（`2043a4ea`＋本轮）：
+   ① CI `40505569696` ⑧ 复发红 `{page:""}`（上一跑绿）＋本机复跑**当场在 ①/② 臂复现同族红**
+   （`选到空层后现状行没跟着走`、`半径 0 拒绝拿到 page:""`）⇒ 定性坐实：**接线探针过后仍有
+   忙窗把 click/change 吃调**（不是产品 ✗，旧判据固定 sleep／立即读是测量陷阱 ✓）。
+   修法＝**有界补按＋先清卡片**（`runToInfo`：拒绝路径不发请求不写原子 ⇒ 补按零副作用 ✓；
+   不清卡片的话半径 70 那臂会被半径 0 留下的**同款文案**假阳性放过 ✓——旧判据正是这样混过去的）；
+   ⑧ 另加失败详情方向证据（`pick`/`click` 在位读数＋`layers`/`atoms` 差值）。
+   本机 13/13 全绿（无预开驱动＋新 debug 二进制）。② RW2 合并（`d686c622`）新增的
+   `render.rs` 单飞 wasm32 等待分支被 CI `40508963270` 的 `kernel-wasm-allowlist` 抓到未登记 ✓
+   —— 本机合并验证跑了定向 test 与变异、**没跑这条主题判据** ⇒ 教训：合并验证要连同
+   **相关主题的既有判据**一起跑，不只是新测试。已登记（调度/等待簿记、不改解码字节 ⇒ 像素逐位一致 ✓），
+   本机该判据绿（9 处＝9 条）。
