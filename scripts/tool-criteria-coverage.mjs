@@ -45,12 +45,14 @@ const NOT_CRITERIA = [
   //   **∴ 它有 write/check 两种模式** ✓，真正的**判据入口**是  ✓
   //   （**∴ 那个名字符合 tool-* glob ⇒ 会被枚举 ✓**）⇒ **∴ 它属于本清单 ✓**。
   "brush-params-doc.mjs",
-  // **∴ `verify-live-showcase.mjs` ✓**（第 1000+ 轮 ✓）：**它**在**部署之后**核对线上 ✓
-  //   ＋ **做什么 ✗**：对 `yanshi.wangda.today` 的**四个展示 URL** 发请求 ⇒ **断言 200
-  //     ＋ 字节与 `assets/showcase/` 里的一致** ✓ ⇒ **∴ 判不了（连不上）退 3** ✓，**字节不对退 1** ✓。
+  // **∴ `verify-live-showcase.mjs` ✓**（第 1000+ 轮 ✓；2026-10-28 校正 ✓）：**它**在**部署之后**核对线上 ✓
+  //   ＋ **做什么 ✗**：对 **PWA 主机 `yanshi-online.wangda.today`** 的展示图 URL 发请求 ⇒ **断言 200
+  //     ＋ 合法 PNG ＋ 字节与 `assets/showcase/` 里的一致** ✓ ⇒ **∴ 判不了（连不上）退 3** ✓，**内容不对退 1** ✓。
+  //     **名单**从 `web/index.html` 的 `src="showcase/…"` **提取** ✓（唯一来源，不再是手抄副本 ✗）。
   //   ＋ **为什么不该进分片 ✗**：**它要的是**已经部署好的站点**✗ —— 分片跑在**构建期** ✓，
   //     **∴ 那时线上还是旧产物** ✗ ⇒ **∴ 放进分片只会得到假红或假绿** ✗
-  //       ⇒ **∴ 它由 `.github/workflows/pwa.yml` 的 `verify-live` job 调用** ✓（**部署之后** ✓）。
+  //       ⇒ **∴ 它由 `.github/workflows/pwa.yml` 的 `verify-live` job 调用** ✓（**真部署之后** ✓，
+  //       `needs.deploy.outputs.skipped != '1'` ⇒ dry run／缺 secret 时**不跑** ✓）。
   //   ＋ **∴ 它**有红有绿**✓**（0／1／3 三档 ✓）⇒ **∴ 只是**接线位置**不同**✗（**部署后**而非构建期 ✓）。
   "verify-live-showcase.mjs",
   // **∴ `tool-psd-cost-accounts.mjs` ✓**（**第 253 轮 ✓）：**它**只做**测量**✗

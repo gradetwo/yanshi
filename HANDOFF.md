@@ -139,6 +139,16 @@
   根因是那条 `setTimeout` 是 **ref'd** 的，**成功路径从不 `clearTimeout`** ⇒ 事件循环被它占着到 90 秒整
   ⇒ 每次成功都变红 ✗（本机逐秒复现：`1:30.14 total` + 同一句「判据超时」）。修法＝收尾之后、
   成功打印之前 `clearTimeout`（收尾本身仍归看门狗管 ✓）⇒ 本机 `16.2s / 退出码 0` ✓。
+- **部署后核对 `verify-live` 三处都坏，已修**（本轮 ✓，台账 §72）：① 名单是**手抄副本**（4 张，
+  其中 2 张在 `4f9de7b0` 已删、而它漏改）⇒ 每次 `exit 3`；② origin 指向**官网** `yanshi.wangda.today`
+  （PWA 在 `yanshi-online.wangda.today`）⇒ 那个地址的 `/showcase/…` 永远 404；③ 只在**手动触发**上跑，
+  而部署**只**发生在 tag 上 ⇒ "部署了但从不核对"。修法：名单**从 `web/index.html` 提取**（唯一来源）＋
+  origin 改 PWA 主机 ＋ `if: needs.deploy.outputs.skipped != '1'`（dry run／缺 secret 不跑）＋
+  每张图 5 次 × 3 秒重试（吸收刚部署的边缘延迟；连不上仍退 3）。**CD 实况（重要）**：线上 PWA 仍是
+  **10-15 的旧部署** —— `/showcase/*` 全部被 SPA 回落成 `index.html`（HTTP 200 ＋ 759113 字节 ＋ `text/html`），
+  因为 10-17 起的 4 次 PWA 工作流**全失败**（10-17／10-24 各自步骤红、10-27 看门狗、10-27 本核对）
+  ⇒ **∴ 没有任何一次成功部署** ✓。修好的核对对线上**如实报 exit 1**（不是它自己坏 ✓）。**待用户裁决**：
+  是否现在手动触发一次真部署（`workflow_dispatch` ＋ `dry_run=false`）把线上刷新到当前 main。
 - **外部补丁包 `photo-bugfix-orf-detect后续包.zip` 已合入**（`bc28716a`，`git am` 零冲突）：
   RAW 嗅探补 `has_raw_magic`/`sniff_format` 对 ORF（IIRS）识别。本机验证与独立变异
   （IIRS⇒IIRX ⇒ 必红、恢复 ⇒ 97 测试全绿）见提交信息与台账 §62。
@@ -658,3 +668,25 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    **教训**："防挂死"的看门狗**本身就是 ref'd 句柄** ⇒ 它必须**在正常完成时被撤销**，
    否则"防挂死"会变成"保证挂满" ✗。凡是 `setTimeout` 做超时守卫的判据都要问一句：
    **成功路径会不会就是被它按住的那一个**？
+
+72. **`verify-live` 三处坏：名单副本、origin、触发条件**（2026-10-28 ✓）：
+   **症状**：手动触发的 PWA run `40602674041`（dry run，部署 job 已全绿）里 `verify-live` 报
+   `❌ 判不了：本地缺 assets/showcase/degas-rehearsal-morning.png ⇒ 退出码 3`。
+   **查实（三处，各自独立）**：
+   ① **名单是副本** ✗：`verify-live-showcase.mjs` 手抄了四张；`4f9de7b0`（10-17，按用户要求换芭蕾成品）
+      删了两张、同步改了 `tool-showcase-assets.mjs`，**漏改本文件** ⇒ 本地缺文件 ⇒ 永远 exit 3。
+   ② **origin 错** ✗：脚本与工作流都写 `yanshi.wangda.today` —— 那是**官网**（首页 HTML 不同、
+      图在 `/assets/showcase/`）；PWA 在 `yanshi-online.wangda.today`（`wrangler.toml` 的 `routes`）。
+   ③ **触发条件反过来** ✗：核对只挂 `workflow_dispatch`，而部署发生在 **tag push** ⇒ 真部署从不核对。
+   **修法**：名单从 `web/index.html` 的 `src="showcase/…"` 提取（唯一来源，抽不到 ⇒ exit 3）；
+   origin 改 PWA 主机；`deploy` job 暴露 `skipped` 输出 ⇒ `verify-live` 用
+   `needs.deploy.outputs.skipped != '1'`（dry run／缺 secret 都写 1 ⇒ 没部署就不核对 ✗）；
+   每张图 5 次 × 3 秒重试（刚部署时边缘可能还在发旧版本），连不上仍 exit 3。
+   **四层验证（本机）**：本地静态服务（`web/`）⇒ exit 0（2/2 张 ✓）；
+   变异 a＝截断一张 ⇒ `✗ 100000 vs 265096` ⇒ exit 1；
+   变异 b＝把另一张换成 HTML（模拟 SPA 回落）⇒ `✗ 不是 PNG` ⇒ exit 1（**HTTP 仍是 200** ⇒ 证明
+   "只查状态码会假绿" ✓）；死端口 ⇒ 连着 5 次失败后 exit 3（不冒充内容错 ✓）。
+   **CD 实况**：线上 PWA 是 **10-15 的旧部署**；`/showcase/*` 全部被 `not_found_handling =
+   "single-page-application"` 回落成 `index.html`（200 ＋ 759113 字节 ＋ `text/html`）。
+   原因：10-17 起的 PWA run 全失败（`2e711439`／`a720cad9`／`4b534cf1` 看门狗／`6a0d8ea9` 本核对）
+   ⇒ 期间没有任何一次成功部署。修好的判据对线上如实报 exit 1 ✓（不是判据自己坏）。

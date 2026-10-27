@@ -32,6 +32,10 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # **∴ `skipped=1` = 没真部署**（dry run 或缺 secret ⇒ 步骤里写 `$GITHUB_OUTPUT` ✓）
+    #   ⇒ **∴ `verify-live` 据此决定跑不跑**（没部署就没有可核对的新产物 ✓）
+    outputs:
+      skipped: ${{ steps.deploy.outputs.skipped }}
     steps:
       - uses: actions/checkout@v4
 
@@ -213,21 +217,28 @@ jobs:
           echo "### ✅ 已部署到 yanshi-online.wangda.today" >> "$GITHUB_STEP_SUMMARY"
           echo "skipped=0" >> "$GITHUB_OUTPUT"
 
-  # **★ 部署后核对线上四张作品展示图 ✗ ★**（2026-10-16 ✓）
+    # **★ 部署后核对线上作品展示图 ✗ ★**（2026-10-16 ✓；2026-10-28 改触发条件与 origin ✓）
   #
-  # **∴ 为什么**只在这个 job 里**、且只手动触发 ✗**：
-  #   `pwa.yml` **也随 push 触发** ✓ ⇒ **∴ 若**在这里无条件 curl 活域名**✗**
-  #     ⇒ **∴ 那**网络抖动／Cloudflare 抖动／DNS 都会**把 CI 弄红** ✗（本仓 7 条 known-red 就是这么来的 ✓）。
-  #   **∴ 所以 ✗**：**手动发版之后**才跑它 ✓ —— **∴ 于是它**可以响亮地失败**✓ */
-  #     （**∴ 真有问题**就该红 ✓），而**push 触发的 CI 一个字节都不受影响** ✓★。
+  # **为什么原来只手动触发 ✗**：当时担忧"无条件 curl 活域名 ⇒ 网络抖动把 CI 弄红" ✗。
+  #   **而实测的代价是反向的 ✗**：部署**只**发生在 tag push（与手动）上 ✓，核对却**只**在手动触发上 ✓
+  #   ⇒ **∴ 于是**"部署了但从不核对" ✗（普通 push 根本不触发本工作流 ✓，抖动的担心不成立）。
   #
-  # **∴ 判什么 ✗**：四张图各要 **HTTP 200 ＋ 合法 PNG ＋ 字节数与 `assets/showcase/` **逐值相同**** ✓
-  #   （**∴ 连不上 ⇒ 退 3** ✗ —— "**我判不了**"不冒充"线上内容错" ✓；**HTTP 错／不是 PNG／字节不符 ⇒ 退 1** ✓）。
+  # **★ 现在的条件 ✗ ★**：**只要有真部署就跑** ✓ —— `needs.deploy.outputs.skipped != '1'` ✓
+  #   （dry run ✓ 与缺 secret ✓ 都写 `skipped=1` ⇒ **没部署就没得核对**，别拿线上旧产物冒充 ✗）。
+  #   抖动由判据自己的重试吸收（每张图 5 次 × 3 秒 ✓）；**连不上仍退 3** ✓（不冒充内容错 ✓）。
+  #
+  # **★ origin ✗ ★**：PWA 在 **`yanshi-online.wangda.today`**（`wrangler.toml` 的 `routes` ✓）。
+  #   原先把官网 `yanshi.wangda.today` 写在这里 ✗ ⇒ 那是**另一个站点**（首页不同，图在 `/assets/showcase/` ✓）
+  #   ⇒ **∴ 那个地址上的 `/showcase/…` 永远 404** ✗（2026-10-28 查实 ✓）。
+  #
+  # **∴ 判什么 ✗**：名单由判据**从 `web/index.html` 提取** ✓（唯一来源，不再是手抄清单 ✗）；
+  #   每张图要 **HTTP 200 ＋ 合法 PNG ＋ 字节数与 `assets/showcase/` 逐值相同** ✓
+  #   （**SPA 托管会把缺文件回落成 200 ＋ HTML** ✗ ⇒ 只查状态码会假绿 ✓）。
   verify-live:
-    if: github.event_name == 'workflow_dispatch'
+    if: needs.deploy.outputs.skipped != '1'
     needs: deploy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: 核对线上展示图（HTTP 200 ＋ 合法 PNG ＋ 字节数与 assets/showcase/ 逐值相同）
-        run: node scripts/verify-live-showcase.mjs https://yanshi.wangda.today
+        run: node scripts/verify-live-showcase.mjs https://yanshi-online.wangda.today
