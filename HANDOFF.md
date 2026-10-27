@@ -1,6 +1,6 @@
-# 工作交接（截至 2026-10-27，vector-tracing v5.1 与 MCP receipts 合并后）
+# 工作交接（截至 2026-10-27，vector-tracing v5.1、MCP receipts 与 draw_text 真文本合并后）
 
-**仓库**：`/home/crow/yanshi`（分支 `main`）｜**HEAD**：`d68d6ce3`（`docs:` 提交会再加一个）｜推送：`git push git@github.com:gradetwo/yanshi.git main`
+**仓库**：`/home/crow/yanshi`（分支 `main`）｜**HEAD**：`1d251991`（`docs:` 提交会再加一个）｜推送：`git push git@github.com:gradetwo/yanshi.git main`
 
 ## 一、每轮第一件事：比两份外部报告
 
@@ -235,6 +235,34 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    11:56「狐狸无 GT」相反；本包按 Wang 定义写规则、不把「狐狸无 GT」写成事实。此前该冲突
    已随 v5 包记过一次，仍未裁决。
    **CI**：只改 `.md` ⇒ `paths-ignore` 不触发；证据是本机本地校验。
+
+57. **draw_text 真文本（子集内嵌）已合**（`1d251991`，作者 `019140c`，基线 `95a1098`，`git am` 干净）：
+   9 文件 +1221/−37——`draw_text` 真字体路径 draw 时记 `data.text_provenance`（基线锚点 + TTF 子集 blob），
+   `export_svg` 对有溯源的对象出真 `<text>`，子集以 `@font-face` 进 `<defs>`；builtin 文本仍走位图
+   （单列 `texts_builtin_raster`）；回退有原因码 + 回执警告（不静默）。
+   **校验（本机 ✓）**：8 个 pre-image blob 与补丁 `index` 行逐位一致；`git apply --check` 干净；
+   定向测试 **22/22**（`text_provenance` 6、`text_object` 6、`raw_registry_guard_off` 2、
+   `vector_layer` 2、`fonts` lib 5、position lib 1）；回归 **20/20**（`svg_q123_fixes` 9、
+   `export_png` 6、`export_small` 5）；`clippy -p yanshi-server --all-targets -D warnings` 干净；
+   fmt 干净。**变异 4 条都红**：拆 XML 转义、去回退计数、去字典 position 分支、按对象分族名。
+   **诚实纠正**：包内注释说「去重表改成每次都插 ⇒ @font-face 变 2」是**错的**——
+   `BTreeMap` 按族名去重，`contains_key` 守卫去掉也仍只有 1 个；真正的回归（每对象一个族名）
+   才红 ⇒ 该测试有效，但变异描述要改。
+   **端到端（旧 release 二进制〔11:27，补丁前〕 vs 新 debug 二进制）**：Inter "Hello"/"World"
+   场景 **PNG sha256 两边相同 `90c373c1…`** ⇒ 引擎光栅路径逐字节未变；新 SVG `texts_vector=2`、
+   `images_embedded=0`、2 个 `@font-face`、xmllint 通过；Chromium 渲染 vs 引擎 PNG
+   **AE(5% fuzz) 136 px = 0.17%**、墨迹框差 1–2 px；CJK（Noto Sans CJK SC 60pt）
+   引擎与 Chromium 墨迹框**同为 165×39 @ (22,22)**、AE 0.4%，`font-size=41.44` 与包内校准一致。
+   字典 position 端到端回显 `[20,20]`；两次导出 sha256 相同；真字体含 `\n` 响亮拒绝；
+   DejaVu（不在 allowlist）`text_svg=false` + `font_license_unknown` + 回执警告 ✓。
+   **补的两处包外改动**：① 补丁**没带 `Cargo.lock`** ⇒ 本机 `cargo metadata` 重生成
+   （+23 个 crate，无既有版本变动；`rustc-hash` 出现 1.1.0/2.1.3 双版本，依赖方标注消歧）；
+   ② `allsorts` 许可证注释原写「MIT／Apache-2.0」⇒ crates.io 元数据只有 **Apache-2.0**，已改。
+   **skill 文档同步**：`SKILL.md` 的 Text Assembly 首条／line 105／failure mode／position 语义四处
+   随事实改写（真字体已自带真 `<text>`，手工组装只留给 builtin／非 allowlist／非平移变换）；
+   `check-skill-tool-names` ✓（93 标识符｜206 工具｜**260 参数**）。
+   **本机未覆盖**：Fredoka／Baloo 本机未装 ⇒ 只对 Inter 与 Noto CJK SC 做了端到端；
+   GPOS 字距丢失是已知代价；全量测试留 CI。
 
 ## 三、下一步（按优先序，都有精确入口）
 
