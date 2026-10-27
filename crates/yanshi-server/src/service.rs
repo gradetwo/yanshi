@@ -1870,6 +1870,22 @@ impl Workspace {
         for document in self.documents.values() {
             extra_roots.extend(document.gc_roots(now)?);
         }
+        // 磁盘文档：本进程未加载的已落盘文档，其日志引用同样是 GC 根。
+        // 只看内存会把它们引用的旧 blob 判成孤儿删掉（另一进程的文档再打开
+        // 就缺像素）。已在内存的跳过（上面已并入）；读日志失败时直接报错、
+        // 不回收——删数据不可逆，根集不明时宁可不删（fail-closed）。
+        // 日志引用是活跃 Manifest 的超集（Manifest 里的 blob 都来自某原子），
+        // 所以只并日志根就够了；钉住 blob 是纯内存状态、无落盘，不在本修复内。
+        if let Some(persist) = &self.persist {
+            for doc_id in persist.list_documents()? {
+                if self.documents.contains_key(&doc_id) {
+                    continue;
+                }
+                for atom in persist.load_atoms(&doc_id)? {
+                    extra_roots.extend(atom.all_blob_refs());
+                }
+            }
+        }
         match self.documents.values().next() {
             Some(primary) => Ok((
                 extra_roots,
