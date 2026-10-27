@@ -9,7 +9,12 @@
 //   ① `count` 必须等于引擎的权威项数 **66** ✓（**∴ 遍历写错、或硬编码成 43 ⇒ 红** ✓）；
 //   ② 已知项必须读得到（`smudge` 的 `base_value` 是数字 ✓）；
 //   ③ **设一项 ⇒ 读回一致** ✓，且**另一项不变** ✓（**∴ setter 写错键 ⇒ 红** ✓）；
-//   ④ **未知设置名必须报错** ✓（**∴ 静默成功 ⇒ 红** ✓）。
+//   ④ **未知设置名必须报错** ✓（**∴ 静默成功 ⇒ 红** ✓）；
+//   ⑤ **清理：把写过的项改回原值，并当场读回核对** ✓ —— 本判据写的是**工作区笔刷缓存** ✓，
+//      而 `resolve_asset` 先查缓存 ⇒ **覆盖文件会对同工作区后续所有判据生效** ✗。
+//      实测（2026-10-28）：它把 `100%_Opaque`（`names[0]`）的 `smudge` 写成 0.375 后不还原 ⇒
+//      同分片的 `tool-export-idempotent` 把该笔所有笔触判成 `reads_canvas` ⇒ `omitted=0` ⇒ **CI 红、本机单独跑绿** ✗。
+//      还原失败时**本判据当场红** ✓，而不是给下游留一个查不到根的怪红 ✗。
 //
 // 用法：node scripts/tool-brush-settings.mjs <server-base> <doc-id> <token>
 const [base, doc, token] = process.argv.slice(2);
@@ -71,8 +76,18 @@ check(
 // ④ 未知设置名必须报错
 const bogus = await call("set_brush_setting", { brush, setting: "definitely_not_a_setting", value: 1 });
 check(bogus.status !== 200, `未知设置名被拒（HTTP ${bogus.status}）`);
+// ⑤ 清理：把 ③ 写过的 smudge 改回原值，并当场读回核对（**放在 `if (bad)` 之前** ⇒ 前面哪怕有断言红，也照样还原 ✓）
+if (typeof smudge === "number") {
+  const restore = await call("set_brush_setting", { brush, setting: "smudge", value: smudge });
+  check(restore.status === 200 && restore.body.ok === true, `清理：写回原 smudge=${smudge} 成功（HTTP ${restore.status}）`);
+  const restored = await call("get_brush_settings", { brush });
+  const smudgeRestored = restored.body?.settings?.smudge?.base_value;
+  check(Math.abs((smudgeRestored ?? NaN) - smudge) < 1e-6, `清理读回一致：smudge = ${smudgeRestored}（原 ${smudge}）`);
+} else {
+  check(false, `清理被跳过：② 就没读到数字 smudge ⇒ 无法还原（本判据已经红了，别让它静默 ✗）`);
+}
 if (bad) {
   console.log(`  ✗ 笔刷动力学读写有 ${bad} 处问题`);
   process.exit(1);
 }
-console.log("  ✓ 笔刷动力学读写：66 项可读、单项可写且读回一致、其它项不受牵连、未知名被拒");
+console.log("  ✓ 笔刷动力学读写：66 项可读、单项可写且读回一致、其它项不受牵连、未知名被拒、写完已还原");

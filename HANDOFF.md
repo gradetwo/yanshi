@@ -22,7 +22,7 @@
 
 ## 二、当前状态
 
-**⇒ 本轮（2026-10-27 下半场，两份审计报告修复中）**：
+**⇒ 本轮（2026-10-27 下半场～10-28，两份审计报告修复中）**：
 - **Batch 1（P0 鉴权）已合入并推上 CI**（`0bd7c06f`）：`atom_submit`／`create_document` 闸在落盘前、
   viewer 令牌不许提交原子、viewer 源链接不许复制成可写副本、`list_documents` 过写闸、密钥常数时间比较。
   CI 上 transport 新测试全过；那跑的 10 个红**没有一个是这次改动造成的**（都是合并遗留 ⇒ 下面三条已修）。
@@ -71,19 +71,18 @@
     本机 `blobs_deleted=1`、释 166 B、404 ✓。
   - 上述四条**本机全绿**（无预开标签页驱动 `/tmp/browser-repro-noprefix.sh`＋debug 二进制）；
     以 CI 为准。
-  - `tool-export-idempotent` **CI 独有红：已上常驻观测，等下一次 CI 定性**：CI 恒
-    `kept_no_recipe=3／omitted=0`，本机 release 与 debug（同 CI 参数）都是 `omitted=2／kept_no_recipe=0`。
-    代码路径已逐一排除（debug/release、笔刷内容、git-lfs、笔触失败），剩下的只有"CI 上那三条
-    位图的配方被判不可重放"这一类 ⇒ **不再读代码猜**：`kept_no_recipe` 现在回执＋`BUILD-INFO`
-    里带**分类计数** `kept_no_recipe_reasons`（`no_source`／`kind_not_brush`／`brush_absent`／
-    `brush_unreadable`／`reads_canvas`／`unreferenced`），分类与判定**共用同一份实现**
-    （`brush_source_replay_rejection` 抽出 ⇒ bool 只是 `.is_none()` 包装 ✗ 无两份漂移）。
-    判据钉恒等式 `各原因之和 == kept_no_recipe` 并自造触发输入（夹具补一笔 `oil-03-paint`，
-    `smudge=0.9` ⇒ 读画布 ⇒ 本机 `reads_canvas=1` 不再是空集恒绿）。变异复现：摘掉分类计数
-    行 ⇒ 恰好两条新断言红 ✓ 其余不动 ✓。顺带修 `service.rs` 的 `kept_missing += 1` **写了两遍**
-    （`00220ddd`＋`e7a4402d` 各加一行）——诚实记录：它是**死写**（该路径随后整单 `Err`，统计不回执）
-    ⇒ 无断言可钉，仅删重复行。第 229 轮的临时 `YANSHI_TRACE_EXPORT_WANTED` 探针随之删除（观测已常驻）。
-    **CI 那侧真正的答案等下一跑**：看 `kept_no_recipe_reasons` 是 `unreferenced` 还是别的名字。
+  - `tool-export-idempotent` **CI 独有红：真因已查实并修复 —— 同工作区的判据间污染**（台账 §70 ✓）：
+    常驻观测 `kept_no_recipe_reasons` 下一跑 CI 即报 `omitted=0／原因={"reads_canvas":4}`；本机按
+    CI 的分片编排把 `tool-brush-settings` 跑在前、同一工作区再跑本判据 ⇒ **逐字节复现同一红**
+    （bytes=35840、`reads_canvas:4`）——`tool-brush-settings` 拿 `list_brushes` 的 `names[0]`
+    （`100%_Opaque`）做 `set_brush_setting(smudge=0.375)` **不还原** ⇒ 覆盖文件落进工作区笔刷缓存 ⇒
+    `resolve_asset` 先查缓存 ⇒ 本判据的"不透明"笔触全被读成**读画布** ⇒ `omitted=0`。
+    修法＝给写方加**第⑤条自清理断言**（写回原值＋当场读回核对，失败则**本判据**红而非下游怪红 ✓）；
+    复跑序列 ⇒ `omitted=2／reads_canvas=1`，与单独跑一致 ✓。
+    （历史：debug/release、笔刷内容、git-lfs、笔触失败都逐一排除过；分类观测与判定共用一份实现
+    `brush_source_is_replayable`／`brush_source_replay_rejection` ⇒ 无两份漂移 ✗；夹具补的
+    `oil-03-paint` 一笔让 `reads_canvas` 分支**输入能触发** ✓；变异：摘掉分类计数行 ⇒ 恰好两条新
+    断言红 ✓。顺带修的 `kept_missing += 1` 双写＝死写，诚实记录：无断言可钉，仅删重复行。）
   - `browser-frequency-separation` ⑧ **CI 复发红（`{page:""}`，run 40505569696；上一跑 40502062240 绿）
     ⇒ 判据侧硬化**：接线差分探针过了而卡片 20 秒仍空 ⇒ 与 fill-region ② 同族的"点击落在忙窗"候选。
     改成**有界补按**（每 1 秒补一次、两次都空才算红）＋失败详情带**方向证据**
@@ -112,6 +111,10 @@
 - **skill-vector-tracing v5.3 后续包已合入**（`764cba98`＋`4820c40e`）：SKILL.md 307→437 行，
   P0 修正（`draw_shape` 没有 `fill` 键——**已对 HEAD 的 `parse_shape` 独立核对**）＋第 4 轮 13 条晋升，
   B12/B13/B16 泛化门未过退回附录。校验见台账 §66。纯文档不触发 CI。
+- **判据间污染查实：`tool-brush-settings` 不还原共享笔刷 ⇒ `tool-export-idempotent` 的"CI 独有红"真因**
+  （本轮 ✓，台账 §70）：常驻观测下一跑即报 `原因={"reads_canvas":4}`；本机照 CI **分片编排**串跑两判据 ⇒
+  逐字节复现（bytes=35840 一字不差）⇒ 定性完成：**不是环境差异，是共享工作区里写方不还完 `100%_Opaque` 的 smudge** ✗。
+  修法＝写方加 ⑤ 自清理（写回原值＋当场读回核对）⇒ 串跑复验 `omitted=2／reads_canvas=1` 全绿 ✓。
 - **外部补丁包 `photo-bugfix-orf-detect后续包.zip` 已合入**（`bc28716a`，`git am` 零冲突）：
   RAW 嗅探补 `has_raw_magic`/`sniff_format` 对 ORF（IIRS）识别。本机验证与独立变异
   （IIRS⇒IIRX ⇒ 必红、恢复 ⇒ 97 测试全绿）见提交信息与台账 §62。
@@ -578,3 +581,17 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    —— 本机合并验证跑了定向 test 与变异、**没跑这条主题判据** ⇒ 教训：合并验证要连同
    **相关主题的既有判据**一起跑，不只是新测试。已登记（调度/等待簿记、不改解码字节 ⇒ 像素逐位一致 ✓），
    本机该判据绿（9 处＝9 条）。
+
+70. **判据间污染：`tool-brush-settings` 改共享笔刷不还原 ⇒ 下游 `tool-export-idempotent` CI 独有红**（本轮 ✓）：
+   `run-criteria.sh` 的分片是**一个临时工作区跑一串判据**，而 `set_brush_setting` 写的是**工作区笔刷缓存**
+   （`resolve_asset` 三档里缓存**优先于** `--assets-dir` ⇒ 覆盖文件对同工作区后续**所有**判据生效 ✗）。
+   `tool-brush-settings` 拿 `list_brushes` 的 `names[0]`（数字名排最前 ⇒ `100%_Opaque`）把 `smudge` 写成
+   0.375 **不还完** ⇒ 同分片后面的 `tool-export-idempotent` 把该笔所有"不透明"笔触判成 `reads_canvas`
+   ⇒ `omitted=0` ⇒ ③ 红。本机按同编排**逐字节复现**（bytes=35840、`原因={"reads_canvas":4}` 与 CI 一字不差 ✓）
+   ⇒ **CI-only 的定性就此终结**：不是 CI 环境差异，是**分片内先后顺序**（本机一直单独跑 ⇒ 永远绿 ✗）。
+   修法＝**写方自清理**：⑤ 写回原值＋当场读回核对（还原失败 ⇒ 本判据红 ✓，不给下游留查不到根的怪红 ✗），
+   复跑「settings 在前、idempotent 在后」⇒ `omitted=2／reads_canvas=1` 全绿 ✓。
+   **通用教训（与第 916/904/888 轮同族：测量工具要先被测量）**：
+   ① 判据**改了共享状态就必须还原**，且还原要**被断言**（不还原＝给分片里所有下游判据埋雷 ✗）；
+   ② 排查"CI 独有红"时，**CI 的编排方式本身**（共享工作区分片）是被测变量之一 ⇒
+     本机复现要**照编排复现**（串跑），单独跑得出的"本机绿"不构成分歧证据 ✗。
