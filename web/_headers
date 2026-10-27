@@ -16,7 +16,7 @@
 /manifest.webmanifest
   Cache-Control: no-cache
 
-/sw.js
+/service-worker.js
   Cache-Control: no-cache
 
 /api-local.js

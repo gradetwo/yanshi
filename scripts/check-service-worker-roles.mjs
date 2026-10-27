@@ -12,10 +12,10 @@
 //     ⇒ **它不该再有占位符** ✓（否则静态托管下缓存名永不变化 ✓）。
 //
 // **⇒ 判据（四条）**：
-//  ① `web/sw.js` **不存在** ✓；② 内嵌那份**有** `__BUILD_ID__` ✓；
+//  ① `web/sw.js*`（含 `.bak` 等变体）**一个都不许存在** ✓；② 内嵌那份**有** `__BUILD_ID__` ✓；
 //  ③ 静态托管那份**没有**占位符、且有 `yanshi-shell-<数字>` 戳 ✓；④ 两份都预缓存内核 wasm ✓。
-// **⇒ 变异**：把 `web/sw.js` 加回来 ⇒ ① 红 ✓；让同步不给副本打戳 ⇒ ③ 红 ✓。
-import { existsSync, readFileSync } from "node:fs";
+// **⇒ 变异**：把 `web/sw.js` 或 `web/sw.js.bak` 加回来 ⇒ ① 红 ✓；让同步不给副本打戳 ⇒ ③ 红 ✓。
+import { readFileSync, readdirSync } from "node:fs";
 
 const failures = [];
 const check = (ok, label, detail) => {
@@ -26,7 +26,18 @@ const check = (ok, label, detail) => {
 const EMBEDDED = "crates/yanshi-http/assets/service-worker.js";
 const STATIC = "web/service-worker.js";
 
-check(!existsSync("web/sw.js"), "没有第二份静态 worker（`web/sw.js` 已删）", "存在 ⇒ 又是平行实现");
+// **① 的口径（xiaomi 审计 H-2 补强）**：不只 `web/sw.js` 本名 ——
+// 任何 `web/sw.js*`（`.bak`、`.old`…）都算平行实现的残留 ✗；
+// 实测（本场）：`web/sw.js` 第 745 轮删掉后**又以 `.bak` 形态留在磁盘**，旧判据抓不到 ✓。
+let swResidue = [];
+try {
+  swResidue = readdirSync("web").filter((n) => n === "sw.js" || n.startsWith("sw.js."));
+} catch {
+  console.error("  ⊘ 判据前提不成立：读不到 web/（不是产品问题）");
+  process.exit(3);
+}
+check(swResidue.length === 0, "没有第二份静态 worker（`web/sw.js*` 全部不许存在）",
+  swResidue.length ? `残留：${swResidue.join("、")}` : "");
 const embedded = readFileSync(EMBEDDED, "utf8");
 const statik = readFileSync(STATIC, "utf8");
 check(embedded.includes("__BUILD_ID__"), "内嵌那份保留 `__BUILD_ID__`（服务端请求时替换）", "丢了 ⇒ 缓存永不失效");
