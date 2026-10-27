@@ -1,6 +1,6 @@
-# 工作交接（截至 2026-10-27，vector-tracing v5 合并后）
+# 工作交接（截至 2026-10-27，vector-tracing v5 与 MCP receipts 合并后）
 
-**仓库**：`/home/crow/yanshi`（分支 `main`）｜**HEAD**：`e544fa3a`（`docs:` 提交会再加一个）｜推送：`git push git@github.com:gradetwo/yanshi.git main`
+**仓库**：`/home/crow/yanshi`（分支 `main`）｜**HEAD**：`26f4c801`（`docs:` 提交会再加一个）｜推送：`git push git@github.com:gradetwo/yanshi.git main`
 
 ## 一、每轮第一件事：比两份外部报告
 
@@ -201,6 +201,17 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    通用性 grep 零命中（`sofa/chest/wordmark` 5 处是 v4 原有）；`##` 12 个；`scripts/pre-commit.sh` 全绿。
    **纯 `*.md` ⇒ 命中 `paths-ignore`，不触发 CI**（证据只是本机那几条，不是 CI）。
    留待 v5.1/v6：交付核验脚本本体、patch–描边方法级修法、宝箱立体感收尾、冷启动实测。
+
+55. **MCP receipts 第一批已合**（`26f4c801`，作者 `9f0072c`）：`export_svg` 回执加 `sha256`
+   （`BlobHash::from_bytes(svg.as_bytes())`，与 `export_png` 同款、与落盘字节同源）＋
+   `list_atoms` 加 `hidden_non_stroke`（缺省过滤藏掉的非笔迹原子数；**计数位置在全部其余
+   过滤器之后**，不变量 `total + hidden_non_stroke` = 加 `include_non_stroke=true` 的 `total`）。
+   **校验（本机 ✓）**：四个 pre/post blob 与 `合并.diff` 逐位一致；`cargo fmt -p yanshi-server` 干净；
+   `clippy -p yanshi-server --all-targets -D warnings` 干净；定向 `list_atoms_truncation` 5/5、
+   `vector_layer` 2/2；**两处变异都红**（`hidden_non_stroke` 写 0 ⇒ 0≠2；sha 换成常量 ⇒ 不匹配）；
+   活体判据 `tool-list-atoms` ✓、`tool-export-svg-validate-not-overrejecting` ✓。
+   **全量测试留给 CI**（本次改了 `crates/**` ⇒ 会跑）。
+   未在本包：③ `draw_text` 出真 `<text>`（只写了设计文档，未实现）。
 
 ## 三、下一步（按优先序，都有精确入口）
 
