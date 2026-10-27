@@ -35,11 +35,41 @@
   `/sw.js` 条目改指真正注册的 `/service-worker.js`；pwa.yml 里跑**已删除脚本**
   `tool-sw-stamp-idempotent.mjs` 的步骤换成 `check-service-worker-roles.mjs`；两个 HTML 的
   `&& false` 死注册行与过期注释删掉。
-- **六个 browser 红正在本机复现**（`browser-dodge-burn`／`fill-region`／`frequency-separation`／
-  `range-mask`／`p0-entries`／`export-full-document`；CI 日志逐条摘出的失败行见台账本轮追加）。
-  已知症状：dodge-burn 是英文模式漏翻（`"图层 1 · Dodge and burn"`）；fill-region 断「宽 0 不写任何东西」；
-  export-full-document 是 known-red 曾登记过又移出的那句「离线默认导出日志没写明整幅」——**按规矩
-  不静默入名单，先复现再定性**。
+- **六个 browser 红的本机定性**（CI 日志逐条摘出的失败行见台账本轮追加）：
+  - `browser-export-full-document` **已修（判据度量错）**：`#log` 是 div 前置追加，
+    `textContent` 里**没有换行** ⇒ 旧判据 `split("\n")` 读日志是测量陷阱；改成
+    `[...document.querySelectorAll("#log div")].find(...)` 逐条读。本机复跑绿，
+    「离线默认导出日志没写明整幅」**不是产品缺陷**（CI 假红源自 `index_missing` 那条
+    boot 错误多插一个 div，改变 find 命中序）。
+  - `browser-p0-entries` **已修（三处）**：① 判据自己钉 `render=server`
+    （`set_brush_dynamics` 在 PWA 本地模式诚实报 `not_implemented_locally` ⇒ 加
+    `render=client` 会改变被测对象，与 dodge-burn 先例同族）；② 下拉选项数
+    `!== 7` 改下界 `< 7`（BLEND_MODE_LABELS 已 7→13，权威比对在
+    `browser-blend-modes`）；③ 渐变坐标从页面 `state().docSize` 推导，不再写死
+    （写死 120×96 在 320×240 夹具下踩到的判据前提）。本机复跑绿。
+  - `browser-dodge-burn` **CI 绿、本机 3/3 红 ⇒ 待归因**：红固定在①首条预测，
+    拿到的是「将新建组 「图层 1 · 减淡加深」（放在「图层 1」上方）」——像夹具的
+    SRC「底」层没建上。按规矩不静默入名单，先查是本机编排/二进制还是判据时序。
+  - `browser-range-mask`／`browser-frequency-separation` 早先本机红**疑似复现夹具污染**
+    （预开标签页把 A 判据的文档混进 B 的日志），等用无预开驱动重跑后再定性；
+    `browser-fill-region` 用无预开驱动重跑**已绿**（前一种红确认是污染，不是产品）。
+  - `tool-export-idempotent` **CI 独有红**：CI 恒 `kept_no_recipe=3／omitted=0`，
+    本机 release 与 debug（同 CI 参数）都是 `omitted=2／kept_no_recipe=0` ⇒
+    CI 环境特有的分类差异，未决。
+- **外部补丁包 `photo-bugfix-gc-isolation后续包.zip` 已合入**（`39511fc6`，`git am` 零冲突，
+  基线 `02506181`＝当时 HEAD）：双服务同 root 的两个跨进程竞态——R1 `put_inner` 的 tmp 名
+  拼上进程 id（每进程 counter 从 0 起 ⇒ 并发同哈希共用 tmp ⇒ 先 rename 者拿走、后一方
+  ENOENT ⇒ 503「CAS IO 失败」，正是 A2 梯度的 503）；R2 `delete_document` 只删年龄 ≥
+  `DELETE_DOCUMENT_BLOB_GRACE_SECONDS`（60 秒）的 blob，新鲜的留给 TTL GC 当孤儿，回执新增
+  `blobs_deferred_fresh`、`blobs_shared_kept` 改精确交集计数。说明.md 更正了 A2 日志的
+  「启动期 GC」推断（全仓没有启动期 GC）。**本机验证**：fmt 干净；`clippy -p yanshi-core
+  -p yanshi-server --all-targets -D warnings` 干净（pre-commit 的 workspace clippy 也过）；
+  新测试 `delete_document_blob_grace` **2/2**；**独立变异复现**（门槛改 0 ⇒ ① FAILED、② 仍过；
+  改回 60 ⇒ 2/2 ✓）；`yanshi-core blob` 13/13、`delete_with_subscriber` 1/1、
+  `two_writers_seqs` 2/2 全绿。全量 `cargo test --workspace` 等 CI。
+  诚实记录（作者自述＋我核对）：60 秒是启发式不是消除（put→import 超 60 秒仍可撞）；
+  R1 无 Rust 单测（同进程撞不出跨进程撞名，写了是安慰剂），证据是盒上双服务复现红→绿；
+  `run_gc` 根集只看本进程的同类缺口**未修**（要 7 天老 blob＋文档未加载两条件，窄得多）。
 - **外部补丁包 `photo-bugfix-a2-interp后续包.zip` 已合入**（`d265897d`，只碰 `filter.rs`）：
   `shadows_highlights` 提亮侧 gap 按品红分量 `m=min(R−G,B−G)` 调制（`t=1/(1+(m/0.005)²)`），
   m≤0 与压暗侧逐位不动。本机定向验证：`-p yanshi-render --lib shadows_highlights` **15/15 绿**；
@@ -387,3 +417,9 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    **校验（本机 ✓）**：pre-image blob `9cab355…`、am 后 blob `a85dd5e…` 均与补丁 `index` 行一致；
    包内定稿 `SKILL.md` sha256 `fa3f8349…` 与说明一致；包内 `合并.diff` 与 patch 逐行一致。
    纯 skill 文档 ⇒ 不触发 CI（`paths-ignore`），随本提交的产品代码一起过 CI。
+
+61. **photo-bugfix-gc-isolation 后续包已合**（`39511fc6`，作者 `e4cf9f0`，基线 `02506181`＝当时 HEAD，
+   `git am` 零冲突）：R1 `put_inner` tmp 名拼进程 id（跨进程撞名 ⇒ 503）；R2 `delete_document`
+   只删年龄 ≥60 秒的 blob（防别的服务 put→import 窗口），回执加 `blobs_deferred_fresh`。
+   本机验证与独立变异见 §二 本轮条目与提交信息；**更正了 A2 日志的「启动期 GC」推断**（全仓没有启动期 GC）。
+   未修记录：`run_gc` 根集同样只看本进程（7 天老 blob＋文档未加载才可能撞，窄 ⇒ 不在本包范围）。
