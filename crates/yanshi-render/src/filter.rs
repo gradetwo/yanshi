@@ -552,6 +552,33 @@ fn soft_knee_gap(ratio: f32) -> f32 {
     }
 }
 
+/// 品红分量尺度（A2 后续 ③ 探针，首探 0.005）：`m = min(R−G, B−G)`（显示空间）
+/// 达到 M0 时调制因子恰为 0.5；korean 变品红像素的 m p50 ≈ +0.008（a2-diagnose2
+/// 实测），M0=0.005 使其 t ≈ 0.28，gap 增益大部收回；红卡 m<0 不受影响。
+const SHADOWS_HIGHLIGHTS_MAGENTA_M0: f32 = 0.005;
+
+/// 品红分量调制因子 `t(m) = 1/(1+(m/M0)²)`：m ≤ 0 时恒为 1（红/灰像素
+/// 与现行逐位一致）；m > 0 时衰减，m = M0 处恰为 0.5、m ≫ M0 时趋近 0。
+fn magenta_gap_factor(m: f32) -> f32 {
+    if m <= 0.0 {
+        1.0
+    } else {
+        let x = m / SHADOWS_HIGHLIGHTS_MAGENTA_M0;
+        1.0 / (1.0 + x * x)
+    }
+}
+
+/// 品红分量感知的 gap：提亮侧（gap > 1）才调制，`gap_eff = 1 + (gap−1)·t(m)`；
+/// 压暗侧（gap ≤ 1）原样返回，与现行逐位一致。gap 仍是逐像素标量 ⇒
+/// 亮度恒等于 target_luma、色相角严格不变。
+fn magenta_aware_gap(gap: f32, magenta: f32) -> f32 {
+    if gap <= 1.0 {
+        gap
+    } else {
+        1.0 + (gap - 1.0) * magenta_gap_factor(magenta)
+    }
+}
+
 /// **阴影/高光恢复**：`shadows`／`highlights` 各 -1..1，0 = 不动（恒等 ✓）。
 ///
 /// 掩码按**显示空间（sRGB 编码）明度**：暗部权重 `(1−L)²`、高光权重 `L²` ⇒ 白色处暗部权重**恰好 0**、
@@ -587,7 +614,12 @@ fn soft_knee_gap(ratio: f32) -> f32 {
 /// `gap = ratio`（ratio ≤ 1.5 时逐位一致）／
 /// `gap = 1.5 + (r−1.5)·0.7/((r−1.5)+0.7)`（ratio > 1.5 时平滑趋近 2.2）。
 /// 暗部色度噪声不再被亮度比 2.5~4.4× 放大越过品红阈值，而提亮量、色相角、
-/// 中浅暗部（ratio ≤ 1.5）逐位不动。软拐点在 ratio = 1.5 处左右导数均为 1.0
+/// 中浅暗部（ratio ≤ 1.5）逐位不动。
+/// **品红分量感知（A2 后续 ③ 探针）**：提亮侧的 gap 再按 `t(m)` 收敛，
+/// `m = min(R−G, B−G)`、`t = 1/(1+(m/0.005)²)`、`gap_eff = 1+(gap−1)·t`——
+/// korean 变品红的中调像素（m p50 ≈ +0.008）增益大部收回，红卡/灰像素
+///（m ≤ 0）逐位不动。gap 仍是逐像素标量，亮度与色相角结论不变。
+/// 软拐点在 ratio = 1.5 处左右导数均为 1.0
 ///（C¹ 连续，无马赫带折角）；顺带修复 `luma→0+` 与 `luma=0` 的分支跳变
 ///（`lim_{luma→0+} display[i] = target_luma`，与纯黑回退分支连续）。
 /// `luma = 0` 的纯黑回退分支不动；highlights 侧 ratio < 1 时 gap = ratio，逐位不变。
@@ -618,7 +650,10 @@ pub fn shadows_highlights(buffer: &mut Buffer, shadows: f32, highlights: f32) {
             // ratio ≤ R0 时 gap = ratio（与现行亮度比回写逐位一致）；
             // ratio > R0 时 gap 平滑趋近 GMAX。亮度恒等于 target_luma
             //（提亮量不动），色相角严格不变。
-            let gap = soft_knee_gap(ratio);
+            // 品红分量感知调制（A2 后续 ③ 探针）：m = min(R−G, B−G)（显示空间），
+            // m>0 的品红向像素收 gap 增益，m≤0 的红/灰像素逐位不动。
+            let magenta = (display[0] - display[1]).min(display[2] - display[1]);
+            let gap = magenta_aware_gap(soft_knee_gap(ratio), magenta);
             for value in display.iter_mut() {
                 *value = (target_luma + (*value - luma) * gap).clamp(0.0, 1.0);
             }
@@ -6880,6 +6915,36 @@ mod coloradj_tests {
         }
     }
 
+    /// 软拐点回写（magenta-fix P6 现行式，供品红调制对照）：显示空间按
+    /// soft_knee_gap(ratio) 缩放通道与亮度的差距；纯黑回退与现行一致。
+    fn soft_knee_scaled(display: [f32; 3], shadows: f32, highlights: f32) -> [f32; 3] {
+        let luma = display_luma(display);
+        let shadow_weight = (1.0 - luma) * (1.0 - luma);
+        let highlight_weight = luma * luma;
+        let target = (luma
+            + toward(shadows, shadow_weight, luma)
+            + toward(highlights, highlight_weight, luma))
+        .clamp(0.0, 1.0);
+        if luma > 0.0 {
+            let ratio = target / luma;
+            let gap = soft_knee_gap(ratio);
+            [
+                (target + (display[0] - luma) * gap).clamp(0.0, 1.0),
+                (target + (display[1] - luma) * gap).clamp(0.0, 1.0),
+                (target + (display[2] - luma) * gap).clamp(0.0, 1.0),
+            ]
+        } else {
+            let mut out = display;
+            for value in out.iter_mut() {
+                let current = *value;
+                let mut next = current + toward(shadows, shadow_weight, current);
+                next += toward(highlights, highlight_weight, current);
+                *value = next.clamp(0.0, 1.0);
+            }
+            out
+        }
+    }
+
     // ── shadows_highlights ──────────────────────────────────────────
 
     /// 0/0 ⇒ 恒等（任意像素）。
@@ -7047,6 +7112,92 @@ mod coloradj_tests {
         assert!(
             (right - 1.0).abs() < 2e-3,
             "右割线（h=1e-3）应在 1.0 附近（实得 {right}）；极限 1.0"
+        );
+    }
+
+    /// **品红调制因子值（A2 后续 ③）**：t(m) 在 m ≤ 0 时恒为 1、m = M0 处恰为 0.5、
+    /// m = 2·M0 处为 0.2、m ≫ M0 时趋近 0。若实现漏掉 m ≤ 0 分支（对负 m 也套
+    /// 平方公式），t(−0.01) 会变成 0.2 而非 1 ⇒ 此处红。
+    #[test]
+    fn shadows_highlights_magenta_gap_factor_values() {
+        let m0 = SHADOWS_HIGHLIGHTS_MAGENTA_M0;
+        for (m, expected) in [
+            (-0.01f32, 1.0f32),
+            (0.0, 1.0),
+            (m0, 0.5),
+            (2.0 * m0, 0.2),
+            (10.0 * m0, 1.0 / 101.0),
+        ] {
+            let got = magenta_gap_factor(m);
+            assert!(
+                (got - expected).abs() < 1e-6,
+                "t({m}) 应为 {expected}，实得 {got}"
+            );
+        }
+    }
+
+    /// **m ≤ 0 逐位一致（A2 后续 ③）**：红/灰像素（m ≤ 0）在 ratio > 1.5 的提亮侧，
+    /// 输出与未调制的软拐点回写逐位一致（容差 1e-5，覆盖 f32 的 sRGB 往返噪声）。
+    /// 每组至少要有一个像素真正参与对照（空集恒真防线）；若实现对 m<0 也调制，
+    /// 红像素输出会偏离 ⇒ 此处红。
+    #[test]
+    fn shadows_highlights_magenta_modulation_is_identity_for_nonpositive_m() {
+        let probes = [
+            [0.05f32, 0.03, 0.02],
+            [0.06, 0.03, 0.02],
+            [0.05, 0.05, 0.05],
+            [0.10, 0.04, 0.02],
+        ];
+        let mut checked = 0;
+        for display in probes {
+            let luma = display_luma(display);
+            let shadow_weight = (1.0 - luma) * (1.0 - luma);
+            let target = (luma + toward(0.4, shadow_weight, luma)).clamp(0.0, 1.0);
+            let ratio = target / luma;
+            assert!(ratio > 1.5, "探针像素 ratio 应 > 1.5，实得 {ratio}");
+            let magenta = (display[0] - display[1]).min(display[2] - display[1]);
+            assert!(magenta <= 0.0, "探针像素 m 应 ≤ 0，实得 {magenta}");
+            let got = run_sh_display(display, 0.4, 0.0);
+            let want = soft_knee_scaled(display, 0.4, 0.0);
+            for channel in 0..3 {
+                assert!(
+                    (got[channel] - want[channel]).abs() < 1e-5,
+                    "像素 {display:?}：m≤0 时应与软拐点回写逐位一致，通道 {channel} 实得 {} 期望 {}",
+                    got[channel],
+                    want[channel]
+                );
+            }
+            checked += 1;
+        }
+        assert!(checked > 0, "一个像素都没对照上 ⇒ 测试恒真无效");
+    }
+
+    /// **品红像素增益收回（A2 后续 ③）**：品红向像素 [0.10, 0.05, 0.09]
+    ///（m = +0.04 ≫ M0，t ≈ 0.015），shadows=+0.4 下输出的通道离差应不到
+    /// 未调制的软拐点回写的六成（gap_eff ≈ 1.016 vs gap ≈ 2.02，离差比
+    /// = gap_eff/gap ≈ 0.50；门限取 0.6 留 f32 余量），而输出亮度仍等于
+    /// target_luma（容差 1e-3）。若实现漏掉调制，离差与对照相等 ⇒ 此处红。
+    #[test]
+    fn shadows_highlights_magenta_pixel_lift_reduced() {
+        let display = [0.10f32, 0.05, 0.09];
+        let luma = display_luma(display);
+        let shadow_weight = (1.0 - luma) * (1.0 - luma);
+        let target = (luma + toward(0.4, shadow_weight, luma)).clamp(0.0, 1.0);
+        let ratio = target / luma;
+        assert!(ratio > 1.5, "探针像素 ratio 应 > 1.5，实得 {ratio}");
+        let got = run_sh_display(display, 0.4, 0.0);
+        let want = soft_knee_scaled(display, 0.4, 0.0);
+        let spread = |px: [f32; 3]| px[0].max(px[1]).max(px[2]) - px[0].min(px[1]).min(px[2]);
+        assert!(
+            spread(got) < 0.6 * spread(want),
+            "品红像素离差应不到对照的六成，实得 {}（对照 {}）",
+            spread(got),
+            spread(want)
+        );
+        let out_luma = display_luma(got);
+        assert!(
+            (out_luma - target).abs() < 1e-3,
+            "输出亮度应等于 target_luma {target}，实得 {out_luma}"
         );
     }
 
