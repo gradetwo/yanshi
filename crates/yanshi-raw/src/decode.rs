@@ -789,6 +789,9 @@ fn sniff_format(bytes: &[u8]) -> String {
     if bytes.len() >= 4 && &bytes[0..4] == b"IIRO" {
         return "orf".to_string();
     }
+    if bytes.len() >= 4 && &bytes[0..4] == b"IIRS" {
+        return "orf".to_string();
+    }
     if bytes.len() >= 4 && (&bytes[0..4] == b"II\x2a\x00" || &bytes[0..4] == b"MM\x00\x2a") {
         return "tiff".to_string();
     }
@@ -799,14 +802,18 @@ fn sniff_format(bytes: &[u8]) -> String {
 ///
 /// TIFF 家族之外必须显式列变体签名，否则真 RAW 在第一道门就被误杀：
 /// Panasonic RW2 的版本字是 0x55（`II\x55\x00`）、Olympus ORF 是
-/// `IIRO`——两者都不是 TIFF 42（`II\x2a\x00`），rawler 本可解码
+/// `IIRO` 与 `IIRS`——两者都不是 TIFF 42（`II\x2a\x00`），rawler 本可解码
 /// （2026-10-24 展示册选材实测：两格式真文件在此被拒、展开链无此门）。
+/// `IIRS` 是老款 Olympus 机身的 ORF 签名（C-5060WZ 等，2026-10-27 探针：
+/// olyC5060 的 `IIRS` 在此被拒、E-3 的 `IIRO` 能过；rawler 的 TIFF 读数
+/// 不校验魔数值、按 Make 标签分发 OrfDecoder，两签名下游同一条路）。
 fn has_raw_magic(bytes: &[u8]) -> bool {
     (bytes.len() >= 4
         && (&bytes[0..4] == b"II\x2a\x00"
             || &bytes[0..4] == b"MM\x00\x2a"
             || &bytes[0..4] == b"II\x55\x00"
-            || &bytes[0..4] == b"IIRO"))
+            || &bytes[0..4] == b"IIRO"
+            || &bytes[0..4] == b"IIRS"))
         || (bytes.len() >= 16 && &bytes[0..16] == b"FUJIFILMCCD-RAW ")
         || (bytes.len() >= 12 && &bytes[4..8] == b"ftyp" && &bytes[8..12] == b"crx ")
 }
@@ -948,6 +955,9 @@ mod tests {
         assert!(has_raw_magic(b"II\x55\x00\x08\x00\x00\x00rest"));
         // Olympus ORF：IIRO 签名（版本字 'RO'）。
         assert!(has_raw_magic(b"IIRO\x08\x00\x00\x00rest"));
+        // 老款 Olympus ORF：IIRS 签名（版本字 'RS'，C-5060WZ 等）。
+        // 2026-10-27：olyC5060 的 IIRS 在此被拒、E-3 的 IIRO 能过。
+        assert!(has_raw_magic(b"IIRS\x08\x00\x00\x00rest"));
         // 既有签名不许回退。
         assert!(has_raw_magic(b"II\x2a\x00rest"));
         assert!(has_raw_magic(b"MM\x00\x2arest"));
@@ -963,6 +973,7 @@ mod tests {
         // sniff 与探针同口径：新签名给出真格式名，不许笼统落 "raw"。
         assert_eq!(sniff_format(b"II\x55\x00rest"), "rw2");
         assert_eq!(sniff_format(b"IIROrest"), "orf");
+        assert_eq!(sniff_format(b"IIRSrest"), "orf");
     }
 
     #[test]

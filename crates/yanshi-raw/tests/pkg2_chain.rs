@@ -125,6 +125,10 @@ fn probe_recognises_raw_and_rejects_lookalikes() {
     let mut fake_orf = b"IIRO".to_vec();
     fake_orf.extend_from_slice(&[0u8; 64]);
     assert!(probe_raw(&fake_orf).is_none());
+    // 老款 ORF 签名 IIRS 同理：魔数过门只是第一道，内容垃圾照样不许误判。
+    let mut fake_orf_old = b"IIRS".to_vec();
+    fake_orf_old.extend_from_slice(&[0u8; 64]);
+    assert!(probe_raw(&fake_orf_old).is_none());
     assert!(probe_raw(b"").is_none());
 }
 
