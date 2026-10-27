@@ -37,6 +37,18 @@ impl HttpClient {
         token: Option<&str>,
         body: Option<&Value>,
     ) -> (u16, BTreeMap<String, String>, Vec<u8>) {
+        self.request_with(method, target, token, body, &[])
+    }
+
+    /// 带**额外请求头**的版本 ✓（第 1440 轮起的 Origin 类测试要发 `Origin:` ✓）。
+    fn request_with(
+        &mut self,
+        method: &str,
+        target: &str,
+        token: Option<&str>,
+        body: Option<&Value>,
+        extra: &[(&str, String)],
+    ) -> (u16, BTreeMap<String, String>, Vec<u8>) {
         let mut stream = TcpStream::connect(self.addr).expect("连接服务端");
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -46,6 +58,9 @@ impl HttpClient {
             format!("{method} {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n");
         if let Some(token) = token {
             head.push_str(&format!("Authorization: Bearer {token}\r\n"));
+        }
+        for (name, value) in extra {
+            head.push_str(&format!("{name}: {value}\r\n"));
         }
         if body.is_some() {
             head.push_str("Content-Type: application/json\r\n");
@@ -66,6 +81,21 @@ impl HttpClient {
         body: Option<&Value>,
     ) -> (u16, Value) {
         let (status, _, bytes) = self.request(method, target, token, body);
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    fn json_with(
+        &mut self,
+        method: &str,
+        target: &str,
+        token: Option<&str>,
+        body: Option<&Value>,
+        extra: &[(&str, String)],
+    ) -> (u16, Value) {
+        let (status, _, bytes) = self.request_with(method, target, token, body, extra);
         (
             status,
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),
@@ -1515,4 +1545,223 @@ fn chunked_request_bodies_are_refused_rather_than_treated_as_empty() {
         "解析期拒绝应当是关连接（实测 {status}，正文 {text}）"
     );
     assert!(text.is_empty(), "解析期拒绝不许回正文，实测：{text}");
+}
+
+/// **viewer 令牌不许经 `/api/atoms` 写文档** ✓（第三方代码审计 P0-2）。
+///
+/// **漏洞的形状** ✗：工具入口 `ToolRegistry::call` 早就按 `mutating && !can_edit` 挡写 ✓，
+/// 但 `/api/atoms` 是**直调 `workspace.commit` 的旁路** ✗ ⇒ viewer 令牌照样能改 ✗。
+/// **三条事实** ✓（与 `a_viewer_token_can_read_but_not_mutate` 同一套证法 ✓）：
+/// ① viewer 提交 ⇒ 403 `permission_denied` 且**点名角色** ✓；
+/// ② 日志**一条没多** ✓（拒绝发生在写入之前 ✓，不是"写 succeeded 再回滚"✗）；
+/// ③ **同一个原子**换 editor 令牌 ⇒ 200 ✓ —— 证明被拒的原因是**角色** ✓，不是原子形状 ✓。
+/// 变异：删掉 `atom_submit` 里的 `can_edit` 闸 ⇒ ① 变 200、② 变 count+1 ⇒ 红 ✓。
+#[test]
+fn a_viewer_token_cannot_submit_atoms() {
+    let server = start_server();
+    let addr = server.addr;
+    let editor = create_document(addr, "doc_atom_roles");
+    let mut client = HttpClient::new(addr);
+    // 同一文档再开一枚**只读**令牌（回环 ⇒ 免密钥 ✓，与既有 viewer 测试同路 ✓）。
+    let (status, body) = client.json(
+        "POST",
+        "/api/documents?role=viewer",
+        None,
+        Some(&json!({"doc_id": "doc_atom_roles", "width": 64, "height": 64})),
+    );
+    assert_eq!(status, 200, "{body}");
+    let viewer = body["token"].as_str().expect("capability token").to_owned();
+
+    let atom = json!({
+        "id": "01VIEWER000000000000000AA",
+        "kind": "create_layer",
+        "actor": "human:viewer",
+        "session": "session:viewer",
+        "timestamp": 1_700_000_000_000i64,
+        "payload": {"layer_id": "layer_viewer", "name": "viewer"}
+    });
+    // ① viewer 提交 ⇒ 拒绝且点名角色 ✓
+    let (status, refused) = client.json(
+        "POST",
+        "/api/atoms?doc=doc_atom_roles",
+        Some(&viewer),
+        Some(&atom),
+    );
+    assert!(
+        (400..500).contains(&status),
+        "viewer 提交原子应当被拒，实测 {status}：{refused}"
+    );
+    assert_eq!(
+        refused["error_code"],
+        json!("permission_denied"),
+        "拒绝应当是**角色**问题，实测：{refused}"
+    );
+    let detail = refused["context"]["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("viewer"),
+        "原因应当点名角色，实测：{detail}"
+    );
+
+    // ② 日志一条没多 ✓（`create_document` 占 seq 1 ✓）
+    let log = tool(addr, "doc_atom_roles", &editor, "get_log", json!({})).1;
+    assert_eq!(log["count"], json!(1), "被拒的提交不许进日志：{log}");
+
+    // ③ 同一个原子、editor 令牌 ⇒ 成功 ✓
+    let (status, ok) = client.json(
+        "POST",
+        "/api/atoms?doc=doc_atom_roles",
+        Some(&editor),
+        Some(&atom),
+    );
+    assert_eq!(status, 200, "editor 应当能提交：{ok}");
+    let log = tool(addr, "doc_atom_roles", &editor, "get_log", json!({})).1;
+    assert_eq!(log["count"], json!(2), "{log}");
+}
+
+/// **只读链接不许"另存为副本"升级成可编辑文档** ✓（第三方代码审计 P0-1 的升级梯 ✗）。
+///
+/// **漏洞的形状** ✗：副本分支给**新文档**签发 **Editor** 令牌 ✓，却只看
+/// `from_token` **能不能过 authorize** ✗ —— viewer 也是"能过" ✓ ⇒
+/// 一条只读分享链接 ⇒ 整份内容复制进一个**自己拿着 editor 令牌**的新文档 ✗。
+/// **两条**都要钉住 ✓：① 源令牌是 viewer ⇒ 403 且点名角色 ✓、副本**没被建出来** ✓
+/// （`ensure`：拒绝发生在 `duplicate_document` 之前 ✗⇒✓）；② editor 令牌照旧成功 ✓
+/// （证明被拒的原因是**角色** ✓，不是副本机制本身坏了 ✗）。
+/// 变异：删掉源角色检查 ⇒ ① 变 200 ⇒ 红 ✓。
+#[test]
+fn a_viewer_link_cannot_be_copied_into_an_editable_document() {
+    let server = start_server();
+    let addr = server.addr;
+    let editor = create_document(addr, "doc_copy_roles");
+    let mut client = HttpClient::new(addr);
+    let (status, body) = client.json(
+        "POST",
+        "/api/documents?role=viewer",
+        None,
+        Some(&json!({"doc_id": "doc_copy_roles", "width": 64, "height": 64})),
+    );
+    assert_eq!(status, 200, "{body}");
+    let viewer = body["token"].as_str().expect("capability token").to_owned();
+
+    // ① viewer 的 from_token ⇒ 拒绝，且**不产生**副本文档 ✓
+    let (status, refused) = client.json(
+        "POST",
+        "/api/documents",
+        None,
+        Some(&json!({
+            "doc_id": "doc_copy_denied", "copy_from": "doc_copy_roles", "from_token": viewer
+        })),
+    );
+    assert!(
+        (400..500).contains(&status),
+        "viewer 令牌另存副本应当被拒，实测 {status}：{refused}"
+    );
+    assert_eq!(
+        refused["error_code"],
+        json!("permission_denied"),
+        "{refused}"
+    );
+    let detail = refused["context"]["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("viewer"),
+        "原因应当点名角色，实测：{detail}"
+    );
+    let (status, listed) = client.json("GET", "/api/documents", None, None);
+    assert_eq!(status, 200, "{listed}");
+    let ids: Vec<&str> = listed["documents"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item["doc_id"].as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        !ids.contains(&"doc_copy_denied"),
+        "被拒的副本不许落盘（拒绝要发生在 duplicate_document 之前）：{listed}"
+    );
+
+    // ② editor 的 from_token ⇒ 照旧成功 ✓
+    let (status, copied) = client.json(
+        "POST",
+        "/api/documents",
+        None,
+        Some(&json!({
+            "doc_id": "doc_copy_ok2", "copy_from": "doc_copy_roles", "from_token": editor
+        })),
+    );
+    assert_eq!(status, 200, "editor 令牌另存副本应当成功：{copied}");
+    assert_eq!(copied["ok"], json!(true), "{copied}");
+}
+
+/// **外来 Origin 在回环上也拿不到任何令牌、任何文档名** ✓（第三方代码审计 P0-1 ＋
+/// 第 1440 轮 DNS rebinding 口径的**补全** ✓：上一轮只把 **editor/owner** 纳入了
+/// 「外来 Origin ⇒ 要密钥」✓，`role=viewer` **整条绕过** ✗ —— 而 viewer 令牌经
+/// `GET /?doc=&token=` **渲染整幅 PNG** ⇒ 是**内容泄露** ✗ 不是"只读所以无害" ✗。
+/// 另外「`open_or_create` 跑在闸**之前**」✗ 也被修掉：被拒的请求不许把文档建到盘上 ✓。
+/// **四条断言** ✓：
+/// ① 外来 Origin ＋ `role=viewer` 开**新**文档 ⇒ 拒 ✓；
+/// ② 被拒的文档**不在列表里** ✓（证明闸在 `open_or_create` **之前** ✗⇒✓；
+///    变异：把闸挪回 `open_or_create` 之后 ⇒ 此条红 ✓）；
+/// ③ 外来 Origin 的 `GET /api/documents` ⇒ 拒 ✓（枚举泄露补口 ✓）；
+/// ④ **同样本机 Origin**（不带 `Origin:` 头）照常 200 ✓ —— 证明 ①③ 的拒绝
+///    原因是 **Origin** ✓，不是端点坏了 ✗（回环开发流/判据不受影响 ✓）。
+#[test]
+fn a_foreign_origin_cannot_mint_tokens_or_enumerate_documents() {
+    let server = start_server();
+    let addr = server.addr;
+    let origin = [("Origin", "https://evil.example".to_owned())];
+    let mut client = HttpClient::new(addr);
+
+    // ① 外来 Origin 想免密钥开 viewer 令牌 ⇒ 拒 ✓
+    let (status, body) = client.json_with(
+        "POST",
+        "/api/documents?role=viewer",
+        None,
+        Some(&json!({"doc_id": "doc_foreign_mint", "width": 64, "height": 64})),
+        &origin,
+    );
+    assert!(
+        (400..500).contains(&status),
+        "外来 Origin 匿名签发 viewer 令牌应当被拒，实测 {status}：{body}"
+    );
+    assert_eq!(body["ok"], json!(false), "{body}");
+
+    // ② 被拒的文档不许落盘 ✓
+    let (status, listed) = client.json("GET", "/api/documents", None, None);
+    assert_eq!(status, 200, "{listed}");
+    let ids: Vec<&str> = listed["documents"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item["doc_id"].as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        !ids.contains(&"doc_foreign_mint"),
+        "被拒的请求不该把文档建到盘上（闸必须在 open_or_create 之前）：{listed}"
+    );
+
+    // ③ 外来 Origin 枚举文档 ⇒ 拒 ✓
+    let (status, _) = client.json_with("GET", "/api/documents", None, None, &origin);
+    assert!(
+        (400..500).contains(&status),
+        "外来 Origin 枚举文档应当被拒，实测 {status}"
+    );
+
+    // ④ 无 Origin（curl/判据形状）在回环照常 ✓
+    let (status, body) = client.json(
+        "POST",
+        "/api/documents?role=viewer",
+        None,
+        Some(&json!({"doc_id": "doc_local_viewer", "width": 64, "height": 64})),
+    );
+    assert_eq!(
+        status, 200,
+        "回环无 Origin 的 viewer 签发不应受影响：{body}"
+    );
+    let (status, _) = client.json_with("GET", "/api/documents", None, None, &[]);
+    assert_eq!(status, 200, "无额外头的对照请求应当成功");
 }

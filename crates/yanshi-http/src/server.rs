@@ -680,7 +680,7 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
     }
     if path == "/api/documents" {
         return match method {
-            "GET" => list_documents(state),
+            "GET" => list_documents(state, request),
             "POST" => create_document(state, request),
             _ => method_not_allowed(request, "GET, POST"),
         };
@@ -1418,7 +1418,16 @@ fn rss_bytes() -> Option<u64> {
     Some(pages.saturating_mul(4096))
 }
 
-fn list_documents(state: &ServerState) -> Response {
+fn list_documents(state: &ServerState, request: &Request) -> Response {
+    // **列举全部文档要同一道闸** ✓（第三方代码审计 P0-1 的帮凶半边）：
+    // 原先 `GET /api/documents` **无鉴权**返回**所有 doc_id** ✗ ⇒ 与旧版
+    // 「`POST ?role=viewer` 对**任意已存在文档**免密钥发只读令牌」✗ 拼成
+    // 「先枚举、再逐个读」的完整链 ✓。本服务是**回环本机 / 对外带密钥**同一口径 ✓
+    // （`require_write_access` ✓：回环＋本机 Origin 照常 ✓，对外或外来 Origin 要 `YANSHI_API_KEY` ✓）。
+    // 泄露的是**标识**不是内容 ✗ ⇒ 用写闸而不是"永远拒绝"，本机前端不受影响 ✓。
+    if let Some(response) = require_write_access(state, request) {
+        return response;
+    }
     let Ok(workspace) = state.workspace.lock() else {
         return internal("工作区锁中毒");
     };
@@ -1452,9 +1461,27 @@ fn create_document(state: &ServerState, request: &Request) -> Response {
             .and_then(Value::as_str)
             .unwrap_or("human:web")
             .to_owned();
-        // 源文档必须用**它自己的令牌**授权（目标文档的令牌管不到源文档 ✓）。
-        if let Err(response) = authorize_with_token(state, &from, from_token) {
+        // **另存为副本会**签发 Editor 令牌**✓ ⇒ 与主路径同一道入口闸** ✓
+        // （第三方代码审计 P0-1：原先副本分支**从不查密钥**✓ 也不查**源令牌的角色**✗
+        // ⇒ 一条**只读分享链接**就能把整份文档复制成**可编辑**的新文档 ✗ ——
+        // 这是"读权限升级成写权限"的现成梯子 ✗）。
+        if let Some(response) = require_write_access(state, request) {
             return response;
+        }
+        // 源文档必须用**它自己的令牌**授权（目标文档的令牌管不到源文档 ✓），
+        // 并且**源令牌的角色必须可编辑**（`can_edit` 单一出处 ✓，只读 ⇒ 只读 ✓）。
+        let source = match authorize_with_token(state, &from, from_token) {
+            Ok(principal) => principal,
+            Err(response) => return response,
+        };
+        if !source.role.can_edit() {
+            return Response::from_error(&YanshiError::new(
+                ErrorCode::PermissionDenied,
+                ErrorContext::detail(format!(
+                    "源文档令牌的角色是 {} ⇒ 只读链接不能另存为可写副本（副本会以 Editor 令牌发还）",
+                    source.role.as_str()
+                )),
+            ));
         }
         let Ok(mut workspace) = state.workspace.lock() else {
             return internal("工作区锁中毒");
@@ -1503,7 +1530,38 @@ fn create_document(state: &ServerState, request: &Request) -> Response {
         .and_then(Value::as_str)
         .unwrap_or("human:web")
         .to_owned();
-
+    // 12.7：打开文档返回内嵌 token 的 URL。
+    //
+    // **Phase 5：角色权限** ✓ —— 打开时可指定角色，缺省 `editor` ✓。
+    // 设计只写了「Phase 5 扩展为 owner/editor/viewer」✓、**没有规定发放策略** ✗
+    // ⇒ 这里做一个**最小且可预期**的选择 ✓ 并记档 ✓：**调用方显式声明角色** ✓、缺省 editor ✓。
+    // **不擅自发明"谁是 owner"** ✗（那是权限管理策略 ✓，留给后续 ✓）；
+    // 但 `owner` 必须**可选** ✓，否则 `can_revert_others` 那条能力**永远用不上** ✗。
+    //
+    // **角色先解析、再过闸** ✓：未知角色该报的是"角色不认识"（400 ✓），
+    // 不该被密钥拒绝（412/403 ✗）盖掉真正的原因 ✓。
+    let requested_role = match request.param("role").unwrap_or("editor") {
+        "viewer" => Role::Viewer,
+        "editor" => Role::Editor,
+        "owner" => Role::Owner,
+        other => {
+            return Response::from_error(&YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("未知角色 {other}（可用：viewer / editor / owner）")),
+            ))
+        }
+    };
+    // **所有角色过同一道闸，且过闸在 `open_or_create` 之前** ✓（第三方代码审计 P0-1）：
+    // ① 原先只有 `editor/owner` 过闸 ✗ ⇒ **绑对外时 `role=viewer` 对任意已存在文档免密钥**
+    //    签发**只读令牌** ✓ —— 而 `GET /?doc=&token=` **渲染整幅 PNG** ⇒ 这是**内容泄露** ✗
+    //    （P0 级），不是"只读所以无害" ✗；
+    // ② `open_or_create` 原先跑在闸**之前** ✗ ⇒ 被拒的请求也把文档**落盘建出来了** ✗
+    //    （未授权者可在对外服务上无限建文档 ✓ 磁盘 DoS ✗）。
+    // **回环 + 本机 Origin 两者都照常放行** ✓（本机开发/探针/判据行为不变 ✓）；
+    // 外来 Origin（DNS rebinding ✓ 第 1440 轮）与绑对外同一口径：**要 `YANSHI_API_KEY`** ✓。
+    if let Some(response) = require_write_access(state, request) {
+        return response;
+    }
     let Ok(mut workspace) = state.workspace.lock() else {
         return internal("工作区锁中毒");
     };
@@ -1528,37 +1586,7 @@ fn create_document(state: &ServerState, request: &Request) -> Response {
     if let Err(error) = workspace.open_or_create(spec, &actor, "session:web") {
         return Response::from_error(&error);
     }
-    // 12.7：打开文档返回内嵌 token 的 URL。
-    //
-    // **Phase 5：角色权限** ✓ —— 打开时可指定角色，缺省 `editor` ✓。
-    // 设计只写了「Phase 5 扩展为 owner/editor/viewer」✓、**没有规定发放策略** ✗
-    // ⇒ 这里做一个**最小且可预期**的选择 ✓ 并记档 ✓：**调用方显式声明角色** ✓、缺省 editor ✓。
-    // **不擅自发明"谁是 owner"** ✗（那是权限管理策略 ✓，留给后续 ✓）；
-    // 但 `owner` 必须**可选** ✓，否则 `can_revert_others` 那条能力**永远用不上** ✗。
-    let requested_role = match request.param("role").unwrap_or("editor") {
-        "viewer" => Role::Viewer,
-        "editor" => Role::Editor,
-        "owner" => Role::Owner,
-        other => {
-            return Response::from_error(&YanshiError::new(
-                ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!("未知角色 {other}（可用：viewer / editor / owner）")),
-            ))
-        }
-    };
-    // **对外绑定时不许匿名发写权限令牌** ✓（第三方代码审计 P0 第 2 条：
-    // `/api/documents` 原先任何人无需凭据即可拿到 **Editor** 令牌 ✓，
-    // 与已修的"任意路径写"合起来就是"未授权 + 任意写"完整链 ✗）。
-    // 策略（最小且可预期 ✓）：**绑回环** ⇒ 维持现状 ✓（本机开发/探针都靠它 ✓）；
-    // **绑对外** ⇒ Editor/Owner 必须带密钥 `YANSHI_API_KEY` ✓；没配密钥就**明确拒绝**并给出两条出路 ✓。
-    // **维持现状有一个例外** ✓（第 1440 轮）：带着**外来 Origin** 的请求按"绑对外"口径处理
-    // —— DNS rebinding 正是"看着像回环、其实是浏览器"的形状 ✓（见 `require_write_access`）。
-    let write_role = matches!(requested_role, Role::Editor | Role::Owner);
-    if write_role {
-        if let Some(response) = require_write_access(state, request) {
-            return response;
-        }
-    }
+    // （闸与角色解析已**前移**到 `open_or_create` 之前 ✓，见上；此处直接签发令牌 ✓）
     let token = match workspace.issue_token(&doc_id, &actor, requested_role) {
         Ok(token) => token,
         Err(error) => return Response::from_error(&error),
@@ -1621,6 +1649,18 @@ fn origin_is_local(origin: &str) -> bool {
 /// **为什么抽成函数** ✓：工程包导入与文档删除都会**新建/销毁落盘文档** ✓，
 /// 与"开一个文档"是同一级写操作 ✓ ⇒ **必须用同一条策略** ✓。
 /// 各写一份必然漂移 ✗（本项目在这上面栽过不止一次 ✓）。
+/// **恒定时间比较密钥** ✓（第三方代码审计附带项：`provided == expected` 在**第一个不相等
+/// 字节**就短路 ✗ ⇒ 理论上可经**重复计时**逐字节恢复前缀 ✓）。长度仍会泄露 ✗ 但长度不是秘密内容 ✓。
+/// 逐字节**异或累积**、不提前退出 ⇒ 无论哪一位开始不同，耗时只随长度线性变化 ✓。
+fn secrets_equal(provided: &str, expected: &str) -> bool {
+    provided.len() == expected.len()
+        && provided
+            .bytes()
+            .zip(expected.bytes())
+            .fold(0u8, |acc, (a, b)| acc | u8::from(a != b))
+            == 0
+}
+
 fn require_write_access(state: &ServerState, request: &Request) -> Option<Response> {
     let foreign_browser = request
         .header("origin")
@@ -1651,7 +1691,10 @@ fn require_write_access(state: &ServerState, request: &Request) -> Option<Respon
             }),
         ))),
         Some(key) => {
-            if provided.as_deref() == Some(key.as_str()) {
+            if provided
+                .as_deref()
+                .is_some_and(|value| secrets_equal(value, &key))
+            {
                 None
             } else {
                 Some(Response::from_error(&YanshiError::new(
@@ -1944,7 +1987,12 @@ fn authorize(
 }
 
 /// 用**显式令牌**授权某个文档（用于「另存为副本」：目标文档的令牌管不到源文档 ✓）。
-fn authorize_with_token(state: &ServerState, doc_id: &str, token: &str) -> Result<(), Response> {
+/// **返回 Principal** ✓（第三方代码审计 P0-1：副本分支要按**源令牌的角色**判"只读不许升级为可写"✗⇒✓）。
+fn authorize_with_token(
+    state: &ServerState,
+    doc_id: &str,
+    token: &str,
+) -> Result<yanshi_server::Principal, Response> {
     let token = if token.is_empty() {
         None
     } else {
@@ -1959,7 +2007,6 @@ fn authorize_with_token(state: &ServerState, doc_id: &str, token: &str) -> Resul
         .map_err(|_| internal("工作区锁中毒"))?;
     workspace
         .authorize(doc_id, token.as_ref(), TransportKind::Http, "local:http")
-        .map(|_| ())
         .map_err(|error| Response::from_error(&error))
 }
 
@@ -3193,6 +3240,20 @@ fn atom_submit(state: &ServerState, request: &Request) -> Response {
         Ok(principal) => principal,
         Err(response) => return response,
     };
+    // **`/api/atoms` 是直写端点，绕过了工具面的 mutating 闸** ✓（第三方代码审计 P0-2）：
+    // `ToolRegistry::call` 在入口按 `spec.mutating && !role.can_edit()` 挡写 ✓（tools.rs:953），
+    // 但本端点直接 `workspace.commit` ✗ ⇒ viewer 令牌照样能经此处改文档 ✗。
+    // 补**同一个谓词**（`can_edit` 单一出处 ✓），且**排在 `open_or_create` 之前** ✓
+    // —— 只读令牌不许替调用方**落盘建文档** ✓。
+    if !principal.role.can_edit() {
+        return Response::from_error(&YanshiError::new(
+            ErrorCode::PermissionDenied,
+            ErrorContext::detail(format!(
+                "该 token 的角色是 {} ⇒ 不允许提交原子（只读角色可用 GET /api/atoms 读取）",
+                principal.role.as_str()
+            )),
+        ));
+    }
     let atom: yanshi_core::Atom = match serde_json::from_slice(&request.body) {
         Ok(atom) => atom,
         Err(error) => {
@@ -3690,6 +3751,25 @@ pub fn routes() -> BTreeMap<&'static str, &'static str> {
 /// 便于工具层：`Role` 是否允许跨 actor revert（12.5）。
 pub fn owner_from_role(role: Role) -> bool {
     role.can_revert_others()
+}
+
+#[cfg(test)]
+mod secrets_tests {
+    use super::secrets_equal;
+
+    /// **密钥比较**：长度不等 ⇒ 假 ✓；逐字节相同 ⇒ 真 ✓；**同长度只差一个字节 ⇒ 假** ✓
+    /// （这一条就是"短路比较看起来也一样"的差别所在 ✗⇒✓）。
+    #[test]
+    fn secrets_equal_accepts_only_byte_identical_same_length() {
+        assert!(secrets_equal("abc123", "abc123"));
+        assert!(!secrets_equal("abc12", "abc123"), "长度不等不许放行");
+        assert!(!secrets_equal("abc124", "abc123"), "末位不同也必须判假");
+        assert!(!secrets_equal("xbc123", "abc123"), "首位不同也必须判假");
+        assert!(
+            secrets_equal("", ""),
+            "两个空串在语义上相等（空密钥在入口已被过滤 ✗⇒此处只测谓词）"
+        );
+    }
 }
 
 #[cfg(test)]
