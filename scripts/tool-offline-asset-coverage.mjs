@@ -312,7 +312,12 @@ function makeServiceWorker(source, buildId, sharedStore = new Map()) {
       }
     }
   };
-  const sandbox = { URL, Request: RequestWithBase, Response, Headers, TextEncoder, caches, fetch: networkFetch, console };
+  // **★ 计时器必须进沙箱**：`service-worker.js` 的超时护栏用了 `setTimeout`
+  //   （`Promise.race([promise, setTimeout(…)])`）⇒ 沙箱不给它 ⇒ vm 里 `ReferenceError:
+  //   setTimeout is not defined` ⇒ 判据整个 crash 成 `exit(3)` ⇒ **离线资产覆盖这条**
+  //   **本该守住的东西一直在静默失效**。补 `setTimeout`／`clearTimeout`（用宿主实现，
+  //   回调仍跑在宿主事件循环上，与浏览器 SW 的语义一致）。
+  const sandbox = { URL, Request: RequestWithBase, Response, Headers, TextEncoder, caches, fetch: networkFetch, console, setTimeout, clearTimeout };
   sandbox.self = sandbox;
   sandbox.location = { origin: ORIGIN };
   sandbox.addEventListener = (type, handler) => handlers.set(type, handler);
