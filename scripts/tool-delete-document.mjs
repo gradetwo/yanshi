@@ -63,8 +63,11 @@ const listIds = async () => {
   const value = (await json("/api/documents")).value;
   return new Set(((value && value.documents) || []).map((doc) => doc.doc_id));
 };
-const makeDoc = async (docId) => {
-  const created = await postJson("/api/documents", { doc_id: docId, width: 64, height: 48 });
+const makeDoc = async (docId, role) => {
+  const created = await postJson(
+    `/api/documents${role ? `?role=${role}` : ""}`,
+    { doc_id: docId, width: 64, height: 48 },
+  );
   return created.value && created.value.token;
 };
 
@@ -77,6 +80,15 @@ const tokenA = await makeDoc(A);
 const tokenB = await makeDoc(B);
 await makeDoc(C);
 const tokenD = await makeDoc(D);
+// **工具面的会话改用 owner 令牌**（第三方审计 P2-N1）：`document_id` 是**被删文档** ✓，
+// 而作用域闸只放行「会话文档相等或 owner」⇒ editor 跨文档删会被 403 拒（下面单有一条反例
+// 钉住闸本身 ✓）。MCP stdio 的缺省角色本来就是 owner ⇒ owner 会话与 MCP 语义一致 ✓。
+const TOOLDOC = "crit_delete_tool_session";
+const tokenTool = await makeDoc(TOOLDOC, "owner");
+if (!tokenTool) {
+  console.error("判据无法运行：建不出 owner 会话文档（不是通过）");
+  process.exit(1);
+}
 if (!tokenA || !tokenB || !tokenD) {
   console.error("判据无法运行：建不出夹具文档（不是通过）");
   process.exit(1);
@@ -113,8 +125,8 @@ const openSocket = (docId, token) =>
     setTimeout(() => reject(new Error("WS 握手超时")), 5000);
   });
 
-const deleteVia = (docId, token) =>
-  json(`/api/tools/delete_document?doc=${encodeURIComponent(B)}&token=${encodeURIComponent(token)}`, {
+const deleteVia = (docId) =>
+  json(`/api/tools/delete_document?doc=${encodeURIComponent(TOOLDOC)}&token=${encodeURIComponent(tokenTool)}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ document_id: docId }),
@@ -222,7 +234,24 @@ check(
     spec.inputSchema.required.includes("document_id"),
   JSON.stringify((spec && spec.inputSchema && spec.inputSchema.required) || []),
 );
-const toolMissing = await deleteVia(MISSING, tokenB);
+// **作用域闸的反例** ✓（第三方审计 P2-N1）：拿文档 B 的 editor 令牌删**别的**文档 C ⇒ 403
+// `permission_denied`，且 C 毫发无损 ✓（去掉 `ensure_doc_scope` ⇒ 这条红 ✓）。
+const editorCross = await json(
+  `/api/tools/delete_document?doc=${encodeURIComponent(B)}&token=${encodeURIComponent(tokenB)}`,
+  {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ document_id: C }),
+  },
+);
+check(
+  "editor 令牌跨文档删 ⇒ `permission_denied` 且目标仍在（作用域闸）",
+  editorCross.value && editorCross.value.ok === false &&
+    editorCross.value.error_code === "permission_denied" &&
+    (await listIds()).has(C),
+  "status=" + editorCross.status + " " + JSON.stringify(editorCross.value).slice(0, 160),
+);
+const toolMissing = await deleteVia(MISSING);
 check(
   "工具面删不存在的文档 ⇒ **与路由同一个** `reference_not_found`",
   toolMissing.value && toolMissing.value.ok === false &&
@@ -231,7 +260,7 @@ check(
 );
 const socketD = await openSocket(D, tokenD);
 await sleep(300);
-const toolInUse = await deleteVia(D, tokenB);
+const toolInUse = await deleteVia(D);
 check(
   "工具面删正在使用中的文档 ⇒ **与路由同一个** `conflict`",
   toolInUse.value && toolInUse.value.ok === false && toolInUse.value.error_code === inUse.value.error_code,
@@ -241,7 +270,7 @@ socketD.destroy();
 await sleep(400);
 let toolDeleted = { status: 0, value: null };
 for (let attempt = 0; attempt < 20; attempt += 1) {
-  toolDeleted = await deleteVia(D, tokenB);
+  toolDeleted = await deleteVia(D);
   if (toolDeleted.status === 200) break;
   await sleep(250);
 }

@@ -15,7 +15,9 @@ import { join } from "node:path";
 const dir = trackTemp(mkdtempSync(join(tmpdir(), "import-layers-")));
 const pkg = `${dir}/p.yanshi`;
 
-const created = await (await fetch(`${base}/api/documents`, {
+// **`?role=owner`**：下面第②步是**跨文档**导入（目标 `${docId}x`）⇒ 第三方审计 P2-N1 的
+// 作用域闸会拒 editor 令牌（`ensure_doc_scope` ✓，与 MCP stdio 缺省对齐 ✓）。
+const created = await (await fetch(`${base}/api/documents?role=owner`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ doc_id: docId, width: 200, height: 200 }),
 })).json();

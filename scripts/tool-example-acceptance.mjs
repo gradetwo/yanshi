@@ -47,7 +47,12 @@ const call = async (name, args) =>
 //   ⇒ 否则示例会被记成「被拒」✗（错怪示例，而工具是对的 ✓）。
 //   **不放松任何东西** ✓：角色本来就是打开文档时的公开参数 ✓，工具仍跑同一套参数校验 ✓。
 //   **新增 owner-only 工具时加一行（带理由 ✓）** —— 没登记就照着缺省 editor 跑 ✓。
-const OWNER_ONLY_TOOLS = new Map([["revoke_token", "吊销令牌必须 owner（审计 H-2）"]]);
+const OWNER_ONLY_TOOLS = new Map([
+  ["revoke_token", "吊销令牌必须 owner（审计 H-2）"],
+  // **第三方审计 P2-N1 之后**：`document_id` 与**会话文档**不同 ⇒ editor 令牌会被作用域闸
+  // 拒掉（`token::ensure_doc_scope` ✓，与 MCP stdio 的 owner 缺省对齐）⇒ 示例要走 owner 令牌。
+  ["delete_document", "跨文档删除必须 owner（第三方审计 P2-N1 的作用域闸）"],
+]);
 
 // **⇒ 每条示例一个**干净文档** ✓**（第 941 轮；外部实测 `frequency_separation` 被前面的示例污染 ✗）
 //   **⇒ 症状** ✗：判据**共用一个文档** ⇒ 状态按顺序累积 ✓ ⇒ 某条示例看到的是**别的示例留下的图层内容** ✓

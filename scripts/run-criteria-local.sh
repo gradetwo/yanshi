@@ -97,6 +97,21 @@ if grep -qE 'yanshi-mcp|YANSHI_MCP_BIN' "$CRIT" 2>/dev/null; then
   echo "  MCP 面 ⇒ ${YANSHI_MCP_BIN}（刚验过新鲜 ✓）"
 fi
 
+# **★ 自己 spawn 服务端的判据也要钉住 release 二进制**（第 872 轮同款坑，2ad65743 之后实测）
+#   `tool-import-project.mjs` 用 `YANSHI_SERVE_BIN || target/debug/yanshi-serve` 起「全新根目录」
+#   的服务端 ⇒ 而本脚本只重建 **release** ⇒ debug 产物可以是任何旧版本的 ⇒
+#   实测：作用域闸（P2-N1）已在 release 里生效，判据却拿陈旧 debug 测出「editor 跨文档导入成功」✗
+#   ⇒ 与第 956 轮同一族：**判据测的不是当前代码**。缺省不 export（`base` 由本脚本起 release ✓），
+#   只在判据自己 spawn 时兜住新鲜度。
+if grep -qE 'YANSHI_SERVE_BIN' "$CRIT" 2>/dev/null; then
+  if [ ! -x "$BIN" ] || find crates vendor -name '*.rs' -newer "$BIN" 2>/dev/null | head -1 | grep -q .; then
+    echo "  ⟳ yanshi-serve（release）陈旧 ⇒ 先重建"
+    cargo build --release -p yanshi-http >/dev/null 2>&1 || { echo "  ⊘ 不可判：yanshi-serve 重建失败" >&2; exit 3; }
+  fi
+  export YANSHI_SERVE_BIN="$BIN"
+  echo "  自 spawn 服务端 ⇒ ${YANSHI_SERVE_BIN}（刚验过新鲜 ✓）"
+fi
+
 # **★ `browser-*` 不能走本脚本的缺省编排** ✓（第 740 轮：一次**假红**换来的）
 #   **⇒ 症状**：本脚本不起**静态 PWA** ✗ ⇒ `browser-live-ui.mjs` 拿不到 `YANSHI_LIVE_UI_URL` ⇒
 #     **缺省回落到线上** `yanshi-online.wangda.today` ✗（那上面 `list_assets` 404 ⇒ 判据红 ✓）

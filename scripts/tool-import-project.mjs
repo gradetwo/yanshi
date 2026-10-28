@@ -382,12 +382,33 @@ writeFileSync(toolPackagePath, packageBytes);
 const serverC = await spawnFreshServer("tool");
 check("工具面用的服务端（又一个全新根目录）可用", serverC.base.length > 0, serverC.base || serverC.log.slice(0, 200));
 if (serverC.base) {
-  const sessionDoc = await postJsonAt(serverC.base, "/api/documents", {
+  // **作用域闸（第三方审计 P2-N1）**：`import_project` 的 `doc_id` 是**目标文档**入参 ⇒
+  // 拿 editor 令牌往**别的**文档里灌包会被 `ensure_doc_scope` 拒（403 ✓，与 MCP stdio 的
+  // owner 缺省对齐 ✓）。工具面测的是「导入闭环」⇒ 会话用 owner 令牌；闸本身由下面那条
+  // editor 反例单独钉住（去掉闸 ⇒ 那条红 ✓）。
+  const sessionDoc = await postJsonAt(serverC.base, "/api/documents?role=owner", {
     doc_id: "crit_import_tool_session",
     width: 64,
     height: 64,
   });
   const sessionToken = sessionDoc.value && sessionDoc.value.token;
+  const editorSession = await postJsonAt(serverC.base, "/api/documents", {
+    doc_id: "crit_import_tool_session_editor",
+    width: 64,
+    height: 64,
+  });
+  const editorToken = editorSession.value && editorSession.value.token;
+  const editorImport = await postJsonAt(
+    serverC.base,
+    `/api/tools/import_project?doc=crit_import_tool_session_editor&token=${encodeURIComponent(editorToken || "")}`,
+    { path: toolPackagePath, doc_id: "crit_import_tool_cross" },
+  );
+  check(
+    "editor 令牌跨文档导入 ⇒ `permission_denied`（作用域闸；同文档与 owner 不受影响）",
+    editorImport.value && editorImport.value.ok === false &&
+      editorImport.value.error_code === "permission_denied",
+    JSON.stringify(editorImport.value).slice(0, 160),
+  );
   const toolImport = await postJsonAt(
     serverC.base,
     `/api/tools/import_project?doc=crit_import_tool_session&token=${encodeURIComponent(sessionToken || "")}`,
