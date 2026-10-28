@@ -3826,6 +3826,13 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
     ///
     /// 文档若尚未打开但磁盘存在，会先按需加载（含 token 恢复，12.7）——
     /// HTTP/WS 请求带着 token 打进来时不该因为进程刚重启就失败。
+    ///
+    /// **★ 05 复审 NEW-C1：未认证的请求不许触发重活 ★**
+    /// 旧实现无条件先 `load_atoms`（读盘解析整份日志）＋ `open_document`（全量折叠 ＋
+    /// 渲染缓存分配），**然后**才查令牌 ⇒ 拿着无效 token 的匿名请求也能逼服务端做全量 IO，
+    /// 与已修的 P0-1 同类（副作用跑在闸前），只是漏在**读**路径上。
+    /// 现在远端请求先用 **meta.json 浅探针**查令牌表（令牌本来就在 meta 里，不需要折叠），
+    /// 通过后才付打开的代价；本地传输（stdio／进程内，受信）维持旧顺序。
     pub fn authorize(
         &mut self,
         doc_id: &str,
@@ -3834,11 +3841,32 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
         fallback_actor: &str,
     ) -> Result<Principal> {
         if !self.documents.contains_key(doc_id) {
-            let exists = match &self.persist {
-                Some(persist) => !persist.load_atoms(doc_id)?.is_empty(),
-                None => false,
-            };
-            if exists {
+            if transport.is_local() {
+                let exists = match &self.persist {
+                    Some(persist) => !persist.load_atoms(doc_id)?.is_empty(),
+                    None => false,
+                };
+                if exists {
+                    self.open_document(doc_id)?;
+                }
+            } else {
+                // 浅探针：只读 meta.json，不读原子、不折叠 ⇒ 无效/缺失令牌在这里就被拒，
+                // 后面的全量打开只有已认证的请求才能触发。
+                let Some(token) = token else {
+                    return Err(YanshiError::new(
+                        ErrorCode::PermissionDenied,
+                        ErrorContext::detail("缺少 capability token"),
+                    ));
+                };
+                if !self.token_known_on_disk(doc_id, token)? {
+                    return Err(YanshiError::new(
+                        ErrorCode::PermissionDenied,
+                        ErrorContext::detail("capability token 无效或已吊销"),
+                    ));
+                }
+                // 令牌确实落过盘 ⇒ 这时才付全量打开的代价。
+                // **如实说边界**：浅探针防的是「**无效令牌免费触发重活**」；
+                // 持**有效令牌**的请求仍要付一次冷开——那是它本来就该付的。
                 self.open_document(doc_id)?;
             }
         }
@@ -3849,6 +3877,25 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
             )
         })?;
         document.authorize(token, transport, fallback_actor)
+    }
+
+    /// 令牌是否在该文档 `meta.json` 的令牌表里（[`Workspace::authorize`] 的浅探针）。
+    ///
+    /// `tokens_hashed` 为假时盘上是**旧版明文** ✓ ⇒ 按明文比对；为真时按 SHA-256 摘要比对。
+    fn token_known_on_disk(&self, doc_id: &str, token: &CapabilityToken) -> Result<bool> {
+        let Some(persist) = &self.persist else {
+            return Ok(false);
+        };
+        let Some(meta) = persist.load_meta(doc_id)? else {
+            return Ok(false);
+        };
+        Ok(meta.tokens.iter().any(|record| {
+            if meta.tokens_hashed {
+                record.token == crate::token::token_digest(token.as_str())
+            } else {
+                record.token == token.as_str()
+            }
+        }))
     }
 
     /// 文档 capability URL（打开文档时返回内嵌 token 的 URL，12.7）。

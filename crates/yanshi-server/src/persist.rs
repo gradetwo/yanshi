@@ -31,6 +31,9 @@ use yanshi_core::{Atom, ErrorCode, ErrorContext, Result, Seq, YanshiError};
 #[derive(Debug, Clone)]
 pub struct FileStore {
     root: PathBuf,
+    /// `load_atoms` 的调用计数（跨 clone 共享）——供判据断言
+    /// 「**无效令牌不触发全量日志读取**」（05 复审 NEW-C1）。
+    load_atoms_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// 文档元数据（meta.json）。
@@ -89,7 +92,16 @@ impl FileStore {
         // **悬空变更集**（设计 §12.4 ✓）：离线窗口可能跨服务重启 ✓ ⇒ 它必须落盘 ✓，
         // 否则"用户离线期间的编辑"会在重启时凭空消失 ✗。
         fs::create_dir_all(root.join("stash")).map_err(|error| io_error(&root, error))?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            load_atoms_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
+    }
+
+    /// `load_atoms` 累计调用次数（跨 clone 共享）✓——05 复审 NEW-C1 的观测口。
+    pub fn load_atoms_calls(&self) -> usize {
+        self.load_atoms_calls
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// 落盘一个悬空变更集 ✓（`<root>/stash/<id>.json` ✓）。
@@ -358,6 +370,8 @@ impl FileStore {
     ///     （原来多跑一趟 `text.lines().count()` ✗，那在大文件上是一整遍额外扫描 ✓）；
     ///   * 中间任何一行损坏 ⇒ 报错并指出**行号** ✓。
     pub fn load_atoms(&self, doc_id: &str) -> Result<Vec<Atom>> {
+        self.load_atoms_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = self.atoms_path(doc_id);
         let file = match fs::File::open(&path) {
             Ok(file) => file,
