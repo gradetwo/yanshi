@@ -1059,6 +1059,12 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
      分开排期 ✓；当前 `/index.html` 已单独 `no-cache` ✓ ⇒ 「每次冷启传 1 MB」是**传输成本**问题 ✗ 不是**陈旧内容**问题 ✓。
    · **NEW-C1 的限流（429）**——浅探之后未授权路径**只剩有界的 meta.json 读** ✗ 重 IO 已闸 ✓ ⇒
      限流降级为「排期后做」✓（做之前先钉判据：同一来源高频 authorize ⇒ 429 且有 `Retry-After` ✓）。
+   ⑥ **NEW-L3 点名「逐字未变」的旧项，本轮动了最便宜的一条**：**上轮 L-4／E-12（三条部署路径各用各的
+   wrangler）**——`deploy-pwa.sh` 的两处 `npx --yes wrangler`（**绕过 lockfile** ✗ 每次现取最新 ✓）
+   换成与 `npm run pwa:deploy` **同一个解析**（`scripts/pwa-wrangler.mjs` ⇒ 本地 `node_modules/.bin/wrangler` ✓
+   实测复现版本 4.149.0 ✓）；守卫 `check-deploy-tool-pin.mjs` 扫 **scripts/ 全体活代码**禁 `npx --yes` ✓
+   （变异：换回 npx ⇒ `deploy-pwa.sh:142` 红 ✓；守卫**先抓到过自己** ⇒ 匹配串拆两段 ✓「检查对象里
+   不得有该检查本身的文字」第 301 轮那条规矩 ✓）。`pwa.yml` 的三处**未动**——L-6 冻结 ✓，解冻后一起做。
    ⑤ **CI 复盘（run `40640839341`，`8816b1fc`，failure）**：
    · `browser-brush-preview` **定性为环境抖动** ✓ —— 上一跑（`522ffcd`）红的那条这一跑**没有复现** ✓
      （同跑 `browser-asset-dock` 当时是 `exit 3` 判据自身求值失败 ✓，不是产品失败 ✓）；

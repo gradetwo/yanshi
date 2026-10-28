@@ -129,11 +129,17 @@ export CLOUDFLARE_API_TOKEN="${CF_TOKEN}"
 if [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
   export CLOUDFLARE_ACCOUNT_ID
 fi
+# **★ 不再 `npx --yes wrangler` ✗ ⇒ 走 `scripts/pwa-wrangler.mjs` ✓ ★**（上轮 E-12／05 复审 L-4 ✓）：
+#   `npx --yes` **绕过 lockfile** ✗ ⇒ 每次部署**现取最新 wrangler**（供应链面 ✗）⇒
+#   而 `npm run pwa:deploy` 走的是**仓库锁定版本** ✓ ⇒ **两条部署路各有各的 wrangler** ✗
+#   ⇒ 统一成**同一个解析**（本地 `node_modules/.bin/wrangler` 优先 ✓，版本随 lockfile ✓）。
+#   **⇒ 残余** ✗：`pwa.yml` 里同样的 `npx --yes`（:153/:205/:210）**未改** —— L-6「暂不改工作流」冻结 ✓，
+#     解冻后把那三处也换成 `node scripts/pwa-wrangler.mjs` ✓（记在台账 §89 ✓）。
 if [ "${DRY_RUN}" = 1 ]; then
-  npx --yes wrangler deploy --dry-run --outdir /tmp/pwa-dist
+  node scripts/pwa-wrangler.mjs deploy --dry-run --outdir /tmp/pwa-dist
   say "⇒ dry run 通过（**未发布** ✓）"
 else
-  npx --yes wrangler deploy
+  node scripts/pwa-wrangler.mjs deploy
   say "⇒ 已部署 ⇒ 自检线上是否真的更新："
   # **∴ 自检（**不许只说「成功了」 ✓）★**
   online="$(curl -s --max-time 30 https://yanshi-online.wangda.today/viewer-app.js | grep -c 'putBlob(db, hash' || true)"
