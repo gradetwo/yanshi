@@ -22623,3 +22623,63 @@ node 判据环境没有 ⇒ **归 browser 判据**（`browser-asset-dock` 在 CI
 **收益 ✓**：修好离线导入图片整条路（不再假成功／不再一个像素不出 ✓）；本地三处口径对齐 ✓。
 **代价 ✓**：净荷比旧「简化形状」多了 `bitmap`/`region`/`width`/`height`/`type` 几个键 ✓（正是渲染器要的 ✓）
 ＋ 判据多四条断言 ＋ 一个 `putBlob` 造数据（node 级 ✓ 毫秒）。
+
+## 六百四十八、`resample` 丢 `scale` ⇒ 又挖出 `p2ObjectView` 认不出 `import_image` 建的对象（离线「导入后再缩放」整条坏，实测）
+
+**⇒ 起因 ✓**：§647 那个「前端发了却没被本地读」的探测器**继续跑**命中 `resample` ✓——
+前端 `viewer-app.js:6483` 只发 `{object_id, scale}`✓（用户拖缩放滑杆 ⇒ 倍率 ✓），
+而本地层 `api-local.js` **只读 `width`/`height`✗** ⇒ `scale` 被整个丢掉 ✓
+⇒ 且旧目标尺寸算式 `toW = targetW || fromW` ⇒ **不缩放却 `ok:true`**✓（静默按原尺寸重采样、冒充成功 ✓）。
+服务端 `write_resample`（`tools.rs:9538`）认 `scale`✓、二者都不给就报错✓、还有画布上限✓ ⇒ 本地三样都缺 ✗。
+
+**⇒ 症状 ①（`resample` 丢倍率 ✓）**：给 `scale` ⇒ 忽略 ⇒ 重采样到**原尺寸**却回 `ok:true`✓（第三个静默降级 ✓）；
+**二者都不给** ⇒ 也不报错✗（旧式 `|| fromW` 悄悄兜住 ✓）；**`scale<=0`** ⇒ 无校验✗。
+
+**⇒ 而验证它时发现更深的一处 ✗（症状 ② —— 这才是 P0 ✓）**：
+判据要先有一个「**可被 `resample` 找到的 `raster_patch` 对象**」⇒ 于是先 `import_image` 再 `resample` 同一 `object_id`✓
+⇒ **实测 `resample` 报「对象不存在」`reference_not_found`**✓ —— 明明 `import_image` 回了 `ok:true`✓。
+根因不在 `resample`✗，在**对象折叠器 `p2ObjectView`**：它**只认 `create_object`** 是建对象✓（`api-local.js:395`）
+而 **`import_image` 是另一种 kind**✗ ⇒ 折叠时**看不见导入的对象**✓。
+
+**⇒ 三处口径 ✗（本地层自相矛盾，是这次最硬的证据 ✓）**：
+
+| 处 | 把什么算「建了个可寻址对象」 | 结果 |
+|---|---|---|
+| `list_objects`（`:1160`） | **任何带 `object_id` 的原子** | 导入图**列得出 ✓** |
+| `duplicate_layer`（`:1385`） | **`import_image` ∣∣ `create_object`** | 导入图**复制得出 ✓** |
+| **`p2ObjectView`（`:395`，改前）** | **只 `create_object`** ✗ | 导入图**动不了 ✓** |
+
+⇒ 于是：**渲染得出、列得出、复制得出**✓，**可 `resample`／`supersede` 读／`tombstone`／组成员**（全走 `p2ObjectView`✗）
+**一律「对象不存在」**✓。而**离线笔触／`gradient_fill`／`texture_background` 也都写 `import_image` 原子**✓
+（`:2507`/`:2580`/`:4084` ✓）⇒ **一并受影响** ✓ —— 一处折叠器漏认 ✗ ⇒ ~20 个端点对所有「非 `create_object` 建的对象」全瞎 ✓。
+
+**⇒ 修法 ✓（补齐口径，不各自发明 ✗）**：
+① `p2ObjectView:395` **照 `duplicate_layer` 的定义**认 `import_image ∣∣ create_object`✓（同一事实两处一致 ✓）；
+② `data` 取法**照服务端折叠规则**「有 `data` 用 `data`✓，否则用整个净荷」✓（`import_image` 把 `bitmap/width/height/region`
+   写在净荷顶层✗ 无 `data` 子对象 ✓）⇒ 否则认出对象后仍会在下一步报「没有位图」✗（**只修一半** ✓）；
+   **只对 `import_image` 走净荷回退 ✓ ⇒ `create_object` 分支逐字节不变 ✓**（**把 ~20 调用方的爆炸半径压到 0** ✓）；
+③ `resample` 补**三条请求校验**：`width/height` 与 `scale` **二者必居其一**✓（都不给就 `invalid_argument`✓ 不猜 ✓）、
+   `scale>0`✓、目标尺寸受**画布上限**约束（`MAX_EDGE 16384`／`MAX_PIXELS 1<<28`✓ 照服务端 S-06 ✓）。
+   **∴ 关键顺序 ✗**：**这两条纯请求校验放在查对象之后、进 `try`（缩放要浏览器 canvas ✗）之前**✓
+   ⇒ 于是 **node 判据也能验到**✓（缩放本身要 CI 浏览器 ✓）。
+
+**⇒ 四层齐 ✓**：① 实现 `p2ObjectView`＋`resample`✓；② 输入 = 判据先 `putBlob`＋`import_image` 建**真对象**✓、再对它 `resample`✓；
+③ 断言 `tool-pwa-api-behaviour` **⑦d 两条**（无尺寸 ⇒ `invalid_argument` 且 reason 含「width 与 height，或 scale」✓／
+   `scale:0` ⇒ `invalid_argument` 且 reason 含「scale 必须是正数」✓）✓；
+④ **变异（实测 ✓ 两条轴都红退出码 1 ✓）**：
+   **(a)** 退回 `p2ObjectView` 只认 `create_object` ⇒ `resample` 变回 `reference_not_found` ⇒ **两条全红**✓（证 ⑦d 押在本次新修复上 ✓）；
+   **(b)** 删掉 `resample` 那两条请求校验 ⇒ 落到 `kernel_unavailable`（node 无 `createImageBitmap`✓）⇒ **两条全红**✓
+   （**真浏览器里**这会是「静默按原尺寸重采样、冒充 `ok:true`」✓ —— 正是被抓住的原始症状 ✓）。恢复 ⇒ 绿 ✓。
+**∴ 为什么「导入对象可见性」能在 node 验成功路径 ✗**：认对象＋读 `object_id`＋回 `invalid_argument` **都不碰内核**✓；
+**只有实际缩放**要浏览器 canvas ⇒ 那条留给 CI 的 `browser-*`✓（本机不跑重活 ✓）。
+
+**⇒ 顺带记一条探测器经验 ✓**：§647 那句「前端发了却没被本地读」是**这一类 bug 的入口**✓，
+但它只指向**读键**✗；顺着一个端点**端到端**验（先造输入对象再操作它）才把**折叠器漏认一整类原子**✓ 这种
+**跨端点的共同依赖坏了一处**挖出来 ✓ —— **「发了没读」抓单点，「拿它当输入再操作」抓共享折叠器** ✓。
+
+**⇒ 两面（AGENTS 第 3 条 ✓）**：
+**收益 ✓**：离线「导入后再缩放／替换／删除／入组」这条链**从全瞎恢复可用**✓（受益面 = 所有 `import_image` 建的对象
+= 导入图＋离线笔触＋渐变铺底＋纹理背景 ✓，不止 `resample` 一个端点 ✓）；`resample` 倍率不再被静默吞 ✓；超大尺寸不再撑爆浏览器 ✓。
+**代价 ✓**：`p2ObjectView` 多认一种 kind ＋ 一处 `data` 净荷回退✓（严格加法：此前对 `import_image` 恒 `found:false`✓ ⇒
+不可能破坏任何 `create_object`-only 文档 ✓）；`resample` 多三条校验✓；判据多两条✓（node 级毫秒）。
+**⚠ 实际缩放路径本机未验**✓（无浏览器 canvas）⇒ **等 CI 的 `browser-*`**✓，本机只证到「认出对象＋请求校验」这一层 ✓。

@@ -393,6 +393,33 @@ check(iiNoBlob.error === "blob_not_found",
 console.log("  本地层 import_image{规范形状} ⇒ " + iiRes.status + "｜ok=" + iiBody.ok +
   "｜落点/尺寸=(" + iiBody.x + "," + iiBody.y + "," + iiBody.width + "," + iiBody.height + ")");
 
+// **★ ⑦d `resample` 要认 `scale`✗ 不许静默按原尺寸冒充成功 ★**（本轮 ✓）：
+//   **∴ 前端 6483 只发 `{object_id, scale}`✓；服务端 `write_resample` 认 `scale`✓** ⇒
+//     **∴ 而**本地此前只读 `width/height`✗ ⇒ `scale` 被丢 ⇒ `toW = targetW || fromW` ⇒
+//     **静默按原尺寸重采样、返回 `ok:true`** ✗（用户"缩到 50%"结果没变而界面说成功了 ✓）。
+//   **∴ node 判据能验什么 ✗（**缩放本体要浏览器 canvas ⇒ 到不了 ✓ 归 browser 判据**）**：
+//     **请求校验**放在 `try` **之前** ⇒ 与浏览器无关 ⇒ 这两条**当场可断** ✓：
+//       ① **`width/height` 与 `scale` 二者都不给 ⇒ 400 参数错误**（**旧代码：进到 try ⇒ 501 ✓ 不报参数错 ✓**）
+//       ② **`scale<=0` ⇒ 400 "scale 必须是正数"**（**旧代码：丢 scale ⇒ 501 ✓**）
+//   **∴ 变异（**实测 ✓）**：**删掉这两条早守卫** ⇒ ① 变 501 ⇒ 断言① 红 ✓**
+//   复用上面 `import_image` 建出的光栅对象（`iiBody.object_id`✓ 是 raster_patch、带 bitmap.blob_hash ✓）
+const rsNoArgs = await (await call("/api/tools/resample", {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ object_id: iiBody.object_id }),
+})).json();
+check(rsNoArgs.ok !== true && /width 与 height，或 scale/.test(String(rsNoArgs.reason || "")),
+  "resample 二者都不给必须报参数错（旧代码会静默按原尺寸重采样、冒充成功，或落到浏览器环境的 501；实测 " +
+  JSON.stringify(rsNoArgs).slice(0, 150) + "）");
+const rsBadScale = await (await call("/api/tools/resample", {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ object_id: iiBody.object_id, scale: 0 }),
+})).json();
+check(rsBadScale.ok !== true && /scale 必须是正数/.test(String(rsBadScale.reason || "")),
+  "resample scale<=0 必须报「scale 必须是正数」（旧代码整个丢掉 scale ⇒ 无此校验；实测 " +
+  JSON.stringify(rsBadScale).slice(0, 120) + "）");
+console.log("  本地层 resample{无尺寸} ⇒ " + (rsNoArgs.error || "(ok)") + "｜resample{scale:0} ⇒ " + (rsBadScale.error || "(ok)"));
+
+
 
 
 // **★ ⑧ 评论的游标不能越过**没交付**的那几条 ✗ ★**（与服务端 `read_list_comments` 同形 ✓）

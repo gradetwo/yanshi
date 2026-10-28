@@ -410,7 +410,15 @@ async function withKernel(doc, fn) {
     for (const r of rows) {
       const a = (r && r.atom) || {};
       const pl = a.payload || {};
-      if (a.kind === "create_object" && pl.object_id === objectId && !create) create = a;
+      // **`import_image` 也是**建对象**的原子 ✗ 必须与 `create_object` 同等认取 ✓**（本轮 ✓）：
+      //   **∴ 判据**（**内部自相矛盾 ✗ 才是这个 bug 的硬证据 ✓**）：**`list_objects`**（第 1160 行 ✓）
+      //     把**任何带 `object_id` 的原子**算对象 ⇒ 导入图**列得出来 ✓**；**`duplicate_layer`**（第 1385 行 ✓）
+      //     **明写 `import_image`∣∣`create_object`** ⇒ 导入图**复制得了 ✓**；**而本折叠器只认 `create_object` ✗**
+      //     ⇒ `resample`／`supersede` 读／`tombstone`／组成员**全部走它 ✗** ⇒ **对导入图一律「对象不存在」** ✓
+      //     （图**渲染得出、列得出、却动不了 ✗** —— 又一处静默降级 ✓。离线笔触／`gradient_fill`／`texture_background`
+      //      **都写 `import_image` 原子 ✓** ⇒ 一并受影响 ✓）。
+      //   **∴ 修法 ✗**：**照 `duplicate_layer` 的定义补齐 ✓**（**同一事实两处口径一致 ✓**，**不各自发明 ✗**）。
+      if ((a.kind === "create_object" || a.kind === "import_image") && pl.object_id === objectId && !create) create = a;
       else if (a.kind === "set_property" && pl.object_id === objectId) props[pl.key] = pl.value;
       else if (a.kind === "supersede" && pl.object_id === objectId) supersededData = pl.data;
       else if (a.kind === "tombstone" && pl.object_id === objectId) tombstoneIds.push(a.id);
@@ -423,7 +431,15 @@ async function withKernel(doc, fn) {
       object_id: objectId,
       layer_id: props.layer_id !== undefined ? props.layer_id : (cpl.layer_id ?? null),
       type: props.type !== undefined ? props.type : (cpl.type ?? null),
-      data: supersededData !== null && supersededData !== undefined ? supersededData : (cpl.data ?? null),
+      // **`data` 的取法要照服务端折叠规则 ✗**（**「有 `data` 子对象 ⇒ 用 `data` ✓，否则 ⇒ 用整个净荷 ✓」**，
+      //   出处 `tools_bitmap.rs` 的 `import_image` 注释 ✓）：**`import_image` 把 `bitmap`/`width`/`height`/`region`
+      //   写在净荷顶层 ✗**（**没有 `data` 子对象 ✓**）⇒ 于是本行若只取 `cpl.data` ⇒ **`data` 恒 `null` ✓**
+      //   ⇒ 即便上面认出了对象 ✗，`resample` 仍会在**下一步**报「没有位图」✓（**修一半 ✗**）。
+      //   **∴ 所以**：**`import_image` 无 `data` ⇒ 用整个净荷 ✓**（**与 `create_object` 有 `data` 的情形逐字分开 ✓，
+      //   后者行为不变 ✗ 保持字节等价 ✓**）。
+      data: supersededData !== null && supersededData !== undefined
+              ? supersededData
+              : (cpl.data ?? (create.kind === "import_image" ? cpl : null)),
       transform: cpl.transform ?? null,
       visible: props.visible ?? null,
       locked: props.locked ?? null,
@@ -3755,6 +3771,19 @@ async function withKernel(doc, fn) {
       if ((targetW !== null && !(targetW > 0)) || (targetH !== null && !(targetH > 0))) {
         return p2Bad("width/height 必须是正整数");
       }
+      // **★ 倍率 `scale` ✗ ★**（本轮 ✓）：**服务端 `write_resample` 认 `scale`（`tools.rs:9538` ✓）
+      //   而前端 6483 只发 `scale` ✗ ⇒ 本地此前**只读 width/height**✗ ⇒ `scale` 被整个丢掉 ✓
+      //   且下面 `toW = targetW || fromW` ⇒ **静默按原尺寸重采样、冒充 `ok:true`** ✗（又一个静默降级 ✓）。
+      const scaleNum = (body.scale !== undefined && body.scale !== null) ? Number(body.scale) : null;
+      if (scaleNum !== null && !(scaleNum > 0)) {
+        return p2Bad("scale 必须是正数（给了就是倍率，> 1 放大、< 1 缩小）");
+      }
+      // **∴ 「width+height」与「scale」二者必居其一 ✗**（**照服务端 `write_resample` 的 match ✗ 都不给就报错 ✓ `tools.rs:9547`**）：
+      //   **∴ 为什么放在 `try` 之前 ✗**：**这条**不依赖源尺寸**⇒ 纯请求校验 ⇒ node 判据也能验到 ✓**（**下面缩放要浏览器 canvas ✗ node 里到不了 ✓**）
+      //   **∴ 而**旧行为 ✗：二者都不给 ⇒ `toW = targetW || fromW` ⇒ **静默按原尺寸重采样、冒充 `ok:true`** ✓（不报错、不缩放 ✓）
+      if (!((targetW !== null && targetH !== null) || scaleNum !== null)) {
+        return p2Bad("resample 需要 width 与 height，或 scale（二者之一，明确给）⇒ 二者都没给，不猜");
+      }
       try {
         const g = typeof globalThis !== "undefined" ? globalThis : {};
         if (typeof g.createImageBitmap !== "function" || !g.document) {
@@ -3792,7 +3821,24 @@ async function withKernel(doc, fn) {
           srcBmp = await g.createImageBitmap(new Blob([new Uint8Array(blobBytes)], { type: mime || "image/png" }));
           fromW = srcBmp.width; fromH = srcBmp.height;
         }
-        const toW = targetW || fromW, toH = targetH || fromH;
+        // **∴ 目标尺寸优先级 ✗**（**与服务端 `write_resample` 一致 ✓ `tools.rs:9541` ✓**）：
+        //   **显式 width/height（两个都给）优先 ⇒ 其次 `scale`×源尺寸 ⇒ 二者都没给就明确报错 ✗ 不静默按原尺寸 ✓**
+        let toW = targetW, toH = targetH;
+        if ((toW === null || toH === null) && scaleNum !== null) {
+          toW = Math.max(1, Math.round(fromW * scaleNum));
+          toH = Math.max(1, Math.round(fromH * scaleNum));
+        }
+        if (toW === null || toH === null) {
+          return p2Bad("resample 需要 width 与 height，或 scale（二者之一，明确给）⇒ 二者都没给，不猜（此前会静默按原尺寸重采样、冒充成功 ✓）");
+        }
+        // **∴ 目标尺寸也受画布上限约束 ✗**（**照服务端 S-06 ✓ `tools.rs:9563` ✓**）：
+        //   **超大倍率会在浏览器里 `createElement("canvas")` 直接吃下巨大内存 ✓ ⇒ 同样该拒 ✗**
+        const MAX_EDGE = 16384, MAX_PIXELS = 1 << 28;
+        if (toW > MAX_EDGE || toH > MAX_EDGE || toW * toH > MAX_PIXELS) {
+          return p2Bad("resample 目标 " + toW + "×" + toH + " 超过画布上限（单边 " + MAX_EDGE +
+                       "／总像素 " + MAX_PIXELS + "）⇒ 这个尺寸必然把浏览器撑爆，所以不做");
+        }
+
         const canvas = g.document.createElement("canvas");
         canvas.width = toW; canvas.height = toH;
         const c2d = canvas.getContext("2d", { willReadFrequently: true });
