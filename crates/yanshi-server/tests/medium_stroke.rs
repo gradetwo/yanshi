@@ -710,3 +710,60 @@ fn medium_stroke_warns_on_semi_transparent_hex_alpha() {
         "6 位 hex 没有 alpha，不许报 alpha 警告：{hex6}"
     );
 }
+
+/// **P-4（P-7）：`size` 420 真的落成 420 宽** ✓ —— 六个介质的 `max_dab` 从 64 提到 512 之前，
+/// `size_used` 被夹到 64，带宽恒 64（回执已明示夹紧，`dirty_bbox` 却按请求值算，第 1416 轮修过一半）。
+/// **⇒ 变异**：任一插件的 `MAX_DAB` 改回 64 ⇒ `size_used` 回 64，本测试红；宿主表改回 64 ⇒ 同样红。
+#[test]
+fn medium_stroke_size_420_is_really_420_wide() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_medium420", 1000, 500),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    let mut ctx = ToolContext::new(&mut workspace, "doc_medium420", "human:1", "session:test")
+        .with_owner(true)
+        .with_wait_for_render(true, 4_000);
+    registry().call(&mut ctx, "create_layer", &json!({ "layer_id": "L" }));
+    let made = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_medium420", "human:1", "session:test")
+            .with_owner(true)
+            .with_wait_for_render(true, 4_000);
+        registry().call(
+            &mut ctx,
+            "medium_stroke",
+            &json!({
+                "layer_id": "L",
+                "object_id": "m_oil420",
+                "medium": "oil",
+                "points": [[100.0, 250.0, 1.0], [900.0, 250.0, 1.0]],
+                "size": 420,
+                "color": {"r": 200, "g": 90, "b": 40, "a": 255},
+            }),
+        )
+    };
+    assert_eq!(made["ok"], json!(true), "{made}");
+    assert_eq!(
+        made["size_used"],
+        json!(420.0),
+        "size 420 不许再夹到 64：{made}"
+    );
+    assert!(
+        made.get("size_clamped").is_none(),
+        "size 420 在上限内，不许报夹紧：{made}"
+    );
+    // 带宽（dirty_bbox 的高）≈ 420：横笔的带高就是笔宽。
+    let bbox = made["dirty_bbox"].as_array().cloned().unwrap_or_default();
+    let h = bbox.get(3).and_then(|v| v.as_f64()).unwrap_or(0.0);
+    assert!(
+        (400.0..=440.0).contains(&h),
+        "带宽应当 ≈420（实测 {h}）：{made}"
+    );
+    assert!(
+        made["painted_pixels"].as_u64().unwrap_or(0) > 100_000,
+        "420 宽的带必须真的落墨：{made}"
+    );
+}

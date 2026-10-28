@@ -16,7 +16,7 @@
 /// ABI 版本：**2** ✓（与油画同版 ✓ —— 输入缓冲提供笔尖色/目标色/载墨/湿度 ✓）。
 pub const ABI_VERSION: u32 = 2;
 /// 单点最大边长（像素），宿主据此施加配额 ✓。
-pub const MAX_DAB: u32 = 64;
+pub const MAX_DAB: u32 = 512;
 /// 输入缓冲长度：笔尖 RGBA(0-3)、目标 RGBA(4-7)、载墨(8)、湿度(9) ✓。
 pub const INPUT_FLOATS: u32 = 10;
 

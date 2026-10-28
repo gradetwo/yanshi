@@ -82,6 +82,44 @@ fn srgb_decode_lut() -> &'static [f32; SRGB_DECODE_LUT_SIZE] {
     })
 }
 
+/// 解码方向 sRGB 查找表（fix15 输入）：输入是 **u16**（`u8 << 7`，满量程 32640）⇒ 定义域只有 **32641** 个值。
+///
+/// 与编码方向的 [`SRGB_ENCODE_LUT_SIZE`]（4097 项、属 D1 显示路径、允许 ±1 LSB）本质不同：
+/// 这里的表是 [`srgb_to_linear`] 在 32641 个 fix15 值上的**原值**，没有索引量化 ⇒ **精确**，
+/// 查表与直接计算**逐位相同**（D0 基线不受影响）。
+/// 用处：`smudge_dab` 每像素调 6 次 `srgb_to_linear`（3 通道 × 2），查表省掉这 6 次 `powf`。
+const SRGB_DECODE_FIX15_LUT_SIZE: usize = 32641;
+
+/// fix15（`u8 << 7`）→ 线性光的**精确**查找表（表项由**同一个** [`srgb_to_linear`] 逐项生成）。
+///
+/// 与 [`srgb_decode_lut`] 同构，用 `OnceLock` 只算一次。
+fn srgb_decode_fix15_lut() -> &'static [f32; SRGB_DECODE_FIX15_LUT_SIZE] {
+    static LUT: std::sync::OnceLock<[f32; SRGB_DECODE_FIX15_LUT_SIZE]> = std::sync::OnceLock::new();
+    LUT.get_or_init(|| {
+        let mut table = [0.0f32; SRGB_DECODE_FIX15_LUT_SIZE];
+        for (index, slot) in table.iter_mut().enumerate() {
+            *slot = srgb_to_linear(index as f32 / 32640.0);
+        }
+        table
+    })
+}
+
+/// **取出 fix15 解码查表**（供逐像素循环**只取一次**）。
+///
+/// 动机与 [`srgb_decode_table`] 相同：循环外取一次，省掉每像素的 `OnceLock` 原子检查。
+pub fn srgb_decode_fix15_table() -> &'static [f32; SRGB_DECODE_FIX15_LUT_SIZE] {
+    srgb_decode_fix15_lut()
+}
+
+/// 用**已取好的表**做一次 fix15 解码（与 `srgb_to_linear(value as f32 / 32640.0)` 逐位一致）。
+///
+/// 超量程值钳到表尾：`srgb_to_linear` 本就把输入钳到 `[0, 1]`，而表尾正是
+/// `srgb_to_linear(1.0)`，两者一致。
+#[inline]
+pub fn decode_fix15_with_table(table: &[f32; SRGB_DECODE_FIX15_LUT_SIZE], value: u16) -> f32 {
+    table[(value as usize).min(SRGB_DECODE_FIX15_LUT_SIZE - 1)]
+}
+
 /// 字节 → 线性光分量（查 [`srgb_decode_lut`]；**逐位等于** `srgb_to_linear(byte as f32 / 255.0)`）。
 pub fn byte_to_linear(byte: u8) -> f32 {
     srgb_decode_lut()[byte as usize]
@@ -348,6 +386,25 @@ mod tests {
             let linear = byte_to_linear(byte);
             assert_eq!(linear_to_byte(linear), byte, "byte={byte}");
         }
+    }
+
+    /// fix15 解码表**逐位等于**直接计算：表项就是 `srgb_to_linear` 的原值，查表只是省掉 `powf`。
+    /// 变异：把表生成换成近似公式（或把 `decode_fix15_with_table` 换成线性插值）⇒ 本测试立刻红。
+    #[test]
+    fn fix15_decode_table_is_bitwise_exact() {
+        let table = srgb_decode_fix15_table();
+        for value in 0..=32640u16 {
+            assert_eq!(
+                decode_fix15_with_table(table, value),
+                srgb_to_linear(value as f32 / 32640.0),
+                "fix15={value}"
+            );
+        }
+        // 超量程值钳到表尾（即 `srgb_to_linear(1.0)`），与直接计算的钳制一致。
+        assert_eq!(
+            decode_fix15_with_table(table, u16::MAX),
+            srgb_to_linear(1.0)
+        );
     }
 
     #[test]

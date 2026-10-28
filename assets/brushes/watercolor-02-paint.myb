@@ -260,8 +260,26 @@
             "inputs": {}
         }, 
         "smudge": {
-            "base_value": 0.95, 
+            "base_value": 0.3, 
             "inputs": {
+                "brush_radius": [
+                    [
+                        1.0, 
+                        0.65
+                    ], 
+                    [
+                        2.89, 
+                        0.65
+                    ], 
+                    [
+                        3.91, 
+                        0.0
+                    ], 
+                    [
+                        6.0, 
+                        0.0
+                    ]
+                ], 
                 "speed1": [
                     [
                         0.0, 
@@ -289,7 +307,7 @@
             }
         }, 
         "smudge_length": {
-            "base_value": 0.1, 
+            "base_value": 0.03, 
             "inputs": {}
         }, 
         "smudge_radius_log": {

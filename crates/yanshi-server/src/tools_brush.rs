@@ -1534,6 +1534,60 @@ impl PrimShape {
 
 // ===== 同族追加（第 1270 轮）：paint_brush + apply_brush_style =====
 
+/// **涂抹笔触的成本预算** ✓（P-4）：`smudge > 0` 且拖曳长度 > 0 的笔，印章成本 ≈
+/// 路径长 × 半径² × k（每步在 `(2r)²` 盘里逐像素涂抹；k 由修后实测标定，见下）。
+/// 预测超过 30 秒 ⇒ 报 `invalid_argument`（不静默跑 7 分钟），并写明数值与改法。
+pub(super) const SMUDGE_BUDGET_MS: f64 = 30_000.0;
+/// 标定（2026-10-28，修后，yanshi-4）：watercolor-02 size 100/200/300 给
+/// 2.57e-4～2.71e-4 ms/px³；取 3.5e-4 留约 30% 余量（盖住压力导致的半径上浮）。
+pub(super) const SMUDGE_COST_PER_PX3_MS: f64 = 3.5e-4;
+
+/// 涂抹印章的预测耗时（毫秒）：路径长（px）× 半径²（px²）× k。
+pub(super) fn smudge_stroke_cost_ms(path_len_px: f64, radius_px: f64) -> f64 {
+    path_len_px * radius_px * radius_px * SMUDGE_COST_PER_PX3_MS
+}
+
+/// 涂抹预算检查 ✓：只对「涂抹真的会跑」的笔生效（`smudge > 0` 且拖曳长度 > 0）。
+/// `smudge_length = 0` 的笔（如 oil-01-paint）涂抹是空操作，不在此列。
+/// 半径与涂抹量都取**覆盖后**的笔刷值（`size`／`brush_params` 已应用）。
+pub(super) fn check_smudge_budget(
+    brush: &hokusai::Brush,
+    points: &[(f64, f64, f64)],
+    size: Option<f64>,
+) -> Result<()> {
+    let smudge_amount = brush.get(hokusai::BrushSetting::Smudge).base_value;
+    if smudge_amount <= 0.0 {
+        return Ok(());
+    }
+    let radius_px = f64::from(brush.get(hokusai::BrushSetting::Radius).base_value).exp();
+    let drag_length =
+        f64::from(brush.get(hokusai::BrushSetting::SmudgeLength).base_value).max(0.0) * radius_px;
+    if drag_length <= 0.0 {
+        return Ok(());
+    }
+    let path_len: f64 = points
+        .windows(2)
+        .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
+        .sum();
+    let predicted_ms = smudge_stroke_cost_ms(path_len, radius_px);
+    if predicted_ms > SMUDGE_BUDGET_MS {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "这一笔涂抹成本太高：预测约 {:.0} 秒（路径 {:.0} px × 半径 {:.0} px，预算 30 秒）⇒ \
+                 涂抹笔刷的印章成本随半径平方增长。改法（任选）：把 size 从 {:.0} 改小，\
+                 或把路径拆成几笔，或把 brush_params.smudge_length 改小。\
+                 （smudge = {smudge_amount}，拖曳长度 {drag_length:.1} px）",
+                predicted_ms / 1000.0,
+                path_len,
+                radius_px,
+                size.unwrap_or(radius_px * 2.0),
+            )),
+        ));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_brush(
     ctx: &mut ToolContext<'_>,
@@ -1683,6 +1737,10 @@ pub(super) fn paint_brush(
         let _ = applied;
     }
     let reads_canvas = feed_base && brush_reads_the_canvas(&brush);
+    // **涂抹预算** ✓（P-4）：预测超 30 秒的涂抹笔直接报 `invalid_argument`，不静默跑几分钟。
+    //   只对「涂抹真的会跑」的笔生效（`smudge > 0` 且拖曳长度 > 0；`smudge_length = 0` 的笔
+    //   如 oil-01-paint 的涂抹是空操作，走 `smudge_dab` 早返，成本不在此列）。
+    check_smudge_budget(&brush, points, size)?;
     // **光栅阶段之一：喂底图** ✓（P2）—— `render_region_raw` 是真正的渲染，
     // 涂抹类笔刷每次落笔都要付这份钱 ✓；测试方原先只能从外部猜它占多少 ✓。
     let base_started = std::time::Instant::now();
@@ -1798,6 +1856,7 @@ pub(super) fn paint_brush(
                     &mut previous,
                     dtimes,
                     sensors,
+                    false,
                 );
                 cursor += 1;
             }
@@ -1833,6 +1892,7 @@ pub(super) fn paint_brush(
                     &mut previous_here,
                     dtimes,
                     sensors,
+                    false,
                 );
                 if std::env::var_os("YANSHI_OPEN_TIMING").is_some() {
                     eprintln!("stamp_steps side=server steps={steps}");

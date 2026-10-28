@@ -22,7 +22,7 @@
 pub const ABI_VERSION: u32 = 1;
 
 /// 单个"点"最大边长（像素）—— 宿主据此施加**配额** ✓。
-pub const MAX_DAB: u32 = 64;
+pub const MAX_DAB: u32 = 512;
 
 /// 固定输出缓冲：`MAX_DAB * MAX_DAB` 个 RGBA 字节 ✓。
 static mut DAB: [u8; (MAX_DAB * MAX_DAB * 4) as usize] = [0; (MAX_DAB * MAX_DAB * 4) as usize];

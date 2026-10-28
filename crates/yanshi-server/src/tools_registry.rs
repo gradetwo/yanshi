@@ -1999,7 +1999,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("layer_id", String, true, "目标图层"),
             param!("medium", String, true, "介质 id：oil | watercolor | marker | pencil | pixel | example"),
             param!("points", Array, true, "笔迹采样点 [[x,y,pressure?], ...]（pressure 0..1）"),
-            param!("size", Number, false, "笔尖大小（缺省 24）"),
+            param!("size", Number, false, "笔尖大小（缺省 24；上限 512，超限夹紧并回 size_used）"),
             // **写法与画笔 / 形状 / 笔迹统一** ✓：同一个解析器 ✓ ⇒ 用户不必记三套 ✓。
             param!("color", Any, false, "笔尖色：{r,g,b,a}（0..255）/ [r,g,b,(a)]（0..1 线性或 0..255 字节） ⇒ **任一分量 > 1 即按 0..255 字节解释**（想要近黑请用 `#RRGGBB` 或 `{r:1,…}`） / \"#RRGGBB\"（缺省不透明黑）；显式空间见 `color_space`（不传 ⇒ 量级切换）"),
             param!("color_to", Any, false, "**末端颜色**（写法同 color）⇒ 一笔之内从 color 渐变到它（**介质也能画渐变了** ✓，第 254 轮补：验收实测过它缺失 ✗）；给了它就必须同时给 color ✓（解释空间同 `color_space`）"),

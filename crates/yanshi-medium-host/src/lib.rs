@@ -34,32 +34,32 @@ pub const MEDIUMS: [MediumSpec; 6] = [
     MediumSpec {
         id: "oil",
         version: 2,
-        max_dab: 64,
+        max_dab: 512,
     },
     MediumSpec {
         id: "watercolor",
         version: 2,
-        max_dab: 64,
+        max_dab: 512,
     },
     MediumSpec {
         id: "marker",
         version: 2,
-        max_dab: 64,
+        max_dab: 512,
     },
     MediumSpec {
         id: "pencil",
         version: 2,
-        max_dab: 64,
+        max_dab: 512,
     },
     MediumSpec {
         id: "pixel",
         version: 2,
-        max_dab: 64,
+        max_dab: 512,
     },
     MediumSpec {
         id: "example",
         version: 1,
-        max_dab: 64,
+        max_dab: 512,
     },
 ];
 
@@ -701,6 +701,44 @@ mod tests {
         let second =
             paint_stroke("watercolor", &points, 18.0, [0.2, 0.4, 0.9, 1.0], 0.8, 0.7).unwrap();
         assert_eq!(first.1, second.1);
+    }
+
+    /// **六个介质的 `max_dab` 都是 512** ✓（P-4：`size` 420 必须真的落成 420 宽，不再夹到 64）。
+    /// 变异：把任一 `max_dab` 改回 64 ⇒ 第一组断言红；把 `paint_stroke` 里的
+    /// `.min(medium.max_dab)` 删掉 ⇒ 插件内仍夹到 64，实测带宽断言红。
+    #[test]
+    fn all_mediums_allow_a_512_dab() {
+        assert_eq!(MEDIUMS.len(), 6);
+        for medium in MEDIUMS {
+            assert_eq!(medium.max_dab, 512, "{} 的 max_dab 应当是 512", medium.id);
+        }
+        // 420 宽的笔落下去，**真的落墨**的区域必须 ≈420 宽（旧上限 64 时只有 ≈104）。
+        // 注意：`paint_stroke` 回的 `bbox` 是按请求 size **规划**的区域，不是实测落墨 ——
+        // 只断它会恒绿（变异：插件 MAX_DAB 改回 64 也不红）⇒ 必须从回的像素里量实测带宽。
+        // 下限取 300：六支笔的实测带宽是 oil 460、水彩 446、marker 366、铅笔 452、
+        // 像素 460、示例 460（marker 笔尖不占满矩形，故低于其余五支；变异值 104 远低于界）。
+        for medium in MEDIUMS {
+            let points = vec![(100.0, 100.0, 1.0), (140.0, 100.0, 1.0)];
+            let (bbox, rgba) =
+                paint_stroke(medium.id, &points, 420.0, [0.85, 0.25, 0.12, 1.0], 1.0, 0.5)
+                    .unwrap_or_else(|error| panic!("{} 应当画得出来：{error:?}", medium.id));
+            let width = bbox.w as usize;
+            let mut min_x = width;
+            let mut max_x = 0usize;
+            for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+                if pixel[3] > 0 {
+                    let x = index % width;
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                }
+            }
+            let painted_w = max_x + 1 - min_x;
+            assert!(
+                (300..=480).contains(&painted_w),
+                "{} 的实测带宽应当 ≈420（实测 {painted_w}）",
+                medium.id
+            );
+        }
     }
 
     /// **未知介质要列出可用值** ✓（用户 §五-18 的原话 ✓）。

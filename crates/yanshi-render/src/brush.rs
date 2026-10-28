@@ -737,6 +737,12 @@ pub fn smudge_dab(
     if direction.0 == 0.0 && direction.1 == 0.0 {
         return 0;
     }
+    // **拖曳长度 ≤ 0 ⇒ 采样即自身**：与上面同理，`out = dst*(1-a) + dst*a = dst`，
+    // 数学上必然是空操作 ⇒ 直接返回，不写任何像素（`oil-01-paint` 的 `smudge_length`
+    // 是 0：这支笔此前每步都在为一次空操作付全部 `powf` 成本）。
+    if length_px <= 0.0 {
+        return 0;
+    }
     let (dx, dy) = {
         let norm = (direction.0 * direction.0 + direction.1 * direction.1)
             .sqrt()
@@ -790,6 +796,9 @@ pub fn smudge_dab(
         }
     }
     let mut touched = 0usize;
+    // **解码查表只取一次** ✓：fix15 输入只有 32641 个离散值，表项就是 `srgb_to_linear` 的
+    // 原值 ⇒ 查表与直接算**逐位相同**，只是省掉每像素 6 次 `powf`（见 `color.rs`）。
+    let decode_table = crate::color::srgb_decode_fix15_table();
     {
         use hokusai::TiledSurface;
         for tile_y in y0.div_euclid(64)..=y1.div_euclid(64) {
@@ -823,10 +832,10 @@ pub fn smudge_dab(
                         //      而涂抹笔的混合像素**变亮** ⇒ 与 `mix_smudge_linear`（wasm 侧）同一套数学 ✓
                         const FULL: f32 = 32640.0; // 255 << 7
                         let mix_rgb = |i: usize| -> u16 {
-                            let a = f32::from(dst[i]) / FULL;
-                            let b = f32::from(src[i]) / FULL;
-                            let lin = crate::color::srgb_to_linear(a) * (1.0 - amount)
-                                + crate::color::srgb_to_linear(b) * amount;
+                            let lin = crate::color::decode_fix15_with_table(decode_table, dst[i])
+                                * (1.0 - amount)
+                                + crate::color::decode_fix15_with_table(decode_table, src[i])
+                                    * amount;
                             (crate::color::linear_to_srgb(lin).clamp(0.0, 1.0) * FULL).round()
                                 as u16
                         };
@@ -2948,5 +2957,28 @@ mod smudge_tests {
         assert_eq!(touched, 0, "方向未知时不该动任何像素");
         let edge = read(&mut surface, split as i32 + 6, 32);
         assert!(!is_reddish(edge), "不该被拖动：{edge:?}");
+    }
+
+    #[test]
+    fn smudge_with_zero_length_is_a_noop() {
+        let split = 64;
+        let mut surface = surface_with_edge(split);
+        // 拖曳长度 0 ⇒ 每个像素采样的就是它自己 ⇒ `out = dst`，数学上必然是空操作。
+        // 这条断言钉的是**语义**，不是早返本身：去掉早返、走完整循环，结果仍是 0 像素
+        // 被改 —— 早返只是省掉那趟循环的成本（`oil-01-paint` 的 `smudge_length` 是 0，
+        // 此前每步都在为这次空操作付全部 `powf` 成本）。
+        for length in [0.0, -5.0] {
+            let touched = smudge_dab(
+                &mut surface,
+                (split as f64, 32.0),
+                12.0,
+                (1.0, 0.0),
+                length,
+                1.0,
+            );
+            assert_eq!(touched, 0, "拖曳长度 {length} 时一个像素都不许动");
+            let edge = read(&mut surface, split as i32 + 6, 32);
+            assert!(!is_reddish(edge), "不该被拖动：{edge:?}");
+        }
     }
 }

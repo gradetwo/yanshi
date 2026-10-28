@@ -62,6 +62,7 @@ fn dtimes_reach_the_engine() {
             &mut previous,
             dtimes,
             super::tools_brush::BrushSensors::default(),
+            false,
         );
         // **∴ 用仓库自己的构造器 ✗ 别手填字段** ✓（**∴ 字段是 x0/y0/x1/y1/width/height ✓）
         let region = super::PaintRegion::from_bounds((0, 0, 255, 159, 256, 160));
@@ -2057,4 +2058,27 @@ fn create_layer_stops_at_the_per_document_cap() {
     assert_eq!(replaced["ok"], true);
     let err = write_create_layer(&mut ctx, &json!({ "layer_id": "L_overflow_2" })).unwrap_err();
     assert_eq!(err.code, ErrorCode::PreconditionFailed);
+}
+
+/// **P-4（涂抹预算）**：预测模型在标定锚点上分得清「预算内」与「预算外」。
+/// 变异：把 `SMUDGE_COST_PER_PX3_MS` 改小一个量级 ⇒ 650 那笔不再超预算，本测试红；
+/// 把 `SMUDGE_BUDGET_MS` 改大十倍 ⇒ 同样红。
+#[test]
+fn smudge_budget_model_splits_the_calibration_anchors() {
+    use super::tools_brush::smudge_stroke_cost_ms;
+    // watercolor-02 size 300、路径 2800 px：修后实测 16.1 秒 ⇒ 预算内。
+    let inside = smudge_stroke_cost_ms(2800.0, 150.0);
+    assert!(
+        inside < super::tools_brush::SMUDGE_BUDGET_MS,
+        "size 300 应当在预算内（预测 {inside:.0} ms）"
+    );
+    // 分诊的 size 650、路径 4240 px：修前 7 分钟以上未完成 ⇒ 预算外。
+    let outside = smudge_stroke_cost_ms(4240.0, 325.0);
+    assert!(
+        outside > super::tools_brush::SMUDGE_BUDGET_MS,
+        "size 650 应当超预算（预测 {outside:.0} ms）"
+    );
+    // 模型是单调的：路径与半径任一增大，预测只增不减。
+    assert!(smudge_stroke_cost_ms(2800.0, 150.0) < smudge_stroke_cost_ms(2800.0, 151.0));
+    assert!(smudge_stroke_cost_ms(2800.0, 150.0) < smudge_stroke_cost_ms(2801.0, 150.0));
 }

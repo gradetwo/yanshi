@@ -14011,7 +14011,7 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     }
     let size_requested = args.get("size").and_then(Value::as_f64).unwrap_or(24.0);
     // **★ 按介质的 `max_dab` **夹紧** `size`** ✓（第 1416 轮；外部 D-09）
-    //   **⇒ 原缺陷** ✗：`size` 一路传下去，插件内部按 `max_dab`（六种介质都是 **64**）截断 ⇒
+    //   **⇒ 原缺陷** ✗：`size` 一路传下去，插件内部按 `max_dab`（六种介质都是 **512**，P-4 前是 64）截断 ⇒
     //     而**脏区按**请求值**算 ⇒ **返回值与真实落墨不符** ✗✗
     //     **⇒ 实测（oil）**：`size` 64/96/200/640 ⇒ 墨厚恒 **58–62 px**，
     //       而 `dirty_bbox` 报 **68 / 100 / 204 / 644** ⇒ 调用方以为铺了 644 px ✗
@@ -16540,6 +16540,9 @@ fn stamp_stroke_from(
     dtimes: &[f64],
     // **真实传感器**（xtilt/ytilt 在这里喂给 `stroke_to`；缺省全 0 ⇒ 老行为逐字节不变）。
     sensors: BrushSensors,
+    // **掩膜遍跳过净室涂抹**：掩膜只记 dab 落点，涂抹只在落点盘内搬颜色、不扩大落点盘
+    //   ⇒ 掩膜遍的涂抹是纯成本（主遍的涂抹照常跑）。主遍传 `false`，掩膜遍传 `true`。
+    skip_smudge: bool,
 ) -> usize {
     // **★★★ 第 246 轮：**给落笔的 dab 循环计时 ✗ ★★★**（**用户裁定「先量笔触占比」✓）
     //   ＋ **∴ 为什么是**这里**✗ 而**不是 `yanshi-render::brush`** ✓**：
@@ -16580,6 +16583,9 @@ fn stamp_stroke_from(
     } else {
         0.0
     };
+    // **拖曳长度（整笔恒定）**：`smudge_length × 像素半径`。≤ 0 时每步的涂抹都是空操作
+    // （采样即自身，见 `smudge_dab` 的早返）⇒ 内循环直接跳过调用。
+    let drag_length = smudge_length * stroke_radius;
     // ** pressure_shape / stroke_taper 要用**：预计算整笔总弧长（像素），
     // 写入 BrushState。引擎每 dab 累加实际步进距离，算出归一化进度 t。
     // 注意：不用 state.stroke_state——它是流式累积的"已走路程"，不知道总长度。
@@ -16667,13 +16673,14 @@ fn stamp_stroke_from(
                     //   挪进内循环后，整条笔迹**沿途**都在把"后方"的颜料搬过来 => 更像真实脏笔。
                     //   方向用**这一段的运动方向**（`x-px, y-py`，`smudge_dab` 内部会归一化），
                     //   长度 = `smudge_length × 像素半径`。只在 `smudge > 0` 的笔刷上生效。
-                    if smudge_amount > 0.0 {
+                    //   掩膜遍（`skip_smudge`）与拖曳长度 0 时不调：前者只记落点，后者是空操作。
+                    if smudge_amount > 0.0 && !skip_smudge && drag_length > 0.0 {
                         yanshi_render::brush::smudge_dab(
                             surface,
                             (ix, iy),
                             stroke_radius,
                             (x - px, y - py),
-                            smudge_length * stroke_radius,
+                            drag_length,
                             smudge_amount,
                         );
                     }
@@ -16927,6 +16934,10 @@ fn brush_deposit_mask(
         points
     };
     let mut previous: Option<(f64, f64, f64)> = None;
+    // **掩膜遍跳过净室涂抹**（P-4）：掩膜只记 dab 落点；涂抹只在落点盘内搬颜色，
+    // 不扩大落点盘 ⇒ 掩膜遍的涂抹是纯成本（约占整笔一半）。主遍的涂抹照常跑。
+    // 正确性：读回用 `deposited || moved`——主遍涂抹改过的像素由 `moved`（容差 ±3）
+    // 独立守住，掩膜缩一圈只会丢「改动 ≤3 级」的晕边像素（肉眼不可见，属引擎量化噪声）。
     let _ = stamp_stroke_from(
         brush,
         &mut state,
@@ -16935,6 +16946,7 @@ fn brush_deposit_mask(
         &mut previous,
         dtimes,
         BrushSensors::default(),
+        true,
     );
     read_surface_region(&surface, region).0
 }

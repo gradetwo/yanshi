@@ -15,7 +15,7 @@
 /// ABI 版本：**2** ✓（宿主注入笔尖色、目标色、载墨与湿度 ✓ —— 像素笔刷只用到笔尖色 ✓）。
 pub const ABI_VERSION: u32 = 2;
 /// 单点最大边长（像素）✓ —— 像素画常用 1..16，上限给足但仍受宿主配额约束 ✓。
-pub const MAX_DAB: u32 = 64;
+pub const MAX_DAB: u32 = 512;
 /// 输入缓冲长度：笔尖 RGBA(0-3)、目标 RGBA(4-7)、载墨(8)、湿度(9) ✓。
 pub const INPUT_FLOATS: u32 = 10;
 
