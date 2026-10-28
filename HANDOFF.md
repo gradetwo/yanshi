@@ -1259,3 +1259,14 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
 ④ **已知红（本批带入、批次 1 已登记）**：本机 `tool-pwa-assets` 报「介质产物 mtime 落后于
    Cargo.toml」——内容未改、属本机时间戳现象，CI 全新 checkout 应不出现 ⇒ **不动判据，等 CI** ✓。
 ⑤ `git am` 不过 pre-commit 钩子 ⇒ 本留痕提交**另行复跑** fmt/clippy/台账编号/守卫 ✓（§90⑤ 同规）。
+⑥ **后效（run 40675598611＝`c93bf89b`，completed/failure ⇒ 意外失败 1，补丁本体无过）**：
+   除 `criteria shard 5/6` 外全部 job 绿（test stable/beta／clippy／rustfmt／其余五片）；
+   批次 2 的四条判据在 CI 全绿（`tool-pwa-local-write-guards`／`preset-server-parity`／
+   `preset-library-parity`／`api-behaviour`——README「CI 从未跑过这笔」就此清账 ✓）。
+   唯一红＝`tool-criteria-coverage` 点名 **`gen-pwa-preset-library.mjs` 生成器漏登记**
+   （**与 `pwa-stamp.mjs` 第 881 轮同根**✗：外部包合并没进清单 ⇒ **覆盖判据立刻红并点名** ✓
+   ——**它存在的意义又被实测一次**）⇒ 修法照 881 轮先例：加进 `NOT_CRITERIA` 写清理由
+   （**判据入口早已接线**✓：`tool-pwa-preset-library-parity.mjs:85` 自己调 `--check` 并断退出码
+   ⇒ **再枚举它只会多一条重复检查／恒 0 的假判据** ✗）；本树跑该判据 **生成器 17⇒18、EXIT 0** ✓。
+   两片已知红（`browser-offline-brush`／`browser-ui-check`）与三条 exit 3 跳过均与登记一致 ⇒
+   **产品侧没有新红** ✓。
