@@ -10,9 +10,14 @@ import { pathToFileURL } from "node:url";
 // —— 以下三件套（`MemStore`／`ok`／`makeIndexedDB`）自 `tool-pwa-api-behaviour.mjs` 逐字搬来 ✓
 class MemStore {
   constructor() { this.map = new Map(); }
-  // **∴ 键按 `store.js` 的 `keyPath` 语义取 ✗**：**`atoms`⇒`id` ✓｜`blobs`⇒`hash` ✓｜`docs`⇒`doc` ✓**。
-  put(v) { this.map.set(v.id ?? v.hash ?? v.doc, v); return ok(); }
+  // **∴ 键按各表 `keyPath` 取 ✗**：**`atoms`⇒`id` ✓｜`blobs`⇒`hash` ✓｜`docs`⇒`doc` ✓｜`prefs`⇒`key` ✓**。
+  //   **★ 漏掉 `key` 的后果（第 六百六十二 轮实测）**：`prefs` 记录是 `{key, value}` ⇒
+  //   `v.id ?? v.hash ?? v.doc` 全是 `undefined` ⇒ **每条偏好都写进同一个 `undefined` 槽 ✗**
+  //   ⇒ `set_reference` 回 `ok:true` 而 `get("reference.blob_hash")` 恒 `undefined` ✗
+  //   ⇒ **判据看到「没有参考图」** ⇒ **∴ 产品对、判据红** ⇒ **∴ 修桩，不迁就桩改产品 ✓**。
+  put(v) { this.map.set(v.id ?? v.hash ?? v.doc ?? v.key, v); return ok(); }
   get(k) { return ok(this.map.get(k)); }
+  delete(k) { this.map.delete(k); return ok(undefined); }
   getAll() { return ok([...this.map.values()]); }
   createIndex() {}
 }

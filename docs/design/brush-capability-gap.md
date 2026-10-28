@@ -23078,3 +23078,254 @@ M3 关掉未知名拒绝｜M4 `apply` 的确定性 `object_id` 改随机｜M5 �
 
 **配套 ✓**：`web/api-local.js` 与 `crates/yanshi-http/assets/api-local.js` 逐字节同步（`cmp` ✓，
 `tool-cs-local-copies`／`tool-web-assets-parity` 看守 ✓）；`run-criteria-local.sh` 会因资产比二进制新而重建 ✓。
+
+## 六百五十九、`detach_instance` 从 501 变真实现：变换要折叠、`master_ref` 要看覆盖、半成品照抄
+
+**为什么它原来 501 ✓ 而现在能实现 ✗**（两条理由**都已过期**）：
+① 「本地层无 changeset」✗ —— 本地早就有变更集（`p2bOpen`／`revert_changeset` 按**封套上的
+   `changeset_id`** 扫原子 ✓）；
+② 「要折叠层状态」✗ —— 真正需要的只是**从日志重放 `move`／`transform`**（`fold.rs:1154`）
+   ＋ **`compose_transforms`**（`tools.rs:6522`），两者都是**纯 f64 运算** ✓ ⇒ JS 能逐位复现 ✓。
+
+**补的三样**：
+1. **`p2ObjectView` 重放 `move`／`transform`** ⇒ `get_object.transform` 不再是创建净荷
+   （**读路径缺陷**：`move_object` 之后本地仍报旧变换 = 形态③ —— 只修写路径会漏它 ✗）；
+   `delta` 叠到 `m[4]/m[5]` ✓、绝对 `transform` 直接赋值 ✓、被中和的跳过 ✓、创建之前的跳过 ✓；
+2. **`detach_instance` 本体**：变换 = `实例自身 ∘ local_transform ∘ master`（`pivot` 先折进矩阵 ✓）、
+   副本 `data` = master 的**折叠** `data` ✓、`type` = `data.type ?? "shape"` ✓（**不是**顶层 `type` ✗）、
+   建副本 ＋ 删实例**同一个 `changeset_id`** ✓；
+3. **五条报错逐字照抄**（不存在 404／不是实例 400／缺 `master_ref.object_id` 400／
+   master 不在状态 404／master 已删 409）。
+
+**判据抓到的三处口径（都不是「两边相等」能发现的 ✓）**：
+① **期望矩阵由判据自己算** ✓：`local_transform = [2,0,0,2,0,0] pivot[3,4]` ⇒ 折平 `[2,0,0,2,-3,-4]`
+   ⇒ 内层 `[2,0,0,2,17,36]` ⇒ 外层实例 `+7/+9` ⇒ **`[2,0,0,2,24,45]`**。
+   **写反顺序**得 `[2,0,0,2,21,34]`、**漏折 pivot** 得 `[2,0,0,2,27,49]`（两次变异的实测值 ✓）；
+② **`master_ref` 必须取折叠后的** ✓：`set_property{key:"master_ref"}` 会**整体替换**它
+   ⇒ 只读创建净荷 ⇒「缺 `object_id`」这条校验**永远不触发**（§C⑤ 实测本地 200 vs 服务端 400 ✗）；
+③ **已删实例的脱离**：前置检查**全过**（墓碑仍在 `state.objects` ✓），
+   但**第二步 `Tombstone` 撞上提交期校验** ⇒ 409「对象 X 已被 tombstone，tombstone 被拒绝」✓；
+   **服务端先建副本、再被拒 ⇒ 副本留下** ✓（实测 409 之后 `get_object D4` 仍 200 ✓）。
+   **本地照抄这个半成品** ✓ —— 本地若「先判死再拒」⇒ **同一个请求两边状态不同** ✗（那是另一种口径分裂）。
+   **这个缺陷归属服务端** ✓（建副本与删实例不在一个事务里 / 未预检实例死活）。
+
+**变异（六次：改坏 ⇒ `exit 1` ✓、恢复 ⇒ `exit 0` ✓；首个红灯写在判据头部 ✓）**：
+① `p2ObjectView` 不重放（5 条红）｜② 合成顺序反（2 条红）｜③ tombstone 不盖 `changeset_id`（§B 3 条红）｜
+④ 去掉 master 已删检查（§C③ 本地 200 vs 409）｜⑤ `type` 取顶层（3 条红）｜
+⑥ `master_ref` 只读净荷（§C⑤ 5 条红）。
+
+**顺手发现、已在第 660 轮修掉 ✓**：本地 `transform_object` 曾与服务端**参数契约不同** ——
+本地收 `transform{matrix}`／`dx,dy`，服务端拒绝并回
+`transform_object 不接受参数 transform（拼写错误？）；可用参数：object_id, rotate, scale, translate, anchor, compose`。
+**第 660 轮已把本地改成服务端的契约** ✓（详见 第 六百六十 节）。
+**更正一条当时的说法** ✗：这里曾写「面板在多个输入非中性时会一次发多项，服务端也拒」——
+**那只对旧版面板成立** ✓；`viewer-app.js` 的 `transformCheckedObjects` 现在按
+rotate → scale → translate **逐项各发一个请求** ✓（每个 `{object_id, compose:true, ...op}` ✓），
+所以面板本身不需要改 ✓。
+
+**已知 flake（不是本批引入 ✓）**：`tool-pwa-api-behaviour` 20 次里红 1 次，红在 §LG1
+「`revert_group` 回来的 id 与 `la1` 快照的 id 不同」—— 同一条判据里两条路径读同一份原子日志，
+却给出不同的 id 集合 ⇒ 方向指向**本地 stub 的读/写时序**；本批没有改 draw／revert 任何路径，
+HEAD 版同判据 1 次也绿，其余 19 次全绿 ⇒ 记为**判据/存储层 flake**，待查（不当作本批回归 ✓）。
+
+**同批复跑 ✓**：`tool-pwa-local-write-guards` ✓、`tool-pwa-preset-library-parity` ✓、
+`tool-pwa-preset-server-parity` ✓（含一条「黑白 amount 按中性 0 插值」的跳过说明 ✓）。
+
+## 六百六十、`transform_object` 本地改成服务端契约：缺省 anchor 要移植整个 `object_bbox`，九次变异全红
+
+**改了什么 ✓**（`web/api-local.js`，并与 `crates/yanshi-http/assets/api-local.js` 逐字节相同 ✓）：
+1. **参数面照服务端**：`object_id` 必填 ✓、`rotate`／`scale`／`translate` **恰好一个** ✓
+   （解析先于计数 ✓）、`anchor` 缺省 = **折叠后包围盒中心** ✓、`compose` 缺省 true ✓；
+   未知参数响亮报错（旧的 `transform{matrix}`／`dx,dy` 现在是 400 ✓）。
+   提交同服务端：`move` 原子 ＋ **绝对矩阵** ✓（`T(anchor)·op·T(−anchor)`，`compose` 时再叠到
+   对象当前变换**左边** ✓ —— 即 `aboutAnchor ∘ view.transform` ✓）。
+2. **移植 `object_bbox_in` 的完整分支** ✓（只算中心不够 —— 拿不到盒就必须 409 ✓）：
+   形状（路径控制点盒优先 → 多边形点盒 → 盒，± `stroke_width/2`）／文本（`measure_sized`：
+   ASCII 5×7、atlas 16×16，两处 `scale` 分母不同 ✓）／笔触／修图（± `size/2 + jitter`）／
+   液化（± `size/2 + clamp(|strength|,0,2)·size`，**不施加变换** ✓）／位图（offset ＋ 宽高）／
+   调整与滤镜（零盒）／不支持与组（无盒）。
+3. **实例两条路径分开照抄** ✓：变换取 `resolve_instance` 的合成（自身 → `override.transform` →
+   链上每层 `local_transform` → master 自身；`sync_policy:"none"` 用快照 ✓）；
+   **`data` 取 `resolved_master`**（跳过中间实例、已删 ⇒ 无 ✓）—— 服务端构造的合成对象是 `Shape` ✓
+   ⇒ 笔触／文本 master 的盒也走形状分支 ✓（**这是我们照抄的权威口径，不是笔误** ✓）。
+   取不到 master ⇒ 退回实例自己的 `data` ✓（服务端同一分支 ✓）。
+4. **为了让「无盒 ⇒ 409」与「有盒」判对**，顺带补齐了三个解析器的服务端口径 ✓：
+   纹理（`parse_shape_texture`：blob 哈希 URL 形态、jitter 0..1、mode、patch 4..=256、
+   overlap<patch、candidates 1..=4096、seam、brightness_ramp）；修图／液化的点（**只收数组、
+   跳过坏点**，与笔触「一点坏整笔坏」不同 ✓）；文本 `position` 的**键存在即生效**（`null`/标量
+   也压住盒回退 ✓）；位图（blob 哈希 ＋ `raw_develop` 存在但非对象 ⇒ Unsupported ✓）。
+5. **读路径**：`set_property{key:"transform"}` 按 `apply_property_to_object` 当**绝对**变换重放 ✓ ——
+   否则「回执对、`get_object.transform` 读回旧」的形态③会漏 ✓。
+
+**判据** ✓：`scripts/tool-pwa-transform-object.mjs`（同一请求打两边 ✓、比解析后的 JSON ✓、
+**判据自己算期望矩阵与期望 anchor** ✓ —— 不能只断「两边相等」，两边同错照样绿 ✗）。
+覆盖面：§A 显式 anchor ＋ `compose:true`；§B1–B6 六种缺省 anchor（矩形含描边／文本度量／
+调整零盒／实例解析／实例-of-调整／路径控制点）；§C1–C12 十二条报错**逐字**（404／400／409／403）；
+§D1–D3 `compose` 两态与 `scale` 非等比；§E `set_property{key:"transform"}` 之上再叠加 ✓。
+每个成功例还查 **`get_object.transform.matrix` 读回同一矩阵** ✓。
+
+**变异（九次，逐次改坏 ⇒ `exit 1` ✓、恢复 ⇒ `exit 0` ✓）**：
+
+| # | 变异 | 红在哪 |
+|---|---|---|
+| ① | 缺省 anchor 取 `(0,0)` | §B 全红（anchor 与矩阵两边都不同） |
+| ② | 漏 `−M·anchor` 平移项 | §B1／§B2／§B4／§B6／§D3（**§A 的 anchor 是 (0,0) ⇒ 不参与**） |
+| ③ | `compose` 缺省成 `false` | §A／§D2／§E（`composed` 与实际矩阵双红） |
+| ④ | `compose` 叠加顺序写反 | §D2（`[5,7]` vs 期望 `[-7,5]`） |
+| ⑤ | 文本高度 `lines·行高`（多算一行） | §B2（anchor `[20,28]` vs `[20,27]`） |
+| ⑥ | 去掉「恰好一个」校验 | §C7（本地 200、服务端 400） |
+| ⑦ | `set_property{transform}` 不重放 | §E（本地矩阵停在单位阵） |
+| ⑧ | 实例解析漏 `local_transform` | §B4（anchor `[110,55]` vs `[115,62]`） |
+| ⑨ | 实例盒取实例自己的 `data` | §B4（anchor `[5,7]` —— 实例 `data` 只有 `master_ref`） |
+
+**变异过程里抓到的两个「判据自己错」✓**：
+① **⑤ 第一次改在了 atlas 分支**（`16×16`）⇒ 判据**全绿** ✗ —— 因为 `AB` 走的是 ASCII 分支 ✓。
+   **∴ 「这条断言读的是哪条路径」要按输入核对** ✓；改到 ASCII 分支后立刻红 ✓。
+② **第 六百五十九 节曾说「漏 `stroke_width/2` ⇒ §B1 红」** —— **实测绿** ✗。原因是**边距是中心对称的** ✓：
+   bbox 中心在 `x+w/2` 处，`(x−m)+(w+2m)/2` 仍等于 `x+w/2` ⇒ **中心不变**。
+   ⇒ 所以那条「变异」没有可观测面 —— **不是实现对，而是判据看不见宽高** ✓（见下）。
+
+**已知盲区（实测定界，不是推断 ✓）**：`transform_object` 只回 `anchor` ⇒ **包围盒的宽高面不可观测** ✓。
+要读宽高得用 `get_resolved_state.bbox`（服务端 `read_get_resolved_state` 有 ✓）；
+而**本地那份 `get_resolved_state` 现在返回的是文档级载荷**（`doc_id`／`layers`／`instances`… ✗），
+与服务端「必填 `object_id`、回 `{type,is_instance,master_id,local_transform,bbox}`」**是两套契约** ✗
+⇒ **已在「第 六百六十一 节」做完** ✓：本地 `get_resolved_state` 对齐服务端、判据补了 §F（宽高面）✓ ——
+那一步之后，「漏描边半宽」这类变异**才有红灯** ✓（实测十次变异全红 ✓）。
+
+**前提与退出码 ✓**：判据要活服务端（`run-criteria-local.sh`）；服务端建文档失败 ⇒ `exit(3)`（不可判 ≠ 产品失败 ✓）。
+本批实测：重建 `yanshi-http` 后首次运行即绿（`Finished release profile in 46.61s` ✓）；
+变异阶段共 13 次运行 ✓ = **9 次按计划的变异（全 `exit 1`）** ✓ ＋
+**2 次「本该红却绿」的尝试**（⑤ 改在 atlas 分支、④ 漏描边 —— 两次都诊断清楚了 ✓）＋
+**2 次恢复后的绿** ✓。**⇒ 「变异全红」要按实际跑的次数说，不按计划的条数说** ✓。
+
+## 六百六十一、本地 `get_resolved_state` 从文档级载荷改成服务端契约：宽高面终于可观测，十次变异全红
+
+**为什么它必须改**（不是「顺手对齐」，是**两套契约** ✗）：服务端 `read_get_resolved_state`
+（`tools.rs:6444`）**必填 `object_id`** ⇒ 回**单个对象**的
+`{ok, object_id, type, is_instance, master_id, local_transform, bbox}`；
+而本地那份**无视 `object_id`** ⇒ 回文档级载荷（`doc_id`／`layers`／`instances`…）✗。
+同一请求两边**形状不同** ⇒ 调用方按服务端写就必然读不到字段 ✓。
+**而 `bbox` 恰是包围盒宽高唯一可观测面** —— 第 六百六十 节实测过：`transform_object` 只回 `anchor`，
+描边半宽／文本行高这类**中心对称**的边距**改变不了中心** ⇒ 漏 `stroke_width/2` 在 §A–§E 上恒绿 ✗。
+⇒ **∴ 这个契约分歧不是「命名不同」，它让一整类缺陷不可测** ✓。
+
+**改了什么**：
+1. **逐对象**：`object_id` 缺 ⇒ 400「缺少必填参数 object_id」；非字符串（含 `null`）⇒
+   400「参数 object_id 类型应为 string，实际为 `<json 类型名>`」——
+   **照 `validate_args` 的三段次序**（未知参数 → 必填存在 → 类型 ✓）；未知参数**响亮**报错并列可用参数 ✓。
+2. **`type`** 照 `format!("{object_type:?}").to_lowercase()` ⇒ **`raster_patch` 要报 `rasterpatch`** ✓
+   （本地写法带下划线 ✗，直接回 `view.type` 会**只在这一个类型**上分裂 ✓）。
+3. **`master_id`／`local_transform` 取折叠后的 `data.master_ref`** ✓ —— `set_property{key:"master_ref"}`
+   会**整体替换**它 ✓ ⇒ 只读创建净荷会漏掉后来的覆盖 ✓（与第 六百五十九 节同一条坑）。
+4. **`bbox` 走已移植的 `p2ObjectBBox`**（形状／文本／调整／路径／实例＋master 已删 ⇒ `null`）✓。
+5. **404 只在「创建被 revert」时**：墓碑对象仍在 `state.objects` 里 ⇒ 照服务端「在状态里就算存在」✓。
+
+**判据（§F，六值 ＋ 五错）**：`R1` 矩形含描边、`R2` 文本度量、`R3` 路径控制点盒、`R4` 实例、
+`A3` 调整零盒、`I3`（master 已删）；**期望盒由判据自己按输入算**（`[8,18,44,24]`／`[10,20,20,14]`／
+`[0,0,20,10]`／`[13,25,44,24]`／`[0,0,0,0]`／`null`）✓；五个字段**逐字段两边比** ✓；
+报错：缺 `object_id`／非字符串／`null`／未知参数 ⇒ 400，对象不存在 ⇒ 404，**文案逐字比** ✓。
+
+**变异（十次，全部 `exit 1` ✓）**：
+
+| # | 改坏 | 红在哪（实测） |
+|---|---|---|
+| ⑩ | 形状盒漏 `stroke_width/2` | §F 矩形含描边 ＋ §F 实例（`[10,20,40,20]` vs `[8,18,44,24]`）；**§B 仍绿 ⇒ 中心盲区实锤** ✓ |
+| ⑪ | 实例盒 `data` 取实例自己的 | §F 实例（`[5,7,0,0]` vs `[13,25,44,24]`）|
+| ⑫ | 实例盒变换取 `view.transform` | §F 实例 ＋ §B4（anchor `[110,55]` vs `[115,62]`）|
+| ⑬ | 去掉 master 已删检查 | §F master 已删（`[0,0,0,0]` vs `null`）＋ §C10 四条（本地 200 vs 409）|
+| ⑭ | `type` 恒 `"shape"` | §F 文本／实例／调整／master 已删 四条（`"text"`/`"instance"`/`"adjustment"` vs `"shape"`）|
+| ⑮ | 去掉类型校验（非字符串回「缺少」）| §F 非字符串 ＋ `null` 两条（文案不同）|
+| ⑯ | 去掉未知参数校验 | §F 未知参数 四条（本地 200 回 `bbox:[8,18,44,24]` vs 400）|
+| ⑰ | `master_id` 恒 `null` | §F 实例 ＋ master 已删（`"R1"`/`"M3"` vs `null`）|
+| ⑱ | `local_transform` 恒 `null` | §F 实例 ＋ master 已删（矩阵 vs `null`）|
+| ⑲ | 404 文案去掉对象名 | §F 对象不存在（文案不同）|
+
+**恢复与复跑**：每次变异后都恢复；恢复后的复跑**全 `exit 0`** ✓ ——
+其中「type 恢复」与「最终同步资产副本后」两次**本段实跑为绿** ✓，
+其余七次恢复由**最后那次全量绿**一并覆盖（同一份 `web/api-local.js`，资产副本 `cmp` 逐字节相同 ✓）。
+
+**已知限制（如实记 ✓）**：`rasterpatch` 那一行**没有判据覆盖** —— 要造一个 `raster_patch` 得先
+`import_image`，而本地 `/api/blob` **要 wasm 内核**（Node 下没有），服务端又没有 `create_object` 工具
+⇒ **造不出来** ✗。那一行现在只有**代码审查级**证据（对照 `state.rs` 的 `ObjectType` 与
+`format!("{:?}").to_lowercase()`）✓ ⇒ **不装作测过** ✓。
+
+**入口闭链**：调用方 `describeCheckedObject`（`web/viewer-app.js:5610`）本来就是
+`callToolChecked("get_resolved_state", {object_id})` ⇒ **旧的文档级载荷它一个字也用不上** ✗；
+现在两边同形 ✓。
+
+## 六百六十二、本地 `analyze_region`／`estimate_dehaze` 改成服务端契约：裸像素管线，判据当场抓出两处静默降级
+
+**为什么它必须改**（不是「补一个端点」，是**两套载荷** ✗）：
+- 本地 `analyze_region` 回的是另一套（`region`／`mean_rgba`／`std_rgba`／`histogram_16bins`），
+  而服务端（`read_analyze_region`）回 `dominant_colors`（16³ 桶前 5，带 `share`）／`avg_brightness`／
+  `warm_pixels`／`cool_pixels`／`warm_cool_ratio`／`comparison_with_reference` ⇒
+  **AI 客户端按服务端字段读，在 PWA 里恒缺** ✗；
+- `estimate_dehaze` 本地是**明确 501**，理由写的是「本地只产 PNG、没有裸像素通道」——
+  而内核本来就导出 `render_region_rgba`（`p2cRenderRgba`）⇒ **那个理由早已过期** ✗。
+
+**改了什么**：
+1. **管线改走裸像素**：`render_region_rgba` 直接拿 RGBA，不再解码 PNG；渲染前**先按服务端的
+   `clamp_region` 裁**（`floor(x).max(0)`／`ceil(x+w).min(w)`）——内核自己的 `clamp_to_canvas`
+   在**负坐标**上会保留原 `w`（`{-4,-4,20,20}` ⇒ 20×20），**与服务端不同** ⇒ 先裁再给内核 ✓。
+2. **统计口径逐位照抄**：16³ 桶同时累计计数与三通道和；桶内均值用**整数除法**；
+   亮度是 **f64** `0.299r+0.587g+0.114b`（按 `÷像素÷255`）；暖 `r>b`、冷 `b>r`（相等两边都不计）；
+   `share = count/total`；前 5 名**显式**按（计数降序，桶号升序）排，不靠引擎的「稳定排序」✓。
+3. **`estimate_dehaze` 的 f32 语义**：暗通道 `min(r,g,b)/255` 用**直方图**置换全排序
+   （值只有 256 种 ⇒ 截断值＋同值按索引升序，与「稳定全排序取前 `take`」等价），
+   `take = ceil(n×0.001).max(1)`，色度阻尼与恢复入口同一条 `damp_air_chromaticity`。
+4. **序列化的 f32 口径**：服务端 `json!` 把 f32 **拓宽成 f64**（`0.95f32` ⇒ `0.949999988079071`），
+   不是 `serialize_f32` 的最短往返小数 ⇒ 本地直接给 `Math.fround(x)`（JS 打印的就是那条 f64）✓。
+
+**判据**（`scripts/tool-pwa-pixel-stats.mjs`，同一请求两边打、比解析后的 JSON）：
+§A 整幅（白 2688／红 384，share 0.875／0.125，hex `#ff0000`，全暖，亮度 ≈0.9124）；
+§B 只框矩形（单桶 share 1、亮度 ≈0.299）；§C 数组形态 `[x,y,w,h]` 与对象同解；
+§D1 小数盒 `{8.5,8.5,23.5,15.5}` ⇒ 24×16；**§D2 负坐标 `{-4,-4,20,20}` ⇒ 16×16＝256（服务端口径）**
+—— 这一条专门守「内核裁剪 ≠ 服务端裁剪」那个分歧；
+§E 三种不相交（右侧外／零面积／小数负坐标）⇒ 400 且文案**逐字**（含 Rust Debug 的 `100.0`）；
+§F 缺 `region`／字符串／缺键／3 元数组／非数字 ⇒ 400（前两种是「缺少必填参数」，后三种是「必须是 {x,y,w,h}」）；
+§G 缺省与显式 `null` ⇒ 不比较；**字符串／数字 ⇒ 400 且逐字点名参数类型**；
+§H `dark_channel_mean` 恰 0.875、`air=[1,1,1]`、`suggested.omega` 恰 `Math.fround(0.95)`、`note` 逐字；
+§I 参考图四态 —— 参考图**由判据现场用本地渲染的裸像素编 PNG**，
+以 `application/octet-stream` **上传到两边**（服务端 `image/png` 会解码成裸 RGBA 入库 ⇒ 不能当参考图 ✓），
+断言两边 `blob_hash` 相同 ⇒ `ΔE` 必须**恰为 0**（同时就是「本地渲染 == 服务端渲染」逐像素判据）；
+黑参考图 ⇒ 均值/极值 > 0 且 `max ≥ mean`；尺寸不一致／没设／非 PNG／**CRC 坏块** ⇒ 四种如实作答。
+
+**判据本轮当场抓出的缺陷（五处，全部已修）**：
+
+| # | 缺陷 | 抓它的断言 | 性质 |
+|---|---|---|---|
+| ① | 暗通道累加写成**红通道** | §H `dark_channel_mean`（0.875 vs 1） | 算法错（白/红两色红通道都是 255 ⇒ 均值必 1）|
+| ② | 空区域回 **400**（服务端 `PreconditionFailed ⇒ 409`）| 状态码逐条比 | 状态码口径分裂 |
+| ③ | `compare_with_reference: "yes"` **静默当没请求** | §G3 本地 200 vs 服务端 400 | **静默降级形态 4**（`read_canvas: "yes"` 同源）|
+| ④ | `omega` 输出成 **f32 最短小数** `0.95` | §H `suggested`（`0.949999988079071`）| 序列化口径（`json!` 是 f32→f64）|
+| ⑤ | **Node 桩**把 `prefs` 记到 `undefined` 键（漏 `keyPath:"key"`）| §I1–§I6 全红（`set_reference` 回 ok 而读不到）| **判据自身**：桩不完备 ⇒ 产品对、判据红 |
+
+④ 之后删掉了只为它存在的 `p2cF32`（唯一用途就是这三处 ⇒ 留着是错误答案的死代码）。
+
+**变异（十二次，全部 `exit 1` ✓；每次后恢复、`cmp` 与原件逐字节相同）**：
+
+| # | 改坏 | 红在哪（实测） |
+|---|---|---|
+| ① | `sum` 累加红通道 | §H 字段不同（0.875 vs 1）＋本地期望红 |
+| ② | 不按 `clamp_region` 裁、原样给内核 | §D2 宽高（16 vs 20）|
+| ③ | 亮度系数 0.299→0.298 | §A（0.91237 vs 0.91137）＋§B |
+| ④ | 暖冷判据对调 | §A／§B `warm_pixels`（384 vs 0）|
+| ⑤ | `omega` 不夹上限 | §H `suggested`（0.95 vs 1.125）|
+| ⑥ | 去掉参考图尺寸校验 | §I2 本地 `ok:true`（且 `delta_e_mean:null`）|
+| ⑦ | PNG 解码不校验 CRC | §I6 本地 `ok:true, ΔE=0` |
+| ⑧ | 去掉布尔类型校验 | §G3 本地 200 vs 400 |
+| ⑨ | `omega` 输出改回 f32 最短小数 | §H（0.95 vs `0.949999988079071`）|
+| ⑩ | 不相交文案不补小数位 | §E1 文案不同 |
+| ⑪ | `region` 解析文案改短 | §F3 文案不同 |
+| ⑫ | 桩 `put` 键退回 `id ?? hash ?? doc` | §I1–§I6 全红（19 条）|
+
+**恢复与复跑**：每次变异后都恢复；最终同步资产副本后**全量复跑 `exit 0`** ✓
+（`web/api-local.js` 与 `crates/yanshi-http/assets/api-local.js` `cmp` 逐字节相同 ✓）。
+
+**已知限制（如实记 ✓）**：本 fixture 的 `air` 是三通道 1 ⇒ **阻尼（`damp_air_chromaticity`）
+在这一份输入上不可观测** ✗（它只在非中性大气光下改数值）；要观测得先造一张彩色大气光图，
+本轮没有做 ⇒ **不装作测过** ✓。
+
+**入口闭链**：`analyze_region`／`estimate_dehaze` 的调用方是 AI 客户端与查看器工具面板；
+PWA 模式下 `/api/tools/*` 全由 `web/api-local.js` 接管 ⇒ 此前一个端点是 501、另一个字段名全不同，
+面板与 MCP 客户端在离线态都拿不到统计结果 ✓；现在两边同形 ✓。

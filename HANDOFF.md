@@ -1472,3 +1472,78 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
      **数值面**，没扫「判据断旧文案『被忽略』」的**措辞面** ⇒ `tool-pressure-curve-echo` 从网眼漏过。
      教训一般化：**语义反转 ⇒ 旧语义的全部断言面都要枚举**（grep 旧文案＋旧字段＋旧数值），缺一面必红。
    · 复判提交后重推 ⇒ 等 run 收敛；**P7 收账以新一轮 CI 为准**（不自称已绿 ✓）。
+
+## §99 PWA 本地内核批次 3–6（detach/transform/analyze/prefs 镜像）合并留痕（2026-10-29）
+
+① **基线与接缝**：`~/patch/web_patch.tar.gz` ＝ **裸 diff 格式** ✗（**无 From/Subject ⇒ 不是
+   mbox ⇒ `git am` 不适用，只能 `git apply` ✓**）；四片 `0d24a23b→94a2768a→08e9e488→886b3a50→
+   a1ff6891` 名字自述 hash 链，**首尾相接 ✓**。四个基线 blob 在本仓 `git cat-file -e` **全部不存在** ✗
+   （**∴ 上游是另一份 clone ⇒ 包侧无法在我仓重放验证 ⇒ 只能以「对当前 main 逐片直接 apply」代 ✓**）。
+   合入基线 main＝`66f89293`（**§98/P7 收账那一轮 run 40704687440 还在跑 ⇒ 本留痕与合入在
+   try-web-batch3456 上完成，push 等组空 ✓**）。try 分支上四片按序 `git apply` **全部 hunk 命中** ✓
+   ⇒ 8 文件 +4299/−260。**铁律核对**：`web/api-local.js` ≡ `crates/yanshi-http/assets/api-local.js`
+   **逐字节相同 ✓**（**每次改动后 `cmp` 重验 ✓，含我的二期修 ✓**）；`node --check` 两份均过 ✓。
+   包内 `._*` AppleDouble 垃圾已剔除（**不是我造 ✗，是 tar 带的 ✓**）。
+② **内容审读**（逐项，含四层齐核对；**二期复核抓到两真一分叉** ✓）：
+   · **真分裂 1（已修 ✓）detach 副本 data**：本地读裸净荷 `mv.data` ✗ 而服务端复制的是折叠后
+     `master.data.clone()`（`tools.rs:6325` ✓）⇒ **master 被 `set_property` 过就分裂** ✓ ——
+     正是 `p2EffectiveData` 头注点名的「凡按 `data` 解析语义的地方都必须经这里」。修 ⇒ 用 `meff`
+     （**`type` 口径同步改 `meff.type ?? "shape"` ✓ 与 `master_data.get("type")` 逐字 ✓**）；
+     **判据补 §E1**（**先断言服务端 master 折叠含 override ⇒ 权威前提 ✓**，变异＝改回 `mv.data`
+     ⇒ 实测「本地副本缺 override」红 ✓）。**此前 §A 的输入从没 set_property 过 master** ⇒
+     折叠面恒绿 ✗（**四层齐第②层缺 ✓ 的又一个实例**）。
+   · **真分裂 2（已修 ✓）撞 id 静默降级形态③**：服务端 `log.rs:100` 对 `create_object` 是
+     `MustNotExist` ✓（**判 `state.objects.contains_key` ⇒ 墓碑也算占位 ✓**）＋层 `MustExist` ✓，
+     顺序在锁之前 ✓；本地只有 `p2LockGuard`（只管锁）⇒ **显式 `object_id` 撞活对象照写 ✓、被折叠层
+     丢弃（`fold.rs:551`）⇒ 回执 200 而状态里没副本** ✗。修 ⇒ `p2RefGuard` 新增 `create_object`／
+     `import_image` 拒生支路 ＋ `detach` 建副本一步先过 guard；**判据补 §E2**，变异＝删该支路 ⇒
+     实测本地 200／服务端 409、文案 undefined、I7 被吞，三条全红 ✓。
+     **∴ 同族既有端点（`create_instance`／`create_group` 等）的同类缺口不在本批 diff 面 ⇒ 记
+     known-gap 给上游 ✗**（**普查不顺手改旧面 ✓**）。
+   · **真分叉 3（已修 ✓）报错文案**：本地「instance_id 必填（字符串）」✗ 服务端
+     `require_str`⇒`missing`⇒「缺少必填参数 instance_id」（`tools.rs:1524` ✓）⇒ **5 处**
+     （create_instance／detach／link_to_master／update_override／update_sync_policy）**全改逐字 ✓**
+     （**`assert count==5` 换完再 assert ✓**）。判据 §C 的逐字比此前**没有**「缺参」这条输入 ⇒ 恒不触发 ✗
+     ——**本条属第②层缺口的措辞面**（与 §98⑥「语义反转要枚举全部断言面」同族 ✓）。
+   · **实现侧其余改动（核对 ✓）**：`detach` 两步同 changeset ✓、tombstone 步 `p2RefGuard` ✓（半成品
+     同形，包 §D 已断）；新错误支路文案逐字 ✓；`docs/design/brush-capability-gap.md` 表格同步 ✓
+     （**表变了回去改 ✓ 本批自带 ✓**）。
+   · **已核对、未修（记 known-gap ⇒ 上游）**：
+     ① `reference.blob_hash` 大写：本地正则**只收 64 位小写**（`api-local.js:3851` ✓ 实测读码）⇒
+       与「本地单独接受大写」**不符** ✗（**审查 agent 说反了 ✓ 两边同拒**，只是分叉在文案与形态）；
+     ② prefs 里参考 blob 已缺：本地归「参考图不是能解码的 PNG」✓ 服务端 ⇒ 404 —— **不是静默成功** ✓
+       （三态都如实 `ok:false` ✓），但**原因分类分裂** ✗ ⇒ 记；
+     ③ batch4 各 null/缺省分叉：texture jitter/mode 的 null 路径**本地更严**、`closed:null`／
+       `fill_rule:null`／`snapshot:null` **本地更宽松** ⇒ 与服务端字面不同 ✗，判据输入不覆盖 ⇒ 记；
+     ④ `powf`/`cbrt` 双舍入 ~1 ulp ΔE 风险：判据输入是字节域（0/255）⇒ 无现行红面 ⇒ 记；
+     ⑤ 未知参数报错**顺序**（本地插入序 vs 服务端 BTreeMap 序）⇒ 单条报错面一致，仅多错并存时分叉 ⇒ 记。
+   · **虚警两条（核对后排除 ✓）**：`p2cKernelFor` 在 `withKernel` 之外的「重入风险」——它只做
+     `__loaders.wasm()` 加载与 `new WasmKernel` 构造，**不碰任何借用** ⇒ 非重入 ✓；
+     「reverted===2 写死数字」——2 是 detach 自己两步 ⇒ **判据造的输入** ✓（第 798 轮表格第一类），可写死。
+③ **本机复验**（合并例外口径 ✓）：
+   · 新判据三份：`tool-pwa-instance-detach` **绿 ✓**（含 §E 两条新臂 ＋ 两次变异各自能红 ✓）；
+     `tool-pwa-transform-object` **绿 ✓**；`tool-pwa-pixel-stats` **exit(3) ⊗**（**内核产物 2026-10-15
+     比 `crates/yanshi-{wasm,render,core}` 源码旧 ⇒ 新鲜度守卫按设计生效 ✓＝「判据前提不成立 ≠ 产品失败」**
+     ——CI 重建 wasm 后才有真判）。
+   · `tool-pwa-*` 全量 14 份：**13 ✓／1 ⊗**（pixel-stats）。⚠ 其中 `api-behaviour`、`assets` 各出现过
+     一次红：前者**重跑即绿**（瞬时，未复现 ⇒ 如实记 ✗ 不追成缺陷）；后者是**介质产物 mtime** ——
+     源码与 HEAD 无 diff（`git diff HEAD -- crates/yanshi-medium-oil` 空 ✓）而 git checkout 把
+     `lib.rs` 时间戳刷成今天 ⇒ **陈旧是 checkout 造成的 ✗ 不是真落后 ✓**（产物已不入库 `1000937f` ✓）
+     ⇒ `touch assets/mediums/*.wasm` 后绿 ✓。
+   · **`cargo test --workspace` 交 CI**（内存可用 2.1 Gi < 3 Gi ⇒ §95③/§96③ 同措辞 ✗ 不自称本机绿）。
+     **workspace clippy 未本机跑**：本批**零 `.rs` 改动**（staged 清单实测：唯一 Rust 侧文件是内嵌资源
+     `assets/api-local.js` ✓）⇒ 编译面与 HEAD 完全相同，而 HEAD 已在 run 40704687440 上验过；
+     本机跑的 `cargo fmt --check` ✓ 与 ledger 编号守卫 ✓ 都过。**⇒ CI 是最终判 ✓**。
+④ **回归普查**（六面）：
+   · Rust：零 `.rs` 改动 ⇒ 单测／Rust 判据无触碰面 ✓。
+   · api-local 改动面＝detach 路径／`p2RefGuard` 新支路（**只认 create_object|import_image** ⇒ 既有
+     调用方 kind 不含这两 ⇒ 零影响 ✓）／5 处文案 ⇒ 风险面全在 `tool-pwa-*`，**已全量跑 ✓（③）**。
+   · 双份拷贝：`cmp` 逐字节 ✓（①）。
+   · docs 表格：本批自带同步 ✓（②）。
+   · 判据侧：§E 以**服务端为权威**断 ✓（两边同错不能同时绿 ✓）；§E2 的存活集合断言**各比各的 id**
+     （**E1S/E1L 故意不同 ⇒ 不做 whole-list 比 ✓ 同源核对 ✓**）。
+   · known-red：未加条目 ⇒ `scripts/criteria-known-red.txt` 不动 ✓（**pixel-stats 的 ⊗ 只在无
+     新鲜 wasm 的本机 ⇒ 不进名单；CI 有重建面 ✓**）。
+⑤ **落账与接缝预告**：本包是 `web_patch` 链的前四片；**batch7（`a1ff6891→dc4898c5`）已在
+   `~/patch` 排队（任务 #47）⇒ 其基线正是本包的终点 ✓**。`git apply` 不过 pre-commit ⇒ 留痕另行
+   复跑 fmt／台账编号／守卫 ✓（§90⑤ 同规）；push 等 run 40704687440 收敛（§98③ 同规）。
