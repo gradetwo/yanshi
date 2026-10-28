@@ -52,6 +52,16 @@ pub enum WarningKind {
     DeclareHeadOutsideFormula,
 }
 
+/// **折叠警告滚动上限**（P-8）：累积警告向量只保留最近 [`MAX_FOLD_WARNINGS`] 条。
+///
+/// 此前警告向量无限累积：增量折叠每折一次就把历史警告全拷一份
+/// （`chain_warnings`），提交回执每笔又全量序列化一次
+/// （`warnings_to_json`）⇒ 每笔成本随 N 线性增长。滚动上限把
+/// 两处都钉死在 O(上限)；回执只丢最旧的警告，最新警告总在。
+/// 上限必须在**所有**累积路径上一致施加（`state_at`、`ladder_fold`、
+/// `chain_warnings`），否则增量折叠与冷重放的警告会分歧（测试钉住）。
+pub const MAX_FOLD_WARNINGS: usize = 128;
+
 /// 折叠警告。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FoldWarning {

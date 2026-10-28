@@ -1178,8 +1178,20 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     //   **⇒ 所以**：加一个字符串字段 ✓ —— `white_base`（没吃底图 ⇒ 合白底后与 255 比 ✓）
     //     ／`canvas_base`（吃了底图 ⇒ 与真底图比 ✓）✓。**文档写了，但字段比文档强** ✓。
     // **背景是否真的读到** ✓（`paint_brush` 里那份用于比较 ✓；这里只为给 regime 贴标签 ✓）
-    let background_from_state = document_state(ctx)
-        .map(|state| state.background.get("r").and_then(Value::as_u64).is_some())
+    // **背景只读一个布尔，不许为它克隆整份文档状态** ✓（P-8）：`document_state`
+    // 克隆 `objects` 全表（N 个对象），每画一笔付一次 ⇒ 这里直接借 `document()`
+    // 读背景，不克隆 ✓；文档不在 ⇒ false（与 `document_state` 出错时同例 ✓）。
+    let background_from_state = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| {
+            document
+                .state()
+                .background
+                .get("r")
+                .and_then(Value::as_u64)
+                .is_some()
+        })
         .unwrap_or(false);
     // **三个 regime** ✓（第 810 轮）：吃了底图 ⇒ `canvas_base` ✓；
     //   没吃底图但**读到了文档背景** ⇒ `document_background_base` ✓（第 809 轮改成比背景 ✓）；

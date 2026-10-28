@@ -27,6 +27,7 @@ use crate::atom::{Atom, AtomId, AtomKind};
 use crate::error::{ErrorCode, ErrorContext, Result, YanshiError};
 use crate::fold::{
     fold_atoms, fold_atoms_skipping, EffectiveActions, FoldEngine, FoldResult, FoldWarning,
+    MAX_FOLD_WARNINGS,
 };
 use crate::ids::{ActorId, Seq, SessionId};
 use crate::log::AtomLog;
@@ -237,6 +238,7 @@ pub fn state_at(log: &AtomLog, n: Seq, cache: &mut StateAtCache) -> Result<State
     let mut state = match cached_tail {
         Some(hit) => {
             warnings.extend(hit.warnings);
+            truncate_warnings(&mut warnings);
             suppressed.extend(hit.suppressed);
             hit.state
         }
@@ -251,13 +253,16 @@ pub fn state_at(log: &AtomLog, n: Seq, cache: &mut StateAtCache) -> Result<State
             } = fold_atoms(DocumentState::empty(), slice);
             state.head_seq = state.head_seq.max(cursor);
             warnings.extend(tail_warnings.iter().cloned());
+            truncate_warnings(&mut warnings);
             suppressed.extend(tail_suppressed.iter().cloned());
+            // 缓存条目存的必须是**截断后**的累积警告：原样存 `tail_warnings`
+            // 会让缓存里留一份超长向量，命中时直接返回、绕过上限。
             cache.insert(StateAt {
                 seq: cursor,
                 origin_seq: 0,
                 state: state.clone(),
                 suppressed: tail_suppressed,
-                warnings: tail_warnings,
+                warnings: warnings.clone(),
             });
             state
         }
@@ -278,6 +283,7 @@ pub fn state_at(log: &AtomLog, n: Seq, cache: &mut StateAtCache) -> Result<State
             level.upto
         });
         warnings.extend(folded.warnings.iter().cloned());
+        truncate_warnings(&mut warnings);
         suppressed.extend(folded.suppressed.iter().cloned());
 
         // **写回缓存时必须用"累积到本层为止"的有效集与警告**，而不是本层的**局部**集合 ✗：
@@ -670,6 +676,7 @@ impl IncrementalFolder {
             let folded = fold_atoms_skipping(state, std::slice::from_ref(atom), &skip);
             state = folded.state;
             warnings.extend(folded.warnings);
+            truncate_warnings(&mut warnings);
             if skip.contains(&atom.id) {
                 seen.insert(atom.id.clone());
             }
@@ -732,11 +739,23 @@ fn affects_fold(kind: AtomKind) -> bool {
 }
 
 /// 拼接两段警告：还原点之前 + 之后，与"一次折完"的顺序一致。
+/// 拼接后截到滚动上限（只留最近 [`MAX_FOLD_WARNINGS`] 条，见
+/// `fold::MAX_FOLD_WARNINGS`）。
 fn chain_warnings(base: &[FoldWarning], extra: &[FoldWarning]) -> Vec<FoldWarning> {
     let mut warnings = Vec::with_capacity(base.len() + extra.len());
     warnings.extend(base.iter().cloned());
     warnings.extend(extra.iter().cloned());
+    truncate_warnings(&mut warnings);
     warnings
+}
+
+/// 把累积警告向量截到滚动上限：只保留最近 [`MAX_FOLD_WARNINGS`] 条，
+/// 丢最旧的。调用方须在**每次**累积之后调它（`state_at`、`ladder_fold`、
+/// `chain_warnings` 各处），否则增量折叠与冷重放的警告会分歧。
+fn truncate_warnings(warnings: &mut Vec<FoldWarning>) {
+    if warnings.len() > MAX_FOLD_WARNINGS {
+        warnings.drain(..warnings.len() - MAX_FOLD_WARNINGS);
+    }
 }
 
 impl FoldEngine {
@@ -1219,6 +1238,85 @@ mod tests {
             }
         }
         log
+    }
+
+    /// **折叠警告滚动上限**（P-8）：警告向量只保留最近 [`MAX_FOLD_WARNINGS`] 条。
+    ///
+    /// 200 个重复建层原子各产生一条级联警告（`layer_1` 已存在 ⇒ 前置失败）。
+    /// 不设上限时完整求值与增量折叠都攒 200 条；设上限后两边都只留
+    /// 最近 128 条，且两边逐字段一致（上限必须在所有累积路径上一致，
+    /// 否则这条恒等式就红）。
+    ///
+    /// 变异验证：把 `truncate_warnings` 改成空操作（或把上限改大），
+    /// `warnings.len() == 128` 立刻红。
+    #[test]
+    fn fold_warnings_are_capped_to_the_most_recent() {
+        let mut log = chain();
+        // chain() 已有 create_document + create_layer layer_1 + 1 个对象。
+        let mut dup_seqs = Vec::new();
+        for i in 0..200 {
+            let seq = push(
+                &mut log,
+                atom(
+                    AtomKind::CreateLayer,
+                    &format!("a_dup_layer_{i}"),
+                    json!({"layer_id": "layer_1"}),
+                ),
+            );
+            dup_seqs.push(seq);
+        }
+        // 完整求值（state_at 路）与增量折叠（ladder_fold 路）都要截到上限，
+        // 且截完仍逐字段一致。
+        let engine = FoldEngine::new();
+        let cold = engine.fold(&log).unwrap();
+        assert_eq!(
+            cold.warnings.len(),
+            MAX_FOLD_WARNINGS,
+            "200 条警告应截到上限 {} 条，实际 {} 条",
+            MAX_FOLD_WARNINGS,
+            cold.warnings.len()
+        );
+        // 留下的是最近 128 条：第一条是第 73 个重复原子（前 72 个被丢），
+        // 最后一条是第 200 个重复原子。
+        assert_eq!(
+            cold.warnings.first().map(|w| w.seq),
+            Some(dup_seqs[72]),
+            "上限应丢最旧的警告、留最近的"
+        );
+        assert_eq!(
+            cold.warnings.last().map(|w| w.seq),
+            Some(dup_seqs[199]),
+            "上限应留住最新一条警告"
+        );
+        let mut folder = IncrementalFolder::new();
+        let incremental = folder.fold_head(&log).unwrap();
+        assert_eq!(
+            incremental, cold,
+            "增量折叠与完整求值在截断后仍须逐字段一致（state/suppressed/warnings）"
+        );
+        // 再追加一笔仍失败的原子：上限不涨，窗口向前滚一格。
+        let seq201 = push(
+            &mut log,
+            atom(
+                AtomKind::CreateLayer,
+                "a_dup_layer_200",
+                json!({"layer_id": "layer_1"}),
+            ),
+        );
+        let cold2 = engine.fold(&log).unwrap();
+        assert_eq!(cold2.warnings.len(), MAX_FOLD_WARNINGS);
+        assert_eq!(
+            cold2.warnings.first().map(|w| w.seq),
+            Some(dup_seqs[73]),
+            "追加一笔后窗口应向前滚一格"
+        );
+        assert_eq!(
+            cold2.warnings.last().map(|w| w.seq),
+            Some(seq201),
+            "追加一笔后最新警告应是新原子那条"
+        );
+        let incremental2 = folder.fold_head(&log).unwrap();
+        assert_eq!(incremental2, cold2, "滚动后两边仍须逐字段一致");
     }
 
     /// **判据（可红 ✓）**：日志里含 `revert`，在它上面继续追加提交（尤其是继续撤销旧原子）

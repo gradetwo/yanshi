@@ -42,7 +42,7 @@ fn call(workspace: &mut Workspace, doc_id: &str, name: &str, args: &Value) -> Va
 }
 
 /// 建一份带 `fills` 个填充原子的文档（估算 ≈ (初始原子 + fills)
-/// × 300 KB + 缓存实测）。
+/// × 100 KB + 缓存实测）。
 fn make_doc(workspace: &mut Workspace, doc_id: &str, fills: usize) {
     workspace
         .create_document(NewDocument::new(doc_id, 64, 64), "human:1", "session:test")
@@ -342,5 +342,38 @@ fn doc_budget_evicts_lru_idle_document_on_create() {
         .as_deref()
         .unwrap_or("")
         .contains("内存预算"));
+    clear_env();
+}
+
+/// **X-1 估算口径校准**（P-8）：每原子估算必须是 100 KB，不是 300 KB。
+///
+/// 旧口径 300 KB/原子约为冷重开实测（0.069 MB/原子）的 4.3 倍：
+/// 10,000 原子文档估算 2.86 GiB，在缺省 2,048 MB 预算下被误拒。
+/// 新口径 100 KB/原子在实测上留约 45% 余量（预算闸本身不动）。
+/// 本判据直接钉住「已载入文档的原子部分估算 = 原子数 × 100 KB」
+/// （渲染保留量已由 `atoms_only_estimate` 剔除）。
+///
+/// 变异验证：把 `BYTES_PER_ATOM` 改回 300 KB ⇒ 本测试立刻红。
+#[test]
+fn doc_budget_per_atom_estimate_is_calibrated_to_100k() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    clear_env();
+    let root = temp_dir("per_atom");
+    let _cleanup = TempCleanup(root.clone());
+    let mut workspace = Workspace::with_file_store(root, DocumentSettings::default()).unwrap();
+    make_doc(&mut workspace, "doc_a", 12);
+    let atoms = workspace.document("doc_a").unwrap().atom_count() as u64;
+    let info = workspace
+        .loaded_documents()
+        .into_iter()
+        .find(|info| info.doc_id == "doc_a")
+        .expect("doc_a 应已载入");
+    let atoms_only = atoms_only_estimate(info);
+    assert_eq!(
+        atoms_only,
+        atoms * 100 * 1_024,
+        "每原子估算口径应为 100 KB（X-1 校准）：{atoms} 个原子应估 {} 字节，实测 {atoms_only} 字节",
+        atoms * 100 * 1_024,
+    );
     clear_env();
 }

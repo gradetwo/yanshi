@@ -17,7 +17,10 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use yanshi_core::blob::{plan_gc, run_gc, BlobStore, GcPlan, GcReport};
 use yanshi_core::{
-    fold::{fold_atoms, segment_needs_atomic_path, FoldResult, FoldWarning, WarningKind},
+    fold::{
+        fold_atoms, segment_needs_atomic_path, FoldResult, FoldWarning, WarningKind,
+        MAX_FOLD_WARNINGS,
+    },
     Atom, AtomId, AtomKind, AtomLog, Bbox, BlobHash, ChangesetId, CommitContext, DocumentState,
     ErrorCode, ErrorContext, FoldEngine, HeadBase, IncrementalFolder, Result, Seq, Snapshot,
     SnapshotBase, SnapshotDecision, SnapshotStore, StateAt, YanshiError,
@@ -3155,7 +3158,15 @@ fn dirty_kind_str(dirty: &DirtySet) -> &'static str {
 }
 
 /// 折叠警告 → 工具层 JSON（`commit_as_timed` 与 `commit_segment_as` 共用同一映射）。
+/// 序列化同样截到滚动上限（只取最近 [`MAX_FOLD_WARNINGS`] 条）：折叠层
+/// 已截，此处是纵深防御——任何绕过折叠层攒出的长向量到这里也被钉死在
+/// O(上限)，不许每笔全量序列化。
 fn warnings_to_json(warnings: &[FoldWarning]) -> Vec<Value> {
+    let warnings = if warnings.len() > MAX_FOLD_WARNINGS {
+        &warnings[warnings.len() - MAX_FOLD_WARNINGS..]
+    } else {
+        warnings
+    };
     warnings
         .iter()
         .map(|warning| {

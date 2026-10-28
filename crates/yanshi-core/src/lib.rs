@@ -73,6 +73,7 @@ pub use conflict::{Bbox, ConflictInfo, CONFLICT_ACTOR};
 pub use error::{ErrorCode, ErrorContext, Result, YanshiError};
 pub use fold::{
     apply, compute_suppressed, fold_atoms, FoldEngine, FoldResult, FoldWarning, WarningKind,
+    MAX_FOLD_WARNINGS,
 };
 pub use ids::{
     now_ms, ActorId, ChangesetId, CheckpointId, DocId, LayerId, MaskId, ObjectId, Seq, SessionId,
