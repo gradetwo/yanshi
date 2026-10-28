@@ -3492,6 +3492,15 @@ fn read_collect_diagnostics(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
 // 写入工具
 // ---------------------------------------------------------------------------
 
+/// **单文档存活图层数上限** ✓（审计 M-6 ✓）。
+///
+/// **为什么必须有**：存活图层会进入渲染遍历、快照与 `list_layers` ✓ ⇒
+/// 无上限时，**已认证**调用方一条 `create_layer` 循环就能把内存与每帧成本推到无界 ✗。
+/// **为什么是 256**：正常绘画文档远低于它（示例工程至多十几层 ✓），
+/// 256 给脚本化分层留足余量，又能在常数时间内判死病态输入 ✓。
+/// **只数存活图层** ✓：墓碑不占额度 ✓ ⇒ 「删了再建」不会被永久锁死 ✓。
+const MAX_LAYERS_PER_DOC: usize = 256;
+
 fn write_create_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = optional_str(args, "layer_id")
         .unwrap_or_else(|| format!("layer_{}", yanshi_core::Ulid::new().encode()));
@@ -3596,6 +3605,30 @@ fn write_create_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
                 ),
             }));
         }
+    }
+    // **图层数上限** ✓（审计 M-6）：`if_exists="reuse"` 且图层存活时已在上面返回 ✓
+    // ⇒ 走到这里**一定会新建/复活一个图层** ⇒ 数存活数并在到顶时**明确拒绝** ✓
+    // （不静默丢弃 ✗；错误里带上限与出路 ✓）。
+    let alive_layers = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| {
+            let state = document.state();
+            state
+                .layers
+                .values()
+                .filter(|layer| !layer.is_deleted())
+                .count()
+        })
+        .unwrap_or(0);
+    if alive_layers >= MAX_LAYERS_PER_DOC {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(format!(
+                "文档 {} 已有 {alive_layers} 个存活图层（上限 {MAX_LAYERS_PER_DOC}）⇒ 先删掉不用的图层再建 ✓",
+                ctx.doc_id
+            )),
+        ));
     }
     let result = ctx.commit(AtomKind::CreateLayer, payload)?;
     let region = region_of(&result);

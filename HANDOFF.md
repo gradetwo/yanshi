@@ -824,3 +824,17 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    都在联网前 `exit 1` 且文案指出形状错；wrapper 转义产物通过 `sh -n`；
    `cargo test -p yanshi-server --test shell_scripts --test script_portability` 全绿。
    **未做**：端到端安装需真实 release（本批用直接执行守卫验证）。
+
+78. **审计 M-6：单文档图层数上限**（2026-10-28 ✓）：
+   ① **问题**：`create_layer` 无上限 ⇒ **已认证**调用方一条循环即可把图层数推到任意大，
+   而存活图层会进入渲染遍历、快照与 `list_layers` ⇒ 内存与每帧成本无界 ✗。
+   ② **修法**：`MAX_LAYERS_PER_DOC = 256`，在 `write_create_layer` 的 `ctx.commit(CreateLayer)` 前
+   数**存活**图层（墓碑不计 ✓，与 `if_exists="reuse"` 的存活判定同一口径 ✓）；
+   到顶返回 `precondition_failed`，错误里带上限与出路（**不静默丢弃** ✓）。
+   `if_exists="reuse"` 命中存活图层时**先返回** ✓ ⇒ 不新建、不占额度 ✓。
+   ③ **判据**：`create_layer_stops_at_the_per_document_cap` —— 新建文档自带一层 ⇒
+   可建数 = 上限 − 初始数（**从状态读出，不写死** ✓）；建满后第 257 个被拒；
+   到顶时 `reuse` 仍成功；删掉一层（留墓碑）后可再建一个、再建又到顶。
+   ④ **变异（一条，退出码 101 ✓）**：`if false && alive_layers >= MAX_LAYERS_PER_DOC`
+   ⇒ 第 257 个被接受（`ok: true`）⇒ 判据红；已改回并重跑绿。
+   **未做**：上限按文档全局，不含图层组嵌套深度（另有一个父链成环判据在 Batch 2 已加）。

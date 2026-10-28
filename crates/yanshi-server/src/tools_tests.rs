@@ -2017,3 +2017,43 @@ fn revoke_token_is_owner_only_and_reports_unknown_tokens() {
     let err = write_revoke_token(&mut ctx, &json!({"token": "short"})).unwrap_err();
     assert_eq!(err.code, ErrorCode::InvalidArgument);
 }
+
+/// 审计 M-6：单文档存活图层数有上限；复用不占额度；墓碑不占额度（删了能再建）。
+#[test]
+fn create_layer_stops_at_the_per_document_cap() {
+    let mut workspace = Workspace::in_memory(crate::document::DocumentSettings::default());
+    workspace
+        .create_document(
+            crate::document::NewDocument::new("doc_cap", 16, 16),
+            "test:1",
+            "s",
+        )
+        .unwrap();
+    let mut ctx = ToolContext::new(&mut workspace, "doc_cap", "test:1", "s");
+    // **新建文档自带一个图层** ✓ ⇒ 可新建数 = 上限 − 已有数（不把「初始几层」写成判据输入 ✗）。
+    let initial = ctx
+        .workspace
+        .document("doc_cap")
+        .map(|document| document.state().alive_layers().len())
+        .unwrap();
+    assert!(initial >= 1, "新建文档应至少有一个初始图层，实测 {initial}");
+    // **上限是允许数，不是「少一个」** ✓：最后一层必须建得出来。
+    for index in 0..(MAX_LAYERS_PER_DOC - initial) {
+        write_create_layer(&mut ctx, &json!({ "layer_id": format!("L{index}") }))
+            .unwrap_or_else(|err| panic!("第 {index} 个图层应允许：{err}"));
+    }
+    // 到顶 ⇒ 明确拒绝（precondition_failed，错误里带上限与出路）。
+    let err = write_create_layer(&mut ctx, &json!({ "layer_id": "L_overflow" })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::PreconditionFailed);
+    assert!(format!("{err}").contains("上限"), "错误要说清上限：{err}");
+    // 复用已存活图层 ⇒ 不新建 ⇒ 到顶仍可用。
+    let reused =
+        write_create_layer(&mut ctx, &json!({ "layer_id": "L0", "if_exists": "reuse" })).unwrap();
+    assert_eq!(reused["reused"], true);
+    // 删掉一个（留墓碑）⇒ 存活数 −1 ⇒ 又能建一个；建回上限后再次到顶。
+    write_delete_layer(&mut ctx, &json!({ "layer_id": "L0" })).unwrap();
+    let replaced = write_create_layer(&mut ctx, &json!({ "layer_id": "L_replacement" })).unwrap();
+    assert_eq!(replaced["ok"], true);
+    let err = write_create_layer(&mut ctx, &json!({ "layer_id": "L_overflow_2" })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::PreconditionFailed);
+}
