@@ -3056,7 +3056,9 @@ async function withKernel(doc, fn) {
     }
 
     // **P2c-32 `import_asset` ✗**：**服务端把文件导进工作区资产缓存 ✓** ⇒ **∴ 本地对
-    //   `kind:"texture"` 从 `/textures/` 取同名文件存进本地 blob 库 ✗**（**`texture_background` 可直接用 ✓**）；
+    //   `kind:"texture"`**优先存 `data_base64` 上传的字节 ✓**（**与前端与服务端口径一致 ✗
+    //   `write_import_asset` 也存这同一份字节 ✓**）；**∴ 没给 `data_base64` 时**才退回按名字取随包纹理 ✓**
+    //   （**并如实标 `source:"bundled"`✗ 不再冒充用户的上传 ✓**）；
     //   **∴ `brush`／`palette` 等本地是随包静态资源 ✗** ⇒ **∴ 明确 501 ✓**。
     if (path === "/api/tools/import_asset") {
       const kind = body.kind;
@@ -3069,17 +3071,41 @@ async function withKernel(doc, fn) {
                               "目前仅支持 kind:texture（存进本地 blob 库）",
                       server: false }, 501);
       }
-      let bytes;
-      try {
-        const res = await fetch("/textures/" + encodeURIComponent(name), { cache: "no-store" });
-        if (!res.ok) {
-          return json({ ok: false, error: "asset_not_found", server: false,
-                        reason: name + " ⇒ HTTP " + res.status }, 404);
+      let bytes, source;
+      if (typeof body.data_base64 === "string" && body.data_base64.length) {
+        // **∴ 用户从本机选的字节 ✗**：**与前端 `importAssetFile` 与服务端 `write_import_asset` 同一口径 ✓**
+        //   （**此前本分支**无视 `data_base64`✗ 去随包取同名文件** ⇒ **用户上传被静默丢弃 ✓ 是缺陷 ✗**）
+        try {
+          if (typeof Buffer !== "undefined" && Buffer.from) {
+            bytes = new Uint8Array(Buffer.from(body.data_base64, "base64"));
+          } else {
+            const bin = atob(body.data_base64);
+            bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          }
+        } catch (err) {
+          return json({ ok: false, error: "invalid_base64", server: false,
+                        reason: "data_base64 无法解码 ⇒ " + String((err && err.message) || err) }, 400);
         }
-        bytes = new Uint8Array(await res.arrayBuffer());
-      } catch (err) {
-        return json({ ok: false, error: "asset_not_found", server: false,
-                      reason: name + " ⇒ " + String((err && err.message) || err) }, 404);
+        if (!bytes.length) {
+          return json({ ok: false, error: "empty_upload", server: false,
+                        reason: "data_base64 解出 0 字节" }, 400);
+        }
+        source = "upload";
+      } else {
+        // **∴ 没上传字节 ✗**：**才**按名字取随包纹理 ✓（**如实标 source ⇒ 不冒充用户的上传 ✓**）
+        try {
+          const res = await fetch("/textures/" + encodeURIComponent(name), { cache: "no-store" });
+          if (!res.ok) {
+            return json({ ok: false, error: "asset_not_found", server: false,
+                          reason: name + " ⇒ HTTP " + res.status + "（且未提供 data_base64）" }, 404);
+          }
+          bytes = new Uint8Array(await res.arrayBuffer());
+        } catch (err) {
+          return json({ ok: false, error: "asset_not_found", server: false,
+                        reason: name + " ⇒ " + String((err && err.message) || err) }, 404);
+        }
+        source = "bundled";
       }
       try {
         const { entry } = await p2cKernelFor();
@@ -3088,8 +3114,10 @@ async function withKernel(doc, fn) {
         try { const o = JSON.parse(raw); if (o && o.blob_hash) blobHash = String(o.blob_hash); } catch (e) {}
         const { putBlob } = await import("./store.js");
         await putBlob(handle, blobHash, Array.from(bytes));
-        return json({ ok: true, server: false, kind, name, blob_hash: blobHash, size: bytes.length,
-                      note: "纹理已存进本地 blob 库；texture_background 可直接用该 blob" });
+        return json({ ok: true, server: false, kind, name, source, blob_hash: blobHash, size: bytes.length,
+                      note: source === "upload"
+                        ? "已存进本地 blob 库的是你上传的字节（与前端与服务端口径一致）；texture_background 可直接用该 blob"
+                        : "未提供 data_base64 ⇒ 存的是随包同名纹理" });
       } catch (err) { return p2cKernel501(err); }
     }
     // **P2c-33 `new_document` ✗**：**照 `write_new_document` ✓** ⇒ **写 `create_document` 原子 ✓**。

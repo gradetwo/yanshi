@@ -313,6 +313,44 @@ check(strokeRes.status === 200 || String((strokeBody && strokeBody.reason) || ""
     JSON.stringify(strokeBody).slice(0, 120) + "）");
 console.log("  本地层 draw_stroke ⇒ " + strokeRes.status + "｜error=" + (strokeErr || "(无)"));
 
+// **★ ⑦b `import_asset{kind:texture}` 必须采纳**上传的字节 ✗ 而不是**去随包里找同名文件 ★**
+//   （**第 745 轮 ✓**；**前端 `viewer-app.js:importAssetFile` 永远发 `data_base64` ✓，
+//     服务端 `write_import_asset` 也存这份字节 ✓** ⇒ **∴ 本地层此前**无视 `data_base64`✗
+//     改从 `/textures/<name>` 取 ⇒ **用户上传被静默丢弃 ✓ 是缺陷 ✗**）**
+//   **∴ 为什么 node 判据**能区分新旧 ✗ 而**不需要 wasm 内核 ✓**：
+//     **∴ 新旧**唯一分岔**在**内核之前**✗（**旧代码**先 fetch 随包 ⇒ 名字不存在 ⇒ `asset_not_found`✗
+//       **新代码**先解码上传 ⇒ 走到内核 ⇒ `kernel_unavailable`✓）**
+//     ⇒ **∴ 所以**断言「**带 `data_base64` 的上传**绝不许**报 `asset_not_found`**」✓**
+//       （**∴ 名字**故意取一个**随包里不存在**的 ⇒ 旧代码必红 ✓ 新代码不受名字影响 ✓）**
+//   **∴ 变异（**已实测 ✓）**：**把 api-local 的分支退回旧的"只 fetch 随包"** ⇒ 本条红 ✓**
+//   **∴ 诚实 ✗**：**成功路径（`ok:true`＋`source:"upload"`＋`size`）要真 wasm 内核** ⇒ **归 browser 判据 ✓**
+//     ⇒ **本条**只守**"别再撒谎说没这个文件"** ✓**（**不冒充"完整验了上传"✓）** ✓✓
+const uploadB64 = (typeof Buffer !== "undefined")
+  ? Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]).toString("base64")
+  : "qgBOQQECA4"; // 一段合法 PNG 头的 base64
+const iaRes = await call("/api/tools/import_asset", {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ kind: "texture", name: "__no_such_texture_local__", data_base64: uploadB64 }),
+});
+const iaBody = await iaRes.json().catch(() => ({}));
+const iaErr = String((iaBody && iaBody.error) || "");
+check(iaErr !== "asset_not_found",
+  "import_asset{texture} 带着 data_base64 时不许报 asset_not_found ⇒ 那说明它忽略了上传字节、去随包里找同名文件（用户上传被丢弃；实测 " +
+  iaRes.status + "／" + JSON.stringify(iaBody).slice(0, 140) + "）");
+// **∴ 且**它**必须是被映射的端点**✓**（**不许** endpoint_not_local／not_implemented_locally 对 texture ✓）**
+check(iaErr !== "endpoint_not_local" && iaErr !== "not_implemented_locally",
+  "import_asset{texture} 必须在本地层有实现分支（实测 error=" + iaErr + "）");
+// **∴ 非 texture** 仍要**如实 501**✓**（**本地 brush/palette 是随包静态资源 ✓**）
+const iaBrush = await (await call("/api/tools/import_asset", {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ kind: "brush", name: "x.myb", data_base64: uploadB64 }),
+})).json();
+check(iaBrush.error === "not_implemented_locally",
+  "import_asset{brush} 必须如实 501（本地该类是随包静态资源；实测 " + JSON.stringify(iaBrush).slice(0, 120) + "）");
+console.log("  本地层 import_asset{texture,data_base64} ⇒ " + iaRes.status + "｜error=" + (iaErr || "(无)") +
+  "｜{brush} error=" + String(iaBrush.error || ""));
+
+
 // **★ ⑧ 评论的游标不能越过**没交付**的那几条 ✗ ★**（与服务端 `read_list_comments` 同形 ✓）
 //   **∴ 为什么 ✗**：本地层原来把 `next_since` 设成**匹配全集**的最大 seq，
 //     而交付的却是**最新一页** ✗ ⇒ 客户端照着游标轮询 ⇒
