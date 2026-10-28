@@ -33,7 +33,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（125 个）。
+    /// 核心层：默认注册（126 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -1997,6 +1997,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "scatter_strokes" => write_scatter_strokes(ctx, args),
         "import_project" => write_import_project(ctx, args),
         "delete_document" => write_delete_document(ctx, args),
+        "revoke_token" => write_revoke_token(ctx, args),
         "import_asset" => write_import_asset(ctx, args),
         "export_png" => write_export_png(ctx, args),
         "export_svg" => write_export_svg(ctx, args),
@@ -14529,6 +14530,45 @@ fn write_delete_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
     //     ＋ **∴ 而**两者的区别**已经写在参数描述里** ✓（**Agent 读 schema 就能看到 ✓）★
     let document_id = require_str(args, "document_id")?;
     ctx.workspace.delete_document(&document_id)
+}
+
+/// **`revoke_token`**（审计 H-2）：吊销本文档的一个 capability token ✓。
+///
+/// **只允许 owner** ✓：令牌是读写凭证 ⇒ editor 不该能吊销别人的（尤其是 owner 的）令牌 ✗。
+/// **内存与 `meta.json` 同步删** ✓：只删内存的话，进程重启会 `restore` 回来 ⇒ 泄露永久有效 ✗。
+/// **找不到就报错** ✓：静默成功会让调用方以为泄露的令牌已失效 ✗（审计的「静默降级」那一条）。
+fn write_revoke_token(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    if ctx.role != crate::token::Role::Owner {
+        return Err(YanshiError::new(
+            ErrorCode::PermissionDenied,
+            ErrorContext::detail(format!(
+                "吊销令牌只允许 owner；当前角色是 {}（editor/viewer 请让 owner 来吊销）",
+                ctx.role.as_str()
+            )),
+        ));
+    }
+    let raw = require_str(args, "token")?;
+    let token = crate::token::CapabilityToken::parse(&raw).map_err(|_| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("token 形态不对（应为 64 位小写十六进制）"),
+        )
+    })?;
+    let (removed, remaining) = ctx.workspace.revoke_token(&ctx.doc_id, &token)?;
+    if !removed {
+        return Err(YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!(
+                "文档 {} 下没有这个令牌（可能已吊销，或它属于别的文档）",
+                ctx.doc_id
+            )),
+        ));
+    }
+    Ok(ok_response(json!({
+        "revoked": true,
+        "doc_id": ctx.doc_id,
+        "remaining_tokens": remaining,
+    })))
 }
 
 /// **`gradient_blend`**（AI 画家需求 P0-1.2）：两点之间**位置与颜色同时插值**，逐笔交给

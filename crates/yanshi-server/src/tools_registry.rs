@@ -2069,6 +2069,18 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         )],
     },
     ToolSpec {
+        name: "revoke_token",
+        profile: Profile::Core,
+        summary: "吊销本文档的一个 capability token（仅 owner）：内存与 meta.json 同步删除 ⇒ 泄露的令牌立即失效、重启不复活",
+        mutating: true,
+        params: &[param!(
+            "token",
+            String,
+            true,
+            "要吊销的令牌（发放时返回的 64 位小写十六进制）"
+        )],
+    },
+    ToolSpec {
         name: "scatter_strokes",
         profile: Profile::Core,
         // **AI 画家需求 P0-1.3**：区域内随机撒笔触 —— 画头发、胡须、背景纹理、破碎色彩的核心工具。

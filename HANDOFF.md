@@ -792,3 +792,23 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    `-p yanshi-server --lib token`（10）、`file_source`（11）本机绿；`cargo fmt --check` 0；
    全量 clippy／test 交给 CI。**未做**（需更大设计）：H-2 令牌吊销/TTL、M-2 恒时比较、
    M-3 未认证文档列表、M-6 图层数上限、L-3 Host 反射、L-4 blob 作用域、L-6 CI 权限、L-8 SHA-1。
+
+76. **审计 H-2：令牌吊销（可跨重启）**（2026-10-28 ✓）：
+   ① **问题**：`TokenAuthority::revoke` 全仓无调用；`meta.json` 的 `tokens` 只增不减，
+   重开文档会把历史令牌全 `restore` ⇒ 一次泄露 = 永久有效（审计 H-2）。
+   ② **修法**：新增工具 `revoke_token`（**仅 owner**，`mutating: true`）：
+   `Workspace::revoke_token` **同时**删内存（`TokenAuthority::revoke`）与磁盘
+   （`FileStore::forget_token` ⇒ `meta.json.tokens` 过滤后回写）⇒ 重启不复活；
+   返回 `{revoked, doc_id, remaining_tokens}`；**找不到如实报 `reference_not_found`** ✗（不静默成功）；
+   重复吊销返回 `revoked=false` 语义由 `Workspace` 的 `(bool, usize)` 表达。
+   工具进 `Profile::Core` ⇒ `docs/tools.md` 计数改为 **126 core / 207 total**（`tool_inventory` 校验 ✓）。
+   ③ **判据**：`forget_token_removes_only_that_token_from_disk`（只删目标、重复删除报 false、
+   不存在文档不新建 meta）、`revoked_tokens_stop_authorizing_and_do_not_resurrect_after_restart`
+   （同进程立刻失效 ＋ 重启后 `authorize` 仍失败）、
+   `revoke_token_is_owner_only_and_reports_unknown_tokens`（editor ⇒ permission_denied、
+   owner ⇒ 成功、再次 ⇒ reference_not_found、形态不对 ⇒ invalid_argument）。
+   ④ **变异（五条，全部退出码 101 ✓）**：`forget_token` 的 `retain` 置空 ⇒ 判据红；
+   删 `persist.forget_token` ⇒ 重启判据红；删 owner 检查 ⇒ editor 判据红；
+   `!removed` 改 `false` ⇒ 重复吊销判据红；内存 `revoke` 改恒 `true` ⇒ 剩余数判据红。
+   **收尾**：变异全部改回；三条新判据与 `tool_inventory` 本机绿；`cargo fmt --check` 0。
+   **未做（需更大设计）**：令牌 TTL、`meta.json` 存哈希而非明文 —— 会在下一批单独评估。

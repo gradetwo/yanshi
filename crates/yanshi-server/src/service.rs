@@ -3786,6 +3786,22 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
         Ok(token)
     }
 
+    /// 吊销令牌（审计 H-2）：**内存与 `meta.json` 同步删除** ✓ ⇒ 重启后不会复活 ✓。
+    ///
+    /// 返回 `(是否真的删掉了, 剩余令牌数)`：前者让调用方区分「吊销成功」与「本来就没有」✗。
+    pub fn revoke_token(&mut self, doc_id: &str, token: &CapabilityToken) -> Result<(bool, usize)> {
+        let (removed, remaining) = {
+            let document = self.document_mut(doc_id)?;
+            let removed = document.authority_mut().revoke(token);
+            (removed, document.authority_mut().len())
+        };
+        // **无论内存里有没有都清盘** ✓：磁盘上残留的记录会在下次打开时 `restore` ⇒ 复活 ✗。
+        if let Some(persist) = &self.persist {
+            persist.forget_token(doc_id, token.as_str())?;
+        }
+        Ok((removed, remaining))
+    }
+
     /// 鉴权（决定提交时的 actor 与权限）。
     ///
     /// 文档若尚未打开但磁盘存在，会先按需加载（含 token 恢复，12.7）——
@@ -4383,6 +4399,42 @@ mod tests {
             .unwrap();
         assert_eq!(principal.actor, "human:2");
         assert!(principal.role.can_edit());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn revoked_tokens_stop_authorizing_and_do_not_resurrect_after_restart() {
+        let root = temp_root("revoke");
+        let settings = DocumentSettings::default();
+        let token;
+        {
+            let mut workspace = Workspace::with_file_store(&root, settings.clone()).unwrap();
+            workspace
+                .create_document(NewDocument::new("doc_r", 16, 16), "human:1", "s")
+                .unwrap();
+            token = workspace
+                .issue_token("doc_r", "human:2", Role::Editor)
+                .unwrap();
+            let (removed, remaining) = workspace.revoke_token("doc_r", &token).unwrap();
+            assert!(removed, "第一次吊销必须真的删掉");
+            assert_eq!(remaining, 0);
+            assert!(
+                workspace
+                    .authorize("doc_r", Some(&token), TransportKind::Http, "x")
+                    .is_err(),
+                "吊销后同一进程内必须立刻失效"
+            );
+            let (removed_again, _) = workspace.revoke_token("doc_r", &token).unwrap();
+            assert!(!removed_again, "重复吊销如实报 false，不假装成功");
+        }
+        // 重启：`meta.json` 里已无该令牌 ⇒ 不许复活。
+        let mut workspace = Workspace::with_file_store(&root, settings).unwrap();
+        assert!(
+            workspace
+                .authorize("doc_r", Some(&token), TransportKind::Http, "x")
+                .is_err(),
+            "吊销必须跨重启生效（否则泄露的令牌永久有效 ✗）"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

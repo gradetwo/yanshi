@@ -507,6 +507,23 @@ impl FileStore {
         self.save_meta(&meta)
     }
 
+    /// 删掉一个已持久化的令牌（审计 H-2：吊销必须能跨重启 ✓）。
+    ///
+    /// 返回 `meta.json` 里**是否真的删掉了一条** —— 调用方据此区分「吊销成功」与
+    /// 「本来就没有」✗（两者都返回 `Ok` 会让接口无法报「找不到」✓）。
+    pub fn forget_token(&self, doc_id: &str, token: &str) -> Result<bool> {
+        let Some(mut meta) = self.load_meta(doc_id)? else {
+            return Ok(false);
+        };
+        let before = meta.tokens.len();
+        meta.tokens.retain(|record| record.token != token);
+        if meta.tokens.len() == before {
+            return Ok(false);
+        }
+        self.save_meta(&meta)?;
+        Ok(true)
+    }
+
     /// 保存渲染缓存（`render.png` + `render.seq`）。
     pub fn save_render(&self, doc_id: &str, seq: Seq, png: &[u8]) -> Result<PathBuf> {
         self.save_image_cache(doc_id, "render", seq, png)
@@ -741,6 +758,31 @@ mod tests {
             "meta 缺失时不许写 0×0（那会让 list_documents 永久报 0×0 ✗）"
         );
         let _ = fs::remove_dir_all(&root_missing);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn forget_token_removes_only_that_token_from_disk() {
+        // 变异：把 `retain` 删掉 ⇒ 第一次断言红（false）；把 `save_meta` 删掉 ⇒ 重读仍有 2 条。
+        let root = temp_root("forget-token");
+        let store = FileStore::open(&root).unwrap();
+        let kept = CapabilityToken::generate();
+        let revoked = CapabilityToken::generate();
+        store
+            .record_token("doc_1", 8, 8, &kept, "human:1", Role::Owner)
+            .unwrap();
+        store
+            .record_token("doc_1", 8, 8, &revoked, "human:2", Role::Viewer)
+            .unwrap();
+        assert!(store.forget_token("doc_1", revoked.as_str()).unwrap());
+        let meta = store.load_meta("doc_1").unwrap().unwrap();
+        assert_eq!(meta.tokens.len(), 1, "只该删掉被吊销的那一条");
+        assert_eq!(meta.tokens[0].token, kept.as_str());
+        // 再删一次 ⇒ 如实报 false ✓（不假装成功）。
+        assert!(!store.forget_token("doc_1", revoked.as_str()).unwrap());
+        // 不存在的文档 ⇒ false（不新建 meta ✗）。
+        assert!(!store.forget_token("doc_missing", revoked.as_str()).unwrap());
+        assert!(store.load_meta("doc_missing").unwrap().is_none());
         let _ = fs::remove_dir_all(&root);
     }
 

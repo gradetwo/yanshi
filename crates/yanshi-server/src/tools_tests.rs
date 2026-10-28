@@ -1984,3 +1984,36 @@ fn attempt_cleanup_removes_only_directories_older_than_the_retention() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// 审计 H-2：吊销只许 owner；找不到如实报错；吊销后立刻失效。
+#[test]
+fn revoke_token_is_owner_only_and_reports_unknown_tokens() {
+    let mut workspace = Workspace::in_memory(crate::document::DocumentSettings::default());
+    workspace
+        .create_document(
+            crate::document::NewDocument::new("doc_revoke", 16, 16),
+            "test:1",
+            "s",
+        )
+        .unwrap();
+    let token = workspace
+        .issue_token("doc_revoke", "test:2", crate::token::Role::Viewer)
+        .unwrap();
+    let mut ctx = ToolContext::new(&mut workspace, "doc_revoke", "test:1", "s");
+    // editor ⇒ permission_denied（handler 自己守 owner，不依赖路由）。
+    ctx.role = crate::token::Role::Editor;
+    let err = write_revoke_token(&mut ctx, &json!({"token": token.as_str()})).unwrap_err();
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+    // owner ⇒ 真吊销，并报告剩余数。
+    ctx.role = crate::token::Role::Owner;
+    let value = write_revoke_token(&mut ctx, &json!({"token": token.as_str()})).unwrap();
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["revoked"], true);
+    assert_eq!(value["remaining_tokens"], 0);
+    // 再吊销同一串 ⇒ reference_not_found（不静默成功）。
+    let err = write_revoke_token(&mut ctx, &json!({"token": token.as_str()})).unwrap_err();
+    assert_eq!(err.code, ErrorCode::ReferenceNotFound);
+    // 形态不对 ⇒ invalid_argument。
+    let err = write_revoke_token(&mut ctx, &json!({"token": "short"})).unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidArgument);
+}

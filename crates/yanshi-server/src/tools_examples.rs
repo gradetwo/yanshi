@@ -389,6 +389,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ),
     ("commit_batch", r#"{"attempt_ids":["a1","a2"]}"#),
     ("discard_stroke", r#"{"attempt_id":"abc123"}"#),
+    (
+        "revoke_token",
+        r#"{"token":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#,
+    ),
     ("list_attempts", r#"{"limit":10,"status":"pending"}"#),
     ("commit_stroke", r#"{"attempt_id":"abc123"}"#),
     ("list_atoms", r#"{"limit":10,"label":"nose"}"#),
