@@ -332,8 +332,8 @@ const I18N_EN_TEXT = {
   //   **∴ 记录一笔 ✗**：我加这一节时**只加了中文** ✓ ⇒ CI 的 shard 1 **当场红** ✓
   //   （判据没漏 ✓，是**我改界面文案却没跑 i18n 判据** ✓）⇒ 现在补齐 ✓。
   "作品展示": "Gallery",
-  "另一个 AI 用本应用的 MCP 工具画的德加习作（只参照风格，未导入原作位图）":
-    "Degas studies painted by another AI with this app's MCP tools (style reference only; no source bitmap imported)",
+  "德加习作 · 由另一 AI 用本应用工具所画":
+    "Degas studies · painted by another AI with this app's tools",
   "排练室的晨光 · 干性粉彩 · 3072×3840": "Morning rehearsal · dry pastel · 3072×3840",
   "幕边的蓝色舞者 · 干性粉彩 · 3840×3072": "Blue dancers at the wings · dry pastel · 3840×3072",
   "后台舞者 · 油画介质 · 3114×4096": "Dancers backstage · oil medium · 3114×4096",
@@ -808,7 +808,7 @@ const I18N_EN_ATTR = {
   "删除图层（可撤销）": "Delete layer (undoable)",
   "勾上：取完色就把浮层收起（想连续试色就取消勾选）": "Checked: the dock closes after every pick; uncheck to try several colours in a row",
   "勾选对象后可「实例化」「编组」「变换」（实例与 master 联动，设计 9.1）。「重采样」只作用于光栅对象（导入的图片、PSD 合成图）——手画的笔迹是 stroke，服务端会明确拒绝并告知类型（先用「转为形状」或改为导入图片）。": "Select objects to instance, group or transform them (instances follow their master, design 9.1). Resample only applies to raster objects (imported pictures, PSD composites): a hand-drawn stroke is not raster, and the server refuses it and says why (convert it to a shape first, or import a picture instead).",
-  "参照 Met／NGA 的公有领域德加原作，只用来看风格：没有导入任何原作位图，每个像素都是笔刷/介质笔触。": "Modelled on public-domain Degas studies at the Met and the NGA, as a style reference only: no source bitmap is imported, every pixel comes from brush or medium strokes.",
+  "另一个 AI 用本应用的 MCP 工具所画；参照 Met／NGA 的公有领域德加原作，只用来看风格：没有导入任何原作位图，每个像素都是笔刷/介质笔触。": "Painted by another AI with this app's MCP tools; modelled on public-domain Degas studies at the Met and the NGA, as a style reference only: no source bitmap is imported, every pixel comes from brush or medium strokes.",
   "图层列表": "Layer list",
   "复制图层（含对象）": "Duplicate the layer with its objects",
   "孤儿是「上传过、但没有任何原子引用」的数据（设计 §6.3）；回收按 TTL 走。": "Orphans are blobs that were uploaded but no atom references (design 6.3); reclaiming follows the TTL.",

@@ -206,8 +206,8 @@
        **∴ 图在 `web/showcase/` ✓**（**三处引用同一个相对路径** ⇒ 判据 `tool-showcase-assets.mjs` 守着 ✓）。 -->
   <h3 style="margin:16px 0 4px">作品展示</h3>
   <p style="opacity:.75;font-size:12px;margin:0 0 8px"
-     title="参照 Met／NGA 的公有领域德加原作，只用来看风格：没有导入任何原作位图，每个像素都是笔刷/介质笔触。">
-    另一个 AI 用本应用的 MCP 工具画的德加习作（只参照风格，未导入原作位图）
+     title="另一个 AI 用本应用的 MCP 工具所画；参照 Met／NGA 的公有领域德加原作，只用来看风格：没有导入任何原作位图，每个像素都是笔刷/介质笔触。">
+    德加习作 · 由另一 AI 用本应用工具所画
   </p>
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">
     <figure style="margin:0">
@@ -12489,7 +12489,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-7939460678528")
+      caches.open("yanshi-shell-3901261203127")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));

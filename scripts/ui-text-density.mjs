@@ -6,7 +6,15 @@
 // 为什么这样定：人类界面靠**约定俗成的图标与短标签** ✓（专业软件都如此 ✓）；
 // 长解释属于**工具描述 / tooltip**（agent 读得到 ✓，人不被干扰 ✓）。
 import { readFileSync } from "node:fs";
-const source = readFileSync("crates/yanshi-http/src/viewer.rs", "utf8");
+// **先剥掉 Rust 注释行**（run 40738727550 的假红归因，与第 916 轮同型：先怀疑我的测量）：
+// `///` 文档注释里带反引号的 `` `<!DOCTYPE html>` ``／`` `<link>` `` 会和下一行的 `<` 跨行
+// 拼成一个**伪文本节点**（NEW-H1 第二步的样式表注释就是这么被点名的 ✗）。
+// 注释不进二进制 ⇒ 不是「人类界面可见文本」⇒ 剥掉**不削弱**本判据口径；
+// **变异**：往 r##"…"## 里的真实页面文案塞 ≥24 汉字带（；的长句 ⇒ 照样红 ✓。
+const source = readFileSync("crates/yanshi-http/src/viewer.rs", "utf8")
+  .split("\n")
+  .map((line) => (/^\s*\/\//.test(line) ? "" : line))
+  .join("\n");
 // **带行号** ✗：原来只打文本 ⇒ 还得自己回去找位置 ✓；现在直接给"第几行" ✓，剩下就是机械活 ✓。
 // **先排除 `<script>` 块** ✗：本文件是 HTML+CSS+JS 三合一 ✓，不排除就会把 JS 运算符当成文本节点
 //（实测误报：`path + (path.includes("?") ? "&" : "?")` ✓、模板字符串 ✓）⇒ 名单不可信 ✓。
