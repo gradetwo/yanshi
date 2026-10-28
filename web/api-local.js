@@ -373,6 +373,11 @@ async function withKernel(doc, fn) {
   //     `id` 唯一 ＋ `schema_version:1` ＋ `seq` 由 `putAtom` 自增覆盖 ＋ `session:"session:web"` ✓）；
   //   **∴ 读操作**从 IndexedDB 原子日志**推导** ✗**（**∴ 不另存一份状态表 ✗ ⇒ **∴ 与 `list_layers` 同一纪律 ✓**）。
   let __p2ctr = 0;
+  // **★ `p2cNewObjectId` 的计数器必须放在 `makeLocalApi` 层 ✗ ★**（**2026-10-28 实测**：
+  //   原来放在请求处理闭包里 ⇒ **每个请求都从 0 重新计数** ⇒ 同毫秒两笔生成**同一个 id**
+  //   （实测 `obj_mvrx8335_1` ×2）⇒ 原子日志互相覆盖 ⇒ `tool-pwa-api-behaviour` ⑦l/⑧ 抖动红 ✓。
+  //   **∴ 与 `__p2ctr` 同一纪律：跨请求存活 ✓**）
+  let __p2cCtr = 0;
   function p2AtomId() {
     __p2ctr += 1;
     return "01P2" + String(Date.now()).padStart(13, "0") + String(__p2ctr).padStart(4, "0");
@@ -2201,10 +2206,13 @@ async function withKernel(doc, fn) {
       "draw_shape","draw_text","erase","retouch","liquify","supersede","move","transform",
       "set_property","reorder_layers","tombstone","revert","reapply","checkpoint","tag",
       "declare_head","comment","suggest","accept_suggestion","reject_suggestion"];
-    let __p2cCtr = 0;
+    // （**`__p2cCtr` 已提升到 `makeLocalApi` 层 ✗ ⇒ **这里**不再**每请求重新声明 ✓**）
     function p2cNewObjectId() {
       __p2cCtr += 1;
-      return "obj_" + Date.now().toString(36) + __p2cCtr.toString(36);
+      // **∴ 分隔符必须有 ✗**（**2026-10-28 实测：无分隔时**时间戳尾字符**可以**等于计数器字符**
+      //   ⇒ 同毫秒两笔生成**同一个 id**（`obj_mvrx4vjm1` ×2）⇒ 原子日志**互相覆盖** ✗
+      //   ⇒ `tool-pwa-api-behaviour` ⑦l 抖动红 ✓。服务端用 ULID ⇒ **天然无此歧义 ✓**）
+      return "obj_" + Date.now().toString(36) + "_" + __p2cCtr.toString(36);
     }
     /** **从原子日志取文档尺寸 ✗**（**`create_document` 的 `payload` ✓**）。 */
     function p2cDocSize(rows) {
