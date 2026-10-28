@@ -1074,6 +1074,16 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    文档侧四个守卫（adjustment-count／agents-selfcheck／ledger-numbering／perf-doc-pointers）**全绿** ✓。
    （`5fc2a5bb` 的提交信息说「§89⑦ 落账」时**还没落**——那次 python 的锚点 assert 挡下了未就绪的追加 ✓，
    补账在下一个提交里 ⇒ 这正是「assert 只证明改了、不证明改对了」的反面用例 ✓。）
+   ⑧ **M-1（05 复审：六个资源目录没有缓存规则）**：`web/_headers` 原来只给 5 个内容寻址目录
+   （wasm/brushes/mediums/brand/icons ✓）配了 immutable ⇒ textures/samples/fonts/brush-previews/
+   showcase/palettes（约 28 MB ✓）全落在 `/*` 的 no-cache 下**每次回源校验** ✗。修法**不是一律 immutable** ✗：
+   这些目录**文件名按资源名、不按内容哈希** ✓（`ls web/brush-previews` ⇒ `100__Opaque.myb.png` ✓），
+   而原地重写是常态（**c5abb674 一次重写全部 brush-previews 同名文件 ✓**；近 90 天提交数实测
+   showcase 5／textures 3／其余各 1 ⇒ 数字随台账更新，命令在 `_headers` 注释里 ✓）⇒
+   immutable 会把第 832 轮用户报的「改了没生效」放大成**最长一年看不到** ✗ ⇒ 折中 `max-age=3600` ✓
+   （最坏一小时旧资源，代价是每小时一次重复下载）。守卫 `check-cache-headers.mjs` 是**开放集** ✓：
+   ① web/ 每个子目录都必须有 `/X/*` 规则（新目录忘配 ⇒ 红 ✓）② 原地重写名单上有 max-age 且**不含** immutable
+   ③ 其余目录都有 Cache-Control ⇒ 变异三条全实测红过（删规则／改 immutable／mkdir 新目录 ✓）再回绿 ✓。
    ⑤ **CI 复盘（run `40640839341`，`8816b1fc`，failure）**：
    · `browser-brush-preview` **定性为环境抖动** ✓ —— 上一跑（`522ffcd`）红的那条这一跑**没有复现** ✓
      （同跑 `browser-asset-dock` 当时是 `exit 3` 判据自身求值失败 ✓，不是产品失败 ✓）；

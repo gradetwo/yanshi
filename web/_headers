@@ -60,3 +60,30 @@
 
 /icons/*
   Cache-Control: public, max-age=31536000, immutable
+
+# ★ 六个「稳定文件名、原地重写」的资源目录 ⇒ 小时级 TTL，**不给 immutable** ★（05 复审 M-1）
+#   ∴ 为什么不 no-cache：合计约 28 MB（du -sb 实测 textures 12.7M／showcase 6.8M／
+#     samples 5.1M／brush-previews 1.9M／fonts 1.1M／palettes 0.1M），每次回源校验太贵 ✗
+#   ∴ 为什么不能 immutable：**文件名按资源名寻址、不按内容哈希** ✗ ⇒
+#     原地重写同名文件是常态（c5abb674 一次重写全部 brush-previews 预览 ⇒ 同名换内容 ✓；
+#     近 90 天提交数：showcase 5／textures 3／samples 1／fonts 1／brush-previews 1／palettes 1）
+#     ⇒ 一年 immutable ＝ 改版后**最长一年看不到** ✗（正是第 832 轮用户报的「改了没生效」）
+#   ∴ 折中：max-age=3600 ⇒ 最坏一小时看到旧资源，代价是每小时一次重复下载（同内容可接受）✓
+#   ∴ 自检：scripts/check-cache-headers.mjs（断这六条规则存在、且**不带** immutable ⇒ 变异能红）
+/textures/*
+  Cache-Control: public, max-age=3600
+
+/samples/*
+  Cache-Control: public, max-age=3600
+
+/fonts/*
+  Cache-Control: public, max-age=3600
+
+/brush-previews/*
+  Cache-Control: public, max-age=3600
+
+/showcase/*
+  Cache-Control: public, max-age=3600
+
+/palettes/*
+  Cache-Control: public, max-age=3600
