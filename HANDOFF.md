@@ -1192,3 +1192,29 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
 ⑤ **后效（run 40667407047＝`5d6bbbfa`，completed/success）**：shard 5/6
    `tool-pwa-api-behaviour` ✓（通过 65｜**意外失败 0**｜已知红 2）；shard 3/6 ✓——
    上一 run 超时的 `tool-pwa-live-smoke` 本片自然转过 ✓（外部瞬时成立）。
+
+## §94 paint-fix 期 3（批处理与会话）合并留痕（2026-10-28，`1f66374f`）
+
+① **基线与接缝**：包基线 `aeca3e4c`＝期 2 合入后的尖端；`aeca3e4c..HEAD` 只动了
+   `HANDOFF.md`＋两份 `api-local.js`（§93 撞 id 修复）⇒ **与本期 4 个文件零重叠** ✓
+   （包说明自己预告了这一点，核对属实）；`git apply --check --3way` 干净 ⇒ `git am --3way`
+   直落 `1f66374f`，无需手工并缝。
+② **内容审阅**（三件都有分诊根因，不是症状 patch）：P-1＝`serve` 超限行改「排空＋JSON-RPC
+   错误回执（-32600／id null／点名 65536 与拆批）」，另设 `MAX_DISCARD=1 MiB`：**行尾永不来**
+   的病态输入仍 `return Err` ⇒ 内存闸门没有被放松，只是不再让一条超长行杀全进程 ✓；
+   P-10＝`write_batch` 落笔前校验子调用 `arguments`/`args` 的 `doc_id` 与 `ctx.doc_id` 一致，
+   不一致**整批拒绝、0 原子落下**（键口径 `arguments||args` 与执行循环 `tools.rs:20805` 逐字
+   一致 ✓；放在 `silent`/变更集之前，无副作用 ✓；**落工具层 ⇒ HTTP 与 MCP 同得** ✓）；
+   P-11＝重复 initialize 只在回执加 note、不改行为（不报错的理由成立：MCP 规范允许重连后
+   重发 initialize）✓。**未修清单**照单收下：按子调用 doc_id 落笔（跨文档拆变更集，另立项）、
+   驱动侧 unknown 文案（须等探针驱动源码）、HTTP 面 `read_line_bounded`（不同构，本来就按连接拒）。
+③ **本机复验**（合并例外）：定向测试全过——`line_cap` 4／`stdio` 4／P-11 单测 1／
+   `batch_doc_id` 5／邻近 `batch_limits` 3／`batch_message` 1／`batch_stroke_evidence` 4／
+   `silent_batch` 2；`cargo clippy --workspace --all-targets -D warnings` ✓；
+   **本树复现三条变异**（不空信包侧）：M1 改回 `return Err` ⇒ `line_cap` 2 红 ✓；
+   M2 校验永不触发（`&& false`）⇒ `batch_doc_id` 3 红（两条放行用例仍绿，与包证据逐条同形）✓；
+   M3 note 永不加 ⇒ P-11 单测红 ✓；还原后 `batch_doc_id` 5/5 复绿、`git status` 干净 ✓。
+   `cargo test --workspace` 按内存规则**交 CI**。
+④ **回归普查**：`scripts/` 无判据以 `calls` 组批、更无「一批混多 doc_id」的用法 ⇒ P-10 的
+   整批拒绝不会打红既有判据 ✓；无 JS 判据依赖「超限行杀进程」旧行为 ✓。
+⑤ `git am` 不过 pre-commit 钩子 ⇒ 提交前**另行复跑** fmt/clippy/守卫 ✓（§90⑤ 同规）。
