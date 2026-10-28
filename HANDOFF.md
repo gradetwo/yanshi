@@ -1308,6 +1308,13 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    `tool-archive-bloat`／`tool-cold-open-budget`／`tool-export-idempotent` 断的是**相对量与恒等式**
    （`blobsB ≤ blobsA×1.5`、原因之和==`kept_no_recipe`），P2 不改变 blob 计数口径 ✓。
 ⑤ `git am` 不过 pre-commit 钩子 ⇒ 本留痕提交**另行复跑** fmt/clippy/台账编号/守卫 ✓（§90⑤ 同规）。
+⑥ **后效（run 40685192585＝`74501886`，completed/success）**：`test (stable)/(beta)`、clippy、
+   rustfmt、判据六片全绿。并取 job 日志**实证了③交 CI 那一条的落地**：
+   `export_brush_proof` **5/5 ok**（`stroke_with_brush_params_exports_as_omitted`／
+   `stroke_with_point_times_exports_as_omitted`／`stroke_with_brush_params_and_times_exports_as_omitted`／
+   `legacy_stroke_without_new_fields_still_exports`／`update_stroke_keeps_the_proof`），
+   整个 test (stable) 作业 **324 个 `test result: ok`、0 FAILED** ⇒ 配方记全⇒导出 `omitted`
+   的机制**在 CI 上成立** ✓。
 
 ## §97 paint-fix 期 4 后续包（brushes）合并留痕（2026-10-28，`e721e7de`）
 
@@ -1356,10 +1363,20 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    判据里最大几何是 `tool-smudge-drags-color`（size≈H/8、路径数百 px ⇒ 预测 ~1 s ≪ 30 s）✓；
    CI 在测试与判据前**重建介质 wasm 并 `mediums-sync`** ⇒ 仓库内旧产物的陈旧问题不进 CI ✓。
 ⑤ `git am` 不过 pre-commit 钩子 ⇒ 本留痕提交**另行复跑** fmt/clippy/台账编号/守卫 ✓（§90⑤ 同规）。
-⑥ **后效（run 40685192585＝`74501886`，completed/success）**：`test (stable)/(beta)`、clippy、
-   rustfmt、判据六片全绿。并取 job 日志**实证了③交 CI 那一条的落地**：
-   `export_brush_proof` **5/5 ok**（`stroke_with_brush_params_exports_as_omitted`／
-   `stroke_with_point_times_exports_as_omitted`／`stroke_with_brush_params_and_times_exports_as_omitted`／
-   `legacy_stroke_without_new_fields_still_exports`／`update_stroke_keeps_the_proof`），
-   整个 test (stable) 作业 **324 个 `test result: ok`、0 FAILED** ⇒ 配方记全⇒导出 `omitted`
-   的机制**在 CI 上成立** ✓。
+⑥ **后效（两条 run，红→修→绿）**：
+   · **run 40688036338**（`98ecde5e`）：除 criteria shard 1/6 外全绿；该片 2 条意外红。
+     **①`check-smudge-mix-uses-linear` ⑤ 定性为判据侧假红**——它用文本模式 `/srgb_to_linear\s*\(/`
+     钉「涂抹走 sRGB 解码」，而 P-4 把逐位等价的 LUT 查表（`decode_fix15_with_table`）接进
+     `smudge_dab`，语义在、字面没了 ⇒ **接线判据的文本模式必须跟上被接线的那次重构**（内核①：
+     「看起来对」的文本断言不是证据）。判据改为认三种等价形态（`srgb_to_linear(`／
+     `decode_fix15_with_table(`／`srgb_decode_fix15_table(`），**变异实证**：把查表调用改坏成
+     常量 ⇒ ⑤ 红、EXIT=1；`git checkout --` 还原 ⇒ EXIT=0 ✓（提交 `47706592`）。
+     **②`browser-brush-preview`（2B_pencil）定性为外部瞬时**——三条证据：新 release 二进制
+     curl 该笔预览 **ok=true、PNG 8449 B、http=200** ✓；本机按 CI 同等编排
+     （`run-criteria.sh`＋fresh debug 二进制＋真 headless chromium，SHARD 技巧单跑）**通过** ✓；
+     HANDOFF 第 1103 轮有同判据「环境抖动」先例（第 10 轮修过 `__deflate` 死锁后它本就在抖动名单附近）。
+     不当产品问题登记，靠复测定性。
+   · **run 40692645078**（`47706592`）：**completed/success**，判据六片全绿 ⇒ ① 的修复在 CI 上
+     成立、② 复测通过（未复现）⇒ 外部瞬时定性成立 ✓。P4 收账完毕。
+   · 留痕时订正一处插入错误：§96⑥（P2 后效）曾被追加到文件尾＝§97 之后（第 254 轮「插入位置」
+     坑的文档版）⇒ 本次搬回 §96 末尾，§97⑥ 重写为本段 ✓。
