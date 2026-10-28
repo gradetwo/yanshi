@@ -1547,3 +1547,42 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
 ⑤ **落账与接缝预告**：本包是 `web_patch` 链的前四片；**batch7（`a1ff6891→dc4898c5`）已在
    `~/patch` 排队（任务 #47）⇒ 其基线正是本包的终点 ✓**。`git apply` 不过 pre-commit ⇒ 留痕另行
    复跑 fmt／台账编号／守卫 ✓（§90⑤ 同规）；push 等 run 40704687440 收敛（§98③ 同规）。
+
+## §100 paint-fix 期 5 后续包（P-8 smart_select：错标＋链式生长）合并留痕（2026-10-29）
+
+① **基线与接缝**：包基线 `25e91bcc`（**实测为本仓 HEAD 祖先 ✓**；上游声明的 tip `dd2642d1` 与
+   重放 tip `710d2e12` 不在本仓 ✗ ⇒ 同 §99①：**包侧树等式只能信其自述，我侧以「apply 干净落地」代 ✓**）。
+   基线序核对：`25e91bcc` 是 P6 基线 `c6b19269` 的**祖先** ✓（相隔 12 笔）⇒ **合并顺序 P5→P6** ✓
+   （任务队列 #45→#46 恰与其一致）。`git am --3way` 于 main＝`282b0cfe`（§99 批 3–6 已入）一笔落地
+   （`301123df`，3 文件 +424/−10 ＝ **与包自述逐字相同 ✓**）；补丁 sha256
+   `c2fc68bb…548105` **与说明书逐字对上 ✓**。漂移面交集只有 `tools_registry.rs` ⇒ 审读见 ②。
+② **内容审读**（四层齐口径逐项 ✓）：
+   · **P-8 错标修**：`write_smart_select` 的 `(_, de_max, …)` 实取 de_in ⇒ 改回第一位 ✓
+     （**回执 `effective_delta_e` 从 0.1165→真值 0.1456@t=0.25** ⇒ **语义反转** ⇒ 按 §98⑥ 教训
+     枚举旧语义全部断言面：**全库 grep `effective_delta_e` 判据 0 处** ✓、新增 `chain_step_delta_e`
+     无既有引用面 ✓、注册表摘要 1 行与批 3–6 的 smart 摘要行相隔 ~486 行 ✓ 无撞车）。
+   · **P-8 断崖修（链式生长）**：核像素**双条件**（距种子 ≤ΔE_max ＋ 距生长父 ≤ΔE_step＝0.5×ΔE_max，
+     常量 `WAND_CHAIN_STEP_RATIO` 一处定义 ✓）；覆盖率环仍纯球 ✓；**非连通（contiguous=false）
+     无父像素 ⇒ 行为不变 ✓**（有专测 `noncontiguous_ignores_chain` ✓）；**游程首像素父色取
+     `lab_at(x.clamp(xl,xr), y)` 对角核像素** ✓——包自述第一版在此漏沿边环列洪水（与旧二进制逐位相同
+     ⇒ 等于没修），**这是包侧自己发现并补的 ✓**。回执新增 `chain_step_delta_e` ✓（信号可见，
+     不静默 ✓）；**不加**「阈值球覆盖色域比例」的理由成立 ✓（链式后球不是漫溢机制，报它会误导）。
+   · **诚实面核对**：「兔图断崖修不掉＝图像性质」的论证带三组实测距离分布 ✓；**渲染漂移 253 vs
+     8,915,103（15–24 连选之间）** 是新发现的**未归因缺陷** ✗——包只绕开（每种子新进程）没有修 ⇒
+     **我侧记为待分诊项**（与 §99 known-gap 同列，交 05 报告下一轮核对）。
+   · **判据侧**：包不自带 `scripts/*.mjs` ⇒ 无判据改动面 ✓；`reverted` 类写死数字问题不存在。
+③ **本机复验**（合并例外 ✓）：`smart_select_p8` 集成 **2/2 ✓**；`--lib smart` **23/23 ✓**（含包自述
+   六条新单测的全部链式面：`chain_stops_at_step_edge`／`chain_fills_smooth_gradient`／
+   `chain_run_start_parent_must_be_core`／`noncontiguous_ignores_chain`，`wand_thresholds` 标定条
+   在 smart 过滤器内 ✓）；回归 `smart_layer_prefail` **10/10 ✓**；`cargo clippy -p yanshi-server
+   --all-targets -D warnings` **exit 0 ✓**。**定向 `--workspace` 全量 test 交 CI**（可用内存 2.1 Gi
+   < 3 Gi ⇒ §95③ 同措辞，不自称本机绿 ✗）。**变异两面（本机、断言粒度 ✓）**：
+   M1 错标改回 de_in ⇒ 集成 2 条全红 ✓；M6 对角父 clamp 改回本行同列 ⇒ **只有
+   `chain_run_start_parent_must_be_core` 红**（其余 3 条绿 ⇒ 变异打在该断言自己的路径上 ✓）；
+   恢复后 `git diff` 干净 ✓、判据面重跑绿 ✓。
+④ **回归普查**：`tool-smart-select-block` ✓／`tool-smart-select-add-merges` ✓（纯色块与 add 两路
+   在链式下不变——**纯色相邻步 ΔE＝0 ⇒ 链式恒真，判据输入造不出分裂 ✓**）；
+   `magic_wand_scanline` 全部 Rust 调用点在 `tools_smart` 测试内 ✓（5416 是唯一生产调用 ⇒ 面即 smart_select ✓）；
+   wasm／HTTP 无该函数副本 ✓（本地内核 `api-local` 不实现 smart_select ⇒ 无双侧口径面 ✓）。
+⑤ `git am` 不过 pre-commit ⇒ fmt／clippy／台账守卫另行复跑 ✓（§90⑤ 同规）；push 等 §99 那轮
+   run 收敛（同组不双派 ✓）。
