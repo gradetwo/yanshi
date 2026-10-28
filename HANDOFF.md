@@ -1005,3 +1005,24 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    （与本条无关，是重连语义的旧缺口 ✓；要补需让重连后拉一次完整文档 ✓）。
    本机：`yanshi-server --lib` 252/252 ✓、`service_flow` 31/31 ✓、
    `yanshi-http --lib` 60/60 ✓、`transport` 26/26 ✓；CI 由下一次 run 确认 ✓。
+88. **两族外部补丁的合并取舍（2026-10-28，`~/patch/zaipatch.zip` ＋ `~/patch/yanshi-patches-76154e19_to_c605ea6f.tar.gz`）**：
+   ① **族一（zaipatch，14 笔）—— 逐笔 `git apply --check` ＋ 读正文后**：
+   **落地 8 笔**（写超时 P1-N1、工具层越界闸 P2-N1、CL/TE 走私 P2-N2、`head_seq` 截断对账 P2-N3、
+   P3 组、blob 每文档作用域 P1-5.5、GPU `map_async` 降级 K-P1-3、token 改 `getrandom`）。
+   **跳过 5 笔**（**主干已有等价或更强的实现 ⇒ 不重贴 ✗**）：
+   · `0005` zlib 输出帽 ⇒ 主干是 `zlib_decompress_capped`＋`MAX_INFLATE_BYTES`（编译期 assert 钉住与像素上限的关系 ✓）；
+   · `0006` 令牌熵的**主体** ⇒ 主干已读 OS 熵，本笔只取其**增量**（`getrandom` 取代 `/dev/urandom`、
+     熵源不可用**改 panic** ✗→✓ —— 原实现是留痕后退回 `RandomState` ✓，那仍是可预测面 ✗）；
+   · `0008` WS 队列帽 ⇒ **第 87 条**的策略更强（数据流先丢、控制流挤旧、全控才断开 ✓）；
+   · `0011` SSRF 主体＋安全头 ⇒ 主干默认**拒**私网（该笔缺省**放行** ⇒ 更弱 ✗）、`nosniff`/`Referrer-Policy` 已在 ✓；
+   · `0014` 只改 `0008` 那条测试 ⇒ 随之跳过。
+   ② **族二（yanshi-patches，14 笔）—— 13 笔台账文档全部照合，1 笔代码**：
+   `0006` 把 `fetch_ip_is_forbidden` 的 `is_unspecified()`（只挡 `0.0.0.0` **一个点** ✗）
+   换成 `octets[0] == 0`（**0/8 整块** ✓）＋ 判据补 `0.1.2.3`／`0.255.255.255`。
+   **修复本体记在提交信息**（台账 §645 只给指针 ⇒ 同一事实只写一处 ✓）。
+   ③ **合并外部补丁的门**：本机 `cargo clippy --workspace --all-targets -- -D warnings` ✓（pre-commit 拦到一次真实缺口 ⇒
+   测试夹具 `ServerState` 少初始化两个新字段 ⇒ 补齐后绿 ✓）；
+   **`cargo test --workspace` 交 CI**（内存规则：可用 2.4 Gi < 3 Gi ⇒ 不在本机跑整 workspace ✓）。
+   ④ **已知残余（族二自己登记的，未修 ✓）**：SSRF 检查与 ureq 建连之间**解析两次**
+   ⇒ DNS rebinding（TOCTOU）✗；修法要 connect-by-IP＋Host/SNI 改写，ureq 无钩子 ⇒ **无判据不动手** ✓
+   （核对命令：`grep -c 'to_socket_addrs' crates/yanshi-server/src/file_source.rs` ⇒ 修好后应为 1 ✓）。
