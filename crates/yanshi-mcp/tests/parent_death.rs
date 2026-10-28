@@ -41,12 +41,22 @@ impl Drop for KillOnDrop {
     }
 }
 
+/// **测试结束即删掉临时目录** ✓（第 813 轮；`/tmp` 是 1.9 GB 的 tmpfs ✓，
+/// 断言失败提前返回时也要删 ⇒ `check-tests-clean-temp` 护栏要的就是绑定式清理器）。
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn child_exits_within_five_seconds_after_its_parent_dies() {
     let bin = env!("CARGO_BIN_EXE_yanshi-mcp");
     let root = std::env::temp_dir().join(format!("yanshi_p20_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
+    let _cleanup = Cleanup(root.clone());
     let pid_file = root.join("child.pid");
     // 父进程：拉起 yanshi-mcp，记下它的 pid，然后 wait（一直活着）。
     // `bash` + `< /dev/stdin`：shell 会把后台任务的 stdin 指到 /dev/null ⇒
@@ -109,5 +119,4 @@ fn child_exits_within_five_seconds_after_its_parent_dies() {
         "子进程应在 5 秒内随父进程退出，实测 {} ms",
         elapsed.as_millis()
     );
-    let _ = std::fs::remove_dir_all(&root);
 }

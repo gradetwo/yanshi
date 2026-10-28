@@ -35,7 +35,10 @@ const draw = async (layer, stepMs) => {
   const written = await call("brush_stroke", {
     layer_id: layer,
     brush: BRUSH,
-    color: { r: 20, g: 20, b: 20, a: 40 },
+    // **P-19 之后 `color.a` 会真乘进整笔 opacity** ⇒ 这里去掉顺带的 `a: 40` ✓：
+    // 本判据测的是**时间间距 ⇒ 墨量**，与 alpha 无关；留着会把墨整体缩到 0.157 倍、
+    // 亮度差被压小 ⇒ 与 P-19 无关的假红（判据自己造的输入，改判据不改产品）。
+    color: { r: 20, g: 20, b: 20 },
     brush_params: { dabs_per_second: 200.0 },
     points: points(stepMs),
     preview: false,
