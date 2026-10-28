@@ -43,6 +43,9 @@
 /viewer-app.js
   Cache-Control: no-cache
 
+/i18n.js
+  Cache-Control: no-cache
+
 /viewer.css
   Cache-Control: no-cache
 

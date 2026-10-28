@@ -63,7 +63,7 @@ import { setStamp } from "./pwa-stamp.mjs";
 //     ⇒ **∴ 所以**：**把 sha256 折成**13 位十进制** ✓（**判据：`scripts/tool-pwa-stamp-shape.mjs` ✓**）
 //     （**原来这里引的** `tool-sw-stamp-idempotent.mjs`**已被上游删除**✓：**`web/sw.js` 那份**从来没被注册**过 ✗ S-10 ★**** ✓✓）
 const stampFiles = [
-  "viewer-app.js", "viewer.css", "index.html",
+  "viewer-app.js", "viewer.css", "index.html", "i18n.js",
   "api-local.js", "brush-local.js", "store.js",
   "wasm/yanshi_wasm.js", "wasm/yanshi_wasm_bg.wasm",
 ];
@@ -118,6 +118,9 @@ const BUILD_STAMP = (() => {
 const FILES = [
   "viewer-app.js",
   "viewer.css",
+  // **NEW-H1 瘦身（双语词表外链）**：页面唯一的 `<script src=` 就靠这份 ✓
+  //   ⇒ **必须进拷贝清单**（单一真源 `crates/yanshi-http/assets/` ✗ 不许手工拷 web/ ✓）。
+  "i18n.js",
   "service-worker.js",
   // **∴ 第 240 轮补上 ✗**（**∴ 之前它们**只在 `stampSource` 里 ✓）
   //   **∴ `brush-local.js` **不在这里** ✗ ★**（**∴ 实测第 240 轮 ✓）**：

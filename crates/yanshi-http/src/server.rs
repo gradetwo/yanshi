@@ -1011,6 +1011,18 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
             _ => method_not_allowed(request, "GET"),
         };
     }
+    // **★ `/i18n.js`（NEW-H1 瘦身的双语词表）**：与 `/viewer-app.js` 同一口径 ✓
+    //   —— **由同一个二进制内嵌发**（`include_str!` ✓）⇒ 页面里唯一的 script src 仍是自包含 ✓。
+    if path == "/i18n.js" {
+        return match method {
+            "GET" => Response::bytes(
+                200,
+                "text/javascript; charset=utf-8",
+                viewer::i18n_script().as_bytes().to_vec(),
+            ),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
     // **★ C/S 本地渲染模式**：`api-local.js` + `store.js` 是 PWA 本地 API 的实现，
     //   C/S 前端在"关闭服务器渲染"时复用它们（`callTool` 走本地 WASM）。
     //   与 `viewer-app.js` 同样内嵌，保證单二进制部署。

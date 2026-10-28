@@ -4,7 +4,7 @@
 // 为什么需要它 ✗：`browser-i18n.mjs` 能抓"英文模式下整页仍有中文" ✓，但它要**真浏览器 + 已构建的二进制** ✗
 // ⇒ 没有 chromium 时它只打印「⊘ 跳过」✓ ⇒ **新加界面元素却忘了加词条**这件事可能完全没人守 ✗。
 // 本判据**只读源码** ✓：把页面模板里"会变成文本节点"的中文串抽出来 ✓，
-// 要求每一条都在 `I18N_EN_TEXT`（`crates/yanshi-http/assets/viewer-app.js` ✓）里有词条 ✓。
+// 要求每一条都在 `I18N_EN_TEXT`（`crates/yanshi-http/assets/i18n.js` ✓，NEW-H1 瘦身起从主脚本挪出 ✓）里有词条 ✓。
 // 这正是新界面元素最容易漏的一步 ✓（本轮实测：文档列表表头、删除文档、诊断包、工程包共 10 条漏了 ✗）。
 //
 // **它覆盖什么、不覆盖什么**（说清楚，别让人以为它是全覆盖 ✗）：
@@ -24,6 +24,9 @@ import { readFileSync } from "node:fs";
 
 const VIEWER_RS = "crates/yanshi-http/src/viewer.rs";
 const VIEWER_JS = "crates/yanshi-http/assets/viewer-app.js";
+// **NEW-H1 瘦身**：三张词表挪成独立资产 ⇒ **抽表读这份**，锚点/运行时逻辑仍读 `VIEWER_JS` ✓
+//（**同一事实只写一处 ✗ 表若被挪回主脚本，本判据当场报"找不到表" ✓ 不会假绿**）。
+const I18N_JS = "crates/yanshi-http/assets/i18n.js";
 const VIEWER_CSS = "crates/yanshi-http/assets/viewer.css";
 
 // **抽原始字符串**：三个 HTML 片段必须都找得到 ✓ —— 找不到说明模板被改名/拆分了 ⇒
@@ -44,6 +47,8 @@ const rs = readFileSync(VIEWER_RS, "utf8");
 // 这样下面按标签剥离时 `<style>` 才有配对的 `</style>` ✓）。
 const css = readFileSync(VIEWER_CSS, "utf8");
 const js = readFileSync(VIEWER_JS, "utf8");
+// **词表在独立资产里**（NEW-H1 ✓）—— 抽表全部改读这份 ✓（锚点检查仍读主脚本 ✓）。
+const dictJs = readFileSync(I18N_JS, "utf8");
 const head = rawChunk(rs, "PAGE_HEAD");
 const tailA = rawChunk(rs, "PAGE_TAIL_A");
 const tailB = rawChunk(rs, "PAGE_TAIL_B");
@@ -132,10 +137,10 @@ while ((match = tagRe.exec(visible))) {
 
 // **抽词表**：只取 `const I18N_EN_TEXT = { … };` 那一段 ✓ —— 不能扫整个文件 ✗
 //（后面还有 `I18N_EN_ATTR` ✓，混在一起会拿属性词条去解释文本节点 ✓）。
-const textStart = js.indexOf("const I18N_EN_TEXT");
-const attrStart = js.indexOf("const I18N_EN_ATTR");
+const textStart = dictJs.indexOf("const I18N_EN_TEXT");
+const attrStart = dictJs.indexOf("const I18N_EN_ATTR");
 if (textStart < 0 || attrStart < 0 || attrStart <= textStart) {
-  console.error("❌ 双语覆盖率判据无法运行：在 " + VIEWER_JS + " 里找不到 I18N_EN_TEXT / I18N_EN_ATTR 两张表");
+  console.error("❌ 双语覆盖率判据无法运行：在 " + I18N_JS + " 里找不到 I18N_EN_TEXT / I18N_EN_ATTR 两张表");
   process.exit(2);
 }
 const entryRe = /"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
@@ -151,7 +156,7 @@ const decodeKey = (literal) => {
 };
 const dict = new Map();
 let entry;
-while ((entry = entryRe.exec(js.slice(textStart, attrStart)))) {
+while ((entry = entryRe.exec(dictJs.slice(textStart, attrStart)))) {
   dict.set(decodeKey(entry[1]), entry[2]);
 }
 if (dict.size === 0) {
@@ -202,14 +207,14 @@ for (const [zh, en] of dict) {
 // 英文界面下按钮文字翻成了英文 ✓、**鼠标悬停整句中文** ✗。
 // `browser-i18n.mjs` 也抓不到它 ✗：它同样只看**可见文本** ✓，tooltip 不进 DOM 文本 ✓。
 // ⇒ "不检查"写进注释 ≠ 安全 ✓：**没判据守的那一半就是会烂掉** ✓（本项目的老病 ✓）。
-const attrEnd = js.indexOf("\n};", attrStart);
+const attrEnd = dictJs.indexOf("\n};", attrStart);
 if (attrEnd < 0) {
   console.error("❌ 双语覆盖率判据无法运行：I18N_EN_ATTR 的表尾找不到");
   process.exit(2);
 }
 const attrDict = new Map();
 entryRe.lastIndex = 0;
-while ((entry = entryRe.exec(js.slice(attrStart, attrEnd)))) {
+while ((entry = entryRe.exec(dictJs.slice(attrStart, attrEnd)))) {
   attrDict.set(decodeKey(entry[1]), entry[2]);
 }
 if (attrDict.size === 0) {

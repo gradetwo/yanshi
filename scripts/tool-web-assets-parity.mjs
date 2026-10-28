@@ -24,7 +24,7 @@ import { join } from "node:path";
 const SRC = "crates/yanshi-http/assets";
 const DST = "web";
 // **∴ 要与 `pwa-sync-viewer.mjs` 的 `FILES` **保持一致** ✗ ★**
-const FILES = ["viewer-app.js", "viewer.css", "service-worker.js", "api-local.js", "store.js"];
+const FILES = ["viewer-app.js", "viewer.css", "i18n.js", "service-worker.js", "api-local.js", "store.js"];
 
 let failed = 0;
 console.log("  ── 源头 vs web（逐字节）──");

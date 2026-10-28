@@ -1180,6 +1180,7 @@ const PAGE_TAIL_A: &str = r##"</style>
   <span class="spacer"></span>
   <span>画布 <b id="canvasSize">—</b></span>
 </footer>
+<script src="/i18n.js"></script>
 <script>"##;
 
 /// **主脚本之后的收尾** ✓（`</script> … </html>` ✓）。
@@ -1278,6 +1279,15 @@ pub fn webm_script() -> &'static str {
 /// **★ 过程视频（timelapse）资产 ✗ ★**（**第 249 轮 ✓；理由同上 ✓）★
 pub fn timelapse_script() -> &'static str {
     include_str!("../assets/timelapse-local.js")
+}
+
+/// **★ 双语词表资产 ✗ ★**（05 复审 NEW-H1 瘦身第一步 ✓）：**这三张表约 910 行 / 77 KB**✗
+///   从主脚本挪出来 ⇒ **以**传统脚本**外链**先于主脚本加载 ✓
+///   ⇒ **∴ 三份 `const` 落在**共享的全局词法环境**✓ 主脚本照常引用 ✗ **运行时语义不变** ✓
+///   ＋ **∴ 为什么单独立一条 `pub fn`**：**同一个二进制**用 `include_str!` 发 ✓（`server.rs` 的
+///     `/i18n.js` 路由 ✓）⇒ **单二进制部署**照样自包含 ✗ 页面里唯一的 `<script src=` 是**同源绝对路径** ✓
+pub fn i18n_script() -> &'static str {
+    include_str!("../assets/i18n.js")
 }
 
 /// 页面长度（测试与可观测性）✓ —— **⚠️ 插入新函数时别把它的文档注释抢走** ✗
@@ -1379,6 +1389,44 @@ mod tests {
         );
     }
 
+    /// **(NEW-H1 瘦身)：双语词表是独立外链资产** ✓ —— 断言 ① 资产文件存在且与出口逐字节一致 ✓；
+    /// ② 页面以 `<script src="/i18n.js">` 引用它，且**在主脚本之前** ✓
+    /// （**变异：删引用 ⇒ 红 ✓；把引用挪到主脚本之后 ⇒ 红 ✓；把三张表挪回 `viewer-app.js` ⇒ 红 ✓**）。
+    #[test]
+    fn the_i18n_dictionary_is_an_external_asset_loaded_before_the_main_script() {
+        let path = std::path::Path::new("assets/i18n.js");
+        assert!(
+            path.is_file(),
+            "双语词表应是**独立资产文件**（NEW-H1：不进单文件页面）✓"
+        );
+        let asset = std::fs::read_to_string(path).expect("应能读取 i18n 资产");
+        assert_eq!(
+            i18n_script().trim(),
+            asset.trim(),
+            "`/i18n.js` 路由出口必须逐字节等于资产文件 ✓"
+        );
+        for name in ["I18N_EN_TEXT", "I18N_EN_ATTR", "I18N_EN_ATTR_PATTERNS"] {
+            assert!(
+                asset.contains(&format!("const {name}")),
+                "词表资产应定义 `{name}` ✓"
+            );
+            assert!(
+                !app_script().contains(&format!("const {name}")),
+                "`{name}` 不该再出现在主脚本资产里（同一事实只写一处 ✓）"
+            );
+        }
+        let page = page_template();
+        let tag = "<script src=\"/i18n.js\"></script>";
+        let at = page.find(tag).expect("页面必须引用 /i18n.js ✓");
+        let main_at = page
+            .find(app_script().lines().next().expect("主脚本首行"))
+            .expect("页面应内联主脚本 ✓");
+        assert!(
+            at < main_at,
+            "/i18n.js 必须**先于**主脚本加载（三份 const 靠共享全局词法环境 ✓）"
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -1404,7 +1452,18 @@ mod tests {
         // 无外部依赖（不加载 CDN 脚本或字体）。
         assert!(!page_template().contains("http://cdn"));
         assert!(!page_template().contains("https://cdn"));
-        assert!(!page_template().contains("<script src="));
+        // **`<script src=` 的口径**（05 复审 NEW-H1 起 ✓）：这条守卫的本意是**不加载外部主机**✗，
+        // 而 `/i18n.js` 是**同源绝对路径**✓ 且由**同一个二进制**用 `include_str!` 发✓（`server.rs` 路由 ✓）
+        // ⇒ 自包含性不变 ✓。**除此以外的任何 `src` 仍然一律禁止** ✗（变异：给路由外主机加脚本 ⇒ 红 ✓）。
+        assert!(!page_template().contains("<script src=\"http"));
+        for atom in page_template().match_indices("<script src=") {
+            assert!(
+                page_template()[atom.0..].starts_with("<script src=\"/i18n.js\""),
+                "页面里唯一的 script src 必须是 /i18n.js（同二进制内嵌路由 ✓），实际：{}",
+                &page_template()[atom.0..atom.0 + 60.min(page_template().len() - atom.0)]
+            );
+        }
+        assert!(page_template().contains("<script src=\"/i18n.js\"></script>"));
         assert!(page_len() > 4000);
     }
 

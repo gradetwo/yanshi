@@ -19,9 +19,10 @@
 //   在提交信息里写清「谁涨了多少、为什么」——让膨胀**必须被看见**，这就是本判据的全部目的。
 import { execFileSync } from "node:child_process";
 
-// 棘轮上界（截至 2026-10-28 实测 1,038,359 字节 ⇒ 上界取 1,040,000 留一点余量）。
+// 棘轮上界（NEW-H1 瘦身第一步：三张双语词表挪成外链 `/i18n.js` ⇒
+// 实测 1,038,359 → 968,345 字节（−69,984，截至 2026-10-29）⇒ 上界取 970,000）。
 // 数它用 `git show HEAD:web/index.html | wc -c`；改这个数必须附理由。
-const CEILING = 1_040_000;
+const CEILING = 970_000;
 
 const failures = [];
 const check = (ok, label, detail) => {
