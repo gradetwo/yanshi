@@ -103,6 +103,7 @@ jobs:
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       # 钉住工具链版本：与本地一致，避免「本地 clippy 通过、CI clippy 报错」的版本漂移。
@@ -116,6 +117,7 @@ jobs:
   clippy:
     name: clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       # 钉住工具链版本：与本地一致，避免「本地 clippy 通过、CI clippy 报错」的版本漂移。
@@ -129,6 +131,7 @@ jobs:
   test:
     name: test (${{ matrix.rust }})
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -192,6 +195,7 @@ jobs:
   gpu-feature:
     name: GPU feature (build and size)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -297,6 +301,7 @@ jobs:
   wasm-smoke:
     name: wasm smoke (node)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       # 钉住工具链版本：与本地一致，避免「本地 clippy 通过、CI clippy 报错」的版本漂移。

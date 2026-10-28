@@ -83,6 +83,7 @@ jobs:
   prepare:
     name: prepare the matrix
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       matrix: ${{ steps.m.outputs.matrix }}
       picked: ${{ steps.m.outputs.picked }}
@@ -117,6 +118,7 @@ jobs:
   package:
     name: package (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     # **★ Windows 也要用 bash ★**（2026-10-15 加 ✓）：`package-release.sh` 是 bash 脚本 ✓，
     # 而 `windows-latest` 的缺省 shell 是 **pwsh** ✗ ⇒ 不声明就会被当成 PowerShell 而立刻失败 ✓。
     # Git Bash 在 runner 上**预装** ✓（`install`/`sha256sum`/`shasum` 都在 ✓）；
@@ -325,6 +327,7 @@ jobs:
     needs: package
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/download-artifact@v4
         with:
