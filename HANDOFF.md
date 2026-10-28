@@ -1696,6 +1696,19 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    按纪律判不了 ✓ 不是产品红，CI 有真适配器面 ⇒ 交它 ✓）。known-red 名单不动 ✓。
 ⑤ **落账与接缝预告**：本包与 §103 的 batch7 **文件面零交集**（Rust vs JS/docs）⇒ 叠成同一候选出；
    `git am` 不过 pre-commit ⇒ fmt／clippy 已复跑 ✓。
+⑥ **CI 后效（run 40730524806＝`d8e66638`）**：criteria 六片／clippy／fmt／wasm smoke／GPU 全绿 ✓，
+   但 **`test (stable)` 与 `test (beta)` 双双红在 `blob_gc_budget.rs:71`** ✗——X-1 把口径
+   300 KB→100 KB 后，该测试写死的「造 4 个原子越过 1 MB 预算」**不再触发闸** ⇒ 断言拿不到拒绝。
+   **我侧审读漏在哪**：②里枚举旧语义断言面用的是 `grep 300 \* 1_024|BYTES_PER_ATOM`——
+   这只抓「把口径数字写下来的地方」✗，抓不到「**输入靠旧口径才成立**」的断言 ✗
+   （四层齐的第 2 层＝输入触发，包侧自测与本侧 grep 双双漏过 ⇒ **CI 是最后防线**的老配方 ✓）；
+   而 §102③ 本机只跑了自述点名的 doc_budget／seq／ink_pixels **三个过滤器**，没跑
+   `--test blob_gc_budget` ⇒ 「合并例外要 workspace 全量 test」这一步当时交了 CI 而 CI 抓到 ✓。
+   **修复（`24a19b33`）**：`BYTES_PER_ATOM` 提为 `pub`（带文档），测试按
+   `budget/per_atom + 1` **现算**造原子数 ⇒ 口径再校准也不二次失效（内核②写命令不写数 ✓）；
+   本机双向验：100 KB 绿 ✓、**300 KB 变异下照样绿**（口径无关性 ✓ 这才是这条修法的变异证明）、
+   恢复后绿；doc_budget 6/6 同跑 ✓；pre-commit 的 **workspace clippy** exit 0 ✓。
+   `cargo test --workspace` 全量仍交 CI（可用 2.4 Gi < 3 Gi ⇒ 不自称本机绿 ✗）。
 
 ## §103 PWA 本地内核批次 7（restore_checkpoint 落地＋state@seq 求值窗口）合并留痕（2026-10-29）
 
@@ -1732,3 +1745,33 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    其余若 CI 绿也只是「没红」不是「验过能红」✗）。
 ⑤ **落账**：`git apply` 不过 pre-commit ⇒ fmt／workspace clippy／台账守卫已复跑 ✓（§90⑤ 同规）。
    与 §102 叠为同一候选（`try-p8-costwall`：`78dc50b6`＋`0a8f386e`）push（同组不双派 ✓）。
+
+## §104 NEW-H1 瘦身第一步（双语词表挪成外链 /i18n.js，index.html −70 KB）留痕（2026-10-29）
+
+① **范围与动机**：05 复审 NEW-H1（连续两轮未修的确认缺陷）点名 `web/index.html` 1.04 MB 且无界膨胀；
+   棘轮判据 `check-index-html-byte-budget`（#37 时先行就位）只拦增长不减肥 ⇒ 本笔做**第一步**：
+   把 `viewer-app.js` 里三张双语表（`I18N_EN_TEXT`/`I18N_EN_ATTR`/`I18N_EN_ATTR_PATTERNS`，
+   910 行 / 76,958 B，**边界以当场 sed 核读定**：13285–14194，运行时消费方 14195 起 ✓）挪成
+   独立资产 `crates/yanshi-http/assets/i18n.js`。i18n+CSS+懒加载+minify 的**后续步**不在本笔 ✗。
+② **机制与口径**（为什么运行时不变）：`<script src="/i18n.js">` 是**传统脚本、同步、先于**内联主脚本 ✓
+   ⇒ 顶层 `const` 进入**共享全局词法环境** ⇒ 主脚本引用逐字不变 ✓（**不是** module、**不是** window 挂载 ✓）；
+   路由 `/i18n.js` 由**同一二进制** `include_str!` 发（对齐 `/viewer-app.js` 的形态 ✓）⇒ 单二进制部署
+   自包含性不变。**守卫口径随之改**：`page_is_self_contained` 从「禁一切 `<script src=`」改为
+   「只许 `/i18n.js`、禁 http(s) 主机」＋新守卫
+   `the_i18n_dictionary_is_an_external_asset_loaded_before_the_main_script`（表在资产／不在主脚本／
+   引用先于主脚本 三面 ✓ 同一事实只写一处 ✓）。接线五处一个口径：SW SHELL、`_headers` no-cache、
+   `pwa-sync-viewer` 的 stampFiles＋FILES、`tool-web-assets-parity` 清单、`ui-i18n-coverage` 读表源。
+③ **本机复验**：`cargo test -p yanshi-http --lib viewer` **7/7 ✓**（含新守卫）；
+   真起服务 `curl /i18n.js` ⇒ **200 且与资产 `cmp` 逐字节一致 ✓**、页面含引用 ✓；
+   判据 `ui-i18n-coverage`（315＋151 条模板文案对 427＋197 词条全过 ✓）／`tool-pwa-stamp-shape` 16/16 ✓／
+   `tool-web-assets-parity`（i18n.js 行 ✓）／`check-service-worker-roles` ✓ 全绿；
+   `--export-viewer-html` 再生 `web/index.html`＝**968,345 B**（−69,984 ✓），棘轮 CEILING 同步收
+   1,040,000 ⇒ 970,000（**瘦身必须被看见 ✓**）。**workspace 全量 test 交 CI**（可用 2.4 Gi ✗ 不自称本机绿）。
+④ **变异两面（断言粒度，恢复后重跑绿＋`cmp` 干净 ✓）**：M-a 删页面 `<script src="/i18n.js">` 引用 ⇒
+   新守卫与 self-contained 守卫**两条全红** ✓；M-b 把资产里 `const I18N_EN_TEXT` 改名 ⇒
+   `ui-i18n-coverage` **exit(2)**「找不到两张表」✓（判据失效时报错不假绿 ✓）。
+⑤ **意外收获（同一 CI run 的红归因给 §102⑥）**：派发本笔前先看账 ⇒ run 40730524806 的
+   `test (stable)/(beta)` 双红是 **P8 口径校准的漏网断言**（与 i18n 无关 ✓），修复＝`24a19b33`
+   （造原子数按 `BYTES_PER_ATOM` 现算；300 KB 变异下测试仍绿＝口径无关性 ✓）。
+   本笔与修复叠成同一候选 push（`24a19b33`＋`93b14798`＋§48 `9e763525` 未推部分，同组不双派 ✓）；
+   `git am` 不适用（我侧手写）⇒ pre-commit fmt／workspace clippy 已随两笔提交复跑 ✓。
