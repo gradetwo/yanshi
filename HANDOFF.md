@@ -1356,3 +1356,10 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    判据里最大几何是 `tool-smudge-drags-color`（size≈H/8、路径数百 px ⇒ 预测 ~1 s ≪ 30 s）✓；
    CI 在测试与判据前**重建介质 wasm 并 `mediums-sync`** ⇒ 仓库内旧产物的陈旧问题不进 CI ✓。
 ⑤ `git am` 不过 pre-commit 钩子 ⇒ 本留痕提交**另行复跑** fmt/clippy/台账编号/守卫 ✓（§90⑤ 同规）。
+⑥ **后效（run 40685192585＝`74501886`，completed/success）**：`test (stable)/(beta)`、clippy、
+   rustfmt、判据六片全绿。并取 job 日志**实证了③交 CI 那一条的落地**：
+   `export_brush_proof` **5/5 ok**（`stroke_with_brush_params_exports_as_omitted`／
+   `stroke_with_point_times_exports_as_omitted`／`stroke_with_brush_params_and_times_exports_as_omitted`／
+   `legacy_stroke_without_new_fields_still_exports`／`update_stroke_keeps_the_proof`），
+   整个 test (stable) 作业 **324 个 `test result: ok`、0 FAILED** ⇒ 配方记全⇒导出 `omitted`
+   的机制**在 CI 上成立** ✓。
