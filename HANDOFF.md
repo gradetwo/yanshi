@@ -1804,3 +1804,16 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
 ⑤ **顺带**：`web/assets-index.json` 又带进与本笔无关的既有资产漂移 ⇒ `git checkout --` 还原，
    保持提交聚焦（与 §104 同规；H-1 去重仍在 #30 等裁定）。本笔与 #47 收账（run 40735508212）**同组排队**：
    该 run 收敛前不 push，收敛后与本账一起推（同组不双派 ✓）。
+
+## §106 CI 收账 run 40735508212（`cffa22ce`）全绿 ⇒ #47／#48 平仓（2026-10-29）
+
+① **该 run 覆盖的三笔**：`9e763525`（#48 ci／release timeout-minutes）＋ `24a19b33`（§102⑥ blob_gc_budget
+   口径修复）＋ `93b14798`（§104 i18n 第一步）＋ `cffa22ce`（§104⑤ 台账）。
+② **结果**：`test (stable)`／`test (beta)` **双双 success** ⇒ blob_gc_budget 修复在 CI 上兑现 ✓
+   （workspace 全量 test 本机没跑过 ⇒ 这是它唯一的验处，§「重计算交 CI」口径 ✓）；
+   criteria 6 片全绿（含 `check-index-html-byte-budget`／`ui-i18n-coverage`／`tool-web-assets-parity`
+   的新接线）✓；clippy／rustfmt／wasm smoke／GPU feature 绿 ✓；brush parity skipped＝已知形态 ✓。
+③ **#48 平仓**：timeout-minutes 随 `9e763525` 入 main，本 run 各 job 均在上限内自然完成，无超时扼杀痕迹。
+④ **#47 平仓**：P8-costwall＋batch7 的 CI 裁定至此闭环（后效＝② 的双 test 绿＋6 片绿）。
+⑤ **下一发**：`41fcd8f5`（§105 CSS 外链＋棘轮 931,000）与本账一起 push ⇒ 由新 run 对**新 HEAD** 收账；
+   棘轮对新 HEAD＝同源 930,816 ≤ 931,000 ✓（§105③ 本机已验，CI 上是同一 blob）。
