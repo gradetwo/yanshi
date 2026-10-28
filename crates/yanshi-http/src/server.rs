@@ -1117,7 +1117,7 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
 /// 版本／commit／构建时间／工具清单／GPU 探测／缓存计数都是**侦察信息** ✗ ——
 /// commit 能对上公开的已知漏洞 ✓，工具清单能省掉攻击者的枚举 ✓。
 /// 判据与本机使用者不受影响 ✓（绑回环 ⇒ 一律完整 ✓）；
-/// 对外部署要监控 ⇒ 带 `?key=<YANSHI_API_KEY>`（或 `X-Yanshi-Key` 头）✓。
+/// 对外部署要监控 ⇒ 带 `X-Yanshi-Key: <密钥>` 头 ✓（`?key=` 兼容但会把密钥写进访问日志 ✗）。
 ///
 /// **对外未认证时仍返回 `wasm`** ✓：查看器的 `initWasm()` 用它决定要不要加载内核 ✓，
 /// 拿掉它会把"对外部署"的每一次打开文档都变成「服务端未启用」✗（那是功能回退，不是加固 ✓）。
@@ -1133,7 +1133,7 @@ fn health(state: &ServerState, request: &Request) -> Response {
             &json!({
                 "ok": true,
                 "detail": "withheld",
-                "note": "服务绑在对外地址上，且请求没带有效的 YANSHI_API_KEY ⇒ 只报存活状态与 wasm；带 ?key=<密钥> 可取完整信息",
+                "note": "服务绑在对外地址上，且请求没带有效的 YANSHI_API_KEY ⇒ 只报存活状态与 wasm；用 X-Yanshi-Key 头带密钥可取完整信息（别放 URL ⇒ 会进访问日志）",
                 "wasm": wasm_available(state),
             }),
         );
@@ -1834,13 +1834,23 @@ fn expected_api_key() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// 请求里带的 API key 的**唯一两种形态** ✓：`?key=` 或 `X-Yanshi-Key` 头 ✓。
+/// 请求里带的 API key 的**唯一两种形态** ✓：`X-Yanshi-Key` 头（**推荐** ✓）或 `?key=`（兼容 ✓）。
 /// **抽成一份** ✓：写权限与 `/health` 的细节开关读的是**同一份** ✓（各写一份必然漂移 ✗）。
+///
+/// **05 复审 NEW-H2**：查询串里的密钥会进**反向代理与服务端访问日志**、浏览器历史、
+/// 以及页面外链的 `Referer` ⇒ 诊断包的脱敏管不到这些通道。通道保留（curl／判据在用 ✓），
+/// 但每次命中打一行提醒（**只说事实，不回显密钥** ✓），文案一律改推头。
+/// **两个都带时头优先** ✓（头是推荐渠道 ⇒ 更可信的那个说话算数）。
 fn provided_api_key(request: &Request) -> Option<String> {
+    if request.param("key").is_some() {
+        yanshi_server::diagnostics::log_line(
+            "API 密钥经 ?key= 查询串传入 ⇒ 它会进访问日志；推荐改用 X-Yanshi-Key 头",
+        );
+    }
     request
-        .param("key")
+        .header("x-yanshi-key")
         .map(str::to_owned)
-        .or_else(|| request.header("x-yanshi-key").map(str::to_owned))
+        .or_else(|| request.param("key").map(str::to_owned))
 }
 
 /// `/health` 的细节是否可见 ✓（审计 L-2）：绑回环 ⇒ 可见 ✓；
@@ -1876,10 +1886,10 @@ fn require_write_access(state: &ServerState, request: &Request) -> Option<Respon
                 "本服务绑在回环上，但这个请求带着外来的 Origin（DNS rebinding 与浏览器反代都是这个形状）\
                      ⇒ 匿名签发写权限令牌只留给**本机 Origin** 的请求。两条出路：\
                      ① 本机用 ⇒ 直接开 http://127.0.0.1 或 http://localhost；\
-                     ② 确实经域名对外服务 ⇒ 设 YANSHI_API_KEY=<密钥>，请求时带上 ?key=<密钥>（或 X-Yanshi-Key 头）"
+                     ② 确实经域名对外服务 ⇒ 设 YANSHI_API_KEY=<密钥>，请求时用 X-Yanshi-Key 头带上（别放 ?key= ⇒ URL 会进访问日志与浏览器历史）"
                         .to_owned()
             } else {
-                "服务端绑在对外地址上，但没配 YANSHI_API_KEY ⇒ 拒绝匿名签发写权限令牌。                                 两条出路：① 只在本机用 ⇒ 用 --bind 127.0.0.1:8080 启动；                                 ② 确实要对外 ⇒ 设 YANSHI_API_KEY=<密钥>，请求时带上 ?key=<密钥>（或 X-Yanshi-Key 头）"
+                "服务端绑在对外地址上，但没配 YANSHI_API_KEY ⇒ 拒绝匿名签发写权限令牌。                                 两条出路：① 只在本机用 ⇒ 用 --bind 127.0.0.1:8080 启动；                                 ② 确实要对外 ⇒ 设 YANSHI_API_KEY=<密钥>，请求时用 X-Yanshi-Key 头带上（别放 ?key= ⇒ URL 会进访问日志与浏览器历史）"
                         .to_owned()
             }),
         ))),
@@ -1893,7 +1903,7 @@ fn require_write_access(state: &ServerState, request: &Request) -> Option<Respon
                 Some(Response::from_error(&YanshiError::new(
                     ErrorCode::PermissionDenied,
                     ErrorContext::detail(
-                        "密钥不对（或没带）⇒ 对外绑定时签发写权限令牌需要 ?key=<YANSHI_API_KEY>"
+                        "密钥不对（或没带）⇒ 对外绑定时签发写权限令牌需要 X-Yanshi-Key 头带上 YANSHI_API_KEY（?key= 兼容但不推荐：会进访问日志）"
                             .to_owned(),
                     ),
                 )))
@@ -4870,6 +4880,31 @@ mod tests {
         assert_eq!(bind_host("127.0.0.1:0"), Some("127.0.0.1"));
         assert_eq!(bind_host("[::1]:0"), Some("::1"));
         assert_eq!(bind_host("0.0.0.0:0"), None);
+    }
+
+    /// **05 复审 NEW-H2**：密钥渠道抽成一份判读 ✓，两头都给时**头优先** ✓
+    ///（头是推荐渠道 ⇒ 更可信的那个说话算数 ✓）；只给查询串仍兼容 ✓（curl／判据在用 ✓）。
+    #[test]
+    fn api_key_channel_prefers_header_and_still_accepts_query() {
+        let mut both = request("GET", "/health?key=qq");
+        both.headers
+            .insert("x-yanshi-key".to_owned(), "hh".to_owned());
+        assert_eq!(
+            provided_api_key(&both).as_deref(),
+            Some("hh"),
+            "两个都带 ⇒ 头优先"
+        );
+
+        let mut only_header = request("GET", "/health");
+        only_header
+            .headers
+            .insert("x-yanshi-key".to_owned(), "hh".to_owned());
+        assert_eq!(provided_api_key(&only_header).as_deref(), Some("hh"));
+
+        let only_query = request("GET", "/health?key=qq");
+        assert_eq!(provided_api_key(&only_query).as_deref(), Some("qq"));
+
+        assert_eq!(provided_api_key(&request("GET", "/health")), None);
     }
 
     /// 错误里只报文件名 ✓（审计 L-2：不泄露 `--root`／安装目录 ✓）。
