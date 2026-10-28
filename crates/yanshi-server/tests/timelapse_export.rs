@@ -469,6 +469,7 @@ fn e2e_thousand_atom_document_timing() {
 }
 
 /// **E3：`export_timelapse` 回执回传分段账（apply／render／shrink 三段 ms）**。
+/// P-14 再补 `scale_ms`／`write_ms`（MCP 路无此两段 ⇒ null），凑齐五段账。
 ///
 /// **四层齐**：实现（`ReplayOutcome` 三段 + 回执三字段）／输入能触发
 /// （有 ffmpeg 时 6 形状真编码一趟）／断言（三字段是 u64、apply＋render
@@ -537,4 +538,16 @@ fn export_timelapse_receipt_carries_segment_ms() {
         json!(0),
         "MCP 路无原子级 shrink ⇒ shrink_ms 恒为 0：{result}"
     );
+    // **P-14：五段账补齐** ✓ —— `scale`/`write` 在 MCP 路不存在 ⇒ null（不编数字冒充 ✓）。
+    // 先断键存在：缺键时 `result[field]` 也会返回 Null，单断 `is_null()` 是安慰剂。
+    for field in ["scale_ms", "write_ms"] {
+        assert!(
+            result.get(field).is_some(),
+            "回执必须有 `{field}` 字段：{result}"
+        );
+        assert!(
+            result[field].is_null(),
+            "回执的 `{field}` 在 MCP 路无此段 ⇒ 必须为 null：{result}"
+        );
+    }
 }

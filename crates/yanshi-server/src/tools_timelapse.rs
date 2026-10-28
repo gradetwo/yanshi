@@ -858,6 +858,11 @@ pub(super) fn write_export_timelapse(ctx: &mut ToolContext<'_>, args: &Value) ->
         "apply_ms": outcome.apply_ms,
         "render_ms": outcome.render_ms,
         "shrink_ms": outcome.shrink_ms,
+        // **P-14：五段账补齐** ✓ —— `scale`（帧缩放到输出尺寸）与 `write`（写帧）
+        // 在 MCP 路不存在（sink 直接按输出尺寸收帧、ffmpeg 直编 ✓）⇒ 标 null，
+        // 不编数字冒充 ✓。独立二进制仍在 stdout 打五段账（`e3_instrumentation` 钉着 ✓）。
+        "scale_ms": Value::Null,
+        "write_ms": Value::Null,
         "warnings": outcome.warnings,
         // **B2 的两栏** ✓：本体缺（`missing_body`）与派生缺（`missing_derived`）分开数 ✓；
         // 成功回执里 `missing_body` 恒为 0 ✓（`> 0` 时重放已直接失败 ✓）。

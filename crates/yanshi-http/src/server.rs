@@ -599,9 +599,20 @@ pub fn serve(mut options: HttpOptions) -> std::io::Result<ServerHandle> {
             *dir = assets_resolved.as_ref().map(|root| root.join(sub));
         }
     }
+    // **P-13：写锁冲突不回退内存** ✓（与 MCP 的 `Server::new` 同规则 ✓）——
+    // `Conflict` 只能出自写锁 ⇒ 第二进程直接启动失败，让调用方看见 ✓；
+    // 其它失败仍回退内存（旧行为 ✓）。
     let workspace = match &options.root {
-        Some(root) => Workspace::with_file_store(root.clone(), settings.clone())
-            .unwrap_or_else(|_| Workspace::in_memory(settings)),
+        Some(root) => match Workspace::with_file_store(root.clone(), settings.clone()) {
+            Ok(workspace) => workspace,
+            Err(err) if err.code == yanshi_core::ErrorCode::Conflict => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::ResourceBusy,
+                    format!("yanshi-serve 启动失败：{err}"),
+                ));
+            }
+            Err(_) => Workspace::in_memory(settings),
+        },
         None => Workspace::in_memory(settings),
     }
     // **内置纹理目录接进工具层** ✓ ⇒ `list_textures` 会同时报内置与缓存 ✓，

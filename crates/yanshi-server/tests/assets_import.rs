@@ -275,6 +275,105 @@ fn every_bundled_asset_is_actually_usable() {
     }
 }
 
+/// **P-18：`list_assets` 只列该类扩展名的文件** ✓（paint-fix 期 7）。
+///
+/// **四层齐**：实现（`list_assets` 里按 `asset_layout` 的扩展名过滤）／输入能触发
+/// （仓库 `assets/brushes` 里本来就有 `CASE-NOTES.md` 与 `LICENSE-CC0.txt` 两份
+/// 说明文件 ✓）／断言（见下）／变异（删掉过滤 ⇒ `CASE-NOTES.md` 回到列表里 ⇒ 红）。
+#[test]
+fn list_assets_only_lists_files_with_the_kinds_extension() {
+    let root = temp_dir("p18_filter");
+    // **跑完就删** ✓（第 816 轮；`/tmp` 是 1.9 GB tmpfs ✓）
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
+    let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+    let mut workspace = workspace(&root).with_assets_dir(Some(assets.clone()));
+
+    // 笔刷：只留 .myb；两份说明文件必须消失；条数等于盘上的 .myb 数。
+    let got = call(&mut workspace, "list_assets", json!({ "kind": "brush" }));
+    assert_eq!(got["ok"], json!(true), "{got}");
+    let entries = got["assets"].as_array().cloned().unwrap_or_default();
+    let names: Vec<String> = entries
+        .iter()
+        .filter_map(|entry| entry["name"].as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        !names.contains(&"CASE-NOTES.md".to_owned()),
+        "说明文件不该被当成笔刷：{names:?}"
+    );
+    assert!(
+        !names.contains(&"LICENSE-CC0.txt".to_owned()),
+        "说明文件不该被当成笔刷：{names:?}"
+    );
+    assert!(
+        names
+            .iter()
+            .all(|name| name.to_ascii_lowercase().ends_with(".myb")),
+        "笔刷列表里不该有非 .myb：{names:?}"
+    );
+    let myb_on_disk = std::fs::read_dir(assets.join("brushes"))
+        .expect("读资产目录")
+        .filter(|entry| {
+            entry.as_ref().is_ok_and(|entry| {
+                entry.file_type().is_ok_and(|kind| kind.is_file())
+                    && entry.file_name().to_string_lossy().ends_with(".myb")
+            })
+        })
+        .count();
+    assert_eq!(
+        names.len(),
+        myb_on_disk,
+        "笔刷条数应等于盘上的 .myb 数（不多不少）：{names:?}"
+    );
+
+    // `list_brushes` 同口径：count 与过滤后的列表一致，且没有 null 条目。
+    let listed = call(&mut workspace, "list_brushes", json!({}));
+    assert_eq!(listed["ok"], json!(true), "{listed}");
+    assert_eq!(
+        listed["count"],
+        json!(names.len()),
+        "list_brushes 的 count 应与过滤后的列表一致：{listed}"
+    );
+    let brushes = listed["brushes"].as_array().cloned().unwrap_or_default();
+    assert_eq!(
+        brushes.len(),
+        names.len(),
+        "list_brushes 的数组长度应与 count 一致（否则下面的 all 是空集恒真）：{listed}"
+    );
+    assert!(
+        brushes
+            .iter()
+            .all(|brush| brush["reads_canvas"].is_boolean()),
+        "过滤后不应再有 reads_canvas=null 的条目：{brushes:?}"
+    );
+
+    // 纹理与调色板同样只留本类扩展名（过滤是一处实现，三类同时受益 ✓）。
+    for (kind, allowed) in [
+        ("texture", [".png"].as_slice()),
+        ("palette", [".json", ".kpl", ".gpl", ".txt"].as_slice()),
+    ] {
+        let got = call(&mut workspace, "list_assets", json!({ "kind": kind }));
+        assert_eq!(got["ok"], json!(true), "{got}");
+        let entries = got["assets"].as_array().cloned().unwrap_or_default();
+        for entry in &entries {
+            let name = entry["name"]
+                .as_str()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            assert!(
+                allowed.iter().any(|ext| name.ends_with(ext)),
+                "{kind} 列表里不该有 {name:?}（只许 {}）：{entries:?}",
+                allowed.join(" / ")
+            );
+        }
+    }
+}
+
 /// **第 1440 轮审计**：`import_asset` 的 `path` 曾直接 `std::fs::read` ✗ ⇒
 /// root 之外的任意绝对路径都能读、也没有体积上限。现在走 `put_blob` 同一份沙箱
 /// （`file_source::resolve_local_path` ✓：拒 `..`、canonicalize 后必须在 root 内、过上限）。

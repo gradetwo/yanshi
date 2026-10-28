@@ -628,6 +628,13 @@ pub struct Workspace {
     /// **键里带上会话** ✓ 是有意的：眼下 HTTP 层把会话写死成 `"session:http"` ✓（等于按文档 ✓），
     /// 但将来真做到"按连接区分会话"时 ✓，这里**不用改** ✓。
     open_changesets: BTreeMap<(String, String), ChangesetId>,
+    /// **"不按时间出 dab"警告已报过的（会话，笔刷）** ✓（P-16）。
+    ///
+    /// **为什么要它** ✗：`oil-06-paint` 这类 `dabs_per_second = 0` 的笔刷 ✓，每笔带
+    /// `time_ms` 都要写一条同样的警告 ✓ ⇒ 20,000 笔就是 20,000 条 ✓。
+    /// **只在内存里** ✓：重启后新会话理应再报一次 ✓（新调用方可能没见过首次警告 ✓）；
+    /// 键里带会话 ⇒ 换会话重新报 ✓，同一会话同一笔刷只报一次 ✓。
+    warned_time_insensitive_brushes: std::collections::HashSet<(String, String)>,
     /// **处于事务中的那些"打开的变更集"** ✓（键同上一张表 ✓）。
     ///
     /// **设计对事务一个字都没写 ⇒ 记录选择** ✓：**事务 = 带失败回滚的变更集** ✓。
@@ -809,6 +816,16 @@ impl Workspace {
         self.open_changesets
             .get(&(doc_id.to_owned(), session.to_owned()))
             .cloned()
+    }
+
+    /// **"不按时间出 dab"警告是否已对这个（会话，笔刷）报过** ✓（P-16）。
+    ///
+    /// 未报过 ⇒ 登记并返回 `false`（调用方这次要报 ✓）；报过 ⇒ 返回 `true`
+    /// （调用方这次跳过 ✓）。同一会话同一笔刷只报一次；换会话重新报 ✓。
+    pub fn mark_time_warning_shown(&mut self, session: &str, brush: &str) -> bool {
+        !self
+            .warned_time_insensitive_brushes
+            .insert((session.to_owned(), brush.to_owned()))
     }
 
     /// **统计 blob 的三级生命周期** ✓（设计 §6.3 ✓，只读 ✓）。
@@ -1229,6 +1246,7 @@ impl Workspace {
             assets_dir: None,
             preferences: BTreeMap::new(),
             open_changesets: BTreeMap::new(),
+            warned_time_insensitive_brushes: std::collections::HashSet::new(),
             transactions: BTreeMap::new(),
             stashes: BTreeMap::new(),
             settings,
@@ -1267,6 +1285,7 @@ impl Workspace {
             settings,
             created: 0,
             open_changesets: BTreeMap::new(),
+            warned_time_insensitive_brushes: std::collections::HashSet::new(),
             transactions: BTreeMap::new(),
             stashes: BTreeMap::new(),
         })
@@ -2992,7 +3011,12 @@ impl Workspace {
     ///（用户导入的同名文件应当生效 ✓，不必改仓库 ✓）。
     /// **一份实现服务三种资产** ✓ —— 各写一份必然漂移 ✗。
     pub fn list_assets(&self, kind: &str) -> Result<Vec<TextureEntry>> {
-        let (sub, _) = asset_layout(kind)?;
+        // **P-18：按 `asset_layout` 的扩展名过滤** ✓ —— 原来枚举目录时不看扩展名 ✓ ⇒
+        // `assets/brushes` 里的 `CASE-NOTES.md` 与 `LICENSE-CC0.txt` 也被当成笔刷列出来 ✓
+        // （下游 `read_list_brushes` 只能给它们挂一条"读不到或解析失败" ✓）。
+        // **过滤点在这里** ✓（一处改动，三类资产同时受益 ✓）：`asset_file_usable` 只管
+        // "这个文件能不能用"（`usable: false` 照样列出来 ✓），而"该不该列出来"由扩展名定 ✓。
+        let (sub, extensions) = asset_layout(kind)?;
         let mut found: Vec<TextureEntry> = Vec::new();
         let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         // **缓存先扫** ✓（优先级高 ✓ ⇒ 先占名字 ✓，内置里同名的随后被跳过 ✓）。
@@ -3008,6 +3032,9 @@ impl Workspace {
                     .rsplit_once('.')
                     .map(|(_, ext)| ext.to_ascii_lowercase())
                     .unwrap_or_default();
+                if !extensions.contains(&extension.as_str()) {
+                    continue;
+                }
                 let usable = asset_file_usable(kind, &path.join(&name), &extension);
                 found.push(TextureEntry {
                     name,

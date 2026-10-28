@@ -34,6 +34,163 @@ pub struct FileStore {
     /// `load_atoms` 的调用计数（跨 clone 共享）——供判据断言
     /// 「**无效令牌不触发全量日志读取**」（05 复审 NEW-C1）。
     load_atoms_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// 本进程持有的写锁（P-13；同进程的多次 `open` 共享同一把 ✓）。
+    /// 只为持有：字段本身不读，最后一把句柄 `drop` 时 `WriteLock::drop` 删锁文件 ✓。
+    #[allow(dead_code)]
+    write_lock: std::sync::Arc<WriteLock>,
+}
+
+/// **同一 root 同一时间只许一个写进程** ✓（paint-fix P-13）。
+///
+/// **为什么要它** ✗：`FileStore::open` 与 `append_atom` 原来没有任何锁 ✓ ⇒
+/// 两个进程同 root 各写 10 笔 ⇒ 20 个笔触原子**全落下**、0 个锁错误 ✓（分诊已证实 ✓）⇒
+/// 内容重复的原子靠 ULID 去重拦不住（两个进程各发新 ULID ✓）。
+///
+/// **做法** ✓：`open` 时在 `<root>/.yanshi-write.lock` 上建**排他锁文件** ✓
+/// （`create_new`：已存在就抢不到 ✓），文件里写持有者的 pid ✓；持有期间
+/// `FileStore` 握着这把锁，`Drop` 时删掉锁文件 ✓（锁文件本身就是锁，句柄写完 pid 就放掉 ✓）。
+///
+/// **同进程重复 `open` 共享同一把锁** ✓：测试与巡检常在同一进程里先后打开
+/// 同一个 root（读盘核对、快照重开 ✓）⇒ 同进程的第二次 `open` 不报错 ✓，
+/// 而是共享已持有的那把锁 ✓（进程内注册表 `HELD_WRITE_LOCKS` ✓，`Weak` 持有 ⇒
+/// 最后一把句柄 `drop` 后锁文件才被删 ✓）。**锁防的是跨进程** ✓，不是同进程 ✓。
+///
+/// **崩溃残留靠 pid 恢复** ✓：进程被 `kill -9` 或 `process::exit` 弄死时 `Drop`
+/// 不跑 ✓ ⇒ 锁文件留在盘上 ✓ ⇒ 下一个 `open` 读到 pid 已死 ⇒ 删锁重试 ✓。
+/// 活着的持有者 ⇒ 报 `Conflict`，点名持有者 pid ✓（不静默回退，见 `Server::new` ✓）。
+struct WriteLock {
+    path: PathBuf,
+}
+
+impl std::fmt::Debug for WriteLock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteLock")
+            .field("path", &self.path)
+            .finish()
+    }
+}
+
+impl Drop for WriteLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// 进程内已持有的写锁（键 = 规范化后的 root 路径；`Weak` ⇒ 不拖住释放 ✓）。
+/// `HashMap::new` 不是常量 ⇒ 用 `LazyLock` 包一层（`Mutex::new` 本身是常量，但装不下它 ✓）。
+static HELD_WRITE_LOCKS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Weak<WriteLock>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// 锁文件名（放在 root 顶层，不进 docs/blobs/stash ⇒ 不污染文档枚举 ✓）。
+const WRITE_LOCK_FILE: &str = ".yanshi-write.lock";
+
+/// 读锁文件里的持有者 pid（读不到 / 不是数字 ⇒ `None`）。
+fn read_lock_holder(path: &Path) -> Option<u32> {
+    let text = std::fs::read_to_string(path).ok()?;
+    text.trim().parse::<u32>().ok()
+}
+
+/// 这个 pid 的进程还活着吗。
+///
+/// Linux：`/proc/<pid>` 存在即活着 ✓。其它系统：没有可移植的轻量判法 ⇒
+/// 按"活着"处理（fail closed：宁可报错等人工删锁，也不冒险双写 ✓）。
+fn process_alive(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::path::Path::new(&format!("/proc/{pid}")).exists()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        true
+    }
+}
+
+/// 抢 `<root>` 的写锁（P-13）。
+///
+/// * 同进程已持有 ⇒ 共享那把锁 ✓；
+/// * 锁文件已存在且持有者活着（且不是本进程）⇒ `Conflict`，点名持有者 pid ✓；
+/// * 持有者是本进程（另一线程正在注册）⇒ 等一会再查注册表 ✓；
+/// * 持有者已死 / 锁文件空 / 读不到 ⇒ 删锁重试 ✓（崩溃残留自愈 ✓）；
+/// * 多次重试仍抢不到 ⇒ 报错（不无限等 ✓）。
+fn acquire_write_lock(root: &Path) -> Result<std::sync::Arc<WriteLock>> {
+    let key = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let lock_path = root.join(WRITE_LOCK_FILE);
+    let own_pid = std::process::id();
+    for _ in 0..8 {
+        if let Some(live) = HELD_WRITE_LOCKS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&key)
+            .and_then(std::sync::Weak::upgrade)
+        {
+            return Ok(live);
+        }
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(mut file) => {
+                use std::io::Write as _;
+                let _ = writeln!(file, "{own_pid}");
+                let _ = file.sync_all();
+                // 句柄写完 pid 就放掉：锁就是锁文件本身，`WriteLock` 只握路径 ✓。
+                drop(file);
+                let guard = std::sync::Arc::new(WriteLock {
+                    path: lock_path.clone(),
+                });
+                HELD_WRITE_LOCKS
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(key, std::sync::Arc::downgrade(&guard));
+                return Ok(guard);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                match read_lock_holder(&lock_path) {
+                    Some(pid) if pid == own_pid => {
+                        // **本进程的另一线程正在注册** ✓：等一会，注册表里就会有它 ✓。
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                        continue;
+                    }
+                    Some(pid) if process_alive(pid) => {
+                        return Err(YanshiError::new(
+                            ErrorCode::Conflict,
+                            ErrorContext::detail(format!(
+                                "根目录 {} 已被进程 {pid} 占用：同一 root 同一时间只许一个写进程 \
+                                 ⇒ 请先停掉那个进程再开这一个；若那个进程已不存在却还报错，删掉 {} 后重试",
+                                root.display(),
+                                lock_path.display()
+                            )),
+                        ));
+                    }
+                    _ => {
+                        // **死 pid / 空文件 / 读不到**：创建与写 pid 之间有个小窗口 ✓ ⇒
+                        // 先等一会再读一次，仍无活着的持有者才当残留删掉 ✓。
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                        if let Some(pid) = read_lock_holder(&lock_path) {
+                            if pid != own_pid && process_alive(pid) {
+                                // 活着的持有者刚写完 pid ⇒ 回到循环顶（下一轮报 Conflict）✓。
+                                continue;
+                            }
+                        }
+                        let _ = std::fs::remove_file(&lock_path);
+                        continue;
+                    }
+                }
+            }
+            Err(error) => return Err(io_error(&lock_path, error)),
+        }
+    }
+    Err(YanshiError::new(
+        ErrorCode::ResourceExhausted,
+        ErrorContext::detail(format!(
+            "根目录 {} 的写锁多次重试仍抢不到（{}）⇒ 请确认没有另一进程在用这个 root",
+            root.display(),
+            lock_path.display()
+        )),
+    ))
 }
 
 /// 文档元数据（meta.json）。
@@ -92,9 +249,13 @@ impl FileStore {
         // **悬空变更集**（设计 §12.4 ✓）：离线窗口可能跨服务重启 ✓ ⇒ 它必须落盘 ✓，
         // 否则"用户离线期间的编辑"会在重启时凭空消失 ✗。
         fs::create_dir_all(root.join("stash")).map_err(|error| io_error(&root, error))?;
+        // **P-13：写锁** ✓ —— 跨进程第二把 `open` 在这里就失败（`Conflict` ✓），
+        // 不等到 `append_atom` 才发现两个进程在双写 ✓。
+        let write_lock = acquire_write_lock(&root)?;
         Ok(Self {
             root,
             load_atoms_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            write_lock,
         })
     }
 
@@ -949,6 +1110,97 @@ mod tests {
         assert!(blobs.exists(&hash));
         assert_eq!(blobs.get(&hash).unwrap(), b"bitmap");
         assert!(store.root().join("blobs").join("sha256").is_dir());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// **P-13：同一 root 同一时间只许一个写进程** ✓（paint-fix 期 7）。
+    ///
+    /// **四层齐**：实现（`open` 时建排他锁文件 + pid stale 检测）／输入能触发
+    /// （同进程两把 `open`、死 pid 残留锁、活 pid 占锁）／断言（见下）／变异
+    /// （删掉 `acquire_write_lock` 的调用 ⇒ 活 pid 那条红；删掉 stale 恢复 ⇒
+    /// 死 pid 那条红；删掉 `Drop` 的删文件 ⇒ 释放那条红）。
+    #[test]
+    fn second_open_in_the_same_process_shares_the_write_lock() {
+        // **同进程重复 open 共享同一把锁** ✓（测试与巡检常在同一进程里先后打开
+        // 同一个 root 读盘核对 ✓）⇒ 两把句柄都能写，锁文件只一份 ✓。
+        let root = temp_root("lock-share");
+        let first = FileStore::open(&root).unwrap();
+        let second = FileStore::open(&root).unwrap();
+        first.append_atom("doc_1", &atom("a1", 1)).unwrap();
+        second.append_atom("doc_1", &atom("a2", 2)).unwrap();
+        assert_eq!(first.load_atoms("doc_1").unwrap().len(), 2);
+        assert!(
+            root.join(".yanshi-write.lock").exists(),
+            "锁文件应在持有期间存在"
+        );
+        drop(first);
+        assert!(
+            root.join(".yanshi-write.lock").exists(),
+            "还有一把句柄活着时锁文件不该被删"
+        );
+        drop(second);
+        assert!(
+            !root.join(".yanshi-write.lock").exists(),
+            "最后一把句柄 drop 后锁文件应被删掉"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lock_is_released_after_drop_and_reopen_succeeds() {
+        let root = temp_root("lock-drop");
+        {
+            let store = FileStore::open(&root).unwrap();
+            store.append_atom("doc_1", &atom("a1", 1)).unwrap();
+        }
+        let reopened = FileStore::open(&root).unwrap();
+        assert_eq!(reopened.load_atoms("doc_1").unwrap().len(), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stale_lock_with_a_dead_pid_is_recovered() {
+        // 一个已退出的子进程的 pid：写进锁文件，模拟崩溃残留。
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead_pid = child.id();
+        child.wait().unwrap();
+        let root = temp_root("lock-stale");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".yanshi-write.lock"), format!("{dead_pid}\n")).unwrap();
+        let store = FileStore::open(&root).unwrap();
+        assert_eq!(
+            read_lock_holder(&root.join(".yanshi-write.lock")),
+            Some(std::process::id()),
+            "残留锁被接手后，锁文件里应是本进程的 pid"
+        );
+        drop(store);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn live_holder_pid_is_refused_with_a_conflict() {
+        // 一个还活着的子进程的 pid：写进锁文件，模拟另一进程持有。
+        // （只杀自己拉起的测试进程，绝不碰其它进程 ✓。）
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let live_pid = child.id();
+        let root = temp_root("lock-live");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".yanshi-write.lock"), format!("{live_pid}\n")).unwrap();
+        let error = FileStore::open(&root).unwrap_err();
+        let text = format!("{error:?} {error}");
+        assert!(
+            text.contains(&live_pid.to_string()),
+            "报错要点名持有者 pid，实测：{text}"
+        );
+        assert!(
+            text.contains("只许一个写进程"),
+            "报错要说清是写锁冲突，实测：{text}"
+        );
+        child.kill().unwrap();
+        let _ = child.wait();
         let _ = fs::remove_dir_all(&root);
     }
 }

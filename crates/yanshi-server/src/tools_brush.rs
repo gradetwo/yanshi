@@ -76,6 +76,49 @@ fn color_has_alpha(value: &Value) -> bool {
     value.as_array().is_some_and(|items| items.len() == 4)
 }
 
+/// **`color.a` 折成的透明度系数** ✓（P-19：把 `a` 乘进有效 opacity ✓）。
+///
+/// **口径与颜色解析一致** ✓：
+/// * 对象式 `{a}` 按 0..255 字节（与 `parse_colour_value` 同款；浮点 `a` 解析器同样不认 ✓）；
+/// * 数组 4 元按 `parse_spec_color` 的量级切换：任一分量 > 1 ⇒ 字节域
+///   （`a == 1.0` 例外按不透明，第 948 轮的陷阱同款处理 ✓）；全 ≤ 1 ⇒ 线性域，`a` 直接是 0..1；
+/// * `color_space: "linear"` 时数组不做量级切换，`a` 直接是 0..1（与
+///   `parse_spec_color_with_space` 的 Linear 分支同款 ✓）。
+/// * hex 写法（`#RRGGBBAA`）**不在这里** ✓：它的 alpha 仍按 P2-8 只警告、不生效 ✓，
+///   别把两个口径混在一起 ✓。
+/// * 无 `a` ⇒ `None`（不碰 opacity ✓）；`a = 255` / `1.0` ⇒ `Some(1.0)` ⇒ 调用方跳过设置 ✓
+///   （与修前逐位相同，连 `.myb` 里 `opaque` 随压力的曲线都不动 ✓）。
+fn color_alpha_factor(
+    value: &Value,
+    space: Option<yanshi_render::color::ColorSpace>,
+) -> Option<f64> {
+    if let Some(object) = value.as_object() {
+        let a = object.get("a")?.as_u64()?;
+        return Some(a.min(255) as f64 / 255.0);
+    }
+    let items = value.as_array()?;
+    if items.len() != 4 {
+        return None;
+    }
+    let numbers: Vec<f64> = items.iter().filter_map(Value::as_f64).collect();
+    if numbers.len() != 4 {
+        return None;
+    }
+    let a = numbers[3];
+    if space == Some(yanshi_render::color::ColorSpace::Linear) {
+        return Some(a.clamp(0.0, 1.0));
+    }
+    if numbers.iter().any(|component| *component > 1.0) {
+        if a == 1.0 {
+            Some(1.0)
+        } else {
+            Some(a.clamp(0.0, 255.0) / 255.0)
+        }
+    } else {
+        Some(a.clamp(0.0, 1.0))
+    }
+}
+
 pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **裁剪一共吃掉多少像素**（跨选区累计，供 `painted_pixels_clipped` 用）✓
     let mut clipped_away = 0usize;
@@ -374,15 +417,16 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         .map(|value| value / glaze_passes as f64);
     // 意图参数（hand_tremor 等）展开成 brush_params 别名，与显式 brush_params 合并（显式优先）
     let merged_brush_params = merge_intent_brush_params(args)?;
-    // **`color.a`：本轮先恢复"接受但不生效"** ✓（第 788 轮；`2dfd7d2b` 的拒绝**太激进** ✗）
+    // **`color.a`：P-19 已把它乘进有效 opacity** ✓（paint-fix 期 7；见 `paint_brush` 里那段 ✓）。
+    //   此前是"接受但不生效"（第 788 轮；`2dfd7d2b` 的拒绝**太激进** ✗）
     //   **⇒ CI 实测**：`export_small.rs` 用 `a = 220` ✓（半透明 ✓，完全合法的既有用法 ✓）
-    //     ⇒ 我的拒绝让 `export_small` 的 **3 个测试** 与 **4 片 criteria** 一起红 ✗
+    //     ⇒ 拒绝让 `export_small` 的 **3 个测试** 与 **4 片 criteria** 一起红 ✗
     //     （`test (stable)` / `test (beta)` / `criteria shard 1,2,4,5` ✓）。
     //   **⇒ 结论**：**"忽略 alpha"是既有行为、且有调用方依赖** ✓ ⇒ 不能直接改成拒绝 ✗；
-    //     正确的修法是**把 `a/255` 乘进笔刷的有效 opacity** ✓ ⇒ 但那会改变既有画作的外观 ✓
-    //     ⇒ **必须先有判据**（同一笔 `a=255` 与 `a=110` 的 `ink_footprint_pixels` 必须不同 ✓）再改 ✓。
-    //   **⇒ 所以这一笔只留 `ink_footprint_pixels`（第 784 轮加、第 808 轮改名 ✓），alpha 的行为回到原样** ✓，
-    //     并把它记进台账 ✓（`D139` 的"色偏移"那一维很可能就是这里 ✓）。
+    //     修法是**把 `a/255` 乘进笔刷的有效 opacity** ✓ —— 现已落地 ✓，
+    //     `a=255` 时与以前逐位相同 ✓，`a<255` 时整笔变透明 ✓（判据见 `ink_pixels` 那条 ✓）。
+    //     `export_small` 的 `a=220` 现在画出来会比以前淡一点（0.86 倍不透明度 ✓），
+    //     它的测试是导出前后自比对 ✓ ⇒ 不受影响 ✓。
 
     // **落笔走唯一的实现** ✓（`paint_brush` ✓，与 `brush_preview` 共用 ✓）。
     // **显式 `color_space`**（C1）：只认 `"srgb"` / `"linear"`，不传 ⇒ 量级切换；
@@ -1200,7 +1244,14 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             })
             // 查不到这支笔刷就别乱警告（后面会自己报"找不到笔刷" ✓）
             .unwrap_or(true);
-        if !time_sensitive {
+        // **P-16：同一会话同一笔刷只报一次** ✓ —— 原来每笔都写 ✓，20,000 笔
+        // 就是 20,000 条同样的警告 ✓。去重状态在 `Workspace` 上（键 = 会话 + 笔刷 ✓）⇒
+        // 换会话重新报 ✓（新调用方可能没见过首次警告 ✓）。
+        if !time_sensitive
+            && !ctx
+                .workspace
+                .mark_time_warning_shown(&ctx.session, &brush_name)
+        {
             value["warning"] = json!(
                 "这支笔刷**不按时间出 dab** ✗：它的 `dabs_per_second` 是 0 ⇒ 它按**几何距离**出 dab，\
                  你给的时间戳**不会改变 dab 的密度**（笔迹的疏密不听时间）。\
@@ -1247,18 +1298,16 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         )]);
     }
     // **B4：传了却不生效的参数进 `warnings`**（与上面"部分越界"那条同一形态：已有就 push，没有就建）。
-    //   `color`/`color_to` 里带 `a` ⇒ alpha 被忽略（透明度只认 `opacity`，见 `paint_brush` 的注释）。
+    //   P-19 之后只有 `color_to.a` 还被忽略 ✓：`color.a` 已乘进 opacity ✓；
+    //   渐变只用单一 opacity，末端 alpha 没处放 ✓ ⇒ 仍警告，不静默 ✓。
     let mut b4_notes: Vec<String> = Vec::new();
     if let Some(note) = envelope_warning {
         b4_notes.push(note);
     }
-    for (name, slot) in [
-        ("color", args.get("color")),
-        ("color_to", args.get("color_to")),
-    ] {
-        if slot.is_some_and(color_has_alpha) {
-            b4_notes.push(format!("`{name}.a` 目前被忽略，透明度用 `opacity`"));
-        }
+    if args.get("color_to").is_some_and(color_has_alpha) {
+        b4_notes.push(
+            "`color_to.a` 目前被忽略：渐变只用单一 opacity，透明度请用 `opacity` 参数".to_owned(),
+        );
     }
     if !b4_notes.is_empty() {
         match value.get_mut("warnings") {
@@ -1677,6 +1726,26 @@ pub(super) fn paint_brush(
         );
     }
 
+    // **P-19：`color.a` 乘进有效 opacity** ✓ —— 此前 `a` 只进 warnings，不进渲染 ✓。
+    //   `a=255`（或无 `a`）⇒ 系数 1.0 ⇒ 这里**什么都不做** ✓（与修前逐位相同，
+    //   连 `.myb` 里 `opaque` 随压力的曲线都不动 ✓）；`a<255` ⇒ 整笔按比例变透明 ✓。
+    //   `opacity` 没给时 ⇒ 以笔刷自带的 `opaque` 为底再乘系数 ✓（与显式 `opacity` 同例 ✓）。
+    //   与显式 `opacity` 一样 ✓：设了就是常量 ⇒ 会压平 `.myb` 里 `opaque` 随压力的曲线 ✓；
+    //   而后来的 `brush_params{opaque}` 仍优先（它最后应用 ✓）。
+    //   `color_to.a` 仍被忽略（渐变只用单一 opacity ✓，见下面 B4 那条）⇒ 警告保留 ✓。
+    if let Some(factor) = color.and_then(|value| color_alpha_factor(value, color_space)) {
+        if factor < 1.0 {
+            let base = match opacity {
+                Some(given) => given,
+                None => brush.get(hokusai::BrushSetting::Opaque).base_value as f64,
+            };
+            brush.set(
+                hokusai::BrushSetting::Opaque,
+                hokusai::SettingValue::constant((base * factor).clamp(0.0, 1.0) as f32),
+            );
+        }
+    }
+
     let mut state = hokusai::BrushState::default();
     prime_stroke_total_length(&mut state, points);
     let mut surface = hokusai::tile_mem::MemSurface::new();
@@ -2043,6 +2112,21 @@ pub(super) fn paint_brush(
     }
     ctx.time(Phase::Raster, read_started);
     if painted == 0 {
+        // **P-19：有效 opacity 是 0 时，零墨是调用方要的透明，不是不够长** ✓ ——
+        // `color.a=0` / `opacity: 0` 都会把 `Opaque` 压到 0 ⇒ 一枚 dab 都不会有墨 ✓ ⇒
+        // 这时若还报"加长路径"，就是误导（照着改也改不好 ✓）。先说清真正原因 ✓。
+        let opaque = brush.get(hokusai::BrushSetting::Opaque).base_value;
+        if opaque <= 0.0 {
+            return Err(YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(
+                    "这一笔没落下任何像素 ⇒ 有效 opacity 是 0（`color.a=0` 或 `opacity: 0`）✓：\
+                     透明度为 0 的笔本来就不会落墨 ✓，不是路径太短、也不是笔刷不对 ✓。\
+                     **想要墨** ⇒ 把 `color.a` / `opacity` 设大；**想要的就是透明** ⇒ 这笔不用画 ✓。"
+                        .to_owned(),
+                ),
+            ));
+        }
         // **说清原因，并给出路** ✓（"错误里要能照着改" 是本项目的既定规矩 ✓）。
         //
         // **实测过的事** ✓：`ramon-Knife.myb` **无论给不给 `size` 都不出墨** ✗ ——

@@ -234,7 +234,8 @@ pub struct Server {
 }
 
 impl Server {
-    /// 以选项构造（文件存储失败时回退内存并给出警告）。
+    /// 以选项构造（文件存储失败时回退内存并给出警告；**写锁冲突例外**，P-13：
+    /// 同一 root 已被另一进程占用时直接启动失败，不回退内存 ✓）。
     ///
     /// **资产目录找不到 ⇒ 失败** ✓（B3：空笔刷库启动即报错 ✓）——
     /// 返回的错误信息就是 `resolve_assets_dir` 的注记串（含找过的路径 ✓）。
@@ -244,13 +245,24 @@ impl Server {
             // **回退必须留痕**（第 1440 轮审计）：文档注释承诺「给出警告」而原来没给 ⇒
             // 静默降级。with_file_store 失败 ⇒ 记住 root 和原因，
             // 走 diagnostics 环（`log_lines` 可取）＋ stderr 两处可见 ✓。
-            Some(root) => Workspace::with_file_store(root.clone(), settings.clone()).unwrap_or_else(|err| {
-                yanshi_server::diagnostics::log_line(format!(
-                    "警告：文件存储 {root} 初始化失败（{err}）⇒ 已回退到内存存储，本次会话的文档不会落盘",
-                    root = root.display()
-                ));
-                Workspace::in_memory(settings)
-            }),
+            //
+            // **P-13：写锁冲突不回退内存** ✓ —— `Conflict` 只能出自写锁
+            // （`with_file_store` 里其它失败都是 `ResourceExhausted` ✓）⇒
+            // 第二进程若静默回退内存 ✓，它的写就全丢了 ✓（比"重复原子"更坏的
+            // 静默丢数据 ✗）⇒ 直接启动失败，让调用方看见 ✓。
+            Some(root) => match Workspace::with_file_store(root.clone(), settings.clone()) {
+                Ok(workspace) => workspace,
+                Err(err) if err.code == yanshi_core::ErrorCode::Conflict => {
+                    return Err(format!("{SERVER_NAME} 启动失败：{err}"));
+                }
+                Err(err) => {
+                    yanshi_server::diagnostics::log_line(format!(
+                        "警告：文件存储 {root} 初始化失败（{err}）⇒ 已回退到内存存储，本次会话的文档不会落盘",
+                        root = root.display()
+                    ));
+                    Workspace::in_memory(settings)
+                }
+            },
             None => Workspace::in_memory(settings),
         }
         // **与 HTTP 用同一个默认** ✓：内置纹理随仓库与发行包走 ✓。
@@ -680,12 +692,41 @@ pub fn tool_result(value: Value, inline_images: bool) -> Value {
     json!({"content": content, "isError": is_error})
 }
 
+/// **P-20：父死子死** ✓ —— `serve` 起始拉一个看门线程 ✓。
+///
+/// **为什么要它** ✗：`serve` 循环只认 stdin EOF 与写响应失败 ✓ ⇒ 父进程被杀后 ✓，
+/// 子进程还会把管道里排队的请求跑完才退出 ✓（分诊实测：又多落 17 笔才以 Broken pipe 退出 ✓）。
+/// **做法** ✓：记下起始父进程号，每 200 ms 比一次，变了就打一行 stderr 后 `exit(0)` ✓
+/// （父进程已死，继续服务没有意义 ✓；`exit(0)` 是干净退出，不是崩溃 ✓）。
+/// **误退边界** ✓：父进程一开始就是 init（ppid 1）时，号一直是 1 ⇒ 不误退 ✓；
+/// 正常父进程活着时号不变 ✓ ⇒ 不误退 ✓。只在 unix 上生效（非 unix 无 `getppid` ✓）。
+/// **stdin 阻塞读不影响检测** ✓：看门线程独立轮询，不等主循环 ✓。
+#[cfg(unix)]
+fn spawn_parent_watchdog() {
+    let parent = std::os::unix::process::parent_id();
+    let spawned = std::thread::Builder::new()
+        .name("yanshi-mcp-parent-watchdog".to_owned())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            if std::os::unix::process::parent_id() != parent {
+                eprintln!("yanshi-mcp: 父进程（pid {parent}）已退出，子进程随之退出");
+                std::process::exit(0);
+            }
+        });
+    if let Err(error) = spawned {
+        eprintln!("yanshi-mcp: 父进程看门线程起不来（{error}）⇒ 父死检测不可用");
+    }
+}
+
 /// 跑 stdio 循环：逐行读 JSON-RPC，逐行写响应。
 pub fn serve<R: Read, W: Write>(
     reader: R,
     mut writer: W,
     options: McpOptions,
 ) -> std::io::Result<()> {
+    // **P-20：父死子死** ✓（看门线程，见上 ✓）。
+    #[cfg(unix)]
+    spawn_parent_watchdog();
     // **先把 `--watch` 需要的东西取出来** ✓（`Server::new` 会把 `options` **拿走** ✗ ⇒ 之后就取不到了 ✓）。
     let watch_on = options.watch;
     let watch_root = options.root.clone();
@@ -1217,6 +1258,46 @@ mod tests {
             "警告行要点名失败的 root 与「回退」，实测 {lines:?} 里没有"
         );
         std::fs::remove_file(&root).ok();
+    }
+
+    /// P-13（paint-fix-p7）：写锁冲突时 `Server::new` 必须**启动失败**，不回退内存。
+    ///
+    /// **为什么不能回退** ✗：第二进程若静默回退内存 ✓，它的写就全丢了 ✓
+    /// （比"重复原子"更坏的静默丢数据 ✗）⇒ `Conflict` 只出自写锁 ⇒ 直接 `Err` ✓。
+    /// 变异：删掉 `Conflict` 那个分支 ⇒ 本测试红（`Server::new` 又回退内存成功）。
+    #[test]
+    fn write_lock_conflict_fails_startup_instead_of_falling_back_to_memory() {
+        // 一个还活着的子进程的 pid：写进锁文件，模拟另一进程持有这个 root。
+        // （只杀自己拉起的测试进程，绝不碰其它进程 ✓。）
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let live_pid = child.id();
+        let root = std::env::temp_dir().join(format!("yanshi-mcp-locked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".yanshi-write.lock"), format!("{live_pid}\n")).unwrap();
+        // `unwrap_err` 不能用：它要求 `Server: Debug`，而 `Server` 没派生它 ✓。
+        let error = match Server::new(McpOptions {
+            root: Some(root.clone()),
+            doc_id: "doc_locked".to_owned(),
+            ..McpOptions::default()
+        }) {
+            Ok(_) => panic!("写锁冲突时 Server::new 必须启动失败，不应回退内存"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains(&live_pid.to_string()),
+            "启动失败要说清是哪个进程占着 root，实测：{error}"
+        );
+        assert!(
+            error.contains("只许一个写进程"),
+            "启动失败要说清是写锁冲突，实测：{error}"
+        );
+        child.kill().unwrap();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// P-11（paint-fix-p3）：重复 initialize 只加 note，不改变行为 ——

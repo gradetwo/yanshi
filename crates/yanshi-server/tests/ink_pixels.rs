@@ -102,45 +102,184 @@ fn ink_pixels_never_exceeds_the_stamp_area_and_is_positive_for_an_opaque_stroke(
     );
 }
 
-/// **`color.a` 目前被忽略 —— 这一条是"记账"，不是"要求"**（第 786→788 轮）
+/// **`color.a` 乘进整笔 opacity** ✓（P-19，paint-fix 期 7）。
 ///
-/// **⇒ 我第 786 轮加过"非不透明就拒绝"** ✗ ⇒ **CI 实测它太激进** ✓：
-///   `export_small.rs` 用 `a = 220`（半透明、完全合法的既有用法 ✓）
-///   ⇒ 拒绝让 `export_small` **3 个测试** 与 **4 片 criteria** 一起红 ✗
-///   （`test (stable)`／`test (beta)`／`criteria shard 1,2,4,5` ✓）。
-/// **⇒ 所以本判据只钉住"现在的行为"** ✓：`a = 0` 与 `a = 255` 的 `ink_pixels` **相同** ✓
-///   ⇒ **这是既有行为的记录** ✓，**不是**期望 ✓ —— 一旦有人把它改成"乘进 opacity" ✓，
-///   本判据会**红** ✓，而那正是提醒"该改文档与该判据"的信号 ✓。
-/// **⇒ 为什么留着它**：把"已知的静默行为"钉成可复核的断言 ✓，
-///   比写在注释里强 ✓（注释会烂，断言不会 ✓）。
+/// **⇒ 旧判据只钉住"现在的行为"** ✓：`a = 0` 与 `a = 255` 的 `ink_pixels` **相同** ✓
+///   ⇒ 那是第 786→788 轮"接受但不生效"的记录 ✓，本轮修法落地后它**必须改** ✓
+///   （判据原文自己写着"一旦有人把它改成乘进 opacity，本判据会红" ✓）。
+///
+/// **⇒ 新行为**：`a=255` 与不给 `a` 逐项相同（与修前逐位一致 ✓）；`a=110` 真透明
+/// （`ink_mass` 与 `max_channel_delta` 都比不透明那笔小 ✓）；`a=0` 按既有零墨规矩
+/// 被拒（`precondition_failed`，与显式 `opacity: 0` 同款 ✓），什么都不落下、也不留原子 ✓；
+/// 拒绝文案必须说清是 opacity 为 0，不能误导去"加长路径" ✓。
+/// **⇒ 为什么不用 `ink_footprint_pixels` 断 `a=110`** ✗：它数的是 alpha 非零的像素 ✓ ⇒
+/// 半透明时足迹几何基本不变、只有 alpha 变小 ✓ ⇒ 真透明的量是 `ink_mass`（Σalpha ✓，
+/// 随 opacity 线性变）与 `max_channel_delta` ✓。
+/// **⇒ 变异**：把乘法去掉 ⇒ `a=0` 那笔又成功落下（`ok=true`，足迹回到 270）⇒ 拒绝那格红 ✓；
+/// 把零 opacity 文案分支删掉 ⇒ 文案回到"加长路径" ⇒ 含 `opacity 是 0` 那格红 ✓；
+/// 把 `factor < 1.0` 的跳过删掉 ⇒ `a=255` 与不给 `a` 的字段仍相等（系数 1.0 恒等 ✓，
+/// 这一格抓不到，但 `a=110` 那格照样红 ✓）。
 #[test]
-fn colour_alpha_is_currently_ignored_and_that_is_recorded_here() {
+fn colour_alpha_multiplies_into_opacity() {
     let mut workspace = setup("alpha");
     let registry = ToolRegistry::with_profiles(&Profile::ALL);
-    let sample = |workspace: &mut Workspace, object: &str, alpha: u8| -> u64 {
+    let sample =
+        |workspace: &mut Workspace, object: &str, color: serde_json::Value| -> serde_json::Value {
+            let mut ctx = ToolContext::new(workspace, "doc_inkpx", "human:1", "s")
+                .with_owner(true)
+                .with_wait_for_render(true, 4_000);
+            let out = registry.call(
+                &mut ctx,
+                "brush_stroke",
+                &json!({
+                    "layer_id": "layer_default", "object_id": object,
+                    "brush": "8B_Pencil#1",
+                    "points": [[8.0, 8.0, 1.0], [40.0, 40.0, 1.0]],
+                    "size": 6.0,
+                    "color": color,
+                }),
+            );
+            assert_eq!(
+                out["ok"],
+                json!(true),
+                "半透明也是合法请求（{object}）：{out}"
+            );
+            out
+        };
+    let opaque = sample(
+        &mut workspace,
+        "o_a255",
+        json!({"r": 200, "g": 20, "b": 20, "a": 255}),
+    );
+    let no_alpha = sample(
+        &mut workspace,
+        "o_no_a",
+        json!({"r": 200, "g": 20, "b": 20}),
+    );
+    // **a=1（a=255）行为不变** ✓：与不给 `a` 逐项相同。
+    for field in [
+        "painted_pixels",
+        "ink_footprint_pixels",
+        "ink_mass",
+        "max_channel_delta",
+    ] {
+        assert_eq!(
+            opaque[field], no_alpha[field],
+            "a=255 必须与不给 a 逐项相同（{field}）：{opaque} vs {no_alpha}"
+        );
+    }
+    let half = sample(
+        &mut workspace,
+        "o_a110",
+        json!({"r": 200, "g": 20, "b": 20, "a": 110}),
+    );
+    // **a<1 真透明** ✓：印章面积不变（几何没变 ✓），墨量与色差都变小。
+    assert_eq!(
+        half["painted_pixels"], opaque["painted_pixels"],
+        "半透明只改透明度，不改印章面积：{half} vs {opaque}"
+    );
+    let mass_opaque = opaque["ink_mass"].as_u64().expect("ink_mass");
+    let mass_half = half["ink_mass"].as_u64().expect("ink_mass");
+    assert!(
+        mass_half > 0 && mass_half < mass_opaque,
+        "a=110 的墨量应在 0 与不透明之间，实测 {mass_half} vs {mass_opaque}：{half}"
+    );
+    let delta_opaque = opaque["max_channel_delta"]
+        .as_u64()
+        .expect("max_channel_delta");
+    let delta_half = half["max_channel_delta"]
+        .as_u64()
+        .expect("max_channel_delta");
+    assert!(
+        delta_half > 0 && delta_half < delta_opaque,
+        "a=110 的色差应在 0 与不透明之间，实测 {delta_half} vs {delta_opaque}：{half}"
+    );
+    // 数组写法同口径：`[200, 20, 20, 110]` 的墨量与对象式 `a=110` 相同。
+    let half_array = sample(&mut workspace, "o_a110_arr", json!([200, 20, 20, 110]));
+    assert_eq!(
+        half_array["ink_mass"], half["ink_mass"],
+        "数组式 a=110 的墨量应与对象式相同：{half_array} vs {half}"
+    );
+    // **a=0：按既有零墨规矩拒绝，不落墨也不留原子** ✓ —— 有效 opacity 是 0 ⇒
+    // raster 零像素 ⇒ `paint_brush` 的 `painted == 0` 前置条件触发 ✓（与显式
+    // `opacity: 0` 同款，不是 P-19 新立的规矩 ✓）。"全透明"在这里的意思就是
+    // "什么都不落下"；拒绝的文案必须说清是 opacity 为 0（P-19 补的分支 ✓），
+    // 不能再让人去"加长路径" ✓。
+    let stroke_log_total = |workspace: &mut Workspace| -> u64 {
         let mut ctx = ToolContext::new(workspace, "doc_inkpx", "human:1", "s")
             .with_owner(true)
             .with_wait_for_render(true, 4_000);
-        let out = registry.call(
+        registry.call(
             &mut ctx,
-            "brush_stroke",
-            &json!({
-                "layer_id": "layer_default", "object_id": object,
-                "brush": "8B_Pencil#1",
-                "points": [[8.0, 8.0, 1.0], [40.0, 40.0, 1.0]],
-                "size": 6.0,
-                "color": {"r": 200, "g": 20, "b": 20, "a": alpha},
-            }),
-        );
-        assert_eq!(out["ok"], json!(true), "半透明也是合法请求：{out}");
-        out["painted_pixels"].as_u64().unwrap_or(0)
+            "get_stroke_log",
+            &json!({"doc_id": "doc_inkpx", "limit": 1}),
+        )["total"]
+            .as_u64()
+            .unwrap_or(0)
     };
-    let opaque = sample(&mut workspace, "o_a255", 255);
-    let clear = sample(&mut workspace, "o_a0", 0);
+    let total_before = stroke_log_total(&mut workspace);
+    let mut ctx = ToolContext::new(&mut workspace, "doc_inkpx", "human:1", "s")
+        .with_owner(true)
+        .with_wait_for_render(true, 4_000);
+    let clear = registry.call(
+        &mut ctx,
+        "brush_stroke",
+        &json!({
+            "layer_id": "layer_default", "object_id": "o_a0",
+            "brush": "8B_Pencil#1",
+            "points": [[8.0, 8.0, 1.0], [40.0, 40.0, 1.0]],
+            "size": 6.0,
+            "color": {"r": 200, "g": 20, "b": 20, "a": 0},
+        }),
+    );
+    assert_eq!(clear["ok"], json!(false), "a=0 的笔不应成功落下：{clear}");
     assert_eq!(
-        clear, opaque,
-        "**既有行为**：`color.a` 被忽略 ⇒ `a=0` 与 `a=255` 的印章面积相同（实测 {clear} vs {opaque}）\
-         ⇒ 若这一条红了，说明有人让 alpha 生效了 ✓ ⇒ 请同时改 `docs/tools.md` 的这个参数说明 ✓"
+        clear["error_code"],
+        json!("precondition_failed"),
+        "a=0 应按零墨规矩拒绝：{clear}"
+    );
+    let detail = clear["context"]["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("opacity 是 0"),
+        "a=0 的拒绝文案要说清是 opacity 为 0，不能误导去加长路径：{clear}"
+    );
+    assert_eq!(
+        stroke_log_total(&mut workspace),
+        total_before,
+        "被拒的 a=0 笔不应留原子：{clear}"
+    );
+    // **`color.a` 不再进 warnings** ✓：半透明那笔的警告里不许再有"被忽略"。
+    if let Some(warnings) = half["warnings"].as_array() {
+        assert!(
+            warnings
+                .iter()
+                .all(|note| !note.as_str().unwrap_or_default().contains("被忽略")),
+            "color.a 已生效，不应再报被忽略：{half}"
+        );
+    }
+    // **`color_to.a` 仍被忽略** ✓：渐变末端 alpha 没处放 ⇒ 警告保留。
+    let mut ctx = ToolContext::new(&mut workspace, "doc_inkpx", "human:1", "s")
+        .with_owner(true)
+        .with_wait_for_render(true, 4_000);
+    let gradient = registry.call(
+        &mut ctx,
+        "brush_stroke",
+        &json!({
+            "layer_id": "layer_default", "object_id": "o_grad_a",
+            "brush": "8B_Pencil#1",
+            "points": [[8.0, 8.0, 1.0], [40.0, 40.0, 1.0]],
+            "size": 6.0,
+            "color": {"r": 200, "g": 20, "b": 20, "a": 255},
+            "color_to": {"r": 20, "g": 20, "b": 200, "a": 0},
+        }),
+    );
+    assert_eq!(gradient["ok"], json!(true), "{gradient}");
+    let warnings = gradient["warnings"].as_array().cloned().unwrap_or_default();
+    assert!(
+        warnings
+            .iter()
+            .any(|note| note.as_str().unwrap_or_default().contains("color_to.a")),
+        "color_to.a 仍被忽略，必须警告：{gradient}"
     );
 }
 

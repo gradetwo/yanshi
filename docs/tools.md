@@ -43,12 +43,15 @@ names, so an audit that reads one name sees zeros on the other tools and reads "
 tool calls it something else". A shared name has not been chosen yet, because pixels and item counts are different
 quantities and one name would hide that; when it is chosen, this paragraph and the tool specs change together.
 
-The alpha of the colour a caller passes to brush_stroke is currently ignored: the paint path keeps only the three
-colour channels, and brush alpha comes from the brush's own opacity and glaze. A stroke asking for a fully transparent
-colour therefore lands exactly as much ink as an opaque one, which was measured as identical stamp areas for alpha 0
-and alpha 255. Refusing a non-opaque alpha was tried and reverted, because export_small draws with alpha 220 and the
-refusal failed three of its tests and four criteria shards; honouring alpha instead would change how every existing
-stroke looks, so the behaviour is recorded in a test rather than changed silently.
+The alpha of the colour a caller passes to brush_stroke multiplies into the stroke's opacity
+(P-19): `a=255` leaves the stroke exactly as before, `a=0` is refused under the existing
+zero-ink rule (`precondition_failed`, same as an explicit `opacity: 0` — nothing lands and no
+atom is left behind), and a missing `a` is the same as `a=255`. Only the start colour's alpha is honoured; `color_to`'s
+alpha is still ignored (a gradient uses a single opacity) and is reported in warnings. Refusing
+a non-opaque alpha was tried and reverted, because export_small draws with alpha 220 and the
+refusal failed three of its tests and four criteria shards; honouring alpha instead changes how
+existing strokes with `a < 255` look (they become transparent as asked), so the behaviour is
+pinned by a test rather than changed silently.
 
 brush_stroke takes opacity and hardness as well, mapping them to MyPaint's opaque and hardness settings, so a painter
 no longer has to leave the brush engine to get a controllable soft stroke, which is what one agent reported doing
