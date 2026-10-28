@@ -105,14 +105,23 @@ fn atoms_of(root: &std::path::Path, name: &str) -> Vec<serde_json::Value> {
 }
 
 /// **包里最后一笔笔触的 `source`** ✓（`update_stroke` 后是合并后的那份 ✓）。
+///
+/// **原子结构** ✓：笔触原子是 `kind == "import_image"`、`source` 在 `payload` 下；
+/// `update_stroke` 的 `supersede` 原子、`source` 在 `payload.data` 下 ✓。
 fn stroke_source(root: &std::path::Path, name: &str) -> serde_json::Value {
     let atoms = atoms_of(root, name);
-    let found = atoms
-        .iter()
-        .rev()
-        .find(|a| a["data"]["source"]["kind"] == json!("brush"));
+    let found = atoms.iter().rev().find(|a| {
+        a["payload"]["source"]["kind"] == json!("brush")
+            || a["payload"]["data"]["source"]["kind"] == json!("brush")
+    });
     match found {
-        Some(atom) => atom["data"]["source"].clone(),
+        Some(atom) => {
+            if atom["payload"]["source"]["kind"] == json!("brush") {
+                atom["payload"]["source"].clone()
+            } else {
+                atom["payload"]["data"]["source"].clone()
+            }
+        }
         None => panic!(
             "包里应当有一笔带 source 的笔触：{}",
             serde_json::to_string(&atoms).unwrap()
@@ -177,8 +186,8 @@ fn stroke_with_point_times_exports_as_omitted() {
     );
     let exported = export(&mut workspace, &root, "times");
     let source = stroke_source(&root, "times");
-    // **`times` 记的是浮点秒数** ✓（`as_f64` 取的 ✓）⇒ 断言用浮点字面量 ✓。
-    assert_eq!(source["times"], json!([0.0, 100.0, 200.0]), "{source}");
+    // **`times` 是原样克隆** ✓（第 4 元素是什么类型就存什么类型 ✓）⇒ 本测试传整数，断言用整数 ✓。
+    assert_eq!(source["times"], json!([0, 100, 200]), "{source}");
     assert_proved(&exported);
 }
 
@@ -200,7 +209,7 @@ fn stroke_with_brush_params_and_times_exports_as_omitted() {
         json!({"dabs_per_actual_radius": 3, "dabs_per_basic_radius": 3}),
         "{source}"
     );
-    assert_eq!(source["times"], json!([0.0, 100.0, 200.0]), "{source}");
+    assert_eq!(source["times"], json!([0, 100, 200]), "{source}");
     assert_proved(&exported);
 }
 
@@ -229,7 +238,7 @@ fn update_stroke_keeps_the_proof() {
         json!({"dabs_per_actual_radius": 3, "dabs_per_basic_radius": 3}),
         "{source}"
     );
-    assert_eq!(source["times"], json!([0.0, 100.0, 200.0]), "{source}");
+    assert_eq!(source["times"], json!([0, 100, 200]), "{source}");
     // **换色后旧红仍在日志里被引用**（若进包也该被证明）；至少新绿那笔被证明，
     // 一张错即 `kept_mismatch > 0` ✗。
     assert_eq!(exported["kept_mismatch"], json!(0), "{exported}");
