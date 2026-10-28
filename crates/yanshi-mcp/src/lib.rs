@@ -342,15 +342,23 @@ impl Server {
 
         let response = match method {
             "initialize" => {
+                // **P-11（paint-fix-p3）**：重复 initialize 只加一条 note，不改变行为 ——
+                // 按 MCP 规范重连后重发 initialize 的合法客户端不能被报错打断。
+                let already = self.initialized;
                 self.initialized = true;
-                Ok(json!({
+                let mut result = json!({
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": {"tools": {"listChanged": false}},
                     "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                     "instructions": "偃师 Yanshi 无头绘画引擎。用 get_document/get_state 看状态，\
                                      用 draw_*/fill/erase 画，用 render_region 看预览，\
                                      重型操作用 get_job 轮询。"
-                }))
+                });
+                if already {
+                    result["note"] =
+                        json!("会话已经初始化：重复 initialize 不改变会话状态，batch 照常执行");
+                }
+                Ok(result)
             }
             "ping" => Ok(json!({})),
             "tools/list" => Ok(self.tools_list()),
@@ -704,32 +712,69 @@ pub fn serve<R: Read, W: Write>(
     //   **⇒ 缺陷**：`reader.lines()` **无上限** ✗ ⇒ 一个不带换行的 10 GB 输入就能让
     //     MCP 进程**把内存吃光** ✓（HTTP 层早有 `read_line_bounded` 的 64 KiB 口径 ✓，
     //     两条路**一道门有锁、一道没有** ✓ —— 本仓反复吃过的「两条路径漂移」✓）。
-    //   **⇒ 判据**：超限的一行 ⇒ 报错退出且**文案说清上限** ✓（`mcp_line_cap`）。
+    //   **⇒ 判据**：超限的一行 ⇒ 丢弃该行并写一条 JSON-RPC 错误回执
+    //     （码 -32600，文案说清 65536 上限与"拆成更小的 batch"），serve 继续循环、不退出
+    //     （P-1，paint-fix-p3）；排空本身另设丢弃上限，行尾一直不来才返回 Err
+    //     （`mcp_line_cap`）。
     //   **⚠ 不用 `reader.lines()`** ✓：它在超限前就已经把整行读进内存了 ✗。
     const MAX_LINE: usize = 64 * 1024;
+    // **P-1（paint-fix-p3）**：超限行的丢弃上限 —— 排空剩余字节时行尾一直不来也不能无限等；
+    // 超过该量仍无行尾时返回 Err（进程退出，旧行为只留给这种病态输入）。
+    const MAX_DISCARD: usize = 1024 * 1024;
     loop {
         let mut bytes: Vec<u8> = Vec::new();
         let mut one = [0u8; 1];
+        // 超限行：已越过上限，不再攒字节，只数丢掉的量。
+        let mut over_limit = false;
+        let mut discarded: usize = 0;
         loop {
             let read = std::io::Read::read(&mut reader, &mut one)?;
             if read == 0 {
                 break;
+            }
+            if over_limit {
+                discarded += 1;
+                if one[0] == b'\n' {
+                    break;
+                }
+                if discarded > MAX_DISCARD {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "MCP 输入行超过 {MAX_LINE} 字节上限且随后 {MAX_DISCARD} 字节内无行尾 ⇒ 拒绝继续读（否则一行就能把内存吃光）"
+                        ),
+                    ));
+                }
+                continue;
             }
             bytes.push(one[0]);
             if one[0] == b'\n' {
                 break;
             }
             if bytes.len() > MAX_LINE {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "MCP 输入行超过 {MAX_LINE} 字节上限 ⇒ 拒绝继续读（否则一行就能把内存吃光）"
-                    ),
-                ));
+                // **P-1**：超限不再 return Err 杀进程 —— 排空该行剩余字节，
+                // 写一条 JSON-RPC 错误回执，然后继续循环；上限本身不变。
+                over_limit = true;
             }
         }
-        if bytes.is_empty() {
+        if bytes.is_empty() && !over_limit {
             break;
+        }
+        if over_limit {
+            // 超限行的 id 读不到（整行已丢），回执 id 只能写 null。
+            let response = json!({
+                "jsonrpc": "2.0",
+                "id": Value::Null,
+                "error": {
+                    "code": error_code::INVALID_REQUEST,
+                    "message": format!(
+                        "MCP 输入行超过 {MAX_LINE} 字节上限，该行已被丢弃，未落下任何原子；请拆成更小的 batch 后重发"
+                    ),
+                },
+            });
+            writeln!(writer, "{response}")?;
+            writer.flush()?;
+            continue;
         }
         let line = String::from_utf8_lossy(&bytes).into_owned();
         // **每行之前**先 poll 一次 ✓（`serve` 是"轮到我们了"的地方 ✓，不需要额外线程 ✓）。
@@ -1172,5 +1217,71 @@ mod tests {
             "警告行要点名失败的 root 与「回退」，实测 {lines:?} 里没有"
         );
         std::fs::remove_file(&root).ok();
+    }
+
+    /// P-11（paint-fix-p3）：重复 initialize 只加 note，不改变行为 ——
+    /// 两次与三次 initialize 之后 batch 全部成功，fail_count 是 0。
+    /// 变异：删掉 note ⇒ 第二次 initialize 的断言红；把重复 initialize 改成报错 ⇒
+    /// 第二次 initialize 的断言红；删掉 batch 的放行 ⇒ batch 断言红。
+    #[test]
+    fn repeated_initialize_only_adds_a_note_and_batch_still_works() {
+        let mut server = server();
+        let first = call(&mut server, 1, "initialize", json!({}));
+        assert_eq!(first["error"], Value::Null);
+        assert_eq!(
+            first["result"]["note"],
+            Value::Null,
+            "首次 initialize 不带 note"
+        );
+        let second = call(&mut server, 2, "initialize", json!({}));
+        assert_eq!(
+            second["error"],
+            Value::Null,
+            "重复 initialize 不能报错：{second}"
+        );
+        assert!(
+            second["result"]["note"]
+                .as_str()
+                .unwrap_or("")
+                .contains("会话已经初始化"),
+            "重复 initialize 回执要写明会话已经初始化：{second}"
+        );
+        let third = call(&mut server, 3, "initialize", json!({}));
+        assert_eq!(third["error"], Value::Null);
+        assert!(
+            third["result"]["note"]
+                .as_str()
+                .unwrap_or("")
+                .contains("会话已经初始化"),
+            "第三次 initialize 同样只加 note：{third}"
+        );
+
+        // 两次与三次 initialize 之后 batch 全部成功。
+        tool(&mut server, "create_layer", json!({"layer_id": "layer_1"}));
+        let batch = text_of(&tool(
+            &mut server,
+            "batch",
+            json!({
+                "calls": [
+                    {"tool": "draw_stroke", "arguments": {"layer_id": "layer_1", "data": {"points": [[1.0, 1.0]], "size": 2.0}}},
+                    {"tool": "draw_stroke", "arguments": {"layer_id": "layer_1", "data": {"points": [[2.0, 2.0]], "size": 2.0}}},
+                    {"tool": "draw_stroke", "arguments": {"layer_id": "layer_1", "data": {"points": [[3.0, 3.0]], "size": 2.0}}},
+                ]
+            }),
+        ));
+        assert_eq!(
+            batch["ok"],
+            json!(true),
+            "重复 initialize 后 batch 应全成：{batch}"
+        );
+        assert_eq!(batch["count"], json!(3));
+        assert_eq!(batch["fail_count"], json!(0));
+        // 建文档 1 个原子 + 建层 1 个原子 + 3 笔 = 5 个原子。
+        let log = text_of(&tool(&mut server, "get_log", json!({})));
+        assert_eq!(
+            log["count"],
+            json!(5),
+            "3 笔 batch 之后日志应有 5 个原子：{log}"
+        );
     }
 }

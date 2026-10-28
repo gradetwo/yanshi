@@ -20715,6 +20715,29 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             )),
         ));
     }
+    // **P-10（paint-fix-p3）**：子调用的 doc_id 必须与本批一致 ——
+    // 全部子调用共用固定 doc_id 的 ctx，子调用 doc_id 被 validate_args 放行又无人读取，
+    // 静默落错文档是本仓"静默降级"点名的最坏组合。校验在落笔之前做：不一致就整批拒绝，
+    // 一个原子都不落；不带 doc_id 的子调用沿用本批 doc_id。
+    // （按子调用 doc_id 落笔是备选，因跨文档拆变更集语义而不做，另立项评估。）
+    for (call_index, call) in calls.iter().enumerate() {
+        let sub_doc_id = call
+            .get("arguments")
+            .or_else(|| call.get("args"))
+            .and_then(|arguments| arguments.get("doc_id"))
+            .and_then(Value::as_str);
+        if let Some(sub_doc_id) = sub_doc_id {
+            if sub_doc_id != ctx.doc_id {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "batch 第 {call_index} 个子调用的 doc_id 是 {sub_doc_id}，与本批 doc_id {} 不一致 ⇒ 整批拒绝（一个 batch 只写一个文档；请把子调用拆到与本批 doc_id 相同的 batch 里）",
+                        ctx.doc_id
+                    )),
+                ));
+            }
+        }
+    }
     let registry = ToolRegistry::full();
     let changeset = Changeset::new_id();
     // **静默批处理** ✓（用户 §五-5 ✓）：`batch` 里的子调用**共用这个 `ctx`** ✓
