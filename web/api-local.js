@@ -28,6 +28,8 @@
  *   **∴ 另 7 个是**如实 501** 的分支 ✓**（`restore_checkpoint`／`accept_suggestion`／`accept_suggestions`／
  *     `preview_suggestion`／`list_stashes`／`apply_stash`／`discard_stash` ✓）——
  *   **∴ 它们**不是"假装成功" ✗**（**一律 501 ＋ 明确原因 ✓**），**而是**已处理的端点** ✗；
+ *   **★ 后续更新 ✗（第 六百六十三 轮 ✓）**：**`restore_checkpoint` 已落地 ✓**（**`declare_head{base:{type:"checkpoint"}}`
+ *     ＋ 本地 `state@seq` 窗口 ✓**）⇒ **∴ 上面那句里的 501 名单已过期 ✗**（**∴ 以本节与实现分支为准 ✓**）。
  *   **∴ 口径说明 ✗**：**判据按 `path === "` 机械计数分支数 ✗**（**要求 `declared === actualImpl(+1)` ✓**）
  *     ⇒ **∴ 本数 = 全部分支数 ✗**（**真实实现 ＋ 如实 501 ✓**），**∴ 与判据口径对齐 ✓**；
  *   **∴ 不虚报 ✓**：**哪 7 个是 501 在上面点名 ✓**（**判据／人都能逐个核对 ✓**）。
@@ -50,6 +52,7 @@
  *   **∴ 另 6 个是**如实 501** 的分支 ✓**（`medium_stroke`／`set_brush_dynamics`／`estimate_dehaze`／
  *     `import_psd`／`resolve_conflict`／`push` ✓）——
  *   **∴ 它们**不是"假装成功" ✗**（**一律 501 ＋ 明确原因 ✓**），**而是**已处理的端点** ✗；
+ *   **★ 后续更新 ✗**：**`estimate_dehaze` 已落地 ✓**（第 六百六十二 轮 ✓，f32 逐位移植 ✓）⇒ **∴ 名单里它已过期 ✗**。
  *   **∴ 口径说明 ✗**：**与 P2b 一致 ✓**（**全部分支数 ＝ 真实实现 ＋ 如实 501 ✓**）；
  *   **∴ `restore_object` 已由他组实现 ✓**（**本片跳过 ✓**）；**`archive_base64` 不是端点 ✗**
  *     （**它是 `export_png` 响应字段 ✓ ⇒ **∴ 本地 `export_png` 照样返回它 ✓**）；
@@ -105,6 +108,104 @@ export function __setLocalApiLoadersForTest(loaders) {
   Object.assign(__loaders, loaders || {});
 }
 
+/** **state@seq 求值窗口 ✗**（**照 `yanshi-core/src/seq.rs` 的 `state_at` ✓**，设计 5.5 ✓）：
+ *   **∴ `state@seq_n := fold(A_n, base_state(H_n))` ✗**：
+ *     `H_n` = `seq ≤ n` 中**最近一次** `declare_head`；`A_n` = `(H_n.seq, n]`；
+ *     `base_state(H)` = base 指向的状态（atom ⇒ 该原子时刻的 state@seq；
+ *     checkpoint ⇒ `payload.anchor_seq ?? atom.seq` 的 state@seq ✓，递归 seq 严格递减 ✓）。
+ *   **∴ 于是「日志里的原子」≠「状态里的原子」✗**：`declare_head` 自身与 base 到它之间的
+ *     那段原子**都不在状态里** ✓（`seq.rs` 模块文档 ✓）。
+ *   **∴ 为什么本地必须有这一层 ✗**：`restore_checkpoint` 的语义就是写一条
+ *     `declare_head{base:{type:"checkpoint"}}` ✓ —— 而本地**所有状态推导**
+ *     （`p2Neutralized`／`p2ObjectView`／`p2PresetLayers`／`p1LayerOrder`／`p2cState`）
+ *     此前**只看全量日志** ✗ ⇒ 恢复后**回执说恢复了、面板还是旧状态** ✓
+ *     （形态③：回执 ok 而读回旧 ✓）。
+ *   **∴ 窗口 = 链底 `(0, 最内层 base]` ∪ 每个 `(H.seq, upto]`（升序拼接 ✓）**
+ *     —— 与 `state_at` 的三阶段折叠顺序等价 ✓。**段内 `revert` 不会跨过求值起点**
+ *     （`log.rs` 提交期拒绝 ✓）⇒ 段内有效集自洽 ⇒ 拼接后倒序扫描仍是同一口径 ✓。
+ *   **∴ 无 `declare_head` ⇒ 原样返回同一数组（下游零成本 ✓）**；memo 按数组身份 ✓。 */
+const p2StateWindowCache = new WeakMap();
+function p2StateWindow(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return rows || [];
+  const memo = p2StateWindowCache.get(rows);
+  if (memo) return memo;
+  const seqOf = new Map();
+  for (const r of rows) {
+    const id = r && r.atom && r.atom.id;
+    if (typeof id === "string" && typeof r.seq === "number") seqOf.set(id, r.seq);
+  }
+  const headUpto = (upto) => {
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const r = rows[i];
+      if (!r || typeof r.seq !== "number" || r.seq > upto) continue;
+      if (r.atom && r.atom.kind === "declare_head") return r;
+    }
+    return null;
+  };
+  const baseSeqOf = (headRow) => {
+    const base = (headRow.atom.payload && headRow.atom.payload.base) || {};
+    if (base.type === "checkpoint") {
+      if (typeof base.id !== "string" || !base.id) return null;
+      // **检查点从日志解析 ✓**（`seq.rs:checkpoint_anchor_seq` ✓：`seq ≤ H.seq` 内**最后一个**同名 ✓）
+      const ckpt = p2FindCheckpointAtom(rows, base.id, headRow.seq);
+      if (!ckpt) return null;
+      const anchor = (ckpt.atom.payload || {}).anchor_seq;
+      return (typeof anchor === "number" && Number.isInteger(anchor) && anchor >= 0) ? anchor : ckpt.seq;
+    }
+    const s = seqOf.get(base.id); // atom / declare_head ⇒ 该原子的 seq ✓（`HeadBase::Atom` ✓）
+    return typeof s === "number" ? s : null;
+  };
+  let tailUpto = rows[rows.length - 1].seq;
+  const ranges = []; // [from, to] ⇒ 可见区间 (from, to] ✓
+  let head = headUpto(tailUpto);
+  while (head) {
+    const base = baseSeqOf(head);
+    // **∴ base 解不出／不早于自身 ⇒ 写入口已经拒绝**（`validate_declare_head` ✓）⇒
+    //   **这里的兜底只是别把坏日志算成「有跳变」**（停在链底 ✓，不是静默放过 ✓）。
+    if (typeof base !== "number" || base >= head.seq) break;
+    ranges.push([head.seq, tailUpto]);
+    tailUpto = base;
+    head = headUpto(tailUpto);
+  }
+  if (ranges.length === 0) {
+    p2StateWindowCache.set(rows, rows);
+    return rows;
+  }
+  const visible = rows.filter((r) => {
+    if (typeof r.seq !== "number") return false;
+    if (r.seq <= tailUpto) return true;
+    for (const range of ranges) if (r.seq > range[0] && r.seq <= range[1]) return true;
+    return false;
+  });
+  p2StateWindowCache.set(rows, visible);
+  return visible;
+}
+/** **当前求值起点 seq ✗**（**`state.eval_origin_seq()` ✓ = 最近一次 `declare_head` 的 seq ✓**；
+ *   没有跳变 ⇒ 0 ✓）。**∴ `revert`／`reapply` 的目标不许早于它** ✗（`log.rs` ✓）。 */
+function p2EvalOriginSeq(rows) {
+  let origin = 0;
+  for (const r of rows || []) {
+    const a = (r && r.atom) || {};
+    if (a.kind === "declare_head" && typeof r.seq === "number" && r.seq > origin) origin = r.seq;
+  }
+  return origin;
+}
+/** **检查点原子 ✗**（**`seq ≤ upto` 内最后一个同名 ✓**，照 `seq.rs:checkpoint_anchor_seq` ✓：
+ *  `checkpoint_id` 缺省 ⇒ `ckpt_{atom.id}` ✓；服务端写的是 `create_checkpoint` ✓，
+ *  本地写的是 `checkpoint` ✓ —— **两种都认** ✓）。**`upto` 缺省 = 全量日志 ✓**。 */
+function p2FindCheckpointAtom(rows, checkpointId, upto) {
+  const limit = typeof upto === "number" ? upto : Infinity;
+  for (let i = (rows || []).length - 1; i >= 0; i--) {
+    const r = rows[i];
+    const a = (r && r.atom) || {};
+    if (typeof r.seq !== "number" || r.seq > limit) continue;
+    if (a.kind !== "checkpoint" && a.kind !== "create_checkpoint") continue;
+    const pl = a.payload || {};
+    const key = typeof pl.checkpoint_id === "string" ? pl.checkpoint_id : ("ckpt_" + a.id);
+    if (key === checkpointId) return r;
+  }
+  return null;
+}
 /** **★ 从原子日志推导图层视图（P1）✓ ★**：
  *   **∴ 只读推导 ✗**（**∴ 不另存图层表 ✓ —— 与 `list_layers` 原有纪律一致 ✓**）；
  *   **∴ `order` 自底向上 ✗**（**与服务端 `reorder_layers` 的 `order` 口径一致 ✓**）；
@@ -114,6 +215,7 @@ export function __setLocalApiLoadersForTest(loaders) {
  *   @returns {{layers: Map<string,{layer_id:string,name:string}>, order: string[]}}
  */
 export function p1LayerOrder(rows) {
+  rows = p2StateWindow(rows); // **`declare_head` 跳变之后的图层状态 ✗**（见 `p2StateWindow` ✓）
   const layers = new Map();
   const order = [];
   // **★ `set_property` 折叠**（`update_layer` ✓）：图层属性（visible/locked/opacity/
@@ -484,6 +586,7 @@ async function withKernel(doc, fn) {
    *   **∴ 返回的集合 = 「当前不再生效的原子」**，`p2ObjectView`／`p2History`／`p2cState`／
    *     `__p2CollectGestures` 共用同一份口径 ✓。 */
   function p2Neutralized(rows) {
+    rows = p2StateWindow(rows);
     const atoms = rows.map((r) => (r && r.atom) || r || {});
     const actions = new Map(); // 目标 id -> 最新**生效**动作（"revert" | "reapply"）
     const suppressed = new Set(); // 当前不再生效的原子
@@ -1146,6 +1249,7 @@ async function withKernel(doc, fn) {
    *     **再看 `set_property` 覆盖 ✗**（**组与实例的语义 ✓**）。
    */
   function p2ObjectView(rows, objectId) {
+    rows = p2StateWindow(rows); // 跳变窗口内折叠 ✓（`create`／属性／墓碑都只看状态里的原子 ✓）
     let create = null;
     let createSeq = null;
     const props = {};
@@ -1286,6 +1390,52 @@ async function withKernel(doc, fn) {
     const ls = layers || p2PresetLayers(rows, n);
     return !p2ObjectDeath(ls, view).deleted;
   }
+  /** **对象列表摘要 ✗**（**`list_objects` 与 `get_state{include_objects}` 共用一份 ✓**）：
+   *   **∴ 字段集照服务端 `summary_object`（`tools.rs:2823`）✓**：11 个里本地能给 8 个 ✓
+   *   （`bbox` 要渲染层算包围盒／`current_version`＋`versions` 要版本链 ⇒ 本地**如实不给** ✓，
+   *     判据把它们列入 serverOnly ✓）。
+   *   **∴ 过滤／排序照 `read_list_objects` ✓**：`alive_objects()` ⇒ `(layer_id, z_index, id)` ✓；
+   *   `include_hidden` 缺省 false ⇒ 只给 `visible` ✓（**∴ 隐藏是对象属性 `visible` ✓，
+   *   不是「有墓碑」✗** —— 旧 `get_state` 把 `deleted` 当可见性过滤，口径错 ✓）。
+   *   **∴ 存活 = 创建未被撤销 ＋ 自己未墓碑 ＋ 未随图层级联删 ✗**（`__p2Alive` ✓）。 */
+  function p2ObjectSummaries(rows, opts) {
+    rows = p2StateWindow(rows);
+    const o = opts || {};
+    const layerFilter = typeof o.layerFilter === "string" && o.layerFilter ? o.layerFilter : null;
+    const typeFilter = typeof o.typeFilter === "string" && o.typeFilter ? o.typeFilter : null;
+    const includeHidden = o.includeHidden === true; // 缺省 false（照 `unwrap_or(false)` ✓）
+    const cmpId = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+    const neutral = p2Neutralized(rows);
+    const layers = p2PresetLayers(rows, neutral);
+    const seen = new Set();
+    const objects = [];
+    for (const r of rows) {
+      const a = (r && r.atom) || {};
+      const id = a.payload && a.payload.object_id;
+      if (typeof id !== "string" || !id || seen.has(id)) continue; // **按 object_id 去重 ✗**
+      seen.add(id);
+      const v = p2ObjectView(rows, id);
+      if (!__p2Alive(rows, v, layers, neutral)) continue;            // 只列存活对象 ✗
+      if (layerFilter !== null && v.layer_id !== layerFilter) continue;
+      if (typeFilter !== null && v.type !== typeFilter) continue;
+      const hidden = (v.visible === false);                          // `null`＝从未设＝可见 ✓
+      if (!includeHidden && hidden) continue;
+      objects.push({
+        object_id: id,
+        layer_id: v.layer_id ?? null,
+        type: v.type ?? null,
+        visible: !hidden,
+        enabled: v.enabled !== false,
+        locked: v.locked === true,
+        z_index: v.z_index ?? 0,
+        medium: v.data && v.data.source && v.data.source.medium ? v.data.source.medium : null,
+      });
+    }
+    objects.sort((a, b) => cmpId(String(a.layer_id), String(b.layer_id))
+      || (a.z_index - b.z_index)
+      || cmpId(String(a.object_id), String(b.object_id)));
+    return objects;
+  }
   /** **状态里存在的对象 id ✗**（**本地等价服务端 `state.objects.keys()` ✓**）：
    *   **∴ 判据是「在状态里」✗ 不是「活着」✓** —— 折叠层**保留墓碑** ✓（删除可撤销的基础 ✓）⇒
    *   `check_object_exists` 报错时列的候选**含已删对象** ✓（`log.rs:1173` 不过滤 `is_deleted` ✓
@@ -1294,6 +1444,7 @@ async function withKernel(doc, fn) {
    *   **∴ 排序** ✓：服务端是 `BTreeMap` ⇒ 键**升序** ✓，候选列表文案随之确定 ✓。
    */
   function p2StateObjectIds(rows, neutral) {
+    rows = p2StateWindow(rows); // 跳变窗口内 ✓（被跳过的「建对象」不在状态里 ✓）
     const created = new Map();
     for (const r of rows) {
       const a = (r && r.atom) || {};
@@ -1317,6 +1468,7 @@ async function withKernel(doc, fn) {
    *   **∴ 此前本地只查自己那条 ✗** ⇒ 父层被删而子层没被删时 ⇒ 本地认为子层还活着 ✓
    *   服务端 409 ⇒「回执 ok 而画面没变」的另一种形态 ✓。 */
   function p2PresetLayers(rows, neutral) {
+    rows = p2StateWindow(rows); // 跳变窗口内折叠 ✓（层创建／墓碑／父链都只看状态里的原子 ✓）
     const seen = new Map();
     let order = 0;
     for (const r of rows || []) {
@@ -2331,62 +2483,17 @@ async function withKernel(doc, fn) {
     //   **∴ 如实说明 ✗**：**这是**日志级**的对象表 ✓（**∴ 字段**取原子里**真的有的那些 ✓），
     //     **∴ 不**补算位置／包围盒 ✓（**∴ 那**要重放内核 ⇒ **∴ 留给**需要它的调用方 ✓）** ✓✓
     if (path === "/api/tools/list_objects") {
+      // **口径照服务端 `read_list_objects`（`tools.rs:3148`）✓**：
+      //   一对象一条（按 `object_id` 去重 ✓）、`layer_id`／`type`／`include_hidden` 三条过滤 ✓、
+      //   只列存活对象（创建被撤销／已墓碑／随层级联删都算死 ✓）、按 `(layer_id, z_index, id)` 排序 ✓。
+      //   **∴ 折叠细节统一在 `p2ObjectSummaries` ✓**（`get_state{include_objects}` 共用同一份 ✓，
+      //     两处各写一遍 ⇒ 一定漂移 ✓）。**∴ 本端点纯原子折叠 ✗ 不碰内核 ✓**（`bbox` 等如实不补 ✓）。
       const rows = await atomsOf(handle, doc);
-      // **口径照服务端 `read_list_objects`（`tools.rs:3148`）✗**（本轮 ✓）：
-      //   **∴ 旧实现坏三处 ✗**：
-      //   ① **逐原子 push** ⇒ 同一对象的 `create`+`set_property`+`move`+`supersede`+`tombstone` 都带 `object_id`
-      //     ⇒ **一个对象在列表里出现好几遍**✓；
-      //   ② **不滤 `layer_id`** ⇒ 跨图层混在一起 ✓ ⇒ `moveCheckedObjectZ`（`viewer-app.js:5683`）按「该图层**完整** z 序」
-      //     的契约拼顺序 ✗ 拿到的却**含别的层的对象**✓ ⇒ 交给 `reorder_objects` 的 `order` 与该层真实集合不符
-      //     ⇒ **「期望 N 个、实际 M 个」打回**✓（**正是那句契约注释警告的情形 ✓**）；
-      //   ③ **不滤 `include_hidden`**（服务端缺省 `false`＝只给可见 ✓）⇒ `pickObjectAt`（`:8717`）传 `include_hidden:false`
-      //     却**拾到看不见的对象**✓（**又一处静默降级 ✓**）；且**不剔已删除**✓。
-      //   **∴ 修法 ✗**：**用同一个 `p2ObjectView` 折叠 ⇒ 一对象一条 ✓**，再照服务端三条过滤 + `alive` ✓。
-      //   **∴ 为什么这能在 node 验 ✗**：本端点**纯原子折叠 ✗ 不碰内核 ✓**（`bbox` 那种要重放才有的字段仍如实不补 ✓）。
-      const layerFilter = typeof body.layer_id === "string" && body.layer_id ? body.layer_id : null;
-      const typeFilter = typeof body.type === "string" && body.type ? body.type : null;
-      const includeHidden = body.include_hidden === true;              // 缺省 false（照 `unwrap_or(false)` ✓）
-      const seen = new Set();
-      const objects = [];
-      // **折叠层只算一次 ✗**（**`__p2Alive` 现在含图层级联删 ✓** ⇒ 逐对象重算会是 O(n²) 且口径漂移 ✓）。
-      const neutralLO = p2Neutralized(rows);
-      const layersLO = p2PresetLayers(rows, neutralLO);
-      for (const r of rows) {
-        const a = (r && r.atom) || {};
-        const id = a.payload && a.payload.object_id;
-        if (typeof id !== "string" || !id || seen.has(id)) continue;   // **按 object_id 去重 ✗**
-        seen.add(id);
-        const v = p2ObjectView(rows, id);
-        // **∴ 存活判定必须用 `__p2Alive` ✗ 不是「没被 tombstone」就完 ✓**（本轮 `revert_atoms` 暴露 ✓）：
-        //   **∴ 服务端实测 ✓：`revert` 掉**建它的那条原子**⇒ 对象从 `list_objects` 整个消失 ✓**
-        //   （**∴ 折叠跳过被抑制的 `create` ⇒ 对象从未存在 ✓**——**与 `deleted` 是两回事 ✗**，
-        //   **∴ 旧实现只查 `v.deleted` ⇒ 撤了 create 对象还挂在列表里 ✓**）。
-        if (!__p2Alive(rows, v, layersLO, neutralLO)) continue;        // **只列存活对象 ✗**（照 `alive_objects` ✓）
-        if (layerFilter !== null && v.layer_id !== layerFilter) continue;
-        if (typeFilter !== null && v.type !== typeFilter) continue;
-        const hidden = (v.visible === false);                          // `null`＝从未设＝可见 ✓
-        if (!includeHidden && hidden) continue;
-        // **字段集照 `summary_object`（`tools.rs:2823`）✓**：11 个里本地能给 8 个 ✓。
-        //   **∴ 少 `bbox`／`current_version`／`versions` ✗**：前者要渲染层算包围盒 ✓、
-        //   后两者要版本链 ✓ —— 本地折叠没有这两样 ⇒ **如实不给** ✓
-        //   （判据把这三个列入 serverOnly ✓，别处若需要就说要勾回服务器渲染 ✓）。
-        objects.push({
-          object_id: id,
-          layer_id: v.layer_id ?? null,
-          type: v.type ?? null,
-          visible: !hidden,
-          enabled: v.enabled !== false,
-          locked: v.locked === true,
-          z_index: v.z_index ?? 0,
-          medium: v.data && v.data.source && v.data.source.medium ? v.data.source.medium : null,
-        });
-      }
-      // **顺序照服务端 `alive_objects()` ✓**（`state.rs`：**`(layer_id, z_index, id)`** 排序 ✓）
-      //   ⇒ `moveCheckedObjectZ` 这类按「返回序即 z 序」拼合同的调用方**跨端一致 ✓**；
-      //   旧本地按日志出现序返回 ⇒ `reorder_objects` 落地后**顺序必须跟着变** ⇒ 本排序是那条事实的载体 ✓。
-      objects.sort((a, b) => String(a.layer_id).localeCompare(String(b.layer_id))
-        || (a.z_index - b.z_index)
-        || String(a.object_id).localeCompare(String(b.object_id)));
+      const objects = p2ObjectSummaries(rows, {
+        layerFilter: body.layer_id,
+        typeFilter: body.type,
+        includeHidden: body.include_hidden === true, // 缺省 false（照 `unwrap_or(false)` ✓）
+      });
       return json({ ok: true, objects, count: objects.length, server: false,
                     derived_from: "atoms" });
     }
@@ -2491,7 +2598,7 @@ async function withKernel(doc, fn) {
       //   **★ `objects` 每层计数 ✗ ★**（`read_list_layers` 的最后一个字段 ✓）：
       //     **∴ 旧本地整条不给 ✗** ⇒ 图层面板显示每层对象数时**静默拿到 0/undefined** ✗
       //     ⇒ 这里用与 `list_objects` **同一份存活折叠**（`__p2Alive` 含图层级联删 ✓）✓。
-      const rows = await atomsOf(handle, doc);
+      const rows = p2StateWindow(await atomsOf(handle, doc)); // 跳变窗口内 ✓（恢复后旧段不在状态里 ✗）
       const { layers, order } = p1LayerOrder(rows);
       const neutralLL = p2Neutralized(rows);
       const layersLL = p2PresetLayers(rows, neutralLL);
@@ -2507,7 +2614,10 @@ async function withKernel(doc, fn) {
         const lid = v.layer_id ?? null;
         if (lid !== null) counts.set(lid, (counts.get(lid) || 0) + 1);
       }
-      const out = order.filter((id) => layers.has(id))
+      // **存活照 `alive_layers()` ✓**：`p1LayerOrder` 只认**自己那条**墓碑 ✗ ⇒ 这里再叠
+      // `p2PresetLayers`（**祖先级联删 ＋ 创建被撤销** ✓，与 `list_objects` 同一份口径 ✓）。
+      const out = order.filter((id) => layers.has(id) &&
+                                       (!layersLL.has(id) || layersLL.get(id).alive))
                        .map((id) => ({ ...layers.get(id), objects: counts.get(id) || 0 }));
       return json({ ok: true, layers: out, count: out.length, server: false,
                     derived_from: "atoms" });
@@ -3458,8 +3568,9 @@ async function withKernel(doc, fn) {
     // **★ P2c 渲染／导出／高级绘画／取色／诊断类端点 ✓ ★**（**服务端语义见 `crates/yanshi-server/src/tools.rs` ✓**）：
     //   **∴ 写操作**一律**写对应 `kind` 的原子 ✗**（**`p2Envelope` 8 字段封套 ✓ ⇒ **∴ 内核重放时处理 ✓**）；
     //   **∴ 读操作**从 IndexedDB 原子日志推导 ✗**（**∴ 不另存状态表 ✓，**与 `list_layers` 同一纪律 ✓**）；
-    //   **∴ 真要服务端能力的**（`import_psd` 的 PSD 解析 ✗／`estimate_dehaze` 的暗通道算法 ✗／
+    //   **∴ 真要服务端能力的**（`import_psd` 的 PSD 解析 ✗／
     //     `medium_stroke` 的介质插件宿主 ✗／`set_brush_dynamics` 的服务端笔刷文件缓存 ✗）⇒ **∴ 明确 501 ✓**；
+    //     **`estimate_dehaze` 已不再是 501 ✓**（第 六百六十二 轮起本地按 f32 逐位移植暗通道 ✓）。
     //   **∴ `archive_base64` 不是端点 ✗**（**它是 `export_png` 响应里的字段 ✓** ⇒ **∴ 本地 `export_png` 照样返回它 ✓**）；
     //   **∴ `push` 在服务端工具注册表里不存在 ✗**（**∴ 用 `p2NoServerEndpoint` 明确 501 ✓**）。
     //   **∴ 口径**：**真实映射的分支计入 `LOCAL_IMPLEMENTED` ✗**；**明确 501 的不计入 ✓**。
@@ -3978,40 +4089,70 @@ async function withKernel(doc, fn) {
      *   **∴ 对象**：**建对象原子（=`P2_OBJECT_CREATE_KINDS` ✓）按 object_id 去重列 ✗**（**只作 id 种子 ✓；
      *     真实类型／层／可见／删除由调用方经 `p2ObjectView` 合并视图取 ✓**）。 */
     function p2cState(rows) {
+      rows = p2StateWindow(rows); // `state@seq` 窗口 ✓（跳变后旧段不在状态里 ✓）
       const { w, h, color_space } = p2cDocSize(rows);
       const layers = [], layerIdx = {};
       const objects = [];
       const objSeen = new Set();  // 种子按 object_id 去重（与服务端 alive_objects 一对象一条 ✓）
-      let checkpoints = 0;
+      const checkpointIds = new Set(); // 服务端 `state.checkpoints` 是**按 id 的 Map** ✓ ⇒ 同 id 只算一个 ✓
       const neutral = p2Neutralized(rows);
+      const cmpId = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
       for (const r of rows) {
         const a = (r && r.atom) || {};
         const pl = a.payload || {};
-        if (a.kind === "create_layer") {
-          const id = pl.layer_id;
+        if (a.kind === "create_document") {
+          // **新文档自带默认层 ✗**（`fold.rs:1020` ✓）⇒ `get_state`／`list_documents`
+          // 从初始状态起就该有它 ✓（旧 `p2cState` 只认 `create_layer` ⇒ 凭空少一层 ✗）。
+          if (!layerIdx["layer_default"]) {
+            layerIdx["layer_default"] = {
+              layer_id: "layer_default", name: "图层 1", type: "raster", z_index: -1,
+              visible: true, opacity: 1, blend_mode: "normal", locked: false, mask_id: null,
+            };
+            layers.push(layerIdx["layer_default"]);
+          }
+        } else if (a.kind === "create_layer") {
+          // **★ 兼容旧原子**：顶层 `layer_id` 回退（与 `p1LayerOrder` 同口径 ✓）。
+          const id = (typeof pl.layer_id === "string" && pl.layer_id) ||
+                     (typeof a.layer_id === "string" && a.layer_id) || null;
           if (!id || layerIdx[id]) continue;
-          layerIdx[id] = { layer_id: id, name: pl.name ?? id, type: pl.type ?? "raster",
-                           z_index: layers.length, visible: true, opacity: 1,
-                           blend_mode: "normal", locked: false, mask_id: null };
+          if (neutral.has(a.id)) continue; // 建层被撤销 ⇒ 状态里没有这一层 ✓
+          // **z 缺省照 `fold.rs:1051` ✗**：`alive_layers()` 的 `max(z+1)`（不是「插入序」✗；已删层不计 ✓）。
+          const zRaw = Number(pl.z_index);
+          const zDefault = layers.reduce((mx, l) => (l.deleted ? mx : Math.max(mx, l.z_index + 1)), 0);
+          const type = typeof pl.type === "string" && pl.type ? pl.type : "raster";
+          layerIdx[id] = { layer_id: id, name: pl.name ?? id, type,
+                           z_index: Number.isFinite(zRaw) ? zRaw : zDefault,
+                           visible: true, opacity: 1, blend_mode: "normal", locked: false, mask_id: null };
           layers.push(layerIdx[id]);
-        } else if (a.kind === "set_property" && pl.layer_id && layerIdx[pl.layer_id]) {
-          layerIdx[pl.layer_id][pl.key] = pl.value;
+        } else if (a.kind === "set_property" && pl.layer_id && layerIdx[pl.layer_id] &&
+                   !neutral.has(a.id)) {
+          if (pl.key === "type") { layerIdx[pl.layer_id].type = pl.value; }
+          else layerIdx[pl.layer_id][pl.key] = pl.value;
         } else if (a.kind === "tombstone" && pl.layer_id && layerIdx[pl.layer_id] && !neutral.has(a.id)) {
           layerIdx[pl.layer_id].deleted = true;
         } else if (P2_OBJECT_CREATE_KINDS.has(a.kind) && typeof pl.object_id === "string" &&
-                   !objSeen.has(pl.object_id)) {
+                   !neutral.has(a.id) && !objSeen.has(pl.object_id)) {
           // **建对象原子 = 共享集合 ✓**（与 `p2ObjectView`／`list_objects`／`duplicate_layer` 同口径 ✓）；
           // 旧只 push `create_object` ⇒ `get_state`／`list_documents`／`collect_diagnostics` 漏掉
           // 手画图／导入图／填充／文字对象 ✓（静默少一整个结果集，还 `ok:true`）。按 object_id 去重 ⇒ supersede 再引用不重复计数 ✓。
           objSeen.add(pl.object_id);
           objects.push({ object_id: pl.object_id, layer_id: pl.layer_id ?? null, type: pl.type ?? null });
-        } else if (a.kind === "checkpoint") {
-          checkpoints += 1;
+        } else if ((a.kind === "checkpoint" || a.kind === "create_checkpoint") &&
+                   !neutral.has(a.id)) {
+          checkpointIds.add(typeof pl.checkpoint_id === "string" && pl.checkpoint_id
+            ? pl.checkpoint_id : ("ckpt_" + a.id));
         }
       }
+      // **图层存活 = 自身墓碑 ＋ 祖先级联删 ＋ 创建被撤销 ✗**（`fold.rs:1988` ✓）⇒
+      // 与 `list_layers`／`list_objects` 共用 `p2PresetLayers` 一份口径 ✓。
+      const layersAlive = p2PresetLayers(rows, neutral);
+      const aliveLayers = layers.filter((l) => !l.deleted &&
+        (!layersAlive.has(l.layer_id) || layersAlive.get(l.layer_id).alive));
+      // **顺序照 `alive_layers()` ✓**（`state.rs:701`：`(z_index, id)` 升序 ✓）。
+      aliveLayers.sort((x, y) => (x.z_index - y.z_index) || cmpId(x.layer_id, y.layer_id));
       return { width: w, height: h, color_space,
-               layers: layers.filter((l) => !l.deleted),
-               objects, checkpoints };
+               layers: aliveLayers,
+               objects, checkpoints: checkpointIds.size };
     }
     /** **P2c-绘画通用写入口 ✗**：**`draw_*`／`fill` 照 `write_draw` 的载荷形状 ✓**
      *   （**`{object_id, layer_id, data, type?}` ✓ ⇒ **∴ 折叠层按 `payload.data` 取内容 ✓**）。 */
@@ -5316,17 +5457,38 @@ async function withKernel(doc, fn) {
 
     // **P2c-36 `declare_head` ✗**：**照 `write_declare_head` ✓** ⇒ **`declare_head` 原子 ✓**
     //   （**`{base:{type, id}, reason?}` ✓**）。
+    //   **★ 三段参数校验照 `validate_args` ✓**（未知参数 → 必填 → 类型 ✓，见 `p2PresetSchemaCheck`）；
+    //   **★ base 必须存在 ✓**：`log.rs:946 validate_declare_head` 在**提交期**查 ⇒
+    //     原子缺失 `reference_not_found: declare_head 的 base 原子 X 不在日志中` ✓、
+    //     检查点缺失 `检查点 X 不存在` ✓。**旧本地两样都不查** ✗ ⇒
+    //     写进一条**解不出的跳变** ⇒ `state@seq` 在服务端会 400、本地会「看起来成功」 ✓。
+    //   **★ 文案照服务端逐字 ✗**：类型错误那句**只说「atom 或 checkpoint」**（即使
+    //     `declare_head` 也收 ✓）—— 照抄，不「顺手修正」✓。
     if (path === "/api/tools/declare_head") {
-      const baseType = body.base_type;
-      const baseId = body.base_id;
-      if (typeof baseType !== "string" || ["atom", "declare_head", "checkpoint"].indexOf(baseType) < 0) {
-        return p2Bad("base_type 必须是 atom/declare_head/checkpoint，得到 " + baseType);
+      let args;
+      try {
+        args = p2PresetSchemaCheck("declare_head", [
+          { name: "base_type", kind: "string", required: true },
+          { name: "base_id", kind: "string", required: true },
+          { name: "reason", kind: "string", required: false },
+        ], body);
+      } catch (error) { const r = p2PresetResponse(error); if (r) return r; throw error; }
+      const baseType = args.base_type;
+      const baseId = args.base_id;
+      if (["atom", "declare_head", "checkpoint"].indexOf(baseType) < 0) {
+        return p2Bad("base_type 必须是 atom 或 checkpoint，得到 " + baseType);
       }
-      if (typeof baseId !== "string" || !baseId) return p2Bad("base_id 必填（字符串）");
+      const rows = await atomsOf(handle, doc);
+      if (baseType === "checkpoint") {
+        if (!p2FindCheckpointAtom(rows, baseId)) return p2Missing("检查点 " + baseId + " 不存在");
+      } else if (!rows.some((r) => r.atom && r.atom.id === baseId)) {
+        return p2Missing("declare_head 的 base 原子 " + baseId + " 不在日志中");
+      }
       const payload = { base: { type: baseType, id: baseId } };
-      if (typeof body.reason === "string") payload.reason = body.reason;
-      const seq = await putAtom(handle, doc, p2Envelope("declare_head", payload));
-      return json({ ok: true, seq, server: false,
+      if (typeof args.reason === "string") payload.reason = args.reason;
+      const atom = p2Envelope("declare_head", payload);
+      const seq = await putAtom(handle, doc, atom);
+      return json({ ok: true, atom_id: atom.id, seq, head: seq, dirty_kind: "full", server: false,
                     note: "已写入 declare_head 原子；求值起点跳变由内核折叠层处理" });
     }
 
@@ -5334,7 +5496,7 @@ async function withKernel(doc, fn) {
     //   （**`include_objects`／`include_hidden` 照服务端 ✓**）。
     if (path === "/api/tools/get_state") {
       const rows = await atomsOf(handle, doc);
-      const st = p2cState(rows);
+      const st = p2cState(rows); // 内部按 `state@seq` 取窗口 ✓（跳变后旧段不在状态里 ✓）
       const includeObjects = body.include_objects === true;
       const includeHidden = body.include_hidden === true;
       const layers = st.layers.filter((l) => includeHidden || l.visible !== false);
@@ -5343,12 +5505,12 @@ async function withKernel(doc, fn) {
                     width: st.width, height: st.height, color_space: st.color_space,
                     layers, checkpoints: st.checkpoints,
                     derived_from: "atoms" };
+      // **`objects` 与 `list_objects` 同一份摘要 ✓**（服务端两处都走 `summary_object` ✓）：
+      //   **∴ 旧本地给的是 5 字段小形状 ✗**（`visible` 常为 null、还带 `deleted`）
+      //   ⇒ 同一对象在 `get_state` 与 `list_objects` 里**字段集不同** ✓；
+      //   过滤也错：把 `deleted` 当可见性 ✗（服务端 `include_hidden` 过滤的是**对象属性 `visible`** ✓）。
       if (includeObjects) {
-        out.objects = st.objects.map((o) => {
-          const v = p2ObjectView(rows, o.object_id);
-          return { object_id: o.object_id, layer_id: v.layer_id, type: v.type,
-                   visible: v.visible, deleted: v.deleted };
-        }).filter((o) => includeHidden || !o.deleted);
+        out.objects = p2ObjectSummaries(rows, { includeHidden });
       }
       return json(out);
     }
@@ -5999,38 +6161,69 @@ async function withKernel(doc, fn) {
     // **P2c-59 `revert` ✗**：**照 `write_history_atom(…, Revert, "atom_id")` ✓** ⇒
     //   **`revert{target}` 原子 ✓**（**与 `restore_object` 分支同形 ✓**）。
     if (path === "/api/tools/revert") {
-      const atomId = body.atom_id;
-      if (typeof atomId !== "string" || !atomId) return p2Bad("atom_id 必填（字符串）");
+      let args;
+      try {
+        args = p2PresetSchemaCheck("revert",
+          [{ name: "atom_id", kind: "string", required: true }], body);
+      } catch (error) { const r = p2PresetResponse(error); if (r) return r; throw error; }
+      const atomId = args.atom_id;
       const rows = await atomsOf(handle, doc);
       const target = rows.find((r) => r.atom && r.atom.id === atomId);
-      if (!target) return p2Missing("目标原子 " + atomId + " 不在日志里");
+      if (!target) return p2Missing("目标原子 " + atomId + " 不在日志中");
+      // **跨求值起点的撤销 ✗**（`log.rs:893` ✓）：目标在 `declare_head` 之前 ⇒
+      //   **它已经烘进 base_state，折叠无法只凭表达式撤销它** ✓ ⇒ 服务端**提交期就拒绝** ✓。
+      //   **∴ 本地旧实现不查** ✗ ⇒ `restore_checkpoint` 之后 revert 旧原子：服务端 400、本地「成功」✓。
+      const origin = p2EvalOriginSeq(rows);
+      if (typeof target.seq === "number" && target.seq <= origin) {
+        return p2Bad("目标原子 " + atomId + " (seq " + target.seq + ") 位于当前求值起点 seq "
+          + origin + " 之前，需先回到该起点或重新提交等价操作");
+      }
       const seq = await putAtom(handle, doc, p2Envelope("revert", { target: atomId }));
       return json({ ok: true, seq, server: false, reverted: atomId,
                     note: "已写入 revert 原子；是否撤销由内核折叠层判定" });
     }
 
     // **P2c-60 `revert_to` ✗**：**照 `write_revert_to` ✓** ⇒ **`declare_head{base:{type:"atom", id}}` ✓**。
+    //   **∴ 目标不存在时服务端报的是 `validate_declare_head` 那句**（`declare_head 的 base 原子 X 不在日志中` ✓），
+    //   不是 `revert` 那句「目标原子 X 不在日志中」✗（`log.rs:867`）—— 旧本地抄错了对象 ✓。
+    //   **∴ 本轮顺带修掉 `revert`／`reapply` 的缺目标文案 ✓**：旧本地写「不在日志里」✗ ⇒
+    //   服务端 `validate_history_refs` 是「不在日志**中**」✓（`get_atom` 那类才用「里」✓，`tools.rs:20283`）。
+    //   **∴ `head` 回**提交后的 head seq**✓**（`commit_response` 的语义 ✓），不是原子 id ✗。
     if (path === "/api/tools/revert_to") {
-      const atomId = body.atom_id;
-      if (typeof atomId !== "string" || !atomId) return p2Bad("atom_id 必填（字符串）");
+      let args;
+      try {
+        args = p2PresetSchemaCheck("revert_to",
+          [{ name: "atom_id", kind: "string", required: true }], body);
+      } catch (error) { const r = p2PresetResponse(error); if (r) return r; throw error; }
+      const atomId = args.atom_id;
       const rows = await atomsOf(handle, doc);
       if (!rows.some((r) => r.atom && r.atom.id === atomId)) {
-        return p2Missing("目标原子 " + atomId + " 不在日志里");
+        return p2Missing("declare_head 的 base 原子 " + atomId + " 不在日志中");
       }
-      const seq = await putAtom(handle, doc, p2Envelope("declare_head", {
+      const atom = p2Envelope("declare_head", {
         base: { type: "atom", id: atomId }, reason: "revert_to",
-      }));
-      return json({ ok: true, seq, server: false, head: atomId,
+      });
+      const seq = await putAtom(handle, doc, atom);
+      return json({ ok: true, atom_id: atom.id, seq, head: seq, dirty_kind: "full", server: false,
                     note: "已写入 declare_head 原子（求值起点跳变由内核折叠层处理）" });
     }
 
     // **P2c-61 `reapply` ✗**：**照 `write_history_atom(…, Reapply, "atom_id")` ✓**。
     if (path === "/api/tools/reapply") {
-      const atomId = body.atom_id;
-      if (typeof atomId !== "string" || !atomId) return p2Bad("atom_id 必填（字符串）");
+      let args;
+      try {
+        args = p2PresetSchemaCheck("reapply",
+          [{ name: "atom_id", kind: "string", required: true }], body);
+      } catch (error) { const r = p2PresetResponse(error); if (r) return r; throw error; }
+      const atomId = args.atom_id;
       const rows = await atomsOf(handle, doc);
-      if (!rows.some((r) => r.atom && r.atom.id === atomId)) {
-        return p2Missing("目标原子 " + atomId + " 不在日志里");
+      const target = rows.find((r) => r.atom && r.atom.id === atomId);
+      if (!target) return p2Missing("目标原子 " + atomId + " 不在日志中");
+      // **与 `revert` 同一条跨起点约束 ✓**（`validate_history_refs` 对 Revert／Reapply 都查 ✓）。
+      const origin = p2EvalOriginSeq(rows);
+      if (typeof target.seq === "number" && target.seq <= origin) {
+        return p2Bad("目标原子 " + atomId + " (seq " + target.seq + ") 位于当前求值起点 seq "
+          + origin + " 之前，需先回到该起点或重新提交等价操作");
       }
       const seq = await putAtom(handle, doc, p2Envelope("reapply", { target: atomId }));
       return json({ ok: true, seq, server: false, reapplied: atomId,
@@ -6375,7 +6568,9 @@ async function withKernel(doc, fn) {
     // **∴ 逐条失败只有三种**（**`log.rs:854–899` `validate_history_refs` ✓**）：
     // **∴ 目标不在日志 ⇒ `reference_not_found: 目标原子 X 不在日志中` ✓**；
     // **∴ 目标 kind 不满足 `revertible` ⇒ `invalid_argument: 不能 revert 协作原子 X（kind）—— …` ✓**；
-    // **∴ 第三种（`declare_head` 求值起点）本地没有 ✗**（**∴ 本地层无变更集求值起点概念 ✓ ⇒ **∴ 不**编一个 ✓**）。
+    // **∴ 第三种（`declare_head` 求值起点）本轮补上 ✓**（**`log.rs:894` ✓**：`target.seq <= eval_origin`
+    //   ⇒ `invalid_argument: 目标原子 X (seq s) 位于当前求值起点 seq o 之前，需先回到该起点或重新提交等价操作` ✓）。
+    //   **∴ 本地求值起点 = 最新 `declare_head` 原子的 seq ✓**（`p2EvalOriginSeq` ✓，与 `seq.rs` 同口径 ✓）。
     // **∴ `revert_group` 的筛法是「曾被 revert 过」✗ 不是「当前生效动作是 revert」✓**
     //   （**∴ 服务端 `tools.rs:19269–19289` 用朴素 `HashSet` 扫全部 `revert` 原子 ✓**
     //     ⇒ **∴ 撤过又 redo 的笔**照样**被整组跳过 ✗**——**∴ 与 `p2Neutralized` 的**「最新动作胜出」**
@@ -6387,10 +6582,16 @@ async function withKernel(doc, fn) {
     async function __p2RevertBatch(ids) {
       const rows = await atomsOf(handle, doc);
       const byId = new Map();
+      const seqById = new Map();
       for (const r of rows) {
         const a = (r && r.atom) || r || {};
-        if (a && a.id != null) byId.set(String(a.id), a);
+        if (a && a.id != null) {
+          byId.set(String(a.id), a);
+          if (typeof r.seq === "number") seqById.set(String(a.id), r.seq);
+          else if (typeof a.seq === "number") seqById.set(String(a.id), a.seq);
+        }
       }
+      const origin = p2EvalOriginSeq(rows);
       const reverted = [];
       const failed = [];
       const uniq = String(Date.now()).padStart(13, "0") + Math.random().toString(36).slice(2, 7);
@@ -6404,6 +6605,13 @@ async function withKernel(doc, fn) {
         if (!P2_REVERTIBLE_KINDS.has(target.kind)) {
           failed.push({ atom_id: id,
             error: "invalid_argument: 不能 revert 协作原子 " + id + "（" + String(target.kind) + "）—— 只有产生状态效果的原子与 revert/reapply 本身可以撤销" });
+          continue;
+        }
+        const seq = seqById.get(id);
+        if (typeof seq === "number" && seq <= origin) {
+          failed.push({ atom_id: id,
+            error: "invalid_argument: 目标原子 " + id + " (seq " + seq + ") 位于当前求值起点 seq "
+              + origin + " 之前，需先回到该起点或重新提交等价操作" });
           continue;
         }
         await putAtom(handle, doc, {
@@ -7054,11 +7262,18 @@ async function withKernel(doc, fn) {
     //   **与服务端 `write_checkpoint` 的原子同形 ✓**）⇒ **∴ `get_checkpoints` 从日志推导 ✓**。
     //   **∴ 如实差距 ✗**：**本地不生成检查点快照 ⇒ `snapshot_id` 恒为 null ✓**（**∴ 不编造 ✓**）。
     if (path === "/api/tools/checkpoint") {
+      let args;
+      try {
+        args = p2PresetSchemaCheck("checkpoint", [
+          { name: "name", kind: "string", required: false },
+          { name: "message", kind: "string", required: false },
+        ], body);
+      } catch (error) { const r = p2PresetResponse(error); if (r) return r; throw error; }
       const checkpointId = "ckpt_" + p2Ulid();
-      const name = body && body.name != null ? String(body.name) : checkpointId;
+      const name = args.name != null ? args.name : checkpointId;
       const anchorSeq = await p2bHeadSeq();
       const payload = { checkpoint_id: checkpointId, name, anchor_seq: anchorSeq };
-      if (body && body.message != null) payload.message = String(body.message);
+      if (args.message != null) payload.message = args.message;
       const atom = p2bAtom("checkpoint", payload);
       const seq = await putAtom(handle, doc, atom);
       return json({ ok: true, atom_id: atom.id, seq, checkpoint_id: checkpointId,
@@ -7066,34 +7281,64 @@ async function withKernel(doc, fn) {
                     note: "检查点即原子日志里的 checkpoint 原子；本地不生成检查点快照 ⇒ snapshot_id 恒为 null" });
     }
     // **⑦ `get_checkpoints` ✗**：**∴ 从原子日志推导 ✓**（**与 `list_layers` 同一纪律：不另存"检查点表" ✗**）。
+    //   **∴ 三处口径照折叠器 ✓**（`fold.rs:1440–1455` ✓）：
+    //     ① **只认当前 `state@seq` 窗口** ✓（跳变前的检查点不在状态里 ✗）；
+    //     ② **被 revert 的检查点原子不出现** ✓（折叠跳过失效原子 ✓，`fold.rs:372` ✓）；
+    //     ③ **`message` 取自原子封套 ✗ 不是净荷** ✓（`atom.message` ✓；净荷里那份是惰性的 ✓）、
+    //        `anchor_seq` = 净荷 `anchor_seq` ?? **原子 seq** ✓、`name` 缺省 = id ✓。
+    //   **∴ 六个键一个不少、缺值给 `null` ✗**（**服务端 `read_get_checkpoints` 是手写 `json!`
+    //     不是结构体序列化 ✓** ⇒ `Option::None` 变成 `"message": null`／`"snapshot_id": null` ✓，
+    //     **`checkpoint` 结构体上的 `skip_serializing_if` 在这条路径**不生效 ✗**）。
+    //   **∴ 顺序 = `BTreeMap` 键序 ⇒ 按 `checkpoint_id` 升序 ✓**（同 id 后写胜出 ✓）。
     if (path === "/api/tools/get_checkpoints") {
-      const rows = await atomsOf(handle, doc);
-      const checkpoints = [];
+      const rows = p2StateWindow(await atomsOf(handle, doc));
+      const suppressed = p2Neutralized(rows);
+      const byId = new Map();
       for (const r of rows) {
-        const a = r.atom || {};
-        if (a.kind !== "checkpoint") continue;
+        const a = (r && r.atom) || {};
+        if (a.kind !== "checkpoint" && a.kind !== "create_checkpoint") continue;
+        if (suppressed.has(a.id)) continue;
         const pl = a.payload || {};
-        if (!pl.checkpoint_id) continue;
-        checkpoints.push({ checkpoint_id: pl.checkpoint_id,
-                           name: pl.name != null ? pl.name : pl.checkpoint_id,
-                           created_by: a.actor != null ? a.actor : null,
-                           message: pl.message != null ? pl.message : null,
-                           anchor_seq: pl.anchor_seq != null ? pl.anchor_seq : null,
-                           snapshot_id: null });
+        const id = typeof pl.checkpoint_id === "string" ? pl.checkpoint_id : ("ckpt_" + a.id);
+        const cp = { checkpoint_id: id,
+                     name: typeof pl.name === "string" ? pl.name : id,
+                     created_by: a.actor != null ? a.actor : null,
+                     message: typeof a.message === "string" ? a.message : null,
+                     anchor_seq: typeof pl.anchor_seq === "number" ? pl.anchor_seq : r.seq,
+                     snapshot_id: typeof pl.snapshot_id === "string" ? pl.snapshot_id : null };
+        byId.set(id, cp);
       }
+      const checkpoints = [...byId.values()].sort((a, b) =>
+        a.checkpoint_id < b.checkpoint_id ? -1 : a.checkpoint_id > b.checkpoint_id ? 1 : 0);
       return json({ ok: true, checkpoints, count: checkpoints.length, server: false,
                     derived_from: "atoms",
-                    note: "snapshot_id 本地恒为 null（不生成检查点快照）" });
+                    note: "从原子日志推导；六个键与服务端一致，缺值给 null（本地不生成检查点快照）" });
     }
-    // **⑧ `restore_checkpoint` ⇒ 如实 501 ✗**：**∴ 语义是提交 `declare_head` 原子做求值起点跳变 ✗**
-    //   （**`state@seq` 公式，设计 5.5 ✓**）⇒ **∴ 而**本地 wasm 折叠器对 `declare_head` **只记警告** ✗**
-    //   （**`DeclareHeadOutsideFormula`，`crates/yanshi-core/src/fold.rs` ✓**）**从不执行跳变 ✗**
-    //   ⇒ **∴ 写了原子也不会生效 ✗** ⇒ **∴ 如实 501，不假装恢复 ✓**。
+    // **⑧ `restore_checkpoint` ✓（本轮落地 ✗ 不再是 501 ✓）**：**∴ 语义 = 提交 `declare_head` 原子做求值起点跳变 ✓**
+    //   （**`state@seq` 公式，设计 5.5 ✓**；**服务端 `write_restore_checkpoint` 同形 ✓**：
+    //     `{base:{type:"checkpoint", id}, reason:"restore_checkpoint"}` ✓）。
+    //   **∴ 旧 501 的理由是错的 ✗**：它说「本地折叠器对 declare_head 只记警告、从不执行跳变」——
+    //     `seq.rs` 的窗口求值**逐层取窗口** ✓，本地派生层（`p2StateWindow` ✓）同口径 ✓
+    //     ⇒ **∴ 写了原子就生效 ✓**（`get_state`／`list_layers`／`list_objects` 随即只见检查点之后的状态 ✓）。
+    //   **∴ 检查点存在性照 `validate_declare_head` ✓**：**在全量日志里找最新的同名检查点原子 ✓**
+    //     （**`seq.rs:350 checkpoint_anchor_seq` 也不看窗口 ✓**）⇒ **缺失 ⇒ 404 `检查点 X 不存在` ✓**。
     if (path === "/api/tools/restore_checkpoint") {
-      return json({ ok: false, error: "restore_checkpoint_unsupported", endpoint: path, server: false,
-                    reason: "restore_checkpoint 的语义是提交 declare_head 原子、把求值起点跳到检查点（state@seq 公式，设计 5.5）；" +
-                            "本地 wasm 折叠器对 declare_head 只记警告（DeclareHeadOutsideFormula）从不执行跳变 ⇒ 写了原子也不会生效。如实 501，不假装恢复。",
-                    detail: "检查点本身可写（checkpoint 已实现）；恢复需等本地内核支持 declare_head 跳变" }, 501);
+      let args;
+      try {
+        args = p2PresetSchemaCheck("restore_checkpoint",
+          [{ name: "checkpoint_id", kind: "string", required: true }], body);
+      } catch (error) { const r = p2PresetResponse(error); if (r) return r; throw error; }
+      const checkpointId = args.checkpoint_id;
+      const rows = await atomsOf(handle, doc);
+      if (!p2FindCheckpointAtom(rows, checkpointId)) {
+        return p2Missing("检查点 " + checkpointId + " 不存在");
+      }
+      const atom = p2Envelope("declare_head", {
+        base: { type: "checkpoint", id: checkpointId }, reason: "restore_checkpoint",
+      });
+      const seq = await putAtom(handle, doc, atom);
+      return json({ ok: true, atom_id: atom.id, seq, head: seq, dirty_kind: "full", server: false,
+                    note: "已写入 declare_head 原子（求值起点跳到检查点）；之后的派生视图只含该检查点之后的状态" });
     }
 
     // ── 建议 ──

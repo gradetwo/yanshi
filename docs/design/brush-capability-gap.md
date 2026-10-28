@@ -23329,3 +23329,94 @@ HEAD 版同判据 1 次也绿，其余 19 次全绿 ⇒ 记为**判据/存储层
 **入口闭链**：`analyze_region`／`estimate_dehaze` 的调用方是 AI 客户端与查看器工具面板；
 PWA 模式下 `/api/tools/*` 全由 `web/api-local.js` 接管 ⇒ 此前一个端点是 501、另一个字段名全不同，
 面板与 MCP 客户端在离线态都拿不到统计结果 ✓；现在两边同形 ✓。
+
+## 六百六十三、本地 `restore_checkpoint` 落地：`declare_head` 跳变 ＋ `state@seq` 窗口贯穿全部派生层，判据当场抓出**判据自己**两处算错
+
+**为什么它必须改**（不是「补一个端点」✗）：
+- `restore_checkpoint` 本地是**如实 501** ✓，但**理由写错了** ✗：它说「本地折叠器对 `declare_head`
+  只记警告、从不执行跳变」—— 服务端 `write_restore_checkpoint` 的语义**就是提交一条
+  `declare_head{base:{type:"checkpoint"}}`** ✓（`state@seq` 公式，设计 5.5 ✓），而**内核折叠本来就认** ✓
+  ⇒ **∴ 缺的不是折叠能力 ✗ 而是本地派生层**：`p2Neutralized`／`p2ObjectView`／`p2PresetLayers`／
+  `p1LayerOrder`／`p2cState` **全部只看全量日志** ✗ ⇒ 写了跳变原子也**读回旧状态** ✓（形态③：回执 ok、读回旧 ✓）。
+- 与之配套的三处**静默不同口径** ✗：
+  ① `get_checkpoints` 缺 `message`／`snapshot_id` 两个键（服务端是手写 `json!` ⇒ `None` 显式成 `null`
+     ✓，结构体上的 `skip_serializing_if` **在这条路径不生效** ✗）；
+  ② `revert`／`reapply` **不查求值起点** ✗ ⇒ 恢复之后撤销旧原子：服务端 400、本地「成功」✓；
+  ③ `checkpoint`／`revert`／`reapply`／`restore_checkpoint` 的参数校验是**手写的只言片语** ✗，
+     而服务端 `validate_args` 对未知参数／缺必填／类型错**各有逐字文案** ✓（形态④静默吞掉拼写错误 ✓）。
+
+**改了什么**：
+1. **`p2StateWindow`（模块层 ✓）**：照 `seq.rs::state_at` 算窗口 —— `H_n` = `seq ≤ n` 最近的 `declare_head`，
+   `A_n = (H_n.seq, n]`，base 为 `atom` 时取该原子 seq、为 `checkpoint` 时取
+   `payload.anchor_seq ?? 原子 seq`（**且从全量日志找 `seq ≤ H.seq` 的最后一个同名** ✓，
+   与 `checkpoint_anchor_seq` 同口径 ✓）；窗口 = `(0, 最内层 base] ∪ 每个 (H.seq, upto]`。
+   **无跳变 ⇒ 原样返回同一数组**（下游零成本 ✓，memo 按数组身份 ✓）。
+2. **所有派生层接上窗口**：`p2Neutralized`／`p2ObjectView`／`p2PresetLayers`／`p1LayerOrder`／`p2cState`／
+   `list_objects`／`get_checkpoints`／`p2ObjectSummaries` ⇒ `get_state`／`list_layers`／`list_objects`／
+   `get_object`／渲染都只见跳变之后的状态 ✓。
+3. **`restore_checkpoint` 落地**：存在性照 `validate_declare_head`（全量日志找最新同名检查点，缺失 ⇒
+   404 `检查点 X 不存在` ✓），提交 `declare_head{base:{type:"checkpoint", id}, reason:"restore_checkpoint"}` ✓，
+   回执 `head === seq` ＋ `dirty_kind:"full"` ✓。
+4. **`declare_head` 写入前的存在性校验**（原子 404 `declare_head 的 base 原子 X 不在日志中` ✓、
+   检查点 404 `检查点 X 不存在` ✓、`base_type` 400 `base_type 必须是 atom 或 checkpoint，得到 X` ✓）。
+5. **跨求值起点拒绝**：`revert`／`reapply` 单条 400，`revert_atoms` 逐项进 `failed`
+   （`reverted_count:0 / failed_count:1` ✓），文案逐字：
+   `目标原子 {id} (seq {s}) 位于当前求值起点 seq {o} 之前，需先回到该起点或重新提交等价操作` ✓。
+6. **`checkpoint`**：`anchor_seq` = **提交前**的 head（= 原子 seq − 1 ✓）；参数走 `p2PresetSchemaCheck`
+   （`name`／`message` 两个可选 ✓）；净荷 `message` **不进** `Checkpoint.message`（那份取原子封套 ✓）。
+7. **`get_checkpoints`**：六个键**恒在**、缺值给 `null` ✓；`message` 取封套（本轮本地封套没有
+   ⇒ `null` ✓）、`anchor_seq` = 净荷锚点 ?? 原子 seq、`name` 缺省 = id、顺序按 `checkpoint_id` 升序 ✓；
+   被撤销的检查点原子不出现 ✓（`p2Neutralized`）。
+8. **`revert`／`reapply`／`checkpoint`／`restore_checkpoint` 全走 `p2PresetSchemaCheck`** ⇒
+   未知参数那句与服务端 `validate_args` 同形（含「可用参数：…；框架级参数：doc_id, actor, session」✓）。
+
+**判据**（`scripts/tool-pwa-checkpoint-restore.mjs`，同一请求两边打、比解析后 JSON；**358 条断言**）：
+§A 检查点锚点＝seq−1／六键含两个 `null`／`message` 取封套不取净荷／封套上无 `message` 键；
+§B 恢复前 5 层 4 对象、桶 {白 2416／红 256／蓝 192／绿 144／黑 64}、暖 256 冷 192（**期望由判据自己算** ✓）；
+§C 恢复后 4 层 3 对象、`checkpoints` 归零、`get_checkpoints` 空、`S4` 404、黑像素消失、桶 2480／256／192／144；
+§D 跨起点 `revert`／`reapply`／`revert_atoms` **逐字**拒绝（id／seq／origin **两边各取各的** ✓）；
+§E `revert_to(S1)` 后仍四层（见下「判据自己算错 ②」✓）、再恢复 ⇒ 回到白 2480；
+§E3 **真正的多层链**：链上第二个 head 的 base 落在第一个 head 之后 ⇒ 窗口两段拼接，期望
+`layer_default,L1,L2,L3,L5`（**L6 在 base 之后 ⇒ 不在** ✓、检查点／L4／S4 也不在 ✓）；
+§F 十条参数与引用错误**逐字**文案。
+
+**判据自己算错的两处（先测量、后改产品 ✓）**：
+
+| # | 症状 | 根因 | 处理 |
+|---|---|---|---|
+| ① | 服务端 `get_log` 回 `count: 0` ⇒ 8 条面红「日志里找不到原子」 | **`actor` 同时是框架参数和 `get_log` 的筛选参数** ✗（`tools_read.rs:698` 直接从 args 读）⇒ 判据把 `actor:"human:judge"` 当成筛选，而服务端原子盖的是 token 持有者（`human:web`）⇒ 0 行，**状态 200、静默** ✓ | 判据改用**不带框架参数**的 `callServerBare` 读日志 ✓（**产品端的 actor 筛选本身是对的** ✓） |
+| ② | §E 期望 `["layer_default","L1"]`，两边都给四层 | 判据**算错了** ✗：三个图层原子都**早于** S1（先建层后画 ✓）⇒ 跳到 S1 的 seq 图层一个不少 ✓ | 改成 `LAYER_IDS_AT_S1`（四层 ✓）；**两边一致 ⇒ 不是产品缺陷** ✓ |
+
+**顺带发现**：§E 原来那句「再恢复 = 多层链」**并不成立** ✗ —— 那个 base（锚点 7）早于前一个
+head（seq 11）⇒ `headUpto(7)` 为空、窗口只有一段 ✓。**∴ 补 §E3** 造出真链（`(0,7] ∪ (11,14]`），
+并用变异 ⑭ 证明「只取最内层 base」会让 L4 冒出来 ⇒ 该段是真的在验拼接 ✓。
+
+**变异（十四次，全部 `exit 1` ✓；每次后恢复、`cmp` 与原件逐字节相同）**：
+
+| # | 改坏 | 红在哪（实测） |
+|---|---|---|
+| ① | `message` 取净荷 | §A（本地）`message` = `第一版说明` |
+| ② | `anchor_seq` 用原子 seq | §A（本地）8 vs 7 |
+| ③ | restore 写 `comment`（不跳变） | §C 图层／对象摘要两边不同 |
+| ④ | 窗口永远不认跳变 | §C 同上 |
+| ⑤ | 检查点 base 用原子 seq（不读锚点） | §C（本地）`checkpoints` 1 vs 0 |
+| ⑥ | `revert` 不查起点 | §D1 本地 200 vs 400 |
+| ⑦ | `reapply` 不查起点 | §D2 本地 200 vs 400 |
+| ⑧ | 批量不查起点 | §D3（本地）`ok:true`、`[1,0]` |
+| ⑨ | 跨起点文案「之前」→「以前」 | §D1 本地文案不同 |
+| ⑩ | 锚点用提交后的 head | §A（本地）8 vs 7（封套那条也红）|
+| ⑪ | `get_checkpoints` 不看窗口 | §C（本地）1 vs 0 |
+| ⑫ | 缺检查点文案改短 | §F2 本地文案不同 |
+| ⑬ | restore 去掉 schema 校验 | §F1 本地 404 vs 400 |
+| ⑭ | 多层链只取最内层 base | §E3（本地）多出 L4 |
+
+**已知限制（如实记 ✓）**：
+- 本地 `create_layer` 的回执是**精简形状**（无 `atom_id`），服务端是 `commit_response`（有 ✓）
+  ⇒ 判据**两边都从日志按 `payload.layer_id` 取** ✓，**不依赖回执形状** ✓。
+  这条**形状差**本轮**没改**（写路径各端点回执形状是另一片，改了要么全改、要么造出第二套不一致 ✗）。
+- `restore_checkpoint` 之后 `get_log` 仍回**全量日志**（服务端同 ✓：日志 ≠ 状态 ✓）；只有
+  `head_seq` 与派生视图按跳变走 ✓。
+
+**入口闭链**：PWA 的检查点面板／历史面板走 `get_checkpoints`／`restore_checkpoint`／`revert`；
+恢复后图层面板、对象列表、渲染、像素统计**统一**按 `state@seq` 读 ⇒ 此前离线态恢复=501、
+撤销旧原子「成功」而画面不变，现在两边同口径 ✓。
