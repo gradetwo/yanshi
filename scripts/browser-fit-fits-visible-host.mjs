@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// criterion-target: client  ## 运行器据此注入 render=client（测本地内核）
 // **「适配」必须把整幅画放进**真实可见的画布宿主**✗**（外部复测 QY-D04 的判据 ✓）
 //
 // **∴ 缺陷 ✓**：**∴ `availableArea` 的高度原本是**`window.innerHeight - 96`**✗**（**∴ 96 是猜的 ✓**）

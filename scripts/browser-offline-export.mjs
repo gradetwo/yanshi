@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// criterion-target: client  ## 运行器据此注入 render=client（测本地内核）
 // **离线能导出判据** ✓（(A)⑥ 的第二条 ✓）。
 //
 // **查证过的实现（✓，不靠记忆 ✗）** ✓：查看器的导出按钮 `#exportPng`（`viewer.rs:534` ✓）

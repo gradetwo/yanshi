@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// criterion-target: client  ## 运行器据此注入 render=client（测本地内核）
 // **判据：范围遮罩（`create_range_mask`）与渐变蒙版（`create_mask` 的两种渐变 kind）
 // 必须在查看器里真的能用** ✓。
 //

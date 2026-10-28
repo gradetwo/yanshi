@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// criterion-target: client  ## 运行器据此注入 render=client（测本地内核）
 // **★ 缩放读数必须**等于真实显示比例**（UI-1 ✓）★**（**第 253 轮 ✓）
 //
 // **∴ 外部独立测试报的 UI-1 ✗**：**点「适配」后 `#zoomInput` 读数不动（**一直 100 ✗）** ✓

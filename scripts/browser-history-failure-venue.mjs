@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// criterion-target: client  ## 运行器据此注入 render=client（测本地内核）
 // **判据：历史卡（`#history`）与撤销/重做在失败时，必须说清「哪条路 + 哪个码」** ✓。
 //
 // **抓的是哪一类缺口** ✓（第七轮效果卡 ⑩b/⑩d 的**同族第四、五格** ✓）：

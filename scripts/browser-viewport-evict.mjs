@@ -1,3 +1,4 @@
+// criterion-target: client  ## 运行器据此注入 render=client（测本地内核）
 // **★ 视口淘汰接线判据（乙(iii) ✓，2026-10-15 ✓）★**
 //
 // **守的是什么** ✗：内核**早就有** `evict_outside_viewport` ✓（`yanshi-wasm/src/kernel.rs` ✓

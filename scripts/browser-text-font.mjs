@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// criterion-target: client  ## 运行器据此注入 render=client（测本地内核）
 // **★ 字体选择必须**真的影响画面**（Phase 1 ✓）★**（**第 254 轮 ✓）
 //
 // **∴ 为什么要这条判据 ✗**：**现状是**只有一套内嵌 16×16 位图图集**✗（`font_atlas.rs` ✓）

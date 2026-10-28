@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// criterion-target: client  ## 运行器据此注入 render=client（测本地内核）
 /// **参考图叠加层：解不开的那一半必须真的看不见** ✓（第四轮补 ✓）。
 ///
 /// 用法: node scripts/browser-reference-decode.mjs <viewer-url> [cdp-port]

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// criterion-target: client  ## 运行器据此注入 render=client（测本地内核）
 // **判据：「用服务端渲染」勾选框在首帧就必须说真话** ✓（第九轮 ✓）。
 //
 // **抓的是哪一类缺口** ✓：`#useServerRender` 的初值原本只在 `setupFileMenu()` 里赋值 ✓

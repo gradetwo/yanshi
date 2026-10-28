@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// criterion-target: client  ## 运行器据此注入 render=client（测本地内核）
 // **判据：区域填充（`fill_region`）必须在查看器里真的能用** ✓（第四轮新增 ✓）。
 //
 // **抓的是哪一类缺口** ✓：这工具在服务端早就有 ✓ 且在 `core` 缺省面里 ✓

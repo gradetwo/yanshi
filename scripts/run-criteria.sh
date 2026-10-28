@@ -250,17 +250,12 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs sc
       #   **∴ 例外（**自己管渲染开关的判据 ✓）**✗**：**`browser-render-switch`／`browser-cs-render-switch`
       #     会**自己设偏好**来对比两种模式**✗ ⇒ **∴ 给它们加参数**会**把开关钉死** ✓
       #     ⇒ **∴ 所以**这两条**不加** `render=client` ✓（**∴ 它们靠自己的显式设置 ✓）** ★**** ✓✓
-      case "$name" in
-        # **`browser-range-mask` 也要服务器渲染**（第 1132 轮）：它要调
-        # `create_range_mask`（服务端工具；本地内核没有这个端点 ✗），并显式验证
-        # 「勾掉服务器渲染 ⇒ 本地缺端点」那一臂 ⇒ 不能预先注入 `render=client` ✗。
-        # **频率分离 / 混合模式也走服务器渲染**（第 1132 轮）：两条都要调服务端工具
-        # （`frequency_separation`、`set_layer_blend`）并自己验证本地内核那一臂 ⇒ 不能预注入 render=client。
-        browser-render-switch.mjs|browser-cs-render-switch.mjs|browser-range-mask.mjs|browser-frequency-separation.mjs|browser-blend-modes.mjs)
-          timeout 240 node "$script" "$BASE/?doc=$doc&token=$tok" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
-        *)
-          timeout 240 node "$script" "$BASE/?doc=$doc&token=$tok&render=client" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
-      esac ;;
+      #   ⇒ **第 1132 轮那段「browser-* 例外名单」是死代码** ✗✓（05 复审 NEW-M2 查清 ✓）：
+      #     本分支只在 `$name == ui-control-heights.mjs` 时到达 ⇒ 它列的 `browser-*` 名字**永远匹配不上** ✓
+      #     （那些脚本实际走下面的 `browser-*)` 分支 ✓，口径由**各自抬头的 `criterion-target`** 说了算 ✓）。
+      #     实测 `browser-range-mask` 一类**并不受害**：它自己 `Page.navigate` 到**干净 URL** ✓
+      #     并擦 `localStorage` ✓ ⇒ 预注入只影响 /json/new 那一眼 ✓，不影响它的断言 ✓。
+      timeout 240 node "$script" "$BASE/?doc=$doc&token=$tok&render=client" "$CDP_PORT" >"$ROOT_DIR/out.txt" 2>&1 ;;
     # **令牌策略** ✓（第 796 轮接线 ✓）：**两半段都要跑** ✓ ——
     #   allow  ⇒ 跑在本分片已有的**回环**服务端上 ✓；
     #   refuse ⇒ **另起一个「对外」实例** ✓（`--bind 0.0.0.0` ✓、**故意不配** YANSHI_API_KEY ✓）。
@@ -305,32 +300,18 @@ for script in $(ls scripts/tool-*.mjs scripts/browser-*.mjs scripts/mcp-*.mjs sc
       timeout 600 node "$script" "$BASE" "$doc" "$tok" "$ROOT/crates/yanshi-wasm/pkg/yanshi_wasm.js" \
         >"$ROOT_DIR/out.txt" 2>&1 ;;
     browser-*)
-      # **★ 少数浏览器判据**不能**加 `render=client`** ✗ ★（第 1131 轮）：
-      #   ⇒ **project-download** 测的是**服务端工程包**下载（HTTP url／`blob_hash` 只有服务端有；
-      #     本地模式的包是 `.yanshi.json` ⇒ 加了参数就**换了被测对象** ✗）
-      #   ⇒ **brush-panel** 的色块来自**服务端资产**（`list_palette_colors`；本地没有资产
-      #     ⇒ CI 实测 `⏱ 等待超时：调色板色块` ⇒ 自动收起**根本没机会跑** ✗）
-      #   ⇒ **i18n** 测**静态文案**（本地模式会把 `endpoint_not_local` 等噪声算进整页中文）
-      #   ⇒ **render-switch／cs-render-switch** 自己设偏好（既有例外）
-      #   ⇒ **dodge-burn**（第五轮）测的是**服务端工具** `dodge_burn_setup` 与回执同源的界面句 ✓
-      #     本地内核没这个端点 ⇒ 加了 `render=client` 就换成测本地缺端点 ✗ 判据自己也再钉一次
-      #     `render=server` ✓（双保险 ✓ 见该脚本抬头「口径」✓）
-      #   ⇒ **status-bar**（第五轮）测的是**服务端水位** `rendered_seq` 与顶栏显示 ✓
-      #     本地内核不去读服务端像素 ⇒ 水位永远不动 ✗ 加了参数就换成"测本地不读像素" ✓ 红得没道理 ✓
-      #   ⇒ **effect-card-truth**（第七轮）主体测的是**服务端** `add_adjustment` / `update_adjustment`
-      #     / `delete_object` 与 `render_region` 整幅指纹 ✓ 判据自己按场景钉 `render=server` ✓
-      #     而它**唯一**的本地那一臂（⑩/⑩b）走的是"URL 不带 `render` ⇒ 由勾选框说话"这条路 ✓
-      #     外面再注入一个 `&render=client` 就成了**第二个真值** ✓ 与判据要问的事正好相反 ✗
-      #   ⇒ **p0-entries**（第 1601 轮 CI 红查清）测的是**服务端工具**的 Web 入口：
-      #     `set_brush_dynamics` 在本地 PWA 是**如实的** `not_implemented_locally`
-      #     （笔刷是随包静态资源 ⇒ 没有可写的笔刷缓存 ✓ 见 api-local.js 该分支 ✓）
-      #     ⇒ 注入 `render=client` 就换成"测本地内核不提供笔刷缓存" ✗ 而判据问的是"入口接上没有" ✓
-      #   **∴ 它们测的是服务端/静态界面，不是本地内核** ⇒ **不加参数才是测对对象** ✓
-      case "$name" in
-        browser-render-switch.mjs|browser-cs-render-switch.mjs|browser-project-download.mjs|browser-brush-panel.mjs|browser-i18n.mjs|browser-dodge-burn.mjs|browser-status-bar.mjs|browser-effect-card-truth.mjs|browser-p0-entries.mjs)
-          RENDER_PARAM="" ;;
-        *) RENDER_PARAM="&render=client" ;;
-      esac
+      # **★ 口径由判据自述，不在运行器硬编码名单** ✗✓（05 复审 NEW-M2 ✓）：
+      #   每个 `browser-*.mjs` 顶部第二行写 `// criterion-target: client|server|static|self` ✓
+      #   ⇒ **只有声明 `client` 的**才注入 `&render=client` ✓；
+      #     声明 server／static／self 的**不加参数才是测对对象** ✓（理由写在**各自脚本的抬头** ✓，
+      #     不再是这里的一串 `case` ✗ —— 旧写法的代价：每加一条判据就要来改运行器 ✗）。
+      #   **⇒ 守卫**：`scripts/check-browser-criteria-target.mjs` 断言**每个** browser-* 都声明了口径 ✓，
+      #     所以「没声明」不会**静默**走默认分支 ✓（未声明时默认仍是 client ✓，与历史行为一致 ✓）。
+      if grep -q '^// criterion-target: \(server\|static\|self\)' "$script"; then
+        RENDER_PARAM=""
+      else
+        RENDER_PARAM="&render=client"
+      fi
       # **先让调试浏览器打开被测地址** ✓（第 967 轮）：这一族约定"页面已经打开"✓（见 :73-74 ✓），
       # 而 :43 只起了 about:blank ✗ ⇒ 判据会去连别的页面 ⇒ 前置不成立（第 966 轮实测 ✓）。
       # CDP 的 /json/new 可以新开一个标签页并直接导航；新版 Chromium 要求 PUT ✓。

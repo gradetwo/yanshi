@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// criterion-target: server  ## 运行器据此决定是否注入 render=client（主体测服务端 add/update/delete + render_region 指纹；本地臂自己走「URL 不带 render」）
 // **判据：调整/滤镜卡（`#cardEffects`）在卡上写下的每一句结论，都必须能被服务端同一时刻的事实复现** ✓。
 //
 // **抓的是哪一类缺口** ✓：这张卡过去的回执是「已应用 X」——**一句界面自己下的结论** ✗

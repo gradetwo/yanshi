@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// criterion-target: client  ## 运行器据此注入 render=client（测本地内核）
 // **素材浮层**的浏览器验收 ✓（用户："画笔区快捷方式、点开浮出来" ✓）。
 //
 // 判据（每条都能红 ✓）：

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// criterion-target: client  ## 运行器据此注入 render=client（测本地内核）
 // **判据：运行时建的 tooltip 也必须是英文**（第六轮新增 ✓ 补 `ui-i18n-coverage` 的盲区 ✓）。
 //
 // **抓的是哪一类缺陷**（本轮实测出来的 ✗ 不是读代码猜的 ✓）：

@@ -1,3 +1,4 @@
+// criterion-target: self  ## 运行器据此决定是否注入 render=client（自己钉 render 偏好 ⇒ 外面再注入就是第二个真值）
 //! **★ C/S 渲染开关的**真浏览器**判据 ✗ ★**（第 68 轮 ✓；
 //! **`yanshi-cs-local-render-修复报告` 的**未覆盖项**换来的 ✓**）。
 //!

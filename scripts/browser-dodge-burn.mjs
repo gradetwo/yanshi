@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// criterion-target: server  ## 运行器据此决定是否注入 render=client（测服务端工具 dodge_burn_setup；本地没这个端点）
 // **判据：减淡加深（`dodge_burn_setup`）在查看器里必须说真话、并且真的建得出** ✓。
 //
 // **抓的是哪一类缺口** ✓：这工具早前在页面上**零入口**（`grep -c dodge_burn crates/yanshi-http/`

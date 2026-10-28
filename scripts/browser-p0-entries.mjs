@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// criterion-target: server  ## 运行器据此决定是否注入 render=client（测服务端工具的 Web 入口；本地是如实 not_implemented_locally）
 // **★ P0 新入口：图层混合模式下拉 ＋ 笔刷压感三预设（真浏览器点击）★**（**第 254 轮 ✓）
 //
 // **∴ 为什么要这条判据 ✗**：**补丁包自己的 README 写着**"未验证：真机浏览器点击"** ✗

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// criterion-target: client  ## 运行器据此注入 render=client（测本地内核）
 /**
  * **★★★ 「页面能导出**可播放**的过程视频」判据 ✗ ★★★**（**第 249 轮 ✓）
  *

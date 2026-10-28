@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// criterion-target: client  ## 运行器据此注入 render=client（测本地内核）
 // **右栏 tab 化 + 整页垂直锁死 + 画布内部滚动** ✓ —— 用户第 5 条 ✓。
 //
 // **判据（都能红 ✓）**：

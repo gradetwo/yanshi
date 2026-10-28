@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// criterion-target: client  ## 运行器据此注入 render=client（测本地内核）
 // **判据：开机就要把「对象」「批注」两个面板装出来** ✓（第 190 轮 ✓）。
 //
 // **抓的是什么 bug** ✓：带 token 打开一个**有内容**的文档 ⇒

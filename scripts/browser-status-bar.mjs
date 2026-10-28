@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// criterion-target: server  ## 运行器据此决定是否注入 render=client（测服务端水位 rendered_seq；本地内核不读服务端像素）
 // **判据：顶栏的 `head / rendered / dirty` 三个数必须自己收敛到服务端的事实** ✓。
 //
 // **抓的是哪一类缺口** ✓：本轮是**看整页截图**才发现的（不是读代码读出来的 ✗）：

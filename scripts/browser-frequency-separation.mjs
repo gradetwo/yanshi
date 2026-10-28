@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// criterion-target: client  ## 运行器据此注入 render=client（测本地内核）
 // **判据：频率分离（`frequency_separation`）必须在查看器里真的能用** ✓。
 //
 // **抓的是哪一类缺口** ✓：这个工具早已在服务端 ✓ 且在 HTTP 缺省面（`retouch` 组）里 ✓
