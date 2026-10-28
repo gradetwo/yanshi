@@ -1151,3 +1151,20 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    修法＝补判据输入（1×1＝4 字节与 blob 恰配），**不动实现**；全仓普查其余带 `import_image` 的
    判据都已带尺寸/region ✓（第 855 轮「改一处 grep 全仓」这条规矩兑现）。他们包自述「CI 从未跑过」
    ⇒ 这条红在预料清单内，属**批次与既有判据的接缝**，不是产品缺陷 ✗⇒✓ 修缝不修闸。
+
+92. **外部包合并：`~/patch/paint-fix-p1-export-receipts后续包.zip`（1 笔，2026-10-28，`81cd13bc`）**：
+   ① **基线与接缝**：base 恰为 `3d26ec24`（批次1合并前的主干尖端），改动三文件
+   （`render.rs`/`tools_io.rs`/`tests/export_png.rs`）批次1 都没碰 ⇒ `git am --3way` 干净落地。
+   ② **内容审查后才合**：`rendered_seq_note` 与既有语义**同向**（`tools_io.rs:649` 早已把
+   `raster_pending === (rendered_seq < head_seq)` 定为不变量、`surface-alignment` 也注明
+   「别拿它当画布状态」⇒ 只是把话写进回执，不新增事实 ✓）；**落回成功警告降级**不违反
+   「失败必须留痕」——落回成功不是失败，且 `YANSHI_TRACE_TILE_STITCH` 仍可查 ✓；
+   既有判据 `tool-bitmap-tiles-render` 断的是**像素改动**不是警告文本 ⇒ 不受影响 ✓（先 grep 过）。
+   ③ **合并例外的本机项**：`cargo test -p yanshi-render --lib tile_fallback` 2/2 ✓；
+   `cargo test -p yanshi-server --test export_png` 10/10（含新测）✓；
+   `cargo clippy --workspace --all-targets -D warnings` ✓；**本树复验 M2 变异**：
+   删 `rendered_seq_note` ⇒ 回执测红（101）⇒ 还原绿 ✓（不空信包侧声明）。
+   `cargo test --workspace` 按内存规则**交 CI**（本机可用 2.4 Gi < 3 Gi 闸门）。
+   ④ **接缝线（第 3 件）定性**：两候选（分带边界/落回路）被受控试验排除、导出逐位同哈希——
+   包结论「画法产物，无程序可修」**照单收下**（不入补丁、不改 skill；skill 侧归临摹方法轮 ✓）。
+   ⑤ `git am` 不过 pre-commit 钩子 ⇒ 合并后**另行复跑**了 fmt/clippy/守卫 ✓（§90⑤ 同规）。
