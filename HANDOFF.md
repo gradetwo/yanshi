@@ -1218,3 +1218,41 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
 ④ **回归普查**：`scripts/` 无判据以 `calls` 组批、更无「一批混多 doc_id」的用法 ⇒ P-10 的
    整批拒绝不会打红既有判据 ✓；无 JS 判据依赖「超限行杀进程」旧行为 ✓。
 ⑤ `git am` 不过 pre-commit 钩子 ⇒ 提交前**另行复跑** fmt/clippy/守卫 ✓（§90⑤ 同规）。
+
+## §95 批次 2（本地层锁闸＋预设四端点）合并留痕（2026-10-28，`3ccde4be`）
+
+① **基线与接缝**：包基线 `6372dd8c`＝批次 1 的 head —— 该哈希**不在本仓历史**（批次 1 是以
+   自有提交合入的），但补丁各文件的**前像 blob 在本树都在** ⇒ `git am --3way` 落在 `a04f181e`
+   之上直接成 `3ccde4be`，无需手工并缝。**重叠面核对**：本批动两份 `api-local.js`，与 §93
+   撞 id 修复同文件不同区段 ⇒ 合并后当场验证修复存活（`+ "_"` ×2、`let __p2cCtr = 0;` ×1 计数对）
+   ＋ `cmp web/ crates/yanshi-http/assets/` **逐字节同一** ✓。
+② **内容审阅**（四件，全部无 Rust）：A＝锁校验补进**提交层**——`p2LockGuard` 镜像
+   `crates/yanshi-core/src/log.rs:786 validate_lock`（detail 文案逐字照抄 log.rs:807–844），
+   闸挂在 `putAtom`（40+ 写入口的必经之路，单点），`set_property{locked|visible}` 永远放行
+   （否则锁上即死）、墓碑层仍算在状态（`fold.rs:1315`）✓；**顺带修真坑**：`local()` 原
+   `try { return dispatch(req) } catch` **抓不到异步拒绝** ⇒ 抽 `localDispatch` 改
+   `return await`（包称实测 `update_adjustment` 曾直接穿出——与 §93 同一族：异常路径没被
+   自己的兜底接住）。B＝`list_layers` 13 字段／`objects` 计数／`z_index` 折叠、
+   `list_objects` 补 `enabled/locked` 对齐服务端 ✓。C＝预设四端点（22 套内联 92959 B，
+   生成器 `--write/--check`＋逐字节判据看守；带 `render` 的 `preview_preset` **如实 501**，
+   不假装有单层裸像素通道 ✓——静默降级 5 形态的反面教材 ✓）。D＝新判据
+   `tool-pwa-local-write-guards`：**同一批写请求分别打真服务端与本地**，比解析后 JSON
+   （整数严格、小数 1e-12 相对误差）＋**错误文案逐字**；三处服务端缺陷**记为分歧断在分歧本身、
+   本地不复刻**（死父层 200-no-op vs 本地 404／changeset 半写 `service.rs:2437`／复制丢
+   `type` `tools.rs:3921`）✓。**未修清单**照单收下：三处分歧的根治属服务端后续，不在本批。
+③ **本机复验**（合并例外；README 第 1 条「CI 从未跑过这笔」照单）：`cargo clippy --workspace
+   --all-targets -D warnings` ✓（本笔无 Rust，仍按例外跑）；判据全绿——`tool-pwa-local-write-guards`
+   0／`tool-pwa-preset-server-parity` 0（22 套／展开三档／错误文案逐字／诚实 501；黑白插值一条
+   条件性跳过）／`tool-pwa-preset-library-parity` ✓／`tool-pwa-api-behaviour` **10 连跑全绿**
+   （§93 修复在本批之下仍立）／`tool-cs-local-copies`／`tool-web-assets-parity`／
+   `cache-headers`／`byte-budget`／`ledger-numbering` ✓／生成器 `--check` ✓。
+   **本树复验变异 ⑨**（删锁闸 ⇒ 判据退出码 1，失败集中在 §C「服务端 403｜本地 200」类 ⇒
+   断的正是锁路径 ✓；还原复绿）——十变异信包侧十条记录 + 自验一条，其余九条不代跑 ✓。
+   踩坑记一笔：复验最初用本机 8080，`/health` 502 —— 那**不是本仓服务**（nohup 起的因
+   「Address already in use」已死）⇒ 改**专端口 `127.0.0.1:18090` 起专用服务**再测 ✓（内核①：
+   先确认测量对象是自己的）。`cargo test --workspace` 按内存规则**交 CI**。
+   包自曝的一点也收下：变异 ⑩ 首跑退出码 3，暴露**判据自身**缺口（`callLocal` 不接异常 ⇒
+   产品抛错被当成判据坏了）⇒ 已修成记 0 状态失败响应——「测量工具要先被测量」又一次 ✓。
+④ **已知红（本批带入、批次 1 已登记）**：本机 `tool-pwa-assets` 报「介质产物 mtime 落后于
+   Cargo.toml」——内容未改、属本机时间戳现象，CI 全新 checkout 应不出现 ⇒ **不动判据，等 CI** ✓。
+⑤ `git am` 不过 pre-commit 钩子 ⇒ 本留痕提交**另行复跑** fmt/clippy/台账编号/守卫 ✓（§90⑤ 同规）。
