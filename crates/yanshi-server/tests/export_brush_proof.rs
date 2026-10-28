@@ -91,7 +91,11 @@ fn atoms_of(root: &std::path::Path, name: &str) -> Vec<serde_json::Value> {
         .args(["-xOf", pack.to_str().unwrap(), "atoms.jsonl"])
         .output()
         .expect("tar 应当能解出 atoms.jsonl");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     std::str::from_utf8(&out.stdout)
         .unwrap()
         .lines()

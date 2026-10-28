@@ -1844,9 +1844,16 @@ pub(super) fn paint_brush(
     ctx.time(Phase::Raster, stamp_started);
 
     // **文档背景** ✓（第 809 轮）：`max_channel_delta` 在没有基准时要合成到**它**上 ✓
+    // **背景只读三个字节，不许为它克隆整份文档状态** ✓（P-2）：`document_state` 克隆
+    // `objects` 全表（水彩 11,024 个对象）⇒ 每重放一笔付约 75 毫秒 ✓（实测：水彩
+    // 4,667 次重放里读回段占 350 秒，stamp 只占 0.5 秒 ✓）⇒ 这里直接借 `document()`
+    // 读背景，不克隆 ✓；文档不在 ⇒ 白底兜底（与读不到通道时同例；落笔前已容忍文档不在 ✓）。
     let background_rgb: Vec<u8> = {
-        let state = document_state(ctx)?;
-        let background = &state.background;
+        let background = ctx
+            .workspace
+            .document(&ctx.doc_id)
+            .map(|document| document.state().background.clone())
+            .unwrap_or(Value::Null);
         (0..3)
             .map(|channel| {
                 background
