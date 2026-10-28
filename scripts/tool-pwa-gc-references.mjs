@@ -91,7 +91,7 @@ await putBlob(db, hashB, [5, 6, 7, 8]);
 await putBlob(db, hashC, [9, 9]);
 
 const imp = await (await call("/api/tools/import_image", {
-  method: "POST", body: JSON.stringify({ blob_hash: hashA, layer_id: "LA", object_id: "oImg" }),
+  method: "POST", body: JSON.stringify({ blob_hash: hashA, layer_id: "LA", object_id: "oImg", width: 1, height: 1 }),
 })).json();
 check(imp.ok === true, `import_image 应成功（制造**顶层** blob_hash 引用 ✗）：${JSON.stringify(imp).slice(0, 120)}`);
 await call("/api/atoms", { method: "POST", body: JSON.stringify({

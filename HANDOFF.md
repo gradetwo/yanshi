@@ -1144,3 +1144,10 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    `tool-assets-index-matches-tree` ✓（10 条）｜`tool-pwa-assets` ✗＝**既有红**（mediums 产物落后
    源码，第 491 轮登记在册 ✓，非本批引入）。批次**没改任何 `.rs`** ⇒ 合并例外的 clippy/test
    无 Rust 对象，全量套件交 CI（已推）。
+   ⑥ **CI 复盘（run `40656113606`，`31035d61`，failure）**：唯一红 `tool-pwa-gc-references` ✗——
+   是**新实现对、旧判据输入裸**：0018 让本地层 `import_image` 照服务端 `parse_raster_patch` 的
+   P0 **要求尺寸**（无尺寸⇒写一条渲染不出来的原子＝静默降级 ✗），而该判据传的 `{blob_hash,
+   layer_id}` 没带 `width/height` ⇒ `missing_bitmap_size` 当场拒 ✓（守卫本身是对的，拒得有理由）。
+   修法＝补判据输入（1×1＝4 字节与 blob 恰配），**不动实现**；全仓普查其余带 `import_image` 的
+   判据都已带尺寸/region ✓（第 855 轮「改一处 grep 全仓」这条规矩兑现）。他们包自述「CI 从未跑过」
+   ⇒ 这条红在预料清单内，属**批次与既有判据的接缝**，不是产品缺陷 ✗⇒✓ 修缝不修闸。
