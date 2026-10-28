@@ -1065,6 +1065,15 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    实测复现版本 4.149.0 ✓）；守卫 `check-deploy-tool-pin.mjs` 扫 **scripts/ 全体活代码**禁 `npx --yes` ✓
    （变异：换回 npx ⇒ `deploy-pwa.sh:142` 红 ✓；守卫**先抓到过自己** ⇒ 匹配串拆两段 ✓「检查对象里
    不得有该检查本身的文字」第 301 轮那条规矩 ✓）。`pwa.yml` 的三处**未动**——L-6 冻结 ✓，解冻后一起做。
+   ⑦ **NEW-M5（`docs/` 过程文档噪音）**：四篇**零外部引用**的现场记录收进 `docs/archive/` ✓
+   （`history-undo-failure-venue`／`sw-cache-critical-path`／`verification-summary`／`render-box-first-paint`，
+   收纳规矩写在 `docs/archive/README.md` ✓——**同一事实只写一处**）。
+   **没动的**：`surface-alignment.md`（185 KB，**仍在生长的台账** ⇒ 不是噪音 ✗，且 3 处活引用含判据 ✓）、
+   `FOR-APPLE2011.md`／`HANDOFF-CI-621ffc2b.md`（各有 3–4 处活引用 ⇒ 先逐处改引用再谈搬，本轮不做 ✓）。
+   搬前搬后各跑一遍 `grep -rl <名字> scripts/ crates/ web/ .github/` ⇒ **外部活引用 0→0** ✓；
+   文档侧四个守卫（adjustment-count／agents-selfcheck／ledger-numbering／perf-doc-pointers）**全绿** ✓。
+   （`5fc2a5bb` 的提交信息说「§89⑦ 落账」时**还没落**——那次 python 的锚点 assert 挡下了未就绪的追加 ✓，
+   补账在下一个提交里 ⇒ 这正是「assert 只证明改了、不证明改对了」的反面用例 ✓。）
    ⑤ **CI 复盘（run `40640839341`，`8816b1fc`，failure）**：
    · `browser-brush-preview` **定性为环境抖动** ✓ —— 上一跑（`522ffcd`）红的那条这一跑**没有复现** ✓
      （同跑 `browser-asset-dock` 当时是 `exit 3` 判据自身求值失败 ✓，不是产品失败 ✓）；
