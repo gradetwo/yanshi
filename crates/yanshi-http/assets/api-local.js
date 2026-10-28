@@ -1521,11 +1521,21 @@ async function withKernel(doc, fn) {
     //   **∴ `layer_id` 缺省取第一个存活图层 ✗**（**∴ 服务端要求必填 ✗，**本地**放宽一点 ✓**）；
     //   **∴ 自带 `object_id` ✗**（**`get_undo_status`／`list_objects` 按它分组 ✓**）。
     if (path === "/api/tools/import_image") {
+      // **★ 形状照前端与服务端 ✗ ★**（本轮 ✓）：前端 `viewer-app.js` 与
+      //   服务端 `write_import_image`（`tools_bitmap.rs:152`）都用
+      //   **`bitmap:{blob_hash,mime_type,size}` ＋ `region:{x,y,w,h}`** ✓
+      //   ⇒ **∴ 而**本分支此前读的是 `body.blob_hash`／`body.x/y`✗ ⇒
+      //     **前端发来的 `bitmap.blob_hash` 根本读不到 ⇒ 一律 `missing_blob_hash` ✓**
+      //     （**离线导入图片整条路是坏的 ✓**）＋ 即便写成功，净荷缺 `bitmap`/`region`/`width`
+      //     ⇒ 渲染器 `parse_raster_patch` 按**不支持的原语跳过 ⇒ 一个像素都不出**（服务端第 1223 轮的 P0 ✓）。
+      //   **∴ 修法 ✗**：读**规范形状**（并兼容旧的平铺写法 ✓）＋ 写**渲染器认得的净荷**
+      //     （`bitmap.blob_hash` ＋ `width/height` ＋ `region` ✓ 与 `brush_stroke` 那条 import_image 原子同形 ✓）
       const pl = (body && body.payload) || {};
-      const blobHash = body.blob_hash || pl.blob_hash;
+      const bitmap = body.bitmap || pl.bitmap || {};
+      const blobHash = bitmap.blob_hash || body.blob_hash || pl.blob_hash;
       if (typeof blobHash !== "string" || !blobHash) {
         return json({ ok: false, error: "missing_blob_hash", error_code: "missing_blob_hash",
-                      reason: "import_image 需要 blob_hash（先 POST /api/blob 存图再导入）",
+                      reason: "import_image 需要 bitmap.blob_hash（先 POST /api/blob 存图再导入）",
                       server: false }, 400);
       }
       const { getBlob } = await import("./store.js");
@@ -1540,18 +1550,35 @@ async function withKernel(doc, fn) {
       if (typeof layerId !== "string" || !layers.has(layerId)) {
         return p2Missing("图层 " + (layerId || "(未指定)") + " 不存在（import_image 需要一个存活图层）");
       }
+      // **∴ region ＋ 尺寸 ✗**：**优先规范 `region`✗** 旧平铺 `x/y/width/height` 兼容 ✓
+      const region = body.region || pl.region || {};
+      const x = Number(region.x ?? body.x ?? pl.x ?? 0);
+      const y = Number(region.y ?? body.y ?? pl.y ?? 0);
+      const w = Number(region.w ?? body.width ?? pl.width ?? 0);
+      const h = Number(region.h ?? body.height ?? pl.height ?? 0);
+      // **∴ 尺寸缺失必须报错 ✗**（**不**写一条渲染不出来的原子 ✓ 照服务端 `parse_raster_patch` 的同一条 P0 ✓）
+      if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) {
+        return json({ ok: false, error: "missing_bitmap_size", error_code: "missing_bitmap_size",
+                      reason: "import_image 需要位图尺寸（region.w/h 或 width/height）⇒ 否则渲染器把它当「不支持的原语」跳过 ⇒ 画面什么都不出",
+                      server: false }, 400);
+      }
       const objectId = body.object_id || pl.object_id ||
                        ("obj_" + Date.now().toString(36));
+      const mime = String(bitmap.mime_type || (pl.bitmap && pl.bitmap.mime_type) || "image/x-yanshi-raw");
+      // **★ 净荷形状 = 渲染器 `parse_raster_patch` 要的 ✓**：`bitmap.blob_hash` ＋ `width/height` ＋ `region`
       const atom = p2Envelope("import_image", {
-        blob_hash: blobHash, layer_id: layerId,
-        x: Number(body.x ?? pl.x ?? 0), y: Number(body.y ?? pl.y ?? 0),
+        type: "raster_patch",
+        bitmap: { blob_hash: blobHash, mime_type: mime, size: bytes.length },
+        width: w, height: h,
+        region: { x, y, w, h },
+        layer_id: layerId,
         object_id: objectId,
       });
       const seq = await putAtom(handle, doc, atom);
       return json({ ok: true, atom_id: atom.id, seq, head: seq, object_id: objectId,
                     blob_hash: blobHash, layer_id: layerId,
-                    x: atom.payload.x, y: atom.payload.y, server: false,
-                    note: "已在本地原子日志写入 import_image（简化形状：blob 引用＋落点；完整位图形状见 brush_stroke 分支）" });
+                    x, y, width: w, height: h, server: false,
+                    note: "已在本地原子日志写入 import_image（净荷含 bitmap＋region＋宽高 ⇒ 渲染器 parse_raster_patch 能取出并落位 ✓）" });
     }
 
     // **⑥ `get_undo_status` ✗**：**只读查询可撤销／可重做的笔数 ✓**（**照服务端 `read_get_undo_status` ✓**）：

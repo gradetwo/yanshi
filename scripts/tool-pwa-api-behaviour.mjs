@@ -90,7 +90,7 @@ stub("window", {
 
 const base = pathToFileURL(`${process.cwd()}/web/`).href;
 const { installLocalApi, makeLocalApi, LOCAL_IMPLEMENTED } = await import(base + "api-local.js");
-const { open } = await import(base + "store.js");
+const { open, putBlob } = await import(base + "store.js");
 
 const db = await open();
 const local = await makeLocalApi(db);
@@ -349,6 +349,50 @@ check(iaBrush.error === "not_implemented_locally",
   "import_asset{brush} 必须如实 501（本地该类是随包静态资源；实测 " + JSON.stringify(iaBrush).slice(0, 120) + "）");
 console.log("  本地层 import_asset{texture,data_base64} ⇒ " + iaRes.status + "｜error=" + (iaErr || "(无)") +
   "｜{brush} error=" + String(iaBrush.error || ""));
+
+// **★ ⑦c `import_image` 要读**规范形状**并写出**渲染器认得的净荷 ✗ ★**（本轮 ✓）：
+//   **∴ 前端 `viewer-app.js` 与服务端 `write_import_image` 都用** `bitmap:{blob_hash}` ＋ `region:{x,y,w,h}`✓
+//     ⇒ **∴ 而**本地层此前读 `body.blob_hash`／`body.x/y`✗ ⇒ 规范请求**一律 `missing_blob_hash`**✓
+//     （**离线导入图片整条路坏 ✓**）＋ 净荷缺 `bitmap`/`region`/`宽高` ⇒ `parse_raster_patch` 当不支持原语跳过✓
+//   **∴ 判据 ✗（**这条不需要内核 ✓**——只要 blob 在 IndexedDB 里就能走通 ✓）**：
+//     ① 先 `putBlob` 造一个 blob ⇒ 用**规范形状**调 `import_image` ⇒ 期望 **`ok:true`**（旧代码此输入必 `missing_blob_hash`✗）
+//     ② **回显的落点/尺寸**取自 `region`✓**（**x=5/y=7/w=4/h=4✗ 不许退回 0 ✓**）
+//     ③ 规范形状但 **w/h 缺** ⇒ `missing_bitmap_size`✓（**不写一条渲染不出的原子 ✓**）
+//     ④ 规范形状但 **blob 不在库** ⇒ `blob_not_found`✓（**且**不是** `missing_blob_hash`✗ 那说明没读到 bitmap.blob_hash ✓**）
+//   **∴ 变异（**实测 ✓）**：**把读侧退回 `body.blob_hash || pl.blob_hash`** ⇒ ① 必红（missing_blob_hash ✓）**
+const IMG_HASH = "sha256:" + "ab".repeat(32);
+await putBlob(db, IMG_HASH, Array.from([1, 2, 3, 4]));   // 4 字节占位（getBlob 只按字符串键取 ✓）
+const iiRes = await call("/api/tools/import_image", {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ layer_id: "L0", bitmap: { blob_hash: IMG_HASH, mime_type: "image/x-yanshi-raw", size: 4 },
+                         region: { x: 5, y: 7, w: 4, h: 4 } }),
+});
+const iiBody = await iiRes.json().catch(() => ({}));
+check(iiBody.ok === true,
+  "import_image 用规范形状（bitmap.blob_hash＋region）必须成功，不能再报 missing_blob_hash（那说明读错了键、离线导入图片整条路坏；实测 " +
+  iiRes.status + "／" + JSON.stringify(iiBody).slice(0, 140) + "）");
+check(iiBody.width === 4 && iiBody.height === 4 && iiBody.x === 5 && iiBody.y === 7,
+  "import_image 的落点/尺寸必须取自 region（不许退回 0/缺省；实测 " +
+  JSON.stringify({ x: iiBody.x, y: iiBody.y, w: iiBody.width, h: iiBody.height }) + "）");
+// ③ 缺尺寸 ⇒ 如实报，而不是写一条渲染不出的原子
+const iiNoSize = await (await call("/api/tools/import_image", {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ layer_id: "L0", bitmap: { blob_hash: IMG_HASH }, region: { x: 0, y: 0, w: 0, h: 0 } }),
+})).json();
+check(iiNoSize.error === "missing_bitmap_size",
+  "import_image 缺位图尺寸必须报 missing_bitmap_size（否则净荷无 region/宽高 ⇒ 渲染器 parse_raster_patch 跳过 ⇒ 画面什么都不出；实测 " +
+  JSON.stringify(iiNoSize).slice(0, 120) + "）");
+// ④ 规范形状但库里没这个 blob ⇒ blob_not_found（不是 missing_blob_hash）
+const iiNoBlob = await (await call("/api/tools/import_image", {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ layer_id: "L0", bitmap: { blob_hash: "sha256:" + "cd".repeat(32) }, region: { x: 0, y: 0, w: 2, h: 2 } }),
+})).json();
+check(iiNoBlob.error === "blob_not_found",
+  "import_image 规范形状＋库中无此 blob ⇒ 应报 blob_not_found（若报 missing_blob_hash 说明没读到 bitmap.blob_hash；实测 " +
+  JSON.stringify(iiNoBlob).slice(0, 120) + "）");
+console.log("  本地层 import_image{规范形状} ⇒ " + iiRes.status + "｜ok=" + iiBody.ok +
+  "｜落点/尺寸=(" + iiBody.x + "," + iiBody.y + "," + iiBody.width + "," + iiBody.height + ")");
+
 
 
 // **★ ⑧ 评论的游标不能越过**没交付**的那几条 ✗ ★**（与服务端 `read_list_comments` 同形 ✓）

@@ -22581,3 +22581,45 @@ node 判据环境没有 ⇒ **归 browser 判据**（`browser-asset-dock` 在 CI
 **⇒ 两面（AGENTS 第 3 条 ✓）**：
 **收益 ✓**：关掉一类**上传被静默丢弃**的静默降级 ✓（前端／服务端／本地三处口径对齐 ✓）；
 **代价 ✓**：本地层多两个错误码（`invalid_base64`／`empty_upload`）＋ 判据多三条断言 ✓（node 级 ✓ 毫秒）。
+
+## 六百四十七、`import_image` 本地层读错键形状＋净荷渲染不出（离线导入图片整条路坏，实测）
+
+**⇒ 起因 ✓**：把 `import_asset` 那条「前端发的 ＝ 本地读的」审计**自动化**——脚本比对
+「前端 `callTool*(name,{…})` 发的字段」× 「`api-local.js` 里 `body.<字段>` 读到的字段」，
+列出**发了却没读**的端点。逐个核对后 `import_image` 命中。
+
+**⇒ 三处口径 ✗（又是本地层独自读错 ✓）**：
+
+| 处 | blob 哈希在哪 | 落点/尺寸在哪 |
+|---|---|---|
+| 前端 `viewer-app.js:4103` | `bitmap:{blob_hash,size,mime_type}` | `region:{x,y,w,h}` |
+| 服务端 `tools_bitmap.rs:152` | `require_object(args,"bitmap")` ⇒ `bitmap.blob_hash` | `require_object(args,"region")` |
+| **本地 `api-local.js:1507`（改前）** | **读 `body.blob_hash`／`body.payload.blob_hash`✗** | **读 `body.x`／`body.y`✗** |
+
+**⇒ 两个症状（都是静默降级 ✓）**：
+① 规范请求里 `blob_hash` 在 `bitmap` 下 ⇒ 本地层**读不到** ⇒ **一律 `missing_blob_hash` 400** ⇒
+   **离线导入图片（含示例画面 seed）整条路坏** ✓；
+② 即便凑上顶层 `blob_hash` 写成功，净荷**缺 `bitmap`/`region`/`width`/`height`** ⇒ 渲染器
+   `parse_raster_patch`（`object.rs:1073`）第一步就要 `data["bitmap"]["blob_hash"]`、尺寸要 `width/height` 或 `region`，
+   缺则 **`Primitive::Unsupported` ⇒ `ok:true` 而画面一个像素都不出** ✓
+   （这正是服务端第 1223 轮记过的 P0 ✓ 被本地层**重新犯了一遍** ✓；而同文件 `brush_stroke` 那条
+   `import_image` 原子（`api-local.js:4028`）**写的是正确形状** ⇒ 本端点是唯一的坏支 ✗）。
+
+**⇒ 修法 ✓**：读侧**优先规范形状**（`bitmap.blob_hash`／`region.{x,y,w,h}`，兼容旧平铺 `blob_hash`/`x`/`y` ✓）；
+写侧**照 `parse_raster_patch` 要的净荷**（`type:"raster_patch"`＋`bitmap{blob_hash,mime_type,size}`＋`width/height`＋`region{x,y,w,h}` ✓
+与 `brush_stroke` 那条同形 ✓）；**缺尺寸如实报 `missing_bitmap_size`**✗ 不写一条渲染不出的原子 ✓。
+
+**⇒ 四层齐 ✓**：① 实现 `api-local.js` ✓；② 输入 = 判据先 `putBlob` 造 blob ＋ 用**规范形状**调用 ✓；
+③ 断言 `tool-pwa-api-behaviour` **四条**（规范形状 ⇒ `ok:true`／回显取自 `region`（5,7,4,4 不许退 0 ✓）／
+缺尺寸 ⇒ `missing_bitmap_size`／库无 blob ⇒ `blob_not_found` 且**不是** `missing_blob_hash`）✓；
+④ **变异（实测 ✓）**：把读侧退回 `body.blob_hash || pl.blob_hash` ⇒ **四条全红（退出码 1 ✓）**；恢复 ⇒ 绿 ✓。
+**∴ 为什么这条能**在 node 里验成功路径**✗（与 `import_asset` 不同 ✓）**：`import_image` **不碰内核** ✓
+只要 blob 在 IndexedDB（判据直接 `putBlob` 造）就能走通 ⇒ **成功＋净荷形状都可当场断** ✓。
+
+**⇒ 顺带把审计做成可复跑的检查 ✓**：「前端发了却没被本地读」的差集是**这一类 bug 的探测器**
+（`import_asset`/`import_image` 都是它抓出来的 ✓）⇒ **登记**：可考虑固化为一条判据（分母＝前端 `callTool*` 端点集 ✓）。
+
+**⇒ 两面（AGENTS 第 3 条 ✓）**：
+**收益 ✓**：修好离线导入图片整条路（不再假成功／不再一个像素不出 ✓）；本地三处口径对齐 ✓。
+**代价 ✓**：净荷比旧「简化形状」多了 `bitmap`/`region`/`width`/`height`/`type` 几个键 ✓（正是渲染器要的 ✓）
+＋ 判据多四条断言 ＋ 一个 `putBlob` 造数据（node 级 ✓ 毫秒）。
