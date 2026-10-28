@@ -90,6 +90,11 @@ fn an_empty_cache_is_an_empty_list_with_a_hint_not_an_error() {
 /// **为什么 `usable` 重要** ✓：内核**只解 PNG** ✗（JPEG/WebP 会被**明确拒绝** ✓）
 /// ⇒ 与其让调用方试一次才知道 ✓，不如**列表里就说清** ✓
 ///（与"错误里带可用选项"是同一规矩 ✓）。
+///
+/// **P-18 把这条规矩收窄到"本类文件"** ✓：**该不该列由扩展名定 ✓、能不能用由内容定 ✓**
+/// ⇒ `NOTICE.md`（说明文件 ⇒ 不再是"假纹理"✗）与 `canvas.jpg`（跨类文件 ⇒ 纹理侧不收 ✓）
+/// 都不再进列表；许可凭据不受影响 ✓（`fetch-textures` 照写 `NOTICE.md` ✓，文件在盘上 ✓）。
+/// 与 `assets_import.rs` 里钉住的口径同一份实现 ✓（一处改、三类一致 ✓）。
 #[test]
 fn the_list_reports_name_size_and_usability() {
     let root = temp_dir("list");
@@ -116,10 +121,11 @@ fn the_list_reports_name_size_and_usability() {
         .iter()
         .map(|entry| entry["name"].as_str().unwrap_or_default().to_owned())
         .collect();
-    // **隐藏文件与子目录不算纹理** ✓（`NOTICE.md` 要留下 ✓ —— 它是许可凭据 ✓）。
+    // **隐藏文件与子目录不算纹理** ✓；**P-18：该不该列由扩展名定** ✓ ⇒
+    // `NOTICE.md` 与 `canvas.jpg` 不再进列表（夹具仍写它们 ✓ 当负对照：过滤被删就红 ✓）。
     assert_eq!(
         names,
-        vec!["NOTICE.md", "canvas.jpg", "grey.png", "paper.png"],
+        vec!["grey.png", "paper.png"],
         "排序或过滤不对：{names:?}"
     );
     let by_name = |name: &str| {
@@ -143,12 +149,7 @@ fn the_list_reports_name_size_and_usability() {
         json!(false),
         "灰度 PNG 解码器吃不了，必须说清：{got}"
     );
-    assert_eq!(
-        by_name("canvas.jpg")["usable"],
-        json!(false),
-        "JPEG 内核解不了，要说清：{got}"
-    );
-    assert_eq!(by_name("NOTICE.md")["usable"], json!(false), "{got}");
+    // P-18 起 `canvas.jpg`／`NOTICE.md` 已由上面的相等断言排除在列表外 ✓（不再断它们的 usable）。
 }
 
 /// **纯内存工作区：能列内置 ✓、但必须说清"不能导入"** ✗。

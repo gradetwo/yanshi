@@ -5,12 +5,14 @@
 // **判据**（每臂独立文档画像素臂，警告臂共用传入文档、各回执独立读）：
 //   ① 点里带起伏压力 + `pressure_curve:"auto"` ⇒ `warnings` 含"不生效"信号；
 //   ② 点里带恒定压力 + `auto` ⇒ 信号消失且包络生效（像素与 `flat` 不同——同一串点只改 `pressure_curve`）；
-//   ③ `color.a` 任意值 ⇒ 信号恒在（对象式 `a`、数组 4 元、`color_to` 的 `a` 各一臂）；
+//   ③ **P-19 之后**：`color.a` 生效 ⇒ 不再出声（对象式、数组 4 元各一臂），`a=0` 按零墨规矩拒绝，
+//      只有 `color_to` 的 `a` 仍被忽略、仍要出声；
 //   ④ 不传这两个参数的普通一笔 ⇒ 不多出这类信号（`warnings` 里无"不生效"/"被忽略"字样）；
 //   ⑤ `humanize:true` 显式传且包络未生效 ⇒ 与第 ① 条合并为一条警告（起伏压力臂、恒定压力+flat 缺省臂；
 //      `auto` + `humanize:true` 同给时只一条含"不生效"的警告，不重复）。
 //
-// **变异**：删掉警告分支（信号恒缺）⇒ ①③⑤ 红；把包络条件改回"只看有没有压力" ⇒ ② 红。
+// **变异**：删掉警告分支（信号恒缺）⇒ ①③c⑤ 红；把包络条件改回"只看有没有压力" ⇒ ② 红；
+//   把 P-19 的 alpha 乘法改回忽略 ⇒ 挂回警告时 ③a/③b 红、即便静默不回警告也有 ③d/③e 红（零墨拒绝＋相对墨量）。
 //
 // 用法：node scripts/tool-pressure-curve-echo.mjs <base> <doc> <token>
 const [base, doc, token] = process.argv.slice(2);
@@ -109,7 +111,9 @@ const pixels = async (d, t) => {
   let ink = 0;
   for (let i = 0; i < bytes.length; i += 4) {
     fingerprint = (fingerprint * 31 + bytes[i] + bytes[i + 1] * 3 + bytes[i + 2] * 7) >>> 0;
-    if (bytes[i] + bytes[i + 1] + bytes[i + 2] < 600) ink += 1;
+    // **墨 = 离纯白至少一档的像素** ✓（③e 比的是相对量：a=110 的半透明笔芯在 600 门槛下会数成 0 ✗
+    //   —— 本机实测 1273 ⇒ 0；门槛放到 762 ⇒ 淡笔也数得到，相对关系仍成立 ✓）。
+    if (bytes[i] + bytes[i + 1] + bytes[i + 2] < 762) ink += 1;
   }
   return { fingerprint, ink };
 };
@@ -140,16 +144,16 @@ const main = async () => {
     `② 恒定压力 + auto ⇒ 像素与 flat 不同（auto 指纹 ${pxAuto.fingerprint}｜flat 指纹 ${pxFlat.fingerprint}）`,
   );
 
-  // **③ `color.a` 任意值 ⇒ 信号恒在**。
+  // **③ P-19：`color.a` 乘进整笔 opacity ⇒ 不再出声；`a=0` 按零墨规矩拒绝；`color_to.a` 仍忽略仍出声**。
   const r3a = await paint(doc, token, {}, VARIED, { r: 200, g: 30, b: 40, a: 110 });
   check(
-    hasWord(r3a, "被忽略") && warningsOf(r3a).some((w) => w.includes("color.a")),
-    `③a 对象式 color.a=110 ⇒ warnings 含"被忽略"（实测 ${JSON.stringify(warningsOf(r3a))}）`,
+    !warningsOf(r3a).some((w) => w.includes("color.a") && w.includes("被忽略")),
+    `③a 对象式 color.a=110 生效 ⇒ warnings 不得再有 color.a"被忽略"（实测 ${JSON.stringify(warningsOf(r3a))}）`,
   );
   const r3b = await paint(doc, token, {}, VARIED, [200, 30, 40, 110]);
   check(
-    hasWord(r3b, "被忽略") && warningsOf(r3b).some((w) => w.includes("color.a")),
-    `③b 数组 4 元 color.a=110 ⇒ warnings 含"被忽略"（实测 ${JSON.stringify(warningsOf(r3b))}）`,
+    !warningsOf(r3b).some((w) => w.includes("color.a") && w.includes("被忽略")),
+    `③b 数组 4 元 color.a=110 生效 ⇒ 同上（实测 ${JSON.stringify(warningsOf(r3b))}）`,
   );
   const r3c = await call(doc, token, "brush_stroke", {
     layer_id: "L1",
@@ -167,6 +171,49 @@ const main = async () => {
   check(
     hasWord(r3c, "被忽略"),
     `③c color_to.a=110 ⇒ warnings 含"被忽略"（实测 ${JSON.stringify(warningsOf(r3c))}）`,
+  );
+  // **③d `a=0` 按零墨规矩拒绝** ✓（`precondition_failed`，与显式 `opacity: 0` 同款，不留原子）。
+  const r3d = await call(doc, token, "brush_stroke", {
+    layer_id: "L1",
+    object_id: "s_zero_a",
+    brush: BRUSH,
+    size: 40,
+    color: { r: 200, g: 30, b: 40, a: 0 },
+    points: VARIED,
+  });
+  check(
+    r3d?.ok === false && r3d?.error_code === "precondition_failed",
+    `③d color.a=0 ⇒ precondition_failed 拒绝（实测 ${JSON.stringify({ ok: r3d?.ok, error_code: r3d?.error_code })}）`,
+  );
+  // **③e 生效臂** ✓：只"把话删了但 alpha 仍被忽略"也是静默降级 ✗ ⇒
+  //   独立文档（916 轮教训）比 a=255 与 a=110 两笔的**相对墨量**（断关系不写像素数 ✓）。
+  const docA255 = await newDoc("a255");
+  const docA110 = await newDoc("a110");
+  await paint(docA255.doc, docA255.token, {}, VARIED, { r: 200, g: 30, b: 40, a: 255 });
+  await paint(docA110.doc, docA110.token, {}, VARIED, { r: 200, g: 30, b: 40, a: 110 });
+  const ink255 = await pixels(docA255.doc, docA255.token);
+  const ink110 = await pixels(docA110.doc, docA110.token);
+  const docA0 = await newDoc("a0");
+  const r0paint = await call(docA0.doc, docA0.token, "brush_stroke", {
+    layer_id: "L1",
+    object_id: "s_zero_a2",
+    brush: BRUSH,
+    size: 40,
+    color: { r: 200, g: 30, b: 40, a: 0 },
+    points: VARIED,
+  });
+  check(
+    r0paint?.ok === false,
+    `③e0 a=0 在独立文档上也被拒（实测 ok=${JSON.stringify(r0paint?.ok)}）`,
+  );
+  const ink0 = await pixels(docA0.doc, docA0.token);
+  check(
+    ink0.ink === 0,
+    `③e1 a=0 的文档必须真零墨（实测 ${ink0.ink} 个有墨像素）`,
+  );
+  check(
+    ink110.ink > 0 && ink110.ink < ink255.ink,
+    `③e2 a=110 的墨应多于 0、少于 a=255（实测 ${ink0.ink} ⇒ ${ink110.ink} ⇒ ${ink255.ink}）`,
   );
 
   // **④ 普通一笔（不传 pressure_curve/humanize/color.a）⇒ 不多出这类信号**。
@@ -198,7 +245,7 @@ const main = async () => {
     console.error(`❌ ${fails.length} 项没成立：${fails.join("｜")}`);
     process.exit(1);
   }
-  console.log("✓ B4 回显成立：auto 起伏压力出声、恒定压力包络生效且无信号、color.a 恒出声、普通一笔不多话、humanize 合并一条");
+  console.log("✓ B4 回显成立：auto 起伏压力出声、恒定压力包络生效且无信号、color.a 生效不出声（P-19）、a=0 零墨拒绝、color_to.a 仍出声、普通一笔不多话、humanize 合并一条");
 };
 
 await main();

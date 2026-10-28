@@ -99,6 +99,10 @@ const ALLOWLIST = {
   //   **⇒ 只放这一个** ✓：其余键（`black`/`white`/`gamma`/`ranges`…）若以后进文案，
   //     也应按同一问句"它是引擎真有的键吗"补进来，不要放成通配 ✓。
   effectParam: new Set(["amount"]),
+  // **P-19（期 7）**：`precondition_failed` 是**错误码** ✓（`error.rs` 的 `ErrorCode` 枚举 ✓、
+  //   零墨拒绝的回执字段）✗ 不是参数名 ⇒ brush_stroke 文案里那句"a=0 按零墨规矩拒绝"
+  //   在 inputSchema 里无处可落 ⇒ 按同一问句"它是引擎真有的东西吗"逐个补 ✓ **不要放成通配** ✓。
+  errorCode: new Set(["precondition_failed"]),
   internal: new Set([
     "feed_base", "cp", "YANSHI_EXPORT_DIR", "canvas", "open", "close",
     "supersede",

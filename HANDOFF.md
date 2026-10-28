@@ -1437,3 +1437,38 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
      `tool-hex-alpha-warning` 断的 hex 路 P-19 明言不动 ✓；UI 侧颜色恒 `a:255`/hex ⇒ 无漂移面 ✓。
    · P-20：只影响 `yanshi-mcp serve`；`mcp-*` 判据的父进程是活着的 node，退出走 EOF/kill 正常路径 ✓。
 ⑤ `git am` 不过 pre-commit 钩子 ⇒ 本留痕提交**另行复跑** fmt/clippy/台账编号/守卫 ✓（§90⑤ 同规）。
+
+⑥ **后效（run `40697212382` 复判，completed/failure）**——红共 5 面，逐面归因与处置：
+   · **test (stable)/(beta) ×2：`textures.rs` 的 `the_list_reports_name_size_and_usability`** ⇒
+     P-18「该不该列由扩展名定」与**包侧没回去改的邻居测试**冲突（包侧在 `assets_import.rs`
+     新增同口径测试＋变异，却留着旧钉「NOTICE.md 要留下／canvas.jpg usable:false」的邻居 ✗ ⇒
+     他们「86 过」只跑了**定向**——§95 例外那句「外部补丁的测试覆盖≠本仓的测试覆盖」再次实证 ✓，
+     而抓到它的正是「`cargo test --workspace` 交 CI」这条规矩本身 ✓）。
+     **裁定：产品保留 P-18，测试改写为新语义**，依据三条：① 同口径已在 `assets_import.rs` 钉死（带变异）✓；
+     ② 许可凭据在**盘上的 NOTICE.md**（`fetch-textures` 照写 ✓），不靠工具列表露出 ✓；
+     ③「usable:false 说清」收窄到**本类内**——扩展名对而内容不行（`grey.png`）仍列仍标 ✓。
+     夹具照写 `NOTICE.md`/`canvas.jpg` 当**负对照**（过滤被删 ⇒ 名字相等断言当场红 ✓）。
+     **变异**：把过滤条件恒假 ⇒ `textures.rs` 与 `assets_import.rs` 两条同红（实测），恢复后 14 测试全绿 ✓。
+   · **criteria shard 1：`tool-pressure-curve-echo` ③a/③b** ⇒ 它钉的是旧语义「`color.a` 恒被忽略」，
+     P-19 正是那次红的**消费**（包侧同步改写了 `ink_px` 那条旧判据、漏了这条；见下方 ④ 订正）。
+     改写为新语义：a=110 **静默**（对象式＋数组式）＋ a=0 `precondition_failed` ＋ **独立文档相对墨量臂**
+     （实测 0 ⇒ 8562 ⇒ 10197 ✓）。**变异（静默忽略：`color_alpha_factor` 直接 `return None`）**：
+     ③a/③b **仍绿**（只删话不改行为的形态）⇒ 而 ③d/③e0/③e1/③e2 **四条全红** ✓——效果臂挡的正是它 ✓。
+     附带 `pixels()` 墨门槛 600→762：半透明笔芯在 600 下数成 0 ⇒ 比较前提不成立（本机实测逼出来的 ✓）。
+   · **criteria shard 3：`mcp-watch-external`** ⇒ **编排撞 P-13**：`kill()` 只发信号不等待 ⇒
+     负对照第二台在旧进程**还活着**时启动 ⇒ P-13 正确拒绝 ⇒ 判据误读成「产品红」✓（正是写锁要防的
+     双写形态，锁没错 ✗ 判据排队错）。修法：`killAndWait` 等 `exit`（残留锁由下一台死 pid 自愈 ✓）
+     ＋ 把 P-13 冲突单列为 exit(3)「判据前提不成立」。**当场踩到的新坑**：启动 banner 的
+     `profiles=["core","conflict",…]` 里有 "conflict" 一词 ⇒ 冲突正则**不许裸写** `/conflict/`
+     （本机首跑即被正常启动误判 ✓，改锚定「启动失败：conflict／已被进程…占用／写锁文件名」）。
+     本机重跑双臂绿 ✓。
+   · **criteria shard 4：`tool-schema-params-census` ①** ⇒ P-19 给 brush_stroke 文案加的
+     `precondition_failed`（**错误码**、`ErrorCode` 枚举里真有 ✓）被当「无处可落的参数名」。
+     按 census 自规「只放引擎真有的、不放通配」补 `errorCode` 分类（单名 ✓）。本机全绿
+     （268 名恒等式：已分类 268＋未分类 0 ✓）。
+   · **跳过面无遮蔽**：shard1 的 8 个 ⊘ 与 P4 run `40692645078` 的 ⊘ **集合逐一相同**（diff 实测 ✓）
+     ⇒ 没有新判据被 P7 打成「不可判」藏红 ✓。
+   · **④ 订正**（内核②「变了回去改」的文档版）：④ 的 P-19 六面普查只扫了「判据造 `a<255` 输入」的
+     **数值面**，没扫「判据断旧文案『被忽略』」的**措辞面** ⇒ `tool-pressure-curve-echo` 从网眼漏过。
+     教训一般化：**语义反转 ⇒ 旧语义的全部断言面都要枚举**（grep 旧文案＋旧字段＋旧数值），缺一面必红。
+   · 复判提交后重推 ⇒ 等 run 收敛；**P7 收账以新一轮 CI 为准**（不自称已绿 ✓）。

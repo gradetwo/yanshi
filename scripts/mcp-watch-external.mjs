@@ -96,6 +96,15 @@ function startServer(doc, watch) {
   };
   return { state, send, waitFor, call };
 }
+// **P-13 起，一个根同一时间只许一个写进程** ✓ ⇒ 第二台服务器必须等第一台**真的退出**才能起 ✗
+//   （`kill()` 只发信号 ⇒ 冲突检测时旧进程还活着 ⇒ 新进程按规矩拒绝 ⇒ 被误读成"产品红" ✗，
+//    CI run 40697212382 的 shard 3 就是这么红的 ✓）。残留锁由下一台自愈（持有者 pid 已死 ⇒ 删锁重试 ✓）。
+async function killAndWait(s) {
+  if (s.state.dead) return;
+  const exited = new Promise((r) => s.state.child.once("exit", r));
+  s.state.child.kill();
+  await Promise.race([exited, new Promise((r) => setTimeout(r, 8000))]);
+}
 async function open(doc, watch) {
   const s = startServer(doc, watch);
   // **★ 先等一小会儿，看它是不是当场就退了（2026-10-15 ✓）★**
@@ -103,6 +112,15 @@ async function open(doc, watch) {
   //   （写了就是 EPIPE ✗ ⇒ node 崩 ✗ ⇒ 退出码变成"崩溃"而不是"产品红" ✗）。
   await new Promise((r) => setTimeout(r, 400));
   const early = (s.state.stderr || "").trim();
+  // **P-13 冲突不是产品红** ✓：说明根还被别的写进程占着 ⇒ **判据自身前提不成立**（exit 3 ✓），
+  //   与"不认识 `--watch`"（真·产品红 ✓）严格分开。
+  //   **⚠ 正则不许裸写 `/conflict/`** ✗：启动 banner 的 `profiles=["core", "conflict", …]`
+  //   里就有这个词 ⇒ 裸匹配会把**正常启动**误判成冲突（本轮实测踩过 ✓）。
+  if (/(启动失败：conflict|已被进程 .* 占用|yanshi-write\.lock)/.test(early)) {
+    console.log("❌ 判不了：根被别的写进程占用（P-13 排他锁在正常工作 ✓）⇒ 先把上一台收干净再跑");
+    console.log("    实测 stderr：" + early.replace(/\s+/g, " ").slice(0, 300));
+    process.exit(3);
+  }
   if (s.state.dead && /usage|用法|unknown|unexpected|invalid|--watch/i.test(early)) {
     console.log("  ✗ 服务器不接受 `--watch` ⇒ 该特性尚未实现 ⇒ **产品红** ✓（不是判据问题 ✓）");
     console.log("    实测 stderr：" + early.replace(/\s+/g, " ").slice(0, 300));
@@ -114,6 +132,11 @@ async function open(doc, watch) {
   if (!hello) {
     // **区分两头** ✓：启动就被拒（不认识 `--watch` 等 ✓）⇒ **产品不达标**（红 ✓）；否则判据自身坏了 ✓
     const why = (s.state.stderr || "").trim();
+    if (/(启动失败：conflict|已被进程 .* 占用|yanshi-write\.lock)/.test(why)) {
+      console.log("❌ 判不了：根被别的写进程占用（P-13 排他锁在正常工作 ✓）⇒ 先把上一台收干净再跑");
+      console.log("    实测 stderr：" + why.replace(/\s+/g, " ").slice(0, 260));
+      process.exit(3);
+    }
     if (/usage|用法|unknown|unexpected|invalid|--watch/i.test(why) || s.state.dead) {
       console.log("  ✗ 服务器不接受 `--watch`（或直接退出）⇒ 该特性尚未实现 ⇒ **产品红** ✓");
       console.log("    实测 stderr：" + why.replace(/\s+/g, " ").slice(0, 260));
@@ -174,7 +197,7 @@ while (Date.now() < deadline) {
   await new Promise((r) => setTimeout(r, 120));
 }
 note(seen, "带 `--watch` 时，外部追加的原子在 1.5 s 内出现在 `get_document` 里 ✓");
-fwd.state.child.kill();
+await killAndWait(fwd);
 
 // ── 负对照 ✓：不带 `--watch`（默认关 ✗）⇒ 必须看不见 ✓ ──
 console.log("② 负对照（默认关 ✗）：外部追加**必须看不见** ✓");
@@ -194,7 +217,7 @@ for (let i = 0; i < 6; i++) {
   await new Promise((r) => setTimeout(r, 150));
 }
 note(!negSeen, "默认（不加 `--watch`）时，外部追加**看不见** ✓（挡住「全量重读」的假绿 ✓）");
-neg.state.child.kill();
+await killAndWait(neg);
 
 // 收尾：把两边的文档目录列一下，便于人工复核 ✓
 try { console.log("  文档目录：" + JSON.stringify(readdirSync(join(root, "docs")))); } catch { /* 无妨 ✓ */ }
