@@ -657,6 +657,68 @@ check(iAncR.ok === true && iAncR.count === 2 && iAncR.ancestors[1].cycle === tru
   `自引用 master 必须**先记一条正常链再记 cycle**（照服务端 visited 初始为空 ✓ 两条 ✗）——旧本地把起点算进 seen 只给一条 ✓ 数对不上 ✗（实测 ${JSON.stringify(iAncR.ancestors)}）`);
 console.log("  本地层 get_ancestors/get_descendants：不存在⇒reference_not_found ✓｜id 数组 ✓｜传递闭包含孙 ✓｜只收 instance ✓｜tombstone 不排除 ✓｜自引用 cycle 两条 ✓");
 
+// **★ ⑦j 命名锚点三件套必须照服务端落地 ✗ ★**（**出处 `tools.rs:2217`／`:2236`／`:2483` ＋
+//   `fold.rs:991–1005` ✓**，本轮逐条读码对齐 ✓）：
+//   ① **状态从原子日志推导 ✗**（`set_anchor`／`delete_anchor` 是内核 `AtomKind` ✓ ⇒ 不另存锚点表 ⇒
+//     `revert` 原子经 `p2Neutralized` 自动生效 ✓ ——「撤掉一次钉锚点」不需要新机制 ✓）；
+//   ② **`anchors` 是名字⇒{x,y,note?} 的对象映射**（服务端 `BTreeMap` 序列化成对象 ✓ ⇒
+//     前端 `Object.keys(anchorCache).sort()` 直接吃这个形状 ✓）；恒等式 `count === Object.keys(anchors).length` ✓；
+//   ③ **删不存在的锚点必须 400 且点名现有锚点 ✗**（服务端注释写明：只靠折叠的 precondition ⇒
+//     **`ok:true` 静默成功** ✓ 端到端抓过同一个毛病 ⇒ 端点层必须自己查 ✓）；
+//   ④ **note 是可选项 ✗**：不给就不该有这个键（服务端 `optional_str` ⇒ 键缺席 ✓，不给 `null` ✓）。
+const jDoc = "dj_" + Date.now().toString(36);
+const jxpost = (p, o) => callDoc(jDoc, p, { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify(o) }).then((r) => r.json());
+await callDoc(jDoc, "/api/documents", { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ doc_id: jDoc, width: 320, height: 240 }) });
+const jSet1 = await jxpost("/api/tools/set_anchor", { name: "left_eye", x: 120, y: 80 });
+check(jSet1.ok === true && typeof jSet1.atom_id === "string" && Number.isFinite(jSet1.seq),
+  `set_anchor 必须落一条原子并回执 atom_id＋seq（照 p2Envelope/putAtom 惯例 ✓）（实测 ${JSON.stringify(jSet1).slice(0, 120)}）`);
+const jEmptyName = await jxpost("/api/tools/set_anchor", { name: "", x: 1, y: 1 });
+const jStrX = await jxpost("/api/tools/set_anchor", { name: "bad_x", x: "abc", y: 1 });
+const jNoY = await jxpost("/api/tools/set_anchor", { name: "no_y", x: 1 });
+check(jEmptyName.ok === false && jEmptyName.error === "invalid_argument"
+    && jStrX.ok === false && jStrX.error === "invalid_argument"
+    && jNoY.ok === false && jNoY.error === "invalid_argument",
+  `空 name／非数值 x／缺 y 必须 invalid_argument ✗ 不许静默当 0（服务端 require_str+require_f64 ✓ 实测 ${jEmptyName.error}／${jStrX.error}／${jNoY.error}）`);
+const jGot1 = await jxpost("/api/tools/get_anchors", {});
+check(jGot1.ok === true && typeof jGot1.anchors === "object" && !Array.isArray(jGot1.anchors)
+    && jGot1.count === Object.keys(jGot1.anchors).length
+    && jGot1.anchors.left_eye && jGot1.anchors.left_eye.x === 120 && jGot1.anchors.left_eye.y === 80
+    && !("note" in (jGot1.anchors.left_eye || {}))
+    && jGot1.anchors.bad_x === undefined && jGot1.anchors.no_y === undefined,
+  `anchors 必须是 **名字⇒{x,y} 的对象映射**（服务端 BTreeMap ✓）、count 与键数同源恒等 ✓、被拒的原子不许进状态 ✓、未给 note 就**没有该键**（optional_str ✓）（实测 ${JSON.stringify(jGot1.anchors)}）`);
+const jSet2 = await jxpost("/api/tools/set_anchor", { name: "left_eye", x: 130, y: 88, note: "第二版" });
+const jGot2 = await jxpost("/api/tools/get_anchors", {});
+check(jSet2.ok === true && jGot2.anchors.left_eye.x === 130 && jGot2.anchors.left_eye.note === "第二版"
+    && jGot2.count === 1,
+  `同名再设 = 覆盖（服务端 BTreeMap::insert ✓）且 note 跟着新版本走（实测 ${JSON.stringify(jGot2.anchors.left_eye)}）`);
+const jDelNope = await jxpost("/api/tools/delete_anchor", { name: "ghost" });
+check(jDelNope.ok === false && jDelNope.error === "invalid_argument"
+    && String(jDelNope.reason || "").includes("找不到锚点 ghost") && String(jDelNope.reason || "").includes("left_eye"),
+  `删不存在的锚点必须 400 且**点名现有锚点** ✗ 不许 ok:true 静默成功（服务端 write_delete_anchor 注释里端到端抓过同一个毛病 ✓ 实测 ${JSON.stringify(jDelNope).slice(0, 140)}）`);
+const jDelOk = await jxpost("/api/tools/delete_anchor", { name: "left_eye" });
+const jGot3 = await jxpost("/api/tools/get_anchors", {});
+check(jDelOk.ok === true && jGot3.count === 0 && Object.keys(jGot3.anchors).length === 0,
+  `delete_anchor 成功后 get_anchors 必须少这一条（fold.rs:1004 remove ✓ 实测 count=${jGot3.count} anchors=${JSON.stringify(jGot3.anchors)}）`);
+const jUndoDel = await jxpost("/api/atoms", { kind: "revert", payload: { target: jDelOk.atom_id } });
+const jGot4 = await jxpost("/api/tools/get_anchors", {});
+check(jUndoDel.ok === true && jGot4.count === 1 && jGot4.anchors.left_eye && jGot4.anchors.left_eye.x === 130,
+  `revert 掉 delete_anchor 原子 ⇒ 锚点必须回来（p2Neutralized 抑制 ✓ 与服务端 EffectiveActions 同口径 ✓ 实测 ${JSON.stringify(jGot4.anchors)}）`);
+const jUndoSet = await jxpost("/api/atoms", { kind: "revert", payload: { target: jSet2.atom_id } });
+const jGot5 = await jxpost("/api/tools/get_anchors", {});
+check(jUndoSet.ok === true && jGot5.count === 1 && jGot5.anchors.left_eye.x === 120 && !("note" in jGot5.anchors.left_eye),
+  `revert 掉**最新那次** set_anchor ⇒ 更早那次仍然生效 ⇒ **回滚到旧坐标 x=120、note 消失**（折叠顺序应用、revert 只抑制被点名那条 ✓——我第一版把它误想成「整个消失」，实测否掉了这个读法 ✓ 实测 ${JSON.stringify(jGot5.anchors.left_eye)}）`);
+const jUndoSet1 = await jxpost("/api/atoms", { kind: "revert", payload: { target: jSet1.atom_id } });
+const jGot5b = await jxpost("/api/tools/get_anchors", {});
+check(jUndoSet1.ok === true && jGot5b.count === 0 && Object.keys(jGot5b.anchors).length === 0,
+  `两次 set_anchor 都被 revert ⇒ 锚点整个消失（每一条建原子的撤销各抑制各的 ✓ 实测 ${JSON.stringify(jGot5b.anchors)}）`);
+const jRedoSet = await jxpost("/api/atoms", { kind: "reapply", payload: { target: jSet2.atom_id } });
+const jGot6 = await jxpost("/api/tools/get_anchors", {});
+check(jRedoSet.ok === true && jGot6.count === 1 && jGot6.anchors.left_eye.x === 130 && jGot6.anchors.left_eye.note === "第二版",
+  `reapply 之后 set_anchor 又生效 ⇒ x=130／note=第二版（撤销撤销 ≡ 重做 ✓ 与 ⑦h 同一台机器 ✓ 实测 ${JSON.stringify(jGot6.anchors.left_eye)}）`);
+console.log("  本地层命名锚点：原子日志推导 ✓｜对象映射＋count 恒等 ✓｜400 校验齐 ✓｜删不存在⇒点名拒绝 ✓｜revert/reapply 级联 ✓（文档 " + jDoc + "）");
+
 
 
 // **★ ⑧ 评论的游标不能越过**没交付**的那几条 ✗ ★**（与服务端 `read_list_comments` 同形 ✓）

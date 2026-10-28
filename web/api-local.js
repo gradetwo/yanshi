@@ -65,7 +65,9 @@ export // **★ 声明必须与**实现分支数**一致 ✗ ★**（第 72 轮 
 //       ⇒ **∴ 于是** `tool-pwa-assets` 报"**声明的端点数（158）与实现分支数（160）
 //         不一致 ⇒ **∴ 在虚报能力 ✓** ✗
 //   ⇒ **★ 所以**：**改成 160**✗ ⇒ **∴ 于是**声明与实现**一致 ✓ ★**** ✓✓
-const LOCAL_IMPLEMENTED = 160;
+//   **∴ 本轮再重数 ✗**（锚点三件套 ✓ —— `set_anchor`／`get_anchors`／`delete_anchor` 落地 ⇒ **+3 ✓**）：
+//   **∴ 判据口径 `actualImpl` = 163 ⇒ **∴ 本数同步到 163 ✓**（**同一机械口径 ✓，非拍脑袋 ✗**）。
+const LOCAL_IMPLEMENTED = 163;
 
 let lastFold = null;
 
@@ -5286,8 +5288,76 @@ async function withKernel(doc, fn) {
                     note: "已存入浏览器本地（localStorage）；服务端版会写成 .gpl 文件" });
     }
 
+    // **★ 命名锚点三件套 ✓ ★**（**照服务端 `tools.rs:2217 write_set_anchor` ／
+    //   `:2236 write_delete_anchor` ／ `:2483 read_get_anchors` ＋ `fold.rs:991–1005` 的折叠语义 ✓**）：
+    //   **∴ 锚点存进原子日志**（`set_anchor`／`delete_anchor` 是内核认识的 `AtomKind` ✓，
+    //   **不另存一份"锚点表" ✗** —— 与 `list_layers` 同一纪律：**状态从日志推导 ⇒ 不会双份漂移 ✓**）;
+    //   **∴ 撤销天然可用 ✓**：`__historyStep` 写的 `revert` 原子经 `p2Neutralized` 抑制目标原子 ⇒
+    //     「撤掉一次钉锚点」＝该 `set_anchor` 不再生效 ✓（与服务端 `EffectiveActions` 同口径 ✓）。
+    /** **锚点折叠 ✗**（**照 `fold.rs:991–1005` 逐条 ✓**：顺序扫原子、`revert` 抑制的跳过、
+     *   同名后来者覆盖、`delete_anchor` 移除 ✓）。返回 `Map<name, {x, y, note?}>` ✓。 */
+    function p2AnchorsFold(rows) {
+      const neutral = p2Neutralized(rows);
+      const anchors = new Map();
+      for (const r of rows) {
+        const a = (r && r.atom) || {};
+        if (neutral.has(a.id)) continue;
+        const pl = a.payload || {};
+        if (a.kind === "set_anchor") {
+          const name = typeof pl.name === "string" ? pl.name : "";
+          if (!name) continue; // 服务端 precondition 拒空名 ⇒ 折叠对历史里的脏原子保持容错 ✓
+          const x = Number(pl.x), y = Number(pl.y);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          const anchor = { x, y };
+          if (typeof pl.note === "string") anchor.note = pl.note;
+          anchors.set(name, anchor); // 同名覆盖 ✓（服务端 BTreeMap::insert ✓）
+        } else if (a.kind === "delete_anchor") {
+          anchors.delete(typeof pl.name === "string" ? pl.name : "");
+        }
+      }
+      return anchors;
+    }
+    if (path === "/api/tools/set_anchor") {
+      const pl = (body && body.payload) || {};
+      const name = body.name ?? pl.name;
+      const x = body.x ?? pl.x, y = body.y ?? pl.y;
+      // **∴ 校验照 `write_set_anchor` ✓**：`name` 必填且非空 ✗、`x`／`y` 必须是数值 ✗（400 而非静默 0 ✓）。
+      if (typeof name !== "string" || !name) return p2Bad("set_anchor 需要非空的 name");
+      if (typeof x !== "number" || !Number.isFinite(x)) return p2Bad("set_anchor 需要数值 x");
+      if (typeof y !== "number" || !Number.isFinite(y)) return p2Bad("set_anchor 需要数值 y");
+      const payload = { name, x, y };
+      const note = body.note ?? pl.note;
+      if (typeof note === "string") payload.note = note; // **∴ 与服务端同 ✓**：note 可选，不给就不写键 ✓
+      const atom = p2Envelope("set_anchor", payload);
+      const seq = await putAtom(handle, doc, atom);
+      return json({ ok: true, atom_id: atom.id, seq, head: seq, name, server: false,
+                    note: "已写入 set_anchor 原子（同名覆盖；随日志持久，跨会话不漂移）" });
+    }
+    if (path === "/api/tools/get_anchors") {
+      const anchors = p2AnchorsFold(await atomsOf(handle, doc));
+      // **∴ 形状照 `read_get_anchors` ✓**：`anchors` 是**名字⇒对象的映射**（服务端 `BTreeMap` 序列化为对象 ✓）
+      //   ⇒ 前端 `Object.keys(anchorCache).sort()` 直接吃这个形状 ✓。
+      return json({ ok: true, anchors: Object.fromEntries(anchors), count: anchors.size, server: false });
+    }
+    if (path === "/api/tools/delete_anchor") {
+      const pl = (body && body.payload) || {};
+      const name = body.name ?? pl.name;
+      if (typeof name !== "string" || !name) return p2Bad("delete_anchor 需要 name（字符串）");
+      // **★ 工具层先查存在性 ✓ ★**（**照 `write_delete_anchor` 的实测教训 ✓**：折叠是容错的 ⇒
+      //   只靠 `precondition` 的话「删不存在的锚点」会**返回 ok:true** ✗ 静默成功 ——
+      //   服务端注释里端到端抓过同一个毛病 ✓，本地必须在端点层自己查 ✓）。
+      const anchors = p2AnchorsFold(await atomsOf(handle, doc));
+      if (!anchors.has(name)) {
+        return p2Bad("找不到锚点 " + name + " ⇒ 现有锚点：" + [...anchors.keys()].sort().join(", "));
+      }
+      const atom = p2Envelope("delete_anchor", { name });
+      const seq = await putAtom(handle, doc, atom);
+      return json({ ok: true, atom_id: atom.id, seq, head: seq, name, server: false,
+                    note: "已写入 delete_anchor 原子（get_anchors 会少这一条；撤销该删除经 revert 原子生效 ✓）" });
+    }
+
     // **★ C/S 客户端渲染：本地没实现的端点 ⇒ **只读代理**到服务端 ✗ ★**（第 10 轮 ✓）
-    //   **∴ 为什么 ✗**：`list_effects`／`get_anchors` 等**只在服务端有** ⇒ 本地层原来抛
+    //   **∴ 为什么 ✗**：`list_effects` 等**只在服务端有**（`get_anchors` 曾在此列 ⇒ **现已本地实现 ✓**）⇒ 本地层原来抛
     //     `endpoint_not_local` ✓ ⇒ 页面初始化／效果面板**每次**打一行红字 ✓（实测日志 ✓），
     //     功能直接不可用 ✓。而 C/S 模式的文档本来就在服务端 ✓ ⇒ 这些**读**请求代理过去是
     //     如实作答 ✓（响应头 `x-yanshi-source: server-proxy` ✓，不假装是本地算的 ✓）。
