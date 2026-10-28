@@ -6,10 +6,16 @@
 //   而且**工作区被改了**（`list_documents` 从此多了这个 id）✗。
 //
 // **⇒ 判据两条**：
-//   ① `get_document` 对不存在的 id ⇒ `ok=false` 且 `error_code=reference_not_found` ✓；
+//   ① `get_document` 对不存在的 id ⇒ `ok=false` 且**对无权限的调用方报 `permission_denied`** ✓
+//     （05 复审 NEW-C1 ✓：`d6525652` 起授权先于开文档 ⇒ **存在性不外泄** ✗
+//      判据随之升级为**恒等式**：「不存在的文档＋外来令牌」与「存在的文档＋坏令牌」**必须同码** ✓
+//      —— 不同码就是存在性预言机 ✓）；
 //   ② 调用**前后**的文档列表里都**没有**这个 id（**无副作用** ✓）。
 //
-// **变异**：把 `server.rs` 里那段"只读工具不建文档"的判断去掉 ⇒ ① 变成 `ok=true` ⇒ 红 ✓。
+// **变异**：把 `server.rs` 里那段"只读工具不建文档"的判断去掉 ⇒ ① 变成 `ok=true` ⇒ 红 ✓；
+//   恒等式的"能红"有**现成实证** ✓：`d6525652` 之前 ①a 报 `reference_not_found` 而 ①b 报
+//   `permission_denied` ⇒ **两个码在真实历史里就是分叉过的**（CI run 40640839341 正是这么红的 ✓），
+//   所以这条断言不是恒真 ✓。
 const [base, doc, token] = process.argv.slice(2);
 if (!base || !doc || !token) {
   console.error("用法: node scripts/tool-unknown-doc-is-not-created.mjs <base> <doc> <token>");
@@ -44,8 +50,25 @@ if (answer.ok !== false) {
   console.error("  ✗ 对不存在的文档居然返回了成功（外部 D10：会编出一份空白文档，误导审计）");
   process.exit(1);
 }
-if (answer.error_code !== "reference_not_found") {
-  console.error(`  ✗ 错误码不是 reference_not_found（实测 ${answer.error_code}）⇒ 调用方分不清"没这份文档"与别的失败`);
+if (answer.error_code !== "permission_denied") {
+  console.error(`  ✗ 对无权限调用方的错误码不是 permission_denied（实测 ${answer.error_code}）⇒ NEW-C1 的"存在性不外泄"被破坏`);
+  process.exit(1);
+}
+// **恒等式（05 复审 NEW-C1 ✓）**：「**存在的文档 ＋ 坏令牌**」必须与上面**同码** ✓
+//   ⇒ 若这里报出**不同**的码（如 reference_not_found ⇄ permission_denied 不对称 ✓），
+//     调用方就能拿一个请求**枚举哪些 id 存在** ✗（存在性预言机 ✗）。
+const bogus = "f".repeat(64);
+const probe = await (await fetch(
+  `${base}/api/tools/get_document?doc=${encodeURIComponent(doc)}&token=${encodeURIComponent(bogus)}`,
+  { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+)).json();
+console.log(`  get_document(${doc}, 坏令牌) ⇒ ok=${probe.ok}｜error_code=${probe.error_code ?? "-"}`);
+if (probe.ok !== false) {
+  console.error("  ⊘ 不可判：坏令牌居然读到了已存在的文档（这是更严重的问题，但本条先不冒充产品结论）");
+  process.exit(3);
+}
+if (probe.error_code !== answer.error_code) {
+  console.error(`  ✗ 存在性预言机复活：不存在=${answer.error_code}｜存在但无权限=${probe.error_code} ⇒ 两码不对称 ✓✗`);
   process.exit(1);
 }
 

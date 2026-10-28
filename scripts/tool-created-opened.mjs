@@ -8,7 +8,8 @@
 //   HTTP 的 `authorize` 会先拦住不存在的文档，所以 `created:true` 那支
 //   只能在 MCP stdio 会话里验，HTTP 臂验已存在 / 只读 / `new_document` 自身）：
 //   ① HTTP：`brush_stroke` 打到已存在的文档 ⇒ `created:false` + `opened:true`；
-//   ② HTTP：只读工具打到不存在的 `doc_id` ⇒ `reference_not_found` 不变，
+//   ② HTTP：只读工具打到不存在的 `doc_id` ⇒ `permission_denied`（05 复审 NEW-C1 ✓：授权浅探
+//      先于开文档 ⇒ **对无权限调用方不报"不存在"**，存在性不外泄 ✓），
 //      且文档列表里不出现该 id（无副作用）；
 //   ③ HTTP：`new_document` 自身的 `created`/`opened` 不被入口覆盖 ——
 //      新建 ⇒ `created:true`；同名再调 ⇒ `opened:true` + `created:false`；
@@ -77,7 +78,7 @@ if (existing.ok !== true) fail(`① brush_stroke（已存在文档）⇒ ${JSON.
 check(existing.created === false, `① 已存在文档 ⇒ created=${existing.created}（应为 false）`);
 check(existing.opened === true, `① 已存在文档 ⇒ opened=${existing.opened}（应为 true）`);
 
-// ② 只读工具打到不存在的 doc ⇒ reference_not_found，且不建文档
+// ② 只读工具打到不存在的 doc ⇒ permission_denied（NEW-C1：无权限者拿不到"不存在"这个码 ✓），且不建文档
 const fake = `no_such_doc_${Date.now().toString(36)}`;
 const before = await ids();
 if (before.includes(fake)) {
@@ -87,8 +88,8 @@ if (before.includes(fake)) {
 const readMissing = await call("get_document", {}, fake, token);
 check(readMissing.ok === false, `② 只读工具打不存在的 doc ⇒ ok=${readMissing.ok}（应为 false）`);
 check(
-  readMissing.error_code === "reference_not_found",
-  `② 错误码=${readMissing.error_code}（应为 reference_not_found）`,
+  readMissing.error_code === "permission_denied",
+  `② 错误码=${readMissing.error_code}（应为 permission_denied ⇒ 存在性不外泄 ✓）`,
 );
 const after = await ids();
 check(!after.includes(fake), `② 调用之后文档列表里没有 ${fake}（只读工具不建文档）`);

@@ -1026,3 +1026,59 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    ④ **已知残余（族二自己登记的，未修 ✓）**：SSRF 检查与 ureq 建连之间**解析两次**
    ⇒ DNS rebinding（TOCTOU）✗；修法要 connect-by-IP＋Host/SNI 改写，ureq 无钩子 ⇒ **无判据不动手** ✓
    （核对命令：`grep -c 'to_socket_addrs' crates/yanshi-server/src/file_source.rs` ⇒ 修好后应为 1 ✓）。
+
+89. **05 复审报告（`~/patch/05-re-audit-v0.3.1.md`）逐条处置（2026-10-28）**：
+   ① **已修并已验（每条都有变异红⇒复原绿的记录，细节在各提交信息 ✓）**：
+   · **NEW-C1**（`d6525652`）：未授权者不再触发 `load_atoms` 全量重放 ⇒ `authorize` 对远端传输
+     先做 **meta.json 浅探**（令牌表整个就在 meta 里 ✓），判 `FileStore.load_atoms_calls` 计数器；
+     副作用如实记：**不存在的文档 + 坏令牌 ⇒ 403 而非 404**（不给存在性预言机 ✓）。
+   · **NEW-M1**（`ffe95f34`）：`doc_param` 与工具入口在 **HTTP 边界**就验 `validate_doc_id`（白名单＋≤128）✓，
+     判据 `transport.rs` 补 7 个坏样本 ⇒ 400；判据跑红过一次（`..%2Fetc` 那组）✓。
+   · **NEW-H2**（`1f9c379d`）：`X-Yanshi-Key` 头**优先**于 `?key=` ✓（URL 会进访问日志/历史/Referer ✗）；
+     `?key=` 仍兜底但**每次用都留一行日志** ✓；lib 测试钉「头与 query 同时给 ⇒ 取头」✓。
+   · **C-1 补全**（`8816b1fc`）：`web/_headers` 的 CSP 从「只剩 frame-ancestors」补成完整白名单 ✓，
+     口径逐条对着 `web/index.html` 实测用法收 ✓；守卫 `check-security-headers.mjs`（变异：删 directive ⇒ 红 ✓）。
+   · **NEW-M3**（`9851cf88`）：known-red 台账 201 行游离散文全部收进 `# ` 注释 ✓、匹配器改**整字段相等**
+     （`awk $1 == n` ✓，原来用未转义正则 ✗）、守卫 `check-known-red-format.mjs` ✓。
+   · **L-2／L-3**（`e9aeb0b2`）：`.PHONY` 补 `serve`／`targets`（20 个目标全数在册 ✓）、`clean` 认 `$(OUT)` ✓
+     （修前实测 `make -n clean OUT=/tmp/x` 打印 `rm -rf dist` ✗）；守卫 `check-makefile-hygiene.mjs` ✓。
+   · **NEW-M2**（`9157b778`）：`browser-*.mjs` **自述口径**（`criterion-target`，56 条：client 47／server 6／
+     static 1／self 2 ✓），运行器改 grep ✓、迁移期与旧行为**逐条 0 不一致** ✓；守卫
+     `check-browser-criteria-target.mjs` 顺手抓到 `ui-control-heights` 分支里**第 1132 轮的名单是死代码** ✗
+     （那段只在 `$name==ui-control-heights.mjs` 时可达 ⇒ browser 名永远匹配不上；实测 `browser-range-mask`
+     自己 navigate 干净 URL、从未受害 ✓）——**报告没点到，守卫点到 ✓**。
+   ② **确认为假**：**H-4**（`make dev PORT=9000` vs `PORT=9000 make dev`）——GNU make 把命令行变量
+   放进 recipe 环境 ✓，两种写法**都能通**（最小 Makefile + printenv 当场实验 ✓）；文档表述已改 ✓（`923e13d8`）。
+   ③ **报告说的已修**：**H-5**（pwa.yml 部署目标）—— 2026-10-28 已查实改为 `yanshi-online` ✓（注释在册）。
+   ④ **暂不做，理由入档**：
+   · **H-1（web/ 与 assets/ 约 19 MB 重复资产）**——去重要把 `web/{textures,samples,fonts}` 移出版本控制 ⇒
+     CI criteria 作业缺前置步骤 ⇒ **要改 `.github/workflows/` ⇒ 撞上 L-6「暂不改工作流」裁定 ✗** ✓；
+     恢复条件：L-6 解冻后照 §5.6 的 `diff -rq` 对账门一起做 ✓。
+   · **NEW-M4（release.yml 加 timeout-minutes）**——同为工作流文件 ⇒ 同上冻结 ✓。
+   · **NEW-H1（index.html 1.04 MB）**——瘦身是大手术（面板拆分/构建管线），与缓存策略（`_headers` ✓）
+     分开排期 ✓；当前 `/index.html` 已单独 `no-cache` ✓ ⇒ 「每次冷启传 1 MB」是**传输成本**问题 ✗ 不是**陈旧内容**问题 ✓。
+   · **NEW-C1 的限流（429）**——浅探之后未授权路径**只剩有界的 meta.json 读** ✗ 重 IO 已闸 ✓ ⇒
+     限流降级为「排期后做」✓（做之前先钉判据：同一来源高频 authorize ⇒ 429 且有 `Retry-After` ✓）。
+   ⑤ **CI 复盘（run `40640839341`，`8816b1fc`，failure）**：
+   · `browser-brush-preview` **定性为环境抖动** ✓ —— 上一跑（`522ffcd`）红的那条这一跑**没有复现** ✓
+     （同跑 `browser-asset-dock` 当时是 `exit 3` 判据自身求值失败 ✓，不是产品失败 ✓）；
+   · **真正的两条红是我留下的** ✗✓：`tool-created-opened` ② 与 `tool-unknown-doc-is-not-created` ①
+     还钉在**旧契约**「不存在的文档 ⇒ `reference_not_found`」上 ✗ ⇒ NEW-C1（`d6525652`）改成
+     「无权限调用方 ⇒ `permission_denied`（存在性不外泄 ✓）」时**只改了实现没回改这两条判据** ✗
+     （正是内核 ②「台账表格变了要回去改」的判据版 ✗）。修法见下一轮：②/① 断言改
+     `permission_denied` ＋ 加**恒等式**「不存在的文档＋外来令牌」与「存在的文档＋坏令牌」**同码** ✓
+     （不同码就是存在性预言机 ✗）；`tool-delete-document` 的同名断言**不受影响** ✓
+     （它走 `DELETE /api/documents/<id>` 路由，不经过 authorize 浅探 ✓，且工具面那条断的是**两面对等** ✓
+     —— 逐条核对过，没有第三处 ✓：`grep -l reference_not_found scripts/*.mjs` 剩下的都是**图层/示例**域）。
+
+90. **外部包合并：`yanshi-skill-vector-tracing-v5.10后续包.zip`（2026-10-28，`2506f046`）**：
+   ① **内容**：只改 `skills/yanshi-vector-tracing/SKILL.md`（437 ⇒ 1476 行 ✓）——v5.4–v5.10 累计文本一次落盘，
+   第 11 轮晋升 5 条 P 档规则进正文，其余进附录 R11；**纯文档，零 Rust 改动** ✓。
+   ② **合并方式**：`git am`（保留作者 Muse 的原提交 ✓）；**逐字节核对**：合并后文件 = 包内交付 `SKILL.md` ✓。
+   ③ **包内声称的验证，本机全部复现**：`check-skill-tool-names.mjs` exit 0（126 处标识符 ✓）✓、
+   `cargo fmt --check` 干净 ✓、版本行 v5.10 无 DRAFT ✓、附录 R11 在 1394 行 ✓。
+   ④ **如实记（包自己写的，未粉饰 ✓）**：发包门槛三项**只达成两项**（企鹅 6/10 < 8/10 ✗、且 P1/P4 是真退步）⇒
+   **这一版是 Wang 决定发的，不是门槛过了发的** ✓；正文残留 4 处 "draft" 历史措辞（照原样 ✓）；
+   P-A 编号在第 8 轮与第 11 轮**重名不同义**（原样保留 ✓，R11 按内容区分 ✓）。
+   ⑤ **合并外部补丁的门（内存规则版）**：纯文档包 ⇒ `cargo test --workspace` 无对象可回归 ✓，
+   clippy/fmt 由 pre-commit 与包侧声称复现 ✓；`git am` 不过 pre-commit 钩子 ⇒ 合并后**另行复跑**了标识符守卫 ✓。
