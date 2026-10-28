@@ -50,14 +50,19 @@ fn blob_gc_refuses_instead_of_being_killed_when_the_estimate_exceeds_the_budget(
             .and_then(Value::as_str)
             .expect("新文档应有图层")
             .to_string();
-        // 攒几个原子：估算按「原子数 × ≈300 KB」算 ⇒ 4 个就超过 1 MB。
-        for index in 0..4 {
+        // **造多少个原子才越过 1 MB 的测试预算 ⇒ 从 `BYTES_PER_ATOM` 现算** ✓
+        //（**内核 ②：别写死会过期的数** ✗ P8 把口径 300 KB 校到 100 KB 时，
+        //  原来写死的 `0..4` 就此恒不进闸 ⇒ **CI `test (stable)/(beta)` 双红** ✓
+        //  闸的判据是 `estimate > budget` ⇒ `budget/per_atom + 1` 个必然越过 ✓）
+        let budget_bytes = 1_048_576u64; // 1 MB ⇒ 与下面 `YANSHI_GC_MEMORY_BUDGET_MB=1` 同一口径 ✓
+        let need = budget_bytes / yanshi_server::service::BYTES_PER_ATOM + 1;
+        for index in 0..need {
             call(
                 &mut ctx,
                 "fill_region",
                 &json!({
                     "layer_id": layer,
-                    "shape": {"type": "rect", "x": index * 8, "y": 0, "w": 8, "h": 8},
+                    "shape": {"type": "rect", "x": index % 8 * 8, "y": index / 8 * 8, "w": 8, "h": 8},
                     "color": [10, 20, 30, 255]
                 }),
             );

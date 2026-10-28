@@ -70,7 +70,10 @@ const PACKAGE_BLOB_ENCODING: &str = "zlib";
 /// 估算口径。两处共用同一份：blob GC 闸（估「全打开」的代价）与
 /// C2 文档预算闸（估「已载入」的驻留）——口径只许有一个出处，
 /// 两处各写一份必然漂移。
-const BYTES_PER_ATOM: u64 = 100 * 1_024;
+/// **对外可见**（P8 后效 ✓）：`tests/blob_gc_budget.rs` 要按**同一把尺子**算
+/// 「造几个原子能越过 1 MB 的测试预算」⇒ 写死个数会随口径校准第二次漂移
+/// （300 KB→100 KB 时它就从绿变红 ✓ CI 抓的 ✓）。
+pub const BYTES_PER_ATOM: u64 = 100 * 1_024;
 
 /// 文档缩略图尺寸档位（7.3 分级；`Skip` 表示不生成）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
