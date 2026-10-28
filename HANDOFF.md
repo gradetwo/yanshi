@@ -1218,6 +1218,9 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
 ④ **回归普查**：`scripts/` 无判据以 `calls` 组批、更无「一批混多 doc_id」的用法 ⇒ P-10 的
    整批拒绝不会打红既有判据 ✓；无 JS 判据依赖「超限行杀进程」旧行为 ✓。
 ⑤ `git am` 不过 pre-commit 钩子 ⇒ 提交前**另行复跑** fmt/clippy/守卫 ✓（§90⑤ 同规）。
+⑥ **后效（run 40674084560＝`a04f181e`，completed/success）**：`test (stable)`／`test (beta)`
+   全绿 ⇒ §93③/§94③ 交 CI 的 workspace test **成立**（新 `line_cap` 4／`batch_doc_id` 5 在其内）；
+   clippy/rustfmt/六片 criteria 全绿 ⇒ P-10 整批拒绝没有打红既有判据（④ 的普查被 CI 印证）✓。
 
 ## §95 批次 2（本地层锁闸＋预设四端点）合并留痕（2026-10-28，`3ccde4be`）
 
