@@ -5928,12 +5928,11 @@ fn restyle_baked_brush_stroke(
             )
         })?
         .to_owned();
-    let points = brush_points_from_json(source.get("points")).map_err(|_| {
-        YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail(format!("对象 {object_id} 的来源里没有可用的控制点")),
-        )
-    })?;
+    // **重跑的配方 = 原 `source` + `core` 覆盖** ✓（P-2 / X-14）——
+    // `core` 只认 color / color_to / color_space / size / opacity / hardness ✓（入口已校验 ✓）；
+    // 其余字段（brush_params / times / color_mixing / seed / symmetry / sensors / smooth ✓）
+    // 一律沿用落笔时记的原值 ✓，不再像以前那样重建一张丢字段的 `source` ✗
+    //（旧重建丢了 `brush_params` 与 `times` ⇒ `update_stroke` 换色后重放不出原笔 ✓）。
     let size = core
         .and_then(|core| core.get("size"))
         .and_then(Value::as_f64)
@@ -5956,10 +5955,6 @@ fn restyle_baked_brush_stroke(
         .cloned()
         .or_else(|| source.get("color").cloned())
         .filter(|value| !value.is_null());
-    let smooth = source
-        .get("smooth")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
     // **读画布的笔刷不许这样改** ✗（见函数头 ✓）—— 先解析出来问一句 ✓。
     let (_, probe) = load_brush(ctx.workspace, &brush)?;
     if brush_reads_the_canvas(&probe) {
@@ -5967,16 +5962,6 @@ fn restyle_baked_brush_stroke(
             "笔刷「{brush}」会**读画布**（涂抹 / colorize 一类 ✓）⇒ 它的结果取决于**底下当时是什么** ✓；             而现在底下已经有这一笔了 ✗ ⇒ 重跑会把它自己再抹一遍 ✓。             要换色请**撤销后用新颜色重画一笔** ✓"
         ));
     }
-    let points = if smooth {
-        smooth_stroke_points(&points)
-    } else {
-        points
-    };
-    // **改色重跑也要带上原笔的传感器**（source 里记着；没记 ⇒ 缺省全 0 ✓）。
-    let sensors = match source.get("sensors").filter(|value| !value.is_null()) {
-        Some(value) => brush_sensors_from_value(value)?,
-        None => BrushSensors::default(),
-    };
     // **重跑也要带上落笔时记的 `color_space`**（C1）：source 里记的是调用方给的原话
     //（`"srgb"` / `"linear"` / 缺省 `null`）；`core` 换色时也沿用它 —— 空间是这支笔的配方，
     // 不是某一次颜色值的附庸；老笔触没记 ⇒ `None` ⇒ 量级切换，与落笔时一致。
@@ -5987,27 +5972,21 @@ fn restyle_baked_brush_stroke(
         Some(value) => color_space_from_value(Some(value))?,
         None => None,
     };
-    let color_space = match explicit_space {
-        Some(space) => Some(space),
-        None => color_space_from_value(source.get("color_space"))?,
+    let mut merged_source = source.clone();
+    merged_source["color"] = color.clone().unwrap_or(Value::Null);
+    merged_source["color_to"] = color_to.clone().unwrap_or(Value::Null);
+    merged_source["size"] = size.map(|value| json!(value)).unwrap_or(Value::Null);
+    merged_source["opacity"] = opacity.map(|value| json!(value)).unwrap_or(Value::Null);
+    merged_source["hardness"] = hardness.map(|value| json!(value)).unwrap_or(Value::Null);
+    merged_source["color_space"] = match explicit_space {
+        Some(yanshi_render::color::ColorSpace::Srgb) => json!("srgb"),
+        Some(yanshi_render::color::ColorSpace::Linear) => json!("linear"),
+        None => source.get("color_space").cloned().unwrap_or(Value::Null),
     };
-    let paint = paint_brush(
-        ctx,
-        &brush,
-        &points,
-        size,
-        color.as_ref(),
-        color_to.as_ref(),
-        opacity,
-        hardness,
-        false,
-        None,
-        yanshi_render::color::ColorMixing::Rgb,
-        &[],
-        None,
-        sensors,
-        color_space,
-    )?;
+    // **改色重跑与 export 重放走同一份实现** ✓（`replay_brush_paint` ✓）——
+    // `brush_params` / `times` / `color_mixing` 都从合并后的 `source` 取 ✓，
+    // 不再各写一份重放调用（两份实现迟早漂移 ✓）。
+    let paint = replay_brush_paint(ctx, &merged_source)?;
     let hash = ctx.workspace.store().put(&paint.rgba)?;
     let mut new_data = data.clone();
     new_data["bitmap"] = json!({
@@ -6024,24 +6003,10 @@ fn restyle_baked_brush_stroke(
     if let Some(value) = size {
         new_data["size"] = json!(value);
     }
-    new_data["source"] = json!({
-        "kind": "brush",
-        "brush": brush,
-        "points": source.get("points").cloned().unwrap_or(Value::Null),
-        "size": size.map(|value| json!(value)).unwrap_or(Value::Null),
-        "color": color.clone().unwrap_or(Value::Null),
-        "color_to": color_to.clone().unwrap_or(Value::Null),
-        // **显式 `color_space` 也要进 `source`**（C1）：否则下一次重跑会丢掉空间、笔变色。
-        // P2-9：`core` 给了新空间 ⇒ 记新空间（下一次重跑沿用它）；没给 ⇒ 沿用落笔时记的。
-        "color_space": match explicit_space {
-            Some(yanshi_render::color::ColorSpace::Srgb) => json!("srgb"),
-            Some(yanshi_render::color::ColorSpace::Linear) => json!("linear"),
-            None => source.get("color_space").cloned().unwrap_or(Value::Null),
-        },
-        "smooth": smooth,
-        "opacity": opacity.map(|value| json!(value)).unwrap_or(Value::Null),
-        "hardness": hardness.map(|value| json!(value)).unwrap_or(Value::Null),
-    });
+    // **新 `source` 就是合并后的配方** ✓（`core` 覆盖 + 其余字段沿用原值 ✓）——
+    // 不再重建一张丢字段的 `source` ✗（旧重建丢了 `brush_params` / `times` / `seed` /
+    // `symmetry` / `sensors` ⇒ 下一次重跑又对不上 ✓）。
+    new_data["source"] = merged_source;
     if let Some(value) = opacity {
         new_data["opacity"] = json!(value);
     }
@@ -15656,6 +15621,28 @@ struct BrushPaint {
     fed_base: bool,
 }
 
+/// **时间戳 → 每步秒数**（`parse_brush_point_times` 与重放共用 ✓）——
+/// 同一份换算，不另写一遍（重放的 dtimes 必须与落笔时逐位相同 ✓，见 P-2）。
+fn dtimes_from_times(times: &[Option<f64>]) -> Vec<f64> {
+    let mut out: Vec<f64> = Vec::with_capacity(times.len());
+    let mut previous_ms: Option<f64> = None;
+    for time_ms in times {
+        let seconds = match (*time_ms, previous_ms) {
+            // **∴ 有真实时间 ✗**：**与该点上一个事件之差（秒 ✓）** ✓
+            (Some(current), Some(previous)) => ((current - previous) / 1000.0).max(0.0),
+            // **∴ 第一个有时间戳的点 ✗**：**相对会话起点未知 ⇒ 0（引擎夹到 0.0001 ✓）** ✓
+            (Some(_), None) => 0.0,
+            // **∴ 没有时间戳 ✗**：**-1 ⇒ 用缺省步长 ✓** ✓
+            _ => -1.0,
+        };
+        if let Some(current) = time_ms {
+            previous_ms = Some(*current);
+        }
+        out.push(seconds);
+    }
+    out
+}
+
 /// **采样点解析** ✓：`[[x,y], [x,y,pressure?], ...]` ✓（`brush_stroke` / `brush_preview` 共用 ✓）。
 /// **★ 读 `points` 里**可选**的第 4 个元素 `time_ms`（P0 #3 ✓）★**
 ///
@@ -15668,27 +15655,15 @@ fn parse_brush_point_times(args: &Value) -> Result<Vec<f64>> {
     let Some(raw) = args.get("points").and_then(Value::as_array) else {
         return Ok(Vec::new());
     };
-    let mut out: Vec<f64> = Vec::with_capacity(raw.len());
-    let mut previous_ms: Option<f64> = None;
-    for item in raw {
-        let time_ms = item
-            .as_array()
-            .and_then(|pair| pair.get(3))
-            .and_then(Value::as_f64);
-        let seconds = match (time_ms, previous_ms) {
-            // **∴ 有真实时间 ✗**：**与该点上一个事件之差（秒 ✓）** ✓
-            (Some(current), Some(previous)) => ((current - previous) / 1000.0).max(0.0),
-            // **∴ 第一个有时间戳的点 ✗**：**相对会话起点未知 ⇒ 0（引擎夹到 0.0001 ✓）** ✓
-            (Some(_), None) => 0.0,
-            // **∴ 没有时间戳 ✗**：**-1 ⇒ 用缺省步长 ✓** ✓
-            _ => -1.0,
-        };
-        if let Some(current) = time_ms {
-            previous_ms = Some(current);
-        }
-        out.push(seconds);
-    }
-    Ok(out)
+    let times: Vec<Option<f64>> = raw
+        .iter()
+        .map(|item| {
+            item.as_array()
+                .and_then(|pair| pair.get(3))
+                .and_then(Value::as_f64)
+        })
+        .collect();
+    Ok(dtimes_from_times(&times))
 }
 
 /// **★ 每个点都显式给了压力吗（P1 #11 humanize 的"爆炸半径开关"）★**（第 254 轮）
@@ -17297,11 +17272,20 @@ fn prune_attempt_log(dir: &std::path::Path, max_lines: usize) {
     let _ = std::fs::write(&path, format!("{kept}\n"));
 }
 
-pub(crate) fn replay_brush_bitmap(
-    workspace: &mut Workspace,
-    doc_id: &str,
-    source: &Value,
-) -> Result<Vec<u8>> {
+/// **按记录的 `source` 把一笔重跑出来** ✓（export 重放证明与 `update_stroke` 共用 ✓）。
+///
+/// **与 `brush_stroke` 共用 [`paint_brush`]** ✓ —— 不另写一条落笔实现 ✗
+/// （本项目对"两份实现迟早漂移"已有多次前科 ✓）。参数还原规则：
+///
+/// * `points` 记的**已经是**风格变换之后的点 ✓ ⇒ 这里不再套 `apply_brush_style` ✓；
+/// * `smooth` 为真时仍要**再平滑一次** ✓（与落笔时一致 ✓）；
+/// * `feed_base = false` ✓ —— **调用方必须先**用 [`brush_source_is_replayable`] 确认这支笔刷
+///   **不读画布** ✓；读画布的根本不该走到这里 ✗（走了也只会画出没有底图的错东西 ✗）。
+/// * **`brush_params` / `times` / `color_mixing` 都随 `source` 一起重放** ✓（P-2 / X-14）：
+///   落笔时用的 dab 密度、点列时间与混色模式，不记下来重放就必然对不上字节 ✓
+///   （实测：`brush_params` 3/3 的笔、`t=0,100,200` 的笔，缺一项即 `kept_mismatch` ✓）。
+///   老笔触没记这三项 ⇒ 与老行为一致（`None` / `&[]` / `Rgb` ✓），不回填、不猜测 ✓。
+pub(crate) fn replay_brush_paint(ctx: &mut ToolContext<'_>, source: &Value) -> Result<BrushPaint> {
     let brush = source
         .get("brush")
         .and_then(Value::as_str)
@@ -17320,7 +17304,6 @@ pub(crate) fn replay_brush_bitmap(
     {
         points = smooth_stroke_points(&points);
     }
-    let mut ctx = ToolContext::new(workspace, doc_id, "system:replay", "session:replay");
     // **`null` 要还原成 `None`** ✗ —— 这不是小事 ✓：`source` 里 `color_to` / `color` / `opacity` /
     // `hardness` **没给时记的是 `null`** ✓，而落笔时调用方给的是**根本没这个键** ✓
     //（`args.get("color_to")` ⇒ `None` ✓）。`paint_brush` 的分支是
@@ -17338,8 +17321,41 @@ pub(crate) fn replay_brush_bitmap(
     // **`color_space` 也随 source 一起重放**（C1）：带显式空间落的一笔，打开 / 重放时
     // 必须按同一空间再解释一次，否则笔变色；老笔触没记 ⇒ `None` ⇒ 量级切换。
     let color_space = color_space_from_value(source.get("color_space"))?;
-    let paint = paint_brush(
-        &mut ctx,
+    // **`brush_params` 随 source 一起重放**（X-14）：落笔时合并后的 dab 密度等覆盖，
+    // 不传就等于用笔刷缺省值重跑 ⇒ 字节必然不同 ✓；老笔触没记 ⇒ `None` ⇒ 老行为 ✓。
+    let brush_params = source.get("brush_params").filter(|value| !value.is_null());
+    // **点列时间随 source 一起重放**（P-2）：落笔时每点的 `time_ms` 决定速度输入，
+    // 速度敏感的笔刷（`speed1_gamma`）缺了它就画不出同一笔 ✓；老笔触没记 ⇒ `&[]` ⇒
+    // `STEP_SECONDS`，与老重放逐字节一致 ✓。
+    let dtimes: Vec<f64> = match source.get("times") {
+        Some(Value::Array(items)) => {
+            let times: Vec<Option<f64>> = items.iter().map(|item| item.as_f64()).collect();
+            dtimes_from_times(&times)
+        }
+        _ => Vec::new(),
+    };
+    let dtimes_ref: &[f64] = &dtimes;
+    // **混色模式随 source 一起重放**（P-2）：落笔时 `pigment` / `linear` 的笔，
+    // 重放用缺省 `Rgb` 会画出不同颜色 ✓；老笔触没记 ⇒ `Rgb` ⇒ 老行为 ✓。
+    let color_mixing = match source.get("color_mixing") {
+        None | Some(Value::Null) => yanshi_render::color::ColorMixing::Rgb,
+        Some(Value::String(name)) => {
+            yanshi_render::color::ColorMixing::parse(name).ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("source 里的 color_mixing 非法：{name}")),
+                )
+            })?
+        }
+        Some(_) => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("source 里的 color_mixing 必须是字符串".to_owned()),
+            ));
+        }
+    };
+    paint_brush(
+        ctx,
         &brush,
         &points,
         source.get("size").and_then(Value::as_f64),
@@ -17349,13 +17365,22 @@ pub(crate) fn replay_brush_bitmap(
         source.get("hardness").and_then(Value::as_f64),
         // **不喂底图** ✗（见函数头 ✓）。
         false,
-        None,
-        yanshi_render::color::ColorMixing::Rgb,
-        &[],
+        brush_params,
+        color_mixing,
+        dtimes_ref,
         None,
         sensors,
         color_space,
-    )?;
+    )
+}
+
+pub(crate) fn replay_brush_bitmap(
+    workspace: &mut Workspace,
+    doc_id: &str,
+    source: &Value,
+) -> Result<Vec<u8>> {
+    let mut ctx = ToolContext::new(workspace, doc_id, "system:replay", "session:replay");
+    let paint = replay_brush_paint(&mut ctx, source)?;
     Ok(paint.rgba)
 }
 

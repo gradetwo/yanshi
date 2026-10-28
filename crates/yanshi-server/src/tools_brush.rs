@@ -160,6 +160,26 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         .iter()
         .map(|(x, y, pressure)| json!([x, y, pressure]))
         .collect::<Vec<_>>());
+    // **点列时间也要进 `source`**（P-2）：每点的第 4 个元素 `time_ms`（没有记 `null` ✓）——
+    // 它决定落笔时的速度输入，速度敏感的笔刷缺了它就重放不出同一笔 ✓；
+    // 与 `points_source` 同一下标 ✓（风格/吸附不改点数 ✓，时间与点一一对应 ✓）。
+    let times_source = args
+        .get("points")
+        .and_then(Value::as_array)
+        .map(|items| {
+            Value::Array(
+                items
+                    .iter()
+                    .map(|item| {
+                        item.as_array()
+                            .and_then(|pair| pair.get(3))
+                            .cloned()
+                            .unwrap_or(Value::Null)
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or(Value::Null);
     let size_source = args.get("size").cloned().unwrap_or(Value::Null);
     let color_source = args.get("color").cloned().unwrap_or(Value::Null);
     let color_to_source = args.get("color_to").cloned().unwrap_or(Value::Null);
@@ -982,13 +1002,22 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         "source": {
             "kind": "brush",
             "brush": name,
+            // **`brush_params` 也要进 `source`**（X-14）：落笔时合并后的 dab 密度等覆盖
+            //（意图参数展开 + 显式 `brush_params`，显式优先 ✓）—— 不记它，重放就用笔刷
+            // 缺省值跑，字节必然不同 ✓；没传记 `null`，与其它来源字段同例。
+            "brush_params": merged_brush_params.clone().unwrap_or(Value::Null),
             "points": points_source,
+            // **点列时间也要进 `source`**（P-2）：见上方 `times_source` ✓。
+            "times": times_source,
             "size": size_source,
             "color": color_source,
             "color_to": color_to_source,
             // **显式 `color_space` 也要进 `source`**（C1）：否则 `update_stroke` / 重放时
             // 丢掉空间、笔变色；没传记 `null`，与其它来源字段同例。
             "color_space": args.get("color_space").cloned().unwrap_or(Value::Null),
+            // **混色模式也要进 `source`**（P-2）：`pigment` / `linear` 的笔，重放用缺省
+            // `Rgb` 会画出不同颜色 ✓；没传记 `null`，与其它来源字段同例。
+            "color_mixing": args.get("color_mixing").cloned().unwrap_or(Value::Null),
             "smooth": smooth_source,
             "opacity": opacity_source,
             "hardness": hardness_source,
