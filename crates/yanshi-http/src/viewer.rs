@@ -26,8 +26,9 @@ pub fn page_with_read_tools() -> String {
 
 /// **查看器整页** ✓（原样 ✓；发出去时会把只读工具清单注入 `__READ_TOOLS__` ✓ —— 见上面那个函数 ✓）。
 /// 注意 ✓：我这个函数是**插在它之前**的 ✓ ⇒ 一度把它的文档注释"抢"走了 ✗ ⇒ `clippy -D warnings` 当场红 ✓。
-/// **整页 HTML 的头部** ✓（`<!DOCTYPE html> … <style>` ✓）—— 与 `PAGE_TAIL` 之间夹的是
-/// **独立可打包的 CSS 资产** ✓（(A)① ✓）。
+/// **整页 HTML 的头部** ✓（`<!DOCTYPE html> … <link>` ✓）——**样式表自 NEW-H1 瘦身第二步起外链** ✗
+/// 不再内联（`/viewer.css` 由**同一二进制** `include_str!` 路由发出 ✓ 单二进制部署照样自包含 ✓
+/// 与 `/i18n.js` 同一条口径 ✓）。
 const PAGE_HEAD: &str = r##"<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -37,12 +38,11 @@ const PAGE_HEAD: &str = r##"<!DOCTYPE html>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png" />
 <link rel="apple-touch-icon" href="/brand/png/favicon-180.png" />
-<style>"##;
+<link rel="stylesheet" href="/viewer.css" />"##;
 
-/// **整页 HTML 的尾部** ✓（`</style> … </html>` ✓）。
-/// **`</style>` … 主脚本 `<script>`** ✓（与 `PAGE_TAIL_B` 之间夹的是**独立可打包的 JS 资产** ✓）。
-const PAGE_TAIL_A: &str = r##"</style>
-</head>
+/// **整页 HTML 的尾部** ✓（`</head> … </html>` ✓）。
+/// **`</head>` … 主脚本 `<script>`** ✓（与 `PAGE_TAIL_B` 之间夹的是**独立可打包的 JS 资产** ✓）。
+const PAGE_TAIL_A: &str = r##"</head>
 <body>
 <header>
   <h1><img class="brand-mark" src="/brand/svg/icon-light.svg" alt="" />偃师 Yanshi</h1>
@@ -1222,14 +1222,15 @@ const PAGE_TAIL_B: &str = r##"</script>
 </html>
 "##;
 
-/// **整页模板** ✓：把**独立的 CSS 资产**拼回页面 ✓（(A)①：HTML/CSS/JS 要能作为独立产物打包 ✓）。
+/// **整页模板** ✓ —— **NEW-H1 瘦身后**：CSS 与双语词表都走**同源外链**（`/viewer.css`／`/i18n.js`，
+/// 均由本二进制 `include_str!` 发 ✓）；**JS 三段仍内联** ✗（页面没有模块加载器 ⇒ 加载顺序
+/// 就是依赖顺序，与 (A)① 的旧理由一致 ✓）。
 ///
-/// ⚠️ 这里**必须用拼接、不能用 `format!`** ✗ —— CSS 与 JS 里全是花括号 ✗，格式化会把它们当占位符 ✓
+/// ⚠️ 这里**必须用拼接、不能用 `format!`** ✗ —— JS 里全是花括号 ✗，格式化会把它们当占位符 ✓
 /// （真正的占位符只有 `__READ_TOOLS__` / `__BUILD_ID__` ✓，用 `.replace` 替换 ✓）。
 fn page_template() -> String {
     [
         PAGE_HEAD,
-        include_str!("../assets/viewer.css"),
         PAGE_TAIL_A,
         // **★★★ 两份新资产 ✗ 各自一段 `<script>`** ✓（**第 249 轮 ✓）★★★
         //   ＋ **∴ 为什么不能 `import` ✗**：**页面没有模块加载器**✗（**全是内联传统脚本 ✓）
@@ -1367,9 +1368,11 @@ mod tests {
         }
     }
 
-    /// **(A)①：CSS 是独立可打包资产** ✓ —— 断言 ① 资产文件存在 ✓；
-    /// ② 生成页面里 `<style>…</style>` 之间的内容与资产**逐字节一致** ✓
-    /// （**变异：把资产拼到 `</style>` 之外 ⇒ 红** ✓）。
+    /// **(A)①＋NEW-H1 第二步：CSS 是独立可打包资产，且页面以 `<link>` 引用它** ✓ ——
+    /// 断言 ① 资产文件存在 ✓ 且与 `stylesheet()` 出口逐字节一致 ✓；
+    /// ② 页面 head 里有 `<link rel="stylesheet" href="/viewer.css" />` ✓ 且**不再有** `<style>` 块 ✓
+    /// （**变异：删 link ⇒ 红 ✓；把 CSS 挪回内联 ⇒ ② 的后半红 ✓**——
+    ///   同一事实只写一处：CSS 只在资产里存在一份，页面靠引用拿 ✗ 不复制）。
     #[test]
     fn the_stylesheet_is_a_separate_packable_asset() {
         let path = std::path::Path::new("assets/viewer.css");
@@ -1378,14 +1381,19 @@ mod tests {
             "(A)①：CSS 应是**独立资产文件**（可打包/可预缓存）✓"
         );
         let asset = std::fs::read_to_string(path).expect("应能读取 CSS 资产");
-        let page = page_template();
-        let open = page.find("<style>").expect("页面应有 <style> ✓") + "<style>".len();
-        let close = page.find("</style>").expect("页面应有 </style> ✓");
-        assert!(open < close, "样式块必须是闭合且有序的 ✓");
         assert_eq!(
-            page[open..close].trim(),
+            stylesheet().trim(),
             asset.trim(),
-            "页面样式块应**逐字节等于**独立 CSS 资产 ✓（顺序/位置错了 ⇒ 红 ✓）"
+            "`/viewer.css` 路由出口必须逐字节等于资产文件 ✓"
+        );
+        let page = page_template();
+        assert!(
+            page.contains("<link rel=\"stylesheet\" href=\"/viewer.css\" />"),
+            "页面必须引用 /viewer.css（NEW-H1：CSS 不再内联 ✓）"
+        );
+        assert!(
+            !page.contains("<style>") && !page.contains("</style>"),
+            "页面不应再有内联 `<style>` 块（瘦身后 CSS 只以外链存在 ✓ 挪回内联＝同一事实写两处 ✗）"
         );
     }
 

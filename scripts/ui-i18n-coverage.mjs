@@ -27,7 +27,7 @@ const VIEWER_JS = "crates/yanshi-http/assets/viewer-app.js";
 // **NEW-H1 瘦身**：三张词表挪成独立资产 ⇒ **抽表读这份**，锚点/运行时逻辑仍读 `VIEWER_JS` ✓
 //（**同一事实只写一处 ✗ 表若被挪回主脚本，本判据当场报"找不到表" ✓ 不会假绿**）。
 const I18N_JS = "crates/yanshi-http/assets/i18n.js";
-const VIEWER_CSS = "crates/yanshi-http/assets/viewer.css";
+// （`VIEWER_CSS` 不再被读本判据 ⇒ NEW-H1 第二步 CSS 外链后它不进页面字节流 ✓ 词表/样式各归资产 ✓）
 
 // **抽原始字符串**：三个 HTML 片段必须都找得到 ✓ —— 找不到说明模板被改名/拆分了 ⇒
 // **判据失效** ✗，此时要**报错退出** ✓，绝不能让"抽不到 ⇒ 0 条 ⇒ 绿"这种假绿发生 ✗。
@@ -43,9 +43,8 @@ function rawChunk(source, name) {
 }
 
 const rs = readFileSync(VIEWER_RS, "utf8");
-// **按 `page_template()` 的同一顺序拼接** ✓（CSS / JS 各自在 `<style>` / `<script>` 里 ✓，
-// 这样下面按标签剥离时 `<style>` 才有配对的 `</style>` ✓）。
-const css = readFileSync(VIEWER_CSS, "utf8");
+// **按 `page_template()` 的同一顺序拼接** ✓（**NEW-H1 瘦身后 CSS 与词表都外链 ✗ 不再进页面字节流**
+// ⇒ 这里也不拼它们 ✓；`<style>` 配对的老理由作废 ✓ 残留一个中文串都进不了候选才是重点 ✓）。
 const js = readFileSync(VIEWER_JS, "utf8");
 // **词表在独立资产里**（NEW-H1 ✓）—— 抽表全部改读这份 ✓（锚点检查仍读主脚本 ✓）。
 const dictJs = readFileSync(I18N_JS, "utf8");
@@ -57,7 +56,6 @@ const tailB = rawChunk(rs, "PAGE_TAIL_B");
 //  实测「删除」被报成第 144 行（注释 `**删除确认**` ✓），而真身在第 156 行 ✓）。
 const parts = [
   { body: head.body, start: head.start },
-  { body: css, start: null },
   { body: tailA.body, start: tailA.start },
   { body: js, start: null },
   { body: tailB.body, start: tailB.start },

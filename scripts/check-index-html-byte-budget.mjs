@@ -20,9 +20,11 @@
 import { execFileSync } from "node:child_process";
 
 // 棘轮上界（NEW-H1 瘦身第一步：三张双语词表挪成外链 `/i18n.js` ⇒
-// 实测 1,038,359 → 968,345 字节（−69,984，截至 2026-10-29）⇒ 上界取 970,000）。
+// 实测 1,038,359 → 968,345 字节（−69,984，截至 2026-10-29）；
+// 第二步：样式表挪成外链 `/viewer.css` ⇒ 实测 968,345 → 930,816 字节
+// （−37,529，截至 2026-10-29）⇒ 上界取 931,000 ⇒ 本提交落地前对旧 HEAD 会红，属预期）。
 // 数它用 `git show HEAD:web/index.html | wc -c`；改这个数必须附理由。
-const CEILING = 970_000;
+const CEILING = 931_000;
 
 const failures = [];
 const check = (ok, label, detail) => {

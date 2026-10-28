@@ -1775,3 +1775,32 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    （造原子数按 `BYTES_PER_ATOM` 现算；300 KB 变异下测试仍绿＝口径无关性 ✓）。
    本笔与修复叠成同一候选 push（`24a19b33`＋`93b14798`＋§48 `9e763525` 未推部分，同组不双派 ✓）；
    `git am` 不适用（我侧手写）⇒ pre-commit fmt／workspace clippy 已随两笔提交复跑 ✓。
+
+## §105 NEW-H1 瘦身第二步（样式表挪成外链 /viewer.css，index.html −37.5 KB）留痕（2026-10-29）
+
+① **范围与动机**：续 §104 的第一步，把 `page_template()` 里 `include_str!("../assets/viewer.css")`
+   的内联 `<style>` 块（37,557 B）挪成**已存在**的同源路由 `/viewer.css`（server.rs 早已发，
+   离线判据 `tool-offline-asset-coverage`／`browser-sw-cache-not-on-critical-path` 本来就按
+   「可 fetch 的外壳资产」对待它 ⇒ 外链化与既有口径一致，不是新机制）。JS 三段仍内联 ✗（无模块加载器，
+   加载顺序即依赖顺序）。
+② **机制与口径**：与 §104② 同一条口径（同一二进制 `include_str!` 发 ⇒ 单二进制自包含不变；
+   守卫只禁外部主机）。PAGE_HEAD 尾部 `<style>` 起点改 `<link rel="stylesheet" href="/viewer.css" />`，
+   PAGE_TAIL_A 起点去掉 `</style>`。**旧守卫 `the_stylesheet_is_a_separate_packable_asset` 反转重写**：
+   从前断「页面**含**内联 CSS 且与资产一致」，现在断「`stylesheet()` 与资产逐字节相等 ✓ 页面含 link ✓
+   页面**不再有** `<style>`／`</style>` ✓」——同一事实仍只写一处（资产），页面只留引用。
+   `ui-i18n-coverage` 同步删掉 parts 拼接里的 CSS 体：CSS 注释会漏进可见文本候选 ⇒ **假红**（四层齐第 2 层：
+   输入不再触发断言的反面——输入多喂了不该喂的东西）。接线面零新增：SW SHELL／`_headers`／
+   pwa-sync stampFiles＋FILES／parity 清单**第一步之前就已含 viewer.css** ✓（这正说明外链形态早被承认）。
+③ **本机复验**：`cargo test -p yanshi-http --lib viewer` **7/7 ✓**；`--export-viewer-html` 再生
+   `web/index.html`＝**930,816 B**（−37,529 ✓），棘轮 CEILING 970,000 ⇒ 931,000（对本提交落地前的
+   旧 HEAD 会红＝预期，落地后同源 ✓）；判据 `ui-i18n-coverage`（315＋151 全过 ✓）／
+   `tool-pwa-stamp-shape` 16/16 ✓／`tool-web-assets-parity` ✓／`check-service-worker-roles` ✓；
+   真起服务 `curl /viewer.css` ⇒ **37,557 B 与资产 `cmp` 逐字节一致 ✓**、页面 `<style>` 0 次／link 1 次 ✓。
+   **workspace 全量 test 交 CI**（可用 2.4 Gi ✗ 不自称本机绿）。
+④ **变异两面（断言粒度，恢复后 7/7 绿＋重建二进制保新鲜 ✓）**：M-a 删 PAGE_HEAD 的 link ⇒
+   `the_stylesheet_is_a_separate_packable_asset` 红（viewer.rs:1390 ✓）；M-b 往 PAGE_HEAD 塞回 `<style>` ⇒
+   **同一条测试的另一面**红（viewer.rs:1394「页面不应再有内联 `<style>` 块」✓）——两条断言各红各的，
+   不是同一条兜all（变异粒度=断言 ✓）。
+⑤ **顺带**：`web/assets-index.json` 又带进与本笔无关的既有资产漂移 ⇒ `git checkout --` 还原，
+   保持提交聚焦（与 §104 同规；H-1 去重仍在 #30 等裁定）。本笔与 #47 收账（run 40735508212）**同组排队**：
+   该 run 收敛前不 push，收敛后与本账一起推（同组不双派 ✓）。
