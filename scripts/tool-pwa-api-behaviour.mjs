@@ -20,55 +20,8 @@ process.on("uncaughtException", (error) => {
 });
 import { pathToFileURL } from "node:url";
 
-// **★ 最小 IndexedDB 桩 ✓ ★**：**够用即可 ✗**（**只支持本层用到的 put／get／getAll ✓**）。
-class MemStore {
-  constructor() { this.map = new Map(); }
-  // **∴ 键按 `store.js` 的 `keyPath` 语义取 ✗**：**`atoms`⇒`id` ✓｜`blobs`⇒`hash` ✓｜`docs`⇒`doc` ✓**。
-  put(v) { this.map.set(v.id ?? v.hash ?? v.doc, v); return ok(); }
-  get(k) { return ok(this.map.get(k)); }
-  getAll() { return ok([...this.map.values()]); }
-  createIndex() {}
-}
-const ok = (result) => { const r = { result, onsuccess: null, onerror: null }; queueMicrotask(() => r.onsuccess && r.onsuccess()); return r; };
-function makeIndexedDB() {
-  const stores = new Map();
-  return {
-    open() {
-      const req = { result: null, onupgradeneeded: null, onsuccess: null, onerror: null };
-      const db = {
-        objectStoreNames: { contains: (n) => stores.has(n) },
-        // **∴ 必须返回带 `createIndex` 的对象 ✗**（**`store.js` 会为 `atoms` 建索引 ✓**）。
-        createObjectStore: (n) => { stores.set(n, new MemStore()); return { createIndex() {} }; },
-        // **★ 桩必须模拟真 IndexedDB 的两个行为**（2026-10-20，本判据在 CI 上 exit 13 / 读回 0）：
-        //   ① `transaction([a, b])` **接受数组**（真 API 就是这样；D-01 的单事务要用它）
-        //      ⇒ 原来的桩只 `stores.get(n)` ⇒ 传数组时拿到 undefined ⇒ **另建一个以数组为 key 的 store**
-        //        ⇒ 原子的 write 全进了那个假 store ⇒ 读回 0 笔触 ✗
-        //   ② 事务是**异步提交**的，会触发 `oncomplete`
-        //      ⇒ 原来的桩没有它 ⇒ 产品里 `await done` **永远不 resolve** ⇒ 判据挂死（Node exit 13）✗
-        //   ⇒ 桩不完备会让「产品对、判据红」⇒ 所以我修桩，**不**迁就桩去改产品 ✓
-        transaction: (n) => {
-          const names = Array.isArray(n) ? n : [n];
-          const storeFor = (name) => {
-            if (!names.includes(name)) {
-              throw new Error(`事务没有包含 store「${name}」（现有：${names.join(",")}）`);
-            }
-            if (!stores.has(name)) stores.set(name, new MemStore());
-            return stores.get(name);
-          };
-          const t = { objectStore: (name) => storeFor(name) };
-          // 真 API 在微任务量级内提交 ⇒ 用 setTimeout 0（`oncomplete` 属性那时已赋好）
-          setTimeout(() => {
-            if (typeof t.oncomplete === "function") t.oncomplete();
-          }, 0);
-          return t;
-        },
-      };
-      req.result = db;
-      queueMicrotask(() => { req.onupgradeneeded && req.onupgradeneeded(); req.onsuccess && req.onsuccess(); });
-      return req;
-    },
-  };
-}
+// **★ 最小 IndexedDB 桩 ✓ ★**：**从共享模块 import ✗**（第 2 批抽出 ⇒ **同一事实只写一处 ✓**）。
+const { makeIndexedDB } = await import(pathToFileURL(process.cwd() + "/scripts/lib/pwa-node-stub.mjs").href);
 
 // **★ 打桩浏览器环境 ✓ ★**
 const calls = [];

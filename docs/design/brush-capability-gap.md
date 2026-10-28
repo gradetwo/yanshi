@@ -22957,3 +22957,124 @@ M-K3「已被删除」分支不可达 ✓红；M-K4 完整性报错丢清单 ✓
 ——`assert count==1` 当场拦住（**仓库那条「替换前断言唯一性」第 N 次挡住改错位置 ✓**），
 补上前一行 `timestamp: Date.now(),` 换行做锚后唯一 ✓。**∴ 教训 ✓：缩进类锚点要带上一整行 ✓**
 （**∴ 「长得像」不是唯一性 ✓，**数出来才是 ✓**）。
+
+## 六百五十七、风格预设四端点落地 PWA 本地层：内联库＋「同一请求打两边」逐字段对照（第 2 批 ✓ 六次变异全红 ✓）
+
+**做什么 ✓**：`web/api-local.js` 新增 `list_presets`／`get_preset`／`preview_preset`／`apply_preset`
+四个分支（照 `presets.rs` 的 `read_list_presets`／`read_get_preset`／`read_preview_preset`／
+`write_apply_preset` ✓；展开器 `p2ExpandPreset` 照 `expand_preset` ＋ `clamp_params`，
+**含 `clamp` 语义**✗ 不是「只靠库合法」✓）。`LOCAL_IMPLEMENTED` 机械重数 166⇒**170**（`tool-pwa-assets` 实算 ✓）。
+**∴ 带 `render` 的 `preview_preset` 仍如实 501 ✓**（本地内核没有「单层裸像素」通道 ⇒ 不许给口径不同的代理图 ✓）。
+
+**内联库＋看守 ✓（内核 ②「同一事实只写一处」）**：22 套预设（92959 B）**内联进 `api-local.js`**（Service Worker
+已预缓存它 ⇒ 离线可用；另起资产文件要同步预缓存清单 ⇒ 漏改就是「读不到预设」的静默降级 ✗）。
+**∴ 而内联 = 第二份拷贝 ✗ ⇒ 必须有机器看守 ✓**：
+`scripts/gen-pwa-preset-library.mjs`（`--write` 从 `crates/yanshi-server/data/style-presets.json`
+重新生成内联块；`--check` 只比 ⇒ 落后即 `exit 1`；三条内联禁忌——反引号／`${`／`\r`——当场挡 ✓）
+＋ `scripts/tool-pwa-preset-library-parity.mjs`（逐字节＋两份部署副本＋端点计数自洽 ✓）。
+
+**判据 ✓**：`scripts/tool-pwa-preset-server-parity.mjs` —— **同一批请求分别打真服务端与本地 `api-local`**，
+比**解析后的结构**（不比字节 ✓）：全量 `list_presets`／四种筛选／22 套 `get_preset`（`preset`＋`expanded_default`）／
+三档 `strength`＋`include_correction:false`＋旋钮 min/max／17 条错误文案逐字／`apply` 两次（全新建⇒全更新）＋
+计数恒等式／C/S 代理（两个端点各一条）／诚实 501。
+`scripts/lib/pwa-node-stub.mjs` 把 IndexedDB 桩从 `tool-pwa-api-behaviour.mjs` 抽出共享（两份抄一定漂移 ✓）。
+
+**六条当场探到的服务端事实 ✓**（全部真服务端实测，不是读码推论）：
+1. **`serde_json` 解析浮点不保证正确舍入** ⇒ 源文件写 `0.010249999999999999`，
+   服务端 `to_value` 后是**相邻的另一个 double**（打印成 `0.01025` ✓），而 JS `JSON.parse` 是正确舍入 ✓。
+   **∴ 判据不能严格比浮点** ✓ ⇒ 整数严格、小数按 `1e-12` 相对误差（**断「同一口径」✗ 不断「同一浮点实现」✓**）。
+2. **`black_white` 那套预设并不含 `black_and_white` 操作**（它走 `saturation:0` ✓）；
+   全库 22 套**零套**用到该 op ⇒ 本地／服务端那条「`amount` 中性值恒 0」**今天没有输入能触发** ✓
+   ⇒ 判据**明说跳过**（「默认通过」是最坏的第四种诚实 ✗）；**∴ 不虚报覆盖 ✓**。
+3. **「已删但存在」的图层** ✓：第一阶段 `state.layers.contains_key` **放行**（不是 404「图层不存在」✗），
+   但第二阶段落 `create_object` 时折叠层拒绝 ⇒ **409／`precondition_failed`／「图层 X 已删除，create_object 被拒绝」** ✓
+   ⇒ 本地同码同句 ✓。**∴ 层 id 两边取同一个名字**✗（文案含层 id ⇒ `psrv-*`／`ploc-*` 永远比不出一致 ✗）。
+4. **HTTP 层把 `created` 覆写成布尔** ✓（服务端 `created:false` 而 `created_object_ids` 有 11 条 ✓）
+   ⇒ **判据不许比 `created`**（两边含义不同 ✓）⇒ 记为 `divergent`，并要求两边**都在** ✓。
+5. **服务端以 `doc` 查询串优先** ✓：查询串里的 doc 不存在 ⇒ 404「文档 … 未打开」，哪怕 body 的 `doc_id` 是好的 ✗
+   ⇒ C/S 代理那条判据必须把**服务端存在的 doc** 放进查询串 ✓（第一版放的是本地文档名 ⇒ 读到「没有 timings」✗）。
+6. **跨层复活要有「级联墓碑」这个输入** ✓：顺序必须是「落到某层 ⇒ **删那层**（`tombstone_layer` 把对象一起标死）⇒ 再落默认层」
+   ⇒ 才全部走 `revived` ✓。**「先删层再落预设」**造出来的对象是**在死层上新建**的、从未被级联
+   ⇒ 两边都报「全部更新」✓ —— 判据的**期望**错，不是产品错 ✗（第一版就是这样 ✓）。
+
+**真 bug（本地层）✓**：`p2PresetLand` 的失败分支把**已经 `.json()` 读过的** `Response` 交回去 ✗
+⇒ 浏览器再读 ⇒ `TypeError: Body is unusable` ⇒ **服务端的 409／文案在 PWA 里变成不可读的空响应** ✗
+（静默降级形态③的镜像：**错误码服务端有、本地层把它吃掉了** ✓）。
+修法：用同一份已解析 body **重建响应**（状态码／`error_code`／`context.detail` 全保真 ✓）。
+**变异 M5 把它还原 ⇒ ⑦「有一边读不出 JSON」红 ✓。**
+
+**判据自身的错 ✓（五次，全是「我的测量错而不是产品错」）**：
+① `withKnobs` 同时当数组与对象 ⇒ `.preset_id` 恒 `undefined` ⇒ `bwId` 未定义 ⇒ 首跑 `ReferenceError`；
+② revive 场景顺序写反（见事实 6）；③ 冲突用例复用了**已经落过**的预设 ⇒ 占位对象建不进去 ⇒ 那一支在空转；
+④ C/S 一条只测 `list_presets` ⇒ **把 `preview_preset` 的 `!__csClientMode()` 闸删掉，判据照样全绿** ✗
+（**「变异粒度是断言不是判据」的实例** ✓ ⇒ 补断言 M2b）；⑤ 代理请求的 doc 见事实 5。
+
+**变异（四层齐第④层 ✓ 六次：改坏⇒`exit 1` ✓、恢复⇒`exit 0` ✓）**：
+M1 中性值插值把 `strength` 换成 `1.0`｜M2 `list_presets` 的 C/S 闸｜M2b `preview_preset` 的 C/S 闸｜
+M3 关掉未知名拒绝｜M4 `apply` 的确定性 `object_id` 改随机｜M5 还原已消费 `Response`。
+
+**有意不做的 ✓**：本地**不重写** `validate_effect`（展开后那一遍）——
+库与服务端**逐字节同一份**，而服务端自己的 `every_preset_expands_and_passes_validate_effect` 已证明它合法 ✓
+⇒ 本地再校验一遍是**把同一句话抄第二次** ✗；`clamp` 则必须照抄（它**改值**✓ 不是判合法 ✗）。
+**∴ 若哪天库里有越界参数**：服务端拒、本地接受 ⇒ 上面那条 Rust 测试会先红 ⇒ 不会静默漂移 ✓。
+
+## 六百五十八、写路径守卫：锁闸挂 `putAtom`、三处服务端缺陷记为分歧、十次变异全红
+
+**做什么 ✓**：`web/api-local.js` 补三样（第 2 批 ✓）——
+① **锁必须被强制**（服务端 `log.rs:786 validate_lock`，从 `validate_commit` 的**提交层**调用 ✓）；
+② `list_layers` 的**字段集／`objects` 计数／`z_index` 折叠**对齐 `read_list_layers`；
+③ `list_objects` 的 `enabled`／`locked` 对齐 `summary_object`。
+判据 `scripts/tool-pwa-local-write-guards.mjs`：**同一批写请求分别打真服务端与本地 `api-local`**，
+比**解析后的 JSON**（整数严格、小数 `1e-12` 相对误差 ✓——与 `tool-pwa-preset-server-parity` 同一口径）；
+**错误文案逐字比**（`context.detail` ✓：调用方按服务端文案写的重试逻辑，在离线模式里也要命中 ✓）。
+
+**锁闸挂**必经之路**✗ 不挂入口 ✓（台账第 9 面）**：本地 40＋ 个写入口都经 `putAtom` ✓
+⇒ **∴ 用**模块级 `p2LockGuard` ＋ 闭包里换装 `putAtom`** ✓（拒绝时抛带 `__p2Failure` 的错误，
+由 `local()` **唯一**的兜底 catch 换成与服务端同形的 403 ✓）。
+**服务端口径逐字照抄 ✓**：`set_property{locked|visible}` 永远放行（**否则锁了就永远解不开** ✓）；
+对象在状态里 ⇒ `不能修改 {id}：{对象自身已锁定|所在图层已锁定}（先解锁再操作；改 locked/visible 不受限制）`；
+对象不在状态而净荷有 `layer_id` 且该层锁定 ⇒ `不能在锁定的图层 {id} 上新建对象（先解锁）`；
+**只有 `layer_id` 的图层管理原子**不受影响 ✓。
+**墓碑对象照样算「在状态里」** ✓（`fold.rs:1315` 的 `Tombstone` 只写 `deleted_by`，`state.objects` 里还在 ✓
+⇒ 锁对已删对象同样生效 ✓）；本地等价物是 `p2ObjectView` 的 `found && !neutral(create_id)` ✓。
+
+**★ 真正的坑：`try { return dispatch(req) } catch` 抓不到异步拒绝 ✗ ★**（实测两轮）：
+`local()` 原来是 `try { …一堆 return… } catch` ⇒ **`return` 一个 Promise 时 try 不 `await` 它** ✗
+⇒ **∴ 锁闸的 `throw` 穿到调用方** ✓ —— 而 `update_object` 有入口预检所以**看着正常**（403 ✓），
+`update_adjustment` 直接 `putAtom` ⇒ 判据拿到的是 rejection（`{"threw":"不能修改 A1：…"}`）✗。
+**修法**：把分发本体抽成 `localDispatch(req)`，兜底改成 `return await localDispatch(req)` ✓
+（**`await` 才会进 catch** ✓）。**∴ 这是「同一个行为两条路径，只有一条走对」的实例** ✓。
+
+**判据抓出的本地真缺口（修前 vs 修后）✓**：
+1. `list_layers` 新层只有 6 个字段、无 `z_index`／`parent_id`／`objects` ⇒ 面板拖组／计数静默拿 `undefined`（形态①）；
+2. `update_layer{z_index|parent_id}` 回执 ok 而 `list_layers` 看不见（形态③）——`p1LayerOrder` 的 `PROP_KEYS` 补到 11；
+3. `list_objects` 少 `enabled`／`locked`；
+4. **锁一条都没强制** ⇒ 锁住的层照样能画、能删（§C 首次跑出来：服务端 403／本地 200）。
+
+**三处**故意分歧**（服务端缺陷 ⇒ 本地不照抄 ✗ ⇒ 判据断分歧本身 ✓）**：
+① **死父层建层**：服务端 200 而图层没进状态（静默失败 ✗）；本地 404 并点名父层 ✓；
+② **changeset 半写**：`service.rs:2437 commit_changeset_timed` 逐条提交再 `attempt?`
+⇒ `{visible:false, layer_id:"NOPE"}` 回 404 而 `visible` 已落盘 ✗；本地要么全落要么全不落 ✓
+（**两条**：§D② 坏引用；§C' 锁＋例外混写 ⇒ 服务端 403 但 `visible=false`、本地仍 `true` ✓）；
+③ **复制图层丢 `type`**：服务端 `create_object` 净荷不带 `type`（`tools.rs:3921` ✓）
+⇒ 副本对象折成 `stroke`（实测：调整对象复制后 `type:"stroke"` ✗）；本地保留 `adjustment` ✓，
+其余 z／visible／locked／enabled 两边相等 ✓。
+
+**判据自身的错 ✓（三次，全是「我的测量错而不是产品错」）**：
+① **`every()` 断言在全集上**：`list_objects` 返回整篇文档 ⇒ 原对象仍在源层
+⇒ `every(layer_id === 副本层)` **恒假** ✗ ⇒ 改成「按副本层过滤 ＋ 与回执 `objects` 计数相等」；
+② **混合 patch 污染主文档对**：服务端多做一次写 ⇒ 之后每条 `head`／`seq` 差 1（一次红 5 条 ✗）
+⇒ **挪进独立文档对**（与第 916 轮同一教训：一个 case 一个文档 ✓）；
+③ **`callLocal` 不接异常** ⇒ 产品抛错被当成「判据坏了」（`exit(3)`）✗
+⇒ 改成记成**状态 0 的失败响应**（`error_code:"local_threw"`）⇒ 走 `exit(1)` ✓
+（**∴ 这条是被变异⑩逼出来的：判据的诚实不止在断言，还在退出码 ✓**）。
+
+**变异（四层齐第④层 ✓ 十次：改坏⇒`exit 1` ✓、恢复⇒`exit 0` ✓）**：
+① `__p2Alive` 恒活（级联死看漏）｜② `update_layer` 去 `p2RefGuard`｜③ `create_layer` 不校验 `kind`｜
+④ 撞墓碑走「已存在」｜⑤ `p2DefaultZInLayer` 恒 0｜⑥ `update_object` 边校验边写（锁闸预检删掉）｜
+⑦ `p1LayerOrder` 不折 `z_index`｜⑧ `list_layers` 的 `objects` 恒 0｜
+⑨ `p2LockGuard` 恒放行（**锁闸本身**也有变异 ✓）｜⑩ 兜底 catch 去掉 `__p2Failure` 换装（错误穿出去）。
+逐条的**首个红灯**写在判据头部 ✓（**∴ 变异粒度是断言，不是判据 ✓**）。
+
+**配套 ✓**：`web/api-local.js` 与 `crates/yanshi-http/assets/api-local.js` 逐字节同步（`cmp` ✓，
+`tool-cs-local-copies`／`tool-web-assets-parity` 看守 ✓）；`run-criteria-local.sh` 会因资产比二进制新而重建 ✓。

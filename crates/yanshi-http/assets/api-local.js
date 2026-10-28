@@ -67,9 +67,11 @@ export // **★ 声明必须与**实现分支数**一致 ✗ ★**（第 72 轮 
 //   ⇒ **★ 所以**：**改成 160**✗ ⇒ **∴ 于是**声明与实现**一致 ✓ ★**** ✓✓
 //   **∴ 本轮再重数 ✗**（锚点三件套 ✓ —— `set_anchor`／`get_anchors`／`delete_anchor` 落地 ⇒ **+3 ✓**；
 //   **同轮 `reorder_objects` ✓ —— `tools.rs:4029` 的校验序列落地 ⇒ 再 +1 ✓，总数 164 ✓**；
-//   **本轮 `revert_atoms`＋`revert_group` ✓ —— `tools.rs:19361`／`:19261` 落地 ⇒ 再 +2 ✓，总数 166 ✓**）：
-//   **∴ 判据口径 `actualImpl` = 166 ⇒ **∴ 本数同步到 166 ✓**（**同一机械口径 ✓，非拍脑袋 ✗**）。
-const LOCAL_IMPLEMENTED = 166; // revert_atoms + revert_group 落地 ⇒ 机械重数 +2 ✓
+//   **本轮 `revert_atoms`＋`revert_group` ✓ —— `tools.rs:19361`／`:19261` 落地 ⇒ 再 +2 ✓，总数 166 ✓**；
+//   **第 2 批 风格预设四端点 ✓ —— `list_presets`／`get_preset`／`preview_preset`／`apply_preset` 落地 ⇒ 再 +4 ✓**）：
+//   **∴ 判据口径 `actualImpl`（**机械重数：`(?:url\.pathname|path) === "`**）⇒ 本数与它同步 ✓（非拍脑袋 ✗）**
+//   **∴ 数它用：`node -e 'const a=require("fs").readFileSync("web/api-local.js","utf8");console.log(((a.match(/(?:url\.pathname|path) === "/g)||[]).length))'` ✓**
+const LOCAL_IMPLEMENTED = 170; // 风格预设四端点落地 ⇒ 机械重数 166 + 4 ✓
 
 let lastFold = null;
 
@@ -115,9 +117,13 @@ export function p1LayerOrder(rows) {
   const layers = new Map();
   const order = [];
   // **★ `set_property` 折叠**（`update_layer` ✓）：图层属性（visible/locked/opacity/
-  //   blend_mode/name 等）存在 `set_property` 原子里 ⇒ 按顺序应用，否则前端读到旧值。
+  //   blend_mode/name **以及第 2 批补上的 z_index／parent_id** ✓）存在 `set_property` 原子里
+  //   ⇒ 按顺序应用，否则前端读到旧值 ✓。
+  //   **∴ 旧清单只有 8 个键 ✗** ⇒ `update_layer{z_index}`／`{parent_id}` **写完回执 ok**
+  //   而 `list_layers` 里**看不见** ⇒ 形态③（输入不被采纳）✓ —— 本轮判据抓出的真缺口 ✓。
   const PROP_KEYS = ["name", "visible", "opacity", "blend_mode",
-                     "locked", "alpha_lock", "clipping_mask", "mask_id"];
+                     "locked", "alpha_lock", "clipping_mask", "mask_id",
+                     "z_index", "parent_id", "type"];
   for (const r of rows || []) {
     const a = (r && r.atom) || {};
     const pl = (a && a.payload) || {};
@@ -145,8 +151,26 @@ export function p1LayerOrder(rows) {
       const id = (typeof pl.layer_id === "string" && pl.layer_id) ||
                  (typeof a.layer_id === "string" && a.layer_id);
       if (typeof id !== "string" || !id || layers.has(id)) continue;
-      layers.set(id, { layer_id: id, name: pl.name ?? a.name ?? id,
-                       visible: true, locked: false, opacity: 1, blend_mode: "normal" });
+      // **★ 缺省字段照 `fold.rs` 的 `CreateLayer` 逐条抄 ✗ ★**（本轮补 ✓）：
+      //   **∴ 旧实现只写 6 个字段 ✗** ⇒ `list_layers` 的新层**没有 `type`／`parent_id`／
+      //   `z_index`／`alpha_lock`／`clipping_mask`／`mask_id`／`objects`** ✗
+      //   ⇒ 与 `layer_default`（13 个字段）**同一条响应里字段集不一致** ✓
+      //   ⇒ 前端读 `layer.type`／拖进组读 `parent_id` 时**静默拿到 undefined** ✗（形态①）。
+      //   **∴ z 缺省 = max(存活 z + 1) ✗**（`fold.rs:1051` ✓，不是「插入序」✓）。
+      const zRaw = Number(pl.z_index);
+      const zDefault = order.reduce((mx, lid) => {
+        const l = layers.get(lid);
+        return l && Number.isFinite(l.z_index) ? Math.max(mx, l.z_index + 1) : mx;
+      }, 0);
+      const type = typeof pl.type === "string" && pl.type ? pl.type : "raster";
+      layers.set(id, {
+        layer_id: id, name: pl.name ?? a.name ?? id,
+        type, kind: type,
+        parent_id: typeof pl.parent_id === "string" ? pl.parent_id : null,
+        z_index: Number.isFinite(zRaw) ? zRaw : zDefault,
+        visible: true, opacity: 1, blend_mode: "normal", locked: false,
+        alpha_lock: false, clipping_mask: false, mask_id: null, objects: 0,
+      });
       order.push(id);
     } else if (a.kind === "tombstone" && typeof pl.layer_id === "string" && !pl.object_id) {
       layers.delete(pl.layer_id);
@@ -159,13 +183,36 @@ export function p1LayerOrder(rows) {
       const ok = ord.length === alive.size &&
                  ord.every((id) => typeof id === "string" && alive.has(id)) &&
                  new Set(ord).size === ord.length;
-      if (ok) { order.length = 0; order.push(...ord); }
+      if (ok) {
+        // **★ 折叠要给 z_index 赋值 ✗ ★**（`fold.rs:1296` ✓：`order[i] ⇒ z_index = i`）：
+        //   **∴ 旧实现只换 `order` 数组 ✗** ⇒ `update_layer{z_index}` 与重排混用时
+        //   **两个来源各说一套** ✓ —— 现在只有一个权威来源（`z_index`）✓，`order` 由它导出 ✓。
+        ord.forEach((id, i) => {
+          const layer = layers.get(id);
+          if (layer) layer.z_index = i;
+        });
+      }
     } else if (a.kind === "set_property" && typeof pl.layer_id === "string" &&
                typeof pl.key === "string" && PROP_KEYS.indexOf(pl.key) >= 0) {
       const layer = layers.get(pl.layer_id);
-      if (layer) layer[pl.key] = pl.value;
+      if (layer) {
+        // **`type` 与 `kind` 同源 ✓**（`read_list_layers` 两个字段都回 `layer.layer_type` ✓）。
+        if (pl.key === "type") { layer.type = pl.value; layer.kind = pl.value; }
+        else layer[pl.key] = pl.value;
+      }
     }
   }
+  // **★ 返回顺序 = 服务端 `alive_layers()` ✗ ★**（`state.rs:699` ✓：`(z_index, id)` 升序 ✓）：
+  //   **∴ 旧实现按推导序（≈ 建层序）✗** ⇒ `update_layer{z_index}` 改了层级**界面不跟着动** ✗
+  //   ⇒ 同一文档在服务端与离线模式里**图层顺序不同** ✓（形态③）。
+  //   **∴ 用显式比较器 ✗ 不用 `localeCompare` ✓**（后者随 locale 变 ⇒ 判据跨机器会飘 ✓）。
+  order.sort((a, b) => {
+    const la = layers.get(a), lb = layers.get(b);
+    const za = la && Number.isFinite(la.z_index) ? la.z_index : 0;
+    const zb = lb && Number.isFinite(lb.z_index) ? lb.z_index : 0;
+    if (za !== zb) return za - zb;
+    return a < b ? -1 : (a > b ? 1 : 0);
+  });
   return { layers, order };
 }
 
@@ -261,7 +308,11 @@ export async function encodePngRgba(w, h, rgba) {
   return out;
 }
 export async function makeLocalApi(db) {
-  const { putAtom, atomsOf: atomsOfLocal, open, wrap, tx, writeSnapshot } = await import("./store.js");
+  // **★ `putAtom` 走本地薄包装 ✗ 不直接用 store 的那一个 ✓ ★**（第 2 批 ✓）：
+  //   **∴ 服务端把「锁定」校验放在**提交层** ✗**（`log.rs:292 validate_commit` ⇒ 每条原子都过 ✓）
+  //   ⇒ **∴ 本地照同一层挂闸 ✓**（见下面的 `putAtom` 包装 ＋ 模块级 `p2LockGuard` ✓）
+  //     —— **∴ 不照「每个写入口各写一遍」✗**（**台账第 9 面「闸挂必经之路而非入口」✓**）。
+  const { putAtom: __p2PutAtomRaw, atomsOf: atomsOfLocal, open, wrap, tx, writeSnapshot } = await import("./store.js");
   // **∴ 内核实例**按文档缓存**✗**（**`Map<doc, WasmKernel>` ✓**）。
   const kernels = new Map();
 
@@ -327,6 +378,21 @@ export async function makeLocalApi(db) {
       if (rows) return rows;
     }
     return await atomsOfLocal(db, doc);
+  }
+  /** **★ 写原子的必经之路：锁闸 ＋ 落盘 ✗ ★**（**本地镜像 `append_validated` ✓**）。
+   *   **∴ 为什么包在这里 ✗**：40＋ 个写入口都经 `putAtom` ✓（**画／滤镜／图层／对象／撤销…**）
+   *   ⇒ **∴ 一处挂闸 ⇒ 全部覆盖 ✓**；反之在每个入口各写一遍 ⇒ **将来新加的入口一定漏** ✗
+   *   （**台账第 9 面 ✓：「闸挂必经之路而非入口」**）。
+   *   **∴ 拒绝时**抛一个带 `__p2Failure` 的错误 ✗ ⇒ **由 `local()` 顶层 catch 换成 403 响应 ✓**
+   *   （**∴ 不在每个 handler 各写一遍 try/catch ✓**；`p2bCatch` 见到它必须**再抛** ✗ 不许吞 ✓）。 */
+  async function putAtom(db, doc, atom) {
+    const guard = p2LockGuard(await atomsOf(db, doc), atom);
+    if (guard) {
+      const err = new Error(guard.detail);
+      err.__p2Failure = p2ToolFailure(guard.status, guard.code, guard.detail, guard.extra);
+      throw err;
+    }
+    return await __p2PutAtomRaw(db, doc, atom);
   }
   /** **heavy 判定与服务端 `Atom::is_heavy` 同义** ✓（`yanshi-core/src/atom.rs:739` ✓）：
    *  retouch／liquify／declare_head，以及 payload.type = raster_patch／filter 的
@@ -520,6 +586,10 @@ async function withKernel(doc, fn) {
               : p2ObjectData(cpl),
       transform: cpl.transform ?? null,
       visible: props.visible ?? null,
+      // **`enabled` 照 `fold.rs` 的缺省 ✓**（创建净荷不吃时是 **true** ✓，与 `visible` 的 `null` 语义不同 ✗）
+      //   ⇒ `update_object{enabled:false}` 必须能在 `list_objects` 里看见 ✓（否则又是形态③）。
+      enabled: props.enabled !== undefined ? props.enabled
+        : (cpl.enabled !== undefined ? cpl.enabled : true),
       locked: props.locked ?? null,
       // **z 的口径 ✗**（**照服务端折叠的应用顺序 ✓**：`reorder_objects` 给层内每个对象**重新赋值** ✓
       //   （`fold.rs:1311 object.z_index = index`），而 `set_property z_index` 是**单点补丁** ✓
@@ -556,10 +626,249 @@ async function withKernel(doc, fn) {
    *   **∴ 三条合取 ✓**：有创建原子 ✓、**创建原子未被最新历史动作中和 ✗**、**没有生效中的 tombstone ✓**。
    *   **∴ 「最新动作」而非「出现过 revert」**✓（**redo 过 ⇒ `reapply` 覆盖更早的 `revert`✓**——
    *     **照折叠层对 `Reapply{Revert{x}} ≡ x 生效 ✓` 的语义（设计 793 ✓）**）。 */
-  function __p2Alive(rows, view) {
+  function __p2Alive(rows, view, layers, neutral) {
     if (view.found !== true || !view.__create_id) return false;
-    if (view.deleted === true) return false;
-    return !p2Neutralized(rows).has(view.__create_id);
+    const n = neutral || p2Neutralized(rows);
+    if (n.has(view.__create_id)) return false;
+    // **★ 图层级联删也算死 ✗ ★**（**`fold.rs:1988 tombstone_layer` 会给层上每个对象写
+    //   `deleted_by` ⇒ `alive_objects()`／`objects_in_layer()` 把它们剔除 ✓**）：
+    //   **∴ 旧实现只看对象自己那条 tombstone ✗** ⇒ 删掉的图层里的对象在 `list_objects`／
+    //   `reorder_objects`／undo 候选里**仍然算活着** ✓（**服务端列表里没有它 ✓ ⇒ 面板与撤销条数两端不一致** ✗）。
+    //   **∴ 用折叠口径 `p2ObjectDeath` ✗**（自己死＋随层死 ✓，一个谓词 ✓ 不各算一遍 ✓）。
+    const ls = layers || p2PresetLayers(rows, n);
+    return !p2ObjectDeath(ls, view).deleted;
+  }
+  /** **状态里存在的对象 id ✗**（**本地等价服务端 `state.objects.keys()` ✓**）：
+   *   **∴ 判据是「在状态里」✗ 不是「活着」✓** —— 折叠层**保留墓碑** ✓（删除可撤销的基础 ✓）⇒
+   *   `check_object_exists` 报错时列的候选**含已删对象** ✓（`log.rs:1173` 不过滤 `is_deleted` ✓
+   *   而图层那侧**过滤** ✓ `:1198` ⇒ **两侧不同，不能共用一个谓词 ✓**）。
+   *   **∴ 唯一要排除的是「创建被 revert」** ✓（折叠把对象整个拿掉 ⇒ 它不在 `objects` 里 ✓）。
+   *   **∴ 排序** ✓：服务端是 `BTreeMap` ⇒ 键**升序** ✓，候选列表文案随之确定 ✓。
+   */
+  function p2StateObjectIds(rows, neutral) {
+    const created = new Map();
+    for (const r of rows) {
+      const a = (r && r.atom) || {};
+      const pl = a.payload || {};
+      if (!P2_OBJECT_CREATE_KINDS.has(a.kind)) continue;
+      if (typeof pl.object_id !== "string" || !pl.object_id) continue;
+      if (!created.has(pl.object_id)) created.set(pl.object_id, a.id);
+    }
+    return [...created.entries()]
+      .filter(([, atomId]) => !neutral.has(atomId))
+      .map(([objectId]) => objectId)
+      .sort();
+  }
+  /** **图层状态 ✗**（**本地等价服务端折叠的 `state.layers` ✓**）：
+   *   **∴ 折叠**保留**被 tombstone 的层 ✓**（`state.rs` 的 `layer_alive` 是**另一个**谓词 ✓
+   *   ⇒ `contains_key` ≠ 活着 ✓），删除可撤销正是靠这个「留墓碑」✓。
+   *   **∴ 级联必须照 `fold.rs:1988 tombstone_layer` 逐条 ✓**：一条「图层 tombstone」会把
+   *   **本层 ＋ 全部子孙层**（按 `parent_id` BFS ✓ 带 `seen` 防环 ✓）以及**这些层上的对象**
+   *   一起标成已删除 ✓，而规则是 `deleted_by.is_none()` ⇒ **先到先得 ✓**
+   *   （**所以取「本层与祖先链上 log 序最早的那条生效墓碑」**✓ 不是「自己那条」✗）。
+   *   **∴ 此前本地只查自己那条 ✗** ⇒ 父层被删而子层没被删时 ⇒ 本地认为子层还活着 ✓
+   *   服务端 409 ⇒「回执 ok 而画面没变」的另一种形态 ✓。 */
+  function p2PresetLayers(rows, neutral) {
+    const seen = new Map();
+    let order = 0;
+    for (const r of rows || []) {
+      order += 1;
+      const a = (r && r.atom) || {};
+      const pl = a.payload || {};
+      if (a.kind === "create_document") {
+        // **新文档自带默认层 ✓**（`fold.rs:1004` ⇒ 与 `p1LayerOrder` 同一事实 ✓）。
+        if (!seen.has("layer_default")) {
+          seen.set("layer_default", { created_id: a.id, tombstones: [], parent: null });
+        }
+      } else if (a.kind === "create_layer") {
+        const id = (typeof pl.layer_id === "string" && pl.layer_id) ||
+                   (typeof a.layer_id === "string" && a.layer_id) || null;
+        if (id && !seen.has(id)) {
+          seen.set(id, { created_id: a.id, tombstones: [],
+                         parent: typeof pl.parent_id === "string" && pl.parent_id ? pl.parent_id : null });
+        }
+      } else if (a.kind === "tombstone" && !pl.object_id &&
+                 typeof pl.layer_id === "string" && seen.has(pl.layer_id)) {
+        seen.get(pl.layer_id).tombstones.push({ id: a.id, order });
+      } else if (a.kind === "set_property" && pl.key === "parent_id" &&
+                 typeof pl.layer_id === "string" && seen.has(pl.layer_id)) {
+        seen.get(pl.layer_id).parent =
+          typeof pl.value === "string" && pl.value ? pl.value : null;
+      }
+    }
+    const inState = new Map();
+    for (const [id, rec] of seen) {
+      if (neutral.has(rec.created_id)) continue; // 创建被撤 ⇒ 状态里没有这一层 ✓
+      inState.set(id, rec);
+    }
+    const layers = new Map();
+    for (const id of inState.keys()) {
+      let best = null;
+      const visited = new Set();
+      let cursor = id;
+      while (typeof cursor === "string" && cursor && !visited.has(cursor)) {
+        visited.add(cursor);
+        const up = inState.get(cursor);
+        if (!up) break; // 祖先不在状态里 ⇒ 折叠不会经它级联 ✓
+        for (const t of up.tombstones) {
+          if (neutral.has(t.id)) continue; // 该删除已被撤销（redo 过 `reapply` ⇒ 生效集已含）✓
+          if (!best || t.order < best.order) best = t;
+        }
+        cursor = up.parent;
+      }
+      layers.set(id, { alive: !best, deleted_by: best ? best.id : null });
+    }
+    return layers;
+  }
+
+  /** **图层类型 ✗**（**`update_layer{parent_id}` 要判「父必须是图层组」✓**，`tools.rs:3739` ✓）：
+   *   **∴ 类型只在 `create_layer` 的净荷里 ✗**（`update_layer` 的 10 个键**不含** `type` ✓）
+   *   ⇒ **∴ 取该层**最后一条** `create_layer` ✓**（重建层会带新类型 ✓）；缺省 `raster` ✓
+   *   （`create_document` 自带的 `layer_default` 也是 `raster` ✓）。 */
+  function p2LayerTypeOf(rows, layerId) {
+    let type = layerId === "layer_default" ? "raster" : null;
+    for (const r of rows || []) {
+      const a = (r && r.atom) || {};
+      if (a.kind !== "create_layer") continue;
+      const pl = a.payload || {};
+      const id = (typeof pl.layer_id === "string" && pl.layer_id) ||
+                 (typeof a.layer_id === "string" && a.layer_id) || null;
+      if (id !== layerId) continue;
+      type = typeof pl.type === "string" && pl.type ? pl.type : "raster";
+    }
+    return type || "raster";
+  }
+
+  /** **对象在状态里是否「算死」✗**（**照折叠的两条路 ✓**）：
+   *   ① 对象**自己**有生效 `tombstone` ⇒ 死 ✓ 且 `fold.rs:1318` 是**无条件覆盖** ✓
+   *     ⇒ 死因取**最新一条**（`p2ObjectView.__deleted_by` 已经是这个口径 ✓ 不再各算一遍 ✓）；
+   *   ② 自己没死但**所属图层链**死了 ⇒ 随层级联一起死 ✓（`fold.rs:1320`）⇒ 死因是那条**图层**原子 ✓
+   *     这一条是「孤儿对象复活」要撤的目标 ✓。 */
+  function p2ObjectDeath(layers, view) {
+    if (view.deleted === true) return { deleted: true, by: view.__deleted_by, cascade: false };
+    const layerId = typeof view.layer_id === "string" && view.layer_id ? view.layer_id : null;
+    const layer = layerId && layers.has(layerId) ? layers.get(layerId) : null;
+    if (!layer || !layer.alive) {
+      return { deleted: true, by: layer && layer.deleted_by ? layer.deleted_by : null, cascade: true };
+    }
+    return { deleted: false, by: null, cascade: false };
+  }
+
+  /** **确定性 `object_id` 撞上了什么 ✗**（**照服务端 `ensure_object_slot` 的三态 ✓**：
+   *   `free`（**没有它 / 创建原子被撤**⇒ 可以再建 ✓）｜`alive`｜`tombstoned`（**含级联删 ✓**）。 */
+  function p2PresetSlot(rows, layers, neutral, objectId) {
+    const view = p2ObjectView(rows, objectId);
+    if (!view.found || neutral.has(view.__create_id)) {
+      return { slot: "free", view: null, dead_by: null, cascade: false };
+    }
+    const death = p2ObjectDeath(layers, view);
+    if (!death.deleted) return { slot: "alive", view, dead_by: null, cascade: false };
+    return { slot: "tombstoned", view, dead_by: death.by, cascade: death.cascade };
+  }
+
+  /** **提交前的引用校验 ✗**（**本地镜像 `log.rs:292 validate_commit` 的 `validate_primary_refs` ✓**
+   *   —— **∴ 顺序也是服务端顺序 ✓**：对象引用**先**于图层引用 ✓（`log.rs:339` vs `:424` ✓）⇒
+   *   一个原子同时踩两条时 ⇒ **报的是对象那条**✓。
+   *   **∴ 为什么此前本地没有这一层 ✗**：各端点各查各的（有的完全不查 ✗）⇒
+   *   「对象已被 tombstone／图层已删除」这类写在本地**静默成功**✓ 而折叠层把它丢掉 ✓
+   *   ⇒ **回执说 ok ✓ 画面没变 ✓** = 静默降级形态 3。
+   *   **∴ 返回** `null`（可提交）**或** `{status, code, detail, extra}` ✓（**文案逐字对齐服务端 ✓**）。
+   */
+  function p2RefGuard(rows, layers, neutral, kind, payload) {
+    const MUST_EXIST_OBJECT = new Set(["supersede", "move", "transform", "set_property", "tombstone"]);
+    const objectId = typeof payload.object_id === "string" && payload.object_id ? payload.object_id : null;
+    if (objectId !== null && MUST_EXIST_OBJECT.has(kind)) {
+      const ids = p2StateObjectIds(rows, neutral);
+      const view = p2ObjectView(rows, objectId);
+      if (!view.found || neutral.has(view.__create_id)) {
+        return { status: 404, code: "reference_not_found",
+                 detail: p2ObjectMissingMessage(ids, objectId), extra: { object_id: objectId } };
+      }
+      const death = p2ObjectDeath(layers, view);
+      if (death.deleted) {
+        return { status: 409, code: "precondition_failed",
+                 detail: `对象 ${objectId} 已被 tombstone，${kind} 被拒绝`, extra: { object_id: objectId } };
+      }
+    }
+    // `set_property` 的属性值引用（服务端 `log.rs:358`）：本地端点只会写 `layer_id`／`parent_id`
+    // ⇒ **这两条要查 ✓**；`mask_id`／`style_id` 本地没有任何端点会写 ⇒ **不存在静默跳过 ✓**。
+    if (kind === "set_property" && typeof payload.value === "string" && payload.value
+        && (payload.key === "layer_id" || payload.key === "parent_id")) {
+      const ref = payload.value;
+      const layer = layers.has(ref) ? layers.get(ref) : null;
+      if (!layer || !layer.alive) {
+        return { status: 404, code: "reference_not_found",
+                 detail: `set_property ${payload.key} 引用的实体 ${ref} 不存在或已删除`, extra: null };
+      }
+    }
+    const layerId = typeof payload.layer_id === "string" && payload.layer_id ? payload.layer_id : null;
+    if (layerId !== null && kind !== "create_layer" && kind !== "create_document") {
+      if (!layers.has(layerId)) {
+        return { status: 404, code: "reference_not_found",
+                 detail: p2LayerMissingMessage(layers, layerId), extra: { layer_id: layerId } };
+      }
+      if (!layers.get(layerId).alive) {
+        return { status: 409, code: "precondition_failed",
+                 detail: `图层 ${layerId} 已删除，${kind} 被拒绝`, extra: { layer_id: layerId } };
+      }
+    }
+    return null;
+  }
+  /** **图层 `locked` 的日志口径 ✓**（**只给「层已被 tombstone ⇒ `p1LayerOrder` 里没有它」兜底 ✓**）：
+   *   **∴ 为什么需要 ✗**：服务端 `state.layers` **保留**墓碑层 ✓（`fold.rs:1320 tombstone_layer`
+   *     只置 `deleted_by` ✓，`locked` 原样留着 ✓）⇒ **∴ 孤儿对象复活时仍要过它的锁 ✓**；
+   *   而本地 `p1LayerOrder` 把删掉的层**从表里拿掉** ✓（那是 `list_layers` 该有的口径 ✓）。
+   *   **∴ 取「最后一条生效的 `set_property{locked}」✓**（与 `p1LayerOrder` 同一套简化 ✓，不各发明 ✓）。 */
+  function p2LayerLockInLog(rows, neutral, layerId) {
+    if (typeof layerId !== "string" || !layerId) return false;
+    let locked = false;
+    for (const r of rows || []) {
+      const a = (r && r.atom) || {};
+      const pl = a.payload || {};
+      if (a.kind === "set_property" && pl.layer_id === layerId && pl.key === "locked" &&
+          typeof pl.value === "boolean" && !neutral.has(a.id)) locked = pl.value;
+    }
+    return locked;
+  }
+  /** **★ 锁定必须被强制 ✗ ★**（**本地镜像 `crates/yanshi-core/src/log.rs:786 validate_lock` ✓**）。
+   *   **∴ 为什么此前本地一条都没有 ✗**：`locked` 在本地**只被记录与回报** ✓
+   *   （`p1LayerOrder`／`list_layers`／`set_property` ✓）⇒ **锁住的图层照样能画、能删** ✓
+   *   —— 与服务端注释里点名的同一个「静默失效」✓（**第 2 批判据 §C 抓出：A1 在锁的层里，
+   *   服务端 403、本地 200 ✗**）。
+   *   **规则逐字照服务端 ✓**（**顺序也一样：引用／存在性由 `p2RefGuard` 先判 ✓，锁在其后 ✓**）：
+   *   · 原子指向**状态里已有的对象** ✓（**含墓碑 ✓** —— `fold.rs:1315` 只置 `deleted_by` ✓
+   *     ⇒ `state.objects` 仍留着它 ✓）⇒ 对象**自己**或**它所在图层**被锁 ⇒ 403 `permission_denied`；
+   *   · 对象**还不在状态里**（⇒ 这条原子要**新建**它 ✓）且净荷带 `layer_id` ⇒ 该层被锁 ⇒ 403；
+   *   · **例外：`set_property` 改 `locked`／`visible` 永远放行 ✓**（否则解锁永远做不到 ✓）；
+   *   · **图层自身的管理原子**（净荷只有 `layer_id`）不受图层锁影响 ✓（锁的是**内容** ✓）。
+   *   **∴ 返回** `null`（可写）或 `{status, code, detail, extra}` ✓（**文案逐字对齐服务端 ✓**）。 */
+  function p2LockGuard(rows, atom) {
+    const pl = (atom && atom.payload) || {};
+    const objectId = typeof pl.object_id === "string" && pl.object_id ? pl.object_id : null;
+    if (objectId === null) return null;
+    if (atom.kind === "set_property" && (pl.key === "locked" || pl.key === "visible")) return null;
+    const neutral = p2Neutralized(rows);
+    const { layers } = p1LayerOrder(rows);
+    const layerLocked = (layerId) => {
+      if (typeof layerId !== "string" || !layerId) return false;
+      const l = layers.get(layerId);
+      return l ? l.locked === true : p2LayerLockInLog(rows, neutral, layerId);
+    };
+    const view = p2ObjectView(rows, objectId);
+    if (view.found === true && !neutral.has(view.__create_id)) {
+      const blocked = view.locked === true ? "对象自身已锁定"
+        : (layerLocked(view.layer_id) ? "所在图层已锁定" : null);
+      if (!blocked) return null;
+      return { status: 403, code: "permission_denied",
+               detail: `不能修改 ${objectId}：${blocked}（先解锁再操作；改 locked/visible 不受限制）`,
+               extra: { object_id: objectId } };
+    }
+    // **对象还不在状态里 ⇒ 这条原子要新建它 ✗**（**服务端同一个 `object_id` 分支 ✓**，
+    //   **∴ 判的是**净荷形状**✗ 不是原子种类 ✓** —— 服务端注释里记着「枚举种类永远会漏」✓）。
+    if (!layerLocked(pl.layer_id)) return null;
+    return { status: 403, code: "permission_denied",
+             detail: `不能在锁定的图层 ${pl.layer_id} 上新建对象（先解锁）`,
+             extra: { layer_id: pl.layer_id } };
   }
   /** **服务端 `collect_gestures` 的本地镜像 ✗**（**`tools.rs:8714` ✓ —— 权威判据在此**）：
    *   **∴ 候选按「对象活着吗」✗**（undo ⇒ 活对象的全部原子（**含它的 `tombstone` 本身 ✓**）；
@@ -573,9 +882,13 @@ async function withKernel(doc, fn) {
    */
   function __p2CollectGestures(rows, wantAlive) {
     const neutral = p2Neutralized(rows);
+    // **层折叠也只算一次 ✓**（`__p2Alive` 含级联删 ⇒ 与服务端 `alive_objects()` 同口径 ✓）。
+    const layersCG = p2PresetLayers(rows, neutral);
     const aliveCache = new Map();
     const aliveOf = (oid) => {
-      if (!aliveCache.has(oid)) aliveCache.set(oid, __p2Alive(rows, p2ObjectView(rows, oid)));
+      if (!aliveCache.has(oid)) {
+        aliveCache.set(oid, __p2Alive(rows, p2ObjectView(rows, oid), layersCG, neutral));
+      }
       return aliveCache.get(oid);
     };
     const gestures = [];
@@ -615,9 +928,22 @@ async function withKernel(doc, fn) {
     }
     return versions;
   }
+  /** **★ 本地错误的权威形状 ✓**：服务端 `http.rs` 落的是
+   *   `{ok:false, error_code, retryable:false, context:{detail}}` ⇒ **前端 `callToolChecked`
+   *   读的就是 `error_code` 与 `context.detail`**（`web/viewer-app.js:7024`）。
+   *   **∴ 旧写法只给 `error`／`reason`** ✗ ⇒ **UI 一律显示「unknown」**✓（第 1487 轮查明）。
+   *   **∴ 现在**：**两边都给** —— `error_code`／`context.detail` 与服务端同形，
+   *   `error`／`reason` **保留**（本仓既有判据在读它们，删掉会红 ⇒ 加字段而不是换字段）。
+   */
+  function p2ToolFailure(status, code, detail, extra) {
+    const context = { detail };
+    if (extra) Object.assign(context, extra);
+    return json({ ok: false, error: code, error_code: code, reason: detail,
+                  context, retryable: false, server: false }, status);
+  }
   /** **参数错误 ⇒ 400 ✗**（**照服务端 `InvalidArgument` 的口径 ✓**）。 */
   function p2Bad(reason) {
-    return json({ ok: false, error: "invalid_argument", reason, server: false }, 400);
+    return p2ToolFailure(400, "invalid_argument", reason);
   }
   /** **计数族参数**（`limit`／`offset`／`since_seq`／`from_seq`／`to_seq`）**的读取 ✓**
    *   （**∴ 与服务端 `optional_count` 同形 ✗**，第 1441 轮 ✓）。
@@ -638,11 +964,11 @@ async function withKernel(doc, fn) {
   }
   /** **引用不存在 ⇒ 404 ✗**（**照服务端 `ReferenceNotFound` 的口径 ✓**）。 */
   function p2Missing(reason) {
-    return json({ ok: false, error: "reference_not_found", reason, server: false }, 404);
+    return p2ToolFailure(404, "reference_not_found", reason);
   }
   /** **前置条件不成立 ⇒ 409 ✗**（**照 `http.rs:392 PreconditionFailed ⇒ 409` ✓**）。 */
   function p2Precon(reason) {
-    return json({ ok: false, error: "precondition_failed", reason, server: false }, 409);
+    return p2ToolFailure(409, "precondition_failed", reason);
   }
   /** **★ 读本地偏好（P1）✓ ★**：
    *   **∴ `set_preferences` 写进 IndexedDB `prefs` 表 ✗**（**`store.js` ✓**）⇒ **∴ 这里读出来 ✓**；
@@ -745,7 +1071,13 @@ async function withKernel(doc, fn) {
     return null;
   }
 
-  return async function local(req) {
+  /** **请求分发本体 ✗**（**不含兜底 catch ✓**：**兜底在下面 `await` 它的那一层 ✓**）。
+   *   **∴ 为什么单独抽出来 ✗**：`try { return dispatch(req); } catch` **抓不到异步拒绝** ✗
+   *   —— **∴ `return` 一个 Promise 时 try 不 await 它 ✓** ⇒ **∴ 锁闸的 `throw` 会穿到调用方 ✓**。
+   *   **实测**（第 2 批 ✓）：`update_object` 有入口预检所以 403 ✓，
+   *   而 `update_adjustment` 直接 `putAtom` ⇒ **`throw` 穿出去 ✓** ⇒ 判据/前端拿到的是 rejection ✗。
+   *   ⇒ **∴ 所以兜底必须 `return await dispatch(req)` ✓**（**await 才会进 catch ✓**）。 */
+  async function localDispatch(req) {
     const url = new URL(req.url, location.origin);
     // **★ 路径归一化：去掉**尾部斜杠** ✗ ★**（第 858 轮 ✓；**用户报"还是落笔失败" ✓**）：
     //   **∴ 根因 ✗**：**落笔**把像素 **POST 到 `/api/blob/` ✗**（**带尾斜杠 ✓）
@@ -958,6 +1290,10 @@ async function withKernel(doc, fn) {
       const e = new Error(reason); e.p2bStatus = status; e.p2bError = error; throw e;
     }
     function p2bCatch(e, endpoint) {
+      // **★ 锁闸错误不许被兜成 500 ✗ ★**（**`putAtom` 的拒绝自带 `__p2Failure` ✓**）：
+      //   **∴ 这里吞掉 ⇒ 服务端 403 会在本地变成 `annotation_failed:500`** ✓（**错误码谎报 ✓**）
+      //   ⇒ **∴ 原样再抛 ⇒ 顶层 catch 换 403 ✓**。
+      if (e && e.__p2Failure) throw e;
       return json({ ok: false, error: (e && e.p2bError) || "annotation_failed",
                     endpoint: endpoint || path,
                     reason: String((e && e.message) || e),
@@ -1353,6 +1689,9 @@ async function withKernel(doc, fn) {
       const includeHidden = body.include_hidden === true;              // 缺省 false（照 `unwrap_or(false)` ✓）
       const seen = new Set();
       const objects = [];
+      // **折叠层只算一次 ✗**（**`__p2Alive` 现在含图层级联删 ✓** ⇒ 逐对象重算会是 O(n²) 且口径漂移 ✓）。
+      const neutralLO = p2Neutralized(rows);
+      const layersLO = p2PresetLayers(rows, neutralLO);
       for (const r of rows) {
         const a = (r && r.atom) || {};
         const id = a.payload && a.payload.object_id;
@@ -1363,16 +1702,22 @@ async function withKernel(doc, fn) {
         //   **∴ 服务端实测 ✓：`revert` 掉**建它的那条原子**⇒ 对象从 `list_objects` 整个消失 ✓**
         //   （**∴ 折叠跳过被抑制的 `create` ⇒ 对象从未存在 ✓**——**与 `deleted` 是两回事 ✗**，
         //   **∴ 旧实现只查 `v.deleted` ⇒ 撤了 create 对象还挂在列表里 ✓**）。
-        if (!__p2Alive(rows, v)) continue;                               // **只列存活对象 ✗**（照 `alive_objects` ✓）
+        if (!__p2Alive(rows, v, layersLO, neutralLO)) continue;        // **只列存活对象 ✗**（照 `alive_objects` ✓）
         if (layerFilter !== null && v.layer_id !== layerFilter) continue;
         if (typeFilter !== null && v.type !== typeFilter) continue;
         const hidden = (v.visible === false);                          // `null`＝从未设＝可见 ✓
         if (!includeHidden && hidden) continue;
+        // **字段集照 `summary_object`（`tools.rs:2823`）✓**：11 个里本地能给 8 个 ✓。
+        //   **∴ 少 `bbox`／`current_version`／`versions` ✗**：前者要渲染层算包围盒 ✓、
+        //   后两者要版本链 ✓ —— 本地折叠没有这两样 ⇒ **如实不给** ✓
+        //   （判据把这三个列入 serverOnly ✓，别处若需要就说要勾回服务器渲染 ✓）。
         objects.push({
           object_id: id,
           layer_id: v.layer_id ?? null,
           type: v.type ?? null,
           visible: !hidden,
+          enabled: v.enabled !== false,
+          locked: v.locked === true,
           z_index: v.z_index ?? 0,
           medium: v.data && v.data.source && v.data.source.medium ? v.data.source.medium : null,
         });
@@ -1483,9 +1828,28 @@ async function withKernel(doc, fn) {
       //     （**与服务端 `order` 口径一致 ✓**）。
       //   **∴ 旧注释的两个字段教训**仍然有效**✗**（**`payload` 里取值 ✓、回 `layer_id` 键 ✓**）。
       //   **★ `set_property` 已折叠**（`p1LayerOrder` 内 ✓）：`visible`／`opacity`／
-      //     `blend_mode`／`locked` 等属性如实返回 ✓。
-      const { layers, order } = p1LayerOrder(await atomsOf(handle, doc));
-      const out = order.map((id) => layers.get(id)).filter(Boolean);
+      //     `blend_mode`／`locked`／`z_index`／`parent_id` 等属性如实返回 ✓。
+      //   **★ `objects` 每层计数 ✗ ★**（`read_list_layers` 的最后一个字段 ✓）：
+      //     **∴ 旧本地整条不给 ✗** ⇒ 图层面板显示每层对象数时**静默拿到 0/undefined** ✗
+      //     ⇒ 这里用与 `list_objects` **同一份存活折叠**（`__p2Alive` 含图层级联删 ✓）✓。
+      const rows = await atomsOf(handle, doc);
+      const { layers, order } = p1LayerOrder(rows);
+      const neutralLL = p2Neutralized(rows);
+      const layersLL = p2PresetLayers(rows, neutralLL);
+      const counts = new Map();
+      const seenLL = new Set();
+      for (const r of rows) {
+        const a = (r && r.atom) || {};
+        const id = a.payload && a.payload.object_id;
+        if (typeof id !== "string" || !id || seenLL.has(id)) continue;
+        seenLL.add(id);
+        const v = p2ObjectView(rows, id);
+        if (!__p2Alive(rows, v, layersLL, neutralLL)) continue;
+        const lid = v.layer_id ?? null;
+        if (lid !== null) counts.set(lid, (counts.get(lid) || 0) + 1);
+      }
+      const out = order.filter((id) => layers.has(id))
+                       .map((id) => ({ ...layers.get(id), objects: counts.get(id) || 0 }));
       return json({ ok: true, layers: out, count: out.length, server: false,
                     derived_from: "atoms" });
     }
@@ -1498,8 +1862,16 @@ async function withKernel(doc, fn) {
     //     `{kind:"create_layer", payload:{layer_id,name}}` ✓ —— **∴ 不**自创字段 ✓**** ✓✓
     if (path === "/api/tools/create_layer") {
       const pl = (body && body.payload) || {};
-      const layerId = body.layer_id || pl.layer_id || "layer_" + String(Date.now());
-      const name = body.name || pl.name || layerId;
+      const arg = (key) => (body && body[key] !== undefined ? body[key] : pl[key]);
+      const layerId = arg("layer_id") || "layer_" + String(Date.now());
+      // **缺省名照服务端 `write_create_layer` ✓**（**取 id 末四位做短名 ✓**：
+      //   **∴ 旧写法拿整个 `layer_id` 当名字 ✗** ⇒ 自动建的层叫 `layer_1730000000000` ✓
+      //   而服务端叫「图层 0000」✓ ⇒ 同一份文档两种环境下**图层面板长得不一样** ✓）。
+      const shortName = (id) => {
+        const tail = String(id).slice(Math.max(0, String(id).length - 4));
+        return tail ? `图层 ${tail}` : "图层";
+      };
+      const name = arg("name") || shortName(layerId);
       const atom = {
         actor: "human:web",
         id: "01LAYER" + String(Date.now()).padStart(13, "0"),
@@ -1510,9 +1882,70 @@ async function withKernel(doc, fn) {
         session: "session:web",
         timestamp: Date.now(),
       };
+      // **图层类型 ✗**（**照 `write_create_layer` 的 `kind`／`type` 双键与三条报错文案 ✓**：
+      //   **∴ 此前本地一个字都不检查 ✗** 任意字符串照落 ⇒ 内核读不出 ⇒ 静默退化 ✓）。
+      const TYPES = ["raster", "vector", "layer_group", "mask"];
+      const kindRaw = arg("kind"), typeRaw = arg("type");
+      if (kindRaw !== undefined && kindRaw !== null) {
+        if (kindRaw !== "raster" && kindRaw !== "vector") {
+          return p2Bad(`kind=「${kindRaw}」不认识：只收 raster / vector（图层组与蒙版请用 type ✓）`);
+        }
+        if (typeRaw !== undefined && typeRaw !== null && typeRaw !== kindRaw) {
+          return p2Bad(`kind=「${kindRaw}」与 type=「${typeRaw}」不一致 ⇒ 说清你要哪种图层`);
+        }
+        atom.payload.type = kindRaw;
+      } else if (typeRaw !== undefined && typeRaw !== null) {
+        if (!TYPES.includes(typeRaw)) {
+          return p2Bad(`type=「${typeRaw}」不认识：只收 ${TYPES.join(" / ")}`);
+        }
+        atom.payload.type = typeRaw;
+      }
+      // **`parent_id` 要**传下去**并校验 ✗**（**此前本地整个丢掉这个键 ✓**
+      //   ⇒ 图层组在离线模式下**根本建不出来**✓ 而回执说 ok ✓ = 形态①「输入不被采纳」✓）。
+      const parent = arg("parent_id");
+      const rows = await atomsOf(handle, doc);
+      const neutral = p2Neutralized(rows);
+      const layers = p2PresetLayers(rows, neutral);
+      if (typeof parent === "string" && parent) {
+        atom.payload.parent_id = parent;
+        if (parent === layerId) {
+          return p2Bad(`图层父链成环：${layerId} 以 ${parent} 为父层时会回到自己`);
+        }
+        const parentLayer = layers.get(parent);
+        if (!parentLayer || !parentLayer.alive) {
+          // **折叠层用的就是这句 ✗**（**`fold.rs:489` 对**没活过**的父层报 `missing_reference("父图层")` ✓**）⇒
+          //   **∴ 逐字照抄 ✓**。**∴ 而服务端 HTTP 层**没跑这条前置检查**✓（实测：建带死父层的层回 200 ✓
+          //   而 `list_layers` 里根本没有它 ⇒ 后续写入 404 ✓ ⇒ **那是服务端的静默失败 ✓ 记在补丁封面 ✓**）
+          //   ⇒ **∴ 本地不照抄那个坏行为 ✓**：写不进去的原子就不写 ✓ 并且当场说清为什么 ✓。
+          const aliveKeys = [...layers.keys()].filter((id) => layers.get(id).alive);
+          return p2ToolFailure(404, "reference_not_found",
+            p2MissingReferenceMessage("父图层", parent, aliveKeys), { layer_id: parent });
+        }
+      }
+      if (Number.isFinite(Number(arg("z_index")))) atom.payload.z_index = Number(arg("z_index"));
+      // **槽位检查 ✗**（**照 `log.rs:429` 的 `MustNotExist` ＋ `fold.rs:482` 的「只与**存活**层冲突」✓**：
+      //   **墓碑不占 id ✓**（删掉再建同名是合法的重建 ✓）⇒ 只有**活着**的同 id 才拒 ✓）。
+      const existing = layers.get(layerId);
+      if (existing && existing.alive) {
+        if (arg("if_exists") === "reuse") {
+          // **名字取折叠后的层视图 ✗**（**`p1LayerOrder` 会把 `update_layer{name}` 折进去 ✓**）
+          //   ⇒ **∴ 与服务端 `state.layers[layer_id].name` 同源 ✓**（**不是**这次请求里的入参 ✓）。
+          const viewName = (p1LayerOrder(rows).layers.get(layerId) || {}).name || name;
+          return json({ ok: true, server: false, reused: true, layer_id: layerId, name: viewName,
+                        detail: `图层 ${layerId} 已存在 ⇒ 按 if_exists=reuse **复用**它 ✓（没有新建、也没有报错 ✓）` });
+        }
+        return p2ToolFailure(409, "precondition_failed", `图层 ${layerId} 已存在`, { layer_id: layerId });
+      }
+      const aliveCount = [...layers.values()].filter((l) => l.alive).length;
+      if (aliveCount >= 256) {
+        return p2ToolFailure(409, "precondition_failed",
+          `文档 ${doc} 已有 ${aliveCount} 个存活图层（上限 256）⇒ 先删掉不用的图层再建 ✓`, null);
+      }
       const seq = await putAtom(handle, doc, atom);
-      return json({ ok: true, seq, server: false, layer_id: layerId, name,
-                    note: "已在本地原子日志写入 create_layer（内核重放时建层）" });
+      const out = { ok: true, seq, server: false, layer_id: layerId, name,
+                    layer_type: atom.payload.type || "raster",
+                    note: "已在本地原子日志写入 create_layer（内核重放时建层）" };
+      return json(out);
     }
 
     // **★ `/api/tools/update_layer` ✗ ★**（2026-10-10 定位 ✓）：
@@ -1523,38 +1956,87 @@ async function withKernel(doc, fn) {
     //     （**`fold.rs` 的 `apply_property_to_layer` ✓，**隔离实验验证过 ✓），**∴ 不**自创格式 ✓**** ✓✓
     //   **∴ 合法 key 与服务端 `LAYER_PATCH_KEYS` 对齐**（8 个 ✓）。
     if (path === "/api/tools/update_layer") {
+      // **★ 清单必须与服务端 `LAYER_PATCH_KEYS` 同源 ✗ ★**（**`tools.rs:3656` ✓ 10 个键 ✓**）：
+      //   **∴ 旧本地少了 `z_index`／`parent_id` ✗** ⇒ 前端**改层级／拖进图层组**时被本地回
+      //   「patch 中没有可修改的图层属性」✗（**而服务端能改 ✓ ⇒ 离线模式少两个功能 ✓**）= 功能缺口 ✓。
       const UPDATE_LAYER_KEYS = ["name", "visible", "opacity", "blend_mode",
-                                 "locked", "alpha_lock", "clipping_mask", "mask_id"];
-      const pl = (body && body.payload) || {};
-      const layerId = (body && body.layer_id) || pl.layer_id;
-      const patch = (body && body.patch) || pl.patch || {};
-      if (!layerId) {
-        return json({ ok: false, error: "invalid_argument",
-                      reason: "update_layer 缺少 layer_id", server: false }, 400);
+                                 "locked", "alpha_lock", "clipping_mask", "mask_id",
+                                 "z_index", "parent_id"];
+      // **混合模式清单取自渲染层 ✓**（**`yanshi-render/src/blend.rs:72 NAMES` ✓ 13 项含别名 ✓**）。
+      const P2_BLEND_NAMES = ["normal", "multiply", "screen", "overlay", "darken", "lighten",
+                              "add", "linear_dodge", "subtract", "color_dodge", "difference",
+                              "linear_light", "soft_light"];
+      const objectBody = body && typeof body === "object" && !Array.isArray(body) ? body : {};
+      // **① 未知参数 ⇒ 400 ✗**（**照服务端框架 `validate_args` 的文案 ✓**：拼错的键**不许静默忽略** ✓）。
+      for (const key of Object.keys(objectBody).sort()) {
+        if (P2_PRESET_FRAMEWORK.includes(key)) continue;
+        if (key !== "layer_id" && key !== "patch") {
+          return p2Bad(`update_layer 不接受参数 ${key}（拼写错误？）；可用参数：layer_id, patch；`
+            + `框架级参数：${P2_PRESET_FRAMEWORK.join(", ")}`);
+        }
       }
-      const keys = Object.keys(patch).filter((k) => UPDATE_LAYER_KEYS.indexOf(k) >= 0);
-      if (!keys.length) {
-        return json({ ok: false, error: "invalid_argument",
-                      reason: "patch 中没有可修改的图层属性（可用：" +
-                              UPDATE_LAYER_KEYS.join("／") + "）",
-                      server: false }, 400);
+      const layerId = objectBody.layer_id;
+      if (typeof layerId !== "string" || !layerId) return p2Bad("缺少必填参数 layer_id");
+      const patch = objectBody.patch;
+      if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+        return p2Bad("缺少必填参数 patch");
       }
-      let seq = 0;
+      const rows = await atomsOf(handle, doc);
+      const neutral = p2Neutralized(rows);
+      const layers = p2PresetLayers(rows, neutral);
+      // **② `blend_mode` 必须校验 ✗**（**`tools.rs:3688` ✓**：写进不可变日志后渲染层会**静默退化为 normal** ✗
+      //   ⇒ 「接受了却没用」⇒ 所以入口就拒 ✓ 并列出可用值 ✓）。
+      if (patch.blend_mode !== undefined) {
+        if (typeof patch.blend_mode !== "string") {
+          return p2Bad(`blend_mode 必须是字符串 ⇒ 可用：${P2_BLEND_NAMES.join(" / ")}`);
+        }
+        if (P2_BLEND_NAMES.indexOf(patch.blend_mode) < 0) {
+          return p2Bad(`不支持的混合模式 ${patch.blend_mode} ⇒ 可用：${P2_BLEND_NAMES.join(" / ")}`);
+        }
+      }
+      // **③ `parent_id` 三条校验 ✗**（**`tools.rs:3715` ✓**：存在／必须是图层组／不许成环 ✓）。
+      if (patch.parent_id !== undefined && patch.parent_id !== null) {
+        if (typeof patch.parent_id !== "string") {
+          return p2Bad("parent_id 必须是字符串（图层组 id）或 null（移出组）");
+        }
+        const parent = layers.get(patch.parent_id);
+        if (!parent || !parent.alive) {
+          return p2ToolFailure(404, "reference_not_found",
+            `父图层组 ${patch.parent_id} 不存在`, { layer_id: patch.parent_id });
+        }
+        const parentType = p2LayerTypeOf(rows, patch.parent_id);
+        if (parentType !== "layer_group") {
+          return p2Bad(`${patch.parent_id} 的类型是 ${p2PresetTypeNameDebug(parentType)}`
+            + " ⇒ parent_id 只能指向 layer_group");
+        }
+        if (patch.parent_id === layerId) return p2Bad("图层不能以自己为父");
+        let cursor = parent.parent, hops = 0;
+        while (typeof cursor === "string" && cursor) {
+          if (cursor === layerId) return p2Bad(`${patch.parent_id} 已经在 ${layerId} 里面 ⇒ 会成环`);
+          hops += 1;
+          if (hops > 64) break;
+          const up = layers.get(cursor);
+          cursor = up ? up.parent : null;
+        }
+      }
+      const keys = UPDATE_LAYER_KEYS.filter((k) => patch[k] !== undefined);
+      if (!keys.length) return p2Bad("patch 中没有可修改的图层属性");
+      // **④ 提交期：图层必须存在且活着 ✗**（**`log.rs` 的 `set_property` 引用检查 ✓**）。
+      //   **∴ 此前本地一个字都不查 ✓** ⇒ 给已删层写属性**回执 ok 而折叠丢掉** ✗（形态③）。
+      const guard = p2RefGuard(rows, layers, neutral, "set_property", { layer_id: layerId });
+      if (guard) return p2ToolFailure(guard.status, guard.code, guard.detail, guard.extra);
+      // **⑤ 先全部校验、再全部写 ✗**（**∴ 与 `update_object` 同一条纪律 ✓**：
+      //   服务端的 changeset **不是**原子的（实测 `service.rs:2437` 逐条提交再 `attempt?` ✓）
+      //   ⇒ **本地不照抄半写** ✗ ⇒ 一次校验、全过才写 ✓）。
+      const seqs = [];
       for (const key of keys) {
-        const atom = {
-          actor: "human:web",
-          id: "01SETPROP" + String(Date.now()).padStart(13, "0") + key.slice(0, 4),
-          kind: "set_property",
-          payload: { layer_id: layerId, key, value: patch[key] },
-          schema_version: 1,
-          seq: 0,
-          session: "session:web",
-          timestamp: Date.now(),
-        };
-        seq = await putAtom(handle, doc, atom);
+        seqs.push(await putAtom(handle, doc, p2Envelope("set_property",
+          { layer_id: layerId, key, value: patch[key] })));
       }
-      return json({ ok: true, seq, server: false, layer_id: layerId,
-                    updated: keys,
+      return json({ ok: true, server: false, layer_id: layerId, updated: keys,
+                    count: seqs.length, head: seqs[seqs.length - 1] ?? null,
+                    changeset_id: "local-" + seqs[0] + "-" + seqs[seqs.length - 1],
+                    atoms: seqs.map((seq) => ({ ok: true, seq })),
                     note: "已写入 set_property 原子（内核重放时更新图层属性）" });
     }
 
@@ -1569,8 +2051,14 @@ async function withKernel(doc, fn) {
       const pl = (body && body.payload) || {};
       const layerId = body.layer_id || pl.layer_id;
       if (typeof layerId !== "string" || !layerId) return p2Bad("delete_layer 需要 layer_id（字符串）");
-      const { layers } = p1LayerOrder(await atomsOf(handle, doc));
-      if (!layers.has(layerId)) return p2Missing("图层 " + layerId + " 不存在或已被删除");
+      // **两句话不能混 ✗**（**实测服务端 ✓**：**从未有过 ⇒ 404「图层 X 不存在（现有图层：…）」✓；
+      //   已删 ⇒ 409「图层 X 已删除，tombstone 被拒绝」✓**）——
+      //   **∴ 旧本地一律 404「不存在或已被删除」✗** ⇒ 调用方**分不清「拼错 id」与「已经删过」** ✓。
+      const rows = await atomsOf(handle, doc);
+      const neutral = p2Neutralized(rows);
+      const layers = p2PresetLayers(rows, neutral);
+      const guard = p2RefGuard(rows, layers, neutral, "tombstone", { layer_id: layerId });
+      if (guard) return p2ToolFailure(guard.status, guard.code, guard.detail, guard.extra);
       const atom = p2Envelope("tombstone", { layer_id: layerId });
       const seq = await putAtom(handle, doc, atom);
       return json({ ok: true, atom_id: atom.id, seq, head: seq, layer_id: layerId, server: false,
@@ -1590,8 +2078,16 @@ async function withKernel(doc, fn) {
       if (typeof layerId !== "string" || !layerId) return p2Bad("duplicate_layer 需要 layer_id（字符串）");
       const rows = await atomsOf(handle, doc);
       const { layers, order } = p1LayerOrder(rows);
+      // **照 `write_duplicate_layer` 的两句话 ✓**（**`tools.rs:3827`／`:3832` ✓**：
+      //   从未有过 ⇒「图层 X 不存在」✓；已删 ⇒「图层 X 已被删除」✓ —— **状态码都是 404 ✓**）。
+      //   **∴ 顺序 ✗**：`p1LayerOrder` 会**剔除**墓碑层 ✓ ⇒ 必须先查状态里的「存在但已删」✓。
+      {
+        const stateDup = p2PresetLayers(rows, p2Neutralized(rows));
+        const rec = stateDup.get(layerId);
+        if (rec && !rec.alive) return p2Missing("图层 " + layerId + " 已被删除");
+      }
       const src = layers.get(layerId);
-      if (!src) return p2Missing("图层 " + layerId + " 不存在或已被删除");
+      if (!src) return p2Missing("图层 " + layerId + " 不存在");
       const newLayerId = body.new_layer_id || pl.new_layer_id || ("layer_" + Date.now().toString(36));
       if (layers.has(newLayerId)) return p2Bad("new_layer_id " + newLayerId + " 已存在");
       const name = body.name || pl.name || (src.name + " 副本");
@@ -1918,9 +2414,18 @@ async function withKernel(doc, fn) {
     }
 
     // **⑩ `delete_object` ✗**：**照 `write_tombstone` ✓** ⇒ **`tombstone{object_id}` ✓**。
+    //   **∴ 提交期的两条拒绝也要照抄 ✓**（**`log.rs:1164 check_object_exists` ✓**）：
+    //   不存在 ⇒ 404「对象 X 不存在（现有对象：…）」✓；已 tombstone ⇒ 409「对象 X 已被 tombstone，
+    //   tombstone 被拒绝」✓。**此前本地一律写成功** ✗ ⇒ 重复删除/删不存在的 id **回执 ok 而状态没变** ✓
+    //   （**形态 3 ✓ 且第二次删还会多留一条无用原子 ✗**）。
     if (path === "/api/tools/delete_object") {
       const objectId = body.object_id;
       if (typeof objectId !== "string" || !objectId) return p2Bad("object_id 必填（字符串）");
+      const rows = await atomsOf(handle, doc);
+      const neutral = p2Neutralized(rows);
+      const guard = p2RefGuard(rows, p2PresetLayers(rows, neutral), neutral, "tombstone",
+                               { object_id: objectId });
+      if (guard) return p2ToolFailure(guard.status, guard.code, guard.detail, guard.extra);
       const seq = await putAtom(handle, doc, p2Envelope("tombstone", { object_id: objectId }));
       return json({ ok: true, seq, server: false, object_id: objectId,
                     note: "已在本地原子日志写入 tombstone（对象删除语义）" });
@@ -1928,15 +2433,38 @@ async function withKernel(doc, fn) {
 
     // **⑪ `update_object` ✗**：**照 `write_update_object` ✓**
     //   ⇒ **`patch` 里每个合法键各写一条 `set_property` 原子 ✗**
-    //   （**只认 6 个键 ✓**：`visible`／`locked`／`z_index`／`layer_id`／`metadata`／`type` ✓）。
+    //   （**只认 7 个键 ✓**：`visible`／`enabled`／`locked`／`z_index`／`layer_id`／`metadata`／`type` ✓）。
     if (path === "/api/tools/update_object") {
       const objectId = body.object_id;
       if (typeof objectId !== "string" || !objectId) return p2Bad("object_id 必填（字符串）");
       const patch = body.patch;
       if (!patch || typeof patch !== "object") return p2Bad("patch 必填（对象）");
-      const KEYS = ["visible", "locked", "z_index", "layer_id", "metadata", "type"];
+      // **7 个键与服务端 `OBJECT_PATCH_KEYS` 同源 ✗**（**`tools.rs:5758` ✓**：旧本地漏了 `enabled` ✓）。
+      const KEYS = ["visible", "enabled", "locked", "z_index", "layer_id", "metadata", "type"];
       const hits = KEYS.filter((k) => patch[k] !== undefined);
-      if (!hits.length) return p2Bad("patch 中没有可修改的对象属性（可用：" + KEYS.join("/") + "）");
+      if (!hits.length) return p2Bad("patch 中没有可修改的对象属性");
+      // **★ 服务端的 changeset 其实**不是**原子的（实测 ✓，第 2 批发现）** ✗：
+      //   `service.rs:2437 commit_changeset_timed` 是**逐条** `commit_as_timed(…)` 再 `attempt?`
+      //   ⇒ **第 2 个键被拒时第 1 个键已经落盘并 journal 了** ✓（实测：`{visible:false, layer_id:"NOPE"}`
+      //   回 404，而 `list_objects{include_hidden:true}` 里 `visible` 已变 `false` ✗ ⇒ 部分写入 ＋ 报错 ✓）。
+      //   **∴ 本地不照抄那个坏行为 ✓**：**先全部校验再全部写** ✓（**⇒ 要么全落要么全不落** ✓）——
+      //   与「死父层照 `missing_reference` 拒绝」同一条纪律：**服务端静默半写 ⇒ 本地响亮拒绝** ✓。
+      //   **∴ 判据要把它当成「已记录的**分歧**」来断言 ✓**（服务端 `visible=false`／本地 `true`），
+      //   而不是当「两边应相等」✗ —— 否则这条判据会逼本地去复制一个缺陷 ✓。
+      const rows = await atomsOf(handle, doc);
+      const neutral = p2Neutralized(rows);
+      const layers = p2PresetLayers(rows, neutral);
+      for (const k of hits) {
+        const guard = p2RefGuard(rows, layers, neutral, "set_property",
+                                 { object_id: objectId, key: k, value: patch[k] });
+        if (guard) return p2ToolFailure(guard.status, guard.code, guard.detail, guard.extra);
+        // **★ 锁闸也**先全查再写**✗**：**∴ 若边写边查，第 2 个键被锁拒时第 1 个键已落盘 ✓
+        //   ⇒ **正是本地刻意避免的「半写」** ✓（`set_property{visible}` 在锁对象上合法、
+        //   `{z_index}` 不合法 ⇒ 混在一只 patch 里就是这个形状 ✓）。
+        const lock = p2LockGuard(rows, { kind: "set_property",
+          payload: { object_id: objectId, key: k, value: patch[k] } });
+        if (lock) return p2ToolFailure(lock.status, lock.code, lock.detail, lock.extra);
+      }
       const seqs = [];
       for (const k of hits) {
         seqs.push(await putAtom(handle, doc, p2Envelope("set_property",
@@ -2493,45 +3021,185 @@ async function withKernel(doc, fn) {
       return json({ ok: true, seq, server: false, object_id: objectId, mode,
                     note: "已写入 liquify 原子；液化由内核重放时处理" });
     }
-    /** **滤镜／调整新增 ✗**（**照 `write_add_effect` ✓ ⇒ **`create_object{type}` ✓**）。 */
-    async function p2cAddEffect(kind) {
-      const layerId = body.layer_id;
+    /** **缺省 `z_index` 的口径 ✓**（**照 `write_add_effect`：同层**存活**对象的最大 z ＋ 1，没有则 0 ✓**）。
+     *   **∴ 为什么本地原来漏了这一条 ✗**：不写 `z_index` ⇒ 折叠层按缺省 0 落 ⇒
+     *   **调整／滤镜只作用于「同层下方」**（设计 6.6）⇒ 新笔排在最底下 ⇒ 上面没有任何东西 ⇒
+     *   **`ok:true` 而画面毫无变化 ✗**（服务端 11568 行的注释描述的正是这个症状 ✓）＝ 静默降级形态① ✓。
+     *   **∴ 残余 ✗**：只扫「创建净荷里写着这一层」的对象 ⇒ 不跟随 `supersede.layer_id` 移层
+     *   （**`p2ObjectView` 的既有缺口，台账「第 六百五十七 节」记 (b) ✓**）。 */
+    function p2DefaultZInLayer(rows, layers, neutral, layerId) {
+      const seeds = new Set();
+      for (const r of rows || []) {
+        const a = (r && r.atom) || {};
+        const pl = a.payload || {};
+        if (P2_OBJECT_CREATE_KINDS.has(a.kind) && pl.layer_id === layerId &&
+            typeof pl.object_id === "string") seeds.add(pl.object_id);
+      }
+      let zTop = 0, hasAlive = false;
+      for (const oid of seeds) {
+        const slot = p2PresetSlot(rows, layers, neutral, oid);
+        if (slot.slot !== "alive") continue;
+        const z = Number.isFinite(Number(slot.view.z_index)) ? Number(slot.view.z_index) : 0;
+        if (!hasAlive || z > zTop) { zTop = z; hasAlive = true; }
+      }
+      return hasAlive ? zTop + 1 : 0;
+    }
+    /** **滤镜／调整新增 ✗**（**照 `write_add_effect` ✓ ⇒ **`create_object{type}` ✓**）。
+     *   **★ 槽位三态是这条路径的必经检查 ✓**（**`tools.rs:11536` 的 `ensure_object_slot` ✓**）：
+     *   **∴ 本地原来一个字都没检查 ✗** ⇒ 显式 `object_id` 撞车时**照写不误**✓ 而后一条
+     *   `create_object` 被**折叠层丢弃**（**`fold.rs:551` ⇒ 服务端是 409 ✓**）⇒
+     *   **响应 `ok:true`、状态里却没有那一笔 ✗ ＝ 静默降级形态③ ✓**（覆盖而不说 ✗）。
+     *   **∴ 墓碑支路不许报错 ✗**：`write_add_effect` 撞墓碑走**复活**（**「不许把『已存在』甩给调用方 ✓」**
+     *   ⇒ 守卫与原子序照 `revive_effect_in_place` ✓ 见下面 `p2cReviveEffect` ✓）。 */
+    async function p2cAddEffect(kind, request = body) {
+      const layerId = request.layer_id;
       if (typeof layerId !== "string" || !layerId) return p2Bad("layer_id 必填（字符串）");
-      const nameKey = kind === "filter" ? "filter_name" : "adjustment_name";
-      const name = body[nameKey];
+      const nameKey = kind === "filter" ? "filter_name" : "adjustment_type";
+      const name = request[nameKey];
       if (typeof name !== "string" || !name) return p2Bad(nameKey + " 必填（字符串）");
-      const params = (body.params && typeof body.params === "object" && !Array.isArray(body.params)) ? body.params : {};
-      const opacity = body.opacity !== undefined ? Number(body.opacity) : 1;
+      const params = (request.params && typeof request.params === "object" && !Array.isArray(request.params)) ? request.params : {};
+      const opacity = request.opacity !== undefined ? Number(request.opacity) : 1;
       if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) return p2Bad("opacity 必须在 [0,1] 内");
       const data = { [nameKey]: name, params, opacity };
-      if (typeof body.name === "string") data.name = body.name;
-      const objectId = (typeof body.object_id === "string" && body.object_id) ? body.object_id : p2cNewObjectId();
-      const payload = { object_id: objectId, layer_id: layerId, type: kind, data };
-      if (Number.isFinite(Number(body.z_index))) payload.z_index = Number(body.z_index);
+      if (typeof request.name === "string") data.name = request.name;
+      const objectId = (typeof request.object_id === "string" && request.object_id) ? request.object_id : p2cNewObjectId();
+      const rows = await atomsOf(handle, doc);
+      const neutral = p2Neutralized(rows);
+      const layers = p2PresetLayers(rows, neutral);
+      const slot = p2PresetSlot(rows, layers, neutral, objectId);
+      if (slot.slot === "tombstoned") {
+        return p2cReviveEffect(kind, { layer_id: layerId, object_id: objectId, name, params, opacity,
+                                       label: typeof request.name === "string" ? request.name : null,
+                                       rows, layers, neutral, slot });
+      }
+      if (slot.slot === "alive") {
+        return p2ToolFailure(409, "precondition_failed", `对象 ${objectId} 已存在`, { object_id: objectId });
+      }
+      // **层必须**活着**✓**（**`log.rs:1188 check_layer_exists` ✗ 两句话不能混用 ✓**：
+      //   **从未有过 ⇒ 404 `missing_reference`（带可用名单 ✓）；存在但已删 ⇒ 409「已删除，create_object 被拒绝」✓**
+      //   ——**∴ 笼统报「不存在」会把「刚删掉」说成「没有」✗ 而这两句自相矛盾 ✓**（同文件 479 行的教训 ✓）。
+      //   **∴ 而 `apply_preset` 判的是 `contains_key` ✗**（**服务端两处口径本来就不同 ⇒ 照字面，不「顺手」统一 ✓**））。
+      const layer = layers.get(layerId);
+      if (!layer) {
+        return p2ToolFailure(404, "reference_not_found", p2LayerMissingMessage(layers, layerId),
+                           { layer_id: layerId });
+      }
+      if (!layer.alive) {
+        return p2ToolFailure(409, "precondition_failed", `图层 ${layerId} 已删除，create_object 被拒绝`,
+                           { layer_id: layerId });
+      }
+      const payload = { object_id: objectId, layer_id: layerId, type: kind, data,
+                        z_index: Number.isFinite(Number(request.z_index))
+                          ? Number(request.z_index) : p2DefaultZInLayer(rows, layers, neutral, layerId) };
       const seq = await putAtom(handle, doc, p2Envelope("create_object", payload));
       const out = { ok: true, seq, server: false, object_id: objectId,
                     note: "已写入 create_object{type:" + kind + "} 原子" };
       out[nameKey] = name;
       return json(out);
     }
-    /** **滤镜／调整更新 ✗**（**照 `write_update_effect` ✓ ⇒ **`supersede` 合并 `params` ✓**）。 */
-    async function p2cUpdateEffect(kind) {
-      const objectId = body.object_id;
+    /** **撞墓碑 ⇒ 复活并整组换参数 ✗**（**照 `revive_effect_in_place` ✓ 三道守卫 ＋ 原子序逐字 ✓**：
+     *   ① 类型不符 ⇒ 拒绝「以复活名义改型」✓；② 效果名不符 ⇒ 拒绝「复活改名」✓；
+     *   ③ **层不符且源层还活着** ⇒ 拒绝「复活不跨层」✓（**歧义**：搬过去还是放回原层 ✗）；
+     *   **∴ 而源层已被删 ⇒ 是孤儿墓碑 ⇒ 没有歧义 ✓**：撤那条**图层** tombstone（级联删的源头 ✓）
+     *   ⇒ 撤对象自己的每条生效墓碑 ⇒ 一条 `supersede` **整组**换新参数（**不是键级合并 ✓**）
+     *   ⇒ **再把用户删掉的那一层删回去** ✓（对象已搬到目标层 ⇒ 不受影响 ✓）。
+     *   **∴ 成功必须点名 `revived:true` ✗**（**服务端 11762 行 ✓**：不许静默复活 ✓）。 */
+    async function p2cReviveEffect(kind, intent) {
+      const { layer_id: layerId, object_id: objectId, name, params, opacity, label,
+              rows, layers, neutral, slot } = intent;
+      const existing = slot.view;
+      if (existing.type !== kind) {
+        return p2ToolFailure(400, "invalid_argument",
+          `对象 ${objectId} 已被删除且不是${kind}对象（实际 ${p2PresetTypeNameDebug(existing.type)}），`
+          + "拒绝以复活名义改型；请先 restore_object 恢复或换 object_id", { object_id: objectId });
+      }
+      const effectKey = kind === "filter" ? "filter_name" : "adjustment_type";
+      const raw = existing.data && typeof existing.data === "object" ? existing.data[effectKey] : undefined;
+      const existingName = typeof raw === "string" ? raw : "";
+      if (existingName !== name) {
+        return p2ToolFailure(400, "invalid_argument",
+          `对象 ${objectId} 已被删除且效果是「${existingName}」，与本次要落的「${name}」不一致，`
+          + "拒绝复活改名；请先 restore_object 恢复或换 object_id", { object_id: objectId });
+      }
+      const ownerLayer = typeof existing.layer_id === "string" ? existing.layer_id : "";
+      const orphan = ownerLayer !== layerId && !(layers.has(ownerLayer) && layers.get(ownerLayer).alive);
+      if (ownerLayer !== layerId && !orphan) {
+        return p2ToolFailure(400, "invalid_argument",
+          `对象 ${objectId} 已被删除且属于图层 ${ownerLayer}（它还在），与本次目标图层 ${layerId} 不一致，`
+          + "复活不跨层；请先 restore_object 恢复后移层，或换 object_id", { object_id: objectId });
+      }
+      if (orphan && slot.dead_by) {
+        await putAtom(handle, doc, p2Envelope("revert", { target: slot.dead_by }));
+      }
+      for (const tid of existing.tombstone_ids) {
+        if (neutral.has(tid)) continue;
+        await putAtom(handle, doc, p2Envelope("revert", { target: tid }));
+      }
+      const data = { ...(existing.data && typeof existing.data === "object" &&
+                       !Array.isArray(existing.data) ? existing.data : {}) };
+      data.params = params;
+      data.opacity = opacity;
+      if (label !== null && label !== undefined) data.name = label;
+      const targetLayer = orphan ? layerId : ownerLayer;
+      // **`supersede` 之前要再过一次提交期校验 ✗**（**服务端就是这么做的 ✓**：
+      //   `revive_object` 只撤**对象自己**的 tombstone ✓ 撤完照样 `ctx.commit(Supersede)` ✓
+      //   而校验是在 commit 里跑的 ✓）。
+      //   **∴ 少了这一步会怎样 ✗**：对象随**图层**级联而死（`fold.rs:1320` ✓）⇒
+      //   撤不到那条图层原子 ⇒ 对象仍然死着 ✓ ⇒ 服务端 409「已被 tombstone，supersede 被拒绝」✗
+      //   而本地**写出成功** ✓（**复活成功而层还是删着 ⇒ 那一笔落在死层上 = 形态③ ✓**）。
+      const rowsAfter = await atomsOf(handle, doc);
+      const neutralAfter = p2Neutralized(rowsAfter);
+      const layersAfter = p2PresetLayers(rowsAfter, neutralAfter);
+      const guard = p2RefGuard(rowsAfter, layersAfter, neutralAfter, "supersede",
+                               { object_id: objectId, layer_id: targetLayer });
+      if (guard) {
+        return p2ToolFailure(guard.status, guard.code, guard.detail, guard.extra);
+      }
+      const seq = await putAtom(handle, doc, p2Envelope("supersede", {
+        object_id: objectId, layer_id: targetLayer, data,
+      }));
+      if (orphan) {
+        await putAtom(handle, doc, p2Envelope("tombstone", { layer_id: ownerLayer }));
+      }
+      const out = { ok: true, seq, server: false, object_id: objectId, revived: true,
+                    note: "确定性 object_id 撞上墓碑 ⇒ 复活并整组换新参数（supersede，非键级合并）" };
+      out[effectKey] = name;
+      return json(out);
+    }
+    /** **滤镜／调整更新 ✗**（**照 `write_update_effect` ✓ ⇒ **`supersede` 合并 `params` ✓**）。
+     *   **∴ 三条拒绝也要照抄 ✓**（**顺序 = 服务端顺序 ✓**）：
+     *   ① **状态里没有** ⇒ 404 `对象 X 不存在` ✓（**`tools.rs:11972` 自己那句 ✗ 没有候选名单 ✓**
+     *     —— 与 `delete_object` 走的**提交期**那句「（现有对象：…）」**是两句话 ✗ 别混 ✓**）；
+     *   ② **类型不对** ⇒ 400 ＋ **指路**（**Y-07：只说「不是 XX 对象」不够 ✓ 要说该用哪个工具 ✓**）；
+     *   ③ **对象已 tombstone／所属图层已删除** ⇒ 提交期 409 ✓（**此前本地静默写成功 ✗
+     *     而折叠把这条 supersede 丢掉 ⇒ 回执 ok 而画面没变 ✓ = 形态 3 ✓**）。 */
+    async function p2cUpdateEffect(kind, request = body) {
+      const objectId = request.object_id;
       if (typeof objectId !== "string" || !objectId) return p2Bad("object_id 必填（字符串）");
-      const patch = body.params;
+      const patch = request.params;
       if (!patch || typeof patch !== "object" || Array.isArray(patch)) return p2Bad("params 必须是对象（必填）");
       const rows = await atomsOf(handle, doc);
+      const neutral = p2Neutralized(rows);
       const v = p2ObjectView(rows, objectId);
-      if (!v.found) return p2Missing("对象 " + objectId + " 不存在");
-      if (v.type !== kind) return p2Bad(objectId + " 不是" + kind + "对象（是 " + v.type + "）");
+      if (!v.found || neutral.has(v.__create_id)) return p2Missing(`对象 ${objectId} 不存在`);
+      if (v.type !== kind) {
+        const pointer = v.type === "filter" ? "请用 update_filter"
+          : v.type === "adjustment" ? "请用 update_adjustment"
+            : "请用 update_filter / update_adjustment";
+        return p2Bad(`${objectId} 不是${kind}对象（它是${v.type}对象）；${pointer}`);
+      }
       const data = (v.data && typeof v.data === "object" && !Array.isArray(v.data)) ? { ...v.data } : {};
       const oldParams = (data.params && typeof data.params === "object") ? data.params : {};
       data.params = { ...oldParams, ...patch };
-      if (body.opacity !== undefined) {
-        const op = Number(body.opacity);
+      if (request.opacity !== undefined) {
+        const op = Number(request.opacity);
         if (!Number.isFinite(op) || op < 0 || op > 1) return p2Bad("opacity 必须在 [0,1] 内");
         data.opacity = op;
       }
+      const layers = p2PresetLayers(rows, neutral);
+      const guard = p2RefGuard(rows, layers, neutral, "supersede",
+        { object_id: objectId, layer_id: v.layer_id });
+      if (guard) return p2ToolFailure(guard.status, guard.code, guard.detail, guard.extra);
       const seq = await putAtom(handle, doc, p2Envelope("supersede", {
         object_id: objectId, layer_id: v.layer_id, data,
       }));
@@ -4567,6 +5235,271 @@ async function withKernel(doc, fn) {
       return json(out);
     }
 
+    // **★ 风格预设四端点 ✗ ★**（第 2 批 ✓；**纯计算在模块层 ✓（`p2PresetLibrary`／`p2ExpandPreset` …），
+    //   这里只做「入口校验 ＋ 落成」✓**）。**∴ 服务端出处 `crates/yanshi-server/src/presets.rs` ✓**。
+    //
+    // **∴ 三条口径先写清楚 ✗**（**每条都是「不这样做就会静默降级」的地方 ✓**）：
+    //   ① **C/S 客户端模式 ⇒ 不进本地分支 ✓**（**由链尾 `:5578` 那段代理到服务端 ✓**）——
+    //     **∴ 否则**用户用 `YANSHI_PRESET_DIR` 装的新预设会被打包时那份**遮蔽**✗ 而页面 `ok:true` ✓
+    //     （**静默降级形态③ ✓**：被覆盖而不说 ✗）。**PWA**（无服务器）⇒ 走本地内联库 ✓ 并用 `server:false` 如实标注 ✓。
+    //   ② **`preview_preset` 的 `render` 分支 ⇒ 如实 501 ✗**（**本地内核没有「单层裸像素」通道 ✓
+    //     ⇒ 盒式降采样＋临时文档渲染无法如实复现 ✗**）；**但校验先做完 ✓**（`render` 的形状与
+    //     `layer_id` 的必填与服务端**同一段文案**✓ ⇒ 写错的请求拿到的是与服务端一致的 400 ✓，
+    //     而不是把「参数拼错」也报成「本地不支持」✓）。
+    //   ③ **`apply_preset` 的落成走既有原子路 ✓**（**`create_object`／`supersede`／复活三连 ✓**，
+    //     **∴ 复用 `p2cAddEffect`／`p2cUpdateEffect` ✗ 不另造原子、不复制第二份落成语义 ✓**）。
+    /** **四个端点的声明表 ✓**（**逐字照 `tools.rs` 的 `param!` 名单 ✓：键名、类型、必填性 ✓**；
+     *   **∴ 为什么在本地也要 ✓**：没有它 ⇒ 拼错的参数**被静默忽略**✓（形态④），而服务端会 400 ✓）。 */
+    const P2_PRESET_PARAMS = {
+      list_presets: [
+        { name: "tag", kind: "string", required: false },
+        { name: "subject", kind: "string", required: false },
+        { name: "status", kind: "string", required: false },
+      ],
+      get_preset: [
+        { name: "preset_id", kind: "string", required: true },
+      ],
+      preview_preset: [
+        { name: "preset_id", kind: "string", required: true },
+        { name: "strength", kind: "number", required: false },
+        { name: "knobs", kind: "object", required: false },
+        { name: "include_correction", kind: "boolean", required: false },
+        { name: "layer_id", kind: "string", required: false },
+        { name: "render", kind: "object", required: false },
+      ],
+      apply_preset: [
+        { name: "preset_id", kind: "string", required: true },
+        { name: "layer_id", kind: "string", required: true },
+        { name: "strength", kind: "number", required: false },
+        { name: "knobs", kind: "object", required: false },
+        { name: "include_correction", kind: "boolean", required: false },
+      ],
+    };
+
+    /** **`kind` ⇒ 既有 `EffectKind` 路径 ✗**（**照 `effect_kind_of` ✓ 逐字文案 ✓**：
+     *   **∴ 为什么本地也要 ✗**：库里若写进第三种 kind，`p2cAddEffect` 会把它**当 adjustment 落下去**✓
+     *   （**`kind === "filter" ? … : …` 的 `else` 分支 ✓**）⇒ **参数齐全、回执 ok:true、效果不是那一笔 ✓**
+     *   **＝ 静默降级形态④**——所以这里**响亮拒绝**，不交给三元运算符猜 ✓）。 */
+    function p2PresetKind(op) {
+      if (op.kind === "adjustment" || op.kind === "filter") return op.kind;
+      p2PresetBad(`操作 ${op.object_id} 的 kind 非法：「${String(op.kind)}」`);
+      return null;
+    }
+
+
+    /** **`Rust 的 ObjectType` 的 `{:?}` 名 ✗**（**报错文案「实际 {…}」用 ✓**：
+     *   **折叠层存的是 snake_case ✗ 而 Debug 打印的是变体名 ✓**（**`state.rs:157` ✓**）⇒
+     *   **∴ 这里做同一件「加首字母」的映射 ✗ 不新造名字 ✓**。 */
+    function p2PresetTypeNameDebug(type) {
+      if (typeof type !== "string" || !type) return "?";
+      return type.split("_").map((part) =>
+        part ? part.charAt(0).toUpperCase() + part.slice(1) : part).join("");
+    }
+
+    /** **把「返回 Response 的本地端点实现」当库用 ✗**（**∴ 复用同一份落成语义 ✓**）：
+     *   取回 JSON 体 ⇒ `ok!==true` ⇒ **把原响应原样交回调用方**✓（**不二次包装 ✗ 不改状态码 ✓**）。 */
+    async function p2PresetLand(response) {
+      const landedBody = await response.json().catch(() => null);
+      if (landedBody && landedBody.ok === true) return { ok: true, body: landedBody, response: null };
+      // **★ 失败分支不许把**已读过的** Response 交回去 ✗ ★**（第 2 批判据实测 ✓）：
+      //   上面 `.json()` 已经把 body 消费掉 ⇒ 调用方 `return landed.response` ⇒ 浏览器再读
+      //   ⇒ **`TypeError: Body is unusable`** ✓ ⇒ **服务端的 409／文案在 PWA 里变成不可读的空响应** ✗
+      //   ——这正是「静默降级形态③」的镜像：**错误码服务端有、本地层把它吃掉了** ✓。
+      //   **∴ 用同一份已解析的 body 重建响应 ✓**（状态码、`ok:false`、`error_code`、`context.detail` 全保真 ✓）。
+      return { ok: false, body: landedBody,
+               response: json(landedBody ?? { ok: false, error: "empty_response", server: false },
+                              response.status) };
+    }
+
+    // **① `list_presets` ✗**（**照 `read_list_presets` ✓：三个可选筛子 ＋ 摘要数组 ✓**。
+    //   **∴ `subject` 是**子串**匹配（`x.contains(s)` ✓）而 `tag` 是**全等**（`x == t` ✓**）⇒ 本地照抄，不「顺手」统一 ✓**。
+    if (path === "/api/tools/list_presets" && !__csClientMode()) {
+      try {
+        const args = p2PresetSchemaCheck("list_presets", P2_PRESET_PARAMS.list_presets, body);
+        const library = p2PresetLibrary();
+        const tag = typeof args.tag === "string" ? args.tag : null;
+        const subject = typeof args.subject === "string" ? args.subject : null;
+        const status = typeof args.status === "string" ? args.status : null;
+        const presets = library.presets
+          .filter((p) => tag === null || p.tags.some((x) => x === tag))
+          .filter((p) => subject === null || p.suitable.some((x) => x.indexOf(subject) >= 0))
+          .filter((p) => status === null || p.status === status)
+          .map((p) => p2PresetSummary(p));
+        // **∴ `ok: true` 在服务端由派发层注入 ✓**（**实测 `list_presets` 的成功响应里有它 ✓**）⇒
+        //   **∴ 本地也要给 ✗**（**否则调用方「`if (!resp.ok) return`」那一支会把成功当失败 ✓**）。
+        return json({ ok: true, presets, count: presets.length,
+                      library_version: library.version,
+                      library_source: library.source, server: false });
+      } catch (error) { const r = p2PresetResponse(error); if (r) return r; throw error; }
+    }
+
+    // **② `get_preset` ✗**（**照 `read_get_preset` ✓：完整定义 ＋ `expanded_default`（strength=1 ✓）**。
+    if (path === "/api/tools/get_preset" && !__csClientMode()) {
+      try {
+        const args = p2PresetSchemaCheck("get_preset", P2_PRESET_PARAMS.get_preset, body);
+        const preset = p2FindPreset(String(args.preset_id));
+        const expanded = p2ExpandPreset(preset, 1.0, {}, true);
+        return json({ ok: true, preset, expanded_default: expanded, server: false });
+      } catch (error) { const r = p2PresetResponse(error); if (r) return r; throw error; }
+    }
+
+    // **③ `preview_preset` ✗**（**照 `read_preview_preset` ✓ 顺序逐字：库 → preset_id → 展开 →
+    //   → kind 校验 → `render` → `layer_id`**。
+    //   **∴ 服务端在展开后还要过一遍 `validate_effect` ✗ 本地依据见台账「第 六百五十七 节」✓**
+    //   （**内联库与源文件逐字同一份 ✓ 而它的 0/0.5/1 全档由服务端 Rust 测试
+    //     `every_preset_expands_and_passes_validate_effect` 证明合法 ✓**）。
+    if (path === "/api/tools/preview_preset" && !__csClientMode()) {
+      try {
+        const args = p2PresetSchemaCheck("preview_preset", P2_PRESET_PARAMS.preview_preset, body);
+        const preset = p2FindPreset(String(args.preset_id));
+        const parsed = p2ParsePresetExpandArgs(preset, args);
+        const ops = p2ExpandPreset(preset, parsed.strength, parsed.knobs, parsed.includeCorrection);
+        for (const op of ops) p2PresetKind(op);
+        if (Object.prototype.hasOwnProperty.call(args, "render")) {
+          // **先按服务端口径把 `render` 与 `layer_id` 校验完 ✓**（**再 501 ✗**）。
+          const render = p2PresetParseRender(args);
+          const layerId = args.layer_id;
+          if (typeof layerId !== "string" || !layerId.trim()) {
+            p2PresetBad("preview_preset 的 render 需要 layer_id（源图层）");
+          }
+          const scaleNotes = p2PresetScaleNotes(ops);
+          return json({ ok: false, error: "not_implemented_locally",
+                        endpoint: "/api/tools/preview_preset",
+                        reason: `preview_preset 带 render（max_edge=${render.maxEdge}, format=${render.format}）：`
+                          + "服务端在**临时文档**里取源图层裸像素、盒式降采样后渲染代理图；"
+                          + "本地内核只出整幅 PNG，没有单层裸像素通道，无法如实复现 ⇒ 宁可 501 也不给一张**口径不同的**代理图 ✗"
+                          + "（展开清单本身已按同一口径校验通过 ⇒ 去掉 render 或改用服务器渲染即可 ✓）"
+                          + (scaleNotes ? `｜${scaleNotes}` : ""),
+                        server: false }, 501);
+        }
+        return json({
+          ok: true,
+          preset_id: preset.id, name_zh: preset.name_zh, status: preset.status,
+          strength: parsed.strength, include_correction: parsed.includeCorrection,
+          ops, op_count: ops.length,
+          notes: "只展开不落成、不渲染；落成请用 apply_preset（同一展开口径）",
+          preset_notes: preset.notes, server: false,
+        });
+      } catch (error) { const r = p2PresetResponse(error); if (r) return r; throw error; }
+    }
+
+    // **④ `apply_preset` ✗**（**照 `write_apply_preset`：两阶段 ✓ 任一非法**整组不落**✓**）。
+    if (path === "/api/tools/apply_preset" && !__csClientMode()) {
+      try {
+        const args = p2PresetSchemaCheck("apply_preset", P2_PRESET_PARAMS.apply_preset, body);
+        const preset = p2FindPreset(String(args.preset_id));
+        const layerId = String(args.layer_id);
+        const parsed = p2ParsePresetExpandArgs(preset, args);
+        const ops = p2ExpandPreset(preset, parsed.strength, parsed.knobs, parsed.includeCorrection);
+        if (!ops.length) {
+          // 服务端这里是 `.expect()` ⇒ panic（库保证风格段非空 ✓）；本地如实报错而不是静默成功 ✗。
+          p2PresetBad(`预设「${preset.id}」展开为空（include_correction=${parsed.includeCorrection} 而风格段没有操作）⇒ 库数据非法`);
+        }
+        // ---- 第一阶段：全量校验（这一段一个原子都不提交 ✓ 照服务端 ✓）----
+        const rows0 = await atomsOf(handle, doc);
+        const neutral0 = p2Neutralized(rows0);
+        const layers = p2PresetLayers(rows0, neutral0);
+        if (!layers.has(layerId)) p2PresetGone(`图层 ${layerId} 不存在`, layerId);
+        const slots = new Map();
+        for (const op of ops) {
+          const effectKey = p2PresetKind(op) === "filter" ? "filter_name" : "adjustment_type";
+          const slot = p2PresetSlot(rows0, layers, neutral0, op.object_id);
+          slots.set(op.object_id, slot);
+          if (slot.slot === "tombstoned") {
+            const ownerLayer = typeof slot.view.layer_id === "string" ? slot.view.layer_id : "";
+            // **只有「源图层还在」才拒绝跨层复活 ✓**（**与 `revive_effect_in_place` 同一口径 ✓**：
+            //   源图层已被删 ⇒ 孤儿墓碑 ⇒ 落位到目标层 ✓ 不再把整套预设永久判死 ✓）。
+            if (ownerLayer !== layerId && layers.has(ownerLayer) && layers.get(ownerLayer).alive) {
+              p2PresetBad(`对象 ${op.object_id} 已被删除且属于图层 ${ownerLayer}（它还在），`
+                + `与预设要落的图层 ${layerId} 不一致，拒绝复活；请先 restore_object 恢复后移层，或换图层/文档`);
+            }
+          }
+          if (slot.slot === "tombstoned" || slot.slot === "alive") {
+            const existing = slot.view;
+            if (existing.type !== op.kind) {
+              p2PresetBad(`对象 ${op.object_id} 已存在但不是${op.kind}对象`
+                + `（实际 ${p2PresetTypeNameDebug(existing.type)}），拒绝覆盖；请换图层/文档或先删除该对象`);
+            }
+            const raw = existing.data && typeof existing.data === "object"
+              ? existing.data[effectKey] : undefined;
+            const existingName = typeof raw === "string" ? raw : "";
+            if (existingName !== op.type) {
+              p2PresetBad(`对象 ${op.object_id} 已存在但效果是「${existingName}」，`
+                + `与预设「${preset.id}」要落的「${op.type}」不一致，拒绝覆盖`);
+            }
+          }
+        }
+        // **缺省 z 的口径 ✓**（**与 `p2cAddEffect` 同一个 `p2DefaultZInLayer` ✗ 不复制第二份 ✓**；
+        //   **∴ 逐笔落成时服务端会重算 ⇒ 本地用游标递增等价 ✓**（**每建一笔它自己就成了新的最大 ✓**）。
+        let zCursor = p2DefaultZInLayer(rows0, layers, neutral0, layerId);
+        // ---- 第二阶段：按序落成 ----
+        const created = [], updated = [], revived = [];
+        let lastSeq = null;
+        for (const op of ops) {
+          const slot = slots.get(op.object_id);
+          const nameKey = op.kind === "filter" ? "filter_name" : "adjustment_type";
+          if (slot.slot === "alive") {
+            const landed = await p2PresetLand(await p2cUpdateEffect(op.kind, {
+              object_id: op.object_id, params: op.params, opacity: 1.0,
+            }));
+            if (!landed.ok) return landed.response;
+            updated.push(op.object_id);
+            lastSeq = landed.body.seq;
+            continue;
+          }
+          if (slot.slot === "tombstoned") {
+            // **复活三连 ✓**（**照 `revive_effect_in_place` 的原子序 ✓**）：
+            //   ① 孤儿墓碑先撤**那条图层 tombstone**（级联删除的源头 ✓ `tools.rs:11723` ✓）；
+            //   ② 再撤对象自己每条生效的 tombstone ✓（`revive_object`／`tombstone_atom_ids` ✓）；
+            //   ③ 一条 `supersede` 整组换新参数 ✓（**不是键级合并 ✓ 复活的调用方给的是完整新参数 ✓**）；
+            //   ④ 孤儿 ⇒ 把用户删掉的那一层**再删回去** ✓（对象已搬到目标层 ⇒ 不受影响 ✓）。
+            if (slot.cascade && slot.dead_by) {
+              await putAtom(handle, doc, p2Envelope("revert", { target: slot.dead_by }));
+            }
+            for (const tid of slot.view.tombstone_ids) {
+              if (neutral0.has(tid)) continue;
+              await putAtom(handle, doc, p2Envelope("revert", { target: tid }));
+            }
+            const data = { ...(slot.view.data && typeof slot.view.data === "object" &&
+                             !Array.isArray(slot.view.data) ? slot.view.data : {}) };
+            data[nameKey] = op.type;
+            data.params = op.params;
+            data.opacity = 1.0;
+            data.name = `preset:${preset.id}`;
+            const ownerLayer = slot.cascade ? layerId : slot.view.layer_id;
+            const seq = await putAtom(handle, doc, p2Envelope("supersede", {
+              object_id: op.object_id, layer_id: ownerLayer, data,
+            }));
+            if (slot.cascade) {
+              await putAtom(handle, doc, p2Envelope("tombstone", { layer_id: slot.view.layer_id }));
+            }
+            revived.push(op.object_id);
+            lastSeq = seq;
+            continue;
+          }
+          const landed = await p2PresetLand(await p2cAddEffect(op.kind, {
+            layer_id: layerId, [nameKey]: op.type, params: op.params,
+            object_id: op.object_id, name: `preset:${preset.id}`, opacity: 1.0,
+            z_index: zCursor,
+          }));
+          if (!landed.ok) return landed.response;
+          zCursor += 1;
+          created.push(op.object_id);
+          lastSeq = landed.body.seq;
+        }
+        return json({ ok: true, seq: lastSeq, server: false,
+                      preset_id: preset.id, strength: parsed.strength,
+                      include_correction: parsed.includeCorrection,
+                      created_object_ids: created, updated_object_ids: updated,
+                      revived_object_ids: revived,
+                      revived: revived.length, created: created.length,
+                      updated: updated.length, op_count: ops.length,
+                      layer_id: layerId,
+                      note: `已按同一展开口径落 ${ops.length} 笔到图层 ${layerId}：`
+                        + `新建 ${created.length}／更新 ${updated.length}／复活 ${revived.length}` });
+      } catch (error) { const r = p2PresetResponse(error); if (r) return r; throw error; }
+    }
+
     // **★ `/api/tools/erase` ✗ ★**（P0 ✓）：
     // **∴ 语义照服务端 `erase => write_draw(ctx, args, AtomKind::Erase)`
     //   （`tools.rs:3140`／`:4918`）✓**：
@@ -5550,7 +6483,10 @@ async function withKernel(doc, fn) {
       const { layers } = p1LayerOrder(rows);
       const layer = layers.get(layerId);
       if (!layer || layer.deleted) return p2Missing("图层 " + layerId + " 不存在");
-      // **该层全部存活对象 ✗**（照 `state.objects_in_layer`：`is_alive` ⇒ 创建未被撤 **且** 无生效 tombstone ✓）。
+      // **该层全部存活对象 ✗**（照 `state.objects_in_layer`：`is_alive` ⇒ 创建未被撤 **且** 无生效 tombstone ✓
+      //   ——**含**随图层级联删 ✓，见 `__p2Alive` 的注释 ✓）。
+      const neutralRO = p2Neutralized(rows);
+      const layersRO = p2PresetLayers(rows, neutralRO);
       const seenIds = new Set();
       const alive = [];
       for (const r of rows) {
@@ -5559,7 +6495,7 @@ async function withKernel(doc, fn) {
         if (typeof id !== "string" || !id || seenIds.has(id)) continue;
         seenIds.add(id);
         const v = p2ObjectView(rows, id);
-        if (__p2Alive(rows, v) && v.layer_id === layerId) alive.push(id);
+        if (__p2Alive(rows, v, layersRO, neutralRO) && v.layer_id === layerId) alive.push(id);
       }
       // **工具层先查「无可重排」✓**（`tools.rs:4057` ⇒ invalid_argument ✓，先于折叠的逐条分类 ✓）。
       if (alive.length === 0) return p2Bad("图层 " + layerId + " 没有对象，无可重排");
@@ -5573,7 +6509,7 @@ async function withKernel(doc, fn) {
       // ② **逐个分类：未知 ⇒ 404 且点名现有对象 ✓／已删 ⇒ 409 ✓／跨层 ⇒ 409 ✓**（`fold.rs:801–819` ✓）。
       for (const id of ids) {
         const v = p2ObjectView(rows, id);
-        if (!v.found || !__p2Alive(rows, v)) {
+        if (!v.found || !__p2Alive(rows, v, layersRO, neutralRO)) {
           if (v.found) return p2Precon("对象 " + id + " 已被删除");
           return p2Missing("对象 " + id + " 不存在 ⇒ 现有对象：" + alive.slice().sort().join("、"));
         }
@@ -5628,6 +6564,20 @@ async function withKernel(doc, fn) {
     }
     // **∴ 其余端点**一律抛给上层 ⇒ 上层如实 501 ＋ 原因 ✗**（**∴ 不假装成功 ✓**）。
     throw new Error(`endpoint_not_local: ${url.pathname}`);
+  }
+
+  /** **★ 唯一的**兜底 catch ✗ ★**（**∴ 只换装 `putAtom` 锁闸的错误 ✓，其余一律**再抛** ✓）：
+   *   **∴ 为什么在这里 ✗**：锁闸挂在 `putAtom`（必经之路 ✓），拒绝时**抛**出去 ✓
+   *   ⇒ **∴ 这里把它换成本地统一错误形状的 403 ✓**（`p2ToolFailure` ✓ 与服务端同形 ✓）；
+   *   **∴ 必须 `await` ✓**（**见 `localDispatch` 的注释：不 await 抓不到异步拒绝 ✓**）；
+   *   **∴ 未实现端点的 `endpoint_not_local` 照旧抛给上层 501 ✓**（行为不变 ✓）。 */
+  return async function local(req) {
+    try {
+      return await localDispatch(req);
+    } catch (e) {
+      if (e && e.__p2Failure) return e.__p2Failure;
+      throw e;
+    }
   };
 }
 
@@ -5768,3 +6718,5990 @@ function parsePaletteText(text, name) {
   }
   return out;
 }
+
+// ============================================================================
+// **★ 风格预设四端点的本地映射 ✓ ★**（第 2 批 ✓；**服务端出处 `crates/yanshi-server/src/presets.rs` ✓**）
+//
+// **∴ 这一节是纯函数层 ✓**（**∴ 只做「读库／展开／校验」✗ ⇒ **∴ 不碰 IndexedDB／内核 ✓**）⇒
+//   **∴ 于是**判据可以直接 `import` 它们逐项比对服务端的输出 ✓（**`tool-pwa-preset-library-parity.mjs` ✓**）。
+//   **∴ 端点分支在 `makeLocalApi` 里 ✓**（**落成要写原子 ✗ ⇒ **∴ 只有那半边需要闭包 ✓**）。
+//
+// **★ 库为什么内联而不是多一个资产文件 ✓ ★**：
+//   **∴ `api-local.js` 已被 SW 预缓存 ✓**（**`tool-pwa-assets` 的清单 ✓**）⇒
+//   **∴ 内联 ⇒ 离线必定可用 ✓，**而新增一个 `style-presets.json` 资产要同时改预缓存清单 ✗**
+//   （**漏一处 ⇒ 离线时 `fetch` 它拿到 504 ⇒ **∴ 正是本仓最怕的「静默降级」✓**）。
+//   **∴ 代价 ✓**：库文本有两份（**源文件 ＋ 内联串 ✓**）⇒ **∴ 所以配一条**逐字相等**判据 ✗**
+//   （**`p2PresetRawText()` 必须逐字等于 `crates/yanshi-server/data/style-presets.json` ✓**）
+//   ＋ **一条再生成脚本 ✓**（**`scripts/gen-pwa-preset-library.mjs` ✓**）。
+//
+// **∴ 数字文本的两处已知残余 ✗**（**如实标注 ✗ 不装作完全等价 ✓**）：
+//   ① **JS `JSON.parse` 把 `2.0` 收成 `2`** ⇒ 「得到 {value}」这类**文案**里
+//     `2.0` 会写成 `2`（**Rust 的 serde_json 保留 `2.0` ✓**）⇒ **解析后的数值仍相等 ✓**；
+//   ② **`1e21` 这类极端量级**的展开位数与 ryu 的最短指数写法可能有差 ✓（**已按 `e+`→`e` 归一 ✓**）。
+//   **∴ 所以判据断的是「解析后的深相等」✗ 不是「响应字节逐字相等」✓**（**这条口径写进判据注释 ✓**）。
+// ============================================================================
+
+/** **`f64` 的 Rust `Display` ✓**（**∴ 位置记法、不用科学计数 ✓**；**`inf`／`-inf`／`NaN` 逐字照 std ✓**）。 */
+export function p2RustNum(value) {
+  const v = Number(value);
+  if (Number.isNaN(v)) return "NaN";
+  if (v === Infinity) return "inf";
+  if (v === -Infinity) return "-inf";
+  const s = Object.is(v, -0) ? "-0" : String(v);
+  if (!/[eE]/.test(s)) return s;
+  return p2ExpandExp(s);
+}
+
+/** **把 JS 的科学计数串展开成位置记法 ✓**（**`1e-8 ⇒ 0.00000001`／`1.5e+21 ⇒ 1500000000000000000000` ✓**）。 */
+function p2ExpandExp(str) {
+  const neg = str.startsWith("-");
+  const bare = neg ? str.slice(1) : str;
+  const [mantissa, expText] = bare.split(/e/i);
+  const exp = parseInt(expText, 10);
+  const [ip, fp = ""] = mantissa.split(".");
+  const digits = ip + fp;
+  const point = ip.length + exp;
+  let out;
+  if (point <= 0) out = "0." + "0".repeat(-point) + digits;
+  else if (point >= digits.length) out = digits + "0".repeat(point - digits.length);
+  else out = digits.slice(0, point) + "." + digits.slice(point);
+  return (neg ? "-" : "") + out;
+}
+
+/** **serde_json 的紧凑文本 ✓**（**`Value` 的 `Display` ⇒ 对象键**按 BTreeMap 排序 ✓**；
+ *   **数值走 ryu ⇒ 指数写法没有 `+` ✓**；**非有限数序列化成 `null` ✓**）。 */
+export function p2JsonText(value) {
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return "null";
+    return String(value).replace("e+", "e");
+  }
+  if (typeof value === "string") return JSON.stringify(value);
+  if (Array.isArray(value)) return "[" + value.map(p2JsonText).join(",") + "]";
+  if (typeof value === "object") {
+    return "{" + Object.keys(value).sort()
+      .map((k) => JSON.stringify(k) + ":" + p2JsonText(value[k])).join(",") + "}";
+  }
+  return String(value);
+}
+
+/** **`Value == Value` ✓**（**∴ 照 serde_json：对象只看键集与值 ✗ 不看顺序 ✓**）。 */
+function p2JsonDeepEqual(a, b) { return p2JsonText(a) === p2JsonText(b); }
+
+/** **深拷贝 ＋ 键序归一 ✓**（**Rust 侧一切都是 `BTreeMap` ⇒ 输出必按键排序 ✓；
+ *   **∴ 本地用插入序 ✗ ⇒ **∴ 出响应前统一走这一条 ✓**（**数值与解析后的结构不变 ✓**）。 */
+export function p2SortedCopy(value) {
+  if (Array.isArray(value)) return value.map(p2SortedCopy);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const key of Object.keys(value).sort()) out[key] = p2SortedCopy(value[key]);
+    return out;
+  }
+  return value;
+}
+
+/** **`StylePreset` 结构体的投影 ✓**（**∴ 服务端 `serde_json::to_value(preset)` 只输出结构体字段 ✗**
+ *   （**`neutral`／`knobs` 有 `#[serde(default)]` ⇒ 缺席时补 `{}`／`[]` ✓；
+ *     **`source` 由加载器回填成 `builtin` ✓ ⇒ 数据文件里那份即使写了也不算 ✓**）。 */
+function p2PresetWire(preset) {
+  // **`params`／`neutral` 在 Rust 侧是 `serde_json::Map`＝BTreeMap ⇒ 输出按**排序键**✓**
+  //   （**∴ 数据文件里的书写序不算数 ✓ 本地要归一 ✓**；结构体字段本身按**声明序**✓ 不排序 ✗）。
+  const opWire = (o) => ({
+    kind: o.kind,
+    type: o.type,
+    params: p2SortedCopy(o.params),
+    neutral: o.neutral === undefined ? {} : p2SortedCopy(o.neutral),
+  });
+  const targets = (k) => (k.targets || []).map((t) => ({ op: t.op, param: t.param, range: t.range }));
+  const knob = (k) => ({ id: k.id, label: k.label, description: k.description,
+                         min: k.min, max: k.max, default: k.default, targets: targets(k) });
+  const correction = preset.correction || {};
+  return {
+    id: preset.id,
+    name_zh: preset.name_zh,
+    name_en: preset.name_en,
+    status: preset.status,
+    tags: preset.tags || [],
+    suitable: preset.suitable || [],
+    caution: preset.caution || [],
+    description: preset.description,
+    notes: preset.notes,
+    correction: { baseline: correction.baseline, ops: (correction.ops || []).map(opWire) },
+    style_ops: (preset.style_ops || []).map(opWire),
+    knobs: (preset.knobs || []).map(knob),
+    source: "builtin",
+  };
+}
+
+let P2_PRESET_CACHE = null;
+/** **内联库的原始文本 ✓**（**判据拿它与源文件逐字比 ✓ —— 「同一事实只写一处」的**看守**✓**）。 */
+export function p2PresetRawText() { return P2_PRESET_RAW; }
+/** **加载内联预设库 ✓**（**惰性解析一次 ✓**）。
+ *  **∴ 不做 `validate_library` ✗**（**∴ 库与服务端**逐字同一份 ✓ 由 `tool-pwa-preset-library-parity` 看守 ✓，
+ *    **∴ 而服务端自己的 Rust 测试 `every_preset_expands_and_passes_validate_effect` 已证明它合法 ✓** ⇒
+ *    **∴ 本地再校验一遍只是**把同一句话抄第二次 ✗**）。 */
+export function p2PresetLibrary() {
+  if (!P2_PRESET_CACHE) {
+    const raw = JSON.parse(P2_PRESET_RAW);
+    P2_PRESET_CACHE = {
+      version: raw.version,
+      source: raw.source,
+      presets: (raw.presets || []).map(p2PresetWire),
+    };
+  }
+  return P2_PRESET_CACHE;
+}
+
+/** **预设系统的错误 ✗**：`status`／`code`／`detail` 挂在异常上 ⇒ 端点分支统一转成响应 ✓
+ *   （**∴ 服务端全部走 `preset_err = InvalidArgument` ⇒ 400 ✓；
+ *     **∴ 只有「图层不存在」是 `ReferenceNotFound` ⇒ 404 ＋ `context.layer_id` ✓**）。 */
+function p2PresetThrow(status, code, detail, layerId) {
+  const error = new Error(detail);
+  error.__presetError = { status, code, detail, layerId: layerId || null };
+  throw error;
+}
+const p2PresetBad = (detail) => p2PresetThrow(400, "invalid_argument", detail);
+/** **「找不到」那一支 ✗**（**∴ 服务端 `ReferenceNotFound` ⇒ 404 ＋ `context.layer_id` ✓**）。 */
+const p2PresetGone = (detail, layerId) => p2PresetThrow(404, "reference_not_found", detail, layerId);
+
+/** **异常 ⇒ 响应 ✓**（**不是本层的错误 ⇒ 返回 `null` ⇒ 调用方继续抛 ✗**，
+ *   **∴ 绝不把编程错误伪装成 400 ✓**）。 */
+export function p2PresetResponse(error) {
+  const info = error && error.__presetError;
+  if (!info) return null;
+  const body = { ok: false, error: info.code, error_code: info.code, reason: info.detail,
+                 context: { detail: info.detail }, retryable: false, server: false };
+  if (info.layerId) body.context.layer_id = info.layerId;
+  return json(body, info.status);
+}
+
+/** **在库里按 id 找预设 ✗**（**照 `find_preset` ✓：找不到 ⇒ 400 且**列出全部可用 id**✓**）。 */
+export function p2FindPreset(presetId) {
+  const library = p2PresetLibrary();
+  const preset = library.presets.find((p) => p.id === presetId);
+  if (!preset) {
+    p2PresetBad(`未知预设 preset_id：「${presetId}」；可用预设共 ${library.presets.length} 套：`
+      + library.presets.map((p) => p.id).join(" / "));
+  }
+  return preset;
+}
+
+/** **`list_presets` 的摘要项 ✓**（**照 `preset_summary` ✗ 键集逐字 ✓**）。 */
+export function p2PresetSummary(preset) {
+  return {
+    preset_id: preset.id,
+    name_zh: preset.name_zh,
+    name_en: preset.name_en,
+    status: preset.status,
+    tags: preset.tags,
+    suitable: preset.suitable,
+    caution: preset.caution,
+    description: preset.description,
+    correction_baseline: preset.correction.baseline,
+    correction_op_count: preset.correction.ops.length,
+    style_op_count: preset.style_ops.length,
+    knobs: preset.knobs.map((k) => ({ id: k.id, label: k.label, min: k.min, max: k.max,
+                                      default: k.default })),
+    source: preset.source,
+  };
+}
+
+/** **「X 不存在」那句话的通用形状 ✗**（**照 `error.rs:156 missing_reference` 逐字 ✓**：
+ *   **上限 8 个候选 ＋ 第 9 个只用来决定要不要写「…」✓**；**空集是另一句话 ✓**。
+ *   **∴ 一份实现，两处调用 ✓**（**图层 ✗ 与服务端 `log.rs:1198` 过滤存活层 ✓**，
+ *   **对象 ✗ 与服务端 `log.rs:1173` 不过滤（墓碑也在状态里）✓** ⇒
+ *   **谓词由调用方决定，文案只有一份 ✓**——服务端注释写明了这条规则：「各写一份必然漂移 ✗」）。
+ *   **∴ 为什么值得逐字 ✗**：这句话是调用方**下一步做什么**的依据（「现有图层：…」＝可直接抄的名单 ✓）
+ *   ⇒ 少一个逗号都会让人多查一轮 ✓。 */
+export function p2MissingReferenceMessage(kindName, id, keys) {
+  const LIMIT = 8;
+  const ids = [...keys].sort().slice(0, LIMIT + 1);
+  let hint;
+  if (ids.length === 0) hint = `（当前没有任何${kindName}）`;
+  else {
+    const shown = ids.slice(0, LIMIT).join(", ");
+    hint = ids.length > LIMIT ? `（现有${kindName}：${shown} …）` : `（现有${kindName}：${shown}）`;
+  }
+  return `${kindName} ${id} 不存在${hint}`;
+}
+
+/** **「图层不存在」那句话 ✗**（**候选＝**活着**的层并按 id 升序 ✓**，
+ *   **`state.layers` 是 BTreeMap ⇒ `keys()` 天然有序 ✓**）。 */
+export function p2LayerMissingMessage(layers, layerId) {
+  const alive = [...layers.keys()].filter((id) => layers.get(id).alive);
+  return p2MissingReferenceMessage("图层", layerId, alive);
+}
+
+/** **「对象不存在」那句话 ✗**（**候选＝状态里全部对象 ✓ 含墓碑 ✓**，见 `p2StateObjectIds`）。 */
+export function p2ObjectMissingMessage(objectIds, objectId) {
+  return p2MissingReferenceMessage("对象", objectId, objectIds);
+}
+
+/** **递归插值 ✓**（**照 `interpolate` ✗ 四条分支与三条报错文案逐字 ✓**；
+ *   **∴ 对象分支按**排序键**遍历 ✓**（**Rust 的 `Map` 是 BTreeMap ✓** ⇒
+ *   「缺键」时报的是哪个键 ✗ 与输出键序 **都**由它决定 ✓）。 */
+export function p2Interpolate(recipe, neutral, t, what) {
+  if (typeof recipe === "number" && typeof neutral === "number") {
+    return neutral + (recipe - neutral) * t;
+  }
+  if (Array.isArray(recipe) && Array.isArray(neutral)) {
+    if (recipe.length !== neutral.length) {
+      p2PresetBad(`${what} 的配方值与中性值长度不一致（${recipe.length} vs ${neutral.length}），无法逐分量插值`);
+    }
+    return recipe.map((rv, i) => p2Interpolate(rv, neutral[i], t, `${what}[${i}]`));
+  }
+  if (recipe && neutral && typeof recipe === "object" && typeof neutral === "object") {
+    const out = {};
+    for (const key of Object.keys(recipe).sort()) {
+      if (!Object.prototype.hasOwnProperty.call(neutral, key)) {
+        p2PresetBad(`${what} 的中性值缺少键「${key}」，无法插值`);
+      }
+      out[key] = p2Interpolate(recipe[key], neutral[key], t, `${what}.${key}`);
+    }
+    return out;
+  }
+  if (p2JsonDeepEqual(recipe, neutral)) return p2SortedCopy(recipe);
+  p2PresetBad(`${what} 是非数值参数（配方 ${p2JsonText(recipe)} vs 中性 ${p2JsonText(neutral)}），`
+    + "不能用 strength 插值；请把它移出 neutral（作固定参数）或改配方让两端相等");
+}
+
+/** **旋钮映射的插值 ✓**（**照 `interpolate_range`：`interpolate(high, low, t)` ✓**）。 */
+export function p2InterpolateRange(low, high, t, what) {
+  return p2Interpolate(high, low, t, what);
+}
+
+/** **钳制表 ✓**（**照 `clamp_params` ✗ 与 `tools_effect.rs` 的数值检查同口径 ✓**；
+ *   **∴ Rust 用 `match (kind, type_name)` 而 kind 全是 `_` ⇒ 表实际只按类型名取 ✓**。 */
+const P2_PRESET_CLAMPS = {
+  brightness_contrast: [["brightness", -1, 1], ["contrast", 0, 8]],
+  saturation: [["amount", 0, 8]],
+  vibrance: [["amount", 0, 2]],
+  exposure: [["ev", -10, 10]],
+  white_balance: [["temperature", -1, 1], ["tint", -1, 1]],
+  shadows_highlights: [["shadows", -1, 1], ["highlights", -1, 1]],
+  levels: [["black", 0, 0.99], ["white", 0.01, 1], ["gamma", 0.01, 10]],
+  hsl: [["hue", -360, 360], ["saturation", 0, 8], ["lightness", -1, 1]],
+  split_toning: [["balance", -1, 1], ["amount", 0, 1]],
+  black_and_white: [["amount", 0, 1]],
+  dehaze: [["amount", -1, 1]],
+  clarity: [["amount", -1, 1]],
+  texture: [["amount", -1, 1]],
+  film_grain: [["amount", 0, 1], ["size", 1, 8]],
+  noise: [["amount", 0, 1]],
+  vignette: [["strength", 0, 1], ["radius", 0, 2], ["softness", 0.02, 2]],
+  glow: [["threshold", 0, 1], ["radius", 1, 64], ["intensity", 0, 4]],
+  sharpen: [["amount", 0, 5], ["radius", 1, 8]],
+};
+
+/** **把展开后的参数钳进允许范围 ✓**（**照 `clamp_params` ✗ 三条细则逐字 ✓**：
+ *   **∴ 只认数值 ✓**（**`as_f64` 对串／布尔得 `None` ⇒ 不动 ✓**）；
+ *   **∴ 钳到边界外才回写 ✓**（**`clamped != value` ⇒ 原位保留 ✓**）；
+ *   **∴ 影调数组 `shadows`／`midtones`／`highlights` 逐分量钳 ±1 ✓**（**只有数组才处理 ✓**）。 */
+export function p2ClampPresetParams(typeName, params) {
+  const checks = P2_PRESET_CLAMPS[typeName] || [];
+  if (!params || typeof params !== "object" || Array.isArray(params)) return params;
+  const clampOne = (value, low, high) => (value < low ? low : value > high ? high : value);
+  for (const [key, low, high] of checks) {
+    const value = params[key];
+    if (typeof value !== "number") continue;
+    const clamped = clampOne(value, low, high);
+    if (clamped !== value) params[key] = clamped;
+  }
+  for (const band of ["shadows", "midtones", "highlights"]) {
+    const array = params[band];
+    if (!Array.isArray(array)) continue;
+    for (let i = 0; i < array.length; i++) {
+      if (typeof array[i] === "number") array[i] = clampOne(array[i], -1, 1);
+    }
+  }
+  return params;
+}
+
+/** **展开一套预设 ✓**（**照 `expand_preset` ✗ 纯函数 ✓**：
+ *   **① strength 合法性 → ② 旋钮**全量**校验（按排序键 ✓）→ ③ 修正段原样＋钳制 →
+ *     ④ 风格段逐参数插值（**`black_and_white` 的 `amount` 中性值恒 0 ✓**）→
+ *     ⑤ 旋钮覆盖（只动风格段 ✓）→ ⑥ 风格段再统一钳制 ✓**。
+ *   **∴ 返回的每一项已带确定性 `object_id` ✓**（**`preset_{id}_{c|s}_{NN}_{type}` ✓**。 */
+export function p2ExpandPreset(preset, strength, knobs, includeCorrection) {
+  if (!Number.isFinite(strength) || !(strength >= 0 && strength <= 1)) {
+    p2PresetBad(`预设「${preset.id}」的 strength 必须是 [0, 1] 内的有限数，得到 ${p2RustNum(strength)}`);
+  }
+  const knobNames = Object.keys(knobs || {}).sort();
+  for (const key of knobNames) {
+    const knob = preset.knobs.find((k) => k.id === key);
+    if (!knob) {
+      p2PresetBad(`预设「${preset.id}」没有旋钮「${key}」；可用旋钮：${preset.knobs.map((k) => k.id).join(" / ")}`);
+    }
+    const value = knobs[key];
+    if (typeof value !== "number") {
+      p2PresetBad(`预设「${preset.id}」的旋钮「${key}」必须是数字，得到 ${p2JsonText(value)}`);
+    }
+    if (!Number.isFinite(value) || !(value >= knob.min && value <= knob.max)) {
+      p2PresetBad(`预设「${preset.id}」的旋钮「${key}」必须在 [${p2RustNum(knob.min)}, ${p2RustNum(knob.max)}] 内，`
+        + `得到 ${p2RustNum(value)}`);
+    }
+  }
+  const ops = [];
+  if (includeCorrection) {
+    preset.correction.ops.forEach((op, index) => {
+      const params = p2ClampPresetParams(op.type, p2SortedCopy(op.params));
+      ops.push({ segment: "correction", index, kind: op.kind, type: op.type, params,
+                 object_id: `preset_${preset.id}_c_${String(index).padStart(2, "0")}_${op.type}` });
+    });
+  }
+  preset.style_ops.forEach((op, index) => {
+    const recipe = op.params;
+    if (!recipe || typeof recipe !== "object" || Array.isArray(recipe)) {
+      p2PresetBad(`预设「${preset.id}」的 ${op.type} 操作 params 必须是对象`);
+    }
+    const expanded = {};
+    for (const key of Object.keys(recipe).sort()) {
+      const recipeValue = recipe[key];
+      let value;
+      if (Object.prototype.hasOwnProperty.call(op.neutral, key)) {
+        value = p2Interpolate(recipeValue, op.neutral[key], strength,
+          `预设「${preset.id}」${op.type} 的参数 ${key}`);
+      } else if (op.type === "black_and_white" && key === "amount") {
+        // 期 4 D2-2：黑白 op 的 amount 中性值恒 0（数据里写没写都按 0 算 ✓）。
+        value = p2Interpolate(recipeValue, 0, strength,
+          `预设「${preset.id}」${op.type} 的参数 ${key}`);
+      } else {
+        value = p2SortedCopy(recipeValue); // 固定参数：strength 不动
+      }
+      expanded[key] = value;
+    }
+    ops.push({ segment: "style", index, kind: op.kind, type: op.type, params: expanded,
+               object_id: `preset_${preset.id}_s_${String(index).padStart(2, "0")}_${op.type}` });
+  });
+  for (const key of knobNames) {
+    const knob = preset.knobs.find((k) => k.id === key);
+    const v = knobs[key];
+    const t = (v - knob.min) / (knob.max - knob.min);
+    for (const target of knob.targets) {
+      const op = ops.find((o) => o.segment === "style" && o.index === target.op);
+      if (!op) {
+        // 服务端这里是 `.expect()` ⇒ panic；本地如实报错而不是静默跳过 ✗。
+        p2PresetBad(`预设「${preset.id}」的旋钮「${key}」指向风格段第 ${target.op} 笔，但库里没有它（库数据非法）`);
+      }
+      const mapped = p2InterpolateRange(target.range[0], target.range[1], t,
+        `预设「${preset.id}」旋钮「${key}」的目标参数 ${target.param}`);
+      op.params[target.param] = mapped;
+    }
+  }
+  for (const op of ops) if (op.segment === "style") p2ClampPresetParams(op.type, op.params);
+  return ops;
+}
+
+/** **解析 `strength`／`knobs`／`include_correction` ✓**（**照 `parse_expand_args` ✗ 三条文案逐字 ✓**；
+ *   **∴ 显式 `null` 走到这里 ⇒ 「必须是数字／对象／布尔 ✗ 得到 null」✓**（**schema 只放行**可选**键的 null ✓**）。 */
+export function p2ParsePresetExpandArgs(preset, args) {
+  const body = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+  let strength = 1.0;
+  if (body.strength !== undefined) {
+    if (typeof body.strength !== "number") {
+      p2PresetBad(`预设「${preset.id}」的 strength 必须是数字，得到 ${p2JsonText(body.strength)}`);
+    }
+    strength = body.strength;
+  }
+  let knobs = {};
+  if (body.knobs !== undefined) {
+    if (!body.knobs || typeof body.knobs !== "object" || Array.isArray(body.knobs)) {
+      p2PresetBad(`预设「${preset.id}」的 knobs 必须是对象（旋钮 id → 数值），得到 ${p2JsonText(body.knobs)}`);
+    }
+    knobs = p2SortedCopy(body.knobs);
+  }
+  let includeCorrection = true;
+  if (body.include_correction !== undefined) {
+    if (typeof body.include_correction !== "boolean") {
+      p2PresetBad(`预设「${preset.id}」的 include_correction 必须是布尔，得到 ${p2JsonText(body.include_correction)}`);
+    }
+    includeCorrection = body.include_correction;
+  }
+  return { strength, knobs, includeCorrection };
+}
+
+/** **框架级参数 ✓**（**照 `FRAMEWORK_PARAMS`：`doc_id`／`actor`／`session` ⇒ 校验时放行 ✓**）。 */
+export const P2_PRESET_FRAMEWORK = ["doc_id", "actor", "session"];
+
+/** **`json_type_name` ✓**（**照服务端 ✗ 六个名字逐字 ✓**。 */
+function p2JsonTypeName(value) {
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "boolean") return "boolean";
+  if (typeof value === "number") return "number";
+  if (typeof value === "string") return "string";
+  if (Array.isArray(value)) return "array";
+  if (typeof value === "object") return "object";
+  return "null";
+}
+
+/** **入口参数校验 ✓**（**照 `validate_args` 的**三段顺序**✗ 实测过 ✓**：
+ *   **① 未知参数**（按排序键取第一个 ✗ 框架级除外）**→ ② 必填缺席**（按声明顺序）**→
+ *   ③ 声明类型不符**（按声明顺序）**；可选键显式传 `null` ⇒ 视为未提供 ✓**。
+ *   @param {string} toolName 工具名（进错误文案 ✓）
+ *   @param {Array<{name:string,kind:string,required:boolean}>} declared **声明顺序**的表 ✓
+ *   @param {object} body 请求体 */
+export function p2PresetSchemaCheck(toolName, declared, body) {
+  const object = body && typeof body === "object" && !Array.isArray(body) ? body : {};
+  for (const key of Object.keys(object).sort()) {
+    if (P2_PRESET_FRAMEWORK.includes(key)) continue;
+    if (!declared.some((p) => p.name === key)) {
+      const accepted = declared.length ? declared.map((p) => p.name).join(", ") : "无";
+      p2PresetBad(`${toolName} 不接受参数 ${key}（拼写错误？）；可用参数：${accepted}；`
+        + `框架级参数：${P2_PRESET_FRAMEWORK.join(", ")}`);
+    }
+  }
+  for (const param of declared) {
+    if (!Object.prototype.hasOwnProperty.call(object, param.name)) {
+      if (param.required) p2PresetBad(`缺少必填参数 ${param.name}`);
+      continue;
+    }
+    const value = object[param.name];
+    if (value === null && !param.required) continue;
+    const matches = param.kind === "string" ? typeof value === "string"
+      : param.kind === "number" ? typeof value === "number"
+      : param.kind === "boolean" ? typeof value === "boolean"
+      : param.kind === "object" ? value !== null && typeof value === "object" && !Array.isArray(value)
+      : param.kind === "array" ? Array.isArray(value)
+      // 声明表里出现没实现的类型 ⇒ 响亮报错，不像 `true` 那样静默放行 ✗。
+      : p2PresetBad(`本地预设 schema 未实现参数类型 ${param.kind}（请补，不要静默放行）`);
+    if (!matches) {
+      p2PresetBad(`参数 ${param.name} 类型应为 ${param.kind}，实际为 ${p2JsonTypeName(value)}`);
+    }
+  }
+  return object;
+}
+
+/** **`render` 参数校验 ✓**（**照 `parse_preview_render` ✗ 五段文案逐字 ✓**：
+ *   **缺席 ⇒ 不渲染 ✓；在场 ⇒ 严格校验 ✗ 未知键／非法 max_edge／非法 format 一律响亮拒绝 ✓**。
+ *   **∴ 本地没有单层裸像素渲染 ⇒ 校验通过后端点仍回 501 ✗**（**先校验再 501 ⇒ 与服务的错误口径一致 ✓**。 */
+export function p2PresetParseRender(args) {
+  const body = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+  if (!Object.prototype.hasOwnProperty.call(body, "render")) return null;
+  const render = body.render;
+  if (!render || typeof render !== "object" || Array.isArray(render)) {
+    p2PresetBad(`preview_preset 的 render 必须是对象（{max_edge, format}），得到 ${p2JsonText(render)}`);
+  }
+  for (const key of Object.keys(render).sort()) {
+    if (key !== "max_edge" && key !== "format") {
+      p2PresetBad(`preview_preset 的 render 不认键「${key}」；只认 max_edge / format`);
+    }
+  }
+  let maxEdge = 512;
+  if (render.max_edge !== undefined) {
+    const value = render.max_edge;
+    const isInt = typeof value === "number" && Number.isFinite(value) &&
+      Math.floor(value) === value && value >= 0;
+    if (!isInt) p2PresetBad(`preview_preset 的 render.max_edge 必须是整数，得到 ${p2JsonText(value)}`);
+    if (!(value >= 128 && value <= 2048)) {
+      p2PresetBad(`preview_preset 的 render.max_edge 必须在 [128, 2048] 内，得到 ${String(value)}`);
+    }
+    maxEdge = value;
+  }
+  let format = "jpeg";
+  if (render.format !== undefined) {
+    if (render.format !== "png" && render.format !== "jpeg") {
+      p2PresetBad(`preview_preset 的 render.format 只收 png / jpeg，得到 ${p2JsonText(render.format)}`);
+    }
+    format = render.format;
+  }
+  return { maxEdge, format };
+}
+
+/** **尺度诚实标注 ✓**（**照 `preview_scale_notes` ✗ 名单与文案逐字 ✓**：
+ *   **`clarity`／`texture`／`glow` ⇒ 点名 ✓；不含 ⇒ 空串 ✓**。 */
+export const P2_PRESET_SCALE_SENSITIVE = ["clarity", "texture", "glow"];
+export function p2PresetScaleNotes(ops) {
+  const found = [];
+  for (const op of ops || []) {
+    if (P2_PRESET_SCALE_SENSITIVE.includes(op.type) && !found.includes(op.type)) found.push(op.type);
+  }
+  if (!found.length) return "";
+  return `代理图按长边 ≤ max_edge 降采样后渲染：${found.join("、")} 在代理分辨率下效果与成品不同`
+    + "（像素半径/邻域阈值随分辨率变化），逐像素颜色操作与几何归一化的 vignette 不受影响。";
+}
+
+// <<P2_PRESET_RAW:begin>>
+const P2_PRESET_RAW = String.raw`{
+ "version": 1,
+ "source": "《修片风格体系速查与配方》(upload.html) + 2026-10-23 实测批次结论 (chatlog)",
+ "presets": [
+  {
+   "id": "japanese_airy",
+   "name_zh": "小清新",
+   "name_en": "Japanese Airy",
+   "status": "established",
+   "tags": [
+    "人像",
+    "日光",
+    "高调"
+   ],
+   "suitable": [
+    "晴日户外人像",
+    "海边",
+    "白建筑",
+    "校园"
+   ],
+   "caution": [
+    "夜景（会变灰）",
+    "肤色易被青污染"
+   ],
+   "description": "高调、青绿环境、透肤、空气感；比韩系更通透、比糖水更克制。",
+   "notes": "已验证（补充找回的截图证据，2026-10-23）：以「JP LIGHT FINAL」在三素材上深挖验证——圣托里尼·伊亚小镇、罗弗敦·红房子（雾天变体格标注 JP CLEAN fog adapt）、树荫下人像。此前『蒙灰纱』问题已换轻校正基线。unsupported：局部眼睛锐化需蒙版工具，不在预设内。逐通道 HSL（绿向青/提明）并非引擎缺失（2026-10-25 纠错）：引擎已有 8 段 HSL（hsl_with_ranges，filter.rs:1263），本预设未使用，仍用全局 hsl + selective_color 近似。【全库说明】22 套预设 ops 里 ranges 与 hsl 类型均为零使用；重写 ops 真正用 ranges/hsl 待 v5 批量收尾 + 期 2 落地后另行。截图为 1170px 参考图，非原始渲染。半量烘焙为 strength-1 默认（2026-10-26）：1.0 在新语义下仍过强（风格步 Lstd −32.0%、p2 0.317 超 0.30 警告、1:1 一眼发灰发雾），风格段 9 ops 取半（levels black 0.04→0.02，其余与 v5 半量 ops 相同），修正段不动。",
+   "correction": {
+    "baseline": "light",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.05
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.1,
+       "highlights": -0.1
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": 0.225
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 0.94
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0.0,
+        0.00245
+       ],
+       [
+        0.0052,
+        0.010249999999999999
+       ],
+       [
+        0.0143,
+        0.02315
+       ],
+       [
+        0.0293,
+        0.0421
+       ],
+       [
+        0.0509,
+        0.06720000000000001
+       ],
+       [
+        0.0796,
+        0.09784999999999999
+       ],
+       [
+        0.116,
+        0.13415
+       ],
+       [
+        0.1607,
+        0.17715
+       ],
+       [
+        0.214,
+        0.22845
+       ],
+       [
+        0.2765,
+        0.2898
+       ],
+       [
+        0.3485,
+        0.3611
+       ],
+       [
+        0.4304,
+        0.4417
+       ],
+       [
+        0.5225,
+        0.53035
+       ],
+       [
+        0.6252,
+        0.6267499999999999
+       ],
+       [
+        0.7388,
+        0.73165
+       ],
+       [
+        0.8637,
+        0.8449500000000001
+       ],
+       [
+        1.0,
+        0.96655
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        0.0052,
+        0.0052
+       ],
+       [
+        0.0143,
+        0.0143
+       ],
+       [
+        0.0293,
+        0.0293
+       ],
+       [
+        0.0509,
+        0.0509
+       ],
+       [
+        0.0796,
+        0.0796
+       ],
+       [
+        0.116,
+        0.116
+       ],
+       [
+        0.1607,
+        0.1607
+       ],
+       [
+        0.214,
+        0.214
+       ],
+       [
+        0.2765,
+        0.2765
+       ],
+       [
+        0.3485,
+        0.3485
+       ],
+       [
+        0.4304,
+        0.4304
+       ],
+       [
+        0.5225,
+        0.5225
+       ],
+       [
+        0.6252,
+        0.6252
+       ],
+       [
+        0.7388,
+        0.7388
+       ],
+       [
+        0.8637,
+        0.8637
+       ],
+       [
+        1.0,
+        1.0
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.96
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "vibrance",
+     "params": {
+      "amount": 0.175
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "white_balance",
+     "params": {
+      "temperature": 0.03,
+      "tint": 0.02
+     },
+     "neutral": {
+      "temperature": 0,
+      "tint": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.175,
+      "highlights": -0.15
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "levels",
+     "params": {
+      "black": 0.02,
+      "white": 1.0,
+      "gamma": 1.01
+     },
+     "neutral": {
+      "black": 0,
+      "white": 1,
+      "gamma": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "texture",
+     "params": {
+      "amount": -0.03
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "fade",
+     "label": "空气感",
+     "description": "曲线首点抬黑点量（curves.points 首点输出），越大越柔越雾；注意 levels.black 是输入黑点、方向相反，不用它做抬升",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 2,
+       "param": "points",
+       "range": [
+        [
+         [
+          0.0,
+          0.0
+         ],
+         [
+          0.0052,
+          0.0064
+         ],
+         [
+          0.0143,
+          0.0185
+         ],
+         [
+          0.0293,
+          0.0376
+         ],
+         [
+          0.0509,
+          0.0637
+         ],
+         [
+          0.0796,
+          0.0961
+         ],
+         [
+          0.116,
+          0.1345
+         ],
+         [
+          0.1607,
+          0.1796
+         ],
+         [
+          0.214,
+          0.233
+         ],
+         [
+          0.2765,
+          0.2963
+         ],
+         [
+          0.3485,
+          0.3689
+         ],
+         [
+          0.4304,
+          0.4501
+         ],
+         [
+          0.5225,
+          0.5382
+         ],
+         [
+          0.6252,
+          0.6327
+         ],
+         [
+          0.7388,
+          0.734
+         ],
+         [
+          0.8637,
+          0.8416
+         ],
+         [
+          1.0,
+          0.9551
+         ]
+        ],
+        [
+         [
+          0.0,
+          0.0134
+         ],
+         [
+          0.0052,
+          0.0285
+         ],
+         [
+          0.0143,
+          0.0495
+         ],
+         [
+          0.0293,
+          0.0757
+         ],
+         [
+          0.0509,
+          0.1065
+         ],
+         [
+          0.0796,
+          0.1399
+         ],
+         [
+          0.116,
+          0.1756
+         ],
+         [
+          0.1607,
+          0.2155
+         ],
+         [
+          0.214,
+          0.2633
+         ],
+         [
+          0.2765,
+          0.3224
+         ],
+         [
+          0.3485,
+          0.3923
+         ],
+         [
+          0.4304,
+          0.4707
+         ],
+         [
+          0.5225,
+          0.5542
+         ],
+         [
+          0.6252,
+          0.6414
+         ],
+         [
+          0.7388,
+          0.734
+         ],
+         [
+          0.8637,
+          0.8313
+         ],
+         [
+          1.0,
+          0.9331
+         ]
+        ]
+       ]
+      }
+     ]
+    },
+    {
+     "id": "softness",
+     "label": "柔和度",
+     "description": "texture 负值量，越大越柔",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 8,
+       "param": "amount",
+       "range": [
+        -0.25,
+        0.0
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ccd",
+   "name_zh": "模拟 CCD",
+   "name_en": "CCD Simulation",
+   "status": "established",
+   "tags": [
+    "夜景",
+    "抓拍",
+    "直闪"
+   ],
+   "suitable": [
+    "直闪夜拍",
+    "日常抓拍",
+    "朋友聚会"
+   ],
+   "caution": [
+    "大光比风光（宽容度对不上）"
+   ],
+   "description": "低宽容、硬切高光、冷闪偏色、数字噪点；模拟 2000 年代 CCD 卡片机成像链而非只加颗粒。",
+   "notes": "已验证（补充找回的截图证据，2026-10-23）：以「CCD FINAL」在三素材上深挖验证——圣托里尼·伊亚小镇、罗弗敦·红房子、树荫下人像，与小清新同为当时深挖的两套。unsupported：直闪光效（拍摄端决定项）与真实色差/紫边（属导入期 raw_options）、PS 高光 glow 复制层法；此处以 noise 数字噪点 + 硬 S 曲线 + 冷偏近似。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.22
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.0509,
+        0.0301
+       ],
+       [
+        0.214,
+        0.214
+       ],
+       [
+        0.5225,
+        0.6209
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.0509,
+        0.0509
+       ],
+       [
+        0.214,
+        0.214
+       ],
+       [
+        0.5225,
+        0.5225
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "white_balance",
+     "params": {
+      "temperature": -0.12,
+      "tint": -0.06
+     },
+     "neutral": {
+      "temperature": 0,
+      "tint": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.15
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": -0.15
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "noise",
+     "params": {
+      "amount": 0.16,
+      "seed": 42
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "vignette",
+     "params": {
+      "strength": 0.16,
+      "radius": 0.75,
+      "softness": 0.8
+     },
+     "neutral": {
+      "strength": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "noise",
+     "label": "数字噪点",
+     "description": "noise.amount，CCD 彩噪/亮度噪的量",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 5,
+       "param": "amount",
+       "range": [
+        0.0,
+        0.35
+       ]
+      }
+     ]
+    },
+    {
+     "id": "cold",
+     "label": "冷闪偏色",
+     "description": "white_balance.temperature，越小越冷青",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 2,
+       "param": "temperature",
+       "range": [
+        -0.3,
+        0.05
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "japanese_film",
+   "name_zh": "日系胶片",
+   "name_en": "Japanese Film",
+   "status": "established",
+   "tags": [
+    "人像",
+    "胶片",
+    "阴天"
+   ],
+   "suitable": [
+    "阴天",
+    "窗光",
+    "制服/校园题材"
+   ],
+   "caution": [
+    "强顺光金色时刻（绿偏变脏）"
+   ],
+   "description": "清、淡、略青绿、皮肤偏白皙，Fuji 400H 系。",
+   "notes": "未在实测批次中，未目检。unsupported：颗粒的粗糙度参数 Yanshi film_grain 只有 amount/size/seed。期 5 目检成立：真照片三格行（d5600_night 夜街）已验收。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": 0.35
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.02,
+      "contrast": 0.88
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0.0039
+       ],
+       [
+        0.0509,
+        0.0732
+       ],
+       [
+        0.214,
+        0.233
+       ],
+       [
+        0.5225,
+        0.5225
+       ],
+       [
+        1,
+        0.9114
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.0509,
+        0.0509
+       ],
+       [
+        0.214,
+        0.214
+       ],
+       [
+        0.5225,
+        0.5225
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.9
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "white_balance",
+     "params": {
+      "temperature": -0.05,
+      "tint": -0.04
+     },
+     "neutral": {
+      "temperature": 0,
+      "tint": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.03,
+       0.05,
+       0.03
+      ],
+      "highlights": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "balance": 0.0,
+      "amount": 0.35
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.22,
+      "size": 3,
+      "seed": 7
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "fade",
+     "label": "褪色",
+     "description": "曲线由 strength 主导；此旋钮改 split_toning 阴影青绿量",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 5,
+       "param": "shadows",
+       "range": [
+        [
+         -0.08,
+         0.0,
+         0.0
+        ],
+        [
+         0.02,
+         0.1,
+         0.08
+        ]
+       ]
+      }
+     ]
+    },
+    {
+     "id": "grain",
+     "label": "颗粒",
+     "description": "film_grain.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 6,
+       "param": "amount",
+       "range": [
+        0.0,
+        0.4
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "retro_film",
+   "name_zh": "胶片复古",
+   "name_en": "Retro Film",
+   "status": "fixed_v2",
+   "tags": [
+    "人像",
+    "胶片",
+    "金色时刻"
+   ],
+   "suitable": [
+    "婚礼",
+    "金色时刻人像",
+    "下坡路/街道日景"
+   ],
+   "caution": [
+    "神社夜景（天空仍偏棕橙，v2 未完全修透）",
+    "室内钨丝灯未校白平衡时暖上加暖"
+   ],
+   "description": "暖金、奶油肤、怀旧但不脏，Kodak Portra 系；v2 暖度减半。",
+   "notes": "v2：白天定版；夜景对暖偏置格外敏感，天空仍棕橙，未完全修透，已如实标注。曝光键为 ev（曾写错键，已修正）。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": 0.1
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 0.88
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0.003
+       ],
+       [
+        0.0509,
+        0.0621
+       ],
+       [
+        0.214,
+        0.2235
+       ],
+       [
+        0.5225,
+        0.5225
+       ],
+       [
+        1,
+        0.9557
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.0509,
+        0.0509
+       ],
+       [
+        0.214,
+        0.214
+       ],
+       [
+        0.5225,
+        0.5225
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.94
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "white_balance",
+     "params": {
+      "temperature": 0.1,
+      "tint": 0.02
+     },
+     "neutral": {
+      "temperature": 0,
+      "tint": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       0.07,
+       0.03,
+       -0.03
+      ],
+      "highlights": [
+       0.05,
+       0.02,
+       -0.02
+      ],
+      "balance": 0.05,
+      "amount": 0.1
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.05,
+      "highlights": -0.2
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.3,
+      "size": 3,
+      "seed": 11
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "vignette",
+     "params": {
+      "strength": 0.11,
+      "radius": 0.8,
+      "softness": 0.9
+     },
+     "neutral": {
+      "strength": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "levels",
+     "params": {
+      "black": 0.02,
+      "white": 1.0,
+      "gamma": 1.0
+     },
+     "neutral": {
+      "black": 0,
+      "white": 1,
+      "gamma": 1
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "warmth",
+     "label": "暖度",
+     "description": "white_balance.temperature，夜景慎用大值",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 4,
+       "param": "temperature",
+       "range": [
+        -0.05,
+        0.22
+       ]
+      }
+     ]
+    },
+    {
+     "id": "grain",
+     "label": "颗粒",
+     "description": "film_grain.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 7,
+       "param": "amount",
+       "range": [
+        0.0,
+        0.4
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "hong_kong",
+   "name_zh": "港风",
+   "name_en": "Hong Kong",
+   "status": "fixed_v2",
+   "tags": [
+    "夜景",
+    "街景",
+    "霓虹"
+   ],
+   "suitable": [
+    "夜街",
+    "招牌",
+    "茶餐厅",
+    "地铁"
+   ],
+   "caution": [
+    "白天须降强度",
+    "肤色发绿是头号失败模式"
+   ],
+   "description": "浓、潮、红绿霓虹对撞、潮湿夜街，王家卫式；v2 全局色偏减半并保红。",
+   "notes": "v1 与国风同病：全局色偏开满。v2 已减半：split_toning 阴影青绿与全局饱和都按 v1 的约一半落值，红靠 selective_color 的 reds 保护。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.24
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.22
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.1,
+       0.08,
+       0.1
+      ],
+      "highlights": [
+       0.1,
+       0.04,
+       -0.05
+      ],
+      "balance": 0.0,
+      "amount": 0.16
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "selective_color",
+     "params": {
+      "adjust": {
+       "reds": [
+        -0.222,
+        0.0,
+        0.111,
+        0.0
+       ],
+       "greens": [
+        0.148,
+        0.0,
+        -0.148,
+        0.037
+       ]
+      }
+     },
+     "neutral": {
+      "adjust": {
+       "reds": [
+        0,
+        0,
+        0,
+        0
+       ],
+       "greens": [
+        0,
+        0,
+        0,
+        0
+       ]
+      }
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "white_balance",
+     "params": {
+      "temperature": -0.08,
+      "tint": 0.0
+     },
+     "neutral": {
+      "temperature": 0,
+      "tint": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.2
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.05,
+      "highlights": -0.35
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.2,
+      "size": 2,
+      "seed": 5
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "vignette",
+     "params": {
+      "strength": 0.22,
+      "radius": 0.75,
+      "softness": 0.8
+     },
+     "neutral": {
+      "strength": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "neon",
+     "label": "霓虹浓艳",
+     "description": "saturation.amount，v2 基准 1.18",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 1,
+       "param": "amount",
+       "range": [
+        1.0,
+        1.45
+       ]
+      }
+     ]
+    },
+    {
+     "id": "teal",
+     "label": "青绿阴影",
+     "description": "split_toning.shadows 的青绿量",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 2,
+       "param": "shadows",
+       "range": [
+        [
+         -0.04,
+         0.03,
+         0.04
+        ],
+        [
+         -0.18,
+         0.14,
+         0.18
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "korean",
+   "name_zh": "韩系",
+   "name_en": "Korean Creamy",
+   "status": "established",
+   "tags": [
+    "人像",
+    "高调",
+    "奶油"
+   ],
+   "suitable": [
+    "棚拍",
+    "探店",
+    "情侣/闺蜜人像"
+   ],
+   "caution": [
+    "硬光正午（糊成一片）",
+    "男性/街头题材显假"
+   ],
+   "description": "奶油、粉彩、干净、白皙；柔焦比小清新敢下手。",
+   "notes": "实测批次蒙灰纱，换轻校正基线重渲 2 张，待最终目检。期 5 目检成立：真照片三格行（cl_chateau 城堡）已验收。",
+   "correction": {
+    "baseline": "light",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.05
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.1,
+       "highlights": -0.1
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": 0.15
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.05,
+      "contrast": 0.6
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "levels",
+     "params": {
+      "black": 0.1,
+      "white": 1.0,
+      "gamma": 1.05
+     },
+     "neutral": {
+      "black": 0,
+      "white": 1,
+      "gamma": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.45,
+      "highlights": -0.45
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "vibrance",
+     "params": {
+      "amount": 0.2
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.02
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "texture",
+     "params": {
+      "amount": -0.14
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": -0.12
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "cream",
+     "label": "奶油柔焦",
+     "description": "texture.amount 负值量",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 6,
+       "param": "amount",
+       "range": [
+        -0.3,
+        0.0
+       ]
+      }
+     ]
+    },
+    {
+     "id": "bright",
+     "label": "明亮",
+     "description": "exposure.ev",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 0,
+       "param": "ev",
+       "range": [
+        -0.1,
+        0.4
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "western_cool",
+   "name_zh": "欧美清冷",
+   "name_en": "Western Cool",
+   "status": "established",
+   "tags": [
+    "风光",
+    "建筑",
+    "人像"
+   ],
+   "suitable": [
+    "建筑",
+    "汽车",
+    "健身",
+    "男性人像",
+    "雪景",
+    "港口"
+   ],
+   "caution": [
+    "婴幼儿/婚礼柔情题材显冷酷",
+    "肤色变青先查黄色压过头"
+   ],
+   "description": "冷峻、硬朗、蓝灰、杂志感；研究名「欧美冷调」，实测批次名「欧美清冷」，同一套。",
+   "notes": "实测本批最好：日落暖天配冷蓝阴影对撞干净；汉堡港微微去饱和的蓝灰，高级感成立。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.2
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "white_balance",
+     "params": {
+      "temperature": -0.14,
+      "tint": 0.0
+     },
+     "neutral": {
+      "temperature": 0,
+      "tint": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.08,
+       0.02,
+       0.14
+      ],
+      "highlights": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "balance": -0.1,
+      "amount": 0.35
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.92
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "selective_color",
+     "params": {
+      "adjust": {
+       "yellows": [
+        0.0,
+        0.0,
+        -0.555,
+        0.0
+       ],
+       "blues": [
+        0.0,
+        0.0,
+        0.278,
+        0.0
+       ]
+      }
+     },
+     "neutral": {
+      "adjust": {
+       "yellows": [
+        0,
+        0,
+        0,
+        0
+       ],
+       "blues": [
+        0,
+        0,
+        0,
+        0
+       ]
+      }
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "texture",
+     "params": {
+      "amount": 0.2
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.2
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "sharpen",
+     "params": {
+      "amount": 0.7,
+      "radius": 2
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "cold",
+     "label": "冷感",
+     "description": "white_balance.temperature，越小越冷",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 1,
+       "param": "temperature",
+       "range": [
+        -0.3,
+        0.05
+       ]
+      }
+     ]
+    },
+    {
+     "id": "hard",
+     "label": "硬朗",
+     "description": "clarity.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 6,
+       "param": "amount",
+       "range": [
+        0.0,
+        0.4
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "cinema",
+   "name_zh": "电影感",
+   "name_en": "Cinematic Teal-Orange",
+   "status": "fixed_v2",
+   "tags": [
+    "夜景",
+    "街景",
+    "叙事"
+   ],
+   "suitable": [
+    "旅行",
+    "街头",
+    "叙事人像",
+    "夜景灯火"
+   ],
+   "caution": [
+    "原片无橙色主体也无青色环境时硬套会假",
+    "分级饱和过头卡通化"
+   ],
+   "description": "青影、橙肤、哑光、叙事；v2 青只压阴影、橙留亮部，不再全局泼色。",
+   "notes": "v1 两张全泡进青色（威尼斯暖灯火被灭、罗弗敦海面成青汤）。v2 只用 split_toning 分段染色，全局饱和不再推高。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.26
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0.0039
+       ],
+       [
+        0.0509,
+        0.047
+       ],
+       [
+        0.214,
+        0.214
+       ],
+       [
+        0.5225,
+        0.5542
+       ],
+       [
+        1,
+        0.9551
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.0509,
+        0.0509
+       ],
+       [
+        0.214,
+        0.214
+       ],
+       [
+        0.5225,
+        0.5225
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.12,
+       0.03,
+       0.14
+      ],
+      "highlights": [
+       0.16,
+       0.06,
+       -0.1
+      ],
+      "balance": 0.1,
+      "amount": 0.13
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.08
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "vibrance",
+     "params": {
+      "amount": 0.25
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "levels",
+     "params": {
+      "black": 0.02,
+      "white": 1.0,
+      "gamma": 1.0
+     },
+     "neutral": {
+      "black": 0,
+      "white": 1,
+      "gamma": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.12
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.12,
+      "size": 2,
+      "seed": 3
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "vignette",
+     "params": {
+      "strength": 0.22,
+      "radius": 0.8,
+      "softness": 0.8
+     },
+     "neutral": {
+      "strength": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "teal_orange",
+     "label": "青橙对峙",
+     "description": "split_toning.shadows 青量（高光橙同向由配方固定比）",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 2,
+       "param": "shadows",
+       "range": [
+        [
+         -0.05,
+         0.01,
+         0.06
+        ],
+        [
+         -0.2,
+         0.05,
+         0.22
+        ]
+       ]
+      }
+     ]
+    },
+    {
+     "id": "matte",
+     "label": "哑光",
+     "description": "曲线首点抬黑点量（curves.points 首点输出），越大黑位越抬、越哑光；levels.black 是输入黑点、方向相反，不用它做抬升",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 1,
+       "param": "points",
+       "range": [
+        [
+         [
+          0,
+          0
+         ],
+         [
+          0.0509,
+          0.0451
+         ],
+         [
+          0.214,
+          0.214
+         ],
+         [
+          0.5225,
+          0.5462
+         ],
+         [
+          1,
+          0.9662
+         ]
+        ],
+        [
+         [
+          0,
+          0.01
+         ],
+         [
+          0.0509,
+          0.0593
+         ],
+         [
+          0.214,
+          0.2234
+         ],
+         [
+          0.5225,
+          0.5623
+         ],
+         [
+          1,
+          0.9441
+         ]
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "french",
+   "name_zh": "法式",
+   "name_en": "French Warm",
+   "status": "established",
+   "tags": [
+    "人像",
+    "窗光",
+    "田园"
+   ],
+   "suitable": [
+    "田园",
+    "家居",
+    "窗光人像",
+    "婚礼细节"
+   ],
+   "caution": [
+    "霓虹/都市夜景（冷光被暖脏）",
+    "色温与分级双暖会把白墙变黄墙"
+   ],
+   "description": "慵懒、琥珀、奶油、橄榄绿、午后窗光。",
+   "notes": "实测批次换轻校正基线重渲 2 张，待最终目检。期 5 目检成立：真照片三格行（cl_chateau 城堡）已验收。",
+   "correction": {
+    "baseline": "light",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.05
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.1,
+       "highlights": -0.1
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": 0.28
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.02,
+      "contrast": 0.9
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0.0031
+       ],
+       [
+        0.0509,
+        0.0684
+       ],
+       [
+        0.214,
+        0.233
+       ],
+       [
+        0.5225,
+        0.5382
+       ],
+       [
+        1,
+        0.9114
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.0509,
+        0.0509
+       ],
+       [
+        0.214,
+        0.214
+       ],
+       [
+        0.5225,
+        0.5225
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "white_balance",
+     "params": {
+      "temperature": 0.14,
+      "tint": 0.02
+     },
+     "neutral": {
+      "temperature": 0,
+      "tint": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       0.05,
+       0.03,
+       -0.02
+      ],
+      "highlights": [
+       0.07,
+       0.04,
+       -0.03
+      ],
+      "balance": 0.05,
+      "amount": 0.35
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.94
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": -0.06
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.14,
+      "size": 2,
+      "seed": 13
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "warmth",
+     "label": "琥珀暖",
+     "description": "white_balance.temperature",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 3,
+       "param": "temperature",
+       "range": [
+        0.0,
+        0.28
+       ]
+      }
+     ]
+    },
+    {
+     "id": "grain",
+     "label": "颗粒",
+     "description": "film_grain.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 7,
+       "param": "amount",
+       "range": [
+        0.0,
+        0.3
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "forest",
+   "name_zh": "森系",
+   "name_en": "Forest",
+   "status": "established",
+   "tags": [
+    "风光",
+    "森林",
+    "雾气"
+   ],
+   "suitable": [
+    "森林",
+    "溪流",
+    "雾日",
+    "森系人像"
+   ],
+   "caution": [
+    "城市/建筑显脏绿",
+    "林下人像肤色易被绿污染"
+   ],
+   "description": "墨绿、幽深、雾气、低饱和的绿海；绿要深不要亮。",
+   "notes": "实测：台湾苔藓森林合格（绿更润更深、苔藓与树根质感都在、无伪影）。雾林素材已剔除（九成白雾），仅作解码验证。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": -0.3
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.12
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.2,
+      "highlights": -0.5
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.9
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "selective_color",
+     "params": {
+      "adjust": {
+       "greens": [
+        0.22,
+        0.0,
+        -0.38,
+        0.12
+       ],
+       "yellows": [
+        0.18,
+        0.0,
+        -0.45,
+        0.08
+       ]
+      }
+     },
+     "neutral": {
+      "adjust": {
+       "greens": [
+        0,
+        0,
+        0,
+        0
+       ],
+       "yellows": [
+        0,
+        0,
+        0,
+        0
+       ]
+      }
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.06,
+       0.06,
+       0.05
+      ],
+      "highlights": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "balance": 0.0,
+      "amount": 0.12
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "dehaze",
+     "params": {
+      "amount": -0.03
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "depth",
+     "label": "幽深",
+     "description": "exposure.ev，越小越深",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 0,
+       "param": "ev",
+       "range": [
+        -0.7,
+        -0.1
+       ]
+      }
+     ]
+    },
+    {
+     "id": "mist",
+     "label": "雾气",
+     "description": "dehaze.amount 负值留雾",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 6,
+       "param": "amount",
+       "range": [
+        -0.25,
+        0.1
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "morandi",
+   "name_zh": "莫兰迪",
+   "name_en": "Morandi",
+   "status": "established",
+   "tags": [
+    "静物",
+    "室内",
+    "产品"
+   ],
+   "suitable": [
+    "静物",
+    "极简室内",
+    "服装平铺",
+    "高级感产品",
+    "港口建筑"
+   ],
+   "caution": [
+    "运动/广告/夜景（没精神）",
+    "降饱和过头肤色变灰"
+   ],
+   "description": "灰、粉、雾蓝、燕麦——所有颜色一起降饱和、明度向中高靠拢的粉彩。",
+   "notes": "实测：汉堡港是教科书式莫兰迪（灰米色、低饱和、哑光）。雾林素材不参与评测。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": 0.2
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.03,
+      "contrast": 0.75
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0.006
+       ],
+       [
+        0.0509,
+        0.0783
+       ],
+       [
+        0.214,
+        0.2429
+       ],
+       [
+        0.5225,
+        0.5225
+       ],
+       [
+        1,
+        0.8689
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.0509,
+        0.0509
+       ],
+       [
+        0.214,
+        0.214
+       ],
+       [
+        0.5225,
+        0.5225
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.72
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "vibrance",
+     "params": {
+      "amount": 0.0
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": -0.1
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.02,
+       0.0,
+       0.03
+      ],
+      "highlights": [
+       0.03,
+       0.01,
+       0.0
+      ],
+      "balance": 0.0,
+      "amount": 0.35
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "gray",
+     "label": "灰度",
+     "description": "saturation.amount，越小越灰",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 3,
+       "param": "amount",
+       "range": [
+        0.5,
+        0.9
+       ]
+      }
+     ]
+    },
+    {
+     "id": "matte",
+     "label": "哑光",
+     "description": "曲线由 strength 主导；此旋钮改 contrast",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 1,
+       "param": "contrast",
+       "range": [
+        0.6,
+        0.95
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "dark_moody",
+   "name_zh": "暗黑情绪",
+   "name_en": "Dark Moody",
+   "status": "established",
+   "tags": [
+    "人像",
+    "低调",
+    "静物"
+   ],
+   "suitable": [
+    "黄昏/阴天人像",
+    "咖啡馆",
+    "静物",
+    "男性肖像"
+   ],
+   "caution": [
+    "儿童/婚礼明快题材禁用",
+    "只有黑没有层次 = 左端撞墙"
+   ],
+   "description": "低调、压抑、戏剧，一束光打在主体上。",
+   "notes": "未在实测批次中，未目检。期 5 目检成立：真照片三格行（ojigi_temple 夜庙（竖幅修正版））已验收。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": -0.45
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.22
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.3,
+      "highlights": -0.6
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.82
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.08,
+       0.02,
+       0.1
+      ],
+      "highlights": [
+       0.07,
+       0.03,
+       -0.03
+      ],
+      "balance": 0.0,
+      "amount": 0.35
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.15
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "vignette",
+     "params": {
+      "strength": 0.24,
+      "radius": 0.7,
+      "softness": 0.8
+     },
+     "neutral": {
+      "strength": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.2,
+      "size": 2,
+      "seed": 17
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "dark",
+     "label": "压暗",
+     "description": "exposure.ev",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 0,
+       "param": "ev",
+       "range": [
+        -0.8,
+        -0.1
+       ]
+      }
+     ]
+    },
+    {
+     "id": "vignette",
+     "label": "暗角",
+     "description": "vignette.strength",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 6,
+       "param": "strength",
+       "range": [
+        0.0,
+        0.5
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "black_white",
+   "name_zh": "黑白",
+   "name_en": "B&W",
+   "status": "established",
+   "tags": [
+    "街头",
+    "建筑",
+    "风光"
+   ],
+   "suitable": [
+    "建筑",
+    "街头",
+    "纹理人像",
+    "形态强的风光"
+   ],
+   "caution": [
+    "靠色彩叙事的题材（花海/美食/霓虹）"
+   ],
+   "description": "形态、纹理、灰阶分离；强 S 曲线 + 银盐颗粒。",
+   "notes": "已目检（期 5）：d700 桌游货架真照片三格行，全幅真黑白且灰阶分离优秀（红/绿/蓝/黄盒映射灰阶分明）；saturation 插值到 0 与真 black_and_white op（amount 1.0、缺省 Rec709 权重）像素等价（期 5 双配方对照，mean_abs_diff 0.0001），故保留 saturation 实现——是等价结论而非不得已。black_and_white 自期 4 起有 amount中性值（0 = 恒等），旧「无中性态」障碍已不存在；逐色 B&W Mix 权重仍为未来选项。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.0
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.26
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.0509,
+        0.0331
+       ],
+       [
+        0.214,
+        0.233
+       ],
+       [
+        0.5225,
+        0.6383
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.0509,
+        0.0509
+       ],
+       [
+        0.214,
+        0.214
+       ],
+       [
+        0.5225,
+        0.5225
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.38
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "sharpen",
+     "params": {
+      "amount": 0.8,
+      "radius": 2
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.2,
+      "size": 3,
+      "seed": 19
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "contrast",
+     "label": "灰阶对比",
+     "description": "brightness_contrast.contrast",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 1,
+       "param": "contrast",
+       "range": [
+        1.0,
+        1.6
+       ]
+      }
+     ]
+    },
+    {
+     "id": "grain",
+     "label": "银盐颗粒",
+     "description": "film_grain.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 5,
+       "param": "amount",
+       "range": [
+        0.0,
+        0.4
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "cyberpunk",
+   "name_zh": "赛博朋克",
+   "name_en": "Cyberpunk",
+   "status": "established",
+   "tags": [
+    "夜景",
+    "霓虹",
+    "都市"
+   ],
+   "suitable": [
+    "雨夜霓虹（原片须真有霓虹/LED 光源）"
+   ],
+   "caution": [
+    "日光照片硬套只会得到紫天毒绿"
+   ],
+   "description": "青 + 品红、霓虹、高反差夜、湿地面反光；放大已有色光而非无中生有。",
+   "notes": "chatlog 点名未目检，须补目检才能升内置库。unsupported：LR 校准面板的越界移色用 channel_mixer 近似；霓虹 glow 复制层法用 glow 滤镜近似。期 5 目检成立：真照片三格行（d5600_night 夜街）已验收。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": -0.2
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.28
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.35,
+      "highlights": -0.4
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "channel_mixer",
+     "params": {
+      "matrix": [
+       [
+        1.1,
+        0.15,
+        0.0
+       ],
+       [
+        0.0,
+        0.9,
+        0.25
+       ],
+       [
+        0.2,
+        0.0,
+        1.1
+       ]
+      ],
+      "constants": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     "neutral": {
+      "matrix": [
+       [
+        1,
+        0,
+        0
+       ],
+       [
+        0,
+        1,
+        0
+       ],
+       [
+        0,
+        0,
+        1
+       ]
+      ],
+      "constants": [
+       0,
+       0,
+       0
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.1,
+       0.0,
+       0.16
+      ],
+      "highlights": [
+       0.1,
+       -0.02,
+       0.12
+      ],
+      "balance": 0.0,
+      "amount": 0.35
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.28
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.3
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "glow",
+     "params": {
+      "threshold": 0.6,
+      "radius": 8,
+      "intensity": 0.5
+     },
+     "neutral": {
+      "intensity": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "neon_glow",
+     "label": "霓虹晕",
+     "description": "glow.intensity",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 7,
+       "param": "intensity",
+       "range": [
+        0.0,
+        1.2
+       ]
+      }
+     ]
+    },
+    {
+     "id": "magenta",
+     "label": "品红",
+     "description": "split_toning.highlights 品红量",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 4,
+       "param": "highlights",
+       "range": [
+        [
+         0.04,
+         -0.01,
+         0.05
+        ],
+        [
+         0.18,
+         -0.04,
+         0.2
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "y2k",
+   "name_zh": "Y2K",
+   "name_en": "Y2K",
+   "status": "established",
+   "tags": [
+    "夜景",
+    "派对",
+    "抓拍"
+   ],
+   "suitable": [
+    "派对",
+    "镜面自拍",
+    "夜出朋友合影"
+   ],
+   "caution": [
+    "严肃场合/商业交付禁用",
+    "不要做成暖胶片：Y2K 的黑是硬的、色是数码饱和的"
+   ],
+   "description": "闪光怼脸、低像素、饱和冷色；借 CCD 成像链再推一档。",
+   "notes": "待补图目检。unsupported：日期戳符号与 JPEG 压缩感（导出层的事）不在预设内。期 5 目检成立：真照片三格行（d700_tabletop 桌游货架）已验收。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.03,
+      "contrast": 1.3
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.32
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "white_balance",
+     "params": {
+      "temperature": -0.08,
+      "tint": 0.0
+     },
+     "neutral": {
+      "temperature": 0,
+      "tint": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": -0.15,
+      "highlights": 0.1
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": -0.08
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "noise",
+     "params": {
+      "amount": 0.12,
+      "seed": 23
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "vignette",
+     "params": {
+      "strength": 0.13,
+      "radius": 0.8,
+      "softness": 0.8
+     },
+     "neutral": {
+      "strength": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "pop",
+     "label": "数码浓艳",
+     "description": "saturation.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 1,
+       "param": "amount",
+       "range": [
+        1.0,
+        1.6
+       ]
+      }
+     ]
+    },
+    {
+     "id": "noise",
+     "label": "低像素噪",
+     "description": "noise.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 5,
+       "param": "amount",
+       "range": [
+        0.0,
+        0.3
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "guofeng",
+   "name_zh": "国风",
+   "name_en": "Chinese Ancient / Guochao",
+   "status": "fixed_v2",
+   "tags": [
+    "古建",
+    "人像",
+    "园林"
+   ],
+   "suitable": [
+    "汉服",
+    "古建",
+    "园林",
+    "茶空间",
+    "神社/寺庙"
+   ],
+   "caution": [
+    "现代极简/玻璃建筑只剩偏色",
+    "大红大绿同时拉满变影楼风"
+   ],
+   "description": "朱红、黛青、月白、鎏金；v2 青绿减半，朱红必须保住。",
+   "notes": "v1 青绿过头：神社朱红大门被压发闷。v2 硬约束：红还得是红（selective_color reds 减青保红），青只进阴影。研究名「古风/国潮」，实测名「国风」，同一套。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.02,
+      "contrast": 1.05
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0.0031
+       ],
+       [
+        0.0509,
+        0.0637
+       ],
+       [
+        0.214,
+        0.2234
+       ],
+       [
+        0.5225,
+        0.5382
+       ],
+       [
+        1,
+        0.9331
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.0509,
+        0.0509
+       ],
+       [
+        0.214,
+        0.214
+       ],
+       [
+        0.5225,
+        0.5225
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.06,
+       0.02,
+       0.07
+      ],
+      "highlights": [
+       0.07,
+       0.03,
+       -0.03
+      ],
+      "balance": 0.0,
+      "amount": 0.14
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "selective_color",
+     "params": {
+      "adjust": {
+       "reds": [
+        -0.27,
+        0.0,
+        0.09,
+        0.0
+       ],
+       "greens": [
+        0.18,
+        0.0,
+        -0.18,
+        0.09
+       ],
+       "magentas": [
+        0.0,
+        0.0,
+        -0.36,
+        0.0
+       ]
+      }
+     },
+     "neutral": {
+      "adjust": {
+       "reds": [
+        0,
+        0,
+        0,
+        0
+       ],
+       "greens": [
+        0,
+        0,
+        0,
+        0
+       ],
+       "magentas": [
+        0,
+        0,
+        0,
+        0
+       ]
+      }
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.06
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": -0.02
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.08,
+      "size": 2,
+      "seed": 9
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "vignette",
+     "params": {
+      "strength": 0.09,
+      "radius": 0.8,
+      "softness": 0.9
+     },
+     "neutral": {
+      "strength": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "daiqing",
+     "label": "黛青",
+     "description": "split_toning.shadows 青量（v2 已减半，慎加大）",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 2,
+       "param": "shadows",
+       "range": [
+        [
+         -0.03,
+         0.01,
+         0.03
+        ],
+        [
+         -0.1,
+         0.04,
+         0.12
+        ]
+       ]
+      }
+     ]
+    },
+    {
+     "id": "zhuhong",
+     "label": "朱红",
+     "description": "selective_color.adjust 中 reds 的减青保红量",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 3,
+       "param": "adjust",
+       "range": [
+        {
+         "reds": [
+          -0.05,
+          0.0,
+          0.02,
+          0.0
+         ],
+         "greens": [
+          0.1,
+          0.0,
+          -0.1,
+          0.05
+         ],
+         "magentas": [
+          0.0,
+          0.0,
+          -0.2,
+          0.0
+         ]
+        },
+        {
+         "reds": [
+          -0.25,
+          0.0,
+          0.08,
+          0.0
+         ],
+         "greens": [
+          0.1,
+          0.0,
+          -0.1,
+          0.05
+         ],
+         "magentas": [
+          0.0,
+          0.0,
+          -0.2,
+          0.0
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ins_minimal",
+   "name_zh": "Ins 简约",
+   "name_en": "INS Minimal",
+   "status": "established",
+   "tags": [
+    "探店",
+    "家居",
+    "建筑"
+   ],
+   "suitable": [
+    "探店",
+    "好物分享",
+    "家居",
+    "留白构图",
+    "港口"
+   ],
+   "caution": [
+    "杂乱/多色场景极简不了（构图问题）",
+    "白色过曝丢细节",
+    "暗部勿压太狠"
+   ],
+   "description": "白、净、留白、低饱和；研究名「ins 极简」，实测名「Ins 简约」，同一套。",
+   "notes": "实测一半成立：汉堡港干净简约味成立；圣托里尼暗部压太狠、悬崖成一团黑——本配方阴影只轻提不压，避开该失败模式。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": 0.4
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.0
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "levels",
+     "params": {
+      "black": 0.03,
+      "white": 1.0,
+      "gamma": 1.0
+     },
+     "neutral": {
+      "black": 0,
+      "white": 1,
+      "gamma": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.25,
+      "highlights": -0.2
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.86
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "vibrance",
+     "params": {
+      "amount": 0.15
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.08
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "texture",
+     "params": {
+      "amount": 0.1
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "white",
+     "label": "通透白",
+     "description": "exposure.ev",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 0,
+       "param": "ev",
+       "range": [
+        0.1,
+        0.6
+       ]
+      }
+     ]
+    },
+    {
+     "id": "clean",
+     "label": "低饱和",
+     "description": "saturation.amount，越小越净",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 4,
+       "param": "amount",
+       "range": [
+        0.7,
+        1.0
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "sweet",
+   "name_zh": "糖水",
+   "name_en": "Sweet Portrait",
+   "status": "established",
+   "tags": [
+    "人像",
+    "高调",
+    "粉嫩"
+   ],
+   "suitable": [
+    "少女写真",
+    "闺蜜",
+    "樱花/花海人像"
+   ],
+   "caution": [
+    "男性、纪实、老人题材即灾难",
+    "过度柔焦+过曝丢轮廓"
+   ],
+   "description": "甜、嫩、粉、亮——小清新的「肤色极大化」变体。",
+   "notes": "实测遗留：去辉光对照实验未跑完（定斜切边缘是否辉光滤镜所致）；本配方默认不带 glow 滤镜，glow 只作 knob 可选项，默认 0。换轻校正基线重渲 1 张。期 5 目检成立：真照片三格行（verona_sunset 日落）已验收。",
+   "correction": {
+    "baseline": "light",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.05
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.1,
+       "highlights": -0.1
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": 0.65
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.05,
+      "contrast": 0.75
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0.0049
+       ],
+       [
+        0.0509,
+        0.089
+       ],
+       [
+        0.214,
+        0.2633
+       ],
+       [
+        0.5225,
+        0.5705
+       ],
+       [
+        1,
+        0.9331
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.0509,
+        0.0509
+       ],
+       [
+        0.214,
+        0.214
+       ],
+       [
+        0.5225,
+        0.5225
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.5,
+      "highlights": -0.5
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "levels",
+     "params": {
+      "black": 0.06,
+      "white": 1.0,
+      "gamma": 1.03
+     },
+     "neutral": {
+      "black": 0,
+      "white": 1,
+      "gamma": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.9
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "highlights": [
+       0.06,
+       0.0,
+       0.02
+      ],
+      "balance": 0.1,
+      "amount": 0.35
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "texture",
+     "params": {
+      "amount": -0.2
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": -0.18
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "glow",
+     "params": {
+      "threshold": 0.65,
+      "radius": 8,
+      "intensity": 0.0
+     },
+     "neutral": {
+      "intensity": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "glow",
+     "label": "辉光",
+     "description": "glow.intensity（斜切边缘嫌疑项，默认关，开启须目检边缘）",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 9,
+       "param": "intensity",
+       "range": [
+        0.0,
+        0.8
+       ]
+      }
+     ]
+    },
+    {
+     "id": "sweet",
+     "label": "甜亮",
+     "description": "exposure.ev",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 0,
+       "param": "ev",
+       "range": [
+        0.3,
+        0.9
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "commercial",
+   "name_zh": "商业",
+   "name_en": "Commercial",
+   "status": "established",
+   "tags": [
+    "产品",
+    "广告",
+    "形象照"
+   ],
+   "suitable": [
+    "产品",
+    "广告",
+    "形象照"
+   ],
+   "caution": [
+    "把情绪风格带进商业交付会被退片：黑点抬高=黑位不准、颗粒=噪点"
+   ],
+   "description": "准、净、贵——风格即「没有风格」；只纠偏不移色。",
+   "notes": "chatlog 点名未目检。unsupported：美妆类频率分离/中性灰 D&B 是 PS 像素级技法，Yanshi 无对应专用工具，不在预设内。期 5 目检成立：真照片三格行（z6_stilllife 桌面静物）已验收。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.12
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.03
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "texture",
+     "params": {
+      "amount": 0.2
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.15
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "sharpen",
+     "params": {
+      "amount": 0.7,
+      "radius": 1
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "material",
+     "label": "材质感",
+     "description": "texture.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 2,
+       "param": "amount",
+       "range": [
+        0.0,
+        0.4
+       ]
+      }
+     ]
+    },
+    {
+     "id": "sharp",
+     "label": "锐利",
+     "description": "sharpen.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 4,
+       "param": "amount",
+       "range": [
+        0.0,
+        1.4
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "hdr_landscape",
+   "name_zh": "HDR 风光",
+   "name_en": "HDR Landscape",
+   "status": "fixed_v2",
+   "tags": [
+    "风光",
+    "建筑",
+    "大光比"
+   ],
+   "suitable": [
+    "大光比风光",
+    "建筑"
+   ],
+   "caution": [
+    "雾景、人像禁用 HDR 式拉法",
+    "清晰度/去朦胧过量出光晕"
+   ],
+   "description": "天地全有细节、通透、戏剧化；v2 降全局强度，必须留真黑否则必灰。",
+   "notes": "v1 两张都糊：日落阴影硬抬成绿雾、天空橙溢出；罗弗敦压成灰泥，左边缘有可疑青斑（待单独验）。v2：阴影/高光拉量约减半、dehaze/clarity 小量、levels 保真黑。unsupported：真 HDR 需包围曝光合并 DNG，Yanshi 无合并工具，此为单张伪 HDR。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "shadows_highlights",
+     "params": {
+      "shadows": 0.22,
+      "highlights": -0.3
+     },
+     "neutral": {
+      "shadows": 0,
+      "highlights": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "levels",
+     "params": {
+      "black": 0.03,
+      "white": 0.99,
+      "gamma": 1.0
+     },
+     "neutral": {
+      "black": 0,
+      "white": 1,
+      "gamma": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "dehaze",
+     "params": {
+      "amount": 0.3
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.3
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.15
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "vibrance",
+     "params": {
+      "amount": 0.3
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.08
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.05,
+       0.02,
+       0.08
+      ],
+      "highlights": [
+       0.06,
+       0.02,
+       -0.04
+      ],
+      "balance": 0.0,
+      "amount": 0.35
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "drama",
+     "label": "戏剧化",
+     "description": "clarity.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 3,
+       "param": "amount",
+       "range": [
+        0.0,
+        0.5
+       ]
+      }
+     ]
+    },
+    {
+     "id": "lift",
+     "label": "暗部拉量",
+     "description": "shadows_highlights.shadows（过量出绿雾/灰泥）",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 0,
+       "param": "shadows",
+       "range": [
+        0.04,
+        0.4
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lomo",
+   "name_zh": "LOMO",
+   "name_en": "Lomo",
+   "status": "established",
+   "tags": [
+    "抓拍",
+    "旅行",
+    "生活"
+   ],
+   "suitable": [
+    "生活抓拍",
+    "聚会",
+    "旅行手帐"
+   ],
+   "caution": [
+    "需要色彩准确的场合禁用",
+    "暗角偏重会吃左下细节（在风格本性内）"
+   ],
+   "description": "浓艳、重暗角、不可预测偏色；宝丽来支线见 notes。",
+   "notes": "实测成立：下坡路糖果色与饱和就是 LOMO 本人；圣托里尼暗角偏重但在本性范围内。unsupported：宝丽来 milky fade 支线（白平衡 6000–7500K + 黑点 +30..60）与 Lomo 是两支，本预设只落 Lomo 支；手动加桶形畸变需 lens 调整逐张给，不进预设。",
+   "correction": {
+    "baseline": "full",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.1
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.2,
+       "highlights": -0.25
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "dehaze",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "clarity",
+      "params": {
+       "amount": 0.05
+      },
+      "neutral": {
+       "amount": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 1.38
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.0,
+      "contrast": 1.15
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       -0.06,
+       0.04,
+       0.08
+      ],
+      "highlights": [
+       0.08,
+       0.02,
+       -0.04
+      ],
+      "balance": 0.0,
+      "amount": 0.35
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "vignette",
+     "params": {
+      "strength": 0.3,
+      "radius": 0.65,
+      "softness": 0.7
+     },
+     "neutral": {
+      "strength": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.18,
+      "size": 3,
+      "seed": 29
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": 0.12
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "vignette",
+     "label": "暗角",
+     "description": "vignette.strength（圣托里尼教训：过重吃细节）",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 3,
+       "param": "strength",
+       "range": [
+        0.1,
+        0.55
+       ]
+      }
+     ]
+    },
+    {
+     "id": "candy",
+     "label": "糖果色",
+     "description": "saturation.amount",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 0,
+       "param": "amount",
+       "range": [
+        1.05,
+        1.55
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "pastoral_cream",
+   "name_zh": "田园奶油",
+   "name_en": "Pastoral Cream",
+   "status": "established",
+   "tags": [
+    "田园",
+    "人像",
+    "亲子"
+   ],
+   "suitable": [
+    "田野",
+    "野餐",
+    "亲子",
+    "花市",
+    "田园婚纱"
+   ],
+   "caution": [
+    "都市/夜景无田园信息可提",
+    "黄提过头白裙/白墙泛奶黄"
+   ],
+   "description": "奶油田野、麦色阳光、柔绿、野餐布；法式的更亮更甜近亲，韩系的更暖更自然近亲。",
+   "notes": "待补图目检。修正段用 light 基线（与法式/韩系同族，避免灰纱）。期 5 目检成立：真照片三格行（gredos_valley 河谷）已验收。",
+   "correction": {
+    "baseline": "light",
+    "ops": [
+     {
+      "kind": "adjustment",
+      "type": "exposure",
+      "params": {
+       "ev": 0.05
+      },
+      "neutral": {
+       "ev": 0
+      }
+     },
+     {
+      "kind": "adjustment",
+      "type": "shadows_highlights",
+      "params": {
+       "shadows": 0.1,
+       "highlights": -0.1
+      },
+      "neutral": {
+       "shadows": 0,
+       "highlights": 0
+      }
+     }
+    ]
+   },
+   "style_ops": [
+    {
+     "kind": "adjustment",
+     "type": "exposure",
+     "params": {
+      "ev": 0.42
+     },
+     "neutral": {
+      "ev": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "brightness_contrast",
+     "params": {
+      "brightness": 0.03,
+      "contrast": 0.85
+     },
+     "neutral": {
+      "brightness": 0,
+      "contrast": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "curves",
+     "params": {
+      "channel": "rgb",
+      "points": [
+       [
+        0,
+        0.0031
+       ],
+       [
+        0.0509,
+        0.0732
+       ],
+       [
+        0.214,
+        0.2429
+       ],
+       [
+        0.5225,
+        0.5542
+       ],
+       [
+        1,
+        0.9114
+       ]
+      ]
+     },
+     "neutral": {
+      "points": [
+       [
+        0,
+        0
+       ],
+       [
+        0.0509,
+        0.0509
+       ],
+       [
+        0.214,
+        0.214
+       ],
+       [
+        0.5225,
+        0.5225
+       ],
+       [
+        1,
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "white_balance",
+     "params": {
+      "temperature": 0.16,
+      "tint": 0.02
+     },
+     "neutral": {
+      "temperature": 0,
+      "tint": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "split_toning",
+     "params": {
+      "shadows": [
+       0.04,
+       0.02,
+       -0.02
+      ],
+      "highlights": [
+       0.07,
+       0.04,
+       -0.03
+      ],
+      "balance": 0.05,
+      "amount": 0.35
+     },
+     "neutral": {
+      "shadows": [
+       0,
+       0,
+       0
+      ],
+      "highlights": [
+       0,
+       0,
+       0
+      ],
+      "balance": 0
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "saturation",
+     "params": {
+      "amount": 0.92
+     },
+     "neutral": {
+      "amount": 1
+     }
+    },
+    {
+     "kind": "adjustment",
+     "type": "clarity",
+     "params": {
+      "amount": -0.09
+     },
+     "neutral": {
+      "amount": 0
+     }
+    },
+    {
+     "kind": "filter",
+     "type": "film_grain",
+     "params": {
+      "amount": 0.1,
+      "size": 2,
+      "seed": 31
+     },
+     "neutral": {
+      "amount": 0
+     }
+    }
+   ],
+   "knobs": [
+    {
+     "id": "cream",
+     "label": "奶油暖",
+     "description": "white_balance.temperature",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 3,
+       "param": "temperature",
+       "range": [
+        0.02,
+        0.3
+       ]
+      }
+     ]
+    },
+    {
+     "id": "glow_soft",
+     "label": "柔光",
+     "description": "clarity.amount 负值量",
+     "min": 0.0,
+     "max": 1.0,
+     "default": 0.5,
+     "targets": [
+      {
+       "op": 6,
+       "param": "amount",
+       "range": [
+        -0.25,
+        0.0
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}`;
+// <<P2_PRESET_RAW:end>>
