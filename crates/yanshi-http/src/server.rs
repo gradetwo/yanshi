@@ -3088,7 +3088,8 @@ fn font_asset(state: &ServerState, file: &str) -> Response {
 }
 
 fn medium_asset(state: &ServerState, file: &str) -> Response {
-    if file.contains("..") || file.contains('/') || !file.ends_with(".wasm") {
+    if file.contains("..") || file.contains('/') || file.contains('\\') || !file.ends_with(".wasm")
+    {
         return crate::http::bad_request("非法介质资源名（只接受 assets/mediums 下的 *.wasm）");
     }
     let dir = state
@@ -3857,6 +3858,21 @@ mod tests {
             connections: AtomicUsize::new(0),
             shutdown: AtomicBool::new(false),
         }
+    }
+
+    /// 介质资源名同样只接受裸文件名（审计 L-7：与 `texture_asset` 对齐 ✓）。
+    #[test]
+    fn medium_asset_rejects_separators_and_parent_refs() {
+        let state = state();
+        for bad in ["../x.wasm", "a/b.wasm", "..\\x.wasm", "a\\b.wasm", "x.bin"] {
+            assert_eq!(
+                medium_asset(&state, bad).status,
+                400,
+                "应拒绝非法介质名：{bad}"
+            );
+        }
+        // 合法名字（文件不存在）⇒ 404 而不是 400 ✓ —— 上限不是「一律拒绝」。
+        assert_eq!(medium_asset(&state, "missing.wasm").status, 404);
     }
 
     /// `HEAD` 必须与 `GET` 同状态码、同 `Content-Length`，但**不含响应体**。

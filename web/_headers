@@ -9,6 +9,9 @@
 /*
   Cache-Control: no-cache
   X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  X-Frame-Options: DENY
+  Content-Security-Policy: frame-ancestors 'none'
 
 /index.html
   Cache-Control: no-cache

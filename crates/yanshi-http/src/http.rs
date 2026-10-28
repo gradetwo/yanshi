@@ -11,6 +11,10 @@ use std::io::{self, BufRead, Write};
 pub const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 /// 单行头部上限。
 pub const MAX_LINE_BYTES: usize = 16 * 1024;
+/// **头部总量上限** ✓（审计 L-5）：逐行 16 KiB 帽不够 —— 单连接可无限喂头部 ⇒ 内存无界 ✗。
+pub const MAX_HEADER_TOTAL_BYTES: usize = 64 * 1024;
+/// **头部条数上限** ✓（同上；`BTreeMap` 还会把同名头合并 ⇒ 只算行数 ✓）。
+pub const MAX_HEADER_COUNT: usize = 100;
 
 /// HTTP 方法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +107,8 @@ impl Request {
         let query = parse_query(query_text);
 
         let mut headers = BTreeMap::new();
+        let mut header_bytes = 0usize;
+        let mut header_count = 0usize;
         loop {
             // **有上限读行** ✓（同上：超长头部行在 `cap+1` 处止损，不再读完整行 ✗→✓）。
             let (read, line) = read_line_bounded(reader, MAX_LINE_BYTES)?;
@@ -115,6 +121,14 @@ impl Request {
             let trimmed = line.trim_end_matches(['\r', '\n']);
             if trimmed.is_empty() {
                 break;
+            }
+            header_bytes = header_bytes.saturating_add(line.len());
+            if header_bytes > MAX_HEADER_TOTAL_BYTES {
+                return Err(invalid("头部总量过大"));
+            }
+            header_count += 1;
+            if header_count > MAX_HEADER_COUNT {
+                return Err(invalid("头部条数过多"));
             }
             if let Some((name, value)) = trimmed.split_once(':') {
                 headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_owned());
@@ -351,6 +365,13 @@ impl Response {
             self.body.len(),
             if keep_alive { "keep-alive" } else { "close" }
         );
+        // **安全头** ✓（审计 M-5）：nosniff 挡 MIME 嗅探 ✓、no-referrer 防 `?token=` 经
+        // Referer 外泄 ✓、frame-ancestors/X-Frame-Options 挡点击劫持 ✓（只需 frame 指令，
+        // 不限制脚本 ⇒ 不会把内联脚本的查看器打坏 ✓）。
+        head.push_str("X-Content-Type-Options: nosniff\r\n");
+        head.push_str("Referrer-Policy: no-referrer\r\n");
+        head.push_str("X-Frame-Options: DENY\r\n");
+        head.push_str("Content-Security-Policy: frame-ancestors 'none'\r\n");
         for (name, value) in &self.headers {
             head.push_str(&format!("{name}: {value}\r\n"));
         }
@@ -486,6 +507,49 @@ mod tests {
     }
 
     #[test]
+    fn header_total_bytes_are_capped() {
+        // 每行 15 KiB（< MAX_LINE_BYTES）⇒ 5 行就超过 64 KiB 总量 ⇒ 必须报错 ✓。
+        let long = "x".repeat(15 * 1024);
+        let mut raw = String::from("GET / HTTP/1.1\r\n");
+        for i in 0..5 {
+            raw.push_str(&format!("X-Pad-{i}: {long}\r\n"));
+        }
+        raw.push_str("\r\n");
+        let err = Request::read(&mut Cursor::new(raw.into_bytes())).unwrap_err();
+        assert!(err.to_string().contains("头部总量过大"), "{err}");
+
+        // 边界内（4 行 ≈ 60 KiB）必须照常解析 ✓ —— 证明上限不是「一律拒绝」✗。
+        let mut ok = String::from("GET / HTTP/1.1\r\n");
+        for i in 0..4 {
+            ok.push_str(&format!("X-Pad-{i}: {long}\r\n"));
+        }
+        ok.push_str("\r\n");
+        assert!(Request::read(&mut Cursor::new(ok.into_bytes()))
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn header_count_is_capped() {
+        let mut raw = String::from("GET / HTTP/1.1\r\n");
+        for i in 0..=MAX_HEADER_COUNT {
+            raw.push_str(&format!("X-H-{i}: v\r\n"));
+        }
+        raw.push_str("\r\n");
+        let err = Request::read(&mut Cursor::new(raw.into_bytes())).unwrap_err();
+        assert!(err.to_string().contains("头部条数过多"), "{err}");
+
+        let mut ok = String::from("GET / HTTP/1.1\r\n");
+        for i in 0..MAX_HEADER_COUNT {
+            ok.push_str(&format!("X-H-{i}: v\r\n"));
+        }
+        ok.push_str("\r\n");
+        assert!(Request::read(&mut Cursor::new(ok.into_bytes()))
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
     fn websocket_upgrade_detection() {
         let upgrade = parse(
             "GET /ws?doc=d1 HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
@@ -518,6 +582,17 @@ mod tests {
         assert!(text.contains("Content-Type: application/json; charset=utf-8\r\n"));
         assert!(text.contains("Content-Length: 11\r\n"), "{text}");
         assert!(text.contains("Connection: close\r\n"));
+        // 审计 M-5：安全头必须每张响应都有（不只是某些路由）✓。
+        assert!(
+            text.contains("X-Content-Type-Options: nosniff\r\n"),
+            "{text}"
+        );
+        assert!(text.contains("Referrer-Policy: no-referrer\r\n"), "{text}");
+        assert!(text.contains("X-Frame-Options: DENY\r\n"), "{text}");
+        assert!(
+            text.contains("Content-Security-Policy: frame-ancestors 'none'\r\n"),
+            "{text}"
+        );
         assert!(text.ends_with("{\"ok\":true}"));
 
         let forbidden = Response::from_error(&yanshi_core::YanshiError::new(

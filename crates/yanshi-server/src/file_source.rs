@@ -23,10 +23,12 @@
 //!   文案都带 URL 与类别词，不许合并成一句「下载失败」。
 //!
 //! 信任模型（4.3/4.4）：本地 MCP 场景下调用者即机器所有者，path/URL 都是
-//! 调用者对自己资源的引用 ⇒ 不做内网地址封禁（会误伤正当的局域网素材源）；
+//! 调用者对自己资源的引用 ⇒ **URL 拉取默认拒绝私网/环回/链路本地地址** ✓（审计 M-1：SSRF）；
+//! 本机调试确需访问 localhost 时用 `YANSHI_ALLOW_PRIVATE_URL_FETCH=1` 显式打开 ✓。
 //! 上面的超时／体积／降级三条是防失控与事故的最小防护，不是防调用者本人。
 
 use std::io::Read;
+use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -319,6 +321,111 @@ fn is_downgrade(from: &str, to: &str) -> bool {
     from.starts_with("https://") && to.starts_with("http://")
 }
 
+/// 本机调试开关：设为 `1`/`true`/`yes` 时允许拉取私网地址 ✓（默认关 ✓）。
+fn allow_private_url_fetch() -> bool {
+    matches!(
+        std::env::var("YANSHI_ALLOW_PRIVATE_URL_FETCH").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
+/// 该 IP 是否**禁止拉取** ✓（内网／环回／链路本地／保留地址 ⇒ SSRF 面 ✗）。
+fn fetch_ip_is_forbidden(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local() // 169.254/16 ⇒ 云元数据
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || (octets[0] == 100 && (octets[1] & 0b1100_0000) == 64) // 100.64/10 CGNAT
+                || (octets[0] == 198 && (octets[1] == 18 || octets[1] == 19)) // 198.18/15
+                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0) // 192.0.0/24
+                || octets[0] >= 240 // 240/4 保留（含 255.255.255.255）
+        }
+        std::net::IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return fetch_ip_is_forbidden(std::net::IpAddr::V4(v4));
+            }
+            let head = v6.segments()[0];
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (head & 0xfe00) == 0xfc00 // fc00::/7 唯一本地
+                || (head & 0xffc0) == 0xfe80 // fe80::/10 链路本地
+                || (head & 0xffc0) == 0xfec0 // fec0::/10 站点本地（已废弃）
+        }
+    }
+}
+
+/// 取 URL 的主机与端口 ✓（`host` 可为 IPv4／`[IPv6]`／域名，可带 userinfo ✓）。
+fn url_host_port(url: &str) -> Option<(String, u16)> {
+    let scheme = url_scheme(url)?;
+    let rest = url.strip_prefix(&format!("{scheme}://"))?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    // userinfo 不参与寻址（`user:pass@host` ⇒ 取 `@` 之后 ✓）。
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
+    let default_port = if scheme == "https" { 443 } else { 80 };
+    if let Some(stripped) = authority.strip_prefix('[') {
+        let (host, tail) = stripped.split_once(']')?;
+        let port = tail
+            .strip_prefix(':')
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(default_port);
+        return Some((host.to_owned(), port));
+    }
+    match authority.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() => Some((host.to_owned(), port.parse().ok()?)),
+        _ => Some((authority.to_owned(), default_port)),
+    }
+}
+
+/// 拉取前校验目标主机 ✓：解析出的**任何**地址落在私网/环回/链路本地 ⇒ 拒绝 ✓。
+///
+/// **每一跳都调** ✓（重定向到内网同样挡住 ✓）。解析后再连接仍有 DNS rebinding 的时间窗 ✗，
+/// 但本仓的 URL 入口需要编辑器令牌 ✓，这一层是纵深防御（审计 M-1 的建议口径 ✓）。
+fn ensure_public_fetch_target(url: &str) -> Result<()> {
+    if allow_private_url_fetch() {
+        return Ok(());
+    }
+    let Some((host, port)) = url_host_port(url) else {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!("拉取失败（地址）：URL 里解析不出主机：{url}")),
+        ));
+    };
+    let addresses: Vec<std::net::IpAddr> = match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => vec![ip],
+        Err(_) => (host.as_str(), port)
+            .to_socket_addrs()
+            .map_err(|error| {
+                YanshiError::new(
+                    ErrorCode::Degraded,
+                    ErrorContext::detail(format!("拉取失败（解析）：{host} ⇒ {error}")),
+                )
+            })?
+            .map(|address| address.ip())
+            .collect(),
+    };
+    if addresses.is_empty() {
+        return Err(YanshiError::new(
+            ErrorCode::Degraded,
+            ErrorContext::detail(format!("拉取失败（解析）：{host} 没有解析到任何地址")),
+        ));
+    }
+    if let Some(ip) = addresses.iter().find(|ip| fetch_ip_is_forbidden(**ip)) {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "拉取失败（内网地址）：{url} 解析到 {ip} ⇒ 默认禁止访问私网/环回/链路本地（SSRF）；本机调试可设 YANSHI_ALLOW_PRIVATE_URL_FETCH=1"
+            )),
+        ));
+    }
+    Ok(())
+}
+
 /// 按设计 4.3 的定版常量拉取一个 URL（见 [`fetch_url_with`]）。
 pub fn fetch_url(url: &str) -> Result<FetchedUrl> {
     fetch_url_with(url, max_upload_bytes(), CONNECT_TIMEOUT, TOTAL_TIMEOUT)
@@ -363,6 +470,8 @@ pub fn fetch_url_with(
     let mut current = url.to_owned();
     let mut hops = 0u32;
     loop {
+        ensure_public_fetch_target(&current)?;
+        // 每跳都验 ✓（重定向到内网也挡 ✓）。
         let mut response = match agent.get(&current).call() {
             Ok(response) => response,
             Err(error) => {
@@ -676,5 +785,75 @@ mod tests {
         let text = format!("{err}");
         assert!(text.contains("268435457"), "{text}");
         assert!(text.contains("268435456"), "{text}");
+    }
+
+    #[test]
+    fn ssrf_blocklist_covers_private_loopback_and_link_local() {
+        // 变异：把 `fetch_ip_is_forbidden` 改成恒 false ⇒ 本测试红 ✓。
+        use std::net::IpAddr;
+        for text in [
+            "127.0.0.1",
+            "127.255.255.254",
+            "10.0.0.1",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.168.1.1",
+            "169.254.169.254",
+            "0.0.0.0",
+            "100.64.0.1",
+            "198.18.0.1",
+            "192.0.0.1",
+            "224.0.0.1",
+            "255.255.255.255",
+            "::1",
+            "::",
+            "fc00::1",
+            "fe80::1",
+            "fec0::1",
+            "::ffff:127.0.0.1",
+        ] {
+            let ip: IpAddr = text.parse().unwrap();
+            assert!(fetch_ip_is_forbidden(ip), "{text} 必须被拒");
+        }
+        for text in ["8.8.8.8", "1.1.1.1", "172.32.0.1", "2606:4700::1111"] {
+            let ip: IpAddr = text.parse().unwrap();
+            assert!(!fetch_ip_is_forbidden(ip), "{text} 是公网，必须放行");
+        }
+    }
+
+    #[test]
+    fn url_host_port_parses_userinfo_ipv6_and_default_ports() {
+        assert_eq!(
+            url_host_port("https://example.com/a.png"),
+            Some(("example.com".to_owned(), 443))
+        );
+        assert_eq!(
+            url_host_port("http://example.com:8080/a"),
+            Some(("example.com".to_owned(), 8080))
+        );
+        assert_eq!(
+            url_host_port("http://user:pass@example.com/x"),
+            Some(("example.com".to_owned(), 80))
+        );
+        assert_eq!(
+            url_host_port("http://[::1]:9000/x"),
+            Some(("::1".to_owned(), 9000))
+        );
+        assert_eq!(
+            url_host_port("http://[2606:4700::1111]/x"),
+            Some(("2606:4700::1111".to_owned(), 80))
+        );
+    }
+
+    #[test]
+    fn fetch_url_refuses_link_local_metadata_endpoint_before_connecting() {
+        // 输入能触发第 2 层 ✓：地址在**连接之前**就被拒（不会真的发请求 ✓）。
+        if allow_private_url_fetch() {
+            return;
+        }
+        let err = fetch_url("http://169.254.169.254/latest/meta-data/").unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidArgument, "{err}");
+        assert!(format!("{err}").contains("内网地址"), "{err}");
+        assert!(fetch_url("http://127.0.0.1:9/x.png").is_err());
     }
 }

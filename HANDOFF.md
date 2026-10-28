@@ -760,3 +760,35 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    `export_proof_cache_is_bounded`（1 passed）、yanshi-render 的
    `revert_chain`（2）／`oversized`（4）／`doc_extent`（1）／`blur_param_clamps`（1）全绿（本机实测 ✓）；
    全量 clippy／test 仍交给 CI ✓。
+
+75. **审计 Batch 3（便宜的安全硬化：M-1／M-5／L-1／L-5／L-7）**（2026-10-28 ✓）：
+   ① **L-1 令牌熵源** ✗：`CapabilityToken` 用 `RandomState` 哈希计数器拼串 ⇒ 安全性押在 SipHash 上。
+   **修法**：`/dev/urandom` 读 32 字节 ⇒ 64 位小写十六进制；熵源不可用时 **`eprintln!` 留痕**再退回旧方案
+   （不静默 ✓）。**判据**：`os_entropy_really_reads_the_kernel_pool`（两次读取不同、非同全 0）。
+   **变异**：`fill_os_entropy` 改 `out.fill(0); true` ⇒ 判据红（退出码 101 ✓）。
+   ② **M-1 SSRF** ✗：URL 取图可打 `127.0.0.1`／`169.254.169.254`／私网。
+   **修法**：`fetch_ip_is_forbidden`（loopback／private／link-local／CGNAT／IPv6 ULA 等）＋
+   `url_host_port`（userinfo、`[IPv6]`、缺省端口）＋ `ensure_public_fetch_target` **逐跳**调用；
+   拒绝文案含「内网地址」；显式 `YANSHI_ALLOW_PRIVATE_URL_FETCH=1` 可放行（本机调试用）。
+   **判据**：`ssrf_blocklist_covers_private_loopback_and_link_local`、
+   `url_host_port_parses_userinfo_ipv6_and_default_ports`、
+   `fetch_url_refuses_link_local_metadata_endpoint_before_connecting`（连接**之前**就拒）。
+   **变异（两条）**：`fetch_ip_is_forbidden` 直接 `return false` ⇒ 黑名单判据红（101 ✓）；
+   删 `ensure_public_fetch_target(&current)?` ⇒ 元数据判据红（101 ✓，10 s 连接超时后失败）。
+   ③ **M-5 安全响应头** ✗：无 `X-Frame-Options`／CSP frame-ancestors／Referrer-Policy。
+   **修法**：`Response::write_inner` 对**所有**响应加 `nosniff`／`no-referrer`／`DENY`／
+   `frame-ancestors 'none'`（只限 frame 指令 ⇒ 不碰内联脚本 ✓）；`web/_headers` 同步（Cloudflare 路径）。
+   **判据**：`response_serialization_has_required_headers` 断言四条头。
+   **变异**：删 `X-Frame-Options` 那一行 ⇒ 判据红（101 ✓）。
+   ④ **L-5 头部总量／条数无界** ✗：单行 16 KiB 有帽，但行数无限 ⇒ 内存无界。
+   **修法**：`MAX_HEADER_TOTAL_BYTES = 64 KiB`、`MAX_HEADER_COUNT = 100`（超限即 400）。
+   **判据**：`header_total_bytes_are_capped`、`header_count_is_capped`（都含「恰好上限仍通过」边界 ✓）。
+   **变异**：两个判据分别短路成 `false && …` ⇒ 各自红（101 ✓）。
+   ⑤ **L-7 `medium_asset` 缺反斜杠检查** ✗：与 `texture_asset` 不一致。
+   **修法**：加 `file.contains('\\')`。**判据**：`medium_asset_rejects_separators_and_parent_refs`
+   （`..`／`/`／`\`／错扩展名 ⇒ 400；合法名缺文件 ⇒ 404 ✓）。
+   **变异**：删反斜杠子句 ⇒ 判据红（101 ✓）。
+   **收尾**：变异全部改回；`cargo test -p yanshi-http --lib`（55 passed）、
+   `-p yanshi-server --lib token`（10）、`file_source`（11）本机绿；`cargo fmt --check` 0；
+   全量 clippy／test 交给 CI。**未做**（需更大设计）：H-2 令牌吊销/TTL、M-2 恒时比较、
+   M-3 未认证文档列表、M-6 图层数上限、L-3 Host 反射、L-4 blob 作用域、L-6 CI 权限、L-8 SHA-1。
