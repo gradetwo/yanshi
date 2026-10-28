@@ -489,6 +489,27 @@ check(nlList.ok === true && (nlList.objects || []).length === 1 &&
 console.log("  本地层 duplicate_layer：draw_shape 复制=" + dup.objects + "｜副本层对象数=" + (nlList.count ?? 0) +
   "｜副本 id 全新=" + (nlObj.object_id !== onlyShape.object_id) + " ✓");
 
+// **★ ⑦g `get_state{include_objects}`／`p2cState` 的对象种子要认全部建对象原子 ✗ ★**（本轮 ✓）
+//   **∴ 与 ⑦e/⑦f 同一类 bug 的第四个读者 ✗**：`p2cState` 旧只 push `create_object` ⇒
+//     **`get_state`／`list_documents`／`collect_diagnostics` 漏掉全部手画图／导入图／填充／文字对象**✓（结果集静默偏少、还 `ok:true` ✓）。
+//   **∴ 修法 ✗**：种子改读 `P2_OBJECT_CREATE_KINDS` ＋ 按 object_id 去重 ✓（真实类型／层／可见／删除仍由 `p2ObjectView` 合并 ✓）。
+//   **∴ 为什么 node 可验 ✗**：纯原子折叠 ✗ 不碰内核／canvas ✓ ⇒ 当场可断 ✓。
+await call("/api/atoms", { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ kind: "create_layer", layer_id: "LS", name: "状态层" }) });
+const gImp = await jpost("/api/tools/import_image", { layer_id: "LS", bitmap: { blob_hash: IMG_HASH, mime_type: "image/x-yanshi-raw", size: 4 }, region: { x: 0, y: 0, w: 2, h: 2 } });
+const gShape = await jpost("/api/tools/draw_shape", { layer_id: "LS", data: { geometry: "rect" } });
+// **去重的触发输入 ✗**：对 gShape **再发一条建对象原子**（同 `object_id` 的重画 ⇒ `draw_shape` 走 `p2cDraw` 把 `object_id` 写进 `payload` ✓；
+//   ⇒ 不去重则种子拿到两条同 id ⇒ list_documents／collect_diagnostics 计数虚高 ✓）。
+await jpost("/api/tools/draw_shape", { layer_id: "LS", object_id: gShape.object_id, data: { geometry: "ellipse" } });
+const gstate = await jpost("/api/tools/get_state", { include_objects: true, include_hidden: true });
+const gids = (gstate.objects || []).map((o) => o.object_id);
+check(gstate.ok === true && gids.includes(gShape.object_id) && gids.includes(gImp.object_id),
+  "get_state{include_objects} 必须列出非 create_object 建的对象（旧 p2cState 种子只 create_object ⇒ 手画图/导入图从 get_state/list_documents/collect_diagnostics 漏掉；实测 " +
+  JSON.stringify(gstate).slice(0, 180) + "）");
+check(gids.length === new Set(gids).size,
+  "get_state 对象表必须按 object_id 去重（对同一对象发两条建对象原子 ⇒ 不去重则出现两遍 ⇒ list_documents/collect_diagnostics 计数虚高；实测重复=" + (gids.length - new Set(gids).size) + "）");
+console.log("  本地层 get_state：draw_shape/import_image 均列出 ✓｜去重 ✓（全档对象数=" + gids.length + "）");
+
 
 
 // **★ ⑧ 评论的游标不能越过**没交付**的那几条 ✗ ★**（与服务端 `read_list_comments` 同形 ✓）

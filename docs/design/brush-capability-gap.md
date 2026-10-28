@@ -22722,3 +22722,37 @@ node 判据环境没有 ⇒ **归 browser 判据**（`browser-asset-dock` 在 CI
 **代价 ✓**：三个读者各引一处共享集合✓（严格加法：旧口径是集合的真子集 ⇒ 不可能少认对象、只会多认——多认的正是要修的 ✓）；判据多 ⑦e（6 断）＋ ⑦f（2 断）✓（node 级毫秒）。
 **⚠ 已知残留（同一类、下一个 ROI ✓）**：**第四个读者 `p2cState`**（`get_state`／`get_resolved_state` 用 ✓，`api-local.js:2218`）**仍只 push `create_object`**✗
 ⇒ `get_state` 的对象表也漏手画对象 ✓。**本片未动它**（先确认再动手 ✓：须核实 `get_state` 的对象表到底该不该含全部对象——若含，则应一并改读 `P2_OBJECT_CREATE_KINDS`；另立一片配变异 ✓）。
+
+## 六百五十、`p2cState` 的对象种子是「建对象 kind」这一事实的第四个读者——收敛到 `P2_OBJECT_CREATE_KINDS` ＋ 按 object_id 去重（本轮 ✓）
+
+**起因 ✓**：§649 末记下的残留。先按内核 3 逐一看全 **6 个消费者**再动手 ✓（读 `api-local.js:2198` 与各调用点）：
+`list_documents`(:3273) 与 `collect_diagnostics`(:3421) 取 `st.objects.length` 当**对象计数**✓；
+`get_state`(:3309-3313)、`get_descendants`(:3604)、`get_dependency_graph`(:3661)、`get_resolved_state`(:3324) **遍历 `st.objects` 当 id 种子**✓，
+且它们**都已用 `p2ObjectView` 重算真实 `type`／`layer_id`／`visible`／`deleted`**✓（⇒ 种子里那几个 raw 字段**无人读**✓）。
+⇒ 结论 ✓：**对象种子该含全部建对象原子**（不是只 `create_object`）——与服务端 `state.objects` 由哪些 kind 填充同口径 ✓。
+
+**症状 ✗（静默降级——结果集偏少还 `ok:true` ✓）**：`p2cState` 旧只 push `create_object`(:2218) ⇒
+`get_state{include_objects}`／`list_documents`／`collect_diagnostics` **漏掉全部手画图／导入图／填充／文字对象**✓。
+本机实测最刺眼的一例 ✓：判据那个文档**一个 `create_object` 都没有**（对象全是 `import_image`＋`draw_shape`）⇒ 旧口径下 **`get_state` 对象表整条为空**✓（对象数 0）。
+另：`p2cState` 自己的 doc 注释(:2197)早已写「类型／层取 `p2ObjectView` 的合并视图」✗ 但代码没这么做 ⇒ 注释与代码不符 ✓。
+
+**修法 ✓**：种子循环 `create_object` → **`P2_OBJECT_CREATE_KINDS.has(a.kind)` ＋ 按 `object_id` 去重**（`objSeen` ✓，照 §649 `list_objects` 同形 ✓）；
+真实字段仍交调用方的 `p2ObjectView` ✓；doc 注释改为**「只作 id 种子，合并视图由调用方取」**✓ 消除注释／代码不符 ✓。
+
+**四层齐 ✓（两个变异各证一条，正交不串味 ✓）**：
+| 断言（`⑦g` in `scripts/tool-pwa-api-behaviour.mjs`） | 变异 | 结果 |
+|---|---|---|
+| `get_state{include_objects}` 必须列出 `draw_shape`／`import_image` 建的 id | **M-D**：种子收窄回 `a.kind==="create_object"` | 覆盖断言红（**全档对象数=0** ✓）、去重绿 ✓ |
+| `get_state` 对象表按 `object_id` 去重（对同一对象发两条建对象原子 ⇒ 只算一遍） | **M-E**：删掉 `!objSeen.has(...)` 去重 | 去重断言红（**全档对象数=9、重复=1** ✓）、覆盖绿 ✓ |
+> 恢复源码后 `tool-web-assets-parity`（api-local.js 逐字节 ✓）＋ `tool-pwa-api-behaviour`（0 ❌ ✓）皆绿 ✓。
+
+**★★ 本轮自己抓到一次「安慰剂断言」——正是四层第 ② 层（输入能触发 ✓）**：
+去重那条断言**第一版**用通用 `/api/atoms` 发 `supersede` 造重复 ⇒ 但 `/api/atoms` 把字段存在**原子顶层**(`:1093` `p2bTag({...atom})`)✗
+而种子读 `payload.object_id`(:2206) ⇒ **输入根本没落进种子** ⇒ M-E 删去重后**仍绿**（`全档对象数=8`、重复 0 ✓ 假通过）✓。
+**⇒ 变异送来的诊断 ✓**：改成**再发一条 `draw_shape`（同 `object_id`）**走 `p2cDraw`(:2240 把 `object_id` 写进 `payload`)✓ ⇒ 输入真触发 ⇒ M-E 才见红 ✓。
+（与「`every()` 在空数组上恒真」同族：断言写作时以为在验，实则没有能触发它的输入 ✓。）
+
+**两面（AGENTS 第 3 条 ✓）**：
+**收益 ✓**：`get_state`／`list_documents`／`collect_diagnostics` 的对象表与计数**与服务端 `alive_objects` 同口径**✓（手画／导入／填充／文字不再整类漏）✓；
+「建对象 kind」这一事实的**四个读者全部收敛到一处**✓（`p2ObjectView`／`list_objects`／`duplicate_layer`／`p2cState` 全读 `P2_OBJECT_CREATE_KINDS` ✓）。
+**代价 ✓**：种子遍历全部建对象原子 ＋ 去重 ⇒ O(原子数)✓（与 `list_objects` 同量级 ✓）；严格加法：旧口径是新集合的真子集 ⇒ 只会**多认**（正是要修的）不会少认 ✓；判据多 ⑦g 两条断言✓（node 级毫秒 ✓）。

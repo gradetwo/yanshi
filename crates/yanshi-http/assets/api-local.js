@@ -2212,11 +2212,13 @@ async function withKernel(doc, fn) {
     /** **从日志推导文档状态 ✗**（**`get_state`／`get_resolved_state` 共用 ✓**）：
      *   **∴ 图层**：**`create_layer` 建 ✗ ＋ `set_property{layer_id}` 覆盖 ✗ ＋
      *     `tombstone{layer_id}` 删（**被 `revert` 中和的不算 ✓**）**；
-     *   **∴ 对象**：**`create_object` 列 ✗**（**类型／层取 `p2ObjectView` 的合并视图 ✓**）。 */
+     *   **∴ 对象**：**建对象原子（=`P2_OBJECT_CREATE_KINDS` ✓）按 object_id 去重列 ✗**（**只作 id 种子 ✓；
+     *     真实类型／层／可见／删除由调用方经 `p2ObjectView` 合并视图取 ✓**）。 */
     function p2cState(rows) {
       const { w, h, color_space } = p2cDocSize(rows);
       const layers = [], layerIdx = {};
       const objects = [];
+      const objSeen = new Set();  // 种子按 object_id 去重（与服务端 alive_objects 一对象一条 ✓）
       let checkpoints = 0;
       const neutral = p2Neutralized(rows);
       for (const r of rows) {
@@ -2233,7 +2235,12 @@ async function withKernel(doc, fn) {
           layerIdx[pl.layer_id][pl.key] = pl.value;
         } else if (a.kind === "tombstone" && pl.layer_id && layerIdx[pl.layer_id] && !neutral.has(a.id)) {
           layerIdx[pl.layer_id].deleted = true;
-        } else if (a.kind === "create_object") {
+        } else if (P2_OBJECT_CREATE_KINDS.has(a.kind) && typeof pl.object_id === "string" &&
+                   !objSeen.has(pl.object_id)) {
+          // **建对象原子 = 共享集合 ✓**（与 `p2ObjectView`／`list_objects`／`duplicate_layer` 同口径 ✓）；
+          // 旧只 push `create_object` ⇒ `get_state`／`list_documents`／`collect_diagnostics` 漏掉
+          // 手画图／导入图／填充／文字对象 ✓（静默少一整个结果集，还 `ok:true`）。按 object_id 去重 ⇒ supersede 再引用不重复计数 ✓。
+          objSeen.add(pl.object_id);
           objects.push({ object_id: pl.object_id, layer_id: pl.layer_id ?? null, type: pl.type ?? null });
         } else if (a.kind === "checkpoint") {
           checkpoints += 1;
