@@ -22905,3 +22905,55 @@ M-K3「已被删除」分支不可达 ✓红；M-K4 完整性报错丢清单 ✓
 
 **配套 ✓**：`LOCAL_IMPLEMENTED` 机械重数 163⇒**164**（`tool-pwa-assets` 实测声明=分支数 ✓）；
 新增 `p2Precon`（409）与 `p2AnchorsFold` 同款**放一处复用** ✓。
+
+## 六百五十六、`revert_group`／`revert_atoms` 落地本地层：组撤销的「朴素曾撤过」筛法与折叠口径的分歧**照抄不修**
+
+**做什么 ✓**：ROI 清扫第三批（记账层最后一项）。`crates/yanshi-http/assets/api-local.js` 新增
+`/api/tools/revert_atoms`（照 `tools.rs:19361`）与 `/api/tools/revert_group`（照 `tools.rs:19261`）✓，
+并把 `group_id` 参数接进 draw 族（**∴ 服务端唯一读点是 `tools.rs:5254` `write_draw` 的
+`ctx.pending_group_id = optional_str(args, "group_id")` ✓** ⇒ 本地同范围：`p2Envelope` 第三参 ✓、
+`p2cDraw` ✓、笔画 `import_image` 字面量 ✓、`erase` 字面量 ✓；**其余端点不收这个参数**（**∴ 照抄范围 ✓**））。
+`LOCAL_IMPLEMENTED` 机械重数 164⇒**166**（`tool-pwa-assets` 实测声明=分支数 ✓）。
+前端 `web/index.html:8252 revertCheckedGroup` 早就按「`ok:true`＋`reverted_count`＋幂等 `note`」的契约写 ✓
+⇒ **这个端点落地 ⇒「整组撤销」按钮在 PWA 模式从 501 变成真可用 ✓**（**∴ 契约没改、按钮没加 ✓**）。
+
+**三条实测到的服务端事实**（**全部当场打真服务端取回 ✓**，探测 `probe-revert{,2,3c,4}.mjs` ✓——
+**∴ 不是读代码推论 ✓**）：
+
+1. **空集响应里没有 `reverted`／`failed` 两个数组 ✓**——幂等分支的 JSON 是服务端**另一支早退字面量** ✓
+   （`{ok:true, group_id, reverted_count:0, failed_count:0, note:"该组没有可撤销的原子（…）"}` ✓）。
+   ⇒ 本地「好心」补上空数组就是改形状 ✗ ⇒ 判据断言这两个键 `undefined` ✓。
+2. **`revert_group` 的筛法是「曾被 revert 过」✗ 不是「当前生效动作是 revert」✓**：
+   实测序列 ⇒ 撤一笔（revert₁）⇒ 撤这条 revert₁（=reapply ⇒ 对象**复活** ✓ `list_objects` 又列出它 ✓）
+   ⇒ 再打 `revert_group` ⇒ **`reverted_count:0`**、照幂等 note 返回 ✓——
+   **∴ 因为组筛法用的 `HashSet` 只看「revert 原子出现过没有」✓（`tools.rs:19269–19289` ✓）**。
+   **∴ 服务端自己的两层就分歧**（折叠按最新动作 ✓、组撤按曾撤过 ✓）**⇒ 本地照抄 ✗ 不替它「修好」✓**
+   （**∴ 擅自对齐 ⇒ PWA 与 C/S 对同一文档给出不同的组撤结果 ✗ 那才是新缺陷 ✓**）。
+3. **撤「已经撤过的笔」服务端成功、不去重 ✓**（第二次 `reverted_count=1` ✓）；
+   **可撤集合** = `is_state_effect` 的 24 种（`atom.rs:451–479` ✓）**∪ {revert, reapply}** ⇒
+   `set_anchor` 不在其中 ⇒ 逐条报 `invalid_argument: 不能 revert 协作原子 X（set_anchor）—— …` ✓
+   （**实测拿到逐字串 ✓**；未知 id ⇒ `reference_not_found: 目标原子 X 不在日志中` ✓）。
+   **∴ 校验顺序也是事实 ✓**：非数组⇒逐项字符串⇒**才**查空（`collect::<Result<_>>()?` 在 `is_empty` 之前 ✓）
+   ⇒ 顺序写反时空数组会错报成「每一项都要是字符串」✗。
+   **∴ `require_str` 不查非空 ✓**（`tools.rs:1209–1214` 只有 as_str 一条 ✓）⇒ `group_id:""` **放行**、
+   且 `optional_str` 会把 `""` **真的盖章**进封套（`skip_serializing_if = Option::is_none` ✓）
+   ⇒ 本地同形：空串去撤被盖成 `""` 的那笔 ✓、非字符串静默不盖章 ✓。
+
+**新功能暴露的旧缺陷 ✓（与第 六百五十五 节同一类）**：`list_objects` 的存活判定原来只查
+`v.deleted`（tombstone）✗ ⇒ **revert 掉「建它的原子」之后对象还挂在列表里** ✓——
+而服务端实测是**整个消失**（探测：`revert_atoms` 掉 `draw_shape` ⇒ `list_objects` 空 ✓，
+**∴ 折叠跳过被抑制的 create ⇒ 对象从未被建 ✓，与「建了又删」是两回事 ✗**）。
+⇒ 改成 `__p2Alive(rows, v)`（它本来就含「create 被最新历史动作中和 ⇒ 死」这条 ✓ ——
+**函数早就对，列表没用它 ✗**）。**变异 M-L9 就是把这一行改回旧写法 ⇒ 判据红 ✓**。
+
+**判据 ✓**：`scripts/tool-pwa-api-behaviour.mjs` 第 ⑦l 块（独立文档 `dl_*` ✓——**第 916 轮规矩**）：
+盖章范围（画族收、非画族不收）✓｜非字符串静默／空串盖章 ✓｜成功批形状＋委托 note 逐字 ✓｜
+端到端消失（`list_objects`）✓｜幂等再撤＋**数组键不存在** ✓｜五类错误串逐字 ✓｜
+混合批「坏一条不拖累其余」✓｜双撤不去重 ✓｜**复活后组撤仍跳过**（分歧钉死）✓。
+**变异 M-L1..M-L9 九个全数「改坏⇒红 ✓、恢复⇒绿 ✓」** ✓。
+
+**本轮判据自己的错 ✓（一次，第 15 次同类）**：M-L2 的锚点 `...(typeof body.group_id === "string" ? …)`
+用 8 空格开头 ⇒ **而笔画分支那行是 10 空格 ⇒ 它的子串正好命中 8 空格版 ⇒ count=2** ✗
+——`assert count==1` 当场拦住（**仓库那条「替换前断言唯一性」第 N 次挡住改错位置 ✓**），
+补上前一行 `timestamp: Date.now(),` 换行做锚后唯一 ✓。**∴ 教训 ✓：缩进类锚点要带上一整行 ✓**
+（**∴ 「长得像」不是唯一性 ✓，**数出来才是 ✓**）。

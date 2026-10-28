@@ -66,9 +66,10 @@ export // **★ 声明必须与**实现分支数**一致 ✗ ★**（第 72 轮 
 //         不一致 ⇒ **∴ 在虚报能力 ✓** ✗
 //   ⇒ **★ 所以**：**改成 160**✗ ⇒ **∴ 于是**声明与实现**一致 ✓ ★**** ✓✓
 //   **∴ 本轮再重数 ✗**（锚点三件套 ✓ —— `set_anchor`／`get_anchors`／`delete_anchor` 落地 ⇒ **+3 ✓**；
-//   **同轮 `reorder_objects` ✓ —— `tools.rs:4029` 的校验序列落地 ⇒ 再 +1 ✓，总数 164 ✓**）：
-//   **∴ 判据口径 `actualImpl` = 164 ⇒ **∴ 本数同步到 164 ✓**（**同一机械口径 ✓，非拍脑袋 ✗**）。
-const LOCAL_IMPLEMENTED = 164; // reorder_objects 落地 ⇒ 机械重数 +1 ✓
+//   **同轮 `reorder_objects` ✓ —— `tools.rs:4029` 的校验序列落地 ⇒ 再 +1 ✓，总数 164 ✓**；
+//   **本轮 `revert_atoms`＋`revert_group` ✓ —— `tools.rs:19361`／`:19261` 落地 ⇒ 再 +2 ✓，总数 166 ✓**）：
+//   **∴ 判据口径 `actualImpl` = 166 ⇒ **∴ 本数同步到 166 ✓**（**同一机械口径 ✓，非拍脑袋 ✗**）。
+const LOCAL_IMPLEMENTED = 166; // revert_atoms + revert_group 落地 ⇒ 机械重数 +2 ✓
 
 let lastFold = null;
 
@@ -376,8 +377,8 @@ async function withKernel(doc, fn) {
     __p2ctr += 1;
     return "01P2" + String(Date.now()).padStart(13, "0") + String(__p2ctr).padStart(4, "0");
   }
-  function p2Envelope(kind, payload) {
-    return {
+  function p2Envelope(kind, payload, groupId) {
+    const atom = {
       actor: "human:web",
       id: p2AtomId(),
       kind,
@@ -387,7 +388,20 @@ async function withKernel(doc, fn) {
       session: "session:web",
       timestamp: Date.now(),
     };
+    if (typeof groupId === "string") atom.group_id = groupId;
+    return atom;
   }
+  /** **`revertible` 的服务端镜像 ✗**（**`log.rs:881`：`is_state_effect ∪ {revert, reapply}` ✓**；
+   *   **`is_state_effect` 的 24 种取自 `atom.rs:451–479` ✓**——
+   *   **∴ `set_anchor`／`delete_anchor`／协作原子**不在其中**✗ ⇒ revert 它们必须逐条报失败 ✓**
+   *   （**实测：真服务端对 `set_anchor` 回 `invalid_argument: 不能 revert 协作原子 …（set_anchor）` ✓**）。 */
+  const P2_REVERTIBLE_KINDS = new Set([
+    "create_document", "create_layer", "create_object", "create_selection", "create_mask",
+    "update_mask", "delete_mask", "create_style", "create_checkpoint", "import_image",
+    "draw_stroke", "fill", "draw_shape", "draw_text", "erase", "retouch", "liquify",
+    "supersede", "move", "transform", "set_property", "reorder_layers", "reorder_objects",
+    "tombstone", "revert", "reapply",
+  ]);
   /** **「失效集」（suppressed）—— 服务端 `EffectiveActions::from_atoms` 的本地镜像 ✗**
    *   （**`yanshi-core/src/fold.rs:211–259` ✓ —— 一个事实只写一处 ✓**）：
    *   **∴ 规则是「每个目标上 seq 最大的生效动作胜出」✗**（**倒序扫描 + 首见登记 ✓**）：
@@ -1340,7 +1354,11 @@ async function withKernel(doc, fn) {
         if (typeof id !== "string" || !id || seen.has(id)) continue;   // **按 object_id 去重 ✗**
         seen.add(id);
         const v = p2ObjectView(rows, id);
-        if (!v.found || v.deleted) continue;                            // **只列存活对象 ✗**（照 `alive_objects` ✓）
+        // **∴ 存活判定必须用 `__p2Alive` ✗ 不是「没被 tombstone」就完 ✓**（本轮 `revert_atoms` 暴露 ✓）：
+        //   **∴ 服务端实测 ✓：`revert` 掉**建它的那条原子**⇒ 对象从 `list_objects` 整个消失 ✓**
+        //   （**∴ 折叠跳过被抑制的 `create` ⇒ 对象从未存在 ✓**——**与 `deleted` 是两回事 ✗**，
+        //   **∴ 旧实现只查 `v.deleted` ⇒ 撤了 create 对象还挂在列表里 ✓**）。
+        if (!__p2Alive(rows, v)) continue;                               // **只列存活对象 ✗**（照 `alive_objects` ✓）
         if (layerFilter !== null && v.layer_id !== layerFilter) continue;
         if (typeFilter !== null && v.type !== typeFilter) continue;
         const hidden = (v.visible === false);                          // `null`＝从未设＝可见 ✓
@@ -2368,7 +2386,11 @@ async function withKernel(doc, fn) {
       const objectId = (typeof body.object_id === "string" && body.object_id) ? body.object_id : p2cNewObjectId();
       const payload = { object_id: objectId, layer_id: layerId, data };
       if (declaredType) payload.type = declaredType;
-      const seq = await putAtom(handle, doc, p2Envelope(kind, payload));
+      // **∴ `group_id` 盖章 ✗**（**∴ 照服务端 `write_draw` 唯一读它的地方 ✓ —— `tools.rs:5254`
+      //   `ctx.pending_group_id = optional_str(args, "group_id")` ⇒ **∴ commit 落到原子封套 ✓**；
+      //   **∴ 非字符串 ⇒ `optional_str` 得 `None` ⇒ **∴ 静默不盖章 ✗**（**∴ 与服务端同形 ✓**））。
+      const groupId = typeof body.group_id === "string" ? body.group_id : undefined;
+      const seq = await putAtom(handle, doc, p2Envelope(kind, payload, groupId));
       return json({ ok: true, seq, server: false, object_id: objectId,
                     note: "已写入 " + kind + " 原子；渲染由内核重放时处理" });
     }
@@ -4328,6 +4350,7 @@ async function withKernel(doc, fn) {
                       seed: 0, size: body.size ?? null, smooth: null },
           },
           schema_version: 1, seq: 0, session: "session:web", timestamp: Date.now(),
+          ...(typeof body.group_id === "string" ? { group_id: body.group_id } : {}),
         }));
         return json({ ok: true, seq, server: false, bytes: rgba.length, blob_hash: hash,
                       note: "已由本地内核渲染并写入 import_image 原子" });
@@ -4439,6 +4462,103 @@ async function withKernel(doc, fn) {
       return await __historyStep(false, count);
     }
 
+    // **★ `/api/tools/revert_atoms`／`/api/tools/revert_group` ✗ ★**（**ROI 记账层 ✓**）：
+    // **∴ 语义照服务端 `write_revert_atoms`（`tools.rs:19361`）／`write_revert_group`
+    //   （`tools.rs:19261`）✓**——**∴ 全部错误串与响应形状是当场打真服务端逐字取回的 ✓**
+    //   （**∴ 不猜：探测脚本 `probe-revert.mjs` 输出随包 ✓**）。
+    // **∴ 逐条失败只有三种**（**`log.rs:854–899` `validate_history_refs` ✓**）：
+    // **∴ 目标不在日志 ⇒ `reference_not_found: 目标原子 X 不在日志中` ✓**；
+    // **∴ 目标 kind 不满足 `revertible` ⇒ `invalid_argument: 不能 revert 协作原子 X（kind）—— …` ✓**；
+    // **∴ 第三种（`declare_head` 求值起点）本地没有 ✗**（**∴ 本地层无变更集求值起点概念 ✓ ⇒ **∴ 不**编一个 ✓**）。
+    // **∴ `revert_group` 的筛法是「曾被 revert 过」✗ 不是「当前生效动作是 revert」✓**
+    //   （**∴ 服务端 `tools.rs:19269–19289` 用朴素 `HashSet` 扫全部 `revert` 原子 ✓**
+    //     ⇒ **∴ 撤过又 redo 的笔**照样**被整组跳过 ✗**——**∴ 与 `p2Neutralized` 的**「最新动作胜出」**
+    //     口径**有分歧 ✓**（服务端自身两层就分歧 ⇒ **∴ 照抄 ✗ 不替它「修好」✓**）。
+    // **∴ 空集 ⇒ 幂等 `ok:true`／`reverted_count:0` ＋原因 ✓**（**`web/index.html:1206`
+    //   的按钮可见性**就依赖**这个形状 ✓ ⇒ **∴ 撤过第二次不报错 ✗ 报错才是缺陷 ✓**）。
+    /** **∴ 逐条撤销一批原子 ✗ ⇒ 回 `{ok, reverted, reverted_count, failed, failed_count, note}` ✓**
+      （**∴ 服务端 `write_revert_atoms` 的循环体 ✓**：**∴ 一条坏**不**拖累其余 ✓**）。 */
+    async function __p2RevertBatch(ids) {
+      const rows = await atomsOf(handle, doc);
+      const byId = new Map();
+      for (const r of rows) {
+        const a = (r && r.atom) || r || {};
+        if (a && a.id != null) byId.set(String(a.id), a);
+      }
+      const reverted = [];
+      const failed = [];
+      const uniq = String(Date.now()).padStart(13, "0") + Math.random().toString(36).slice(2, 7);
+      for (let i = 0; i < ids.length; i++) {
+        const id = String(ids[i]);
+        const target = byId.get(id);
+        if (!target) {
+          failed.push({ atom_id: id, error: "reference_not_found: 目标原子 " + id + " 不在日志中" });
+          continue;
+        }
+        if (!P2_REVERTIBLE_KINDS.has(target.kind)) {
+          failed.push({ atom_id: id,
+            error: "invalid_argument: 不能 revert 协作原子 " + id + "（" + String(target.kind) + "）—— 只有产生状态效果的原子与 revert/reapply 本身可以撤销" });
+          continue;
+        }
+        await putAtom(handle, doc, {
+          actor: "human:web",
+          id: "01RVATM" + uniq + "_" + i,
+          kind: "revert",
+          payload: { target: id },
+          schema_version: 1, seq: 0, session: "session:web", timestamp: Date.now(),
+        });
+        reverted.push(id);
+      }
+      return { ok: failed.length === 0, reverted, reverted_count: reverted.length,
+               failed, failed_count: failed.length,
+               note: "逐个撤销；有一条失败也照实报 failed，不假称全部成功" };
+    }
+    if (path === "/api/tools/revert_atoms") {
+      const pl = (body && body.payload) || {};
+      const ids0 = body.atom_ids ?? pl.atom_ids;
+      // **∴ 校验顺序照服务端 ✓**：**∴ 先「是不是数组」✓**（`tools.rs:19363` 的 match ✓）
+      //   ⇒ **∴ 再逐项「是不是字符串」✓**（`collect::<Result<_>>()?` ✓）⇒ **∴ 最后才查空 ✗**
+      //   （**∴ `[]` 过得了逐项 ⇒ 落在 `is_empty` ✓** ⇒ **∴ 顺序错 ⇒ 空数组会报成「每项都要是字符串」✗**）。
+      if (!Array.isArray(ids0)) return p2Bad("atom_ids 必须是数组（原子 id 列表）");
+      for (const v of ids0) {
+        if (typeof v !== "string") return p2Bad("atom_ids 里每一项都要是字符串（原子 id）");
+      }
+      if (ids0.length === 0) return p2Bad("atom_ids 不能为空");
+      const out = await __p2RevertBatch(ids0);
+      out.server = false;
+      return json(out);
+    }
+    if (path === "/api/tools/revert_group") {
+      const pl = (body && body.payload) || {};
+      const groupId = body.group_id ?? pl.group_id;
+      // **∴ 服务端 `require_str`（`tools.rs:1209`）只查「在不在／是不是字符串」✗ 不查非空 ✓**
+      //   ⇒ **∴ 空串**要**放行 ✓**（**∴ 它会去匹配那些被盖章成空串的原子 ✓ —— **∴ 不**擅自改成 400 ✓**）。
+      if (typeof groupId !== "string") return p2Bad("缺少必填参数 group_id");
+      const rows = await atomsOf(handle, doc);
+      const everReverted = new Set();
+      for (const r of rows) {
+        const a = (r && r.atom) || r || {};
+        if (a.kind === "revert" && a.payload && typeof a.payload.target === "string") {
+          everReverted.add(a.payload.target);
+        }
+      }
+      const ids = [];
+      for (const r of rows) {
+        const a = (r && r.atom) || r || {};
+        if (a.group_id === groupId && !everReverted.has(String(a.id))) ids.push(String(a.id));
+      }
+      if (ids.length === 0) {
+        // **∴ 实测：服务端这一支的响应里**没有** `reverted`／`failed` 两个数组 ✓**
+        //   （**∴ 探测输出逐字对过 ✓ ⇒ **∴ 别**「好心」补成空数组 ✗ 形状变了调用方会看见 ✓**）。
+        return json({ ok: true, group_id: groupId, reverted_count: 0, failed_count: 0,
+                      note: "该组没有可撤销的原子（可能已撤过，或这个 group_id 从未用过）", server: false });
+      }
+      const out = await __p2RevertBatch(ids);
+      out.group_id = groupId;
+      out.server = false;
+      return json(out);
+    }
+
     // **★ `/api/tools/erase` ✗ ★**（P0 ✓）：
     // **∴ 语义照服务端 `erase => write_draw(ctx, args, AtomKind::Erase)`
     //   （`tools.rs:3140`／`:4918`）✓**：
@@ -4477,6 +4597,7 @@ async function withKernel(doc, fn) {
         seq: 0,
         session: "session:web",
         timestamp: Date.now(),
+        ...(typeof body.group_id === "string" ? { group_id: body.group_id } : {}),
       });
       return json({ ok: true, seq, server: false, object_id: objectId, layer_id: layerId,
                     note: "已在本地原子日志写入 erase 原子（折叠层按服务端语义把它归成 Retouch/erase 对象；get_log 可读）" });

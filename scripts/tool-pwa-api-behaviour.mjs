@@ -789,6 +789,123 @@ check(kNoLayer.ok === false && kNoLayer.error === "reference_not_found",
   `图层不存在 ⇒ reference_not_found（tools.rs:4047 ✓ 实测 ${JSON.stringify(kNoLayer).slice(0, 110)}）`);
 console.log("  本地层 reorder_objects：z=位置 ✓｜list 按 (layer,z,id) ✓｜五类错误码逐个对齐 ✓｜重复先报 ✓｜revert⇒旧序回来 ✓（文档 " + kDoc + "）");
 
+// **★ ⑦l `revert_group`／`revert_atoms` 必须照服务端落地 ✗ ★**
+//   （**出处 `tools.rs:19261`／`:19361` ＋ `log.rs:854–899` ＋ `atom.rs:451–479` ✓**——
+//   **∴ 全部错误串与响应形状是打真服务端逐字取回的 ✓**（探测 `probe-revert.mjs`／`probe-revert2.mjs`／
+//   `probe-revert3c.mjs` ✓，结论：**∴ 不猜任何一条 ✓**）：
+//   ① **`group_id` 只在 write_draw 那条路盖章**（`tools.rs:5254` 是唯一读它的地方 ✓）⇒ **∴ 本地只有
+//     draw 族收这个参数 ✓**；**∴ 非字符串 ⇒ `optional_str` 给 `None` ⇒ 静默不盖章 ✓**（服务端同形）；
+//     **∴ 空串会被盖章 ✗**（`require_str`/`optional_str` 都不查非空 ✓ ⇒ **∴ 别**擅自 400 ✓）；
+//   ② **`revert_group` 的筛法是「曾被 revert 过」✗ 不是「当前生效动作是 revert」✓**
+//     （**实测 ✓：撤过一笔 ⇒ 再 revert 那条 revert（=reapply）⇒ 对象复活 ✓，此时 `revert_group`
+//     仍报 `reverted_count:0` 跳过它 ✗**——**∴ 本地折叠按「最新动作胜出」复活对象 ✓，
+//     而组撤销必须保持朴素筛法 ✓**：**∴ 服务端自身两层就分歧 ⇒ 照抄 ✗ 不替它修好 ✓**）；
+//   ③ **空集 ⇒ 幂等 `ok:true`/`reverted_count:0` ＋原因 ✓，且响应里没有 `reverted`/`failed` 两个数组 ✗**
+//     （实测 ✓ ⇒ **∴ 「好心」补空数组就是改形状 ✓ 要断言它不存在 ✓**；`web/index.html:1206`
+//     的按钮可见性就依赖这个幂等 ✓）；
+//   ④ **`revert_atoms` 逐条失败两类串逐字对**：未知 id ⇒ `reference_not_found: 目标原子 X 不在日志中` ✓；
+//     不可撤 kind（实测 `set_anchor` ✓）⇒ `invalid_argument: 不能 revert 协作原子 X（set_anchor）—— …` ✓；
+//     **撤「已经撤过的笔」⇒ 服务端成功**（不去重 ✓ 实测第二次照样 `reverted_count=1` ✓）；
+//   ⑤ **校验顺序**：非数组 ⇒ 逐项字符串 ⇒ 才查空（`collect::<Result<_>>()?` 在 `is_empty` **之前** ✓
+//     ⇒ **∴ 顺序写反 ⇒ 空数组会错报成「每一项都要是字符串」✗**）。
+const lDoc = "dl_" + Date.now().toString(36);
+const lxpost = (p, o) => callDoc(lDoc, p, { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify(o) }).then((r) => r.json());
+await callDoc(lDoc, "/api/documents", { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ doc_id: lDoc, width: 320, height: 240 }) });
+await callDoc(lDoc, "/api/atoms", { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ kind: "create_layer", layer_id: "LG", name: "组层" }) });
+const lShape = (gid, x) => gid === undefined
+  ? lxpost("/api/tools/draw_shape", { layer_id: "LG", data: { geometry: { kind: "rect", bbox: { x, y: 1, width: 3, height: 3 } } } })
+  : lxpost("/api/tools/draw_shape", { layer_id: "LG", group_id: gid, data: { geometry: { kind: "rect", bbox: { x, y: 1, width: 3, height: 3 } } } });
+const lS1 = await lShape("LG1", 1);
+const lS2 = await lShape("LG1", 6);
+const lS3 = await lShape(undefined, 11);
+const lS5 = await lShape(5, 16); // **∴ 非字符串 ⇒ 静默不盖章 ✓**（照服务端 `optional_str` ⇒ `None` ✓）
+const lS4 = await lShape("LG4", 21);
+const lS6 = await lShape("", 26); // **∴ 空串**会**被盖章 ✓**（require/optional_str 都不查非空 ✓）
+const lE1 = await lxpost("/api/tools/erase", { layer_id: "LG", group_id: "LG2", data: { points: [[2, 2], [4, 4]], size: 3 } });
+const lAtoms = async () => Object.fromEntries(((await callDoc(lDoc, "/api/atoms").then((r) => r.json())).atoms || [])
+  .map((a) => [a.payload && a.payload.object_id, a]));
+const la1 = await lAtoms();
+check(la1[lS1.object_id] && la1[lS1.object_id].group_id === "LG1"
+    && la1[lS2.object_id] && la1[lS2.object_id].group_id === "LG1"
+    && la1[lE1.object_id] && la1[lE1.object_id].group_id === "LG2",
+  `draw 族必须把 group_id 盖进原子封套（tools.rs:5254 唯一读点 ✓ 实测 ${JSON.stringify([la1[lS1.object_id] && la1[lS1.object_id].group_id, la1[lE1.object_id] && la1[lE1.object_id].group_id])}）`);
+check(!("group_id" in (la1[lS3.object_id] || {})) && !("group_id" in (la1[lS5.object_id] || {})),
+  `没给／非字符串的 group_id ⇒ 封套里**不许出现这个键**（服务端 skip_serializing_if ✓ 实测 ${JSON.stringify([la1[lS3.object_id] && la1[lS3.object_id].group_id, la1[lS5.object_id] && la1[lS5.object_id].group_id])}）`);
+check(la1[lS6.object_id] && la1[lS6.object_id].group_id === "",
+  `空串 group_id 会被盖章（optional_str 收 "" ⇒ commit 落 Some("") ✓ 实测 ${JSON.stringify(la1[lS6.object_id] && la1[lS6.object_id].group_id)}）`);
+const lG1 = await lxpost("/api/tools/revert_group", { group_id: "LG1" });
+check(lG1.ok === true && lG1.reverted_count === 2 && lG1.failed_count === 0
+    && JSON.stringify([...lG1.reverted].sort()) === JSON.stringify([la1[lS1.object_id].id, la1[lS2.object_id].id].sort())
+    && lG1.group_id === "LG1" && lG1.note === "逐个撤销；有一条失败也照实报 failed，不假称全部成功" && lG1.server === false,
+  `revert_group 成功 ⇒ reverted 两项＋委托 note 逐字 ✓（实测 ${JSON.stringify(lG1).slice(0, 200)}）`);
+const lList1 = await lxpost("/api/tools/list_objects", { layer_id: "LG" });
+const lSeen = new Set((lList1.objects || []).map((o) => o.object_id));
+check(!lSeen.has(lS1.object_id) && !lSeen.has(lS2.object_id) && lSeen.has(lS3.object_id) && lSeen.has(lS5.object_id),
+  `撤掉的两个形状必须从 list_objects 消失、没在组里的还在（端到端生效 ✓ 实测 ${JSON.stringify([...lSeen])}）`);
+const lG1again = await lxpost("/api/tools/revert_group", { group_id: "LG1" });
+check(lG1again.ok === true && lG1again.reverted_count === 0 && lG1again.failed_count === 0
+    && lG1again.reverted === undefined && lG1again.failed === undefined
+    && lG1again.note === "该组没有可撤销的原子（可能已撤过，或这个 group_id 从未用过）",
+  `再撤同一组 ⇒ 幂等 ok:true/0＋原因 ✓ **且响应里没有 reverted/failed 两个数组**（实测形状 ✓ 不许「好心」补上 ✗；实测 ${JSON.stringify(lG1again).slice(0, 160)}）`);
+const lGnever = await lxpost("/api/tools/revert_group", { group_id: "从未用过" });
+check(lGnever.ok === true && lGnever.reverted_count === 0 && lGnever.group_id === "从未用过",
+  `没用过的 group_id ⇒ 同一幂等形状＋原样回显（实测 ${JSON.stringify(lGnever).slice(0, 140)}）`);
+const lGbad = await lxpost("/api/tools/revert_group", { group_id: 5 });
+check(lGbad.ok === false && lGbad.error === "invalid_argument" && String(lGbad.reason) === "缺少必填参数 group_id",
+  `group_id 非字符串 ⇒ 400「缺少必填参数 group_id」（require_str ✓ 实测 ${JSON.stringify(lGbad).slice(0, 110)}）`);
+const lGempty = await lxpost("/api/tools/revert_group", { group_id: "" });
+check(lGempty.ok === true && lGempty.reverted_count === 1 && lGempty.reverted[0] === la1[lS6.object_id].id,
+  `空串不是 400 ⇒ 它去匹配被盖章成 "" 的那笔并撤掉（实测 ${JSON.stringify(lGempty).slice(0, 160)}）`);
+const lRArr = await lxpost("/api/tools/revert_atoms", { atom_ids: "x" });
+const lRItem = await lxpost("/api/tools/revert_atoms", { atom_ids: ["ok-id", 5] });
+const lREmpty = await lxpost("/api/tools/revert_atoms", { atom_ids: [] });
+check(lRArr.ok === false && String(lRArr.reason) === "atom_ids 必须是数组（原子 id 列表）",
+  `非数组 ⇒「必须是数组」（tools.rs:19363 match ✓ 实测 ${JSON.stringify(lRArr).slice(0, 110)}）`);
+check(lRItem.ok === false && String(lRItem.reason) === "atom_ids 里每一项都要是字符串（原子 id）",
+  `非字符串成员 ⇒ 逐项报错（collect::<Result> ✓ 实测 ${JSON.stringify(lRItem).slice(0, 120)}）`);
+check(lREmpty.ok === false && String(lREmpty.reason) === "atom_ids 不能为空",
+  `空数组报的是「不能为空」**而不是**「每一项…」⇒ 校验顺序：数组⇒逐项⇒空 ✓（实测 ${JSON.stringify(lREmpty).slice(0, 110)}）`);
+const lRunknown = await lxpost("/api/tools/revert_atoms", { atom_ids: ["no-such-atom"] });
+check(lRunknown.ok === false && lRunknown.reverted_count === 0 && JSON.stringify(lRunknown.reverted) === "[]"
+    && lRunknown.failed[0] && lRunknown.failed[0].error === "reference_not_found: 目标原子 no-such-atom 不在日志中",
+  `未知 id ⇒ failed 里逐字 reference_not_found（log.rs:865 ✓ 不许编措辞 ✗ 实测 ${JSON.stringify(lRunknown).slice(0, 180)}）`);
+const lAnchor = await lxpost("/api/tools/set_anchor", { name: "锚l", x: 10, y: 10 });
+const lRAnchor = await lxpost("/api/tools/revert_atoms", { atom_ids: [lAnchor.atom_id] });
+check(lRAnchor.ok === false && lRAnchor.failed[0]
+    && lRAnchor.failed[0].error === `invalid_argument: 不能 revert 协作原子 ${lAnchor.atom_id}（set_anchor）—— 只有产生状态效果的原子与 revert/reapply 本身可以撤销`,
+  `set_anchor 不在 is_state_effect 的 24 种里 ⇒ revert 必须被拒且逐字报错（log.rs:883 ＋实测 ✓ 实测 ${JSON.stringify(lRAnchor).slice(0, 200)}）`);
+const a3id = la1[lS3.object_id].id;
+const lRMixed = await lxpost("/api/tools/revert_atoms", { atom_ids: [a3id, "nope-abc"] });
+check(lRMixed.ok === false && lRMixed.reverted_count === 1 && lRMixed.reverted[0] === a3id
+    && lRMixed.failed_count === 1 && lRMixed.failed[0].atom_id === "nope-abc",
+  `混合批 ⇒ 一条坏**不拖累**其余（服务端循环体 ✓ 实测 ${JSON.stringify(lRMixed).slice(0, 170)}）`);
+const lRDouble = await lxpost("/api/tools/revert_atoms", { atom_ids: [a3id] });
+check(lRDouble.ok === true && lRDouble.reverted_count === 1,
+  `撤「已经撤过的笔」⇒ 服务端**不去重**、照样成功（实测 ✓ ⇒ 本地擅自拒绝就是分歧 ✗ 实测 ${JSON.stringify(lRDouble).slice(0, 120)}）`);
+const lG2 = await lxpost("/api/tools/revert_group", { group_id: "LG2" });
+check(lG2.ok === true && lG2.reverted_count === 1 && lG2.reverted[0] === la1[lE1.object_id].id,
+  `erase 的原子也被 draw 族盖章 ⇒ 组撤销收它（实测 ${JSON.stringify(lG2).slice(0, 150)}）`);
+// **∴ ② 的分歧钉死 ✗**（**实测序列 ✓**：撤 `LG4` 那笔 ⇒ 找到那条 revert ⇒ revert 它（=reapply ⇒ 复活 ✓）
+//   ⇒ 对象回来了 ✓ ⇒ 但 `revert_group` 仍按「曾被撤过」**跳过**它 ✗）
+const a4id = la1[lS4.object_id].id;
+await lxpost("/api/tools/revert_atoms", { atom_ids: [a4id] });
+const lRows4 = ((await callDoc(lDoc, "/api/atoms").then((r) => r.json())).atoms || []);
+const lRv4 = lRows4.find((a) => a.kind === "revert" && a.payload && a.payload.target === a4id);
+const lReapply = await lxpost("/api/tools/revert_atoms", { atom_ids: [lRv4.id] });
+const lList4 = await lxpost("/api/tools/list_objects", { layer_id: "LG" });
+const lSeen4 = new Set((lList4.objects || []).map((o) => o.object_id));
+const lG4 = await lxpost("/api/tools/revert_group", { group_id: "LG4" });
+check(lRv4 && lReapply.ok === true && lReapply.reverted_count === 1,
+  `revert 一条 revert ⇒ 允许（log.rs 裁决「放开到历史原子」✓ 实测 ${JSON.stringify(lReapply).slice(0, 130)}）`);
+check(lSeen4.has(lS4.object_id),
+  `撤了又 redo ⇒ 「最新动作胜出」⇒ 对象必须复活回来（折叠口径 ✓ 实测 ${JSON.stringify([...lSeen4])}）`);
+check(lG4.ok === true && lG4.reverted_count === 0 && String(lG4.note || "").includes("可能已撤过"),
+  `但组撤销按**朴素「曾撤过」**筛 ⇒ 复活的这笔**仍被跳过**（服务端实测 ✓ ⇒ 本地擅自改成「最新动作」就是分歧 ✗ 实测 ${JSON.stringify(lG4).slice(0, 150)}）`);
+console.log("  本地层 revert_group/revert_atoms：盖章范围 ✓｜幂等空集形状逐字 ✓｜五类错误串逐字 ✓｜混合批不拖累 ✓｜朴素「曾撤过」筛法与折叠口径的分歧照抄 ✓（文档 " + lDoc + "）");
+
 
 
 // **★ ⑧ 评论的游标不能越过**没交付**的那几条 ✗ ★**（与服务端 `read_list_comments` 同形 ✓）
