@@ -97,6 +97,9 @@ const local = await makeLocalApi(db);
 const bad = [];
 const check = (c, m) => { if (!c) bad.push(m); };
 const call = (path, init = {}) => local(new Request(`https://x${path}?doc=d1`, { method: init.method ?? "GET", ...init }));
+// **★ ⑦h 起：隔离文档用的 `callDoc` ✗ ★**（**第 916/1356 轮的坑 ✓：一个判据里多个 case 共用一个文档 ⇒
+//   前一段的状态污染后一段的计数 ✗ ⇒ undo/redo 这种「整档计数」的断言必须建在独立文档里 ✓**）。
+const callDoc = (d, path, init = {}) => local(new Request(`https://x${path}?doc=${d}`, { method: init.method ?? "GET", ...init }));
 
 // **① 静态资源走原 fetch ✓**
 await window.fetch({ url: "/wasm/yanshi_wasm.js" });
@@ -509,6 +512,80 @@ check(gstate.ok === true && gids.includes(gShape.object_id) && gids.includes(gIm
 check(gids.length === new Set(gids).size,
   "get_state 对象表必须按 object_id 去重（对同一对象发两条建对象原子 ⇒ 不去重则出现两遍 ⇒ list_documents/collect_diagnostics 计数虚高；实测重复=" + (gids.length - new Set(gids).size) + "）");
 console.log("  本地层 get_state：draw_shape/import_image 均列出 ✓｜去重 ✓（全档对象数=" + gids.length + "）");
+
+// **★ ⑦h undo／redo 的候选判据必须与服务端 `collect_gestures` 的状态事实一致 ✗ ★**（本轮差分探针实测 ✓）
+//   **∴ 服务端实跑史**（同一序列打**真服务** `target/release/yanshi-serve`，取回的行为 ✓）：
+//     `create_layer → draw_shape → update_object{visible:false} → delete_object → restore_object` 之后：
+//     · **`undo_last` 撤掉 [tombstone, set_property, draw_shape] 三条**✗（**含 tombstone 本身 ✓**——
+//       候选按「**对象活着吗**」判定 ✓，restore 撤掉了 tombstone ⇒ 对象活着 ⇒ 它的**每一条**原子都是候选 ✓）；
+//     · 撤掉创建原子后 `list_objects.count=0`、`get_undo_status.remaining=0` ⇒ 对象**死了** ✓。
+//   **∴ 旧本地实现错在两处 ✗**（**都是静默降级 ✓：`ok:true` 却与画面矛盾 ✓**）：
+//     ① **候选按「每个原子的最新动作」** ⇒ restore 用过的 tombstone 被当成「已撤」跳过 ✗
+//       ⇒ undo 只撤 [4,3] **半笔**（对象仍活着 ✓ —— 与服务端的整笔不一致 ✓）；
+//     ② **`p2Neutralized` 把 revert／reapply 混成一个「被中和过」集合** ✗ ⇒ 撤过的原子**永远**判抑制
+//       （`reapply` 不解除抑制 ✓）⇒ redo 找不到候选而**空手** ✗、`get_undo_status` 与实际画面矛盾 ✓
+//       （实测：旧实现 redo_last 返回空 ⇒ 服务端同史重做整组 [5,4,3] ✓）。
+//   **∴ 在独立文档里测 ✗**（第 916/1356 轮的坑 ✓：共享文档的整档计数会被别的测试块污染 ✗）。
+//   **∴ 差分探针实跑两轮才定案 ✗**（第 904 轮的教训 ✓：探针给的意外结果先怀疑**我的期望**✗）：
+//     redo 之后服务端的 `redo_last` 重做的是**整组** [tombstone, set_property, draw_shape] ✓
+//     ⇒ 创建与 tombstone **又一起生效** ⇒ 对象**又是死的**（`get_object.deleted_by` 有值 ✓、
+//     `list_objects` 里没有它 ✓）⇒ 它的 `get_undo_status#2.remaining=0`、`undo_last#2` 报
+//     「没有可撤销的笔迹」✗ —— 与 `redoable=1`（死对象仍可被重做机器收集 ✓ 实测 ignored=11）一起
+//     **两条路同一事实** ✓，**没有漂移** ✗（我一度判「服务端自相矛盾」是把 redo 误想成「只复活对象、
+//     不恢复 tombstone」✗ —— 探针的 `redone` 清单直接否掉了这个读法 ✓）。
+//   **∴ 本地层整条链与服务端逐字段对齐 ✗**（撤整笔含 tombstone ✓ → 撤后死透 remaining=0 ✓ →
+//     整组重做 ✓ → 重做后又死 ⇒ undoable=0／undo#2 空带 message ✓ —— 本端就断这些实测事实 ✓）。
+const hDoc = "dh_" + Date.now().toString(36);
+const hjpost = (p, o) => callDoc(hDoc, p, { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify(o) }).then((r) => r.json());
+await callDoc(hDoc, "/api/documents", { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ doc_id: hDoc, width: 320, height: 240 }) });
+await callDoc(hDoc, "/api/atoms", { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ kind: "create_layer", layer_id: "LT", name: "历史层" }) });
+const hShape = await hjpost("/api/tools/draw_shape", { layer_id: "LT", data: { geometry: { kind: "rect", bbox: { x: 1, y: 1, width: 8, height: 8 } } } });
+await hjpost("/api/tools/update_object", { object_id: hShape.object_id, patch: { visible: false } });
+await hjpost("/api/tools/delete_object", { object_id: hShape.object_id });
+const hRestore = await hjpost("/api/tools/restore_object", { object_id: hShape.object_id });
+check(hRestore.ok === true && hRestore.restored === true, `restore 应先复活对象（实测 ${JSON.stringify(hRestore).slice(0, 140)}）`);
+const hStatus0 = await hjpost("/api/tools/get_undo_status", {});
+check(hStatus0.undoable_gestures === 1 && hStatus0.redoable_gestures === 0,
+  `独立文档里 restore 之后应「可撤 1／可重做 0」（实测 ${hStatus0.undoable_gestures}/${hStatus0.redoable_gestures}）`);
+const hUndo1 = await hjpost("/api/tools/undo_last", {});
+const hSeq1 = (hUndo1.undone || []).map((x) => x.kind);
+check(hUndo1.ok === true && JSON.stringify(hSeq1) === JSON.stringify(["tombstone", "set_property", "draw_shape"])
+    && hUndo1.gestures_undone === 1,
+  `undo_last 必须把**活着对象**的全部原子（含 tombstone 本身、从新到旧）整笔撤掉 —— 旧本地按「每原子最新动作」跳过 restore 过的 tombstone ⇒ 只撤半笔（实测 kinds=${JSON.stringify(hSeq1)}）`);
+const hStatus1 = await hjpost("/api/tools/get_undo_status", {});
+check(hStatus1.remaining_gestures === hStatus1.undoable_gestures
+    && hStatus1.undoable_gestures === 0 && hStatus1.redoable_gestures === 1,
+  `撤完整笔后：remaining 与 undoable 同源 ✓、可撤归零 ✓、可重做=1 ✓（实测 ${hStatus1.remaining_gestures}/${hStatus1.undoable_gestures}/${hStatus1.redoable_gestures}）`);
+const hObjAfterUndo = await hjpost("/api/tools/get_object", { object_id: hShape.object_id });
+const hListAfterUndo = await hjpost("/api/tools/list_objects", {});
+check(hObjAfterUndo.deleted === false && hObjAfterUndo.deleted_by === null && hListAfterUndo.count === 0,
+  `撤掉创建原子的对象：本地 get_object 的 deleted/deleted_by 只看**生效的** tombstone（undo 撤了它 ⇒ 都为空 ✓），但 list_objects 必须按状态事实把它剔掉（实测 deleted=${hObjAfterUndo.deleted}／deleted_by=${hObjAfterUndo.deleted_by}／count=${hListAfterUndo.count}）`);
+const hRedo1 = await hjpost("/api/tools/redo_last", {});
+const hRedoIds = (hRedo1.redone || []).map((x) => x.atom_id);
+const hUndoIds = (hUndo1.undone || []).map((x) => x.atom_id);
+check(hRedo1.ok === true && JSON.stringify(hRedoIds) === JSON.stringify(hUndoIds),
+  `redo 必须**按同一顺序整笔重做** undo 撤掉的那组原子（实测 redone=${JSON.stringify(hRedoIds)} vs undone=${JSON.stringify(hUndoIds)}）`);
+// **∴ 「为什么死」也要断 ✗**（M-G 变异实测教的一课 ✓）：undo 机器只看**对象死不死** ⇒
+//   「tombstone 生效而活着的创建」与「创建被抑制」**两种错法都给同样的计数**✓ 分不出来 ✗。
+//   服务端 `get_object after redo` 实测：**创建仍在**（`created_by` 有值 ✓）而**死因是 tombstone**
+//   （`deleted_by` = 那条 tombstone ✓）⇒ 本端用 `deleted`/`list_objects` 断同一事实 ✓。
+const hObjAfterRedo = await hjpost("/api/tools/get_object", { object_id: hShape.object_id });
+const hListAfterRedo = await hjpost("/api/tools/list_objects", {});
+check(hObjAfterRedo.found !== false && hObjAfterRedo.deleted === true
+    && hObjAfterRedo.deleted_by === (hUndo1.undone[0] || {}).atom_id && hListAfterRedo.count === 0,
+  `redo 之后对象必须「创建仍在、死因是 tombstone」（deleted=true 且 deleted_by=undo 撤的第一条 tombstone ✓ 与服务端 get_object after redo 的 created_by+deleted_by 同形 ✓；若 reapply 被误登记成 revert ⇒ tombstone 反被判抑制 ⇒ deleted=false ✗；实测 deleted=${hObjAfterRedo.deleted}／deleted_by=${hObjAfterRedo.deleted_by}／count=${hListAfterRedo.count}）`);
+const hStatus2 = await hjpost("/api/tools/get_undo_status", {});
+check(hStatus2.remaining_gestures === hStatus2.undoable_gestures
+    && hStatus2.undoable_gestures === 0 && hStatus2.redoable_gestures === 1,
+  `redo 重做的是**整组**（含 tombstone）⇒ 对象又死了 ⇒ undoable=0／redoable=1 ✓（与服务端实测同数 ✓：status#2 remaining=0／ignored=11；实测 ${hStatus2.remaining_gestures}/${hStatus2.undoable_gestures}/${hStatus2.redoable_gestures}）`);
+const hUndo2 = await hjpost("/api/tools/undo_last", {});
+check(hUndo2.ok === true && (hUndo2.undone || []).length === 0 && typeof hUndo2.message === "string",
+  `redo 后对象是死的 ⇒ 不是 undo 候选 ⇒ undo_last#2 必须**空手且如实报**（ok:true + message ✓ 不许静默 ✓——与服务端实测一致 ✓；实测 undone=${JSON.stringify((hUndo2.undone || []).map((x) => x.kind))} message=${JSON.stringify(hUndo2.message)}`);
+console.log("  本地层 undo/redo（独立文档 " + hDoc + "）：候选=对象存活 ✓｜tombstone 整笔撤 ✓｜reapply 覆盖 revert ✓（撤 " +
+  hUndo1.undone_count + " 条 ⇒ 重做 " + hRedo1.redone_count + " 条 ⇒ 再撤 " + hUndo2.undone_count + " 条 ✓）");
 
 
 

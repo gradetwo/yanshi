@@ -367,16 +367,39 @@ async function withKernel(doc, fn) {
       timestamp: Date.now(),
     };
   }
-  /** **被 `revert`／`reapply` 中和掉的原子 id 集合 ✗**（**∴ 判"删没删"要用它 ✓**）。 */
+  /** **「失效集」（suppressed）—— 服务端 `EffectiveActions::from_atoms` 的本地镜像 ✗**
+   *   （**`yanshi-core/src/fold.rs:211–259` ✓ —— 一个事实只写一处 ✓**）：
+   *   **∴ 规则是「每个目标上 seq 最大的生效动作胜出」✗**（**倒序扫描 + 首见登记 ✓**）：
+   *     `revert` ⇒ 目标失效 ✓；**更晚的 `reapply` ⇒ 目标又生效** ✓
+   *     （**旧本地实现把 revert／reapply 混成一个「被中和过」集合 ✗ ⇒ redo 过的对象
+   *       永远死着 ⇒ undo 栈与画面互相矛盾 —— 本轮差分探针实测抓出的 ✓**）；
+   *   **∴「撤销撤销」级联 ✓**：动作自己也被有效 revert 撤掉时它失效（**登记在动作 id 上 ✓**），
+   *     于是目标上更早的动作重新胜出 ✓（**照 `fold.rs:213–247` 的两个分支逐字 ✓**）；
+   *   **∴ 返回的集合 = 「当前不再生效的原子」**，`p2ObjectView`／`p2History`／`p2cState`／
+   *     `__p2CollectGestures` 共用同一份口径 ✓。 */
   function p2Neutralized(rows) {
-    const s = new Set();
-    for (const r of rows) {
-      const a = (r && r.atom) || {};
-      if ((a.kind === "revert" || a.kind === "reapply") && a.payload && a.payload.target) {
-        s.add(a.payload.target);
+    const atoms = rows.map((r) => (r && r.atom) || r || {});
+    const actions = new Map(); // 目标 id -> 最新**生效**动作（"revert" | "reapply"）
+    const suppressed = new Set(); // 当前不再生效的原子
+    const isHistory = (k) => k === "revert" || k === "reapply";
+    for (let i = atoms.length - 1; i >= 0; i--) {
+      const a = atoms[i];
+      const target = isHistory(a.kind) && a.payload ? a.payload.target : null;
+      if (a.kind === "revert") {
+        if (actions.get(a.id) === "revert") suppressed.add(a.id); // revert(revert(x)) ≡ reapply(x)
+        else if (typeof target === "string" && target) {
+          if (!actions.has(target)) actions.set(target, "revert");
+        }
+      } else if (a.kind === "reapply") {
+        if (actions.get(a.id) === "revert") suppressed.add(a.id); // revert(reapply(x)) ⇒ 维持 x 被抑制
+        else if (typeof target === "string" && target) {
+          if (!actions.has(target)) actions.set(target, "reapply");
+        }
+      } else if (actions.get(a.id) === "revert") {
+        suppressed.add(a.id);
       }
     }
-    return s;
+    return suppressed;
   }
   /** **哪些原子「建了一个可寻址的对象」—— 一个事实只写一处 ✗ 的权威集合 ✓**（本轮 ✓）：
    *   **∴ 出处 = 服务端折叠器**（**`yanshi-core/src/fold.rs:1089` 与 `1116–1151` ✓**）：
@@ -428,6 +451,9 @@ async function withKernel(doc, fn) {
     const view = {
       found: true,
       object_id: objectId,
+      /** **建它的原子 id ✗**（**`__p2Alive` 判「创建是否被撤掉」用 ✓**——
+       *   **∴ 折叠器里 `Revert{create}` ⇒ 对象整个从状态消失 ✓，与 `deleted` 是两回事 ✗**）。 */
+      __create_id: create.id,
       layer_id: props.layer_id !== undefined ? props.layer_id : (cpl.layer_id ?? null),
       type: props.type !== undefined ? props.type : (cpl.type ?? null),
       // **`data` 的取法照服务端 `object_data` ✓**（**「有 `data` 子对象 ⇒ 用 `data`✓，否则 ⇒ 用整个净荷 ✓」**，
@@ -445,6 +471,14 @@ async function withKernel(doc, fn) {
       metadata: props.metadata ?? null,
       tombstone_ids: tombstoneIds,
       deleted: tombstoneIds.some((id) => !neutral.has(id)),
+      /** **死因 ✗**（**∴ 照服务端折叠的 `Object::deleted_by` ✓**——**每条生效的 `tombstone` 都覆写 ✓
+       *   ⇒ 取**最新一条未被抑制的** ✓；`tools.rs:3188` 把它原样给 `get_object` ✓**）。
+       *   **∴ 为什么本地也要有 ✗**：undo 机器只看「死没死」⇒「创建被抑制」与「tombstone 生效」
+       *   **两种错法计数相同 ✓ 分不出来 ✗**（M-G 变异实测）⇒ **死因字段把两者分开 ✓**。 */
+      __deleted_by: (() => {
+        const live = tombstoneIds.filter((id) => !neutral.has(id));
+        return live.length ? live[live.length - 1] : null;
+      })(),
     };
     view.members = view.data && view.data.members !== undefined ? view.data.members : null;
     if (props.members !== undefined) view.members = props.members;
@@ -455,6 +489,55 @@ async function withKernel(doc, fn) {
     view.local_transform = view.master_ref && view.master_ref.local_transform
       ? view.master_ref.local_transform : null;
     return view;
+  }
+  /** **一笔**＝ `(object_id, [ {seq, atom_id, kind} ])`（**照服务端 `type Gesture` ✓，`tools.rs:8685`**）。 */
+  /** **对象在状态里是否活着 ✗**（**本地等价 `alive_objects()` ✓ —— 状态事实 = 「折叠后还在状态里」✓，
+   *   **不是**「没被 tombstone 删过」✗**）：折叠器对 `Revert{create 原子}` 会**连对象一起消失** ✓
+   *   （**实测：服务端撤掉 `draw_shape` 后 `undo_last` 报「没有可撤销的笔迹」✓**）⇒
+   *   **∴ 三条合取 ✓**：有创建原子 ✓、**创建原子未被最新历史动作中和 ✗**、**没有生效中的 tombstone ✓**。
+   *   **∴ 「最新动作」而非「出现过 revert」**✓（**redo 过 ⇒ `reapply` 覆盖更早的 `revert`✓**——
+   *     **照折叠层对 `Reapply{Revert{x}} ≡ x 生效 ✓` 的语义（设计 793 ✓）**）。 */
+  function __p2Alive(rows, view) {
+    if (view.found !== true || !view.__create_id) return false;
+    if (view.deleted === true) return false;
+    return !p2Neutralized(rows).has(view.__create_id);
+  }
+  /** **服务端 `collect_gestures` 的本地镜像 ✗**（**`tools.rs:8714` ✓ —— 权威判据在此**）：
+   *   **∴ 候选按「对象活着吗」✗**（undo ⇒ 活对象的全部原子（**含它的 `tombstone` 本身 ✓**）；
+   *     redo ⇒ 死对象的原子）。**∴ 不是**「每个原子的最新动作」✗ —— 旧本地实现用后者 ✓，
+   *     于是 **restore 过的 `tombstone` 被跳过 ⇒ undo 半笔 ⇒ 画面没跟着变 ✓**
+   *     （**∴ 正是服务端注释里写明的教训 ✓：「对象已经不在 alive_objects() 里 ⇒ 这一笔早就被撤了」**）。
+   *   **∴ 与服务端逐条对齐的跳过规则 ✓**：`create_document` 不进候选也不计数 ✓；
+   *     无对象归属的原子（**含 `revert`／`reapply` —— 它们的净荷只有 `target`✓**）进 `ignored` ✓；
+   *     `update_mask` 是**唯一**没 `object_id` 也进候选的 ✓（**有效性＝未被 revert ✓，
+   *     照 `compute_suppressed` 补集 ✓**）；连续同对象归并成一笔 ✓（**中间隔着的无主原子不断笔 ✓**）。
+   */
+  function __p2CollectGestures(rows, wantAlive) {
+    const neutral = p2Neutralized(rows);
+    const aliveCache = new Map();
+    const aliveOf = (oid) => {
+      if (!aliveCache.has(oid)) aliveCache.set(oid, __p2Alive(rows, p2ObjectView(rows, oid)));
+      return aliveCache.get(oid);
+    };
+    const gestures = [];
+    let ignored = 0;
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const a = (rows[i] && rows[i].atom) || {};
+      if (a.kind === "create_document") continue;
+      const pl = a.payload || {};
+      let object = typeof pl.object_id === "string" && pl.object_id ? pl.object_id : null;
+      if (object === null && a.kind === "update_mask") {
+        if (typeof pl.mask_id === "string" && pl.mask_id) object = "mask:" + pl.mask_id;
+      }
+      if (object === null) { ignored++; continue; }
+      const current = object.startsWith("mask:") ? !neutral.has(a.id) : aliveOf(object);
+      if (current !== wantAlive) { ignored++; continue; }
+      const entry = { seq: rows[i].seq, atom_id: a.id, kind: a.kind };
+      const last = gestures[gestures.length - 1];
+      if (last && last[0] === object) last[1].push(entry);
+      else gestures.push([object, [entry]]);
+    }
+    return { gestures, ignored };
   }
   /** **对象版本链 ✗**（**∴ 所有**引用 `object_id` 的原子 ✓ ＋ `reverted` 标记 ✓**）。 */
   function p2History(rows, objectId) {
@@ -1625,41 +1708,20 @@ async function withKernel(doc, fn) {
     }
 
     // **⑥ `get_undo_status` ✗**：**只读查询可撤销／可重做的笔数 ✓**（**照服务端 `read_get_undo_status` ✓**）：
-    //   **∴ 与本地 `undo_last`／`redo_last` 同一套归并 ✗**（**连续相同 `object_id`＝一笔 ✓；
-    //     无 `object_id` 的原子只进 `ignored` ✓；历史原子看 `payload.target` 的**最新**动作 ✓**）；
-    //   **∴ 可撤销＝**没有**被 `revert` 的笔 ✓；可重做＝**整笔**被 `revert` 且没 `reapply` 的笔 ✓**。
+    //   **∴ 与 `undo_last`／`redo_last` 走同一个 `__p2CollectGestures` ✗**（**∴ 服务端注释的原话 ✓：
+    //     「undo 与只读状态查询必须报同一个数 ⇒ 各写一份必然漂移」✓**）；
+    //   **∴ 判据是对象存活 ✗**（**不是**每原子最新动作 ✓ —— 见 `__p2CollectGestures` 的教训注 ✓）；
+    //   **∴ `remaining_gestures`／`ignored_atoms` 与服务端同名同义 ✓**（**服务端只给这两个 ✓**；
+    //     `undoable_gestures`／`redoable_gestures` 是本地层的便利字段 ✗，前端读它们 ✓）。
     if (path === "/api/tools/get_undo_status") {
       const rows = await atomsOf(handle, doc);
-      const latestAction = new Map(); // atom id -> "revert" | "reapply"（**最新**的 ✓）
-      for (let i = rows.length - 1; i >= 0; i--) {
-        const a = rows[i] && rows[i].atom;
-        if (!a || (a.kind !== "revert" && a.kind !== "reapply")) continue;
-        const t = a.payload && a.payload.target;
-        if (typeof t === "string" && t && !latestAction.has(t)) latestAction.set(t, a.kind);
-      }
-      let undoable = 0, redoable = 0, ignored = 0;
-      let cur = null, curAtoms = [];
-      const flush = () => {
-        if (curAtoms.length === 0) return;
-        const rev = curAtoms.filter((id) => latestAction.get(id) === "revert").length;
-        if (rev === 0) undoable++;
-        else if (rev === curAtoms.length) redoable++;
-        // **∴ 半撤状态（**部分原子被 revert ✓**）两边都不进 ✗**（**∴ 如实，不硬归类 ✓**）
-        cur = null; curAtoms = [];
-      };
-      for (let i = rows.length - 1; i >= 0; i--) {
-        const a = (rows[i] && rows[i].atom) || {};
-        if (a.kind === "create_document" || a.kind === "revert" || a.kind === "reapply") {
-          flush(); ignored++; continue;
-        }
-        const oid = a.payload && a.payload.object_id;
-        if (typeof oid !== "string" || !oid) { flush(); ignored++; continue; }
-        if (cur !== oid) { flush(); cur = oid; }
-        curAtoms.push(a.id);
-      }
-      flush();
-      return json({ ok: true, undoable_gestures: undoable, redoable_gestures: redoable,
-                    remaining_gestures: undoable, ignored_atoms: ignored, server: false,
+      const undoCollect = __p2CollectGestures(rows, true);
+      const redoCollect = __p2CollectGestures(rows, false);
+      return json({ ok: true,
+                    undoable_gestures: undoCollect.gestures.length,
+                    redoable_gestures: redoCollect.gestures.length,
+                    remaining_gestures: undoCollect.gestures.length,
+                    ignored_atoms: undoCollect.ignored, server: false,
                     note: "只读查询：没有改动任何内容（与本地 undo_last／redo_last 同一套归并）" });
     }
 
@@ -1821,6 +1883,10 @@ async function withKernel(doc, fn) {
                     visible: v.visible, locked: v.locked, z_index: v.z_index,
                     metadata: v.metadata, data: v.data, transform: v.transform,
                     deleted: v.deleted,
+                    // **∴ `created_by`／`deleted_by` ✗**（**∴ 照服务端 `get_object` 的字段 ✓**
+                    //   （**`tools.rs:3188` ✓**）—— **死因与出身分开报 ✗ 才能把「创建被抑制」与
+                    //   「tombstone 生效」两种「死」区分开 ✓**）。
+                    created_by: v.__create_id, deleted_by: v.__deleted_by,
                     note: "从原子日志推导；bbox 等需内核折叠的字段未推导" };
       if (body.include_history === true) out.version_chain = p2History(rows, objectId);
       return json(out);
@@ -4200,51 +4266,37 @@ async function withKernel(doc, fn) {
 
     // **★ `/api/tools/undo_last`／`/api/tools/redo_last` ✗ ★**（P0 ✓）：
     // **∴ 语义照服务端 `write_undo_last`／`write_redo_last`
-    //   （`crates/yanshi-server/src/tools.rs:7119`／`:7192`）✓**：
+    //   （`crates/yanshi-server/src/tools.rs:8803`／`:8876`）✓**：
     // **∴ 参数 `{count?}`（**缺省 1 ✓、**下限 1 ✓ —— **∴ 照服务端 `.max(1)` ✓**）；
-    // **∴ 把原子从新到旧按"笔"分组 ✗**（**连续相同 `object_id` = 一笔 ✓**）；
-    // **∴ 无 `object_id` 的原子不进候选**（**如 `create_document`／`create_layer` ✓ ——
-    //   **∴ 服务端 `collect_gestures` 里它们只进 `ignored` ✓，**∴ 结构改动不在这里撤 ✓**）；
-    // **∴ 历史原子本身不撤／不重做**（`revert`／`reapply` ✗）；
-    // **∴ 已撤过的笔不再撤、已重做的笔不再重做**（**∴ 按 `payload.target` 从新到旧判每个原子的
-    //   "最新动作"✗ —— **∴ 这是服务端 `alive_objects()` 在本地层的等价实现 ✓
-    //   ⇒ **∴ 于是**不会"**报撤了、画面没变**"✓**）；
+    // **∴ 候选归并走共享的 `__p2CollectGestures` ✗**（**∴ 与服务端 `collect_gestures` 同一套判据 ✓：
+    //   对象活着 ⇒ undo 候选（**含它的 `tombstone` ✓**）；死了 ⇒ redo 候选 ✓**）；
+    // **∴ 无对象归属的原子不进候选只进 `ignored`**（**`create_document` 连 `ignored` 都不进 ✓，
+    //   **∴ 照服务端 `continue` ✓**；`revert`／`reapply` 净荷只有 `target` ⇒ 天然无主 ✓ 不撤历史 ✓）；
+    // **∴ 历史原子若仍进了笔 ⇒ `skipped` 并如实报原因 ✗**（**∴ 照服务端 `tools.rs:8834` 的分支 ✓**）；
     // **∴ 对选中笔的每个原子写一个历史原子**（**∴ kind 用 **snake_case** `revert`／`reapply` ✗ ——
     //   **∴ 与服务端序列化名一致（`atom.rs:356` ✓）⇒ **∴ 内核重放时认得 ✓**；
     //   **∴ payload 键用 `target` ✗**（**∴ 照服务端 `write_history_atom` 的 `{"target":…}`
-    //     （`tools.rs:8743` ✓）—— **∴ 折叠层的 `target_atom()` 只读这个键（`atom.rs:641` ✓）
+    //     （`tools.rs:10451` ✓）—— **∴ 折叠层的 `target_atom()` 只读这个键（`atom.rs:641` ✓）
     //     ⇒ **∴ 否则内核**认不出**它是个撤销 ✓**）。
     async function __historyStep(isUndo, count) {
       const rows = await atomsOf(handle, doc);
       // **∴ `atomsOf` 已按 seq 升序 ✓**（**`store.js` ✓）⇒ **∴ 倒着扫 = 从新到旧 ✓**。
-      const latestAction = new Map(); // atom id -> "revert" | "reapply"
-      for (let i = rows.length - 1; i >= 0; i--) {
-        const a = rows[i] && rows[i].atom;
-        if (!a || (a.kind !== "revert" && a.kind !== "reapply")) continue;
-        const t = a.payload && a.payload.target;
-        if (typeof t === "string" && t && !latestAction.has(t)) latestAction.set(t, a.kind);
-      }
-      const gestures = []; // [object_id, [{seq, atom_id, kind, object_id}]]
-      let ignored = 0;
-      for (let i = rows.length - 1; i >= 0; i--) {
-        const rec = rows[i];
-        const a = rec && rec.atom;
-        if (!a) continue;
-        if (a.kind === "create_document" || a.kind === "revert" || a.kind === "reapply") { ignored++; continue; }
-        const oid = a.payload && a.payload.object_id;
-        if (typeof oid !== "string" || !oid) { ignored++; continue; }
-        const reverted = latestAction.get(a.id) === "revert";
-        if (isUndo ? reverted : !reverted) { ignored++; continue; }
-        const entry = { seq: rec.seq, atom_id: a.id, kind: a.kind, object_id: oid };
-        const last = gestures[gestures.length - 1];
-        if (last && last[0] === oid) last[1].push(entry);
-        else gestures.push([oid, [entry]]);
-      }
+      const { gestures, ignored } = __p2CollectGestures(rows, isUndo);
       const histKind = isUndo ? "revert" : "reapply";
       const prefix = isUndo ? "01UNDO" : "01REDO";
       const itemsName = isUndo ? "undone" : "redone";
       const gesturesName = isUndo ? "gestures_undone" : "gestures_redone";
       const countName = isUndo ? "undone_count" : "redone_count";
+      if (gestures.length === 0) {
+        return json({ ok: true, [itemsName]: [], skipped: [], [countName]: 0,
+                      remaining_gestures: 0, server: false,
+                      message: isUndo
+                        ? "没有可撤销的笔迹 ✗ ⇒ 这个文档里除了创建本身，还没有内容原子 ✓"
+                        : "没有可重做的笔迹 ✗ ⇒ 没有哪一笔处于「被撤销」状态 ✓",
+                      note: isUndo
+                        ? "结构改动不在这里撤 ✓（例如建层/删层/重排 ✓）⇒ 用 revert 或 revert_changeset ✓"
+                        : undefined });
+      }
       const take = Math.min(count, gestures.length);
       const done = [], skipped = [];
       const uniq = String(Date.now()).padStart(13, "0") + Math.random().toString(36).slice(2, 7);
@@ -4252,6 +4304,12 @@ async function withKernel(doc, fn) {
         const items = gestures[g][1];
         for (let k = 0; k < items.length; k++) {
           const it = items[k];
+          if (it.kind === "revert" || it.kind === "reapply") {
+            skipped.push({ seq: it.seq, atom_id: it.atom_id, kind: it.kind,
+                           reason: isUndo ? "历史原子本身不撤（折叠层与校验层对嵌套撤销有分歧 ⇒ 不擅自决定）"
+                                          : "历史原子本身不重做" });
+            continue;
+          }
           await putAtom(handle, doc, {
             actor: "human:web",
             id: prefix + uniq + "_" + g + "_" + k,
@@ -4262,23 +4320,18 @@ async function withKernel(doc, fn) {
             session: "session:web",
             timestamp: Date.now(),
           });
-          done.push(it);
+          done.push({ seq: it.seq, atom_id: it.atom_id, kind: it.kind, object_id: gestures[g][0] });
         }
       }
-      const resp = {
+      return json({
         ok: true, [itemsName]: done, skipped, [countName]: done.length,
         [gesturesName]: take, gestures_total: gestures.length,
-        remaining_gestures: gestures.length - take,
+        remaining_gestures: Math.max(gestures.length - take, 0),
         ignored_non_content_atoms: ignored,
-        hint: isUndo ? "要恢复就对这些 atom_id 用 redo_last；count 可以一次撤多笔 ✓"
-                      : "再撤掉它们用 undo_last ✓",
+        hint: isUndo ? "要恢复就对这些 atom_id 用 reapply；count 可以一次撤多笔 ✓"
+                     : "再撤掉它们用 undo_last ✓",
         server: false,
-      };
-      if (gestures.length === 0) {
-        resp.message = isUndo ? "没有可撤销的笔迹 ✗ ⇒ 这个文档里除了创建本身，还没有内容原子 ✓"
-                              : "没有可重做的笔迹 ✗ ⇒ 没有哪一笔处于「被撤销」状态 ✓";
-      }
-      return json(resp);
+      });
     }
     if (path === "/api/tools/undo_last") {
       // **∴ `count` 非法 ⇒ 按服务端 `.unwrap_or(1)` 落到 1 ✗**（**∴ 不 400 ✓**）。

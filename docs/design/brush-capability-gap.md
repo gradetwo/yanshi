@@ -22626,7 +22626,7 @@ node 判据环境没有 ⇒ **归 browser 判据**（`browser-asset-dock` 在 CI
 
 ## 六百四十八、`resample` 丢 `scale` ⇒ 又挖出 `p2ObjectView` 认不出 `import_image` 建的对象（离线「导入后再缩放」整条坏，实测）
 
-**⇒ 起因 ✓**：§647 那个「前端发了却没被本地读」的探测器**继续跑**命中 `resample` ✓——
+**⇒ 起因 ✓**：第 六百四十七 节那个「前端发了却没被本地读」的探测器**继续跑**命中 `resample` ✓——
 前端 `viewer-app.js:6483` 只发 `{object_id, scale}`✓（用户拖缩放滑杆 ⇒ 倍率 ✓），
 而本地层 `api-local.js` **只读 `width`/`height`✗** ⇒ `scale` 被整个丢掉 ✓
 ⇒ 且旧目标尺寸算式 `toW = targetW || fromW` ⇒ **不缩放却 `ok:true`**✓（静默按原尺寸重采样、冒充成功 ✓）。
@@ -22673,7 +22673,7 @@ node 判据环境没有 ⇒ **归 browser 判据**（`browser-asset-dock` 在 CI
 **∴ 为什么「导入对象可见性」能在 node 验成功路径 ✗**：认对象＋读 `object_id`＋回 `invalid_argument` **都不碰内核**✓；
 **只有实际缩放**要浏览器 canvas ⇒ 那条留给 CI 的 `browser-*`✓（本机不跑重活 ✓）。
 
-**⇒ 顺带记一条探测器经验 ✓**：§647 那句「前端发了却没被本地读」是**这一类 bug 的入口**✓，
+**⇒ 顺带记一条探测器经验 ✓**：第 六百四十七 节那句「前端发了却没被本地读」是**这一类 bug 的入口**✓，
 但它只指向**读键**✗；顺着一个端点**端到端**验（先造输入对象再操作它）才把**折叠器漏认一整类原子**✓ 这种
 **跨端点的共同依赖坏了一处**挖出来 ✓ —— **「发了没读」抓单点，「拿它当输入再操作」抓共享折叠器** ✓。
 
@@ -22686,7 +22686,7 @@ node 判据环境没有 ⇒ **归 browser 判据**（`browser-asset-dock` 在 CI
 
 ## 六百四十九、`p2ObjectView`／`list_objects`／`duplicate_layer` 三处各自发明「哪些原子建对象」⇒ 收敛成一个共享集合（本轮 ✓）
 
-**起因 ✓**：§648 只把 `p2ObjectView` 从「只认 `create_object`」补上 `import_image`✓。
+**起因 ✓**：第 六百四十八 节只把 `p2ObjectView` 从「只认 `create_object`」补上 `import_image`✓。
 但**同一个事实**——「哪些原子 kind 会建立一个对象」——在本地层**被三个读者各自硬编码 ✗**，
 三者口径互不一致 ⇒ 这正是内核 2「同一事实只写一处」禁止的形状 ✓。核权威口径（服务端折叠本身）：
 - `crates/yanshi-core/src/fold.rs:1089` ⇒ `CreateObject|ImportImage` **无条件建对象** ✓；
@@ -22725,7 +22725,7 @@ node 判据环境没有 ⇒ **归 browser 判据**（`browser-asset-dock` 在 CI
 
 ## 六百五十、`p2cState` 的对象种子是「建对象 kind」这一事实的第四个读者——收敛到 `P2_OBJECT_CREATE_KINDS` ＋ 按 object_id 去重（本轮 ✓）
 
-**起因 ✓**：§649 末记下的残留。先按内核 3 逐一看全 **6 个消费者**再动手 ✓（读 `api-local.js:2198` 与各调用点）：
+**起因 ✓**：第 六百四十九 节末记下的残留。先按内核 3 逐一看全 **6 个消费者**再动手 ✓（读 `api-local.js:2198` 与各调用点）：
 `list_documents`(:3273) 与 `collect_diagnostics`(:3421) 取 `st.objects.length` 当**对象计数**✓；
 `get_state`(:3309-3313)、`get_descendants`(:3604)、`get_dependency_graph`(:3661)、`get_resolved_state`(:3324) **遍历 `st.objects` 当 id 种子**✓，
 且它们**都已用 `p2ObjectView` 重算真实 `type`／`layer_id`／`visible`／`deleted`**✓（⇒ 种子里那几个 raw 字段**无人读**✓）。
@@ -22736,7 +22736,7 @@ node 判据环境没有 ⇒ **归 browser 判据**（`browser-asset-dock` 在 CI
 本机实测最刺眼的一例 ✓：判据那个文档**一个 `create_object` 都没有**（对象全是 `import_image`＋`draw_shape`）⇒ 旧口径下 **`get_state` 对象表整条为空**✓（对象数 0）。
 另：`p2cState` 自己的 doc 注释(:2197)早已写「类型／层取 `p2ObjectView` 的合并视图」✗ 但代码没这么做 ⇒ 注释与代码不符 ✓。
 
-**修法 ✓**：种子循环 `create_object` → **`P2_OBJECT_CREATE_KINDS.has(a.kind)` ＋ 按 `object_id` 去重**（`objSeen` ✓，照 §649 `list_objects` 同形 ✓）；
+**修法 ✓**：种子循环 `create_object` → **`P2_OBJECT_CREATE_KINDS.has(a.kind)` ＋ 按 `object_id` 去重**（`objSeen` ✓，照第 六百四十九 节 `list_objects` 同形 ✓）；
 真实字段仍交调用方的 `p2ObjectView` ✓；doc 注释改为**「只作 id 种子，合并视图由调用方取」**✓ 消除注释／代码不符 ✓。
 
 **四层齐 ✓（两个变异各证一条，正交不串味 ✓）**：
@@ -22756,3 +22756,35 @@ node 判据环境没有 ⇒ **归 browser 判据**（`browser-asset-dock` 在 CI
 **收益 ✓**：`get_state`／`list_documents`／`collect_diagnostics` 的对象表与计数**与服务端 `alive_objects` 同口径**✓（手画／导入／填充／文字不再整类漏）✓；
 「建对象 kind」这一事实的**四个读者全部收敛到一处**✓（`p2ObjectView`／`list_objects`／`duplicate_layer`／`p2cState` 全读 `P2_OBJECT_CREATE_KINDS` ✓）。
 **代价 ✓**：种子遍历全部建对象原子 ＋ 去重 ⇒ O(原子数)✓（与 `list_objects` 同量级 ✓）；严格加法：旧口径是新集合的真子集 ⇒ 只会**多认**（正是要修的）不会少认 ✓；判据多 ⑦g 两条断言✓（node 级毫秒 ✓）。
+
+## 六百五十一、本地层 undo/redo 与服务端 `collect_gestures` 全链对齐（差分探针实测 ✓ 四层齐 ✓）
+
+**问题 ✓**（静默降级家族 ✓：`ok:true` 却与画面矛盾 ✓）：PWA 本地层的 `undo_last`／`redo_last`／`get_undo_status` 各自发明候选判据 ✗ ⇒
+① 按「每个原子的最新动作」判定 ⇒ **restore 过的 `tombstone` 被当成已撤跳过** ✗ ⇒ undo 只撤 [4,3] **半笔**（对象仍活着 ✓）；
+② `p2Neutralized` 把 `revert`／`reapply` **混成一个「被中和过」集合** ✗ ⇒ `reapply` 不解除抑制 ⇒ redo 永远空手 ✗。
+
+**做法 ✓**（**判据以服务端实跑史为权威 ✓**，同一序列打真 `yanshi-serve` 逐字段比对 ✓）：
+· `p2Neutralized` 重写为 `yanshi-core/src/fold.rs:211–259` `EffectiveActions::from_atoms` 的忠实镜像 ✓（从新到旧 ✓ 目标上首登记胜出 ✓ `revert(revert)`／`revert(reapply)` 级联 ✓ 返回「当前不再生效」集合 ✓）；
+· 新增 `__p2Alive`（有创建原子 ✓ 创建未被抑制 ✓ 无生效 tombstone ✓ —— **折叠里 `Revert{create}` 让对象整个消失 ✓ 与 `deleted` 两回事 ✗**）；
+· 新增 `__p2CollectGestures(rows, wantAlive)` —— **undo／redo／只读状态三个读者收敛到同一份收集** ✓（服务端注释原话：各写一份必然漂移 ✓）；
+· `__historyStep` 照 `write_undo_last`／`write_redo_last`：无候选 ⇒ `ok:true` + `message` 如实报 ✓ 历史原子进笔 ⇒ `skipped` 带原因 ✓ 净荷只写 `{target}` ✓（内核折叠认这个键 ✓）。
+
+**新字段 ✓**：本地 `get_object` 补 `created_by`／`deleted_by` ✗（照服务端 `tools.rs:3188` ✓）——
+**M-G 变异教的一课 ✗**：undo 机器只看「死没死」⇒「创建被抑制」与「tombstone 生效」**两种错法给出完全相同的计数**✓ 分不出来 ✗
+⇒ **死因字段把两种「死」分开断 ✓**（redo 后必须 `deleted=true` 且 `deleted_by=` 那条 tombstone ✓）。
+
+**判据 ✗**：`tool-pwa-api-behaviour.mjs` ⑦h —— **在独立文档里测 ✗**（第 916/1356 轮的坑 ✓ 共享文档的整档计数会被别的测试块污染 ✓ 本轮第一次跑就撞上）；
+断言链：restore 后 1/0 ⇒ undo 整笔 [tombstone,set_property,draw_shape] ⇒ status1 remaining=undoable=0/redoable=1 ⇒
+undo 后 `deleted_by=null` 而 `list_objects.count=0` ⇒ redo **同序整组** ⇒ redo 后 `deleted=true`＋`deleted_by=tombstone` ⇒ status2 0/1 ⇒ undo#2 空手带 message ✓
+（**每一步都对上了服务端实测输出 ✓**：`status#2 remaining=0／ignored=11`、`undo#2 「没有可撤销的笔迹」` ✓）。
+
+**变异 ✓（三条全红 ✓ 还原全绿 ✓）**：M-F 候选退回「每原子最新动作」⇒ undo#1 丢 tombstone 红 ✓；
+M-G `reapply` 登记成 `revert`（= 旧 bug）⇒ `deleted_by` 断言红 ✓；M-H `__p2Alive` 不查创建抑制 ⇒ status1/redo 红 ✓。
+
+**探针纠错两次的如实记录 ✗**：我曾把「redo 后服务端报没有可撤销」判成**服务端自相矛盾**✗ ——
+实际是**我的期望错**✓：`redo_last` 重做的是**整组**（含 tombstone ✓ 探针 `redone` 清单直接否掉了「redo 只复活对象」的读法 ✓）
+⇒ 对象又死了 ⇒ 两条路（状态折叠与撤销机器）**同一事实** ✓ 没有漂移 ✓。
+**∴ 这是第 904 轮教训的第三次复用 ✗**：探针给出意外结果 ⇒ **先怀疑我的期望与测量**✓ 再怀疑产品 ✓。
+
+**收益 ✓**：web 端「撤销我刚画的那一笔」与服务端**同判据**✓（整笔含 tombstone ✓ redo 后不重复撤 ✓ 计数与画面同源 ✓）；
+`p2ObjectView.deleted`／`p2History.reverted`／`p2cState`／掩码候选**四个读者同时吃到**重写后的单一抑制口径 ✓。
