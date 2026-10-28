@@ -587,6 +587,49 @@ check(hUndo2.ok === true && (hUndo2.undone || []).length === 0 && typeof hUndo2.
 console.log("  本地层 undo/redo（独立文档 " + hDoc + "）：候选=对象存活 ✓｜tombstone 整笔撤 ✓｜reapply 覆盖 revert ✓（撤 " +
   hUndo1.undone_count + " 条 ⇒ 重做 " + hRedo1.redone_count + " 条 ⇒ 再撤 " + hUndo2.undone_count + " 条 ✓）");
 
+// **★ ⑦i `get_ancestors`／`get_descendants` 必须照服务端的三条判据 ✗ ★**
+//   （**出处 `tools.rs:8579`／`:8610` ＋ `dirty.rs:473` ✓**，本轮逐条读码对齐 ✓）：
+//   ① **对象不在折叠状态 ⇒ `reference_not_found` ✗**——旧本地**静默给 `ok:true, count:0`** ✓
+//     （「不存在」冒充「没有祖先」= 静默降级形态 4 ✓）；
+//     **状态含被 tombstone 标记的对象 ✓**（服务端 `state.objects.contains_key` 不看 `deleted_by` ✓
+//     —— 与 ⑦h 实测「redo 后 get_object 仍答 created_by+deleted_by」同一事实 ✓）。
+//   ② **`descendants` 是 id 字符串数组 ✗**（`Vec<String>` ✓）——旧本地给 `{object_id,layer_id}` 对象 ✓
+//     ⇒ 按服务端形状写的调用方拿到错形状而回执一切正常 ✓。
+//   ③ **只收 `instance` 且走传递闭包 ✗**（≤64 层 BFS ✓）——旧本地只收一层 ⇒ **孙实例漏掉** ✓。
+const iCreate = (objectId, type, master) => jpost("/api/atoms", {
+  kind: "create_object", id: "AT_" + objectId, actor: "human:test", session: "session:test",
+  schema_version: 1, timestamp: 1,
+  payload: { object_id: objectId, type, layer_id: "LN",
+             data: master ? { master_ref: { object_id: master } } : { geometry: { kind: "rect" } } } });
+await call("/api/atoms", { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ kind: "create_layer", layer_id: "LN", name: "实例层" }) });
+await iCreate("AN_M", "shape", null);
+await iCreate("AN_C", "instance", "AN_M");
+await iCreate("AN_G", "instance", "AN_C");
+await iCreate("AN_D", "instance", "AN_M");
+await iCreate("AN_S", "shape", "AN_M");
+await iCreate("AN_R", "instance", "AN_R");
+await jpost("/api/tools/delete_object", { object_id: "AN_D" });
+const iNopeA = await jpost("/api/tools/get_ancestors", { object_id: "AN_NOPE" });
+const iNopeD = await jpost("/api/tools/get_descendants", { object_id: "AN_NOPE" });
+check(iNopeA.ok === false && iNopeA.error === "reference_not_found"
+    && iNopeD.ok === false && iNopeD.error === "reference_not_found",
+  `不存在的对象必须报 reference_not_found ✗ 不许静默 ok:true count:0（旧实现把「不存在」与「没有祖先/后代」混成一个答案 ✓ 实测 ${JSON.stringify(iNopeA).slice(0, 100)}／${JSON.stringify(iNopeD).slice(0, 100)}）`);
+const iDesc = await jpost("/api/tools/get_descendants", { object_id: "AN_M" });
+check(iDesc.ok === true && Array.isArray(iDesc.descendants)
+    && iDesc.descendants.every((x) => typeof x === "string")
+    && JSON.stringify([...iDesc.descendants].sort()) === JSON.stringify(["AN_C", "AN_D", "AN_G"])
+    && iDesc.count === 3,
+  `descendants 必须是 **id 字符串数组**（服务端 Vec<String> ✓）且**传递闭包**（孙 AN_G 不许漏 ✓）、**只收 instance**（shape 引用 AN_S 不许进 ✓）、**tombstone 标记的不排除**（服务端 dependents_of 不看 deleted_by ✓ AN_D 必须在 ✓）（实测 ${JSON.stringify(iDesc.descendants)}）`);
+const iAncG = await jpost("/api/tools/get_ancestors", { object_id: "AN_G" });
+check(iAncG.ok === true && JSON.stringify((iAncG.ancestors || []).map((x) => x.object_id)) === JSON.stringify(["AN_C", "AN_M"])
+    && iAncG.count === 2,
+  `get_ancestors 必须沿 master_ref 走到顶（AN_G→AN_C→AN_M ✓ 实测 ${JSON.stringify(iAncG.ancestors)}）`);
+const iAncR = await jpost("/api/tools/get_ancestors", { object_id: "AN_R" });
+check(iAncR.ok === true && iAncR.count === 2 && iAncR.ancestors[1].cycle === true && iAncR.ancestors[0].cycle === undefined,
+  `自引用 master 必须**先记一条正常链再记 cycle**（照服务端 visited 初始为空 ✓ 两条 ✗）——旧本地把起点算进 seen 只给一条 ✓ 数对不上 ✗（实测 ${JSON.stringify(iAncR.ancestors)}）`);
+console.log("  本地层 get_ancestors/get_descendants：不存在⇒reference_not_found ✓｜id 数组 ✓｜传递闭包含孙 ✓｜只收 instance ✓｜tombstone 不排除 ✓｜自引用 cycle 两条 ✓");
+
 
 
 // **★ ⑧ 评论的游标不能越过**没交付**的那几条 ✗ ★**（与服务端 `read_list_comments` 同形 ✓）

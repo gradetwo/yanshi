@@ -3664,19 +3664,31 @@ async function withKernel(doc, fn) {
 
     // **P2c-52 `get_ancestors` ✗**：**服务端走实例→master 链 ✓** ⇒ **∴ 本地从日志推导
     //   `master_ref` 链 ✓**（**成环即停并标记 ✓**）。
+    //   **∴ 与服务端 `read_get_ancestors`（`tools.rs:8579`）逐条对齐 ✗**（本轮修 ✓）：
+    //   · **对象不在折叠状态 ⇒ `reference_not_found` ✗**（**旧本地静默给 `ok:true, count:0` ✓**
+    //     —— **「不存在」与「没有祖先」是两个答案 ✗ 混起来就是静默降级形态 4 ✓**）；
+    //     **判定 = 有创建原子且创建未被抑制 ✗**（**∴ 照服务端 `state.objects.contains_key` ✓——
+    //     折叠状态**含**被 tombstone 标记的对象 ✓：实测服务端对 `deleted_by` 有值的对象照样答 ✓**）；
+    //   · **环检测照服务端 `visited`（初始为空 ✗ 不含查询对象自己 ✓）**——
+    //     **∴ 自引用 master 服务端先记一条正常链再记 `cycle:true` ✗（两条 ✓）**，
+    //     旧本地把 `seen` 起点设为自己 ⇒ 只给一条 ✓ 数都对不上 ✗。
     if (path === "/api/tools/get_ancestors") {
       const objectId = body.object_id;
       if (typeof objectId !== "string" || !objectId) return p2Bad("object_id 必填（字符串）");
       const rows = await atomsOf(handle, doc);
+      const neutral = p2Neutralized(rows);
+      const selfView = p2ObjectView(rows, objectId);
+      if (!selfView.found || neutral.has(selfView.__create_id)) return p2Missing("对象 " + objectId + " 不存在");
       const chain = [];
-      const seen = new Set([objectId]);
+      const visited = new Set();
       let cur = objectId;
       for (let i = 0; i < 64; i++) {
         const v = p2ObjectView(rows, cur);
-        if (!v.found || !v.master_ref || typeof v.master_ref.object_id !== "string") break;
-        const master = v.master_ref.object_id;
-        if (seen.has(master)) { chain.push({ object_id: master, cycle: true }); break; }
-        seen.add(master);
+        const master = v.found && v.master_ref && typeof v.master_ref.object_id === "string"
+          ? v.master_ref.object_id : null;
+        if (!master) break;
+        if (visited.has(master)) { chain.push({ object_id: master, cycle: true }); break; }
+        visited.add(master);
         chain.push({ object_id: master });
         cur = master;
       }
@@ -3686,22 +3698,50 @@ async function withKernel(doc, fn) {
 
     // **P2c-53 `get_descendants` ✗**：**`get_ancestors` 的反向 ✓** ⇒ **∴ 扫描所有对象的
     //   `master_ref` 找指向该对象的实例 ✓**。
+    //   **∴ 与服务端 `read_get_descendants` + `dependents_of`（`tools.rs:8610`／
+    //   `dirty.rs:473`）逐条对齐 ✗**（本轮修 ✓）：
+    //   · **对象不在折叠状态 ⇒ `reference_not_found` ✗**（**∴ 同上 ✓**）；
+    //   · **∴ 返回的是 id 字符串数组 ✗**（**`Vec<String>` ✓**）—— **旧本地给 `{object_id,layer_id}` 对象 ✓
+    //     ⇒ 按服务端形状写的调用方在本地层拿到的是错形状 ✓（静默 ✗：`ok:true` 看着都对 ✓）**；
+    //   · **∴ 只收 `type === "instance"` 的 ✓、传递闭包（BFS ≤ 64 层 ✓）✗**
+    //     —— **旧本地只收一层 ✗（孙实例漏掉 ✓）**；**tombstone 标记的实例照服务端不排除 ✓**
+    //     （**`dependents_of` 只看 `state.objects` 里有没有 ✗ 不看 `deleted_by` ✓**）。
     if (path === "/api/tools/get_descendants") {
       const objectId = body.object_id;
       if (typeof objectId !== "string" || !objectId) return p2Bad("object_id 必填（字符串）");
       const rows = await atomsOf(handle, doc);
+      const neutral = p2Neutralized(rows);
+      const selfView = p2ObjectView(rows, objectId);
+      if (!selfView.found || neutral.has(selfView.__create_id)) return p2Missing("对象 " + objectId + " 不存在");
       const st = p2cState(rows);
-      const ids = new Set();
-      for (const o of st.objects) ids.add(o.object_id);
-      const descendants = [];
-      for (const id of ids) {
-        const v = p2ObjectView(rows, id);
-        if (v.found && !v.deleted && v.master_ref && v.master_ref.object_id === objectId) {
-          descendants.push({ object_id: id, layer_id: v.layer_id });
-        }
+      const views = new Map();
+      for (const o of st.objects) {
+        if (!views.has(o.object_id)) views.set(o.object_id, p2ObjectView(rows, o.object_id));
       }
-      return json({ ok: true, server: false, object_id: objectId, descendants,
-                    count: descendants.length, derived_from: "atoms" });
+      const masterOf = (id) => {
+        const v = views.get(id);
+        return v && v.found && !neutral.has(v.__create_id)
+          && v.type === "instance" && v.master_ref && typeof v.master_ref.object_id === "string"
+          ? v.master_ref.object_id : null;
+      };
+      const out = [];
+      let frontier = [objectId];
+      const visited = new Set([objectId]);
+      for (let hop = 0; hop < 64 && frontier.length; hop++) {
+        const next = [];
+        for (const id of views.keys()) {
+          if (visited.has(id)) continue;
+          const m = masterOf(id);
+          if (m !== null && frontier.includes(m)) {
+            visited.add(id);
+            out.push(id);
+            next.push(id);
+          }
+        }
+        frontier = next;
+      }
+      return json({ ok: true, server: false, object_id: objectId, descendants: out,
+                    count: out.length, derived_from: "atoms" });
     }
 
     // **P2c-54 `get_diff` ✗**：**照 `read_get_diff` ✓** ⇒ **`(from_seq, to_seq]` 的日志差分 ✓** ＋

@@ -22788,3 +22788,30 @@ M-G `reapply` 登记成 `revert`（= 旧 bug）⇒ `deleted_by` 断言红 ✓；
 
 **收益 ✓**：web 端「撤销我刚画的那一笔」与服务端**同判据**✓（整笔含 tombstone ✓ redo 后不重复撤 ✓ 计数与画面同源 ✓）；
 `p2ObjectView.deleted`／`p2History.reverted`／`p2cState`／掩码候选**四个读者同时吃到**重写后的单一抑制口径 ✓。
+
+## 六百五十二、本地层 `get_ancestors`／`get_descendants` 与服务端逐条对齐（判据 ⑦i ✓ 四层齐 ✓）
+
+**问题 ✓**（三条分歧 ✗ 全是「`ok:true` 却给错答案」的静默家族 ✓）：
+① **不存在的对象**：服务端 `read_get_ancestors`（`tools.rs:8579`）先查 `state.objects.contains_key` ⇒ `reference_not_found` ✓；
+  旧本地**静默给 `ok:true, count:0`** ✗ —— 「不存在」冒充「没有祖先」= 静默降级形态 4 ✓；
+② **`descendants` 形状**：服务端是 `Vec<String>`（`dirty.rs:473` ✓）✓ 旧本地给 `{object_id, layer_id}` 对象 ✓
+  ⇒ 按服务端形状写的调用方在本地层拿到错形状而回执一切正常 ✓；
+③ **深度与过滤**：服务端 `dependents_of` 走**传递闭包**（BFS ≤64 层 ✓）**且只收 `instance`** ✓；
+  旧本地**只收一层**（孙实例漏掉 ✓）、不滤类型（shape 的 `master_ref` 引用混进后代 ✓）、
+  还排除 tombstone 对象（服务端**不排除** ✓——`state.objects` 含被标记删除的对象，与 第 六百五十一 节 实测「redo 后 `get_object` 仍答 `created_by`+`deleted_by`」同一事实 ✓）。
+④ **自引用环**：服务端 `visited` 初始为空 ⇒ 先记一条正常链**再**记 `cycle:true`（两条 ✓）；旧本地把起点算进 `seen` ⇒ 只给一条 ✓ 数对不上 ✗。
+
+**做法 ✓**：本地两个端点照服务端代码逐字重写（存在性 = 「有创建原子且创建未被抑制」✗ 用 第 六百四十九/五百五十一 节的 `p2Neutralized`/`P2_OBJECT_CREATE_KINDS` 同一份口径 ✓ 不另发明 ✗）；
+`descendants` 改 id 字符串数组 ＋ BFS 传递闭包 ＋ 只收 instance ＋ tombstone 不排除 ✓。
+
+**判据 ⑦i ✓**：`tool-pwa-api-behaviour.mjs` —— 输入造满触发面 ✓（`AN_M→AN_C→AN_G` 三层链 ✓、tombstone 的 `AN_D` ✓、非 instance 的 `AN_S` ✓、自引用 `AN_R` ✓、不存在的 `AN_NOPE` ✓）；
+断言五链：不存在⇒错误码 ✓｜id 数组且集合 `[AN_C,AN_D,AN_G]` ✓｜ancestors 到顶 `[AN_C,AN_M]` ✓｜自引用 cycle 两条 ✓｜`count` 与数组长度同源 ✓。
+**变异三条全红 ✓（M-I1 删存在性检查 ⇒ 错误码断言红 ✓｜M-I2 BFS 改一层 ⇒ 孙漏红 ✓｜M-I3 去掉 instance 过滤 ⇒ 混入红 ✓；还原全绿 ✓）**。
+
+**顺带核掉的候选 ✗（如实记录免得再查 ✓）**：「`get_preferences` 的 `keys` 不滤」——读码裁定**不是缺陷**✓：
+服务端 `read_get_preferences`（`tools.rs:8934`）对**非数组** `keys` 用 `as_array` ⇒ `None` ⇒ **不过滤** ✓；
+本地 `p1ReadPreferences` 同样 `Array.isArray(keys)` 才挑 ✓ ⇒ **两边行为一致** ✓（传字符串都被忽略 —— 要说「忽略」吗：那是服务端的既有公开行为 ✓ 本地照齐 ✓ 不擅自更严 ✓）。
+
+**判据自身的一课 ✓**：`iCreate` 第一次写成 `jpost("/api/atoms", {method, headers, body})` ⇒ **双重包装** ✗
+（`jpost` 自己就是 `(path, obj)` 会 stringify ✓）⇒ IndexedDB 里存的「原子」是**请求 init 对象** ✓（`{kind}` 都不在顶层 ✓）
+⇒ 存在性检查红 —— **而红得正确** ✓：新的响亮错误比旧的静默 `ok:true` 更快暴露测试自身的错 ✗（静默降级的反面 ✓）。
