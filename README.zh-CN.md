@@ -64,13 +64,15 @@ make dev        # 有工具链时构建 WASM 内核，构建服务端并启动
                 # ⇒ 打开 http://127.0.0.1:8110/ （页面自行获取 capability token）
 ```
 
-数据缺省落在 `~/.local/share/yanshi/workspace`。要换端口或数据目录，请用**环境变量** ——
-`make dev` **不会**把 Make 变量传进它的 recipe，而 `make serve` 是显式传 `--port` 的：
+数据缺省落在 `~/.local/share/yanshi/workspace`。要换端口或数据目录就设 `PORT` / `ROOT` ——
+**两种写法都可以**：GNU make 会把命令行变量放进 recipe 的环境（用 `printenv PORT` 实测过），
+而 `scripts/dev.sh` 正是从环境里读它们：
 
 ```bash
-PORT=9000 make dev                 # 写成 make dev PORT=9000 **不会**传进去
+PORT=9000 make dev
+make dev PORT=9000               # 一样可以 —— 命令行变量**会**传进 recipe
 ROOT=/tmp/yanshi PORT=9000 make dev
-make serve PORT=9000
+make serve PORT=9000             # make serve 另外还显式拼了 --port
 ```
 
 随后：

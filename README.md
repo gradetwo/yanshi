@@ -75,14 +75,15 @@ make dev        # build the WASM kernel if the toolchain is present, build the s
                 # ⇒ open http://127.0.0.1:8110/  (the page obtains its capability token)
 ```
 
-Data lives in `~/.local/share/yanshi/workspace` by default. To change the port or the data root, pass
-**environment variables** — `make dev` does not forward Make variables into its recipe, while
-`make serve` passes `--port` explicitly:
+Data lives in `~/.local/share/yanshi/workspace` by default. To change the port or the data root, set
+`PORT` / `ROOT` — **both** forms work: GNU make puts command-line variables into the environment of
+its recipes (verified against `printenv PORT`), and `scripts/dev.sh` reads them from there:
 
 ```bash
-PORT=9000 make dev                 # `make dev PORT=9000` would NOT reach the recipe
+PORT=9000 make dev
+make dev PORT=9000               # same thing — the variable DOES reach the recipe
 ROOT=/tmp/yanshi PORT=9000 make dev
-make serve PORT=9000
+make serve PORT=9000             # `make serve` additionally threads an explicit --port
 ```
 
 Then:
