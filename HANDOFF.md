@@ -959,3 +959,19 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    CI 由下一次 run 确认 ✓。
    **教训**：**「同一个字符串形状」不等于「同一套规则」** ✗ —— 监听地址允许端口 0、
    Host 头不允许 ✓；复用校验函数前先问「两边的取值集合一样吗」✓。
+
+86. **审计 L-6／L-8 的处置（用户裁定 2026-10-28）**：
+   ① **L-6（CI 最小权限／输入注入／SHA 钉）—— 暂不改工作流** ✓（用户选择）。
+   现状（供下次动手时照抄）：`ci.yml`／`heavy.yml`／`pwa.yml` **没有** `permissions:` ⇒
+   继承仓库默认；`release.yml` 有 `contents: write`（发布需要 ✓）。
+   安全子集（未做）：给 `ci/heavy/pwa` 加 `permissions: contents: read`；
+   `release.yml` 的 `${{ github.event.inputs.targets }}`／`dynamic` 先落到 `env:` 再进 bash。
+   **为什么这算"安全子集"**：三个工作流只用 checkout/cache/upload-artifact 与
+   Cloudflare secret ✓，`contents: read` 足够 ✓；`release.yml` 的注入只有 maintainer
+   能触发（审计原话 ✓），走 `env:` 是零行为变化的硬化 ✓。
+   第三方 action 的 SHA 钉**未做**：升级维护成本高、钉错直接断 CI ⇒ 与"暂不改"一致 ✓。
+   ② **L-8（自研 SHA-1）—— 无需改代码** ✓：握手只要求 SHA-1（RFC 6455 ✓），
+   且已有两组标准向量钉住 —— `sha1::tests::rfc3174_vectors`（4 条 RFC 3174 向量 ✓）
+   与 `ws::tests` 的 RFC 6455 示例（`dGhlIHNhbXBsZSBub25jZQ==` ⇒
+   `s3pPLMBiTxaQ9kYGzzhZRbK+xOo=` ✓）。若要换成熟 crate，收益是维护面，代价是
+   新增依赖；审计本身也只说"保持测试向量" ✓ ⇒ 现状已满足。
