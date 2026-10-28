@@ -15,6 +15,10 @@
 //! 键含目标哈希 —— 两条测试若画出同一张位图，后一条会命中前一条的证明，
 //! 断言就测不到重放本身 ✗（`update_stroke` 那条换色后位图不同，不在此列 ✓）。
 //!
+//! **每条测试的文档 id 也不同** ✓：导出结果缓存也是进程内的，键含 `doc_id` +
+//! `head_seq` ⇒ 同名文档会互相命中缓存、后一条测试拿到前一条的包 ✗
+//!（实测：五条测试同名 `doc_p2` 时三条读到别人的原子 ✓）。
+//!
 //! **恒等式** ✓（跨输入成立）：`kept_mismatch + kept_no_recipe == blob_count`
 //!（`blob_count` 只计装进包的；`omitted` 的不装、缺失的也不装 ✓）。
 //!
@@ -39,45 +43,64 @@ fn registry() -> ToolRegistry {
 }
 
 /// **落盘工作区 + 仓库里的 `assets/`** ✓ —— `brush_stroke` 要从那儿读 `.myb` 笔刷 ✓。
-/// 返回工作区与根目录（包落根目录下 ✓）。
-fn workspace(name: &str) -> (Workspace, std::path::PathBuf) {
+/// 返回工作区、根目录与文档 id（**每条测试的文档 id 都不同** ✓ ——
+/// 导出结果缓存是进程内的，键含 `doc_id` + `head_seq` ⇒ 同名文档会互相命中缓存、
+/// 后一条测试拿到前一条的包 ✗，实测三条测试因此读到别人的原子 ✓）。
+fn workspace(name: &str) -> (Workspace, std::path::PathBuf, String) {
     let root = std::env::temp_dir().join(format!("yanshi_p2_proof_{name}_{}", std::process::id()));
     let _cleanup = Cleanup(root.clone());
     let _ = std::fs::remove_dir_all(&root);
     let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+    let doc_id = format!("doc_p2_{name}");
     let mut workspace = Workspace::with_file_store(root.clone(), DocumentSettings::default())
         .expect("落盘工作区应当能建")
         .with_assets_dir(Some(assets));
     workspace
         .create_document(
-            NewDocument::new("doc_p2", 320, 240),
+            NewDocument::new(doc_id.clone(), 320, 240),
             "human:1",
             "session:test",
         )
         .unwrap();
-    call(&mut workspace, "create_layer", json!({ "layer_id": "L" }));
-    (workspace, root)
+    call(
+        &mut workspace,
+        &doc_id,
+        "create_layer",
+        json!({ "layer_id": "L" }),
+    );
+    (workspace, root, doc_id)
 }
 
-fn call(workspace: &mut Workspace, tool: &str, args: serde_json::Value) -> serde_json::Value {
-    let mut ctx = ToolContext::new(workspace, "doc_p2", "human:1", "session:test")
+fn call(
+    workspace: &mut Workspace,
+    doc_id: &str,
+    tool: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    let mut ctx = ToolContext::new(workspace, doc_id, "human:1", "session:test")
         .with_owner(true)
         .with_wait_for_render(true, 4_000);
     registry().call(&mut ctx, tool, &args)
 }
 
 /// **画一笔 `brush_stroke`** ✓（`100%_Opaque` 不读画布 ⇒ 可重放 ✓）。
-fn paint(workspace: &mut Workspace, args: serde_json::Value) -> serde_json::Value {
-    let made = call(workspace, "brush_stroke", args);
+fn paint(workspace: &mut Workspace, doc_id: &str, args: serde_json::Value) -> serde_json::Value {
+    let made = call(workspace, doc_id, "brush_stroke", args);
     assert_eq!(made["ok"], json!(true), "{made}");
     made
 }
 
 /// **导出并返回回执** ✓。
-fn export(workspace: &mut Workspace, root: &std::path::Path, name: &str) -> serde_json::Value {
+fn export(
+    workspace: &mut Workspace,
+    doc_id: &str,
+    root: &std::path::Path,
+    name: &str,
+) -> serde_json::Value {
     let pack = root.join(format!("{name}.yanshi"));
     let exported = call(
         workspace,
+        doc_id,
         "export_project",
         json!({ "path": pack.to_string_lossy() }),
     );
@@ -155,15 +178,16 @@ fn assert_proved(receipt: &serde_json::Value, omitted: u64) {
 /// **① 带 `brush_params` 3/3 的笔 ⇒ 导出省略** ✓（X-14 验收）。
 #[test]
 fn stroke_with_brush_params_exports_as_omitted() {
-    let (mut workspace, root) = workspace("params");
+    let (mut workspace, root, doc_id) = workspace("params");
     paint(
         &mut workspace,
+        &doc_id,
         json!({"layer_id": "L", "brush": "100%_Opaque",
                "points": [[40.0, 60.0, 1.0], [160.0, 60.0, 1.0], [280.0, 60.0, 0.8]],
                "size": 30, "color": [0.45, 0.38, 0.30],
                "brush_params": {"dabs_per_actual_radius": 3, "dabs_per_basic_radius": 3}}),
     );
-    let exported = export(&mut workspace, &root, "params");
+    let exported = export(&mut workspace, &doc_id, &root, "params");
     // **配方真的记下来了** ✓（不只是导出碰巧对了 ✓）。
     let source = stroke_source(&root, "params");
     assert_eq!(
@@ -177,14 +201,15 @@ fn stroke_with_brush_params_exports_as_omitted() {
 /// **② 带 4 元点时间 `t=0,100,200` 的笔 ⇒ 导出省略** ✓（速度敏感的笔刷缺时间即错笔 ✓）。
 #[test]
 fn stroke_with_point_times_exports_as_omitted() {
-    let (mut workspace, root) = workspace("times");
+    let (mut workspace, root, doc_id) = workspace("times");
     paint(
         &mut workspace,
+        &doc_id,
         json!({"layer_id": "L", "brush": "100%_Opaque",
                "points": [[40.0, 120.0, 0.6, 0], [160.0, 120.0, 1.0, 100], [280.0, 120.0, 0.6, 200]],
                "size": 24, "color": [0.2, 0.5, 0.7]}),
     );
-    let exported = export(&mut workspace, &root, "times");
+    let exported = export(&mut workspace, &doc_id, &root, "times");
     let source = stroke_source(&root, "times");
     // **`times` 是原样克隆** ✓（第 4 元素是什么类型就存什么类型 ✓）⇒ 本测试传整数，断言用整数 ✓。
     assert_eq!(source["times"], json!([0, 100, 200]), "{source}");
@@ -194,15 +219,16 @@ fn stroke_with_point_times_exports_as_omitted() {
 /// **③ `brush_params` + 点列时间组合 ⇒ 导出省略** ✓。
 #[test]
 fn stroke_with_brush_params_and_times_exports_as_omitted() {
-    let (mut workspace, root) = workspace("both");
+    let (mut workspace, root, doc_id) = workspace("both");
     paint(
         &mut workspace,
+        &doc_id,
         json!({"layer_id": "L", "brush": "100%_Opaque",
                "points": [[40.0, 180.0, 0.6, 0], [160.0, 180.0, 1.0, 100], [280.0, 180.0, 0.6, 200]],
                "size": 20, "color": [0.7, 0.2, 0.2],
                "brush_params": {"dabs_per_actual_radius": 3, "dabs_per_basic_radius": 3}}),
     );
-    let exported = export(&mut workspace, &root, "both");
+    let exported = export(&mut workspace, &doc_id, &root, "both");
     let source = stroke_source(&root, "both");
     assert_eq!(
         source["brush_params"],
@@ -216,9 +242,10 @@ fn stroke_with_brush_params_and_times_exports_as_omitted() {
 /// **④ `update_stroke` 换色后，合并的 `source` 仍带配方，导出仍省略** ✓。
 #[test]
 fn update_stroke_keeps_the_proof() {
-    let (mut workspace, root) = workspace("update");
+    let (mut workspace, root, doc_id) = workspace("update");
     paint(
         &mut workspace,
+        &doc_id,
         json!({"layer_id": "L", "object_id": "S1", "brush": "100%_Opaque",
                "points": [[40.0, 90.0, 0.6, 0], [160.0, 90.0, 1.0, 100], [280.0, 90.0, 0.6, 200]],
                "size": 26, "color": [1.0, 0.0, 0.0, 1.0],
@@ -226,11 +253,12 @@ fn update_stroke_keeps_the_proof() {
     );
     let updated = call(
         &mut workspace,
+        &doc_id,
         "update_stroke",
         json!({ "object_id": "S1", "core": { "color": [0.0, 1.0, 0.0, 1.0] } }),
     );
     assert_eq!(updated["ok"], json!(true), "{updated}");
-    let exported = export(&mut workspace, &root, "update");
+    let exported = export(&mut workspace, &doc_id, &root, "update");
     // **换色后的新 `source` 仍带配方** ✓（旧重建丢 `brush_params` / `times` ✗）。
     let source = stroke_source(&root, "update");
     assert_eq!(
@@ -247,14 +275,15 @@ fn update_stroke_keeps_the_proof() {
 /// **⑤ 老笔触（无新字段）⇒ 仍按老行为导出** ✓（共享重放不得改坏旧路 ✓）。
 #[test]
 fn legacy_stroke_without_new_fields_still_exports() {
-    let (mut workspace, root) = workspace("legacy");
+    let (mut workspace, root, doc_id) = workspace("legacy");
     paint(
         &mut workspace,
+        &doc_id,
         json!({"layer_id": "L", "brush": "100%_Opaque",
                "points": [[40.0, 200.0, 1.0], [160.0, 200.0, 0.8], [280.0, 200.0, 1.0]],
                "size": 18, "color": [0.3, 0.3, 0.3]}),
     );
-    let exported = export(&mut workspace, &root, "legacy");
+    let exported = export(&mut workspace, &doc_id, &root, "legacy");
     let source = stroke_source(&root, "legacy");
     assert_eq!(source["brush_params"], json!(null), "{source}");
     assert_eq!(source["times"], json!([null, null, null]), "{source}");

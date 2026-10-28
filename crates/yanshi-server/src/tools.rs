@@ -15588,7 +15588,10 @@ fn brush_stroke_region(
 ///
 /// `brush_stroke`（画进文档 ✓）与 `brush_preview`（只出一张预览图 ✓）**共用**它 ✓ ——
 /// 两条路必须是**同一条落笔实现** ✗（各写一份迟早漂移 ✓，本项目对这种"两份实现"已有多次前科 ✓）。
-struct BrushPaint {
+///
+/// **`pub(crate)`** ✓（P-2）：`replay_brush_paint` 是 `pub(crate)` 且返回它 ⇒
+/// 私有类型出现在公开接口里会报 `private_interfaces` 警告 ✗。
+pub(crate) struct BrushPaint {
     /// 解析后的资产名 ✓（形如 `2B_pencil.myb` ✓）。
     name: String,
     /// 区域左上角 x（文档坐标；预览时即画布坐标 ✓）。
