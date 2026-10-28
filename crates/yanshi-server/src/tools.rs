@@ -5247,6 +5247,557 @@ fn rect_gap(a: &yanshi_core::Bbox, b: &yanshi_core::Bbox) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 
+/// draw_* 回执的像素取证（P-12）：落笔前像素 + 单对象覆盖 tile，内存里合成比对。
+///
+/// 五项字段与 `brush_stroke` 同名：`painted_pixels`／`painted_pixels_clipped`／
+/// `ink_footprint_pixels`／`max_channel_delta`／`delta_regime`（恒 `canvas_base`，
+/// 因为比对用的就是落笔前的真画布）；另附 P-15 的分布字段与 `landed`／`landed_reason`。
+/// 落笔前像素（P-12）：提交之前渲染的脏区，供提交后比对。
+///
+/// 口径（与 `brush_stroke` 的区别，调用方须知）：
+/// * `painted_pixels` 是**对象自身的覆盖**（单对象 tile 里 alpha>0 的像素，含画布外），
+///   不是“画面变了几个像素”——白上画白时 `painted > 0` 而 `max_channel_delta == 0`。
+/// * `painted_pixels_clipped` 与 `ink_footprint_pixels` 对 draw 恒等（tile 本身就是
+///   最终覆盖，没有笔刷那种“印章 vs 合成后”的两层口径）。
+/// * 分布只统计笔触覆盖到的像素（tile alpha>0 且在画布内）；未覆盖的不参与。
+/// * `erase` 例外：erase 只扣图层 alpha，透明底 tile 上看不见（tile 法恒为 0）⇒
+///   erase 的 `painted/clipped/footprint` 是**实际擦除的像素**（落笔前/后区域比较），
+///   不是笔触几何足迹；`ink_mass` 恒 0（erase 不产墨）。
+/// * `max_channel_delta` 把 tile 按 Normal source-over 合成到落笔前像素上再比；
+///   混合模式非 Normal 时它是估算（见 `evidence_note`），覆盖数不受影响。
+/// * 取证只在本次调用实际渲染时给（见 `draw_evidence_capture`）：静默调用与
+///   `wait_for_render=false` 时五项字段在位但为 null，并附 `evidence_note` 说明原因。
+///   这不是静默缺失——字段在位 + 原因可读（本仓“静默降级是唯一对手”那条规矩）。
+struct EvidenceBefore {
+    /// 取证用的区域（整数对齐，已按画布裁剪）。
+    bbox: Bbox,
+    /// 渲染返回的宽。
+    width: u32,
+    /// 渲染返回的高。
+    height: u32,
+    /// 行主序 RGBA8，`width × height × 4`。
+    pixels: Vec<u8>,
+}
+
+/// draw_* 的像素取证结果（P-12）。
+struct DrawEvidence {
+    /// 对象覆盖（tile 里 alpha>0 的像素，含画布外）；erase 例外：实际擦除的像素
+    /// （落笔前/后区域比较），见文件头口径注。
+    painted: usize,
+    /// 画布内的对象覆盖；erase 例外：同 `painted`（区域比较只覆盖画布内）。
+    clipped: usize,
+    /// 画布内的足迹（对 draw 恒等于 `clipped`；erase 同 `clipped`）。
+    footprint: usize,
+    /// 画布内覆盖像素的 alpha 之和（Σalpha，与 `brush_stroke` 的 `ink_mass` 同口径）。
+    ink_mass: u64,
+    /// 合成后 RGB 单通道最大差（alpha 不参与）。
+    max_delta: u8,
+    /// 差值分布（只统计覆盖到的像素）。
+    distribution: DeltaDistribution,
+}
+
+/// 整数对齐（P-12）：左上取 floor、右下取 ceil ⇒ 像素格与文档整数坐标对上，
+/// 两次渲染（落笔前、单对象）的像素才能按下标一一对应。
+fn align_bbox(bbox: Bbox) -> Bbox {
+    let x0 = bbox.x.floor();
+    let y0 = bbox.y.floor();
+    let x1 = bbox.right().ceil();
+    let y1 = bbox.bottom().ceil();
+    Bbox::new(x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0))
+}
+
+/// 点列的包围盒（P-12）：`[[x,y], [x,y,p], [x,y,p,t], ...]` 只取前两元。
+fn points_bbox(data: &Value) -> Option<Bbox> {
+    let points = data.get("points")?.as_array()?;
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for point in points {
+        let Some(pair) = point.as_array() else {
+            continue;
+        };
+        let (Some(x), Some(y)) = (
+            pair.first().and_then(Value::as_f64),
+            pair.get(1).and_then(Value::as_f64),
+        ) else {
+            continue;
+        };
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    if !min_x.is_finite() {
+        return None;
+    }
+    Some(Bbox::new(min_x, min_y, max_x - min_x, max_y - min_y))
+}
+
+/// 取证用的脏区估计（P-12）：提交之前按几何算，提交之后用 `dirty_bbox` 验算。
+///
+/// 裕量取整笔 `size`（不止一半）：斜接（miter）与圆头盖会把墨推出 `size/2` 之外；
+/// 验算不过就放弃取证（字段 null + note），不报凑数的数。
+fn draw_evidence_bbox(data: &Value, kind: AtomKind) -> Option<Bbox> {
+    let expand = |bbox: Bbox, margin: f64| {
+        Bbox::new(
+            bbox.x - margin,
+            bbox.y - margin,
+            bbox.w + 2.0 * margin,
+            bbox.h + 2.0 * margin,
+        )
+    };
+    match kind {
+        AtomKind::DrawStroke => {
+            // 笔尖直径缺省 4.0（`BrushSpec::default`）。
+            let size = data.get("size").and_then(Value::as_f64).unwrap_or(4.0);
+            points_bbox(data).map(|bbox| expand(bbox, size + 1.0))
+        }
+        AtomKind::Erase => {
+            // 橡皮直径缺省 24.0（渲染层 `Retouch` 的缺省）；`region` 写法已在前面展开成点列。
+            let size = data.get("size").and_then(Value::as_f64).unwrap_or(24.0);
+            points_bbox(data).map(|bbox| expand(bbox, size + 1.0))
+        }
+        AtomKind::DrawShape => {
+            let margin = data
+                .get("stroke_width")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
+                .max(0.0)
+                / 2.0
+                + data
+                    .get("geometry")
+                    .and_then(|g| g.get("feather"))
+                    .or_else(|| data.get("feather"))
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0)
+                    .max(0.0)
+                + 1.0;
+            // 形状的 bbox 已在前面归一化（数组／扁平写法都转成对象）；path 没有 bbox 时
+            // 从子路径的点列现算（start + 每段的 to／c1／c2）。
+            let base = data
+                .get("geometry")
+                .and_then(|g| g.get("bbox"))
+                .or_else(|| data.get("bbox"))
+                .and_then(|value| parse_bbox(value).ok())
+                .or_else(|| {
+                    let mut flat = Vec::new();
+                    let subpaths = data.get("geometry")?.get("subpaths")?.as_array()?;
+                    for subpath in subpaths {
+                        if let Some(start) = subpath.get("start") {
+                            flat.push(start.clone());
+                        }
+                        for segment in subpath
+                            .get("segments")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                        {
+                            for key in ["to", "c1", "c2"] {
+                                if let Some(point) = segment.get(key) {
+                                    flat.push(point.clone());
+                                }
+                            }
+                        }
+                    }
+                    points_bbox(&json!({ "points": flat }))
+                })?;
+            Some(expand(base, margin))
+        }
+        AtomKind::Fill => {
+            // `region` 已在前面归一化成 `bbox`。
+            data.get("bbox")
+                .and_then(|value| parse_bbox(value).ok())
+                .map(|bbox| expand(bbox, 1.0))
+        }
+        AtomKind::DrawText => {
+            // 字形包围盒未建模：按位置 + 字号 + 字数给一个宽裕盒（居左／居中／居右都盖住），
+            // 验算不过就放弃取证，不报凑数的数。
+            let (px, py) = data
+                .get("position")
+                .map(|value| {
+                    if let Some(pair) = value.as_array() {
+                        (
+                            pair.first().and_then(Value::as_f64).unwrap_or(0.0),
+                            pair.get(1).and_then(Value::as_f64).unwrap_or(0.0),
+                        )
+                    } else {
+                        (
+                            value.get("x").and_then(Value::as_f64).unwrap_or(0.0),
+                            value.get("y").and_then(Value::as_f64).unwrap_or(0.0),
+                        )
+                    }
+                })
+                .or_else(|| {
+                    data.get("bbox")
+                        .and_then(Bbox::from_value)
+                        .map(|b| (b.x, b.y))
+                })?;
+            let size = data.get("size").and_then(Value::as_f64).unwrap_or(24.0);
+            let len = data
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::chars)
+                .map(Iterator::count)
+                .unwrap_or(0) as f64;
+            Some(Bbox::new(
+                px - len * size,
+                py - size,
+                (2.0 * len * size).max(1.0),
+                3.0 * size,
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// 取证要的落笔前像素（P-12）：提交之前渲染脏区。
+///
+/// 只在本次调用实际渲染时取。返回 `(取到的像素, 未取的原因)`：未取时五项字段
+/// 为 null，原因写进 `evidence_note`（不静默缺失）。
+fn draw_evidence_capture(
+    ctx: &mut ToolContext<'_>,
+    data: &Value,
+    kind: AtomKind,
+) -> (Option<EvidenceBefore>, Option<String>) {
+    if ctx.silent {
+        return (
+            None,
+            Some(
+                "静默调用不渲染：取证字段不提供（silent 批量不产生额外渲染；要取证请用非静默调用，或用 get_render_status / sample_colors 事后核对）"
+                    .to_owned(),
+            ),
+        );
+    }
+    if !ctx.wait_for_render {
+        return (
+            None,
+            Some(
+                "wait_for_render=false 时不渲染：取证字段不提供（本次调用不产生渲染；要取证请用缺省的 wait_for_render=true）"
+                    .to_owned(),
+            ),
+        );
+    }
+    let Some(bbox) = draw_evidence_bbox(data, kind) else {
+        return (
+            None,
+            Some("取证区域算不出来（该画法未建模包围盒）：本次调用不提供取证字段".to_owned()),
+        );
+    };
+    let Some((canvas_w, canvas_h)) = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| (document.state().width, document.state().height))
+    else {
+        return (None, Some("文档未打开：取证字段不提供".to_owned()));
+    };
+    // 按画布裁剪，再整数对齐（渲染按整数格采样，两次渲染才能对上像素）。
+    let clipped = Bbox::new(
+        bbox.x.max(0.0),
+        bbox.y.max(0.0),
+        (bbox.right().min(canvas_w as f64) - bbox.x.max(0.0)).max(0.0),
+        (bbox.bottom().min(canvas_h as f64) - bbox.y.max(0.0)).max(0.0),
+    );
+    if clipped.is_empty() {
+        return (
+            None,
+            Some("取证区域在画布外：本次调用不提供取证字段".to_owned()),
+        );
+    }
+    let aligned = align_bbox(clipped);
+    let started = std::time::Instant::now();
+    let rendered = ctx.workspace.render_region_raw(&ctx.doc_id, aligned);
+    ctx.time(Phase::Preview, started);
+    match rendered {
+        Ok((width, height, pixels)) => (
+            Some(EvidenceBefore {
+                bbox: aligned,
+                width,
+                height,
+                pixels,
+            }),
+            None,
+        ),
+        Err(error) => (None, Some(format!("落笔前渲染失败：{error}"))),
+    }
+}
+
+/// 两块同尺寸 RGBA 缓冲的 RGB 差（P-12；纯函数）。
+///
+/// 只比 RGB（alpha 不参与）；返回（单通道最大差，差值分布——只统计改了的像素）。
+fn compare_pixel_buffers(before: &[u8], after: &[u8]) -> Option<(u8, DeltaDistribution)> {
+    if before.len() != after.len() || before.len() % 4 != 0 {
+        return None;
+    }
+    let mut max_delta = 0u8;
+    let mut hist = [0u32; 256];
+    for at in (0..before.len()).step_by(4) {
+        let mut pixel_delta: u8 = 0;
+        for channel in 0..3 {
+            let diff = (i32::from(after[at + channel]) - i32::from(before[at + channel]))
+                .unsigned_abs()
+                .min(255) as u8;
+            pixel_delta = pixel_delta.max(diff);
+        }
+        max_delta = max_delta.max(pixel_delta);
+        if pixel_delta > 0 {
+            hist[pixel_delta as usize] += 1;
+        }
+    }
+    Some((max_delta, delta_distribution(&hist)))
+}
+
+/// tile 与落笔前像素合成比对（P-12；纯函数）。
+///
+/// `tile_bbox` 是整数对齐后的脏区；`tile` 是只渲染本对象的透明底 tile。
+/// 返回 `None`（缓冲尺寸不符）时调用方给 null + note，不报凑数的数。
+fn draw_evidence_compare(
+    before: &EvidenceBefore,
+    tile: (u32, u32, Vec<u8>),
+    tile_bbox: Bbox,
+    canvas: (u32, u32),
+) -> Option<DrawEvidence> {
+    let (tile_w, tile_h, tile_pixels) = tile;
+    let (before_w, before_h) = (before.width, before.height);
+    if tile_pixels.len() != (tile_w as usize) * (tile_h as usize) * 4
+        || before.pixels.len() != (before_w as usize) * (before_h as usize) * 4
+    {
+        return None;
+    }
+    let tile_x0 = tile_bbox.x as i32;
+    let tile_y0 = tile_bbox.y as i32;
+    let before_x0 = before.bbox.x as i32;
+    let before_y0 = before.bbox.y as i32;
+    // tile 按 Normal source-over 合成到落笔前像素上，再与落笔前比（alpha 不参与）。
+    let mut composited = before.pixels.clone();
+    let mut painted = 0usize;
+    let mut clipped = 0usize;
+    let mut ink_mass = 0u64;
+    for j in 0..tile_h {
+        for i in 0..tile_w {
+            let at = ((j * tile_w + i) * 4) as usize;
+            let alpha = i32::from(tile_pixels[at + 3]);
+            if alpha == 0 {
+                continue;
+            }
+            // 对象覆盖（画布外也算 ⇒ `painted_pixels` 是铺开面积）。
+            painted += 1;
+            let doc_x = tile_x0 + i as i32;
+            let doc_y = tile_y0 + j as i32;
+            let in_canvas =
+                doc_x >= 0 && doc_y >= 0 && doc_x < canvas.0 as i32 && doc_y < canvas.1 as i32;
+            if !in_canvas {
+                continue;
+            }
+            clipped += 1;
+            ink_mass += alpha as u64;
+            let bx = doc_x - before_x0;
+            let by = doc_y - before_y0;
+            if bx < 0 || by < 0 || bx >= before_w as i32 || by >= before_h as i32 {
+                continue;
+            }
+            let old_at = ((by as u32 * before_w + bx as u32) * 4) as usize;
+            for channel in 0..3 {
+                composited[old_at + channel] = ((i32::from(tile_pixels[at + channel]) * alpha
+                    + i32::from(before.pixels[old_at + channel]) * (255 - alpha))
+                    / 255) as u8;
+            }
+        }
+    }
+    let (max_delta, distribution) = compare_pixel_buffers(&before.pixels, &composited)?;
+    Some(DrawEvidence {
+        painted,
+        clipped,
+        // 对 draw，足迹恒等于画布内覆盖（tile 本身就是最终覆盖）。
+        footprint: clipped,
+        ink_mass,
+        max_delta,
+        distribution,
+    })
+}
+
+/// erase 的取证比对（P-12；纯函数）。
+///
+/// erase 不走 tile（只扣图层 alpha，透明底 tile 上看不见，tile 法恒为 0）⇒
+/// 直接比落笔前/后同一区域的渲染。口径：`painted/clipped/footprint` 都是
+/// 实际擦除的像素（`changed_pixels`），不是笔触几何足迹；`ink_mass` 恒 0。
+fn draw_evidence_compare_erase(
+    before: &EvidenceBefore,
+    after: (u32, u32, Vec<u8>),
+) -> Option<DrawEvidence> {
+    let (after_w, after_h, after_pixels) = after;
+    if after_w != before.width
+        || after_h != before.height
+        || after_pixels.len() != before.pixels.len()
+    {
+        return None;
+    }
+    let (max_delta, distribution) = compare_pixel_buffers(&before.pixels, &after_pixels)?;
+    let changed = distribution.changed_pixels as usize;
+    Some(DrawEvidence {
+        painted: changed,
+        clipped: changed,
+        footprint: changed,
+        ink_mass: 0,
+        max_delta,
+        distribution,
+    })
+}
+
+/// 把取证字段贴到 draw_* 回执上（P-12）。
+///
+/// 取证失败不让整笔失败（笔已落下，只量不到）：五项字段给 null + `evidence_note`
+/// 说清原因。`landed`／`landed_reason` 与 `brush_stroke` 共用 `landed_reason`。
+#[allow(clippy::too_many_arguments)]
+fn attach_draw_evidence(
+    response: &mut Value,
+    ctx: &mut ToolContext<'_>,
+    result: &CommitResult,
+    kind: AtomKind,
+    layer_id: &str,
+    object_id: &str,
+    blend_non_normal: bool,
+    before: Option<EvidenceBefore>,
+    skip: Option<String>,
+) {
+    // 取证字段贴附（两条路共用：tile 路与 erase 的前后比较路）。
+    let attach_fields = |response: &mut Value, evidence: &DrawEvidence| {
+        response["painted_pixels"] = json!(evidence.painted);
+        response["painted_pixels_clipped"] = json!(evidence.clipped);
+        response["ink_footprint_pixels"] = json!(evidence.footprint);
+        // **兼容别名** ✓：与 `brush_stroke` 同例，值完全相同 ✓。
+        response["ink_pixels"] = json!(evidence.footprint);
+        response["ink_mass"] = json!(evidence.ink_mass);
+        response["max_channel_delta"] = json!(evidence.max_delta);
+        response["delta_regime"] = json!("canvas_base");
+        response["delta_median"] = json!(evidence.distribution.median);
+        response["delta_p90"] = json!(evidence.distribution.p90);
+        response["delta_p99"] = json!(evidence.distribution.p99);
+        response["changed_pixels"] = json!(evidence.distribution.changed_pixels);
+        let (landed_reason, landed) = landed_reason(
+            evidence.clipped as u64,
+            evidence.footprint as u64,
+            u64::from(evidence.max_delta),
+        );
+        response["landed"] = json!(landed);
+        response["landed_reason"] = json!(landed_reason);
+    };
+    // 取证字段置 null + 原因（字段在位，原因可读，不静默缺失）。
+    let set_nulls = |response: &mut Value, note: String| {
+        for key in [
+            "painted_pixels",
+            "painted_pixels_clipped",
+            "ink_footprint_pixels",
+            "ink_pixels",
+            "ink_mass",
+            "max_channel_delta",
+            "delta_regime",
+            "delta_median",
+            "delta_p90",
+            "delta_p99",
+            "changed_pixels",
+            "landed",
+            "landed_reason",
+        ] {
+            response[key] = Value::Null;
+        }
+        response["evidence_note"] = json!(note);
+    };
+    if let Some(reason) = skip {
+        set_nulls(response, reason);
+        return;
+    }
+    let Some(before) = before else {
+        set_nulls(
+            response,
+            "取证未取到落笔前像素（内部原因）：本次调用不提供取证字段".to_owned(),
+        );
+        return;
+    };
+    let Some(dirty) = result.dirty_bbox else {
+        set_nulls(
+            response,
+            "脏区为空：渲染器认为本笔不改像素（重复提交时 dirty_bbox 为空，见 duplicate 字段）"
+                .to_owned(),
+        );
+        return;
+    };
+    let tile_bbox = align_bbox(Bbox::new(dirty[0], dirty[1], dirty[2], dirty[3]));
+    // 脏区必须落在预渲染区里（包围盒估计偏小就放弃，不报凑数的数）。
+    if tile_bbox.x < before.bbox.x
+        || tile_bbox.y < before.bbox.y
+        || tile_bbox.right() > before.bbox.right()
+        || tile_bbox.bottom() > before.bbox.bottom()
+    {
+        set_nulls(
+            response,
+            "脏区超出预渲染范围（包围盒估计偏小）：本次调用不提供取证字段".to_owned(),
+        );
+        return;
+    }
+    let Some((canvas_w, canvas_h)) = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| (document.state().width, document.state().height))
+    else {
+        set_nulls(response, "文档未打开：取证字段不提供".to_owned());
+        return;
+    };
+    if kind == AtomKind::Erase {
+        // erase 不走 tile（见口径注）：提交后再渲染一次同一区域，与落笔前比对。
+        let started = std::time::Instant::now();
+        let after = ctx.workspace.render_region_raw(&ctx.doc_id, before.bbox);
+        ctx.time(Phase::Preview, started);
+        let after = match after {
+            Ok(after) => after,
+            Err(error) => {
+                set_nulls(response, format!("落笔后渲染失败：{error}"));
+                return;
+            }
+        };
+        let Some(evidence) = draw_evidence_compare_erase(&before, after) else {
+            set_nulls(
+                response,
+                "取证比对失败（像素缓冲尺寸不符）：本次调用不提供取证字段".to_owned(),
+            );
+            return;
+        };
+        attach_fields(response, &evidence);
+        response["evidence_note"] = json!(
+            "erase 口径：painted/clipped/footprint 是实际擦除的像素（落笔前/后区域比较），不是笔触几何足迹；ink_mass 恒 0（erase 不产墨）"
+        );
+        return;
+    }
+    let mut keep = BTreeSet::new();
+    keep.insert(object_id.to_owned());
+    let started = std::time::Instant::now();
+    let tile = ctx
+        .workspace
+        .render_layer_objects_subset(&ctx.doc_id, tile_bbox, layer_id, &keep);
+    ctx.time(Phase::Preview, started);
+    let tile = match tile {
+        Ok(tile) => tile,
+        Err(error) => {
+            set_nulls(response, format!("单对象渲染失败：{error}"));
+            return;
+        }
+    };
+    let Some(evidence) = draw_evidence_compare(&before, tile, tile_bbox, (canvas_w, canvas_h))
+    else {
+        set_nulls(
+            response,
+            "取证比对失败（像素缓冲尺寸不符）：本次调用不提供取证字段".to_owned(),
+        );
+        return;
+    };
+    attach_fields(response, &evidence);
+    if blend_non_normal {
+        response["evidence_note"] = json!(
+            "混合模式非 Normal：max_channel_delta 按 Normal 合成估算（tile 与落笔前像素 source-over 合成）；painted/footprint 是对象自身覆盖，与混合模式无关"
+        );
+    }
+}
+
 fn write_draw(ctx: &mut ToolContext<'_>, args: &Value, kind: AtomKind) -> Result<Value> {
     // **笔迹标签**（外部 §113 清单第 2 项：`fill` 出错同样难查）⇒ 这条路（画/填/擦）都收 `label`，
     // 由 `commit` 取走写进原子 ✓。`brush_stroke` 走 `write_import_image`，在那边单独设。
@@ -5373,6 +5924,17 @@ fn write_draw(ctx: &mut ToolContext<'_>, args: &Value, kind: AtomKind) -> Result
         }
     }
 
+    // **取证要的落笔前像素** ✓（P-12）：提交之前渲染，提交之后比对。
+    //   `data`／`layer_id`／`object_id` 在下面被移进 payload ⇒ 先克隆要用的那份。
+    //   只在本次调用实际渲染时取（silent / wait_for_render=false 时不取，字段 null + note）。
+    let blend_non_normal = data
+        .get("blend_mode")
+        .and_then(Value::as_str)
+        .is_some_and(|mode| mode != "normal");
+    let evidence_layer_id = layer_id.clone();
+    let evidence_object_id = object_id.clone();
+    let (evidence_before, evidence_skip) = draw_evidence_capture(ctx, &data, kind);
+
     let mut payload = json!({
         "object_id": object_id,
         "layer_id": layer_id,
@@ -5383,7 +5945,19 @@ fn write_draw(ctx: &mut ToolContext<'_>, args: &Value, kind: AtomKind) -> Result
     }
     let result = ctx.commit(kind, payload)?;
     let region = region_of(&result);
-    finish_mutation(ctx, &result, region)
+    let mut response = finish_mutation(ctx, &result, region)?;
+    attach_draw_evidence(
+        &mut response,
+        ctx,
+        &result,
+        kind,
+        &evidence_layer_id,
+        &evidence_object_id,
+        blend_non_normal,
+        evidence_before,
+        evidence_skip,
+    );
+    Ok(response)
 }
 
 /// 矩形区域 ⇒ 蛇形盖章点列（`erase` 的 `data.region` 写法用）。
@@ -8259,6 +8833,26 @@ fn read_get_stroke_log(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         )
     })?;
     let mut all: Vec<Value> = Vec::new();
+    // **已撤销的原子不进日志** ✓（X-5）：`Revert`/`Reapply` 原子的净荷是
+    //   `{"target": "<被撤销的 id>"}`（与 `list_atoms` 同一机制 ✓）⇒ 扫一遍收集失活集合。
+    //   按**最近一次动作**算：revert 之后又 reapply 回来的算 live，不是一撤到底 ✓
+    //   （`list_atoms` 只认 `Revert`，reapply 回来的仍隐藏 —— 那处不顺手改，见本期说明 ✓）。
+    let mut last_action: std::collections::BTreeMap<String, (u64, bool)> =
+        std::collections::BTreeMap::new();
+    for atom in document.log().iter() {
+        if atom.kind != AtomKind::Revert && atom.kind != AtomKind::Reapply {
+            continue;
+        }
+        if let Some(target) = atom.payload.get("target").and_then(Value::as_str) {
+            last_action.insert(target.to_owned(), (atom.seq, atom.kind == AtomKind::Revert));
+        }
+    }
+    let reverted: std::collections::HashSet<String> = last_action
+        .iter()
+        .filter(|(_, (_, is_revert))| *is_revert)
+        .map(|(id, _)| id.clone())
+        .collect();
+    let mut reverted_excluded = 0usize;
     for atom in document.log().iter() {
         if atom.seq <= since {
             continue;
@@ -8317,6 +8911,13 @@ fn read_get_stroke_log(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
             .as_deref()
             .is_some_and(|want| atom.group_id.as_deref() != Some(want))
         {
+            continue;
+        }
+        // **已撤销的不列** ✓（X-5）：撤销后它不在 live 画面里，日志视图也不该再数它 ✓。
+        //   放在全部过滤器之后 ⇒ `reverted_excluded` 正好是“匹配但被排除”的笔数，
+        //   恒等式 `total + reverted_excluded` = 全部匹配数 ✓。
+        if reverted.contains(&atom.id) {
+            reverted_excluded += 1;
             continue;
         }
         // 点列：**原样报回** ✓（`[x,y]`／`[x,y,p]`／`[x,y,p,t]` 都可能是调用方给的形状 ✓）。
@@ -8402,11 +9003,13 @@ fn read_get_stroke_log(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         "entries": page,
         "returned": returned,
         "total": total,
+        // **被排除的已撤销笔数** ✓（X-5）：`total + reverted_excluded` = 全部匹配数 ✓。
+        "reverted_excluded": reverted_excluded,
         "offset": offset,
         "limit": limit,
         "next_offset": if offset + returned < total { json!(offset + returned) } else { Value::Null },
         "truncated": offset + returned < total,
-        "note": "这是**原子日志**的视图 ✓ ⇒ 跟文档走（清 /tmp、换 session、重启都在 ✓）。                 `bbox` 是原子里的 `region` ✓；逐点 `time_ms` **没有**保存在原子里 ✗ ⇒ 只有原子时间戳 ✓。",
+        "note": "这是**原子日志**的视图 ✓ ⇒ 跟文档走（清 /tmp、换 session、重启都在 ✓）。                 `bbox` 是原子里的 `region` ✓；逐点 `time_ms` **没有**保存在原子里 ✗ ⇒ 只有原子时间戳 ✓。                 已撤销的原子不列，`total` 只数 live 笔；`reverted_excluded` 是被排除的已撤销笔数（`total + reverted_excluded` = 全部匹配数）✓。",
     }))
 }
 
@@ -14247,8 +14850,13 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     //   ⇒ **∴ 在 4K 上那是 **67,108,864** 字节 ✗ ⇒ **∴ 实测 `brush_stroke` 中位 101.6 → 235.0 ms ✗**）
     //   **⇒ A2 再添足迹与墨量** ✓：同一遍里多算 `ink_footprint_pixels` 与 `ink_mass`（Σalpha）⇒
     //     零额外遍历 ✓（与 `brush_stroke` 同口径 ✓）。
-    let (painted_pixels, paint_delta, ink_footprint_pixels, ink_mass) =
-        count_painted_and_delta(base.as_deref(), &rgba);
+    let PaintedDelta {
+        painted: painted_pixels,
+        delta_max: paint_delta,
+        footprint: ink_footprint_pixels,
+        mass: ink_mass,
+        distribution: paint_distribution,
+    } = count_painted_and_delta(base.as_deref(), &rgba);
     // **截断可见** ✓（第 1416 轮；外部 D-09）：两个数都给，且被夹紧时加一句说明
     value["size_requested"] = json!(size_requested);
     value["size_used"] = json!(size);
@@ -14265,6 +14873,13 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     // **同值字段 `painted_pixels_raw`** ✓（A3 并存方案，与 `brush_stroke` 同例 ✓）。
     value["painted_pixels_raw"] = json!(painted_pixels);
     value["paint_delta"] = json!(paint_delta);
+    // **差值分布** ✓（P-15）：与 `paint_delta` 同一遍遍历算出，只统计改了的像素 ✓。
+    //   `paint_delta` 一个像素就能顶到 255（边缘伪影可主导它），而 `paint_delta_median`
+    //   接近 0 ⇒ 说明那 255 只是个别像素，不是整笔的幅度。
+    value["paint_delta_median"] = json!(paint_distribution.median);
+    value["paint_delta_p90"] = json!(paint_distribution.p90);
+    value["paint_delta_p99"] = json!(paint_distribution.p99);
+    value["changed_pixels"] = json!(paint_distribution.changed_pixels);
     // **足迹与墨量** ✓（A2）：与 `brush_stroke` 的 `ink_footprint_pixels`／`ink_mass` 同口径 ✓。
     value["ink_footprint_pixels"] = json!(ink_footprint_pixels);
     value["ink_mass"] = json!(ink_mass);
@@ -14314,6 +14929,65 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     Ok(value)
 }
 
+/// 单通道差值分布（P-15）：同一遍遍历里由 256 桶直方图算出，不另扫一遍。
+///
+/// 口径：直方图只统计**改了的像素**（delta > 0）；一个像素都没改时三值全 0。
+/// 中位值／p90／p99 的规则统一是“累计 ≥ total×pct 的最小 d”。
+/// 与 `max_channel_delta`／`paint_delta` 是同一遍遍历的产物，口径一致。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DeltaDistribution {
+    /// 改了的像素里，差值的中位值（p50）。
+    pub median: u8,
+    /// 改了的像素里，差值的 p90。
+    pub p90: u8,
+    /// 改了的像素里，差值的 p99。
+    pub p99: u8,
+    /// 改了的像素数（delta > 0 的像素数）。
+    pub changed_pixels: u32,
+}
+
+/// 256 桶直方图 → 差值分布（P-15；`brush_stroke`／`medium_stroke`／`draw_*` 三处共用）。
+///
+/// `hist[d]` 是差值恰好为 `d` 的像素数；只统计改了的像素（`hist[0]` 不进分位数）。
+/// `total == 0`（一个像素都没改）时三值全 0，不报空。
+pub(crate) fn delta_distribution(hist: &[u32; 256]) -> DeltaDistribution {
+    let total: u32 = hist.iter().skip(1).sum();
+    if total == 0 {
+        return DeltaDistribution::default();
+    }
+    // 最小 d 使得累计 ≥ total×pct（pct 取 50／90／99）。
+    let quantile = |pct: u32| -> u8 {
+        let mut cumulative: u32 = 0;
+        for (d, count) in hist.iter().enumerate().skip(1) {
+            cumulative += count;
+            if cumulative * 100 >= total * pct {
+                return d as u8;
+            }
+        }
+        255
+    };
+    DeltaDistribution {
+        median: quantile(50),
+        p90: quantile(90),
+        p99: quantile(99),
+        changed_pixels: total,
+    }
+}
+
+/// `count_painted_and_delta` 的返回值：四个旧量 + 差值分布（P-15）。
+pub(crate) struct PaintedDelta {
+    /// 逐字节不同的像素数（与旧口径一致）。
+    pub painted: usize,
+    /// 单通道最大差值（与旧口径一致）。
+    pub delta_max: u8,
+    /// 产出里 alpha 非零的像素数（与旧口径一致）。
+    pub footprint: usize,
+    /// 落墨像素的 alpha 字节之和（与旧口径一致）。
+    pub mass: u64,
+    /// 差值分布（新增；同一遍遍历算出）。
+    pub distribution: DeltaDistribution,
+}
+
 /// **这一笔改了多少个像素** ✓（`medium_stroke` 的 `painted_pixels` ✓；2026-10-16 ✓）。
 ///
 /// **为什么需要它** ✗：介质笔触此前**只有 `ok`** ✓ ⇒ 画面上**一个像素都没变**时也回 `ok=true` ✗
@@ -14342,11 +15016,13 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 /// · **`footprint`** ✓ ⇒ 产出里 **alpha 非零**的像素数（与 `brush_stroke` 的 `ink_footprint_pixels` 同义 ✓）
 /// · **`mass`** ✓ ⇒ 落墨像素的 **alpha 字节之和（Σalpha，u64）** ⇒ 恒等式
 ///   `0 ≤ mass ≤ footprint × 255`；与 `brush_stroke` 的 `ink_mass` 同口径 ✓
-fn count_painted_and_delta(base: Option<&[u8]>, produced: &[u8]) -> (usize, u8, usize, u64) {
+fn count_painted_and_delta(base: Option<&[u8]>, produced: &[u8]) -> PaintedDelta {
     let mut painted = 0usize;
     let mut delta_max = 0u8;
     let mut footprint = 0usize;
     let mut mass = 0u64;
+    // **差值直方图** ✓（P-15）：同一遍遍历里记，与 `delta_max` 同一个像素、同一个差值 ✓。
+    let mut hist = [0u32; 256];
     for (index, pixel) in produced.chunks_exact(4).enumerate() {
         // **未触碰的透明像素不参与任何一个量** ✓（A1）：插件产出是**稀疏覆盖层**，
         //   alpha==0 即"这里没落笔" ⇒ 拿它跟底色比是假信号（白底 ⇒ 差 255 ✗）：
@@ -14377,6 +15053,8 @@ fn count_painted_and_delta(base: Option<&[u8]>, produced: &[u8]) -> (usize, u8, 
         //   （白笔仍报 254 ✗：边缘像素 RGB 近白而 alpha 很低 ⇒ 与底色差 254，但肉眼不可见 ✗）。
         //   ⇒ 先把产出按 alpha 合成到底色上，再比 RGB；**alpha 通道不参与**（不是可见颜色 ✓，
         //     与画笔 `max_delta` 的无基准臂同例 ✓）。无基准时按白底 255 合成（旧口径 ✓）。
+        // **本像素的差值** ✓（P-15）：三通道里最大的那格，记进直方图 ✓。
+        let mut pixel_delta: u8 = 0;
         for channel in 0..3 {
             let old = before.map_or(255, |bytes| bytes[channel]);
             let alpha = i32::from(pixel[3]);
@@ -14384,9 +15062,19 @@ fn count_painted_and_delta(base: Option<&[u8]>, produced: &[u8]) -> (usize, u8, 
             let composited = (i32::from(pixel[channel]) * alpha + base_c * (255 - alpha)) / 255;
             let diff = (composited - base_c).unsigned_abs().min(255) as u8;
             delta_max = delta_max.max(diff);
+            pixel_delta = pixel_delta.max(diff);
+        }
+        if pixel_delta > 0 {
+            hist[pixel_delta as usize] += 1;
         }
     }
-    (painted, delta_max, footprint, mass)
+    PaintedDelta {
+        painted,
+        delta_max,
+        footprint,
+        mass,
+        distribution: delta_distribution(&hist),
+    }
 }
 
 /// **`export_project`** ✓ —— 一键打成 `.yanshi` 工程包 ✓（真实用户提的缺口 ✓）。
@@ -15613,6 +16301,10 @@ pub(crate) struct BrushPaint {
     /// **∴ 薄涂笔的信号 ✗**：`thin_watercolor` 实测中位 **1**✗、最大 **6**✗（`pointy_ink` 是 **62**✓）。
     /// ⇒ **∴ 所以**调用方能靠它区分「**画了**」✗ 与「**看得见**」✓ —— 后者才是用户要的 ✓。
     max_delta: u8,
+    /// **差值分布** ✓（P-15）：与 `max_delta` 同一遍遍历算出，只统计改了的像素 ✓。
+    ///   单像素最大值会被边缘伪影主导（255 可能只来自个别像素），而 `median` 接近 0
+    ///   ⇒ 说明那 255 不是整笔的幅度。
+    delta_distribution: DeltaDistribution,
     /// **这一笔是否吃了底图** ✓（第 215 轮 ✓）：等值于
     /// `feed_base && brush_reads_the_canvas(&brush)` ✓。
     ///
@@ -18661,6 +19353,11 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         "ink_pixels": ink_footprint,
         "delta_regime": delta_regime,
         "max_channel_delta": paint.max_delta,
+        // **差值分布** ✓（P-15）：与 `brush_stroke` 同一套字段，同一遍遍历算出 ✓。
+        "delta_median": paint.delta_distribution.median,
+        "delta_p90": paint.delta_distribution.p90,
+        "delta_p99": paint.delta_distribution.p99,
+        "changed_pixels": paint.delta_distribution.changed_pixels,
         "steps": paint.steps,
         "blob_hash": hash,
         "thumb_url": format!("yanshi://blob/{hash}"),

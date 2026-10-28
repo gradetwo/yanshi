@@ -461,6 +461,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         steps,
         painted,
         max_delta,
+        delta_distribution,
         fed_base,
     } = paint;
     // **blob 先行** ✓，与 `medium_stroke` 完全同路 ✓。
@@ -1148,6 +1149,13 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         value["clip_coverage"] = json!(coverage);
     }
     value["max_channel_delta"] = json!(max_delta);
+    // **差值分布** ✓（P-15）：与 `max_channel_delta` 同一遍遍历算出，只统计改了的像素 ✓。
+    //   单像素最大值会被边缘伪影主导（255 可能只来自个别像素），而 `delta_median`
+    //   接近 0 ⇒ 说明那 255 不是整笔的幅度。
+    value["delta_median"] = json!(delta_distribution.median);
+    value["delta_p90"] = json!(delta_distribution.p90);
+    value["delta_p99"] = json!(delta_distribution.p99);
+    value["changed_pixels"] = json!(delta_distribution.changed_pixels);
     // **落笔顶层结论** ✓（A1/B1）：`landed` + `landed_reason` ⇒ 调用方不用再自己读五个字段拼结论 ✓。
     //   判定见 `landed_reason`（`tools.rs`，与 `medium_stroke` 共用同一函数 ✓）。
     let (landed_reason, landed) = landed_reason(
@@ -2013,8 +2021,10 @@ pub(super) fn paint_brush(
     //
     // **∴ 算法 ✓**：**不碰 `rgba` ✗**（**∴ 纯读 ✓**）⇒ **∴ 在清零点之前量，才是**原始**落墨幅度 ✓**
     //   ⇒ **∴ 于是**它报的是"引擎到底改了多少"✗，与后续掩膜无关 ✓
-    let max_delta = {
+    let (max_delta, delta_distribution) = {
         let mut max_delta: u8 = 0;
+        // **差值直方图** ✓（P-15）：同一遍遍历里记，与 `max_delta` 同一个像素、同一个差值 ✓。
+        let mut hist = [0u32; 256];
         let before = before_pixels.as_deref();
         for index in (0..rgba.len()).step_by(4) {
             // ★ **无基准时必须跳过**未触碰的透明像素 ✗** ★**（第 118 轮 ✓；**∴ 外部复测 QY-D03 ✓**）
@@ -2071,8 +2081,11 @@ pub(super) fn paint_brush(
                 delta = delta.max(diff);
             }
             max_delta = max_delta.max(delta);
+            if delta > 0 {
+                hist[delta as usize] += 1;
+            }
         }
-        max_delta
+        (max_delta, delta_distribution(&hist))
     };
     // **只保留"这一笔真的碰到过"的像素** ✗ —— 绝不能把喂进去的底图**原样复制**出来 ✓：
     // 那会把**笔触的包围矩形**烘成一个新对象 ✗ ⇒ 删掉底下的东西之后，
@@ -2249,6 +2262,7 @@ pub(super) fn paint_brush(
         steps,
         painted,
         max_delta,
+        delta_distribution,
         fed_base: reads_canvas,
     })
 }

@@ -524,7 +524,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "draw_stroke",
         profile: Profile::Core,
-        summary: "**纯几何矢量笔迹**（几何插值、实心、**无笔刷物理** ✗）：data.color 支持 [r,g,b,a] 0-1 线性 / 0-255 字节、{r,g,b,a}、#RRGGBB。                  想要笔毛 / 干湿 / 压感的笔触 ⇒ 用 brush_stroke（.myb）或 medium_stroke（介质插件）。                  **每条笔触只作用于它自己的图层** ✓：跨图层只是普通叠加；介质的湿搅 / 混色**不跨图层** ✓（先把底下那层画完，或用同一层叠 ✓）。",
+        summary: "**纯几何矢量笔迹**（几何插值、实心、**无笔刷物理** ✗）：data.color 支持 [r,g,b,a] 0-1 线性 / 0-255 字节、{r,g,b,a}、#RRGGBB。                  想要笔毛 / 干湿 / 压感的笔触 ⇒ 用 brush_stroke（.myb）或 medium_stroke（介质插件）。                  **每条笔触只作用于它自己的图层** ✓：跨图层只是普通叠加；介质的湿搅 / 混色**不跨图层** ✓（先把底下那层画完，或用同一层叠 ✓）。                  回执带像素取证字段（painted_pixels、painted_pixels_clipped、ink_footprint_pixels、max_channel_delta、delta_regime，另有分布与 landed）：实际渲染时给实数；静默调用或 wait_for_render=false 时为 null 并附 evidence_note。",
         mutating: true,
         params: &[
             param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
@@ -576,7 +576,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "draw_shape",
         profile: Profile::Core,
-        summary: "绘制形状（矩形/椭圆/多边形/路径 path，可描边）：path 的 geometry 形如 {kind:\"path\", fill_rule:\"evenodd\"|\"nonzero\"（缺省 evenodd）, subpaths:[{start:[x,y], closed:bool, segments:[{op:\"L\",to:[x,y]} | {op:\"C\",c1:[x,y],c2:[x,y],to:[x,y]}]}]}，或用 d 给 SVG 路径字符串（支持 M/L/C/Q/H/V/Z 与小写相对命令，Q 自动转 C；与 subpaths 二选一，落库前统一转成 subpaths）；path 不给 color ⇒ 纯描边（开放路径），给 color ⇒ 填充（开放路径按隐式闭合填充、描边不封口）；非法 path 载荷带字段路径报错、不回退成多边形",
+        summary: "绘制形状（矩形/椭圆/多边形/路径 path，可描边）：path 的 geometry 形如 {kind:\"path\", fill_rule:\"evenodd\"|\"nonzero\"（缺省 evenodd）, subpaths:[{start:[x,y], closed:bool, segments:[{op:\"L\",to:[x,y]} | {op:\"C\",c1:[x,y],c2:[x,y],to:[x,y]}]}]}，或用 d 给 SVG 路径字符串（支持 M/L/C/Q/H/V/Z 与小写相对命令，Q 自动转 C；与 subpaths 二选一，落库前统一转成 subpaths）；path 不给 color ⇒ 纯描边（开放路径），给 color ⇒ 填充（开放路径按隐式闭合填充、描边不封口）；非法 path 载荷带字段路径报错、不回退成多边形。回执带像素取证字段（painted_pixels、painted_pixels_clipped、ink_footprint_pixels、max_channel_delta、delta_regime，另有分布与 landed）：实际渲染时给实数；静默调用或 wait_for_render=false 时为 null 并附 evidence_note。",
         mutating: true,
         params: &[
             param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
@@ -657,7 +657,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         // ⇒ **过时的描述会让 agent 主动放弃可用的能力** ✗（与"参数被静默忽略"是同一类损失 ✓）。
         // **真字体路（2026-10-27）**：`font` 给真字体名时服务端栅格化 + 记文本溯源 ⇒
         // `export_svg` 出真 `<text>`（OFL 字体子集内嵌 ✓）；含 `\n` 时响亮拒绝（单行 ✓）。
-        summary: "绘制文本对象：font=builtin 时内核用内置位图字体光栅化（ASCII 与常用 CJK 都能画）；font=真字体名时服务端栅格化（引擎渲染用）+ 记文本溯源，export_svg 出真 <text>（OFL 字体子集内嵌；含换行符时响亮拒绝，只支持单行）",
+        summary: "绘制文本对象：font=builtin 时内核用内置位图字体光栅化（ASCII 与常用 CJK 都能画）；font=真字体名时服务端栅格化（引擎渲染用）+ 记文本溯源，export_svg 出真 <text>（OFL 字体子集内嵌；含换行符时响亮拒绝，只支持单行）。font=builtin 时回执带像素取证字段（同 draw_stroke；真字体路走 import_image，不带本字段）；静默调用或 wait_for_render=false 时为 null 并附 evidence_note。",
         mutating: true,
         params: &[
             param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
@@ -678,7 +678,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         // **描述必须说出参数藏在哪** ✗：外部绘画 agent 实测把它当 Photoshop 的"填充"用 ✓
         //（`fill {x:0,y:0,w:900,h:700}` 或 `fill {color:…, region:…}` ✓）⇒ 一律被拒 ✓，
         // 而它把"没填上"归因成**坐标偏移** ✗ —— 一句话的描述要负一半责任 ✓。
-        summary: "用纯色填充：颜色与区域**都放在 `data` 里** ⇒ `data:{color, region:{x,y,w,h}}`，或 `data:{color, object_id}` 只填某个对象；要画纯色矩形也可以用 `draw_shape`（kind=rect）✓",
+        summary: "用纯色填充：颜色与区域**都放在 `data` 里** ⇒ `data:{color, region:{x,y,w,h}}`，或 `data:{color, object_id}` 只填某个对象；要画纯色矩形也可以用 `draw_shape`（kind=rect）✓。回执带像素取证字段（painted_pixels、painted_pixels_clipped、ink_footprint_pixels、max_channel_delta、delta_regime，另有分布与 landed）：实际渲染时给实数；静默调用或 wait_for_render=false 时为 null 并附 evidence_note。",
         mutating: true,
         params: &[
             param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),
@@ -691,7 +691,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "erase",
         profile: Profile::Core,
-        summary: "擦除（对象新版本或区域擦除）",
+        summary: "擦除（对象新版本或区域擦除）。回执带像素取证字段（painted_pixels、painted_pixels_clipped、ink_footprint_pixels、max_channel_delta、delta_regime，另有分布与 landed）：实际渲染时给实数；静默调用或 wait_for_render=false 时为 null 并附 evidence_note。erase 口径：painted 是实际擦除的像素（落笔前/后区域比较），不是笔触几何足迹；ink_mass 恒 0。",
         mutating: true,
         params: &[
             param!("label", String, false, "笔迹标签（部位名）⇒ 记进原子，供 list_atoms(label=…) 追查"),

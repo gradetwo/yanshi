@@ -2140,3 +2140,40 @@ fn radius_evaluated_value_reads_the_brush_radius_curves() {
         plain_base
     );
 }
+
+/// **P-15：`delta_distribution` 的分位数规则** ✓（纯函数，直接测）。
+///
+/// 口径：直方图只统计改了的像素（`hist[0]` 不进分位数）；分位数是“累计 ≥ total×pct
+/// 的最小 d”；一个像素都没改时三值全 0。
+/// **变异** ✓：把分位数改成恒返 255 ⇒ 第一、第二条红；把 `skip(1)` 改成全算 ⇒
+/// 第一条红（median 变 0，因为未改的像素占多数）。
+#[test]
+fn delta_distribution_quantiles_follow_the_documented_rule() {
+    // 10 个像素，差值恰好是 1..=10 各一个 ⇒ 中位 5、p90 9、p99 10。
+    let mut hist = [0u32; 256];
+    for slot in hist.iter_mut().skip(1).take(10) {
+        *slot = 1;
+    }
+    let dist = delta_distribution(&hist);
+    assert_eq!(dist.median, 5, "累计 ≥ 5 的最小 d 是 5");
+    assert_eq!(dist.p90, 9, "累计 ≥ 9 的最小 d 是 9");
+    assert_eq!(dist.p99, 10, "累计 ≥ 9.9 的最小 d 是 10");
+    assert_eq!(dist.changed_pixels, 10);
+    // 5 个像素全是差 1 ⇒ 三值全是 1（纯函数例：改了的像素差值全相等时分布与最大值一致）。
+    let mut hist = [0u32; 256];
+    hist[1] = 5;
+    let dist = delta_distribution(&hist);
+    assert_eq!((dist.median, dist.p90, dist.p99), (1, 1, 1));
+    assert_eq!(dist.changed_pixels, 5);
+    // 只有 1 个像素改了，差 255 ⇒ 中位值就是 255（一个像素的分布没有“多数”可言；
+    // 判单像素 spike 靠 `changed_pixels == 1`，不靠 median）。
+    let mut hist = [0u32; 256];
+    hist[255] = 1;
+    let dist = delta_distribution(&hist);
+    assert_eq!((dist.median, dist.p90, dist.p99), (255, 255, 255));
+    assert_eq!(dist.changed_pixels, 1);
+    // 一个像素都没改 ⇒ 三值全 0（不报空）。
+    let dist = delta_distribution(&[0u32; 256]);
+    assert_eq!((dist.median, dist.p90, dist.p99), (0, 0, 0));
+    assert_eq!(dist.changed_pixels, 0);
+}
