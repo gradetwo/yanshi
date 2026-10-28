@@ -1269,4 +1269,5 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    （**判据入口早已接线**✓：`tool-pwa-preset-library-parity.mjs:85` 自己调 `--check` 并断退出码
    ⇒ **再枚举它只会多一条重复检查／恒 0 的假判据** ✗）；本树跑该判据 **生成器 17⇒18、EXIT 0** ✓。
    两片已知红（`browser-offline-brush`／`browser-ui-check`）与三条 exit 3 跳过均与登记一致 ⇒
-   **产品侧没有新红** ✓。
+   **产品侧没有新红** ✓。**修法复验（run 40679121210＝`25e91bcc`，completed/success）**：
+   全部 job 绿——`tool-criteria-coverage` 随登记转绿，批次 2 至此**在 CI 上完整成立** ✓。
