@@ -8,8 +8,10 @@
 //! - Phase 5 扩展为 owner/editor/viewer 角色权限；这里已预留 [`Role`]。
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use yanshi_core::{ActorId, ErrorCode, ErrorContext, Result, SessionId, YanshiError};
 
@@ -222,6 +224,20 @@ impl Session {
     }
 }
 
+/// 令牌表的键：`SHA-256(token)`（64 位小写十六进制）✓（审计 M-2）。
+///
+/// **为什么键不存令牌原文** ✗：`BTreeMap` 按 `Ord` 查表 ⇒ 比较在**第一个不同的字节**
+/// 就返回 ✗ ⇒ 单次查表的耗时随「与真实键共享的前缀长度」变化 ⇒ 逐字节可测的旁路 ✓；
+/// 而且明文凭证本不该在服务端内存里多躺一份 ✓。摘要定长 32 字节 ⇒ 一次比较 ✓，
+/// 像空间仍是 2^256 ✓（令牌本身就是 OS 熵 ⇒ L-1 ✓）。
+fn token_key(token: &str) -> String {
+    let mut key = String::with_capacity(TOKEN_HEX_LEN);
+    for byte in Sha256::digest(token.as_bytes()) {
+        let _ = write!(key, "{byte:02x}");
+    }
+    key
+}
+
 /// 令牌管理器：一个文档一份 capability token 集合。
 #[derive(Debug, Default)]
 pub struct TokenAuthority {
@@ -238,7 +254,7 @@ impl TokenAuthority {
     pub fn issue(&mut self, actor: impl Into<ActorId>, role: Role) -> CapabilityToken {
         let token = CapabilityToken::generate();
         self.tokens.insert(
-            token.as_str().to_owned(),
+            token_key(token.as_str()),
             Principal {
                 actor: actor.into(),
                 role,
@@ -249,14 +265,15 @@ impl TokenAuthority {
 
     /// 吊销令牌。
     pub fn revoke(&mut self, token: &CapabilityToken) -> bool {
-        self.tokens.remove(token.as_str()).is_some()
+        let key = token_key(token.as_str());
+        self.tokens.remove(&key).is_some()
     }
 
     /// 恢复一个已持久化的令牌（服务端重启，12.7）。
     pub fn restore(&mut self, token: &str, actor: &str, role: Role) -> Result<()> {
         let token = CapabilityToken::parse(token)?;
         self.tokens.insert(
-            token.as_str().to_owned(),
+            token_key(token.as_str()),
             Principal {
                 actor: actor.to_owned(),
                 role,
@@ -277,7 +294,7 @@ impl TokenAuthority {
 
     /// 解析令牌对应的主体（不校验传输）。
     pub fn principal_of(&self, token: &CapabilityToken) -> Option<&Principal> {
-        self.tokens.get(token.as_str())
+        self.tokens.get(&token_key(token.as_str()))
     }
 
     /// 鉴权：本地传输豁免；其他传输必须提供有效令牌。
@@ -299,12 +316,15 @@ impl TokenAuthority {
                 ErrorContext::detail("缺少 capability token"),
             ));
         };
-        self.tokens.get(token.as_str()).cloned().ok_or_else(|| {
-            YanshiError::new(
-                ErrorCode::PermissionDenied,
-                ErrorContext::detail("capability token 无效或已吊销"),
-            )
-        })
+        self.tokens
+            .get(&token_key(token.as_str()))
+            .cloned()
+            .ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::PermissionDenied,
+                    ErrorContext::detail("capability token 无效或已吊销"),
+                )
+            })
     }
 }
 
@@ -390,6 +410,48 @@ mod tests {
         assert!(authority
             .authorize(Some(&token), TransportKind::Http, "x")
             .is_err());
+    }
+
+    #[test]
+    fn token_table_is_keyed_by_digest_not_by_plaintext() {
+        // 变异：让 `token_key` 直接返回令牌原文 ⇒ 第一条断言红 ✓（审计 M-2）。
+        let mut authority = TokenAuthority::new();
+        let token = authority.issue("human:2", Role::Editor);
+        assert_eq!(authority.len(), 1);
+        assert!(
+            !authority.tokens.contains_key(token.as_str()),
+            "表里不许出现令牌原文（泄漏内存即泄漏凭证）"
+        );
+        let key = authority.tokens.keys().next().unwrap().clone();
+        assert_eq!(key.len(), TOKEN_HEX_LEN);
+        assert!(key
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+        assert_eq!(
+            key,
+            token_key(token.as_str()),
+            "键必须是 SHA-256 的十六进制"
+        );
+
+        // 查表／吊销／恢复仍按令牌原文工作 ✓（键换了，语义不变 ✓）。
+        assert_eq!(authority.principal_of(&token).unwrap().actor, "human:2");
+        assert_eq!(
+            authority
+                .authorize(Some(&token), TransportKind::Http, "x")
+                .unwrap()
+                .role,
+            Role::Editor
+        );
+        assert!(authority.revoke(&token));
+        assert!(authority.principal_of(&token).is_none());
+        assert!(authority
+            .authorize(Some(&token), TransportKind::Http, "x")
+            .is_err());
+        authority
+            .restore(token.as_str(), "human:2", Role::Viewer)
+            .unwrap();
+        assert!(!authority.tokens.contains_key(token.as_str()));
+        assert_eq!(authority.principal_of(&token).unwrap().role, Role::Viewer);
     }
 
     #[test]

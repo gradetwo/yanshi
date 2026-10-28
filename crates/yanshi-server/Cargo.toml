@@ -18,6 +18,9 @@ yanshi-heap = { path = "../yanshi-heap", version = "0.3.0" }
 yanshi-render = { path = "../yanshi-render", version = "0.3.0" }
 serde.workspace = true
 serde_json.workspace = true
+# **令牌表的键用摘要**（审计 M-2）：`sha2` 已是工作区既有依赖（`yanshi-core` 在用 ✓）
+# ⇒ 不新增供应链面 ✓；只把「按令牌原文查表」换成「按 SHA-256 查表」✓。
+sha2.workspace = true
 hokusai = "0.3"
 # **★ 服务端真字体（字体方案 Phase 3）★**：`fontdb` 枚举系统字体（**它在 Linux 用 fontconfig、
 # macOS 用 Core Text、Windows 用 DirectWrite** ⇒ 正是方案点名的那三样，**已经打包好了** ✓），

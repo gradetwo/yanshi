@@ -3016,6 +3016,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "sha2",
  "ureq",
  "yanshi-core",
  "yanshi-heap",

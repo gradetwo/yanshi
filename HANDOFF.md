@@ -859,3 +859,22 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    ③ **本机验证**：`tool-surface-coverage` ✓（2 处源码声明与 2/2 文档数均一致）、
    `tool-example-acceptance` ✓（140 跑通｜0 被拒｜67 需前置；`revoke_token` 落 ⊙）、
    `tool-examples-doc-check` ✓、`cargo test -p yanshi-server --test file_transfer` 10/10 ✓。
+
+80. **审计 M-2：令牌查表改常数时间**（2026-10-28 ✓）：
+   ① **问题（两半）**：`YANSHI_API_KEY` 的比较**已在 Batch 1 换成常数时间** ✓
+   （`server.rs` 的 `secrets_equal`，`0bd7c06f`）⇒ 剩下的是 `TokenAuthority` 的表：
+   `BTreeMap<String, Principal>` 用**令牌原文**当键 ⇒ `Ord` 在**第一个不同字节**就返回 ✗
+   ⇒ 单次查表耗时随「与真实键共享的前缀长度」变化 ⇒ 逐字节可测的旁路 ✓；
+   而且明文凭证在服务端内存里多躺一份 ✓。
+   ② **修法**：键改成 `SHA-256(token)` 的 64 位小写十六进制（`token_key`）⇒
+   `issue`／`revoke`／`restore`／`principal_of`／`authorize` **五处**统一走它 ✓；
+   摘要定长 32 字节 ⇒ 一次比较 ✓，像空间仍是 2^256 ✓（令牌本身是 OS 熵 ⇒ L-1 ✓）。
+   `sha2` 是工作区既有依赖（`yanshi-core` 在用）⇒ `Cargo.lock` 只给 `yanshi-server` 加一行 ✓，
+   不新增供应链 crate ✓。
+   ③ **判据**：`token_table_is_keyed_by_digest_not_by_plaintext` —— 表里**不出现令牌原文**、
+   键长 64 且全小写十六进制、键 == `token_key(原文)`；再验**语义不变**：
+   `principal_of`／`authorize`／`revoke` 后失效／`restore` 后角色变为 Viewer ✓。
+   ④ **变异（一条，退出码 101 ✓）**：让 `token_key` 返回令牌原文 ⇒ 第一条断言红
+   （「表里不许出现令牌原文」）⇒ 已改回并重跑绿（`cargo test -p yanshi-server --lib token` 14/14 ✓）。
+   **未做**：`meta.json` 里仍存**令牌原文**（H-2 遗留 ⇒ 要改成存摘要就得放弃「重启后原 token 仍可用」，
+   属行为变更，待定 ✓）；令牌 TTL 同样未做 ✓。
