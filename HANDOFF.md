@@ -1271,3 +1271,40 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    两片已知红（`browser-offline-brush`／`browser-ui-check`）与三条 exit 3 跳过均与登记一致 ⇒
    **产品侧没有新红** ✓。**修法复验（run 40679121210＝`25e91bcc`，completed/success）**：
    全部 job 绿——`tool-criteria-coverage` 随登记转绿，批次 2 至此**在 CI 上完整成立** ✓。
+
+## §96 paint-fix 期 2 后续包（export-perf）合并留痕（2026-10-28，`d094ca5a`）
+
+① **基线与接缝**：包基线 `aeca3e4c`（期 2 合入后尖端）；包侧前向重放验证跑在 `25e91bcc` 上
+   （`verify/重放验证-新main.txt` PASS，漂移＝预期 15 文件）⇒ 而 `25e91bcc..b39d4c2b` 只动
+   `HANDOFF.md` 3 行 ⇒ **包验证的正是本树合并前的上一提交** ✓。`aeca3e4c..b39d4c2b` 与本包
+   四个文件的交集只有 `tools.rs` 一处（期 3 的 P-10 在 `write_batch` ≈20805 行，本包 hunks 在
+   5928／15588／17051／17272）⇒ 距离足够，`git am --3way` 五片**全部干净落地**
+   （`2546feb2..d094ca5a`，无冲突、无手工并缝）✓。
+② **内容审阅**（五片，全是根因修不是症状 patch）：
+   **1/5 X-14 配方记全**——`write_brush_stroke` 的 `source` 补记 `brush_params`（落笔合并后的值）、
+   `times`（各点第 4 元素 `time_ms`，没有记 `null`）、`color_mixing`；新增共享
+   `replay_brush_paint(ctx, source)`：**export 重放与 `update_stroke` 改色重跑用同一份实现**
+   （本项目「两份实现迟早漂移」已有多次前科 ✓）；`restyle_baked_brush_stroke` 由「重建一张丢字段的
+   `source`」改为「原 `source` clone + `core` 五字段覆盖」⇒ 新 `source` 即合并后的配方 ✓；
+   老笔触没记三项 ⇒ `None`/`&[]`/`Rgb` ⇒ 老行为逐字节不变 ✓。**2/5 P-2 性能**——`paint_brush`
+   读背景不再 `document_state(ctx)?`（整表克隆，实测 ≈75 ms/次重放），改
+   `document().state().background` 直接借出 ✓。**3/5、5/5 测试夹具**——按真实原子结构读
+   `source`（顶层或 supersede 的 `data.source`）；各测试用不同 `doc_id`（证明缓存进程内、
+   键含 doc_id+head_seq ⇒ 同图会命中前一条的证明，断言就测不到重放本身 ✗）。
+   **4/5 回执恒等式订正**——导出认 supersede 原子 `data` 下的配方（`payload_brush_source`）；
+   恒等式从「`omitted + kept_mismatch + kept_no_recipe + kept_missing == blob_count`」订正为
+   **`kept_mismatch + kept_no_recipe == blob_count`**（`blob_count` 只数**进包的 blob**，
+   `omitted` 的不进包 ⇒ 原来那个式子把两类混数，本树对着 `archive.rs` 计数路径核过 ✓）。
+   **未修清单**照单收下：重放并行化**不做**（冷导出已 6–13 s < 60 s 预算，收益不抵复杂度）✓。
+③ **本机复验**（合并例外的内存边界）：`cargo check -p yanshi-server --tests` **exit 0** ✓；
+   `free -h` 可用 **2.4 Gi < 3 Gi** ⇒ 定向 test（`export_brush_proof` 5 条）与
+   `cargo test --workspace` 一律**交 CI**（§95③ 同口径，不自称本机绿）。包侧变异 M1–M5
+   （不记 `brush_params`／重放不取 `times`／restyle 丢字段／重放 `None`／导出只认顶层 `source`）
+   在盒上 `evidence/mutate.log` 全红——**本树不代跑**（跑一次＝整 crate debug 编译，超内存闸门）✗
+   ⇒ 以 CI `test (stable)/(beta)` 里 `export_brush_proof` 5 条为端到端成立依据 ✓。
+④ **回归普查**：`grep` 全仓判据**无**一条断 `source` 的**键集合**（深比较 0 处）⇒ 新增三字段不打红；
+   `tool-color-space-p2-9` 断的是 `source.color_space === "srgb"/"linear"` 单字段，
+   `merged_source` 的覆盖规则（core 给空间记新的、没给沿用原值）与原逻辑逐条一致 ✓；
+   `tool-archive-bloat`／`tool-cold-open-budget`／`tool-export-idempotent` 断的是**相对量与恒等式**
+   （`blobsB ≤ blobsA×1.5`、原因之和==`kept_no_recipe`），P2 不改变 blob 计数口径 ✓。
+⑤ `git am` 不过 pre-commit 钩子 ⇒ 本留痕提交**另行复跑** fmt/clippy/台账编号/守卫 ✓（§90⑤ 同规）。
