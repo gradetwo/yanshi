@@ -2849,9 +2849,26 @@ fn is_loopback_host(name: &str) -> bool {
             .is_ok_and(|ip| ip.is_loopback())
 }
 
+/// `--bind` 的主机部分 ✓ —— **端口可以是 0**（临时端口 ✓：测试与 `--bind 127.0.0.1:0` 都用它 ✓）。
+///
+/// **为什么不复用 `split_host_port`** ✗：那里的「端口 0 不合法」是**Host 头**的规则 ✓
+/// （客户端不会请求端口 0 ✓），套到监听地址上会把 `127.0.0.1:0` 当成**对外** ✗
+/// —— CI 上 16 个 `transport` 集成测试与 `tool-import-project` 当场红 ✓。
+fn bind_host_part(bind: &str) -> &str {
+    if let Some(rest) = bind.strip_prefix('[') {
+        // `[::1]:8080` 或 `[::1]` ⇒ 取方括号里的主机。
+        return rest.split_once(']').map(|(host, _)| host).unwrap_or(bind);
+    }
+    if bind.matches(':').count() > 1 {
+        // 未加方括号的 IPv6（没有端口）⇒ 整串就是主机。
+        return bind;
+    }
+    bind.split_once(':').map(|(host, _)| host).unwrap_or(bind)
+}
+
 /// `--bind` 的**具体**主机部分 ✓；`0.0.0.0`／`::`／空 ⇒ `None`（监听全部不算主机名 ✗）。
 fn bind_host(bind: &str) -> Option<&str> {
-    let (name, _port) = split_host_port(bind)?;
+    let name = bind_host_part(bind);
     if name.is_empty() {
         return None;
     }
@@ -3108,8 +3125,9 @@ fn brush_text_asset(state: &ServerState, file: &str) -> Response {
 /// **监听地址是不是只在本机** ✓ —— 用来决定"能不能匿名发写权限令牌"（见 `create_document`）。
 /// 判据从宽到严 ✓：`127.` / `::1` / `localhost` 都算回环 ✓；`0.0.0.0`、`[::]`、具体外网地址都**不算** ✗。
 /// **与 Host 白名单共用同一条回环判定** ✓（`is_loopback_host` ✓，一份实现 ✓）。
+/// **端口不参与判定** ✓：`127.0.0.1:0`（临时端口）也是回环 ✓。
 fn bind_is_loopback(bind: &str) -> bool {
-    split_host_port(bind).is_some_and(|(host, _)| is_loopback_host(host))
+    is_loopback_host(bind_host_part(bind))
 }
 
 /// `GET /brush-previews/{file}`：**预生成入库的画笔预览图 / 索引**。
@@ -4589,6 +4607,15 @@ mod tests {
             Some("k"),
             Some("K")
         ));
+        // **临时端口（0）也是回环** ✓：测试与 `--bind 127.0.0.1:0` 都靠它 ✓
+        // （按 Host 头的「端口不许为 0」规则套过来 ⇒ CI 上 16 个集成测试当场红 ✗）。
+        assert!(health_detail_allowed("127.0.0.1:0", None, None));
+        assert!(health_detail_allowed("[::1]:0", None, None));
+        assert!(!health_detail_allowed("0.0.0.0:0", None, None));
+        assert!(bind_is_loopback("::1"), "未加方括号的 IPv6 也算");
+        assert_eq!(bind_host("127.0.0.1:0"), Some("127.0.0.1"));
+        assert_eq!(bind_host("[::1]:0"), Some("::1"));
+        assert_eq!(bind_host("0.0.0.0:0"), None);
     }
 
     /// 错误里只报文件名 ✓（审计 L-2：不泄露 `--root`／安装目录 ✓）。
