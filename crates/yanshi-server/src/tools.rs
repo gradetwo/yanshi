@@ -17051,6 +17051,24 @@ fn brush_source_replay_rejection(workspace: &Workspace, source: &Value) -> Optio
     }
 }
 
+/// **从一条净荷里取笔触配方** ✓（P-2 / X-14）：`brush_stroke` 的原子把 `source`
+/// 放在净荷顶层 ✓；`update_stroke` 的 `supersede` 原子把它放在 `data` 下 ✓
+/// （`restyle_baked_brush_stroke` 写的新 `data` ✓）⇒ 两处都要认 ✗ ——
+/// 只认顶层会把换色后的那一笔判成 `no_source` ⇒ 整张位图进包 ✗
+/// （实测：换色后新绿那笔 `kept_no_recipe`，旧红那笔反倒 `omitted` ✓）。
+/// 缺失或显式 `null` ⇒ `None` ✓（与其它来源字段同例 ✓）。
+pub(crate) fn payload_brush_source(payload: &Value) -> Option<&Value> {
+    payload
+        .get("source")
+        .filter(|value| !value.is_null())
+        .or_else(|| {
+            payload
+                .get("data")
+                .and_then(|data| data.get("source"))
+                .filter(|value| !value.is_null())
+        })
+}
+
 /// **一类 `kept_no_recipe` 的唯一原因** ✓（第 230 轮 ✓，取**第一条不通过的净荷**的拒绝原因 ✓）：
 /// 判据据此能说清"是**没带配方**还是**笔刷读不出**"✗→✓ —— 以前只有个计数 ✓，
 /// CI 独有红（`kept_no_recipe=3`／本机 `omitted=2`）因此**无从定位** ✗。
@@ -17062,7 +17080,7 @@ pub(crate) fn payloads_replay_rejection(
         return "unreferenced";
     };
     for payload in payloads {
-        let Some(source) = payload.get("source") else {
+        let Some(source) = payload_brush_source(payload) else {
             return "no_source";
         };
         if let Some(reason) = brush_source_replay_rejection(workspace, source) {

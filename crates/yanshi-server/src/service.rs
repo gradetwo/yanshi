@@ -3415,13 +3415,20 @@ impl Workspace {
                 let all_replayable = refs_by_blob.get(hash_text).is_some_and(|payloads| {
                     !payloads.is_empty()
                         && payloads.iter().all(|payload| {
-                            payload.get("source").is_some_and(|source| {
+                            crate::tools::payload_brush_source(payload).is_some_and(|source| {
                                 crate::tools::brush_source_is_replayable(self, source)
                             })
                         })
                 });
                 if all_replayable {
-                    let source = refs_by_blob[hash_text][0]["source"].clone();
+                    // **配方从引用它的第一条净荷取** ✓（`supersede` 原子的配方在
+                    // `data` 下 ✓，见 `payload_brush_source` ✓）—— `all_replayable`
+                    // 已保证每条净荷都有可重放配方 ⇒ 这里一定找得到 ✓。
+                    let source = refs_by_blob[hash_text]
+                        .iter()
+                        .find_map(crate::tools::payload_brush_source)
+                        .cloned()
+                        .unwrap_or(Value::Null);
                     // **证明记忆化** ✓（第 39 轮 ✓）：
                     // 重放的输入只有四项 ✓（第 365 轮查明 ✓）：配方 ✓、**那个 `.myb` 的字节** ✓、
                     // 引擎数学（crate 版本 ✓）、目标哈希 ✓ ⇒ **∴ 键就是这四项** ✓，缺一不可 ✗。

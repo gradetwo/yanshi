@@ -8,19 +8,20 @@
 //! **判据** ✓：① 带 `brush_params` 3/3 的笔 ⇒ 导出 `omitted == 1`、
 //! `kept_mismatch == 0`；② 带 4 元点时间 `t=0,100,200` 的笔 ⇒ 同上；
 //! ③ 两者组合 ⇒ 同上；④ `update_stroke` 换色后 ⇒ 新 `source` 仍带
-//! `brush_params` 与 `times`、导出仍 `omitted`；⑤ 老笔触（无新字段）⇒
+//! `brush_params` 与 `times`、旧红与新绿两张位图导出都 `omitted`；⑤ 老笔触（无新字段）⇒
 //! 仍按老行为导出（`omitted == 1`，与修复前一致 ✓）。
 //!
 //! **每条测试的笔都不同** ✓（点位与颜色各不相同）：证明缓存是进程内的，
 //! 键含目标哈希 —— 两条测试若画出同一张位图，后一条会命中前一条的证明，
 //! 断言就测不到重放本身 ✗（`update_stroke` 那条换色后位图不同，不在此列 ✓）。
 //!
-//! **恒等式** ✓（跨输入成立）：
-//! `omitted + kept_mismatch + kept_no_recipe + kept_missing == blob_count`。
+//! **恒等式** ✓（跨输入成立）：`kept_mismatch + kept_no_recipe == blob_count`
+//!（`blob_count` 只计装进包的；`omitted` 的不装、缺失的也不装 ✓）。
 //!
 //! **变异**（每条断言各一次，见本期说明）：
 //! ① `source` 不记 `brush_params` ⇒ ①③ 红；② 重放不取 `times` ⇒ ②③ 红；
-//! ③ `restyle` 重建旧字段清单 ⇒ ④ 红；④ 共享重放改回 `brush_params=None` ⇒ ①②③④ 全红。
+//! ③ `restyle` 重建旧字段清单 ⇒ ④ 红；④ 共享重放改回 `brush_params=None` ⇒ ①②③④ 全红；
+//! ⑤ 导出只认净荷顶层 `source`（不认 `data` 下）⇒ ④ 红（新绿判 `no_source`）。
 
 use serde_json::json;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
@@ -129,23 +130,22 @@ fn stroke_source(root: &std::path::Path, name: &str) -> serde_json::Value {
     }
 }
 
-/// **回执恒等式** ✓：每个 blob 要么省略、要么以三种原因之一留下 ✓。
+/// **回执恒等式** ✓：`blob_count` 只计**装进包的** blob ✓（`omitted` 的不装、
+/// 缺失的也不装 ✓）⇒ 装进包的 = 以 `kept_mismatch` / `kept_no_recipe` 留下的 ✓。
 fn assert_receipt_identity(receipt: &serde_json::Value) {
-    let omitted = receipt["omitted"].as_u64().unwrap();
     let mismatch = receipt["kept_mismatch"].as_u64().unwrap();
     let no_recipe = receipt["kept_no_recipe"].as_u64().unwrap();
-    let missing = receipt["kept_missing"].as_u64().unwrap();
     let total = receipt["blob_count"].as_u64().unwrap();
     assert_eq!(
-        omitted + mismatch + no_recipe + missing,
+        mismatch + no_recipe,
         total,
-        "omitted + kept_mismatch + kept_no_recipe + kept_missing == blob_count：{receipt}"
+        "kept_mismatch + kept_no_recipe == blob_count：{receipt}"
     );
 }
 
-/// **一笔被证明 ⇒ `omitted` 涨 1、`kept_mismatch` 为 0** ✓。
-fn assert_proved(receipt: &serde_json::Value) {
-    assert_eq!(receipt["omitted"], json!(1), "{receipt}");
+/// **被证明的笔 ⇒ `omitted` 涨到期望数、`kept_*` 全为 0** ✓。
+fn assert_proved(receipt: &serde_json::Value, omitted: u64) {
+    assert_eq!(receipt["omitted"], json!(omitted), "{receipt}");
     assert_eq!(receipt["kept_mismatch"], json!(0), "{receipt}");
     assert_eq!(receipt["kept_no_recipe"], json!(0), "{receipt}");
     assert_eq!(receipt["kept_missing"], json!(0), "{receipt}");
@@ -171,7 +171,7 @@ fn stroke_with_brush_params_exports_as_omitted() {
         json!({"dabs_per_actual_radius": 3, "dabs_per_basic_radius": 3}),
         "{source}"
     );
-    assert_proved(&exported);
+    assert_proved(&exported, 1);
 }
 
 /// **② 带 4 元点时间 `t=0,100,200` 的笔 ⇒ 导出省略** ✓（速度敏感的笔刷缺时间即错笔 ✓）。
@@ -188,7 +188,7 @@ fn stroke_with_point_times_exports_as_omitted() {
     let source = stroke_source(&root, "times");
     // **`times` 是原样克隆** ✓（第 4 元素是什么类型就存什么类型 ✓）⇒ 本测试传整数，断言用整数 ✓。
     assert_eq!(source["times"], json!([0, 100, 200]), "{source}");
-    assert_proved(&exported);
+    assert_proved(&exported, 1);
 }
 
 /// **③ `brush_params` + 点列时间组合 ⇒ 导出省略** ✓。
@@ -210,7 +210,7 @@ fn stroke_with_brush_params_and_times_exports_as_omitted() {
         "{source}"
     );
     assert_eq!(source["times"], json!([0, 100, 200]), "{source}");
-    assert_proved(&exported);
+    assert_proved(&exported, 1);
 }
 
 /// **④ `update_stroke` 换色后，合并的 `source` 仍带配方，导出仍省略** ✓。
@@ -239,16 +239,9 @@ fn update_stroke_keeps_the_proof() {
         "{source}"
     );
     assert_eq!(source["times"], json!([0, 100, 200]), "{source}");
-    // **换色后旧红仍在日志里被引用**（若进包也该被证明）；至少新绿那笔被证明，
-    // 一张错即 `kept_mismatch > 0` ✗。
-    assert_eq!(exported["kept_mismatch"], json!(0), "{exported}");
-    assert_eq!(exported["kept_no_recipe"], json!(0), "{exported}");
-    assert_eq!(exported["kept_missing"], json!(0), "{exported}");
-    assert!(
-        exported["omitted"].as_u64().unwrap() >= 1,
-        "至少新绿那笔被证明：{exported}"
-    );
-    assert_receipt_identity(&exported);
+    // **换色产生两张位图**（旧红 + 新绿）⇒ 两张都该被证明（新绿那张的配方在
+    // `supersede` 原子的 `data` 下，导出也要认那一处 ✓）；一张错即 `kept_* > 0` ✗。
+    assert_proved(&exported, 2);
 }
 
 /// **⑤ 老笔触（无新字段）⇒ 仍按老行为导出** ✓（共享重放不得改坏旧路 ✓）。
@@ -265,5 +258,5 @@ fn legacy_stroke_without_new_fields_still_exports() {
     let source = stroke_source(&root, "legacy");
     assert_eq!(source["brush_params"], json!(null), "{source}");
     assert_eq!(source["times"], json!([null, null, null]), "{source}");
-    assert_proved(&exported);
+    assert_proved(&exported, 1);
 }
