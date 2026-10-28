@@ -8,15 +8,19 @@
 //   （棘轮：越改只许越小），不是被测系统的数量 ⇒ 不属「上游一加就失效」那一类。
 //   当前实测值用命令现算（`wc -c web/index.html`），注释里带时间戳（内核 ② ✓）。
 //
-// **⇒ 判什么**：① 文件读得到；② 字节数 ≤ CEILING；③ 若已逼近（≥95%）打印警示但不红
+// **⇒ 判什么**：① `git show HEAD:web/index.html` 取得到；② 字节数 ≤ CEILING；③ 若已逼近（≥95%）打印警示但不红
 //   （棘轮的含义是**拦住增长**，不是拦住逼近）。
-// **⇒ 变异**：往 index.html 追加 12 KB ⇒ ② 红 ✓（实测红过再回绿 ✓）。
+// **⇒ 为什么读 git 而不是工作区文件**（CI run `40646976572` 的实测教训 ✓）：CI 跑判据前
+//   有 `pwa-sync` 步骤**重写工作区**的 index.html ⇒ 同一提交本机 1,038,359、CI 1,044,372 ✗
+//   ⇒ 读工作区就是**跨环境不同源**（第 336 轮「它读的两个量是不是同源」的假红形态 ✗）；
+//   读 HEAD 的 blob ⇒ 同一提交在两台机器上**必然同一个数** ✓。
+// **⇒ 变异**：把 index.html 追加 12 KB 提交成临时 commit ⇒ ② 红 ✓（reset --soft 还原再验绿 ✓）。
 // **⇒ 红之后怎么办**：若增长是有意的（合并补丁带进新功能），把 CEILING 改成新值、
 //   在提交信息里写清「谁涨了多少、为什么」——让膨胀**必须被看见**，这就是本判据的全部目的。
-import { statSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 
 // 棘轮上界（截至 2026-10-28 实测 1,038,359 字节 ⇒ 上界取 1,040,000 留一点余量）。
-// 数它用 `wc -c web/index.html`；改这个数必须附理由。
+// 数它用 `git show HEAD:web/index.html | wc -c`；改这个数必须附理由。
 const CEILING = 1_040_000;
 
 const failures = [];
@@ -27,10 +31,9 @@ const check = (ok, label, detail) => {
 
 let size;
 try {
-  size = statSync("web/index.html").size;
-  readFileSync("web/index.html");
+  size = execFileSync("git", ["show", "HEAD:web/index.html"], { maxBuffer: 32 * 1024 * 1024 }).length;
 } catch {
-  console.error("  ⊘ 判据前提不成立：读不到 web/index.html（不是产品问题）");
+  console.error("  ⊘ 判据前提不成立：git show HEAD:web/index.html 取不到（不在 git 仓库？不是产品问题）");
   process.exit(3);
 }
 
