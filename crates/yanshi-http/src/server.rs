@@ -1655,13 +1655,14 @@ fn create_document(state: &ServerState, request: &Request) -> Response {
             Ok(copied) => copied,
             Err(error) => return Response::from_error(&error),
         };
-        let token = match workspace.issue_token(&doc_id, &actor, Role::Editor) {
-            Ok(token) => token,
+        let (token, evicted) = match workspace.issue_token(&doc_id, &actor, Role::Editor) {
+            Ok(pair) => pair,
             Err(error) => return Response::from_error(&error),
         };
         return Response::json(
             200,
             &json!({"ok": true, "doc_id": doc_id, "token": token.as_str(),
+                    "tokens_evicted": evicted,
                     "copied_atoms": copied, "copy_from": from}),
         );
     }
@@ -1752,8 +1753,10 @@ fn create_document(state: &ServerState, request: &Request) -> Response {
         return Response::from_error(&error);
     }
     // （闸与角色解析已**前移**到 `open_or_create` 之前 ✓，见上；此处直接签发令牌 ✓）
-    let token = match workspace.issue_token(&doc_id, &actor, requested_role) {
-        Ok(token) => token,
+    // **`tokens_evicted`（审计 P2-1）** ✓：令牌表有上限 ⇒ 超限淘汰最早签发的；
+    // **不许静默** ⇒ 回执里明说刚丢了几枚（被淘汰的链接再用是 403，显式失败 ✓）。
+    let (token, evicted) = match workspace.issue_token(&doc_id, &actor, requested_role) {
+        Ok(pair) => pair,
         Err(error) => return Response::from_error(&error),
     };
     let summary = workspace
@@ -1765,6 +1768,7 @@ fn create_document(state: &ServerState, request: &Request) -> Response {
             "ok": true,
             "doc_id": doc_id,
             "token": token.as_str(),
+            "tokens_evicted": evicted,
             // **回显尺寸**（真实回归报告）：它请求 800×600、读到的是 1024×1024 ⇒ 报"尺寸被静默忽略" ✗。
             // 真相是：它**量的是别的文档**（会话/命令行那个 1024×1024）✓ —— 但响应不回显尺寸，
             // 就没人能从回执里自证 ✓ ⇒ 补上这两项，让"我建的是多大"**一眼可验** ✓。
@@ -2149,8 +2153,8 @@ fn import_finish(state: &ServerState, request: &Request, upload_id: &str) -> Res
     let Some(doc_id) = imported.get("doc_id").and_then(Value::as_str) else {
         return internal("导入成功却没有回 doc_id");
     };
-    let token = match workspace.issue_token(doc_id, actor, Role::Editor) {
-        Ok(token) => token,
+    let (token, evicted) = match workspace.issue_token(doc_id, actor, Role::Editor) {
+        Ok(pair) => pair,
         Err(error) => return Response::from_error(&error),
     };
     Response::json(
@@ -2159,6 +2163,7 @@ fn import_finish(state: &ServerState, request: &Request, upload_id: &str) -> Res
             "ok": true,
             "doc_id": doc_id,
             "token": token.as_str(),
+            "tokens_evicted": evicted,
             "url": format!("/?doc={doc_id}&token={token}"),
             "atoms": imported.get("atoms").cloned().unwrap_or(Value::Null),
             "blobs": imported.get("blobs").cloned().unwrap_or(Value::Null),
@@ -4434,6 +4439,7 @@ mod tests {
         workspace
             .issue_token(doc_id, "human:1", Role::Editor)
             .unwrap()
+            .0
             .as_str()
             .to_owned()
     }

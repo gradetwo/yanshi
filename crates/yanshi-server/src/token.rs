@@ -9,13 +9,23 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::fmt::Write as _;
 use yanshi_core::{ActorId, ErrorCode, ErrorContext, Result, SessionId, YanshiError};
 
 /// 令牌长度（十六进制字符数）：64 字符 = 256 bit。
 pub const TOKEN_HEX_LEN: usize = 64;
+
+/// **每个文档的令牌上限**（审计 P2-1）。
+///
+/// **为什么必须有上限** ✗：`POST /api/documents` 每调一次都签发一枚新令牌 ✓，
+/// 而 `meta.json` 的令牌表原先**只增不减** ⇒ 本机（无鉴权）反复调用就能把文件撑大 ✗；
+/// 更糟的是每次签发都要**整文件重写** ⇒ 总量 O(n²) 的磁盘写 ✓。
+/// **超过上限 ⇒ 淘汰最早签发的那枚** ✓（审计建议的 LRU 近似 ✓）：
+/// 被淘汰的链接再用会拿到 403（显式失败 ✓，不是静默放行 ✓），
+/// 签发方从响应的 `tokens_evicted` 得知**刚刚发生了淘汰** ✓。
+pub const MAX_TOKENS_PER_DOCUMENT: usize = 256;
 
 /// 文档级 capability token。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -213,6 +223,8 @@ pub(crate) fn token_digest(token: &str) -> String {
 #[derive(Debug, Default)]
 pub struct TokenAuthority {
     tokens: BTreeMap<String, Principal>,
+    /// **签发顺序** ✓（`BTreeMap` 按摘要排序，给不出「最早」✗）⇒ 淘汰 FIFO 要单独记 ✓。
+    order: VecDeque<String>,
 }
 
 impl TokenAuthority {
@@ -221,35 +233,59 @@ impl TokenAuthority {
         Self::default()
     }
 
-    /// 发放令牌。
-    pub fn issue(&mut self, actor: impl Into<ActorId>, role: Role) -> CapabilityToken {
+    /// 发放令牌；返回 `(令牌, 被淘汰的旧令牌数)` ✓（审计 P2-1）。
+    pub fn issue(&mut self, actor: impl Into<ActorId>, role: Role) -> (CapabilityToken, usize) {
         let token = CapabilityToken::generate();
-        self.tokens.insert(
+        self.insert(
             token_digest(token.as_str()),
             Principal {
                 actor: actor.into(),
                 role,
             },
         );
-        token
+        let evicted = self.trim_to_cap();
+        (token, evicted)
+    }
+
+    /// 插入一条（新签发或从盘上恢复）；**只在首次插入时记顺序** ✓。
+    fn insert(&mut self, digest: String, principal: Principal) {
+        if self.tokens.insert(digest.clone(), principal).is_none() {
+            self.order.push_back(digest);
+        }
+    }
+
+    /// 超过上限 ⇒ 淘汰最早签发的那枚；返回淘汰数 ✓。
+    fn trim_to_cap(&mut self) -> usize {
+        let mut evicted = 0;
+        while self.tokens.len() > MAX_TOKENS_PER_DOCUMENT {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if self.tokens.remove(&oldest).is_some() {
+                evicted += 1;
+            }
+        }
+        evicted
     }
 
     /// 吊销令牌。
     pub fn revoke(&mut self, token: &CapabilityToken) -> bool {
         let key = token_digest(token.as_str());
+        self.order.retain(|digest| digest != &key);
         self.tokens.remove(&key).is_some()
     }
 
     /// 恢复一个已持久化的令牌（服务端重启，12.7）。
     pub fn restore(&mut self, token: &str, actor: &str, role: Role) -> Result<()> {
         let token = CapabilityToken::parse(token)?;
-        self.tokens.insert(
+        self.insert(
             token_digest(token.as_str()),
             Principal {
                 actor: actor.to_owned(),
                 role,
             },
         );
+        self.trim_to_cap();
         Ok(())
     }
 
@@ -259,13 +295,14 @@ impl TokenAuthority {
     /// 做形状校验 ✓；存进去**不再哈希一次** ✗（否则重启后原文对不上 ✓）。
     pub fn restore_digest(&mut self, digest: &str, actor: &str, role: Role) -> Result<()> {
         let digest = CapabilityToken::parse(digest)?.as_str().to_owned();
-        self.tokens.insert(
+        self.insert(
             digest,
             Principal {
                 actor: actor.to_owned(),
                 role,
             },
         );
+        self.trim_to_cap();
         Ok(())
     }
 
@@ -342,7 +379,8 @@ mod tests {
     #[test]
     fn local_transports_are_exempt_and_remote_require_tokens() {
         let mut authority = TokenAuthority::new();
-        let token = authority.issue("human:1", Role::Editor);
+        let (token, evicted) = authority.issue("human:1", Role::Editor);
+        assert_eq!(evicted, 0, "空表签发不淘汰任何东西");
 
         // stdio / 进程内：豁免鉴权，按 owner 处理。
         let principal = authority
@@ -391,7 +429,7 @@ mod tests {
     fn token_table_is_keyed_by_digest_not_by_plaintext() {
         // 变异：让 `token_digest` 直接返回令牌原文 ⇒ 第一条断言红 ✓（审计 M-2）。
         let mut authority = TokenAuthority::new();
-        let token = authority.issue("human:2", Role::Editor);
+        let (token, _) = authority.issue("human:2", Role::Editor);
         assert_eq!(authority.len(), 1);
         assert!(
             !authority.tokens.contains_key(token.as_str()),
@@ -444,6 +482,58 @@ mod tests {
         assert!(!Role::Editor.can_revert_others());
         assert!(Role::Owner.can_revert_others());
         assert_eq!(Role::Owner.as_str(), "owner");
+    }
+
+    #[test]
+    fn token_table_evicts_oldest_beyond_cap_and_says_so() {
+        // 审计 P2-1 的四层齐：变异①去掉 `trim_to_cap` ⇒ `len` 越界 ⇒ 第 2 断言红 ✓；
+        // 变异②让淘汰不返回计数（恒 0）⇒ 第「必须明说」断言红 ✓；
+        // 变异③淘汰**最新**而不是最旧 ⇒ FIFO 两条断言红 ✓。
+        let mut authority = TokenAuthority::new();
+        let mut issued = Vec::new();
+        for _ in 0..MAX_TOKENS_PER_DOCUMENT {
+            let (token, evicted) = authority.issue("human:fifo", Role::Editor);
+            assert_eq!(evicted, 0, "没到上限不许淘汰任何东西");
+            issued.push(token);
+        }
+        assert_eq!(authority.len(), MAX_TOKENS_PER_DOCUMENT);
+        let (extra, evicted) = authority.issue("human:fifo", Role::Editor);
+        assert_eq!(
+            evicted, 1,
+            "超限多签一枚 ⇒ 必须明说淘汰了 1 枚（不许静默降级）"
+        );
+        assert_eq!(authority.len(), MAX_TOKENS_PER_DOCUMENT, "表不许越过上限");
+        assert!(
+            authority.principal_of(&issued[0]).is_none(),
+            "最早签发的那枚必须是被淘汰的（FIFO）"
+        );
+        assert!(authority.principal_of(&issued[1]).is_some());
+        assert!(
+            authority.principal_of(&extra).is_some(),
+            "新签的那枚自己当然有效"
+        );
+        // 淘汰必须同时清 `order` 队列 ⇒ 腾出的位置让下一次签发**不再**淘汰 ✓。
+        assert!(authority.revoke(&extra), "吊销活的令牌必须返回 true");
+        let (again, evicted) = authority.issue("human:fifo", Role::Editor);
+        assert_eq!(evicted, 0, "吊销腾出位置后，签发不许淘汰");
+        assert!(authority.principal_of(&again).is_some());
+    }
+
+    #[test]
+    fn restored_table_is_trimmed_to_cap_too() {
+        // 盘上遗留的超限表（旧版本写的）在 restore 时也当场收敛 ✓。
+        let mut authority = TokenAuthority::new();
+        for _ in 0..MAX_TOKENS_PER_DOCUMENT + 8 {
+            let token = CapabilityToken::generate();
+            authority
+                .restore(token.as_str(), "human:restore", Role::Editor)
+                .unwrap();
+        }
+        assert_eq!(
+            authority.len(),
+            MAX_TOKENS_PER_DOCUMENT,
+            "restore 路径也要过同一条上限"
+        );
     }
 
     #[test]

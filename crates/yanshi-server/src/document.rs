@@ -773,8 +773,8 @@ impl Document {
         &mut self.authority
     }
 
-    /// 发放令牌（12.7）。
-    pub fn issue_token(&mut self, actor: &str, role: Role) -> CapabilityToken {
+    /// 发放令牌（12.7）；返回 `(令牌, 被淘汰的旧令牌数)` ✓（审计 P2-1：表有上限，超限丢最旧）。
+    pub fn issue_token(&mut self, actor: &str, role: Role) -> (CapabilityToken, usize) {
         self.authority.issue(actor, role)
     }
 
@@ -3658,7 +3658,8 @@ mod tests {
     #[test]
     fn tokens_gate_remote_access_but_not_stdio() {
         let mut document = document();
-        let token = document.issue_token("human:2", Role::Viewer);
+        let (token, evicted) = document.issue_token("human:2", Role::Viewer);
+        assert_eq!(evicted, 0, "一枚令牌不该触发淘汰");
         let principal = document
             .authorize(None, TransportKind::Stdio, "local:stdio")
             .unwrap();

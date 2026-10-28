@@ -1920,3 +1920,58 @@ fn a_blob_of_document_b_is_not_readable_with_document_a_token() {
     assert_eq!(status, 403, "跨文档读 blob 必须被拒：{body}");
     assert_eq!(body["error_code"], "permission_denied", "{body}");
 }
+
+#[test]
+fn token_table_overissue_evicts_oldest_and_says_so_over_http() {
+    // 审计 P2-1 端到端：同一文档反复 `POST /api/documents` 签发 ⇒
+    // ① 回执**当场明说**淘汰了几枚（不许静默 ✓）；② 被淘汰的旧令牌再用 ⇒ 显式 403 ✓；
+    // ③ **盘上**的 `meta.json` 表同上限收敛（`record_token` 自己裁 ⇒ 只增不减就是审计本体 ✗）。
+    // 变异：去掉 `trim_to_cap` ⇒ ②③ 红；让淘汰恒返回 0 ⇒ ① 红 ✓。
+    let mut root = std::env::temp_dir();
+    root.push(format!("yanshi_token_cap_{}", std::process::id()));
+    let _cleanup = Cleanup(root.clone());
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let handle = start_server_with_root(root.clone());
+    let addr = handle.addr;
+    let cap = yanshi_server::token::MAX_TOKENS_PER_DOCUMENT;
+    let mut evicted_total = 0usize;
+    let mut oldest_token = String::new();
+    for i in 0..cap + 3 {
+        let mut client = HttpClient::new(addr);
+        let (status, body) = client.json(
+            "POST",
+            "/api/documents",
+            None,
+            Some(&json!({"doc_id": "doc_cap", "width": 64, "height": 64})),
+        );
+        assert_eq!(status, 200, "{body}");
+        let evicted = body["tokens_evicted"]
+            .as_u64()
+            .expect("回执必须带 tokens_evicted（不许静默淘汰）");
+        evicted_total += evicted as usize;
+        if i == 0 {
+            oldest_token = body["token"].as_str().unwrap().to_owned();
+        }
+    }
+    assert_eq!(evicted_total, 3, "签了 cap+3 枚 ⇒ 恰好淘汰最早的 3 枚");
+    let mut client = HttpClient::new(addr);
+    let (status, body) = client.json(
+        "GET",
+        &format!("/api/documents/doc_cap?token={oldest_token}"),
+        None,
+        None,
+    );
+    assert_eq!(
+        status, 403,
+        "被淘汰的令牌必须显式拒绝而不是静默放行：{body}"
+    );
+    let meta_raw =
+        std::fs::read_to_string(root.join("docs/doc_cap/meta.json")).expect("meta.json 应在盘上");
+    let meta: Value = serde_json::from_str(&meta_raw).unwrap();
+    assert_eq!(
+        meta["tokens"].as_array().unwrap().len(),
+        cap,
+        "盘上令牌表必须与内存同一上限收敛"
+    );
+}

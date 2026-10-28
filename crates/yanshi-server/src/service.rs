@@ -3781,26 +3781,29 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
         document.render_status(atom_id)
     }
 
-    /// 发放令牌并持久化（12.7）。
+    /// 发放令牌并持久化（12.7）；返回 `(令牌, 被淘汰的旧令牌数)` ✓（审计 P2-1）。
+    ///
+    /// **被淘汰数必须回显** ✓：链接被淘汰后用会得到 403（显式失败 ✓），而**签发方**
+    /// 要从响应里的 `tokens_evicted` 当场知道「刚刚丢了几枚」✗⇒ 不许静默 ✓。
     pub fn issue_token(
         &mut self,
         doc_id: &str,
         actor: &str,
         role: Role,
-    ) -> Result<CapabilityToken> {
+    ) -> Result<(CapabilityToken, usize)> {
         // **尺寸在这里一并取出** ✓（`meta.json` 缺失时 `record_token` **不许**凭空写 0×0 ✗，
         // 见 `persist.rs::record_token` 的说明 ✓）：`document` 就在手里 ✓ ⇒ 尺寸是已知的 ✓。
-        let (token, width, height) = {
+        let (token, evicted, width, height) = {
             let document = self.document_mut(doc_id)?;
             let width = document.state().width;
             let height = document.state().height;
-            let token = document.issue_token(actor, role);
-            (token, width, height)
+            let (token, evicted) = document.issue_token(actor, role);
+            (token, evicted, width, height)
         };
         if let Some(persist) = &self.persist {
             persist.record_token(doc_id, width, height, &token, actor, role)?;
         }
-        Ok(token)
+        Ok((token, evicted))
     }
 
     /// 吊销令牌（审计 H-2）：**内存与 `meta.json` 同步删除** ✓ ⇒ 重启后不会复活 ✓。
@@ -4386,7 +4389,8 @@ mod tests {
             }
             token = workspace
                 .issue_token("doc_1", "human:2", Role::Editor)
-                .unwrap();
+                .unwrap()
+                .0;
             let preview = workspace
                 .render_region("doc_1", Bbox::new(0.0, 0.0, 64.0, 48.0))
                 .unwrap();
@@ -4431,7 +4435,8 @@ mod tests {
                 .unwrap();
             token = workspace
                 .issue_token("doc_r", "human:2", Role::Editor)
-                .unwrap();
+                .unwrap()
+                .0;
             let (removed, remaining) = workspace.revoke_token("doc_r", &token).unwrap();
             assert!(removed, "第一次吊销必须真的删掉");
             assert_eq!(remaining, 0);

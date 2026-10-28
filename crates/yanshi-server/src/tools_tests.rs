@@ -1998,7 +1998,8 @@ fn revoke_token_is_owner_only_and_reports_unknown_tokens() {
         .unwrap();
     let token = workspace
         .issue_token("doc_revoke", "test:2", crate::token::Role::Viewer)
-        .unwrap();
+        .unwrap()
+        .0;
     let mut ctx = ToolContext::new(&mut workspace, "doc_revoke", "test:1", "s");
     // editor ⇒ permission_denied（handler 自己守 owner，不依赖路由）。
     ctx.role = crate::token::Role::Editor;

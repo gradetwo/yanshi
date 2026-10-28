@@ -1271,7 +1271,8 @@ fn capability_tokens_gate_http_and_allow_stdio() {
     setup(&mut workspace);
     let token = workspace
         .issue_token("doc_1", "human:2", Role::Editor)
-        .unwrap();
+        .unwrap()
+        .0;
 
     // stdio（本地进程）豁免鉴权。
     let principal = workspace

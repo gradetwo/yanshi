@@ -527,6 +527,15 @@ impl FileStore {
             actor: actor.to_owned(),
             role,
         });
+        // **磁盘侧同一条上限** ✓（审计 P2-1）：内存里 `TokenAuthority` 超限淘汰最早签发的，
+        // `meta.json` 也必须**只留最后 `MAX_TOKENS_PER_DOCUMENT` 条** ✗⇒ 否则本机无鉴权地
+        // 反复 `POST /api/documents` 仍能把文件撑大（**只增不减**就是这条审计的本体 ✓）。
+        // FIFO 口径与内存一致 ✓：两边都按「签发顺序」丢最旧 ⇒ 重启后 restore 进来的
+        // 就是内存里还活着的那一批 ✓。
+        if meta.tokens.len() > crate::token::MAX_TOKENS_PER_DOCUMENT {
+            let excess = meta.tokens.len() - crate::token::MAX_TOKENS_PER_DOCUMENT;
+            meta.tokens.drain(0..excess);
+        }
         self.save_meta(&meta)
     }
 
@@ -784,6 +793,28 @@ mod tests {
             "meta 缺失时不许写 0×0（那会让 list_documents 永久报 0×0 ✗）"
         );
         let _ = fs::remove_dir_all(&root_missing);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn meta_json_token_table_stays_bounded() {
+        // 审计 P2-1 本体：`record_token` 原先**只增不减** ⇒ 本机反复签发能把 `meta.json`
+        // 撑大。变异：去掉 `record_token` 里的 drain ⇒ 这里断言红 ✓（表变 300 条）。
+        let root = temp_root("meta-cap");
+        let store = FileStore::open(&root).unwrap();
+        for _ in 0..crate::token::MAX_TOKENS_PER_DOCUMENT + 44 {
+            let token = CapabilityToken::generate();
+            store
+                .record_token("doc_cap", 64, 48, &token, "human:1", Role::Editor)
+                .unwrap();
+        }
+        let meta = store.load_meta("doc_cap").unwrap().unwrap();
+        assert_eq!(
+            meta.tokens.len(),
+            crate::token::MAX_TOKENS_PER_DOCUMENT,
+            "盘上的令牌表必须与内存同一上限收敛（只增不减就是这条审计的本体 ✗）"
+        );
+        assert_eq!(meta.width, 64, "裁剪令牌表不许动尺寸字段");
         let _ = fs::remove_dir_all(&root);
     }
 
