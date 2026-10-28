@@ -1637,3 +1637,9 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    · 双份 api-local／docs 表格：本包**不碰** ✓；known-red 名单：不动 ✓。
 ⑥ `git am` 不过 pre-commit ⇒ fmt／clippy／台账守卫另行复跑 ✓（§90⑤ 同规）；push 等
    40722469155 收敛后与 §100 一并出去（同组不双派 ✓）。
+⑦ **CI 后效（收账 ✓）**：run `40722469155`（HEAD＝`282b0cfe`）**completed/success** ⇒
+   §99 各面成立：`tool-pwa-instance-detach`（含 §E1/§E2 新臂）在 CI 绿 ✓、
+   `tool-pwa-transform-object` 绿 ✓、**`tool-pwa-pixel-stats` 的 ⊘ 如预期被 CI 的新鲜 wasm 重建消费 ⇒
+   真判且绿 ✓**（本机 exit(3) 不是躲过去，是**换了有前提的判** ✓）；`tool-pwa-*` 全族无回归 ✓。
+   known-gap ②①–⑤ 与 §99② 的批 3–6 分裂面**不在本轮红面里**（判据输入不覆盖 ⇒ 绿不绿都不证明它们 ✓
+   ——**这正是把它们记进台账而不是忘掉的意义 ✓**）。
