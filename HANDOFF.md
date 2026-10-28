@@ -975,3 +975,33 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    与 `ws::tests` 的 RFC 6455 示例（`dGhlIHNhbXBsZSBub25jZQ==` ⇒
    `s3pPLMBiTxaQ9kYGzzhZRbK+xOo=` ✓）。若要换成熟 crate，收益是维护面，代价是
    新增依赖；审计本身也只说"保持测试向量" ✓ ⇒ 现状已满足。
+
+87. **审计 P1-3 已修：WebSocket 慢客户端（无界队列 ＋ 无写超时）（2026-10-28）**：
+   ① **每订阅者队列设限** ✓（`crates/yanshi-server/src/broadcast.rs`）：
+   数据流上限 `QUEUE_DATA_LIMIT = 256`、硬上限 `QUEUE_HARD_LIMIT = 1024`。
+   **控制流不丢** ✗：硬上限被原子占满时先**挤掉一条更旧的数据流**（tile／缩略图可重取 ✓）
+   再入队；连一条数据流都挤不出（队列全是原子）⇒ `overflowed` 标记 ⇒ 推送线程断开连接 ✓。
+   可观测：`BroadcastStats` 新增 `queue_dropped_data`／`queue_dropped_overflow` ✓
+   （不许静默丢 ✓）；`take_overflowed(id)` 取一次即清 ✓；`unsubscribe` 同时清标记 ✓。
+   ② **socket 写超时** ✓（`server.rs` 握手后 `set_write_timeout(10s)`）：
+   对端不读时 `write_frame` 不再无限阻塞 ✓。
+   ③ **写锁收敛到单帧** ✓：原来持锁跨整批事件 ⇒ 读循环的 pong／ack 被一起卡住 ✗。
+   ④ **推送线程任何退出路径都 `shutdown(Both)`** ✓：原来只置 `push_closed`，
+   而**读循环仍阻塞在 `read_message`** ✗ ⇒ 连接与订阅永久挂着 ✗（资源泄漏）。
+   ⑤ **测试与变异**（都是**执行过的红** ✓）：
+   · 单元 `queue_drops_data_flow_before_control_flow` ⇐ 变异：`is_data_event` 恒 false ⇒ 266≠256 红 ✓
+   · 单元 `queue_overflow_flags_the_subscriber` ⇐ 变异：硬上限改 `usize::MAX` ⇒ 1029≠1024 红 ✓
+   · 单元 `control_flow_evicts_queued_data_before_overflowing` ⇐ 变异：不挤数据流、直接溢出 ⇒ 红 ✓
+   · 单元 `unsubscribe_clears_overflow_flag` ⇐ 变异：删 `overflowed.remove` ⇒ 红 ✓
+   · 集成 `websocket_overflow_disconnects_a_stalled_subscriber`（`tests/transport.rs`）：
+     在**同一把工作区锁**里发 `QUEUE_HARD_LIMIT+1` 条事件 ⇒ 队列必然溢满（不依赖内核缓冲 ✓）
+     ⇒ 断言客户端读到 **EOF** ✓。变异：忽略溢出标记 ⇒ 实测 `Ok(Some(Frame))` 红 ✓；
+     删 `shutdown` ⇒ 5.5s 读超时 ⇒ 红 ✓。
+   ⑥ **诚实的边界** ✗：写超时**本身**没有确定性判据 ✓（要控制内核发送缓冲大小 ✗，
+   会跨机器不稳 ✓）；字节级上限**未做** —— 原因是写超时把堆积窗口钉在 ~10s ✓、
+   单个事件受 `MAX_BODY_BYTES`（32 MiB ✓）约束 ✓，故选择更简单的条数上限 ✓。
+   客户端被断时会看到**无 close 帧的断开** ✓（它本来就有退避重连 ✓ `viewer-app.js:8307`）；
+   **已知残余** ✗：重连只重新 `subscribe` 不重放错过原子 ⇒ 溢出断开后本地折叠状态可能落后 ✓
+   （与本条无关，是重连语义的旧缺口 ✓；要补需让重连后拉一次完整文档 ✓）。
+   本机：`yanshi-server --lib` 252/252 ✓、`service_flow` 31/31 ✓、
+   `yanshi-http --lib` 60/60 ✓、`transport` 26/26 ✓；CI 由下一次 run 确认 ✓。

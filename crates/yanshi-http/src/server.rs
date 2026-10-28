@@ -3588,6 +3588,12 @@ fn handle_websocket(
     writer.write_all(handshake.as_bytes())?;
     writer.flush()?;
     writer.set_nodelay(true).ok();
+    // **★ 慢客户端（审计 P1-3）★**：没有写超时 ⇒ 对端不读时 `write_frame` 会**无限期阻塞**
+    //   ⇒ 推送线程卡死、队列无界增长 ⇒ 一条不读的连接就能拖垮内存 ✓。
+    //   10 秒足够写完一次正常大小的帧（事件已按队列上限钉住 ✓）。
+    writer
+        .set_write_timeout(Some(std::time::Duration::from_secs(10)))
+        .ok();
 
     // 订阅推送（6.8）：控制流全局、数据流按视口过滤。
     let session = format!("session:ws:{}", yanshi_core::Ulid::new().encode());
@@ -3683,30 +3689,47 @@ fn handle_websocket(
                     }
                 }
             }
-            let events = {
+            let (events, overflowed) = {
                 let Ok(mut workspace) = push_state.workspace.lock() else {
                     break;
                 };
                 let Ok(document) = workspace.document_mut(&push_doc) else {
                     break;
                 };
-                document
-                    .broadcaster_mut()
-                    .drain(push_subscriber.load(std::sync::atomic::Ordering::SeqCst))
+                let subscriber = push_subscriber.load(std::sync::atomic::Ordering::SeqCst);
+                let events = document.broadcaster_mut().drain(subscriber);
+                // **★ 慢客户端（审计 P1-3）★**：队列越过硬上限 ⇒ 该订阅者读不动 ✓
+                //   ⇒ 丢弃这批（几乎全是陈旧数据流 ✓）并断开连接 ✓ —— 客户端重连后重新同步 ✓。
+                let overflowed = document.broadcaster_mut().take_overflowed(subscriber);
+                (events, overflowed)
             };
+            if overflowed {
+                push_closed.store(true, Ordering::SeqCst);
+                break;
+            }
             if events.is_empty() {
                 continue;
             }
-            let Ok(mut stream) = push_writer.lock() else {
-                break;
-            };
             for event in events {
                 let payload = json!({"type": "event", "event": event}).to_string();
+                // **写锁收敛到单帧** ✓（审计 P1-3）：`write_frame` 可能阻塞到**写超时** ✓
+                //   持锁跨整批会把**读循环的响应**（pong / 工具 ack）一起卡住 ✗；
+                //   每帧各自上锁 ⇒ 帧之间读循环能插进来 ✓，而单帧本身仍不会被拆开 ✓。
+                let Ok(mut stream) = push_writer.lock() else {
+                    push_closed.store(true, Ordering::SeqCst);
+                    break;
+                };
                 if write_frame(&mut *stream, &Frame::text(payload)).is_err() {
                     push_closed.store(true, Ordering::SeqCst);
                     break;
                 }
             }
+        }
+        // **推送线程的**任何**退出路径都要收掉这条连接** ✓（审计 P1-3）：
+        //   写失败／溢出／文档消失 ⇒ 之前只置 `push_closed` ✓，而**读循环仍阻塞在 `read_message`**
+        //   ⇒ 连接与订阅**永久挂着** ✗。`shutdown` 让读循环立刻返回 ⇒ 走下面的退订清理 ✓。
+        if let Ok(stream) = push_writer.lock() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
         }
     });
 

@@ -604,6 +604,53 @@ fn websocket_pushes_control_flow_globally_and_data_flow_by_viewport() {
     assert_eq!(ack["result"]["doc_id"], json!("doc_push"));
 }
 
+/// **慢客户端（审计 P1-3）**：队列越过硬上限 ⇒ 推送线程断开连接，读循环不再永久挂着。
+///
+/// **为什么直接在测试里打 `broadcaster`** ✓：要**确定性地**填满队列，必须挡住推送线程的
+/// `drain` ⇒ 在**同一把工作区锁**里发完 `QUEUE_HARD_LIMIT + 1` 个事件 ✓，它拿不到锁 ✓。
+/// 靠「客户端不读、冲刷内核发送缓冲」来填队列会**依赖缓冲大小** ✗（跨机器不稳 ✗）。
+#[test]
+fn websocket_overflow_disconnects_a_stalled_subscriber() {
+    let handle = start_server();
+    let addr = handle.addr;
+    let token = create_document(addr, "doc_slow");
+    let (mut ws, status, _) = WsClient::connect(addr, "doc_slow", &token);
+    assert_eq!(status, 101, "升级成功");
+    // **必须先证明订阅已建立** ✓：服务端在 101 **之后**才 `subscribe` ✓
+    // ⇒ 不握手就可能"发给零个订阅者"、溢出永远不发生 ✗（假绿/假红都难看出 ✓）。
+    ws.send_json(&json!({
+        "type": "subscribe",
+        "viewport": {"x": 0, "y": 0, "w": 32, "h": 32},
+        "zoom": 1.0,
+    }));
+    assert!(
+        ws.wait_for_json(|value| value["type"] == json!("subscribed"))
+            .is_some(),
+        "订阅确认"
+    );
+    let state = handle.state();
+    let limit = yanshi_server::broadcast::QUEUE_HARD_LIMIT;
+    {
+        let mut workspace = state.workspace.lock().expect("工作区锁");
+        let document = workspace.document_mut("doc_slow").expect("文档");
+        let broadcaster = document.broadcaster_mut();
+        for seq in 0..=limit {
+            broadcaster.publish_job_finished(format!("job_{seq}"), "committed");
+        }
+        // 输入真的制造了溢出 ✓（否则下面读到 EOF 也可能只是别的原因）。
+        assert_eq!(
+            broadcaster.stats().queue_dropped_overflow,
+            1,
+            "恰好越过硬上限 1 个事件（≥1025 个事件才可能溢出）"
+        );
+    }
+    // 推送线程恢复后：drain → 见到溢出 → 断开连接 ⇒ 客户端读到 EOF（不是超时）。★
+    match read_frame_any(&mut ws.reader) {
+        Ok(None) => {}
+        other => panic!("溢出必须断开连接（期望 EOF=Ok(None)），实测 {other:?}"),
+    }
+}
+
 #[test]
 fn document_persistence_over_http_survives_restart() {
     let mut root = std::env::temp_dir();

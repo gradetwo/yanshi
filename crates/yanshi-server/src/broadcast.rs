@@ -11,13 +11,33 @@
 //! 通道分工（6.7）：MCP stdio 走「提交 + 轮询」，不做推送；WS 推送只服务 Web 客户端。
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use yanshi_core::{Atom, AtomKind, Bbox, Seq, SessionId};
 use yanshi_render::thumb::ThumbKind;
 use yanshi_render::tile::TileKey;
 
 /// 订阅者标识。
 pub type SubscriberId = u64;
+
+/// 单个订阅者队列的**数据流**上限（事件数）。
+///
+/// 超过后**只丢数据流**（tile / 缩略图）：它们可以按需重取；
+/// **控制流（原子）绝不因它丢**——丢了客户端折叠状态会与服务端静默不一致。
+pub const QUEUE_DATA_LIMIT: usize = 256;
+
+/// 单个订阅者队列的**硬上限**（事件数）。
+///
+/// 队列被**控制流**占满（已挤不出可丢弃的数据流）⇒ 该订阅者已被判定为「读不动」⇒
+/// 标记溢出并由推送线程断开连接（客户端重连后重新同步）。上限本身把慢客户端的
+/// 内存占用钉住（审计 P1-3）。
+pub const QUEUE_HARD_LIMIT: usize = 1024;
+
+fn is_data_event(event: &BroadcastEvent) -> bool {
+    matches!(
+        event,
+        BroadcastEvent::Tiles { .. } | BroadcastEvent::Thumbnail { .. }
+    )
+}
 
 /// 推送通道类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -162,6 +182,10 @@ pub struct BroadcastStats {
     pub data_filtered: u64,
     /// 因通道不支持推送而改走轮询的次数。
     pub polled_instead: u64,
+    /// 队列越过数据流上限后被丢弃的数据流事件数（控制流不受影响）。
+    pub queue_dropped_data: u64,
+    /// 队列越过硬上限后被丢弃的事件数（此后该连接会被断开）。
+    pub queue_dropped_overflow: u64,
 }
 
 /// 广播器。
@@ -169,6 +193,7 @@ pub struct BroadcastStats {
 pub struct Broadcaster {
     subscribers: BTreeMap<SubscriberId, Subscriber>,
     queues: BTreeMap<SubscriberId, Vec<BroadcastEvent>>,
+    overflowed: BTreeSet<SubscriberId>,
     next_id: SubscriberId,
     stats: BroadcastStats,
 }
@@ -207,6 +232,7 @@ impl Broadcaster {
     /// 退订。
     pub fn unsubscribe(&mut self, id: SubscriberId) -> bool {
         self.queues.remove(&id);
+        self.overflowed.remove(&id);
         self.subscribers.remove(&id).is_some()
     }
 
@@ -310,11 +336,12 @@ impl Broadcaster {
                     keys: visible,
                 }
             };
-            self.queues.entry(id).or_default().push(filtered.clone());
-            deliveries.push(Delivery {
-                subscriber: id,
-                event: filtered,
-            });
+            if self.enqueue(id, filtered.clone()) {
+                deliveries.push(Delivery {
+                    subscriber: id,
+                    event: filtered,
+                });
+            }
         }
         self.stats.data_deliveries += deliveries.len() as u64;
         deliveries
@@ -358,6 +385,51 @@ impl Broadcaster {
         self.queues.get(&id).map(|queue| queue.len()).unwrap_or(0)
     }
 
+    /// 取出并清除「该订阅者已溢出」标记（推送线程据此断开连接）。
+    pub fn take_overflowed(&mut self, id: SubscriberId) -> bool {
+        self.overflowed.remove(&id)
+    }
+
+    /// 入队；返回是否真的排进去了（被上限丢掉的事件不计入投递）。
+    ///
+    /// **策略**（审计 P1-3）：数据流（tile / 缩略图）先丢 ✓ —— 客户端可以按需重取 ✓；
+    /// **控制流不丢** ✗ —— 丢一个原子会让客户端折叠状态与服务端静默不一致 ✗。
+    /// 硬上限被控制流占满时，先**挤掉一条更旧的数据流**再入队 ✓；
+    /// 连一条数据流都挤不出去（队列里全是原子）⇒ 标记溢出、由推送线程断开连接 ✓。
+    fn enqueue(&mut self, id: SubscriberId, event: BroadcastEvent) -> bool {
+        let Some(queue) = self.queues.get_mut(&id) else {
+            return false;
+        };
+        if self.overflowed.contains(&id) {
+            self.stats.queue_dropped_overflow += 1;
+            return false;
+        }
+        if is_data_event(&event) {
+            if queue.len() >= QUEUE_DATA_LIMIT {
+                self.stats.queue_dropped_data += 1;
+                return false;
+            }
+            queue.push(event);
+            return true;
+        }
+        if queue.len() >= QUEUE_HARD_LIMIT {
+            let oldest_data = queue.iter().position(is_data_event);
+            match oldest_data {
+                Some(position) => {
+                    queue.remove(position);
+                    self.stats.queue_dropped_data += 1;
+                }
+                None => {
+                    self.overflowed.insert(id);
+                    self.stats.queue_dropped_overflow += 1;
+                    return false;
+                }
+            }
+        }
+        queue.push(event);
+        true
+    }
+
     fn deliver(&mut self, event: BroadcastEvent) -> Vec<Delivery> {
         let targets: Vec<SubscriberId> = self
             .subscribers
@@ -367,11 +439,12 @@ impl Broadcaster {
             .collect();
         let mut deliveries = Vec::with_capacity(targets.len());
         for id in targets {
-            self.queues.entry(id).or_default().push(event.clone());
-            deliveries.push(Delivery {
-                subscriber: id,
-                event: event.clone(),
-            });
+            if self.enqueue(id, event.clone()) {
+                deliveries.push(Delivery {
+                    subscriber: id,
+                    event: event.clone(),
+                });
+            }
         }
         deliveries
     }
@@ -540,5 +613,124 @@ mod tests {
             BroadcastEvent::Annotation { pending: 2 }
         ));
         assert!(matches!(events[2], BroadcastEvent::Thumbnail { .. }));
+    }
+
+    /// **慢客户端（审计 P1-3）**：数据流排队到上限就被丢，**控制流不丢**。
+    ///
+    /// **为什么控制流不能丢** ✗：客户端折叠状态靠全部原子 ✓ ⇒ 丢一个原子会让
+    /// 本地状态与服务端**静默**不一致 ✗（数据流丢了可以按需重取 ✓）。
+    #[test]
+    fn queue_drops_data_flow_before_control_flow() {
+        let mut broadcaster = Broadcaster::new();
+        let web = broadcaster.subscribe("s", PushChannel::WebSocket);
+        let keys = vec![TileKey::new(0, 0)];
+        let overshoot = 10;
+        for _ in 0..QUEUE_DATA_LIMIT + overshoot {
+            broadcaster.publish_tiles(256, &keys);
+        }
+        assert_eq!(
+            broadcaster.queued(web),
+            QUEUE_DATA_LIMIT,
+            "数据流排队不得超过软上限"
+        );
+        assert_eq!(
+            broadcaster.stats().queue_dropped_data,
+            overshoot as u64,
+            "超出的数据流事件必须被**计数**（不许静默丢）"
+        );
+        assert!(
+            !broadcaster.take_overflowed(web),
+            "只丢数据流不算溢出（连接不该被断）"
+        );
+        // 软上限之后控制流仍然入队 ✓（这是"只丢数据流"的证据 ✓）。
+        broadcaster.publish_atom(&atom(AtomKind::Comment, 1, "a1"));
+        assert_eq!(broadcaster.queued(web), QUEUE_DATA_LIMIT + 1);
+        let drained = broadcaster.drain(web);
+        assert!(
+            matches!(drained.last(), Some(BroadcastEvent::Atom { .. })),
+            "控制流必须排在队尾、不许被丢"
+        );
+    }
+
+    /// **慢客户端（审计 P1-3）**：连控制流也顶到硬上限 ⇒ 标记溢出（推送线程据此断开）。
+    #[test]
+    fn queue_overflow_flags_the_subscriber() {
+        let mut broadcaster = Broadcaster::new();
+        let web = broadcaster.subscribe("s", PushChannel::WebSocket);
+        let overshoot = 5;
+        for seq in 0..QUEUE_HARD_LIMIT + overshoot {
+            broadcaster.publish_job_finished(format!("job_{seq}"), "committed");
+        }
+        assert_eq!(
+            broadcaster.queued(web),
+            QUEUE_HARD_LIMIT,
+            "硬上限必须把队列钉住（内存 DoS 的边界）"
+        );
+        assert_eq!(
+            broadcaster.stats().queue_dropped_overflow,
+            overshoot as u64,
+            "越过硬上限的每个事件都要计数"
+        );
+        assert!(broadcaster.take_overflowed(web), "越过硬上限必须标记溢出");
+        assert!(!broadcaster.take_overflowed(web), "标记只能取一次");
+        broadcaster.publish_job_finished("job_after", "committed");
+        assert_eq!(
+            broadcaster.queued(web),
+            QUEUE_HARD_LIMIT,
+            "已溢出后不再入队（等推送线程断开该连接）"
+        );
+    }
+
+    /// **控制流不丢**（审计 P1-3）：硬上限被占满时，先挤掉更旧的数据流再入队。
+    #[test]
+    fn control_flow_evicts_queued_data_before_overflowing() {
+        let mut broadcaster = Broadcaster::new();
+        let web = broadcaster.subscribe("s", PushChannel::WebSocket);
+        let keys = vec![TileKey::new(0, 0)];
+        for _ in 0..QUEUE_DATA_LIMIT {
+            broadcaster.publish_tiles(256, &keys);
+        }
+        // 再灌控制流把队列正好填到硬上限（256 条数据流 + 768 条控制流）。
+        for seq in 0..(QUEUE_HARD_LIMIT - QUEUE_DATA_LIMIT) {
+            broadcaster.publish_job_finished(format!("job_{seq}"), "committed");
+        }
+        assert_eq!(broadcaster.queued(web), QUEUE_HARD_LIMIT);
+        // 再来一条控制流 ⇒ 挤掉一条数据流（不是溢出 ✓）。
+        broadcaster.publish_job_finished("job_evict", "committed");
+        assert_eq!(broadcaster.queued(web), QUEUE_HARD_LIMIT, "上限仍被钉住");
+        assert_eq!(
+            broadcaster.stats().queue_dropped_data,
+            1,
+            "被挤掉的是数据流（可重取），不是控制流"
+        );
+        assert!(
+            !broadcaster.take_overflowed(web),
+            "队列里还有数据流可挤 ⇒ 不算溢出"
+        );
+        // 把剩下的数据流全部挤掉仍未溢出；再挤不出来时才算溢出。
+        for seq in 0..QUEUE_DATA_LIMIT - 1 {
+            broadcaster.publish_job_finished(format!("job_more_{seq}"), "committed");
+        }
+        assert!(!broadcaster.take_overflowed(web), "还有数据流可挤");
+        broadcaster.publish_job_finished("job_last", "committed");
+        assert!(
+            broadcaster.take_overflowed(web),
+            "队列全是原子 ⇒ 读不动的证据 ⇒ 必须溢出"
+        );
+    }
+
+    /// 退订要同时清掉溢出标记（否则同一 id 的残留状态会误伤后续判断）。
+    #[test]
+    fn unsubscribe_clears_overflow_flag() {
+        let mut broadcaster = Broadcaster::new();
+        let web = broadcaster.subscribe("s", PushChannel::WebSocket);
+        for seq in 0..QUEUE_HARD_LIMIT + 1 {
+            broadcaster.publish_job_finished(format!("job_{seq}"), "committed");
+        }
+        assert!(broadcaster.unsubscribe(web));
+        assert!(
+            !broadcaster.take_overflowed(web),
+            "退订必须清掉溢出标记（否则标记会留在集合里）"
+        );
     }
 }
