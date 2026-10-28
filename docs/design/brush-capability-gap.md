@@ -22550,3 +22550,34 @@ server lib（--features raw）**222**（5 ignored）、定向 11 个集成 suite
 | **JSON 嵌套深度 → 栈溢出 abort 整个进程**（结构复杂度，与字节大小**正交**） | 一条**只有几百字节**的 `[[[[…]]]]`（深度远超 128）就能打爆解析栈——而**栈溢出是不可捕获的 SIGSEGV，会 abort 整个进程**（即便刻意不设 `panic="abort"` 也救不回来 ⇒ 一条连接拖垮全部连接）。防御在 **serde_json 默认递归上限**：`from_slice／from_str::<Value>` 的 `remaining_depth` 起于 **128**，超限**直接回错误**、不再往下递归。**当场把「依赖的默认值」核成「本仓关不掉」** ✓：唯一能关掉上限的 feature `unbounded_depth` **不在 `Cargo.lock`** ⇒ `disable_recursion_limit()` 方法在本 build 里**根本不存在**（被 `#[cfg(feature=…)]` 门掉），全仓也**没有一处**调用它 ⇒ 上限**恒生效**，客户端无法用深嵌套 JSON 打崩服务端。**与第 12 面分工**：那面封顶**字节数**（32 MiB），这面封顶**结构深度**（与字节无关） | `grep -rn 'unbounded_depth' Cargo.lock` ⇒ **空**（feature 未启用）＋ `grep -rn 'disable_recursion_limit' crates/` ⇒ **空** ＋ 依赖侧 `~/.cargo/registry/src/*/serde_json-1.0.151/src/de.rs` 里 `remaining_depth: 128` |
 
 ⇒ **口径**：这一节只记「普查范围＋每面复核入口」；**修复内容**不在这里复述（同一事实只写一处，指针见上）。
+
+## 六百四十六、`import_asset{texture}` 本地层丢上传字节、冒充随包文件（静默降级，实测）
+
+**⇒ 起因 ✓**：按 ROI 排查 web 版本缺陷时核对「前端发的 ＝ 本地存的」这条不变量。
+`import_asset` 三处口径应一致 ✗ 实测只两处：
+
+| 处 | 对 `data_base64` 做了什么 |
+|---|---|
+| 前端 `viewer-app.js:5946 importAssetFile` | 选文件 ⇒ `btoa(bin)` ⇒ 永远发 `data_base64` ✓ |
+| 服务端 `write_import_asset`（`tools.rs:2001`） | 解 `data_base64` ⇒ 写进工作区资产缓存 ✓ |
+| **本地 PWA `api-local.js:3061`（改前）** | **无视 `data_base64`✗ 去 `fetch("/textures/<name>")` 取随包同名文件存库 ✗** |
+
+**⇒ 根因 ✗**：本地层当初只做「按名字取随包纹理」这一条便利路径 ✓ 没接住上传支 ✓
+⇒ **两种症状**（都是「静默降级」形态 5 的近亲）：
+① 上传名字**撞上**随包纹理 ⇒ `ok:true` 而 `size` 是**随包文件**的 ⇒ **冒充成功** ✓（用户以为导进了自己的 ✗）；
+② 上传名字**不存在于随包** ⇒ `asset_not_found` 404 ⇒ **明明给了合法字节却说「没这个文件」** ✓。
+
+**⇒ 修法 ✓**：`data_base64` 非空 ⇒ 解码存**上传的字节**（如实标 `source:"upload"`，解码失败/空各报
+`invalid_base64`/`empty_upload`）；仅在**没给** `data_base64` 时才退回随包同名（标 `source:"bundled"`）。
+`brush`／`palette` 维持如实 501 ✓（本地是随包静态资源 ✓ 非缺陷）。
+
+**⇒ 四层齐 ✓**：① 实现在 `api-local.js` ✓；② 输入触发 = 判据用一个**随包里不存在**的名字＋一段合法 base64 ✓
+（旧代码此输入必落 bundle-fetch）；③ 断言 `tool-pwa-api-behaviour`：带 `data_base64` 时**不许** `asset_not_found` ✓；
+④ **变异（实测 ✓）**：把分支退回「只 fetch 随包」⇒ 该名字 ⇒ **404 `asset_not_found` ⇒ 判据红（退出码 1 ✓）**；
+恢复后 ⇒ **501 `kernel_unavailable`（内核之前已采纳上传 ✓）⇒ 判据绿** ✓。
+**⇒ 诚实边界 ✗**：成功路径（`ok:true`＋`source:"upload"`＋`size` 等于上传字节）需**真 wasm 内核** ✗
+node 判据环境没有 ⇒ **归 browser 判据**（`browser-asset-dock` 在 CI 跑 ✓）；本条只守「别再撒谎说没这个文件」✓。
+
+**⇒ 两面（AGENTS 第 3 条 ✓）**：
+**收益 ✓**：关掉一类**上传被静默丢弃**的静默降级 ✓（前端／服务端／本地三处口径对齐 ✓）；
+**代价 ✓**：本地层多两个错误码（`invalid_base64`／`empty_upload`）＋ 判据多三条断言 ✓（node 级 ✓ 毫秒）。
