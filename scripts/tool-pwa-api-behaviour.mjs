@@ -586,6 +586,33 @@ check(hUndo2.ok === true && (hUndo2.undone || []).length === 0 && typeof hUndo2.
   `redo 后对象是死的 ⇒ 不是 undo 候选 ⇒ undo_last#2 必须**空手且如实报**（ok:true + message ✓ 不许静默 ✓——与服务端实测一致 ✓；实测 undone=${JSON.stringify((hUndo2.undone || []).map((x) => x.kind))} message=${JSON.stringify(hUndo2.message)}`);
 console.log("  本地层 undo/redo（独立文档 " + hDoc + "）：候选=对象存活 ✓｜tombstone 整笔撤 ✓｜reapply 覆盖 revert ✓（撤 " +
   hUndo1.undone_count + " 条 ⇒ 重做 " + hRedo1.redone_count + " 条 ⇒ 再撤 " + hUndo2.undone_count + " 条 ✓）");
+// **★ ⑦h-alias：`undo`／`redo` 短名必须走同一台撤销机器 ✗ ★**（**照服务端 `tools.rs:917` 的唯一收口 ✓**：
+//   真机报告 P0 #2 ——「想撤销时调 `undo` 拿到未知工具」是**按钮按下去画什么都不动**的静默家族 ✓。
+//   **∴ 且不许模糊匹配 ✗**（服务端原话 ✓：拼错名字必须继续 501 ✗ 不许「悄悄接受」✓）。
+const haDoc = "ha_" + Date.now().toString(36);
+const hapost = (p, o) => callDoc(haDoc, p, { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify(o) }).then((r) => r.json());
+await callDoc(haDoc, "/api/documents", { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ doc_id: haDoc, width: 320, height: 240 }) });
+await callDoc(haDoc, "/api/atoms", { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ kind: "create_layer", layer_id: "LA", name: "别名层" }) });
+const haShape = await hapost("/api/tools/draw_shape", { layer_id: "LA", data: { geometry: { kind: "rect", bbox: { x: 2, y: 2, width: 6, height: 6 } } } });
+// **∴ undo/redo 两条用 .catch 收成断言失败 ✗**（**不许**让「端点没映射」走 exit(3) 的「判据自身出错」通道 ✓
+//   —— 那是**产品坏了**的形态 ✗ 必须红在**断言**上 ✓ 变异时红得确定 ✓）。
+const haUndo = await hapost("/api/tools/undo", { scope: "paint" }).catch((e) => ({ ok: false, crashed: String(e && e.message || e) }));
+check(haUndo.ok === true && haUndo.undone_count === 1,
+  `短名 /api/tools/undo 必须映射到 undo_last（服务端 tools.rs:917 唯一收口 ✓ 旧本地没有这层 ⇒ 撤销按钮 501 ✓ 画布不动 ✓）（实测 ${JSON.stringify(haUndo).slice(0, 160)}）`);
+const haRedo = await hapost("/api/tools/redo", { scope: "paint" }).catch((e) => ({ ok: false, crashed: String(e && e.message || e) }));
+check(haRedo.ok === true && haRedo.redone_count === 1,
+  `短名 /api/tools/redo 必须映射到 redo_last（实测 ${JSON.stringify(haRedo).slice(0, 160)}）`);
+// **∴ 拼错的探测要用 try/catch ✗**：本地层对**未知端点**是**抛** `endpoint_not_local`（判据脚手架会当
+//   「判据自身出错」exit(3) ✓）——**不许被别名表悄悄接受**就是这条断言的全部内容 ✓（catch 到才叫通过 ✓）。
+let haTypoErr = "";
+try { await hapost("/api/tools/undoo", {}); } catch (e) { haTypoErr = String(e && e.message || e); }
+check(haTypoErr.includes("endpoint_not_local"),
+  `拼错的名字 /api/tools/undoo 不许被模糊匹配悄悄接受（服务端原话 ✓）——必须仍然抛 endpoint_not_local（实测 ${JSON.stringify(haTypoErr).slice(0, 120)}）`);
+console.log("  本地层 undo/redo 短名别名：undo→undo_last ✓｜redo→redo_last ✓｜拼错仍响亮 501 ✓（撤 " +
+  haUndo.undone_count + " ⇒ 重做 " + haRedo.redone_count + " ✓）");
 
 // **★ ⑦i `get_ancestors`／`get_descendants` 必须照服务端的三条判据 ✗ ★**
 //   （**出处 `tools.rs:8579`／`:8610` ＋ `dirty.rs:473` ✓**，本轮逐条读码对齐 ✓）：

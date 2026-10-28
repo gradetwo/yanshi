@@ -711,7 +711,13 @@ async function withKernel(doc, fn) {
     //   **∴ 为什么改这里而不是逐个分支 ✗**：**逐个改**要改 11 处 ✗**
     //     ⇒ **∴ 而**归一化**一处**就够 ✗** ⇒ **∴ 且**不会**漏掉将来的新分支 ✓**** ✓✓
     const rawPath = url.pathname;
-    const path = rawPath.length > 1 && rawPath.endsWith("/") ? rawPath.slice(0, -1) : rawPath;
+    const p2Norm = rawPath.length > 1 && rawPath.endsWith("/") ? rawPath.slice(0, -1) : rawPath;
+    // **★ 工具名别名 ✗（**∴ 照服务端 `tools.rs:917` 的唯一收口 ✓**）**：`undo`／`redo`
+    //   是「最自然的写法」（真机报告 P0 #2 ✓），服务端把它们映射到 `undo_last`／`redo_last` ✓。
+    //   **∴ 旧本地没有这一层 ✗** ⇒ 前端撤销按钮打 `/api/tools/undo` **落到未实现分支 ⇒ 501** ✓
+    //   （**静默家族 ✓：按钮按下去了，画什么都不动 ✓**）。
+    const path = p2Norm === "/api/tools/undo" ? "/api/tools/undo_last"
+      : p2Norm === "/api/tools/redo" ? "/api/tools/redo_last" : p2Norm;
     const q = url.searchParams;
     const doc = q.get("doc") || "";
     // **★ 只在**确实是 JSON**时才按 JSON 读 body ✗ ★**（第 841 轮 ✓；**已确认的缺陷 ✓**）：
