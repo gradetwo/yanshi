@@ -115,7 +115,14 @@ for (let k = dabIdx; k < dabCode.length; k += 1) {
   dabBody.push(l);
   if (started2 && d2 === 0) break;
 }
-const dabHasTo = dabBody.some((l) => /srgb_to_linear\s*\(/.test(l));
+const dabHasTo = dabBody.some((l) =>
+  // **P-4（2026-10-28）之后解码走 fix15 查表**：`decode_fix15_with_table` 的表项**由
+  //   `srgb_to_linear` 逐项生成**、Rust 测试 `fix15_decode_table_is_bitwise_exact` 钉了
+  //   **逐位相同** ⇒ 「线性空间混合」的语义没变 ⇒ 两种形态都算在线性侧解码 ✓
+  //   （变异核对：若有人把解码整个删掉、直接对 sRGB u16 插值 ⇒ 两个模式都不中 ⇒ 红 ✓）
+  /srgb_to_linear\s*\(/.test(l) ||
+  /decode_fix15_with_table\s*\(/.test(l) ||
+  /srgb_decode_fix15_table\s*\(/.test(l));
 const dabHasBack = dabBody.some((l) => /linear_to_srgb\s*\(/.test(l));
 if (dabHasTo && dabHasBack) {
   ok(`⑤ 服务端 smudge_dab 的颜色混合也是线性的（:${dabCode[dabIdx][0]}，去/回都在）`);
