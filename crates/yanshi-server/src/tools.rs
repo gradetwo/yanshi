@@ -16528,6 +16528,35 @@ static STAMP_DAB_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 //   ⇒ 修好后（掩膜遍显式传 `dtimes`）它**没有任何调用点** ⇒ clippy 报 `never used`
 //   **⇒ 所以删掉，而不是留着等下次被误用** ✓（这正是外部 patch#3 的做法 ✓）
 
+/// **某设置的求值后值（只计 `brush_radius` 那条映射）**（P-4 跟进：水彩 s36 洗白）。
+///
+/// **为什么**：净室 `smudge_dab` 的拖曳与混合量一直只读 `base_value`，
+/// 而引擎侧按 dab 求值（`stroke.rs:798`）。`watercolor-02-paint` 的
+/// `smudge` 与 `smudge_length` 都挂了 `brush_radius` 曲线（小尺寸
+/// smudge 0.95／长度 0.1，大尺寸 0.3／0.03）——只读 base 会让小尺寸
+/// 丢掉拖曳泵：s36 实测 band mean|d| 7（基线 78）；只求长度不求量时
+/// 仍是 9（v2），量与长度都求值后才回到 78 一带（v3，见探针）。
+/// 拖曳泵要长度与混合量同时够：单拎一项只涨一两成，两项齐了才涨十倍。
+/// **范围**：只加 `brush_radius` 的贡献；其它输入（pressure/speed1/stroke/…）
+/// 沿用今天的行为（即不计入）——仓库里除水彩外没有 `brush_radius` 曲线，
+/// 其它笔刷的行为一位不动。`brush_radius` 整笔恒定，故每笔只求一次。
+/// 求值走 `InputMapping::eval` 本身（与引擎同一份实现），不另写插值。
+fn radius_evaluated_value(brush: &hokusai::Brush, setting: hokusai::BrushSetting) -> f64 {
+    let sv = brush.get(setting);
+    let mut value = f64::from(sv.base_value);
+    let radius_log = brush.get(hokusai::BrushSetting::Radius).base_value;
+    for mapping in &sv.inputs {
+        if mapping.input == hokusai::BrushInput::BrushRadius {
+            value += f64::from(mapping.eval(radius_log));
+        }
+    }
+    value
+}
+
+// 8 个实参是落笔的完整上下文（笔刷／状态／画布／点列／上一点／时间基／
+// 传感器／掩膜跳过），拆结构体反而让三个调用点难读——与 `paint_brush`
+// 同一口径（13 个实参），用 allow，不拆。
+#[allow(clippy::too_many_arguments)]
 /// **接着上一段继续走** ✓ —— 多色笔迹要逐段换颜色 ✓，但**不能在段边界重新播种** ✗
 /// （那会在每个换色点多盖一枚 dab ✓ ⇒ 一串深色小点 ✗）。`previous` 由调用方跨段持有 ✓。
 fn stamp_stroke_from(
@@ -16561,18 +16590,9 @@ fn stamp_stroke_from(
     // **净室揉合要用的三个量：只读一次**（笔刷自己的设置；`smudge = 0` 时下面整段都不执行）
     // **注意**：`BrushSetting::base_value` 是 **f32**（`hokusai` 的口径）=> 转成 f64 再算
     //（第一版直接传 f32 给要 f64 的 `smudge_dab`，编译报 E0308 三个参数全不匹配）。
-    let smudge_amount = f64::from(
-        brush
-            .get(hokusai::BrushSetting::Smudge)
-            .base_value
-            .clamp(0.0, 1.0),
-    );
-    let smudge_length = f64::from(
-        brush
-            .get(hokusai::BrushSetting::SmudgeLength)
-            .base_value
-            .max(0.0),
-    );
+    let smudge_amount =
+        radius_evaluated_value(brush, hokusai::BrushSetting::Smudge).clamp(0.0, 1.0);
+    let smudge_length = radius_evaluated_value(brush, hokusai::BrushSetting::SmudgeLength).max(0.0);
     // **半径**：**必须取 exp ✗** —— `Radius` 的 `base_value` 存的是 **ln(半径)**（本仓注释
     // 早写过："`size` 是直径像素，而 MyPaint 的设置叫 `radius_logarithmic`，存的是 ln(半径)"）。
     // **实测踩到**：`size: 40`（直径）时探针报 `radius=2.9957` = **ln(20)**；
@@ -16583,7 +16603,9 @@ fn stamp_stroke_from(
     } else {
         0.0
     };
-    // **拖曳长度（整笔恒定）**：`smudge_length × 像素半径`。≤ 0 时每步的涂抹都是空操作
+    // **拖曳长度（整笔恒定）**：求值后 `smudge_length × 像素半径`（见
+    // `radius_evaluated_value`：`brush_radius` 曲线要算进去，只读 base 会
+    // 让小尺寸丢掉拖曳泵）。≤ 0 时每步的涂抹都是空操作
     // （采样即自身，见 `smudge_dab` 的早返）⇒ 内循环直接跳过调用。
     let drag_length = smudge_length * stroke_radius;
     // ** pressure_shape / stroke_taper 要用**：预计算整笔总弧长（像素），

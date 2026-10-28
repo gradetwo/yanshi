@@ -2082,3 +2082,61 @@ fn smudge_budget_model_splits_the_calibration_anchors() {
     assert!(smudge_stroke_cost_ms(2800.0, 150.0) < smudge_stroke_cost_ms(2800.0, 151.0));
     assert!(smudge_stroke_cost_ms(2800.0, 150.0) < smudge_stroke_cost_ms(2801.0, 150.0));
 }
+
+/// **P-4 跟进（水彩 s36 洗白）**：净室的涂抹量与拖曳长度都读求值后值，
+/// 只计 `brush_radius` 那条映射。小尺寸（半径 18，ln≈2.89，正好落在
+/// 曲线的 2.89 拐点上）时：smudge 0.3+0.65 ⇒ 0.95，长度 0.03+0.07 ⇒ 0.10；
+/// 大尺寸（半径 150，ln≈5.01，落在 3.91～6.0 的 0 平段上）时曲线给 0
+/// ⇒ 0.3／0.03 不变。
+/// 变异：把 helper 改回只读 `base_value` ⇒ 第一、二组断言红；把任一曲线的
+/// 增量改成 0 ⇒ 对应那组红；把 `Radius` 的输入值换成别处 ⇒ 两组都红。
+#[test]
+fn radius_evaluated_value_reads_the_brush_radius_curves() {
+    use hokusai::BrushSetting;
+    let mut brush = hokusai::Brush::default();
+    let mut smudge = hokusai::SettingValue::constant(0.3);
+    let mut smudge_map = hokusai::InputMapping::new(hokusai::BrushInput::BrushRadius);
+    smudge_map.points = vec![(1.0, 0.65), (2.89, 0.65), (3.91, 0.0), (6.0, 0.0)];
+    smudge.inputs.push(smudge_map);
+    brush.set(BrushSetting::Smudge, smudge);
+    let mut length = hokusai::SettingValue::constant(0.03);
+    let mut length_map = hokusai::InputMapping::new(hokusai::BrushInput::BrushRadius);
+    length_map.points = vec![(1.0, 0.07), (2.89, 0.07), (3.91, 0.0), (6.0, 0.0)];
+    length.inputs.push(length_map);
+    brush.set(BrushSetting::SmudgeLength, length);
+    // 小尺寸：半径 18 px，ln(18)≈2.8904——拐点取 2.89（与 .myb 同值），
+    // 这样期望值是精确的 0.95／0.10，不受插值斜率影响。
+    brush.set(BrushSetting::Radius, hokusai::SettingValue::constant(2.89));
+    let small_amount = super::radius_evaluated_value(&brush, BrushSetting::Smudge);
+    assert!(
+        (small_amount - 0.95).abs() < 1e-6,
+        "size 36 的涂抹量应当是 0.95（实测 {small_amount}）"
+    );
+    let small_length = super::radius_evaluated_value(&brush, BrushSetting::SmudgeLength);
+    assert!(
+        (small_length - 0.10).abs() < 1e-6,
+        "size 36 的拖曳长度应当是 0.10（实测 {small_length}）"
+    );
+    // size 300：半径 150 px。
+    brush.set(
+        BrushSetting::Radius,
+        hokusai::SettingValue::constant(libm::log(150.0) as f32),
+    );
+    let large_amount = super::radius_evaluated_value(&brush, BrushSetting::Smudge);
+    assert!(
+        (large_amount - 0.30).abs() < 1e-6,
+        "size 300 的涂抹量应当是 0.30（实测 {large_amount}）"
+    );
+    let large_length = super::radius_evaluated_value(&brush, BrushSetting::SmudgeLength);
+    assert!(
+        (large_length - 0.03).abs() < 1e-6,
+        "size 300 的拖曳长度应当是 0.03（实测 {large_length}）"
+    );
+    // 没有曲线的笔刷：与今天只读 base 的行为完全一致。
+    let plain = hokusai::Brush::default();
+    let plain_base = f64::from(plain.get(BrushSetting::SmudgeLength).base_value);
+    assert_eq!(
+        super::radius_evaluated_value(&plain, BrushSetting::SmudgeLength),
+        plain_base
+    );
+}

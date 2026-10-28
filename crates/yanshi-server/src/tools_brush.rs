@@ -1560,8 +1560,11 @@ pub(super) fn check_smudge_budget(
         return Ok(());
     }
     let radius_px = f64::from(brush.get(hokusai::BrushSetting::Radius).base_value).exp();
+    // 拖曳长度取求值后值（`radius_evaluated_value`）：`brush_radius` 曲线
+    // 要算进去，大尺寸下它等于 base，小尺寸下它更大——预算的闸门与报错数字
+    // 都要与实际跑的拖曳一致。
     let drag_length =
-        f64::from(brush.get(hokusai::BrushSetting::SmudgeLength).base_value).max(0.0) * radius_px;
+        radius_evaluated_value(brush, hokusai::BrushSetting::SmudgeLength).max(0.0) * radius_px;
     if drag_length <= 0.0 {
         return Ok(());
     }
