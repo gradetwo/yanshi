@@ -14,7 +14,10 @@ export CDP_PORT
 ROOT_DIR="$(mktemp -d)"
 PROFILE="$(mktemp -d)"
 KNOWN="$ROOT/scripts/criteria-known-red.txt"
-is_known_red() { [ -f "$KNOWN" ] && grep -qE "^$1[[:space:]]" "$KNOWN"; }
+# **精确串比较** ✓（05 复审 NEW-M3）：旧写法 `grep -qE "^$1[[:space:]]"` 把 `$1` 里的 `.`
+# 当正则通配 ✗ ⇒ `tool-fooXmjs` 这类串也能匹配 ✓。改成 awk 的**字段全等**：
+# 条目行的第一字段就是判据文件名 ✓，注释/散文行不可能全等 ✗。
+is_known_red() { [ -f "$KNOWN" ] && awk -v n="$1" '$1 == n { found = 1; exit } END { exit !found }' "$KNOWN"; }
 
 cleanup() {
   [ -n "${STATIC_PID:-}" ] && kill "$STATIC_PID" 2>/dev/null
