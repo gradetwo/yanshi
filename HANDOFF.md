@@ -1075,7 +1075,13 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    （`5fc2a5bb` 的提交信息说「§89⑦ 落账」时**还没落**——那次 python 的锚点 assert 挡下了未就绪的追加 ✓，
    补账在下一个提交里 ⇒ 这正是「assert 只证明改了、不证明改对了」的反面用例 ✓。）
    ⑧ **M-1（05 复审：六个资源目录没有缓存规则）**：`web/_headers` 原来只给 5 个内容寻址目录
-   （wasm/brushes/mediums/brand/icons ✓）配了 immutable ⇒ textures/samples/fonts/brush-previews/
+   （was   ⑨ **NEW-H1 的防回归半边（字节预算判据）**：瘦身本身仍排期在后 ✓（大手术），
+   但先**止损**：`check-index-html-byte-budget.mjs` 钉棘轮 CEILING=1,040,000
+   （2026-10-28 实测 1,038,359 ✓ 已用 99.8% ⇒ 每次跑都会打印逼近警示 ⚠ ✓）。
+   CEILING 属「判据自己造的期望值」那一类 ⇒ 可以写死 ✓（判据两分类，第 798 轮那条规矩）；
+   变异：给 index.html 追加 12 KB ⇒ 红「超出 10,369 字节」✓ 还原回绿 ✓。
+   **红之后的规矩写在判据头里**：抬棘轮必须附「谁涨了多少、为什么」⇒ 让膨胀必须被看见 ✓。
+m/brushes/mediums/brand/icons ✓）配了 immutable ⇒ textures/samples/fonts/brush-previews/
    showcase/palettes（约 28 MB ✓）全落在 `/*` 的 no-cache 下**每次回源校验** ✗。修法**不是一律 immutable** ✗：
    这些目录**文件名按资源名、不按内容哈希** ✓（`ls web/brush-previews` ⇒ `100__Opaque.myb.png` ✓），
    而原地重写是常态（**c5abb674 一次重写全部 brush-previews 同名文件 ✓**；近 90 天提交数实测
