@@ -378,6 +378,26 @@ async function withKernel(doc, fn) {
     }
     return s;
   }
+  /** **哪些原子「建了一个可寻址的对象」—— 一个事实只写一处 ✗ 的权威集合 ✓**（本轮 ✓）：
+   *   **∴ 出处 = 服务端折叠器**（**`yanshi-core/src/fold.rs:1089` 与 `1116–1151` ✓**）：
+   *     `CreateObject ∣ ImportImage` **总是建**✓；
+   *     `DrawStroke ∣ DrawShape ∣ DrawText ∣ Fill ∣ Erase ∣ Retouch ∣ Liquify ∣ Supersede`
+   *     **对**没见过**的 `object_id` 也建**✓（**见过**则 supersede ✓ ⇒ 本折叠器取**第一条**建它的原子即等价 ✓**）。
+   *   **∴ 为什么必须共享 ✓**：**`p2ObjectView`／`list_objects`／`duplicate_layer`** 三处此前各写各的口径 ✗
+   *     （**只认 `create_object`✗／只认 `import_image∣∣create_object`✗／任何带 `object_id` 的都算✗**）
+   *     ⇒ 于是**同一类 bug 在三个地方犯了三遍**✓ —— 折叠器漏认 ⇒ 对该对象的所有工具端点一律「对象不存在」✓
+   *     （**导入图 ✗、画的形／字／填充 ✗、离线笔触 ✗**）。**收敛成一个集合后 ✗ 一处对齐 ⇒ 三处同时修好 ✓**。
+   */
+  const P2_OBJECT_CREATE_KINDS = new Set([
+    "create_object", "import_image", "draw_stroke", "draw_shape", "draw_text",
+    "fill", "erase", "retouch", "liquify", "supersede",
+  ]);
+  /** **`object_data` 的本地等价 ✗**（**照 `fold.rs:1553` 逐字 ✓**：「有 `data` ⇒ 用 `data`✓，否则 ⇒ 用整个净荷 ✓」）：
+   *   **∴ `import_image`/`draw_*`/`fill` 把净荷写在**顶层还是 `data` 子对象 ✗** 都由这一条兜住 ✓**
+   *   （**`import_image` 无 `data` ⇒ 用净荷 ✓；`create_object`/`draw_shape` 有 `data` ⇒ 用 `data` ✓**）。 */
+  function p2ObjectData(createPayload) {
+    return createPayload.data !== undefined ? createPayload.data : createPayload;
+  }
   /** **从日志推导对象视图 ✗**（**∴ 存在性／类型／属性覆盖／删除状态 ✓**）：
    *   **∴ `type`／`layer_id` 等**可被 `set_property` 覆盖 ✗**（**∴ 取最后一次 ✓**）；
    *   **∴ `data` 可被 `supersede` 整体替换 ✗**（**`replace_object_data` 的语义 ✓**）；
@@ -392,15 +412,12 @@ async function withKernel(doc, fn) {
     for (const r of rows) {
       const a = (r && r.atom) || {};
       const pl = a.payload || {};
-      // **`import_image` 也是**建对象**的原子 ✗ 必须与 `create_object` 同等认取 ✓**（本轮 ✓）：
-      //   **∴ 判据**（**内部自相矛盾 ✗ 才是这个 bug 的硬证据 ✓**）：**`list_objects`**（第 1160 行 ✓）
-      //     把**任何带 `object_id` 的原子**算对象 ⇒ 导入图**列得出来 ✓**；**`duplicate_layer`**（第 1385 行 ✓）
-      //     **明写 `import_image`∣∣`create_object`** ⇒ 导入图**复制得了 ✓**；**而本折叠器只认 `create_object` ✗**
-      //     ⇒ `resample`／`supersede` 读／`tombstone`／组成员**全部走它 ✗** ⇒ **对导入图一律「对象不存在」** ✓
-      //     （图**渲染得出、列得出、却动不了 ✗** —— 又一处静默降级 ✓。离线笔触／`gradient_fill`／`texture_background`
-      //      **都写 `import_image` 原子 ✓** ⇒ 一并受影响 ✓）。
-      //   **∴ 修法 ✗**：**照 `duplicate_layer` 的定义补齐 ✓**（**同一事实两处口径一致 ✓**，**不各自发明 ✗**）。
-      if ((a.kind === "create_object" || a.kind === "import_image") && pl.object_id === objectId && !create) create = a;
+      // **建对象的原子 = 共享集合 ✓**（**不再各自发明 ✗**，见 `P2_OBJECT_CREATE_KINDS`）：
+      //   **∴ 旧 bug ✗**：此前**只认 `create_object`**（后补 `import_image`✗）⇒
+      //     `draw_shape`／`fill`／`draw_text` 建的图形**同样看不见**✓ ⇒ `get_object`／`restore_object`／`list_objects`
+      //     对**手画的形／字／色块**也报「对象不存在」✓（与导入图是**同一类**✗ 只是没被 CI 指到 ✓）。
+      //   **∴ 取「第一条」建它的原子 ✓**（**与服务端「没见过才建、见过就 supersede」等价 ✓**）。
+      if (P2_OBJECT_CREATE_KINDS.has(a.kind) && pl.object_id === objectId && !create) create = a;
       else if (a.kind === "set_property" && pl.object_id === objectId) props[pl.key] = pl.value;
       else if (a.kind === "supersede" && pl.object_id === objectId) supersededData = pl.data;
       else if (a.kind === "tombstone" && pl.object_id === objectId) tombstoneIds.push(a.id);
@@ -413,15 +430,14 @@ async function withKernel(doc, fn) {
       object_id: objectId,
       layer_id: props.layer_id !== undefined ? props.layer_id : (cpl.layer_id ?? null),
       type: props.type !== undefined ? props.type : (cpl.type ?? null),
-      // **`data` 的取法要照服务端折叠规则 ✗**（**「有 `data` 子对象 ⇒ 用 `data` ✓，否则 ⇒ 用整个净荷 ✓」**，
-      //   出处 `tools_bitmap.rs` 的 `import_image` 注释 ✓）：**`import_image` 把 `bitmap`/`width`/`height`/`region`
-      //   写在净荷顶层 ✗**（**没有 `data` 子对象 ✓**）⇒ 于是本行若只取 `cpl.data` ⇒ **`data` 恒 `null` ✓**
-      //   ⇒ 即便上面认出了对象 ✗，`resample` 仍会在**下一步**报「没有位图」✓（**修一半 ✗**）。
-      //   **∴ 所以**：**`import_image` 无 `data` ⇒ 用整个净荷 ✓**（**与 `create_object` 有 `data` 的情形逐字分开 ✓，
-      //   后者行为不变 ✗ 保持字节等价 ✓**）。
+      // **`data` 的取法照服务端 `object_data` ✓**（**「有 `data` 子对象 ⇒ 用 `data`✓，否则 ⇒ 用整个净荷 ✓」**，
+      //   `fold.rs:1553` 逐字 ✓）：**`import_image` 把 `bitmap`/`width`/`height`/`region` 写在净荷顶层 ✗**
+      //   （**无 `data` 子对象 ✓**）⇒ 只取 `cpl.data` ⇒ `data` 恒 `null`✓ ⇒ 认出对象后 `resample` 仍报「没有位图」✓
+      //   （**修一半 ✗**）；而 `create_object`/`draw_shape`/`fill` **有** `data` ✓ ⇒ 取 `data` ✓。
+      //   **∴ 一个 `p2ObjectData` 同时兜住两类 ✗**（**不各写各的 ✓**）。
       data: supersededData !== null && supersededData !== undefined
               ? supersededData
-              : (cpl.data ?? (create.kind === "import_image" ? cpl : null)),
+              : p2ObjectData(cpl),
       transform: cpl.transform ?? null,
       visible: props.visible ?? null,
       locked: props.locked ?? null,
@@ -1169,16 +1185,40 @@ async function withKernel(doc, fn) {
     //     **∴ 不**补算位置／包围盒 ✓（**∴ 那**要重放内核 ⇒ **∴ 留给**需要它的调用方 ✓）** ✓✓
     if (path === "/api/tools/list_objects") {
       const rows = await atomsOf(handle, doc);
+      // **口径照服务端 `read_list_objects`（`tools.rs:3148`）✗**（本轮 ✓）：
+      //   **∴ 旧实现坏三处 ✗**：
+      //   ① **逐原子 push** ⇒ 同一对象的 `create`+`set_property`+`move`+`supersede`+`tombstone` 都带 `object_id`
+      //     ⇒ **一个对象在列表里出现好几遍**✓；
+      //   ② **不滤 `layer_id`** ⇒ 跨图层混在一起 ✓ ⇒ `moveCheckedObjectZ`（`viewer-app.js:5683`）按「该图层**完整** z 序」
+      //     的契约拼顺序 ✗ 拿到的却**含别的层的对象**✓ ⇒ 交给 `reorder_objects` 的 `order` 与该层真实集合不符
+      //     ⇒ **「期望 N 个、实际 M 个」打回**✓（**正是那句契约注释警告的情形 ✓**）；
+      //   ③ **不滤 `include_hidden`**（服务端缺省 `false`＝只给可见 ✓）⇒ `pickObjectAt`（`:8717`）传 `include_hidden:false`
+      //     却**拾到看不见的对象**✓（**又一处静默降级 ✓**）；且**不剔已删除**✓。
+      //   **∴ 修法 ✗**：**用同一个 `p2ObjectView` 折叠 ⇒ 一对象一条 ✓**，再照服务端三条过滤 + `alive` ✓。
+      //   **∴ 为什么这能在 node 验 ✗**：本端点**纯原子折叠 ✗ 不碰内核 ✓**（`bbox` 那种要重放才有的字段仍如实不补 ✓）。
+      const layerFilter = typeof body.layer_id === "string" && body.layer_id ? body.layer_id : null;
+      const typeFilter = typeof body.type === "string" && body.type ? body.type : null;
+      const includeHidden = body.include_hidden === true;              // 缺省 false（照 `unwrap_or(false)` ✓）
+      const seen = new Set();
       const objects = [];
       for (const r of rows) {
         const a = (r && r.atom) || {};
-        const pl = a.payload || {};
-        if (!pl.object_id) continue;
+        const id = a.payload && a.payload.object_id;
+        if (typeof id !== "string" || !id || seen.has(id)) continue;   // **按 object_id 去重 ✗**
+        seen.add(id);
+        const v = p2ObjectView(rows, id);
+        if (!v.found || v.deleted) continue;                            // **只列存活对象 ✗**（照 `alive_objects` ✓）
+        if (layerFilter !== null && v.layer_id !== layerFilter) continue;
+        if (typeFilter !== null && v.type !== typeFilter) continue;
+        const hidden = (v.visible === false);                          // `null`＝从未设＝可见 ✓
+        if (!includeHidden && hidden) continue;
         objects.push({
-          object_id: pl.object_id,
-          layer_id: pl.layer_id ?? null,
-          type: pl.type ?? a.kind ?? null,
-          medium: pl.source && pl.source.medium ? pl.source.medium : null,
+          object_id: id,
+          layer_id: v.layer_id ?? null,
+          type: v.type ?? null,
+          visible: !hidden,
+          z_index: v.z_index ?? 0,
+          medium: v.data && v.data.source && v.data.source.medium ? v.data.source.medium : null,
         });
       }
       return json({ ok: true, objects, count: objects.length, server: false,
@@ -1398,7 +1438,12 @@ async function withKernel(doc, fn) {
       for (const r of rows) {
         const a = (r && r.atom) || {};
         const apl = (a && a.payload) || {};
-        if ((a.kind === "import_image" || a.kind === "create_object") &&
+        // **建对象的原子 = 共享集合 ✓**（**不再各自列 ✗**：此前这里只写 `import_image∣∣create_object` ⇒
+        //   **`draw_shape`／`fill`／`draw_text` 画的形／字／色块在「复制图层」时被整个丢掉 ✓**
+        //   （对象数偏少、副本缺东西 —— **与 `p2ObjectView` 同一类口径 bug ✗ 现在同一处对齐 ✓**）。
+        //   **∴ 排除 `supersede`✗**：它引用的是别的创建原子 ✓（净荷多半无 `layer_id` ⇒ 本就匹配不上 ✓）
+        //   ⇒ 显式挡掉以防**悬空复制**（复制一条 supersede 却不复制它的 create ✓）。
+        if (P2_OBJECT_CREATE_KINDS.has(a.kind) && a.kind !== "supersede" &&
             apl.layer_id === layerId && typeof apl.object_id === "string") {
           const cp = Object.assign({}, apl, {
             layer_id: newLayerId,

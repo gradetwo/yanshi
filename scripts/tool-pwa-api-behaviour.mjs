@@ -419,6 +419,75 @@ check(rsBadScale.ok !== true && /scale 必须是正数/.test(String(rsBadScale.r
   JSON.stringify(rsBadScale).slice(0, 120) + "）");
 console.log("  本地层 resample{无尺寸} ⇒ " + (rsNoArgs.error || "(ok)") + "｜resample{scale:0} ⇒ " + (rsBadScale.error || "(ok)"));
 
+// **★ ⑦e `list_objects` 要照服务端 `read_list_objects` 折叠：去重／滤层／滤可见／剔删除 ✗ ★**（本轮 ✓）
+//   **∴ 两处前端契约靠它 ✗**：`moveCheckedObjectZ`（`viewer-app.js:5683` 要「该图层**完整** z 序」）
+//     ＋ `pickObjectAt`（`:8717` 要 `include_hidden:false` ⇒ 只给**可见**的）✓。
+//   **∴ 旧本地 ✗**：逐原子 push ⇒ 同一对象的多原子**重复出现**✓；**不滤 `layer_id`** ⇒ 跨层混 ✓
+//     （⇒ 拼出的 `order` 与该层真实集合不符 ⇒ `reorder_objects`「期望 N 实际 M」打回 ✓）；
+//     **不滤 `include_hidden`** ⇒ 拾到看不见的对象 ✓；**不剔 `tombstone`** ⇒ 已删的还在列 ✓。
+//   **∴ 顺带证 `p2ObjectView` 泛化 ✗**：`draw_shape`（既非 `create_object` 也非 `import_image`）建的对象
+//     ⇒ `get_object` **必须**找得到 ✓（旧折叠器只认那两种 ⇒ 手画图形 get_object/list 全瞎 ✓）。
+//   **∴ 全程不碰内核 ✗（纯原子折叠 ⇒ node 当场可验 ✓）**。新建独立层 `LZ` 隔离，避开前面块的 L0/L9 对象 ✓。
+await call("/api/atoms", { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ kind: "create_layer", layer_id: "LZ", name: "过滤层" }) });
+const jpost = (p, o) => call(p, { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify(o) }).then((r) => r.json());
+const objA = await jpost("/api/tools/import_image", { layer_id: "LZ", bitmap: { blob_hash: IMG_HASH, mime_type: "image/x-yanshi-raw", size: 4 }, region: { x: 0, y: 0, w: 2, h: 2 } });
+const objB = await jpost("/api/tools/import_image", { layer_id: "LZ", bitmap: { blob_hash: IMG_HASH, mime_type: "image/x-yanshi-raw", size: 4 }, region: { x: 4, y: 4, w: 2, h: 2 } });
+const shapeC = await jpost("/api/tools/draw_shape", { layer_id: "LZ", data: { geometry: "rect" } });  // 证泛化：非 create_object／非 import_image 建的对象
+await jpost("/api/tools/update_object", { object_id: objA.object_id, patch: { visible: false } });     // A：隐藏
+await jpost("/api/tools/delete_object", { object_id: objB.object_id });                                // B：删除
+const lzAll = await jpost("/api/tools/list_objects", { layer_id: "LZ", include_hidden: true });
+const lzVis = await jpost("/api/tools/list_objects", { layer_id: "LZ" });                              // 缺省＝不含隐藏
+const has = (lst, id) => (lst.objects || []).some((o) => o.object_id === id);
+const countOf = (lst, id) => (lst.objects || []).filter((o) => o.object_id === id).length;
+// ① 折叠器认全「建对象原子」：draw_shape 对象 get_object 找得到
+const gotShape = await jpost("/api/tools/get_object", { object_id: shapeC.object_id });
+check(gotShape.ok === true && gotShape.object_id === shapeC.object_id,
+  "draw_shape 建的对象必须能被 get_object 找到（旧折叠器只认 create_object/import_image ⇒ 手画图形 get_object 报不存在；实测 " +
+  JSON.stringify(gotShape).slice(0, 150) + "）");
+// ② 滤层：LZ 的列表不许混进别的层（L0 上的 ⑦c 导入图 iiBody.object_id）
+check(Array.isArray(lzAll.objects) && !has(lzAll, iiBody.object_id),
+  "list_objects{layer_id:LZ} 不许含其它层对象（旧不滤 layer_id ⇒ 跨层 ⇒ moveCheckedObjectZ 拼的 order 与该层集合不符⇒ reorder 被打回；实测 " +
+  JSON.stringify(lzAll).slice(0, 160) + "）");
+// ③ 去重：A 有 import＋set_property 两条原子 ⇒ 只许出现一次
+check(countOf(lzAll, objA.object_id) === 1,
+  "list_objects 每对象只数一次（旧逐原子 push ⇒ A 有 create+update 两条 ⇒ 出现两遍；实测 A 出现 " +
+  countOf(lzAll, objA.object_id) + " 次）");
+// ④ 剔删除：B 被 delete_object 后不许出现（照服务端 alive_objects）
+check(!has(lzAll, objB.object_id),
+  "list_objects 必须剔除已删除(tombstone)的对象（旧不过滤；实测 " + JSON.stringify(lzAll).slice(0, 160) + "）");
+// ⑤ 滤可见：缺省排除隐藏 A、保留可见 C（不许把过滤做成恒空）
+check(!has(lzVis, objA.object_id),
+  "list_objects 缺省必须排除不可见对象（A 设了 visible:false；服务端缺省 include_hidden=false；旧不滤 ⇒ pickObjectAt 拾到看不见的；实测 " +
+  JSON.stringify(lzVis).slice(0, 160) + "）");
+check(has(lzVis, shapeC.object_id),
+  "list_objects 缺省必须含可见对象 C（证明过滤不是恒空；实测 " + JSON.stringify(lzVis).slice(0, 160) + "）");
+console.log("  本地层 list_objects：draw_shape 可 get_object ✓｜滤层/去重/剔删除/滤可见 ✓（LZ 含隐藏=" +
+  lzAll.count + "｜仅可见=" + lzVis.count + "）");
+
+// **★ ⑦f `duplicate_layer` 也要复制 `draw_shape`/`fill`/`draw_text` 画的形 ✗ ★**（本轮 ✓）
+//   **∴ 与 ⑦e 同一类 bug ✗**：复制循环此前只 inline 列 `import_image || create_object` ⇒
+//     **手画图／字／色块在「复制图层」时被整个丢掉** ✓（副本对象数偏少 —— **静默降级 ✓**，返回还 `ok:true`）。
+//   **∴ 修法 ✗**：用共享集合 `P2_OBJECT_CREATE_KINDS` ✓（与 `p2ObjectView`／`list_objects` 同一处口径 ✓）。
+//   **∴ 为什么 node 可验 ✗**：`duplicate_layer` 是**纯原子复制 ✗ 不碰内核／canvas ✓** ⇒ 当场可断 ✓。
+//   **∴ 变异 ✗**：把复制判据换回旧的 inline 两种 ⇒ 本条必红 ✓。
+await call("/api/atoms", { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ kind: "create_layer", layer_id: "LD", name: "复制层" }) });
+const onlyShape = await jpost("/api/tools/draw_shape", { layer_id: "LD", data: { geometry: "rect" } });  // 该层唯一的非 create_object／非 import_image 对象
+const dup = await jpost("/api/tools/duplicate_layer", { layer_id: "LD" });
+check(dup.ok === true && dup.objects === 1,
+  "duplicate_layer 必须复制该层的 draw_shape 对象（旧 inline 只列 create_object/import_image ⇒ 复制图层时图形被整个丢掉、还冒充成功；实测 " +
+  JSON.stringify(dup).slice(0, 160) + "）");
+// **∴ 副本层要真在折叠里列得出这一对象 ✓**（证明不是只「计数」，而是真落进原子日志 ✓）：
+const nlList = await jpost("/api/tools/list_objects", { layer_id: dup.layer_id, include_hidden: true });
+const nlObj = (nlList.objects || [])[0] || {};
+check(nlList.ok === true && (nlList.objects || []).length === 1 &&
+      typeof nlObj.object_id === "string" && nlObj.object_id !== onlyShape.object_id,
+  "duplicate_layer 后副本层必须能列出 1 个、且 object_id 是新的（共享 blob、独立对象 id；旧复制漏掉图形 ⇒ 这里会是 0 个；实测 " +
+  JSON.stringify(nlList).slice(0, 200) + "）");
+console.log("  本地层 duplicate_layer：draw_shape 复制=" + dup.objects + "｜副本层对象数=" + (nlList.count ?? 0) +
+  "｜副本 id 全新=" + (nlObj.object_id !== onlyShape.object_id) + " ✓");
 
 
 

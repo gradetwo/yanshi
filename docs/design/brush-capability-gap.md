@@ -22683,3 +22683,42 @@ node 判据环境没有 ⇒ **归 browser 判据**（`browser-asset-dock` 在 CI
 **代价 ✓**：`p2ObjectView` 多认一种 kind ＋ 一处 `data` 净荷回退✓（严格加法：此前对 `import_image` 恒 `found:false`✓ ⇒
 不可能破坏任何 `create_object`-only 文档 ✓）；`resample` 多三条校验✓；判据多两条✓（node 级毫秒）。
 **⚠ 实际缩放路径本机未验**✓（无浏览器 canvas）⇒ **等 CI 的 `browser-*`**✓，本机只证到「认出对象＋请求校验」这一层 ✓。
+
+## 六百四十九、`p2ObjectView`／`list_objects`／`duplicate_layer` 三处各自发明「哪些原子建对象」⇒ 收敛成一个共享集合（本轮 ✓）
+
+**起因 ✓**：§648 只把 `p2ObjectView` 从「只认 `create_object`」补上 `import_image`✓。
+但**同一个事实**——「哪些原子 kind 会建立一个对象」——在本地层**被三个读者各自硬编码 ✗**，
+三者口径互不一致 ⇒ 这正是内核 2「同一事实只写一处」禁止的形状 ✓。核权威口径（服务端折叠本身）：
+- `crates/yanshi-core/src/fold.rs:1089` ⇒ `CreateObject|ImportImage` **无条件建对象** ✓；
+- `fold.rs:1116-1151` ⇒ `DrawStroke|DrawShape|DrawText|Fill|Erase|Retouch|Liquify|Supersede` **按 object_id 新建（不存在时）** ✓；
+- `fold.rs:1553` `object_data` ⇒ 内容取 `payload.data`，缺则回退整个 payload ✓；
+- `crates/yanshi-server/src/tools.rs:3148-3169` `read_list_objects` ⇒ `layer_id`／`type` 过滤 ＋ `include_hidden||visible`（缺省 `false`）＋ 走 `alive_objects()`（剔删除）✓。
+
+**症状 ✗（三处，全是静默降级——返回还 `ok:true`）**：
+1. **`p2ObjectView`**（`get_object`／`resample`／`restore_object`／…约 20 个端点共用 ✓）只认两种 ⇒
+   **`draw_shape`／`fill`／`draw_text` 手画的对象 `get_object` 报 `reference_not_found`**✓、无法缩放／替换／删除 ✓。
+2. **`list_objects`** 逐原子 push ＋ 不滤 `layer_id`／可见／删除 ⇒ 同一对象**重复出现**✓、**跨层混入**✓
+   （⇒ 前端 `moveCheckedObjectZ` 拼的 `order` 与该层真实集合不符 ⇒ `reorder_objects`「期望 N 实际 M」打回 ✓）、
+   **拾到看不见的对象**✓（`pickObjectAt`）、**已删的还在列**✓。
+3. **`duplicate_layer`** 复制循环 inline 只列 `import_image||create_object` ⇒ **「复制图层」时手画的形／字／色块被整个丢掉**✓、副本对象数偏少 ✓。
+
+**修法 ✓（一个事实一处定义）**：抽出 **`P2_OBJECT_CREATE_KINDS`** 共享集合 ✓（= 服务端两条并集），
+三个读者**全部改读它** ⇒ 消除「改一处忘两处」的整类 bug ✓。
+- `p2ObjectView`：建对象判据换成 `P2_OBJECT_CREATE_KINDS.has(a.kind)`✓，`data` 走 `p2ObjectData`（照 `object_data` ✓）；
+- `list_objects`：**用同一 `p2ObjectView` 折叠 ⇒ 一对象一条 ✓**，再照 `read_list_objects` 三条过滤 + `alive` ✓；
+- `duplicate_layer`：复制判据换共享集合，**显式挡 `supersede`✗**（它引用别处的 create ✓，悬空复制会只复制引用不复制本体 ✓）。
+
+**四层齐 ✓（三处变异 ⇒ 断言各归各，正交不串味 ✓）**：
+| 断言（`scripts/tool-pwa-api-behaviour.mjs`） | 变异 | 结果 |
+|---|---|---|
+| ⑦e① `draw_shape` 对象 `get_object` 找得到 ＋ ⑦e⑥ 缺省列表含可见 C | **M-A**：`p2ObjectView` 收窄回 `create_object||import_image` | ①⑥ 红、②③④⑤ 绿 ✓ |
+| ⑦e② 滤层 ＋ ③ 去重 ＋ ④ 剔删除 ＋ ⑤ 滤可见 | **M-B**：`list_objects` 四道过滤逐个 disable | ②③④⑤ 红、①⑥ 绿 ✓ |
+| ⑦f `duplicate_layer` 复制 `draw_shape`（副本层可列 1 个、id 全新） | **M-C**：复制判据 inline 回退两种 | ⑦f 两条红（`objects:0`、副本层 `count:0`）✓ |
+> 全程**纯原子折叠 ✗ 不碰内核／canvas ✓** ⇒ node 当场可验 ✓；恢复源码后 `tool-web-assets-parity`（api-local.js 逐字节 ✓）＋ `tool-pwa-api-behaviour`（0 ❌ ✓）皆绿 ✓。
+
+**两面（AGENTS 第 3 条 ✓）**：
+**收益 ✓**：手画／填色／文字对象在**寻址、列表、复制图层**三条链**从全瞎恢复可用**✓；`list_objects` 结果集**与服务端同口径**✓
+（不再污染 reorder 契约／命中测试）；「建对象 kind」这一事实**只剩一处**✓（`P2_OBJECT_CREATE_KINDS`）。
+**代价 ✓**：三个读者各引一处共享集合✓（严格加法：旧口径是集合的真子集 ⇒ 不可能少认对象、只会多认——多认的正是要修的 ✓）；判据多 ⑦e（6 断）＋ ⑦f（2 断）✓（node 级毫秒）。
+**⚠ 已知残留（同一类、下一个 ROI ✓）**：**第四个读者 `p2cState`**（`get_state`／`get_resolved_state` 用 ✓，`api-local.js:2218`）**仍只 push `create_object`**✗
+⇒ `get_state` 的对象表也漏手画对象 ✓。**本片未动它**（先确认再动手 ✓：须核实 `get_state` 的对象表到底该不该含全部对象——若含，则应一并改读 `P2_OBJECT_CREATE_KINDS`；另立一片配变异 ✓）。
