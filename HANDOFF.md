@@ -812,3 +812,15 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    `!removed` 改 `false` ⇒ 重复吊销判据红；内存 `revoke` 改恒 `true` ⇒ 剩余数判据红。
    **收尾**：变异全部改回；三条新判据与 `tool_inventory` 本机绿；`cargo fmt --check` 0。
    **未做（需更大设计）**：令牌 TTL、`meta.json` 存哈希而非明文 —— 会在下一批单独评估。
+
+77. **审计 M-4：install.sh 供应链硬化**（2026-10-28 ✓）：
+   ① `YANSHI_REPO` 只许 `owner/name`（拒 `a/b/c`、`../evil`、`owner/..`、`./x`）✓；
+   ② 版本号只许 `[0-9A-Za-z.]`（它进路径与 wrapper）✓；
+   ③ 所有 curl 加 `--proto '=https' --proto-redir '=https'`，wget 加 `--https-only` ✓；
+   ④ tar 解包加 `--no-same-owner`，解包后检查符号链接：绝对路径或含 `..` 一律拒绝（tar-slip）✓；
+   ⑤ wrapper 不再用双引号拼路径，改为**单引号 + `'\''` 转义**（`$PREFIX` 可含 `'`/`$`/空格）✓；
+   ⑥ README 写明信任边界：`SHA256SUMS` 与包同源 ⇒ 防截断/镜像错配，不防上游被控 ✓。
+   **验证（实测）**：`sh -n` 0；`a/b/c`／`../evil`／`owner/..`／`./x` 四个恶意 `YANSHI_REPO`
+   都在联网前 `exit 1` 且文案指出形状错；wrapper 转义产物通过 `sh -n`；
+   `cargo test -p yanshi-server --test shell_scripts --test script_portability` 全绿。
+   **未做**：端到端安装需真实 release（本批用直接执行守卫验证）。

@@ -31,6 +31,10 @@ That resolves the release asset for your platform, **verifies its SHA256** again
 `SHA256SUMS`, unpacks it to `~/.local/share/yanshi/<version>`, and puts `yanshi-serve` and `yanshi-mcp`
 into `~/.local/bin` as thin wrappers.
 
+**Trust boundary:** the checksum file ships in the same release as the tarball, so this check catches
+truncated downloads and mirror mix-ups — it does **not** protect against a compromised upstream release.
+Downloads are HTTPS-only (curl `--proto`/`--proto-redir`, wget `--https-only`).
+
 The tarball is **self-contained**: brushes, brush previews, mediums, palettes, material assets, brand assets and
 the WASM kernel all ship inside it, and the binaries locate them through the package layout
 (`bin/…` next to `share/yanshi/…`), so nothing depends on where you unpack it.

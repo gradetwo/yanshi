@@ -24,6 +24,11 @@ DRY="${YANSHI_DRY_RUN:-0}"
 say()  { printf '%s\n' "$*"; }
 die()  { printf '✗ %s\n' "$*" >&2; exit 1; }
 
+# **`YANSHI_REPO` 只许 owner/name** ✓（审计 M-4：别让它改 API 路径 ✗）。
+case "$REPO" in
+  *[!A-Za-z0-9._/-]*|/*|*/|*/*/*|../*|*/..|..|./*|*/.) die "YANSHI_REPO 形状不对（应为 owner/name）：$REPO" ;;
+esac
+
 # ---- 1. 认平台 ------------------------------------------------------------------
 os=$(uname -s 2>/dev/null || echo unknown)
 arch=$(uname -m 2>/dev/null || echo unknown)
@@ -52,8 +57,9 @@ api="https://api.github.com/repos/$REPO/releases"
 if [ "$VERSION" = latest ]; then release_url="$api/latest"; else release_url="$api/tags/$VERSION"; fi
 
 fetch() {  # fetch <url>  → stdout
-  if command -v curl >/dev/null 2>&1; then curl -fsSL -m 60 "$1"
-  elif command -v wget >/dev/null 2>&1; then wget -qO- "$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --proto '=https' --proto-redir '=https' -m 60 "$1"
+  elif command -v wget >/dev/null 2>&1; then wget -qO- --https-only "$1"
   else die "需要 curl 或 wget 之一"; fi
 }
 
@@ -67,6 +73,10 @@ sums_url=$(printf '%s\n' "$urls" | grep -E '/SHA256SUMS$' | head -1)
 [ -n "$pkg_url" ] && [ -n "$sums_url" ] || die "这一版没有 $target 的包（也许还没发布完）"
 
 ver_tag=$(printf '%s' "$pkg_url" | sed 's|.*/yanshi-\([^-]*\)-.*|\1|')
+# **版本号进路径、也进 wrapper** ✓ ⇒ 只许字母数字与点（审计 M-4：防注入 ✗）。
+case "$ver_tag" in
+  ''|*[!0-9A-Za-z.]*) die "版本号形状不对（只许 [0-9A-Za-z.]）：$ver_tag" ;;
+esac
 say "  找到 yanshi ${ver_tag}（${target}）"
 
 if [ "$DRY" = 1 ]; then
@@ -80,8 +90,8 @@ tmp=$(mktemp -d 2>/dev/null || mktemp -d -t yanshi)
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
 say "→ 下载…"
-if command -v curl >/dev/null 2>&1; then curl -fsSL -m 900 -o "$tmp/pkg.tar.gz" "$pkg_url" && curl -fsSL -m 60 -o "$tmp/SHA256SUMS" "$sums_url"
-else wget -q -O "$tmp/pkg.tar.gz" "$pkg_url" && wget -q -O "$tmp/SHA256SUMS" "$sums_url"; fi
+if command -v curl >/dev/null 2>&1; then curl -fsSL --proto '=https' --proto-redir '=https' -m 900 -o "$tmp/pkg.tar.gz" "$pkg_url" && curl -fsSL --proto '=https' --proto-redir '=https' -m 60 -o "$tmp/SHA256SUMS" "$sums_url"
+else wget -q -O "$tmp/pkg.tar.gz" --https-only "$pkg_url" && wget -q -O "$tmp/SHA256SUMS" --https-only "$sums_url"; fi
 [ -s "$tmp/pkg.tar.gz" ] || die "下载失败"
 
 say "→ 校验 SHA256…"
@@ -97,16 +107,28 @@ say "  ✓ 校验通过"
 dest="$PREFIX/share/yanshi/$ver_tag"
 say "→ 解包到 $dest"
 mkdir -p "$dest"
-tar -xzf "$tmp/pkg.tar.gz" -C "$dest" --strip-components=1 || die "解包失败"
+tar -xzf "$tmp/pkg.tar.gz" -C "$dest" --strip-components=1 --no-same-owner || die "解包失败"
+# **tar-slip 守卫** ✓（审计 M-4）：包里若有符号链接，只许指向包内相对路径 ✓。
+find "$dest" -type l > "$tmp/links.txt" 2>/dev/null || true
+while IFS= read -r link; do
+  [ -n "$link" ] || continue
+  link_target=$(readlink "$link" 2>/dev/null || true)
+  case "$link_target" in
+    '') die "读不出符号链接目标：$link" ;;
+    /*|..|../*|*/..|*/../*) die "解包产物含越界符号链接：$link -> $link_target" ;;
+  esac
+done < "$tmp/links.txt"
 [ -x "$dest/bin/yanshi-serve" ] || die "包里没有 bin/yanshi-serve"
 
 mkdir -p "$BIN_DIR"
+# **安装路径进 wrapper 前先转义** ✓（审计 M-4：`$PREFIX` 由环境给出 ⇒ 不许拼出可执行代码 ✗）。
+escaped_dest=$(printf '%s' "$dest" | sed "s/'/'\\\\''/g")
 for name in yanshi-serve yanshi-mcp; do
   [ -x "$dest/bin/$name" ] || continue
   wrapper="$BIN_DIR/$name"
   # **用 wrapper 而不是软链** ✓：软链下 `current_exe` 在部分平台会指向软链本身 ✗，
   # 那样 `<exe>/../share/yanshi` 就找不到资产 ✗ ⇒ **∴ 明确 exec 真身** ✓。
-  printf '#!/bin/sh\nexec "%s/bin/%s" "$@"\n' "$dest" "$name" > "$wrapper"
+  printf "#!/bin/sh\nexec '%s/bin/%s' \"\$@\"\n" "$escaped_dest" "$name" > "$wrapper"
   chmod +x "$wrapper"
   say "  ✓ $wrapper"
 done
