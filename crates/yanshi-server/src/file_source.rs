@@ -216,13 +216,13 @@ pub fn resolve_local_path(
         // 同一口径 ✓（`textures.rs` 的旧断言钉的正是它 ✓；两种失败的**出路**不同 ✓，
         // 调用方的处置也不同 ✗：一个改参数 ✓、一个只能改部署 ✓）。
         match root {
-            Some(root) => {
+            Some(_root) => {
                 return Err(YanshiError::new(
                     ErrorCode::InvalidArgument,
                     ErrorContext::detail(format!(
-                        "path 必须落在工作区根目录之内：当前 root={} ⇒ 收不到 {}（把文件放到 root 之下再传）",
-                        root.display(),
-                        resolved.display()
+                        // **不回报服务端路径** ✓（审计 L-2：`--root` 与解析后的绝对路径
+                        // 都属安装目录信息 ✗）。调用方知道自己传的是什么 ✓ ⇒ 照样能照做 ✓。
+                        "path 必须落在工作区根目录之内：收到 {raw}（把文件放到 --root 指定的目录之下再传）"
                     )),
                 ));
             }

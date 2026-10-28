@@ -647,7 +647,7 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
 
     if path == "/health" {
         return match method {
-            "GET" => health(state),
+            "GET" => health(state, request),
             _ => method_not_allowed(request, "GET"),
         };
     }
@@ -972,7 +972,33 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
     crate::http::not_found(format!("未知路由 {} {path}", method))
 }
 
-fn health(state: &ServerState) -> Response {
+/// `GET /health`。
+///
+/// **详细信息只给本机或持密钥的调用方** ✓（审计 L-2）：
+/// 版本／commit／构建时间／工具清单／GPU 探测／缓存计数都是**侦察信息** ✗ ——
+/// commit 能对上公开的已知漏洞 ✓，工具清单能省掉攻击者的枚举 ✓。
+/// 判据与本机使用者不受影响 ✓（绑回环 ⇒ 一律完整 ✓）；
+/// 对外部署要监控 ⇒ 带 `?key=<YANSHI_API_KEY>`（或 `X-Yanshi-Key` 头）✓。
+///
+/// **对外未认证时仍返回 `wasm`** ✓：查看器的 `initWasm()` 用它决定要不要加载内核 ✓，
+/// 拿掉它会把"对外部署"的每一次打开文档都变成「服务端未启用」✗（那是功能回退，不是加固 ✓）。
+fn health(state: &ServerState, request: &Request) -> Response {
+    if !health_detail_allowed(
+        &state.options.bind,
+        expected_api_key().as_deref(),
+        provided_api_key(request).as_deref(),
+    ) {
+        // **不许静默少报字段** ✓：说清为什么少报、怎么取完整信息 ✓。
+        return Response::json(
+            200,
+            &json!({
+                "ok": true,
+                "detail": "withheld",
+                "note": "服务绑在对外地址上，且请求没带有效的 YANSHI_API_KEY ⇒ 只报存活状态与 wasm；带 ?key=<密钥> 可取完整信息",
+                "wasm": wasm_available(state),
+            }),
+        );
+    }
     let documents = state
         .workspace
         .lock()
@@ -1625,11 +1651,8 @@ fn origin_is_local(origin: &str) -> bool {
         .map(|(h, _)| h)
         .unwrap_or(authority);
     let host = host.trim_start_matches('[').trim_end_matches(']');
-    host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<std::net::IpAddr>()
-            .map(|ip| ip.is_loopback())
-            .unwrap_or(false)
+    // **与 Host 白名单共用同一条回环判定** ✓（一份实现 ✓，避免两边漂移 ✗）。
+    is_loopback_host(host)
 }
 
 /// **写权限的入口守卫** ✓（第三方代码审计 P0 第 2 条 ＋ 第 1440 轮 DNS rebinding 补口 ✓）。
@@ -1661,6 +1684,38 @@ fn secrets_equal(provided: &str, expected: &str) -> bool {
             == 0
 }
 
+/// 服务端配置的 API key（空串按"没配"处理 ✓）。
+fn expected_api_key() -> Option<String> {
+    std::env::var("YANSHI_API_KEY")
+        .ok()
+        .filter(|value| !value.is_empty())
+}
+
+/// 请求里带的 API key 的**唯一两种形态** ✓：`?key=` 或 `X-Yanshi-Key` 头 ✓。
+/// **抽成一份** ✓：写权限与 `/health` 的细节开关读的是**同一份** ✓（各写一份必然漂移 ✗）。
+fn provided_api_key(request: &Request) -> Option<String> {
+    request
+        .param("key")
+        .map(str::to_owned)
+        .or_else(|| request.header("x-yanshi-key").map(str::to_owned))
+}
+
+/// `/health` 的细节是否可见 ✓（审计 L-2）：绑回环 ⇒ 可见 ✓；
+/// 绑对外 ⇒ 只有**配了密钥且请求带对**才可见 ✓；密钥没配／带错 ⇒ 只见存活状态 ✓。
+fn health_detail_allowed(
+    bind: &str,
+    expected_key: Option<&str>,
+    provided_key: Option<&str>,
+) -> bool {
+    if bind_is_loopback(bind) {
+        return true;
+    }
+    match (expected_key, provided_key) {
+        (Some(expected), Some(provided)) => secrets_equal(provided, expected),
+        _ => false,
+    }
+}
+
 fn require_write_access(state: &ServerState, request: &Request) -> Option<Response> {
     let foreign_browser = request
         .header("origin")
@@ -1668,13 +1723,8 @@ fn require_write_access(state: &ServerState, request: &Request) -> Option<Respon
     if bind_is_loopback(&state.options.bind) && !foreign_browser {
         return None;
     }
-    let expected = std::env::var("YANSHI_API_KEY")
-        .ok()
-        .filter(|value| !value.is_empty());
-    let provided = request
-        .param("key")
-        .map(str::to_owned)
-        .or_else(|| request.header("x-yanshi-key").map(str::to_owned));
+    let expected = expected_api_key();
+    let provided = provided_api_key(request);
     match expected {
         None => Some(Response::from_error(&YanshiError::new(
             ErrorCode::PreconditionFailed,
@@ -1834,7 +1884,7 @@ fn import_begin(root: &std::path::Path) -> Response {
     if let Err(error) = std::fs::write(&path, []) {
         return Response::from_error(&YanshiError::new(
             ErrorCode::PreconditionFailed,
-            ErrorContext::detail(format!("建不了上传文件 {}：{error}", path.display())),
+            ErrorContext::detail(format!("建不了上传文件 {}：{error}", asset_label(&path))),
         ));
     }
     Response::json(
@@ -1904,7 +1954,7 @@ fn import_chunk(request: &Request, root: &std::path::Path, upload_id: &str) -> R
     if let Err(error) = appended {
         return Response::from_error(&YanshiError::new(
             ErrorCode::PreconditionFailed,
-            ErrorContext::detail(format!("写不进上传文件 {}：{error}", path.display())),
+            ErrorContext::detail(format!("写不进上传文件 {}：{error}", asset_label(&path))),
         ));
     }
     Response::json(
@@ -2709,15 +2759,122 @@ fn control_plane(
 /// **★ 从请求里取 origin（真机报告 P1 #1）★**：优先用 `Host` 头 ✓（反代/自定义端口都对 ✓），
 /// 退回 bind 地址 ✓。**注意** bind 若是 `0.0.0.0` 这种"监听全部"的写法，拼出来的 URL 客户端用不了 ✗
 /// —— 所以**优先 Host 头** ✓（正常请求都有 ✓）。
+///
+/// **★ 但 Host 不能无条件回显** ✗（审计 L-3）★：`*_absolute` 形如
+/// `http://{Host}/api/blob/…&token=…` ✓ ⇒ 伪造的 Host 会把它指向**别人的域名** ✗
+/// 并把 token 一起带过去 ✓ ⇒ 所以只有[可信主机](host_is_trusted)才回显 ✓，
+/// 其余一律退回 bind（再不行就只给**相对** URL ✓ —— 客户端自己拼本来也能用 ✓）。
 fn request_origin(state: &ServerState, request: &Request) -> Option<String> {
-    if let Some(host) = request.header("host") {
-        return Some(format!("http://{host}"));
-    }
     let bind = state.options.bind.as_str();
+    if let Some(host) = request.header("host") {
+        let host = host.trim();
+        if host_is_trusted(host, bind) {
+            return Some(format!("http://{host}"));
+        }
+    }
     if bind.is_empty() {
         return None;
     }
+    // **bind 是「监听全部」时它不是一个客户端能用的主机** ⇒ 别回显 `0.0.0.0` ✗。
+    bind_host(bind)?;
     Some(format!("http://{bind}"))
+}
+
+/// Host 值是否可信、可以回显进响应 URL ✓（审计 L-3）。
+///
+/// **放行三类** ✓：① 本机名／回环 IP ✓；② 与 `--bind` 的**具体**主机部分一致 ✓；
+/// ③ `YANSHI_PUBLIC_ORIGIN` 里声明的公网主机 ✓（反代部署的显式出口 ✓）。
+/// `0.0.0.0`／`::` 是「监听全部」**不是主机名** ⇒ 不参与匹配 ✗；
+/// 形状不合法（路径／用户信息／端口越界／未加方括号的 IPv6）⇒ 不信 ✗。
+fn host_is_trusted(host: &str, bind: &str) -> bool {
+    let Some((name, _port)) = split_host_port(host) else {
+        return false;
+    };
+    if is_loopback_host(name) {
+        return true;
+    }
+    if bind_host(bind).is_some_and(|bound| bound.eq_ignore_ascii_case(name)) {
+        return true;
+    }
+    public_origin_host().is_some_and(|public| public.eq_ignore_ascii_case(name))
+}
+
+/// 拆 `host[:port]` 并校验形状 ✓：只允许主机名字符、IPv6 方括号与数字端口。
+///
+/// **这就是「别把 Host 当任意字符串拼进 URL」那一步** ✓：`@`／`/`／空白／CRLF
+/// 在这里就被拒 ⇒ 拼出来的 origin 不可能改变 URL 的**结构** ✗（审计 L-3）。
+fn split_host_port(value: &str) -> Option<(&str, Option<&str>)> {
+    if value.is_empty() || value.len() > 255 {
+        return None;
+    }
+    let shaped = value.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b':' | b'[' | b']')
+    });
+    if !shaped {
+        return None;
+    }
+    if let Some(rest) = value.strip_prefix('[') {
+        let (inner, tail) = rest.split_once(']')?;
+        inner.parse::<std::net::Ipv6Addr>().ok()?;
+        return match tail {
+            "" => Some((inner, None)),
+            _ => {
+                let port = tail.strip_prefix(':')?;
+                port.parse::<u16>().ok().filter(|port| *port != 0)?;
+                Some((inner, Some(port)))
+            }
+        };
+    }
+    match value.split_once(':') {
+        None => Some((value, None)),
+        Some((name, port)) => {
+            if port.contains(':') {
+                // 未加方括号的 IPv6 ⇒ 主机与端口分不开 ⇒ 不认 ✗。
+                return None;
+            }
+            port.parse::<u16>().ok().filter(|port| *port != 0)?;
+            Some((name, Some(port)))
+        }
+    }
+}
+
+/// 本机名／回环地址 ✓（与 `origin_is_local` 同一口径 ✓）。
+fn is_loopback_host(name: &str) -> bool {
+    name.eq_ignore_ascii_case("localhost")
+        || name
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|ip| ip.is_loopback())
+        || name
+            .parse::<std::net::Ipv6Addr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// `--bind` 的**具体**主机部分 ✓；`0.0.0.0`／`::`／空 ⇒ `None`（监听全部不算主机名 ✗）。
+fn bind_host(bind: &str) -> Option<&str> {
+    let (name, _port) = split_host_port(bind)?;
+    if name.is_empty() {
+        return None;
+    }
+    let unspecified = name
+        .parse::<std::net::Ipv4Addr>()
+        .is_ok_and(|ip| ip.is_unspecified())
+        || name
+            .parse::<std::net::Ipv6Addr>()
+            .is_ok_and(|ip| ip.is_unspecified());
+    (!unspecified).then_some(name)
+}
+
+/// `YANSHI_PUBLIC_ORIGIN` 的主机部分 ✓（反代部署：显式声明"这个 Host 是我"✓）。
+///
+/// **为什么需要它** ✗：反代后 `Host` 是公网域名 ✓ ⇒ 没有白名单就只能退回相对 URL ✓；
+/// 这个变量让运营者**显式**把那个域名加进来 ✓，而不是放宽成"什么 Host 都信" ✗。
+fn public_origin_host() -> Option<String> {
+    let raw = std::env::var("YANSHI_PUBLIC_ORIGIN").ok()?;
+    let raw = raw.trim();
+    let authority = raw.split_once("://").map_or(raw, |(_scheme, rest)| rest);
+    let authority = authority.split('/').next()?;
+    let (name, _port) = split_host_port(authority)?;
+    Some(name.to_owned())
 }
 
 fn rewrite_blob_urls(
@@ -2803,6 +2960,14 @@ fn wasm_available(state: &ServerState) -> bool {
         .unwrap_or(false)
 }
 
+/// **错误里只报文件名** ✓（审计 L-2：完整路径会泄露 `--root`／安装目录 ✗）。
+/// 调用方本来就知道自己请求的是哪个文件 ✓ ⇒ 报文件名照样能照做 ✓。
+fn asset_label(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "（未知文件）".to_owned())
+}
+
 /// 只允许取 `wasm-bindgen --target web` 生成的白名单文件，避免路径穿越。
 ///
 /// **★★★ 必须同时提供 `snippets/` 子路径 ✗ ★★★**（**第 736 轮：**CI 与本地双双复现 ✓）
@@ -2866,7 +3031,7 @@ fn wasm_asset(state: &ServerState, file: &str) -> Response {
             .with_header("Cache-Control", "no-cache"),
         Err(_) => crate::http::not_found(format!(
             "WASM 产物缺失：{}（先运行 cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release 与 wasm-bindgen）",
-            path.display()
+            asset_label(&path)
         )),
     }
 }
@@ -2936,16 +3101,15 @@ fn brush_text_asset(state: &ServerState, file: &str) -> Response {
                 if reads_canvas { "1" } else { "0" },
             )
         }
-        Err(_) => crate::http::not_found(format!("没有这支笔刷：{}", path.display())),
+        Err(_) => crate::http::not_found(format!("没有这支笔刷：{}", asset_label(&path))),
     }
 }
 
 /// **监听地址是不是只在本机** ✓ —— 用来决定"能不能匿名发写权限令牌"（见 `create_document`）。
 /// 判据从宽到严 ✓：`127.` / `::1` / `localhost` 都算回环 ✓；`0.0.0.0`、`[::]`、具体外网地址都**不算** ✗。
+/// **与 Host 白名单共用同一条回环判定** ✓（`is_loopback_host` ✓，一份实现 ✓）。
 fn bind_is_loopback(bind: &str) -> bool {
-    let host = bind.rsplit_once(':').map(|(host, _)| host).unwrap_or(bind);
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    host == "localhost" || host == "::1" || host.starts_with("127.")
+    split_host_port(bind).is_some_and(|(host, _)| is_loopback_host(host))
 }
 
 /// `GET /brush-previews/{file}`：**预生成入库的画笔预览图 / 索引**。
@@ -2976,7 +3140,7 @@ fn brush_preview_asset(state: &ServerState, file: &str) -> Response {
             },
             bytes,
         ),
-        Err(_) => crate::http::not_found(format!("没有这张笔刷预览：{}", path.display())),
+        Err(_) => crate::http::not_found(format!("没有这张笔刷预览：{}", asset_label(&path))),
     }
 }
 
@@ -2990,7 +3154,7 @@ fn sample_asset(file: &str) -> Response {
         Ok(bytes) => Response::bytes(200, "image/png", bytes)
             // 画面随版本走 ✓ ⇒ 可以长缓存 ✓。
             .with_header("Cache-Control", "public, max-age=31536000, immutable"),
-        Err(_) => crate::http::not_found(format!("示例画面缺失：{}", path.display())),
+        Err(_) => crate::http::not_found(format!("示例画面缺失：{}", asset_label(&path))),
     }
 }
 
@@ -3104,7 +3268,7 @@ fn medium_asset(state: &ServerState, file: &str) -> Response {
             .with_header("Cache-Control", "public, max-age=31536000, immutable"),
         Err(_) => crate::http::not_found(format!(
             "介质插件缺失：{}（先运行 make build-medium）",
-            path.display()
+            asset_label(&path)
         )),
     }
 }
@@ -3166,7 +3330,7 @@ fn brand_asset(state: &ServerState, file: &str) -> Response {
     match std::fs::read(&path) {
         Ok(bytes) => Response::bytes(200, content_type, bytes)
             .with_header("Cache-Control", "public, max-age=3600"),
-        Err(_) => crate::http::not_found(format!("品牌资源缺失：{}", path.display())),
+        Err(_) => crate::http::not_found(format!("品牌资源缺失：{}", asset_label(&path))),
     }
 }
 
@@ -3774,6 +3938,51 @@ mod secrets_tests {
 }
 
 #[cfg(test)]
+mod origin_tests {
+    use super::{bind_host, host_is_trusted};
+
+    /// **Host 回显白名单** ✓（审计 L-3）——只认本机／`--bind` 的具体主机／
+    /// `YANSHI_PUBLIC_ORIGIN` ✓；形状不合法一律不信 ✗。
+    #[test]
+    fn host_reflection_trusts_only_loopback_bind_and_declared_origin() {
+        // 变异：让 `host_is_trusted` 恒返回 `true` ⇒ 后两条 `evil.example` 断言红 ✓。
+        let bind = "127.0.0.1:8080";
+        assert!(host_is_trusted("localhost:9000", bind));
+        assert!(host_is_trusted("LOCALHOST", bind));
+        assert!(host_is_trusted("127.0.0.1:8080", bind));
+        assert!(host_is_trusted("127.8.9.10", bind));
+        assert!(host_is_trusted("[::1]:8080", bind));
+        assert!(
+            host_is_trusted("10.0.0.5:9000", "10.0.0.5:9000"),
+            "与 bind 一致"
+        );
+
+        assert!(!host_is_trusted("evil.example:8080", bind));
+        assert!(!host_is_trusted("evil.example", bind));
+        assert!(
+            !host_is_trusted("0.0.0.0:8080", "0.0.0.0:8080"),
+            "监听全部不是主机名"
+        );
+        assert!(!host_is_trusted("[::]:8080", "[::]:8080"));
+
+        // 形状：不许把路径／用户信息／空白拼进 origin。
+        assert!(!host_is_trusted("127.0.0.1:8080/path", bind));
+        assert!(!host_is_trusted("user@127.0.0.1:8080", bind));
+        assert!(!host_is_trusted("127.0.0.1:8080\r\nX-Evil: 1", bind));
+        assert!(!host_is_trusted("127.0.0.1:99999", bind));
+        assert!(!host_is_trusted("127.0.0.1:0", bind));
+        assert!(!host_is_trusted("::1:8080", bind), "未加方括号的 IPv6 不认");
+        assert!(!host_is_trusted("[::1", bind));
+        assert!(!host_is_trusted("", bind));
+
+        assert_eq!(bind_host("0.0.0.0:8080"), None);
+        assert_eq!(bind_host("[::]:8080"), None);
+        assert_eq!(bind_host("192.168.1.9:8080"), Some("192.168.1.9"));
+        assert_eq!(bind_host("[::1]:8080"), Some("::1"));
+    }
+}
+
+#[cfg(test)]
 mod tests {
 
     /// **页面与 SW 的缓存名必须逐字一致** ✓ —— 这是 (A)⑥「SW 升级不脏读」的核心不变量 ✓。
@@ -4319,6 +4528,77 @@ mod tests {
         assert_eq!(viewer.status, 200);
         assert!(viewer.content_type.starts_with("text/html"));
         assert!(String::from_utf8_lossy(&viewer.body).contains("偃师"));
+    }
+
+    /// **对外绑定时 `/health` 只报存活状态** ✓（审计 L-2）：
+    /// 版本／commit／构建时间／工具数／缓存计数都是侦察信息 ⇒ 未认证不报 ✓。
+    /// **但 `wasm` 必须留** ✓：查看器的 `initWasm()` 靠它决定要不要加载内核 ✓
+    /// （拿掉它 = 每一次对外打开文档都变成「服务端未启用」✗）。
+    #[test]
+    fn health_withholds_reconnaissance_on_a_public_bind() {
+        let mut state = state();
+        state.options.bind = "0.0.0.0:8080".to_owned();
+        for target in ["/health", "/health?key=wrong", "/health?key=%20"] {
+            let response = route(&state, &request("GET", target));
+            assert_eq!(response.status, 200, "{target} 仍要活体可探");
+            let health = body_json(&response);
+            assert_eq!(health["ok"], json!(true), "{target}：{health}");
+            assert_eq!(health["detail"], json!("withheld"), "{target}：{health}");
+            assert!(
+                health["note"]
+                    .as_str()
+                    .is_some_and(|note| note.contains("YANSHI_API_KEY")),
+                "{target} 要说清怎么取完整信息：{health}"
+            );
+            assert!(
+                health["wasm"].is_boolean(),
+                "{target} 必须保留 wasm（查看器内核初始化的硬前置）：{health}"
+            );
+            for hidden in ["version", "commit", "built", "build", "tools", "profiles"] {
+                assert!(
+                    health.get(hidden).is_none(),
+                    "{target} 不许报 {hidden}：{health}"
+                );
+            }
+        }
+        let mut header_key = request("GET", "/health");
+        header_key
+            .headers
+            .insert("x-yanshi-key".to_owned(), "wrong".to_owned());
+        assert_eq!(
+            body_json(&route(&state, &header_key))["detail"],
+            json!("withheld"),
+            "X-Yanshi-Key 带错同样只报存活状态"
+        );
+    }
+
+    /// 细节开关的**纯判据**：回环恒可见 ✓；对外必须"配了密钥且请求带对" ✓。
+    /// （这条读的是 `health` 实际调用的同一份判定 ✓。）
+    #[test]
+    fn health_detail_switch_depends_on_bind_and_key() {
+        assert!(health_detail_allowed("127.0.0.1:8080", None, None));
+        assert!(health_detail_allowed("localhost:8080", None, None));
+        assert!(health_detail_allowed("[::1]:8080", None, None));
+        assert!(!health_detail_allowed("0.0.0.0:8080", None, None));
+        assert!(!health_detail_allowed("0.0.0.0:8080", Some("k"), None));
+        assert!(!health_detail_allowed("0.0.0.0:8080", None, Some("k")));
+        assert!(!health_detail_allowed("0.0.0.0:8080", Some("k"), Some("x")));
+        assert!(health_detail_allowed("0.0.0.0:8080", Some("k"), Some("k")));
+        assert!(!health_detail_allowed(
+            "10.0.0.5:8080",
+            Some("k"),
+            Some("K")
+        ));
+    }
+
+    /// 错误里只报文件名 ✓（审计 L-2：不泄露 `--root`／安装目录 ✓）。
+    #[test]
+    fn asset_errors_report_only_the_file_name() {
+        let label = asset_label(std::path::Path::new(
+            "/home/someone/.local/share/yanshi/assets/brush/Round_Bl.myb",
+        ));
+        assert_eq!(label, "Round_Bl.myb");
+        assert!(!label.contains('/'), "不许带路径分隔符：{label}");
     }
 
     #[test]

@@ -894,3 +894,51 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    恢复分支恒走 `restore`（把摘要再哈希一次）⇒ `file_workspace_survives_restart_with_tokens_and_render_cache`
    红（`PermissionDenied` ✓）。均已改回并重跑绿 ✓。
    **未做**：令牌 TTL（同上 ✓）。
+
+82. **审计 L-3：`Host` 头不再无条件反射**（2026-10-28 ✓）：
+   ① **问题**：`request_origin` 把请求的 `Host` 原样拼进 `*_absolute` 形如
+   `http://{Host}/api/blob/…&token=…` ⇒ 伪造 Host 就把**带令牌的链接**指向攻击者域名 ✗。
+   ② **修法**：只回显[可信主机]——① 本机名／回环 IP ✓；② 与 `--bind` 的具体主机一致 ✓；
+   ③ `YANSHI_PUBLIC_ORIGIN` 声明的公网主机 ✓（反代部署的**显式**出口，不用放宽成"什么都信"✗）。
+   `0.0.0.0`／`::` 是「监听全部」不是主机名 ⇒ 不参与匹配 ✗；形状校验（`split_host_port`）
+   只允许主机名字符／方括号 IPv6／1..=65535 端口 ⇒ `/`、`@`、CRLF、未加方括号的 IPv6
+   在拼 URL **之前**就被拒 ✓。不可信 ⇒ 退回 bind（bind 是 0.0.0.0 时给**相对** URL ✓）。
+   **回环判定抽成一份** ✓：`origin_is_local`、`bind_is_loopback`、Host 白名单共用
+   `is_loopback_host`（顺带修掉 `bind_is_loopback` 的 `starts_with("127.")` ——
+   它会把 `127.evil.example` 当回环 ✗，现在按 `Ipv4Addr::is_loopback` 判 ✓）。
+   ③ **判据**：`host_reflection_trusts_only_loopback_bind_and_declared_origin` ——
+   localhost／大小写／127.x／`[::1]`／bind 一致 ⇒ 信；`evil.example`、`0.0.0.0`、`[::]`、
+   带路径、`user@`、CRLF、端口 0／99999、未加方括号 IPv6、空 ⇒ 拒 ✓。
+   ④ **变异（一条，退出码 101 ✓）**：`host_is_trusted` 首行恒 `true` ⇒ 判据红
+   （`evil.example:8080` 被信）⇒ 已改回并重跑绿（`cargo test -p yanshi-http --lib` 60/60 ✓）。
+
+83. **审计 L-2：`/health` 细节按绑定收敛 ＋ 错误不再带服务器路径**（2026-10-28 ✓）：
+   ① **问题（两半）**：`GET /health` 无鉴权返回版本／commit／构建时间／工具清单／
+   GPU 探测／缓存计数（侦察信息 ✗）；多处错误把 `--root`／安装目录的**绝对路径**回给调用方 ✗。
+   ② **修法（health）**：绑回环 ⇒ 照旧完整 ✓；绑对外 ⇒ 只有「配了 `YANSHI_API_KEY` 且
+   请求带对」（`?key=` 或 `X-Yanshi-Key`，与写权限**同一份** `provided_api_key`／
+   `expected_api_key`／`secrets_equal` ✓）才完整 ✓；否则返回
+   `{"ok":true,"detail":"withheld","note":…,"wasm":…}` —— **说清为什么少报** ✓（不静默 ✗）。
+   **`wasm` 必须留** ✓：查看器 `initWasm()` 拿它决定要不要加载内核 ⇒ 拿掉会让对外部署的
+   每次打开文档都报「服务端未启用」✗（那是功能回退，不是加固 ✗）。
+   ② **修法（路径）**：资产/上传错误的路径一律只报**文件名**（`asset_label` ✓）；
+   `file_source` 的「工作区根目录之外」不再回 `root=` 与解析后的绝对路径 ✓（仍说清怎么照做 ✓）。
+   ③ **判据**：`health_withholds_reconnaissance_on_a_public_bind`（对外绑 ⇒ 无
+   version/commit/built/build/tools/profiles、`detail=withheld`、`wasm` 仍是布尔）、
+   `health_detail_switch_depends_on_bind_and_key`（四个组合 ＋ 大小写不等）、
+   `asset_errors_report_only_the_file_name`；`cargo test -p yanshi-http --lib` 60/60 ✓、
+   `cargo test -p yanshi-server --test assets_import` 8/8 ✓。
+   ④ **变异（三条）**：① 细节开关恒 `true` ⇒ 对外绑判据红（响应里看得见 `commit` ✓）；
+   ② 恒 `false` ⇒ `health_and_viewer_do_not_require_tokens` 红（回环拿不到 `tools` ✓）；
+   ③ `asset_label` 改回 `path.display()` ⇒ 文件名判据红 ✓。均已改回。
+   **未做**：工具层（`tools.rs`）错误里的路径**保留** —— 那里大多是调用方自己传的
+   `path`（诊断需要原样回显 ✓）；若将来要求"所有面统一脱敏"，应在 `ToolRegistry` 出口
+   按 `--root` 前缀统一处理（一次改，面更全），不在每个工具里各改一处 ✗。
+
+84. **审计 L-4（blob 按文档隔离）—— 暂不做，理由入档**（2026-10-28 ✓）：
+   `GET /api/blob/{hash}` 不做文档范围校验 ⇒ 持有 A 文档令牌的人**知道 hash** 即可读 B 的
+   blob ✓。完整修法需要「按文档记录所有签发过的 blob」（含渲染/导出物，它们**不在**
+   `active_blob_manifest()` 里 ✓）＋ 历史闭包 ＋ stash ⇒ 会牵动 `render_region` 的
+   `raw_url`、历史回退目标与 stash 三条已验证路径 ✗（高风险）。当前前提是**必须知道 hash**
+   （2^256 不可枚举 ✓），且 hash 由同一 CAS 的内容寻址语义共享 ✓ ⇒ 排在「CI 权限硬化（L-6）」
+   之后；做之前先用判据钉住「文档 A 的令牌取不到文档 B 的**活动** blob」，再逐步扩到历史闭包。
