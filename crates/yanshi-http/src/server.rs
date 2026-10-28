@@ -2717,6 +2717,11 @@ fn tool_call_with(
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| state.options.doc_id.clone());
+    // 与 `doc_param` 同一口径（05 复审 NEW-M1）：非法 doc_id 在边界就 400 说清原因，
+    // 不许混到持久层被 `doc_dir` 静默改道成误导性的「文档不存在」。
+    if let Err(error) = yanshi_server::persist::FileStore::validate_doc_id(&doc_id) {
+        return crate::http::bad_request(error.to_string());
+    }
     let principal = match authorize(state, request, &doc_id) {
         Ok(principal) => principal,
         Err(response) => return response,
@@ -3152,11 +3157,21 @@ fn rewrite_blob_urls(
 }
 
 /// 取 `doc` 参数（缺失或为空都算参数错误）。
+///
+/// **05 复审 NEW-M1**：旧实现只查非空 ⇒ 非法 id（`../etc`、超 128、以 `-`/`.` 开头）
+/// 一路混到持久层，被 `doc_dir` **静默改道**到 `docs/_invalid` ⇒ 调用方拿到误导性的
+/// 「文档不存在」而真实原因是「doc_id 不合法」。现在在 HTTP 边界就 400 并给出原因
+/// （也省掉一次无谓的 `load_atoms`；路径穿越本来就被白名单兜住，这里修的是**错误语义**）。
 fn doc_param(request: &Request) -> Result<String, Response> {
-    match request.param("doc") {
-        Some(doc) if !doc.trim().is_empty() => Ok(doc.to_owned()),
-        _ => Err(crate::http::bad_request("缺少 doc 参数")),
+    let Some(doc) = request.param("doc") else {
+        return Err(crate::http::bad_request("缺少 doc 参数"));
+    };
+    if doc.trim().is_empty() {
+        return Err(crate::http::bad_request("缺少 doc 参数"));
     }
+    yanshi_server::persist::FileStore::validate_doc_id(doc)
+        .map_err(|error| crate::http::bad_request(error.to_string()))?;
+    Ok(doc.to_owned())
 }
 
 /// WASM 产物是否可用（`/health` 与查看器据此决定是否启用本地乐观渲染）。

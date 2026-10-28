@@ -1975,3 +1975,39 @@ fn token_table_overissue_evicts_oldest_and_says_so_over_http() {
         "盘上令牌表必须与内存同一上限收敛"
     );
 }
+
+#[test]
+fn an_invalid_doc_id_is_rejected_at_the_http_boundary() {
+    // 05 复审 NEW-M1：非法 doc_id 必须在 HTTP 边界 400 并说清原因 ——
+    // 旧实现只查非空 ⇒ `../etc` 之类混到持久层被 `doc_dir` 静默改道成
+    // `docs/_invalid`，调用方拿到误导性的「文档不存在」。
+    let handle = start_server();
+    let addr = handle.addr;
+    let mut client = HttpClient::new(addr);
+    let long = "x".repeat(129);
+    for bad in ["..%2Fetc", "%2e%2e", ".hidden", "-dash", long.as_str()] {
+        let (status, body) = client.json("GET", &format!("/api/atoms?doc={bad}"), None, None);
+        assert_eq!(status, 400, "非法 doc_id {bad} 必须 400：{body}");
+        let text = body.to_string();
+        assert!(
+            text.contains("不合法") || text.contains("缺少 doc"),
+            "400 要说清是格式不合法，而不是回环「不存在」：{body}"
+        );
+    }
+    // 工具入口同口径（`tool_call_with` 不走 `doc_param`，是另一条读 `doc` 的路）。
+    for bad in ["..%2Fetc", "-dash"] {
+        let (status, body) = client.json(
+            "POST",
+            &format!("/api/tools/get_document?doc={bad}"),
+            None,
+            Some(&json!({})),
+        );
+        assert_eq!(status, 400, "工具入口的非法 doc_id {bad} 必须 400：{body}");
+    }
+    // 反对照：合法 id 不被这条闸误伤（走原来的鉴权路径 ⇒ 无令牌 403，不是 400）。
+    let (status, _body) = client.json("GET", "/api/atoms?doc=good_doc_1", None, None);
+    assert_eq!(
+        status, 403,
+        "合法 id 缺令牌应是 403（NEW-C1 浅探针），不许被格式闸误伤"
+    );
+}
