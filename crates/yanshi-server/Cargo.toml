@@ -85,6 +85,10 @@ image = { version = "0.25", default-features = false, features = ["jpeg"] }
 #   － **代价**：ring 带一个 C 编译步（cc）；`default-features = false` 关掉
 #     gzip/charset/cookies/json（都用不上），只留 `rustls` 特性收窄攻击面。
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+# **capability token 的 OS 熵源**（审计 P1-5.2）：零新包 —— rustls/ring 早已把
+# getrandom 0.3.4 带进 Cargo.lock，本行只把已有节点暴露给 yanshi-server；
+# 只加在这个 crate ⇒ 内核与 wasm 包体积不变。
+getrandom = "0.3"
 # **★ RAW 展开 crate（可选）★**（RAW 第二包）：导入计划／元数据组装的语义
 # 归 `yanshi-raw`（设计 9.3），工具层只透传与落账 ⇒ 由 `raw` feature 门控，
 # 与 `yanshi-render/raw` 同开同关（见下 [features]）；默认关 ⇒ 不进依赖树。

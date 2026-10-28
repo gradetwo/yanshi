@@ -12,7 +12,6 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::Write as _;
-use std::sync::atomic::{AtomicU64, Ordering};
 use yanshi_core::{ActorId, ErrorCode, ErrorContext, Result, SessionId, YanshiError};
 
 /// 令牌长度（十六进制字符数）：64 字符 = 256 bit。
@@ -24,39 +23,24 @@ pub const TOKEN_HEX_LEN: usize = 64;
 pub struct CapabilityToken(String);
 
 impl CapabilityToken {
-    /// 生成新令牌：**直接读 OS 熵**（32 字节 ⇒ 64 位小写十六进制）✓。
+    /// 生成新令牌：**256 bit 全部来自 OS CSPRNG** ✓（32 字节 ⇒ 64 位小写十六进制）。
     ///
-    /// **为什么不用 `RandomState`**：它把安全性押在 SipHash 的 PRF 性质上 ✗（审计 L-1）⇒
-    /// 令牌是能力凭证 ⇒ 必须用标准 CSPRNG ✓（`/dev/urandom` 在 Linux/macOS 都是内核熵池 ✓）。
+    /// 旧实现用 `RandomState` 对「进程内计数器 ＋ 当前毫秒」做 SipHash ✗（审计 P1-5.2）——
+    /// 密钥固定后输出完全由两个可预测输入决定 ⇒ 观测少量令牌即可预测后续令牌 ✗，
+    /// 而 token 是本项目**唯一的授权凭据** ✗。`getrandom` 直通 OS 熵源
+    ///（Linux `getrandom(2)`／macOS `getentropy`／Windows `BCryptGenRandom`）⇒ 与进程状态、
+    /// 时间、签发顺序完全无关 ✓。
+    ///
+    /// **熵源不可用 ⇒ panic** ✓：capability 模型下宁可不签发，
+    /// 也不能静默回退成可预测令牌 ✗。
     pub fn generate() -> Self {
         let mut bytes = [0u8; TOKEN_HEX_LEN / 2];
-        if !fill_os_entropy(&mut bytes) {
-            // **不许静默降级** ✓：熵源不可用时留痕，然后退回旧方案（仍非可预测明文 ✓）。
-            eprintln!("偃师：OS 熵源不可用 ⇒ capability token 退回 RandomState 熵；请检查系统熵源");
-            return Self::generate_from_random_state();
-        }
+        getrandom::fill(&mut bytes)
+            .unwrap_or_else(|error| panic!("OS 熵源不可用 ⇒ 拒绝签发 capability token：{error}"));
         let mut out = String::with_capacity(TOKEN_HEX_LEN);
         for byte in bytes {
             out.push_str(&format!("{byte:02x}"));
         }
-        Self(out)
-    }
-
-    /// 旧方案（`RandomState` 逐段哈希计数器）—— 只在 OS 熵源不可用时兜底 ✓。
-    fn generate_from_random_state() -> Self {
-        use std::collections::hash_map::RandomState;
-        use std::hash::{BuildHasher, Hasher};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let mut out = String::with_capacity(TOKEN_HEX_LEN);
-        while out.len() < TOKEN_HEX_LEN {
-            let state = RandomState::new();
-            let mut hasher = state.build_hasher();
-            hasher.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
-            hasher.write_u64(yanshi_core::now_ms() as u64);
-            let chunk = hasher.finish();
-            out.push_str(&format!("{chunk:016x}"));
-        }
-        out.truncate(TOKEN_HEX_LEN);
         Self(out)
     }
 
@@ -85,21 +69,6 @@ impl fmt::Display for CapabilityToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
-}
-
-/// 读 OS 熵源 ✓。失败返回 `false`（调用方退回旧方案并留痕 ✓，不冒充成功 ✗）。
-#[cfg(unix)]
-fn fill_os_entropy(out: &mut [u8]) -> bool {
-    use std::io::Read as _;
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(out))
-        .is_ok()
-}
-
-/// 非 unix 目标没有 `/dev/urandom` ⇒ 走兜底（Windows 若要发版，应改接 `BCryptGenRandom`）。
-#[cfg(not(unix))]
-fn fill_os_entropy(_out: &mut [u8]) -> bool {
-    false
 }
 
 /// 角色（Phase 5 细粒度权限；Phase 1 只区分“能改/只读”）。
@@ -349,18 +318,6 @@ impl TokenAuthority {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(unix)]
-    #[test]
-    fn os_entropy_really_reads_the_kernel_pool() {
-        // 变异：让 fill_os_entropy 写全 0 ⇒ 本测试红（两次相同），令牌唯一性测试也红 ✓。
-        let mut first = [0u8; TOKEN_HEX_LEN / 2];
-        let mut second = [0u8; TOKEN_HEX_LEN / 2];
-        assert!(fill_os_entropy(&mut first), "/dev/urandom 必须可读");
-        assert!(fill_os_entropy(&mut second));
-        assert_ne!(first, second, "两次读取必须不同 ⇒ 熵源真的在读内核");
-        assert!(first.iter().any(|byte| *byte != 0), "不许是全 0 占位");
-    }
 
     #[test]
     fn generated_tokens_are_unique_and_well_formed() {

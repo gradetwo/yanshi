@@ -3010,6 +3010,7 @@ dependencies = [
  "ab_glyph",
  "allsorts",
  "fontdb",
+ "getrandom 0.3.4",
  "hokusai",
  "image",
  "libm",

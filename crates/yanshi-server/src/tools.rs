@@ -14530,6 +14530,12 @@ fn write_verify_package(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
 fn write_import_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let path = require_str(args, "path")?;
     let doc_id = optional_str(args, "doc_id");
+    // **导入落点也要过作用域闸** ✓（第三方审计 P2-N1 同批）：`doc_id` 是**目标文档**入参 ✓，
+    // 拿着文档 A 的 editor 令牌把包装进任意文档 B 同样是越界写 ✗ ⇒ 与 delete_document
+    // 同一份谓词 ✓（不给 `doc_id` ⇒ 由包内 doc_id 生成新文档 ✓，不受影响 ✓）。
+    if let Some(target) = &doc_id {
+        crate::ensure_doc_scope(&ctx.doc_id, ctx.role, target)?;
+    }
     let bytes = std::fs::read(&path).map_err(|error| {
         YanshiError::new(
             ErrorCode::ReferenceNotFound,
@@ -14562,6 +14568,15 @@ fn write_delete_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
     //   ＋ **∴ 结论 ✗**：**报告这条**不是缺陷**✗ 是**有理由的设计** ✓
     //     ＋ **∴ 而**两者的区别**已经写在参数描述里** ✓（**Agent 读 schema 就能看到 ✓）★
     let document_id = require_str(args, "document_id")?;
+    // **每文档令牌不许越界** ✓（第三方审计 P2-N1）：工具层唯一的角色闸在
+    // `ToolRegistry::call`（按**会话文档**的 role 查 `mutating` ✓）⇒ `document_id`
+    // 这个入参此前**没有任何作用域校验** ✗ —— 拿着文档 A 的 editor 令牌就能
+    // `POST /api/tools/delete_document {"document_id":"B"}` 真删文档 B ✗，
+    // 而同级的 `DELETE /api/documents/<id>` 要求 YANSHI_API_KEY ✓ ⇒ 两个删除入口
+    // **权限口径不一致** ✗。现在与 `get_inflight`/`cancel_operation` 挂**同一份谓词**
+    //（`token::ensure_doc_scope` ✓ 单一出处 ✓）：doc_id 相等或 owner 才放行 ✓，
+    // 本地传输（MCP ✓／测试 ✓）缺省就是 owner ⇒ 行为不变 ✓。
+    crate::ensure_doc_scope(&ctx.doc_id, ctx.role, &document_id)?;
     ctx.workspace.delete_document(&document_id)
 }
 

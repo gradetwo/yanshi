@@ -21,7 +21,16 @@ pub(super) fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> R
     // **导出失败删目标文件**（P2-12）：守卫在成功返回前 `disarm`，
     // 任何 `Err` 返回都删掉该路径上的文件（旧的也不留 —— 旧文件会冒充新产物）。
     let mut delete_on_failure = DeleteTargetOnFailure::new(path.clone());
-    let doc_id = optional_str(args, "doc_id").unwrap_or_else(|| ctx.doc_id.clone());
+    // **显式 `doc_id` 也要过作用域闸** ✓（第三方审计 P2-N1 同批）：导出是读类工具 ✓，
+    // 但拿文档 A 的 editor 令牌导出**任意文档 B 的全部内容**同样是越界读 ✗
+    // ⇒ 与 `get_inflight`/`delete_document` 同一份谓词 ✓（缺省落到会话文档 ✓ 行为不变 ✓）。
+    let doc_id = match optional_str(args, "doc_id") {
+        Some(explicit) => {
+            crate::ensure_doc_scope(&ctx.doc_id, ctx.role, &explicit)?;
+            explicit
+        }
+        None => ctx.doc_id.clone(),
+    };
     if ctx.workspace.document(&doc_id).is_none() {
         return Err(YanshiError::new(
             ErrorCode::ReferenceNotFound,

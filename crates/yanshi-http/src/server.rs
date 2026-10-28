@@ -43,6 +43,13 @@ use crate::ws::{accept_key, is_valid_client_key, read_message, write_frame, Fram
 /// **∴ 二者分离 ⇒ "要求 GPU 但实际用 CPU" 一眼可见 ✗，不会被掩盖 ✓**。
 static GPU_MODE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
+/// **blob 引用集缓存**的类型别名 ✓（审计 P1 存量 5.5）：
+/// `(doc_id, head_seq) ⇒ 该文档日志引用的全部 blob`；只为压平 `clippy::type_complexity` ✓。
+type BlobRootsCache = std::collections::HashMap<
+    (String, u64),
+    Arc<std::collections::BTreeSet<yanshi_core::BlobHash>>,
+>;
+
 /// **★ `--cache-bust` 的运行时后缀 ✗ ★**（第 408 轮 ✓；**用户提的测试手段 ✓）。
 ///
 /// **∴ 为什么用 `OnceLock` ✗**：**SW 路由**拿不到 `HttpOptions`**✗
@@ -342,6 +349,16 @@ pub struct ServerState {
     pub connections: AtomicUsize,
     /// 关闭标志。
     pub shutdown: AtomicBool,
+    /// **blob 引用集缓存**的类型别名 ✓（审计 P1 存量 5.5）：
+    /// `(doc_id, head_seq) ⇒ 该文档日志引用的全部 blob`；只为压平 `clippy::type_complexity` ✓。
+    pub blob_roots_cache: Mutex<BlobRootsCache>,
+    /// **派生 blob 登记表** ✓（审计 P1 存量 5.5）：`hash ⇒ 产出它的文档`。
+    ///
+    /// 导出包／预览 PNG 这类**由某文档会话当场产出**的 blob 不在原子日志里 ✓
+    /// ⇒ 改写 `yanshi://blob/<hash>` 时登记 ✓，读回时按「产出文档」放行 ✓
+    /// —— 否则浏览器导出下载会被引用集检查误伤 ✓。
+    /// 有界（4096 条，超出整体清空）：登记表只服务「当场下载」流 ✓。
+    pub derived_blobs: Mutex<std::collections::HashMap<String, String>>,
 }
 
 impl std::fmt::Debug for ServerState {
@@ -353,6 +370,109 @@ impl std::fmt::Debug for ServerState {
             )
             .field("requests", &self.requests.load(Ordering::Relaxed))
             .finish()
+    }
+}
+
+impl ServerState {
+    /// **blob 是否被指定文档的日志引用** ✓（审计 P1 存量 5.5；调用方必须持工作区锁 ✓）。
+    ///
+    /// 引用集按 `(doc_id, head_seq)` 缓存 ✓：文档一提交 head_seq 即变 ⇒ 缓存键失效 ✓；
+    /// 大文档的全日志扫描（O(原子数) ✓）只在**每个文档版本第一次 blob 读**时发生 ✓
+    /// —— tile/位图的成批拉取发生在两次提交之间 ⇒ 缓存命中 ✓。
+    /// 文档未打开 ⇒ 不引用 ✓（保守 ✓）。
+    fn blob_referenced(
+        &self,
+        workspace: &Workspace,
+        doc_id: &str,
+        hash: &yanshi_core::BlobHash,
+    ) -> bool {
+        let Some(document) = workspace.document(doc_id) else {
+            return false;
+        };
+        let key = (doc_id.to_owned(), document.head_seq());
+        if let Ok(cache) = self.blob_roots_cache.lock() {
+            if let Some(roots) = cache.get(&key) {
+                return roots.contains(hash);
+            }
+        }
+        let roots = Arc::new(document.log().blob_roots());
+        if let Ok(mut cache) = self.blob_roots_cache.lock() {
+            if cache.len() >= 32 {
+                cache.clear();
+            }
+            cache.insert(key, Arc::clone(&roots));
+        }
+        roots.contains(hash)
+    }
+
+    /// **登记工具响应里的派生 blob** ✓（审计 P1 存量 5.5 的派生产物通道 ✓）。
+    ///
+    /// 两个形状都认 ✓：① 改写后 URL 的 `/api/blob/<hash>`（导出包／预览 ✓）；
+    /// ② `blob_hash` 字段值（`put_blob` 等工具刚存入 CAS 的产物 ✓ —— 它不在
+    /// 原子日志里 ✓，不登记的话调用方回头读回会被引用集闸误伤 ✓）。
+    /// 这些 hash 都是**本次会话的文档**当场产出 ⇒ 产出文档有权读回 ✓。
+    fn record_derived_blobs(&self, value: &Value, doc_id: &str) {
+        let mut hashes = Vec::new();
+        collect_blob_hashes(value, &mut hashes);
+        for hash in hashes {
+            self.record_derived_hash(&hash, doc_id);
+        }
+    }
+
+    /// **登记单个派生 blob** ✓（`blob_upload`／[`Self::record_derived_blobs`] 共用 ✓）。
+    fn record_derived_hash(&self, hash_hex: &str, doc_id: &str) {
+        if let Ok(mut registry) = self.derived_blobs.lock() {
+            if registry.len() >= 4096 {
+                registry.clear();
+            }
+            registry.insert(hash_hex.to_ascii_lowercase(), doc_id.to_owned());
+        }
+    }
+
+    /// **hash 是否是 `doc_id` 当场产出的派生 blob** ✓（与 [`Self::record_derived_blobs`] 配对 ✓）。
+    fn derived_for_doc(&self, hash_hex: &str, doc_id: &str) -> bool {
+        self.derived_blobs
+            .lock()
+            .map(|registry| {
+                registry
+                    .get(&hash_hex.to_ascii_lowercase())
+                    .map(|produced_by| produced_by == doc_id)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+    }
+}
+
+/// 从（改写后的）工具响应里收集派生 blob 的 hash ✓（[`ServerState::record_derived_blobs`] 用 ✓）。
+///
+/// 两个形状 ✓：`/api/blob/<hash>?…` URL ✓ ＋ `"blob_hash": "<hash>"` 字段值 ✓
+///（后者是 put_blob 一族工具的回显形状 ✓）。跨文档风险为零：这些值只出现在
+/// **授权过的工具调用响应里** ✓（跨文档工具已在 P2-N1 的作用域闸被拒 ✓）。
+fn collect_blob_hashes(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(text) => {
+            if let Some(rest) = text.strip_prefix("/api/blob/") {
+                let hash = rest.split(['?', '&']).next().unwrap_or("");
+                if !hash.is_empty() {
+                    out.push(hash.to_owned());
+                }
+            }
+        }
+        Value::Object(map) => {
+            for (key, item) in map {
+                if key == "blob_hash" {
+                    if let Some(hash) = item.as_str() {
+                        if !hash.is_empty() {
+                            out.push(hash.to_owned());
+                        }
+                    }
+                } else {
+                    collect_blob_hashes(item, out);
+                }
+            }
+        }
+        Value::Array(items) => items.iter().for_each(|item| collect_blob_hashes(item, out)),
+        _ => {}
     }
 }
 
@@ -517,6 +637,8 @@ pub fn serve(mut options: HttpOptions) -> std::io::Result<ServerHandle> {
         requests: AtomicU64::new(0),
         connections: AtomicUsize::new(0),
         shutdown: AtomicBool::new(false),
+        blob_roots_cache: Mutex::new(std::collections::HashMap::new()),
+        derived_blobs: Mutex::new(std::collections::HashMap::new()),
     });
 
     let listener = TcpListener::bind(&options.bind)?;
@@ -534,6 +656,12 @@ pub fn serve(mut options: HttpOptions) -> std::io::Result<ServerHandle> {
                 >= accept_state.options.max_connections
             {
                 let mut stream = stream;
+                // **写超时也护住 503 这条路** ✓（审计 P1-N1）：拒绝响应虽小 ✓，
+                // 但 accept 线程是**单线程**的 ✓ —— 一个"只发请求不读响应"的客户端
+                // 卡在这次 write 上 ⇒ 后续所有连接都进不来 ✗ ⇒ 整站拒绝服务 ✗。
+                stream
+                    .set_write_timeout(Some(std::time::Duration::from_secs(10)))
+                    .ok();
                 let response = Response::from_error(&YanshiError::new(
                     ErrorCode::ResourceExhausted,
                     ErrorContext::detail("并发连接数已达上限"),
@@ -562,6 +690,17 @@ fn handle_connection(state: Arc<ServerState>, stream: TcpStream) -> std::io::Res
     // 空闲 30s 视为断开，避免长期占着线程（keep-alive 连接会复用到客户端关闭为止）。
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .ok();
+    // **响应补写超时** ✓（第三方审计 P1-N1）：此前**全仓没有任何 set_write_timeout** ✓
+    // —— 请求体读完后读超时从此不再起作用 ✓，客户端只要**停止读 socket** ✓，
+    // 处理线程就**永久阻塞在 write 上** ✗：max_connections（缺省 64）个慢读连接
+    // ＝ 整站拒绝服务 ✗，且攻击者保持不关就**无限期持续** ✗。
+    // 语义：单次 write 超过 10 秒即视为对端不读 ⇒ 按写失败走现有 `?` 路径关闭连接 ✓，
+    // 连接槽随之回收 ✓（无需新增状态；WS 升级后同一条 socket ⇒ 推送写同样受护 ✓）。
+    // 配套判据（transport 形态）：开满 64 个只发请求不读响应的连接 ⇒
+    // 第 65 个 `GET /health` 必须在写超时窗口内拿到 200（旧行为：永久 503）。
+    stream
+        .set_write_timeout(Some(std::time::Duration::from_secs(10)))
         .ok();
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
@@ -1674,7 +1813,7 @@ fn origin_is_local(origin: &str) -> bool {
 /// 各写一份必然漂移 ✗（本项目在这上面栽过不止一次 ✓）。
 /// **恒定时间比较密钥** ✓（第三方代码审计附带项：`provided == expected` 在**第一个不相等
 /// 字节**就短路 ✗ ⇒ 理论上可经**重复计时**逐字节恢复前缀 ✓）。长度仍会泄露 ✗ 但长度不是秘密内容 ✓。
-/// 逐字节**异或累积**、不提前退出 ⇒ 无论哪一位开始不同，耗时只随长度线性变化 ✓。
+/// 逐字节**按位或累积不等位**、不提前退出 ⇒ 无论哪一位开始不同，耗时只随长度线性变化 ✓。
 fn secrets_equal(provided: &str, expected: &str) -> bool {
     provided.len() == expected.len()
         && provided
@@ -1986,7 +2125,19 @@ fn import_finish(state: &ServerState, request: &Request, upload_id: &str) -> Res
     if bytes.is_empty() {
         return crate::http::bad_request("上传内容为空 ⇒ 这不是一个 .yanshi 工程包");
     }
-    let doc_id = request.param("doc_id").map(str::to_owned);
+    // **非法 doc_id 在门口就拒** ✓（审计 P3 #3）：`?doc_id=` 此前不校验 ✗ ——
+    // 非法 id 在内存以原始串建文档 ✓、落盘走 `docs/_invalid` 兑底 ✓
+    // ⇒ 两个非法 id 串扰 ✓ 且 HTTP 无法精确删除 ✗。与 `duplicate_document`
+    // 同一份白名单（`FileStore::validate_doc_id` ✓）⇒ 400 拒绝 ✓。
+    let doc_id = match request.param("doc_id") {
+        None => None,
+        Some(raw) => {
+            if let Err(error) = yanshi_server::persist::FileStore::validate_doc_id(raw) {
+                return Response::from_error(&error);
+            }
+            Some(raw.to_owned())
+        }
+    };
     let actor = "human:web";
     let Ok(mut workspace) = state.workspace.lock() else {
         return internal("工作区锁中毒");
@@ -2232,8 +2383,19 @@ fn web_diagnostics_facts(
 ///（"DELETE 返回 closed:true，但文档还在列表里" ✓）：那不是它的错 ✓，
 /// 是**方法名与语义对不上** ✓ ⇒ 本次把两者分开 ✓，并让关闭这条**只**回答关闭这件事 ✓。
 fn close_document(state: &ServerState, request: &Request, doc_id: &str) -> Response {
-    if let Err(response) = authorize(state, request, doc_id) {
-        return response;
+    let principal = match authorize(state, request, doc_id) {
+        Ok(principal) => principal,
+        Err(response) => return response,
+    };
+    // **viewer 不许 close** ✓（审计 P3 #2）：关闭只是把文档从内存放下 ✓，但
+    // viewer 令牌能把自己的**查看会话**当武器 ✓ —— POST 一下就把**他人正在编辑**的
+    // 内存态文档逐出 ✓（干扰型 ✗）。关闭是**控制面动作** ✓ ⇒ 与 `cancel_operation`
+    // 同一口径：只许有编辑权的角色 ✓（viewer 页面从不调 close ✓，实测无消费者 ✓）。
+    if !principal.role.can_edit() {
+        return crate::http::forbidden(format!(
+            "该 token 的角色是 {} ⇒ 不允许关闭文档（关闭会影响正在编辑的会话）",
+            principal.role.as_str()
+        ));
     }
     let Ok(mut workspace) = state.workspace.lock() else {
         return internal("工作区锁中毒");
@@ -2415,11 +2577,16 @@ fn blob_upload(state: &ServerState, request: &Request) -> Response {
         return internal("工作区锁中毒");
     };
     match workspace.store().put(&body) {
-        Ok(hash) => Response::json(
-            200,
-            &json!({"ok": true, "blob_hash": hash.to_string(), "size": body.len(),
-                    "mime_type": mime_type, "decoded_from": decoded_from}),
-        ),
+        Ok(hash) => {
+            // **上传即登记** ✓（审计 P1 存量 5.5）：上传者拿到的 hash 回头就要读回
+            //（预览／入图 ✓）⇒ 记产出者为本文档，读回时放行 ✓（不登记会被引用集闸拦住 ✓）。
+            state.record_derived_hash(&hash.to_string(), &doc_id);
+            Response::json(
+                200,
+                &json!({"ok": true, "blob_hash": hash.to_string(), "size": body.len(),
+                        "mime_type": mime_type, "decoded_from": decoded_from}),
+            )
+        }
         Err(error) => Response::from_error(&error),
     }
 }
@@ -2436,9 +2603,10 @@ fn blob_by_hash(state: &ServerState, request: &Request, hash: &str) -> Response 
         Ok(doc_id) => doc_id,
         Err(response) => return response,
     };
-    if let Err(response) = authorize(state, request, &doc_id) {
-        return response;
-    }
+    let principal = match authorize(state, request, &doc_id) {
+        Ok(principal) => principal,
+        Err(response) => return response,
+    };
     let Ok(hash) = hash.parse::<yanshi_core::BlobHash>() else {
         return crate::http::bad_request("非法 blob hash");
     };
@@ -2448,6 +2616,24 @@ fn blob_by_hash(state: &ServerState, request: &Request, hash: &str) -> Response 
     let store = workspace.store();
     if !store.exists(&hash) {
         return crate::http::not_found(format!("blob {hash} 不存在"));
+    }
+    // **每文档令牌只能读自己文档的 blob** ✓（审计 P1 存量 5.5）：CAS 是**全工作区共享**的 ✓
+    // —— 此前读侧只验「任一文档的有效令牌」✗ ⇒ 拿文档 A 的令牌就能读文档 B 的画布内容 ✗
+    //（tile／位图全在 CAS 里 ⇒ 跨文档内容泄露 ✗）。放行口径（与 `ensure_doc_scope` 同形 ✓）：
+    // ① **owner** 令牌：跨文档全读 ✓（本地传输缺省就是 owner ⇒ MCP/测试行为不变 ✓）；
+    // ② **日志引用集**：blob 被**本授权文档**的原子引用 ✓ —— viewer/editor 拉自己文档的
+    //    tile／位图全走这条 ✓（引用集按 (doc_id, head_seq) 缓存 ✓）；
+    // ③ **派生登记**：blob 是本授权文档当场产出的（导出包 ✓／预览 PNG ✓ —— 不在日志里 ✓，
+    //    改写 `yanshi://blob/<hash>` 时已登记 ✓）⇒ 浏览器下载流不被误伤 ✓。
+    // 三臂都不中 ⇒ 403 ✓（不是 404：blob 确实存在，只是**没授权给你** ✓）。
+    let allowed = principal.role == Role::Owner
+        || state.blob_referenced(&workspace, &doc_id, &hash)
+        || state.derived_for_doc(&hash.to_string(), &doc_id);
+    if !allowed {
+        return crate::http::forbidden(format!(
+            "blob {hash} 不属于文档 {doc_id}（未被其日志引用、也非其派生产物）⇒ \
+             跨文档读 blob 需要 owner 令牌"
+        ));
     }
     match store.get(&hash) {
         // **content-type 必须按魔数说话** ✓（三方对照实测的红点 ✓）：
@@ -2629,6 +2815,9 @@ fn tool_call_with(
     } else {
         value
     };
+    // **派生产物登记** ✓（审计 P1 存量 5.5）：响应里改写出的 `/api/blob/<hash>`
+    // 是本次会话文档当场产出的（导出包／预览）⇒ 记下产出者，读回时放行 ✓。
+    state.record_derived_blobs(&value, &doc_id);
     // **B6：写路径建文档要回显** ✓：`registry.call` 之后、状态映射之前插字段 ✓
     //   （`created` = 本次调用前不存在 ⇒ 刚才是入口替调用方建的 ✓）。
     if pre_create {
@@ -3474,6 +3663,8 @@ fn atom_submit(state: &ServerState, request: &Request) -> Response {
                 request.token().as_deref(),
                 origin.as_deref(),
             );
+            // **派生产物登记** ✓（同 tool_route ✓）：上传/提交响应里的 blob URL 也记产出者 ✓。
+            state.record_derived_blobs(&value, &doc_id);
             Response::json(200, &value)
         }
         Err(error) => Response::from_error(&error),
@@ -3526,8 +3717,15 @@ fn origin_is_acceptable(origin: &str, request: &Request) -> bool {
     let Some(origin_host) = host_of(origin) else {
         return false;
     };
-    let loopback =
-        origin_host == "localhost" || origin_host == "::1" || origin_host.starts_with("127.");
+    // **回环判定必须走 IpAddr 解析** ✓（审计 P3 #1）：`starts_with("127.")` 是前缀匹配 ✗
+    // ⇒ `127.0.0.1.evil.com` 会被当成回环放行 ✗ —— 与 `origin_is_local` 的严格口径
+    //（`IpAddr::parse + is_loopback` ✓）不一致 ✗。统一后：evil 域名解析不成 IP ✓
+    // ⇒ 落到下面的 Host 同源比较 ✓ ⇒ 与本服务 Host 不一致 ⇒ 拒 ✓。
+    let loopback = origin_host.eq_ignore_ascii_case("localhost")
+        || origin_host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false);
     if loopback {
         return true;
     }
@@ -3873,7 +4071,8 @@ fn handle_ws_message(
                     }
                 }
             };
-            let result = rewrite_blob_urls_value(result, doc_id, state.options.rewrite_blob_urls);
+            let result =
+                rewrite_blob_urls_value(state, result, doc_id, state.options.rewrite_blob_urls);
             let _ = send_json(
                 write_stream,
                 &json!({"type": "ack", "request_id": request_id, "result": result}),
@@ -3888,10 +4087,19 @@ fn handle_ws_message(
     }
 }
 
-fn rewrite_blob_urls_value(value: Value, doc_id: &str, rewrite: bool) -> Value {
+fn rewrite_blob_urls_value(
+    state: &ServerState,
+    value: Value,
+    doc_id: &str,
+    rewrite: bool,
+) -> Value {
     if rewrite {
-        // 这条路径没有请求上下文（工具层内部用）=> 保持**相对路径** ✓（传 `None` ✓）
-        rewrite_blob_urls(value, doc_id, None, None)
+        // 这条路径没有请求上下文（工具层内部用）=> 保持**相对路径** ✓（传 `None` ✓）。
+        let value = rewrite_blob_urls(value, doc_id, None, None);
+        // **派生产物登记** ✓（审计 P1 存量 5.5）：WS 工具响应里的导出/预览 URL 同样记产出者 ✓
+        //（浏览器拿到 URL 后仍是走 HTTP GET 读回 ⇒ 闸在那一侧 ✓）。
+        state.record_derived_blobs(&value, doc_id);
+        value
     } else {
         value
     }
@@ -4107,6 +4315,8 @@ mod tests {
             requests: AtomicU64::new(0),
             connections: AtomicUsize::new(0),
             shutdown: AtomicBool::new(false),
+            blob_roots_cache: Mutex::new(std::collections::HashMap::new()),
+            derived_blobs: Mutex::new(std::collections::HashMap::new()),
         }
     }
 

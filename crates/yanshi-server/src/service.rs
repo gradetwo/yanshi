@@ -1415,6 +1415,10 @@ impl Workspace {
         actor: &str,
         session: &str,
     ) -> Result<usize> {
+        // **副本目标 id 也要过白名单** ✓（审计 P3 #14）：`create_document` 内部有校验 ✓
+        // 但在它之前 `open_document(from)` 已跑完 ✓ —— 校验提前到入口 ✓
+        // 让 400 在门口就发生，而不是静默落 `docs/_invalid` ✓。
+        crate::persist::FileStore::validate_doc_id(to)?;
         let (width, height, background, atoms) = {
             let source = self.open_document(from)?;
             let state = source.state();

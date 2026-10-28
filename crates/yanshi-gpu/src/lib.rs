@@ -1067,7 +1067,18 @@ impl Quantizer {
             let slice = readback.slice(..);
             let signal = std::sync::Arc::new(OnceSignal::new(&self.device));
             let signal_in_cb = std::sync::Arc::clone(&signal);
-            slice.map_async(wgpu::MapMode::Read, move |_r| {
+            // **map 结果不能丢** ✓（审计 P3 #4）：此前回调签名是 `|_r|` ✗ ——
+            // 设备丢失时回调带着 `Err(MapError)` 来 ✗，后面照样 `get_mapped_range`
+            // ⇒ panic ✗ 而非干净降级 ✗。现在把 Err 存进共享格 ✓，与 blur 路形态统一 ✓。
+            let map_error =
+                std::sync::Arc::new(std::sync::Mutex::new(None::<wgpu::BufferAsyncError>));
+            let map_error_in_cb = std::sync::Arc::clone(&map_error);
+            slice.map_async(wgpu::MapMode::Read, move |result| {
+                if let Err(error) = result {
+                    if let Ok(mut cell) = map_error_in_cb.lock() {
+                        *cell = Some(error);
+                    }
+                }
                 signal_in_cb.signal();
             });
             let _ = self.device.poll(wgpu::PollType::Poll);
@@ -1116,8 +1127,16 @@ impl Quantizer {
                 readback_timed_out = true;
             }
             if !readback_timed_out {
-                let mapped = slice.get_mapped_range();
-                out.extend_from_slice(&mapped);
+                let map_failed = map_error.lock().map(|cell| cell.is_some()).unwrap_or(false);
+                if map_failed {
+                    // **map 失败 ⇒ 设备丢失形态** ✓（审计 P3 #4）：不碰 `get_mapped_range`
+                    //（会 panic ✗）⇒ `out` 保持为空 ✓ ⇒ 调用方按「长度不足」回退 CPU ✓
+                    //（与读回超时同路 ✓，不谎报成功 ✓）。
+                    eprintln!("  ⏭ GPU map 失败（设备丢失？）⇒ 本次按不可用处理 ⇒ 调用方回退 CPU");
+                } else {
+                    let mapped = slice.get_mapped_range();
+                    out.extend_from_slice(&mapped);
+                }
             }
         }
         readback.unmap();
@@ -1140,7 +1159,10 @@ impl Quantizer {
                 let _ = tx.send(result);
             });
             let _ = self.device.poll(wgpu::PollType::Wait);
-            if rx.recv().is_ok() {
+            // **map 结果必须看** ✓（审计 P3 #4）：此前只看「回调 fired」（`rx.recv().is_ok()` ✗）——
+            // 设备丢失时回调带着 Err 来 ⇒ `get_mapped_range` 会 panic ✗。统一成 blur 路形态：
+            // Err ⇒ 本次时间戳缺失 ✓（不读数、不 unmap —— map 失败后缓冲已不处于 mapped 态 ✓）。
+            if matches!(rx.recv(), Ok(Ok(()))) {
                 let data = slice.get_mapped_range();
                 if data.len() >= 16 {
                     let start = u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
@@ -2108,7 +2130,10 @@ impl Quantizer {
             let _ = tx.send(r);
         });
         let _ = self.device.poll(wgpu::PollType::Wait);
-        if rx.recv().is_err() {
+        // **map 结果必须看** ✓（审计 P3 #4）：此前只看「回调 fired」（`rx.recv().is_err()` 才返回 ✗）——
+        // 设备丢失时回调带着 Err 来 ⇒ `get_mapped_range` 会 panic ✗。与 blur 路同形：
+        // Err ⇒ 回 None 降级 ✓（不读数、不 unmap —— map 失败后缓冲已不处于 mapped 态 ✓）。
+        if !matches!(rx.recv(), Ok(Ok(()))) {
             return None;
         }
         let mapped = slice.get_mapped_range();

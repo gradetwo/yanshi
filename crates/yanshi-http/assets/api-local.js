@@ -294,6 +294,24 @@ export async function makeLocalApi(db) {
       if (!res || !res.ok) return null;
       const body = await res.json();
       if (!body || body.ok !== true || !Array.isArray(body.atoms)) return null;
+      // **截断对账** ✓（第三方审计 P2-N3 回归判据）：`/api/atoms` 缺省 limit=10,000
+      // 且按 seq 升序 **take** —— 超过上限时**被丢弃的是最新的原子** ✗（服务端
+      // `head_seq` 是日志末条 seq ✓）。本地内核若照常折叠这前一万条 ⇒ 画布
+      // **静默停在旧状态** ✗（本仓判据就记录过 39,354 笔触的文档 ✓）。
+      // ⇒ 末条 seq 落后于 head_seq（或日志非空却回 0 条）即认定截断：
+      // **放弃本地渲染、回落服务端权威路径**（与 heavy 分支同路 ✓，不谎报成功 ✓）。
+      // 该判定对 seq 非连续的日志同样成立 ✓（比"head_seq > atoms.length"更严 ✓）。
+      const headSeq = Number(body.head_seq || 0);
+      if (headSeq > 0) {
+        const last = body.atoms.length
+          ? Number(body.atoms[body.atoms.length - 1].seq || 0)
+          : 0;
+        if (last < headSeq) {
+          console.warn("[yanshi] atom log truncated at limit (" + body.atoms.length +
+                       " of head_seq " + headSeq + "), falling back to server render");
+          return null;
+        }
+      }
       return body.atoms.map((atom) => ({ atom, seq: Number(atom.seq || 0) }));
     } catch (e) {
       return null; // 网络不可用 ⇒ 回落本地日志 ✓

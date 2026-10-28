@@ -1812,3 +1812,111 @@ fn a_foreign_origin_cannot_mint_tokens_or_enumerate_documents() {
     let (status, _) = client.json_with("GET", "/api/documents", None, None, &[]);
     assert_eq!(status, 200, "无额外头的对照请求应当成功");
 }
+
+/// **编辑令牌不许跨文档删除** ✓（第三方审计 P2-N1 回归判据）。
+///
+/// `delete_document` 工具的 `document_id` 是**要删的那一份** ✓，
+/// 与会话 `doc_id` 分离 ✓ ⇒ 此前它没有任何作用域校验 ✗ ——
+/// 拿文档 A 的 editor 令牌就能真删文档 B ✗。修复后挂 `ensure_doc_scope` ✓
+/// ⇒ 跨文档 403 ✓；删**自己**的文档照常 ✓（`ensure_doc_scope` 的相等臂 ✓）。
+#[test]
+fn editor_token_cannot_delete_another_document_via_tool() {
+    let handle = start_server();
+    let addr = handle.addr;
+    let token_a = create_document(addr, "doc_scope_a");
+    let token_b = create_document(addr, "doc_scope_b");
+    assert!(!token_a.is_empty() && !token_b.is_empty());
+
+    // ① A 的 editor 令牌删 B ⇒ 403 permission_denied ✓
+    let (status, body) = tool(
+        addr,
+        "doc_scope_a",
+        &token_a,
+        "delete_document",
+        json!({"document_id": "doc_scope_b"}),
+    );
+    assert_eq!(status, 403, "跨文档删除必须被拒：{body}");
+    assert_eq!(body["error_code"], "permission_denied", "{body}");
+
+    // ② B 还在 ✓
+    let (status, body) = tool(addr, "doc_scope_b", &token_b, "get_inflight", json!({}));
+    assert_eq!(status, 200, "被越权删除的目标必须原样还在：{body}");
+
+    // ③ editor 删**自己的**文档（document_id == 会话 doc_id）⇒ 照常放行 ✓
+    let (status, body) = tool(
+        addr,
+        "doc_scope_a",
+        &token_a,
+        "delete_document",
+        json!({"document_id": "doc_scope_a"}),
+    );
+    assert_eq!(status, 200, "本文档删除不该被误伤：{body}");
+
+    // ④ 同理：import_project 的显式落点也不许越界 ✓
+    let (status, body) = tool(
+        addr,
+        "doc_scope_b",
+        &token_b,
+        "import_project",
+        json!({"path": "/tmp/never-read.yanshi", "doc_id": "doc_scope_a"}),
+    );
+    assert_eq!(status, 403, "跨文档导入落点必须被拒：{body}");
+    assert_eq!(body["error_code"], "permission_denied", "{body}");
+}
+
+/// **blob 跨文档读必须被拒** ✓（审计 P1 存量 5.5 回归判据）。
+///
+/// CAS 是全工作区共享的 ✓ —— 修复前读侧只验「任一文档的有效令牌」✗ ⇒
+/// 拿文档 A 的令牌就能读文档 B 的画布内容（tile／位图全在 CAS 里 ✗）。
+/// 修复后三臂放行：owner 直通 ✓、本文档日志引用集 ✓、本文档派生产物 ✓。
+///
+/// **变异即红** ✓：删掉引用集/派生闸 ⇒ ② 返回 200（B 的内容跨文档泄露）✓；
+/// 误伤派生通道 ⇒ ① 红（上传读回被拦）✓。
+#[test]
+fn a_blob_of_document_b_is_not_readable_with_document_a_token() {
+    // put_blob 需要**持久化存储**（`--root`）⇒ 用带根目录的服务器 ✓。
+    let mut root = std::env::temp_dir();
+    root.push(format!("yanshi_blob_scope_{}", std::process::id()));
+    let _cleanup = Cleanup(root.clone());
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let handle = start_server_with_root(root.clone());
+    let addr = handle.addr;
+    let token_a = create_document(addr, "doc_blob_a");
+    let token_b = create_document(addr, "doc_blob_b");
+
+    // 文档 B 里放一个 blob（put_blob + base64 载荷；PNG 魔数开头让 magic 复核过 ✓）。
+    // base64 = 89 50 4E 47 0D 0A 1A 0A 01 02 03 04 的编码。
+    let (status, body) = tool(
+        addr,
+        "doc_blob_b",
+        &token_b,
+        "put_blob",
+        json!({"data_base64": "iVBORw0KGgoBAgME"}),
+    );
+    assert_eq!(status, 200, "{body}");
+    let hash = body["blob_hash"]
+        .as_str()
+        .expect("put_blob 必须回 blob_hash")
+        .to_owned();
+
+    // ① B 的 editor 令牌读自己的 blob ⇒ 200 ✓（上传即登记 ⇒ 派生臂放行 ✓）
+    let mut client = HttpClient::new(addr);
+    let (status, body) = client.json(
+        "GET",
+        &format!("/api/blob/{hash}?doc=doc_blob_b&token={token_b}"),
+        None,
+        None,
+    );
+    assert_eq!(status, 200, "本文档读回自己的 blob 必须放行：{body}");
+
+    // ② A 的 editor 令牌读 B 的 blob ⇒ 403 permission_denied ✓
+    let (status, body) = client.json(
+        "GET",
+        &format!("/api/blob/{hash}?doc=doc_blob_a&token={token_a}"),
+        None,
+        None,
+    );
+    assert_eq!(status, 403, "跨文档读 blob 必须被拒：{body}");
+    assert_eq!(body["error_code"], "permission_denied", "{body}");
+}

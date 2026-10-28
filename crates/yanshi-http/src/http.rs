@@ -107,6 +107,9 @@ impl Request {
         let query = parse_query(query_text);
 
         let mut headers = BTreeMap::new();
+        // **重复 Content-Length 计数** ✓（审计 P2-N2）：头部存进 BTreeMap 会静默覆盖前值 ✓
+        // ⇒ 必须在覆盖**之前**数清出现了几次 ✓。
+        let mut content_length_seen = 0usize;
         let mut header_bytes = 0usize;
         let mut header_count = 0usize;
         loop {
@@ -131,8 +134,28 @@ impl Request {
                 return Err(invalid("头部条数过多"));
             }
             if let Some((name, value)) = trimmed.split_once(':') {
-                headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_owned());
+                let name = name.trim().to_ascii_lowercase();
+                if name == "content-length" {
+                    content_length_seen += 1;
+                }
+                headers.insert(name, value.trim().to_owned());
             }
+        }
+
+        // **走私防线** ✓（审计 P2-N2；RFC 7230 §3.3.3）：
+        //
+        // ① **CL 与 TE 互斥** ✓ —— 此前 Content-Length 命中即用、Transfer-Encoding 被无视 ✗
+        //    ⇒ CL+TE 同现按 CL 处理正是 CL.TE 走私的经典形状 ✗。有 TE 就拒 ✓，
+        //    与常见代理取首 CL 的语义不可兼容 ✓ ⇒ 宁可断连 ✓。
+        // ② **重复 Content-Length 一律拒绝** ✓ —— 相等值也拒 ✓：前置代理（如 nginx）取
+        //    **首个** CL ✓，本解析器存 BTreeMap **静默取后值** ✗ ⇒ 两端对 body 边界判断分歧
+        //    ⇒ 第二个请求就会在 keep-alive 连接上被当新请求解析，可绕过代理层鉴权/审计头 ✗。
+        //    取首与取尾永选一，这里选择**都不取** ✓。
+        if content_length_seen > 1 {
+            return Err(invalid("重复的 content-length"));
+        }
+        if headers.contains_key("content-length") && headers.contains_key("transfer-encoding") {
+            return Err(invalid("content-length 与 transfer-encoding 同时出现"));
         }
 
         let mut body = Vec::new();
@@ -667,5 +690,53 @@ mod tests {
         assert_eq!(request.path, "/a");
         assert_eq!(request.param("b"), Some("c"));
         assert_eq!(request.headers.get("host").map(String::as_str), Some("x"));
+    }
+
+    /// **CL 与 TE 同时出现必须被拒** ✓（审计 P2-N2 回归判据；RFC 7230 §3.3.3）。
+    /// 变异（删掉互斥闸、回退成「CL 命中即用」）⇒ 这条红 ✓。
+    #[test]
+    fn cl_plus_te_is_rejected_as_a_smuggling_shape() {
+        let raw = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 13\r\n\
+             Transfer-Encoding: chunked\r\n\r\n{\"size\": 4.0}"
+            .to_vec();
+        let error = Request::read(&mut std::io::Cursor::new(raw)).expect_err("CL+TE 必须报错");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("同时出现"), "{error}");
+    }
+
+    /// **重复 Content-Length 一律拒绝** ✓（审计 P2-N2 回归判据）。
+    /// 相等值也拒 ✓：取首（nginx 形状）与本解析器旧取尾（BTreeMap 覆盖形状）
+    /// 对 body 边界的判断分歧正是走私面 ⇒ 唯一安全答案是**都不取** ✓。
+    /// 变异（回退成 BTreeMap 静默取后值）⇒ 这条红 ✓。
+    #[test]
+    fn duplicate_content_length_is_rejected_even_when_equal() {
+        let equal = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\
+             Content-Length: 5\r\n\r\nhello"
+            .to_vec();
+        let error =
+            Request::read(&mut std::io::Cursor::new(equal)).expect_err("重复 CL（相等）必须报错");
+        assert!(
+            error.to_string().contains("重复的 content-length"),
+            "{error}"
+        );
+
+        let conflicting = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\
+             Content-Length: 13\r\n\r\nhello"
+            .to_vec();
+        let error = Request::read(&mut std::io::Cursor::new(conflicting))
+            .expect_err("重复 CL（冲突）必须报错");
+        assert!(
+            error.to_string().contains("重复的 content-length"),
+            "{error}"
+        );
+    }
+
+    /// 单个 CL 的哨兵 ⇒ 照旧按声明长度读请求体 ✓（互斥闸只拦「同现」✓）。
+    #[test]
+    fn single_content_length_still_parses() {
+        let request = parse(
+            "POST /api/tools/draw_stroke HTTP/1.1\r\nContent-Length: 13\r\n\r\n{\"size\": 4.0}",
+        );
+        assert_eq!(request.body.len(), 13);
     }
 }
