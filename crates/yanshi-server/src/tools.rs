@@ -17059,6 +17059,8 @@ struct AttemptRecord {
     status: &'static str,
     /// **原始参数**：`based_on` 靠它继承（第 602 轮：这个字段曾加失败，导致四次误判）。
     params: Value,
+    /// 创建序号（单调递增）⇒ 淘汰时按它取最旧的 ✓。
+    created: u64,
 }
 
 type AttemptMap = std::collections::HashMap<String, AttemptRecord>;
@@ -17082,9 +17084,129 @@ fn export_result_lookup(key: &ExportResultKey) -> Option<ExportResultValue> {
 /// 记住本次结果 —— **调用方必须先确认"没有任何 blob 被打包"** ✓（见上面的说明）。
 fn export_result_remember(key: ExportResultKey, value: ExportResultValue) {
     if let Ok(mut guard) = export_result_cache().lock() {
+        // 只保留最近一次 ⇒ 上限恒为 1 条（值可能是一张大图 ✓，不能按文档累积 ✗）。
         guard.clear();
         guard.insert(key, value);
     }
+}
+
+/// 尝试表里**每个文档**最多留这么多条（超出按创建顺序淘汰最旧的）✓。
+///
+/// **为什么必须有上限**：`try_stroke` 每次把整张 RGBA 放进 `ATTEMPTS` ✓ ⇒
+/// 不设上限就是**无界内存**（4K 试画一张 ~33 MB，几百次就 OOM）✗。
+/// **淘汰不静默** ✓：`try_stroke` 的响应里有 `evicted_attempts`／`evicted_count` ✓。
+const MAX_ATTEMPTS_PER_DOC: usize = 100;
+
+/// `log.jsonl` 保留的最大行数：一次尝试最多两行（try + commit/discard）⇒
+/// 100 条约 200 行 ✓，留 4 倍余量给跨重启的旧记录 ✓。
+const MAX_ATTEMPT_LOG_LINES: usize = MAX_ATTEMPTS_PER_DOC * 4;
+
+/// 磁盘上的尝试目录保留 7 天 ✓：跨进程重启仍可查是特性 ✓，但无界堆积会吃满 /tmp ✗。
+const ATTEMPT_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
+
+static ATTEMPT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn next_attempt_seq() -> u64 {
+    ATTEMPT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 尝试落盘的根目录 —— **只此一处** ✓（三处曾各写一遍 ⇒ 改地址时会漏改 ✗）。
+fn attempt_root() -> std::path::PathBuf {
+    std::env::temp_dir().join("yanshi-attempts")
+}
+
+/// 淘汰**该文档**最旧的记录直到不超过 `cap`；返回被淘汰的 id ✓。
+///
+/// 只看 `doc_id` 相同的记录 ⇒ **一个文档的尝试不会挤掉别的文档的** ✓。
+fn evict_attempts_over_cap(map: &mut AttemptMap, doc_id: &str, cap: usize) -> Vec<String> {
+    let mut mine: Vec<(u64, String)> = map
+        .iter()
+        .filter(|(_, record)| record.doc_id == doc_id)
+        .map(|(id, record)| (record.created, id.clone()))
+        .collect();
+    if mine.len() <= cap {
+        return Vec::new();
+    }
+    mine.sort_unstable();
+    let overflow = mine.len() - cap;
+    let mut evicted = Vec::with_capacity(overflow);
+    for (_, id) in mine.into_iter().take(overflow) {
+        map.remove(&id);
+        evicted.push(id);
+    }
+    evicted
+}
+
+/// 每个进程只清一次（`try_stroke` 与 `list_attempts` 共用）✓。
+static ATTEMPT_CLEANUP: std::sync::Once = std::sync::Once::new();
+
+/// 启动时清掉**过期**的尝试目录（最后修改早于 7 天）✓。
+///
+/// **为什么不删光**：`list_attempts` 承诺"跨进程重启仍在" ✓（读 `log.jsonl` ✓）
+/// ⇒ 删光会打破那个承诺 ✗；而**无界堆积**同样不行 ✗ ⇒ 所以按年龄清 ✓。
+fn cleanup_stale_attempt_dirs() {
+    ATTEMPT_CLEANUP.call_once(|| {
+        let removed = cleanup_attempt_dirs_older_than(
+            &attempt_root(),
+            std::time::Duration::from_secs(ATTEMPT_RETENTION_SECS),
+        );
+        if removed > 0 {
+            eprintln!("偃师：清理了 {removed} 个过期试画目录（超过 7 天）");
+        }
+    });
+}
+
+/// 删掉 `root` 下最新文件修改时间早于 `retention` 的目录；返回删除的个数 ✓。
+///
+/// **单独成函数是为了能对独立根目录测** ✓（真根目录被 `Once` 保护，测试删不动 ✓）。
+fn cleanup_attempt_dirs_older_than(
+    root: &std::path::Path,
+    retention: std::time::Duration,
+) -> usize {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    let now = std::time::SystemTime::now();
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let newest = std::fs::read_dir(&path)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|file| file.metadata().ok()?.modified().ok())
+            .max()
+            // 空目录没有文件时间 ⇒ 退回目录自己的 mtime，否则它会永远留下 ✗。
+            .or_else(|| entry.metadata().ok().and_then(|meta| meta.modified().ok()));
+        let stale = newest
+            .and_then(|time| now.duration_since(time).ok())
+            .is_some_and(|age| age > retention);
+        if stale && std::fs::remove_dir_all(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// 只保留 `log.jsonl` 的最后 `max_lines` 行 ✓（先淘汰旧记录 ✓）。
+///
+/// **为什么在写路径上做**：原注释说"超 100 条由 list_attempts 负责淘汰" ✗，
+/// 但它只读不写 ⇒ 从未真正淘汰过 ✗。写路径是唯一能安全重写日志的地方 ✓。
+fn prune_attempt_log(dir: &std::path::Path, max_lines: usize) {
+    let path = dir.join("log.jsonl");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= max_lines {
+        return;
+    }
+    let kept = lines[lines.len() - max_lines..].join("\n");
+    let _ = std::fs::write(&path, format!("{kept}\n"));
 }
 
 pub(crate) fn replay_brush_bitmap(
@@ -19354,6 +19476,7 @@ fn write_commit_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
 /// **`discard_stroke`**：把某次试画标成 discarded —— **不写文档**，之后也不能再提交。
 fn write_discard_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let attempt_id = require_str(args, "attempt_id")?;
+    cleanup_stale_attempt_dirs();
     let mut map = attempts().lock().map_err(|_| {
         YanshiError::new(
             ErrorCode::PreconditionFailed,
@@ -19391,9 +19514,7 @@ fn write_discard_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
         "label": record.label,
         "status": "discarded",
     });
-    let dir = std::env::temp_dir()
-        .join("yanshi-attempts")
-        .join(&ctx.doc_id);
+    let dir = attempt_root().join(&ctx.doc_id);
     std::fs::create_dir_all(&dir).ok();
     if let Ok(mut log) = std::fs::OpenOptions::new()
         .create(true)
@@ -19416,9 +19537,8 @@ fn read_list_attempts(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let limit = optional_count(args, "limit")?.unwrap_or(20).min(500) as usize;
     let want_label = optional_str(args, "label");
     let want_status = optional_str(args, "status");
-    let dir = std::env::temp_dir()
-        .join("yanshi-attempts")
-        .join(&ctx.doc_id);
+    cleanup_stale_attempt_dirs();
+    let dir = attempt_root().join(&ctx.doc_id);
     let text = std::fs::read_to_string(dir.join("log.jsonl")).unwrap_or_default();
     let mut hits: Vec<Value> = Vec::new();
     for line in text.lines().rev() {
@@ -19494,6 +19614,7 @@ fn write_commit_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
             label: record.label.clone(),
             status: "committed",
             params: record.params.clone(),
+            created: record.created,
         }
     };
     if record.doc_id != ctx.doc_id {
@@ -19541,6 +19662,7 @@ fn write_commit_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 /// `write_import_image`（实测函数体内这两类调用 0 次）。所以试画只需取它的返回，
 /// 不需要给引擎加开关。
 fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value> {
+    cleanup_stale_attempt_dirs();
     // **`layer_id` 在 spec 里非必填**：否则框架会在合并之前拒掉只给 `based_on` 的调用
     // （第 595 轮实测：错误来自框架校验，handler 根本没执行）。
     if optional_str(raw_args, "based_on").is_none() {
@@ -19636,9 +19758,7 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
     // **为什么用系统临时目录**：`asset_dir` 只认 brush／texture／palette 三种（实测报
     // 「未知资产种类 attempts」）⇒ 拿不到工作区根下的自定义目录。临时目录能跨进程重启，
     // 但不随工作区走 —— 这是**已知债**，等有工作区路径访问器再搬家。
-    let attempt_dir = std::env::temp_dir()
-        .join("yanshi-attempts")
-        .join(&ctx.doc_id);
+    let attempt_dir = attempt_root().join(&ctx.doc_id);
     std::fs::create_dir_all(&attempt_dir).ok();
     let attempt_id = format!(
         "at{:x}{:x}",
@@ -19648,7 +19768,7 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
             .unwrap_or(0),
         std::process::id()
     );
-    {
+    let evicted = {
         let label = optional_str(args, "label");
         let mut map = attempts().lock().map_err(|_| {
             YanshiError::new(
@@ -19671,10 +19791,13 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
                 label,
                 status: "pending",
                 params: args.clone(),
+                created: next_attempt_seq(),
             },
         );
-    }
-    // 落盘：位图与元数据各一个文件；日志追加一行（超 100 条由 list_attempts 负责淘汰）
+        evict_attempts_over_cap(&mut map, &ctx.doc_id, MAX_ATTEMPTS_PER_DOC)
+    };
+    // 落盘：位图与元数据各一个文件；日志追加一行，随后**在写路径上**按行数截断 ✓
+    //（淘汰只在写路径做：list_attempts 只读，做不了 ✓）。
     if let Ok(map_guard) = attempts().lock() {
         if let Some(rec) = map_guard.get(&attempt_id) {
             let _ = std::fs::write(attempt_dir.join(format!("{attempt_id}.rgba")), &rec.rgba);
@@ -19704,6 +19827,13 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
             }
         }
     }
+    // 被淘汰的记录**连同磁盘文件一起**删掉 ✓ —— 否则内存有界而 /tmp 无界 ✗。
+    for id in &evicted {
+        let _ = std::fs::remove_file(attempt_dir.join(format!("{id}.rgba")));
+        let _ = std::fs::remove_file(attempt_dir.join(format!("{id}.json")));
+    }
+    prune_attempt_log(&attempt_dir, MAX_ATTEMPT_LOG_LINES);
+    let evicted_count = evicted.len();
     let mut out = json!({
         "ok": true,
         "attempt_id": attempt_id,
@@ -19713,8 +19843,15 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
         "dab_steps": paint.steps,
         "width": paint.width,
         "height": paint.height,
+        "evicted_attempts": evicted,
+        "evicted_count": evicted_count,
         "note": "试画不写入文档：没有原子、seq 不变、文件字节数不变",
     });
+    if evicted_count > 0 {
+        out["note"] = json!(format!(
+            "试画不写入文档：没有原子、seq 不变、文件字节数不变；尝试表上限 {MAX_ATTEMPTS_PER_DOC} 条/文档 ⇒ 最旧的 {evicted_count} 条已淘汰（见 evicted_attempts）"
+        ));
+    }
     // **本次调用生效参数的回显**（P2-9，与 `brush_stroke` 同口径）：`applied.color_space`
     // 回显输入色的实际解释空间（`color` 没给时不出现）；其余字段是构造期值（同 `medium_stroke`）。
     out["applied"] = applied_echo(ctx, args);

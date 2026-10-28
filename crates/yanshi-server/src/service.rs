@@ -772,9 +772,18 @@ fn export_proof_lookup(key: &ExportProofKey) -> bool {
         .unwrap_or(false)
 }
 
+/// 证明缓存的条目上限 ✓：键含**笔刷内容哈希** ⇒ 不同笔刷可持续撑大它 ✗。
+///
+/// 满了就**整体清空**：缓存只省重放时间 ✓，清空不影响任何结果 ✓
+/// （代价只是下一批重放要重新验一遍 ✓）。
+const MAX_EXPORT_PROOF_ENTRIES: usize = 4096;
+
 /// 记入缓存 ✓。
 fn export_proof_remember(key: &ExportProofKey) {
     if let Ok(mut guard) = export_proof_cache().lock() {
+        if guard.len() >= MAX_EXPORT_PROOF_ENTRIES && !guard.contains(key) {
+            guard.clear();
+        }
         guard.insert(key.clone());
     }
 }
@@ -4425,5 +4434,23 @@ mod tests {
             ErrorCode::ReferenceNotFound
         );
         assert!(workspace.open_document("doc_missing").is_err());
+    }
+
+    #[test]
+    fn export_proof_cache_is_bounded() {
+        // 键含笔刷内容哈希 ⇒ 不同笔刷能无限撑大它 ✓；上限满了整体清空（只损失时间）。
+        for n in 0..MAX_EXPORT_PROOF_ENTRIES + 10 {
+            export_proof_remember(&(
+                "crate".to_owned(),
+                format!("recipe-{n}"),
+                "brush".to_owned(),
+                "target".to_owned(),
+            ));
+        }
+        let len = export_proof_cache().lock().unwrap().len();
+        assert!(
+            len <= MAX_EXPORT_PROOF_ENTRIES,
+            "证明缓存必须有界：实际 {len} 条，上限 {MAX_EXPORT_PROOF_ENTRIES}"
+        );
     }
 }

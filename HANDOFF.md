@@ -712,6 +712,51 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    `check_layer_parent_cycle_rejects_cycles_and_depth_bombs`。
    **变异（四条，实测）**：删提交闸调用 ⇒ 两条 `commit_*` 红 ✓；删折叠闸 ⇒ 折叠测试红 ✓；
    删深度上限 ⇒ 深度断言红 ✓；删 `seen` ⇒ 终止测试**不返回**（`timeout 5` ⇒ 退出码 124、无 `test result` 行 ✓）。
-   ③ **仍未做（Batch 2 后半）**：`plan_dirty_with_log` 迭代化 ＋ `MAX_REVERT_DEPTH`、
+   ③ **Batch 2 后半（已做，见 §74）**：`plan_dirty_with_log` 迭代化 ＋ `MAX_REVERT_DEPTH`、
    `buffer.rs` usize 饱和运算 ＋ 像素上限、`apply_filter`／padding 共用 clamp、
    `ATTEMPTS` 上限与 `/tmp/yanshi-attempts` 启动清理、`EXPORT_RESULT_CACHE`／`EXPORT_PROOF_CACHE` 上限。
+
+74. **审计 Batch 2（后半）：递归／回绕／无界缓存**（2026-10-28 ✓）：
+   ① **撤销链递归** ✗：`plan_dirty_with_log` 沿 `Revert.target` 递归 ⇒ 100 层链就能吃光栈。
+   **修法**：先**迭代**剥掉内层 Revert（`MAX_REVERT_DEPTH = 64`），再按**跳数**一次性放大；
+   `amplify_revert` 保留 1 跳时的旧文案（`撤销 {kind} 无几何线索`／`撤销几何修改`）⇒
+   浅链的 dirty 集与文案**逐字不变** ✓。**判据**：`a_nested_revert_chain_resolves_iteratively`（3 跳
+   仍与旧行为一致）、`a_revert_chain_deeper_than_the_cap_falls_back_to_full`（100 跳 ⇒ Full ＋ 文案含「超过」）。
+   **变异**：`MAX_REVERT_DEPTH` 64→200 ⇒ 深链判据红（退出码 101 ✓，实测）。
+   ② **Buffer u32 回绕** ✗：`width × height × 4` 在 u32 里回绕 ⇒ 小分配骗过大检查。
+   **修法**：`MAX_BUFFER_PIXELS = 1 << 28`（与 `MAX_CANVAS_PIXELS` 同口径），
+   `pixel_count` 用 `saturating_mul` ＋ 超限 panic；`doc_width/doc_height`、`len()`、
+   `from_f32(_vec)`、`to_rgba8_blocks` 全部改饱和运算。
+   **判据**：`oversized_buffers_are_rejected_before_allocating`（`#[should_panic]` 断文案）、
+   `doc_extent_saturates_instead_of_wrapping`（2×2、`step = u32::MAX` ⇒ 文档尺寸 `u32::MAX`、`len()==4`）。
+   **变异**：删上限断言 ⇒ 判据红（panic 文案不含「Buffer 尺寸过大」，退出码 101 ✓）；
+   `doc_width` 的 `saturating_mul` 改回 `*` ⇒ 调试构建溢出 panic ⇒ 判据红（退出码 101 ✓）。
+   ③ **滤镜参数无界** ✗：`box_blur` 的 radius／passes、`gaussian_blur` 的 σ、`motion_blur` 的 distance
+   全来自 JSON ⇒ 一次调用可让单线程算几小时／容量溢出。
+   **修法**：`MAX_BLUR_RADIUS=4096`、`MAX_BLUR_PASSES=4`、`MAX_BLUR_SIGMA=256`、`MAX_MOTION_DISTANCE=512`；
+   **实现函数**里夹（覆盖所有调用点 ✓）⇒ `FilterKind::padding` 用**同一组常量**申报邻域
+   （否则分带少看邻域 ⇒ 接缝 ✗），加法全改 `saturating_add`。
+   **判据**：`oversized_filter_params_are_clamped_to_the_declared_caps`（超限与显式上限**逐像素相同**）、
+   `oversized_params_padding_matches_the_caps`、`blur_param_clamps_are_the_declared_constants`。
+   **变异**：删 `padding` 里的 `.min(MAX_BLUR_RADIUS)` ⇒ padding 判据红（退出码 101 ✓）；
+   `.min(MAX_BLUR_RADIUS)` 改 `.min(MAX_BLUR_RADIUS/2)` ⇒ 常量判据红（已记在测试注释里）。
+   ④ **试画表无界** ✗：`ATTEMPTS` 每次 `try_stroke` 存整张 RGBA ⇒ 无界内存；
+   原注释声称「超 100 条由 list_attempts 负责淘汰」✗，而 `list_attempts` **只读不写** ⇒ 从未淘汰过 ✗；
+   `/tmp/yanshi-attempts/<doc>` 与 `log.jsonl` 也无界。
+   **修法**：每文档 `MAX_ATTEMPTS_PER_DOC = 100`，按 `created` 序号淘汰最旧（**只淘汰同文档** ✓），
+   **随响应报告** `evicted_attempts`／`evicted_count`（不静默 ✓）；被淘汰者的 `.rgba`／`.json` 一并删；
+   `log.jsonl` 在**写路径**截到最后 400 行；启动时（首次访问，`Once`）删 > 7 天的目录
+   （不删光 ⇒ 保住「跨重启仍可查」的承诺 ✓）；目录根只留 `attempt_root()` 一处。
+   **判据**：`attempt_eviction_removes_the_oldest_of_the_same_document_only`（含恒等式
+   「淘汰数 ＋ 留存数 ＝ 原有数」与边界「恰好等于上限不淘汰」）、`attempt_log_keeps_only_the_newest_lines`、
+   `attempt_cleanup_removes_only_directories_older_than_the_retention`。
+   **变异（四条，全部退出码 101 ✓）**：淘汰短路 ⇒ 淘汰判据红；日志保留最旧行 ⇒ 截断判据红；
+   过期条件 `>` 翻成 `<` ⇒ 清理判据红（把新目录删了、旧目录留着）；
+   ⑤ **证明缓存无界** ✗：`EXPORT_PROOF_CACHE` 是 `HashSet`，键含笔刷内容哈希 ⇒ 可持续撑大。   **修法**：`MAX_EXPORT_PROOF_ENTRIES = 4096`，满了**整体清空**（缓存只省时间，不影响结果 ✓）。
+   `EXPORT_RESULT_CACHE` 本来就是「clear＋insert」单条（值可能是大图 ⇒ 更该只留一份 ✓），补注释写明上限。
+   **判据**：`export_proof_cache_is_bounded`（插入上限 +10 个唯一键 ⇒ 长度仍 ≤ 上限）。
+   **变异**：删掉 `guard.clear()` 分支 ⇒ 长度 4106 > 4096 ⇒ 判据红（退出码 101 ✓）。
+   **收尾**：所有变异改回后，`cargo test -p yanshi-server --lib 'tools_tests::attempt_'`（3 passed）、
+   `export_proof_cache_is_bounded`（1 passed）、yanshi-render 的
+   `revert_chain`（2）／`oversized`（4）／`doc_extent`（1）／`blur_param_clamps`（1）全绿（本机实测 ✓）；
+   全量 clippy／test 仍交给 CI ✓。

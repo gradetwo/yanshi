@@ -121,6 +121,14 @@ pub(crate) fn div_ceil_i64(a: i64, b: i64) -> i64 {
     }
 }
 
+/// **缓冲区的像素数硬上限** ✓（2026-10-28，审计 Batch 2）：`1 << 28` ✓ ——
+/// 与 `yanshi-server::service` 的 `MAX_CANVAS_PIXELS` 同口径 ✓（整层缓冲不该超过一张画布 ✓）。
+///
+/// **∴ 为什么必须有它 ✗**：`width * height * 4` 是 **u32 乘法** ✗ ⇒ 大尺寸会**回绕**
+/// （release 下静默得到错误长度，后面的下标全建立在假长度上 ✗；debug 下 panic ✓）。
+/// 超过上限一律 **panic 并说明原因** ✓：构造点拿不到 `Result` ✓，而**静默回绕**比崩溃更糟 ✗。
+pub const MAX_BUFFER_PIXELS: usize = 1 << 28;
+
 /// 线性光、预乘 alpha 的区域缓冲区（行主序）。
 ///
 /// **取样步长 `step`**（期 4，`export_png` 的 `lod`）：缓冲像素 `(lx, ly)` 对应文档坐标
@@ -150,6 +158,16 @@ impl Buffer {
         Self::new_stepped(origin_x, origin_y, width, height, 1)
     }
 
+    /// 像素数（`width × height`）✓；超过 [`MAX_BUFFER_PIXELS`] 直接 panic ✓（防 u32 回绕 ✗）。
+    fn pixel_count(width: u32, height: u32) -> usize {
+        let count = (width as usize).saturating_mul(height as usize);
+        assert!(
+            count <= MAX_BUFFER_PIXELS,
+            "Buffer 尺寸过大：{width}×{height} = {count} 像素（上限 {MAX_BUFFER_PIXELS}）"
+        );
+        count
+    }
+
     /// 与 [`Buffer::new`] 相同，但取样步长为 `step`（期 4 `lod` 用；`step` 必须 ≥ 1）。
     #[track_caller]
     pub fn new_stepped(origin_x: i64, origin_y: i64, width: u32, height: u32, step: u32) -> Self {
@@ -161,7 +179,7 @@ impl Buffer {
             step: step.max(1),
             pixels: {
                 // **分配探针**：`Buffer::new` 绕过池的那些路径（直接 `vec!`）。
-                let len = (width * height * 4) as usize;
+                let len = Self::pixel_count(width, height).saturating_mul(4);
                 let location = std::panic::Location::caller();
                 crate::alloc_probe::record_site(
                     crate::alloc_probe::AllocPoint::BufferFresh,
@@ -179,14 +197,14 @@ impl Buffer {
         self.step
     }
 
-    /// 缓冲覆盖的文档宽（像素）=`width * step`。
+    /// 缓冲覆盖的文档宽（像素）=`width * step`（饱和乘法 ✓：`lod` 也不会回绕 ✗）。
     pub const fn doc_width(&self) -> u32 {
-        self.width * self.step
+        self.width.saturating_mul(self.step)
     }
 
-    /// 缓冲覆盖的文档高（像素）=`height * step`。
+    /// 缓冲覆盖的文档高（像素）=`height * step`（饱和乘法 ✓）。
     pub const fn doc_height(&self) -> u32 {
-        self.height * self.step
+        self.height.saturating_mul(self.step)
     }
 
     /// 单色填充缓冲区。
@@ -242,7 +260,7 @@ impl Buffer {
 
     /// 像素总数。
     pub fn len(&self) -> usize {
-        (self.width * self.height) as usize
+        Self::pixel_count(self.width, self.height)
     }
 
     /// 是否为空。
@@ -284,7 +302,7 @@ impl Buffer {
         height: u32,
         pixels: &[f32],
     ) -> Option<Self> {
-        if pixels.len() != (width * height * 4) as usize {
+        if pixels.len() != Self::pixel_count(width, height).saturating_mul(4) {
             return None;
         }
         Some(Self {
@@ -308,7 +326,7 @@ impl Buffer {
         height: u32,
         pixels: Vec<f32>,
     ) -> Option<Self> {
-        if pixels.len() != (width * height * 4) as usize {
+        if pixels.len() != Self::pixel_count(width, height).saturating_mul(4) {
             return None;
         }
         Some(Self {
@@ -976,7 +994,7 @@ impl Buffer {
         let table = crate::color::srgb_encode_table();
         let width = self.width as usize;
         let height = self.height as usize;
-        let mut out = vec![0u8; width * height * 4];
+        let mut out = vec![0u8; self.len().saturating_mul(4)];
         if width == 0 || height == 0 {
             return (out, 0);
         }
@@ -2425,5 +2443,23 @@ mod copy_region_tests {
         buffer.blit_linear(-1, 0, 2, 1, &rgb, 0.5);
         assert_eq!(buffer.pixel(0, 0), [0.2, 0.3, 0.4, 0.5]);
         assert_eq!(buffer.pixel(1, 0), [0.0, 0.0, 0.0, 0.0]);
+    }
+
+    /// **超大尺寸不许回绕** ✓（2026-10-28，审计 Batch 2）：`u32::MAX × u32::MAX × 4`
+    /// 在 u32 里会绕成一个"看起来很小"的长度 ✗ ⇒ 必须在分配前就 panic 并说清原因 ✓。
+    /// **变异**：把 `pixel_count` 里的 `assert!` 删掉 ⇒ panic 文案变成容量溢出 ⇒ 本条红 ✓。
+    #[test]
+    #[should_panic(expected = "Buffer 尺寸过大")]
+    fn oversized_buffers_are_rejected_before_allocating() {
+        let _ = Buffer::new(0, 0, u32::MAX, u32::MAX);
+    }
+
+    /// 边界：`doc_width/doc_height` 用饱和乘法 ✓（`step` 再大也不会绕回小值 ✗）。
+    #[test]
+    fn doc_extent_saturates_instead_of_wrapping() {
+        let buffer = Buffer::new_stepped(0, 0, 2, 2, u32::MAX);
+        assert_eq!(buffer.doc_width(), u32::MAX);
+        assert_eq!(buffer.doc_height(), u32::MAX);
+        assert_eq!(buffer.len(), 4, "缓冲像素数不受 step 影响");
     }
 }

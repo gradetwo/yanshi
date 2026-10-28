@@ -199,7 +199,7 @@ impl AdjustmentKind {
                         .unwrap_or(true),
                 };
                 let scale = geo_auto_crop_scale(None, &lens, frame);
-                geo_displacement_bound(None, &lens, scale, frame) + 2
+                geo_displacement_bound(None, &lens, scale, frame).saturating_add(2)
             }
             Self::Perspective => {
                 let Some(quad) = quad_param(params) else {
@@ -218,7 +218,7 @@ impl AdjustmentKind {
                     ..LensParams::default()
                 };
                 let scale = geo_auto_crop_scale(Some(quad), &lens, frame);
-                geo_displacement_bound(Some(&hom), &lens, scale, frame) + 2
+                geo_displacement_bound(Some(&hom), &lens, scale, frame).saturating_add(2)
             }
             Self::Denoise => {
                 let luminance = params
@@ -281,6 +281,23 @@ impl AdjustmentKind {
         }
     }
 }
+
+/// **方框模糊半径的硬上限** ✓（2026-10-28，审计 Batch 2）：4096 px ✓。
+///
+/// **∴ 为什么在实现里限 ✗**：`radius` 决定每行初值累加的长度 ✓、`passes` 是整幅工作的乘数 ✓
+/// ⇒ 不受信的载荷能让一次提交占用任意长 CPU ✗。限在 `box_blur` 里 ⇒ **所有调用方**
+/// （`apply_filter` ✓ `sharpen` ✓ `glow`／`clarity` ✓）共用同一道 ✓，不会漏 ✓。
+/// 4096 远大于画布常用半径（4K 的半宽也不过 2048 ✓）⇒ 正常作品不受影响 ✓。
+pub const MAX_BLUR_RADIUS: u32 = 4096;
+
+/// 方框模糊趟数上限 ✓（超过 4 趟在视觉上已无可分辨差别 ✓）。
+pub const MAX_BLUR_PASSES: u32 = 4;
+
+/// 高斯模糊 `sigma` 的硬上限 ✓：核半径 = `ceil(3σ)` ⇒ 768 px ✓（常量窗口，不是无界 ✓）。
+pub const MAX_BLUR_SIGMA: f32 = 256.0;
+
+/// 动感模糊的 `distance` 上限 ✓（与 `motion_blur` 内部原先的 `clamp(0.0, 512.0)` 同值 ✓）。
+pub const MAX_MOTION_DISTANCE: f32 = 512.0;
 
 /// 滤镜类型（`filter_name` 字段）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -358,36 +375,42 @@ impl FilterKind {
     }
 
     /// 该滤镜需要的邻域半径（像素）。
+    ///
+    /// **∴ 与实现用同一组上限 ✓**（2026-10-28，审计 Batch 2）：声明值必须**不小于**实际邻域 ✓，
+    /// 否则分带渲染少看一圈 ⇒ 接缝 ✗（见 `render::band_padding_for` 的说明 ✓）。
     pub fn padding(&self, params: &Value) -> u32 {
         let radius = params
             .get("radius")
             .and_then(Value::as_f64)
             .unwrap_or(0.0)
-            .max(0.0);
+            .max(0.0)
+            .min(MAX_BLUR_RADIUS as f64);
         let sigma = params
             .get("sigma")
             .and_then(Value::as_f64)
             .unwrap_or(0.0)
-            .max(0.0);
+            .max(0.0)
+            .min(f64::from(MAX_BLUR_SIGMA));
         let passes = params
             .get("passes")
             .and_then(Value::as_u64)
             .unwrap_or(1)
-            .clamp(1, 4);
+            .clamp(1, MAX_BLUR_PASSES as u64) as u32;
         let distance = params
             .get("distance")
             .and_then(Value::as_f64)
             .unwrap_or(0.0)
-            .max(0.0);
+            .max(0.0)
+            .min(f64::from(MAX_MOTION_DISTANCE));
         match self {
-            Self::BoxBlur => (radius.ceil() as u32) * passes as u32,
+            Self::BoxBlur => (radius.ceil() as u32).saturating_mul(passes),
             Self::GaussianBlur => (sigma * 3.0).ceil() as u32,
             // 动感模糊沿 `distance` 采样、锐化需要方框模糊的半径，区域渲染必须外扩，
             // 否则边缘会采到画外产生接缝。
             Self::MotionBlur => (distance / 2.0).ceil() as u32,
             Self::Sharpen => radius.ceil() as u32,
             // 两趟方框模糊，邻域按 2 倍半径申报（glow 与 clarity 同理）。
-            Self::Glow | Self::Clarity => (radius.ceil() as u32) * 2,
+            Self::Glow | Self::Clarity => (radius.ceil() as u32).saturating_mul(2),
             // 去雾内部对透射率图做 radius=4 的模糊，固定外扩 8。
             Self::Dehaze => 8,
             // 胶片颗粒逐像素（块坐标）计算，无邻域。
@@ -1628,7 +1651,7 @@ pub fn curves(buffer: &mut Buffer, points: &[(f32, f32)], channel: &str) {
 
 /// 动感模糊：沿给定角度按 `samples` 个采样点平均（预乘空间平均，边界按 clamp 复制）。
 pub fn motion_blur(buffer: &mut Buffer, angle_degrees: f32, distance: f32, samples: u32) {
-    let distance = distance.clamp(0.0, 512.0);
+    let distance = distance.clamp(0.0, MAX_MOTION_DISTANCE);
     let samples = samples.clamp(2, 64);
     if distance <= 0.0 {
         return;
@@ -2807,13 +2830,29 @@ pub fn texture_adjustment(buffer: &mut Buffer, amount: f32) {
 ///（实测：换过去会让 `the_falloff_stays_bounded` 红 ✓）。
 /// **若要合并**：先统一边界语义 ✓，并接受蒙版输出会变 ✗。
 pub fn box_blur(buffer: &mut Buffer, radius: u32, passes: u32) {
+    // **★ 上限在这里 ✗ 而不是调用方 ★**（2026-10-28，审计 Batch 2）：
+    // 直接写进日志的载荷／别的调用方都能传任意值 ⇒ 一道闸盖住全部入口 ✓。
+    let radius = clamp_blur_radius(radius);
+    let passes = clamp_blur_passes(passes);
     if radius == 0 {
         return;
     }
-    for _ in 0..passes.max(1) {
+    for _ in 0..passes {
         blur_horizontal(buffer, radius);
         blur_vertical(buffer, radius);
     }
+}
+
+/// 方框模糊半径的夹取 ✓（抽成函数只为让判据能**直接证明上限** ✓ ——
+/// 在 4×4 的缓冲上半径 4096 与 `u32::MAX` 的输出**相同** ✗（都覆盖整行 ✓），
+/// 光靠像素比对证明不了"夹到了 4096" ✓）。
+fn clamp_blur_radius(radius: u32) -> u32 {
+    radius.min(MAX_BLUR_RADIUS)
+}
+
+/// 方框模糊趟数的夹取 ✓（`0` 与原来的 `passes.max(1)` 同义 ✓）。
+fn clamp_blur_passes(passes: u32) -> u32 {
+    passes.clamp(1, MAX_BLUR_PASSES)
 }
 
 /// 高斯模糊（按 `sigma` 生成一维核，可分离；核为确定性浮点权重）。
@@ -2821,6 +2860,10 @@ pub fn gaussian_blur(buffer: &mut Buffer, sigma: f32) {
     if sigma <= 0.0 {
         return;
     }
+    // **∴ 核长度 = ceil(3σ) ⇒ σ 必须限** ✓（2026-10-28，审计 Batch 2）：
+    // `σ = f32::MAX` 时 `(σ * 3.0) as i32` 饱和成 `i32::MAX` ⇒ `radius * 2 + 1` 溢出 ✗
+    // （debug panic／release 退化成巨容量分配 ✓）⇒ 限成常量窗口 ✓（GPU 分支也用同一个值 ✓）。
+    let sigma = sigma.min(MAX_BLUR_SIGMA);
     // **★★★ GPU 分支（**滤镜 GPU 化 ✓）✗ ★★★**（**第 700 轮 ✓；用户第 82 轮的方向 ✓）
     //   **∴ 第 699 轮实测收益 ✗**（**含传输 ✓）：
     //     **∴ 1080p σ=2 ⇒ **2.0×**｜σ=8 ⇒ **3.6×**** ✓
@@ -5817,6 +5860,84 @@ mod tests {
         );
         assert_eq!(FilterKind::GaussianBlur.padding(&json!({"sigma": 2.0})), 6);
         assert_eq!(FilterKind::Invert.padding(&json!({})), 0);
+    }
+
+    /// **超大滤镜参数必须被夹到上限** ✓（2026-10-28，审计 Batch 2）：
+    /// `radius: u64::MAX`／`sigma: f64::MAX` 走 `apply_filter` 不许 panic／不许无界工作 ✓，
+    /// 结果必须与**显式传上限**逐位相同 ✓。
+    /// **变异**：删掉 `box_blur` 里的 `radius.min(MAX_BLUR_RADIUS)`，或
+    /// `gaussian_blur` 里的 `sigma.min(MAX_BLUR_SIGMA)` ⇒ 对应那条 `assert_eq!` 红 ✓。
+    #[test]
+    fn oversized_filter_params_are_clamped_to_the_declared_caps() {
+        // 方框模糊：半径与趟数都超限 ⇒ 与"显式上限"逐位相同 ✓。
+        let mut huge = filled([0.25, 0.5, 0.75, 1.0]);
+        huge.set_pixel(1, 1, [1.0, 1.0, 1.0, 1.0]);
+        let mut capped = huge.clone();
+        assert!(apply_filter(
+            &mut huge,
+            "box_blur",
+            &json!({"radius": u64::MAX, "passes": 999}),
+            1.0,
+            (4.0, 4.0)
+        ));
+        assert!(apply_filter(
+            &mut capped,
+            "box_blur",
+            &json!({"radius": MAX_BLUR_RADIUS, "passes": MAX_BLUR_PASSES}),
+            1.0,
+            (4.0, 4.0)
+        ));
+        assert_eq!(huge.pixels, capped.pixels, "超限半径／趟数必须夹到上限");
+
+        // 高斯模糊：核长度 = ceil(3σ) ⇒ σ 超限必须夹住（否则 i32 饱和 + 容量溢出 ✗）。
+        let mut huge = filled([0.5, 0.5, 0.5, 1.0]);
+        huge.set_pixel(1, 1, [1.0, 1.0, 1.0, 1.0]);
+        let mut capped = huge.clone();
+        assert!(apply_filter(
+            &mut huge,
+            "gaussian_blur",
+            &json!({"sigma": f64::MAX}),
+            1.0,
+            (4.0, 4.0)
+        ));
+        assert!(apply_filter(
+            &mut capped,
+            "gaussian_blur",
+            &json!({"sigma": MAX_BLUR_SIGMA}),
+            1.0,
+            (4.0, 4.0)
+        ));
+        assert_eq!(huge.pixels, capped.pixels, "超限 sigma 必须夹到上限");
+    }
+
+    /// **夹取函数本身就是上限** ✓（2026-10-28，审计 Batch 2）：
+    /// 像素比对证明不了半径上限（4×4 上 4096 与 `u32::MAX` 输出相同 ✗）⇒ 直接断函数 ✓。
+    /// **变异**：把 `.min(MAX_BLUR_RADIUS)` 改成 `.min(MAX_BLUR_RADIUS / 2)` ⇒ 第一条红 ✓。
+    #[test]
+    fn blur_param_clamps_are_the_declared_constants() {
+        assert_eq!(clamp_blur_radius(u32::MAX), MAX_BLUR_RADIUS);
+        assert_eq!(clamp_blur_radius(MAX_BLUR_RADIUS - 1), MAX_BLUR_RADIUS - 1);
+        assert_eq!(clamp_blur_passes(0), 1);
+        assert_eq!(clamp_blur_passes(u32::MAX), MAX_BLUR_PASSES);
+    }
+
+    /// **padding 与实现同口径** ✓（2026-10-28，审计 Batch 2）：超限参数下声明值
+    /// 必须等于"上限 × 趟数"，**不许回绕成小值** ✗（回绕 ⇒ 分带少看邻域 ⇒ 接缝 ✗）。
+    /// **变异**：删掉 `padding` 里的 `.min(MAX_BLUR_RADIUS)` ⇒ 第一条红 ✓（实测过 ✓）。
+    #[test]
+    fn oversized_params_padding_matches_the_caps() {
+        assert_eq!(
+            FilterKind::BoxBlur.padding(&json!({"radius": 1e30, "passes": 1000})),
+            MAX_BLUR_RADIUS * MAX_BLUR_PASSES
+        );
+        assert_eq!(
+            FilterKind::GaussianBlur.padding(&json!({"sigma": 1e30})),
+            (MAX_BLUR_SIGMA * 3.0).ceil() as u32
+        );
+        assert_eq!(
+            FilterKind::MotionBlur.padding(&json!({"distance": 1e30})),
+            (MAX_MOTION_DISTANCE / 2.0).ceil() as u32
+        );
     }
 
     #[test]

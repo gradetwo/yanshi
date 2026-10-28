@@ -1873,3 +1873,114 @@ fn draw_text_position_accepts_both_array_and_dict() {
     assert_eq!(parse_position(&json!("nope")), (0.0, 0.0));
     assert_eq!(parse_position(&json!(42)), (0.0, 0.0));
 }
+
+// **审计 Batch 2 · 第 9 项**：试画表必须有上限、必须能淘汰、磁盘也要跟着清 ✓。
+// 三层各自一条（内存淘汰／日志截断／过期目录清理），变异记录见 HANDOFF §74。
+
+fn attempt_record(doc_id: &str, created: u64) -> AttemptRecord {
+    AttemptRecord {
+        doc_id: doc_id.to_owned(),
+        layer_id: "layer_1".to_owned(),
+        brush: "round".to_owned(),
+        x0: 0,
+        y0: 0,
+        width: 1,
+        height: 1,
+        rgba: Vec::new(),
+        painted: 0,
+        label: None,
+        status: "pending",
+        params: json!({}),
+        created,
+    }
+}
+
+#[test]
+fn attempt_eviction_removes_the_oldest_of_the_same_document_only() {
+    let mut map = std::collections::HashMap::new();
+    for (id, created) in [("a1", 1u64), ("a2", 2), ("a3", 3), ("a4", 4)] {
+        map.insert(id.to_owned(), attempt_record("doc_a", created));
+    }
+    // 别的文档里有一条**更旧**的：不许被这个文档的淘汰挤掉 ✓。
+    map.insert("b0".to_owned(), attempt_record("doc_b", 0));
+    let evicted = evict_attempts_over_cap(&mut map, "doc_a", 2);
+    assert_eq!(
+        evicted,
+        vec!["a1".to_owned(), "a2".to_owned()],
+        "淘汰最旧的两条"
+    );
+    assert!(
+        map.contains_key("a3") && map.contains_key("a4"),
+        "新记录必须留下"
+    );
+    assert!(map.contains_key("b0"), "别的文档不许被挤掉");
+    // 恒等式：淘汰数 + 留下的本档记录 = 原有本档记录 ⇒ 「一条记录要么留下要么进 evicted」✓。
+    let left = map
+        .values()
+        .filter(|record| record.doc_id == "doc_a")
+        .count();
+    assert_eq!(evicted.len() + left, 4, "淘汰与留存必须覆盖全部记录");
+    // 边界：恰好等于上限 ⇒ 不淘汰（`<=` 不是 `<`）。
+    let mut exact = std::collections::HashMap::new();
+    for (id, created) in [("a1", 1u64), ("a2", 2)] {
+        exact.insert(id.to_owned(), attempt_record("doc_a", created));
+    }
+    assert!(
+        evict_attempts_over_cap(&mut exact, "doc_a", 2).is_empty(),
+        "等于上限时不该淘汰"
+    );
+    assert_eq!(exact.len(), 2);
+}
+
+#[test]
+fn attempt_log_keeps_only_the_newest_lines() {
+    let dir = std::env::temp_dir().join(format!("yanshi-attempt-log-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("log.jsonl");
+    let body: String = (1..=6).map(|n| format!("line-{n}\n")).collect();
+    std::fs::write(&log, &body).unwrap();
+    prune_attempt_log(&dir, 4);
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap(),
+        "line-3\nline-4\nline-5\nline-6\n",
+        "截断必须保留最新的行，而不是最旧的"
+    );
+    // 未超限 ⇒ 原样不动（不重写 ⇒ 不改变字节）。
+    std::fs::write(&log, "line-1\nline-2\n").unwrap();
+    prune_attempt_log(&dir, 4);
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), "line-1\nline-2\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn attempt_cleanup_removes_only_directories_older_than_the_retention() {
+    let root = std::env::temp_dir().join(format!("yanshi-attempt-cleanup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let stale = root.join("doc_stale");
+    let fresh = root.join("doc_fresh");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::create_dir_all(&fresh).unwrap();
+    let stale_file = stale.join("log.jsonl");
+    std::fs::write(&stale_file, "old\n").unwrap();
+    let old =
+        std::time::SystemTime::now() - std::time::Duration::from_secs(ATTEMPT_RETENTION_SECS + 60);
+    std::fs::File::options()
+        .write(true)
+        .open(&stale_file)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    std::fs::write(fresh.join("log.jsonl"), "new\n").unwrap();
+    let removed = cleanup_attempt_dirs_older_than(
+        &root,
+        std::time::Duration::from_secs(ATTEMPT_RETENTION_SECS),
+    );
+    assert_eq!(removed, 1, "只删过期的那个目录");
+    assert!(!stale.exists(), "过期目录必须删掉");
+    assert!(
+        fresh.exists(),
+        "新鲜目录必须留着——删光会打破 list_attempts 的跨重启承诺"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

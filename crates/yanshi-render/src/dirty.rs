@@ -286,31 +286,69 @@ pub fn plan_dirty_with_log(
     log: &AtomLog,
     atom: &Atom,
 ) -> DirtySet {
-    match atom.kind {
-        AtomKind::Revert | AtomKind::Reapply => {
-            let Some(target_id) = atom.target_atom() else {
-                return DirtySet::full("revert/reapply 缺少 target");
-            };
-            let Some(target) = log.get(target_id) else {
-                return DirtySet::full(format!("revert 目标 {target_id} 不在日志中"));
-            };
-            if target.kind == AtomKind::DeclareHead {
-                return DirtySet::full("撤销 declare_head 起点变化，全量失效");
-            }
-            let inner = plan_dirty_with_log(state, previous, log, target);
-            // 撤销/恢复都会改变有效集：放大为结构 dirty，但保留目标的 bbox。
-            match inner.kind {
-                DirtyKind::None => DirtySet::full(format!("撤销 {} 无几何线索", target.kind)),
-                DirtyKind::Geometry => {
-                    DirtySet::structure(BTreeSet::new(), inner.bbox, "撤销几何修改")
-                }
-                DirtyKind::Structure => {
-                    DirtySet::structure(inner.objects, inner.bbox, "撤销结构修改")
-                }
-                DirtyKind::Full => DirtySet::full("撤销目标本身全量失效"),
+    if !matches!(atom.kind, AtomKind::Revert | AtomKind::Reapply) {
+        return plan_dirty(state, previous, atom);
+    }
+    // **★ 迭代而不是递归 ✗ ★**（2026-10-28，审计 Batch 2）：
+    // `revert(revert(x)) ≡ reapply(x)` ✓（设计 5.4 ✓）⇒ 目标可以是另一个 revert ✓
+    // ⇒ 一条**手工构造**的日志能有任意深的链 ✗ ⇒ 递归版会被栈溢出打穿 ✓。
+    let mut current = atom;
+    let mut hops = 0usize;
+    loop {
+        let Some(target_id) = current.target_atom() else {
+            return DirtySet::full("revert/reapply 缺少 target");
+        };
+        let Some(target) = log.get(target_id) else {
+            return DirtySet::full(format!("revert 目标 {target_id} 不在日志中"));
+        };
+        if target.kind == AtomKind::DeclareHead {
+            return DirtySet::full("撤销 declare_head 起点变化，全量失效");
+        }
+        if !matches!(target.kind, AtomKind::Revert | AtomKind::Reapply) {
+            // **∴ 放大一次就够 ✓**：上面那条"结构 → 结构"的映射是**幂等**的 ✓
+            // （Geometry → Structure → Structure ✓；None → Full → Full ✓）
+            // ⇒ K 层嵌套与 1 层的结果**逐字段相同** ✓，只有原因文案按层数区分 ✓。
+            return amplify_revert(plan_dirty(state, previous, target), hops + 1, target.kind);
+        }
+        hops += 1;
+        if hops > MAX_REVERT_DEPTH {
+            // **∴ 这里不 panic ✗**：脏区宁大勿小 ✓ ⇒ 全量失效 ＋ 说清原因 ✓。
+            return DirtySet::full(format!(
+                "撤销链超过 {MAX_REVERT_DEPTH} 层（疑似成环）⇒ 全量失效"
+            ));
+        }
+        current = target;
+    }
+}
+
+/// `revert`／`reapply` 链的最大解包层数 ✓（2026-10-28，审计 Batch 2）。
+///
+/// **∴ 为什么需要上限 ✗**：合法日志里链深 ≤ 日志长度 ✓，但**手工构造**的日志可以任意深 /
+/// 成环 ✓ ⇒ 不设上限就会死循环或耗尽栈 ✓。超过上限时返回**全量失效** ✓（保守但正确 ✓）。
+pub const MAX_REVERT_DEPTH: usize = 64;
+
+/// 撤销/恢复都会改变有效集：放大为结构 dirty ✓，但保留目标的 bbox ✓。
+///
+/// `hops` 只影响**原因文案** ✓（`None`／`Geometry` 在 2 层以上时会被再放大一档 ✓，
+/// 与递归版逐字一致 ✓）；`kind`／`objects`／`bbox` 与层数无关 ✓。
+fn amplify_revert(inner: DirtySet, hops: usize, target_kind: AtomKind) -> DirtySet {
+    match inner.kind {
+        DirtyKind::None => {
+            if hops == 1 {
+                DirtySet::full(format!("撤销 {target_kind} 无几何线索"))
+            } else {
+                DirtySet::full("撤销目标本身全量失效")
             }
         }
-        _ => plan_dirty(state, previous, atom),
+        DirtyKind::Geometry => {
+            if hops == 1 {
+                DirtySet::structure(BTreeSet::new(), inner.bbox, "撤销几何修改")
+            } else {
+                DirtySet::structure(BTreeSet::new(), inner.bbox, "撤销结构修改")
+            }
+        }
+        DirtyKind::Structure => DirtySet::structure(inner.objects, inner.bbox, "撤销结构修改"),
+        DirtyKind::Full => DirtySet::full("撤销目标本身全量失效"),
     }
 }
 
@@ -1337,5 +1375,96 @@ mod tests {
         assert_eq!(dirty.kind, DirtyKind::Geometry);
         assert!(dirty.objects.is_empty());
         assert_eq!(dirty.bbox, Some(Bbox::new(0.0, 0.0, 30.0, 30.0)));
+    }
+
+    /// `revert` 链是**迭代**解包的 ✓（2026-10-28，审计 Batch 2）：3 层嵌套不递归 ✓，
+    /// 最终落到目标的 dirty 上并**放大一次** ✓。
+    /// **变异**：把 `hops + 1` 改成 `1`（永远按"一层"处理文案）⇒ 本条最后一条断言红 ✓。
+    #[test]
+    fn a_nested_revert_chain_resolves_iteratively() {
+        let mut log = AtomLog::new();
+        log.append(
+            yanshi_core::Atom::new(
+                AtomKind::Comment,
+                "human:1",
+                "session:t",
+                json!({"target_atom": "a_missing", "text": "t"}),
+            )
+            .with_id("a_comment"),
+        )
+        .unwrap();
+        let mut prev = "a_comment".to_owned();
+        for i in 0..3 {
+            let id = format!("a_r{i}");
+            log.append(
+                yanshi_core::Atom::new(
+                    AtomKind::Revert,
+                    "human:1",
+                    "session:t",
+                    json!({"target": prev}),
+                )
+                .with_id(&id),
+            )
+            .unwrap();
+            prev = id;
+        }
+        let state = state_with_layers();
+        let plan = plan_dirty_with_log(&state, Some(&state), &log, log.get(&prev).unwrap());
+        assert_eq!(plan.kind, DirtyKind::Full, "撤销 Comment 无几何线索 ⇒ 全量");
+        assert!(
+            plan.reason.contains("撤销目标本身全量失效"),
+            "3 层链在第 2 层就被再放大一次，实际 {}",
+            plan.reason
+        );
+
+        // 1 层时仍是旧文案 ✓（迭代版不许改变可观测输出 ✗）。
+        let one = plan_dirty_with_log(&state, Some(&state), &log, log.get("a_r0").unwrap());
+        assert!(
+            one.reason.contains("无几何线索"),
+            "1 层应保留旧文案，实际 {}",
+            one.reason
+        );
+    }
+
+    /// **超深／成环的 revert 链不许死循环或爆栈** ✓（2026-10-28，审计 Batch 2）：
+    /// 手工构造 100 层 ⇒ 超过 `MAX_REVERT_DEPTH` ⇒ 全量失效 ＋ 原因说清 ✓。
+    /// **变异**：删掉 `hops > MAX_REVERT_DEPTH` 那段 ⇒ 跑到链尾正常返回 ⇒
+    /// 本条对"超过"的断言红 ✓（实测过 ✓）。
+    #[test]
+    fn a_revert_chain_deeper_than_the_cap_falls_back_to_full() {
+        let mut log = AtomLog::new();
+        log.append(
+            yanshi_core::Atom::new(
+                AtomKind::Comment,
+                "human:1",
+                "session:t",
+                json!({"target_atom": "a_missing", "text": "t"}),
+            )
+            .with_id("a_comment"),
+        )
+        .unwrap();
+        let mut prev = "a_comment".to_owned();
+        for i in 0..100 {
+            let id = format!("a_deep{i}");
+            log.append(
+                yanshi_core::Atom::new(
+                    AtomKind::Revert,
+                    "human:1",
+                    "session:t",
+                    json!({"target": prev}),
+                )
+                .with_id(&id),
+            )
+            .unwrap();
+            prev = id;
+        }
+        let state = state_with_layers();
+        let plan = plan_dirty_with_log(&state, Some(&state), &log, log.get(&prev).unwrap());
+        assert_eq!(plan.kind, DirtyKind::Full);
+        assert!(
+            plan.reason.contains("超过"),
+            "超深链必须说清是上限触发的，实际 {}",
+            plan.reason
+        );
     }
 }
