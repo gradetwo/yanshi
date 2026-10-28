@@ -1093,6 +1093,12 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    **自我交代**：本条第一次落账（`16c12eab`）把 ⑨ 插进了 ⑧ 的句子中间 ✗——python 拿
    「⑦ 段尾偏移＋marker 长度」当插入点，锚点 assert 全过而**位置是错的** ⇒ 下一提交接回 ✓。
    教训：**assert 只证明锚点存在，不证明插入位置对**；跨段追加要**当场 sed 回读那几行**。
+   **CI 首跑复盘（run `40646976572`，`16c12eab`，failure）**：两条新守卫里 `check-cache-headers` **绿** ✓，
+   `check-index-html-byte-budget` **红** ✗——红得有价值：CI 跑判据前 `pwa-sync` 会**重写工作区**的
+   index.html（同一提交本机 1,038,359 vs CI 1,044,372 ✗）⇒ 判据读工作区就是**跨环境不同源**
+   （第 336 轮三问「它读的两个量是不是同源」的又一次 ✓）。修法 `f0f7e0c6`：改读
+   `git show HEAD:web/index.html` ⇒ 同一提交两台机器必然同一个数 ✓；变异改走**临时提交**
+   （HEAD blob 1,050,369 红 ✓）`reset --soft`＋`restore` 还原回绿 ✓。
    ⑤ **CI 复盘（run `40640839341`，`8816b1fc`，failure）**：
    · `browser-brush-preview` **定性为环境抖动** ✓ —— 上一跑（`522ffcd`）红的那条这一跑**没有复现** ✓
      （同跑 `browser-asset-dock` 当时是 `exit 3` 判据自身求值失败 ✓，不是产品失败 ✓）；
