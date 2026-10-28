@@ -1586,3 +1586,54 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    wasm／HTTP 无该函数副本 ✓（本地内核 `api-local` 不实现 smart_select ⇒ 无双侧口径面 ✓）。
 ⑤ `git am` 不过 pre-commit ⇒ fmt／clippy／台账守卫另行复跑 ✓（§90⑤ 同规）；push 等 §99 那轮
    run 收敛（同组不双派 ✓）。
+
+## §101 paint-fix 期 6 后续包（P-12 取证回执／P-15 分布／X-5 live total）合并留痕（2026-10-29）
+
+① **基线与接缝**：包基线 `c6b19269` **在本仓存在 ✓**（P7 的基线）且为 HEAD 祖先 ✓；
+   上游声明的本期 tip `5f06875`／重放 tip `4b524e89` 不在本仓 ✗（同 §99①/§100① 的处置：
+   包侧树等式信自述，我侧以 apply 干净落地代 ✓）。**说明书未写补丁 sha256** ✗（P5 写了 ⇒ 口径不齐，
+   如实记；本包 sha256 `5c73d48e…6966e0` 留此）。**基线序核对决定了合并顺序 P5→P6**（§100① ✓）：
+   P6 自述「已 rebase 到 c6b1926、含期 5」⇒ **队列里的 #45→#46 恰与祖先序一致 ✓**。
+   **落枝方式**：§99 那轮 CI（40722469155）在跑 ⇒ 不双派 ⇒ **P5、P6 叠在 `try-p5-selection` 上
+   合为一个候选**，随轮 push（§897「攒几处一起提交」口径 ✓）。`git am --3way` 一笔落地
+   （7 文件 +1444/−13 ＝ **与自述逐字相同 ✓**）；自述的 rebase 冲突点只在 `tools_tests.rs` 文件尾
+   ⇒ 我侧落点直接干净 ✓（测试模块在尾部追加 ⇒ §「测试模块留文件末尾」规矩未被破坏 ✓）。
+② **内容审读**：
+   · **P-12（draw_*/fill/erase 五项取证）**：提交前按几何算脏区预渲染 ＋ 提交后用 `result.dirty_bbox`
+     验算，**超出即放弃取证（字段在位＝null ＋ `evidence_note`）✓**（形态⑤的对偶：「不算」要明说 ✗）。
+     **三处如实披露核对 ✓**：① T-E 验收第 3 条**自认不成立**（静默 batch 每笔加 2 次渲染违反
+       silent 约定、是 P-21 级成本 ⇒ null＋note 是「明说不提供」✓ 不是静默缺失 ✓）；
+     ② **erase 例外口径**（tile 法恒 0 ⇒ 改前后区域比较；`painted==changed_pixels`、`ink_mass` 恒 0）✓；
+     ③ **代价写数**（交互每笔 ＋2 区域渲染 ＋1 状态克隆；静默 0）✓。
+     `write_fill_region` 的内部 `write_draw` 调用点同样带取证 ✓（一处修覆盖调用面 ✓）。
+   · **P-15（分布）**：`max` 口径**不动** ✓（只加 256 桶直方图，同一遍遍历 ⇒ 零额外遍历 ✓）；
+     分位数规则**三处共用一份** ✓（一个事实一处 ✓）；**实测值与分诊不一致处不冒充**
+     （淡色笔 max==2 vs 分诊报 1 ⇒ 几何不同未复现，断言以本轮实测为准 ✓——数字带来源 ✓）。
+   · **X-5（live total）**：按**最近动作**判撤销（reapply 回来算 live）✓；**`list_atoms` 不顺手改** ✓
+     （两边口径本来就不同 ⇒ 照字面，见 §「取值集合」教训 ✓）；恒等式 `total + reverted_excluded
+     == 全部匹配数` ✓（比单点断言强 ✓）；**既有行为**「`list_atoms` 缺省视图看不见 draw 笔」
+     （draw 净荷无 `source` ⇒ total==0）**如实进测试** ✓ 不改。
+③ **本机复验**（合并例外 ✓）：新判 **14/14 绿**（`draw_stroke_evidence` 6／`brush_delta_distribution` 4／
+   `stroke_log_live_total` 4）＋ lib 单元 `delta_distribution_quantiles_follow_the_documented_rule` ✓；
+   既有相邻 Rust 面 **19/19 绿**（`stroke_log_group_filter`／`stroke_log_message`／`batch_message`／
+   `ink_pixels`／`read_cursor_resume`／`list_atoms_truncation`）；`cargo clippy -p yanshi-server
+   --all-targets -D warnings` exit 0 ✓。**`--workspace` 全量 test 交 CI**（可用 2.1 Gi < 3 Gi ⇒
+   §95③ 同措辞 ✗ 不自称本机绿）。判据面：`tool-batch-stroke-evidence` ✓／`tool-brush-landed` ✓／
+   `tool-stroke-log{,-color-shape,-vector}` ✓。**⚠ `tool-stroke-log-color-legacy` 的调用契约是
+   「argv[2]＝二进制路径」而非 URL** ⇒ 经 `run-criteria-local.sh`（传 URL）必 exit(3) ⇒
+   直接 `node … target/release/yanshi-serve` 跑 **绿 ✓**（**exit(3) 是脚本用法不是产品 ✗ 记免得下轮误判**）。
+④ **变异本机三面重放**（断言粒度 ✓，恢复后 `git status` 干净、重跑绿 ✓）：
+   M1 两个比较子恒返 None ⇒ **恰 4 红 2 绿**（null-期望两条本该绿 ✓ 与包侧预期逐字一致）；
+   M2 分位数恒返 255 ⇒ 比包侧**更狠**：lib 单元 ＋ `pale_wash`／`medium`／`soft_dark` **3 条集成红**
+   （包只报 2 红 ⇒ 他们的变异是「恒返 max」在我这输入上与 255 等效但面更小；如实记，不算分歧 ✗）；
+   M3 撤销过滤失效 ⇒ `after_undo` ＋ `list_atoms 交叉核对` 2 红 2 绿 ✓ 逐字一致。
+⑤ **回归普查**（语义反转面枚举，§98⑥ 教训 ✓）：
+   · 新增字段面：**全库 grep 无判据钉「draw 回执字段全集」** ⇒ 加键不打红任何 shape 断言 ✓；
+   · `paint_delta`/`max_channel_delta` 口径不动 ⇒ gpu-*／color-space-p2-9 等既有断言面不漂移 ✓
+     （gpu-* 属本地特殊构建面 ⇒ 交 CI ✓）；
+   · X-5 的 `total` 语义反转：唯一可能红的是「撤笔后仍断 total 含撤」的判据 ⇒
+     **全库 grep 只有 tool-stroke-log ④（造 2 笔不撤 ⇒ 2 是判据造的输入 ✓）**，四条 stroke-log 全绿 ✓；
+   · P-12 的渲染副作用：**渲染路径未改**（只读比较 ⇒ 像素输出恒等 ✓，`tool-pwa-pixel-stats` 面不受涉）；
+   · 双份 api-local／docs 表格：本包**不碰** ✓；known-red 名单：不动 ✓。
+⑥ `git am` 不过 pre-commit ⇒ fmt／clippy／台账守卫另行复跑 ✓（§90⑤ 同规）；push 等
+   40722469155 收敛后与 §100 一并出去（同组不双派 ✓）。
