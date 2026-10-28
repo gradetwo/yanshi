@@ -1122,3 +1122,25 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    P-A 编号在第 8 轮与第 11 轮**重名不同义**（原样保留 ✓，R11 按内容区分 ✓）。
    ⑤ **合并外部补丁的门（内存规则版）**：纯文档包 ⇒ `cargo test --workspace` 无对象可回归 ✓，
    clippy/fmt 由 pre-commit 与包侧声称复现 ✓；`git am` 不过 pre-commit 钩子 ⇒ 合并后**另行复跑**了标识符守卫 ✓。
+
+91. **外部包合并：`~/patch/yanshi-patch-batch1-20261028-6372dd8c.tar.gz`（27 笔，2026-10-28）**：
+   ① **完整性先验**：包自述 base=`76154e19`（我们 HEAD 的祖先）／head 树 `41ddcb8b…` ⇒ 在 scratch
+   worktree 上 `git am` 全部 27 笔后**树对象逐字节复现** ✓（包与声明一致）。
+   ② **去重**：0001–0014（§643–645 台账＋SSRF `0/8` 修复）**已在主干**（`c18c1d98` 家族、
+   `file_source.rs:340` 的 `octets[0]==0`、§645 十三面齐全 ⇒ 逐条内容核对，不是 grep 主题——
+   MIME 编码的主题 grep 会全漏 ✓）。所以真正新的是 **0015–0027（13 笔）**：PWA 本地层 13 端点
+   ＋ 6 处静默降级修复 ＋ §646–656 台账。
+   ③ **L-6 裁定照办**：0015 里往 `.github/workflows/ci.yml` 加「重生成前验资产索引」一步 ✗ ——
+   **剥掉那 11 行只合其余**（`git am` 前先删 diff 段 ✓）；**待办登记**：L-6 解冻后把该步补回
+   （理由他们写得很实：`pwa-sync-viewer.mjs` 会重生成 `web/assets-index.json` ⇒ 判据在 CI 里
+   永远只看得到重生成态 ⇒ 仓库里被污染的 15 张测不出 ✗ 历史上 8↔15 反复过四轮 ✓）。
+   ④ **合并中查出并修掉一个我们自己的旧错**：`2ad65743`（zaipatch P2-N3 截断对账）**只改了
+   `crates/yanshi-http/assets/api-local.js`、漏了 `web/api-local.js`** ✗ ⇒ PWA 副本在超大文档上
+   会「静默停在旧状态」——正是 P2-N3 要封的形态，也是 H-1「两份重复资产会漂移」的活案例 ✓。
+   本批 0015–0027 对两副本的改动字节相同（各 +808），差集 18 行全部是那段缺失 ⇒ 以 assets 为准
+   `cp`+`cmp`+`node --check` 补齐（`3a18015b`）✓。**规矩坐实**：改任一副本必须另一副本同改。
+   ⑤ **本机验收**：`tool-pwa-api-behaviour` ✓（锚点/reorder/revert 三组全绿）｜
+   `tool-offline-asset-coverage` ✓（他们补的 `setTimeout` 沙箱让这条**复活真验**了 ✓）｜
+   `tool-assets-index-matches-tree` ✓（10 条）｜`tool-pwa-assets` ✗＝**既有红**（mediums 产物落后
+   源码，第 491 轮登记在册 ✓，非本批引入）。批次**没改任何 `.rs`** ⇒ 合并例外的 clippy/test
+   无 Rust 对象，全量套件交 CI（已推）。
