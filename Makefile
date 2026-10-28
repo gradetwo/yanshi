@@ -10,7 +10,7 @@ SHELL := /usr/bin/env bash
 # 便于 `make OUT=… release` ✓
 OUT ?= dist
 
-.PHONY: help release release-all release-cpu release-all-cpu release-kernel-gpu release-dynamic macos-benefit macos-benefit-selftest macos-quantize-bench macos-quantize-bench-selftest test test-heavy fmt clippy check dev clean
+.PHONY: help release release-all release-cpu release-all-cpu release-kernel-gpu release-dynamic macos-benefit macos-benefit-selftest macos-quantize-bench macos-quantize-bench-selftest test test-heavy fmt clippy check serve targets dev clean
 
 help:  ## 显示这份清单
 	@echo "偃师 Yanshi —— 常用入口："
@@ -92,4 +92,4 @@ dev:  ## 开发用：构建 wasm 内核并起本地服务
 	scripts/dev.sh
 
 clean:  ## 清掉发布产物
-	rm -rf dist
+	rm -rf $(OUT)
