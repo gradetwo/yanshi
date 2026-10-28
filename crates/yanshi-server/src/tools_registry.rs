@@ -2485,7 +2485,7 @@ CLIP_TO_SELECTION_PARAM,
     ToolSpec {
         name: "smart_select",
         profile: Profile::Core,
-        summary: "智能选取（魔棒）：点种子像素，按 4D 预乘 OKLabA 感知距离做 Scanline 连通泛洪（contiguous=false 时为全图色彩范围选取），1px 抗锯齿软边烘焙进位图，微孔自动闭合，可选磁力边缘细化。选区以 L8 位图 blob 存储，add/subtract/intersect/invert 照常用。返回诊断指标（面积/覆盖率/漏出告警）与可选 Quick-Mask 预览。",
+        summary: "智能选取（魔棒）：点种子像素，按 4D 预乘 OKLabA 感知距离做 Scanline 连通泛洪（链式生长：核像素须同时在种子色球内且距生长父像素 ≤ 0.5×ΔE_max；contiguous=false 时为全图色彩范围选取），1px 抗锯齿软边烘焙进位图，微孔自动闭合，可选磁力边缘细化。选区以 L8 位图 blob 存储，add/subtract/intersect/invert 照常用。返回诊断指标（面积/覆盖率/漏出告警）与可选 Quick-Mask 预览。",
         mutating: true,
         params: &[
             param!("selection_id", String, false, "选区 id；不传自动生成 sel_wand_N"),

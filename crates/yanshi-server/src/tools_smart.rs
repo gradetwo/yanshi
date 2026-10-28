@@ -4497,6 +4497,14 @@ pub(super) fn coverage_u8_from_dist(dist: f32, de_in: f32, de_out: f32) -> u8 {
     }
 }
 
+/// **P-8（paint-fix 期 5）链式生长步限比**：单步可跨的最大色差 `= 0.5 × ΔE_max`。
+///
+/// 标定依据（2026-10-28，hare-watercolor3 图层实测）：口袋内部相邻步 p99 ≈ 0.03，
+/// t=0.15 时 0.5×ΔE_max=0.038 仍能填满；图层相邻步 p99 = 0.173，
+/// t=0.35 时 0.5×ΔE_max=0.116 仍被拦住。无色隙的连续调渐变（如水彩晕染）
+/// 没有可拦的步，链式生长拦不住——那是图像本身的性质，见期 5 说明。
+pub(super) const WAND_CHAIN_STEP_RATIO: f32 = 0.5;
+
 /// `tolerance ∈ [0, 1]` → `(ΔE_max, ΔE_in, ΔE_out, ΔE_max²)`：二次感知标定曲线。
 ///
 /// 人眼对低容差区极敏感，线性映射会让前半段跨度太大；二次曲线让 `t = 0.2`
@@ -4514,6 +4522,10 @@ pub(super) fn wand_thresholds(tolerance: f64) -> (f32, f32, f32, f32) {
 ///
 /// - `contiguous = true`：从种子做 4-连通泛洪；`false`：全区域线性扫描
 ///   （"色彩范围选取"）。
+/// - **P-8 链式生长**：核像素须同时满足距种子 ≤ `ΔE_max` 与距生长父像素
+///   ≤ `ΔE_step`（`= 0.5 × ΔE_max`）。步限拦住"球内但隔着色阶跳变"的区域，
+///   让容差响应沿真实边缘停下，而不是一到阈值就漫过整幅。无色隙的连续调
+///   渐变没有可拦的步，链式生长拦不住（图像本身的性质）。
 /// - 绝不降采样：1~2px 的线稿缝降采样后会被冲淡，导致漏墨穿出（致命）。
 /// - 按需 OKLab 求值：只在访问像素时转色，不全图转 `f32`（4K 下省 132MB）。
 /// - 返回 `(mask, bbox)`：`mask` 为 `w*h` 的 `u8` 覆盖率，`bbox` 为
@@ -4527,8 +4539,11 @@ pub(super) fn magic_wand_scanline(
     tolerance: f64,
     contiguous: bool,
 ) -> (Vec<u8>, [i32; 4]) {
-    let (_de_max, de_in, de_out, de_max_sq) = wand_thresholds(tolerance);
+    let (de_max, de_in, de_out, de_max_sq) = wand_thresholds(tolerance);
     let de_out_sq = de_out * de_out;
+    // P-8：链式生长步限（见 `WAND_CHAIN_STEP_RATIO`）。
+    let de_step = WAND_CHAIN_STEP_RATIO * de_max;
+    let de_step_sq = de_step * de_step;
 
     let seed_off = (seed_y * w + seed_x) * 4;
     let c_seed = rgba_to_oklaba(
@@ -4564,12 +4579,21 @@ pub(super) fn magic_wand_scanline(
         }};
     }
 
+    // 单像素的 OKLabA 向量（链式生长的父参考用）。
+    let lab_at = |x: usize, y: usize| -> [f32; 4] {
+        let p = (y * w + x) * 4;
+        rgba_to_oklaba(raw[p], raw[p + 1], raw[p + 2], raw[p + 3])
+    };
+
     // 单像素求值：(是否连通核, 覆盖率)。连通核继续生长；边界环只记覆盖率。
-    let eval_px = |x: usize, y: usize| -> (bool, u8) {
+    // P-8 链式生长：核必须同时满足两点——(a) 距种子 ≤ ΔE_max（外圈球），
+    // (b) 距生长父像素 `c_ref` ≤ ΔE_step（步限）。(b) 拦住"球内但隔着色阶
+    // 跳变"的区域。覆盖率仍只按种子距离算（AA 环不变）。
+    let eval_px = |x: usize, y: usize, c_ref: [f32; 4]| -> (bool, u8) {
         let p = (y * w + x) * 4;
         let c = rgba_to_oklaba(raw[p], raw[p + 1], raw[p + 2], raw[p + 3]);
         let d_sq = oklaba_dist_sq(c, c_seed);
-        if d_sq <= de_max_sq {
+        if d_sq <= de_max_sq && oklaba_dist_sq(c, c_ref) <= de_step_sq {
             (
                 true,
                 coverage_u8_from_dist(d_sq.sqrt(), de_in, de_out).max(1),
@@ -4582,9 +4606,10 @@ pub(super) fn magic_wand_scanline(
     };
 
     if !contiguous {
+        // 全图色彩范围选取：没有生长父像素，链式步限不适用，只按种子球取色。
         for y in 0..h {
             for x in 0..w {
-                let (core, cov) = eval_px(x, y);
+                let (core, cov) = eval_px(x, y, c_seed);
                 let _ = core;
                 if cov > 0 {
                     put!(x, y, cov);
@@ -4602,19 +4627,22 @@ pub(super) fn magic_wand_scanline(
 
         while let Some((y, sx)) = stack.pop() {
             // 本行向左右扩展核心区间。
+            // 链式生长的父参考：当前最左/最右核像素的颜色（行首种子先行）。
             let mut xl = sx;
+            let mut c_parent = lab_at(sx, y);
             while xl > 0 {
                 let nx = xl - 1;
                 let idx = y * w + nx;
                 if visited[idx] != 0 {
                     break;
                 }
-                let (is_core, cov) = eval_px(nx, y);
+                let (is_core, cov) = eval_px(nx, y, c_parent);
                 if cov > 0 {
                     put!(nx, y, cov);
                 }
                 if is_core {
                     visited[idx] = 1;
+                    c_parent = lab_at(nx, y);
                     xl = nx;
                 } else {
                     visited[idx] = 2;
@@ -4622,18 +4650,20 @@ pub(super) fn magic_wand_scanline(
                 }
             }
             let mut xr = sx;
+            c_parent = lab_at(sx, y);
             while xr + 1 < w {
                 let nx = xr + 1;
                 let idx = y * w + nx;
                 if visited[idx] != 0 {
                     break;
                 }
-                let (is_core, cov) = eval_px(nx, y);
+                let (is_core, cov) = eval_px(nx, y, c_parent);
                 if cov > 0 {
                     put!(nx, y, cov);
                 }
                 if is_core {
                     visited[idx] = 1;
+                    c_parent = lab_at(nx, y);
                     xr = nx;
                 } else {
                     visited[idx] = 2;
@@ -4654,7 +4684,11 @@ pub(super) fn magic_wand_scanline(
                         x += 1;
                         continue;
                     }
-                    let (is_core, cov) = eval_px(x, ny);
+                    // 链式生长的父参考必须是核像素：本行同列像素若是边界环
+                    // （非核），它的颜色已在边外侧，用它当父参考会让洪水
+                    // 沿环列漏出（合成锐边探针实测：0.35 漏到 223,908 px）。
+                    // 取核区间内最近的核像素（对角父）作参考。
+                    let (is_core, cov) = eval_px(x, ny, lab_at(x.clamp(xl, xr), y));
                     if cov > 0 {
                         put!(x, ny, cov);
                     }
@@ -4667,13 +4701,14 @@ pub(super) fn magic_wand_scanline(
                     // 不预标记——游程内部留给种子弹出后的左右扩展自然覆盖，
                     // 否则扩展会被 visited=1 截断、洪水退化成梳子形状）。
                     let run_l = x;
+                    let mut c_run = lab_at(run_l, ny);
                     let mut x2 = x + 1;
                     while x2 <= end {
                         let idx2 = ny * w + x2;
                         if visited[idx2] != 0 {
                             break;
                         }
-                        let (c2, cov2) = eval_px(x2, ny);
+                        let (c2, cov2) = eval_px(x2, ny, c_run);
                         if cov2 > 0 {
                             put!(x2, ny, cov2);
                         }
@@ -4682,6 +4717,7 @@ pub(super) fn magic_wand_scanline(
                             x2 += 1;
                             break;
                         }
+                        c_run = lab_at(x2, ny);
                         x2 += 1;
                     }
                     visited[ny * w + run_l] = 1;
@@ -5242,6 +5278,9 @@ pub(super) fn commit_bitmap_selection(
 /// 边缘细化（可选）→ 羽化烘焙（可选）→ 紧致 BBox → L8 PNG blob →
 /// `CreateSelection` 原子（`kind: "bitmap"`）→ 诊断 JSON。
 ///
+/// P-8：泛洪为链式生长（核像素须同时在种子球内且距生长父像素 ≤ 0.5×ΔE_max）；
+/// 回执报 `effective_delta_e`（= ΔE_max）与 `chain_step_delta_e`。
+///
 /// `"kind"` 必须用 `"bitmap"`：`"magic_wand"` 有现成单测断言退化全选，
 /// 复用它会直接变红。
 pub(super) fn write_smart_select(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
@@ -5433,7 +5472,9 @@ pub(super) fn write_smart_select(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         0.0
     };
     let canvas_coverage_ratio = selected_area / (canvas_w * canvas_h) as f64;
-    let (_, de_max, _, _) = wand_thresholds(tolerance);
+    // P-8：`effective_delta_e` 是 ΔE_max（元组第 1 个元素）。旧代码取第 2 个
+    // 元素 ΔE_in（0.1165 @ t=0.25）错标成 ΔE_max，见期 5 说明。
+    let (de_max, _, _, _) = wand_thresholds(tolerance);
     let mut diagnostic_warning: Option<String> = None;
     if !any {
         diagnostic_warning = Some(
@@ -5469,6 +5510,7 @@ pub(super) fn write_smart_select(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         "canvas_coverage_ratio": canvas_coverage_ratio,
         "seed_color_rgba": seed_rgba,
         "effective_delta_e": de_max,
+        "chain_step_delta_e": WAND_CHAIN_STEP_RATIO * de_max,
         "refined_edges": refine_edges,
         "blob_bytes": png_len,
         "diagnostic_warning": diagnostic_warning,
@@ -5479,3 +5521,276 @@ pub(super) fn write_smart_select(ctx: &mut ToolContext<'_>, args: &Value) -> Res
 
 /// 2x3 仿射矩阵 `[a,b,c,d,e,f]`：`x' = a*x + b*y + c`；`y' = d*x + e*y + f`（Q1 选区变换用）。
 pub(super) type Affine2x3 = [f64; 6];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 由 `(r, g, b)` 列表拼 RGBA（alpha 恒 255）原始像素。
+    fn raw_from_colors(colors: &[[u8; 3]]) -> Vec<u8> {
+        let mut raw = Vec::with_capacity(colors.len() * 4);
+        for c in colors {
+            raw.extend_from_slice(&[c[0], c[1], c[2], 255]);
+        }
+        raw
+    }
+
+    /// `mask` 里等于 `value` 的像素数。
+    fn count_mask(mask: &[u8], value: u8) -> usize {
+        mask.iter().filter(|&&v| v == value).count()
+    }
+
+    /// P-8：`wand_thresholds` 的 ΔE_max 标定值（分诊验收：t=0.25 → 0.1456，
+    /// t=0.45 → 0.3346）。变异：改二次曲线系数 ⇒ 红。
+    #[test]
+    fn wand_thresholds_de_max_values() {
+        let (de_max, de_in, de_out, de_max_sq) = wand_thresholds(0.25);
+        assert!(
+            (de_max - 0.1456).abs() < 1e-4,
+            "t=0.25 时 ΔE_max 应为 0.1456，实测 {de_max}"
+        );
+        assert!(
+            de_in < de_max && de_max < de_out,
+            "应有 de_in < de_max < de_out：{de_in} < {de_max} < {de_out}"
+        );
+        assert!(
+            (de_max_sq - de_max * de_max).abs() < 1e-6,
+            "de_max² 应等于 de_max 的平方"
+        );
+        let (de_max, _, _, _) = wand_thresholds(0.45);
+        assert!(
+            (de_max - 0.3346).abs() < 1e-4,
+            "t=0.45 时 ΔE_max 应为 0.3346，实测 {de_max}"
+        );
+    }
+
+    /// P-8 链式生长：球内但隔着色阶跳变的区域不被选中。
+    ///
+    /// 左半 A=(200,180,160)，右半 B=(150,130,110)，t=0.35。
+    /// 前置（用真实函数算）：d_seed(B) ≤ de_in（作核会是 255），
+    /// 步 A→B > de_step。旧行为（无链）右半全 255；新行为右半只剩 1px
+    /// AA 环（x=5），x=6..9 为 0。变异：删链式条件 ⇒ x=6..9 变 255 ⇒ 红。
+    #[test]
+    fn chain_stops_at_step_edge() {
+        let a = [200u8, 180, 160];
+        let b = [150u8, 130, 110];
+        let (de_max, de_in, _, _) = wand_thresholds(0.35);
+        let d_seed_b = oklaba_dist_sq(
+            rgba_to_oklaba(b[0], b[1], b[2], 255),
+            rgba_to_oklaba(a[0], a[1], a[2], 255),
+        )
+        .sqrt();
+        assert!(
+            d_seed_b <= de_in,
+            "前置：B 应在 de_in 内（作核会是 255），d={d_seed_b}，de_in={de_in}"
+        );
+        assert!(
+            d_seed_b > WAND_CHAIN_STEP_RATIO * de_max,
+            "前置：步 A→B 应大于 de_step，d={d_seed_b}，de_step={}",
+            WAND_CHAIN_STEP_RATIO * de_max
+        );
+        let w = 10usize;
+        let h = 10usize;
+        let mut colors = vec![a; w * h];
+        for y in 0..h {
+            for x in 5..w {
+                colors[y * w + x] = b;
+            }
+        }
+        let raw = raw_from_colors(&colors);
+        let (mask, bbox) = magic_wand_scanline(&raw, w, h, 2, 5, 0.35, true);
+        for y in 0..h {
+            for x in 6..w {
+                assert_eq!(
+                    mask[y * w + x],
+                    0,
+                    "右半 ({x},{y}) 应为 0（链式步限应拦住，不让洪水越过 1px 环）"
+                );
+            }
+        }
+        assert_eq!(bbox, [0, 0, 6, 10], "bbox 应只含左半 + 1px 环：{bbox:?}");
+    }
+
+    /// P-8 链式生长：步步可跨的平滑渐变应被填满（步限不能过紧）。
+    ///
+    /// 20×1 行，A=(200,180,160) 线性插值到 C=(160,140,120)，t=0.35。
+    /// 每步 ≈ 0.007 < de_step，全部在 de_in 内。变异：de_step=0 ⇒ 只剩种子 ⇒ 红。
+    #[test]
+    fn chain_fills_smooth_gradient() {
+        let a = [200u8, 180, 160];
+        let c = [160u8, 140, 120];
+        let w = 20usize;
+        let mut colors = Vec::with_capacity(w);
+        for i in 0..w {
+            let t = i as f32 / (w - 1) as f32;
+            colors.push([
+                (a[0] as f32 + (c[0] as f32 - a[0] as f32) * t).round() as u8,
+                (a[1] as f32 + (c[1] as f32 - a[1] as f32) * t).round() as u8,
+                (a[2] as f32 + (c[2] as f32 - a[2] as f32) * t).round() as u8,
+            ]);
+        }
+        // 前置：每步 ≤ de_step，且全部在 de_in 内。
+        let (de_max, de_in, _, _) = wand_thresholds(0.35);
+        let de_step = WAND_CHAIN_STEP_RATIO * de_max;
+        let seed_lab = rgba_to_oklaba(a[0], a[1], a[2], 255);
+        let mut prev = seed_lab;
+        for col in &colors {
+            let lab = rgba_to_oklaba(col[0], col[1], col[2], 255);
+            assert!(
+                oklaba_dist_sq(lab, prev).sqrt() <= de_step,
+                "前置：渐变每步应 ≤ de_step"
+            );
+            assert!(
+                oklaba_dist_sq(lab, seed_lab).sqrt() <= de_in,
+                "前置：渐变全部应在 de_in 内"
+            );
+            prev = lab;
+        }
+        let raw = raw_from_colors(&colors);
+        let (mask, _) = magic_wand_scanline(&raw, w, 1, 0, 0, 0.35, true);
+        assert!(
+            mask.iter().all(|&v| v == 255),
+            "平滑渐变应全被选中（255），实测 {mask:?}"
+        );
+    }
+
+    /// P-8：链式生长不能漂出种子球——步步可跨、但远端超出 ΔE_max 的不选中。
+    ///
+    /// 20×1 行，A=(200,180,160) 线性插值到 C=(100,80,60)，t=0.35。
+    /// 每步 ≈ 0.018 < de_step（链允许），但 d_seed 超过 de_max 的像素不选中。
+    /// 恒等式：mask==255 的个数 = d_seed ≤ de_in 的个数；洪水在第一个非核
+    /// 像素处停下，环外像素一律为 0（1px 环的设计，见 scanline 注释）。
+    /// 变异：删球条件 ⇒ 洪水越过环继续长，环外像素变非 0 ⇒ 红。
+    #[test]
+    fn ball_caps_drift() {
+        let a = [200u8, 180, 160];
+        let c = [100u8, 80, 60];
+        let w = 20usize;
+        let mut colors = Vec::with_capacity(w);
+        for i in 0..w {
+            let t = i as f32 / (w - 1) as f32;
+            colors.push([
+                (a[0] as f32 + (c[0] as f32 - a[0] as f32) * t).round() as u8,
+                (a[1] as f32 + (c[1] as f32 - a[1] as f32) * t).round() as u8,
+                (a[2] as f32 + (c[2] as f32 - a[2] as f32) * t).round() as u8,
+            ]);
+        }
+        // 前置：每步 ≤ de_step（链允许），且末端超出 de_out（球外无环）。
+        let (de_max, _, de_out, _) = wand_thresholds(0.35);
+        let de_step = WAND_CHAIN_STEP_RATIO * de_max;
+        let seed_lab = rgba_to_oklaba(a[0], a[1], a[2], 255);
+        let mut prev = seed_lab;
+        for col in &colors {
+            let lab = rgba_to_oklaba(col[0], col[1], col[2], 255);
+            assert!(
+                oklaba_dist_sq(lab, prev).sqrt() <= de_step,
+                "前置：渐变每步应 ≤ de_step"
+            );
+            prev = lab;
+        }
+        let last_lab = rgba_to_oklaba(c[0], c[1], c[2], 255);
+        assert!(
+            oklaba_dist_sq(last_lab, seed_lab).sqrt() > de_out,
+            "前置：末端应在 de_out 外"
+        );
+        let raw = raw_from_colors(&colors);
+        let (mask, _) = magic_wand_scanline(&raw, w, 1, 0, 0, 0.35, true);
+        let (_, de_in, _, _) = wand_thresholds(0.35);
+        let mut expect_full = 0usize;
+        for col in &colors {
+            let d = oklaba_dist_sq(rgba_to_oklaba(col[0], col[1], col[2], 255), seed_lab).sqrt();
+            if d <= de_in {
+                expect_full += 1;
+            }
+        }
+        assert_eq!(
+            count_mask(&mask, 255),
+            expect_full,
+            "mask==255 的个数应等于 d_seed ≤ de_in 的个数：{mask:?}"
+        );
+        // 洪水在第一个非核像素（d_seed > ΔE_max）处停下：它只得 1px 环，
+        // 环外的像素一律不求值、不选中（即使在 de_out 内）。变异：删球条件
+        // ⇒ 洪水越过环继续长，环外像素变非 0 ⇒ 红。
+        let first_non_core = colors
+            .iter()
+            .position(|col| {
+                oklaba_dist_sq(rgba_to_oklaba(col[0], col[1], col[2], 255), seed_lab).sqrt()
+                    > de_max
+            })
+            .expect("前置：渐变末端应超出 ΔE_max");
+        for (i, &v) in mask.iter().enumerate() {
+            if i > first_non_core {
+                assert_eq!(v, 0, "环外像素 ({i}) 不应被选中（洪水已在环处停下）");
+            }
+        }
+        assert_eq!(mask[w - 1], 0, "最远端（d_seed 超出 ΔE_max）不应被选中");
+    }
+
+    /// P-8 链式生长：上下行扫描的游程首像素，父色必须是核像素。
+    ///
+    /// 12×12，竖带 A=(200,180,160) 在 x=4..7，两侧是 B=(150,130,110)，
+    /// 种子 (5,6) 在带内，t=0.35。核区间在内部（xl=4），扫描的 xl-1 列
+    /// (x=3) 是环像素（B 色）。旧代码以本行同列 (3,6)（环，B 色）当父色，
+    /// 步为 0 ⇒ (3,ny) 成核，洪水沿环列漏进左侧 B 区；修后父色取核区间
+    /// 内最近的核像素 (4,6)（A 色），步 0.1658 > de_step ⇒ 拦住。
+    /// 变异：把 `x.clamp(xl, xr)` 改回 `x` ⇒ 左侧 B 区变 255 ⇒ 红。
+    #[test]
+    fn chain_run_start_parent_must_be_core() {
+        let a = [200u8, 180, 160];
+        let b = [150u8, 130, 110];
+        let w = 12usize;
+        let h = 12usize;
+        let mut colors = vec![b; w * h];
+        for y in 0..h {
+            for x in 4..8 {
+                colors[y * w + x] = a;
+            }
+        }
+        let raw = raw_from_colors(&colors);
+        let (mask, bbox) = magic_wand_scanline(&raw, w, h, 5, 6, 0.35, true);
+        // 带外两侧（除 1px 环 x=3、x=8）应为 0。
+        for y in 0..h {
+            for x in 0..3 {
+                assert_eq!(
+                    mask[y * w + x],
+                    0,
+                    "左侧 B 区 ({x},{y}) 应为 0（环列父色若取环像素会漏出）"
+                );
+            }
+            for x in 9..w {
+                assert_eq!(
+                    mask[y * w + x],
+                    0,
+                    "右侧 B 区 ({x},{y}) 应为 0（环列父色若取环像素会漏出）"
+                );
+            }
+        }
+        assert_eq!(
+            bbox,
+            [3, 0, 6, 12],
+            "bbox 应只含竖带 + 两侧 1px 环：{bbox:?}"
+        );
+    }
+
+    /// P-8：contiguous=false（全图色彩范围选取）不受链式步限影响。
+    /// 同 step-edge 图像，右半应在球内被选中。变异：链式误用于非连通 ⇒ 红。
+    #[test]
+    fn noncontiguous_ignores_chain() {
+        let a = [200u8, 180, 160];
+        let b = [150u8, 130, 110];
+        let w = 10usize;
+        let h = 10usize;
+        let mut colors = vec![a; w * h];
+        for y in 0..h {
+            for x in 5..w {
+                colors[y * w + x] = b;
+            }
+        }
+        let raw = raw_from_colors(&colors);
+        let (mask, _) = magic_wand_scanline(&raw, w, h, 2, 5, 0.35, false);
+        assert!(
+            mask.iter().all(|&v| v == 255),
+            "非连通模式下球内像素应全被选中（255），实测 {mask:?}"
+        );
+    }
+}
