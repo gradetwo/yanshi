@@ -11,7 +11,16 @@
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
   X-Frame-Options: DENY
-  Content-Security-Policy: frame-ancestors 'none'
+  # 05 复审 C-1：frame-ancestors 只封了嵌套；这里补**资源面**白名单。
+  # 口径（全部对着 web/ 实测用法收的，不是照抄模板）：
+  # · 'unsafe-inline'（script/style）＝ 9 段内联脚本 ＋ 大量 style 属性 ✗ 收敛要动产物结构，走 nonce 是后话；
+  # · 'wasm-unsafe-eval' ＝ 内核与插件走 WebAssembly.compile(bytes)（index.html:6120 ✓）；
+  # · img data:/blob: ＝ 缩略图/导入预览走 createObjectURL ✓；worker blob: ＝ 同上一条；
+  # · connect 只有 'self' ＋ 同源 ws（api-local 全部走相对路径 ✓，没有绝对 127.0.0.1 引用 ✓）；
+  # · object-src 'none' ＋ base-uri 'self' ＝ 堵插件类向量与 <base> 劫持 ✓。
+  # ∴ 两面：收益＝外部注入的代码只能连同源、加载不了外链资源 ✗；
+  #   代价＝哪天要接外部服务（CDN／上报）必须同步改这里，否则会被浏览器静默拦掉 ✓。
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'
 
 /index.html
   Cache-Control: no-cache
