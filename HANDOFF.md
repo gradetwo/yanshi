@@ -1308,3 +1308,51 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    `tool-archive-bloat`／`tool-cold-open-budget`／`tool-export-idempotent` 断的是**相对量与恒等式**
    （`blobsB ≤ blobsA×1.5`、原因之和==`kept_no_recipe`），P2 不改变 blob 计数口径 ✓。
 ⑤ `git am` 不过 pre-commit 钩子 ⇒ 本留痕提交**另行复跑** fmt/clippy/台账编号/守卫 ✓（§90⑤ 同规）。
+
+## §97 paint-fix 期 4 后续包（brushes）合并留痕（2026-10-28，`e721e7de`）
+
+① **基线与接缝**：包基线同为 `aeca3e4c`，包侧前向验证跑在 `25e91bcc`（`verify/前向验证-当前main.txt`
+   PASS）⇒ 但本树合完 P2 后 main 已是 `74501886` ⇒ **P4 叠在 P2 之上**顺序应用。
+   两包同改 `tools.rs`/`tools_brush.rs` 而**行段互斥**（P2 hunks 5928／15588／17051／17272、
+   tools_brush 160／982／1844；P4 hunks 14046／16550–16700／16949–16970、tools_brush 1505–1565）✓；
+   `git am --3way` 两片**全部干净**（`3fd25dbc`、`171a1f8b`，无冲突）✓。
+   小噪音记一笔：包提交信息里「3011363 起 latent」应为「第 1363 轮」——文字漂移，不碍事。
+② **内容审阅**（四件根因 + 一件跟进）：
+   **P-4（成本与可见性）**——`smudge_dab` 拖曳长度 ≤0 早返（`oil-01-paint` 的 `smudge_length` 是 0 ⇒
+   此前每步都在为一次**数学上恒等的空操作**付全部逐像素 `powf` 成本 ✓）；掩膜遍 `skip_smudge`
+   （掩膜只记 dab 落点，涂抹只在落点盘内搬颜色、不扩盘 ⇒ 掩膜遍涂抹是纯成本；正确性靠
+   读回用 `deposited || moved`——主遍涂抹改过的像素由 `moved`（±3 容差）独立守住 ✓）；
+   `srgb_to_linear` 走 **fix15 精确查表**（32641 项、表项由同一函数逐项生成 ⇒ **逐位相同**，
+   D0 基线不受影响，证据是 `fix15_decode_table_is_bitwise_exact` 全定义域断言 ✓）；
+   `paint_brush` 拒绝预测 >30 s 的涂抹笔（`invalid_argument` 写明路径／半径／预算与三条改法——
+   **不静默跑 7 分钟** ✓，符合「静默降级是唯一对手」）。
+   **P-6**——watercolor-02-paint `smudge` 0.95→0.3 加 `brush_radius` 曲线、`smudge_length` 0.1→0.03
+   （大面积洗白是**笔刷数据**问题，不是引擎问题 ✓）。
+   **P-7**——`MAX_DAB` 64→512：六插件 + 宿主 `MEDIUMS` + schema 文案三处齐改 ✓；
+   宿主测试 `all_mediums_allow_a_512_dab` **量实测落墨带宽**（420 请求 ⇒ 300..=480）而**不**断
+   `paint_stroke` 回的 bbox——包自己写明理由：回的 bbox 是按请求值**规划**的区域，只断它会恒绿
+   （变异「插件改回 64」不红）⇒ 这正是四层齐的「输入能触发」层 ✓。
+   **P-17**——classic-knife `opaque_multiply` 压力峰值 1.0→0.99，避开 `opaque_linearize` 在 1.0 的
+   奇点（压力峰变成一道暗竖棱）。
+   **2/2（s36 跟进）**——净室侧涂抹量与拖曳长度改读 `radius_evaluated_value`（只算 `brush_radius`
+   映射的求值后值）⇒ **预算闸门与报错数字和实际跑的拖曳一致** ✓；`radius_evaluated_value` 定义在
+   `tools.rs:16544`（私有），`tools_brush.rs` 经 `use super::*` 可见（父子模块可见性 ✓，编译实证）。
+③ **本机复验**（合并例外的内存边界，§96③ 同口径）：`cargo check -p yanshi-server --tests`、
+   `-p yanshi-medium-host --tests`、`-p yanshi-render --tests`、六插件 `cargo check` **全部 exit 0** ✓；
+   pre-commit（fmt ＋ **workspace clippy `-D warnings`**）✓。可用内存 **2.4 Gi < 3 Gi** ⇒
+   定向 test（`medium_stroke` 420 落墨、宿主 512 带宽、预算模型、fix15 逐位）与
+   `cargo test --workspace` **交 CI** ✗ 不自称本机绿。包侧变异（改回 64 ⇒ 带宽断言红等）在盒上记录、
+   本树不代跑；本地二进制早于本提交 ⇒ 本机跑判据**只验脚本形状不取产品数字**（④ 有交代）✓。
+④ **回归普查**——**查出一条必假红并已修**（包侧没点名，是本普查抓的 ✗）：
+   `tool-medium-stroke-size-clamp.mjs` 写死 `CAP = 64` ⇒ P-7 后请求 192 **不再夹紧** ⇒ 判据必红。
+   按「判据里的数字分两类」改成**探测上限**（请求 4096 ⇒ 回的 `size_used` 即当前上限），
+   原三条断言**换形保义**，另加④「上限之半不夹紧且回显」防「全都夹紧」的假阳性，
+   补 `uncaughtException ⇒ exit(3)`（第 1084 轮规）。**用 P4 前的 release 二进制实跑**：
+   探测=64、五项全绿、服务不在时 EXIT 3 ✓——测的是脚本逻辑与响应形状（`size_used`/
+   `size_clamped`/`dirty_bbox` 字段名），不是产品数字（二进制陈旧，按新鲜度规则只作此用）✓。
+   其余核对：`medium-abi-check` 读各插件 `yanshi_max_dab()` ⇒ 天然自适应 ✓；classic-knife 在
+   `brush_stroke.rs`/`preferences.rs` 只当「有东西可抹」的底层，断存在性／裁剪不断定值像素 ⇒
+   1.0→0.99 不打红 ✓；**无判据点名 watercolor-02** ✓；涂抹预算只可能拦 `smudge>0` 且拖曳>0 的笔，
+   判据里最大几何是 `tool-smudge-drags-color`（size≈H/8、路径数百 px ⇒ 预测 ~1 s ≪ 30 s）✓；
+   CI 在测试与判据前**重建介质 wasm 并 `mediums-sync`** ⇒ 仓库内旧产物的陈旧问题不进 CI ✓。
+⑤ `git am` 不过 pre-commit 钩子 ⇒ 本留痕提交**另行复跑** fmt/clippy/台账编号/守卫 ✓（§90⑤ 同规）。
