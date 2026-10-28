@@ -1382,6 +1382,8 @@ impl Workspace {
                 height: spec.height,
                 created_at: yanshi_core::now_ms(),
                 tokens: Vec::new(),
+                // **新文档从第一枚令牌起就写摘要** ✓（审计 H-2③）⇒ 不存在明文窗口 ✓。
+                tokens_hashed: true,
             })?;
             // **★ 顺手把"最新可用快照"落盘（待办 ① ✓，2026-10-15 ✓）★**
             //   **调用处不写"存不存在"的判断** ✓：`save_snapshot` **自带幂等** ✓（已存在 ⇒ `Ok(false)` ✓）
@@ -1764,12 +1766,23 @@ impl Workspace {
                     mark("before_meta");
                 }
                 if let Some(meta) = persist.load_meta(doc_id)? {
+                    // **旧格式（明文）按原文恢复，新格式（摘要）直接入表** ✓（审计 H-2③）：
+                    // 迁移只发生在**下一次写入** ✓ ⇒ 读路径必须认两种格式 ✓，不能只认一种 ✗。
+                    let hashed = meta.tokens_hashed;
                     for record in meta.tokens {
-                        document.authority_mut().restore(
-                            &record.token,
-                            &record.actor,
-                            record.role,
-                        )?;
+                        if hashed {
+                            document.authority_mut().restore_digest(
+                                &record.token,
+                                &record.actor,
+                                record.role,
+                            )?;
+                        } else {
+                            document.authority_mut().restore(
+                                &record.token,
+                                &record.actor,
+                                record.role,
+                            )?;
+                        }
                     }
                 }
             }

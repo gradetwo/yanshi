@@ -224,13 +224,15 @@ impl Session {
     }
 }
 
-/// 令牌表的键：`SHA-256(token)`（64 位小写十六进制）✓（审计 M-2）。
+/// 令牌的查表键：`SHA-256(token)`（64 位小写十六进制）✓（审计 M-2）。
 ///
 /// **为什么键不存令牌原文** ✗：`BTreeMap` 按 `Ord` 查表 ⇒ 比较在**第一个不同的字节**
 /// 就返回 ✗ ⇒ 单次查表的耗时随「与真实键共享的前缀长度」变化 ⇒ 逐字节可测的旁路 ✓；
 /// 而且明文凭证本不该在服务端内存里多躺一份 ✓。摘要定长 32 字节 ⇒ 一次比较 ✓，
 /// 像空间仍是 2^256 ✓（令牌本身就是 OS 熵 ⇒ L-1 ✓）。
-fn token_key(token: &str) -> String {
+///
+/// **持久层也用这一份** ✓（审计 H-2③：`meta.json` 存摘要而不是明文 ✓）。
+pub(crate) fn token_digest(token: &str) -> String {
     let mut key = String::with_capacity(TOKEN_HEX_LEN);
     for byte in Sha256::digest(token.as_bytes()) {
         let _ = write!(key, "{byte:02x}");
@@ -254,7 +256,7 @@ impl TokenAuthority {
     pub fn issue(&mut self, actor: impl Into<ActorId>, role: Role) -> CapabilityToken {
         let token = CapabilityToken::generate();
         self.tokens.insert(
-            token_key(token.as_str()),
+            token_digest(token.as_str()),
             Principal {
                 actor: actor.into(),
                 role,
@@ -265,7 +267,7 @@ impl TokenAuthority {
 
     /// 吊销令牌。
     pub fn revoke(&mut self, token: &CapabilityToken) -> bool {
-        let key = token_key(token.as_str());
+        let key = token_digest(token.as_str());
         self.tokens.remove(&key).is_some()
     }
 
@@ -273,7 +275,23 @@ impl TokenAuthority {
     pub fn restore(&mut self, token: &str, actor: &str, role: Role) -> Result<()> {
         let token = CapabilityToken::parse(token)?;
         self.tokens.insert(
-            token_key(token.as_str()),
+            token_digest(token.as_str()),
+            Principal {
+                actor: actor.to_owned(),
+                role,
+            },
+        );
+        Ok(())
+    }
+
+    /// 按**已存的摘要**恢复令牌 ✓（审计 H-2③：`meta.json` 里只有摘要 ✓）。
+    ///
+    /// 摘要形状与令牌相同（64 位小写十六进制）⇒ 借用同一个 [`CapabilityToken::parse`]
+    /// 做形状校验 ✓；存进去**不再哈希一次** ✗（否则重启后原文对不上 ✓）。
+    pub fn restore_digest(&mut self, digest: &str, actor: &str, role: Role) -> Result<()> {
+        let digest = CapabilityToken::parse(digest)?.as_str().to_owned();
+        self.tokens.insert(
+            digest,
             Principal {
                 actor: actor.to_owned(),
                 role,
@@ -294,7 +312,7 @@ impl TokenAuthority {
 
     /// 解析令牌对应的主体（不校验传输）。
     pub fn principal_of(&self, token: &CapabilityToken) -> Option<&Principal> {
-        self.tokens.get(&token_key(token.as_str()))
+        self.tokens.get(&token_digest(token.as_str()))
     }
 
     /// 鉴权：本地传输豁免；其他传输必须提供有效令牌。
@@ -317,7 +335,7 @@ impl TokenAuthority {
             ));
         };
         self.tokens
-            .get(&token_key(token.as_str()))
+            .get(&token_digest(token.as_str()))
             .cloned()
             .ok_or_else(|| {
                 YanshiError::new(
@@ -414,7 +432,7 @@ mod tests {
 
     #[test]
     fn token_table_is_keyed_by_digest_not_by_plaintext() {
-        // 变异：让 `token_key` 直接返回令牌原文 ⇒ 第一条断言红 ✓（审计 M-2）。
+        // 变异：让 `token_digest` 直接返回令牌原文 ⇒ 第一条断言红 ✓（审计 M-2）。
         let mut authority = TokenAuthority::new();
         let token = authority.issue("human:2", Role::Editor);
         assert_eq!(authority.len(), 1);
@@ -429,7 +447,7 @@ mod tests {
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
         assert_eq!(
             key,
-            token_key(token.as_str()),
+            token_digest(token.as_str()),
             "键必须是 SHA-256 的十六进制"
         );
 
@@ -452,6 +470,14 @@ mod tests {
             .unwrap();
         assert!(!authority.tokens.contains_key(token.as_str()));
         assert_eq!(authority.principal_of(&token).unwrap().role, Role::Viewer);
+
+        // **摘要恢复不许再哈希一次** ✗（H-2③：盘上存的就是摘要 ✓）。
+        let mut from_disk = TokenAuthority::new();
+        let raw = CapabilityToken::generate();
+        from_disk
+            .restore_digest(&token_digest(raw.as_str()), "human:3", Role::Viewer)
+            .unwrap();
+        assert_eq!(from_disk.principal_of(&raw).unwrap().actor, "human:3");
     }
 
     #[test]

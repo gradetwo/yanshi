@@ -18,7 +18,7 @@
 //! 与 HEAD 一致"时用来**直接命中** ✓；`preview.png` 是**小的**文档预览（256²、解码 ~1s ✓），
 //! 用来做**增量预览的像素基座** ✓。共用一份文件会互相顶掉 ✓ ⇒ 两条复用路径都失效 ✗。
 
-use crate::token::{CapabilityToken, Role};
+use crate::token::{token_digest, CapabilityToken, Role};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::BufRead;
@@ -47,17 +47,37 @@ pub struct DocumentMeta {
     /// 已发放的 capability token（12.7）。
     #[serde(default)]
     pub tokens: Vec<TokenRecord>,
+    /// **令牌记录是否已存为摘要** ✓（审计 H-2③）。
+    /// **旧版本的 `meta.json` 没有这个字段** ⇒ `false` ⇒ 记录里的 `token` 是**明文** ✓
+    /// ⇒ 读取时按明文恢复 ✓、下次写入时**就地迁移**成摘要 ✓（`hash_legacy_tokens` ✓）。
+    #[serde(default)]
+    pub tokens_hashed: bool,
 }
 
 /// 持久化的令牌记录。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenRecord {
-    /// 令牌。
+    /// **令牌原文**（旧版本）**或 SHA-256 摘要**（`tokens_hashed` 为真时 ✓）。
+    /// 新写入一律是摘要 ✓（审计 H-2③：盘上不留可直接使用的凭证 ✓）。
     pub token: String,
     /// 绑定 actor。
     pub actor: String,
     /// 角色。
     pub role: Role,
+}
+
+/// 把旧版本（明文）的令牌记录**就地**转成摘要 ✓（审计 H-2③）。
+///
+/// **只在读到旧格式时改写** ✓：`tokens_hashed` 为真就说明已经是摘要 ⇒ 再哈希一次会把
+/// 凭证变成**谁都对不上**的东西 ✗ ⇒ 所以这里必须先看标记、再动手 ✓。
+fn hash_legacy_tokens(meta: &mut DocumentMeta) {
+    if meta.tokens_hashed {
+        return;
+    }
+    for record in &mut meta.tokens {
+        record.token = token_digest(&record.token);
+    }
+    meta.tokens_hashed = true;
 }
 
 impl FileStore {
@@ -497,10 +517,13 @@ impl FileStore {
             height,
             created_at: yanshi_core::now_ms(),
             tokens: Vec::new(),
+            tokens_hashed: true,
         });
-        meta.tokens.retain(|record| record.token != token.as_str());
+        hash_legacy_tokens(&mut meta);
+        let digest = token_digest(token.as_str());
+        meta.tokens.retain(|record| record.token != digest);
         meta.tokens.push(TokenRecord {
-            token: token.as_str().to_owned(),
+            token: digest,
             actor: actor.to_owned(),
             role,
         });
@@ -515,8 +538,10 @@ impl FileStore {
         let Some(mut meta) = self.load_meta(doc_id)? else {
             return Ok(false);
         };
+        hash_legacy_tokens(&mut meta);
+        let digest = token_digest(token);
         let before = meta.tokens.len();
-        meta.tokens.retain(|record| record.token != token);
+        meta.tokens.retain(|record| record.token != digest);
         if meta.tokens.len() == before {
             return Ok(false);
         }
@@ -719,6 +744,7 @@ mod tests {
                 height: 32,
                 created_at: 123,
                 tokens: Vec::new(),
+                tokens_hashed: false,
             })
             .unwrap();
         let token = CapabilityToken::generate();
@@ -777,12 +803,79 @@ mod tests {
         assert!(store.forget_token("doc_1", revoked.as_str()).unwrap());
         let meta = store.load_meta("doc_1").unwrap().unwrap();
         assert_eq!(meta.tokens.len(), 1, "只该删掉被吊销的那一条");
-        assert_eq!(meta.tokens[0].token, kept.as_str());
+        assert_eq!(
+            meta.tokens[0].token,
+            token_digest(kept.as_str()),
+            "盘上留的是摘要（审计 H-2③），不是原文"
+        );
         // 再删一次 ⇒ 如实报 false ✓（不假装成功）。
         assert!(!store.forget_token("doc_1", revoked.as_str()).unwrap());
         // 不存在的文档 ⇒ false（不新建 meta ✗）。
         assert!(!store.forget_token("doc_missing", revoked.as_str()).unwrap());
         assert!(store.load_meta("doc_missing").unwrap().is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tokens_are_persisted_as_digests_not_plaintext() {
+        // 变异：`record_token` 里改回 `token: token.as_str().to_owned()`（审计 H-2③）
+        // ⇒ 第一条断言红（盘上出现原文）。
+        let root = temp_root("token-digest");
+        let store = FileStore::open(&root).unwrap();
+        let token = CapabilityToken::generate();
+        store
+            .record_token("doc_1", 8, 8, &token, "human:1", Role::Owner)
+            .unwrap();
+        let text = fs::read_to_string(store.meta_path("doc_1")).unwrap();
+        assert!(
+            !text.contains(token.as_str()),
+            "meta.json 不许出现令牌原文：{text}"
+        );
+        assert!(text.contains(&token_digest(token.as_str())));
+        let meta = store.load_meta("doc_1").unwrap().unwrap();
+        assert!(meta.tokens_hashed);
+        assert_eq!(meta.tokens[0].token, token_digest(token.as_str()));
+
+        // **旧格式**（没有 `tokens_hashed` 字段、记录里是明文）⇒ 读到仍能恢复 ✓，
+        // 下一次写入**就地迁移**成摘要 ✓（否则升级后所有旧令牌立刻失效 ✗）。
+        let dir = store.doc_dir("doc_legacy");
+        fs::create_dir_all(&dir).unwrap();
+        let legacy = CapabilityToken::generate();
+        fs::write(
+            dir.join("meta.json"),
+            format!(
+                r#"{{"doc_id":"doc_legacy","width":8,"height":8,"created_at":1,
+                    "tokens":[{{"token":"{}","actor":"human:9","role":"viewer"}}]}}"#,
+                legacy.as_str()
+            ),
+        )
+        .unwrap();
+        let loaded = store.load_meta("doc_legacy").unwrap().unwrap();
+        assert!(!loaded.tokens_hashed, "缺字段就是旧格式");
+        assert_eq!(
+            loaded.tokens[0].token,
+            legacy.as_str(),
+            "旧格式读出来是明文"
+        );
+        let fresh = CapabilityToken::generate();
+        store
+            .record_token("doc_legacy", 8, 8, &fresh, "human:9", Role::Editor)
+            .unwrap();
+        let migrated = fs::read_to_string(store.meta_path("doc_legacy")).unwrap();
+        assert!(!migrated.contains(legacy.as_str()), "迁移后旧明文必须消失");
+        assert!(!migrated.contains(fresh.as_str()), "新令牌也只存摘要");
+        assert!(migrated.contains(&token_digest(legacy.as_str())));
+        assert!(migrated.contains(&token_digest(fresh.as_str())));
+        assert!(
+            store
+                .load_meta("doc_legacy")
+                .unwrap()
+                .unwrap()
+                .tokens_hashed
+        );
+        // 吊销旧格式的令牌也能按原文找到（内部先转摘要再比 ✓）。
+        assert!(store.forget_token("doc_legacy", legacy.as_str()).unwrap());
+        assert!(!store.forget_token("doc_legacy", legacy.as_str()).unwrap());
         let _ = fs::remove_dir_all(&root);
     }
 

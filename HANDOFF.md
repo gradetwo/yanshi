@@ -866,15 +866,31 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    `BTreeMap<String, Principal>` 用**令牌原文**当键 ⇒ `Ord` 在**第一个不同字节**就返回 ✗
    ⇒ 单次查表耗时随「与真实键共享的前缀长度」变化 ⇒ 逐字节可测的旁路 ✓；
    而且明文凭证在服务端内存里多躺一份 ✓。
-   ② **修法**：键改成 `SHA-256(token)` 的 64 位小写十六进制（`token_key`）⇒
+   ② **修法**：键改成 `SHA-256(token)` 的 64 位小写十六进制（`token_digest`）⇒
    `issue`／`revoke`／`restore`／`principal_of`／`authorize` **五处**统一走它 ✓；
    摘要定长 32 字节 ⇒ 一次比较 ✓，像空间仍是 2^256 ✓（令牌本身是 OS 熵 ⇒ L-1 ✓）。
    `sha2` 是工作区既有依赖（`yanshi-core` 在用）⇒ `Cargo.lock` 只给 `yanshi-server` 加一行 ✓，
    不新增供应链 crate ✓。
    ③ **判据**：`token_table_is_keyed_by_digest_not_by_plaintext` —— 表里**不出现令牌原文**、
-   键长 64 且全小写十六进制、键 == `token_key(原文)`；再验**语义不变**：
-   `principal_of`／`authorize`／`revoke` 后失效／`restore` 后角色变为 Viewer ✓。
-   ④ **变异（一条，退出码 101 ✓）**：让 `token_key` 返回令牌原文 ⇒ 第一条断言红
-   （「表里不许出现令牌原文」）⇒ 已改回并重跑绿（`cargo test -p yanshi-server --lib token` 14/14 ✓）。
-   **未做**：`meta.json` 里仍存**令牌原文**（H-2 遗留 ⇒ 要改成存摘要就得放弃「重启后原 token 仍可用」，
-   属行为变更，待定 ✓）；令牌 TTL 同样未做 ✓。
+   键长 64 且全小写十六进制、键 == `token_digest(原文)`；再验**语义不变**：
+   `principal_of`／`authorize`／`revoke` 后失效／`restore` 后角色变为 Viewer、
+   `restore_digest` **不再二次哈希** ✓。
+   ④ **变异（一条，退出码 101 ✓）**：让 `token_digest` 返回令牌原文 ⇒ 第一条断言红
+   （「表里不许出现令牌原文」）⇒ 已改回并重跑绿（`cargo test -p yanshi-server --lib token` 15/15 ✓）。
+   **未做**：令牌 TTL（行为变更，待定 ✓）。`meta.json` 的明文问题见第 81 条（已做 ✓）。
+
+81. **审计 H-2③：`meta.json` 只存令牌摘要**（2026-10-28 ✓）：
+   ① **问题**：令牌以**明文**存在 `<root>/docs/<doc>/meta.json` ⇒ 任何能读 `--root` 的
+   本地用户／进程直接拿到全部 capability 凭证 ✓（令牌即权限，不需要再猜 ✓）。
+   ② **修法**：`DocumentMeta` 加 `tokens_hashed` 标记；`TokenRecord.token` 新写入一律是
+   `SHA-256`（与内存查表键**同一个** `token_digest` ✓，一份实现 ✓）；`record_token`／
+   `forget_token` 写之前先 `hash_legacy_tokens` **就地迁移**旧明文 ✓；
+   启动恢复按标记分派：摘要 ⇒ `restore_digest`（**不再二次哈希** ✗），旧明文 ⇒ `restore` ✓。
+   **⇒ 原 token 重启后照常可用** ✓（查表本来就先哈希 ✓）⇒ 不是行为变更 ✓。
+   ③ **判据**：`tokens_are_persisted_as_digests_not_plaintext` —— 新写入的 `meta.json`
+   **不含原文**、含摘要；手工写一份**旧格式**（无 `tokens_hashed`、记录是明文）⇒
+   读出来是明文、下次写入迁成摘要（旧明文消失）、之后 `forget_token` 仍按原文命中 ✓。
+   ④ **变异（两条）**：`record_token` 写回原文 ⇒ 新判据红（打印的 meta 里看得见原文 ✓）；
+   恢复分支恒走 `restore`（把摘要再哈希一次）⇒ `file_workspace_survives_restart_with_tokens_and_render_cache`
+   红（`PermissionDenied` ✓）。均已改回并重跑绿 ✓。
+   **未做**：令牌 TTL（同上 ✓）。
