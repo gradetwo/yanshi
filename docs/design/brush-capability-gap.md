@@ -22470,3 +22470,83 @@ server lib（--features raw）**222**（5 ignored）、定向 11 个集成 suite
 `calibrate_primaries`（调整 25→**26**），而 `docs/design/implementation-notes.md` 的算子表没加行、
 总数行还写 25 ✗（`docs/tools.md` 已由 D1-c 更新 ✓）。
 ⇒ 补一行 `calibrate_primaries` + 总数改 **26** ✓；`doc_consistency` 3 通过/3 ignored ✓。
+
+## 六百四十三、patch 族**整族进入主干**的当场核对：我先拿旧的号写了一节，被主干判据当场报「新增撞号 1」⇒ 删掉才回到 7/7（第 808 轮，实测）
+
+### 吸收核对（全部当场算，不写快照数字）
+
+| 本族的活 | 主干里的下落 | 核对命令 |
+|---|---|---|
+| viewer 前端七段 | ✓ 已合入（`8110e32c`「合入外部补丁 viewer-app.patch」） | `git log --oneline origin/main \| grep viewer-app.patch` |
+| alpha 不生效要在回执点名 | ✓ `tools.rs` 的 `被忽略（画面不会变透明）` 告警在 | `grep -n 'alpha' crates/yanshi-server/src/tools.rs \| grep 忽略` |
+| `外§N` 标注约定 | ✓ 主干判据自己采纳（`33dcb383` 把标了外报的不计入棘轮） | `grep -c '外' scripts/check-ledger-section-numbering.mjs` |
+| `§数字` 棘轮＋自动收紧 | ✓ 主干**独立实现**（`87e35006`＋`51914b3c`＋自测 `0caad368`）⇒ **同一条断想的第三次撞车** | `git log --oneline origin/main -- scripts/check-ledger-section-numbering.mjs` |
+| `kept_no_recipe` 原因进回执 | ✓ HEAD 即主干祖先 | `git merge-base --is-ancestor 15d04dfe origin/main` |
+| 本族 13 条判据版＋`scripts/lib/ledger-sections.mjs` 单源 | ✗ **未进主干**（主干保留自己的 7 条版，`EXPECTED = 7`）⇒ 处置：**以主干为准，不再重贴** | `git show origin/main:scripts/check-ledger-section-numbering.mjs \| grep -o 'EXPECTED = [0-9]*'` |
+| 本族 807/808 的台账节（十三／十四次撞号、545–556 尾） | ✗ **未进主干**：主干台账自行续到 626 节／最大号 642，**编号体系整体换轨** ⇒ 撞号战争的终点不是我们赢了尾号，是**主干不再用我们的尾号** | `grep -c '第十四次撞号' docs/design/brush-capability-gap.md` ⇒ 0 |
+
+### 当场被抓的那次（内核 ① 的新证据）
+
+- ff 之前我按**会话里旧的**「540 节／最大 556」号体系追加了一节「五百五十七」⇒ 判据**立刻**报
+  「撞号 3（新增 1）」——因为主干台账里同号早已存在（第 944 轮的 alpha 自检那一节）。
+- **⇒ 写台账节之前的两条必跑命令**：① `grep -n '^## 五百五十七' <ledger>`（查同号）；
+  ② `git show origin/main:<ledger> | grep -c '^## '`（查主干现号段）。**这次两条我都没跑就写了** ✗。
+- 处理：`git checkout origin/main -- <ledger>` 丢掉旧中间态 ⇒ `git merge --ff-only origin/main` ⇒ 判据 7/7 rc=0 ✓。
+
+### 棘轮第一次为「清零」而跳
+
+- 主干把全部未标注引用**改标完了** ⇒ 基数文件现为 **0**（`cat scripts/criteria-ledger-digit-refs.json`，命令数，别抄数字）。
+- ⇒ 以后新增任何「`§`＋阿拉伯」的裸引用**必红** ⇒「只降不升」由判据自己保证 ✓。
+
+### 残余登记
+
+- 本族的标题锚点断言（判据注释不许写裸号）主干版没有 ⇒ 主干用「说明性引号不计入」（`51914b3c`）缓解 ⇒ **暂不重提**，等主干再出跨号段事故再议 ✓
+- `backup-808` 等 ref 被同步流程清除、对象已 prune ⇒ **核对吸收要用内容痕迹（log/grep），不能只靠 `git cherry`**——这次 cherry 为空只是因为 HEAD 已经就是主干 ✓（第 808 轮实测）
+
+## 六百四十四、审了两笔新主干（`8a01a448` SSRF/头部上限、`c5746046` 临时端口回环）：都立得住，登记一条残余——SSRF 检查与 ureq 连接之间隔了**第二次 DNS 解析**（第 809 轮，实测）
+
+### 审法与结论（逐条走查，不是读 commit message）
+
+| 提交 | 查了什么 | 结论 |
+|---|---|---|
+| `c5746046` | `bind_host_part` 的边界：畸形 `[::1`（无闭括号）⇒ 落回**整串** ⇒ 解析失败 ⇒ **不算回环** ✓ fail-closed；未加括号的 `::1:8080` 整串当主机 ⇒ 解析成 ≠`::1` ⇒ 正确判非回环 ✓；`0.0.0.0:0` 仍非回环 ✓ | **没有问题**：测试双向齐（放行 :0 回环／拒绝 :0 对外／IPv6 两形态），教训「同一个字符串形状 ≠ 同一套规则」已进主干 HANDOFF 第 85 条 ✓ |
+| `8a01a448` | ① SSRF 名单覆盖面：`fetch_ip_is_forbidden` 除 RFC1918/回环/链路本地外还收了 **CGNAT 100.64/10、198.18/15 基准测试段、192.0.0/24、240/4、`::`、IPv4-mapped 递归** ✓（`grep -n -A18 'fn fetch_ip_is_forbidden' crates/yanshi-server/src/file_source.rs`）② 混淆形态：数字主机串（`2130706433`）parse 失败会**落到 `to_socket_addrs`** ⇒ glibc 照样解析成 127.0.0.1 ⇒ 名单拦得住 ✓ ③ 解析差异：`url_host_port` 对 userinfo 用 `rsplit('@')` ✓、括号 IPv6 ✓、非数字端口返回 None ⇒ 拒绝 ✓，各有具名测试 ④ 重定向：**每跳**都重过 `ensure_public_fetch_target` ✓（loop 内第一行） | **没有问题**；另登记残余 ↓ |
+
+### 残余核对：SSRF 检查与 ureq 连接之间**解析了两次**（DNS rebinding 窗口）——**上游自己已在代码注释里声明过**，不是本轮新发现
+
+- 现状：`ensure_public_fetch_target` 自己 `to_socket_addrs()` 拿地址做名单检查，随后 **ureq 连接时再解析一次** ⇒ 恶意低 TTL 域名的话，**两次答案可以不同**（第一次公网、第二次 127.0.0.1）✗
+- **上游已知情**：`crates/yanshi-server/src/file_source.rs` 的注释原文写着「解析后再连接仍有 DNS rebinding 的时间窗」⇒ 按「同一事实只写一处」，本节**只登记指针**，不重写机理（命令：`grep -n 'rebinding' crates/yanshi-server/src/file_source.rs`）✓
+- **为什么本轮不动手**：修法要「检查时把已验证的 IP 钉进连接」（socket 级 connect-by-IP ＋ Host/SNI 改写），ureq 没有现成钩子 ⇒ **没有判据支撑的改动不做**（规矩：不提交没有判据的分支）✓；默认名单＋每跳重验已挡住全部**字面量**形态 ✓
+- **修复信号**（可核对，当场算）：`grep -rn 'fn .*rebind' crates/ | wc -l` 现在 = **0** ⇒ 将来出现名为 rebind 的具名测试就是修了 ✓
+
+### 本轮我自己的错（同族血债第 4 次，换了一种写法）
+
+- 提交前把门控写成 `bash scripts/pre-commit.sh 2>&1 | tail -1 && git commit …` ⇒ **管道吞掉失败码**（`&&` 检查的是 `tail` 的 0），门控明明打印「不许提交」而提交照样发生 ✗
+- 这与 AGENTS.md 记过的「`;` 不传递失败」**同族但不同形**——那条规矩防的是 `;`，**`| tail` 是它的孪生** ✗
+- **改法**：门控永远**裸跑先看 `$?`**，或者 `bash scripts/pre-commit.sh && git commit`（不接管道）✓；本节的红（把 HANDOFF 那条引用写成「`§`＋两位数字」的裸形态违了棘轮）正是这样被抓出来的
+
+## 六百四十五、服务端「外部输入面」安全普查：查出并修掉 SSRF 名单的 `0/8` 缺段，其余十三面逐条核到代码为健全（第 812–821 轮，实测）
+
+⇒ 把「别相信看起来对」用到安全审计：每一面都**读到代码、或读到钉住它的测试**才写「健全」，不是 grep 个关键词就算查过。
+
+**修掉的那一条（细节只在提交里写一次，这里只给指针）**：`fetch_ip_is_forbidden` 用 `v4.is_unspecified()` 只挡 `0.0.0.0` **一个点** ⇒ `0.0.0.0/8`「本机网络」整块（如 `0.1.2.3`）能穿过 SSRF 名单。改成 `octets[0] == 0`（覆盖并取代旧谓词）。**四层齐**：补码前测试红（`rc=101`，报 `0.1.2.3 必须被拒`），补码后绿（`rc=0`），`-p yanshi-server --lib` 全 248 测通过。**诚实边界**：本机 `ip route show table local` 没有 `0/8→lo` 条目 ⇒ 这**不是**「本机实测打穿到回环」，而是名单弱于守卫**自身声明**（「任何私网/环回地址⇒拒绝」）的失败即封闭加固（合法贴图 URL 永不落 0/8，零误伤）。定位那笔提交：`git log --oneline --grep '禁掉 0.0.0.0/8'`。
+
+**其余十三面：核到代码＝健全（每面附「怎么自己复核」的入口，不空口）**：
+
+| 面 | 结论 | 复核入口 |
+|---|---|---|
+| SSRF 出站名单**完整性** | 全仓只有这一条 deny-list ⇒ 一处改即全改，没有漏改的姊妹 | `grep -rn 'fn fetch_ip_is_forbidden' crates/ \| wc -l` ＝ 1 |
+| **重定向逐跳** | 关掉自动跟随、自己一跳一跳走：**每跳**都过 scheme 白名单＋IP 复核＋https→http 降级拒绝＋跳数上限 | 读 `file_source.rs` 里 `max_redirects(0)` 的那个 loop——scheme 检查在**循环内**，不是只在入口 |
+| **绑定／Host 信任** | `is_loopback_host` 只认 `localhost`／`127/8`／`::1`；`0.0.0.0` 与 `0/8` 一律**不算本机**（`bind_host` 把 unspecified 归 `None`）⇒ 信任方向与出站名单相反，**两边都 fail-closed** | 读 `server.rs` 的 `is_loopback_host`／`bind_host` |
+| **上传解码（PNG）** | 尺寸在**解析期**就封顶：单边 ≤ 65535、总像素 ≤ 2^28，且有**编译期 assert** 把 inflate 上限钉死在「像素×4＋边」之内 ⇒「小 IDAT＋大 IHDR」的解压炸弹与整数溢出都被挡，并有超限／炸弹／截断三类 reject 测试钉着 | `grep -n 'MAX_DECODE_EDGE\|MAX_DECODE_PIXELS\|MAX_INFLATE_BYTES' png.rs` ＋ 那三条 `decode_png(…).is_none()` |
+| **工程包导入（tar）** | tar 的 `path` 只当**逻辑键**（与固定字面量 `==` 比较后取内容），落盘用**固定文件名** ⇒ 无 tar-slip；`typeflag` 明确拒绝 symlink／hardlink／GNU 长名／PAX | 读 `service.rs` `import_project` 里那段 `path == "…"` |
+| **外部进程（ffmpeg）** | 用户可控的只有 `out_w/out_h/fps/crf` 四个 **u32**（数字串不可能以 `-` 开头或含空格）⇒ 无 argv 注入；所有 flag 写死，固定质量参数另有测试守着 | 读 `tools_timelapse.rs` 的 `ffmpeg_args` |
+| **畸形输入触发 panic（DoS 面）** | 凡「按位置索引用户数组／Vec」处，前面都有长度或存在性守卫：`points.len()==1` 才 `points[0]`、`arr.len()>=4` 才 `arr[3]`、`pts.len()<2` 早退、`seeds.is_empty()` 早退才 `seeds[0]`、`!payloads.is_empty() && all(source)` 才 `refs_by_blob[…][0]["source"]` ⇒ 畸形 JSON 走不到越界／缺键 panic；**且** release **不设 `panic="abort"`**（一个线程 panic 只崩该请求，不带崩进程） | `grep -n 'panic *= *"abort"' Cargo.toml` 只命中注释行（赋值 0 处）＋ 抽查 `tools_smart.rs:5277` 的 `seeds.is_empty()` 在 `:5366` 的 `seeds[0]` 之前 |
+| **共享锁中毒 →「粘滞」DoS** | 看着最吓人的其实是安全的：`state.workspace` 这把**全局**锁在**生产路径**从不 `.unwrap()`——25 处路由一律 `let Ok(w) = lock() else { return internal("工作区锁中毒") }`（其余是 Debug／统计的 `.map().unwrap_or()`、`.ok()`、`if let Ok`），故一次 panic 中毒后**每个后续请求得到干净的 500＋明确信号**，而不是静默 panic 雪崩（与「不带崩进程」同口径 ⇒ 这是**故意的 fail-closed**，不做 `into_inner` 自动恢复，以免在可能被撕裂的工作区状态上继续写）。唯一两处 `.lock().unwrap()` 在 `#[cfg(test)]` 的 `editor_token`／`call_tool` 里。**⇒ 我一开始把它读成缺陷、量过才发现反了**（内核 1）| `grep -c 'workspace.lock()' server.rs`＝**单行**命中 29 处（另有多行拆开的调用不计入此式）；其中 `grep -n 'workspace.lock().unwrap()' server.rs`＝**只有**测试模块那 2 行（4197／4329）|
+| **鉴权闸的位置（越权／入口漂移）** | 「能不能改文档」这条**不挂在入口**上（入口只会越加越多：HTTP／WS／MCP／batch 嵌套），而挂在**所有工具调用的必经之路** `ToolRegistry::call`：`spec.mutating && !role.can_edit() ⇒ permission_denied`——全仓**唯一一处**，判据取工具**自己声明的** `mutating` ⇒ 既不漏改也不误伤只读。HTTP 与 WS **两个入口实测都经过这把闸**（旧 bug 正是同一 viewer 令牌 `HTTP⇒拒`／`WS⇒放行`，已收口）。谓词 `can_edit()` 单一出处（`token.rs`），**不经** registry 的 HTTP 变更路由（另存副本／直接 commit 原子）**复用同一谓词**、且**排在按需建文档之前**（免得 viewer 触发建文档）。跨文档越权另有一道 `ensure_doc_scope`（`can_edit` 只看角色、拦不住「A 的 editor 取消任意文档」——该越权已发现并修，测试钉着）。本地传输（stdio／in-process／MCP）缺省 `Owner` ⇒ 行为不变 | `grep -c 'spec.mutating && !ctx.role.can_edit' tools.rs`＝1 ＋ `grep -n registry.call server.rs`＝HTTP(2620)与 WS(3849)两处 ＋ `grep -n 'wanted == authorized \|\| role == Role::Owner' token.rs`（`ensure_doc_scope` 的收口判定）|
+| **用户可控尺寸 → 内存 DoS** | 三层封顶，且**建文档**这条路是 HTTP／MCP **共用**的 service 层 `create_document` 收口（旧 bug：HTTP 曾接受 `100000×100000`＝10¹⁰ 像素，惰性分配当场不炸、而**任何全幅渲染／导出 ≈ 40GB ⇒ 必然 OOM**，MCP 早有检查 ⇒ 同一参数两条路行为不同，已收口）：① 单边 `MAX_CANVAS_EDGE=16384` ＋ 总像素 `MAX_CANVAS_PIXELS=1<<28`（**先验单边、再把乘积 `saturating_mul` 进 u64** ⇒ 乘积不会先回绕）；② 渲染缓冲 `buffer.rs MAX_BUFFER_PIXELS=1<<28` **与画布同口径**（恒等式：一层缓冲不该超过一张画布），构造点拿不到 `Result` 故用 `assert!` panic（release 下 `w*h*4` 的 u32 乘法会**静默回绕**成假长度 ⇒ 后续下标全建立在假长度上 ⇒ 比崩更糟）；③ 落笔 dab 区域 `4096×4096` 越界 ⇒ `ResourceExhausted` | `grep -n 'MAX_CANVAS_EDGE\|MAX_CANVAS_PIXELS' service.rs` ＋ `grep -n 'MAX_BUFFER_PIXELS' buffer.rs` ⇒ 两处像素上限**都** `1 << 28`（同口径当场可核）|
+| **慢客户端 → 推送队列内存增长 DoS**（第 819 轮补：主干 `git log --oneline --grep '慢客户端'` 已修，本次**独立复核为健全**） | 一条「连上却不读」的 WS 连接，原本让**单订阅者队列无界增长**（`write_frame` 阻塞在对端零窗口上 ⇒ 生产者越堆越多）。现按**事件数**封顶：数据流（tile／缩略图）软上限 `QUEUE_DATA_LIMIT=256`，超了就**计数丢弃**（可重取）；**控制流（原子）绝不因它丢**（丢一个⇒客户端折叠状态与服务端**静默**不一致）；控制流顶到硬上限 `QUEUE_HARD_LIMIT=1024` 时先**挤掉一条更旧的数据流**再入队，连一条都挤不出⇒**标记溢出 ⇒ 推送线程断开连接 ⇒ 客户端重连重同步**。**我核到的三个「不然就漏」的点**：① **计数上限＝字节上限，只在「原子事件不内联位图」时才成立** ✓（`BroadcastEvent::Atom` 的大二进制外置 CAS、位图按需拉 ⇒ 单条是小结构 ✓；若它内联位图，1024 条仍无界 ✗）；② `enqueue` 把旧的 `entry().or_default()` 换成 `get_mut()` 拿不到就返回 `false`，**不漏新订阅者** ✓（`subscribe` 当场 `queues.insert(id, Vec::new())` ⇒ 任何活订阅者必有队列条目 ✓）；③ **断开后队列条目真的被回收** ✓（写失败／溢出／文档消失**任一**退出路径都 `stream.shutdown(Both)` ⇒ 读循环 `read_message` 立即返回 ⇒ 走到末尾 `unsubscribe`，连带删 `queues`＋`overflowed` 两处，不留挂死的满队列）；另有 **10 s 写超时**防推送线程被零窗口永久钉住 | `grep -n 'QUEUE_DATA_LIMIT\|QUEUE_HARD_LIMIT' broadcast.rs` ＋ `subscribe` 里那句 `queues.insert` ＋ `server.rs` 推送线程末尾的 `stream.shutdown(Shutdown::Both)` 与读循环退订 ＋ 四条单测（`queue_drops_data_flow_before_control_flow`／`queue_overflow_flags_the_subscriber`／`control_flow_evicts_queued_data_before_overflowing`／`unsubscribe_clears_overflow_flag`）|
+| **HTTP 请求解析 → 内存／时间 DoS（首道外部可达面）** | 每个请求都先过 `Request::read` ⇒ 最该钉死的面，实测**五重**都齐：① **先查后分配**：`Content-Length` 解析成 usize 后**立刻**判 `> MAX_BODY_BYTES`(32 MiB) 再 `vec![0u8; length]` ⇒ 攻击者**不能**用一个超大头部让服务端**预分配**巨型缓冲（顺序反了就是分配 DoS）；② **有界读行**：头部行 `read_line_bounded(.., MAX_LINE_BYTES)` ＋ 总量 `MAX_HEADER_TOTAL_BYTES` ＋ 条数 `MAX_HEADER_COUNT` 三重封顶；③ **慢连接 slow-loris**：`handle_connection` 在**解析之前**就 `set_read_timeout(30 s)` ⇒ 「声明大 body 再一滴滴发」撑不过 30 秒空闲；④ **线程／连接数**：accept 循环 `connections >= max_connections` 拒新连 ⇒ 每连接一线程的栈开销有界；⑤ **chunked 显式拒绝**（解析器只认 `Content-Length` ⇒ 无无界分块路径）。**一个必要例外**（不是漏洞，是修过的真 bug）：升级 WS 时 `set_read_timeout(None)` **清掉**这条 30 s 超时 ✓，否则长活 WS 会在 30.0 s 被无 close 帧的 EOF（外部 QY-D05 实测 3/3 连接 30.016～30.026 s EOF）⇒ 改由协议层 ping/pong ＋ 推送侧写超时管活性 | `grep -n 'MAX_BODY_BYTES\|MAX_LINE_BYTES\|MAX_HEADER' http.rs`（含 `:141` 检查在 `:144` 分配**之前**）＋ `grep -n 'set_read_timeout' server.rs`（`:564` 解析前 30 s、`:585` WS 清成 `None`）＋ `grep -n 'max_connections' server.rs` ＋ `grep -n '暂不支持 chunked' http.rs` |
+| **JSON 嵌套深度 → 栈溢出 abort 整个进程**（结构复杂度，与字节大小**正交**） | 一条**只有几百字节**的 `[[[[…]]]]`（深度远超 128）就能打爆解析栈——而**栈溢出是不可捕获的 SIGSEGV，会 abort 整个进程**（即便刻意不设 `panic="abort"` 也救不回来 ⇒ 一条连接拖垮全部连接）。防御在 **serde_json 默认递归上限**：`from_slice／from_str::<Value>` 的 `remaining_depth` 起于 **128**，超限**直接回错误**、不再往下递归。**当场把「依赖的默认值」核成「本仓关不掉」** ✓：唯一能关掉上限的 feature `unbounded_depth` **不在 `Cargo.lock`** ⇒ `disable_recursion_limit()` 方法在本 build 里**根本不存在**（被 `#[cfg(feature=…)]` 门掉），全仓也**没有一处**调用它 ⇒ 上限**恒生效**，客户端无法用深嵌套 JSON 打崩服务端。**与第 12 面分工**：那面封顶**字节数**（32 MiB），这面封顶**结构深度**（与字节无关） | `grep -rn 'unbounded_depth' Cargo.lock` ⇒ **空**（feature 未启用）＋ `grep -rn 'disable_recursion_limit' crates/` ⇒ **空** ＋ 依赖侧 `~/.cargo/registry/src/*/serde_json-1.0.151/src/de.rs` 里 `remaining_depth: 128` |
+
+⇒ **口径**：这一节只记「普查范围＋每面复核入口」；**修复内容**不在这里复述（同一事实只写一处，指针见上）。
