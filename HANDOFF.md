@@ -1547,6 +1547,12 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
 ⑤ **落账与接缝预告**：本包是 `web_patch` 链的前四片；**batch7（`a1ff6891→dc4898c5`）已在
    `~/patch` 排队（任务 #47）⇒ 其基线正是本包的终点 ✓**。`git apply` 不过 pre-commit ⇒ 留痕另行
    复跑 fmt／台账编号／守卫 ✓（§90⑤ 同规）；push 等 run 40704687440 收敛（§98③ 同规）。
+⑦ **CI 后效（收账 ✓）**：run `40722469155`（HEAD＝`282b0cfe`）**completed/success** ⇒
+   §99 各面成立：`tool-pwa-instance-detach`（含 §E1/§E2 新臂）在 CI 绿 ✓、
+   `tool-pwa-transform-object` 绿 ✓、**`tool-pwa-pixel-stats` 的 ⊘ 如预期被 CI 的新鲜 wasm 重建消费 ⇒
+   真判且绿 ✓**（本机 exit(3) 不是躲过去，是**换了有前提的判** ✓）；`tool-pwa-*` 全族无回归 ✓。
+   known-gap ②①–⑤ 与 §99② 的批 3–6 分裂面**不在本轮红面里**（判据输入不覆盖 ⇒ 绿不绿都不证明它们 ✓
+   ——**这正是把它们记进台账而不是忘掉的意义 ✓**）。
 
 ## §100 paint-fix 期 5 后续包（P-8 smart_select：错标＋链式生长）合并留痕（2026-10-29）
 
@@ -1637,9 +1643,92 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    · 双份 api-local／docs 表格：本包**不碰** ✓；known-red 名单：不动 ✓。
 ⑥ `git am` 不过 pre-commit ⇒ fmt／clippy／台账守卫另行复跑 ✓（§90⑤ 同规）；push 等
    40722469155 收敛后与 §100 一并出去（同组不双派 ✓）。
-⑦ **CI 后效（收账 ✓）**：run `40722469155`（HEAD＝`282b0cfe`）**completed/success** ⇒
-   §99 各面成立：`tool-pwa-instance-detach`（含 §E1/§E2 新臂）在 CI 绿 ✓、
-   `tool-pwa-transform-object` 绿 ✓、**`tool-pwa-pixel-stats` 的 ⊘ 如预期被 CI 的新鲜 wasm 重建消费 ⇒
-   真判且绿 ✓**（本机 exit(3) 不是躲过去，是**换了有前提的判** ✓）；`tool-pwa-*` 全族无回归 ✓。
-   known-gap ②①–⑤ 与 §99② 的批 3–6 分裂面**不在本轮红面里**（判据输入不覆盖 ⇒ 绿不绿都不证明它们 ✓
-   ——**这正是把它们记进台账而不是忘掉的意义 ✓**）。
+⑦ **CI 后效（收账 ✓）**：run `40726198780`（HEAD＝`9c481d63`，P5＋P6＋§100/§101/§99⑦ 台账）**completed/success** ⇒
+   两面同场收账：**§100** 的 `smart_select_p8`／链式面在 CI 的 test(stable/beta) 绿 ✓、
+   `tool-smart-select*` 两片在 criteria 分片绿 ✓；**§101** 的 P-12/P-15/X-5 新判 14 条＋相邻 19 条
+   在 CI test 绿 ✓、`tool-batch-stroke-evidence`／`tool-stroke-log*` 族分片绿 ✓；
+   `tool-pwa-*` 全族（含本两期不碰的双份 api-local）无回归 ✓。**§100② 的渲染漂移待分诊项**
+   不在 CI 红面里（判据输入不覆盖 ⇒ 绿不证明它存在或不存在 ✓，仍留台账）。
+
+## §102 paint-fix 期 8 后续包（成本墙第 1 期：背景借用／警告滚动上限／每原子预算校准）合并留痕（2026-10-29）
+
+① **基线与接缝**：包基线 `c6b19269` **在本仓存在 ✓ 且为 HEAD 祖先 ✓**（说明书 §基线写的正是
+   §96⑥ 那笔台账提交 ✓）；上游声明 tip `faea27d3`／重放 tip `4c5e6e93` 不在本仓 ✗（同 §99① 处置：
+   包侧树等式信自述＋`verify/重放验证.txt` 的 TREE OK，我侧以 apply 干净落地代 ✓）。
+   zip sha256 `d08e5b5a…41aeb2d1` 留此。**`git am --3way` 于 HEAD＝`9c481d63` 一笔落地**
+   （`78dc50b6`，7 文件 +186/−13 ＝ **与自述逐字相同 ✓**）——基线在 HEAD 上游 21 笔，
+   中间合过的 P5/P6/detach 全部**不碰这 7 个文件** ⇒ 零冲突 ✓。
+   **证据自洽核对 ✓**：`evidence/` 两枚 mincheck PNG 的 sha256 **当场算得逐字相同**
+   （`a4a2b818…74697b7`，与说明书「像素逐位不变」节对上 ✓——这是「基线 vs 修复版」的
+   包内侧量，**我侧等价物＝本机 15 条 tool-pwa 全绿＋ink_pixels 5/5 ✓**）。
+② **内容审读**（三件事，四层齐口径 ✓）：
+   · **快赢一（背景借用）**：`write_brush_stroke` 的 `document_state(ctx)` 克隆**只取一个布尔** ⇒
+     改借 `ctx.workspace.document(&ctx.doc_id)` 直读 ✓；**「文档不在 ⇒ false」与旧出错分支同例** ✓
+     （语义不动，只动成本）；regime 三分支的既有注释面完整保留 ✓。
+   · **快赢二（警告上限 128）**：`MAX_FOLD_WARNINGS` **一处定义** ✓（fold.rs，lib.rs 再导出 ✓）；
+     截断在 `state_at` 三个累积点＋`ladder_fold`＋`chain_warnings`＋`warnings_to_json` **全路径一致施加** ✓；
+     **包侧自修一处旁路**：`state_at` 尾巴分支原把**未截断**的 `tail_warnings` 存进缓存、命中即绕过上限 ⇒
+     现存截断后累积值 ✓（**形态④「非法路径静默放过」的同类：上限存在但有旁路＝没有**）；
+     与期 7 的 P-16（同笔刷只报一次）**层面不同不冲突**，说明书写明 ✓。
+   · **X-1（估算 300 KB→100 KB）**：根因是 **double-count**（旧口径含渲染缓存、新代码已另行实测叠加）✓；
+     **只改估算口径、预算闸不动**（缺省 2,048 MB／超限仍拒 ✓）；校准带实测（4,002 原子冷重开 275 MB ⇒
+     0.069 MB/原子，100 KB 留 45% 余量 ✓——**数字带来源与日期 ✓**）；
+     **语义反转面枚举（他们做了＋我复核 ✓）**：blob GC 报错文案与注释里的「300 KB」同步改 ✓
+     （`grep 300 KB` 于 service.rs 只剩历史叙述 ✓）；**我侧全库 grep `300 \* 1_024|BYTES_PER_ATOM`
+     于 scripts/docs ⇒ 零命中** ⇒ 没有判据钉旧口径 ✓（反转不打红既有断言）。
+   · **50% 判据不凑数 ✓**：相对本基线 33.1% 未达、相对旧基线 25e91bc 叠加态 50.4% 达标——
+     **两种口径分开写、原因写明（P2 已去掉一处克隆）** ✓（内核①：不拿叠加成绩冒充单项成绩）。
+   · **只定位不修的两处如实标注 ✓**：dirty_ms 的 `dependents_of` 全表扫（O(对象数)）与 raster 的
+     base 段冷热波动——**未解两点也写进说明**（每对象 2.8 µs 高于理论 10 倍／重开首笔 0.5–2.2 ms）✓，
+     进第 2 期 ⇒ **不进本期断言面 ✓**。
+③ **本机复验**（合并例外 ✓）：`cargo clippy -p yanshi-core -p yanshi-server --all-targets -D warnings`
+   exit 0 ✓；`cargo test -p yanshi-core --lib seq` **23/23 ✓**、`--test doc_budget` **6/6 ✓**、
+   `--test ink_pixels` **5/5 ✓**（与自述 15/6/5 的差异＝seq 过滤在我尖端上多收 8 条既有测试 ✓）。
+   **`--workspace` 全量 test 交 CI**（可用 2.4 Gi < 3 Gi ⇒ 不自称本机绿 ✗）。
+   **变异三面本机重放（断言粒度 ✓，恢复后绿、`git status` 干净 ✓）**：
+   M1 `background_from_state` 恒 false ⇒ ink_pixels **1 红 4 绿** ✓；
+   M2 `truncate_warnings` 空操作 ⇒ `fold_warnings_are_capped_to_the_most_recent` **红** ✓；
+   M3 `BYTES_PER_ATOM` 改回 300 KB ⇒ doc_budget **1 红 5 绿** ✓（三条全红 ⇒ 全绿）。
+④ **回归普查**：`tool-open-fast` ✓（预算口径改动最近的判据——它断的是**结构**不是毫秒 ✓）；
+   `tool-stroke-latency-4k` ✓（背景借用打在笔写路径上）；`tool-snapshot-roundtrip` ✓
+   （restore_checkpoint 走 declare_head，先于 §103 落地验证服务端面不受涉）；
+   `check-timelapse-shrink` ✓。**`tool-break-even` exit(3)＝本机无 GPU 适配器**（软件光栅 ⇒
+   按纪律判不了 ✓ 不是产品红，CI 有真适配器面 ⇒ 交它 ✓）。known-red 名单不动 ✓。
+⑤ **落账与接缝预告**：本包与 §103 的 batch7 **文件面零交集**（Rust vs JS/docs）⇒ 叠成同一候选出；
+   `git am` 不过 pre-commit ⇒ fmt／clippy 已复跑 ✓。
+
+## §103 PWA 本地内核批次 7（restore_checkpoint 落地＋state@seq 求值窗口）合并留痕（2026-10-29）
+
+① **基线与接缝**：**裸 diff**（`a1ff6891→dc4898c5`，两个提交都不在本仓 ✗ ⇒ 同 §99①：只能以
+   我侧 apply 干净落地代）。补丁 sha256 `8b08b4e2…360253b` 留此。
+   **无包内说明文件**（不像 §99 各批带重放验证 ⇒ 本轮断言与变异面**全靠我侧自建**，见 ③④ ✓）。
+   `git apply --check` 干净 ✓（4 文件：双份 api-local／docs 台账＋94 行／新判据 631 行）；
+   **与我侧 §99/§100/§101 刚改的热区有重叠风险**（detach 文案、list_objects 折叠）⇒ 逐 hunk 审读见 ②。
+② **内容审读**（口径以服务端为权威 ✓）：
+   · **`p2StateWindow`**：照 `seq.rs::state_at` 的窗口公式 `(0, 链底 base] ∪ 每个 (H.seq, n]` ✓，
+     递归 declare_head（atom/checkpoint 两种 base）✓、checkpoint 锚点取 `payload.anchor_seq ?? atom.seq`
+     与服务端 `checkpoint_anchor_seq` 同口径 ✓；**无跳变 ⇒ 原样返回同一数组**（下游零成本 ⇒ 不误伤
+     既有判据面 ✓，这是本轮全绿的结构性原因）；WeakMap memo 按数组身份 ✓。
+   · **restore_checkpoint 501 ⇒ 落地**：写 `declare_head{base:{type:"checkpoint"}, reason}` ✓
+     （服务端 `write_restore_checkpoint` 同形 tools.rs:21384 ✓）；缺检查点 ⇒ **404 reference_not_found
+     ＋文案逐字「检查点 X 不存在」** ✓（服务端 `log.rs:986` 同码同字 ✓）；**旧 501 的理由（本地折叠器
+     从不执行跳变）被窗口层推翻** ⇒ 注释里写明推翻理由 ✓（不是悄悄删 501 ✓）。
+   · **形态③补洞（本轮最大面）**：此前本地**回执说恢复了、派生视图还是旧状态**——`p2Neutralized`／
+     `p2ObjectView`／`p2PresetLayers`／`p1LayerOrder`／`p2cState` 全量日志口径 ⇒ 现在统一过窗口 ✓
+     （**一个事实一处口径**：窗口只在 `p2StateWindow` 定义 ✓）。
+   · **参数校验补齐**：`restore_checkpoint`/`checkpoint` 的缺参／类型错／未知参数走
+     `p2PresetSchemaCheck` ⇒ 与服务端 `validate_args` 逐字（判据 §F 十条钉住 ✓）。
+   · **既有 501 名单同步改**：头部注释加「后续更新」行**点名哪条已落地**（不抹旧文 ⇒ 可追溯 ✓）；
+     **判据按 `path === "` 机械计数的分支总数口径不变**（真实实现＋如实 501 ⇒ 总数恒等 ✓）。
+③ **本机复验**：`node --check` 双份 ✓、**两份 `cmp` 逐字节一致 ✓**（铁律）；新判据
+   `tool-pwa-checkpoint-restore` **358 条断言全绿 ✓**（前提：真 wasm 内核 ⇒ 本机 `web/wasm` 过期
+   ⇒ 判据正确 `exit(3)` ⇒ **重建内核＋`pwa-sync-wasm` 后才真判 ✓**——exit(3) 期间没拿旧内核冒充测过）。
+   **全族回归：`tool-pwa-*` 15/15 绿 ✓**（api-behaviour／detach／preset-parity／pixel-stats 全在内 ⇒
+   窗口层对无跳变文档的恒等性成立 ✓）。docs 台账 94 行随包入（§六百六十二/六百六十三 两轮记录 ✓）。
+④ **变异本机重放**（判据自述 ①–⑪，抽两条断言粒度 ✓）：**⑧ 窗口空操作**（`p2StateWindow` 恒返全量）
+   ⇒ §C/§E3 多条红（「恢复后 checkpoint 应归零／S4 消失」被窗口擦掉所致）✓；
+   恢复后 `cmp` 一致、判据重跑绿 ✓。**①②③⑤⑥⑦⑨⑩ 由判据自述＋§103③ 的 358 条覆盖陈述，
+   未逐条重放**（如实记：包侧台账「六百六十三」称逐条实测过，我侧只重放了最核心的两条 ⇒
+   其余若 CI 绿也只是「没红」不是「验过能红」✗）。
+⑤ **落账**：`git apply` 不过 pre-commit ⇒ fmt／workspace clippy／台账守卫已复跑 ✓（§90⑤ 同规）。
+   与 §102 叠为同一候选（`try-p8-costwall`：`78dc50b6`＋`0a8f386e`）push（同组不双派 ✓）。
