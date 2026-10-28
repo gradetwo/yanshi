@@ -719,6 +719,76 @@ check(jRedoSet.ok === true && jGot6.count === 1 && jGot6.anchors.left_eye.x === 
   `reapply 之后 set_anchor 又生效 ⇒ x=130／note=第二版（撤销撤销 ≡ 重做 ✓ 与 ⑦h 同一台机器 ✓ 实测 ${JSON.stringify(jGot6.anchors.left_eye)}）`);
 console.log("  本地层命名锚点：原子日志推导 ✓｜对象映射＋count 恒等 ✓｜400 校验齐 ✓｜删不存在⇒点名拒绝 ✓｜revert/reapply 级联 ✓（文档 " + jDoc + "）");
 
+// **★ ⑦k `reorder_objects` 必须照服务端那条**校验序列**落地 ✗ ★**
+//   （**出处 `tools.rs:4029 write_reorder_objects` ＋ `fold.rs:758–837` precondition ＋ `:1305–1313` apply ✓**）：
+//   ① **`order[i] ⇒ z_index = i`**（apply 逐字 ✓）⇒ `list_objects` 的返回序必须跟着变 ✓；
+//   ② **`list_objects` 顺序照 `alive_objects()` = `(layer_id, z_index, id)`** ✓
+//     （旧本地按日志出现序返回 ⇒「返回序即 z 序」的调用方契约跨端不一致 ✓）；
+//   ③ **错误序列与错误码逐个对齐 ✗**：非字符串成员⇒400 ⇒ 空层⇒400 ⇒ 重复⇒409（fold 注释：比集合差更具体 ✓）
+//     ⇒ 未知⇒404 且点名现有对象 ⇒ 已删⇒409 ⇒ 跨层⇒409 ⇒ 不完整⇒409（期望 N 实际 M 缺失…✓）；
+//   ④ **撤销免费 ✓**：`revert` 掉这条 `reorder_objects` ⇒ 折叠跳过它 ⇒ 旧 z 序回来（⑦j 同一台机器 ✓）。
+const kDoc = "dk_" + Date.now().toString(36);
+const kxpost = (p, o) => callDoc(kDoc, p, { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify(o) }).then((r) => r.json());
+await callDoc(kDoc, "/api/documents", { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ doc_id: kDoc, width: 320, height: 240 }) });
+await callDoc(kDoc, "/api/atoms", { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ kind: "create_layer", layer_id: "RK", name: "重排层" }) });
+await callDoc(kDoc, "/api/atoms", { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ kind: "create_layer", layer_id: "RL", name: "邻层" }) });
+for (const nm of ["RO_B", "RO_A", "RO_C"]) {
+  await callDoc(kDoc, "/api/atoms", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "create_object", id: "AT_" + nm, actor: "human:test", session: "session:test",
+                           schema_version: 1, timestamp: 1,
+                           payload: { object_id: nm, layer_id: "RK", type: "shape", data: { geometry: { kind: "rect" } } } }) });
+}
+const kOther = await kxpost("/api/tools/draw_shape", { layer_id: "RL", data: { geometry: { kind: "rect", bbox: { x: 1, y: 1, width: 4, height: 4 } } } });
+const kList0 = await kxpost("/api/tools/list_objects", { layer_id: "RK" });
+check(kList0.ok === true && JSON.stringify(kList0.objects.map((o) => o.object_id)) === JSON.stringify(["RO_A", "RO_B", "RO_C"]),
+  `同 z（全 0）时 list_objects 必须按 **id 字典序**（服务端 alive_objects 的 (layer_id, z, id) ✓）——旧本地按日志出现序返回（RO_B 先）✓ 跨端不一致 ✓（实测 ${JSON.stringify(kList0.objects.map((o) => o.object_id))}）`);
+const kBadMember = await kxpost("/api/tools/reorder_objects", { layer_id: "RK", order: ["RO_A", 7, "RO_C"] });
+const kDup = await kxpost("/api/tools/reorder_objects", { layer_id: "RK", order: ["RO_A", "RO_A", "RO_C"] });
+const kUnknown = await kxpost("/api/tools/reorder_objects", { layer_id: "RK", order: ["RO_NOPE", "RO_A", "RO_C"] });
+const kCross = await kxpost("/api/tools/reorder_objects", { layer_id: "RK", order: [kOther.object_id, "RO_A", "RO_C"] });
+const kShort = await kxpost("/api/tools/reorder_objects", { layer_id: "RK", order: ["RO_A", "RO_B"] });
+check(kBadMember.ok === false && kBadMember.error === "invalid_argument",
+  `order 含非字符串 ⇒ invalid_argument（tools.rs:4038 ✓ 实测 ${JSON.stringify(kBadMember).slice(0, 90)}）`);
+check(kDup.ok === false && kDup.error === "precondition_failed" && String(kDup.reason).includes("重复对象 id"),
+  `重复 id ⇒ precondition_failed 且**先于**未知/完整性报（fold.rs:772「比集合差更具体」✓ 实测 ${JSON.stringify(kDup).slice(0, 110)}）`);
+check(kUnknown.ok === false && kUnknown.error === "reference_not_found" && String(kUnknown.reason).includes("RO_NOPE"),
+  `未知对象 ⇒ reference_not_found 且点名现有对象（fold.rs:804 missing_error ✓ 实测 ${JSON.stringify(kUnknown).slice(0, 130)}）`);
+check(kCross.ok === false && kCross.error === "precondition_failed" && String(kCross.reason).includes("不在目标图层"),
+  `跨层对象 ⇒ precondition_failed「属于图层 RL，不在目标图层 RK 内」（fold.rs:810 ✓ 实测 ${JSON.stringify(kCross).slice(0, 120)}）`);
+check(kShort.ok === false && kShort.error === "precondition_failed"
+    && String(kShort.reason).includes("期望 3 个对象，实际 2 个") && String(kShort.reason).includes("RO_C"),
+  `不完整 ⇒ precondition_failed 且给「期望/实际/缺失清单」（fold.rs:824 ✓ 实测 ${JSON.stringify(kShort).slice(0, 160)}）`);
+const kReorder = await kxpost("/api/tools/reorder_objects", { layer_id: "RK", order: ["RO_C", "RO_A", "RO_B"] });
+const kList1 = await kxpost("/api/tools/list_objects", { layer_id: "RK" });
+const kz = Object.fromEntries(kList1.objects.map((o) => [o.object_id, o.z_index]));
+check(kReorder.ok === true && typeof kReorder.atom_id === "string"
+    && JSON.stringify(kList1.objects.map((o) => o.object_id)) === JSON.stringify(["RO_C", "RO_A", "RO_B"])
+    && kz.RO_C === 0 && kz.RO_A === 1 && kz.RO_B === 2,
+  `重排后 order[i]⇒z=i 必须进状态且**返回序跟着变**（fold.rs:1311 ✓ 实测 z=${JSON.stringify(kz)} list=${JSON.stringify(kList1.objects.map((o) => o.object_id))}）`);
+const kUndo = await kxpost("/api/atoms", { kind: "revert", payload: { target: kReorder.atom_id } });
+const kList2 = await kxpost("/api/tools/list_objects", { layer_id: "RK" });
+check(kUndo.ok === true && JSON.stringify(kList2.objects.map((o) => o.object_id)) === JSON.stringify(["RO_A", "RO_B", "RO_C"])
+    && kList2.objects.every((o) => o.z_index === 0),
+  `revert 掉 reorder 原子 ⇒ 旧 z 序回来（折叠跳过被抑制的那条 ✓ 实测 ${JSON.stringify(kList2.objects.map((o) => [o.object_id, o.z_index]))}）`);
+await kxpost("/api/tools/delete_object", { object_id: "RO_B" });
+const kDeletedInOrder = await kxpost("/api/tools/reorder_objects", { layer_id: "RK", order: ["RO_A", "RO_B", "RO_C"] });
+check(kDeletedInOrder.ok === false && kDeletedInOrder.error === "precondition_failed"
+    && String(kDeletedInOrder.reason).includes("已被删除"),
+  `含已删对象 ⇒ 逐个分类先命中「已被删除」（fold.rs:806 tombstone_error ✓ 不许落到「未知对象」✓ 实测 ${JSON.stringify(kDeletedInOrder).slice(0, 120)}）`);
+await callDoc(kDoc, "/api/atoms", { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ kind: "create_layer", layer_id: "RE", name: "空层" }) });
+const kEmpty = await kxpost("/api/tools/reorder_objects", { layer_id: "RE", order: [] });
+const kNoLayer = await kxpost("/api/tools/reorder_objects", { layer_id: "RK_NOPE", order: ["RO_A"] });
+check(kEmpty.ok === false && kEmpty.error === "invalid_argument" && String(kEmpty.reason).includes("没有对象"),
+  `空层 ⇒ 「没有对象，无可重排」invalid_argument（tools.rs:4058 ✓ 实测 ${JSON.stringify(kEmpty).slice(0, 110)}）`);
+check(kNoLayer.ok === false && kNoLayer.error === "reference_not_found",
+  `图层不存在 ⇒ reference_not_found（tools.rs:4047 ✓ 实测 ${JSON.stringify(kNoLayer).slice(0, 110)}）`);
+console.log("  本地层 reorder_objects：z=位置 ✓｜list 按 (layer,z,id) ✓｜五类错误码逐个对齐 ✓｜重复先报 ✓｜revert⇒旧序回来 ✓（文档 " + kDoc + "）");
+
 
 
 // **★ ⑧ 评论的游标不能越过**没交付**的那几条 ✗ ★**（与服务端 `read_list_comments` 同形 ✓）

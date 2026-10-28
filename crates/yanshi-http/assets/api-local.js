@@ -65,9 +65,10 @@ export // **★ 声明必须与**实现分支数**一致 ✗ ★**（第 72 轮 
 //       ⇒ **∴ 于是** `tool-pwa-assets` 报"**声明的端点数（158）与实现分支数（160）
 //         不一致 ⇒ **∴ 在虚报能力 ✓** ✗
 //   ⇒ **★ 所以**：**改成 160**✗ ⇒ **∴ 于是**声明与实现**一致 ✓ ★**** ✓✓
-//   **∴ 本轮再重数 ✗**（锚点三件套 ✓ —— `set_anchor`／`get_anchors`／`delete_anchor` 落地 ⇒ **+3 ✓**）：
-//   **∴ 判据口径 `actualImpl` = 163 ⇒ **∴ 本数同步到 163 ✓**（**同一机械口径 ✓，非拍脑袋 ✗**）。
-const LOCAL_IMPLEMENTED = 163;
+//   **∴ 本轮再重数 ✗**（锚点三件套 ✓ —— `set_anchor`／`get_anchors`／`delete_anchor` 落地 ⇒ **+3 ✓**；
+//   **同轮 `reorder_objects` ✓ —— `tools.rs:4029` 的校验序列落地 ⇒ 再 +1 ✓，总数 164 ✓**）：
+//   **∴ 判据口径 `actualImpl` = 164 ⇒ **∴ 本数同步到 164 ✓**（**同一机械口径 ✓，非拍脑袋 ✗**）。
+const LOCAL_IMPLEMENTED = 164; // reorder_objects 落地 ⇒ 机械重数 +1 ✓
 
 let lastFold = null;
 
@@ -449,9 +450,14 @@ async function withKernel(doc, fn) {
    */
   function p2ObjectView(rows, objectId) {
     let create = null;
+    let createSeq = null;
     const props = {};
     let supersededData = null;
     const tombstoneIds = [];
+    // **`reorder_objects` 的最新生效位置 ✗**（**照 `fold.rs:1305–1313` 逐字 ✓**：
+    //   `order[index] ⇒ z_index = index`；**被 revert 抑制的那条跳过 ✓** ⇒ 撤一次重排 = 回到旧 z ✓）。
+    let reorderZ = null;
+    const neutralEarly = p2Neutralized(rows);
     for (const r of rows) {
       const a = (r && r.atom) || {};
       const pl = a.payload || {};
@@ -460,13 +466,19 @@ async function withKernel(doc, fn) {
       //     `draw_shape`／`fill`／`draw_text` 建的图形**同样看不见**✓ ⇒ `get_object`／`restore_object`／`list_objects`
       //     对**手画的形／字／色块**也报「对象不存在」✓（与导入图是**同一类**✗ 只是没被 CI 指到 ✓）。
       //   **∴ 取「第一条」建它的原子 ✓**（**与服务端「没见过才建、见过就 supersede」等价 ✓**）。
-      if (P2_OBJECT_CREATE_KINDS.has(a.kind) && pl.object_id === objectId && !create) create = a;
+      if (P2_OBJECT_CREATE_KINDS.has(a.kind) && pl.object_id === objectId && !create) {
+        create = a;
+        createSeq = typeof r.seq === "number" ? r.seq : null;
+      }
       else if (a.kind === "set_property" && pl.object_id === objectId) props[pl.key] = pl.value;
       else if (a.kind === "supersede" && pl.object_id === objectId) supersededData = pl.data;
       else if (a.kind === "tombstone" && pl.object_id === objectId) tombstoneIds.push(a.id);
+      else if (a.kind === "reorder_objects" && Array.isArray(pl.order) && pl.order.indexOf(objectId) >= 0) {
+        if (!neutralEarly.has(a.id)) reorderZ = pl.order.indexOf(objectId);
+      }
     }
     if (!create) return { found: false };
-    const neutral = p2Neutralized(rows);
+    const neutral = neutralEarly; // **同一份失效集只算一次 ✓**（一个事实一处来源 ✓）
     const cpl = create.payload || {};
     const view = {
       found: true,
@@ -474,6 +486,9 @@ async function withKernel(doc, fn) {
       /** **建它的原子 id ✗**（**`__p2Alive` 判「创建是否被撤掉」用 ✓**——
        *   **∴ 折叠器里 `Revert{create}` ⇒ 对象整个从状态消失 ✓，与 `deleted` 是两回事 ✗**）。 */
       __create_id: create.id,
+      /** **建它的原子 seq ✗**（**服务端 `objects_in_layer` 的第二排序键是「加入顺序」✓ `state.rs`
+       *   2026-10-15 的教训 ⇒ 本地用原子 seq 当同一事实 ✓**）。 */
+      __create_seq: createSeq,
       layer_id: props.layer_id !== undefined ? props.layer_id : (cpl.layer_id ?? null),
       type: props.type !== undefined ? props.type : (cpl.type ?? null),
       // **`data` 的取法照服务端 `object_data` ✓**（**「有 `data` 子对象 ⇒ 用 `data`✓，否则 ⇒ 用整个净荷 ✓」**，
@@ -487,7 +502,12 @@ async function withKernel(doc, fn) {
       transform: cpl.transform ?? null,
       visible: props.visible ?? null,
       locked: props.locked ?? null,
-      z_index: props.z_index ?? null,
+      // **z 的口径 ✗**（**照服务端折叠的应用顺序 ✓**：`reorder_objects` 给层内每个对象**重新赋值** ✓
+      //   （`fold.rs:1311 object.z_index = index`），而 `set_property z_index` 是**单点补丁** ✓
+      //   （`:1907`）⇒ 本地取「`set_property` 优先、其次最新生效重排的位置、再次创建净荷、缺省 0 ✓」
+      //   —— **与「重排后 `list_objects` 顺序必须变」这条可观测事实一致 ✓**）。
+      z_index: props.z_index !== undefined ? props.z_index
+        : (reorderZ !== null ? reorderZ : (cpl.z_index ?? null)),
       metadata: props.metadata ?? null,
       tombstone_ids: tombstoneIds,
       deleted: tombstoneIds.some((id) => !neutral.has(id)),
@@ -600,6 +620,10 @@ async function withKernel(doc, fn) {
   /** **引用不存在 ⇒ 404 ✗**（**照服务端 `ReferenceNotFound` 的口径 ✓**）。 */
   function p2Missing(reason) {
     return json({ ok: false, error: "reference_not_found", reason, server: false }, 404);
+  }
+  /** **前置条件不成立 ⇒ 409 ✗**（**照 `http.rs:392 PreconditionFailed ⇒ 409` ✓**）。 */
+  function p2Precon(reason) {
+    return json({ ok: false, error: "precondition_failed", reason, server: false }, 409);
   }
   /** **★ 读本地偏好（P1）✓ ★**：
    *   **∴ `set_preferences` 写进 IndexedDB `prefs` 表 ✗**（**`store.js` ✓**）⇒ **∴ 这里读出来 ✓**；
@@ -1330,6 +1354,12 @@ async function withKernel(doc, fn) {
           medium: v.data && v.data.source && v.data.source.medium ? v.data.source.medium : null,
         });
       }
+      // **顺序照服务端 `alive_objects()` ✓**（`state.rs`：**`(layer_id, z_index, id)`** 排序 ✓）
+      //   ⇒ `moveCheckedObjectZ` 这类按「返回序即 z 序」拼合同的调用方**跨端一致 ✓**；
+      //   旧本地按日志出现序返回 ⇒ `reorder_objects` 落地后**顺序必须跟着变** ⇒ 本排序是那条事实的载体 ✓。
+      objects.sort((a, b) => String(a.layer_id).localeCompare(String(b.layer_id))
+        || (a.z_index - b.z_index)
+        || String(a.object_id).localeCompare(String(b.object_id)));
       return json({ ok: true, objects, count: objects.length, server: false,
                     derived_from: "atoms" });
     }
@@ -5372,6 +5402,67 @@ async function withKernel(doc, fn) {
       const seq = await putAtom(handle, doc, atom);
       return json({ ok: true, atom_id: atom.id, seq, head: seq, name, server: false,
                     note: "已写入 delete_anchor 原子（get_anchors 会少这一条；撤销该删除经 revert 原子生效 ✓）" });
+    }
+
+    // **★ `reorder_objects` ✓ ★**（**照 `tools.rs:4029 write_reorder_objects` 的校验序列 ✓**，
+    //   **折叠语义照 `fold.rs:758–837`（precondition）与 `:1305–1313`（apply：`order[i] ⇒ z=i`）✓**）：
+    //   **∴ 校验顺序与错误码逐个对齐 ✗**（invalid_argument ⇒ 400 / reference_not_found ⇒ 404 /
+    //     precondition_failed ⇒ 409，**`http.rs:392` 的映射 ✓**）——
+    //     顺序本身也是事实：**重复先于未知**（fold.rs:772 注释「比集合差更具体」✓）。
+    if (path === "/api/tools/reorder_objects") {
+      const pl = (body && body.payload) || {};
+      const layerId = body.layer_id ?? pl.layer_id;
+      const order = body.order ?? pl.order;
+      if (typeof layerId !== "string" || !layerId) return p2Bad("reorder_objects 需要 layer_id（字符串）");
+      if (!Array.isArray(order)) return p2Bad("reorder_objects 需要 order（对象 id 字符串数组）");
+      const ids = order.filter((x) => typeof x === "string" && x);
+      if (ids.length !== order.length) return p2Bad("order 必须全部是对象 id 字符串");
+      const rows = await atomsOf(handle, doc);
+      const { layers } = p1LayerOrder(rows);
+      const layer = layers.get(layerId);
+      if (!layer || layer.deleted) return p2Missing("图层 " + layerId + " 不存在");
+      // **该层全部存活对象 ✗**（照 `state.objects_in_layer`：`is_alive` ⇒ 创建未被撤 **且** 无生效 tombstone ✓）。
+      const seenIds = new Set();
+      const alive = [];
+      for (const r of rows) {
+        const a2 = (r && r.atom) || {};
+        const id = a2.payload && a2.payload.object_id;
+        if (typeof id !== "string" || !id || seenIds.has(id)) continue;
+        seenIds.add(id);
+        const v = p2ObjectView(rows, id);
+        if (__p2Alive(rows, v) && v.layer_id === layerId) alive.push(id);
+      }
+      // **工具层先查「无可重排」✓**（`tools.rs:4057` ⇒ invalid_argument ✓，先于折叠的逐条分类 ✓）。
+      if (alive.length === 0) return p2Bad("图层 " + layerId + " 没有对象，无可重排");
+      const aliveSet = new Set(alive);
+      // ① **重复先报**（`fold.rs:772–792` ⇒ precondition_failed ✓「比集合差更具体」✓）。
+      const dup = new Set(), dups = [];
+      for (const id of ids) { if (dup.has(id)) dups.push(id); else dup.add(id); }
+      if (dups.length) {
+        return p2Precon("reorder_objects 的 order 含重复对象 id：" + [...new Set(dups)].join("、"));
+      }
+      // ② **逐个分类：未知 ⇒ 404 且点名现有对象 ✓／已删 ⇒ 409 ✓／跨层 ⇒ 409 ✓**（`fold.rs:801–819` ✓）。
+      for (const id of ids) {
+        const v = p2ObjectView(rows, id);
+        if (!v.found || !__p2Alive(rows, v)) {
+          if (v.found) return p2Precon("对象 " + id + " 已被删除");
+          return p2Missing("对象 " + id + " 不存在 ⇒ 现有对象：" + alive.slice().sort().join("、"));
+        }
+        if (v.layer_id !== layerId) {
+          return p2Precon("对象 " + id + " 属于图层 " + v.layer_id + "，不在目标图层 " + layerId + " 内");
+        }
+      }
+      // ③ **完整性：期望 = 该层全部存活对象**（`fold.rs:821–836` ⇒ precondition_failed ✓）。
+      if (aliveSet.size !== ids.length) {
+        const missing = [...aliveSet].filter((id) => ids.indexOf(id) < 0);
+        return p2Precon("reorder_objects 必须携带完整目标 z 序（图层 " + layerId +
+                        "：期望 " + aliveSet.size + " 个对象，实际 " + ids.length + " 个；缺失：" + missing.join("、") + "）");
+      }
+      const atom = p2Envelope("reorder_objects", { layer_id: layerId, order: ids });
+      const seq = await putAtom(handle, doc, atom);
+      return json({ ok: true, atom_id: atom.id, seq, head: seq, layer_id: layerId,
+                    count: ids.length, server: false,
+                    note: "已写入 reorder_objects 原子：order[i] ⇒ z_index=i（照 fold.rs:1311）；撤销经 revert 机器生效 ✓" });
     }
 
     // **★ C/S 客户端渲染：本地没实现的端点 ⇒ **只读代理**到服务端 ✗ ★**（第 10 轮 ✓）
