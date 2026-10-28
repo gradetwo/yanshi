@@ -1380,3 +1380,60 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
      成立、② 复测通过（未复现）⇒ 外部瞬时定性成立 ✓。P4 收账完毕。
    · 留痕时订正一处插入错误：§96⑥（P2 后效）曾被追加到文件尾＝§97 之后（第 254 轮「插入位置」
      坑的文档版）⇒ 本次搬回 §96 末尾，§97⑥ 重写为本段 ✓。
+## §98 paint-fix 期 7 后续包（misc：写锁/回执/去重/过滤/alpha/看门狗）合并留痕（2026-10-28，`74ea27ac`）
+
+① **基线与接缝**：包基线 `c6b1926`（**实测成立**：`git log` 里 §97/P4 代码都在它祖先链上 ⇒
+   「已含期 2 与期 4」不是口说 ✓）。合入时 main＝`767903b9`，漂移 `c6b1926..767903b9` 只有
+   `scripts/check-smudge-mix-uses-linear.mjs` 与 `HANDOFF.md` 两个文件 ⇒ **与 P7 的 13 个文件零交集** ✓
+   ⇒ `git am --3way` 一笔干净落地（`74ea27ac`，13 文件 +1020/−64）。包侧 `verify/重放验证.txt`：
+   基线上 am 成功、重放 tip `254d47e` 与 `ebd1626` 树一致 ⇒ VERIFY PASS ✓。
+② **内容审读**（逐项，含四层齐核对）：
+   · **P-13 写锁**：`FileStore::open` 建 `<root>/.yanshi-write.lock`（`create_new` ＋ pid）；
+     跨进程活着⇒`Conflict` 点名 pid、死了⇒删锁自愈、同进程⇒`HELD_WRITE_LOCKS`（`Weak` 注册表）共享 ✓；
+     `Server::new`（MCP）与 HTTP `serve` 遇 `Conflict` **不回退内存、直接启动失败** ✓——
+     修的是「第二进程静默回退 ⇒ 写全丢」这个比双写更坏的形态（内核：静默降级）。
+     判法在 Linux 用 `/proc/<pid>`，非 Linux fail-closed（宁可报错等人工，不冒双写险）✓。
+   · **P-14**：`export_timelapse` 回执补 `scale_ms`/`write_ms`＝**null**（MCP 路无此两段，不编数字冒充 ✓），
+     五段账齐；测试**先断键存在再断 null**（缺键时 `result[field]` 也返回 Null ⇒ 单断 `is_null` 是安慰剂 ✓）。
+   · **P-16**：`dabs_per_second=0` 的警告去重，键＝（会话，笔刷），内存态、换会话重报 ✓。
+   · **P-18**：`list_assets` 按 `asset_layout` 扩展名过滤（一处改，brush/texture/palette 三类同受益 ✓）；
+     测试数盘上 `.myb` 与回执条数**相等**（下界不写死——判据里的数字分两类 ✓）。
+   · **P-19**：`color.a` 乘进整笔 `Opaque`（口径与颜色解析一致：对象式 0..255、数组量级切换、
+     `linear` 直通；hex 的 `a` 仍只警告不生效——**两口径不混** ✓）；`a=255`/无 `a` ⇒ 什么都不做
+     （逐位相同 ✓）；`a=0` ⇒ 零墨规矩 `precondition_failed`，文案点名「opacity 是 0」不再误导加长路径 ✓；
+     `color_to.a` 仍忽略＋警告保留 ✓。`ink_pixels` 旧判据（钉「被忽略」的）按其自述**同步改写**
+     （原文写着「一旦改成乘进 opacity 本判据会红」⇒ 这正是那次红该被消费的地方 ✓）。
+   · **P-20**：MCP `serve` 起始拉看门线程，200 ms 比 `getppid`，父变则一行 stderr＋`exit(0)` ✓；
+     `parent_death.rs` 用 `bash -c … < /dev/stdin` 造「无 EOF」现场（说明里写清了 sh/bash 把后台任务
+     stdin 指 `/dev/null` 的坑 ✓——判据前提不成立≠产品失败的同族陷阱）。
+③ **本机复验**（合并例外，§96③/§97③ 同口径）：`cargo check -p yanshi-server -p yanshi-mcp -p yanshi-http
+   --tests` **exit 0** ✓；pre-commit（fmt ＋ workspace clippy `-D warnings` ＋ 四护栏）✓。
+   **护栏抓到两处包侧没做的**（本普查＋守卫 ✗ 包上 8 项变异全过却没拦住这两条 ⇒ 守卫比盒上的眼严 ✓）：
+   · `check-tests-clean-temp` 红：`parent_death.rs` 用 `temp_dir()` 但清理器没按谓词绑定 ⇒ 补
+     绑定式 `Cleanup`（断言提前失败也要删，`/tmp` 是 1.9 GB tmpfs ✓）。
+   · `tool-brush-speed.mjs` **必假红**：它给 `color` 顺带 `a: 40`（旧语义「a 被忽略」下无害）⇒
+     P-19 后墨整体压到 0.157 倍，它断的 `avg_brightness` 差（门槛 0.05）会被压小。去掉 `a`
+     （判据自己造的输入，测的是时间间距⇒墨量，与 alpha 无关）；**本机实测差 0.369／门槛 0.05** ✓。
+   定向 `cargo test --workspace` **交 CI**（内存 2.4 Gi < 3 Gi ⇒ §95③/§96③ 措辞）✗ 不自称本机绿。
+   **新 release 二进制冒烟**（P7 后重建，新鲜度 ✓）：P-13 第二进程同 root **拒启 exit=1、stderr 点名写锁** ✓；
+   P-16 首笔有警告、同会话第二笔不再重复 ✓；P-18 brush 列表 **199 条全 .myb**＝盘上数 ✓；
+   P-19 `a=255`≡无 `a`（`ink_mass` 550462 恒等 ✓）、`a=110` 真变淡（230552 ✓）、`a=0`
+   `precondition_failed`＋文案点名 opacity ✓、`color_to.a` 警告保留 ✓；P-14 HTTP 回执
+   `scale_ms`/`write_ms` 键在且如实 null（frames=1 ✓，path 须落在 root 沙箱内——第一格我用 `/tmp` 绝对路径
+   被沙箱拒是**我的调用错**不是产品 ✗）✓；`tool-time-ms` 本地（新起服务）④⑤⑥ 全绿 ✓。
+④ **回归普查**（六面各自的既有断言）：
+   · P-13：判据起的自备服务全走 `mktemp` 独立根（`with-temp-server.sh` ✓）；`tool-cold-open-foreign`
+     的「SIGKILL 后第二个进程开同根」正是**死 pid 自愈**路径 ✓；`check-k01-both-hosts` 是静态判据不碰服务 ✓。
+   · P-14：无任何 `*.mjs` 引用 `apply_ms/scale_ms/write_ms` ⇒ 新增 null 字段不打红既有断言 ✓。
+   · P-16：唯一断「不吃时间必须报警」的是 `tool-time-ms` ④；CI 单服务上它是 `100%_Opaque`＋time 的
+     **第一笔**（全库 grep 只它一个）⇒ 首报归它 ✓。⚠ 语义变化如实记：**同一长期运行的服务里第二次
+     探针不会再有 warning**——本机重复跑请用 `run-criteria-local.sh`（每次新起服务 ✓）；
+     `check-deposit-mask-time-base` 只静态读 `brush_deposit_mask` 函数体，P7 没碰那个函数 ✓。
+   · P-18：`tool-offline-asset-coverage` 的「199 支」与过滤后的真 `.myb` 数**正好对齐**（原来 201 是含
+     两份说明文件的虚数 ✓）；无判据断 201 ✓。
+   · P-19：全库找 `a<255` 的判据用例：`tool-brush-speed`（已修 ✓）、`tool-gpu-pure-parity`（CPU/GPU
+     **同一条 paint_brush** ⇒ delta=0 恒等不受影响 ✓）、`tool-macos-gpu-benefit`/`tool-gpu-backend-report`
+     的 a:210/220 走 **`fill`**（不碰笔刷 opacity ✓）；`tool-vermeer-study` 的 `a:180` 只断 `ok===true` ✓；
+     `tool-hex-alpha-warning` 断的 hex 路 P-19 明言不动 ✓；UI 侧颜色恒 `a:255`/hex ⇒ 无漂移面 ✓。
+   · P-20：只影响 `yanshi-mcp serve`；`mcp-*` 判据的父进程是活着的 node，退出走 EOF/kill 正常路径 ✓。
+⑤ `git am` 不过 pre-commit 钩子 ⇒ 本留痕提交**另行复跑** fmt/clippy/台账编号/守卫 ✓（§90⑤ 同规）。
