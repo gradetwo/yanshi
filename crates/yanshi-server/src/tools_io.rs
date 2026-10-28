@@ -683,6 +683,10 @@ pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         //   **⇒ 所以**只留两个**如实**的数字（head 与渲染水位），并说清它们**不管**导出的完整性 ✓
         "head_seq": head_seq,
         "rendered_seq": rendered_seq,
+        // **P-3（期 1）**：`rendered_seq` 是**预览水位**（预览/缩略图那条线），不是本次导出的进度 ✓
+        //   ⇒ 它落后只说明上一次预览停在那里，**与本次导出完整性无关** ✓（`export_png` 总是从原子同步重渲 ✓）
+        //   ⇒ 字段本身留着（调用方可能在读），但回执里**用一句话把语义写死**，不再让人误读成"渲染不完整" ✓
+        "rendered_seq_note": "预览水位（preview/thumbnail 渲染进度），与本次导出完整性无关；export_png 总是从原子同步重渲，导出图完整。",
         // **⇒ 导出完整性**不需要这个字段：`export_png` **总是**从原子同步重渲 ✓
 
         "warnings": render_warnings,

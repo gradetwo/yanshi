@@ -4728,6 +4728,10 @@ impl Renderer {
                     // **分块路** ✓（第 187 轮 ✓）—— 只取并解码"覆盖请求区域"的块 ✓。
                     // **不撒谎** ✓：索引缺失／版本不符／块取不到 ⇒ **落回下面的既有整幅路** ✓。
                     // **旧工程没有 `tiles` ⇒ 行为一字不变** ✓。
+                    // **P-3（期 1）**：分块路拼出全透明缓冲 ⇒ 先**记下**这条落回注记，不直接进 `warnings` ✓
+                    //   ⇒ 落回**成功**（下面整幅路画出像素）时直接丢掉，不再每图刷 20 条同类警告 ✓
+                    //   ⇒ 落回**失败**（下面整幅路也没产出该补丁，`continue` 分支）时仍推进 `track.unsupported` ✓
+                    let mut tile_fallback_note: Option<String> = None;
                     {
                         let d = layer_buffer.bbox();
                         let x0 = (offset.0 as i64).max(d.x as i64);
@@ -4897,10 +4901,9 @@ impl Renderer {
                                     }
                                     continue;
                                 }
-                                track.unsupported.push(format!(
+                                tile_fallback_note = Some(format!(
                                     "位图补丁的**分块索引拼出了一张全透明缓冲**（对象 {}，blob {blob}）\
-                                     ⇒ **落回整幅路** ✓（索引可能过期，或块内容为空 ✓）；\
-                                     若整幅路也画不出来，下面还会再报一次 ✓",
+                                     ⇒ **落回整幅路**后仍未画出像素（索引可能过期，或块内容为空 ✓）",
                                     object.id
                                 ));
                             }
@@ -4945,6 +4948,10 @@ impl Renderer {
                         )
                     })?
                     else {
+                        // **P-3（期 1）**：整幅路也没产出该补丁 ⇒ 落回失败，注记仍要报 ✓
+                        if let Some(note) = tile_fallback_note.take() {
+                            track.unsupported.push(note);
+                        }
                         continue;
                     };
                     // **★ 命中缓存时这一段近似为 0 ✗ ★** ⇒ **∴ 它正是判"解码是否真被摊掉"的那一段 ✓**
@@ -4984,6 +4991,13 @@ impl Renderer {
                         let __d = t_blit.stop();
                         if std::env::var_os("YANSHI_RENDER_PROBE").is_some() {
                             eprintln!("PROBE raster blit={:?}", __d);
+                        }
+                    }
+                    // **P-3（期 1）**：整幅路画出像素 ⇒ 落回成功，注记直接丢掉，不进 `warnings` ✓
+                    //   ⇒ 诊断仍可查：`YANSHI_TRACE_TILE_STITCH` 开着时打一行 ✓
+                    if let Some(note) = tile_fallback_note.take() {
+                        if std::env::var_os("YANSHI_TRACE_TILE_STITCH").is_some() {
+                            eprintln!("TILE_FALLBACK_OK {note}");
                         }
                     }
                 }
@@ -9349,6 +9363,114 @@ mod tests {
         assert!(inside[1] > 200 && inside[0] < 60, "{inside:?}");
         assert_eq!(out.pixel(2, 2), Some([255, 255, 255, 255]));
         assert!(out.stats.unsupported.is_empty());
+    }
+
+    /// **P-3（期 1）夹具**：512×512 位图，左上 256² tile 全透明，不透明像素只在
+    /// 右下 tile（400,400）处。返回（store，未入库的整幅像素，tile 索引哈希串）。
+    /// 32×32 文档只请求到 tile 0 ⇒ 分块路必拼出全透明缓冲、走落回路。
+    fn sparse_tile_index_fixture() -> (MemoryBlobStore, Vec<u8>, String) {
+        let store = MemoryBlobStore::new();
+        let mut pixels = vec![0u8; 512 * 512 * 4];
+        let at = (400 * 512 + 400) * 4;
+        pixels[at..at + 4].copy_from_slice(&[255, 0, 0, 255]);
+        let mut tile_hashes = Vec::new();
+        for ty in 0..2 {
+            for tx in 0..2 {
+                let mut tile = Vec::with_capacity(256 * 256 * 4);
+                for r in 0..256 {
+                    let sy = ty * 256 + r;
+                    let start = (sy * 512 + tx * 256) * 4;
+                    tile.extend_from_slice(&pixels[start..start + 256 * 4]);
+                }
+                tile_hashes.push(store.put(&tile).unwrap().to_string());
+            }
+        }
+        let index = crate::bitmap_tiles::BitmapIndex {
+            v: crate::bitmap_tiles::BITMAP_INDEX_VERSION,
+            tile: crate::bitmap_tiles::BITMAP_TILE,
+            width: 512,
+            height: 512,
+            tiles: tile_hashes,
+        };
+        let index_hash = store
+            .put(&serde_json::to_vec(&index).unwrap())
+            .unwrap()
+            .to_string();
+        (store, pixels, index_hash)
+    }
+
+    /// **P-3（期 1）**：分块路拼出全透明缓冲、落回整幅路**成功** ⇒ 不再进 `warnings` ✓
+    /// （旧行为：每张图刷一条同类警告；油画导出一次 20 条 ✓）
+    ///
+    /// **变异**：把落回成功时的丢弃改回直接 `track.unsupported.push` ⇒ 本条红 ✓。
+    #[test]
+    fn tile_fallback_success_is_quiet_not_a_warning() {
+        let (store, pixels, index_hash) = sparse_tile_index_fixture();
+        let blob = stage_blob(&store, &pixels, RAW_RGBA_MIME).unwrap();
+        let mut state = white_document();
+        state.objects.insert(
+            "obj_patch".to_owned(),
+            object(
+                "obj_patch",
+                "layer_1",
+                ObjectType::RasterPatch,
+                0,
+                json!({
+                    "bitmap": blob,
+                    "width": 512,
+                    "height": 512,
+                    "tiles": index_hash,
+                    "region": {"x": 0, "y": 0, "w": 32, "h": 32},
+                }),
+            ),
+        );
+        let out = renderer().render_document(&state, &store).unwrap();
+        assert!(
+            out.stats.unsupported.is_empty(),
+            "落回成功时 warnings 应当为空（实测 {:?}）",
+            out.stats.unsupported
+        );
+    }
+
+    /// **P-3（期 1）**：分块路拼出全透明缓冲、落回整幅路**失败**（整幅 blob 缺失）⇒ 注记仍要报 ✓
+    ///
+    /// **变异**：把 `else { continue; }` 分支里的 `track.unsupported.push(note)` 删掉 ⇒ 本条红 ✓。
+    #[test]
+    fn tile_fallback_failure_still_warns() {
+        let (store, pixels, index_hash) = sparse_tile_index_fixture();
+        // 整幅 blob 故意不入库：落回路取不到它。
+        let missing = yanshi_core::BlobHash::from_bytes(&pixels).to_string();
+        let mut state = white_document();
+        state.objects.insert(
+            "obj_patch".to_owned(),
+            object(
+                "obj_patch",
+                "layer_1",
+                ObjectType::RasterPatch,
+                0,
+                json!({
+                    "bitmap": {"blob_hash": missing, "size": pixels.len(), "mime_type": RAW_RGBA_MIME},
+                    "width": 512,
+                    "height": 512,
+                    "tiles": index_hash,
+                    "region": {"x": 0, "y": 0, "w": 32, "h": 32},
+                }),
+            ),
+        );
+        let out = renderer().render_document(&state, &store).unwrap();
+        assert!(
+            out.stats
+                .unsupported
+                .iter()
+                .any(|w| w.contains("全透明缓冲")),
+            "落回失败时必须报全透明缓冲注记：{:?}",
+            out.stats.unsupported
+        );
+        assert!(
+            out.stats.unsupported.iter().any(|w| w.contains(&missing)),
+            "落回失败时也必须说清缺了哪个整幅 blob：{:?}",
+            out.stats.unsupported
+        );
     }
 
     /// **缺一个 blob ⇒ 跳过那一块 + 告警，绝不让整幅渲染失败** ✓（工程包体积专题 ✓）。

@@ -549,3 +549,36 @@ fn lod_pixel_equivalence_on_real_content() {
     let _ = std::fs::remove_file(&full_path);
     let _ = std::fs::remove_file(&lod_path);
 }
+
+/// **P-3（期 1）**：`export_png` 回执必须用一句话说清 `rendered_seq` 是预览水位 ✓
+/// （旧行为：只给两个数字，调用方误读成"渲染不完整" ⇒ 白跑一遍重导 ✓）。
+///
+/// **变异**：删掉 `rendered_seq_note` 字段 ⇒ 本条红 ✓。
+#[test]
+fn export_png_receipt_names_rendered_seq_as_preview_watermark() {
+    let mut workspace = workspace();
+    setup(&mut workspace);
+    let path = temp_path("receipt-note");
+    let exported = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_png", "human:1", "session:test")
+            .with_owner(true)
+            .with_wait_for_render(false, 0);
+        registry().call(
+            &mut ctx,
+            "export_png",
+            &json!({ "path": path.to_string_lossy() }),
+        )
+    };
+    assert_eq!(exported["ok"], json!(true), "{exported}");
+    let note = exported["rendered_seq_note"].as_str().unwrap_or("");
+    assert!(
+        note.contains("预览水位") && note.contains("与本次导出完整性无关"),
+        "回执必须说清 rendered_seq 是预览水位、与导出完整性无关：{exported}"
+    );
+    // 数字本身照旧：两个字段都在，语义由 note 锚定。
+    assert!(
+        exported["head_seq"].is_number() && exported["rendered_seq"].is_number(),
+        "head_seq 与 rendered_seq 必须仍在回执里：{exported}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
