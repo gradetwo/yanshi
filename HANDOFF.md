@@ -838,3 +838,24 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    ④ **变异（一条，退出码 101 ✓）**：`if false && alive_layers >= MAX_LAYERS_PER_DOC`
    ⇒ 第 257 个被接受（`ok: true`）⇒ 判据红；已改回并重跑绿。
    **未做**：上限按文档全局，不含图层组嵌套深度（另有一个父链成环判据在 Batch 2 已加）。
+
+79. **CI 红（`886d4f52`）复盘：SSRF 挡住本机夹具 ＋ 工具数漂移**（2026-10-28 ✓）：
+   ① **`test (stable)`／`test (beta)` 同一个原因**：`tests/file_transfer.rs` 的 HTTP 夹具全是
+   127.0.0.1 回环服务器 ✓ ⇒ 审计 M-1 的 SSRF 默认封私网把它当成了攻击 ✗
+   （`put_blob_three_channels_land_on_the_same_hash` 与 `fetch_follows_redirects_and_classifies_failures`）
+   ⇒ 修法：两条测试开头显式设 `YANSHI_ALLOW_PRIVATE_URL_FETCH=1` ✓（文档给的本机调试旁路 ✓；
+   本测试二进制里**没有**「必须拒绝私网」的判据 ✓ —— 那些在 lib 单测里，进程独立 ✓）。
+   ② **criteria 分片 4/5/6 是同一类：H-2 加工具后，写死的数过期** ✗：
+   · `tool-surface-coverage`：tools.rs 两处「核心层 125 个」＋ `docs/guide.md`「206/125」＋
+     `docs/guide.zh-CN.md`「206/125」⇒ 全部改成 **126 / 207** ✓。
+     **⚠ tools.rs 的「核心层 … N 个」必须保留数字** ✓：判据 ④ **找不到就红** ✓——
+     我一开始改成「以 docs/tools.md 为准」，反而触发了「检查消失」✗ ⇒ 已改回。
+   · `tool-examples-doc-check`：重跑生成器 `node scripts/tool-examples-doc.mjs <base>` ✓
+     ⇒ `docs/design/tool-examples.md` 补上 `revoke_token` 小节、计数 207 ✓。
+   · `tool-example-acceptance`：它缺省发 **editor** 令牌 ⇒ `revoke_token` 示例被记「被拒」✗
+     ⇒ 新增 `OWNER_ONLY_TOOLS`（**带理由** ✓）⇒ 这类工具用 `?role=owner` 建文档 ✓；
+     并把「没有这个令牌」归入「需要前置状态」✓（示例里是形状合法的**假令牌** ✓）；
+     顺手把**抄了第二份**的 `needsPriorState` 正则改回**用同一个常量** ✓（同一事实只写一处）。
+   ③ **本机验证**：`tool-surface-coverage` ✓（2 处源码声明与 2/2 文档数均一致）、
+   `tool-example-acceptance` ✓（140 跑通｜0 被拒｜67 需前置；`revoke_token` 落 ⊙）、
+   `tool-examples-doc-check` ✓、`cargo test -p yanshi-server --test file_transfer` 10/10 ✓。

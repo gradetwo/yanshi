@@ -42,15 +42,24 @@ const call = async (name, args) =>
     body: JSON.stringify({ tool: name, arguments: args }),
   }).then((r) => r.json());
 
+// **owner-only 工具 ⇒ 用 `?role=owner` 建文档** ✓（审计 H-2 的 `revoke_token`）：
+//   `POST /api/documents` 缺省发 **editor** 令牌 ✓ ⇒ 而 `revoke_token` **只许 owner** ✓
+//   ⇒ 否则示例会被记成「被拒」✗（错怪示例，而工具是对的 ✓）。
+//   **不放松任何东西** ✓：角色本来就是打开文档时的公开参数 ✓，工具仍跑同一套参数校验 ✓。
+//   **新增 owner-only 工具时加一行（带理由 ✓）** —— 没登记就照着缺省 editor 跑 ✓。
+const OWNER_ONLY_TOOLS = new Map([["revoke_token", "吊销令牌必须 owner（审计 H-2）"]]);
+
 // **⇒ 每条示例一个**干净文档** ✓**（第 941 轮；外部实测 `frequency_separation` 被前面的示例污染 ✗）
 //   **⇒ 症状** ✗：判据**共用一个文档** ⇒ 状态按顺序累积 ✓ ⇒ 某条示例看到的是**别的示例留下的图层内容** ✓
 //     ⇒ 于是 `frequency_separation` 的自检在"累积内容"上失败 ✗ 而干净文档上它只会报 `precondition_failed`（= 需前置 ✓）
 //   **⇒ 修法**：每条示例前**重建文档** ✓ 并**重新铺前置**（`L1` ＋ `o1` ✓ —— 否则示例里的 `L1` 不存在 ✓）
 //   **⇒ 代价**：多约 **2×140 次** HTTP 调用 ✓（毫秒级 ✓）；**收益**：**顺序无关** ✓
 //   **⇒ 例外**：`create_layer` 那条**必须**在**空文档**上跑 ✓（它自己就是"建 L1" ✓）⇒ `seed=false` ✓
-async function freshDoc(seed) {
+async function freshDoc(seed, owner = false) {
   doc = "ea1_" + Math.random().toString(36).slice(2, 10);
-  const made = await fetch(`${base}/api/documents`, {
+  // 角色是 `POST /api/documents` 的查询参数 ✓（见 server.rs 的 requested_role ✓）。
+  const createUrl = owner ? `${base}/api/documents?role=owner` : `${base}/api/documents`;
+  const made = await fetch(createUrl, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ doc_id: doc, width: 900, height: 640 }),
   }).then((r) => r.json());
@@ -96,7 +105,8 @@ let needsState = 0;
 for (const tool of withExample) {
   if (tool.name !== "create_layer") {
     // **⇒ 每条示例前重建**干净文档 ＋ 前置** ✓（第 941 轮：顺序无关 ✓）
-    await freshDoc(true);
+    // **owner-only 工具** ⇒ 换 owner 令牌 ✓（理由见 `OWNER_ONLY_TOOLS`）。
+    await freshDoc(true, OWNER_ONLY_TOOLS.has(tool.name));
   }
   if (tool.name === "create_layer") {
     accepted += 1;
@@ -152,7 +162,10 @@ for (const tool of withExample) {
   // badParameter 的正则里有「缺少必填」与「必须」⇒ 上面两条实测先命中它
   // ⇒ 走了「示例被拒」而永远到不了下面的 needsState ⇒ 我补的措辞等于没加。
   // 缺上下文比「参数错」更具体（要你先建对象，不是写错值），所以先算它。
-  const needsPriorState = /不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|已经有一个打开的|先 begin_|需要 delta 或 transform|缺少必填参数 path|文档 .* 未打开|尚未打开|不在存储|order 必须是全部存活图层|需要 suggestion_id 或 patch|已经存在/i.test(detail);
+  // **「没有这个令牌」也是缺前置** ✓（审计 H-2 的 `revoke_token` 示例）：示例里的令牌是
+  // 一串**形状合法的假令牌** ✓（真令牌只能运行时拿 ✓）⇒ 抄它的人本来就得**换成自己的令牌** ✓
+  // ⇒ 与 `revert_to` 要先 `declare_head` 同类 ✓，不是值写错 ✗。
+  const needsPriorState = /不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|没有这个令牌|已经有一个打开的|先 begin_|需要 delta 或 transform|缺少必填参数 path|文档 .* 未打开|尚未打开|不在存储|order 必须是全部存活图层|需要 suggestion_id 或 patch|已经存在/i.test(detail);
   if (response.ok) { accepted += 1; console.log(`  ✓ ${tool.name}：**成功** ✓`); }
   else if (badParameter && !needsPriorState) { rejected += 1; console.log(`  ✗ ${tool.name}：示例被拒 ⇒ ${detail.slice(0, 90)}`); }
   // **措辞要收全** ✓（第 514 轮 ✓）：原先只认 `不存在|未找到|not found|no such|missing` ✗ ⇒
@@ -169,7 +182,9 @@ for (const tool of withExample) {
   // 「需要 suggestion_id 或 patch」（**要先有建议** ✓）。
   // ⚠️ **注释不能写在正则字面量里面** ✗（第 546 轮实测 ✓）：`//` 会**终止正则** ✓
   // ⇒ 报 `SyntaxError: Invalid regular expression: missing /` ✓ ⇒ **整条判据当场失效** ✗。
-  else if (/不存在|未找到|not found|no such|missing|不在日志|从未存在|找不到|没有可修改|已经有一个打开的|先 begin_|需要 delta 或 transform|缺少必填参数 path|文档 .* 未打开|尚未打开|不在存储|order 必须是全部存活图层|需要 suggestion_id 或 patch|已经存在/i.test(detail)) {
+  // **用上面那个常量** ✓：原先这里**又抄了一份同样的正则** ✗ ⇒ 两边改一处就漂移
+  //（本仓「同一事实只写一处」✓ —— 我刚加「没有这个令牌」时第一反应是改两处 ✓）。
+  else if (needsPriorState) {
     needsState += 1;
     console.log(`  ⊙ ${tool.name}：**需要前置状态**（引用了还不存在的对象）⇒ ${detail.slice(0, 80)}`);
   }

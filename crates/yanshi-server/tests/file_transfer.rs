@@ -153,6 +153,9 @@ fn serve(routes: Vec<(&'static str, u16, &'static str, Vec<u8>)>) -> String {
 
 #[test]
 fn put_blob_three_channels_land_on_the_same_hash() {
+    // **SSRF 默认封私网** ✓（审计 M-1）⇒ 本文件的夹具全是 127.0.0.1 回环服务器 ✓
+    // ⇒ 显式走文档里给的本机调试旁路 ✓（只影响本测试进程，且本二进制没有「必须拒绝」的判据 ✓）。
+    std::env::set_var("YANSHI_ALLOW_PRIVATE_URL_FETCH", "1");
     let root = temp_dir("putblob3");
     let _cleanup_1 = Cleanup(root.clone());
     let mut ws = workspace(&root);
@@ -269,6 +272,8 @@ fn put_blob_accepts_file_over_old_64mib_cap() {
 #[test]
 fn fetch_follows_redirects_and_classifies_failures() {
     use yanshi_server::file_source::{fetch_url, fetch_url_with};
+    // 同上：夹具在 127.0.0.1 ⇒ 显式打开本机调试旁路 ✓（审计 M-1 的 SSRF 默认封私网）。
+    std::env::set_var("YANSHI_ALLOW_PRIVATE_URL_FETCH", "1");
     let base = serve(vec![
         ("/img.png", 200, "image/png", png_bytes()),
         ("/redir", 302, "text/plain", Vec::new()),
