@@ -145,6 +145,36 @@ const shotWheel = await capture("wheel-pans-not-zooms");
 // 所以"滚轮会平移"这条判据必须在**放得下不去**的尺度上量 ✓。
 
 // ② 状态栏百分比输入框能缩放 ✓
+// **② 之前必须先等布局稳定** ✓ —— displayScale = fit × userZoom ✓，而 fit 随可用区域变 ✓：
+//   实测失败（main run 40836360543，head 6b91fca2）：布局未定型时输入 300% ⇒ handler 按旧 fit 0.5879
+//   算出 userZoom = 3/0.5879 = 5.103 ✓，随后文档载入/布局定型触发 clampViewport ⇒ fit 长到 2.4667 ⇒
+//   displayScale = 5.103 × 2.4667 = 12.587 ✗，输入框自己都回填成 1259% ✗ —— 断言 (2.5, 3.6) 于是红 ✓。
+//   ∴ 输入之前先等「舞台矩形＋文档尺寸＋displayScale」两次读取（间隔 300ms）全等 ✓；
+//   超时（8 秒）不跳过：按原流程继续断言（退化为旧行为，不静默丢覆盖 ✓），断言本身仍是裁判 ✓。
+const layoutSnapshot = async () =>
+  evaluate(`(() => {
+    const b = document.getElementById("board");
+    if (!b) return undefined;
+    const r = b.getBoundingClientRect();
+    const s = window.yanshi.state();
+    const d = s.docSize || {};
+    return [Math.round(r.width), Math.round(r.height), d.w ?? null, d.h ?? null, s.zoom].join("|");
+  })()`);
+{
+  let prev;
+  let stable = false;
+  const until = Date.now() + 8000;
+  while (Date.now() < until) {
+    const cur = await layoutSnapshot();
+    if (cur !== undefined && cur === prev) {
+      stable = true;
+      break;
+    }
+    if (cur !== undefined) prev = cur;
+    await sleep(300);
+  }
+  if (!stable) console.log("  ② 前置：布局 8 秒内未稳定，仍按原流程继续断言（超时不是产品失败，断言仍是裁判）");
+}
 await evaluate(`(() => {
   const box = document.getElementById("zoomInput");
   box.value = "300";

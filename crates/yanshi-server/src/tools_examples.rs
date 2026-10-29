@@ -571,6 +571,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         // `document_id` 才是要被删掉的那一份。所以这条示例**必须显式写 document_id**。
         r##"{"document_id": "sample-oil"}"##,
     ),
+    // **release/reopen 薄包装**：参数面只有一个必填 document_id，示例照抄即可；
+    // 前置状态是「磁盘上已有这份文档」（先 new_document 建一份，再 release 掉）。
+    ("release_document", r#"{"document_id":"sample-oil"}"#),
+    ("reopen_document", r#"{"document_id":"sample-oil"}"#),
     (
         "export_psd_layers",
         // **★ 分层导出 ✗ ★**（**第 253 轮 ✓）：**把当前文档写成**带图层结构的 PSD**
@@ -591,5 +595,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         // 原先写的是占位文本 `sha256:<先上传 PSD 得到的哈希>` ⇒ **形状不合法** ⇒ 抄走必然失败 ✗
         //（2026-10-06 判据实测：`blob_hash` 不是合法哈希 ✓）⇒ 违反「示例要**真的可照抄**」 ✓。
         r##"{"layer_id": "layer_default", "blob_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}"##,
+    ),
+    // **stroke_heatmap**（反馈 5.6）：唯一必填参数是 region（与 render_region 同形）⇒ 只给必填项就成立 ✓。
+    (
+        "stroke_heatmap",
+        r#"{"region":{"x":0,"y":0,"w":400,"h":300}}"#,
     ),
 ];
