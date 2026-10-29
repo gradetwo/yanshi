@@ -1991,7 +1991,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         // ⇒ 而实现**明确拒绝**覆盖已存在的 id ✓ ⇒ **遵循这份描述的 Agent 会撞墙** ✗ ——
         // 契约与行为不符 ✓ 比功能缺失更坏 ✗（调用方会按描述写出**必然失败**的代码 ✓）。
         // **语义照实写清** ✓：新画布 = **新的 doc_id** ✓（文档 id 就是持久单元 ✓，这是设计 ✓）。
-        summary: "新建文档（doc_id / 宽高 / 背景色）：新 id ⇒ 建好并返回 created:true / opened:false；**若该 doc_id 已存在 ⇒ 打开它**（返回 opened:true / created:false，内容与尺寸都不动）；要一块干净画布请换新 doc_id",
+        summary: "新建文档（doc_id / 宽高 / 背景色 / mode）：新 id ⇒ 建好并返回 created:true / opened:false；**若该 doc_id 已存在 ⇒ 缺省打开它**（返回 opened:true / created:false，内容与尺寸都不动，传入的宽高与背景会原样列在 ignored 里）；要一块干净画布请换新 doc_id；mode=open 为缺省（已存在⇒打开，不存在⇒新建），mode=create 为严格新建（已存在⇒报错，不打开、不清空），mode=reset 为清空重建（已存在⇒删后重建空白，不存在⇒新建）",
         mutating: true,
         params: &[
             param!("doc_id", String, false, "文档 id（缺省用当前会话的文档）"),
@@ -2001,6 +2001,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("width", Integer, false, "宽（像素）——新建画布时必填；打开已存在文档时可不传"),
             param!("height", Integer, false, "高（像素）——新建画布时必填；打开已存在文档时可不传"),
             param!("background", Object, false, "背景 {r,g,b,a}（0..255；缺省不透明白）"),
+            param!("mode", String, false, "同名文档的处理方式：open（缺省：已存在⇒打开，不存在⇒新建）、create（严格新建：已存在⇒报错）、reset（清空重建：已存在⇒删后重建空白，不存在⇒新建；删文档时遵循与 delete_document 相同的权限与实时连接规则；重建时尺寸必填，与新建相同）"),
         ],
     },
     ToolSpec {

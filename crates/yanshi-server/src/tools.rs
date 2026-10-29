@@ -14285,6 +14285,8 @@ fn kind_label(kind: &AtomKind) -> String {
 ///
 /// **与"文档隔离"的关系** ✓：本工具**不改变** id 语义 ✓ —— 它只是把"新建"这件事
 /// 从"手工删目录"变成"一次调用" ✓。想彼此隔离就**用不同的 doc_id** ✓（默认值已由 `--doc` 提供 ✓）。
+/// 同名处理见 `mode` 参数 ✓：缺省 open（打开）、create（严格新建）、reset（删后重建）✓ ——
+/// 续画流只依赖缺省 open，不动 ✓。
 fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let doc_id = optional_str(args, "doc_id").unwrap_or_else(|| ctx.doc_id.clone());
     // **尺寸只在"真的要新建"时才是必填** ✓（真实使用探针 2026-10-25 ✓）：
@@ -14311,6 +14313,49 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         }
         _ => json!({"r": 255, "g": 255, "b": 255, "a": 255}),
     };
+    // **同名处理 `mode`** ✓（反馈报告 2 §4.6 期 2）：缺省 open = 今天的行为（已存在⇒打开，
+    // 不存在⇒新建），续画流不动 ✓；create = 严格新建（已存在⇒报错）；reset = 删后重建
+    //（与 delete_document 同闸：权限闸 + 实时连接拒，删失败直接报错、不回落到打开）。
+    // 非法值报错，不静默回落 ✓（"静默降级是唯一对手"）。
+    let mode: &str =
+        match args.get("mode") {
+            None | Some(Value::Null) => "open",
+            Some(Value::String(value)) => match value.as_str() {
+                "open" | "create" | "reset" => value.as_str(),
+                _ => return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(
+                        "mode 只能是 open / create / reset（缺省 open：已存在⇒打开，不存在⇒新建）",
+                    ),
+                )),
+            },
+            Some(_) => {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("mode 必须是字符串 open / create / reset（缺省 open）"),
+                ))
+            }
+        };
+    // **create / reset 的分支在打开语义之前定** ✓：只在 open_document 成功时才算"真的存在"
+    //（磁盘空壳走下面的新建，与今天一致 ✓）。reset 删完后 document_exists 为假 ⇒
+    // 自然落到下面的新建分支，不用另起一条创建路径 ✓。
+    let mut reset_deleted = false;
+    if mode != "open"
+        && ctx.workspace.document_exists(&doc_id)
+        && ctx.workspace.open_document(&doc_id).is_ok()
+    {
+        if mode == "create" {
+            return Err(YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!(
+                    "文档 {doc_id} 已存在 ⇒ 本次没有打开、也没有清空；要续画请用 mode=open（或不传 mode），要清空重建请用 mode=reset"
+                )),
+            ));
+        }
+        crate::ensure_doc_scope(&ctx.doc_id, ctx.role, &doc_id)?;
+        ctx.workspace.delete_document(&doc_id)?;
+        reset_deleted = true;
+    }
     // **同 id 已存在 ⇒ 打开它** ✓（第三方报告 P0-2 ✓：报告作者读到的是"会被拒绝" ✗ ——
     // 因为**描述与实现相反** ✗：实现早就改成"打开且不清空" ✓，而描述一直没跟 ✓）。
     // 注意：**不覆盖、不清空** ✓（"给我一块干净画布"请换新 doc_id ✓）。
@@ -14368,17 +14413,32 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
                     "missing_sample": missing_sample,
                 })
             };
-            return Ok(json!({
+            // **打开时传入的宽高/背景被忽略，必须明说** ✓（反馈报告 2 §4.6 的第二点）：
+            // 只列调用方这次真的传了的键，不编没传的 ✓。
+            let mut ignored = serde_json::Map::new();
+            for key in ["width", "height", "background"] {
+                if let Some(value) = args.get(key) {
+                    if !value.is_null() {
+                        ignored.insert(key.to_owned(), value.clone());
+                    }
+                }
+            }
+            let mut receipt = json!({
                 "ok": true,
                 "doc_id": doc_id,
                 "opened": true,
                 "created": false,
+                "mode": "open",
                 "width": existing_width,
                 "height": existing_height,
                 "session_document": ctx.doc_id,
                 "blob_integrity": blob_integrity,
-                "note": "该 doc_id 已存在 ⇒ 本次是**打开**（内容未被清空 ✓）；要一块新画布请换 doc_id",
-            }));
+                "note": "该 doc_id 已存在 ⇒ 本次是**打开**（内容未被清空 ✓）；要一块新画布请换 doc_id；要清空重建请用 mode=reset",
+            });
+            if !ignored.is_empty() {
+                receipt["ignored"] = Value::Object(ignored);
+            }
+            return Ok(receipt);
         }
     }
     // 走到这里 ⇒ 确实要**新建**一块画布 ✓ ⇒ 尺寸缺了就给一句**能照做**的错 ✓。
@@ -14418,8 +14478,9 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     // `fold.rs` 在文档初始状态里**已经**放了一个 `layer_default`（z=-1，不额外产生原子 ✓）——
     // 这里**不再**显式建 `layer_1` ✗（否则新文档会有两个都叫"图层 1"的层 ✗，实测确认 ✓）。
     let default_layer = "layer_default";
-    Ok(json!({
+    let mut receipt = json!({
         "doc_id": doc_id,
+        "mode": mode,
         // **新建与打开必须能一眼分开** ✓（真实缺陷 ✓ 2026-10-06 ✓）：这条分支原先**没有**
         // 这两个字段 ✗ ⇒ 调用方只能"看到 opened 才判断是打开" ✓，而**新建**那条**什么都不说** ✗；
         // 加上入口预建那个缺陷一叠 ✓，新 id 就变成 `created:false/opened:true` ✗。
@@ -14443,7 +14504,12 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             "后续请求请把 ?doc={} 换成 ?doc={}（会话归属在客户端；本工具不会替你切）",
             ctx.doc_id, doc_id
         ),
-    }))
+    });
+    // **reset 真删过才说 reset:true** ✓：没删过（不存在⇒新建）不谎报 ✓。
+    if reset_deleted {
+        receipt["reset"] = json!(true);
+    }
+    Ok(receipt)
 }
 
 /// **`medium_stroke`** ✓ —— 用**介质插件**画一笔 ✓（真实用户 P1-3 要的那件事 ✓）。
