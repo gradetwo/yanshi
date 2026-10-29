@@ -1851,6 +1851,32 @@ fn batch_watermark_override_limit_takes_effect() {
     );
 }
 
+/// **精简回执参数面（feedback5-feat-slim）**：`batch` 必须声明 `slim_receipt`
+/// 可选布尔参数，否则调用方传它会被参数校验以「不接受参数」拒绝（静默降级
+/// 的反面：声明了却不接受）。本条只钉参数面；参数「真的被读」由盒上
+/// 200 笔实测证明（完整回执与精简回执字符数不同、精简的 calls 为空数组）。
+#[test]
+fn batch_declares_slim_receipt_optional_boolean() {
+    let spec = ALL_TOOLS
+        .iter()
+        .find(|tool| tool.name == "batch")
+        .expect("batch 这个工具应当在清单里");
+    let param = spec
+        .params
+        .iter()
+        .find(|parameter| parameter.name == "slim_receipt")
+        .expect("batch 必须声明 slim_receipt 参数");
+    assert!(
+        !param.required,
+        "slim_receipt 必须是可选的（缺省 false，完整回执不变）"
+    );
+    assert!(
+        matches!(param.kind, ParamKind::Boolean),
+        "slim_receipt 必须是布尔参数，得到 {:?}",
+        param.kind
+    );
+}
+
 /// **D1（期 2b）：`batch_stroke_evidence` 的字段归一** ✓。
 ///
 /// 断的是**组装逻辑本身**（不经过 `batch` 的循环 ✓）：brush 回执原样取四字段、

@@ -21634,6 +21634,11 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     //   ⇒ 挂到 `ctx.batch_message` ✓ ⇒ `commit` 收口点把它写进**每条**原子的 `message` ✓
     //   ⇒ 读侧已经能看见 ✓（`get_stroke_log` 的条目带 `message` ✓，第 723 轮 ✓）。
     let previous_message = std::mem::replace(&mut ctx.batch_message, optional_str(args, "message"));
+    // **精简回执（feedback5-feat-slim）**：opt-in，缺省 false ⇒ 完整回执不变。
+    //   slim 时回执只留计数与失败项，成功笔的逐笔调用回执不再列出（calls 为空数组，
+    //   省掉的条数记在 omitted_calls；失败项仍在 failed_calls 里完整保留）。
+    //   注意：精简只改回执形状，不改执行——子调用照常顺序执行、照常落笔。
+    let slim_receipt = optional_bool(args, "slim_receipt").unwrap_or(false);
     let preview_every = optional_count(args, "preview_every_n_strokes")?.unwrap_or(0);
     let preview_interval_ms = optional_count(args, "preview_interval_ms")?.unwrap_or(0);
     let mut last_preview = std::time::Instant::now();
@@ -21858,7 +21863,17 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         response["total_calls"] = json!(calls.len());
         response["segments_completed"] = json!(results.len() / BATCH_SEGMENT_CALLS);
         response["changeset_id"] = json!(changeset);
-        response["calls"] = json!(results);
+        // **精简回执**：提前停也一样砍逐笔调用回执（失败项仍在 failed_calls 里）。
+        //   非精简时这一行与旧行为逐字节同形。
+        response["calls"] = if slim_receipt {
+            json!([])
+        } else {
+            json!(results)
+        };
+        if slim_receipt {
+            response["slim_receipt"] = json!(true);
+            response["omitted_calls"] = json!(results.len());
+        }
         response["count"] = json!(results.len());
         response["ok_count"] = json!(results.len().saturating_sub(failed_calls.len()));
         response["fail_count"] = json!(failed_calls.len());
@@ -21897,6 +21912,14 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     //   HTTP 状态由 200 变 400（无 `error_code` 时走缺省臂 ✓）。
     let failed_n = failed_calls.len();
     let total_n = results.len();
+    // **精简回执**：calls 是回执里最 bulk 的一块（每笔带完整子调用回执）⇒
+    //   slim 时以空数组代之，省掉的条数记在 omitted_calls；失败项不受影响
+    //   （它们本来就在 failed_calls 里）。非精简时与旧行为完全相同。
+    let calls_json = if slim_receipt {
+        json!([])
+    } else {
+        json!(results)
+    };
     let mut response = json!({
         // 失败留痕（第 1000+ 轮）：空数组 = 全成功；非空 = 有子调用失败（此时顶层 `ok` 是 `false` ✓）。
         // **顶层 `ok` 即全成** ✓（A6 方案 ①）：与下面的 `all_ok` 同值 ✓。
@@ -21956,7 +21979,7 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         "stopped_early": false,
         // **A 期**：正常回执同样附两个上限的当前值（只加字段，便于调用方事前核对水位与预算 ✓）。
         "memory_limits": batch_memory_limits_json(),
-        "calls": results,
+        "calls": calls_json,
         "stroke_evidence": stroke_evidence,
         "count": results.len(),
         "atom_ids": atom_ids,
@@ -21966,6 +21989,11 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         // ⇒ 日志里的"每笔耗时"是假的 ✗、调用方也不知道活干完没有 ✗。
         "execution": execution_report(ctx),
     });
+    // **精简回执的标记**：只在 slim 时出现 ⇒ 缺省完整回执的键集合一字不变。
+    if slim_receipt {
+        response["slim_receipt"] = json!(true);
+        response["omitted_calls"] = json!(total_n);
+    }
     // **部分失败时顶层加 `error` 指路 `failed_calls`** ✓（A6 方案 ①）：`ok:false` 本身已是信号 ✓，
     //   但调用方不该只靠它反查 ⇒ 一句话说清"几分之几失败、去哪看每条的错误" ✓。
     if failed_n > 0 {
