@@ -505,6 +505,11 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     // 取值域来自仓库里的真实文件 `assets/textures/`（Paper001.png ✓ / Cardboard001.png ✓ …）⇒
     // **不是编的** ✓。`mode` 缺省是 tile ✓ ⇒ 只给必填项就成立 ✓。
     ("texture_background", r#"{"texture":"Paper001.png"}"#),
+    // **`rebackground`**：唯一必填参数是目标底色 ✓（与 new_document background 同形 ✓）⇒ 只给必填项就成立 ✓。
+    (
+        "rebackground",
+        r#"{"color":{"r":30,"g":60,"b":120,"a":255}}"#,
+    ),
     // **`toned_ground`**（反馈 §5.3）：唯一必填参数是颜色 ✓（与 new_document background 同形 ✓）⇒ 只给必填项就成立 ✓。
     (
         "toned_ground",

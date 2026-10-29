@@ -33,7 +33,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（127 个）。
+    /// 核心层：默认注册（128 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -764,7 +764,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，127 个）。
+    /// 核心层（默认注册，128 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -2052,6 +2052,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "list_palette_colors" => write_list_palette_colors(ctx, args),
         "analyze_region" => read_analyze_region(ctx, args),
         "texture_background" => write_texture_background(ctx, args),
+        "rebackground" => write_rebackground(ctx, args),
         "toned_ground" => write_toned_ground(ctx, args),
         "gradient_fill" => write_gradient_fill(ctx, args),
         "gradient_blend" => write_gradient_blend(ctx, args),
@@ -16772,6 +16773,103 @@ fn write_toned_ground(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         "region": {"x": 0, "y": 0, "w": canvas_width, "h": canvas_height},
         "execution": execution_report(ctx),
     }))
+}
+
+/// **改已有文档底色 `rebackground`**（反馈报告 §4 单拆项）：
+/// **只改底色** ✓：把当前打开文档的 `background` 换成给定的纯色 ⇒ 渲染侧
+/// `parse_background(&state.background)` 下一次出帧就读到新底色 ✓；图层、笔触、
+/// 画布尺寸**一律不动** ✗（想铺笔触质感底色是另一个工具的活 ✗，想给新文档底色
+/// 请在新建文档时给 ✗ —— 两者与本工具互补，不互相改写语义 ✗）。
+/// **必须是正式日志原子** ✓：落一条 `set_background` 原子 ⇒ 折叠进 `state.background` ✓、
+/// 落盘进原子日志 ✓ ⇒ 重开文档（全量日志重放 ✓）后仍在 ✓；**绝不**走「内存改状态
+/// 但不落原子、重开即丢」的捷径 ✗。配套：`dirty.rs` 里 `set_background` 是全量失效 ✓
+/// （底色是每块 tile 复合的基底 ⇒ 不全量就会让缓存 tile 继续用旧底色出帧 ✗）；
+/// 撤销/恢复：该原子种已进 `is_state_effect` ⇒ `revert`/`reapply` 能把它来回倒 ✓。
+/// **颜色严格校验** ✓（抄笔触底色工具的教训 ✗）：`parse_colour_value` 那套会把缺失通道
+/// 静默补 0、把越界静默夹到 255 ✗ ⇒ 底色工具抄它就会「错色也照改」✗ ⇒ 这里缺失/
+/// 非对象/缺通道/非整数/越界一律**明确报错** ✓，不传颜色也报错 ✓，绝不静默改底 ✗。
+/// **文档定位** ✓：按现有工具惯例，不另设文档参数 —— 作用于当前会话打开的文档
+/// （框架级 doc_id 字段已覆盖显式指定 ✓）；文档未打开时明确报错，不静默建文档 ✗。
+fn rebackground_channel(color: &Value, key: &str, required: bool) -> Result<u8> {
+    match color.get(key) {
+        None => {
+            if required {
+                Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "rebackground 的 color 缺少 {key} ⇒ 给完整的 {{r,g,b,a}}（0..255 整数；a 可缺省为 255）"
+                    )),
+                ))
+            } else {
+                Ok(255)
+            }
+        }
+        Some(value) => {
+            let number = value.as_i64().ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "rebackground 的 color.{key} 必须是 0..255 的整数（给了 {value}）⇒ 小数、字符串、负数、超 255 都不收"
+                    )),
+                )
+            })?;
+            if !(0..=255).contains(&number) {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "rebackground 的 color.{key} 越界（{number}）⇒ 只收 0..255，不静默夹紧"
+                    )),
+                ));
+            }
+            Ok(number as u8)
+        }
+    }
+}
+
+fn write_rebackground(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **先查文档开没开** ✓（删锚点工具同款教训 ✗）：折叠是容错的 ⇒ 只靠折叠层
+    // 拦不住「没文档也返回 ok」✗ ⇒ 想在调用方看到错误，就得在这里自己查 ✓。
+    let previous_background = {
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!(
+                    "文档 {} 未打开 ⇒ 先建文档或打开已有文档，再改底色",
+                    ctx.doc_id
+                )),
+            )
+        })?;
+        document.state().background.clone()
+    };
+    let color_value = args.get("color").ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "rebackground 必须给 color（{r,g,b,a}，0..255 整数）⇒ 不给颜色不会静默改底"
+                    .to_string(),
+            ),
+        )
+    })?;
+    if !color_value.is_object() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "rebackground 的 color 必须是对象 {{r,g,b,a}}（给了 {color_value}）"
+            )),
+        ));
+    }
+    let r = rebackground_channel(color_value, "r", true)?;
+    let g = rebackground_channel(color_value, "g", true)?;
+    let b = rebackground_channel(color_value, "b", true)?;
+    let a = rebackground_channel(color_value, "a", false)?;
+    let background = json!({"r": r, "g": g, "b": b, "a": a});
+    let result = ctx.commit(AtomKind::SetBackground, json!({"background": background}))?;
+    let mut value = finish_mutation(ctx, &result, None)?;
+    // **改前改后都回** ✓：调用方不用再调一次读状态就能确认「底色确实换了、换成什么」✓
+    // （只回新值的话，「没换」与「换成了同一个色」分不出来 ✗）。
+    value["previous_background"] = previous_background;
+    value["background"] = background;
+    Ok(value)
 }
 
 /// **`save_palette`**（AI 画家需求 P1-5 的写侧）：把 `colors` 规范成 `R G B` ⇒ 写一份临时 `.gpl` ⇒
