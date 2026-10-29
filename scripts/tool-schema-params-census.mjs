@@ -65,7 +65,11 @@ const ALLOWLIST = {
   response: new Set([
     "all_ok", "failed_calls", "error", "ok", "landed", "landed_reason",
     "painted_pixels", "painted_pixels_clipped", "painted_pixels_raw",
-    "base_value", "bytes_per_atom_avg", "server_rss_mb", "has_more",
+    "base_value", "bytes_per_atom_avg", "server_rss_mb",
+    // **报告 5/6 §2 #1 跟进**：`describe_canvas` 的回执字段 `estimated_memory_bytes`
+    //   （`tools.rs` 写进回执 JSON；同工具的 `server_rss_mb`／`bytes_per_atom_avg`
+    //   已在 response 集里，同一类 ⇒ 按规则逐个补，不放通配）。
+    "estimated_memory_bytes", "has_more",
     "next_offset", "next_since", "truncated", "thumb_url", "clamped_pixels",
     "effective_margin", "effective_sample_stride", "field_range",
     "field_uniform", "filled_pixels", "mask_bbox", "placed", "residual_ratio",
