@@ -21400,24 +21400,61 @@ const BATCH_MAX_CALLS: usize = 500;
 const BATCH_SEGMENT_CALLS: usize = 100;
 
 /// **P2-7**：batch 段边界水位检查 —— 任一触发即提前停止（已提交的保留，不回滚 ✓）：
-///   · 进程 RSS > 4 GiB（`proc_rss_mb`）；
+///   · 进程 RSS > batch 水位（`proc_rss_mb`；缺省 4 GiB，`YANSHI_BATCH_RSS_LIMIT_MB` 可覆盖，见 A 期 ✓）；
 ///   · 系统 MemAvailable < 512MB（`proc_mem_available_mb`，保护小内存机器，如 1.27GB 的 Colab 会话 ✓）。
 ///   非 Linux / 读不到 ⇒ `None`（fail-open：检查跳过，不拦批次 ✓）。
+/// **A 期（paint-r2-A）**：batch 水位不再是硬编码常量 ——
+///   `YANSHI_BATCH_RSS_LIMIT_MB` 可覆盖，缺省 4096（旧值，不变 ✓）。
+///   注意与 `YANSHI_DOC_MEMORY_BUDGET_MB` 的区别：后者只 gate 开文档
+///   （`service.rs` 的 `memory_budget_bytes`），不管 batch 落笔；两者是两个天花板，
+///   触发回执的 `memory_limits` 同时报当前值，免得再混为一谈 ✓。
+///   期 8 的 X-1（`BYTES_PER_ATOM` 校准）缓解的是重开预算，不是此处水位，两处无关 ✓。
+const BATCH_RSS_LIMIT_DEFAULT_MB: u64 = 4 * 1024;
+
+/// **A 期**：水位解析（纯函数，可单测 ✓）—— 解析失败 / 为 0 ⇒ 回退缺省
+///   （不编一个会立刻触发的 0 上限 ✓）。
+fn parse_batch_rss_limit_mb(text: Option<&str>) -> u64 {
+    text.and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|limit| *limit >= 1)
+        .unwrap_or(BATCH_RSS_LIMIT_DEFAULT_MB)
+}
+
+fn batch_rss_limit_mb() -> u64 {
+    parse_batch_rss_limit_mb(std::env::var("YANSHI_BATCH_RSS_LIMIT_MB").ok().as_deref())
+}
+
+/// **A 期**：触发回执与正常回执共用的两个上限当前值 —— 只加字段，不改现有字段语义 ✓。
+fn batch_memory_limits_json() -> Value {
+    json!({
+        "batch_rss_limit_mb": batch_rss_limit_mb(),
+        "doc_memory_budget_mb": Workspace::memory_budget_bytes() / (1_024 * 1_024),
+    })
+}
+
 fn batch_watermark_reason() -> Option<String> {
     batch_watermark_reason_for(proc_rss_mb(), proc_mem_available_mb())
 }
 
 /// **P2-7**：水位谓词（纯函数，可单测 ✓）—— 读数是参数，`batch_watermark_reason` 只负责取数 ✓。
+///   水位取当前环境变量值（缺省 4096）；要断“覆盖生效”时用下面的 `_for_limit` 传显式水位 ✓。
 fn batch_watermark_reason_for(
     rss_mb: Option<u64>,
     mem_available_mb: Option<u64>,
 ) -> Option<String> {
-    const RSS_LIMIT_MB: u64 = 4 * 1024;
+    batch_watermark_reason_for_limit(rss_mb, mem_available_mb, batch_rss_limit_mb())
+}
+
+/// **A 期**：水位谓词的显式水位版（纯函数）—— 覆盖逻辑本身可单测，不碰进程环境变量 ✓。
+fn batch_watermark_reason_for_limit(
+    rss_mb: Option<u64>,
+    mem_available_mb: Option<u64>,
+    rss_limit_mb: u64,
+) -> Option<String> {
     const MEM_AVAILABLE_FLOOR_MB: u64 = 512;
     if let Some(rss) = rss_mb {
-        if rss > RSS_LIMIT_MB {
+        if rss > rss_limit_mb {
             return Some(format!(
-                "进程 RSS {rss}MB 超过 {RSS_LIMIT_MB}MB 上限 ⇒ 提前停止，不再开始新子调用（已提交的保留）"
+                "进程 RSS {rss}MB 超过 {rss_limit_mb}MB 上限 ⇒ 提前停止，不再开始新子调用（已提交的保留）"
             ));
         }
     }
@@ -21752,6 +21789,8 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             ErrorContext::detail(reason),
         ));
         response["stopped_early"] = json!(true);
+        // **A 期**：触发回执同时报两个上限的当前值（只加字段，现有字段语义不动 ✓）。
+        response["memory_limits"] = batch_memory_limits_json();
         response["completed_calls"] = json!(results.len());
         response["total_calls"] = json!(calls.len());
         response["segments_completed"] = json!(results.len() / BATCH_SEGMENT_CALLS);
@@ -21852,6 +21891,8 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         //   `stopped_early` 恒 false（提前停的那条路走上面的错误形状返回 ✓）。
         "segments_completed": results.len() / BATCH_SEGMENT_CALLS,
         "stopped_early": false,
+        // **A 期**：正常回执同样附两个上限的当前值（只加字段，便于调用方事前核对水位与预算 ✓）。
+        "memory_limits": batch_memory_limits_json(),
         "calls": results,
         "stroke_evidence": stroke_evidence,
         "count": results.len(),

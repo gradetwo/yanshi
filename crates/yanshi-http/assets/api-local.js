@@ -30,6 +30,10 @@
  *   **∴ 它们**不是"假装成功" ✗**（**一律 501 ＋ 明确原因 ✓**），**而是**已处理的端点** ✗；
  *   **★ 后续更新 ✗（第 六百六十三 轮 ✓）**：**`restore_checkpoint` 已落地 ✓**（**`declare_head{base:{type:"checkpoint"}}`
  *     ＋ 本地 `state@seq` 窗口 ✓**）⇒ **∴ 上面那句里的 501 名单已过期 ✗**（**∴ 以本节与实现分支为准 ✓**）。
+ *   **★ 后续更新 ✗（第 六百六十四 轮 ✓）**：**`preview_suggestion`／`accept_suggestion`／`accept_suggestions`
+ *     已落地 ✓**（**预览＝逐步 `p2CheckSingleStep` ＋ 影响预估 ✓；接受＝全量预检 ⇒ 按序重放
+ *     ⇒ 运行期失败逐条 `revert` 回滚 ✓；批量＝逐条、个别失败不中断 ✓**）⇒ **∴ 上面那句里的 501 名单又少 3 个 ✗**
+ *     （**∴ 以本节与实现分支为准 ✓**）。
  *   **∴ 口径说明 ✗**：**判据按 `path === "` 机械计数分支数 ✗**（**要求 `declared === actualImpl(+1)` ✓**）
  *     ⇒ **∴ 本数 = 全部分支数 ✗**（**真实实现 ＋ 如实 501 ✓**），**∴ 与判据口径对齐 ✓**；
  *   **∴ 不虚报 ✓**：**哪 7 个是 501 在上面点名 ✓**（**判据／人都能逐个核对 ✓**）。
@@ -409,6 +413,594 @@ export async function encodePngRgba(w, h, rgba) {
   for (const p of parts) { out.set(p, o); o += p.length; }
   return out;
 }
+/** **工具规格表 ✗**（**服务端「工具 → 参数」的本地镜像 ✓**）：
+ *   **∴ 由 `scripts/gen-pwa-tool-specs.mjs` 生成 ✓** —— **∴ 手抄必漂移**✗
+ *   ⇒ **∴ 生成器 `--check` 挂在判据里看守（过期 ⇒ 红，不是静默漂移 ✓）**。
+ *   格式：`name: [mutating?1:0, [["参数","类型码",必填?1:0], …]]`
+ *   **参数顺序 = 注册表声明顺序 ✓**（`validate_args` 的「可用参数：…」按它 join ✓）
+ *   类型码：`s`=string `i`=integer `n`=number `b`=boolean `o`=object `a`=array
+ *   `x`=any（**服务端 `Any` 不写 type ✓**）
+ *   **数据源**：① 参数名/类型/必填 = `GET /api/tools`（与 MCP `tools/list` 逐字相同 ✓，
+ *   `server.rs:701`）；② `mutating` 位 ＋ 参数顺序 = `crates/yanshi-server/src/tools_registry.rs`
+ *   （**HTTP 清单不暴露这两样 ✓**；`serde_json` 的 Map 是 BTreeMap ⇒ 键按字母序 ✗）。
+ */
+const P2_TOOL_SPECS = {
+// <gen:tool-specs>
+  abort_changeset: [1, []],
+  accept_suggestion: [1, [["suggestion_id","s",1]]],
+  accept_suggestions: [1, [["suggestion_ids","a",1]]],
+  add_adjustment: [1, [["layer_id","s",1],["adjustment_type","s",1],["params","o",0],["opacity","n",0],["z_index","i",0],["name","s",0],["object_id","s",0]]],
+  add_filter: [1, [["layer_id","s",1],["filter_name","s",1],["params","o",0],["opacity","n",0],["z_index","i",0],["name","s",0],["object_id","s",0]]],
+  add_to_group: [1, [["group_id","s",1],["object_id","s",1]]],
+  analyze_region: [0, [["region","x",1],["compare_with_reference","b",0]]],
+  apply_adjustments: [1, [["adjustments","a",1],["layer_id","s",0]]],
+  apply_curve_preset: [0, [["brush","s",1],["shape","s",1],["target","s",0]]],
+  apply_preset: [1, [["preset_id","s",1],["layer_id","s",1],["strength","n",0],["knobs","o",0],["include_correction","b",0]]],
+  apply_stash: [1, [["stash_id","s",1]]],
+  auto_retouch: [1, [["layer_id","s",0],["strength","n",0],["groups","a",0],["dry_run","b",0],["force","b",0]]],
+  batch: [1, [["calls","a",1],["preview_every_n_strokes","n",0],["preview_interval_ms","n",0],["preview","b",0],["message","s",0],["silent","b",0]]],
+  begin_changeset: [0, []],
+  begin_transaction: [0, []],
+  blob_gc: [1, [["dry_run","b",0],["confirm","b",0],["ttl_days","n",0],["demote","b",0]]],
+  brush_preview: [0, [["brush","s",1],["size","n",0],["color","x",0],["points","a",0],["color_to","x",0],["color_space","s",0],["smooth","b",0],["opacity","n",0],["hardness","n",0],["background","x",0],["read_canvas","b",0],["brush_params","o",0],["include_image","b",0],["output_path","s",0]]],
+  brush_stroke: [1, [["brush_params","o",0],["hand_tremor","n",0],["speed_ink","n",0],["color_breath","n",0],["paint_push","n",0],["pressure_shape","n",0],["stroke_taper","n",0],["dry_brush","n",0],["edge_soft","n",0],["tilt_shade","n",0],["scatter_texture","n",0],["edge","s",0],["pressure_shape","n",0],["path_guide","o",0],["stroke_taper","n",0],["preview","b",0],["wait_for_render","b",0],["sensors","o",0],["layer_id","s",1],["symmetry","s",0],["anchor_mode","s",0],["grid_spacing","n",0],["humanize","b",0],["pressure_curve","s",0],["dwell","n",0],["tremor","n",0],["tremor_seed","i",0],["glaze","b",0],["glaze_passes","i",0],["brush","s",1],["points","a",1],["size","n",0],["color","x",0],["color_mixing","s",0],["color_to","x",0],["color_space","s",0],["opacity","n",0],["hardness","n",0],["smooth","b",0],["object_id","s",0],["style","s",0],["clip_to_selection","s",0],["label","s",0],["group_id","s",0]]],
+  calibrate: [1, [["size","n",0],["points","x",0],["tolerance","n",0],["layer_id","s",0],["cleanup","b",0]]],
+  cancel_job: [0, [["job_id","s",1]]],
+  cancel_operation: [0, [["doc_id","s",0]]],
+  checkpoint: [1, [["name","s",0],["message","s",0]]],
+  clear_reference: [0, []],
+  clone_stamp: [1, [["layer_id","s",1],["points","a",1],["source_offset","a",1],["size","n",0],["hardness","n",0],["opacity","n",0],["object_id","s",0],["z_index","i",0]]],
+  collect_diagnostics: [0, [["path","s",0],["include_thumbnail","b",0],["max_bytes","i",0]]],
+  collect_garbage: [0, [["confirm","b",0],["ttl_seconds","i",0]]],
+  combine_shapes: [1, [["object_ids","a",1],["mode","s",0],["result_id","s",0],["simplify","n",0],["layer_id","s",0],["color","x",0],["engine","s",0],["tolerance","n",0]]],
+  comment: [1, [["text","s",1],["target_atom","s",0],["object_id","s",0]]],
+  commit_batch: [1, [["attempt_ids","x",0],["attempt_id","s",0]]],
+  commit_changeset: [0, []],
+  commit_stroke: [1, [["attempt_id","s",1]]],
+  commit_transaction: [0, []],
+  convert_to_path: [1, [["object_id","s",1],["path_id","s",0]]],
+  convert_to_shape: [1, [["object_id","s",1],["shape_id","s",0]]],
+  create_annotation: [0, [["type","s",1],["intent","s",1],["target","o",1],["content","s",0],["suggestion_id","s",0]]],
+  create_group: [1, [["group_id","s",1],["layer_id","s",1],["members","a",0]]],
+  create_instance: [1, [["instance_id","s",1],["layer_id","s",1],["master_id","s",1],["local_transform","o",0]]],
+  create_layer: [1, [["layer_id","s",0],["name","s",0],["type","s",0],["kind","s",0],["parent_id","s",0],["z_index","i",0],["if_exists","s",0]]],
+  create_mask: [1, [["mask_id","s",1],["shape","o",0],["feather","n",0],["invert","b",0],["mode","s",0],["linked_layer","s",0],["from_selection","s",0]]],
+  create_range_mask: [1, [["mask_id","s",1],["layer_id","s",1],["range","s",0],["low","n",0],["high","n",0],["hue","n",0],["hue_width","n",0],["smoothness","n",0],["invert","b",0]]],
+  create_selection: [1, [["selection_id","s",1],["shape","o",0],["feather","n",0],["invert","b",0],["mode","s",0],["linked_layer","s",0],["from_mask","s",0]]],
+  declare_head: [1, [["base_type","s",1],["base_id","s",1],["reason","s",0]]],
+  delete_anchor: [1, [["name","s",1]]],
+  delete_annotation: [0, [["annotation_id","s",1]]],
+  delete_document: [1, [["document_id","s",1]]],
+  delete_layer: [1, [["layer_id","s",1]]],
+  delete_mask: [1, [["mask_id","s",1]]],
+  delete_object: [1, [["object_id","s",1]]],
+  delete_selection: [1, [["selection_id","s",1]]],
+  describe_canvas: [0, []],
+  detach_instance: [1, [["instance_id","s",1],["object_id","s",0]]],
+  discard_stash: [1, [["stash_id","s",1]]],
+  discard_stroke: [0, [["attempt_id","s",1]]],
+  dodge_burn_setup: [1, [["layer_id","s",1],["mode","s",0],["dodge_mid","n",0],["burn_mid","n",0],["name","s",0]]],
+  draw_shape: [1, [["label","s",0],["group_id","s",0],["layer_id","s",1],["data","o",1],["object_id","s",0]]],
+  draw_stroke: [1, [["label","s",0],["group_id","s",0],["layer_id","s",1],["data","o",1],["object_id","s",0]]],
+  draw_text: [1, [["label","s",0],["group_id","s",0],["layer_id","s",1],["data","o",1],["object_id","s",0]]],
+  duplicate_layer: [1, [["layer_id","s",1],["new_layer_id","s",0],["name","s",0]]],
+  edit_path: [1, [["object_id","s",1],["op","s",1],["subpath","i",1],["node","i",0],["segment","i",0],["t","n",0],["side","s",0],["to","x",0]]],
+  erase: [1, [["label","s",0],["group_id","s",0],["layer_id","s",1],["data","o",1],["object_id","s",0]]],
+  estimate_dehaze: [0, []],
+  explain_tool: [0, [["name","s",0],["tool","s",0]]],
+  export_book_pngs: [0, [["doc_ids","x",1],["dir","s",1]]],
+  export_png: [0, [["path","s",1],["region","x",0],["lod","i",0],["width","i",0],["height","i",0],["max_edge","i",0],["filter","s",0],["deterministic","b",0],["layer_id","s",0]]],
+  export_project: [0, [["path","s",0],["doc_id","s",0],["include_bitmaps","b",0]]],
+  export_psd_layers: [0, [["filename","s",0],["output_path","s",0]]],
+  export_svg: [0, [["path","s",1],["validate","b",0],["flatten_opacity","b",0]]],
+  export_timelapse: [0, [["path","s",1],["doc_id","s",0],["fps","i",0],["frame_every","i",0],["duration_sec","n",0],["width","i",0],["crf","i",0],["max_frames","i",0]]],
+  fill: [1, [["label","s",0],["group_id","s",0],["layer_id","s",1],["data","o",1],["object_id","s",0]]],
+  fill_region: [1, [["layer_id","s",1],["shape","o",1],["feather","n",0],["color","x",0],["opacity","n",0],["texture","x",0]]],
+  find_atom: [0, [["kind","s",0],["actor","s",0],["object_id","s",0],["layer_id","s",0],["since_seq","i",0],["limit","i",0]]],
+  fit_background_field: [1, [["layer_id","s",1],["mask","o",1],["degree","n",0],["sample_stride","n",0],["margin","n",0],["object_id","s",0]]],
+  frequency_separation: [1, [["layer_id","s",1],["radius","n",0],["name","s",0]]],
+  get_ancestors: [0, [["object_id","s",1]]],
+  get_anchors: [0, []],
+  get_annotation: [0, [["annotation_id","s",1]]],
+  get_atom: [0, [["atom_id","s",1]]],
+  get_brush_dynamics: [0, [["brush","s",1],["format","s",0]]],
+  get_brush_settings: [0, [["brush","s",1]]],
+  get_changesets: [0, [["limit","i",0]]],
+  get_checkpoints: [0, []],
+  get_dependency_graph: [0, [["object_id","s",1]]],
+  get_descendants: [0, [["object_id","s",1]]],
+  get_diff: [0, [["from_seq","i",1],["to_seq","i",0],["limit","i",0]]],
+  get_document: [0, [["preview_size","x",0]]],
+  get_histogram: [0, [["layer_id","s",0],["region","o",0]]],
+  get_inflight: [0, [["doc_id","s",0]]],
+  get_job: [0, [["job_id","s",1]]],
+  get_log: [0, [["since_seq","i",0],["limit","i",0],["kind","s",0],["actor","s",0],["order","s",0]]],
+  get_object: [0, [["object_id","s",1],["include_history","b",0]]],
+  get_object_history: [0, [["object_id","s",1]]],
+  get_path: [0, [["object_id","s",1]]],
+  get_preferences: [0, [["keys","a",0]]],
+  get_preset: [0, [["preset_id","s",1]]],
+  get_render_status: [0, [["atom_id","s",1]]],
+  get_resolved_state: [0, [["object_id","s",1]]],
+  get_state: [0, [["include_objects","b",0],["include_hidden","b",0],["preview_size","x",0]]],
+  get_stroke_log: [0, [["limit","n",0],["offset","n",0],["since_seq","n",0],["group_id","s",0],["layer_id","s",0],["object_id","s",0],["order","s",0]]],
+  get_undo_status: [0, []],
+  gradient_blend: [1, [["layer_id","s",1],["from","x",1],["to","o",1],["brush","s",1],["size","n",1],["steps","n",0],["smooth","b",0]]],
+  gradient_fill: [1, [["layer_id","s",1],["from","o",1],["to","o",1],["kind","s",0],["angle","n",0],["center","o",0],["radius","n",0],["region","x",0],["object_id","s",0]]],
+  heal_stamp: [1, [["layer_id","s",1],["points","a",1],["source_offset","a",1],["size","n",0],["hardness","n",0],["opacity","n",0],["object_id","s",0],["z_index","i",0]]],
+  import_asset: [0, [["kind","s",1],["name","s",1],["path","s",0],["blob","o",0],["overwrite","b",0],["data_base64","s",0]]],
+  import_image: [1, [["layer_id","s",1],["bitmap","o",1],["region","x",1],["object_id","s",0],["medium","o",0],["text_provenance","o",0]]],
+  import_project: [1, [["path","s",1],["doc_id","s",0]]],
+  import_psd: [1, [["layer_id","s",1],["blob_hash","s",1],["object_id","s",0]]],
+  import_psd_layers: [1, [["blob_hash","s",1],["name_prefix","s",0]]],
+  link_to_master: [1, [["instance_id","s",1],["master_id","s",1]]],
+  liquify_pinch: [1, [["layer_id","s",1],["points","a",1],["size","n",0],["strength","n",0],["object_id","s",0],["z_index","i",0]]],
+  liquify_push: [1, [["layer_id","s",1],["points","a",1],["direction","a",1],["size","n",0],["strength","n",0],["object_id","s",0],["z_index","i",0]]],
+  liquify_twirl: [1, [["layer_id","s",1],["points","a",1],["size","n",0],["strength","n",0],["object_id","s",0],["z_index","i",0]]],
+  list_annotations: [0, [["status","s",0],["actor","s",0],["intent","s",0],["object_id","s",0],["suggestion_id","s",0]]],
+  list_assets: [0, [["kind","s",1],["tag","s",0]]],
+  list_atoms: [0, [["limit","i",0],["offset","i",0],["label","s",0],["layer_id","s",0],["brush","s",0],["since_seq","i",0],["group_id","s",0],["bbox","x",0],["thumb_size","i",0],["want_thumb","b",0],["include_non_stroke","b",0]]],
+  list_attempts: [0, [["limit","i",0],["label","s",0],["status","s",0]]],
+  list_brushes: [0, [["filter","s",0],["medium","s",0]]],
+  list_comments: [0, [["limit","i",0],["since_seq","i",0],["actor","s",0],["object_id","s",0]]],
+  list_documents: [0, []],
+  list_effects: [0, [["layer_id","s",0]]],
+  list_engine_capabilities: [0, []],
+  list_fonts: [0, []],
+  list_layers: [0, []],
+  list_objects: [0, [["layer_id","s",0],["type","s",0],["include_hidden","b",0]]],
+  list_palette_colors: [0, [["palette","s",1],["limit","i",0]]],
+  list_presets: [0, [["tag","s",0],["subject","s",0],["status","s",0]]],
+  list_selections: [0, []],
+  list_stashes: [0, []],
+  list_suggestions: [0, [["status","s",0],["since_seq","i",0],["limit","i",0],["offset","i",0]]],
+  list_textures: [0, []],
+  lock_layer: [1, [["layer_id","s",1]]],
+  medium_stroke: [1, [["layer_id","s",1],["medium","s",1],["points","a",1],["size","n",0],["color","x",0],["color_to","x",0],["color_space","s",0],["color_mixing","s",0],["smooth","b",0],["symmetry","s",0],["load","n",0],["wetness","n",0],["texture","n",0],["object_id","s",0]]],
+  move_object: [1, [["object_id","s",1],["delta","o",0],["transform","o",0]]],
+  new_document: [1, [["doc_id","s",0],["width","i",0],["height","i",0],["background","o",0]]],
+  paint_mask: [1, [["mask_id","s",1],["points","a",1],["mode","s",0],["mask_value","n",0],["size","n",0],["softness","n",0],["opacity","n",0],["flow","n",0],["humanize","b",0],["preset","s",0]]],
+  patch: [1, [["layer_id","s",1],["source_region","o",1],["target","a",1],["opacity","n",0],["object_id","s",0],["z_index","i",0]]],
+  path_edit: [1, [["op","s",1],["object_id","s",1],["other_id","s",0],["at","i",0],["right_id","s",0],["shape_id","s",0],["path_id","s",0],["mode","s",0],["result_id","s",0]]],
+  preview_preset: [0, [["preset_id","s",1],["strength","n",0],["knobs","o",0],["include_correction","b",0],["layer_id","s",0],["render","o",0]]],
+  preview_suggestion: [0, [["suggestion_id","s",0],["patch","a",0]]],
+  put_blob: [0, [["path","s",0],["data_base64","s",0],["mime_type","s",0]]],
+  reapply: [1, [["atom_id","s",1]]],
+  redo_last: [1, [["count","i",0]]],
+  reject_annotation: [0, [["annotation_id","s",1]]],
+  reject_suggestion: [1, [["suggestion_id","s",1],["reason","s",0]]],
+  reject_suggestions: [1, [["suggestion_ids","a",1],["reason","s",0]]],
+  remove_from_group: [1, [["group_id","s",1],["object_id","s",1]]],
+  render_region: [0, [["region","x",1],["raw","b",0],["output_path","s",0],["show_coords","b",0],["include_image","b",0],["max_px","n",0],["layer_id","s",0],["active_layer","s",0]]],
+  reorder_layers: [1, [["order","a",1]]],
+  reorder_objects: [1, [["layer_id","s",1],["order","a",1]]],
+  replace_object_data: [1, [["object_id","s",1],["data","o",1],["type","s",0]]],
+  resample: [1, [["object_id","s",1],["width","i",0],["height","i",0],["scale","n",0],["filter","s",0]]],
+  resolve_annotation: [0, [["annotation_id","s",1],["atom_id","s",0]]],
+  resolve_conflict: [1, [["resolution","s",1],["conflict_layer_id","s",0],["formal_layer_id","s",0],["opponent_atom_id","s",0]]],
+  restore_checkpoint: [1, [["checkpoint_id","s",1]]],
+  restore_object: [1, [["object_id","s",1]]],
+  revert: [1, [["atom_id","s",1]]],
+  revert_atoms: [1, [["atom_ids","x",1]]],
+  revert_changeset: [1, [["changeset_id","s",1]]],
+  revert_group: [1, [["group_id","s",1]]],
+  revert_to: [1, [["atom_id","s",1]]],
+  revert_to_seq: [1, [["seq","i",1]]],
+  revoke_token: [1, [["token","s",1]]],
+  sample_color: [0, [["x","n",1],["y","n",1]]],
+  sample_colors: [0, [["points","a",1]]],
+  save_palette: [0, [["name","s",1],["colors","a",1]]],
+  scatter_strokes: [1, [["layer_id","s",1],["seed","n",1],["area","o",1],["palette","a",1],["count","n",0],["brush","s",1],["size_range","a",0],["opacity_range","a",0],["direction","s",0],["clip_to_selection","s",0]]],
+  select_opaque_pixels: [1, [["layer_id","s",1],["selection_id","s",0],["min_alpha","n",0],["binarize","b",0],["close_pinholes","b",0],["mode","s",0],["feather","n",0]]],
+  set_anchor: [1, [["name","s",1],["x","n",1],["y","n",1],["note","s",0]]],
+  set_brush_curve: [0, [["brush","s",1],["setting","s",1],["input","s",1],["points","a",1]]],
+  set_brush_dynamics: [0, [["brush","s",1],["curve","o",1]]],
+  set_brush_setting: [0, [["brush","s",1],["setting","s",1],["value","n",1]]],
+  set_group_transform: [1, [["group_id","s",1],["delta","o",1]]],
+  set_layer_blend: [1, [["layer_id","s",1],["mode","s",1]]],
+  set_preferences: [1, [["values","o",1]]],
+  set_property: [1, [["key","s",1],["value","x",0],["object_id","s",0],["layer_id","s",0]]],
+  set_reference: [0, [["blob_hash","s",1],["opacity","n",0],["position","o",0]]],
+  smart_blend: [1, [["shape","o",1],["color_a","a",1],["color_b","a",1],["blend_direction","n",0],["direction_guides","a",0],["direction_from","s",0],["brush","s",0],["size","n",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0]]],
+  smart_edge_soften: [1, [["edge_path","a",0],["path_guide","o",0],["shape","o",0],["soften_width","n",0],["soften_strength","n",0],["max_steps","i",0],["soften_direction","s",0],["color","a",0],["brush","s",0],["size","n",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0]]],
+  smart_erase_shape: [1, [["layer_id","s",1],["shape","o",1],["invert","b",0],["feather","n",0],["opacity","n",0],["size","n",0]]],
+  smart_fill: [1, [["shape","o",1],["fill_direction","n",0],["direction_guides","a",0],["direction_from","s",0],["clip_to_shape","b",0],["direction_jitter","n",0],["color","a",1],["brush","s",0],["size","n",0],["mode","s",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0]]],
+  smart_glaze: [1, [["shape","o",1],["color","a",1],["layers","n",0],["target_opacity","n",0],["layer_opacity","n",0],["brush","s",0],["size","n",0],["fill_direction","n",0],["direction_jitter","n",0],["direction_rotate","n",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0]]],
+  smart_hatch_follow: [1, [["guides","a",1],["width","n",0],["shape","o",0],["density","n",0],["size","n",0],["color","a",1],["brush","s",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0]]],
+  smart_sample: [1, [["ref","s",1],["shape","o",1],["ref_bbox","a",0],["samples","n",0],["texture_type","s",0],["density","n",0],["size","n",0],["brush","s",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0]]],
+  smart_select: [1, [["selection_id","s",0],["seed","a",0],["seeds","a",0],["tolerance","n",0],["contiguous","b",0],["refine_edges","b",0],["layer_id","s",0],["mode","s",0],["feather","n",0],["preview","b",0]]],
+  smart_texture: [1, [["shape","o",1],["texture_type","s",1],["direction_guides","a",0],["direction_from","s",0],["density","n",0],["neutral","b",0],["size","n",0],["color","a",0],["brush","s",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0]]],
+  smudge: [1, [["layer_id","s",1],["points","a",1],["size","n",0],["smudge_length","n",0],["deposit","n",0],["hardness","n",0],["opacity","n",0],["object_id","s",0],["z_index","i",0]]],
+  stroke_path: [1, [["label","s",0],["group_id","s",0],["layer_id","s",1],["path_object_id","s",0],["subpaths","a",0],["d","s",0],["brush","s",1],["size","n",0],["color","x",0],["brush_params","o",0],["pressure_profile","s",0],["pressure_max","n",0],["ramp_ratio","n",0],["virtual_speed","n",0],["preview","b",0],["wait_for_render","b",0],["opacity","n",0],["clip_to_selection","s",0]]],
+  submit_offline: [1, [["atoms","a",1]]],
+  suggest: [1, [["patch","a",1],["annotation_id","s",0],["summary","s",0],["priority","i",0]]],
+  swatch_brush_strokes: [0, [["brushes","a",1],["brush_params","o",0],["preview_size","s",0],["colors","a",0],["paths","a",0],["size","n",0],["background","x",0],["read_canvas","b",0],["opacity","n",0],["hardness","n",0],["color_to","x",0],["smooth","b",0],["include_image","b",0],["output_path","s",0]]],
+  texture_background: [1, [["texture","s",1],["mode","s",0],["region","x",0],["layer_id","s",0],["object_id","s",0]]],
+  transform_object: [1, [["object_id","s",1],["rotate","o",0],["scale","o",0],["translate","o",0],["anchor","o",0],["compose","b",0]]],
+  transform_selection: [1, [["selection_id","s",1],["translate","a",0],["scale","a",0],["rotate_deg","n",0],["pivot","a",0]]],
+  try_batch: [0, [["layer_id","s",1],["strokes","x",1],["label","s",0]]],
+  try_stroke: [0, [["layer_id","s",0],["brush","s",0],["points","x",0],["size","n",0],["color","x",0],["color_space","s",0],["opacity","n",0],["hardness","n",0],["sensors","x",0],["want_image","b",0],["output_path","s",0],["margin","i",0],["label","s",0],["based_on","s",0]]],
+  undo_last: [1, [["count","i",0]]],
+  unlock_layer: [1, [["layer_id","s",1]]],
+  update_adjustment: [1, [["object_id","s",1],["params","o",1],["opacity","n",0]]],
+  update_annotation: [0, [["annotation_id","s",1],["content","s",0],["intent","s",0],["status","s",0]]],
+  update_filter: [1, [["object_id","s",1],["params","o",1],["opacity","n",0]]],
+  update_layer: [1, [["layer_id","s",1],["patch","o",1]]],
+  update_object: [1, [["object_id","s",1],["patch","o",1]]],
+  update_override: [1, [["instance_id","s",1],["transform","o",0]]],
+  update_stroke: [1, [["object_id","s",1],["core","o",0],["preset","s",0],["advanced","o",0]]],
+  update_sync_policy: [1, [["instance_id","s",1],["policy","s",1]]],
+  vector_erase: [1, [["layer_id","s",1],["points","a",1],["radius","n",1]]],
+  vector_hit_test: [0, [["layer_id","s",1],["x","n",1],["y","n",1],["tolerance","n",0]]],
+  verify_package: [0, [["path","s",1]]],
+// </gen:tool-specs>
+};
+/** **测试专用**：返回嵌入的工具表（判据拿它与服务端清单逐项比对 ✓）。 */
+export function __toolSpecsForTest() { return P2_TOOL_SPECS; }
+
+/** **工具规格查表 ✗**（**类型码 ⇒ `p2PresetSchemaCheck` 的 kind 名 ✓**）：
+ *   `x`（服务端 `Any`）⇒ `"any"`（**恒匹配 ✓**）；表里没有 ⇒ `null`（**调用方报「未知工具」✓**）。 */
+const P2_KIND_NAMES = { s: "string", i: "integer", n: "number", b: "boolean", o: "object", a: "array", x: "any" };
+function p2ToolSpec(name) {
+  const row = Object.prototype.hasOwnProperty.call(P2_TOOL_SPECS, name) ? P2_TOOL_SPECS[name] : null;
+  if (!row) return null;
+  return {
+    name,
+    mutating: row[0] === 1,
+    params: row[1].map(([param, code, required]) =>
+      ({ name: param, kind: P2_KIND_NAMES[code], required: required === 1 })),
+  };
+}
+/** **入口参数校验 ✗**（**与 HTTP 层 `ToolRegistry::call` 同一道闸 ✓**）：
+ *   **∴ 返回** `null`（通过）**或** `{code, detail}` ✓ —— **∴ 不抛 ✗**（**调用方决定 400 还是记成「步骤无效」✓**）。 */
+function p2ValidateArgsFor(tool, args) {
+  const spec = p2ToolSpec(tool);
+  if (!spec) return { code: "invalid_argument", detail: `未知工具 ${tool}` };
+  try {
+    p2PresetSchemaCheck(tool, spec.params, args);
+  } catch (e) {
+    const info = e && e.__presetError;
+    if (!info) throw e;
+    return { code: info.code, detail: info.detail };
+  }
+  return null;
+}
+/** **`format!("{:?}", Option<String>)` ✓**（**`preview_suggestion` 的 `error` 是 `Some("…")` 形态 ✓**）：
+ *   **∴ 服务端**直接 Debug 打印 `Option` ✗ 不是裸字符串 ✓ ⇒ **∴ 判据读原样也要照抄 ✓**。 */
+function p2DebugOptionString(detail) { return `Some(${JSON.stringify(detail)})`; }
+
+/** **效果名白名单 ✓**（**照 `yanshi-render/src/filter.rs:3291` / `:3321` 逐字 ✓**，
+ *   **顺序也照抄** —— 错误文案里的「支持 …」由它 join 出来 ✓）。 */
+const P2_ADJUSTMENT_NAMES = [
+  "brightness_contrast", "saturation", "invert", "levels", "exposure", "white_balance",
+  "curves", "hsl", "posterize", "color_balance", "split_toning", "vibrance",
+  "black_and_white", "channel_mixer", "calibrate_primaries", "gradient_map",
+  "shadows_highlights", "selective_color", "color_lut", "red_eye", "denoise",
+  "lens", "perspective", "dehaze", "clarity", "texture",
+];
+const P2_FILTER_NAMES = [
+  "box_blur", "blur", "gaussian_blur", "motion_blur", "sharpen", "noise", "vignette",
+  "glow", "clarity", "dehaze", "film_grain", "brightness_contrast", "saturation",
+  "invert", "relief",
+];
+/** **数值键范围表 ✓**（**照 `tools_effect.rs:58–131` 逐条 ✓**，**`kind/名` 键 ✓**）：
+ *   **∴ 空表 ≠ 缺省**✗ ⇒ **∴ 两边都等价于「不查范围、也不拒未知键」✓**（**服务端 `checks.is_empty()` ✓**）。 */
+const P2_EFFECT_RANGES = {
+  "adjustment/brightness_contrast": [["brightness", -1, 1], ["contrast", 0, 8]],
+  "adjustment/saturation": [["amount", 0, 8]],
+  "adjustment/invert": [],
+  "adjustment/posterize": [["levels", 2, 64]],
+  "adjustment/red_eye": [["strength", 0, 1], ["threshold", 0.5, 10]],
+  "adjustment/vibrance": [["amount", 0, 2]],
+  "adjustment/color_balance": [["amount", 0, 1]],
+  "adjustment/split_toning": [["balance", -1, 1], ["amount", 0, 1]],
+  "adjustment/denoise": [["luminance", 0, 1], ["detail", 0, 1], ["color", 0, 1]],
+  "adjustment/lens": [["k1", -1, 1], ["k2", -1, 1], ["tca_r", 0.9, 1.1],
+    ["tca_b", 0.9, 1.1], ["vignette_strength", 0, 1]],
+  "adjustment/perspective": [["k1", -1, 1], ["k2", -1, 1]],
+  "adjustment/levels": [["black", 0, 1], ["white", 0, 1], ["gamma", 0.01, 10]],
+  "adjustment/exposure": [["ev", -10, 10]],
+  "adjustment/white_balance": [["temperature", -1, 1], ["tint", -1, 1]],
+  "adjustment/shadows_highlights": [["shadows", -1, 1], ["highlights", -1, 1]],
+  "adjustment/dehaze": [["amount", -1, 1]],
+  "adjustment/clarity": [["amount", -1, 1]],
+  "adjustment/texture": [["amount", -1, 1]],
+  "adjustment/curves": [],
+  "adjustment/hsl": [["hue", -360, 360], ["saturation", 0, 8], ["lightness", -1, 1]],
+  "filter/box_blur": [["radius", 1, 128], ["passes", 1, 8]],
+  "filter/gaussian_blur": [["sigma", 0.05, 128]],
+  "filter/motion_blur": [["angle", -360, 360], ["distance", 0, 512], ["samples", 2, 64]],
+  "filter/sharpen": [["amount", 0, 5], ["radius", 1, 8]],
+  // **`seed` 上界 = `u64::MAX as f64` ✓**（**照抄成 f64 能表示的那个数 ✓**）
+  "filter/noise": [["amount", 0, 1], ["seed", 0, 18446744073709551616]],
+  "filter/clarity": [["amount", 0, 2], ["radius", 2, 64]],
+  "filter/dehaze": [["omega", 0, 1], ["floor", 0.02, 0.8]],
+  "filter/film_grain": [["amount", 0, 1], ["size", 1, 8]],
+  "filter/glow": [["threshold", 0, 1], ["radius", 1, 64], ["intensity", 0, 4]],
+  "filter/vignette": [["strength", 0, 1], ["radius", 0, 2], ["softness", 0.02, 2]],
+  "filter/brightness_contrast": [["brightness", -1, 1], ["contrast", 0, 8]],
+  "filter/saturation": [["amount", 0, 8]],
+  "filter/invert": [],
+};
+/** **非数值键白名单 ✓**（**照 `tools_effect.rs:159–188` 逐字 ✓**）：
+ *   **∴ 只有「表的数值键非空」时才查未知键 ✗** ⇒ **∴ `curves`／`invert` 等空表效果**不拒任何键 ✓**。 */
+const P2_EFFECT_NON_NUMERIC = [
+  "adjust", "air", "angle", "auto_crop", "balance", "channel", "color", "constants",
+  "detail", "highlights", "hue", "levels", "matrix", "midtones", "omega", "path",
+  "points", "quad", "ranges", "samples", "seed", "shadows", "size", "stops", "table",
+  "tca_b", "tca_r", "tint", "weights",
+];
+/** **效果参数校验 ✗**（**照 `validate_effect` 的**白名单／对象形状／数值范围／未知键**四段 ✓**；
+ *   **∴ 未移植的深层结构检查 ✓**（**`levels` 的 channel／black<white、`dehaze` 的 air、`quad` 凸性、
+ *   `matrix`／`weights`／`stops`／`tint` 等数组类**）⇒ **∴ 本地比服务端**宽**✗** ——
+ *   **∴ 如实登记为残留差异 ✓**（**`preview_suggestion` 的判据只覆盖已移植的四段 ✓**）。 */
+function p2ValidateEffect(kind, name, params) {
+  const supported = kind === "adjustment" ? P2_ADJUSTMENT_NAMES : P2_FILTER_NAMES;
+  const aliased = (kind === "filter" && (name === "emboss" || name === "impasto")) ||
+                  (kind === "adjustment" && name === "vibrance_natural");
+  if (!supported.includes(name) && !aliased) {
+    return { code: "invalid_argument",
+             detail: `内核未实现该${kind === "adjustment" ? "调整类型" : "滤镜"}：${name}；`
+               + `支持 ${supported.join(" / ")}` };
+  }
+  if (params === null || params === undefined) return null;
+  if (typeof params !== "object" || Array.isArray(params)) {
+    return { code: "invalid_argument", detail: "params 必须是 JSON 对象" };
+  }
+  const canonical = name === "vibrance_natural" ? "vibrance" : name;
+  const checks = P2_EFFECT_RANGES[`${kind}/${canonical}`] || [];
+  for (const [key, low, high] of checks) {
+    const value = typeof params[key] === "number" ? params[key] : null;
+    if (value === null || !Number.isFinite(value)) continue;
+    if (value < low || value > high) {
+      return { code: "invalid_argument",
+               detail: `${canonical} 的 ${key} 必须在 [${p2RustNum(low)}, ${p2RustNum(high)}] 内，`
+                 + `得到 ${p2RustNum(value)}` };
+    }
+  }
+  if (checks.length > 0) {
+    const allowed = checks.map((c) => c[0]).sort();
+    for (const key of Object.keys(params).sort()) {
+      if (allowed.includes(key) || P2_EFFECT_NON_NUMERIC.includes(key)) continue;
+      return { code: "invalid_argument",
+               detail: `${canonical} 不认识参数 \`${key}\`（**不会静默忽略**）⇒ `
+                 + `数值键：${allowed.join(" / ")}；另有若干数组类键`
+                 + `（如 air／points／matrix／weights）按各自说明使用` };
+    }
+  }
+  return null;
+}
+/** **预览的效果校验 ✗**（**照 `preview_effect_check` ✓**：**只对 `add_adjustment`／`add_filter` ✓**）。 */
+function p2PreviewEffectCheck(tool, args) {
+  let kind, key;
+  if (tool === "add_adjustment") { kind = "adjustment"; key = "adjustment_type"; }
+  else if (tool === "add_filter") { kind = "filter"; key = "filter_name"; }
+  else return null;
+  const name = args && typeof args === "object" ? args[key] : undefined;
+  if (typeof name !== "string") return null;
+  // **缺席 ⇒ `{}`；显式 `null` ⇒ `null`（`validate_effect` 对 null 放行 ✓）**
+  const params = args.params === undefined ? {} : args.params;
+  return p2ValidateEffect(kind, name, params);
+}
+
+/** **包围盒 ✓**（**照 `yanshi-core/src/conflict.rs:37–95` 逐条 ✓**：
+ *   `from_value` 认 `{x,y,w|width,h|height}` ✓、`w<=0||h<=0` 视为空盒 ✓、
+ *   `union` 遇空盒取另一边 ✓、`intersects` 空盒永不相交 ✓）。 */
+function p2BboxFromValue(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const num = (v) => (typeof v === "number" ? v : null);
+  const x = num(value.x), y = num(value.y);
+  const w = value.w !== undefined ? num(value.w) : num(value.width);
+  const h = value.h !== undefined ? num(value.h) : num(value.height);
+  if (x === null || y === null || w === null || h === null) return null;
+  return { x, y, w, h };
+}
+function p2BboxIsEmpty(b) { return b.w <= 0 || b.h <= 0; }
+function p2BboxRight(b) { return b.x + b.w; }
+function p2BboxBottom(b) { return b.y + b.h; }
+function p2BboxIntersects(a, b) {
+  if (p2BboxIsEmpty(a) || p2BboxIsEmpty(b)) return false;
+  return a.x < p2BboxRight(b) && b.x < p2BboxRight(a)
+    && a.y < p2BboxBottom(b) && b.y < p2BboxBottom(a);
+}
+function p2BboxUnion(a, b) {
+  if (p2BboxIsEmpty(a)) return b;
+  if (p2BboxIsEmpty(b)) return a;
+  const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+  return { x, y,
+    w: Math.max(p2BboxRight(a), p2BboxRight(b)) - x,
+    h: Math.max(p2BboxBottom(a), p2BboxBottom(b)) - y };
+}
+
+/** **按 patch 顺序检查引用有效性 ✓**（**照 `check_step_order`（`tools.rs:13051`）逐条 ✓**）：
+ *   **∴ 创建型步骤把目标加进集合 ✗；引用型要求**此刻存在** ✓；删除型把目标移出 ✓**。 */
+const P2_CREATES_OBJECT_TOOLS = new Set([
+  "create_object", "import_image", "draw_stroke", "draw_shape", "draw_text", "fill",
+  "erase", "retouch", "liquify", "clone_stamp", "heal_stamp", "smudge", "patch",
+  "add_adjustment", "add_filter",
+]);
+function p2CheckStepOrder(tool, args, layers, objects) {
+  const str = (v) => (typeof v === "string" ? v : null);
+  const layerId = args && typeof args === "object" ? str(args.layer_id) : null;
+  const objectId = args && typeof args === "object" ? str(args.object_id) : null;
+  const createsLayer = tool === "create_layer";
+  const createsObject = P2_CREATES_OBJECT_TOOLS.has(tool);
+  const deletesLayer = tool === "delete_layer";
+  const deletesObject = tool === "delete_object" || tool === "tombstone";
+  if (!createsLayer && !deletesLayer && layerId !== null && !layers.has(layerId)) {
+    return { code: "reference_not_found",
+             detail: `该步骤引用的图层 ${layerId} 在此时尚未创建（补丁顺序问题）` };
+  }
+  if (!createsObject && !deletesObject && objectId !== null && !objects.has(objectId)) {
+    return { code: "reference_not_found",
+             detail: `该步骤引用的对象 ${objectId} 在此时不存在（补丁顺序问题）` };
+  }
+  if (createsLayer && layerId !== null) layers.add(layerId);
+  if (createsObject && objectId !== null) objects.add(objectId);
+  if (deletesLayer && layerId !== null) layers.delete(layerId);
+  if (deletesObject && objectId !== null) objects.delete(objectId);
+  return null;
+}
+
+/** **单步预检 ✓**（**照 `check_single_step`（`tools.rs:12987`）四段顺序 ✓**）：
+ *   未知工具 ⇒ 只读 ⇒ `validate_args` ⇒ 效果范围 ⇒ 引用顺序 ✓（**预览与接受共用 ✓**）。 */
+function p2CheckSingleStep(tool, args, layers, objects) {
+  const spec = p2ToolSpec(tool);
+  if (!spec) return { code: "invalid_argument", detail: `未知工具 ${tool}` };
+  if (!spec.mutating) {
+    return { code: "invalid_argument", detail: `${tool} 是只读工具，不能作为补丁步骤` };
+  }
+  const bad = p2ValidateArgsFor(tool, args);
+  if (bad) return bad;
+  const effect = p2PreviewEffectCheck(tool, args);
+  if (effect) return effect;
+  return p2CheckStepOrder(tool, args, layers, objects);
+}
+
+/** **影响预估 ✓**（**照 `estimate_step_impact`（`tools.rs:13134`）逐条 ✓**）：
+ *   **∴ 返回** `{affects, region}` ✓（**`affects` ∈ document／layer／region／unknown ✓**）。 */
+function p2EstimateStepImpact(tool, args) {
+  const A = args && typeof args === "object" && !Array.isArray(args) ? args : null;
+  const num = (v) => (typeof v === "number" ? v : null);
+  const number = (key) => (A ? num(A[key]) : null);
+  const data = A && A.data && typeof A.data === "object" ? A.data : null;
+  const lookup = (key) => (A && A[key] !== undefined ? A[key]
+    : (data && data[key] !== undefined ? data[key] : null));
+  const points_bbox = (margin) => {
+    const points = lookup("points");
+    if (!Array.isArray(points)) return null;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const point of points) {
+      if (!Array.isArray(point) || point.length < 2) return null;
+      const x = num(point[0]), y = num(point[1]);
+      if (x === null || y === null) return null;
+      minX = Math.min(minX, x); minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+    }
+    if (!Number.isFinite(minX)) return null;
+    const m = Math.max(margin, 0);
+    return { x: minX - m, y: minY - m, w: (maxX - minX) + m * 2, h: (maxY - minY) + m * 2 };
+  };
+  const region_bbox = () => {
+    const fromRegion = A ? p2BboxFromValue(A.region) : null;
+    if (fromRegion) return fromRegion;
+    const fromBbox = p2BboxFromValue(lookup("bbox"));
+    if (fromBbox) return fromBbox;
+    const fromGeometry = data && data.geometry ? p2BboxFromValue(data.geometry.bbox) : null;
+    if (fromGeometry) return fromGeometry;
+    const x = number("x"), y = number("y"), w = number("w"), h = number("h");
+    if (x === null || y === null || w === null || h === null) return null;
+    return { x, y, w, h };
+  };
+  const object_bbox_from_args = () => {
+    if (!A) return null;
+    return p2BboxFromValue(A.region) || p2BboxFromValue(A.bbox);
+  };
+  if (tool === "create_layer" || tool === "reorder_layers" || tool === "reorder_objects"
+      || tool === "delete_layer") {
+    return { affects: "document", region: null };
+  }
+  if (tool.startsWith("add_adjustment") || tool.startsWith("add_filter")
+      || tool.startsWith("update_adjustment") || tool.startsWith("update_filter")) {
+    return { affects: "layer", region: null };
+  }
+  if (tool === "set_property") {
+    const key = A && typeof A.key === "string" ? A.key : "";
+    if (["z_index", "visible", "layer_id", "mask_id", "style_id", "type"].includes(key)) {
+      return { affects: "layer", region: null };
+    }
+    return { affects: "region", region: object_bbox_from_args() };
+  }
+  if (tool.startsWith("clone_stamp") || tool.startsWith("heal_stamp") || tool === "smudge") {
+    const size = number("size") !== null ? number("size") : 24;
+    const offset = number("source_offset");
+    const smudge = number("smudge_length");
+    const reach = Math.max(offset === null ? 0 : Math.abs(offset), smudge === null ? 0 : smudge);
+    return { affects: "region", region: points_bbox(size / 2 + reach + 2) };
+  }
+  if (tool.startsWith("liquify")) {
+    const size = number("size") !== null ? number("size") : 80;
+    const raw = number("strength") !== null ? number("strength") : 0.5;
+    const strength = Math.min(Math.abs(raw), 2);
+    return { affects: "region", region: points_bbox(size / 2 + strength * size + 2) };
+  }
+  if (tool === "patch") {
+    const source = A ? p2BboxFromValue(A.source_region) : null;
+    const width = source ? source.w : 0, height = source ? source.h : 0;
+    const target = A && Array.isArray(A.target) ? A.target : null;
+    if (!target) return { affects: "region", region: null };
+    const x = num(target[0]) === null ? 0 : num(target[0]);
+    const y = num(target[1]) === null ? 0 : num(target[1]);
+    return { affects: "region", region: { x, y, w: width, h: height } };
+  }
+  if (tool.startsWith("draw_") || tool === "fill" || tool === "erase" || tool === "import_image") {
+    const size = number("size") !== null ? number("size") : 0;
+    return { affects: "region", region: points_bbox(size / 2 + 2) || region_bbox() };
+  }
+  if (tool.startsWith("move_") || tool === "transform" || tool.startsWith("delete_")) {
+    return { affects: "region", region: object_bbox_from_args() };
+  }
+  if (tool.startsWith("create_mask")) return { affects: "layer", region: null };
+  return { affects: "unknown", region: null };
+}
+
+/** **补丁步骤的粗分类 ✓**（**照 `tool_class`（`tools.rs:13264`）逐条 ✓**）。 */
+function p2ToolClass(tool) {
+  if (tool.startsWith("add_adjustment") || tool.startsWith("add_filter")
+      || tool.startsWith("update_adjustment") || tool.startsWith("update_filter")) {
+    return "effect";
+  }
+  if (tool.startsWith("clone_stamp") || tool.startsWith("heal_stamp") || tool === "smudge"
+      || tool === "patch" || tool.startsWith("liquify")) {
+    return "retouch";
+  }
+  if (tool.startsWith("draw_") || tool === "fill" || tool === "erase"
+      || tool.startsWith("move_") || tool === "transform") {
+    return "geometry";
+  }
+  if (tool.startsWith("create_") || tool.startsWith("reorder_") || tool === "set_property"
+      || tool.startsWith("delete_")) {
+    return "structure";
+  }
+  return "other";
+}
+
+/** **建议的作用域 ✗**（**照 `suggestion_scope`（`tools.rs:12919`）✓**：逐步预估 ＋ 图层／对象集合 ✓）。 */
+function p2SuggestionScope(patch) {
+  const scope = { affects: "none", region: null, layers: new Set(), objects: new Set() };
+  for (const step of patch) {
+    if (!step || typeof step !== "object" || Array.isArray(step)) continue;
+    const tool = typeof step.tool === "string" ? step.tool : "";
+    const args = step.arguments !== undefined ? step.arguments : {};
+    const { affects, region } = p2EstimateStepImpact(tool, args);
+    if (affects === "document") scope.affects = "document";
+    else if (affects === "layer" && scope.affects !== "document") scope.affects = "layer";
+    else if (affects === "region" && scope.affects === "none") scope.affects = "region";
+    if (region) scope.region = scope.region ? p2BboxUnion(scope.region, region) : region;
+    const A = args && typeof args === "object" && !Array.isArray(args) ? args : null;
+    if (A && typeof A.layer_id === "string") scope.layers.add(A.layer_id);
+    if (A && typeof A.object_id === "string") scope.objects.add(A.object_id);
+  }
+  return scope;
+}
+/** **两条建议是否冲突 ✓**（**照 `scopes_conflict`（`tools.rs:12991`）逐条 ✓**，**文案也逐字 ✓**）。 */
+function p2ScopesConflict(a, b) {
+  if (a.affects === "document" || b.affects === "document") {
+    return "两者之一会改变图层结构（整文档失效）";
+  }
+  const sameObject = [...a.objects].some((id) => b.objects.has(id));
+  if (sameObject) return "两者修改同一个对象";
+  const layerLevel = (scope) => scope.affects === "layer";
+  if (layerLevel(a) || layerLevel(b)) {
+    const sameLayer = [...a.layers].some((id) => b.layers.has(id));
+    if (sameLayer) return "同图层上存在作用于整层的改动（调整/滤镜）";
+  }
+  if (a.region && b.region && p2BboxIntersects(a.region, b.region)) {
+    return "两者的影响区域相交";
+  }
+  return null;
+}
+
 export async function makeLocalApi(db) {
   // **★ `putAtom` 走本地薄包装 ✗ 不直接用 store 的那一个 ✓ ★**（第 2 批 ✓）：
   //   **∴ 服务端把「锁定」校验放在**提交层** ✗**（`log.rs:292 validate_commit` ⇒ 每条原子都过 ✓）
@@ -1860,26 +2452,10 @@ async function withKernel(doc, fn) {
    *  （**∴ 是否相同或相交 ✗**）⇒ **∴ 有相交返回原因串 ✗**，**无相交返回 null ✓**；
    *  **∴ 如实简化 ✗**（**服务端另有完整作用域模型 ✓ —— **∴ 调用处必须注记，不冒充 ✓**）。 */
   function p2bScopesConflict(patchA, patchB) {
-    const scope = (patch) => {
-      const layers = new Set(), objects = new Set(), regions = [];
-      for (const step of patch) {
-        const args = (step && step.arguments) || {};
-        if (args.layer_id != null) layers.add(String(args.layer_id));
-        if (args.object_id != null) objects.add(String(args.object_id));
-        const rg = args.region || args.bbox;
-        if (rg && [rg.x, rg.y, rg.w, rg.h].every((v) => Number.isFinite(Number(v))))
-          regions.push({ x: +rg.x, y: +rg.y, w: +rg.w, h: +rg.h });
-      }
-      return { layers, objects, regions };
-    };
-    const A = scope(patchA), B = scope(patchB);
-    for (const l of A.layers) if (B.layers.has(l)) return "同图层 " + l;
-    for (const o of A.objects) if (B.objects.has(o)) return "同对象 " + o;
-    for (const ra of A.regions) for (const rb of B.regions) {
-      if (ra.x < rb.x + rb.w && rb.x < ra.x + ra.w && ra.y < rb.y + rb.h && rb.y < ra.y + ra.h)
-        return "区域相交";
-    }
-    return null;
+    // **∴ 作用域模型与服务端同口径 ✓**（**`suggestion_scope` ＋ `scopes_conflict` ✓**）——
+    //   旧本地只比「同 layer_id／object_id／region 矩形」✗ ⇒ **∴ 整文档级（`create_layer` 等）
+    //   与整层级（`add_adjustment`）的变化此前**检出不来** ✗**（**判据里的 `conflicts` 会漏 ✓**）。
+    return p2ScopesConflict(p2SuggestionScope(patchA), p2SuggestionScope(patchB));
   }
 
   /** **请求分发本体 ✗**（**不含兜底 catch ✓**：**兜底在下面 `await` 它的那一层 ✓**）。
@@ -2039,6 +2615,189 @@ async function withKernel(doc, fn) {
       return { ok: true, status: 200,
                body: { ok: true, suggestion_id: suggestionId, seq, already_rejected: false,
                        reject_atom_id: atom.id, rejected_annotations: rejectedAnns, server: false } };
+    }
+    /** **重放一步工具调用 ✗**（**走**同一台分发器** ✓** —— 与人工操作完全同路径 ✓）：
+     *   **∴ 必须经 `localDispatch` ✗ 不直接调 handler ✓**（**否则分支条件会漏 ✓**）。
+     *   **∴ 锁闸的 `__p2Failure` 是一个**响应**✗ 不是程序错误 ✓ ⇒ **∴ 原样带回来 ✓**。 */
+    async function p2bReplay(tool, args) {
+      const target = new URL("/api/tools/" + tool, url.origin);
+      target.searchParams.set("doc", doc);
+      const request = new Request(target.href, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify(args === undefined ? {} : args),
+      });
+      let res;
+      try {
+        res = await localDispatch(request);
+      } catch (e) {
+        if (e && e.__p2Failure) res = e.__p2Failure;
+        else throw e;
+      }
+      const out = await res.json().catch(() => null);
+      return { res, body: out };
+    }
+    /** **回滚到 `startSeq` ✗**（**本次重放写下的**状态效果**原子 ⇒ 各一条 `revert{target}` ✓**）：
+     *   **∴ 为什么逐条 revert 而不是删原子 ✗**：**日志只追加 ✓**（**删了 seq 就断 ✓**），
+     *   **`revert(revert(x)) ≡ reapply(x)` 由折叠层保证 ✓** ⇒ **∴ 这就是「撤销」的同一条路 ✓**。
+     *   **∴ 不可 revert 的原子**（**`declare_head` 等历史原子 ✗**，`atom.rs:450` ✓）
+     *   **⇒ 如实列出来 ⇒ `ok:false` ✓**（**∴ 不许假装「已经全撤了」✗**）。 */
+    async function p2bRollbackTo(startSeq) {
+      const rows = await atomsOf(handle, doc);
+      const targets = [], skipped = [];
+      for (const r of rows) {
+        const a = (r && r.atom) || {};
+        if (!(Number(r.seq) > startSeq) || !a.id) continue;
+        if (P2_REVERTIBLE_KINDS.has(a.kind)) targets.push(a.id);
+        else skipped.push({ atom_id: a.id, kind: a.kind || null, seq: r.seq });
+      }
+      const reverted = [];
+      try {
+        for (const target of targets) {
+          await putAtom(handle, doc, p2bAtom("revert", { target }));
+          reverted.push(target);
+        }
+      } catch (e) {
+        return { ok: false, ids: reverted, pending: targets.slice(reverted.length),
+                 skipped, detail: String((e && e.message) || e) };
+      }
+      return { ok: skipped.length === 0, ids: reverted, pending: [], skipped, detail: null };
+    }
+    /** **接受单条建议 ✗**（**照 `accept_one`（`tools.rs:13354`）逐条 ✓**）：
+     *   ① 取 patch（**必须是一条 `suggest` 原子** ✓）⇒ ② 空 patch 拒 ✓ ⇒ ③ 状态闸门
+     *   （**已接受 ⇒ 幂等回执 ✓；已拒绝 ⇒ 409 ✓**）⇒ ④ **全量预检**（**任一步不合法 ⇒ 整体不写 ✓**）
+     *   ⇒ ⑤ 按序重放（**走 `localDispatch` ✓**）⇒ ⑥ 提交 `accept_suggestion` ＋ 关联标注置 resolved ✓。
+     *   **∴ 本地**多一层**：重放中途运行期失败 ⇒ **把已写的状态原子逐条 `revert`** ✓
+     *   （**服务端此时会留下部分应用 ✗** —— **∴ 这是本地更强的一处，如实登记 ✓**）。
+     *   @returns `{ok, status, body}` */
+    async function p2bAcceptOne(suggestionId) {
+      const fail = (status, code, detail, extra) => ({ ok: false, status,
+        body: { ok: false, error: code, error_code: code, reason: detail,
+                context: { detail, ...(extra || {}) }, retryable: false, server: false } });
+      const rows = await atomsOf(handle, doc);
+      const atoms = rows.map((r) => r.atom).filter(Boolean);
+      const target = atoms.find((a) => a.id === suggestionId);
+      if (!target) return fail(404, "reference_not_found", "建议 " + suggestionId + " 不在日志中");
+      if (target.kind !== "suggest") {
+        return fail(400, "invalid_argument",
+          suggestionId + " 是 " + target.kind + " 原子，不是建议（suggest）");
+      }
+      const pl = target.payload || {};
+      const patch = Array.isArray(pl.patch) ? pl.patch : [];
+      const annotationId = typeof pl.annotation_id === "string" ? pl.annotation_id : null;
+      if (patch.length === 0) return fail(400, "invalid_argument", "建议没有可重放的步骤");
+      let acceptedBy = null, rejectedBy = null;
+      for (const a of atoms) {
+        if ((a.payload || {}).target_atom_id !== suggestionId) continue;
+        if (a.kind === "accept_suggestion") acceptedBy = a.id;
+        else if (a.kind === "reject_suggestion") rejectedBy = a.id;
+      }
+      if (acceptedBy) {
+        return { ok: true, status: 200,
+                 body: { ok: true, suggestion_id: suggestionId, applied_atom_ids: [],
+                         accept_atom_id: acceptedBy, resolved_annotations: [],
+                         already_accepted: true,
+                         note: "该建议此前已被接受，本次不重复施加效果", server: false } };
+      }
+      if (rejectedBy) {
+        return fail(409, "precondition_failed",
+          "建议 " + suggestionId + " 已被拒绝（原子 " + rejectedBy + "），不能接受已拒绝的建议");
+      }
+      // ── ④ 全量预检：任一步不合法 ⇒ 整体拒绝，**一步都不写** ✓ ──
+      const knownLayers = new Set(p2cState(rows).layers.map((layer) => layer.layer_id));
+      const knownObjects = new Set(
+        p2ObjectSummaries(rows, { includeHidden: true }).map((object) => object.object_id));
+      for (const step of patch) {
+        const isObject = step && typeof step === "object" && !Array.isArray(step);
+        const tool = isObject && typeof step.tool === "string" ? step.tool : null;
+        if (tool === null) return fail(400, "invalid_argument", "补丁步骤缺少 tool");
+        const stepArgs = isObject && step.arguments !== undefined ? step.arguments : {};
+        const error = p2CheckSingleStep(tool, stepArgs, knownLayers, knownObjects);
+        if (error) {
+          return fail(error.code === "reference_not_found" ? 404 : 400, error.code, error.detail);
+        }
+      }
+      // ── ⑤ 逐条重放 ──
+      const startSeq = await p2bHeadSeq();
+      let failure = null;
+      for (let index = 0; index < patch.length; index++) {
+        const step = patch[index];
+        const tool = step.tool;
+        const stepArgs = step.arguments !== undefined ? step.arguments : {};
+        if (!p2ToolSpec(tool)) {
+          failure = { status: 400, code: "invalid_argument",
+                      detail: `patch[${index}] 引用了未知工具 ${tool}` };
+          break;
+        }
+        const bad = p2ValidateArgsFor(tool, stepArgs);
+        if (bad) { failure = { status: 400, code: bad.code, detail: bad.detail }; break; }
+        let outcome;
+        try {
+          outcome = await p2bReplay(tool, stepArgs);
+        } catch (e) {
+          // **∴ 本地没有这个端点 ✗**（**`endpoint_not_local` ✓**）或其它未兜住的抛错 ✓
+          failure = { status: 501, code: "not_implemented_locally",
+                      detail: "patch[" + index + "] 的 " + tool + " 在本地层没有实现"
+                        + "（服务端能执行，PWA 不能）⇒ " + String((e && e.message) || e),
+                      extra: { step_index: index, tool } };
+          break;
+        }
+        const out = outcome.body;
+        if (!outcome.res.ok || !out || out.ok === false) {
+          const status = outcome.res.status >= 400 ? outcome.res.status : 500;
+          failure = { status,
+                      code: (out && (out.error_code || out.error)) || "apply_failed",
+                      detail: (out && out.context && out.context.detail)
+                        || (out && out.reason)
+                        || `patch[${index}] 的 ${tool} 失败（状态 ${outcome.res.status}）`,
+                      extra: { step_index: index, tool } };
+          break;
+        }
+      }
+      if (failure) {
+        const rollback = await p2bRollbackTo(startSeq);
+        const body = {
+          ok: false, error: failure.code, error_code: failure.code, reason: failure.detail,
+          context: { detail: failure.detail, ...(failure.extra || {}) },
+          retryable: false, server: false,
+          rolled_back: rollback.ok && rollback.pending.length === 0,
+          rolled_back_atom_ids: rollback.ids,
+          rollback_skipped: rollback.skipped,
+          local_rollback_note: "本地重放在中途失败 ⇒ 用 revert 原子撤销本次已写入的状态原子"
+            + "（服务端此时会留下部分应用状态）；不可 revert 的原子会在 rollback_skipped 里列出",
+        };
+        if (!rollback.ok) {
+          body.rollback_failed = rollback.detail
+            || "有原子不可 revert（如 declare_head），部分应用残留";
+          body.rollback_pending_atom_ids = rollback.pending;
+        }
+        return { ok: false, status: failure.status, body };
+      }
+      // ── ⑥ 提交接受原子 ＋ 解析关联标注 ──
+      const rowsAfter = await atomsOf(handle, doc);
+      const applied = [];
+      for (const r of rowsAfter) {
+        const a = (r && r.atom) || {};
+        if (Number(r.seq) > startSeq && a.id && P2_REVERTIBLE_KINDS.has(a.kind)) applied.push(a.id);
+      }
+      const atom = p2bAtom("accept_suggestion", {
+        target_atom_id: suggestionId, applied_atom_ids: applied, annotation_id: annotationId,
+      });
+      const seq = await putAtom(handle, doc, atom);
+      const st = p2bAnnLoad();
+      const resolved = [];
+      for (const id of st.order) {
+        const versions = st.versions[id];
+        if (!versions || versions.length === 0) continue;
+        const current = versions[versions.length - 1];
+        if (current.suggestion_id === suggestionId && current.status === "pending") {
+          resolved.push(p2bAnnTransition(st, id, "resolved", atom.id));
+        }
+      }
+      p2bAnnSave();
+      return { ok: true, status: 200,
+               body: { ok: true, suggestion_id: suggestionId, applied_atom_ids: applied,
+                       accept_atom_id: atom.id, resolved_annotations: resolved,
+                       pending_annotations: p2bAnnPending(st), seq, server: false } };
     }
     /** **400 快捷 ✗**（**P2b 非标注分支的参数错误 ✓**）。 */
     function p2bBad(reason, error) {
@@ -2616,8 +3375,11 @@ async function withKernel(doc, fn) {
       }
       // **存活照 `alive_layers()` ✓**：`p1LayerOrder` 只认**自己那条**墓碑 ✗ ⇒ 这里再叠
       // `p2PresetLayers`（**祖先级联删 ＋ 创建被撤销** ✓，与 `list_objects` 同一份口径 ✓）。
+      // **∴ 缺省即死 ✗**（`p2PresetLayers` **不在表里 = 创建被撤销** ⇒ 状态里没有它 ✓）：
+      //   旧写法 `!has ⇒ alive` ✗ 把「撤销了建层」当成活着 ⇒ `list_layers` 里那层还在 ✓
+      // （本轮 `accept_suggestion` 回滚判据抓到；`p2cState` 同一行一并改 ✓）。
       const out = order.filter((id) => layers.has(id) &&
-                                       (!layersLL.has(id) || layersLL.get(id).alive))
+                                       layersLL.has(id) && layersLL.get(id).alive)
                        .map((id) => ({ ...layers.get(id), objects: counts.get(id) || 0 }));
       return json({ ok: true, layers: out, count: out.length, server: false,
                     derived_from: "atoms" });
@@ -4147,7 +4909,7 @@ async function withKernel(doc, fn) {
       // 与 `list_layers`／`list_objects` 共用 `p2PresetLayers` 一份口径 ✓。
       const layersAlive = p2PresetLayers(rows, neutral);
       const aliveLayers = layers.filter((l) => !l.deleted &&
-        (!layersAlive.has(l.layer_id) || layersAlive.get(l.layer_id).alive));
+        layersAlive.has(l.layer_id) && layersAlive.get(l.layer_id).alive);
       // **顺序照 `alive_layers()` ✓**（`state.rs:701`：`(z_index, id)` 升序 ✓）。
       aliveLayers.sort((x, y) => (x.z_index - y.z_index) || cmpId(x.layer_id, y.layer_id));
       return { width: w, height: h, color_space,
@@ -7388,14 +8150,52 @@ async function withKernel(doc, fn) {
                       note: "suggest 原子是协作原子：不产生状态效果，只进日志（list_suggestions 从日志推导状态）" });
       } catch (e) { return p2bCatch(e, path); }
     }
-    // **⑩ `accept_suggestion`／`accept_suggestions` ⇒ 如实 501 ✗**：**∴ 核心是全量预检 ＋
-    //   按序重放 patch 里的每一步工具调用 ✗**（**服务端 `accept_one` ✓**）⇒ **∴ 本地层没有工具注册表／
-    //   参数校验／分发器 ✗ ⇒ **∴ 重放不全会留下"部分应用"状态 ✓** ⇒ **∴ 如实 501，不硬凑 ✓**。
-    if (path === "/api/tools/accept_suggestion" || path === "/api/tools/accept_suggestions") {
-      return json({ ok: false, error: "accept_suggestion_unsupported", endpoint: path, server: false,
-                    reason: "accept 的语义是全量预检（preflight）＋按序重放 patch 里的每一步工具调用；" +
-                            "本地层没有工具注册表／参数校验／分发器，重放不全会留下「部分应用」状态 ⇒ 如实 501，不硬凑。",
-                    detail: "suggest（记录提议）／reject_suggestion（拒绝）已实现；接受需等本地 patch 重放能力" }, 501);
+    // **⑩ `accept_suggestion`／`accept_suggestions` ✓（本轮落地 ✗ 不再是 501 ✓）**：
+    //   **∴ 语义照 `accept_one`（`tools.rs:13354`）✓**：状态闸门 ⇒ **全量预检**（**任一步不合法 ⇒ 一步都不写 ✓**）
+    //   ⇒ 按序重放（**走 `localDispatch` ✓ —— 与人工操作同一条路 ✓**）⇒ 提交 `accept_suggestion` ＋ 标注 resolved ✓。
+    //   **∴ 本地多一层回滚 ✗**：**重放中途运行期失败 ⇒ 已写的状态原子逐条 `revert` ✓**
+    //   （**服务端此时会留下部分应用 ✗** —— **∴ 如实登记为「本地更强的一处」✓**，见 `local_rollback_note`）。
+    if (path === "/api/tools/accept_suggestion") {
+      try {
+        const bad = p2ValidateArgsFor("accept_suggestion", body);
+        if (bad) return p2ToolFailure(400, bad.code, bad.detail);
+        const r = await p2bAcceptOne(body.suggestion_id);
+        return json(r.body, r.status);
+      } catch (e) { return p2bCatch(e, path); }
+    }
+    // **⑩b `accept_suggestions` ✓**：**逐条尝试、个别失败不中断 ✓**（**与服务端同形 ✓**）。
+    if (path === "/api/tools/accept_suggestions") {
+      try {
+        const bad = p2ValidateArgsFor("accept_suggestions", body);
+        if (bad) return p2ToolFailure(400, bad.code, bad.detail);
+        const ids = body.suggestion_ids;
+        if (ids.length === 0)
+          return p2ToolFailure(400, "invalid_argument", "suggestion_ids 不能为空");
+        if (ids.length > 64)
+          return p2ToolFailure(400, "invalid_argument",
+            "一次最多接受 64 条建议（收到 " + ids.length + "）");
+        const results = [];
+        let accepted = 0;
+        for (const value of ids) {
+          if (typeof value !== "string") {
+            results.push({ suggestion_id: value, ok: false, error: "id 必须是字符串" });
+            continue;
+          }
+          const r = await p2bAcceptOne(value);
+          if (r.ok) {
+            accepted += 1;
+            results.push({ suggestion_id: value, ok: true,
+                           applied_atom_ids: r.body.applied_atom_ids,
+                           resolved_annotations: r.body.resolved_annotations });
+          } else {
+            results.push({ suggestion_id: value, ok: false,
+                           error_code: r.body.error_code,
+                           detail: r.body.context ? r.body.context.detail : r.body.reason });
+          }
+        }
+        return json({ ok: true, results, accepted, failed: results.length - accepted,
+                      pending_annotations: 0, server: false });
+      } catch (e) { return p2bCatch(e, path); }
     }
     // **⑪ `reject_suggestion` ✗**：**∴ 写 `reject_suggestion` 原子 ✓**（**`payload.target_atom_id`／`reason` ✓**）＋
     //   **∴ 状态闸门与服务端 `reject_one` 同形 ✓**（**已接受 ⇒ 409 ✗**；**已拒绝 ⇒ 幂等 ✓**）＋
@@ -7489,16 +8289,86 @@ async function withKernel(doc, fn) {
       return json({ ok: true, suggestions: suggestions.slice(offset, offset + limit),
                     conflicts, pending, total, offset, limit, since_seq: since,
                     server: false, derived_from: "atoms",
-                    conflicts_note: "本地简化版冲突检测：只看补丁步骤的 layer_id/object_id/region 是否相同或相交" });
+                    conflicts_note: "冲突检测与服务端同口径（suggestion_scope ＋ scopes_conflict）："
+                      + "整文档／整层级／同对象／区域相交" });
     }
-    // **⑭ `preview_suggestion` ⇒ 如实 501 ✗**：**∴ 语义是按 patch 顺序做依赖模拟 ✗**
-    //   （**跟踪"此刻已知的图层／对象" ✓**）＋ 逐步骤影响面估计 ✗ ⇒ **∴ 需要 `document_state` 与工具注册表 ✗**
-    //   ⇒ **∴ 本地没有这两样 ✗** ⇒ **∴ 如实 501，不猜影响范围 ✓**。
+    // **⑭ `preview_suggestion` ✓（本轮落地 ✗ 不再是 501 ✓）**：**∴ 照 `read_preview_suggestion`
+    //   （`tools.rs:12768`）逐条 ✓** —— ① `patch` 直接给 或 ② `suggestion_id` 取 `suggest` 原子的 patch ✓
+    //   ⇒ **逐步**静态检查**（**与接受路径共用 `p2CheckSingleStep` ✓ ⇒ 两条标准不会分叉 ✓**）
+    //   ＋ 逐步影响预估 ✓（**`estimated_region` 是**并集** ✓，`estimated_dirty` 取最大值 ✓**）。
+    //   **∴ `error` 字段是 `format!("{:?}", Option<String>)` 的 `Some("…")` 形态 ✓**（**不是裸文本 ✗**）。
     if (path === "/api/tools/preview_suggestion") {
-      return json({ ok: false, error: "preview_suggestion_unsupported", endpoint: path, server: false,
-                    reason: "preview 的语义是按 patch 顺序做依赖模拟（跟踪此刻已知的图层／对象）＋逐步骤影响面估计；" +
-                            "本地没有 document_state 与工具注册表 ⇒ 如实 501，不猜影响范围。",
-                    detail: "suggest（记录提议）／list_suggestions（含简化冲突检测）已实现" }, 501);
+      try {
+        const bad = p2ValidateArgsFor("preview_suggestion", body);
+        if (bad) return p2ToolFailure(400, bad.code, bad.detail);
+        const suggestionId = typeof body.suggestion_id === "string" ? body.suggestion_id : null;
+        let patch;
+        if (Object.prototype.hasOwnProperty.call(body, "patch")) {
+          if (!Array.isArray(body.patch))
+            return p2ToolFailure(400, "invalid_argument", "patch 必须是数组");
+          patch = body.patch;
+        } else {
+          if (suggestionId === null)
+            return p2ToolFailure(400, "invalid_argument", "需要 suggestion_id 或 patch");
+          const all = await atomsOf(handle, doc);
+          const atom = all.map((r) => r.atom).find((a) => a && a.id === suggestionId);
+          if (!atom) return p2ToolFailure(404, "reference_not_found", "建议 " + suggestionId + " 不在日志中");
+          if (atom.kind !== "suggest")
+            return p2ToolFailure(400, "invalid_argument", suggestionId + " 不是建议（suggest）原子");
+          const stored = (atom.payload || {}).patch;
+          patch = Array.isArray(stored) ? stored : [];
+        }
+        const rows = await atomsOf(handle, doc);
+        const knownLayers = new Set(p2cState(rows).layers.map((layer) => layer.layer_id));
+        const knownObjects = new Set(
+          p2ObjectSummaries(rows, { includeHidden: true }).map((object) => object.object_id));
+        const steps = [];
+        let invalid = 0, aggregateAffects = "none", aggregateRegion = null;
+        for (let index = 0; index < patch.length; index++) {
+          const step = patch[index];
+          const isObject = step && typeof step === "object" && !Array.isArray(step);
+          // **服务端 `step.get(...)` 不认非对象步骤 ✓ ⇒ 一律落到空串／空对象 ✓**
+          const tool = isObject && typeof step.tool === "string" ? step.tool : "";
+          const stepArgs = isObject && step.arguments !== undefined ? step.arguments : {};
+          const { affects, region } = p2EstimateStepImpact(tool, stepArgs);
+          const entry = {
+            index, tool, class: p2ToolClass(tool), affects,
+            estimated_region: region ? [region.x, region.y, region.w, region.h] : null,
+            layer_id: isObject && stepArgs && typeof stepArgs === "object"
+              && stepArgs.layer_id !== undefined ? stepArgs.layer_id : null,
+            object_id: isObject && stepArgs && typeof stepArgs === "object"
+              && stepArgs.object_id !== undefined ? stepArgs.object_id : null,
+          };
+          if (affects === "document") aggregateAffects = "document";
+          else if (affects === "layer" && aggregateAffects !== "document") aggregateAffects = "layer";
+          else if (affects === "region" && aggregateAffects === "none") aggregateAffects = "region";
+          if (region) {
+            aggregateRegion = aggregateRegion ? p2BboxUnion(aggregateRegion, region) : region;
+          }
+          const error = p2CheckSingleStep(tool, stepArgs, knownLayers, knownObjects);
+          if (error) {
+            invalid += 1;
+            entry.valid = false;
+            entry.error = p2DebugOptionString(error.detail);
+          } else {
+            entry.valid = true;
+          }
+          steps.push(entry);
+        }
+        return json({
+          ok: true, // **∴ 服务端信封也有 `ok:true` ✓**（**其他本地端点同 ✓**）
+          suggestion_id: suggestionId, steps, total_steps: patch.length, invalid_steps: invalid,
+          applicable: invalid === 0 && patch.length > 0,
+          estimated_dirty: aggregateAffects,
+          estimated_region: aggregateRegion
+            ? [aggregateRegion.x, aggregateRegion.y, aggregateRegion.w, aggregateRegion.h] : null,
+          notes: "静态检查：工具存在性、mutating、参数形状与效果类取值范围；"
+            + "个别工具的运行期限制（如外扩上限）在应用时最终判定",
+          server: false,
+          local_replay_note: "本地接受时会按序重放这些步骤；本地尚未实现的工具会在接受时如实报错并回滚"
+            + "（预检本身与服务端同口径，不按本地实现裁剪）",
+        });
+      } catch (e) { return p2bCatch(e, path); }
     }
 
     // ── 标注（**独立通道，不进原子日志 ✓**）──
@@ -8626,6 +9496,10 @@ export function p2PresetSchemaCheck(toolName, declared, body) {
     if (value === null && !param.required) continue;
     const matches = param.kind === "string" ? typeof value === "string"
       : param.kind === "number" ? typeof value === "number"
+      // **∴ `Integer` 放行**整数形态的浮点**✗**（**照 `validate_args`：`fract() == 0` ✓**）
+      : param.kind === "integer" ? typeof value === "number" && Number.isInteger(value)
+      // **∴ `Any` ⇒ **恒匹配** ✓**（**服务端 `ParamKind::Any => true` ✓**，**连 `null` 也放行 ✓**）
+      : param.kind === "any" ? true
       : param.kind === "boolean" ? typeof value === "boolean"
       : param.kind === "object" ? value !== null && typeof value === "object" && !Array.isArray(value)
       : param.kind === "array" ? Array.isArray(value)

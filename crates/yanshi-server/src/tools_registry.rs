@@ -1671,7 +1671,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
-            param!("filter_name", String, true, "滤镜名（见工具说明）。**`relief`（厚涂浮雕）的参数与实测范围**（第 254 轮修过一处设计缺陷后**重测** ✓）：`strength` **0.5–10** 都可用且**均值不漂**（实测漂移 ≤0.4/255 ✓），**越大只是浮雕越强**（对比 +0.0 ⇒ +2.2 ✓）—— **0.5 轻微／2 明显／5–10 强烈** ✓；`height_gain` 10–30 常见；`azimuth` 0–360（缺省 135）、`elevation` 1–89（缺省 45）✓ ★需要额外参数的：`dehaze` 必须给 `air: [r,g,b]`（可用 `estimate_dehaze` 估计）✓；其余 13 个不需要 ✓。"),
+            param!("filter_name", String, true, "滤镜名（见工具说明）。**`relief`（厚涂浮雕）的参数与实测范围**（第 254 轮修过一处设计缺陷后**重测** ✓）：`strength` **0.5–10** 都可用且**均值不漂**（实测漂移 ≤0.4/255 ✓），**越大只是浮雕越强**（对比 +0.0 ⇒ +2.2 ✓）—— **0.5 轻微／2 明显／5–10 强烈** ✓；`height_gain` 10–30 常见；`azimuth` 0–360（缺省 135）、`elevation` 1–89（缺省 45）✓；`height_source`（C 期新增）：`alpha`（缺省，旧行为，高度取 alpha，全不透明层无效）／`luminance`（高度取 RGB 亮度，全不透明层也有效果），非法值报错、不静默回落 ✓ ★需要额外参数的：`dehaze` 必须给 `air: [r,g,b]`（可用 `estimate_dehaze` 估计）✓；其余 13 个不需要 ✓。"),
             param!("params", Object, false, "滤镜参数（按 `filter_name` 取；每个滤镜的键见工具说明）。\n**`brightness_contrast` 约定（期 3 A1 起，滤镜/调整两条路同一实现、同一约定）**：显示空间枢轴口径——先平移亮度、再绕显示中灰 0.5 缩放对比、按亮度比回写（色相不扭、HDR 不钳）。\n· `brightness`：**显示平移，恒等值 `0`**（`±0.5` ⇔ 中灰显示 ±0.25）\n· `contrast`：**绕枢轴缩放，恒等值 `1`**（`0` = 全图压平为显示中灰，**不再是全黑**）\n要**不变**请**省略参数**或写 `{brightness:0, contrast:1}`。\n**`saturation` 约定**：`amount` 是乘子，恒等值 `1`（`0` = 灰度，`>1` 增强）。"),
             param!("opacity", Number, false, "整体不透明度 0-1（缺省 1）"),
             param!(

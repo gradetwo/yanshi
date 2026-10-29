@@ -3926,29 +3926,84 @@ pub fn apply_adjustment(
     true
 }
 
-/// 应用一个滤镜对象；返回是否被识别。
-/// 应用一个滤镜对象；返回是否被识别。
-/// **★ 厚涂浮雕（P2 #15）：用**高度场**给明度加光向偏置 ★**（第 254 轮）
+/// `relief` 的高度源（C 期，项 12）。
 ///
-/// **需求 P2 #15**："高度场（厚涂浮雕：法向 + 光源的明度偏置）"。
-///
-/// **高度从 alpha 来**：一层里每个笔触的 alpha 就是"这里堆了多少颜料" => 浮雕看**相对高差**，
-/// 取 alpha 作高度在本仓语义里是自洽的。**只处理 `alpha > 0`**；邻居空白时按"同高"处理
-/// （否则会把笔画**边界**当成坡面 —— 那是边缘，不是高差）。
-///
-/// **算法（确定性、无随机）**：`h = a`（可乘 `height_gain`）；
-/// 法向 `n = normalize(-gain·dh/dx, -gain·dh/dy, 1)`（中心差分）；
-/// 光向 `l = (cos e·cos a, cos e·sin a, sin e)`（`azimuth` 0°=+x 逆时针，`elevation` clamp 1..89°）；
-/// 明度偏置 `rgb' = rgb · (1 + strength · (n·l))` => 迎光坡提亮、背光压暗。
-///
-/// **读写口径**（本仓实测的坑）：`Buffer::pixel(x: u32, y: u32)`；**没有 `set_pixel`** =>
-/// 写回用 `pixels_mut()`；法向必须基于**同一时刻**的高度快照（否则边改边读）。
+/// `Alpha` 是旧行为：高度取 alpha，全不透明层上梯度恒 0、效果恒零。
+/// `Luminance` 是新行为：高度取 RGB 亮度（三分量均值，与本文件亮度统计同口径），
+/// 全不透明层只要颜色有起伏就有梯度、有效果。缺省是 `Alpha`，保兼容。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeightSource {
+    /// 高度 = alpha（缺省，旧行为）。
+    Alpha,
+    /// 高度 = RGB 亮度均值。
+    Luminance,
+}
+
+impl HeightSource {
+    /// 由参数字符串解析；非法值返回 `None`（调用层必须报错，不许静默回落）。
+    pub fn from_name(value: &str) -> Option<Self> {
+        match value {
+            "alpha" => Some(Self::Alpha),
+            "luminance" => Some(Self::Luminance),
+            _ => None,
+        }
+    }
+
+    /// 参数字符串。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Alpha => "alpha",
+            Self::Luminance => "luminance",
+        }
+    }
+}
+
+/// 旧签名包装：缺省高度源 `Alpha`，行为与改前逐位一致。
+/// `relief` 旧签名：高度源缺省 `Alpha`（见 `HeightSource`），行为与改前一致。
 pub fn relief(
     buffer: &mut Buffer,
     azimuth_deg: f32,
     elevation_deg: f32,
     strength: f32,
     height_gain: f32,
+) {
+    relief_with_height_source(
+        buffer,
+        azimuth_deg,
+        elevation_deg,
+        strength,
+        height_gain,
+        HeightSource::Alpha,
+    );
+}
+
+/// 应用一个滤镜对象；返回是否被识别。
+/// 应用一个滤镜对象；返回是否被识别。
+/// **★ 厚涂浮雕（P2 #15）：用**高度场**给明度加光向偏置 ★**（第 254 轮）
+///
+/// **需求 P2 #15**："高度场（厚涂浮雕：法向 + 光源的明度偏置）"。
+///
+/// **高度缺省从 alpha 来**：一层里每个笔触的 alpha 就是"这里堆了多少颜料" => 浮雕看**相对高差**，
+/// 取 alpha 作高度在本仓语义里是自洽的。**只处理 `alpha > 0`**；邻居空白时按"同高"处理
+/// （否则会把笔画**边界**当成坡面 —— 那是边缘，不是高差）。
+/// C 期加 `height_source`：`luminance` 时高度取 RGB 亮度均值（"有颜料"的门仍看 alpha），
+/// 全不透明层也有效果；缺省 `alpha` 时与改前逐位一致。
+///
+/// **算法（确定性、无随机）**：`h = 高度源值`（可乘 `height_gain`）；
+/// 法向 `n = normalize(-gain·dh/dx, -gain·dh/dy, 1)`（中心差分）；
+/// 光向 `l = (cos e·cos a, cos e·sin a, sin e)`（`azimuth` 0°=+x 逆时针，`elevation` clamp 1..89°）；
+/// 明度偏置 `rgb' = rgb · (1 + strength · (n·l))` => 迎光坡提亮、背光压暗。
+///
+/// **读写口径**（本仓实测的坑）：`Buffer::pixel(x: u32, y: u32)`；**没有 `set_pixel`** =>
+/// 写回用 `pixels_mut()`；法向必须基于**同一时刻**的高度快照（否则边改边读）。
+/// 带高度源的 `relief` 实现。`relief()` 只转调它（`Alpha`）。
+pub fn relief_with_height_source(
+    buffer: &mut Buffer,
+    azimuth_deg: f32,
+    elevation_deg: f32,
+    strength: f32,
+    height_gain: f32,
+    height_source: HeightSource,
 ) {
     let (width, height) = (buffer.width(), buffer.height());
     if width < 3 || height < 3 || strength <= 0.0 {
@@ -3974,6 +4029,20 @@ pub fn relief(
         let cy = y.clamp(0, h - 1) as usize;
         pixels[(cy * width as usize + cx) * 4 + 3].clamp(0.0, 1.0)
     };
+    // 高度取值：`Alpha` 时即 alpha（与改前同一闭包同一算式）；
+    // `Luminance` 时取 RGB 均值。是否“有颜料”的门仍看 alpha（空白邻居按同高处理，
+    // 笔画边界不当坡面），两种模式共用同一门。
+    let height_at = |pixels: &[f32], x: i32, y: i32| -> f32 {
+        let cx = x.clamp(0, w - 1) as usize;
+        let cy = y.clamp(0, h - 1) as usize;
+        let base = (cy * width as usize + cx) * 4;
+        match height_source {
+            HeightSource::Alpha => pixels[base + 3].clamp(0.0, 1.0),
+            HeightSource::Luminance => {
+                ((pixels[base] + pixels[base + 1] + pixels[base + 2]) / 3.0).clamp(0.0, 1.0)
+            }
+        }
+    };
     let mut shaded: Vec<(usize, [f32; 3])> = Vec::new();
     for y in 1..h - 1 {
         for x in 1..w - 1 {
@@ -3981,12 +4050,12 @@ pub fn relief(
             if a_here <= 0.0 {
                 continue;
             }
+            let h_here = height_at(&snapshot, x, y);
             let hx = |dx: i32, dy: i32| -> f32 {
-                let a = alpha_at(&snapshot, x + dx, y + dy);
-                if a > 0.0 {
-                    a
+                if alpha_at(&snapshot, x + dx, y + dy) > 0.0 {
+                    height_at(&snapshot, x + dx, y + dy)
                 } else {
-                    a_here
+                    h_here
                 }
             };
             let dhdx = (hx(1, 0) - hx(-1, 0)) * 0.5 * gain;
@@ -4067,25 +4136,39 @@ pub fn apply_filter(
                 .unwrap_or(8.0) as f32,
             params.get("samples").and_then(Value::as_u64).unwrap_or(16) as u32,
         ),
-        FilterKind::Relief => relief(
-            &mut filtered,
-            params
-                .get("azimuth")
-                .and_then(Value::as_f64)
-                .unwrap_or(135.0) as f32,
-            params
-                .get("elevation")
-                .and_then(Value::as_f64)
-                .unwrap_or(45.0) as f32,
-            params
-                .get("strength")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.6) as f32,
-            params
-                .get("height_gain")
-                .and_then(Value::as_f64)
-                .unwrap_or(1.0) as f32,
-        ),
+        FilterKind::Relief => {
+            // C 期：`height_source` 缺省 `alpha`（保兼容）；缺失才缺省，凡是给了
+            // 非 `alpha`/`luminance` 字符串（含非字符串）都不许静默回落为 `alpha`——
+            // 工具层 `validate_effect` 先报错，内核层这里返回“未识别”（渲染侧记为
+            // 不支持），两层都不静默。
+            let height_source = match params.get("height_source") {
+                None => HeightSource::Alpha,
+                Some(value) => match value.as_str().and_then(HeightSource::from_name) {
+                    Some(source) => source,
+                    None => return false,
+                },
+            };
+            relief_with_height_source(
+                &mut filtered,
+                params
+                    .get("azimuth")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(135.0) as f32,
+                params
+                    .get("elevation")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(45.0) as f32,
+                params
+                    .get("strength")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.6) as f32,
+                params
+                    .get("height_gain")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(1.0) as f32,
+                height_source,
+            )
+        }
         FilterKind::Sharpen => sharpen(
             &mut filtered,
             params.get("amount").and_then(Value::as_f64).unwrap_or(1.0) as f32,
@@ -6362,6 +6445,203 @@ mod relief_ambient_tests {
         assert!(
             strong_sd > base_sd,
             "`strength = 5` 之后**对比没有增长**（标准差 {base_sd:.4} ⇒ {strong_sd:.4}）             —— 浮雕应当**增强**局部明暗（修复后实测 +1.4）✗"
+        );
+    }
+}
+
+/// C 期（项 12）`height_source` 判据：缺省保兼容、亮度模式在全不透明层上
+/// 从零效果变可见梯度效果、非法值不静默。
+#[cfg(test)]
+mod relief_height_source_tests {
+    use super::{apply_filter, relief, HeightSource};
+    use crate::buffer::Buffer;
+    use serde_json::json;
+
+    /// 全不透明层上的亮度隆起：alpha 处处为 1，颜色（= 亮度）呈钟形。
+    /// 这正是旧 relief 必然零效果的输入：alpha 无梯度。
+    fn opaque_luma_bump(w: u32, h: u32) -> Buffer {
+        let mut buffer = Buffer::new(0, 0, w, h);
+        let pixels = buffer.pixels_mut();
+        for y in 0..h {
+            for x in 0..w {
+                let at = ((y * w + x) * 4) as usize;
+                let dx = x as f32 / (w - 1).max(1) as f32 - 0.5;
+                let dy = y as f32 / (h - 1).max(1) as f32 - 0.5;
+                let bell = (1.0 - (dx * dx + dy * dy) * 8.0).clamp(0.0, 1.0);
+                let luma = 0.2 + 0.6 * bell;
+                pixels[at] = luma;
+                pixels[at + 1] = luma;
+                pixels[at + 2] = luma;
+                pixels[at + 3] = 1.0;
+            }
+        }
+        buffer
+    }
+
+    fn changed_pixels(after: &Buffer, before: &Buffer) -> usize {
+        after
+            .pixels()
+            .chunks_exact(4)
+            .zip(before.pixels().chunks_exact(4))
+            .filter(|(a, b)| (a[0] - b[0]).abs() > 1e-4 || (a[1] - b[1]).abs() > 1e-4)
+            .count()
+    }
+
+    fn flank_luma(buffer: &Buffer, left: bool) -> f32 {
+        let (w, h) = (buffer.width(), buffer.height());
+        let pixels = buffer.pixels();
+        let mut sum = 0.0f32;
+        let mut n = 0.0f32;
+        for y in 0..h {
+            for x in 0..w {
+                let in_band = if left {
+                    x >= w / 4 && x < w / 2
+                } else {
+                    x >= w / 2 && x < w * 3 / 4
+                };
+                if !in_band {
+                    continue;
+                }
+                let at = ((y * w + x) * 4) as usize;
+                sum += (pixels[at] + pixels[at + 1] + pixels[at + 2]) / 3.0;
+                n += 1.0;
+            }
+        }
+        sum / n.max(1.0)
+    }
+
+    #[test]
+    fn height_source_parses_only_alpha_and_luminance() {
+        assert_eq!(HeightSource::from_name("alpha"), Some(HeightSource::Alpha));
+        assert_eq!(
+            HeightSource::from_name("luminance"),
+            Some(HeightSource::Luminance)
+        );
+        assert_eq!(HeightSource::from_name("depth"), None);
+        assert_eq!(HeightSource::from_name(""), None);
+        assert_eq!(HeightSource::Alpha.as_str(), "alpha");
+        assert_eq!(HeightSource::Luminance.as_str(), "luminance");
+    }
+
+    #[test]
+    fn alpha_default_is_unchanged_on_opaque_layer_and_matches_old_signature() {
+        let base = opaque_luma_bump(64, 32);
+        // ① 缺省（不给 height_source）= 旧行为：全不透明层上零效果。
+        let mut via_default = base.clone();
+        assert!(
+            apply_filter(&mut via_default, "relief", &json!({}), 1.0, (64.0, 32.0)),
+            "缺省参数的 relief 必须被识别"
+        );
+        // 注意：{} 的 strength 缺省 0.6、height_gain 缺省 1.0；零效果不是因为
+        // strength 为 0——下面用同样显式强度再验一次。
+        let mut via_default_strong = base.clone();
+        assert!(apply_filter(
+            &mut via_default_strong,
+            "relief",
+            &json!({"strength": 1.0, "height_gain": 24.0}),
+            1.0,
+            (64.0, 32.0)
+        ));
+        assert_eq!(
+            changed_pixels(&via_default_strong, &base),
+            0,
+            "缺省 alpha 模式在全不透明层上必须仍是零效果（改前根因原样保留）"
+        );
+        // ② 显式 alpha 与缺省逐位相同，且与旧签名 relief() 逐位相同。
+        let mut via_explicit = base.clone();
+        assert!(apply_filter(
+            &mut via_explicit,
+            "relief",
+            &json!({"height_source": "alpha", "strength": 1.0, "height_gain": 24.0}),
+            1.0,
+            (64.0, 32.0)
+        ));
+        assert_eq!(
+            via_explicit.pixels(),
+            via_default_strong.pixels(),
+            "显式 alpha 必须与缺省逐位相同"
+        );
+        let mut via_old = base.clone();
+        relief(&mut via_old, 135.0, 45.0, 1.0, 24.0);
+        assert_eq!(
+            via_old.pixels(),
+            via_default_strong.pixels(),
+            "apply_filter 缺省必须与旧签名 relief() 逐位相同（缺省 azimuth 135/elevation 45）"
+        );
+    }
+
+    #[test]
+    fn luminance_turns_opaque_layer_from_zero_effect_to_gradient_effect() {
+        let base = opaque_luma_bump(64, 32);
+        // ① 同一输入、alpha 模式零效果（对照组：输入确实能触发“零效果”情况）。
+        let mut via_alpha = base.clone();
+        assert!(apply_filter(
+            &mut via_alpha,
+            "relief",
+            &json!({"height_source": "alpha", "strength": 1.0, "height_gain": 24.0}),
+            1.0,
+            (64.0, 32.0)
+        ));
+        assert_eq!(changed_pixels(&via_alpha, &base), 0);
+        // ② 亮度模式：大量像素变化，且明暗随光向反号（真梯度 shading，不是均匀缩放）。
+        let mut from_right = base.clone();
+        assert!(apply_filter(
+            &mut from_right,
+            "relief",
+            &json!({"height_source": "luminance", "azimuth": 0.0, "strength": 1.0, "height_gain": 24.0}),
+            1.0,
+            (64.0, 32.0)
+        ));
+        let changed = changed_pixels(&from_right, &base);
+        assert!(
+            changed >= 100,
+            "亮度模式在全不透明层上应有可见梯度效果，改动像素只有 {changed}"
+        );
+        let mut from_left = base.clone();
+        assert!(apply_filter(
+            &mut from_left,
+            "relief",
+            &json!({"height_source": "luminance", "azimuth": 180.0, "strength": 1.0, "height_gain": 24.0}),
+            1.0,
+            (64.0, 32.0)
+        ));
+        let right_light = flank_luma(&from_right, false) - flank_luma(&from_right, true);
+        let left_light = flank_luma(&from_left, false) - flank_luma(&from_left, true);
+        assert!(
+            right_light * left_light < 0.0,
+            "换光源方向必须让明暗对比反号（右光 {right_light} / 左光 {left_light}），否则只是均匀缩放"
+        );
+    }
+
+    #[test]
+    fn invalid_height_source_is_not_silently_applied() {
+        let base = opaque_luma_bump(16, 16);
+        let mut buffer = base.clone();
+        assert!(
+            !apply_filter(
+                &mut buffer,
+                "relief",
+                &json!({"height_source": "depth"}),
+                1.0,
+                (16.0, 16.0)
+            ),
+            "非法 height_source 在内核层必须返回未识别，不许静默按 alpha 算"
+        );
+        assert_eq!(
+            buffer.pixels(),
+            base.pixels(),
+            "非法值被拒时像素必须一动不动"
+        );
+        let mut buffer = base.clone();
+        assert!(
+            !apply_filter(
+                &mut buffer,
+                "relief",
+                &json!({"height_source": 123}),
+                1.0,
+                (16.0, 16.0)
+            ),
+            "非字符串 height_source 同样不得静默回落"
         );
     }
 }

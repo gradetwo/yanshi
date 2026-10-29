@@ -264,6 +264,24 @@ pub(super) fn validate_effect(kind: EffectKind, name: &str, params: &Value) -> R
             }
         }
     }
+    if kind == EffectKind::Filter && matches!(name.as_str(), "relief" | "emboss" | "impasto") {
+        // C 期（项 12）：`height_source` 只收 `alpha`（缺省，旧行为）与 `luminance`
+        //（RGB 亮度高度，全不透明层也有效果）；别名 emboss/impasto 走同一 relief
+        // 实现，故同受此校验。非法值（包括非字符串）明确报错，不静默回落。
+        if let Some(value) = object.get("height_source") {
+            let ok = value
+                .as_str()
+                .is_some_and(|text| matches!(text, "alpha" | "luminance"));
+            if !ok {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "relief 的 height_source 只能是 alpha/luminance，得到 {value}"
+                    )),
+                ));
+            }
+        }
+    }
     if name == "color_balance" || name == "split_toning" {
         let bands: &[&str] = if name == "color_balance" {
             &["shadows", "midtones", "highlights"]
@@ -1123,5 +1141,39 @@ mod presence_validation_tests {
             .is_err(),
             "red_sat 非数字应被拒绝"
         );
+    }
+
+    #[test]
+    fn relief_height_source_validation() {
+        // C 期（项 12）：缺省与两合法值放行；非法值与非字符串明确报错。
+        for name in ["relief", "emboss", "impasto"] {
+            assert!(
+                validate_effect(EffectKind::Filter, name, &json!({})).is_ok(),
+                "{name} 缺省 height_source 应放行"
+            );
+            assert!(
+                validate_effect(
+                    EffectKind::Filter,
+                    name,
+                    &json!({"height_source": "luminance"})
+                )
+                .is_ok(),
+                "{name} height_source=luminance 应放行"
+            );
+            assert!(
+                validate_effect(EffectKind::Filter, name, &json!({"height_source": "alpha"}))
+                    .is_ok(),
+                "{name} height_source=alpha 应放行"
+            );
+            assert!(
+                validate_effect(EffectKind::Filter, name, &json!({"height_source": "depth"}))
+                    .is_err(),
+                "{name} height_source=depth 必须报错，不许静默回落"
+            );
+            assert!(
+                validate_effect(EffectKind::Filter, name, &json!({"height_source": 1})).is_err(),
+                "{name} 非字符串 height_source 必须报错"
+            );
+        }
     }
 }

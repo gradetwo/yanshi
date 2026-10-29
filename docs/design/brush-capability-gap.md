@@ -23420,3 +23420,97 @@ head（seq 11）⇒ `headUpto(7)` 为空、窗口只有一段 ✓。**∴ 补 §
 **入口闭链**：PWA 的检查点面板／历史面板走 `get_checkpoints`／`restore_checkpoint`／`revert`；
 恢复后图层面板、对象列表、渲染、像素统计**统一**按 `state@seq` 读 ⇒ 此前离线态恢复=501、
 撤销旧原子「成功」而画面不变，现在两边同口径 ✓。
+
+## 六百六十四、本地 `preview_suggestion`／`accept_suggestion(s)` 落地：预检与重放共用一道闸，运行期失败逐条 `revert` 回滚；判据当场抓出 `list_layers` 的存活过滤缺陷
+
+**为什么它必须改**（不是「补一个端点」✗）：
+- 三个端点在本地一直是**如实 501** ✓，而 PWA 的**批注／建议面板**（`viewer-app.js` 的协作卡）
+  在离线态因此**完全不可用** ✗：`preview` 看不到逐步校验与影响范围，
+  `accept` 无法回放建议里的工具补丁，批量接受更是整条路径不存在 ✓。
+- 语义不是「照着 patch 逐条调用」那么薄 ✗：服务端 `read_preview_suggestion`（`tools.rs:12768`）
+  的**逐步静态检查**与 `accept_one`（`tools.rs:13354`）的**全量预检**必须是**同一把尺子** ✓
+  —— 否则会出现「预览说合法、接受却被拒」或反过来的**两条标准** ✗（形态④：合法输入被静默降级 ✓）。
+- `accept_suggestion` 的状态机有三道闸（不是建议原子／已接受幂等／已拒绝 409），
+  批量 `accept_suggestions` 又是「逐条尝试、个别失败不中断」✓ —— **都不像能一行糊过去** ✗。
+
+**改了什么**：
+1. **`preview_suggestion`**：`patch` 直接给，或按 `suggestion_id` 从 `suggest` 原子的净荷取 ✓；
+   逐步输出 `index/tool/class/affects/estimated_region/layer_id/object_id/valid/error` ✓，
+   `error` 是 `format!("{:?}", Option<String>)` 的 **`Some("…")` 形态** ✓（不是裸文本 ✗）；
+   聚合量 `estimated_dirty`（`document` ＞ `layer` ＞ `region` ＞ `none`）、
+   `estimated_region`（**逐步区域的并集** ✓）、`notes` 逐字 ✓。
+   **逐步检查直接复用 `p2CheckSingleStep`** ✓ ⇒ 与接受路径**不会分叉** ✓；
+   **不按本地实现裁剪** ✓ —— 例如 `revert_to_seq` 在服务端是 mutating、本地仍 501，
+   预览照样给 `valid:true` ✓（**这条是判据 ③ 面** ✓）。
+2. **`accept_suggestion`**：照 `accept_one` 逐条 —— ① 必须是 `suggest` 原子（不存在 404、
+   非建议 400）⇒ ② 空 patch 400 ⇒ ③ 状态闸门（**已接受 ⇒ 幂等回执**，
+   `already_accepted:true` ＋ `applied_atom_ids:[]` ＋ note 逐字 ✓；**已拒绝 ⇒ 409** ✓）
+   ⇒ ④ **全量预检**（任一步不合法 ⇒ 整体拒绝、**一步都不写** ✓）
+   ⇒ ⑤ 按序重放（**经 `localDispatch` ✓** —— 与人工操作同一条路 ✓）
+   ⇒ ⑥ 提交 `accept_suggestion` 原子（`payload.target_atom_id`／`applied_atom_ids`／`annotation_id` ✓）
+   ＋ 关联待处理标注置 `resolved` ✓，回执 `pending_annotations` ✓。
+3. **本地多一层（如实登记 ✓）**：⑤ 中途**运行期**失败（预检挡不住的，如第二步建同名图层 409）⇒
+   **把本次已写的状态原子逐条 `revert`** ✓（日志只追加 ✓；`revert(revert(x)) ≡ reapply(x)` 由折叠层保证 ✓），
+   回执 `rolled_back:true` ＋ `rolled_back_atom_ids` ＋ `rolled_back*` 说明；
+   不可 revert 的原子（`declare_head` 等）如实进 `rollback_skipped`，并给 `rollback_failed` ✓
+   —— **不许假装「已经全撤了」** ✗。**服务端此时会留下部分应用** ✓（判据 §G 两边**分别**断言 ✓）。
+4. **`accept_suggestions`**：≤64 条；**逐条尝试、个别失败不中断** ✓；非字符串 id 逐项
+   `error:"id 必须是字符串"` ✓；**已接受的那条幂等成功也计入 `accepted`** ✓（与服务端同 ✓）；
+   回执 `results` 五项逐项 ＋ `accepted/failed/pending_annotations` ✓。
+5. **`list_suggestions` 的冲突检测改成与服务端同源** ✓（`suggestion_scope` ＋ `scopes_conflict`：
+   整文档／整层级／同对象／区域相交 ✓）—— 旧的本地简化模型会漏**整文档级**冲突 ✗。
+
+**判据**（`scripts/tool-pwa-suggestion-accept.mjs`，同一请求两边打、比解析后 JSON；**175 条断言**）：
+§表 表漂移（`gen-pwa-tool-specs.mjs --check` 必须退出 0，207 条工具的 `mutating`／参数表自证 ✓）；
+§A 逐步全字段 ＋ 聚合量，`invalid_steps === 7`（未知工具／只读／引用顺序／效果名／范围／未知键／缺参 ✓）；
+§B `suggestion_id` 与 `patch` 两条路径等价（**同一边内自比** ✓）＋ 三种取建议错误逐字；
+§C 接受成功 = `applied_atom_ids` 两条 ＋ 日志 kind 序列 `create_layer → draw_shape` ＋
+标注解析 ＋ 新图层／对象读回；§D 重复接受幂等；§E 拒绝；§F 预检拒收 ⇒ 404 文案逐字 ＋
+**两边零原子**（不写半条 ✓）；§G 运行期失败：服务端**部分应用** vs 本地**回滚**（两边各自断言 ✓）；
+§H 批量五项（成功／已接受／已拒绝／不存在／非字符串）＋ `accepted:2 / failed:3`；
+§I `list_suggestions` 的「同对象」「整文档」两类冲突 ＋ 状态推导；
+§J 本地额外的 `server:false`／`local_replay_note` 必须真的给 ✓。
+
+**判据与产品各抓到一处（先测量、后改产品 ✓）**：
+
+| # | 症状 | 根因 | 处理 |
+|---|---|---|---|
+| ① | §G `rolled_back:true`、revert 目标也对，但 `list_layers` 里被撤销的图层还在 | **产品缺陷** ✗：`list_layers`（以及 `p2cState` 同一行）把「`p2PresetLayers` 不在表里」当**活着** ✓ —— 而「不在表」正是**创建被撤销**的意思 ✗（`p2PresetLayers` 的语义：缺省即死 ✓） | 改成**必须在表里且 `alive`** ✓（`list_layers`／`p2cState` 共两处 ✓） |
+| ② | §A 未知参数那句，服务端 `label, group_id, layer_id, data, object_id`、本地 `data, group_id, label, layer_id, object_id` | **产品缺陷** ✗：本地工具表的参数序取 `GET /api/tools`，而 `serde_json::Map` 默认是 **BTreeMap** ⇒ `properties` **按键名排序** ✗；服务端的报错文案按**注册表声明序** join ✓ | 生成器改为**从 `tools_registry.rs` 取声明序** ✓（含共享常量 `LAYER_ID`／`NO_PARAMS`、`#[cfg]` 双变体 `IMPORT_IMAGE_PARAMS`、裸元素常量 `CLIP_TO_SELECTION_PARAM` ✓），并与清单做**去重集合**核对 ✓ |
+| ③ | 判据误红：全字段比较差 `created/opened/timings` | **判据自己** ✗：HTTP 信封字段不是业务字段 ⇒ 两边比之前先剥 ✓（`ok` **保留** ✓ —— 本地也必须给 ✓） | 判据加 `SERVER_ENVELOPE` 投影 ✓ |
+| ④ | 判据误红：两边 `suggestion_id` 不同 | **判据自己** ✗：id 是各边各自生成的 ✓ | 投影成 `<suggestion>` 再比 ✓ |
+| ⑤ | 判据误红：批量 `accepted` 期望 1 实得 2 | **判据自己** ✗：已接受的那条是**幂等成功**，服务端也计入 `accepted` ✓ | 期望改 2／3 ✓ |
+| ⑥ | 判据误红：冲突集合里漏出另一侧的原子 id | **判据自己** ✗：只把 `J-` 前缀的建议映射成名字，另一侧的原样漏出 ✓ ⇒ 且冲突对**顺序不定** | 全表映射 ＋ 每对**先排序**再比 ✓ |
+| ⑦ | 判据误红：§A 第 10 步被本地裁成 invalid | **判据自己** ✗：旧选的 `try_stroke` 在服务端是**只读** ⇒ 本来就该 invalid ✗ | 换成 `revert_to_seq`（服务端 mutating、本地 501）✓ |
+
+**变异（十五次，全部 `exit 1` ✓；每次后恢复、与原件逐字节相同 ✓）**：
+
+| # | 改坏 | 红在哪（实测） |
+|---|---|---|
+| ① | 工具表 `draw_shape.data` 类型码 `o`→`s` | §表 表漂移 |
+| ② | 预览逐步 `error` 恒 `null` | §A error 形态 |
+| ③ | 预览无效步骤也标 `valid:true` | §A 逐步 valid |
+| ④ | 聚合 `estimated_dirty` 恒 `none` | §A 全字段 |
+| ⑤ | 逐步 `estimated_region` 恒 `null` | §A estimated_region |
+| ⑥ | 接受去掉全量预检 | §F 预检零写入（原子数变了） |
+| ⑦ | 接受跳过已接受闸门 | §D 幂等 |
+| ⑧ | 接受跳过已拒绝闸门 | §H 第 3 项 |
+| ⑨ | 回滚不写 `revert` | §G `rolled_back_atom_ids` 为空、日志条数不对 |
+| ⑩ | `applied_atom_ids` 只记第一条 | §C 条数 1 vs 2 |
+| ⑪ | 批量只数「真正施加的」（幂等不算） | §H `accepted` 1 vs 2 |
+| ⑫ | 冲突检测恒空 | §I 冲突集合 |
+| ⑬ | `list_suggestions` 不认 rejected | §I 列表状态 |
+| ⑭ | `list_layers` 回到「不在表=活着」 | §G 回滚后图层（**就是本轮修的缺陷** ✓） |
+| ⑮ | 预览回执 `server:true` | §J `server:false` |
+
+**已知限制（如实记 ✓）**：
+- **本地回滚比服务端强** ✓：服务端运行期失败会留下部分应用，本地逐条 `revert`
+  ⇒ 判据在 §G **分别**断言两边的行为（不是「两边相等」✓），这是**有意差异**，不是缺陷 ✓。
+- `preview_suggestion` 的 `estimated_*` 是**静态估计** ✓（与服务端同一个 `estimate_step_impact` 口径 ✓），
+  个别工具的**运行期**限制（外扩上限等）只在接受时最终判定 ✓ —— `notes` 里逐字写明 ✓。
+- 本地 `accept_suggestion` 的重放**只能走已移植的工具** ✓：未移植的工具在预检里仍可能 `valid:true`
+  （服务端合法 ✓），到重放时如实报 `not_implemented_locally` 并**回滚** ✓（不静默跳过 ✗）。
+
+**入口闭链**：PWA 的批注／建议卡走 `preview_suggestion`（逐步红绿 ＋ 影响范围）→
+`accept_suggestion`／`accept_suggestions`（一键应用、批量、失败回滚）→ `list_suggestions`（状态与冲突）；
+此前离线态这条链路整段 501，现在两边同口径 ✓。

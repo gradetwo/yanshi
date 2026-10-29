@@ -146,7 +146,7 @@ pub use filter::{
     clarity_adjustment, color_balance, color_lut, dehaze, dehaze_adjustment,
     estimate_atmospheric_light, gaussian_blur, gradient_map, invert, levels, saturation,
     selective_color, shadows_highlights, split_toning, texture_adjustment, AdjustmentKind,
-    FilterKind, ADJUSTMENT_NAMES, FILTER_NAMES, SELECTIVE_COLOR_RANGES,
+    FilterKind, HeightSource, ADJUSTMENT_NAMES, FILTER_NAMES, SELECTIVE_COLOR_RANGES,
 };
 pub use geometry::{
     dashed_line, ellipse_coverage, point_in_polygon, polygon_coverage, rect_coverage, Coverage,

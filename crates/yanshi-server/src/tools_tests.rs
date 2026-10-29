@@ -1796,6 +1796,61 @@ fn batch_watermark_fails_open_when_unreadable() {
     );
 }
 
+/// **A 期（paint-r2-A）**：水位缺省 4096 不变 —— 解析口径本身可单测，不碰进程环境变量 ✓。
+///   变异：把缺省改大 ⇒ 缺省断言红；把 `filter(>= 1)` 删掉 ⇒ 0 值断言红 ✓。
+#[test]
+fn batch_rss_limit_defaults_to_4096_and_rejects_bad_values() {
+    assert_eq!(
+        parse_batch_rss_limit_mb(None),
+        4 * 1024,
+        "未设环境变量时水位缺省必须是 4096（旧硬编码值）"
+    );
+    assert_eq!(
+        parse_batch_rss_limit_mb(Some("4096")),
+        4 * 1024,
+        "显式 4096 与缺省同值"
+    );
+    assert_eq!(
+        parse_batch_rss_limit_mb(Some(" 8192 ")),
+        8192,
+        "首尾空白应当容忍"
+    );
+    assert_eq!(
+        parse_batch_rss_limit_mb(Some("not-a-number")),
+        4 * 1024,
+        "解析失败应当回退缺省，而不是编一个会立刻触发的上限"
+    );
+    assert_eq!(
+        parse_batch_rss_limit_mb(Some("0")),
+        4 * 1024,
+        "0 不是合法水位（会立刻触发），应当回退缺省"
+    );
+}
+
+/// **A 期**：环境变量覆盖生效 —— 显式水位版谓词：同一 RSS 在旧水位下不触发、在覆盖水位下触发 ✓。
+///   变异：谓词忽略传入水位、仍用 4096 ⇒ 第二个断言红 ✓。
+#[test]
+fn batch_watermark_override_limit_takes_effect() {
+    assert_eq!(
+        batch_watermark_reason_for_limit(Some(2048), Some(8 * 1024), 4 * 1024),
+        None,
+        "RSS 2048 在缺省水位 4096 下不应当触发"
+    );
+    assert!(
+        batch_watermark_reason_for_limit(Some(2048), Some(8 * 1024), 1024)
+            .as_deref()
+            .unwrap_or("")
+            .contains("1024"),
+        "同一 RSS 在覆盖水位 1024 下应当触发，且文案报的是覆盖后的水位：{:?}",
+        batch_watermark_reason_for_limit(Some(2048), Some(8 * 1024), 1024)
+    );
+    assert_eq!(
+        batch_watermark_reason_for_limit(Some(1024), Some(512), 1024),
+        None,
+        "恰好等于覆盖水位时不应当触发（`>`，不是 `>=`）"
+    );
+}
+
 /// **D1（期 2b）：`batch_stroke_evidence` 的字段归一** ✓。
 ///
 /// 断的是**组装逻辑本身**（不经过 `batch` 的循环 ✓）：brush 回执原样取四字段、
