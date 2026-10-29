@@ -9,11 +9,11 @@
 //   **∴ 三件事必须同时成立 ✗**：
 //   ① **全字段逐字节结构一致**（layers 的十个字段含 `kind`≡`type` 别名 ✓、
 //      selections **过滤墓碑** ✓、masks **不过滤** ✓ —— 服务端就是这么露出已删蒙版的 ⇒ 照抄 ✗ 不顺手修好 ✓）；
-//   ② **期望值由判据自己按输入算** ✗（每层对象数、`estimated = 活对象×180`、
+//   ② **期望值由判据自己按输入算** ✗（每层对象数、本地 `estimated = 活对象×180`、服务端 `estimated` 只断整数≥0、
 //      selection/mask 的 mode/feather/invert/shape 回显、错误文案逐字）
 //      —— **∴ 不能只断「两边相等」**：两边同错时相等断言照样绿 ✓ ⇒ 安慰剂 ✓；
 //   ③ **恒等式** ✓：`counts.layers === layers.length`（selections／masks 同理）✓、
-//      `Σ layers[].objects × 180 === estimated_memory_bytes` ✓、`kind === type` ✓
+//      本地 `Σ layers[].objects × 180 === estimated_memory_bytes` ✓、服务端 `estimated` 为整数≥0 ✓、`kind === type` ✓
 //      —— 每边各自验 ⇒ 「组合错」一次封住 ✓。
 //
 // **∴ 覆盖的面 ✗→✓**：
@@ -29,7 +29,7 @@
 //   拿不到 ⇒ `exit(3)`（判据前提不成立 ≠ 产品失败 ✓）。服务端拒绝前序 ⇒ 同样 `exit(3)` ✓。
 //
 // **∴ 变异（逐条对应第 N 层断言 ✓，实测记录见台账「第 六百七十二 节」）**：
-//   ① `estimated_memory_bytes` 恒 0 ⇒ §B／§C 恒等式红 ✓；
+//   ① `estimated_memory_bytes` 恒 0 ⇒ §B／§C 本地恒等式红 ✓；
 //   ② selections 去掉墓碑过滤 ⇒ §D 两边不一致红 ✓；
 //   ③ masks 加上墓碑过滤（顺手「修好」服务端怪癖）⇒ §E「删后仍列出」红 ✓；
 //   ④ 去掉 `create_mask` 重复守卫 ⇒ §E 重复 409 本地 200 红 ✓；
@@ -128,7 +128,9 @@ function same(a, b) {
  *  （本地没有服务端进程 ⇒ 哨兵值单独断 ✓，**编数字才是撒谎 ✗**）。
  *  **`ms_per_stroke_avg` 同属计时派生量**：服务端按真耗时算，本地桩无计时 ⇒ 剥掉再比 ✓，
  *  服务端出字段本身由 tools_tests 回执测试守住，不由本判据逐字节比 ✓。 */
-const ENV_KEYS = ["created", "opened", "timings", "server", "server_rss_mb", "bytes_per_atom_avg", "ms_per_stroke_avg"];
+/** **`estimated_memory_bytes` 同属口径分叉量**：服务端是 RSS 派生量，本地桩是活对象×180，
+ *  两种口径不能逐字节相等 ⇒ 剥掉再比 ✓，分边断（本地仍 Σ×180，服务端只断整数≥0）✓。 */
+const ENV_KEYS = ["created", "opened", "timings", "server", "server_rss_mb", "bytes_per_atom_avg", "ms_per_stroke_avg", "estimated_memory_bytes"];
 const strip = (body) => {
   const out = { ...(body || {}) };
   for (const key of ENV_KEYS) delete out[key];
@@ -206,8 +208,13 @@ async function describeCase(label, expect) {
     check(b.layers.every((x) => x.kind === x.type),
       `${label}（${who}）每个图层都该有 kind ≡ type 别名 ✗ ${show(b.layers)}`);
     const sum = b.layers.reduce((n, x) => n + x.objects, 0);
-    check(sum * 180 === b.estimated_memory_bytes,
-      `${label}（${who}）Σ对象×180 应等于 estimated_memory_bytes ✗ Σ=${sum} est=${b.estimated_memory_bytes}`);
+    if (who === "本地") {
+      check(sum * 180 === b.estimated_memory_bytes,
+        `${label}（${who}）Σ对象×180 应等于 estimated_memory_bytes ✗ Σ=${sum} est=${b.estimated_memory_bytes}`);
+    } else {
+      check(Number.isInteger(b.estimated_memory_bytes) && b.estimated_memory_bytes >= 0,
+        `${label}（${who}）estimated_memory_bytes 应为 ≥0 的整数（服务端 RSS 派生量，不与本地活对象×180 逐字节比）✗ est=${b.estimated_memory_bytes}`);
+    }
     check(Number.isInteger(b.counts.atoms) && b.counts.atoms >= 1,
       `${label}（${who}）counts.atoms 应为 ≥1 的整数 ✗ ${show(b.counts.atoms)}`);
     if (expect) expect(who, b);
@@ -225,7 +232,7 @@ const rectData = {
 const objsOf = (b) => Object.fromEntries(b.layers.map((x) => [x.layer_id, x.objects]));
 const idsOf = (b) => b.layers.map((x) => x.layer_id);
 
-// ══ §A 空文档：默认层身份 ＋ 零对象 ＋ 零估计 ══
+// ══ §A 空文档：默认层身份 ＋ 零对象（本地估计 0，服务端估计只断 ≥0）══
 await describeCase("§A 空文档", (who, b) => {
   check(b.width === 400 && b.height === 300,
     `${who} 尺寸应为 400×300 ✗ ${b.width}×${b.height}`);
@@ -233,8 +240,15 @@ await describeCase("§A 空文档", (who, b) => {
     && b.layers[0].objects === 0 && b.layers[0].mask_id === null
     && b.layers[0].visible === true && b.layers[0].locked === false,
     `${who} 默认层身份不对 ✗ ${show(b.layers)}`);
-  check(b.estimated_memory_bytes === 0 && b.selections.length === 0 && b.masks.length === 0,
-    `${who} 空文档应为零对象／零选区／零蒙版 ✗ ${show(b.counts)}`);
+  check(b.selections.length === 0 && b.masks.length === 0,
+    `${who} 空文档应为零选区／零蒙版 ✗ ${show(b.counts)}`);
+  if (who === "本地") {
+    check(b.estimated_memory_bytes === 0,
+      `${who} 空文档本地估计应为 0 ✗ ${show(b.counts)}`);
+  } else {
+    check(Number.isInteger(b.estimated_memory_bytes) && b.estimated_memory_bytes >= 0,
+      `${who} 空文档服务端估计应为 ≥0 的整数 ✗ ${show(b.counts)}`);
+  }
 });
 
 // ══ §B 层与对象计数：建层、跨层移动、删对象 ══
@@ -244,19 +258,29 @@ await setup("O0 默认层", "draw_shape", { layer_id: "layer_default", object_id
 await setup("O1 层 LA", "draw_shape", { layer_id: "LA", object_id: "O1", data: rectData });
 await setup("O2 层 LA", "draw_shape", { layer_id: "LA", object_id: "O2", data: rectData });
 await setup("O3 层 LB", "draw_shape", { layer_id: "LB", object_id: "O3", data: rectData });
-// 移动 O2 ⇒ 期望 layer_default:1 ｜ LA:1 ｜ LB:2 ⇒ 4 个活对象 ×180 = 720 ✓。
+// 移动 O2 ⇒ 期望 layer_default:1 ｜ LA:1 ｜ LB:2 ⇒ 本地 4 个活对象 ×180 = 720 ✓（服务端只断整数≥0）。
 await setup("把 O2 移到 LB", "set_property", { object_id: "O2", key: "layer_id", value: "LB" });
 await describeCase("§B 移动后计数", (who, b) => {
   check(JSON.stringify(objsOf(b)) === JSON.stringify({ layer_default: 1, LA: 1, LB: 2 }),
     `${who} 每层对象数应为 默认1／LA1／LB2 ✗ ${show(objsOf(b))}`);
-  check(b.estimated_memory_bytes === 720, `${who} 4 个活对象应估 720 ✗ ${b.estimated_memory_bytes}`);
+  if (who === "本地") {
+    check(b.estimated_memory_bytes === 720, `${who} 4 个活对象应估 720 ✗ ${b.estimated_memory_bytes}`);
+  } else {
+    check(Number.isInteger(b.estimated_memory_bytes) && b.estimated_memory_bytes >= 0,
+      `${who} 服务端估计应为 ≥0 的整数（对象计数仍由 objsOf 断）✗ ${b.estimated_memory_bytes}`);
+  }
 });
 // 删 O1 ⇒ LA:0 ｜ 3 个活对象 ⇒ 540 ✓（恒等式随删随验 ✓）。
 await setup("删 O1", "delete_object", { object_id: "O1" });
 await describeCase("§B2 删对象后计数", (who, b) => {
   check(JSON.stringify(objsOf(b)) === JSON.stringify({ layer_default: 1, LA: 0, LB: 2 }),
     `${who} 删 O1 后应为 默认1／LA0／LB2 ✗ ${show(objsOf(b))}`);
-  check(b.estimated_memory_bytes === 540, `${who} 3 个活对象应估 540 ✗ ${b.estimated_memory_bytes}`);
+  if (who === "本地") {
+    check(b.estimated_memory_bytes === 540, `${who} 3 个活对象应估 540 ✗ ${b.estimated_memory_bytes}`);
+  } else {
+    check(Number.isInteger(b.estimated_memory_bytes) && b.estimated_memory_bytes >= 0,
+      `${who} 服务端估计应为 ≥0 的整数（对象计数仍由 objsOf 断）✗ ${b.estimated_memory_bytes}`);
+  }
 });
 
 // ══ §C `delete_layer` 级联：层没了 ⇒ 层上的对象也随层死 ⇒ 估计量变小 ══
@@ -269,8 +293,13 @@ await describeCase("§C 删层级联", (who, b) => {
   check(b.counts.layers === 2, `${who} 删层后应剩 2 层 ✗ ${b.counts.layers}`);
   check(JSON.stringify(objsOf(b)) === JSON.stringify({ layer_default: 1, LA: 0 }),
     `${who} LB 上的 2 个对象应随层死（估计里看不见）✗ ${show(objsOf(b))}`);
-  check(b.estimated_memory_bytes === 180,
-    `${who} 级联后只该剩 O0 一个活对象 ⇒ 180 ✗ ${b.estimated_memory_bytes}`);
+  if (who === "本地") {
+    check(b.estimated_memory_bytes === 180,
+      `${who} 级联后只该剩 O0 一个活对象 ⇒ 180 ✗ ${b.estimated_memory_bytes}`);
+  } else {
+    check(Number.isInteger(b.estimated_memory_bytes) && b.estimated_memory_bytes >= 0,
+      `${who} 服务端估计应为 ≥0 的整数（级联后对象计数仍由 objsOf 断，killLayer 守卫不丢）✗ ${b.estimated_memory_bytes}`);
+  }
 });
 
 // ══ §D 选区：mode／feather／invert／shape 回显 ＋ 墓碑过滤 ══
