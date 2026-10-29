@@ -223,7 +223,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                   **要释放就 `close` 再 `open` 同一文档**（实测 4 450 MB → 1 736 MB，回放 0.8 s）；\
                   配了 `YANSHI_VECTOR_RASTER_CACHE_MB`（兆字节）后单笔光栅缓存按 LRU 逐出、\
                   被逐笔触按需重算、像素不变 ⇒ close 重开不再是唯一出路；\
-                  **单会话有天花板、文档本身没有** ⇒ 长跑请分阶段、每阶段重开或配上限",
+                  **单会话有天花板、文档本身没有** ⇒ 长跑请分阶段、每阶段重开或配上限；\
+                  另带每笔均值字段 ms_per_stroke_avg（毫秒）：本次调用墙钟除以文档原子数，\
+                  0 原子时为 0——它是 describe 自身成本摊到每原子，不是画笔单笔成本，\
+                  画笔预算看 batch 的同名字段",
         mutating: false,
         params: &[],
     },
@@ -1418,7 +1421,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                  **单笔绘制**请用 `brush_stroke(preview: false)` ✓（同一条免编码路 ✓），\
                  要图时**不传**它即可 ✓（默认行为不变 ✓）。\
                  顶层 `ok` 即全成（与 `all_ok` 一致 ✓，A6 方案 ①）：有子调用失败 ⇒ `ok:false` + `error` 指路 `failed_calls` ✓。\
-                 每笔另有取证摘要 `stroke_evidence`（与 `calls` 同下标 ✓）：笔触类子调用给 `landed` / `painted_pixels_clipped` / `ink_mass` / `max_channel_delta`（与 `brush_stroke` 回执同字段 ✓；`medium_stroke` 的 `paint_delta` 在此归一为 `max_channel_delta` ✓）；失败的子调用带完整 `error` ✓。",
+                 每笔另有取证摘要 `stroke_evidence`（与 `calls` 同下标 ✓）：笔触类子调用给 `landed` / `painted_pixels_clipped` / `ink_mass` / `max_channel_delta`（与 `brush_stroke` 回执同字段 ✓；`medium_stroke` 的 `paint_delta` 在此归一为 `max_channel_delta` ✓）；失败的子调用带完整 `error` ✓。\
+                 另带每笔均值字段 ms_per_stroke_avg（毫秒）：整批墙钟除以笔触子调用数，\
+                 0 笔触时为 0；混合批次里是非笔触开销也摊进来的全批成本，纯笔触批次里即纯笔触均值。",
         mutating: true,
         params: &[
             param!("calls", Array, true, "[{tool, arguments}]（一次最多 500 个调用，超了拆成多个 batch；每 100 个一段，段边界做内存水位检查，触发即提前停）"),

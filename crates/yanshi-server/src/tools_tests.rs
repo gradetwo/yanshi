@@ -2525,3 +2525,143 @@ fn short_stroke_extension_lands_at_least_one_dab() {
         "延长到 1.5× 间距后至少落一枚 dab ⇒ 像素必须 > 0，实测 {painted}"
     );
 }
+
+/// **预算字段收缩版**（feedback5-feat-budget-fields）：`ms_per_stroke_avg` 的
+/// 公式与 0 笔行为。分子是同回执 `timings.total_ms`，3 位小数口径与
+/// `timings` 一致；分母为 0 时字段恒为 0.0（不可判），不是缺失键。
+#[test]
+fn ms_per_stroke_avg_formula_and_zero() {
+    assert_eq!(super::ms_per_stroke_avg(10.0, 4), 2.5);
+    assert!(
+        (super::ms_per_stroke_avg(10.0, 3) - 3.333).abs() < 1e-9,
+        "10/3 应 3 位小数舍入为 3.333，实测 {}",
+        super::ms_per_stroke_avg(10.0, 3)
+    );
+    assert_eq!(
+        super::ms_per_stroke_avg(5.0, 0),
+        0.0,
+        "0 笔时字段取 0.0（不可判），不是缺失、不是 NaN"
+    );
+    assert_eq!(super::ms_per_stroke_avg(0.0, 5), 0.0);
+}
+
+/// 预算字段端到端共用脚手架：内存工作区 + 仓库 assets（笔刷可读）+ 空文档。
+fn budget_fields_setup(doc_id: &str) -> super::Workspace {
+    let mut workspace = super::Workspace::in_memory(crate::document::DocumentSettings::default())
+        .with_assets_dir(Some(std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets"
+        ))));
+    workspace
+        .create_document(
+            crate::document::NewDocument::new(doc_id, 300, 300),
+            "test:1",
+            "s",
+        )
+        .expect("建测试文档");
+    workspace
+}
+
+/// `describe_canvas` 顶层回执带字段，且字段值等于公式值（容差内）；
+/// 其他工具（如 `get_document`）的回执不带该字段——证明“只在两处”。
+#[test]
+fn describe_canvas_receipt_carries_ms_per_stroke_avg() {
+    let mut workspace = budget_fields_setup("budget_describe_doc");
+    let registry = super::ToolRegistry::full();
+    let mut ctx = super::ToolContext::new(&mut workspace, "budget_describe_doc", "test:1", "s");
+    let response = registry.call(&mut ctx, "describe_canvas", &json!({}));
+    assert_eq!(response["ok"], json!(true), "describe 应成功：{response}");
+    let total_ms = response["timings"]["total_ms"]
+        .as_f64()
+        .expect("describe 回执须带 timings.total_ms");
+    let atoms = response["counts"]["atoms"]
+        .as_u64()
+        .expect("describe 回执须带 counts.atoms");
+    let avg = response["ms_per_stroke_avg"]
+        .as_f64()
+        .expect("describe 回执须带 ms_per_stroke_avg");
+    if atoms == 0 {
+        assert_eq!(avg, 0.0, "0 原子时字段取 0.0：{response}");
+    } else {
+        assert!(
+            (avg * atoms as f64 - total_ms).abs() <= 0.001 * atoms as f64 + 1e-9,
+            "字段值须等于 total_ms/atoms（3 位小数舍入容差内）：avg={avg} atoms={atoms} total_ms={total_ms}"
+        );
+    }
+    let other = registry.call(&mut ctx, "get_document", &json!({}));
+    assert_eq!(other["ok"], json!(true), "get_document 应成功：{other}");
+    assert!(
+        other.get("ms_per_stroke_avg").is_none(),
+        "非目标工具的回执不许带该字段：{other}"
+    );
+}
+
+/// `batch` 顶层回执带字段：2 笔纯笔触批次里 stroke_calls==2，
+/// 字段值等于 total_ms/2（容差内）；全是非笔触子调用的批次里
+/// stroke_calls==0，字段取 0.0。
+#[test]
+fn batch_receipt_carries_ms_per_stroke_avg() {
+    let mut workspace = budget_fields_setup("budget_batch_doc");
+    let registry = super::ToolRegistry::full();
+    let mut ctx = super::ToolContext::new(&mut workspace, "budget_batch_doc", "test:1", "s");
+    let created = registry.call(
+        &mut ctx,
+        "create_layer",
+        &json!({"layer_id": "L1", "name": "Layer 1"}),
+    );
+    assert_eq!(created["ok"], json!(true), "建层应成功：{created}");
+    let stroke = |x: i64| {
+        json!({
+            "tool": "brush_stroke",
+            "arguments": {
+                "brush": "100%_Opaque", "layer_id": "L1",
+                "points": [[x, 100, 1], [x + 80, 140, 1], [x + 160, 100, 1]],
+                "color": {"r": 255, "g": 0, "b": 0, "a": 255}, "size": 40
+            }
+        })
+    };
+    let batched = registry.call(
+        &mut ctx,
+        "batch",
+        &json!({"calls": [stroke(20), stroke(20)]}),
+    );
+    assert_eq!(batched["ok"], json!(true), "纯笔触批次应全成：{batched}");
+    assert_eq!(
+        batched["stroke_calls"],
+        json!(2),
+        "两笔笔触子调用：{batched}"
+    );
+    let total_ms = batched["timings"]["total_ms"]
+        .as_f64()
+        .expect("batch 回执须带 timings.total_ms");
+    let avg = batched["ms_per_stroke_avg"]
+        .as_f64()
+        .expect("batch 回执须带 ms_per_stroke_avg");
+    assert!(
+        (avg * 2.0 - total_ms).abs() <= 0.002 + 1e-9,
+        "字段值须等于 total_ms/2（3 位小数舍入容差内）：avg={avg} total_ms={total_ms}"
+    );
+    let no_stroke = registry.call(
+        &mut ctx,
+        "batch",
+        &json!({"calls": [
+            {"tool": "create_layer", "arguments": {"layer_id": "L2", "name": "Layer 2"}},
+            {"tool": "create_layer", "arguments": {"layer_id": "L3", "name": "Layer 3"}}
+        ]}),
+    );
+    assert_eq!(
+        no_stroke["ok"],
+        json!(true),
+        "非笔触批次应全成：{no_stroke}"
+    );
+    assert_eq!(
+        no_stroke["stroke_calls"],
+        json!(0),
+        "无笔触子调用：{no_stroke}"
+    );
+    assert_eq!(
+        no_stroke["ms_per_stroke_avg"],
+        json!(0.0),
+        "0 笔触时字段取 0.0（不可判）：{no_stroke}"
+    );
+}
