@@ -12117,6 +12117,105 @@ fn resolve_lut_path(
     Ok(())
 }
 
+/// **impasto/relief 的 alpha 恒定警告探针**（报告 5+6 §2 第 2 项）。
+///
+/// 只在同时满足以下全部条件时返回一条警告文案（调用方把它以对象形态
+/// 追加到回执顶层 `warnings`，形态与折叠警告的 `{atom_id, seq, kind, detail}`
+/// 同款）：
+/// * 对象是滤镜且名字是 `relief`／`emboss`／`impasto`（内核 `FilterKind::from_name`
+///   把三者都映到 `Relief`，落存名不动）；
+/// * `height_source` 缺省（= `alpha`）或显式 `alpha`；`luminance` 不触发；
+/// * 滤镜不透明度 > 0 且 `strength` > 0（否则零效果另有原因，不归 alpha 恒定）；
+/// * 该滤镜下方内容（同层内按 `(z_index, seq, id)` 排在它之前的对象，与生产
+///   渲染同一顺序）渲染出的 f32 alpha 在有颜料像素上逐位恒定。
+///
+/// 恒定 ⇒ 高度场无梯度 ⇒ relief 因子恒 1 ⇒ 零效果是数学结论，不是启发式。
+/// 探针失败（状态读不到／渲染出错等）时返回 `None`：一次问不出来不得让
+/// 本次添加／更新失败。
+/// **代价**：命中前三条门时多做一次整层子集渲染（只对 relief 系 + alpha 源，
+/// 不论 `silent`／`preview` —— batch 默认静默，若按静默跳过则批量用户永远
+/// 看不到这条警告）。
+/// **已知漏报（只漏报、不误报）**：纯调整层播种在 `only_layer` 下不播种、
+/// 剪贴蒙版层在子集渲染里拿不到下方内容 ⇒ 子集为空 ⇒ `None`。
+fn relief_alpha_constant_detail(ctx: &mut ToolContext<'_>, object_id: &str) -> Option<String> {
+    let state = document_state(ctx).ok()?;
+    let object = state.objects.get(object_id)?;
+    if object.object_type != ObjectType::Filter {
+        return None;
+    }
+    let name = object
+        .data
+        .get("filter_name")
+        .and_then(Value::as_str)?
+        .to_owned();
+    if !matches!(name.as_str(), "relief" | "emboss" | "impasto") {
+        return None;
+    }
+    let params = object
+        .data
+        .get("params")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    match params.get("height_source").and_then(Value::as_str) {
+        None | Some("alpha") => {}
+        _ => return None,
+    }
+    let opacity = object
+        .data
+        .get("opacity")
+        .and_then(Value::as_f64)
+        .unwrap_or(1.0);
+    if opacity <= 0.0 {
+        return None;
+    }
+    // 内核缺省 `strength` 0.6（`apply_filter` 的 `Relief` 分支）；<= 0 时
+    // relief 自身提前返回，零效果与 alpha 恒定无关。
+    let strength = params
+        .get("strength")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.6);
+    if strength <= 0.0 {
+        return None;
+    }
+    let layer_id = object.layer_id.clone();
+    let filter_key = (object.z_index, object.seq, object.id.clone());
+    let mut keep = std::collections::BTreeSet::new();
+    for before in state.objects_in_layer(&layer_id) {
+        let key = (before.z_index, before.seq, before.id.clone());
+        if key < filter_key {
+            keep.insert(before.id.clone());
+        }
+    }
+    let bbox = Bbox::new(0.0, 0.0, state.width as f64, state.height as f64);
+    // `state` 是克隆的所有权值，借用已结束；下面可拿 `document_mut`。
+    let document = ctx.workspace.document_mut(&ctx.doc_id).ok()?;
+    let alpha = document
+        .below_objects_alpha_constant(bbox, &layer_id, &keep)
+        .ok()??;
+    let source_note = if params.get("height_source").is_some() {
+        "height_source=alpha（显式）"
+    } else {
+        "height_source 缺省（=alpha）"
+    };
+    Some(format!(
+        "{name}（{source_note}）当前下方内容的 alpha 恒为 {alpha:.3}：高度取 alpha 时高度场无梯度，relief 不产生任何效果；改用 height_source=luminance（高度取 RGB 亮度）即可在全不透明层上见效"
+    ))
+}
+
+/// 把一条警告对象追加到回执顶层 `warnings`（已是数组则续接，不是数组则重建）。
+fn push_top_warning(response: &mut Value, result: &CommitResult, kind: &str, detail: String) {
+    let warning = json!({
+        "atom_id": result.atom_id,
+        "seq": result.seq,
+        "kind": kind,
+        "detail": detail,
+    });
+    match response.get_mut("warnings").and_then(Value::as_array_mut) {
+        Some(list) => list.push(warning),
+        None => response["warnings"] = json!([warning]),
+    }
+}
+
 fn write_add_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let name = require_str(args, kind.key())?;
@@ -12186,7 +12285,7 @@ fn write_add_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind) -
     let result = ctx.commit(
         AtomKind::CreateObject,
         json!({
-            "object_id": object_id,
+            "object_id": object_id.clone(),
             "layer_id": layer_id,
             "type": kind.object_type(),
             "z_index": z_index,
@@ -12194,7 +12293,18 @@ fn write_add_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind) -
         }),
     )?;
     let region = region_of(&result);
-    finish_mutation(ctx, &result, region)
+    let mut response = finish_mutation(ctx, &result, region)?;
+    if kind == EffectKind::Filter {
+        if let Some(detail) = relief_alpha_constant_detail(ctx, &object_id) {
+            push_top_warning(
+                &mut response,
+                &result,
+                "relief_no_effect_constant_alpha",
+                detail,
+            );
+        }
+    }
+    Ok(response)
 }
 
 /// **复活并替换**（期 1 E-b）：`write_add_effect` 的墓碑支路。
@@ -12361,6 +12471,16 @@ fn revive_effect_in_place(
         }
         let region = region_of(&result);
         let mut value = finish_mutation(ctx, &result, region)?;
+        if kind == EffectKind::Filter {
+            if let Some(detail) = relief_alpha_constant_detail(ctx, object_id) {
+                push_top_warning(
+                    &mut value,
+                    &result,
+                    "relief_no_effect_constant_alpha",
+                    detail,
+                );
+            }
+        }
         value["revived"] = json!(true);
         Ok(value)
     })();
@@ -12631,10 +12751,21 @@ fn write_update_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind
     let layer_id = object.layer_id.clone();
     let result = ctx.commit(
         AtomKind::Supersede,
-        json!({"object_id": object_id, "layer_id": layer_id, "data": data}),
+        json!({"object_id": object_id.clone(), "layer_id": layer_id, "data": data}),
     )?;
     let region = region_of(&result);
-    finish_mutation(ctx, &result, region)
+    let mut response = finish_mutation(ctx, &result, region)?;
+    if kind == EffectKind::Filter {
+        if let Some(detail) = relief_alpha_constant_detail(ctx, &object_id) {
+            push_top_warning(
+                &mut response,
+                &result,
+                "relief_no_effect_constant_alpha",
+                detail,
+            );
+        }
+    }
+    Ok(response)
 }
 
 /// 从**落盘 JSON** 估一个包围盒（`rect`/`ellipse` 用 x/y/w/h，`polygon` 取点集极值）。
