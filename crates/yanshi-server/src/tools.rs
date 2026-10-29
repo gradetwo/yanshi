@@ -1991,6 +1991,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "save_palette" => write_save_palette(ctx, args),
         "list_palette_colors" => write_list_palette_colors(ctx, args),
         "analyze_region" => read_analyze_region(ctx, args),
+        "stroke_heatmap" => read_stroke_heatmap(ctx, args),
         "texture_background" => write_texture_background(ctx, args),
         "gradient_fill" => write_gradient_fill(ctx, args),
         "gradient_blend" => write_gradient_blend(ctx, args),

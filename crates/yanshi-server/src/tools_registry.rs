@@ -2205,6 +2205,24 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "stroke_heatmap",
+        profile: Profile::History,
+        // **反馈 5.6**：区域作画量热力图 —— 不是 `analyze_region` 的变体（那个只读
+        // 最终像素颜色），而是笔触日志的聚合视图：每格给笔数／点数／墨量。
+        // **口径必须写在描述里**（调用方不读实现，只读描述）：
+        // 笔数与点数走与 `get_stroke_log` 同一扫描（已撤销排除）；墨量是烘焙位图
+        // tile 的逐像素 alpha 求和，只覆盖带 tile 的笔（实为笔刷笔）；
+        // `medium_stroke` 的介质笔不在扫描内（无 `source` 的 `ImportImage` 原子），
+        // `draw_stroke` 笔只计笔数与点数、墨量不含它们（缺口见回执的
+        // `strokes_without_ink`）。一笔进多格时每格计 1，`total_strokes` 去重只计 1。
+        summary: "把一块区域划成网格，每格给笔数/点数/墨量：笔数与点数走与 get_stroke_log 同一日志扫描（已撤销排除），墨量是烘焙位图 tile 的逐像素 alpha 求和（只覆盖带 tile 的笔刷笔；medium_stroke 的介质笔不在扫描内，draw_stroke 笔只计笔数与点数，缺口见 strokes_without_ink）",
+        mutating: false,
+        params: &[
+            param!("region", Any, true, "区域 {x,y,w,h} 或 [x,y,w,h]（同 render_region／analyze_region：画布像素，左上角原点）"),
+            param!("cell_size", Number, false, "网格边长（画布像素，缺省 64；格数上限 10000，超限报错并提示调大 cell_size）"),
+        ],
+    },
+    ToolSpec {
         name: "list_palette_colors",
         profile: Profile::Core,
         summary: "读一个调色板的颜色（.gpl / .kpl / open-color 那种 .json）⇒ 供界面显示与取色",
