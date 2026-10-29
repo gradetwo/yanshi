@@ -3319,6 +3319,11 @@ fn medium_brush_keywords(medium: &str) -> Option<&'static [&'static str]> {
 }
 
 fn read_list_brushes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **分页参数先校验再干活**：负数／非整数经 optional_count 报 invalid_argument，
+    // 不许静默当成缺省（与 get_log 的计数参数同一口径，见 optional_count 的注释）。
+    // limit 缺省 = 不分页（返回过滤后的全部）；limit 为 0 = 只取总数探针（见下）。
+    let limit = optional_count(args, "limit")?;
+    let offset = optional_count(args, "offset")?.unwrap_or(0) as usize;
     let filter = args
         .get("filter")
         .and_then(Value::as_str)
@@ -3391,12 +3396,33 @@ fn read_list_brushes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             .unwrap_or_default()
             .cmp(b.get("name").and_then(Value::as_str).unwrap_or_default())
     });
-    let count = brushes.len();
+    // **分页在过滤之后、排序之后切片**（先过滤再切片 ✓）：total 是过滤后的总数，
+    // 不是资产总数、也不是本页条数；offset 超出总数时给空页，不报错。
+    // limit 为 0 的语义：空页＋真实 total（只取总数的廉价探针，不报错）；
+    // 用 limit 为 0 翻页会原地不动，调用方不要拿它翻页。
+    let total = brushes.len();
+    let page: Vec<Value> = match limit {
+        Some(max) => brushes
+            .into_iter()
+            .skip(offset)
+            .take(max as usize)
+            .collect(),
+        None => brushes.into_iter().skip(offset).collect(),
+    };
+    let count = page.len();
+    let end = offset.saturating_add(count);
+    let has_more = end < total;
+    let next_offset = if has_more { Some(end) } else { None };
     Ok(json!({
-        "brushes": brushes,
+        "brushes": page,
         "count": count,
+        "total": total,
+        "offset": offset,
+        "has_more": has_more,
+        "next_offset": next_offset,
         // **能力边界用布尔说** ✓：0 支时调用方不用猜"是不是资产目录丢了" ✓。
-        "brushes_available": count > 0,
+        // 注意它看的是过滤后总数，不是本页条数（limit 为 0 的空页也不该报“无笔刷”）。
+        "brushes_available": total > 0,
         "filter": filter,
         "canonical_param_names": hokusai::BrushSetting::ALL
             .iter()
