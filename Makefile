@@ -17,16 +17,17 @@ help:  ## 显示这份清单
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | \
 	  awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
+# 脚本一律用 bash 显式调用：zip 下载解包可能丢可执行位，直接执行会 Error 126。
 release:  ## 打出发布包（缺省**只编当前平台**；可 TARGET=<triple> 指定）
 	@if [ -n "$(TARGET)" ]; then \
 	  echo "== 目标平台：$(TARGET)"; \
-	  scripts/package-release.sh --target "$(TARGET)" --out $(OUT); \
+	  bash scripts/package-release.sh --target "$(TARGET)" --out $(OUT); \
 	else \
-	  scripts/package-release.sh --out $(OUT); \
+	  bash scripts/package-release.sh --out $(OUT); \
 	fi
 
 release-all:  ## 逐个目标打包（没装的目标跳过并说明；YANSHI_RELEASE_TARGETS 可收紧清单）
-	scripts/package-release.sh --all-targets --out $(OUT)
+	bash scripts/package-release.sh --all-targets --out $(OUT)
 
 # **★ GPU 相关的两个目标 ✗ ★**（**第 490 轮 ✓）
 #
@@ -36,15 +37,15 @@ release-all:  ## 逐个目标打包（没装的目标跳过并说明；YANSHI_RE
 #     ＋ **∴ `release-kernel-gpu` ✗**：**连浏览器内核也带 GPU** ✓
 #       （**∴ 代价：内核依赖树 67 ⇒ 198 包 ✓）★**** ✓✓
 release-cpu:  ## 打出纯 CPU 的发布包（不带 --features gpu；体积更小）
-	scripts/package-release.sh --no-gpu \
+	bash scripts/package-release.sh --no-gpu \
 	  $(if $(TARGET),--target "$(TARGET)",) --out $(OUT)
 
 release-kernel-gpu:  ## 打出内核也带 GPU 的发布包（内核依赖树 67 ⇒ 198 包）
-	scripts/package-release.sh --gpu --kernel-gpu \
+	bash scripts/package-release.sh --gpu --kernel-gpu \
 	  $(if $(TARGET),--target "$(TARGET)",) --out $(OUT)
 
 release-all-cpu:  ## 逐个目标打纯 CPU 包
-	scripts/package-release.sh --all-targets --no-gpu --out $(OUT)
+	bash scripts/package-release.sh --all-targets --no-gpu --out $(OUT)
 
 # **★ macOS 收益实测 ✗ ★**（**第 490 轮 ✓；**用户要求「增加在 macOS 平台测试收益的脚本」✓）
 #
@@ -66,10 +67,10 @@ macos-quantize-bench-selftest:  ## 自检：量化微基准脚本的参数与表
 	node scripts/tool-macos-gpu-quantize-bench.mjs --self-test
 
 targets:  ## 看看本机装了哪些发布目标（以及缺哪个要 rustup target add）
-	scripts/package-release.sh --list-targets
+	bash scripts/package-release.sh --list-targets
 
 release-dynamic:  ## 打出动态链接的发布包（仅在你确实需要时用）
-	scripts/package-release.sh --dynamic --out $(OUT)
+	bash scripts/package-release.sh --dynamic --out $(OUT)
 
 test:  ## 跑工作区测试（快的那一批）
 	cargo test --workspace
@@ -86,10 +87,10 @@ clippy:  ## 严格 lint
 check: fmt clippy test  ## 推送前的三项判据
 
 serve:  ## 起一个"肯定是新的"服务端（先重编 -p yanshi-http ⇒ 用 curl 验工具前必跑）
-	scripts/serve.sh --port $(PORT)
+	bash scripts/serve.sh --port $(PORT)
 
 dev:  ## 开发用：构建 wasm 内核并起本地服务
-	scripts/dev.sh
+	bash scripts/dev.sh
 
 clean:  ## 清掉发布产物
 	rm -rf $(OUT)
