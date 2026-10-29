@@ -33,6 +33,7 @@ pub mod fonts;
 pub mod inflight;
 pub mod job;
 pub mod persist;
+pub mod planner_cell_score;
 pub mod service;
 pub mod timings;
 pub mod token;
