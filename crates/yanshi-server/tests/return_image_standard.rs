@@ -195,7 +195,7 @@ fn export_png_return_image() {
     // 显式绑定守卫：判据 check-tests-clean-temp 只认 `x = Cleanup(` 的绑定形态，
     // 且要求 Drop 清理器真的被实例化（只声明不绑定同样判红，见 colorspace 跟进 23e7d461）。
     // 守卫活到测试结束，panic 路径同样清掉落盘文件。
-    let cleanup = Cleanup(path.clone());
+    let _cleanup = Cleanup(path.clone());
     let path_str = path.display().to_string();
     let mut workspace = fresh_workspace(64, 64);
     let plain = call(&mut workspace, "export_png", json!({"path": path_str}));
