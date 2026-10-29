@@ -1011,9 +1011,16 @@ impl Document {
             .cloned()
             .ok_or_else(|| internal("刚追加的原子不在日志中"))?;
 
-        // 折叠段（6.6）。
+        // 折叠段（6.6）：状态本体由 `Document` 持有、原样交回折叠器
+        // （`fold_from`），折叠器只留步长还原点，不再每笔为"调用方一份 +
+        // 折叠器一份"深拷贝一次（见 `yanshi-core` `IncrementalFolder::fold_from`）；
+        // 交回的状态与跟踪头 seq 不符时 `fold_from` 回退到完整求值，结果仍正确。
+        // 失败时 `fold_from` 不碰交回的状态（`self.state` 仍是旧状态），与老
+        // `fold()` 路径失败时状态原样不动一致。
         let fold_started = std::time::Instant::now();
-        let folded: StateAt = self.folder.fold(&self.log, self.log.head_seq())?;
+        let folded: StateAt =
+            self.folder
+                .fold_from(&self.log, &mut self.state, self.log.head_seq())?;
         self.state = folded.state;
         if self.state.width > 1 {
             if let Ok(grid) = self.grid_for_state() {

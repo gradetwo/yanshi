@@ -386,9 +386,51 @@ const STRIDE_CAPACITY: usize = 16;
 /// `state@seq` 记忆化容量（完整求值在 `declare_head` 链上每层写一条）。
 ///
 /// 增量前推**不再**往这里写：每写一条就是一次完整状态深拷贝，实测反而更慢
-/// （见 [`IncrementalFolder::remember`]）⇒ 它只是 `state_at` 自己的记忆化，
+/// （见 [`IncrementalFolder::retain_result`]）⇒ 它只是 `state_at` 自己的记忆化，
 /// 外加几个顺带的还原点。
 const RESUME_CAPACITY: usize = 32;
+
+/// `IncrementalFolder` 跟踪的上一次折叠结果。
+///
+/// 与 [`StateAt`] 的区别只有一个：`state` 可以缺席。`fold()` 保留状态本体
+/// （老行为：每折一次深拷贝一份）；[`IncrementalFolder::fold_from`] 不保留——
+/// 状态本体由调用方持有（服务端是 `Document.state`），下一步原样交回，
+/// 折叠器只凭 `seq`/`origin_seq`/`warnings` + `actions`/`carry` 记账。
+/// 于是逐笔前推的每步深拷贝只剩**步长点**进 `stride` 的那一份（每
+/// `RESUME_STRIDE` 步一次），其余步数为零拷贝。
+///
+/// `suppressed` 不存在这里：快路径的结果撤销集恒由
+/// [`IncrementalFolder::reported_suppressed`]（`carry + actions.suppressed()`）
+/// 重算，旧 base 的撤销集在 destructure 时就被丢弃，从不被读。
+#[derive(Debug, Clone)]
+struct TrackedHead {
+    seq: Seq,
+    origin_seq: Seq,
+    warnings: Vec<FoldWarning>,
+    /// `fold()` 路径保留的状态本体；`fold_from()` 路径为 `None`。
+    state: Option<DocumentState>,
+}
+
+/// [`IncrementalFolder::plan_fold`] 的结论：前推、续折，或回完整求值（`None`）。
+enum FoldPlan {
+    /// 前推：只折 `(base_seq, n]`。
+    Push,
+    /// 续折：从还原点折 `(还原点.seq, n]`（装箱：`StateAt` 含完整文档状态，
+    /// 不装箱会让枚举两个变体大小悬殊）。
+    Rebase(Box<StateAt>),
+}
+
+/// [`IncrementalFolder::apply_plan`] 的调用参数包（避免参数过多）。
+struct ApplyCtx<'a> {
+    log: &'a AtomLog,
+    base_seq: Seq,
+    origin: Seq,
+    base_warnings: Vec<FoldWarning>,
+    /// 前推用的状态本体；续折不用它（从还原点重折），此时为 `None`。
+    base_state: Option<DocumentState>,
+    n: Seq,
+    retain: bool,
+}
 
 /// 增量折叠器：跨批次复用上一次的状态（设计文档 6.6 客户端/服务端同步增量折叠）。
 ///
@@ -410,7 +452,7 @@ const RESUME_CAPACITY: usize = 32;
 #[derive(Debug, Clone)]
 pub struct IncrementalFolder {
     cache: StateAtCache,
-    last: Option<StateAt>,
+    last: Option<TrackedHead>,
     /// 当前求值起点（`declare_head` 之后的起点；无跳变时为 0）。
     origin: Seq,
     /// 当前起点内已折叠原子的有效动作表。
@@ -449,32 +491,172 @@ impl IncrementalFolder {
         Self::default()
     }
 
-    /// 折叠到 seq `n`。
+    /// 折叠到 seq `n`（老路径：折叠器自己保留状态本体）。
+    ///
+    /// 每折一次深拷贝一份状态本体进跟踪头——真实 4K 画作实测 316 KiB JSON、
+    /// 318 个对象 ⇒ 一份约 ~15ms，远超过折叠本身。热路径（服务端逐笔提交）
+    /// 请用 [`Self::fold_from`]，它不留这份拷贝。
     pub fn fold(&mut self, log: &AtomLog, n: Seq) -> Result<StateAt> {
-        // **按值取出、按值折进去** ✓：`StateAt` 里是完整文档状态（真实 4K 画作实测
-        // 316 KiB JSON、318 个对象 ✓）⇒ 每折一次深拷贝一份要 ~15ms ✗，
-        // 远超过折叠本身 ⇒ 这里全程用移动而不是克隆（`fold_atoms` 本来就按值收 base ✓）。
-        let Some(last) = self.last.take() else {
-            return self.full_fold(log, n);
+        let Some(head) = self.last.take() else {
+            return self.full_fold(log, n, true);
         };
-        // 时间旅行（往回折）不属于"前推"，交给完整求值。
-        if last.seq > n {
-            self.last = Some(last);
-            return self.full_fold(log, n);
+        // 时间旅行（往回折）不属于"前推"，交给完整求值（头先还回去，
+        // 完整求值失败时下一次仍可从它重试）。
+        if head.seq > n {
+            self.last = Some(head);
+            return self.full_fold(log, n, true);
         }
-        if last.seq == n {
-            let result = last.clone();
-            self.last = Some(last);
+        // 跟踪头没有状态本体（上一轮是 `fold_from()` 步）⇒ 快路径没有 base 可折，
+        // 只能完整求值；结果与完整求值逐字段一致，只是多一次全量。
+        let Some(state) = head.state else {
+            self.last = Some(head);
+            return self.full_fold(log, n, true);
+        };
+        if head.seq == n {
+            // 与老行为一致：返回跟踪头那份的拷贝（撤销集恒等于记账重算值，
+            // 见 `reported_suppressed` 的不变量）。
+            let result = StateAt {
+                seq: n,
+                origin_seq: head.origin_seq,
+                state: state.clone(),
+                suppressed: self.reported_suppressed(),
+                warnings: head.warnings.clone(),
+            };
+            self.last = Some(TrackedHead {
+                seq: head.seq,
+                origin_seq: head.origin_seq,
+                warnings: head.warnings,
+                state: Some(state),
+            });
             return Ok(result);
         }
-        let last_seq = last.seq;
-        let origin = last.origin_seq;
-        let slice = log.range_exclusive_inclusive(last_seq, n);
+        let slice = log.range_exclusive_inclusive(head.seq, n);
         if slice.iter().any(|atom| atom.kind == AtomKind::DeclareHead) {
-            self.last = Some(last);
-            return self.full_fold(log, n);
+            self.last = Some(TrackedHead {
+                seq: head.seq,
+                origin_seq: head.origin_seq,
+                warnings: head.warnings,
+                state: Some(state),
+            });
+            return self.full_fold(log, n, true);
         }
+        let base_seq = head.seq;
+        let origin = head.origin_seq;
+        let base_warnings = head.warnings;
+        match self.plan_fold(log, base_seq, origin, n) {
+            Some(plan) => Ok(self.apply_plan(
+                ApplyCtx {
+                    log,
+                    base_seq,
+                    origin,
+                    base_warnings,
+                    base_state: Some(state),
+                    n,
+                    retain: true,
+                },
+                plan,
+            )),
+            None => self.full_fold(log, n, true),
+        }
+    }
 
+    /// 折叠到 seq `n`，状态本体由调用方持有、原样交回（热路径）。
+    ///
+    /// 调用方（服务端 `Document`）把自己持有的当前状态本体以 `&mut` 交进来：
+    /// 前推时按值取走它、折出新状态、由调用方收走；续折时根本不用它（从还原点
+    /// 重折）；完整求值时完全不碰它。折叠器**不**另存一份，因此逐笔前推的
+    /// 每步深拷贝只剩步长点进 `stride` 的那一份（每 `RESUME_STRIDE` 步一次），
+    /// 其余步数为零拷贝——`fold()` 的每步一份拷贝由此降为 1/32。
+    ///
+    /// **守卫（任一不符 ⇒ 回完整求值，结果仍正确，只是慢一次）**：
+    /// ① 跟踪头不存在；② 交回状态的 `head_seq` ≠ 跟踪头 seq（例如段回滚后
+    /// 文档状态被还回段首，而折叠器跟踪头仍在段后）；③ 交回状态的求值起点
+    /// `eval_origin_seq()` ≠ 跟踪头起点；④ 往回折（`n < 跟踪头 seq`）。
+    /// 守卫成立的唯一依据是"日志只追加 + 折叠确定"：同一 seq 的同一日志前缀
+    /// 折出来必是同一状态，交回的状态只要 seq 与起点都对上就是跟踪头那份。
+    /// 完整求值失败时 `base_state` 原样不动（老 `fold()` 路径失败时文档状态
+    /// 本就原样不动），调用方仍可重试；前推／续折本身不失败
+    /// （`fold_atoms` 不返回 `Result`），取走状态后没有失败出口。
+    pub fn fold_from(
+        &mut self,
+        log: &AtomLog,
+        base_state: &mut DocumentState,
+        n: Seq,
+    ) -> Result<StateAt> {
+        let Some(head) = self.last.take() else {
+            return self.full_fold(log, n, false);
+        };
+        // 守卫：交回的状态必须就是跟踪头那一份，否则回完整求值。
+        if head.seq != base_state.head_seq
+            || head.origin_seq != base_state.eval_origin_seq()
+            || head.seq > n
+        {
+            self.last = Some(head);
+            return self.full_fold(log, n, false);
+        }
+        if head.seq == n {
+            let result = StateAt {
+                seq: n,
+                origin_seq: head.origin_seq,
+                state: std::mem::take(base_state),
+                suppressed: self.reported_suppressed(),
+                warnings: head.warnings.clone(),
+            };
+            self.last = Some(TrackedHead {
+                seq: head.seq,
+                origin_seq: head.origin_seq,
+                warnings: head.warnings,
+                state: None,
+            });
+            return Ok(result);
+        }
+        let slice = log.range_exclusive_inclusive(head.seq, n);
+        if slice.iter().any(|atom| atom.kind == AtomKind::DeclareHead) {
+            self.last = Some(head);
+            return self.full_fold(log, n, false);
+        }
+        let base_seq = head.seq;
+        let origin = head.origin_seq;
+        let base_warnings = head.warnings;
+        // 注意：`head.state`（若有）在这里直接丢弃——守卫已确认交回的
+        // `base_state` 就是同一份状态，留两份是浪费；前推用交回的那份。
+        match self.plan_fold(log, base_seq, origin, n) {
+            Some(FoldPlan::Push) => Ok(self.apply_plan(
+                ApplyCtx {
+                    log,
+                    base_seq,
+                    origin,
+                    base_warnings,
+                    base_state: Some(std::mem::take(base_state)),
+                    n,
+                    retain: false,
+                },
+                FoldPlan::Push,
+            )),
+            Some(plan) => Ok(self.apply_plan(
+                ApplyCtx {
+                    log,
+                    base_seq,
+                    origin,
+                    base_warnings,
+                    base_state: None,
+                    n,
+                    retain: false,
+                },
+                plan,
+            )),
+            None => self.full_fold(log, n, false),
+        }
+    }
+
+    /// 快路径记账：只动 `actions`/`cache`/`stride`，不碰状态本体。
+    ///
+    /// 因此调用方在它返回 `None`（回完整求值）时仍可保住 base 状态——
+    /// `fold_from` 的失败恢复就靠这一点：完整求值失败时交回的状态原样不动。
+    /// 记账本身即使随后走了完整求值也不会错：完整求值开头就把 `actions`
+    /// 整表重算，而被剔除的缓存／还原点本来就是翻转点之后陈旧的。
+    fn plan_fold(&mut self, log: &AtomLog, base_seq: Seq, origin: Seq, n: Seq) -> Option<FoldPlan> {
+        let slice = log.range_exclusive_inclusive(base_seq, n);
         // 一、把新增区的撤销动作并进有效集，得到"撤销状态真的变了"的原子。
         let changed = match self.actions.extend(slice, log, origin) {
             Some(changed) => changed,
@@ -509,57 +691,96 @@ impl IncrementalFolder {
         let earliest = changed
             .iter()
             .filter_map(|id| log.get(id).map(|atom| (atom.seq, atom.kind)))
-            .filter(|(seq, kind)| *seq <= last_seq && affects_fold(*kind))
+            .filter(|(seq, kind)| *seq <= base_seq && affects_fold(*kind))
             .map(|(seq, _)| seq)
             .min();
 
-        let StateAt {
-            state,
-            warnings: base_warnings,
-            ..
-        } = last;
-
         let Some(earliest) = earliest else {
             // 前推：已折叠区间的有效集没变，只折新增区间。
-            let folded = fold_atoms(state, slice);
-            let mut state = folded.state;
-            state.head_seq = state.head_seq.max(n);
-            let result = StateAt {
-                seq: n,
-                origin_seq: origin,
-                state,
-                suppressed: self.reported_suppressed(),
-                warnings: chain_warnings(&base_warnings, &folded.warnings),
-            };
-            self.incremental_steps += 1;
-            self.replayed_atoms += slice.len();
-            return Ok(self.remember(result));
+            return Some(FoldPlan::Push);
         };
 
         // 四、续折：从"变化点之前最近的还原点"重新折叠，而不是从 seq 0。
-        let Some(base) = self.resume_before(earliest, origin) else {
-            return self.full_fold(log, n);
-        };
-        let head = log.range_exclusive_inclusive(base.seq, n);
-        let StateAt {
-            state: base_state,
-            warnings: base_warnings,
-            ..
-        } = base;
-        let folded = fold_atoms(base_state, head);
-        let mut state = folded.state;
-        state.head_seq = state.head_seq.max(n);
-        let result = StateAt {
-            seq: n,
-            origin_seq: origin,
-            state,
-            suppressed: self.reported_suppressed(),
-            warnings: chain_warnings(&base_warnings, &folded.warnings),
-        };
-        self.incremental_steps += 1;
-        self.rebase_steps += 1;
-        self.replayed_atoms += head.len();
-        Ok(self.remember(result))
+        //     找不到还原点 ⇒ 回完整求值。
+        let base = self.resume_before(earliest, origin)?;
+        Some(FoldPlan::Rebase(Box::new(base)))
+    }
+
+    /// 执行前推／续折，把结果记进跟踪头并返回。
+    ///
+    /// 前推用 `base_state`（调用方交回的状态本体，按值取走）；续折不用它
+    /// （从还原点重折），此时传 `None`。两者本身都不失败（`fold_atoms`
+    /// 不返回 `Result`），所以调用方取走状态后没有失败出口。
+    fn apply_plan(&mut self, ctx: ApplyCtx<'_>, plan: FoldPlan) -> StateAt {
+        match plan {
+            FoldPlan::Push => {
+                let state = ctx.base_state.expect("前推必须有调用方交回的状态本体");
+                let slice = ctx.log.range_exclusive_inclusive(ctx.base_seq, ctx.n);
+                let folded = fold_atoms(state, slice);
+                let mut state = folded.state;
+                state.head_seq = state.head_seq.max(ctx.n);
+                let result = StateAt {
+                    seq: ctx.n,
+                    origin_seq: ctx.origin,
+                    state,
+                    suppressed: self.reported_suppressed(),
+                    warnings: chain_warnings(&ctx.base_warnings, &folded.warnings),
+                };
+                self.incremental_steps += 1;
+                self.replayed_atoms += slice.len();
+                self.retain_result(result, ctx.retain)
+            }
+            FoldPlan::Rebase(point) => {
+                let point = *point;
+                let head = ctx.log.range_exclusive_inclusive(point.seq, ctx.n);
+                let StateAt {
+                    state: point_state,
+                    warnings: point_warnings,
+                    ..
+                } = point;
+                let folded = fold_atoms(point_state, head);
+                let mut state = folded.state;
+                state.head_seq = state.head_seq.max(ctx.n);
+                let result = StateAt {
+                    seq: ctx.n,
+                    origin_seq: ctx.origin,
+                    state,
+                    suppressed: self.reported_suppressed(),
+                    warnings: chain_warnings(&point_warnings, &folded.warnings),
+                };
+                self.incremental_steps += 1;
+                self.rebase_steps += 1;
+                self.replayed_atoms += head.len();
+                self.retain_result(result, ctx.retain)
+            }
+        }
+    }
+
+    /// 记录一次求值结果：更新跟踪头与还原点阶梯。
+    ///
+    /// `retain = true`（`fold()` 老路径）：跟踪头保留状态本体——每折一次
+    /// 深拷贝一份。`retain = false`（`fold_from()` 热路径）：跟踪头只留
+    /// seq/起点/警告，状态本体由调用方持有——逐笔前推不再付这份拷贝。
+    /// 两种路径在步长点都另留一份进 `stride`（撤销旧原子时续折的还原点，
+    /// resume-before 语义就靠它；不留它，第一次撤销旧原子就得从 0 重来）。
+    fn retain_result(&mut self, result: StateAt, retain: bool) -> StateAt {
+        if result.seq % RESUME_STRIDE == 0 {
+            self.stride.push_back((result.seq, result.clone()));
+            while self.stride.len() > STRIDE_CAPACITY {
+                self.stride.pop_front();
+            }
+        }
+        self.last = Some(TrackedHead {
+            seq: result.seq,
+            origin_seq: result.origin_seq,
+            warnings: result.warnings.clone(),
+            state: if retain {
+                Some(result.state.clone())
+            } else {
+                None
+            },
+        });
+        result
     }
 
     /// 折叠到当前 head。
@@ -617,7 +838,10 @@ impl IncrementalFolder {
     }
 
     /// 完整求值（与 [`FoldEngine::fold`] 同一条路），并重建有效集记账。
-    fn full_fold(&mut self, log: &AtomLog, n: Seq) -> Result<StateAt> {
+    ///
+    /// `retain` 的含义与 [`Self::retain_result`] 相同：`fold()` 路径保留状态
+    /// 本体，`fold_from()` 路径不保留（状态本体由调用方持有）。
+    fn full_fold(&mut self, log: &AtomLog, n: Seq, retain: bool) -> Result<StateAt> {
         self.actions = EffectiveActions::from_atoms(log.atoms_upto(n));
         // 整条区间内没有 `declare_head` ⇒ 完整求值就是"从空白折 (0, n]" ⇒ 顺手
         // 在**同一趟**里留下还原点阶梯（每多一个点只多一次深拷贝，不多扫一趟）。
@@ -649,7 +873,7 @@ impl IncrementalFolder {
             .collect();
         self.full_steps += 1;
         self.replayed_atoms += n as usize;
-        Ok(self.remember(result))
+        Ok(self.retain_result(result, retain))
     }
 
     /// 从空白折 `(0, n]`，沿途在几何级数的 seq 上留还原点。
@@ -710,23 +934,6 @@ impl IncrementalFolder {
             suppressed: skip,
             warnings,
         }
-    }
-
-    /// 记录一次求值结果：更新上一次状态与还原点阶梯。
-    ///
-    /// **故意不往 [`StateAtCache`] 里塞** ✓：真实 4K 画作的 `StateAt` 深拷贝约 ~15ms ✓，
-    /// 而"逐 seq 的密集还原点"每折一次就要多拷一份 ✗ ⇒ 实测总耗时反而上升 ✓。
-    /// 还原点改为**按步长采样**（`RESUME_STRIDE`）✓：既保住"撤销旧原子时不必从 0 重来"✓，
-    /// 又把每折一次的深拷贝压到 **1 份**（只给 `self.last` ✓）。
-    fn remember(&mut self, result: StateAt) -> StateAt {
-        if result.seq % RESUME_STRIDE == 0 {
-            self.stride.push_back((result.seq, result.clone()));
-            while self.stride.len() > STRIDE_CAPACITY {
-                self.stride.pop_front();
-            }
-        }
-        self.last = Some(result.clone());
-        result
     }
 }
 
@@ -1651,6 +1858,227 @@ mod tests {
             folder.fold_head(log).unwrap(),
             cold_head,
             "head 处增量结果必须与冷重放逐字段一致"
+        );
+    }
+
+    /// **期 B 判据 1**：`fold_from()`（调用方持有状态本体）逐条前推，
+    /// 每一步都必须与冷重放逐字段一致——含撤销旧原子走续折的步。
+    ///
+    /// 模拟服务端 `Document`：每步把上一步返回的状态本体原样交回下一步，
+    /// 折叠器自己不留它。终态还要序列化逐字节相同（MCP 层"resume 重放逐字节
+    /// 相同"的单测版）。
+    #[test]
+    fn fold_from_matches_full_replay_stepwise_with_reverts() {
+        let log = history_with_reverts(120);
+        let head = log.head_seq();
+        let mut folder = IncrementalFolder::new();
+        let mut doc_state = DocumentState::empty();
+        let mut rebased = false;
+        for n in 1..=head {
+            let incremental = folder.fold_from(&log, &mut doc_state, n).unwrap();
+            let cold = state_at(&log, n, &mut StateAtCache::new()).unwrap();
+            assert!(
+                incremental == cold,
+                "seq {n} 处 fold_from 与冷重放分歧（state/suppressed/warnings）"
+            );
+            if folder.rebase_steps() > 0 {
+                rebased = true;
+            }
+            doc_state = incremental.state;
+        }
+        assert!(
+            rebased,
+            "撤销旧原子应至少走一次续折，否则没测到 stride 还原点"
+        );
+        let cold_head = state_at(&log, head, &mut StateAtCache::new()).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&doc_state).unwrap(),
+            serde_json::to_vec(&cold_head.state).unwrap(),
+            "终态序列化必须逐字节相同"
+        );
+    }
+
+    /// **期 B 判据 2**：`fold_from()` 步只在步长点留状态本体。
+    ///
+    /// 每步之后跟踪头的 `state` 必须为 `None`（调用方持有那份，折叠器不另拷）；
+    /// `stride` 里只在 32 的倍数处有还原点，非步长点不得出现。
+    /// 变异验证：把 `retain_result` 的 `retain = false` 分支改成保留状态本体，
+    /// 第一个 `state.is_none()` 断言立刻红。
+    #[test]
+    fn fold_from_retains_state_only_at_stride_points() {
+        let mut log = chain();
+        for i in 0..80 {
+            push(
+                &mut log,
+                atom(
+                    AtomKind::CreateObject,
+                    &format!("a_s_{i}"),
+                    json!({"object_id": format!("obj_s_{i}"), "layer_id": "layer_1", "type": "stroke"}),
+                ),
+            );
+        }
+        let head = log.head_seq();
+        assert!(head >= 64, "日志要盖过两个步长点");
+        let mut folder = IncrementalFolder::new();
+        let mut doc_state = DocumentState::empty();
+        for n in 1..=head {
+            let incremental = folder.fold_from(&log, &mut doc_state, n).unwrap();
+            let cold = state_at(&log, n, &mut StateAtCache::new()).unwrap();
+            assert_eq!(incremental, cold, "seq {n} 处 fold_from 必须与冷重放一致");
+            let tracked = folder.last.as_ref().expect("每步后跟踪头必须存在");
+            assert!(
+                tracked.state.is_none(),
+                "seq {n} 处跟踪头不得保留状态本体（应由调用方持有）"
+            );
+            doc_state = incremental.state;
+        }
+        let stride_seqs: Vec<Seq> = folder.stride.iter().map(|(seq, _)| *seq).collect();
+        assert!(
+            stride_seqs.contains(&32),
+            "步长点 32 必须有还原点，实际 stride={stride_seqs:?}"
+        );
+        assert!(
+            stride_seqs.contains(&64),
+            "步长点 64 必须有还原点，实际 stride={stride_seqs:?}"
+        );
+        assert!(
+            !stride_seqs.contains(&33),
+            "非步长点 33 不得有还原点，实际 stride={stride_seqs:?}"
+        );
+    }
+
+    /// **期 B 判据 3**：交回的状态与跟踪头对不上时必须回完整求值、结果仍正确。
+    ///
+    /// 故意把一份旧状态（seq 5）当成当前状态（seq 13）交回：若守卫被删、
+    /// 快路径拿着旧状态只折新增区间，对象 6..13 就会丢，结果与冷重放分歧。
+    /// 回退后下一笔用正确状态仍能继续前推（回退没有把折叠器置于坏状态）。
+    #[test]
+    fn fold_from_falls_back_when_base_seq_mismatches() {
+        let mut log = chain();
+        for i in 0..10 {
+            push(
+                &mut log,
+                atom(
+                    AtomKind::CreateObject,
+                    &format!("a_m_{i}"),
+                    json!({"object_id": format!("obj_m_{i}"), "layer_id": "layer_1", "type": "stroke"}),
+                ),
+            );
+        }
+        let mut folder = IncrementalFolder::new();
+        let mut doc_state = DocumentState::empty();
+        for n in 1..=log.head_seq() {
+            let step = folder.fold_from(&log, &mut doc_state, n).unwrap();
+            doc_state = step.state;
+        }
+        assert_eq!(folder.last.as_ref().unwrap().seq, 13);
+        // 另起一个折叠器折到 5，拿到一份 seq 5 的旧状态。
+        let mut early = IncrementalFolder::new();
+        let mut early_state = DocumentState::empty();
+        for n in 1..=5 {
+            let step = early.fold_from(&log, &mut early_state, n).unwrap();
+            early_state = step.state;
+        }
+        assert_eq!(early_state.head_seq, 5);
+        // 再追加一笔，拿旧状态当 current 交回：必须回完整求值。
+        push(
+            &mut log,
+            atom(
+                AtomKind::CreateObject,
+                "a_m_new",
+                json!({"object_id": "obj_m_new", "layer_id": "layer_1", "type": "stroke"}),
+            ),
+        );
+        let head = log.head_seq();
+        assert_eq!(head, 14);
+        let mut wrong_base = early_state;
+        let recovered = folder.fold_from(&log, &mut wrong_base, head).unwrap();
+        let cold = state_at(&log, head, &mut StateAtCache::new()).unwrap();
+        assert_eq!(
+            recovered, cold,
+            "守卫回退后的结果必须与冷重放一致（旧状态不得被当成 current）"
+        );
+        // 回退后用正确状态继续一笔，仍能前推且与冷重放一致。
+        push(
+            &mut log,
+            atom(
+                AtomKind::CreateObject,
+                "a_m_new2",
+                json!({"object_id": "obj_m_new2", "layer_id": "layer_1", "type": "stroke"}),
+            ),
+        );
+        let head2 = log.head_seq();
+        let mut doc_state2 = recovered.state;
+        let next = folder.fold_from(&log, &mut doc_state2, head2).unwrap();
+        assert_eq!(
+            next,
+            state_at(&log, head2, &mut StateAtCache::new()).unwrap(),
+            "回退后下一笔必须能正常前推"
+        );
+    }
+
+    /// **期 B 判据 4**：`fold_from()` 跨 `declare_head` 跳变仍与冷重放一致。
+    ///
+    /// 跳变步走完整求值（不拿旧状态当前推），跳变后新起点下的前推也要对：
+    /// 交回状态的 `eval_origin_seq()` 必须与跟踪头的新起点对上，否则守卫
+    /// 会回完整求值——结果仍正确，但这里断言前推确实发生了（`full_steps`
+    /// 在跳变后不再涨），证明起点记账接上了。
+    #[test]
+    fn fold_from_survives_declare_head_jump() {
+        let mut log = chain();
+        push(
+            &mut log,
+            atom(
+                AtomKind::Supersede,
+                "a_super",
+                json!({"object_id": "obj_1", "data": {"v": 2}}),
+            ),
+        );
+        let engine = FoldEngine::new();
+        let head_atom = engine
+            .revert_to_atom("human:1", "session:a", "a_layer")
+            .with_id("a_head");
+        push(&mut log, head_atom);
+        push(
+            &mut log,
+            atom(
+                AtomKind::CreateObject,
+                "a_obj2",
+                json!({"object_id": "obj_2", "layer_id": "layer_1", "type": "shape"}),
+            ),
+        );
+        let head = log.head_seq();
+        let mut folder = IncrementalFolder::new();
+        let mut doc_state = DocumentState::empty();
+        for n in 1..=head {
+            let step = folder.fold_from(&log, &mut doc_state, n).unwrap();
+            assert_eq!(
+                step,
+                state_at(&log, n, &mut StateAtCache::new()).unwrap(),
+                "seq {n} 处 fold_from（含跳变）必须与冷重放一致"
+            );
+            doc_state = step.state;
+        }
+        let full_after_jump = folder.full_steps();
+        push(
+            &mut log,
+            atom(
+                AtomKind::CreateObject,
+                "a_obj3",
+                json!({"object_id": "obj_3", "layer_id": "layer_1", "type": "shape"}),
+            ),
+        );
+        let head2 = log.head_seq();
+        let step = folder.fold_from(&log, &mut doc_state, head2).unwrap();
+        assert_eq!(
+            step,
+            state_at(&log, head2, &mut StateAtCache::new()).unwrap(),
+            "跳变后一笔必须与冷重放一致"
+        );
+        assert_eq!(
+            folder.full_steps(),
+            full_after_jump,
+            "跳变后一笔应当前推，不应再完整求值"
         );
     }
 }
