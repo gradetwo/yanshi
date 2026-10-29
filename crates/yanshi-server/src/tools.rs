@@ -16686,6 +16686,35 @@ pub(crate) fn effective_color_space(
     }
 }
 
+/// **报告 4 P4：未传 `color_space` 且浮点色走了线性直通时的回执 warning 判据**。
+///
+/// 触发条件（缺一不可，全部按量级切换的既有口径，不另起规则）：
+/// * `color_space` 参数缺省（`None`，含显式 `null`）；
+/// * `color` 或 `color_to` 任一是浮点数组且按 [`effective_color_space`] 走了线性解释
+///   （全分量 ≤ 1 ⇒ `"linear"`）。
+///
+/// 不触发：显式传了 `"srgb"`／`"linear"`；字节数组（任一分量 > 1 ⇒ `"srgb_bytes"`）；
+/// 对象式／hex（恒为字节）；没给颜色。
+///
+/// 只产文案：调用方把它 push 进已有的 `warnings` 数组，不改任何现有字段语义、不改像素
+/// （判据函数本身是纯函数；落笔处的调用点也在提交之后、只改回执 `Value`）。
+pub(crate) fn default_linear_color_warning(
+    color: Option<&Value>,
+    color_to: Option<&Value>,
+    space: Option<yanshi_render::color::ColorSpace>,
+) -> Option<String> {
+    if space.is_some() {
+        return None;
+    }
+    let walked_linear = [color, color_to]
+        .into_iter()
+        .flatten()
+        .any(|value| value.is_array() && effective_color_space(value, None) == "linear");
+    walked_linear.then(|| {
+        "未传 color_space：本次颜色按线性直通解释（浮点数组 0..1 直接当线性值），未按 sRGB 解码——同值会比显式传 color_space=\"srgb\" 时更亮；缺省未改，如需 sRGB 解释请显式传 color_space=\"srgb\"".to_owned()
+    })
+}
+
 /// **本次调用生效参数的回显对象** ✓（A5：只加在 `brush_stroke`／`medium_stroke` 回执 ✓）。
 ///
 /// 取值一律是**实际生效**的，不是调用方原话的复述 ✓：`wait_for_render`／`wait_budget_ms`／

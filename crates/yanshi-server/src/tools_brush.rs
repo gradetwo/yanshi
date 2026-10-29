@@ -1805,6 +1805,19 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             }
         }
     }
+    // **报告 4 P4：缺省线性直通 warning**（只加回执字段，不改像素与现有字段）：
+    //   不传 color_space 且 color / color_to 实际走了线性直通解释时进已有的 `warnings`
+    //   数组（与上面各条同一形态：已有就 push，没有就建）；显式传空间、字节色、
+    //   对象式 / hex、没给颜色时判据函数返回 None，不报。判据见 `default_linear_color_warning`。
+    //   调用点在提交之后：只改回执 `Value`，已落库的像素不受影响。
+    if let Some(note) =
+        default_linear_color_warning(Some(&color_source), Some(&color_to_source), color_space)
+    {
+        match value.get_mut("warnings") {
+            Some(Value::Array(items)) => items.push(json!(note)),
+            _ => value["warnings"] = json!([note]),
+        }
+    }
     Ok(value)
 }
 

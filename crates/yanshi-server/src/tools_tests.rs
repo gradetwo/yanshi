@@ -1693,6 +1693,65 @@ fn parse_color_space_arg_accepts_only_srgb_and_linear() {
     );
 }
 
+/// 报告 4 P4：`default_linear_color_warning` 只在「不传空间 + 浮点色走线性」时报。
+///
+/// **变异**：判据恒报 ⇒ 显式 srgb 臂与字节臂红；判据恒不报 ⇒ 缺省浮点臂红；
+/// 文案删「线性」或「更亮」任一词 ⇒ 文案臂红。
+#[test]
+fn default_linear_color_warning_only_for_default_float_linear() {
+    use yanshi_render::color::ColorSpace;
+    // 触发：不传空间 + 浮点色（报告 4 探针同值）。
+    let note = default_linear_color_warning(Some(&json!([0.5, 0.2, 0.2])), None, None)
+        .expect("不传空间 + 浮点色必须报 warning");
+    assert!(
+        note.contains("线性") && note.contains("更亮"),
+        "文案必须同时说明线性直通与同值更亮：{note}"
+    );
+    assert!(
+        note.contains("color_space=\"srgb\""),
+        "文案必须给出显式 srgb 的出路：{note}"
+    );
+    // 触发：color_to 单独是浮点色时同样走了线性解释，也报。
+    assert!(
+        default_linear_color_warning(None, Some(&json!([0.5, 0.2, 0.2])), None).is_some(),
+        "color_to 浮点色在缺省下同样走线性，也应报"
+    );
+    // 不触发：显式传了空间（srgb 与 linear 都不报——显式即知情）。
+    assert!(
+        default_linear_color_warning(Some(&json!([0.5, 0.2, 0.2])), None, Some(ColorSpace::Srgb))
+            .is_none(),
+        "显式 srgb 不应触发本 warning"
+    );
+    assert!(
+        default_linear_color_warning(
+            Some(&json!([0.5, 0.2, 0.2])),
+            None,
+            Some(ColorSpace::Linear)
+        )
+        .is_none(),
+        "显式 linear 不应触发本 warning（显式即知情）"
+    );
+    // 不触发：字节色（量级切换到 0–255，不是线性直通）。
+    assert!(
+        default_linear_color_warning(Some(&json!([128, 51, 51])), None, None).is_none(),
+        "字节色不是线性直通，不应触发"
+    );
+    // 不触发：对象式 / hex / 没给颜色。
+    assert!(
+        default_linear_color_warning(Some(&json!({"r": 128, "g": 51, "b": 51})), None, None)
+            .is_none(),
+        "对象式恒为字节，不应触发"
+    );
+    assert!(
+        default_linear_color_warning(Some(&json!("#803333")), None, None).is_none(),
+        "hex 恒为字节，不应触发"
+    );
+    assert!(
+        default_linear_color_warning(None, None, None).is_none(),
+        "没给颜色时没有调用方颜色走线性，不应触发"
+    );
+}
+
 /// 显式 `color_space` 下的回显（C1）：回显的是**生效值**，不是原话 ——
 /// 对象式 / hex 传了显式空间也不认领它。
 ///
