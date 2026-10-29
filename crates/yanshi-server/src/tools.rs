@@ -21589,6 +21589,21 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     if optional_bool(args, "silent").unwrap_or(true) {
         ctx.silent = true;
     }
+    // **batch 顶层 `wait_for_render`**（反馈报告 2 期 1）：批量作画一键开关 ✓。
+    //   不给 ⇒ 各子调用按自己的值（单笔缺省 `true` ✓），行为与以前一致 ✓；
+    //   给了 ⇒ 成为子调用**未显式指定时**的缺省 ✓，子调用显式值只对自己那一笔生效 ✓
+    //     （下一笔回到批值 ✓）；`smart_*` 系内层笔触走自己的 `set_inner_wait_for_render`
+    //     缺省 `false`，不受批值改写 ✓ —— 批值只管**直接**子调用 ✓。
+    //   批值本身不改单笔缺省 ✓（双缺省 `true` 不动 ✓）。
+    let batch_wait = optional_bool(args, "wait_for_render");
+    let previous_wait = ctx.wait_for_render;
+    if let Some(wait) = batch_wait {
+        ctx.set_wait_for_render(wait);
+    }
+    // **`preview` 也按子调用隔离** ✓（与 `wait` 同一条规矩 ✓）：`brush_stroke` 的
+    //   `preview` 只写 `ctx` 不读回执 ⇒ 不隔离就会漏给下一个子调用 ✓
+    //   （`draw_shape` 这类带预览回执的工具会被连累 ✓）。
+    let previous_preview = ctx.preview;
     // **长批次中途的预览**（测试报告 §一.4）✓：`batch` 在一个循环里跑完 ✓ ⇒ 单线程服务下
     // 这期间别的写盘路径没有机会 ⇒ `render.png` 会冻结"整批时长" ✗（实测 300 笔 ⇒ 4~6 分钟 ✓）。
     // 这两个参数让**循环内部**周期性放行一次预览 ✓（默认 0 ⇒ **行为完全不变** ✓）。
@@ -21650,6 +21665,10 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         if want_preview {
             ctx.silent = false;
         }
+        // **子调用的 `wait`／`preview` 只对自己生效** ✓：子调用 handler 会从自己的参数
+        //   改写共享 `ctx` ✓ ⇒ 跑完必须还原 ✓，否则漏给下一笔 ✓（`silent` 同一条规矩 ✓）。
+        let saved_wait = ctx.wait_for_render;
+        let saved_preview = ctx.preview;
         let name = call
             .get("tool")
             .or_else(|| call.get("name"))
@@ -21658,6 +21677,8 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         if name == "batch" {
             ctx.changeset = previous;
             ctx.batch_message = previous_message;
+            ctx.set_wait_for_render(previous_wait);
+            ctx.preview = previous_preview;
             return Err(YanshiError::new(
                 ErrorCode::InvalidArgument,
                 ErrorContext::detail("batch 不允许嵌套"),
@@ -21720,6 +21741,14 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 rendered
             }
         };
+        // **还原** ✓：批值在 ⇒ 回到批值（下一笔的缺省 ✓）；没批值 ⇒ 回到本笔之前的值 ✓
+        //   （子调用显式值不漏给下一笔 ✓）。
+        if let Some(wait) = batch_wait {
+            ctx.set_wait_for_render(wait);
+        } else {
+            ctx.set_wait_for_render(saved_wait);
+        }
+        ctx.preview = saved_preview;
         if let Some(atom_id) = value.get("atom_id").and_then(Value::as_str) {
             atom_ids.push(json!(atom_id));
         }
@@ -21775,6 +21804,8 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **还原静默标志** ✓：`ctx` 是**共享**的 ✓ ⇒ 不还原就会**漏到 batch 之后的调用** ✗
     //（那些调用本该照常带预览 ✓）。**共享上下文里"改了就要还原"** ✓ —— 与 `changeset` 同一规矩 ✓。
     ctx.silent = previous_silent;
+    ctx.set_wait_for_render(previous_wait);
+    ctx.preview = previous_preview;
     // **取消 ⇒ 整批回滚** ✓（P1）：先还原上下文 ✓，再撤销 ✓ ——
     // 撤销本身要提交原子（`ctx.commit` ✓），所以必须放在"取消检查"之外 ✓
     //（见 `ToolContext::check_cancelled` 的说明 ✓）。
@@ -21918,6 +21949,9 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         "stopped_early": false,
         // **A 期**：正常回执同样附两个上限的当前值（只加字段，便于调用方事前核对水位与预算 ✓）。
         "memory_limits": batch_memory_limits_json(),
+        // **批值回显** ✓（反馈报告 2 期 1）：证明顶层 `wait_for_render` 被读过 ✓
+        //   （`null` = 没给，走各子调用自己的值 ✓）。
+        "wait_for_render": batch_wait.map(Value::Bool).unwrap_or(Value::Null),
         "calls": results,
         "stroke_evidence": stroke_evidence,
         "count": results.len(),
