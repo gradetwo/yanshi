@@ -532,7 +532,10 @@ mod tests {
         let report =
             verify_package_bytes(&pack(&atoms, "include_bitmaps: false\n"), &r3_replayable)
                 .expect("包应当验得出来");
-        assert_eq!(report.omitted, 1, "3 笔共享 1 哈希 ⇒ omitted 计 1，不是 3：{report:?}");
+        assert_eq!(
+            report.omitted, 1,
+            "3 笔共享 1 哈希 ⇒ omitted 计 1，不是 3：{report:?}"
+        );
         assert_eq!(report.missing_body, 0, "{report:?}");
         assert!(report.complete, "{report:?}");
         assert_eq!(report.omitted_hashes, vec![hash], "{report:?}");

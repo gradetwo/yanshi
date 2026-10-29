@@ -579,7 +579,11 @@ fn p5_three_brush_strokes_judged_by_payload_not_envelope() {
                 && atom.get("brush").and_then(Value::as_str).is_some()
         })
         .collect();
-    assert_eq!(listed_brush.len(), 3, "list_atoms 里 3 笔 drawn 笔触：{listed}");
+    assert_eq!(
+        listed_brush.len(),
+        3,
+        "list_atoms 里 3 笔 drawn 笔触：{listed}"
+    );
     assert!(
         listed_brush
             .iter()
@@ -695,7 +699,11 @@ fn photo_body_loss_is_real_not_replayable() {
     std::fs::write(&doctored_path, &doctored).expect("写回");
     let after = verify(&mut workspace, "doc_photo", &doctored_path);
     assert_eq!(after["ok"], json!(true), "{after}");
-    assert_eq!(after["complete"], json!(false), "照片本体缺失必须判不合格：{after}");
+    assert_eq!(
+        after["complete"],
+        json!(false),
+        "照片本体缺失必须判不合格：{after}"
+    );
     assert_eq!(after["missing_body"], json!(1), "{after}");
     assert_eq!(after["omitted"], json!(0), "{after}");
     let _ = std::fs::remove_dir_all(&root);
@@ -803,7 +811,11 @@ fn stripped_origin_on_old_log_still_derives_drawn() {
     std::fs::write(&stripped_path, write_tar(&entries)).expect("写回");
     let after = verify(&mut workspace, "doc_old", &stripped_path);
     assert_eq!(after["ok"], json!(true), "{after}");
-    assert_eq!(after["complete"], json!(true), "老日志派生后仍应完整：{after}");
+    assert_eq!(
+        after["complete"],
+        json!(true),
+        "老日志派生后仍应完整：{after}"
+    );
     assert_eq!(
         after["omitted"].as_u64().unwrap(),
         before_omitted,

@@ -2963,9 +2963,7 @@ impl Workspace {
                     continue;
                 }
                 match payload.get("source") {
-                    Some(source)
-                        if crate::tools::brush_source_is_replayable(self, source) =>
-                    {
+                    Some(source) if crate::tools::brush_source_is_replayable(self, source) => {
                         pending.push((hash, source.clone()));
                     }
                     // 没有重跑路径 ⇒ 直接记补不回来，不静默跳过。
