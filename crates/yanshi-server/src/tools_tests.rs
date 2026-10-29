@@ -1693,6 +1693,108 @@ fn parse_color_space_arg_accepts_only_srgb_and_linear() {
     );
 }
 
+/// 报告 5/6 第 6 项：`mixed_color_space_warning` 只在「显式 linear＋渐变两端异族」时报。
+///
+/// 钉死定义：数组端（显式 linear 下线性直通）与对象式／hex 端（恒为 sRGB 字节）同现一笔。
+/// 与报告 4 P4 分工：P4 要求空间缺省，本判据要求空间显式 linear，两谓词空间不交，合入后
+/// 同一笔永不因这两项得两条 warning。
+///
+/// **变异**：判据恒报 ⇒ 显式 srgb 臂、同族臂、单色臂红；判据恒不报 ⇒ 两触发臂红；
+/// 文案删「混写」或「linear」任一词 ⇒ 文案臂红。
+#[test]
+fn mixed_color_space_warning_only_for_explicit_linear_gradient_mix() {
+    use yanshi_render::color::ColorSpace;
+    let linear = Some(ColorSpace::Linear);
+    let srgb = Some(ColorSpace::Srgb);
+    // 触发：数组端＋对象式端，两个方向都算混写。
+    let note = mixed_color_space_warning(
+        Some(&json!([0.47, 0.353, 0.235])),
+        Some(&json!({"r": 120, "g": 90, "b": 60})),
+        linear,
+    )
+    .expect("显式 linear＋数组／对象式两端必须报 warning");
+    assert!(
+        note.contains("混写") && note.contains("linear"),
+        "文案必须同时说明混写与显式 linear：{note}"
+    );
+    assert!(
+        note.contains("同一写法"),
+        "文案必须给出统一写法的出路：{note}"
+    );
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!({"r": 120, "g": 90, "b": 60})),
+            Some(&json!([0.47, 0.353, 0.235])),
+            linear,
+        )
+        .is_some(),
+        "反向（对象式起点＋数组末端）同样是混写，也应报"
+    );
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!([0.47, 0.353, 0.235])),
+            Some(&json!("#785A3C")),
+            linear,
+        )
+        .is_some(),
+        "数组端＋hex 端同样是混写，也应报"
+    );
+    // 不触发：不传空间——两端口径不同时属 P4（缺省线性）覆盖，本判据不抢报。
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!([120, 90, 60])),
+            Some(&json!([0.5, 0.2, 0.2])),
+            None,
+        )
+        .is_none(),
+        "不传空间时本判据不报（P4 的地盘，合入后不重复）"
+    );
+    // 不触发：显式 srgb 时两端全是 sRGB 字节族，不存在混写。
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!([0.47, 0.353, 0.235])),
+            Some(&json!({"r": 120, "g": 90, "b": 60})),
+            srgb,
+        )
+        .is_none(),
+        "显式 srgb 下数组也被解释为 sRGB 字节，不应触发"
+    );
+    // 不触发：两端同族——数组＋数组（同为线性）、对象式＋hex（同为 sRGB 字节）。
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!([0.47, 0.353, 0.235])),
+            Some(&json!([0.5, 0.2, 0.2])),
+            linear,
+        )
+        .is_none(),
+        "数组＋数组同为线性，不应触发"
+    );
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!({"r": 120, "g": 90, "b": 60})),
+            Some(&json!("#785A3C")),
+            linear,
+        )
+        .is_none(),
+        "对象式＋hex 同为 sRGB 字节族（回显词不同而已），不应触发"
+    );
+    // 不触发：只给一端颜色——单色无“两端混写”（相邻的显式空间被忽略项不在本项范围）。
+    assert!(
+        mixed_color_space_warning(Some(&json!({"r": 120, "g": 90, "b": 60})), None, linear)
+            .is_none(),
+        "单色对象式＋显式 linear 不属本项（回执 applied 已照实报 srgb_bytes）"
+    );
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!([0.47, 0.353, 0.235])),
+            Some(&json!(null)),
+            linear,
+        )
+        .is_none(),
+        "color_to 为 null 视同没给，不应触发"
+    );
+}
+
 /// 显式 `color_space` 下的回显（C1）：回显的是**生效值**，不是原话 ——
 /// 对象式 / hex 传了显式空间也不认领它。
 ///
@@ -2397,6 +2499,66 @@ fn delta_distribution_quantiles_follow_the_documented_rule() {
     assert_eq!(dist.changed_pixels, 0);
 }
 
+/// **D-4b 回归：只靠曲线驱动涂抹的笔刷也读画布**。
+///
+/// `wet_round` 的 `smudge`：`base_value = 0`，但 `pressure` 曲线把它推到约 1.0；
+/// 引擎的涂抹门（`stroke.rs` 的 `smudge_mapping_active`）认“`base != 0` 或有输入”，
+/// 服务端旧判定只认 `base_value` ⇒ `fed_base=false`，引擎涂抹只能采本笔自己的墨，
+/// 叠盖的笔触各成扁平胶囊，胶囊轮廓在密集重叠下织成环形网格（干笔软边加抖动不成囊，故无环）。
+#[test]
+fn reads_canvas_counts_curve_driven_smudge() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/brushes/");
+    let wet_text =
+        std::fs::read_to_string(format!("{root}wet_round.myb")).expect("读不到 wet_round.myb");
+    let wet = hokusai::myb::from_str(&wet_text).expect("解析 wet_round.myb 失败");
+    assert_eq!(
+        wet.get(hokusai::BrushSetting::Smudge).base_value,
+        0.0,
+        "本测试的前提是 wet_round 的 smudge 只靠曲线驱动"
+    );
+    assert!(
+        !wet.get(hokusai::BrushSetting::Smudge).inputs.is_empty(),
+        "本测试的前提是 wet_round 的 smudge 带输入曲线"
+    );
+    assert!(
+        super::brush_reads_the_canvas(&wet),
+        "曲线驱动的涂抹也必须喂底图（修前这里是 false，即红）"
+    );
+    let dry_text =
+        std::fs::read_to_string(format!("{root}dry_brush.myb")).expect("读不到 dry_brush.myb");
+    let dry = hokusai::myb::from_str(&dry_text).expect("解析 dry_brush.myb 失败");
+    assert!(
+        !super::brush_reads_the_canvas(&dry),
+        "不涂抹的笔刷仍不读画布"
+    );
+    let knife_text =
+        std::fs::read_to_string(format!("{root}ramon-Knife.myb")).expect("读不到 ramon-Knife.myb");
+    let knife = hokusai::myb::from_str(&knife_text).expect("解析 ramon-Knife.myb 失败");
+    assert!(
+        super::brush_reads_the_canvas(&knife),
+        "base 驱动的涂抹笔刷保持读画布"
+    );
+    // **D-4b 跟进：永不为正的 smudge 曲线不读画布**。
+    //
+    // `Round` 的 `smudge`：`base_value = 0`，但 `pressure` 曲线恒在 [-0.4, 0]，
+    // 钳后永远是 0，从不混画布色；判读画布会把纯红存成与白底合成过的粉色
+    //（半透明单测红）。正值精炼下它必须判 false（旧口径这里是 true，即红）。
+    let round_text = std::fs::read_to_string(format!("{root}Round.myb")).expect("读不到 Round.myb");
+    let round = hokusai::myb::from_str(&round_text).expect("解析 Round.myb 失败");
+    assert_eq!(
+        round.get(hokusai::BrushSetting::Smudge).base_value,
+        0.0,
+        "本测试的前提是 Round 的 smudge 只靠曲线驱动"
+    );
+    assert!(
+        !round.get(hokusai::BrushSetting::Smudge).inputs.is_empty(),
+        "本测试的前提是 Round 的 smudge 带输入曲线"
+    );
+    assert!(
+        !super::brush_reads_the_canvas(&round),
+        "永不为正的 smudge 曲线不读画布（否则纯红存成粉色）"
+    );
+}
 /// **反馈期 1（3.6a）：短路径延长的几何规则** ✓（纯函数，直接测）。
 ///
 /// 口径：触发值是 dab 间距，目标值是 1.5× 间距；等于触发值不延长（正常笔画不动）；
@@ -2660,4 +2822,199 @@ fn release_and_reopen_document_via_registry() {
     assert_eq!(reopened["reopened"], json!(true));
     assert_eq!(reopened["width"], json!(32));
     let _ = std::fs::remove_dir_all(&root);
+}
+
+// **报告 5/6 第 1 项：`estimated_memory_bytes` 口径**（旧口径 `存活对象 × 180`
+// 是序列化量级，实测仅为 RSS 的约 1/882；现口径 = `bytes_per_atom_avg × 原子数`）。
+// 两档探针数直接取自分诊 §1/§6（201 原子 800×600 文档、12098 原子 4K 文档），
+// 单位统一用 MiB；分诊“12098 原子差约 5%”是十进制 GB 与 MiB 混算，
+// 同单位下差 < 0.01%，本测试按同单位断言。
+#[test]
+fn estimated_memory_bytes_uses_per_atom_average_not_180() {
+    // 201 原子档：avg = 30 MiB / 201 = 156503（与探针逐字一致）。
+    let avg_small = (30u64 * 1_024 * 1_024) / 201;
+    assert_eq!(avg_small, 156503, "探针 avg 复算必须一致，否则测试前提已变");
+    let est_small = super::estimate_memory_bytes(Some(30), avg_small, 201, 200);
+    assert_eq!(est_small, 156503 * 201, "estimated 必须等于 avg × 原子数");
+    assert_eq!(est_small, 31_457_103);
+    // 旧口径会给 36000（= 180 × 200），新口径必须是内存量级而非序列化量级。
+    assert_ne!(
+        est_small, 36_000,
+        "旧 180 常量口径必须被改掉（变异：改回 180 即红）"
+    );
+    assert!(
+        est_small > 1_000_000,
+        "201 原子文档的内存估计必须上 MB 量级，实测 {est_small}"
+    );
+    // 取整误差界：0 ≤ rss_bytes − estimated < 原子数（floor 的余数性质）。
+    let rss_bytes_small = 30u64 * 1_024 * 1_024;
+    assert!(rss_bytes_small >= est_small);
+    assert!(
+        rss_bytes_small - est_small < 201,
+        "截断误差必须小于原子数，实测 {}",
+        rss_bytes_small - est_small
+    );
+    // 12098 原子档：avg = 2824 MiB / 12098 = 244765（与探针逐字一致）。
+    let avg_large = (2824u64 * 1_024 * 1_024) / 12_098;
+    assert_eq!(avg_large, 244765, "探针 avg 复算必须一致，否则测试前提已变");
+    let est_large = super::estimate_memory_bytes(Some(2824), avg_large, 12_098, 12_097);
+    assert_eq!(est_large, 244765 * 12_098);
+    let rss_bytes_large = 2824u64 * 1_024 * 1_024;
+    assert!(rss_bytes_large >= est_large);
+    assert!(
+        rss_bytes_large - est_large < 12_098,
+        "大档截断误差必须小于原子数，实测 {}",
+        rss_bytes_large - est_large
+    );
+}
+
+#[test]
+fn estimated_memory_bytes_small_doc_falls_back_to_rss_bytes() {
+    // 原子数 < 100 时 avg 报 0 = 不可判：退为进程 RSS 字节数，仍是内存量级，
+    // 而不是旧口径的数百字节（2 原子文档旧口径只给 360）。
+    let est = super::estimate_memory_bytes(Some(11), 0, 2, 2);
+    assert_eq!(est, 11 * 1_024 * 1_024);
+    // `/proc` 读不到时才退为旧量（内容规模、非内存），且仅此一路保留 180。
+    let est_no_proc = super::estimate_memory_bytes(None, 0, 50, 49);
+    assert_eq!(est_no_proc, 49 * 180);
+}
+
+/// **预算字段收缩版**（feedback5-feat-budget-fields）：`ms_per_stroke_avg` 的
+/// 公式与 0 笔行为。分子是同回执 `timings.total_ms`，3 位小数口径与
+/// `timings` 一致；分母为 0 时字段恒为 0.0（不可判），不是缺失键。
+#[test]
+fn ms_per_stroke_avg_formula_and_zero() {
+    assert_eq!(super::ms_per_stroke_avg(10.0, 4), 2.5);
+    assert!(
+        (super::ms_per_stroke_avg(10.0, 3) - 3.333).abs() < 1e-9,
+        "10/3 应 3 位小数舍入为 3.333，实测 {}",
+        super::ms_per_stroke_avg(10.0, 3)
+    );
+    assert_eq!(
+        super::ms_per_stroke_avg(5.0, 0),
+        0.0,
+        "0 笔时字段取 0.0（不可判），不是缺失、不是 NaN"
+    );
+    assert_eq!(super::ms_per_stroke_avg(0.0, 5), 0.0);
+}
+
+/// 预算字段端到端共用脚手架：内存工作区 + 仓库 assets（笔刷可读）+ 空文档。
+fn budget_fields_setup(doc_id: &str) -> super::Workspace {
+    let mut workspace = super::Workspace::in_memory(crate::document::DocumentSettings::default())
+        .with_assets_dir(Some(std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets"
+        ))));
+    workspace
+        .create_document(
+            crate::document::NewDocument::new(doc_id, 300, 300),
+            "test:1",
+            "s",
+        )
+        .expect("建测试文档");
+    workspace
+}
+
+/// `describe_canvas` 顶层回执带字段，且字段值等于公式值（容差内）；
+/// 其他工具（如 `get_document`）的回执不带该字段——证明“只在两处”。
+#[test]
+fn describe_canvas_receipt_carries_ms_per_stroke_avg() {
+    let mut workspace = budget_fields_setup("budget_describe_doc");
+    let registry = super::ToolRegistry::full();
+    let mut ctx = super::ToolContext::new(&mut workspace, "budget_describe_doc", "test:1", "s");
+    let response = registry.call(&mut ctx, "describe_canvas", &json!({}));
+    assert_eq!(response["ok"], json!(true), "describe 应成功：{response}");
+    let total_ms = response["timings"]["total_ms"]
+        .as_f64()
+        .expect("describe 回执须带 timings.total_ms");
+    let atoms = response["counts"]["atoms"]
+        .as_u64()
+        .expect("describe 回执须带 counts.atoms");
+    let avg = response["ms_per_stroke_avg"]
+        .as_f64()
+        .expect("describe 回执须带 ms_per_stroke_avg");
+    if atoms == 0 {
+        assert_eq!(avg, 0.0, "0 原子时字段取 0.0：{response}");
+    } else {
+        assert!(
+            (avg * atoms as f64 - total_ms).abs() <= 0.001 * atoms as f64 + 1e-9,
+            "字段值须等于 total_ms/atoms（3 位小数舍入容差内）：avg={avg} atoms={atoms} total_ms={total_ms}"
+        );
+    }
+    let other = registry.call(&mut ctx, "get_document", &json!({}));
+    assert_eq!(other["ok"], json!(true), "get_document 应成功：{other}");
+    assert!(
+        other.get("ms_per_stroke_avg").is_none(),
+        "非目标工具的回执不许带该字段：{other}"
+    );
+}
+
+/// `batch` 顶层回执带字段：2 笔纯笔触批次里 stroke_calls==2，
+/// 字段值等于 total_ms/2（容差内）；全是非笔触子调用的批次里
+/// stroke_calls==0，字段取 0.0。
+#[test]
+fn batch_receipt_carries_ms_per_stroke_avg() {
+    let mut workspace = budget_fields_setup("budget_batch_doc");
+    let registry = super::ToolRegistry::full();
+    let mut ctx = super::ToolContext::new(&mut workspace, "budget_batch_doc", "test:1", "s");
+    let created = registry.call(
+        &mut ctx,
+        "create_layer",
+        &json!({"layer_id": "L1", "name": "Layer 1"}),
+    );
+    assert_eq!(created["ok"], json!(true), "建层应成功：{created}");
+    let stroke = |x: i64| {
+        json!({
+            "tool": "brush_stroke",
+            "arguments": {
+                "brush": "100%_Opaque", "layer_id": "L1",
+                "points": [[x, 100, 1], [x + 80, 140, 1], [x + 160, 100, 1]],
+                "color": {"r": 255, "g": 0, "b": 0, "a": 255}, "size": 40
+            }
+        })
+    };
+    let batched = registry.call(
+        &mut ctx,
+        "batch",
+        &json!({"calls": [stroke(20), stroke(20)]}),
+    );
+    assert_eq!(batched["ok"], json!(true), "纯笔触批次应全成：{batched}");
+    assert_eq!(
+        batched["stroke_calls"],
+        json!(2),
+        "两笔笔触子调用：{batched}"
+    );
+    let total_ms = batched["timings"]["total_ms"]
+        .as_f64()
+        .expect("batch 回执须带 timings.total_ms");
+    let avg = batched["ms_per_stroke_avg"]
+        .as_f64()
+        .expect("batch 回执须带 ms_per_stroke_avg");
+    assert!(
+        (avg * 2.0 - total_ms).abs() <= 0.002 + 1e-9,
+        "字段值须等于 total_ms/2（3 位小数舍入容差内）：avg={avg} total_ms={total_ms}"
+    );
+    let no_stroke = registry.call(
+        &mut ctx,
+        "batch",
+        &json!({"calls": [
+            {"tool": "create_layer", "arguments": {"layer_id": "L2", "name": "Layer 2"}},
+            {"tool": "create_layer", "arguments": {"layer_id": "L3", "name": "Layer 3"}}
+        ]}),
+    );
+    assert_eq!(
+        no_stroke["ok"],
+        json!(true),
+        "非笔触批次应全成：{no_stroke}"
+    );
+    assert_eq!(
+        no_stroke["stroke_calls"],
+        json!(0),
+        "无笔触子调用：{no_stroke}"
+    );
+    assert_eq!(
+        no_stroke["ms_per_stroke_avg"],
+        json!(0.0),
+        "0 笔触时字段取 0.0（不可判）：{no_stroke}"
+    );
 }

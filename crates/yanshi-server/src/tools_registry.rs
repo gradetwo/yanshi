@@ -74,7 +74,7 @@ const IMPORT_IMAGE_PARAMS: &[ParamSpec] = &[
     param!("raw_options", Object, false, "仅当 bitmap 是 RAW 源（mime image/x-yanshi-rawsrc）时可用：展开参数 {wb: as_shot|auto（缺省 as_shot）, demosaic: malvar|bilinear（缺省 malvar）, pre_exposure_ev: -4..4（缺省 0，不 clamp、越界报错）, lens_correction: off|auto（缺省 off，D5 定版；auto = 文件自带校正逐项优先 + Lensfun 库匹配）, lens_override: string|null（手动点名镜头库中的镜头，查无此镜报错）, highlight_recovery: chroma|floor（缺省 chroma 真色度恢复，floor = 第三包保底机制）, tone: off|standard（缺省 standard，显影期基调曲线；off = 现行零调整链）, tone_strength: 0..1（缺省 1.0，越界报错、不 clamp；tone=off 时忽略）}；给到非 RAW blob 报错"),
 ];
 
-/// 核心层 112 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 130 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -218,12 +218,17 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         //   **⇒ ⇒ ⇒ 所以**：**summary 直接说清**三件事 —— RSS 会随原子增长、
         //     **`/api/documents` 的 close+open 能释放**、单会话有天花板但文档本身没有 ✓
         summary: "一次返回画布状态：尺寸、层列表、选区、掩码，外加**真实内存**（`server_rss_mb`）\
-                  与**每原子均值**（`bytes_per_atom_avg`，<100 原子时报 0=不可判）（只读 ✓）。\
+                  与**每原子均值**（`bytes_per_atom_avg`，<100 原子时报 0=不可判）\
+                  及**内存估计**（`estimated_memory_bytes`：原子数≥100 时 = `bytes_per_atom_avg` × 原子数\
+                  （≈进程 RSS，整 MB 截断误差内）；<100 时退为进程 RSS 字节数）（只读 ✓）。\
                   **内存**：缺省不配上限时渲染缓存按原子增长、只增不减 ⇒ \
                   **要释放就 `close` 再 `open` 同一文档**（实测 4 450 MB → 1 736 MB，回放 0.8 s）；\
                   配了 `YANSHI_VECTOR_RASTER_CACHE_MB`（兆字节）后单笔光栅缓存按 LRU 逐出、\
                   被逐笔触按需重算、像素不变 ⇒ close 重开不再是唯一出路；\
-                  **单会话有天花板、文档本身没有** ⇒ 长跑请分阶段、每阶段重开或配上限",
+                  **单会话有天花板、文档本身没有** ⇒ 长跑请分阶段、每阶段重开或配上限；\
+                  另带每笔均值字段 ms_per_stroke_avg（毫秒）：本次调用墙钟除以文档原子数，\
+                  0 原子时为 0——它是 describe 自身成本摊到每原子，不是画笔单笔成本，\
+                  画笔预算看 batch 的同名字段",
         mutating: false,
         params: &[],
     },
@@ -326,7 +331,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                  text 块里只有 `yanshi://blob/…` 地址或缺图原因。缺省上限 512px，超限会**自动缩小**后内嵌 ✓\\n\
                  （并回 scaled_from 记录原尺寸 ✓）；连缩小都失败才回 image_omitted + 原因 ✓。"
             ),
-            param!("max_px", Number, false, "内嵌上限（缺省 512）⇒ 超限时回 image_omitted + 可读原因；想看图就把它调大"),
+            param!("max_px", Number, false, "内嵌图的长边上限，缺省 512，钳制到 1 到 8192；超限自动缩小到该长边内并回 scaled_from，缩小失败才回 image_omitted 与原因。"),
             // **★ `active_layer` ✓ ★**（**目标第 4 条 ✓**；第 529 轮 ✓）：
             // **∴ 三段合成的切点放在该层上 ⇒ 改它时只重渲该层，其下复用 ✓**；
             // **∴ 不传 ⇒ 切在"最上层以外"✓（**与今天一致 ✓**）**。
@@ -354,7 +359,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 String,
                 false,
                 "当前层 id（可选）：把三段合成的切点放在该层上 ⇒ 改它时只重渲该层、其下复用；不传则切在最上层以外"
-            ),
+            ),            param!("return_image", Boolean, false, "统一回图开关：true 时与旧 include_image 同义，在回执里附加内嵌图；缺省 false 不回图。给了 output_path 或 raw 时不走内嵌路。"),
+
         ],
     },
     // **诊断包** ✓（P0 事故复盘：事发时柜台是空的 ✓）—— 见 `crate::diagnostics` ✓。
@@ -799,7 +805,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "get_stroke_log",
         profile: Profile::History,
-        summary: "**★ 一笔一行的可审计记录（Muse 建议 3）★**：只列**笔触**（不把建图层之类倒出来 ✓），每行给 `kind`/`brush`/`layer_id`/`object_id`/`points`（原样 ✓）/`bbox`（原子里的 `region` ✓）/`first_point`/`last_point`/`pressure{min,max,first,last}`/`timestamp` ✓。**为什么要它** ✗：`find_atom` **按设计只返回元数据** ✓（实测**没有坐标** ✗），要审计「我到底画在哪了」得用 `get_atom` 一条条取 ✓ ⇒ 这个工具把坐标面直接摊平 ✓。**跟文档走** ✓（它就是原子日志的视图 ✓，不是 `/tmp` 里的旁路文件 ✓ ⇒ 清 `/tmp`、换 session、重启都在 ✓）。**分页** `limit`（缺省 50，上限 500）/`offset` ✓，可按 `layer_id`/`object_id`/`since_seq` 过滤 ✓。**已知限制** ✗：笔触原子**不保存逐点 `time_ms`** ✓（实测传了 4 元组后，原子里的 `points` 只有 3 个分量 ✗）⇒ 只能给**原子时间戳** ✓。",
+        summary: "**★ 一笔一行的可审计记录（Muse 建议 3）★**：只列**笔触**（不把建图层之类倒出来 ✓），每行给 `kind`/`brush`/`layer_id`/`object_id`/`points`（原样 ✓）/`bbox`（原子里的 `region` ✓）/`first_point`/`last_point`/`pressure{min,max,first,last}`/`timestamp` ✓。**为什么要它** ✗：`find_atom` **按设计只返回元数据** ✓（实测**没有坐标** ✗），要审计「我到底画在哪了」得用 `get_atom` 一条条取 ✓ ⇒ 这个工具把坐标面直接摊平 ✓。**跟文档走** ✓（它就是原子日志的视图 ✓，不是 `/tmp` 里的旁路文件 ✓ ⇒ 清 `/tmp`、换 session、重启都在 ✓）。**分页** `limit`（缺省 50，上限 500）/`offset` ✓，可按 `layer_id`/`object_id`/`since_seq` 过滤 ✓。**已知限制** ✗：笔触原子**不保存逐点 `time_ms`** ✓（实测传了 4 元组后，原子里的 `points` 只有 3 个分量 ✗）⇒ 只能给**原子时间戳** ✓。**计数口径**：缺省只返 50 条，数笔数请读回执的 `total` 或传 `limit` 翻页，不要数 `entries` 条数（50 条截断时条数 ≠ 笔数）。",
         mutating: false,
         params: &[
             param!("limit", Number, false, "返回条数（缺省 50 ✓，上限 500 ✓）"),
@@ -1415,10 +1421,13 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                  需要中途看进展就用 `preview_every_n_strokes: N`（每 N 笔放行一次 ✓）\
                  或 `preview_interval_ms: M`（每 M 毫秒放行一次 ✓）—— 放行的那一次**照常产出预览** ✓。\
                  显式传 `silent: false` 可恢复旧行为（每笔带预览）。\
-                 **单笔绘制**请用 `brush_stroke(preview: false)` ✓（同一条免编码路 ✓），\
-                 要图时**不传**它即可 ✓（默认行为不变 ✓）。\
+                 **批量作画不等渲染** ✓（反馈报告 2 期 1）：顶层 `wait_for_render: false` ⇒ 整批子调用默认不等渲染（完工后用 `export_png` / `render_region` 取图 ✓）；不给 ⇒ 各子调用按自己的值（单笔缺省 `true` ✓）；子调用显式值只对自己那一笔生效 ✓。\
+                 **`preview` 与 `wait_for_render` 分工** ✓：`preview` 只管响应里要不要图（编码与回执体积），**不省渲染遍**；`wait_for_render` 才管渲不渲染（wall 时间开关）—— `preview: false` 绝不等于「快」✓。\
+                 单笔绘制要省 wall 时间请用 `brush_stroke(wait_for_render: false)` ✓（`brush_stroke` 回执本就不带预览图，`preview` 对它无可见效果 ✓）。\
                  顶层 `ok` 即全成（与 `all_ok` 一致 ✓，A6 方案 ①）：有子调用失败 ⇒ `ok:false` + `error` 指路 `failed_calls` ✓。\
-                 每笔另有取证摘要 `stroke_evidence`（与 `calls` 同下标 ✓）：笔触类子调用给 `landed` / `painted_pixels_clipped` / `ink_mass` / `max_channel_delta`（与 `brush_stroke` 回执同字段 ✓；`medium_stroke` 的 `paint_delta` 在此归一为 `max_channel_delta` ✓）；失败的子调用带完整 `error` ✓。",
+                 每笔另有取证摘要 `stroke_evidence`（与 `calls` 同下标 ✓）：笔触类子调用给 `landed` / `painted_pixels_clipped` / `ink_mass` / `max_channel_delta`（与 `brush_stroke` 回执同字段 ✓；`medium_stroke` 的 `paint_delta` 在此归一为 `max_channel_delta` ✓）；失败的子调用带完整 `error` ✓。\
+                 另带每笔均值字段 ms_per_stroke_avg（毫秒）：整批墙钟除以笔触子调用数，\
+                 0 笔触时为 0；混合批次里是非笔触开销也摊进来的全批成本，纯笔触批次里即纯笔触均值。",
         mutating: true,
         params: &[
             param!("calls", Array, true, "[{tool, arguments}]（一次最多 500 个调用，超了拆成多个 batch；每 100 个一段，段边界做内存水位检查，触发即提前停）"),
@@ -1436,6 +1445,12 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 Boolean,
                 false,
                 "true = 不生成每次调用的预览（大批量排线时省下大量临时 IO；缺省 true，D1 期 2 块 4；显式 false 恢复每笔带预览的旧行为）"
+            ),
+            param!(
+                "wait_for_render",
+                Boolean,
+                false,
+                "批内子调用未显式指定 wait_for_render 时的缺省（反馈报告 2 期 1）：不给 = 各子调用按自己的值（单笔缺省 true）；给了 = 批量作画一键开关（false = 整批不等渲染，完工后用 export_png / render_region 取图）；子调用显式值只对自己那一笔生效，下一笔回到批值；smart_* 系内层笔触走自己的缺省 false，不受批值改写"
             ),
         ],
     },
@@ -1984,7 +1999,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         // ⇒ 而实现**明确拒绝**覆盖已存在的 id ✓ ⇒ **遵循这份描述的 Agent 会撞墙** ✗ ——
         // 契约与行为不符 ✓ 比功能缺失更坏 ✗（调用方会按描述写出**必然失败**的代码 ✓）。
         // **语义照实写清** ✓：新画布 = **新的 doc_id** ✓（文档 id 就是持久单元 ✓，这是设计 ✓）。
-        summary: "新建文档（doc_id / 宽高 / 背景色）：新 id ⇒ 建好并返回 created:true / opened:false；**若该 doc_id 已存在 ⇒ 打开它**（返回 opened:true / created:false，内容与尺寸都不动）；要一块干净画布请换新 doc_id",
+        summary: "新建文档（doc_id / 宽高 / 背景色 / mode）：新 id ⇒ 建好并返回 created:true / opened:false；**若该 doc_id 已存在 ⇒ 缺省打开它**（返回 opened:true / created:false，内容与尺寸都不动，传入的宽高与背景会原样列在 ignored 里）；要一块干净画布请换新 doc_id；mode=open 为缺省（已存在⇒打开，不存在⇒新建），mode=create 为严格新建（已存在⇒报错，不打开、不清空），mode=reset 为清空重建（已存在⇒删后重建空白，不存在⇒新建）",
         mutating: true,
         params: &[
             param!("doc_id", String, false, "文档 id（缺省用当前会话的文档）"),
@@ -1994,6 +2009,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("width", Integer, false, "宽（像素）——新建画布时必填；打开已存在文档时可不传"),
             param!("height", Integer, false, "高（像素）——新建画布时必填；打开已存在文档时可不传"),
             param!("background", Object, false, "背景 {r,g,b,a}（0..255；缺省不透明白）"),
+            param!("mode", String, false, "同名文档的处理方式：open（缺省：已存在⇒打开，不存在⇒新建）、create（严格新建：已存在⇒报错）、reset（清空重建：已存在⇒删后重建空白，不存在⇒新建；删文档时遵循与 delete_document 相同的权限与实时连接规则；重建时尺寸必填，与新建相同）"),
         ],
     },
     ToolSpec {
@@ -2027,7 +2043,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "export_project",
         profile: Profile::Core,
-        summary: "把一份文档打成 .yanshi 工程包（未压缩 tar：原子日志 + 元数据 + 引用到的 blob，blob 用 zlib 逐字节无损压缩；能证明重放得出来的位图缺省不装）；回可直接下载的 url，path 可选（另存一份到服务器）",
+        summary: "把一份文档打成 .yanshi 工程包（未压缩 tar：原子日志 + 元数据 + 引用到的 blob，blob 用 zlib 逐字节无损压缩；能证明重放得出来的位图缺省不装）；回可直接下载的 url，path 可选（另存一份到服务器）。缺省包语义：缺省 include_bitmaps=false 时，能证明重放的笔触位图不装（omitted），包依赖 import 重放、不是逐字节自含（回执 package_self_contained 为假即此意）；画布读取类笔刷与媒体笔触恒装。回执的 missing_body 是存储侧口径（成功时恒 0），不能判包自含性；判包用 verify_package（complete 为真 ⇔ import 可重放）。各栏计去重后的 blob 哈希数，不是笔数",
         mutating: false,
         params: &[
             param!("path", String, false, "可选：**服务器上**的另存路径（建议以 .yanshi 结尾；内容其实是未压缩 tar）。不填 ⇒ 只回可直接下载的 url（浏览器走这条）"),
@@ -2054,7 +2070,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "verify_package",
         profile: Profile::Core,
-        summary: "体检一个 .yanshi 工程包（未压缩 tar）：读 atoms.jsonl 的全部 blob 引用，按 canonical 规则分本体/派生 tile，与包内 blobs/ 对账；回 missing_body/missing_derived 两栏 + 恒等式（missing_body + missing_derived == missing_total）；complete 为真 ⇔ 缺本体为 0（只缺派生 ⇒ 完整，可重放）；有意省掉的可重放位图单列 omitted，不算缺失",
+        summary: "体检一个 .yanshi 工程包（未压缩 tar）：读 atoms.jsonl 的全部 blob 引用，按 canonical 规则分本体/派生 tile，与包内 blobs/ 对账；回 missing_body/missing_derived 两栏 + 恒等式（missing_body + missing_derived == missing_total）；complete 为真 ⇔ 缺本体为 0（只缺派生 ⇒ 完整，可重放）；有意省掉的可重放位图单列 omitted，不算缺失。omitted 判定：引用它的每条净荷都须 source.kind=brush 且 origin=drawn（老日志无 origin 时按 source 带笔刷名派生）且笔刷不读画布；按 source.kind+origin 判，不按包络 kind 名（笔触包络 kind 就是 import_image，与照片导入同名；get_stroke_log 的 kind 是语义名 brush）。照片类无生成参数的本体缺失 ⇒ 真缺失 ⇒ complete 为假。各栏计去重后的 blob 哈希数，不是笔数",
         mutating: false,
         params: &[
             param!("path", String, true, "工程包路径（.yanshi）"),
@@ -2198,6 +2214,41 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "rebackground",
+        profile: Profile::Core,
+        // **反馈报告 §4 单拆项**：只改**已有**文档的底色 ✓。
+        // **分工** ✓：新建文档时的底色在新建时给（建文档那一刻才生效 ✓）；
+        // 笔触质感底色是另一个工具的活（铺一层笔触，不动文档底色 ✓）；
+        // 本工具不动图层与笔触，只换文档底色本身 ✓ —— 三者互补，不互相改写语义 ✓。
+        // **持久性** ✓：落一条正式底色原子（`set_background`）⇒ 折叠进文档状态、
+        // 落盘进原子日志 ⇒ 重开文档后仍在 ✓；不是内存改状态不落原子的捷径 ✗。
+        // **文案里不用反引号写名字** ✓：普查脚本会扫描述里的反引号名并要求分类 ✓
+        // ⇒ 本工具的描述与参数描述一律不用反引号，普查无名可分 ✓。
+        summary: "改已有文档的底色：把当前打开文档的背景色换成给定的纯色，落一条正式底色原子，重开文档后仍在；只改底色，不动图层、笔触与画布尺寸",
+        mutating: true,
+        params: &[
+            param!("color", Object, true, "目标底色，对象式 r g b a（0..255 整数；a 缺省 255；缺失、非对象、缺通道、非整数或越界都会明确报错，不静默改色）"),
+        ],
+    },
+    ToolSpec {
+        name: "toned_ground",
+        profile: Profile::Core,
+        // **反馈报告 §5.3**：`texture_background` 铺的是 CC0 纹理图片 ✗，不是笔触底色 ✗
+        // ⇒ 这里用**现成笔刷**在专用底层上铺笔触 ⇒ 有机底色 ✓。
+        // **一键 = 参数少** ✓：颜色必填（与 new_document background 同形 {r,g,b,a} ✓）；
+        // 纹理只留 `strength`（明暗起伏幅度 ✓）与 `seed`（可复现 ✓）两个可选 ✓。
+        // **幂等** ✓：每次调用先删掉上次的底色层再重建 ⇒ 重复调用不叠加、不越铺越暗 ✓。
+        // **层序** ✓：底色层永远在最底 ⇒ 已有画作在其上不受影响 ✓（与 3.6b 纯色换底工具的
+        // 关系见包内说明文档：本项只管自己的底色层，不动 3.6b 的工具；跨工具联动是后续工作 ✓）。
+        summary: "一键铺笔触质感底色（专用底层底色层；颜色必填；重复调用再生本层、不叠加）",
+        mutating: true,
+        params: &[
+            param!("color", Object, true, "底色 {r,g,b,a}（0..255 整数；a 缺省 255；与 new_document background 同形；缺失或非法会明确报错，不静默铺底）"),
+            param!("strength", Number, false, "纹理起伏强度 0..1（缺省 0.5；0 = 近乎平涂，1 = 明暗起伏最大）"),
+            param!("seed", Number, false, "随机种子（缺省 42；同 seed ⇒ 同结果）"),
+        ],
+    },
+    ToolSpec {
         name: "save_palette",
         profile: Profile::Core,
         // **AI 画家需求 P1-5（写的一侧）**：读的一侧早有 `list_palette_colors`，缺的是"把一份调色板存下来"。
@@ -2264,8 +2315,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "**要 MyPaint 笔刷物理（dab / 笔毛 / 干湿 / 压感）就用这个** ✓：**要载墨量／湿度／光谱混色（一笔蘸多少颜料、湿画法 vs 干笔）⇒ 用 `medium_stroke` 的 `load`／`wetness`／`color_mixing=pigment`，不是这里的 `brush_params`** ✓（**∵ `.myb` 的规范名里没有这两项** ✓）；201 支 .myb 笔刷，可带 color 画彩色、带 color_to 画**一笔多色**（Loaded Brush ✓）。                  与邻居的分工：要**介质插件**（油画 / 水彩 / 马克笔 / 铅笔 / 像素的我们自己的模拟）用 medium_stroke；                  要**纯几何、无物理**的矢量笔迹用 draw_stroke。                  **★ ⚠️ 切换笔刷或改 `brush_params` 之前，先用 `swatch_brush_strokes` 批量试 3–5 支，选最好的再真画 ★**（实测教训：AI 直接真画试错 ⇒ 画坏要 undo ⇒ 效率低一半 ✗。真画一笔 = 写文档 + 生成 atom + 污染历史；**swatch 不写文档、不生成 atom ⇒ 试 10 支也不心疼** ✓）。                  工作流：`list_brushes` 查 → `swatch_brush_strokes` 批量试 → 选一支 `brush_stroke` 真画 → 看缩略图 → 不满意再 swatch 换 ✓（**不要只试一次就开画** ✗）。                  **★ 压感指南 ★**：`points` 的第三个分量是 **pressure 0..1** ✓，它**按点生效**（不是整笔一个值 ✓）。**每一笔都该起伏**：起笔 **0.2–0.3** → 行笔 **0.8–1.0** → 收笔 **0.2–0.3** ✓；转折/顿笔处可以**短距离内压低再抬起**（形成「顿」✓）。**全程 0.8 会让笔触像矢量图** ✗（粗细一致、边缘生硬 ✓）—— 可直接抄的示例：`points: [[40,100,0.25],[110,96,0.9],[180,104,0.95],[250,100,0.3]]` ✓。**⚠️ `pressure_curve: 「auto」` 只对「压感敏感」的笔刷有效** ✓ —— 先用 `list_brushes` 的 `pressure_sensitive`／`pressure_settings` 确认（实测 `2B_pencil` 墨量 **1023→3470** ✓，而 `100%_Opaque` 几乎看不出差别 ✗）。                  **每条笔触只作用于它自己的图层** ✓：跨图层只是普通叠加；介质的湿搅 / 混色**不跨图层** ✓（先把底下那层画完，或用同一层叠 ✓）。                  **覆盖率／落墨量以 clipped 为准** ✓：`painted_pixels` 只是裁剪前的铺开面积（同值字段 `painted_pixels_raw`），真实落墨看 `painted_pixels_clipped`；顶层 `landed`／`landed_reason` 直接给结论。",
         mutating: true,
         params: &[
-            // **预览开关** ✓（第 5 轮 ✓，P0 ✓）：连续作画时 `preview: false` ⇒ 这一笔不编预览 PNG ✓
-            // ⇒ 省下实测 ~130 ms/笔（4K、`Clouds.myb`、`size 180` ✓）✓；默认 `true` ⇒ 行为不变 ✓。
+            // **预览开关** ✓（第 5 轮 ✓，P0 ✓）：连续作画时 `preview: false` ⇒ 这一笔不产出预览图 ✓
+            // ⇒ 只省编码与回执体积，渲染遍照常走（`wait_for_render: true` 时），不省单笔 wall 时间 ✓
+            //   （反馈报告 2 期 1 定准：真开关是 `wait` 不是 `preview`；且 `brush_stroke` 回执本就
+            //   不带预览图，`preview` 对本工具无可见效果 ✓）；默认 `true` ⇒ 行为不变 ✓。
             // **★ P0 #4：覆盖 `.myb` 的任意字段 ✗ ★**（**名字用 libmypaint 规范名 ✓ ＝ `.myb` 的 JSON 键 ✓）
             //   ⇒ **∴ AI 不必换笔刷文件就能调** `smudge`／`opaque`／`dabs_per_actual_radius` 这类** ✓ ★★★
             // **★ 但 `dabs_per_basic_radius` 在本引擎里**不会生效 ★**（第 1589 轮实测 + 根因）
@@ -2351,7 +2404,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("pressure_shape", Number, false, "压力曲线 -1..1（缺省 0 = 不启用）：一笔内压力自动变化。正值中间粗两头细（通用），负值起笔粗收笔细（书法顿笔出锋）"),
             param!("path_guide", Object, false, "曲线尺吸附（二期）：{object_id|subpaths, snap_radius}——把落点往一条 path 曲线拉（权重 (1−d/R)²，d 为落点到规范折线的距离）；只改落点坐标，压感/时间不动。与 direction_guides 并存不冲突：那是方向场（改生成笔触的走向），本参数改的是已有落点的位置，两者独立生效。缺省不传 ⇒ 点列逐位不变"),
             param!("stroke_taper", Number, false, "起收锋 0..1（缺省 0 = 不启用）：笔画两头几何收细，中段不受影响。模拟锋利笔尖"),
-            param!("preview", Boolean, false, "缺省 true = 产出这一笔的预览图；false = 不产出（连续作画提速；预览仍可由 export_png / get_document 取）"),
+            param!("preview", Boolean, false, "缺省 true；false = 这一笔不产出预览图。注意两点：① preview 只省编码与回执体积，渲染遍照常走（wait_for_render: true 时），不省单笔 wall 时间——要省时间用 wait_for_render: false；② brush_stroke 回执本就不带预览图，所以 preview 对本工具无可见效果（为与其它笔触工具统一调用而保留）"),
             param!(
                 "wait_for_render",
                 Boolean,
@@ -2432,7 +2485,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("mode", String, false, "hatch（单向排线，缺省）/ cross_hatch（交叉）/ contour（沿轮廓收缩，仅 rect/circle）"),
             param!("layer_id", String, true, "图层 id（必填）"),
                         param!("wait_for_render", Boolean, false, "内层每条笔触是否等渲染完成（缺省 false = 只落原子、不等渲染；显式 true = 逐笔等渲染，代价是回执变慢）"),
-CLIP_TO_SELECTION_PARAM,
+CLIP_TO_SELECTION_PARAM,            param!("return_image", Boolean, false, "统一回图开关：true 时在回执里附加一张内嵌图，缺省 false 不回图。图取自形状包围盒的渲染。"),
+            param!("max_px", Number, false, "回图长边上限：显式传了就钳制到 1 到 8192，超限自动缩小到该长边内并回 scaled_from；不传时缺省 512。只在请求回图时生效。"),
+
         ],
     },
     ToolSpec {
@@ -2451,7 +2506,9 @@ CLIP_TO_SELECTION_PARAM,
             param!("size", Number, false, "笔刷大小，缺省 15"),
             param!("layer_id", String, true, "图层 id（必填）"),
                         param!("wait_for_render", Boolean, false, "内层每条笔触是否等渲染完成（缺省 false = 只落原子、不等渲染；显式 true = 逐笔等渲染，代价是回执变慢）"),
-CLIP_TO_SELECTION_PARAM,
+CLIP_TO_SELECTION_PARAM,            param!("return_image", Boolean, false, "统一回图开关：true 时在回执里附加一张内嵌图，缺省 false 不回图。图取自形状包围盒的渲染。"),
+            param!("max_px", Number, false, "回图长边上限：显式传了就钳制到 1 到 8192，超限自动缩小到该长边内并回 scaled_from；不传时缺省 512。只在请求回图时生效。"),
+
         ],
     },
     ToolSpec {
@@ -2472,7 +2529,9 @@ CLIP_TO_SELECTION_PARAM,
             param!("direction_rotate", Number, false, "层间角度摆动幅度（度），缺省 12；不要用等差旋转，会产生摩尔纹"),
             param!("layer_id", String, true, "图层 id（必填）"),
                         param!("wait_for_render", Boolean, false, "内层每条笔触是否等渲染完成（缺省 false = 只落原子、不等渲染；显式 true = 逐笔等渲染，代价是回执变慢）"),
-CLIP_TO_SELECTION_PARAM,
+CLIP_TO_SELECTION_PARAM,            param!("return_image", Boolean, false, "统一回图开关：true 时在回执里附加一张内嵌图，缺省 false 不回图。图取自形状包围盒的渲染。"),
+            param!("max_px", Number, false, "回图长边上限：显式传了就钳制到 1 到 8192，超限自动缩小到该长边内并回 scaled_from；不传时缺省 512。只在请求回图时生效。"),
+
         ],
     },
     ToolSpec {
@@ -2493,7 +2552,9 @@ CLIP_TO_SELECTION_PARAM,
             param!("size", Number, false, "笔刷大小，缺省 12"),
             param!("layer_id", String, true, "图层 id（必填）"),
                         param!("wait_for_render", Boolean, false, "内层每条笔触是否等渲染完成（缺省 false = 只落原子、不等渲染；显式 true = 逐笔等渲染，代价是回执变慢）"),
-CLIP_TO_SELECTION_PARAM,
+CLIP_TO_SELECTION_PARAM,            param!("return_image", Boolean, false, "统一回图开关：true 时在回执里附加一张内嵌图，缺省 false 不回图。图取自边缘路径或形状包围盒外扩柔化宽度的渲染。"),
+            param!("max_px", Number, false, "回图长边上限：显式传了就钳制到 1 到 8192，超限自动缩小到该长边内并回 scaled_from；不传时缺省 512。只在请求回图时生效。"),
+
         ],
     },
     ToolSpec {
@@ -2515,7 +2576,9 @@ CLIP_TO_SELECTION_PARAM,
             // **P2-6**：缺省改 `false`（见 `set_inner_wait_for_render`；此前缺省 `true`，
             //   内层每笔等渲染 —— tex_fold 实测 22.4 ms/笔 ⇒ 6.6 ms/笔，**3.4×**）。
             param!("wait_for_render", Boolean, false, "内层每条笔触是否等渲染完成（缺省 false = 只落原子、不等渲染；显式 true = 逐笔等渲染，代价是回执变慢）"),
-            CLIP_TO_SELECTION_PARAM,
+            CLIP_TO_SELECTION_PARAM,            param!("return_image", Boolean, false, "统一回图开关：true 时在回执里附加一张内嵌图，缺省 false 不回图。图取自形状包围盒的渲染。"),
+            param!("max_px", Number, false, "回图长边上限：显式传了就钳制到 1 到 8192，超限自动缩小到该长边内并回 scaled_from；不传时缺省 512。只在请求回图时生效。"),
+
         ],
     },
     ToolSpec {
@@ -2533,7 +2596,9 @@ CLIP_TO_SELECTION_PARAM,
             param!("layer_id", String, false, "只在该图层取色；不传则取合成后像素"),
             param!("mode", String, false, "new（缺省）/add/subtract/intersect"),
             param!("feather", Number, false, "羽化半径像素，缺省 0；>0 时高斯烘焙进位图"),
-            param!("preview", Boolean, false, "true 则返回 Quick-Mask 预览缩略图 blob"),
+            param!("preview", Boolean, false, "true 则返回 Quick-Mask 预览缩略图 blob"),            param!("return_image", Boolean, false, "统一回图开关：true 时在回执里附加一张内嵌图，缺省 false 不回图。图取自选区包围盒的画布实景渲染；与旧 preview 缩略图不同，这张不是掩膜示意。"),
+            param!("max_px", Number, false, "回图长边上限：显式传了就钳制到 1 到 8192，超限自动缩小到该长边内并回 scaled_from；不传时缺省 512。只在请求回图时生效。"),
+
         ],
     },
     ToolSpec {
@@ -2570,7 +2635,9 @@ CLIP_TO_SELECTION_PARAM,
             param!("brush", String, false, "用哪支笔刷画这些笔触（缺省 calligraphy ✓）"),
             param!("layer_id", String, true, "目标绘制图层 id（必填）"),
                         param!("wait_for_render", Boolean, false, "内层每条笔触是否等渲染完成（缺省 false = 只落原子、不等渲染；显式 true = 逐笔等渲染，代价是回执变慢）"),
-CLIP_TO_SELECTION_PARAM,
+CLIP_TO_SELECTION_PARAM,            param!("return_image", Boolean, false, "统一回图开关：true 时在回执里附加一张内嵌图，缺省 false 不回图。图取自形状包围盒的渲染。"),
+            param!("max_px", Number, false, "回图长边上限：显式传了就钳制到 1 到 8192，超限自动缩小到该长边内并回 scaled_from；不传时缺省 512。只在请求回图时生效。"),
+
         ],
     },
     ToolSpec {
@@ -2584,7 +2651,9 @@ CLIP_TO_SELECTION_PARAM,
             param!("invert", Boolean, false, "反相擦除（true = 保留 shape 内部，擦除 shape 外部溢色），缺省 false"),
             param!("feather", Number, false, "边缘羽化半径 0..256，缺省 1.0（1px 抗锯齿软边）"),
             param!("opacity", Number, false, "擦除强度 0..1，缺省 1.0"),
-            param!("size", Number, false, "橡皮直径，缺省 24（扫描线行距 = 0.5×size）"),
+            param!("size", Number, false, "橡皮直径，缺省 24（扫描线行距 = 0.5×size）"),            param!("return_image", Boolean, false, "统一回图开关：true 时在回执里附加一张内嵌图，缺省 false 不回图。图取自擦除形状包围盒外扩羽化半径的渲染；反相擦除时取整幅渲染。"),
+            param!("max_px", Number, false, "回图长边上限：显式传了就钳制到 1 到 8192，超限自动缩小到该长边内并回 scaled_from；不传时缺省 512。只在请求回图时生效。"),
+
         ],
     },
     ToolSpec {
@@ -2602,7 +2671,9 @@ CLIP_TO_SELECTION_PARAM,
             param!("brush", String, false, "笔刷名，缺省 calligraphy"),
             param!("layer_id", String, true, "图层 id（必填）"),
                         param!("wait_for_render", Boolean, false, "内层每条笔触是否等渲染完成（缺省 false = 只落原子、不等渲染；显式 true = 逐笔等渲染，代价是回执变慢）"),
-CLIP_TO_SELECTION_PARAM,
+CLIP_TO_SELECTION_PARAM,            param!("return_image", Boolean, false, "统一回图开关：true 时在回执里附加一张内嵌图，缺省 false 不回图。图取自引导线包围盒的渲染；给了形状裁剪时仍按引导线包围盒取图。"),
+            param!("max_px", Number, false, "回图长边上限：显式传了就钳制到 1 到 8192，超限自动缩小到该长边内并回 scaled_from；不传时缺省 512。只在请求回图时生效。"),
+
         ],
     },
     ToolSpec {
@@ -2656,7 +2727,9 @@ CLIP_TO_SELECTION_PARAM,
             param!("color_to", Any, false, "末端色（同 brush_stroke 的 color_to ✓）⇒ 预览里也能试一笔多色"),
             param!("smooth", Boolean, false, "把路径当 Catmull-Rom 平滑（同 brush_stroke.smooth）"),
             param!("include_image", Boolean, false, "true ⇒ 每个 swatch 额外给一个 `image` 块（base64 PNG ✓）⇒ **MCP Agent 能直接看到图** ✓（外部复测 QY-G01；**最多 8 张**，超了给 `image_skipped` ✓）"),
-            param!("output_path", String, false, "给了（**目录**，须在导出目录或系统临时目录内，守卫同 export_png）⇒ 每支试笔的 PNG 落盘为 swatch_<序号>.png（仍受 8 张上限），每条给 `image_file` 而非内嵌 base64；与 include_image 同给时文件形态优先"),
+            param!("output_path", String, false, "给了（**目录**，须在导出目录或系统临时目录内，守卫同 export_png）⇒ 每支试笔的 PNG 落盘为 swatch_<序号>.png（仍受 8 张上限），每条给 `image_file` 而非内嵌 base64；与 include_image 同给时文件形态优先"),            param!("return_image", Boolean, false, "统一回图开关：true 时与旧 include_image 同义，每张试笔附加内嵌图，仍受 8 张上限，超了给 image_skipped；缺省 false 不回图。给了 output_path 时文件形态优先。"),
+            param!("max_px", Number, false, "回图长边上限：显式传了就钳制到 1 到 8192，超限自动缩小到该长边内并回 scaled_from；只传 return_image 不传它时缺省 512；只传旧 include_image 不传它时不设限，保持旧行为。只在请求回图时生效。"),
+
         ],
     },
     ToolSpec {
@@ -2697,7 +2770,9 @@ CLIP_TO_SELECTION_PARAM,
                 "true ⇒ 额外内嵌图像 ⇒ **图片以 MCP 的 `image` 内容块返回**（base64 在那里 ✓，不在 text 里 ✗）；\\n\
                  text 块里只有 thumb_url（`yanshi://blob/…`）✓。批处理客户端可加 `--no-inline-images` 关掉 ✓。"
             ),
-            param!("output_path", String, false, "给了就把预览 PNG 落盘到该路径（导出目录或系统临时目录内，守卫同 export_png），响应给 `image_file` 元数据而非内嵌 base64；与 include_image 同给时文件形态优先"),
+            param!("output_path", String, false, "给了就把预览 PNG 落盘到该路径（导出目录或系统临时目录内，守卫同 export_png），响应给 `image_file` 元数据而非内嵌 base64；与 include_image 同给时文件形态优先"),            param!("return_image", Boolean, false, "统一回图开关：true 时与旧 include_image 同义，在回执里附加内嵌图；缺省 false 不回图。给了 output_path 时文件形态优先，不内嵌。"),
+            param!("max_px", Number, false, "回图长边上限：显式传了就钳制到 1 到 8192，超限自动缩小到该长边内并回 scaled_from；只传 return_image 不传它时缺省 512；只传旧 include_image 不传它时不设限，保持旧行为。只在请求回图时生效。"),
+
         ],
     },
     ToolSpec {
@@ -2768,7 +2843,9 @@ CLIP_TO_SELECTION_PARAM,
             //   而 render_region 的 CAS 哈希相同 ⇒ 非确定源在导出后半段（缩放/编码）
             //   ⇒ 本参数**禁止缩放 + 强制 Nearest** ⇒ 让「改一处测指标」可复现
             param!("deterministic", Boolean, false, "true ⇒ 禁止缩放并强制 nearest，保证同一文档两次导出逐像素相同（外部 §164）"),
-            param!("layer_id", String, false, "只导出这一层（**忽略它的可见性** ✓；缺省导出整幅合成）"),
+            param!("layer_id", String, false, "只导出这一层（**忽略它的可见性** ✓；缺省导出整幅合成）"),            param!("return_image", Boolean, false, "统一回图开关：true 时在落盘回执之外再附加一张内嵌图，即本次导出的图再按 max_px 缩一份；缺省 false 只落盘不回图。"),
+            param!("max_px", Number, false, "回图长边上限：显式传了就钳制到 1 到 8192，超限自动缩小到该长边内并回 scaled_from；不传时缺省 512。只在请求回图时生效。"),
+
         ],
     },
     ToolSpec {
@@ -3140,7 +3217,7 @@ CLIP_TO_SELECTION_PARAM,
         // **P1 #9（第 254 轮）**：原来写死 4 支内置笔刷、而且看不到工作区 => AI 不知道有哪 201 支
         // `.myb` 可挑，也不知道 `brush_params` 的字段叫什么。现在枚举走仓库已有的资产枚举，
         // 并附上**规范字段名全表**（与 P0 #4 的 `brush_params` 配对）。
-        summary: "列出可用 .myb 笔刷（含各自参数摘要 ＋ 规范字段名全表）=> 先看有哪些笔刷，再决定 brush 与 brush_params",
+        summary: "列出可用 .myb 笔刷（含各自参数摘要 ＋ 规范字段名全表）=> 先看有哪些笔刷，再决定 brush 与 brush_params；不传分页参数时返回过滤后的完整列表，传了分页参数时只返回对应的一页并附过滤后总数与下一页起点",
         mutating: false,
         params: &[
             param!(
@@ -3154,6 +3231,18 @@ CLIP_TO_SELECTION_PARAM,
                 String,
                 false,
                 "按介质过滤：oil／watercolor／sketch／ink／pastel ⇒ 只返回该画法常用的笔刷白名单（与 filter 可叠加）"
+            ),
+            param!(
+                "limit",
+                Integer,
+                false,
+                "本页最多返回几支；缺省 = 不分页（返回过滤后的全部）；0 = 只返回总数、不返回笔刷条目（廉价探针，不要拿它翻页）；负数或非整数报 invalid_argument"
+            ),
+            param!(
+                "offset",
+                Integer,
+                false,
+                "跳过过滤后的前几支再取页；缺省 = 0；超出总数时返回空页，不报错；负数或非整数报 invalid_argument"
             ),
         ],
     },
