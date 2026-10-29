@@ -125,8 +125,10 @@ function same(a, b) {
 }
 /** **服务端-rooted 的环境字段 ✗ 剥掉再比 ✓**：`created/opened/timings` 是 HTTP 信封 ✓，
  *  `server` 是本地标记 ✓，**`server_rss_mb`／`bytes_per_atom_avg` 是服务端进程的真测量** ✗
- *  （本地没有服务端进程 ⇒ 哨兵值单独断 ✓，**编数字才是撒谎 ✗**）。 */
-const ENV_KEYS = ["created", "opened", "timings", "server", "server_rss_mb", "bytes_per_atom_avg"];
+ *  （本地没有服务端进程 ⇒ 哨兵值单独断 ✓，**编数字才是撒谎 ✗**）。
+ *  **`ms_per_stroke_avg` 同属计时派生量**：服务端按真耗时算，本地桩无计时 ⇒ 剥掉再比 ✓，
+ *  服务端出字段本身由 tools_tests 回执测试守住，不由本判据逐字节比 ✓。 */
+const ENV_KEYS = ["created", "opened", "timings", "server", "server_rss_mb", "bytes_per_atom_avg", "ms_per_stroke_avg"];
 const strip = (body) => {
   const out = { ...(body || {}) };
   for (const key of ENV_KEYS) delete out[key];

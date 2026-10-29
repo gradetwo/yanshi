@@ -33,7 +33,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（127 个）。
+    /// 核心层：默认注册（128 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -764,7 +764,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，127 个）。
+    /// 核心层（默认注册，128 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1324,6 +1324,235 @@ fn optional_bool(args: &Value, key: &str) -> Option<bool> {
     args.get(key).and_then(Value::as_bool)
 }
 
+/// return_image 统一语义（feedback5-feat-return-image，与 render_region 的既有
+/// include_image + max_px 对齐）：缺省关图，不请求不回图；max_px 是长边上限，
+/// 缺省 512、钳制到 1..=8192；超限自动缩小（不是报错），缩小失败才回
+/// image_omitted 与原因；回图失败永不推翻主结果（只写 omitted 字段）。
+pub(super) const RETURN_IMAGE_DEFAULT_MAX_PX: u64 = 512;
+pub(super) const RETURN_IMAGE_MAX_PX_CAP: u64 = 8192;
+
+/// 是否请求回图：新开关 return_image 与旧开关 include_image（只在有它的工具
+/// 上存在）任一为 true 即请求。validate_args 会先拒掉未声明的键，所以 smart
+/// 工具上实际只有 return_image 能触发。
+pub(super) fn wants_return_image(args: &Value) -> bool {
+    optional_bool(args, "return_image").unwrap_or(false)
+        || optional_bool(args, "include_image").unwrap_or(false)
+}
+
+/// 校验并解析显式传来的 max_px：负数/小数由 optional_count 报
+/// invalid_argument；没传返回 None（由调用方按各自缺省补）。
+pub(super) fn explicit_max_px(args: &Value) -> Result<Option<u64>> {
+    Ok(optional_count(args, "max_px")?.map(|value| value.clamp(1, RETURN_IMAGE_MAX_PX_CAP)))
+}
+
+/// 把 RGBA8 按长边上限编码成 PNG：已在限内直接编码原图，超限先双线性缩小。
+/// 返回 (png, 宽, 高, 是否缩小过)；缩放或编码失败返回 None。
+pub(super) fn encode_image_capped(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    max_px: u64,
+) -> Option<(Vec<u8>, u32, u32, bool)> {
+    let cap = max_px as f64;
+    if f64::from(width) <= cap && f64::from(height) <= cap {
+        return yanshi_render::png::encode_png(width, height, rgba)
+            .map(|png| (png, width, height, false));
+    }
+    let ratio = cap / f64::from(width.max(height));
+    let scaled_w = ((f64::from(width) * ratio).round().max(1.0)) as u32;
+    let scaled_h = ((f64::from(height) * ratio).round().max(1.0)) as u32;
+    let small = yanshi_core::resample::resample_rgba(
+        rgba,
+        width,
+        height,
+        scaled_w,
+        scaled_h,
+        yanshi_core::resample::ResampleFilter::Bilinear,
+    )?;
+    yanshi_render::png::encode_png(scaled_w, scaled_h, &small)
+        .map(|png| (png, scaled_w, scaled_h, true))
+}
+
+/// 把 region 渲染成内嵌图附到回执上（smart 工具的统一回图路）。
+/// 渲染失败、缩放失败、编码失败时只写 image_omitted 与原因，不返回 Err。
+pub(super) fn attach_region_return_image(
+    ctx: &mut ToolContext<'_>,
+    value: &mut Value,
+    region: Bbox,
+    max_px: u64,
+) {
+    let preview = match ctx.workspace.render_region(&ctx.doc_id, region) {
+        Ok(preview) => preview,
+        Err(error) => {
+            value["image_omitted"] = json!(true);
+            value["image_omitted_reason"] = json!(format!("成像区域渲染失败，未回图：{error}"));
+            return;
+        }
+    };
+    let encoded = match preview.rgba8.as_deref() {
+        Some(rgba) => encode_image_capped(rgba, preview.width, preview.height, max_px),
+        None => ctx
+            .workspace
+            .render_region_raw_active(&ctx.doc_id, region, None)
+            .ok()
+            .and_then(|(width, height, rgba)| encode_image_capped(&rgba, width, height, max_px)),
+    };
+    match encoded {
+        Some((png, width, height, scaled)) => {
+            value["image"] = json!({
+                "mime_type": "image/png",
+                "data": crate::base64::encode(&png),
+                "width": width,
+                "height": height,
+            });
+            value["image_region"] = json!(preview.bbox);
+            if scaled {
+                value["scaled_from"] = json!([preview.width, preview.height]);
+                value["scaled_note"] = json!(format!(
+                    "原区域 {}×{} 超过 max_px={}，已自动缩小到 {}×{} 内嵌；要看原尺寸请传 max_px={}",
+                    preview.width,
+                    preview.height,
+                    max_px,
+                    width,
+                    height,
+                    preview.width.max(preview.height)
+                ));
+            }
+        }
+        None => {
+            value["image_omitted"] = json!(true);
+            value["image_omitted_reason"] = json!(format!(
+                "区域 {}×{} 的回图缩放或编码失败，未内嵌 base64（避免超大响应）；请改用 render_region 或 export_png 取图",
+                preview.width, preview.height
+            ));
+        }
+    }
+}
+
+/// smart 工具名（注册表里 smart_ 前缀的 9 只；fit_background_field 不带此前缀，
+/// 不在本轮覆盖内，见包说明）。
+fn is_smart_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "smart_fill"
+            | "smart_blend"
+            | "smart_glaze"
+            | "smart_edge_soften"
+            | "smart_texture"
+            | "smart_select"
+            | "smart_sample"
+            | "smart_erase_shape"
+            | "smart_hatch_follow"
+    )
+}
+
+/// 由参数推导 smart 工具的成像区域（画布坐标）：
+/// shape 优先（fill/blend/glaze/texture/sample/erase/edge_soften 带 shape 时）；
+/// hatch_follow 优先 guides（shape 只是裁剪）；edge_path 取点列包围盒外扩
+/// 柔化宽度；smart_select 取回执里的选区包围盒 [x, y, w, h]；erase 反相时取整幅。
+fn smart_return_region(
+    ctx: &mut ToolContext<'_>,
+    tool: &str,
+    args: &Value,
+    value: &Value,
+) -> Option<Bbox> {
+    let points_bbox = |points: &Vec<Value>| -> Option<Bbox> {
+        let mut x0 = f64::MAX;
+        let mut y0 = f64::MAX;
+        let mut x1 = f64::MIN;
+        let mut y1 = f64::MIN;
+        for point in points {
+            let xy: Vec<f64> = point.as_array()?.iter().filter_map(Value::as_f64).collect();
+            if xy.len() < 2 {
+                continue;
+            }
+            x0 = x0.min(xy[0]);
+            y0 = y0.min(xy[1]);
+            x1 = x1.max(xy[0]);
+            y1 = y1.max(xy[1]);
+        }
+        if x0 == f64::MAX {
+            None
+        } else {
+            Some(Bbox::new(x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0)))
+        }
+    };
+    if tool == "smart_hatch_follow" {
+        if let Some(guides) = args.get("guides").and_then(Value::as_array) {
+            let mut all: Vec<Value> = Vec::new();
+            for line in guides {
+                if let Some(points) = line.as_array() {
+                    all.extend(points.iter().cloned());
+                }
+            }
+            if let Some(region) = points_bbox(&all) {
+                return Some(region);
+            }
+        }
+    }
+    if let Some(shape) = args.get("shape") {
+        if let Ok(parsed) = parse_smart_shape(shape, tool) {
+            let (x0, y0, x1, y1) = parsed.bbox;
+            if tool == "smart_erase_shape" && optional_bool(args, "invert").unwrap_or(false) {
+                if let Some(document) = ctx.workspace.document(&ctx.doc_id) {
+                    let state = document.state();
+                    return Some(Bbox::new(0.0, 0.0, state.width as f64, state.height as f64));
+                }
+            }
+            let mut region = Bbox::new(x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0));
+            if tool == "smart_erase_shape" {
+                let feather = args
+                    .get("feather")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(1.0)
+                    .max(0.0);
+                region = Bbox::new(
+                    region.x - feather,
+                    region.y - feather,
+                    region.w + 2.0 * feather,
+                    region.h + 2.0 * feather,
+                );
+            }
+            return Some(region);
+        }
+    }
+    if let Some(guides) = args.get("guides").and_then(Value::as_array) {
+        let mut all: Vec<Value> = Vec::new();
+        for line in guides {
+            if let Some(points) = line.as_array() {
+                all.extend(points.iter().cloned());
+            }
+        }
+        if let Some(region) = points_bbox(&all) {
+            return Some(region);
+        }
+    }
+    if let Some(points) = args.get("edge_path").and_then(Value::as_array) {
+        if let Some(mut region) = points_bbox(points) {
+            let pad = args
+                .get("soften_width")
+                .and_then(Value::as_f64)
+                .unwrap_or(20.0)
+                .max(0.0);
+            region = Bbox::new(
+                region.x - pad,
+                region.y - pad,
+                region.w + 2.0 * pad,
+                region.h + 2.0 * pad,
+            );
+            return Some(region);
+        }
+    }
+    if let Some(bbox) = value.get("bbox") {
+        if let Ok(region) = parse_bbox(bbox) {
+            if !region.is_empty() {
+                return Some(region);
+            }
+        }
+    }
+    None
+}
+
 /// 校验 `data.color` / `data.stroke_color`（统一由 `yanshi_render` 解析）。
 ///
 /// 非法颜色必须在工具层就被拒绝：历史事故里 `[40,120,60,255]` 被渲染层当作线性浮点，
@@ -1845,7 +2074,36 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
     let started = std::time::Instant::now();
     // `ToolTimings` 是 `Copy` ✓（只有 5 个 `u64` ✓）⇒ 快照就是复制 ✓。
     let base = ctx.timings;
-    let outcome = dispatch_inner(spec, ctx, args);
+    // smart 工具的 return_image：max_px 非法必须在落笔前报错，不能等笔落下
+    // 才报（笔已提交 + 错误回执 = 副作用与结论矛盾）。传了 max_px 就校验，
+    // 请求回图时缺省 512；不请求回图且没传 max_px 时不碰。
+    let smart_max_px = if is_smart_tool(spec.name)
+        && (wants_return_image(args) || args.get("max_px").is_some_and(|value| !value.is_null()))
+    {
+        Some(explicit_max_px(args)?.unwrap_or(RETURN_IMAGE_DEFAULT_MAX_PX))
+    } else {
+        None
+    };
+    let wants_smart_image = is_smart_tool(spec.name) && wants_return_image(args);
+    let mut outcome = dispatch_inner(spec, ctx, args);
+    if wants_smart_image {
+        if let Ok(value) = &mut outcome {
+            match smart_return_region(ctx, spec.name, args, value) {
+                Some(region) => attach_region_return_image(
+                    ctx,
+                    value,
+                    region,
+                    smart_max_px.unwrap_or(RETURN_IMAGE_DEFAULT_MAX_PX),
+                ),
+                None => {
+                    value["image_omitted"] = json!(true);
+                    value["image_omitted_reason"] = json!(
+                        "无法从本次调用参数推导成像区域（没有形状、引导线、边缘路径或选区包围盒），故未回图"
+                    );
+                }
+            }
+        }
+    }
     let delta = ctx.timings.since(&base);
     match outcome {
         Ok(mut value) => {
@@ -2052,6 +2310,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "list_palette_colors" => write_list_palette_colors(ctx, args),
         "analyze_region" => read_analyze_region(ctx, args),
         "texture_background" => write_texture_background(ctx, args),
+        "rebackground" => write_rebackground(ctx, args),
         "toned_ground" => write_toned_ground(ctx, args),
         "gradient_fill" => write_gradient_fill(ctx, args),
         "gradient_blend" => write_gradient_blend(ctx, args),
@@ -16823,6 +17082,103 @@ fn write_toned_ground(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     }))
 }
 
+/// **改已有文档底色 `rebackground`**（反馈报告 §4 单拆项）：
+/// **只改底色** ✓：把当前打开文档的 `background` 换成给定的纯色 ⇒ 渲染侧
+/// `parse_background(&state.background)` 下一次出帧就读到新底色 ✓；图层、笔触、
+/// 画布尺寸**一律不动** ✗（想铺笔触质感底色是另一个工具的活 ✗，想给新文档底色
+/// 请在新建文档时给 ✗ —— 两者与本工具互补，不互相改写语义 ✗）。
+/// **必须是正式日志原子** ✓：落一条 `set_background` 原子 ⇒ 折叠进 `state.background` ✓、
+/// 落盘进原子日志 ✓ ⇒ 重开文档（全量日志重放 ✓）后仍在 ✓；**绝不**走「内存改状态
+/// 但不落原子、重开即丢」的捷径 ✗。配套：`dirty.rs` 里 `set_background` 是全量失效 ✓
+/// （底色是每块 tile 复合的基底 ⇒ 不全量就会让缓存 tile 继续用旧底色出帧 ✗）；
+/// 撤销/恢复：该原子种已进 `is_state_effect` ⇒ `revert`/`reapply` 能把它来回倒 ✓。
+/// **颜色严格校验** ✓（抄笔触底色工具的教训 ✗）：`parse_colour_value` 那套会把缺失通道
+/// 静默补 0、把越界静默夹到 255 ✗ ⇒ 底色工具抄它就会「错色也照改」✗ ⇒ 这里缺失/
+/// 非对象/缺通道/非整数/越界一律**明确报错** ✓，不传颜色也报错 ✓，绝不静默改底 ✗。
+/// **文档定位** ✓：按现有工具惯例，不另设文档参数 —— 作用于当前会话打开的文档
+/// （框架级 doc_id 字段已覆盖显式指定 ✓）；文档未打开时明确报错，不静默建文档 ✗。
+fn rebackground_channel(color: &Value, key: &str, required: bool) -> Result<u8> {
+    match color.get(key) {
+        None => {
+            if required {
+                Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "rebackground 的 color 缺少 {key} ⇒ 给完整的 {{r,g,b,a}}（0..255 整数；a 可缺省为 255）"
+                    )),
+                ))
+            } else {
+                Ok(255)
+            }
+        }
+        Some(value) => {
+            let number = value.as_i64().ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "rebackground 的 color.{key} 必须是 0..255 的整数（给了 {value}）⇒ 小数、字符串、负数、超 255 都不收"
+                    )),
+                )
+            })?;
+            if !(0..=255).contains(&number) {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "rebackground 的 color.{key} 越界（{number}）⇒ 只收 0..255，不静默夹紧"
+                    )),
+                ));
+            }
+            Ok(number as u8)
+        }
+    }
+}
+
+fn write_rebackground(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **先查文档开没开** ✓（删锚点工具同款教训 ✗）：折叠是容错的 ⇒ 只靠折叠层
+    // 拦不住「没文档也返回 ok」✗ ⇒ 想在调用方看到错误，就得在这里自己查 ✓。
+    let previous_background = {
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!(
+                    "文档 {} 未打开 ⇒ 先建文档或打开已有文档，再改底色",
+                    ctx.doc_id
+                )),
+            )
+        })?;
+        document.state().background.clone()
+    };
+    let color_value = args.get("color").ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "rebackground 必须给 color（{r,g,b,a}，0..255 整数）⇒ 不给颜色不会静默改底"
+                    .to_string(),
+            ),
+        )
+    })?;
+    if !color_value.is_object() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "rebackground 的 color 必须是对象 {{r,g,b,a}}（给了 {color_value}）"
+            )),
+        ));
+    }
+    let r = rebackground_channel(color_value, "r", true)?;
+    let g = rebackground_channel(color_value, "g", true)?;
+    let b = rebackground_channel(color_value, "b", true)?;
+    let a = rebackground_channel(color_value, "a", false)?;
+    let background = json!({"r": r, "g": g, "b": b, "a": a});
+    let result = ctx.commit(AtomKind::SetBackground, json!({"background": background}))?;
+    let mut value = finish_mutation(ctx, &result, None)?;
+    // **改前改后都回** ✓：调用方不用再调一次读状态就能确认「底色确实换了、换成什么」✓
+    // （只回新值的话，「没换」与「换成了同一个色」分不出来 ✗）。
+    value["previous_background"] = previous_background;
+    value["background"] = background;
+    Ok(value)
+}
+
 /// **`save_palette`**（AI 画家需求 P1-5 的写侧）：把 `colors` 规范成 `R G B` ⇒ 写一份临时 `.gpl` ⇒
 /// 交给**既有的资产导入**（`kind: palette` + `overwrite`）⇒ 再**回读**一次返回 ✓
 /// ⇒ 存进去就一定能读出来（与 `list_palette_colors` 同一条路 ✓，不另造存储 ✗）。
@@ -17358,6 +17714,64 @@ pub(crate) fn effective_color_space(
         },
         _ => "srgb_bytes",
     }
+}
+
+/// **报告 5/6 第 6 项：显式 `linear` 下渐变两端混写判据**。
+///
+/// 钉死的“混写”只有一种（与报告 4 P4 的触发谓词空间不交，见下）：
+/// * `color_space` 显式传了 `"linear"`；
+/// * `color` 与 `color_to` 都给了，且一端是数组（显式 linear 下按线性直通解释），
+///   另一端是对象式／hex（`parse_spec_color_with_space` 里非数组直接走既有解析，
+///   恒为 sRGB 字节，不受显式空间影响）。
+///
+/// 于是渐变两端实际按不同空间解码，而回执 `applied.color_space` 只回显 `color` 一端的
+/// 空间，另一端的解释被藏住 —— 这正是要警告的情形。
+///
+/// 不触发（与 P4 分工，合入后两条 warning 永不重叠）：
+/// * 不传空间：两端口径不同时 P4 已覆盖（任一浮点端走线性即报），本判据不报；
+/// * 显式 `"srgb"`：数组与对象式／hex 全是 sRGB 字节族，不存在混写；
+/// * 两端同族：数组＋数组（同为线性）、对象式＋hex（同为 sRGB 字节）；
+/// * 只给一端颜色：单色不存在“两端混写”（显式空间被对象式／hex 忽略是另一相邻项，
+///   且单色回执 `applied` 已照实报 `srgb_bytes`／`hex`，不在本项范围）。
+///
+/// 只产文案：调用方把它 push 进已有的 `warnings` 数组，不改任何现有字段语义、不改像素
+/// （判据函数本身是纯函数；落笔处的调用点也在提交之后、只改回执 `Value`）。
+pub(crate) fn mixed_color_space_warning(
+    color: Option<&Value>,
+    color_to: Option<&Value>,
+    space: Option<yanshi_render::color::ColorSpace>,
+) -> Option<String> {
+    use yanshi_render::color::ColorSpace;
+    if !matches!(space, Some(ColorSpace::Linear)) {
+        return None;
+    }
+    // 显式 linear 下：数组 ⇒ 线性族；对象式／hex ⇒ sRGB 字节族；其余形态（null、
+    // 数字、非 hex 字符串）不是合法颜色，落笔前已报错或不存在，判据不认领。
+    let family = |value: &Value| -> Option<&'static str> {
+        match value {
+            Value::Array(_) => Some("linear"),
+            Value::Object(_) => Some("srgb_bytes"),
+            Value::String(text) if text.starts_with('#') => Some("srgb_bytes"),
+            _ => None,
+        }
+    };
+    let label = |family: &str| -> &'static str {
+        if family == "linear" {
+            "线性直通"
+        } else {
+            "sRGB 字节"
+        }
+    };
+    let from = color.filter(|value| !value.is_null()).and_then(family)?;
+    let to = color_to.filter(|value| !value.is_null()).and_then(family)?;
+    if from == to {
+        return None;
+    }
+    Some(format!(
+        "显式 color_space=\"linear\" 下渐变两端混写：color 按{from_label}解释、color_to 按{to_label}解释——显式空间只改数组的解释，对象式／hex 恒为 sRGB 字节；两端实际按不同空间解码，缺省与像素未改，如需两端同空间请两端用同一写法（都用浮点数组表线性，或都用字节数组／对象式／hex 表 sRGB）",
+        from_label = label(from),
+        to_label = label(to),
+    ))
 }
 
 /// **本次调用生效参数的回显对象** ✓（A5：只加在 `brush_stroke`／`medium_stroke` 回执 ✓）。
@@ -20028,6 +20442,18 @@ fn selection_shape_points(shape: &Value, bbox: (f64, f64, f64, f64)) -> Option<V
 /// **判据（能红 ✓）**：两支不同的笔刷 ⇒ 两张预览**必须不同** ✓（`blob_hash` 不同 ✓）；
 /// 同一支两次 ⇒ **逐字节相同** ✓（确定性 ✓）；**它不碰文档** ✓（head 不变 ✓）。
 fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // return_image 统一语义：max_px 传了就校验（非法在画笔前报错）；回图长边
+    // 上限 = 显式 max_px，或只传 return_image 时的缺省 512；只传旧
+    // include_image 且不传 max_px 时不设限（旧行为：全尺寸内嵌，不动）。
+    let preview_explicit_max_px = explicit_max_px(args)?;
+    let preview_wants_image = wants_return_image(args);
+    let preview_max_px = preview_explicit_max_px.or_else(|| {
+        if optional_bool(args, "return_image").unwrap_or(false) {
+            Some(RETURN_IMAGE_DEFAULT_MAX_PX)
+        } else {
+            None
+        }
+    });
     let brush_name = require_str(args, "brush")?;
     // 缺省 24 ✓：与 `brush_stroke` / `medium_stroke` 的缺省一致 ✓（不在这里另立一套 ✗）。
     let size = args.get("size").and_then(Value::as_f64).unwrap_or(24.0);
@@ -20191,13 +20617,44 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
             "mime_type": "image/png",
             "overwritten": overwritten,
         });
-    } else if optional_bool(args, "include_image").unwrap_or(false) {
-        value["image"] = json!({
-            "mime_type": "image/png",
-            "data": base64::encode(&png),
-            "width": width,
-            "height": height,
-        });
+    } else if preview_wants_image {
+        match preview_max_px {
+            Some(cap) => match encode_image_capped(&paint.rgba, width, height, cap) {
+                Some((capped, capped_w, capped_h, scaled)) => {
+                    value["image"] = json!({
+                        "mime_type": "image/png",
+                        "data": base64::encode(&capped),
+                        "width": capped_w,
+                        "height": capped_h,
+                    });
+                    if scaled {
+                        value["scaled_from"] = json!([width, height]);
+                        value["scaled_note"] = json!(format!(
+                            "预览 {}×{} 超过 max_px={}，已自动缩小到 {}×{} 内嵌；要看原尺寸请传 max_px={}",
+                            width,
+                            height,
+                            cap,
+                            capped_w,
+                            capped_h,
+                            width.max(height)
+                        ));
+                    }
+                }
+                None => {
+                    value["image_omitted"] = json!(true);
+                    value["image_omitted_reason"] = json!("预览图缩放或编码失败，未内嵌 base64");
+                }
+            },
+            // 旧 include_image 单独调用：全尺寸内嵌，与从前逐字节一致。
+            None => {
+                value["image"] = json!({
+                    "mime_type": "image/png",
+                    "data": base64::encode(&png),
+                    "width": width,
+                    "height": height,
+                });
+            }
+        }
     }
     Ok(value)
 }
@@ -20213,6 +20670,17 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
 /// 于是「试画」与「预览」共用同一条落笔实现 —— 与 `brush_stroke` 也是同一条（只是
 /// `feed_base = false`、不提交）=> **试画效果 = 真画效果**。
 fn write_swatch_brush_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // return_image 统一语义：max_px 传了就在整批开始前校验（非法直接报错，
+    // 不进循环后才静默丢弃）；上限 = 显式值，或只传 return_image 时的 512，
+    // 只传旧 include_image 时为 None（子调用保持旧行为）。
+    let swatch_explicit_max_px = explicit_max_px(args)?;
+    let swatch_max_px = swatch_explicit_max_px.or_else(|| {
+        if optional_bool(args, "return_image").unwrap_or(false) {
+            Some(RETURN_IMAGE_DEFAULT_MAX_PX)
+        } else {
+            None
+        }
+    });
     let names = |key: &str| -> Vec<Value> {
         match args.get(key) {
             Some(Value::Array(items)) => items.clone(),
@@ -20322,7 +20790,11 @@ fn write_swatch_brush_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result
                 // 外部复测 QY-G01：把 include_image 透传下去，但**最多 8 张**（超了不说"没有"，说原因）
                 // 外部复测 QY-G01：把 include_image 透传下去，但**最多 8 张**
                 // **超限要说原因**（spec 承诺过 `image_skipped`）⇒ 不静默丢
-                let wants_image = optional_bool(args, "include_image").unwrap_or(false);
+                // return_image 统一语义：与 include_image 同义触发回图；透传给
+                // brush_preview 时把长边上限也带过去（显式 max_px 优先，只传
+                // return_image 时带缺省 512；只传旧 include_image 时不带，
+                // 子调用保持旧的全尺寸行为）。
+                let wants_image = wants_return_image(args);
                 let wants_file = output_dir.is_some();
                 let image_allowed = (wants_image || wants_file) && swatches.len() < 8;
                 if image_allowed {
@@ -20336,6 +20808,9 @@ fn write_swatch_brush_strokes(ctx: &mut ToolContext<'_>, args: &Value) -> Result
                         );
                     } else {
                         sub.insert("include_image".to_owned(), Value::Bool(true));
+                        if let Some(cap) = swatch_max_px {
+                            sub.insert("max_px".to_owned(), json!(cap));
+                        }
                     }
                 }
                 // **★ 单个组合失败 ⇒ 记在该条上 ✗ 不整批失败** ✓（**第 254 轮实测修 ✓）**

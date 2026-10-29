@@ -606,7 +606,7 @@ const P2_TOOL_SPECS = {
   begin_changeset: [0, []],
   begin_transaction: [0, []],
   blob_gc: [1, [["dry_run","b",0],["confirm","b",0],["ttl_days","n",0],["demote","b",0]]],
-  brush_preview: [0, [["brush","s",1],["size","n",0],["color","x",0],["points","a",0],["color_to","x",0],["color_space","s",0],["smooth","b",0],["opacity","n",0],["hardness","n",0],["background","x",0],["read_canvas","b",0],["brush_params","o",0],["include_image","b",0],["output_path","s",0]]],
+  brush_preview: [0, [["brush","s",1],["size","n",0],["color","x",0],["points","a",0],["color_to","x",0],["color_space","s",0],["smooth","b",0],["opacity","n",0],["hardness","n",0],["background","x",0],["read_canvas","b",0],["brush_params","o",0],["include_image","b",0],["output_path","s",0],["return_image","b",0],["max_px","n",0]]],
   brush_stroke: [1, [["brush_params","o",0],["hand_tremor","n",0],["speed_ink","n",0],["color_breath","n",0],["paint_push","n",0],["pressure_shape","n",0],["stroke_taper","n",0],["dry_brush","n",0],["edge_soft","n",0],["tilt_shade","n",0],["scatter_texture","n",0],["edge","s",0],["pressure_shape","n",0],["path_guide","o",0],["stroke_taper","n",0],["preview","b",0],["wait_for_render","b",0],["sensors","o",0],["layer_id","s",1],["symmetry","s",0],["anchor_mode","s",0],["grid_spacing","n",0],["humanize","b",0],["pressure_curve","s",0],["dwell","n",0],["tremor","n",0],["tremor_seed","i",0],["glaze","b",0],["glaze_passes","i",0],["brush","s",1],["points","a",1],["size","n",0],["color","x",0],["color_mixing","s",0],["color_to","x",0],["color_space","s",0],["opacity","n",0],["hardness","n",0],["smooth","b",0],["object_id","s",0],["style","s",0],["clip_to_selection","s",0],["label","s",0],["group_id","s",0]]],
   calibrate: [1, [["size","n",0],["points","x",0],["tolerance","n",0],["layer_id","s",0],["cleanup","b",0]]],
   cancel_job: [0, [["job_id","s",1]]],
@@ -653,7 +653,7 @@ const P2_TOOL_SPECS = {
   estimate_dehaze: [0, []],
   explain_tool: [0, [["name","s",0],["tool","s",0]]],
   export_book_pngs: [0, [["doc_ids","x",1],["dir","s",1]]],
-  export_png: [0, [["path","s",1],["region","x",0],["lod","i",0],["width","i",0],["height","i",0],["max_edge","i",0],["filter","s",0],["deterministic","b",0],["layer_id","s",0]]],
+  export_png: [0, [["path","s",1],["region","x",0],["lod","i",0],["width","i",0],["height","i",0],["max_edge","i",0],["filter","s",0],["deterministic","b",0],["layer_id","s",0],["return_image","b",0],["max_px","n",0]]],
   export_project: [0, [["path","s",0],["doc_id","s",0],["include_bitmaps","b",0]]],
   export_psd_layers: [0, [["filename","s",0],["output_path","s",0]]],
   export_svg: [0, [["path","s",1],["validate","b",0],["flatten_opacity","b",0]]],
@@ -730,12 +730,13 @@ const P2_TOOL_SPECS = {
   preview_suggestion: [0, [["suggestion_id","s",0],["patch","a",0]]],
   put_blob: [0, [["path","s",0],["data_base64","s",0],["mime_type","s",0]]],
   reapply: [1, [["atom_id","s",1]]],
+  rebackground: [1, [["color","o",1]]],
   redo_last: [1, [["count","i",0]]],
   reject_annotation: [0, [["annotation_id","s",1]]],
   reject_suggestion: [1, [["suggestion_id","s",1],["reason","s",0]]],
   reject_suggestions: [1, [["suggestion_ids","a",1],["reason","s",0]]],
   remove_from_group: [1, [["group_id","s",1],["object_id","s",1]]],
-  render_region: [0, [["region","x",1],["raw","b",0],["output_path","s",0],["show_coords","b",0],["include_image","b",0],["max_px","n",0],["layer_id","s",0],["active_layer","s",0]]],
+  render_region: [0, [["region","x",1],["raw","b",0],["output_path","s",0],["show_coords","b",0],["include_image","b",0],["max_px","n",0],["layer_id","s",0],["active_layer","s",0],["return_image","b",0]]],
   reorder_layers: [1, [["order","a",1]]],
   reorder_objects: [1, [["layer_id","s",1],["order","a",1]]],
   replace_object_data: [1, [["object_id","s",1],["data","o",1],["type","s",0]]],
@@ -765,20 +766,20 @@ const P2_TOOL_SPECS = {
   set_preferences: [1, [["values","o",1]]],
   set_property: [1, [["key","s",1],["value","x",0],["object_id","s",0],["layer_id","s",0]]],
   set_reference: [0, [["blob_hash","s",1],["opacity","n",0],["position","o",0]]],
-  smart_blend: [1, [["shape","o",1],["color_a","a",1],["color_b","a",1],["blend_direction","n",0],["direction_guides","a",0],["direction_from","s",0],["brush","s",0],["size","n",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0]]],
-  smart_edge_soften: [1, [["edge_path","a",0],["path_guide","o",0],["shape","o",0],["soften_width","n",0],["soften_strength","n",0],["max_steps","i",0],["soften_direction","s",0],["color","a",0],["brush","s",0],["size","n",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0]]],
-  smart_erase_shape: [1, [["layer_id","s",1],["shape","o",1],["invert","b",0],["feather","n",0],["opacity","n",0],["size","n",0]]],
-  smart_fill: [1, [["shape","o",1],["fill_direction","n",0],["direction_guides","a",0],["direction_from","s",0],["clip_to_shape","b",0],["direction_jitter","n",0],["color","a",1],["brush","s",0],["size","n",0],["mode","s",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0]]],
-  smart_glaze: [1, [["shape","o",1],["color","a",1],["layers","n",0],["target_opacity","n",0],["layer_opacity","n",0],["brush","s",0],["size","n",0],["fill_direction","n",0],["direction_jitter","n",0],["direction_rotate","n",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0]]],
-  smart_hatch_follow: [1, [["guides","a",1],["width","n",0],["shape","o",0],["density","n",0],["size","n",0],["color","a",1],["brush","s",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0]]],
-  smart_sample: [1, [["ref","s",1],["shape","o",1],["ref_bbox","a",0],["samples","n",0],["texture_type","s",0],["density","n",0],["size","n",0],["brush","s",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0]]],
-  smart_select: [1, [["selection_id","s",0],["seed","a",0],["seeds","a",0],["tolerance","n",0],["contiguous","b",0],["refine_edges","b",0],["layer_id","s",0],["mode","s",0],["feather","n",0],["preview","b",0]]],
-  smart_texture: [1, [["shape","o",1],["texture_type","s",1],["direction_guides","a",0],["direction_from","s",0],["density","n",0],["neutral","b",0],["size","n",0],["color","a",0],["brush","s",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0]]],
+  smart_blend: [1, [["shape","o",1],["color_a","a",1],["color_b","a",1],["blend_direction","n",0],["direction_guides","a",0],["direction_from","s",0],["brush","s",0],["size","n",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0],["return_image","b",0],["max_px","n",0]]],
+  smart_edge_soften: [1, [["edge_path","a",0],["path_guide","o",0],["shape","o",0],["soften_width","n",0],["soften_strength","n",0],["max_steps","i",0],["soften_direction","s",0],["color","a",0],["brush","s",0],["size","n",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0],["return_image","b",0],["max_px","n",0]]],
+  smart_erase_shape: [1, [["layer_id","s",1],["shape","o",1],["invert","b",0],["feather","n",0],["opacity","n",0],["size","n",0],["return_image","b",0],["max_px","n",0]]],
+  smart_fill: [1, [["shape","o",1],["fill_direction","n",0],["direction_guides","a",0],["direction_from","s",0],["clip_to_shape","b",0],["direction_jitter","n",0],["color","a",1],["brush","s",0],["size","n",0],["mode","s",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0],["return_image","b",0],["max_px","n",0]]],
+  smart_glaze: [1, [["shape","o",1],["color","a",1],["layers","n",0],["target_opacity","n",0],["layer_opacity","n",0],["brush","s",0],["size","n",0],["fill_direction","n",0],["direction_jitter","n",0],["direction_rotate","n",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0],["return_image","b",0],["max_px","n",0]]],
+  smart_hatch_follow: [1, [["guides","a",1],["width","n",0],["shape","o",0],["density","n",0],["size","n",0],["color","a",1],["brush","s",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0],["return_image","b",0],["max_px","n",0]]],
+  smart_sample: [1, [["ref","s",1],["shape","o",1],["ref_bbox","a",0],["samples","n",0],["texture_type","s",0],["density","n",0],["size","n",0],["brush","s",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0],["return_image","b",0],["max_px","n",0]]],
+  smart_select: [1, [["selection_id","s",0],["seed","a",0],["seeds","a",0],["tolerance","n",0],["contiguous","b",0],["refine_edges","b",0],["layer_id","s",0],["mode","s",0],["feather","n",0],["preview","b",0],["return_image","b",0],["max_px","n",0]]],
+  smart_texture: [1, [["shape","o",1],["texture_type","s",1],["direction_guides","a",0],["direction_from","s",0],["density","n",0],["neutral","b",0],["size","n",0],["color","a",0],["brush","s",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0],["return_image","b",0],["max_px","n",0]]],
   smudge: [1, [["layer_id","s",1],["points","a",1],["size","n",0],["smudge_length","n",0],["deposit","n",0],["hardness","n",0],["opacity","n",0],["object_id","s",0],["z_index","i",0]]],
   stroke_path: [1, [["label","s",0],["group_id","s",0],["layer_id","s",1],["path_object_id","s",0],["subpaths","a",0],["d","s",0],["brush","s",1],["size","n",0],["color","x",0],["brush_params","o",0],["pressure_profile","s",0],["pressure_max","n",0],["ramp_ratio","n",0],["virtual_speed","n",0],["preview","b",0],["wait_for_render","b",0],["opacity","n",0],["clip_to_selection","s",0]]],
   submit_offline: [1, [["atoms","a",1]]],
   suggest: [1, [["patch","a",1],["annotation_id","s",0],["summary","s",0],["priority","i",0]]],
-  swatch_brush_strokes: [0, [["brushes","a",1],["brush_params","o",0],["preview_size","s",0],["colors","a",0],["paths","a",0],["size","n",0],["background","x",0],["read_canvas","b",0],["opacity","n",0],["hardness","n",0],["color_to","x",0],["smooth","b",0],["include_image","b",0],["output_path","s",0]]],
+  swatch_brush_strokes: [0, [["brushes","a",1],["brush_params","o",0],["preview_size","s",0],["colors","a",0],["paths","a",0],["size","n",0],["background","x",0],["read_canvas","b",0],["opacity","n",0],["hardness","n",0],["color_to","x",0],["smooth","b",0],["include_image","b",0],["output_path","s",0],["return_image","b",0],["max_px","n",0]]],
   texture_background: [1, [["texture","s",1],["mode","s",0],["region","x",0],["layer_id","s",0],["object_id","s",0]]],
   toned_ground: [1, [["color","o",1],["strength","n",0],["seed","n",0]]],
   transform_object: [1, [["object_id","s",1],["rotate","o",0],["scale","o",0],["translate","o",0],["anchor","o",0],["compose","b",0]]],
@@ -5000,8 +5001,7 @@ async function withKernel(doc, fn) {
                       reason: "import_image 需要位图尺寸（region.w/h 或 width/height）⇒ 否则渲染器把它当「不支持的原语」跳过 ⇒ 画面什么都不出",
                       server: false }, 400);
       }
-      const objectId = body.object_id || pl.object_id ||
-                       ("obj_" + Date.now().toString(36));
+      const objectId = body.object_id || pl.object_id || p2cNewObjectId();
       const mime = String(bitmap.mime_type || (pl.bitmap && pl.bitmap.mime_type) || "image/x-yanshi-raw");
       // **★ 净荷形状 = 渲染器 `parse_raster_patch` 要的 ✓**：`bitmap.blob_hash` ＋ `width/height` ＋ `region`
       //   （**blob 缺失时也要能先把原子造出来 ✗**——**服务端 404 的文案里带的是原子 id ✓**
@@ -8208,7 +8208,7 @@ async function withKernel(doc, fn) {
         return p2ToolFailure(400, "invalid_argument", "缺少必填参数 layer_id", null);
       }
       const objectId = typeof body.object_id === "string" && body.object_id
-        ? body.object_id : ("obj_" + Date.now().toString(36));
+        ? body.object_id : p2cNewObjectId();
       const guard = p2RefGuard(rows, p2PresetLayers(rows, neutral), neutral, "import_image",
                                { object_id: objectId, layer_id: layerId });
       if (guard) return p2ToolFailure(guard.status, guard.code, guard.detail, guard.extra);
