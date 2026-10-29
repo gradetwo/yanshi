@@ -206,6 +206,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         //   ⇒ **∴ 报告里说"一次调用拿到尺寸 ＋ 层列表 ＋ 选区 ＋ 掩码"✗ ⇒ **∴ 免得 agent 打四五次 ✓**
         name: "describe_canvas",
         profile: Profile::Core,
+        // **反馈期 3 补记**：单笔光栅缓存现可配上限（`YANSHI_VECTOR_RASTER_CACHE_MB`，
+        //   兆字节；非法值静默回落缺省 = 不设上限）⇒ 配了上限后按 LRU 逐出、被逐
+        //   笔触按需重算、像素不变 ⇒ 下面的 summary 由“只能 close 重开”改成
+        //   “缺省仍只增不减、配上限后不再是唯一出路”的条件写法 ✓。
         // **★ 把"内存只增不减"这条实测性质写进工具面 ★**（第 1560 轮；外部 `B5`）
         //   **⇒ 他们的原话**：「服务端内存只增不减，只能靠 close/reopen 释放 ⇒
         //     这个性质**我是自己试出来的**，工具面没有告诉我」✗
@@ -215,9 +219,11 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         //     **`/api/documents` 的 close+open 能释放**、单会话有天花板但文档本身没有 ✓
         summary: "一次返回画布状态：尺寸、层列表、选区、掩码，外加**真实内存**（`server_rss_mb`）\
                   与**每原子均值**（`bytes_per_atom_avg`，<100 原子时报 0=不可判）（只读 ✓）。\
-                  **内存只增不减**：渲染缓存按原子增长（实测 ≈300 KB/原子，4K 一笔 ≈300 KB）⇒ \
-                  **要释放就 `close` 再 `open` 同一文档**（实测 4 450 MB → 1 736 MB，回放 0.8 s）⇒ \
-                  **单会话有天花板、文档本身没有** ⇒ 长跑请分阶段、每阶段重开",
+                  **内存**：缺省不配上限时渲染缓存按原子增长、只增不减 ⇒ \
+                  **要释放就 `close` 再 `open` 同一文档**（实测 4 450 MB → 1 736 MB，回放 0.8 s）；\
+                  配了 `YANSHI_VECTOR_RASTER_CACHE_MB`（兆字节）后单笔光栅缓存按 LRU 逐出、\
+                  被逐笔触按需重算、像素不变 ⇒ close 重开不再是唯一出路；\
+                  **单会话有天花板、文档本身没有** ⇒ 长跑请分阶段、每阶段重开或配上限",
         mutating: false,
         params: &[],
     },
@@ -1409,8 +1415,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                  需要中途看进展就用 `preview_every_n_strokes: N`（每 N 笔放行一次 ✓）\
                  或 `preview_interval_ms: M`（每 M 毫秒放行一次 ✓）—— 放行的那一次**照常产出预览** ✓。\
                  显式传 `silent: false` 可恢复旧行为（每笔带预览）。\
-                 **单笔绘制**请用 `brush_stroke(preview: false)` ✓（同一条免编码路 ✓），\
-                 要图时**不传**它即可 ✓（默认行为不变 ✓）。\
+                 **批量作画不等渲染** ✓（反馈报告 2 期 1）：顶层 `wait_for_render: false` ⇒ 整批子调用默认不等渲染（完工后用 `export_png` / `render_region` 取图 ✓）；不给 ⇒ 各子调用按自己的值（单笔缺省 `true` ✓）；子调用显式值只对自己那一笔生效 ✓。\
+                 **`preview` 与 `wait_for_render` 分工** ✓：`preview` 只管响应里要不要图（编码与回执体积），**不省渲染遍**；`wait_for_render` 才管渲不渲染（wall 时间开关）—— `preview: false` 绝不等于「快」✓。\
+                 单笔绘制要省 wall 时间请用 `brush_stroke(wait_for_render: false)` ✓（`brush_stroke` 回执本就不带预览图，`preview` 对它无可见效果 ✓）。\
                  顶层 `ok` 即全成（与 `all_ok` 一致 ✓，A6 方案 ①）：有子调用失败 ⇒ `ok:false` + `error` 指路 `failed_calls` ✓。\
                  每笔另有取证摘要 `stroke_evidence`（与 `calls` 同下标 ✓）：笔触类子调用给 `landed` / `painted_pixels_clipped` / `ink_mass` / `max_channel_delta`（与 `brush_stroke` 回执同字段 ✓；`medium_stroke` 的 `paint_delta` 在此归一为 `max_channel_delta` ✓）；失败的子调用带完整 `error` ✓。",
         mutating: true,
@@ -1430,6 +1437,12 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 Boolean,
                 false,
                 "true = 不生成每次调用的预览（大批量排线时省下大量临时 IO；缺省 true，D1 期 2 块 4；显式 false 恢复每笔带预览的旧行为）"
+            ),
+            param!(
+                "wait_for_render",
+                Boolean,
+                false,
+                "批内子调用未显式指定 wait_for_render 时的缺省（反馈报告 2 期 1）：不给 = 各子调用按自己的值（单笔缺省 true）；给了 = 批量作画一键开关（false = 整批不等渲染，完工后用 export_png / render_region 取图）；子调用显式值只对自己那一笔生效，下一笔回到批值；smart_* 系内层笔触走自己的缺省 false，不受批值改写"
             ),
         ],
     },
@@ -1978,7 +1991,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         // ⇒ 而实现**明确拒绝**覆盖已存在的 id ✓ ⇒ **遵循这份描述的 Agent 会撞墙** ✗ ——
         // 契约与行为不符 ✓ 比功能缺失更坏 ✗（调用方会按描述写出**必然失败**的代码 ✓）。
         // **语义照实写清** ✓：新画布 = **新的 doc_id** ✓（文档 id 就是持久单元 ✓，这是设计 ✓）。
-        summary: "新建文档（doc_id / 宽高 / 背景色）：新 id ⇒ 建好并返回 created:true / opened:false；**若该 doc_id 已存在 ⇒ 打开它**（返回 opened:true / created:false，内容与尺寸都不动）；要一块干净画布请换新 doc_id",
+        summary: "新建文档（doc_id / 宽高 / 背景色 / mode）：新 id ⇒ 建好并返回 created:true / opened:false；**若该 doc_id 已存在 ⇒ 缺省打开它**（返回 opened:true / created:false，内容与尺寸都不动，传入的宽高与背景会原样列在 ignored 里）；要一块干净画布请换新 doc_id；mode=open 为缺省（已存在⇒打开，不存在⇒新建），mode=create 为严格新建（已存在⇒报错，不打开、不清空），mode=reset 为清空重建（已存在⇒删后重建空白，不存在⇒新建）",
         mutating: true,
         params: &[
             param!("doc_id", String, false, "文档 id（缺省用当前会话的文档）"),
@@ -1988,6 +2001,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("width", Integer, false, "宽（像素）——新建画布时必填；打开已存在文档时可不传"),
             param!("height", Integer, false, "高（像素）——新建画布时必填；打开已存在文档时可不传"),
             param!("background", Object, false, "背景 {r,g,b,a}（0..255；缺省不透明白）"),
+            param!("mode", String, false, "同名文档的处理方式：open（缺省：已存在⇒打开，不存在⇒新建）、create（严格新建：已存在⇒报错）、reset（清空重建：已存在⇒删后重建空白，不存在⇒新建；删文档时遵循与 delete_document 相同的权限与实时连接规则；重建时尺寸必填，与新建相同）"),
         ],
     },
     ToolSpec {
@@ -2246,8 +2260,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "**要 MyPaint 笔刷物理（dab / 笔毛 / 干湿 / 压感）就用这个** ✓：**要载墨量／湿度／光谱混色（一笔蘸多少颜料、湿画法 vs 干笔）⇒ 用 `medium_stroke` 的 `load`／`wetness`／`color_mixing=pigment`，不是这里的 `brush_params`** ✓（**∵ `.myb` 的规范名里没有这两项** ✓）；201 支 .myb 笔刷，可带 color 画彩色、带 color_to 画**一笔多色**（Loaded Brush ✓）。                  与邻居的分工：要**介质插件**（油画 / 水彩 / 马克笔 / 铅笔 / 像素的我们自己的模拟）用 medium_stroke；                  要**纯几何、无物理**的矢量笔迹用 draw_stroke。                  **★ ⚠️ 切换笔刷或改 `brush_params` 之前，先用 `swatch_brush_strokes` 批量试 3–5 支，选最好的再真画 ★**（实测教训：AI 直接真画试错 ⇒ 画坏要 undo ⇒ 效率低一半 ✗。真画一笔 = 写文档 + 生成 atom + 污染历史；**swatch 不写文档、不生成 atom ⇒ 试 10 支也不心疼** ✓）。                  工作流：`list_brushes` 查 → `swatch_brush_strokes` 批量试 → 选一支 `brush_stroke` 真画 → 看缩略图 → 不满意再 swatch 换 ✓（**不要只试一次就开画** ✗）。                  **★ 压感指南 ★**：`points` 的第三个分量是 **pressure 0..1** ✓，它**按点生效**（不是整笔一个值 ✓）。**每一笔都该起伏**：起笔 **0.2–0.3** → 行笔 **0.8–1.0** → 收笔 **0.2–0.3** ✓；转折/顿笔处可以**短距离内压低再抬起**（形成「顿」✓）。**全程 0.8 会让笔触像矢量图** ✗（粗细一致、边缘生硬 ✓）—— 可直接抄的示例：`points: [[40,100,0.25],[110,96,0.9],[180,104,0.95],[250,100,0.3]]` ✓。**⚠️ `pressure_curve: 「auto」` 只对「压感敏感」的笔刷有效** ✓ —— 先用 `list_brushes` 的 `pressure_sensitive`／`pressure_settings` 确认（实测 `2B_pencil` 墨量 **1023→3470** ✓，而 `100%_Opaque` 几乎看不出差别 ✗）。                  **每条笔触只作用于它自己的图层** ✓：跨图层只是普通叠加；介质的湿搅 / 混色**不跨图层** ✓（先把底下那层画完，或用同一层叠 ✓）。                  **覆盖率／落墨量以 clipped 为准** ✓：`painted_pixels` 只是裁剪前的铺开面积（同值字段 `painted_pixels_raw`），真实落墨看 `painted_pixels_clipped`；顶层 `landed`／`landed_reason` 直接给结论。",
         mutating: true,
         params: &[
-            // **预览开关** ✓（第 5 轮 ✓，P0 ✓）：连续作画时 `preview: false` ⇒ 这一笔不编预览 PNG ✓
-            // ⇒ 省下实测 ~130 ms/笔（4K、`Clouds.myb`、`size 180` ✓）✓；默认 `true` ⇒ 行为不变 ✓。
+            // **预览开关** ✓（第 5 轮 ✓，P0 ✓）：连续作画时 `preview: false` ⇒ 这一笔不产出预览图 ✓
+            // ⇒ 只省编码与回执体积，渲染遍照常走（`wait_for_render: true` 时），不省单笔 wall 时间 ✓
+            //   （反馈报告 2 期 1 定准：真开关是 `wait` 不是 `preview`；且 `brush_stroke` 回执本就
+            //   不带预览图，`preview` 对本工具无可见效果 ✓）；默认 `true` ⇒ 行为不变 ✓。
             // **★ P0 #4：覆盖 `.myb` 的任意字段 ✗ ★**（**名字用 libmypaint 规范名 ✓ ＝ `.myb` 的 JSON 键 ✓）
             //   ⇒ **∴ AI 不必换笔刷文件就能调** `smudge`／`opaque`／`dabs_per_actual_radius` 这类** ✓ ★★★
             // **★ 但 `dabs_per_basic_radius` 在本引擎里**不会生效 ★**（第 1589 轮实测 + 根因）
@@ -2333,7 +2349,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("pressure_shape", Number, false, "压力曲线 -1..1（缺省 0 = 不启用）：一笔内压力自动变化。正值中间粗两头细（通用），负值起笔粗收笔细（书法顿笔出锋）"),
             param!("path_guide", Object, false, "曲线尺吸附（二期）：{object_id|subpaths, snap_radius}——把落点往一条 path 曲线拉（权重 (1−d/R)²，d 为落点到规范折线的距离）；只改落点坐标，压感/时间不动。与 direction_guides 并存不冲突：那是方向场（改生成笔触的走向），本参数改的是已有落点的位置，两者独立生效。缺省不传 ⇒ 点列逐位不变"),
             param!("stroke_taper", Number, false, "起收锋 0..1（缺省 0 = 不启用）：笔画两头几何收细，中段不受影响。模拟锋利笔尖"),
-            param!("preview", Boolean, false, "缺省 true = 产出这一笔的预览图；false = 不产出（连续作画提速；预览仍可由 export_png / get_document 取）"),
+            param!("preview", Boolean, false, "缺省 true；false = 这一笔不产出预览图。注意两点：① preview 只省编码与回执体积，渲染遍照常走（wait_for_render: true 时），不省单笔 wall 时间——要省时间用 wait_for_render: false；② brush_stroke 回执本就不带预览图，所以 preview 对本工具无可见效果（为与其它笔触工具统一调用而保留）"),
             param!(
                 "wait_for_render",
                 Boolean,

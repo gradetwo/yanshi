@@ -111,6 +111,10 @@ const ALLOWLIST = {
   internal: new Set([
     "feed_base", "cp", "YANSHI_EXPORT_DIR", "canvas", "open", "close",
     "supersede",
+    // **反馈期 3（P3）**：`describe_canvas` 文案里的单笔光栅缓存上限环境变量 ✓
+    //   （`vector.rs` 的 `VECTOR_RASTER_CACHE_ENV_VAR` 常量、文档打开时的缺省来源；
+    //   internal 类明文覆盖“环境变量”，先例是 `YANSHI_EXPORT_DIR` ✓）。
+    "YANSHI_VECTOR_RASTER_CACHE_MB",
   ]),
 };
 const allowClassOf = (name) => {

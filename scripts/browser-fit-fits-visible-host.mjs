@@ -11,9 +11,20 @@
 //   ⇒ **∴ 必须**完全落在**它的宿主容器 rect 内**✗**（**∴ 容差 2px ✓**）
 //   ⇒ **∴ 且**宿主的可见高度**必须**被用满到 90% 以上**✗**（**∴ 防止把画面缩得过小 ✓**）
 //
-// 用法：node scripts/browser-fit-fits-visible-host.mjs <viewer-url> [cdpPort]
+// 用法：node scripts/browser-fit-fits-visible-host.mjs <viewer-url> [base] [token] [cdpPort]
 const url = process.argv[2];
-const port = process.argv[3] || "9222";
+// **★ CDP 端口**只认纯数字** ✗ ★**（外§117⑨ ✓ 由 CI 的 `exit 3` 换来 ✓）：
+//   **∴ 编排**（`run-criteria.sh:389` ✓）给 `browser-*` 传**四个**参数 ✗
+//     ⇒ `argv[2]`＝viewer URL ✓ ＋ **`argv[3]`＝服务端 base（也是个 URL ✗）** ＋ `argv[4]`＝令牌 ＋ **`argv[5]`＝CDP 端口 ✓**
+//   **∴ 旧写法 ✗** `process.argv[3] || "9222"` ⇒ 拿到的是 URL ⇒ 拼成
+//     `http://127.0.0.1:http://127.0.0.1:13990/json/list` ⇒ `Failed to parse URL` ⇒ **`exit 3`** ✓
+//   **∴ 而它表现成「跳过」**✓ **不是红** ✗ ⇒ **板面全绿而这条判据什么都没验** ✓✓（**静默降级形态⑤**）
+//   **∴ 修法**：照 `browser-render-box-truth.mjs:52` ✓ ⇒ **只认纯数字**的槽位 ＋ `CDP_PORT` 兜底 ✓
+const port =
+  (/^\d+$/.test(process.argv[5] || "") && process.argv[5]) ||
+  (/^\d+$/.test(process.argv[3] || "") && process.argv[3]) ||
+  process.env.CDP_PORT ||
+  "9222";
 if (!url) { console.error("用法: node scripts/browser-fit-fits-visible-host.mjs <viewer-url> [cdpPort]"); process.exit(2); }
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));

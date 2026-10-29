@@ -1199,3 +1199,348 @@ fn hex_alpha_warns_only_when_semi_transparent() {
         "6 位 hex 没有 alpha，不许报 alpha 警告：{hex6}"
     );
 }
+
+/// **反馈期 4（5.2 涂抹自动拆分）的测试脚手架** ✓：与本文件既有 `workspace()` 同形，
+/// 只把画布尺寸参数化（既有 helper 写死 400×200，拆分测试要 9000 宽的长笔）。
+fn workspace_sized(root: &std::path::Path, width: u32, height: u32) -> Workspace {
+    let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+    let mut workspace = Workspace::with_file_store(root.to_path_buf(), DocumentSettings::default())
+        .expect("落盘工作区应当能建")
+        .with_assets_dir(Some(assets));
+    workspace
+        .create_document(
+            NewDocument::new("doc_brush", width, height),
+            "human:1",
+            "session:test",
+        )
+        .unwrap();
+    workspace
+}
+
+/// **整幅渲染** ✓（返回 `(宽, 高, RGBA)`；与既有涂抹测试同一调用）。
+fn render_all(workspace: &mut Workspace, width: f64, height: f64) -> Vec<u8> {
+    let (_w, _h, pixels) = workspace
+        .document_mut("doc_brush")
+        .unwrap()
+        .render_region_raw(yanshi_core::Bbox::new(0.0, 0.0, width, height))
+        .expect("区域渲染应成功");
+    pixels
+}
+
+/// **两幅图在 x 区间内不同的像素数** ✓（只比 RGB，alpha 不计）。
+fn zone_diff_count(a: &[u8], b: &[u8], canvas_w: usize, x0: usize, x1: usize) -> usize {
+    assert_eq!(a.len(), b.len());
+    let mut count = 0usize;
+    for (i, (pa, pb)) in a.chunks(4).zip(b.chunks(4)).enumerate() {
+        let x = i % canvas_w;
+        if x >= x0 && x < x1 && (pa[0] != pb[0] || pa[1] != pb[1] || pa[2] != pb[2]) {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// **反馈期 4（5.2）**：超预算长涂抹自动拆成一段组、一次 `revert_group` 全收回、
+/// 素 `undo_last` 只撤最后一段（不是整组撤销的等价物）、后段喂得到前段的墨。
+/// 几何（`ramon-Knife`：`smudge = 1.0`、`smudge_length = 0.5`）：
+/// size 200（半径 100）⇒ 拖曳 50px、可达 50 + 100 + 2 = 152 ≤ 512（期 2 新上限）；
+/// 直线 200→8900（8700px）⇒ 预测 8700 × 100² × 3.5e-4 = 30,450ms > 30,000ms 预算 ⇒
+/// 段长上限 7714px ⇒ 拆 2 段（每段 4350px、约 15,225ms）。
+/// 本测试跑两遍等长涂抹（拆分一次 + 手动分段一次），墙钟约一分钟，属定向测试。
+#[test]
+fn over_budget_smudge_splits_into_one_group_and_reverts_as_a_whole() {
+    let root = temp_dir("smudge_split");
+    let _cleanup = Cleanup(root.clone());
+    let mut workspace = workspace_sized(&root, 9000, 300);
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
+        json!(true)
+    );
+    // 底：左红右蓝两笔（`classic-knife` 的 `smudge = 0` ⇒ 底笔自身不触发预算闸）。
+    for (object, colour, x0, x1) in [
+        (
+            "base_r",
+            json!({"r": 220, "g": 30, "b": 30, "a": 255}),
+            0.0,
+            4500.0,
+        ),
+        (
+            "base_b",
+            json!({"r": 30, "g": 30, "b": 220, "a": 255}),
+            4500.0,
+            9000.0,
+        ),
+    ] {
+        let made = call(
+            &mut workspace,
+            "brush_stroke",
+            json!({
+                "layer_id": "L", "object_id": object, "brush": "classic-knife", "size": 200,
+                "color": colour, "points": [[x0, 150.0, 0.9], [x1, 150.0, 0.9]]
+            }),
+        );
+        assert_eq!(made["ok"], json!(true), "底笔应当成功：{made}");
+    }
+    let base = render_all(&mut workspace, 9000.0, 300.0);
+    // 拆分落笔（调用方给组 id ⇒ 沿用它）。
+    let split = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "brush": "ramon-Knife", "size": 200, "group_id": "split_e2e",
+            "points": [[200.0, 150.0, 0.9], [8900.0, 150.0, 0.9]]
+        }),
+    );
+    assert_eq!(
+        split["ok"],
+        json!(true),
+        "超预算涂抹应当拆分后成功：{split}"
+    );
+    assert_eq!(split["split"], json!(true), "必须明说拆分了：{split}");
+    assert_eq!(
+        split["split_segments"],
+        json!(2),
+        "8700px ÷ 7714px 应当是 2 段：{split}"
+    );
+    assert_eq!(
+        split["split_group_id"],
+        json!("split_e2e"),
+        "调用方组 id 必须沿用：{split}"
+    );
+    let costs = split["segment_costs_ms"].as_array().expect("段成本数组");
+    assert_eq!(costs.len(), 2);
+    for cost in costs {
+        let ms = cost.as_f64().unwrap_or(-1.0);
+        assert!(
+            ms > 0.0 && ms <= 30_000.0,
+            "每段成本必须在预算内（实测 {ms} ms）：{split}"
+        );
+    }
+    let lengths = split["segment_path_lengths_px"]
+        .as_array()
+        .expect("段弧长数组");
+    let total_len: f64 = lengths.iter().map(|v| v.as_f64().unwrap_or(0.0)).sum();
+    assert!(
+        (total_len - 8700.0).abs() < 1.0,
+        "各段弧长之和应当等于整笔 8700px（实测 {total_len}）：{split}"
+    );
+    assert_eq!(
+        split["reach_cap_px"],
+        json!(512),
+        "可达上限必须是期 2 新值 512：{split}"
+    );
+    assert!(
+        split["undo_note"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("revert_group"),
+        "回执必须明说整组撤销走 revert_group：{split}"
+    );
+    assert_eq!(
+        split["segment_atom_ids"].as_array().map(|a| a.len()),
+        Some(2),
+        "两段各有一个提交原子：{split}"
+    );
+    let split_pixels = render_all(&mut workspace, 9000.0, 300.0);
+    // 涂抹确实改动了红蓝交界区（非空转：两段都真的抹了颜色）。
+    assert!(
+        zone_diff_count(&base, &split_pixels, 9000, 4300, 4700) > 100,
+        "交界区应当被涂抹改动（拆分不是空转）"
+    );
+    // 素 undo_last 只撤最后一段 ⇒ 组里还剩一段 ⇒ revert_group 只能再撤 1 段。
+    let undone = call(&mut workspace, "undo_last", json!({ "count": 1 }));
+    assert_eq!(undone["ok"], json!(true), "undo_last 应当成功：{undone}");
+    let reverted = call(
+        &mut workspace,
+        "revert_group",
+        json!({ "group_id": "split_e2e" }),
+    );
+    assert_eq!(
+        reverted["ok"],
+        json!(true),
+        "revert_group 应当成功：{reverted}"
+    );
+    assert_eq!(
+        reverted["reverted_count"],
+        json!(1),
+        "undo_last 已撤一段，组里应当只剩 1 段可撤（素 undo 不是整组撤销）：{reverted}"
+    );
+    let restored = render_all(&mut workspace, 9000.0, 300.0);
+    assert_eq!(restored, base, "整组撤完后画面应当回到涂抹前（逐字节）");
+    // 手动分段（同接点 4550）应当与自动拆分逐字节相同 ⇒
+    // 自动拆分的后段喂到底图里确实含前段的墨（不是各抹各的底）。
+    for (a, b) in [(200.0, 4550.0), (4550.0, 8900.0)] {
+        let made = call(
+            &mut workspace,
+            "brush_stroke",
+            json!({
+                "layer_id": "L", "brush": "ramon-Knife", "size": 200,
+                "points": [[a, 150.0, 0.9], [b, 150.0, 0.9]]
+            }),
+        );
+        assert_eq!(made["ok"], json!(true), "手动分段应当成功：{made}");
+        assert!(
+            made.get("split").is_none(),
+            "预算内分段不许带拆分字段：{made}"
+        );
+    }
+    let manual_pixels = render_all(&mut workspace, 9000.0, 300.0);
+    assert_eq!(
+        manual_pixels, split_pixels,
+        "手动分段与自动拆分的画面应当逐字节相同（后段喂得到前段的墨）"
+    );
+}
+
+/// **反馈期 4（5.2）**：没给组 id 时服务端生成 `split_` 组 id，一次 `revert_group` 收回两段。
+#[test]
+fn over_budget_smudge_without_group_id_gets_server_split_group() {
+    let root = temp_dir("smudge_split_generated");
+    let _cleanup = Cleanup(root.clone());
+    let mut workspace = workspace_sized(&root, 9000, 300);
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
+        json!(true)
+    );
+    let base = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "object_id": "base1", "brush": "classic-knife", "size": 200,
+            "points": [[0.0, 150.0, 0.9], [9000.0, 150.0, 0.9]]
+        }),
+    );
+    assert_eq!(base["ok"], json!(true), "{base}");
+    let split = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "brush": "ramon-Knife", "size": 200,
+            "points": [[200.0, 150.0, 0.9], [8900.0, 150.0, 0.9]]
+        }),
+    );
+    assert_eq!(
+        split["ok"],
+        json!(true),
+        "超预算涂抹应当拆分后成功：{split}"
+    );
+    assert_eq!(split["split_segments"], json!(2), "{split}");
+    let group_id = split["split_group_id"]
+        .as_str()
+        .expect("服务端必须生成组 id")
+        .to_owned();
+    assert!(
+        group_id.starts_with("split_"),
+        "服务端生成的组 id 应当以 split_ 开头（实测 {group_id}）"
+    );
+    let reverted = call(
+        &mut workspace,
+        "revert_group",
+        json!({ "group_id": group_id }),
+    );
+    assert_eq!(reverted["ok"], json!(true), "{reverted}");
+    assert_eq!(
+        reverted["reverted_count"],
+        json!(2),
+        "一次 revert_group 必须收回全部 2 段：{reverted}"
+    );
+}
+
+/// **反馈期 4（5.2）**：预算内短笔行为不变（不拆分、不带拆分字段）。
+#[test]
+fn in_budget_smudge_stroke_is_not_split() {
+    let root = temp_dir("smudge_split_short");
+    let _cleanup = Cleanup(root.clone());
+    let mut workspace = workspace(&root);
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
+        json!(true)
+    );
+    let base = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "object_id": "base1", "brush": "classic-knife", "size": 40,
+            "points": [[40.0, 60.0, 0.9], [200.0, 60.0, 0.9]]
+        }),
+    );
+    assert_eq!(base["ok"], json!(true), "{base}");
+    let made = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "object_id": "smudge1", "brush": "ramon-Knife", "size": 40,
+            "points": [[60.0, 60.0, 0.9], [180.0, 66.0, 0.9]]
+        }),
+    );
+    assert_eq!(made["ok"], json!(true), "{made}");
+    assert!(
+        made.get("split").is_none(),
+        "预算内短笔不许带拆分字段：{made}"
+    );
+    assert!(
+        made["painted_pixels"].as_u64().unwrap_or(0) > 0,
+        "短笔仍应正常落墨：{made}"
+    );
+}
+
+/// **反馈期 4（5.2）**：可达超限仍走原 Err（不拆分、不跑光栅，快拒）。
+/// size 1000（半径 500）⇒ 拖曳 0.5 × 500 = 250，可达 250 + 500 + 2 = 752 > 512；
+/// 500px 路径预测 43,750ms > 30,000ms 预算 ⇒ 原预算 Err（不是拆分错）。
+#[test]
+fn reach_over_cap_smudge_still_errors_without_splitting() {
+    let root = temp_dir("smudge_split_reach");
+    let _cleanup = Cleanup(root.clone());
+    let mut workspace = workspace_sized(&root, 1200, 1200);
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
+        json!(true)
+    );
+    let got = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "brush": "ramon-Knife", "size": 1000,
+            "points": [[100.0, 600.0, 0.9], [600.0, 600.0, 0.9]]
+        }),
+    );
+    assert_eq!(got["ok"], json!(false), "可达超限的笔必须被拒：{got}");
+    assert_eq!(got["error_code"], json!("invalid_argument"), "{got}");
+    let detail = got["context"]["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("预算 30 秒"),
+        "可达超限应当走原预算 Err（实测：{detail}）"
+    );
+    assert!(got.get("split").is_none(), "被拒的笔不许带拆分字段：{got}");
+}
+
+/// **反馈期 4（5.2）**：段数超上限仍走原 Err（不拆分、不跑光栅，快拒）。
+/// size 200 时段长上限约 7714px、段数上限 64 ⇒ 52 万 px 折线要 68 段 ⇒ 不拆分。
+#[test]
+fn too_many_segments_smudge_still_errors_without_splitting() {
+    let root = temp_dir("smudge_split_too_many");
+    let _cleanup = Cleanup(root.clone());
+    let mut workspace = workspace_sized(&root, 1000, 1000);
+    assert_eq!(
+        call(&mut workspace, "create_layer", json!({ "layer_id": "L" }))["ok"],
+        json!(true)
+    );
+    let mut points = Vec::with_capacity(651);
+    for i in 0..651 {
+        let x = if i % 2 == 0 { 100.0 } else { 900.0 };
+        let y = 100.0 + (i % 9) as f64 * 100.0;
+        points.push(json!([x, y, 0.9]));
+    }
+    let got = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({ "layer_id": "L", "brush": "ramon-Knife", "size": 200, "points": points }),
+    );
+    assert_eq!(got["ok"], json!(false), "段数超上限的笔必须被拒：{got}");
+    assert_eq!(got["error_code"], json!("invalid_argument"), "{got}");
+    let detail = got["context"]["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("预算 30 秒"),
+        "段数超上限应当走原预算 Err（实测：{detail}）"
+    );
+    assert!(got.get("split").is_none(), "被拒的笔不许带拆分字段：{got}");
+}

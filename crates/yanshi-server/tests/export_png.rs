@@ -193,6 +193,52 @@ fn bad_arguments_are_refused_with_a_reason() {
     }
 }
 
+/// **拒绝文案要打印当前生效导出目录的绝对路径** ✓（反馈报告 2 期 4）：
+/// 旧文案只给规则与改法、不给当前值 ⇒ 调用方仍要猜“现在到底是哪个目录” ✗；
+/// 新文案保留旧句、末尾追加当前导出目录绝对路径 ✓（沙箱策略不动 ✓）。
+#[test]
+fn export_rejection_names_the_effective_export_dir() {
+    let mut workspace = workspace();
+    setup(&mut workspace);
+    let refused = {
+        let mut ctx = context(&mut workspace);
+        registry().call(
+            &mut ctx,
+            "export_png",
+            &json!({"path": "/proc/definitely/not/writable/x.png"}),
+        )
+    };
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    let detail = refused["context"]["detail"].as_str().unwrap_or_default();
+    // ① 旧句一字不动 ✓
+    assert!(
+        detail.contains("拒绝写 /proc/definitely/not/writable/x.png：只能写进导出目录（缺省 ./exports，可用 YANSHI_EXPORT_DIR 改）或系统临时目录"),
+        "旧句应当保留：{detail}"
+    );
+    // ② 新值：当前生效导出目录的绝对路径（缺省 ./exports 按进程工作目录解析；
+    // 环境变量若已设置则按它解析；只读环境变量，不改它 ⇒ 不干扰同二进制其他测试 ✓）。
+    let expected = match std::env::var("YANSHI_EXPORT_DIR") {
+        Ok(dir) => {
+            let path = std::path::PathBuf::from(dir);
+            if path.is_absolute() {
+                path
+            } else {
+                std::env::current_dir()
+                    .expect("测试进程应当有工作目录")
+                    .join(path)
+            }
+        }
+        Err(_) => std::env::current_dir()
+            .expect("测试进程应当有工作目录")
+            .join("exports"),
+    };
+    let expected = expected.to_string_lossy().into_owned();
+    assert!(
+        detail.contains(expected.as_str()),
+        "拒绝文案应当打印当前导出目录绝对路径 {expected}，实测：{detail}"
+    );
+}
+
 /// **整幅导出要顺手刷新"打开即图片"缓存** ✓（真实用户工程包里那张**空 `render.png`** 的根因 ✓）。
 ///
 /// **他四个包实测** ✓：缓存 `render.seq` 是 **5–6** ✓，而原子最高 **97–217** ✓

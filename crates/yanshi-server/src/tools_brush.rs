@@ -119,337 +119,73 @@ fn color_alpha_factor(
     }
 }
 
-pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
-    // **裁剪一共吃掉多少像素**（跨选区累计，供 `painted_pixels_clipped` 用）✓
+/// **画一段并提交** ✓（反馈期 4：涂抹预算闸自动拆分的落点 ✓）。
+///
+/// 原先 `write_brush_stroke` 里“单次 `paint_brush` → 单次提交”的一段，原样抽出：
+/// 选区裁剪、位图对称合并、blob 落库、`write_import_image` 提交全在里面 ⇒
+/// 单笔与拆分段走**同一段代码**，不存在“拆分专用落笔路”与主路漂移的可能 ✓。
+/// 调用方责任：
+/// * 每段提交前必须重设 `ctx.pending_group_id`（`commit` 里 `take()` 只取走一次 ⇒
+///   不重设就只有首段带组）；本函数在提交前统一设成 `seg_group_id`（`Some` 时），
+///   单笔调用传 `None` ⇒ 沿用主函数开头已设的调用方 `group_id`，行为一位不动 ✓。
+/// * `seg_points_source` 记该段的**落笔后点列**（拆分点列是变换后的最终点列，
+///   无法可靠映回变换前控制点；`smooth` 记 `seg_smooth`，拆分段一律 `false` ⇒
+///   重放时不再对已平滑点列二次平滑，见 `write_brush_stroke` 的拆分分支注释）。
+#[allow(clippy::too_many_arguments)]
+fn paint_and_commit_brush_segment(
+    ctx: &mut ToolContext<'_>,
+    args: &Value,
+    seg_points: &[(f64, f64, f64)],
+    seg_dtimes: &[f64],
+    seg_points_source: &Value,
+    seg_times_source: &Value,
+    seg_smooth: bool,
+    seg_glaze_opacity: Option<f64>,
+    seg_brush_params: Option<&Value>,
+    seg_color_mixing: yanshi_render::color::ColorMixing,
+    seg_sensors: BrushSensors,
+    seg_color_space: Option<yanshi_render::color::ColorSpace>,
+    seg_symmetry: yanshi_render::Symmetry,
+    seg_group_id: Option<&str>,
+    seg_force_fresh_object: bool,
+) -> Result<BrushSegmentPainted> {
+    // **裁剪累计量是每段自己的** ✓（主函数不再持有跨段累计；聚合在调用方做）。
     let mut clipped_away = 0usize;
-    // **选区内的覆盖率**（`None` = 这一笔没裁剪）（第 1567 轮）
     let mut clip_coverage: Option<f64> = None;
-    // Validate output options before rasterization or committing a stroke.
-    let anchor_mode = optional_str(args, "anchor_mode").unwrap_or_else(|| "data".to_owned());
-    if anchor_mode != "data" {
-        return Err(YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail(format!(
-                "anchor_mode 只支持 data（缺省）—— {anchor_mode} 还没实现：\
-                 dual（两张图：干净 ＋ 带 Overlay）需要额外的缩略图合成通道，已记录在需求文档 P1 #12"
-            )),
-        ));
-    }
-    // **笔迹标签**：`brush_stroke` 最终走 `write_import_image` 的 `ctx.commit` ⇒ 那里会取走它 ✓。
-    ctx.pending_label = optional_str(args, "label");
-    ctx.pending_group_id = optional_str(args, "group_id");
-    // ★ **`wait_for_render` 参数 ✗**：**∴ 缺省不给 ⇒ 保持 true（现有行为 ✓）**
-    //   ⇒ **∴ 给了就就地改 ✓ ⇒ **∴ 不等渲染时省掉那 66% ✓**
-    if let Some(wait) = args.get("wait_for_render").and_then(Value::as_bool) {
-        ctx.set_wait_for_render(wait);
-    }
-
-    // **预览开关** ✓（第 5 轮 ✓）：只影响"要不要编这张 PNG" ✓，不影响 job ✓。
-    if !optional_bool(args, "preview").unwrap_or(true) {
-        ctx.preview = false;
-    }
-
+    // **与主函数同口径的来源回显** ✓（全从 `args` 原样取，段间无差别 ⇒ 不作参数）。
+    let seg_brush_name = require_str(args, "brush")?;
     let layer_id = require_str(args, "layer_id")?;
-    let brush_name = require_str(args, "brush")?;
-    let points = parse_brush_points(args)?;
-    // **★ 退化成"一个点"就自动展开（真机报告 P2 #1）★** —— 画"点"不该报错 ✓。
-    let points = expand_degenerate_points(points, args.get("size").and_then(Value::as_f64));
-    // **★ P0 #3：取每个点的真实时间（没有就是 -1 ⇒ 落回 STEP_SECONDS）★**
-    let dtimes = parse_brush_point_times(args)?;
-    // **真实传感器**（缺省不传 ⇒ 全 0 ⇒ 与历史行为逐位一致；传了非法值报错 ✓）。
-    let sensors = match args.get("sensors") {
-        Some(value) if !value.is_null() => brush_sensors_from_value(value)?,
-        _ => BrushSensors::default(),
-    };
-    let sensors_source = args.get("sensors").cloned().unwrap_or(Value::Null);
-    // **风格变换** ✓（缺省 ⇒ 原样 ✓，见 `apply_brush_style` ✓）。
-    let points = apply_brush_style(points, args)?;
-    // **曲线尺吸附**（二期 `path_guide`）：只拉落点坐标 (x, y)，压感逐位不动；
-    // 时间戳在点列之外按下标携带（`dtimes`），点数与顺序不变 ⇒ 同样不受影响。
-    // 缺省不传 ⇒ 点列逐位不变（回归锁）；传了 ⇒ 吸附后的点列即此后的一切
-    // 来源（含下方 `points_source` 的回放记录），与 style 变换同例。
-    let points: Vec<(f64, f64, f64)> = if args.get("path_guide").is_some() {
-        let coords: Vec<(f64, f64)> = points.iter().map(|p| (p.0, p.1)).collect();
-        let snapped = apply_path_guide_xy(ctx, args, coords)?;
-        points
-            .into_iter()
-            .zip(snapped)
-            .map(|((_, _, pressure), (x, y))| (x, y, pressure))
-            .collect()
-    } else {
-        points
-    };
-    // **★★★ 对称模式 ✗ ★★★**（**第 251 轮 ✓）：**这一条路是**服务端自己栅格化**的** ✓
-    //   ＋ **∴ 仓库自己写明 ✗**：**"提交一条笔触走的是**本文件这一份**（**`hokusai` ✓）
-    //     ＋ **∴ 而** `yanshi-render::brush` 是**渲染那条路**用的** ✓
-    //       ⇒ **∴ 所以**：**两条都要接 ✗ 否则 UI 里**看不到对称** ✓ ★★
-    //   ＋ **∴ 这一条怎么接 ✗**：**把**点序列镜像一份**✗ 一起栅格化** ✓
-    //     （**∴ 对**只按位置盖章的路径 ✗ 镜像点序列与**逐 dab 镜像**等价 ✓ 且改动最小 ✓）★
-    //   ＋ **∴ 而** `source` 里要**记下 symmetry** ✗ ⇒ **∴ `update_stroke`**重跑时**才会同样镜像** ✓
-    //     （**∴ 本仓的确定性纪律：**位图不进包 ✗ 打开时按参数重放** ✓）★★
-    let symmetry_name = optional_str(args, "symmetry").unwrap_or_else(|| "none".to_owned());
-    // **∴ `String` 不能用 `&str` 字面量做模式 ✗**（**实测：expected String, found &str ✓）
-    //   ⇒ **∴ 先 `as_str()`** ✓ ★
-    // **∴ 解析抽到 `parse_symmetry_arg` ✗ 与 medium_stroke 共用一份词表** ✓（**第 253 轮 ✓）★
-    let symmetry = parse_symmetry_arg(args)?;
-    // **★★★ 实测踩到 ✗：不能把镜像点**接在同一条折线**上** ✓ ★★★**
-    //   ＋ **∴ 我第一版**就是这么写的 ✗ ⇒ **∴ 栅格化器**把两点之间的位移也画了**
-    //     ⇒ **∴ 量出来是**一条横穿画布的连续墨带**（**52..202 ✓）✗ 不是两个笔尖** ✓
-    //       ⇒ **∴ 教训 ✗**：**"点序列"是一条**连续笔画**✗** ⇒ **∴ 加两点 ≠ 画两笔** ✓ ★★
-    //   ＋ **∴ 正解（**本函数后面按**位图**做 ✓）**：**原样交给 `paint_brush` 只画一笔**✗
-    //     **再把这一笔自己的位图**翻转**✗ 摆到镜像位置** ✓ ★★★
-    // **调用方给的原话** ✓（重跑时要用它 ✓，而不是"平滑之后的中间量" ✗）。
-    let points_source = json!(points
-        .iter()
-        .map(|(x, y, pressure)| json!([x, y, pressure]))
-        .collect::<Vec<_>>());
-    // **点列时间也要进 `source`**（P-2）：每点的第 4 个元素 `time_ms`（没有记 `null` ✓）——
-    // 它决定落笔时的速度输入，速度敏感的笔刷缺了它就重放不出同一笔 ✓；
-    // 与 `points_source` 同一下标 ✓（风格/吸附不改点数 ✓，时间与点一一对应 ✓）。
-    let times_source = args
-        .get("points")
-        .and_then(Value::as_array)
-        .map(|items| {
-            Value::Array(
-                items
-                    .iter()
-                    .map(|item| {
-                        item.as_array()
-                            .and_then(|pair| pair.get(3))
-                            .cloned()
-                            .unwrap_or(Value::Null)
-                    })
-                    .collect(),
-            )
-        })
-        .unwrap_or(Value::Null);
     let size_source = args.get("size").cloned().unwrap_or(Value::Null);
     let color_source = args.get("color").cloned().unwrap_or(Value::Null);
     let color_to_source = args.get("color_to").cloned().unwrap_or(Value::Null);
-    let smooth_source = json!(optional_bool(args, "smooth").unwrap_or(false));
-    // **★ `opacity` 越界要**报错**，不许静默夹紧** ✓（第 1419 轮；外部 D-12）
-    //   **⇒ 原缺陷** ✗：`opacity: 5` **静默变成 1.0**（`opacity.clamp(0.0, 1.0)`）⇒
-    //     调用方以为「5 是个很强的透明度」⇒ 实际**和 1.0 一样** ✗
-    //   **⇒ ⇒ 所以**在这里就拒绝**并说清范围 ✓（负值同样）
-    if let Some(raw) = args.get("opacity").and_then(Value::as_f64) {
-        if !(0.0..=1.0).contains(&raw) {
-            return Err(YanshiError::new(
-                ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!(
-                    "opacity 必须在 0..1（给了 {raw}）⇒ 越界不再静默夹紧；0 = 全透明，1 = 全不透明"
-                )),
-            ));
-        }
-    }
+    let smooth_source = json!(seg_smooth);
     let opacity_source = args.get("opacity").cloned().unwrap_or(Value::Null);
     let hardness_source = args.get("hardness").cloned().unwrap_or(Value::Null);
-    // **落笔之前先问"这条笔迹在画布上吗"** ✗（本轮新增 ✓）。
-    //
-    // **为什么必须有** ✓：外部 MCP 报告**连着两轮**把"坐标非线性偏移"当 bug 报 ✓，
-    // 而它量到的很可能正是**被画布裁掉一半的墨** ✗ —— 因为当时这种情况会一路走到
-    // "这一笔没落下任何像素" ✓，再被那句"**换一支笔刷**"✗ 引到错误方向 ✓
-    //（agent 于是去查坐标映射 ✓，量到的包围盒当然是**残缺的** ✓）。
-    // ⇒ 现在：**完全在画布外** ⇒ 明确拒绝 ✓ 并写出**画布尺寸与笔迹范围** ✓；
-    //   **部分越界** ⇒ 照画 ✓，但在响应里带 `clipped` 与 `warnings` ✓（不静默 ✓）。
-    // `brush_stroke_region` 回的是 **(x0, y0, x1, y1, 宽, 高)** ✓（`i32` ✓，已含笔尖半径 ✓）。
-    let (doc_width, doc_height) = ctx
-        .workspace
-        .document(&ctx.doc_id)
-        .map(|document| {
-            (
-                document.state().width as i32,
-                document.state().height as i32,
-            )
-        })
-        .unwrap_or((0, 0));
-    let (x0, y0, x1, y1, _, _) =
-        brush_stroke_region(&points, args.get("size").and_then(Value::as_f64));
-    let entirely_outside = x1 <= 0 || y1 <= 0 || x0 >= doc_width || y0 >= doc_height;
-    let clipped = x0 < 0 || y0 < 0 || x1 > doc_width || y1 > doc_height;
-    if entirely_outside {
-        return Err(YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail(format!(
-            "整条笔迹都在画布**外面** ⇒ 一枚 dab 都不会落上 ✓。画布是 {doc_width}×{doc_height} \
-             （原点在**左上角** ✓，坐标就是**文档像素** ✓），而这条笔迹的范围是 \
-             x {x0}..{x1}、y {y0}..{y1}（含笔尖半径）⇒ 把坐标挪进画布内即可 ✓ \
-             —— 这不是笔刷的问题 ✗，**别去换笔刷** ✓"
-            )),
-        ));
+    let symmetry_name = optional_str(args, "symmetry").unwrap_or_else(|| "none".to_owned());
+    let sensors_source = args.get("sensors").cloned().unwrap_or(Value::Null);
+    // **组 id 每提交必重设** ✓（`commit` 的 `take()` 语义，见本函数文档）：
+    //   拆分段传 `Some` ⇒ 每段都带同一组；单笔传 `None` ⇒ 不动主函数已设的值。
+    if let Some(group_id) = seg_group_id {
+        ctx.pending_group_id = Some(group_id.to_owned());
     }
-    // **可选平滑** ✓（`smooth: true` ⇒ 把控制点当 **Catmull-Rom 样条** ✓）——
-    // 与 `draw_stroke` 的 `data.smooth` **同一个实现** ✓；不给 ⇒ **逐字节不变** ✓（老调用方不受影响 ✓）。
-    let points = if optional_bool(args, "smooth").unwrap_or(false) {
-        smooth_stroke_points(&points)
-    } else {
-        points
-    };
-    // **★ P1 #11 humanize：拟人模式（默认 true）★**（第 254 轮）
-    //   需求文档附录二：非对称起收笔包络 —— 起笔 12%（快升）、行笔 60%（平稳）、收笔 28%（长尾）。
-    //   **爆炸半径怎么控住**（本轮的设计决定，写清楚免得后人踩）：
-    //     * **调用方显式给了每个点的压力** => `humanize` **什么都不做**（一个像素都不改）
-    //       => 既有的像素级判据不受影响；
-    //     * **没给压力（缺省 0.5）** => 才套包络 —— 这就是「默认就好用」：AI 通常只给坐标。
-    //   **包络施加在**平滑之后**的点上**：Catmull-Rom 已经把压力插值平滑过，再套包络才不会出折角。
-    // **★ P1 #8 曲率驻留（**opt-in**）★**（第 254 轮）
-    //   `dwell` 缺省 **不给** ⇒ `apply_curvature_dwell` 都不调用 ⇒ 点列**一个都不动**
-    //   （这是本仓纪律：会改像素的新行为必须显式打开 ✓）。
-    //   给了才按 κ^(2/3) 在**转弯处**多插点（手在拐角天然减速的物理 ✓）。
-    let points = match args.get("dwell").and_then(Value::as_f64) {
-        Some(strength) => apply_curvature_dwell(&points, strength),
-        None => points,
-    };
-    // **★ P1 #8 生理颤动（opt-in）★**（第 254 轮）
-    //   `tremor: 0..1` 缺省不给 => `apply_tremor` 都不调用 => 点列一个都不动（逐字节不变 ✓）。
-    //   给了才叠**带限**的 1D value noise（手腕 λ≈90px ＋ 震颤 λ≈28px，沿局部法向）——
-    //   与仓库既有的**白噪声**抖动（`apply_brush_style` 的 `scatter_next`）不同：
-    //   白噪声相邻点独立（像砂纸），带限噪声相邻点相关（像手）。
-    let points = match args.get("tremor").and_then(Value::as_f64) {
-        Some(amount) => {
-            let seed = args.get("tremor_seed").and_then(Value::as_u64).unwrap_or(0);
-            apply_tremor(&points, amount, seed)
-        }
-        None => points,
-    };
-    let mut points = points;
-    // **★ 压感包络的开关（真机报告 P1：`pressure_curve`）★**（第 254 轮）
-    //
-    // 真机反馈"**笔触太硬，压力变化没用**"✗ —— 根因是**程序生成的 pressure 是恒定值**
-    //（`0.8` 这种 ✓），而包络原来**只在"完全没给 pressure"时**才加 ✓ => 给了恒定值就绕过了 ✓。
-    // **现在**：
-    //   * `auto`（缺省 ✓）：**没给 pressure** ⇒ 加包络（老行为 ✓）；**给了但整笔恒定** ⇒ **也加** ✓；
-    //     **给了有起伏的** ⇒ **原样尊重** ✓（不叠两层 ✗）；
-    //   * `flat`（`none`/`off` 同义 ✓）：**永不动** ✓（技术绘图 ✓）；
-    //   * **`humanize: false` ⇒ 一律不动** ✓ —— 这是硬约束
-    //     （"`humanize:false` 时老行为逐字节不变" ✓），所以它**优先于** `pressure_curve` ✓。
-    // **★ 缺省是 `flat`（2026-10-15 真机报告后的修正）★**：我第一版把缺省设成 `auto` ⇒
-    //   **默认行为变了** ✗ ⇒ CI 里 `kernel-brush-parity`／`tool-brush-parity-jitter`／
-    //   `tool-brush-style`／`tool-brush-dynamics` **同时红** ✗（它们正是比"同一笔触"的 ✓）。
-    //   => 按本仓纪律（**改默认行为要极慎重** ✓）**缺省改回 `flat`（＝与以前逐字节相同 ✓）** ✓，
-    //   **想要"起轻行重收轻"请显式传 `pressure_curve: 「auto」`** ✓（summary 里已写明 ✓）。
-    //   **要不要把它变成默认** —— 那是一次**产品决策** ✓，需要同时更新上面那几条笔刷判据
-    //   并说清代价 ✓，不该顺手做掉 ✗。
-    let pressure_curve = optional_str(args, "pressure_curve").unwrap_or_else(|| "flat".to_owned());
-    // **★ `pressure_curve` 只该管"新增的那一半"（2026-10-15 的教训）★**
-    //   我第一版写成"`flat` ⇒ 什么都不做" ✗ ⇒ 连**"完全没给 pressure"时 humanize 的包络**
-    //   也一起没了 ✗✗ ⇒ CI 的 `tool-humanize.mjs` 当场红 ✓
-    //   （判据原话：**默认指纹 == `humanize:false` 指纹** ⇒ 那就等于 humanize 失效 ✗）。
-    //   **正确语义**：
-    //     * **完全没给 pressure** ⇒ 老行为：`humanize` 开着就加包络 ✓（与 `pressure_curve` 无关 ✓）；
-    //     * **给了 pressure** ⇒ 只有 `pressure_curve: 「auto」` 才在"整笔恒定"时**补**包络 ✓
-    //       （缺省 `flat` ⇒ 不动你的 pressure ✓）；
-    //     * **`humanize: false`** ⇒ 一律不动 ✓（硬约束 ✓）。
-    let envelope_wanted = if !all_points_have_pressure(args) {
-        true
-    } else {
-        matches!(pressure_curve.as_str(), "auto") && points_are_flat(&points)
-    };
-    // **B4：包络没补上时要出声**（只回显，不改行为、不改缺省）——**必须在套包络之前算**：
-    //   `apply_humanize_envelope` 就地改压力，算晚了就看不出原来是起伏还是恒定。
-    //   只在显式传了才信号（缺省调用不刷警告）：
-    //   * 显式 `pressure_curve:"auto"` + 点里压力有起伏 ⇒ `auto` 不生效；
-    //   * 显式 `humanize:true` + 点里带压力 + 包络未生效 ⇒ 与上一条合并为一条，注明原因
-    //     （起伏压力 / 恒定压力 + `flat` 缺省）；`humanize:false` 是显式关包络，不出声。
-    let envelope_warning: Option<String> = {
-        let auto_explicit = args.get("pressure_curve").and_then(Value::as_str) == Some("auto");
-        let humanize_explicit = optional_bool(args, "humanize") == Some(true);
-        let has_pressure = all_points_have_pressure(args);
-        let flat = points_are_flat(&points);
-        let envelope_applied = optional_bool(args, "humanize").unwrap_or(true) && envelope_wanted;
-        if auto_explicit && has_pressure && !flat {
-            Some(if humanize_explicit {
-                "`pressure_curve:auto` 不生效：点里压力已有起伏，包络只在恒定压力时补；`humanize:true` 也因此不生效".to_owned()
-            } else {
-                "`pressure_curve:auto` 不生效：点里压力已有起伏，包络只在恒定压力时补".to_owned()
-            })
-        } else if humanize_explicit && has_pressure && !envelope_applied {
-            Some(if flat {
-                "`humanize:true` 不生效：点里压力恒定但 `pressure_curve` 不是 `auto`（缺省 `flat`），包络只在恒定压力 + `auto` 时补".to_owned()
-            } else {
-                "`humanize:true` 不生效：点里压力已有起伏，包络只在恒定压力 + `pressure_curve:auto` 时补".to_owned()
-            })
-        } else {
-            None
-        }
-    };
-    if optional_bool(args, "humanize").unwrap_or(true) && envelope_wanted {
-        apply_humanize_envelope(&mut points);
-    }
-    // **★ P1 #10 罩染（opt-in）★**（第 254 轮）
-    //   `glaze: true` => 3 遍（可调 `glaze_passes`）**微偏移薄涂**：几何由
-    //   `apply_glaze_passes` **交错展开**（p1(A),p2(B),p3(C),p4(A)…）—— 先整遍 A 再整遍 B 会在
-    //   两遍之间留一条**回程跳线** ✗；交错之后相邻点只差几像素 => 得到**加宽的柔带** ✓。
-    //   **透明度**：整笔除以遍数（三遍叠加 ≈ 原来的浓度 ✓）。
-    //   **不给 `glaze` / 给 false** => 遍数 1 => 点列与透明度**都不动**（逐字节不变 ✓）。
-    // **★ P2 #16 混色模式 ★**（第 254 轮）
-    //   `rgb`（**缺省**）=> 与仓库既有的 `lerp_srgb` 完全同口径 => **逐字节不变**；
-    //   `pigment` => 光谱 K/S 混色（黄+蓝=绿，而不是灰）。
-    let color_mixing = match optional_str(args, "color_mixing") {
-        Some(name) => yanshi_render::color::ColorMixing::parse(&name).ok_or_else(|| {
-            YanshiError::new(
-                ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!(
-                    "未知 color_mixing {name} ⇒ 可用：rgb（缺省）/ linear（物理正确混色）/ pigment（光谱颜料）"
-                )),
-            )
-        })?,
-        None => yanshi_render::color::ColorMixing::Rgb,
-    };
-    let (points, glaze_passes) = if optional_bool(args, "glaze").unwrap_or(false) {
-        let passes = args
-            .get("glaze_passes")
-            .and_then(Value::as_u64)
-            .unwrap_or(3)
-            .clamp(1, 8) as usize;
-        // "微偏移"：间距与笔尖尺寸成比例（缺省 size 24 => 间距约 4.3px）
-        let size = args
-            .get("size")
-            .and_then(Value::as_f64)
-            .unwrap_or(24.0)
-            .max(1.0);
-        (apply_glaze_passes(&points, passes, size * 0.18), passes)
-    } else {
-        (points, 1usize)
-    };
-    let glaze_opacity = args
-        .get("opacity")
-        .and_then(Value::as_f64)
-        .map(|value| value / glaze_passes as f64);
-    // 意图参数（hand_tremor 等）展开成 brush_params 别名，与显式 brush_params 合并（显式优先）
-    let merged_brush_params = merge_intent_brush_params(args)?;
-    // **`color.a`：P-19 已把它乘进有效 opacity** ✓（paint-fix 期 7；见 `paint_brush` 里那段 ✓）。
-    //   此前是"接受但不生效"（第 788 轮；`2dfd7d2b` 的拒绝**太激进** ✗）
-    //   **⇒ CI 实测**：`export_small.rs` 用 `a = 220` ✓（半透明 ✓，完全合法的既有用法 ✓）
-    //     ⇒ 拒绝让 `export_small` 的 **3 个测试** 与 **4 片 criteria** 一起红 ✗
-    //     （`test (stable)` / `test (beta)` / `criteria shard 1,2,4,5` ✓）。
-    //   **⇒ 结论**：**"忽略 alpha"是既有行为、且有调用方依赖** ✓ ⇒ 不能直接改成拒绝 ✗；
-    //     修法是**把 `a/255` 乘进笔刷的有效 opacity** ✓ —— 现已落地 ✓，
-    //     `a=255` 时与以前逐位相同 ✓，`a<255` 时整笔变透明 ✓（判据见 `ink_pixels` 那条 ✓）。
-    //     `export_small` 的 `a=220` 现在画出来会比以前淡一点（0.86 倍不透明度 ✓），
-    //     它的测试是导出前后自比对 ✓ ⇒ 不受影响 ✓。
-
-    // **落笔走唯一的实现** ✓（`paint_brush` ✓，与 `brush_preview` 共用 ✓）。
-    // **显式 `color_space`**（C1）：只认 `"srgb"` / `"linear"`，不传 ⇒ 量级切换；
-    // 作用于 `color` 与 `color_to` 两处；非法值在这里就 `invalid_argument`（落笔前拒绝）。
-    let color_space = parse_color_space_arg(args)?;
     let paint = paint_brush(
         ctx,
-        &brush_name,
-        &points,
+        &seg_brush_name,
+        seg_points,
         args.get("size").and_then(Value::as_f64),
         args.get("color"),
         args.get("color_to"),
-        glaze_opacity,
+        seg_glaze_opacity,
         args.get("hardness").and_then(Value::as_f64),
         // **文档里必须喂底图** ✓ —— 涂抹类笔刷靠它工作 ✓。
         true,
         // **★ P0 #4：把调用方给的字段覆盖传进去 ✗ ★**（**∴ 我第一版补成了 `None` ✗ ⇒ ①② 假绿 ✓）★
-        merged_brush_params.as_ref(),
-        color_mixing,
-        &dtimes,
+        seg_brush_params,
+        seg_color_mixing,
+        seg_dtimes,
         None,
-        sensors,
-        color_space,
+        seg_sensors,
+        seg_color_space,
     )?;
     let BrushPaint {
         name,
@@ -463,6 +199,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         max_delta,
         delta_distribution,
         fed_base,
+        short_stroke_hint,
     } = paint;
     // **blob 先行** ✓，与 `medium_stroke` 完全同路 ✓。
     // **选区裁剪**（需求 P0-3）：不在选区内的像素**不许进图层** ⇒ 与"引擎没碰过"同等对待 ✓
@@ -973,7 +710,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     // **∴ 注意类型 ✗**：`paint_brush` 回来的 `x0/y0/width/height` 是 **`usize`** ✓
     //   ⇒ **∴ 与画布尺寸做算术时**统一用 `i64`**✗ 避免符号/宽度混乱** ✓（**实测：混用报 E0308 ✓）★
     let (mut rgba, mut x0, mut y0, mut width, mut height) = (rgba, x0, y0, width, height);
-    if symmetry != yanshi_render::Symmetry::None {
+    if seg_symmetry != yanshi_render::Symmetry::None {
         let (doc_w, doc_h) = ctx
             .workspace
             .document(&ctx.doc_id)
@@ -987,7 +724,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         if doc_w > 0 && doc_h > 0 {
             let (x0i, y0i) = (x0 as i64, y0 as i64);
             let (wi, hi) = (width as i64, height as i64);
-            let (mirror_x0, mirror_y0) = match symmetry {
+            let (mirror_x0, mirror_y0) = match seg_symmetry {
                 yanshi_render::Symmetry::Vertical => (doc_w - (x0i + wi), y0i),
                 yanshi_render::Symmetry::Horizontal => (x0i, doc_h - (y0i + hi)),
                 yanshi_render::Symmetry::None => (x0i, y0i),
@@ -1026,7 +763,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
                             }
                         }
                     };
-                let vertical = symmetry == yanshi_render::Symmetry::Vertical;
+                let vertical = seg_symmetry == yanshi_render::Symmetry::Vertical;
                 paste(&rgba, width, height, x0i, y0i, false);
                 paste(&rgba, width, height, mirror_x0, mirror_y0, vertical);
                 rgba = merged;
@@ -1050,10 +787,10 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             // **`brush_params` 也要进 `source`**（X-14）：落笔时合并后的 dab 密度等覆盖
             //（意图参数展开 + 显式 `brush_params`，显式优先 ✓）—— 不记它，重放就用笔刷
             // 缺省值跑，字节必然不同 ✓；没传记 `null`，与其它来源字段同例。
-            "brush_params": merged_brush_params.clone().unwrap_or(Value::Null),
-            "points": points_source,
-            // **点列时间也要进 `source`**（P-2）：见上方 `times_source` ✓。
-            "times": times_source,
+            "brush_params": seg_brush_params.cloned().unwrap_or(Value::Null),
+            "points": seg_points_source,
+            // **点列时间也要进 `source`**（P-2）：见本函数段点列时间 ✓。
+            "times": seg_times_source,
             "size": size_source,
             "color": color_source,
             "color_to": color_to_source,
@@ -1081,7 +818,11 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             "sensors": sensors_source,
         },
         "layer_id": layer_id,
-        "object_id": optional_str(args, "object_id"),
+        "object_id": if seg_force_fresh_object {
+            None
+        } else {
+            optional_str(args, "object_id")
+        },
         "bitmap": {
             "blob_hash": composite.to_string(),
             "size": rgba.len(),
@@ -1089,7 +830,699 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         },
         "region": {"x": x0, "y": y0, "w": width, "h": height},
     });
-    let mut value = write_import_image(ctx, &import_args)?;
+    let value = write_import_image(ctx, &import_args)?;
+
+    // **墨量与足迹与主函数旧口径同一遍遍历** ✓（原在提交后由 `rgba` 算，现段内算完即带走；
+    //   `rgba` 在此已是裁剪后、对称合并后的缓冲 ⇒ 与旧值逐位一致）。
+    let (ink_footprint_pixels, ink_mass) =
+        rgba.chunks_exact(4)
+            .fold((0usize, 0u64), |(footprint, mass), px| {
+                if px[3] != 0 {
+                    (footprint + 1, mass + u64::from(px[3]))
+                } else {
+                    (footprint, mass)
+                }
+            });
+    Ok(BrushSegmentPainted {
+        value,
+        brush: name,
+        steps,
+        painted,
+        dropped: clipped_away,
+        clip_coverage,
+        ink_footprint_pixels,
+        ink_mass,
+        max_delta,
+        delta_distribution,
+        fed_base,
+        short_stroke_hint,
+        region_x: x0,
+        region_y: y0,
+        region_w: width,
+        region_h: height,
+    })
+}
+
+/// **一段落笔 + 提交的产物** ✓（`write_brush_stroke` 的回执尾段据此组装；拆分时按段聚合）。
+struct BrushSegmentPainted {
+    /// `write_import_image` 的回执（含该段提交的 `atom_id`／`seq`／`dirty_bbox`／`preview`）。
+    value: Value,
+    /// 笔刷名（`paint_brush` 回的解析后资产名）。
+    brush: String,
+    /// 引擎步数。
+    steps: usize,
+    /// 裁剪前铺开面积。
+    painted: usize,
+    /// 选区裁掉的落墨像素数（该段）。
+    dropped: usize,
+    /// 选区内覆盖率（该段；未裁剪时 `None`）。
+    clip_coverage: Option<f64>,
+    /// 足迹像素数（裁剪后缓冲的 alpha 非零数）。
+    ink_footprint_pixels: usize,
+    /// 墨量（`Σalpha`）。
+    ink_mass: u64,
+    /// 最大通道改变量。
+    max_delta: u8,
+    /// 差值分布。
+    delta_distribution: DeltaDistribution,
+    /// 是否吃了底图。
+    fed_base: bool,
+    /// 短笔触兜底提示（反馈期 1：路径撑不满 dab 间距时延长落一枚 dab 的诊断事实；无兜底时 `None`）。
+    short_stroke_hint: Option<String>,
+    /// 该段提交区域（文档坐标）。
+    region_x: i32,
+    region_y: i32,
+    region_w: usize,
+    region_h: usize,
+}
+
+/// **拆分决策** ✓（反馈期 4）：返回 `Some` 当且仅当同时满足——
+/// * 探针笔刷（`size` + `brush_params` 覆盖后）按 `check_smudge_budget` 本会 Err；
+/// * 可达 `drag + size/2 + 2 ≤ MAX_EFFECT_PADDING`（期 2 新上限，当前值 512，
+///   这里直接读渲染常量、不另写一个数 ⇒ 期 2 改上限时此处自动跟上）；
+/// * 拆分计划成立，且每段重算成本 ≤ 预算（否则不拆）。
+///
+/// 其余一切情形返回 `None` ⇒ 主函数走原单笔路，行为一位不动：
+/// 探针取不到笔刷／覆盖失败时也返回 `None`（原路会报出真正的错，不在这里改写错因）；
+/// 可达超限时同样 `None` ⇒ 原路的预算 Err 就是任务说的“可达超限仍走原 Err”。
+struct SmudgeSplitDecision {
+    /// 沿用的调用方 `group_id`，或服务端生成的 `split_<ulid>`。
+    group_id: String,
+    /// 按弧长均分的段点列（相邻段共享接点）。
+    segments: Vec<Vec<(f64, f64, f64)>>,
+    /// 与段点列对齐的段时间（长度不对齐时为空 ⇒ 距离步进老行为）。
+    segment_dtimes: Vec<Vec<f64>>,
+    /// 每段预测成本（毫秒，皆 ≤ 预算）。
+    segment_costs_ms: Vec<f64>,
+    /// 每段弧长（px）。
+    segment_path_lengths_px: Vec<f64>,
+    /// 可达量（px，≤ 期 2 上限）。
+    reach_px: f64,
+}
+
+fn decide_smudge_split(
+    ctx: &mut ToolContext<'_>,
+    args: &Value,
+    points: &[(f64, f64, f64)],
+    dtimes: &[f64],
+    merged_brush_params: &Option<Value>,
+    sensors: BrushSensors,
+    size: Option<f64>,
+) -> Option<SmudgeSplitDecision> {
+    let brush_name = require_str(args, "brush").ok()?;
+    // **探针笔刷与 `paint_brush` 的预算相关应用逐字同序** ✓：
+    // 载笔刷 → 传感器 → `size` 改半径 → `brush_params` 最后覆盖（它优先）。
+    // 颜色／不透明度／硬度不影响预算输入，不探。
+    let (_, mut brush) = load_brush(ctx.workspace, &brush_name).ok()?;
+    brush.viewzoom = sensors.viewzoom;
+    brush.barrel_rotation = sensors.barrel_rotation_deg;
+    if let Some(diameter) = size {
+        if diameter <= 0.0 {
+            return None;
+        }
+        brush.set(
+            hokusai::BrushSetting::Radius,
+            hokusai::SettingValue::constant(libm::log(diameter / 2.0) as f32),
+        );
+    }
+    if let Some(params) = merged_brush_params {
+        apply_brush_params(&mut brush, params).ok()?;
+    }
+    // **只有“本会 Err”才往下走** ✓：预算内直接 `None`（单笔路一位不动）。
+    check_smudge_budget(&brush, points, size).err()?;
+    let radius_px = f64::from(brush.get(hokusai::BrushSetting::Radius).base_value).exp();
+    let reach_px = smudge_reach_px(&brush)?;
+    // **可达闸** ✓：超期 2 上限 ⇒ 不拆分（原路预算 Err 即是交代，不另造错因）。
+    if reach_px > yanshi_render::MAX_EFFECT_PADDING as f64 {
+        return None;
+    }
+    let path_len = brush_points_path_len_px(points);
+    let plan = smudge_split_plan(path_len, radius_px)?;
+    let segments = split_points_by_arclength(points, plan.segments);
+    if segments.len() != plan.segments {
+        return None;
+    }
+    // **每段重算成本并断言 ≤ 预算** ✓（草稿要求；均分保证成立，算一遍是防线不是摆设）。
+    let mut segment_costs_ms = Vec::with_capacity(segments.len());
+    let mut segment_path_lengths_px = Vec::with_capacity(segments.len());
+    for seg in &segments {
+        let seg_len = brush_points_path_len_px(seg);
+        let seg_cost = smudge_stroke_cost_ms(seg_len, radius_px);
+        if seg_cost > SMUDGE_BUDGET_MS {
+            return None;
+        }
+        segment_path_lengths_px.push(seg_len);
+        segment_costs_ms.push(seg_cost);
+    }
+    let segment_dtimes = split_dtimes_by_arclength(points, dtimes, plan.segments)
+        .unwrap_or_else(|| vec![Vec::new(); plan.segments]);
+    let group_id = optional_str(args, "group_id")
+        .unwrap_or_else(|| format!("split_{}", yanshi_core::Ulid::new().encode()));
+    Some(SmudgeSplitDecision {
+        group_id,
+        segments,
+        segment_dtimes,
+        segment_costs_ms,
+        segment_path_lengths_px,
+        reach_px,
+    })
+}
+
+pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **裁剪累计量现由 `paint_and_commit_brush_segment` 按段返回、分支处聚合** ✓
+    // Validate output options before rasterization or committing a stroke.
+    let anchor_mode = optional_str(args, "anchor_mode").unwrap_or_else(|| "data".to_owned());
+    if anchor_mode != "data" {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "anchor_mode 只支持 data（缺省）—— {anchor_mode} 还没实现：\
+                 dual（两张图：干净 ＋ 带 Overlay）需要额外的缩略图合成通道，已记录在需求文档 P1 #12"
+            )),
+        ));
+    }
+    // **笔迹标签**：`brush_stroke` 最终走 `write_import_image` 的 `ctx.commit` ⇒ 那里会取走它 ✓。
+    ctx.pending_label = optional_str(args, "label");
+    ctx.pending_group_id = optional_str(args, "group_id");
+    // ★ **`wait_for_render` 参数 ✗**：**∴ 缺省不给 ⇒ 保持 true（现有行为 ✓）**
+    //   ⇒ **∴ 给了就就地改 ✓ ⇒ **∴ 不等渲染时省掉那 66% ✓**
+    if let Some(wait) = args.get("wait_for_render").and_then(Value::as_bool) {
+        ctx.set_wait_for_render(wait);
+    }
+
+    // **预览开关** ✓（第 5 轮 ✓）：只影响"要不要编这张 PNG" ✓，不影响 job ✓。
+    if !optional_bool(args, "preview").unwrap_or(true) {
+        ctx.preview = false;
+    }
+
+    require_str(args, "layer_id")?;
+    let brush_name = require_str(args, "brush")?;
+    let points = parse_brush_points(args)?;
+    // **★ 退化成"一个点"就自动展开（真机报告 P2 #1）★** —— 画"点"不该报错 ✓。
+    let points = expand_degenerate_points(points, args.get("size").and_then(Value::as_f64));
+    // **★ P0 #3：取每个点的真实时间（没有就是 -1 ⇒ 落回 STEP_SECONDS）★**
+    let dtimes = parse_brush_point_times(args)?;
+    // **真实传感器**（缺省不传 ⇒ 全 0 ⇒ 与历史行为逐位一致；传了非法值报错 ✓）。
+    let sensors = match args.get("sensors") {
+        Some(value) if !value.is_null() => brush_sensors_from_value(value)?,
+        _ => BrushSensors::default(),
+    };
+    // **风格变换** ✓（缺省 ⇒ 原样 ✓，见 `apply_brush_style` ✓）。
+    let points = apply_brush_style(points, args)?;
+    // **曲线尺吸附**（二期 `path_guide`）：只拉落点坐标 (x, y)，压感逐位不动；
+    // 时间戳在点列之外按下标携带（`dtimes`），点数与顺序不变 ⇒ 同样不受影响。
+    // 缺省不传 ⇒ 点列逐位不变（回归锁）；传了 ⇒ 吸附后的点列即此后的一切
+    // 来源（含下方 `points_source` 的回放记录），与 style 变换同例。
+    let points: Vec<(f64, f64, f64)> = if args.get("path_guide").is_some() {
+        let coords: Vec<(f64, f64)> = points.iter().map(|p| (p.0, p.1)).collect();
+        let snapped = apply_path_guide_xy(ctx, args, coords)?;
+        points
+            .into_iter()
+            .zip(snapped)
+            .map(|((_, _, pressure), (x, y))| (x, y, pressure))
+            .collect()
+    } else {
+        points
+    };
+    // **★★★ 对称模式 ✗ ★★★**（**第 251 轮 ✓）：**这一条路是**服务端自己栅格化**的** ✓
+    //   ＋ **∴ 仓库自己写明 ✗**：**"提交一条笔触走的是**本文件这一份**（**`hokusai` ✓）
+    //     ＋ **∴ 而** `yanshi-render::brush` 是**渲染那条路**用的** ✓
+    //       ⇒ **∴ 所以**：**两条都要接 ✗ 否则 UI 里**看不到对称** ✓ ★★
+    //   ＋ **∴ 这一条怎么接 ✗**：**把**点序列镜像一份**✗ 一起栅格化** ✓
+    //     （**∴ 对**只按位置盖章的路径 ✗ 镜像点序列与**逐 dab 镜像**等价 ✓ 且改动最小 ✓）★
+    //   ＋ **∴ 而** `source` 里要**记下 symmetry** ✗ ⇒ **∴ `update_stroke`**重跑时**才会同样镜像** ✓
+    //     （**∴ 本仓的确定性纪律：**位图不进包 ✗ 打开时按参数重放** ✓）★★
+    // **∴ `String` 不能用 `&str` 字面量做模式 ✗**（**实测：expected String, found &str ✓）
+    //   ⇒ **∴ 先 `as_str()`** ✓ ★
+    // **∴ 解析抽到 `parse_symmetry_arg` ✗ 与 medium_stroke 共用一份词表** ✓（**第 253 轮 ✓）★
+    let symmetry = parse_symmetry_arg(args)?;
+    // **★★★ 实测踩到 ✗：不能把镜像点**接在同一条折线**上** ✓ ★★★**
+    //   ＋ **∴ 我第一版**就是这么写的 ✗ ⇒ **∴ 栅格化器**把两点之间的位移也画了**
+    //     ⇒ **∴ 量出来是**一条横穿画布的连续墨带**（**52..202 ✓）✗ 不是两个笔尖** ✓
+    //       ⇒ **∴ 教训 ✗**：**"点序列"是一条**连续笔画**✗** ⇒ **∴ 加两点 ≠ 画两笔** ✓ ★★
+    //   ＋ **∴ 正解（**本函数后面按**位图**做 ✓）**：**原样交给 `paint_brush` 只画一笔**✗
+    //     **再把这一笔自己的位图**翻转**✗ 摆到镜像位置** ✓ ★★★
+    // **调用方给的原话** ✓（重跑时要用它 ✓，而不是"平滑之后的中间量" ✗）。
+    let points_source = json!(points
+        .iter()
+        .map(|(x, y, pressure)| json!([x, y, pressure]))
+        .collect::<Vec<_>>());
+    // **点列时间也要进 `source`**（P-2）：每点的第 4 个元素 `time_ms`（没有记 `null` ✓）——
+    // 它决定落笔时的速度输入，速度敏感的笔刷缺了它就重放不出同一笔 ✓；
+    // 与 `points_source` 同一下标 ✓（风格/吸附不改点数 ✓，时间与点一一对应 ✓）。
+    let times_source = args
+        .get("points")
+        .and_then(Value::as_array)
+        .map(|items| {
+            Value::Array(
+                items
+                    .iter()
+                    .map(|item| {
+                        item.as_array()
+                            .and_then(|pair| pair.get(3))
+                            .cloned()
+                            .unwrap_or(Value::Null)
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or(Value::Null);
+    let color_source = args.get("color").cloned().unwrap_or(Value::Null);
+    let color_to_source = args.get("color_to").cloned().unwrap_or(Value::Null);
+    // **★ `opacity` 越界要**报错**，不许静默夹紧** ✓（第 1419 轮；外部 D-12）
+    //   **⇒ 原缺陷** ✗：`opacity: 5` **静默变成 1.0**（`opacity.clamp(0.0, 1.0)`）⇒
+    //     调用方以为「5 是个很强的透明度」⇒ 实际**和 1.0 一样** ✗
+    //   **⇒ ⇒ 所以**在这里就拒绝**并说清范围 ✓（负值同样）
+    if let Some(raw) = args.get("opacity").and_then(Value::as_f64) {
+        if !(0.0..=1.0).contains(&raw) {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "opacity 必须在 0..1（给了 {raw}）⇒ 越界不再静默夹紧；0 = 全透明，1 = 全不透明"
+                )),
+            ));
+        }
+    }
+    // **落笔之前先问"这条笔迹在画布上吗"** ✗（本轮新增 ✓）。
+    //
+    // **为什么必须有** ✓：外部 MCP 报告**连着两轮**把"坐标非线性偏移"当 bug 报 ✓，
+    // 而它量到的很可能正是**被画布裁掉一半的墨** ✗ —— 因为当时这种情况会一路走到
+    // "这一笔没落下任何像素" ✓，再被那句"**换一支笔刷**"✗ 引到错误方向 ✓
+    //（agent 于是去查坐标映射 ✓，量到的包围盒当然是**残缺的** ✓）。
+    // ⇒ 现在：**完全在画布外** ⇒ 明确拒绝 ✓ 并写出**画布尺寸与笔迹范围** ✓；
+    //   **部分越界** ⇒ 照画 ✓，但在响应里带 `clipped` 与 `warnings` ✓（不静默 ✓）。
+    // `brush_stroke_region` 回的是 **(x0, y0, x1, y1, 宽, 高)** ✓（`i32` ✓，已含笔尖半径 ✓）。
+    let (doc_width, doc_height) = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| {
+            (
+                document.state().width as i32,
+                document.state().height as i32,
+            )
+        })
+        .unwrap_or((0, 0));
+    let (x0, y0, x1, y1, _, _) =
+        brush_stroke_region(&points, args.get("size").and_then(Value::as_f64));
+    let entirely_outside = x1 <= 0 || y1 <= 0 || x0 >= doc_width || y0 >= doc_height;
+    let clipped = x0 < 0 || y0 < 0 || x1 > doc_width || y1 > doc_height;
+    if entirely_outside {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+            "整条笔迹都在画布**外面** ⇒ 一枚 dab 都不会落上 ✓。画布是 {doc_width}×{doc_height} \
+             （原点在**左上角** ✓，坐标就是**文档像素** ✓），而这条笔迹的范围是 \
+             x {x0}..{x1}、y {y0}..{y1}（含笔尖半径）⇒ 把坐标挪进画布内即可 ✓ \
+             —— 这不是笔刷的问题 ✗，**别去换笔刷** ✓"
+            )),
+        ));
+    }
+    // **可选平滑** ✓（`smooth: true` ⇒ 把控制点当 **Catmull-Rom 样条** ✓）——
+    // 与 `draw_stroke` 的 `data.smooth` **同一个实现** ✓；不给 ⇒ **逐字节不变** ✓（老调用方不受影响 ✓）。
+    let points = if optional_bool(args, "smooth").unwrap_or(false) {
+        smooth_stroke_points(&points)
+    } else {
+        points
+    };
+    // **★ P1 #11 humanize：拟人模式（默认 true）★**（第 254 轮）
+    //   需求文档附录二：非对称起收笔包络 —— 起笔 12%（快升）、行笔 60%（平稳）、收笔 28%（长尾）。
+    //   **爆炸半径怎么控住**（本轮的设计决定，写清楚免得后人踩）：
+    //     * **调用方显式给了每个点的压力** => `humanize` **什么都不做**（一个像素都不改）
+    //       => 既有的像素级判据不受影响；
+    //     * **没给压力（缺省 0.5）** => 才套包络 —— 这就是「默认就好用」：AI 通常只给坐标。
+    //   **包络施加在**平滑之后**的点上**：Catmull-Rom 已经把压力插值平滑过，再套包络才不会出折角。
+    // **★ P1 #8 曲率驻留（**opt-in**）★**（第 254 轮）
+    //   `dwell` 缺省 **不给** ⇒ `apply_curvature_dwell` 都不调用 ⇒ 点列**一个都不动**
+    //   （这是本仓纪律：会改像素的新行为必须显式打开 ✓）。
+    //   给了才按 κ^(2/3) 在**转弯处**多插点（手在拐角天然减速的物理 ✓）。
+    let points = match args.get("dwell").and_then(Value::as_f64) {
+        Some(strength) => apply_curvature_dwell(&points, strength),
+        None => points,
+    };
+    // **★ P1 #8 生理颤动（opt-in）★**（第 254 轮）
+    //   `tremor: 0..1` 缺省不给 => `apply_tremor` 都不调用 => 点列一个都不动（逐字节不变 ✓）。
+    //   给了才叠**带限**的 1D value noise（手腕 λ≈90px ＋ 震颤 λ≈28px，沿局部法向）——
+    //   与仓库既有的**白噪声**抖动（`apply_brush_style` 的 `scatter_next`）不同：
+    //   白噪声相邻点独立（像砂纸），带限噪声相邻点相关（像手）。
+    let points = match args.get("tremor").and_then(Value::as_f64) {
+        Some(amount) => {
+            let seed = args.get("tremor_seed").and_then(Value::as_u64).unwrap_or(0);
+            apply_tremor(&points, amount, seed)
+        }
+        None => points,
+    };
+    let mut points = points;
+    // **★ 压感包络的开关（真机报告 P1：`pressure_curve`）★**（第 254 轮）
+    //
+    // 真机反馈"**笔触太硬，压力变化没用**"✗ —— 根因是**程序生成的 pressure 是恒定值**
+    //（`0.8` 这种 ✓），而包络原来**只在"完全没给 pressure"时**才加 ✓ => 给了恒定值就绕过了 ✓。
+    // **现在**：
+    //   * `auto`（缺省 ✓）：**没给 pressure** ⇒ 加包络（老行为 ✓）；**给了但整笔恒定** ⇒ **也加** ✓；
+    //     **给了有起伏的** ⇒ **原样尊重** ✓（不叠两层 ✗）；
+    //   * `flat`（`none`/`off` 同义 ✓）：**永不动** ✓（技术绘图 ✓）；
+    //   * **`humanize: false` ⇒ 一律不动** ✓ —— 这是硬约束
+    //     （"`humanize:false` 时老行为逐字节不变" ✓），所以它**优先于** `pressure_curve` ✓。
+    // **★ 缺省是 `flat`（2026-10-15 真机报告后的修正）★**：我第一版把缺省设成 `auto` ⇒
+    //   **默认行为变了** ✗ ⇒ CI 里 `kernel-brush-parity`／`tool-brush-parity-jitter`／
+    //   `tool-brush-style`／`tool-brush-dynamics` **同时红** ✗（它们正是比"同一笔触"的 ✓）。
+    //   => 按本仓纪律（**改默认行为要极慎重** ✓）**缺省改回 `flat`（＝与以前逐字节相同 ✓）** ✓，
+    //   **想要"起轻行重收轻"请显式传 `pressure_curve: 「auto」`** ✓（summary 里已写明 ✓）。
+    //   **要不要把它变成默认** —— 那是一次**产品决策** ✓，需要同时更新上面那几条笔刷判据
+    //   并说清代价 ✓，不该顺手做掉 ✗。
+    let pressure_curve = optional_str(args, "pressure_curve").unwrap_or_else(|| "flat".to_owned());
+    // **★ `pressure_curve` 只该管"新增的那一半"（2026-10-15 的教训）★**
+    //   我第一版写成"`flat` ⇒ 什么都不做" ✗ ⇒ 连**"完全没给 pressure"时 humanize 的包络**
+    //   也一起没了 ✗✗ ⇒ CI 的 `tool-humanize.mjs` 当场红 ✓
+    //   （判据原话：**默认指纹 == `humanize:false` 指纹** ⇒ 那就等于 humanize 失效 ✗）。
+    //   **正确语义**：
+    //     * **完全没给 pressure** ⇒ 老行为：`humanize` 开着就加包络 ✓（与 `pressure_curve` 无关 ✓）；
+    //     * **给了 pressure** ⇒ 只有 `pressure_curve: 「auto」` 才在"整笔恒定"时**补**包络 ✓
+    //       （缺省 `flat` ⇒ 不动你的 pressure ✓）；
+    //     * **`humanize: false`** ⇒ 一律不动 ✓（硬约束 ✓）。
+    let envelope_wanted = if !all_points_have_pressure(args) {
+        true
+    } else {
+        matches!(pressure_curve.as_str(), "auto") && points_are_flat(&points)
+    };
+    // **B4：包络没补上时要出声**（只回显，不改行为、不改缺省）——**必须在套包络之前算**：
+    //   `apply_humanize_envelope` 就地改压力，算晚了就看不出原来是起伏还是恒定。
+    //   只在显式传了才信号（缺省调用不刷警告）：
+    //   * 显式 `pressure_curve:"auto"` + 点里压力有起伏 ⇒ `auto` 不生效；
+    //   * 显式 `humanize:true` + 点里带压力 + 包络未生效 ⇒ 与上一条合并为一条，注明原因
+    //     （起伏压力 / 恒定压力 + `flat` 缺省）；`humanize:false` 是显式关包络，不出声。
+    let envelope_warning: Option<String> = {
+        let auto_explicit = args.get("pressure_curve").and_then(Value::as_str) == Some("auto");
+        let humanize_explicit = optional_bool(args, "humanize") == Some(true);
+        let has_pressure = all_points_have_pressure(args);
+        let flat = points_are_flat(&points);
+        let envelope_applied = optional_bool(args, "humanize").unwrap_or(true) && envelope_wanted;
+        if auto_explicit && has_pressure && !flat {
+            Some(if humanize_explicit {
+                "`pressure_curve:auto` 不生效：点里压力已有起伏，包络只在恒定压力时补；`humanize:true` 也因此不生效".to_owned()
+            } else {
+                "`pressure_curve:auto` 不生效：点里压力已有起伏，包络只在恒定压力时补".to_owned()
+            })
+        } else if humanize_explicit && has_pressure && !envelope_applied {
+            Some(if flat {
+                "`humanize:true` 不生效：点里压力恒定但 `pressure_curve` 不是 `auto`（缺省 `flat`），包络只在恒定压力 + `auto` 时补".to_owned()
+            } else {
+                "`humanize:true` 不生效：点里压力已有起伏，包络只在恒定压力 + `pressure_curve:auto` 时补".to_owned()
+            })
+        } else {
+            None
+        }
+    };
+    if optional_bool(args, "humanize").unwrap_or(true) && envelope_wanted {
+        apply_humanize_envelope(&mut points);
+    }
+    // **★ P1 #10 罩染（opt-in）★**（第 254 轮）
+    //   `glaze: true` => 3 遍（可调 `glaze_passes`）**微偏移薄涂**：几何由
+    //   `apply_glaze_passes` **交错展开**（p1(A),p2(B),p3(C),p4(A)…）—— 先整遍 A 再整遍 B 会在
+    //   两遍之间留一条**回程跳线** ✗；交错之后相邻点只差几像素 => 得到**加宽的柔带** ✓。
+    //   **透明度**：整笔除以遍数（三遍叠加 ≈ 原来的浓度 ✓）。
+    //   **不给 `glaze` / 给 false** => 遍数 1 => 点列与透明度**都不动**（逐字节不变 ✓）。
+    // **★ P2 #16 混色模式 ★**（第 254 轮）
+    //   `rgb`（**缺省**）=> 与仓库既有的 `lerp_srgb` 完全同口径 => **逐字节不变**；
+    //   `pigment` => 光谱 K/S 混色（黄+蓝=绿，而不是灰）。
+    let color_mixing = match optional_str(args, "color_mixing") {
+        Some(name) => yanshi_render::color::ColorMixing::parse(&name).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "未知 color_mixing {name} ⇒ 可用：rgb（缺省）/ linear（物理正确混色）/ pigment（光谱颜料）"
+                )),
+            )
+        })?,
+        None => yanshi_render::color::ColorMixing::Rgb,
+    };
+    let (points, glaze_passes) = if optional_bool(args, "glaze").unwrap_or(false) {
+        let passes = args
+            .get("glaze_passes")
+            .and_then(Value::as_u64)
+            .unwrap_or(3)
+            .clamp(1, 8) as usize;
+        // "微偏移"：间距与笔尖尺寸成比例（缺省 size 24 => 间距约 4.3px）
+        let size = args
+            .get("size")
+            .and_then(Value::as_f64)
+            .unwrap_or(24.0)
+            .max(1.0);
+        (apply_glaze_passes(&points, passes, size * 0.18), passes)
+    } else {
+        (points, 1usize)
+    };
+    let glaze_opacity = args
+        .get("opacity")
+        .and_then(Value::as_f64)
+        .map(|value| value / glaze_passes as f64);
+    // 意图参数（hand_tremor 等）展开成 brush_params 别名，与显式 brush_params 合并（显式优先）
+    let merged_brush_params = merge_intent_brush_params(args)?;
+    // **`color.a`：P-19 已把它乘进有效 opacity** ✓（paint-fix 期 7；见 `paint_brush` 里那段 ✓）。
+    //   此前是"接受但不生效"（第 788 轮；`2dfd7d2b` 的拒绝**太激进** ✗）
+    //   **⇒ CI 实测**：`export_small.rs` 用 `a = 220` ✓（半透明 ✓，完全合法的既有用法 ✓）
+    //     ⇒ 拒绝让 `export_small` 的 **3 个测试** 与 **4 片 criteria** 一起红 ✗
+    //     （`test (stable)` / `test (beta)` / `criteria shard 1,2,4,5` ✓）。
+    //   **⇒ 结论**：**"忽略 alpha"是既有行为、且有调用方依赖** ✓ ⇒ 不能直接改成拒绝 ✗；
+    //     修法是**把 `a/255` 乘进笔刷的有效 opacity** ✓ —— 现已落地 ✓，
+    //     `a=255` 时与以前逐位相同 ✓，`a<255` 时整笔变透明 ✓（判据见 `ink_pixels` 那条 ✓）。
+    //     `export_small` 的 `a=220` 现在画出来会比以前淡一点（0.86 倍不透明度 ✓），
+    //     它的测试是导出前后自比对 ✓ ⇒ 不受影响 ✓。
+
+    // **落笔走唯一的实现** ✓（`paint_brush` ✓，与 `brush_preview` 共用 ✓）。
+    // **显式 `color_space`**（C1）：只认 `"srgb"` / `"linear"`，不传 ⇒ 量级切换；
+    // 作用于 `color` 与 `color_to` 两处；非法值在这里就 `invalid_argument`（落笔前拒绝）。
+    let color_space = parse_color_space_arg(args)?;
+    // **反馈期 4：涂抹预算闸自动拆分** ✓（5.2；阈值按期 2 新上限 512 校准，见决策函数）。
+    //
+    // **两路的回执尾段是同一段** ✓：分支只产出下面这些统一量（拆分路聚合、单笔路直取），
+    // 之后 `value["brush"]` 起的全部回执字段（`landed`／`anchors`／`warnings`／`delta_regime`
+    // 等）不分路 ⇒ 拆分不会悄悄改掉老字段的口径。
+    //
+    // **拆分路的关键语义** ✓（设计草稿已验证的结论，直接落实）：
+    // * 每段一次 `paint_brush` + 一次 `write_import_image` 提交（段内喂底图读的是
+    //   已提交状态 ⇒ 后段看得到前段刚落的墨，不抹空白；对称镜像在段内做 ⇒ 每段都镜像）；
+    // * 各段同属一次 `brush_stroke` 调用 ⇒ 天然同一变更集（`commit` 的变更集复用）；
+    //   组 id 每段提交前由 helper 重设（`take()` 只取走一次，不重设就只有首段带组）；
+    // * 段中途失败 ⇒ 先以同组 `revert_group` 收回已提交段，再回原错（不留半截笔画）；
+    // * 素 `undo_last` 按连续同一 `object_id` 归并 ⇒ 只撤最后一段，**不是**整组撤销的
+    //   等价物（回执 `undo_note` 明说整组撤销走 `revert_group`，不改 `collect_gestures` 语义）；
+    // * 段 `source` 记该段的落笔后点列、`smooth: false`（点列已是平滑后结果，重放时
+    //   不再二次平滑；`glaze`／`tremor`／`dwell` 本就不进 `source`，与单笔路同例）
+    //   与段时间不进段 `source`（`times: null` ⇒ 重放按距离步进；落笔当次仍用插值时间）。
+    let (
+        mut value,
+        name,
+        steps,
+        painted,
+        clipped_away,
+        clip_coverage,
+        ink_footprint_pixels,
+        ink_mass,
+        max_delta,
+        delta_distribution,
+        fed_base,
+        x0,
+        y0,
+        width,
+        height,
+        short_stroke_hint,
+    ) = if let Some(plan) = decide_smudge_split(
+        ctx,
+        args,
+        &points,
+        &dtimes,
+        &merged_brush_params,
+        sensors,
+        args.get("size").and_then(Value::as_f64),
+    ) {
+        let mut seg_values: Vec<BrushSegmentPainted> = Vec::with_capacity(plan.segments.len());
+        let mut committed = 0usize;
+        let mut failed: Option<YanshiError> = None;
+        for (index, seg_points) in plan.segments.iter().enumerate() {
+            let seg_points_source = json!(seg_points
+                .iter()
+                .map(|(x, y, pressure)| json!([x, y, pressure]))
+                .collect::<Vec<_>>());
+            let seg = paint_and_commit_brush_segment(
+                ctx,
+                args,
+                seg_points,
+                &plan.segment_dtimes[index],
+                &seg_points_source,
+                &Value::Null,
+                false,
+                glaze_opacity,
+                merged_brush_params.as_ref(),
+                color_mixing,
+                sensors,
+                color_space,
+                symmetry,
+                Some(&plan.group_id),
+                true,
+            );
+            match seg {
+                Ok(seg) => {
+                    committed += 1;
+                    seg_values.push(seg);
+                }
+                Err(error) => {
+                    failed = Some(error);
+                    break;
+                }
+            }
+        }
+        if let Some(error) = failed {
+            // **段中途失败先回滚** ✓：清掉待取的组／标签（免得回滚原子误带组），
+            // 再以同组 `revert_group` 收回已提交段；回滚本身失败也不掩盖原错。
+            ctx.pending_group_id = None;
+            ctx.pending_label = None;
+            let rolled_back = write_revert_group(ctx, &json!({"group_id": plan.group_id}))
+                .ok()
+                .and_then(|v| v["reverted_count"].as_u64())
+                .unwrap_or(0);
+            let message = format!("{error}");
+            return Err(YanshiError::new(
+                error.code,
+                ErrorContext::detail(format!(
+                    "涂抹拆分落笔第 {} 段失败（已提交 {committed} 段，已同组 revert {rolled_back} 段，不留半截笔画）⇒ 原错：{message}",
+                    committed + 1
+                )),
+            ));
+        }
+        // **聚合** ✓：画量／墨量求和，差值分位数取各段最大（保守口径），区域取并集，
+        // 覆盖率按“总留存／总铺开”合并（与单笔路 `kept / total` 同口径）。
+        let total_painted: usize = seg_values.iter().map(|s| s.painted).sum();
+        let total_dropped: usize = seg_values.iter().map(|s| s.dropped).sum();
+        let any_clipped = seg_values.iter().any(|s| s.clip_coverage.is_some());
+        let merged_coverage = if any_clipped {
+            Some(
+                (total_painted.saturating_sub(total_dropped) as f64)
+                    / (total_painted.max(1) as f64),
+            )
+        } else {
+            None
+        };
+        let (ux0, uy0, ux1, uy1) = seg_values.iter().fold(
+            (i32::MAX, i32::MAX, i32::MIN, i32::MIN),
+            |(ax0, ay0, ax1, ay1), s| {
+                (
+                    ax0.min(s.region_x),
+                    ay0.min(s.region_y),
+                    ax1.max(s.region_x + s.region_w as i32),
+                    ay1.max(s.region_y + s.region_h as i32),
+                )
+            },
+        );
+        // **回执主体取末段提交** ✓（`atom_id`／`seq`／`preview` 皆为末段提交后的终态），
+        // 脏区改写成各段区域并集（末段一家的脏区会漏掉前面段的区域）。
+        let mut value = seg_values
+            .last()
+            .expect("拆分至少两段，末段必在")
+            .value
+            .clone();
+        value["dirty_bbox"] = json!([ux0, uy0, ux1 - ux0, uy1 - uy0]);
+        // **拆分字段：不静默拆分** ✓（草稿 §5 的字段全数在位）。
+        value["split"] = json!(true);
+        value["split_segments"] = json!(plan.segments.len());
+        value["split_group_id"] = json!(plan.group_id);
+        value["segment_costs_ms"] = json!(plan.segment_costs_ms);
+        value["segment_path_lengths_px"] = json!(plan.segment_path_lengths_px);
+        value["segment_atom_ids"] = json!(seg_values
+            .iter()
+            .map(|s| s.value["atom_id"].clone())
+            .collect::<Vec<_>>());
+        value["reach_cap_px"] = json!(yanshi_render::MAX_EFFECT_PADDING);
+        value["reach_px"] = json!(plan.reach_px);
+        value["undo_note"] = json!(format!(
+            "本次落笔已拆成 {} 段、同属一组 {}：整组撤销请调 revert_group（素 undo_last 只撤最后一段，不是整组撤销）",
+            plan.segments.len(),
+            plan.group_id
+        ));
+        let all = &seg_values;
+        let steps = all.iter().map(|s| s.steps).sum();
+        let painted = all.iter().map(|s| s.painted).sum();
+        let ink_footprint_pixels = all.iter().map(|s| s.ink_footprint_pixels).sum();
+        let ink_mass = all.iter().map(|s| s.ink_mass).sum();
+        let max_delta = all.iter().map(|s| s.max_delta).max().unwrap_or(0);
+        let delta_distribution = DeltaDistribution {
+            median: all
+                .iter()
+                .map(|s| s.delta_distribution.median)
+                .max()
+                .unwrap_or(0),
+            p90: all
+                .iter()
+                .map(|s| s.delta_distribution.p90)
+                .max()
+                .unwrap_or(0),
+            p99: all
+                .iter()
+                .map(|s| s.delta_distribution.p99)
+                .max()
+                .unwrap_or(0),
+            changed_pixels: all
+                .iter()
+                .map(|s| s.delta_distribution.changed_pixels)
+                .sum(),
+        };
+        let fed_base = all.iter().any(|s| s.fed_base);
+        let name = all.last().map(|s| s.brush.clone()).unwrap_or_default();
+        (
+            value,
+            name,
+            steps,
+            painted,
+            total_dropped,
+            merged_coverage,
+            ink_footprint_pixels,
+            ink_mass,
+            max_delta,
+            delta_distribution,
+            fed_base,
+            ux0,
+            uy0,
+            (ux1 - ux0).max(0) as usize,
+            (uy1 - uy0).max(0) as usize,
+            all.iter().find_map(|s| s.short_stroke_hint.clone()),
+        )
+    } else {
+        // **单笔路** ✓：与重构前同一段代码（helper 内），回执量直取，无聚合。
+        let seg = paint_and_commit_brush_segment(
+            ctx,
+            args,
+            &points,
+            &dtimes,
+            &points_source,
+            &times_source,
+            optional_bool(args, "smooth").unwrap_or(false),
+            glaze_opacity,
+            merged_brush_params.as_ref(),
+            color_mixing,
+            sensors,
+            color_space,
+            symmetry,
+            None,
+            false,
+        )?;
+        (
+            seg.value,
+            seg.brush,
+            seg.steps,
+            seg.painted,
+            seg.dropped,
+            seg.clip_coverage,
+            seg.ink_footprint_pixels,
+            seg.ink_mass,
+            seg.max_delta,
+            seg.delta_distribution,
+            seg.fed_base,
+            seg.region_x,
+            seg.region_y,
+            seg.region_w,
+            seg.region_h,
+            seg.short_stroke_hint,
+        )
+    };
     value["brush"] = json!(name);
     value["steps"] = json!(steps);
     value["painted_pixels"] = json!(painted);
@@ -1122,17 +1555,9 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     //     （`color.a=0` 实测**不是**全透明 ✓：`painted=324 / ink=324` ✓）⇒ 按规矩
     //     **不提交没有判据的分支** ✓ ⇒ 先只加字段 ✓，warning 等能复现了再加 ✓。
     // **墨量 `ink_mass` 与足迹同一遍遍历** ✓（A2）：`Σalpha`（落墨像素 alpha 字节之和，u64）⇒
-    //   恒等式 `0 ≤ ink_mass ≤ ink_footprint_pixels × 255`；`rgba` 在这里已是**裁剪后**的缓冲 ⇒
+    //   恒等式 `0 ≤ ink_mass ≤ ink_footprint_pixels × 255`；现由
+    //   `paint_and_commit_brush_segment` 在段内从**裁剪后**缓冲算出（拆分路为各段求和）⇒
     //   Σalpha 天然与 `painted_pixels_clipped` 同口径，对称合并也在此之前 ⇒ 镜像一半已含在内 ✓。
-    let (ink_footprint_pixels, ink_mass) =
-        rgba.chunks_exact(4)
-            .fold((0usize, 0u64), |(footprint, mass), px| {
-                if px[3] != 0 {
-                    (footprint + 1, mass + u64::from(px[3]))
-                } else {
-                    (footprint, mass)
-                }
-            });
     value["ink_footprint_pixels"] = json!(ink_footprint_pixels);
     value["ink_mass"] = json!(ink_mass);
     // **兼容别名** ✓：值完全相同 ✓，只在注释里说明"同源、语义是足迹" ✓
@@ -1333,6 +1758,17 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         match value.get_mut("warnings") {
             Some(Value::Array(items)) => items.extend(b4_notes.into_iter().map(|note| json!(note))),
             _ => value["warnings"] = json!(b4_notes),
+        }
+    }
+    // **反馈期 1（3.6a）：短笔触兜底提示** —— 路径撑不满 dab 间距时不再拒绝，
+    // 而是延长落一枚 dab；诊断事实（原长／间距／size）降为 `warnings` 里的一条提示，
+    // 与“部分越界”／B4 同形态（已有就 push，没有就建）。
+    // 旧拒绝文案仍留在 `paint_brush` 的 0 墨分支里，那是其它真 0 墨情形（透明／涂抹／不可见色）
+    // 的最后防线，不是本兜底的残留。
+    if let Some(hint) = short_stroke_hint {
+        match value.get_mut("warnings") {
+            Some(Value::Array(items)) => items.push(json!(hint)),
+            _ => value["warnings"] = json!([hint]),
         }
     }
     // **D139 的静默零墨：印章落了、画面没变** ✓（第 811 轮；探针确认此处两个值已就位 ✓）
@@ -1616,6 +2052,159 @@ pub(super) fn smudge_stroke_cost_ms(path_len_px: f64, radius_px: f64) -> f64 {
     path_len_px * radius_px * radius_px * SMUDGE_COST_PER_PX3_MS
 }
 
+/// **拆分安全系数** ✓（反馈期 4）：段长上限 = 预算 ÷ (r² × k) × 本系数。
+/// 0.9 吸收压力致半径上浮（k 本身已有约 30% 余量，见 `SMUDGE_COST_PER_PX3_MS` 注释；
+/// 系数再小就会把段数虚增一个量级，0.9 是“刚好盖住上浮”的取舍）。
+pub(super) const SMUDGE_SPLIT_SAFETY: f64 = 0.9;
+/// **拆分段数上限** ✓（反馈期 4）：段数超过它 ⇒ 拆分无意义，保留原 Err 路径。
+/// 64 段在半径 130px 时覆盖约 29 万 px 路径（整幅 4K 对角线的 50 倍以上）；
+/// 超过它的长笔不是“涂抹一笔”，而是调用方该分批的作业。
+pub(super) const SMUDGE_SPLIT_MAX_SEGMENTS: usize = 64;
+/// **拆分段长下限** ✓（反馈期 4）：段长上限低于它 ⇒ 段比一枚 dab 间距还短，
+/// 拆出来可能是 0-dab 空段 ⇒ 不拆分，保留原 Err 路径。
+pub(super) const SMUDGE_SPLIT_MIN_SEGMENT_PX: f64 = 100.0;
+
+/// **拆分计划** ✓（反馈期 4）：超预算长笔按预算切成的段数。
+/// 均分（而非按上限切出末段余数）⇒ 各段成本均衡，且每段成本 ≤ 预算 × 安全系数。
+pub(super) struct SmudgeSplitPlan {
+    /// 段数（≥ 2）。
+    pub segments: usize,
+}
+
+/// **拆分段长上限** ✓：预算 ÷ (r² × k) × 安全系数（毫秒与 k 的单位约掉，得 px）。
+pub(super) fn smudge_split_segment_limit_px(radius_px: f64) -> f64 {
+    SMUDGE_BUDGET_MS / (radius_px * radius_px * SMUDGE_COST_PER_PX3_MS) * SMUDGE_SPLIT_SAFETY
+}
+
+/// **拆分计划** ✓（反馈期 4；纯函数，可单测）：
+/// * 预算内 ⇒ `None`（不拆分，走原单笔路）；
+/// * 段长上限 < 下限，或段数 > 上限 ⇒ `None`（退化，保留原 Err 路径）；
+/// * 否则 `Some`（段数 = 向上取整，段长 = 路径均分 ⇒ 每段成本 ≤ 预算 × 0.9）。
+pub(super) fn smudge_split_plan(path_len_px: f64, radius_px: f64) -> Option<SmudgeSplitPlan> {
+    if path_len_px <= 0.0 || radius_px <= 0.0 {
+        return None;
+    }
+    if smudge_stroke_cost_ms(path_len_px, radius_px) <= SMUDGE_BUDGET_MS {
+        return None;
+    }
+    let limit = smudge_split_segment_limit_px(radius_px);
+    if limit < SMUDGE_SPLIT_MIN_SEGMENT_PX {
+        return None;
+    }
+    let segments = (path_len_px / limit).ceil() as usize;
+    if !(2..=SMUDGE_SPLIT_MAX_SEGMENTS).contains(&segments) {
+        return None;
+    }
+    Some(SmudgeSplitPlan { segments })
+}
+
+/// **涂抹可达量** ✓（反馈期 4；与期 2 同口径）：
+/// `drag + size/2 + 2`，其中 `drag` = 求值后 `smudge_length` × 半径（与
+/// `check_smudge_budget` 里的拖曳算法逐字一致），`size/2` = 半径。
+/// 预算闸不生效的笔（`smudge = 0` 或拖曳 0）⇒ `None`（拆分决策不调用它）。
+pub(super) fn smudge_reach_px(brush: &hokusai::Brush) -> Option<f64> {
+    let smudge_amount = brush.get(hokusai::BrushSetting::Smudge).base_value;
+    if smudge_amount <= 0.0 {
+        return None;
+    }
+    let radius_px = f64::from(brush.get(hokusai::BrushSetting::Radius).base_value).exp();
+    let drag_length =
+        radius_evaluated_value(brush, hokusai::BrushSetting::SmudgeLength).max(0.0) * radius_px;
+    if drag_length <= 0.0 {
+        return None;
+    }
+    Some(drag_length + radius_px + 2.0)
+}
+
+/// **按累计弧长均分点列** ✓（反馈期 4；纯函数，可单测）：
+/// 每段 = 接点（起）＋ 段内全部原点 ＋ 接点（止）；相邻段**共享接点**
+/// （接点坐标与压力线性插值 ⇒ 不留缝隙，折线不被拉直）；
+/// 零长腿（连续重复点）跳过，不除零；`segments < 2` 或总长 0 ⇒ 原样返回一整段。
+pub(super) fn split_points_by_arclength(
+    points: &[(f64, f64, f64)],
+    segments: usize,
+) -> Vec<Vec<(f64, f64, f64)>> {
+    if segments < 2 || points.len() < 2 {
+        return vec![points.to_vec()];
+    }
+    let mut cumulative = Vec::with_capacity(points.len());
+    cumulative.push(0.0);
+    for w in points.windows(2) {
+        let leg = ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt();
+        cumulative.push(cumulative.last().copied().unwrap_or(0.0) + leg);
+    }
+    let total = cumulative.last().copied().unwrap_or(0.0);
+    if total <= 0.0 {
+        return vec![points.to_vec()];
+    }
+    let at = |distance: f64| -> (f64, f64, f64) {
+        if distance <= 0.0 {
+            return points[0];
+        }
+        if distance >= total {
+            return points[points.len() - 1];
+        }
+        for i in 0..points.len() - 1 {
+            let (a, b) = (cumulative[i], cumulative[i + 1]);
+            if b > a && distance >= a && distance <= b {
+                let t = (distance - a) / (b - a);
+                return (
+                    points[i].0 + (points[i + 1].0 - points[i].0) * t,
+                    points[i].1 + (points[i + 1].1 - points[i].1) * t,
+                    points[i].2 + (points[i + 1].2 - points[i].2) * t,
+                );
+            }
+        }
+        points[points.len() - 1]
+    };
+    (0..segments)
+        .map(|i| {
+            let start = total * i as f64 / segments as f64;
+            let end = total * (i + 1) as f64 / segments as f64;
+            let mut seg = vec![at(start)];
+            // 段内原点（严格在起止之间 ⇒ 接点恰落原点时不重复进段）。
+            for (j, point) in points.iter().enumerate() {
+                if cumulative[j] > start && cumulative[j] < end {
+                    seg.push(*point);
+                }
+            }
+            seg.push(at(end));
+            seg
+        })
+        .collect()
+}
+
+/// **点列时间按同一弧长切分** ✓（反馈期 4；与点列切分同接点、同插值）：
+/// 长度与点列不对齐（平滑改了点数时）⇒ `None`（调用方改传空切片 ⇒ 距离步进老行为）。
+pub(super) fn split_dtimes_by_arclength(
+    points: &[(f64, f64, f64)],
+    dtimes: &[f64],
+    segments: usize,
+) -> Option<Vec<Vec<f64>>> {
+    if dtimes.len() != points.len() {
+        return None;
+    }
+    let triples: Vec<(f64, f64, f64)> = points
+        .iter()
+        .zip(dtimes.iter())
+        .map(|(&(x, y, _), &t)| (x, y, t))
+        .collect();
+    Some(
+        split_points_by_arclength(&triples, segments)
+            .into_iter()
+            .map(|seg| seg.into_iter().map(|(_, _, t)| t).collect())
+            .collect(),
+    )
+}
+
+/// **折线总长** ✓（与 `check_smudge_budget` 里的路径算法逐字一致）。
+pub(super) fn brush_points_path_len_px(points: &[(f64, f64, f64)]) -> f64 {
+    points
+        .windows(2)
+        .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
+        .sum()
+}
+
 /// **每步涂抹量（D 期，项 14）**：`stamp_stroke_from` 每 2px 插值步调一次
 /// `smudge_dab`，而引擎每 dab 间距才盖一枚 dab ⇒ 旧实现把一名义量施加了
 /// `间距 / 2px` 倍（水彩 size 300：间距 18.75px ⇒ 约 9.4 倍），且每像素累计
@@ -1779,6 +2368,64 @@ pub(super) fn paint_brush(
             hokusai::SettingValue::constant(libm::log(diameter / 2.0) as f32),
         );
     }
+
+    // **反馈期 1（3.6a）：短笔画单 dab 兜底** —— 原路径撑不满一枚 dab 间距时，
+    // 轻点至少落一枚 dab，不再 0 落墨报错；诊断事实降为回执里的提示（见 `short_stroke_hint`）。
+    // 间距口径：引擎每 dab 的位移 ≈ 半径 / (dabs_per_actual_radius + dabs_per_basic_radius)
+    // （`count_dabs_to`：dist/radius*dpar + dist/base_radius*dpbr；起笔时 actual=base）。
+    // 延长到 1.5× 间距（留余量对冲压感曲线造成的半径变化）；视觉上仍是一次轻点，不是拉出一条线。
+    // 落点语义：起笔处不动（`extend_short_path`：多点沿末段方向延长，单点沿 +x 延长）。
+    // 总长 ≥ 间距的正常笔画原样不动。只对会落墨的笔生效（opaque > 0）：
+    // 透明笔（P-19）与纯涂抹笔的 0 墨仍是正确行为，不由这里兜底。
+    // 注意：`brush_params` 在下面才事后覆盖（它能改 dabs/opaque），本处用的是覆盖前的值；
+    // 覆盖后才把间距改大的笔，兜底可能不够，仍走下面的 0 墨分支（残留，见包说明）。
+    // 位置：必须在区域计算之前（延长后的端点要进区域），且在 `size` 已写入半径之后。
+    let owned_points: Vec<(f64, f64, f64)>;
+    let mut short_stroke_hint: Option<String> = None;
+    let points: &[(f64, f64, f64)] = {
+        let radius = f64::from(brush.get(hokusai::BrushSetting::Radius).base_value).exp();
+        let opaque = brush.get(hokusai::BrushSetting::Opaque).base_value;
+        let dabs_sum = f64::from(
+            brush
+                .get(hokusai::BrushSetting::DabsPerActualRadius)
+                .base_value,
+        ) + f64::from(
+            brush
+                .get(hokusai::BrushSetting::DabsPerBasicRadius)
+                .base_value,
+        );
+        let total_len: f64 = points
+            .windows(2)
+            .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
+            .sum();
+        if radius.is_finite()
+            && radius > 0.0
+            && opaque > 0.0
+            && dabs_sum > 0.0
+            && total_len.is_finite()
+            && total_len < radius / dabs_sum
+        {
+            let spacing = radius / dabs_sum;
+            match extend_short_path(points, spacing, spacing * 1.5) {
+                Some(extended) => {
+                    let n = points.len();
+                    let size_text = match size {
+                        Some(sz) => format!("{sz}"),
+                        None => format!("{:.1}", radius * 2.0),
+                    };
+                    short_stroke_hint = Some(format!(
+                        "短笔触兜底：原路径太短（{n} 个点、路径总长 {total_len:.1}px，撑不满一个 dab 间距约 {spacing:.1}px，size={size_text}）⇒ 起笔处不动、沿末段方向延长至 {:.1}px，已落下一枚 dab；这不代表整支笔刷不可用，想要更长的笔触请加长路径",
+                        spacing * 1.5
+                    ));
+                    owned_points = extended;
+                    &owned_points
+                }
+                None => points,
+            }
+        } else {
+            points
+        }
+    };
 
     // **P-19：`color.a` 乘进有效 opacity** ✓ —— 此前 `a` 只进 warnings，不进渲染 ✓。
     //   `a=255`（或无 `a`）⇒ 系数 1.0 ⇒ 这里**什么都不做** ✓（与修前逐位相同，
@@ -2065,8 +2712,15 @@ pub(super) fn paint_brush(
     //   ⇒ **∴ 而现在下一行那段 `CANVAS_DRIFT_TOLERANCE = 3` ✗ 的闸门**正好把差 1 的真落墨清零**✗
     //      ⇒ **∴ 所以这一项不仅是诊断 ✓，它也是**识别"薄涂笔"**✗ 的依据 ✓**。
     //
-    // **∴ 算法 ✓**：**不碰 `rgba` ✗**（**∴ 纯读 ✓**）⇒ **∴ 在清零点之前量，才是**原始**落墨幅度 ✓**
-    //   ⇒ **∴ 于是**它报的是"引擎到底改了多少"✗，与后续掩膜无关 ✓
+    // **∴ 算法 ✓**：**不碰 `rgba` ✗**（**∴ 纯读 ✓**）⇒ **∴ 量的是"导出图上
+    //   实际变了多少"** ✓ —— 与 `draw_evidence_compare` 同一口径 ✓：
+    //   tile 按 Normal source-over 合成到落笔前像素上再比 RGB，alpha 不参与 ✓。
+    //   **∴ 旧口径的错**（名画第 3 轮 §7 glazing 项）：喂底图分支曾逐通道
+    //   直比（含 alpha、未合成）⇒ 涂抹笔晕边低 alpha 像素报 |a−255| ≈ 244–254，
+    //   而导出 RGB 合成后仅差 4 级 ⇒ 回执 254 冒充了导出效果 ✗。
+    //   **∴ 残留**：本遍在落墨掩膜清零之前量 ⇒ 被掩膜清零的像素
+    //   （四通道与底图差均 ≤ `CANVAS_DRIFT_TOLERANCE` = 3）最多贡献 3 级，
+    //   属漂移容差量级，不是另一套口径 ✓。
     let (max_delta, delta_distribution) = {
         let mut max_delta: u8 = 0;
         // **差值直方图** ✓（P-15）：同一遍遍历里记，与 `max_delta` 同一个像素、同一个差值 ✓。
@@ -2081,7 +2735,11 @@ pub(super) fn paint_brush(
             //   ⇒ **∴ 而我逐通道按**白底 255**✗ 比较** ⇒ **∴ 差恒 255 ✗ ⇒ **∴ 饱和 ✓**
             // **∴ 所以 ✓**：**∴ 无基准时 ✗ 只让**有 alpha**✗ 的像素参与 ✓
             //   ⇒ **∴ 于是**白笔（255 vs 255）⇒ **0** ✓／近白 ⇒ **1** ✓／灰 ⇒ **31** ✓／深 ⇒ **205** ✓** ✓
-            // **∴ 而有基准时 ✗ **不改**✗**（**∴ base 是真实像素 ✓ ⇒ **∴ 逐通道比较本来就对 ✓**）✓
+            // **∴ 而有基准时 ✗ 也要先合成再比 ✗**（名画第 3 轮 §7 glazing 项）：
+            //   直通 tile 的 RGB 不是画面颜色 ⇒ 低 alpha 晕边像素的 RGB 直比
+            //   与 alpha 直比都会虚报几百级 ⇒ 必须按 Normal source-over 合成
+            //   到落笔前像素上再比 RGB（与 `draw_evidence_compare` 同式 ✓），
+            //   alpha 通道不参与（它不是可见颜色 ✓，与无基准分支同例 ✓）。
             if before.is_none() && rgba[index + 3] == 0 {
                 continue;
             }
@@ -2110,9 +2768,18 @@ pub(super) fn paint_brush(
                     .and_then(|pixels| pixels.get(index + channel))
                     .copied()
                     .unwrap_or_else(|| background_byte(channel));
-                // **∴ 有基准 ⇒ 直接比 ✓；无基准 ⇒ 先把该通道合成到白底 ✓**（**∴ 后者才等于"肉眼看到"✓**）
+                // **∴ 有基准 ⇒ 先按 Normal source-over 合成到落笔前像素上再比 RGB ✓；
+                //   无基准 ⇒ 先把该通道合成到背景上再比 ✓**（**∴ 两者才都等于"肉眼看到"✓**）
                 let current = if before.is_some() {
-                    i32::from(rgba[index + channel])
+                    if channel == 3 {
+                        // **∴ alpha 通道不参与 ✗**（**∴ 它不是可见颜色 ✓**）
+                        continue;
+                    }
+                    // `old_byte` 在有基准时就是落笔前该通道的值 ✓ ⇒ 与
+                    // `draw_evidence_compare` 同式：`tile·a + before·(255−a)` ✓。
+                    let alpha = i32::from(rgba[index + 3]);
+                    (i32::from(rgba[index + channel]) * alpha + i32::from(old_byte) * (255 - alpha))
+                        / 255
                 } else if channel == 3 {
                     // **∴ alpha 通道不参与 ✗**（**∴ 它不是可见颜色 ✓**）
                     continue;
@@ -2170,6 +2837,8 @@ pub(super) fn paint_brush(
         }
     }
     ctx.time(Phase::Raster, read_started);
+    // **反馈期 1 注**：撑不满 dab 间距的短笔触已在上面兜底（延长落一枚 dab），
+    // 走到这里的 0 墨是**其它**真 0 墨情形（透明／涂抹／不可见色等），下面的分因诊断仍适用。
     if painted == 0 {
         // **P-19：有效 opacity 是 0 时，零墨是调用方要的透明，不是不够长** ✓ ——
         // `color.a=0` / `opacity: 0` 都会把 `Opaque` 压到 0 ⇒ 一枚 dab 都不会有墨 ✓ ⇒
@@ -2310,6 +2979,7 @@ pub(super) fn paint_brush(
         max_delta,
         delta_distribution,
         fed_base: reads_canvas,
+        short_stroke_hint,
     })
 }
 

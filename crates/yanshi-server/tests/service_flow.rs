@@ -826,10 +826,11 @@ fn clone_stamp_copies_content_and_is_reversible() {
     assert_eq!(store.get(&raw_hash).unwrap().len(), 32 * 32 * 4);
 
     // 区域外扩上限：offset/size 组合超出内核可达范围时必须拒绝（否则分块与整幅会不一致）。
+    // 上限已由反馈期 2 从 128 放宽到 512：拒绝组合相应改为外扩 610（600 + 16/2 + 2）。
     let too_far = registry.call(
         &mut context,
         "clone_stamp",
-        &json!({"layer_id": "layer_1", "points": [[40.0, 40.0]], "source_offset": [-200.0, -200.0], "size": 16.0}),
+        &json!({"layer_id": "layer_1", "points": [[40.0, 40.0]], "source_offset": [-600.0, -600.0], "size": 16.0}),
     );
     assert_eq!(
         too_far["error_code"],
@@ -1021,6 +1022,77 @@ fn clone_stamp_copies_content_and_is_reversible() {
         restored[0] > 240 && restored[1] > 240,
         "撤销后应回到白底：{restored:?}"
     );
+}
+
+/// 反馈期 2：涂抹区域外扩上限 128 → 512 的服务端口径。
+///
+/// 单独立文档（不与 clone_stamp 测试共享状态，避免大尺寸涂抹污染其像素断言）。
+/// 报告组合（size 320 + smudge_length 26，外扩 26 + 160 + 2 = 188）在旧上限下
+/// 被拒、新上限下必须通过；边界 512 通过、513 仍拒绝并说明原因；
+/// 旧小尺寸组合仍通过（行为不变；小尺寸涂抹的像素行为由 clone_stamp 测试守）。
+#[test]
+fn smudge_reach_cap_512_accepts_report_case_and_rejects_over_cap() {
+    let mut workspace = workspace();
+    workspace
+        .create_document(
+            NewDocument::new("doc_smudge_cap", 96, 96),
+            "human:1",
+            "session:web",
+        )
+        .unwrap();
+    let registry = ToolRegistry::with_profiles(&[
+        yanshi_server::Profile::Core,
+        yanshi_server::Profile::Retouch,
+    ]);
+    let mut context = ToolContext::new(&mut workspace, "doc_smudge_cap", "human:1", "session:web")
+        .with_owner(true)
+        .with_wait_for_render(true, 500);
+    let created = registry.call(
+        &mut context,
+        "create_layer",
+        &json!({"layer_id": "layer_1"}),
+    );
+    assert_eq!(created["ok"], json!(true), "{created}");
+
+    let report_smudge = registry.call(
+        &mut context,
+        "smudge",
+        &json!({"layer_id": "layer_1", "points": [[20.0, 50.0], [80.0, 50.0]],
+                "size": 320.0, "smudge_length": 26.0, "hardness": 1.0}),
+    );
+    assert_eq!(report_smudge["ok"], json!(true), "{report_smudge}");
+    let at_cap = registry.call(
+        &mut context,
+        "smudge",
+        &json!({"layer_id": "layer_1", "points": [[20.0, 50.0], [80.0, 50.0]],
+                "size": 320.0, "smudge_length": 350.0, "hardness": 1.0}),
+    );
+    assert_eq!(at_cap["ok"], json!(true), "{at_cap}");
+    let over_cap = registry.call(
+        &mut context,
+        "smudge",
+        &json!({"layer_id": "layer_1", "points": [[20.0, 50.0], [80.0, 50.0]],
+                "size": 320.0, "smudge_length": 351.0, "hardness": 1.0}),
+    );
+    assert_eq!(
+        over_cap["error_code"],
+        json!("invalid_argument"),
+        "{over_cap}"
+    );
+    assert!(
+        over_cap["context"]["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("超过内核上限"),
+        "超限错误信息应说明原因：{over_cap}"
+    );
+    let small_smudge = registry.call(
+        &mut context,
+        "smudge",
+        &json!({"layer_id": "layer_1", "points": [[50.0, 50.0], [58.0, 50.0]],
+                "size": 14.0, "smudge_length": 8.0, "hardness": 1.0}),
+    );
+    assert_eq!(small_smudge["ok"], json!(true), "{small_smudge}");
 }
 
 /// 蒙版：创建 + 挂到图层后，图层内容应只在蒙版范围内可见（含羽化与缺蒙版告警）。

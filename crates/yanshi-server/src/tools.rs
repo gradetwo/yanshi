@@ -14286,6 +14286,8 @@ fn kind_label(kind: &AtomKind) -> String {
 ///
 /// **与"文档隔离"的关系** ✓：本工具**不改变** id 语义 ✓ —— 它只是把"新建"这件事
 /// 从"手工删目录"变成"一次调用" ✓。想彼此隔离就**用不同的 doc_id** ✓（默认值已由 `--doc` 提供 ✓）。
+/// 同名处理见 `mode` 参数 ✓：缺省 open（打开）、create（严格新建）、reset（删后重建）✓ ——
+/// 续画流只依赖缺省 open，不动 ✓。
 fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let doc_id = optional_str(args, "doc_id").unwrap_or_else(|| ctx.doc_id.clone());
     // **尺寸只在"真的要新建"时才是必填** ✓（真实使用探针 2026-10-25 ✓）：
@@ -14312,6 +14314,49 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         }
         _ => json!({"r": 255, "g": 255, "b": 255, "a": 255}),
     };
+    // **同名处理 `mode`** ✓（反馈报告 2 §4.6 期 2）：缺省 open = 今天的行为（已存在⇒打开，
+    // 不存在⇒新建），续画流不动 ✓；create = 严格新建（已存在⇒报错）；reset = 删后重建
+    //（与 delete_document 同闸：权限闸 + 实时连接拒，删失败直接报错、不回落到打开）。
+    // 非法值报错，不静默回落 ✓（"静默降级是唯一对手"）。
+    let mode: &str =
+        match args.get("mode") {
+            None | Some(Value::Null) => "open",
+            Some(Value::String(value)) => match value.as_str() {
+                "open" | "create" | "reset" => value.as_str(),
+                _ => return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(
+                        "mode 只能是 open / create / reset（缺省 open：已存在⇒打开，不存在⇒新建）",
+                    ),
+                )),
+            },
+            Some(_) => {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail("mode 必须是字符串 open / create / reset（缺省 open）"),
+                ))
+            }
+        };
+    // **create / reset 的分支在打开语义之前定** ✓：只在 open_document 成功时才算"真的存在"
+    //（磁盘空壳走下面的新建，与今天一致 ✓）。reset 删完后 document_exists 为假 ⇒
+    // 自然落到下面的新建分支，不用另起一条创建路径 ✓。
+    let mut reset_deleted = false;
+    if mode != "open"
+        && ctx.workspace.document_exists(&doc_id)
+        && ctx.workspace.open_document(&doc_id).is_ok()
+    {
+        if mode == "create" {
+            return Err(YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!(
+                    "文档 {doc_id} 已存在 ⇒ 本次没有打开、也没有清空；要续画请用 mode=open（或不传 mode），要清空重建请用 mode=reset"
+                )),
+            ));
+        }
+        crate::ensure_doc_scope(&ctx.doc_id, ctx.role, &doc_id)?;
+        ctx.workspace.delete_document(&doc_id)?;
+        reset_deleted = true;
+    }
     // **同 id 已存在 ⇒ 打开它** ✓（第三方报告 P0-2 ✓：报告作者读到的是"会被拒绝" ✗ ——
     // 因为**描述与实现相反** ✗：实现早就改成"打开且不清空" ✓，而描述一直没跟 ✓）。
     // 注意：**不覆盖、不清空** ✓（"给我一块干净画布"请换新 doc_id ✓）。
@@ -14369,17 +14414,32 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
                     "missing_sample": missing_sample,
                 })
             };
-            return Ok(json!({
+            // **打开时传入的宽高/背景被忽略，必须明说** ✓（反馈报告 2 §4.6 的第二点）：
+            // 只列调用方这次真的传了的键，不编没传的 ✓。
+            let mut ignored = serde_json::Map::new();
+            for key in ["width", "height", "background"] {
+                if let Some(value) = args.get(key) {
+                    if !value.is_null() {
+                        ignored.insert(key.to_owned(), value.clone());
+                    }
+                }
+            }
+            let mut receipt = json!({
                 "ok": true,
                 "doc_id": doc_id,
                 "opened": true,
                 "created": false,
+                "mode": "open",
                 "width": existing_width,
                 "height": existing_height,
                 "session_document": ctx.doc_id,
                 "blob_integrity": blob_integrity,
-                "note": "该 doc_id 已存在 ⇒ 本次是**打开**（内容未被清空 ✓）；要一块新画布请换 doc_id",
-            }));
+                "note": "该 doc_id 已存在 ⇒ 本次是**打开**（内容未被清空 ✓）；要一块新画布请换 doc_id；要清空重建请用 mode=reset",
+            });
+            if !ignored.is_empty() {
+                receipt["ignored"] = Value::Object(ignored);
+            }
+            return Ok(receipt);
         }
     }
     // 走到这里 ⇒ 确实要**新建**一块画布 ✓ ⇒ 尺寸缺了就给一句**能照做**的错 ✓。
@@ -14419,8 +14479,9 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     // `fold.rs` 在文档初始状态里**已经**放了一个 `layer_default`（z=-1，不额外产生原子 ✓）——
     // 这里**不再**显式建 `layer_1` ✗（否则新文档会有两个都叫"图层 1"的层 ✗，实测确认 ✓）。
     let default_layer = "layer_default";
-    Ok(json!({
+    let mut receipt = json!({
         "doc_id": doc_id,
+        "mode": mode,
         // **新建与打开必须能一眼分开** ✓（真实缺陷 ✓ 2026-10-06 ✓）：这条分支原先**没有**
         // 这两个字段 ✗ ⇒ 调用方只能"看到 opened 才判断是打开" ✓，而**新建**那条**什么都不说** ✗；
         // 加上入口预建那个缺陷一叠 ✓，新 id 就变成 `created:false/opened:true` ✗。
@@ -14444,7 +14505,12 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             "后续请求请把 ?doc={} 换成 ?doc={}（会话归属在客户端；本工具不会替你切）",
             ctx.doc_id, doc_id
         ),
-    }))
+    });
+    // **reset 真删过才说 reset:true** ✓：没删过（不存在⇒新建）不谎报 ✓。
+    if reset_deleted {
+        receipt["reset"] = json!(true);
+    }
+    Ok(receipt)
 }
 
 /// **`medium_stroke`** ✓ —— 用**介质插件**画一笔 ✓（真实用户 P1-3 要的那件事 ✓）。
@@ -16333,6 +16399,10 @@ pub(crate) struct BrushPaint {
     /// **从空表面**比（喂了反而要剔"没碰过的像素"✗，实测喂了就 0 条相同 ✓）。
     /// ⇒ 判据**无法**自己判断该不该喂 ✗ ⇒ 必须由**唯一的事实源**告出 ✓。
     fed_base: bool,
+    /// **短笔触兜底提示**（反馈期 1：3.6a）✓：原路径撑不满一枚 dab 间距时，
+    /// 主遍延长落了一枚 dab，诊断事实（原长／间距／size）放在这里；
+    /// `None` = 本笔没触发兜底（正常笔画不带这条提示 ✓）。
+    short_stroke_hint: Option<String>,
 }
 
 /// **时间戳 → 每步秒数**（`parse_brush_point_times` 与重放共用 ✓）——
@@ -17622,6 +17692,48 @@ pub(crate) fn deposit_nudge(size: f64) -> f64 {
     (size * 0.5).max(4.0)
 }
 
+/// **短路径延长**（反馈期 1：3.6a 短笔画单 dab 兜底）。
+///
+/// 引擎按 dab 间距盖章：首事件只播种，累计位移 < 间距时一枚 dab 都不盖。
+/// 本函数是“延长”这一事实的唯一写法：掩膜遍（`brush_deposit_mask`）与
+/// 主遍（`paint_brush`）共用它，两遍的触发值/目标值可以不同，但几何规则同一份。
+/// - `trigger`：总长 < trigger 才延长（等于 trigger 不延长——正常笔画不动）。
+/// - `target`：延长后的总长（须 ≥ trigger，否则延长了也未必够一枚 dab）。
+/// - 落点语义：起笔处不动；多点沿最后一段**非零**方向延长；单点或零长点列沿 +x 延长。
+/// - 返回 `None` = 不用延长（空点列、已够长、数值非法）。
+pub(crate) fn extend_short_path(
+    points: &[(f64, f64, f64)],
+    trigger: f64,
+    target: f64,
+) -> Option<Vec<(f64, f64, f64)>> {
+    if points.is_empty() || !trigger.is_finite() || !target.is_finite() || target < trigger {
+        return None;
+    }
+    let total_len: f64 = points
+        .windows(2)
+        .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
+        .sum();
+    if !total_len.is_finite() || total_len >= trigger {
+        return None;
+    }
+    let need = target - total_len;
+    let (lx, ly, lp) = points[points.len() - 1];
+    for w in points.windows(2).rev() {
+        let dx = w[1].0 - w[0].0;
+        let dy = w[1].1 - w[0].1;
+        let d = (dx * dx + dy * dy).sqrt();
+        if d > 1e-9 {
+            let mut out = points.to_vec();
+            out.push((lx + dx / d * need, ly + dy / d * need, lp));
+            return Some(out);
+        }
+    }
+    // 单点或全零长点列：沿 +x 延长。
+    let mut out = points.to_vec();
+    out.push((lx + need, ly, lp));
+    Some(out)
+}
+
 fn brush_deposit_mask(
     brush: &hokusai::Brush,
     size: f64,
@@ -17641,38 +17753,19 @@ fn brush_deposit_mask(
     // Q5：短笔触兜底（对齐 Photoshop 单击落点语义）。
     // 引擎按 dab 间距（≈ size/4）落笔：单点（零位移）或总长 < 间距时一枚 dab 都不盖，
     // 导致 paint_mask 返回 ok:true 但 deposited:false（静默无操作）。
-    // 修法：单点补一段短位移；多点但总长过短时延长末段，保证至少触发一枚 dab。
-    // （原来只在 write_paint_mask 里对单点做 nudge，现下沉到公共入口，
-    // `brush_stroke` 的 painted_pixels 计算同样受益。）
-    let mut owned_points: Vec<(f64, f64, f64)>;
-    let points: &[(f64, f64, f64)] = if points.len() == 1 {
-        let (x, y, p) = points[0];
-        let nudge = deposit_nudge(size);
-        owned_points = vec![(x, y, p), (x + nudge, y, p)];
-        &owned_points
-    } else if points.len() >= 2 {
-        let total_len: f64 = points
-            .windows(2)
-            .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
-            .sum();
-        // **阈值必须随 size** ✓（同 `deposit_nudge`：大笔刷的 dab 间距是 size/4，4px 远远不够 ✗）
-        let need_min = deposit_nudge(size);
-        if total_len < need_min && total_len > 0.0 {
-            let (lx, ly, lp) = points[points.len() - 1];
-            let (px, py, _) = points[points.len() - 2];
-            let dx = lx - px;
-            let dy = ly - py;
-            let d = (dx * dx + dy * dy).sqrt().max(1e-6);
-            let need = need_min - total_len;
-            owned_points = points.to_vec();
-            owned_points.push((lx + dx / d * need, ly + dy / d * need, lp));
-            &owned_points
-        } else {
-            points
-        }
-    } else {
-        points
-    };
+    // 修法：走共用的 `extend_short_path`（触发值与目标值都是 `deposit_nudge(size)`，
+    // **阈值必须随 size** ✓：大笔刷的 dab 间距是 size/4，4px 远远不够 ✗）。
+    // 反馈期 1 注：旧实现只在总长 > 0 时延长（全零长点列不延长）；现共用函数
+    // 对全零长点列也沿 +x 延长，与主遍的兜底一致（旧行为下这类笔触本来就 0 dab 报错）。
+    let owned_points: Vec<(f64, f64, f64)>;
+    let points: &[(f64, f64, f64)] =
+        match extend_short_path(points, deposit_nudge(size), deposit_nudge(size)) {
+            Some(extended) => {
+                owned_points = extended;
+                &owned_points
+            }
+            None => points,
+        };
     let mut previous: Option<(f64, f64, f64)> = None;
     // **掩膜遍跳过净室涂抹**（P-4）：掩膜只记 dab 落点；涂抹只在落点盘内搬颜色，
     // 不扩大落点盘 ⇒ 掩膜遍的涂抹是纯成本（约占整笔一半）。主遍的涂抹照常跑。
@@ -19428,6 +19521,10 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     //   ⇒ **∴ 否则**调用方会**以为**"我传了 layer_id 就能只看那层"**✗** ✓
     value["target_layer_supported"] = json!(false);
     value["target_layer_note"] = json!("预览不支持只读某一层（没有 layer_id 参数）：`render_region_raw` 读的是文档合成。要做这种预览，需要渲染层提供按层读取；这与「底图内容仍未读入」是同一处限制。要只看一层，用 export_png 的 layer_id（它走文档合成，能按层导出）。");
+    // **短笔触兜底提示**（反馈期 1：3.6a，与 `brush_stroke` 的 `warnings` 同形态）。
+    if let Some(hint) = paint.short_stroke_hint {
+        value["warnings"] = json!([hint]);
+    }
     value["color_space"] = json!("srgb");
     value["color_space_note"] = json!("`brush_preview` 恒在 **sRGB 字节空间**混色（`ColorMixing::Rgb` 直接对 u8 插值；`Pigment` 也以 `ks_to_srgb` 结束）⇒ **不是 linear**。所以 `max_channel_delta` 这类差值也在 sRGB 里量；若你的参考图或计算在 linear/LAB/HSV 里，**Δ 不能直接比**。输入色的解释空间另见 `applied.color_space`（`color_space` 参数：`srgb`/`linear`，不传 ⇒ 量级切换；只改输入解释，不改混色与输出）。");
     // **本次调用生效参数的回显**（P2-9，与 `brush_stroke` 同口径）：`applied.color_space`
@@ -20002,10 +20099,17 @@ fn guarded_output_path(raw: &str) -> Result<std::path::PathBuf> {
         let inside =
             normalized.starts_with(&normalized_root) || normalized.starts_with(&normalized_temp);
         if !inside {
+            // **反馈报告 2 期 4**：拒绝文案追加当前生效导出目录的绝对路径（策略不动，只补文案）——
+            // 相对缺省 ./exports 按进程工作目录解析；YANSHI_EXPORT_DIR 若是相对路径同样处理；
+            // 调用方照着这个绝对路径放文件就一定在允许目录内。
+            let absolute_root = std::path::absolute(&normalized_root)
+                .map(|path| normalize_lexically(&path))
+                .unwrap_or_else(|_| normalized_root.clone());
             return Err(YanshiError::new(
                 ErrorCode::PreconditionFailed,
                 ErrorContext::detail(format!(
-                    "拒绝写 {raw}：只能写进导出目录（缺省 ./exports，可用 YANSHI_EXPORT_DIR 改）或系统临时目录"
+                    "拒绝写 {raw}：只能写进导出目录（缺省 ./exports，可用 YANSHI_EXPORT_DIR 改）或系统临时目录；当前导出目录：{}",
+                    absolute_root.display()
                 )),
             ));
         }
@@ -21590,6 +21694,21 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     if optional_bool(args, "silent").unwrap_or(true) {
         ctx.silent = true;
     }
+    // **batch 顶层 `wait_for_render`**（反馈报告 2 期 1）：批量作画一键开关 ✓。
+    //   不给 ⇒ 各子调用按自己的值（单笔缺省 `true` ✓），行为与以前一致 ✓；
+    //   给了 ⇒ 成为子调用**未显式指定时**的缺省 ✓，子调用显式值只对自己那一笔生效 ✓
+    //     （下一笔回到批值 ✓）；`smart_*` 系内层笔触走自己的 `set_inner_wait_for_render`
+    //     缺省 `false`，不受批值改写 ✓ —— 批值只管**直接**子调用 ✓。
+    //   批值本身不改单笔缺省 ✓（双缺省 `true` 不动 ✓）。
+    let batch_wait = optional_bool(args, "wait_for_render");
+    let previous_wait = ctx.wait_for_render;
+    if let Some(wait) = batch_wait {
+        ctx.set_wait_for_render(wait);
+    }
+    // **`preview` 也按子调用隔离** ✓（与 `wait` 同一条规矩 ✓）：`brush_stroke` 的
+    //   `preview` 只写 `ctx` 不读回执 ⇒ 不隔离就会漏给下一个子调用 ✓
+    //   （`draw_shape` 这类带预览回执的工具会被连累 ✓）。
+    let previous_preview = ctx.preview;
     // **长批次中途的预览**（测试报告 §一.4）✓：`batch` 在一个循环里跑完 ✓ ⇒ 单线程服务下
     // 这期间别的写盘路径没有机会 ⇒ `render.png` 会冻结"整批时长" ✗（实测 300 笔 ⇒ 4~6 分钟 ✓）。
     // 这两个参数让**循环内部**周期性放行一次预览 ✓（默认 0 ⇒ **行为完全不变** ✓）。
@@ -21651,6 +21770,10 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         if want_preview {
             ctx.silent = false;
         }
+        // **子调用的 `wait`／`preview` 只对自己生效** ✓：子调用 handler 会从自己的参数
+        //   改写共享 `ctx` ✓ ⇒ 跑完必须还原 ✓，否则漏给下一笔 ✓（`silent` 同一条规矩 ✓）。
+        let saved_wait = ctx.wait_for_render;
+        let saved_preview = ctx.preview;
         let name = call
             .get("tool")
             .or_else(|| call.get("name"))
@@ -21659,6 +21782,8 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         if name == "batch" {
             ctx.changeset = previous;
             ctx.batch_message = previous_message;
+            ctx.set_wait_for_render(previous_wait);
+            ctx.preview = previous_preview;
             return Err(YanshiError::new(
                 ErrorCode::InvalidArgument,
                 ErrorContext::detail("batch 不允许嵌套"),
@@ -21721,6 +21846,14 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 rendered
             }
         };
+        // **还原** ✓：批值在 ⇒ 回到批值（下一笔的缺省 ✓）；没批值 ⇒ 回到本笔之前的值 ✓
+        //   （子调用显式值不漏给下一笔 ✓）。
+        if let Some(wait) = batch_wait {
+            ctx.set_wait_for_render(wait);
+        } else {
+            ctx.set_wait_for_render(saved_wait);
+        }
+        ctx.preview = saved_preview;
         if let Some(atom_id) = value.get("atom_id").and_then(Value::as_str) {
             atom_ids.push(json!(atom_id));
         }
@@ -21776,6 +21909,8 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // **还原静默标志** ✓：`ctx` 是**共享**的 ✓ ⇒ 不还原就会**漏到 batch 之后的调用** ✗
     //（那些调用本该照常带预览 ✓）。**共享上下文里"改了就要还原"** ✓ —— 与 `changeset` 同一规矩 ✓。
     ctx.silent = previous_silent;
+    ctx.set_wait_for_render(previous_wait);
+    ctx.preview = previous_preview;
     // **取消 ⇒ 整批回滚** ✓（P1）：先还原上下文 ✓，再撤销 ✓ ——
     // 撤销本身要提交原子（`ctx.commit` ✓），所以必须放在"取消检查"之外 ✓
     //（见 `ToolContext::check_cancelled` 的说明 ✓）。
@@ -21919,6 +22054,9 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         "stopped_early": false,
         // **A 期**：正常回执同样附两个上限的当前值（只加字段，便于调用方事前核对水位与预算 ✓）。
         "memory_limits": batch_memory_limits_json(),
+        // **批值回显** ✓（反馈报告 2 期 1）：证明顶层 `wait_for_render` 被读过 ✓
+        //   （`null` = 没给，走各子调用自己的值 ✓）。
+        "wait_for_render": batch_wait.map(Value::Bool).unwrap_or(Value::Null),
         "calls": results,
         "stroke_evidence": stroke_evidence,
         "count": results.len(),

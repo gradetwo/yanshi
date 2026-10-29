@@ -1,9 +1,9 @@
-//! **带截断（band truncation）复现**：蒙版羽化半径超过 `MAX_EFFECT_PADDING`（128）时，
-//! 并行分带与串行整幅的渲染差超过已批准的 D1（±1 LSB）。
+//! **带截断（band truncation）复现**：蒙版羽化半径超过 `MAX_EFFECT_PADDING`（512；
+//! 反馈期 2 前为 128）时，并行分带与串行整幅的渲染差超过已批准的 D1（±1 LSB）。
 //!
-//! 机制（源码核对，非猜测）：
+//! 机制（源码核对，非猜测；以下为修前 128 上限下的失效模式，现带外扩已不钳）：
 //! * `declared = padding_for_region`（蒙版羽化取 `feather/2 + 1`）在
-//!   `render_region_with_lod` 被钳到 `max_filter_padding`（默认 128）；
+//!   `render_region_with_lod` 被钳到 `max_filter_padding`（默认 512；修前 128）；
 //! * 并行每带 `render_accumulation(band, padding = 128)`，带缓冲只覆「带 ±128」；
 //! * 蒙版羽化在层缓冲内做 `box_blur`（`filter.rs`，边界语义是 **clamp 复制**），
 //!   带界附近 `radius − padding` 行内窗口越出缓冲边、缺失行被边行复制值替代；
@@ -240,4 +240,12 @@ fn wider_canvas_feather_beyond_padding_matches_serial_within_d1() {
 #[test]
 fn huge_feather_matches_serial_within_d1() {
     assert_within_d1("700x1400-f1000", 700, 1400, 1000.0);
+}
+
+/// 超新上限应力：羽化 1200（半径 600，声明 601 > 512）——串行区域外扩仍被
+/// 新上限钳住，但并行分带按声明外扩；整幅串行与并行仍须落在 D1 内。
+/// （反馈期 2 后旧 501 声明已落入上限内，本 case 接替“超上限”覆盖。）
+#[test]
+fn feather_beyond_new_padding_matches_serial_within_d1() {
+    assert_within_d1("700x1400-f1200", 700, 1400, 1200.0);
 }
