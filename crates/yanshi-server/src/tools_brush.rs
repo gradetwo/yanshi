@@ -855,6 +855,7 @@ fn paint_and_commit_brush_segment(
         max_delta,
         delta_distribution,
         fed_base,
+        short_stroke_hint,
         region_x: x0,
         region_y: y0,
         region_w: width,
@@ -886,6 +887,8 @@ struct BrushSegmentPainted {
     delta_distribution: DeltaDistribution,
     /// 是否吃了底图。
     fed_base: bool,
+    /// 短笔触兜底提示（反馈期 1：路径撑不满 dab 间距时延长落一枚 dab 的诊断事实；无兜底时 `None`）。
+    short_stroke_hint: Option<String>,
     /// 该段提交区域（文档坐标）。
     region_x: i32,
     region_y: i32,
@@ -1322,6 +1325,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         y0,
         width,
         height,
+        short_stroke_hint,
     ) = if let Some(plan) = decide_smudge_split(
         ctx,
         args,
@@ -1479,6 +1483,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             uy0,
             (ux1 - ux0).max(0) as usize,
             (uy1 - uy0).max(0) as usize,
+            all.iter().find_map(|s| s.short_stroke_hint.clone()),
         )
     } else {
         // **单笔路** ✓：与重构前同一段代码（helper 内），回执量直取，无聚合。
@@ -1515,6 +1520,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             seg.region_y,
             seg.region_w,
             seg.region_h,
+            seg.short_stroke_hint,
         )
     };
     value["brush"] = json!(name);
