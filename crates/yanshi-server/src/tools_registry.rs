@@ -80,7 +80,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "get_document",
         profile: Profile::Core,
-        summary: "读取文档元信息与统计（尺寸、head、图层/对象数、渲染水位、文档级缩略图）。**缩略图是一份缓存**：落后于 head 时会**当场重建**再返回 —— 所以「要一张最新的文档缩略图」就用它（`wait_for_render=true` 不承诺缩略图是新的，只承诺这一笔的渲染完成了）",
+        summary: "读取文档元信息与统计（尺寸、head、图层/对象数、渲染水位、文档级缩略图）。**缩略图是一份缓存**：落后于 head 时会**当场重建**再返回 —— 所以「要一张最新的文档缩略图」就用它（`wait_for_render=true` 不承诺缩略图是新的，只承诺这一笔的渲染完成了）。回执另带提示字段（只加信息，不改读哪个文档）：`session_doc_id` = 本次读的会话当前文档（即 `doc_id`）；`documents` / `documents_count` = 与 `list_documents` 同口径的全部文档清单（doc_id、宽高、层数、存活对象数，含磁盘上未打开的文档）—— 续画前先核对这份清单，别只凭缺省文档画",
         mutating: false,
         params: &[param!(
             "preview_size",

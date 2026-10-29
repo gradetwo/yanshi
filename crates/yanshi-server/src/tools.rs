@@ -2710,6 +2710,17 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             }
         }
     }
+    // **反馈报告 3 期 E（b）回执提示：只加信息，不改行为**。
+    // `doc_id` 本已是会话当前文档（`summary_json` 出）；`session_doc_id` 把它显式点名，
+    // 免得调用方把缺省文档误当成磁盘上已有的那份文档。
+    // `documents` / `documents_count` 与 `list_documents` 同口径（见下面的
+    // `documents_summary_json`，同一份映射，不两处各算一套）；清单获取失败时
+    // 不阻塞主读（提示字段缺省，旧字段与旧语义原样返回），不把一次成功的读变成报错。
+    summary["session_doc_id"] = json!(ctx.doc_id.clone());
+    if let Ok(documents) = documents_summary_json(ctx.workspace) {
+        summary["documents_count"] = json!(documents.len());
+        summary["documents"] = json!(documents);
+    }
     Ok(summary)
 }
 
@@ -2837,14 +2848,10 @@ fn summary_object(object: &yanshi_core::Object) -> Value {
     })
 }
 
-/// **列出工作区里的文档** ✓（第三方 MCP 实测报告 P0-2 ✓）。
-///
-/// 为什么必须有它 ✗：会话可以「打开已有文档」了 ✓（同 id 再 `new_document` ✓），
-/// 但**不知道该打开哪个** ✗ —— 没有列举入口时，调用方只能靠外部记着 doc_id ✓（报告里就是这个困境 ✓）。
-/// 与 `list_layers` 一样是**只读** ✓（`mutating: false` ✓）。
-fn read_list_documents(ctx: &mut ToolContext<'_>) -> Result<Value> {
-    let documents: Vec<Value> = ctx
-        .workspace
+/// `list_documents` 的条目口径：`list_documents` 与 `get_document` 的磁盘清单
+/// 共用同一份映射（期 E 的清单不是第二套口径）。
+fn documents_summary_json(workspace: &Workspace) -> Result<Vec<Value>> {
+    Ok(workspace
         .list_documents()?
         .into_iter()
         .map(|summary| {
@@ -2856,7 +2863,16 @@ fn read_list_documents(ctx: &mut ToolContext<'_>) -> Result<Value> {
                 "objects": summary.objects,
             })
         })
-        .collect();
+        .collect())
+}
+
+/// **列出工作区里的文档** ✓（第三方 MCP 实测报告 P0-2 ✓）。
+///
+/// 为什么必须有它 ✗：会话可以「打开已有文档」了 ✓（同 id 再 `new_document` ✓），
+/// 但**不知道该打开哪个** ✗ —— 没有列举入口时，调用方只能靠外部记着 doc_id ✓（报告里就是这个困境 ✓）。
+/// 与 `list_layers` 一样是**只读** ✓（`mutating: false` ✓）。
+fn read_list_documents(ctx: &mut ToolContext<'_>) -> Result<Value> {
+    let documents = documents_summary_json(ctx.workspace)?;
     Ok(json!({ "documents": documents, "count": documents.len() }))
 }
 
