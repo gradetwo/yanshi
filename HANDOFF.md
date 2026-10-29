@@ -1954,3 +1954,20 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
 ⑥ **`web/assets-index.json` 漂移第四次再现**：pwa-sync-viewer 扫 `web/textures/` 把 7 张**未跟踪本地文件**
    （Cardboard*／Paper004-5 等）写回索引 ⇒ 正是 `b5c167bf` 修过的病 ⇒ 按 §104/§105 同规 `checkout` 还原 ✓，
    还原后 parity／byte-budget 复跑绿 ✓（根因清理仍挂 #30）。
+
+## §113 CI 收账 run 40799412602（`9045faeb`）：Rust 全链首验绿 ⇒ 唯一红是守门判据没跟上 D 期口径（2026-10-29）
+
+① **收账**：`test (stable)`／`test (beta)`／`clippy`／`rustfmt`／`GPU feature`／shard 2–6 **全绿** ✓
+   —— #52/#53 合并的 workspace 全量 test 在 CI **首验通过**（§112⑥ 预留的归因成本没花上 ✓）。
+② **唯一意外红**：`check-smudge-mix-uses-linear.mjs` ⑤（`✗ 服务端 smudge_dab 必须在线性空间混合 ⇒ 去=false 回=false`）。
+   **定性＝判据侧口径过期，不是产品错** ✓：该条是 1309 轮「涂抹混合走线性共享函数」时代的**文本守门**，
+   而 D 期（§112②）实测证明旧前提本身错了——tile 存 fix15 **预乘**值，解码混合⇒读回放大（墨 60→84 复利到白）；
+   新实现=预乘空间四通道凸组合 ⇒ gamma 往返**应当缺席**。①–④（wasm 侧 `mix_smudge_linear`）没变、照绿 ✓。
+③ **修法（与 P-4「两种形态都算」、§34「两条判据跟上 NEW-C1」同一先例：判据跟着权威改，不改产品）**：
+   ⑤ 重写为 **⑤a 凸组合接线在**（锚 `f32::from(d) * (1.0 - amount) + f32::from(s) * amount`，找不到 ⇒ exit(3) 点名
+   「实现又变了，判据口径要跟着权威改」）**＋ ⑤b 函数体内 gamma 往返必须缺席**（四种形态任一出现即红 ⇒
+   守住「别把解码混合改回来」）。**四层齐**：实现=brush.rs:837 ✓｜输入=当前树 ✓｜断言=⑤a/⑤b ✓｜
+   **变异实测**：往 `smudge_dab` 塞回一行 `srgb_to_linear(...)` ⇒ **⑤b 红 exit=1** ✓ ⇒ 还原 `cmp` 逐字节一致 ✓
+   ⇒ 复测 exit=0 ✓。行为面守卫（brush.rs 两条新回归＋`tool-smudge-deposit`／`tool-smudge-drags-color`）未动 ✓。
+④ 其余 `⊘ EXIT=3`（browser-asset-dock／browser-pan-vs-paint 等 CDP 超时）与「没发生任何逐出」调试块
+   均为 known-red/不可判在册 ✓（通过 64｜意外失败 1｜已知红 2｜跳过 8 ⇒ 本条修后该口径应归零 ✓）。
