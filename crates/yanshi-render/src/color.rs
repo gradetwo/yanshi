@@ -87,7 +87,7 @@ fn srgb_decode_lut() -> &'static [f32; SRGB_DECODE_LUT_SIZE] {
 /// 与编码方向的 [`SRGB_ENCODE_LUT_SIZE`]（4097 项、属 D1 显示路径、允许 ±1 LSB）本质不同：
 /// 这里的表是 [`srgb_to_linear`] 在 32641 个 fix15 值上的**原值**，没有索引量化 ⇒ **精确**，
 /// 查表与直接计算**逐位相同**（D0 基线不受影响）。
-/// 用处：`smudge_dab` 每像素调 6 次 `srgb_to_linear`（3 通道 × 2），查表省掉这 6 次 `powf`。
+/// 注：`smudge_dab` 自 D 期起不再用此表（预乘插值无需解码）；表仍由下方测试覆盖。
 const SRGB_DECODE_FIX15_LUT_SIZE: usize = 32641;
 
 /// fix15（`u8 << 7`）→ 线性光的**精确**查找表（表项由**同一个** [`srgb_to_linear`] 逐项生成）。

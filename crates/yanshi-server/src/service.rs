@@ -738,7 +738,16 @@ pub struct ExportStats {
     /// 口径与 `check_package.py` 一致：`payload.tiles` 里藏的引用 ⇒ 派生 ✓；
     /// tile 索引由本体位图重建 ✓，缺了它渲染落回整幅路 ✓ ⇒ 只缺派生时
     /// 仍可导出 ✓，但数字必须报出来 ✓。
+    ///
+    /// **B 期项 7/8（出口侧口径）**：本栏只数**存储里缺失**的派生索引；
+    /// 按设计未装包的派生总数另见 `derived_not_packaged`，不计入本栏。
     pub missing_derived: usize,
+    /// **按设计未装包的派生 tile 数** ✓（B 期项 7/8，出口侧口径）：
+    /// `payload.tiles` 里引用、且不是本体引用的 tile 索引总数——
+    /// 无论存储里在不在，导出时**都不装包**（tile 由本体位图重建 ✓）。
+    /// 与 `missing_derived` 的区别：`missing_derived` 只数其中存储里
+    /// 不存在的那部分（存储缺失）；本栏数的是全部按设计未装包的。
+    pub derived_not_packaged: usize,
 }
 
 /// **导出"可重放证明"的进程内缓存** ✓（第 39 轮 ✓）。
@@ -3421,6 +3430,8 @@ impl Workspace {
         // **B2 的两栏计数** ✓：本体缺（`missing_body`）与派生缺（`missing_derived`）分开数 ✓。
         let mut missing_body = 0usize;
         let mut missing_derived = 0usize;
+        // **B 期项 7/8**：按设计未装包的派生总数（见 `ExportStats::derived_not_packaged`）。
+        let mut derived_not_packaged = 0usize;
         // **缺席本体的裸哈希**（与上面 `missing` 里的人话清单并存）：
         // `verify_package` 靠它区分「存储里就没有」（真缺）与「导出时有意省掉」
         // （`omitted`）—— 只看计数分不出来，必须有名有姓的清单。
@@ -3555,6 +3566,9 @@ impl Workspace {
             if wanted.contains(hash_text) {
                 continue;
             }
+            // **B 期项 7/8**：只要是 tile 引用而非本体引用，导出时就按设计不装包——
+            // 无论存储里在不在，都先计入本栏；存储缺失的那部分另由 `missing_derived` 数。
+            derived_not_packaged += 1;
             let hash: yanshi_core::BlobHash = hash_text.parse().map_err(|_| {
                 YanshiError::new(
                     ErrorCode::InvalidArgument,
@@ -3643,6 +3657,7 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
                 // 直接失败 ✓）—— 字段仍要填 ✓（成功回执的两栏数字是契约 ✓）。
                 missing_body,
                 missing_derived,
+                derived_not_packaged,
             },
         ))
     }

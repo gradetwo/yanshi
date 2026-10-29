@@ -75,10 +75,15 @@ export // **★ 声明必须与**实现分支数**一致 ✗ ★**（第 72 轮 
 //   **∴ 本轮再重数 ✗**（锚点三件套 ✓ —— `set_anchor`／`get_anchors`／`delete_anchor` 落地 ⇒ **+3 ✓**；
 //   **同轮 `reorder_objects` ✓ —— `tools.rs:4029` 的校验序列落地 ⇒ 再 +1 ✓，总数 164 ✓**；
 //   **本轮 `revert_atoms`＋`revert_group` ✓ —— `tools.rs:19361`／`:19261` 落地 ⇒ 再 +2 ✓，总数 166 ✓**；
-//   **第 2 批 风格预设四端点 ✓ —— `list_presets`／`get_preset`／`preview_preset`／`apply_preset` 落地 ⇒ 再 +4 ✓**）：
+//   **第 2 批 风格预设四端点 ✓ —— `list_presets`／`get_preset`／`preview_preset`／`apply_preset` 落地 ⇒ 再 +4 ✓**；
+//   **第 4 批 读测三端点 ✓ —— `list_effects`／`sample_colors`／`get_histogram` 落地 ⇒ 再 +3 ✓**；
+//   **第 5 批 原子日志两端点 ✓ —— `get_stroke_log`／`list_atoms` 落地 ⇒ 再 +2 ✓**；
+//   **第 6 批 阶段回退 ✓ —— `revert_to_seq` 落地 ⇒ 再 +1 ✓**；
+//   **第 7 批 矢量命中 ✓ —— `vector_hit_test` 落地 ⇒ 再 +1 ✓**；
+//   **第 8 批 路径读回 ✓ —— `get_path` 落地 ⇒ 再 +1 ✓**）：
 //   **∴ 判据口径 `actualImpl`（**机械重数：`(?:url\.pathname|path) === "`**）⇒ 本数与它同步 ✓（非拍脑袋 ✗）**
 //   **∴ 数它用：`node -e 'const a=require("fs").readFileSync("web/api-local.js","utf8");console.log(((a.match(/(?:url\.pathname|path) === "/g)||[]).length))'` ✓**
-const LOCAL_IMPLEMENTED = 170; // 风格预设四端点落地 ⇒ 机械重数 166 + 4 ✓
+const LOCAL_IMPLEMENTED = 178; // 路径读回落地 ⇒ 机械重数 177 + 1 ✓
 
 let lastFold = null;
 
@@ -683,6 +688,9 @@ const P2_FILTER_NAMES = [
   "glow", "clarity", "dehaze", "film_grain", "brightness_contrast", "saturation",
   "invert", "relief",
 ];
+/** **B 期项 13 的本地镜像 ✓**：与服务端 `list_effects` 回执的 `filter_aliases` 同条目 ✓
+ *   （`tools.rs:13236`；条目只写别名关系，不暗示 impasto 可用 ⇒ relief 高度源是 C 期的事 ✓）。 */
+const P2_FILTER_ALIASES = [{ name: "impasto", alias_of: "relief", note: "同 relief" }];
 /** **数值键范围表 ✓**（**照 `tools_effect.rs:58–131` 逐条 ✓**，**`kind/名` 键 ✓**）：
  *   **∴ 空表 ≠ 缺省**✗ ⇒ **∴ 两边都等价于「不查范围、也不拒未知键」✓**（**服务端 `checks.is_empty()` ✓**）。 */
 const P2_EFFECT_RANGES = {
@@ -1080,6 +1088,14 @@ export async function makeLocalApi(db) {
    *   **∴ 拒绝时**抛一个带 `__p2Failure` 的错误 ✗ ⇒ **由 `local()` 顶层 catch 换成 403 响应 ✓**
    *   （**∴ 不在每个 handler 各写一遍 try/catch ✓**；`p2bCatch` 见到它必须**再抛** ✗ 不许吞 ✓）。 */
   async function putAtom(db, doc, atom) {
+    // **服务端 `append_validated` 给净荷补 `origin` ✓**（`tools.rs:574`）⇒ **本地同一处盖戳 ✓**：
+    //   **∴ `get_log`／`list_atoms` 的 `stored_origin` 才会两边同形 ✓**（否则本地恒 null ✗）。
+    //   **∴ 只在键不存在时盖 ✓**（`null` 也算已写 ✓ —— 服务端 `payload.get("origin").is_none()` 同义 ✓）。
+    if (atom && atom.payload && typeof atom.payload === "object"
+        && !Array.isArray(atom.payload)
+        && !Object.prototype.hasOwnProperty.call(atom.payload, "origin")) {
+      atom.payload.origin = p2AtomOriginOf(atom.kind, atom.payload);
+    }
     const guard = p2LockGuard(await atomsOf(db, doc), atom);
     if (guard) {
       const err = new Error(guard.detail);
@@ -1156,6 +1172,48 @@ async function withKernel(doc, fn) {
     if (typeof groupId === "string") atom.group_id = groupId;
     return atom;
   }
+  /** **服务端 `origin_of` 的本地镜像 ✗**（**`tools.rs:17563` ✓**）：
+   *   **∴ 口径 = 来源，不是存储形态 ✓**（笔触落成 `import_image` ✓ 但来源是 drawn ✓）：
+   *   `source.brush` 有 ⇒ drawn ✓；`draw_stroke` ⇒ drawn ✓；
+   *   `import_image` 且**没有** `bitmap` 键 ⇒ drawn ✓（**`bitmap:null` 算有 ✓** —— 服务端 `Value::get` 同义）；
+   *   带 `bitmap` 的 `import_image` ⇒ imported ✓；建文档／建图层 ⇒ system ✓；其余 generated ✓。 */
+  function p2AtomOriginOf(kind, payload) {
+    const pl = payload || {};
+    const src = pl.source;
+    if (src && typeof src === "object" && typeof src.brush === "string") return "drawn";
+    if (kind === "draw_stroke") return "drawn";
+    if (kind === "import_image" && pl.bitmap === undefined) return "drawn";
+    if (kind === "import_image") return "imported";
+    if (kind === "create_document" || kind === "create_layer") return "system";
+    return "generated";
+  }
+  /** **服务端 `payload_str` 的本地镜像 ✗**（**`tools.rs:20767` ✓**）：
+   *   **∴ 先看净荷顶层 ✓，再看 `source` 里 ✓**（**两个都是字符串才算 ✓**）。 */
+  function p2PayloadStr(atom, key) {
+    const pl = (atom && atom.payload) || {};
+    if (typeof pl[key] === "string") return pl[key];
+    const src = pl.source;
+    return src && typeof src === "object" && typeof src[key] === "string" ? src[key] : null;
+  }
+  /** **只看净荷顶层**（`atom_layer_id`／`atom_object_id` ✓ —— **它们不回落到 `source`** ✗）。 */
+  function p2PayloadTopStr(atom, key) {
+    const pl = (atom && atom.payload) || {};
+    return typeof pl[key] === "string" ? pl[key] : null;
+  }
+  /** **服务端 `normalize_color` 的本地镜像 ✗**（**`tools.rs:8797` ✓**）：
+   *   **∴ 数组（≥3 项）⇒ `{r,g,b,a}` ✓**，通道取**无符号整数**（读不出 ⇒ 0／alpha 缺省 255 ✓）；
+   *   **∴ 非数组原样 ✓**（字符串／对象照回 ✓）。 */
+  function p2NormalizeColor(value) {
+    if (value === undefined) return null;
+    if (Array.isArray(value) && value.length >= 3) {
+      const channel = (index, fallback) => {
+        const v = value[index];
+        return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : fallback;
+      };
+      return { r: channel(0, 0), g: channel(1, 0), b: channel(2, 0), a: channel(3, 255) };
+    }
+    return value;
+  }
   /** **`revertible` 的服务端镜像 ✗**（**`log.rs:881`：`is_state_effect ∪ {revert, reapply}` ✓**；
    *   **`is_state_effect` 的 24 种取自 `atom.rs:451–479` ✓**——
    *   **∴ `set_anchor`／`delete_anchor`／协作原子**不在其中**✗ ⇒ revert 它们必须逐条报失败 ✓**
@@ -1221,6 +1279,395 @@ async function withKernel(doc, fn) {
    *   （**`import_image` 无 `data` ⇒ 用净荷 ✓；`create_object`/`draw_shape` 有 `data` ⇒ 用 `data` ✓**）。 */
   function p2ObjectData(createPayload) {
     return createPayload.data !== undefined ? createPayload.data : createPayload;
+  }
+  /** **对象类型（折叠口径）✗**（**照 `fold.rs:1528 parse_object_type` ＋ `:1549 object_type_for` 逐字 ✓**）：
+   *   **∴ `kind` 覆盖**优先于净荷声明的 `type` ✓（`draw_shape⇒shape`／`draw_text⇒text`／
+   *   `retouch⇒retouch`／`erase⇒retouch`／`liquify⇒liquify` ✓），其余按声明 ✓、未知 ⇒ `stroke` ✓。
+   *   **∴ `set_property{type}` 可以再覆盖**它 ✓（`fold.rs:1923` ✓；**非字符串 ⇒ 服务端 `parse_object_type(None)`
+   *   ⇒ `stroke` ✓** —— 不是「保持旧值」✗）。
+   *   **∴ 为什么不用 `p2ObjectView().type` ✗**：那个只取「声明的 `type`」✗ ⇒ `draw_shape`
+   *   （服务端**不写** `payload.type` ✓）在本地会读成 `null` ✓ ⇒ **图形被当成笔迹**✗
+   *   （`vector_hit_test` 的 `strokes_examined` 会虚高 ✓）。
+   */
+  const P2_OBJECT_TYPE_OF_KIND = {
+    draw_shape: "shape", draw_text: "text", retouch: "retouch",
+    erase: "retouch", liquify: "liquify",
+  };
+  const P2_OBJECT_TYPE_DECLARED = {
+    shape: "shape", text: "text", adjustment: "adjustment", filter: "filter",
+    raster_patch: "raster_patch", retouch: "retouch", liquify: "liquify",
+    instance: "instance", group: "group", path: "path",
+  };
+  function p2ParseObjectType(declared) {
+    return typeof declared === "string" && P2_OBJECT_TYPE_DECLARED[declared]
+      ? P2_OBJECT_TYPE_DECLARED[declared] : "stroke";
+  }
+  /** **对象在折叠后的类型 ✗**（**创建**取第一条建它的原子 ✓ ＋ **对后续 `set_property{type}` 生效**
+   *   ✓ —— **被中和的那条不算** ✓，与折叠同口径 ✓）。**没建过 ⇒ `null`** ✓。 */
+  function p2ObjectTypeOf(rows, objectId) {
+    rows = p2StateWindow(rows);
+    const neutral = p2Neutralized(rows);
+    let type = null;
+    for (const r of rows) {
+      const a = (r && r.atom) || {};
+      const pl = a.payload || {};
+      if (type === null) {
+        if (P2_OBJECT_CREATE_KINDS.has(a.kind) && pl.object_id === objectId) {
+          type = P2_OBJECT_TYPE_OF_KIND[a.kind]
+            || p2ParseObjectType(typeof pl.type === "string" ? pl.type : null);
+        }
+        continue;
+      }
+      if (a.kind === "set_property" && pl.object_id === objectId && pl.key === "type"
+          && !neutral.has(a.id)) {
+        type = p2ParseObjectType(typeof pl.value === "string" ? pl.value : null);
+      }
+    }
+    return type;
+  }
+  /** **图层类型（折叠口径）✗**（**照 `layer_type_of`（`tools_vector.rs:15`）＋ `parse_layer_type`
+   *   （`fold.rs:1516`）逐字 ✓**）：**∴ 服务端查的是 `state.layers.get()` ✗ 不是 `alive_layers()` ✓**
+   *   ⇒ **已 tombstone 的层仍解析得类型** ✓（它的对象**全随层死** ⇒ 读数是 0 而不是 404 ✓）。
+   *   **∴ 返回** `null`（层不在状态里 ⇒ 404 ✓）**或** `"raster"｜"vector"｜"layer_group"｜"mask"` ✓。
+   *   **∴ `set_property{type}` 照 `apply_property_to_layer` ✓**：**非字符串 ⇒ `parse_layer_type(None)`
+   *   ⇒ `raster` ✓**（不是保持旧值 ✗）。
+   */
+  function p2LayerTypeFold(rows, layerId) {
+    rows = p2StateWindow(rows);
+    const neutral = p2Neutralized(rows);
+    const parse = (value) => (value === "vector" ? "vector" : value === "layer_group" ? "layer_group"
+      : value === "mask" ? "mask" : "raster");
+    let found = false;
+    let type = "raster";
+    for (const r of rows) {
+      const a = (r && r.atom) || {};
+      const pl = a.payload || {};
+      if (a.kind === "create_document") {
+        if (layerId === "layer_default" && !found) { found = true; type = "raster"; }
+        continue;
+      }
+      if (a.kind === "create_layer" && !neutral.has(a.id)) {
+        const id = (typeof pl.layer_id === "string" && pl.layer_id)
+          || (typeof a.layer_id === "string" && a.layer_id) || null;
+        if (id === layerId && !found) {
+          found = true;
+          type = typeof pl.type === "string" && pl.type ? parse(pl.type) : "raster";
+          continue;
+        }
+      }
+      if (a.kind === "set_property" && pl.layer_id === layerId && pl.key === "type"
+          && !neutral.has(a.id) && found) {
+        type = typeof pl.value === "string" ? parse(pl.value) : "raster";
+      }
+    }
+    return found ? type : null;
+  }
+  /** **矢量笔迹几何 ✗**（**照 `brush.rs:40 StrokeGeometry::from_value` 逐字 ✓**）：
+   *   **∴ 有一颗坏点 ⇒ 整个 `null`** ✓（与 Rust 的 `?` 一致：**不是**跳过那一颗 ✗）——
+   *   调用方**照样把它算进 `strokes_examined`** ✓，只是不出命中 ✓。
+   *   **∴ 压力缺省 1.0** ✓（数组第 3 元／对象的 `pressure` ✓，非数字也按缺省 ✓）；
+   *   **∴ `smooth` 只认字面 `true`** ✓（`as_bool` ⇒ `"yes"` 不算 ✓）。
+   */
+  function p2VectorGeometry(data) {
+    if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+    const list = data.points;
+    if (!Array.isArray(list)) return null;
+    const points = [];
+    for (const item of list) {
+      if (Array.isArray(item) && item.length >= 2) {
+        if (typeof item[0] !== "number" || typeof item[1] !== "number") return null;
+        points.push({ x: item[0], y: item[1],
+                      pressure: typeof item[2] === "number" ? item[2] : 1 });
+        continue;
+      }
+      if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+      if (typeof item.x !== "number" || typeof item.y !== "number") return null;
+      points.push({ x: item.x, y: item.y,
+                    pressure: typeof item.pressure === "number" ? item.pressure : 1 });
+    }
+    if (points.length === 0) return null;
+    return { points, smooth: data.smooth === true };
+  }
+  /** **Catmull-Rom 采样 ✓**（**照 `brush.rs:106 catmull_rom_smooth` 逐字 ✓**：端点**反射**补齐 ✓、
+   *   只输出每段**内部**采样 ✓、随后补段端点 ✓；**公式与运算顺序也照抄** ✓ ⇒ 同一个双精度结果 ✓）。 */
+  function p2VectorSmooth(points, subdivisions) {
+    if (points.length < 3 || subdivisions < 2) return points.slice();
+    const first = points[0], second = points[1];
+    const last = points[points.length - 1], prev = points[points.length - 2];
+    const control = [
+      { x: 2 * first.x - second.x, y: 2 * first.y - second.y, pressure: first.pressure },
+      ...points,
+      { x: 2 * last.x - prev.x, y: 2 * last.y - prev.y, pressure: last.pressure },
+    ];
+    const out = [first];
+    const interp = (a, b, c, d, t, t2, t3) => 0.5 * ((2 * b) + (-a + c) * t
+      + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3);
+    for (let index = 0; index < control.length - 3; index++) {
+      const p0 = control[index], p1 = control[index + 1];
+      const p2 = control[index + 2], p3 = control[index + 3];
+      for (let step = 1; step < subdivisions; step++) {
+        const t = step / subdivisions;
+        const t2 = t * t, t3 = t * t * t;
+        out.push({
+          x: interp(p0.x, p1.x, p2.x, p3.x, t, t2, t3),
+          y: interp(p0.y, p1.y, p2.y, p3.y, t, t2, t3),
+          pressure: interp(p0.pressure, p1.pressure, p2.pressure, p3.pressure, t, t2, t3),
+        });
+      }
+      out.push(p2);
+    }
+    return out;
+  }
+  /** **脊线半径 ✗**（**照 `vector.rs:34 spine_radius` 逐字 ✓**）：
+   *   **∴ `pressure_size` 恒视为真** ✓ —— `BrushSpec::from_value` **从不读**这个键 ✗
+   *   （**∴ 缺省 `true` ✓**）⇒ **本地也不许读它** ✗（否则同一笔两边半径不同 ✗）。 */
+  function p2VectorSpineRadius(brush, pressure) {
+    const p = Math.min(1, Math.max(0, pressure));
+    const scale = brush.minSizeRatio + (1 - brush.minSizeRatio) * p;
+    return Math.max(0, brush.size / 2 * scale);
+  }
+  /** **`BrushSpec::from_value` 里影响半径的两个键 ✓**（`size` 缺省 4、下限 0.05 ✓；
+   *   `min_size_ratio` 缺省 0.25、夹到 [0,1] ✓）。 */
+  function p2VectorBrush(data) {
+    const d = data && typeof data === "object" && !Array.isArray(data) ? data : {};
+    const size = typeof d.size === "number" ? Math.max(d.size, 0.05) : 4;
+    const ratio = typeof d.min_size_ratio === "number"
+      ? Math.min(1, Math.max(0, d.min_size_ratio)) : 0.25;
+    return { size, minSizeRatio: ratio };
+  }
+  /** **点到线段最近点 ✗**（**照 `vector.rs:57 segment_closest` 逐字 ✓**，
+   *   含 `len2 <= 1e-24 ⇒ t = 0` 的退化保护 ✓ —— **零长线段**不会除出 `NaN` ✗）。 */
+  function p2VectorSegmentClosest(a, b, qx, qy) {
+    const abx = b.x - a.x, aby = b.y - a.y;
+    const len2 = abx * abx + aby * aby;
+    let t = 0;
+    if (!(len2 <= 1e-24)) {
+      t = ((qx - a.x) * abx + (qy - a.y) * aby) / len2;
+      t = Math.min(1, Math.max(0, t));
+    }
+    const dx = qx - (a.x + abx * t), dy = qy - (a.y + aby * t);
+    return { t, distance: Math.sqrt(dx * dx + dy * dy) };
+  }
+  /** **脊线命中 ✗**（**照 `vector.rs:142 spine_hit` 逐字 ✓**）：**有效脊线**在 `smooth` 时是
+   *   渲染端同一份 Catmull-Rom 采样 ✓（`SMOOTH_SUBDIVISIONS = 8` ✓）；**单点笔**按点距算 ✓；
+   *   **多段取「余量最小」** ✓（**严格 `<`** ⇒ 并列时先到者留 ✓）。
+   */
+  function p2VectorSpineHit(brush, geometry, qx, qy) {
+    const spine = geometry.smooth ? p2VectorSmooth(geometry.points, 8) : geometry.points;
+    if (spine.length === 0) return null;
+    let best = null;
+    const consider = (distance, pressure) => {
+      const radius = p2VectorSpineRadius(brush, pressure);
+      const hit = { distance, radius, clearance: distance - radius };
+      if (best === null || hit.clearance < best.clearance) best = hit;
+    };
+    if (spine.length === 1) {
+      const p = spine[0];
+      const dx = qx - p.x, dy = qy - p.y;
+      consider(Math.sqrt(dx * dx + dy * dy), p.pressure);
+      return best;
+    }
+    for (let i = 0; i + 1 < spine.length; i++) {
+      const a = spine[i], b = spine[i + 1];
+      const seg = p2VectorSegmentClosest(a, b, qx, qy);
+      consider(seg.distance, a.pressure + (b.pressure - a.pressure) * seg.t);
+    }
+    return best;
+  }
+  /** **路径子路径校验 ✗**（**照 `parse_path_subpaths`（`object.rs:630`）的**接受集合**逐字 ✓**：
+   *   **`fill_rule` 键存在但非 `evenodd`／`nonzero` 字符串 ⇒ 非法** ✓（**`null` 也算存在 ✗**
+   *   ⇒ 「键缺失 ⇒ 缺省 evenodd」与「显式 null」是两回事 ✓）；`subpaths` 必须**非空数组** ✓、
+   *   每条 `segments` 必须**非空** ✓、点必须是**恰好两元的有限数对** ✓、
+   *   `closed` 缺省 `false`、给了就必须是布尔 ✓。**非法 ⇒ `null`**（调用方报「不是 path 形状」✓）。
+   *   **∴ 输出是**入库同构**的规范形 ✓**（`subpaths_to_json` ✓：`start`／`closed`／`segments` ✓，
+   *   段只带该算子要的键 ✓）。
+   */
+  function p2PathSubpaths(geometry) {
+    if (!geometry || typeof geometry !== "object" || Array.isArray(geometry)) return null;
+    let fillRule = "evenodd";
+    if (Object.prototype.hasOwnProperty.call(geometry, "fill_rule")) {
+      const value = geometry.fill_rule;
+      if (value !== "evenodd" && value !== "nonzero") return null;
+      fillRule = value;
+    }
+    const list = geometry.subpaths;
+    if (!Array.isArray(list) || list.length === 0) return null;
+    const point = (value) => {
+      if (!Array.isArray(value) || value.length !== 2) return null;
+      if (!p2Num(value[0]) || !p2Num(value[1])) return null;
+      return [value[0], value[1]];
+    };
+    const subpaths = [];
+    for (const sub of list) {
+      if (!sub || typeof sub !== "object" || Array.isArray(sub)) return null;
+      const start = point(sub.start);
+      if (!start) return null;
+      let closed = false;
+      if (Object.prototype.hasOwnProperty.call(sub, "closed")) {
+        if (typeof sub.closed !== "boolean") return null;
+        closed = sub.closed;
+      }
+      if (!Array.isArray(sub.segments) || sub.segments.length === 0) return null;
+      const segments = [];
+      for (const seg of sub.segments) {
+        if (!seg || typeof seg !== "object" || Array.isArray(seg)) return null;
+        if (seg.op === "L") {
+          const to = point(seg.to);
+          if (!to) return null;
+          segments.push({ op: "L", to });
+        } else if (seg.op === "C") {
+          const c1 = point(seg.c1), c2 = point(seg.c2), to = point(seg.to);
+          if (!c1 || !c2 || !to) return null;
+          segments.push({ op: "C", c1, c2, to });
+        } else {
+          return null;
+        }
+      }
+      subpaths.push({ start, closed, segments });
+    }
+    return { fillRule, subpaths };
+  }
+  /** **三次 Bézier 霍纳求值 ✓**（**照 `path.rs:77 cubic_at` 逐字 ✓**：系数与运算顺序照抄 ✓）。 */
+  function p2CubicAt(p0, p1, p2, p3, t) {
+    const evalAxis = (a, b, c, d) => {
+      const a3 = -a + 3 * b - 3 * c + d;
+      const a2 = 3 * a - 6 * b + 3 * c;
+      const a1 = -3 * a + 3 * b;
+      return ((a3 * t + a2) * t + a1) * t + a;
+    };
+    return [evalAxis(p0[0], p1[0], p2[0], p3[0]), evalAxis(p0[1], p1[1], p2[1], p3[1])];
+  }
+  /** **Wang 的 L ✗**（**照 `path.rs:88 wang_l` 逐字 ✓**：两个二阶差分向量的 L1 范数取大者 ✓）。 */
+  function p2WangL(p0, p1, p2, p3) {
+    const d1 = Math.abs(p0[0] - 2 * p1[0] + p2[0]) + Math.abs(p0[1] - 2 * p1[1] + p2[1]);
+    const d2 = Math.abs(p1[0] - 2 * p2[0] + p3[0]) + Math.abs(p1[1] - 2 * p2[1] + p3[1]);
+    return Math.max(d1, d2);
+  }
+  /** **Wang 定采样数 ✗**（**照 `path.rs:96 wang_steps_raw` 逐字 ✓**：`ceil(sqrt(3L/(4·tol)))` ✓，
+   *   `L <= 0 ⇒ 1` ✓）。 */
+  function p2WangStepsRaw(l, tol) {
+    if (l <= 0) return 1;
+    return Math.ceil(Math.sqrt(3 * l / (4 * tol)));
+  }
+  /** **de Casteljau 对半分治 ✓**（**照 `path.rs:108 split_cubic_half` 逐字 ✓**：`t=0.5` 的除以 2
+   *   在二进制浮点下**精确** ✓ ⇒ 拆分点确定 ✓）。 */
+  function p2SplitCubicHalf(p0, p1, p2, p3) {
+    const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    const q0 = mid(p0, p1), q1 = mid(p1, p2), q2 = mid(p2, p3);
+    const r0 = mid(q0, q1), r1 = mid(q1, q2), m = mid(r0, r1);
+    return [[p0, q0, r0, m], [m, r1, q2, p3]];
+  }
+  const P2_MAX_STEPS_PER_SEG = 256;
+  /** **一段三次 Bézier 采样进 `out`（不含起点、含终点 ✓）**（**照 `path.rs:129 flatten_cubic_into` 逐字 ✓**：
+   *   `N` 超上限时**先对半分治再各自定 N** ✓（钳 N 会让误差界失效 ✓）、深度上限 8 ✓、
+   *   末点**直出 `p3`** ✓（Horner 在 t=1 有 1-ulp 漂移 ✓）。 */
+  function p2FlattenCubic(out, p0, p1, p2, p3, tol, depth) {
+    const raw = p2WangStepsRaw(p2WangL(p0, p1, p2, p3), tol);
+    if (raw > P2_MAX_STEPS_PER_SEG && depth > 0) {
+      const [a, b] = p2SplitCubicHalf(p0, p1, p2, p3);
+      p2FlattenCubic(out, a[0], a[1], a[2], a[3], tol, depth - 1);
+      p2FlattenCubic(out, b[0], b[1], b[2], b[3], tol, depth - 1);
+      return;
+    }
+    const n = raw <= 1 ? 1
+      : raw >= P2_MAX_STEPS_PER_SEG ? P2_MAX_STEPS_PER_SEG : Math.trunc(raw);
+    for (let i = 1; i < n; i++) out.push(p2CubicAt(p0, p1, p2, p3, i / n));
+    out.push(p3);
+  }
+  /** **子路径展平 ✓**（**照 `path.rs:170 flatten_subpath` 逐字 ✓**：闭合且末点离起点 `> 1e-9`
+   *   ⇒ 追加回首点 ✓；`L` 直接输出终点 ✓）。 */
+  function p2FlattenSubpath(sub, tol) {
+    const t = Number.isFinite(tol) && tol > 0 ? tol : 0.1;
+    const out = [sub.start];
+    let cur = sub.start;
+    for (const seg of sub.segments) {
+      if (seg.op === "L") {
+        out.push(seg.to);
+      } else {
+        p2FlattenCubic(out, cur, seg.c1, seg.c2, seg.to, t, 8);
+      }
+      cur = seg.to;
+    }
+    if (sub.closed) {
+      const last = out[out.length - 1] || sub.start;
+      const dx = last[0] - sub.start[0], dy = last[1] - sub.start[1];
+      if (dx * dx + dy * dy > 1e-18) out.push(sub.start);
+    }
+    return out;
+  }
+  /** **折线总长 ✓**（**照 `path.rs:202 polyline_length` 逐字 ✓**：逐段 `sqrt` **顺序累加** ✓）。 */
+  function p2PolylineLength(points) {
+    let sum = 0;
+    for (let i = 1; i < points.length; i++) {
+      const dx = points[i][0] - points[i - 1][0];
+      const dy = points[i][1] - points[i - 1][1];
+      sum += Math.sqrt(dx * dx + dy * dy);
+    }
+    return sum;
+  }
+  /** **控制点包围盒 ✓**（**照 `path.rs:764 path_control_bbox` 逐字 ✓**：起点＋每段 `c1`／`c2`／`to` ✓，
+   *   **禁止用展平点列算** ✓）。 */
+  function p2PathControlBbox(subpaths) {
+    let any = false;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    const visit = (p) => {
+      any = true;
+      if (p[0] < minX) minX = p[0];
+      if (p[1] < minY) minY = p[1];
+      if (p[0] > maxX) maxX = p[0];
+      if (p[1] > maxY) maxY = p[1];
+    };
+    for (const sub of subpaths) {
+      visit(sub.start);
+      for (const seg of sub.segments) {
+        if (seg.op === "L") {
+          visit(seg.to);
+        } else {
+          visit(seg.c1);
+          visit(seg.c2);
+          visit(seg.to);
+        }
+      }
+    }
+    return any ? [minX, minY, maxX - minX, maxY - minY] : null;
+  }
+  /** **`f64` 的 Rust `Display` 形 ✓**（`path.rs:459` 的 `d` 用 `format!` ✓）：
+   *   **最短往返数字 ＋ 无科学计数法** ✓（`1e-7 ⇒ 0.0000001`、`1e21 ⇒ 1000…` ✓）。
+   *   **JS `String(v)` 给出同一批最短数字** ✓（ECMAScript 规定最短往返 ✓；与 Rust 实测同 ✓）⇒
+   *   **只需把指数形展开成十进制** ✓；`-0 ⇒ "-0"` ✓。 */
+  function p2RustF64(value) {
+    // **`-0.0` 的 `Display` 是 `-0` ✓**（`String(-0)` 给 `0` ✗ —— 用倒数判别 ✓）。
+    if (value === 0 && 1 / value === -Infinity) return "-0";
+    const text = String(value);
+    if (!/e/i.test(text)) return text;
+    const match = /^(-?)(\d+)(?:\.(\d+))?e([+-]?\d+)$/i.exec(text);
+    if (!match) return text;
+    const sign = match[1] || "";
+    const digits = match[2] + (match[3] || "");
+    const point = match[2].length + parseInt(match[4], 10);
+    if (point <= 0) return sign + "0." + "0".repeat(-point) + digits;
+    if (point >= digits.length) return sign + digits + "0".repeat(point - digits.length);
+    return sign + digits.slice(0, point) + "." + digits.slice(point);
+  }
+  /** **等价 SVG `d` ✓**（**照 `path.rs:459 subpaths_to_svg_d` 逐字 ✓**：绝对 `M/L/C/Z` ✓，
+   *   子路径之间一个空格 ✓，闭合以 `Z` 收尾 ✓）。 */
+  function p2PathSvgD(subpaths) {
+    const parts = [];
+    for (const sub of subpaths) {
+      let text = `M ${p2RustF64(sub.start[0])} ${p2RustF64(sub.start[1])}`;
+      for (const seg of sub.segments) {
+        if (seg.op === "L") {
+          text += ` L ${p2RustF64(seg.to[0])} ${p2RustF64(seg.to[1])}`;
+        } else {
+          text += ` C ${p2RustF64(seg.c1[0])} ${p2RustF64(seg.c1[1])}`
+            + ` ${p2RustF64(seg.c2[0])} ${p2RustF64(seg.c2[1])}`
+            + ` ${p2RustF64(seg.to[0])} ${p2RustF64(seg.to[1])}`;
+        }
+      }
+      if (sub.closed) text += " Z";
+      parts.push(text);
+    }
+    return parts.join(" ");
   }
   /** **变换净荷解析 ✗**（**照 `fold.rs:1753 transform_from_payload` 逐字 ✓**）：
    *   **没给 `transform`（或 `matrix` 不是 6 元）⇒ 单位阵 ✓**；
@@ -2113,6 +2560,59 @@ async function withKernel(doc, fn) {
     return layers;
   }
 
+  /** **图层渲染属性 ✗**（**`get_histogram` 的图层作用域要「只看这一层」✓**）：
+   *   **∴ 只取渲染器读的四个字段 ✗**：`visible`／`opacity`／`clipping_mask`／`parent_id` ✓
+   *   （**照 `fold.rs` 的 `CreateLayer` 缺省 ＋ `apply_property_to_layer` 的取值规则 ✓**：
+   *     **非布尔／非数字 ⇒ 保持旧值 ✓**，不猜默认 ✓）。
+   *   **∴ 存活性不在这里算 ✗** —— **`alive`／`deleted_by` 直接取 `p2PresetLayers` ✓**
+   *   （**父链级联删是同一事实 ⇒ 不写第二份 ✓** 内核 ②）。
+   */
+  function p2LayerRenderProps(rows) {
+    rows = p2StateWindow(rows);
+    const neutral = p2Neutralized(rows);
+    const live = p2PresetLayers(rows, neutral);
+    const props = new Map();
+    const base = () => ({ visible: true, opacity: 1, clipping_mask: false, parent_id: null });
+    for (const r of rows) {
+      const a = (r && r.atom) || {};
+      const pl = a.payload || {};
+      if (a.kind === "create_document") {
+        if (!props.has("layer_default")) props.set("layer_default", base());
+        continue;
+      }
+      if (a.kind === "create_layer") {
+        const id = (typeof pl.layer_id === "string" && pl.layer_id) ||
+                   (typeof a.layer_id === "string" && a.layer_id) || null;
+        if (!id || props.has(id)) continue;
+        props.set(id, {
+          visible: typeof pl.visible === "boolean" ? pl.visible : true,
+          opacity: typeof pl.opacity === "number" && Number.isFinite(pl.opacity) ? pl.opacity : 1,
+          clipping_mask: pl.clipping_mask === true,
+          parent_id: typeof pl.parent_id === "string" && pl.parent_id ? pl.parent_id : null,
+        });
+        continue;
+      }
+      if (a.kind === "set_property" && !pl.object_id &&
+          typeof pl.layer_id === "string" && typeof pl.key === "string") {
+        const p = props.get(pl.layer_id);
+        if (!p) continue;
+        if (pl.key === "visible" && typeof pl.value === "boolean") p.visible = pl.value;
+        else if (pl.key === "opacity" && typeof pl.value === "number" && Number.isFinite(pl.value)) p.opacity = pl.value;
+        else if (pl.key === "clipping_mask" && typeof pl.value === "boolean") p.clipping_mask = pl.value;
+        else if (pl.key === "parent_id") {
+          p.parent_id = typeof pl.value === "string" && pl.value ? pl.value : null;
+        }
+      }
+    }
+    for (const id of [...props.keys()]) {
+      const l = live.get(id);
+      if (!l) { props.delete(id); continue; } // 创建被 revert ⇒ 状态里没有这一层 ✓
+      props.get(id).alive = l.alive;
+      props.get(id).deleted_by = l.deleted_by;
+    }
+    return props;
+  }
+
   /** **图层类型 ✗**（**`update_layer{parent_id}` 要判「父必须是图层组」✓**，`tools.rs:3739` ✓）：
    *   **∴ 类型只在 `create_layer` 的净荷里 ✗**（`update_layer` 的 10 个键**不含** `type` ✓）
    *   ⇒ **∴ 取该层**最后一条** `create_layer` ✓**（重建层会带新类型 ✓）；缺省 `raster` ✓
@@ -2347,6 +2847,25 @@ async function withKernel(doc, fn) {
   /** **参数错误 ⇒ 400 ✗**（**照服务端 `InvalidArgument` 的口径 ✓**）。 */
   function p2Bad(reason) {
     return p2ToolFailure(400, "invalid_argument", reason);
+  }
+  /** **工具级 `ok:false` 的 HTTP 状态 ✓**（**逐条照 `server.rs:2872-2885` 的映射 ✓**）。
+   *   **∴ 为什么 ✗**：本地以前**一律 200** ✗ ⇒ 批量撤销里「一条坏、其余成」这种
+   *   **`ok:false` 但带成功计数**的响应，服务端落到 **400** 而本地 200 ✓ ⇒
+   *   调用方按状态码分支时会看到两种客户端两种答案 ✗（与「同答案」的判据直接对不上 ✓）。
+   *   **∴ 服务端按 `error_code` 选状态 ✗ 缺省 400** ✓（`revert_to_seq` 的批量失败体**没有**
+   *   `error_code` ✓ ⇒ 落 `_ => 400` ✓）；这里**同一个 switch** ✓。
+   */
+  function p2ToolStatusOf(body) {
+    if (!body || body.ok !== false) return 200;
+    switch (body.error_code) {
+      case "invalid_argument": return 400;
+      case "permission_denied": return 403;
+      case "reference_not_found": case "job_not_found": return 404;
+      case "precondition_failed": case "conflict": case "busy": case "cancelled": return 409;
+      case "resource_exhausted": case "degraded": return 503;
+      case "job_pending": return 202;
+      default: return 400;
+    }
   }
   /** **计数族参数**（`limit`／`offset`／`since_seq`／`from_seq`／`to_seq`）**的读取 ✓**
    *   （**∴ 与服务端 `optional_count` 同形 ✗**，第 1441 轮 ✓）。
@@ -3255,6 +3774,96 @@ async function withKernel(doc, fn) {
       });
       return json({ ok: true, objects, count: objects.length, server: false,
                     derived_from: "atoms" });
+    }
+
+    // **P2c-71 `get_path` ✓**（**照 `read_get_path`（`tools_pathdata.rs:109`）逐字 ✓**）：
+    //   **∴ 读的是对象**本地坐标**几何 ✗**（不应用 `object.transform` ✓，与 `get_object` 的
+    //     `data` 同一口径 ✓）；**∴ 在状态里但已删 ⇒「已被删除」✓；创建被撤 ⇒「不存在」✓**
+    //     （服务端 `state.objects` 与 `deleted_by` 的两个分支 ✓）；**不是 `Shape{Path}` ⇒ 一句 400** ✓
+    //     （不静默回退 ✗）；**∴ `d` 用 Rust `Display` 形 ✓**（最短往返、无科学计数法 ✓）、
+    //     **`length` 用生产容差 0.10 展平** ✓。
+    if (path === "/api/tools/get_path") {
+      const specBad = p2ValidateArgsFor("get_path", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
+      const objectId = body.object_id;
+      const rows = p2StateWindow(await atomsOf(handle, doc));
+      const neutral = p2Neutralized(rows);
+      const view = p2ObjectView(rows, objectId);
+      if (!view.found || neutral.has(view.__create_id)) {
+        return p2Missing(`对象 ${objectId} 不存在`);
+      }
+      const death = p2ObjectDeath(p2PresetLayers(rows, neutral), view);
+      if (death.deleted) return p2Missing(`对象 ${objectId} 已被删除`);
+      const notPath = () => p2Bad(
+        `对象 ${objectId} 不是 path 形状（只认 draw_shape 建的 kind=path 对象）`);
+      if (p2ObjectTypeOf(rows, objectId) !== "shape") return notPath();
+      const data = view.data;
+      const geometry = data && typeof data === "object" && !Array.isArray(data)
+        ? data.geometry : null;
+      if (!geometry || typeof geometry !== "object" || Array.isArray(geometry)) return notPath();
+      if (geometry.kind !== "path") return notPath();
+      const parsed = p2PathSubpaths(geometry);
+      if (parsed === null) return notPath();
+      const bbox = p2PathControlBbox(parsed.subpaths) || [0, 0, 0, 0];
+      let length = 0;
+      for (const sub of parsed.subpaths) length += p2PolylineLength(p2FlattenSubpath(sub, 0.1));
+      return json({
+        ok: true, object_id: objectId, layer_id: view.layer_id ?? null, kind: "path",
+        fill_rule: parsed.fillRule,
+        geometry: { kind: "path", fill_rule: parsed.fillRule, subpaths: parsed.subpaths },
+        subpaths: parsed.subpaths,
+        d: p2PathSvgD(parsed.subpaths),
+        bbox: { x: bbox[0], y: bbox[1], w: bbox[2], h: bbox[3] },
+        length,
+        node_counts: parsed.subpaths.map((sub) => sub.segments.length + 1),
+        server: false,
+      });
+    }
+
+    // **P2c-70 `vector_hit_test` ✓**（**照 `read_vector_hit_test`，`tools_vector.rs:288` 逐字 ✓**）：
+    //   **∴ 纯原子折叠 ✗ 不碰内核 ✓** —— 命中的是**脊线 ＋ 剖面**（不是像素 ✓）；
+    //   **∴ 有效脊线**：`smooth` 时是渲染端**同一份** Catmull-Rom 采样 ✓（`vector.rs:48` ✓）；
+    //   **∴ `strokes_examined` 在几何解析之前就 +1** ✓（`tools_vector.rs:313` ✓）⇒
+    //     **几何坏掉的对象照样算「查过」** ✓ 但不出命中 ✓（不是静默跳过 ✗）；
+    //   **∴ 只查 `Stroke` 类型的对象** ✓（图形／文字／填充／组／路径…不看 ✓）；
+    //   **∴ 隐藏对象照查** ✓（`objects_in_layer` 不过滤可见性 ✓ ⇒ 本地**不许**用 `includeHidden:false` ✗）；
+    //   **∴ 已删图层仍解析得类型** ✓（`layer_type_of` 查 `state.layers.get()` ✓ 不是 `alive_layers()` ✓）
+    //     —— 它的对象全随层死 ⇒ **读数是 0** ✓，**不是 404** ✗。
+    if (path === "/api/tools/vector_hit_test") {
+      const specBad = p2ValidateArgsFor("vector_hit_test", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
+      const layerId = body.layer_id;
+      const rows = await atomsOf(handle, doc);
+      const layerType = p2LayerTypeFold(rows, layerId);
+      if (layerType === null) return p2Missing(`图层 ${layerId} 不存在`);
+      if (layerType !== "vector") {
+        // **类型名照 Rust 的 `Debug` ✗**（`{other:?}` ⇒ `Raster`／`LayerGroup`／`Mask` ✓）。
+        const debugName = { raster: "Raster", layer_group: "LayerGroup", mask: "Mask" }[layerType]
+          || "Raster";
+        return p2Bad(`图层 ${layerId} 是 ${debugName} 图层、不是矢量图层 => 矢量工具不作用于它`
+          + `（建矢量层请用 create_layer 的 kind 参数传 vector）`);
+      }
+      const x = body.x, y = body.y;
+      const tolerance = typeof body.tolerance === "number" ? body.tolerance : 0;
+      if (tolerance < 0) return p2Bad("tolerance 不能为负");
+      let strokesExamined = 0;
+      const hits = [];
+      for (const summary of p2ObjectSummaries(rows, { layerFilter: layerId, includeHidden: true })) {
+        if (p2ObjectTypeOf(rows, summary.object_id) !== "stroke") continue;
+        strokesExamined += 1;
+        const view = p2ObjectView(rows, summary.object_id);
+        const geometry = p2VectorGeometry(view.data);
+        if (geometry === null) continue;
+        const hit = p2VectorSpineHit(p2VectorBrush(view.data), geometry, x, y);
+        if (hit === null || !(hit.clearance <= tolerance)) continue;
+        hits.push({ object_id: summary.object_id, distance: hit.distance,
+                    radius: hit.radius, clearance: hit.clearance });
+      }
+      // **排序照服务端 ✓**：`clearance` 升序，**并列按 `object_id` 升序** ✓。
+      hits.sort((a, b) => (a.clearance - b.clearance) || (a.object_id < b.object_id ? -1
+        : a.object_id > b.object_id ? 1 : 0));
+      return json({ ok: true, layer_id: layerId, x, y, tolerance,
+                    strokes_examined: strokesExamined, hits, count: hits.length, server: false });
     }
 
     // **④ `/api/tools/list_selections` ✗**：**没有选区原子 ⇒ **∴ 如实报空表 ✓****
@@ -4458,7 +5067,7 @@ async function withKernel(doc, fn) {
      *  ⇒ **∴ 内核的裁剪就成了恒等 ✓ ⇒ 宽高与像素都同服务端 ✓**。
      *  与服务端同样：**不相交 ⇒ `invalid_argument`**（**∴ 不给假统计 ✓**）。
      */
-    async function p2cRenderRgba(x, y, w, h) {
+    async function p2cRenderRgba(x, y, w, h, extraAtoms = null) {
       const rows = await atomsOf(handle, doc);
       const { w: cw, h: ch } = p2cDocSize(rows);
       const x0 = Math.max(0, Math.floor(x));
@@ -4476,8 +5085,29 @@ async function withKernel(doc, fn) {
       return await withKernel(doc, async () => {
         const k = entry.k;
         const atoms = await atomsOf(handle, doc);
-        const fold = String(k.load_atoms_json(JSON.stringify(atoms.map((r) => r.atom))) || "");
-        const rgba = k.render_region_rgba(x0, y0, bw, bh);
+        // **∴ `extraAtoms` 只喂给这一次 `load_atoms_json` ✗**（**不落盘 ✓**）：
+        //   **图层作用域的「只看这一层」靠它 ✓**（见 `p2LayerScopeAtoms` ✓）。
+        const loaded = atoms.map((r) => r.atom);
+        if (Array.isArray(extraAtoms)) loaded.push(...extraAtoms);
+        const fold = String(k.load_atoms_json(JSON.stringify(loaded)) || "");
+        let rgba;
+        try {
+          rgba = k.render_region_rgba(x0, y0, bw, bh);
+        } finally {
+          // **∴ 合成原子只属于这一次渲染 ✗**（第 六百六十五 轮实测）：
+          //   内核的增量折叠把「head_seq 相同」当成「日志没变」✓（`seq.rs` 的
+          //   `last.seq == n` 直接回旧状态 ✓）⇒ **∴ 两次图层作用域若合成原子段
+          //   落在同一段 seq 上 ⇒ 后一次会拿到前一次的状态 ✗**
+          //   （实测：L2 的蓝矩形被当成上一次 L3 的空白、L5 的墓碑层混进 H1 的黄色 ✗）
+          //   ⇒ **∴ 渲完必须折回权威日志 ✓** ⇒ 下一次合成从干净状态前推 ✓
+          //   ⇒ **∴ 折回失败要报错 ✗**（**内核状态已被污染 ⇒ 不许静默 ✓**）。
+          if (Array.isArray(extraAtoms)) {
+            const back = String(k.load_atoms_json(JSON.stringify(atoms.map((r) => r.atom))) || "");
+            let ok = false;
+            try { ok = JSON.parse(back).ok === true; } catch (e) { ok = false; }
+            if (!ok) throw new Error("合成原子渲染后无法折回权威日志（内核状态已污染）：" + back.slice(0, 200));
+          }
+        }
         const need = bw * bh * 4;
         if (!rgba || rgba.length < need) {
           throw new Error("内核未产出裸像素（got=" + (rgba ? rgba.length : 0) +
@@ -4486,6 +5116,107 @@ async function withKernel(doc, fn) {
         return { rgba: rgba instanceof Uint8Array ? rgba : new Uint8Array(rgba),
                  w: bw, h: bh, fold };
       });
+    }
+
+    /** **图层作用域的合成原子 ✗**（**本地镜像服务端 `set_only_layer` ✓**，第 六百六十五 轮 ✓）。
+     *
+     *  **∴ 为什么不是「直接渲染这一层」✗**：**内核没有单层渲染通道 ✗**
+     *  （`render_region_rgba` 只给整幅合成 ✓）⇒ **∴ 换成「把别的层都藏起来」✓**
+     *  —— **服务端探针实测：它与 `set_only_layer` 逐像素相同 ✓**
+     *  （覆盖：普通层／纯调整层／隐藏层／已删层／裁剪层／组内层 ✓）。
+     *
+     *  **∴ 三处必须补偿 ✗**（**都是 `set_only_layer` 与普通合成的语义差 ✓**）：
+     *    ① **只认这一层、不看它自己的可见性** ⇒ **∴ 补 `visible:true` ✓**；
+     *    ② **不继承组可见性／组不透明度** ⇒ **∴ 把父链断开 ✓**（`parent_id:null` ✓；
+     *       探针实测：不断开时差在 `r[220]` ✓，断开后逐位相同 ✓）；
+     *    ③ **纯调整层不播种下方内容** ⇒ **∴ 补 `clipping_mask:true` ✓**（播种被这条关掉 ✓；
+     *       空缓冲上的调整 alpha 仍是 0 ⇒ 乘下方 alpha 是恒等 ✓；invert／blur／
+     *       film_grain／glow／noise 探针逐位相同 ✓）。
+     *
+     *  **∴ 只影响这一次装载 ✗**：返回的原子**不落盘** ✓（`p2cRenderRgba` 的 `extraAtoms` ✓）。
+     */
+    function p2LayerScopeAtoms(rows, props, targetId) {
+      const extra = [];
+      let maxSeq = 0;
+      for (const r of rows) if (typeof r.seq === "number" && r.seq > maxSeq) maxSeq = r.seq;
+      const push = (payload) => {
+        const atom = p2Envelope("set_property", payload);
+        atom.seq = ++maxSeq; // 合成原子必须带权威序号 ✓（`AtomLog::with_atoms` 拒收 seq=0 ✓）
+        extra.push(atom);
+      };
+      const target = props.get(targetId);
+      if (!target || !target.alive) {
+        // 已删除的层不在 `alive_layers()` 里 ⇒ 服务端只画背景 ✓ ⇒ 把所有活层藏掉 ✓
+        for (const [id, p] of props) if (p.alive) push({ layer_id: id, key: "visible", value: false });
+        return extra;
+      }
+      for (const [id, p] of props) {
+        if (p.alive && id !== targetId) push({ layer_id: id, key: "visible", value: false });
+      }
+      push({ layer_id: targetId, key: "visible", value: true });
+      if (target.parent_id) push({ layer_id: targetId, key: "parent_id", value: null });
+      // **纯调整层：照 `layer_is_adjustment_only` 的定义 ✓**（只数**可见且启用**的对象 ✓）。
+      let any = false;
+      let only = true;
+      for (const o of p2ObjectSummaries(rows, { layerFilter: targetId, includeHidden: true })) {
+        if (!o.visible || !o.enabled) continue;
+        if (o.type === "adjustment" || o.type === "filter") any = true;
+        else { only = false; break; }
+      }
+      if (any && only && !target.clipping_mask) {
+        push({ layer_id: targetId, key: "clipping_mask", value: true });
+      }
+      return extra;
+    }
+    /** **直方图 · 每通道 256 桶 ✗**（**照 `yanshi-render/src/histogram.rs` 逐字 ✓**）：
+     *   **∴ 亮度是整数 Rec.601 ✓** ⇒ **∴ 跨平台逐位一致 ✓**（不用浮点舍入当判据 ✓）。
+     */
+    function p2cHistogramRgba8(rgba) {
+      const r = new Array(256).fill(0), g = new Array(256).fill(0);
+      const b = new Array(256).fill(0), a = new Array(256).fill(0);
+      const luma = new Array(256).fill(0);
+      let count = 0;
+      for (let i = 0; i + 4 <= rgba.length; i += 4) {
+        const pr = rgba[i], pg = rgba[i + 1], pb = rgba[i + 2], pa = rgba[i + 3];
+        r[pr] += 1; g[pg] += 1; b[pb] += 1; a[pa] += 1;
+        luma[Math.floor((299 * pr + 587 * pg + 114 * pb + 500) / 1000)] += 1;
+        count += 1;
+      }
+      return { r, g, b, a, luma, count };
+    }
+    /** **下分位口径 ✓**（**照 `histogram::percentile` 逐字 ✓**）：
+     *   **∴ 最小的、累计 ≥ ⌈percent/100·count⌉ 的桶 ✓**。
+     */
+    function p2cHistPercentile(buckets, count, percent) {
+      if (count === 0 || percent === 0 || percent > 100) return 0;
+      const rank = Math.ceil((percent * count) / 100);
+      let cumulative = 0;
+      for (let value = 0; value < 256; value++) {
+        cumulative += buckets[value];
+        if (cumulative >= rank) return value;
+      }
+      return 255;
+    }
+    /** **摘要 ✓**（**照 `histogram::summarize` 逐字 ✓**：均值／极值／p5／中位数／p95 ✓）。 */
+    function p2cHistSummary(buckets, count) {
+      if (count === 0) return { mean: 0, min: 0, max: 0, p5: 0, median: 0, p95: 0 };
+      let weighted = 0;
+      let min = 0;
+      let max = 0;
+      let seen = false;
+      for (let value = 0; value < 256; value++) {
+        const n = buckets[value];
+        if (n === 0) continue;
+        if (!seen) { min = value; seen = true; }
+        max = value;
+        weighted += value * n;
+      }
+      return {
+        mean: weighted / count, min, max,
+        p5: p2cHistPercentile(buckets, count, 5),
+        median: p2cHistPercentile(buckets, count, 50),
+        p95: p2cHistPercentile(buckets, count, 95),
+      };
     }
 
     /** **`region` 解析 ✗**（**照服务端 `parse_bbox` ✓** ）：
@@ -5668,6 +6399,183 @@ async function withKernel(doc, fn) {
         note: "把 air/omega/floor 传给 add_filter {filter_name: \"dehaze\"}；渲染逐像素确定性",
       });
     }
+    // **P2c-19a `list_effects` ✓**（**照 `read_list_effects` ✓**，第 六百六十五 轮 ✓）：
+    //   **∴ 与 `list_objects` 的两处不同 ✗**：① **不过滤隐藏**（`alive_objects()` 含隐藏／禁用 ✓）；
+    //   ② **字段取自折叠后的 `data` ✓**（`set_property` 覆盖也算 ✓ ⇒ 经 `p2EffectiveData` ✓）。
+    //   **∴ 入口参数校验先行 ✗**（**照 `validate_args` ✓**：未知参数／必填／声明类型 ✓）——
+    //   **∴ 实测服务端对 `layer_id:123` 回**「参数 layer_id 类型应为 string，实际为 number」✗
+    //   ⇒ **∴ handler 里的 `optional_str` 根本走不到 ✓**（**∴ 别在 handler 里猜「非字符串就当没给」✗**）。
+    if (path === "/api/tools/list_effects") {
+      const specBad = p2ValidateArgsFor("list_effects", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
+      const layerRaw = body.layer_id;
+      const layerFilter = typeof layerRaw === "string" ? layerRaw : null; // 照 `optional_str` ✓
+      const rows = p2StateWindow(await atomsOf(handle, doc));
+      const neutral = p2Neutralized(rows);
+      const layers = p2PresetLayers(rows, neutral);
+      const seen = new Set();
+      const effects = [];
+      for (const r of rows) {
+        const a = (r && r.atom) || {};
+        const id = a.payload && a.payload.object_id;
+        if (typeof id !== "string" || !id || seen.has(id)) continue;
+        seen.add(id);
+        const v = p2ObjectView(rows, id);
+        if (!__p2Alive(rows, v, layers, neutral)) continue;
+        if (v.type !== "adjustment" && v.type !== "filter") continue;
+        if (layerFilter !== null && v.layer_id !== layerFilter) continue;
+        const data = p2EffectiveData(v);
+        const pick = (key) => (Object.prototype.hasOwnProperty.call(data, key) ? data[key] : null);
+        effects.push({
+          object_id: id,
+          layer_id: v.layer_id ?? null,
+          type: v.type,
+          name: pick("name"),
+          adjustment_type: pick("adjustment_type"),
+          filter_name: pick("filter_name"),
+          params: pick("params"),
+          opacity: pick("opacity"),
+          enabled: v.enabled !== false,
+          __z: v.z_index ?? 0,
+        });
+      }
+      const cmpId = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+      // **排序照 `alive_objects()` ✓**：`(layer_id, z_index, id)` ✓。
+      effects.sort((a, b) => cmpId(String(a.layer_id), String(b.layer_id))
+        || (a.__z - b.__z) || cmpId(String(a.object_id), String(b.object_id)));
+      for (const e of effects) delete e.__z;
+      return json({ ok: true, server: false, effects, count: effects.length,
+                    filter_aliases: P2_FILTER_ALIASES.map((e) => ({ ...e })),
+                    supported: { adjustments: P2_ADJUSTMENT_NAMES.slice(),
+                                 filters: P2_FILTER_NAMES.slice() } });
+    }
+    // **P2c-19b `sample_colors` ✓**（**照 `read_sample_colors` ✓**，第 六百六十五 轮 ✓）：
+    //   **∴ 一次区域渲染 ＋ 逐点取下标 ✓**（**不是逐点渲染 ✓**）；**∴ 画布外的点 `rgba:null` ＋ 警告 ✓**
+    //   （**不夹到边缘冒充成功 ✗**）。
+    if (path === "/api/tools/sample_colors") {
+      // **∴ 入口校验先行 ✗**：服务端对**缺参**回「缺少必填参数 points」✓、
+      //   对**非数组**回「参数 points 类型应为 array，实际为 …」✓
+      //   ⇒ **∴ 这两个口径都来自 `validate_args` ✗** ⇒ **∴ 不能拿 handler 里那句自定义文案顶替 ✓**
+      //   （**∴ `read_sample_colors` 里那句「缺少 points ⇒ 形如 …」经 HTTP 走不到 ✓ 但留作内层兜底 ✓**）。
+      const specBad = p2ValidateArgsFor("sample_colors", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
+      const rawPoints = body.points;
+      if (!Array.isArray(rawPoints)) {
+        return p2Bad("缺少 points ⇒ 形如 [[120,64], [200,80]]（画布坐标，像素）");
+      }
+      const points = [];
+      for (let i = 0; i < rawPoints.length; i++) {
+        const pair = rawPoints[i];
+        if (!Array.isArray(pair)) {
+          return p2Bad("points[" + i + "] 应为 [x,y]，实际 " + JSON.stringify(pair));
+        }
+        const x = (typeof pair[0] === "number" && Number.isFinite(pair[0])) ? pair[0] : null;
+        if (x === null) return p2Bad("points[" + i + "][0] 不是数字");
+        const yv = pair.length > 1 ? pair[1] : undefined;
+        const y = (typeof yv === "number" && Number.isFinite(yv)) ? yv : null;
+        if (y === null) return p2Bad("points[" + i + "][1] 不是数字");
+        points.push([x, y]);
+      }
+      if (points.length === 0) return p2Bad("points 不能为空");
+      const rows = await atomsOf(handle, doc);
+      const { w: cw, h: ch } = p2cDocSize(rows);
+      let ax = Infinity, ay = Infinity, bx = -Infinity, by = -Infinity;
+      for (const [x, y] of points) {
+        ax = Math.min(ax, x); ay = Math.min(ay, y);
+        bx = Math.max(bx, x); by = Math.max(by, y);
+      }
+      // **包围盒先裁到画布内 ✓**（**照服务端 §27 ✓**：否则 stride 偏大 ⇒ 画布内的点也会读成 null ✗）。
+      const x0 = Math.max(0, Math.floor(ax));
+      const y0 = Math.max(0, Math.floor(ay));
+      const w = Math.max(1, Math.min(Math.floor(bx) - x0 + 1, Math.max(1, cw - x0)));
+      const h = Math.max(1, Math.min(Math.floor(by) - y0 + 1, Math.max(1, ch - y0)));
+      let rendered;
+      try {
+        rendered = await p2cRenderRgba(x0, y0, w, h);
+      } catch (err) { return p2cKernel501(err); }
+      if (rendered && rendered.error) return p2Bad(rendered.error);
+      const stride = w * 4;
+      const samples = [];
+      let outsideCount = 0;
+      for (let i = 0; i < points.length; i++) {
+        const [x, y] = points[i];
+        const outside = x < 0 || y < 0 || x >= cw || y >= ch;
+        let rgba = null;
+        if (outside) {
+          outsideCount += 1;
+        } else {
+          const px = Math.max(0, Math.floor(x) - x0);
+          const py = Math.max(0, Math.floor(y) - y0);
+          const offset = py * stride + px * 4;
+          if (offset + 4 <= rendered.rgba.length) {
+            rgba = [rendered.rgba[offset], rendered.rgba[offset + 1],
+                    rendered.rgba[offset + 2], rendered.rgba[offset + 3]];
+          }
+        }
+        samples.push({ index: i, x, y, rgba, outside });
+      }
+      const warnings = outsideCount > 0 ? [
+        outsideCount + " 个点在画布**外面** ⇒ 它们的 rgba 是 null ✓（画布 " + cw + "×" + ch +
+        "，原点在**左上角** ✓）。这不是「画布边缘的颜色」✗ —— 那会让人以为取色成功 ✓。"
+      ] : [];
+      return json({ ok: true, server: false, count: samples.length,
+                    outside_count: outsideCount, warnings,
+                    region: { x: x0, y: y0, w, h }, samples });
+    }
+    // **P2c-19c `get_histogram` ✓**（**照 `read_get_histogram` ✓**，第 六百六十五 轮 ✓）：
+    //   **∴ 四个作用域 ✓**（整文档／选区／图层／图层×选区 ✓）；**∴ 图层作用域用合成原子 ✓**
+    //   （`p2LayerScopeAtoms` ✓ —— 服务端探针已证与服务端 `set_only_layer` 逐位相同 ✓）。
+    if (path === "/api/tools/get_histogram") {
+      // **∴ 入口校验先行 ✗**（**照 `validate_args` ✓**）：**`region` 声明为 `object` ✓**
+      //   ⇒ **∴ 数组形式**过不了 HTTP 层 ✗（**`parse_bbox` 的数组分支经工具入口走不到 ✓**）；
+      //   **`layer_id:123` 同理**回「参数 layer_id 类型应为 string」✓。
+      const specBad = p2ValidateArgsFor("get_histogram", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
+      const layerRaw = body.layer_id;
+      const layerId = typeof layerRaw === "string" ? layerRaw : null; // 照 `optional_str` ✓
+      const rows = await atomsOf(handle, doc);
+      const { w: cw, h: ch } = p2cDocSize(rows);
+      let region = null;
+      if (body.region !== undefined && body.region !== null) {
+        region = p2cParseRegion(body.region);
+        if (!region) return p2Bad("region 必须是 {x,y,w,h} 或 [x,y,w,h]");
+      }
+      let props = null;
+      if (layerId !== null) {
+        props = p2LayerRenderProps(rows);
+        // **存在性照 `state.layers.contains_key` ✓**（墓碑层仍算存在 ✓ —— `p2LayerRenderProps` 保留它 ✓）
+        if (!props.has(layerId)) {
+          return p2ToolFailure(404, "reference_not_found", "图层 " + layerId + " 不存在",
+                               { layer_id: layerId });
+        }
+      }
+      const bbox = region || { x: 0, y: 0, w: cw, h: ch };
+      let rendered;
+      try {
+        const extra = layerId !== null ? p2LayerScopeAtoms(rows, props, layerId) : null;
+        rendered = await p2cRenderRgba(bbox.x, bbox.y, bbox.w, bbox.h, extra);
+      } catch (err) { return p2cKernel501(err); }
+      if (rendered && rendered.error) return p2Bad(rendered.error);
+      const hist = p2cHistogramRgba8(rendered.rgba);
+      if (hist.count === 0) return p2Precon("这块作用域没有像素可统计");
+      const summaryOf = (buckets) => p2cHistSummary(buckets, hist.count);
+      const scope = layerId !== null
+        ? (region ? "layer_region" : "layer")
+        : (region ? "region" : "document");
+      return json({
+        ok: true, server: false,
+        scope, layer_id: layerId,
+        region: { x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h },
+        width: rendered.w, height: rendered.h,
+        pixels: hist.count,
+        channels: { r: hist.r, g: hist.g, b: hist.b, a: hist.a },
+        luma: hist.luma,
+        summary: {
+          r: summaryOf(hist.r), g: summaryOf(hist.g), b: summaryOf(hist.b),
+          a: summaryOf(hist.a), luma: summaryOf(hist.luma),
+        },
+      });
+    }
     // **P2c-20 `transform_object` ✓**：**与服务端同一套参数面 ✓**（`rotate`／`scale`／`translate`
     //   **恰好一个 ✓** ＋ `anchor`（缺省 = **折叠后包围盒中心** ✓）＋ `compose`（缺省 true ✓））。
     //   **∴ 旧实现收 `transform{matrix}`／`dx`／`dy` ✗** ⇒ **服务端根本不接受这些参数 ✗**
@@ -6541,15 +7449,327 @@ async function withKernel(doc, fn) {
 
     // **P2c-51 `get_atom` ✗**：**照 `read_get_atom` ✓** ⇒ **按 `atom_id` 取整条原子 ✓**。
     if (path === "/api/tools/get_atom") {
+      // **入口校验照服务端 `validate_args` ✓**（缺 `atom_id`／未知键都由入口拒 ✓）。
+      const specBad = p2ValidateArgsFor("get_atom", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
       const atomId = body.atom_id;
       if (typeof atomId !== "string" || !atomId) return p2Bad("atom_id 必填（字符串）");
       const rows = await atomsOf(handle, doc);
       const found = rows.find((r) => r.atom && r.atom.id === atomId);
       if (!found) return p2Missing("原子 " + atomId + " 不在日志里");
       const a = found.atom;
+      // **字段照服务端 `read_get_atom` ✓**（`tools.rs:21030`）：`message`／`label`／
+      //   `changeset_id`／`parents` **一直都有** ✓ ⇒ **∴ 旧本地只给六个字段 ✗** ⇒ 调用方读不到标签 ✓。
       return json({ ok: true, server: false, atom_id: a.id, seq: found.seq, kind: a.kind,
-                    actor: a.actor, session: a.session, timestamp: a.timestamp,
-                    payload: a.payload });
+                    actor: a.actor === undefined ? null : a.actor,
+                    session: a.session === undefined ? null : a.session,
+                    timestamp: a.timestamp === undefined ? null : a.timestamp,
+                    message: a.message === undefined ? null : a.message,
+                    label: a.label === undefined ? null : a.label,
+                    changeset_id: a.changeset_id === undefined ? null : a.changeset_id,
+                    parents: Array.isArray(a.parents) ? a.parents : [],
+                    payload: a.payload === undefined ? null : a.payload });
+    }
+
+    // **P2c-56 `get_stroke_log` ✓**（**照 `read_get_stroke_log` ✓**，`tools.rs:8818`）：
+    //   **∴ 一笔一行的可审计视图 ✓**：只列**笔触**（`source.kind` ∈ brush／medium／draw ✓），
+    //   坐标原样回 ✓，压力给 min/max/first/last ✓；已撤销的按「最近一次 revert／reapply」排除 ✓。
+    //   **∴ 与 `list_atoms` 的口径差 ✓**：这条**认 Reapply**（撤了又回来算 live ✓），
+    //   `list_atoms` 只认 Revert（**那处不改** —— 服务端就是如此 ✓）。
+    if (path === "/api/tools/get_stroke_log") {
+      const specBad = p2ValidateArgsFor("get_stroke_log", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
+      const countOf = (key, fallback, max) => {
+        const arg = p2Count(body[key], key);
+        if (arg.error) return arg;
+        const v = arg.value === undefined ? fallback : arg.value;
+        return { value: max == null ? v : Math.min(v, max) };
+      };
+      const limitArg = countOf("limit", 50, 500);
+      if (limitArg.error) return limitArg.error;
+      const offsetArg = countOf("offset", 0);
+      if (offsetArg.error) return offsetArg.error;
+      const sinceArg = countOf("since_seq", 0);
+      if (sinceArg.error) return sinceArg.error;
+      const limit = limitArg.value, offset = offsetArg.value, since = sinceArg.value;
+      const strOf = (key) => (typeof body[key] === "string" ? body[key] : null);
+      const layerFilter = strOf("layer_id");
+      const objectFilter = strOf("object_id");
+      const groupFilter = strOf("group_id");
+      const newestFirst = strOf("order") === "newest";
+      const rows = await atomsOf(handle, doc);
+      // **最近一次动作胜出 ✓**（服务端 `last_action` ✓）：同一目标的 revert 后又 reapply ⇒ live ✓。
+      const lastAction = new Map();
+      for (const r of rows) {
+        const a = (r && r.atom) || {};
+        if (a.kind !== "revert" && a.kind !== "reapply") continue;
+        const target = a.payload && a.payload.target;
+        if (typeof target === "string") {
+          lastAction.set(target, { seq: Number(r.seq) || 0, revert: a.kind === "revert" });
+        }
+      }
+      const reverted = new Set();
+      for (const [id, act] of lastAction) if (act.revert) reverted.add(id);
+      let revertedExcluded = 0;
+      const all = [];
+      for (const r of rows) {
+        const a = (r && r.atom) || {};
+        const seq = Number(r.seq) || 0;
+        if (seq <= since) continue;
+        const pl = a.payload || {};
+        let source = null;
+        const ps = pl.source;
+        if (ps && typeof ps === "object" && !Array.isArray(ps)) {
+          source = ps;
+        } else {
+          // **普通矢量笔触的点列在 `payload.data` 里 ✓**（服务端第 2026-10-16 轮修的那条 ✓）。
+          if (a.kind !== "draw_stroke" && a.kind !== "erase") continue;
+          const data = pl.data;
+          if (!(data && typeof data === "object" && !Array.isArray(data))) continue;
+          source = {
+            kind: "draw",
+            points: Object.prototype.hasOwnProperty.call(data, "points") ? data.points : null,
+            color: p2NormalizeColor(data.color),
+            size: Object.prototype.hasOwnProperty.call(data, "size") ? data.size : null,
+          };
+        }
+        const sourceKind = typeof source.kind === "string" ? source.kind : "";
+        if (sourceKind !== "brush" && sourceKind !== "medium" && sourceKind !== "draw") continue;
+        const layerId = p2PayloadTopStr(a, "layer_id");
+        if (layerFilter !== null && layerId !== layerFilter) continue;
+        if (objectFilter !== null && p2PayloadTopStr(a, "object_id") !== objectFilter) continue;
+        if (groupFilter !== null && (a.group_id === undefined ? null : a.group_id) !== groupFilter) continue;
+        if (reverted.has(a.id)) { revertedExcluded += 1; continue; }
+        const points = Object.prototype.hasOwnProperty.call(source, "points") ? source.points : [];
+        const pointList = Array.isArray(points) ? points : [];
+        const coordinate = (item) => {
+          if (item === undefined || item === null) return null;
+          if (!Array.isArray(item)) return null;
+          const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+          return { x: num(item[0]), y: num(item[1]) };
+        };
+        const pressures = [];
+        for (const item of pointList) {
+          if (Array.isArray(item) && typeof item[2] === "number" && Number.isFinite(item[2])) {
+            pressures.push(item[2]);
+          }
+        }
+        const pressure = pressures.length === 0 ? null : {
+          min: Math.min(...pressures), max: Math.max(...pressures),
+          first: pressures[0], last: pressures[pressures.length - 1],
+        };
+        const opt = (obj, key) => (obj && Object.prototype.hasOwnProperty.call(obj, key)
+                                    && obj[key] !== undefined ? obj[key] : null);
+        all.push({
+          seq,
+          atom_id: a.id,
+          kind: sourceKind,
+          layer_id: layerId,
+          object_id: p2PayloadTopStr(a, "object_id"),
+          message: a.message === undefined ? null : a.message,
+          brush: opt(source, "brush"),
+          medium: opt(source, "medium"),
+          size: opt(source, "size"),
+          color: p2NormalizeColor(source.color),
+          color_to: opt(source, "color_to"),
+          hardness: opt(source, "hardness"),
+          opacity: opt(source, "opacity"),
+          smooth: opt(source, "smooth"),
+          seed: opt(source, "seed"),
+          points,
+          points_count: pointList.length,
+          bbox: Object.prototype.hasOwnProperty.call(pl, "region") ? pl.region : null,
+          first_point: coordinate(pointList[0]),
+          last_point: coordinate(pointList[pointList.length - 1]),
+          pressure,
+          timestamp: a.timestamp === undefined ? null : a.timestamp,
+        });
+      }
+      if (newestFirst) all.reverse();
+      const total = all.length;
+      const page = all.slice(offset, offset + limit);
+      const returned = page.length;
+      return json({
+        ok: true, server: false,
+        entries: page,
+        returned,
+        total,
+        reverted_excluded: revertedExcluded,
+        offset,
+        limit,
+        next_offset: offset + returned < total ? offset + returned : null,
+        truncated: offset + returned < total,
+        note: "这是**原子日志**的视图 ✓ ⇒ 跟文档走（清 /tmp、换 session、重启都在 ✓）。"
+          + "                 `bbox` 是原子里的 `region` ✓；逐点 `time_ms` **没有**保存在原子里 ✗"
+          + " ⇒ 只有原子时间戳 ✓。                 已撤销的原子不列，`total` 只数 live 笔；"
+          + "`reverted_excluded` 是被排除的已撤销笔数（`total + reverted_excluded` = 全部匹配数）✓。",
+      });
+    }
+
+    // **P2c-57 `list_atoms` ✓**（**照 `read_list_atoms` ✓**，`tools.rs:20779`）：
+    //   **∴ 按 seq 倒序 ✓**（新的在前 ✓）＋ label／layer／brush／group／bbox／since 六条筛选 ✓
+    //   ＋ `offset`／`total`／`has_more` 真分页 ✓ ＋ `origin`／`stored_origin` 来源口径 ✓
+    //   ＋ 非笔迹原子**缺省藏起来但**数出来 ✓（`hidden_non_stroke` —— 「不是没有，是被藏了」✓）。
+    if (path === "/api/tools/list_atoms") {
+      const specBad = p2ValidateArgsFor("list_atoms", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
+      const countOf = (key, fallback, max) => {
+        const arg = p2Count(body[key], key);
+        if (arg.error) return arg;
+        const v = arg.value === undefined ? fallback : arg.value;
+        return { value: max == null ? v : Math.min(v, max) };
+      };
+      const limitArg = countOf("limit", 20, 5000);
+      if (limitArg.error) return limitArg.error;
+      const offsetArg = countOf("offset", 0);
+      if (offsetArg.error) return offsetArg.error;
+      const sinceArg = countOf("since_seq", 0);
+      if (sinceArg.error) return sinceArg.error;
+      const thumbArg = countOf("thumb_size", 0);
+      if (thumbArg.error) return thumbArg.error;
+      const limit = limitArg.value, offset = offsetArg.value, since = sinceArg.value;
+      const askedThumb = thumbArg.value;
+      // **不许 `as u32` 回绕成 0 ✗**（服务端第 738 轮；外部 S-12）⇒ 超限**响亮报错** ✓。
+      if (askedThumb > 4294967295) {
+        return p2Bad("thumb_size 太大（" + askedThumb + "）⇒ 缩略图边长上限 4294967295（不许回绕成 0）");
+      }
+      const thumbSize = askedThumb;
+      const wantThumb = body.want_thumb === undefined || body.want_thumb === null
+        ? true : body.want_thumb === true;
+      const includeNonStroke = body.include_non_stroke === true;
+      const strOf = (key) => (typeof body[key] === "string" ? body[key] : null);
+      const wantLabel = strOf("label");
+      const wantLayer = strOf("layer_id");
+      const wantGroup = strOf("group_id");
+      const wantBrush = strOf("brush") === null ? null : strOf("brush").toLowerCase();
+      let wantBbox = null;
+      if (Array.isArray(body.bbox) && body.bbox.length === 4) {
+        const nums = body.bbox.filter((v) => typeof v === "number" && Number.isFinite(v));
+        if (nums.length === 4) wantBbox = nums;
+      }
+      const rows = await atomsOf(handle, doc);
+      // **已撤销的不列 ✓**（只认 `revert` ✓；`reapply` 回来的仍隐藏 ✓ —— 服务端原样 ✓）。
+      const reverted = new Set();
+      for (const r of rows) {
+        const a = (r && r.atom) || {};
+        if (a.kind !== "revert") continue;
+        const target = a.payload && a.payload.target;
+        if (typeof target === "string") reverted.add(target);
+      }
+      let matched = 0;
+      let hiddenNonStroke = 0;
+      const hits = [];
+      for (let i = rows.length - 1; i >= 0; i -= 1) {
+        const r = rows[i];
+        const a = (r && r.atom) || {};
+        const seq = Number(r.seq) || 0;
+        const pl = a.payload || {};
+        if (seq <= since) continue;
+        const groupId = a.group_id === undefined ? null : a.group_id;
+        if (wantGroup !== null && groupId !== wantGroup) continue;
+        const label = a.label === undefined ? null : a.label;
+        if (wantLabel !== null && label !== wantLabel) continue;
+        if (wantLayer !== null && p2PayloadStr(a, "layer_id") !== wantLayer) continue;
+        if (reverted.has(a.id)) continue;
+        if (wantBbox !== null) {
+          const region = pl.region;
+          const num = (key) => {
+            const v = region && typeof region === "object" ? region[key] : undefined;
+            return typeof v === "number" ? v : NaN;
+          };
+          const [rx, ry, rw, rh] = [num("x"), num("y"), num("w"), num("h")];
+          if (!Number.isFinite(rx) || !Number.isFinite(ry)
+              || !Number.isFinite(rw) || !Number.isFinite(rh)) continue;
+          const apart = rx + rw < wantBbox[0] || wantBbox[0] + wantBbox[2] < rx
+            || ry + rh < wantBbox[1] || wantBbox[1] + wantBbox[3] < ry;
+          if (apart) continue;
+        }
+        if (wantBrush !== null) {
+          const brush = (p2PayloadStr(a, "brush") || "").toLowerCase();
+          if (!brush.includes(wantBrush)) continue;
+        }
+        if (!includeNonStroke && pl.source === undefined) {
+          hiddenNonStroke += 1;
+          continue;
+        }
+        matched += 1;
+        if (matched <= offset) continue;
+        if (hits.length > limit) continue;
+        const storedOrigin = p2PayloadStr(a, "origin");
+        hits.push({
+          atom_id: a.id,
+          seq,
+          kind: a.kind,
+          origin: storedOrigin !== null ? storedOrigin : p2AtomOriginOf(a.kind, pl),
+          stored_origin: storedOrigin,
+          label,
+          group_id: groupId,
+          layer_id: p2PayloadStr(a, "layer_id"),
+          brush: p2PayloadStr(a, "brush"),
+          timestamp: a.timestamp === undefined ? null : a.timestamp,
+          region: Object.prototype.hasOwnProperty.call(pl, "region") ? pl.region : null,
+        });
+      }
+      // **缩略图 ✓**（服务端每条一次区域渲染 ✓）：单次最多 20 张 ✓、区域 >256×256 跳过 ✓、
+      //   渲染失败**不列也不计入 skipped** ✓（服务端 `if let Ok(...)` 同义 ✓）。
+      let thumbs = 0;
+      const skipped = [];
+      if (wantThumb) {
+        for (const hit of hits) {
+          const region = hit.region;
+          const num = (key) => {
+            const v = region && typeof region === "object" ? region[key] : undefined;
+            return typeof v === "number" ? v : 0;
+          };
+          const rx = num("x"), ry = num("y"), rw = num("w"), rh = num("h");
+          if (thumbs >= 20 || rw <= 0 || rh <= 0 || rw > 256 || rh > 256) {
+            skipped.push(hit.atom_id);
+            continue;
+          }
+          try {
+            const rendered = await p2cRenderRgba(rx, ry, rw, rh);
+            if (rendered && !rendered.error && rendered.w > 0 && rendered.h > 0) {
+              let ew = rendered.w, eh = rendered.h, bytes = rendered.rgba;
+              if (thumbSize > 0 && (ew > thumbSize || eh > thumbSize)) {
+                const long = Math.max(ew, eh);
+                const nw = Math.max(1, Math.floor(ew * thumbSize / long));
+                const nh = Math.max(1, Math.floor(eh * thumbSize / long));
+                const small = new Uint8Array(nw * nh * 4);
+                for (let yy = 0; yy < nh; yy += 1) {
+                  const sy = Math.min(eh - 1, Math.floor(yy * eh / nh));
+                  for (let xx = 0; xx < nw; xx += 1) {
+                    const sx = Math.min(ew - 1, Math.floor(xx * ew / nw));
+                    const si = (sy * ew + sx) * 4;
+                    const di = (yy * nw + xx) * 4;
+                    small.set(bytes.subarray(si, si + 4), di);
+                  }
+                }
+                ew = nw; eh = nh; bytes = small;
+              }
+              const png = await encodePngRgba(ew, eh, bytes);
+              if (png) { hit.thumbnail = p2cB64(png); thumbs += 1; }
+            }
+          } catch (e) { /* 与服务端同义：渲染失败即跳过（不冒充缩略图）✓ */ }
+        }
+      }
+      const hasMore = limit > 0 && hits.length > limit;
+      hits.length = Math.min(hits.length, limit);
+      return json({
+        ok: true, server: false,
+        atoms: hits,
+        count: hits.length,
+        total: matched,
+        hidden_non_stroke: hiddenNonStroke,
+        offset,
+        truncated: hasMore,
+        has_more: hasMore,
+        limit,
+        thumbnail_count: thumbs,
+        thumbnail_skipped: skipped,
+        note: "按 seq 倒序（新的在前）；用 `offset` 翻页，`truncated`/`has_more` 为真表示满页；"
+          + "**`kind` 是存储形态**（笔触在库里也是 `import_image`）⇒ 判来源请看 `origin`"
+          + "（drawn/imported/generated/system）",
+      });
     }
 
     // **P2c-52 `get_ancestors` ✗**：**服务端走实例→master 链 ✓** ⇒ **∴ 本地从日志推导
@@ -7212,6 +8432,9 @@ async function withKernel(doc, fn) {
           },
           schema_version: 1, seq: 0, session: "session:web", timestamp: Date.now(),
           ...(typeof body.group_id === "string" ? { group_id: body.group_id } : {}),
+          // **`label` 写进**原子顶层**✗**（**服务端 `Atom.label` ✓**；`list_atoms(label=…)`
+          //   只认它 ✓）⇒ **∴ 旧本地**丢掉了它 ✗ ⇒ **∴ 带标签的笔在本地永远筛不到 ✓**。
+          ...(typeof body.label === "string" ? { label: body.label } : {}),
         }));
         return json({ ok: true, seq, server: false, bytes: rgba.length, blob_hash: hash,
                       note: "已由本地内核渲染并写入 import_image 原子" });
@@ -7402,7 +8625,8 @@ async function withKernel(doc, fn) {
       if (ids0.length === 0) return p2Bad("atom_ids 不能为空");
       const out = await __p2RevertBatch(ids0);
       out.server = false;
-      return json(out);
+      // **混合批的 `ok:false` ⇒ 400 ✓**（服务端 `server.rs:2872` 同映射 ✓；以前本地 200 ✗）。
+      return json(out, p2ToolStatusOf(out));
     }
     if (path === "/api/tools/revert_group") {
       const pl = (body && body.payload) || {};
@@ -7432,7 +8656,53 @@ async function withKernel(doc, fn) {
       const out = await __p2RevertBatch(ids);
       out.group_id = groupId;
       out.server = false;
-      return json(out);
+      return json(out, p2ToolStatusOf(out));
+    }
+    // **P2c-57 `revert_to_seq` ✓**（照 `write_revert_to_seq`，`tools.rs:20100`）：
+    //   **∴ 一句「回到第 n 笔之后」✓**——**∴ 筛法与服务端逐条同 ✗**：
+    //   · 候选 = **`seq > n` 且净荷有 `source` 键** ✓（`get("source").is_some()` ⇒ **`source:null` 也算有** ✓，
+    //     用 `hasOwnProperty` 才对 ✓）；`draw_shape`／`create_layer` 这类没有 `source` 的**不碰** ✓；
+    //   · **已撤过的按朴素集合跳过 ✗**（扫**全部** `revert` 原子 ✓ —— **`reapply` 回来的照样跳过** ✗，
+    //     与 `revert_group` 同一口径 ✓；**∴ 不**替服务端「修好」✓）；
+    //   · 空集支**没有 `reverted`／`failed` 两个数组** ✓（形状照实测 ✓，别好心补空数组 ✗）；
+    //   · 非空支 = `revert_atoms` 的结果 ＋ `seq` ✓（失败逐条照报 ✓，`ok` 由 `failed` 决定 ✓）。
+    if (path === "/api/tools/revert_to_seq") {
+      const specBad = p2ValidateArgsFor("revert_to_seq", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
+      // **服务端读的是 `args.seq` 本身 ✗ 不拆 `payload`**（与 `revert_atoms` 那两行不同 ✓）。
+      const seqArg = p2Count(body.seq, "seq");
+      if (seqArg.error) return seqArg.error;
+      if (seqArg.value === undefined) return p2Bad("seq 必填（撤销 seq 大于它的笔迹）");
+      const target = seqArg.value;
+      const rows = await atomsOf(handle, doc);
+      const alreadyReverted = new Set();
+      for (const r of rows) {
+        const a = (r && r.atom) || r || {};
+        if (a.kind === "revert" && a.payload && typeof a.payload.target === "string") {
+          alreadyReverted.add(a.payload.target);
+        }
+      }
+      const ids = [];
+      for (const r of rows) {
+        const a = (r && r.atom) || r || {};
+        const seq = typeof r.seq === "number" ? r.seq : (typeof a.seq === "number" ? a.seq : 0);
+        if (!(seq > target)) continue;
+        const pl = a.payload;
+        if (!(pl && typeof pl === "object"
+              && Object.prototype.hasOwnProperty.call(pl, "source"))) continue;
+        const id = String(a.id);
+        if (alreadyReverted.has(id)) continue;
+        ids.push(id);
+      }
+      if (ids.length === 0) {
+        return json({ ok: true, seq: target, reverted_count: 0, failed_count: 0,
+                      note: "没有需要撤销的笔迹（seq 大于它的一笔都没有）", server: false });
+      }
+      const out = await __p2RevertBatch(ids);
+      out.seq = target;
+      out.server = false;
+      // **逐条失败时 `ok:false` ⇒ 状态照服务端映射（400 ✓）** ✗ 不是 200 ✓。
+      return json(out, p2ToolStatusOf(out));
     }
 
     // **★ 风格预设四端点 ✗ ★**（第 2 批 ✓；**纯计算在模块层 ✓（`p2PresetLibrary`／`p2ExpandPreset` …），

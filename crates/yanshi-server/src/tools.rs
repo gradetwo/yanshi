@@ -3355,13 +3355,21 @@ fn read_list_brushes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 //   `pressure_curve`／按 pressure 画的笔触**会不会有可见效果** ✓
                 //   （实测：`2B_pencil` 有、`100%_Opaque` 几乎没有 ✓）。
                 let (pressure_sensitive, pressure_settings) = brush_pressure_response(&brush);
-                brushes.push(json!({
+                // **B 期项 10**：涂抹量（`smudge > 0` 即涂抹类）直接报出来，
+                // 调用方不用再从 `params` 里翻它是不是涂抹笔。
+                let smudge = f64::from(brush.get(hokusai::BrushSetting::Smudge).base_value);
+                let mut entry = json!({
                     "name": name,
                     "reads_canvas": brush_reads_the_canvas(&brush),
                     "pressure_sensitive": pressure_sensitive,
                     "pressure_settings": pressure_settings,
                     "params": canonical_param_summary(&brush),
-                }))
+                    "smudge": smudge,
+                });
+                if smudge > 0.0 {
+                    entry["smudge_note"] = json!("涂抹类：须先有颜料");
+                }
+                brushes.push(entry);
             }
             // 解析/读取失败要**如实说**，不许假装有参数
             // **解析失败时字段也要在**（值给 `null` ✓）—— 免得调用方要区分"字段不存在"与"值未知" ✗
@@ -3371,6 +3379,7 @@ fn read_list_brushes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 "reads_canvas": null,
                 "pressure_sensitive": null,
                 "pressure_settings": null,
+                "smudge": null,
                 "note": "读不到或解析失败",
             })),
         }
@@ -13223,6 +13232,14 @@ fn read_list_effects(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             "adjustments": yanshi_render::ADJUSTMENT_NAMES,
             "filters": yanshi_render::FILTER_NAMES,
         },
+        // B 期项 13：`impasto` 已是内核 `relief` 的别名（工具层同样放行），
+        // 只是从未在列表里单列——这里补一条目，不动 `FILTER_NAMES` 常量与 relief 实现。
+        // 条目只写别名关系，不暗示厚涂可用（relief 的高度源问题是 C 期的事）。
+        "filter_aliases": [{
+            "name": "impasto",
+            "alias_of": "relief",
+            "note": "同 relief",
+        }],
     }))
 }
 
@@ -15511,7 +15528,8 @@ fn write_gradient_blend(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
     let steps = args
         .get("steps")
         .and_then(Value::as_f64)
-        .unwrap_or(10.0)
+        // B 期项 11：缺省 10 步在长渐变上必见阶梯 ⇒ 缺省 64 步；可调范围不变（2..200）。
+        .unwrap_or(64.0)
         .clamp(2.0, 200.0) as usize;
     let smooth = args.get("smooth").and_then(Value::as_bool).unwrap_or(false);
 
@@ -17300,6 +17318,11 @@ fn stamp_stroke_from(
     // 让小尺寸丢掉拖曳泵）。≤ 0 时每步的涂抹都是空操作
     // （采样即自身，见 `smudge_dab` 的早返）⇒ 内循环直接跳过调用。
     let drag_length = smudge_length * stroke_radius;
+    // **每步涂抹量（D 期，项 14）**：内循环每 2px 步调一次 `smudge_dab`，
+    // 但引擎每 dab 间距才盖一枚 dab ⇒ 名义量必须归一到每步（见
+    // `tools_brush::smudge_step_amount`），否则大笔拖曳超施约 9.4 倍且随
+    // 尺寸增长。调用点仍每步拖（“沿途拖”的语义不变），变的只是每步的量。
+    let smudge_step = smudge_step_amount(smudge_amount, stroke_radius, brush);
     // ** pressure_shape / stroke_taper 要用**：预计算整笔总弧长（像素），
     // 写入 BrushState。引擎每 dab 累加实际步进距离，算出归一化进度 t。
     // 注意：不用 state.stroke_state——它是流式累积的"已走路程"，不知道总长度。
@@ -17388,6 +17411,8 @@ fn stamp_stroke_from(
                     //   方向用**这一段的运动方向**（`x-px, y-py`，`smudge_dab` 内部会归一化），
                     //   长度 = `smudge_length × 像素半径`。只在 `smudge > 0` 的笔刷上生效。
                     //   掩膜遍（`skip_smudge`）与拖曳长度 0 时不调：前者只记落点，后者是空操作。
+                    //   **D 期**：每步的量用归一后的 `smudge_step`（每 dab 间距累计恰为
+                    //   一名义量），不是名义量本身 —— 否则每步全量施加即超施约 9.4 倍。
                     if smudge_amount > 0.0 && !skip_smudge && drag_length > 0.0 {
                         yanshi_render::brush::smudge_dab(
                             surface,
@@ -17395,7 +17420,7 @@ fn stamp_stroke_from(
                             stroke_radius,
                             (x - px, y - py),
                             drag_length,
-                            smudge_amount,
+                            smudge_step,
                         );
                     }
                     steps += 1;
@@ -22135,18 +22160,37 @@ pub fn validate_args(spec: &ToolSpec, args: &Value) -> Result<()> {
         }
         if !spec.params.iter().any(|param| param.name == key) {
             let accepted: Vec<&str> = spec.params.iter().map(|param| param.name).collect();
+            // B 期项 5：batch 顶层误传子工具参数时追加归属提示。
+            // 通用化：对未知 key 在全部工具参数表里匹配归属工具，不硬编码 layer_id；
+            // 只在 batch 上追加（其它工具的报错文本保持原样）。
+            let mut detail = format!(
+                "{} 不接受参数 {key}（拼写错误？）；可用参数：{}；框架级参数：{}",
+                spec.name,
+                if accepted.is_empty() {
+                    "无".to_owned()
+                } else {
+                    accepted.join(", ")
+                },
+                FRAMEWORK_PARAMS.join(", ")
+            );
+            if spec.name == "batch" {
+                let owners: Vec<&str> = tools_registry::ALL_TOOLS
+                    .iter()
+                    .filter(|other| other.name != spec.name)
+                    .filter(|other| other.params.iter().any(|param| param.name == key))
+                    .map(|other| other.name)
+                    .take(4)
+                    .collect();
+                if !owners.is_empty() {
+                    detail.push_str(&format!(
+                        "；提示：{key} 是子工具参数（如 {} 接受该参数），请放在 calls 内各笔 arguments 里",
+                        owners.join("、")
+                    ));
+                }
+            }
             return Err(YanshiError::new(
                 ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!(
-                    "{} 不接受参数 {key}（拼写错误？）；可用参数：{}；框架级参数：{}",
-                    spec.name,
-                    if accepted.is_empty() {
-                        "无".to_owned()
-                    } else {
-                        accepted.join(", ")
-                    },
-                    FRAMEWORK_PARAMS.join(", ")
-                )),
+                ErrorContext::detail(detail),
             ));
         }
     }

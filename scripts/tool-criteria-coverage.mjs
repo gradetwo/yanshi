@@ -82,6 +82,15 @@ const NOT_CRITERIA = [
   //     并断其退出码** ⇒ **∴ 再枚举它本身**✗ **只会多一条重复检查／恒 exit 0 的假判据** ✓
   //   ⇒ **∴ 它属于本清单** ✓（**不是漏接的判据** ✓）。
   "gen-pwa-preset-library.mjs",
+  // **∴ `gen-pwa-tool-specs.mjs` ✓**（**batch8 带进来的 ✓；与 `gen-pwa-preset-library.mjs` 同根**✗）：
+  //   **它是生成器 ＋ 校验库**✗（`--write` **把服务端注册表的 §表生成进 `web/api-local.js` ✓**
+  //   ＋ `--check` **只核对是否最新 ✓**）
+  //   ⇒ **∴ 判据入口早已接线**✓：**`tool-pwa-suggestion-accept.mjs` 自己调它并断其退出码**
+  //     （**∴ 那个名字符合 tool-* glob ⇒ 会被枚举 ✓**）
+  //   ⇒ **∴ 再枚举它本身**✗ **只会多一条重复检查／恒 exit 0 的假判据** ✓
+  //   ⇒ **∴ 它属于本清单** ✓（**不是漏接的判据** ✓；**∴ 代价**：#50 合并时**漏登记** ⇒
+  //     `tool-criteria-coverage` 在 run 40791747706 的 shard 5/6 立刻红并点名 ✓）。
+  "gen-pwa-tool-specs.mjs",
   // **∴ `pwa-sync-wasm.mjs` ✓**（第 610 轮 ✓）：**它**改产物**✗（**把 `crates/yanshi-wasm/pkg/`
   // 拷到 `web/wasm/` ✓**）⇒ **∴ 本就不该当判据 ✓**；**∴ 而"产物是否完整"由
   // `tool-pwa-assets.mjs` 判 ✓**（**它断言 wasm 存在且非空 ✓**）** ✓✓。

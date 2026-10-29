@@ -284,6 +284,10 @@ pub(super) fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> R
         // 成功回执里 `missing_body` 恒为 0 ✓（`> 0` 时上面已直接失败 ✓）。
         "missing_body": stats.missing_body,
         "missing_derived": stats.missing_derived,
+        // **B 期项 7/8（出口侧口径）**：`missing_derived` 只数存储里缺失的
+        // 派生索引；按设计未装包的派生总数另报，不与丢失混在一栏。
+        "missing_derived_note": "存储里缺失的派生索引数；按设计未装包的派生（tile 索引由本体位图重建，导出时不装包）另见 derived_not_packaged，不计入本栏",
+        "derived_not_packaged": stats.derived_not_packaged,
     });
     if let Some(path) = &path {
         value["path"] = json!(path);

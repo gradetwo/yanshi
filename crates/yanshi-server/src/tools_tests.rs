@@ -2138,6 +2138,49 @@ fn smudge_budget_model_splits_the_calibration_anchors() {
     assert!(smudge_stroke_cost_ms(2800.0, 150.0) < smudge_stroke_cost_ms(2801.0, 150.0));
 }
 
+/// **D 期（项 14）**：每步涂抹量归一到每 dab 间距一名义量。
+/// 水彩 size 300（半径 150，dpar 2 + dpbr 6 ⇒ 间距 18.75px、每间距 9.375 步）：
+/// 名义 0.3 ⇒ 每步约 0.0372，且 `(1-步量)^(间距/2)` 恰回 0.7（累计一名义量）。
+/// 变异：把指数写成 `spacing / 2`（倒置）⇒ 第二组断言红；把 helper 改回返回原量
+/// ⇒ 第一组断言红。
+#[test]
+fn smudge_step_amount_normalises_per_dab_interval() {
+    use super::tools_brush::smudge_step_amount;
+    use hokusai::BrushSetting;
+    let mut brush = hokusai::Brush::default();
+    brush.set(
+        BrushSetting::DabsPerActualRadius,
+        hokusai::SettingValue::constant(2.0),
+    );
+    brush.set(
+        BrushSetting::DabsPerBasicRadius,
+        hokusai::SettingValue::constant(6.0),
+    );
+    let step = smudge_step_amount(0.3, 150.0, &brush);
+    assert!(
+        (step - 0.0372).abs() < 0.001,
+        "水彩 size 300 的每步量应当约 0.0372（实测 {step}）"
+    );
+    let cumulative = 1.0 - (1.0 - step).powf(18.75 / 2.0);
+    assert!(
+        (cumulative - 0.3).abs() < 1e-9,
+        "每间距累计必须恰为一名义量 0.3（实测 {cumulative}）"
+    );
+    // 边界恒等：0 与 1 不变；两率皆 0（引擎不盖 dab）时返回原量。
+    assert_eq!(smudge_step_amount(0.0, 150.0, &brush), 0.0);
+    assert_eq!(smudge_step_amount(1.0, 150.0, &brush), 1.0);
+    let mut no_dabs = hokusai::Brush::default();
+    no_dabs.set(
+        BrushSetting::DabsPerActualRadius,
+        hokusai::SettingValue::constant(0.0),
+    );
+    no_dabs.set(
+        BrushSetting::DabsPerBasicRadius,
+        hokusai::SettingValue::constant(0.0),
+    );
+    assert_eq!(smudge_step_amount(0.3, 150.0, &no_dabs), 0.3);
+}
+
 /// **P-4 跟进（水彩 s36 洗白）**：净室的涂抹量与拖曳长度都读求值后值，
 /// 只计 `brush_radius` 那条映射。小尺寸（半径 18，ln≈2.89，正好落在
 /// 曲线的 2.89 拐点上）时：smudge 0.3+0.65 ⇒ 0.95，长度 0.03+0.07 ⇒ 0.10；

@@ -710,6 +710,8 @@ pub fn feed_base(
 //   * 采样 = **把整个 dab 足迹沿运动方向的反方向平移 `length_px`**（经典"拖曳"）：
 //     于是笔尖**后方**的颜色被带进当前位置 => 跨色边界时边界色会被拖出来；
 //   * 混合是**线性**的（`out = dst*(1-a) + src*a`），无随机数 => 同输入同输出；
+//     混合在**预乘空间**做（tile 是 fix15 预乘值）：直通色只在两输入直通色之间
+//     取值，永不超调；与透明源混合时直通色不动、只稀释 alpha（D 期修）。
 //   * 颜色按 `u16`（`<<7` 缩放）与 `feed_base` 同一套表示，读写口径一致。
 //
 // 返回被改写的像素数（供判据/探针看"到底动了多少"）。
@@ -796,9 +798,17 @@ pub fn smudge_dab(
         }
     }
     let mut touched = 0usize;
-    // **解码查表只取一次** ✓：fix15 输入只有 32641 个离散值，表项就是 `srgb_to_linear` 的
-    // 原值 ⇒ 查表与直接算**逐位相同**，只是省掉每像素 6 次 `powf`（见 `color.rs`）。
-    let decode_table = crate::color::srgb_decode_fix15_table();
+    // **★★★ 预乘空间直接插值（D 期修：项 14＋项 15 同根）★★★**
+    //   tile 像素是 fix15 **预乘**值（vendor `tile.rs`：premultiplied alpha）⇒
+    //   涂抹混合必须在预乘空间做：`out = dst*(1-a) + src*a`，四通道同式。
+    //   旧实现把预乘值当直通色，先 sRGB 解码再混合、写回时却不再乘回 alpha：
+    //   读回（反预乘除 alpha）后直通色被放大 —— 与透明源混合时墨 60 读回约 84，
+    //   每步复利到白（纸色底淡色扇弧）；同色异 alpha 时直通 64 读回约 91
+    //   （半透明水彩漆上的淡隙条纹）。预乘插值是凸组合：结果恒在两输入之间，
+    //   不可能超出、也不可能提亮；与透明源混合时直通色一位不动、只稀释 alpha，
+    //   正是“拖空处只把漆抹薄”的语义。不透明像素上预乘 = 直通，amount=0/1
+    //   两端与旧实现逐位一致；中间量上旧实现是双重 gamma 变换后的混合，与
+    //   服务端 feed_base／读回（皆无 gamma 变换）本就不一致，改后反而一致。
     {
         use hokusai::TiledSurface;
         for tile_y in y0.div_euclid(64)..=y1.div_euclid(64) {
@@ -823,28 +833,18 @@ pub fn smudge_dab(
                         }
                         let src = sample[(qy - sy0) as usize * sample_w + (qx - sx0) as usize];
                         let dst = tile[row as usize][column as usize];
-                        // **★ 颜色三通道在**线性空间**混合，alpha 保持线性插值** ✓（第 1311 轮；Phase 1）
-                        //   **⇒ 为什么**：`dst*(1-a) + src*a` 是**光的相加** ⇒ 只在 linear 上有物理意义
-                        //      （sRGB 是感知编码，有 gamma）⇒ 在 sRGB 上插值会让中间调**偏暗** ✗
-                        //   **⇒ 为什么 alpha 不转**：alpha 不是 gamma 编码量 ⇒ 它在两个空间里都是线性 ✓
-                        //   **⇒ 缩放**：tile 存的是 `u8 << 7`（`brush.rs:658`）⇒ 所以 `255<<7 = 32640` 是满量程 ✓
-                        //   **⇒ 判据**：`tool-visible-delta`（不涂抹的纯色笔）必须**一字不变**；
-                        //      而涂抹笔的混合像素**变亮** ⇒ 与 `mix_smudge_linear`（wasm 侧）同一套数学 ✓
-                        const FULL: f32 = 32640.0; // 255 << 7
-                        let mix_rgb = |i: usize| -> u16 {
-                            let lin = crate::color::decode_fix15_with_table(decode_table, dst[i])
-                                * (1.0 - amount)
-                                + crate::color::decode_fix15_with_table(decode_table, src[i])
-                                    * amount;
-                            (crate::color::linear_to_srgb(lin).clamp(0.0, 1.0) * FULL).round()
-                                as u16
+                        // 预乘插值（见上面 D 期注记）：四通道同式，凸组合，无超调。
+                        let mix = |d: u16, s: u16| -> u16 {
+                            (f32::from(d) * (1.0 - amount) + f32::from(s) * amount)
+                                .round()
+                                .clamp(0.0, 65535.0) as u16
                         };
-                        let mix_alpha = |i: usize| -> u16 {
-                            let a = f32::from(dst[i]);
-                            let b = f32::from(src[i]);
-                            (a * (1.0 - amount) + b * amount).clamp(0.0, 65535.0) as u16
-                        };
-                        let out = [mix_rgb(0), mix_rgb(1), mix_rgb(2), mix_alpha(3)];
+                        let out = [
+                            mix(dst[0], src[0]),
+                            mix(dst[1], src[1]),
+                            mix(dst[2], src[2]),
+                            mix(dst[3], src[3]),
+                        ];
                         if out != dst {
                             tile[row as usize][column as usize] = out;
                             touched += 1;
@@ -2980,5 +2980,98 @@ mod smudge_tests {
             let edge = read(&mut surface, split as i32 + 6, 32);
             assert!(!is_reddish(edge), "不该被拖动：{edge:?}");
         }
+    }
+
+    /// 直接写一块 tile 像素（`feed_base` 写的是直通字节，半透明预乘像素须直写）。
+    fn write_tile(surface: &mut hokusai::tile_mem::MemSurface, x: i32, y: i32, px: [u16; 4]) {
+        let tile = surface.tile_request_start(x.div_euclid(64), y.div_euclid(64));
+        tile[(y.rem_euclid(64)) as usize][(x.rem_euclid(64)) as usize] = px;
+        surface.tile_request_end(x.div_euclid(64), y.div_euclid(64));
+    }
+
+    /// 按服务端读回口径（`tools.rs` 的反预乘 `>> 7`）把 tile 像素换算回直通字节。
+    fn read_straight(surface: &mut hokusai::tile_mem::MemSurface, x: i32, y: i32) -> [f32; 4] {
+        let px = read(surface, x, y);
+        let alpha = f32::from(px[3]);
+        if alpha == 0.0 {
+            return [0.0, 0.0, 0.0, 0.0];
+        }
+        let mut out = [0.0f32; 4];
+        for i in 0..3 {
+            out[i] = f32::from(px[i]) * 32767.0 / alpha / 128.0;
+        }
+        out[3] = alpha / 128.0;
+        out
+    }
+
+    /// 项 15 回归：与透明源混合不得提亮直通色（旧实现：墨 60 → 读回约 84，复利到白）。
+    ///
+    /// 左侧透明、右侧不透明墨 `[60,50,40,255]`，笔尖在交界、向 +x 运动、拖曳 20px：
+    /// 墨区左缘像素的采样点落在透明区（`src alpha = 0`）。涂抹只能稀释 alpha，
+    /// 直通色必须保持为墨色；旧实现把预乘值当直通色做 sRGB 解码混合，读回时除以
+    /// 混后 alpha，墨色被放大 —— 纸色底上这就是淡色扇弧（深色不透明底上无放大，
+    /// 与探针“深色底弧不可见”一致）。
+    #[test]
+    fn smudge_mixing_with_transparent_preserves_straight_colour() {
+        let (w, h) = (128usize, 64usize);
+        let mut surface = hokusai::tile_mem::MemSurface::new();
+        for y in 0..h {
+            for x in 0..w {
+                let px = if x < 64 {
+                    [0u16, 0, 0, 0]
+                } else {
+                    [60u16 << 7, 50 << 7, 40 << 7, 255 << 7]
+                };
+                write_tile(&mut surface, x as i32, y as i32, px);
+            }
+        }
+        let touched = smudge_dab(&mut surface, (64.0, 32.0), 12.0, (1.0, 0.0), 20.0, 0.51);
+        assert!(touched > 0, "揉合一个像素都没动");
+        let straight = read_straight(&mut surface, 66, 32);
+        for (channel, expected) in [(0, 60.0f32), (1, 50.0), (2, 40.0)] {
+            assert!(
+                (straight[channel] - expected).abs() <= 2.0,
+                "与透明源混合后直通色必须保持墨色：通道 {channel} 实测 {straight:?}"
+            );
+        }
+        assert!(
+            (straight[3] - 125.0).abs() <= 3.0,
+            "alpha 应被稀释为 255×(1-0.51)≈125：实测 {straight:?}"
+        );
+        let untouched = read_straight(&mut surface, 80, 32);
+        assert!(
+            (untouched[0] - 60.0).abs() <= 2.0,
+            "dab 盘外像素不得动：实测 {untouched:?}"
+        );
+    }
+
+    /// 项 14 回归：同一直通色、不同 alpha 的两块预乘像素混合，直通色不得漂移。
+    ///
+    /// 左侧墨预乘（直通 64，alpha 255）、右侧墨预乘（直通约 64，alpha 32），笔尖在
+    /// 交界、向 +x 运动、拖曳 20px、量 0.3：右侧像素的采样点落在左侧。旧实现在
+    /// alpha 不一致时把预乘值当直通色混合，读回直通约 92（比两输入都亮得多）——
+    /// 半透明水彩漆上这就是淡隙条纹的来源（dab 边缘与重叠区的 alpha 本来就起伏，
+    /// 每步涂抹都把 alpha 起伏翻成亮度起伏）。
+    #[test]
+    fn smudge_same_straight_colour_different_alpha_stays_put() {
+        let (w, h) = (128usize, 64usize);
+        let mut surface = hokusai::tile_mem::MemSurface::new();
+        for y in 0..h {
+            for x in 0..w {
+                let px = if x < 64 {
+                    [64u16 << 7, 56 << 7, 48 << 7, 255 << 7]
+                } else {
+                    [8u16 << 7, 7 << 7, 6 << 7, 32 << 7]
+                };
+                write_tile(&mut surface, x as i32, y as i32, px);
+            }
+        }
+        let touched = smudge_dab(&mut surface, (64.0, 32.0), 12.0, (1.0, 0.0), 20.0, 0.3);
+        assert!(touched > 0, "揉合一个像素都没动");
+        let straight = read_straight(&mut surface, 66, 32);
+        assert!(
+            (straight[0] - 64.0).abs() <= 3.0,
+            "同色异 alpha 混合后 R 直通必须仍约 64：实测 {straight:?}"
+        );
     }
 }

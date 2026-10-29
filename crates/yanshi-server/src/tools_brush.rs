@@ -1616,6 +1616,40 @@ pub(super) fn smudge_stroke_cost_ms(path_len_px: f64, radius_px: f64) -> f64 {
     path_len_px * radius_px * radius_px * SMUDGE_COST_PER_PX3_MS
 }
 
+/// **每步涂抹量（D 期，项 14）**：`stamp_stroke_from` 每 2px 插值步调一次
+/// `smudge_dab`，而引擎每 dab 间距才盖一枚 dab ⇒ 旧实现把一名义量施加了
+/// `间距 / 2px` 倍（水彩 size 300：间距 18.75px ⇒ 约 9.4 倍），且每像素累计
+/// 步数 = 直径 / 2px 随半径增长 ⇒ 大笔拖曳更重（探针列均变异系数 size 300
+/// 为 0.38、size 600 为 0.76 的尺寸 scaling 根源）。
+/// 归一：`amount_step = 1 - (1 - amount)^(2 / spacing)`，使每 dab 间距内的
+/// 累计拖曳恰为一名义量（与间距无关 ⇒ 与尺寸无关；`amount = 0/1` 时恒等）。
+/// `spacing` 取引擎 `count_dabs_to` 的同一口径：`dpar / actual_radius +
+/// dpbr / base_radius`（`dabs_per_second` 项：三支涉事笔刷皆为 0，见 .myb；
+/// 其它笔刷若有时间项，本式只计距离项，量取下界，不放大）。
+/// `actual_radius = base_radius = radius_px`（引擎注记：实际半径不受随机扰动）。
+/// 边界：`spacing ≤ 0` 或两率皆 0（引擎不盖 dab）时返回原量，不放大不缩小。
+pub(super) fn smudge_step_amount(amount: f64, radius_px: f64, brush: &hokusai::Brush) -> f64 {
+    if amount <= 0.0 || amount >= 1.0 || radius_px <= 0.0 {
+        return amount.clamp(0.0, 1.0);
+    }
+    let dpar = f64::from(
+        brush
+            .get(hokusai::BrushSetting::DabsPerActualRadius)
+            .base_value,
+    );
+    let dpbr = f64::from(
+        brush
+            .get(hokusai::BrushSetting::DabsPerBasicRadius)
+            .base_value,
+    );
+    let dabs_per_px = (dpar + dpbr) / radius_px;
+    if dabs_per_px <= 0.0 || !dabs_per_px.is_finite() {
+        return amount;
+    }
+    let spacing_px = 1.0 / dabs_per_px;
+    1.0 - (1.0 - amount).powf(2.0 / spacing_px)
+}
+
 /// 涂抹预算检查 ✓：只对「涂抹真的会跑」的笔生效（`smudge > 0` 且拖曳长度 > 0）。
 /// `smudge_length = 0` 的笔（如 oil-01-paint）涂抹是空操作，不在此列。
 /// 半径与涂抹量都取**覆盖后**的笔刷值（`size`／`brush_params` 已应用）。

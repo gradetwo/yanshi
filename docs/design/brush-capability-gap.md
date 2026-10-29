@@ -23514,3 +23514,412 @@ head（seq 11）⇒ `headUpto(7)` 为空、窗口只有一段 ✓。**∴ 补 §
 **入口闭链**：PWA 的批注／建议卡走 `preview_suggestion`（逐步红绿 ＋ 影响范围）→
 `accept_suggestion`／`accept_suggestions`（一键应用、批量、失败回滚）→ `list_suggestions`（状态与冲突）；
 此前离线态这条链路整段 501，现在两边同口径 ✓。
+
+## 六百六十五、本地 `list_effects`／`sample_colors`／`get_histogram` 落地：直方图四个作用域、图层作用域用合成原子；判据抓出「内核同 head_seq 复用旧状态」的真缺陷
+
+**做什么**：三个只读工具从 501 变成与服务端同口径（`web/api-local.js`；`LOCAL_IMPLEMENTED`
+机械计数 170 → **173** ✓，常量与机械重数一致 ✓）。
+
+1. **`list_effects`**：从原子日志推导**存活**对象（含**隐藏对象** `visible:false` 与
+   **禁用对象** `enabled:false` ✓），只留调整／滤镜；排序照 `alive_objects()` 的
+   `(layer_id, z_index, object_id)` ✓；字段 `object_id/layer_id/type/name/adjustment_type/
+   filter_name/params/opacity/enabled` ✓（缺省取 `p2EffectiveData`，无键 ⇒ `null` ✓）；
+   `layer_id` 过滤是**字符串** ✓，不存在的层回**空表**（不是 404 ✓）；回执带
+   `supported.{adjustments,filters}` ✓。
+2. **`sample_colors`**：一次区域渲染；包围盒**先夹到画布内**再算 stride ✓（照服务端
+   `外§27`：未夹 ⇒ 同批的远处画布外点会把 stride 撑大 ⇒ 画布内的点被读成 `null` ✗）；
+   小数坐标**向下取整**采样、回显保留原值 ✓；画布外的点 `rgba:null` ＋ 顶部逐字警告 ✓
+   （「这不是画布边缘的颜色」✓ —— 不许夹到边缘冒充成功 ✗）。
+3. **`get_histogram`**：四个作用域（整文档／选区／图层／图层×选区 ✓）；256 桶逐通道
+   ＋ 整数 Rec.601 亮度 ✓；摘要按桶**独立重算**（均值／极值／p5／中位数／p95 ✓，
+   分位数取**最小累计 ≥ ⌈p·n/100⌉** 的桶 ✓）；选区回显**未裁剪**的入参 ✓；
+   图层存在性照 `state.layers.contains_key` ✓（**墓碑层仍算存在** ✓ ⇒ 回整幅背景，不 404 ✓）。
+4. **入口校验**：三个端点都先走 `p2ValidateArgsFor`（未知键／缺必填／声明类型三段，
+   文案逐字照 `validate_args` ✓）⇒ `region` **声明为 object** ⇒ 数组形式在入口被拒 ✓
+   （`parse_bbox` 的数组分支经工具入口走不到 ✓）；`layer_id:123` ⇒ 类型错误 ✓
+   （不是「等同没给」✗）；显式 `null` ⇒ 视为未提供 ✓。
+
+**图层作用域怎么做到的**：内核没有单层渲染通道 ⇒ 本地用**合成原子**临时「把别的层都藏起来」
+（隐藏层补 `visible:true` ✓／组内层断父链 ✓／纯调整层补 `clipping_mask:true` ✓ ——
+不补 ⇒ 反相会把背景也反掉 ✗）；合成原子只喂给这一次 `load_atoms_json`，**不落盘** ✓。
+
+**判据抓出的产品缺陷（先测量、后改产品 ✓）**：
+
+| # | 症状 | 根因 | 处理 |
+|---|---|---|---|
+| ① | §C6 组内层 L2 的蓝矩形没画出来（回白）；§C8 已删层 L5 混进了上一层 H1 的黄 | **产品缺陷** ✗：内核的 `IncrementalFolder` 把「`head_seq` 相同」当成「日志没变」✓（`seq.rs` 的 `last.seq == n` 直接回旧状态，**不看日志内容** ✗）⇒ 两次图层作用域的合成原子恰好落在同一段 seq（都是 `持久化 head+1..`）⇒ **后一次拿到前一次的状态** ✗。探针实测：C6 的输出 = C5 的白图、C8 的输出 = C7 的黄图 ✓；同一组原子在**新建内核**上渲染则完全正确 ✓ ⇒ 证实是状态复用 ✓ | 渲完立刻**折回权威日志** ✓（`p2cRenderRgba` 的 `finally`）；折回失败**报错**（转 501）✓ 而不是静默 ✓ |
+
+**判据**（`scripts/tool-pwa-read-inspect.mjs`，同一请求两边打、比解析后 JSON；**428 条断言**）：
+§A `list_effects` 全字段／顺序／隐藏与禁用都在／层过滤三种形态／未知键与类型错误逐字；
+§B `sample_colors` 区域内点、小数坐标、画布外三点（`rgba:null` ＋ 警告逐字）、
+夹包围盒 ＋ 远点（stride）、六个参数错误逐字；§C `get_histogram` 四作用域 ＋ 摘要恒等式
+（桶和 = `pixels`，摘要全部从桶重算 ✓）、三处图层补偿（隐藏层／组内层／纯调整层）、
+墓碑层、`layer_id` 类型、不存在的层 404 ＋ `context.layer_id`、不相交区域逐字 Bbox；
+§D **合成原子不落盘**（日志条数与层级 `set_property` 计数两边相等，且恰好一条 H1 可见原子 ✓）。
+
+**变异（十五次，全部 `exit 1` ✓；每次后恢复、与原件逐字节相同 ✓）**：
+
+| # | 改坏 | 红在哪（实测） |
+|---|---|---|
+| ① | 去掉「折回权威日志」（**就是本轮修的缺陷** ✓） | §C6／§C8 |
+| ② | `list_effects` 排序反转 | §A／§A2 |
+| ③ | `enabled` 恒 `true` | §A enabled 序列 |
+| ④ | 画布外点按成功处理 | §B3／§B4 |
+| ⑤ | stride 用未夹的包围盒宽 | §B4 |
+| ⑥ | 亮度系数 `587→586` | §C1／§C9b |
+| ⑦ | 分位数 `ceil→floor` | §C4 |
+| ⑧ | 去掉 `clipping_mask` 补偿 | §C5 |
+| ⑨ | 去掉断父链 | §C6 |
+| ⑩ | 去掉强制可见 | §C7 |
+| ⑪ | 不存在的层回空表而不是 404 | §C10 |
+| ⑫ | 去掉 `get_histogram` 入口校验 | §C3 |
+| ⑬ | 去掉 `list_effects` 入口校验 | §A3 |
+| ⑭ | 去掉 `sample_colors` 入口校验 | §B5 |
+| ⑮ | 摘要均值分母 `count→count+1` | §C1／§C2／§C4／§C5 |
+
+**已知限制（如实记 ✓）**：
+- 图层作用域是**合成原子近似** ✓（服务端探针逐位相同 ✓），但它在内核里会**短暂改变状态** ⇒
+  折回那一步是**必须的** ✓（不是优化 ✓）；折回成本 = 一次权威日志折叠（本判据 25 原子，可忽略 ✓）。
+- 图层存在性用 `contains_key` 口径 ✓：**墓碑层**仍算存在（与服务端一致 ✓），
+  「创建被撤销」的层则不在表里 ⇒ 404 ✓（由 §C10 与既有撤销判据各自守着 ✓）。
+- `sample_colors` 的画布外点**不做边缘夹取** ✓：给 `null` ＋ 警告 ✓（夹取会让人以为取色成功 ✗）。
+
+## 六百六十六、本地原子日志三端点落地：`get_stroke_log`／`list_atoms` 从 501 变真实现、`get_atom` 补齐七个字段，另给写入层补 `origin` 戳
+
+**做什么**（`web/api-local.js`；`LOCAL_IMPLEMENTED` 机械计数 173 → **175** ✓，常量与机械重数一致 ✓）：
+
+1. **`get_stroke_log`**（照 `read_get_stroke_log`，`tools.rs:8818`）：一笔一行的审计视图。
+   - 来源两路：净荷 `payload.source` **优先**；没有才回退普通矢量笔 ——
+     `DrawStroke`／`Erase` 的 `payload.data` 拼成 `{kind:"draw",points,color,size}` ✓
+     （`color` 走 `normalize_color` 同口径：数组 ≥3 元 ⇒ `{r,g,b,a}` **整数**，缺 alpha 补 255 ✓）。
+   - 只收 `source.kind` ∈ `brush`／`medium`／`draw` ✓（其余静默跳过，与服务端同 ✓）。
+   - **撤销口径与 `list_atoms` 不同** ✓：这里按「**最近一次** `revert`／`reapply`」判活 ✓
+     （撤了又 reapply 回来 ⇒ 算 live ✓）；`list_atoms` **只认 `Revert`** ✓ —— 两处**故意不同**，
+     照抄服务端（`read_list_atoms` 那处不顺手改 ✓）。
+   - 过滤 `layer_id`／`object_id`／`group_id`（都是**字符串**，非字符串视同未给 ✓）、
+     `since_seq` 按 `seq <= since` 跳过 ✓、`order:"newest"` 反转 ✓、`offset`／`limit`（缺省 50，夹 500 ✓）。
+   - 条目字段逐个照抄（`seq/atom_id/kind/layer_id/object_id/message/brush/medium/size/color/color_to/
+     hardness/opacity/smooth/seed/points/points_count/bbox/first_point/last_point/pressure/timestamp` ✓）；
+     **`pressure` 是 `{min,max,first,last}`** ✓、矢量笔无压力 ⇒ `null` ✓；**条目里没有 `label`** ✓
+     （服务端也没有 ⇒ 判据照实按「无 label」写 ✓）。
+   - 回执 `returned/total/reverted_excluded/offset/limit/next_offset/truncated/note` ✓；
+     恒等式 `total + reverted_excluded = 全部匹配` ✓。
+2. **`list_atoms`**（照 `read_list_atoms`，`tools.rs:20779`）：倒扫日志的审计列表。
+   - 缺省**藏非笔迹**（`payload.source === undefined` ✓），命中数记进 `hidden_non_stroke` ✓；
+     `include_non_stroke:true` 才给（`create_document`／`create_layer` 之类 `origin:"system"` ✓）。
+   - 过滤 `since_seq`／`label`／`layer_id`／`group_id`／`brush`（**转小写包含** ✓）、
+     `reverted`（**只认 `Revert`** ✓）、`bbox`（相交判定，**边界相接不算相交** ✓：
+     `rx+rw < bx || bx+bw < rx || ry+rh < by || by+bh < ry` ✓）；`bbox` 非 4 元有限数 ⇒ **忽略不报错** ✓。
+   - 分页语义照服务端：`matched` 后才吃 `offset`（`matched <= offset` ⇒ 跳过 ✓），
+     命中满 `limit+1` 就**继续扫但不收** ✓（`if (hits.length > limit) continue;` —— 为了算 `total` ✓）；
+     `has_more = limit > 0 && hits.length > limit` ✓（`limit:0` 不报截断 ✓，判据守这条 ✓）。
+   - 每条带 `origin`（**存着的** `payload.origin`，否则按 `origin_of` 现算 ✓）＋ `stored_origin`
+     （**只给存着的**，没存 ⇒ `null` ✓）＋ `region` ✓。
+   - 缩略图：只给**净荷有顶层 `region`** 的原子 ✓（`draw_shape` 只有 `bbox` ⇒ 天然没有 ✓）；
+     最多 **20 张** ✓，`w/h<=0` 或 `>256` 进 `thumbnail_skipped` ✓；`thumb_size>0` 且超长边 ⇒
+     **最近邻缩放**（`nw = max(1, floor(w*ts/long))` ✓）；`thumb_size > 4294967295` ⇒ 入口 `invalid_argument` ✓
+     （不许静默回绕成 0 ✗）；PNG 由内核 `render_region_raw` ＋ 本地编码 ✓。
+3. **`get_atom`**（照 `read_get_atom`，`tools.rs:21030`）：加入口 `p2ValidateArgsFor`（缺 `atom_id`／未知键由入口拒 ✓）；
+   字段从六个补到服务端全量：`message/label/changeset_id/parents` 一直都有 ✓，旧本地**没给** ⇒ 调用方读不到标签 ✗。
+4. **写入层补 `origin` 戳**（`putAtom`，照 `append_validated` 的 `tools.rs:574`）：只在键**不存在**时盖 ✓
+   （`null` 也算已写 ✓，与服务端 `payload.get("origin").is_none()` 同义 ✓）；`origin_of` 本地镜像 ✓。
+   ⇒ **这是判据 §E 抓出来的**：本地写入的原子若不带戳 ⇒ `stored_origin` 两边不同形 ✗（本地恒 `null` ✗）。
+
+**判据**（`scripts/tool-pwa-atom-log.mjs`，同一请求两边打、剥掉 HTTP 信封后**比解析后 JSON**；**210 条断言**）：
+§A `get_stroke_log` 全表 ＋ limit／offset／newest／layer／不存在层／group／since（含压力、首尾点、
+矢量笔颜色归一、`pressure:null`、恒等式）；§B `list_atoms` 全表 ＋ include_non_stroke 恒等式
+（`total(含)=total(缺省)+hidden`、`systemAtoms≥2` 且全 `origin:"system"`）＋ label／group／brush 大小写／
+bbox 内与外／分页（含 `limit:0`）；§C `get_atom` 字段集合与 `label`／`parents`；§D 七种入口错误**逐字**；
+§E 缩略图（服务端与本地各用**真 blob** 导入一张 12×8 图 ⇒ 两张缩略图都是真 PNG，比**张数／跳过数／宽高**，
+不断字节 ✓）。
+
+**判据自己的两处「空集恒真」当场抓出（先测量、后改判据 ✓）**：
+
+| # | 症状 | 根因 | 处理 |
+|---|---|---|---|
+| ① | `§B 建文档／建层的 origin 应为 system ✗ []` | 检查写在**缺省列表**上，而缺省**藏非笔迹** ⇒ 候选集为空 ⇒ `every()` 恒真 ✗ | 挪进 `include_non_stroke:true` 那一节 ✓ |
+| ② | `§E` 缩略图两边都「没跳过、也没图」却全绿（`if (a.thumbnail && b.thumbnail)` 静默跳过 ✗） | 原用 `draw_shape` 造图，而它只写 `bbox`、**没有 `region`** ⇒ 两边都不出缩略图 ⇒ **空集合** ✗ | 改成判据自己走 blob 上传真 12×8 像素、再 `import_image`（两边各一次）；并把「必须有缩略图」提成**无条件断言** ✓ |
+| ③ | 本地 `thumbnail_count` 2 而服务端 1 | 判据里 `seedLocal` 排在了服务端 `import_image` **之后** ⇒ 那条原子连带被播种到本地 ⇒ 本地多算一张 ✗（**判据自身顺序问题**，不是产品 ✓） | `seedLocal` 挪到服务端导入**之前** ✓ |
+
+**变异（十七次，全部 `exit 1` ✓；每次后恢复、与原件逐字节相同 ✓ `cmp`；恢复后复测 210 条全绿 ✓）**：
+
+| # | 改坏 | 红在哪（实测） |
+|---|---|---|
+| ① | `get_stroke_log` 不排除已撤销 | §A get_stroke_log 全表 |
+| ② | `order:"newest"` 不反转 | §A4 order=newest |
+| ③ | 压力 `last` 抄成 `first` | §A get_stroke_log 全表 |
+| ④ | `offset` 被忽略 | §A3 offset=2 |
+| ⑤ | 矢量笔 `payload.data` 回退被删 | §A get_stroke_log 全表 |
+| ⑥ | `group_id` 筛选不生效 | §A7 group_id=G1 |
+| ⑦ | `since_seq` 筛选不生效 | §A8 since_seq |
+| ⑧ | `list_atoms` 缺省不藏非笔迹 | §B list_atoms 全表 |
+| ⑨ | `list_atoms` 的 `offset` 被忽略 | §B12 offset=2 |
+| ⑩ | `brush` 变成大小写敏感 | §B7 brush=OPAQUE |
+| ⑪ | `bbox` 相交筛选被关掉 | §B9 bbox 画布外 |
+| ⑫ | `thumb_size` 不缩放 | §E2 thumb_size=4 |
+| ⑬ | `thumb_size >= 2^32` 静默回绕 | §D4 |
+| ⑭ | `limit:0` 也报 `has_more` | §B13 limit=0 |
+| ⑮ | `get_atom` 丢 `label` | §C get_atom |
+| ⑯ | `list_atoms` 入口校验被关掉 | §D5 |
+| ⑰ | 本地写入不盖 `origin` 戳（恒 `generated`） | §E 本地写入的 import_image 应盖 origin 戳 |
+
+**如实记**：①②③⑤ 四次变异红在「**全字段比对**」那条断言上，**不是**名字里写的数字断言 ——
+因为 §A／§C 里那几条数字检查读的是**服务端** `s.body`（服务端答案本来就对 ✓），
+本地改坏后先被 `compareBody` 抓到 ✓。**这不是没验到**（全表比对确实读本地那条路径 ✓），
+但**命名要诚实**：变异脚本的期望串已改成**实际先红的那个标签** ✓，不写「应该红在哪」的想象 ✓。
+
+**已知限制（如实记 ✓）**：
+- `get_stroke_log` 的「已撤销」与 `list_atoms` 的「已撤销」**口径不同** ✓（前者认 `reapply`，后者不认 ✓）——
+  这是**服务端现状**，两边都照抄；要统一得先改服务端 ✓（本层不发明第三口径 ✓）。
+- 缩略图只覆盖**净荷有 `region`** 的原子 ✓：`draw_shape`／`fill_region` 这类只有 `bbox` 的对象
+  **拿不到缩略图** ✓（与服务端同 ✓，不是本地缺口 ✓）。
+- 判据的本地装配走 `GET /api/atoms` ＋ `putAtom` ✓（**测试装配**，不是产品写入路径 ✗）——
+  因为 Node 里跑不了浏览器的 `brush_stroke` 导入 ✓；产品路径由 `origin` 戳那条断言单独守 ✓。
+
+## 六百六十七、本地 `revert_to_seq` 落地（175 → 176）：工具级 `ok:false` 的 HTTP 状态改成照服务端映射，判据当场抓出「本地一律 200」这处分歧
+
+**做什么**（`crates/yanshi-http/assets/api-local.js`；`LOCAL_IMPLEMENTED` 机械重数 175 → **176** ✓）：
+
+1. **`revert_to_seq`**（照 `write_revert_to_seq`，`tools.rs:20100`）：一句「回到第 n 笔之后」。
+   - 入口：`p2ValidateArgsFor("revert_to_seq", body)`（`seq` 必填 Integer ✓）＋ `p2Count(body.seq)`（负数／小数 ⇒
+     带合法区间的 400 ✓）；**服务端读 `args.seq` 本身** ✗ 不拆 `payload` ✓（与 `revert_atoms` 不同 ✓）。
+   - 候选 = `seq > n` **且**净荷 `hasOwnProperty("source")` ✓（`source:null` 也算有 ✓，照
+     `payload.get("source").is_some()` ✓）；`draw_shape`／`create_layer` 这类没有 `source` 的**不碰** ✓。
+   - 已撤过的按**朴素集合**跳过 ✓（扫**全部** `revert` 原子的 `payload.target` ⇒ `reapply` 回来的**照样**跳过 ✗）——
+     这是**服务端现状**，照抄不「修好」✓（与 `revert_group` 同一口径 ✓）。
+   - 空集支：`{ok:true, seq, reverted_count:0, failed_count:0, note:"没有需要撤销的笔迹（seq 大于它的一笔都没有）"}`
+     ＋ `server:false` ✓；**没有 `reverted`／`failed` 两个键** ✓（形状照实测 ✓ 不补空数组 ✗）。
+   - 非空支：直接复用 `__p2RevertBatch(ids)` ✓（逐条失败串、跨求值起点检查、`ok = failed.is_empty()` 全部同一份实现 ✓）
+     ＋ 回显 `seq` ✓。
+2. **工具级 `ok:false` 的 HTTP 状态照服务端映射**（新助手 `p2ToolStatusOf`，照 `server.rs:2872-2885` 的 switch）：
+   - **判据抓出来的真分歧** ✓：服务端把 `ok:false` 的工具结果映射成 HTTP 错误码（`invalid_argument ⇒ 400`、
+     `reference_not_found ⇒ 404`、`precondition_failed ⇒ 409` …… **缺省 400** ✓）；本地**一律 200** ✗。
+   - §D（`declare_head` 之后前两笔逐条失败）两边**响应体逐字相同**而**状态码 400 vs 200** ⇒ 调用方按状态码分支时
+     看到两种客户端两种答案 ✗。
+   - 现在 `revert_atoms`／`revert_group`／`revert_to_seq` 三处的批量结果都过这道映射 ✓
+     （批量失败体**没有** `error_code` ⇒ 落 `default: 400` ✓，与服务端同 ✓）。前端 `callTool*` 只读响应体 ✓
+     ⇒ 状态码收紧不影响界面 ✓（`web/viewer-app.js:1520` 附近 `response.json()` 不看 `res.ok` ✓）。
+
+**判据**（`scripts/tool-pwa-revert-to-seq.mjs`，同一请求两边打、剥掉 HTTP 信封后比解析后 JSON；**134 条断言**）：
+§A 基本回退（目标集合由判据**自己从 setup 的笔算** ✓、回退后 `get_stroke_log`／`list_atoms` 两边全字段相同 ✓）；
+§B 空集支（**没有** `reverted`／`failed` 键 ✓、原因串逐字 ✓、日志不变 ✓）；
+§C 朴素集合（已撤跳过 ✓）；§C2 **撤了又 `reapply` 回来的照样跳过** ✓（服务端现状 ✓）；
+§D 求值起点之后才能撤（`declare_head` 跳变 ⇒ 2 失败 ＋ 1 成功 ✓、失败原因逐字含「位于当前求值起点」✓、
+**状态码两边相同** ✓）；§E 六种入口错误逐字（缺／null／字符串／负数／小数／未知键 ✓）；
+§F 只碰有 `source` 的原子（`draw_shape` 在目标之上也不被撤 ✓、图形仍在 ✓）。
+
+**判据自己的两处算错（先测量、后改判据 ✓）**：
+
+| # | 症状 | 根因 | 处理 |
+|---|---|---|---|
+| ① | 五个 case 的「之后 `list_atoms`」全字段不一致，首个差异都是 `.atoms[0].thumbnail` | 两边**编码器不同**（服务端 vs 本地 canvas）⇒ 同一张图给出**不同 PNG 字节** ✓ —— 字节**不是契约** ✗ | 比表时把 `thumbnail` 统一换成占位符 ✓（**存在性／位置仍被比到** ✓：一边有、一边没有照样红 ✓） |
+| ② | `§D 起点之前逐条失败：服务端应 200 ✗ 状态 400` | 判据把「两边都 200」写死 ✗ ⇒ 把**服务端的正确答案**（`ok:false ⇒ 400`）判成缺陷 ✗ | 改成**两边状态码相同** ✓ —— 正是它把本地「一律 200」的分歧照了出来 ✓ |
+
+**变异（八次，全部 `exit 1` ✓；每次后恢复、与原件逐字节相同 ✓ `cmp`；恢复后复测 134 条全绿 ✓）**：
+
+| # | 改坏 | 红在哪（实测） |
+|---|---|---|
+| ① | 取消 `seq > target` 筛子 | §A revert_to_seq |
+| ② | 取消「净荷必须有 `source`」筛子 | §F 只撤笔迹 |
+| ③ | 取消「朴素曾撤过」跳过 | §C 已撤跳过 |
+| ④ | 空集支原因串被改写 | §B 空集 |
+| ⑤ | 回执的 `seq` 不回显 | §A revert_to_seq |
+| ⑥ | 状态映射退回一律 200 | §D 起点之前逐条失败：状态码应两边相同 |
+| ⑦ | 入口声明校验被关掉 | §E1 缺 seq |
+| ⑧ | 跨求值起点检查被关掉（`__p2RevertBatch` 共用段） | §D 起点之前逐条失败 |
+
+**如实记**：④ 红在「全字段比对」那条，**不是**名字里写的「原因串」那条 —— 后者读的是**服务端** `s.body`
+（服务端答案本来就对 ✓），本地改坏后先被 `compareBody` 抓到 ✓；变异脚本的期望串已改成**实际先红的那个标签** ✓。
+
+**回归**：状态映射改动后重跑 `tool-pwa-api-behaviour`（`revert_group`／`revert_atoms` 五类错误与混合批）、
+`tool-pwa-atom-log`（210 条）、`tool-pwa-checkpoint-restore`（358 条，含 §D3 批量 `ok:false`）、
+`tool-pwa-preset-library-parity`、`tool-js-syntax` —— **全绿** ✓（前三者对 `ok:false` 只读响应体 ✓ 不断状态码 ✓）。
+
+**已知限制（如实记 ✓）**：
+- 判据的本地装配走 `GET /api/atoms` ＋ `putAtom` ✓（**测试装配**，不是产品写入路径 ✗）—— Node 里跑不了浏览器的
+  `brush_stroke` 导入 ✓（与第 666 节同一手法 ✓）。
+- 「朴素曾撤过」忽略 `reapply` 是**服务端现状** ✓（§C2 照实钉住 ✓）；要改得先改服务端 ✓，本层不发明第三口径 ✗。
+- 本次只给**三个 revert 端点**接上了 `p2ToolStatusOf` ✓；其他会产出工具级 `ok:false` 的本地端点（如带逐项失败的
+  批量工具）仍可能返回 200 ✗ —— 同一个助手已就位 ✓，后续端点落地时逐个接 ✓（**不静默**：这条留在这里当待办 ✓）。
+
+## 六百六十八、本地 `vector_hit_test` 落地（176 → 177）：脊线 ＋ 压力剖面在纯原子折叠上重建，判据当场抓出**判据自己**两处算错
+
+**做什么**（`crates/yanshi-http/assets/api-local.js`；`LOCAL_IMPLEMENTED` 机械重数 176 → **177** ✓）：
+
+1. **`vector_hit_test`**（照 `read_vector_hit_test`，`tools_vector.rs:288`）——
+   **纯原子折叠 ✗ 不碰内核 ✓**：命中的是**脊线距离 ＋ 剖面半径**，不是像素 ✓。
+   - 入口：`p2ValidateArgsFor("vector_hit_test", body)`（`layer_id` 字符串必填、`x`／`y` 数字必填、
+     `tolerance` 数字可选 ✓）；**入口校验先于图层查找** ✓（服务端 `validate_args` 在 dispatch 之前 ✓
+     ⇒ 层不存在也先报「缺 x」✓，§B10 钉住）。
+   - **图层类型折叠**（新助手 `p2LayerTypeFold`，照 `layer_type_of`＋`parse_layer_type`）：
+     查的是**折叠后的层表** ✗ 不是活层表 ✓ ⇒ **已 `tombstone` 的层仍解析得类型** ✓
+     ⇒ 读数是 **0 笔 0 命中** ✓ 而不是 404 ✗（§C1 钉住）；**建层被 `revert` 掉 ⇒ 不在层表 ⇒ 404** ✓（§C2 钉住）。
+     `create_document` 自带 `layer_default`（raster ✓）；`create_layer` 认 `kind` 或 `type` ✓；
+     `set_property{type}` 照 `apply_property_to_layer` ✓：**非字符串 ⇒ `raster`** ✓（不是保持旧值 ✗）。
+   - 非矢量层 ⇒ 400，类型名照 Rust `Debug`（`Raster`／`LayerGroup`／`Mask` ✓），文案逐字含
+     「建矢量层请用 create_layer 的 kind 参数传 vector」✓；层不存在 ⇒ 404 `图层 {id} 不存在` ✓；
+     `tolerance < 0` ⇒ 400 `tolerance 不能为负` ✓；缺省容差 0 ✓（`tolerance:null` 当未提供 ✓）。
+   - **只查 `Stroke`**（新助手 `p2ObjectTypeOf`：创建原子按 `kind` 映射 —— `draw_shape⇒shape`、
+     `draw_text⇒text`、`retouch／erase⇒retouch`、`liquify⇒liquify`，其余按声明的 `type` 解析、缺省 `stroke` ✓；
+     后续 `set_property{type}` 覆盖 ✓，**被中和的那条不算** ✓）；图形／文字／组／路径**不数也不命中** ✓。
+   - **隐藏对象照查** ✓（服务端 `objects_in_layer` 不过滤可见性 ✓）；对象的 `transform` **两边都不应用** ✓
+     （服务端直接在对象局部坐标上算 ✓ —— 本地照抄，不「修好」✗）。
+   - `strokes_examined` **在几何解析之前** `+1` ✓（`tools_vector.rs:313` ✓）⇒ **几何坏掉的对象照样算「查过」** ✓
+     但不出命中 ✓（`StrokeGeometry::from_value` 的 `?` ⇒ **有一颗坏点整个 `null`** ✓，不是跳过那颗 ✗）；
+     压力缺省 1.0 ✓、`smooth` 只认字面 `true` ✓。
+   - **脊线**（`p2VectorSpineHit`，照 `vector.rs:142`）：`smooth` ⇒ Catmull-Rom 采样（**端点反射补齐、
+     只取每段内部采样、随后补端点、公式与运算顺序逐字照抄** ✓，`SMOOTH_SUBDIVISIONS = 8` ✓）；
+     单点笔按点距 ✓；多段逐段 `segment_closest`（**零长线段 `len2 <= 1e-24 ⇒ t = 0`** ✓）、
+     压力按 `t` 线性插值 ✓、**严格 `<` 取余量最小** ✓。
+     服务端全程 **`f64`** ✓ ⇒ JS 双精度同一份结果 ✓（不是 f32 近似 ✗）。
+   - **半径**（照 `vector.rs:34`）：`size` 缺省 4、下限 0.05 ✓；`min_size_ratio` 缺省 0.25、夹到 `[0,1]` ✓；
+     `scale = ratio + (1-ratio)·clamp(pressure,0,1)` ✓、`radius = max(0, size/2·scale)` ✓。
+     **`pressure_size` 恒视为真** ✓ —— `BrushSpec::from_value` **从不读**这个键 ✗ ⇒ 本地也**不许读** ✗
+     （否则同一笔两边半径不同 ✗）。
+   - 筛 `clearance <= tolerance` ✓；命中按 `clearance` 升序、并列按 `object_id` 升序 ✓；
+     回执 `{layer_id, x, y, tolerance, strokes_examined, hits, count}` ✓（`count = hits.length` ✓）。
+
+**判据**（`scripts/tool-pwa-vector-hit-test.mjs`，同一请求两边打、剥掉 HTTP 信封后比解析后 JSON；**137 条断言**）：
+§A 基本几何（笔心／笔外／容差真的被读／两笔排序／`tolerance:null` 同缺省／小数坐标回显 ✓）；
+§A2 压力剖面（中点半径 6.25 ✓、`min_size_ratio:0.5 ⇒ 7.5` ✓、`smooth` 有效脊线、单点笔 `13/5` ✓）；
+§A3 只查 Stroke（图形／组不数 ✓、隐藏照查 ✓、无 `points` 的笔照样「查过」但不出命中 ✓）；
+§B 十种入口／处理器错误逐字 ＋ 状态码 ✓（含「入口校验先于图层查找」✓、`Raster` 文案逐字 ✓）；
+§C1 已删图层读 0（不是 404 ✓）／§C2 建层被 `revert` ⇒ 404 ✓；§D 字段集合 ＋ `count === hits.length` ✓。
+
+**判据自己的两处算错（先测量、后改判据 ✓）**：
+
+| # | 症状 | 根因 | 处理 |
+|---|---|---|---|
+| ① | 首跑唯一红：`§A1 应只命中 S1`，实测命中 `[S1, S3]` | **S3 是竖笔 `(50,0)→(50,30)`，正好穿过查询点 `(50,10)`** ✗ —— 我只想到 S2 在 35 格外，漏了 S3 ✓ | 期望改成 `[S1,S3]`（S1 余量 −10 排前 ✓）—— 服务端与本地**本来就一致** ✓，这是判据的错 ✗ |
+| ② | `§A2 smooth` 原查询 `(25,65)` 两边都无命中 ⇒ 断言恒绿 | 平滑曲线对折线的**最大偏离 2.44 < 半径 4** ⇒ 命中集合**分不出来** ✗ | 查询点改成平滑脊线 **t=0.5 的采样 `(25,72.5)`** ✓，断**距离 0／余量 −4**（折线会给 2.08 ✓）—— 这是「测量工具要先被测量」的又一次 ✓ |
+
+**变异（十九次，全部 `exit 1` ✓；每次后恢复、与原件逐字节相同 ✓ `cmp`；恢复后复测 137 条全绿 ✓）**：
+
+| # | 改坏 | 红在哪（实测） |
+|---|---|---|
+| ① | 入口声明校验被关掉 | §B1 缺 layer_id |
+| ② | 层不存在回 400（应 404） | §B5 图层不存在 |
+| ③ | 矢量层守卫被关掉 | §B6 光栅层 |
+| ④ | `Debug` 类型名写错（`Raster⇒raster`） | §B6 光栅层 |
+| ⑤ | 负容差不再报错 | §B9 容差为负 |
+| ⑥ | 缺省容差 0 ⇒ 1 | §A5 tolerance=null |
+| ⑦ | `strokes_examined` 挪到几何解析之后 | §A3 只查笔迹 |
+| ⑧ | 类型筛子被关掉 | §A3 只查笔迹 |
+| ⑨ | 隐藏对象被筛掉 | §A3 只查笔迹 |
+| ⑩ | 容差筛子被关掉 | §A1 笔心 |
+| ⑪ | 排序反了 | §A4 两条命中排序 |
+| ⑫ | 压力剖面被忽略 | §A2 压力中点 P1 |
+| ⑬ | `min_size_ratio` 被忽略 | §A2 压力中点 P2 |
+| ⑭ | `smooth` 被忽略 | §A2 smooth 有效脊线 |
+| ⑮ | 单点笔支被关掉 | §A2 单点笔 tol=10 |
+| ⑯ | 图层类型只看活层（删层变 404） | §C1 已删图层 |
+| ⑰ | 建层被 `revert` 后仍算存在 | §C2 建层被撤 |
+| ⑱ | 回执 `x`／`y` 写反 | §A1 笔心 |
+| ⑲ | `count` 用了 `strokes_examined` | §A2 压力中点 P1 |
+
+**如实记**：⑲ 的标签是**实际先红**的那条（§A2 P1 有 4 笔 1 命中 ⇒ 全字段比对先抓到），
+**不是** §D 的 `count === hits.length` —— §D 那个 case 恰好 1 笔 1 命中，`count` 与 `strokes_examined` 同值 ✓。
+
+**回归**：`tool-pwa-api-behaviour`、`tool-pwa-atom-log`（210 条）、`tool-pwa-revert-to-seq`（134 条）、
+`tool-pwa-preset-library-parity`、`tool-js-syntax`（452 个脚本）—— **全绿** ✓。
+
+**已知限制（如实记 ✓）**：
+- 判据的本地装配走 `GET /api/atoms` ＋ `putAtom` ✓（**测试装配**，不是产品写入路径 ✗）。
+- 命中测试**不应用对象 `transform`** ✓ —— 服务端现状如此 ✓（局坐标上算），本地照抄不发明 ✗。
+- 压力剖面只验了线性两点（0→1）；`pressure_size:false` **两边都不读** ✓ ⇒ 不存在可比的分支 ✓。
+- 判据只断**判据自己造的**几何量（半径 6.25／7.5、距离 13／5、余量 −10／−2／−4）＋ 全字段比对 ✓；
+  边界「余量恰好等于容差」用 0／2／10 避开末位浮点翻转 ✓。
+
+## 六百六十九、本地 `get_path` 落地（177 → 178）：path 几何读回（结构化 subpaths／控制点 bbox／Wang 展平总长／Rust `Display` 形 `d`）照 `read_get_path` 逐字复刻，判据当场抓出自己两处算错
+
+**做什么**（`crates/yanshi-http/assets/api-local.js`；`LOCAL_IMPLEMENTED` 机械重数 177 → **178** ✓）：
+
+1. **`get_path`**（照 `read_get_path`，`tools_pathdata.rs:109`，经 `load_path_object`）——
+   **纯原子折叠 ✗ 不碰内核 ✓**：读回的是**路径数据本身**（subpaths／bbox／长度／`d`），不是像素 ✓。
+   - 入口：`p2ValidateArgsFor("get_path", body)`（`object_id` 字符串必填 ✓）；**入口校验先于对象查找** ✓
+     （服务端 `validate_args` 在 dispatch 之前 ✓，§B12 钉住）。
+   - **两条 404**：对象不在 ⇒ `对象 {id} 不存在` ✓（含**建对象被 `revert` 中和** ✓，§C 钉住）；
+     `deleted_by.is_some()`（含**随层级联死** ✓）⇒ `对象 {id} 已被删除` ✓（§B5／§B13 钉住）。
+   - **两道 400 守卫**：对象类型必须是 `Shape` ✓（`draw_stroke` 建的笔 ⇒ §B6；`ObjectType::Path` 的
+     `parse_path` 只产 stroke／Unsupported ⇒ 同样 400 ✓）；`geometry.kind` 必须是 `path` ✓（矩形 ⇒ §B14）；
+     文案逐字「对象 {id} 不是 path 形状（只认 draw_shape 建的 kind=path 对象）」✓。
+   - **路径解析**（新助手 `p2PathSubpaths`，照 `parse_path_subpaths`）：`fill_rule` **缺省 `evenodd`** ✓、
+     给了就必须是 `"evenodd"`／`"nonzero"` 字符串 ✓（**`null` 非法** ✓，§B10）；`subpaths` 非空数组 ✓（§B9）；
+     `start` 恰 2 个有限数 ✓；`closed` 缺省 `false`、给了必须是布尔 ✓（§B15）；`segments` 非空、算子只认 `L`（`to`）
+     ／`C`（`c1`／`c2`／`to`）✓（§B11）；**任一处不合法整条 `null` ⇒ 同一个 400** ✓（服务端是 `Unsupported` ✓）。
+   - **bbox 是控制点盒** ✓（新助手 `p2PathControlBbox`：`start` ＋ 每段 `to`，`C` 段再算 `c1`／`c2` ✓）——
+     **不是展平采样盒** ✗（§A2 的三次段 `h = 100` 就靠控制点 ✓）。
+   - **总长** ✓（`p2FlattenSubpath` ＋ `p2PolylineLength`）：展平容差 **0.10** ✓；每段采样数照 Wang 公式
+     （`p2WangL` 取两个二阶差分 L1 的**较大**值 ✓、`ceil(sqrt(3L/(4tol)))` ✓、`[1,256]` 夹 ✓、
+     `>256 且 depth>0` 先 `de Casteljau` 二分 ✓、深度上限 8 ✓）；求值走**霍纳形**并**把终点精确压入** ✓；
+     **闭合子路径补回起点**（距离² > 1e-18 才补 ✓）；逐段开方求和 ✓（§A1／§A2／§A3 钉住）。
+   - **`node_counts`** = 每子路径 `segments.length + 1` ✓ —— **不是**展平采样数 ✗（§A2 钉住）。
+   - **`d`** 照 Rust `f64` 的 `Display` ✓（新助手 `p2RustF64`）：**无科学计数法** ✓（指数形展开，
+     大数写满位数 ✓、小数补零 ✓），`-0.0` 写 `-0` ✓（`String(-0)` 给 `0` ✗ ⇒ 另有判别）；
+     子路径以空格分隔、闭合段补 `Z` ✓（§A3／§A4／§A8／§A9 钉住）。
+   - 回执 `{object_id, layer_id, kind:"path", fill_rule, geometry:{kind, fill_rule, subpaths},
+     subpaths, d, bbox:{x,y,w,h}, length, node_counts}` ✓；坐标**不做 `transform`** ✓（服务端在局部坐标上读 ✓，
+     本地照抄不发明 ✗）。
+
+**判据**（`scripts/tool-pwa-get-path.mjs`，同一请求两边打、剥掉 HTTP 信封后比解析后 JSON；**151 条断言**）：
+§A 九份路径文档（直段／三次段／闭合方形／多子路径／`nonzero`／隐藏／带 `transform`／小数／超长指数）；
+§B 十六种入口／处理器错误逐字 ＋ 状态码（含「对象已删」「随层死」「笔里塞 path 几何」「矩形带 subpaths」）；
+§C 建对象被 `revert` ⇒ 404「不存在」；§D 字段集合（11 键）＋ 恒等式（`node_counts.length === subpaths.length`、
+`geometry` 与顶层同值、`node_counts[i] === segments.length + 1`、bbox／length 非负）。
+
+**判据自己的两处算错（先测量、后改判据 ✓）**：
+
+| # | 症状 | 根因 | 处理 |
+|---|---|---|---|
+| ① | 首跑 §C `exit(3)`：`list_atoms` 里找不到 `draw_shape` 原子 | **`list_atoms` 的条目没有 `payload`** ✗ —— 我按 `payload.object_id` 找 ✓ | 改按 `kind === "draw_shape" && layer_id === "V1"` 找（该文档里只有一条 ✓） |
+| ② | §B8「笔里塞 path 几何」首跑两边都 200 ⇒ 断言恒红 | 我把 G1 用 **`draw_shape`** 建 ⇒ 那本来就是 `Shape` ✓，服务端照读 ✓ | 改成 **`draw_stroke` 建笔 ＋ `replace_object_data` 塞 path 几何** ⇒ 类型仍是笔 ⇒ 两边 400 ✓ |
+
+**变异（二十六次，全部 `exit 1` ✓；每次后恢复、与原件逐字节相同 ✓ `cmp`；恢复后复测 151 条全绿 ✓）**：
+
+| # | 改坏 | 红在哪（实测） |
+|---|---|---|
+| ① | 入口声明校验被关掉 | §B1 缺 object_id |
+| ② | 对象不存在回 400（应 404） | §B4 对象不存在 |
+| ③ | 已删对象回 400（应 404） | §B5 对象已删 |
+| ④ | 对象类型守卫被关掉 | §B8 笔里塞 path 几何 |
+| ⑤ | `geometry.kind` 守卫被关掉 | §B14 矩形带 subpaths |
+| ⑥ | `fill_rule` 非法值被接受 | §B10 fill_rule 为 null |
+| ⑦ | 空 `subpaths` 被接受 | §B9 空 subpaths |
+| ⑧ | 未知段算子当直段接受 | §B11 未知段算子 |
+| ⑨ | `closed` 非布尔被接受 | §B15 closed 非布尔 |
+| ⑩ | bbox 漏掉控制点 | §A2 三次段：全字段不一致 |
+| ⑪ | `node_counts` 用了展平采样数 | §A2 三次段：全字段不一致 |
+| ⑫ | 闭合不回首页 | §A3 闭合方形：全字段不一致 |
+| ⑬ | `d` 保留 JS 指数形 | §A8 小数：全字段不一致 |
+| ⑭ | 小数展开少补一个零 | §A8 小数：全字段不一致 |
+| ⑮ | 闭合子路径丢了 `Z` | §A3 闭合方形：全字段不一致 |
+| ⑯ | 子路径之间没空格 | §A4 多子路径：全字段不一致 |
+| ⑰ | 建对象被中和后仍当存在 | §C 建对象被撤 |
+| ⑱ | 墓碑检查被关掉 | §B5 对象已删 |
+| ⑲ | `layer_id` 回执写死 `null` | §A1 直段：全字段不一致 |
+| ⑳ | 顶层 `fill_rule` 写死 `evenodd` | §A5 nonzero：全字段不一致 |
+| ㉑ | 顶层 `kind` 写错 | §A1 直段：全字段不一致 |
+| ㉒ | 霍纳求值丢了常数项 | §A2 三次段：全字段不一致 |
+| ㉓ | Wang 的 `L` 恒 0（折线退化成弦） | §A2 三次段：全字段不一致 |
+| ㉔ | 折线总长忘了开方 | §A1 直段：全字段不一致 |
+| ㉕ | 展平容差写错（1.0） | §A2 三次段：全字段不一致 |
+| ㉖ | bbox 恒零 | §A1 直段：全字段不一致 |
+
+**如实记**：
+- 期望标签是**全字段比对**那条（`§Ax …：全字段不一致`）✓ —— 判据里那些「服务端应等于某值」的显式断言
+  读的是**服务端回执** ✗ ⇒ 变异只动本地 ⇒ 它们不会红 ✓；真红的是 `compareBody` ✓。这是判据结构使然，
+  不是覆盖缺口 ✓（每条变异都**有**一条比对断言接住 ✓）。
+- ㉒／㉓ 首跑**没红**：§A2 的三次段原本从 `[0,0]` 起（霍纳常数项恰为 0 ⇒ ㉒ 不可见 ✓）且左右对称
+  （`wang_l` 两个差分相等 ⇒ ㉓ 改 `max` 不可见 ✓）⇒ 把起点挪到 `[10,20]`、控制点改成非对称 ✓
+  ⇒ **判据的输入没制造出它要检查的情况** —— 「四层齐」第二层 ✓。
+- 二十六个锚点都做过唯一性 `assert`（`count == 1` ✓），零失配 ✓。
+
+**回归**：`tool-pwa-api-behaviour`、`tool-pwa-atom-log`（210 条）、`tool-pwa-revert-to-seq`（134 条）、
+`tool-pwa-preset-library-parity`、`tool-js-syntax`（453 个脚本）—— **全绿** ✓。
+
+**已知限制（如实记 ✓）**：
+- 判据的本地装配走 `GET /api/atoms` ＋ `putAtom` ✓（**测试装配**，不是产品写入路径 ✗）。
+- 不应用对象 `transform` ✓ —— 服务端现状如此 ✓，本地照抄不发明 ✗。
+- `-0` 分支经 JSON 契约**到不了**（请求体里 `-0` 被 `JSON.parse` 读成 `-0` 会一路保留，但判据不造这个输入 ✓）
+  ⇒ 该守卫是**防御性**的 ✓，没变异（不可观测 ⇒ 变异必假红 ✗）。
+- 只验 `L`／`C` 两种段算子 ✓（服务端 `parse_path_subpaths` 也只认这两种 ✓）。

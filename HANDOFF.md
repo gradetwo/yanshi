@@ -1902,3 +1902,55 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
 ⑥ **落地与后效**：合并提交与本账同推 ⇒ 新 run 对新 HEAD 收账；**workspace test 将在 CI 首验** ⇒
    若红先读 `error` 按包归因（三包文件面不重叠，归因成本低）。`web/assets-index.json` 无关漂移
    再次 `checkout` 还原（与 §104/§105 同规；H-1 去重仍挂 #30 待裁定）。
+
+## §110 yanshi-patch-batch9～batch13 五连包合并留痕（基线 `a59ca1f4`，2026-10-29）
+
+① **接缝**：五贴按作者链 `8cbab98a→06f141a4→91f77111→3389425d→b0bb43b6→db3e2cc2` 序贯 `git apply` ✓，
+   每一贴落点与作者侧上下文逐字一致 ✓；`LOCAL_IMPLEMENTED` 常量 178 与机械重数（177+1 ✓）对齐 ✓。
+② **作者自带变异电池复跑（merge-exception 口径，全部在本机）**：`mutate-pwa-atom-log.py` **17/17** ✓／
+   `mutate-pwa-vector-hit-test.py` **19/19** ✓／`mutate-pwa-get-path.py` **26/26** ✓／
+   `mutate-pwa-revert-to-seq.py` **8/8** ✓（§109 前已验）——每条都是「红在该红的断言 ＋ 还原 cmp 逐字节一致 ＋ 复测全绿」。
+③ **我补的电池**：batch9 的新判据 `tool-pwa-read-inspect.mjs`（本地读测三端点）作者**没带变异** ⇒
+   按「断言必须证明自己能红」造 `mutate-pwa-read-inspect.py`（6 条：visible/parent/clipping 三补偿、
+   effects 排序、合成原子折回、luma 取整）⇒ 首跑两课：
+   a) 锚点只替换两行表达式的第一行 ⇒ 截断 JS ⇒ 内核起不来 ⇒ **exit(3)**——是**电池的 bug** 不是产品的 ✓
+      （「这个意外结果是我造的吗」再证）；改成整块锚点后：
+   b) `effects_sort_off` 首红落在「§A list_effects 全表」（§A 顺序断言读的是**服务端**列 ✓ 不动）⇒
+      期望清单如实改成两条同红 ✓。终跑 **6/6 全红在该红的断言 ＋ cmp 一致 ＋ 复测绿** ✓。
+④ **判据文案后效**：`tool-pwa-suggestion-accept.mjs` 随 batch8 生成器口径微调措辞 ✓；
+   `docs/design/brush-capability-gap.md` 追加 409 行（§六百六十五 起，本地三端点落地＋判据抓出的
+   「内核同 head_seq 复用旧状态」真缺陷留档）✓。
+
+## §111 #50 CI 后效平仓（run 40791747706 的两条真红 ⇒ 全修，2026-10-29）
+
+① **census 红**（`tool-schema-params-census.mjs`：未分类 3）：`height_source` 的枚举值 `alpha`／`luminance`
+   与参数 `height_source` 本身上账——**先核引擎现实**（`tools_effect.rs:268-280` 真校验、`filter.rs:4006` 真用）
+   再落ALLOWLIST（`value`＋`effectParam`）✓ 复跑绿（已分类 271｜未分类 0 ✓）。这是 C 期 add_filter 摘要的后效，**不是产品错**。
+② **coverage 红**（`tool-criteria-coverage.mjs`：1 个未登记）：`gen-pwa-tool-specs.mjs` 是生成器＋校验库，
+   判据入口 = `tool-pwa-suggestion-accept.mjs` 调它并断退出码 ⇒ 落 `NOT_CRITERIA` 带接线证据 ✓。
+   **与 batch2 的 `gen-pwa-preset-library.mjs` 同根**：外部包合并漏登记 ⇒ 本判据立刻红并点名 ✓。
+③ browser CDP 的 ❌ 行按第 402 轮口径复核为**重试噪声**；offline-reload／offline-brush／ui-check 是
+   known-red 非阻断 ✓。run 40791747706 除此之外无新红 ⇒ #50 的 A+C+batch8 三包**行为面全部被 CI 验过** ✓。
+
+## §112 paint-fix-r2-B-caliber-copy ＋ r2-D-smudge 双包合并留痕（基线 `a59ca1f4`，2026-10-29）
+
+① **凭据**：md5（zip）B=`dd64c1539883fecb7e1a6de951a14905`、D=`c2daa24f94459cf2dfa3ede83229d2a3` ✓；
+   作者侧 replay **PASS**（base=我们 `a59ca1f4` ✓）；B／D 文件面不重叠 ⇒ **两种顺序先后试跑，接缝干净** ✓。
+② **内容**：B 期＝口径与文案簇（项 5 batch 归属提示、项 7/8 `derived_not_packaged` 分栏、
+   项 10 `list_brushes.smudge`＋`smudge_note`、项 11 gradient_blend 缺省 64、项 13 `filter_aliases` impasto）✓；
+   D 期＝涂抹两错（项 15 `smudge_dab` 改**预乘空间凸组合**（旧实现把预乘值当直通色做 sRGB 解码 ⇒ 读回放大、复利到白）✓；
+   项 14 `smudge_step_amount` 把每 2px 步的涂抹量归一到每 dab 间距一名义量（水彩 size 300 旧超施 ≈9.4 倍）✓）。
+③ **本机复验**（合并例外口径）：`paint_r2_b_caliber` **6/6** ✓／render smudge 库 **8/8**（593 过滤 ✓）／
+   server step 单测 **1/1** ✓／`clippy -D warnings` 两 crate 过、`fmt --check` 干净 ✓；
+   重建链（release→wasm32→bindgen→pwa-sync-wasm→pwa-sync-viewer→重导）全绿，stamp `1373391047189`，
+   index.html **930,815 B ≤ 931,000** ✓。
+④ **后效一处（判据抓住的）**：`tool-pwa-read-inspect` 复跑红 `filter_aliases：本地缺` ×3 ⇒
+   B 期改了服务端 `list_effects` ⇒ 本地镜像缺同条目 ⇒ `api-local.js` 补 `P2_FILTER_ALIASES` ＋回执带字段 ✓，
+   重 sync/重编译后绿 ✓。**决定不镜像** `list_brushes.smudge`（无判据比对本地该字段）与本地 `add_filter`
+   拒收 "impasto" 名（服务端放行是既有分歧，不扩大本期范围）⇒ 记在此处留痕 ✓。
+⑤ **回归扫**：定向 20 条全绿——18×exit0 ✓；`tool-export-missing-body`／`tool-timelapse-missing-body`
+   **exit=3**，与 run 40791747706 上**同树同形**（`⊘ 判据自身的前置条件缺失…不是产品失败`，跨文档 token 前提 ✓）
+   ⇒ 既有不可判，非 B/D 后效 ✓。静态六条全绿（parity／stamp／sw-roles／byte-budget／i18n-coverage／density）✓。
+⑥ **`web/assets-index.json` 漂移第四次再现**：pwa-sync-viewer 扫 `web/textures/` 把 7 张**未跟踪本地文件**
+   （Cardboard*／Paper004-5 等）写回索引 ⇒ 正是 `b5c167bf` 修过的病 ⇒ 按 §104/§105 同规 `checkout` 还原 ✓，
+   还原后 parity／byte-budget 复跑绿 ✓（根因清理仍挂 #30）。

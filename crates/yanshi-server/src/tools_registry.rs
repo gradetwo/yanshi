@@ -1709,7 +1709,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "list_effects",
         profile: Profile::Retouch,
-        summary: "列出当前文档的调整/滤镜对象（含参数与生效顺序）",
+        summary: "列出当前文档的调整/滤镜对象（含参数与生效顺序）；滤镜别名 impasto（同 relief）见回执 filter_aliases",
         mutating: false,
         params: &[param!("layer_id", String, false, "按图层过滤")],
     },
@@ -2114,7 +2114,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         profile: Profile::Core,
         // **AI 画家需求 P0-1.2**：用户实测"左暗右亮要手动拼 20 笔" ⇒ 这里把"拼笔"交给服务端。
         // 它**逐笔调用 `write_brush_stroke`** ⇒ 与手画**同一条落笔实现**（不是另一套笔触）。
-        summary: "两点之间自动生成过渡笔触（位置与颜色同时插值）；笔数 = steps ⇒ 替代手动拼笔",
+        summary: "两点之间自动生成过渡笔触（位置与颜色同时插值）；笔数 = steps（缺省 64，可调 2..200）⇒ 替代手动拼笔",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层"),
@@ -2122,7 +2122,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("to", Object, true, "终点 {x, y, color}（与 from 同口径）"),
             param!("brush", String, true, "笔刷名（同 brush_stroke）"),
             param!("size", Number, true, "笔尖直径（像素）"),
-            param!("steps", Number, false, "生成几笔（缺省 10，含首末两点）"),
+            param!("steps", Number, false, "生成几笔（缺省 64，含首末两点；可调 2..200）"),
             param!("smooth", Boolean, false, "同 brush_stroke.smooth（缺省关）"),
         ],
     },

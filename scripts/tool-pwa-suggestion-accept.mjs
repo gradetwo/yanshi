@@ -8,7 +8,7 @@
 //      layer_id/object_id/valid/error` 与聚合量 `estimated_dirty/estimated_region/notes` ✓
 //      ⇒ **`error` 必须是 `Some("…")` 形态** ✓（`format!("{:?}", Option<String>)` ✓）；
 //   ② **预检四类错误逐字**：未知工具／只读工具／参数缺失／效果名与范围／引用顺序 ✓；
-//   ③ **预检**不按本地实现裁剪** ✓**：`revert_to_seq`（服务端 mutating、本地 501）在预览里仍 `valid:true` ✓
+//   ③ **预检**不按本地实现裁剪** ✓**：`revert_to_seq`（服务端 mutating；batch8 时本地 501、batch11 已落地）在预览里仍 `valid:true` ✓
 //      —— **∴ 若按本地 get 裁剪 ⇒ 它会变 invalid ⇒ 红 ✓**（旧判据用 `try_stroke` ✗ ——
 //      它在服务端是**只读** ⇒ 本来就该 invalid ✗ ⇒ 拿它测这一面等于测错对象 ✓）；
 //   ④ **`suggestion_id` 路径 ✗ 与 `patch` 路径等价**（同一边内自比 ✓），
@@ -240,10 +240,11 @@ const MIXED_PATCH = [
   { tool: "draw_shape", arguments: { layer_id: "L2", object_id: "S3", bogus: 1,
     data: RECT(50, 10, 6, 6, [1, 1, 0, 1]) } },
   { tool: "draw_shape", arguments: { object_id: "S4", data: RECT(10, 50, 4, 4, [0, 1, 1, 1]) } },
-  // **本地 501 的工具仍必须 valid ✓**（预检不按本地实现裁剪 ✓，第 ③ 面 ✓）。
-  // **∴ 必须选**服务端 mutating 且本地没实现的**工具 ✗**：`try_stroke` 在服务端是**只读** ✓
+  // **预检不按本地实现裁剪 ✓**（第 ③ 面 ✓）。样本演变如实记 ✗→✓：
+  // **∴ 必须选**服务端 mutating 的工具 ✗：`try_stroke` 在服务端是**只读** ✓
   //   ⇒ 预检本来就该判它 invalid ✗（旧判据拿它当「本地 501」样本 ⇒ 测错了对象 ✓）；
-  //   `revert_to_seq` 在服务端 `mutating: true` ✓ 而本地没有它的端点（501）✓ ⇒ 正是这一面 ✓。
+  //   `revert_to_seq` 服务端 `mutating: true` ✓——**batch8 写本判据时本地还没有它的端点（501）**，
+  //   **batch11 已在本地落地**（`api-local.js` P2c-57）⇒ 这一条现在断的是**两边预检同口径不裁剪** ✓。
   { tool: "revert_to_seq", arguments: { seq: 1 } },
 ];
 const previewByPatch = async (side, patch) => side === "server"
@@ -265,7 +266,7 @@ const previewByPatch = async (side, patch) => side === "server"
       `§A 第 ${i} 步的 error 应是 Some("…") 形态 ✗ ${show(entry && entry.error)}`);
   }
   check(step(vs, 10) && step(vs, 10).valid === true,
-    `§A 第 10 步 revert_to_seq（服务端 mutating、本地 501）应仍 valid ✓ 实测 ${show(step(vs, 10))}`
+    `§A 第 10 步 revert_to_seq（服务端 mutating、本地 batch11 已落地）应仍 valid ✓ 实测 ${show(step(vs, 10))}`
     + " ⇒ 预检被本地实现裁剪了 ✗");
   check(step(vs, 1) && step(vs, 1).affects === "layer", `§A add_adjustment 应 affects=layer ✗ ${show(step(vs, 1))}`);
   check(step(vs, 0) && step(vs, 0).affects === "document", `§A create_layer 应 affects=document ✗ ${show(step(vs, 0))}`);

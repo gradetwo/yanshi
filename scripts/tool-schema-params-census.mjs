@@ -86,6 +86,9 @@ const ALLOWLIST = {
     "mix_colors", "pigment", "rgb", "cross_hatch", "relief", "azimuth",
     "elevation", "dehaze", "brightness", "contrast", "brightness_contrast",
     "height_gain", "newest", "oldest", "desc", "false", "true", "image",
+    // **C 期（#50）**：`relief` 的 `height_source` 只收这两个枚举值 ✓
+    //   （`tools_effect.rs:268-280` 校验、非法值报错不静默回落 ✓）
+    "alpha", "luminance",
   ]),
   // **`fill_region` 的 `texture` 对象子键** ✓（vector-tracing v5.2 文案补了
   //   「region 类型会继承 `mode`/`patch`/`overlap`/`candidates`/`seam`/
@@ -98,7 +101,9 @@ const ALLOWLIST = {
   //   ⇒ 旧分类器无处置 ⇒ 未分类 1 个 ⇒ 红 ✓
   //   **⇒ 只放这一个** ✓：其余键（`black`/`white`/`gamma`/`ranges`…）若以后进文案，
   //     也应按同一问句"它是引擎真有的键吗"补进来，不要放成通配 ✓。
-  effectParam: new Set(["amount"]),
+  //   **C 期（#50）**：`height_source` 是 `relief` 的 params 子键 ✓
+  //     （`tools_effect.rs:271` 真读它、`filter.rs:4006` 真用它）⇒ 同 `amount` 一类 ✓
+  effectParam: new Set(["amount", "height_source"]),
   // **P-19（期 7）**：`precondition_failed` 是**错误码** ✓（`error.rs` 的 `ErrorCode` 枚举 ✓、
   //   零墨拒绝的回执字段）✗ 不是参数名 ⇒ brush_stroke 文案里那句"a=0 按零墨规矩拒绝"
   //   在 inputSchema 里无处可落 ⇒ 按同一问句"它是引擎真有的东西吗"逐个补 ✓ **不要放成通配** ✓。
