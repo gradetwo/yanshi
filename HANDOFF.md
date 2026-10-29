@@ -2219,3 +2219,249 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    **⇒ 静态文本判据在这里不可靠**：我先用「有没有 `process.exit(<非2/3>)`」当代理 ⇒ 报 **1 条**✗，
    实测 **4 条**✗（**代理看不见「成功路径上会不会走到那句 exit**」✓）⇒ **已登记 #57**：
    把「守卫值 ≥ 真实用时」「收尾必须 clearTimeout／unref／显式 exit」变成**有实测支撑**的机检 ✗→✓
+
+## §119 主干先红在 `short_stroke_hint`（合并把「绑定」与「使用」分到了两个函数）＋ batch16 落地（包侧台账「六百七十二」）（2026-10-29）
+
+① **一个不属于 batch16 的红：我修了，但上游同时修了 ⇒ 我这版作废**（**同一事实只留一处 ✓**）：
+   `cargo build --release` 直接 `error[E0425]`✗ 根因是两次上游合并的叠加 ——
+   `c5c96350`（反馈期 1：短笔画单 dab 兜底）写消费端 `if let Some(hint) = short_stroke_hint`，
+   `123448b1`（反馈期 4：涂抹预算闸自动拆分）把绘制段抽成 `paint_and_commit_brush_segment`
+   ⇒ **绑定留在函数里、使用留在外面** ✗ ⇒ `d6ca1c28` 合到同一棵树起**主干编不过**
+   （CI run 40830060709 `failure` 就是它 ✓；`git grep -n short_stroke_hint cc9332ab` 核过 :2378 与 :1762 分属两函数 ✗）
+   · **我的修法**（曾是 `038e723f`）：hint 挂到 `BrushSegmentPainted` 返回值 ⇒ 拆分路径收成 `Vec<String>`
+     ⇒ **每条提示都进 `warnings`** ✓
+   · **上游的修法**（`7783ce23`，落地的就是这个 ✓）：同样把 hint 穿出段结构，但拆分路径用
+     `all.iter().find_map(…)` ⇒ **多段各有提示时只露第一条** ✗
+   **⇒ 所以本仓库带的是上游那版**（rebase 时丢弃我的重复提交 ✓ —— 不夹带、不覆盖别人已落地的修法 ✓）
+   **⇒ 留下一条待观察**：`find_map` 会不会让「第二段也有兜底提示」静默消失（形态⑤ 的小兄弟 ✗）——
+   要修得另开一个提交 ＋ 一条判据（断 `warnings` 条数 = 有提示的段数 ✓），**不在本轮夹带** ✓
+
+② **batch16（`e479da63 → bc55369a`）三件事**（全在 `api-local.js`，两份拷贝 `cmp` 逐字节一致 ✓）：
+   · `describe_canvas` 本地端点（照服务端 `tools.rs:2971 read_describe_canvas`✓）
+   · `delete_mask` 从「如实 501」改成真删 ＋ 404 文案（`tools_mask.rs:360`✓）
+   · `create_mask` 补 **409 重复守卫**（照 `fold.rs:873` 的 `mask_alive` 门 ✓；**与 `create_selection`
+     的「`mode:"new"` 才撞」不同 ✗ —— 蒙版没有 mode 门 ✓**）
+   **⇒ 本地端点数**（命令口径，别抄数字 ✓）：
+   `node -e 'const s=require("fs").readFileSync("web/api-local.js","utf8");console.log((s.match(/(?:url\.pathname|path) === "/g)||[]).length)'`
+   ＋ 同文件里的 `const LOCAL_IMPLEMENTED = …` ⇒ **本轮实测两边都是 181** ✓（batch15 是 180）
+
+③ **判据第一次跑就抓出真分叉**（`scripts/tool-pwa-describe-canvas.mjs` ✓，本轮实测 274 条断言全过 ✓）：
+   「引用的蒙版不存在」这句**权威文案在 `log.rs:565`**（提交期引用检查 ✗）**而不在 `fold.rs`** ✗
+   ⇒ 因为 `validate_commit` 的顺序是 **blobs → primary refs → secondary refs → cycles → …**（`log.rs:293`✓）
+   ⇒ **提交期先拦 ⇒ `fold.rs` 的 `check_auxiliary_refs` 那句「列候选」永远轮不到** ✗
+   **⇒ 教训**：写「权威文案在哪」之前先确认**哪一道检查先跑**，不是先确认哪道检查更具体 ✗
+
+④ **补丁里的行号是**他们仓库的**，三处对我们已过期**（改完再 `cmp` 两份 js ✓）：
+   `fold.rs:1988` ⇒ **1998**（`tombstone_layer` ✓，5 处）｜`tools_registry.rs:1602` ⇒ **1608** ｜
+   `fold.rs:877` ⇒ **873**。**⇒ 这是合并外部补丁的固定一步**：行号只能当**线索**，不能当**坐标** ✗
+
+⑤ **两个构建产物文件不取他们的值，本机重算**（外§116 的口径 ✓）：
+   · `web/index.html`**必须**重算：`api-local.js` 在 `pwa-sync-viewer.mjs:67` 的 `stampFiles` 里 ✓
+     ⇒ **改了内核却不重算戳 ⇒ 离线外壳拿缓存里的旧内核** ✗（静默降级：页面照常、代码是旧的 ✓）
+     本轮实测 `3949394908072` ⇒ `0684330157133`（三份产物同戳 ✓）
+   · `web/assets-index.json`**本不需要**动：它只描述 palette／texture／brush／medium（不含 `api-local.js` ✓）
+     ⇒ 我顺手重算了，**反而被污染**：`tool-assets-index-matches-tree` 当场红 ✗
+     「索引有而包里没有 7」⇒ **本机 `assets/textures/` 有 15 张、git 里只有 8 张**（命令：
+     `git ls-files web/textures | wc -l` vs `ls assets/textures | wc -l`✗ 两边不等就是 H-1 ✓）
+     ⇒ **已 revert 回入库版** ✓ ⇒ **这是 #30（H-1 资产重复）的第 7 次实例**：它每次都以
+     「索引／戳在 CI 与本机算出不同值」的形式出现，而**根因是 `web/` 与 `assets/` 两份拷贝**✗
+
+⑥ **未收账**：batch16 落在 `2672dc45`（rebase 后 ＝ 上游 `6b91fca2` 之上 ✓），**CI 还没跑**
+   ⇒ 按外§118 的规矩：main 组里只要还有 `in_progress`／`pending` 就不派发，等它清 ✓
+
+## §120 batch17 落地（包侧台账「六百七十三」）：`import_psd` 本地化 ＋ **我自己写坏了一次变异**（2026-10-29）
+
+① **落账**：`/api/tools/import_psd` 从「诚实 501」换成 `psd.rs::decode_psd` 的逐字 JS 移植 ✓
+   ⇒ **替换的是已有分支 ⇒ 本地端点数不变**（命令口径 ✓）：
+   `node -e 'const s=require("fs").readFileSync("web/api-local.js","utf8");console.log((s.match(/(?:url\.pathname|path) === "/g)||[]).length)'`
+   ＋ 同文件 `const LOCAL_IMPLEMENTED = …` ⇒ 本轮实测两边都是 **181** ✓
+   **判据**（`scripts/tool-pwa-import-psd.mjs` ✓）本轮实测 **240 条断言全过**，
+   而**最硬的一条是恒等式而不是逐像素比**：两边 composite 的 `blob_hash` **逐字符相等**
+   ⇒ 解码逐字节正确（`blob_put` 与服务端同一个 sha256 口径 ✓）。
+
+② **这批补丁没有带过期行号**（与外§119④ 相反 ✓）：逐条核对全中 ——
+   `psd.rs:58 decode_psd` ✓｜`psd.rs:180 packbits_row` ✓｜`atom.rs:72 from_str`（函数从 :68 起 ✓）
+   ＋ `atom.rs:92` 的小写 hex 校验 ✓｜`blob.rs:580 missing_blob` ✓｜`tools_psd.rs:23` ✓
+   ＋ 文案逐字：`blob_hash 不是合法哈希`（`tools_psd.rs:28` ✓）**不是** `atom.rs` 那句
+   「非法 blob hash: {:?}」✗ —— **映射发生在调用点** ✓；`blob_decodable` 恒 true 的说法
+   也核过：`render.rs:5560 raster_mime_supported` 把 `RAW_RGBA_MIME` **无条件**算支持 ✓
+   （只有 `feature = "raw"` 的相机 RAW 才看构建 ✓）。
+
+③ **三条变异本机复测都红**（① PackBits 原样段少 `+1` ⇒ §C/§D ＋ 顺手把 §F8 也带红 ✓；
+   ④ 签名检查恒假 ⇒ §F6 红 ✓；⑧ 合成 blob 不写 IndexedDB ⇒ §B–§E「本地读回」全红 ✓）
+
+④ **★★ 但我第一次写变异 ④ 时把它写成了「没变异」**（**本轮最重要的教训 ✓**）：
+   原条件是 `if (bytes[0] !== 0x38 || bytes[1] !== 0x42 || …)` ✓，我在**开头**加 `false &&` ✗
+   ⇒ 因为 `&&` 比 `||` **结合更紧** ⇒ 变成 `(false && A) || B || C || D` ✓ ⇒ **后三个字节照查**
+   ⇒ 判据**照样全绿**（240 条 ✓）——**而绿在这里不是好消息**：它差点被我读成
+   「§F6 那条断言是安慰剂」✗（内核①：看起来对的东西最危险 ✓）
+   **⇒ 正确做法**：**整条条件替换成 `false`**（`if (false) { … }` ✓）⇒ 当场 §F6 红 ✓
+   **⇒ 配套自检**（变异完先跑这一条，再跑判据 ✓）：
+   `node -e 'const s=require("fs").readFileSync("web/api-local.js","utf8");console.log(s.match(/function p2DecodePsd\(bytes\)[\s\S]{0,600}/)[0])'`
+   ⇒ **亲眼确认那个谓词真的被改坏了**，才算「变异已施加」✗→✓
+
+⑤ **顺带修了一处真实的陈旧**（不是补丁带来的 ✓）：判据第一轮 `exit 3`
+   「内核产物比源码旧 ⇒ 测到的会是上一版内核」✓ —— **守卫报的是前提不成立，不是产品失败** ✓
+   根因：反馈期 p1–p4 的合并只动了 `crates/yanshi-render/src`，而 `web/wasm/` 还是旧的 pkg ✓
+   **修法**（本机、单目标 ✓）：`cargo build -p yanshi-wasm --release --target wasm32-unknown-unknown`
+   ＋ `wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg …`（CLI 版本取
+   `scripts/wasm-bindgen-version.sh` ⇒ 与 `Cargo.lock` 同源 ✓，本机 0.2.129 一致 ✓）
+   ＋ `node scripts/pwa-sync-wasm.mjs` ＋ `node scripts/pwa-sync-viewer.mjs` ✓
+
+⑥ **`web/assets-index.json` 又被本机污染**（H-1 #30 的又一次实例 ✓）：本机
+   `ls assets/textures | wc -l` = 15 ＋ `git ls-files web/textures | wc -l` = 8 ⇒ 重算出的索引
+   多出 7 项 ⇒ `tool-assets-index-matches-tree` 当场红 ✗ ⇒ **已 revert 回入库版** ✓
+   （索引只描述 palette／texture／brush／medium ⇒ **改 `api-local.js` 根本不需要动它** ✓）
+   而 `web/index.html` 的戳**必须**重算（`api-local.js` 与 `wasm/*` 都在 `stampFiles` 里 ✓）✓
+
+## §121 batch18 落地（包侧台账「六百七十四」）：两条光栅导入的**提交前守卫**对齐服务端四层检查 ＋ **台账自己的计数不符**（2026-10-29）
+
+① **落账**：`import_image` 与 `import_psd` 的本地守卫改成**走同一份 `p2RefGuard`**，
+   顺序逐字照 `log.rs::validate_commit`（**blob `:293` 先 ⇒ 对象唯一 `:339` ⇒ 图层存活 `:424`** ✓）
+   ＋ `layer_id` 由「本地放宽（默默取第一个活层）」改回**必填 400**（`tools_bitmap.rs:151` 的 `require_str` ✓）。
+   ⇒ **替换的是已有分支**（命令口径，别抄数字 ✓）：
+   `node -e 'const s=require("fs").readFileSync("web/api-local.js","utf8");console.log((s.match(/(?:url\.pathname|path) === "/g)||[]).length)'`
+   ＋ 同文件 `const LOCAL_IMPLEMENTED = …` ⇒ **本轮实测两边都是 181** ✓（batch16/17 也是 181 ✓）
+   ＋ `cmp crates/yanshi-http/assets/api-local.js web/api-local.js` ✓ 逐字节一致 ✓
+
+② **判据 §H 十二案**（`scripts/tool-pwa-import-psd.mjs`：总断言 **240 → 338** ✓ 本机全过 ✓）——
+   最硬的不是逐案文案，而是**每条拒绝案都附一条恒等式**：原子总数**前后不变** ✓
+   ⇒ 拦的正是「先写日志再丢掉」那类**形态③**（回执 ok 而状态里没有 ✗）；
+   而**成功路径 H11/H12 照样要跑** ⇒ 防「守卫把一切都拒」的假绿 ✓。
+   原子 id 是各自机器生成的 ⇒ 用 `idNorm` 归一化成「原子 ⟨id⟩」再比 ✓
+   （**外§119① 那条「标识要认判据名／整句结构、不认会变的那段」在同一轮的落地 ✓**）。
+
+③ **★★ 台账自己的标题与正文对不上，两次都对不上**（本轮查清 ✓）：
+   「六百七十四」的标题写 **十三案／十七条变异** ✗，而**它自己的正文枚举**是 H1–H12 ＋ ①–⑱ ✓
+   ⇒ 用命令核对：`grep -c 'guardCase(' `（10 案）＋ 两条成功案 = **12** ✓，变异 **11 + 7 = 18** ✓
+   ⇒ **已按命令改成 12／18** ✓。**这是「同一事实写两处 ⇒ 一定漂移」的第 4 次实例**
+   （866 轮判据数、855 轮那个 `63`、994 轮 trackTemp、本轮计数 ✗）——
+   **⇒ 而这次漂移发生在同一份文档的相邻两行**，读者只要比对就看得见，却没有被发现 ✓
+
+④ **判据跟着分叉走，不是产品坏了**（`tool-pwa-api-behaviour` 第 ④ 案起初红 ✗）：
+   它锁的是**本地旧文案** `blob_not_found` ⇒ 对齐服务端后那句**本身就是分叉** ⇒ 改断整句
+   「原子 ⟨id⟩ 引用的 blob 尚未上传（违反提交顺序协议）」＋ `reference_not_found` ✓
+   （**旧判据锁住旧分叉** ⇒ 这类回归必须在台账里说清是哪一边在动 ✓）。
+
+⑤ **补丁带来的行号又有三处对我们已过期**（外§119④ 的固定一步 ✓）：
+   `fold.rs:1315 → 1325`（`Tombstone` ✓ 两份 js ＋ docs）｜`log.rs:294 → 293`（`validate_blobs` ✓ js×2 ＋ docs ＋ 两条判据的范围 `:292–295`）｜
+   `fold.rs:1305–1313 → 1315–1323`（`ReorderObjects` ✓）⇒ **按第 855／856 轮的规矩一次 grep 全仓改完**，
+   改完 `node --check` ＋ 两份 `cmp` 复核 ✓（**全是注释，行为未变 ✓**）。
+
+⑥ **变异本机复测两条**（⑫–⑱ 是这一批的新路径 ✓）：
+   ⑮「`layer_id` 必填失效」⇒ §H6 红 ✓｜⑰「重复 id 检查整个失效」⇒ §H2/§H3/§H10 红 ✓。
+   **每条跑之前先按外§120④ 那两道闸**：先把改动落到 `.mjs` 副本上 `node --check`（**语法合法 ≠ 变异生效 ✗**），
+   再打印被改函数体**亲眼确认谓词真的坏了** ✓ —— 上一轮就是靠这道闸才没把「没变异」当成「安慰剂」。
+
+⑦ **收紧 `layer_id` 之前先核前端**（别把产品改坏 ✓）：
+   `grep -n 'callTool("import_image"' web/viewer-app.js` ⇒ **四处（:4024/:4101/:4203/:8898）全部带 `layer_id`** ✓
+   ⇒ 所以 400 必填不会打到真实 UI ✓。
+
+⑧ **构建产物**：`api-local.js` 改了 ⇒ 外壳戳**必须**再重算一次 ✓
+   本轮 `3406621666198 → 9843496206568`（`service-worker.js`／`viewer-app.js`／`index.html` 三处同戳 ✓，
+   `tool-pwa-stamp-shape` 16 条 ✓）；而 `web/assets-index.json` **又被本机重算污染**（本机 texture 15 vs git 8 ✗）
+   ⇒ **已 revert** ✓ —— H-1（#30）的又一次实例，**根因是 `web/` 与 `assets/` 两份拷贝** ✗
+
+⑨ **回归**（全部在**重建后的二进制**上跑 ✓ —— 首次编译上游 `7783ce23`，8m12s）：
+   `tool-pwa-import-psd`（338 ✓）／`tool-pwa-api-behaviour` ✓／`tool-pwa-describe-canvas`（274 ✓）／
+   `tool-pwa-local-write-guards` ✓／`tool-pwa-stamp-shape` ✓／`tool-assets-index-matches-tree` ✓／
+   `tool-web-assets-parity` ✓／`tool-pwa-assets`（**声明 181 === 分支 181** ✓）／`tool-js-syntax`（458 文件 ✓）—— **全绿** ✓
+
+⑩ **未收账**：batch18 提交后 **CI 还没跑**；本轮 main 组里 `6b91fca2` 仍是 `queued`，
+   另有 5 个上游分支的 run 全在 `queued`（**GH 侧没-runner 状态，不是我多派 ✓**）
+   ⇒ 按外§118／§119⑥ 的规矩：**不派发、不取消**，等组清 ✓
+   ⇒ 我这一版落在 `6b91fca2` 的**后代**上 ⇒ 即便顶掉那条 `queued` 也**无损**（第 897 轮 ✓）。
+
+## §122 batch19 落地（包侧台账「六百七十五」）：`preview_preset{render}` 从「如实 501」换成真出图 ＋ **抽查两条声明的变异**（2026-10-29）
+
+① **落账**（命令口径，别抄数字 ✓）：**分支数不变**——那条 501 本来就写在 `preview_preset` 分支**里面** ⇒
+   `node -e 'const s=require("fs").readFileSync("web/api-local.js","utf8");console.log((s.match(/(?:url\.pathname|path) === "/g)||[]).length)'`
+   ＋ 同文件 `const LOCAL_IMPLEMENTED` ⇒ 本轮实测**两边都是 181** ✓；两份拷贝 `cmp` 逐字节一致 ✓
+   **新增判据** `scripts/tool-pwa-preset-render-parity.mjs`（`wc -l`=445 ✓／`grep -c 'check('`=46 ✓／九节）
+   ＋ 浅判据 `tool-pwa-preset-server-parity` 的第 ⑨ 节从「必 501」改成**两种诚实出口**（200 带回图且尺寸同服务端 ／ 501 且理由只许「内核没就绪」）。
+
+② **那句 501 的理由本身就是错的 ✗**（这一节值得记的地方）：原注释写「本地内核没有单层裸像素通道 ⇒ 无法如实复现」——
+   **两个分句都被自己的代码推翻** ✓：裸像素早有（`p2LayerScopeAtoms` ＋ `p2cRenderRgba`，服务端探针逐像素相同 ✓），
+   「临时文档」= **第二个内核实例**（一次一用、`finally` 里 `free()` ✓）。
+   **⇒ 而「实例可以复用」这个替代方案是实测证伪的** ✓：复用同实例装一批**新 id** ⇒ `ok`／`atoms`／`head_seq` 全正常
+   而**这批原子不生效** ⇒ 返回**上一张**代理图（**静默降级形态③：覆盖而不说**）
+   ⇒ **守它的不是告警而是恒等式**（⑨ 节「实例数 === 调用数 === `free()` 数」✓，因为折叠层对重复 id **不告警**、
+   换批后的 `cascade_invalidation` 还会**串批** ✗ 不可信）。
+
+③ **补丁的 12 处 `presets.rs` 锚点逐条核过全中** ✓（`:742`／`:684`／`:936`＋`:944`／`:840`＋`:889-892`＋`:904-911`／
+   `:977`／`:969`／`:980`／`:991`／`:1030`／`:1157`）⇒ **需要改的只有三处，且都不是主干漂移** ✗：
+   `document.rs:1660`⇒**1657**（`rendered.rgba8.is_empty()` ✓）、`` `fold.rs:44` ``⇒**`fold.rs:45`**（`rename_all` ✓）、
+   台账表格行 `p2PresetParseRender` 的权威⇒**`presets.rs:684 parse_preview_render`** ✓
+   **⇒ 陷阱**：`:1030` **同在一处是对的**（`preview_preset` 只要求 `layer_id` 是非空串 ✓ 实测就在那一段）
+   ⇒ **所以行号不能整批替换**，要按「它旁边写的是哪件事」逐条定 ✓（外§119④ 的「行号只能当线索」的又一种形态：
+   **同一个行号在同一个文件里可以既是线索又是错标 ✗**）
+
+④ **「463 个 `scripts/*.mjs`」不取**：那是他们那侧的树 ⇒ 本轮 `ls scripts/*.mjs | wc -l` **实测 459** ✓
+   ⇒ 台账里已改成**命令＋时间戳**（「数它用……⇒ 本轮实测 459 ⇒ 不取补丁里的 463」✓）——外§119⑤／§120⑥ 的同一类
+
+⑤ **抽查两条**声明的变异（**台账声明 16 条，我不可能全跑，但抽查必须抽在「只有一条断言能看见」的那种上** ✓）：
+   · **M7** 降采样 `Math.floor(sum/count)`→`Math.round` ⇒ **红 2 条**（`japanese_airy@128` 68/49152 不同、
+     「有墨 vs 无墨」差值 1418 vs 1419 ✓）⇒ 像素类断言抓得住 ✓
+   · **M1** 删掉 `finally` 里的 `k.free()` ⇒ **只红在 ⑨ 节**（「建了 3 个实例却只 free 了 0 个」＋「换尺寸再预览应当各 +1，
+     实测 ctor 3→4｜free 0→0」✓）⇒ **与台账声明完全一致：每一条像素与结构断言都绿，只有恒等式看得见** ✓
+   **⇒ 施加前后各过两道闸**（第 120 节④／第 121 节⑥ 的规矩 ✓）：`cp` 到 `.mjs` 跑 `node --check`（防「语法崩伪装成断言红」）
+   ＋ **打印被改坏的那一段**——这次打印差点骗过我：`t.match(/\} finally \{/)` 命中的是**另一处** `finally`
+   ⇒ 改成锚定那句注释再打印 ✓ 才确认 `k.free()` 真的没了
+   **⇒ 顺带我自己的 assert 写错了一次**：`if (!(new_ in t))` ⇒ JS 的 `in` **不能用于字符串**（`TypeError`）✗
+   ⇒ 而抛错发生在 `writeFileSync` **之后** ⇒ 变异已落地却**没验就退出** ✓ ⇒ 换成 `t.includes(...)` 重验 ✓
+   （**内核②的「验完再宣布」同样适用于我自己的一次性脚本**）
+
+⑥ **构建戳不取补丁值**：本机 `node scripts/pwa-sync-viewer.mjs` 重算 ⇒ `web/index.html` 从 `6600723660600`
+   走到 **`9308320124771`**（三份产物同戳 ✓ `tool-pwa-stamp-shape` 16 条绿 ✓）
+   ＋ `web/assets-index.json` 每次重生成必被本机纹理数污染（口径：`ls assets/textures | wc -l` vs
+   `git ls-files web/textures | wc -l` ⇒ 两边不等就是 H-1 ✓）⇒ **当场 `git checkout --`**（`tool-assets-index-matches-tree` 10 条绿 ✓）
+   **⇒ 这是 #30（H-1）的又一次实例**（**不数第几次** ✗——那个数没有命令能算，写了就会漂 ✓）：
+   同一条 revert **每轮都要手动做一次** ⇒ 该把它做成 `pwa-sync-viewer.mjs` 的一步（记在 #30）
+
+⑦ **用户新增的常态要求：定期 `git pull` 同步远端**（本轮起每批开工前先 `git fetch` 比对 ✓）：
+   本轮实测 `origin/main` = `6b91fca2`，**本地 86fccf2f 领先 3、落后 0** ⇒ 无需 rebase ✓
+   远端同期多了三个上游分支（`handfeel-300pct-fix`／`criteria-relax-brush-parity-jitter`／`paint-r4-p3` 在推进）
+   ⇒ **它们的 run 全在各自分支的 concurrency 组里**（`gh run list --json headBranch` ✓ 本轮逐个看过）
+   ⇒ **main 组当下是空的** ⇒ 攒 batch18＋batch19 **一起 push**（第 875 轮「要么少 push」✓）
+
+⑧ **判据结论**（**全部是在「变异还原后」的那份字节上重跑的 ✓ 不是变异前那份**——还原靠 `cp crates/…/assets/api-local.js web/`
+   ＋ `cmp` 证 ✓）：`tool-pwa-preset-render-parity` exit 0（「逐像素同口径……实例数与 free 数恒等」✓）、
+   `tool-pwa-preset-server-parity` exit 0（22 套库／带 render 的两种诚实出口 ✓）、`tool-pwa-preset-library-parity` exit 0 ✓、
+   `tool-pwa-import-psd` exit 0（338 条 ✓）、`tool-pwa-describe-canvas` exit 0（274 条 ✓）、
+   `tool-pwa-api-behaviour` exit 0 ✓、`tool-pwa-local-write-guards` exit 0 ✓、`tool-pwa-pixel-stats` exit 0 ✓、
+   `tool-pwa-assets` exit 0（181===181 ✓）、`tool-web-assets-parity` exit 0 ✓、`tool-js-syntax` exit 0（459 个 ✓）、
+   `tool-pwa-stamp-shape` exit 0（16 条 ✓）、`tool-assets-index-matches-tree` exit 0（10 条 ✓）
+   ⇒ **没新增已知红** ✓
+
+⑨ **上面那⑧是 rebase 前的结论**：`git fetch` 之后 **origin/main 前进了 10 个提交**（到 `be7481f8`），
+   而**用户本轮定的规矩正是「定期 git pull 同步」**（本节⑦ ✓）⇒ 本地提交 rebase 上去 ✓
+   （**rebase 前先把旧 HEAD 钉成本地分支** ✓ `backup/pre-rebase-batch19-21327916` 与 `backup/pre-rebase-batch19-2`
+   ——改写未推送的提交也要留退路，不搞「先动再找」✗）。
+   **⇒ 这就是「只在自己的树里验证」的代价**：那一轮 13 条判据测的字节**已经不是主干的字节** ✓
+   （内核①：**绿不是证据，「对哪份字节绿」才是** ✓）⇒ 所以 rebase 后**必须重跑**（不止 `cmp` ✓）
+   **上游那 10 个提交动了 `api-local.js`**（两个 `P2_TOOL_SPECS` 行：`batch` 加 `wait_for_render`、`new_document` 加 `mode` ✓）
+   ⇒ 与我的 batch19 大改**不是同一 hunk ⇒ rebase 零冲突**（**「没冲突」不等于「没事」**✗：见 ⑩）
+   **⇒ 而且 main 还在动**：第一次 rebase 后 `git fetch` 又见 4 个提交（到 `8dd922f7`，新工具 `toned_ground` ＋
+   导出口径文档）⇒ **再 rebase 一次** ✓ ⇒ **戳跟着动两次**：`9308320124771 ⇒ 6040682035257 ⇒ 5153474874212`
+   （本机重算 ✓ `assets-index` 每次 revert ✓ 每轮 `cmp` 两份 js 一致 ✓ 两份都含 `toned_ground` 行 ✓）
+   **⇒ 教训（写给下一轮的我 ✓）**：**只要 main 在被人合，「验证过了」的有效期就是一分钟** ✗
+   ⇒ 所以顺序应当是**先 fetch→rebase→再跑判据→再 commit→再 push**，而不是反过来 ✓
+   （本轮我把判据跑在了两份不同的、都已不是主干字节的树上 ✗ 白跑两轮 rebuild）
+
+⑩ **rebase 顺手抓到一条真分叉（记成任务 #63，本轮不夹带修 ✗）**：
+   上游把 `mode` **只写进了参数表**，本地实现**没读**它 ✓——`web/api-local.js` 的 `new_document` 分支
+   只取 `doc_id`／`width`／`height`／`background`，**而它的拒绝条件根本不是服务端那个 `mode` 门**：
+   本地对「已有 `create_document` 的文档再建」一律拒 ✗，服务端 `mode:"open"` 是**缺省不动** ✓、`"create"` 严格新建 ✓、`"reset"` 删后重建 ✓
+   ⇒ **PWA 里传 `mode` 的用户会拿到「不再重复创建」而 `mode:"open"` 本该成功**（**静默降级形态④：两种输入静默当成一种 ✗**）
+   **⇒ 这条为什么值得记**：`P2_TOOL_SPECS` 是**生成物**（`gen-pwa-tool-specs.mjs` 从服务端 schema 抄）⇒
+   **「表里声明了」看起来像「支持了」** ✗ 而**没有任何一条判据**断「声明的入参被读过」✓
+   （口径：`grep -rln P2_TOOL_SPECS scripts/*.mjs` ⇒ **本轮实测只命中生成器**）
+   ⇒ 所以 #63 = 普查「声明集合 − 读取集合」并把恒等式钉成判据 ✓（**不是补 `mode` 的实现就完事**✗）
+
+⑪ **rebase 后对「主干那份字节」重跑（13 条全 exit 0 ✓）**：`tool-pwa-stamp-shape`／
+`tool-assets-index-matches-tree`／`tool-js-syntax`（459 个 ✓）／`tool-web-assets-parity`／`tool-pwa-assets`／
+`tool-pwa-preset-server-parity`（22 套库＋带 render 的两种诚实出口 ✓）／`tool-pwa-preset-library-parity`（逐字节相同 ✓）／
+`tool-pwa-preset-render-parity`（逐像素同口径 ✓）／`tool-pwa-api-behaviour`／`tool-pwa-import-psd`（338 ✓）／
+`tool-pwa-describe-canvas`（274 ✓）／`tool-pwa-local-write-guards`／`tool-pwa-pixel-stats`
+⇒ **没新增已知红** ✓ ⇒ 所以⑧那句「全绿」现在有了对主干字节的版本 ✓（**⑧保留是因为它记的是「变异还原」这一步，
+不是同一件事 ✓**——两条各自成立，别合并成一条 ✗）

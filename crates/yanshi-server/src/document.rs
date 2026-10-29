@@ -1684,6 +1684,21 @@ impl Document {
         layer_id: &str,
         keep: &std::collections::BTreeSet<yanshi_core::ObjectId>,
     ) -> Result<(u32, u32, Vec<u8>)> {
+        let rendered = self.render_layer_objects_subset_rendered(bbox, layer_id, keep)?;
+        self.note_render_stats(&rendered.stats);
+        Ok((rendered.width, rendered.height, rendered.rgba8))
+    }
+
+    /// 子集渲染的共用实现（`render_layer_objects_subset` 与下方 alpha 探针共用）。
+    ///
+    /// 只做渲染、不记账目：记不记“最近一次渲染”的账目由调用方决定 ——
+    /// 探针式调用只是问一句，不应让这次询问变成用户可见的那次渲染。
+    fn render_layer_objects_subset_rendered(
+        &mut self,
+        bbox: Bbox,
+        layer_id: &str,
+        keep: &std::collections::BTreeSet<yanshi_core::ObjectId>,
+    ) -> Result<RegionRender> {
         let mut filtered = self.state.clone();
         // **背景必须置空** ✓（2026-10-20 端到端实测抓到）：`render_region` 会把
         // 结果合成到 `state.background` 上 ⇒ 不置空时子集像素是**白底不透明**的，
@@ -1700,9 +1715,56 @@ impl Document {
         let rendered = self.renderer.render_region(&filtered, &*self.store, bbox);
         // **无论成功失败都要还原** ✓（同单层渲染那条的纪律 ✓）。
         self.renderer.set_only_layer(previous);
-        let rendered = rendered?;
-        self.note_render_stats(&rendered.stats);
-        Ok((rendered.width, rendered.height, rendered.rgba8))
+        rendered
+    }
+
+    /// **目标层里一个对象子集合成后的 alpha 是否恒定**（impasto/relief 警告探针用）。
+    ///
+    /// 做法与 [`Self::render_layer_objects_subset`] 同构：走同一套生产渲染语义
+    /// 画出子集（调用方给 `keep` = 排在该滤镜之前的对象），再扫它的 f32 alpha
+    /// 通道。返回 `Some(c)` 当且仅当：有颜料像素（alpha > 0 —— relief 自身
+    /// 的门与此同值）非空，且全部有颜料像素的 alpha（钳到 0..1，与 relief 的
+    /// `alpha_at` 同口径）逐位相等。此时高度场处处无梯度，`height_source=alpha`
+    /// 的 relief 在数学上必为零效果（`tilt` 恒 0 ⇒ 因子恒 1），不是采样启发式。
+    /// 其余情形（空子集／alpha 有起伏）返回 `None`。f32 缓冲缺失时退到 u8
+    /// alpha 恒定判定（生产渲染路恒为 `Some`，此分支只防未来路径改动）。
+    /// **探针不记账**：不调用 `note_render_stats`，不改动“最近一次渲染”的
+    /// 账目（`last_render_warnings`／`last_below_tiles`）。
+    pub fn below_objects_alpha_constant(
+        &mut self,
+        bbox: Bbox,
+        layer_id: &str,
+        keep: &std::collections::BTreeSet<yanshi_core::ObjectId>,
+    ) -> Result<Option<f32>> {
+        let rendered = self.render_layer_objects_subset_rendered(bbox, layer_id, keep)?;
+        if let Some(buffer) = rendered.buffer.as_ref() {
+            let mut min: Option<f32> = None;
+            let mut max: Option<f32> = None;
+            for pixel in buffer.pixels().chunks_exact(4) {
+                let alpha = pixel[3].clamp(0.0, 1.0);
+                if alpha > 0.0 {
+                    min = Some(min.map_or(alpha, |m: f32| m.min(alpha)));
+                    max = Some(max.map_or(alpha, |m: f32| m.max(alpha)));
+                }
+            }
+            return Ok(match (min, max) {
+                (Some(lo), Some(hi)) if lo == hi => Some(lo),
+                _ => None,
+            });
+        }
+        let mut min: Option<u8> = None;
+        let mut max: Option<u8> = None;
+        for pixel in rendered.rgba8.chunks_exact(4) {
+            let alpha = pixel[3];
+            if alpha > 0 {
+                min = Some(min.map_or(alpha, |m: u8| m.min(alpha)));
+                max = Some(max.map_or(alpha, |m: u8| m.max(alpha)));
+            }
+        }
+        Ok(match (min, max) {
+            (Some(lo), Some(hi)) if lo == hi => Some(lo as f32 / 255.0),
+            _ => None,
+        })
     }
 
     /// **最近一次渲染里被跳过的东西** ✓（裸像素出口的告警通道 ✓，见字段说明 ✓）。

@@ -596,12 +596,15 @@ fn lod_pixel_equivalence_on_real_content() {
     let _ = std::fs::remove_file(&lod_path);
 }
 
-/// **P-3（期 1）**：`export_png` 回执必须用一句话说清 `rendered_seq` 是预览水位 ✓
-/// （旧行为：只给两个数字，调用方误读成"渲染不完整" ⇒ 白跑一遍重导 ✓）。
+/// **P-3（期 1）＋反馈 5 第 7 项**：`export_png` 回执必须用一句话说清预览水位 ✓
+/// （旧行为：只给两个数字，调用方误读成"渲染不完整" ⇒ 白跑一遍重导 ✓；
+///  反馈 5：旧名 `rendered_seq` 在导出回执里误导 ⇒ 正名 `preview_watermark`，
+///  旧名只作已弃用别名留着，值与新名恒等 ⇒ 旧读法不断 ✓）。
 ///
-/// **变异**：删掉 `rendered_seq_note` 字段 ⇒ 本条红 ✓。
+/// **变异**：删掉 `preview_watermark` 字段 ⇒ 本条红 ✓；
+/// 删掉 `rendered_seq` 别名 ⇒ 本条红 ✓；改动别名值使两值不等 ⇒ 本条红 ✓。
 #[test]
-fn export_png_receipt_names_rendered_seq_as_preview_watermark() {
+fn export_png_receipt_names_preview_watermark_with_rendered_seq_alias() {
     let mut workspace = workspace();
     setup(&mut workspace);
     let path = temp_path("receipt-note");
@@ -616,15 +619,25 @@ fn export_png_receipt_names_rendered_seq_as_preview_watermark() {
         )
     };
     assert_eq!(exported["ok"], json!(true), "{exported}");
-    let note = exported["rendered_seq_note"].as_str().unwrap_or("");
+    let note = exported["preview_watermark_note"].as_str().unwrap_or("");
     assert!(
         note.contains("预览水位") && note.contains("与本次导出完整性无关"),
-        "回执必须说清 rendered_seq 是预览水位、与导出完整性无关：{exported}"
+        "回执必须说清 preview_watermark 是预览水位、与导出完整性无关：{exported}"
     );
-    // 数字本身照旧：两个字段都在，语义由 note 锚定。
+    // 正名在、别名在、两值恒等——恒等式，不是两个单点断言。
     assert!(
-        exported["head_seq"].is_number() && exported["rendered_seq"].is_number(),
-        "head_seq 与 rendered_seq 必须仍在回执里：{exported}"
+        exported["head_seq"].is_number()
+            && exported["preview_watermark"].is_number()
+            && exported["rendered_seq"].is_number(),
+        "head_seq 与 preview_watermark（含 rendered_seq 别名）必须都在回执里：{exported}"
+    );
+    assert_eq!(
+        exported["preview_watermark"], exported["rendered_seq"],
+        "别名必须与正名恒等，值一变就该红：{exported}"
+    );
+    assert_eq!(
+        exported["preview_watermark_note"], exported["rendered_seq_note"],
+        "旧 note 名是别名，文本必须与新 note 相同：{exported}"
     );
     let _ = std::fs::remove_file(&path);
 }

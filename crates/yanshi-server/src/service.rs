@@ -2933,11 +2933,19 @@ impl Workspace {
     fn materialize_pending_replayable_blobs(&mut self, doc_id: &str) -> Result<(usize, usize)> {
         let store = self.store();
         // **先收齐再落笔** ✗：下面要 `&mut self` 去重放 ✓，不能在遍历日志的同时持有它的借用 ✓。
-        let pending: Vec<(yanshi_core::BlobHash, serde_json::Value)> = {
+        let (pending, mut unreplayable): (Vec<(yanshi_core::BlobHash, serde_json::Value)>, usize) = {
             let Some(document) = self.document(doc_id) else {
                 return Ok((0, 0));
             };
             let mut pending = Vec::new();
+            // **无配方缺失也必须计数**（第 4 轮第 3 期口径簇 · 水彩 P2 反证边界）：
+            // 照片 / 媒体原子根本没有 `source`，读画布笔刷的配方也不可重放 ——
+            // 从前在这里直接 `continue` ⇒ 包里缺了它们的本体，导入回执仍报
+            // `blobs_unreplayable = 0`，丢失是静默的。第 942 轮「补不回来必须计数」
+            // 只堵了有配方那条路；无配方本体缺失同样是真实丢失，必须进
+            // `unreplayable`，不能跳过。计数按引用原子数（与 `replayed` 同口径，
+            // 不是去重后的哈希数 —— `verify_package` 那边才是去重计数）。
+            let mut unreplayable = 0usize;
             for atom in document.log().iter() {
                 let payload = &atom.payload;
                 let Some(hash_text) = payload
@@ -2954,15 +2962,15 @@ impl Workspace {
                 if store.exists(&hash) {
                     continue;
                 }
-                let Some(source) = payload.get("source") else {
-                    continue;
-                };
-                if !crate::tools::brush_source_is_replayable(self, source) {
-                    continue;
+                match payload.get("source") {
+                    Some(source) if crate::tools::brush_source_is_replayable(self, source) => {
+                        pending.push((hash, source.clone()));
+                    }
+                    // 没有重跑路径 ⇒ 直接记补不回来，不静默跳过。
+                    _ => unreplayable += 1,
                 }
-                pending.push((hash, source.clone()));
             }
-            pending
+            (pending, unreplayable)
         };
         let mut replayed = 0usize;
         // **★ "补不回来"必须**计数 ✗ ★**（第 942 轮 ✓；**修静默丢弃 ✓）：
@@ -2974,7 +2982,8 @@ impl Workspace {
         //     ⇒ **∴ 打开一个包**立刻知道**有几笔没补回来 ✓**** ✓✓
         //   **∴ 且**"**不写**"这个行为**不变 ✗**（**对的 ✓：**绝不把**另一张图
         //     塞进那个哈希 ✓）—— **∴ 变的只是"**说出来**" ✓**** ✓✓
-        let mut unreplayable = 0usize;
+        // （`unreplayable` 已在上面的收集段声明：有配方重放失败与无配方缺失
+        // 都进同一个计数，见收集段注释。）
         for (hash, source) in pending {
             match crate::tools::replay_brush_bitmap(self, doc_id, &source) {
                 Ok(bytes) if yanshi_core::BlobHash::from_bytes(&bytes) == hash => {
@@ -3619,7 +3628,7 @@ impl Workspace {
                  blob_encoding: {PACKAGE_BLOB_ENCODING}\n\
                  blob_bytes_plain: {plain_bytes}\nblob_bytes_packed: {packed_bytes}\n\
                  unparsable_atom_lines: {broken_lines}\n\
-                 restore: 把本包解开到 <root>/ 之下即可（atoms.jsonl 是唯一权威，渲染可重放）\n"
+                 restore: 把本包解开到 <root>/ 之下即可（atoms.jsonl 是唯一权威，仅 import 重放可恢复省掉的位图，直接读 blob 的消费方仍见缺失）\n"
             )
             .into_bytes(),
         });
@@ -3633,6 +3642,12 @@ Contents:\n  atoms.jsonl      append-only atom log; this is the authority\n\
 Not every blob is here: a patch whose brush recipe provably replays byte-exact is omitted\n\
 (BUILD-INFO blobs_omitted_replayable). Importing replays those from the log; blobs whose\n\
 pixels cannot be proven reproducible (canvas-reading brushes, media strokes) are always kept.\n\
+Boundary (default packages are NOT byte-self-contained): only the import path restores\n\
+an omitted bitmap. A consumer that unpacks blobs/ directly without import replay still\n\
+sees the omitted bitmaps as missing. Judge a package with verify_package (complete=true\n\
+means import-replayable); do not judge self-containment from the export receipt's\n\
+missing_body, which is a storage-side count (0 on every successful export). Counts in\n\
+omitted/missing_body/missing_derived are deduplicated blob hashes, not stroke counts.\n\
 Restore under <root>/ of a yanshi-serve instance (the doc lives under docs/<doc_id>/):\n\
   mkdir -p <root>/docs/<doc_id>\n\
   mv atoms.jsonl meta.json <root>/docs/<doc_id>/\n\
