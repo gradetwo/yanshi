@@ -24166,3 +24166,70 @@ bbox 内与外／分页（含 `limit:0`）；§C `get_atom` 字段集合与 `lab
 `tool-pwa-vector-hit-test`（137 条）、`tool-pwa-transform-object`、`tool-pwa-read-inspect`（428 条）、
 `tool-pwa-preset-library-parity`、`tool-pwa-preset-server-parity`、`tool-pwa-engine-capabilities`（462 条）、
 `tool-js-syntax`（455 个脚本）—— **全绿** ✓（第 6 条的 `p2RefGuard` 是跨端点改动 ⇒ 写路径与读路径判据一起跑 ✓）。
+
+## 六百七十二、本地 `describe_canvas` 落地（180 → 181）＋ `delete_mask` 从「如实 501」改真相 ＋ `create_mask` 补 409 重复守卫：判据第一次跑就抓出「权威文案在 `log.rs` 不在 `fold.rs`」这处分叉
+
+**做什么**（`crates/yanshi-http/assets/api-local.js`；`LOCAL_IMPLEMENTED` 机械重数 180 → **181** ✓）：
+
+1. **本地 `describe_canvas` 落地**（照 `read_describe_canvas`，`tools.rs:2971`）——**纯折叠读 ✓**（不碰像素、不碰内核 ✓）：
+   `layers` 十字段（含 `kind ≡ type` 别名 ✓、`mask_id` 缺省 `null` ✓、每层 `objects` 计数 ✓）／
+   `selections` **过滤墓碑** ✓／`masks` **不过滤** ✓（**服务端就是这么露出已删蒙版的 ⇒ 照抄 ✗ 不「顺手修好」✓**）／
+   `estimated_memory_bytes = 活对象 × 180` ✓。
+   **两个服务端-rooted 的量本地编不出来** ✓：`server_rss_mb: null` ＋ `bytes_per_atom_avg: 0`
+   （**0 就是服务端自己「原子 < 100 ⇒ 不可判」的哨兵 ✓** —— 编个数字才是撒谎 ✗）。
+2. **新折叠器 `p2DescribeRegions`**（选区／蒙版／对象归属／图层父子一张表走完 ✓）：
+   ① `tombstone{layer_id}` ⇒ `killLayer` **沿 parent 链闭包扩张再把层上对象标死** ✓
+   （照 `fold.rs:1998 tombstone_layer` 的 `deleted_by` 级联 ✓ —— 对象**没有自己的墓碑** ✗
+   ⇒ 漏了级联就会出现「层没了、估计量还挂着」的形态③ ✓）；
+   ② `create_object`／`import_image` **总是插新** ✓（照 `fold.rs:1099` ✓），其余 `draw_*`／`supersede`
+   未见过才插、见过只改归属 ✓；③ `set_property{key:"layer_id"}` 走对象归属 ✓；
+   ④ `delete_mask` 原子与 `tombstone{selection_id}` 分别打 `deleted` ✓。
+3. **`delete_mask` 从「如实 501」改成真实现**（**旧注释「服务端只有 create_mask」是过期事实 ✗**：
+   `tools_registry.rs:1608`／`tools.rs:1946`／`tools_mask.rs:360` 都在 ✓ ⇒ 面板删蒙版本地被 501、云端能删 ✓）：
+   写 `delete_mask{mask_id}` 原子 ✓；不存在或已删 ⇒ 404 ✓
+   —— **权威文案实测是 `log.rs:565` 的「引用的蒙版 X 不存在」**（提交期引用检查**先于** `fold.rs` 的
+   `check_auxiliary_refs` ⇒ 后者那句「列候选」形**永远轮不到** ✗）；从未存在与已删**同一句** ✓（`is_none_or` ✓）。
+4. **`create_mask` 补 409 重复守卫**（照 `fold.rs:873` 的 `mask_alive` 门 ✓）：**活着的同名 ⇒ 409「蒙版 X 已存在」**✓
+   （**与 `create_selection` 的「`mode:"new"` 才撞」不同 ✗ —— 蒙版没有 mode 门 ✓**）；
+   **墓碑不占 id** ✓ ⇒ 删过的可以重建 ✓（`mask_alive` 不是 `contains_key` ✓）。
+
+**判据**（`scripts/tool-pwa-describe-canvas.mjs`，同一请求两边打、剥掉 HTTP 信封与两个 RSS 量后比；**274 条断言** ✓）：
+
+| 节 | 覆盖 | 能红的形状 |
+|---|---|---|
+| §A | 空文档：400×300／默认层身份／零对象零估计／`kind ≡ type` | 别名丢、默认层口径漂 |
+| §B | 每层对象数**由判据独立算**（`默认1／LA1／LB2`）＋ 移动／删除后估计量 | 计数错、`est` 恒 0 |
+| §C | **删层级联**：层缺席＋对象随层死＋`est` 掉到 180 | 漏 `killLayer` |
+| §D | 选区 `mode/feather/invert/shape` 回显 ＋ **删了就不列** | 缺省值漂、不滤墓碑 |
+| §E | 蒙版生命周期：回显 → 重复 409 逐字 → **删后仍列出** → 重删 404 逐字 → **重建允许** → 删未知 404 同句；**id 按反序建（M_B 先／M_A 后）⇒ 列表必须按 id 升序而非插入序** | 顺手「修好」、守卫丢、排序错 |
+| §F | 入口校验：未知键／缺 `mask_id`／类型错 ⇒ 400 逐字 | 校验口径漂 |
+| §G | 全量终检 ＋ `counts.atoms` 两边同为 **17** ✓（写路径原子产生数一致 ✓） | 任一面分叉 |
+| 恒等式 | `counts.X === X.length`（三类）／`Σ objects × 180 === est`／`kind === type` —— **每边各自验** | 「字段各自合法却互相矛盾」 |
+| 哨兵 | 本地 `server_rss_mb === null` ＋ `bytes_per_atom_avg === 0` | 本地编数字冒充测量 |
+
+**变异（十条 ✓ 全跑在 `web/api-local.js` 那份上，每条：改 → 判据必须红 → `cmp` 还原 ✓）**：
+① `est` 恒 0 ⇒ §B/§C 红（21 条）✓｜② 选区不滤墓碑 ⇒ §D2 红 ✓｜③ 蒙版滤墓碑（顺手修好）⇒ §E3 红 ✓｜
+④ 重复守卫反向 ⇒ §E 全链红 ✓｜⑤ 去掉存在检查 ⇒ §E5/§E7 本地 200 红 ✓｜⑥ 已删当存在 ⇒ §E5 红 ✓｜
+⑦ 级联不杀对象 ⇒ §C 红（`est` 540 ≠ 180 ✓）｜⑧ 层计数无视 `layer_id` ⇒ §B 红（`{默认:4,LA:4,LB:4}` ✓）｜
+⑨ 去掉 `kind` 别名 ⇒ §A 起全红 ✓｜⑩ 蒙版漏 sort ⇒ §E3/§E8 红 ✓（**靠反序 id 才分辨得出 ✓**）。
+
+**这一轮判据自己错的两处（都改判据，不迁就产品 ✓）**：
+1. **变异 ④ 第一次跑出来是 `exit(3)` 不是红 ✗**：判据在 `b.masks[0]` 无长度守卫就 `"invert" in b.masks[0]` ⇒
+   TypeError 走 `uncaughtException` ⇒ 「产品坏」被记成「判据坏」✗ —— 加长度守卫后同一变异红 12 条 ✓
+   （**∴ 判据必须能把「实现坏」与「我自己坏」分开口径 ✓**）。
+2. **原计划的变异 ⑩「`mask_id ?? null` 改裸值」是**假变异**✗**：`p2cState` 本就初始化 `mask_id: null` ⇒
+   行为不变 ⇒ 判据必绿 ✗ —— 换成「漏 sort」，并把蒙版 id 改成反序建（M_B 先）让这一面**可分辨** ✓
+   （**∴ 变异前先问「这个改动落在哪条路径上」✓ 内核 3 ✓**）。
+
+**判据第一次跑还抓到一处真分叉 ✓（不是推断，是实测）**：本地 `delete_mask` 的 404 起初照
+`fold.rs:934 check_auxiliary_refs` 写「`mask_id X 不存在（现有mask_id：…）`」✗，而服务端给的是
+`log.rs` 提交期引用检查的「引用的蒙版 X 不存在」✓ —— **两道检查都在，跑在前面的那道才是权威 ✓**；
+本地改成逐字照 `log.rs` 后 §E5/§E7 绿 ✓。
+
+**环境插曲**（与本节无关，但如实记 ✓）：`tool-pwa-assets` 一度红在「介质产物落后于源码」——
+是**上游 pull 把 `crates/yanshi-medium-*/src` 的时间戳刷新**了 ✗ 而本地 `assets/mediums/*.wasm` 没重同步 ⇒
+`cargo build --release --target wasm32-unknown-unknown -p 六个介质` ＋ `node scripts/mediums-sync.mjs` 后转绿 ✓。
+
+**回归**：`tool-pwa-assets`（声明 181 === 分支 181 ✓）、`tool-js-syntax`、`tool-pwa-api-behaviour`、
+`tool-pwa-transform-object`（§C10/§C11 的 404/409 文案与 `p2DescribeRegions` 无关但共用折叠）、
+`tool-pwa-describe-canvas` —— **全绿** ✓。

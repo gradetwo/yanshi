@@ -2219,3 +2219,48 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    **⇒ 静态文本判据在这里不可靠**：我先用「有没有 `process.exit(<非2/3>)`」当代理 ⇒ 报 **1 条**✗，
    实测 **4 条**✗（**代理看不见「成功路径上会不会走到那句 exit**」✓）⇒ **已登记 #57**：
    把「守卫值 ≥ 真实用时」「收尾必须 clearTimeout／unref／显式 exit」变成**有实测支撑**的机检 ✗→✓
+
+## §119 主干先红在 `short_stroke_hint`（合并把「绑定」与「使用」分到了两个函数）＋ batch16 落地（包侧台账「六百七十二」）（2026-10-29）
+
+① **先修一个不属于 batch16 的红**：`cargo build --release` 直接 `error[E0425]`✗
+   **根因是两次上游合并的叠加**：`c5c96350`（反馈期 1：短笔画单 dab 兜底）写消费端
+   `if let Some(hint) = short_stroke_hint`，`123448b1`（反馈期 4：涂抹预算闸自动拆分）把绘制段
+   抽成 `paint_and_commit_brush_segment` ⇒ **绑定留在了函数里、使用留在了外面** ✗
+   ⇒ `d6ca1c28` 把它们合到同一棵树 ⇒ **主干自那起编不过**（CI run 40830060709 `failure` 就是它 ✓）
+   **⇒ 上游 tip `cc9332ab` 仍然红**（本轮核过：`git grep -n short_stroke_hint cc9332ab` ⇒ 绑定在 :2378、
+   使用在 :1762，两个函数 ✗）⇒ 所以这个修复**必须先于任何补丁**落地。
+   **⇒ 修法**：把 hint **挂到返回值上**（`BrushSegmentPainted.short_stroke_hint` ✓）⇒ 拆分路径收集成
+   `Vec<String>` ⇒ 消费端判 `!is_empty()` ⇒ **多条提示全部进 `warnings`**（原来只能带一条 ✗）✓
+
+② **batch16（`e479da63 → bc55369a`）三件事**（全在 `api-local.js`，两份拷贝 `cmp` 逐字节一致 ✓）：
+   · `describe_canvas` 本地端点（照服务端 `tools.rs:2971 read_describe_canvas`✓）
+   · `delete_mask` 从「如实 501」改成真删 ＋ 404 文案（`tools_mask.rs:360`✓）
+   · `create_mask` 补 **409 重复守卫**（照 `fold.rs:873` 的 `mask_alive` 门 ✓；**与 `create_selection`
+     的「`mode:"new"` 才撞」不同 ✗ —— 蒙版没有 mode 门 ✓**）
+   **⇒ 本地端点数**（命令口径，别抄数字 ✓）：
+   `node -e 'const s=require("fs").readFileSync("web/api-local.js","utf8");console.log((s.match(/(?:url\.pathname|path) === "/g)||[]).length)'`
+   ＋ 同文件里的 `const LOCAL_IMPLEMENTED = …` ⇒ **本轮实测两边都是 181** ✓（batch15 是 180）
+
+③ **判据第一次跑就抓出真分叉**（`scripts/tool-pwa-describe-canvas.mjs` ✓，本轮实测 274 条断言全过 ✓）：
+   「引用的蒙版不存在」这句**权威文案在 `log.rs:565`**（提交期引用检查 ✗）**而不在 `fold.rs`** ✗
+   ⇒ 因为 `validate_commit` 的顺序是 **blobs → primary refs → secondary refs → cycles → …**（`log.rs:293`✓）
+   ⇒ **提交期先拦 ⇒ `fold.rs` 的 `check_auxiliary_refs` 那句「列候选」永远轮不到** ✗
+   **⇒ 教训**：写「权威文案在哪」之前先确认**哪一道检查先跑**，不是先确认哪道检查更具体 ✗
+
+④ **补丁里的行号是**他们仓库的**，三处对我们已过期**（改完再 `cmp` 两份 js ✓）：
+   `fold.rs:1988` ⇒ **1998**（`tombstone_layer` ✓，5 处）｜`tools_registry.rs:1602` ⇒ **1608** ｜
+   `fold.rs:877` ⇒ **873**。**⇒ 这是合并外部补丁的固定一步**：行号只能当**线索**，不能当**坐标** ✗
+
+⑤ **两个构建产物文件不取他们的值，本机重算**（外§116 的口径 ✓）：
+   · `web/index.html`**必须**重算：`api-local.js` 在 `pwa-sync-viewer.mjs:67` 的 `stampFiles` 里 ✓
+     ⇒ **改了内核却不重算戳 ⇒ 离线外壳拿缓存里的旧内核** ✗（静默降级：页面照常、代码是旧的 ✓）
+     本轮实测 `3949394908072` ⇒ `0684330157133`（三份产物同戳 ✓）
+   · `web/assets-index.json`**本不需要**动：它只描述 palette／texture／brush／medium（不含 `api-local.js` ✓）
+     ⇒ 我顺手重算了，**反而被污染**：`tool-assets-index-matches-tree` 当场红 ✗
+     「索引有而包里没有 7」⇒ **本机 `assets/textures/` 有 15 张、git 里只有 8 张**（命令：
+     `git ls-files web/textures | wc -l` vs `ls assets/textures | wc -l`✗ 两边不等就是 H-1 ✓）
+     ⇒ **已 revert 回入库版** ✓ ⇒ **这是 #30（H-1 资产重复）的第 7 次实例**：它每次都以
+     「索引／戳在 CI 与本机算出不同值」的形式出现，而**根因是 `web/` 与 `assets/` 两份拷贝**✗
+
+⑥ **未收账**：本轮三个提交（修主干 ＋ batch16）已进树，**CI 还没跑**（main 组里还压着
+   `cc9332ab`／`f4df04a4`／`fe77ac04` 三个 run ✓ ⇒ 按规矩不派发、等它们清）✓

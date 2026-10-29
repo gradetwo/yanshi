@@ -84,7 +84,9 @@ export // **★ 声明必须与**实现分支数**一致 ✗ ★**（第 72 轮 
 //   **第 9 批 路径节点编辑 ✓ —— `edit_path` 落地 ⇒ 再 +1 ✓**）：
 //   **∴ 判据口径 `actualImpl`（**机械重数：`(?:url\.pathname|path) === "`**）⇒ 本数与它同步 ✓（非拍脑袋 ✗）**
 //   **∴ 数它用：`node -e 'const a=require("fs").readFileSync("web/api-local.js","utf8");console.log(((a.match(/(?:url\.pathname|path) === "/g)||[]).length))'` ✓**
-const LOCAL_IMPLEMENTED = 180; // `list_engine_capabilities` 落地 ⇒ 机械重数 179 + 1 ✓
+const LOCAL_IMPLEMENTED = 181; // `describe_canvas` 落地 ⇒ 机械重数 180 + 1 ✓
+//   **★ 同轮 `delete_mask` 由"如实 501"改成真实现（**不新增分支 ✓**）；
+//     `create_mask` 补上重复 409 守卫 ✓**（**与 `create_selection` 的 mode 门不同：蒙版不论 mode 都拒 ✗**）**
 
 let lastFold = null;
 
@@ -2651,7 +2653,7 @@ async function withKernel(doc, fn) {
     if (view.found !== true || !view.__create_id) return false;
     const n = neutral || p2Neutralized(rows);
     if (n.has(view.__create_id)) return false;
-    // **★ 图层级联删也算死 ✗ ★**（**`fold.rs:1988 tombstone_layer` 会给层上每个对象写
+    // **★ 图层级联删也算死 ✗ ★**（**`fold.rs:1998 tombstone_layer` 会给层上每个对象写
     //   `deleted_by` ⇒ `alive_objects()`／`objects_in_layer()` 把它们剔除 ✓**）：
     //   **∴ 旧实现只看对象自己那条 tombstone ✗** ⇒ 删掉的图层里的对象在 `list_objects`／
     //   `reorder_objects`／undo 候选里**仍然算活着** ✓（**服务端列表里没有它 ✓ ⇒ 面板与撤销条数两端不一致** ✗）。
@@ -2730,7 +2732,7 @@ async function withKernel(doc, fn) {
   /** **图层状态 ✗**（**本地等价服务端折叠的 `state.layers` ✓**）：
    *   **∴ 折叠**保留**被 tombstone 的层 ✓**（`state.rs` 的 `layer_alive` 是**另一个**谓词 ✓
    *   ⇒ `contains_key` ≠ 活着 ✓），删除可撤销正是靠这个「留墓碑」✓。
-   *   **∴ 级联必须照 `fold.rs:1988 tombstone_layer` 逐条 ✓**：一条「图层 tombstone」会把
+   *   **∴ 级联必须照 `fold.rs:1998 tombstone_layer` 逐条 ✓**：一条「图层 tombstone」会把
    *   **本层 ＋ 全部子孙层**（按 `parent_id` BFS ✓ 带 `seen` 防环 ✓）以及**这些层上的对象**
    *   一起标成已删除 ✓，而规则是 `deleted_by.is_none()` ⇒ **先到先得 ✓**
    *   （**所以取「本层与祖先链上 log 序最早的那条生效墓碑」**✓ 不是「自己那条」✗）。
@@ -4869,15 +4871,42 @@ async function withKernel(doc, fn) {
     if (path === "/api/tools/create_mask") {
       const chk = p2CheckRegionArgs(body, "mask_id");
       if (chk.err) return chk.err;
+      // **∴ 墓碑不占 id ✗**（`fold.rs:871 precondition` ✓）：**活着的同名蒙版 ⇒ 409** ✓
+      //   （**文案逐字 `蒙版 {mask_id} 已存在` ✓**）；**已删的可以重建 ✓**。
+      const rows = await atomsOf(handle, doc);
+      const existing = p2DescribeRegions(rows).masks.get(chk.payload.mask_id);
+      if (existing && !existing.deleted) {
+        return p2ToolFailure(409, "precondition_failed",
+          "蒙版 " + chk.payload.mask_id + " 已存在");
+      }
       const seq = await putAtom(handle, doc, p2Envelope("create_mask", chk.payload));
       return json({ ok: true, seq, server: false, mask_id: chk.payload.mask_id,
                     note: "已在本地原子日志写入 create_mask" });
     }
 
-    // **⑤ `delete_mask` ⇒ 明确 501 ✗**：**服务端**只有** `create_mask` ✗**（**注册表无 `delete_mask` ✓**）
-    //   ⇒ **∴ 遮罩删除**没有**服务端语义可照抄 ✗** ⇒ **∴ 不硬凑 ✓**。
+    // **⑤ `delete_mask` ✗**：**照 `write_delete_mask` ✓**（`tools_mask.rs:360`）⇒
+    //   **`delete_mask{mask_id}` 原子** ✓（**墓碑语义 ✓，撤销可复原 ✓**）。
+    //   **∴ 旧本地这里是「服务端只有 create_mask ⇒ 501」✗ —— 那是**过期的事实**✗**：
+    //     `delete_mask` 早在注册表里（`tools_registry.rs:1608`、`tools.rs:1946` ✓）
+    //     ⇒ **∴ 面板删蒙版在本地被 501，而云端能删 ✓**（**同一按钮两种结果 ✓ 已修 ✓**）。
+    //   **∴ 引用校验的权威文案实测是 `log.rs:565` 那一句**（**提交期引用检查先于
+    //     `fold.rs` 的 `check_auxiliary_refs` ✓** ⇒ 后者列不出候选 ✗）：
+    //     `引用的蒙版 X 不存在` ✓ —— **不列现有值** ✓（**判据 §E5／§E7 逐字抓到过分叉 ✓**）。
+    //     墓碑蒙版**不算活着** ✓ ⇒ 404；从未存在与已删**同一句** ✓（`is_none_or` ✓）。
     if (path === "/api/tools/delete_mask") {
-      return p2NoServerEndpoint("delete_mask", "遮罩只有创建语义");
+      const specBad = p2ValidateArgsFor("delete_mask", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
+      const maskId = body.mask_id;
+      const rows = await atomsOf(handle, doc);
+      const masks = p2DescribeRegions(rows).masks;
+      const existing = masks.get(maskId);
+      if (!existing || existing.deleted) {
+        return p2ToolFailure(404, "reference_not_found", "引用的蒙版 " + maskId + " 不存在");
+      }
+      const atom = p2Envelope("delete_mask", { mask_id: maskId });
+      const seq = await putAtom(handle, doc, atom);
+      return json({ ok: true, seq, server: false, mask_id: maskId,
+                    note: "已在本地原子日志写入 delete_mask（蒙版墓碑语义，撤销可复原）" });
     }
 
     // **⑥⑦ `lock_layer`／`unlock_layer` ✗**：**照 `write_lock_layer` ✓**
@@ -5246,7 +5275,7 @@ async function withKernel(doc, fn) {
         return p2Missing("master " + masterId + " 不存在，无法脱离");
       }
       // **master 已删 ⇒ 409 ✓**（**`PreconditionFailed` ⇒ 服务端 HTTP 409 ✓**）；
-      //   **∴ 用折叠口径判死 ✗**（**自己墓碑 ＋ 随层删 ✓，`fold.rs:1988` 给层里每个对象写 `deleted_by` ✓**）。
+      //   **∴ 用折叠口径判死 ✗**（**自己墓碑 ＋ 随层删 ✓，`fold.rs:1998` 给层里每个对象写 `deleted_by` ✓**）。
       if (p2ObjectDeath(p2PresetLayers(rows, neutral), mv).deleted) {
         return p2Precon("master " + masterId + " 已被删除，无法脱离");
       }
@@ -6024,7 +6053,7 @@ async function withKernel(doc, fn) {
             ? pl.checkpoint_id : ("ckpt_" + a.id));
         }
       }
-      // **图层存活 = 自身墓碑 ＋ 祖先级联删 ＋ 创建被撤销 ✗**（`fold.rs:1988` ✓）⇒
+      // **图层存活 = 自身墓碑 ＋ 祖先级联删 ＋ 创建被撤销 ✗**（`fold.rs:1998` ✓）⇒
       // 与 `list_layers`／`list_objects` 共用 `p2PresetLayers` 一份口径 ✓。
       const layersAlive = p2PresetLayers(rows, neutral);
       const aliveLayers = layers.filter((l) => !l.deleted &&
@@ -6034,6 +6063,112 @@ async function withKernel(doc, fn) {
       return { width: w, height: h, color_space,
                layers: aliveLayers,
                objects, checkpoints: checkpointIds.size };
+    }
+    /** **`describe_canvas` 的选区／蒙版／对象折叠 ✗**（**照 `fold.rs` 的五条分支 ✓**）：
+     *   **∴ 选区**：`create_selection` 入表 ✓；`update_selection` 只改 `shape/feather/invert` ✓
+     *     （`fold.rs:1357` ✓）；`tombstone{selection_id}` 置墓碑 ✓。
+     *   **∴ 蒙版**：`create_mask` 入表 ✓；`delete_mask` 与 `tombstone{mask_id}` 置墓碑 ✓
+     *     （`fold.rs:1336`／`:1412` ✓）；`update_mask` **不改** `mode/feather/shape` ✓（只追加 patch）。
+     *   **∴ 对象计数**：建对象的原子（**共享集合 ✓**）按 `object_id` 去重 ✓；
+     *     `supersede` 可改 `layer_id` ✓、`set_property{object_id,key:"layer_id"}` 可搬层 ✓
+     *     （`fold.rs:1883`／`:1918` ✓）；`tombstone{object_id}` 置死 ✓。
+     *   **∴ 墓碑层／墓碑对象都**留在表里**✓**（服务端 `state.masks` 不过滤 `is_deleted` ✓、
+     *     `state.objects` 也留着 ✓）—— 过滤发生在**输出那一步** ✓，不在这里丢 ✓。
+     */
+    function p2DescribeRegions(rows) {
+      const win = p2StateWindow(rows);
+      const neutral = p2Neutralized(rows);
+      const selections = new Map(), masks = new Map(), objects = new Map();
+      // **图层父链 ✗**（**只为「删层级联到对象」用 ✓**；层自身存活由 `p2PresetLayers` 算 ✓）。
+      //   **∴ 逐原子维护而非取终态 ✗**：级联发生在**墓碑那一刻**的父链上 ✓，
+      //   而 `deleted_by` 一旦置上**永不恢复** ✓ ⇒ **∴ 之后改 parent 不影响已删对象 ✓**。
+      const layerParent = new Map([["layer_default", null]]);
+      const region = (pl) => ({
+        mode: typeof pl.mode === "string" ? pl.mode : "new",
+        feather: typeof pl.feather === "number" ? pl.feather : 0,
+        invert: pl.invert === true,
+        shape: pl.shape === undefined ? null : pl.shape,
+      });
+      const setFields = (cur, pl) => {
+        if (pl.shape !== undefined) cur.shape = pl.shape;
+        if (typeof pl.feather === "number") cur.feather = pl.feather;
+        if (typeof pl.invert === "boolean") cur.invert = pl.invert;
+      };
+      // **`fold.rs:1998 tombstone_layer` ✓**：删层**级联**后代层，并把其中对象一并标记 ✓。
+      //   **∴ 去重 ✗**：父链可成环（旧日志）⇒ 没有 `seen` 会无限增长 ✓（与内核同一理由 ✓）。
+      const killLayer = (layerId) => {
+        const targets = new Set([layerId]);
+        let grew = true;
+        while (grew) {
+          grew = false;
+          for (const [id, parent] of layerParent) {
+            if (parent && targets.has(parent) && !targets.has(id)) {
+              targets.add(id);
+              grew = true;
+            }
+          }
+        }
+        for (const o of objects.values()) if (targets.has(o.layer_id)) o.dead = true;
+      };
+      // **`CreateObject`／`ImportImage` 总是重建对象 ✓**（`fold.rs:1099`）；
+      //   `Draw*`／`Supersede` 对**没见过**的 id 也建、见过则 supersede ✓（`:1126`）——
+      //   **∴ 只有前两者能「复活」已墓碑的 id ✗**（工具层不许，见 `fold.rs:549` ✓）。
+      const FRESH_OBJECT_KINDS = new Set(["create_object", "import_image"]);
+      for (const r of win) {
+        const a = (r && r.atom) || {};
+        const pl = a.payload || {};
+        if (!a.kind || neutral.has(a.id)) continue;
+        if (a.kind === "create_document") {
+          if (!layerParent.has("layer_default")) layerParent.set("layer_default", null);
+        } else if (a.kind === "create_layer") {
+          const id = (typeof pl.layer_id === "string" && pl.layer_id) ||
+                     (typeof a.layer_id === "string" && a.layer_id) || null;
+          if (id) {
+            layerParent.set(id, typeof pl.parent_id === "string" && pl.parent_id ? pl.parent_id : null);
+          }
+        } else if (a.kind === "set_property" && !pl.object_id &&
+                   typeof pl.layer_id === "string" && pl.key === "parent_id") {
+          layerParent.set(pl.layer_id, typeof pl.value === "string" && pl.value ? pl.value : null);
+        } else if (a.kind === "tombstone") {
+          // **带 `object_id` 的墓碑不级联层 ✗**（`p2PresetLayers` 同口径 ✓）；反之亦然 ✓。
+          if (!pl.object_id && typeof pl.layer_id === "string") killLayer(pl.layer_id);
+          if (typeof pl.selection_id === "string") {
+            const cur = selections.get(pl.selection_id);
+            if (cur) cur.deleted = true;
+          }
+          if (typeof pl.mask_id === "string") {
+            const cur = masks.get(pl.mask_id);
+            if (cur) cur.deleted = true;
+          }
+          if (typeof pl.object_id === "string") {
+            const cur = objects.get(pl.object_id);
+            if (cur) cur.dead = true;
+          }
+        } else if (a.kind === "create_selection" && typeof pl.selection_id === "string") {
+          selections.set(pl.selection_id, Object.assign(region(pl), { deleted: false }));
+        } else if (a.kind === "create_mask" && typeof pl.mask_id === "string") {
+          masks.set(pl.mask_id, Object.assign(region(pl), { deleted: false }));
+        } else if (a.kind === "update_selection" && typeof pl.selection_id === "string") {
+          const cur = selections.get(pl.selection_id);
+          if (cur) setFields(cur, pl);
+        } else if (a.kind === "delete_mask" && typeof pl.mask_id === "string") {
+          const cur = masks.get(pl.mask_id);
+          if (cur) cur.deleted = true;
+        } else if (P2_OBJECT_CREATE_KINDS.has(a.kind) && typeof pl.object_id === "string") {
+          const cur = objects.get(pl.object_id);
+          if (!cur || FRESH_OBJECT_KINDS.has(a.kind)) {
+            objects.set(pl.object_id, {
+              layer_id: typeof pl.layer_id === "string" ? pl.layer_id : null, dead: false });
+          } else if (typeof pl.layer_id === "string") {
+            cur.layer_id = pl.layer_id;
+          }
+        } else if (a.kind === "set_property" && typeof pl.object_id === "string" &&
+                   pl.key === "layer_id" && typeof pl.value === "string") {
+          const cur = objects.get(pl.object_id);
+          if (cur) cur.layer_id = pl.value;
+        }
+      }
+      return { selections, masks, objects };
     }
     /** **P2c-绘画通用写入口 ✗**：**`draw_*`／`fill` 照 `write_draw` 的载荷形状 ✓**
      *   （**`{object_id, layer_id, data, type?}` ✓ ⇒ **∴ 折叠层按 `payload.data` 取内容 ✓**）。 */
@@ -7606,6 +7741,53 @@ async function withKernel(doc, fn) {
         out.objects = p2ObjectSummaries(rows, { includeHidden });
       }
       return json(out);
+    }
+
+    // **P2c-37b `describe_canvas` ✓**：**照 `read_describe_canvas` ✓**（`tools.rs:2971`）——
+    //   **纯派生读 ✓**：宽高／层摘要（含每层存活对象数）／选区／蒙版／内存估算／`counts` ✓。
+    //   **∴ 两个「服务端进程量」如实区分 ✗**（**不编数字 ✓**）：
+    //     · `server_rss_mb` ⇒ **本地不是服务端进程 ⇒ `null`** ✓（**服务端非 Linux 也回 `null` ✓**）；
+    //     · `bytes_per_atom_avg` ⇒ **`0` = 不可判** ✓（**与它自己「原子数 < 100 ⇒ 0」同一含义 ✓**）。
+    //   **∴ 选区**只列未删的 ✓；**蒙版连墓碑都列** ✓（**服务端那一行就是 `state.masks.values()`，
+    //     没有 `is_deleted()` 过滤 ✓ —— 照抄，不「顺手修好」✗**）。
+    //   **∴ `estimated_memory_bytes` = 存活对象数 × 180 ✓**（**服务端 O(1) 估算 ✓ 不是 RSS**）。
+    if (path === "/api/tools/describe_canvas") {
+      const specBad = p2ValidateArgsFor("describe_canvas", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
+      const rows = await atomsOf(handle, doc);
+      const st = p2cState(rows);
+      const fold = p2DescribeRegions(rows);
+      const cmpId = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+      const masks = [...fold.masks.keys()].sort(cmpId).map((id) => {
+        const m = fold.masks.get(id);
+        return { mask_id: id, mode: m.mode, feather: m.feather, shape: m.shape };
+      });
+      const selections = [...fold.selections.keys()].sort(cmpId)
+        .filter((id) => !fold.selections.get(id).deleted)
+        .map((id) => {
+          const s = fold.selections.get(id);
+          return { selection_id: id, mode: s.mode, feather: s.feather,
+                   invert: s.invert, shape: s.shape };
+        });
+      const countInLayer = (layerId) => {
+        let n = 0;
+        for (const o of fold.objects.values()) if (!o.dead && o.layer_id === layerId) n++;
+        return n;
+      };
+      let aliveObjects = 0;
+      for (const o of fold.objects.values()) if (!o.dead) aliveObjects++;
+      const layers = st.layers.map((l) => ({
+        layer_id: l.layer_id, name: l.name, type: l.type, kind: l.type,
+        visible: l.visible, opacity: l.opacity, blend_mode: l.blend_mode,
+        locked: l.locked, mask_id: l.mask_id ?? null, objects: countInLayer(l.layer_id),
+      }));
+      return json({ ok: true, width: st.width, height: st.height, layers,
+                    selections, masks,
+                    estimated_memory_bytes: aliveObjects * 180,
+                    server_rss_mb: null, bytes_per_atom_avg: 0,
+                    counts: { layers: layers.length, selections: selections.length,
+                              masks: masks.length, atoms: rows.length },
+                    server: false });
     }
 
     // **P2c-38 `get_resolved_state` ✓**：**照 `read_get_resolved_state` ✓** ——
