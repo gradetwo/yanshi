@@ -1415,6 +1415,14 @@ pub struct Renderer {
     /// `Mutex` 与 `below`/`above` 同例（渲染走 `&self`、多 tile 并行 ✓）；
     /// 计数经 [`Self::vector_raster_stats`] 读（增量渲染的证据面 ✓）。
     vector_raster: std::sync::Mutex<crate::vector::VectorRasterCache>,
+
+    /// **对象内容指纹缓存**：键为 `(对象 id, current_version)`，值为 [`object_fingerprint`] 的结果。
+    /// `Mutex` 与 `below`/`above` 同例：指纹循环在并行 tile 路径的 `&self` helper 里跑。
+    /// 键的安全性：对象内容只经原子变更，而每次触及对象的原子都会产生新的 `current_version`
+    ///（原子 id 全局唯一）；`Tombstone` 不改版本但改 `deleted_by`，而指纹循环先过滤已删除对象，
+    /// 故缓存查不到已删除对象；无版本对象（`None`）不缓存、每次重算。
+    /// 上限 65536 条，超限整表清空（正确性不受影响，只多算一次）；渲染器重建时随之丢弃。
+    fp_cache: std::sync::Mutex<std::collections::HashMap<(String, String), String>>,
 }
 
 impl Renderer {
@@ -1558,6 +1566,7 @@ impl Renderer {
             below: std::sync::Mutex::new(None),
             above: std::sync::Mutex::new(None),
             vector_raster: std::sync::Mutex::new(crate::vector::VectorRasterCache::new()),
+            fp_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -1577,6 +1586,7 @@ impl Renderer {
             below: std::sync::Mutex::new(None),
             above: std::sync::Mutex::new(None),
             vector_raster: std::sync::Mutex::new(crate::vector::VectorRasterCache::new()),
+            fp_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
 
         // **★ 让并行度可测 ✗ ★**（第 861 轮 ✓；**目标第 8 条 ✓**）：
@@ -1796,6 +1806,30 @@ impl Renderer {
         bbox: Bbox,
     ) -> Result<RegionRender> {
         self.render_region_with_lod(state, store, bbox, 0)
+    }
+
+    /// 对象内容指纹（带缓存）：命中时直接复用已算的指纹串，跳过整份 `data` 的 JSON 序列化。
+    /// 每笔预览都要给全层对象算指纹，而笔触 `data` 含 `source`（大区还有 `tiles`）时走
+    /// `format!(data)` 全量分支 ⇒ 每笔渲染重复序列化整层数据；缓存后每笔只算新增对象。
+    /// 锁只盖查与写两段短临界区，序列化本身在锁外（并行 tile 互不阻塞；重复算出同值也无害）。
+    fn cached_fingerprint(&self, object: &Object) -> String {
+        if let Some(version) = &object.current_version {
+            let key = (object.id.clone(), version.clone());
+            if let Ok(cache) = self.fp_cache.lock() {
+                if let Some(hit) = cache.get(&key) {
+                    return hit.clone();
+                }
+            }
+            let fingerprint = object_fingerprint(object);
+            if let Ok(mut cache) = self.fp_cache.lock() {
+                if cache.len() >= 65_536 {
+                    cache.clear();
+                }
+                cache.insert(key, fingerprint.clone());
+            }
+            return fingerprint;
+        }
+        object_fingerprint(object)
     }
 
     /// 渲染指定区域（文档坐标），取样步长 `1 << lod`（期 4 `export_png` 的 `lod`）：
@@ -2279,7 +2313,7 @@ impl Renderer {
                 .objects
                 .values()
                 .filter(|o| o.layer_id == layer.id && o.deleted_by.is_none())
-                .map(object_fingerprint)
+                .map(|o| self.cached_fingerprint(o))
                 .collect();
             objs.sort();
             // **∴ `clippy` 不许"`format!` 套在 `format!` 实参里" ✗（`format_in_format_args` ✓）⇒ 先算成局部变量 ✓。
@@ -7640,6 +7674,67 @@ mod tests {
         assert_eq!(out.pixel(31, 31), Some([255, 255, 255, 255]));
         assert_eq!(out.tiles, vec![TileKey::new(0, 0)]);
         assert_eq!(out.stats.layers, 2);
+    }
+
+    /// 指纹缓存复用不改变像素，且对象内容变更（新版本）后缓存失效。
+    #[test]
+    fn fingerprint_cache_reuse_keeps_pixels_identical() {
+        let mut state = white_document();
+        state.objects.insert(
+            "obj_1".to_owned(),
+            object(
+                "obj_1",
+                "layer_1",
+                ObjectType::Stroke,
+                0,
+                json!({
+                    "points": [[4.0, 4.0], [12.0, 4.0]],
+                    "size": 4.0,
+                    "color": [0.0, 0.0, 0.0, 1.0],
+                }),
+            ),
+        );
+        state.objects.insert(
+            "obj_2".to_owned(),
+            object(
+                "obj_2",
+                "layer_1",
+                ObjectType::Stroke,
+                1,
+                json!({
+                    "points": [[4.0, 20.0], [12.0, 20.0]],
+                    "size": 4.0,
+                    "color": [0.0, 0.0, 0.0, 1.0],
+                }),
+            ),
+        );
+        let store = MemoryBlobStore::new();
+        let mut r = renderer();
+        let first = r.render_document(&state, &store).unwrap();
+        assert_eq!(r.fp_cache.lock().unwrap().len(), 2, "两对象指纹都应进缓存");
+        let second = r.render_document(&state, &store).unwrap();
+        assert_eq!(
+            first.pixel(8, 4),
+            second.pixel(8, 4),
+            "缓存复用不得改变像素"
+        );
+        assert_eq!(first.pixel(8, 20), second.pixel(8, 20));
+        // 变更 obj_2（新版本＋新位置）：缓存须失效，新像素须出现、旧位置须恢复。
+        let mut changed = state.clone();
+        let obj2 = changed.objects.get_mut("obj_2").unwrap();
+        obj2.current_version = Some("a2".to_owned());
+        obj2.data = json!({
+            "points": [[20.0, 20.0], [28.0, 20.0]],
+            "size": 4.0,
+            "color": [0.0, 0.0, 0.0, 1.0],
+        });
+        let third = r.render_document(&changed, &store).unwrap();
+        assert!(third.pixel(24, 20).unwrap()[0] < 60, "新位置应画出黑笔");
+        assert_eq!(
+            third.pixel(8, 20),
+            Some([255, 255, 255, 255]),
+            "旧位置应恢复白底"
+        );
     }
 
     #[test]
