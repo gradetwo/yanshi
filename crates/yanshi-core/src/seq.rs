@@ -424,6 +424,10 @@ pub struct IncrementalFolder {
     rebase_steps: usize,
     full_steps: usize,
     replayed_atoms: usize,
+    /// 追加路径到达的 head（`fold_append` 记；`fold()` 见它超前于 `last` 时回落完整求值）。
+    append_head_seq: Option<Seq>,
+    /// 追加路径上各原子新产的折叠警告（`fold()` 完整求值后清空，因其结果已含全部警告）。
+    append_warnings: Vec<FoldWarning>,
 }
 
 impl Default for IncrementalFolder {
@@ -439,14 +443,66 @@ impl Default for IncrementalFolder {
             rebase_steps: 0,
             full_steps: 0,
             replayed_atoms: 0,
+            append_head_seq: None,
+            append_warnings: Vec::new(),
         }
     }
+}
+
+/// [`IncrementalFolder::fold_append`] 的结果：不用 `Result` 是因为不适用时奉还的基座
+/// 是整个文档状态（424 字节），进 `Err` 会触发 `clippy::result_large_err`；枚举则无此问题。
+#[derive(Debug)]
+pub enum FoldAppend {
+    /// 已追加折叠，含新状态与警告（与通用折叠的 `StateAt` 口径一致）。
+    Applied(StateAt),
+    /// 不适用，基座原样奉还，调用方回落通用折叠。
+    NotApplicable(DocumentState),
 }
 
 impl IncrementalFolder {
     /// 空增量折叠器。
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 追加折叠（提交热路径用）：调用方把当前文档状态以值传入作基座，折单个刚追加的新原子。
+    /// 不克隆状态，不动 `last`/阶梯/有效集记账，只记 `append_head_seq` 与 `append_warnings`。
+    ///
+    /// 不适用时返回 [`FoldAppend::NotApplicable`]（状态原样奉还，调用方回落 `fold()`）：
+    ///
+    /// - 原子种类是 `Revert`/`Reapply`/`DeclareHead`（其折叠效果依赖整条历史的有效集，
+    ///   单原子前推会丢撤销语义；`DeclareHead` 还改变求值起点）；
+    /// - 原子 seq 与基座 `head_seq` 不连续（`atom.seq != base.head_seq + 1`）。
+    ///
+    /// 调用方保证：原子是刚追加的新原子（非幂等命中），基座是折到上一 head 的文档状态。
+    ///
+    /// 返回的 `StateAt` 与通用折叠等价：`suppressed` 取记账的当前报告集（追加的 plain 原子
+    /// 不改变撤销集），`warnings` 为记账基底警告 ＋ 追加路径累计警告（与 `fold()` 的链式口径一致）。
+    pub fn fold_append(&mut self, base: DocumentState, atom: &Atom) -> FoldAppend {
+        if matches!(
+            atom.kind,
+            AtomKind::Revert | AtomKind::Reapply | AtomKind::DeclareHead
+        ) {
+            return FoldAppend::NotApplicable(base);
+        }
+        if atom.seq != base.head_seq.saturating_add(1) {
+            return FoldAppend::NotApplicable(base);
+        }
+        let folded = fold_atoms(base, std::slice::from_ref(atom));
+        self.append_head_seq = Some(atom.seq);
+        self.append_warnings.extend(folded.warnings);
+        let base_warnings = self
+            .last
+            .as_ref()
+            .map(|last| last.warnings.clone())
+            .unwrap_or_default();
+        FoldAppend::Applied(StateAt {
+            seq: atom.seq,
+            origin_seq: self.origin,
+            state: folded.state,
+            suppressed: self.reported_suppressed(),
+            warnings: chain_warnings(&base_warnings, &self.append_warnings),
+        })
     }
 
     /// 折叠到 seq `n`。
@@ -466,6 +522,17 @@ impl IncrementalFolder {
             let result = last.clone();
             self.last = Some(last);
             return Ok(result);
+        }
+        // 追加路径失效防护：`fold_append` 推进文档状态时不更新 `last`；若它已超前，
+        // 从陈旧 `last` 快推会把已折过的追加原子再折一遍（`revert` 目标的动作登记缺失时
+        // 还会漏掉对旧原子的撤销效果），须回落完整求值。折叠器已追上时清掉标记。
+        if let Some(appended) = self.append_head_seq {
+            if appended > last.seq {
+                self.last = Some(last);
+                return self.full_fold(log, n);
+            }
+            self.append_head_seq = None;
+            self.append_warnings.clear();
         }
         let last_seq = last.seq;
         let origin = last.origin_seq;
@@ -649,7 +716,13 @@ impl IncrementalFolder {
             .collect();
         self.full_steps += 1;
         self.replayed_atoms += n as usize;
-        Ok(self.remember(result))
+        let result = self.remember(result);
+        // 完整求值追上追加路径时，新的 `last` 已含追加原子的全部效果与警告，标记与累计警告作废。
+        if result.seq >= self.append_head_seq.unwrap_or(0) {
+            self.append_head_seq = None;
+            self.append_warnings.clear();
+        }
+        Ok(result)
     }
 
     /// 从空白折 `(0, n]`，沿途在几何级数的 seq 上留还原点。
@@ -878,6 +951,130 @@ mod tests {
         assert_eq!(cache.get(3).map(|state| state.seq), Some(3));
         assert!(cache.newest_before(3, 0).is_some());
         assert!(cache.newest_before(1, 0).is_none());
+    }
+
+    /// `fold_append` 与通用折叠等价；`Revert` 回落且基座原样奉还；追加超前后的通用折叠
+    /// 必须回落完整求值（守卫），结果与完整求值逐字段一致。
+    #[test]
+    fn fold_append_matches_fold_and_revert_falls_back() {
+        let mut log = AtomLog::new();
+        push(
+            &mut log,
+            atom(
+                AtomKind::CreateDocument,
+                "a_doc",
+                json!({"doc_id": "doc_1", "width": 100, "height": 50}),
+            ),
+        );
+        push(
+            &mut log,
+            atom(
+                AtomKind::CreateLayer,
+                "a_layer",
+                json!({"layer_id": "layer_1"}),
+            ),
+        );
+        for i in 0..8 {
+            push(
+                &mut log,
+                atom(
+                    AtomKind::CreateObject,
+                    &format!("a_obj_{i}"),
+                    json!({"object_id": format!("obj_{i}"), "layer_id": "layer_1", "type": "stroke"}),
+                ),
+            );
+        }
+        push(
+            &mut log,
+            atom(
+                AtomKind::Supersede,
+                "a_super_3",
+                json!({"object_id": "obj_3", "data": {"v": 2}}),
+            ),
+        );
+        push(
+            &mut log,
+            atom(
+                AtomKind::Tombstone,
+                "a_tomb_5",
+                json!({"object_id": "obj_5"}),
+            ),
+        );
+        // 追加路径：从空态逐原子前推，终态须与完整求值逐字段一致。
+        let mut folder = IncrementalFolder::new();
+        let mut state = DocumentState::empty();
+        let mut appended: Option<StateAt> = None;
+        for atom_in_log in log.atoms() {
+            let next = match folder.fold_append(state, atom_in_log) {
+                FoldAppend::Applied(next) => next,
+                FoldAppend::NotApplicable(_) => panic!(
+                    "plain 原子必须走追加路径：kind={:?} seq={}",
+                    atom_in_log.kind, atom_in_log.seq
+                ),
+            };
+            state = next.state.clone();
+            appended = Some(next);
+        }
+        let reference = FoldEngine::new().fold(&log).unwrap();
+        assert_eq!(
+            appended.unwrap(),
+            reference,
+            "追加路径终态须与完整求值逐字段一致"
+        );
+        // 门：`Revert` 不走追加路径，基座原样奉还。
+        let revert = atom(AtomKind::Revert, "a_rev_1", json!({"target": "a_obj_1"}));
+        let before = state.clone();
+        match folder.fold_append(state, &revert) {
+            FoldAppend::NotApplicable(back) => {
+                assert_eq!(back, before, "回落时基座必须原样奉还")
+            }
+            FoldAppend::Applied(_) => panic!("Revert 必须回落通用折叠"),
+        }
+        // 守卫：折叠器先记住旧 last，再走追加路径超前它；随后含 revert 的通用折叠
+        // 必须回落完整求值（full_steps 涨），结果与完整求值一致。
+        let mut folder2 = IncrementalFolder::new();
+        let head_before = folder2.fold_head(&log).unwrap();
+        assert_eq!(head_before.state, reference.state);
+        let full_before = folder2.full_steps();
+        let mut state2 = head_before.state.clone();
+        for i in 8..10 {
+            let seq = push(
+                &mut log,
+                atom(
+                    AtomKind::CreateObject,
+                    &format!("a_obj_{i}"),
+                    json!({"object_id": format!("obj_{i}"), "layer_id": "layer_1", "type": "stroke"}),
+                ),
+            );
+            let added = log.by_seq(seq).unwrap().clone();
+            state2 = match folder2.fold_append(state2, &added) {
+                FoldAppend::Applied(next) => next.state,
+                FoldAppend::NotApplicable(_) => panic!("plain 原子必须走追加路径"),
+            };
+        }
+        push(
+            &mut log,
+            atom(AtomKind::Revert, "a_rev_2", json!({"target": "a_obj_1"})),
+        );
+        push(
+            &mut log,
+            atom(
+                AtomKind::CreateObject,
+                "a_obj_10",
+                json!({"object_id": "obj_10", "layer_id": "layer_1", "type": "stroke"}),
+            ),
+        );
+        let via_folder = folder2.fold_head(&log).unwrap();
+        let via_engine = FoldEngine::new().fold(&log).unwrap();
+        assert_eq!(
+            via_folder.state, via_engine.state,
+            "追加超前后的通用折叠终态须与完整求值一致"
+        );
+        assert_eq!(via_folder.seq, via_engine.seq);
+        assert!(
+            folder2.full_steps() > full_before,
+            "守卫必须回落完整求值，不得从陈旧 last 快推"
+        );
     }
 
     /// `state@seq` 的结果**不得依赖缓存里恰好有什么**（缓存是旁路，不是语义）。

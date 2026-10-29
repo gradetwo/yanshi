@@ -1011,9 +1011,17 @@ impl Document {
             .cloned()
             .ok_or_else(|| internal("刚追加的原子不在日志中"))?;
 
-        // 折叠段（6.6）。
+        // 折叠段（6.6）：追加路径优先（热路径：不克隆整态），不适用时回落通用折叠。
         let fold_started = std::time::Instant::now();
-        let folded: StateAt = self.folder.fold(&self.log, self.log.head_seq())?;
+        let base = std::mem::replace(&mut self.state, DocumentState::empty());
+        let folded: StateAt = match self.folder.fold_append(base, &appended) {
+            yanshi_core::FoldAppend::Applied(folded) => folded,
+            yanshi_core::FoldAppend::NotApplicable(base) => {
+                // 回落前先恢复旧状态：通用折叠出错时文档状态须与现态一致（不受损）。
+                self.state = base;
+                self.folder.fold(&self.log, self.log.head_seq())?
+            }
+        };
         self.state = folded.state;
         if self.state.width > 1 {
             if let Ok(grid) = self.grid_for_state() {
