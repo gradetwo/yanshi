@@ -1997,6 +1997,8 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "scatter_strokes" => write_scatter_strokes(ctx, args),
         "import_project" => write_import_project(ctx, args),
         "delete_document" => write_delete_document(ctx, args),
+        "release_document" => write_release_document(ctx, args),
+        "reopen_document" => write_reopen_document(ctx, args),
         "revoke_token" => write_revoke_token(ctx, args),
         "import_asset" => write_import_asset(ctx, args),
         "export_png" => write_export_png(ctx, args),
@@ -15248,6 +15250,99 @@ fn write_delete_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
     // 本地传输（MCP ✓／测试 ✓）缺省就是 owner ⇒ 行为不变 ✓。
     crate::ensure_doc_scope(&ctx.doc_id, ctx.role, &document_id)?;
     ctx.workspace.delete_document(&document_id)
+}
+
+/// **`release_document`** —— 把一份文档从内存里放下（与 HTTP 的
+/// `POST /api/documents/<id>/close` **同一条实现**：`Workspace::close_document`）。
+///
+/// **只放内存，不删磁盘** ✓：已提交的原子早已由提交路径的 `flush_journal` 落盘 ✓
+/// ⇒ 关闭只是把内存态摘掉并归还一次堆 ✓，磁盘上的原子日志与元数据一点不动 ✓，
+/// 下次 `reopen_document` 就回来 ✓。真删是 `delete_document` 的事 ✓，两者绝不混用 ✓。
+///
+/// **不存在就说「不存在」** ✓（与 `delete_document` 的硬规矩同一口径 ✓）：
+/// 内存里没有、磁盘上也没有 ⇒ `reference_not_found` ✓，而不是回一个
+/// `closed:false` 让人以为「已经放下了」✓。只在磁盘上有、内存里没有时，
+/// `closed:false` 才是诚实的回答 ✓（那份文档本来就已经不在内存里 ✓）。
+///
+/// **回执直通服务端语义** ✓：`closed` 是「这次调用是不是真的从内存里摘掉了一份」✓，
+/// `persisted` 照 HTTP 关闭路由的同一算法算 ✓（关闭后仍在 `list_documents` 里出现 ⇒
+/// 磁盘上还在 ✓）；纯内存工作区里关完就什么都不剩 ⇒ `persisted:false` ✓，如实说 ✓。
+fn write_release_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // 参数名与 `delete_document` 同例：`document_id` 必须是独立且必填的参数 ✓ ——
+    // 若放在 `doc_id` 上，框架会先把会话文档创建出来，「放不存在的文档」这条反例
+    // 就永远触发不了 ✓，还会静默成功 ✓。
+    let document_id = require_str(args, "document_id")?;
+    // 每文档令牌不许越界 ✓（与 `delete_document` 同一份谓词 ✓）：doc_id 相等或
+    // owner 才放行 ✓ —— 拿着文档 A 的 editor 令牌不能把文档 B 的内存态逐出 ✓
+    //（HTTP 关闭路由同理：只许有编辑权的角色关它自己那份文档 ✓）。
+    crate::ensure_doc_scope(&ctx.doc_id, ctx.role, &document_id)?;
+    if !ctx.workspace.document_exists(&document_id) {
+        return Err(YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!(
+                "文档 {document_id} 不存在（内存里没有、磁盘上也没有），没有什么可放下"
+            )),
+        ));
+    }
+    let closed = ctx.workspace.close_document(&document_id);
+    let persisted = ctx
+        .workspace
+        .list_documents()
+        .map(|documents| {
+            documents
+                .iter()
+                .any(|summary| summary.doc_id == document_id)
+        })
+        .unwrap_or(false);
+    Ok(json!({
+        "document_id": document_id,
+        "closed": closed,
+        "persisted": persisted,
+        "deleted": false,
+        "note": if persisted {
+            "已关闭内存中的文档；磁盘上的工作区仍然保留（要真删请用 delete_document）"
+        } else {
+            "已关闭内存中的文档；工作区没有文件后端，磁盘上没有保留"
+        },
+    }))
+}
+
+/// **`reopen_document`** —— 把一份已落盘的文档重新装进内存（与服务端的
+/// `Workspace::open_document` **同一条实现**，不是新造的加载路径 ✓）。
+///
+/// **绝不新建** ✓：这是它与 `new_document` 的关键区别 ✓ —— `new_document` 对已存在
+/// 的 id 是「打开」，对不存在的 id 是「新建」✓；而这里磁盘上没有就直接报错 ✓，
+/// 绝不会悄悄建一块空白画布出来 ✓（否则调用方会把「重开失败」读成「重开成功，
+/// 但内容是空的」✓ —— 那正是静默降级 ✓）。
+///
+/// **重开后完好** ✓：打开走全量原子日志折叠 ✓（快照基座路径已停用，见
+/// `open_document_inner` 的注释 ✓），尺寸、原子数与 head_seq 与关闭前一致 ✓；
+/// 已在内存里时直接返回 ✓，不重复加载 ✓（`open_document` 的热开分支 ✓）。
+fn write_reopen_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let document_id = require_str(args, "document_id")?;
+    crate::ensure_doc_scope(&ctx.doc_id, ctx.role, &document_id)?;
+    let was_open = ctx.workspace.document(&document_id).is_some();
+    let document = ctx.workspace.open_document(&document_id)?;
+    let (width, height) = {
+        let state = document.state();
+        (state.width, state.height)
+    };
+    let atoms = document.atom_count();
+    let head_seq = document.head_seq();
+    Ok(json!({
+        "document_id": document_id,
+        "opened": true,
+        "reopened": !was_open,
+        "width": width,
+        "height": height,
+        "atoms": atoms,
+        "head_seq": head_seq,
+        "note": if was_open {
+            "该文档已在内存里，直接返回，未重复加载"
+        } else {
+            "已从磁盘原子日志重新装入内存"
+        },
+    }))
 }
 
 /// **`revoke_token`**（审计 H-2）：吊销本文档的一个 capability token ✓。

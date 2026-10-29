@@ -561,6 +561,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         // `document_id` 才是要被删掉的那一份。所以这条示例**必须显式写 document_id**。
         r##"{"document_id": "sample-oil"}"##,
     ),
+    // **release/reopen 薄包装**：参数面只有一个必填 document_id，示例照抄即可；
+    // 前置状态是「磁盘上已有这份文档」（先 new_document 建一份，再 release 掉）。
+    ("release_document", r#"{"document_id":"sample-oil"}"#),
+    ("reopen_document", r#"{"document_id":"sample-oil"}"#),
     (
         "export_psd_layers",
         // **★ 分层导出 ✗ ★**（**第 253 轮 ✓）：**把当前文档写成**带图层结构的 PSD**

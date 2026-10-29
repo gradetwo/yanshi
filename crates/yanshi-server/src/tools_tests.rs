@@ -2525,3 +2525,139 @@ fn short_stroke_extension_lands_at_least_one_dab() {
         "延长到 1.5× 间距后至少落一枚 dab ⇒ 像素必须 > 0，实测 {painted}"
     );
 }
+
+/// **release/reopen 薄包装往返**：关闭后 closed 与持久化状态符合服务端语义，
+/// 重开后文档完好（原子数、head_seq、尺寸、渲染哈希一致），且两条反例都响亮：
+/// 放不存在的文档报错、重开不存在的文档报错且绝不新建。
+#[test]
+fn release_and_reopen_document_roundtrip() {
+    let root = std::env::temp_dir().join(format!("yanshi-release-reopen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut workspace =
+        Workspace::with_file_store(&root, crate::document::DocumentSettings::default()).unwrap();
+    workspace
+        .create_document(
+            crate::document::NewDocument::new("doc_rr", 64, 48),
+            "test:1",
+            "s",
+        )
+        .unwrap();
+    {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_create_layer(&mut ctx, &json!({"layer_id": "p", "name": "p"})).unwrap();
+    }
+    let bbox = yanshi_core::Bbox::new(0.0, 0.0, 64.0, 48.0);
+    // 先取标量再渲染：文档借用必须先放下，否则可变借用编不过。
+    let (atoms_before, head_before) = {
+        let document = workspace.document("doc_rr").unwrap();
+        assert_eq!((document.state().width, document.state().height), (64, 48));
+        (document.atom_count(), document.head_seq())
+    };
+    let render_before = workspace.render_region("doc_rr", bbox).unwrap().blob_hash;
+    assert!(atoms_before >= 1, "建层原子必须已落下，实测 {atoms_before}");
+    // 关闭：closed 为真、磁盘上还在、内存里确实没了。
+    let released = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_release_document(&mut ctx, &json!({"document_id": "doc_rr"})).unwrap()
+    };
+    assert_eq!(released["closed"], json!(true));
+    assert_eq!(released["persisted"], json!(true));
+    assert_eq!(released["deleted"], json!(false));
+    assert!(workspace.document("doc_rr").is_none());
+    // 磁盘上还在但内存里没有时再放一次：closed 为假、persisted 仍为真，不报错。
+    let released_again = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_release_document(&mut ctx, &json!({"document_id": "doc_rr"})).unwrap()
+    };
+    assert_eq!(released_again["closed"], json!(false));
+    assert_eq!(released_again["persisted"], json!(true));
+    // 重开：这次真从磁盘装入，内容与关闭前一致。
+    let reopened = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_reopen_document(&mut ctx, &json!({"document_id": "doc_rr"})).unwrap()
+    };
+    assert_eq!(reopened["opened"], json!(true));
+    assert_eq!(reopened["reopened"], json!(true));
+    assert_eq!(reopened["width"], json!(64));
+    assert_eq!(reopened["height"], json!(48));
+    assert_eq!(reopened["atoms"], json!(atoms_before));
+    assert_eq!(reopened["head_seq"], json!(head_before));
+    let preview_after = workspace.render_region("doc_rr", bbox).unwrap();
+    assert_eq!(
+        preview_after.blob_hash, render_before,
+        "重开后整幅渲染哈希必须与关闭前一致（内容寻址，哈希等即 PNG 等）"
+    );
+    // 已在内存里再重开：直接返回，不重复加载。
+    let reopened_again = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_reopen_document(&mut ctx, &json!({"document_id": "doc_rr"})).unwrap()
+    };
+    assert_eq!(reopened_again["reopened"], json!(false));
+    // 反例 1：放不存在的文档报错，不静默成功。
+    let err = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_release_document(&mut ctx, &json!({"document_id": "doc_nope"})).unwrap_err()
+    };
+    assert_eq!(err.code, ErrorCode::ReferenceNotFound);
+    // 反例 2：重开不存在的文档报错，且绝不新建（事后仍不存在）。
+    let err = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_reopen_document(&mut ctx, &json!({"document_id": "doc_nope"})).unwrap_err()
+    };
+    assert_eq!(err.code, ErrorCode::ReferenceNotFound);
+    assert!(!workspace.document_exists("doc_nope"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// **release/reopen 走真实注册表调用路径**：分发、必填参数校验、viewer 角色闸
+/// 都在 `ToolRegistry::call` 这一处生效（直接调 `write_*` 绕过了这三处）。
+#[test]
+fn release_and_reopen_document_via_registry() {
+    let root =
+        std::env::temp_dir().join(format!("yanshi-release-reopen-reg-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut workspace =
+        Workspace::with_file_store(&root, crate::document::DocumentSettings::default()).unwrap();
+    workspace
+        .create_document(
+            crate::document::NewDocument::new("doc_rg", 32, 32),
+            "test:1",
+            "s",
+        )
+        .unwrap();
+    let registry = ToolRegistry::full();
+    let mut ctx = ToolContext::new(&mut workspace, "doc_rg", "test:1", "s");
+    // 缺必填参数 ⇒ 参数校验在分发前拦下，不进实现。
+    let missing = registry.call(&mut ctx, "release_document", &json!({}));
+    assert_eq!(missing["ok"], json!(false));
+    assert_eq!(missing["error_code"], json!("invalid_argument"));
+    // 正常释放 ⇒ 注册表包的 ok:true 与实现字段一并返回。
+    let released = registry.call(
+        &mut ctx,
+        "release_document",
+        &json!({"document_id": "doc_rg"}),
+    );
+    assert_eq!(released["ok"], json!(true));
+    assert_eq!(released["closed"], json!(true));
+    assert_eq!(released["persisted"], json!(true));
+    // viewer 调变更类工具 ⇒ 角色闸在分发前拦下（与 HTTP 关闭路由的 viewer 禁令同口径）。
+    ctx.role = crate::token::Role::Viewer;
+    let denied = registry.call(
+        &mut ctx,
+        "reopen_document",
+        &json!({"document_id": "doc_rg"}),
+    );
+    assert_eq!(denied["ok"], json!(false));
+    assert_eq!(denied["error_code"], json!("permission_denied"));
+    // owner 重开 ⇒ 回到内存。
+    ctx.role = crate::token::Role::Owner;
+    let reopened = registry.call(
+        &mut ctx,
+        "reopen_document",
+        &json!({"document_id": "doc_rg"}),
+    );
+    assert_eq!(reopened["ok"], json!(true));
+    assert_eq!(reopened["reopened"], json!(true));
+    assert_eq!(reopened["width"], json!(32));
+    let _ = std::fs::remove_dir_all(&root);
+}

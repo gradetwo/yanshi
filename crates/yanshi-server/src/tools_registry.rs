@@ -2075,6 +2075,36 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         )],
     },
     ToolSpec {
+        name: "release_document",
+        profile: Profile::Core,
+        // **与 HTTP 的关闭路由同一条实现**（`Workspace::close_document`）：只把文档从
+        // 内存里放下，磁盘上的原子日志与元数据一点不动，下次重开就回来；真删是
+        // `delete_document` 的事，两者绝不混用。
+        summary: "把一份文档从内存里放下（释放内存与堆，不删磁盘）：已在内存返回 closed 为真，磁盘上还在返回 persisted 为真；不存在的文档报错，不静默成功；重开请用 reopen_document，真删请用 delete_document",
+        mutating: true,
+        params: &[param!(
+            "document_id",
+            String,
+            true,
+            "要从内存里放下的文档 id。注意它跟 doc_id 不是一回事：doc_id 是本次调用的会话文档，document_id 才是要被放下的那一份；只放内存，磁盘上的原子日志与元数据不动，下次重开就回来"
+        )],
+    },
+    ToolSpec {
+        name: "reopen_document",
+        profile: Profile::Core,
+        // **与服务端的打开路径同一条实现**（`Workspace::open_document`）：从磁盘原子
+        // 日志全量折叠装回内存；与 `new_document` 的关键区别是绝不新建——磁盘上
+        // 没有就报错，而不是悄悄建一块空白画布。
+        summary: "把一份已落盘的文档重新装进内存：从磁盘原子日志全量折叠，尺寸与原子数与关闭前一致；绝不新建，不存在的文档报错；已在内存里直接返回，不重复加载；放下内存请用 release_document",
+        mutating: true,
+        params: &[param!(
+            "document_id",
+            String,
+            true,
+            "要从磁盘重新装进内存的文档 id。注意它跟 doc_id 不是一回事：doc_id 是本次调用的会话文档，document_id 才是要被重开的那一份；只打开已存在的文档，绝不新建"
+        )],
+    },
+    ToolSpec {
         name: "revoke_token",
         profile: Profile::Core,
         summary: "吊销本文档的一个 capability token（仅 owner）：内存与 meta.json 同步删除 ⇒ 泄露的令牌立即失效、重启不复活",
@@ -3150,6 +3180,8 @@ pub const PHOTO_TOOLS: &[&str] = &[
     "list_documents",
     "get_document",
     "delete_document",
+    "release_document",
+    "reopen_document",
     "get_state",
     "get_log",
     "list_atoms",
@@ -3265,6 +3297,8 @@ pub const SVG_TOOLS: &[&str] = &[
     "list_documents",
     "get_document",
     "delete_document",
+    "release_document",
+    "reopen_document",
     "get_state",
     "get_log",
     "list_atoms",
