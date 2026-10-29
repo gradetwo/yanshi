@@ -21635,8 +21635,8 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     //   ⇒ 读侧已经能看见 ✓（`get_stroke_log` 的条目带 `message` ✓，第 723 轮 ✓）。
     let previous_message = std::mem::replace(&mut ctx.batch_message, optional_str(args, "message"));
     // **精简回执（feedback5-feat-slim）**：opt-in，缺省 false ⇒ 完整回执不变。
-    //   slim 时回执只留计数与失败项，成功笔的逐笔调用回执不再列出（calls 为空数组，
-    //   省掉的条数记在 omitted_calls；失败项仍在 failed_calls 里完整保留）。
+    //   slim 时只砍逐笔调用回执（calls 为空数组，省掉的条数记在 omitted_calls）；计数、失败项
+    //   （failed_calls 完整保留）、stroke_evidence、atom_ids、head、changeset_id、execution 仍保留。
     //   注意：精简只改回执形状，不改执行——子调用照常顺序执行、照常落笔。
     let slim_receipt = optional_bool(args, "slim_receipt").unwrap_or(false);
     let preview_every = optional_count(args, "preview_every_n_strokes")?.unwrap_or(0);
