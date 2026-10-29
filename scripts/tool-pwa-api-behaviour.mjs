@@ -314,7 +314,9 @@ console.log("  本地层 import_asset{texture,data_base64} ⇒ " + iaRes.status 
 //     ① 先 `putBlob` 造一个 blob ⇒ 用**规范形状**调 `import_image` ⇒ 期望 **`ok:true`**（旧代码此输入必 `missing_blob_hash`✗）
 //     ② **回显的落点/尺寸**取自 `region`✓**（**x=5/y=7/w=4/h=4✗ 不许退回 0 ✓**）
 //     ③ 规范形状但 **w/h 缺** ⇒ `missing_bitmap_size`✓（**不写一条渲染不出的原子 ✓**）
-//     ④ 规范形状但 **blob 不在库** ⇒ `blob_not_found`✓（**且**不是** `missing_blob_hash`✗ 那说明没读到 bitmap.blob_hash ✓**）
+//     ④ 规范形状但 **blob 不在库** ⇒ `reference_not_found`＋「原子 ⟨id⟩ 引用的 blob 尚未上传（违反提交顺序协议）」✓
+//        （**第 六百七十四 轮改成服务端口径 ✗**：服务端 `validate_blobs` 先跑（log.rs:293），本地旧文案 `blob_not_found`
+//         是**第三处真分叉**；断**整句 detail** ⇒ 若没读到 `bitmap.blob_hash` 会报 `missing_blob_hash`✗ 照样红 ✓）
 //   **∴ 变异（**实测 ✓）**：**把读侧退回 `body.blob_hash || pl.blob_hash`** ⇒ ① 必红（missing_blob_hash ✓）**
 const IMG_HASH = "sha256:" + "ab".repeat(32);
 await putBlob(db, IMG_HASH, Array.from([1, 2, 3, 4]));   // 4 字节占位（getBlob 只按字符串键取 ✓）
@@ -338,14 +340,16 @@ const iiNoSize = await (await call("/api/tools/import_image", {
 check(iiNoSize.error === "missing_bitmap_size",
   "import_image 缺位图尺寸必须报 missing_bitmap_size（否则净荷无 region/宽高 ⇒ 渲染器 parse_raster_patch 跳过 ⇒ 画面什么都不出；实测 " +
   JSON.stringify(iiNoSize).slice(0, 120) + "）");
-// ④ 规范形状但库里没这个 blob ⇒ blob_not_found（不是 missing_blob_hash）
+// ④ 规范形状但库里没这个 blob ⇒ 服务端逐字口径（validate_blobs 先 ⇒ reference_not_found ＋「尚未上传」）
 const iiNoBlob = await (await call("/api/tools/import_image", {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ layer_id: "L0", bitmap: { blob_hash: "sha256:" + "cd".repeat(32) }, region: { x: 0, y: 0, w: 2, h: 2 } }),
 })).json();
-check(iiNoBlob.error === "blob_not_found",
-  "import_image 规范形状＋库中无此 blob ⇒ 应报 blob_not_found（若报 missing_blob_hash 说明没读到 bitmap.blob_hash；实测 " +
-  JSON.stringify(iiNoBlob).slice(0, 120) + "）");
+check(iiNoBlob.error === "reference_not_found" &&
+  /^原子 \S+ 引用的 blob 尚未上传（违反提交顺序协议）$/.test(String(iiNoBlob.reason || "")),
+  "import_image 规范形状＋库中无此 blob ⇒ 应报服务端那句「原子 ⟨id⟩ 引用的 blob 尚未上传（违反提交顺序协议）」" +
+  "（报 missing_blob_hash 说明没读到 bitmap.blob_hash；报 blob_not_found 说明本地旧文案没跟齐 validate_blobs 顺序；实测 " +
+  JSON.stringify(iiNoBlob).slice(0, 160) + "）");
 console.log("  本地层 import_image{规范形状} ⇒ " + iiRes.status + "｜ok=" + iiBody.ok +
   "｜落点/尺寸=(" + iiBody.x + "," + iiBody.y + "," + iiBody.width + "," + iiBody.height + ")");
 

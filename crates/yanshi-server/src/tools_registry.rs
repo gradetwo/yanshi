@@ -799,7 +799,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "get_stroke_log",
         profile: Profile::History,
-        summary: "**★ 一笔一行的可审计记录（Muse 建议 3）★**：只列**笔触**（不把建图层之类倒出来 ✓），每行给 `kind`/`brush`/`layer_id`/`object_id`/`points`（原样 ✓）/`bbox`（原子里的 `region` ✓）/`first_point`/`last_point`/`pressure{min,max,first,last}`/`timestamp` ✓。**为什么要它** ✗：`find_atom` **按设计只返回元数据** ✓（实测**没有坐标** ✗），要审计「我到底画在哪了」得用 `get_atom` 一条条取 ✓ ⇒ 这个工具把坐标面直接摊平 ✓。**跟文档走** ✓（它就是原子日志的视图 ✓，不是 `/tmp` 里的旁路文件 ✓ ⇒ 清 `/tmp`、换 session、重启都在 ✓）。**分页** `limit`（缺省 50，上限 500）/`offset` ✓，可按 `layer_id`/`object_id`/`since_seq` 过滤 ✓。**已知限制** ✗：笔触原子**不保存逐点 `time_ms`** ✓（实测传了 4 元组后，原子里的 `points` 只有 3 个分量 ✗）⇒ 只能给**原子时间戳** ✓。",
+        summary: "**★ 一笔一行的可审计记录（Muse 建议 3）★**：只列**笔触**（不把建图层之类倒出来 ✓），每行给 `kind`/`brush`/`layer_id`/`object_id`/`points`（原样 ✓）/`bbox`（原子里的 `region` ✓）/`first_point`/`last_point`/`pressure{min,max,first,last}`/`timestamp` ✓。**为什么要它** ✗：`find_atom` **按设计只返回元数据** ✓（实测**没有坐标** ✗），要审计「我到底画在哪了」得用 `get_atom` 一条条取 ✓ ⇒ 这个工具把坐标面直接摊平 ✓。**跟文档走** ✓（它就是原子日志的视图 ✓，不是 `/tmp` 里的旁路文件 ✓ ⇒ 清 `/tmp`、换 session、重启都在 ✓）。**分页** `limit`（缺省 50，上限 500）/`offset` ✓，可按 `layer_id`/`object_id`/`since_seq` 过滤 ✓。**已知限制** ✗：笔触原子**不保存逐点 `time_ms`** ✓（实测传了 4 元组后，原子里的 `points` 只有 3 个分量 ✗）⇒ 只能给**原子时间戳** ✓。**计数口径**：缺省只返 50 条，数笔数请读回执的 `total` 或传 `limit` 翻页，不要数 `entries` 条数（50 条截断时条数 ≠ 笔数）。",
         mutating: false,
         params: &[
             param!("limit", Number, false, "返回条数（缺省 50 ✓，上限 500 ✓）"),
@@ -2035,7 +2035,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "export_project",
         profile: Profile::Core,
-        summary: "把一份文档打成 .yanshi 工程包（未压缩 tar：原子日志 + 元数据 + 引用到的 blob，blob 用 zlib 逐字节无损压缩；能证明重放得出来的位图缺省不装）；回可直接下载的 url，path 可选（另存一份到服务器）",
+        summary: "把一份文档打成 .yanshi 工程包（未压缩 tar：原子日志 + 元数据 + 引用到的 blob，blob 用 zlib 逐字节无损压缩；能证明重放得出来的位图缺省不装）；回可直接下载的 url，path 可选（另存一份到服务器）。缺省包语义：缺省 include_bitmaps=false 时，能证明重放的笔触位图不装（omitted），包依赖 import 重放、不是逐字节自含（回执 package_self_contained 为假即此意）；画布读取类笔刷与媒体笔触恒装。回执的 missing_body 是存储侧口径（成功时恒 0），不能判包自含性；判包用 verify_package（complete 为真 ⇔ import 可重放）。各栏计去重后的 blob 哈希数，不是笔数",
         mutating: false,
         params: &[
             param!("path", String, false, "可选：**服务器上**的另存路径（建议以 .yanshi 结尾；内容其实是未压缩 tar）。不填 ⇒ 只回可直接下载的 url（浏览器走这条）"),
@@ -2062,7 +2062,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "verify_package",
         profile: Profile::Core,
-        summary: "体检一个 .yanshi 工程包（未压缩 tar）：读 atoms.jsonl 的全部 blob 引用，按 canonical 规则分本体/派生 tile，与包内 blobs/ 对账；回 missing_body/missing_derived 两栏 + 恒等式（missing_body + missing_derived == missing_total）；complete 为真 ⇔ 缺本体为 0（只缺派生 ⇒ 完整，可重放）；有意省掉的可重放位图单列 omitted，不算缺失",
+        summary: "体检一个 .yanshi 工程包（未压缩 tar）：读 atoms.jsonl 的全部 blob 引用，按 canonical 规则分本体/派生 tile，与包内 blobs/ 对账；回 missing_body/missing_derived 两栏 + 恒等式（missing_body + missing_derived == missing_total）；complete 为真 ⇔ 缺本体为 0（只缺派生 ⇒ 完整，可重放）；有意省掉的可重放位图单列 omitted，不算缺失。omitted 判定：引用它的每条净荷都须 source.kind=brush 且 origin=drawn（老日志无 origin 时按 source 带笔刷名派生）且笔刷不读画布；按 source.kind+origin 判，不按包络 kind 名（笔触包络 kind 就是 import_image，与照片导入同名；get_stroke_log 的 kind 是语义名 brush）。照片类无生成参数的本体缺失 ⇒ 真缺失 ⇒ complete 为假。各栏计去重后的 blob 哈希数，不是笔数",
         mutating: false,
         params: &[
             param!("path", String, true, "工程包路径（.yanshi）"),
@@ -2173,6 +2173,24 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("region", Any, false, "只铺这块区域 {x,y,w,h}；不给就铺满整幅（并沉到底当背景）"),
             param!("layer_id", String, false, "铺到哪个图层（缺省新建一个并沉到最底）"),
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
+        ],
+    },
+    ToolSpec {
+        name: "toned_ground",
+        profile: Profile::Core,
+        // **反馈报告 §5.3**：`texture_background` 铺的是 CC0 纹理图片 ✗，不是笔触底色 ✗
+        // ⇒ 这里用**现成笔刷**在专用底层上铺笔触 ⇒ 有机底色 ✓。
+        // **一键 = 参数少** ✓：颜色必填（与 new_document background 同形 {r,g,b,a} ✓）；
+        // 纹理只留 `strength`（明暗起伏幅度 ✓）与 `seed`（可复现 ✓）两个可选 ✓。
+        // **幂等** ✓：每次调用先删掉上次的底色层再重建 ⇒ 重复调用不叠加、不越铺越暗 ✓。
+        // **层序** ✓：底色层永远在最底 ⇒ 已有画作在其上不受影响 ✓（与 3.6b 纯色换底工具的
+        // 关系见包内说明文档：本项只管自己的底色层，不动 3.6b 的工具；跨工具联动是后续工作 ✓）。
+        summary: "一键铺笔触质感底色（专用底层底色层；颜色必填；重复调用再生本层、不叠加）",
+        mutating: true,
+        params: &[
+            param!("color", Object, true, "底色 {r,g,b,a}（0..255 整数；a 缺省 255；与 new_document background 同形；缺失或非法会明确报错，不静默铺底）"),
+            param!("strength", Number, false, "纹理起伏强度 0..1（缺省 0.5；0 = 近乎平涂，1 = 明暗起伏最大）"),
+            param!("seed", Number, false, "随机种子（缺省 42；同 seed ⇒ 同结果）"),
         ],
     },
     ToolSpec {

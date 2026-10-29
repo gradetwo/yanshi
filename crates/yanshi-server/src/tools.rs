@@ -33,7 +33,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（126 个）。
+    /// 核心层：默认注册（127 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -764,7 +764,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，126 个）。
+    /// 核心层（默认注册，127 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1993,6 +1993,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "analyze_region" => read_analyze_region(ctx, args),
         "stroke_heatmap" => read_stroke_heatmap(ctx, args),
         "texture_background" => write_texture_background(ctx, args),
+        "toned_ground" => write_toned_ground(ctx, args),
         "gradient_fill" => write_gradient_fill(ctx, args),
         "gradient_blend" => write_gradient_blend(ctx, args),
         "scatter_strokes" => write_scatter_strokes(ctx, args),
@@ -6386,7 +6387,7 @@ fn write_update_object(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     if atoms.is_empty() {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
-            ErrorContext::detail("patch 中没有可修改的对象属性"),
+            ErrorContext::detail("patch 中没有可修改的对象属性；改笔用 update_stroke"),
         ));
     }
     let changeset = Changeset::new_id();
@@ -11866,6 +11867,9 @@ fn write_set_property(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let value = args.get("value").cloned().unwrap_or(Value::Null);
     let object_id = optional_str(args, "object_id");
     let layer_id = optional_str(args, "layer_id");
+    // `layer_id` 是 `Option<String>`，下面建 payload 时会被部分移动，
+    // 故先记布尔值供提交后的 warning 判据用。
+    let is_layer = layer_id.is_some();
     if object_id.is_none() && layer_id.is_none() {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
@@ -11881,7 +11885,28 @@ fn write_set_property(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     }
     let result = ctx.commit(AtomKind::SetProperty, payload)?;
     let region = region_of(&result);
-    finish_mutation(ctx, &result, region)
+    let mut value = finish_mutation(ctx, &result, region)?;
+    // 报告 5/6 第 4 项：图层 set_property 改 background 的静默退化。
+    // 机理（fold.rs `apply_property_to_layer`）：图层没有 background 字段，
+    // 未知键落入 `other` 分支、只存进图层 metadata；渲染层只读文档底色
+    // `state.background`，故像素 0 变化，却仍回 ok:true。
+    // 选 warning 不选报错的依据：① 任务首选顶层 warning、保持 ok 语义兼容；
+    // ② 同路没有对同类情形报错的先例——未知键进 metadata 是 set_property 的
+    // 通用回落（对象侧同理），报错会改掉这条回落语义；③ 同仓先例（报告 4
+    // P4 颜色缺省、impasto 缺省零效果）皆为“行为不动、回执加 warning”。
+    // 只动图层一路：文档级（无 id 时本函数已报错）与 update_layer（自带
+    // allowlist 报错）两路一字不动；底色本身的行为也不动，rebackground
+    // 是功能候选，不在此开工。
+    if is_layer && key == "background" {
+        let note = "图层 set_property 的 background 未生效：图层没有 background 字段，\
+            该值只存进图层 metadata，文档底色与渲染像素均未变；改底色目前没有合法入口，\
+            不要以本次 ok:true 判断底色已改";
+        match value.get_mut("warnings") {
+            Some(Value::Array(items)) => items.push(json!(note)),
+            _ => value["warnings"] = json!([note]),
+        }
+    }
+    Ok(value)
 }
 
 fn write_lock_layer(ctx: &mut ToolContext<'_>, args: &Value, locked: bool) -> Result<Value> {
@@ -12093,6 +12118,105 @@ fn resolve_lut_path(
     Ok(())
 }
 
+/// **impasto/relief 的 alpha 恒定警告探针**（报告 5+6 §2 第 2 项）。
+///
+/// 只在同时满足以下全部条件时返回一条警告文案（调用方把它以对象形态
+/// 追加到回执顶层 `warnings`，形态与折叠警告的 `{atom_id, seq, kind, detail}`
+/// 同款）：
+/// * 对象是滤镜且名字是 `relief`／`emboss`／`impasto`（内核 `FilterKind::from_name`
+///   把三者都映到 `Relief`，落存名不动）；
+/// * `height_source` 缺省（= `alpha`）或显式 `alpha`；`luminance` 不触发；
+/// * 滤镜不透明度 > 0 且 `strength` > 0（否则零效果另有原因，不归 alpha 恒定）；
+/// * 该滤镜下方内容（同层内按 `(z_index, seq, id)` 排在它之前的对象，与生产
+///   渲染同一顺序）渲染出的 f32 alpha 在有颜料像素上逐位恒定。
+///
+/// 恒定 ⇒ 高度场无梯度 ⇒ relief 因子恒 1 ⇒ 零效果是数学结论，不是启发式。
+/// 探针失败（状态读不到／渲染出错等）时返回 `None`：一次问不出来不得让
+/// 本次添加／更新失败。
+/// **代价**：命中前三条门时多做一次整层子集渲染（只对 relief 系 + alpha 源，
+/// 不论 `silent`／`preview` —— batch 默认静默，若按静默跳过则批量用户永远
+/// 看不到这条警告）。
+/// **已知漏报（只漏报、不误报）**：纯调整层播种在 `only_layer` 下不播种、
+/// 剪贴蒙版层在子集渲染里拿不到下方内容 ⇒ 子集为空 ⇒ `None`。
+fn relief_alpha_constant_detail(ctx: &mut ToolContext<'_>, object_id: &str) -> Option<String> {
+    let state = document_state(ctx).ok()?;
+    let object = state.objects.get(object_id)?;
+    if object.object_type != ObjectType::Filter {
+        return None;
+    }
+    let name = object
+        .data
+        .get("filter_name")
+        .and_then(Value::as_str)?
+        .to_owned();
+    if !matches!(name.as_str(), "relief" | "emboss" | "impasto") {
+        return None;
+    }
+    let params = object
+        .data
+        .get("params")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    match params.get("height_source").and_then(Value::as_str) {
+        None | Some("alpha") => {}
+        _ => return None,
+    }
+    let opacity = object
+        .data
+        .get("opacity")
+        .and_then(Value::as_f64)
+        .unwrap_or(1.0);
+    if opacity <= 0.0 {
+        return None;
+    }
+    // 内核缺省 `strength` 0.6（`apply_filter` 的 `Relief` 分支）；<= 0 时
+    // relief 自身提前返回，零效果与 alpha 恒定无关。
+    let strength = params
+        .get("strength")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.6);
+    if strength <= 0.0 {
+        return None;
+    }
+    let layer_id = object.layer_id.clone();
+    let filter_key = (object.z_index, object.seq, object.id.clone());
+    let mut keep = std::collections::BTreeSet::new();
+    for before in state.objects_in_layer(&layer_id) {
+        let key = (before.z_index, before.seq, before.id.clone());
+        if key < filter_key {
+            keep.insert(before.id.clone());
+        }
+    }
+    let bbox = Bbox::new(0.0, 0.0, state.width as f64, state.height as f64);
+    // `state` 是克隆的所有权值，借用已结束；下面可拿 `document_mut`。
+    let document = ctx.workspace.document_mut(&ctx.doc_id).ok()?;
+    let alpha = document
+        .below_objects_alpha_constant(bbox, &layer_id, &keep)
+        .ok()??;
+    let source_note = if params.get("height_source").is_some() {
+        "height_source=alpha（显式）"
+    } else {
+        "height_source 缺省（=alpha）"
+    };
+    Some(format!(
+        "{name}（{source_note}）当前下方内容的 alpha 恒为 {alpha:.3}：高度取 alpha 时高度场无梯度，relief 不产生任何效果；改用 height_source=luminance（高度取 RGB 亮度）即可在全不透明层上见效"
+    ))
+}
+
+/// 把一条警告对象追加到回执顶层 `warnings`（已是数组则续接，不是数组则重建）。
+fn push_top_warning(response: &mut Value, result: &CommitResult, kind: &str, detail: String) {
+    let warning = json!({
+        "atom_id": result.atom_id,
+        "seq": result.seq,
+        "kind": kind,
+        "detail": detail,
+    });
+    match response.get_mut("warnings").and_then(Value::as_array_mut) {
+        Some(list) => list.push(warning),
+        None => response["warnings"] = json!([warning]),
+    }
+}
+
 fn write_add_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let name = require_str(args, kind.key())?;
@@ -12162,7 +12286,7 @@ fn write_add_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind) -
     let result = ctx.commit(
         AtomKind::CreateObject,
         json!({
-            "object_id": object_id,
+            "object_id": object_id.clone(),
             "layer_id": layer_id,
             "type": kind.object_type(),
             "z_index": z_index,
@@ -12170,7 +12294,18 @@ fn write_add_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind) -
         }),
     )?;
     let region = region_of(&result);
-    finish_mutation(ctx, &result, region)
+    let mut response = finish_mutation(ctx, &result, region)?;
+    if kind == EffectKind::Filter {
+        if let Some(detail) = relief_alpha_constant_detail(ctx, &object_id) {
+            push_top_warning(
+                &mut response,
+                &result,
+                "relief_no_effect_constant_alpha",
+                detail,
+            );
+        }
+    }
+    Ok(response)
 }
 
 /// **复活并替换**（期 1 E-b）：`write_add_effect` 的墓碑支路。
@@ -12337,6 +12472,16 @@ fn revive_effect_in_place(
         }
         let region = region_of(&result);
         let mut value = finish_mutation(ctx, &result, region)?;
+        if kind == EffectKind::Filter {
+            if let Some(detail) = relief_alpha_constant_detail(ctx, object_id) {
+                push_top_warning(
+                    &mut value,
+                    &result,
+                    "relief_no_effect_constant_alpha",
+                    detail,
+                );
+            }
+        }
         value["revived"] = json!(true);
         Ok(value)
     })();
@@ -12607,10 +12752,21 @@ fn write_update_effect(ctx: &mut ToolContext<'_>, args: &Value, kind: EffectKind
     let layer_id = object.layer_id.clone();
     let result = ctx.commit(
         AtomKind::Supersede,
-        json!({"object_id": object_id, "layer_id": layer_id, "data": data}),
+        json!({"object_id": object_id.clone(), "layer_id": layer_id, "data": data}),
     )?;
     let region = region_of(&result);
-    finish_mutation(ctx, &result, region)
+    let mut response = finish_mutation(ctx, &result, region)?;
+    if kind == EffectKind::Filter {
+        if let Some(detail) = relief_alpha_constant_detail(ctx, &object_id) {
+            push_top_warning(
+                &mut response,
+                &result,
+                "relief_no_effect_constant_alpha",
+                detail,
+            );
+        }
+    }
+    Ok(response)
 }
 
 /// 从**落盘 JSON** 估一个包围盒（`rect`/`ellipse` 用 x/y/w/h，`polygon` 取点集极值）。
@@ -14952,6 +15108,18 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
             max_dab.unwrap_or(f64::NAN),
             size
         ));
+        // **反馈报告 5 §2**：夹紧此前只有 `size_clamped`／`size_clamp_note`，顶层
+        // `warnings` 恒为空 ⇒ 调用方只读顶层警告时会错过夹紧。夹紧时顶层也给
+        // 一条警告，写明请求值、夹紧后 `size_used` 与上限；不夹紧时不触发。
+        // 夹紧行为与 `size_used` 本身一字不动。
+        let warning = format!(
+            "请求 size={size_requested} 超过上限 {} ⇒ 已夹紧到 size_used={size} 落笔",
+            max_dab.unwrap_or(f64::NAN)
+        );
+        match value.get_mut("warnings") {
+            Some(Value::Array(items)) => items.push(json!(warning)),
+            _ => value["warnings"] = json!([warning]),
+        }
     }
     value["painted_pixels"] = json!(painted_pixels);
     // **同值字段 `painted_pixels_raw`** ✓（A3 并存方案，与 `brush_stroke` 同例 ✓）。
@@ -15222,6 +15390,12 @@ fn count_painted_and_delta(base: Option<&[u8]>, produced: &[u8]) -> PaintedDelta
 /// 恒等式 `missing_body + missing_derived == missing_total` 与
 /// `referenced == present_and_referenced + missing_total + omitted`；
 /// `complete` 为真 ⇔ `missing_body == 0`（只缺派生 tile ⇒ 完整，可重放）。
+/// **可重建缺失（`omitted`）的判定**：引用它的每一条净荷都满足
+/// `source.kind == "brush"` 且 `origin == "drawn"`（老日志无 `origin` 时按
+/// `source` 带笔刷名派生为 `drawn`）且笔刷不读画布 —— **不看包络 kind 名**
+/// （笔触包络 kind 就是 `import_image`，与照片导入同名）；
+/// 照片类无生成参数的本体缺失 ⇒ 真缺失 ⇒ `complete` 为假。
+/// 各栏计的都是**去重后的本体 blob 哈希数**，不是笔数（多笔共享同一哈希只计 1）。
 /// `path` 是包文件路径（与 `import_project` 同一路：直接 `fs::read`，
 /// 读不到 ⇒ `reference_not_found`）。
 fn write_verify_package(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
@@ -15232,13 +15406,30 @@ fn write_verify_package(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
             ErrorContext::detail(format!("读不到工程包 {path}：{error}")),
         )
     })?;
-    // **`omitted` 判定要真配方**（`verify` 模块只认回调，不碰工作区）：
-    // 引用净荷的 `source` 是笔刷配方且笔刷不读画布 ⇒ 可重放 ⇒ 省掉不算缺。
+    // **`omitted` 判定要真配方 + 真来源**（`verify` 模块只认回调，不碰工作区）：
+    // 引用净荷同时满足两条才算可重建缺失（`omitted`，不进 `missing_body`）：
+    // ① `source` 是笔刷配方且笔刷不读画布（`brush_source_is_replayable`）；
+    // ② `origin == "drawn"` —— **按 `payload.source.kind + origin` 判定，不按包络 kind 名**
+    // （笔触原子的包络 kind 就是 `import_image`，与照片导入同名；只看包络名会把
+    // 全部画笔误判为导入图，也会把照片误判为笔触；第 4 轮第 3 期口径簇）。
+    // 老日志没有 `origin` 字段时按 `origin_of` 的首条派生：`source` 带笔刷名 ⇒ `drawn`
+    // （提交收口点自第 659 轮起写 `payload.origin`，老原子读时派生兜底）。
+    // 照片类（`source.kind != "brush"` 或 `origin != "drawn"`，无生成参数）本体缺失
+    // ⇒ 真缺失 ⇒ `missing_body`，`complete` 为假 —— 那是真实丢失，不是可重放省略。
     let workspace = &*ctx.workspace;
     let report = crate::verify::verify_package_bytes(&bytes, &|payload| {
-        payload
-            .get("source")
-            .is_some_and(|source| brush_source_is_replayable(workspace, source))
+        let origin_drawn = match payload.get("origin").and_then(Value::as_str) {
+            Some(origin) => origin == "drawn",
+            None => payload
+                .get("source")
+                .and_then(|source| source.get("brush"))
+                .and_then(Value::as_str)
+                .is_some(),
+        };
+        origin_drawn
+            && payload
+                .get("source")
+                .is_some_and(|source| brush_source_is_replayable(workspace, source))
     })?;
     Ok(json!({
         "ok": true,
@@ -16214,6 +16405,288 @@ fn write_texture_background(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
         value["created_layer"] = json!(layer);
     }
     Ok(value)
+}
+
+/// **一键有机底色 `toned_ground`**（反馈报告 §5.3，功能需求小到中）：
+/// `texture_background` 铺的是 CC0 纹理图片 ✗，不是笔触底色 ✗ ⇒ 这里用**仓库现成笔刷**
+/// 在**专用底层**上铺笔触 ⇒ 有质感的底色 ✓（不是平涂 ✗，不是平铺纹理图片 ✗）。
+/// **笔刷选 `Classic_Paint`** ✓：`opaque = 1.0` ⇒ 盖得满 ✓；`elliptical_dab_ratio = 5.19` 的
+/// 长椭圆 dab 沿行笔方向拉出刷痕 ✓；**没有 `random` 输入**（`offset_by_random = 0`、
+/// `radius_by_random = 0` ✓）⇒ 同输入逐笔可复现 ✓ —— `Dirty_Noise`/`Grain` 都吃 `random` ✗，
+/// 重复调用会逐笔漂移 ✗，当不了\"调两次结果一致\"的底 ✓。
+/// **排布** ✓：横向通笔、行距 = 笔径 × 0.30（`Classic_Paint` 的长椭圆 dab 竖直有效半高只有
+/// 约 0.25 笔径 ✗，行距必须小于两倍半高才盖得满 ✓）；每行颜色在请求色
+/// 上下按 `strength` 起伏（起伏量先**去均值** ⇒ 整幅均色贴住请求色 ✓，不漂移 ✓）；
+/// 行内带种子抖动（y 抖 ±笔径 × 0.15、压感 0.75..1.0 ⇒ 不是机械条纹 ✓）。
+/// **层序与幂等** ✓：底色层名固定为 `底色（笔触）`，每次调用先删掉同名旧层再重建并沉到
+/// 最底 ⇒ 重复调用**再生本层、不叠加、不越铺越暗** ✓；已有画作都在它上面 ⇒ 不受影响 ✓。
+/// **与 3.6b 纯色换底工具的关系** ✓：本项只管自己的底色层，**不动 3.6b 的工具** ✗；
+/// 两者叠加时的层序关系（谁在谁上）是跨工具联动工作，本项不做 ✗，见包内说明文档 ✓。
+/// **颜色口径** ✓：与 `new_document background` 同形 `{r,g,b,a}`（0..255 整数 ✓）；
+/// 但这里**严格校验** ✗ —— `parse_colour_value` 那套会把缺失通道静默补 0、把越界静默夹到 255 ✗，
+/// 底色工具抄它就会\"错色也照铺\" ✗ ⇒ 本函数缺失/非对象/缺通道/非整数/越界一律**明确报错** ✓，
+/// 不传颜色也报错 ✓，绝不静默铺底 ✗。
+const TONED_GROUND_LAYER_NAME: &str = "底色（笔触）";
+
+/// **确定性伪随机**（splitmix64 ✓）：`seed` 相同 ⇒ 行颜色与抖动逐位相同 ✓ ⇒
+/// 调两次的导出图逐位一致 ✓（笔刷本身无 `random` 输入 ⇒ 整条链可复现 ✓）。
+fn toned_ground_next(state: &mut u64) -> f64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    (z ^ (z >> 31)) as f64 / u64::MAX as f64
+}
+
+fn toned_ground_channel(color: &Value, key: &str, required: bool) -> Result<u8> {
+    match color.get(key) {
+        None => {
+            if required {
+                Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "toned_ground 的 color 缺少 {key} ⇒ 给完整的 {{r,g,b,a}}（0..255 整数；a 可缺省为 255）"
+                    )),
+                ))
+            } else {
+                Ok(255)
+            }
+        }
+        Some(value) => {
+            let number = value.as_i64().ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "toned_ground 的 color.{key} 必须是 0..255 的整数（给了 {value}）⇒ 小数、字符串、负数、超 255 都不收"
+                    )),
+                )
+            })?;
+            if !(0..=255).contains(&number) {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "toned_ground 的 color.{key} 越界（{number}）⇒ 只收 0..255，不静默夹紧"
+                    )),
+                ));
+            }
+            Ok(number as u8)
+        }
+    }
+}
+
+fn write_toned_ground(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **颜色必填、严格校验** ✓：不传、非对象、缺通道、非整数、越界 ⇒ 全部明确报错 ✓。
+    let color_value = args.get("color").ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "toned_ground 必须给 color（{r,g,b,a}，0..255 整数）⇒ 不给颜色不会静默铺底"
+                    .to_string(),
+            ),
+        )
+    })?;
+    if !color_value.is_object() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "toned_ground 的 color 必须是对象 {{r,g,b,a}}（给了 {color_value}）"
+            )),
+        ));
+    }
+    let r = toned_ground_channel(color_value, "r", true)?;
+    let g = toned_ground_channel(color_value, "g", true)?;
+    let b = toned_ground_channel(color_value, "b", true)?;
+    let a = toned_ground_channel(color_value, "a", false)?;
+    // **两个可选纹理旋钮，都有缺省** ✓（再多就不是\"一键\" ✗）：
+    // `strength` 越界同样报错 ✗（不静默夹紧 ✓，与 `brush_stroke.opacity` 同一条纪律 ✓）。
+    let strength = match args.get("strength") {
+        None => 0.5,
+        Some(value) => {
+            let number = value.as_f64().ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "toned_ground 的 strength 必须是数字（给了 {value}）"
+                    )),
+                )
+            })?;
+            if !number.is_finite() || !(0.0..=1.0).contains(&number) {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "toned_ground 的 strength 必须在 0..1（给了 {number}）⇒ 越界不再静默夹紧"
+                    )),
+                ));
+            }
+            number
+        }
+    };
+    let seed = match args.get("seed") {
+        None => 42,
+        Some(value) => value.as_u64().ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "toned_ground 的 seed 必须是非负整数（给了 {value}）"
+                )),
+            )
+        })?,
+    };
+    let (canvas_width, canvas_height) = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| (document.state().width, document.state().height))
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("找不到文档 {}", ctx.doc_id)),
+            )
+        })?;
+    if canvas_width == 0 || canvas_height == 0 {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail("文档尺寸是 0 ⇒ 铺不了底色".to_string()),
+        ));
+    }
+    // **幂等：先删同名旧底色层** ✓（删整层 ⇒ 旧笔触一个不留 ⇒ 绝无叠加变暗 ✓）。
+    // 同名层正常只有一个；同名多层（调用方手工改名撞上）也一并清掉 ⇒ 再生结果唯一 ✓。
+    let listed = read_list_layers(ctx)?;
+    let mut replaced = false;
+    if let Some(layers) = listed.get("layers").and_then(Value::as_array) {
+        let old: Vec<String> = layers
+            .iter()
+            .filter(|layer| {
+                layer.get("name").and_then(Value::as_str) == Some(TONED_GROUND_LAYER_NAME)
+            })
+            .filter_map(|layer| {
+                layer
+                    .get("layer_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .collect();
+        for layer_id in old {
+            write_delete_layer(ctx, &json!({ "layer_id": layer_id }))?;
+            replaced = true;
+        }
+    }
+    // **新建专用层并沉到最底** ✓（与 `texture_background` 同一套路 ✓：
+    // `reorder_layers` 收**自下而上**的顺序 ⇒ 新层放最前 ✓）。
+    let made = write_create_layer(ctx, &json!({ "name": TONED_GROUND_LAYER_NAME }))?;
+    let layer_id = made
+        .get("layer_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!("建底色图层之后没拿到 layer_id：{made}")),
+            )
+        })?
+        .to_string();
+    let listed = read_list_layers(ctx)?;
+    let mut order: Vec<String> = vec![layer_id.clone()];
+    if let Some(items) = listed.get("layers").and_then(Value::as_array) {
+        for item in items {
+            if let Some(id) = item.get("layer_id").and_then(Value::as_str) {
+                if id != layer_id {
+                    order.push(id.to_string());
+                }
+            }
+        }
+    }
+    write_reorder_layers(ctx, &json!({ "order": order }))?;
+    // **排布** ✓：笔径按短边取（小画布不糊成一坨、大画布不细成发丝 ✓），行距 0.30 笔径、
+    // 首行中心 0.20 笔径处 ⇒ 四边盖满 ✓。
+    // **行距为什么不是 0.55** ✓：`Classic_Paint` 的 dab 是长椭圆（ratio 5.19 ✓），竖直方向的
+    // 有效半高只有约 0.25 笔径 ✗，不是笔径的一半 ✗ —— 0.55 笔径的行距会在顶边留下一条露白带
+    // （盒上探针实测：160×100 画布露白 299 像素，其中 274 个在 y=0..11 ✓）。
+    // ⇒ 行距 0.30 笔径（相邻行重叠约 0.20 笔径 ✓），首末行中心各向画布外探 0.20 笔径以上 ✓。
+    let min_side = (canvas_width as f64).min(canvas_height as f64);
+    let size = (min_side / 6.0).clamp(16.0, 256.0);
+    let step = size * 0.30;
+    let half = size * 0.25;
+    let mut rows: Vec<f64> = Vec::new();
+    let mut row_y = size * 0.2;
+    while row_y - half < canvas_height as f64 {
+        rows.push(row_y);
+        row_y += step;
+    }
+    // **每行一色** ✓：在请求色上下起伏（幅度 = strength × 32/通道 ✓），起伏先去均值 ⇒
+    // 整幅均色贴住请求色 ✓（行数少时也不漂 ✓）；`strength = 0` ⇒ 全行同色 ⇒ 近乎平涂 ✓
+    //（只剩笔刷自身的 dab 纹理 ✓）。
+    let mut rng = seed;
+    let mut deltas: Vec<[f64; 3]> = rows
+        .iter()
+        .map(|_| {
+            let amp = strength * 32.0;
+            [
+                (toned_ground_next(&mut rng) * 2.0 - 1.0) * amp,
+                (toned_ground_next(&mut rng) * 2.0 - 1.0) * amp,
+                (toned_ground_next(&mut rng) * 2.0 - 1.0) * amp,
+            ]
+        })
+        .collect();
+    if !deltas.is_empty() {
+        let count = deltas.len() as f64;
+        for channel in 0..3 {
+            let mean = deltas.iter().map(|delta| delta[channel]).sum::<f64>() / count;
+            for delta in deltas.iter_mut() {
+                delta[channel] -= mean;
+            }
+        }
+    }
+    let base = [f64::from(r), f64::from(g), f64::from(b)];
+    let mut strokes = 0usize;
+    for (index, y) in rows.iter().enumerate() {
+        ctx.check_cancelled()?;
+        let delta = deltas[index];
+        let row_color = json!({
+            "r": (base[0] + delta[0]).round().clamp(0.0, 255.0),
+            "g": (base[1] + delta[1]).round().clamp(0.0, 255.0),
+            "b": (base[2] + delta[2]).round().clamp(0.0, 255.0),
+            "a": f64::from(a),
+        });
+        let point_step = (size * 0.5).max(12.0);
+        let mut points: Vec<Value> = Vec::new();
+        let mut x = -size / 2.0;
+        while x <= canvas_width as f64 + size / 2.0 {
+            let jitter = (toned_ground_next(&mut rng) * 2.0 - 1.0) * size * 0.15;
+            let pressure = 0.75 + 0.25 * toned_ground_next(&mut rng);
+            points.push(json!([
+                x.round(),
+                (y + jitter).round(),
+                (pressure * 100.0).round() / 100.0,
+            ]));
+            x += point_step;
+        }
+        // **逐笔走 `write_brush_stroke`** ✓（与 `scatter_strokes`/`gradient_blend` 同一条落笔实现 ✓，
+        // 不是另一套像素填充 ✓）⇒ 底色**就是笔触** ✓，防作弊核查里也认它是笔触 ✓。
+        write_brush_stroke(
+            ctx,
+            &json!({
+                "layer_id": layer_id,
+                "brush": "Classic_Paint",
+                "points": points,
+                "size": size.round() as i64,
+                "color": row_color,
+                "label": "toned_ground",
+            }),
+        )?;
+        strokes += 1;
+    }
+    Ok(json!({
+        "ok": true,
+        "layer_id": layer_id,
+        "created_layer": layer_id,
+        "replaced": replaced,
+        "brush": "Classic_Paint",
+        "color": {"r": r, "g": g, "b": b, "a": a},
+        "strength": strength,
+        "seed": seed,
+        "strokes": strokes,
+        "region": {"x": 0, "y": 0, "w": canvas_width, "h": canvas_height},
+        "execution": execution_report(ctx),
+    }))
 }
 
 /// **`save_palette`**（AI 画家需求 P1-5 的写侧）：把 `colors` 规范成 `R G B` ⇒ 写一份临时 `.gpl` ⇒

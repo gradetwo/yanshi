@@ -505,6 +505,11 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     // 取值域来自仓库里的真实文件 `assets/textures/`（Paper001.png ✓ / Cardboard001.png ✓ …）⇒
     // **不是编的** ✓。`mode` 缺省是 tile ✓ ⇒ 只给必填项就成立 ✓。
     ("texture_background", r#"{"texture":"Paper001.png"}"#),
+    // **`toned_ground`**（反馈 §5.3）：唯一必填参数是颜色 ✓（与 new_document background 同形 ✓）⇒ 只给必填项就成立 ✓。
+    (
+        "toned_ground",
+        r#"{"color":{"r":210,"g":190,"b":160,"a":255}}"#,
+    ),
     // **`set_preferences`**（✓，第 459 轮 ✓）：唯一必填参数是 values（一个键值对对象 ✓，
     // 键是自由的 ✓）；spec 明说「值为 null 表示删除该键」✓、且是**合并**（没提到的键不动 ✓）⇒
     // 这里用一个**有据可查的真键** `reference.blob_hash` ✓（ΔE 写入器读的就是它 ✓，见 tools.rs:3121 ✓），
