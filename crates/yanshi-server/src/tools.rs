@@ -17311,6 +17311,64 @@ pub(crate) fn effective_color_space(
     }
 }
 
+/// **报告 5/6 第 6 项：显式 `linear` 下渐变两端混写判据**。
+///
+/// 钉死的“混写”只有一种（与报告 4 P4 的触发谓词空间不交，见下）：
+/// * `color_space` 显式传了 `"linear"`；
+/// * `color` 与 `color_to` 都给了，且一端是数组（显式 linear 下按线性直通解释），
+///   另一端是对象式／hex（`parse_spec_color_with_space` 里非数组直接走既有解析，
+///   恒为 sRGB 字节，不受显式空间影响）。
+///
+/// 于是渐变两端实际按不同空间解码，而回执 `applied.color_space` 只回显 `color` 一端的
+/// 空间，另一端的解释被藏住 —— 这正是要警告的情形。
+///
+/// 不触发（与 P4 分工，合入后两条 warning 永不重叠）：
+/// * 不传空间：两端口径不同时 P4 已覆盖（任一浮点端走线性即报），本判据不报；
+/// * 显式 `"srgb"`：数组与对象式／hex 全是 sRGB 字节族，不存在混写；
+/// * 两端同族：数组＋数组（同为线性）、对象式＋hex（同为 sRGB 字节）；
+/// * 只给一端颜色：单色不存在“两端混写”（显式空间被对象式／hex 忽略是另一相邻项，
+///   且单色回执 `applied` 已照实报 `srgb_bytes`／`hex`，不在本项范围）。
+///
+/// 只产文案：调用方把它 push 进已有的 `warnings` 数组，不改任何现有字段语义、不改像素
+/// （判据函数本身是纯函数；落笔处的调用点也在提交之后、只改回执 `Value`）。
+pub(crate) fn mixed_color_space_warning(
+    color: Option<&Value>,
+    color_to: Option<&Value>,
+    space: Option<yanshi_render::color::ColorSpace>,
+) -> Option<String> {
+    use yanshi_render::color::ColorSpace;
+    if !matches!(space, Some(ColorSpace::Linear)) {
+        return None;
+    }
+    // 显式 linear 下：数组 ⇒ 线性族；对象式／hex ⇒ sRGB 字节族；其余形态（null、
+    // 数字、非 hex 字符串）不是合法颜色，落笔前已报错或不存在，判据不认领。
+    let family = |value: &Value| -> Option<&'static str> {
+        match value {
+            Value::Array(_) => Some("linear"),
+            Value::Object(_) => Some("srgb_bytes"),
+            Value::String(text) if text.starts_with('#') => Some("srgb_bytes"),
+            _ => None,
+        }
+    };
+    let label = |family: &str| -> &'static str {
+        if family == "linear" {
+            "线性直通"
+        } else {
+            "sRGB 字节"
+        }
+    };
+    let from = color.filter(|value| !value.is_null()).and_then(family)?;
+    let to = color_to.filter(|value| !value.is_null()).and_then(family)?;
+    if from == to {
+        return None;
+    }
+    Some(format!(
+        "显式 color_space=\"linear\" 下渐变两端混写：color 按{from_label}解释、color_to 按{to_label}解释——显式空间只改数组的解释，对象式／hex 恒为 sRGB 字节；两端实际按不同空间解码，缺省与像素未改，如需两端同空间请两端用同一写法（都用浮点数组表线性，或都用字节数组／对象式／hex 表 sRGB）",
+        from_label = label(from),
+        to_label = label(to),
+    ))
+}
+
 /// **本次调用生效参数的回显对象** ✓（A5：只加在 `brush_stroke`／`medium_stroke` 回执 ✓）。
 ///
 /// 取值一律是**实际生效**的，不是调用方原话的复述 ✓：`wait_for_render`／`wait_budget_ms`／

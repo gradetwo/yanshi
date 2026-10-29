@@ -1693,6 +1693,108 @@ fn parse_color_space_arg_accepts_only_srgb_and_linear() {
     );
 }
 
+/// 报告 5/6 第 6 项：`mixed_color_space_warning` 只在「显式 linear＋渐变两端异族」时报。
+///
+/// 钉死定义：数组端（显式 linear 下线性直通）与对象式／hex 端（恒为 sRGB 字节）同现一笔。
+/// 与报告 4 P4 分工：P4 要求空间缺省，本判据要求空间显式 linear，两谓词空间不交，合入后
+/// 同一笔永不因这两项得两条 warning。
+///
+/// **变异**：判据恒报 ⇒ 显式 srgb 臂、同族臂、单色臂红；判据恒不报 ⇒ 两触发臂红；
+/// 文案删「混写」或「linear」任一词 ⇒ 文案臂红。
+#[test]
+fn mixed_color_space_warning_only_for_explicit_linear_gradient_mix() {
+    use yanshi_render::color::ColorSpace;
+    let linear = Some(ColorSpace::Linear);
+    let srgb = Some(ColorSpace::Srgb);
+    // 触发：数组端＋对象式端，两个方向都算混写。
+    let note = mixed_color_space_warning(
+        Some(&json!([0.47, 0.353, 0.235])),
+        Some(&json!({"r": 120, "g": 90, "b": 60})),
+        linear,
+    )
+    .expect("显式 linear＋数组／对象式两端必须报 warning");
+    assert!(
+        note.contains("混写") && note.contains("linear"),
+        "文案必须同时说明混写与显式 linear：{note}"
+    );
+    assert!(
+        note.contains("同一写法"),
+        "文案必须给出统一写法的出路：{note}"
+    );
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!({"r": 120, "g": 90, "b": 60})),
+            Some(&json!([0.47, 0.353, 0.235])),
+            linear,
+        )
+        .is_some(),
+        "反向（对象式起点＋数组末端）同样是混写，也应报"
+    );
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!([0.47, 0.353, 0.235])),
+            Some(&json!("#785A3C")),
+            linear,
+        )
+        .is_some(),
+        "数组端＋hex 端同样是混写，也应报"
+    );
+    // 不触发：不传空间——两端口径不同时属 P4（缺省线性）覆盖，本判据不抢报。
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!([120, 90, 60])),
+            Some(&json!([0.5, 0.2, 0.2])),
+            None,
+        )
+        .is_none(),
+        "不传空间时本判据不报（P4 的地盘，合入后不重复）"
+    );
+    // 不触发：显式 srgb 时两端全是 sRGB 字节族，不存在混写。
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!([0.47, 0.353, 0.235])),
+            Some(&json!({"r": 120, "g": 90, "b": 60})),
+            srgb,
+        )
+        .is_none(),
+        "显式 srgb 下数组也被解释为 sRGB 字节，不应触发"
+    );
+    // 不触发：两端同族——数组＋数组（同为线性）、对象式＋hex（同为 sRGB 字节）。
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!([0.47, 0.353, 0.235])),
+            Some(&json!([0.5, 0.2, 0.2])),
+            linear,
+        )
+        .is_none(),
+        "数组＋数组同为线性，不应触发"
+    );
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!({"r": 120, "g": 90, "b": 60})),
+            Some(&json!("#785A3C")),
+            linear,
+        )
+        .is_none(),
+        "对象式＋hex 同为 sRGB 字节族（回显词不同而已），不应触发"
+    );
+    // 不触发：只给一端颜色——单色无“两端混写”（相邻的显式空间被忽略项不在本项范围）。
+    assert!(
+        mixed_color_space_warning(Some(&json!({"r": 120, "g": 90, "b": 60})), None, linear)
+            .is_none(),
+        "单色对象式＋显式 linear 不属本项（回执 applied 已照实报 srgb_bytes）"
+    );
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!([0.47, 0.353, 0.235])),
+            Some(&json!(null)),
+            linear,
+        )
+        .is_none(),
+        "color_to 为 null 视同没给，不应触发"
+    );
+}
+
 /// 显式 `color_space` 下的回显（C1）：回显的是**生效值**，不是原话 ——
 /// 对象式 / hex 传了显式空间也不认领它。
 ///
