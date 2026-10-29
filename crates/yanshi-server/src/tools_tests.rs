@@ -2275,3 +2275,132 @@ fn delta_distribution_quantiles_follow_the_documented_rule() {
     assert_eq!((dist.median, dist.p90, dist.p99), (0, 0, 0));
     assert_eq!(dist.changed_pixels, 0);
 }
+
+/// **反馈期 1（3.6a）：短路径延长的几何规则** ✓（纯函数，直接测）。
+///
+/// 口径：触发值是 dab 间距，目标值是 1.5× 间距；等于触发值不延长（正常笔画不动）；
+/// 起笔处不动；单点／零长点列沿 +x 延长；末段为零长时沿最后一段非零方向延长。
+/// **变异** ✓：把 `>=` 改成 `>` ⇒ “等于间距”那条红；把方向取成最后两点（可能零长）
+/// ⇒ “末段零长”那条红；把目标值改成触发值 ⇒ “极短路径”那条总长断言红。
+#[test]
+fn extend_short_path_geometry() {
+    let path_len = |points: &[(f64, f64, f64)]| -> f64 {
+        points
+            .windows(2)
+            .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
+            .sum()
+    };
+    // 极短路径：5px（3-4-5 三角）→ 延长到 1.5× 间距，起笔不动、沿原方向。
+    let short = vec![(0.0, 0.0, 1.0), (3.0, 4.0, 1.0)];
+    let extended = extend_short_path(&short, 45.66, 68.49).expect("5px < 间距，必须延长");
+    assert_eq!(extended[0], (0.0, 0.0, 1.0), "起笔处不动");
+    assert!(
+        (path_len(&extended) - 68.49).abs() < 1e-6,
+        "延长后总长 = 目标值"
+    );
+    assert!((extended[2].0 - 41.094).abs() < 1e-6 && (extended[2].1 - 54.792).abs() < 1e-6);
+    // 刚好小于间距：50px 路径、触发值 50.5 → 延长。
+    let below = vec![(0.0, 0.0, 1.0), (30.0, 40.0, 1.0)];
+    assert!(
+        extend_short_path(&below, 50.5, 75.75).is_some(),
+        "50 < 50.5，必须延长"
+    );
+    // 等于间距：50px 路径、触发值 50 → 不延长（正常笔画行为不变的边界）。
+    assert!(
+        extend_short_path(&below, 50.0, 75.0).is_none(),
+        "等于间距不延长"
+    );
+    // 正常路径：200px → 不延长。
+    let normal = vec![(0.0, 0.0, 1.0), (200.0, 0.0, 1.0)];
+    assert!(
+        extend_short_path(&normal, 45.66, 68.49).is_none(),
+        "正常路径不动"
+    );
+    // 单点：沿 +x 延长到目标值，压力不变。
+    let single = vec![(7.0, 9.0, 0.5)];
+    let extended = extend_short_path(&single, 45.66, 68.49).expect("单点必须延长");
+    assert_eq!(extended, vec![(7.0, 9.0, 0.5), (75.49, 9.0, 0.5)]);
+    // 零长多点：沿 +x 延长。
+    let zero = vec![(5.0, 5.0, 1.0), (5.0, 5.0, 1.0), (5.0, 5.0, 1.0)];
+    let extended = extend_short_path(&zero, 45.66, 68.49).expect("零长点列必须延长");
+    assert_eq!(extended.last().copied(), Some((73.49, 5.0, 1.0)));
+    // 末段零长：沿最后一段非零方向（30,40）延长到 90。
+    let trailing_dup = vec![(0.0, 0.0, 1.0), (30.0, 40.0, 1.0), (30.0, 40.0, 1.0)];
+    let extended = extend_short_path(&trailing_dup, 60.0, 90.0).expect("末段零长仍须延长");
+    assert!((path_len(&extended) - 90.0).abs() < 1e-6);
+    assert!((extended.last().unwrap().0 - 54.0).abs() < 1e-6);
+    assert!((extended.last().unwrap().1 - 72.0).abs() < 1e-6);
+    // 空点列与非法数值：不延长（不 panic）。
+    assert!(extend_short_path(&[], 45.66, 68.49).is_none());
+    assert!(extend_short_path(&short, f64::NAN, 68.49).is_none());
+    assert!(
+        extend_short_path(&short, 45.66, 40.0).is_none(),
+        "目标 < 触发是非法的"
+    );
+}
+
+/// **反馈期 1（3.6a）：短路径延长后引擎至少落一枚 dab** ✓（落笔层实测）。
+///
+/// 口径：`100%_Opaque`、size 400（半径 200，dabs_per_basic_radius 2.18、
+/// dabs_per_actual_radius 2.2、dabs_per_second 0）⇒ dab 间距 ≈ 45.7px；
+/// 两点 4.2px 的原路径不延长时 0 像素，延长到 1.5× 间距后 > 0 像素。
+/// 这条直接证明“轻点至少落一枚 dab”，不是只证几何延长。
+/// **变异** ✓：把 `paint_brush` 的兜底删掉 ⇒ 集成测试那条红；把延长目标改回
+/// 间距以下 ⇒ 本条红（延长后仍 0 像素）。
+#[test]
+fn short_stroke_extension_lands_at_least_one_dab() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/brushes/");
+    let text =
+        std::fs::read_to_string(format!("{root}100%_Opaque.myb")).expect("读不到测试用 .myb");
+    let mut brush = hokusai::myb::from_str(&text).expect("解析 .myb 失败");
+    brush.set(
+        hokusai::BrushSetting::Radius,
+        hokusai::SettingValue::constant(libm::log(200.0) as f32),
+    );
+    brush
+        .get_mut(hokusai::BrushSetting::DabsPerSecond)
+        .base_value = 0.0;
+    let dpar = f64::from(
+        brush
+            .get(hokusai::BrushSetting::DabsPerActualRadius)
+            .base_value,
+    );
+    let dpbr = f64::from(
+        brush
+            .get(hokusai::BrushSetting::DabsPerBasicRadius)
+            .base_value,
+    );
+    let spacing = 200.0 / (dpar + dpbr);
+    let points: Vec<(f64, f64, f64)> = vec![(100.0, 100.0, 1.0), (103.0, 103.0, 1.0)];
+    let stamp = |points: &[(f64, f64, f64)]| -> usize {
+        let mut state = hokusai::BrushState::default();
+        let mut surface = hokusai::tile_mem::MemSurface::new();
+        let mut previous = None;
+        super::stamp_stroke_from(
+            &brush,
+            &mut state,
+            &mut surface,
+            points,
+            &mut previous,
+            &[],
+            super::tools_brush::BrushSensors::default(),
+            false,
+        );
+        let region = super::PaintRegion::from_bounds((0, 0, 399, 399, 400, 400));
+        let (rgba, _) = super::read_surface_region(&surface, region);
+        rgba.chunks_exact(4)
+            .filter(|px| px.iter().any(|byte| *byte != 0))
+            .count()
+    };
+    assert_eq!(
+        stamp(&points),
+        0,
+        "原 4.2px 路径撑不满间距，必须 0 像素（否则本测试的前提不成立）"
+    );
+    let extended = extend_short_path(&points, spacing, spacing * 1.5).expect("短路径必须延长");
+    let painted = stamp(&extended);
+    assert!(
+        painted > 0,
+        "延长到 1.5× 间距后至少落一枚 dab ⇒ 像素必须 > 0，实测 {painted}"
+    );
+}

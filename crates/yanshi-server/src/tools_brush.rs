@@ -463,6 +463,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         max_delta,
         delta_distribution,
         fed_base,
+        short_stroke_hint,
     } = paint;
     // **blob 先行** ✓，与 `medium_stroke` 完全同路 ✓。
     // **选区裁剪**（需求 P0-3）：不在选区内的像素**不许进图层** ⇒ 与"引擎没碰过"同等对待 ✓
@@ -1335,6 +1336,17 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             _ => value["warnings"] = json!(b4_notes),
         }
     }
+    // **反馈期 1（3.6a）：短笔触兜底提示** —— 路径撑不满 dab 间距时不再拒绝，
+    // 而是延长落一枚 dab；诊断事实（原长／间距／size）降为 `warnings` 里的一条提示，
+    // 与“部分越界”／B4 同形态（已有就 push，没有就建）。
+    // 旧拒绝文案仍留在 `paint_brush` 的 0 墨分支里，那是其它真 0 墨情形（透明／涂抹／不可见色）
+    // 的最后防线，不是本兜底的残留。
+    if let Some(hint) = short_stroke_hint {
+        match value.get_mut("warnings") {
+            Some(Value::Array(items)) => items.push(json!(hint)),
+            _ => value["warnings"] = json!([hint]),
+        }
+    }
     // **D139 的静默零墨：印章落了、画面没变** ✓（第 811 轮；探针确认此处两个值已就位 ✓）
     //   **⇒ 实测（他们的调用）**：`ink_footprint_pixels=6`、`max_channel_delta=0` ✓
     //     ⇒ 账面上"落了 6 个像素的墨" ✓ 而**画面一个像素都没变** ✗ ⇒ `ok=true` 且无提醒 ✗。
@@ -1780,6 +1792,64 @@ pub(super) fn paint_brush(
         );
     }
 
+    // **反馈期 1（3.6a）：短笔画单 dab 兜底** —— 原路径撑不满一枚 dab 间距时，
+    // 轻点至少落一枚 dab，不再 0 落墨报错；诊断事实降为回执里的提示（见 `short_stroke_hint`）。
+    // 间距口径：引擎每 dab 的位移 ≈ 半径 / (dabs_per_actual_radius + dabs_per_basic_radius)
+    // （`count_dabs_to`：dist/radius*dpar + dist/base_radius*dpbr；起笔时 actual=base）。
+    // 延长到 1.5× 间距（留余量对冲压感曲线造成的半径变化）；视觉上仍是一次轻点，不是拉出一条线。
+    // 落点语义：起笔处不动（`extend_short_path`：多点沿末段方向延长，单点沿 +x 延长）。
+    // 总长 ≥ 间距的正常笔画原样不动。只对会落墨的笔生效（opaque > 0）：
+    // 透明笔（P-19）与纯涂抹笔的 0 墨仍是正确行为，不由这里兜底。
+    // 注意：`brush_params` 在下面才事后覆盖（它能改 dabs/opaque），本处用的是覆盖前的值；
+    // 覆盖后才把间距改大的笔，兜底可能不够，仍走下面的 0 墨分支（残留，见包说明）。
+    // 位置：必须在区域计算之前（延长后的端点要进区域），且在 `size` 已写入半径之后。
+    let owned_points: Vec<(f64, f64, f64)>;
+    let mut short_stroke_hint: Option<String> = None;
+    let points: &[(f64, f64, f64)] = {
+        let radius = f64::from(brush.get(hokusai::BrushSetting::Radius).base_value).exp();
+        let opaque = brush.get(hokusai::BrushSetting::Opaque).base_value;
+        let dabs_sum = f64::from(
+            brush
+                .get(hokusai::BrushSetting::DabsPerActualRadius)
+                .base_value,
+        ) + f64::from(
+            brush
+                .get(hokusai::BrushSetting::DabsPerBasicRadius)
+                .base_value,
+        );
+        let total_len: f64 = points
+            .windows(2)
+            .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
+            .sum();
+        if radius.is_finite()
+            && radius > 0.0
+            && opaque > 0.0
+            && dabs_sum > 0.0
+            && total_len.is_finite()
+            && total_len < radius / dabs_sum
+        {
+            let spacing = radius / dabs_sum;
+            match extend_short_path(points, spacing, spacing * 1.5) {
+                Some(extended) => {
+                    let n = points.len();
+                    let size_text = match size {
+                        Some(sz) => format!("{sz}"),
+                        None => format!("{:.1}", radius * 2.0),
+                    };
+                    short_stroke_hint = Some(format!(
+                        "短笔触兜底：原路径太短（{n} 个点、路径总长 {total_len:.1}px，撑不满一个 dab 间距约 {spacing:.1}px，size={size_text}）⇒ 起笔处不动、沿末段方向延长至 {:.1}px，已落下一枚 dab；这不代表整支笔刷不可用，想要更长的笔触请加长路径",
+                        spacing * 1.5
+                    ));
+                    owned_points = extended;
+                    &owned_points
+                }
+                None => points,
+            }
+        } else {
+            points
+        }
+    };
+
     // **P-19：`color.a` 乘进有效 opacity** ✓ —— 此前 `a` 只进 warnings，不进渲染 ✓。
     //   `a=255`（或无 `a`）⇒ 系数 1.0 ⇒ 这里**什么都不做** ✓（与修前逐位相同，
     //   连 `.myb` 里 `opaque` 随压力的曲线都不动 ✓）；`a<255` ⇒ 整笔按比例变透明 ✓。
@@ -2170,6 +2240,8 @@ pub(super) fn paint_brush(
         }
     }
     ctx.time(Phase::Raster, read_started);
+    // **反馈期 1 注**：撑不满 dab 间距的短笔触已在上面兜底（延长落一枚 dab），
+    // 走到这里的 0 墨是**其它**真 0 墨情形（透明／涂抹／不可见色等），下面的分因诊断仍适用。
     if painted == 0 {
         // **P-19：有效 opacity 是 0 时，零墨是调用方要的透明，不是不够长** ✓ ——
         // `color.a=0` / `opacity: 0` 都会把 `Opaque` 压到 0 ⇒ 一枚 dab 都不会有墨 ✓ ⇒
@@ -2310,6 +2382,7 @@ pub(super) fn paint_brush(
         max_delta,
         delta_distribution,
         fed_base: reads_canvas,
+        short_stroke_hint,
     })
 }
 
