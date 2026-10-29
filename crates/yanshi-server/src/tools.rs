@@ -20001,10 +20001,17 @@ fn guarded_output_path(raw: &str) -> Result<std::path::PathBuf> {
         let inside =
             normalized.starts_with(&normalized_root) || normalized.starts_with(&normalized_temp);
         if !inside {
+            // **反馈报告 2 期 4**：拒绝文案追加当前生效导出目录的绝对路径（策略不动，只补文案）——
+            // 相对缺省 ./exports 按进程工作目录解析；YANSHI_EXPORT_DIR 若是相对路径同样处理；
+            // 调用方照着这个绝对路径放文件就一定在允许目录内。
+            let absolute_root = std::path::absolute(&normalized_root)
+                .map(|path| normalize_lexically(&path))
+                .unwrap_or_else(|_| normalized_root.clone());
             return Err(YanshiError::new(
                 ErrorCode::PreconditionFailed,
                 ErrorContext::detail(format!(
-                    "拒绝写 {raw}：只能写进导出目录（缺省 ./exports，可用 YANSHI_EXPORT_DIR 改）或系统临时目录"
+                    "拒绝写 {raw}：只能写进导出目录（缺省 ./exports，可用 YANSHI_EXPORT_DIR 改）或系统临时目录；当前导出目录：{}",
+                    absolute_root.display()
                 )),
             ));
         }
