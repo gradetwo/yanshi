@@ -80,7 +80,7 @@
             "inputs": {}
         }, 
         "hardness": {
-            "base_value": 0.7, 
+            "base_value": 0.5, 
             "inputs": {}
         }, 
         "lock_alpha": {
@@ -132,7 +132,7 @@
                 "pressure": [
                     [
                         0.0, 
-                        0.0
+                        -0.2
                     ], 
                     [
                         1.0, 
