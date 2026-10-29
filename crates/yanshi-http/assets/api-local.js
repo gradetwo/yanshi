@@ -4969,7 +4969,7 @@ async function withKernel(doc, fn) {
       // **7 个键与服务端 `OBJECT_PATCH_KEYS` 同源 ✗**（**`tools.rs:5758` ✓**：旧本地漏了 `enabled` ✓）。
       const KEYS = ["visible", "enabled", "locked", "z_index", "layer_id", "metadata", "type"];
       const hits = KEYS.filter((k) => patch[k] !== undefined);
-      if (!hits.length) return p2Bad("patch 中没有可修改的对象属性");
+      if (!hits.length) return p2Bad("patch 中没有可修改的对象属性；改笔用 update_stroke");
       // **★ 服务端的 changeset 其实**不是**原子的（实测 ✓，第 2 批发现）** ✗：
       //   `service.rs:2437 commit_changeset_timed` 是**逐条** `commit_as_timed(…)` 再 `attempt?`
       //   ⇒ **第 2 个键被拒时第 1 个键已经落盘并 journal 了** ✓（实测：`{visible:false, layer_id:"NOPE"}`

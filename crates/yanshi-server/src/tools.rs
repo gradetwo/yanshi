@@ -6385,7 +6385,7 @@ fn write_update_object(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     if atoms.is_empty() {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
-            ErrorContext::detail("patch 中没有可修改的对象属性"),
+            ErrorContext::detail("patch 中没有可修改的对象属性；改笔用 update_stroke"),
         ));
     }
     let changeset = Changeset::new_id();
