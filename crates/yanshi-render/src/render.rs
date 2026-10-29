@@ -1415,6 +1415,50 @@ pub struct Renderer {
     /// `Mutex` 与 `below`/`above` 同例（渲染走 `&self`、多 tile 并行 ✓）；
     /// 计数经 [`Self::vector_raster_stats`] 读（增量渲染的证据面 ✓）。
     vector_raster: std::sync::Mutex<crate::vector::VectorRasterCache>,
+    /// **图层对象裁剪索引**（反馈 3 期 A）：每层一份按渲染顺序排列的裁剪计划
+    /// 缓存（见 [`LayerIndexEntry`]）。渲染走 `&self` 且多 tile 并行，故用
+    /// `Mutex`（与 `below`／`above`／`vector_raster` 同例）；锁中毒时退回逐对象
+    /// 现算，像素不受影响。
+    layer_index: std::sync::Mutex<std::collections::HashMap<String, Vec<LayerIndexEntry>>>,
+}
+
+/// 反馈 3 期 A：渲染循环的单对象裁剪计划（小、可 `Copy`，锁外复用）。
+#[derive(Debug, Clone, Copy)]
+struct CullPlan {
+    /// `true` ⇒ 本对象按整层处理（Adjustment／Filter／Unsupported），不裁剪。
+    whole_layer: bool,
+    /// `true` ⇒ 不缓存裁剪结论，每次现算（Instance：包围盒依赖 master，master
+    /// 一变本对象版本不动 ⇒ 缓存会 stale；实例稀少，现算成本可接受，且与改前一致）。
+    /// 索引关掉（`YANSHI_NO_LAYER_INDEX`）或锁中毒时全员 `live`，即改前路径。
+    live: bool,
+    /// 非整层且非 `live` 时的文档坐标包围盒（`None` ⇒ 按旧口径裁掉）。
+    bbox: Option<Bbox>,
+}
+
+/// 反馈 3 期 A：索引缓存的一条。校验 = 对象 id＋版本＋变换位模式：
+/// fold 改对象必推进 `current_version`（见 `fold.rs`，创建与每次改动都写原子 id），
+/// 变换另作位比较，兜底不走原子直接改 `transform` 的情形；
+/// 数据内容本身不比（那正是要省掉的解析）——数据改动必须走原子改版本，
+/// 与 below 缓存／`layer_content_fingerprint` 同一条版本纪律。
+struct LayerIndexEntry {
+    id: String,
+    version: Option<String>,
+    transform_bits: ([u64; 6], [u64; 2]),
+    plan: CullPlan,
+}
+
+/// 变换的位模式比较（`f64` 的 `PartialEq` 会把 `NaN != NaN`，位比较则同一比特
+/// 模式判相等，避免含 `NaN` 的变换每帧都触发重建；重建本身仍正确，只是慢）。
+fn transform_bits(transform: &yanshi_core::Transform) -> ([u64; 6], [u64; 2]) {
+    let mut matrix = [0u64; 6];
+    for (slot, value) in matrix.iter_mut().zip(transform.matrix.iter()) {
+        *slot = value.to_bits();
+    }
+    let mut pivot = [0u64; 2];
+    for (slot, value) in pivot.iter_mut().zip(transform.pivot.iter()) {
+        *slot = value.to_bits();
+    }
+    (matrix, pivot)
 }
 
 impl Renderer {
@@ -1569,6 +1613,7 @@ impl Renderer {
             below: std::sync::Mutex::new(None),
             above: std::sync::Mutex::new(None),
             vector_raster: std::sync::Mutex::new(crate::vector::VectorRasterCache::new()),
+            layer_index: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -1588,6 +1633,7 @@ impl Renderer {
             below: std::sync::Mutex::new(None),
             above: std::sync::Mutex::new(None),
             vector_raster: std::sync::Mutex::new(crate::vector::VectorRasterCache::new()),
+            layer_index: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
 
         // **★ 让并行度可测 ✗ ★**（第 861 轮 ✓；**目标第 8 条 ✓**）：
@@ -3981,6 +4027,91 @@ impl Renderer {
         self.global_padding(state)
     }
 
+    /// 反馈 3 期 A：取本层本帧的裁剪计划（与 `order` 等长、顺序一致）。
+    ///
+    /// 命中时只做 O(N) 的 (id, 版本, 变换) 标量校验：前缀一致的复用，首个不
+    /// 一致处起截断重建——新增对象多在渲染顺序尾部（新笔 `seq` 最大），故
+    /// 逐笔追加的常见情形只解析新增对象；中间插入／删除／改动则重建其后尾巴，
+    /// 仍正确。不可见／停用的对象建计划时不解析（循环本来就先跳过它们），
+    /// 记 `live`：一旦可见且版本未变（手写状态才可能），循环现算仍正确。
+    /// 建计划时的解析不进 `ObjectTimings`（那是循环内诊断）；建计划成本只
+    /// 在层内容变化时付一次，后续同内容渲染零解析。
+    fn layer_cull_plans(&self, layer: &Layer, order: &[&Object]) -> Vec<CullPlan> {
+        // 关掉／锁中毒 ⇒ 全员 live，即改前逐对象现算路径。
+        let disabled = std::env::var_os("YANSHI_NO_LAYER_INDEX").is_some();
+        let mut guard = if disabled {
+            None
+        } else {
+            self.layer_index.lock().ok()
+        };
+        let Some(guard) = guard.as_mut() else {
+            return order
+                .iter()
+                .map(|_| CullPlan {
+                    whole_layer: false,
+                    live: true,
+                    bbox: None,
+                })
+                .collect();
+        };
+        let cached = guard.entry(layer.id.clone()).or_default();
+        let mut keep = 0usize;
+        while keep < cached.len() && keep < order.len() {
+            let entry = &cached[keep];
+            let object = order[keep];
+            if entry.id == object.id
+                && entry.version.as_deref() == object.current_version.as_deref()
+                && entry.transform_bits == transform_bits(&object.transform)
+            {
+                keep += 1;
+            } else {
+                break;
+            }
+        }
+        cached.truncate(keep);
+        for object in &order[keep..] {
+            let plan = if !object.visible
+                || !object.enabled
+                || object.object_type == yanshi_core::ObjectType::Instance
+            {
+                // 实例不缓存（包围盒依赖 master）；不可见／停用不解析。
+                CullPlan {
+                    whole_layer: false,
+                    live: true,
+                    bbox: None,
+                }
+            } else {
+                let primitive = crate::object::transform_primitive(
+                    crate::object::parse_object(object),
+                    &object.transform,
+                );
+                let whole_layer = matches!(
+                    primitive,
+                    Primitive::Adjustment { .. }
+                        | Primitive::Filter { .. }
+                        | Primitive::Unsupported { .. }
+                );
+                let bbox = if whole_layer {
+                    None
+                } else {
+                    crate::object::bbox_of_primitive(&primitive)
+                };
+                CullPlan {
+                    whole_layer,
+                    live: false,
+                    bbox,
+                }
+            };
+            cached.push(LayerIndexEntry {
+                id: object.id.clone(),
+                version: object.current_version.clone(),
+                transform_bits: transform_bits(&object.transform),
+                plan,
+            });
+        }
+        cached.iter().map(|entry| entry.plan).collect()
+    }
+
     fn render_layer_objects(
         &self,
         state: &DocumentState,
@@ -4012,11 +4143,26 @@ impl Renderer {
                 );
             }
         }
-        for object in __order {
+        let cull_plans = self.layer_cull_plans(layer, &__order);
+        for (object, plan) in __order.into_iter().zip(cull_plans) {
             // G-03 bypass：`enabled: false` 的对象渲染时跳过（与 `visible`
             // 同门——调整/滤镜对象也走这条循环，停用即整项不生效）。
             if !object.visible || !object.enabled {
                 continue;
+            }
+            // 期 A 索引命中：计划已判为不相交的对象零解析直接跳过（被裁对象
+            // 原先每帧付两次解析：画前一次＋包围盒一次；现付零次）。
+            if !plan.whole_layer && !plan.live {
+                let intersects = plan
+                    .bbox
+                    .map(|bbox| {
+                        bbox.w > 0.0 && bbox.h > 0.0 && bbox.intersects(&layer_buffer.bbox())
+                    })
+                    .unwrap_or(false);
+                if !intersects {
+                    track.culled.insert(object.id.clone());
+                    continue;
+                }
             }
             // 几何裁剪：包围盒与渲染区域不相交的对象直接跳过。
             // 调整/滤镜对象作用于整层、无法用几何裁剪；未实现类型必须保留以便产生告警。
@@ -4059,11 +4205,27 @@ impl Renderer {
             if !affects_whole_layer {
                 // **实例的包围盒必须解析 master** ✓（否则实例会被当成空盒子裁掉 ✗，
                 // 实测："实例应在 local_transform 指定的位置画出 master（实测 0）" ✓）。
-                let intersects = crate::object::object_bbox_in(state, object)
-                    .map(|bbox| {
-                        bbox.w > 0.0 && bbox.h > 0.0 && bbox.intersects(&layer_buffer.bbox())
-                    })
-                    .unwrap_or(false);
+                let intersects = if plan.live {
+                    // 实例／索引关闭／锁中毒：现算，与改前一致（实例的包围盒
+                    // 必须解析 master，否则实例会被当成空盒子裁掉）。
+                    crate::object::object_bbox_in(state, object)
+                        .map(|bbox| {
+                            bbox.w > 0.0 && bbox.h > 0.0 && bbox.intersects(&layer_buffer.bbox())
+                        })
+                        .unwrap_or(false)
+                } else if plan.whole_layer {
+                    // 计划说整层、实解析却非整层：版本纪律下不会发生；保守画
+                    // 出来（与整层对象旧行为一致），绝不静默裁掉。
+                    true
+                } else {
+                    // 期 A：包围盒已由同一份图元算过（`bbox_of_primitive`），
+                    // 这里不再为裁剪解析第二遍。
+                    plan.bbox
+                        .map(|bbox| {
+                            bbox.w > 0.0 && bbox.h > 0.0 && bbox.intersects(&layer_buffer.bbox())
+                        })
+                        .unwrap_or(false)
+                };
                 // **★ 必须**先记再判 ✗ ★**（第 199 轮 ✓）：**∴ 记录点**若放在 `if !intersects` **之后**✗
                 //   ⇒ **∴ 被裁掉的对象**就**不记** ✓（**实测：**只记了 73 次，**而对象 468 ✓）**
                 //     ⇒ **∴ 于是**裁剪成本**全被漏掉** ✓ ⇒ **★ 那**正是要找的那一块 ✓ ★**
@@ -7646,6 +7808,80 @@ mod tests {
 
     fn renderer() -> Renderer {
         Renderer::new(TileGrid::new(32, 32, 32).unwrap())
+    }
+
+    /// 反馈 3 期 A：同一渲染器跨状态复用裁剪索引时，移动／删除／追加对象后
+    /// 的区域渲染必须与全新渲染器逐字节一致。区域渲染是判 stale 的关键：
+    /// 全幅渲染里旧包围盒仍相交、画出来也对，只有区域渲染能让 stale 包围盒
+    /// 把对象错裁掉（变异：索引不校验版本 ⇒ 移动后新位置仍是白底 ⇒ 本测试红）。
+    #[test]
+    fn layer_index_reused_render_matches_fresh_render() {
+        let mut state = white_document();
+        state.objects.insert(
+            "obj_1".to_owned(),
+            object(
+                "obj_1",
+                "layer_1",
+                ObjectType::Stroke,
+                0,
+                json!({
+                    "points": [[4.0, 4.0], [12.0, 4.0]],
+                    "size": 4.0,
+                    "color": [0.0, 0.0, 0.0, 1.0],
+                }),
+            ),
+        );
+        let store = MemoryBlobStore::new();
+        // 区域 x=20..32：旧笔（包围盒约 x=2..14）不相交，新位置（x=18..30）相交。
+        // `pixel` 取区域内坐标：文档 (24, 4) ⇒ 区域内 (4, 4)。
+        let region = Bbox::new(20.0, 0.0, 12.0, 32.0);
+        let mut reused = renderer();
+        let first = reused.render_region(&state, &store, region).unwrap();
+        assert_eq!(first.pixel(4, 4), Some([255, 255, 255, 255]));
+        // 移动：变换＋版本双推进（fold 改对象时的真实形态）。
+        let mut moved = state.clone();
+        let obj = moved.objects.get_mut("obj_1").unwrap();
+        obj.transform = Transform {
+            matrix: [1.0, 0.0, 0.0, 1.0, 16.0, 0.0],
+            pivot: [0.0, 0.0],
+        };
+        obj.current_version = Some("a2".to_owned());
+        let second = reused.render_region(&moved, &store, region).unwrap();
+        let fresh = renderer().render_region(&moved, &store, region).unwrap();
+        assert_eq!(second.rgba8, fresh.rgba8);
+        assert!(
+            second.pixel(4, 4).unwrap()[0] < 60,
+            "移动后新位置应画出黑笔"
+        );
+        // 删除：deleted_by＋版本推进后同区域应恢复白底。
+        let mut deleted = moved.clone();
+        let obj = deleted.objects.get_mut("obj_1").unwrap();
+        obj.deleted_by = Some("a3".to_owned());
+        obj.current_version = Some("a3".to_owned());
+        let third = reused.render_region(&deleted, &store, region).unwrap();
+        let fresh3 = renderer().render_region(&deleted, &store, region).unwrap();
+        assert_eq!(third.rgba8, fresh3.rgba8);
+        assert_eq!(third.pixel(4, 4), Some([255, 255, 255, 255]));
+        // 追加：新对象（新版本）同区域应画出（文档 (24, 10) ⇒ 区域内 (4, 10)）。
+        let mut appended = deleted.clone();
+        appended.objects.insert(
+            "obj_2".to_owned(),
+            object(
+                "obj_2",
+                "layer_1",
+                ObjectType::Stroke,
+                1,
+                json!({
+                    "points": [[22.0, 10.0], [30.0, 10.0]],
+                    "size": 4.0,
+                    "color": [0.0, 0.0, 0.0, 1.0],
+                }),
+            ),
+        );
+        let fourth = reused.render_region(&appended, &store, region).unwrap();
+        let fresh4 = renderer().render_region(&appended, &store, region).unwrap();
+        assert_eq!(fourth.rgba8, fresh4.rgba8);
+        assert!(fourth.pixel(4, 10).unwrap()[0] < 60, "追加后新笔应画出");
     }
 
     #[test]

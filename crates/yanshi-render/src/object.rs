@@ -1424,12 +1424,14 @@ pub fn text_scale_for_size(size: f64) -> u32 {
 }
 
 /// 对象的文档坐标包围盒（**已施加对象变换**）。
-pub fn object_bbox(object: &Object) -> Option<Bbox> {
-    // 对象的仿射 `transform` 尚未进入内核（Phase 3 起按对象应用），
-    // 因此这里返回的是对象**本地**包围盒。
-    // 先施加对象变换，再按**变换后**的图元算包围盒 ⇒ 剔除与命中测试都跟着走 ✓
-    //（查看器的「移动」工具正是用 list_objects 的 bbox 做命中测试 ✓）。
-    let local = match transform_primitive(parse_object(object), &object.transform) {
+/// 对**已解析并已施加变换**的图元算包围盒（反馈 3 期 A 抽出）。
+///
+/// 渲染循环先解析一次对象，裁剪用的包围盒直接由此函数从**同一份图元**算出，
+/// 不再为裁剪把对象解析第二遍。口径与旧 `object_bbox` 逐字一致：先施加对象
+/// 变换，再按变换后的图元算（查看器的「移动」工具正是用 list_objects 的 bbox
+/// 做命中测试，口径必须跟着走）。
+pub fn bbox_of_primitive(primitive: &Primitive) -> Option<Bbox> {
+    let local = match primitive {
         Primitive::Text {
             text,
             size,
@@ -1441,7 +1443,7 @@ pub fn object_bbox(object: &Object) -> Option<Bbox> {
                 // 此前这里固定用 5×7 度量 ✗ ⇒ CJK 文本的包围盒远大于实际墨迹 ✓
                 //（子 agent 实测 510×119 vs 92×14 ✓）⇒ 脏区规划会把无关区域算进来 ✓，
                 // 而真正越界的那一小块又可能算不进去 ✓ ⇒ 画布与缩略图/导出不一致 ✓（一致性自检不通过 ✓）。
-                crate::font::measure_sized(text.as_str(), size, 0.0);
+                crate::font::measure_sized(text.as_str(), *size, 0.0);
             return Some(Bbox::new(
                 position.0,
                 position.1,
@@ -1459,7 +1461,7 @@ pub fn object_bbox(object: &Object) -> Option<Bbox> {
             let mut min_y = f64::INFINITY;
             let mut max_x = f64::NEG_INFINITY;
             let mut max_y = f64::NEG_INFINITY;
-            for (x, y) in &points {
+            for (x, y) in points {
                 min_x = min_x.min(*x);
                 min_y = min_y.min(*y);
                 max_x = max_x.max(*x);
@@ -1487,7 +1489,7 @@ pub fn object_bbox(object: &Object) -> Option<Bbox> {
             let mut min_y = f64::INFINITY;
             let mut max_x = f64::NEG_INFINITY;
             let mut max_y = f64::NEG_INFINITY;
-            for (x, y) in &points {
+            for (x, y) in points {
                 min_x = min_x.min(*x);
                 min_y = min_y.min(*y);
                 max_x = max_x.max(*x);
@@ -1534,19 +1536,19 @@ pub fn object_bbox(object: &Object) -> Option<Bbox> {
             stroke_width,
             ..
         } => {
-            let base = if kind == ShapeKind::Path && !subpaths.is_empty() {
+            let base = if *kind == ShapeKind::Path && !subpaths.is_empty() {
                 // Path 的脏区按控制点包围盒（与 parse 的 base bbox 同口径）。
-                path_control_bbox(&subpaths)
+                path_control_bbox(subpaths)
                     .map(|(x, y, w, h)| Bbox::new(x, y, w, h))
-                    .unwrap_or(bbox)
-            } else if kind == ShapeKind::Polygon && !points.is_empty() {
+                    .unwrap_or(*bbox)
+            } else if *kind == ShapeKind::Polygon && !points.is_empty() {
                 let min_x = points.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
                 let min_y = points.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
                 let max_x = points.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
                 let max_y = points.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
                 Bbox::new(min_x, min_y, max_x - min_x, max_y - min_y)
             } else {
-                bbox
+                *bbox
             };
             let margin = stroke_width / 2.0;
             Bbox::new(
@@ -1561,7 +1563,7 @@ pub fn object_bbox(object: &Object) -> Option<Bbox> {
             height,
             offset,
             ..
-        } => Bbox::new(offset.0, offset.1, width as f64, height as f64),
+        } => Bbox::new(offset.0, offset.1, *width as f64, *height as f64),
         Primitive::Adjustment { .. } | Primitive::Filter { .. } => {
             // 调整/滤镜作用于整层，包围盒由调用方按图层计算。
             Bbox::new(0.0, 0.0, 0.0, 0.0)
@@ -1569,6 +1571,17 @@ pub fn object_bbox(object: &Object) -> Option<Bbox> {
         Primitive::Unsupported { .. } => return None,
     };
     Some(local)
+}
+
+/// 对象的包围盒（文档坐标）；无法判定时返回 None。
+///
+/// 先施加对象变换，再按**变换后**的图元算包围盒 ⇒ 剔除与命中测试都跟着走 ✓
+///（查看器的「移动」工具正是用 list_objects 的 bbox 做命中测试 ✓）。
+pub fn object_bbox(object: &Object) -> Option<Bbox> {
+    bbox_of_primitive(&transform_primitive(
+        parse_object(object),
+        &object.transform,
+    ))
 }
 
 /// 图层的效果包围盒 = 其存活对象包围盒的并集（未知包围盒的对象使结果保守为整层）。
@@ -1696,6 +1709,60 @@ mod tests {
         }
         let bbox = object_bbox(&object).unwrap();
         assert_eq!(bbox, Bbox::new(-2.0, -2.0, 14.0, 4.0));
+    }
+
+    /// 反馈 3 期 A：`bbox_of_primitive`（渲染循环裁剪用）必须与旧 `object_bbox`
+    /// 逐字一致——恒等与平移变换、笔触／形状／位图补丁／文本四类全覆盖。
+    /// 平移情形是关键：忘施加变换时恒等情形仍绿、平移情形红。
+    #[test]
+    fn bbox_of_primitive_matches_object_bbox() {
+        let cases = vec![
+            object(
+                ObjectType::Stroke,
+                json!({"points": [[0.0, 0.0], [10.0, 0.0]], "size": 4.0, "color": [1.0, 0.0, 0.0, 1.0]}),
+            ),
+            object(
+                ObjectType::Shape,
+                json!({"geometry": {"kind": "rect", "bbox": {"x": 3, "y": 4, "w": 10.0, "h": 6.0}}}),
+            ),
+            object(
+                ObjectType::RasterPatch,
+                json!({
+                    "bitmap": {"blob_hash": format!("sha256:{}", "a".repeat(64)), "mime_type": "image/x-yanshi-raw"},
+                    "width": 7,
+                    "height": 5,
+                    "region": {"x": 11, "y": 13, "w": 7, "h": 5},
+                }),
+            ),
+            object(
+                ObjectType::Text,
+                json!({"text": "hi", "size": 10.0, "position": [2.0, 3.0]}),
+            ),
+        ];
+        for mut obj in cases {
+            for transform in [
+                Transform::IDENTITY,
+                Transform {
+                    matrix: [1.0, 0.0, 0.0, 1.0, 100.0, -50.0],
+                    pivot: [0.0, 0.0],
+                },
+            ] {
+                obj.transform = transform;
+                let via_primitive =
+                    bbox_of_primitive(&transform_primitive(parse_object(&obj), &obj.transform));
+                assert_eq!(via_primitive, object_bbox(&obj));
+            }
+        }
+        // Unsupported（缺 blob_hash 的位图补丁）两边都应是 None。
+        let bad = object(
+            ObjectType::RasterPatch,
+            json!({"bitmap": {"blob_hash": "bad"}}),
+        );
+        assert_eq!(
+            bbox_of_primitive(&transform_primitive(parse_object(&bad), &bad.transform)),
+            object_bbox(&bad)
+        );
+        assert!(object_bbox(&bad).is_none());
     }
 
     #[test]
