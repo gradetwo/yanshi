@@ -510,7 +510,9 @@ pub(super) fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         }));
     }
     let region = parse_bbox(require_object(args, "region")?)?;
-    let include_image = optional_bool(args, "include_image").unwrap_or(false);
+    // return_image 统一语义：与旧 include_image 同义（任一 true 即内嵌）；
+    // max_px 缺省 512、钳制 1..=8192、超限自动缩小（下文既有行为不动）。
+    let include_image = wants_return_image(args);
     // **∴ 有 `layer_id` ⇒ **只渲那一层**✗；**没有 ⇒ **行为完全不变 ✓**。
     // **★ 埋点：渲染本体 ✗ ★**（**第 505 轮 ✓）
     //   **∴ 为什么 ✗**：**第 503 轮的标度实验说「**80% 是与像素成正比的计算**」 ✗
@@ -849,4 +851,270 @@ pub(super) fn read_get_checkpoints(ctx: &mut ToolContext<'_>) -> Result<Value> {
         })
         .collect();
     Ok(json!({"checkpoints": checkpoints, "count": checkpoints.len()}))
+}
+
+/// **`stroke_heatmap`**（反馈 5.6）：**纯读** —— 把一块区域划成网格，每格给
+/// 笔数／点数／墨量。笔数与点数走与 `get_stroke_log` **同一扫描**（`source.kind`
+/// ∈ {brush, medium, draw} 的原子，`DrawStroke`／`Erase` 回落 `payload.data`，
+/// 已撤销原子按最近一次动作排除）；墨量是烘焙位图 tile 的逐像素 alpha 求和
+/// （与 `brush_stroke` 回执的 `ink_mass` 同口径：Σalpha），只覆盖带 tile 的笔。
+/// **口径缺口必须明说**：`medium_stroke` 经 `write_import_image` 提交的是无
+/// `source` 的 `ImportImage` 原子，日志扫描看不见它 ⇒ 介质笔不在热力图里；
+/// `draw_stroke` 笔无 tile ⇒ 只计笔数与点数，墨量不含它们（缺口以
+/// `strokes_without_ink` 计数明示，不以 0 冒充“没用墨”）。
+/// **不改 `analyze_region`**：那只读最终像素颜色，本工具读笔触归属，两者互补。
+pub(super) fn read_stroke_heatmap(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let region = parse_bbox(require_object(args, "region")?)?;
+    if !region.x.is_finite()
+        || !region.y.is_finite()
+        || !region.w.is_finite()
+        || !region.h.is_finite()
+        || region.w <= 0.0
+        || region.h <= 0.0
+    {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "region 的宽高必须大于 0（且坐标有限）；区域可部分在画布外，但不能是空盒"
+                    .to_string(),
+            ),
+        ));
+    }
+    let cell_size = match args.get("cell_size") {
+        None | Some(Value::Null) => 64.0,
+        Some(value) => value.as_f64().ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("cell_size 必须是数字（画布像素，缺省 64）".to_string()),
+            )
+        })?,
+    };
+    if !cell_size.is_finite() || cell_size <= 0.0 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("cell_size 必须是有限正数（缺省 64）".to_string()),
+        ));
+    }
+    // **格数上限是防炸护栏**（约定值，不是引擎临界值）：`cell_size = 1` 扫 4K
+    // 区域会炸出 1600 万格 ⇒ 超限就报错并指路调大 `cell_size`，不静默夹紧
+    // （夹紧会让调用方拿到与请求不符的网格而不自知）。
+    let cols_f = (region.w / cell_size).ceil();
+    let rows_f = (region.h / cell_size).ceil();
+    if cols_f * rows_f > 10_000.0 {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "网格 {cols_f}×{rows_f} 超过 10000 格上限 ⇒ 请调大 cell_size（当前 {cell_size}）"
+            )),
+        ));
+    }
+    let cols = cols_f as usize;
+    let rows = rows_f as usize;
+    let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::ReferenceNotFound,
+            ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+        )
+    })?;
+    // **已撤销集合与 `get_stroke_log` 同规则**：按最近一次动作算，revert 之后
+    // 又 reapply 回来的算 live。
+    let mut last_action: BTreeMap<String, (u64, bool)> = BTreeMap::new();
+    for atom in document.log().iter() {
+        if atom.kind != AtomKind::Revert && atom.kind != AtomKind::Reapply {
+            continue;
+        }
+        if let Some(target) = atom.payload.get("target").and_then(Value::as_str) {
+            last_action.insert(target.to_owned(), (atom.seq, atom.kind == AtomKind::Revert));
+        }
+    }
+    let reverted: BTreeSet<String> = last_action
+        .iter()
+        .filter(|(_, (_, is_revert))| *is_revert)
+        .map(|(id, _)| id.clone())
+        .collect();
+    // **半开区间归属**：右／下边界上的点与像素不属于本区域（与
+    // `Bbox::intersects`“只贴边不算相交”同精神）。
+    let col_of = |x: f64| -> Option<usize> {
+        if x < region.x || x >= region.x + region.w {
+            return None;
+        }
+        let col = ((x - region.x) / cell_size).floor() as usize;
+        if col < cols {
+            Some(col)
+        } else {
+            None
+        }
+    };
+    let row_of = |y: f64| -> Option<usize> {
+        if y < region.y || y >= region.y + region.h {
+            return None;
+        }
+        let row = ((y - region.y) / cell_size).floor() as usize;
+        if row < rows {
+            Some(row)
+        } else {
+            None
+        }
+    };
+    let mut cell_strokes = vec![0u64; cols * rows];
+    let mut cell_points = vec![0u64; cols * rows];
+    let mut cell_ink = vec![0u64; cols * rows];
+    let mut total_strokes = 0u64;
+    let mut total_points = 0u64;
+    let mut strokes_without_ink = 0u64;
+    for atom in document.log().iter() {
+        // **扫描谓词与 `get_stroke_log` 逐字同款**（见文件头注释的口径缺口）：
+        // `source` 不是对象时只对 `DrawStroke`／`Erase` 回落 `payload.data`。
+        let owned_source;
+        let source = match atom.payload.get("source").filter(|value| value.is_object()) {
+            Some(source) => source,
+            None => {
+                if !matches!(atom.kind, AtomKind::DrawStroke | AtomKind::Erase) {
+                    continue;
+                }
+                let Some(data) = atom.payload.get("data").filter(|value| value.is_object()) else {
+                    continue;
+                };
+                owned_source = json!({
+                    "kind": "draw",
+                    "points": data.get("points").cloned().unwrap_or(Value::Null),
+                });
+                &owned_source
+            }
+        };
+        let source_kind = source
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !matches!(source_kind, "brush" | "medium" | "draw") {
+            continue;
+        }
+        if reverted.contains(&atom.id) {
+            continue;
+        }
+        let points: Vec<(f64, f64)> = source
+            .get("points")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| {
+                        let pair = item.as_array()?;
+                        Some((pair.first()?.as_f64()?, pair.get(1)?.as_f64()?))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        // **可读 tile 才算墨**：哈希非法、取不到、字节长 ≠ tile 的 `w × h × 4`
+        // 时墨量跳过（不整单报错，缺口计入 `strokes_without_ink`）；分块索引
+        // （`payload.tiles`）只追加，不动主 blob ⇒ 主 blob 仍是整幅 RGBA。
+        let tile: Option<(f64, f64, usize, usize, Vec<u8>)> = (|| {
+            let tile_box = atom.payload.get("region").and_then(Bbox::from_value)?;
+            let hash_text = atom.payload.get("bitmap")?.get("blob_hash")?.as_str()?;
+            let hash: yanshi_core::BlobHash = hash_text.parse().ok()?;
+            let bytes = ctx.workspace.store().get(&hash).ok()?;
+            if !tile_box.w.is_finite()
+                || !tile_box.h.is_finite()
+                || tile_box.w <= 0.0
+                || tile_box.h <= 0.0
+                || tile_box.w.fract() != 0.0
+                || tile_box.h.fract() != 0.0
+            {
+                return None;
+            }
+            let width = tile_box.w as usize;
+            let height = tile_box.h as usize;
+            if width.checked_mul(height)?.checked_mul(4)? != bytes.len() {
+                return None;
+            }
+            Some((tile_box.x, tile_box.y, width, height, bytes))
+        })();
+        let mut touched: BTreeSet<usize> = BTreeSet::new();
+        for (px, py) in &points {
+            if let (Some(col), Some(row)) = (col_of(*px), row_of(*py)) {
+                let index = row * cols + col;
+                touched.insert(index);
+                cell_points[index] += 1;
+                total_points += 1;
+            }
+        }
+        if let Some((tile_x, tile_y, tile_w, _, bytes)) = &tile {
+            for (index, pixel) in bytes.chunks_exact(4).enumerate() {
+                // alpha = 0 的像素是没落笔的透明处，不是墨 ⇒ 不计入。
+                let alpha = u64::from(pixel[3]);
+                if alpha == 0 {
+                    continue;
+                }
+                let gx = tile_x + (index % tile_w) as f64;
+                let gy = tile_y + (index / tile_w) as f64;
+                if let (Some(col), Some(row)) = (col_of(gx), row_of(gy)) {
+                    let cell = row * cols + col;
+                    touched.insert(cell);
+                    cell_ink[cell] += alpha;
+                }
+            }
+        } else if let Some(bbox) = atom.payload.get("region").and_then(Bbox::from_value) {
+            // **无 tile 的笔走 `bbox` 兜底**：`draw_stroke` 的 `bbox` 是点列包围盒
+            // 扩 `size / 2 + 2`，即真实落墨范围 ⇒ 笔尖擦边区域也能计入；有 tile
+            // 的笔不走这条（tile 像素已是精确归属，`bbox` 会把透明边也算进来）。
+            for row in 0..rows {
+                for col in 0..cols {
+                    let cx = region.x + col as f64 * cell_size;
+                    let cy = region.y + row as f64 * cell_size;
+                    let cell = Bbox::new(
+                        cx,
+                        cy,
+                        (region.x + region.w - cx).min(cell_size).max(0.0),
+                        (region.y + region.h - cy).min(cell_size).max(0.0),
+                    );
+                    if bbox.intersects(&cell) {
+                        touched.insert(row * cols + col);
+                    }
+                }
+            }
+        }
+        if !touched.is_empty() {
+            total_strokes += 1;
+            for index in &touched {
+                cell_strokes[*index] += 1;
+            }
+            if tile.is_none() {
+                strokes_without_ink += 1;
+            }
+        }
+    }
+    let mut cells: Vec<Value> = Vec::with_capacity(cols * rows);
+    let mut total_ink_mass = 0u64;
+    for row in 0..rows {
+        for col in 0..cols {
+            let index = row * cols + col;
+            let x = region.x + col as f64 * cell_size;
+            let y = region.y + row as f64 * cell_size;
+            total_ink_mass += cell_ink[index];
+            cells.push(json!({
+                "col": col,
+                "row": row,
+                "x": x,
+                "y": y,
+                "w": (region.x + region.w - x).min(cell_size).max(0.0),
+                "h": (region.y + region.h - y).min(cell_size).max(0.0),
+                "strokes": cell_strokes[index],
+                "points": cell_points[index],
+                "ink_mass": cell_ink[index],
+            }));
+        }
+    }
+    Ok(json!({
+        "ok": true,
+        "region": {"x": region.x, "y": region.y, "w": region.w, "h": region.h},
+        "cell_size": cell_size,
+        "cols": cols,
+        "rows": rows,
+        "cells": cells,
+        "total_strokes": total_strokes,
+        "total_points": total_points,
+        "total_ink_mass": total_ink_mass,
+        "strokes_without_ink": strokes_without_ink,
+        "note": "笔数／点数走与 get_stroke_log 同一日志扫描（已撤销排除）；墨量是烘焙位图 tile 的逐像素 alpha 求和，只覆盖带 tile 的笔（实为笔刷笔）。medium_stroke 的介质笔不在扫描内（无 source 的 ImportImage 原子），draw_stroke 笔只计笔数与点数、墨量不含它们；strokes_without_ink 是对区域有贡献但无可读 tile 的去重笔数。一笔进多格时每格计 1，total_strokes 去重只计 1；total_ink_mass = 各格 ink_mass 之和，区域盖住整笔 tile 时等于该笔回执的 ink_mass。",
+    }))
 }

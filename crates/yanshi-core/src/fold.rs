@@ -922,7 +922,10 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
         | AtomKind::Comment
         | AtomKind::Suggest
         | AtomKind::AcceptSuggestion
-        | AtomKind::RejectSuggestion => {}
+        | AtomKind::RejectSuggestion
+        // `set_background` 没有 id 引用可查 ✓（载荷形状由 `apply` 那一臂把关 ✓，
+        // 缺 `background` 时 `apply` 报错 ⇒ 折叠记级联警告、原子跳过 ✓）。
+        | AtomKind::SetBackground => {}
     }
     check_auxiliary_refs(state, atom)
 }
@@ -1055,6 +1058,19 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
                     deleted_by: None,
                 },
             );
+        }
+        // **改已有文档底色**：只写 `state.background`，与 `CreateDocument` 同形
+        // （`{r, g, b, a}`）⇒ 渲染侧 `parse_background(&state.background)` 直接读到新底色 ✓。
+        // 缺 `background` 不静默清成透明：`apply` 报错 ⇒ 折叠记一条级联警告、该原子跳过 ✓
+        // （工具层永远写完整底色，正常日志走不到这条 ✓）。
+        AtomKind::SetBackground => {
+            let background = atom.payload.get("background").ok_or_else(|| {
+                err(
+                    ErrorCode::InvalidArgument,
+                    "set_background 缺少 background（应为 {r, g, b, a}）",
+                )
+            })?;
+            state.background = background.clone();
         }
         AtomKind::CreateLayer => {
             let layer_id = required(atom, "layer_id")?.to_owned();

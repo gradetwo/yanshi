@@ -343,6 +343,14 @@ pub enum AtomKind {
     /// **单独一个变体而不是在 `SetAnchor` 里加 `removed` 标志** ✗：删除与写入在**撤销**
     /// 语义上是两件事 ✓ ⇒ 分开才能在日志里各自回退 ✓。
     DeleteAnchor,
+    /// 改已有文档的底色（`rebackground` 工具）。
+    ///
+    /// 载荷：`{background: {r, g, b, a}}`，与 `CreateDocument` 的 `background` 同形 ✓。
+    /// 只改 `DocumentState::background`，不动图层、对象与画布尺寸 ⇒ 折叠、重放、
+    /// 撤销/恢复都与其它状态原子同一条路 ✓；**绝不**走内存改状态不落原子的捷径
+    /// （重开即丢的静默退化 ✗）。与新建文档时给底色（`CreateDocument`）互补：
+    /// 那个只在建文档那一刻生效，这个只改**已有**文档的底色 ✓。
+    SetBackground,
     /// 重排图层（携带完整目标 z 序）。
     ReorderLayers,
     /// 重排同一图层内的对象（携带完整目标 z 序）。
@@ -400,6 +408,7 @@ impl AtomKind {
             Self::SetProperty => "set_property",
             Self::SetAnchor => "set_anchor",
             Self::DeleteAnchor => "delete_anchor",
+            Self::SetBackground => "set_background",
             Self::ReorderLayers => "reorder_layers",
             Self::ReorderObjects => "reorder_objects",
             Self::Tombstone => "tombstone",
@@ -472,6 +481,7 @@ impl AtomKind {
                 | Self::Move
                 | Self::Transform
                 | Self::SetProperty
+                | Self::SetBackground
                 | Self::ReorderLayers
                 | Self::ReorderObjects
                 | Self::Tombstone
@@ -522,7 +532,7 @@ impl AtomKind {
     }
 
     /// 全部原子类型，便于穷举测试。
-    pub const ALL: [AtomKind; 33] = [
+    pub const ALL: [AtomKind; 34] = [
         Self::CreateDocument,
         Self::CreateLayer,
         Self::CreateObject,
@@ -544,6 +554,7 @@ impl AtomKind {
         Self::Move,
         Self::Transform,
         Self::SetProperty,
+        Self::SetBackground,
         Self::ReorderLayers,
         Self::ReorderObjects,
         Self::Tombstone,
