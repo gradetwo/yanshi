@@ -505,6 +505,11 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     // 取值域来自仓库里的真实文件 `assets/textures/`（Paper001.png ✓ / Cardboard001.png ✓ …）⇒
     // **不是编的** ✓。`mode` 缺省是 tile ✓ ⇒ 只给必填项就成立 ✓。
     ("texture_background", r#"{"texture":"Paper001.png"}"#),
+    // **`rebackground`**：唯一必填参数是目标底色 ✓（与 new_document background 同形 ✓）⇒ 只给必填项就成立 ✓。
+    (
+        "rebackground",
+        r#"{"color":{"r":30,"g":60,"b":120,"a":255}}"#,
+    ),
     // **`toned_ground`**（反馈 §5.3）：唯一必填参数是颜色 ✓（与 new_document background 同形 ✓）⇒ 只给必填项就成立 ✓。
     (
         "toned_ground",
@@ -566,6 +571,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         // `document_id` 才是要被删掉的那一份。所以这条示例**必须显式写 document_id**。
         r##"{"document_id": "sample-oil"}"##,
     ),
+    // **release/reopen 薄包装**：参数面只有一个必填 document_id，示例照抄即可；
+    // 前置状态是「磁盘上已有这份文档」（先 new_document 建一份，再 release 掉）。
+    ("release_document", r#"{"document_id":"sample-oil"}"#),
+    ("reopen_document", r#"{"document_id":"sample-oil"}"#),
     (
         "export_psd_layers",
         // **★ 分层导出 ✗ ★**（**第 253 轮 ✓）：**把当前文档写成**带图层结构的 PSD**

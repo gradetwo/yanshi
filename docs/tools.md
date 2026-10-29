@@ -65,11 +65,11 @@ canvas. Two stale claims were corrected rather than left to mislead: draw_text's
 item while it renders Chinese today, and this file said convert_to_shape, convert_to_path, split, merge and boolean
 were refused because no path model existed, which stopped being true when the path object model landed.
 
-The tool layer registers **127 core tools**, and with every implemented group enabled there are **209 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
+The tool layer registers **130 core tools**, and with every implemented group enabled there are **212 tools in total** (both numbers are asserted against the registry by `tool_inventory.rs`; keeping them on this one line means adding a tool edits one place, and the anchors `core tools` / `tools in total` must stay unbroken because that is what the test parses).
 
 > **完整工具列表**：本文档是散文式概述，不逐个列出全部工具。完整、实时的工具目录（含参数表）由注册表生成，见 `GET /api/tools` 或 MCP 的 `tools/list`。
 
-> **注意这里有两套口径，别混**：上面那两个数字（125 / 206）是**工具注册表**里的条目数，由
+> **注意这里有两套口径，别混**：上面那两个数字（130 / 212）是**工具注册表**里的条目数，由
 > `tool_inventory.rs` 断言。而 **HTTP 面**（`GET /api/tools`）会按启用的 profile 展开，缺省会话用
 > `Profile::DEFAULT` 9 组，实测是 **206 个**（2026-10-26 注册表实测：DEFAULT 现已覆盖全部工具，
 > 故与注册表总数同数；`tools_list_json` 直接列 `tools()`，无过滤。旧值 193 为第 1447 轮实测，已过期）。
