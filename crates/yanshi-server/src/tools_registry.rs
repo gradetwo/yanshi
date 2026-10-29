@@ -799,7 +799,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "get_stroke_log",
         profile: Profile::History,
-        summary: "**★ 一笔一行的可审计记录（Muse 建议 3）★**：只列**笔触**（不把建图层之类倒出来 ✓），每行给 `kind`/`brush`/`layer_id`/`object_id`/`points`（原样 ✓）/`bbox`（原子里的 `region` ✓）/`first_point`/`last_point`/`pressure{min,max,first,last}`/`timestamp` ✓。**为什么要它** ✗：`find_atom` **按设计只返回元数据** ✓（实测**没有坐标** ✗），要审计「我到底画在哪了」得用 `get_atom` 一条条取 ✓ ⇒ 这个工具把坐标面直接摊平 ✓。**跟文档走** ✓（它就是原子日志的视图 ✓，不是 `/tmp` 里的旁路文件 ✓ ⇒ 清 `/tmp`、换 session、重启都在 ✓）。**分页** `limit`（缺省 50，上限 500）/`offset` ✓，可按 `layer_id`/`object_id`/`since_seq` 过滤 ✓。**已知限制** ✗：笔触原子**不保存逐点 `time_ms`** ✓（实测传了 4 元组后，原子里的 `points` 只有 3 个分量 ✗）⇒ 只能给**原子时间戳** ✓。",
+        summary: "**★ 一笔一行的可审计记录（Muse 建议 3）★**：只列**笔触**（不把建图层之类倒出来 ✓），每行给 `kind`/`brush`/`layer_id`/`object_id`/`points`（原样 ✓）/`bbox`（原子里的 `region` ✓）/`first_point`/`last_point`/`pressure{min,max,first,last}`/`timestamp` ✓。**为什么要它** ✗：`find_atom` **按设计只返回元数据** ✓（实测**没有坐标** ✗），要审计「我到底画在哪了」得用 `get_atom` 一条条取 ✓ ⇒ 这个工具把坐标面直接摊平 ✓。**跟文档走** ✓（它就是原子日志的视图 ✓，不是 `/tmp` 里的旁路文件 ✓ ⇒ 清 `/tmp`、换 session、重启都在 ✓）。**分页** `limit`（缺省 50，上限 500）/`offset` ✓，可按 `layer_id`/`object_id`/`since_seq` 过滤 ✓。**已知限制** ✗：笔触原子**不保存逐点 `time_ms`** ✓（实测传了 4 元组后，原子里的 `points` 只有 3 个分量 ✗）⇒ 只能给**原子时间戳** ✓。**计数口径**：缺省只返 50 条，数笔数请读回执的 `total` 或传 `limit` 翻页，不要数 `entries` 条数（50 条截断时条数 ≠ 笔数）。",
         mutating: false,
         params: &[
             param!("limit", Number, false, "返回条数（缺省 50 ✓，上限 500 ✓）"),
@@ -2035,7 +2035,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "export_project",
         profile: Profile::Core,
-        summary: "把一份文档打成 .yanshi 工程包（未压缩 tar：原子日志 + 元数据 + 引用到的 blob，blob 用 zlib 逐字节无损压缩；能证明重放得出来的位图缺省不装）；回可直接下载的 url，path 可选（另存一份到服务器）",
+        summary: "把一份文档打成 .yanshi 工程包（未压缩 tar：原子日志 + 元数据 + 引用到的 blob，blob 用 zlib 逐字节无损压缩；能证明重放得出来的位图缺省不装）；回可直接下载的 url，path 可选（另存一份到服务器）。缺省包语义：缺省 include_bitmaps=false 时，能证明重放的笔触位图不装（omitted），包依赖 import 重放、不是逐字节自含（回执 package_self_contained 为假即此意）；画布读取类笔刷与媒体笔触恒装。回执的 missing_body 是存储侧口径（成功时恒 0），不能判包自含性；判包用 verify_package（complete 为真 ⇔ import 可重放）。各栏计去重后的 blob 哈希数，不是笔数",
         mutating: false,
         params: &[
             param!("path", String, false, "可选：**服务器上**的另存路径（建议以 .yanshi 结尾；内容其实是未压缩 tar）。不填 ⇒ 只回可直接下载的 url（浏览器走这条）"),
@@ -2062,7 +2062,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "verify_package",
         profile: Profile::Core,
-        summary: "体检一个 .yanshi 工程包（未压缩 tar）：读 atoms.jsonl 的全部 blob 引用，按 canonical 规则分本体/派生 tile，与包内 blobs/ 对账；回 missing_body/missing_derived 两栏 + 恒等式（missing_body + missing_derived == missing_total）；complete 为真 ⇔ 缺本体为 0（只缺派生 ⇒ 完整，可重放）；有意省掉的可重放位图单列 omitted，不算缺失",
+        summary: "体检一个 .yanshi 工程包（未压缩 tar）：读 atoms.jsonl 的全部 blob 引用，按 canonical 规则分本体/派生 tile，与包内 blobs/ 对账；回 missing_body/missing_derived 两栏 + 恒等式（missing_body + missing_derived == missing_total）；complete 为真 ⇔ 缺本体为 0（只缺派生 ⇒ 完整，可重放）；有意省掉的可重放位图单列 omitted，不算缺失。omitted 判定：引用它的每条净荷都须 source.kind=brush 且 origin=drawn（老日志无 origin 时按 source 带笔刷名派生）且笔刷不读画布；按 source.kind+origin 判，不按包络 kind 名（笔触包络 kind 就是 import_image，与照片导入同名；get_stroke_log 的 kind 是语义名 brush）。照片类无生成参数的本体缺失 ⇒ 真缺失 ⇒ complete 为假。各栏计去重后的 blob 哈希数，不是笔数",
         mutating: false,
         params: &[
             param!("path", String, true, "工程包路径（.yanshi）"),
