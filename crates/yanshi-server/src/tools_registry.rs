@@ -218,7 +218,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         //   **⇒ ⇒ ⇒ 所以**：**summary 直接说清**三件事 —— RSS 会随原子增长、
         //     **`/api/documents` 的 close+open 能释放**、单会话有天花板但文档本身没有 ✓
         summary: "一次返回画布状态：尺寸、层列表、选区、掩码，外加**真实内存**（`server_rss_mb`）\
-                  与**每原子均值**（`bytes_per_atom_avg`，<100 原子时报 0=不可判）（只读 ✓）。\
+                  与**每原子均值**（`bytes_per_atom_avg`，<100 原子时报 0=不可判）\
+                  及**内存估计**（`estimated_memory_bytes`：原子数≥100 时 = `bytes_per_atom_avg` × 原子数\
+                  （≈进程 RSS，整 MB 截断误差内）；<100 时退为进程 RSS 字节数）（只读 ✓）。\
                   **内存**：缺省不配上限时渲染缓存按原子增长、只增不减 ⇒ \
                   **要释放就 `close` 再 `open` 同一文档**（实测 4 450 MB → 1 736 MB，回放 0.8 s）；\
                   配了 `YANSHI_VECTOR_RASTER_CACHE_MB`（兆字节）后单笔光栅缓存按 LRU 逐出、\
