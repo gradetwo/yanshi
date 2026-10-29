@@ -17491,11 +17491,21 @@ fn brush_pressure_response(brush: &hokusai::Brush) -> (bool, Vec<&'static str>) 
 /// 好让 HTTP 层在发 `.myb` 时**顺带告诉浏览器** ✓（第 68 轮定性：会读画布的笔刷**不能**本地预览 ✓，
 /// 因为门面没有 base 输入 ⇒ 两边起点不同 ✓）。**判定只有这一处** ✗（复制一份必然漂移 ✓）。
 pub fn brush_reads_the_canvas(brush: &hokusai::Brush) -> bool {
-    let value = |setting: hokusai::BrushSetting| brush.get(setting).base_value;
-    value(hokusai::BrushSetting::Smudge) > 0.0
-        || value(hokusai::BrushSetting::Colorize) > 0.0
-        || value(hokusai::BrushSetting::Posterize) > 0.0
-        || value(hokusai::BrushSetting::LockAlpha) > 0.0
+    // **D-4b：判定必须与引擎的涂抹门同口径** —— 引擎按 dab 求值（`stroke.rs` 的
+    // `smudge_mapping_active` = `base != 0` 或有输入），旧判定只认 `base_value` ⇒
+    // `wet_round`（`smudge` base 0、pressure 曲线至约 1.0）被判不读画布，
+    // `paint_brush` 不喂底图（回执 `fed_base=false`），引擎涂抹只能采本笔自己的墨；
+    // 叠盖的笔触各成扁平胶囊，胶囊轮廓在密集重叠下织成环形网格。
+    // 四项设置同理：`base > 0` 或带输入曲线即读画布（曲线恒 0 时多喂的底图不改像素：
+    // dab 不吃涂抹桶，掩膜只留落墨像素）。
+    let reads = |setting: hokusai::BrushSetting| {
+        let value = brush.get(setting);
+        value.base_value > 0.0 || !value.inputs.is_empty()
+    };
+    reads(hokusai::BrushSetting::Smudge)
+        || reads(hokusai::BrushSetting::Colorize)
+        || reads(hokusai::BrushSetting::Posterize)
+        || reads(hokusai::BrushSetting::LockAlpha)
 }
 
 /// **落墨掩膜** ✓ —— 用**同一支笔刷、同一条路径**在一块**空 surface** 上再走一遍 ✓，

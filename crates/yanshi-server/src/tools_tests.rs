@@ -2275,3 +2275,44 @@ fn delta_distribution_quantiles_follow_the_documented_rule() {
     assert_eq!((dist.median, dist.p90, dist.p99), (0, 0, 0));
     assert_eq!(dist.changed_pixels, 0);
 }
+
+/// **D-4b 回归：只靠曲线驱动涂抹的笔刷也读画布**。
+///
+/// `wet_round` 的 `smudge`：`base_value = 0`，但 `pressure` 曲线把它推到约 1.0；
+/// 引擎的涂抹门（`stroke.rs` 的 `smudge_mapping_active`）认“`base != 0` 或有输入”，
+/// 服务端旧判定只认 `base_value` ⇒ `fed_base=false`，引擎涂抹只能采本笔自己的墨，
+/// 叠盖的笔触各成扁平胶囊，胶囊轮廓在密集重叠下织成环形网格（干笔软边加抖动不成囊，故无环）。
+#[test]
+fn reads_canvas_counts_curve_driven_smudge() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/brushes/");
+    let wet_text =
+        std::fs::read_to_string(format!("{root}wet_round.myb")).expect("读不到 wet_round.myb");
+    let wet = hokusai::myb::from_str(&wet_text).expect("解析 wet_round.myb 失败");
+    assert_eq!(
+        wet.get(hokusai::BrushSetting::Smudge).base_value,
+        0.0,
+        "本测试的前提是 wet_round 的 smudge 只靠曲线驱动"
+    );
+    assert!(
+        !wet.get(hokusai::BrushSetting::Smudge).inputs.is_empty(),
+        "本测试的前提是 wet_round 的 smudge 带输入曲线"
+    );
+    assert!(
+        super::brush_reads_the_canvas(&wet),
+        "曲线驱动的涂抹也必须喂底图（修前这里是 false，即红）"
+    );
+    let dry_text =
+        std::fs::read_to_string(format!("{root}dry_brush.myb")).expect("读不到 dry_brush.myb");
+    let dry = hokusai::myb::from_str(&dry_text).expect("解析 dry_brush.myb 失败");
+    assert!(
+        !super::brush_reads_the_canvas(&dry),
+        "不涂抹的笔刷仍不读画布"
+    );
+    let knife_text =
+        std::fs::read_to_string(format!("{root}ramon-Knife.myb")).expect("读不到 ramon-Knife.myb");
+    let knife = hokusai::myb::from_str(&knife_text).expect("解析 ramon-Knife.myb 失败");
+    assert!(
+        super::brush_reads_the_canvas(&knife),
+        "base 驱动的涂抹笔刷保持读画布"
+    );
+}
