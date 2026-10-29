@@ -11866,6 +11866,9 @@ fn write_set_property(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let value = args.get("value").cloned().unwrap_or(Value::Null);
     let object_id = optional_str(args, "object_id");
     let layer_id = optional_str(args, "layer_id");
+    // `layer_id` 是 `Option<String>`，下面建 payload 时会被部分移动，
+    // 故先记布尔值供提交后的 warning 判据用。
+    let is_layer = layer_id.is_some();
     if object_id.is_none() && layer_id.is_none() {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,
@@ -11881,7 +11884,28 @@ fn write_set_property(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     }
     let result = ctx.commit(AtomKind::SetProperty, payload)?;
     let region = region_of(&result);
-    finish_mutation(ctx, &result, region)
+    let mut value = finish_mutation(ctx, &result, region)?;
+    // 报告 5/6 第 4 项：图层 set_property 改 background 的静默退化。
+    // 机理（fold.rs `apply_property_to_layer`）：图层没有 background 字段，
+    // 未知键落入 `other` 分支、只存进图层 metadata；渲染层只读文档底色
+    // `state.background`，故像素 0 变化，却仍回 ok:true。
+    // 选 warning 不选报错的依据：① 任务首选顶层 warning、保持 ok 语义兼容；
+    // ② 同路没有对同类情形报错的先例——未知键进 metadata 是 set_property 的
+    // 通用回落（对象侧同理），报错会改掉这条回落语义；③ 同仓先例（报告 4
+    // P4 颜色缺省、impasto 缺省零效果）皆为“行为不动、回执加 warning”。
+    // 只动图层一路：文档级（无 id 时本函数已报错）与 update_layer（自带
+    // allowlist 报错）两路一字不动；底色本身的行为也不动，rebackground
+    // 是功能候选，不在此开工。
+    if is_layer && key == "background" {
+        let note = "图层 set_property 的 background 未生效：图层没有 background 字段，\
+            该值只存进图层 metadata，文档底色与渲染像素均未变；改底色目前没有合法入口，\
+            不要以本次 ok:true 判断底色已改";
+        match value.get_mut("warnings") {
+            Some(Value::Array(items)) => items.push(json!(note)),
+            _ => value["warnings"] = json!([note]),
+        }
+    }
+    Ok(value)
 }
 
 fn write_lock_layer(ctx: &mut ToolContext<'_>, args: &Value, locked: bool) -> Result<Value> {
