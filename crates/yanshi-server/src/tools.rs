@@ -11,6 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use yanshi_core::{
@@ -14829,6 +14830,27 @@ fn kind_label(kind: &AtomKind) -> String {
         .unwrap_or_else(|| format!("{kind:?}"))
 }
 
+/// **`new_document` 回执的 root 标识**：只给**标识**，绝不给**原始路径**。
+///
+/// **为什么是规范化路径的 SHA-256**：同一 root 的不同写法（相对／绝对／符号链接）
+/// 必须落在同一个标识上，规范化先统一写法再哈希；不同 root 的路径不同 ⇒ 标识不同，
+/// 调用方跨会话比对标识就能发现走错 root。哈希不可逆，原始路径不会从回执里漏出去。
+/// 无持久化 root 的内存工作区没有路径可哈希，标识固定为 `in_memory`（它不是一个 root，
+/// 只是说明“没有 root”；两个内存工作区本来就不共享存储，不存在跨 root 静默新建）。
+fn root_identifier(workspace: &Workspace) -> String {
+    match workspace.root_path() {
+        Some(root) => {
+            let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+            let mut hex = String::with_capacity(64);
+            for byte in Sha256::digest(canonical.to_string_lossy().as_bytes()) {
+                hex.push_str(&format!("{byte:02x}"));
+            }
+            format!("sha256:{hex}")
+        }
+        None => "in_memory".to_owned(),
+    }
+}
+
 /// **`new_document`** ✓ —— 一键得到一块**空白画布** ✓（真实用户 §六-4 ✓）。
 ///
 /// **用户的原话** ✓："同一 `--root` 下重复打开页面会载入同一文档，三次绘画叠在一张画布上；
@@ -14842,6 +14864,9 @@ fn kind_label(kind: &AtomKind) -> String {
 /// 续画流只依赖缺省 open，不动 ✓。
 fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let doc_id = optional_str(args, "doc_id").unwrap_or_else(|| ctx.doc_id.clone());
+    // **回执带 root 标识**（水墨第 2 项）：两条分支共用同一份标识 ⇒ 新建与打开
+    // 在同一 root 下标识相同，跨 root 标识不同；原始路径只进哈希，绝不进回执。
+    let root_id = root_identifier(ctx.workspace);
     // **尺寸只在"真的要新建"时才是必填** ✓（真实使用探针 2026-10-25 ✓）：
     // 同 id 已存在 ⇒ 语义是"打开" ✓（见下），此时宽度由**既有文档**决定 ✓ ⇒
     // 若像以前那样在打开分支**之前**就强制 width ✗，"打开已存在文档"这条
@@ -14979,6 +15004,7 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             let mut receipt = json!({
                 "ok": true,
                 "doc_id": doc_id,
+                "root_id": root_id,
                 "opened": true,
                 "created": false,
                 "mode": "open",
@@ -15033,6 +15059,7 @@ fn write_new_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     let default_layer = "layer_default";
     let mut receipt = json!({
         "doc_id": doc_id,
+        "root_id": root_id,
         "mode": mode,
         // **新建与打开必须能一眼分开** ✓（真实缺陷 ✓ 2026-10-06 ✓）：这条分支原先**没有**
         // 这两个字段 ✗ ⇒ 调用方只能"看到 opened 才判断是打开" ✓，而**新建**那条**什么都不说** ✗；

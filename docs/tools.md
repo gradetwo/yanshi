@@ -225,7 +225,10 @@ with the same understanding that wrote it proves nothing.
 new_document gives a blank canvas in one call, which the report asked for because a document id is the unit of
 persistence, so a second session under the same root loads the same document and drawings stack up; the tool is
 explicit that a new canvas means a new doc id, and asking for an id that is already open is refused with that advice
-rather than silently clearing anything.
+rather than silently clearing anything. The reply also carries root_id so a driver can tell roots apart:
+a persistent root is identified by the sha256 of its canonicalised path, an in-memory workspace reports
+in_memory, and the raw path never appears in the reply — two roots creating the same doc id therefore no longer
+return identical replies, while a second call under the same root still opens the old document unchanged.
 
 The viewer exposes a window.yanshi object for automation, with a state reader and setters for colour, size, opacity,
 medium and tool. Each setter writes the existing control and dispatches the existing event, so no behaviour is
