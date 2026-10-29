@@ -20706,6 +20706,8 @@ apply  2,881,298 ms｜render 652,982 ms｜累计 3,545 s
 ```
 ✓ check-tests-have-asserts     ⇒ 每个声称有判据的测试文件都至少有一条断言
 ✓ check-skill-tool-names       ⇒ skill 文档里引用的标识符都在注册表里（工具名或参数名）
+                                    ↑ **这一行的口径在 HANDOFF 外§117 已放宽**：允许集现为
+                                      工具名 ∪ 参数名 ∪ **响应字段名** ∪ **错误码**（都从源码现算 ✓）
 ✓ check-tests-clean-temp       ⇒ 每个用 temp_dir() 的测试都有 Drop 清理器
 ✓ check-ledger-section-numbering ⇒ 节 553｜号 551 种｜撞号 2（登记内）｜引用 55｜悬空 0｜断言 7/7
 ```
