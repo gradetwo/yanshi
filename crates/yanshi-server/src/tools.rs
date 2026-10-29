@@ -2968,6 +2968,43 @@ fn read_explain_tool(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     }))
 }
 
+/// `describe_canvas` 的 `estimated_memory_bytes` 估计器（报告 5/6 分诊第 1 项）。
+///
+/// 口径（字段名承诺内存，就必须给内存量级的数；旧口径 `存活对象数 × 180`
+/// 是状态条目的序列化量级，实测仅为 RSS 的约 1/882，见分诊 §0/§1）：
+/// - 原子数 ≥ 100（此时 `bytes_per_atom_avg` 有效）：
+///   `estimated = bytes_per_atom_avg × 原子数`。它与 `server_rss_mb` 是同一
+///   实测来源的两种写法，不是独立测量：`bytes_per_atom_avg` 本身就是
+///   `server_rss_mb × MiB / 原子数` 取整，所以恒等式
+///   `0 ≤ server_rss_mb × MiB − estimated < 原子数` 恒成立；
+///   相对误差界就是整 MB 截断：`< 1 MiB / RSS`（30 MB 文档约 3%，
+///   2.8 GiB 文档约 0.04%；实测 201 原子差 0.99%、12098 原子差 < 0.01%，
+///   单位统一用 MiB 计；分诊 §6 的“差约 5%”是十进制 GB 与 MiB 混算所致）。
+/// - 原子数 < 100（`bytes_per_atom_avg` 报 0 = 不可判，固定开销摊薄失真）：
+///   退为实测进程 RSS 字节数 `server_rss_mb × MiB`，仍是内存量级；
+///   此时它随笔触只在跨整 MB 时才跳变，不保证每笔都增长。
+/// - `/proc` 读不到（非 Linux）：才退为旧量 `存活对象数 × 180`，此时它只是
+///   内容规模量、不是内存，调用方不可按内存读。
+///
+/// 适用边界：同一文档内用 `bytes_per_atom_avg` 外推未来笔数只在同画布、
+/// 同笔刷条件下可辩护；跨条件实测均值在约 95 KB/原子至 300 KB/原子间
+/// 摆动（分诊 §6），跨条件外推须乘该摆动区间，不可只报单点值。
+/// 本函数不碰 `server_rss_mb` 与 `bytes_per_atom_avg` 自身的语义。
+fn estimate_memory_bytes(
+    rss_mb: Option<u64>,
+    rss_per_atom: u64,
+    atom_total: usize,
+    alive_objects: usize,
+) -> u64 {
+    if rss_per_atom > 0 {
+        return rss_per_atom.saturating_mul(atom_total as u64);
+    }
+    if let Some(mb) = rss_mb {
+        return mb.saturating_mul(1_024 * 1_024);
+    }
+    (alive_objects as u64).saturating_mul(180)
+}
+
 fn read_describe_canvas(ctx: &mut ToolContext<'_>) -> Result<Value> {
     let (width, height) = ctx
         .workspace
@@ -3019,9 +3056,8 @@ fn read_describe_canvas(ctx: &mut ToolContext<'_>) -> Result<Value> {
             .cmp(b.get("selection_id").and_then(Value::as_str).unwrap_or(""))
     });
     // **先把三个与内存有关的量算好** ✓（`json!` 里**不能放语句** —— 我在这条坑上踩过多次）
-    // **O(1) 的内容规模估算**（**不是 RSS** ⇒ 真内存看 `server_rss_mb`）
-    //   **⇒ 每对象按 180 字节估**（**这是状态条目的量级**）✓
-    let estimated_memory_bytes = state.alive_objects().len().saturating_mul(180);
+    // `estimated_memory_bytes` 的口径见 `estimate_memory_bytes`（报告 5/6 第 1 项）：
+    // 原子数 ≥ 100 时 = `bytes_per_atom_avg × 原子数`（≈ 进程 RSS），不再是 180 常量。
     let atom_total = ctx
         .workspace
         .document(&ctx.doc_id)
@@ -3038,6 +3074,12 @@ fn read_describe_canvas(ctx: &mut ToolContext<'_>) -> Result<Value> {
         (Some(mb), n) if n >= MIN_ATOMS_FOR_AVERAGE => (mb * 1_024 * 1_024) / n as u64,
         _ => 0,
     };
+    let estimated_memory_bytes = estimate_memory_bytes(
+        rss_mb,
+        rss_per_atom,
+        atom_total,
+        state.alive_objects().len(),
+    );
     Ok(json!({
         "ok": true,
         "width": width,
@@ -3073,11 +3115,18 @@ fn read_describe_canvas(ctx: &mut ToolContext<'_>) -> Result<Value> {
         //   **⇒ ⇒ ⇒ 所以**：**按"对象数 × 每对象估算"给一个 O(1) 的数**，
         //     **并明确它只是"内容规模"的**量级**（**不是 RSS**）✓
         //     ⇒ **实测代价**：**22.2 ms → ~1 ms**（**20×**），**每次少分配 1.3 MB** ✓
+        // **★ 报告 5/6 第 1 项：上面那段已过期 ★**（旧口径 `存活对象 × 180`
+        //   是序列化量级、实测仅为 RSS 的约 1/882 ⇒ 字段名承诺内存却给错量级 ✗）
+        //   **⇒ 现口径**（见 `estimate_memory_bytes`）：原子数 ≥ 100 时
+        //     `estimated = bytes_per_atom_avg × 原子数`（≈ 进程 RSS，整 MB 截断误差内）；
+        //     < 100 时 `bytes_per_atom_avg` 报 0 = 不可判，`estimated` 退为进程 RSS 字节数。
         "estimated_memory_bytes": estimated_memory_bytes,
         // **★ 进程真实内存 + 每原子平均 ★**（第 1555 轮；外部 `B5` 的建议 ①）
-        //   **⇒ 为什么 `estimated_memory_bytes` 不够**：那是**状态序列化**的字节数，
+        //   **⇒ 旧注**：`estimated_memory_bytes` 曾是**状态序列化**的字节数，
         //     而外部实测 **≈ 300 KB/原子**（3 600 原子 ⇒ RSS 1 088 MB）
         //     ⇒ **两者差一个量级** ⇒ 用序列化大小预估会**严重低估** ✗
+        //   **⇒ ⇒ 现口径已改**（报告 5/6 第 1 项）：`estimated` 即 `avg × 原子数`，
+        //     与下面两个实测数同源，不再是序列化量级。
         //   **⇒ ⇒ 所以**给两个**实测**的数：
         //     · `server_rss_mb`：本进程的 **VmRSS**（`/proc/self/status`）⇒ **真实占用**
         //     · `bytes_per_atom_avg`：**RSS / 原子数** ⇒ 用来预估"再加 N 笔要多少内存"

@@ -2525,3 +2525,58 @@ fn short_stroke_extension_lands_at_least_one_dab() {
         "延长到 1.5× 间距后至少落一枚 dab ⇒ 像素必须 > 0，实测 {painted}"
     );
 }
+
+// **报告 5/6 第 1 项：`estimated_memory_bytes` 口径**（旧口径 `存活对象 × 180`
+// 是序列化量级，实测仅为 RSS 的约 1/882；现口径 = `bytes_per_atom_avg × 原子数`）。
+// 两档探针数直接取自分诊 §1/§6（201 原子 800×600 文档、12098 原子 4K 文档），
+// 单位统一用 MiB；分诊“12098 原子差约 5%”是十进制 GB 与 MiB 混算，
+// 同单位下差 < 0.01%，本测试按同单位断言。
+#[test]
+fn estimated_memory_bytes_uses_per_atom_average_not_180() {
+    // 201 原子档：avg = 30 MiB / 201 = 156503（与探针逐字一致）。
+    let avg_small = (30u64 * 1_024 * 1_024) / 201;
+    assert_eq!(avg_small, 156503, "探针 avg 复算必须一致，否则测试前提已变");
+    let est_small = super::estimate_memory_bytes(Some(30), avg_small, 201, 200);
+    assert_eq!(est_small, 156503 * 201, "estimated 必须等于 avg × 原子数");
+    assert_eq!(est_small, 31_457_103);
+    // 旧口径会给 36000（= 180 × 200），新口径必须是内存量级而非序列化量级。
+    assert_ne!(
+        est_small, 36_000,
+        "旧 180 常量口径必须被改掉（变异：改回 180 即红）"
+    );
+    assert!(
+        est_small > 1_000_000,
+        "201 原子文档的内存估计必须上 MB 量级，实测 {est_small}"
+    );
+    // 取整误差界：0 ≤ rss_bytes − estimated < 原子数（floor 的余数性质）。
+    let rss_bytes_small = 30u64 * 1_024 * 1_024;
+    assert!(rss_bytes_small >= est_small);
+    assert!(
+        rss_bytes_small - est_small < 201,
+        "截断误差必须小于原子数，实测 {}",
+        rss_bytes_small - est_small
+    );
+    // 12098 原子档：avg = 2824 MiB / 12098 = 244765（与探针逐字一致）。
+    let avg_large = (2824u64 * 1_024 * 1_024) / 12_098;
+    assert_eq!(avg_large, 244765, "探针 avg 复算必须一致，否则测试前提已变");
+    let est_large = super::estimate_memory_bytes(Some(2824), avg_large, 12_098, 12_097);
+    assert_eq!(est_large, 244765 * 12_098);
+    let rss_bytes_large = 2824u64 * 1_024 * 1_024;
+    assert!(rss_bytes_large >= est_large);
+    assert!(
+        rss_bytes_large - est_large < 12_098,
+        "大档截断误差必须小于原子数，实测 {}",
+        rss_bytes_large - est_large
+    );
+}
+
+#[test]
+fn estimated_memory_bytes_small_doc_falls_back_to_rss_bytes() {
+    // 原子数 < 100 时 avg 报 0 = 不可判：退为进程 RSS 字节数，仍是内存量级，
+    // 而不是旧口径的数百字节（2 原子文档旧口径只给 360）。
+    let est = super::estimate_memory_bytes(Some(11), 0, 2, 2);
+    assert_eq!(est, 11 * 1_024 * 1_024);
+    // `/proc` 读不到时才退为旧量（内容规模、非内存），且仅此一路保留 180。
+    let est_no_proc = super::estimate_memory_bytes(None, 0, 50, 49);
+    assert_eq!(est_no_proc, 49 * 180);
+}
