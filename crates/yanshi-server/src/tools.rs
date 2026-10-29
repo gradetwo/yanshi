@@ -21573,6 +21573,115 @@ fn batch_stroke_evidence(index: usize, name: &str, value: &Value, failed: bool) 
     })
 }
 
+/// **batch `validate_only` 干跑回执**（报告 4 小修，opt-in，缺省关）：
+/// 只校验、不执行。校验 = 正常路径逐笔执行前做的同一套检查（工具存在 +
+/// 不嵌套 batch + `validate_args`），只是**提前对全部子调用做完**，而不是
+/// 执行到第几笔才发现第几笔有问题。
+///
+/// 形状（与正常回执同口径，便于调用方复用同一读取逻辑）：
+/// - `ok` / `validated`：校验全过才为 `true`（干跑下 `ok` = 校验结论，不是
+///   “执行成功”——因为根本没执行，见 `executed: false`）；
+/// - `executed: false` 恒真：干跑不建 changeset、不改 `ctx`、不落原子；
+/// - `failed_calls`：与正常路径**同一形状**（`{index, name, error}`），列出
+///   校验失败项；无名子调用（缺 `tool`/`name`）的 `name` 为 `null`（正常路径
+///   里它是整批硬错，干跑下改列为失败项——干跑的本意就是把问题一次列全）；
+/// - `validated_calls`：每笔 `{index, tool, ok}` 一览（错误详情只在
+///   `failed_calls` 里，不重复贴）；
+/// - 恒等式与正常回执一致：`ok_count + fail_count == count`，其中 `count`
+///   是子调用个数（不是已执行数——干跑下执行数恒为 0）；
+/// - `changeset_id: null`：干跑不建变更集，`null` 是明说的“没有”，不是缺字段；
+/// - `head`：调用前原样（干跑不落原子 ⇒ 前后不变，调用方可自验）。
+///
+/// **口径边界（明说，不夸大）**：干跑只拦参数面问题（未知工具、未知参数、
+/// 缺必填、类型错、嵌套 batch）；执行期才暴露的问题（图层/文档不存在、画布
+/// 外、预算与水位）干跑拦不住，仍需真实执行才见。另：本函数之前已跑过的
+/// 整批前置门（空批、超 500、子调用 doc_id 不一致）对干跑同样生效——干跑
+/// 不绕过 P-10。
+fn batch_validate_only(ctx: &ToolContext<'_>, registry: &ToolRegistry, calls: &[Value]) -> Value {
+    let mut failed_calls: Vec<Value> = Vec::new();
+    let mut validated_calls: Vec<Value> = Vec::new();
+    for (call_index, call) in calls.iter().enumerate() {
+        let name = call
+            .get("tool")
+            .or_else(|| call.get("name"))
+            .and_then(Value::as_str);
+        let Some(name) = name else {
+            failed_calls.push(json!({
+                "index": call_index,
+                "name": Value::Null,
+                "error": error_response(&YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(
+                        "batch 子调用缺少 tool/name（validate_only 校验失败）",
+                    ),
+                )),
+            }));
+            validated_calls.push(json!({"index": call_index, "tool": Value::Null, "ok": false}));
+            continue;
+        };
+        let arguments = call
+            .get("arguments")
+            .or_else(|| call.get("args"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let failure: Option<YanshiError> = if name == "batch" {
+            Some(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("batch 不允许嵌套"),
+            ))
+        } else {
+            match registry.get(name) {
+                None => Some(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("batch 中的工具 {name} 不存在")),
+                )),
+                Some(spec) => validate_args(spec, &arguments).err(),
+            }
+        };
+        match failure {
+            Some(error) => {
+                failed_calls.push(json!({
+                    "index": call_index,
+                    "name": name,
+                    "error": error_response(&error),
+                }));
+                validated_calls.push(json!({"index": call_index, "tool": name, "ok": false}));
+            }
+            None => {
+                validated_calls.push(json!({"index": call_index, "tool": name, "ok": true}));
+            }
+        }
+    }
+    let fail_count = failed_calls.len();
+    let total = calls.len();
+    let head = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| document.head_seq())
+        .unwrap_or(0);
+    let mut response = json!({
+        "ok": fail_count == 0,
+        "validate_only": true,
+        "validated": fail_count == 0,
+        "executed": false,
+        "failed_calls": failed_calls,
+        "validated_calls": validated_calls,
+        "ok_count": total - fail_count,
+        "fail_count": fail_count,
+        "all_ok": fail_count == 0,
+        "count": total,
+        "atom_ids": [],
+        "changeset_id": Value::Null,
+        "head": head,
+    });
+    if fail_count > 0 {
+        response["error"] = json!(format!(
+            "validate_only：{fail_count}/{total} 个子调用校验失败，见 failed_calls（未执行、零原子落下）"
+        ));
+    }
+    response
+}
+
 fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let calls = require_object(args, "calls")?;
     let calls = calls.as_array().ok_or_else(|| missing("calls"))?;
@@ -21616,6 +21725,14 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         }
     }
     let registry = ToolRegistry::full();
+    // **报告 4 小修：`validate_only` 干跑（opt-in，缺省 false）** —— 放在一切
+    // 共享上下文变动（silent / changeset / batch_message）之前：干跑不建
+    // changeset、不改 ctx、不落原子；任一校验失败即整批 fast-fail（回执里
+    // `failed_calls` 列项），全过也只报告校验通过、不转执行。缺省（不传
+    // validate_only）跳过本分支，走下面的老路，一字不动。
+    if optional_bool(args, "validate_only").unwrap_or(false) {
+        return Ok(batch_validate_only(ctx, &registry, calls));
+    }
     let changeset = Changeset::new_id();
     // **静默批处理** ✓（用户 §五-5 ✓）：`batch` 里的子调用**共用这个 `ctx`** ✓
     // ⇒ 在这里置一次 ✓ ⇒ **所有子调用都不再生成预览** ✓（一处生效、全部受益 ✓）。
