@@ -21897,11 +21897,47 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     //   HTTP 状态由 200 变 400（无 `error_code` 时走缺省臂 ✓）。
     let failed_n = failed_calls.len();
     let total_n = results.len();
+    // **P5 顶层失败摘要**（报告 4 残留极小项）：只读 `ok` 的调用方在部分失败时
+    //   不必翻 `failed_calls` 就知道“败了几条、首条败在哪、为什么” ✓。
+    //   极小：只取首条的下标/工具名/错误码/原因概要，不复制 `failed_calls` 全量 ✓；
+    //   全成时为 `null`（与同回执 `warnings` 的空值语义一致 ✓），不造无意义摘要 ✓。
+    //   `ok` / `all_ok` / `ok_count` / `fail_count` / `failed_calls` 一字不动 ✓。
+    let failure_summary = match failed_calls.first() {
+        None => Value::Null,
+        Some(first) => {
+            let first_error = first.get("error").cloned().unwrap_or(Value::Null);
+            let detail = first_error
+                .get("context")
+                .and_then(|context| context.get("detail"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            let code = first_error
+                .get("error_code")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            // 原因概要：detail 为主；detail 缺失时回落到错误码，绝不编一个假原因 ✓。
+            let reason = if detail.is_empty() {
+                code.clone()
+            } else {
+                detail
+            };
+            json!({
+                "fail_count": failed_n,
+                "first_index": first.get("index").cloned().unwrap_or(Value::Null),
+                "first_tool": first.get("name").cloned().unwrap_or(Value::Null),
+                "first_error_code": code,
+                "first_error": reason,
+            })
+        }
+    };
     let mut response = json!({
         // 失败留痕（第 1000+ 轮）：空数组 = 全成功；非空 = 有子调用失败（此时顶层 `ok` 是 `false` ✓）。
         // **顶层 `ok` 即全成** ✓（A6 方案 ①）：与下面的 `all_ok` 同值 ✓。
         "ok": failed_n == 0,
         "failed_calls": failed_calls,
+        "failure_summary": failure_summary,
         // **★ 一个布尔说清「整批都成了吗」** ✓（第 1402 轮加）
         //   **⇒ 为什么加** ✗：外部把 **1495 个子调用**的参数传错 ⇒ 每个子调用都被**静默忽略**
         //     （那时 `batch` 连校验都不做 ⇒ 已在本轮修好 ✓）⇒ 而当时他们只看了 `ok: true` ✗
