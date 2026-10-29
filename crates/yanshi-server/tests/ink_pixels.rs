@@ -121,7 +121,17 @@ fn ink_pixels_never_exceeds_the_stamp_area_and_is_positive_for_an_opaque_stroke(
 /// 这一格抓不到，但 `a=110` 那格照样红 ✓）。
 #[test]
 fn colour_alpha_multiplies_into_opacity() {
-    let mut workspace = setup("alpha");
+    // **每笔一个独立文档**（D4b 跟进）：8B_Pencil#1 是读画布笔刷，
+    // `max_channel_delta` 走 `canvas_base` 口径、与落笔前真画布比；
+    // 同一文档里顺序画同几何的几笔，后一笔的基准里就含前一笔的墨，
+    // 跨笔比较不再同基准（首笔 235、对红线 52），与 `color.a` 无关。
+    // 各笔独立文档后每笔基准都是白底，比较才回到 P-19 本意。
+    let mut ws_opaque = setup("alpha_a255");
+    let mut ws_no_alpha = setup("alpha_no_a");
+    let mut ws_half = setup("alpha_a110");
+    let mut ws_half_arr = setup("alpha_a110_arr");
+    let mut ws_zero = setup("alpha_a0");
+    let mut ws_grad = setup("alpha_grad");
     let registry = ToolRegistry::with_profiles(&Profile::ALL);
     let sample =
         |workspace: &mut Workspace, object: &str, color: serde_json::Value| -> serde_json::Value {
@@ -147,12 +157,12 @@ fn colour_alpha_multiplies_into_opacity() {
             out
         };
     let opaque = sample(
-        &mut workspace,
+        &mut ws_opaque,
         "o_a255",
         json!({"r": 200, "g": 20, "b": 20, "a": 255}),
     );
     let no_alpha = sample(
-        &mut workspace,
+        &mut ws_no_alpha,
         "o_no_a",
         json!({"r": 200, "g": 20, "b": 20}),
     );
@@ -169,14 +179,25 @@ fn colour_alpha_multiplies_into_opacity() {
         );
     }
     let half = sample(
-        &mut workspace,
+        &mut ws_half,
         "o_a110",
         json!({"r": 200, "g": 20, "b": 20, "a": 110}),
     );
-    // **a<1 真透明** ✓：印章面积不变（几何没变 ✓），墨量与色差都变小。
+    // **a<1 真透明** ✓：印章几何不变，墨量与色差都变小。
+    // **读画布笔刷的 `painted_pixels` 允许 ≤2 像素的掩膜量化差**（D4b 跟进）：
+    // `paint_brush` 的防幽灵掩膜只留「落过颜料或改动 >3 级」的像素；
+    // P-19 把掩膜遍的 deposit alpha 同样乘 0.43，晕边上 2 个改动 ≤3 级的像素
+    // deposit alpha 量化到 0 后被掩膜清零（不透明那笔则留住），肉眼不可见。
+    // 几何本身用 `region` 钉死（两笔同为 [1,1,46,46]），不拿像素数充当几何。
     assert_eq!(
-        half["painted_pixels"], opaque["painted_pixels"],
-        "半透明只改透明度，不改印章面积：{half} vs {opaque}"
+        half["region"], opaque["region"],
+        "半透明只改透明度，不改印章几何：{half} vs {opaque}"
+    );
+    let painted_opaque = opaque["painted_pixels"].as_u64().expect("painted_pixels");
+    let painted_half = half["painted_pixels"].as_u64().expect("painted_pixels");
+    assert!(
+        painted_half <= painted_opaque && painted_opaque - painted_half <= 2,
+        "半透明的 painted_pixels 只允许掩膜量化差（≤2），实测 {painted_half} vs {painted_opaque}：{half}"
     );
     let mass_opaque = opaque["ink_mass"].as_u64().expect("ink_mass");
     let mass_half = half["ink_mass"].as_u64().expect("ink_mass");
@@ -195,7 +216,7 @@ fn colour_alpha_multiplies_into_opacity() {
         "a=110 的色差应在 0 与不透明之间，实测 {delta_half} vs {delta_opaque}：{half}"
     );
     // 数组写法同口径：`[200, 20, 20, 110]` 的墨量与对象式 `a=110` 相同。
-    let half_array = sample(&mut workspace, "o_a110_arr", json!([200, 20, 20, 110]));
+    let half_array = sample(&mut ws_half_arr, "o_a110_arr", json!([200, 20, 20, 110]));
     assert_eq!(
         half_array["ink_mass"], half["ink_mass"],
         "数组式 a=110 的墨量应与对象式相同：{half_array} vs {half}"
@@ -217,8 +238,8 @@ fn colour_alpha_multiplies_into_opacity() {
             .as_u64()
             .unwrap_or(0)
     };
-    let total_before = stroke_log_total(&mut workspace);
-    let mut ctx = ToolContext::new(&mut workspace, "doc_inkpx", "human:1", "s")
+    let total_before = stroke_log_total(&mut ws_zero);
+    let mut ctx = ToolContext::new(&mut ws_zero, "doc_inkpx", "human:1", "s")
         .with_owner(true)
         .with_wait_for_render(true, 4_000);
     let clear = registry.call(
@@ -244,7 +265,7 @@ fn colour_alpha_multiplies_into_opacity() {
         "a=0 的拒绝文案要说清是 opacity 为 0，不能误导去加长路径：{clear}"
     );
     assert_eq!(
-        stroke_log_total(&mut workspace),
+        stroke_log_total(&mut ws_zero),
         total_before,
         "被拒的 a=0 笔不应留原子：{clear}"
     );
@@ -258,7 +279,7 @@ fn colour_alpha_multiplies_into_opacity() {
         );
     }
     // **`color_to.a` 仍被忽略** ✓：渐变末端 alpha 没处放 ⇒ 警告保留。
-    let mut ctx = ToolContext::new(&mut workspace, "doc_inkpx", "human:1", "s")
+    let mut ctx = ToolContext::new(&mut ws_grad, "doc_inkpx", "human:1", "s")
         .with_owner(true)
         .with_wait_for_render(true, 4_000);
     let gradient = registry.call(
