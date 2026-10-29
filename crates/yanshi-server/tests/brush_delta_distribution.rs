@@ -2,10 +2,11 @@
 //!
 //! **判据** ✓：
 //! ① 淡色笔（分诊的输入：`[0.98, 0.98, 0.98]`、size 30、oil-06-paint）⇒
-//!    实测 `max_channel_delta == 2`、`delta_median == 2`、`delta_p90 == 2`、
-//!    `changed_pixels > 0`（改了的像素全是差 2 ⇒ 分布与最大值一致，证明直方图真的在数数）。
-//!    注意：分诊报的是 `max == 1`（`painted == 1110`），本输入实测 `max == 2`
-//!   （`painted == 8292`，几何不同：240px 长线 vs 分诊的短笔）；数值的档位（淡色小差）
+//!    实测 `max_channel_delta == 1`、`delta_median == 1`、`delta_p90 == 1`、
+//!    `delta_p99 == 1`、`changed_pixels > 0`（D4b 后 oil-06 的 smudge 喂底图，delta 按
+//!    canvas_base 算，全是 1，证明直方图真的在数数）。
+//!    注意：分诊报的是 `max == 1`（`painted == 1110`），本输入实测 `max == 1`
+//!   （`painted == 8270`，几何不同：240px 长线 vs 分诊的短笔）；数值的档位（淡色小差）
 //!    一致，断言以本轮实测为准。
 //! ② 软笔深色大笔（`100%_Opaque`、黑色、size 60、hardness 0.5）⇒ `max == 255` 而
 //!    `0 < delta_median < 255`（边缘渐变 ⇒ 中位值被最大值甩开，证明 median 不是 max 的别名）、
@@ -70,7 +71,8 @@ fn setup_layer(workspace: &mut Workspace) {
 }
 
 /// **① 淡色笔 ⇒ `max == 1` 且分布全是 1** ✓（分诊复现的原样输入）。
-/// **① 淡色笔 ⇒ `max == 2` 且分布全是 2** ✓（分诊输入的原样几何；实测值见文件头注）。
+/// **① 淡色笔 ⇒ `max == 1`、`delta_median == 1`、`delta_p90/p99 == 1** ✓
+/// （D4b 后 canvas_base 口径；实测值见文件头注）。
 #[test]
 fn pale_wash_reports_small_uniform_delta() {
     let mut workspace = workspace("pale");
@@ -87,12 +89,14 @@ fn pale_wash_reports_small_uniform_delta() {
     assert_eq!(made["ok"], json!(true), "{made}");
     assert_eq!(
         made["max_channel_delta"],
-        json!(2),
-        "淡色笔只得 2（本轮实测）：{made}"
+        json!(1),
+        "淡色笔只得 1（本轮实测）：{made}"
     );
-    assert_eq!(made["delta_median"], json!(2), "{made}");
-    assert_eq!(made["delta_p90"], json!(2), "{made}");
-    assert_eq!(made["delta_p99"], json!(2), "{made}");
+    // D4b 后：oil-06 的 smudge（base 0 + stroke 曲线输入）翻为 fed_base=true，
+    // delta 按 canvas_base 算 ⇒ 四个数全由 2 落到 1（预期后果，不是回归）。
+    assert_eq!(made["delta_median"], json!(1), "{made}");
+    assert_eq!(made["delta_p90"], json!(1), "{made}");
+    assert_eq!(made["delta_p99"], json!(1), "{made}");
     let changed = made["changed_pixels"]
         .as_u64()
         .expect("changed_pixels 必须是数值");
@@ -101,8 +105,8 @@ fn pale_wash_reports_small_uniform_delta() {
 
 /// **② 软笔深色大笔 ⇒ `max == 255` 而 `median < 255`** ✓（median 不是 max 的别名）。
 ///
-/// 大笔（size 60）的 dab 间距大 ⇒ 两点直线撑不满间距会被拒（`precondition_failed`，
-/// 引擎原话）⇒ 点列每 15px 加密一个点，让路径达到间距的数倍。
+/// 大笔（size 60）的 dab 间距大 ⇒ 两点直线撑不满间距时反馈期 1 会兜底落一枚 dab
+/// （带提示，不再拒）⇒ 为画出完整笔形，点列仍每 15px 加密一个点，让路径达到间距的数倍。
 /// 另：`hardness == 0.0` 时这支笔一墨不出（探针实测，四个 size 全拒）⇒ 用 0.5。
 #[test]
 fn soft_dark_stroke_median_is_below_max() {
@@ -197,4 +201,69 @@ fn brush_preview_reports_the_same_distribution_fields() {
     for key in ["delta_median", "delta_p90", "delta_p99", "changed_pixels"] {
         assert!(made[key].is_number(), "{key} 必须是数值：{made}");
     }
+}
+
+/// **反馈期 1（3.6a）：短笔触兜底——工具级** ✓。
+///
+/// 口径：`100%_Opaque`、size 400（dab 间距约 45.7px）＋ 两点 4.2px 短路径，
+/// 旧行为是 `precondition_failed` 拒绝；新行为是 ok:true、painted_pixels > 0，
+/// 且 `warnings` 里有兜底提示（含“dab 间距”与“路径总长”诊断事实）。
+/// 对照：280px 正常路径同样 ok，但 `warnings` 里不许出现 dab 间距提示
+/// （正常笔画行为不变、也不带兜底提示）。
+#[test]
+fn short_stroke_lands_one_dab_with_hint() {
+    let mut workspace = workspace("shortdab");
+    setup_layer(&mut workspace);
+    let short = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "brush": "100%_Opaque",
+            "points": [[100.0, 100.0, 1.0], [103.0, 103.0, 1.0]], "size": 400,
+            "color": [0.0, 0.0, 0.0], "preview": false,
+        }),
+    );
+    assert_eq!(short["ok"], json!(true), "短路径不再拒绝：{short}");
+    assert!(
+        short["painted_pixels"].as_u64().unwrap_or(0) > 0,
+        "短路径至少落一枚 dab ⇒ painted_pixels > 0：{short}"
+    );
+    let warnings: Vec<String> = short["warnings"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("dab 间距") && w.contains("路径总长")),
+        "短笔触回执必须带兜底提示（诊断事实保留在 warnings 里）：{warnings:?}"
+    );
+    let normal = call(
+        &mut workspace,
+        "brush_stroke",
+        json!({
+            "layer_id": "L", "brush": "100%_Opaque",
+            "points": [[20.0, 120.0, 1.0], [300.0, 120.0, 1.0]], "size": 400,
+            "color": [0.0, 0.0, 0.0], "preview": false,
+        }),
+    );
+    assert_eq!(normal["ok"], json!(true), "正常路径仍成功：{normal}");
+    let normal_warnings: Vec<String> = normal["warnings"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        !normal_warnings.iter().any(|w| w.contains("dab 间距")),
+        "正常路径不许带兜底提示：{normal_warnings:?}"
+    );
 }

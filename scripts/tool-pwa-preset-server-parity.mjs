@@ -12,7 +12,7 @@
 // **∴ 前提 ✗**：需要**活着的服务端**（`run-criteria-local.sh` 会起一个并把地址放进 argv[2] ✓）。
 //   **拿不到 ⇒ `exit(3)`（判据前提不成立 ≠ 产品失败 ✓）**。
 //
-// **∴ 变异（四层齐第④层 ✓ 六次实测 ⇒ 全部退出码 1 ✓）**：
+// **∴ 变异（四层齐第④层 ✓ 下面每一条都实测过「改坏 ⇒ 退出码 1」✓）**：
 //   ① `p2ExpandPreset` 的中性值插值把 `strength` 换成 `1.0` ⇒ preview @0／@0.5 那一批红 ✓；
 //   ② 删掉 `list_presets` 分支的 `!__csClientMode()` 闸 ⇒ ⑩「没走代理」红 ✓；
 //   ③ 删掉 `preview_preset` 分支的同一道闸 ⇒ ⑩ 新增的那条红 ✓
@@ -21,6 +21,8 @@
 //   ⑤ `apply_preset` 的确定性 `object_id` 改成随机 ⇒「第二次应全部走更新」红 ✓；
 //   ⑥ 把 `p2PresetLand` 的失败分支还原成「直接交回已读过的 Response」⇒ ⑦「读不出 JSON」红 ✓
 //      （**∴ 这条是**真 bug**：本地 409 的 body 被自己吃掉 ⇒ 调用方看不到原因 ✓ 已在本地修掉 ✓**）。
+//   ⑦ 把带 `render` 的本地分支改回「无条件 501 ＋ 理由写『本地渲染不出来』」⇒ ⑨ 那条理由正则红 ✓
+//      （**∴ 而 ⑨ 原来断的就是这个 ✗ 所以它是**把错的口径钉住**的那三条断言 ✗ 已跟权威改 ✓**）。
 process.on("uncaughtException", (error) => {
   console.error(String(error&&error.stack||error).slice(0,1200));
   process.exit(3);
@@ -404,15 +406,35 @@ await callLocal("create_layer", { layer_id: REVIVE_LAYER, name: "复活测试层
     `本地这一轮应当「全部复活」✗（revived=${loc.body.revived_object_ids.length}／op_count=${loc.body.op_count}）⇒ 级联墓碑口径没对上 ✓`);
 }
 
-// **⑨ `preview` 带 render ⇒ 服务端给图、本地如实 501 ✗**（**不许给「口径不同的代理图」✓**）。
+// **⑨ `preview` 带 render ⇒ 本地这条只剩**两种诚实出口**✓**（**第 六百七十五 节改口径**）。
+//   **∴ 以前这里断的是「必须 501 ＋ 理由写着本地做不到」✗ 而那个理由是错的**✗
+//   （**单层裸像素早就有 `p2LayerScopeAtoms`；「临时文档」＝第二个内核实例 ✓**）⇒ 现在补成了真实现 ✓
+//   **∴ 而这份判据跑在 stub 环境**✗（**`pwa-node-stub.mjs` 没有真 wasm ⇒ 拿不到 `WasmKernel` ✓**）
+//   ⇒ **∴ 所以它只能断「出口的形态」**✗ **不能断像素**✓：**逐字节比对在 `tool-pwa-preset-render-parity.mjs`**
+//   （**「同一事实只写一处」✓**）。**红的情形**：那条 501 的理由又变回「本地渲染不出来」✗
+//   或者 200 却不带 `server:false`／缺图 ✗
+//   （**⇒ 调用方会把「内核没就绪」读成「产品做不到」⇒ 那正是形态③的反向 ✓**）。
 {
   const srv = await callServer("preview_preset", { preset_id: presetIds[0], layer_id: LAYER, render: { max_edge: 256 } });
   const loc = await callLocal("preview_preset", { preset_id: presetIds[0], layer_id: LAYER, render: { max_edge: 256 } });
   check(!!srv.body && srv.body.ok === true, `服务端这条本该成功 ✗ ${JSON.stringify(srv.body ? srv.body.context : null)}`);
-  check(loc.status === 501, `本地对带 render 的 preview 应如实 501 ✗（实测 ${loc.status}）`);
-  check(loc.body && loc.body.error === "not_implemented_locally", "本地 501 没自报 not_implemented_locally ✗");
-  check(loc.body && loc.body.server === false, "本地 501 没标 server:false ✗ 调用方会以为是服务端给的");
-  check(/无法如实|宁可/.test((loc.body && loc.body.reason) || ""), "本地 501 没说清「为什么不能如实做」✗");
+  const reason = String((loc.body && (loc.body.reason || (loc.body.context && loc.body.context.detail))) || "");
+  if (loc.status === 501) {
+    // **∴ 两个都算诚实出口 ✓**：**`kernel_unavailable`**（**这份桩里连 wasm 模块都取不到 ⇒ 第②步取源像素就报 ✓**）
+    //   与 **`not_implemented_locally`**（**模块取到了、但没有 `WasmKernel` ⇒ 临时文档建不起来 ✓**）。
+    check(loc.body && (loc.body.error === "not_implemented_locally" || loc.body.error === "kernel_unavailable"),
+      `本地这条 501 的错误码不是「内核没就绪」那两个 ✗（实测 ${JSON.stringify(loc.body && loc.body.error)}｜reason「${reason.slice(0, 120)}」）`);
+    check(loc.body && loc.body.server === false, "本地 501 没标 server:false ✗ 调用方会以为是服务端给的");
+    check(/内核.*(未加载|没就绪|不可用)/.test(reason),
+      `本地这条 501 的理由不是「内核没就绪」✗（实测「${reason.slice(0, 120)}」）⇒ 又退回那句已被实测证伪的「本地渲染不出来」✓`);
+  } else {
+    check(loc.status === 200 && !!loc.body && loc.body.ok === true && loc.body.server === false,
+      `本地这条既不是 501 也不是干净的 200 ✗（状态 ${loc.status}｜${JSON.stringify(loc.body).slice(0, 160)}）`);
+    check(typeof loc.body.image_base64 === "string" && loc.body.image_base64.length > 0,
+      `本地 200 却没带回图 ✗（有 ok:true 而无 image_base64 ⇒ 空口成功 ✓）`);
+    check(srv.body.image_width === loc.body.image_width && srv.body.image_height === loc.body.image_height,
+      `本地代理尺寸与服务端不同 ✗ 服务端 ${srv.body.image_width}×${srv.body.image_height}｜本地 ${loc.body.image_width}×${loc.body.image_height}`);
+  }
 }
 
 // **⑩ C/S 客户端模式 ⇒ 必须**代理**到服务端，而不是用内联库**遮蔽**✗**（**静默降级形态③ ✓**）。
@@ -453,4 +475,4 @@ if (bad.length) {
   for (const m of bad) console.log("   · " + m);
   process.exit(1);
 }
-console.log(`✓ PWA 预设四端点与服务端逐字段同口径（${presetIds.length} 套库／展开三档／错误文案逐字／落成计数／诚实 501／C-S 代理）`);
+console.log(`✓ PWA 预设四端点与服务端逐字段同口径（${presetIds.length} 套库／展开三档／错误文案逐字／落成计数／带 render 的两种诚实出口／C-S 代理）`);

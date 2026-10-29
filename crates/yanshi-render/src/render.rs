@@ -1443,6 +1443,17 @@ impl Renderer {
         std::mem::replace(&mut self.options.active_layer, layer)
     }
 
+    /// **原生矢量单笔光栅缓存的字节上限**（反馈期 3 ✓）：调小立即按 LRU
+    /// 逐出到新上限内；锁中毒时静默跳过（与 `clear_caches` 同例——调用方
+    /// 下次渲染仍走指纹门控，像素不受影响 ✓）。环境变量
+    /// `YANSHI_VECTOR_RASTER_CACHE_MB` 是文档打开时的缺省来源，本方法是
+    /// 已打开文档的程序化调上限口（测试用）✓。
+    pub fn set_vector_raster_cache_budget(&mut self, max_bytes: usize) {
+        if let Ok(mut guard) = self.vector_raster.lock() {
+            guard.set_max_bytes(max_bytes);
+        }
+    }
+
     /// **原生矢量笔触光栅缓存的计数快照**（路线甲 Phase 2 ✓）：
     /// 命中/未命中/实际盖章数——「第二遍渲染不重算未变笔触」的证据面 ✓。
     pub fn vector_raster_stats(&self) -> crate::vector::VectorRasterStats {
@@ -5539,7 +5550,15 @@ impl Renderer {
 /// 外扩越大，单块缓冲越大（内存与耗时都线性增长），因此有上限。
 /// **参数超出该上限的调用必须被拒绝**：否则 tile 渲染取不到邻域/源像素，
 /// 客户端与服务端的结果会静默不一致（实测 `source_offset = 200` 时 bit-exact 失败）。
-pub const MAX_EFFECT_PADDING: u32 = 128;
+///
+/// 上限 512（2026-10-29 反馈期 2 由 128 放宽）：4K 下常用揉合笔刷的
+/// 区域外扩 `smudge_length + size / 2 + 2` 可达约 188px（size 320 +
+/// smudge_length 26），旧 128 上限把它挡在门外；512 覆盖该组合并留有余量
+/// （size 320 时 smudge_length 可到 350），同时仍挡住两个参数同时顶满的
+/// 极端组合（外扩 > 512 的区域缓冲代价不再可控）。服务端
+/// `write_retouch` / `write_liquify` 的拒绝口径直接读本常量，两侧同源，
+/// 不许各自另写一个数。
+pub const MAX_EFFECT_PADDING: u32 = 512;
 
 /// 位图补丁的原始像素 MIME（RGBA8 直通字节）。
 use crate::png::decode_png;

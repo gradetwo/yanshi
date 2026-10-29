@@ -9,6 +9,11 @@ const __judgeTimeout = setTimeout(() => {
   console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（CDP 浏览器可能没起来）⇒ 退出码 3");
   process.exit(3);
 }, 90000);
+// **★ 必须 `unref` ✗ ★**（外§117⑨ 的**第二个实例** ✓；**CI 实测换来的**✗）：
+//   **∴ 不解除** ⇒ **跑完之后** node 仍被这个定时器拖着 ✓ ⇒ 到点就 `process.exit(3)` ✗
+//   ⇒ **∴ 于是** CI 板面上「**✓ 断言全过**」后面跟着 **EXIT=3**（**三条判据就这样长期没在验东西** ✓）
+//   **∴ `unref` 之后**：成功路径**自然退出** ✓；而**真的卡住**时事件循环仍活着 ⇒ 守卫**照样到点**报 3 ✓
+__judgeTimeout.unref();
 // **手形工具：不落笔 ✓ + 仍能平移 ✓**判据（用户报告："平移画布功能异常，小手会像画笔一样画上去" ✓）。
 //
 // 为什么必须**双向** ✓：只验"不落笔"是不够的 ✗ —— 把平移一起关掉也能让那一半变绿 ✗。
@@ -18,7 +23,9 @@ const __judgeTimeout = setTimeout(() => {
 // 用法：node scripts/browser-pan-vs-paint.mjs <viewer-url> <server-base> <token> [cdpPort]
 import { strict as assert } from "node:assert";
 const [url, base, token, portArg] = process.argv.slice(2);
-const port = portArg || "9222";
+// **端口只认纯数字** ✓ ＋ **`CDP_PORT` 优先** ✓（与这一族其余判据同规 ⇒ 守卫见
+//   `check-browser-cdp-port-source.mjs`：`argv[3]` 是**服务端 base**（URL）不是端口 ✗）
+const port = process.env.CDP_PORT || (/^\d+$/.test(portArg || "") ? portArg : "9222");
 if (!url || !base || !token) {
   console.error("用法: node scripts/browser-pan-vs-paint.mjs <viewer-url> <server-base> <token> [cdpPort]");
   process.exit(2);

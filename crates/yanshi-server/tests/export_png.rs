@@ -193,6 +193,52 @@ fn bad_arguments_are_refused_with_a_reason() {
     }
 }
 
+/// **拒绝文案要打印当前生效导出目录的绝对路径** ✓（反馈报告 2 期 4）：
+/// 旧文案只给规则与改法、不给当前值 ⇒ 调用方仍要猜“现在到底是哪个目录” ✗；
+/// 新文案保留旧句、末尾追加当前导出目录绝对路径 ✓（沙箱策略不动 ✓）。
+#[test]
+fn export_rejection_names_the_effective_export_dir() {
+    let mut workspace = workspace();
+    setup(&mut workspace);
+    let refused = {
+        let mut ctx = context(&mut workspace);
+        registry().call(
+            &mut ctx,
+            "export_png",
+            &json!({"path": "/proc/definitely/not/writable/x.png"}),
+        )
+    };
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    let detail = refused["context"]["detail"].as_str().unwrap_or_default();
+    // ① 旧句一字不动 ✓
+    assert!(
+        detail.contains("拒绝写 /proc/definitely/not/writable/x.png：只能写进导出目录（缺省 ./exports，可用 YANSHI_EXPORT_DIR 改）或系统临时目录"),
+        "旧句应当保留：{detail}"
+    );
+    // ② 新值：当前生效导出目录的绝对路径（缺省 ./exports 按进程工作目录解析；
+    // 环境变量若已设置则按它解析；只读环境变量，不改它 ⇒ 不干扰同二进制其他测试 ✓）。
+    let expected = match std::env::var("YANSHI_EXPORT_DIR") {
+        Ok(dir) => {
+            let path = std::path::PathBuf::from(dir);
+            if path.is_absolute() {
+                path
+            } else {
+                std::env::current_dir()
+                    .expect("测试进程应当有工作目录")
+                    .join(path)
+            }
+        }
+        Err(_) => std::env::current_dir()
+            .expect("测试进程应当有工作目录")
+            .join("exports"),
+    };
+    let expected = expected.to_string_lossy().into_owned();
+    assert!(
+        detail.contains(expected.as_str()),
+        "拒绝文案应当打印当前导出目录绝对路径 {expected}，实测：{detail}"
+    );
+}
+
 /// **整幅导出要顺手刷新"打开即图片"缓存** ✓（真实用户工程包里那张**空 `render.png`** 的根因 ✓）。
 ///
 /// **他四个包实测** ✓：缓存 `render.seq` 是 **5–6** ✓，而原子最高 **97–217** ✓
@@ -550,12 +596,15 @@ fn lod_pixel_equivalence_on_real_content() {
     let _ = std::fs::remove_file(&lod_path);
 }
 
-/// **P-3（期 1）**：`export_png` 回执必须用一句话说清 `rendered_seq` 是预览水位 ✓
-/// （旧行为：只给两个数字，调用方误读成"渲染不完整" ⇒ 白跑一遍重导 ✓）。
+/// **P-3（期 1）＋反馈 5 第 7 项**：`export_png` 回执必须用一句话说清预览水位 ✓
+/// （旧行为：只给两个数字，调用方误读成"渲染不完整" ⇒ 白跑一遍重导 ✓；
+///  反馈 5：旧名 `rendered_seq` 在导出回执里误导 ⇒ 正名 `preview_watermark`，
+///  旧名只作已弃用别名留着，值与新名恒等 ⇒ 旧读法不断 ✓）。
 ///
-/// **变异**：删掉 `rendered_seq_note` 字段 ⇒ 本条红 ✓。
+/// **变异**：删掉 `preview_watermark` 字段 ⇒ 本条红 ✓；
+/// 删掉 `rendered_seq` 别名 ⇒ 本条红 ✓；改动别名值使两值不等 ⇒ 本条红 ✓。
 #[test]
-fn export_png_receipt_names_rendered_seq_as_preview_watermark() {
+fn export_png_receipt_names_preview_watermark_with_rendered_seq_alias() {
     let mut workspace = workspace();
     setup(&mut workspace);
     let path = temp_path("receipt-note");
@@ -570,15 +619,25 @@ fn export_png_receipt_names_rendered_seq_as_preview_watermark() {
         )
     };
     assert_eq!(exported["ok"], json!(true), "{exported}");
-    let note = exported["rendered_seq_note"].as_str().unwrap_or("");
+    let note = exported["preview_watermark_note"].as_str().unwrap_or("");
     assert!(
         note.contains("预览水位") && note.contains("与本次导出完整性无关"),
-        "回执必须说清 rendered_seq 是预览水位、与导出完整性无关：{exported}"
+        "回执必须说清 preview_watermark 是预览水位、与导出完整性无关：{exported}"
     );
-    // 数字本身照旧：两个字段都在，语义由 note 锚定。
+    // 正名在、别名在、两值恒等——恒等式，不是两个单点断言。
     assert!(
-        exported["head_seq"].is_number() && exported["rendered_seq"].is_number(),
-        "head_seq 与 rendered_seq 必须仍在回执里：{exported}"
+        exported["head_seq"].is_number()
+            && exported["preview_watermark"].is_number()
+            && exported["rendered_seq"].is_number(),
+        "head_seq 与 preview_watermark（含 rendered_seq 别名）必须都在回执里：{exported}"
+    );
+    assert_eq!(
+        exported["preview_watermark"], exported["rendered_seq"],
+        "别名必须与正名恒等，值一变就该红：{exported}"
+    );
+    assert_eq!(
+        exported["preview_watermark_note"], exported["rendered_seq_note"],
+        "旧 note 名是别名，文本必须与新 note 相同：{exported}"
     );
     let _ = std::fs::remove_file(&path);
 }
