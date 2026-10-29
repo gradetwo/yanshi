@@ -2014,3 +2014,95 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    （`Cardboard*`／`Paper004-5`）写回索引 ⇒ 按 §104/§105/§112⑥ 同规 `checkout` 还原 ✓
    （还原后 `grep Cardboard001` 命中 0 ✓；根因清理仍挂 **#30** ⇒ 这条**每合并一次就要再还原一次**，
    已成本机同步链的固定后步 ✓）。
+
+## §115 CI 收账 run 40811177989（`15319c3c`＝batch14）：唯一红是 `tile_parallel` 里一条**断线程交错**的判据（2026-10-29）
+
+① **盘面**：`test (stable)` 红，其余全绿（`criteria` 6/6 片 ✓／`clippy` ✓／`rustfmt` ✓／
+   `wasm smoke` ✓／`GPU feature` ✓／`brush parity` 按 `continue-on-error` 跳过 ✓）。
+② **红不在 batch14，也不在产品**：`git diff --stat 3c9091f8..15319c3c -- crates/ Cargo.lock Cargo.toml`
+   ⇒ 只有 `crates/yanshi-http/assets/api-local.js`（**零 Rust 改动 ✓**）；而**同一份 Rust**
+   在 `3c9091f8`（main ✓）与 `c82f9ea3`（`paint-r2-E-line-cap` ✓）两次 `test (stable)` 都是绿的
+   ⇒ 代码没变、结论变了 ⇒ **跨机器不稳定**，与 `tool-dwell`／`tool-zero-dab-hint` 同族 ✓。
+③ **症状**：`crates/yanshi-render/tests/tile_parallel.rs:1009` 断 `layer_buffers_allocated == 4`，
+   CI 实测 **`分配/复用 = 3/5`** ⇒ **3 + 5 = 8 = LAYERS × WORKERS** ✓：**取用总数没变** ✓，
+   只是「新建／复用」的分界挪了一格 ✓。
+④ **机理（读代码确认，不是猜 ✓）**：图层租约在**每层迭代结束**就 `Drop`（`render.rs:2990` 的注释 ✓），
+   于是只要有一个 worker **落后整整一层**，它要的那块就能复用别人刚归还的 ⇒
+   **旧断言实际断的是「4 个 worker 都在任何人归还之前取完」＝线程交错**✗，不是保留预算 ✓。
+⑤ **本机复现不出来（如实记 ✗）**：6 个 `nice -n 19` CPU 负载 ×3 次 ✓ 全绿；
+   `taskset -c 0`（单核强制串行 ✓）也绿 ✓ ⇒ **撞不到那一格** ⇒ 这恰恰说明「恰好 4 块」**不是**可依赖的性质 ✓。
+⑥ **修法**：把单点断言换成**两条关系** ✓——
+   上界 `allocated <= WORKERS` ＋ **恒等式** `allocated + reused == stats.layers × stats.parallel_workers` ✓；
+   并**删掉** `reused >= (LAYERS−1) × WORKERS`：它被上面两条**蕴含**（`allocated ≤ 4` 且和为 8 ⇒ `reused ≥ 4`）
+   ⇒ **单独不会红** ✗ ⇒ 是**装饰**（内核 ①：断言要能红 ✓）。
+⑦ **变异复判（四条都真跑 ✓，红在哪一条按实测写 ✓）**：
+
+   | # | 变异 | 实测红在哪 |
+   |---|---|---|
+   | ① | 归还规则退回**固定 192 MB**（`buffer_pool.rs` 的 `let budget = …`）| 冷轮上界**没红**（冷轮本来新建 4 块 ✓）⇒ **红在热轮** `allocated = 1 ≠ 0` ✓ |
+   | ② | `acquire` **跳过空闲表** | **红在新上界**：`分配/复用 = 8/0` ✓ |
+   | ③ | 复用时**两边都记账** | 红在上界（`allocated` 被重复计 ✓）|
+   | ④ | **复用不记账** | **红在恒等式**：`4/0`，总数 4 ≠ 8 ✓ |
+
+   ⇒ **①是这一条判据当初立项要抓的历史回归** ✓：它**露在第二轮**而不是冷轮 ⇒
+   **我第⑥步最初写的注释「那时 `allocated` 只会大于并发数 ⇒ 上界照样抓得住」是没跑过的推断** ✗
+   ⇒ **已按实测改掉**（内核 ①：写变异结论之前先跑变异 ✓）。
+   四条变异后都 `cp` 回原文件 ＋ `cmp` 逐字节一致 ✓，复测全绿 ✓。
+⑧ **整片复验**：`cargo test -p yanshi-render --test tile_parallel -- --test-threads=2`
+   ⇒ **23 通过／0 失败／1 忽略** ✓（改动没伤到同片其它判据 ✓）。
+⑨ **不进已知红名单**：这条判据本身**改对了** ⇒ 不需要豁免 ✓（名单只收「环境差异但断言没错」那一类 ✗）。
+
+## §116 yanshi-patch-batch15（本地 `list_engine_capabilities` ＋ 四个写端点对齐）合并留痕（基线 `15319c3c`，2026-10-29）
+
+① **包**：`~/patch/yanshi-patch-batch15-b11e1feb_to_e479da63.patch`（md5
+   `84e86903dc2265ddbba756fff6b2ef82` ✓，106,567 B ✓，6 个文件／api-local.js 11 个 hunk ✓）。
+   **链号续得上**：`b11e1feb` 正是 batch14 的终点 ✓，台账基线 = 我方 `15319c3c` ✓。
+② **接缝**（`git apply --check` 三处失败 ⇒ 逐处判决 ✓，不硬塞 ✓）：
+   - `docs/design/brush-capability-gap.md` 基线 `ddc8f8c4` ＝ 我方现值 ⇒ **逐字节干净应用** ✓；
+   - `api-local.js` 只有 **#2 一个 hunk 被拒**（61 行纯插入 ✓），根因是**我方 §112 的
+     `P2_FILTER_ALIASES` 本地镜像**正好落在它的**后置上下文**里 ⇒ 作者的 `b11e1feb` 没有这块 ✓
+     ⇒ 按锚点（`P2_FILTER_NAMES` 收尾三行 ✓，`assert count == 1` ✓）插到**作者指定的位置** ✓，
+     **其余 10 个 hunk 全部干净应用** ⇒ batch14 的三处修复（`p2PathInsertNode` 的 `ok:true` ✓
+     `p2ObjectView` 的两道 `neutralEarly` 守卫 ✓）**不在任何 hunk 的覆盖范围内** ✓ 没被冲掉 ✓；
+   - `web/index.html` 那一处**只是 `yanshi-shell-` 戳**（`6178204831389` ⇒ `3036017128090` ✗）
+     ⇒ **构建噪声**（§106①/§114② 同规 ✓）：排除 ＋ 产物链重生成 ⇒ 我方戳 `3949394908072` ✓，
+     **字节数 930,815 未变** ✓（预算判据绿 ✓）。
+   - **产物链踩到第三种新鲜度表现** ✗：我照记的路径 `crates/yanshi-wasm/target/…` 不存在 ⇒
+     `wasm-bindgen` 直接 `No such file` ✗（**工作区 target 在 `target/wasm32-unknown-unknown/release/`**✓）
+     ⇒ 按 `pwa-sync-wasm.mjs` 自己打印的修法重跑 ✓，bindgen 版本取 `scripts/wasm-bindgen-version.sh`
+     （**0.2.129 ✓ 与本机 `~/.cargo/bin/wasm-bindgen` 一致 ✓**，第 492 轮「别写死」的规矩守住 ✓）。
+③ **内容**（`LOCAL_IMPLEMENTED` 179 ⇒ **180** ✓，机械重数命令当场算 = **180** ✓ 与声明自洽 ✓）：
+   1. **`list_engine_capabilities` 落地** ⇒ 前端问「这个引擎支持什么」不再只能 501 ✓
+      （**路由引用生成表 `P2_TOOL_SPECS` ✓，`[0, []]` 那行在 `api-local.js:554` ✓**）。
+   2. **`set_layer_blend` 的混合模式清单退回 13 项**：旧代码自写 **11 项** ✓（`git show HEAD:web/api-local.js`
+      实测在其第 4805 行，`BLEND_MODES` 只列到 `color_dodge`／`difference` ✓）
+      ⇒ `linear_light`／`soft_light` **本地 400、云端能改** ✓
+      ⇒ 与服务端 `BlendMode::NAMES: [&str; 13]`（`blend.rs:72` ✓）对不上，**用户看得见**（图层面板选这两种就失败 ✓）。
+   3. **四个写端点（`set_layer_blend`／`lock_layer`／`unlock_layer`／`set_property`／`update_layer`）
+      入口校验改走 `p2ValidateArgsFor`**（**照 `validate_args` ✓ 文案由规格表推导 ✓**）
+      ⇒ 「本地自己写的必填检查把**空串 id 当缺席**」那处分歧消掉：服务端只查类型 ⇒ 空串放行、
+      到提交期才 404「图层  不存在」✓（判据 §B12／§D27／§D28 两边打真服务端钉住 ✓）。
+   4. **提交期引用校验补上**（`p2RefGuard` ✓ 照 `log.rs:424 check_layer_exists`：不在 ⇒ 404 名单、
+      已删 ⇒ 409 ✓）⇒ 消掉「**回执 ok 而状态没变**」那类静默降级（形态③ ✓）。
+④ **双份一致**：`crates/yanshi-http/assets/api-local.js` ↔ `web/api-local.js` `cmp` 逐字节相同 ✓
+   （插入、产物链、变异电池之后各查一次 ✓ 三次都一致）。
+⑤ **判据与变异**：`tool-pwa-engine-capabilities` **462 条断言全过** ✓（§A 能力表**整份深度比较**——
+   `compareBody` 递归逐字段、信封 `created/opened/timings` 两边都剥 ✓，不是挑字段比 ✓
+   ＋ §B 混合模式清单**从服务端读**、不在判据里写死 ✓ ⇒ 上游增减一项判据不会自己过期 ✓）；
+   作者电池 **31/31 全红在该红的断言** ✓（`blend_list_11`／`blend_no_ref`／`lock_*`／`sp_*`／`up_*` 各点名 ✓）
+   ＋ 还原 `cmp` 逐字节 ✓ ＋ 复测全绿 ✓。
+   **⇒ 口径照 §114⑤ 同规写清**：断言数 462 是**运行时累积**，字面 `check(` 调用点数另一回事 ✓。
+⑥ **同族回归 14/14 绿**：`local-write-guards`／`edit-path`(483)／`get-path`(151)／`atom-log`(210)／
+   `revert-to-seq`(134)／`vector-hit-test`(137)／`api-behaviour`／`read-inspect`(428)／
+   `transform-object`／`instance-detach`／`preset-library-parity`／`preset-server-parity`／
+   `suggestion-accept`(175)／`checkpoint-restore`(358) ⇒ 五个被改的端点**没把别的本地端点带坏** ✓。
+   静态六条绿：`js-syntax`(455 个文件 ✓)／`web-assets-parity`／`index-html-byte-budget`／
+   `cs-local-copies`／`criteria-coverage`（两份新文件都不在覆盖缺口里 ✓）／`repo-root-clean`（无 `.rej` 残留 ✓）。
+⑦ **`.rej` 处置**（第 608 轮那条规矩的正向用例 ✓）：两个 `.rej` 是**我已经手工落地的同一个 hunk**
+   ⇒ 先 `assert` 插入落地 ＋ `cmp` 两份一致，**再删** ✓（不是「删掉失败的补丁说明书」✗）。
+⑧ **`assets-index.json` 漂移第六次再现**：同因（7 张未跟踪本地纹理被写回索引 ✓）⇒ 同规 `checkout` 还原 ✓
+   （根因清理仍挂 **#30** ✓）。
+⑨ **一处判据口径要登记**：§A 把 `counts` 的**键集合**写死成 6 项（`COUNT_KEYS` ✓）⇒
+   **上游真加一类能力**时这条会红，而红是**提醒同步镜像**（镜像本身也是写死的 ✓，作者已在台账「断点 2」写明 ✓）
+   ⇒ 与「被测系统的数量不能写死」那条（第 798/812 轮）**形式上冲突、实质上是刻意的漂移报警器** ✓
+   ⇒ 记在这里，下次它红了**别当产品 bug** ✗。
