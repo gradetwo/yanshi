@@ -11,6 +11,17 @@
 use serde_json::{json, Value};
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// 本测试落盘的单个 png 的清理器：Drop 时删文件。
+/// 注意：测试写的是共享 /tmp 里的单个文件，不是私有临时目录，
+/// 所以 Drop 只删该文件，绝不能 remove_dir_all（那会删 /tmp 本身）。
+struct Cleanup(std::path::PathBuf);
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 fn registry() -> ToolRegistry {
     ToolRegistry::with_profiles(&Profile::ALL)
 }
@@ -181,6 +192,10 @@ fn render_region_return_image() {
 fn export_png_return_image() {
     let dir = std::env::temp_dir();
     let path = dir.join("yanshi-return-image-test.png");
+    // 显式绑定守卫：判据 check-tests-clean-temp 只认 `x = Cleanup(` 的绑定形态，
+    // 且要求 Drop 清理器真的被实例化（只声明不绑定同样判红，见 colorspace 跟进 23e7d461）。
+    // 守卫活到测试结束，panic 路径同样清掉落盘文件。
+    let cleanup = Cleanup(path.clone());
     let path_str = path.display().to_string();
     let mut workspace = fresh_workspace(64, 64);
     let plain = call(&mut workspace, "export_png", json!({"path": path_str}));
@@ -202,7 +217,6 @@ fn export_png_return_image() {
         capped.get("scaled_from").is_some(),
         "export_png 超限缩小后应当回 scaled_from：{capped}"
     );
-    let _ = std::fs::remove_file(&path);
 }
 
 #[test]
