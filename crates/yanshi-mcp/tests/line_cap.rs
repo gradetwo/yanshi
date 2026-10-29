@@ -3,14 +3,16 @@
 //! **⇒ 缺陷**：`reader.lines()` **无上限** ✗ ⇒ 一个**不带换行**的超大输入就能让 MCP 进程
 //!   把内存吃光 ✓（HTTP 层早有 64 KiB 的 `read_line_bounded` ✓ —— **一道门有锁、一道没有** ✓）。
 //!
-//! **⇒ 判据（P-1，paint-fix-p3 改）**：喂一段**超过上限**的输入 ⇒ `serve` 必须**返回 Ok**，
-//!   stdout 有一条**点名 65536 上限**的 JSON-RPC 错误回执（码 -32600，id 是 null），
-//!   下一行 ping 仍有响应（进程存活 ✓）；上限本身保持 64 KiB 不变 ✓。
+//! **⇒ 判据（P-1，paint-fix-p3 改；本期补 id 回带）**：喂一段**超过上限**的输入 ⇒ `serve` 必须**返回 Ok**，
+//!   stdout 有一条**点名 65536 上限**的 JSON-RPC 错误回执（码 -32600；id 取自行首前缀，
+//!   取不到时才是 null），下一行 ping 仍有响应（进程存活 ✓）；上限本身保持 64 KiB 不变 ✓。
 //!   排空本身另设 1 MiB 丢弃上限：行尾一直不来、丢弃量越过该上限时才返回 Err。
 //! **变异**：改回 `reader.lines()` ⇒ 它会把整段读进内存并**正常返回** ⇒ 第一条红 ✓；
 //!   把超限改回 `return Err` ⇒ 第一条红（serve 返回 Err）✓；
 //!   删掉错误回执 ⇒ 第一条红（没有错误行）✓；
-//!   把丢弃上限改大 ⇒ 第三条红（不再返回 Err）✓。
+//!   把丢弃上限改大 ⇒ 第三条红（不再返回 Err）✓；
+//!   删掉 id 回带 ⇒ 带 id 的超长行测试红（回执 id 变 null，客户端匹配不到）✓；
+//!   把回带改成首次出现 ⇒ 嵌套 id 测试红（嵌套 id 被误当请求 id）✓。
 use std::io::Cursor;
 use yanshi_mcp::{serve, McpOptions};
 
@@ -35,7 +37,7 @@ fn a_line_beyond_the_cap_is_answered_with_an_error_and_the_server_survives() {
     assert_eq!(
         error["id"],
         serde_json::Value::Null,
-        "超限行的 id 读不到，回执 id 只能是 null"
+        "垃圾行里没有 id，前缀取不到，回执 id 是 null"
     );
     assert_eq!(error["error"]["code"], -32600, "超限行是非法请求：{error}");
     let message = error["error"]["message"].as_str().unwrap_or("");
@@ -96,4 +98,98 @@ fn normal_lines_still_work() {
     .expect("正常的一行必须照常处理");
     let text = String::from_utf8_lossy(&output);
     assert!(text.contains("jsonrpc"), "没有回包：{text}");
+}
+
+#[test]
+fn overlong_line_with_early_id_is_answered_with_that_id() {
+    // 超限行的 id 在行首 ⇒ 错误回执必须带这个 id；否则按 id 等回执的客户端永远等不到它 ⇒ 静默挂起。
+    // 构造：tools/call，id=7，message 里填 x 到整行 70,000 字节；之后再发一行 ping。
+    let head = "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"batch\",\"arguments\":{\"calls\":[],\"message\":\"";
+    let tail = "\"}}}\n";
+    let pad = 70_000 - head.len() - tail.len();
+    let mut line = String::from(head);
+    line.push_str(&"x".repeat(pad));
+    line.push_str(tail);
+    assert_eq!(line.len(), 70_000, "测试行应为 70,000 字节");
+    assert!(line.len() > 65_536, "测试行必须超限");
+    let mut input = line.into_bytes();
+    input.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"ping\"}\n");
+    let mut output: Vec<u8> = Vec::new();
+    let result = serve(Cursor::new(input), &mut output, McpOptions::default());
+    assert!(result.is_ok(), "超长行之后 serve 应返回 Ok：{result:?}");
+    let text = String::from_utf8(output).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "超长行一条错误回执 + ping 一条响应：{text}");
+    let error: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("第一行是 JSON-RPC 错误回执");
+    assert_eq!(
+        error["id"], 7,
+        "回执 id 必须是从行首取到的请求 id（否则客户端匹配不到）：{error}"
+    );
+    assert_eq!(error["error"]["code"], -32600, "超限行是非法请求：{error}");
+    let message = error["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("65536") && message.contains("拆成更小的 batch"),
+        "错误文案要说清 65536 上限并指路拆成更小的 batch：{message}"
+    );
+    let ping: serde_json::Value = serde_json::from_str(lines[1]).expect("第二行是 ping 响应");
+    assert_eq!(ping["id"], 9, "超长行之后 ping 仍有响应：{ping}");
+    assert_eq!(ping["result"], serde_json::json!({}));
+}
+
+#[test]
+fn overlong_line_with_string_id_is_answered_with_that_string_id() {
+    // 字符串 id 同理：回执 id 必须是原字符串。
+    let head = "{\"jsonrpc\":\"2.0\",\"id\":\"req-abc\",\"method\":\"tools/call\",\"params\":{\"name\":\"batch\",\"arguments\":{\"calls\":[],\"message\":\"";
+    let tail = "\"}}}\n";
+    let pad = 70_000 - head.len() - tail.len();
+    let mut line = String::from(head);
+    line.push_str(&"x".repeat(pad));
+    line.push_str(tail);
+    assert_eq!(line.len(), 70_000, "测试行应为 70,000 字节");
+    let mut output: Vec<u8> = Vec::new();
+    let result = serve(
+        Cursor::new(line.into_bytes()),
+        &mut output,
+        McpOptions::default(),
+    );
+    assert!(result.is_ok(), "超长行之后 serve 应返回 Ok：{result:?}");
+    let text = String::from_utf8(output).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 1, "只应有一条错误回执：{text}");
+    let error: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("第一行是 JSON-RPC 错误回执");
+    assert_eq!(error["id"], "req-abc", "字符串 id 也要原样回带：{error}");
+    assert_eq!(error["error"]["code"], -32600, "超限行是非法请求：{error}");
+}
+
+#[test]
+fn overlong_line_with_only_nested_id_still_uses_null() {
+    // 顶层没有 id、params 里嵌套一个 id ⇒ 嵌套 id 不是请求 id，回执仍是 null。
+    // （变异：把回带改成首次出现 ⇒ 这条红，因为它会把嵌套的 123 当请求 id。）
+    let head = "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"batch\",\"arguments\":{\"id\":123,\"message\":\"";
+    let tail = "\"}}}\n";
+    let pad = 70_000 - head.len() - tail.len();
+    let mut line = String::from(head);
+    line.push_str(&"x".repeat(pad));
+    line.push_str(tail);
+    assert_eq!(line.len(), 70_000, "测试行应为 70,000 字节");
+    let mut output: Vec<u8> = Vec::new();
+    let result = serve(
+        Cursor::new(line.into_bytes()),
+        &mut output,
+        McpOptions::default(),
+    );
+    assert!(result.is_ok(), "超长行之后 serve 应返回 Ok：{result:?}");
+    let text = String::from_utf8(output).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 1, "只应有一条错误回执：{text}");
+    let error: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("第一行是 JSON-RPC 错误回执");
+    assert_eq!(
+        error["id"],
+        serde_json::Value::Null,
+        "嵌套 id 不能当请求 id：{error}"
+    );
+    assert_eq!(error["error"]["code"], -32600, "超限行是非法请求：{error}");
 }

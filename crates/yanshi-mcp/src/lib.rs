@@ -718,6 +718,193 @@ fn spawn_parent_watchdog() {
     }
 }
 
+/// 从已缓冲的行前缀里取出顶层 JSON-RPC `id`（超限行错误回执用）。
+///
+/// **为什么要它**：P-1 以前超限行回执 id 只能写 null（整行已丢）⇒ 按 id 等回执的
+/// 客户端（release 版 `mcp.py` 的 `_recv(rid)`）永远等不到匹配行 ⇒ 两侧互等、0 CPU、
+/// 无报错的静默挂起（2026-10-29 成本重测实测：65,400 字节过、65,700 字节挂）。
+/// 但真实请求的 id 总在行首（`{"jsonrpc":"2.0","id":…,"method":…,"params":…}`），
+/// 前 64 KiB 已缓冲 ⇒ 从前缀里取出来放进回执，客户端就能匹配到并大声报错，会话还活着。
+/// **只认深度 1 的 `id` 键**：params 里嵌套的 `id` 不是请求 id，拿它当回执 id 会把
+/// 错误安到别的请求上（变异：改成首次出现 ⇒ 嵌套 id 测试红）。
+/// 找不到（无 id / 垃圾行 / 值不完整 / 整数溢出）时返回 None，调用方回 null，与旧行为一致。
+/// 残留口径：id 在 64 KiB 之后才出现时（params 写在 id 前面）仍回 null——盖它的办法
+/// 在客户端（null id 错误也当报错处理），见包说明。
+fn top_level_request_id(prefix: &[u8]) -> Option<Value> {
+    fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
+        while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\r' | b'\n') {
+            i += 1;
+        }
+        i
+    }
+    // i 指向开引号；返回（内容起，内容止，闭引号后）。截断、裸控制字符 ⇒ None。
+    // 注意：`\"` 与 `\\` 各越 2 字节 ⇒ 转义引号不会误当终结符；`\uXXXX` 里的数字不含
+    // 引号 ⇒ 不用特殊处理（`\"` 已是最危险的情形）。
+    fn string_span(bytes: &[u8], mut i: usize) -> Option<(usize, usize, usize)> {
+        if bytes.get(i) != Some(&b'"') {
+            return None;
+        }
+        let start = i + 1;
+        i = start;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' => return Some((start, i, i + 1)),
+                b'\\' => {
+                    i += 2;
+                    if i > bytes.len() {
+                        return None;
+                    }
+                }
+                c if c < 0x20 => return None,
+                _ => i += 1,
+            }
+        }
+        None
+    }
+    // 把一段字符串内容里的转义解开；非法转义、非法 hex ⇒ None。
+    fn unescape(span: &[u8]) -> Option<String> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut i = 0usize;
+        while i < span.len() {
+            if span[i] != b'\\' {
+                out.push(span[i]);
+                i += 1;
+                continue;
+            }
+            i += 1;
+            match span.get(i)? {
+                b'"' => out.push(b'"'),
+                b'\\' => out.push(b'\\'),
+                b'/' => out.push(b'/'),
+                b'b' => out.push(0x08),
+                b'f' => out.push(0x0C),
+                b'n' => out.push(b'\n'),
+                b'r' => out.push(b'\r'),
+                b't' => out.push(b'\t'),
+                b'u' => {
+                    if i + 4 >= span.len() {
+                        return None;
+                    }
+                    let hex = std::str::from_utf8(&span[i + 1..i + 5]).ok()?;
+                    let cp = u32::from_str_radix(hex, 16).ok()?;
+                    let ch = char::from_u32(cp).unwrap_or('\u{FFFD}');
+                    let mut buf = [0u8; 4];
+                    out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                    i += 4;
+                }
+                _ => return None,
+            }
+            i += 1;
+        }
+        String::from_utf8(out).ok()
+    }
+    // 跳过一个 JSON 值（i 指向值首）；截断 ⇒ None。对象/数组按括号计数，串内括号不算。
+    fn skip_value(bytes: &[u8], mut i: usize) -> Option<usize> {
+        i = skip_ws(bytes, i);
+        match bytes.get(i)? {
+            b'"' => string_span(bytes, i).map(|(_, _, next)| next),
+            b'{' | b'[' => {
+                let open = bytes[i];
+                let close = if open == b'{' { b'}' } else { b']' };
+                let mut depth = 0i32;
+                let mut j = i;
+                while j < bytes.len() {
+                    match bytes[j] {
+                        b'"' => {
+                            let (_, _, next) = string_span(bytes, j)?;
+                            j = next;
+                        }
+                        b if b == open => {
+                            depth += 1;
+                            j += 1;
+                        }
+                        b if b == close => {
+                            depth -= 1;
+                            j += 1;
+                            if depth == 0 {
+                                return Some(j);
+                            }
+                        }
+                        _ => j += 1,
+                    }
+                }
+                None
+            }
+            _ => {
+                let mut j = i;
+                while j < bytes.len()
+                    && !matches!(bytes[j], b',' | b'}' | b']' | b' ' | b'\t' | b'\r' | b'\n')
+                {
+                    j += 1;
+                }
+                if j == i {
+                    None
+                } else {
+                    Some(j)
+                }
+            }
+        }
+    }
+    // 解析 id 值：字符串或整数；小数/指数/字面量/截断 ⇒ None。
+    fn parse_id_value(bytes: &[u8], i: usize) -> Option<Value> {
+        match bytes.get(i)? {
+            b'"' => {
+                let (s, e, _) = string_span(bytes, i)?;
+                Some(Value::String(unescape(&bytes[s..e])?))
+            }
+            b'-' | b'0'..=b'9' => {
+                let mut j = i;
+                let mut neg = false;
+                if bytes[j] == b'-' {
+                    neg = true;
+                    j += 1;
+                }
+                let mut val: i64 = 0;
+                let mut any = false;
+                while j < bytes.len() && bytes[j].is_ascii_digit() {
+                    any = true;
+                    val = val.checked_mul(10)?.checked_add((bytes[j] - b'0') as i64)?;
+                    j += 1;
+                }
+                if !any {
+                    return None;
+                }
+                if matches!(bytes.get(j), Some(b'.') | Some(b'e') | Some(b'E')) {
+                    return None;
+                }
+                Some(Value::Number((if neg { -val } else { val }).into()))
+            }
+            _ => None,
+        }
+    }
+    let mut i = skip_ws(prefix, 0);
+    if prefix.get(i) != Some(&b'{') {
+        return None;
+    }
+    i += 1;
+    loop {
+        i = skip_ws(prefix, i);
+        match prefix.get(i)? {
+            b'}' => return None,
+            b'"' => {
+                let (ks, ke, next) = string_span(prefix, i)?;
+                let is_id = &prefix[ks..ke] == b"id";
+                i = skip_ws(prefix, next);
+                if prefix.get(i).copied()? != b':' {
+                    return None;
+                }
+                i = skip_ws(prefix, i + 1);
+                if is_id {
+                    return parse_id_value(prefix, i);
+                }
+                i = skip_value(prefix, i)?;
+            }
+            b',' => i += 1,
+            _ => return None,
+        }
+    }
+}
+
 /// 跑 stdio 循环：逐行读 JSON-RPC，逐行写响应。
 pub fn serve<R: Read, W: Write>(
     reader: R,
@@ -757,6 +944,9 @@ pub fn serve<R: Read, W: Write>(
     //     （码 -32600，文案说清 65536 上限与"拆成更小的 batch"），serve 继续循环、不退出
     //     （P-1，paint-fix-p3）；排空本身另设丢弃上限，行尾一直不来才返回 Err
     //     （`mcp_line_cap`）。
+    //   **⇒ 回执 id**：以前只能写 null（整行已丢）⇒ 按 id 等回执的客户端永远等不到它
+    //     ⇒ 静默挂起（2026-10-29 成本重测实测）；真实请求的 id 总在行首，前 64 KiB
+    //     已缓冲 ⇒ 从前缀里取顶层 id 放进回执（取不到时仍回 null，与旧行为一致）。
     //   **⚠ 不用 `reader.lines()`** ✓：它在超限前就已经把整行读进内存了 ✗。
     const MAX_LINE: usize = 64 * 1024;
     // **P-1（paint-fix-p3）**：超限行的丢弃上限 —— 排空剩余字节时行尾一直不来也不能无限等；
@@ -802,10 +992,13 @@ pub fn serve<R: Read, W: Write>(
             break;
         }
         if over_limit {
-            // 超限行的 id 读不到（整行已丢），回执 id 只能写 null。
+            // 超限行的 id 以前只能写 null（整行已丢）⇒ 按 id 等回执的客户端永远等不到它
+            // ⇒ 静默挂起；但 id 总在行首，前 64 KiB 已缓冲 ⇒ 从前缀里取顶层 id 放进回执，
+            // 取不到（无 id / 垃圾行）时仍回 null，与旧行为一致。
+            let reply_id = top_level_request_id(&bytes).unwrap_or(Value::Null);
             let response = json!({
                 "jsonrpc": "2.0",
-                "id": Value::Null,
+                "id": reply_id,
                 "error": {
                     "code": error_code::INVALID_REQUEST,
                     "message": format!(
