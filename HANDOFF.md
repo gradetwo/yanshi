@@ -2264,3 +2264,48 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
 
 ⑥ **未收账**：本轮三个提交（修主干 ＋ batch16）已进树，**CI 还没跑**（main 组里还压着
    `cc9332ab`／`f4df04a4`／`fe77ac04` 三个 run ✓ ⇒ 按规矩不派发、等它们清）✓
+
+## §120 batch17 落地（包侧台账「六百七十三」）：`import_psd` 本地化 ＋ **我自己写坏了一次变异**（2026-10-29）
+
+① **落账**：`/api/tools/import_psd` 从「诚实 501」换成 `psd.rs::decode_psd` 的逐字 JS 移植 ✓
+   ⇒ **替换的是已有分支 ⇒ 本地端点数不变**（命令口径 ✓）：
+   `node -e 'const s=require("fs").readFileSync("web/api-local.js","utf8");console.log((s.match(/(?:url\.pathname|path) === "/g)||[]).length)'`
+   ＋ 同文件 `const LOCAL_IMPLEMENTED = …` ⇒ 本轮实测两边都是 **181** ✓
+   **判据**（`scripts/tool-pwa-import-psd.mjs` ✓）本轮实测 **240 条断言全过**，
+   而**最硬的一条是恒等式而不是逐像素比**：两边 composite 的 `blob_hash` **逐字符相等**
+   ⇒ 解码逐字节正确（`blob_put` 与服务端同一个 sha256 口径 ✓）。
+
+② **这批补丁没有带过期行号**（与外§119④ 相反 ✓）：逐条核对全中 ——
+   `psd.rs:58 decode_psd` ✓｜`psd.rs:180 packbits_row` ✓｜`atom.rs:72 from_str`（函数从 :68 起 ✓）
+   ＋ `atom.rs:92` 的小写 hex 校验 ✓｜`blob.rs:580 missing_blob` ✓｜`tools_psd.rs:23` ✓
+   ＋ 文案逐字：`blob_hash 不是合法哈希`（`tools_psd.rs:28` ✓）**不是** `atom.rs` 那句
+   「非法 blob hash: {:?}」✗ —— **映射发生在调用点** ✓；`blob_decodable` 恒 true 的说法
+   也核过：`render.rs:5560 raster_mime_supported` 把 `RAW_RGBA_MIME` **无条件**算支持 ✓
+   （只有 `feature = "raw"` 的相机 RAW 才看构建 ✓）。
+
+③ **三条变异本机复测都红**（① PackBits 原样段少 `+1` ⇒ §C/§D ＋ 顺手把 §F8 也带红 ✓；
+   ④ 签名检查恒假 ⇒ §F6 红 ✓；⑧ 合成 blob 不写 IndexedDB ⇒ §B–§E「本地读回」全红 ✓）
+
+④ **★★ 但我第一次写变异 ④ 时把它写成了「没变异」**（**本轮最重要的教训 ✓**）：
+   原条件是 `if (bytes[0] !== 0x38 || bytes[1] !== 0x42 || …)` ✓，我在**开头**加 `false &&` ✗
+   ⇒ 因为 `&&` 比 `||` **结合更紧** ⇒ 变成 `(false && A) || B || C || D` ✓ ⇒ **后三个字节照查**
+   ⇒ 判据**照样全绿**（240 条 ✓）——**而绿在这里不是好消息**：它差点被我读成
+   「§F6 那条断言是安慰剂」✗（内核①：看起来对的东西最危险 ✓）
+   **⇒ 正确做法**：**整条条件替换成 `false`**（`if (false) { … }` ✓）⇒ 当场 §F6 红 ✓
+   **⇒ 配套自检**（变异完先跑这一条，再跑判据 ✓）：
+   `node -e 'const s=require("fs").readFileSync("web/api-local.js","utf8");console.log(s.match(/function p2DecodePsd\(bytes\)[\s\S]{0,600}/)[0])'`
+   ⇒ **亲眼确认那个谓词真的被改坏了**，才算「变异已施加」✗→✓
+
+⑤ **顺带修了一处真实的陈旧**（不是补丁带来的 ✓）：判据第一轮 `exit 3`
+   「内核产物比源码旧 ⇒ 测到的会是上一版内核」✓ —— **守卫报的是前提不成立，不是产品失败** ✓
+   根因：反馈期 p1–p4 的合并只动了 `crates/yanshi-render/src`，而 `web/wasm/` 还是旧的 pkg ✓
+   **修法**（本机、单目标 ✓）：`cargo build -p yanshi-wasm --release --target wasm32-unknown-unknown`
+   ＋ `wasm-bindgen --target web --out-dir crates/yanshi-wasm/pkg …`（CLI 版本取
+   `scripts/wasm-bindgen-version.sh` ⇒ 与 `Cargo.lock` 同源 ✓，本机 0.2.129 一致 ✓）
+   ＋ `node scripts/pwa-sync-wasm.mjs` ＋ `node scripts/pwa-sync-viewer.mjs` ✓
+
+⑥ **`web/assets-index.json` 又被本机污染**（H-1 #30 的又一次实例 ✓）：本机
+   `ls assets/textures | wc -l` = 15 ＋ `git ls-files web/textures | wc -l` = 8 ⇒ 重算出的索引
+   多出 7 项 ⇒ `tool-assets-index-matches-tree` 当场红 ✗ ⇒ **已 revert 回入库版** ✓
+   （索引只描述 palette／texture／brush／medium ⇒ **改 `api-local.js` 根本不需要动它** ✓）
+   而 `web/index.html` 的戳**必须**重算（`api-local.js` 与 `wasm/*` 都在 `stampFiles` 里 ✓）✓

@@ -56,7 +56,11 @@
  *   **∴ 另 6 个是**如实 501** 的分支 ✓**（`medium_stroke`／`set_brush_dynamics`／`estimate_dehaze`／
  *     `import_psd`／`resolve_conflict`／`push` ✓）——
  *   **∴ 它们**不是"假装成功" ✗**（**一律 501 ＋ 明确原因 ✓**），**而是**已处理的端点** ✗；
- *   **★ 后续更新 ✗**：**`estimate_dehaze` 已落地 ✓**（第 六百六十二 轮 ✓，f32 逐位移植 ✓）⇒ **∴ 名单里它已过期 ✗**。
+ *   **★ 后续更新 ✗**：**`estimate_dehaze` 已落地 ✓**（第 六百六十二 轮 ✓，f32 逐位移植 ✓）⇒ **∴ 名单里它已过期 ✗**；
+ *     **`import_psd` 已落地 ✓**（第 六百七十三 轮 ✓，`psd.rs decode_psd` 逐字移植 ＋ 「blob 先行」走内核 `blob_put` ⇒
+ *     合成图哈希与服务端逐字符相等 ✓）⇒ **∴ 名单里它也过期 ✗**（**∴ 还剩 4 个：`medium_stroke`／`set_brush_dynamics`／
+ *     `resolve_conflict`／`push` ✓ —— 前两个要内核／资产缓存 ✗ `resolve_conflict` 要本地先有冲突生产者 ✗
+ *     `push` 服务端根本没有该工具 ⇒ 都是**如实 501** ✓**）。
  *   **∴ 口径说明 ✗**：**与 P2b 一致 ✓**（**全部分支数 ＝ 真实实现 ＋ 如实 501 ✓**）；
  *   **∴ `restore_object` 已由他组实现 ✓**（**本片跳过 ✓**）；**`archive_base64` 不是端点 ✗**
  *     （**它是 `export_png` 响应字段 ✓ ⇒ **∴ 本地 `export_png` 照样返回它 ✓**）；
@@ -5405,10 +5409,144 @@ async function withKernel(doc, fn) {
       }
       return { mod, entry };
     }
+    /** **把一个裸 RGBA8 缓冲存进本地 blob 库并返回内核的内容哈希 ✗**
+     *  （**第 六百七十三 轮 ✓**：**`import_psd` 的「blob 先行」要用 ✓**）：
+     *  **∴ 为什么走内核而不是自算 sha256 ✗**：`/api/blob` 与 `brush_stroke` 的哈希**都**是
+     *  内核 `blob_put` 给的 ✓（`store.rs put_at` ⇒ **与服务端 `BlobHash::from_bytes` 同一个
+     *  sha256 ✓**）⇒ **∴ 同一条路 ⇒ 本地 composite 的 `blob_hash` 与服务端逐字符相等 ✓**
+     *  （**那正是「解码逐字节正确」的最强恒等式 ✗ 判据 §B1 断它 ✓**）；
+     *  **∴ 自己另算一份 ⇒ 两条哈希口径 ⇒ 漂移没信号 ✗**（内核 ② ✓）。 */
+    async function p2cPutCompositeBlob(bytes) {
+      const { entry } = await p2cKernelFor();
+      const raw = String(await withKernel(doc, () => entry.k.blob_put(bytes)) || "");
+      let hash = raw;
+      try { const o = JSON.parse(raw); if (o && o.blob_hash) hash = String(o.blob_hash); } catch (e) {}
+      if (!hash) throw new Error("内核未返回 blob hash");
+      return hash;
+    }
     function p2cKernel501(err) {
       return json({ ok: false, error: "kernel_unavailable", endpoint: path,
                     reason: "本地内核不可用 ⇒ " + String((err && err.message) || err).slice(0, 300),
                     server: false }, 501);
+    }
+    /** **PackBits 一行 ✗**（**逐字照 `psd.rs:180 packbits_row` ✓**，第 六百七十三 轮 ✓）：
+     *  控制字节 n 的语义 —— `0..127` ⇒ 后面 `n+1` 字节原样 ✓；`-127..-1` ⇒ 后面 1 字节重复 `1-n` 次 ✓；
+     *  `-128` ⇒ 跳过 ✓。**截断时报错而不"尽力而为"** ✓（与服务端同一句文案 ✓）。
+     *  **∴ 出错形状 ✗**：返回 `{ error: 文案 }`（没出错 ⇒ `null` ✓）⇒ 由 `p2DecodePsd`
+     *  转成 `{ detail }`，调用方再拼「PSD 解析失败：<detail>」✓
+     *  （服务端是 `Result<_, PsdError>` ⇒ 这里等价返回错误对象 ✓）。 */
+    function p2PackbitsRow(row, out) {
+      let at = 0;
+      while (at < row.length) {
+        const control = (row[at] << 24) >> 24; // 按 i8 解释 ✓（无符号字节 128..255 ⇒ 负 ✓）
+        at += 1;
+        if (control >= 0) {
+          const count = control + 1;
+          const end = at + count;
+          if (end > row.length) return { error: "PackBits 原样段截断" };
+          for (let i = at; i < end; i += 1) out.push(row[i]);
+          at = end;
+        } else if (control !== -128) {
+          const count = 1 - control;
+          if (at >= row.length) return { error: "PackBits 重复段截断" };
+          const value = row[at];
+          at += 1;
+          for (let i = 0; i < count; i += 1) out.push(value);
+        }
+      }
+      return null;
+    }
+    /** **★ 解析 PSD，取出合成图 ✓ ★**（**`psd.rs:58 decode_psd` 的逐字移植 ✗**，第 六百七十三 轮 ✓）：
+     *  **∴ 契约与服务端一致 ✗**：只支持「版本 1 ／ 8 位 ／ RGB=3」✓ ⇒ 其余**逐条给具体原因** ✗
+     *    （**半个画面比明确的报错更糟 ✓**）；压缩只认 `0=原始` 与 `1=RLE` ✓（ZIP 是 PSB 的 ✗）。
+     *  **∴ 返回 ✗**：成功 `{ width, height, rgba }`（**rgba 是 Uint8Array ✓**）；
+     *    失败 `{ detail }`（**服务端 PsdError.message 的原文 ✓**）⇒ 调用方拼前缀「PSD 解析失败：」✓。
+     *  **∴ 逐通道平面交错成 RGBA 的缺省值也要照抄 ✗**：通道 <4 时 alpha=255 ✓、
+     *    通道 1／2 时 g、b 复制 r ✓（`raw[index]`，不是 0 ✗ —— 抄错这里 ⇒ 判据的合成图哈希红 ✓）。 */
+    function p2DecodePsd(bytes) {
+      const u16 = (at) => (at + 2 <= bytes.length ? (bytes[at] << 8) | bytes[at + 1] : null);
+      const u32 = (at) => (at + 4 <= bytes.length
+        ? ((bytes[at] << 24) | (bytes[at + 1] << 16) | (bytes[at + 2] << 8) | bytes[at + 3]) >>> 0
+        : null);
+      const fail = (detail) => ({ detail });
+      if (bytes.length < 26) return fail("文件太短，不像 PSD");
+      if (bytes[0] !== 0x38 || bytes[1] !== 0x42 || bytes[2] !== 0x50 || bytes[3] !== 0x53) {
+        return fail("缺少 PSD 签名 8BPS");
+      }
+      const versionField = u16(4);
+      const version = versionField == null ? 0 : versionField;
+      if (version !== 1) {
+        return fail(`PSD 版本 ${version} 不支持（只支持版本 1；版本 2 是 PSB 大文档格式）`);
+      }
+      // 6..12 保留区读时容忍非零 ✓（与服务端同：有些工具会写脏数据 ✓）
+      const channelsField = u16(12);
+      const channels = channelsField == null ? 0 : channelsField;
+      const heightField = u32(14);
+      const height = heightField == null ? 0 : heightField;
+      const widthField = u32(18);
+      const width = widthField == null ? 0 : widthField;
+      const depthField = u16(22);
+      const depth = depthField == null ? 0 : depthField;
+      const modeField = u16(24);
+      const mode = modeField == null ? 0 : modeField;
+      if (width === 0 || height === 0) return fail("PSD 的宽或高为 0");
+      if (depth !== 8) return fail(`位深 ${depth} 不支持（只支持 8 位；16/32 位请先导出为 8 位）`);
+      if (mode !== 3) return fail(`色彩模式 ${mode} 不支持（只支持 RGB=3；灰度/CMYK/索引色请先转换）`);
+      // **跳过三段**（色彩模式数据／图像资源／图层与蒙版）✓：每段「长度＋数据」✓
+      let at = 26;
+      const colorModeLen = u32(at);
+      if (colorModeLen == null) return fail("色彩模式数据段截断");
+      at += 4 + colorModeLen;
+      const resourcesLen = u32(at);
+      if (resourcesLen == null) return fail("图像资源段截断");
+      at += 4 + resourcesLen;
+      const layersLen = u32(at);
+      if (layersLen == null) return fail("图层与蒙版段截断");
+      at += 4 + layersLen;
+      if (at + 2 > bytes.length) return fail("合成图段截断（缺少压缩方式）");
+      const compression = u16(at);
+      if (compression == null) return fail("缺少压缩方式");
+      at += 2;
+      const pixels = width * height;
+      if (!Number.isSafeInteger(pixels)) return fail("尺寸过大");
+      const channels16 = Math.min(Math.max(channels, 1), 4);
+      let raw;
+      if (compression === 0) {
+        const need = pixels * channels16;
+        if (at + need > bytes.length) return fail("合成图数据不足（原始压缩）");
+        raw = bytes.slice(at, at + need);
+      } else if (compression === 1) {
+        const rows = height * channels16;
+        const lengths = [];
+        let cursor = at;
+        for (let i = 0; i < rows; i += 1) {
+          const value = u16(cursor);
+          if (value == null) return fail("RLE 行长度表截断");
+          lengths.push(value);
+          cursor += 2;
+        }
+        raw = [];
+        for (const length of lengths) {
+          const end = cursor + length;
+          if (end > bytes.length) return fail("RLE 数据截断");
+          const err = p2PackbitsRow(bytes.subarray(cursor, end), raw);
+          if (err) return fail(err.error);
+          cursor = end;
+        }
+      } else {
+        return fail(`压缩方式 ${compression} 不支持（只支持 0=原始 与 1=RLE；ZIP 压缩是 PSB 才有的）`);
+      }
+      if (raw.length < pixels * channels16) return fail("合成图数据不足（解压后）");
+      // **逐通道平面 ⇒ 交错 RGBA** ✓（先所有红、再所有绿…… ✓ 与服务端同一读法 ✓）
+      const rgba = new Uint8Array(pixels * 4);
+      for (let i = 0; i < pixels; i += 1) {
+        const r = raw[i];
+        const g = channels16 > 1 ? raw[pixels + i] : r;
+        const b = channels16 > 2 ? raw[pixels * 2 + i] : r;
+        const a = channels16 > 3 ? raw[pixels * 3 + i] : 255;
+        rgba[i * 4] = r; rgba[i * 4 + 1] = g; rgba[i * 4 + 2] = b; rgba[i * 4 + 3] = a;
+      }
+      return { width, height, rgba };
     }
     /** **内核渲染一块区域为 PNG ✗**（**照 `render_region` 的折叠＋裁剪流程 ✓**）。 */
     async function p2cRenderPng(x, y, w, h) {
@@ -7542,12 +7680,87 @@ async function withKernel(doc, fn) {
                     note: "原子已按包内顺序写入（seq 重排）；未知 kind 的条目被跳过（如实报告）" });
     }
 
-    // **P2c-31 `import_psd` ⇒ 明确 501 ✗**：**服务端用 `psd::decode_psd` 解析图层 ✗**
-    //   ⇒ **∴ 本地没有 PSD 解析器 ✓** ⇒ **∴ 无法如实复现 ✓**。
+    // **P2c-31 `import_psd` ✗**（**第 六百七十三 轮：由「如实 501」改成真实现 ✓**）：
+    //   **∴ 三步都不可省，照 `tools_psd.rs:23 write_import_psd` ✓**：
+    //   **① 校验 blob_hash**（**先 `require_str` 的 `missing(key)` 兜底 ✓ → 再 `BlobHash::from_str`
+    //     的规范化＋校验 ✓：取**最后一个** `sha256:`、截到 `?#&/` 或 71 字符、**必须小写**十六进制 ✗
+    //     —— 旧 `p2BlobHashOk` 收大写 ⇒ 与 `atom.rs:92` 不一致，**这里不用它** ✓）；
+    //   **② 取 PSD 字节**（**库里没有 ⇒ 404 `blob {规范化hash} 不存在` ✓ —— 权威是
+    //     `blob.rs:580 missing_blob`，文案是 `Display`＝规范化后的串 ✗ **不是用户原样给的写法** ✓，
+    //     判据 §G4 拿 `yanshi://blob/…?x=1` 形态抓这一点 ✓**）；
+    //   **③ 解合成图 ⇒ blob 先行 ⇒ 复用 import_image 的净荷形状 ✗**（**`p2DecodePsd` 是
+    //     `psd.rs:58 decode_psd` 的逐字移植 ✓；解析失败 ⇒ 400 前缀「PSD 解析失败：」✓；
+    //     `store().put(rgba)` ⇒ 内核 `blob_put` 取**内容哈希** ⇒ **与服务端同一 sha256 ⇒
+    //     两边 composite 的 blob_hash 逐字符相等 = 解码逐字节正确的最强恒等式 ✓**；
+    //     净荷不写 `source` ✓ —— 服务端的 `import_args` 就没有那项，第 251 轮注释说的
+    //     「顶层放」只对**调用方给的** source 成立 ✓**）；
+    //   **④ 回执加 `source:{format:"psd",width,height,note} ＋ blob_decodable ✓**（**`x-yanshi-raw`
+    //     在内核支持清单里 ⇒ 恒 true ✓，与服务端同值 ✓**）。
     if (path === "/api/tools/import_psd") {
-      return json({ ok: false, error: "not_implemented_locally", endpoint: "/api/tools/import_psd",
-                    reason: "import_psd：服务端用 psd::decode_psd 解析 PSD 图层结构；本地没有 PSD 解析器，无法如实复现",
-                    server: false }, 501);
+      const specBad = p2ValidateArgsFor("import_psd", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
+      const rawHash = body.blob_hash; // **∴ 类型与必填由入口校验保证 ✗**（**照服务端 `validate_args` 先跑 ✓**）
+      if (typeof rawHash !== "string") {
+        return p2ToolFailure(400, "invalid_argument", "缺少必填参数 blob_hash");
+      }
+      // **规范化照 `atom.rs:72 from_str` ✗**：取最后一个 `sha256:` 之后，截到 `?#&/` 或 71 字符。
+      const idx = rawHash.lastIndexOf("sha256:");
+      let candidate = idx >= 0 ? "sha256:" + rawHash.slice(idx + 7) : rawHash;
+      candidate = candidate.split(/[?#&/]/)[0].slice(0, 71);
+      if (!(candidate.length === 71 && candidate.startsWith("sha256:")
+            && /^[0-9a-f]{64}$/.test(candidate.slice(7)))) {
+        return p2ToolFailure(400, "invalid_argument", "blob_hash 不是合法哈希");
+      }
+      const { getBlob, putBlob } = await import("./store.js");
+      const psdBytes = await getBlob(handle, candidate);
+      if (!psdBytes) {
+        return p2ToolFailure(404, "reference_not_found", "blob " + candidate + " 不存在",
+                             { blob: candidate });
+      }
+      const view = psdBytes instanceof Uint8Array ? psdBytes
+        : new Uint8Array(psdBytes && psdBytes.length ? psdBytes : []);
+      const decoded = p2DecodePsd(view);
+      if (decoded.detail !== undefined) {
+        return p2ToolFailure(400, "invalid_argument", "PSD 解析失败：" + decoded.detail);
+      }
+      const { rgba, width, height } = decoded;
+      let blobHash = null;
+      try {
+        blobHash = await p2cPutCompositeBlob(rgba);
+      } catch (err) { return p2cKernel501(err); }
+      if (!blobHash) {
+        return json({ ok: false, error: "kernel_unavailable", endpoint: path,
+                      reason: "内核 blob_put 未返回哈希 ⇒ 本地不猜 ✗", server: false }, 501);
+      }
+      await putBlob(handle, blobHash, Array.from(rgba));
+      const { layers, order } = p1LayerOrder(await atomsOf(handle, doc));
+      const layerId = typeof body.layer_id === "string" && body.layer_id ? body.layer_id : order[0];
+      if (typeof layerId !== "string" || !layers.has(layerId)) {
+        // **∴ 文案逐字照服务端 ✓**（**权威是折叠期引用检查那句「图层 X 不存在（现有图层：…）」✓**
+        //   —— **候选＝活层按 id 升序、上限 8 个 ✓**；`p1LayerOrder` 的 Map **已剔除删层** ⇒
+        //   **keys 就是活集 ✓**，走同一份 `p2MissingReferenceMessage` 的形状实现 ✓）
+        return p2ToolFailure(404, "reference_not_found",
+                             p2MissingReferenceMessage("图层", layerId, layers.keys()),
+                             { layer_id: layerId });
+      }
+      const objectId = typeof body.object_id === "string" && body.object_id
+        ? body.object_id : ("obj_" + Date.now().toString(36));
+      const atom = p2Envelope("import_image", {
+        object_id: objectId,
+        layer_id: layerId,
+        type: "raster_patch",
+        bitmap: { blob_hash: blobHash, mime_type: "image/x-yanshi-raw", size: rgba.length },
+        region: { x: 0, y: 0, w: width, h: height },
+        width, height,
+        refs: { blobs: [blobHash] },
+      });
+      const seq = await putAtom(handle, doc, atom);
+      return json({ ok: true, seq, head: seq, atom_id: atom.id, object_id: objectId,
+                    layer_id: layerId, blob_hash: blobHash, blob_decodable: true,
+                    source: { format: "psd", width, height,
+                              note: "只导入了合成图；图层结构与蒙版没有导入（只读）" },
+                    server: false,
+                    note: "已在本地原子日志写入 import_image（合成图先落 blob 再引原子 ⇒ 撤销可复原 ✓）" });
     }
 
     // **P2c-32 `import_asset` ✗**：**服务端把文件导进工作区资产缓存 ✓** ⇒ **∴ 本地对

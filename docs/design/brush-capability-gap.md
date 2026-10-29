@@ -24233,3 +24233,67 @@ bbox 内与外／分页（含 `limit:0`）；§C `get_atom` 字段集合与 `lab
 **回归**：`tool-pwa-assets`（声明 181 === 分支 181 ✓）、`tool-js-syntax`、`tool-pwa-api-behaviour`、
 `tool-pwa-transform-object`（§C10/§C11 的 404/409 文案与 `p2DescribeRegions` 无关但共用折叠）、
 `tool-pwa-describe-canvas` —— **全绿** ✓。
+
+## 六百七十三、本地 `import_psd` 落地（替换「如实 501」分支，`LOCAL_IMPLEMENTED` 保持 181）：`decode_psd` 的逐字 JS 移植＋判据第一次跑就逼出「恒等式要长在原子上」这个结构，并当场抓出自己四处算错
+
+**做什么**（`crates/yanshi-http/assets/api-local.js` 的 `/api/tools/import_psd` 分支；
+**旧分支是诚实 501 ⇒ 换成真实现 ⇒ 分支数不变 ⇒ `LOCAL_IMPLEMENTED` 保持 181 ✓**）：
+
+1. **`p2DecodePsd` ＋ `p2PackbitsRow`**（照 `crates/yanshi-render/src/psd.rs::decode_psd` 逐字移植 ✓）：
+   26 字节头（`8BPS`／version／skip 6／channels@12／height@14／width@18／depth@22／mode@24）＋
+   三个长度段（color mode / image resources / layer & mask **全跳过 ✓ 与服务端一样只取合成图**）＋
+   合成数据 compression u16 在 **38**（26＋3×4）；raw(0)／RLE(1) 两条路径 ✓；
+   非 8bit／无通道／越界 ⇒ `{detail}` 失败串 ✓（错误文案逐字：「合成图数据不足（原始压缩）」
+   「合成图数据不足（解压后）」等，照 `psd.rs`）。
+   **1 通道 ⇒ 灰度复制进 r/g/b、alpha 恒 255 ✓**（§E 有独立期望值断言这条）。
+2. **合成图先落 blob 再引原子**（照服务端 write path ✓）：`p2cPutCompositeBlob`（内核 `blob_put`，
+   内核不支持 ⇒ 501 不猜 ✓）＋ **`putBlob` 写进 IndexedDB**（撤销可回放 ✓ ——
+   变异 ⑧ 证明少这一步判据能红）。
+3. **入口链照服务端顺序 ✓**：`p2ValidateArgsFor("import_psd")` 先跑（未知键／缺 `blob_hash`／类型错 ⇒ 400）
+   ⇒ 哈希规范化逐字照 `atom.rs:72 from_str`（取最后一个 `sha256:`、截 `?#&/`、71 字符、**小写 hex 严格**
+   ⇒ 大写也拒 ✓）⇒ 拉字节（不存在 ⇒ 404「blob … 不存在」**用规范化后的哈希** ✓ 变异 ⑨）。
+4. **回执形状 = 服务端形状的本地可镜像子集 ✓**：`source:{format:"psd",width,height,note}` 的 note 逐字
+   「只导入了合成图；图层结构与蒙版没有导入（只读）」、`blob_decodable:true`（`image/x-yanshi-raw`
+   在内核支持清单里 ⇒ 恒 true ✓ 与服务端同值）；未知图层 ⇒ **404 文案逐字照服务端权威**
+   「图层 X 不存在（现有图层：…）」（候选＝活层升序、上限 8 —— 走 `p2MissingReferenceMessage` ✓）。
+5. **`tiles` 不编造 ✗**：服务端原子 payload 里那块 tile 索引是服务端存储私有物 ⇒ 判据比较前剥掉它 ✓，
+   本地**不**为了好看去造一份 ✗。
+
+**判据**（`scripts/tool-pwa-import-psd.mjs`，**240 条断言 ✓ 全绿**；核种子经
+`bootLocalWithRealKernel` 注入真 wasm glue ⇒ 本地 `/api/blob` 可用 ✓；
+**内核陈旧 ⇒ `exit(3)` 前提不成立**，不冒充产品失败 ✓）：
+
+| 节 | 覆盖 | 能红的形状 |
+|---|---|---|
+| §A | **上传哈希两边一致**（sha256 口径前提）——不一致整条判据作废 ⇒ 先 `exit(3)` | 两边哈希口径不同还比恒等式 |
+| §B–§E | 四条真夹具（仓库 PSD 夹具／RLE×3ch／RLE×4ch alpha 面／raw×1ch 灰度）：两边 `import_psd` 后**读各自原子日志**，剥 `tiles` 后 `import_image` payload **结构全等**；核心恒等式 `srv.bitmap.blob_hash === loc.bitmap.blob_hash`（内容寻址 ⇒ ⇔ RGBA 逐字节相等 ✓）；**判据自己用 node crypto 算期望 sha256** ⇒ 两边同错也红 ✓；`size===w·h·4`／`region{0,0,w,h}`／`type:raster_patch`／mime ✓；**本地 IndexedDB 读回字节 === expectRgba**（blob 先行且可回放 ✓） | 解码漂一位、blob 没入库、payload 形状分叉、两边同错 |
+| §F | 八条拒绝分支逐字错误码＋文案（含 §F4 原始压缩越界、**§F8 RLE 行解码偏短 ⇒「解压后」守卫**） | 任一守卫恒不触发 |
+| §G | 入口链：未知键／缺参／类型错 400、坏哈希（含大写）400「blob_hash 不是合法哈希」（`tools_psd.rs` 改写过内核那句 ✓）、缺 blob 404、未知图层 404 逐字、`object_id` 回显 | 校验口径漂、文案抄了轮不到的那道 |
+| §B2 | `describe_canvas` 计数：PSD 对象真的进了图层（与参照 `draw_shape` 同层计 2 ✓） | import 只回执不落原子 |
+
+**变异（十一条 ✓ 全跑在 `web/api-local.js`，每条：改 → 判据必须红 → `cmp` 字节级还原 ✓ 全部红 ✓）**：
+① packbits `count+1` 少读一字节 ⇒ §B/§C 红 ✓｜② G 通道复制错 ⇒ §E 灰度红 ✓｜③ alpha 恒 0 ⇒ §D 四通道红 ✓｜
+④ 签名校验永不触发 ⇒ §F1 红 ✓｜⑤ `compression===1` 放行 2 ⇒ §F3 红 ✓｜⑥ color mode 段偏移少 4 ⇒ §F2 红 ✓｜
+⑦ 「解压后」守卫恒不触发 ⇒ **§F8** 红 ✓（见下面自错 ②）｜⑧ 合成 blob 不写 IndexedDB ⇒ §B–§E 本地读回红 ✓｜
+⑨ 404 用原始串而非规范化哈希 ⇒ §G 红 ✓｜⑩ `source.width` 写 0 ⇒ §B–§E 回显红 ✓｜
+⑪ 入口校验只查 `blob_hash` ⇒ §G1 未知键红 ✓。
+
+**这一轮判据自己错（或险些 placebo）的四处（都改判据，不迁就产品 ✓）**：
+1. **§F4 打补丁的偏移抄成 44**（照仓库夹具的 hexdump 抄 ✗ 那夹具**带图层段** ⇒ compression 位置不同）
+   ⇒ 变异打在像素数据上、两边照样 200 ⇒ **判据构造的夹具 compression u16 在 38**（26＋3×4 ✓），
+   改完 §F4 立刻能红 —— **教训：夹具是自己造的，偏移要按自己的布局算，不能抄别人 hexdump ✓**。
+2. **变异 ⑦ 第一次跑了个绿 ✗**：「解压后」守卫**没有输入能触发**（§F5 截断夹具在更早的「原始压缩」
+   越界处就被拦住 ⇒ 四层齐的第 ② 层缺）⇒ **补 §F8（RLE 行长度表谎报 ⇒ 解压后偏短）才齐 ✓**
+   （**∴ 「断言写了」≠「输入制造出它要检查的情况」✓ 内核 1 ✓**）。
+3. **变异 ⑧ 第一次被静默跳过 ✗**：两行锚点里的 `await putBlob(...)` 在 `p2cPutImportImage` 里
+   **同形出现第二次**（count==2 ⇒ assert 拦下），而 ABORT 分支当时没打印 ⇒ 差点当成「跑过了」；
+   补上下文行＋日志后重跑才拿到真红 ✓（**∴ 变异的 `assert count==1` 与「跳过必须可见」缺一不可 ✓**）。
+4. **§B–§E 起初断的是响应顶层 `blob_hash` ⇒ 服务端根本没这个键**（信封只有
+   `atom_id/seq/source/preview/…`）⇒ 探完活服务端真实形状后**把恒等式搬到原子上**
+   （`GET /api/atoms` 两边的 `import_image` payload 比）✓ —— **这正是「看起来像真的」的字段假设，
+   先打印完整响应才是权威 ✓（内核 3）**。另外 §G5 起初断内核文案「非法 blob hash: …」✗，
+   实测服务端是 `tools_psd.rs` 改写过的「blob_hash 不是合法哈希」✓ ⇒ 断言改成实际轮到的那道。
+
+**回归**：`tool-pwa-import-psd`（240 ✓）、`tool-js-syntax`（459 文件 ✓）、`tool-pwa-assets`
+（**声明 181 === 分支 181 ✓** 替换 501 分支不减计数）、`tool-pwa-api-behaviour`、
+`tool-pwa-describe-canvas`、`tool-pwa-local-write-guards` —— **全绿** ✓。
