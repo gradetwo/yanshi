@@ -52,6 +52,12 @@ const OWNER_ONLY_TOOLS = new Map([
   // **第三方审计 P2-N1 之后**：`document_id` 与**会话文档**不同 ⇒ editor 令牌会被作用域闸
   // 拒掉（`token::ensure_doc_scope` ✓，与 MCP stdio 的 owner 缺省对齐）⇒ 示例要走 owner 令牌。
   ["delete_document", "跨文档删除必须 owner（第三方审计 P2-N1 的作用域闸）"],
+  // **release/reopen 同闸**：两工具 `document_id` 为 require_str 必填（有意设计，与会话
+  // doc_id 分离才能触发“释放不存在文档”反例）⇒ 静态 sample-oil 示例在判据随机文档
+  // 加 editor 令牌下恒撞作用域闸 ⇒ 示例要走 owner 令牌，报 reference_not_found 即
+  // 归入需要前置状态。代价：判据不再验证这两工具的 editor 越界被拒，与 delete_document 口径相同。
+  ["release_document", "跨文档释放必须 owner（document_id 有意 require_str，与 delete_document 同闸）"],
+  ["reopen_document", "跨文档重开必须 owner（document_id 有意 require_str，与 delete_document 同闸）"],
 ]);
 
 // **⇒ 每条示例一个**干净文档** ✓**（第 941 轮；外部实测 `frequency_separation` 被前面的示例污染 ✗）
