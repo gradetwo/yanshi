@@ -27,7 +27,7 @@ use crate::brush::{BrushSpec, StrokeAppearance, StrokeGeometry, StrokePoint, Sym
 use crate::buffer::Buffer;
 use crate::svg::{self, Pt, StrokeExport, SvgDab};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// 脊线上一点的**剖面半径**（与盖章路径 `stamp_samples_from` 的
 /// `size_scale` 算法逐字一致：压力只缩放半径 ✓）。
@@ -511,6 +511,34 @@ pub struct VectorRasterStats {
     pub dabs_stamped: u64,
     /// 当前缓存条目数。
     pub entries: usize,
+    /// 累计因字节上限被 LRU 淘汰的条目数（反馈期 3 ✓）。
+    pub evicted: u64,
+    /// 当前缓存的单笔光栅字节之和（按缓冲容量计，与 [`VectorRasterCache::bytes`] 一致 ✓）。
+    pub bytes: usize,
+}
+
+/// 单笔光栅缓存字节上限的环境变量（反馈期 3 ✓；单位兆字节）。
+///
+/// 参照批水位 `YANSHI_BATCH_RSS_LIMIT_MB` 的先例：环境变量覆盖、缺省不变、
+/// 非法值静默回落缺省。缺省 = 不设上限（与旧行为一致：只增不减，close 再 open
+/// 才释放）；配了正整数后缓存按 LRU 逐出，被逐条目下次渲染按需重算、像素不变。
+pub const VECTOR_RASTER_CACHE_ENV_VAR: &str = "YANSHI_VECTOR_RASTER_CACHE_MB";
+
+/// 缺省上限：无上限（旧行为 ✓）。
+pub const VECTOR_RASTER_CACHE_DEFAULT_BYTES: usize = usize::MAX;
+
+/// 解析上限文本（单位 MB）：空、非法、0 ⇒ 缺省（无上限）；正整数 ⇒ MB 换算字节。
+/// 纯函数（不读环境），供测试直接断言解析口径 ✓。
+pub fn parse_vector_raster_cache_bytes(text: Option<&str>) -> usize {
+    text.and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|mb| *mb >= 1)
+        .map(|mb| usize::try_from(mb.saturating_mul(1024 * 1024)).unwrap_or(usize::MAX))
+        .unwrap_or(VECTOR_RASTER_CACHE_DEFAULT_BYTES)
+}
+
+/// 从环境读上限（文档打开时由 [`VectorRasterCache::new`] 调一次 ✓）。
+fn vector_raster_cache_bytes_from_env() -> usize {
+    parse_vector_raster_cache_bytes(std::env::var(VECTOR_RASTER_CACHE_ENV_VAR).ok().as_deref())
 }
 
 struct CacheEntry {
@@ -524,18 +552,93 @@ struct CacheEntry {
 /// 原点 ✓）；渲染矢量图层时，已提交笔触从缓存合成、只有新增/被改的笔
 /// 才重新走引擎盖章路径。图层/文档未变 ⇒ 第二遍渲染盖章数为 0 ✓
 /// （由测试以 [`VectorRasterStats`] 断言 ✓）。
-#[derive(Default)]
+///
+/// **字节上限与 LRU 逐出（反馈期 3 ✓）**：旧实现是无界 `HashMap`——每新增
+/// 一笔就多一表项，只能靠删对象或关文档释放，这正是“内存只增不减、close
+/// 再 open 才释放”的无界分量（tile／区域／位图／缓冲池早已有界 LRU）。
+/// 现加 `max_bytes`：缺省无上限（旧行为不变）；`YANSHI_VECTOR_RASTER_CACHE_MB`
+/// 配了正整数后，插入与调小上限时都按 LRU（`order` 队首最旧）逐出，直到
+/// 字节达标或只剩刚放进的一块（单块超预算仍保留，与区域缓存同例——缓存
+/// “有”比“全无”好，超预算的块不挤光别的块）。逐出只影响速度：被逐条目
+/// 下次渲染走同一条盖章路径重算（指纹门控不变），像素与冷路径逐位相同，
+/// 绝不静默丢像素 ✓。
 pub struct VectorRasterCache {
     entries: HashMap<(String, String), CacheEntry>,
+    /// LRU 顺序：队首最旧、队尾最新；命中与插入都把键移到队尾 ✓。
+    order: VecDeque<(String, String)>,
+    /// 当前所有条目缓冲容量之和（`put`／逐出／`retain`／`clear` 同步维护 ✓）。
+    bytes: usize,
+    /// 字节上限（缺省 [`VECTOR_RASTER_CACHE_DEFAULT_BYTES`] = 无上限 ✓）。
+    max_bytes: usize,
     hits: u64,
     misses: u64,
     dabs_stamped: u64,
+    evicted: u64,
+}
+
+impl Default for VectorRasterCache {
+    /// 缺省 = 环境上限（未配 ⇒ 无上限，旧行为 ✓）。
+    fn default() -> Self {
+        Self::with_byte_budget(vector_raster_cache_bytes_from_env())
+    }
 }
 
 impl VectorRasterCache {
-    /// 新建空缓存。
+    /// 新建空缓存（上限取环境变量，未配 ⇒ 无上限 ✓）。
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 新建空缓存并显式给字节上限（测试与程序化调上限用；0 ⇒ 夹到 1 ✓）。
+    pub fn with_byte_budget(max_bytes: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            bytes: 0,
+            max_bytes: max_bytes.max(1),
+            hits: 0,
+            misses: 0,
+            dabs_stamped: 0,
+            evicted: 0,
+        }
+    }
+
+    /// 当前字节上限。
+    pub const fn max_bytes(&self) -> usize {
+        self.max_bytes
+    }
+
+    /// 调整字节上限并立即按 LRU 逐出到新上限内（单块超预算仍保留一块 ✓）。
+    pub fn set_max_bytes(&mut self, max_bytes: usize) {
+        self.max_bytes = max_bytes.max(1);
+        self.evict_to_fit(None);
+    }
+
+    /// 把键移到 LRU 队尾（最新 ✓）。
+    fn touch(&mut self, key: &(String, String)) {
+        self.order.retain(|old| old != key);
+        self.order.push_back(key.clone());
+    }
+
+    /// 按 LRU 逐出到字节上限内；`keep` 指定的键永不被逐（刚放进的那块 ✓）。
+    /// 只剩一块时停（单块超预算仍保留 ✓）。返回逐出数。
+    fn evict_to_fit(&mut self, keep: Option<&(String, String)>) -> usize {
+        let mut evicted = 0;
+        while self.bytes > self.max_bytes && self.entries.len() > 1 {
+            let Some(victim) = self.order.pop_front() else {
+                break;
+            };
+            if Some(&victim) == keep {
+                self.order.push_back(victim);
+                break;
+            }
+            if let Some(old) = self.entries.remove(&victim) {
+                self.bytes = self.bytes.saturating_sub(old.buffer.capacity_bytes());
+                self.evicted += 1;
+                evicted += 1;
+            }
+        }
+        evicted
     }
 
     /// 当前计数快照。
@@ -545,16 +648,15 @@ impl VectorRasterCache {
             misses: self.misses,
             dabs_stamped: self.dabs_stamped,
             entries: self.entries.len(),
+            evicted: self.evicted,
+            bytes: self.bytes,
         }
     }
 
     /// 当前缓存的单笔光栅字节之和（按缓冲容量计；RSS 修复 paint-rss：
     /// C2 预算闸估算口径的一部分）。
-    pub fn bytes(&self) -> usize {
-        self.entries
-            .values()
-            .map(|entry| entry.buffer.capacity_bytes())
-            .sum()
+    pub const fn bytes(&self) -> usize {
+        self.bytes
     }
 
     /// 取一笔的光栅：指纹一致 ⇒ 命中直接返回缓存（不盖章 ✓）；
@@ -579,6 +681,7 @@ impl VectorRasterCache {
             .is_some_and(|entry| entry.fingerprint == fingerprint)
         {
             self.hits += 1;
+            self.touch(&key);
             return self.entries.get(&key).map(|entry| &entry.buffer);
         }
         let (buffer, _bbox) = svg::render_stroke_buffer(brush, geometry, appearance, canvas)?;
@@ -587,6 +690,11 @@ impl VectorRasterCache {
             .iter()
             .map(Vec::len)
             .sum::<usize>() as u64;
+        // 同键旧条目（指纹已变 ⇒ 重算）先扣旧字节，账面不重复计 ✓。
+        if let Some(old) = self.entries.remove(&key) {
+            self.bytes = self.bytes.saturating_sub(old.buffer.capacity_bytes());
+        }
+        self.bytes = self.bytes.saturating_add(buffer.capacity_bytes());
         self.entries.insert(
             key.clone(),
             CacheEntry {
@@ -594,19 +702,38 @@ impl VectorRasterCache {
                 buffer,
             },
         );
+        self.touch(&key);
+        // 超上限 ⇒ 按 LRU 逐出旧条目（刚放进的这块不逐 ✓）；被逐条目下次
+        // 渲染走同一条盖章路径重算，像素不变 ✓。
+        self.evict_to_fit(Some(&key));
         self.entries.get(&key).map(|entry| &entry.buffer)
     }
 
     /// 淘汰某图层中不在 `alive` 集合里的对象条目（对象被删/被擦除替换时
     /// 由调用方在渲染前同步 ✓，防缓存无限增长与幽灵条目 ✓）。
     pub fn retain_layer_objects(&mut self, layer_id: &str, alive: &HashSet<String>) {
-        self.entries
-            .retain(|(layer, object), _| layer != layer_id || alive.contains(object));
+        let removed: Vec<(String, String)> = self
+            .entries
+            .keys()
+            .filter(|(layer, object)| layer == layer_id && !alive.contains(object))
+            .cloned()
+            .collect();
+        for key in &removed {
+            if let Some(old) = self.entries.remove(key) {
+                self.bytes = self.bytes.saturating_sub(old.buffer.capacity_bytes());
+            }
+        }
+        if !removed.is_empty() {
+            self.order.retain(|key| !removed.contains(key));
+        }
     }
 
-    /// 清空（文档切换/关闭时 ✓）。
+    /// 清空（文档切换/关闭时 ✓）。计数（命中／未命中／逐出）是累计证据面，
+    /// 清空不重置，只清条目与字节账 ✓。
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.order.clear();
+        self.bytes = 0;
     }
 }
 
@@ -935,6 +1062,123 @@ mod tests {
         // 对象消失 ⇒ 条目被淘汰 ✓。
         cache.retain_layer_objects("L1", &HashSet::new());
         assert_eq!(cache.stats().entries, 0);
+    }
+
+    #[test]
+    fn raster_cache_budget_parses_like_batch_watermark() {
+        // 空／非法／0 ⇒ 缺省（无上限）；正整数 ⇒ MB 换算字节（批水位同例 ✓）。
+        assert_eq!(parse_vector_raster_cache_bytes(None), usize::MAX);
+        assert_eq!(parse_vector_raster_cache_bytes(Some("")), usize::MAX);
+        assert_eq!(parse_vector_raster_cache_bytes(Some("abc")), usize::MAX);
+        assert_eq!(parse_vector_raster_cache_bytes(Some("0")), usize::MAX);
+        assert_eq!(
+            parse_vector_raster_cache_bytes(Some("64")),
+            64 * 1024 * 1024
+        );
+        assert_eq!(
+            parse_vector_raster_cache_bytes(Some(" 128 ")),
+            128 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn raster_cache_evicts_lru_within_budget_and_rerasters_identically() {
+        let b = brush(20.0);
+        let g = line(&[(20.0, 50.0), (180.0, 50.0)]);
+        let fp = stroke_fingerprint(&json!({"size": 20.0, "opacity": 1.0}), &[]);
+        // 一笔约 77 KiB（186×26 像素 × RGBA f32）；预算只容两笔 ✓。
+        let mut cache = VectorRasterCache::with_byte_budget(160_000);
+        let first_pixels: Vec<f32> = {
+            let buffer = cache
+                .get_or_raster(("L1", "obj1"), fp, &b, &g, None, (200, 100))
+                .expect("画布内笔触应可光栅化");
+            buffer.pixels().to_vec()
+        };
+        let one_entry_bytes = cache.bytes();
+        assert!(one_entry_bytes > 0);
+        cache
+            .get_or_raster(("L1", "obj2"), fp, &b, &g, None, (200, 100))
+            .expect("第二笔应可光栅化");
+        assert_eq!(cache.stats().entries, 2);
+        // 第三笔 ⇒ 最旧（obj1）被逐出，字节回到上限内 ✓。
+        cache
+            .get_or_raster(("L1", "obj3"), fp, &b, &g, None, (200, 100))
+            .expect("第三笔应可光栅化");
+        let after_evict = cache.stats();
+        assert_eq!(after_evict.entries, 2);
+        assert!(after_evict.evicted >= 1);
+        assert!(after_evict.bytes <= 160_000);
+        // 被逐条目再取 ⇒ 未命中、重算、像素与逐出前逐位相同（只慢不坏图 ✓）。
+        let misses_before = cache.stats().misses;
+        let buffer = cache
+            .get_or_raster(("L1", "obj1"), fp, &b, &g, None, (200, 100))
+            .expect("被逐笔触应可重算");
+        assert_eq!(buffer.pixels(), first_pixels.as_slice());
+        assert_eq!(cache.stats().misses, misses_before + 1);
+    }
+
+    #[test]
+    fn raster_cache_evicts_least_recently_used_not_oldest_inserted() {
+        let b = brush(20.0);
+        let g = line(&[(20.0, 50.0), (180.0, 50.0)]);
+        let fp = stroke_fingerprint(&json!({"size": 20.0, "opacity": 1.0}), &[]);
+        let mut cache = VectorRasterCache::with_byte_budget(160_000);
+        for obj in ["obj1", "obj2"] {
+            cache
+                .get_or_raster(("L1", obj), fp, &b, &g, None, (200, 100))
+                .expect("笔触应可光栅化");
+        }
+        // 再命中 obj1 ⇒ 它变最新；下一笔应逐出 obj2（LRU），不是 obj1 ✓。
+        cache
+            .get_or_raster(("L1", "obj1"), fp, &b, &g, None, (200, 100))
+            .expect("命中应可取");
+        cache
+            .get_or_raster(("L1", "obj3"), fp, &b, &g, None, (200, 100))
+            .expect("第三笔应可光栅化");
+        assert_eq!(cache.stats().evicted, 1);
+        let hits_before = cache.stats().hits;
+        cache
+            .get_or_raster(("L1", "obj1"), fp, &b, &g, None, (200, 100))
+            .expect("obj1 应仍在缓存");
+        assert_eq!(cache.stats().hits, hits_before + 1, "obj1 被命中才算 LRU");
+        let misses_before = cache.stats().misses;
+        cache
+            .get_or_raster(("L1", "obj2"), fp, &b, &g, None, (200, 100))
+            .expect("obj2 应已被逐出、可重算");
+        assert_eq!(cache.stats().misses, misses_before + 1);
+    }
+
+    #[test]
+    fn raster_cache_set_max_bytes_shrinks_live_cache_and_keeps_accounting() {
+        let b = brush(20.0);
+        let g = line(&[(20.0, 50.0), (180.0, 50.0)]);
+        let fp = stroke_fingerprint(&json!({"size": 20.0, "opacity": 1.0}), &[]);
+        let mut cache = VectorRasterCache::with_byte_budget(usize::MAX);
+        assert_eq!(cache.max_bytes(), usize::MAX, "缺省口径 = 无上限");
+        for obj in ["obj1", "obj2", "obj3"] {
+            cache
+                .get_or_raster(("L1", obj), fp, &b, &g, None, (200, 100))
+                .expect("笔触应可光栅化");
+        }
+        assert_eq!(cache.stats().evicted, 0, "无上限时不逐出");
+        assert_eq!(cache.stats().entries, 3);
+        // 调小上限 ⇒ 立即逐出到上限内（恒等式：字节 ≤ 上限且条目减少 ✓）。
+        cache.set_max_bytes(160_000);
+        assert!(cache.bytes() <= 160_000);
+        assert_eq!(cache.stats().entries, 2);
+        assert!(cache.stats().evicted >= 1);
+        // 指纹替换同键 ⇒ 条目数不变、字节不重复计 ✓。
+        let bytes_before = cache.bytes();
+        let fp2 = stroke_fingerprint(&json!({"size": 20.0, "opacity": 0.5}), &[]);
+        cache
+            .get_or_raster(("L1", "obj3"), fp2, &b, &g, None, (200, 100))
+            .expect("指纹变应重算");
+        assert_eq!(cache.stats().entries, 2);
+        assert_eq!(
+            cache.bytes(),
+            bytes_before,
+            "同几何同笔尺 ⇒ 替换前后字节应相等（不双倍计）"
+        );
     }
 
     #[test]

@@ -1435,6 +1435,17 @@ impl Renderer {
         std::mem::replace(&mut self.options.active_layer, layer)
     }
 
+    /// **原生矢量单笔光栅缓存的字节上限**（反馈期 3 ✓）：调小立即按 LRU
+    /// 逐出到新上限内；锁中毒时静默跳过（与 `clear_caches` 同例——调用方
+    /// 下次渲染仍走指纹门控，像素不受影响 ✓）。环境变量
+    /// `YANSHI_VECTOR_RASTER_CACHE_MB` 是文档打开时的缺省来源，本方法是
+    /// 已打开文档的程序化调上限口（测试用）✓。
+    pub fn set_vector_raster_cache_budget(&mut self, max_bytes: usize) {
+        if let Ok(mut guard) = self.vector_raster.lock() {
+            guard.set_max_bytes(max_bytes);
+        }
+    }
+
     /// **原生矢量笔触光栅缓存的计数快照**（路线甲 Phase 2 ✓）：
     /// 命中/未命中/实际盖章数——「第二遍渲染不重算未变笔触」的证据面 ✓。
     pub fn vector_raster_stats(&self) -> crate::vector::VectorRasterStats {
