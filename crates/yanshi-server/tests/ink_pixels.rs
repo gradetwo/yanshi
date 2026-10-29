@@ -183,10 +183,21 @@ fn colour_alpha_multiplies_into_opacity() {
         "o_a110",
         json!({"r": 200, "g": 20, "b": 20, "a": 110}),
     );
-    // **a<1 真透明** ✓：印章面积不变（几何没变 ✓），墨量与色差都变小。
+    // **a<1 真透明** ✓：印章几何不变，墨量与色差都变小。
+    // **读画布笔刷的 `painted_pixels` 允许 ≤2 像素的掩膜量化差**（D4b 跟进）：
+    // `paint_brush` 的防幽灵掩膜只留「落过颜料或改动 >3 级」的像素；
+    // P-19 把掩膜遍的 deposit alpha 同样乘 0.43，晕边上 2 个改动 ≤3 级的像素
+    // deposit alpha 量化到 0 后被掩膜清零（不透明那笔则留住），肉眼不可见。
+    // 几何本身用 `region` 钉死（两笔同为 [1,1,46,46]），不拿像素数充当几何。
     assert_eq!(
-        half["painted_pixels"], opaque["painted_pixels"],
-        "半透明只改透明度，不改印章面积：{half} vs {opaque}"
+        half["region"], opaque["region"],
+        "半透明只改透明度，不改印章几何：{half} vs {opaque}"
+    );
+    let painted_opaque = opaque["painted_pixels"].as_u64().expect("painted_pixels");
+    let painted_half = half["painted_pixels"].as_u64().expect("painted_pixels");
+    assert!(
+        painted_half <= painted_opaque && painted_opaque - painted_half <= 2,
+        "半透明的 painted_pixels 只允许掩膜量化差（≤2），实测 {painted_half} vs {painted_opaque}：{half}"
     );
     let mass_opaque = opaque["ink_mass"].as_u64().expect("ink_mass");
     let mass_half = half["ink_mass"].as_u64().expect("ink_mass");
