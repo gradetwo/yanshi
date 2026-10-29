@@ -2222,15 +2222,19 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
 
 ## §119 主干先红在 `short_stroke_hint`（合并把「绑定」与「使用」分到了两个函数）＋ batch16 落地（包侧台账「六百七十二」）（2026-10-29）
 
-① **先修一个不属于 batch16 的红**：`cargo build --release` 直接 `error[E0425]`✗
-   **根因是两次上游合并的叠加**：`c5c96350`（反馈期 1：短笔画单 dab 兜底）写消费端
-   `if let Some(hint) = short_stroke_hint`，`123448b1`（反馈期 4：涂抹预算闸自动拆分）把绘制段
-   抽成 `paint_and_commit_brush_segment` ⇒ **绑定留在了函数里、使用留在了外面** ✗
-   ⇒ `d6ca1c28` 把它们合到同一棵树 ⇒ **主干自那起编不过**（CI run 40830060709 `failure` 就是它 ✓）
-   **⇒ 上游 tip `cc9332ab` 仍然红**（本轮核过：`git grep -n short_stroke_hint cc9332ab` ⇒ 绑定在 :2378、
-   使用在 :1762，两个函数 ✗）⇒ 所以这个修复**必须先于任何补丁**落地。
-   **⇒ 修法**：把 hint **挂到返回值上**（`BrushSegmentPainted.short_stroke_hint` ✓）⇒ 拆分路径收集成
-   `Vec<String>` ⇒ 消费端判 `!is_empty()` ⇒ **多条提示全部进 `warnings`**（原来只能带一条 ✗）✓
+① **一个不属于 batch16 的红：我修了，但上游同时修了 ⇒ 我这版作废**（**同一事实只留一处 ✓**）：
+   `cargo build --release` 直接 `error[E0425]`✗ 根因是两次上游合并的叠加 ——
+   `c5c96350`（反馈期 1：短笔画单 dab 兜底）写消费端 `if let Some(hint) = short_stroke_hint`，
+   `123448b1`（反馈期 4：涂抹预算闸自动拆分）把绘制段抽成 `paint_and_commit_brush_segment`
+   ⇒ **绑定留在函数里、使用留在外面** ✗ ⇒ `d6ca1c28` 合到同一棵树起**主干编不过**
+   （CI run 40830060709 `failure` 就是它 ✓；`git grep -n short_stroke_hint cc9332ab` 核过 :2378 与 :1762 分属两函数 ✗）
+   · **我的修法**（曾是 `038e723f`）：hint 挂到 `BrushSegmentPainted` 返回值 ⇒ 拆分路径收成 `Vec<String>`
+     ⇒ **每条提示都进 `warnings`** ✓
+   · **上游的修法**（`7783ce23`，落地的就是这个 ✓）：同样把 hint 穿出段结构，但拆分路径用
+     `all.iter().find_map(…)` ⇒ **多段各有提示时只露第一条** ✗
+   **⇒ 所以本仓库带的是上游那版**（rebase 时丢弃我的重复提交 ✓ —— 不夹带、不覆盖别人已落地的修法 ✓）
+   **⇒ 留下一条待观察**：`find_map` 会不会让「第二段也有兜底提示」静默消失（形态⑤ 的小兄弟 ✗）——
+   要修得另开一个提交 ＋ 一条判据（断 `warnings` 条数 = 有提示的段数 ✓），**不在本轮夹带** ✓
 
 ② **batch16（`e479da63 → bc55369a`）三件事**（全在 `api-local.js`，两份拷贝 `cmp` 逐字节一致 ✓）：
    · `describe_canvas` 本地端点（照服务端 `tools.rs:2971 read_describe_canvas`✓）
@@ -2262,8 +2266,8 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
      ⇒ **已 revert 回入库版** ✓ ⇒ **这是 #30（H-1 资产重复）的第 7 次实例**：它每次都以
      「索引／戳在 CI 与本机算出不同值」的形式出现，而**根因是 `web/` 与 `assets/` 两份拷贝**✗
 
-⑥ **未收账**：本轮三个提交（修主干 ＋ batch16）已进树，**CI 还没跑**（main 组里还压着
-   `cc9332ab`／`f4df04a4`／`fe77ac04` 三个 run ✓ ⇒ 按规矩不派发、等它们清）✓
+⑥ **未收账**：batch16 落在 `2672dc45`（rebase 后 ＝ 上游 `6b91fca2` 之上 ✓），**CI 还没跑**
+   ⇒ 按外§118 的规矩：main 组里只要还有 `in_progress`／`pending` 就不派发，等它清 ✓
 
 ## §120 batch17 落地（包侧台账「六百七十三」）：`import_psd` 本地化 ＋ **我自己写坏了一次变异**（2026-10-29）
 
@@ -2309,3 +2313,61 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    多出 7 项 ⇒ `tool-assets-index-matches-tree` 当场红 ✗ ⇒ **已 revert 回入库版** ✓
    （索引只描述 palette／texture／brush／medium ⇒ **改 `api-local.js` 根本不需要动它** ✓）
    而 `web/index.html` 的戳**必须**重算（`api-local.js` 与 `wasm/*` 都在 `stampFiles` 里 ✓）✓
+
+## §121 batch18 落地（包侧台账「六百七十四」）：两条光栅导入的**提交前守卫**对齐服务端四层检查 ＋ **台账自己的计数不符**（2026-10-29）
+
+① **落账**：`import_image` 与 `import_psd` 的本地守卫改成**走同一份 `p2RefGuard`**，
+   顺序逐字照 `log.rs::validate_commit`（**blob `:293` 先 ⇒ 对象唯一 `:339` ⇒ 图层存活 `:424`** ✓）
+   ＋ `layer_id` 由「本地放宽（默默取第一个活层）」改回**必填 400**（`tools_bitmap.rs:151` 的 `require_str` ✓）。
+   ⇒ **替换的是已有分支**（命令口径，别抄数字 ✓）：
+   `node -e 'const s=require("fs").readFileSync("web/api-local.js","utf8");console.log((s.match(/(?:url\.pathname|path) === "/g)||[]).length)'`
+   ＋ 同文件 `const LOCAL_IMPLEMENTED = …` ⇒ **本轮实测两边都是 181** ✓（batch16/17 也是 181 ✓）
+   ＋ `cmp crates/yanshi-http/assets/api-local.js web/api-local.js` ✓ 逐字节一致 ✓
+
+② **判据 §H 十二案**（`scripts/tool-pwa-import-psd.mjs`：总断言 **240 → 338** ✓ 本机全过 ✓）——
+   最硬的不是逐案文案，而是**每条拒绝案都附一条恒等式**：原子总数**前后不变** ✓
+   ⇒ 拦的正是「先写日志再丢掉」那类**形态③**（回执 ok 而状态里没有 ✗）；
+   而**成功路径 H11/H12 照样要跑** ⇒ 防「守卫把一切都拒」的假绿 ✓。
+   原子 id 是各自机器生成的 ⇒ 用 `idNorm` 归一化成「原子 ⟨id⟩」再比 ✓
+   （**外§119① 那条「标识要认判据名／整句结构、不认会变的那段」在同一轮的落地 ✓**）。
+
+③ **★★ 台账自己的标题与正文对不上，两次都对不上**（本轮查清 ✓）：
+   「六百七十四」的标题写 **十三案／十七条变异** ✗，而**它自己的正文枚举**是 H1–H12 ＋ ①–⑱ ✓
+   ⇒ 用命令核对：`grep -c 'guardCase(' `（10 案）＋ 两条成功案 = **12** ✓，变异 **11 + 7 = 18** ✓
+   ⇒ **已按命令改成 12／18** ✓。**这是「同一事实写两处 ⇒ 一定漂移」的第 4 次实例**
+   （866 轮判据数、855 轮那个 `63`、994 轮 trackTemp、本轮计数 ✗）——
+   **⇒ 而这次漂移发生在同一份文档的相邻两行**，读者只要比对就看得见，却没有被发现 ✓
+
+④ **判据跟着分叉走，不是产品坏了**（`tool-pwa-api-behaviour` 第 ④ 案起初红 ✗）：
+   它锁的是**本地旧文案** `blob_not_found` ⇒ 对齐服务端后那句**本身就是分叉** ⇒ 改断整句
+   「原子 ⟨id⟩ 引用的 blob 尚未上传（违反提交顺序协议）」＋ `reference_not_found` ✓
+   （**旧判据锁住旧分叉** ⇒ 这类回归必须在台账里说清是哪一边在动 ✓）。
+
+⑤ **补丁带来的行号又有三处对我们已过期**（外§119④ 的固定一步 ✓）：
+   `fold.rs:1315 → 1325`（`Tombstone` ✓ 两份 js ＋ docs）｜`log.rs:294 → 293`（`validate_blobs` ✓ js×2 ＋ docs ＋ 两条判据的范围 `:292–295`）｜
+   `fold.rs:1305–1313 → 1315–1323`（`ReorderObjects` ✓）⇒ **按第 855／856 轮的规矩一次 grep 全仓改完**，
+   改完 `node --check` ＋ 两份 `cmp` 复核 ✓（**全是注释，行为未变 ✓**）。
+
+⑥ **变异本机复测两条**（⑫–⑱ 是这一批的新路径 ✓）：
+   ⑮「`layer_id` 必填失效」⇒ §H6 红 ✓｜⑰「重复 id 检查整个失效」⇒ §H2/§H3/§H10 红 ✓。
+   **每条跑之前先按外§120④ 那两道闸**：先把改动落到 `.mjs` 副本上 `node --check`（**语法合法 ≠ 变异生效 ✗**），
+   再打印被改函数体**亲眼确认谓词真的坏了** ✓ —— 上一轮就是靠这道闸才没把「没变异」当成「安慰剂」。
+
+⑦ **收紧 `layer_id` 之前先核前端**（别把产品改坏 ✓）：
+   `grep -n 'callTool("import_image"' web/viewer-app.js` ⇒ **四处（:4024/:4101/:4203/:8898）全部带 `layer_id`** ✓
+   ⇒ 所以 400 必填不会打到真实 UI ✓。
+
+⑧ **构建产物**：`api-local.js` 改了 ⇒ 外壳戳**必须**再重算一次 ✓
+   本轮 `3406621666198 → 9843496206568`（`service-worker.js`／`viewer-app.js`／`index.html` 三处同戳 ✓，
+   `tool-pwa-stamp-shape` 16 条 ✓）；而 `web/assets-index.json` **又被本机重算污染**（本机 texture 15 vs git 8 ✗）
+   ⇒ **已 revert** ✓ —— H-1（#30）的又一次实例，**根因是 `web/` 与 `assets/` 两份拷贝** ✗
+
+⑨ **回归**（全部在**重建后的二进制**上跑 ✓ —— 首次编译上游 `7783ce23`，8m12s）：
+   `tool-pwa-import-psd`（338 ✓）／`tool-pwa-api-behaviour` ✓／`tool-pwa-describe-canvas`（274 ✓）／
+   `tool-pwa-local-write-guards` ✓／`tool-pwa-stamp-shape` ✓／`tool-assets-index-matches-tree` ✓／
+   `tool-web-assets-parity` ✓／`tool-pwa-assets`（**声明 181 === 分支 181** ✓）／`tool-js-syntax`（458 文件 ✓）—— **全绿** ✓
+
+⑩ **未收账**：batch18 提交后 **CI 还没跑**；本轮 main 组里 `6b91fca2` 仍是 `queued`，
+   另有 5 个上游分支的 run 全在 `queued`（**GH 侧没-runner 状态，不是我多派 ✓**）
+   ⇒ 按外§118／§119⑥ 的规矩：**不派发、不取消**，等组清 ✓
+   ⇒ 我这一版落在 `6b91fca2` 的**后代**上 ⇒ 即便顶掉那条 `queued` 也**无损**（第 897 轮 ✓）。

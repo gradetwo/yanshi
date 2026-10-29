@@ -2525,7 +2525,7 @@ async function withKernel(doc, fn) {
     const props = {};
     let supersededData = null;
     const tombstoneIds = [];
-    // **`reorder_objects` 的最新生效位置 ✗**（**照 `fold.rs:1305–1313` 逐字 ✓**：
+    // **`reorder_objects` 的最新生效位置 ✗**（**照 `fold.rs:1315–1323` 逐字 ✓**：
     //   `order[index] ⇒ z_index = index`；**被 revert 抑制的那条跳过 ✓** ⇒ 撤一次重排 = 回到旧 z ✓）。
     let reorderZ = null;
     /** **生效的 `move`／`transform` ✗**（**照 `fold.rs` 的 `Move | Transform` ✓**）：
@@ -2946,7 +2946,7 @@ async function withKernel(doc, fn) {
     const objectId = typeof payload.object_id === "string" ? payload.object_id : null;
     // **`create_object`／`import_image` = `MustNotExist` ✗**（**`log.rs:100` 逐字 ✓**）：
     //   判的是**服务端 `state.objects.contains_key`** ✓（`state.rs:546`）——
-    //   **∴ 墓碑对象仍在 `objects` 里**（`fold.rs:1315` 只置 `deleted_by` ✓）⇒ **撞墓碑也拒 ✓**
+    //   **∴ 墓碑对象仍在 `objects` 里**（`fold.rs:1325` 只置 `deleted_by` ✓）⇒ **撞墓碑也拒 ✓**
     //   （**不是**「活着才拒」✗）；而**创建被 revert ⇒ 折叠层根本没把它建出来** ✓ ⇒ 该 id 可复用 ✓
     //   —— 本地同判：**视图存在（含墓碑）就 409**，与 `neutral` 无关 ✓。
     if (objectId !== null && (kind === "create_object" || kind === "import_image")) {
@@ -3014,7 +3014,7 @@ async function withKernel(doc, fn) {
    *   —— 与服务端注释里点名的同一个「静默失效」✓（**第 2 批判据 §C 抓出：A1 在锁的层里，
    *   服务端 403、本地 200 ✗**）。
    *   **规则逐字照服务端 ✓**（**顺序也一样：引用／存在性由 `p2RefGuard` 先判 ✓，锁在其后 ✓**）：
-   *   · 原子指向**状态里已有的对象** ✓（**含墓碑 ✓** —— `fold.rs:1315` 只置 `deleted_by` ✓
+   *   · 原子指向**状态里已有的对象** ✓（**含墓碑 ✓** —— `fold.rs:1325` 只置 `deleted_by` ✓
    *     ⇒ `state.objects` 仍留着它 ✓）⇒ 对象**自己**或**它所在图层**被锁 ⇒ 403 `permission_denied`；
    *   · 对象**还不在状态里**（⇒ 这条原子要**新建**它 ✓）且净荷带 `layer_id` ⇒ 该层被锁 ⇒ 403；
    *   · **例外：`set_property` 改 `locked`／`visible` 永远放行 ✓**（否则解锁永远做不到 ✓）；
@@ -4734,7 +4734,8 @@ async function withKernel(doc, fn) {
     // **⑤ `import_image` ✗**：**把已存进本地 blob 库的图钉成对象 ✓**：
     //   **∴ `blob_hash` 必填 ✓**（**∴ 先 `POST /api/blob` 存图再调 ✓ —— 与服务端流程一致 ✓**）；
     //   **∴ blob 不在库里 ⇒ 404 ✗**（**∴ 不写一条**渲染时取不到像素**的原子 ✓**）；
-    //   **∴ `layer_id` 缺省取第一个存活图层 ✗**（**∴ 服务端要求必填 ✗，**本地**放宽一点 ✓**）；
+    //   **∴ `layer_id` 必填 ✗**（**第 六百七十四 轮实测 ✓：服务端 `require_str` 缺 ⇒ 400
+    //     「缺少必填参数 layer_id」—— 此前本地「放宽」成默默取第一个活层 ✗ 是第三处真分叉 ✓**）；
     //   **∴ 自带 `object_id` ✗**（**`get_undo_status`／`list_objects` 按它分组 ✓**）。
     if (path === "/api/tools/import_image") {
       // **★ 形状照前端与服务端 ✗ ★**（本轮 ✓）：前端 `viewer-app.js` 与
@@ -4746,9 +4747,19 @@ async function withKernel(doc, fn) {
       //     ⇒ 渲染器 `parse_raster_patch` 按**不支持的原语跳过 ⇒ 一个像素都不出**（服务端第 1223 轮的 P0 ✓）。
       //   **∴ 修法 ✗**：读**规范形状**（并兼容旧的平铺写法 ✓）＋ 写**渲染器认得的净荷**
       //     （`bitmap.blob_hash` ＋ `width/height` ＋ `region` ✓ 与 `brush_stroke` 那条 import_image 原子同形 ✓）
+      //
+      // **★ 检查顺序逐字照服务端 ✗（第 六百七十四 轮实测 ✓：P1–P4 四处真分叉的根源都是「各查各的」✗）★**
+      //   `write_import_image`：`require_str layer_id` ⇒ `require_object bitmap` ⇒ `parse_bbox`
+      //   ⇒ `ctx.commit` ⇒ `validate_commit`：**`validate_blobs` 先**（`log.rs:293` ⇒ blob 缺失报
+      //   「原子 … 尚未上传」✓）**再** `validate_primary_refs`（对象唯一 `:339` ⇒ 图层存活 `:424` ✓）。
       const pl = (body && body.payload) || {};
       const bitmap = body.bitmap || pl.bitmap || {};
       const blobHash = bitmap.blob_hash || body.blob_hash || pl.blob_hash;
+      const layerId = typeof body.layer_id === "string" ? body.layer_id
+        : (typeof pl.layer_id === "string" ? pl.layer_id : null);
+      if (layerId === null) {
+        return p2ToolFailure(400, "invalid_argument", "缺少必填参数 layer_id", null);
+      }
       if (typeof blobHash !== "string" || !blobHash) {
         return json({ ok: false, error: "missing_blob_hash", error_code: "missing_blob_hash",
                       reason: "import_image 需要 bitmap.blob_hash（先 POST /api/blob 存图再导入）",
@@ -4756,16 +4767,6 @@ async function withKernel(doc, fn) {
       }
       const { getBlob } = await import("./store.js");
       const bytes = await getBlob(handle, blobHash);
-      if (!bytes) {
-        return json({ ok: false, error: "blob_not_found", error_code: "blob_not_found",
-                      reason: "本地 blob 库里没有 " + blobHash + "（先 POST /api/blob 存图）",
-                      server: false }, 404);
-      }
-      const { layers, order } = p1LayerOrder(await atomsOf(handle, doc));
-      const layerId = body.layer_id || pl.layer_id || order[0];
-      if (typeof layerId !== "string" || !layers.has(layerId)) {
-        return p2Missing("图层 " + (layerId || "(未指定)") + " 不存在（import_image 需要一个存活图层）");
-      }
       // **∴ region ＋ 尺寸 ✗**：**优先规范 `region`✗** 旧平铺 `x/y/width/height` 兼容 ✓
       const region = body.region || pl.region || {};
       const x = Number(region.x ?? body.x ?? pl.x ?? 0);
@@ -4782,14 +4783,33 @@ async function withKernel(doc, fn) {
                        ("obj_" + Date.now().toString(36));
       const mime = String(bitmap.mime_type || (pl.bitmap && pl.bitmap.mime_type) || "image/x-yanshi-raw");
       // **★ 净荷形状 = 渲染器 `parse_raster_patch` 要的 ✓**：`bitmap.blob_hash` ＋ `width/height` ＋ `region`
+      //   （**blob 缺失时也要能先把原子造出来 ✗**——**服务端 404 的文案里带的是原子 id ✓**
+      //   ⇒ `size` 缺像素时退回调用方给的 `bitmap.size` ✓ 与服务端「净荷照抄 bitmap」同形 ✓）
       const atom = p2Envelope("import_image", {
         type: "raster_patch",
-        bitmap: { blob_hash: blobHash, mime_type: mime, size: bytes.length },
+        bitmap: { blob_hash: blobHash, mime_type: mime,
+                  size: bytes ? bytes.length : (Number(bitmap.size) || 0) },
         width: w, height: h,
         region: { x, y, w, h },
         layer_id: layerId,
         object_id: objectId,
       });
+      // **① blob 引用检查先于对象／图层 ✗**（**`log.rs:293 validate_blobs` 在 `:294 primary_refs` 之前 ✓**
+      //   —— **文案逐字**「原子 {id} 引用的 blob 尚未上传（违反提交顺序协议）」✓ 404 `reference_not_found` ✓）
+      if (!bytes) {
+        return p2ToolFailure(404, "reference_not_found",
+                             "原子 " + atom.id + " 引用的 blob 尚未上传（违反提交顺序协议）",
+                             { blob: blobHash });
+      }
+      // **② 对象唯一 ⇒ ③ 图层存活 ✗**（**同一次 `p2RefGuard` 走完服务端顺序 ✓**：
+      //   `import_image` 的对象是 `MustNotExist` ⇒ 撞活对象**或墓碑**都 409「对象 X 已存在」✓（`log.rs:339` ✓）；
+      //   图层**从未有过** ⇒ 404 `missing_reference`（带名单 ✓）、**存在但已删** ⇒ 409
+      //   「图层 X 已删除，import_image 被拒绝」✓（`log.rs:424` ✗ 两句话不能混 ✓ 实测 P1/P5 ✓））
+      const rows = await atomsOf(handle, doc);
+      const neutral = p2Neutralized(rows);
+      const guard = p2RefGuard(rows, p2PresetLayers(rows, neutral), neutral, "import_image",
+                               { object_id: objectId, layer_id: layerId });
+      if (guard) return p2ToolFailure(guard.status, guard.code, guard.detail, guard.extra);
       const seq = await putAtom(handle, doc, atom);
       return json({ ok: true, atom_id: atom.id, seq, head: seq, object_id: objectId,
                     blob_hash: blobHash, layer_id: layerId,
@@ -7733,18 +7753,23 @@ async function withKernel(doc, fn) {
                       reason: "内核 blob_put 未返回哈希 ⇒ 本地不猜 ✗", server: false }, 501);
       }
       await putBlob(handle, blobHash, Array.from(rgba));
-      const { layers, order } = p1LayerOrder(await atomsOf(handle, doc));
-      const layerId = typeof body.layer_id === "string" && body.layer_id ? body.layer_id : order[0];
-      if (typeof layerId !== "string" || !layers.has(layerId)) {
-        // **∴ 文案逐字照服务端 ✓**（**权威是折叠期引用检查那句「图层 X 不存在（现有图层：…）」✓**
-        //   —— **候选＝活层按 id 升序、上限 8 个 ✓**；`p1LayerOrder` 的 Map **已剔除删层** ⇒
-        //   **keys 就是活集 ✓**，走同一份 `p2MissingReferenceMessage` 的形状实现 ✓）
-        return p2ToolFailure(404, "reference_not_found",
-                             p2MissingReferenceMessage("图层", layerId, layers.keys()),
-                             { layer_id: layerId });
+      // **提交前守卫 ✗**（**第 六百七十四 轮：此前只查「在不在活层表」✗ 三处真分叉 ✓**：
+      //   已删层本地 404「不存在」而服务端 409「图层 X 已删除，import_image 被拒绝」✓；
+      //   重复 `object_id`（含墓碑 ⇒ 服务端 `contains_key`）本地**照写不误**✓ 而服务端 409
+      //   「对象 X 已存在」✓——回执 ok 状态里却没有 ⇒ **静默降级形态③** ✓）：
+      //   **走同一份 `p2RefGuard`**（**服务端 `validate_commit` 顺序 ✓：blob（合成图已先落库 ⇒ 必过）
+      //   ⇒ 对象唯一 ⇒ 图层存活**，两句话各查各的 ✗ 不许混 ✓）。
+      const rows = await atomsOf(handle, doc);
+      const neutral = p2Neutralized(rows);
+      const layerId = typeof body.layer_id === "string" ? body.layer_id : null;
+      if (layerId === null) {
+        return p2ToolFailure(400, "invalid_argument", "缺少必填参数 layer_id", null);
       }
       const objectId = typeof body.object_id === "string" && body.object_id
         ? body.object_id : ("obj_" + Date.now().toString(36));
+      const guard = p2RefGuard(rows, p2PresetLayers(rows, neutral), neutral, "import_image",
+                               { object_id: objectId, layer_id: layerId });
+      if (guard) return p2ToolFailure(guard.status, guard.code, guard.detail, guard.extra);
       const atom = p2Envelope("import_image", {
         object_id: objectId,
         layer_id: layerId,

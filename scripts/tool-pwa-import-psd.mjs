@@ -28,7 +28,10 @@
 //      RLE 行解码偏短 ⇒「解压后」守卫 ✓）；
 //   §G 入口链（缺 layer_id ✓／缺 blob_hash ✓／类型错 ✓／未知键 ✓／非法哈希 ✓／
 //      **规范化的大写哈希两边都拒 ✓ —— 旧 `p2BlobHashOk` 收大写，本分支不用它 ✓**／
-//      不存在的 blob ⇒ 404 文案是**规范化后的哈希** ✓／图层不存在 ✓）。
+//      不存在的 blob ⇒ 404 文案是**规范化后的哈希** ✓／图层不存在 ✓）；
+//   §H 提交前守卫（第 六百七十四 轮 ✓）：已删层 409「已删除，import_image 被拒绝」✓／
+//      重复与墓碑 object_id 都 409「已存在」✓／`layer_id:""` 算「给了」⇒ 404 带名单 ✓／
+//      复合故障的先后（blob ⇒ 对象 ⇒ 图层 ✓）／**每条拒绝断言「原子日志一条都不许多」**✓。
 //
 // **∴ 前提 ✗**：需要**活着的服务端**（`run-criteria-local.sh` 起并把地址放进 argv[2] ✓）
 //   ＋ 仓库夹具在位 ＋ 本地内核（`blob_put` 取内容哈希 ✓）。拿不到 ⇒ `exit(3)`（≠ 产品失败 ✓）。
@@ -503,6 +506,95 @@ function psdRleShortRows(width, height, channels) {
     check(g8[1].status === g8[0].status,
       `§G8 本地应与服务端同状态 ✗ 服务端 ${g8[0].status}｜本地 ${g8[1].status}｜${show(g8[1].body)}`);
   }
+}
+
+// ══ §H 提交前守卫（第 六百七十四 轮：实测出「服务端四道检查的先后顺序也是契约」✗）══
+// **∴ 服务端顺序 ✗**（`tools_bitmap.rs:151`＋`log.rs:292–295 validate_commit` ✓）：
+//   `require_str layer_id`（400）⇒ 工具级 blob／解析 ⇒ **`validate_blobs`**（404「原子 … 尚未上传」✓）
+//   ⇒ **对象唯一**（409「对象 X 已存在」✓ **墓碑也算** ⇒ `contains_key` ✓）⇒ **图层存活**
+//   （**从未有过** ⇒ 404 带名单；**存在但已删** ⇒ 409「图层 X 已删除，import_image 被拒绝」✓
+//   —— 两句话不许混 ✗ 实测 P1/P5 ✓）。
+// **∴ 恒等式（每条拒绝都要过 ✗）**：被拒 ⇒ **两边的原子日志一条都不许多** ✓
+//   —— 否则就是「先写原子、折叠时丢弃」的静默降级形态③（回执 ok 而状态里没有 ✗）。
+{
+  const idNorm = (t) => typeof t === "string" ? t.replace(/原子 \S+ /, "原子 ⟨id⟩ ") : t;
+  async function guardCase(label, tool, args, status, code, expectDetail) {
+    const beforeS = (await readAtoms("srv")).length;
+    const beforeL = (await readAtoms("loc")).length;
+    const [s, l] = await both(tool, args);
+    if (expectDetail === "ATOM_ID") {
+      // blob 顺序文案带**机器生成的原子 id** ✗ ⇒ 归一化后逐字比（形状两边必须同为「原子 … 引用的 blob 尚未上传（违反提交顺序协议）」✓）
+      check(s.status === 404 && l.status === 404 && s.body.error_code === "reference_not_found"
+        && l.body.error_code === "reference_not_found",
+        `${label}：应两边 404 reference_not_found ✗ ${s.status}/${l.status}｜${show(s.body)}｜${show(l.body)}`);
+      const sd = idNorm(detailOf(s)), ld = idNorm(detailOf(l));
+      check(sd === "原子 ⟨id⟩ 引用的 blob 尚未上传（违反提交顺序协议）",
+        `${label}：服务端文案形状 ✗ ${detailOf(s)}`);
+      check(sd === ld, `${label}：文案不同 ✗ 服务端 ${sd}｜本地 ${ld}`);
+    } else {
+      compareError(label, s, l, status, code, expectDetail);
+    }
+    const afterS = (await readAtoms("srv")).length, afterL = (await readAtoms("loc")).length;
+    check(afterS === beforeS, `${label}：服务端拒绝却多写了原子 ✗ ${beforeS}→${afterS} ⇒ 前提变了，改判据`);
+    check(afterL === beforeL,
+      `${label}：本地拒绝却把原子写进了日志 ✗ ${beforeL}→${afterL}（先写后丢＝静默降级形态③ ✓）`);
+  }
+  // 前序：删掉一层（L_H）＋ 造一个活对象（PSD_H2D）＋ 造一个墓碑对象（REF_T）✓
+  await setupBoth("§H 前序 create_layer L_H", "create_layer", { layer_id: "L_H", name: "删给我看" });
+  await setupBoth("§H 前序 delete_layer L_H", "delete_layer", { layer_id: "L_H" });
+  await setupBoth("§H 前序 import_psd PSD_H2D", "import_psd",
+    { layer_id: "layer_default", blob_hash: fxServerHash, object_id: "PSD_H2D" });
+  await setupBoth("§H 前序 draw_shape REF_T", "draw_shape",
+    { layer_id: "layer_default", object_id: "REF_T", data: rectOnLayer });
+  await setupBoth("§H 前序 delete_object REF_T", "delete_object", { object_id: "REF_T" });
+  // —— import_psd 的四道守卫，逐字文案 ＋「拒绝不写日志」✓
+  await guardCase("§H1 import_psd→已删层（409 已删除句 ✓）", "import_psd",
+    { layer_id: "L_H", blob_hash: fxServerHash, object_id: "PSD_H1" },
+    409, "precondition_failed", "图层 L_H 已删除，import_image 被拒绝");
+  await guardCase("§H2 import_psd→重复 object_id（409 ✓ 此前本地照写=形态③）", "import_psd",
+    { layer_id: "layer_default", blob_hash: fxServerHash, object_id: "PSD_H2D" },
+    409, "precondition_failed", "对象 PSD_H2D 已存在");
+  await guardCase("§H3 import_psd→撞墓碑 object_id（contains_key ⇒ 也拒 ✓）", "import_psd",
+    { layer_id: "layer_default", blob_hash: fxServerHash, object_id: "REF_T" },
+    409, "precondition_failed", "对象 REF_T 已存在");
+  await guardCase("§H4 import_psd→layer_id 空串（『给了 id』⇒ 404 带名单，不是 400 ✓）", "import_psd",
+    { layer_id: "", blob_hash: fxServerHash, object_id: "PSD_H4" },
+    404, "reference_not_found", "图层  不存在（现有图层：layer_default）");
+  await guardCase("§H5 import_psd→对象撞＋层已删 ⇒ 对象句先（服务端顺序 ✓）", "import_psd",
+    { layer_id: "L_H", blob_hash: fxServerHash, object_id: "PSD_H2D" },
+    409, "precondition_failed", "对象 PSD_H2D 已存在");
+  // —— import_image 的同一套守卫（服务端另一条写路径 ✓）：先上传一份 2×2 原始像素 ✗
+  const rawBytes = Uint8Array.from(Array.from({ length: 16 }, (_, i) => i * 4));
+  const rawS = await uploadServer(rawBytes), rawL = await uploadLocal(rawBytes);
+  if (!rawS || !rawL || rawS !== rawL) {
+    console.log(`⊘ 不可判：§H 原始像素上传不齐（${rawS}/${rawL}）⇒ 前提不成立`);
+    process.exit(3);
+  }
+  const img = (layerId, objectId) => {
+    const a = { bitmap: { blob_hash: rawS, size: 16, mime_type: "image/x-yanshi-raw" },
+                region: { x: 0, y: 0, w: 2, h: 2 } };
+    if (layerId !== undefined) a.layer_id = layerId;
+    if (objectId !== undefined) a.object_id = objectId;
+    return a;
+  };
+  await guardCase("§H6 import_image→缺 layer_id（400 必填句 ✓ 此前本地默默取第一个活层）", "import_image",
+    img(undefined, "IMG_H6"), 400, "invalid_argument", "缺少必填参数 layer_id");
+  await guardCase("§H7 import_image→已删层 ⇒ 409", "import_image",
+    img("L_H", "IMG_H7"), 409, "precondition_failed", "图层 L_H 已删除，import_image 被拒绝");
+  const absentHash = "sha256:" + "1".repeat(64);
+  await guardCase("§H8 import_image→blob 缺 ⇒ 404「尚未上传」句（旧本地是自造 blob_not_found ✗）", "import_image",
+    { layer_id: "layer_default", bitmap: { blob_hash: absentHash, size: 16, mime_type: "image/x-yanshi-raw" },
+      region: { x: 0, y: 0, w: 2, h: 2 }, object_id: "IMG_H8" }, 404, "reference_not_found", "ATOM_ID");
+  await guardCase("§H9 import_image→blob 缺＋层已删 ⇒ blob 句先（validate_blobs 先于 primary_refs ✓）", "import_image",
+    { layer_id: "L_H", bitmap: { blob_hash: absentHash, size: 16, mime_type: "image/x-yanshi-raw" },
+      region: { x: 0, y: 0, w: 2, h: 2 }, object_id: "IMG_H9" }, 404, "reference_not_found", "ATOM_ID");
+  await setupBoth("§H 前序 import_image IMG_H10", "import_image", img("layer_default", "IMG_H10"));
+  await guardCase("§H10 import_image→重复 object_id ⇒ 409", "import_image",
+    img("layer_default", "IMG_H10"), 409, "precondition_failed", "对象 IMG_H10 已存在");
+  // **成功路径在守卫之后仍要通 ✓**（防「守卫一律拒绝」的假绿 ✗）：
+  await setupBoth("§H11 守卫后成功路径 import_psd PSD_H11", "import_psd",
+    { layer_id: "layer_default", blob_hash: fxServerHash, object_id: "PSD_H11" });
+  await setupBoth("§H12 守卫后成功路径 import_image IMG_H12", "import_image", img("layer_default", "IMG_H12"));
 }
 
 if (bad.length) {

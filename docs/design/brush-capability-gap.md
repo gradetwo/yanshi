@@ -23037,7 +23037,7 @@ M3 关掉未知名拒绝｜M4 `apply` 的确定性 `object_id` 改随机｜M5 �
 对象在状态里 ⇒ `不能修改 {id}：{对象自身已锁定|所在图层已锁定}（先解锁再操作；改 locked/visible 不受限制）`；
 对象不在状态而净荷有 `layer_id` 且该层锁定 ⇒ `不能在锁定的图层 {id} 上新建对象（先解锁）`；
 **只有 `layer_id` 的图层管理原子**不受影响 ✓。
-**墓碑对象照样算「在状态里」** ✓（`fold.rs:1315` 的 `Tombstone` 只写 `deleted_by`，`state.objects` 里还在 ✓
+**墓碑对象照样算「在状态里」** ✓（`fold.rs:1325` 的 `Tombstone` 只写 `deleted_by`，`state.objects` 里还在 ✓
 ⇒ 锁对已删对象同样生效 ✓）；本地等价物是 `p2ObjectView` 的 `found && !neutral(create_id)` ✓。
 
 **★ 真正的坑：`try { return dispatch(req) } catch` 抓不到异步拒绝 ✗ ★**（实测两轮）：
@@ -24297,3 +24297,58 @@ bbox 内与外／分页（含 `limit:0`）；§C `get_atom` 字段集合与 `lab
 **回归**：`tool-pwa-import-psd`（240 ✓）、`tool-js-syntax`（459 文件 ✓）、`tool-pwa-assets`
 （**声明 181 === 分支 181 ✓** 替换 501 分支不减计数）、`tool-pwa-api-behaviour`、
 `tool-pwa-describe-canvas`、`tool-pwa-local-write-guards` —— **全绿** ✓。
+
+## 六百七十四、本地 `import_image`／`import_psd` 的**提交前守卫**对齐服务端四层检查（`LOCAL_IMPLEMENTED` 保持 181）：活服务端探出六处分叉，其中「已删图层」被本地误报成 404；判据 §H 十二案（H1–H12 ✓）＋十八条变异（①–⑱ ✓），并补上「变异自己先要被检查」这道闸
+
+**做什么**（`crates/yanshi-http/assets/api-local.js` ⇒ `web/api-local.js` 由 `pwa-sync-viewer.mjs` 重生成；**分支数不变 ⇒ 181 不动 ✓**）：
+
+两条光栅导入路径此前**各有各的守卫写法**，而**权威顺序在 `log.rs::validate_commit`**（**blob 先、再主引用 ✓**）：
+
+| # | 检查 | 服务端（实测锚点） | 本地改之前 |
+|---|---|---|---|
+| ① | `layer_id` 必填（**空串算「给了」**，`require_str` 只判类型） | 400 `invalid_argument`「缺少必填参数 layer_id」（`tools_bitmap.rs:151`）| `import_image` **默默取第一个活层** ✗；`import_psd` 走 `body.layer_id` 缺省编造 ✗ |
+| ② | `validate_blobs` **先跑** | 404 `reference_not_found`「原子 ⟨id⟩ 引用的 blob 尚未上传（违反提交顺序协议）」＋ extras `{with_atom, with_blob}`（`log.rs:293`）| 本地报**没有原子 id** 的 `blob_not_found` ✗（**且顺序在层检查之后 ⇒ 复合故障时谁先报会反过来 ✓**）|
+| ③ | `validate_primary_refs`：**对象撞（含墓碑）先于层** | 409「对象 X 已存在」（`state.objects.contains_key` ⇒ **已删对象的 id 照样撞 ✓**，`log.rs:339`）| **完全没有这一层** ✗ |
+| ④ | 层：从未存在 ⇒ 404；**存在过又被删 ⇒ 409** | 404「图层 X 不存在（现有图层：…）」／409「图层 X 已删除，import_image 被拒绝」（`log.rs:424 check_layer_exists`）| 一律 404＋**自己编的文案**「（import_image 需要一个存活图层）」✗ |
+
+**根因**：本地当时用 `p1LayerOrder`（一个**只剩活层**的 Map）⇒ **「已删层」与「从没这个层」压成同一个答案** ✗
+（**形态④：两种输入静默当成一种处理 ✓**）。而守卫所需的 `alive/deleted_by` 在 `p2PresetLayers(rows, neutral)` 里就有 ⇒
+改走**别处已在用的 `p2RefGuard`**（layers 用带 `alive` 的那张表，**不用 `p1LayerOrder` ✓**）。
+
+**先探再改**（临时探针脚本，跑完即删 ✓）：对活服务端 14 案（P1–P11＋Q1–Q3）逐字打印响应 ⇒
+**六处分叉 P1–P6 全部坐实，改完后逐字一致**（只有原子 id 是各自机器生成的 ULID／计数串 ⇒ 判据里用
+`idNorm` 归一化「原子 ⟨id⟩」再比 ✓ —— **标识要认判据名／整句结构，不认会变的那段 ✓**）。
+
+**判据**（`scripts/tool-pwa-import-psd.mjs` 新增 **§H**，总断言 240 → **338 ✓**）：
+
+| 案 | 输入 | 两边必须逐字同 |
+|---|---|---|
+| H1 | `import_psd` → **已删**图层 | 409「图层 `L_H` 已删除，import_image 被拒绝」 |
+| H2 | `import_psd` **重复 object_id** | 409「对象 `PSD_H2D` 已存在」 |
+| H3 | `import_psd` 撞**墓碑对象**（`draw_shape` 建完再 `delete_object`）| 409（**证明服务端查的是 map 含墓碑 ✓**）|
+| H4 | `import_psd` 的 `layer_id: ""` | 404「图层  不存在（现有图层：layer_default）」——**两个空格 ✓ 空串算给了 ✓** |
+| H5 | 对象撞＋层已删 **复合故障** | **对象那句先**（③ 先于 ④ ✓）|
+| H6–H10 | `import_image`：缺 `layer_id`／已删层／blob 不在库／blob 缺＋层已删／重复 id | ①400、④409、②「尚未上传」、**② 先于 ④**、③409 |
+| H11–H12 | 两条路径的**成功路径**在守卫之后仍成立 | 防「守卫把一切都拒」的假绿 ✓ |
+
+**每条拒绝案还断一条恒等式**：原子总数**前后不变**（**先写日志再丢掉 ⇒ 形态③ ✓**）；
+上传夹具是**两边各传一次真 2×2 原始 RGBA**，哈希不一致就 `exit(3)`（**判据前提不成立 ≠ 产品失败 ✓**）。
+
+**变异（18 条全红 ✓ 绿 0 ✓ 未跑 0 ✓）**：①–⑪ 是「第 六百七十三 节」的解码器那批（**重跑仍全红 ✓**），⑫–⑱ 打这次的新路径：
+⑫⑬ 守卫结果被忽略、⑭ blob 检查恒不触发、⑮ `layer_id` 必填失效、⑯ dup 只查活层（撞墓碑放行）、
+⑰ dup 整个失效、⑱ 空串 `layer_id` 被当缺席 —— **每条都红 ✓**。
+
+**★ 这一轮补的新规矩：变异脚本自己也要先被测量**（两场事故都是**判据侧**，不是产品侧 ✓）：
+1. **⑦ 第一次「假红」**：把整句 `if (…) return fail(…);` 换成 `if (false) {` ⇒ **吞掉了函数尾部的 `}`**，
+   文件语法坏掉 ⇒ 判据 `exit(3)`。而**若把 3 当成「能红」，就等于用「脚本崩溃」冒充「断言失效」✗**
+   （**比 placebo 更隐蔽：它确实会一直「红」✓**）。⇒ **现在每条变异跑之前先 `node --check`（ESM 口径：拷成 `.mjs` 查 ✓**，
+   **`node --check` 在 `.js` 上按 CJS 解析会漏 ✗ —— 本轮实测**）；语法不合法 ⇒ **`⊘ ABORT` 打印出来，不算红 ✓**。
+2. **⑭ 第一次锚点不唯一**：`if (!bytes) {` 在文件里出现 2 次（`import_image` 与 `swatch` 的同形句）⇒
+   `assert count==1` 拦下 ⇒ 加两行上下文才跑（**第 608／995 轮同族：锚点要带足够上下文，跳过要可见 ✓**）。
+
+**回归**：`tool-pwa-import-psd`（338 ✓）、`tool-js-syntax`（459 文件 ✓）、`tool-pwa-assets`
+（**声明 181 === 分支 181 ✓**）、`tool-pwa-api-behaviour` ✓、`tool-pwa-describe-canvas`（274 ✓）、
+`tool-pwa-local-write-guards` ✓ —— **全绿** ✓。
+**其中 `tool-pwa-api-behaviour` 第 ④ 案起初是红的 ✗**：它断的是**本地旧文案** `blob_not_found` ⇒
+对齐服务端后那句**本身就是分叉** ⇒ 判据跟着改断整句「原子 ⟨id⟩ 引用的 blob 尚未上传（违反提交顺序协议）」✓
+（**旧判据锁住旧分叉 ⇒ 这类回归红要在台账里说清是「判据跟着分叉走」而不是「产品坏了」✓**）。
