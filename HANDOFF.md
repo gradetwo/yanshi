@@ -2433,15 +2433,20 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    `tool-pwa-stamp-shape` exit 0（16 条 ✓）、`tool-assets-index-matches-tree` exit 0（10 条 ✓）
    ⇒ **没新增已知红** ✓
 
-⑨ **上面那⑧是 rebase 前的结论**：`git fetch` 之后 **origin/main 已经前进了 10 个提交**（`be7481f8` 及其祖先），
-   而**用户本轮的规矩正是「定期 git pull 同步」**（外§122⑦ ✓）⇒ 所以本地 4 个提交 rebase 到 `be7481f8` 之上 ✓
-   （**rebase 前先把旧 HEAD 钉成一个本地分支 `backup/pre-rebase-batch19-21327916`** ✓——改写未推送的提交也要留退路，
-   不搞「先动再找」✗）。**⇒ 这就是「只在自己的树里验证」的代价**：我这一场跑了 13 条判据，而它们测的字节
-   **已经不是主干的字节** ✓（内核①：绿不是证据，**对哪份字节绿**才是 ✓）
-   ⇒ 所以 rebase 后**必须重跑**（不止 `cmp` ✓）。
+⑨ **上面那⑧是 rebase 前的结论**：`git fetch` 之后 **origin/main 前进了 10 个提交**（到 `be7481f8`），
+   而**用户本轮定的规矩正是「定期 git pull 同步」**（本节⑦ ✓）⇒ 本地提交 rebase 上去 ✓
+   （**rebase 前先把旧 HEAD 钉成本地分支** ✓ `backup/pre-rebase-batch19-21327916` 与 `backup/pre-rebase-batch19-2`
+   ——改写未推送的提交也要留退路，不搞「先动再找」✗）。
+   **⇒ 这就是「只在自己的树里验证」的代价**：那一轮 13 条判据测的字节**已经不是主干的字节** ✓
+   （内核①：**绿不是证据，「对哪份字节绿」才是** ✓）⇒ 所以 rebase 后**必须重跑**（不止 `cmp` ✓）
    **上游那 10 个提交动了 `api-local.js`**（两个 `P2_TOOL_SPECS` 行：`batch` 加 `wait_for_render`、`new_document` 加 `mode` ✓）
    ⇒ 与我的 batch19 大改**不是同一 hunk ⇒ rebase 零冲突**（**「没冲突」不等于「没事」**✗：见 ⑩）
-   ⇒ 戳因此再动一次：**`9308320124771` ⇒ `6040682035257`**（本机重算 ✓，`assets-index` 又 revert 一次 ✓）
+   **⇒ 而且 main 还在动**：第一次 rebase 后 `git fetch` 又见 4 个提交（到 `8dd922f7`，新工具 `toned_ground` ＋
+   导出口径文档）⇒ **再 rebase 一次** ✓ ⇒ **戳跟着动两次**：`9308320124771 ⇒ 6040682035257 ⇒ 5153474874212`
+   （本机重算 ✓ `assets-index` 每次 revert ✓ 每轮 `cmp` 两份 js 一致 ✓ 两份都含 `toned_ground` 行 ✓）
+   **⇒ 教训（写给下一轮的我 ✓）**：**只要 main 在被人合，「验证过了」的有效期就是一分钟** ✗
+   ⇒ 所以顺序应当是**先 fetch→rebase→再跑判据→再 commit→再 push**，而不是反过来 ✓
+   （本轮我把判据跑在了两份不同的、都已不是主干字节的树上 ✗ 白跑两轮 rebuild）
 
 ⑩ **rebase 顺手抓到一条真分叉（记成任务 #63，本轮不夹带修 ✗）**：
    上游把 `mode` **只写进了参数表**，本地实现**没读**它 ✓——`web/api-local.js` 的 `new_document` 分支
@@ -2452,3 +2457,11 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    **「表里声明了」看起来像「支持了」** ✗ 而**没有任何一条判据**断「声明的入参被读过」✓
    （口径：`grep -rln P2_TOOL_SPECS scripts/*.mjs` ⇒ **本轮实测只命中生成器**）
    ⇒ 所以 #63 = 普查「声明集合 − 读取集合」并把恒等式钉成判据 ✓（**不是补 `mode` 的实现就完事**✗）
+
+⑪ **rebase 后对「主干那份字节」重跑（13 条全 exit 0 ✓）**：`tool-pwa-stamp-shape`／
+`tool-assets-index-matches-tree`／`tool-js-syntax`（459 个 ✓）／`tool-web-assets-parity`／`tool-pwa-assets`／
+`tool-pwa-preset-server-parity`（22 套库＋带 render 的两种诚实出口 ✓）／`tool-pwa-preset-library-parity`（逐字节相同 ✓）／
+`tool-pwa-preset-render-parity`（逐像素同口径 ✓）／`tool-pwa-api-behaviour`／`tool-pwa-import-psd`（338 ✓）／
+`tool-pwa-describe-canvas`（274 ✓）／`tool-pwa-local-write-guards`／`tool-pwa-pixel-stats`
+⇒ **没新增已知红** ✓ ⇒ 所以⑧那句「全绿」现在有了对主干字节的版本 ✓（**⑧保留是因为它记的是「变异还原」这一步，
+不是同一件事 ✓**——两条各自成立，别合并成一条 ✗）
