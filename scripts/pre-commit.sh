@@ -117,6 +117,45 @@ if [ -n "$DBG_KB" ] && [ "$DBG_KB" -gt 5242880 ]; then   # > 5 GiB
   echo "     （release 保留；本场实测 9.5 G → 614 M、磁盘 63% → 60%）"
 fi
 
+# ⑦ **PWA 内联工具表**（2026-10-29 加）—— **只在工具面文件变了时跑** ✓
+#   **⇒ 为什么加**：四支分支（newdoc／f53／batch-wait／f56）先后倒在同一个判据
+#     tool-pwa-suggestion-accept 上，根因全是「改了工具面却没重生成
+#     web/api-local.js 里嵌的内联工具表」✗ ⇒ 每次都是 CI 排队半小时后才暴露 ✗
+#     ⇒ 所以把它**挂到改工具面的那一刻**，而不是靠人记住 ✓
+#   **⇒ 触发集合（已核实：表内容只由这五处决定）**：
+#     · crates/yanshi-server/src/tools_registry.rs（ToolSpec 清单与参数表 ✓）
+#     · crates/yanshi-server/src/tools.rs（ParamSpec 常量、清单函数 ✓）
+#       （grep 核实：ToolSpec 块与 ParamSpec 常量只在这两个文件里，别处没有 ✓；
+#        GET /api/tools 就是 registry.tools_list_json() 的直出，无过滤 ✓）
+#     · web/api-local.js（表文件本身：手改也要验 ✓）
+#     · crates/yanshi-http/assets/api-local.js（第二份表：服务端 include_str! 内嵌、
+#       实际 serve 的那份；只改 web/ 会让页内比对继续红，2026-10-29 batch-wait
+#       新 run 实测：web/ 已新、embedded 仍旧 ⇒ CI 仍倒在同一判据 ✓）
+#     · scripts/gen-pwa-tool-specs.mjs（生成器变了 ⇒ 表可能要重算 ✓）
+#     ⇒ 其余提交**零成本**（grep 一下就跳过，不起服务、不构建 ✓）
+#   **⇒ 检查本身不写回**：regen 脚本的 --check 只比对，表过期才拦提交 ✓
+#     （钩子绝不在提交前夜里改工作区：写回是开发者的事，跑一条命令就行 ✓）
+#   **⇒ 退出码 3（不可判）不拦**：服务起不来／构建失败 ⇒ 警告放行，判据同规
+#     （不可判 ≠ 产品失败；且本步骤跑在 clippy 之后，树已通过编译，构建失败极罕见 ✓）
+if git diff --name-only HEAD 2>/dev/null | grep -qE '^crates/yanshi-server/src/tools(_registry)?\.rs$|^web/api-local\.js$|^crates/yanshi-http/assets/api-local\.js$|^scripts/gen-pwa-tool-specs\.mjs$' \
+   || git diff --name-only --cached 2>/dev/null | grep -qE '^crates/yanshi-server/src/tools(_registry)?\.rs$|^web/api-local\.js$|^crates/yanshi-http/assets/api-local\.js$|^scripts/gen-pwa-tool-specs\.mjs$'; then
+  echo "  ⑦ PWA 内联工具表（工具面变了 ⇒ 核对表是否过期）"
+  if bash scripts/regen-pwa-table.sh --check > /tmp/precommit-pwa-table.log 2>&1; then
+    echo "     ✓（表与服务端一致）"
+  else
+    RC=$?
+    if [ "$RC" -eq 3 ]; then
+      echo "     ⚠ 表无法判定（服务起不来或构建失败），不阻塞提交——请手动跑重生成确认"
+      tail -3 /tmp/precommit-pwa-table.log | sed 's/^/       /'
+    else
+      echo "     ✗ 表过期（改了工具面却没重生成）——提交被拦"
+      grep -aE "✗|⇒" /tmp/precommit-pwa-table.log | head -6 | sed 's/^/       /'
+      echo "       重生成：bash scripts/regen-pwa-table.sh"
+      fail=1
+    fi
+  fi
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "  ⇒ **不许提交**（上面有红）"
   exit 1
