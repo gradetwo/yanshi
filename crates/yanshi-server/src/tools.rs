@@ -16332,6 +16332,10 @@ pub(crate) struct BrushPaint {
     /// **从空表面**比（喂了反而要剔"没碰过的像素"✗，实测喂了就 0 条相同 ✓）。
     /// ⇒ 判据**无法**自己判断该不该喂 ✗ ⇒ 必须由**唯一的事实源**告出 ✓。
     fed_base: bool,
+    /// **短笔触兜底提示**（反馈期 1：3.6a）✓：原路径撑不满一枚 dab 间距时，
+    /// 主遍延长落了一枚 dab，诊断事实（原长／间距／size）放在这里；
+    /// `None` = 本笔没触发兜底（正常笔画不带这条提示 ✓）。
+    short_stroke_hint: Option<String>,
 }
 
 /// **时间戳 → 每步秒数**（`parse_brush_point_times` 与重放共用 ✓）——
@@ -17621,6 +17625,48 @@ pub(crate) fn deposit_nudge(size: f64) -> f64 {
     (size * 0.5).max(4.0)
 }
 
+/// **短路径延长**（反馈期 1：3.6a 短笔画单 dab 兜底）。
+///
+/// 引擎按 dab 间距盖章：首事件只播种，累计位移 < 间距时一枚 dab 都不盖。
+/// 本函数是“延长”这一事实的唯一写法：掩膜遍（`brush_deposit_mask`）与
+/// 主遍（`paint_brush`）共用它，两遍的触发值/目标值可以不同，但几何规则同一份。
+/// - `trigger`：总长 < trigger 才延长（等于 trigger 不延长——正常笔画不动）。
+/// - `target`：延长后的总长（须 ≥ trigger，否则延长了也未必够一枚 dab）。
+/// - 落点语义：起笔处不动；多点沿最后一段**非零**方向延长；单点或零长点列沿 +x 延长。
+/// - 返回 `None` = 不用延长（空点列、已够长、数值非法）。
+pub(crate) fn extend_short_path(
+    points: &[(f64, f64, f64)],
+    trigger: f64,
+    target: f64,
+) -> Option<Vec<(f64, f64, f64)>> {
+    if points.is_empty() || !trigger.is_finite() || !target.is_finite() || target < trigger {
+        return None;
+    }
+    let total_len: f64 = points
+        .windows(2)
+        .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
+        .sum();
+    if !total_len.is_finite() || total_len >= trigger {
+        return None;
+    }
+    let need = target - total_len;
+    let (lx, ly, lp) = points[points.len() - 1];
+    for w in points.windows(2).rev() {
+        let dx = w[1].0 - w[0].0;
+        let dy = w[1].1 - w[0].1;
+        let d = (dx * dx + dy * dy).sqrt();
+        if d > 1e-9 {
+            let mut out = points.to_vec();
+            out.push((lx + dx / d * need, ly + dy / d * need, lp));
+            return Some(out);
+        }
+    }
+    // 单点或全零长点列：沿 +x 延长。
+    let mut out = points.to_vec();
+    out.push((lx + need, ly, lp));
+    Some(out)
+}
+
 fn brush_deposit_mask(
     brush: &hokusai::Brush,
     size: f64,
@@ -17640,38 +17686,19 @@ fn brush_deposit_mask(
     // Q5：短笔触兜底（对齐 Photoshop 单击落点语义）。
     // 引擎按 dab 间距（≈ size/4）落笔：单点（零位移）或总长 < 间距时一枚 dab 都不盖，
     // 导致 paint_mask 返回 ok:true 但 deposited:false（静默无操作）。
-    // 修法：单点补一段短位移；多点但总长过短时延长末段，保证至少触发一枚 dab。
-    // （原来只在 write_paint_mask 里对单点做 nudge，现下沉到公共入口，
-    // `brush_stroke` 的 painted_pixels 计算同样受益。）
-    let mut owned_points: Vec<(f64, f64, f64)>;
-    let points: &[(f64, f64, f64)] = if points.len() == 1 {
-        let (x, y, p) = points[0];
-        let nudge = deposit_nudge(size);
-        owned_points = vec![(x, y, p), (x + nudge, y, p)];
-        &owned_points
-    } else if points.len() >= 2 {
-        let total_len: f64 = points
-            .windows(2)
-            .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
-            .sum();
-        // **阈值必须随 size** ✓（同 `deposit_nudge`：大笔刷的 dab 间距是 size/4，4px 远远不够 ✗）
-        let need_min = deposit_nudge(size);
-        if total_len < need_min && total_len > 0.0 {
-            let (lx, ly, lp) = points[points.len() - 1];
-            let (px, py, _) = points[points.len() - 2];
-            let dx = lx - px;
-            let dy = ly - py;
-            let d = (dx * dx + dy * dy).sqrt().max(1e-6);
-            let need = need_min - total_len;
-            owned_points = points.to_vec();
-            owned_points.push((lx + dx / d * need, ly + dy / d * need, lp));
-            &owned_points
-        } else {
-            points
-        }
-    } else {
-        points
-    };
+    // 修法：走共用的 `extend_short_path`（触发值与目标值都是 `deposit_nudge(size)`，
+    // **阈值必须随 size** ✓：大笔刷的 dab 间距是 size/4，4px 远远不够 ✗）。
+    // 反馈期 1 注：旧实现只在总长 > 0 时延长（全零长点列不延长）；现共用函数
+    // 对全零长点列也沿 +x 延长，与主遍的兜底一致（旧行为下这类笔触本来就 0 dab 报错）。
+    let owned_points: Vec<(f64, f64, f64)>;
+    let points: &[(f64, f64, f64)] =
+        match extend_short_path(points, deposit_nudge(size), deposit_nudge(size)) {
+            Some(extended) => {
+                owned_points = extended;
+                &owned_points
+            }
+            None => points,
+        };
     let mut previous: Option<(f64, f64, f64)> = None;
     // **掩膜遍跳过净室涂抹**（P-4）：掩膜只记 dab 落点；涂抹只在落点盘内搬颜色，
     // 不扩大落点盘 ⇒ 掩膜遍的涂抹是纯成本（约占整笔一半）。主遍的涂抹照常跑。
@@ -19427,6 +19454,10 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
     //   ⇒ **∴ 否则**调用方会**以为**"我传了 layer_id 就能只看那层"**✗** ✓
     value["target_layer_supported"] = json!(false);
     value["target_layer_note"] = json!("预览不支持只读某一层（没有 layer_id 参数）：`render_region_raw` 读的是文档合成。要做这种预览，需要渲染层提供按层读取；这与「底图内容仍未读入」是同一处限制。要只看一层，用 export_png 的 layer_id（它走文档合成，能按层导出）。");
+    // **短笔触兜底提示**（反馈期 1：3.6a，与 `brush_stroke` 的 `warnings` 同形态）。
+    if let Some(hint) = paint.short_stroke_hint {
+        value["warnings"] = json!([hint]);
+    }
     value["color_space"] = json!("srgb");
     value["color_space_note"] = json!("`brush_preview` 恒在 **sRGB 字节空间**混色（`ColorMixing::Rgb` 直接对 u8 插值；`Pigment` 也以 `ks_to_srgb` 结束）⇒ **不是 linear**。所以 `max_channel_delta` 这类差值也在 sRGB 里量；若你的参考图或计算在 linear/LAB/HSV 里，**Δ 不能直接比**。输入色的解释空间另见 `applied.color_space`（`color_space` 参数：`srgb`/`linear`，不传 ⇒ 量级切换；只改输入解释，不改混色与输出）。");
     // **本次调用生效参数的回显**（P2-9，与 `brush_stroke` 同口径）：`applied.color_space`
