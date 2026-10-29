@@ -74,34 +74,63 @@ const masksHaveIds = (canvas.masks ?? []).every((m) => m && typeof m.mask_id ===
 console.log(`  ${masksHaveIds ? "✓" : "✗"} masks 每一项都含字符串 \`mask_id\``);
 if (!masksHaveIds) bad += 1;
 
-// ★ **`estimated_memory_bytes` 必须随对象数**线性**增长**✗ ★**（报告 §33 第 3 点 ✓）
-//   ⇒ **∴ 他们要它来**长跑前预估**✗ ⇒ **∴ 若它不随对象数涨 ⇒ **∴ 那字段就是死的 ✗**
-//   ⇒ **∴ 断言 ✓**：画 N 笔后字节数**约等于** N 的倍数（**∴ 每笔 ~1.18 KB ✓**）
-//     ⇒ **∴ 用**翻倍**判定 ✓（**∴ 不写死绝对值 ✓ ⇒ **∴ 不随机器／版本变 ✓**）
+// ★ **`estimated_memory_bytes` 必须是内存量级** ★**（报告 5/6 第 1 项 ✓）
+//   ⇒ **∴ 旧口径** `存活对象 × 180` 是序列化量级，实测仅为 RSS 的约 1/882 ✗
+//   ⇒ **∴ 现口径**：原子数 ≥ 100 时 `estimated = bytes_per_atom_avg × 原子数`
+//     （≈ 进程 RSS）；< 100 时 avg 报 0 = 不可判，`estimated` 退为进程 RSS 字节数。
+//   ⇒ **∴ 小文档不断言跨次增长**：RSS 以整 MB 计，20 笔未必跨 MB 边界，
+//     跨次比较会抖；**断言同回执恒等式**（不跨次、不跨机器）：
+//     `estimated == bytes_per_atom_avg × atoms`，且
+//     `0 ≤ server_rss_mb × MiB − estimated < atoms`（floor 取整的余数性质）。
+//   ⇒ **∴ 旧的“每笔 100..100000 字节”区间已删**：那是序列化量级的残留；
+//     内存/原子跨画布/笔刷实测在约 95 KB..300 KB 间摆动，绝对每笔区间不是契约。
 const memBefore = canvas.estimated_memory_bytes;
 const objectsBefore = (canvas.layers ?? []).reduce((n, l) => n + (l.objects ?? 0), 0);
 console.log(`  ${Number.isFinite(memBefore) ? "✓" : "✗"} estimated_memory_bytes = ${memBefore}（画之前，objects=${objectsBefore}）`);
 if (!Number.isFinite(memBefore)) bad += 1;
+const memoryScale = Number.isFinite(memBefore) && memBefore >= 1_000_000;
+console.log(`  ${memoryScale ? "✓" : "✗"} estimated_memory_bytes 必须上 MB 量级（旧 180 口径只给数百～数万字节）`);
+if (!memoryScale) bad += 1;
 
 const strokeCount = 20;
-for (let i = 0; i < strokeCount; i += 1) {
+const paint = async (i) => {
   await call("brush_stroke", {
     layer_id: "dc_a", brush: "100%_Opaque",
     color: { r: 90, g: 70, b: 50, a: 255 },
-    points: [[20, 20 + i * 4, 1], [180, 20 + i * 4, 1]],
+    points: [[20, 20 + (i * 7) % 110, 1], [180, 20 + (i * 7) % 110, 1]],
     size: 8, preview: false,
   });
-}
+};
+for (let i = 0; i < strokeCount; i += 1) await paint(i);
 const after = await call("describe_canvas", {});
 const memAfter = after.estimated_memory_bytes;
 const objectsAfter = (after.layers ?? []).reduce((n, l) => n + (l.objects ?? 0), 0);
-const grew = objectsAfter > objectsBefore && memAfter > memBefore;
-console.log(`  ${grew ? "✓" : "✗"} 画 ${strokeCount} 笔后 ⇒ objects ${objectsBefore}→${objectsAfter}｜字节 ${memBefore}→${memAfter}（**必须都增长**）`);
-if (!grew) bad += 1;
-const perStroke = (memAfter - memBefore) / (objectsAfter - objectsBefore);
-const plausible = perStroke > 100 && perStroke < 100_000;
-console.log(`  ${plausible ? "✓" : "✗"} 每笔字节 ≈ ${Number.isFinite(perStroke) ? perStroke.toFixed(0) : "NaN"}（**合理区间 100..100000**）`);
-if (!plausible) bad += 1;
+const objectsGrew = objectsAfter > objectsBefore;
+console.log(`  ${objectsGrew ? "✓" : "✗"} 画 ${strokeCount} 笔后 ⇒ objects ${objectsBefore}→${objectsAfter}｜字节 ${memBefore}→${memAfter}（对象必须增长；字节跨次不比，见上）`);
+if (!objectsGrew) bad += 1;
+// **大档恒等式**：再画到原子数 ≥ 100（avg 生效的门槛），同一回执内验恒等式。
+let large = after;
+let extra = 0;
+while ((large.counts?.atoms ?? 0) < 100 && extra < 160) { await paint(strokeCount + extra); extra += 1; large = await call("describe_canvas", {}); }
+const atomsLarge = large.counts?.atoms;
+const avgLarge = large.bytes_per_atom_avg;
+const estLarge = large.estimated_memory_bytes;
+const rssMbLarge = large.server_rss_mb;
+console.log(`  大档：补画 ${extra} 笔后 atoms=${atomsLarge}｜avg=${avgLarge}｜estimated=${estLarge}｜server_rss_mb=${rssMbLarge}`);
+const identity = Number.isFinite(atomsLarge) && atomsLarge >= 100 && Number.isFinite(avgLarge) && avgLarge > 0
+  && estLarge === avgLarge * atomsLarge;
+console.log(`  ${identity ? "✓" : "✗"} 大档恒等式 estimated == bytes_per_atom_avg × atoms`);
+if (!identity) bad += 1;
+if (Number.isFinite(rssMbLarge)) {
+  const rssBytes = rssMbLarge * 1024 * 1024;
+  const gap = rssBytes - estLarge;
+  const bound = Number.isFinite(gap) && gap >= 0 && gap < atomsLarge;
+  console.log(`  ${bound ? "✓" : "✗"} 大档截断界 0 ≤ server_rss_mb×MiB − estimated < atoms（实测 gap=${gap}）`);
+  if (!bound) bad += 1;
+} else {
+  console.log("  ✗ 大档 server_rss_mb 非数字（Linux 上应可读 /proc）");
+  bad += 1;
+}
 
 const selOk = (canvas.selections ?? []).some((s) => s.selection_id === "dc_s");
 console.log(`  ${selOk ? "✓" : "✗"} selections 里能找到刚建的 dc_s`);

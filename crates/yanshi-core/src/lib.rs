@@ -80,7 +80,7 @@ pub use ids::{
     SnapshotId, StyleId, Ulid, UlidGen,
 };
 pub use log::{AppendOutcome, AtomLog, CommitContext};
-pub use seq::{state_at, IncrementalFolder, StateAt, StateAtCache};
+pub use seq::{state_at, FoldAppend, IncrementalFolder, StateAt, StateAtCache};
 pub use snapshot::{
     crc32, crc32_update, snapshot_decision, Snapshot, SnapshotBase, SnapshotDecision,
     SnapshotStore, SnapshotTrigger,
