@@ -2138,6 +2138,127 @@ fn smudge_budget_model_splits_the_calibration_anchors() {
     assert!(smudge_stroke_cost_ms(2800.0, 150.0) < smudge_stroke_cost_ms(2801.0, 150.0));
 }
 
+/// **反馈期 4（5.2 涂抹自动拆分）**：拆分阈值按期 2 新上限 512 校准（不是旧 128），
+/// 每段成本皆在预算内；退化情形不拆分（保留原 Err 路径）。
+/// 变异：把 `SMUDGE_SPLIT_SAFETY` 改成 1.0 ⇒ 报告量级段成本断言红；
+/// 把 `SMUDGE_SPLIT_MAX_SEGMENTS` 改成 100 ⇒ 超长路径断言红；
+/// 把上限常量改回 128 ⇒ 首行断言红（期 2 已放宽到 512）。
+#[test]
+fn smudge_split_plan_calibrated_to_new_reach_cap_512() {
+    use super::tools_brush::{
+        brush_points_path_len_px, smudge_split_plan, smudge_split_segment_limit_px,
+        smudge_stroke_cost_ms, split_dtimes_by_arclength, split_points_by_arclength,
+        SMUDGE_BUDGET_MS, SMUDGE_COST_PER_PX3_MS, SMUDGE_SPLIT_SAFETY,
+    };
+    // 期 2 新上限就是 512：直接读渲染常量（不另写数 ⇒ 上限再改时此处自动跟上，
+    // 但本测试名与注释写明 512，旧 128 在此红）。
+    assert_eq!(
+        yanshi_render::MAX_EFFECT_PADDING,
+        512,
+        "期 2 已把区域外扩上限从 128 放宽到 512"
+    );
+    // 段长上限（半径 130px 时约 4565px；安全系数 0.9 已计入）。
+    let limit = smudge_split_segment_limit_px(130.0);
+    assert!(
+        (limit - 4565.0).abs() < 2.0,
+        "段长上限应当约 4565px（实测 {limit:.1}）"
+    );
+    // 报告量级：路径 9382px、半径 130px ⇒ 预测约 55.5 秒，超 30 秒预算 ⇒ 拆 3 段。
+    let plan = smudge_split_plan(9382.0, 130.0).expect("报告量级必须拆分");
+    assert_eq!(plan.segments, 3, "9382 ÷ 4565 向上取整是 3 段");
+    // 均分后每段成本 ≤ 预算 × 安全系数（每段约 18.5 秒）。
+    let seg_cost = smudge_stroke_cost_ms(9382.0 / 3.0, 130.0);
+    assert!(
+        seg_cost <= SMUDGE_BUDGET_MS * SMUDGE_SPLIT_SAFETY + 1.0,
+        "每段成本应当 ≤ 预算 × 0.9（实测 {seg_cost:.0} ms）"
+    );
+    // 预算内不拆分。
+    assert!(smudge_split_plan(2800.0, 150.0).is_none());
+    // 刚在预算内不拆分、刚超预算拆 2 段（边界两侧各留 0.1% 余量，避浮点抖动）。
+    let at_budget = SMUDGE_BUDGET_MS / (130.0 * 130.0 * SMUDGE_COST_PER_PX3_MS);
+    assert!(smudge_split_plan(at_budget * 0.999, 130.0).is_none());
+    assert_eq!(
+        smudge_split_plan(at_budget * 1.01, 130.0).map(|p| p.segments),
+        Some(2)
+    );
+    // 段数超上限不拆分：64 段在半径 130 时只覆盖约 29.2 万 px，40 万 px 要 88 段。
+    assert!(smudge_split_plan(400_000.0, 130.0).is_none());
+    // 段长上限低于 100px 下限不拆分：半径 1000 时上限约 77px。
+    assert!(smudge_split_plan(10_000.0, 1000.0).is_none());
+    // 弧长切分：接点共享、段内原点保留、段长之和等于总长（不拉直折线）。
+    let points = vec![
+        (0.0, 0.0, 0.5),
+        (100.0, 0.0, 0.5),
+        (100.0, 100.0, 1.0),
+        (200.0, 100.0, 0.5),
+    ];
+    let segs = split_points_by_arclength(&points, 3);
+    assert_eq!(segs.len(), 3);
+    assert_eq!(segs[0].last(), segs[1].first(), "相邻段必须共享接点");
+    assert_eq!(segs[1].last(), segs[2].first(), "相邻段必须共享接点");
+    assert_eq!(segs[0], vec![(0.0, 0.0, 0.5), (100.0, 0.0, 0.5)]);
+    assert_eq!(segs[1], vec![(100.0, 0.0, 0.5), (100.0, 100.0, 1.0)]);
+    assert_eq!(segs[2], vec![(100.0, 100.0, 1.0), (200.0, 100.0, 0.5)]);
+    let total: f64 = segs.iter().map(|s| brush_points_path_len_px(s)).sum();
+    assert!(
+        (total - 300.0).abs() < 1e-9,
+        "各段弧长之和应当等于总长（{total}）"
+    );
+    // 插值接点：直线两点切 2 段，接点在中点且压力线性插值。
+    let line = vec![(0.0, 0.0, 0.0), (200.0, 0.0, 1.0)];
+    let halves = split_points_by_arclength(&line, 2);
+    assert_eq!(halves[0].last(), Some(&(100.0, 0.0, 0.5)));
+    assert_eq!(halves[1].first(), Some(&(100.0, 0.0, 0.5)));
+    // 段时间：长度不对齐 ⇒ None；对齐时接点时间插值。
+    assert!(split_dtimes_by_arclength(&line, &[0.0], 2).is_none());
+    let times = split_dtimes_by_arclength(&line, &[0.0, 2.0], 2).unwrap();
+    assert_eq!(times[0].last(), Some(&1.0));
+    assert_eq!(times[1].first(), Some(&1.0));
+}
+
+/// **反馈期 4（5.2）**：可达量 = 拖曳 + 半径 + 2，与期 2 的 `enforce_reach` 同口径；
+/// 超 512 不拆分，`smudge = 0` 的笔不进拆分决策。
+#[test]
+fn smudge_reach_uses_drag_plus_radius_plus_two_against_cap_512() {
+    use super::tools_brush::smudge_reach_px;
+    use hokusai::BrushSetting;
+    let mut brush = hokusai::Brush::default();
+    brush.set(BrushSetting::Smudge, hokusai::SettingValue::constant(1.0));
+    brush.set(
+        BrushSetting::SmudgeLength,
+        hokusai::SettingValue::constant(0.5),
+    );
+    brush.set(
+        BrushSetting::Radius,
+        hokusai::SettingValue::constant(libm::log(100.0) as f32),
+    );
+    let reach = smudge_reach_px(&brush).expect("涂抹笔必有可达量");
+    // drag = 0.5 × 100 = 50；reach = 50 + 100 + 2 = 152 ≤ 512（f32 半径有约 1e-5 误差）。
+    assert!(
+        (reach - 152.0).abs() < 1e-3,
+        "可达量应当是 152px（实测 {reach}）"
+    );
+    assert!(reach <= yanshi_render::MAX_EFFECT_PADDING as f64);
+    // smudge = 0 ⇒ 闸不生效 ⇒ None（拆分决策不调用它，单笔路原样走）。
+    brush.set(BrushSetting::Smudge, hokusai::SettingValue::constant(0.0));
+    assert!(smudge_reach_px(&brush).is_none());
+    // 超上限量级：半径 500、length 0.5 ⇒ drag 250，reach 752 > 512。
+    let mut big = hokusai::Brush::default();
+    big.set(BrushSetting::Smudge, hokusai::SettingValue::constant(1.0));
+    big.set(
+        BrushSetting::SmudgeLength,
+        hokusai::SettingValue::constant(0.5),
+    );
+    big.set(
+        BrushSetting::Radius,
+        hokusai::SettingValue::constant(libm::log(500.0) as f32),
+    );
+    assert!(
+        smudge_reach_px(&big).unwrap() > 512.0,
+        "半径 500 的涂抹笔可达量必须超 512"
+    );
+}
+
 /// **D 期（项 14）**：每步涂抹量归一到每 dab 间距一名义量。
 /// 水彩 size 300（半径 150，dpar 2 + dpbr 6 ⇒ 间距 18.75px、每间距 9.375 步）：
 /// 名义 0.3 ⇒ 每步约 0.0372，且 `(1-步量)^(间距/2)` 恰回 0.7（累计一名义量）。
