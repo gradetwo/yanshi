@@ -4793,8 +4793,7 @@ async function withKernel(doc, fn) {
                       reason: "import_image 需要位图尺寸（region.w/h 或 width/height）⇒ 否则渲染器把它当「不支持的原语」跳过 ⇒ 画面什么都不出",
                       server: false }, 400);
       }
-      const objectId = body.object_id || pl.object_id ||
-                       ("obj_" + Date.now().toString(36));
+      const objectId = body.object_id || pl.object_id || p2cNewObjectId();
       const mime = String(bitmap.mime_type || (pl.bitmap && pl.bitmap.mime_type) || "image/x-yanshi-raw");
       // **★ 净荷形状 = 渲染器 `parse_raster_patch` 要的 ✓**：`bitmap.blob_hash` ＋ `width/height` ＋ `region`
       //   （**blob 缺失时也要能先把原子造出来 ✗**——**服务端 404 的文案里带的是原子 id ✓**
@@ -7787,7 +7786,7 @@ async function withKernel(doc, fn) {
         return p2ToolFailure(400, "invalid_argument", "缺少必填参数 layer_id", null);
       }
       const objectId = typeof body.object_id === "string" && body.object_id
-        ? body.object_id : ("obj_" + Date.now().toString(36));
+        ? body.object_id : p2cNewObjectId();
       const guard = p2RefGuard(rows, p2PresetLayers(rows, neutral), neutral, "import_image",
                                { object_id: objectId, layer_id: layerId });
       if (guard) return p2ToolFailure(guard.status, guard.code, guard.detail, guard.extra);
