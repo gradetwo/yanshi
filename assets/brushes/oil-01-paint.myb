@@ -98,7 +98,7 @@
             }
         }, 
         "elliptical_dab_ratio": {
-            "base_value": 7.1, 
+            "base_value": 1.0, 
             "inputs": {
                 "stroke": [
                     [
@@ -125,7 +125,7 @@
             "inputs": {}
         }, 
         "offset_by_random": {
-            "base_value": 0.6, 
+            "base_value": 0.0, 
             "inputs": {}
         }, 
         "offset_by_speed": {
@@ -294,7 +294,7 @@
             "inputs": {}
         }, 
         "tracking_noise": {
-            "base_value": 0.2, 
+            "base_value": 0.0, 
             "inputs": {}
         }
     }, 

@@ -44,8 +44,8 @@ fn photo_allowlist_names_all_registered() {
     );
     assert_eq!(
         SVG_TOOLS.len(),
-        91,
-        "SVG_TOOLS 长度与设计 §7 不符（期 2 块 3 加 verify_package 后 89→90；Y-08 期 4 加 reorder_objects 后 90→91）"
+        93,
+        "SVG_TOOLS 长度与设计 §7 不符（期 2 块 3 加 verify_package 后 89→90；Y-08 期 4 加 reorder_objects 后 90→91；反馈 5+6 §4 release/reopen 加 release_document、reopen_document 后 91→93）"
     );
     let cases: [(&[&'static str], &[Profile]); 2] = [
         (

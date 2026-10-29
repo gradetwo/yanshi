@@ -1929,6 +1929,32 @@ fn batch_rss_limit_defaults_to_4096_and_rejects_bad_values() {
     );
 }
 
+/// **报告 5 第 8 项**：压力档位分档 —— 档位只由 RSS 对静态限额的比值定，
+///   阈值处（50% / 75% / 100%）两侧各一值，档位名取自回执字段 `memory_pressure` 的取值集合 ✓。
+///   变异：任一阈值改动 ⇒ 对应边界断言红；`unknown` 改成 `low` ⇒ 读不到断言红；
+///   分母改成写死 4096 ⇒ 覆盖限额断言红 ✓。
+#[test]
+fn batch_memory_pressure_level_tiers_at_boundaries() {
+    // 读不到 RSS ⇒ 未知档，不编数。
+    assert_eq!(batch_memory_pressure_level(None, 4096), "unknown");
+    // 缺省限额 4096 的阈值处：下侧一档、上侧一档。
+    assert_eq!(batch_memory_pressure_level(Some(0), 4096), "low");
+    assert_eq!(batch_memory_pressure_level(Some(2047), 4096), "low");
+    assert_eq!(batch_memory_pressure_level(Some(2048), 4096), "moderate");
+    assert_eq!(batch_memory_pressure_level(Some(3071), 4096), "moderate");
+    assert_eq!(batch_memory_pressure_level(Some(3072), 4096), "high");
+    assert_eq!(batch_memory_pressure_level(Some(4095), 4096), "high");
+    assert_eq!(batch_memory_pressure_level(Some(4096), 4096), "critical");
+    assert_eq!(batch_memory_pressure_level(Some(5000), 4096), "critical");
+    // 分母是当前限额不是写死值：同一 RSS 在 1000 限额下档位上移。
+    assert_eq!(batch_memory_pressure_level(Some(499), 1000), "low");
+    assert_eq!(batch_memory_pressure_level(Some(500), 1000), "moderate");
+    assert_eq!(batch_memory_pressure_level(Some(750), 1000), "high");
+    assert_eq!(batch_memory_pressure_level(Some(1000), 1000), "critical");
+    // 退化分母不谎报低档。
+    assert_eq!(batch_memory_pressure_level(Some(10), 0), "critical");
+}
+
 /// **A 期**：环境变量覆盖生效 —— 显式水位版谓词：同一 RSS 在旧水位下不触发、在覆盖水位下触发 ✓。
 ///   变异：谓词忽略传入水位、仍用 4096 ⇒ 第二个断言红 ✓。
 #[test]
@@ -2712,6 +2738,197 @@ fn short_stroke_extension_lands_at_least_one_dab() {
         painted > 0,
         "延长到 1.5× 间距后至少落一枚 dab ⇒ 像素必须 > 0，实测 {painted}"
     );
+}
+
+/// **release/reopen 薄包装往返**：关闭后 closed 与持久化状态符合服务端语义，
+/// 重开后文档完好（原子数、head_seq、尺寸、渲染哈希一致），且两条反例都响亮：
+/// 放不存在的文档报错、重开不存在的文档报错且绝不新建。
+#[test]
+fn release_and_reopen_document_roundtrip() {
+    let root = std::env::temp_dir().join(format!("yanshi-release-reopen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut workspace =
+        Workspace::with_file_store(&root, crate::document::DocumentSettings::default()).unwrap();
+    workspace
+        .create_document(
+            crate::document::NewDocument::new("doc_rr", 64, 48),
+            "test:1",
+            "s",
+        )
+        .unwrap();
+    {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_create_layer(&mut ctx, &json!({"layer_id": "p", "name": "p"})).unwrap();
+    }
+    let bbox = yanshi_core::Bbox::new(0.0, 0.0, 64.0, 48.0);
+    // 先取标量再渲染：文档借用必须先放下，否则可变借用编不过。
+    let (atoms_before, head_before) = {
+        let document = workspace.document("doc_rr").unwrap();
+        assert_eq!((document.state().width, document.state().height), (64, 48));
+        (document.atom_count(), document.head_seq())
+    };
+    let render_before = workspace.render_region("doc_rr", bbox).unwrap().blob_hash;
+    assert!(atoms_before >= 1, "建层原子必须已落下，实测 {atoms_before}");
+    // 关闭：closed 为真、磁盘上还在、内存里确实没了。
+    let released = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_release_document(&mut ctx, &json!({"document_id": "doc_rr"})).unwrap()
+    };
+    assert_eq!(released["closed"], json!(true));
+    assert_eq!(released["persisted"], json!(true));
+    assert_eq!(released["deleted"], json!(false));
+    assert!(workspace.document("doc_rr").is_none());
+    // 磁盘上还在但内存里没有时再放一次：closed 为假、persisted 仍为真，不报错。
+    let released_again = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_release_document(&mut ctx, &json!({"document_id": "doc_rr"})).unwrap()
+    };
+    assert_eq!(released_again["closed"], json!(false));
+    assert_eq!(released_again["persisted"], json!(true));
+    // 重开：这次真从磁盘装入，内容与关闭前一致。
+    let reopened = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_reopen_document(&mut ctx, &json!({"document_id": "doc_rr"})).unwrap()
+    };
+    assert_eq!(reopened["opened"], json!(true));
+    assert_eq!(reopened["reopened"], json!(true));
+    assert_eq!(reopened["width"], json!(64));
+    assert_eq!(reopened["height"], json!(48));
+    assert_eq!(reopened["atoms"], json!(atoms_before));
+    assert_eq!(reopened["head_seq"], json!(head_before));
+    let preview_after = workspace.render_region("doc_rr", bbox).unwrap();
+    assert_eq!(
+        preview_after.blob_hash, render_before,
+        "重开后整幅渲染哈希必须与关闭前一致（内容寻址，哈希等即 PNG 等）"
+    );
+    // 已在内存里再重开：直接返回，不重复加载。
+    let reopened_again = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_reopen_document(&mut ctx, &json!({"document_id": "doc_rr"})).unwrap()
+    };
+    assert_eq!(reopened_again["reopened"], json!(false));
+    // 反例 1：放不存在的文档报错，不静默成功。
+    let err = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_release_document(&mut ctx, &json!({"document_id": "doc_nope"})).unwrap_err()
+    };
+    assert_eq!(err.code, ErrorCode::ReferenceNotFound);
+    // 反例 2：重开不存在的文档报错，且绝不新建（事后仍不存在）。
+    let err = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_reopen_document(&mut ctx, &json!({"document_id": "doc_nope"})).unwrap_err()
+    };
+    assert_eq!(err.code, ErrorCode::ReferenceNotFound);
+    assert!(!workspace.document_exists("doc_nope"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// **release/reopen 走真实注册表调用路径**：分发、必填参数校验、viewer 角色闸
+/// 都在 `ToolRegistry::call` 这一处生效（直接调 `write_*` 绕过了这三处）。
+#[test]
+fn release_and_reopen_document_via_registry() {
+    let root =
+        std::env::temp_dir().join(format!("yanshi-release-reopen-reg-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut workspace =
+        Workspace::with_file_store(&root, crate::document::DocumentSettings::default()).unwrap();
+    workspace
+        .create_document(
+            crate::document::NewDocument::new("doc_rg", 32, 32),
+            "test:1",
+            "s",
+        )
+        .unwrap();
+    let registry = ToolRegistry::full();
+    let mut ctx = ToolContext::new(&mut workspace, "doc_rg", "test:1", "s");
+    // 缺必填参数 ⇒ 参数校验在分发前拦下，不进实现。
+    let missing = registry.call(&mut ctx, "release_document", &json!({}));
+    assert_eq!(missing["ok"], json!(false));
+    assert_eq!(missing["error_code"], json!("invalid_argument"));
+    // 正常释放 ⇒ 注册表包的 ok:true 与实现字段一并返回。
+    let released = registry.call(
+        &mut ctx,
+        "release_document",
+        &json!({"document_id": "doc_rg"}),
+    );
+    assert_eq!(released["ok"], json!(true));
+    assert_eq!(released["closed"], json!(true));
+    assert_eq!(released["persisted"], json!(true));
+    // viewer 调变更类工具 ⇒ 角色闸在分发前拦下（与 HTTP 关闭路由的 viewer 禁令同口径）。
+    ctx.role = crate::token::Role::Viewer;
+    let denied = registry.call(
+        &mut ctx,
+        "reopen_document",
+        &json!({"document_id": "doc_rg"}),
+    );
+    assert_eq!(denied["ok"], json!(false));
+    assert_eq!(denied["error_code"], json!("permission_denied"));
+    // owner 重开 ⇒ 回到内存。
+    ctx.role = crate::token::Role::Owner;
+    let reopened = registry.call(
+        &mut ctx,
+        "reopen_document",
+        &json!({"document_id": "doc_rg"}),
+    );
+    assert_eq!(reopened["ok"], json!(true));
+    assert_eq!(reopened["reopened"], json!(true));
+    assert_eq!(reopened["width"], json!(32));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// **报告 5/6 第 1 项：`estimated_memory_bytes` 口径**（旧口径 `存活对象 × 180`
+// 是序列化量级，实测仅为 RSS 的约 1/882；现口径 = `bytes_per_atom_avg × 原子数`）。
+// 两档探针数直接取自分诊 §1/§6（201 原子 800×600 文档、12098 原子 4K 文档），
+// 单位统一用 MiB；分诊“12098 原子差约 5%”是十进制 GB 与 MiB 混算，
+// 同单位下差 < 0.01%，本测试按同单位断言。
+#[test]
+fn estimated_memory_bytes_uses_per_atom_average_not_180() {
+    // 201 原子档：avg = 30 MiB / 201 = 156503（与探针逐字一致）。
+    let avg_small = (30u64 * 1_024 * 1_024) / 201;
+    assert_eq!(avg_small, 156503, "探针 avg 复算必须一致，否则测试前提已变");
+    let est_small = super::estimate_memory_bytes(Some(30), avg_small, 201, 200);
+    assert_eq!(est_small, 156503 * 201, "estimated 必须等于 avg × 原子数");
+    assert_eq!(est_small, 31_457_103);
+    // 旧口径会给 36000（= 180 × 200），新口径必须是内存量级而非序列化量级。
+    assert_ne!(
+        est_small, 36_000,
+        "旧 180 常量口径必须被改掉（变异：改回 180 即红）"
+    );
+    assert!(
+        est_small > 1_000_000,
+        "201 原子文档的内存估计必须上 MB 量级，实测 {est_small}"
+    );
+    // 取整误差界：0 ≤ rss_bytes − estimated < 原子数（floor 的余数性质）。
+    let rss_bytes_small = 30u64 * 1_024 * 1_024;
+    assert!(rss_bytes_small >= est_small);
+    assert!(
+        rss_bytes_small - est_small < 201,
+        "截断误差必须小于原子数，实测 {}",
+        rss_bytes_small - est_small
+    );
+    // 12098 原子档：avg = 2824 MiB / 12098 = 244765（与探针逐字一致）。
+    let avg_large = (2824u64 * 1_024 * 1_024) / 12_098;
+    assert_eq!(avg_large, 244765, "探针 avg 复算必须一致，否则测试前提已变");
+    let est_large = super::estimate_memory_bytes(Some(2824), avg_large, 12_098, 12_097);
+    assert_eq!(est_large, 244765 * 12_098);
+    let rss_bytes_large = 2824u64 * 1_024 * 1_024;
+    assert!(rss_bytes_large >= est_large);
+    assert!(
+        rss_bytes_large - est_large < 12_098,
+        "大档截断误差必须小于原子数，实测 {}",
+        rss_bytes_large - est_large
+    );
+}
+
+#[test]
+fn estimated_memory_bytes_small_doc_falls_back_to_rss_bytes() {
+    // 原子数 < 100 时 avg 报 0 = 不可判：退为进程 RSS 字节数，仍是内存量级，
+    // 而不是旧口径的数百字节（2 原子文档旧口径只给 360）。
+    let est = super::estimate_memory_bytes(Some(11), 0, 2, 2);
+    assert_eq!(est, 11 * 1_024 * 1_024);
+    // `/proc` 读不到时才退为旧量（内容规模、非内存），且仅此一路保留 180。
+    let est_no_proc = super::estimate_memory_bytes(None, 0, 50, 49);
+    assert_eq!(est_no_proc, 49 * 180);
 }
 
 /// **预算字段收缩版**（feedback5-feat-budget-fields）：`ms_per_stroke_avg` 的
