@@ -2176,6 +2176,24 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "toned_ground",
+        profile: Profile::Core,
+        // **反馈报告 §5.3**：`texture_background` 铺的是 CC0 纹理图片 ✗，不是笔触底色 ✗
+        // ⇒ 这里用**现成笔刷**在专用底层上铺笔触 ⇒ 有机底色 ✓。
+        // **一键 = 参数少** ✓：颜色必填（与 new_document background 同形 {r,g,b,a} ✓）；
+        // 纹理只留 `strength`（明暗起伏幅度 ✓）与 `seed`（可复现 ✓）两个可选 ✓。
+        // **幂等** ✓：每次调用先删掉上次的底色层再重建 ⇒ 重复调用不叠加、不越铺越暗 ✓。
+        // **层序** ✓：底色层永远在最底 ⇒ 已有画作在其上不受影响 ✓（与 3.6b 纯色换底工具的
+        // 关系见包内说明文档：本项只管自己的底色层，不动 3.6b 的工具；跨工具联动是后续工作 ✓）。
+        summary: "一键铺笔触质感底色（专用底层底色层；颜色必填；重复调用再生本层、不叠加）",
+        mutating: true,
+        params: &[
+            param!("color", Object, true, "底色 {r,g,b,a}（0..255 整数；a 缺省 255；与 new_document background 同形；缺失或非法会明确报错，不静默铺底）"),
+            param!("strength", Number, false, "纹理起伏强度 0..1（缺省 0.5；0 = 近乎平涂，1 = 明暗起伏最大）"),
+            param!("seed", Number, false, "随机种子（缺省 42；同 seed ⇒ 同结果）"),
+        ],
+    },
+    ToolSpec {
         name: "save_palette",
         profile: Profile::Core,
         // **AI 画家需求 P1-5（写的一侧）**：读的一侧早有 `list_palette_colors`，缺的是"把一份调色板存下来"。

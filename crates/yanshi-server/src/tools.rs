@@ -33,7 +33,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（126 个）。
+    /// 核心层：默认注册（127 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -764,7 +764,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，126 个）。
+    /// 核心层（默认注册，127 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1992,6 +1992,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "list_palette_colors" => write_list_palette_colors(ctx, args),
         "analyze_region" => read_analyze_region(ctx, args),
         "texture_background" => write_texture_background(ctx, args),
+        "toned_ground" => write_toned_ground(ctx, args),
         "gradient_fill" => write_gradient_fill(ctx, args),
         "gradient_blend" => write_gradient_blend(ctx, args),
         "scatter_strokes" => write_scatter_strokes(ctx, args),
@@ -16236,6 +16237,288 @@ fn write_texture_background(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
         value["created_layer"] = json!(layer);
     }
     Ok(value)
+}
+
+/// **一键有机底色 `toned_ground`**（反馈报告 §5.3，功能需求小到中）：
+/// `texture_background` 铺的是 CC0 纹理图片 ✗，不是笔触底色 ✗ ⇒ 这里用**仓库现成笔刷**
+/// 在**专用底层**上铺笔触 ⇒ 有质感的底色 ✓（不是平涂 ✗，不是平铺纹理图片 ✗）。
+/// **笔刷选 `Classic_Paint`** ✓：`opaque = 1.0` ⇒ 盖得满 ✓；`elliptical_dab_ratio = 5.19` 的
+/// 长椭圆 dab 沿行笔方向拉出刷痕 ✓；**没有 `random` 输入**（`offset_by_random = 0`、
+/// `radius_by_random = 0` ✓）⇒ 同输入逐笔可复现 ✓ —— `Dirty_Noise`/`Grain` 都吃 `random` ✗，
+/// 重复调用会逐笔漂移 ✗，当不了\"调两次结果一致\"的底 ✓。
+/// **排布** ✓：横向通笔、行距 = 笔径 × 0.30（`Classic_Paint` 的长椭圆 dab 竖直有效半高只有
+/// 约 0.25 笔径 ✗，行距必须小于两倍半高才盖得满 ✓）；每行颜色在请求色
+/// 上下按 `strength` 起伏（起伏量先**去均值** ⇒ 整幅均色贴住请求色 ✓，不漂移 ✓）；
+/// 行内带种子抖动（y 抖 ±笔径 × 0.15、压感 0.75..1.0 ⇒ 不是机械条纹 ✓）。
+/// **层序与幂等** ✓：底色层名固定为 `底色（笔触）`，每次调用先删掉同名旧层再重建并沉到
+/// 最底 ⇒ 重复调用**再生本层、不叠加、不越铺越暗** ✓；已有画作都在它上面 ⇒ 不受影响 ✓。
+/// **与 3.6b 纯色换底工具的关系** ✓：本项只管自己的底色层，**不动 3.6b 的工具** ✗；
+/// 两者叠加时的层序关系（谁在谁上）是跨工具联动工作，本项不做 ✗，见包内说明文档 ✓。
+/// **颜色口径** ✓：与 `new_document background` 同形 `{r,g,b,a}`（0..255 整数 ✓）；
+/// 但这里**严格校验** ✗ —— `parse_colour_value` 那套会把缺失通道静默补 0、把越界静默夹到 255 ✗，
+/// 底色工具抄它就会\"错色也照铺\" ✗ ⇒ 本函数缺失/非对象/缺通道/非整数/越界一律**明确报错** ✓，
+/// 不传颜色也报错 ✓，绝不静默铺底 ✗。
+const TONED_GROUND_LAYER_NAME: &str = "底色（笔触）";
+
+/// **确定性伪随机**（splitmix64 ✓）：`seed` 相同 ⇒ 行颜色与抖动逐位相同 ✓ ⇒
+/// 调两次的导出图逐位一致 ✓（笔刷本身无 `random` 输入 ⇒ 整条链可复现 ✓）。
+fn toned_ground_next(state: &mut u64) -> f64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    (z ^ (z >> 31)) as f64 / u64::MAX as f64
+}
+
+fn toned_ground_channel(color: &Value, key: &str, required: bool) -> Result<u8> {
+    match color.get(key) {
+        None => {
+            if required {
+                Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "toned_ground 的 color 缺少 {key} ⇒ 给完整的 {{r,g,b,a}}（0..255 整数；a 可缺省为 255）"
+                    )),
+                ))
+            } else {
+                Ok(255)
+            }
+        }
+        Some(value) => {
+            let number = value.as_i64().ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "toned_ground 的 color.{key} 必须是 0..255 的整数（给了 {value}）⇒ 小数、字符串、负数、超 255 都不收"
+                    )),
+                )
+            })?;
+            if !(0..=255).contains(&number) {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "toned_ground 的 color.{key} 越界（{number}）⇒ 只收 0..255，不静默夹紧"
+                    )),
+                ));
+            }
+            Ok(number as u8)
+        }
+    }
+}
+
+fn write_toned_ground(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **颜色必填、严格校验** ✓：不传、非对象、缺通道、非整数、越界 ⇒ 全部明确报错 ✓。
+    let color_value = args.get("color").ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "toned_ground 必须给 color（{r,g,b,a}，0..255 整数）⇒ 不给颜色不会静默铺底"
+                    .to_string(),
+            ),
+        )
+    })?;
+    if !color_value.is_object() {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(format!(
+                "toned_ground 的 color 必须是对象 {{r,g,b,a}}（给了 {color_value}）"
+            )),
+        ));
+    }
+    let r = toned_ground_channel(color_value, "r", true)?;
+    let g = toned_ground_channel(color_value, "g", true)?;
+    let b = toned_ground_channel(color_value, "b", true)?;
+    let a = toned_ground_channel(color_value, "a", false)?;
+    // **两个可选纹理旋钮，都有缺省** ✓（再多就不是\"一键\" ✗）：
+    // `strength` 越界同样报错 ✗（不静默夹紧 ✓，与 `brush_stroke.opacity` 同一条纪律 ✓）。
+    let strength = match args.get("strength") {
+        None => 0.5,
+        Some(value) => {
+            let number = value.as_f64().ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "toned_ground 的 strength 必须是数字（给了 {value}）"
+                    )),
+                )
+            })?;
+            if !number.is_finite() || !(0.0..=1.0).contains(&number) {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "toned_ground 的 strength 必须在 0..1（给了 {number}）⇒ 越界不再静默夹紧"
+                    )),
+                ));
+            }
+            number
+        }
+    };
+    let seed = match args.get("seed") {
+        None => 42,
+        Some(value) => value.as_u64().ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!(
+                    "toned_ground 的 seed 必须是非负整数（给了 {value}）"
+                )),
+            )
+        })?,
+    };
+    let (canvas_width, canvas_height) = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| (document.state().width, document.state().height))
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("找不到文档 {}", ctx.doc_id)),
+            )
+        })?;
+    if canvas_width == 0 || canvas_height == 0 {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail("文档尺寸是 0 ⇒ 铺不了底色".to_string()),
+        ));
+    }
+    // **幂等：先删同名旧底色层** ✓（删整层 ⇒ 旧笔触一个不留 ⇒ 绝无叠加变暗 ✓）。
+    // 同名层正常只有一个；同名多层（调用方手工改名撞上）也一并清掉 ⇒ 再生结果唯一 ✓。
+    let listed = read_list_layers(ctx)?;
+    let mut replaced = false;
+    if let Some(layers) = listed.get("layers").and_then(Value::as_array) {
+        let old: Vec<String> = layers
+            .iter()
+            .filter(|layer| {
+                layer.get("name").and_then(Value::as_str) == Some(TONED_GROUND_LAYER_NAME)
+            })
+            .filter_map(|layer| {
+                layer
+                    .get("layer_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .collect();
+        for layer_id in old {
+            write_delete_layer(ctx, &json!({ "layer_id": layer_id }))?;
+            replaced = true;
+        }
+    }
+    // **新建专用层并沉到最底** ✓（与 `texture_background` 同一套路 ✓：
+    // `reorder_layers` 收**自下而上**的顺序 ⇒ 新层放最前 ✓）。
+    let made = write_create_layer(ctx, &json!({ "name": TONED_GROUND_LAYER_NAME }))?;
+    let layer_id = made
+        .get("layer_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!("建底色图层之后没拿到 layer_id：{made}")),
+            )
+        })?
+        .to_string();
+    let listed = read_list_layers(ctx)?;
+    let mut order: Vec<String> = vec![layer_id.clone()];
+    if let Some(items) = listed.get("layers").and_then(Value::as_array) {
+        for item in items {
+            if let Some(id) = item.get("layer_id").and_then(Value::as_str) {
+                if id != layer_id {
+                    order.push(id.to_string());
+                }
+            }
+        }
+    }
+    write_reorder_layers(ctx, &json!({ "order": order }))?;
+    // **排布** ✓：笔径按短边取（小画布不糊成一坨、大画布不细成发丝 ✓），行距 0.30 笔径、
+    // 首行中心 0.20 笔径处 ⇒ 四边盖满 ✓。
+    // **行距为什么不是 0.55** ✓：`Classic_Paint` 的 dab 是长椭圆（ratio 5.19 ✓），竖直方向的
+    // 有效半高只有约 0.25 笔径 ✗，不是笔径的一半 ✗ —— 0.55 笔径的行距会在顶边留下一条露白带
+    // （盒上探针实测：160×100 画布露白 299 像素，其中 274 个在 y=0..11 ✓）。
+    // ⇒ 行距 0.30 笔径（相邻行重叠约 0.20 笔径 ✓），首末行中心各向画布外探 0.20 笔径以上 ✓。
+    let min_side = (canvas_width as f64).min(canvas_height as f64);
+    let size = (min_side / 6.0).clamp(16.0, 256.0);
+    let step = size * 0.30;
+    let half = size * 0.25;
+    let mut rows: Vec<f64> = Vec::new();
+    let mut row_y = size * 0.2;
+    while row_y - half < canvas_height as f64 {
+        rows.push(row_y);
+        row_y += step;
+    }
+    // **每行一色** ✓：在请求色上下起伏（幅度 = strength × 32/通道 ✓），起伏先去均值 ⇒
+    // 整幅均色贴住请求色 ✓（行数少时也不漂 ✓）；`strength = 0` ⇒ 全行同色 ⇒ 近乎平涂 ✓
+    //（只剩笔刷自身的 dab 纹理 ✓）。
+    let mut rng = seed;
+    let mut deltas: Vec<[f64; 3]> = rows
+        .iter()
+        .map(|_| {
+            let amp = strength * 32.0;
+            [
+                (toned_ground_next(&mut rng) * 2.0 - 1.0) * amp,
+                (toned_ground_next(&mut rng) * 2.0 - 1.0) * amp,
+                (toned_ground_next(&mut rng) * 2.0 - 1.0) * amp,
+            ]
+        })
+        .collect();
+    if !deltas.is_empty() {
+        let count = deltas.len() as f64;
+        for channel in 0..3 {
+            let mean = deltas.iter().map(|delta| delta[channel]).sum::<f64>() / count;
+            for delta in deltas.iter_mut() {
+                delta[channel] -= mean;
+            }
+        }
+    }
+    let base = [f64::from(r), f64::from(g), f64::from(b)];
+    let mut strokes = 0usize;
+    for (index, y) in rows.iter().enumerate() {
+        ctx.check_cancelled()?;
+        let delta = deltas[index];
+        let row_color = json!({
+            "r": (base[0] + delta[0]).round().clamp(0.0, 255.0),
+            "g": (base[1] + delta[1]).round().clamp(0.0, 255.0),
+            "b": (base[2] + delta[2]).round().clamp(0.0, 255.0),
+            "a": f64::from(a),
+        });
+        let point_step = (size * 0.5).max(12.0);
+        let mut points: Vec<Value> = Vec::new();
+        let mut x = -size / 2.0;
+        while x <= canvas_width as f64 + size / 2.0 {
+            let jitter = (toned_ground_next(&mut rng) * 2.0 - 1.0) * size * 0.15;
+            let pressure = 0.75 + 0.25 * toned_ground_next(&mut rng);
+            points.push(json!([
+                x.round(),
+                (y + jitter).round(),
+                (pressure * 100.0).round() / 100.0,
+            ]));
+            x += point_step;
+        }
+        // **逐笔走 `write_brush_stroke`** ✓（与 `scatter_strokes`/`gradient_blend` 同一条落笔实现 ✓，
+        // 不是另一套像素填充 ✓）⇒ 底色**就是笔触** ✓，防作弊核查里也认它是笔触 ✓。
+        write_brush_stroke(
+            ctx,
+            &json!({
+                "layer_id": layer_id,
+                "brush": "Classic_Paint",
+                "points": points,
+                "size": size.round() as i64,
+                "color": row_color,
+                "label": "toned_ground",
+            }),
+        )?;
+        strokes += 1;
+    }
+    Ok(json!({
+        "ok": true,
+        "layer_id": layer_id,
+        "created_layer": layer_id,
+        "replaced": replaced,
+        "brush": "Classic_Paint",
+        "color": {"r": r, "g": g, "b": b, "a": a},
+        "strength": strength,
+        "seed": seed,
+        "strokes": strokes,
+        "region": {"x": 0, "y": 0, "w": canvas_width, "h": canvas_height},
+        "execution": execution_report(ctx),
+    }))
 }
 
 /// **`save_palette`**（AI 画家需求 P1-5 的写侧）：把 `colors` 规范成 `R G B` ⇒ 写一份临时 `.gpl` ⇒

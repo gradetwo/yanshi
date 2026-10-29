@@ -622,6 +622,7 @@ const P2_TOOL_SPECS = {
   suggest: [1, [["patch","a",1],["annotation_id","s",0],["summary","s",0],["priority","i",0]]],
   swatch_brush_strokes: [0, [["brushes","a",1],["brush_params","o",0],["preview_size","s",0],["colors","a",0],["paths","a",0],["size","n",0],["background","x",0],["read_canvas","b",0],["opacity","n",0],["hardness","n",0],["color_to","x",0],["smooth","b",0],["include_image","b",0],["output_path","s",0]]],
   texture_background: [1, [["texture","s",1],["mode","s",0],["region","x",0],["layer_id","s",0],["object_id","s",0]]],
+  toned_ground: [1, [["color","o",1],["strength","n",0],["seed","n",0]]],
   transform_object: [1, [["object_id","s",1],["rotate","o",0],["scale","o",0],["translate","o",0],["anchor","o",0],["compose","b",0]]],
   transform_selection: [1, [["selection_id","s",1],["translate","a",0],["scale","a",0],["rotate_deg","n",0],["pivot","a",0]]],
   try_batch: [0, [["layer_id","s",1],["strokes","x",1],["label","s",0]]],
