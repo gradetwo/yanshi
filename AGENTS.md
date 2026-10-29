@@ -824,15 +824,15 @@ gh workflow run CI
 
 ### 更根本的一条：**同 `concurrency group` 只跑一个 ⇒ 一个在跑时别派发**
 
-`ci.yml:98-100`：
+`ci.yml:98-100`（2026-10-29 起 `cancel-in-progress` 改为 `true`，全分支统一；旧表达式见 ci.yml 注释历史）：
 
 ```yaml
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: true
 ```
 
-- `main` 上 `cancel-in-progress: **false**` ⇒ 新 run **不会取消**旧的 ✓
+- `main` 上 `cancel-in-progress: **true**` ⇒ 新 run **自动取消**旧的（2026-10-29 用户新裁定：主干只跑最新一次合并）
 - **但同一个 group 只跑一个** ⇒ 新 run **排队**，它的 `jobs` 数是 **0**
 
 **⇒ 所以我每派发一次，就在队尾排一个，而排队期间它的提交已经过期了。**

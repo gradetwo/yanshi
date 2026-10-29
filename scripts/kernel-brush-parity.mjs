@@ -85,7 +85,7 @@ let missingFlagCount = 0;
 // **整层合成通道**（第 296 轮 ✓，C⑧ ✓）：吃底图的笔刷**也能比了** ✓。
 // 依据（第 295 轮的实测 ✓）：门面（喂非空 base ✓）的输出**就是"base ⊕ 这一笔"的合成结果** ✓ ——
 // 两支 `fed_base=true` 的笔刷实测"最大通道差恰好是 **1**" ✓，而两组对照差 2123／7012 ✓。
-// ⇒ **∴ 比"门面 vs 画后合成"** ✓，容差按**已知的依赖侧 1 ulp 类** ✓（**语义边界**，不是某次观测 ✗）。
+// ⇒ **∴ 比"门面 vs 画后合成"** ✓，容差按**放宽后的经验包络** ✓（Wang 2026-10-29 定放宽 ✗：旧 1 ulp 语义边界已被两条管线的舍入缺口证伪 ✗，依据见判定处注释 ✓）。
 let compositeCompared = 0;
 let compositeSame = 0;
 const docSize = { x: 0, y: 0, w: CANVAS.width, h: CANVAS.height };
@@ -206,14 +206,20 @@ for (const brush of names) {
     for (let i = 0; i < want; i += 1) {
       if (afterBox[i] !== facadeC[i]) rawDiff += 1;
     }
-    // **容差 1** ✓ —— 这是**语义边界** ✓（已知的依赖侧 1 ulp 类 ✓），不是"某次实测的数" ✗。
-    const okC = maxC <= 1;
+    // **容差 8（最大通道差）** ✓ —— 这是**经验包络＋margin** ✓（Wang 2026-10-29 定放宽 ✗：旧 1 ulp
+    //   语义边界已被两条管线的舍入缺口证伪 ✗）。依据：D4b 分支实测最大通道差 3（Fountain_SF#1
+    //   红色区 88×48，22 字节差；更早 run 最大也是 3）⇒ 8 = 实测最大 3 的约 2.7 倍，留 5 级 margin；
+    //   仍比真实分歧量级小一个数量级以上（同文件旧比法参考值最大通道差 215；去门面 base 的变异
+    //   最大通道差 255）⇒ 真实笔刷偏差仍会红 ✓。差异字节数只打印、不参与判定（保持原状 ✗：
+    //   新加字节 cap 会是新断言维度，可能让现绿的笔刷新红，不属本次放宽范围 ✗；实测 12～68 字节
+    //   只占区域字节（88×48×4＝16896）的 0.4% 以内，是抖动量级的佐证 ✓）。
+    const okC = maxC <= 8;
     compositeCompared += 1;
     if (okC) compositeSame += 1; else allEqual = false;
     console.log(
       `  ${(brush + "/" + colourName).padEnd(22)} 区域 ${region.w}×${region.h}（整层合成 ✓）｜` +
       `门面⊕底图 vs 画后合成：不同字节 ${diffC}｜最大通道差 ${maxC}｜（未合成时 ${rawDiff}）｜` +
-      (okC ? "**在 1 ulp 容差内** ✓" : "超出 1 ulp 容差 ✗（**这不等于「笔刷不同」** ✗ —— 两侧管线尚未对齐 ✓）"),
+      (okC ? "**在放宽后容差（最大通道差 ≤ 8）内** ✓" : "超出放宽后容差 ✗（**这不等于「笔刷不同」** ✗ —— 两侧管线尚未对齐 ✓）"),
     );
     continue;
   }
@@ -337,7 +343,7 @@ console.log(
     : "结论：存在差异 ✗（**机制未隔离** ✗ —— 不许再写「两边数学实现不同」当结论 ✓："
       + "取证是本机把**两种底图口径**都试过 ⇒ region 裁剪 2652 字节 / 全画布 6564 字节 ✗"
       + " ⇒ 至少不是「底图被裁小了」这一个原因 ✓；下一步要把服务端的**第二遍掩膜落墨**与门面的单遍对齐再比 ✓）") +
-  `｜吃底图的 **已用整层合成比对** ✓：${compositeCompared} 条（其中 ${compositeSame} 条在 1 ulp 容差内 ✓）` +
+  `｜吃底图的 **已用整层合成比对** ✓：${compositeCompared} 条（其中 ${compositeSame} 条在放宽后容差（最大通道差 ≤ 8）内 ✓）` +
   `｜吃底图的**未比对**：${fedBaseCount - compositeCompared} 条` +
   (missingFlagCount > 0 ? `｜服务端未报 fed_base：${missingFlagCount} 条` : "") +
   `｜覆盖 ${names.length}/${total} 支笔（${pct}%｜${sample}）` +

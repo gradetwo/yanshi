@@ -6,7 +6,7 @@
 //   **⇒ 而**仓里**早就有**一份手写解码器（`tool-import-image-visible.mjs` 里内联了 40 行 ✓）
 //   ⇒ **∴ 复制一份**会让两处漂移 ✗ ⇒ **∴ 所以**抽到这里，两处都引用 ✓（同一事实一处 ✓）。
 //
-// **支持**：8 位、颜色类型 2（RGB）与 6（RGBA）、五种行过滤器 ✓ —— 正是本仓 `export_png` 会产的两种 ✓。
+// **支持**：8 位、颜色类型 0（灰度＝遮罩 patch）、2（RGB）与 6（RGBA）、五种行过滤器 ✓。
 import { inflateSync } from "node:zlib";
 
 /**
@@ -36,10 +36,12 @@ export function decodePng(buffer) {
     if (type === "IDAT") idat.push(data);
     pos += 12 + length;
   }
-  if (bitDepth !== 8 || (colourType !== 2 && colourType !== 6)) {
+  if (bitDepth !== 8 || (colourType !== 0 && colourType !== 2 && colourType !== 6)) {
     throw new Error(`不支持的颜色类型／位深：colourType=${colourType} bitDepth=${bitDepth}`);
   }
-  const channels = colourType === 6 ? 4 : 3;
+  // **★ 颜色类型 0（灰度 8 位）是遮罩片段的格式 ✓**（`crates/yanshi-render/src/png.rs encode_png_l8`
+  //   ＋ `decode_png_l8` ⇒ 烘焙遮罩／`create_mask` 的 patch 就是它 ✗ 判据要逐字节比网格必须有它 ✓）
+  const channels = colourType === 6 ? 4 : colourType === 2 ? 3 : 1;
   const stride = width * channels;
   const raw = inflateSync(Buffer.concat(idat));
   const out = Buffer.alloc(height * stride);
