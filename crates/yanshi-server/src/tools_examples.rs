@@ -596,4 +596,9 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         //（2026-10-06 判据实测：`blob_hash` 不是合法哈希 ✓）⇒ 违反「示例要**真的可照抄**」 ✓。
         r##"{"layer_id": "layer_default", "blob_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}"##,
     ),
+    // **stroke_heatmap**（反馈 5.6）：唯一必填参数是 region（与 render_region 同形）⇒ 只给必填项就成立 ✓。
+    (
+        "stroke_heatmap",
+        r#"{"region":{"x":0,"y":0,"w":400,"h":300}}"#,
+    ),
 ];
