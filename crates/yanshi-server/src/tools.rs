@@ -33,7 +33,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（126 个）。
+    /// 核心层：默认注册（128 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -764,7 +764,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，126 个）。
+    /// 核心层（默认注册，128 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
