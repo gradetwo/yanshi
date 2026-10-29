@@ -100,3 +100,16 @@ description: 用 yanshi 的 MCP 笔触工具画"一笔一笔看都真实"的画 
 
 **脸 / 手 / 蕾丝不许被 `smudge` 扫到** ✗ —— 那是"一模糊就偏"的来源。
 `smudge` 只允许用在**非锚点区**（背景、衣料大面、暗部过渡）。
+
+## 风格分册（v5）
+
+四份风格方法文档与证据附录在 `references/` 下：
+
+- 油画：`references/oil-painting.md`，证据 `references/oil-painting-evidence-round1.md`。
+- 水彩：`references/watercolor.md`，证据 `references/watercolor-evidence-round1.md`。
+- 素描：`references/sketch.md`，证据 `references/sketch-evidence-round1.md`。
+- 水墨：`references/ink.md`，证据 `references/ink-evidence-round1.md`。
+
+通用化验收见 `references/genericity-check.md`，勘误见 `references/errata.md`。
+
+v5 基线：第 3 轮量测（binary 9045faeb）；正文量测更新只 U-1 与项 2 两条；§8 方法发现只进证据附录，不升为正文规则。
