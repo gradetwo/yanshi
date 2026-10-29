@@ -78,8 +78,8 @@ fn mean_and_stddev(rgba: &[u8]) -> ([f64; 3], [f64; 3]) {
             mean[channel] += f64::from(chunk[channel]);
         }
     }
-    for channel in 0..3 {
-        mean[channel] /= count;
+    for item in &mut mean {
+        *item /= count;
     }
     let mut variance = [0.0; 3];
     for chunk in rgba.chunks_exact(4) {
