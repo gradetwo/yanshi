@@ -223,7 +223,10 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                   **要释放就 `close` 再 `open` 同一文档**（实测 4 450 MB → 1 736 MB，回放 0.8 s）；\
                   配了 `YANSHI_VECTOR_RASTER_CACHE_MB`（兆字节）后单笔光栅缓存按 LRU 逐出、\
                   被逐笔触按需重算、像素不变 ⇒ close 重开不再是唯一出路；\
-                  **单会话有天花板、文档本身没有** ⇒ 长跑请分阶段、每阶段重开或配上限",
+                  **单会话有天花板、文档本身没有** ⇒ 长跑请分阶段、每阶段重开或配上限；\
+                  另带每笔均值字段 ms_per_stroke_avg（毫秒）：本次调用墙钟除以文档原子数，\
+                  0 原子时为 0——它是 describe 自身成本摊到每原子，不是画笔单笔成本，\
+                  画笔预算看 batch 的同名字段",
         mutating: false,
         params: &[],
     },
@@ -1420,7 +1423,9 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                  单笔绘制要省 wall 时间请用 `brush_stroke(wait_for_render: false)` ✓（`brush_stroke` 回执本就不带预览图，`preview` 对它无可见效果 ✓）。\
                  顶层 `ok` 即全成（与 `all_ok` 一致 ✓，A6 方案 ①）：有子调用失败 ⇒ `ok:false` + `error` 指路 `failed_calls` ✓。\
                  每笔另有取证摘要 `stroke_evidence`（与 `calls` 同下标 ✓）：笔触类子调用给 `landed` / `painted_pixels_clipped` / `ink_mass` / `max_channel_delta`（与 `brush_stroke` 回执同字段 ✓；`medium_stroke` 的 `paint_delta` 在此归一为 `max_channel_delta` ✓）；失败的子调用带完整 `error` ✓。\
-                 精简回执：传 slim_receipt true 时只砍逐笔调用回执（calls 为空数组，omitted_calls 记被省掉的条数）；计数、失败项（failed_calls 完整保留）、stroke_evidence、atom_ids、head、changeset_id、execution 仍保留；缺省 false，完整回执不变。",
+                 精简回执：传 slim_receipt true 时只砍逐笔调用回执（calls 为空数组，omitted_calls 记被省掉的条数）；计数、失败项（failed_calls 完整保留）、stroke_evidence、atom_ids、head、changeset_id、execution 仍保留；缺省 false，完整回执不变\
+                 另带每笔均值字段 ms_per_stroke_avg（毫秒）：整批墙钟除以笔触子调用数，\
+                 0 笔触时为 0；混合批次里是非笔触开销也摊进来的全批成本，纯笔触批次里即纯笔触均值。",
         mutating: true,
         params: &[
             param!("calls", Array, true, "[{tool, arguments}]（一次最多 500 个调用，超了拆成多个 batch；每 100 个一段，段边界做内存水位检查，触发即提前停）"),
@@ -3145,7 +3150,7 @@ CLIP_TO_SELECTION_PARAM,
         // **P1 #9（第 254 轮）**：原来写死 4 支内置笔刷、而且看不到工作区 => AI 不知道有哪 201 支
         // `.myb` 可挑，也不知道 `brush_params` 的字段叫什么。现在枚举走仓库已有的资产枚举，
         // 并附上**规范字段名全表**（与 P0 #4 的 `brush_params` 配对）。
-        summary: "列出可用 .myb 笔刷（含各自参数摘要 ＋ 规范字段名全表）=> 先看有哪些笔刷，再决定 brush 与 brush_params",
+        summary: "列出可用 .myb 笔刷（含各自参数摘要 ＋ 规范字段名全表）=> 先看有哪些笔刷，再决定 brush 与 brush_params；不传分页参数时返回过滤后的完整列表，传了分页参数时只返回对应的一页并附过滤后总数与下一页起点",
         mutating: false,
         params: &[
             param!(
@@ -3159,6 +3164,18 @@ CLIP_TO_SELECTION_PARAM,
                 String,
                 false,
                 "按介质过滤：oil／watercolor／sketch／ink／pastel ⇒ 只返回该画法常用的笔刷白名单（与 filter 可叠加）"
+            ),
+            param!(
+                "limit",
+                Integer,
+                false,
+                "本页最多返回几支；缺省 = 不分页（返回过滤后的全部）；0 = 只返回总数、不返回笔刷条目（廉价探针，不要拿它翻页）；负数或非整数报 invalid_argument"
+            ),
+            param!(
+                "offset",
+                Integer,
+                false,
+                "跳过过滤后的前几支再取页；缺省 = 0；超出总数时返回空页，不报错；负数或非整数报 invalid_argument"
             ),
         ],
     },

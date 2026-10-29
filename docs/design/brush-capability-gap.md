@@ -24439,3 +24439,138 @@ M7 是「**像素级**」的那种 ⇒ 验容差没把它糊过去 ✓。**其�
 `tool-pwa-assets`（**声明 181 === 分支 181 ✓**）、`tool-js-syntax`（数它用 `ls scripts/*.mjs | wc -l` ⇒ 本轮实测 459 个 ✓ **不取补丁里的 463**，那是他们那侧的树 ✓）、
 `tool-pwa-api-behaviour` ✓、`tool-pwa-preset-library-parity` ✓、`tool-pwa-import-psd`（338 条 ✓）、
 `tool-pwa-pixel-stats` ✓、`tool-pwa-local-write-guards` ✓。**没新增已知红** ✓。
+
+## 六百七十六、本地 `create_range_mask` 落地（`LOCAL_IMPLEMENTED` 181 → **182**）：f32 烘焙管线逐字移植＋遮罩片段必须是 **L8**；一条变异**没红**送来「判据的输入要自己能证」＋三条诚实分叉记在案上
+
+**做什么**（`crates/yanshi-http/assets/api-local.js` 的 `⑤b` 分支 ⇒ `web/api-local.js` 由 `pwa-sync-viewer.mjs` 重生成 ✓）：
+面板的「按明度／色相范围建蒙版」以前本地是**如实 501** ⇒ 现在真的把源层像素烤成一张 L8 覆盖网格、
+存成 `create_mask` 原子的 patch 片段、回执逐键对齐服务端。**新增一个分支 ⇒ 机械重数 182 ✓**
+（数它用：`node -e 'const a=require("fs").readFileSync("web/api-local.js","utf8");console.log(((a.match(/(?:url\.pathname|path) === "/g)||[]).length))'`）。
+
+**移植的七块**（权威都在 `crates/yanshi-server/src/tools_mask.rs`）：
+
+| 本地 | 权威 | 钉住的口径 |
+|---|---|---|
+| `p2Smoothstep01` | `:722 smoothstep01` | 先钳 `[0,1]` 再 `t*t*(3-2t)`（**不是 smoothstep 的另一种写法 ✓**）|
+| `p2SrgbLuma` | `:728 srgb_luma` | **在 u8 显示字节上**做 Rec709 加权再除 255 ✗ **不是**在参数那串线性浮点上 ✓ |
+| `p2LuminanceWindow` | `:735 luminance_window` | `smoothness` 先钳到 `(high-low)/2` ⇒ **窄带仍有平顶**✓；上下边各一次 smoothstep |
+| `p2RgbHueSat` | `:751 rgb_hue_sat` | 无彩色（`max==min`）⇒ 返回 `(0,0)`（**色相无定义 ⇒ 不参与色相选 ✓**）|
+| `p2HueWindow` | `:777 hue_window` | `sat < 0.1` ⇒ 恒 0；环形距离；`inner = half*(1-smoothness)` |
+| `p2BakeRangeGrid` | `:800 bake_range_grid` | **`invert` 烤进网格**✓（`CompiledMask` 的 invert 只管几何阶段，不翻 patch）；`alpha==0` 恒 0，**反选也不复活**✓ |
+| `encodePngL8` | `yanshi-render/src/png.rs:549 encode_png_l8` | `IHDR` 的 `bitDepth=8 / color_type=0` ＋ 逐行 filter=0，**无** `tRNS`／`gAMA` ✓ |
+
+**★ 为什么必须 L8 ✗**（这一条是本节的重点之一）：遮罩 patch 的回放方 `CompiledMask::build`
+（`selection.rs:1139-1142`）用 `decode_png_l8` 解字节 ⇒ **color_type 不是 0 就解不出来**✗
+而**解不出来／尺寸不符的片段被静默跳过**✓ ⇒ 症状是「回执 `coverage_matched_pixels=8192` 一切正常 ✓ 蒙版却是全空 ✓」
+= **静默降级形态③**。⇒ 判据因此**不看回执的计数就下结论 ✗ 而是把本地写进 IndexedDB 的那串字节取回来解码 ✓
+再与服务端 CAS 里那串解出来的网格逐格比**（M18「RGBA 替 L8」实测能红 ✓）。
+
+**★ f32 逐位**：服务端整条烘焙是 f32（`tools_mask.rs:722-832`）而 JS 的 `number` 是 f64 ⇒
+每一步 `Math.fround` 收窄 ✗。少收一次 ⇒ **带边像素的格值可以差 1**（实测 `low:0.5 high:1.0 smoothness:0.05`
+时白像素 coverage=`0.4999993` ⇒ 格值 **127**✓），而回执 `baked.smoothness` 打印成 **`0.05000000074505806`**
+（**f32 拓宽成 f64 ✓ 判据就断这个又长又歪的数 ✗ 不断 `0.05`**✓——断 `0.05` 会把「没做 f32」当成对 ✓）。
+**⇒ 而「`Math.fround(a / b)` 等于 f32 除法」这条依据要说全 ✓**：f64 中间结果再收窄与直接 f32 运算
+逐位相同，靠的是「中间精度 ≥ `2p+2` ⇒ 双重舍入无害」那条定理（f32 的 `p=24` ⇒ 门槛 50 ≤ f64 的 53 ✓），
+**只对 +／−／×／÷（正常范围）成立** ✗ 不是对任何运算都成立（`Math.sqrt`／`**` 不在其列）✓。
+
+### ★ 本轮头条：一条变异**没红** ⇒ 缺的不是断言，是**判据的输入**
+
+变异 M21「把 Rec709 的 r／b 权重装反」第一次跑 ⇒ **退出码 0**（判据全绿 ✗）。
+**∴ 四层齐缺的是第②层**：那份种子里**每一支矩形都是灰**（`[1,1,1]`／`[0.1,0.1,0.1]`／透明／纯调整层）⇒
+**R=G=B 时权重怎么排列都算出同一个数**✓ ⇒ 那条断言**根本没有可红的输入**✓（AGENTS「四层齐」列的原文症状：
+`every()` 在空数组上恒真 ✗ 这里是「灰像素在权重置换下恒等」✗ **同构**）。
+
+修法**不是**放宽断言 ✓，而是**造出能触发的输入**，再把这个「输入真的在过渡带里」**写成一条断言**（§C2）✓：
+
+| 我试过的色 | 我怎么算的 | 实测网格 |
+|---|---|---|
+| `[0.9, 0.5, 0.2]` ✗ | 拿**参数那串线性浮点**做 Rec709 ⇒ `0.563` ⇒「在带里」 | **16384/16384 格全是 255**✗ 恒绿案 |
+| `[0.9, 0.45, 0.2]` ✗ | 同上 ⇒ `0.528` | **同上 255** ✗ ⇒ §C2 自己把它报红了 ✓ |
+| `[0.9, 0.1125, 0.2]` ✓ | **不再算**：一次性探针**逐档扫 `g`**（0.100→0.130 步长 0.0025），每档一个独立图层，读**服务端自己的** `coverage_mean` | **每格 `133`**✓（`low=0.5, smoothness=0.05` ⇒ 过渡带 `[0.45,0.55]`，带心就是它）|
+
+**∴ 前两次算错的根因是域弄错了 ✓**：烘焙读的是**入库后的 u8 显示字节**（`:728 srgb_luma`）⇒
+参数里的 `[r,g,b]` 是**线性值** ⇒ 要先 sRGB 编码、量化到 0–255，再加权。按这个域重算，13 档的预测格值
+与实测**逐档相同**（`80 90 101 111 122 133 143 154 164 175 184 194 203` ✓）⇒ 域是对的。
+**∴ 而我仍不拿这个数当保证 ✗**：§C2 断「这条案的**每一格都在 0 与 255 之间**」⇒
+将来上游改 gamma／改权重／改量化口径，判据会说「这条案不在过渡带里 ⇒ 要改的是输入」✓
+**而不是静默变成一条恒绿的断言**✓（**这正是「四层齐」里第②层该长的样子 ✓**）。
+装上这条案后 M21 ⇒ 红在「烘焙出的遮罩像素不同」✓（互换权重把明度打到 `0.436` ⇒ 掉出带外 ⇒ 网格全 0 ✗）。
+
+### 顺手修掉的一处真缺陷：`set_property` 的**值引用**守卫少给 `context.atom_id`
+
+服务端那条守卫在**原子日志层**（`crates/yanshi-core/src/log.rs:357-381`），而它**恒** `.with_atom(atom.id)`（`:378`）
+⇒ 拒绝时的 `context` 键集是 `["atom_id","detail"]` ✓。本地 `p2RefGuard` 原来只有五个参数 ⇒
+**引用类拒绝只有 `detail`**✗。面板挂蒙版走的就是 `set_property{key:"mask_id"}` ⇒ 两条边键集不同 ✓。
+**∴ 修法**：加第 7 参 `atomId`，`extra: atomId ? { atom_id: atomId } : null`，两个值引用分支都传 ✓
+（**`layer_id`／`parent_id` 那条也补了** ✓ ⇒ 同一句拒绝的两个入口口径一致）。
+**∴ 判据断的是「排序后的键集相等」**✓ **而不是「有没有 atom_id」**✓ —— 键集更通用：**上游将来加任何一个键，两边必同时红**✓
+（`rm_dup_mask_no_atom_id` 钉提交期 409 那条 ✓、`rm_sp_guard_no_atom_id` 钉挂接那条 ✓，**两个入口各一个变异**）。
+
+**⇒ 但这条修法顺带把守卫从两键扩成四键 ✓**（`mask_id`／`style_id` 也查，且 `""` 不再当缺席 ✓）——
+**∴ 为什么以前不查 `mask_id` ✗**：那时本地没有任何端点会写它；**本轮起 `create_range_mask` 的挂接就是它 ✓**。
+`regions` 缺失时**不静默放过**：只有传了 `regions` 才走那条分支 ✓ ⇒ **两个能写 `mask_id`／`style_id` 的入口都传**
+（`set_property` 端点 ＋ `update_layer` 的逐键循环）✓；`lock_layer`／`set_layer_blend`／`set_object_property`
+写的键名不在那四个里 ⇒ 走不到 ✓。
+
+### 判据自己的库缺一格：`scripts/lib/png.mjs` 不认 `colourType 0`
+
+它原来只解 2（RGB）与 6（RGBA）⇒「正是本仓 `export_png` 会产的两种」✓。而**遮罩片段是 L8**（`encode_png_l8`）⇒
+**判据要把两边字节解回网格来比就必须先能解它**✓ ⇒ 补 `colourType 0 ⇒ channels=1`（`+8/-2` 行 ✓）。
+**⇒ 这不是产品缺陷 ✗ 是测量工具的缺口**：不补的话它会以「解不出来」的形式假红 ✓
+（AGENTS「测量工具要先被测量」同族 —— **新写的判据第一次跑之前，先让它把被测对象真的读出来**✓）。
+**⇒ 顺带核过**：解滤波的 `bpp` 就是 `channels` ✓ ⇒ 灰度时 `bpp=1` 正是 PNG 规范对 color_type 0 的要求 ✓。
+
+### 三条**已知分叉**（判据 §G **打印出来 ✗ 不假装比过 ✓**）
+
+| # | 分叉 | 为什么不断 |
+|---|---|---|
+| ① | **PNG 容器字节**两边不同 ⇒ **blob 哈希不同**✓ | 服务端 `miniz_oxide` level 7 vs 浏览器 `CompressionStream("deflate")` 缺省级别 ⇒ 实测**同一张网格**，容器**长度相同**而**首个不同偏移 = 42**（zlib 的 `FLG`）⇒ **压缩级别不是契约 ✓ 像素才是 ✓** ⇒ 判据比**解出的网格**逐格全等 ✓ 容器只打印。**哈希因此也跨边不断**，但**每边自证**：`hash === "sha256:" + sha256(取回的字节)` ✓ ＋ `refs.blobs ≡ patches[].blob` ✓（M16/M17 各钉一条 ✗）|
+| ② | **内存预算闸**（`resource_exhausted ⇒ 503`）本地**不可达**✓ | 本地画布上限 16384 像素 ⇒ 估算最大 1280 MB < 缺省预算 2048 MB ✓，而浏览器里没有 `YANSHI_DOC_MEMORY_BUDGET_MB` ⇒ **那条分支在本地是死路** ⇒ **不编造输入去触发它**✓（服务端侧由服务端单测与 `tool-*` 判据守着 ✓）|
+| ③ | **`update_layer{patch:{mask_id}}`** 那条拒绝**仍少** `context.atom_id`✗ | 它**逐键组原子** ⇒ 守卫跑在封套**之前**（拿不到 atom id）⇒ 与服务端 `log.rs:378` 不同 ✗。**已记进本节**；**面板主路径 `set_property` 已补齐并由 §F 钉住**✓（**加字段而不是换字段**：本地既有的 `reason`／`error` 保留，判据另断 `reason === context.detail` ✓ 防两处漂移 `rm_reason_drift` ✗）|
+
+**判据**（新文件 `scripts/tool-pwa-range-mask-parity.mjs`／**49 个 `check(` 调用点**（数它用 `grep -c '^ *check('` ✓）／八节）：
+**§A 错误族 17 案**——状态／`error_code`／`context.detail` **逐字**／**排序后的键集**四样都要相等，且两边**零新原子**；
+**§B 成功族 9 案**——回执 10 个共有键**规范形全等**（服务端字母序 vs 本地插入序 ⇒ **比内容不比键序**✓）、
+落盘 L8 网格 **128×128 逐字节全等**、**回执三个数从网格重算**（`matched`／`ratio === matched/cells`／
+`mean === sum/(cells*255)` ⇒ **任一边虚报必红 ✓** 形态⑤的专项守卫 ✓）、
+未登记键**两个方向**都闸（本地多给 ⇒ 红 ✗ 服务端 15 个外层字段白名单里**任何一个不再出现** ⇒ 也红 ✓）；
+**§C** 色相带选不到东西时**必须照实说**（`matched===0` ∧ 网格全 0 ⇒ 抓「选不到却画出遮罩」= 把整幅文档当被选中 ✓ 形态③）；
+**§C2** 输入闸（上面那一条）；**§D** `invert` 断**互补恒等式** `grid_inv === 255 − grid`（**两边各自成立**✓
+⇒ 不断「invert 那张长什么样」✓ 跨输入跨机器 ✓）；**§E** 图层作用域：空层网格 ≠ 有墨层 ＋ **多盖一层不透明层后源层网格必须不变**（抓「把整幅文档当成这一层」✓）；
+**§F** 挂接 3 案（活蒙版／不存在／已删除）；**§G** 三条分叉只打印。
+前提一律 `exit(3)`（**判据前提不成立 ≠ 产品失败**✓）。
+
+**变异**：**共 26 条**（补丁 25 条 ＋ 合并侧复审加的 1 条 `rm_lowhigh_f64`，见下），**全红在该红的断言**✓
+（脚本 `scripts/mutations/mutate-pwa-range-mask.py` ✓ 只改 `web/api-local.js`、`finally` 还原、`cmp` 验逐字节一致、
+还原后复测全绿 ✓；每条先 `assert` 锚点唯一 ✓）。逐条：`rm_no_validate`（未知键不拒）｜`rm_never_layer_as_400`｜
+`rm_deleted_layer_no_name`（已删层那句不报名字）｜`rm_empty_layer_gate_off`｜`rm_adjust_only_gate_off`｜
+`rm_dup_mask_gate_off`｜`rm_dup_mask_no_atom_id`｜`rm_reason_drift`｜`rm_matched_off_by_one`｜`rm_ratio_wrong_denom`｜
+`rm_mean_no_255`｜`rm_range_echo_hardcoded`｜`rm_note_drift`｜`rm_stray_key`｜`rm_seq_off_by_one`｜`rm_refs_missing_blob`｜
+`rm_blob_bytes_mismatch`｜`rm_l8_becomes_rgb8`｜`rm_payload_shape_wrong`｜`rm_f32_dropped`｜
+**`rm_luma_weights_swapped`（本轮的头条那条 ✓）**｜`rm_invert_ignored`｜`rm_hue_window_always_full`｜
+**`rm_lowhigh_f64`（合并侧复审补的 ✓）**｜`rm_layer_scope_off`｜`rm_sp_guard_no_atom_id`。
+**⇒ 本轮把「25 条里 1 条没红」的原始输出与结论一并留在这里 ✓**（没红不是交差理由，是**改输入的工单**✓）。
+
+**★ 合并侧复审抓到的第一处**（**不是补丁的变异找出来的 ✗ 是复审读出来的**）：
+本地在**收窄成 f32 之前**比 `low > high`（f64），而服务端是 `number_in(..) as f32` **之后**再比 ⇒
+`low=0.30000000000000004`、`high=0.3` 这一对**服务端放行（0.3f32 == 0.3f32）、本地拒**✗
+⇒ **静默分叉**（与「空串当缺席」同一族：**判据的量取错了域**）。修法：**比收窄后的 f32** ✓，
+并把这一对写进 `§B` 的新案「f32 等值（f64 不等）」✓ ＋ 变异 `rm_lowhigh_f64`（把比较改回 f64 ⇒ 该案红 ✓）
+—— **⇒ 这条断言自己证得了自己能红 ✓**（旧实现下红、新实现下绿，两种我都跑过）。
+
+**★ 合并侧复审抓到的三处引用错**（都是注释，不影响行为，但**锚点错了就是把读者送错地方** ✗）：
+① `fold.rs:871 precondition` ⇒ 实际是 `fold.rs:870-876` 的 `CreateMask` 分支（**条件是 `state.mask_alive`** ✓，
+`871` 落在分支里但不在那个 `if` 上）；② `tools_mask.rs:985`（blob 先行）⇒ 实际是 `:977 encode_png_l8` ＋ `:978 put_blob`；
+③ **`UPDATE_LAYER_KEYS` 不是服务端的名字** ✗ —— 服务端的提交期检查是 `log.rs:357-381` 的**键开关**
+（`mask_id`／`style_id`／`parent_id`／`layer_id`，**白名单字符串直接写在 match 里** ⇒ 没有常量），
+`UPDATE_LAYER_KEYS` 是**本地** `api-local.js:4686` 的常量；而这条路真的写得出来，靠的是
+`LAYER_PATCH_KEYS`（`tools.rs:3662`，**10 个键含 `mask_id`／`parent_id`，不含 `style_id`** ✓）。
+
+**回归**（本机复测 ✓）：`tool-pwa-range-mask-parity` ✓、`tool-pwa-assets`（**声明 182 === 分支 182 ✓**）、
+`tool-js-syntax`（数它用 `ls scripts/*.mjs | wc -l`）、`tool-pwa-pixel-stats` ✓、
+`tool-pwa-local-write-guards` ✓、`tool-pwa-preset-render-parity` ✓、`tool-pwa-api-behaviour` ✓。**没新增已知红** ✓。
+
+**⇒ 与上游 6 个提交的关系**（合并前 `git pull --ff-only` 到 `6383a9ae` ✓）：它们动了
+`crates/yanshi-server/src/{tools,document}.rs` 与 `api-local.js`（**只有一句 `update_object` 的提示文案** ✓），
+**没碰本节的任何 hunk** ⇒ rebase 无冲突 ✓；其中「`set_property` 改 `background` 无效时回顶层 `warnings`」
+**正好落在本判据的 `SERVER_ONLY` 白名单里**（`warnings` 已登记 ✓）⇒ **外层多一个键也不会让 §B 变红 ✓**。

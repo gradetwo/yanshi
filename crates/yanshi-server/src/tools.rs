@@ -1023,6 +1023,9 @@ impl ToolRegistry {
         // **阶段耗时如实附上** ✓（P2）：成功与失败都带 ✓ ——
         // "超时到底花在哪"这个问题在**失败**时最需要答案 ✓。
         attach_timings(&mut response, &ctx.timings.report(call_started.elapsed()));
+        // **每笔均值重算**（预算字段收缩版）：以最终 `timings` 为准覆盖
+        // `dispatch` 里按分段增量算的那份，保证与回执展示的 `total_ms` 对应 ✓。
+        attach_ms_per_stroke_avg(&mut response, name);
         // **把这次结果记进诊断环** ✓（`collect_diagnostics` 的 `timings.json` 就是它 ✓）：
         // 这是工具结果里**本来就有**的那份 `timings` 与 `warnings` ✓，
         // 采集时不必再猜"上一次慢在哪、有没有告警" ✓。
@@ -1042,6 +1045,62 @@ impl ToolRegistry {
             crate::diagnostics::log_line(format!("tool {name} 失败：{code} {detail}"));
         }
         response
+    }
+}
+
+/// **每笔均值**（预算字段收缩版：只加回执字段，不新增工具与参数）。
+///
+/// 口径（写死，调用方按此算预算，不可另猜）：
+/// * 分子：同回执里 `timings.total_ms`（整次调用的墙钟，毫秒）；
+/// * 分母：`describe_canvas` 用回执 `counts.atoms`（文档日志原子总数）；
+///   `batch` 用回执 `stroke_calls`（本批带落墨量的笔触子调用数）；
+/// * 0 笔：字段恒为 `0.0`（与 `bytes_per_atom_avg` 的“0 = 不可判”同口径，
+///   字段恒存在、类型恒为数，调用方不必分支处理缺失键）；
+/// * 3 位小数：与 `timings` 的毫秒口径一致（先乘 1000 四舍五入再除回）。
+/// * 混合批次的提醒：分子是整批墙钟（含非笔触子调用与预览等开销），
+///   故混合批次里该值是“摊到每笔的全批成本”，不是纯笔触成本；
+///   纯笔触批次里它就是纯笔触均值。画笔预算以 `batch` 的该字段为准；
+///   `describe_canvas` 的该字段是“本次 describe 墙钟摊到每原子”，
+///   只用于看 describe 自身成本随规模的变化，不可当作画笔单笔成本。
+fn ms_per_stroke_avg(total_ms: f64, strokes: u64) -> f64 {
+    if strokes == 0 {
+        0.0
+    } else {
+        (total_ms / strokes as f64 * 1000.0).round() / 1000.0
+    }
+}
+
+/// 在回执上附加 `ms_per_stroke_avg`（只对 `describe_canvas` 与 `batch`）。
+///
+/// 只有回执同时带 `timings.total_ms` 与对应分母字段时才附加：
+/// 失败、提前停等无分母字段的回执不带该字段（无法派生，不编数）。
+/// 顶层调用处（`ToolRegistry::call`）会在最终 `timings` 落定后重算一次，
+/// 保证字段与回执里最终展示的 `total_ms` 严格对应（恒等式：
+/// `ms_per_stroke_avg * 分母 ≈ total_ms`，误差仅 3 位小数舍入）。
+fn attach_ms_per_stroke_avg(value: &mut Value, name: &str) {
+    let Value::Object(map) = value else {
+        return;
+    };
+    let Some(total_ms) = map
+        .get("timings")
+        .and_then(|timings| timings.get("total_ms"))
+        .and_then(Value::as_f64)
+    else {
+        return;
+    };
+    let strokes = match name {
+        "describe_canvas" => map
+            .get("counts")
+            .and_then(|counts| counts.get("atoms"))
+            .and_then(Value::as_u64),
+        "batch" => map.get("stroke_calls").and_then(Value::as_u64),
+        _ => None,
+    };
+    if let Some(strokes) = strokes {
+        map.insert(
+            "ms_per_stroke_avg".to_owned(),
+            json!(ms_per_stroke_avg(total_ms, strokes)),
+        );
     }
 }
 
@@ -1791,6 +1850,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
     match outcome {
         Ok(mut value) => {
             attach_timings(&mut value, &delta.report(started.elapsed()));
+            attach_ms_per_stroke_avg(&mut value, spec.name);
             Ok(value)
         }
         // 失败不在这里附：错误路径的总时长由 `ToolRegistry::call` 统一附 ✓
@@ -3319,6 +3379,11 @@ fn medium_brush_keywords(medium: &str) -> Option<&'static [&'static str]> {
 }
 
 fn read_list_brushes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // **分页参数先校验再干活**：负数／非整数经 optional_count 报 invalid_argument，
+    // 不许静默当成缺省（与 get_log 的计数参数同一口径，见 optional_count 的注释）。
+    // limit 缺省 = 不分页（返回过滤后的全部）；limit 为 0 = 只取总数探针（见下）。
+    let limit = optional_count(args, "limit")?;
+    let offset = optional_count(args, "offset")?.unwrap_or(0) as usize;
     let filter = args
         .get("filter")
         .and_then(Value::as_str)
@@ -3391,12 +3456,33 @@ fn read_list_brushes(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             .unwrap_or_default()
             .cmp(b.get("name").and_then(Value::as_str).unwrap_or_default())
     });
-    let count = brushes.len();
+    // **分页在过滤之后、排序之后切片**（先过滤再切片 ✓）：total 是过滤后的总数，
+    // 不是资产总数、也不是本页条数；offset 超出总数时给空页，不报错。
+    // limit 为 0 的语义：空页＋真实 total（只取总数的廉价探针，不报错）；
+    // 用 limit 为 0 翻页会原地不动，调用方不要拿它翻页。
+    let total = brushes.len();
+    let page: Vec<Value> = match limit {
+        Some(max) => brushes
+            .into_iter()
+            .skip(offset)
+            .take(max as usize)
+            .collect(),
+        None => brushes.into_iter().skip(offset).collect(),
+    };
+    let count = page.len();
+    let end = offset.saturating_add(count);
+    let has_more = end < total;
+    let next_offset = if has_more { Some(end) } else { None };
     Ok(json!({
-        "brushes": brushes,
+        "brushes": page,
         "count": count,
+        "total": total,
+        "offset": offset,
+        "has_more": has_more,
+        "next_offset": next_offset,
         // **能力边界用布尔说** ✓：0 支时调用方不用猜"是不是资产目录丢了" ✓。
-        "brushes_available": count > 0,
+        // 注意它看的是过滤后总数，不是本页条数（limit 为 0 的空页也不该报“无笔刷”）。
+        "brushes_available": total > 0,
         "filter": filter,
         "canonical_param_names": hokusai::BrushSetting::ALL
             .iter()
@@ -17225,6 +17311,64 @@ pub(crate) fn effective_color_space(
     }
 }
 
+/// **报告 5/6 第 6 项：显式 `linear` 下渐变两端混写判据**。
+///
+/// 钉死的“混写”只有一种（与报告 4 P4 的触发谓词空间不交，见下）：
+/// * `color_space` 显式传了 `"linear"`；
+/// * `color` 与 `color_to` 都给了，且一端是数组（显式 linear 下按线性直通解释），
+///   另一端是对象式／hex（`parse_spec_color_with_space` 里非数组直接走既有解析，
+///   恒为 sRGB 字节，不受显式空间影响）。
+///
+/// 于是渐变两端实际按不同空间解码，而回执 `applied.color_space` 只回显 `color` 一端的
+/// 空间，另一端的解释被藏住 —— 这正是要警告的情形。
+///
+/// 不触发（与 P4 分工，合入后两条 warning 永不重叠）：
+/// * 不传空间：两端口径不同时 P4 已覆盖（任一浮点端走线性即报），本判据不报；
+/// * 显式 `"srgb"`：数组与对象式／hex 全是 sRGB 字节族，不存在混写；
+/// * 两端同族：数组＋数组（同为线性）、对象式＋hex（同为 sRGB 字节）；
+/// * 只给一端颜色：单色不存在“两端混写”（显式空间被对象式／hex 忽略是另一相邻项，
+///   且单色回执 `applied` 已照实报 `srgb_bytes`／`hex`，不在本项范围）。
+///
+/// 只产文案：调用方把它 push 进已有的 `warnings` 数组，不改任何现有字段语义、不改像素
+/// （判据函数本身是纯函数；落笔处的调用点也在提交之后、只改回执 `Value`）。
+pub(crate) fn mixed_color_space_warning(
+    color: Option<&Value>,
+    color_to: Option<&Value>,
+    space: Option<yanshi_render::color::ColorSpace>,
+) -> Option<String> {
+    use yanshi_render::color::ColorSpace;
+    if !matches!(space, Some(ColorSpace::Linear)) {
+        return None;
+    }
+    // 显式 linear 下：数组 ⇒ 线性族；对象式／hex ⇒ sRGB 字节族；其余形态（null、
+    // 数字、非 hex 字符串）不是合法颜色，落笔前已报错或不存在，判据不认领。
+    let family = |value: &Value| -> Option<&'static str> {
+        match value {
+            Value::Array(_) => Some("linear"),
+            Value::Object(_) => Some("srgb_bytes"),
+            Value::String(text) if text.starts_with('#') => Some("srgb_bytes"),
+            _ => None,
+        }
+    };
+    let label = |family: &str| -> &'static str {
+        if family == "linear" {
+            "线性直通"
+        } else {
+            "sRGB 字节"
+        }
+    };
+    let from = color.filter(|value| !value.is_null()).and_then(family)?;
+    let to = color_to.filter(|value| !value.is_null()).and_then(family)?;
+    if from == to {
+        return None;
+    }
+    Some(format!(
+        "显式 color_space=\"linear\" 下渐变两端混写：color 按{from_label}解释、color_to 按{to_label}解释——显式空间只改数组的解释，对象式／hex 恒为 sRGB 字节；两端实际按不同空间解码，缺省与像素未改，如需两端同空间请两端用同一写法（都用浮点数组表线性，或都用字节数组／对象式／hex 表 sRGB）",
+        from_label = label(from),
+        to_label = label(to),
+    ))
+}
+
 /// **本次调用生效参数的回显对象** ✓（A5：只加在 `brush_stroke`／`medium_stroke` 回执 ✓）。
 ///
 /// 取值一律是**实际生效**的，不是调用方原话的复述 ✓：`wait_for_render`／`wait_budget_ms`／
@@ -18034,11 +18178,45 @@ fn brush_pressure_response(brush: &hokusai::Brush) -> (bool, Vec<&'static str>) 
 /// 好让 HTTP 层在发 `.myb` 时**顺带告诉浏览器** ✓（第 68 轮定性：会读画布的笔刷**不能**本地预览 ✓，
 /// 因为门面没有 base 输入 ⇒ 两边起点不同 ✓）。**判定只有这一处** ✗（复制一份必然漂移 ✓）。
 pub fn brush_reads_the_canvas(brush: &hokusai::Brush) -> bool {
-    let value = |setting: hokusai::BrushSetting| brush.get(setting).base_value;
-    value(hokusai::BrushSetting::Smudge) > 0.0
-        || value(hokusai::BrushSetting::Colorize) > 0.0
-        || value(hokusai::BrushSetting::Posterize) > 0.0
-        || value(hokusai::BrushSetting::LockAlpha) > 0.0
+    // **D-4b：曲线驱动的涂抹也读画布** —— 旧判定只认 `base_value` ⇒
+    // `wet_round`（`smudge` base 0、pressure 曲线至约 1.0）被判不读画布，
+    // `paint_brush` 不喂底图（回执 `fed_base=false`），引擎涂抹只能采本笔自己的墨；
+    // 叠盖的笔触各成扁平胶囊，胶囊轮廓在密集重叠下织成环形网格。
+    // **D-4b 跟进：smudge 臂只做正值精炼** —— 服务端问的是“笔触结果会不会带入画布色”，
+    // 不是引擎记账门问的“映射是不是活动的”：引擎门（`stroke.rs` 的 `smudge_mapping_active`
+    // = `base != 0` 或有输入）只保证“ momentarily 求值为 0 的曲线驱动涂抹仍要衰减
+    // recentness”，而每 dab 的 smudge 量先钳到 [0, 1]（`stroke.rs:797` 与 `:1137-1140`），
+    // 量 ≤ 0 时 dab 色就是笔色本身、不混画布色。`Round` 的 smudge 曲线恒在 [-0.4, 0]、
+    // `Tail_Feathers` 的 smudge 输入全恒 0：两者钳后永远是 0，从不混画布色；
+    // 喂底图反而把 dab 以覆盖度画到底图上，存的是合成值而非纯色（半透明单测红：
+    // 纯红存成粉色）。判据因此是有效拾取：`base > 0` 或 `base + 各输入最大 y 之和 > 0`
+    //（各输入取曲线 knots 的 y 最大值，即该输入能贡献的上限；和 ≤ 0 ⇒ 任何一 dab
+    // 都混不进画布色）。其余三臂（colorize / posterize / lock_alpha）不动：
+    // 仍是 `base > 0` 或带输入曲线。
+    let smudge_reads = {
+        let value = brush.get(hokusai::BrushSetting::Smudge);
+        let max_sum: f32 = value
+            .inputs
+            .iter()
+            .map(|mapping| {
+                mapping
+                    .points
+                    .iter()
+                    .map(|(_, y)| *y)
+                    .reduce(f32::max)
+                    .unwrap_or(0.0)
+            })
+            .sum();
+        value.base_value > 0.0 || value.base_value + max_sum > 0.0
+    };
+    let reads = |setting: hokusai::BrushSetting| {
+        let value = brush.get(setting);
+        value.base_value > 0.0 || !value.inputs.is_empty()
+    };
+    smudge_reads
+        || reads(hokusai::BrushSetting::Colorize)
+        || reads(hokusai::BrushSetting::Posterize)
+        || reads(hokusai::BrushSetting::LockAlpha)
 }
 
 /// **落墨掩膜** ✓ —— 用**同一支笔刷、同一条路径**在一块**空 surface** 上再走一遍 ✓，
