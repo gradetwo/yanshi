@@ -95,9 +95,13 @@ env:
 #   * **其它分支**（我的工作分支 `l4-sync` ✓）⇒ **`true`** ✓：一个分支上"最新的那次"才作数 ✓
 #     ⇒ 旧的**已被取代** ✗ ⇒ 让它继续占 6 个分片的 runner 只是浪费 ✓
 #     （2026-10-15 的实测账 ✓：最近 40 次里 `CI|push` 有 **28 次** ✓，多数互相比稿 ✗）。
+# **★ 用户新裁定（2026-10-29）★**：主干只跑最新一次合并 ⇒ `cancel-in-progress` 改为 `true`（所有分支统一）。
+#   取代 2026-10-12 的 main=false 裁定与 2026-10-15 的 main 保持 false 一项；以上两条旧注记为历史。
+#   理由：队列已溢出（2026-10-29 晚间约 20 轮排队、等待 1.5–2 小时），且主干 run 不再作为合入门禁
+#   （2026-10-29 只放行自身 run 绿的分支），中间主干结论无门禁价值。人工取消步骤随之取消。
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: true
 
 jobs:
   fmt:
