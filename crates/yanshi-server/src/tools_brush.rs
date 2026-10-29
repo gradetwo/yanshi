@@ -2065,8 +2065,15 @@ pub(super) fn paint_brush(
     //   ⇒ **∴ 而现在下一行那段 `CANVAS_DRIFT_TOLERANCE = 3` ✗ 的闸门**正好把差 1 的真落墨清零**✗
     //      ⇒ **∴ 所以这一项不仅是诊断 ✓，它也是**识别"薄涂笔"**✗ 的依据 ✓**。
     //
-    // **∴ 算法 ✓**：**不碰 `rgba` ✗**（**∴ 纯读 ✓**）⇒ **∴ 在清零点之前量，才是**原始**落墨幅度 ✓**
-    //   ⇒ **∴ 于是**它报的是"引擎到底改了多少"✗，与后续掩膜无关 ✓
+    // **∴ 算法 ✓**：**不碰 `rgba` ✗**（**∴ 纯读 ✓**）⇒ **∴ 量的是"导出图上
+    //   实际变了多少"** ✓ —— 与 `draw_evidence_compare` 同一口径 ✓：
+    //   tile 按 Normal source-over 合成到落笔前像素上再比 RGB，alpha 不参与 ✓。
+    //   **∴ 旧口径的错**（名画第 3 轮 §7 glazing 项）：喂底图分支曾逐通道
+    //   直比（含 alpha、未合成）⇒ 涂抹笔晕边低 alpha 像素报 |a−255| ≈ 244–254，
+    //   而导出 RGB 合成后仅差 4 级 ⇒ 回执 254 冒充了导出效果 ✗。
+    //   **∴ 残留**：本遍在落墨掩膜清零之前量 ⇒ 被掩膜清零的像素
+    //   （四通道与底图差均 ≤ `CANVAS_DRIFT_TOLERANCE` = 3）最多贡献 3 级，
+    //   属漂移容差量级，不是另一套口径 ✓。
     let (max_delta, delta_distribution) = {
         let mut max_delta: u8 = 0;
         // **差值直方图** ✓（P-15）：同一遍遍历里记，与 `max_delta` 同一个像素、同一个差值 ✓。
@@ -2081,7 +2088,11 @@ pub(super) fn paint_brush(
             //   ⇒ **∴ 而我逐通道按**白底 255**✗ 比较** ⇒ **∴ 差恒 255 ✗ ⇒ **∴ 饱和 ✓**
             // **∴ 所以 ✓**：**∴ 无基准时 ✗ 只让**有 alpha**✗ 的像素参与 ✓
             //   ⇒ **∴ 于是**白笔（255 vs 255）⇒ **0** ✓／近白 ⇒ **1** ✓／灰 ⇒ **31** ✓／深 ⇒ **205** ✓** ✓
-            // **∴ 而有基准时 ✗ **不改**✗**（**∴ base 是真实像素 ✓ ⇒ **∴ 逐通道比较本来就对 ✓**）✓
+            // **∴ 而有基准时 ✗ 也要先合成再比 ✗**（名画第 3 轮 §7 glazing 项）：
+            //   直通 tile 的 RGB 不是画面颜色 ⇒ 低 alpha 晕边像素的 RGB 直比
+            //   与 alpha 直比都会虚报几百级 ⇒ 必须按 Normal source-over 合成
+            //   到落笔前像素上再比 RGB（与 `draw_evidence_compare` 同式 ✓），
+            //   alpha 通道不参与（它不是可见颜色 ✓，与无基准分支同例 ✓）。
             if before.is_none() && rgba[index + 3] == 0 {
                 continue;
             }
@@ -2110,9 +2121,18 @@ pub(super) fn paint_brush(
                     .and_then(|pixels| pixels.get(index + channel))
                     .copied()
                     .unwrap_or_else(|| background_byte(channel));
-                // **∴ 有基准 ⇒ 直接比 ✓；无基准 ⇒ 先把该通道合成到白底 ✓**（**∴ 后者才等于"肉眼看到"✓**）
+                // **∴ 有基准 ⇒ 先按 Normal source-over 合成到落笔前像素上再比 RGB ✓；
+                //   无基准 ⇒ 先把该通道合成到背景上再比 ✓**（**∴ 两者才都等于"肉眼看到"✓**）
                 let current = if before.is_some() {
-                    i32::from(rgba[index + channel])
+                    if channel == 3 {
+                        // **∴ alpha 通道不参与 ✗**（**∴ 它不是可见颜色 ✓**）
+                        continue;
+                    }
+                    // `old_byte` 在有基准时就是落笔前该通道的值 ✓ ⇒ 与
+                    // `draw_evidence_compare` 同式：`tile·a + before·(255−a)` ✓。
+                    let alpha = i32::from(rgba[index + 3]);
+                    (i32::from(rgba[index + channel]) * alpha + i32::from(old_byte) * (255 - alpha))
+                        / 255
                 } else if channel == 3 {
                     // **∴ alpha 通道不参与 ✗**（**∴ 它不是可见颜色 ✓**）
                     continue;
