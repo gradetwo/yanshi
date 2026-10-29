@@ -3110,7 +3110,7 @@ CLIP_TO_SELECTION_PARAM,
         // **P1 #9（第 254 轮）**：原来写死 4 支内置笔刷、而且看不到工作区 => AI 不知道有哪 201 支
         // `.myb` 可挑，也不知道 `brush_params` 的字段叫什么。现在枚举走仓库已有的资产枚举，
         // 并附上**规范字段名全表**（与 P0 #4 的 `brush_params` 配对）。
-        summary: "列出可用 .myb 笔刷（含各自参数摘要 ＋ 规范字段名全表）=> 先看有哪些笔刷，再决定 brush 与 brush_params",
+        summary: "列出可用 .myb 笔刷（含各自参数摘要 ＋ 规范字段名全表）=> 先看有哪些笔刷，再决定 brush 与 brush_params；不传分页参数时返回过滤后的完整列表，传了分页参数时只返回对应的一页并附过滤后总数与下一页起点",
         mutating: false,
         params: &[
             param!(
@@ -3124,6 +3124,18 @@ CLIP_TO_SELECTION_PARAM,
                 String,
                 false,
                 "按介质过滤：oil／watercolor／sketch／ink／pastel ⇒ 只返回该画法常用的笔刷白名单（与 filter 可叠加）"
+            ),
+            param!(
+                "limit",
+                Integer,
+                false,
+                "本页最多返回几支；缺省 = 不分页（返回过滤后的全部）；0 = 只返回总数、不返回笔刷条目（廉价探针，不要拿它翻页）；负数或非整数报 invalid_argument"
+            ),
+            param!(
+                "offset",
+                Integer,
+                false,
+                "跳过过滤后的前几支再取页；缺省 = 0；超出总数时返回空页，不报错；负数或非整数报 invalid_argument"
             ),
         ],
     },

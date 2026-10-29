@@ -547,7 +547,7 @@ const P2_TOOL_SPECS = {
   list_assets: [0, [["kind","s",1],["tag","s",0]]],
   list_atoms: [0, [["limit","i",0],["offset","i",0],["label","s",0],["layer_id","s",0],["brush","s",0],["since_seq","i",0],["group_id","s",0],["bbox","x",0],["thumb_size","i",0],["want_thumb","b",0],["include_non_stroke","b",0]]],
   list_attempts: [0, [["limit","i",0],["label","s",0],["status","s",0]]],
-  list_brushes: [0, [["filter","s",0],["medium","s",0]]],
+  list_brushes: [0, [["filter","s",0],["medium","s",0],["limit","i",0],["offset","i",0]]],
   list_comments: [0, [["limit","i",0],["since_seq","i",0],["actor","s",0],["object_id","s",0]]],
   list_documents: [0, []],
   list_effects: [0, [["layer_id","s",0]]],
