@@ -1971,3 +1971,5 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    ⇒ 复测 exit=0 ✓。行为面守卫（brush.rs 两条新回归＋`tool-smudge-deposit`／`tool-smudge-drags-color`）未动 ✓。
 ④ 其余 `⊘ EXIT=3`（browser-asset-dock／browser-pan-vs-paint 等 CDP 超时）与「没发生任何逐出」调试块
    均为 known-red/不可判在册 ✓（通过 64｜意外失败 1｜已知红 2｜跳过 8 ⇒ 本条修后该口径应归零 ✓）。
+⑤ **平仓**：修后推 `3c9091f8` ⇒ run（HEAD 3c9091f8）**全绿 success** ✓（rustfmt 首绿 ⇒ 其余 job 全过）
+   —— #50／#52／#53 三线合并至此**全部被 CI 验过**，无遗留意外红 ✓。
