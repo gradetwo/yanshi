@@ -2016,6 +2016,19 @@
 }
 ```
 
+## `toned_ground`
+
+```json
+{
+  "color": {
+    "r": 210,
+    "g": 190,
+    "b": 160,
+    "a": 255
+  }
+}
+```
+
 ## `transform_object`
 
 ```json

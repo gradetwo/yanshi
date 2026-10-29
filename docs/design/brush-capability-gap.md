@@ -23037,7 +23037,7 @@ M3 关掉未知名拒绝｜M4 `apply` 的确定性 `object_id` 改随机｜M5 �
 对象在状态里 ⇒ `不能修改 {id}：{对象自身已锁定|所在图层已锁定}（先解锁再操作；改 locked/visible 不受限制）`；
 对象不在状态而净荷有 `layer_id` 且该层锁定 ⇒ `不能在锁定的图层 {id} 上新建对象（先解锁）`；
 **只有 `layer_id` 的图层管理原子**不受影响 ✓。
-**墓碑对象照样算「在状态里」** ✓（`fold.rs:1315` 的 `Tombstone` 只写 `deleted_by`，`state.objects` 里还在 ✓
+**墓碑对象照样算「在状态里」** ✓（`fold.rs:1325` 的 `Tombstone` 只写 `deleted_by`，`state.objects` 里还在 ✓
 ⇒ 锁对已删对象同样生效 ✓）；本地等价物是 `p2ObjectView` 的 `found && !neutral(create_id)` ✓。
 
 **★ 真正的坑：`try { return dispatch(req) } catch` 抓不到异步拒绝 ✗ ★**（实测两轮）：
@@ -24166,3 +24166,276 @@ bbox 内与外／分页（含 `limit:0`）；§C `get_atom` 字段集合与 `lab
 `tool-pwa-vector-hit-test`（137 条）、`tool-pwa-transform-object`、`tool-pwa-read-inspect`（428 条）、
 `tool-pwa-preset-library-parity`、`tool-pwa-preset-server-parity`、`tool-pwa-engine-capabilities`（462 条）、
 `tool-js-syntax`（455 个脚本）—— **全绿** ✓（第 6 条的 `p2RefGuard` 是跨端点改动 ⇒ 写路径与读路径判据一起跑 ✓）。
+
+## 六百七十二、本地 `describe_canvas` 落地（180 → 181）＋ `delete_mask` 从「如实 501」改真相 ＋ `create_mask` 补 409 重复守卫：判据第一次跑就抓出「权威文案在 `log.rs` 不在 `fold.rs`」这处分叉
+
+**做什么**（`crates/yanshi-http/assets/api-local.js`；`LOCAL_IMPLEMENTED` 机械重数 180 → **181** ✓）：
+
+1. **本地 `describe_canvas` 落地**（照 `read_describe_canvas`，`tools.rs:2971`）——**纯折叠读 ✓**（不碰像素、不碰内核 ✓）：
+   `layers` 十字段（含 `kind ≡ type` 别名 ✓、`mask_id` 缺省 `null` ✓、每层 `objects` 计数 ✓）／
+   `selections` **过滤墓碑** ✓／`masks` **不过滤** ✓（**服务端就是这么露出已删蒙版的 ⇒ 照抄 ✗ 不「顺手修好」✓**）／
+   `estimated_memory_bytes = 活对象 × 180` ✓。
+   **两个服务端-rooted 的量本地编不出来** ✓：`server_rss_mb: null` ＋ `bytes_per_atom_avg: 0`
+   （**0 就是服务端自己「原子 < 100 ⇒ 不可判」的哨兵 ✓** —— 编个数字才是撒谎 ✗）。
+2. **新折叠器 `p2DescribeRegions`**（选区／蒙版／对象归属／图层父子一张表走完 ✓）：
+   ① `tombstone{layer_id}` ⇒ `killLayer` **沿 parent 链闭包扩张再把层上对象标死** ✓
+   （照 `fold.rs:1998 tombstone_layer` 的 `deleted_by` 级联 ✓ —— 对象**没有自己的墓碑** ✗
+   ⇒ 漏了级联就会出现「层没了、估计量还挂着」的形态③ ✓）；
+   ② `create_object`／`import_image` **总是插新** ✓（照 `fold.rs:1099` ✓），其余 `draw_*`／`supersede`
+   未见过才插、见过只改归属 ✓；③ `set_property{key:"layer_id"}` 走对象归属 ✓；
+   ④ `delete_mask` 原子与 `tombstone{selection_id}` 分别打 `deleted` ✓。
+3. **`delete_mask` 从「如实 501」改成真实现**（**旧注释「服务端只有 create_mask」是过期事实 ✗**：
+   `tools_registry.rs:1608`／`tools.rs:1946`／`tools_mask.rs:360` 都在 ✓ ⇒ 面板删蒙版本地被 501、云端能删 ✓）：
+   写 `delete_mask{mask_id}` 原子 ✓；不存在或已删 ⇒ 404 ✓
+   —— **权威文案实测是 `log.rs:565` 的「引用的蒙版 X 不存在」**（提交期引用检查**先于** `fold.rs` 的
+   `check_auxiliary_refs` ⇒ 后者那句「列候选」形**永远轮不到** ✗）；从未存在与已删**同一句** ✓（`is_none_or` ✓）。
+4. **`create_mask` 补 409 重复守卫**（照 `fold.rs:873` 的 `mask_alive` 门 ✓）：**活着的同名 ⇒ 409「蒙版 X 已存在」**✓
+   （**与 `create_selection` 的「`mode:"new"` 才撞」不同 ✗ —— 蒙版没有 mode 门 ✓**）；
+   **墓碑不占 id** ✓ ⇒ 删过的可以重建 ✓（`mask_alive` 不是 `contains_key` ✓）。
+
+**判据**（`scripts/tool-pwa-describe-canvas.mjs`，同一请求两边打、剥掉 HTTP 信封与两个 RSS 量后比；**274 条断言** ✓）：
+
+| 节 | 覆盖 | 能红的形状 |
+|---|---|---|
+| §A | 空文档：400×300／默认层身份／零对象零估计／`kind ≡ type` | 别名丢、默认层口径漂 |
+| §B | 每层对象数**由判据独立算**（`默认1／LA1／LB2`）＋ 移动／删除后估计量 | 计数错、`est` 恒 0 |
+| §C | **删层级联**：层缺席＋对象随层死＋`est` 掉到 180 | 漏 `killLayer` |
+| §D | 选区 `mode/feather/invert/shape` 回显 ＋ **删了就不列** | 缺省值漂、不滤墓碑 |
+| §E | 蒙版生命周期：回显 → 重复 409 逐字 → **删后仍列出** → 重删 404 逐字 → **重建允许** → 删未知 404 同句；**id 按反序建（M_B 先／M_A 后）⇒ 列表必须按 id 升序而非插入序** | 顺手「修好」、守卫丢、排序错 |
+| §F | 入口校验：未知键／缺 `mask_id`／类型错 ⇒ 400 逐字 | 校验口径漂 |
+| §G | 全量终检 ＋ `counts.atoms` 两边同为 **17** ✓（写路径原子产生数一致 ✓） | 任一面分叉 |
+| 恒等式 | `counts.X === X.length`（三类）／`Σ objects × 180 === est`／`kind === type` —— **每边各自验** | 「字段各自合法却互相矛盾」 |
+| 哨兵 | 本地 `server_rss_mb === null` ＋ `bytes_per_atom_avg === 0` | 本地编数字冒充测量 |
+
+**变异（十条 ✓ 全跑在 `web/api-local.js` 那份上，每条：改 → 判据必须红 → `cmp` 还原 ✓）**：
+① `est` 恒 0 ⇒ §B/§C 红（21 条）✓｜② 选区不滤墓碑 ⇒ §D2 红 ✓｜③ 蒙版滤墓碑（顺手修好）⇒ §E3 红 ✓｜
+④ 重复守卫反向 ⇒ §E 全链红 ✓｜⑤ 去掉存在检查 ⇒ §E5/§E7 本地 200 红 ✓｜⑥ 已删当存在 ⇒ §E5 红 ✓｜
+⑦ 级联不杀对象 ⇒ §C 红（`est` 540 ≠ 180 ✓）｜⑧ 层计数无视 `layer_id` ⇒ §B 红（`{默认:4,LA:4,LB:4}` ✓）｜
+⑨ 去掉 `kind` 别名 ⇒ §A 起全红 ✓｜⑩ 蒙版漏 sort ⇒ §E3/§E8 红 ✓（**靠反序 id 才分辨得出 ✓**）。
+
+**这一轮判据自己错的两处（都改判据，不迁就产品 ✓）**：
+1. **变异 ④ 第一次跑出来是 `exit(3)` 不是红 ✗**：判据在 `b.masks[0]` 无长度守卫就 `"invert" in b.masks[0]` ⇒
+   TypeError 走 `uncaughtException` ⇒ 「产品坏」被记成「判据坏」✗ —— 加长度守卫后同一变异红 12 条 ✓
+   （**∴ 判据必须能把「实现坏」与「我自己坏」分开口径 ✓**）。
+2. **原计划的变异 ⑩「`mask_id ?? null` 改裸值」是**假变异**✗**：`p2cState` 本就初始化 `mask_id: null` ⇒
+   行为不变 ⇒ 判据必绿 ✗ —— 换成「漏 sort」，并把蒙版 id 改成反序建（M_B 先）让这一面**可分辨** ✓
+   （**∴ 变异前先问「这个改动落在哪条路径上」✓ 内核 3 ✓**）。
+
+**判据第一次跑还抓到一处真分叉 ✓（不是推断，是实测）**：本地 `delete_mask` 的 404 起初照
+`fold.rs:934 check_auxiliary_refs` 写「`mask_id X 不存在（现有mask_id：…）`」✗，而服务端给的是
+`log.rs` 提交期引用检查的「引用的蒙版 X 不存在」✓ —— **两道检查都在，跑在前面的那道才是权威 ✓**；
+本地改成逐字照 `log.rs` 后 §E5/§E7 绿 ✓。
+
+**环境插曲**（与本节无关，但如实记 ✓）：`tool-pwa-assets` 一度红在「介质产物落后于源码」——
+是**上游 pull 把 `crates/yanshi-medium-*/src` 的时间戳刷新**了 ✗ 而本地 `assets/mediums/*.wasm` 没重同步 ⇒
+`cargo build --release --target wasm32-unknown-unknown -p 六个介质` ＋ `node scripts/mediums-sync.mjs` 后转绿 ✓。
+
+**回归**：`tool-pwa-assets`（声明 181 === 分支 181 ✓）、`tool-js-syntax`、`tool-pwa-api-behaviour`、
+`tool-pwa-transform-object`（§C10/§C11 的 404/409 文案与 `p2DescribeRegions` 无关但共用折叠）、
+`tool-pwa-describe-canvas` —— **全绿** ✓。
+
+## 六百七十三、本地 `import_psd` 落地（替换「如实 501」分支，`LOCAL_IMPLEMENTED` 保持 181）：`decode_psd` 的逐字 JS 移植＋判据第一次跑就逼出「恒等式要长在原子上」这个结构，并当场抓出自己四处算错
+
+**做什么**（`crates/yanshi-http/assets/api-local.js` 的 `/api/tools/import_psd` 分支；
+**旧分支是诚实 501 ⇒ 换成真实现 ⇒ 分支数不变 ⇒ `LOCAL_IMPLEMENTED` 保持 181 ✓**）：
+
+1. **`p2DecodePsd` ＋ `p2PackbitsRow`**（照 `crates/yanshi-render/src/psd.rs::decode_psd` 逐字移植 ✓）：
+   26 字节头（`8BPS`／version／skip 6／channels@12／height@14／width@18／depth@22／mode@24）＋
+   三个长度段（color mode / image resources / layer & mask **全跳过 ✓ 与服务端一样只取合成图**）＋
+   合成数据 compression u16 在 **38**（26＋3×4）；raw(0)／RLE(1) 两条路径 ✓；
+   非 8bit／无通道／越界 ⇒ `{detail}` 失败串 ✓（错误文案逐字：「合成图数据不足（原始压缩）」
+   「合成图数据不足（解压后）」等，照 `psd.rs`）。
+   **1 通道 ⇒ 灰度复制进 r/g/b、alpha 恒 255 ✓**（§E 有独立期望值断言这条）。
+2. **合成图先落 blob 再引原子**（照服务端 write path ✓）：`p2cPutCompositeBlob`（内核 `blob_put`，
+   内核不支持 ⇒ 501 不猜 ✓）＋ **`putBlob` 写进 IndexedDB**（撤销可回放 ✓ ——
+   变异 ⑧ 证明少这一步判据能红）。
+3. **入口链照服务端顺序 ✓**：`p2ValidateArgsFor("import_psd")` 先跑（未知键／缺 `blob_hash`／类型错 ⇒ 400）
+   ⇒ 哈希规范化逐字照 `atom.rs:72 from_str`（取最后一个 `sha256:`、截 `?#&/`、71 字符、**小写 hex 严格**
+   ⇒ 大写也拒 ✓）⇒ 拉字节（不存在 ⇒ 404「blob … 不存在」**用规范化后的哈希** ✓ 变异 ⑨）。
+4. **回执形状 = 服务端形状的本地可镜像子集 ✓**：`source:{format:"psd",width,height,note}` 的 note 逐字
+   「只导入了合成图；图层结构与蒙版没有导入（只读）」、`blob_decodable:true`（`image/x-yanshi-raw`
+   在内核支持清单里 ⇒ 恒 true ✓ 与服务端同值）；未知图层 ⇒ **404 文案逐字照服务端权威**
+   「图层 X 不存在（现有图层：…）」（候选＝活层升序、上限 8 —— 走 `p2MissingReferenceMessage` ✓）。
+5. **`tiles` 不编造 ✗**：服务端原子 payload 里那块 tile 索引是服务端存储私有物 ⇒ 判据比较前剥掉它 ✓，
+   本地**不**为了好看去造一份 ✗。
+
+**判据**（`scripts/tool-pwa-import-psd.mjs`，**240 条断言 ✓ 全绿**；核种子经
+`bootLocalWithRealKernel` 注入真 wasm glue ⇒ 本地 `/api/blob` 可用 ✓；
+**内核陈旧 ⇒ `exit(3)` 前提不成立**，不冒充产品失败 ✓）：
+
+| 节 | 覆盖 | 能红的形状 |
+|---|---|---|
+| §A | **上传哈希两边一致**（sha256 口径前提）——不一致整条判据作废 ⇒ 先 `exit(3)` | 两边哈希口径不同还比恒等式 |
+| §B–§E | 四条真夹具（仓库 PSD 夹具／RLE×3ch／RLE×4ch alpha 面／raw×1ch 灰度）：两边 `import_psd` 后**读各自原子日志**，剥 `tiles` 后 `import_image` payload **结构全等**；核心恒等式 `srv.bitmap.blob_hash === loc.bitmap.blob_hash`（内容寻址 ⇒ ⇔ RGBA 逐字节相等 ✓）；**判据自己用 node crypto 算期望 sha256** ⇒ 两边同错也红 ✓；`size===w·h·4`／`region{0,0,w,h}`／`type:raster_patch`／mime ✓；**本地 IndexedDB 读回字节 === expectRgba**（blob 先行且可回放 ✓） | 解码漂一位、blob 没入库、payload 形状分叉、两边同错 |
+| §F | 八条拒绝分支逐字错误码＋文案（含 §F4 原始压缩越界、**§F8 RLE 行解码偏短 ⇒「解压后」守卫**） | 任一守卫恒不触发 |
+| §G | 入口链：未知键／缺参／类型错 400、坏哈希（含大写）400「blob_hash 不是合法哈希」（`tools_psd.rs` 改写过内核那句 ✓）、缺 blob 404、未知图层 404 逐字、`object_id` 回显 | 校验口径漂、文案抄了轮不到的那道 |
+| §B2 | `describe_canvas` 计数：PSD 对象真的进了图层（与参照 `draw_shape` 同层计 2 ✓） | import 只回执不落原子 |
+
+**变异（十一条 ✓ 全跑在 `web/api-local.js`，每条：改 → 判据必须红 → `cmp` 字节级还原 ✓ 全部红 ✓）**：
+① packbits `count+1` 少读一字节 ⇒ §B/§C 红 ✓｜② G 通道复制错 ⇒ §E 灰度红 ✓｜③ alpha 恒 0 ⇒ §D 四通道红 ✓｜
+④ 签名校验永不触发 ⇒ §F1 红 ✓｜⑤ `compression===1` 放行 2 ⇒ §F3 红 ✓｜⑥ color mode 段偏移少 4 ⇒ §F2 红 ✓｜
+⑦ 「解压后」守卫恒不触发 ⇒ **§F8** 红 ✓（见下面自错 ②）｜⑧ 合成 blob 不写 IndexedDB ⇒ §B–§E 本地读回红 ✓｜
+⑨ 404 用原始串而非规范化哈希 ⇒ §G 红 ✓｜⑩ `source.width` 写 0 ⇒ §B–§E 回显红 ✓｜
+⑪ 入口校验只查 `blob_hash` ⇒ §G1 未知键红 ✓。
+
+**这一轮判据自己错（或险些 placebo）的四处（都改判据，不迁就产品 ✓）**：
+1. **§F4 打补丁的偏移抄成 44**（照仓库夹具的 hexdump 抄 ✗ 那夹具**带图层段** ⇒ compression 位置不同）
+   ⇒ 变异打在像素数据上、两边照样 200 ⇒ **判据构造的夹具 compression u16 在 38**（26＋3×4 ✓），
+   改完 §F4 立刻能红 —— **教训：夹具是自己造的，偏移要按自己的布局算，不能抄别人 hexdump ✓**。
+2. **变异 ⑦ 第一次跑了个绿 ✗**：「解压后」守卫**没有输入能触发**（§F5 截断夹具在更早的「原始压缩」
+   越界处就被拦住 ⇒ 四层齐的第 ② 层缺）⇒ **补 §F8（RLE 行长度表谎报 ⇒ 解压后偏短）才齐 ✓**
+   （**∴ 「断言写了」≠「输入制造出它要检查的情况」✓ 内核 1 ✓**）。
+3. **变异 ⑧ 第一次被静默跳过 ✗**：两行锚点里的 `await putBlob(...)` 在 `p2cPutImportImage` 里
+   **同形出现第二次**（count==2 ⇒ assert 拦下），而 ABORT 分支当时没打印 ⇒ 差点当成「跑过了」；
+   补上下文行＋日志后重跑才拿到真红 ✓（**∴ 变异的 `assert count==1` 与「跳过必须可见」缺一不可 ✓**）。
+4. **§B–§E 起初断的是响应顶层 `blob_hash` ⇒ 服务端根本没这个键**（信封只有
+   `atom_id/seq/source/preview/…`）⇒ 探完活服务端真实形状后**把恒等式搬到原子上**
+   （`GET /api/atoms` 两边的 `import_image` payload 比）✓ —— **这正是「看起来像真的」的字段假设，
+   先打印完整响应才是权威 ✓（内核 3）**。另外 §G5 起初断内核文案「非法 blob hash: …」✗，
+   实测服务端是 `tools_psd.rs` 改写过的「blob_hash 不是合法哈希」✓ ⇒ 断言改成实际轮到的那道。
+
+**回归**：`tool-pwa-import-psd`（240 ✓）、`tool-js-syntax`（459 文件 ✓）、`tool-pwa-assets`
+（**声明 181 === 分支 181 ✓** 替换 501 分支不减计数）、`tool-pwa-api-behaviour`、
+`tool-pwa-describe-canvas`、`tool-pwa-local-write-guards` —— **全绿** ✓。
+
+## 六百七十四、本地 `import_image`／`import_psd` 的**提交前守卫**对齐服务端四层检查（`LOCAL_IMPLEMENTED` 保持 181）：活服务端探出六处分叉，其中「已删图层」被本地误报成 404；判据 §H 十二案（H1–H12 ✓）＋十八条变异（①–⑱ ✓），并补上「变异自己先要被检查」这道闸
+
+**做什么**（`crates/yanshi-http/assets/api-local.js` ⇒ `web/api-local.js` 由 `pwa-sync-viewer.mjs` 重生成；**分支数不变 ⇒ 181 不动 ✓**）：
+
+两条光栅导入路径此前**各有各的守卫写法**，而**权威顺序在 `log.rs::validate_commit`**（**blob 先、再主引用 ✓**）：
+
+| # | 检查 | 服务端（实测锚点） | 本地改之前 |
+|---|---|---|---|
+| ① | `layer_id` 必填（**空串算「给了」**，`require_str` 只判类型） | 400 `invalid_argument`「缺少必填参数 layer_id」（`tools_bitmap.rs:151`）| `import_image` **默默取第一个活层** ✗；`import_psd` 走 `body.layer_id` 缺省编造 ✗ |
+| ② | `validate_blobs` **先跑** | 404 `reference_not_found`「原子 ⟨id⟩ 引用的 blob 尚未上传（违反提交顺序协议）」＋ extras `{with_atom, with_blob}`（`log.rs:293`）| 本地报**没有原子 id** 的 `blob_not_found` ✗（**且顺序在层检查之后 ⇒ 复合故障时谁先报会反过来 ✓**）|
+| ③ | `validate_primary_refs`：**对象撞（含墓碑）先于层** | 409「对象 X 已存在」（`state.objects.contains_key` ⇒ **已删对象的 id 照样撞 ✓**，`log.rs:339`）| **完全没有这一层** ✗ |
+| ④ | 层：从未存在 ⇒ 404；**存在过又被删 ⇒ 409** | 404「图层 X 不存在（现有图层：…）」／409「图层 X 已删除，import_image 被拒绝」（`log.rs:424 check_layer_exists`）| 一律 404＋**自己编的文案**「（import_image 需要一个存活图层）」✗ |
+
+**根因**：本地当时用 `p1LayerOrder`（一个**只剩活层**的 Map）⇒ **「已删层」与「从没这个层」压成同一个答案** ✗
+（**形态④：两种输入静默当成一种处理 ✓**）。而守卫所需的 `alive/deleted_by` 在 `p2PresetLayers(rows, neutral)` 里就有 ⇒
+改走**别处已在用的 `p2RefGuard`**（layers 用带 `alive` 的那张表，**不用 `p1LayerOrder` ✓**）。
+
+**先探再改**（临时探针脚本，跑完即删 ✓）：对活服务端 14 案（P1–P11＋Q1–Q3）逐字打印响应 ⇒
+**六处分叉 P1–P6 全部坐实，改完后逐字一致**（只有原子 id 是各自机器生成的 ULID／计数串 ⇒ 判据里用
+`idNorm` 归一化「原子 ⟨id⟩」再比 ✓ —— **标识要认判据名／整句结构，不认会变的那段 ✓**）。
+
+**判据**（`scripts/tool-pwa-import-psd.mjs` 新增 **§H**，总断言 240 → **338 ✓**）：
+
+| 案 | 输入 | 两边必须逐字同 |
+|---|---|---|
+| H1 | `import_psd` → **已删**图层 | 409「图层 `L_H` 已删除，import_image 被拒绝」 |
+| H2 | `import_psd` **重复 object_id** | 409「对象 `PSD_H2D` 已存在」 |
+| H3 | `import_psd` 撞**墓碑对象**（`draw_shape` 建完再 `delete_object`）| 409（**证明服务端查的是 map 含墓碑 ✓**）|
+| H4 | `import_psd` 的 `layer_id: ""` | 404「图层  不存在（现有图层：layer_default）」——**两个空格 ✓ 空串算给了 ✓** |
+| H5 | 对象撞＋层已删 **复合故障** | **对象那句先**（③ 先于 ④ ✓）|
+| H6–H10 | `import_image`：缺 `layer_id`／已删层／blob 不在库／blob 缺＋层已删／重复 id | ①400、④409、②「尚未上传」、**② 先于 ④**、③409 |
+| H11–H12 | 两条路径的**成功路径**在守卫之后仍成立 | 防「守卫把一切都拒」的假绿 ✓ |
+
+**每条拒绝案还断一条恒等式**：原子总数**前后不变**（**先写日志再丢掉 ⇒ 形态③ ✓**）；
+上传夹具是**两边各传一次真 2×2 原始 RGBA**，哈希不一致就 `exit(3)`（**判据前提不成立 ≠ 产品失败 ✓**）。
+
+**变异（18 条全红 ✓ 绿 0 ✓ 未跑 0 ✓）**：①–⑪ 是「第 六百七十三 节」的解码器那批（**重跑仍全红 ✓**），⑫–⑱ 打这次的新路径：
+⑫⑬ 守卫结果被忽略、⑭ blob 检查恒不触发、⑮ `layer_id` 必填失效、⑯ dup 只查活层（撞墓碑放行）、
+⑰ dup 整个失效、⑱ 空串 `layer_id` 被当缺席 —— **每条都红 ✓**。
+
+**★ 这一轮补的新规矩：变异脚本自己也要先被测量**（两场事故都是**判据侧**，不是产品侧 ✓）：
+1. **⑦ 第一次「假红」**：把整句 `if (…) return fail(…);` 换成 `if (false) {` ⇒ **吞掉了函数尾部的 `}`**，
+   文件语法坏掉 ⇒ 判据 `exit(3)`。而**若把 3 当成「能红」，就等于用「脚本崩溃」冒充「断言失效」✗**
+   （**比 placebo 更隐蔽：它确实会一直「红」✓**）。⇒ **现在每条变异跑之前先 `node --check`（ESM 口径：拷成 `.mjs` 查 ✓**，
+   **`node --check` 在 `.js` 上按 CJS 解析会漏 ✗ —— 本轮实测**）；语法不合法 ⇒ **`⊘ ABORT` 打印出来，不算红 ✓**。
+2. **⑭ 第一次锚点不唯一**：`if (!bytes) {` 在文件里出现 2 次（`import_image` 与 `swatch` 的同形句）⇒
+   `assert count==1` 拦下 ⇒ 加两行上下文才跑（**第 608／995 轮同族：锚点要带足够上下文，跳过要可见 ✓**）。
+
+**回归**：`tool-pwa-import-psd`（338 ✓）、`tool-js-syntax`（459 文件 ✓）、`tool-pwa-assets`
+（**声明 181 === 分支 181 ✓**）、`tool-pwa-api-behaviour` ✓、`tool-pwa-describe-canvas`（274 ✓）、
+`tool-pwa-local-write-guards` ✓ —— **全绿** ✓。
+**其中 `tool-pwa-api-behaviour` 第 ④ 案起初是红的 ✗**：它断的是**本地旧文案** `blob_not_found` ⇒
+对齐服务端后那句**本身就是分叉** ⇒ 判据跟着改断整句「原子 ⟨id⟩ 引用的 blob 尚未上传（违反提交顺序协议）」✓
+（**旧判据锁住旧分叉 ⇒ 这类回归红要在台账里说清是「判据跟着分叉走」而不是「产品坏了」✓**）。
+## 六百七十五、本地 `preview_preset{render}` 落地（把「如实 501」换成真出图，`LOCAL_IMPLEMENTED` 保持 181）：那句 501 的**理由本身就是错的** ✗；三处被实测推翻的说法、九节判据 46 条断言、十六条变异（15 红 ＋ 1 条对照绿）
+
+**做什么**：`preview_preset` 带 `render` 时本地以前返回 501，理由写的是「本地内核没有单层裸像素通道 ⇒ 无法如实复现临时文档渲染」。
+**那句话的两个分句都是错的** ✓：单层裸像素通道早就有（`p2cRenderRgba` ＋ `p2LayerScopeAtoms`），而「临时文档渲染」正是
+`presets.rs:840 render_preview_in_temp_doc` 的镜像 —— 用**一次一用的第二个内核实例**就能如实复现。
+⇒ 现在本地真的出图，并逐像素与服务端对齐。（**分支数没变：那条 501 本来就写在 `preview_preset` 分支里面 ⇒ 181 不动 ✓**）
+
+**移植的三块**（都在 `crates/yanshi-http/assets/api-local.js` ⇒ `web/api-local.js` 由 `pwa-sync-viewer.mjs` 重生成 ✓）：
+
+| 名字 | 权威 | 钉住的口径 |
+|---|---|---|
+| `p2BoxDownsample` | `presets.rs:742 box_downsample` | `Math.floor(sum/count)`（**不是 `round` ✓**：M7 实测能红 ✓）|
+| `p2PresetParseRender` | `presets.rs:684 parse_preview_render` | 只认 `max_edge`／`format`；`max_edge ∈ [128, 2048]`，缺省 512／`jpeg` |
+| `p2PresetScratchRender` | `presets.rs:840` ＋ `:889-892` 落成 | blob 先行 → `create_document`（**不带 `color_space`**：`NewDocument` 没这字段 ⇒ 跟着源文档反而会多一次换算 ✗）→ `create_layer` → `import_image(raster_patch)` → 逐条 `create_object`（`name = preset:<id>`／`opacity 1.0`／逐笔 z 递增 ✓ 与 `apply_preset` 同一份口径）→ 整幅 `render_region_png` |
+
+### ★ 三处被**实测**推翻的说法（这一节的存在理由）
+
+| # | 我以前写的 | 实测 |
+|---|---|---|
+| ① | 「本地内核没有单层裸像素通道」⇒ 所以只能 501 | **有** ✓ ⇒ 那句 501 是**没查自己的代码**就写下的 ✗（**「文档里那句因果，有实测数字吗」这一问句又一次没被问 ✓**）|
+| ② | 「实例可以复用，只要序号单调」 | **不可以** ✓：复用同一实例装载一批**新 id** 的原子 ⇒ `ok`／`atoms`／`head_seq` 全正常，而**这批原子不生效** ⇒ 返回的是**上一张**代理图（判据第 ③ 节实测：本地 strength 0→1 的亮度差 **0**｜服务端 **17**；像素差 **359957/480000**、最大单通道差 **87**）⇒ **静默降级形态③（覆盖而不说）** ⇒ 现在每次新建、`finally` 里 `free()` ✓ |
+| ③ | 「复用会让每条原子被判 `cascade_invalidation`『已存在』⇒ 那道告警闸守得住」 | **两处都错** ✓（一次性探针实测）：折叠层对**同批重复 id 根本不告警**（`warnings` 键直接缺席）；换一批新 id 再装 ⇒ 响应里那条 `cascade_invalidation` 是**上一批的坏原子**（告警**串批** ✗ 不可信）⇒ **所以「一次一用」不能靠告警守** ✓ 守它的是判据第 ⑨ 节的计数恒等式「实例数 === 调用数 === `free()` 数」（**M1 漏掉 `free()` ⇒ 只有这一条看得见 ✓** 每一条像素与结构断言都绿 ✓）|
+
+**∴ 而那道闸守的是**另一件**真事 ✓**：`cascade_invalidation` 的真实触发是「临时文档里某条原子依赖缺失」
+（`fold.rs:418` 把 `PreconditionFailed` 与 `ReferenceNotFound` **都**映射成它）⇒ 折叠层**静默跳过**那条原子、
+`ok:true`、画面只剩底色而**预设效果没了**。探针实测：把效果原子的 `layer_id` 指向不存在的层 ⇒
+`warnings:[{kind:"cascade_invalidation",detail:"图层 layer_NOPE 不存在（现有图层：layer_base, layer_default）"}]` ✓。
+**比对串也验了**：`WarningKind` 带 `#[serde(rename_all = "snake_case")]`（`fold.rs:45`）⇒ JSON 里确实就是
+`"cascade_invalidation"` —— `document.rs:3174` 那处手工映射是**重复**，不是「还有另一种形态」的暗示 ✗（**我原来把它当证据，是读错了 ✓**）。
+
+**⇒ 但要诚实写下：这道闸没有判据钉住 ✗** —— 公开输入造不出「临时文档依赖缺失」（底图那几条原子都是本次新建的 ✓）。
+四层齐缺第三／第四层 ⇒ 这里就**不声称「改坏必红」** ✓（原先那句「有人改回复用 ⇒ 判据必红」是**借了第 ⑨ 节的功劳**记在闸头上 ✗ 已改成各记各的 ✓）。
+
+### ★ 判据第 ⑦ 节：一次「我以为服务端会拒」的红
+
+判据第一次跑就红在「图层不存在」这一类输入上 ⇒ 去读权威：**服务端对三种无墨层（从没有过的层／存在但空的层／已删除的层）
+全都返回 200 ＋ 一张底色图** ✓ —— 权威是 `document.rs:1657` 的 `rendered.rgba8.is_empty()`（单层渲染照样画**整幅底色**），
+而「图层 X 不存在」那句属于 `apply_preset`（`presets.rs:1157`），**不属于** `preview_preset`（`presets.rs:1030` 只要求 `layer_id` 是非空串）。
+⇒ **改的是产品**（把本地那句 `!props.has(layerId)` 删掉 ✗）**而不是把判据放宽** ✓，
+并补一条**差异恒等式**：同一预设「有墨层 vs 无墨层」的差值**两边必须相等**（**M5「预览不筛图层」⇒ 1418/196608 不同、最大单通道差 210 ✓**
+⇒ 这条专抓「把整幅文档当成这一层」✓）。
+
+**判据**（新文件 `scripts/tool-pwa-preset-render-parity.mjs`，445 行／46 条 `check(` ✓ 九节）：
+①纯 adjustment 的预设 ⇒ **逐字节全等**（实测 0/480000 ✗ 无容差）②效果必须落到像素：同一边 strength 0/1 必须不同 ＋ 两边差值相等
+③连续两次预览不许回陈旧图 ④降采样口径（长边 128 ⇒ 400×300 → 128×96 ＋ `proxy` 四个字段）
+⑤jpeg 缺省 ⇒ 本地按 png 回带 ＋ `format_fallback` **点名 JPEG** ⑥`render` 参数校验 ⇒ 两边同一句话
+⑦无墨层三种形态 200 ＋ 全等 ＋ 差异恒等式 ⑧预览不写任何东西（权威日志原子数前后不变）⑨实例数 === 调用数 === `free()` 数。
+浅判据 `tool-pwa-preset-server-parity` 的第 ⑨ 节改成**两种诚实出口**：内核就绪 ⇒ 200 且尺寸同服务端 ✓；
+内核没加载 ⇒ 501 且理由只许是「内核没就绪」✗ 不许再写那句已被证伪的「本地渲染不出来」✓。
+
+**噪声档的容差是量出来的，不是拍的**：noise／film_grain 两档 **58–143/480000** 字节不同、最大单通道差 **1**
+（f32 舍入落在 8bit 量化边界）⇒ 判据断「不同字节 ≤0.5% ∧ 最大差 ≤2」✓；
+而陈旧图（M2/M3）给的是 **356438–359957/480000**、最大差 **82–126** ⇒ 与容差差**三个数量级** ✓ 不是「容差太松」。
+
+### 变异：**共 16 条变异｜钉住 16 条｜没抓住 0 条｜ABORT 0 条**（15 红 ＋ 1 条对照绿）
+
+M1 漏掉 `free()`（临时实例泄漏 ⇒ **只有 ⑨ 能看见**）｜M2 重新引入 JS 侧实例缓存（守卫仍在）｜M3 缓存 ＋ 守卫失效｜
+**C0 对照：`scratchId` 去掉尺寸后缀（不改行为 ⇒ 判据必须绿）**｜M4 又把「图层不存在」当成错误｜M5 预览不筛图层｜
+M6 效果原子不喂进临时文档（68/49152）｜M7 降采样用 `round`｜M8 回带尺寸写源图而非代理图｜M9 `render.max_edge` 不校验｜
+M10 `format_fallback` 不点名 JPEG｜M11 谎报 `image_format` 为 jpeg｜M12 不给 `warnings` 键｜M13 `scale_notes` 抹掉 knob 清单｜
+M14 把合成原子写进**用户**文档（⑧ ✓）｜M15 带 `render` 又退回「本地做不到」的 501（浅判据 ⑨ ✓）。
+（变异脚本是一次性临时工具 ⇒ 跑完就删 ⇒ **改法与结论只留在这一节 ✓**。）
+
+**⇒ 合并侧抽查两条（本机复测，不是照抄上面那行 ✓）**：**M7** ⇒ 红 2 条（`japanese_airy@128` 68/49152 不同 ＋
+「有墨 vs 无墨」差值 1418 vs 1419）✓；**M1** ⇒ **只红在 ⑨**（「建了 3 个实例却只 free 了 0 个」＋「换尺寸再预览应当各 +1，
+实测 ctor 3→4｜free 0→0」）✓ ——**与上面声明的「只有恒等式看得见」逐字对上**（外§122⑤ ✓）。
+**为什么抽这两条**：M1 是「**只有一条断言能看见**」的那种 ⇒ 若它其实到处都红，声明就 overstated ✗；
+M7 是「**像素级**」的那种 ⇒ 验容差没把它糊过去 ✓。**其余 14 条不在本机重跑**（一次性脚本已删 ⇒ 复现成本是一条一条写改法 ✗）。
+
+**★ 这一轮补上的三条判据侧纪律**：
+
+1. **「一条变异没红」有两种含义**✗ 必须先分清再动判据 ✓：C0 起初被我当变异（期望红）而它**绿** ⇒
+   查下来是「`scratchId` 带不带尺寸后缀」根本不改变行为（实例每次新建、尺寸由代理图决定）⇒
+   **它不是缺陷的说明书 ✗ 是对照** ⇒ 重分类成 `expect: 0` 并计入统计。
+   **反过来才危险**：若当时把它改成「期望绿」交差 ⇒ 就等于把「判据不敏感」洗成「预期行为」✓
+   （**与第 1356／916 轮同族：先怀疑测量，再怀疑产品**）。
+2. **错误码不该由判据想象**✗：浅判据起初断 `error === "not_implemented_locally"`，实测那条走的是 `p2cKernel501`
+   ⇒ 码是 `kernel_unavailable` ✓ ⇒ 判据改成断**「自报家门」这一件事**（两个码都合法，但必须有一个 ✓ 且 `server:false` 必须在 ✓），
+   而不是钉某一个串（**形态①：没说清是谁拒的 ✗**）。
+3. **别把跑不动的命令写进文档**✗：我在判据头注释写过一条 `grep -c '^//   [①-⑩] '` 用来数节数 ⇒
+   `grep: Invalid collation character` ✗ ⇒「写命令而不是写数字」的前提是**那条命令当场能跑** ✓
+   否则它比数字更坏：**数字会过期，假命令会一直骗** ✓（已删掉那行 ✗）。
+
+**回归**（全绿 ✓）：`tool-pwa-preset-render-parity` ✓、`tool-pwa-preset-server-parity` ✓、
+`tool-pwa-assets`（**声明 181 === 分支 181 ✓**）、`tool-js-syntax`（数它用 `ls scripts/*.mjs | wc -l` ⇒ 本轮实测 459 个 ✓ **不取补丁里的 463**，那是他们那侧的树 ✓）、
+`tool-pwa-api-behaviour` ✓、`tool-pwa-preset-library-parity` ✓、`tool-pwa-import-psd`（338 条 ✓）、
+`tool-pwa-pixel-stats` ✓、`tool-pwa-local-write-guards` ✓。**没新增已知红** ✓。
