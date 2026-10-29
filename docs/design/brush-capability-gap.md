@@ -24055,3 +24055,112 @@ bbox 内与外／分页（含 `limit:0`）；§C `get_atom` 字段集合与 `lab
 - 判据的本地装配走 `GET /api/atoms` ＋ `putAtom` ✓（**测试装配**，不是产品写入路径 ✗）。
 - `edit_path` 只在**局部坐标**上编辑 ✓、不应用对象 `transform` ✓ —— 服务端现状如此 ✓。
 - 服务端 `edit_path` 的 `t` 缺省是 **0.5** ✓；本地照抄 ✓（判据 §B3 钉住 ✓）。
+
+## 六百七十一、本地 `list_engine_capabilities` 落地（179 → 180）＋ `set_layer_blend` 补回 `linear_light`／`soft_light`：`set_property`／`lock_layer`／`unlock_layer`／`update_layer` 四个写端点对齐服务端，判据当场抓出「空串 id 被当缺席」这处分歧
+
+**做什么**（`crates/yanshi-http/assets/api-local.js`；`LOCAL_IMPLEMENTED` 机械重数 179 → **180** ✓）：
+
+1. **`set_layer_blend` 的 11 项清单换成 13 项**（**真·功能缺口 ✓**）：本地此前自写
+   `["normal" … "difference"]` 11 项 ✗ ⇒ 图层面板选中 **`linear_light`／`soft_light`** 时
+   本地回 400、云端能改 ✓。现在**模块级 `P2_BLEND_NAMES`**（照 `yanshi-render/src/blend.rs:72 NAMES` 逐字 ✓
+   13 项 ✓）一处定义，`set_layer_blend`／`update_layer`／`list_engine_capabilities` 三处共用 ✓；
+   归一化照 `to_ascii_lowercase` ✓（`.toLowerCase()`；白名单全 ASCII ⇒ 等价 ✓）。
+2. **本地 `list_engine_capabilities` 落地**（照 `read_list_engine_capabilities`，`tools.rs:11635`）——
+   **纯静态 ✓**（服务端 handler 连 `ctx` 都不用 ✓ ⇒ 本地也不读文档／不碰内核 ✓）：
+   `P2_ENGINE_STATIC` 照服务端 `json!` **逐字**抄（**连 `dab_shape.note` 里的换行与 21 个缩进空格 ✓**），
+   `blend_modes`／`filters`／`adjustments`／`brush_settings` 取上面三份模块常量 ✓，
+   **`counts` 现算 `.length` ✓** ⇒ 判据断**恒等式** `counts.X === X.length` ✓（不是条数快照 ✗）。
+   `P2_BRUSH_SETTING_NAMES`（66）也落成模块常量 ✓（与 `get_brush_settings` 同源 ✓）。
+3. **`set_property` 对齐服务端**：缺省 `value` ⇒ `null` ✓（照 `write_set_property` 的 `unwrap_or(Null)` ✓，
+   此前本地回「value 必填」✗）；**空串 `layer_id`／`object_id` 是「给了 id」✓**（`optional_str` 只查类型 ⇒
+   `Some("")` ✓ ⇒ 提交期 404「图层  不存在／对象  不存在」✓，此前本地当缺席回 400 ✗）；
+   **引用校验先于值类型校验** ✓（`validate_commit` 的顺序 ✓）；新增 `p2PropertyValueError`
+   （照 `log.rs:654 validate_property_values` 逐字 ✓：`visible`／`locked`／`alpha_lock`／`clipping_mask`／
+   `enabled` ⇒ 布尔 ✓；`z_index` ⇒ `as_i64()` 口径（整数 ＋ i64 界）✓；`opacity` ⇒ 数值 ✓；
+   `type` ⇒ **按净荷是否带 `object_id` 分两张表** ✓）；未列出的键不查 ✓（服务端 `_ => {}` ✓）。
+4. **`lock_layer`／`unlock_layer` 对齐**：共用分支**按实际端点取工具名** ✓（`unlock_layer` 的错误文案
+   不能带成 `lock_layer` ✗）；入口校验走 `validate_args` ✓；提交期查图层存在／已删 ✓。
+5. **`update_layer` 对齐**：手写的三条入口检查换成 `p2ValidateArgsFor` ✓（`patch:"x"` 从
+   「缺少必填参数 patch」✗ 变成「参数 patch 类型应为 object，实际为 string」✓）；混合模式**严格匹配** ✓
+   （`update_layer` 不做大小写归一 ⇒ `SCREEN` 拒 ✓，与 `set_layer_blend` 的归一不同 ✓）；
+   `LAYER_PATCH_KEYS` 10 键 ✓；`parent_id` 三条（存在／必须 layer_group／不许成环）✓；
+   提交期引用校验 ✓；**每个键的值类型校验** ✓；**先全查后全写** ✓（不照抄服务端的 half-write ✗）。
+6. **`p2RefGuard` 的口径修正（跨端点 ✓）**：`object_id`／`layer_id` **只查类型、不查非空** ✓ ——
+   空串进入引用检查 ⇒ 404 名单；影响**所有**用它的端点 ✓（回归见下）。
+
+**判据**（`scripts/tool-pwa-engine-capabilities.mjs`，同一请求两边打、剥掉 HTTP 信封后比；**462 条断言** ✓）：
+
+| 节 | 覆盖 |
+|---|---|
+| §A | 能力表**整份相等**（含 `server:false`）＋ `counts` 键集合 ＋ **逐项恒等式** `counts.X === X.length`（两侧各算 ✓）＋ `blend_modes` 含 `linear_light`／`soft_light` ＋ `retouch_kind_tools` 键集合 = `retouch_kinds` ＋ `brush_settings` 无重复；§A2 零参数工具的「可用参数：无」逐字 |
+| §B | **混合模式清单从服务端能力表读**（判据不写死 13 ✓）⇒ 每种模式两边都收 ＋ 大写／混合大小写归一（`SCREEN`／`Soft_Light`）＋ 八种错误（未知模式、mode 非字符串／null、缺 mode、layer_id 非字符串／空串、缺 layer_id、未知参数、层不存在／已删）|
+| §C | `lock_layer`／`unlock_layer` 成功 ＋ 回执布尔 ＋ 七种错误（含**空串 layer_id**、未知参数两条**文案前缀**：`unlock_layer` 那条必须带自己的工具名 ✓）|
+| §D | `set_property` 五个成功（布尔、缺省 `null`、图层类型、`z_index`、对象类型）＋ 十九种错误（值类型六条／引用五条／锁三条／顺序两条／空串两条）＋ **锁层里改 `visible` 放行** ＋ **锁层改自己的属性放行** |
+| §E | `update_layer` 成功（单键／双键／混合模式／锁层自身）＋ `count` 与 `atoms.length` 的**两侧恒等式** ＋ 十四种错误（含 `SCREEN` 被拒、空 `patch`、`patch:"x"`、空串 `layer_id`）＋ **半写分歧**（服务端第一键已落盘、本地整批拒绝 ⇒ 用**各自**的 `list_layers` 读回断言 ✓）|
+
+**首轮变异有 2 条「红了但期望标签没出现」—— 是期望标签写错 ✗，不是断言没红 ✓**：
+
+| 变异 | 实际红在 | 我的期望写成了 |
+|---|---|---|
+| `lock_boolean_swapped` | `§C1 本地回执应带 locked:true` | `§C1 锁定`（那条 `compareSuccess` 只比状态/ok/server，`pick` 为空 ⇒ 本来就不会红 ✗）|
+| `sp_default_value_wrong` | `§D2 本地回执的 value 应为 null` | `§D2 缺省 value`（`compareSuccess` 不 pick `value` ⇒ 只有紧邻的值断言能红 ✓）|
+
+⇒ **两次都是「我读的标签」比「真正守住它的断言」粗** ✓ —— 与第 888 轮同族（量尺要先被量 ✓）：
+`compareSuccess` 只断**选定字段** ✓，所以标签要写到**那条具体 `check`** 头上 ✓。
+
+**变异（31 次，全部 `exit 1` ✓；每次后恢复、与原件逐字节相同 ✓ `cmp`；恢复后复测 462 条全绿 ✓）**：
+
+| # | 改坏 | 红在哪（实测） |
+|---|---|---|
+| ① | 能力表 `note` 写错 | §A 能力表 |
+| ② | `counts.brush_settings` 与数组脱钩 | §A counts 恒等式（本地）：brush_settings |
+| ③ | `brush_settings` 混进重复项 | §A brush_settings（本地）不应有重复项 |
+| ④ | `retouch_kinds` 截断 | §A retouch_kind_tools（本地） |
+| ⑤ | 能力表入口校验被关掉 | §A2 未知参数 |
+| ⑥ | 混合模式清单退回 11 项 | §B1 模式 linear_light |
+| ⑦ | 不做小写归一 | §B2 归一化 SCREEN |
+| ⑧ | 未知模式文案丢掉可用清单 | §B3 未知模式 |
+| ⑨ | 白名单整个失效 | §B3 未知模式 |
+| ⑩ | `set_layer_blend` 入口校验被关掉 | §B6 layer_id 非字符串 |
+| ⑪ | `set_layer_blend` 引用校验被关掉 | §B10 图层不存在 |
+| ⑫ | 回执回显原文（不归一） | §B2 归一化 SCREEN |
+| ⑬ | 共用分支工具名写死 `lock_layer` | §C9 unlock 未知参数 |
+| ⑭ | 锁／解锁布尔反了 | §C1 本地回执应带 locked:true |
+| ⑮ | 锁定端点引用校验被关掉 | §C7 图层不存在 |
+| ⑯ | `set_property` 入口校验被关掉 | §D16 key 为 null |
+| ⑰ | `set_property` 引用校验被关掉 | §D19 图层不存在 |
+| ⑱ | 值类型校验被关掉 | §D6 visible 非布尔 |
+| ⑲ | `z_index` 丢了 i64 上界 | §D9 z_index 超出 i64 |
+| ⑳ | `type` 两张表装反 | §D5 合法对象类型 |
+| ㉑ | 缺省 `value` 不再写 `null` | §D2 本地回执的 value 应为 null |
+| ㉒ | 空串 `object_id` 又当缺席 | §D28 空 object_id |
+| ㉓ | 空串 `layer_id` 又当缺席 | §D27 空 layer_id |
+| ㉔ | `p2RefGuard` 又把空串层 id 当缺席 | §B12 空 layer_id |
+| ㉕ | 忘了「图层自身属性不受锁影响」 | §D26 锁层的图层属性 |
+| ㉖ | 忘了「改 locked/visible 永远放行」 | §D25 锁层里改 visible |
+| ㉗ | 不查对象所在图层的锁 | §D23 锁层里的对象被拒 |
+| ㉘ | `update_layer` 入口校验被关掉 | §E12 patch 非对象 |
+| ㉙ | 照抄服务端的 half-write | §E19 半写分歧 |
+| ㉚ | `update_layer` 引用校验被关掉 | §E15 图层不存在 |
+| ㉛ | 只写第一个键 | §E2 两个键 |
+
+**如实记**：
+- §B 的混合模式清单**从服务端能力表读** ✓ —— 上游加一种模式时判据自动覆盖 ✓，不会像第 798／812 轮那样过期 ✓。
+- §A 的 `counts` 恒等式在**两侧各断一次** ✓ —— 只断服务端那侧时，本地把 `counts` 写错也照绿 ✗（首版如此 ✓，已改 ✓）。
+- `update_layer` 的**半写**是**服务端现状** ✓（`service.rs:2437` 逐条提交再 `attempt?` ✓）；本地**故意不照抄** ✓
+  ⇒ §E19 断的是「服务端 `visible=false` ‖ 本地 `visible=true`」这条**已记录的分歧** ✓（两边各用**自己**的 `list_layers` 读 ✓）。
+
+**已知限制（如实记 ✓）**：
+- **i64 边界与 JS 精度**：`9223372036854775807` 在 JS 里已不是精确整数（变成 `9223372036854775808`）⇒
+  若调用方真要写 `i64::MAX`，本地会判「超出 i64」而服务端收 ✓ —— 判据用 `1e19`（远超边界 ✓）与 `1.5` 钉口径，
+  **不碰边界值** ✓（碰了就是测 JS 的精度，不是测契约 ✗）。
+- `mask_id`／`style_id` 的**值引用**本地不查 ✓（服务端 `log.rs:358` 才查；本地没有任何端点会写这两个键 ✓）。
+- `update_layer` 本地**先全查后全写** ⇒ 与服务端的逐条提交在「中途失败」时结果不同 ✓（见 §E19）；
+  这不是缺口，是**故意的更强保证** ✓。
+- 判据的本地装配走 `GET /api/atoms` ＋ `putAtom` ✓（**测试装配**，不是产品写入路径 ✗）。
+
+**回归**：`tool-pwa-api-behaviour`、`tool-pwa-local-write-guards`、`tool-pwa-atom-log`（210 条）、
+`tool-pwa-get-path`（151 条）、`tool-pwa-edit-path`（483 条）、`tool-pwa-revert-to-seq`（134 条）、
+`tool-pwa-vector-hit-test`（137 条）、`tool-pwa-transform-object`、`tool-pwa-read-inspect`（428 条）、
+`tool-pwa-preset-library-parity`、`tool-pwa-preset-server-parity`、`tool-pwa-engine-capabilities`（462 条）、
+`tool-js-syntax`（455 个脚本）—— **全绿** ✓（第 6 条的 `p2RefGuard` 是跨端点改动 ⇒ 写路径与读路径判据一起跑 ✓）。

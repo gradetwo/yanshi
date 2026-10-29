@@ -84,7 +84,7 @@ export // **★ 声明必须与**实现分支数**一致 ✗ ★**（第 72 轮 
 //   **第 9 批 路径节点编辑 ✓ —— `edit_path` 落地 ⇒ 再 +1 ✓**）：
 //   **∴ 判据口径 `actualImpl`（**机械重数：`(?:url\.pathname|path) === "`**）⇒ 本数与它同步 ✓（非拍脑袋 ✗）**
 //   **∴ 数它用：`node -e 'const a=require("fs").readFileSync("web/api-local.js","utf8");console.log(((a.match(/(?:url\.pathname|path) === "/g)||[]).length))'` ✓**
-const LOCAL_IMPLEMENTED = 179; // 路径节点编辑落地 ⇒ 机械重数 178 + 1 ✓
+const LOCAL_IMPLEMENTED = 180; // `list_engine_capabilities` 落地 ⇒ 机械重数 179 + 1 ✓
 
 let lastFold = null;
 
@@ -689,6 +689,67 @@ const P2_FILTER_NAMES = [
   "glow", "clarity", "dehaze", "film_grain", "brightness_contrast", "saturation",
   "invert", "relief",
 ];
+/** **混合模式清单 ✓**（**照 `yanshi-render/src/blend.rs:72 NAMES` 逐字 ✓**，13 项 ✓）。
+ *   **∴ 一份实现两处调用 ✓**（`update_layer` 的 `blend_mode` 校验 ＋ `set_layer_blend` ✓）——
+ *   **∴ 此前 `set_layer_blend` 自写 11 项 ✗** ⇒ `linear_light`／`soft_light` 在本地被拒 ✗
+ *     （**而服务端 `BlendMode::NAMES` 收 ✓** ⇒ 图层面板选中这两种模式时本地回 400、云端能改 ✓）。 */
+const P2_BLEND_NAMES = ["normal", "multiply", "screen", "overlay", "darken", "lighten",
+                        "add", "linear_dodge", "subtract", "color_dodge", "difference",
+                        "linear_light", "soft_light"];
+/** **笔刷动力学规范名 ✓**（**照 `hokusai::BrushSetting::ALL` 的 `cname()` 顺序 ✓**，66 项 ✓；
+ *   **`list_engine_capabilities.brush_settings` 与 `get_brush_settings` 共用这一份 ✓**）。 */
+const P2_BRUSH_SETTING_NAMES = [
+  "opaque", "opaque_multiply", "opaque_linearize", "radius_logarithmic", "hardness",
+  "anti_aliasing", "dabs_per_basic_radius", "dabs_per_actual_radius", "dabs_per_second",
+  "radius_by_random", "speed1_slowness", "speed2_slowness", "speed1_gamma", "speed2_gamma",
+  "speed_ink", "pressure_shape", "stroke_taper", "offset_by_random", "offset_by_speed",
+  "offset_by_speed_slowness", "slow_tracking", "slow_tracking_per_dab", "tracking_noise",
+  "color_h", "color_s", "color_v", "restore_color", "change_color_h", "change_color_l",
+  "change_color_hsl_s", "change_color_v", "change_color_hsv_s", "smudge", "smudge_length",
+  "smudge_length_log", "smudge_radius_log", "eraser", "stroke_threshold",
+  "stroke_duration_logarithmic", "stroke_holdtime", "custom_input", "custom_input_slowness",
+  "elliptical_dab_ratio", "elliptical_dab_angle", "direction_filter", "lock_alpha",
+  "colorize", "snap_to_pixel", "pressure_gain_log", "posterize", "posterize_num",
+  "paint_mode", "smudge_transparency", "offset_y", "offset_x", "offset_angle",
+  "offset_angle_asc", "offset_angle_view", "offset_angle_2", "offset_angle_2_asc",
+  "offset_angle_2_view", "offset_angle_adj", "offset_multiplier", "gridmap_scale",
+  "gridmap_scale_x", "gridmap_scale_y",
+];
+/** **引擎能力表的其余静态部分 ✓**（**照 `tools.rs:11635` 的 `json!` 逐字 ✓** ——
+ *   **连 `dab_shape.note` 里的换行与 21 个缩进空格都照抄 ✓**：那是 Rust 源码字面量的一部分 ✓，
+ *   判据逐字比 ✓）。**∴ 本地 `list_engine_capabilities` 直接读它 ✓**（**纯静态、不碰内核／文档 ✓**）。
+ *   **∴ 列表本身（blend／filters／adjustments／brush_settings）由上面三份常量供 ✓** ——
+ *   一份实现，两处用（`update_layer`／`set_layer_blend` 与这里 ✓）。 */
+const P2_ENGINE_STATIC = {
+  retouch_kinds: ["clone_stamp", "heal", "smudge", "erase"],
+  liquify_kinds: ["push", "twirl", "pinch"],
+  mediums: ["oil", "watercolor", "marker", "pencil", "pixel"],
+  example_mediums: ["example"],
+  dab_shape: {
+    supported: ["circle", "ellipse"],
+    verified_settings: ["elliptical_dab_ratio", "elliptical_dab_angle"],
+    unverified_settings: [],
+    note: "椭圆 dab 与角度都生效（外部复测实测：ratio=1 与 8 的像素不同、angle=0 与 90 得到\n                     明显不同的扁平笔触）。我此前把这两项列为 ignored 是错的——那只是'我没验证过'，\n                     不是'引擎不支持'。其余组合未逐一验证，标 unverified 而非 ignored。",
+  },
+  retouch_kind_tools: {
+    clone_stamp: "clone_stamp",
+    heal: "heal_stamp",
+    smudge: "smudge",
+    erase: "erase",
+  },
+  brush_aliases: ["hand_jitter", "speed_gain", "color_variance", "smudge_amount"],
+  filters_needing_params: { dehaze: ["air"] },
+  medium_params: {
+    names: ["color", "color_mixing", "color_space", "color_to", "layer_id", "load", "medium",
+            "object_id", "points", "size", "smooth", "symmetry", "texture", "wetness"],
+    load: "0..1（缺省 1；越画越少）",
+    wetness: "0..1（缺省 0.4）",
+    color_mixing: ["rgb", "linear", "pigment"],
+    color_space: ["srgb", "linear"],
+  },
+};
+const P2_ENGINE_NOTE =
+  "每个列表都引用引擎常量 ✓；加一种只改一处 ✓；example-dab 是示例介质，不是给成品用的 ✗";
 /** **B 期项 13 的本地镜像 ✓**：与服务端 `list_effects` 回执的 `filter_aliases` 同条目 ✓
  *   （`tools.rs:13236`；条目只写别名关系，不暗示 impasto 可用 ⇒ relief 高度源是 C 期的事 ✓）。 */
 const P2_FILTER_ALIASES = [{ name: "impasto", alias_of: "relief", note: "同 relief" }];
@@ -2826,6 +2887,41 @@ async function withKernel(doc, fn) {
     return { slot: "tombstoned", view, dead_by: death.by, cascade: death.cascade };
   }
 
+  /** **`set_property` 的值类型校验 ✗**（**照 `log.rs:654 validate_property_values` 逐字 ✓**）：
+   *   **∴ 为什么必须 ✗**：非法值在折叠层**静默取默认**（`visible:"yes"` ⇒ 当 `true` ✓；
+   *   `type:"怪串"` ⇒ 当笔迹 ✓）⇒ 「接受了却没用／用错」= 静默降级 ⇒ **服务端在提交层就拒 ✓**。
+   *   **∴ 返回** `null`（合法）**或**错误文案 ✓（**`set_property` 与 `update_layer` 共用一份 ✓**）。
+   *   **∴ 未列出的键不查 ✗**（服务端 `_ => {}` ✓ —— 与折叠层"只认这几类"一致 ✓）。
+   */
+  function p2PropertyValueError(payload) {
+    const key = payload && payload.key;
+    const value = payload && Object.prototype.hasOwnProperty.call(payload, "value")
+      ? payload.value : null;
+    const reject = (expect) => `set_property(key=${key}) 的值不合法：需要${expect}，收到 `
+      + `${JSON.stringify(value)} —— 拒绝静默保持旧值或取默认（第 1440 轮）`;
+    if (key === "visible" || key === "locked" || key === "alpha_lock"
+        || key === "clipping_mask" || key === "enabled") {
+      if (typeof value !== "boolean") return reject("布尔");
+    } else if (key === "z_index") {
+      // **`as_i64()` 的口径 ✓**：整数且在 i64 内 ✓（`1e300` 这类浮点 ⇒ 服务端 `None` ⇒ 拒 ✓）。
+      if (!(typeof value === "number" && Number.isInteger(value)
+            && Math.abs(value) <= 9223372036854775807)) return reject("整数");
+    } else if (key === "opacity") {
+      if (typeof value !== "number") return reject("数值");
+    } else if (key === "type") {
+      // **分发口径照折叠层 ✓**：有 `object_id` ⇒ 对象类型表；否则 `layer_id` ⇒ 图层类型表 ✓。
+      const objectSide = Object.prototype.hasOwnProperty.call(payload || {}, "object_id");
+      const known = objectSide
+        ? ["stroke", "shape", "text", "adjustment", "filter", "raster_patch", "retouch",
+           "liquify", "instance", "group", "path"]
+        : ["raster", "vector", "layer_group", "mask"];
+      if (typeof value !== "string" || !known.includes(value)) {
+        return reject(objectSide ? "已知对象类型字符串" : "已知图层类型字符串");
+      }
+    }
+    return null;
+  }
+
   /** **提交前的引用校验 ✗**（**本地镜像 `log.rs:292 validate_commit` 的 `validate_primary_refs` ✓**
    *   —— **∴ 顺序也是服务端顺序 ✓**：对象引用**先**于图层引用 ✓（`log.rs:339` vs `:424` ✓）⇒
    *   一个原子同时踩两条时 ⇒ **报的是对象那条**✓。
@@ -2836,7 +2932,11 @@ async function withKernel(doc, fn) {
    */
   function p2RefGuard(rows, layers, neutral, kind, payload) {
     const MUST_EXIST_OBJECT = new Set(["supersede", "move", "transform", "set_property", "tombstone"]);
-    const objectId = typeof payload.object_id === "string" && payload.object_id ? payload.object_id : null;
+    // **★ 空串也是「给了 id」✗ ★**（**服务端 `optional_str` 只查类型 ⇒ `""` 是 `Some("")` ✓**）：
+    //   **∴ 实测**：`set_property{layer_id:""}` ⇒ 404「图层  不存在（现有图层：…）」✓、
+    //   `{object_id:""}` ⇒ 404「对象  不存在（…）」✓ —— **不是**「没给 id」✗。
+    //   **∴ 旧本地把 `""` 当缺席**⇒ 回 400 或**照写原子**✗（**两条都与服务端不同** ✓）。
+    const objectId = typeof payload.object_id === "string" ? payload.object_id : null;
     // **`create_object`／`import_image` = `MustNotExist` ✗**（**`log.rs:100` 逐字 ✓**）：
     //   判的是**服务端 `state.objects.contains_key`** ✓（`state.rs:546`）——
     //   **∴ 墓碑对象仍在 `objects` 里**（`fold.rs:1315` 只置 `deleted_by` ✓）⇒ **撞墓碑也拒 ✓**
@@ -2872,7 +2972,7 @@ async function withKernel(doc, fn) {
                  detail: `set_property ${payload.key} 引用的实体 ${ref} 不存在或已删除`, extra: null };
       }
     }
-    const layerId = typeof payload.layer_id === "string" && payload.layer_id ? payload.layer_id : null;
+    const layerId = typeof payload.layer_id === "string" ? payload.layer_id : null;
     if (layerId !== null && kind !== "create_layer" && kind !== "create_document") {
       if (!layers.has(layerId)) {
         return { status: 404, code: "reference_not_found",
@@ -4373,25 +4473,16 @@ async function withKernel(doc, fn) {
       const UPDATE_LAYER_KEYS = ["name", "visible", "opacity", "blend_mode",
                                  "locked", "alpha_lock", "clipping_mask", "mask_id",
                                  "z_index", "parent_id"];
-      // **混合模式清单取自渲染层 ✓**（**`yanshi-render/src/blend.rs:72 NAMES` ✓ 13 项含别名 ✓**）。
-      const P2_BLEND_NAMES = ["normal", "multiply", "screen", "overlay", "darken", "lighten",
-                              "add", "linear_dodge", "subtract", "color_dodge", "difference",
-                              "linear_light", "soft_light"];
-      const objectBody = body && typeof body === "object" && !Array.isArray(body) ? body : {};
-      // **① 未知参数 ⇒ 400 ✗**（**照服务端框架 `validate_args` 的文案 ✓**：拼错的键**不许静默忽略** ✓）。
-      for (const key of Object.keys(objectBody).sort()) {
-        if (P2_PRESET_FRAMEWORK.includes(key)) continue;
-        if (key !== "layer_id" && key !== "patch") {
-          return p2Bad(`update_layer 不接受参数 ${key}（拼写错误？）；可用参数：layer_id, patch；`
-            + `框架级参数：${P2_PRESET_FRAMEWORK.join(", ")}`);
-        }
-      }
-      const layerId = objectBody.layer_id;
-      if (typeof layerId !== "string" || !layerId) return p2Bad("缺少必填参数 layer_id");
-      const patch = objectBody.patch;
-      if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
-        return p2Bad("缺少必填参数 patch");
-      }
+      // **混合模式清单取自渲染层 ✓**（**模块级 `P2_BLEND_NAMES` ✓** —— 与 `set_layer_blend` 同一份 ✓）。
+      // **① 入口校验照 `validate_args` ✓**（**声明在 `P2_TOOL_SPECS` 的 `update_layer` 行 ✓**）——
+      //   **∴ 此前本地手写三条 ✗** ⇒ `patch:"x"` 回「缺少必填参数 patch」✗ 而服务端回
+      //   「参数 patch 类型应为 object，实际为 string」✓（**调用方照本地文案会去「补参数」** ✗）；
+      //   **∴ 空串 `layer_id` 也照服务端放行 ✓**（schema 只查类型 ⇒ 提交期 404「图层  不存在」✓，
+      //   此前本地回 400「缺少必填参数」✗）。
+      const specBad = p2ValidateArgsFor("update_layer", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
+      const layerId = body.layer_id;
+      const patch = body.patch;
       const rows = await atomsOf(handle, doc);
       const neutral = p2Neutralized(rows);
       const layers = p2PresetLayers(rows, neutral);
@@ -4436,6 +4527,12 @@ async function withKernel(doc, fn) {
       //   **∴ 此前本地一个字都不查 ✓** ⇒ 给已删层写属性**回执 ok 而折叠丢掉** ✗（形态③）。
       const guard = p2RefGuard(rows, layers, neutral, "set_property", { layer_id: layerId });
       if (guard) return p2ToolFailure(guard.status, guard.code, guard.detail, guard.extra);
+      // **∴ 值类型校验 ✗**（**`log.rs:310 validate_property_values` ✓**：`visible:"yes"` 在折叠层
+      //   静默当 `true` ✗ ⇒ 服务端提交层就拒 ✓）—— **∴ 此前本地照收 ⇒ 回执 ok 而属性没变** ✓。
+      for (const key of keys) {
+        const bad = p2PropertyValueError({ layer_id: layerId, key, value: patch[key] });
+        if (bad) return p2ToolFailure(400, "invalid_argument", bad);
+      }
       // **⑤ 先全部校验、再全部写 ✗**（**∴ 与 `update_object` 同一条纪律 ✓**：
       //   服务端的 changeset **不是**原子的（实测 `service.rs:2437` 逐条提交再 `attempt?` ✓）
       //   ⇒ **本地不照抄半写** ✗ ⇒ 一次校验、全过才写 ✓）。
@@ -4785,9 +4882,20 @@ async function withKernel(doc, fn) {
     // **⑥⑦ `lock_layer`／`unlock_layer` ✗**：**照 `write_lock_layer` ✓**
     //   ⇒ **本体就是 `set_property{key:"locked"}` ✗**（**∴ 不是独立原子 ✓**）。
     if (path === "/api/tools/lock_layer" || path === "/api/tools/unlock_layer") {
+      // **∴ 入口校验照 `validate_args` ✓**（缺参／类型／未知键的文案由它统一 ✓）。
+      //   **∴ 工具名要按实际端点取 ✗**（两者共享同一个分支 ⇒ 文案里的工具名不能写死 ✓）。
+      const toolName = path.endsWith("/lock_layer") ? "lock_layer" : "unlock_layer";
+      const specBad = p2ValidateArgsFor(toolName, body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
       const layerId = body.layer_id;
-      if (typeof layerId !== "string" || !layerId) return p2Bad("layer_id 必填（字符串）");
       const locked = path === "/api/tools/lock_layer";
+      // **∴ 提交期引用校验 ✗**（**`log.rs:424 check_layer_exists` ✓**：层不在 ⇒ 404 名单 ✓、
+      //   已删 ⇒ 409 ✓）—— **此前本地照写原子**✗ ⇒ 对不存在的层回执 ok 而折叠丢掉 ✓。
+      const rows = await atomsOf(handle, doc);
+      const neutral = p2Neutralized(rows);
+      const layers = p2PresetLayers(rows, neutral);
+      const guard = p2RefGuard(rows, layers, neutral, "set_property", { layer_id: layerId });
+      if (guard) return p2ToolFailure(guard.status, guard.code, guard.detail, guard.extra);
       const seq = await putAtom(handle, doc, p2Envelope("set_property",
         { layer_id: layerId, key: "locked", value: locked }));
       return json({ ok: true, seq, server: false, layer_id: layerId, locked,
@@ -4799,16 +4907,24 @@ async function withKernel(doc, fn) {
     //   **∴ 如实说明 ✗**：**`update_layer` 本地**尚未实现 ✗ ⇒ **∴ 这里**不经由它**✗**（**∴ 不虚报覆盖 ✓**），
     //     **而是**照服务端**直接写 `set_property` 原子 ✓**（**与服务端实际落盘的原子一致 ✓**）。
     if (path === "/api/tools/set_layer_blend") {
+      // **∴ 入口校验照 `validate_args` ✓**（缺参／类型／未知键的文案由它统一 ✓ ——
+      //   此前本地自写「layer_id 必填（字符串）」✗ ⇒ 与服务端「缺少必填参数 layer_id」不同 ✓）。
+      const specBad = p2ValidateArgsFor("set_layer_blend", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
       const layerId = body.layer_id;
-      if (typeof layerId !== "string" || !layerId) return p2Bad("layer_id 必填（字符串）");
-      // **∴ 清单取自渲染层 ✓**（`crates/yanshi-render/src/blend.rs` 的 `BlendMode::NAMES` ✓ ⇒ 11 个 ✓）。
-      const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken",
-                           "lighten", "add", "linear_dodge", "subtract",
-                           "color_dodge", "difference"];
-      const mode = typeof body.mode === "string" ? body.mode.toLowerCase() : "";
-      if (BLEND_MODES.indexOf(mode) < 0) {
-        return p2Bad("未知混合模式 " + body.mode + " ⇒ 可用：" + BLEND_MODES.join(" / "));
+      // **∴ 清单与 `update_layer` 同一份模块常量 ✓**（`blend.rs:72 NAMES` ✓ 13 项含 `linear_light`／
+      //   `soft_light` ✓）；**∴ 小写照服务端 `to_ascii_lowercase` ✓**（白名单本身全 ASCII ⇒ 等价 ✓）。
+      const mode = body.mode.toLowerCase();
+      if (P2_BLEND_NAMES.indexOf(mode) < 0) {
+        return p2Bad("未知混合模式 " + body.mode + " ⇒ 可用：" + P2_BLEND_NAMES.join(" / "));
       }
+      // **∴ 提交期引用校验 ✗**（**`log.rs:424 check_layer_exists` ✓**：层不在 ⇒ 404 名单 ✓、
+      //   已删 ⇒ 409 ✓）—— **此前本地照写原子**✗ ⇒ 对不存在的层回执 ok 而折叠丢掉 ✓。
+      const rows = await atomsOf(handle, doc);
+      const neutral = p2Neutralized(rows);
+      const layers = p2PresetLayers(rows, neutral);
+      const guard = p2RefGuard(rows, layers, neutral, "set_property", { layer_id: layerId });
+      if (guard) return p2ToolFailure(guard.status, guard.code, guard.detail, guard.extra);
       const seq = await putAtom(handle, doc, p2Envelope("set_property",
         { layer_id: layerId, key: "blend_mode", value: mode }));
       return json({ ok: true, seq, server: false, layer_id: layerId, mode,
@@ -6670,6 +6786,41 @@ async function withKernel(doc, fn) {
         note: "把 air/omega/floor 传给 add_filter {filter_name: \"dehaze\"}；渲染逐像素确定性",
       });
     }
+    // **P2c-73 `list_engine_capabilities` ✓**（**照 `read_list_engine_capabilities`（`tools.rs:11635`）逐字 ✓**）：
+    //   **∴ 纯静态 ✗**（**服务端 handler 连 `ctx` 都不用 ✓**）⇒ **∴ 本地也不读文档／不碰内核 ✓**
+    //   ⇒ 一张表两处用：`blend_modes`／`filters`／`adjustments`／`brush_settings` 直接取上面那三份
+    //   模块常量 ✓（**`update_layer`／`set_layer_blend` 用的**同一份**✓ ⇒ 清单不能再漂移 ✓**）。
+    //   **∴ `counts` 现算 ✗**（**数组 `.length` ✓**）⇒ **∴ 恒等式**：`counts.X === X.length` ✓。
+    if (path === "/api/tools/list_engine_capabilities") {
+      const specBad = p2ValidateArgsFor("list_engine_capabilities", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
+      return json({
+        ok: true,
+        blend_modes: P2_BLEND_NAMES.slice(),
+        filters: P2_FILTER_NAMES.slice(),
+        adjustments: P2_ADJUSTMENT_NAMES.slice(),
+        retouch_kinds: P2_ENGINE_STATIC.retouch_kinds.slice(),
+        liquify_kinds: P2_ENGINE_STATIC.liquify_kinds.slice(),
+        mediums: P2_ENGINE_STATIC.mediums.slice(),
+        example_mediums: P2_ENGINE_STATIC.example_mediums.slice(),
+        dab_shape: P2_ENGINE_STATIC.dab_shape,
+        retouch_kind_tools: P2_ENGINE_STATIC.retouch_kind_tools,
+        brush_aliases: P2_ENGINE_STATIC.brush_aliases.slice(),
+        filters_needing_params: P2_ENGINE_STATIC.filters_needing_params,
+        medium_params: P2_ENGINE_STATIC.medium_params,
+        brush_settings: P2_BRUSH_SETTING_NAMES.slice(),
+        counts: {
+          blend_modes: P2_BLEND_NAMES.length,
+          filters: P2_FILTER_NAMES.length,
+          adjustments: P2_ADJUSTMENT_NAMES.length,
+          retouch_kinds: P2_ENGINE_STATIC.retouch_kinds.length,
+          liquify_kinds: P2_ENGINE_STATIC.liquify_kinds.length,
+          brush_settings: P2_BRUSH_SETTING_NAMES.length,
+        },
+        note: P2_ENGINE_NOTE,
+        server: false,
+      });
+    }
     // **P2c-19a `list_effects` ✓**（**照 `read_list_effects` ✓**，第 六百六十五 轮 ✓）：
     //   **∴ 与 `list_objects` 的两处不同 ✗**：① **不过滤隐藏**（`alive_objects()` 含隐藏／禁用 ✓）；
     //   ② **字段取自折叠后的 `data` ✓**（`set_property` 覆盖也算 ✓ ⇒ 经 `p2EffectiveData` ✓）。
@@ -8495,18 +8646,36 @@ async function withKernel(doc, fn) {
     // **P2c-63 `set_property` ✗**：**照 `write_set_property` ✓** ⇒ **`set_property{key, value,
     //   object_id?/layer_id?}` 原子 ✓**。
     if (path === "/api/tools/set_property") {
+      // **∴ 入口校验照 `validate_args` ✓**（缺 `key` ⇒「缺少必填参数 key」✓、未知键逐字 ✓）——
+      //   此前本地自写「key 必填（字符串）」✗ 且**不拒未知键** ✓（拼错的键被静默忽略 ✗）。
+      const specBad = p2ValidateArgsFor("set_property", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
       const key = body.key;
-      if (typeof key !== "string" || !key) return p2Bad("key 必填（字符串）");
-      if (body.value === undefined) return p2Bad("value 必填");
-      const payload = { key, value: body.value };
+      // **∴ 缺省 `value` ⇒ `null` ✓**（**照 `write_set_property` 的 `unwrap_or(Null)` ✓**）——
+      //   此前本地回「value 必填」✗ ⇒ 与服务端「照收并写 null」不同 ✓；**null 合不合法由值类型校验判 ✓**。
+      const value = body.value === undefined ? null : body.value;
+      const payload = { key, value };
       const objectId = body.object_id, layerId = body.layer_id;
-      if (typeof objectId === "string" && objectId) payload.object_id = objectId;
-      if (typeof layerId === "string" && layerId) payload.layer_id = layerId;
-      if (!payload.object_id && !payload.layer_id) {
-        return p2Bad("object_id / layer_id 至少给一个");
+      // **∴ 只查类型 ✗ 不查非空 ✓**（**照 `optional_str`：`""` 是 `Some("")` ✓**）——
+      //   空串交给 `p2RefGuard` 报 404「对象  不存在／图层  不存在」✓（**服务端同一句 ✓**）。
+      const hasObject = typeof objectId === "string";
+      const hasLayer = typeof layerId === "string";
+      if (hasObject) payload.object_id = objectId;
+      if (hasLayer) payload.layer_id = layerId;
+      if (!hasObject && !hasLayer) {
+        return p2Bad("set_property 需要 object_id 或 layer_id");
       }
+      // **∴ 顺序照 `validate_commit` ✓**：引用校验（`log.rs:294`）**先于**值类型校验（`:310`）✓
+      //   ⇒ 「层不在」＋「值不合法」同时踩 ⇒ **报的是层那条 404** ✓。
+      const rows = await atomsOf(handle, doc);
+      const neutral = p2Neutralized(rows);
+      const layers = p2PresetLayers(rows, neutral);
+      const guard = p2RefGuard(rows, layers, neutral, "set_property", payload);
+      if (guard) return p2ToolFailure(guard.status, guard.code, guard.detail, guard.extra);
+      const valueBad = p2PropertyValueError(payload);
+      if (valueBad) return p2ToolFailure(400, "invalid_argument", valueBad);
       const seq = await putAtom(handle, doc, p2Envelope("set_property", payload));
-      return json({ ok: true, seq, server: false, key,
+      return json({ ok: true, seq, server: false, key, value,
                     note: "已写入 set_property 原子" });
     }
 
