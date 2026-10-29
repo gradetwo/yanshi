@@ -399,6 +399,10 @@ pub(super) fn write_export_book_pngs(ctx: &mut ToolContext<'_>, args: &Value) ->
 }
 
 pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // return_image 统一语义：max_px 传了就在落盘前校验（非法直接报错，
+    // 不产半张文件）；请求回图时缺省 512，不请求时不回图，落盘行为不动。
+    let export_explicit_max_px = explicit_max_px(args)?;
+    let export_wants_image = wants_return_image(args);
     let path = guarded_output_path(&require_str(args, "path")?)?;
     // **导出失败删目标文件**（P2-12）：见 `write_export_project` 的守卫说明。
     let mut delete_on_failure = DeleteTargetOnFailure::new(Some(path.clone()));
@@ -657,7 +661,7 @@ pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         .map(|document| (document.head_seq(), document.render_watermark()))
         .unwrap_or((0, 0));
     delete_on_failure.disarm();
-    Ok(json!({
+    let mut export_value = json!({
         "path": path,
         "width": target_w,
         "height": target_h,
@@ -694,7 +698,36 @@ pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         // **⇒ 导出完整性**不需要这个字段：`export_png` **总是**从原子同步重渲 ✓
 
         "warnings": render_warnings,
-    }))
+    });
+    // return_image 是落盘之外的附加内嵌图：用本次导出的像素（已按
+    // width/height/max_edge/lod 缩放过）再按 max_px 缩一份；文件本身不动，
+    // deterministic 模式的文件逐像素性也不受影响。
+    if export_wants_image {
+        let cap = export_explicit_max_px.unwrap_or(RETURN_IMAGE_DEFAULT_MAX_PX);
+        match encode_image_capped(&scaled, target_w, target_h, cap) {
+            Some((capped, capped_w, capped_h, capped_scaled)) => {
+                export_value["image"] = json!({
+                    "mime_type": "image/png",
+                    "data": crate::base64::encode(&capped),
+                    "width": capped_w,
+                    "height": capped_h,
+                });
+                if capped_scaled {
+                    export_value["scaled_from"] = json!([target_w, target_h]);
+                    export_value["scaled_note"] = json!(format!(
+                        "导出图 {}×{} 超过 max_px={}，内嵌图已自动缩小到 {}×{}；落盘文件仍是原尺寸",
+                        target_w, target_h, cap, capped_w, capped_h
+                    ));
+                }
+            }
+            None => {
+                export_value["image_omitted"] = json!(true);
+                export_value["image_omitted_reason"] =
+                    json!("内嵌图的缩放或编码失败，未内嵌 base64；落盘文件不受影响");
+            }
+        }
+    }
+    Ok(export_value)
 }
 
 /// XML 文本转义（`<text>` 内容与属性值共用 ✓）：`& < > " '` 都转义、控制字符

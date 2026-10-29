@@ -510,7 +510,9 @@ pub(super) fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         }));
     }
     let region = parse_bbox(require_object(args, "region")?)?;
-    let include_image = optional_bool(args, "include_image").unwrap_or(false);
+    // return_image 统一语义：与旧 include_image 同义（任一 true 即内嵌）；
+    // max_px 缺省 512、钳制 1..=8192、超限自动缩小（下文既有行为不动）。
+    let include_image = wants_return_image(args);
     // **∴ 有 `layer_id` ⇒ **只渲那一层**✗；**没有 ⇒ **行为完全不变 ✓**。
     // **★ 埋点：渲染本体 ✗ ★**（**第 505 轮 ✓）
     //   **∴ 为什么 ✗**：**第 503 轮的标度实验说「**80% 是与像素成正比的计算**」 ✗
