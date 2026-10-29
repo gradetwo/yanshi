@@ -2,8 +2,9 @@
 //!
 //! **判据** ✓：
 //! ① 淡色笔（分诊的输入：`[0.98, 0.98, 0.98]`、size 30、oil-06-paint）⇒
-//!    实测 `max_channel_delta == 2`、`delta_median == 2`、`delta_p90 == 2`、
-//!    `changed_pixels > 0`（改了的像素全是差 2 ⇒ 分布与最大值一致，证明直方图真的在数数）。
+//!    实测 `max_channel_delta == 2`、`delta_median == 1`、`delta_p90 == 2`、
+//!    `changed_pixels > 0`（中位值 1：D4b 后 oil-06 的 smudge 喂底图，delta 按
+//!    canvas_base 算；其余分位仍为 2，证明直方图真的在数数）。
 //!    注意：分诊报的是 `max == 1`（`painted == 1110`），本输入实测 `max == 2`
 //!   （`painted == 8292`，几何不同：240px 长线 vs 分诊的短笔）；数值的档位（淡色小差）
 //!    一致，断言以本轮实测为准。
@@ -70,7 +71,8 @@ fn setup_layer(workspace: &mut Workspace) {
 }
 
 /// **① 淡色笔 ⇒ `max == 1` 且分布全是 1** ✓（分诊复现的原样输入）。
-/// **① 淡色笔 ⇒ `max == 2` 且分布全是 2** ✓（分诊输入的原样几何；实测值见文件头注）。
+/// **① 淡色笔 ⇒ `max == 2`、`delta_median == 1`、`delta_p90/p99 == 2** ✓
+/// （D4b 后 canvas_base 口径；实测值见文件头注）。
 #[test]
 fn pale_wash_reports_small_uniform_delta() {
     let mut workspace = workspace("pale");
@@ -90,7 +92,9 @@ fn pale_wash_reports_small_uniform_delta() {
         json!(2),
         "淡色笔只得 2（本轮实测）：{made}"
     );
-    assert_eq!(made["delta_median"], json!(2), "{made}");
+    // D4b 后：oil-06 的 smudge（base 0 + stroke 曲线输入）翻为 fed_base=true，
+    // delta 按 canvas_base 算 ⇒ 中位值由 2 落到 1（预期后果，不是回归）。
+    assert_eq!(made["delta_median"], json!(1), "{made}");
     assert_eq!(made["delta_p90"], json!(2), "{made}");
     assert_eq!(made["delta_p99"], json!(2), "{made}");
     let changed = made["changed_pixels"]
