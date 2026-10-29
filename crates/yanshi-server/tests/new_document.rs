@@ -286,3 +286,159 @@ fn missing_dimensions_are_refused_with_an_example() {
         );
     }
 }
+
+/// **第 4 轮第 5 期：`new_document` 回执带 root 标识**（水墨第 2 项）。
+///
+/// **复现原状**：root A 与 root B 对同名文档调 `new_document`，两份回执除 timings 外
+/// 逐项相同且均无 root 字段，驱动方跨会话无法从回执发现走错 root。
+/// **修后**：两份回执在 `root_id` 上不同，其余字段相同；`root_id` 是规范化路径的
+/// SHA-256，原始路径绝不进回执；同 root 二次建文档仍是打开旧文档，行为不变。
+#[test]
+fn root_id_distinguishes_two_roots_and_never_leaks_the_path() {
+    let root_a = temp_dir("root-a");
+    let cleanup_a = Cleanup(root_a.clone());
+    let root_b = temp_dir("root-b");
+    let cleanup_b = Cleanup(root_b.clone());
+    let mut workspace_a = Workspace::with_file_store(root_a.clone(), DocumentSettings::default())
+        .expect("落盘工作区 A");
+    let mut workspace_b = Workspace::with_file_store(root_b.clone(), DocumentSettings::default())
+        .expect("落盘工作区 B");
+
+    let created_a = {
+        let mut ctx = context(&mut workspace_a);
+        registry().call(
+            &mut ctx,
+            "new_document",
+            &json!({ "doc_id": "probe-same", "width": 320, "height": 240 }),
+        )
+    };
+    let created_b = {
+        let mut ctx = context(&mut workspace_b);
+        registry().call(
+            &mut ctx,
+            "new_document",
+            &json!({ "doc_id": "probe-same", "width": 320, "height": 240 }),
+        )
+    };
+    assert_eq!(created_a["ok"], json!(true), "{created_a}");
+    assert_eq!(created_b["ok"], json!(true), "{created_b}");
+    let root_id_a = created_a["root_id"].as_str().expect("A 应带 root_id");
+    let root_id_b = created_b["root_id"].as_str().expect("B 应带 root_id");
+    assert!(
+        root_id_a.starts_with("sha256:") && root_id_a.len() == 7 + 64,
+        "持久化 root 的标识应为 sha256:<64 位十六进制>：{root_id_a}"
+    );
+    assert_ne!(
+        root_id_a, root_id_b,
+        "不同 root 的标识必须可区分：{created_a} / {created_b}"
+    );
+    // **除 root_id 与 timings 外逐项相同**（本期之前这两份回执除 timings 外全同；
+    // 现在只差标识；timings 是调用耗时，本来就逐次不同，不在此比）。
+    for (key, value) in created_a.as_object().expect("回执是对象") {
+        if key == "root_id" || key == "timings" {
+            continue;
+        }
+        assert_eq!(
+            &created_b[key], value,
+            "除 root_id 外两份回执应逐项相同，字段 {key} 不同：{created_a} / {created_b}"
+        );
+    }
+    // **原始路径绝不进回执**（给定的写法与规范化后的写法都不许出现）。
+    for (reply, root) in [(&created_a, &root_a), (&created_b, &root_b)] {
+        let text = format!("{reply}");
+        let raw = root.to_string_lossy().into_owned();
+        assert!(!text.contains(&raw), "回执不得含原始路径 {raw}：{text}");
+        if let Ok(canonical) = std::fs::canonicalize(root) {
+            let canonical = canonical.to_string_lossy().into_owned();
+            assert!(
+                !text.contains(&canonical),
+                "回执不得含规范化路径 {canonical}：{text}"
+            );
+        }
+    }
+    // **同 root 二次建文档仍是打开旧文档**，标识与新建时相同，内容与尺寸都不动。
+    let opened_a = {
+        let mut ctx = context(&mut workspace_a);
+        registry().call(
+            &mut ctx,
+            "new_document",
+            &json!({ "doc_id": "probe-same", "width": 640, "height": 480 }),
+        )
+    };
+    assert_eq!(opened_a["opened"], json!(true), "{opened_a}");
+    assert_eq!(opened_a["created"], json!(false), "{opened_a}");
+    assert_eq!(opened_a["root_id"], json!(root_id_a), "{opened_a}");
+    assert_eq!(
+        (opened_a["width"].as_u64(), opened_a["height"].as_u64()),
+        (Some(320), Some(240)),
+        "打开不许改尺寸：{opened_a}"
+    );
+    // **两文档互不干扰**：只在 B 里画一笔，A 的画布仍是干净的。
+    // 注意：通用 context() 的会话文档是 doc_new，B 里的文档是 probe-same，
+    // 落笔必须用 probe-same 会话，否则会报“文档 doc_new 未打开”。
+    {
+        let mut ctx = ToolContext::new(&mut workspace_b, "probe-same", "human:1", "session:test")
+            .with_owner(true)
+            .with_wait_for_render(true, 4_000);
+        let layer = registry().call(&mut ctx, "create_layer", &json!({ "layer_id": "L" }));
+        assert_eq!(layer["ok"], json!(true), "{layer}");
+    }
+    {
+        let mut ctx = ToolContext::new(&mut workspace_b, "probe-same", "human:1", "session:test")
+            .with_owner(true)
+            .with_wait_for_render(true, 4_000);
+        let drawn = registry().call(
+            &mut ctx,
+            "draw_shape",
+            &json!({"layer_id": "L", "object_id": "s1",
+                    "data": {"geometry": {"kind": "rect", "bbox": {"x": 10, "y": 10, "w": 60, "h": 40}},
+                             "color": {"r": 10, "g": 10, "b": 10, "a": 255}}}),
+        );
+        assert_eq!(drawn["ok"], json!(true), "{drawn}");
+    }
+    let inked = |workspace: &mut Workspace| -> usize {
+        let (_, _, pixels) = workspace
+            .document_mut("probe-same")
+            .unwrap()
+            .render_region_raw(yanshi_core::Bbox::new(0.0, 0.0, 320.0, 240.0))
+            .expect("区域渲染应成功");
+        pixels
+            .chunks_exact(4)
+            .filter(|pixel| {
+                (u32::from(pixel[0]) * 299 + u32::from(pixel[1]) * 587 + u32::from(pixel[2]) * 114)
+                    / 1000
+                    < 200
+            })
+            .count()
+    };
+    assert!(inked(&mut workspace_b) > 100, "B 里画完应当有墨");
+    assert_eq!(inked(&mut workspace_a), 0, "B 的笔不得落到 A 的画布上");
+    drop(workspace_a);
+    drop(workspace_b);
+    drop(cleanup_a);
+    drop(cleanup_b);
+}
+
+/// **内存工作区没有 root**：标识固定为 `in_memory`，新建与打开一致，不伪装成一个路径哈希。
+#[test]
+fn in_memory_workspace_reports_in_memory_root_id() {
+    let mut workspace = workspace();
+    let created = {
+        let mut ctx = context(&mut workspace);
+        registry().call(
+            &mut ctx,
+            "new_document",
+            &json!({ "doc_id": "doc_new", "width": 320, "height": 240 }),
+        )
+    };
+    assert_eq!(created["root_id"], json!("in_memory"), "{created}");
+    let opened = {
+        let mut ctx = context(&mut workspace);
+        registry().call(
+            &mut ctx,
+            "new_document",
+            &json!({ "doc_id": "doc_new", "width": 320, "height": 240 }),
+        )
+    };
+    assert_eq!(opened["root_id"], json!("in_memory"), "{opened}");
+}
