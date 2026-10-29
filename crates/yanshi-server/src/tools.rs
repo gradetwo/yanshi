@@ -15155,6 +15155,12 @@ fn count_painted_and_delta(base: Option<&[u8]>, produced: &[u8]) -> PaintedDelta
 /// 恒等式 `missing_body + missing_derived == missing_total` 与
 /// `referenced == present_and_referenced + missing_total + omitted`；
 /// `complete` 为真 ⇔ `missing_body == 0`（只缺派生 tile ⇒ 完整，可重放）。
+/// 另回 `stroke_count`（包内 live 笔数，与 `get_stroke_log` 的 `total` 同口径：
+/// 配方笔 + 矢量笔触）与 `stroke_reverted_excluded`（匹配为笔触但因最近一次
+/// 动作为 `revert` 而排除的笔数），恒等式
+/// `stroke_count + stroke_reverted_excluded == 全部匹配笔触原子数`；
+/// 无撤销时排除数为 0、此时笔数与原子计数一致，有撤销时两者不同——
+/// `stroke_count` 只数 live 笔。两栏只读，不参与 `complete` 的判定。
 /// `path` 是包文件路径（与 `import_project` 同一路：直接 `fs::read`，
 /// 读不到 ⇒ `reference_not_found`）。
 fn write_verify_package(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
@@ -15190,6 +15196,8 @@ fn write_verify_package(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
         "missing_derived_hashes": report.missing_derived_hashes,
         "omitted_hashes": report.omitted_hashes,
         "warnings": report.warnings,
+        "stroke_count": report.stroke_count,
+        "stroke_reverted_excluded": report.stroke_reverted_excluded,
     }))
 }
 

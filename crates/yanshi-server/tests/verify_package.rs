@@ -468,6 +468,140 @@ fn export_failure_deletes_the_target() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// **导出校验回执附 live 笔数（无撤销）**：`stroke_count` 必须等于
+/// `get_stroke_log` 的 `total`，`stroke_reverted_excluded` 为 0。
+///
+/// 变异：笔数栏恒 0 ⇒ 与 `total` 的相等断言红；把排除数算进 live ⇒
+/// 无撤销时仍过、有撤销那条才红（两条互补）。
+#[test]
+fn verify_package_reports_live_stroke_count_without_revert() {
+    let root = temp_dir("strokecount");
+    let _cleanup = Cleanup(root.clone());
+    let mut workspace = workspace(&root, "doc_sc", 200, 160);
+    assert_eq!(
+        call(
+            &mut workspace,
+            "doc_sc",
+            "create_layer",
+            json!({ "layer_id": "L" })
+        )["ok"],
+        json!(true)
+    );
+    let first = pencil_stroke(
+        &mut workspace,
+        "doc_sc",
+        "p1",
+        &[[20.0, 40.0, 0.5], [100.0, 60.0, 0.6]],
+    );
+    assert_eq!(first["ok"], json!(true), "{first}");
+    let second = pencil_stroke(
+        &mut workspace,
+        "doc_sc",
+        "p2",
+        &[[20.0, 100.0, 0.5], [150.0, 120.0, 0.6]],
+    );
+    assert_eq!(second["ok"], json!(true), "{second}");
+    let log = call(
+        &mut workspace,
+        "doc_sc",
+        "get_stroke_log",
+        json!({ "limit": 500 }),
+    );
+    assert_eq!(log["ok"], json!(true), "{log}");
+    let live = log["total"].as_u64().expect("get_stroke_log 必须回 total");
+    assert!(live >= 2, "两笔落下后 live 笔数至少为 2：{log}");
+    let pack = root.join("strokecount.yanshi");
+    let exported = export_to(&mut workspace, "doc_sc", &pack, false);
+    assert_eq!(exported["ok"], json!(true), "{exported}");
+    let report = verify(&mut workspace, "doc_sc", &pack);
+    assert_eq!(report["ok"], json!(true), "{report}");
+    assert_eq!(
+        report["stroke_count"].as_u64(),
+        Some(live),
+        "无撤销时 stroke_count 必须等于 get_stroke_log total：{report} vs {log}"
+    );
+    assert_eq!(
+        report["stroke_reverted_excluded"],
+        json!(0),
+        "无撤销时排除数必须为 0：{report}"
+    );
+}
+
+/// **导出校验回执附 live 笔数（有撤销）**：撤掉一笔 ⇒ `stroke_count`
+/// 减 1、`stroke_reverted_excluded` 为 1、两栏之和等于撤销前的笔数。
+/// 口径说明：`stroke_count` 只数 live 笔，`stroke_reverted_excluded`
+/// 另计已撤销笔；无撤销时与原子计数一致，有撤销时不同。
+#[test]
+fn verify_package_stroke_count_excludes_reverted_strokes() {
+    let root = temp_dir("strokerevert");
+    let _cleanup = Cleanup(root.clone());
+    let mut workspace = workspace(&root, "doc_sr", 200, 160);
+    assert_eq!(
+        call(
+            &mut workspace,
+            "doc_sr",
+            "create_layer",
+            json!({ "layer_id": "L" })
+        )["ok"],
+        json!(true)
+    );
+    let first = pencil_stroke(
+        &mut workspace,
+        "doc_sr",
+        "p1",
+        &[[20.0, 40.0, 0.5], [100.0, 60.0, 0.6]],
+    );
+    assert_eq!(first["ok"], json!(true), "{first}");
+    let second = pencil_stroke(
+        &mut workspace,
+        "doc_sr",
+        "p2",
+        &[[20.0, 100.0, 0.5], [150.0, 120.0, 0.6]],
+    );
+    assert_eq!(second["ok"], json!(true), "{second}");
+    let log = call(
+        &mut workspace,
+        "doc_sr",
+        "get_stroke_log",
+        json!({ "limit": 500 }),
+    );
+    assert_eq!(log["ok"], json!(true), "{log}");
+    let before = log["total"].as_u64().expect("get_stroke_log 必须回 total");
+    let victim = log["entries"][0]["atom_id"]
+        .as_str()
+        .expect("日志条目必须带 atom_id")
+        .to_owned();
+    let reverted = call(
+        &mut workspace,
+        "doc_sr",
+        "revert_atoms",
+        json!({ "atom_ids": [victim] }),
+    );
+    assert_eq!(reverted["ok"], json!(true), "{reverted}");
+    assert_eq!(reverted["reverted_count"], json!(1), "{reverted}");
+    let pack = root.join("strokerevert.yanshi");
+    let exported = export_to(&mut workspace, "doc_sr", &pack, false);
+    assert_eq!(exported["ok"], json!(true), "{exported}");
+    let report = verify(&mut workspace, "doc_sr", &pack);
+    assert_eq!(report["ok"], json!(true), "{report}");
+    assert_eq!(
+        report["stroke_count"].as_u64(),
+        Some(before - 1),
+        "撤一笔后 live 笔数必须减 1：{report}（撤销前 {before}）"
+    );
+    assert_eq!(
+        report["stroke_reverted_excluded"],
+        json!(1),
+        "撤一笔后排除数必须为 1：{report}"
+    );
+    assert_eq!(
+        report["stroke_count"].as_u64().unwrap()
+            + report["stroke_reverted_excluded"].as_u64().unwrap(),
+        before,
+        "恒等式：stroke_count + stroke_reverted_excluded == 全部匹配笔触原子数：{report}"
+    );
+}
+
 /// **非包 / 缺 `atoms.jsonl` 响亮报错**（不静默、不当成"空包完整"）。
 #[test]
 fn verify_package_rejects_a_non_package() {

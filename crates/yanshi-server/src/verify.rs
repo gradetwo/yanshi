@@ -238,6 +238,95 @@ pub struct PackageReport {
     pub omitted_hashes: Vec<String>,
     /// 人读的判定说明（机读字段在上面；这里只解释，不承载判定）。
     pub warnings: Vec<String>,
+    /// 包内原子日志的 live 笔数（与 `get_stroke_log` 的 `total` 同口径：
+    /// 净荷 `source.kind` 为 `brush`/`medium`/`draw` 的原子，或
+    /// `draw_stroke`/`erase` 且净荷 `data` 为对象的矢量笔触；已撤销的笔不算）。
+    pub stroke_count: usize,
+    /// 匹配为笔触、但因最近一次动作是 `revert` 而被排除的笔数。
+    /// 恒等式：`stroke_count + stroke_reverted_excluded == 全部匹配笔触原子数`；
+    /// 无撤销时 `stroke_reverted_excluded == 0`，此时 `stroke_count` 与
+    /// 原子计数一致；有撤销时两者不同——`stroke_count` 只数 live 笔。
+    pub stroke_reverted_excluded: usize,
+}
+
+/// **一条包内原子是不是 `get_stroke_log` 会数的笔触**（同一判定，不读工作区）。
+///
+/// ① 净荷 `source` 为对象时看 `source.kind`：`brush`/`medium`/`draw` 才算
+/// （笔刷/媒介/矢量笔触的配方都在这里，与原子 `kind` 无关——笔触原子在库里
+/// 也可能以 `import_image` 的 `kind` 落账）；② `source` 不是对象时，只认
+/// `draw_stroke`/`erase` 且净荷 `data` 为对象的矢量笔触（`fill`/`draw_shape`/
+/// `draw_text` 等带 `data` 的非笔触不在此列）。
+fn atom_is_stroke(atom: &Value) -> bool {
+    let payload = atom.get("payload").unwrap_or(&Value::Null);
+    if let Some(source) = payload.get("source").filter(|value| value.is_object()) {
+        return matches!(
+            source.get("kind").and_then(Value::as_str),
+            Some("brush") | Some("medium") | Some("draw")
+        );
+    }
+    if !matches!(
+        atom.get("kind").and_then(Value::as_str),
+        Some("draw_stroke") | Some("erase")
+    ) {
+        return false;
+    }
+    payload.get("data").is_some_and(Value::is_object)
+}
+
+/// **数包内原子日志的 live 笔数**，返回 `(stroke_count, stroke_reverted_excluded)`。
+///
+/// 撤销按**最近一次动作**算（与分诊基线 `get_stroke_log` 同机制）：
+/// 扫一遍 `revert`/`reapply` 原子，记每个 `target` 的最后动作；
+/// 最后动作为 `revert` 的目标笔触排除在 live 之外，`reapply` 回来的重新算 live。
+/// 解析失败的行既不是笔触也不是撤销动作，直接跳过（`unparsable_lines`
+/// 那一栏已经记了它们，不在这里重复计数）。
+pub fn count_live_strokes(atoms_text: &str) -> (usize, usize) {
+    let atoms: Vec<Value> = atoms_text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect();
+    let mut last_action: BTreeMap<String, bool> = BTreeMap::new();
+    for atom in &atoms {
+        if !matches!(
+            atom.get("kind").and_then(Value::as_str),
+            Some("revert") | Some("reapply")
+        ) {
+            continue;
+        }
+        if let Some(target) = atom
+            .get("payload")
+            .and_then(|payload| payload.get("target"))
+            .and_then(Value::as_str)
+        {
+            last_action.insert(
+                target.to_owned(),
+                atom.get("kind").and_then(Value::as_str) == Some("revert"),
+            );
+        }
+    }
+    let reverted: BTreeSet<String> = last_action
+        .iter()
+        .filter(|(_, is_revert)| **is_revert)
+        .map(|(id, _)| id.clone())
+        .collect();
+    let mut stroke_count = 0usize;
+    let mut stroke_reverted_excluded = 0usize;
+    for atom in &atoms {
+        if !atom_is_stroke(atom) {
+            continue;
+        }
+        if atom
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| reverted.contains(id))
+        {
+            stroke_reverted_excluded += 1;
+        } else {
+            stroke_count += 1;
+        }
+    }
+    (stroke_count, stroke_reverted_excluded)
 }
 
 /// **体检一个 `.yanshi` 包的字节**（`verify_package` 的实现本体）。
@@ -362,6 +451,8 @@ pub fn verify_package_bytes(
             "原子日志里有 {unparsable_lines} 行解析失败，它们的引用按本体 fail-safe 计入 missing_body"
         ));
     }
+    // **笔数只读、不参与校验**：只加两个只读计数，不改上面任何一栏的语义与判定。
+    let (stroke_count, stroke_reverted_excluded) = count_live_strokes(&atoms_text);
     Ok(PackageReport {
         referenced: referenced.len(),
         present: present.len(),
@@ -377,6 +468,8 @@ pub fn verify_package_bytes(
         missing_derived_hashes,
         omitted_hashes,
         warnings,
+        stroke_count,
+        stroke_reverted_excluded,
     })
 }
 
@@ -447,5 +540,74 @@ mod tests {
         assert_eq!(info.include_bitmaps, Some(false));
         assert_eq!(info.omitted_declared, Some(2));
         assert!(info.missing_declared.contains(&hash));
+    }
+
+    /// **live 笔数口径**：`brush`/`medium`/`draw` 配方笔 + 矢量 `draw_stroke`
+    /// 都算；`fill`/`draw_shape`/`import_image`（无配方）不算；坏行跳过不算。
+    #[test]
+    fn live_stroke_count_matches_get_stroke_log_matching() {
+        let text = [
+            json!({"id": "s1", "kind": "import_image", "payload": {"source": {"kind": "brush", "brush": "2B_pencil.myb"}}}),
+            json!({"id": "s2", "kind": "draw_stroke", "payload": {"data": {"points": [[0.0, 0.0]]}}}),
+            json!({"id": "s3", "kind": "draw_stroke", "payload": {"source": {"kind": "medium"}}}),
+            json!({"id": "f1", "kind": "fill", "payload": {"data": {"points": [[0.0, 0.0]]}}}),
+            json!({"id": "h1", "kind": "draw_shape", "payload": {"data": {"points": [[0.0, 0.0]]}}}),
+            json!({"id": "i1", "kind": "import_image", "payload": {"bitmap": {"blob_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}),
+            json!({"id": "x1", "kind": "import_image", "payload": {"source": {"kind": "texture"}}}),
+        ]
+        .iter()
+        .map(|value| serde_json::to_string(value).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n")
+            + "\n{not json\n";
+        let (live, excluded) = count_live_strokes(&text);
+        assert_eq!(live, 3, "s1/s2/s3 三笔都该算");
+        assert_eq!(excluded, 0, "无撤销时排除数必须为 0");
+    }
+
+    /// **撤销口径与恒等式**：`revert` 掉一笔 ⇒ live −1、排除 +1、和不变；
+    /// 随后 `reapply` ⇒ 回到 live；`revert` 非笔触原子不影响两栏。
+    #[test]
+    fn live_stroke_count_excludes_reverted_and_reapply_restores() {
+        let base = [
+            json!({"id": "s1", "kind": "import_image", "payload": {"source": {"kind": "brush"}}}),
+            json!({"id": "s2", "kind": "draw_stroke", "payload": {"data": {"points": [[0.0, 0.0]]}}}),
+            json!({"id": "c1", "kind": "create_layer", "payload": {}}),
+        ];
+        let mut lines: Vec<String> = base
+            .iter()
+            .map(|v| serde_json::to_string(v).unwrap())
+            .collect();
+        let (live, excluded) = count_live_strokes(&lines.join("\n"));
+        assert_eq!((live, excluded), (2, 0));
+        lines.push(
+            serde_json::to_string(
+                &json!({"id": "r1", "kind": "revert", "payload": {"target": "s1"}}),
+            )
+            .unwrap(),
+        );
+        let (live, excluded) = count_live_strokes(&lines.join("\n"));
+        assert_eq!((live, excluded), (1, 1), "撤掉 s1 ⇒ live 1、排除 1");
+        assert_eq!(
+            live + excluded,
+            2,
+            "恒等式：live + 排除 == 全部匹配笔触原子数"
+        );
+        lines.push(
+            serde_json::to_string(
+                &json!({"id": "r2", "kind": "revert", "payload": {"target": "c1"}}),
+            )
+            .unwrap(),
+        );
+        let (live, excluded) = count_live_strokes(&lines.join("\n"));
+        assert_eq!((live, excluded), (1, 1), "撤非笔触原子不影响两栏");
+        lines.push(
+            serde_json::to_string(
+                &json!({"id": "r3", "kind": "reapply", "payload": {"target": "s1"}}),
+            )
+            .unwrap(),
+        );
+        let (live, excluded) = count_live_strokes(&lines.join("\n"));
+        assert_eq!((live, excluded), (2, 0), "reapply 后 s1 回到 live");
     }
 }
