@@ -20,6 +20,7 @@
 
 use crate::token::{token_digest, CapabilityToken, Role};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::BufRead;
 use std::io::Write;
@@ -426,14 +427,67 @@ impl FileStore {
         self.doc_dir(doc_id).join(format!("snapshot-{seq_at}.json"))
     }
 
+    /// 快照分片目录：`docs/<doc>/snapshot-shards/`。
+    ///
+    /// 每个分片是一份**单个对象**的序列化字节（`serde_json::to_vec(object)` ✓），
+    /// 文件名即其内容指纹（见 `object_shard_fingerprint` ✓），内容一律不可变 ✓ ——
+    /// 同一指纹的文件已存在就不再写 ✓（这正是增量复用的落点 ✓）。
+    /// 分片目录与 `snapshot-<seq>.json` 同级 ✓，`load_latest_snapshot` 的
+    /// `snapshot-<digits>.json` 匹配会跳过它 ✓（目录名不以 `.json` 结尾 ✓）。
+    fn snapshot_shard_dir(&self, doc_id: &str) -> PathBuf {
+        self.doc_dir(doc_id).join("snapshot-shards")
+    }
+
     /// **★ 把一份快照写到盘上（待办 ① ✓）：幂等 ⇒ 已存在就返回 `false` ★**
     ///
-    /// **语义** ✓：写 `docs/<doc>/snapshot-<seq_at>.json` ✓（`serde_json::to_vec` ✓，
-    /// `Snapshot` 本身就 `derive(Serialize)` ✓）；
+    /// **语义** ✓（与旧实现逐条一致 ✓）：
+    /// 写 `docs/<doc>/snapshot-<seq_at>.json` ✓，读回的字节仍能直接反序列化成
+    /// `yanshi_core::Snapshot` 且 `verify()` 通过 ✓（旧判据 `open_readout.rs` 的
+    /// 「文件存在＋读回 id 一致＋CRC 通过＋坏文件当没有」四条一律不动 ✓）；
     /// **幂等** ✓：同一 `seq_at` 的文件已存在 ⇒ **不重写**、直接 `Ok(false)` ✓；
     /// 真写了 ⇒ `Ok(true)` ✓（返回 `bool` 是给调用处记账／打日志用的 ✓）。
     /// **失败怎么办** ✓：**由调用处决定** ✗ —— 落盘失败**不该让提交失败** ✓
     /// （快照只是**加速**用的 ✓）⇒ 调用处记 stderr ＋ 继续 ✓。
+    ///
+    /// **★ 反馈 3 期 C：快照增量／分片（只削触发点暂停尖峰，不改单笔成本斜率 ✓）★**
+    ///
+    /// 旧实现每次触发都 `serde_json::to_vec(整个 Snapshot)` ✓ —— 状态本体
+    /// 61.6KB／笔 × 几千笔时，触发点一次要序列化＋写盘几百 MB ✓，这就是
+    /// 「快照触发点暂停尖峰」✓（分诊 §0 第 5 条已定性：它**不是**每笔 O(N) 成本 ✓，
+    /// 快照决策三门已把它摊薄到每 1000 原子／30 秒闲置／重原子才触发一次 ✓）。
+    /// 本期只动这一层 ✓：触发时**不再全量序列化** ✓，改成：
+    ///
+    /// * **分片** ✓：`state.objects` 按对象切分 ✓，每个对象先算内容指纹
+    ///   （`object_shard_fingerprint`：全字段遍历哈希，**只走内存、不分配**
+    ///   JSON 字符串 ✓），指纹已在 `snapshot-shards/` 里 ⇒ **跳过该对象的
+    ///   序列化与写盘** ✓，直接复用分片字节拼进快照文件 ✓；
+    ///   只有新增／改动过的对象才序列化一次并落一个新分片 ✓。
+    /// * **增量** ✓：两次触发之间未动过的对象 ⇒ 零序列化、零分片写盘 ✓；
+    ///   分片按内容寻址、跨快照共享 ✓ ⇒ 磁盘总量反而比「每快照一份全量文件」
+    ///   的旧方案小 ✓（旧方案每份快照都存全量对象，新方案每个对象版本只存一次 ✓）。
+    /// * **兼容** ✓：拼出来的 `snapshot-<seq>.json` 仍是完整快照 JSON ✓，
+    ///   字段名与旧实现一致 ✓，旧文件照读 ✓；`load_latest_snapshot` **不动** ✓
+    ///   （仍读 `snapshot-<seq>.json` 并验 CRC ✓ —— 坏文件当没有的语义不动 ✓）。
+    ///
+    /// **诚实边界** ✓（本期**不**承诺的 ✓）：
+    /// * 单笔成本斜率**不动** ✓：斜率来自每笔 fold＋raster（期 A／B 的域 ✓），
+    ///   本期只削触发点那一次的序列化量 ✓；
+    /// * `snapshot-<seq>.json` 本身仍是全量写盘 ✓（旧判据要求它存在且可读回 ✓，
+    ///   全量文件写不掉 ✓）—— 省掉的是**序列化 CPU**与**分片写盘量** ✓，
+    ///   文件写本身走页缓存、相对序列化是小头 ✓；
+    /// * 除 `objects` 外的状态字段（图层／选区／蒙版等小表 ✓）仍逐触发序列化 ✓
+    ///   —— 它们体量远小于对象表 ✓，且下文的字段表与 `DocumentState` 保持同步 ✓；
+    /// * 冷启动（分片目录为空，如换进程重开后第一次触发 ✓）仍需全量序列化一次 ✓，
+    ///   之后才进入增量态 ✓；
+    /// * 分片是**缓存**不是权威 ✓：权威永远是 `atoms.jsonl` ✓；分片损坏 ⇒
+    ///   拼出的快照 CRC 校验失败 ⇒ `load_latest_snapshot` 当没有 ⇒
+    ///   调用处回退全量重放 ✓（**绝不静默画错** ✓，只损失一次加速 ✓）。
+    ///
+    /// **字段表同步警告** ✓：`state` 除 `objects` 外的字段是逐字段手写拼装的 ✓
+    /// （为避开 `serde_json::to_value(整个 state)` 那次全量克隆 ✓）⇒
+    /// `DocumentState` 加字段时必须同步这里 ✓，否则新字段在快照里丢失 ⇒
+    /// 读回 CRC 失败 ⇒ 回退全量重放（**安全降级**，不是静默错 ✓，但会丢加速 ✓）——
+    /// 本期测试 `snapshot_round_trip_keeps_state_equal` 就是钉住这条的 ✓。
     pub fn save_snapshot(&self, doc_id: &str, snapshot: &yanshi_core::Snapshot) -> Result<bool> {
         let dir = self.doc_dir(doc_id);
         fs::create_dir_all(&dir).map_err(|error| io_error(&dir, error))?;
@@ -441,13 +495,13 @@ impl FileStore {
         if path.exists() {
             return Ok(false); // **幂等** ✓：同一 `seq_at` 只写一次 ✓
         }
-        let bytes = serde_json::to_vec(snapshot).map_err(|error| {
-            YanshiError::new(
-                ErrorCode::InvalidArgument,
-                ErrorContext::detail(format!("快照序列化失败: {error}")),
-            )
-        })?;
-        fs::write(&path, bytes).map_err(|error| io_error(&path, error))?;
+        let shard_dir = self.snapshot_shard_dir(doc_id);
+        fs::create_dir_all(&shard_dir).map_err(|error| io_error(&shard_dir, error))?;
+        let bytes = assemble_snapshot_bytes(&shard_dir, snapshot)?;
+        // 先写临时文件再改名 ✓（与其它落盘一致 ✓）：中途失败不留半个快照 ✓。
+        let temporary = path.with_extension("json.tmp");
+        fs::write(&temporary, &bytes).map_err(|error| io_error(&temporary, error))?;
+        fs::rename(&temporary, &path).map_err(|error| io_error(&path, error))?;
         Ok(true)
     }
 
@@ -810,6 +864,301 @@ impl FileStore {
         ids.sort();
         Ok(ids)
     }
+}
+
+/// 往已拼装的 JSON 对象里追加一个字段（`first` 管逗号 ✓；字段名是
+/// 写死的 ASCII 标识 ⇒ 直接加引号，不走转义 ✓）。
+fn push_json_field(out: &mut Vec<u8>, first: &mut bool, name: &str, value_bytes: &[u8]) {
+    if !*first {
+        out.push(b',');
+    }
+    *first = false;
+    out.push(b'"');
+    out.extend_from_slice(name.as_bytes());
+    out.push(b'"');
+    out.push(b':');
+    out.extend_from_slice(value_bytes);
+}
+
+/// 把一份快照拼成 `snapshot-<seq>.json` 的字节（反馈 3 期 C ✓）。
+///
+/// `state.objects` 之外逐字段序列化（小表 ✓）；对象表按分片复用 ✓：
+/// 每个对象先算内容指纹 ⇒ 分片已存在就直接读分片字节拼入 ⇒
+/// 只有新增／改动过的对象才走一次 `serde_json::to_vec` 并落新分片 ✓。
+/// 拼出的字节与旧实现 `serde_json::to_vec(snapshot)` **语义等价** ✓
+/// （字段名／skip 规则与 `DocumentState`／`Snapshot` 的 derive 一致 ✓），
+/// 反序列化回来的 `Snapshot` 与原快照相等且 `verify()` 通过 ✓
+/// （本期测试 `snapshot_round_trip_keeps_state_equal` 钉住 ✓）。
+fn assemble_snapshot_bytes(shard_dir: &Path, snapshot: &yanshi_core::Snapshot) -> Result<Vec<u8>> {
+    let to_json = |value: &impl serde::Serialize| {
+        serde_json::to_vec(value).map_err(|error| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("快照序列化失败: {error}")),
+            )
+        })
+    };
+    let state = &snapshot.state;
+    let mut state_bytes = Vec::new();
+    state_bytes.push(b'{');
+    let mut first = true;
+    if let Some(doc_id) = &state.doc_id {
+        push_json_field(&mut state_bytes, &mut first, "doc_id", &to_json(doc_id)?);
+    }
+    push_json_field(
+        &mut state_bytes,
+        &mut first,
+        "width",
+        &to_json(&state.width)?,
+    );
+    push_json_field(
+        &mut state_bytes,
+        &mut first,
+        "height",
+        &to_json(&state.height)?,
+    );
+    push_json_field(
+        &mut state_bytes,
+        &mut first,
+        "color_space",
+        &to_json(&state.color_space)?,
+    );
+    push_json_field(
+        &mut state_bytes,
+        &mut first,
+        "background",
+        &to_json(&state.background)?,
+    );
+    if !state.anchors.is_empty() {
+        push_json_field(
+            &mut state_bytes,
+            &mut first,
+            "anchors",
+            &to_json(&state.anchors)?,
+        );
+    }
+    if let Some(medium) = &state.medium {
+        push_json_field(&mut state_bytes, &mut first, "medium", &to_json(medium)?);
+    }
+    if let Some(style) = &state.style {
+        push_json_field(&mut state_bytes, &mut first, "style", &to_json(style)?);
+    }
+    if !state.layers.is_empty() {
+        push_json_field(
+            &mut state_bytes,
+            &mut first,
+            "layers",
+            &to_json(&state.layers)?,
+        );
+    }
+    if !state.objects.is_empty() {
+        let mut objects_bytes = Vec::new();
+        objects_bytes.push(b'{');
+        for (index, (id, object)) in state.objects.iter().enumerate() {
+            if index > 0 {
+                objects_bytes.push(b',');
+            }
+            objects_bytes.extend_from_slice(&to_json(id)?);
+            objects_bytes.push(b':');
+            let fingerprint = object_shard_fingerprint(object);
+            let shard_path = shard_dir.join(format!("{fingerprint}.json"));
+            if !shard_path.exists() {
+                // 只有新对象／改动过的对象才到这里 ✓：序列化一次并落分片 ✓
+                // （先写临时文件再改名 ✓，崩溃不留半个分片 ✓）。
+                let bytes = to_json(object)?;
+                let temporary = shard_path.with_extension("json.tmp");
+                fs::write(&temporary, &bytes).map_err(|error| io_error(&temporary, error))?;
+                fs::rename(&temporary, &shard_path)
+                    .map_err(|error| io_error(&shard_path, error))?;
+            }
+            let shard_bytes =
+                fs::read(&shard_path).map_err(|error| io_error(&shard_path, error))?;
+            objects_bytes.extend_from_slice(&shard_bytes);
+        }
+        objects_bytes.push(b'}');
+        push_json_field(&mut state_bytes, &mut first, "objects", &objects_bytes);
+    }
+    if !state.selections.is_empty() {
+        push_json_field(
+            &mut state_bytes,
+            &mut first,
+            "selections",
+            &to_json(&state.selections)?,
+        );
+    }
+    if !state.masks.is_empty() {
+        push_json_field(
+            &mut state_bytes,
+            &mut first,
+            "masks",
+            &to_json(&state.masks)?,
+        );
+    }
+    if !state.styles.is_empty() {
+        push_json_field(
+            &mut state_bytes,
+            &mut first,
+            "styles",
+            &to_json(&state.styles)?,
+        );
+    }
+    if !state.checkpoints.is_empty() {
+        push_json_field(
+            &mut state_bytes,
+            &mut first,
+            "checkpoints",
+            &to_json(&state.checkpoints)?,
+        );
+    }
+    push_json_field(
+        &mut state_bytes,
+        &mut first,
+        "head_seq",
+        &to_json(&state.head_seq)?,
+    );
+    if let Some(head_atom) = &state.head_atom {
+        push_json_field(
+            &mut state_bytes,
+            &mut first,
+            "head_atom",
+            &to_json(head_atom)?,
+        );
+    }
+    if let Some(declare_head) = &state.declare_head {
+        push_json_field(
+            &mut state_bytes,
+            &mut first,
+            "declare_head",
+            &to_json(declare_head)?,
+        );
+    }
+    state_bytes.push(b'}');
+
+    let mut out = Vec::new();
+    out.extend_from_slice(b"{\"id\":");
+    out.extend_from_slice(&to_json(&snapshot.id)?);
+    out.extend_from_slice(b",\"base_ref\":");
+    out.extend_from_slice(&to_json(&snapshot.base_ref)?);
+    out.extend_from_slice(b",\"seq_at\":");
+    out.extend_from_slice(snapshot.seq_at.to_string().as_bytes());
+    out.extend_from_slice(b",\"state\":");
+    out.extend_from_slice(&state_bytes);
+    out.extend_from_slice(b",\"manifest\":");
+    out.extend_from_slice(&to_json(&snapshot.manifest)?);
+    out.extend_from_slice(b",\"crc\":");
+    out.extend_from_slice(&to_json(&snapshot.crc)?);
+    out.push(b'}');
+    Ok(out)
+}
+
+/// 给 `serde_json::Value` 做带类型标签的哈希（指纹遍历用 ✓）。
+///
+/// 标签＋长度前缀 ⇒ `1` 与 `"1"`、`[1, 2]` 与 `"12"` 不会撞到同一哈希 ✓；
+/// `serde_json::Map` 在本仓是不保序的 `BTreeMap` ⇒ 键按字典序遍历 ✓，确定性 ✓。
+/// （同一对象值在不同进程里若 Map 顺序不同 ⇒ 指纹不同 ⇒ 只损失一次复用 ✓，
+/// 绝不会复用错字节 ✓ —— 指纹是缓存键，不是身份证明 ✓。）
+fn fingerprint_value(hasher: &mut Sha256, value: &serde_json::Value) {
+    use serde_json::Value;
+    match value {
+        Value::Null => hasher.update(&[0]),
+        Value::Bool(flag) => {
+            hasher.update(&[1]);
+            hasher.update(&[u8::from(*flag)]);
+        }
+        Value::Number(number) => {
+            if let Some(int) = number.as_i64() {
+                hasher.update(&[2]);
+                hasher.update(&int.to_le_bytes());
+            } else if let Some(uint) = number.as_u64() {
+                hasher.update(&[3]);
+                hasher.update(&uint.to_le_bytes());
+            } else if let Some(float) = number.as_f64() {
+                hasher.update(&[4]);
+                hasher.update(&float.to_bits().to_le_bytes());
+            }
+        }
+        Value::String(text) => fingerprint_str(hasher, 5, text),
+        Value::Array(items) => {
+            hasher.update(&[6]);
+            hasher.update(&(items.len() as u64).to_le_bytes());
+            for item in items {
+                fingerprint_value(hasher, item);
+            }
+        }
+        Value::Object(map) => {
+            hasher.update(&[7]);
+            hasher.update(&(map.len() as u64).to_le_bytes());
+            for (key, item) in map {
+                fingerprint_str(hasher, 8, key);
+                fingerprint_value(hasher, item);
+            }
+        }
+    }
+}
+
+/// 带标签＋长度前缀的字符串哈希（防 `"ab"+"c"` 与 `"a"+"bc"` 撞 ✓）。
+fn fingerprint_str(hasher: &mut Sha256, tag: u8, text: &str) {
+    hasher.update(&[tag]);
+    hasher.update(&(text.len() as u64).to_le_bytes());
+    hasher.update(text.as_bytes());
+}
+
+/// 带标签的 `Option<String>` 哈希（`None` 与 `Some("")` 必须区分 ✓）。
+fn fingerprint_opt_str(hasher: &mut Sha256, tag: u8, value: &Option<String>) {
+    match value {
+        None => hasher.update(&[0]),
+        Some(text) => fingerprint_str(hasher, tag, text),
+    }
+}
+
+/// **单个对象的全部字段**内容指纹（SHA-256 十六进制 ✓，反馈 3 期 C ✓）。
+///
+/// 覆盖 `Object` 的**每一个**字段 ✓ —— 包括 `versions`／`current_version`／
+/// `deleted_by`（版本链 ✓）与 `data`／`metadata`（`Value` 全遍历 ✓）：
+/// 只看版本链**不够** ✓（`apply_property_to_object` 改可见性／锁定／元数据时
+/// 不推版本 ✓），只看 `data` 也不够 ✓（图层／z 序／变换改动不走 `data` ✓）。
+/// 指纹是**缓存键** ✓：撞上（SHA-256 下可忽略 ✓）或分片损坏时，
+/// 拼出的快照过不了 `Snapshot::verify` ⇒ 加载回退全量重放 ✓，
+/// 权威 `atoms.jsonl` 不受影响 ✓（绝不静默画错 ✓）。
+fn object_shard_fingerprint(object: &yanshi_core::Object) -> String {
+    let mut hasher = Sha256::new();
+    fingerprint_str(&mut hasher, b'i', &object.id);
+    hasher.update(&object.seq.to_le_bytes());
+    fingerprint_str(&mut hasher, b'l', &object.layer_id);
+    if let Ok(text) = serde_json::to_string(&object.object_type) {
+        fingerprint_str(&mut hasher, b't', &text);
+    }
+    hasher.update(&object.z_index.to_le_bytes());
+    hasher.update(&[
+        u8::from(object.visible),
+        u8::from(object.enabled),
+        u8::from(object.locked),
+    ]);
+    fingerprint_value(&mut hasher, &object.metadata);
+    if let Ok(bytes) = serde_json::to_vec(&object.transform) {
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
+    }
+    fingerprint_opt_str(&mut hasher, b's', &object.style);
+    hasher.update(&(object.versions.len() as u64).to_le_bytes());
+    for version in &object.versions {
+        fingerprint_str(&mut hasher, b'v', version);
+    }
+    fingerprint_opt_str(&mut hasher, b'c', &object.current_version);
+    fingerprint_str(&mut hasher, b'r', &object.created_by);
+    fingerprint_opt_str(&mut hasher, b'd', &object.deleted_by);
+    fingerprint_value(&mut hasher, &object.data);
+    hasher.update(&(object.blobs.len() as u64).to_le_bytes());
+    for blob in &object.blobs {
+        fingerprint_str(&mut hasher, b'b', blob.as_str());
+    }
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
 }
 
 fn io_error(path: &Path, error: std::io::Error) -> YanshiError {
@@ -1202,6 +1551,217 @@ mod tests {
         child.kill().unwrap();
         let _ = child.wait();
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 反馈 3 期 C 的测试脚手架：一份含两个对象的真实折叠日志。
+    fn shard_test_log() -> yanshi_core::AtomLog {
+        use yanshi_core::{AtomKind, AtomLog};
+        let mut log = AtomLog::new();
+        {
+            let mut push =
+                |log: &mut AtomLog, kind: AtomKind, id: &str, payload: serde_json::Value| {
+                    log.append(
+                        yanshi_core::Atom::new(kind, "human:1", "session:a", payload).with_id(id),
+                    )
+                    .unwrap();
+                };
+            push(
+                &mut log,
+                AtomKind::CreateDocument,
+                "a_doc",
+                json!({"doc_id": "doc_1", "width": 32, "height": 32}),
+            );
+            push(
+                &mut log,
+                AtomKind::CreateLayer,
+                "a_layer",
+                json!({"layer_id": "layer_1"}),
+            );
+            push(
+                &mut log,
+                AtomKind::CreateObject,
+                "a_obj1",
+                json!({"object_id": "obj_1", "layer_id": "layer_1", "type": "stroke"}),
+            );
+            push(
+                &mut log,
+                AtomKind::CreateObject,
+                "a_obj2",
+                json!({"object_id": "obj_2", "layer_id": "layer_1", "type": "stroke"}),
+            );
+        }
+        log
+    }
+
+    fn shard_test_snapshot(log: &yanshi_core::AtomLog, seq: Seq) -> yanshi_core::Snapshot {
+        let mut cache = yanshi_core::StateAtCache::new();
+        yanshi_core::Snapshot::create(
+            log,
+            seq,
+            yanshi_core::SnapshotBase::DeclareHead("root".into()),
+            &mut cache,
+        )
+        .unwrap()
+    }
+
+    fn shard_files(store: &FileStore, doc: &str) -> std::collections::BTreeMap<String, Vec<u8>> {
+        let dir = store.snapshot_shard_dir(doc);
+        let mut map = std::collections::BTreeMap::new();
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.ends_with(".json") {
+                    map.insert(name, fs::read(entry.path()).unwrap());
+                }
+            }
+        }
+        map
+    }
+
+    /// **期 C 收官：拼出的快照文件与旧全量格式语义等价** ✓。
+    ///
+    /// 变异：把拼装里的对象表换成空表 ⇒ `back.state != snapshot.state` 红 ✓；
+    /// 把 `crc` 写错 ⇒ `back.verify()` 红 ✓；把 `seq_at` 写错 ⇒ 旧判据的
+    /// 文件名／读回口径红 ✓（三条各钉一处 ✓）。
+    #[test]
+    fn snapshot_round_trip_keeps_state_equal() {
+        let root = temp_root("snap-shard-rt");
+        let store = FileStore::open(&root).unwrap();
+        let log = shard_test_log();
+        let snapshot = shard_test_snapshot(&log, log.head_seq());
+        assert!(store.save_snapshot("doc_1", &snapshot).unwrap());
+        let path = root
+            .join("docs")
+            .join("doc_1")
+            .join(format!("snapshot-{}.json", snapshot.seq_at));
+        assert!(path.exists(), "快照文件必须落盘");
+        let bytes = fs::read(&path).unwrap();
+        let back: yanshi_core::Snapshot = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(back.id, snapshot.id, "读回来的 id 必须一致");
+        assert!(back.verify(), "读回来的快照必须通过 CRC 校验");
+        assert_eq!(
+            back, snapshot,
+            "拼装的快照必须与原快照完全相等（字段丢失会在这里红）"
+        );
+        let loaded = store.load_latest_snapshot("doc_1").unwrap();
+        assert_eq!(loaded.id, snapshot.id, "加载路径必须读到同一份快照");
+        assert!(
+            !store.save_snapshot("doc_1", &snapshot).unwrap(),
+            "幂等仍成立"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// **期 C 本体：未动过的对象不产生新分片，改动过的对象只增一个新分片** ✓。
+    ///
+    /// 变异：改回旧全量序列化（不写分片）⇒ 分片数为 0，第一条断言红 ✓；
+    /// 指纹漏字段（如不含 `data`）⇒ 第二份快照复用旧分片 ⇒ 分片数不变、
+    /// 读回状态不等 ⇒ 第二组断言红 ✓（两条各钉一处 ✓）。
+    #[test]
+    fn snapshot_reuses_shards_for_unchanged_objects_only() {
+        let root = temp_root("snap-shard-incr");
+        let store = FileStore::open(&root).unwrap();
+        let mut log = shard_test_log();
+        let first = shard_test_snapshot(&log, log.head_seq());
+        assert!(store.save_snapshot("doc_1", &first).unwrap());
+        let before = shard_files(&store, "doc_1");
+        assert_eq!(
+            before.len(),
+            2,
+            "两个对象 ⇒ 两个分片，实测：{:?}",
+            before.keys()
+        );
+
+        // 只改动 obj_2（一次 supersede ⇒ 只有它的对象值变 ✓）。
+        log.append(
+            yanshi_core::Atom::new(
+                yanshi_core::AtomKind::Supersede,
+                "human:1",
+                "session:a",
+                json!({"object_id": "obj_2", "data": {"v": 7}}),
+            )
+            .with_id("a_super_2"),
+        )
+        .unwrap();
+        let second = shard_test_snapshot(&log, log.head_seq());
+        assert_ne!(second.seq_at, first.seq_at, "第二份快照的 seq 必须不同");
+        assert!(store.save_snapshot("doc_1", &second).unwrap());
+        let after = shard_files(&store, "doc_1");
+        assert_eq!(
+            after.len(),
+            3,
+            "未动对象复用＋改动对象新增 ⇒ 分片数 2→3，实测：{:?}",
+            after.keys()
+        );
+        for (name, bytes) in &before {
+            assert_eq!(
+                after.get(name),
+                Some(bytes),
+                "旧分片 {name} 必须原样保留（未动对象不重写）"
+            );
+        }
+        let back = store.load_latest_snapshot("doc_1").unwrap();
+        assert_eq!(back.id, second.id, "最新快照必须是第二份");
+        assert_eq!(back, second, "第二份快照读回必须与原快照相等");
+        assert!(back.verify());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// **期 C 指纹：对象任一字段变 ⇒ 指纹必变** ✓（否则会复用错分片 ✓）。
+    ///
+    /// 逐字段变异：`visible`（不推版本的属性改动 ✓）、`data`、`metadata`、
+    /// `z_index`、`layer_id` 各改一次 ⇒ 指纹每次都必须变 ✓；
+    /// 原对象克隆 ⇒ 指纹不变 ✓（否则每次触发都全量重写 ✓）。
+    #[test]
+    fn object_shard_fingerprint_covers_every_field() {
+        let base: yanshi_core::Object = serde_json::from_value(json!({
+            "id": "obj_1",
+            "layer_id": "layer_1",
+            "type": "stroke",
+            "created_by": "a_obj1",
+        }))
+        .unwrap();
+        let fingerprint = object_shard_fingerprint(&base);
+        assert_eq!(
+            object_shard_fingerprint(&base.clone()),
+            fingerprint,
+            "同一对象值 ⇒ 同一指纹（否则复用失效）"
+        );
+        let mut changed = base.clone();
+        changed.visible = false;
+        assert_ne!(
+            object_shard_fingerprint(&changed),
+            fingerprint,
+            "visible 改动必须换指纹（属性改动不推版本，单看版本链会漏）"
+        );
+        let mut changed = base.clone();
+        changed.data = json!({"v": 1});
+        assert_ne!(
+            object_shard_fingerprint(&changed),
+            fingerprint,
+            "data 改动必须换指纹"
+        );
+        let mut changed = base.clone();
+        changed.metadata = json!({"tag": "x"});
+        assert_ne!(
+            object_shard_fingerprint(&changed),
+            fingerprint,
+            "metadata 改动必须换指纹"
+        );
+        let mut changed = base.clone();
+        changed.z_index = 5;
+        assert_ne!(
+            object_shard_fingerprint(&changed),
+            fingerprint,
+            "z_index 改动必须换指纹"
+        );
+        let mut changed = base.clone();
+        changed.layer_id = "layer_2".to_owned();
+        assert_ne!(
+            object_shard_fingerprint(&changed),
+            fingerprint,
+            "layer_id 改动必须换指纹"
+        );
     }
 }
 
