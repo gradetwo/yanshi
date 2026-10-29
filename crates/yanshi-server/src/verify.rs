@@ -31,6 +31,26 @@
 //! ② `include_bitmaps: false` 且引用它的每一条净荷都带可重放笔刷配方
 //! ⇒ `omitted`；③ 其余 ⇒ `missing_body`。老包没有这两行时 ①② 不适用，
 //! 一律按 ③（保守：宁可报缺，不可放过）。
+//!
+//! **可重建缺失的分流口径**（第 4 轮第 3 期口径簇，`omitted` 即「可重建缺失」）：
+//! ② 的「可重放笔刷配方」必须同时含来源 —— 引用净荷的
+//! `payload.source.kind == "brush"` **且** `payload.origin == "drawn"`
+//! （调用方 `write_verify_package` 的回调里 gate；老日志无 `origin` 时按
+//! `source` 带笔刷名派生为 `drawn`，与 `origin_of` 首条一致）。
+//! **包络 kind 名永远不作判定依据**：笔触原子以光栅对象形式存储，包络 kind
+//! 就是 `import_image`（`atoms.jsonl` 与 `list_atoms` 皆然），而 `get_stroke_log`
+//! 的 kind 是语义名 `brush` —— 两层各说各的；反作弊与核包一律按
+//! `payload.source.kind + origin` 判定。照片类（`import_image` 工具导入的用户
+//! 照片，无生成参数）本体缺失无法重建 ⇒ 那种 `missing_body` 是**真实丢失**，
+//! `complete` 为假；只有 `brush + drawn` 的笔触本体缺失才记可重建缺失，
+//! 不单独判不合格。
+//!
+//! **计数口径**：`missing_body` / `missing_derived` / `omitted` 计的都是
+//! **去重后的本体 blob 哈希数**，不是笔数（多笔共享同一哈希只计 1 ——
+//! 240 笔笔触只对应 17 个哈希；派生 tile 另计，不混进本体栏）。
+//! **存储侧 ≠ 包内口径**：导出回执的 `missing_body` 是存储侧口径（成功导出时
+//! 恒为 0，因为本体缺会直接让导出失败）；包自含性只能用本工具的包内口径判，
+//! 不能拿导出回执的 `missing_body == 0` 当「包齐了」。
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -447,5 +467,112 @@ mod tests {
         assert_eq!(info.include_bitmaps, Some(false));
         assert_eq!(info.omitted_declared, Some(2));
         assert!(info.missing_declared.contains(&hash));
+    }
+
+    /// **第 4 轮第 3 期口径簇的回调口径**（与 `write_verify_package` 的回调同款，
+    /// 减去「笔刷不读画布」那条工作区判定 —— 本模块不碰工作区）：
+    /// `source.kind == "brush"` 且 `origin == "drawn"`（无 `origin` 时按
+    /// `source` 带笔刷名派生为 `drawn`）⇒ 可重建；其余 ⇒ 真缺。
+    fn r3_replayable(payload: &Value) -> bool {
+        let origin_drawn = match payload.get("origin").and_then(Value::as_str) {
+            Some(origin) => origin == "drawn",
+            None => payload
+                .get("source")
+                .and_then(|source| source.get("brush"))
+                .and_then(Value::as_str)
+                .is_some(),
+        };
+        origin_drawn
+            && payload
+                .get("source")
+                .and_then(|source| source.get("kind"))
+                .and_then(Value::as_str)
+                == Some("brush")
+    }
+
+    /// **包络 kind 不作判定依据 + 去重计数**：3 笔笔触共享同一本体哈希、
+    /// 包络 kind 全是 `import_image`、缺省包（`include_bitmaps: false`）⇒
+    /// `omitted == 1`（不是 3 笔），`missing_body == 0`，`complete` 为真。
+    fn brush_atom(hash: &str, origin: Option<&str>) -> Value {
+        let mut payload = json!({
+            "source": {"kind": "brush", "brush": "2B_pencil.myb", "points": [[0, 0, 0.5]]},
+            "bitmap": {"blob_hash": format!("sha256:{hash}"), "size": 10, "mime_type": "image/x-yanshi-raw"},
+        });
+        if let Some(origin) = origin {
+            payload["origin"] = json!(origin);
+        }
+        json!({"kind": "import_image", "payload": payload})
+    }
+
+    fn pack(atoms: &[Value], build_info: &str) -> Vec<u8> {
+        let lines: Vec<String> = atoms
+            .iter()
+            .map(|atom| serde_json::to_string(atom).unwrap())
+            .collect();
+        crate::archive::write_tar(&[
+            crate::archive::TarEntry {
+                path: "atoms.jsonl".to_owned(),
+                bytes: lines.join("\n").into_bytes(),
+            },
+            crate::archive::TarEntry {
+                path: "BUILD-INFO".to_owned(),
+                bytes: build_info.as_bytes().to_vec(),
+            },
+        ])
+    }
+
+    #[test]
+    fn shared_brush_hash_counts_once_as_omitted() {
+        let hash = "a".repeat(64);
+        let atoms = vec![
+            brush_atom(&hash, Some("drawn")),
+            brush_atom(&hash, Some("drawn")),
+            brush_atom(&hash, Some("drawn")),
+        ];
+        let report =
+            verify_package_bytes(&pack(&atoms, "include_bitmaps: false\n"), &r3_replayable)
+                .expect("包应当验得出来");
+        assert_eq!(report.omitted, 1, "3 笔共享 1 哈希 ⇒ omitted 计 1，不是 3：{report:?}");
+        assert_eq!(report.missing_body, 0, "{report:?}");
+        assert!(report.complete, "{report:?}");
+        assert_eq!(report.omitted_hashes, vec![hash], "{report:?}");
+    }
+
+    /// **origin 门**：同一哈希被 3 笔引用，其中 1 笔 `origin == "imported"` ⇒
+    /// 该哈希不再是「每条引用都可重放」⇒ `missing_body == 1`，`complete` 为假。
+    #[test]
+    fn imported_origin_blocks_omitted() {
+        let hash = "b".repeat(64);
+        let atoms = vec![
+            brush_atom(&hash, Some("drawn")),
+            brush_atom(&hash, Some("drawn")),
+            brush_atom(&hash, Some("imported")),
+        ];
+        let report =
+            verify_package_bytes(&pack(&atoms, "include_bitmaps: false\n"), &r3_replayable)
+                .expect("包应当验得出来");
+        assert_eq!(report.missing_body, 1, "{report:?}");
+        assert_eq!(report.omitted, 0, "{report:?}");
+        assert!(!report.complete, "{report:?}");
+    }
+
+    /// **照片真缺**：`import_image` 工具导入的用户照片（无 `source`、无生成参数、
+    /// `origin == "imported"`）本体缺失 ⇒ `missing_body`，不是 `omitted`。
+    #[test]
+    fn photo_body_loss_is_missing_not_omitted() {
+        let hash = "c".repeat(64);
+        let atom = json!({
+            "kind": "import_image",
+            "payload": {
+                "origin": "imported",
+                "bitmap": {"blob_hash": format!("sha256:{hash}"), "size": 10, "mime_type": "image/x-yanshi-raw"},
+            },
+        });
+        let report =
+            verify_package_bytes(&pack(&[atom], "include_bitmaps: false\n"), &r3_replayable)
+                .expect("包应当验得出来");
+        assert_eq!(report.missing_body, 1, "{report:?}");
+        assert_eq!(report.omitted, 0, "{report:?}");
+        assert!(!report.complete, "{report:?}");
     }
 }

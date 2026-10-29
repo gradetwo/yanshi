@@ -15155,6 +15155,12 @@ fn count_painted_and_delta(base: Option<&[u8]>, produced: &[u8]) -> PaintedDelta
 /// 恒等式 `missing_body + missing_derived == missing_total` 与
 /// `referenced == present_and_referenced + missing_total + omitted`；
 /// `complete` 为真 ⇔ `missing_body == 0`（只缺派生 tile ⇒ 完整，可重放）。
+/// **可重建缺失（`omitted`）的判定**：引用它的每一条净荷都满足
+/// `source.kind == "brush"` 且 `origin == "drawn"`（老日志无 `origin` 时按
+/// `source` 带笔刷名派生为 `drawn`）且笔刷不读画布 —— **不看包络 kind 名**
+/// （笔触包络 kind 就是 `import_image`，与照片导入同名）；
+/// 照片类无生成参数的本体缺失 ⇒ 真缺失 ⇒ `complete` 为假。
+/// 各栏计的都是**去重后的本体 blob 哈希数**，不是笔数（多笔共享同一哈希只计 1）。
 /// `path` 是包文件路径（与 `import_project` 同一路：直接 `fs::read`，
 /// 读不到 ⇒ `reference_not_found`）。
 fn write_verify_package(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
@@ -15165,13 +15171,30 @@ fn write_verify_package(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
             ErrorContext::detail(format!("读不到工程包 {path}：{error}")),
         )
     })?;
-    // **`omitted` 判定要真配方**（`verify` 模块只认回调，不碰工作区）：
-    // 引用净荷的 `source` 是笔刷配方且笔刷不读画布 ⇒ 可重放 ⇒ 省掉不算缺。
+    // **`omitted` 判定要真配方 + 真来源**（`verify` 模块只认回调，不碰工作区）：
+    // 引用净荷同时满足两条才算可重建缺失（`omitted`，不进 `missing_body`）：
+    // ① `source` 是笔刷配方且笔刷不读画布（`brush_source_is_replayable`）；
+    // ② `origin == "drawn"` —— **按 `payload.source.kind + origin` 判定，不按包络 kind 名**
+    // （笔触原子的包络 kind 就是 `import_image`，与照片导入同名；只看包络名会把
+    // 全部画笔误判为导入图，也会把照片误判为笔触；第 4 轮第 3 期口径簇）。
+    // 老日志没有 `origin` 字段时按 `origin_of` 的首条派生：`source` 带笔刷名 ⇒ `drawn`
+    // （提交收口点自第 659 轮起写 `payload.origin`，老原子读时派生兜底）。
+    // 照片类（`source.kind != "brush"` 或 `origin != "drawn"`，无生成参数）本体缺失
+    // ⇒ 真缺失 ⇒ `missing_body`，`complete` 为假 —— 那是真实丢失，不是可重放省略。
     let workspace = &*ctx.workspace;
     let report = crate::verify::verify_package_bytes(&bytes, &|payload| {
-        payload
-            .get("source")
-            .is_some_and(|source| brush_source_is_replayable(workspace, source))
+        let origin_drawn = match payload.get("origin").and_then(Value::as_str) {
+            Some(origin) => origin == "drawn",
+            None => payload
+                .get("source")
+                .and_then(|source| source.get("brush"))
+                .and_then(Value::as_str)
+                .is_some(),
+        };
+        origin_drawn
+            && payload
+                .get("source")
+                .is_some_and(|source| brush_source_is_replayable(workspace, source))
     })?;
     Ok(json!({
         "ok": true,

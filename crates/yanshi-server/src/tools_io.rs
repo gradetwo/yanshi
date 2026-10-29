@@ -282,8 +282,22 @@ pub(super) fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> R
         "missing": stats.missing,
         // **B2 的两栏** ✓：本体缺（`missing_body`）与派生缺（`missing_derived`）分开数 ✓；
         // 成功回执里 `missing_body` 恒为 0 ✓（`> 0` 时上面已直接失败 ✓）。
+        // **⚠ 这是存储侧口径，不是包内口径**（第 4 轮第 3 期口径簇）：成功回执的
+        // `missing_body == 0` 只说「存储里不缺」，**不能**用来判包自含性 —— 缺省包
+        // （`include_bitmaps: false`）省掉的可重放位图在 `omitted` 里，不在缺失里。
+        // 判包自含性请用 `verify_package`（`complete` 为真 ⇔ import 可重放）。
         "missing_body": stats.missing_body,
         "missing_derived": stats.missing_derived,
+        // **包内自含性**（第 4 轮第 3 期口径簇）：为真 ⇔ 全部被引用的本体位图都
+        // 装进了包（逐字节自含）；为假 ⇔ 包依赖导入重放（`omitted > 0` 的位图只在
+        // import 时从日志重跑出来）—— 不是数据丢失，但**不走 import 重放、直接读
+        // 包内 `blobs/` 的消费方仍会见缺失**。派生 tile 缺失不影响这一项（tile 由
+        // 本体重建，`verify_package` 里 `complete` 为真仍可重放）。
+        "package_self_contained": stats.omitted == 0,
+        // **口径说明**（机读字段在上面；这里只解释，不承载判定）：
+        // `omitted` / `missing_body` / `missing_derived` 计的都是去重后的 blob 哈希数，
+        // 不是笔数（多笔共享同一哈希只计 1）；缺省包不是数据丢失。
+        "caliber_note": "missing_body 是存储侧口径（成功导出时恒为 0），不能用它判包自含性；判包请用 verify_package（complete 为真 ⇔ import 可重放）。omitted/missing_body/missing_derived 计去重后的 blob 哈希数，不是笔数；omitted > 0 的缺省包依赖导入重放，直接读包内 blobs/ 的消费方仍见缺失。",
         // **B 期项 7/8（出口侧口径）**：`missing_derived` 只数存储里缺失的
         // 派生索引；按设计未装包的派生总数另报，不与丢失混在一栏。
         "missing_derived_note": "存储里缺失的派生索引数；按设计未装包的派生（tile 索引由本体位图重建，导出时不装包）另见 derived_not_packaged，不计入本栏",

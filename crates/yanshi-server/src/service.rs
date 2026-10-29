@@ -3619,7 +3619,7 @@ impl Workspace {
                  blob_encoding: {PACKAGE_BLOB_ENCODING}\n\
                  blob_bytes_plain: {plain_bytes}\nblob_bytes_packed: {packed_bytes}\n\
                  unparsable_atom_lines: {broken_lines}\n\
-                 restore: 把本包解开到 <root>/ 之下即可（atoms.jsonl 是唯一权威，渲染可重放）\n"
+                 restore: 把本包解开到 <root>/ 之下即可（atoms.jsonl 是唯一权威，仅 import 重放可恢复省掉的位图，直接读 blob 的消费方仍见缺失）\n"
             )
             .into_bytes(),
         });
@@ -3633,6 +3633,12 @@ Contents:\n  atoms.jsonl      append-only atom log; this is the authority\n\
 Not every blob is here: a patch whose brush recipe provably replays byte-exact is omitted\n\
 (BUILD-INFO blobs_omitted_replayable). Importing replays those from the log; blobs whose\n\
 pixels cannot be proven reproducible (canvas-reading brushes, media strokes) are always kept.\n\
+Boundary (default packages are NOT byte-self-contained): only the import path restores\n\
+an omitted bitmap. A consumer that unpacks blobs/ directly without import replay still\n\
+sees the omitted bitmaps as missing. Judge a package with verify_package (complete=true\n\
+means import-replayable); do not judge self-containment from the export receipt's\n\
+missing_body, which is a storage-side count (0 on every successful export). Counts in\n\
+omitted/missing_body/missing_derived are deduplicated blob hashes, not stroke counts.\n\
 Restore under <root>/ of a yanshi-serve instance (the doc lives under docs/<doc_id>/):\n\
   mkdir -p <root>/docs/<doc_id>\n\
   mv atoms.jsonl meta.json <root>/docs/<doc_id>/\n\
