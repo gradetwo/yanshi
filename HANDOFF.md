@@ -1855,3 +1855,50 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    run」的观察**归纳**出一条**规则** ✗（之前每次都夹了代码）。保证仍在：`475ad39f` 相对 `8d81624e`
    **产品代码树零变化**，run 40742785951 验的就是同一棵树 ✓。watcher 对「没出现 run」`exit(3)`
    ＋打印现场＝正确形态（前提不成立 ≠ 静默假绿 ✓）。
+
+## §109 三包合并留痕（paint-fix-r2-A ＋ r2-C ＋ batch8，基线 `26e0edcb`，2026-10-29）
+
+① **三包与接缝**：`~/patch/{paint-fix-r2-A-batch-watermark后续包.zip 88c23911…、
+   paint-fix-r2-C-relief-luminance后续包.zip c84dc191…、
+   yanshi-patch-batch8-173efe81_to_8cbab98a.patch 6c0b6178…}`（本轮 md5 已录）。
+   三包 `git apply --check` 对 HEAD 逐字节验缝 ✓；包内 `verify/重放验证.txt` A／C 均 VERIFY PASS ✓。
+   应用顺序 A→C→batch8：三方**文件面互不重叠**（A＝tools{,_tests}.rs＋新集成测试；
+   C＝filter/lib/tools_effect/tools_registry；batch8＝api-local.js 两份拷贝＋docs＋两新脚本）⇒ 顺序无关 ✓。
+
+② **内容一句话**：**A 期**——batch 水位改 `YANSHI_BATCH_RSS_LIMIT_MB` 可覆盖（缺省 4096＝旧硬编码，
+   行为不变 ✓；解析失败／0 ⇒ 回退缺省，不编一个会立刻触发的上限 ✓），触发与正常回执都加
+   `memory_limits`（`batch_rss_limit_mb`＋`doc_memory_budget_mb` 两个天花板同时报——把「batch 水位」与
+   「开文档预算」拆开，前者管落笔、后者管开文档；与 §102 P8 成本墙呼应：**期 8 X-1 缓解的是重开预算，
+   与此处水位无关** ✓）。**C 期（项 12）**——relief 加 `height_source: alpha|luminance`：缺省 alpha
+   与旧行为**逐位一致**（测试锁死），luminance 高度取 RGB 亮度 ⇒ 全不透明层从零效果变可见梯度效果
+   （旧「零效果」根因原样保留为对照组 ✓）；非法值**两层都不静默**（工具层 InvalidArgument、
+   内核层未识别）。项 13／B 期**不在本包**，不记账。**batch8**——PWA 本地内核工具表改由
+   `scripts/gen-pwa-tool-specs.mjs` 从服务端 `/api/tools`＋registry **生成**（单一来源 ✓，`--check`＝新判据 §表）；
+   `accept_suggestion(s)` 本地走四步校验／预检零写入／失败逐原子回滚；新判据
+   `tool-pwa-suggestion-accept.mjs` 175 条断言；**一处真产品修复**：`list_layers`／`p2cState` 的层存活过滤
+   `(!has || alive)` ⇒ `has && alive`（未知层不再「缺省即活」——内核 3「静默降级」第 4 形态同族 ✓）。
+
+③ **本机复验**（合并例外口径）：relief 4/4（height_source）＋旧 relief 7/7 ✓／tools_effect 8/8 ✓／
+   水位单测 1/1＋batch_watermark 5/5＋batch_watermark_env 1/1＋batch_limits 3/3＋doc_budget 6/6 ✓／
+   **tool-pwa 族 16/16**（含 175/175）✓／静态六条（parity／stamp／sw-roles／byte-budget 930,815≤931,000／
+   i18n-coverage／density）✓；`fmt --check` 干净、`node --check` 4/4。**workspace clippy --all-targets
+   -D warnings PASS**（合并后树上跑过；此后所有变异均恢复后 `cmp` 逐字节一致 ⇒ 结论仍成立）。
+   **workspace 全量 test 本机没跑**（free 2.6Gi＜3Gi 门槛）⇒ 交 CI `test (stable)/(beta)`，这是它唯一验处。
+
+④ **变异重判四条**（粒度＝断言；每条红后恢复、cmp＋复验绿）：M-① alive 过滤翻回旧式 ⇒ **§G 红** ✓；
+   M-② 改一行 P2_TOOL_SPECS（`analyze_region` mutating 0→1）⇒ **§表 红**（gen --check 退 1）✓——
+   副产品发现：**§表 读 `web/api-local.js` 磁盘文件，行为页跑的是二进制内嵌的 assets 拷贝**，
+   两份拷贝互相漂移由 `tool-web-assets-parity` 兜住 ⇒ 该面是**双判据覆盖**，记档；
+   M-③ RSS 缺省 4096→8192 ⇒ 单测与集成**双双红**、回执 `memory_limits` 如实印 8192 ✓；
+   M-④ 内核把非法 height_source 静默回落 ⇒ **恰那一条** invalid 断言红、其余 3 条绿 ✓。
+
+⑤ **测量侧两课**（「这个意外结果是我造的吗」）：a) 第一次 tool-pwa 扫描 15 条全 ✗——**日志目录没建，
+   zsh 重定向失败**，判据一条都没跑 ⇒ ✗ 是 shell 的不是产品的；见全红先读输出再归因（916 轮自检 ③）✓。
+   b) 变异恢复源文件 ⇒ mtime 变新 ⇒ runner 对 wasm 产物陈旧 `exit(3)` 拒跑（**正确形态** ✓）；
+   恢复要走 wasm32→wasm-bindgen→pwa-sync-wasm→pwa-sync-viewer 全链，且 **pwa-sync-viewer 必须用
+   恢复后的二进制重跑**——漏了这一步的那一轮，导出页里仍带变异 JS ⇒ §G 恒红，重导后 175/175 绿
+   （第 956 轮新鲜度纪律对**产物链**同样成立，第三种表现）。
+
+⑥ **落地与后效**：合并提交与本账同推 ⇒ 新 run 对新 HEAD 收账；**workspace test 将在 CI 首验** ⇒
+   若红先读 `error` 按包归因（三包文件面不重叠，归因成本低）。`web/assets-index.json` 无关漂移
+   再次 `checkout` 还原（与 §104/§105 同规；H-1 去重仍挂 #30 待裁定）。
