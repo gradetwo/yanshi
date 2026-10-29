@@ -80,26 +80,33 @@ for (const size of [8, 20, 40]) {
   check(code === null, `落墨时不该有 error_code`, "error_code=" + code);
 }
 
-// **不变式（仍要守）**：真正落不下 dab 的情形（两点太短、笔尖太大 ✓）
-//   ⇒ 必须给**非空 error_code** ＋ 说得出原因 ✓（这条**从来没有**被反转 ✓）。
+// **不变式（仍要守）**：真正落不下 dab 的情形 ⇒ 必须给**非空 error_code** ＋ 说得出原因 ✓
+//   （这条**从来没有**被反转 ✓，但“真正落不下”的样本换了：
+//   **反馈期 1（3.6a）之后，“两点太短、笔尖太大”不再是落不下的情形** ✓
+//   —— 短路径兜底落一枚 dab、照常成功（本判据旧版在这里断言 ok=false，
+//   且旧版“本机不落、CI 落”的环境差异也随兜底落地而消失 ⇒ exit 3 的那套随之退役）。
+//   ⇒ 新样本：**有效 opacity 为 0**（color.a=0，P-19）⇒ 透明笔本来就不会落墨，
+//   必须响亮拒绝（不许静默成功 ✓），且理由必须说清是 opacity 问题。
 {
   const r = await call("brush_stroke", stroke("short", [[300, 300, 1], [305, 305, 1]], 400));
+  const warnText = (r.warnings || []).join(" ");
+  console.log(`  两点 5px ＋ size 400 ⇒ ok=${r.ok}｜painted=${r.painted_pixels}｜提示：${warnText.slice(0, 80)}`);
+  check(r.ok === true, "短路径现在应当兜底成功（反馈期 1：不再因撑不满间距而拒绝 ✓）", "ok=" + r.ok);
+  check(Number(r.painted_pixels || 0) > 0, "短路径兜底后必须真的落墨 ✓", "painted=" + r.painted_pixels);
+  check(/dab 间距/.test(warnText), "短路径回执必须带兜底提示（说清 dab 间距 ✓）", warnText.slice(0, 120));
+}
+{
+  const r = await call("brush_stroke", {
+    layer_id: "L1", object_id: "transparent", brush: "100%_Opaque", size: 40,
+    color: { r: 0, g: 0, b: 0, a: 0 }, preview: false,
+    points: [[300, 300, 1], [400, 300, 1]],
+  });
   const code = r.error_code || r.error || null;
   const text = JSON.stringify(r.context || r);
-  console.log(`  两点 5px ＋ size 400 ⇒ ok=${r.ok}｜error_code=${code}`);
-  // **场景本身可能不成立** ⇒ `exit 3`，不是判据红 ✓（第 878 轮；CI 实测就是这么红的 ✓）
-  //   **⇒ 为什么**：这个场景要求「两点 5px ＋ size 400 **一个 dab 都落不下**」✓
-  //     而它在不同 runner 上**不一样**：本机 `ok=false` ✓ ／ **CI `ok=true`**（落了墨 ✓）
-  //     ⇒ 当它是失败 ⇒ 同一条判据在 CI 上**永远红** ✗ 而产品没问题 ✓
-  //     ⇒ 本仓标准形态：前提不成立 ⇒ **`exit 3`（不可判）** ✓（与 `tool-zero-dab-hint` 同一处理 ✓）
-  if (r.ok !== false) {
-    console.log("  ⊘ 前提不成立：`size=400` ＋ 5px 路径**在这台机器上落了墨** ⇒ 「落不下 dab」场景测不了");
-    console.log("  ⊘ 判据不可判 ⇒ exit 3");
-    process.exit(3);
-  }
-  check(r.ok === false, "落不下 dab 的情形必须仍然报错（不许静默成功 ✓）", "ok=" + r.ok);
+  console.log(`  color.a=0 ⇒ ok=${r.ok}｜error_code=${code}`);
+  check(r.ok === false, "有效 opacity 为 0 时必须仍然报错（不许静默成功 ✓）", "ok=" + r.ok);
   check(code !== null && String(code).length > 0, "报错必须带非空 error_code ✓", "error_code=" + code);
-  check(/个点|路径总长/.test(text), "报错必须说清**真实根因**（点数／路径总长 ✓）", text.slice(0, 120));
+  check(/opacity/.test(text), "报错必须说清**真实根因**（opacity 为 0 ✓）", text.slice(0, 120));
 }
 
 // —— ② 两点必须照常画出（防"一律拒绝"✗）——
@@ -115,5 +122,5 @@ if (failures.length) {
   for (const f of failures) console.error("   - " + f);
   process.exit(1);
 }
-console.log("结论：✓ 单点被响亮拒绝、两点照常画出（语义边界判据，与像素数/耗时无关）");
+console.log("结论：✓ 单点自动展开落墨、短路径兜底落墨、真落不下（opacity 0）时响亮报错、两点照常画出（语义边界判据，与像素数/耗时无关）");
 process.exit(0);

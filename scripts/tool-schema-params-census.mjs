@@ -80,6 +80,10 @@ const ALLOWLIST = {
     //   （`ink_mass` / `max_channel_delta` 是 `brush_stroke` 回执本来的字段 ✓；
     //    `paint_delta` 是 `medium_stroke` 回执的同义字段 ✓；此前都没进过文案）。
     "stroke_evidence", "ink_mass", "max_channel_delta", "paint_delta",
+    // **P3（paint-r4-p3）**：`get_stroke_log` 的回执字段 ✓（`tools.rs` 的
+    //   `read_get_stroke_log` 回 `"entries"` 当页数组与 `"total"` live 笔数；
+    //   同回执的 `next_offset`/`truncated` 已在本组 ✓；它俩不是任何工具的参数名 ✓）。
+    "total", "entries",
   ]),
   value: new Set([
     "auto", "flat", "hex", "linear", "srgb", "srgb_bytes", "dual",
@@ -111,6 +115,10 @@ const ALLOWLIST = {
   internal: new Set([
     "feed_base", "cp", "YANSHI_EXPORT_DIR", "canvas", "open", "close",
     "supersede",
+    // **反馈期 3（P3）**：`describe_canvas` 文案里的单笔光栅缓存上限环境变量 ✓
+    //   （`vector.rs` 的 `VECTOR_RASTER_CACHE_ENV_VAR` 常量、文档打开时的缺省来源；
+    //   internal 类明文覆盖“环境变量”，先例是 `YANSHI_EXPORT_DIR` ✓）。
+    "YANSHI_VECTOR_RASTER_CACHE_MB",
   ]),
 };
 const allowClassOf = (name) => {

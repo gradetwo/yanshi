@@ -73,6 +73,8 @@ Knobs: `YANSHI_VERSION=v0.2.1` (default `latest`), `YANSHI_PREFIX`, `YANSHI_BIN_
 git clone https://github.com/gradetwo/yanshi.git && cd yanshi
 make dev        # build the WASM kernel if the toolchain is present, build the server, start it
                 # ⇒ open http://127.0.0.1:8110/  (the page obtains its capability token)
+
+注：若用 zip 下载源码而非 git clone，解包可能丢可执行位；直接跑 `scripts/*.sh` 前请先 `chmod +x scripts/*.sh`。`make` 目标已改用 `bash` 显式调用脚本，不受此影响。
 ```
 
 Data lives in `~/.local/share/yanshi/workspace` by default. To change the port or the data root, set
