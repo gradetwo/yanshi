@@ -88,9 +88,11 @@ export // **★ 声明必须与**实现分支数**一致 ✗ ★**（第 72 轮 
 //   **第 9 批 路径节点编辑 ✓ —— `edit_path` 落地 ⇒ 再 +1 ✓**）：
 //   **∴ 判据口径 `actualImpl`（**机械重数：`(?:url\.pathname|path) === "`**）⇒ 本数与它同步 ✓（非拍脑袋 ✗）**
 //   **∴ 数它用：`node -e 'const a=require("fs").readFileSync("web/api-local.js","utf8");console.log(((a.match(/(?:url\.pathname|path) === "/g)||[]).length))'` ✓**
-const LOCAL_IMPLEMENTED = 181; // `describe_canvas` 落地 ⇒ 机械重数 180 + 1 ✓
+const LOCAL_IMPLEMENTED = 182; // `describe_canvas` 落地 ⇒ 机械重数 180 + 1 ✓
 //   **★ 同轮 `delete_mask` 由"如实 501"改成真实现（**不新增分支 ✓**）；
 //     `create_mask` 补上重复 409 守卫 ✓**（**与 `create_selection` 的 mode 门不同：蒙版不论 mode 都拒 ✗**）**
+//   **★ 第 六百七十六 轮 `create_range_mask` 落地 ⇒ 新增 1 个分支 ✓ ⇒ 机械重数 182 ✓**
+//     （**∴ 数它，不要信这一行 ✗**：**判据读的是 `web/api-local.js`** ✓）
 
 let lastFold = null;
 
@@ -424,6 +426,156 @@ export async function encodePngRgba(w, h, rgba) {
   let o = 0;
   for (const p of parts) { out.set(p, o); o += p.length; }
   return out;
+}
+/** **★ 灰度 L8 ⇒ PNG（`create_range_mask` 的烘焙网格 ✓）★**
+ *  （**逐字照 `yanshi-render/src/png.rs:549 encode_png_l8` ✓**：`IHDR(8bit / color_type=0)`
+ *   ＋ 逐行 filter=0 ＋ `IDAT` ＋ `IEND` ✓，**没有** `tRNS`／`gAMA` ✓）。
+ *  **∴ 为什么不能复用上面那个 RGBA 编码器 ✗**：遮罩 patch 的回放方
+ *   `CompiledMask::build`（`selection.rs:1140+`）用 `decode_png_l8` 解字节 ⇒
+ *   **color_type 不是 0 就解不出来** ✗，而**解不出来／尺寸不符的 patch 被静默跳过** ✓
+ *   ⇒ 症状是「回执 `coverage_matched_pixels=8192` ✓ 遮罩却全空 ✓」= 静默降级形态 3。
+ *   **∴ 所以**：**字节必须服务端同形 ✗**（判据 §C 断「本地 blob 解出来的网格 == 服务端解出来的网格」✓）。 */
+export async function encodePngL8(w, h, gray) {
+  const px = gray instanceof Uint8Array ? gray : Uint8Array.from(gray);
+  if (px.length !== w * h) throw new Error("像素字节数与宽高不符");
+  const raw = new Uint8Array((w + 1) * h);
+  for (let y = 0; y < h; y++) {
+    raw[y * (w + 1)] = 0; // **逐行 filter=0（None）✓**
+    raw.set(px.subarray(y * w, (y + 1) * w), y * (w + 1) + 1);
+  }
+  const idat = await __deflate(raw);
+  const concat2 = (a, b) => { const o = new Uint8Array(a.length + b.length); o.set(a, 0); o.set(b, a.length); return o; };
+  const chunk = (type, data) => {
+    const td = new TextEncoder().encode(type);
+    const out = new Uint8Array(12 + data.length);
+    const dv = new DataView(out.buffer);
+    dv.setUint32(0, data.length);
+    out.set(td, 4); out.set(data, 8);
+    dv.setUint32(8 + data.length, __crc32(concat2(td, data)));
+    return out;
+  };
+  const ihdr = new Uint8Array(13);
+  const dv = new DataView(ihdr.buffer);
+  dv.setUint32(0, w); dv.setUint32(4, h);
+  ihdr[8] = 8; ihdr[9] = 0; // **8bit ＋ grayscale（color_type=0）✓**（`png.rs:134 ihdr(.., 0)` ✓）
+  const sig = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  const parts = [sig, chunk("IHDR", ihdr), chunk("IDAT", idat), chunk("IEND", new Uint8Array(0))];
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+
+/** **★ f32 逐位口径的公共件 ✓ ★**（**第 六百七十六 轮 ✓**：`create_range_mask` 的烘焙管线）。
+ *  **∴ 为什么每一步都要 `Math.fround` ✗**：服务端整个烘焙是 **f32** ✓（`tools_mask.rs:722-832`）
+ *   而 JS 的 `number` 是 f64 ⇒ **少收一次窄 ⇒ 带边像素的格值可以差 1 ✗**
+ *   （实测 `low:0.5 high:1.0 smoothness:0.05` 时白像素 coverage=`0.4999993` ⇒ 格值 **127** ✓
+ *    ＋ 回执 `baked.smoothness` 打印成 **0.05000000074505806** ✓ —— 那是 f32 拓宽成 f64 ✓）。
+ *  **∴ `Math.fround(a / b)` ⇔ f32 除法 ✓**：IEEE 正确舍入 ⇒ 先 f64 除再收窄与直接 f32 除逐位相同 ✓。 */
+const p2Fr = Math.fround;
+/** Rust `x.rem_euclid(y)`（f32 ✓）：截断余数为负时加 `|y|` ✓。 */
+function p2RemEuclid(x, y) {
+  const r = p2Fr(x % y);
+  return r < 0 ? p2Fr(r + p2Fr(Math.abs(y))) : r;
+}
+/** **`t*t*(3-2t)` 且先钳到 `[0,1]` ✓**（**`tools_mask.rs:722 smoothstep01` ✓**）。 */
+function p2Smoothstep01(t) {
+  const x = Math.min(1, Math.max(0, t));
+  return p2Fr(p2Fr(x * x) * p2Fr(3 - p2Fr(2 * x)));
+}
+/** **显示空间明度（Rec709 加权）✓**（**`tools_mask.rs:728 srgb_luma` ✓**）：
+ *  左结合 `((m1 + m2) + m3) / 255` ✓ ⇒ **结合次序改了末位就不同 ✗**。 */
+function p2SrgbLuma(r, g, b) {
+  const m1 = p2Fr(p2Fr(0.2126) * r);
+  const m2 = p2Fr(p2Fr(0.7152) * g);
+  const m3 = p2Fr(p2Fr(0.0722) * b);
+  return p2Fr(p2Fr(p2Fr(m1 + m2) + m3) / 255);
+}
+/** **明度窗 ✓**（**`tools_mask.rs:735 luminance_window` ✓**）：`smoothness` 先钳到
+ *  `(high-low)/2` ⇒ **窄带留平顶** ✓（钳错 ⇒ 峰值到不了 1 ✓）；`s<=0` 退化成硬窗 ✓。 */
+function p2LuminanceWindow(luma, low, high, smoothness) {
+  const s = Math.min(Math.max(smoothness, 0), p2Fr(p2Fr(high - low) / 2));
+  if (s <= 0) return luma >= low && luma <= high ? 1 : 0;
+  const up = p2Smoothstep01(p2Fr(p2Fr(luma - p2Fr(low - s)) / p2Fr(2 * s)));
+  const down = p2Fr(1 - p2Smoothstep01(p2Fr(p2Fr(luma - p2Fr(high - s)) / p2Fr(2 * s))));
+  return Math.min(1, Math.max(0, p2Fr(up * down)));
+}
+/** **像素色相（度）＋ HSV 饱和度 ✓**（**`tools_mask.rs:751 rgb_hue_sat` ✓**）：
+ *  无彩色（`delta<=0`）⇒ `(0, 0)` ✓（色相无定义 ⇒ 由饱和度门限滤掉 ✓）；
+ *  分支判据是 `(max - r).abs() < f32::EPSILON` ✓ ⇒ **不是** `==` ✗（抄成 `===` 时
+ *  三个分支的归属会变 ⇒ 判据 §D 的色相带覆盖率会跟着变 ✓）。 */
+function p2RgbHueSat(r, g, b) {
+  const rr = p2Fr(r / 255), gg = p2Fr(g / 255), bb = p2Fr(b / 255);
+  const max = Math.max(rr, Math.max(gg, bb));
+  const min = Math.min(rr, Math.min(gg, bb));
+  const delta = p2Fr(max - min);
+  const sat = max <= 0 ? 0 : p2Fr(delta / max);
+  if (delta <= 0) return [0, 0];
+  const EPS = 1.1920928955078125e-7; // f32::EPSILON ✓
+  let hue;
+  if (Math.abs(p2Fr(max - rr)) < EPS) {
+    hue = p2Fr(60 * p2RemEuclid(p2Fr(p2Fr(gg - bb) / delta), 6));
+  } else if (Math.abs(p2Fr(max - gg)) < EPS) {
+    hue = p2Fr(60 * p2Fr(p2Fr(p2Fr(bb - rr) / delta) + 2));
+  } else {
+    hue = p2Fr(60 * p2Fr(p2Fr(p2Fr(rr - gg) / delta) + 4));
+  }
+  return [p2RemEuclid(hue, 360), sat];
+}
+/** **色相窗 ✓**（**`tools_mask.rs:777 hue_window` ✓**）：环形距离 ＋ 软边比例；
+ *  **`sat < 0.1` 恒 0** ✓（近灰像素没有稳定色相 ⇒ 不参与色相选 ✓）。 */
+function p2HueWindow(hue, sat, center, width, smoothness) {
+  if (sat < p2Fr(0.1)) return 0;
+  let d = Math.abs(p2Fr(hue - center));
+  if (d > 180) d = p2Fr(360 - d);
+  const half = p2Fr(width / 2);
+  const inner = p2Fr(half * p2Fr(1 - Math.min(1, Math.max(0, smoothness))));
+  if (d <= inner) return 1;
+  if (d >= half) return 0;
+  return p2Fr(1 - p2Smoothstep01(p2Fr(p2Fr(d - inner) / p2Fr(half - inner))));
+}
+/** **Rust `f32::round` 的「逢半远离零」✓**（**不是** JS `Math.round` 的「逢半向 +∞」✗）。
+ *  `x` 是 f32 值 ⇒ `|x| - |trunc(x)|` 在 f64 里算**精确** ✓，与 0.5 的比较不会漂 ✓。 */
+function p2RoundHalfAway(x) {
+  const t = Math.trunc(x);
+  return Math.abs(x) - Math.abs(t) >= 0.5 ? t + (x < 0 ? -1 : 1) : t;
+}
+/** **RGBA8 ⇒ L8 覆盖网格 ✓**（**`tools_mask.rs:800 bake_range_grid` ✓**）：
+ *  **`alpha==0` 的像素恒 0 ✓ 且反选也不复活它** ✗（`invert` 在 `a==0` 的 `continue` **之后** ✓）；
+ *  `range` 形如 `{kind:"luminance", low, high, smoothness}` 或
+ *  `{kind:"color", hue, width, smoothness}`（**值已是 f32 ✓** ⇒ 由调用方 `Math.fround` 过）。 */
+function p2BakeRangeGrid(rgba, width, height, range, invert) {
+  const grid = new Uint8Array(width * height);
+  for (let index = 0; index < width * height; index++) {
+    const p = index * 4;
+    const a = rgba[p + 3];
+    if (a === 0) continue;
+    let coverage;
+    if (range.kind === "color") {
+      const [h, s] = p2RgbHueSat(rgba[p], rgba[p + 1], rgba[p + 2]);
+      coverage = p2HueWindow(h, s, range.hue, range.width, range.smoothness);
+    } else {
+      coverage = p2LuminanceWindow(p2SrgbLuma(rgba[p], rgba[p + 1], rgba[p + 2]),
+                                   range.low, range.high, range.smoothness);
+    }
+    const value = invert ? p2Fr(1 - coverage) : coverage;
+    grid[index] = Math.min(255, Math.max(0, p2RoundHalfAway(p2Fr(value * 255))));
+  }
+  return grid;
+}
+/** **Rust `{f32}`（最短往返十进制）✓**：逐个精度试到「能原样回到同一个 f32」为止 ✓。
+ *  **∴ 与回执数字的口径是两件事 ✗**：`baked` 里的 f32 是**拓宽成 f64 打印** ✓
+ *  （`0.05f32` ⇒ `0.05000000074505806` ✓ ⇒ 那边用 `Math.fround` 就够 ✓）；
+ *  **而错误文案里的是 `Display`** ✓ ⇒ `0.8` 打 `"0.8"` ✗ 不是 `"0.800000011920929"` ✗
+ *  （实测 R07：「low 必须 ≤ high，得到 low=0.8、high=0.2」✓）。
+ *  **∴ 位置记法与 `-0` 的口径复用 `p2RustNum` ✓**（**同一事实只写一处 ✓**）。 */
+function p2F32Text(x) {
+  const f = p2Fr(x);
+  for (let p = 1; p <= 17; p++) {
+    const s = f.toPrecision(p);
+    if (p2Fr(Number(s)) === f) return p2RustNum(Number(s));
+  }
+  return p2RustNum(f);
 }
 /** **工具规格表 ✗**（**服务端「工具 → 参数」的本地镜像 ✓**）：
  *   **∴ 由 `scripts/gen-pwa-tool-specs.mjs` 生成 ✓** —— **∴ 手抄必漂移**✗
@@ -2767,14 +2919,21 @@ async function withKernel(doc, fn) {
       if (a.kind === "create_document") {
         // **新文档自带默认层 ✓**（`fold.rs:1004` ⇒ 与 `p1LayerOrder` 同一事实 ✓）。
         if (!seen.has("layer_default")) {
-          seen.set("layer_default", { created_id: a.id, tombstones: [], parent: null });
+          seen.set("layer_default", { created_id: a.id, tombstones: [], parent: null,
+                                      name: "图层 1" });
         }
       } else if (a.kind === "create_layer") {
         const id = (typeof pl.layer_id === "string" && pl.layer_id) ||
                    (typeof a.layer_id === "string" && a.layer_id) || null;
         if (id && !seen.has(id)) {
           seen.set(id, { created_id: a.id, tombstones: [],
-                         parent: typeof pl.parent_id === "string" && pl.parent_id ? pl.parent_id : null });
+                         parent: typeof pl.parent_id === "string" && pl.parent_id ? pl.parent_id : null,
+                         // **层名照 `p1LayerOrder:285` 同一条规则 ✓**（`pl.name ?? a.name ?? id` ✓）：
+                         //   **∴ 为什么要在这里也带一份 ✗**：`require_alive_layer` 的**已删**文案
+                         //   带名字 ✓（实测 R04：「图层 LD（「删层」）已删除」✓）⇒
+                         //   **没有它就只能报「图层 LD 已删除」✗ 与服务端逐字不同 ✓**。
+                         name: typeof pl.name === "string" ? pl.name
+                              : (typeof a.name === "string" ? a.name : id) });
         }
       } else if (a.kind === "tombstone" && !pl.object_id &&
                  typeof pl.layer_id === "string" && seen.has(pl.layer_id)) {
@@ -2783,6 +2942,9 @@ async function withKernel(doc, fn) {
                  typeof pl.layer_id === "string" && seen.has(pl.layer_id)) {
         seen.get(pl.layer_id).parent =
           typeof pl.value === "string" && pl.value ? pl.value : null;
+      } else if (a.kind === "set_property" && pl.key === "name" &&
+                 typeof pl.layer_id === "string" && seen.has(pl.layer_id)) {
+        if (typeof pl.value === "string") seen.get(pl.layer_id).name = pl.value;
       }
     }
     const inState = new Map();
@@ -2805,7 +2967,8 @@ async function withKernel(doc, fn) {
         }
         cursor = up.parent;
       }
-      layers.set(id, { alive: !best, deleted_by: best ? best.id : null });
+      layers.set(id, { alive: !best, deleted_by: best ? best.id : null,
+                       name: inState.get(id).name });
     }
     return layers;
   }
@@ -2950,8 +3113,13 @@ async function withKernel(doc, fn) {
    *   「对象已被 tombstone／图层已删除」这类写在本地**静默成功**✓ 而折叠层把它丢掉 ✓
    *   ⇒ **回执说 ok ✓ 画面没变 ✓** = 静默降级形态 3。
    *   **∴ 返回** `null`（可提交）**或** `{status, code, detail, extra}` ✓（**文案逐字对齐服务端 ✓**）。
+   *   **∴ 第 7 参 `atomId`（可选）✓**：**服务端把这条拒绝挂在「正要提交的那条原子」上**✗
+   *   （**`log.rs:378 .with_atom(atom.id)` ⇒ context 里有 `atom_id` ✓**）⇒ **调用方**若能**先封好原子**✗
+   *   **就把它的 id 传进来** ✓（`set_property` 端点就这么做 ✓）；**传不进的调用方**（`update_layer`
+   *   逐键组原子 ✗）**暂时少这个键** ✗ ⇒ **已记进台账「第 六百七十六 节」的已知分叉**✓
+   *   （**`detail` 完整 ⇒ 原因读得到 ✓ 不是形态 3 ✓**）。
    */
-  function p2RefGuard(rows, layers, neutral, kind, payload) {
+  function p2RefGuard(rows, layers, neutral, kind, payload, regions, atomId) {
     const MUST_EXIST_OBJECT = new Set(["supersede", "move", "transform", "set_property", "tombstone"]);
     // **★ 空串也是「给了 id」✗ ★**（**服务端 `optional_str` 只查类型 ⇒ `""` 是 `Some("")` ✓**）：
     //   **∴ 实测**：`set_property{layer_id:""}` ⇒ 404「图层  不存在（现有图层：…）」✓、
@@ -2982,15 +3150,39 @@ async function withKernel(doc, fn) {
                  detail: `对象 ${objectId} 已被 tombstone，${kind} 被拒绝`, extra: { object_id: objectId } };
       }
     }
-    // `set_property` 的属性值引用（服务端 `log.rs:358`）：本地端点只会写 `layer_id`／`parent_id`
-    // ⇒ **这两条要查 ✓**；`mask_id`／`style_id` 本地没有任何端点会写 ⇒ **不存在静默跳过 ✓**。
-    if (kind === "set_property" && typeof payload.value === "string" && payload.value
+    // **`set_property` 的属性值引用 ✗**（**服务端 `log.rs:357-381` ✓**）：**四条都要查 ✓**，
+    //   而且**判据是「给了字符串值」✗ 不是「值非空」✓** —— 服务端只看
+    //   `payload["key"]` 是字符串 **且** `payload["value"]` 是字符串 ✓，`""` 也是 `Some("")` ✓
+    //   ⇒ 实测 `set_property{key:"mask_id", value:""}` ⇒ 404
+    //   「set_property mask_id 引用的实体  不存在或已删除」✓（**旧本地把 `""` 当缺席 ⇒ 照写原子 ✓**
+    //   ⇒ 折叠把它丢掉 ⇒「回执 ok、遮罩没挂上」= 静默降级形态 3 ✓）。
+    //   **∴ 为什么以前只查 `layer_id`／`parent_id` ✗**：那时本地没有任何端点会写 `mask_id`；
+    //   **第 六百七十六 轮起 `create_range_mask` 的挂接步骤就是 `set_property{mask_id}` ✓**
+    //   （面板 `commitRangeMask` 走这条路 ✓）⇒ **这一条从「用不到」变成「主路径」✗**。
+    //   **∴ `regions` 缺失时不许静默放过 ✗**：现算一份 `p2DescribeRegions` 的口径拿不到 ⇒
+    //   **调用方必须传 ✗**（传了 `regions` 才会走到这条分支）⇒ **能写 `mask_id`／`style_id` 的
+    //   两个入口都传了 ✓**（`set_property` 端点 ＋ `update_layer` 的逐键循环）；
+    //   **其余写 `key` 的入口**（`lock_layer`／`set_layer_blend`／`set_object_property`）键名不在那四个里
+    //   ⇒ **走不到这条分支 ✓**（若哪天加了 `style_id` 之类的键，就**必须**传 `regions` ✗ 否则静默跳过）。
+    if (kind === "set_property" && typeof payload.value === "string"
         && (payload.key === "layer_id" || payload.key === "parent_id")) {
       const ref = payload.value;
       const layer = layers.has(ref) ? layers.get(ref) : null;
       if (!layer || !layer.alive) {
         return { status: 404, code: "reference_not_found",
-                 detail: `set_property ${payload.key} 引用的实体 ${ref} 不存在或已删除`, extra: null };
+                 detail: `set_property ${payload.key} 引用的实体 ${ref} 不存在或已删除`,
+                 extra: atomId ? { atom_id: atomId } : null };
+      }
+    }
+    if (kind === "set_property" && regions && typeof payload.value === "string"
+        && (payload.key === "mask_id" || payload.key === "style_id")) {
+      const ref = payload.value;
+      const table = payload.key === "mask_id" ? regions.masks : regions.styles;
+      const rec = table.get(ref);
+      if (!rec || rec.deleted) {
+        return { status: 404, code: "reference_not_found",
+                 detail: `set_property ${payload.key} 引用的实体 ${ref} 不存在或已删除`,
+                 extra: atomId ? { atom_id: atomId } : null };
       }
     }
     const layerId = typeof payload.layer_id === "string" ? payload.layer_id : null;
@@ -4548,6 +4740,21 @@ async function withKernel(doc, fn) {
       //   **∴ 此前本地一个字都不查 ✓** ⇒ 给已删层写属性**回执 ok 而折叠丢掉** ✗（形态③）。
       const guard = p2RefGuard(rows, layers, neutral, "set_property", { layer_id: layerId });
       if (guard) return p2ToolFailure(guard.status, guard.code, guard.detail, guard.extra);
+      // **④′ 属性值引用也要逐键查 ✗**（**`log.rs:357-381` ✓** 的四键开关
+      //   `mask_id`／`style_id`／`parent_id`／`layer_id` ⇒ 它们的值是**实体引用** ⇒ 服务端在提交期就拒 ✓）
+      //   **∴ 这条路真的写得出来 ✓**：`LAYER_PATCH_KEYS`（**`tools.rs:3662` ✓ 10 个键**）里就有
+      //   `mask_id` 与 `parent_id` ✓（**没有 `style_id`** ✗ ⇒ 那个键只能从 `set_property` 端点写 ✓）：
+      //   **∴ 此前这里只查「层活不活」✗** ⇒ `update_layer{patch:{mask_id:"没有的蒙版"}}`
+      //   在本地**回执 ok** ✓ 而折叠把它丢掉 ✓ ⇒ 又是形态 3 ✓。
+      const layerRegions = p2DescribeRegions(rows);
+      for (const key of keys) {
+        const valueGuard = p2RefGuard(rows, layers, neutral, "set_property",
+                                      { layer_id: layerId, key, value: patch[key] }, layerRegions);
+        if (valueGuard) {
+          return p2ToolFailure(valueGuard.status, valueGuard.code,
+                               valueGuard.detail, valueGuard.extra);
+        }
+      }
       // **∴ 值类型校验 ✗**（**`log.rs:310 validate_property_values` ✓**：`visible:"yes"` 在折叠层
       //   静默当 `true` ✗ ⇒ 服务端提交层就拒 ✓）—— **∴ 此前本地照收 ⇒ 回执 ok 而属性没变** ✓。
       for (const key of keys) {
@@ -4909,7 +5116,7 @@ async function withKernel(doc, fn) {
     if (path === "/api/tools/create_mask") {
       const chk = p2CheckRegionArgs(body, "mask_id");
       if (chk.err) return chk.err;
-      // **∴ 墓碑不占 id ✗**（`fold.rs:871 precondition` ✓）：**活着的同名蒙版 ⇒ 409** ✓
+      // **∴ 墓碑不占 id ✗**（`fold.rs:870-876` 的 `CreateMask` 分支 ✓）：**活着的同名蒙版 ⇒ 409** ✓
       //   （**文案逐字 `蒙版 {mask_id} 已存在` ✓**）；**已删的可以重建 ✓**。
       const rows = await atomsOf(handle, doc);
       const existing = p2DescribeRegions(rows).masks.get(chk.payload.mask_id);
@@ -4945,6 +5152,208 @@ async function withKernel(doc, fn) {
       const seq = await putAtom(handle, doc, atom);
       return json({ ok: true, seq, server: false, mask_id: maskId,
                     note: "已在本地原子日志写入 delete_mask（蒙版墓碑语义，撤销可复原）" });
+    }
+
+    // **⑤b `create_range_mask` ✗**：**照 `write_create_range_mask` ✓**（`tools_mask.rs:842`）——
+    //   **按亮度带／色相带烘焙一张 L8 覆盖网格 ⇒ 落 blob ⇒ 写 `create_mask` 原子（`replace_all` patch）✓**。
+    //   **∴ 检查顺序逐条照服务端 ✓**（**次序错了 ⇒ 同一次调用两边报不同的错 ✗**）：
+    //   `validate_args`（HTTP 层 ✓ 由 `p2ValidateArgsFor` 守）⇒ `require_str` ⇒ `range` 参数解析（400 族 ✓）
+    //   ⇒ `invert` ⇒ **图层存活 ✓** ⇒ **对象级空层／纯调整层 ✓** ⇒ **内存闸 ✓**
+    //   ⇒ **渲染 ✓** ⇒ **全幅透明 ✓** ⇒ 烘焙＋统计 ⇒ 编码 ⇒ blob ⇒ 提交（重复蒙版 409 ✓）。
+    //   **∴ 实测口径（22 案 ✓ 探针逐案记录 ✓）**：
+    //   · 透明层**照样 200**（R15 ✓）——单层渲染落到**文档不透明白底** ⇒「全幅透明」那条只在
+    //     **文档背景本身透明**时才成立 ✗（**∴ 不是**「这层没有可见内容」✓）；
+    //   · `mask_id:""` **被接受**（R20 ⇒ 200 ✓）而 `layer_id:""` **404**（R05 ⇒「图层  不存在」✓）
+    //     ⇒ **∴ 空串不许当「没给」✗**（**形态④：把非法输入当成合法输入 ✓**）；
+    //   · `range` 拼错 ⇒ **400 在图层校验之前**（R06 对不存在的层仍报 range ✓）；
+    //   · 覆盖为 0 **不是错误**（R17/R21 ⇒ 200 ＋ `coverage_matched_pixels:0` ✓）⇒
+    //     **∴ 回执必须老实带这个 0 ✗**（**面板据此拒绝挂载 ✓**）。
+    if (path === "/api/tools/create_range_mask") {
+      const specBad = p2ValidateArgsFor("create_range_mask", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
+      const maskId = typeof body.mask_id === "string" ? body.mask_id : "";
+      const layerId = typeof body.layer_id === "string" ? body.layer_id : "";
+      // **`optional_str` 只看类型 ⇒ `null`／缺席 ⇒ 缺省 ✓**（**`range` 不是必填 ✓**）。
+      const rangeName = typeof body.range === "string" ? body.range : "luminance";
+      /** **`number_in` ✓**（**`tools_mask.rs:849` 逐字 ✓**）：**非数字 ⇒ 走缺省**（**照 `Value::as_f64`
+       *   对 `null` 返回 `None` ✓ —— 类型错早在 `validate_args` 被拦下 ✓（R12 ⇒「参数 low 类型应为
+       *   number，实际为 string」✓）**，**∴ 不许在这里再报一次类型错 ✗**）；
+       *  **越界 ⇒ 400 且把三个数都按 Rust `Display` 打 ✓**（`0`／`1` 不带小数点 ⇒ 用 `p2RustNum` ✓）。 */
+      const numberIn = (key, lo, hi, def) => {
+        const raw = body[key];
+        if (typeof raw === "number") {
+          if (Number.isFinite(raw) && raw >= lo && raw <= hi) return { value: raw };
+          return { error: p2Bad(`${key} 必须在 [${p2RustNum(lo)}，${p2RustNum(hi)}] 内，`
+                                + `得到 ${p2RustNum(raw)}`) };
+        }
+        if (def !== null && def !== undefined) return { value: def };
+        return { error: p2Bad(`${key} 是必填参数`) };
+      };
+      /** **烘焙参数 ✓**：`invalid` ⇒ 直接 return；数值一律 `Math.fround` 收成 f32 ✓
+       *   （**`baked` 回执把 f32 拓宽成 f64 打印 ✓** ⇒ `0.05` 会变成
+       *   `0.05000000074505806` ✓ 而**错误文案**里的同一个数走 `Display` ⇒ 打 `0.05` ✓
+       *   （**两口径 ⟪⟫ 用 `p2F32Text` ✗ 用 `p2RustNum(fround)` 会打出长串 ✗**））。 */
+      let range;
+      if (rangeName === "luminance") {
+        const low = numberIn("low", 0.0, 1.0, 0.0);
+        if (low.error) return low.error;
+        const high = numberIn("high", 0.0, 1.0, 1.0);
+        if (high.error) return high.error;
+        // **∴ 比的是**收窄之后**的 f32 ✗**（服务端 `number_in(..) as f32` 之后就比了 ✓
+        //   ⇒ `low=0.30000000000000004` / `high=0.3` 在服务端**相等**（都是 0.3f32）而 f64 里不等 ⇒
+        //   **在 f64 里比会拒掉一条服务端放行的参数 ✓** 静默分叉）。
+        if (p2Fr(low.value) > p2Fr(high.value)) {
+          return p2Bad(`low 必须 ≤ high，得到 low=${p2F32Text(low.value)}、high=${p2F32Text(high.value)}`);
+        }
+        const smoothness = numberIn("smoothness", 0.0, 0.5, 0.05);
+        if (smoothness.error) return smoothness.error;
+        range = { kind: "luminance", low: p2Fr(low.value), high: p2Fr(high.value),
+                  smoothness: p2Fr(smoothness.value) };
+      } else if (rangeName === "color") {
+        const hue = numberIn("hue", 0.0, 360.0, null);
+        if (hue.error) return hue.error;
+        const width = numberIn("hue_width", 0.0, 360.0, 60.0);
+        if (width.error) return width.error;
+        if (p2Fr(width.value) <= 0.0) {
+          return p2Bad(`hue_width 必须大于 0（窗全宽），得到 ${p2F32Text(width.value)}`);
+        }
+        const smoothness = numberIn("smoothness", 0.0, 1.0, 0.25);
+        if (smoothness.error) return smoothness.error;
+        range = { kind: "color", hue: p2Fr(hue.value), width: p2Fr(width.value),
+                  smoothness: p2Fr(smoothness.value) };
+      } else {
+        return p2Bad(`range 只收 luminance / color，得到 ${rangeName}`);
+      }
+      const invert = body.invert === true; // **`as_bool` 认不出 ⇒ `unwrap_or(false)` ✓**
+      const rows = await atomsOf(handle, doc);
+      const neutral = p2Neutralized(rows);
+      // **① 图层存活 ✓**（**`tools_retouch.rs:339 require_alive_layer` 逐字 ✓**：
+      //   **从未有过 ⇒ 404「图层 X 不存在」✓、存在但已删 ⇒ 404「图层 X（「名」）已删除」✓**
+      //   —— **两句都是 `reference_not_found` ✗ 不是 409 ✓**，而 `p2RefGuard` 的已删分支给 409 ✓
+      //   ⇒ **∴ 这里不能图省事走 `p2RefGuard` ✗**（**同一个「层已删」在两处口径不同是服务端事实 ✓**）。
+      //   **∴ context 只有 `detail` ✗ 没有 `layer_id`**（**实测 R03/R04/R05 ✓**）。
+      const layers = p2PresetLayers(rows, neutral);
+      const layer = layers.has(layerId) ? layers.get(layerId) : null;
+      if (!layer) {
+        return p2ToolFailure(404, "reference_not_found", `图层 ${layerId} 不存在`, null);
+      }
+      if (!layer.alive) {
+        return p2ToolFailure(404, "reference_not_found",
+                             `图层 ${layerId}（「${layer.name}」）已删除`, null);
+      }
+      const size = p2cDocSize(rows);
+      const canvasW = size.w, canvasH = size.h;
+      // **② 对象级空层检查 ✓**（**`tools_mask.rs:905` ✓ 渲染级检查不够 ✗**：空层单层渲染会落到
+      //   文档白底 ⇒「空层」伪装成一张纯色图通过自检 ✓）。**判据是 `alive_objects()` 里
+      //   `layer_id` 属于这一层的**全部**对象 ✗ 不过滤隐藏 ✓**（**`includeHidden:true` ✓**）。
+      const layerObjects = p2ObjectSummaries(rows, { layerFilter: layerId, includeHidden: true });
+      if (layerObjects.length === 0) {
+        return p2Precon(`图层 ${layerId} 没有任何对象 ⇒ 没有可采样的像素`);
+      }
+      if (layerObjects.every((o) => o.type === "adjustment" || o.type === "filter")) {
+        return p2Precon(`图层 ${layerId} 只有调整/滤镜对象，没有可采样的像素`);
+      }
+      // **③ 内存闸 ✓**（**C2 口径 ✓ 源图 4 B/px ＋ 网格 1 B/px ✓**）。
+      //   **∴ 如实说明 ✗**：服务端预算读 `YANSHI_DOC_MEMORY_BUDGET_MB`（缺省 2048 MB ✓），
+      //   **本地没有这个环境变量可读** ⇒ 只能按缺省值算 ⇒ **而本部署画布上限 16384 ⇒
+      //   16384²×5 B = 1280 MB < 2048 MB ⇒ 这一条在本地永远走不到 ✗**
+      //   （**∴ 写了它不是为了好看 ✓：它守的是「将来上限放宽」这条路 ✗ 而判据不许假装覆盖它 ✓**）。
+      const pixels = canvasW * canvasH;
+      const estimated = pixels * 5;
+      const budget = 2048 * 1024 * 1024;
+      if (estimated > budget) {
+        return p2ToolFailure(503, "resource_exhausted",
+          `范围遮罩估算内存 ${Math.floor(estimated / 1048576)} MB 超过文档内存预算 `
+          + `${Math.floor(budget / 1048576)} MB（${canvasW}×${canvasH} 像素 × 5 B/px）`
+          + `⇒ 拒绝烘焙（调大 YANSHI_DOC_MEMORY_BUDGET_MB 或先缩小画布）`, null);
+      }
+      // **④ 源图层全幅裸像素 ✓**（**服务端 `render_region_raw_layer` ✓ 本地 = `p2LayerScopeAtoms`
+      //   ＋ `p2cRenderRgba` ✓ 第 六百六十五 轮已证逐像素等价 ✓**）。
+      const props = p2LayerRenderProps(rows);
+      let rendered;
+      try {
+        rendered = await p2cRenderRgba(0, 0, canvasW, canvasH,
+                                       p2LayerScopeAtoms(rows, props, layerId));
+      } catch (err) { return p2cKernel501(err); }
+      if (rendered.error || !rendered.rgba || rendered.rgba.length === 0) {
+        // **兜底 ✗ 不是主判据**（**`tools_mask.rs:957` 把 `ReferenceNotFound` 转成这句 ✓**
+        //   —— 对象级检查在前 ⇒ 走到这里说明渲染侧真的真空 ✓）。
+        return p2Precon(`图层 ${layerId} 渲染为空 ⇒ 它是空层或纯调整层，没有可采样的像素：`
+          + String(rendered.error || "渲染器一个字节都没吐"));
+      }
+      const renderW = rendered.w, renderH = rendered.h;
+      const rgba = rendered.rgba;
+      let anyOpaque = false;
+      for (let i = 3; i < rgba.length; i += 4) if (rgba[i] !== 0) { anyOpaque = true; break; }
+      if (!anyOpaque) {
+        return p2Precon(`图层 ${layerId} 全幅透明 ⇒ 没有可采样的像素`);
+      }
+      // **⑤ 烘焙＋覆盖统计 ✓**（**`matched` 数「格值 > 0」✗ 不是「进了窗」✓ ⇒ 软边末位 0 也算没选中 ✓**；
+      //   **`mean` 是 f64：`sum /(n*255)` ✓ 左结合、一次除法 ✓**）。
+      const grid = p2BakeRangeGrid(rgba, renderW, renderH, range, invert);
+      let matched = 0;
+      let sum = 0;
+      for (let i = 0; i < grid.length; i++) {
+        if (grid[i] > 0) matched += 1;
+        sum += grid[i];
+      }
+      const mean = sum / (grid.length * 255.0);
+      // **⑥ blob 先行 ✓**（**`tools_mask.rs:977 encode_png_l8` ＋ `:978 put_blob`**：放 blob 在提交之前 ✓
+      //   ⇒ 提交被拒时 blob 已成为孤儿 ✓
+      //   这是服务端的既有行为 ✗ 本地照做而不"顺手清掉"✓（清了就和两边对不上 ✓）**）。
+      //   **∴ 必须是 L8 ✗**：回放方 `CompiledMask::build` 用 `decode_png_l8` 解字节 ⇒
+      //   编码成 RGBA 时**解不出来 ⇒ patch 被静默跳过 ⇒「回执 coverage=8192 而遮罩全空」✓ 形态③**。
+      let png;
+      try {
+        png = await encodePngL8(renderW, renderH, grid);
+      } catch (err) {
+        return p2ToolFailure(500, "internal_error",
+          `本地 L8 PNG 编码失败（${renderW}×${renderH}）：` + String((err && err.message) || err), null);
+      }
+      let blobHash;
+      try {
+        blobHash = await p2cPutCompositeBlob(png);
+      } catch (err) { return p2cKernel501(err); }
+      if (!blobHash) {
+        return p2ToolFailure(501, "kernel_unavailable",
+          "内核 blob_put 未返回哈希 ⇒ 本地不猜", null);
+      }
+      const { putBlob } = await import("./store.js");
+      await putBlob(handle, blobHash, Array.from(png));
+      // **⑦ 提交期唯一会拒的一条 ✓**（**`蒙版 X 已存在` ⇒ 409 ＋ `context.atom_id` ✓ 实测 R19 ✓**：
+      //   服务端把**要提交的那条原子 id**放进 context ✓ ⇒ 本地同一个位置 ✓。
+      //   **∴ 墓碑蒙版不占名 ✓**（**`fold.rs:870-876` 的 `CreateMask` 分支（条件 `state.mask_alive`）✓
+      //   删了能重建 ✓** 与 `create_mask` 同口径 ✓）。
+      const maskAtom = p2Envelope("create_mask", {
+        mask_id: maskId,
+        shape: { kind: "rect", bbox: { x: 0, y: 0, w: canvasW, h: canvasH } },
+        feather: 0.0,
+        mode: "new",
+        invert: false,
+        patches: [{ bbox: [0, 0, renderW, renderH], target_u8: 255, op: "replace_all", blob: blobHash }],
+        refs: { blobs: [blobHash] },
+      });
+      const liveMask = p2DescribeRegions(rows).masks.get(maskId);
+      if (liveMask && !liveMask.deleted) {
+        return p2ToolFailure(409, "precondition_failed", `蒙版 ${maskId} 已存在`,
+                             { atom_id: maskAtom.id });
+      }
+      const seq = await putAtom(handle, doc, maskAtom);
+      const response = { ok: true, seq, head: seq, server: false,
+                         coverage_matched_pixels: matched,
+                         coverage_matched_ratio: matched / grid.length,
+                         coverage_mean: mean };
+      response.range = rangeName;
+      response.source_layer_id = layerId;
+      response.baked = range.kind === "color"
+        ? { range: "color", hue: range.hue, hue_width: range.width,
+            smoothness: range.smoothness, invert }
+        : { range: "luminance", low: range.low, high: range.high,
+            smoothness: range.smoothness, invert };
+      response.note = "烘焙快照：遮罩取自源图层当前渲染的像素，源图层此后的修改不传播；"
+        + "明度为 sRGB 编码值的 Rec709 加权（显示空间）；invert 已烤进网格。"
+        + "挂到调整层：set_property{layer_id, key: \"mask_id\", value: <mask_id>}。";
+      return json(response);
     }
 
     // **⑥⑦ `lock_layer`／`unlock_layer` ✗**：**照 `write_lock_layer` ✓**
@@ -6248,6 +6657,10 @@ async function withKernel(doc, fn) {
      *     （`fold.rs:1357` ✓）；`tombstone{selection_id}` 置墓碑 ✓。
      *   **∴ 蒙版**：`create_mask` 入表 ✓；`delete_mask` 与 `tombstone{mask_id}` 置墓碑 ✓
      *     （`fold.rs:1336`／`:1412` ✓）；`update_mask` **不改** `mode/feather/shape` ✓（只追加 patch）。
+     *   **∴ 风格**（**第 六百七十六 轮补 ✓**）：`create_style` 入表 ✓、`tombstone{style_id}` 置墓碑 ✓
+     *     （`fold.rs:1340` ✓，**蒙版优先于风格** ✓ 与服务端 `else if` 链同序 ✓）——
+     *     **∴ 为什么现在要它 ✗**：`log.rs:357` 的 `set_property` 值引用要查 `style_id` ✓
+     *     ⇒ **本地要能答「这个风格活着吗」**✗ 否则那条引用检查只能静默跳过 ✓（形态 3 ✓）。
      *   **∴ 对象计数**：建对象的原子（**共享集合 ✓**）按 `object_id` 去重 ✓；
      *     `supersede` 可改 `layer_id` ✓、`set_property{object_id,key:"layer_id"}` 可搬层 ✓
      *     （`fold.rs:1883`／`:1918` ✓）；`tombstone{object_id}` 置死 ✓。
@@ -6258,6 +6671,7 @@ async function withKernel(doc, fn) {
       const win = p2StateWindow(rows);
       const neutral = p2Neutralized(rows);
       const selections = new Map(), masks = new Map(), objects = new Map();
+      const styles = new Map(); // **只用于 `set_property{key:"style_id"}` 的存活判定 ✓**
       // **图层父链 ✗**（**只为「删层级联到对象」用 ✓**；层自身存活由 `p2PresetLayers` 算 ✓）。
       //   **∴ 逐原子维护而非取终态 ✗**：级联发生在**墓碑那一刻**的父链上 ✓，
       //   而 `deleted_by` 一旦置上**永不恢复** ✓ ⇒ **∴ 之后改 parent 不影响已删对象 ✓**。
@@ -6318,6 +6732,11 @@ async function withKernel(doc, fn) {
           if (typeof pl.mask_id === "string") {
             const cur = masks.get(pl.mask_id);
             if (cur) cur.deleted = true;
+          } else if (typeof pl.style_id === "string") {
+            // **服务端 `fold.rs:1340` 的 `else if` 链：`mask_id` 优先于 `style_id` ✗**
+            //   （一条墓碑只认一个实体 ✓ ⇒ 两个都写时**风格不死** ✓）。
+            const cur = styles.get(pl.style_id);
+            if (cur) cur.deleted = true;
           }
           if (typeof pl.object_id === "string") {
             const cur = objects.get(pl.object_id);
@@ -6327,6 +6746,8 @@ async function withKernel(doc, fn) {
           selections.set(pl.selection_id, Object.assign(region(pl), { deleted: false }));
         } else if (a.kind === "create_mask" && typeof pl.mask_id === "string") {
           masks.set(pl.mask_id, Object.assign(region(pl), { deleted: false }));
+        } else if (a.kind === "create_style" && typeof pl.style_id === "string") {
+          if (!styles.has(pl.style_id)) styles.set(pl.style_id, { deleted: false });
         } else if (a.kind === "update_selection" && typeof pl.selection_id === "string") {
           const cur = selections.get(pl.selection_id);
           if (cur) setFields(cur, pl);
@@ -6347,7 +6768,7 @@ async function withKernel(doc, fn) {
           if (cur) cur.layer_id = pl.value;
         }
       }
-      return { selections, masks, objects };
+      return { selections, masks, objects, styles };
     }
     /** **P2c-绘画通用写入口 ✗**：**`draw_*`／`fill` 照 `write_draw` 的载荷形状 ✓**
      *   （**`{object_id, layer_id, data, type?}` ✓ ⇒ **∴ 折叠层按 `payload.data` 取内容 ✓**）。 */
@@ -9112,11 +9533,18 @@ async function withKernel(doc, fn) {
       const rows = await atomsOf(handle, doc);
       const neutral = p2Neutralized(rows);
       const layers = p2PresetLayers(rows, neutral);
-      const guard = p2RefGuard(rows, layers, neutral, "set_property", payload);
+      // **★ 原子**先封套、后校验**✗ ★**（**第 六百七十六 轮实测 ✓**：服务端那条 404 的 context
+      //   除 `detail` 外**还带 `atom_id`**（**`log.rs:372-378` 的 `.with_atom(atom.id)` ✓**）⇒
+      //   **∴ 本地原来在 `p2Envelope` 之前就跑守卫 ✗** ⇒ 回执**少一个键** ✓（探针实测：服务端
+      //   `ctxKeys=["atom_id","detail"]`｜本地 `["detail"]`✗）。**服务端顺序也是这样**✓
+      //   （**工具层先组原子、再交给日志校验 ✓**）⇒ **这里不是迁就 ✗ 是照抄 ✓**。
+      const atom = p2Envelope("set_property", payload);
+      const guard = p2RefGuard(rows, layers, neutral, "set_property", payload,
+                               p2DescribeRegions(rows), atom.id);
       if (guard) return p2ToolFailure(guard.status, guard.code, guard.detail, guard.extra);
       const valueBad = p2PropertyValueError(payload);
       if (valueBad) return p2ToolFailure(400, "invalid_argument", valueBad);
-      const seq = await putAtom(handle, doc, p2Envelope("set_property", payload));
+      const seq = await putAtom(handle, doc, atom);
       return json({ ok: true, seq, server: false, key, value,
                     note: "已写入 set_property 原子" });
     }

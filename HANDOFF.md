@@ -2465,3 +2465,59 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
 `tool-pwa-describe-canvas`（274 ✓）／`tool-pwa-local-write-guards`／`tool-pwa-pixel-stats`
 ⇒ **没新增已知红** ✓ ⇒ 所以⑧那句「全绿」现在有了对主干字节的版本 ✓（**⑧保留是因为它记的是「变异还原」这一步，
 不是同一件事 ✓**——两条各自成立，别合并成一条 ✗）
+
+## §123 batch20 落地（包侧台账「六百七十六」）：`create_range_mask` 本地烘焙 ＋ **复审读出一处真分叉（`low > high` 比在 f64 上）**（2026-10-29）
+
+① **落账**（命令口径，别抄数字 ✓）：**分支 181 → 182**——
+   `node -e 'const s=require("fs").readFileSync("web/api-local.js","utf8");console.log((s.match(/(?:url\.pathname|path) === "/g)||[]).length)'`
+   ＝ 同文件 `const LOCAL_IMPLEMENTED` ＝ **182** ✓（`tool-pwa-assets` 自己印「声明 182｜分支 182」✓）；
+   两份拷贝 `cmp` 逐字节一致 ✓。新增判据 `scripts/tool-pwa-range-mask-parity.mjs`
+   （**49 个 `check(`**（`grep -c '^ *check('`）／八节／§A 17 案＋§B 9 案＋§F 3 案）＋
+   变异脚本 `scripts/mutations/mutate-pwa-range-mask.py`（**26 条**，只改 `web/`、`finally` 还原、`cmp`）＋
+   `scripts/lib/png.mjs` 补 `colourType 0 ⇒ channels=1`（**测量工具的缺口，不是产品缺陷** ✓）。
+   **戳随**：`5153474874212` ⇒ **`9053176175667`**（`pwa-sync-viewer.mjs` 重算 ✓）；
+   `web/assets-index.json` 又被本机 `assets/textures` 污染 ⇒ `git checkout --` 还原 ✓（#30 的老账）。
+
+② **复审读出一处真分叉 ✗**（**不是补丁的变异找出来的** ✓ 是逐行对服务端读出来的）：
+   本地比 `low > high` 用的是**收窄之前的 f64**，而服务端是 `number_in(..) as f32` **之后**再比
+   （`tools_mask.rs:863-871`，判据就在 `:865 if low > high`）⇒ `low=0.30000000000000004`／`high=0.3` 这一对
+   **服务端放行（两个都成 0.3f32）、本地拒 400** ✗ ⇒ 与「空串当缺席」同族：**判据的量取错了域**。
+   **修法**：比 `p2Fr(..)` ✓；**并让这条修法自己证得了自己能红**：加 §B 新案「f32 等值（f64 不等）」✓
+   ＋ 变异 `rm_lowhigh_f64`（把比较改回 f64）⇒ **旧实现下该案红、新实现下绿，两种都跑过** ✓
+
+③ **三处引用错**（都是注释 ✗ 不改行为，但**锚点错了就是把读者送错地方**）：
+   ① `fold.rs:871 precondition` ⇒ 实际是 **`fold.rs:870-876`** 的 `CreateMask` 分支（**条件是 `state.mask_alive`**）；
+   ② `tools_mask.rs:985`（blob 先行）⇒ 实际是 **`:977 encode_png_l8` ＋ `:978 put_blob`**；
+   ③ **`UPDATE_LAYER_KEYS` 不是服务端的名字** ✗——提交期检查是 `log.rs:357-381` 的**键开关**
+   （键名直接写在 match 里 ⇒ 服务端**没有**这个常量），这个名字是**本地** `api-local.js:4686` 的；
+   而本地 `update_layer` 真的写得出来，靠的是 `LAYER_PATCH_KEYS`（`tools.rs:3662`，**10 键含 `mask_id`／`parent_id`，
+   不含 `style_id`**）⇒ **`style_id` 只能从 `set_property` 端点写** ✓
+
+④ **变异抽查三条（本机复现，不照抄台账 ✓）**：`rm_lowhigh_f64` ⇒ 红在「§B f32 等值」✓、
+   `rm_matched_off_by_one` ⇒ 红在「本地回执的 coverage_matched_pixels」✓、
+   `rm_l8_becomes_rgb8` ⇒ 红在「遮罩片段不是**灰度 L8**」✓（**三条都是退出码 1，不是 3** ✓）⇒
+   还原后 `cmp` 逐字节 ✓、复测退出码 0 ✓。**其余 23 条没重跑**（口径同 §122⑤：抽查不是为了代替全部，
+   是为了证明「它这套锚点＋还原纪律在这台机器上真的能跑」✓）。
+
+⑤ **回归（本机，对上主干字节 ✓）**：`tool-pwa-range-mask-parity`（17／9／3 案 ✓ 逐像素同）／
+   `tool-pwa-assets`（182｜182 ✓）／`tool-pwa-pixel-stats`／`tool-pwa-local-write-guards`／
+   `tool-pwa-preset-render-parity`／`tool-pwa-api-behaviour`／`tool-js-syntax`（**460** 个 ✓）
+   ＋ 四条体检：`check-ledger-section-numbering`（最大号 676、撞号新增 0 ✓）／`check-criteria-have-exit3`（259／259 ✓）／
+   `check-known-red-format`／`tool-criteria-coverage`（460 个：443 枚举＋19 生成器＋1 已登记缺口 ✓）。
+   **没新增已知红** ✓。
+
+⑥ **上游又漂了 6 个提交**（用户规矩「定期 pull」✓）：apply 前 `git fetch` ⇒ `HEAD..origin/main` 是 6
+   （`6383a9ae` 起）⇒ **先 `git pull --ff-only` 再 apply** ✓（**顺序是「先同步再验」，不是「先验再同步」** ✗——
+   §122⑨ 那条教训第一次被主动用上 ✓）。它们动了 `tools.rs`／`document.rs` 与 `api-local.js`
+   （**只有一句 `update_object` 提示文案** ⇒ 没碰本包任何 hunk ⇒ 零冲突 ✓）；
+   其中「`set_property` 改 `background` 无效时回顶层 `warnings`」**正好落在本判据 `SERVER_ONLY` 白名单里**
+   （`warnings` 早就在 ✓）⇒ 外层多一个键不会让 §B 变红 ✓。
+   **⇒ 代价**：`api-local.js` 是 `include_str!` ⇒ 重建 `yanshi-http` **7m53s**（上游改了 `tools.rs`／`document.rs` 也一起重编）。
+
+⑦ **两个 hunk 仍 apply 不上，照旧手工放**：台账那段（上下文是我 §122 改过的 `tool-js-syntax` 行 ✓）
+   ⇒ 手写「六百七十六」节，并把补丁里那句「463 个」换成命令 + 本轮实测；
+   `web/index.html` 的戳（他们写 `4218838438338`，我们树上没有）⇒ 本机重算 ✓。**除此之外 7 个 hunk 全零冲突** ✓。
+
+⑧ **没夹带**：#63（`new_document.mode` 声明未读）**仍不动** ✓；§G 记的第三条分叉
+   （`update_layer{patch:{mask_id}}` 少 `context.atom_id`）**留在本地不修** ✗——它逐键组原子、守卫跑在封套之前，
+   属「结构上拿不到」，面板主路径 `set_property` 已补齐并由 §F 钉住 ✓；#61 的 CI 收账仍在次轮。
