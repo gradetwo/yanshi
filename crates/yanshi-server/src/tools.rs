@@ -17491,18 +17491,42 @@ fn brush_pressure_response(brush: &hokusai::Brush) -> (bool, Vec<&'static str>) 
 /// 好让 HTTP 层在发 `.myb` 时**顺带告诉浏览器** ✓（第 68 轮定性：会读画布的笔刷**不能**本地预览 ✓，
 /// 因为门面没有 base 输入 ⇒ 两边起点不同 ✓）。**判定只有这一处** ✗（复制一份必然漂移 ✓）。
 pub fn brush_reads_the_canvas(brush: &hokusai::Brush) -> bool {
-    // **D-4b：判定必须与引擎的涂抹门同口径** —— 引擎按 dab 求值（`stroke.rs` 的
-    // `smudge_mapping_active` = `base != 0` 或有输入），旧判定只认 `base_value` ⇒
+    // **D-4b：曲线驱动的涂抹也读画布** —— 旧判定只认 `base_value` ⇒
     // `wet_round`（`smudge` base 0、pressure 曲线至约 1.0）被判不读画布，
     // `paint_brush` 不喂底图（回执 `fed_base=false`），引擎涂抹只能采本笔自己的墨；
     // 叠盖的笔触各成扁平胶囊，胶囊轮廓在密集重叠下织成环形网格。
-    // 四项设置同理：`base > 0` 或带输入曲线即读画布（曲线恒 0 时多喂的底图不改像素：
-    // dab 不吃涂抹桶，掩膜只留落墨像素）。
+    // **D-4b 跟进：smudge 臂只做正值精炼** —— 服务端问的是“笔触结果会不会带入画布色”，
+    // 不是引擎记账门问的“映射是不是活动的”：引擎门（`stroke.rs` 的 `smudge_mapping_active`
+    // = `base != 0` 或有输入）只保证“ momentarily 求值为 0 的曲线驱动涂抹仍要衰减
+    // recentness”，而每 dab 的 smudge 量先钳到 [0, 1]（`stroke.rs:797` 与 `:1137-1140`），
+    // 量 ≤ 0 时 dab 色就是笔色本身、不混画布色。`Round` 的 smudge 曲线恒在 [-0.4, 0]、
+    // `Tail_Feathers` 的 smudge 输入全恒 0：两者钳后永远是 0，从不混画布色；
+    // 喂底图反而把 dab 以覆盖度画到底图上，存的是合成值而非纯色（半透明单测红：
+    // 纯红存成粉色）。判据因此是有效拾取：`base > 0` 或 `base + 各输入最大 y 之和 > 0`
+    //（各输入取曲线 knots 的 y 最大值，即该输入能贡献的上限；和 ≤ 0 ⇒ 任何一 dab
+    // 都混不进画布色）。其余三臂（colorize / posterize / lock_alpha）不动：
+    // 仍是 `base > 0` 或带输入曲线。
+    let smudge_reads = {
+        let value = brush.get(hokusai::BrushSetting::Smudge);
+        let max_sum: f32 = value
+            .inputs
+            .iter()
+            .map(|mapping| {
+                mapping
+                    .points
+                    .iter()
+                    .map(|(_, y)| *y)
+                    .reduce(f32::max)
+                    .unwrap_or(0.0)
+            })
+            .sum();
+        value.base_value > 0.0 || value.base_value + max_sum > 0.0
+    };
     let reads = |setting: hokusai::BrushSetting| {
         let value = brush.get(setting);
         value.base_value > 0.0 || !value.inputs.is_empty()
     };
-    reads(hokusai::BrushSetting::Smudge)
+    smudge_reads
         || reads(hokusai::BrushSetting::Colorize)
         || reads(hokusai::BrushSetting::Posterize)
         || reads(hokusai::BrushSetting::LockAlpha)

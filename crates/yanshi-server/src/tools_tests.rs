@@ -2315,4 +2315,24 @@ fn reads_canvas_counts_curve_driven_smudge() {
         super::brush_reads_the_canvas(&knife),
         "base 驱动的涂抹笔刷保持读画布"
     );
+    // **D-4b 跟进：永不为正的 smudge 曲线不读画布**。
+    //
+    // `Round` 的 `smudge`：`base_value = 0`，但 `pressure` 曲线恒在 [-0.4, 0]，
+    // 钳后永远是 0，从不混画布色；判读画布会把纯红存成与白底合成过的粉色
+    //（半透明单测红）。正值精炼下它必须判 false（旧口径这里是 true，即红）。
+    let round_text = std::fs::read_to_string(format!("{root}Round.myb")).expect("读不到 Round.myb");
+    let round = hokusai::myb::from_str(&round_text).expect("解析 Round.myb 失败");
+    assert_eq!(
+        round.get(hokusai::BrushSetting::Smudge).base_value,
+        0.0,
+        "本测试的前提是 Round 的 smudge 只靠曲线驱动"
+    );
+    assert!(
+        !round.get(hokusai::BrushSetting::Smudge).inputs.is_empty(),
+        "本测试的前提是 Round 的 smudge 带输入曲线"
+    );
+    assert!(
+        !super::brush_reads_the_canvas(&round),
+        "永不为正的 smudge 曲线不读画布（否则纯红存成粉色）"
+    );
 }
