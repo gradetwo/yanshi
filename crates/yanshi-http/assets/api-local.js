@@ -612,7 +612,7 @@ const P2_TOOL_SPECS = {
   auto_retouch: [1, [["layer_id","s",0],["strength","n",0],["groups","a",0],["dry_run","b",0],["force","b",0]]],
   bake_document: [1, [["allow_rasterize_editable","b",0],["allow_clip_off_canvas","b",0],["flatten_mask","b",0]]],
   bake_layer: [1, [["layer_id","s",1],["allow_rasterize_editable","b",0],["allow_clip_off_canvas","b",0],["flatten_mask","b",0]]],
-  batch: [1, [["calls","a",1],["preview_every_n_strokes","n",0],["preview_interval_ms","n",0],["preview","b",0],["message","s",0],["silent","b",0],["slim_receipt","b",0],["wait_for_render","b",0]]],
+  batch: [1, [["calls","a",1],["preview_every_n_strokes","n",0],["preview_interval_ms","n",0],["preview","b",0],["message","s",0],["silent","b",0],["slim_receipt","b",0],["wait_for_render","b",0],["validate_only","b",0]]],
   begin_changeset: [0, []],
   begin_transaction: [0, []],
   blob_gc: [1, [["dry_run","b",0],["confirm","b",0],["ttl_days","n",0],["demote","b",0]]],
