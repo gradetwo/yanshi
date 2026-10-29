@@ -617,6 +617,7 @@ const P2_TOOL_SPECS = {
   smart_select: [1, [["selection_id","s",0],["seed","a",0],["seeds","a",0],["tolerance","n",0],["contiguous","b",0],["refine_edges","b",0],["layer_id","s",0],["mode","s",0],["feather","n",0],["preview","b",0]]],
   smart_texture: [1, [["shape","o",1],["texture_type","s",1],["direction_guides","a",0],["direction_from","s",0],["density","n",0],["neutral","b",0],["size","n",0],["color","a",0],["brush","s",0],["layer_id","s",1],["wait_for_render","b",0],["clip_to_selection","s",0]]],
   smudge: [1, [["layer_id","s",1],["points","a",1],["size","n",0],["smudge_length","n",0],["deposit","n",0],["hardness","n",0],["opacity","n",0],["object_id","s",0],["z_index","i",0]]],
+  stroke_heatmap: [0, [["region","x",1],["cell_size","n",0]]],
   stroke_path: [1, [["label","s",0],["group_id","s",0],["layer_id","s",1],["path_object_id","s",0],["subpaths","a",0],["d","s",0],["brush","s",1],["size","n",0],["color","x",0],["brush_params","o",0],["pressure_profile","s",0],["pressure_max","n",0],["ramp_ratio","n",0],["virtual_speed","n",0],["preview","b",0],["wait_for_render","b",0],["opacity","n",0],["clip_to_selection","s",0]]],
   submit_offline: [1, [["atoms","a",1]]],
   suggest: [1, [["patch","a",1],["annotation_id","s",0],["summary","s",0],["priority","i",0]]],
