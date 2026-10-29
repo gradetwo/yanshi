@@ -576,7 +576,7 @@ fn p5_three_brush_strokes_judged_by_payload_not_envelope() {
         .iter()
         .filter(|atom| {
             atom.get("origin").and_then(Value::as_str) == Some("drawn")
-                && atom.get("brush").is_some()
+                && atom.get("brush").and_then(Value::as_str).is_some()
         })
         .collect();
     assert_eq!(listed_brush.len(), 3, "list_atoms 里 3 笔 drawn 笔触：{listed}");
@@ -597,7 +597,7 @@ fn p5_three_brush_strokes_judged_by_payload_not_envelope() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|entry| entry.get("brush").is_some())
+        .filter(|entry| entry.get("brush").and_then(Value::as_str).is_some())
         .collect();
     assert_eq!(log_brush.len(), 3, "get_stroke_log 里 3 笔笔刷：{log}");
     assert!(
