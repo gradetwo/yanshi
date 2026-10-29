@@ -8215,8 +8215,11 @@ mod tests {
         assert!(inverted.stats.unsupported.is_empty());
 
         // 未实现的类型必须产生告警且不改动像素（`curves` 已实现，这里用内核没有的类型）。
-        state.objects.get_mut("obj_adj").unwrap().data =
-            json!({"adjustment_type": "not_an_effect", "params": {}});
+        // 按引擎不变量：内容改动必须出新版本，否则 (id, current_version) 键的
+        // 指纹缓存会命中旧指纹，第二遍渲染复用首遍 tile，调整分派不再走。
+        let adj = state.objects.get_mut("obj_adj").unwrap();
+        adj.current_version = Some("a2".to_owned());
+        adj.data = json!({"adjustment_type": "not_an_effect", "params": {}});
         let warned = renderer.render_document(&state, &store).unwrap();
         assert_eq!(warned.stats.unsupported.len(), 1);
         assert_eq!(warned.pixel(5, 5).unwrap()[0], 255, "未识别时不改动像素");
