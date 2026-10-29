@@ -686,11 +686,22 @@ pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         //     两张（连导两次）**逐像素相同** ⇒ **图是完整的** ⇒ 那个 `true` 会让人**白跑一遍** ✗
         //   **⇒ 所以**只留两个**如实**的数字（head 与渲染水位），并说清它们**不管**导出的完整性 ✓
         "head_seq": head_seq,
+        // **反馈 5 第 7 项**：`rendered_seq` 在导出回执里是误导名——它量的是预览水位，
+        //   而 `export_png` 是同步重渲、根本不走那条水位 ⇒ 正名 `preview_watermark`。
+        //   ⇒ 旧名只作**已弃用别名**留着（值与新名恒等），不断旧读法：
+        //     `tool-export-reports-staleness.mjs` 与既有调用方仍读 `rendered_seq`，
+        //     新代码一律读 `preview_watermark`；别名删除是后续一行的事，不在本项里偷做。
+        //   ⇒ 只改导出回执：`get_document`／`get_render_status`／`RenderStatus` 的
+        //     `rendered_seq` 不动——在那两处它就是正确的"该原子/文档是否已渲染"语义，
+        //     viewer 与 `browser-status-bar.mjs` 读的正是那两处，改了才是真破坏。
+        "preview_watermark": rendered_seq,
         "rendered_seq": rendered_seq,
-        // **P-3（期 1）**：`rendered_seq` 是**预览水位**（预览/缩略图那条线），不是本次导出的进度 ✓
+        // **P-3（期 1）**：`preview_watermark` 是**预览水位**（预览/缩略图那条线），不是本次导出的进度 ✓
         //   ⇒ 它落后只说明上一次预览停在那里，**与本次导出完整性无关** ✓（`export_png` 总是从原子同步重渲 ✓）
-        //   ⇒ 字段本身留着（调用方可能在读），但回执里**用一句话把语义写死**，不再让人误读成"渲染不完整" ✓
-        "rendered_seq_note": "预览水位（preview/thumbnail 渲染进度），与本次导出完整性无关；export_png 总是从原子同步重渲，导出图完整。",
+        //   ⇒ 回执里**用一句话把语义写死**，不再让人误读成"渲染不完整" ✓；
+        //     旧 note 名同步留作别名，文本与新 note 逐字相同。
+        "preview_watermark_note": "预览水位（preview/thumbnail 渲染进度），与本次导出完整性无关；export_png 总是从原子同步重渲，导出图完整。rendered_seq 是 preview_watermark 的旧名别名，值相同。",
+        "rendered_seq_note": "预览水位（preview/thumbnail 渲染进度），与本次导出完整性无关；export_png 总是从原子同步重渲，导出图完整。rendered_seq 是 preview_watermark 的旧名别名，值相同。",
         // **⇒ 导出完整性**不需要这个字段：`export_png` **总是**从原子同步重渲 ✓
 
         "warnings": render_warnings,
