@@ -2238,19 +2238,18 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // ⇒ 省下实测 ~130 ms/笔（4K、`Clouds.myb`、`size 180` ✓）✓；默认 `true` ⇒ 行为不变 ✓。
             // **★ P0 #4：覆盖 `.myb` 的任意字段 ✗ ★**（**名字用 libmypaint 规范名 ✓ ＝ `.myb` 的 JSON 键 ✓）
             //   ⇒ **∴ AI 不必换笔刷文件就能调** `smudge`／`opaque`／`dabs_per_actual_radius` 这类** ✓ ★★★
-            // **★ 但 `dabs_per_basic_radius` 在本引擎里**不会生效 ★**（第 1589 轮实测 + 根因）
-            //   **⇒ 为什么**：服务端把路径**每 2 px 切一段**、每段调一次内核
-            //     （`divisions = distance / 2.0`）⇒ **有效 dab 间距被 2 px 钉死** ⇒
-            //     **笔刷自己的 `dabs_per_basic_radius` 被覆盖** ✓
-            //   **⇒ ⇒ 实测**：直线（size 4）剖面**三档完全相同**；急弯弧 painted
-            //     **886 / 876 / 890**（±1.6%）⇒ **零差异** ✗
-            //   **⇒ ⇒ ⇒ 所以**要在**说明里讲清**（**否则下一个使用者会像外部那样白试三轮**）✓
+            // **★ `dabs_per_basic_radius` 控 dab 间距 ✓**（第 1589 轮观察已订正）
+            //   **⇒ 机理**：2 px 只是服务端插值步，dab 累计跨步结转 ⇒
+            //     **间距不受 2 px 步长限制** ✓（笔刷自己的 `dabs_per_basic_radius` 不被覆盖 ✓）
+            //   **⇒ ⇒ 实测限定**：第 1589 轮直线（size 4）剖面三档相同、急弯弧 painted
+            //     **886 / 876 / 890**（±1.6%）**只在密铺饱和区 painted 指标看不出** ✓
+            //   **⇒ ⇒ ⇒ 稀疏见效需压低 dpar 与 dpbr** ✓（密铺时 dab 重叠，间距效应被浓度掩盖 ✓）
             //   **⇒ ⇒ ⇒ ⇒ 要更密 ⇒ 加笔数、加 `size`、用 `smudge`**（**`smudge` 实测有效**）✓
             param!(
                 "brush_params",
                 Object,
                 false,
-                "覆盖 .myb 字段：{规范名: 数值}，如 {\"smudge\":1.0,\"opaque\":0.2}；**注意 `dabs_per_basic_radius` 在本引擎里不生效**（路径每 2px 采样一次，有效 dab 间距被钉死；实测三档零差异）⇒ 要更密请加笔数／加 size／用 smudge；字段名就是 .myb 的 JSON 键**也可直接用四组语义别名**：hand_jitter／speed_gain／color_variance／smudge_amount ✓（一个词管一组 .myb 项 ✓）；，拼错会报错并给候选。**常见字段与合理范围**（多为 0..1，除注明外）：`opaque`／`smudge`／`smudge_length`（0..5）／`dabs_per_actual_radius`（1..20，越大越密；>20 明显变慢）／**`dabs_per_second`（0..500；>0 才会按时间出 dab ⇒ 它决定 `time_ms` 有没有用）**／`speed1_slowness`／`speed1_gamma`（速度映射的形状）／`hardness`／`elliptical_dab_angle`（度）。**`radius` 是对数**（想改笔尖大小请用 `size`）✓"
+                "覆盖 .myb 字段：{规范名: 数值}，如 {\"smudge\":1.0,\"opaque\":0.2}；`dabs_per_basic_radius` 控 dab 间距（2px 只是服务端插值步，dab 累计跨步结转）；只在密铺饱和区 painted 指标看不出，稀疏见效需压低 dpar 与 dpbr ⇒ 要更密请加笔数／加 size／用 smudge；字段名就是 .myb 的 JSON 键**也可直接用四组语义别名**：hand_jitter／speed_gain／color_variance／smudge_amount ✓（一个词管一组 .myb 项 ✓）；，拼错会报错并给候选。**常见字段与合理范围**（多为 0..1，除注明外）：`opaque`／`smudge`／`smudge_length`（0..5）／`dabs_per_actual_radius`（1..20，越大越密；>20 明显变慢）／**`dabs_per_second`（0..500；>0 才会按时间出 dab ⇒ 它决定 `time_ms` 有没有用）**／`speed1_slowness`／`speed1_gamma`（速度映射的形状）／`hardness`／`elliptical_dab_angle`（度）。**`radius` 是对数**（想改笔尖大小请用 `size`）✓"
             ),
             param!(
                 "hand_tremor",
