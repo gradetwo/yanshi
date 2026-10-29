@@ -572,6 +572,7 @@ const P2_TOOL_SPECS = {
   preview_suggestion: [0, [["suggestion_id","s",0],["patch","a",0]]],
   put_blob: [0, [["path","s",0],["data_base64","s",0],["mime_type","s",0]]],
   reapply: [1, [["atom_id","s",1]]],
+  rebackground: [1, [["color","o",1]]],
   redo_last: [1, [["count","i",0]]],
   reject_annotation: [0, [["annotation_id","s",1]]],
   reject_suggestion: [1, [["suggestion_id","s",1],["reason","s",0]]],
