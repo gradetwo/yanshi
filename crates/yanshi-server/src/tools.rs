@@ -14885,6 +14885,18 @@ fn write_medium_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
             max_dab.unwrap_or(f64::NAN),
             size
         ));
+        // **反馈报告 5 §2**：夹紧此前只有 `size_clamped`／`size_clamp_note`，顶层
+        // `warnings` 恒为空 ⇒ 调用方只读顶层警告时会错过夹紧。夹紧时顶层也给
+        // 一条警告，写明请求值、夹紧后 `size_used` 与上限；不夹紧时不触发。
+        // 夹紧行为与 `size_used` 本身一字不动。
+        let warning = format!(
+            "请求 size={size_requested} 超过上限 {} ⇒ 已夹紧到 size_used={size} 落笔",
+            max_dab.unwrap_or(f64::NAN)
+        );
+        match value.get_mut("warnings") {
+            Some(Value::Array(items)) => items.push(json!(warning)),
+            _ => value["warnings"] = json!([warning]),
+        }
     }
     value["painted_pixels"] = json!(painted_pixels);
     // **同值字段 `painted_pixels_raw`** ✓（A3 并存方案，与 `brush_stroke` 同例 ✓）。
