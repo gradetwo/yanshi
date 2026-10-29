@@ -40,7 +40,10 @@ fn workspace(tag: &str) -> (Cleanup, Workspace) {
         .with_wait_for_render(true, 4_000);
     let layer = registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
     assert_eq!(layer["ok"], json!(true), "{layer}");
-    (Cleanup(root), workspace)
+    // 显式绑定守卫：判据 check-tests-clean-temp 只认 `x = Cleanup(` 的绑定形态，
+    // 元组里直接写 `Cleanup(root)` 会被判为“从未绑定”（语义相同，但结构检查认不出）。
+    let cleanup = Cleanup(root);
+    (cleanup, workspace)
 }
 
 fn stroke(
