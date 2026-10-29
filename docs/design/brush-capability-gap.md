@@ -23923,3 +23923,135 @@ bbox 内与外／分页（含 `limit:0`）；§C `get_atom` 字段集合与 `lab
 - `-0` 分支经 JSON 契约**到不了**（请求体里 `-0` 被 `JSON.parse` 读成 `-0` 会一路保留，但判据不造这个输入 ✓）
   ⇒ 该守卫是**防御性**的 ✓，没变异（不可观测 ⇒ 变异必假红 ✗）。
 - 只验 `L`／`C` 两种段算子 ✓（服务端 `parse_path_subpaths` 也只认这两种 ✓）。
+
+## 六百七十、本地 `edit_path` 落地（178 → 179）：四个节点算子照 `write_edit_path` 逐字复刻，判据当场抓出三处真缺陷（插点恒失败／撤销后被抑制的 `supersede` 仍生效）＋ 判据自己四处算错
+
+**做什么**（`crates/yanshi-http/assets/api-local.js`；`LOCAL_IMPLEMENTED` 机械重数 178 → **179** ✓）：
+
+1. **`edit_path` 路由**（照 `write_edit_path`，`tools_pathdata.rs:145`）—— **纯原子折叠 ＋ `supersede` ✓ 不碰内核 ✓**：
+   - **顺序照服务端** ✓：入口声明校验 → 算子白名单（`move_node`／`insert_node`／`delete_node`／`set_handle` ✓）
+     → 对象寻址（`404 不存在`／`404 已被删除`／`400 不是 path` ✓）→ `subpath` 下标 → 算子参数 → 编辑
+     → **复验整份几何** → 写回 `data.geometry.{subpaths,bbox}` → 落 `supersede` 原子 ✓。
+   - **两道几何守卫各自可观测** ✓：对象类型必须是 `Shape` ✓；`data.geometry.kind` 必须是 `path` ✓ ——
+     两者都以**注入几何的笔／带 `subpaths` 的矩形**钉住（§E13／§E14 ✓，见下面「变异没打中」一节）。
+   - **参数口径照服务端** ✓：`subpath`／`node`／`segment` 是**非负整数** ✓（负数／非整数一律 400 ✓）；
+     `to` 必须**恰好两元有限数** ✓（少一元、多一元、字符串都拒 ✓）；`t` 缺省 **0.5**、必须开区间 ✓；
+     `side` 只认 `in`／`out` ✓。
+   - **四个节点算子**（新助手照 `crates/yanshi-render/src/path.rs` 逐字 ✓）：
+     - `p2PathMoveNode`：锚点**刚性平移** ✓（前一段的 `c2`、后一段的 `c1` 同步位移 ✓；
+       节点 0 还改 `start` ✓）；
+     - `p2PathInsertNode`：直段**按 t 拆两段** ✓；三次段 **de Casteljau** 切分 ✓；
+       **闭合子路径的虚拟回首段**（`segment === segments.length` ✓）拆成「末段 → 中点 → 显式回首段」✓；
+     - `p2PathDeleteNode`：首节点改 `start` 并丢首段 ✓、末节点丢末段 ✓、中间节点按**两侧算子**合并 ✓
+       （两侧都是直段 ⇒ 直段 ✓；否则升为三次段，缺柄那侧取**被删锚点** ✓）；**只剩一段拒绝** ✓；
+     - `p2PathSetHandle`：该侧已是三次段 ⇒ 直接改控制点 ✓；是直段 ⇒ 升格（`Out` 的 `c2` 取段上 **2/3**、
+       `In` 的 `c1` 取 **1/3** ✓）；闭合首节点 `In`／末节点 `Out` 落成**显式回首三次段** ✓；
+       开放首节点 `In`／末节点 `Out` **明确报错** ✓（不静默 ✓）。
+   - **回执**照服务端 ✓：`{ok, op, object_id, subpath, new_node, subpaths, d, bbox, length, node_counts, head}`；
+     `bbox` 是**编辑后**的控制点盒 ✓、`d`／`node_counts`／`length` 全部读**编辑后**的几何 ✓
+     （编辑前的值在这里是**写读分裂** ✗ —— 两条变异分别钉住 bbox 与 d ✓）。
+
+2. **写回是**整份 `supersede`** ✓**：`data.geometry.{subpaths,bbox}` 与旧 `data` 合并后落原子 ✓；
+   **编辑失败不落原子** ✓（先复验、后 `putAtom` ✓）。
+
+**判据**（`scripts/tool-pwa-edit-path.mjs`，同一请求两边打、剥掉 HTTP 信封后比解析后 JSON；**483 条断言** ✓）：
+装配走**真 wasm 内核 ＋ 服务端日志回放** ✓（前序只在服务端跑一遍 ⇒ `GET /api/atoms?since=0` 原样 `putAtom` 进本地 ✓
+⇒ 两边 `head`／原子 seq／笔画对象逐位同源 ✓；不过期检查失败 ⇒ `exit(3)` ✓）。
+
+| 节 | 覆盖 |
+|---|---|
+| §A | `move_node` 5 个成功例（中间节点／三次段两端／闭合首节点）＋ 4 个 400（节点越界、`to` 少一元／含字符串／**多一元**）|
+| §B | `insert_node` 4 个成功例（直段／三次段／缺省 `t=0.5`／闭合虚拟回首段）＋ 4 个 400（段越界、`t=1`／`t=0`、缺 `segment`）|
+| §C | `delete_node` 4 个成功例（直直合并／删首／删末／三三合并）＋ 2 个 400（只剩一段、节点越界）|
+| §D | `set_handle` 6 个成功例（直段 `Out`／`In` 升格、三次段直改、闭合首 `In`／末 `Out`）＋ 4 个 400（开放首 `In`／末 `Out`、`side` 非法、缺 `side`）|
+| §E | 入口与寻址 14 条：缺参／未知键／未知算子／`subpath` 越界与负下标／对象不存在／已删／**笔里塞 path 几何**／**矩形带 `subpaths`**，以及「入口校验先于对象查找」「算子白名单先于对象查找」两条顺序断言 |
+| §F | **可撤的 `supersede`**：编辑 → `revert_atoms` 撤掉那条 `supersede` → `get_path` 回到编辑前 ✓ |
+| §G | `get_path` 顶层字段集合（11 键）与回读一致性 ✓ |
+
+**判据抓出的三处真缺陷（都是本地产品缺陷 ✓，不是判据算错 ✗）**：
+
+| # | 症状 | 根因 | 修法 |
+|---|---|---|---|
+| ① | **每一次** `insert_node` 都回 `400 edit_path insert_node 失败：未知错误` | `p2PathInsertNode` 两条成功路径只回 `{index}` ✓ **没有 `ok:true`** ✗ ⇒ 路由的 `if (!outcome \|\| !outcome.ok)` 把它当失败 ✓ | 两处成功返回补 `ok: true` ✓ |
+| ② | §F 撤销后读回：`bbox.w` 20 vs 30 | 本地折叠 `p2ObjectView` **无条件**应用最后一条 `supersede` ✗ —— **被 `revert` 中和的原子没有跳过** ✗（服务端 `EffectiveActions` 整条跳过 ✓）⇒ 撤销编辑后 `get_path` 仍读到编辑后的数据 ✓ | `supersede` 分支加 `!neutralEarly.has(a.id)` ✓ |
+| ③ | 同上，`set_property` 同一问题 | 同一处折叠 ✗ —— 被撤销的 `set_property` 照旧生效 ⇒ `get_object`／`list_objects` 也一起错 ✗ | 同一修法 ✓ |
+
+⇒ ②③ 是**写读两条口径同时分裂** ✓：`edit_path` 回执自己是对的 ✓，但任何**读路径**都跟着错 ✓ ——
+只有 §F 那种「先写、再撤、再读」的序列才照得出来 ✓（`tool-pwa-get-path` 的 §C 只撤了**建对象**，撤不到 `supersede` ✓）。
+
+**判据自己的四处算错（先测量、后改判据 ✓）**：
+
+| # | 症状 | 根因 | 处理 |
+|---|---|---|---|
+| ① | §B2「切分是同一曲线 ⇒ 总长不变」差 ~7.9e-4 | 几何**完全相同** ✓ 但切分后**展平采样点不同** ⇒ 折线总长按字节不同 ✓ | 改成**相对容差 1e-4**（不是像素数、不是绝对相等 ✓） |
+| ② | §F 找不到 `supersede` 原子 | `list_atoms` **倒序** ＋ 缺省 `limit` 20 ✗ —— 我从数组**末尾**找 ✓ | 从**头**找 ＋ `limit: 5000` ✓ |
+| ③ | §F 撤销「看起来成功」 | `revert_atoms` **失败也回 HTTP 200** ✗ —— 只断言状态码 ⇒ 安慰剂 ✓ | 断言 `ok === true` ＋ `reverted_count === 1` ＋ `failed_count === 0` ✓ |
+| ④ | 首跑 §B1 前序 `exit(3)`：`draw_shape 不接受参数 0` | `shape()` 返回 `[tool, args]` 对，却被当 args 传 ✓ | 只回 args ✓ |
+
+**首轮变异有 6 条没打中 ⇒ 四条根因（都是「输入没制造出它要检查的情况」✗）**：
+
+| 变异 | 为什么没红 | 补什么 |
+|---|---|---|
+| `type_guard_off` | §E9 用的是**没有几何的笔** ⇒ 下游 `p2PathSubpaths` 也拒 ✓ 关掉守卫看不出差别 ✗ | 加 P11：笔 ＋ `replace_object_data` 塞**合法 path 几何** ⇒ §E13 ✓ |
+| `kind_guard_off` | §E8 用的是**裸矩形**（没有 `subpaths`）⇒ 下游也拒 ✗ | 加 P12：矩形 ＋ 塞 `subpaths` ⇒ §E14 ✓ |
+| `to_arity_off` | §A6 的 `to: [1]` 被「第二个不是有限数」拒掉 ⇒ 两元检查测不到 ✗ | 加 §A9 `to: [1,2,3]` ⇒ 只有 `length === 2` 能拒 ✓ |
+| `closed_out_lerp_third` | §D6 原来在 P3 上跑，**末锚点已回到 `start`** ⇒ 回首线 lerp **退化**（2/3 与 1/3 同值）✗ | 加 P10（末锚点 ≠ `start` 的闭合路径）⇒ §D6 改用 P10 ✓ |
+| `bbox_pre_edit`／`d_pre_edit` | 变异改用的 `parsed.subpaths` 与 `subpaths` 是**同一个数组**（助手原地改 ✓）⇒ 变异是空操作 ✗ | 改成**重新解析** `p2PathSubpaths(geometry)` ⇒ 真·编辑前 ✓ |
+
+**变异（37 次，全部 `exit 1` ✓；每次后恢复、与原件逐字节相同 ✓ `cmp`；恢复后复测 483 条全绿 ✓）**：
+
+| # | 改坏 | 红在哪（实测） |
+|---|---|---|
+| ① | 入口声明校验被关掉 | §E1 缺 object_id |
+| ② | 算子白名单被关掉 | §E3 未知算子 |
+| ③ | 对象不存在回 400（应 404） | §E7 对象不存在 |
+| ④ | 已删对象回 400（应 404） | §E12 对象已删 |
+| ⑤ | 对象类型守卫被关掉 | §E13 笔里塞 path 几何 |
+| ⑥ | `geometry.kind` 守卫被关掉 | §E14 矩形带 subpaths |
+| ⑦ | `subpath` 越界被放行 | §E5 subpath 越界 |
+| ⑧ | 负下标被当成合法 | §E6 subpath 负下标 |
+| ⑨ | 节点越界被放行 | §A5 节点越界 |
+| ⑩ | `to` 只查数组不查两元 | §A9 to 三元 |
+| ⑪ | 移动节点不平移入段 `c2` | §A2 三次段末端 |
+| ⑫ | 移动节点不平移出段 `c1` | §A3 三次段首节点 |
+| ⑬ | 节点 0 移动不改 `start` | §A3 三次段首节点 |
+| ⑭ | 插直段的 t 缺省不是 0.5 | §B3 缺省 t=0.5 |
+| ⑮ | 插点落在开区间外（t 端点接受） | §B6 t=1 |
+| ⑯ | de Casteljau 的 `c1` 取反（镜像） | §B2 三次段插点 |
+| ⑰ | 闭合虚拟回首段被关掉 | §B4 闭合回首段 |
+| ⑱ | `new_node` 不回填 | §B1 直段插点：new_node 应为 1 |
+| ⑲ | 只剩一段的删除被放行 | §C5 只剩一段拒绝 |
+| ⑳ | 删首节点不改 `start` | §C2 删首节点 |
+| ㉑ | 删末节点不丢段 | §C3 删末节点 |
+| ㉒ | 合并段丢进入段的 `c1` | §C4 三三合并 |
+| ㉓ | 直段 `Out` 升格的 2/3 写成 1/3 | §D1 直段 Out 升格 |
+| ㉔ | 直段 `In` 升格的 1/3 写成 2/3 | §D2 直段 In 升格 |
+| ㉕ | 既有三次段的 `Out` 直改被跳过 | §D3 三次段 Out 直改 |
+| ㉖ | 既有三次段的 `In` 直改被跳过 | §D4 三次段 In 直改 |
+| ㉗ | 开放首节点 `In` 静默成功 | §D7 开放首节点无 in |
+| ㉘ | 开放末节点 `Out` 静默成功 | §D8 开放末节点无 out |
+| ㉙ | `side` 白名单被关掉 | §D9 side 非法 |
+| ㉚ | 缺 `side` 不报缺参 | §D10 缺 side |
+| ㉛ | 闭合首节点 `In` 的 `c1` 取 2/3 | §D5 闭合首节点 In |
+| ㉜ | 闭合末节点 `Out` 的 `c2` 取 1/3 | §D6 闭合末节点 Out |
+| ㉝ | 回执 bbox 用编辑前几何 | §A1 bbox 应为控制点盒 |
+| ㉞ | 回执 `d` 用编辑前几何 | §A1 中间节点：全字段不一致 |
+| ㉟ | `node_counts` 恒 +2 | §A1 中间节点：node_counts 应与段数 + 1 一致 |
+| ㊱ | 不落 `supersede`（回执对、读回旧） | §A1 中间节点 回读：全字段不一致 |
+| ㊲ | 折叠时忽略「被撤销的 supersede」 | §F 撤销后读回：全字段不一致 |
+
+**如实记**：
+- 闭环的两条在**服务端侧也验** ✓：`revert_atoms` 的 `ok`／计数是两边都断 ✓ —— 否则本地那侧失败会被 200 掩盖 ✗。
+- ㊱ 的期望标签是**回读比对** ✓ 不是回执比对 ✓ —— 回执本来是对的 ✓（缺陷在写路径没落库 ✓）。
+- 三十七个锚点都做过唯一性 `assert` ✓；其中 `missing_wrong_status`／`deleted_wrong_status`／`type_guard_off`／
+  `kind_guard_off` 一度各命中 **2 处** ✗（`get_path` 分支同样的几行**逐字相同** ✓）⇒ 锚点带上
+  分支独有上下文（`const rows = await atomsOf(handle, doc);`、`// **非负整数下标 ✓**`）后唯一 ✓。
+
+**回归**：`tool-pwa-get-path`（151 条）、`tool-pwa-api-behaviour`、`tool-pwa-atom-log`（210 条）、
+`tool-pwa-revert-to-seq`（134 条）、`tool-pwa-preset-library-parity`、`tool-js-syntax`（454 个脚本）—— **全绿** ✓
+（②③ 的折叠修复对 `get_object`／`list_objects` 也是行为变化 ⇒ 其中 atom-log 判据覆盖了那条读路径 ✓）。
+
+**已知限制（如实记 ✓）**：
+- 判据的本地装配走 `GET /api/atoms` ＋ `putAtom` ✓（**测试装配**，不是产品写入路径 ✗）。
+- `edit_path` 只在**局部坐标**上编辑 ✓、不应用对象 `transform` ✓ —— 服务端现状如此 ✓。
+- 服务端 `edit_path` 的 `t` 缺省是 **0.5** ✓；本地照抄 ✓（判据 §B3 钉住 ✓）。

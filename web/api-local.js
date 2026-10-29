@@ -80,10 +80,11 @@ export // **★ 声明必须与**实现分支数**一致 ✗ ★**（第 72 轮 
 //   **第 5 批 原子日志两端点 ✓ —— `get_stroke_log`／`list_atoms` 落地 ⇒ 再 +2 ✓**；
 //   **第 6 批 阶段回退 ✓ —— `revert_to_seq` 落地 ⇒ 再 +1 ✓**；
 //   **第 7 批 矢量命中 ✓ —— `vector_hit_test` 落地 ⇒ 再 +1 ✓**；
-//   **第 8 批 路径读回 ✓ —— `get_path` 落地 ⇒ 再 +1 ✓**）：
+//   **第 8 批 路径读回 ✓ —— `get_path` 落地 ⇒ 再 +1 ✓**；
+//   **第 9 批 路径节点编辑 ✓ —— `edit_path` 落地 ⇒ 再 +1 ✓**）：
 //   **∴ 判据口径 `actualImpl`（**机械重数：`(?:url\.pathname|path) === "`**）⇒ 本数与它同步 ✓（非拍脑袋 ✗）**
 //   **∴ 数它用：`node -e 'const a=require("fs").readFileSync("web/api-local.js","utf8");console.log(((a.match(/(?:url\.pathname|path) === "/g)||[]).length))'` ✓**
-const LOCAL_IMPLEMENTED = 178; // 路径读回落地 ⇒ 机械重数 177 + 1 ✓
+const LOCAL_IMPLEMENTED = 179; // 路径节点编辑落地 ⇒ 机械重数 178 + 1 ✓
 
 let lastFold = null;
 
@@ -1669,6 +1670,168 @@ async function withKernel(doc, fn) {
     }
     return parts.join(" ");
   }
+  /** **一条子路径的节点列 ✓**（**照 `path.rs:437 node_anchors` 逐字 ✓**）：节点 0 = `start` ✓、
+   *   节点 k = 第 k-1 段的终点 ✓ ⇒ 总数恒为 `segments.length + 1` ✓（**闭合回首段不是节点 ✗**）。
+   *   **∴ 这是 `edit_path` 的统一下标口径 ✗**（与服务端同一个 ✓）。 */
+  function p2PathNodeAnchors(sub) {
+    const anchors = [sub.start];
+    for (const seg of sub.segments) anchors.push(seg.to);
+    return anchors;
+  }
+  /** **两点线性插值 ✓**（**照 `path.rs:450 lerp_point` ✓**：纯四则 ⇒ 逐位确定性 ✓）。 */
+  function p2PathLerp(a, b, t) {
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  }
+  /** **节点下标越界文案 ✓**（**照 `path.rs` 三处同一句 ✓**：`0..=len-1` 走 `saturating_sub` ✓）。 */
+  function p2PathNodeRangeError(node, count) {
+    return `节点下标 ${node} 越界（本子路径共 ${count} 个节点，下标 0..=${Math.max(0, count - 1)}）`;
+  }
+  /** **移动节点 ✓**（**照 `path.rs:504 move_path_node` 逐字 ✓**）：
+   *   **∴ 相连的两个存储控制柄按**同一位移**刚性平移 ✗**（`node-1` 段的 `c2` 与 `node` 段的 `c1` ✓）；
+   *   **∴ 闭合回首段是隐式直段 ⇒ 没有存储柄 ✓**（只移锚点 ✓）；其余控制点逐位不动 ✓。 */
+  function p2PathMoveNode(sub, node, to) {
+    if (!Number.isFinite(to[0]) || !Number.isFinite(to[1])) {
+      return { error: `目标点必须是有限数，得到 (${p2RustF64(to[0])}, ${p2RustF64(to[1])})` };
+    }
+    const anchors = p2PathNodeAnchors(sub);
+    if (node >= anchors.length) return { error: p2PathNodeRangeError(node, anchors.length) };
+    const old = anchors[node];
+    const delta = [to[0] - old[0], to[1] - old[1]];
+    if (node === 0) {
+      sub.start = to;
+    } else {
+      const seg = sub.segments[node - 1];
+      if (seg.op === "C") {
+        seg.c2 = [seg.c2[0] + delta[0], seg.c2[1] + delta[1]];
+        seg.to = to;
+      } else {
+        seg.to = to;
+      }
+    }
+    if (node < sub.segments.length) {
+      const seg = sub.segments[node];
+      if (seg.op === "C") seg.c1 = [seg.c1[0] + delta[0], seg.c1[1] + delta[1]];
+    }
+    return { ok: true };
+  }
+  /** **插入节点 ✓**（**照 `path.rs:543 insert_path_node` 逐字 ✓**）：
+   *   **∴ 直段取插值点拆两段 ✓、三次段按 de Casteljau 在 t 处切分 ✓**（**几何逐位不变 ✓**）；
+   *   **∴ 闭合子路径给 `segment === 段数` ⇒ 作用于隐式回首直段 ✗**（新节点落成末尾显式直段 ✓，
+   *   返回值是**旧节点数** ✓）；`t` 必须**开区间** (0,1) ✓。 */
+  function p2PathInsertNode(sub, segment, t) {
+    if (!Number.isFinite(t) || t <= 0 || t >= 1) {
+      return { error: `t 必须在 (0, 1) 开区间内（端点就是已有节点），得到 ${p2RustF64(t)}` };
+    }
+    const anchors = p2PathNodeAnchors(sub);
+    if (segment === sub.segments.length && sub.closed && sub.segments.length > 0) {
+      const mid = p2PathLerp(anchors[anchors.length - 1], sub.start, t);
+      sub.segments.push({ op: "L", to: mid });
+      return { ok: true, index: anchors.length };
+    }
+    if (segment >= sub.segments.length) {
+      return { error: `段下标 ${segment} 越界（本子路径共 ${sub.segments.length} 段，下标 0..=${Math.max(0, sub.segments.length - 1)}）` };
+    }
+    const seg = sub.segments[segment];
+    const p0 = anchors[segment];
+    if (seg.op === "L") {
+      const mid = p2PathLerp(p0, seg.to, t);
+      sub.segments[segment] = { op: "L", to: mid };
+      sub.segments.splice(segment + 1, 0, { op: "L", to: seg.to });
+    } else {
+      const q0 = p2PathLerp(p0, seg.c1, t);
+      const q1 = p2PathLerp(seg.c1, seg.c2, t);
+      const q2 = p2PathLerp(seg.c2, seg.to, t);
+      const r0 = p2PathLerp(q0, q1, t);
+      const r1 = p2PathLerp(q1, q2, t);
+      const m = p2PathLerp(r0, r1, t);
+      sub.segments[segment] = { op: "C", c1: q0, c2: r0, to: m };
+      sub.segments.splice(segment + 1, 0, { op: "C", c1: r1, c2: q2, to: seg.to });
+    }
+    return { ok: true, index: segment + 1 };
+  }
+  /** **删除节点 ✓**（**照 `path.rs:599 delete_path_node` 逐字 ✓**）：
+   *   **∴ 节点 0 ⇒ 丢第一段、新 `start` = 原第 1 个锚点 ✓**；**末节点 ⇒ 丢最后一段 ✓**；
+   *   **中间节点 ⇒ 相邻两段合并 ✓**：两段都是直段 ⇒ 直段 ✓；**否则三次段 ✓** ——
+   *   `c1` 取入段的 `c1`、`c2` 取出段的 `c2`，**直段那侧取**被删锚点** ✓**（形状会变 ✓，不假装无损 ✓）。
+   *   **只剩一段 ⇒ 拒绝 ✓**（删完会零段、违反入库校验 ✓）。 */
+  function p2PathDeleteNode(sub, node) {
+    const anchors = p2PathNodeAnchors(sub);
+    if (node >= anchors.length) return { error: p2PathNodeRangeError(node, anchors.length) };
+    if (sub.segments.length < 2) {
+      return { error: "子路径只剩一段，删节点会让它没有段（先 insert_node 或整条重画）" };
+    }
+    if (node === 0) {
+      const newStart = anchors[1];
+      sub.segments.shift();
+      sub.start = newStart;
+      return { ok: true };
+    }
+    if (node === anchors.length - 1) {
+      sub.segments.pop();
+      return { ok: true };
+    }
+    const incoming = sub.segments[node - 1];
+    const outgoing = sub.segments[node];
+    const deleted = anchors[node];
+    const target = outgoing.to;
+    if (incoming.op === "L" && outgoing.op === "L") {
+      sub.segments[node - 1] = { op: "L", to: target };
+    } else {
+      const c1 = incoming.op === "C" ? incoming.c1 : deleted;
+      const c2 = outgoing.op === "C" ? outgoing.c2 : deleted;
+      sub.segments[node - 1] = { op: "C", c1, c2, to: target };
+    }
+    sub.segments.splice(node, 1);
+    return { ok: true };
+  }
+  /** **设置一侧控制柄 ✓**（**照 `path.rs:660 set_path_handle` 逐字 ✓**）：
+   *   **∴ 该侧已是三次段 ⇒ 直接改控制点 ✓**；**是直段 ⇒ 升格为三次段 ✗** ——
+   *   给定的柄落在 `to` ✓、**另一侧控制点取段上 1/3（`In` 升格取 `c1`）／2/3（`Out` 升格取 `c2`）✓**；
+   *   **∴ 闭合回首段 ⇒ 落成显式三次段（终点 = `start`）追加在末尾 ✓**；
+   *   **∴ 开放子路径首节点 `In`／末节点 `Out` 不存在 ⇒ 明确报错 ✓**（不静默 ✓）。 */
+  function p2PathSetHandle(sub, node, side, to) {
+    if (!Number.isFinite(to[0]) || !Number.isFinite(to[1])) {
+      return { error: `控制点必须是有限数，得到 (${p2RustF64(to[0])}, ${p2RustF64(to[1])})` };
+    }
+    const anchors = p2PathNodeAnchors(sub);
+    if (node >= anchors.length) return { error: p2PathNodeRangeError(node, anchors.length) };
+    if (side === "out") {
+      if (node < sub.segments.length) {
+        const seg = sub.segments[node];
+        if (seg.op === "C") {
+          seg.c1 = to;
+        } else {
+          sub.segments[node] = { op: "C", c1: to,
+                                 c2: p2PathLerp(anchors[node], seg.to, 2 / 3), to: seg.to };
+        }
+        return { ok: true };
+      }
+      if (sub.closed && sub.segments.length > 0) {
+        const last = anchors[node];
+        sub.segments.push({ op: "C", c1: to,
+                            c2: p2PathLerp(last, sub.start, 2 / 3), to: sub.start });
+        return { ok: true };
+      }
+      return { error: `节点 ${node} 是开放子路径的末节点，没有 out 控制柄（其后没有段）` };
+    }
+    if (node > 0) {
+      const seg = sub.segments[node - 1];
+      if (seg.op === "C") {
+        seg.c2 = to;
+      } else {
+        sub.segments[node - 1] = { op: "C", c1: p2PathLerp(anchors[node - 1], seg.to, 1 / 3),
+                                   c2: to, to: seg.to };
+      }
+      return { ok: true };
+    }
+    if (sub.closed && sub.segments.length > 0) {
+      const last = anchors[anchors.length - 1];
+      sub.segments.push({ op: "C", c1: p2PathLerp(last, sub.start, 1 / 3),
+                          c2: to, to: sub.start });
+      return { ok: true };
+    }
+    return { error: `节点 ${node} 是开放子路径的首节点，没有 in 控制柄（其前没有段）` };
+  }
   /** **变换净荷解析 ✗**（**照 `fold.rs:1753 transform_from_payload` 逐字 ✓**）：
    *   **没给 `transform`（或 `matrix` 不是 6 元）⇒ 单位阵 ✓**；
    *   **给了 6 元 ⇒ 从**全零**起逐槽取数 ✓**（**非数字 ⇒ 0 ✓**，**不是**保留单位阵的槽 ✗ ——
@@ -2317,7 +2480,8 @@ async function withKernel(doc, fn) {
         createSeq = typeof r.seq === "number" ? r.seq : null;
         createAt = ri;
       }
-      else if (a.kind === "set_property" && pl.object_id === objectId) {
+      else if (a.kind === "set_property" && pl.object_id === objectId
+               && !neutralEarly.has(a.id)) {
         props[pl.key] = pl.value;
         // **`set_property{key:"transform"}` 也是变换来源 ✗**（**照 `apply_property_to_object` ✓**：
         // 它把值当**绝对**变换写进 `object.transform` ✓）⇒ **∴ 与 `move` 同序重放 ✓**；
@@ -2326,7 +2490,11 @@ async function withKernel(doc, fn) {
           moveOps.push({ pl: { transform: pl.value }, at: ri });
         }
       }
-      else if (a.kind === "supersede" && pl.object_id === objectId) supersededData = pl.data;
+      // **被撤销的 `supersede` 不算 ✗**（**照服务端折叠 ✓：失效集里的原子整条跳过 ✓** ——
+      //   旧本地实现无条件取最后一条 ⇒ **撤销编辑后 `get_path` 仍读到编辑后的数据** ✗，
+      //   而 `get_object`／`list_objects` 也一起错 ⇒ 与服务端**写读两条口径同时分裂** ✓）。
+      else if (a.kind === "supersede" && pl.object_id === objectId
+               && !neutralEarly.has(a.id)) supersededData = pl.data;
       else if (a.kind === "tombstone" && pl.object_id === objectId) tombstoneIds.push(a.id);
       else if ((a.kind === "move" || a.kind === "transform") && pl.object_id === objectId) {
         if (!neutralEarly.has(a.id)) moveOps.push({ pl, at: ri });
@@ -3818,6 +3986,109 @@ async function withKernel(doc, fn) {
         node_counts: parsed.subpaths.map((sub) => sub.segments.length + 1),
         server: false,
       });
+    }
+
+    // **P2c-72 `edit_path` ✓**（**照 `write_edit_path`（`tools_pathdata.rs:145`）逐字 ✓**）：
+    //   **∴ 四个算子共用一条路 ✗**：改 subpaths 克隆 → **复验整份几何** → 写回
+    //     `data.geometry`（**`subpaths` 与 `bbox` 同步 ✓**，**不许留旧 bbox 骗脏区 ✗**）→ `supersede` 落原子 ✓；
+    //   **∴ 顺序照服务端 ✗**：入口校验 → 算子白名单 → 对象寻址（404／400）→ `subpath` 下标 →
+    //     算子参数（`node`／`segment`／`t`／`side`／`to`）✓；**编辑失败 ⇒ 整单拒绝、不落原子 ✓**；
+    //   **∴ 节点语义全在 `path.rs` 那四个纯函数里 ✓**（锚点下标、刚性平移、de Casteljau 插点、
+    //     删点合并、直段升格补柄 ✓）—— 本地照抄，**不另立口径 ✗**。
+    if (path === "/api/tools/edit_path") {
+      const specBad = p2ValidateArgsFor("edit_path", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
+      const objectId = body.object_id;
+      const op = body.op;
+      if (!["move_node", "insert_node", "delete_node", "set_handle"].includes(op)) {
+        return p2Bad(`未知的 edit_path 算子 ${op}（已实现：move_node / insert_node / delete_node / set_handle）`);
+      }
+      const rows = await atomsOf(handle, doc);
+      const neutral = p2Neutralized(rows);
+      const view = p2ObjectView(rows, objectId);
+      if (!view.found || neutral.has(view.__create_id)) {
+        return p2Missing(`对象 ${objectId} 不存在`);
+      }
+      const death = p2ObjectDeath(p2PresetLayers(rows, neutral), view);
+      if (death.deleted) return p2Missing(`对象 ${objectId} 已被删除`);
+      const notPath = () => p2Bad(
+        `对象 ${objectId} 不是 path 形状（只认 draw_shape 建的 kind=path 对象）`);
+      if (p2ObjectTypeOf(rows, objectId) !== "shape") return notPath();
+      const data = view.data;
+      const geometry = data && typeof data === "object" && !Array.isArray(data)
+        ? data.geometry : null;
+      if (!geometry || typeof geometry !== "object" || Array.isArray(geometry)) return notPath();
+      if (geometry.kind !== "path") return notPath();
+      const parsed = p2PathSubpaths(geometry);
+      if (parsed === null) return notPath();
+      // **非负整数下标 ✓**（**照 `pathdata_index` ✓**：`as_u64` ⇒ 负数／非整数一律拒绝 ✓）。
+      const indexOf = (key) => {
+        const value = body[key];
+        return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+      };
+      // **`[x, y]` 点 ✓**（**照 `pathdata_point` ✓**：必须恰好两元有限数 ⇒ 否则点名参数 ✓）。
+      const pointOf = (key) => {
+        const value = body[key];
+        if (!Array.isArray(value) || value.length !== 2) return null;
+        if (!p2Num(value[0]) || !p2Num(value[1])) return null;
+        return [value[0], value[1]];
+      };
+      const subpathIndex = indexOf("subpath");
+      if (subpathIndex === null) return p2Bad("参数 subpath 必须是非负整数下标");
+      if (subpathIndex >= parsed.subpaths.length) {
+        return p2Bad(`subpath 下标 ${subpathIndex} 越界（对象 ${objectId} 共 ${parsed.subpaths.length} 条子路径）`);
+      }
+      // **`p2PathSubpaths` 的产物是**新建对象** ✓**（点列也是新数组 ✓）⇒ 直接改不碰原子里的旧值 ✓。
+      const subpaths = parsed.subpaths;
+      const sub = subpaths[subpathIndex];
+      let newNode = null;
+      let outcome = null;
+      if (op === "move_node") {
+        const node = indexOf("node");
+        if (node === null) return p2Bad("参数 node 必须是非负整数下标");
+        const to = pointOf("to");
+        if (!to) return p2Bad("参数 to 必须是 [x, y] 两个有限数");
+        outcome = p2PathMoveNode(sub, node, to);
+      } else if (op === "insert_node") {
+        const segment = indexOf("segment");
+        if (segment === null) return p2Bad("参数 segment 必须是非负整数下标");
+        const t = typeof body.t === "number" ? body.t : 0.5;
+        outcome = p2PathInsertNode(sub, segment, t);
+        if (outcome.ok) newNode = outcome.index;
+      } else if (op === "delete_node") {
+        const node = indexOf("node");
+        if (node === null) return p2Bad("参数 node 必须是非负整数下标");
+        outcome = p2PathDeleteNode(sub, node);
+      } else {
+        const node = indexOf("node");
+        if (node === null) return p2Bad("参数 node 必须是非负整数下标");
+        const sideName = typeof body.side === "string" ? body.side : null;
+        if (sideName === null) return p2Bad("缺少必填参数 side");
+        if (sideName !== "in" && sideName !== "out") {
+          return p2Bad(`side 只认 in / out，得到 ${sideName}`);
+        }
+        const to = pointOf("to");
+        if (!to) return p2Bad("参数 to 必须是 [x, y] 两个有限数");
+        outcome = p2PathSetHandle(sub, node, sideName, to);
+      }
+      if (!outcome || !outcome.ok) {
+        return p2Bad(`edit_path ${op} 失败：${(outcome && outcome.error) || "未知错误"}`);
+      }
+      // **复验整份几何 ✓**（**同一份校验 ✓**：不合法宁可整单拒绝也不落库 ✓）。
+      if (p2PathSubpaths({ fill_rule: parsed.fillRule, subpaths }) === null) {
+        return p2Bad("编辑后几何非法（已拒绝落库）");
+      }
+      const bbox = p2PathControlBbox(subpaths) || [0, 0, 0, 0];
+      const box = { x: bbox[0], y: bbox[1], w: bbox[2], h: bbox[3] };
+      const newData = { ...data, geometry: { ...geometry, subpaths, bbox: box } };
+      const seq = await putAtom(handle, doc,
+        p2Envelope("supersede", { object_id: objectId, data: newData }));
+      let length = 0;
+      for (const each of subpaths) length += p2PolylineLength(p2FlattenSubpath(each, 0.1));
+      return json({ ok: true, op, object_id: objectId, subpath: subpathIndex, new_node: newNode,
+                    subpaths, d: p2PathSvgD(subpaths), bbox: box, length,
+                    node_counts: subpaths.map((each) => each.segments.length + 1),
+                    head: seq, server: false });
     }
 
     // **P2c-70 `vector_hit_test` ✓**（**照 `read_vector_hit_test`，`tools_vector.rs:288` 逐字 ✓**）：

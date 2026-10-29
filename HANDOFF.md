@@ -1973,3 +1973,44 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    均为 known-red/不可判在册 ✓（通过 64｜意外失败 1｜已知红 2｜跳过 8 ⇒ 本条修后该口径应归零 ✓）。
 ⑤ **平仓**：修后推 `3c9091f8` ⇒ run（HEAD 3c9091f8）**全绿 success** ✓（rustfmt 首绿 ⇒ 其余 job 全过）
    —— #50／#52／#53 三线合并至此**全部被 CI 验过**，无遗留意外红 ✓。
+
+## §114 yanshi-patch-batch14（本地 `edit_path`）合并留痕（基线 `dccc1775`，2026-10-29）
+
+① **凭据**：md5 `fde76a3e1d5c1b94f252601f25bc7142`（102,945 B／1,744 行 ✓）；作者链 `db3e2cc2→b11e1feb`
+   —— **起点正是 §110 五连包的终点** ✓（链条连续，无空档）。
+② **接缝**：6 文件，`git apply --check` **只有一处失败** = `web/index.html` 单 hunk 且**只改构建戳数字**
+   （`yanshi-shell-5318612630582→6178204831389` ✓）⇒ **定性为作者自己跑同步链的产物抖动，不硬套** ✗；
+   正确做法＝`--exclude=web/index.html` 应用五个真改动，再由本机链重生成戳
+   （**本机现值 `4042295635918`** ✓ ⇒ 与 §109「产物链新鲜度」同一口径）。
+③ **内容（本地产品缺陷三处 ＋ 一个新端点）**：`LOCAL_IMPLEMENTED` 178 → **179**，且**当场用机械重数对上** ✓
+   （`(?:url\.pathname|path) === "` 数出 178＋1 ✓）；四个节点算子照 `path.rs:437/450/504/543/599/660` 逐字复刻
+   （**三条引用先 grep 核实存在再接受 ✓**，内核③）。三处真缺陷：
+   a) `p2PathInsertNode` 两条成功路径漏 `ok:true` ⇒ **每一次** `insert_node` 恒 400 ✓；
+   b) c) 本地折叠 `p2ObjectView` **无条件**应用最后一条 `supersede`／`set_property`，
+      **没跳过被 `revert` 中和的原子** ✗（服务端 `EffectiveActions` 整条跳过 ✓）
+      ⇒ **撤销编辑后所有读路径仍回编辑后的数据** ✓ —— 这是**写读两条口径同时分裂**：
+      `edit_path` 回执自己是对的 ⇒ 只有「先写→再撤→再读」的序列照得出来 ✓
+      （`tool-pwa-get-path` §C 只撤过**建对象**，撤不到 `supersede` ⇒ 一直漏 ✓）。
+④ **双副本自证**：补丁里 `assets/api-local.js` 与 `web/api-local.js` 的增删行**逐字节相同**（279 对 279 ✓
+   ＝ `cmp` 两份补丁体）⇒ 应用后 `cmp` 两文件一致 ✓（**parity 在补丁侧就已成立**，不必事后补救）。
+⑤ **本机复验**（合并例外口径）：**Rust 侧零改动**（补丁不动 `crates/*/src` 除 JS 资产 ✓）⇒
+   免跑 cargo test；重建链 release→wasm32→bindgen→pwa-sync-wasm→pwa-sync-viewer **全绿**（`BUILDCHAIN-OK` ✓）；
+   新判据 `tool-pwa-edit-path` **483 条断言全过** ✓（口径＝**runtime 累加**，文件内是 30 处 `check(` 调用点 ⇒
+   报数必须说口径，AGENTS.md「两个判据数不是一回事」同族 ✓）；
+   **作者变异电池复跑 37/37 全红在该红的断言** ✓＋还原 `cmp` 逐字节一致 ✓＋复测全绿 ✓
+   （其中 ㊱/㊲ 两条红在**回读比对**而非回执比对 ⇒ 正是缺陷 b/c 的形状 ✓）。
+⑥ **同族回归**（折叠修复也改读路径）：`get-path`／`atom-log`／`revert-to-seq`／`vector-hit-test`／
+   `read-inspect`／`api-behaviour`／`edit-path` **7/7 exit=0** ✓；
+   静态与结构：`js-syntax`／`web-assets-parity`／`stamp-shape`／`sw-roles`／`byte-budget`
+   （**930,815 ≤ 931,000 未涨** ✓，戳换位数相同）／`i18n-coverage`／`density`／`criteria-coverage`
+   （454 脚本｜437 枚举｜新判据走 `tool-*` glob 自动接线 ✓）全绿 ✓；
+   `preset-library-parity`／`suggestion-accept`／`schema-params-census` 走 `run-criteria-local.sh` 复跑绿 ✓
+   （census 输出 207 工具／271 文案名 —— **Rust 注册表未变** ⇒ 数字不动 ✓）。
+⑦ **我自己的一次错**（「这个意外结果是我造的吗」再证 ✓）：把 `tool-schema-params-census` 当**静态判据**直接
+   `node` 跑 ⇒ 它要 `argv[2..4]`（base／doc／token）⇒ 打出「用法」并**退 2**，我一度记成红。
+   实际是**前提不成立**（该判据的契约就是带服务端地址跑）⇒ 改由 `run-criteria-local.sh` 跑，exit 0 ✓。
+   ⇒ 教训落在这里：**「静态六条」之外别自行扩列**，先读脚本的 argv 契约再决定怎么跑 ✓。
+⑧ **`web/assets-index.json` 漂移第五次再现**：`pwa-sync-viewer` 又把 7 张**未跟踪本地纹理**
+   （`Cardboard*`／`Paper004-5`）写回索引 ⇒ 按 §104/§105/§112⑥ 同规 `checkout` 还原 ✓
+   （还原后 `grep Cardboard001` 命中 0 ✓；根因清理仍挂 **#30** ⇒ 这条**每合并一次就要再还原一次**，
+   已成本机同步链的固定后步 ✓）。
