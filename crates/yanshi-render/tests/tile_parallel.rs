@@ -961,10 +961,13 @@ fn banded_document(width: u32, height: u32, layers: usize) -> DocumentState {
 /// 把画布按比例缩到本机能承载的最小值（12.6 M 像素，刚越过阈值 0.25 MiB），worker 数
 /// 与报告一致（4）。阈值不可能靠"更小的画布"跨过——每块再小，4 块之和仍是整幅大小。
 ///
-/// 断言的**被判条件**：冷池时首层每个 worker 各新建一块（4 次），此后每一层都必须复用；
-/// 热池（同一渲染器的第二轮）**一次新建都不该有**。旧实现里空闲表最多留下
+/// 断言的**被判条件**：冷池新建的缓冲**不超过**并发 worker 数（上界 ✓，不是「恰好 4 块」✗ ——
+/// 新/旧的分界随线程交错挪动，见下面第一处断言前的 CI 复盘 ✓），且**每次取用非新即旧**
+/// （恒等式：分配 + 复用 = 合成层数 × 并发数 ✓）；热池（同一渲染器的第二轮）**一次新建都不该有**。
+/// 旧实现里空闲表最多留下
 /// `floor(192 MiB / 50.4 MiB) = 3` 块 ⇒ 第 4 块每层都被丢弃 ⇒ 每层重新分配一块 48 MiB，
-/// 即 5 层导出白白 churn 约 1.5 GB 的那个缺陷。
+/// 即 5 层导出白白 churn 约 1.5 GB 的那个缺陷（**实测：这条回归是在热轮的
+/// `allocated == 0` 上露馅的 ✓，冷轮上界抓的是「每次取用都新建」那一类 ✓**）。
 ///
 /// 变异：把归还规则改回"只按固定 192 MiB 预算"（或让 `acquire` 跳过空闲表）⇒ 红。
 #[test]
@@ -1006,12 +1009,45 @@ fn buffer_pool_budget_covers_every_concurrent_worker() {
         first.stats.parallel_workers, WORKERS,
         "判据要求真的并行到 {WORKERS} 个 worker（否则工作集只有一份，机制不成立）"
     );
-    assert_eq!(
-        first.stats.layer_buffers_allocated, WORKERS,
-        "冷池首层只应为每个 worker 各新建一块；其余层必须复用。实测 分配/复用 = {}/{}",
-        first.stats.layer_buffers_allocated, first.stats.layer_buffers_reused
+    // ★★ 这里断的是**关系**，不是「首层恰好新建 4 块」（第 114 轮 CI 复盘改成 ✓）** ★★
+    //   **∴ 旧断言错在哪 ✗**：`allocated == WORKERS` 实际断的是**线程交错**——
+    //     「4 个 worker 都在任何人归还之前取完」。而租约在**每层迭代结束**就 Drop ✓，
+    //     于是只要有一个 worker 落后整整一层，它要的那块就能复用别人刚还的 ⇒
+    //     `allocated` **变小**（**产品没坏，是池在正常工作 ✓**）。
+    //   **∴ 实测 ✗**：同一份 Rust（batch14 **零 Rust 改动**✓）**本机绿**、
+    //     **CI 红在 `分配/复用 = 3/5`**（**3 + 5 = 8 = LAYERS × WORKERS**✓** ⇒ 取用总数没变 ✓，
+    //     只是新/旧的分界随调度挪了一格 ✓**）⇒ **∴ 与 `tool-dwell` 同一族 ✗（跨不了机器 ✓）**
+    //   **∴ 真正要守的是什么 ✓**：**冷池新建不得超过并发 worker 数** ✓ ＋ 上面那条恒等式 ✓
+    //     （**∴ 注意 ✗**：固定 192 MB 那个**历史回归不在这里露馅**——冷轮本来就新建 4 块 ✓ ⇒
+    //      **它红在热轮那条 `allocated == 0`** ✓（下面变异 ① 实测 ✓）⇒ 所以上界守的是
+    //      **「每次取用都新建」那一类**（变异 ② ✓）**，不是「每层丢一块」那一类 ✓**）
+    //   **∴ 本机复现不出来 ✗（如实记 ✓）**：`taskset -c 0`（单核强制串行 ✓）＋ 6 个 nice-19 负载 ✓
+    //     都仍绿 ⇒ CI 那一格交错**没能在本机撞出来** ✓
+    //     ⇒ **∴ 这恰恰说明**「恰好 4 块」**不是**可依赖的性质 ✗ ⇒ 所以改成关系 ✓
+    //   **∴ 变异 ✗**（**四条都真跑过 ✓，红在哪一条按实测写 ✓**）：
+    //     ① **归还规则改回固定 192 MB** ⇒ 冷轮上界**没红**（冷轮本来就新建 4 块 ✓）⇒
+    //        **红在热轮**那条 `allocated = 1 ≠ 0` ✓（**回归是在第二轮露出来的 ✓**）
+    //     ② `acquire` **跳过空闲表** ⇒ 红在下面这条上界（**实测 `分配/复用 = 8/0`** ✓）
+    //     ③ **复用不记账** ⇒ 红在恒等式（**实测 `4/0`，总数 4 ≠ 8** ✓）
+    //     ⇒ **∴ 原来那条 `reused >= (LAYERS−1) × WORKERS` 已删 ✓**：恒等式 ＋ 上界
+    //       **蕴含**它（`allocated ≤ 4` 且 `allocated + reused = 8` ⇒ `reused ≥ 4` ✓）
+    //       ⇒ **∴ 它单独不会红 ✗ ⇒ 是装饰**（内核 ①：断言要能红 ✓）
+    assert!(
+        first.stats.layer_buffers_allocated <= WORKERS,
+        "冷池新建的缓冲不得超过并发 worker 数（{WORKERS}）：超过了 ⇒ 保留预算装不下并发工作集，\
+         每层都要重新分配一块。实测 分配/复用 = {}/{}",
+        first.stats.layer_buffers_allocated,
+        first.stats.layer_buffers_reused
     );
-    assert_eq!(first.stats.layer_buffers_reused, (LAYERS - 1) * WORKERS);
+    // **恒等式**（每次取用非新即旧，而取用次数 = 合成的层数 × 并发 worker 数）：
+    //   ⇒ 这条**与机器无关** ✓，且能抓住「计数漏了／重了」那一类错 ✗
+    assert_eq!(
+        first.stats.layer_buffers_allocated + first.stats.layer_buffers_reused,
+        first.stats.layers * first.stats.parallel_workers,
+        "每次取用要么新建要么复用：总数应等于 合成层数 × 并发数。实测 分配/复用 = {}/{}",
+        first.stats.layer_buffers_allocated,
+        first.stats.layer_buffers_reused
+    );
     drop(first);
 
     // **热池**：池里已经躺着上一轮归还的全部并发工作集 ⇒ 本轮必须零新建。
