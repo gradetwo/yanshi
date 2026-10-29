@@ -2371,3 +2371,64 @@ CI：35656ee9 **已推，待跑**（三条外部期 1 补丁线合并；见 §�
    另有 5 个上游分支的 run 全在 `queued`（**GH 侧没-runner 状态，不是我多派 ✓**）
    ⇒ 按外§118／§119⑥ 的规矩：**不派发、不取消**，等组清 ✓
    ⇒ 我这一版落在 `6b91fca2` 的**后代**上 ⇒ 即便顶掉那条 `queued` 也**无损**（第 897 轮 ✓）。
+
+## §122 batch19 落地（包侧台账「六百七十五」）：`preview_preset{render}` 从「如实 501」换成真出图 ＋ **抽查两条声明的变异**（2026-10-29）
+
+① **落账**（命令口径，别抄数字 ✓）：**分支数不变**——那条 501 本来就写在 `preview_preset` 分支**里面** ⇒
+   `node -e 'const s=require("fs").readFileSync("web/api-local.js","utf8");console.log((s.match(/(?:url\.pathname|path) === "/g)||[]).length)'`
+   ＋ 同文件 `const LOCAL_IMPLEMENTED` ⇒ 本轮实测**两边都是 181** ✓；两份拷贝 `cmp` 逐字节一致 ✓
+   **新增判据** `scripts/tool-pwa-preset-render-parity.mjs`（`wc -l`=445 ✓／`grep -c 'check('`=46 ✓／九节）
+   ＋ 浅判据 `tool-pwa-preset-server-parity` 的第 ⑨ 节从「必 501」改成**两种诚实出口**（200 带回图且尺寸同服务端 ／ 501 且理由只许「内核没就绪」）。
+
+② **那句 501 的理由本身就是错的 ✗**（这一节值得记的地方）：原注释写「本地内核没有单层裸像素通道 ⇒ 无法如实复现」——
+   **两个分句都被自己的代码推翻** ✓：裸像素早有（`p2LayerScopeAtoms` ＋ `p2cRenderRgba`，服务端探针逐像素相同 ✓），
+   「临时文档」= **第二个内核实例**（一次一用、`finally` 里 `free()` ✓）。
+   **⇒ 而「实例可以复用」这个替代方案是实测证伪的** ✓：复用同实例装一批**新 id** ⇒ `ok`／`atoms`／`head_seq` 全正常
+   而**这批原子不生效** ⇒ 返回**上一张**代理图（**静默降级形态③：覆盖而不说**）
+   ⇒ **守它的不是告警而是恒等式**（⑨ 节「实例数 === 调用数 === `free()` 数」✓，因为折叠层对重复 id **不告警**、
+   换批后的 `cascade_invalidation` 还会**串批** ✗ 不可信）。
+
+③ **补丁的 12 处 `presets.rs` 锚点逐条核过全中** ✓（`:742`／`:684`／`:936`＋`:944`／`:840`＋`:889-892`＋`:904-911`／
+   `:977`／`:969`／`:980`／`:991`／`:1030`／`:1157`）⇒ **需要改的只有三处，且都不是主干漂移** ✗：
+   `document.rs:1660`⇒**1657**（`rendered.rgba8.is_empty()` ✓）、`` `fold.rs:44` ``⇒**`fold.rs:45`**（`rename_all` ✓）、
+   台账表格行 `p2PresetParseRender` 的权威⇒**`presets.rs:684 parse_preview_render`** ✓
+   **⇒ 陷阱**：`:1030` **同在一处是对的**（`preview_preset` 只要求 `layer_id` 是非空串 ✓ 实测就在那一段）
+   ⇒ **所以行号不能整批替换**，要按「它旁边写的是哪件事」逐条定 ✓（外§119④ 的「行号只能当线索」的又一种形态：
+   **同一个行号在同一个文件里可以既是线索又是错标 ✗**）
+
+④ **「463 个 `scripts/*.mjs`」不取**：那是他们那侧的树 ⇒ 本轮 `ls scripts/*.mjs | wc -l` **实测 459** ✓
+   ⇒ 台账里已改成**命令＋时间戳**（「数它用……⇒ 本轮实测 459 ⇒ 不取补丁里的 463」✓）——外§119⑤／§120⑥ 的同一类
+
+⑤ **抽查两条**声明的变异（**台账声明 16 条，我不可能全跑，但抽查必须抽在「只有一条断言能看见」的那种上** ✓）：
+   · **M7** 降采样 `Math.floor(sum/count)`→`Math.round` ⇒ **红 2 条**（`japanese_airy@128` 68/49152 不同、
+     「有墨 vs 无墨」差值 1418 vs 1419 ✓）⇒ 像素类断言抓得住 ✓
+   · **M1** 删掉 `finally` 里的 `k.free()` ⇒ **只红在 ⑨ 节**（「建了 3 个实例却只 free 了 0 个」＋「换尺寸再预览应当各 +1，
+     实测 ctor 3→4｜free 0→0」✓）⇒ **与台账声明完全一致：每一条像素与结构断言都绿，只有恒等式看得见** ✓
+   **⇒ 施加前后各过两道闸**（第 120 节④／第 121 节⑥ 的规矩 ✓）：`cp` 到 `.mjs` 跑 `node --check`（防「语法崩伪装成断言红」）
+   ＋ **打印被改坏的那一段**——这次打印差点骗过我：`t.match(/\} finally \{/)` 命中的是**另一处** `finally`
+   ⇒ 改成锚定那句注释再打印 ✓ 才确认 `k.free()` 真的没了
+   **⇒ 顺带我自己的 assert 写错了一次**：`if (!(new_ in t))` ⇒ JS 的 `in` **不能用于字符串**（`TypeError`）✗
+   ⇒ 而抛错发生在 `writeFileSync` **之后** ⇒ 变异已落地却**没验就退出** ✓ ⇒ 换成 `t.includes(...)` 重验 ✓
+   （**内核②的「验完再宣布」同样适用于我自己的一次性脚本**）
+
+⑥ **构建戳不取补丁值**：本机 `node scripts/pwa-sync-viewer.mjs` 重算 ⇒ `web/index.html` 从 `6600723660600`
+   走到 **`9308320124771`**（三份产物同戳 ✓ `tool-pwa-stamp-shape` 16 条绿 ✓）
+   ＋ `web/assets-index.json` 每次重生成必被本机纹理数污染（口径：`ls assets/textures | wc -l` vs
+   `git ls-files web/textures | wc -l` ⇒ 两边不等就是 H-1 ✓）⇒ **当场 `git checkout --`**（`tool-assets-index-matches-tree` 10 条绿 ✓）
+   **⇒ 这是 #30（H-1）的又一次实例**（**不数第几次** ✗——那个数没有命令能算，写了就会漂 ✓）：
+   同一条 revert **每轮都要手动做一次** ⇒ 该把它做成 `pwa-sync-viewer.mjs` 的一步（记在 #30）
+
+⑦ **用户新增的常态要求：定期 `git pull` 同步远端**（本轮起每批开工前先 `git fetch` 比对 ✓）：
+   本轮实测 `origin/main` = `6b91fca2`，**本地 86fccf2f 领先 3、落后 0** ⇒ 无需 rebase ✓
+   远端同期多了三个上游分支（`handfeel-300pct-fix`／`criteria-relax-brush-parity-jitter`／`paint-r4-p3` 在推进）
+   ⇒ **它们的 run 全在各自分支的 concurrency 组里**（`gh run list --json headBranch` ✓ 本轮逐个看过）
+   ⇒ **main 组当下是空的** ⇒ 攒 batch18＋batch19 **一起 push**（第 875 轮「要么少 push」✓）
+
+⑧ **判据结论**（**全部是在「变异还原后」的那份字节上重跑的 ✓ 不是变异前那份**——还原靠 `cp crates/…/assets/api-local.js web/`
+   ＋ `cmp` 证 ✓）：`tool-pwa-preset-render-parity` exit 0（「逐像素同口径……实例数与 free 数恒等」✓）、
+   `tool-pwa-preset-server-parity` exit 0（22 套库／带 render 的两种诚实出口 ✓）、`tool-pwa-preset-library-parity` exit 0 ✓、
+   `tool-pwa-import-psd` exit 0（338 条 ✓）、`tool-pwa-describe-canvas` exit 0（274 条 ✓）、
+   `tool-pwa-api-behaviour` exit 0 ✓、`tool-pwa-local-write-guards` exit 0 ✓、`tool-pwa-pixel-stats` exit 0 ✓、
+   `tool-pwa-assets` exit 0（181===181 ✓）、`tool-web-assets-parity` exit 0 ✓、`tool-js-syntax` exit 0（459 个 ✓）、
+   `tool-pwa-stamp-shape` exit 0（16 条 ✓）、`tool-assets-index-matches-tree` exit 0（10 条 ✓）
+   ⇒ **没新增已知红** ✓

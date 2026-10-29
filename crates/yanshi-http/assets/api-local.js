@@ -1086,6 +1086,20 @@ export async function makeLocalApi(db) {
   const { putAtom: __p2PutAtomRaw, atomsOf: atomsOfLocal, open, wrap, tx, writeSnapshot } = await import("./store.js");
   // **∴ 内核实例**按文档缓存**✗**（**`Map<doc, WasmKernel>` ✓**）。
   const kernels = new Map();
+  // **∴ 预览用的「临时文档」内核 = 每次调用新建、用完 `free()` ✗ 不缓存 ✓**（台账「第 六百七十五 节」）：
+  //   服务端的 `preview_preset{render}` 建一个**画布＝代理尺寸**的临时文档、渲完删掉 ✓
+  //   （`presets.rs:840 render_preview_in_temp_doc` ＋ `:980 delete_document`）⇒
+  //   **∴ 本地镜像它 = 第二个内核实例** ✓（**原子只喂 `load_atoms_json` ⇒ 不碰权威日志 ✓
+  //   **∴ 「删临时文档」换来的是什么 ✗**（**实测推翻了我原来的「可以复用」✓**）：
+  //   `load_atoms_json` 确实**整体替换**日志并清空 tile 缓存 ✓（`kernel.rs:606`）⇒
+  //   复用实例的失效方式**不是报错**✗ 而是**这一批原子不生效** ✓：`ok`／`atoms`／`head_seq`
+  //   全都正常，返回的却是**上一张代理图** ✓（**静默降级形态③：覆盖而不说**）
+  //   ⇒ **所以每次新建、`finally` 里 `free()`** ✓（glue 里有 `free` ⇒ 不必等 GC ⇒
+  //   预设面板连续预览不会堆积实例）。
+  //   **∴ 「一次一用」不能靠 fold 告警来守 ✗**（两条实测 ✓）：同一批 id 装两次 ⇒
+  //   `warnings` 里**没有**「已存在」这种东西 ✓（折叠层对重复 id 不告警）；换一批新 id 再装 ⇒
+  //   响应里那条 `cascade_invalidation` 是**上一批的坏原子**（告警串批 ✗ 不可信 ✓）。
+  //   守这条的是**判据的「实例数 === 调用数」恒等式**（`tool-pwa-preset-render-parity` 第 ⑨ 节）✓。
 
   // **★ C/S 客户端渲染模式：文档状态在服务端 ✗ ★**（第 10 轮 ✓）
   //   **∴ 「关闭服务器渲染」关的是**像素路径**✗**（落笔仍然 POST `/api/atoms` ✓ —— 见
@@ -5399,13 +5413,20 @@ async function withKernel(doc, fn) {
       //   ⇒ `tool-pwa-api-behaviour` ⑦l 抖动红 ✓。服务端用 ULID ⇒ **天然无此歧义 ✓**）
       return "obj_" + Date.now().toString(36) + "_" + __p2cCtr.toString(36);
     }
-    /** **从原子日志取文档尺寸 ✗**（**`create_document` 的 `payload` ✓**）。 */
+    /** **从原子日志取文档尺寸与背景 ✗**（**`create_document` 的 `payload` ✓**）。 */
     function p2cDocSize(rows) {
       const c = rows.map((r) => (r && r.atom) || {}).find((a) => a.kind === "create_document");
       const pl = (c && c.payload) || {};
       return { w: Number(pl.width) > 0 ? Number(pl.width) : 1024,
                h: Number(pl.height) > 0 ? Number(pl.height) : 1024,
-               color_space: pl.color_space || "srgb" };
+               color_space: pl.color_space || "srgb",
+               // **∴ 背景也要取 ✗**（**第 六百七十五 轮 ✓**：`preview_preset` 的临时文档**继承源文档背景** ✓
+               //   照 `presets.rs:977 state.background.clone()` ⇒ 漏了它 ⇒ 代理图在透明底上渲染 ✗
+               //   与服务端**逐像素不同**而两边都「成功」✓ 形态③）。
+               background: (pl.background && typeof pl.background === "object")
+                 ? pl.background : { r: 255, g: 255, b: 255, a: 255 },
+               raw_width: Number(pl.width) || 0,
+               raw_height: Number(pl.height) || 0 };
     }
     /** **取本地内核（**按文档缓存 ✓**）✗**：**拿不到 ⇒ 抛错由调用方转 501 ✓**（**∴ 不静默 ✓**）。 */
     async function p2cKernelFor() {
@@ -9573,10 +9594,12 @@ async function withKernel(doc, fn) {
     //   ① **C/S 客户端模式 ⇒ 不进本地分支 ✓**（**由链尾 `:5578` 那段代理到服务端 ✓**）——
     //     **∴ 否则**用户用 `YANSHI_PRESET_DIR` 装的新预设会被打包时那份**遮蔽**✗ 而页面 `ok:true` ✓
     //     （**静默降级形态③ ✓**：被覆盖而不说 ✗）。**PWA**（无服务器）⇒ 走本地内联库 ✓ 并用 `server:false` 如实标注 ✓。
-    //   ② **`preview_preset` 的 `render` 分支 ⇒ 如实 501 ✗**（**本地内核没有「单层裸像素」通道 ✓
-    //     ⇒ 盒式降采样＋临时文档渲染无法如实复现 ✗**）；**但校验先做完 ✓**（`render` 的形状与
-    //     `layer_id` 的必填与服务端**同一段文案**✓ ⇒ 写错的请求拿到的是与服务端一致的 400 ✓，
-    //     而不是把「参数拼错」也报成「本地不支持」✓）。
+    //   ② **`preview_preset` 的 `render` 分支已落地 ✓**（**第 六百七十五 轮 ✓**——**此前写的是
+    //     「本地内核没有单层裸像素通道 ⇒ 无法如实复现」✗ 那句是错的 ✓**：单层裸像素有**已证等价路**
+    //     `p2LayerScopeAtoms`＋`p2cRenderRgba` ✓（服务端探针逐像素相同 ✓），缺的其实只有**盒式降采样**
+    //     ⇒ 现在按 `presets.rs:742` 逐字移植 ✓。**唯一如实做不到的是 JPEG 编码 ✗**
+    //     ⇒ 按 png 回带＋`format_fallback` 明说 ✓（**不 501、也不谎报格式 ✓**）。
+    //     **校验仍先行 ✓**（`render` 的形状与 `layer_id` 的必填与服务端**同一段文案**✓）。
     //   ③ **`apply_preset` 的落成走既有原子路 ✓**（**`create_object`／`supersede`／复活三连 ✓**，
     //     **∴ 复用 `p2cAddEffect`／`p2cUpdateEffect` ✗ 不另造原子、不复制第二份落成语义 ✓**）。
     /** **四个端点的声明表 ✓**（**逐字照 `tools.rs` 的 `param!` 名单 ✓：键名、类型、必填性 ✓**；
@@ -9642,6 +9665,190 @@ async function withKernel(doc, fn) {
                               response.status) };
     }
 
+    /** **`preview_preset` 带 `render` 的那条路的外层 ✗**（**第 六百七十五 节落地 ✓**，
+     *   照 `presets.rs:936 render_preview_image` 逐步 ✓）：
+     *
+     *   **源图层裸像素 ⇒ 盒式降采样到代理尺寸 ⇒【临时文档＝第二个内核实例】⇒ 整幅渲染 ⇒ 编码 ⇒ base64 ✓**。
+     *
+     *   **∴ 「临时文档」在本地怎么成立 ✗**：**每次调用新建一个内核实例** ✓
+     *   原子只喂那一次 `load_atoms_json` ⇒ **既不写 IndexedDB、也不碰用户文档的内核 ✓**
+     *   ⇒ **∴ 服务端「删临时文档」那一步在本地 = `free()` ✗ 放在 `finally`** ✓（**抛错也要释放 ✓
+     *   否则预设面板每拖一次滑杆就漏一个实例 ⇒ 这是「删失败只留痕」与服务端最大的形态差 ✗**）。
+     *
+     *   **∴ 唯一如实做不到的 ✗**：**JPEG 编码**（本部署没有编码器，`image` crate 那一份在 wasm 里 ✗）⇒
+     *   **∴ 不 501 ✗ 也不假装是 jpeg ✗**：按 **png** 回带 ＋ **`format_fallback` 明说原因** ✓
+     *   （**像素是同一份代理图 ⇒ 差的只是编码 ✓**；**而「不说」才是撒谎 ✗ 形态③ ✓**）。 */
+    async function p2PresetRenderPreview(preset, ops, layerId, render, scaleNotes) {
+      const rows = await atomsOf(handle, doc);
+      const size = p2cDocSize(rows);
+      // **① 源文档尺寸必须真读过 ✗**（**照 `presets.rs:944`：`state.width/height == 0` ⇒ 响亮拒绝 ✓**；
+      //   **∴ 用 `raw_*` 而不是 `p2cDocSize` 的 1024 缺省 ✓** —— 缺省值会让「0×0」被当成「1024×1024」✓
+      //   ⇒ **那正是「把坏输入当成合法输入」的形态④ ✓**）。
+      if (size.raw_width === 0 || size.raw_height === 0) {
+        p2PresetBad(`源文档画布尺寸为 ${size.raw_width}×${size.raw_height}，无法渲染预览`);
+      }
+      // **② 取源图层裸像素 ✗**（**本地镜像服务端 `set_only_layer` 的那条已证等价路 ✓**
+      //   `p2LayerScopeAtoms` ＋ `p2cRenderRgba` ⇒ 服务端实测逐像素相同 ✓）。
+      const props = p2LayerRenderProps(rows);
+      let rendered;
+      try {
+        rendered = await p2cRenderRgba(0, 0, size.w, size.h, p2LayerScopeAtoms(rows, props, layerId));
+      } catch (err) { return p2cKernel501(err); }
+      // **③「渲出来是空的」这一条只挂在**缓冲区真的为空**上 ✗ 不挂「图层不存在」✓**
+      //   （**服务端实测：从没有过的层／存在但空的层／已删除的层 ⇒ 全都 200 ＋ 一张「底色＋预设效果」的图 ✓**
+      //   **∴ 权威是 `document.rs:1657` 的 `rendered.rgba8.is_empty()`** ⇒ 单层渲染照样画出**整幅底色**
+      //   ⇒ 缓冲区非空 ⇒ **服务端那句 400 只在「渲染器一个字节都没吐」时成立**（正常文档不可能 ✓）。
+      //   **∴ 所以本地原来把 `!props.has(layerId)` 也塞进这个分支是把同一件事报成了两个答案 ✗**
+      //   （**判据第 ⑦ 节实测抓住的正是这条 ✓**：**服务端 200｜本地 400**）。
+      //   **∴ 而**那句「渲染为空」的文案**照服务端逐字保留 ✓**（`document.rs:1661` 内层 ＋ `presets.rs:957` 外层）
+      //   ——**它还在，只是不再对「查不到图层」开枪 ✓**（**`p2LayerScopeAtoms` 对不存在／已删除的层
+      //   本来就是「把所有活层藏掉 ⇒ 只画底色」✓ 与服务端同一口径 ✓**）。
+      if (rendered.error || !rendered.rgba || rendered.rgba.length === 0) {
+        p2PresetBad(`源图层 ${layerId} 渲染为空 ⇒ 它是空层或纯调整层，没有可预览的像素：`
+          + `图层 ${layerId} 渲染出来是空的 ⇒ 它可能不存在，或它里面什么都没有`);
+      }
+      // **④ 盒式降采样 ✓**（**逐字移植的那一个 ✗ 不是 canvas 缩放 ✓** —— `drawImage` 的
+      //   重采样是另一套算法 ⇒ 与服务端逐像素不同的那种「差不多」正是本函数存在的理由 ✗）。
+      const proxy = p2BoxDownsample(rendered.rgba, rendered.w, rendered.h, render.maxEdge);
+      if (proxy.pixels.length === 0) {
+        p2PresetBad(`代理图像素缓冲为空（${proxy.width}×${proxy.height}）⇒ 无法建立临时文档`);
+      }
+      // **⑤ 代理尺寸先算出来才建得了实例 ✗**（**画布尺寸是构造参数 ✗ 改不了 ✓** ⇒
+      //   所以「取源像素＋降采样」在外层、「喂原子＋渲染」在内层 ✓ 不是一处随机拆的 ✓）。
+      const mod = await __loaders.wasm().catch(() => null);
+      if (!mod || typeof mod.WasmKernel !== "function") {
+        return p2ToolFailure(501, "not_implemented_locally",
+          "preview_preset{render}：本地内核未加载 ⇒ 临时文档建不起来（不是产品问题，是本页面的内核还没就绪）",
+          { kernel: "unavailable" });
+      }
+      const scratchId = "preview_" + doc + "_" + proxy.width + "x" + proxy.height;
+      let k = null;
+      try {
+        k = new mod.WasmKernel(scratchId, 256, proxy.width, proxy.height, 256 * 1024 * 1024);
+      } catch (err) {
+        p2PresetBad(`临时文档内核建不起来（${proxy.width}×${proxy.height}）：`
+          + String((err && err.message) || err));
+      }
+      try {
+        return await p2PresetScratchRender(k, scratchId, preset, ops, layerId, render,
+                                           proxy, size, rendered, scaleNotes);
+      } finally {
+        // **∴ 释放无条件 ✓**（`free` 在 glue 里存在 ⇒ 不靠 GC 的时机 ⇒ 连续预览不堆积 ✓）。
+        if (typeof k.free === "function") k.free();
+      }
+    }
+
+    /** **内层 ✗**（**照 `presets.rs:840 render_preview_in_temp_doc`：底图两条原子 ⇒
+     *   `land_expanded_ops` 同一份落成 ⇒ 整幅渲染 ✓**）。
+     *
+     *   **∴ 实例一次一用 ✗**（**实测推翻「可复用」✓ 台账「第 六百七十五 节」✓**）：
+     *   复用同一实例再装载一批**新 id** 的原子 ⇒ `ok`／`atoms`／`head_seq` 全正常 ✓ 而
+     *   **这批原子不生效** ✗ ⇒ 返回的是**上一张代理图**（**静默降级形态③ ✓**）
+     *   ⇒ 所以每次新建、`finally` 里 `free()` ✓（**判据第 ⑨ 节钉「实例数 === 调用数」**✓）。
+     *   **∴ 下面那道告警闸守的是另一件事 ✗ 不是「复用」✓**：临时文档里**任何一条原子依赖缺失**
+     *   （层／对象／blob 找不到）⇒ 折叠层**静默跳过**它 ✓ `ok:true` ✓ 只在 `warnings` 留一条
+     *   `kind:"cascade_invalidation"` ⇒ 画面**只剩底色、预设效果没了** ✓（**实测：把效果原子
+     *   的 `layer_id` 指向不存在的层 ⇒ detail 为「图层 … 不存在（现有图层：…）」✓**）。 */
+    async function p2PresetScratchRender(k, scratchId, preset, ops, layerId, render,
+                                         proxy, size, rendered, scaleNotes) {
+      // **∴ blob 先行 ✓**（**与 `import_psd`／`/api/blob` 同一条内核哈希路 ✓** ⇒
+      //   这份 `proxy.blob_hash` 就是本地上传同一串字节会得到的那个哈希 ✓
+      //   **∴ 它不与服务端比**——服务端不回带代理哈希 ✗ 比的是**像素**（判据 ✓））。
+      const put = JSON.parse(String(k.blob_put(proxy.pixels) || "{}"));
+      if (!put.ok || !put.blob_hash) {
+        p2PresetBad("代理图写入临时文档失败：" + String(put.raw || "(无响应)"));
+      }
+      const baseLayerId = "layer_preview_base";
+      const proxyObjectId = "obj_preview_proxy";
+      // **序号从 1 起 ✗**（**实例一次一用 ⇒ 不需要跨调用单调 ✓**；
+      //   **但同一实例内必须递增 ✓**，否则折叠层把「`head_seq` 相同」当「日志没变」✗
+      //   ——第 六百六十五 轮的教训 ✓）。
+      let nextSeq = 0;
+      const stamp = (atom) => { atom.seq = ++nextSeq; return atom; };
+      const atoms = [
+        stamp(p2Envelope("create_document", {
+          // **∴ 不带 `color_space` ✓**（**`NewDocument::new` 根本没有这个字段 ⇒
+          //   服务端的临时文档永远用缺省色彩空间 ✓ 跟着源文档走反而会比服务端多一次换算 ✗**）。
+          background: size.background,
+          doc_id: scratchId, height: proxy.height, width: proxy.width,
+        })),
+        stamp(p2Envelope("create_layer", { layer_id: baseLayerId, name: "预览底图" })),
+        stamp(p2Envelope("import_image", {
+          type: "raster_patch",
+          bitmap: { blob_hash: put.blob_hash, mime_type: "image/x-yanshi-raw",
+                    size: proxy.pixels.length },
+          width: proxy.width, height: proxy.height,
+          region: { x: 0, y: 0, w: proxy.width, h: proxy.height },
+          layer_id: baseLayerId, object_id: proxyObjectId,
+        })),
+      ];
+      // **⑥ 落成 ✗ 与 `apply_preset` 同一份口径 ✓**（**临时文档全新 ⇒ `alive` 为空 ⇒ 全走 add 支 ✓
+      //   照 `presets.rs:889-892`：`layer_id`／`name = preset:<id>`／`opacity = 1.0`／逐笔 z 递增 ✓**）。
+      const synRows = atoms.map((atom) => ({ atom, seq: atom.seq }));
+      let zCursor = p2DefaultZInLayer(synRows, p2PresetLayers(synRows, p2Neutralized(synRows)),
+                                     p2Neutralized(synRows), baseLayerId);
+      for (const op of ops) {
+        const kind = p2PresetKind(op);
+        const nameKey = kind === "filter" ? "filter_name" : "adjustment_type";
+        atoms.push(stamp(p2Envelope("create_object", {
+          object_id: op.object_id, layer_id: baseLayerId, type: kind,
+          data: { [nameKey]: op.type, params: op.params, opacity: 1.0,
+                  name: `preset:${preset.id}` },
+          z_index: zCursor,
+        })));
+        synRows.push(atoms[atoms.length - 1]);
+        zCursor += 1;
+      }
+      const foldRaw = String(k.load_atoms_json(JSON.stringify(atoms)) || "");
+      let fold = null;
+      try { fold = JSON.parse(foldRaw); } catch (e) { fold = null; }
+      if (!fold || fold.ok !== true) {
+        p2PresetBad("临时文档装载失败：" + foldRaw.slice(0, 200));
+      }
+      // **★ 折叠跳过告警闸 ★**（**`ok:true` 不够 ✓**：依赖缺失的原子会被折叠层**静默跳过** ⇒
+      //   一张「只有底色、没有预设效果」的代理图 ✓ 看着是合法结果 ✗ 所以告警也必须响 ✓。
+      //   **∴ 比对的串是实测来的 ✓**：`WarningKind` 带 `#[serde(rename_all = "snake_case")]`
+      //   （`fold.rs:45`）⇒ JSON 里就是 `"cascade_invalidation"` ✓；而 `fold.rs:418` 把
+      //   `PreconditionFailed`／`ReferenceNotFound` **都**映射成它 ⇒ 任何 precondition 失败都归这一条 ✓。
+      //   **∴ 这道闸的覆盖要说清 ✗**：公开输入造不出「临时文档依赖缺失」（底图那几条原子
+      //   都是本次新建的 ✓）⇒ **它没有判据钉住**✗ 守的是日后新增原子形态时的静默跳过 ✓
+      //   （**这里不声称「改坏必红」✓**；守「实例一次一用」的是判据第 ⑨ 节的计数恒等式 ✓）。
+      const invalidated = (Array.isArray(fold.warnings) ? fold.warnings : [])
+        .filter((w) => w && w.kind === "cascade_invalidation");
+      if (invalidated.length > 0) {
+        p2PresetBad(`临时文档有 ${invalidated.length} 条原子被折叠层跳过（首条：`
+          + String((invalidated[0] && invalidated[0].detail) || "") + `）⇒ 预设效果没有全部落进`
+          + `这次渲染 ⇒ 拒绝返回一张「看着合法、其实少了效果」的图`);
+      }
+      // **⑦ 整幅渲染 ⇒ PNG ✓**（**空缓冲 ⇒ 响亮报错 ✗ 不给一张空白图 ✓**，与 `p2cRenderRgba` 同纪律 ✓）。
+      //   **∴ 这里不需要 `withKernel` 串行闸 ✓**：那个闸守的是**按文档共享**的实例 ✗
+      //   而这个实例只在本次调用的作用域里 ✗ 没有第二个调用能碰到它 ✓。
+      const pngBytes = k.render_region_png(0, 0, proxy.width, proxy.height);
+      const png = pngBytes instanceof Uint8Array ? pngBytes : new Uint8Array(pngBytes || []);
+      if (png.length === 0) {
+        p2PresetBad(`临时文档渲染产出空 PNG（${proxy.width}×${proxy.height}）⇒ 内核没有画出东西`);
+      }
+      const out = {
+        ok: true, server: false,
+        preset_id: preset.id, name_zh: preset.name_zh,
+        image_base64: p2cB64(png),
+        image_width: proxy.width, image_height: proxy.height,
+        image_format: "png",
+        ops_applied: ops.length,
+        scale_notes: scaleNotes,
+        // **∴ 服务端的 `warnings` 是「临时文档删失败」✗** 本地没有那份状态可漏 ⇒ **恒空数组 ✓**
+        //   （**键必须在 ✓ 调用方按它写断言 ✗ 缺键就是形态① ✓**）。
+        warnings: [],
+        source_layer: layerId,
+        proxy: { max_edge: render.maxEdge, source_width: rendered.w, source_height: rendered.h,
+                 blob_hash: put.blob_hash },
+      };
+      if (render.format === "jpeg") {
+        out.format_fallback = "本部署没有 JPEG 编码器 ⇒ 按 png 回带（像素是同一份代理图，只有编码不同）";
+      }
+      return json(out);
+    }
+
     // **① `list_presets` ✗**（**照 `read_list_presets` ✓：三个可选筛子 ＋ 摘要数组 ✓**。
     //   **∴ `subject` 是**子串**匹配（`x.contains(s)` ✓）而 `tag` 是**全等**（`x == t` ✓**）⇒ 本地照抄，不「顺手」统一 ✓**。
     if (path === "/api/tools/list_presets" && !__csClientMode()) {
@@ -9687,21 +9894,14 @@ async function withKernel(doc, fn) {
         const ops = p2ExpandPreset(preset, parsed.strength, parsed.knobs, parsed.includeCorrection);
         for (const op of ops) p2PresetKind(op);
         if (Object.prototype.hasOwnProperty.call(args, "render")) {
-          // **先按服务端口径把 `render` 与 `layer_id` 校验完 ✓**（**再 501 ✗**）。
+          // **先按服务端口径把 `render` 与 `layer_id` 校验完 ✓**（**再进渲染路 ✓**）。
           const render = p2PresetParseRender(args);
           const layerId = args.layer_id;
           if (typeof layerId !== "string" || !layerId.trim()) {
             p2PresetBad("preview_preset 的 render 需要 layer_id（源图层）");
           }
           const scaleNotes = p2PresetScaleNotes(ops);
-          return json({ ok: false, error: "not_implemented_locally",
-                        endpoint: "/api/tools/preview_preset",
-                        reason: `preview_preset 带 render（max_edge=${render.maxEdge}, format=${render.format}）：`
-                          + "服务端在**临时文档**里取源图层裸像素、盒式降采样后渲染代理图；"
-                          + "本地内核只出整幅 PNG，没有单层裸像素通道，无法如实复现 ⇒ 宁可 501 也不给一张**口径不同的**代理图 ✗"
-                          + "（展开清单本身已按同一口径校验通过 ⇒ 去掉 render 或改用服务器渲染即可 ✓）"
-                          + (scaleNotes ? `｜${scaleNotes}` : ""),
-                        server: false }, 501);
+          return await p2PresetRenderPreview(preset, ops, layerId, render, scaleNotes);
         }
         return json({
           ok: true,
@@ -11690,6 +11890,54 @@ export function p2PresetScaleNotes(ops) {
   if (!found.length) return "";
   return `代理图按长边 ≤ max_edge 降采样后渲染：${found.join("、")} 在代理分辨率下效果与成品不同`
     + "（像素半径/邻域阈值随分辨率变化），逐像素颜色操作与几何归一化的 vignette 不受影响。";
+}
+
+/** **盒式降采样 ✗**（**`presets.rs:742 box_downsample` 的逐字移植 ✓**，第 六百七十五 轮 ✓）。
+ *
+ *  **∴ 为什么必须逐字 ✓**：它决定代理图的**每一个像素** ⇒ 抄错一处（取整方向／边界盒）
+ *  本地与服务端的预览就**逐像素不同**，而两边都 `ok:true` ✓（**形态③ ✓**）。
+ *  **∴ 四处口径照 Rust ✗ 不许「顺手」写成 JS 习惯 ✓**：
+ *    ① 长边 `≤ max_edge` ⇒ **原样返回同一份字节** ✓（**服务端靠这条断「原生分辨率的预览与 apply 逐像素相等」✓**）；
+ *    ② 尺寸 0 ⇒ **不做除法**、直接返回空缓冲 ✓（**调用方随后响亮拒绝 ✗ 不静默出图 ✓**）；
+ *    ③ `new_* = (旧 × scale).round().max(1)` ✓ —— **`.round()` 是「离零最远」✓**
+ *       而 `Math.round` 对正数与它同（**负数不同 ⇒ 这里全是正数 ✓ 可用 ✓**）；
+ *    ④ 源盒 `y0 = y*H/newH`（**usize 除法 ⇒ 向零取整 ✓ 不是 JS `/` 的小数 ✓**）⇒
+ *       用 `Math.floor`（正数等价 ✓），`y1 = max((y+1)*H/newH, y0+1)` ✓ 保证**每盒至少一个源像素 ✓**
+ *       （**否则除零 ⇒ Rust panic、JS 得 NaN ⇒ 必须同样防住 ✗**）；
+ *    ⑤ 均值 `sum / count` 是 **u32 除法 ⇒ 向零取整 ✓**（**不是 `Math.round` ✗**），
+ *       `as u8` 在 0..255 内是恒等 ✓。 */
+export function p2BoxDownsample(pixels, width, height, maxEdge) {
+  if (!width || !height) return { pixels: new Uint8Array(0), width, height };
+  const longest = Math.max(width, height);
+  if (longest <= maxEdge) {
+    return { pixels: pixels.slice ? pixels.slice(0, width * height * 4)
+                                   : new Uint8Array(pixels.subarray(0, width * height * 4)),
+             width, height };
+  }
+  const scale = maxEdge / longest;
+  const newWidth = Math.max(Math.round(width * scale), 1);
+  const newHeight = Math.max(Math.round(height * scale), 1);
+  const out = new Uint8Array(newWidth * newHeight * 4);
+  for (let y = 0; y < newHeight; y += 1) {
+    const y0 = Math.floor((y * height) / newHeight);
+    const y1 = Math.max(Math.floor(((y + 1) * height) / newHeight), y0 + 1);
+    for (let x = 0; x < newWidth; x += 1) {
+      const x0 = Math.floor((x * width) / newWidth);
+      const x1 = Math.max(Math.floor(((x + 1) * width) / newWidth), x0 + 1);
+      const sum = [0, 0, 0, 0];
+      let count = 0;
+      for (let sy = y0; sy < y1; sy += 1) {
+        for (let sx = x0; sx < x1; sx += 1) {
+          const base = (sy * width + sx) * 4;
+          for (let c = 0; c < 4; c += 1) sum[c] += pixels[base + c];
+          count += 1;
+        }
+      }
+      const base = (y * newWidth + x) * 4;
+      for (let c = 0; c < 4; c += 1) out[base + c] = Math.floor(sum[c] / count);
+    }
+  }
+  return { pixels: out, width: newWidth, height: newHeight };
 }
 
 // <<P2_PRESET_RAW:begin>>
