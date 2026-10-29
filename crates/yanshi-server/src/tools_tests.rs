@@ -2397,6 +2397,66 @@ fn delta_distribution_quantiles_follow_the_documented_rule() {
     assert_eq!(dist.changed_pixels, 0);
 }
 
+/// **D-4b 回归：只靠曲线驱动涂抹的笔刷也读画布**。
+///
+/// `wet_round` 的 `smudge`：`base_value = 0`，但 `pressure` 曲线把它推到约 1.0；
+/// 引擎的涂抹门（`stroke.rs` 的 `smudge_mapping_active`）认“`base != 0` 或有输入”，
+/// 服务端旧判定只认 `base_value` ⇒ `fed_base=false`，引擎涂抹只能采本笔自己的墨，
+/// 叠盖的笔触各成扁平胶囊，胶囊轮廓在密集重叠下织成环形网格（干笔软边加抖动不成囊，故无环）。
+#[test]
+fn reads_canvas_counts_curve_driven_smudge() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/brushes/");
+    let wet_text =
+        std::fs::read_to_string(format!("{root}wet_round.myb")).expect("读不到 wet_round.myb");
+    let wet = hokusai::myb::from_str(&wet_text).expect("解析 wet_round.myb 失败");
+    assert_eq!(
+        wet.get(hokusai::BrushSetting::Smudge).base_value,
+        0.0,
+        "本测试的前提是 wet_round 的 smudge 只靠曲线驱动"
+    );
+    assert!(
+        !wet.get(hokusai::BrushSetting::Smudge).inputs.is_empty(),
+        "本测试的前提是 wet_round 的 smudge 带输入曲线"
+    );
+    assert!(
+        super::brush_reads_the_canvas(&wet),
+        "曲线驱动的涂抹也必须喂底图（修前这里是 false，即红）"
+    );
+    let dry_text =
+        std::fs::read_to_string(format!("{root}dry_brush.myb")).expect("读不到 dry_brush.myb");
+    let dry = hokusai::myb::from_str(&dry_text).expect("解析 dry_brush.myb 失败");
+    assert!(
+        !super::brush_reads_the_canvas(&dry),
+        "不涂抹的笔刷仍不读画布"
+    );
+    let knife_text =
+        std::fs::read_to_string(format!("{root}ramon-Knife.myb")).expect("读不到 ramon-Knife.myb");
+    let knife = hokusai::myb::from_str(&knife_text).expect("解析 ramon-Knife.myb 失败");
+    assert!(
+        super::brush_reads_the_canvas(&knife),
+        "base 驱动的涂抹笔刷保持读画布"
+    );
+    // **D-4b 跟进：永不为正的 smudge 曲线不读画布**。
+    //
+    // `Round` 的 `smudge`：`base_value = 0`，但 `pressure` 曲线恒在 [-0.4, 0]，
+    // 钳后永远是 0，从不混画布色；判读画布会把纯红存成与白底合成过的粉色
+    //（半透明单测红）。正值精炼下它必须判 false（旧口径这里是 true，即红）。
+    let round_text = std::fs::read_to_string(format!("{root}Round.myb")).expect("读不到 Round.myb");
+    let round = hokusai::myb::from_str(&round_text).expect("解析 Round.myb 失败");
+    assert_eq!(
+        round.get(hokusai::BrushSetting::Smudge).base_value,
+        0.0,
+        "本测试的前提是 Round 的 smudge 只靠曲线驱动"
+    );
+    assert!(
+        !round.get(hokusai::BrushSetting::Smudge).inputs.is_empty(),
+        "本测试的前提是 Round 的 smudge 带输入曲线"
+    );
+    assert!(
+        !super::brush_reads_the_canvas(&round),
+        "永不为正的 smudge 曲线不读画布（否则纯红存成粉色）"
+    );
+}
 /// **反馈期 1（3.6a）：短路径延长的几何规则** ✓（纯函数，直接测）。
 ///
 /// 口径：触发值是 dab 间距，目标值是 1.5× 间距；等于触发值不延长（正常笔画不动）；
