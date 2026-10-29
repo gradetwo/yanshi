@@ -198,7 +198,10 @@ async function describeCase(label, expect) {
   if (!s.body || !l.body) { check(false, `${label}：有一边读不出 JSON ✗`); return null; }
   const vs = strip(s.body), vl = strip(l.body);
   check(same(vs, vl), `${label}：全字段不一致 ✗ 首个差异 ${firstDiff(vs, vl)}`);
-  for (const [who, b] of [["服务端", vs], ["本地", vl]]) {
+  // 分边检查必须读原始体：strip 已删掉 ENV_KEYS 字段（含 estimated_memory_bytes），
+  // 若读剥离体，分边 estimated 检查永远读到 undefined（a74222c2 首跑 28 条即此因）。
+  // 逐字节比对仍走剥离体 vs/vl，分边口径检查走原始体 s.body/l.body。
+  for (const [who, b] of [["服务端", s.body], ["本地", l.body]]) {
     check(b.layers.length === b.counts.layers,
       `${label}（${who}）counts.layers 应等于 layers 数组长度 ✗ ${b.counts.layers} vs ${b.layers.length}`);
     check(b.selections.length === b.counts.selections,
@@ -223,7 +226,8 @@ async function describeCase(label, expect) {
     `本地应报哨兵 null（服务端-rooted 测量不可判）✗ 实测 ${show(l.body.server_rss_mb)}`);
   check(l.body.bytes_per_atom_avg === 0,
     `本地应报哨兵 0（同上）✗ 实测 ${show(l.body.bytes_per_atom_avg)}`);
-  return vs;
+  // §G 终态日志要读真实 estimated，返回原始服务端体（逐字节比对已在上面用剥离体做过）。
+  return s.body;
 }
 const rectData = {
   geometry: { kind: "rect", bbox: { x: 0, y: 0, w: 4, h: 4 } },
