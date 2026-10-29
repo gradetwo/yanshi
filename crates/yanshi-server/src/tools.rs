@@ -1023,6 +1023,9 @@ impl ToolRegistry {
         // **阶段耗时如实附上** ✓（P2）：成功与失败都带 ✓ ——
         // "超时到底花在哪"这个问题在**失败**时最需要答案 ✓。
         attach_timings(&mut response, &ctx.timings.report(call_started.elapsed()));
+        // **每笔均值重算**（预算字段收缩版）：以最终 `timings` 为准覆盖
+        // `dispatch` 里按分段增量算的那份，保证与回执展示的 `total_ms` 对应 ✓。
+        attach_ms_per_stroke_avg(&mut response, name);
         // **把这次结果记进诊断环** ✓（`collect_diagnostics` 的 `timings.json` 就是它 ✓）：
         // 这是工具结果里**本来就有**的那份 `timings` 与 `warnings` ✓，
         // 采集时不必再猜"上一次慢在哪、有没有告警" ✓。
@@ -1042,6 +1045,62 @@ impl ToolRegistry {
             crate::diagnostics::log_line(format!("tool {name} 失败：{code} {detail}"));
         }
         response
+    }
+}
+
+/// **每笔均值**（预算字段收缩版：只加回执字段，不新增工具与参数）。
+///
+/// 口径（写死，调用方按此算预算，不可另猜）：
+/// * 分子：同回执里 `timings.total_ms`（整次调用的墙钟，毫秒）；
+/// * 分母：`describe_canvas` 用回执 `counts.atoms`（文档日志原子总数）；
+///   `batch` 用回执 `stroke_calls`（本批带落墨量的笔触子调用数）；
+/// * 0 笔：字段恒为 `0.0`（与 `bytes_per_atom_avg` 的“0 = 不可判”同口径，
+///   字段恒存在、类型恒为数，调用方不必分支处理缺失键）；
+/// * 3 位小数：与 `timings` 的毫秒口径一致（先乘 1000 四舍五入再除回）。
+/// * 混合批次的提醒：分子是整批墙钟（含非笔触子调用与预览等开销），
+///   故混合批次里该值是“摊到每笔的全批成本”，不是纯笔触成本；
+///   纯笔触批次里它就是纯笔触均值。画笔预算以 `batch` 的该字段为准；
+///   `describe_canvas` 的该字段是“本次 describe 墙钟摊到每原子”，
+///   只用于看 describe 自身成本随规模的变化，不可当作画笔单笔成本。
+fn ms_per_stroke_avg(total_ms: f64, strokes: u64) -> f64 {
+    if strokes == 0 {
+        0.0
+    } else {
+        (total_ms / strokes as f64 * 1000.0).round() / 1000.0
+    }
+}
+
+/// 在回执上附加 `ms_per_stroke_avg`（只对 `describe_canvas` 与 `batch`）。
+///
+/// 只有回执同时带 `timings.total_ms` 与对应分母字段时才附加：
+/// 失败、提前停等无分母字段的回执不带该字段（无法派生，不编数）。
+/// 顶层调用处（`ToolRegistry::call`）会在最终 `timings` 落定后重算一次，
+/// 保证字段与回执里最终展示的 `total_ms` 严格对应（恒等式：
+/// `ms_per_stroke_avg * 分母 ≈ total_ms`，误差仅 3 位小数舍入）。
+fn attach_ms_per_stroke_avg(value: &mut Value, name: &str) {
+    let Value::Object(map) = value else {
+        return;
+    };
+    let Some(total_ms) = map
+        .get("timings")
+        .and_then(|timings| timings.get("total_ms"))
+        .and_then(Value::as_f64)
+    else {
+        return;
+    };
+    let strokes = match name {
+        "describe_canvas" => map
+            .get("counts")
+            .and_then(|counts| counts.get("atoms"))
+            .and_then(Value::as_u64),
+        "batch" => map.get("stroke_calls").and_then(Value::as_u64),
+        _ => None,
+    };
+    if let Some(strokes) = strokes {
+        map.insert(
+            "ms_per_stroke_avg".to_owned(),
+            json!(ms_per_stroke_avg(total_ms, strokes)),
+        );
     }
 }
 
@@ -1791,6 +1850,7 @@ fn dispatch(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> Result<
     match outcome {
         Ok(mut value) => {
             attach_timings(&mut value, &delta.report(started.elapsed()));
+            attach_ms_per_stroke_avg(&mut value, spec.name);
             Ok(value)
         }
         // 失败不在这里附：错误路径的总时长由 `ToolRegistry::call` 统一附 ✓
