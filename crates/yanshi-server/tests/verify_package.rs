@@ -701,6 +701,49 @@ fn photo_body_loss_is_real_not_replayable() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// **第 4 轮第 3 期口径簇 · 水彩 P2 反证边界（导入侧）**：照片本体缺失在
+/// 导入时也必须出声 —— 全新工作区（CAS 为空）导入抠掉照片本体的包 ⇒
+/// `blobs_unreplayable == 1`（按引用原子数），而不是 `ok` 背后的静默 0。
+/// 根因：`materialize_pending_replayable_blobs` 从前只对有 `source` 的原子
+/// 计数，无 `source` 的照片 / 媒体原子直接跳过。
+///
+/// 变异：把无配方分支改回 `continue` ⇒ `blobs_unreplayable` 变 0 ⇒ 红；
+/// 在同一工作区重导（CAS 早有本体）⇒ 计数同样变 0 ⇒ 本测试特意用全新
+/// 工作区，免得旧 blob 命中掩盖缺失。
+#[test]
+fn photo_body_loss_surfaces_as_unreplayable_on_import() {
+    let root = temp_dir("photoloss");
+    let _cleanup = Cleanup(root.clone());
+    let (_workspace, pack) = sample_pack(&root, "doc_pl");
+    let bytes = std::fs::read(&pack).expect("读回");
+    let mut entries = read_tar(&bytes).expect("读回");
+    let dropped = entries
+        .iter()
+        .find(|entry| entry.path.starts_with("blobs/sha256/"))
+        .map(|entry| entry.path.clone())
+        .expect("样本包应当有本体 blob");
+    entries.retain(|entry| entry.path != dropped);
+    let doctored = write_tar(&entries);
+    let fresh_root = temp_dir("photoloss_fresh");
+    let _cleanup_fresh = Cleanup(fresh_root.clone());
+    let mut fresh = workspace(&fresh_root, "doc_holder", 64, 64);
+    let imported = fresh
+        .import_project(&doctored, Some("doc_pl_re"))
+        .expect("导入应当成功（只记账，不失败）");
+    assert_eq!(
+        imported["blobs_unreplayable"].as_u64().unwrap_or(999),
+        1,
+        "照片本体缺失必须在导入回执里出声：{imported}"
+    );
+    assert_eq!(
+        imported["blobs_replayed"].as_u64().unwrap_or(999),
+        0,
+        "照片没有重放路径，不应有重放数：{imported}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&fresh_root);
+}
+
 /// **第 4 轮第 3 期口径簇 · 老日志派生**：缺省包的原子行去掉 `payload.origin`
 /// （模拟 `origin` 落账之前的老日志）⇒ 核包仍按 `source` 带笔刷名派生为
 /// `drawn` ⇒ `omitted` 与 `complete` 不变。
