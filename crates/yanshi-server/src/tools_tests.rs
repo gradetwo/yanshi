@@ -1929,6 +1929,32 @@ fn batch_rss_limit_defaults_to_4096_and_rejects_bad_values() {
     );
 }
 
+/// **报告 5 第 8 项**：压力档位分档 —— 档位只由 RSS 对静态限额的比值定，
+///   阈值处（50% / 75% / 100%）两侧各一值，档位名取自回执字段 `memory_pressure` 的取值集合 ✓。
+///   变异：任一阈值改动 ⇒ 对应边界断言红；`unknown` 改成 `low` ⇒ 读不到断言红；
+///   分母改成写死 4096 ⇒ 覆盖限额断言红 ✓。
+#[test]
+fn batch_memory_pressure_level_tiers_at_boundaries() {
+    // 读不到 RSS ⇒ 未知档，不编数。
+    assert_eq!(batch_memory_pressure_level(None, 4096), "unknown");
+    // 缺省限额 4096 的阈值处：下侧一档、上侧一档。
+    assert_eq!(batch_memory_pressure_level(Some(0), 4096), "low");
+    assert_eq!(batch_memory_pressure_level(Some(2047), 4096), "low");
+    assert_eq!(batch_memory_pressure_level(Some(2048), 4096), "moderate");
+    assert_eq!(batch_memory_pressure_level(Some(3071), 4096), "moderate");
+    assert_eq!(batch_memory_pressure_level(Some(3072), 4096), "high");
+    assert_eq!(batch_memory_pressure_level(Some(4095), 4096), "high");
+    assert_eq!(batch_memory_pressure_level(Some(4096), 4096), "critical");
+    assert_eq!(batch_memory_pressure_level(Some(5000), 4096), "critical");
+    // 分母是当前限额不是写死值：同一 RSS 在 1000 限额下档位上移。
+    assert_eq!(batch_memory_pressure_level(Some(499), 1000), "low");
+    assert_eq!(batch_memory_pressure_level(Some(500), 1000), "moderate");
+    assert_eq!(batch_memory_pressure_level(Some(750), 1000), "high");
+    assert_eq!(batch_memory_pressure_level(Some(1000), 1000), "critical");
+    // 退化分母不谎报低档。
+    assert_eq!(batch_memory_pressure_level(Some(10), 0), "critical");
+}
+
 /// **A 期**：环境变量覆盖生效 —— 显式水位版谓词：同一 RSS 在旧水位下不触发、在覆盖水位下触发 ✓。
 ///   变异：谓词忽略传入水位、仍用 4096 ⇒ 第二个断言红 ✓。
 #[test]

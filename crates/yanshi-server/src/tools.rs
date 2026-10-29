@@ -22773,6 +22773,57 @@ fn batch_memory_limits_json() -> Value {
     })
 }
 
+/// **报告 5 第 8 项：batch 回执事前压力信号** —— cgroup SIGKILL 事后无法打日志，
+///   真缺口在事前：batch 回执此前只有静态限额 `memory_limits`，没有任何实时水位。
+///   本函数只做一件事：把实时 RSS（与 `describe_canvas` 的 `server_rss_mb` **同一测量**，
+///   即下面的 `proc_rss_mb()`，`/proc/self/status` 的 VmRSS，不另发明口径 ✓）
+///   对照静态限额 `batch_rss_limit_mb()` 分档，档位写进回执 `memory_pressure`。
+///
+/// **阈值定义**（`ratio = server_rss_mb / batch_rss_limit_mb`，分母是**当前**限额值，
+///   含 `YANSHI_BATCH_RSS_LIMIT_MB` 覆盖后的值，不是写死的 4096 ✓）：
+///   · `low`：ratio < 50%（水位不到限额一半，正常）；
+///   · `moderate`：50% ≤ ratio < 75%（过半，下一批前值得看一眼）；
+///   · `high`：75% ≤ ratio < 100%（接近限额，长批前应先分阶段或释放文档）；
+///   · `critical`：ratio ≥ 100%（已到/超限额；段边界水位检查会在下一段前提前停）；
+///   · `unknown`：读不到 RSS（非 Linux 或 `/proc` 不可读）⇒ 不编数字，档位也报未知。
+///   分母恒 ≥ 1（`parse_batch_rss_limit_mb` 把 0 与解析失败都回退到缺省 4096）；
+///   直接传 0 的退化输入按 `critical` 计（分母无意义时不谎报低档 ✓）。
+///   **注意**：`doc_memory_budget_mb` **不参与分档** —— 它是开文档的预算门，
+///   与进程 RSS 不是同一口径；系统 `MemAvailable < 512MB` 的停批条件也不参与
+///   （那是另一条段边界触发线，见 `batch_watermark_reason_for_limit`，语义不动 ✓）。
+///   **采样点**：回执组装时（本批跑完之后）的一次读数 —— 它是**下一批的事前信号**，
+///   不是本批执行中的峰值（批中峰值由段边界水位检查守，触发走 `stopped_early` 路 ✓）。
+///   **只加字段**：不改 batch 执行、不改限额、不改停批谓词；§4 的预算字段
+///   （`ms_per_stroke_avg`、`recommended_max_atoms`）是功能候选，本项不开工 ✓。
+fn batch_memory_pressure_level(rss_mb: Option<u64>, rss_limit_mb: u64) -> &'static str {
+    let Some(rss) = rss_mb else {
+        return "unknown";
+    };
+    if rss_limit_mb == 0 {
+        return "critical";
+    }
+    let ratio_x100 = rss as u128 * 100 / rss_limit_mb as u128;
+    if ratio_x100 >= 100 {
+        "critical"
+    } else if ratio_x100 >= 75 {
+        "high"
+    } else if ratio_x100 >= 50 {
+        "moderate"
+    } else {
+        "low"
+    }
+}
+
+/// **报告 5 第 8 项**：往一条 batch 回执上挂实时信号 —— 两字段与 `memory_limits` 并列：
+///   `server_rss_mb`（`describe_canvas` 同口径，读不到时 `null`，不编数 ✓）与
+///   `memory_pressure`（上档位）。三条回执路（正常、提前停、取消）共用，免得漏一路 ✓。
+fn attach_batch_memory_signal(response: &mut Value) {
+    let limit = batch_rss_limit_mb();
+    let rss = proc_rss_mb();
+    response["server_rss_mb"] = json!(rss);
+    response["memory_pressure"] = json!(batch_memory_pressure_level(rss, limit));
+}
+
 fn batch_watermark_reason() -> Option<String> {
     batch_watermark_reason_for(proc_rss_mb(), proc_mem_available_mb())
 }
@@ -23146,6 +23197,8 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         // **取消后的执行状态也要说清** ✓：回滚之后可能仍有**之前那批**留下的渲染 job ✓
         //（回滚不会替它们跑完 ✓）⇒ 调用方据此知道"还要不要等渲染" ✓。
         response["execution"] = execution_report(ctx);
+        // **报告 5 第 8 项**：取消路也是 batch 回执，同样挂实时信号 ✓。
+        attach_batch_memory_signal(&mut response);
         return Ok(response);
     }
     let head = ctx
@@ -23164,6 +23217,8 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         response["stopped_early"] = json!(true);
         // **A 期**：触发回执同时报两个上限的当前值（只加字段，现有字段语义不动 ✓）。
         response["memory_limits"] = batch_memory_limits_json();
+        // **报告 5 第 8 项**：触发回执更要带实时水位 —— 停批那一刻的 RSS 与档位 ✓。
+        attach_batch_memory_signal(&mut response);
         response["completed_calls"] = json!(results.len());
         response["total_calls"] = json!(calls.len());
         response["segments_completed"] = json!(results.len() / BATCH_SEGMENT_CALLS);
@@ -23286,6 +23341,9 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             "{failed_n}/{total_n} 个子调用失败，见 failed_calls"
         ));
     }
+    // **报告 5 第 8 项**：正常路（全成与部分失败同属此路）挂实时信号 ✓。
+    //   部分失败批的顶层 `ok:false` 与本信号无关，两者并列，不互相改写 ✓。
+    attach_batch_memory_signal(&mut response);
     Ok(response)
 }
 
