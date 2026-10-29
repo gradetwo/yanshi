@@ -16157,7 +16157,8 @@ fn write_texture_background(ctx: &mut ToolContext<'_>, args: &Value) -> Result<V
 /// 长椭圆 dab 沿行笔方向拉出刷痕 ✓；**没有 `random` 输入**（`offset_by_random = 0`、
 /// `radius_by_random = 0` ✓）⇒ 同输入逐笔可复现 ✓ —— `Dirty_Noise`/`Grain` 都吃 `random` ✗，
 /// 重复调用会逐笔漂移 ✗，当不了\"调两次结果一致\"的底 ✓。
-/// **排布** ✓：横向通笔、行距 = 笔径 × 0.55（行与行重叠 ⇒ 盖满画布 ✓）；每行颜色在请求色
+/// **排布** ✓：横向通笔、行距 = 笔径 × 0.30（`Classic_Paint` 的长椭圆 dab 竖直有效半高只有
+/// 约 0.25 笔径 ✗，行距必须小于两倍半高才盖得满 ✓）；每行颜色在请求色
 /// 上下按 `strength` 起伏（起伏量先**去均值** ⇒ 整幅均色贴住请求色 ✓，不漂移 ✓）；
 /// 行内带种子抖动（y 抖 ±笔径 × 0.15、压感 0.75..1.0 ⇒ 不是机械条纹 ✓）。
 /// **层序与幂等** ✓：底色层名固定为 `底色（笔触）`，每次调用先删掉同名旧层再重建并沉到
@@ -16337,14 +16338,19 @@ fn write_toned_ground(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
         }
     }
     write_reorder_layers(ctx, &json!({ "order": order }))?;
-    // **排布** ✓：笔径按短边取（小画布不糊成一坨、大画布不细成发丝 ✓），行距 0.55 笔径 ⇒
-    // 行行重叠 ⇒ 盖满 ✓；首行中心在 0.4 笔径处、末行盖过底边 ⇒ 四边不露白 ✓。
+    // **排布** ✓：笔径按短边取（小画布不糊成一坨、大画布不细成发丝 ✓），行距 0.30 笔径、
+    // 首行中心 0.20 笔径处 ⇒ 四边盖满 ✓。
+    // **行距为什么不是 0.55** ✓：`Classic_Paint` 的 dab 是长椭圆（ratio 5.19 ✓），竖直方向的
+    // 有效半高只有约 0.25 笔径 ✗，不是笔径的一半 ✗ —— 0.55 笔径的行距会在顶边留下一条露白带
+    // （盒上探针实测：160×100 画布露白 299 像素，其中 274 个在 y=0..11 ✓）。
+    // ⇒ 行距 0.30 笔径（相邻行重叠约 0.20 笔径 ✓），首末行中心各向画布外探 0.20 笔径以上 ✓。
     let min_side = (canvas_width as f64).min(canvas_height as f64);
     let size = (min_side / 6.0).clamp(16.0, 256.0);
-    let step = size * 0.55;
+    let step = size * 0.30;
+    let half = size * 0.25;
     let mut rows: Vec<f64> = Vec::new();
-    let mut row_y = size * 0.4;
-    while row_y - size / 2.0 < canvas_height as f64 {
+    let mut row_y = size * 0.2;
+    while row_y - half < canvas_height as f64 {
         rows.push(row_y);
         row_y += step;
     }
