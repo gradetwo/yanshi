@@ -3,7 +3,7 @@
 **这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，
 所以它不会与实现漂移；`--check` 模式会在文档过期时失败。
 
-当前共 207 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
+当前共 212 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
 
 ## `abort_changeset`
 
@@ -1362,6 +1362,19 @@
 }
 ```
 
+## `rebackground`
+
+```json
+{
+  "color": {
+    "r": 30,
+    "g": 60,
+    "b": 120,
+    "a": 255
+  }
+}
+```
+
 ## `redo_last`
 
 ```json
@@ -1394,6 +1407,14 @@
 }
 ```
 
+## `release_document`
+
+```json
+{
+  "document_id": "sample-oil"
+}
+```
+
 ## `remove_from_group`
 
 ```json
@@ -1414,6 +1435,14 @@
     64
   ],
   "include_image": true
+}
+```
+
+## `reopen_document`
+
+```json
+{
+  "document_id": "sample-oil"
 }
 ```
 
@@ -1913,6 +1942,19 @@
 }
 ```
 
+## `stroke_heatmap`
+
+```json
+{
+  "region": {
+    "x": 0,
+    "y": 0,
+    "w": 400,
+    "h": 300
+  }
+}
+```
+
 ## `stroke_path`
 
 ```json
@@ -2000,6 +2042,19 @@
 ```json
 {
   "texture": "Paper001.png"
+}
+```
+
+## `toned_ground`
+
+```json
+{
+  "color": {
+    "r": 210,
+    "g": 190,
+    "b": 160,
+    "a": 255
+  }
 }
 ```
 
