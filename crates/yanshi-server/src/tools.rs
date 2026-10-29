@@ -960,6 +960,11 @@ impl ToolRegistry {
             ));
         }
         if let Err(error) = validate_args(spec, args) {
+            let error = if name == "brush_stroke" {
+                missing_layer_id_with_layers(ctx, error)
+            } else {
+                error
+            };
             return error_response(&error);
         }
         // **阶段计时从这里开始记** ✓（P2；batch 里的子调用由 `dispatch` 记 ✓）。
@@ -1526,6 +1531,34 @@ fn missing(key: &str) -> YanshiError {
         ErrorCode::InvalidArgument,
         ErrorContext::detail(format!("缺少必填参数 {key}")),
     )
+}
+
+/// `brush_stroke` 缺 `layer_id` 时的报错：在原句后附当前文档的存活图层 id 列表
+/// （报告 4 P1 残留小项；文案照 `require_smart_layer_alive` 的「现有图层」写法）。
+/// 取不到文档时原样返回原错——不掩盖原错、不编造图层。其它工具、其它缺失
+/// 参数一律不走这里（调用方先按工具名与原句过滤）。
+fn missing_layer_id_with_layers(ctx: &mut ToolContext<'_>, error: YanshiError) -> YanshiError {
+    let Some(detail) = error.context.detail.clone() else {
+        return error;
+    };
+    if detail != "缺少必填参数 layer_id" {
+        return error;
+    }
+    let Ok(state) = document_state(ctx) else {
+        return error;
+    };
+    let existing: Vec<String> = state
+        .alive_layers()
+        .iter()
+        .map(|layer| layer.id.clone())
+        .collect();
+    let mut error = error;
+    error.context.detail = Some(if existing.is_empty() {
+        format!("{detail} ⇒ 现有图层：（一个都没有）")
+    } else {
+        format!("{detail} ⇒ 现有图层：{}", existing.join(", "))
+    });
+    error
 }
 
 /// 解析 `draw_text` 的 `data.position`：数组 `[x,y]` 与字典 `{x,y}` 都认。
@@ -21722,6 +21755,11 @@ fn write_batch(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             //   **⇒ 所以**这里补上同一套校验 ⇒ 失败进 `failed_calls`（可观测 ✓）而不提交原子 ✓
             Some(spec) => match validate_args(spec, &arguments) {
                 Err(error) => {
+                    let error = if name == "brush_stroke" {
+                        missing_layer_id_with_layers(ctx, error)
+                    } else {
+                        error
+                    };
                     let rendered = error_response(&error);
                     failed_calls.push(serde_json::json!({
                         "index": call_index,

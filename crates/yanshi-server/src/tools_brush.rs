@@ -154,7 +154,8 @@ fn paint_and_commit_brush_segment(
     let mut clip_coverage: Option<f64> = None;
     // **与主函数同口径的来源回显** ✓（全从 `args` 原样取，段间无差别 ⇒ 不作参数）。
     let seg_brush_name = require_str(args, "brush")?;
-    let layer_id = require_str(args, "layer_id")?;
+    let layer_id =
+        require_str(args, "layer_id").map_err(|error| missing_layer_id_with_layers(ctx, error))?;
     let size_source = args.get("size").cloned().unwrap_or(Value::Null);
     let color_source = args.get("color").cloned().unwrap_or(Value::Null);
     let color_to_source = args.get("color_to").cloned().unwrap_or(Value::Null);
@@ -1012,7 +1013,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         ctx.preview = false;
     }
 
-    require_str(args, "layer_id")?;
+    require_str(args, "layer_id").map_err(|error| missing_layer_id_with_layers(ctx, error))?;
     let brush_name = require_str(args, "brush")?;
     let points = parse_brush_points(args)?;
     // **★ 退化成"一个点"就自动展开（真机报告 P2 #1）★** —— 画"点"不该报错 ✓。
