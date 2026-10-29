@@ -18394,7 +18394,9 @@ fn read_surface_region(
                     let r = straight_byte(pixel[0]);
                     let g = straight_byte(pixel[1]);
                     let b = straight_byte(pixel[2]);
-                    let a = (pixel[3] >> 7) as u8;
+                    // **满值 32768 必须先 clamp** ✓：32768 >> 7 = 256，转 u8 会回绕成 0 ✗
+                    // ⇒ 与 RGB 行同一口径：先 `.min(32767)` 再 `>> 7` ✓（满不透明 ⇒ 255 ✓）。
+                    let a = (pixel[3].min(32767) >> 7) as u8;
                     if a == 0 && r == 0 && g == 0 && b == 0 {
                         continue;
                     }

@@ -2740,6 +2740,92 @@ fn short_stroke_extension_lands_at_least_one_dab() {
     );
 }
 
+/// **反馈 5+6（1pixel 零落墨）：满不透明落墨读回 alpha 必须为 255** ✓
+/// 两层断言，分工不同：
+/// ① 直接换算（担回归）：tile 像素 `[2560, 7680, 23040, 32768]`（直通色 (20,60,180)
+///    满不透明）读回 alpha 必须为 255 且 painted == 1。修前：32768 >> 7 = 256 转 u8 回绕成 0，
+///    读回 alpha 为 0，本层红（变异实测已证）。
+/// ② 落墨实测（端到端 sanity，不单独担回归）：`100%_Opaque` 全不透明硬笔、压力 1.0
+///   满压落墨 ⇒ 笔迹中心像素 (100,100)（dab 盘深内）读回 alpha 必须为 255，且非零像素 > 0。
+///   变异实测：本层修前也绿——盘内 tile alpha 落在 [32640,32767]，未触 32768 回绕阈值；
+///   真正打满 32768 的是 1pixel 硬笔路径（定位探针实测），故回归由 ① 担。
+/// 注意：只断言“存在 alpha == 255 的像素”是不够的——边缘半覆盖像素的 fix15 落在
+/// [32640,32767] 时修前也能读回 255（变异实测：第一版测试修前照样绿，已弃）。
+#[test]
+fn fully_opaque_stroke_reads_back_alpha_255() {
+    // ① 直接换算：手写一块满不透明 tile 像素。
+    use hokusai::TiledSurface;
+    let mut direct = hokusai::tile_mem::MemSurface::new();
+    let tile = direct.tile_request_start(0, 0);
+    tile[10][10] = [2560, 7680, 23040, 32768];
+    direct.tile_request_end(0, 0);
+    let region = super::PaintRegion::from_bounds((0, 0, 64, 64, 64, 64));
+    let (rgba, painted) = super::read_surface_region(&direct, region);
+    let at = (10 * 64 + 10) * 4;
+    // alpha 必须精确为 255（本回归的主题）；RGB 允许 ±1（既有反预乘路径
+    // 用 32767 做乘数，2560×32767÷32768 取整后会丢 1 LSB，实测 (19,59,179)）。
+    assert_eq!(
+        rgba[at + 3],
+        255,
+        "满不透明 tile 像素读回 alpha 必须为 255，实测 {}",
+        rgba[at + 3]
+    );
+    for (channel, expected) in [(0, 20), (1, 60), (2, 180)] {
+        assert!(
+            (rgba[at + channel] as i32 - expected).abs() <= 1,
+            "满不透明 tile 像素读回通道 {channel} 必须为 {expected}±1，实测 {}",
+            rgba[at + channel]
+        );
+    }
+    assert_eq!(
+        painted, 1,
+        "只写了一个像素，painted 必须为 1，实测 {painted}"
+    );
+    // ② 落墨实测：100%_Opaque（opaque 恒 1.0、压力 1.0 时 multiply 为 1.0）。
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/brushes/");
+    let text =
+        std::fs::read_to_string(format!("{root}100%_Opaque.myb")).expect("读不到测试用 .myb");
+    let mut brush = hokusai::myb::from_str(&text).expect("解析 .myb 失败");
+    brush.set(
+        hokusai::BrushSetting::Radius,
+        hokusai::SettingValue::constant(libm::log(50.0) as f32),
+    );
+    brush
+        .get_mut(hokusai::BrushSetting::DabsPerSecond)
+        .base_value = 0.0;
+    // 密点列、压力 1.0：dab 间距约 11px，8px 点距保证 dab 盘重叠；(100,100) 在盘深内。
+    let points: Vec<(f64, f64, f64)> = (0..20)
+        .map(|i| (50.0 + i as f64 * 8.0, 100.0, 1.0))
+        .collect();
+    let mut state = hokusai::BrushState::default();
+    let mut surface = hokusai::tile_mem::MemSurface::new();
+    let mut previous = None;
+    super::stamp_stroke_from(
+        &brush,
+        &mut state,
+        &mut surface,
+        &points,
+        &mut previous,
+        &[],
+        super::tools_brush::BrushSensors::default(),
+        false,
+    );
+    let region = super::PaintRegion::from_bounds((0, 0, 256, 160, 256, 160));
+    let (rgba, _) = super::read_surface_region(&surface, region);
+    let nonzero = rgba
+        .chunks_exact(4)
+        .filter(|px| px.iter().any(|byte| *byte != 0))
+        .count();
+    assert!(nonzero > 0, "满压落墨后非零像素必须 > 0，实测 {nonzero}");
+    let center = (100 * 256 + 100) * 4;
+    assert_eq!(
+        rgba[center + 3],
+        255,
+        "笔迹中心像素 (100,100) 读回 alpha 必须为 255，实测 {}（修前满值回绕成 0 时本条红）",
+        rgba[center + 3]
+    );
+}
+
 /// **release/reopen 薄包装往返**：关闭后 closed 与持久化状态符合服务端语义，
 /// 重开后文档完好（原子数、head_seq、尺寸、渲染哈希一致），且两条反例都响亮：
 /// 放不存在的文档报错、重开不存在的文档报错且绝不新建。
