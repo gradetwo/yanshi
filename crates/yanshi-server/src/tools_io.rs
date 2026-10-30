@@ -47,6 +47,10 @@ pub(super) fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> R
         .get("include_bitmaps")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    // **bake 打包模式**（第二轮第 9 条）：frontier（默认）只打包完整原子日志 +
+    // 当前折叠必需的活跃 Blob，历史 Bake Blob 不装；all_history 全量打包。
+    let blob_bundle_mode =
+        optional_str(args, "blob_bundle_mode").unwrap_or_else(|| "frontier".to_owned());
     // **分段探针（第 51 轮 ✓）**：在**调用侧**量 ✓ —— 原因 ✗：构造点 `ExportStats { … }`
     // 位于**表达式位置**（`Ok((…))` ✓），语句插不进去 ✓（我为此失败两次 ✗）。
     // 这里量两段 ✓：① `export_project`（读日志 ＋ 收集 ＋ 组装 tar ✓）② `store.put`（入 CAS ✓）。
@@ -82,11 +86,16 @@ pub(super) fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> R
         doc_id.clone(),
         head_seq,
         include_bitmaps,
+        // **键里必须有 `blob_bundle_mode`** ✓：frontier 与 all_history 的包内容
+        // 不同（历史 Bake Blob 装与不装），同键会撞包 ✓。
+        blob_bundle_mode.clone(),
     );
     let (tar, stats) = match export_result_lookup(&cache_key) {
         Some(hit) => hit,
         None => {
-            let built = ctx.workspace.export_project(&doc_id, include_bitmaps)?;
+            let built =
+                ctx.workspace
+                    .export_project(&doc_id, include_bitmaps, &blob_bundle_mode)?;
             // **只在"存储没有参与"时才记入** ✗ —— 这正是第 82 轮的漏洞所在 ✓。
             if built.1.kept_no_recipe == 0
                 && built.1.kept_mismatch == 0
@@ -261,6 +270,8 @@ pub(super) fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> R
         "doc_id": doc_id,
         "bytes": tar.len(),
         "include_bitmaps": include_bitmaps,
+        "blob_bundle_mode": blob_bundle_mode,
+        "frontier_omitted_historical_blobs": stats.frontier_omitted_historical_blobs,
         "format": "tar (uncompressed)",
         // **位图部分的独立读数** ✓（第 1331 轮 ✓）：整包体积会被**原子日志**主导 ✗
         //（实测：12 次覆盖的差值里 **98.3%** 是日志 ✓）⇒ 所以"位图有没有被回收"必须看这三项 ✓。
@@ -2150,6 +2161,10 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                 | Prim::Liquify { .. }
                 | Prim::Retouch { .. } => {
                     collapse_through!(index);
+                }
+                // 压平基底是位图：SVG 导出走位图段（与 RasterPatch 同口径）。
+                Prim::BakedBase { .. } => {
+                    pending.push(index);
                 }
                 Prim::RasterPatch { .. } => {
                     match classify_text_provenance(&object.data) {

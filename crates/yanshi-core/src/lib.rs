@@ -43,6 +43,7 @@
 #![warn(missing_docs)]
 
 pub mod atom;
+pub mod bake;
 pub mod blob;
 pub mod changeset;
 pub mod conflict;
@@ -64,6 +65,7 @@ pub use atom::{
     payload_bool, payload_f64, payload_str, payload_u64, Atom, AtomId, AtomKind, BlobHash, BlobRef,
     PluginRef, Refs, CAS_THRESHOLD_BYTES, SCHEMA_VERSION, SEQ_UNASSIGNED,
 };
+pub use bake::{compute_bake_horizon, validate_affine, Affine2D, BakeLayerParams};
 pub use blob::{
     plan_gc, run_gc, stage_blob, BlobEntry, BlobLifecycleMetrics, BlobStore, BlobTier, FsBlobStore,
     GcPlan, GcReport, MemoryBlobStore, DEFAULT_ORPHAN_TTL_SECONDS,

@@ -1678,6 +1678,40 @@ impl Document {
         Ok((rendered.width, rendered.height, rendered.rgba8))
     }
 
+    /// **压平渲染（bake_layer 专用）**：只渲染目标层，返回画布 1:1 的
+    /// 直通 RGBA8（与 `render_region_raw_layer` 同口径的量化输出）。
+    ///
+    /// 与单层导出**不同**的关键点：克隆状态里把目标层的外壳清零
+    /// （`opacity = 1`、`blend_mode = normal`、`clipping_mask = false`，
+    /// 默认 `mask_id = None` 除非 `flatten_mask`），背景置空。
+    /// 否则基底里已乘过一次外壳，之后整幅合成再乘一次 = 双重应用。
+    /// 图层本身的 ID/名称/混合/不透明度/z 序/掩膜在真实状态里一律不动，
+    /// 只影响这次克隆渲染；层内调整/滤镜/液化对象照常进层缓冲（压进基底），
+    /// 位于该层上方的独立调整层不在 only_layer 内（留在压平层之上继续生效）。
+    pub fn render_layer_bake_base(
+        &mut self,
+        layer_id: &str,
+        flatten_mask: bool,
+    ) -> Result<(u32, u32, Vec<u8>)> {
+        let mut filtered = self.state.clone();
+        filtered.background = serde_json::Value::Null;
+        if let Some(layer) = filtered.layers.get_mut(layer_id) {
+            layer.opacity = 1.0;
+            layer.blend_mode = "normal".to_owned();
+            layer.clipping_mask = false;
+            if !flatten_mask {
+                layer.mask_id = None;
+            }
+        }
+        let bbox = yanshi_core::Bbox::new(0.0, 0.0, filtered.width as f64, filtered.height as f64);
+        let previous = self.renderer.set_only_layer(Some(layer_id.to_owned()));
+        let rendered = self.renderer.render_region(&filtered, &*self.store, bbox);
+        self.renderer.set_only_layer(previous);
+        let rendered = rendered?;
+        self.note_render_stats(&rendered.stats);
+        Ok((rendered.width, rendered.height, rendered.rgba8))
+    }
+
     /// **只渲染某一层里的一个对象子集** ✓（SVG 导出的位图回退段用 ✓）。
     ///
     /// 做法与 [`Self::render_region_raw_layer`] 同构 ✓：临时拼一份过滤后的
