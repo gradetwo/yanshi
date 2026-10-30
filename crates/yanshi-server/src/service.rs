@@ -2518,6 +2518,19 @@ impl Workspace {
             .render_region_raw_layer_with_lod(bbox, layer_id, lod)
     }
 
+    /// **只渲染某一层，透明底** ✓（笔刷本层底图用 ✓）—— 语义见 `Document::render_region_layer_rgba` ✓。
+    /// 与 `render_region_raw_layer` 不同：那条叠文档背景，空层会取回不透明白底；
+    /// 笔刷底图要的是本层自身像素，背景必须透明（第 253 轮 PSD 同款教训）。
+    pub fn render_region_layer_rgba(
+        &mut self,
+        doc_id: &str,
+        bbox: Bbox,
+        layer_id: &str,
+    ) -> Result<(u32, u32, Vec<u8>)> {
+        self.document_mut(doc_id)?
+            .render_region_layer_rgba(bbox, layer_id)
+    }
+
     /// **只渲染某一层里的一个对象子集** ✓（一行转调，语义见 `Document` 侧 ✓）。
     pub fn render_layer_objects_subset(
         &mut self,

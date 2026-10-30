@@ -2541,10 +2541,15 @@ pub(super) fn paint_brush(
         );
         // A paint operation samples its own layer; layerless previews retain
         // their explicit document-context semantics.
+        // **本层底图必须透明底**（Y26-006 own-layer；第 253 轮 PSD 同款教训）：
+        // `render_region_raw_layer` 叠文档背景 ⇒ 空层取回不透明白底 ⇒ 在白底上落笔
+        // 会把不透明白晕烘进笔触对象（jitter C⑧ 实测：空层红笔 fringe [255,244,242,255]，
+        // 与白底上门面输出逐字节同值；种子区外两者全同、种子区内才分叉）。
+        // `render_region_layer_rgba` 只带本层自身像素（透明底），空层即全零 ⇒ 与门面空底图等价。
         let base_result = match read_layer {
             Some(layer_id) => ctx
                 .workspace
-                .render_region_raw_layer(&ctx.doc_id, bbox, layer_id),
+                .render_region_layer_rgba(&ctx.doc_id, bbox, layer_id),
             None => ctx.workspace.render_region_raw(&ctx.doc_id, bbox),
         };
         if let Ok((base_width, base_height, base)) = base_result {
