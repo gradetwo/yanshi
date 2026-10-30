@@ -388,12 +388,19 @@ impl AtomLog {
         // ⇒ 两句自相矛盾 ✓，而且没有任何出路 ✓ —— 只能整份文档重开 ✓）。
         if aux_ref_mode(atom.kind) == RefMode::MustNotExist {
             if let Some(mask_id) = crate::atom::payload_str(&atom.payload, "mask_id") {
-                if state.mask_alive(mask_id) {
+                let mode = crate::atom::payload_str(&atom.payload, "mode").unwrap_or("new");
+                if mode == "new" && state.mask_alive(mask_id) {
                     return Err(YanshiError::new(
                         ErrorCode::PreconditionFailed,
                         ErrorContext::detail(format!("蒙版 {mask_id} 已存在")),
                     )
                     .with_atom(atom.id.clone()));
+                }
+                if mode != "new" && !state.mask_alive(mask_id) {
+                    return Err(YanshiError::new(
+                        ErrorCode::ReferenceNotFound,
+                        ErrorContext::detail(format!("蒙版 {mask_id} 不存在，mode={mode} 只能修改现有蒙版")),
+                    ).with_atom(atom.id.clone()));
                 }
             }
             if let Some(selection_id) = crate::atom::payload_str(&atom.payload, "selection_id") {

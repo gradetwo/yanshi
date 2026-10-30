@@ -4448,6 +4448,9 @@ async function loadDocumentData() {
   }
 }
 
+// 文档切换会再次预热内核；DOM控件和事件处理器只需连接一次。
+let documentPanelsBound = false;
+
 // 后台预热 WASM 内核：装载原子并切换为客户端渲染；失败则保持服务端渲染。
 async function warmKernel() {
   (window.__appMarks = window.__appMarks || []).push("warm:enter");
@@ -4456,9 +4459,12 @@ async function warmKernel() {
   // 这三步原先挂在 `await initWasm()` **后面** ✗ ⇒ 内核起不来（离线 / wasm 取不到 ✓）
   // 就**整段不执行** ✓ ⇒ 「对象」「批注」「检查点」三个面板的按钮**全都点不动** ✗，
   // 而它们与内核**没有任何关系** ✓（全部走 HTTP 工具 ✓）。接线本身是纯 DOM ✓，提前无害 ✓。
-  setupAnnotationPanel();
-  setupObjectPanel();
-  setupCheckpointPanel();
+  if (!documentPanelsBound) {
+    setupAnnotationPanel();
+    setupObjectPanel();
+    setupCheckpointPanel();
+    documentPanelsBound = true;
+  }
   await initWasm();
   (window.__appMarks = window.__appMarks || []).push("warm:after-initWasm");
   if (!state.wasm) return;
@@ -5741,7 +5747,7 @@ async function savePaletteFromSwatches() {
 function referenceDisplayArgs() {
   const args = {};
   const raw = Number(($("referenceOpacity") || {}).value);
-  args.opacity = Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : 0.5;
+  args.opacity = Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : 0.5;
   const ids = ["referenceX", "referenceY", "referenceW", "referenceH"];
   const values = ids.map((id) => String((($(id) || {}).value || "")).trim());
   const filled = values.filter((v) => v !== "").length;
@@ -5786,56 +5792,60 @@ function onFilePicked(el, label, fn) {
   });
 }
 
-/// **上传参考图** ✓（`set_reference` ✓）：上传走与导入图片同一条 CAS 路 ✓（`/api/blob` 裸 RGBA ✓）。
-/// **本地留一份 dataURL** ✓：存储里是裸 RGBA ✓，`<img>` 解不开 ✗ ⇒ 本会话的 overlay 用 dataURL 显示 ✓。
+/// PNG/JPEG references remain compressed and browser-decodable in CAS.
+/// Other formats retain the browser-decoded raw fallback used by image imports.
 async function setReferenceImage() {
   const input = $("referenceFile");
   const file = input && input.files && input.files[0];
+  const info = $("referenceInfo");
   if (!file) { log("先选一张图片 ✓", "#c33"); return; }
-  const dataUrl = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-  const bitmap = await createImageBitmap(file);
-  const canvas = document.createElement("canvas");
-  canvas.width = bitmap.width;
-  canvas.height = bitmap.height;
-  const context = canvas.getContext("2d");
-  context.drawImage(bitmap, 0, 0);
-  const bytes = new Uint8Array(context.getImageData(0, 0, canvas.width, canvas.height).data.buffer);
-  const upload = await fetchOrLocal(api("/api/blob"), {
-    method: "POST",
-    headers: { "content-type": "image/x-yanshi-raw" },
-    body: bytes,
-  }).then((response) => response.json()).catch(() => ({ ok: false }));
-  if (!upload || !upload.ok || !upload.blob_hash) {
-    log("参考图上传失败：" + String((upload && (upload.error_code || upload.reason)) || "unknown"), "#c33");
-    return;
-  }
-  const built = referenceDisplayArgs();
-  if (built.error) {
-    log(built.error, "#c33");
-    if (input) input.value = "";
-    return;
-  }
-  const args = { blob_hash: upload.blob_hash, ...built.args };
-  const set = await callToolChecked("set_reference", args, "设为参考图");
-  if (set && set.ok) {
-    state.referenceLocal = { hash: String(upload.blob_hash), url: dataUrl };
-    // **顺手进本地缓存** ✓：否则刷新后 `<img>` 只剩裸像素可读 ✗（见 `rememberReferenceBlob` ✓）。
-    const cached = window.__rememberReferenceBlob(String(upload.blob_hash), dataUrl);
-    const info = $("referenceInfo");
-    if (info) {
-      info.textContent = "参考图已就位（" + canvas.width + "×" + canvas.height + "）"
-        + (args.position ? " · 钉在 " + args.position.x + "," + args.position.y + " 的 " + args.position.w + "×" + args.position.h : "")
-        + (cached ? "" : " · 本浏览器没存下原图（超过 1.5MB 或配额不足）⇒ 刷新后需要重传");
+  try {
+    const built = referenceDisplayArgs();
+    if (built.error) throw new Error(built.error);
+    if (info) info.textContent = "正在上传参考图…";
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+    const bitmap = await createImageBitmap(file);
+    const width = bitmap.width, height = bitmap.height;
+    const encoded = file.type === "image/png" || file.type === "image/jpeg";
+    let body = file;
+    const headers = { "content-type": file.type };
+    try {
+      if (encoded) {
+        headers["x-yanshi-preserve-encoded"] = "1";
+      } else {
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        const context = canvas.getContext("2d");
+        context.drawImage(bitmap, 0, 0);
+        body = new Uint8Array(context.getImageData(0, 0, width, height).data.buffer);
+        headers["content-type"] = "image/x-yanshi-raw";
+      }
+    } finally {
+      bitmap.close();
     }
-    // **不能直接调 `refreshReferenceOverlay()`** ✗：它在**另一个块作用域**里 ✓
-    //（直接调 = ReferenceError ⇒ 静默失败 ✓ —— 正是本项目禁止的那类 ✗）
-    // ⇒ 走它**自己已经挂上的 resize 监听** ✓（同一处理函数 ✓、零新接口 ✓）。
+    const response = await fetchOrLocal(api("/api/blob"), { method: "POST", headers, body });
+    const upload = await response.json();
+    if (!response.ok || !upload || !upload.ok || !upload.blob_hash) {
+      throw new Error(String((upload && (upload.context?.detail || upload.error_code)) || "上传没有返回 blob"));
+    }
+    const args = { blob_hash: upload.blob_hash, ...built.args };
+    const set = await callToolChecked("set_reference", args, "设为参考图");
+    if (!set || !set.ok) throw new Error("参考图已上传，但保存参考设置失败");
+    state.referenceLocal = { hash: String(upload.blob_hash), url: dataUrl };
+    const cached = upload.encoded_original || window.__rememberReferenceBlob(String(upload.blob_hash), dataUrl);
+    if (info) info.textContent = "参考图已就位（" + width + "×" + height + "）"
+      + (cached ? "" : " · 本浏览器未缓存原图，刷新后可能需要重传");
     window.dispatchEvent(new Event("resize"));
+  } catch (error) {
+    const message = "参考图上传失败：" + String(error?.message || error);
+    if (info) info.textContent = message;
+    log(message, "#c33");
+  } finally {
     if (input) input.value = "";
   }
 }
@@ -11246,7 +11256,7 @@ function renderToolStrip() {
     const key = def.icon || def.tool || def.id;
     const hint = def.key ? def.label + " (" + def.key.toUpperCase() + ")" : def.label;
     const attrs = def.tool ? ` data-tool="${def.tool}"` : ` id="${def.id}"`;
-    return `<button${attrs} title="${hint}" aria-label="${hint}" aria-pressed="false">` +
+    return `<button${attrs} title="${hint}" aria-label="${hint}" aria-pressed="${def.tool === state.tool}">` +
       `<svg viewBox="0 0 24 24" aria-hidden="true">${TOOL_ICONS[key] || ""}</svg></button>`;
   }).join("");
 }
@@ -11799,6 +11809,7 @@ async function refreshReferenceOverlay() {
       overlay.addEventListener("load", () => {
         overlay.dataset.decode = "ok";
         overlay.style.display = "";
+        referenceOverlayState();
       });
       document.body.appendChild(overlay);
     }
@@ -11822,7 +11833,9 @@ async function refreshReferenceOverlay() {
     // 名字能不能直接看见取决于拼装顺序 ✗ ⇒ 用全局引用把它钉死 ✓。
     if (window.__applyReferenceGeometry) window.__applyReferenceGeometry();
     const opacity = Number(prefs["reference.opacity"]);
-    overlay.style.opacity = String(Number.isFinite(opacity) && opacity > 0 ? opacity : 0.5);
+    overlay.style.opacity = String(Number.isFinite(opacity) && opacity >= 0 ? opacity : 0.5);
+    const opacityInput = $("referenceOpacity");
+    if (opacityInput && document.activeElement !== opacityInput) opacityInput.value = overlay.style.opacity;
     // **把服务端存的位置回填到输入框** ✓（空着才填 ⇒ 不盖掉人正在打的字 ✓）：
     // Agent 用 MCP 设过位置后 ✓，人打开页面看得见"钉在哪一块"✓ 而不是看不见 ✗。
     if (window.__referenceView.position) {
@@ -11834,10 +11847,6 @@ async function refreshReferenceOverlay() {
       fill("referenceY", window.__referenceView.position.y);
       fill("referenceW", window.__referenceView.position.w);
       fill("referenceH", window.__referenceView.position.h);
-    }
-    const info = $("referenceInfo");
-    if (info && overlay.dataset.source === "blob") {
-      info.textContent = "参考图由外部设置，本浏览器没有它的原图（存储里是裸像素）⇒ 重新上传一次就能一直显示";
     }
     // **解码结果异步** ✓：`src` 设下去之后 `load`/`error` 才决定看得见看不见 ✗
     // ⇒ 这一句必须在**两种结果**下都说得出口 ✓ 不能只在 `source === "blob"` 那一刻写一次 ✓。
@@ -11855,9 +11864,9 @@ function referenceOverlayState() {
   const info = $("referenceInfo");
   if (!overlay || !info) return;
   if (overlay.dataset.decode === "failed") {
-    info.textContent = "参考图叠不上去：存储里那份是裸像素（本浏览器没有它的原图）⇒ 已收起画布上的这一层，重新上传一次就能一直显示";
+    info.textContent = "参考图无法读取或解码，已收起叠加层；请检查连接、访问权限或重新上传图片";
   } else if (overlay.dataset.decode === "ok" && overlay.dataset.source === "blob") {
-    info.textContent = "参考图由外部设置，本浏览器没有它的原图（存储里是裸像素）⇒ 重新上传一次就能一直显示";
+    info.textContent = "参考图已就位（从服务端读取原图）";
   }
 }
 void refreshReferenceOverlay();

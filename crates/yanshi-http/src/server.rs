@@ -2568,13 +2568,24 @@ fn blob_upload(state: &ServerState, request: &Request) -> Response {
     let mut mime_type = declared_mime.clone();
     let mut body = request.body.clone();
     let mut decoded_from = Value::Null;
+    // Reference overlays need a browser-decodable source, not a raw paint patch.
+    // This opt-in does not alter normal image imports or authorization/size limits.
+    let encoded_original = request.header("x-yanshi-preserve-encoded") == Some("1");
     // **相机 RAW 在上传端只识别、不展开**（设计 5.3，RAW 第二包）：识别走
     // 字节探针（经 render 挂接点），**先于声明 mime 的分派**——RAW 文件常被
     // 声明成 image/x-dcraw／octet-stream 甚至误报 image/tiff，字节说了算。
     // 命中 ⇒ **原样存入**（body 不动）、mime 改报 rawsrc、decoded_from 给
     // `{"format":"raw", ...}` 概要；展开留给取图侧凭对象 raw_develop 记录。
     // feature 关时探针恒 None，本端点行为与基线逐字一致。
-    if let Some(summary) = raw_upload_probe(&request.body) {
+    if encoded_original {
+        mime_type = if request.body.starts_with(b"\x89PNG\r\n\x1a\n") {
+            "image/png".to_owned()
+        } else if yanshi_render::jpeg::is_jpeg(&request.body) {
+            "image/jpeg".to_owned()
+        } else {
+            return crate::http::bad_request("保留压缩参考图只支持 PNG/JPEG 字节");
+        };
+    } else if let Some(summary) = raw_upload_probe(&request.body) {
         decoded_from = summary;
         mime_type = yanshi_render::RAW_SOURCE_MIME.to_owned();
     } else if declared_mime.eq_ignore_ascii_case("image/png") {
@@ -2618,15 +2629,81 @@ fn blob_upload(state: &ServerState, request: &Request) -> Response {
         Ok(hash) => {
             // **上传即登记** ✓（审计 P1 存量 5.5）：上传者拿到的 hash 回头就要读回
             //（预览／入图 ✓）⇒ 记产出者为本文档，读回时放行 ✓（不登记会被引用集闸拦住 ✓）。
+            if encoded_original {
+                if let Err(reason) = record_reference_source(state, &workspace, &doc_id, &hash.to_string()) {
+                    return internal(&format!("保存参考图来源归属失败: {reason}"));
+                }
+            }
             state.record_derived_hash(&hash.to_string(), &doc_id);
             Response::json(
                 200,
                 &json!({"ok": true, "blob_hash": hash.to_string(), "size": body.len(),
-                        "mime_type": mime_type, "decoded_from": decoded_from}),
+                        "mime_type": mime_type, "decoded_from": decoded_from,
+                        "encoded_original": encoded_original}),
             )
         }
         Err(error) => Response::from_error(&error),
     }
+}
+
+// Bind a reference grant to the document generation, not merely a reusable id.
+fn reference_document_generation(workspace: &Workspace, doc_id: &str) -> Option<String> {
+    workspace.document(doc_id)?.log().atoms().first().map(|atom| atom.id.to_string())
+}
+
+// Server-private metadata: generic workspace preferences cannot grant blob access.
+// The caller holds the workspace mutex, so upload updates are serialized.
+fn record_reference_source(
+    state: &ServerState, workspace: &Workspace, doc_id: &str, hash: &str,
+) -> std::result::Result<(), String> {
+    let Some(root) = &state.options.root else { return Ok(()); };
+    let generation = reference_document_generation(workspace, doc_id)
+        .ok_or_else(|| "参考图文档尚未初始化".to_owned())?;
+    let path = root.join(".reference-sources.json");
+    let mut registry: std::collections::BTreeMap<String, Value> = match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| error.to_string())?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => std::collections::BTreeMap::new(),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut sources = std::collections::BTreeSet::<String>::new();
+    if let Some(entry) = registry.get(doc_id) {
+        if entry.get("generation").and_then(Value::as_str) == Some(generation.as_str()) {
+            if let Some(previous) = entry.get("blob_hash").and_then(Value::as_str) {
+                sources.insert(previous.to_owned());
+            }
+            if let Some(previous) = entry.get("blob_hashes").and_then(Value::as_array) {
+                sources.extend(previous.iter().filter_map(Value::as_str).map(str::to_owned));
+            }
+        }
+    }
+    sources.insert(hash.to_owned());
+    registry.insert(doc_id.to_owned(), json!({"generation": generation, "blob_hashes": sources}));
+    let bytes = serde_json::to_vec(&registry).map_err(|error| error.to_string())?;
+    let temporary = path.with_extension("json.tmp");
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&temporary).map_err(|error| error.to_string())?;
+        file.write_all(&bytes).map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+    }
+    std::fs::rename(&temporary, &path).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn reference_source_owned(
+    state: &ServerState, workspace: &Workspace, doc_id: &str, hash: &str,
+) -> bool {
+    let Some(root) = &state.options.root else { return false; };
+    let Some(generation) = reference_document_generation(workspace, doc_id) else { return false; };
+    let registry = std::fs::read(root.join(".reference-sources.json"))
+        .ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    registry.as_ref().and_then(|value| value.get(doc_id)).map(|entry| {
+        entry.get("generation").and_then(Value::as_str) == Some(generation.as_str())
+            && (entry.get("blob_hash").and_then(Value::as_str) == Some(hash)
+                || entry.get("blob_hashes").and_then(Value::as_array)
+                    .map(|values| values.iter().any(|value| value.as_str() == Some(hash)))
+                    .unwrap_or(false))
+    }).unwrap_or(false)
 }
 
 fn blob_route(state: &ServerState, request: &Request) -> Response {
@@ -2666,7 +2743,8 @@ fn blob_by_hash(state: &ServerState, request: &Request, hash: &str) -> Response 
     // 三臂都不中 ⇒ 403 ✓（不是 404：blob 确实存在，只是**没授权给你** ✓）。
     let allowed = principal.role == Role::Owner
         || state.blob_referenced(&workspace, &doc_id, &hash)
-        || state.derived_for_doc(&hash.to_string(), &doc_id);
+        || state.derived_for_doc(&hash.to_string(), &doc_id)
+        || reference_source_owned(state, &workspace, &doc_id, &hash.to_string());
     if !allowed {
         return crate::http::forbidden(format!(
             "blob {hash} 不属于文档 {doc_id}（未被其日志引用、也非其派生产物）⇒ \

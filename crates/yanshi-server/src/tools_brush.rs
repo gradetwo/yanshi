@@ -179,6 +179,7 @@ fn paint_and_commit_brush_segment(
         args.get("hardness").and_then(Value::as_f64),
         // **文档里必须喂底图** ✓ —— 涂抹类笔刷靠它工作 ✓。
         true,
+        Some(&layer_id),
         // **★ P0 #4：把调用方给的字段覆盖传进去 ✗ ★**（**∴ 我第一版补成了 `None` ✗ ⇒ ①② 假绿 ✓）★
         seg_brush_params,
         seg_color_mixing,
@@ -2310,6 +2311,7 @@ pub(super) fn paint_brush(
     // **笔尖硬度** ✓（`0..1`；`None` = 用 `.myb` 自带的 ✓）—— 落到 MyPaint 的 `hardness` ✓。
     hardness: Option<f64>,
     feed_base: bool,
+    read_layer: Option<&str>,
     brush_params: Option<&Value>,
     // **★ P2 #16：`color_to` 渐变的混色模式 ★**（缺省 `Rgb` ⇒ 与今天逐字节相同）
     color_mixing: yanshi_render::color::ColorMixing,
@@ -2531,15 +2533,19 @@ pub(super) fn paint_brush(
     // 涂抹类笔刷每次落笔都要付这份钱 ✓；测试方原先只能从外部猜它占多少 ✓。
     let base_started = std::time::Instant::now();
     if reads_canvas {
-        if let Ok((base_width, base_height, base)) = ctx.workspace.render_region_raw(
-            &ctx.doc_id,
-            yanshi_core::Bbox::new(
-                seed_region.x0 as f64,
-                seed_region.y0 as f64,
-                seed_region.width as f64,
-                seed_region.height as f64,
-            ),
-        ) {
+        let bbox = yanshi_core::Bbox::new(
+            seed_region.x0 as f64,
+            seed_region.y0 as f64,
+            seed_region.width as f64,
+            seed_region.height as f64,
+        );
+        // A paint operation samples its own layer; layerless previews retain
+        // their explicit document-context semantics.
+        let base_result = match read_layer {
+            Some(layer_id) => ctx.workspace.render_region_raw_layer(&ctx.doc_id, bbox, layer_id),
+            None => ctx.workspace.render_region_raw(&ctx.doc_id, bbox),
+        };
+        if let Ok((base_width, base_height, base)) = base_result {
             let base_ok = base_width as usize == seed_region.width
                 && base_height as usize == seed_region.height
                 && base.len() >= seed_region.width * seed_region.height * 4;
@@ -2866,6 +2872,19 @@ pub(super) fn paint_brush(
                      **想要墨** ⇒ 把 `color.a` / `opacity` 设大；**想要的就是透明** ⇒ 这笔不用画 ✓。"
                         .to_owned(),
                 ),
+            ));
+        }
+        // 橡皮在空 surface 上不会增加 alpha；不能由零墨推断路径太短。
+        // 这里修正恢复建议，不冒充已经补齐跨对象的 MyPaint 橡皮合成。
+        if brush.get(hokusai::BrushSetting::Eraser).base_value > 0.0 {
+            return Err(YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!(
+                    "笔刷「{name}」启用了 eraser，但这次没有产生可提交的擦除结果。\
+                     这不能证明路径太短，继续加长路径不是可靠的恢复办法。\
+                     请先确认目标图层已有颜料；若仍无变化，请用专用 erase 工具\
+                     （data.points/size/hardness/opacity）擦除同一图层，并保留本次参数供排查。"
+                )),
             ));
         }
         // **说清原因，并给出路** ✓（"错误里要能照着改" 是本项目的既定规矩 ✓）。
