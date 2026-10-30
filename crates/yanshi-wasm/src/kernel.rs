@@ -12,9 +12,10 @@
 
 use std::collections::BTreeSet;
 
+use crate::host_blob::HostBlobStore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use yanshi_core::blob::{BlobStore, MemoryBlobStore};
+use yanshi_core::blob::BlobStore;
 use yanshi_core::fold::FoldWarning;
 use yanshi_core::{
     Atom, AtomLog, Bbox, BlobHash, DocumentState, IncrementalFolder, ObjectType, Seq,
@@ -187,6 +188,19 @@ fn clamp_to_canvas(region: Bbox, width: u32, height: u32) -> Bbox {
     Bbox::new(x, y, w, h)
 }
 
+/// 渲染错误到内核信封的映射（bake 二期第 4 项的缺 Blob 口径对齐）。
+///
+/// 缺压平基底必须报 `missing_baked_blob`（与服务端渲染口径一致：
+/// `yanshi_core::bake::missing_baked_blob_error` 的码）；其余渲染错误
+/// 仍按旧口径报 `invalid_argument`（JS 侧已有依赖，不扩大改动面）。
+fn render_error(error: yanshi_core::YanshiError) -> KernelError {
+    if error.code == yanshi_core::ErrorCode::MissingBakedBlob {
+        KernelError::new("missing_baked_blob", error.to_string())
+    } else {
+        KernelError::new("invalid_argument", error.to_string())
+    }
+}
+
 /// 本地待提交覆盖层的保留对象 id（不进原子日志，13.3 乐观渲染）。
 pub const PREVIEW_OBJECT_ID: &str = "__yanshi_preview__";
 
@@ -197,7 +211,9 @@ pub struct Kernel {
     folder: IncrementalFolder,
     state: DocumentState,
     renderer: Renderer,
-    store: MemoryBlobStore,
+    /// 宿主侧 blob 存储（bake 二期第 4 项）：字节活在宿主后端里，
+    /// 不再是内核自有的 `MemoryBlobStore`（见 `host_blob` 模块文档）。
+    store: HostBlobStore,
     /// **★ 缓存的 GPU 量化器 ✗ ★**（**第 487 轮 ✓；**目标第 6 条 ✓）
     ///
     /// **∴ 为什么要缓存 ✗**：**`Quantizer::new_async` **每次都要建设备 ＋ 编译管线**✗
@@ -243,6 +259,26 @@ impl Kernel {
         height: u32,
         memory_limit: usize,
     ) -> Result<Self, KernelError> {
+        Self::new_with_blob_store(
+            doc_id,
+            tile_size,
+            width,
+            height,
+            memory_limit,
+            HostBlobStore::new(),
+        )
+    }
+
+    /// 以指定宿主 blob 存储新建内核（测试故障注入与嵌入宿主用；
+    /// 常规路径走 [`Kernel::new`]，它用 [`HostBlobStore::new`] 的默认后端）。
+    pub fn new_with_blob_store(
+        doc_id: impl Into<String>,
+        tile_size: u32,
+        width: u32,
+        height: u32,
+        memory_limit: usize,
+        store: HostBlobStore,
+    ) -> Result<Self, KernelError> {
         let grid = TileGrid::new(tile_size, width, height).ok_or_else(|| {
             KernelError::new(
                 "invalid_argument",
@@ -256,7 +292,7 @@ impl Kernel {
             folder: IncrementalFolder::new(),
             state: DocumentState::empty(),
             renderer: Renderer::with_budget(grid, memory_limit),
-            store: MemoryBlobStore::new(),
+            store,
             #[cfg(feature = "gpu")]
             gpu_quantizer: None,
             viewport: Bbox::new(0.0, 0.0, width as f64, height as f64),
@@ -566,27 +602,26 @@ impl Kernel {
         self.renderer.cache_mut().invalidate(&keys);
     }
 
-    /// 写入本地 blob（设计 6.3：blob 先行），返回 CAS 哈希。
+    /// 写入宿主 blob（设计 6.3：blob 先行），返回 CAS 哈希。
     ///
-    /// **`created_at` 显式给 `0`，不走 `MemoryBlobStore::put`** ✗ —— 那条路会调 `now_ms()` ✓，
-    /// 而 `now_ms()` 在 `wasm32-unknown-unknown` 上**根本没有实现** ✓
-    ///（它底下的**宿主时钟**在 wasm32 上直接 panic ✓ —— 本仓库有守卫测试在数这个字面量 ✓，
-    /// 所以这里**刻意不写出那个 API 名** ✗：守卫数的是文本出现次数 ✓，写出来会把它从 0 顶到 1 ✓
-    /// 而那不是"新增了一处调用" ✗；实测浏览器里 `blob_put` 抛 `RuntimeError: unreachable` ✓，
-    /// 内核对象随即进入"递归借用"状态、后续调用全废 ✗）
-    /// ⇒ 内核暴露的这条写入路径**在浏览器里从来不能用** ✗ —— 直到离线落笔第一次真正调它 ✓。
-    ///
-    /// **为什么常数 0 是对的** ✓：`created_at` 只服务于**服务端的孤儿 GC / TTL** ✓
-    ///（`age_seconds` ✓），内核不做 GC ✓；而 blob 的键是**内容哈希** ✓、与时间戳无关 ✓
-    /// ⇒ 常数时间戳不改变任何可观测行为 ✓，还顺带满足"同输入同输出" ✓（D0 的纪律 ✓）。
+    /// 走 [`HostBlobStore::put`]（bake 二期第 4 项）：哈希在 Rust 侧算，
+    /// 字节交给宿主后端（`wasm32` 下是 JS 堆内的宿主 store，不进 WASM
+    /// 线性内存）。`put` 不碰时钟，`created_at` 归宿主（记 `0`，与一期
+    /// `put_at(bytes, 0)` 的口径一致；内核不做 GC）——一期浏览器里
+    /// `blob_put` 曾因宿主时钟而 `unreachable` 的隐患随之消除。
     pub fn blob_put(&mut self, bytes: &[u8]) -> Result<String, KernelError> {
         self.store
-            .put_at(bytes, 0)
+            .put(bytes)
             .map(|hash| hash.to_string())
             .map_err(|error| KernelError::new("resource_exhausted", error.to_string()))
     }
 
-    /// 读取本地 blob。
+    /// 读取宿主 blob。
+    ///
+    /// 缺失报 `reference_not_found`（文案沿用一期：需先 `blob_put`，
+    /// WASM 下即需先经宿主 store 推入）；宿主返回内容与哈希不符时
+    /// 报 `precondition_failed`（见 `host_blob` 模块文档的校验落点），
+    /// 不再一律折成 `resource_exhausted`。
     pub fn blob_get(&mut self, hash: &str) -> Result<Vec<u8>, KernelError> {
         let hash: BlobHash = hash
             .parse()
@@ -599,7 +634,22 @@ impl Kernel {
         }
         self.store
             .get(&hash)
-            .map_err(|error| KernelError::new("resource_exhausted", error.to_string()))
+            .map_err(|error| KernelError::new(error.code.as_str(), error.to_string()))
+    }
+
+    /// 宿主 store 里是否存在该 blob（非法哈希字符串返回 `false`）。
+    ///
+    /// 供 `WasmKernel::blob_has` 用：`blob_get` 在缺失时返回空数组，
+    /// 无法区分“缺失”与“空 blob”，探针必须走这条。
+    pub fn blob_exists(&self, hash: &str) -> bool {
+        hash.parse::<BlobHash>()
+            .map(|parsed| self.store.exists(&parsed))
+            .unwrap_or(false)
+    }
+
+    /// 宿主 blob 后端名（见 [`HostBlobStore::backend_name`]）。
+    pub fn blob_store_backend_name(&self) -> &'static str {
+        self.store.backend_name()
     }
 
     /// view 模式批量装载（13.1：从日志一次性折叠）。
@@ -909,7 +959,7 @@ impl Kernel {
         let rendered = self
             .renderer
             .render_region(&self.state, &self.store, region)
-            .map_err(|error| KernelError::new("invalid_argument", error.to_string()))?;
+            .map_err(render_error)?;
         // **∴ ② 惰性建量化器（**只一次 ✓）
         if self.gpu_quantizer.is_none() {
             let lut = yanshi_render::color::srgb_encode_table();
@@ -972,7 +1022,7 @@ impl Kernel {
         let rendered = self
             .renderer
             .render_region(&self.state, &self.store, bbox)
-            .map_err(|error| KernelError::new("invalid_argument", error.to_string()))?;
+            .map_err(render_error)?;
         Ok(rendered.rgba8)
     }
 
@@ -999,7 +1049,7 @@ impl Kernel {
             let tile = self
                 .renderer
                 .render_tile(&self.state, &self.store, key)
-                .map_err(|error| KernelError::new("invalid_argument", error.to_string()))?;
+                .map_err(render_error)?;
             tiles.push(key);
             let bounds = grid.bounds(key);
             let tile_rgba = tile.to_rgba8(background);
@@ -1277,6 +1327,7 @@ mod tests {
     /// 在舍入边界上差 149/4.2M 字节（如 32 vs 31）。现在两条路径都以 f16 为准。
     #[test]
     fn tile_composed_render_is_bit_exact_with_whole_region_render() {
+        use yanshi_core::blob::MemoryBlobStore;
         use yanshi_render::render::Renderer;
         use yanshi_render::tile::TileGrid;
 
@@ -1497,6 +1548,66 @@ mod tests {
         assert_eq!(summary["layers"], json!(2));
         assert_eq!(summary["objects"], json!(2));
         assert_eq!(summary["width"], json!(128));
+    }
+
+    /// 压平基底缺 Blob 时，两条渲染路都必须报 `missing_baked_blob`
+    ///（与服务端渲染口径一致），而不是一期的 `invalid_argument`，
+    ///且绝不画出空白层（错误即失败，无像素返回）。
+    #[test]
+    fn missing_baked_base_renders_missing_baked_blob_error() {
+        let mut kernel = kernel_with(&scene_atoms(), DEFAULT_MEMORY_LIMIT);
+        // scene_atoms 已建 128x128 文档 + layer_1（HEAD=4）；seq 5 为 bake_layer。
+        let missing = BlobHash::from_bytes(b"never put into the host store");
+        let atom = json!({"id": "01AAAAAAAAAAAAAAAAAAAAAAAA05", "seq": 5, "kind": "bake_layer",
+            "actor": "human:1", "session": "s", "timestamp": 5,
+            "payload": {"layer_id": "layer_1", "blob_hash": missing.to_string(), "up_to_seq": 4}});
+        kernel.apply_atom_json(&atom.to_string()).unwrap();
+        assert!(!kernel.blob_exists(&missing.to_string()));
+        let region = Bbox::new(0.0, 0.0, 128.0, 128.0);
+        let tile_err = kernel.render_region(region).unwrap_err();
+        assert_eq!(
+            tile_err.code, "missing_baked_blob",
+            "tile 组合路必须报缺基底码：{tile_err:?}"
+        );
+        assert!(
+            tile_err.detail.contains("layer_1"),
+            "detail 必须写明图层：{}",
+            tile_err.detail
+        );
+        let direct_err = kernel
+            .render_region_direct_rgba(0, 0, 128, 128)
+            .unwrap_err();
+        assert_eq!(
+            direct_err.code, "missing_baked_blob",
+            "直绘路必须报同一码：{direct_err:?}"
+        );
+    }
+
+    /// 压平基底经宿主 store 推入后，两条渲染路都必须画出基底像素。
+    #[test]
+    fn baked_base_renders_after_host_blob_put() {
+        let mut kernel = kernel_with(&scene_atoms(), DEFAULT_MEMORY_LIMIT);
+        let mut rgba = vec![0u8; 128 * 128 * 4];
+        for pixel in rgba.chunks_mut(4) {
+            pixel[0] = 200;
+            pixel[1] = 30;
+            pixel[2] = 60;
+            pixel[3] = 255;
+        }
+        let png = yanshi_render::png::encode_png(128, 128, &rgba).expect("PNG 编码");
+        let hash = kernel.blob_put(&png).unwrap();
+        assert!(kernel.blob_exists(&hash));
+        assert_eq!(kernel.stats().blobs, 1);
+        let atom = json!({"id": "01AAAAAAAAAAAAAAAAAAAAAAAA05", "seq": 5, "kind": "bake_layer",
+            "actor": "human:1", "session": "s", "timestamp": 5,
+            "payload": {"layer_id": "layer_1", "blob_hash": hash, "up_to_seq": 4}});
+        kernel.apply_atom_json(&atom.to_string()).unwrap();
+        let rendered = kernel
+            .render_region(Bbox::new(0.0, 0.0, 128.0, 128.0))
+            .unwrap();
+        assert_eq!(&rendered.rgba8[0..4], &[200, 30, 60, 255]);
+        let direct = kernel.render_region_direct_rgba(0, 0, 128, 128).unwrap();
+        assert_eq!(&direct[0..4], &[200, 30, 60, 255]);
     }
 }
 

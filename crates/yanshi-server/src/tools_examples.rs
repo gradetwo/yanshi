@@ -19,6 +19,10 @@
 /// 形状：`(工具名, 一段可直接粘贴的 JSON 参数)`。**先给日常最常用的三个**，
 /// 其余工具按同一模式补齐（每加一个，测试自动替它把关）。
 pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
+    ("bake_layer", r#"{"layer_id":"L1"}"#),
+    ("bake_document", r#"{}"#),
+    ("recover_baked_blobs", r#"{"layer_id":"L1"}"#),
+    ("get_bake_status", r#"{}"#),
     ("smart_glaze", r#"{"shape":{},"color":[],"layer_id":"L1"}"#),
     ("smart_erase_shape", r#"{"layer_id":"L1","shape":{}}"#),
     (
@@ -408,6 +412,21 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("transform_object", r#"{"object_id":"L1"}"#),
     ("restore_object", r#"{"object_id":"L1"}"#),
     ("move_object", r#"{"object_id":"L1"}"#),
+    ("resize_canvas_bounds", r#"{"width":200,"height":100}"#),
+    ("scale_canvas", r#"{"scale":2,"anchor_name":"center"}"#),
+    ("rotate_canvas", r#"{"degrees":90,"anchor_name":"center"}"#),
+    (
+        "flip_canvas",
+        r#"{"direction":"horizontal","anchor_name":"center"}"#,
+    ),
+    (
+        "crop_canvas",
+        r#"{"region":{"x":10,"y":10,"w":100,"h":50}}"#,
+    ),
+    (
+        "extend_canvas",
+        r#"{"margins":{"left":10,"top":10,"right":10,"bottom":10}}"#,
+    ),
     ("revert", r#"{"atom_id":"atom1"}"#),
     ("reapply", r#"{"atom_id":"atom1"}"#),
     ("revert_to", r#"{"atom_id":"atom1"}"#),

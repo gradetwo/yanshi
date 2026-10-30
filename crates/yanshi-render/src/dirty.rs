@@ -263,7 +263,24 @@ pub fn plan_dirty(
         // 的 `options.background.or_else(|| parse_background(&state.background))` ✓），
         // 没有「只脏一块」的说法 ✗ ⇒ 落到 `_ => none()` 就会让缓存 tile 继续用旧底色
         // 出帧（改了底色画面却不动的静默退化 ✗）⇒ 必须显式全量 ✓。
+        AtomKind::BakeLayer => {
+            DirtySet::whole_document(state, "bake_layer 替换整层图元（基底 Blob 换新）")
+        }
+        AtomKind::BakeDocument => {
+            DirtySet::whole_document(state, "bake_document 逐层替换图元（各层基底 Blob 换新）")
+        }
         AtomKind::SetBackground => DirtySet::whole_document(state, "set_background 改变文档底色"),
+        // **几何（路线三）⇒ 整幅失效**：画布尺寸变了、全部对象变换复合了，
+        // 没有「只脏一块」的说法，落到按对象/按层失效会让缓存 tile 继续用旧
+        // 尺寸与旧变换出帧（改了画布画面却不动的静默退化）。
+        AtomKind::ResizeCanvasBounds
+        | AtomKind::ScaleCanvas
+        | AtomKind::RotateCanvas
+        | AtomKind::FlipCanvas
+        | AtomKind::CropCanvas
+        | AtomKind::ExtendCanvas => {
+            DirtySet::whole_document(state, "几何操作改变画布尺寸与全部对象变换")
+        }
         kind if GEOMETRY_KINDS.contains(&kind) => {
             if atom.object_id().is_some() {
                 dirty_for_object(state, previous, atom, "几何修改")

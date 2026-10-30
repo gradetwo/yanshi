@@ -164,6 +164,8 @@ pub fn atom_needs_previous_state(kind: AtomKind) -> bool {
             | AtomKind::Reapply
             | AtomKind::ReorderLayers
             | AtomKind::ReorderObjects
+            | AtomKind::BakeLayer
+            | AtomKind::BakeDocument
     )
 }
 
@@ -377,10 +379,75 @@ pub fn fold_atoms_skipping(
     let mut state = base;
     let mut warnings = Vec::new();
     let mut applied = Vec::new();
+    // Fold Horizon（bake）：有效 Bake 原子（BakeLayer 与 BakeDocument 条目）的
+    // layer -> max up_to_seq。
+    // 段内预扫描只用本段原子；增量段从已含压平态的 base 续折时，段内
+    // 原子 seq 恒大于 base 的水位，不会误剪（base 侧水位由状态自带）。
+    let horizon = crate::bake::compute_bake_horizon(atoms, &suppressed);
+    // 对象 -> 图层映射：先取 base 状态，再随段内创建原子顺序更新。
+    // 被剪枝的创建原子也要登记归属，否则其后续 Move/Transform 无法判定剪枝。
+    let mut object_layer: std::collections::BTreeMap<String, String> = state
+        .objects
+        .values()
+        .map(|o| (o.id.clone(), o.layer_id.clone()))
+        .collect();
 
     for atom in atoms {
         if suppressed.contains(&atom.id) {
             continue;
+        }
+        // Horizon 剪枝（Bake 原子本身与外壳类原子永不剪枝）。
+        if !crate::bake::is_bake_kind(atom.kind) && !crate::bake::is_bake_shell_kind(atom.kind) {
+            let target = crate::bake::bake_target_layer(atom, |id| object_layer.get(id).cloned());
+            if let Some(layer_id) = target {
+                if let Some(water) = horizon.get(&layer_id) {
+                    if atom.seq <= *water && crate::bake::is_bake_content_kind(atom.kind) {
+                        // 仍登记创建归属（见上），但不产生状态效果、不进 applied。
+                        if matches!(
+                            atom.kind,
+                            AtomKind::CreateObject
+                                | AtomKind::ImportImage
+                                | AtomKind::DrawStroke
+                                | AtomKind::DrawShape
+                                | AtomKind::DrawText
+                                | AtomKind::Fill
+                                | AtomKind::Erase
+                                | AtomKind::Retouch
+                                | AtomKind::Liquify
+                                | AtomKind::Supersede
+                        ) {
+                            if let (Some(oid), Some(lid)) = (
+                                atom.payload.get("object_id").and_then(|v| v.as_str()),
+                                atom.payload.get("layer_id").and_then(|v| v.as_str()),
+                            ) {
+                                object_layer.insert(oid.to_owned(), lid.to_owned());
+                            }
+                        }
+                        continue;
+                    }
+                }
+            }
+        }
+        // 登记本原子的创建归属（供后续原子判定剪枝）。
+        if matches!(
+            atom.kind,
+            AtomKind::CreateObject
+                | AtomKind::ImportImage
+                | AtomKind::DrawStroke
+                | AtomKind::DrawShape
+                | AtomKind::DrawText
+                | AtomKind::Fill
+                | AtomKind::Erase
+                | AtomKind::Retouch
+                | AtomKind::Liquify
+                | AtomKind::Supersede
+        ) {
+            if let (Some(oid), Some(lid)) = (
+                atom.payload.get("object_id").and_then(|v| v.as_str()),
+                atom.payload.get("layer_id").and_then(|v| v.as_str()),
+            ) {
+                object_layer.insert(oid.to_owned(), lid.to_owned());
+            }
         }
         if atom.kind == AtomKind::DeclareHead {
             warnings.push(FoldWarning {
@@ -676,7 +743,49 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
                     Some(object) if object.is_deleted() => {
                         return Err(tombstone_error("对象", object_id))
                     }
-                    Some(_) => {}
+                    Some(object) => {
+                        // 液化网格变换拦截（第二轮第 3 条）：transform_primitive
+                        // 不变换 Liquify 网格，变换液化对象本身是静默退化，
+                        // 必须报错并提示先 bake_layer 固化液化后再变换。
+                        if matches!(atom.kind, AtomKind::Move | AtomKind::Transform)
+                            && object.object_type == crate::state::ObjectType::Liquify
+                        {
+                            return Err(err(
+                                ErrorCode::PreconditionFailed,
+                                "液化对象未压平：transform_primitive 不变换液化网格，请先 bake_layer 固化液化后再变换",
+                            ));
+                        }
+                        // BakedBase 仿射门禁（第二轮第 1 条）：压平后追加的
+                        // Move/Transform 只复合进基底变换；旋转限 90° 倍数，
+                        // 非均匀缩放须显式 allow_non_uniform_scale。
+                        if matches!(atom.kind, AtomKind::Move | AtomKind::Transform)
+                            && object.data.get("baked_base").and_then(Value::as_bool) == Some(true)
+                        {
+                            let cur = crate::bake::Affine2D(object.transform.matrix);
+                            let allow = atom
+                                .payload
+                                .get("allow_non_uniform_scale")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false);
+                            let next = if let Some(delta) = atom.payload.get("delta") {
+                                let dx = delta.get("dx").and_then(Value::as_f64).unwrap_or(0.0);
+                                let dy = delta.get("dy").and_then(Value::as_f64).unwrap_or(0.0);
+                                let mut m = cur.0;
+                                m[4] += dx;
+                                m[5] += dy;
+                                crate::bake::Affine2D(m)
+                            } else if atom.payload.get("transform").is_some() {
+                                crate::bake::Affine2D(transform_from_payload(&atom.payload).matrix)
+                            } else {
+                                cur
+                            };
+                            // delta 平移不改变旋转/缩放，validate 直接通过；
+                            // 绝对变换走完整门禁。
+                            if atom.payload.get("transform").is_some() {
+                                crate::bake::validate_affine(next, allow)?;
+                            }
+                        }
+                    }
                     None => return Err(missing_error("对象", object_id, state.objects.keys())),
                 }
             } else if let Some(layer_id) = payload_str(&atom.payload, "layer_id") {
@@ -925,6 +1034,128 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
         AtomKind::DeclareHead => {
             // 由 state@seq 公式处理（5.5）。
         }
+        AtomKind::ResizeCanvasBounds
+        | AtomKind::ScaleCanvas
+        | AtomKind::RotateCanvas
+        | AtomKind::FlipCanvas
+        | AtomKind::CropCanvas
+        | AtomKind::ExtendCanvas => {
+            // 几何原子改画布尺寸与全部对象变换：必须已有文档、新尺寸 ≥ 1、
+            // 仿射矩阵 6 个分量全部有限。工具层先行校验，这里是重放时的把关。
+            if state.doc_id.is_none() {
+                return Err(err(
+                    ErrorCode::PreconditionFailed,
+                    "几何操作需要先创建文档",
+                ));
+            }
+            let width = payload_u64(&atom.payload, "new_width").unwrap_or(0);
+            let height = payload_u64(&atom.payload, "new_height").unwrap_or(0);
+            if width < 1 || height < 1 {
+                return Err(err(
+                    ErrorCode::InvalidArgument,
+                    "几何操作的新画布尺寸必须 ≥ 1",
+                ));
+            }
+            let matrix = atom
+                .payload
+                .get("affine")
+                .and_then(|affine| affine.get("matrix"))
+                .and_then(Value::as_array);
+            let finite = matrix
+                .map(|list| {
+                    list.len() == 6
+                        && list
+                            .iter()
+                            .all(|item| item.as_f64().map(f64::is_finite).unwrap_or(false))
+                })
+                .unwrap_or(false);
+            if !finite {
+                return Err(err(
+                    ErrorCode::InvalidArgument,
+                    "几何原子的 affine.matrix 必须是 6 个有限数",
+                ));
+            }
+        }
+        AtomKind::BakeLayer => {
+            let layer_id = required(atom, "layer_id")?;
+            if !state.layer_alive(layer_id) {
+                return Err(missing_error(
+                    "图层",
+                    layer_id,
+                    state.layers.keys().filter(|id| state.layer_alive(id)),
+                ));
+            }
+            let blob_hash = required(atom, "blob_hash")?;
+            if blob_hash.parse::<crate::atom::BlobHash>().is_err() {
+                return Err(err(
+                    ErrorCode::InvalidArgument,
+                    format!("bake_layer blob_hash 非法：{blob_hash}"),
+                ));
+            }
+            if atom.payload.get("up_to_seq").and_then(Value::as_u64).is_none() {
+                return Err(err(
+                    ErrorCode::InvalidArgument,
+                    "bake_layer 缺少 up_to_seq",                ));
+            }
+        }
+        AtomKind::BakeDocument => {
+            if atom
+                .payload
+                .get("document_up_to_seq")
+                .and_then(Value::as_u64)
+                .is_none()
+            {
+                return Err(err(
+                    ErrorCode::InvalidArgument,
+                    "bake_document 缺少 document_up_to_seq",
+                ));
+            }
+            let Some(layers) = atom.payload.get("layers").and_then(Value::as_array) else {
+                return Err(err(
+                    ErrorCode::InvalidArgument,
+                    "bake_document 缺少 layers 数组",
+                ));
+            };
+            if layers.is_empty() {
+                return Err(err(
+                    ErrorCode::InvalidArgument,
+                    "bake_document 的 layers 数组为空（全 no-op 时不产生原子）",
+                ));
+            }
+            for entry in layers {
+                let Some(layer_id) = entry.get("layer_id").and_then(Value::as_str) else {
+                    return Err(err(
+                        ErrorCode::InvalidArgument,
+                        "bake_document 条目缺少 layer_id",
+                    ));
+                };
+                if !state.layer_alive(layer_id) {
+                    return Err(missing_error(
+                        "图层",
+                        layer_id,
+                        state.layers.keys().filter(|id| state.layer_alive(id)),
+                    ));
+                }
+                let Some(blob_hash) = entry.get("blob_hash").and_then(Value::as_str) else {
+                    return Err(err(
+                        ErrorCode::InvalidArgument,
+                        "bake_document 条目缺少 blob_hash",
+                    ));
+                };
+                if blob_hash.parse::<crate::atom::BlobHash>().is_err() {
+                    return Err(err(
+                        ErrorCode::InvalidArgument,
+                        format!("bake_document blob_hash 非法：{blob_hash}"),
+                    ));
+                }
+                if entry.get("up_to_seq").and_then(Value::as_u64).is_none() {
+                    return Err(err(
+                        ErrorCode::InvalidArgument,
+                        "bake_document 条目缺少 up_to_seq",
+                    ));
+                }
+            }
+        }
         AtomKind::Tag
         | AtomKind::Comment
         | AtomKind::Suggest
@@ -1065,6 +1296,17 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
                     deleted_by: None,
                 },
             );
+        }
+        // **几何（路线三）**：画布尺寸 + 逐对象变换复合 + 锚点/选区/蒙版跟随。
+        // 渲染不动：对象 `transform` 字段的合成就是渲染口径（`transform_primitive`
+        // 逐层施加与此处的矩阵合成同一约定）。撤销 = 重折时排除本原子，干净回退。
+        AtomKind::ResizeCanvasBounds
+        | AtomKind::ScaleCanvas
+        | AtomKind::RotateCanvas
+        | AtomKind::FlipCanvas
+        | AtomKind::CropCanvas
+        | AtomKind::ExtendCanvas => {
+            apply_geometry(state, atom)?;
         }
         // **改已有文档底色**：只写 `state.background`，与 `CreateDocument` 同形
         // （`{r, g, b, a}`）⇒ 渲染侧 `parse_background(&state.background)` 直接读到新底色 ✓。
@@ -1487,6 +1729,87 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
             };
             state.checkpoints.insert(checkpoint_id, checkpoint);
         }
+        AtomKind::BakeLayer => {
+            // 折叠期只做状态替换，不渲染、不读存储（存储在渲染/工具层校验）：
+            // 清空目标层全部存活对象，写入单个压平基底对象（见 object.rs 的
+            // BakedBase 图元）；图层 ID/名称/混合/不透明度/z 序一律不动。
+            // 掩膜例外（D11 定夺）：`flatten_mask=true` 时基底像素已含掩膜，
+            // 折叠期消费掩膜——清层 `mask_id`，否则合成再乘一次成二次作用；
+            // 消费后对该层的掩膜编辑由工具层拒绝（须先 revert 该 Bake）。
+            // 压平后追加的 Move/Transform 作用在这个基底对象上（对象变换），
+            // 下一次 bake 由工具层按累积变换一次采样后重置为 IDENTITY。
+            let layer_id = required(atom, "layer_id")?.to_owned();
+            let blob_hash = required(atom, "blob_hash")?.to_owned();
+            let up_to_seq = atom
+                .payload
+                .get("up_to_seq")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if !state.layers.contains_key(&layer_id) {
+                return Err(err(
+                    ErrorCode::ReferenceNotFound,
+                    format!("图层 {layer_id} 不存在"),
+                ));
+            }
+            let flatten_mask = atom
+                .payload
+                .get("flatten_mask")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let object_ids: Vec<String> = state
+                .objects
+                .values()
+                .filter(|o| o.layer_id == layer_id && o.is_alive())
+                .map(|o| o.id.clone())
+                .collect();
+            for oid in object_ids {
+                state.objects.remove(&oid);
+            }
+            if flatten_mask {
+                if let Some(layer) = state.layers.get_mut(&layer_id) {
+                    layer.mask_id = None;
+                }
+            }
+            insert_baked_base_object(state, atom, &layer_id, &blob_hash, up_to_seq, &blobs);
+        }
+        AtomKind::BakeDocument => {
+            // 与 BakeLayer 臂同一形态，按条目逐层处理；先全量校验（层存在、
+            // 哈希可解析）再改写，避免中途报错留下半截状态。
+            let entries = crate::bake::bake_document_entries(atom);
+            let mut checked: Vec<(String, Seq, String, bool, crate::atom::BlobHash)> = Vec::new();
+            for (layer_id, up_to_seq, blob_hash, flatten_mask) in entries {
+                if !state.layers.contains_key(&layer_id) {
+                    return Err(err(
+                        ErrorCode::ReferenceNotFound,
+                        format!("图层 {layer_id} 不存在"),
+                    ));
+                }
+                let Ok(hash) = blob_hash.parse::<crate::atom::BlobHash>() else {
+                    return Err(err(
+                        ErrorCode::InvalidArgument,
+                        format!("bake_document blob_hash 非法：{blob_hash}"),
+                    ));
+                };
+                checked.push((layer_id, up_to_seq, blob_hash, flatten_mask, hash));
+            }
+            for (layer_id, up_to_seq, blob_hash, flatten_mask, hash) in checked {
+                let object_ids: Vec<String> = state
+                    .objects
+                    .values()
+                    .filter(|o| o.layer_id == layer_id && o.is_alive())
+                    .map(|o| o.id.clone())
+                    .collect();
+                for oid in object_ids {
+                    state.objects.remove(&oid);
+                }
+                if flatten_mask {
+                    if let Some(layer) = state.layers.get_mut(&layer_id) {
+                        layer.mask_id = None;
+                    }
+                }
+                insert_baked_base_object(state, atom, &layer_id, &blob_hash, up_to_seq, &[hash]);
+            }
+        }
         AtomKind::DeclareHead => {
             state.declare_head = Some(DeclareHead {
                 atom_id: atom.id.clone(),
@@ -1507,6 +1830,49 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// 写入单个压平基底对象（BakeLayer 与 BakeDocument 臂共用）：
+/// 对象 id 为 `baked:{layer}`，形态与一期完全相同；`blobs` 为该基底的
+/// 生命周期引用（单层臂传原子引用集，文档臂按条目只传本层哈希）。
+fn insert_baked_base_object(
+    state: &mut DocumentState,
+    atom: &Atom,
+    layer_id: &str,
+    blob_hash: &str,
+    up_to_seq: Seq,
+    blobs: &[crate::atom::BlobHash],
+) {
+    let baked_id = format!("baked:{layer_id}");
+    let data = serde_json::json!({
+        "baked_base": true,
+        "blob_hash": blob_hash,
+        // bake_seq 是产生该基底的 Bake 原子 seq（自愈身份，与 BakeLayer 臂同口径）。
+        "bake_seq": atom.seq,
+        "source_up_to_seq": up_to_seq,
+        "width": state.width,
+        "height": state.height,
+    });
+    let object = Object {
+        seq: atom.seq,
+        id: baked_id,
+        layer_id: layer_id.to_owned(),
+        object_type: ObjectType::RasterPatch,
+        z_index: 0,
+        visible: true,
+        enabled: true,
+        locked: false,
+        metadata: Value::Null,
+        transform: transform_from_payload(&Value::Null),
+        style: None,
+        versions: vec![atom.id.clone()],
+        current_version: Some(atom.id.clone()),
+        created_by: atom.id.clone(),
+        deleted_by: None,
+        data,
+        blobs: blobs.to_vec(),
+    };
+    state.objects.insert(object.id.clone(), object);
 }
 
 /// 解析 `declare_head` 的 base 引用。
@@ -1781,6 +2147,124 @@ fn group_translation(value: &Value) -> Option<(f64, f64)> {
         return None;
     }
     Some((dx, dy))
+}
+
+/// 几何原子的折叠应用（路线三）。
+///
+/// - 画布尺寸写 `new_width`/`new_height`。
+/// - 存活对象（跳过已删除、实例、组）把几何仿射复合进 `transform` 字段：
+///   实例的内容经由 master 的变换移动（实例合成里 master 在最外层），故实例
+///   自身不复合，否则内容会被作用两次；组经由成员移动，组自身不复合。
+/// - 锚点按仿射映射为新画布坐标（枢轴点自身不动，符合锚点 A 语义）。
+/// - 选区与蒙版的形状按同一仿射变换；path 引用跟随对象，不动。
+/// - 位图 patch：纯平移时按整数平移量移 bbox；恒等时不动；缩放/旋转/翻转时
+///   工具层必须随原子提交 `mask_patches`（重采样结果），缺失即报错——
+///   折叠层没有 blob 存储，无法自行重采样，静默保留旧 patch 等于错位。
+/// - 原 patch 仍在日志历史里，撤销本原子即恢复（无需额外保留动作）。
+fn apply_geometry(state: &mut DocumentState, atom: &Atom) -> Result<()> {
+    use crate::geometry::*;
+    let affine = transform_from_affine_payload(&atom.payload);
+    let flat = flatten_transform(&affine);
+    let new_width = payload_u64(&atom.payload, "new_width").unwrap_or(0) as u32;
+    let new_height = payload_u64(&atom.payload, "new_height").unwrap_or(0) as u32;
+    if new_width < 1 || new_height < 1 {
+        return Err(err(
+            ErrorCode::InvalidArgument,
+            "几何操作的新画布尺寸必须 ≥ 1",
+        ));
+    }
+    let is_translation = translation_of_flat(&flat);
+    let is_identity = is_identity_flat(&flat);
+    // 非平移仿射下，带 patch 的选区/蒙版必须在载荷里有重采样结果，先验一遍。
+    if !is_identity && is_translation.is_none() {
+        let patches_map = atom.payload.get("mask_patches");
+        for (table, table_name) in [(&state.selections, "选区"), (&state.masks, "蒙版")] {
+            for (id, selection) in table.iter() {
+                if selection.is_deleted() || selection.patches.is_empty() {
+                    continue;
+                }
+                let Some(list) = patches_map.and_then(|map| map.get(id)) else {
+                    return Err(err(
+                        ErrorCode::InvalidArgument,
+                        format!(
+                            "几何原子缺少{table_name} {id} 的重采样 patch（位图蒙版在缩放/旋转/翻转下必须由工具层重采样后随原子提交）"
+                        ),
+                    ));
+                };
+                parse_mask_patches(list)
+                    .map_err(|reason| err(ErrorCode::InvalidArgument, reason))?;
+            }
+        }
+    }
+    // 单位仿射（改界）不移动内容：对象变换原样不动（不把非零 pivot 清零）。
+    if !is_identity {
+        for object in state.objects.values_mut() {
+            if object.is_deleted() {
+                continue;
+            }
+            if object.object_type == crate::state::ObjectType::Instance
+                || object.object_type == crate::state::ObjectType::Group
+            {
+                continue;
+            }
+            let old_flat = flatten_transform(&object.transform);
+            let composed = compose_flat(&flat, &old_flat);
+            object.transform = crate::state::Transform {
+                matrix: composed,
+                pivot: [0.0, 0.0],
+            };
+        }
+    }
+    for anchor in state.anchors.values_mut() {
+        let (x, y) = apply_flat(&flat, anchor.x, anchor.y);
+        anchor.x = x;
+        anchor.y = y;
+    }
+    for selection in state
+        .selections
+        .values_mut()
+        .chain(state.masks.values_mut())
+    {
+        if selection.is_deleted() {
+            continue;
+        }
+        // 单位仿射（改界）不移动内容：形状原样不动，连 JSON 表示都不重写。
+        if !is_identity {
+            transform_shape(&mut selection.shape, &flat);
+        }
+        if selection.patches.is_empty() || is_identity {
+            continue;
+        }
+        if let Some((dx, dy)) = is_translation {
+            if dx.fract() != 0.0 || dy.fract() != 0.0 {
+                return Err(err(
+                    ErrorCode::InvalidArgument,
+                    "位图 patch 的平移量必须是整数像素",
+                ));
+            }
+            let (Ok(dx), Ok(dy)) = (i32::try_from(dx as i64), i32::try_from(dy as i64)) else {
+                return Err(err(
+                    ErrorCode::InvalidArgument,
+                    "位图 patch 的平移量超出整数范围",
+                ));
+            };
+            for patch in selection.patches.iter_mut() {
+                patch.bbox[0] += dx;
+                patch.bbox[1] += dy;
+            }
+        } else {
+            let list = atom
+                .payload
+                .get("mask_patches")
+                .and_then(|map| map.get(&selection.id))
+                .expect("上一步已验过重采样 patch 存在");
+            selection.patches = parse_mask_patches(list)
+                .map_err(|reason| err(ErrorCode::InvalidArgument, reason))?;
+        }
+    }
+    state.width = new_width;
+    state.height = new_height;
+    Ok(())
 }
 
 fn transform_from_payload(payload: &Value) -> Transform {
@@ -2075,6 +2559,197 @@ fn payload_ids(payload: &Value, key: &str) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+
+    fn bake_atom(id: &str, seq: Seq, payload: serde_json::Value) -> Atom {
+        let mut a = Atom::new(
+            AtomKind::BakeLayer,
+            "actor".to_owned(),
+            "session".to_owned(),
+            payload,
+        );
+        a.id = id.to_owned();
+        a.seq = seq;
+        a
+    }
+
+    fn bake_fixture_state() -> DocumentState {
+        // 最小文档：建文档 + 建层 + 两笔（用 apply 直推，避免工具层）。
+        let mut state = DocumentState::default();
+        let mut doc = Atom::new(
+            AtomKind::CreateDocument,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"doc_id": "d1", "width": 16, "height": 16}),
+        );
+        doc.id = "a_doc".to_owned();
+        doc.seq = 1;
+        apply(&mut state, &doc).unwrap();
+        let mut layer = Atom::new(
+            AtomKind::CreateLayer,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"layer_id": "L1", "name": "L1"}),
+        );
+        layer.id = "a_layer".to_owned();
+        layer.seq = 2;
+        apply(&mut state, &layer).unwrap();
+        for (i, seq) in [(1, 3), (2, 4)] {
+            let mut stroke = Atom::new(
+                AtomKind::DrawStroke,
+                "a".to_owned(),
+                "s".to_owned(),
+                serde_json::json!({"object_id": format!("o{i}"), "layer_id": "L1"}),
+            );
+            stroke.id = format!("a_stroke{i}");
+            stroke.seq = seq;
+            apply(&mut state, &stroke).unwrap();
+        }
+        state
+    }
+
+    #[test]
+    fn bake_horizon_skips_pre_bake_atoms_and_bake_replaces_objects() {
+        let base = bake_fixture_state();
+        assert_eq!(base.objects_in_layer("L1").len(), 2);
+        let bake = bake_atom(
+            "a_bake",
+            5,
+            serde_json::json!({"layer_id": "L1", "up_to_seq": 4, "blob_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}),
+        );
+        // 全量折叠：先有两笔，再有 BakeLayer；两笔被剪枝，BakeLayer 生效。
+        let mut atoms: Vec<Atom> = Vec::new();
+        let mut doc = Atom::new(
+            AtomKind::CreateDocument,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"doc_id": "d1", "width": 16, "height": 16}),
+        );
+        doc.id = "a_doc".to_owned();
+        doc.seq = 1;
+        atoms.push(doc);
+        let mut layer = Atom::new(
+            AtomKind::CreateLayer,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"layer_id": "L1", "name": "L1"}),
+        );
+        layer.id = "a_layer".to_owned();
+        layer.seq = 2;
+        atoms.push(layer);
+        for (i, seq) in [(1, 3), (2, 4)] {
+            let mut stroke = Atom::new(
+                AtomKind::DrawStroke,
+                "a".to_owned(),
+                "s".to_owned(),
+                serde_json::json!({"object_id": format!("o{i}"), "layer_id": "L1"}),
+            );
+            stroke.id = format!("a_stroke{i}");
+            stroke.seq = seq;
+            atoms.push(stroke);
+        }
+        atoms.push(bake);
+        let result = fold_atoms(DocumentState::default(), &atoms);
+        let objs = result.state.objects_in_layer("L1");
+        assert_eq!(objs.len(), 1, "压平后层内只剩单个基底对象");
+        assert_eq!(
+            objs[0].data.get("baked_base").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        // 两笔被剪枝：applied 里没有它们，BakeLayer 在。
+        assert!(!result.applied.contains(&"a_stroke1".to_owned()));
+        assert!(result.applied.contains(&"a_bake".to_owned()));
+        // Undo BakeLayer（revert 后全量重折）：两笔恢复，基底消失。
+        let mut atoms2 = atoms.clone();
+        let mut revert = Atom::new(
+            AtomKind::Revert,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"target": "a_bake"}),
+        );
+        revert.id = "a_revert".to_owned();
+        revert.seq = 6;
+        atoms2.push(revert);
+        let result2 = fold_atoms(DocumentState::default(), &atoms2);
+        assert_eq!(result2.state.objects_in_layer("L1").len(), 2);
+    }
+
+    #[test]
+    fn bake_shell_atoms_are_not_pruned() {
+        // 建层原子 seq <= horizon 时仍执行：否则 BakeLayer 无层可落。
+        let mut atoms: Vec<Atom> = Vec::new();
+        let mut doc = Atom::new(
+            AtomKind::CreateDocument,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"doc_id": "d1", "width": 16, "height": 16}),
+        );
+        doc.id = "a_doc".to_owned();
+        doc.seq = 1;
+        atoms.push(doc);
+        let mut layer = Atom::new(
+            AtomKind::CreateLayer,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"layer_id": "L1", "name": "L1"}),
+        );
+        layer.id = "a_layer".to_owned();
+        layer.seq = 2;
+        atoms.push(layer);
+        atoms.push(bake_atom("a_bake", 3, serde_json::json!({"layer_id": "L1", "up_to_seq": 2, "blob_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"})));
+        let result = fold_atoms(DocumentState::default(), &atoms);
+        assert!(result.state.layer_alive("L1"));
+        assert_eq!(result.state.objects_in_layer("L1").len(), 1);
+    }
+
+    #[test]
+    fn baked_base_gate_rejects_45_degrees_in_precondition() {
+        // 兜底门禁：45° 绝对变换在 precondition 即失败；90° 通过。
+        // （工具层门禁是用户可见的拒绝；fold 门禁只作回放兜底——
+        // precondition 失败在折叠里是级联警告，不是提交失败。）
+        let mut atoms: Vec<Atom> = Vec::new();
+        let mut doc = Atom::new(
+            AtomKind::CreateDocument,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"doc_id": "d1", "width": 16, "height": 16}),
+        );
+        doc.id = "a_doc".to_owned();
+        doc.seq = 1;
+        atoms.push(doc);
+        let mut layer = Atom::new(
+            AtomKind::CreateLayer,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"layer_id": "L1", "name": "L1"}),
+        );
+        layer.id = "a_layer".to_owned();
+        layer.seq = 2;
+        atoms.push(layer);
+        atoms.push(bake_atom("a_bake", 3, serde_json::json!({"layer_id": "L1", "up_to_seq": 2, "blob_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"})));
+        let baked = fold_atoms(DocumentState::default(), &atoms).state;
+        assert_eq!(baked.objects_in_layer("L1").len(), 1);
+        let mut mv45 = Atom::new(
+            AtomKind::Move,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"object_id": "baked:L1", "transform": {"matrix": [std::f64::consts::FRAC_1_SQRT_2, std::f64::consts::FRAC_1_SQRT_2, -std::f64::consts::FRAC_1_SQRT_2, std::f64::consts::FRAC_1_SQRT_2, 0.0, 0.0]}}),
+        );
+        mv45.id = "a_mv45".to_owned();
+        mv45.seq = 4;
+        assert!(
+            precondition(&baked, &mv45).is_err(),
+            "45° 变换必须被门禁拒绝"
+        );
+        let mut mv90 = Atom::new(
+            AtomKind::Move,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"object_id": "baked:L1", "transform": {"matrix": [0.0, 1.0, -1.0, 0.0, 0.0, 0.0]}}),
+        );
+        mv90.id = "a_mv90".to_owned();
+        mv90.seq = 4;
+        assert!(precondition(&baked, &mv90).is_ok(), "90° 变换必须通过门禁");
+    }
     /// **坏 `patches` 不许被静默丢弃** ✓（第 710 轮；外部审计 R-13）
     ///
     /// **⇒ 判据**：`create_selection` 带上**格式错误**的 `patches` ⇒ `apply` 必须返回
@@ -3497,5 +4172,627 @@ mod tests {
         assert_eq!(result.state, base);
         assert!(result.warnings.is_empty());
         assert!(result.applied.is_empty());
+    }
+
+    #[test]
+    fn bake_document_replaces_each_layer_and_revert_restores() {
+        let h1 = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let h2 = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+        let mut atoms: Vec<Atom> = Vec::new();
+        let mut doc = Atom::new(
+            AtomKind::CreateDocument,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"doc_id": "d1", "width": 16, "height": 16}),
+        );
+        doc.id = "a_doc".to_owned();
+        doc.seq = 1;
+        atoms.push(doc);
+        for (lid, seq) in [("L1", 2), ("L2", 3)] {
+            let mut layer = Atom::new(
+                AtomKind::CreateLayer,
+                "a".to_owned(),
+                "s".to_owned(),
+                serde_json::json!({"layer_id": lid, "name": lid}),
+            );
+            layer.id = format!("a_layer_{lid}");
+            layer.seq = seq;
+            atoms.push(layer);
+        }
+        for (oid, lid, seq) in [("o1", "L1", 4), ("o2", "L1", 5), ("o3", "L2", 6)] {
+            let mut stroke = Atom::new(
+                AtomKind::DrawStroke,
+                "a".to_owned(),
+                "s".to_owned(),
+                serde_json::json!({"object_id": oid, "layer_id": lid}),
+            );
+            stroke.id = format!("a_{oid}");
+            stroke.seq = seq;
+            atoms.push(stroke);
+        }
+        let mut doc_atom = Atom::new(
+            AtomKind::BakeDocument,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"document_up_to_seq": 6, "layers": [
+                {"layer_id": "L1", "up_to_seq": 6, "blob_hash": h1, "flatten_mask": false},
+                {"layer_id": "L2", "up_to_seq": 6, "blob_hash": h2, "flatten_mask": false},
+            ]}),
+        );
+        doc_atom.id = "a_docbake".to_owned();
+        doc_atom.seq = 7;
+        atoms.push(doc_atom);
+        let result = fold_atoms(DocumentState::default(), &atoms);
+        for (lid, h) in [("L1", h1), ("L2", h2)] {
+            let objs = result.state.objects_in_layer(lid);
+            assert_eq!(objs.len(), 1, "压平后 {lid} 层内只剩单个基底对象");
+            assert_eq!(objs[0].id, format!("baked:{lid}"));
+            assert_eq!(
+                objs[0].data.get("blob_hash").and_then(|v| v.as_str()),
+                Some(h)
+            );
+            assert_eq!(
+                objs[0]
+                    .data
+                    .get("source_up_to_seq")
+                    .and_then(|v| v.as_u64()),
+                Some(6)
+            );
+        }
+        assert!(!result.applied.contains(&"a_o1".to_owned()));
+        assert!(result.applied.contains(&"a_docbake".to_owned()));
+        // 撤销文档压平原子：两层笔触恢复，基底消失。
+        let mut atoms2 = atoms.clone();
+        let mut revert = Atom::new(
+            AtomKind::Revert,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"target": "a_docbake"}),
+        );
+        revert.id = "a_revert".to_owned();
+        revert.seq = 8;
+        atoms2.push(revert);
+        let result2 = fold_atoms(DocumentState::default(), &atoms2);
+        assert_eq!(result2.state.objects_in_layer("L1").len(), 2);
+        assert_eq!(result2.state.objects_in_layer("L2").len(), 1);
+    }
+
+    #[test]
+    fn bake_document_flatten_mask_consumes_mask_id() {
+        let mut state = bake_fixture_state();
+        state.layers.get_mut("L1").expect("夹具层 L1 存在").mask_id = Some("m1".to_owned());
+        let mut flat = Atom::new(
+            AtomKind::BakeDocument,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"document_up_to_seq": 4, "layers": [
+                {"layer_id": "L1", "up_to_seq": 4, "blob_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "flatten_mask": true},
+            ]}),
+        );
+        flat.id = "a_flat".to_owned();
+        flat.seq = 5;
+        apply(&mut state, &flat).unwrap();
+        assert_eq!(
+            state.layers.get("L1").and_then(|l| l.mask_id.clone()),
+            None,
+            "flatten_mask=true 时折叠期消费掩膜（清 mask_id），否则合成再乘一次"
+        );
+        assert_eq!(state.objects_in_layer("L1").len(), 1);
+        // flatten_mask=false 时掩膜保留。
+        let mut state2 = bake_fixture_state();
+        state2.layers.get_mut("L1").expect("夹具层 L1 存在").mask_id = Some("m1".to_owned());
+        let mut noflat = Atom::new(
+            AtomKind::BakeDocument,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"document_up_to_seq": 4, "layers": [
+                {"layer_id": "L1", "up_to_seq": 4, "blob_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "flatten_mask": false},
+            ]}),
+        );
+        noflat.id = "a_noflat".to_owned();
+        noflat.seq = 5;
+        apply(&mut state2, &noflat).unwrap();
+        assert_eq!(
+            state2.layers.get("L1").and_then(|l| l.mask_id.clone()),
+            Some("m1".to_owned())
+        );
+    }
+    // ---- 几何（路线三）----
+
+    /// 几何原子载荷：`affine: {matrix, pivot}` + 新尺寸。
+    fn geometry_atom(
+        kind: AtomKind,
+        id: &str,
+        matrix: [f64; 6],
+        pivot: [f64; 2],
+        w: u32,
+        h: u32,
+    ) -> Atom {
+        atom(
+            kind,
+            id,
+            json!({
+                "affine": { "matrix": matrix, "pivot": pivot },
+                "new_width": w,
+                "new_height": h,
+            }),
+        )
+    }
+
+    /// 撤销往返的比较口径：只比内容字段（head_seq/head_atom 本来就会变）。
+    fn content_of(state: &DocumentState) -> Value {
+        let objects: Vec<Value> = state
+            .objects
+            .values()
+            .map(|object| {
+                json!({
+                    "id": object.id,
+                    "deleted": object.is_deleted(),
+                    "matrix": object.transform.matrix,
+                    "pivot": object.transform.pivot,
+                })
+            })
+            .collect();
+        let selections: Vec<Value> = state
+            .selections
+            .values()
+            .map(|selection| {
+                json!({
+                    "id": selection.id,
+                    "shape": selection.shape,
+                    "patches": selection.patches.iter().map(|patch| patch.bbox).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        json!({
+            "width": state.width,
+            "height": state.height,
+            "anchors": state.anchors,
+            "objects": objects,
+            "selections": selections,
+        })
+    }
+
+    #[test]
+    fn geometry_scale_composes_object_transform_about_anchor() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            geometry_atom(
+                AtomKind::ScaleCanvas,
+                "a_scale",
+                [2.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+                [50.0, 25.0],
+                200,
+                100,
+            ),
+        );
+        let result = fold(&atoms);
+        assert!(result.is_clean(), "{:?}", result.warnings);
+        assert_eq!(result.state.width, 200);
+        assert_eq!(result.state.height, 100);
+        let object = &result.state.objects["obj_1"];
+        // 平移折叠进矩阵：x' = 2(x-50)+50 = 2x-50；y' = 2(y-25)+25 = 2y-25。
+        assert_eq!(object.transform.matrix, [2.0, 0.0, 0.0, 2.0, -50.0, -25.0]);
+        assert_eq!(object.transform.pivot, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn geometry_crop_translates_content_and_selection_and_patches() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateSelection,
+                "a_sel",
+                json!({
+                    "selection_id": "sel_1",
+                    "shape": { "kind": "rect", "x": 20, "y": 30, "w": 10, "h": 10 },
+                    "patches": [{
+                        "bbox": [15, 25, 5, 5],
+                        "target_u8": 255,
+                        "op": "replace_all",
+                        "blob": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                    }],
+                }),
+            ),
+        );
+        push(
+            &mut atoms,
+            geometry_atom(
+                AtomKind::CropCanvas,
+                "a_crop",
+                [1.0, 0.0, 0.0, 1.0, -10.0, -20.0],
+                [0.0, 0.0],
+                80,
+                30,
+            ),
+        );
+        let result = fold(&atoms);
+        assert!(result.is_clean(), "{:?}", result.warnings);
+        assert_eq!((result.state.width, result.state.height), (80, 30));
+        assert_eq!(
+            result.state.objects["obj_1"].transform.matrix,
+            [1.0, 0.0, 0.0, 1.0, -10.0, -20.0]
+        );
+        // 形状坐标是 f64：变换后写出 10.0（不是整数 10）。
+        assert_eq!(
+            result.state.selections["sel_1"].shape,
+            json!({ "kind": "rect", "x": 10.0, "y": 10.0, "w": 10.0, "h": 10.0 })
+        );
+        assert_eq!(
+            result.state.selections["sel_1"].patches[0].bbox,
+            [5, 5, 5, 5]
+        );
+    }
+
+    #[test]
+    fn geometry_rotate_90_swaps_canvas_and_composes_rotation() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            geometry_atom(
+                AtomKind::RotateCanvas,
+                "a_rot",
+                [0.0, 1.0, -1.0, 0.0, 0.0, 0.0],
+                [50.0, 25.0],
+                50,
+                100,
+            ),
+        );
+        let result = fold(&atoms);
+        assert!(result.is_clean(), "{:?}", result.warnings);
+        assert_eq!((result.state.width, result.state.height), (50, 100));
+        // 顺时针 90° 绕中心：x' = -(y-25)+50 = -y+75；y' = (x-50)+25 = x-25。
+        assert_eq!(
+            result.state.objects["obj_1"].transform.matrix,
+            [0.0, 1.0, -1.0, 0.0, 75.0, -25.0]
+        );
+    }
+
+    #[test]
+    fn geometry_flip_mirrors_about_anchor() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            geometry_atom(
+                AtomKind::FlipCanvas,
+                "a_flip",
+                [-1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                [50.0, 25.0],
+                100,
+                50,
+            ),
+        );
+        let result = fold(&atoms);
+        assert!(result.is_clean(), "{:?}", result.warnings);
+        assert_eq!((result.state.width, result.state.height), (100, 50));
+        // 左右翻绕中心：x' = -(x-50)+50 = -x+100；y' = y。
+        assert_eq!(
+            result.state.objects["obj_1"].transform.matrix,
+            [-1.0, 0.0, 0.0, 1.0, 100.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn geometry_resize_bounds_changes_size_only() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateSelection,
+                "a_sel",
+                json!({
+                    "selection_id": "sel_1",
+                    "shape": { "kind": "rect", "x": 20, "y": 30, "w": 10, "h": 10 },
+                }),
+            ),
+        );
+        push(
+            &mut atoms,
+            geometry_atom(
+                AtomKind::ResizeCanvasBounds,
+                "a_resize",
+                [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0],
+                300,
+                200,
+            ),
+        );
+        let result = fold(&atoms);
+        assert!(result.is_clean(), "{:?}", result.warnings);
+        assert_eq!((result.state.width, result.state.height), (300, 200));
+        assert_eq!(
+            result.state.objects["obj_1"].transform.matrix,
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        );
+        // 改界不碰形状：输入的整数表示原样保留。
+        assert_eq!(
+            result.state.selections["sel_1"].shape,
+            json!({ "kind": "rect", "x": 20, "y": 30, "w": 10, "h": 10 })
+        );
+    }
+
+    #[test]
+    fn geometry_anchors_move_with_content_and_pivot_anchor_stays() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::SetAnchor,
+                "a_anchor",
+                json!({ "name": "a1", "x": 20, "y": 30 }),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::SetAnchor,
+                "a_anchor_pivot",
+                json!({ "name": "pivot", "x": 50, "y": 25 }),
+            ),
+        );
+        push(
+            &mut atoms,
+            geometry_atom(
+                AtomKind::ScaleCanvas,
+                "a_scale",
+                [2.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+                [50.0, 25.0],
+                200,
+                100,
+            ),
+        );
+        let result = fold(&atoms);
+        assert!(result.is_clean(), "{:?}", result.warnings);
+        // 锚点 A：枢轴坐标不动，其余锚点跟随内容走。
+        assert_eq!(result.state.anchors["pivot"].x, 50.0);
+        assert_eq!(result.state.anchors["pivot"].y, 25.0);
+        assert_eq!(result.state.anchors["a1"].x, -10.0);
+        assert_eq!(result.state.anchors["a1"].y, 35.0);
+    }
+
+    #[test]
+    fn geometry_skips_deleted_instance_and_group_objects() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateObject,
+                "a_inst",
+                json!({
+                    "object_id": "inst_1",
+                    "layer_id": "layer_1",
+                    "type": "instance",
+                    "data": { "master_ref": { "object_id": "obj_1" } },
+                }),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateObject,
+                "a_group",
+                json!({ "object_id": "grp_1", "layer_id": "layer_1", "type": "group" }),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::Tombstone,
+                "a_del",
+                json!({ "object_id": "obj_1" }),
+            ),
+        );
+        push(
+            &mut atoms,
+            geometry_atom(
+                AtomKind::ScaleCanvas,
+                "a_scale",
+                [2.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+                [50.0, 25.0],
+                200,
+                100,
+            ),
+        );
+        let result = fold(&atoms);
+        assert!(result.is_clean(), "{:?}", result.warnings);
+        // 实例内容经由 master 移动（master 已删则不渲染），实例自身不复合；
+        // 组自身不在渲染路径上；已删对象不碰。
+        assert_eq!(
+            result.state.objects["inst_1"].transform.matrix,
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            result.state.objects["grp_1"].transform.matrix,
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        );
+        assert!(result.state.objects["obj_1"].is_deleted());
+        assert_eq!(
+            result.state.objects["obj_1"].transform.matrix,
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn geometry_missing_mask_patches_is_an_observable_error_not_silent() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateSelection,
+                "a_sel",
+                json!({
+                    "selection_id": "sel_1",
+                    "shape": { "kind": "rect", "x": 0, "y": 0, "w": 10, "h": 10 },
+                    "patches": [{
+                        "bbox": [0, 0, 10, 10],
+                        "target_u8": 255,
+                        "op": "replace_all",
+                        "blob": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                    }],
+                }),
+            ),
+        );
+        push(
+            &mut atoms,
+            geometry_atom(
+                AtomKind::ScaleCanvas,
+                "a_scale",
+                [2.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+                [50.0, 25.0],
+                200,
+                100,
+            ),
+        );
+        let result = fold(&atoms);
+        // 非平移仿射 + 带 patch 的蒙版 + 载荷里没有 mask_patches ⇒ 原子被跳过并留警告。
+        assert!(
+            !result.warnings.is_empty(),
+            "必须留可观测信号，不能静默接受"
+        );
+        assert_eq!((result.state.width, result.state.height), (100, 50));
+        assert_eq!(
+            result.state.objects["obj_1"].transform.matrix,
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn geometry_mask_patches_payload_replaces_patches() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateSelection,
+                "a_sel",
+                json!({
+                    "selection_id": "sel_1",
+                    "shape": { "kind": "rect", "x": 0, "y": 0, "w": 10, "h": 10 },
+                    "patches": [{
+                        "bbox": [0, 0, 10, 10],
+                        "target_u8": 255,
+                        "op": "replace_all",
+                        "blob": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                    }],
+                }),
+            ),
+        );
+        let mut scale = geometry_atom(
+            AtomKind::ScaleCanvas,
+            "a_scale",
+            [2.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+            [50.0, 25.0],
+            200,
+            100,
+        );
+        scale.payload["mask_patches"] = json!({
+            "sel_1": [{
+                "bbox": [0, 0, 20, 20],
+                "target_u8": 255,
+                "op": "replace_all",
+                "blob": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            }],
+        });
+        push(&mut atoms, scale);
+        let result = fold(&atoms);
+        assert!(result.is_clean(), "{:?}", result.warnings);
+        assert_eq!(result.state.selections["sel_1"].patches.len(), 1);
+        assert_eq!(
+            result.state.selections["sel_1"].patches[0].bbox,
+            [0, 0, 20, 20]
+        );
+    }
+
+    #[test]
+    fn geometry_unknown_selection_shape_is_left_unchanged() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateSelection,
+                "a_sel",
+                json!({
+                    "selection_id": "sel_1",
+                    "shape": { "kind": "weird", "data": [1, 2, 3] },
+                }),
+            ),
+        );
+        push(
+            &mut atoms,
+            geometry_atom(
+                AtomKind::ScaleCanvas,
+                "a_scale",
+                [2.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+                [50.0, 25.0],
+                200,
+                100,
+            ),
+        );
+        let result = fold(&atoms);
+        assert!(result.is_clean(), "{:?}", result.warnings);
+        assert_eq!(
+            result.state.selections["sel_1"].shape,
+            json!({ "kind": "weird", "data": [1, 2, 3] })
+        );
+    }
+
+    #[test]
+    fn geometry_undo_by_exclusion_restores_content() {
+        let mut atoms = chain();
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::SetAnchor,
+                "a_anchor",
+                json!({ "name": "a1", "x": 20, "y": 30 }),
+            ),
+        );
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateSelection,
+                "a_sel",
+                json!({
+                    "selection_id": "sel_1",
+                    "shape": { "kind": "rect", "x": 20, "y": 30, "w": 10, "h": 10 },
+                }),
+            ),
+        );
+        let base = fold(&atoms).state;
+        push(
+            &mut atoms,
+            geometry_atom(
+                AtomKind::ScaleCanvas,
+                "a_scale",
+                [2.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+                [50.0, 25.0],
+                200,
+                100,
+            ),
+        );
+        let moved = fold(&atoms).state;
+        assert_eq!((moved.width, moved.height), (200, 100));
+        // 撤销 = 折叠时排除几何原子：内容字段与几何前完全一致。
+        atoms.pop();
+        let restored = fold(&atoms).state;
+        assert_eq!(content_of(&restored), content_of(&base));
+    }
+
+    #[test]
+    fn geometry_old_log_serializes_without_new_keys() {
+        let state = fold(&chain()).state;
+        let value = serde_json::to_value(&state).expect("状态可序列化");
+        // 空锚点表不写键（serde skip-if-empty）：旧文档逐字节不变的序列化侧证据。
+        assert!(
+            value.get("anchors").is_none(),
+            "空 anchors 表不应写出键：{}",
+            value
+        );
+        let object = &value["objects"]["obj_1"];
+        assert_eq!(
+            object["transform"]["matrix"],
+            json!([1.0, 0.0, 0.0, 1.0, 0.0, 0.0])
+        );
     }
 }

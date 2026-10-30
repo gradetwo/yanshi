@@ -3156,3 +3156,228 @@ fn batch_receipt_carries_ms_per_stroke_avg() {
         "0 笔触时字段取 0.0（不可判）：{no_stroke}"
     );
 }
+
+// ---- auto-bake 失败受阻（bake 二期 item 2）----
+//
+// 覆盖：软线首越发一次且不重复报；硬线 bake 失败进 sticky 受阻态（触发调用本身
+// 仍成功，失败只挂在 auto_bake 节里）；受阻后下一次内容调用不再重试；手动 bake
+// 成功清除受阻态。失败用可开关的测试存储注入（bake 走 put；put_cache 恒走内层，
+// 否则落笔路径的预览缓存先失败，测的就不是 bake）。
+//
+// 变异（每条都必须红）：
+//   ① 删 evaluate 里硬线候选的 `!blocked` 条件 ⇒ 第 2048 笔回执重带 failed 节 ⇒ 红；
+//   ② 删手动 bake 成功后的 clear_auto_bake_blocked_for_layer ⇒ 末尾 blocked 仍非空 ⇒ 红；
+//   ③ 删软线候选的 `!soft_fired` 条件 ⇒ 第 1433 笔回执重带 soft_line 节 ⇒ 红。
+
+/// put 可开关失败的 Blob 存储（测试注入）。
+struct ToggleFailBlobStore {
+    inner: yanshi_core::blob::MemoryBlobStore,
+    fail_put: std::sync::atomic::AtomicBool,
+}
+
+impl ToggleFailBlobStore {
+    fn new() -> Self {
+        Self {
+            inner: yanshi_core::blob::MemoryBlobStore::new(),
+            fail_put: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+impl yanshi_core::BlobStore for ToggleFailBlobStore {
+    fn put(&self, bytes: &[u8]) -> yanshi_core::Result<yanshi_core::BlobHash> {
+        if self.fail_put.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(yanshi_core::YanshiError::new(
+                yanshi_core::ErrorCode::Degraded,
+                yanshi_core::ErrorContext::detail("测试注入：Blob 存储 put 失败"),
+            ));
+        }
+        self.inner.put(bytes)
+    }
+    fn put_cache(&self, bytes: &[u8]) -> yanshi_core::Result<yanshi_core::BlobHash> {
+        self.inner.put_cache(bytes)
+    }
+    fn get(&self, hash: &yanshi_core::BlobHash) -> yanshi_core::Result<Vec<u8>> {
+        self.inner.get(hash)
+    }
+    fn exists(&self, hash: &yanshi_core::BlobHash) -> bool {
+        self.inner.exists(hash)
+    }
+    fn size(&self, hash: &yanshi_core::BlobHash) -> Option<u64> {
+        self.inner.size(hash)
+    }
+    fn list(&self) -> yanshi_core::Result<Vec<yanshi_core::BlobEntry>> {
+        self.inner.list()
+    }
+    fn remove(&self, hash: &yanshi_core::BlobHash) -> yanshi_core::Result<bool> {
+        self.inner.remove(hash)
+    }
+}
+
+#[test]
+fn auto_bake_failure_is_sticky_and_manual_bake_clears_it() {
+    let store = std::sync::Arc::new(ToggleFailBlobStore::new());
+    let mut workspace =
+        Workspace::with_store(store.clone(), crate::document::DocumentSettings::default());
+    workspace
+        .create_document(
+            crate::document::NewDocument::new("doc_ab", 64, 64),
+            "test:1",
+            "s",
+        )
+        .unwrap();
+    let registry = ToolRegistry::full();
+    let mut ctx = ToolContext::new(&mut workspace, "doc_ab", "test:1", "s");
+    // 落笔不等待渲染：脏区预览的 put 也会撞上失败存储，测试只注入 bake 的 put。
+    ctx.wait_for_render = false;
+    let created = registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+    assert_eq!(created["ok"], json!(true), "建层失败：{created}");
+    let enabled = registry.call(
+        &mut ctx,
+        "update_layer",
+        &json!({"layer_id": "L", "patch": {"auto_bake": true}}),
+    );
+    assert_eq!(enabled["ok"], json!(true), "开层开关失败：{enabled}");
+    store
+        .fail_put
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    // 计数口径（与手动 bake 水位一致）：update_layer 的 SetProperty 原子本身就是
+    // 内容类原子，占 1 个未 bake 数 ⇒ 软线（1433）在第 1432 笔、硬线（2048）在
+    // 第 2047 笔触发；笔号比阈值小 1 不是产品差一，是测试须把建设置那 1 笔算进去。
+    let mut soft_resp = Value::Null;
+    let mut over_soft_resp = Value::Null;
+    let mut trigger_resp = Value::Null;
+    let mut retry_resp = Value::Null;
+    for i in 1..=2049 {
+        let resp = registry.call(
+            &mut ctx,
+            "draw_stroke",
+            &json!({"layer_id": "L", "data": {"points": [[10, 10], [11, 10]], "size": 2, "color": [20, 20, 20, 255]}}),
+        );
+        assert_eq!(resp["ok"], json!(true), "第 {i} 笔失败：{resp}");
+        match i {
+            1432 => soft_resp = resp,
+            1433 => over_soft_resp = resp,
+            2047 => trigger_resp = resp,
+            2048 => retry_resp = resp,
+            _ => {}
+        }
+    }
+    // 软线：首越发一次，警告码对，且触发调用本身成功。
+    assert_eq!(
+        soft_resp["auto_bake"]["status"],
+        json!("soft_line"),
+        "第 1432 笔应带软线节：{soft_resp}"
+    );
+    assert_eq!(
+        soft_resp["auto_bake"]["warnings"][0]["code"],
+        json!("AUTO_BAKE_SOFT_LINE"),
+        "软线警告码不对：{soft_resp}"
+    );
+    // 软线去重：已发过就不再带节。
+    assert!(
+        over_soft_resp.get("auto_bake").is_none(),
+        "第 1433 笔不应再带 auto_bake 节（软线已发过）：{over_soft_resp}"
+    );
+    // 硬线：bake 失败只挂节里，触发调用本身仍成功；失败原因须来自注入的存储。
+    assert_eq!(
+        trigger_resp["auto_bake"]["status"],
+        json!("failed"),
+        "第 2047 笔应带 failed 节：{trigger_resp}"
+    );
+    assert_eq!(
+        trigger_resp["auto_bake"]["warnings"][0]["code"],
+        json!("AUTO_BAKE_FAILED"),
+        "失败警告码不对：{trigger_resp}"
+    );
+    assert!(
+        trigger_resp["auto_bake"]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("测试注入"),
+        "失败原因须来自注入的存储 put：{trigger_resp}"
+    );
+    // 受阻：下一次内容调用不再重试（无节），不是每次都失败刷屏。
+    assert!(
+        retry_resp.get("auto_bake").is_none(),
+        "第 2048 笔不应再尝试 bake（受阻态）：{retry_resp}"
+    );
+    let status = registry.call(&mut ctx, "get_bake_status", &json!({"layer_id": "L"}));
+    assert_eq!(status["ok"], json!(true), "查状态失败：{status}");
+    assert!(
+        status["layers"][0]["blocked"].is_string(),
+        "受阻态须可见：{status}"
+    );
+    // 末态：建设置 1 笔＋落笔 2049 笔＝2050 个未 bake 内容原子（受阻后计数不重置）。
+    assert_eq!(
+        status["layers"][0]["unbaked"],
+        json!(2050),
+        "受阻后计数不重置：{status}"
+    );
+    // 手动 bake 成功清除受阻态（存储恢复后）。
+    store
+        .fail_put
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let baked = registry.call(&mut ctx, "bake_layer", &json!({"layer_id": "L"}));
+    assert_eq!(baked["ok"], json!(true), "手动 bake 失败：{baked}");
+    assert_eq!(
+        baked["status"],
+        json!("applied"),
+        "手动 bake 未应用：{baked}"
+    );
+    let status = registry.call(&mut ctx, "get_bake_status", &json!({"layer_id": "L"}));
+    assert!(
+        status["layers"][0]["blocked"].is_null(),
+        "手动 bake 成功后受阻态须清除：{status}"
+    );
+    assert_eq!(
+        status["layers"][0]["unbaked"],
+        json!(0),
+        "手动 bake 后未 bake 数须归零：{status}"
+    );
+    assert_eq!(
+        status["layers"][0]["last_bake"]["origin"],
+        json!("manual"),
+        "手动 bake 的来源须读作 manual：{status}"
+    );
+}
+// ---- 几何（路线三）：位图蒙版重采样纯函数 ----
+use super::tools_geometry::resample_compiled;
+
+#[test]
+fn geometry_resample_identity_returns_same_grid() {
+    let compiled = yanshi_render::selection::CompiledMask {
+        bbox: [0, 0, 3, 2],
+        default_outside: 0.0,
+        grid: vec![10, 20, 30, 40, 50, 60],
+    };
+    let (bbox, grid) = resample_compiled(&compiled, 0, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0], 3, 2);
+    assert_eq!(bbox, [0, 0, 3, 2]);
+    assert_eq!(grid, vec![10, 20, 30, 40, 50, 60]);
+}
+
+#[test]
+fn geometry_resample_flip_horizontal_is_an_exact_permutation() {
+    // 绕中心 (2,1) 左右翻：x' = -x+4；逆矩阵自逆。
+    let compiled = yanshi_render::selection::CompiledMask {
+        bbox: [0, 0, 4, 2],
+        default_outside: 0.0,
+        grid: vec![10, 20, 30, 40, 50, 60, 70, 80],
+    };
+    let (bbox, grid) = resample_compiled(&compiled, 0, &[-1.0, 0.0, 0.0, 1.0, 4.0, 0.0], 4, 2);
+    assert_eq!(bbox, [0, 0, 4, 2]);
+    assert_eq!(grid, vec![40, 30, 20, 10, 80, 70, 60, 50]);
+}
+
+#[test]
+fn geometry_resample_all_default_collapses_to_one_pixel() {
+    // 全默认值网格：紧致裁剪为空 ⇒ 原点 1×1 默认值 patch，语义与全画布默认值等价。
+    let compiled = yanshi_render::selection::CompiledMask {
+        bbox: [0, 0, 2, 2],
+        default_outside: 0.0,
+        grid: vec![0, 0, 0, 0],
+    };
+    let (bbox, grid) = resample_compiled(&compiled, 0, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0], 2, 2);
+    assert_eq!(bbox, [0, 0, 1, 1]);
+    assert_eq!(grid, vec![0]);
+}

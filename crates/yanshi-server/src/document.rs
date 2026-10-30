@@ -316,6 +316,28 @@ pub struct RenderStatus {
     pub thumb_url: Option<String>,
 }
 
+/// 单层 auto-bake 运行时态（bake 二期 item 2）。
+///
+/// **只在内存**：不进原子日志、不持久化、不随导出包走。重启后清空；
+/// 下一次内容调用重新评估（硬线之上仍会再尝试一次，失败则重新受阻——
+/// 这是有意的：重启本身就是一次显式的重新开始，不是静默重试）。
+#[derive(Debug, Default, Clone)]
+pub struct AutoBakeLayerRuntime {
+    /// 软线警告已对当前这次越线发过（跌回软线下清零，可再发）。
+    pub soft_fired: bool,
+    /// bake 失败后的受阻原因（Some = 不再自动重试，等手动 bake／recover／改设置清除）。
+    pub blocked: Option<String>,
+    /// 门禁跳过的原因（同原因不再重复报告；原因变化或计数归零后可再报）。
+    pub skip_reason: Option<String>,
+}
+
+/// 每层 auto-bake 运行时态表（键 = 图层 id）。
+#[derive(Debug, Default, Clone)]
+pub struct AutoBakeRuntime {
+    /// 按图层 id 索引的运行时态（不存在的层按 Default 计：未发软线、未受阻、无跳过原因）。
+    pub layers: std::collections::BTreeMap<String, AutoBakeLayerRuntime>,
+}
+
 /// 单个文档的服务端状态。
 pub struct Document {
     id: String,
@@ -483,6 +505,8 @@ pub struct Document {
     /// 从磁盘打开 = `head_seq`（日志本来就在盘上 ✓）⇒ 漏初始化只会**重复追加**（可见 ✗）
     /// 而不是**漏写**（静默 ✗）—— 这个方向是故意选的 ✓。
     journal_watermark: Seq,
+    /// auto-bake 运行时态（bake 二期 item 2）：只在内存，见 `AutoBakeRuntime`。
+    auto_bake_runtime: AutoBakeRuntime,
 }
 
 impl std::fmt::Debug for Document {
@@ -670,6 +694,7 @@ impl Document {
             last_snapshot_at: 0,
             commits: 0,
             journal_watermark: 0,
+            auto_bake_runtime: AutoBakeRuntime::default(),
             settings,
         }
     }
@@ -697,6 +722,16 @@ impl Document {
     /// head seq。
     pub fn head_seq(&self) -> Seq {
         self.log.head_seq()
+    }
+
+    /// auto-bake 运行时态（只读）。
+    pub fn auto_bake_runtime(&self) -> &AutoBakeRuntime {
+        &self.auto_bake_runtime
+    }
+
+    /// auto-bake 运行时态（可写）。
+    pub fn auto_bake_runtime_mut(&mut self) -> &mut AutoBakeRuntime {
+        &mut self.auto_bake_runtime
     }
 
     /// 原子数。
@@ -1675,6 +1710,40 @@ impl Document {
         // **∴ 第 247 轮 ✗**：**这次渲染**也进缓存**✗（**键里带着图层 scope ✓ ⇒ 不会串层 ✓）★
         //   ＋ **∴ 空的那些**在上面就 `return Err` 了**✗ ⇒ **∴ 缓存里**不会有空图** ✓
         self.region_block_put(key, version, &rendered.stats, rendered.rgba8.clone());
+        Ok((rendered.width, rendered.height, rendered.rgba8))
+    }
+
+    /// **压平渲染（bake_layer 专用）**：只渲染目标层，返回画布 1:1 的
+    /// 直通 RGBA8（与 `render_region_raw_layer` 同口径的量化输出）。
+    ///
+    /// 与单层导出**不同**的关键点：克隆状态里把目标层的外壳清零
+    /// （`opacity = 1`、`blend_mode = normal`、`clipping_mask = false`，
+    /// 默认 `mask_id = None` 除非 `flatten_mask`），背景置空。
+    /// 否则基底里已乘过一次外壳，之后整幅合成再乘一次 = 双重应用。
+    /// 图层本身的 ID/名称/混合/不透明度/z 序/掩膜在真实状态里一律不动，
+    /// 只影响这次克隆渲染；层内调整/滤镜/液化对象照常进层缓冲（压进基底），
+    /// 位于该层上方的独立调整层不在 only_layer 内（留在压平层之上继续生效）。
+    pub fn render_layer_bake_base(
+        &mut self,
+        layer_id: &str,
+        flatten_mask: bool,
+    ) -> Result<(u32, u32, Vec<u8>)> {
+        let mut filtered = self.state.clone();
+        filtered.background = serde_json::Value::Null;
+        if let Some(layer) = filtered.layers.get_mut(layer_id) {
+            layer.opacity = 1.0;
+            layer.blend_mode = "normal".to_owned();
+            layer.clipping_mask = false;
+            if !flatten_mask {
+                layer.mask_id = None;
+            }
+        }
+        let bbox = yanshi_core::Bbox::new(0.0, 0.0, filtered.width as f64, filtered.height as f64);
+        let previous = self.renderer.set_only_layer(Some(layer_id.to_owned()));
+        let rendered = self.renderer.render_region(&filtered, &*self.store, bbox);
+        self.renderer.set_only_layer(previous);
+        let rendered = rendered?;
+        self.note_render_stats(&rendered.stats);
         Ok((rendered.width, rendered.height, rendered.rgba8))
     }
 
