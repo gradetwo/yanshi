@@ -2630,7 +2630,9 @@ fn blob_upload(state: &ServerState, request: &Request) -> Response {
             // **上传即登记** ✓（审计 P1 存量 5.5）：上传者拿到的 hash 回头就要读回
             //（预览／入图 ✓）⇒ 记产出者为本文档，读回时放行 ✓（不登记会被引用集闸拦住 ✓）。
             if encoded_original {
-                if let Err(reason) = record_reference_source(state, &workspace, &doc_id, &hash.to_string()) {
+                if let Err(reason) =
+                    record_reference_source(state, &workspace, &doc_id, &hash.to_string())
+                {
                     return internal(&format!("保存参考图来源归属失败: {reason}"));
                 }
             }
@@ -2648,21 +2650,33 @@ fn blob_upload(state: &ServerState, request: &Request) -> Response {
 
 // Bind a reference grant to the document generation, not merely a reusable id.
 fn reference_document_generation(workspace: &Workspace, doc_id: &str) -> Option<String> {
-    workspace.document(doc_id)?.log().atoms().first().map(|atom| atom.id.to_string())
+    workspace
+        .document(doc_id)?
+        .log()
+        .atoms()
+        .first()
+        .map(|atom| atom.id.to_string())
 }
 
 // Server-private metadata: generic workspace preferences cannot grant blob access.
 // The caller holds the workspace mutex, so upload updates are serialized.
 fn record_reference_source(
-    state: &ServerState, workspace: &Workspace, doc_id: &str, hash: &str,
+    state: &ServerState,
+    workspace: &Workspace,
+    doc_id: &str,
+    hash: &str,
 ) -> std::result::Result<(), String> {
-    let Some(root) = &state.options.root else { return Ok(()); };
+    let Some(root) = &state.options.root else {
+        return Ok(());
+    };
     let generation = reference_document_generation(workspace, doc_id)
         .ok_or_else(|| "参考图文档尚未初始化".to_owned())?;
     let path = root.join(".reference-sources.json");
     let mut registry: std::collections::BTreeMap<String, Value> = match std::fs::read(&path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| error.to_string())?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => std::collections::BTreeMap::new(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::collections::BTreeMap::new()
+        }
         Err(error) => return Err(error.to_string()),
     };
     let mut sources = std::collections::BTreeSet::<String>::new();
@@ -2677,7 +2691,10 @@ fn record_reference_source(
         }
     }
     sources.insert(hash.to_owned());
-    registry.insert(doc_id.to_owned(), json!({"generation": generation, "blob_hashes": sources}));
+    registry.insert(
+        doc_id.to_owned(),
+        json!({"generation": generation, "blob_hashes": sources}),
+    );
     let bytes = serde_json::to_vec(&registry).map_err(|error| error.to_string())?;
     let temporary = path.with_extension("json.tmp");
     {
@@ -2691,19 +2708,33 @@ fn record_reference_source(
 }
 
 fn reference_source_owned(
-    state: &ServerState, workspace: &Workspace, doc_id: &str, hash: &str,
+    state: &ServerState,
+    workspace: &Workspace,
+    doc_id: &str,
+    hash: &str,
 ) -> bool {
-    let Some(root) = &state.options.root else { return false; };
-    let Some(generation) = reference_document_generation(workspace, doc_id) else { return false; };
+    let Some(root) = &state.options.root else {
+        return false;
+    };
+    let Some(generation) = reference_document_generation(workspace, doc_id) else {
+        return false;
+    };
     let registry = std::fs::read(root.join(".reference-sources.json"))
-        .ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
-    registry.as_ref().and_then(|value| value.get(doc_id)).map(|entry| {
-        entry.get("generation").and_then(Value::as_str) == Some(generation.as_str())
-            && (entry.get("blob_hash").and_then(Value::as_str) == Some(hash)
-                || entry.get("blob_hashes").and_then(Value::as_array)
-                    .map(|values| values.iter().any(|value| value.as_str() == Some(hash)))
-                    .unwrap_or(false))
-    }).unwrap_or(false)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    registry
+        .as_ref()
+        .and_then(|value| value.get(doc_id))
+        .map(|entry| {
+            entry.get("generation").and_then(Value::as_str) == Some(generation.as_str())
+                && (entry.get("blob_hash").and_then(Value::as_str) == Some(hash)
+                    || entry
+                        .get("blob_hashes")
+                        .and_then(Value::as_array)
+                        .map(|values| values.iter().any(|value| value.as_str() == Some(hash)))
+                        .unwrap_or(false))
+        })
+        .unwrap_or(false)
 }
 
 fn blob_route(state: &ServerState, request: &Request) -> Response {

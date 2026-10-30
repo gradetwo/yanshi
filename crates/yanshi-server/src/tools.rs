@@ -21959,7 +21959,9 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
         .and_then(Value::as_bool)
         .unwrap_or(true);
     // **同上** ✓（第 717 轮）：`margin: -8` 原来被静默当成 16 ✓。
-    let margin = optional_count(args, "margin")?.unwrap_or(16).min(i32::MAX as u64) as i64;
+    let margin = optional_count(args, "margin")?
+        .unwrap_or(16)
+        .min(i32::MAX as u64) as i64;
     // **试画与真画同路**：sensors 给了就带上（缺省全 0 ⇒ 老行为 ✓）。
     let sensors = match args.get("sensors") {
         Some(value) if !value.is_null() => brush_sensors_from_value(value)?,
@@ -22121,9 +22123,9 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
         out["preview_bbox"] = json!([x0, y0, x1, y1]);
         out["preview_width"] = json!(preview_w);
         out["preview_height"] = json!(preview_h);
-        if let Some(bytes) = yanshi_render::png::encode_png(
-            preview_w as u32, preview_h as u32, &preview_rgba,
-        ) {
+        if let Some(bytes) =
+            yanshi_render::png::encode_png(preview_w as u32, preview_h as u32, &preview_rgba)
+        {
             match &output_path {
                 Some(raw_path) => {
                     let target = guarded_output_path(raw_path)?;

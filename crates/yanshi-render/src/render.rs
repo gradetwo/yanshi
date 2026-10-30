@@ -7322,11 +7322,12 @@ fn apply_layer_mask_warn(
                     .ok()
                     .and_then(|hash| store.get(&hash).ok())
             };
-            let failed = crate::selection::ensure_bitmap_masks_registered(
-                &[&mask.shape], &load_blob,
-            );
+            let failed =
+                crate::selection::ensure_bitmap_masks_registered(&[&mask.shape], &load_blob);
             if !failed.is_empty() {
-                warnings.push(format!("蒙版 {mask_id} 的位图无法读取或解码（本层不施加蒙版）: {failed:?}"));
+                warnings.push(format!(
+                    "蒙版 {mask_id} 的位图无法读取或解码（本层不施加蒙版）: {failed:?}"
+                ));
                 return;
             }
         }

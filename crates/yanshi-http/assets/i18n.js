@@ -163,6 +163,7 @@ const I18N_EN_TEXT = {
   "已清除参考图": "Reference cleared",
   "参考图由外部设置，本浏览器没有它的原图（存储里是裸像素）⇒ 重新上传一次就能一直显示":
     "The reference was set from outside; this browser has no copy of the original (the store keeps raw pixels) ⇒ upload it once more and it will keep showing",
+  "参考图已就位（从服务端读取原图）": "Reference image ready (original read from the server)",
   // **破图收起那一句** ✓（本轮新增 ✓）：写在同一个 `#referenceInfo` 里 ✓ 不是 `#log` ✗
   //   ⇒ 英文模式没有词条就是中文残留 ✓（`browser-reference-overlay` 判据扫的就是这条 ✓）。
   "参考图叠不上去：存储里那份是裸像素（本浏览器没有它的原图）⇒ 已收起画布上的这一层，重新上传一次就能一直显示":

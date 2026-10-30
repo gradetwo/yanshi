@@ -2542,7 +2542,9 @@ pub(super) fn paint_brush(
         // A paint operation samples its own layer; layerless previews retain
         // their explicit document-context semantics.
         let base_result = match read_layer {
-            Some(layer_id) => ctx.workspace.render_region_raw_layer(&ctx.doc_id, bbox, layer_id),
+            Some(layer_id) => ctx
+                .workspace
+                .render_region_raw_layer(&ctx.doc_id, bbox, layer_id),
             None => ctx.workspace.render_region_raw(&ctx.doc_id, bbox),
         };
         if let Ok((base_width, base_height, base)) = base_result {

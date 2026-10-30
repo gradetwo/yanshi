@@ -11864,7 +11864,7 @@ function referenceOverlayState() {
   const info = $("referenceInfo");
   if (!overlay || !info) return;
   if (overlay.dataset.decode === "failed") {
-    info.textContent = "参考图无法读取或解码，已收起叠加层；请检查连接、访问权限或重新上传图片";
+    info.textContent = "参考图叠不上去：存储里那份是裸像素（本浏览器没有它的原图）⇒ 已收起画布上的这一层，重新上传一次就能一直显示";
   } else if (overlay.dataset.decode === "ok" && overlay.dataset.source === "blob") {
     info.textContent = "参考图已就位（从服务端读取原图）";
   }

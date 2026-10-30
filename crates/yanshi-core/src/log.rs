@@ -399,8 +399,11 @@ impl AtomLog {
                 if mode != "new" && !state.mask_alive(mask_id) {
                     return Err(YanshiError::new(
                         ErrorCode::ReferenceNotFound,
-                        ErrorContext::detail(format!("蒙版 {mask_id} 不存在，mode={mode} 只能修改现有蒙版")),
-                    ).with_atom(atom.id.clone()));
+                        ErrorContext::detail(format!(
+                            "蒙版 {mask_id} 不存在，mode={mode} 只能修改现有蒙版"
+                        )),
+                    )
+                    .with_atom(atom.id.clone()));
                 }
             }
             if let Some(selection_id) = crate::atom::payload_str(&atom.payload, "selection_id") {
