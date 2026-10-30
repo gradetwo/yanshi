@@ -263,6 +263,9 @@ pub fn plan_dirty(
         // 的 `options.background.or_else(|| parse_background(&state.background))` ✓），
         // 没有「只脏一块」的说法 ✗ ⇒ 落到 `_ => none()` 就会让缓存 tile 继续用旧底色
         // 出帧（改了底色画面却不动的静默退化 ✗）⇒ 必须显式全量 ✓。
+        AtomKind::BakeLayer => {
+            DirtySet::whole_document(state, "bake_layer 替换整层图元（基底 Blob 换新）")
+        }
         AtomKind::SetBackground => DirtySet::whole_document(state, "set_background 改变文档底色"),
         kind if GEOMETRY_KINDS.contains(&kind) => {
             if atom.object_id().is_some() {

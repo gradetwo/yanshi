@@ -55,6 +55,8 @@ pub enum ErrorCode {
     /// 调用方**无法知道**它上一次超时的请求到底完成了没有 ✓，
     /// 直接重试正是"重复落笔"的成因 ✗ ⇒ 必须先查 `get_inflight` / 核对 `head` ✓。
     Busy,
+    /// 压平基底缺失（bake 严格错误，见 bake.rs）。
+    MissingBakedBlob,
     /// **操作已被协作式取消** ✓（服务端在安全点看到取消标志 ⇒ 不提交新的原子 ✓）。
     ///
     /// 与 `busy` 一样**不可盲目重试** ✗：取消可能发生在已经落下若干原子之后 ✓，
@@ -75,6 +77,7 @@ impl ErrorCode {
             Self::Degraded => "degraded",
             Self::JobPending => "job_pending",
             Self::JobNotFound => "job_not_found",
+            Self::MissingBakedBlob => "missing_baked_blob",
             Self::Busy => "busy",
             Self::Cancelled => "cancelled",
         }

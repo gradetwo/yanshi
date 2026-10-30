@@ -412,6 +412,10 @@ impl Response {
             yanshi_core::ErrorCode::InvalidArgument => 400,
             yanshi_core::ErrorCode::PermissionDenied => 403,
             yanshi_core::ErrorCode::ReferenceNotFound => 404,
+            // **压平基底缺 Blob**（bake）：引用到的内容寻址 Blob 不在存储里 ⇒
+            // 与 ReferenceNotFound 同口径 404（不是 409 前置失败：缺的是被引用的
+            // 外部内容，不是调用方给的状态前提）。
+            yanshi_core::ErrorCode::MissingBakedBlob => 404,
             yanshi_core::ErrorCode::PreconditionFailed => 409,
             yanshi_core::ErrorCode::Conflict => 409,
             yanshi_core::ErrorCode::ResourceExhausted => 503,

@@ -5046,6 +5046,85 @@ impl Renderer {
                         }
                     }
                 }
+                Primitive::BakedBase {
+                    blob,
+                    width,
+                    height,
+                    source_up_to_seq,
+                    transform,
+                } => {
+                    // BakedBase 渲染（第二轮第 1、2、9 条）：
+                    // 缺 Blob => 严格报错 FoldError::MissingBakedBlob，绝不画空白层；
+                    // 一般 RasterPatch 的缺 Blob 容忍（跳过 + 告警）**不适用于** BakedBase。
+                    // PNG 直通 RGBA8 与 bake 基底同构；IDENTITY 走 1:1 直贴，
+                    // 非 IDENTITY 走渲染期一次 Q16.16 定点双线性采样。
+                    let bytes = match store.get(&blob) {
+                        Ok(bytes) => bytes,
+                        Err(_) => {
+                            return Err(yanshi_core::bake::missing_baked_blob_error(
+                                &layer.id,
+                                blob.as_str(),
+                                source_up_to_seq,
+                            ));
+                        }
+                    };
+                    let (dw, dh, rgba8) = crate::png::decode_png(&bytes).ok_or_else(|| {
+                        YanshiError::new(
+                            yanshi_core::ErrorCode::InvalidArgument,
+                            yanshi_core::ErrorContext::detail(format!(
+                                "压平基底 PNG 解码失败（对象 {}，blob {blob}）",
+                                object.id
+                            )),
+                        )
+                        .with_object(object.id.clone())
+                        .with_blob(blob.to_string())
+                    })?;
+                    if dw != width || dh != height {
+                        track.unsupported.push(format!(
+                            "压平基底尺寸与声明不一致（对象 {}，声明 {}x{}，实际 {}x{}）：按实际尺寸渲染",
+                            object.id, width, height, dw, dh
+                        ));
+                    }
+                    if transform.is_identity() {
+                        layer_buffer.blit_rgba8(0, 0, dw, dh, &rgba8, opacity);
+                    } else {
+                        let (ox, oy) = layer_buffer.origin();
+                        let bw = layer_buffer.width();
+                        let bh = layer_buffer.height();
+                        let step = layer_buffer.step();
+                        let sampled = crate::object::sample_affine_rgba8(
+                            &rgba8,
+                            dw,
+                            dh,
+                            transform,
+                            crate::object::AffineSampleDest {
+                                origin: (ox, oy),
+                                width: bw,
+                                height: bh,
+                                step,
+                            },
+                        );
+                        for ly in 0..bh {
+                            for lx in 0..bw {
+                                let idx = ((ly * bw + lx) * 4) as usize;
+                                let bytes4 = [
+                                    sampled[idx],
+                                    sampled[idx + 1],
+                                    sampled[idx + 2],
+                                    sampled[idx + 3],
+                                ];
+                                if bytes4[3] == 0 {
+                                    continue;
+                                }
+                                let mut pixel = crate::color::u8x4_to_linear_premul(bytes4);
+                                for value in pixel.iter_mut() {
+                                    *value *= opacity;
+                                }
+                                layer_buffer.blend(lx, ly, pixel);
+                            }
+                        }
+                    }
+                }
                 Primitive::Text {
                     text,
                     size,
