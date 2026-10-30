@@ -452,3 +452,55 @@ fn geometry_translation_liquify_is_limited_not_silent() {
         "缩放遇液化必须标注受限：{scaled}"
     );
 }
+
+#[test]
+fn geometry_crop_array_region_accepted_object_unchanged() {
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let stroke_id = setup(&mut workspace);
+    let mut ctx = context(&mut workspace);
+    // 数组形 [x, y, w, h] 必须被接受（判据 tool-region-shape-parity 要求），
+    // 且与 object 形走同一条归一化逻辑：尺寸与笔触变换矩阵相同。
+    let cropped = ok(
+        &call(
+            &mut ctx,
+            "crop_canvas",
+            &json!({"region": [10, 20, 100, 50]}),
+        ),
+        "crop_canvas array region",
+    );
+    assert_eq!(cropped["width"], json!(100));
+    assert_eq!(cropped["height"], json!(50));
+    assert_eq!(doc_size(&mut ctx), (100, 50));
+    let object = get_object(&mut ctx, &stroke_id);
+    assert_eq!(
+        object["transform"]["matrix"],
+        json!([1.0, 0.0, 0.0, 1.0, -10.0, -20.0]),
+        "数组形裁剪的笔触变换应与 object 形一致：{object}"
+    );
+    let atom_id = cropped["atom_id"]
+        .as_str()
+        .expect("回执应有 atom_id")
+        .to_owned();
+    ok(
+        &call(&mut ctx, "revert", &json!({"atom_id": atom_id})),
+        "revert crop_canvas array",
+    );
+    assert_eq!(doc_size(&mut ctx), (200, 100));
+    // object 形行为不变：同一区域裁剪，结果与数组形逐项相同。
+    let cropped = ok(
+        &call(
+            &mut ctx,
+            "crop_canvas",
+            &json!({"region": {"x": 10, "y": 20, "w": 100, "h": 50}}),
+        ),
+        "crop_canvas object region",
+    );
+    assert_eq!(cropped["width"], json!(100));
+    assert_eq!(cropped["height"], json!(50));
+    let object = get_object(&mut ctx, &stroke_id);
+    assert_eq!(
+        object["transform"]["matrix"],
+        json!([1.0, 0.0, 0.0, 1.0, -10.0, -20.0]),
+        "object 形裁剪的笔触变换应与数组形一致：{object}"
+    );
+}

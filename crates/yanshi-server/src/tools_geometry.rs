@@ -564,10 +564,32 @@ pub(super) fn write_crop_canvas(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
     reject_anchor(args, "crop_canvas")?;
     let state = document_state(ctx)?;
     let (old_width, old_height) = (state.width, state.height);
-    let region = args
+    let region_value = args
         .get("region")
-        .and_then(Value::as_object)
         .ok_or_else(|| invalid("crop 需要 region: {x, y, w, h}"))?;
+    // 数组形 [x, y, w, h] 在现有逻辑前归一化为 object 形（与 render_region /
+    // analyze_region 的 parse_bbox 口径一致）；后续整数像素校验仍走同一条路。
+    let normalized;
+    let region = if let Some(array) = region_value.as_array() {
+        if array.len() != 4 {
+            return Err(invalid("region 数组形必须是 [x, y, w, h] 4 个数值"));
+        }
+        let numbers: Option<Vec<f64>> = array.iter().map(Value::as_f64).collect();
+        let numbers = numbers.ok_or_else(|| invalid("region 数组元素必须是数值"))?;
+        normalized = json!({
+            "x": numbers[0],
+            "y": numbers[1],
+            "w": numbers[2],
+            "h": numbers[3],
+        });
+        normalized
+            .as_object()
+            .ok_or_else(|| invalid("crop 需要 region: {x, y, w, h}"))?
+    } else {
+        region_value
+            .as_object()
+            .ok_or_else(|| invalid("crop 需要 region: {x, y, w, h}"))?
+    };
     let get_int = |key: &str| -> Result<i64> {
         let value = region
             .get(key)

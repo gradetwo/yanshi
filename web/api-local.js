@@ -631,7 +631,7 @@ const P2_TOOL_SPECS = {
   create_mask: [1, [["mask_id","s",1],["shape","o",0],["feather","n",0],["invert","b",0],["mode","s",0],["linked_layer","s",0],["from_selection","s",0]]],
   create_range_mask: [1, [["mask_id","s",1],["layer_id","s",1],["range","s",0],["low","n",0],["high","n",0],["hue","n",0],["hue_width","n",0],["smoothness","n",0],["invert","b",0]]],
   create_selection: [1, [["selection_id","s",1],["shape","o",0],["feather","n",0],["invert","b",0],["mode","s",0],["linked_layer","s",0],["from_mask","s",0]]],
-  crop_canvas: [1, [["region","o",1]]],
+  crop_canvas: [1, [["region","x",1]]],
   declare_head: [1, [["base_type","s",1],["base_id","s",1],["reason","s",0]]],
   delete_anchor: [1, [["name","s",1]]],
   delete_annotation: [0, [["annotation_id","s",1]]],

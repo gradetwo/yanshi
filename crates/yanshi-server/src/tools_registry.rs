@@ -1219,7 +1219,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         summary: "裁剪画布（只改 bounds 加平移，不删除原子；越界内容渲染时裁剪，撤销恢复）",
         mutating: true,
         params: &[
-            param!("region", Object, true, "{x,y,w,h} 整数像素，必须完全位于画布内"),
+            param!("region", Any, true, "区域 {x,y,w,h} 或 [x,y,w,h] 整数像素，必须完全位于画布内"),
         ],
     },
     ToolSpec {
