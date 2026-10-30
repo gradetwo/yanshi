@@ -668,6 +668,7 @@ const P2_TOOL_SPECS = {
   get_anchors: [0, []],
   get_annotation: [0, [["annotation_id","s",1]]],
   get_atom: [0, [["atom_id","s",1]]],
+  get_bake_status: [0, [["layer_id","s",0]]],
   get_brush_dynamics: [0, [["brush","s",1],["format","s",0]]],
   get_brush_settings: [0, [["brush","s",1]]],
   get_changesets: [0, [["limit","i",0]]],

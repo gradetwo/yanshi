@@ -21,6 +21,7 @@
 pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("bake_layer", r#"{"layer_id":"L1"}"#),
     ("recover_baked_blobs", r#"{"layer_id":"L1"}"#),
+    ("get_bake_status", r#"{}"#),
     ("smart_glaze", r#"{"shape":{},"color":[],"layer_id":"L1"}"#),
     ("smart_erase_shape", r#"{"layer_id":"L1","shape":{}}"#),
     (

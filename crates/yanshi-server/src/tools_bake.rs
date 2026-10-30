@@ -153,6 +153,226 @@ fn replay_baked_blob(
     Ok((png, hash))
 }
 
+/// 层内对象分项计数（bake_layer 与 auto-bake 共用，纯函数）。
+pub(crate) struct LayerCensus {
+    pub strokes: usize,
+    pub texts: usize,
+    pub vectors: usize,
+    pub images: usize,
+    pub liquify: usize,
+    pub adjustments: usize,
+    pub filters: usize,
+    pub text_ids: Vec<String>,
+    pub vector_ids: Vec<String>,
+    pub clipped: Vec<Value>,
+    pub single_baked: bool,
+}
+
+/// 层内对象分项计数：与期 1 `write_bake_layer` 里的循环逐字同口径
+/// （已压平基底本身不计入 images；越界用带变换的包围盒判）。
+pub(crate) fn census_layer_objects(
+    objects: &[yanshi_core::Object],
+    canvas_w: u32,
+    canvas_h: u32,
+) -> LayerCensus {
+    let mut strokes = 0usize;
+    let mut texts = 0usize;
+    let mut vectors = 0usize;
+    let mut images = 0usize;
+    let mut liquify = 0usize;
+    let mut adjustments = 0usize;
+    let mut filters = 0usize;
+    let mut text_ids: Vec<String> = Vec::new();
+    let mut vector_ids: Vec<String> = Vec::new();
+    let mut clipped: Vec<Value> = Vec::new();
+    let single_baked = objects.len() == 1
+        && objects[0].data.get("baked_base").and_then(|v| v.as_bool()) == Some(true)
+        && objects[0].transform.matrix == Affine2D::IDENTITY.0;
+    for object in objects {
+        match object.object_type {
+            yanshi_core::ObjectType::Stroke => strokes += 1,
+            yanshi_core::ObjectType::Text => {
+                texts += 1;
+                text_ids.push(object.id.clone());
+            }
+            yanshi_core::ObjectType::Shape | yanshi_core::ObjectType::Path => {
+                vectors += 1;
+                vector_ids.push(object.id.clone());
+            }
+            yanshi_core::ObjectType::RasterPatch => {
+                if object.data.get("baked_base").and_then(|v| v.as_bool()) == Some(true) {
+                    // 已压平的基底本身不是“新图元”：再压平时它会被旧基底渲染取代。
+                } else {
+                    images += 1;
+                }
+            }
+            yanshi_core::ObjectType::Liquify => liquify += 1,
+            yanshi_core::ObjectType::Adjustment => adjustments += 1,
+            yanshi_core::ObjectType::Filter => filters += 1,
+            _ => {}
+        }
+        // 越界判定：用带变换的包围盒与画布求交之外的部分。
+        if let Some(bbox) = yanshi_render::object::object_bbox(object) {
+            let x0 = bbox.x;
+            let y0 = bbox.y;
+            let x1 = bbox.x + bbox.w;
+            let y1 = bbox.y + bbox.h;
+            if x0 < 0.0 || y0 < 0.0 || x1 > canvas_w as f64 || y1 > canvas_h as f64 {
+                clipped.push(json!({
+                    "object_id": object.id,
+                    "bbox": [x0, y0, x1, y1],
+                    "canvas": [0.0, 0.0, canvas_w as f64, canvas_h as f64],
+                }));
+            }
+        }
+    }
+    LayerCensus {
+        strokes,
+        texts,
+        vectors,
+        images,
+        liquify,
+        adjustments,
+        filters,
+        text_ids,
+        vector_ids,
+        clipped,
+        single_baked,
+    }
+}
+
+/// 一次 bake 的渲染 → 写 Blob → 校验 → 计数 → 提交（手动与自动共用）。
+///
+/// `origin`／`trigger` 为 None 时载荷与期 1 完全相同（手动 bake 不写审计字段，
+/// `ctx.commit` 照旧填 `generated`）；自动 bake 传 `origin="auto"` 与 trigger 对象。
+pub(crate) struct BakePerformed {
+    pub up_to_seq: u64,
+    pub width: u32,
+    pub height: u32,
+    pub blob_hash: String,
+    pub blob_byte_len: usize,
+    pub bake_seq: u64,
+    pub bake_atom_id: String,
+    pub superseded_atom_count: usize,
+    pub superseded_min_seq: u64,
+    pub retained_atom_count: usize,
+    pub commit: crate::document::CommitResult,
+}
+
+pub(crate) fn render_and_commit_bake(
+    ctx: &mut ToolContext<'_>,
+    layer_id: &str,
+    flatten_mask: bool,
+    origin: Option<&str>,
+    trigger: Option<Value>,
+) -> Result<BakePerformed> {
+    // ---- 只读渲染（失败则日志零修改）----
+    let up_to_seq = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|d| d.head_seq())
+        .unwrap_or(0);
+    let (bw, bh, rgba) = ctx
+        .workspace
+        .document_mut(&ctx.doc_id)?
+        .render_layer_bake_base(layer_id, flatten_mask)?;
+    let mut png_input = try_reserve_bytes(rgba.len())?;
+    png_input.extend_from_slice(&rgba);
+    let png = yanshi_render::png::encode_png(bw, bh, &png_input).ok_or_else(|| {
+        YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail("bake_layer PNG 编码失败：日志未改动，可直接重试"),
+        )
+    })?;
+    // ---- 写 Blob 并校验（失败则日志零修改）----
+    let blob_hash = ctx.workspace.store().put(&png)?;
+    let stored = ctx.workspace.store().get(&blob_hash)?;
+    if stored != png {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail(
+                "bake_layer Blob 写回校验失败：存储内容与编码字节不一致，日志未改动",
+            ),
+        ));
+    }
+    if BlobHash::from_bytes(&png) != blob_hash {
+        return Err(YanshiError::new(
+            ErrorCode::PreconditionFailed,
+            ErrorContext::detail("bake_layer Blob 哈希校验失败：日志未改动"),
+        ));
+    }
+    // ---- 追加原子并更新内存折叠态 ----
+    let (superseded_atom_count, superseded_min_seq) = {
+        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
+            )
+        })?;
+        let suppressed = yanshi_core::fold::compute_suppressed(document.log().atoms());
+        let mut count = 0usize;
+        let mut min_seq = u64::MAX;
+        for atom in document.log().iter() {
+            if atom.seq > up_to_seq || suppressed.contains(&atom.id) {
+                continue;
+            }
+            if !is_bake_content_kind(atom.kind) {
+                continue;
+            }
+            let target = yanshi_core::bake::bake_target_layer(atom, |id| {
+                document.state().objects.get(id).map(|o| o.layer_id.clone())
+            });
+            if target.as_deref() == Some(layer_id) {
+                count += 1;
+                min_seq = min_seq.min(atom.seq);
+            }
+        }
+        (
+            count,
+            if min_seq == u64::MAX {
+                up_to_seq
+            } else {
+                min_seq
+            },
+        )
+    };
+    let total_effective = ctx
+        .workspace
+        .document(&ctx.doc_id)
+        .map(|document| {
+            let suppressed = yanshi_core::fold::compute_suppressed(document.log().atoms());
+            document.log().atoms().len() - suppressed.len()
+        })
+        .unwrap_or(0);
+    let retained_atom_count = total_effective.saturating_sub(superseded_atom_count);
+    let mut payload = json!({
+        "layer_id": layer_id,
+        "up_to_seq": up_to_seq,
+        "blob_hash": blob_hash.to_string(),
+        "flatten_mask": flatten_mask,
+    });
+    if let Some(origin) = origin {
+        payload["origin"] = json!(origin);
+    }
+    if let Some(trigger) = trigger {
+        payload["trigger"] = trigger;
+    }
+    let result = ctx.commit(AtomKind::BakeLayer, payload)?;
+    Ok(BakePerformed {
+        up_to_seq,
+        width: bw,
+        height: bh,
+        blob_hash: blob_hash.to_string(),
+        blob_byte_len: png.len(),
+        bake_seq: result.seq,
+        bake_atom_id: result.atom_id.clone(),
+        superseded_atom_count,
+        superseded_min_seq,
+        retained_atom_count,
+        commit: result,
+    })
+}
+
 /// bake_layer 工具。
 pub(super) fn write_bake_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
@@ -215,57 +435,19 @@ pub(super) fn write_bake_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
             }],
         }));
     }
-    let mut strokes = 0usize;
-    let mut texts = 0usize;
-    let mut vectors = 0usize;
-    let mut images = 0usize;
-    let mut liquify = 0usize;
-    let mut adjustments = 0usize;
-    let mut filters = 0usize;
-    let mut text_ids: Vec<String> = Vec::new();
-    let mut vector_ids: Vec<String> = Vec::new();
-    let mut clipped: Vec<Value> = Vec::new();
-    let single_baked = objects.len() == 1
-        && objects[0].data.get("baked_base").and_then(|v| v.as_bool()) == Some(true)
-        && objects[0].transform.matrix == Affine2D::IDENTITY.0;
-    for object in &objects {
-        match object.object_type {
-            yanshi_core::ObjectType::Stroke => strokes += 1,
-            yanshi_core::ObjectType::Text => {
-                texts += 1;
-                text_ids.push(object.id.clone());
-            }
-            yanshi_core::ObjectType::Shape | yanshi_core::ObjectType::Path => {
-                vectors += 1;
-                vector_ids.push(object.id.clone());
-            }
-            yanshi_core::ObjectType::RasterPatch => {
-                if object.data.get("baked_base").and_then(|v| v.as_bool()) == Some(true) {
-                    // 已压平的基底本身不是“新图元”：再压平时它会被旧基底渲染取代。
-                } else {
-                    images += 1;
-                }
-            }
-            yanshi_core::ObjectType::Liquify => liquify += 1,
-            yanshi_core::ObjectType::Adjustment => adjustments += 1,
-            yanshi_core::ObjectType::Filter => filters += 1,
-            _ => {}
-        }
-        // 越界判定：用带变换的包围盒与画布求交之外的部分。
-        if let Some(bbox) = yanshi_render::object::object_bbox(object) {
-            let x0 = bbox.x;
-            let y0 = bbox.y;
-            let x1 = bbox.x + bbox.w;
-            let y1 = bbox.y + bbox.h;
-            if x0 < 0.0 || y0 < 0.0 || x1 > canvas_w as f64 || y1 > canvas_h as f64 {
-                clipped.push(json!({
-                    "object_id": object.id,
-                    "bbox": [x0, y0, x1, y1],
-                    "canvas": [0.0, 0.0, canvas_w as f64, canvas_h as f64],
-                }));
-            }
-        }
-    }
+    let LayerCensus {
+        strokes,
+        texts,
+        vectors,
+        images,
+        liquify,
+        adjustments,
+        filters,
+        text_ids,
+        vector_ids,
+        clipped,
+        single_baked,
+    } = census_layer_objects(&objects, canvas_w, canvas_h);
     if single_baked {
         // 仅有 1 个未改动 BakedBase 且其后无新内容原子：no-op（不查日志外的状态）。
         let source_up_to_seq = objects[0]
@@ -321,95 +503,25 @@ pub(super) fn write_bake_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
             )),
         ));
     }
-    // ---- 只读渲染（失败则日志零修改）----
-    let up_to_seq = ctx
-        .workspace
-        .document(&ctx.doc_id)
-        .map(|d| d.head_seq())
-        .unwrap_or(0);
-    let (bw, bh, rgba) = ctx
-        .workspace
-        .document_mut(&ctx.doc_id)?
-        .render_layer_bake_base(&layer_id, flatten_mask)?;
-    let mut png_input = try_reserve_bytes(rgba.len())?;
-    png_input.extend_from_slice(&rgba);
-    let png = yanshi_render::png::encode_png(bw, bh, &png_input).ok_or_else(|| {
-        YanshiError::new(
-            ErrorCode::InvalidArgument,
-            ErrorContext::detail("bake_layer PNG 编码失败：日志未改动，可直接重试"),
-        )
-    })?;
-    // ---- 写 Blob 并校验（失败则日志零修改）----
-    let blob_hash = ctx.workspace.store().put(&png)?;
-    let stored = ctx.workspace.store().get(&blob_hash)?;
-    if stored != png {
-        return Err(YanshiError::new(
-            ErrorCode::PreconditionFailed,
-            ErrorContext::detail(
-                "bake_layer Blob 写回校验失败：存储内容与编码字节不一致，日志未改动",
-            ),
-        ));
-    }
-    if BlobHash::from_bytes(&png) != blob_hash {
-        return Err(YanshiError::new(
-            ErrorCode::PreconditionFailed,
-            ErrorContext::detail("bake_layer Blob 哈希校验失败：日志未改动"),
-        ));
-    }
-    // ---- 追加原子并更新内存折叠态 ----
-    let (superseded_atom_count, superseded_min_seq) = {
-        let document = ctx.workspace.document(&ctx.doc_id).ok_or_else(|| {
-            YanshiError::new(
-                ErrorCode::ReferenceNotFound,
-                ErrorContext::detail(format!("文档 {} 未打开", ctx.doc_id)),
-            )
-        })?;
-        let suppressed = yanshi_core::fold::compute_suppressed(document.log().atoms());
-        let mut count = 0usize;
-        let mut min_seq = u64::MAX;
-        for atom in document.log().iter() {
-            if atom.seq > up_to_seq || suppressed.contains(&atom.id) {
-                continue;
-            }
-            if !is_bake_content_kind(atom.kind) {
-                continue;
-            }
-            let target = yanshi_core::bake::bake_target_layer(atom, |id| {
-                document.state().objects.get(id).map(|o| o.layer_id.clone())
-            });
-            if target.as_deref() == Some(layer_id.as_str()) {
-                count += 1;
-                min_seq = min_seq.min(atom.seq);
-            }
-        }
-        (
-            count,
-            if min_seq == u64::MAX {
-                up_to_seq
-            } else {
-                min_seq
-            },
-        )
-    };
-    let total_effective = ctx
-        .workspace
-        .document(&ctx.doc_id)
-        .map(|document| {
-            let suppressed = yanshi_core::fold::compute_suppressed(document.log().atoms());
-            document.log().atoms().len() - suppressed.len()
-        })
-        .unwrap_or(0);
-    let retained_atom_count = total_effective.saturating_sub(superseded_atom_count);
-    let result = ctx.commit(
-        AtomKind::BakeLayer,
-        json!({
-            "layer_id": layer_id,
-            "up_to_seq": up_to_seq,
-            "blob_hash": blob_hash.to_string(),
-            "flatten_mask": flatten_mask,
-        }),
-    )?;
+    // ---- 渲染 → 写 Blob → 校验 → 计数 → 提交（与 auto-bake 共用核）----
+    // 手动 bake 写 origin="manual"（设计 §5.1 的两值之一；老原子无此字段，
+    // 读时按“非 auto 即 manual”归一，见 get_bake_status 的 last_bake.origin）。
+    let BakePerformed {
+        up_to_seq,
+        width: bw,
+        height: bh,
+        blob_hash,
+        blob_byte_len,
+        superseded_atom_count,
+        superseded_min_seq,
+        retained_atom_count,
+        commit: result,
+        ..
+    } = render_and_commit_bake(ctx, &layer_id, flatten_mask, Some("manual"), None)?;
     let mut value = finish_mutation(ctx, &result, None)?;
+    // auto-bake：手动 bake 成功 ⇒ 清该层受阻态与跳过原因（设计 §9 决定 10：
+    // 手动 bake 证明该层可 bake，下次内容调用不必再被旧失败拦着）。
+    super::tools_autobake::clear_auto_bake_blocked_for_layer(ctx, &layer_id);
     // ---- 回执（必填字段 + 警告分级）----
     let mut warnings: Vec<Value> = Vec::new();
     if liquify > 0 {
@@ -462,8 +574,8 @@ pub(super) fn write_bake_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
     value["bake_atom_seq"] = json!(result.seq);
     value["bake_atom_id"] = json!(result.atom_id);
     value["superseded_seq_range"] = json!([superseded_min_seq, up_to_seq]);
-    value["blob_hash"] = json!(blob_hash.to_string());
-    value["blob_byte_len"] = json!(png.len());
+    value["blob_hash"] = json!(blob_hash);
+    value["blob_byte_len"] = json!(blob_byte_len);
     value["dimensions"] = json!({"width": bw, "height": bh});
     value["superseded_atom_count"] = json!(superseded_atom_count);
     value["retained_atom_count"] = json!(retained_atom_count);
@@ -600,6 +712,10 @@ pub(super) fn write_recover_baked_blobs(ctx: &mut ToolContext<'_>, args: &Value)
             "blob_hash": expected_hash,
         }));
     }
+    // auto-bake 受阻态清除（bake 二期 item 2，设计 §9 决定 10）：recover 成功是
+    // 显式自愈动作 ⇒ 清掉全部存活层的 blocked 与跳过原因；下次内容调用重新尝试
+    // bake，仍失败则重新受阻（清除本身不掩盖故障）。
+    super::tools_autobake::clear_auto_bake_blocked_all(ctx);
     Ok(json!({
         "recovered": healed.len(),
         "healed_blobs": healed,

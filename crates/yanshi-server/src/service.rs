@@ -1255,6 +1255,11 @@ impl Workspace {
 
     /// 内存工作区（测试与嵌入式使用）。
     pub fn in_memory(settings: DocumentSettings) -> Self {
+        Self::with_store(Arc::new(MemoryBlobStore::new()), settings)
+    }
+
+    /// 以指定 Blob 存储构造（测试用：注入失败存储，验 bake 失败路径）。
+    pub fn with_store(store: Arc<dyn BlobStore>, settings: DocumentSettings) -> Self {
         Self {
             preview_pending_at: std::collections::BTreeMap::new(),
             doc_last_used: BTreeMap::new(),
@@ -1262,7 +1267,7 @@ impl Workspace {
             doc_evictions: 0,
             doc_evictions_skipped_busy: 0,
             doc_last_eviction: None,
-            store: Arc::new(MemoryBlobStore::new()),
+            store,
             inflight: Arc::new(InflightRegistry::new()),
             documents: BTreeMap::new(),
             persist: None,

@@ -316,6 +316,28 @@ pub struct RenderStatus {
     pub thumb_url: Option<String>,
 }
 
+/// 单层 auto-bake 运行时态（bake 二期 item 2）。
+///
+/// **只在内存**：不进原子日志、不持久化、不随导出包走。重启后清空；
+/// 下一次内容调用重新评估（硬线之上仍会再尝试一次，失败则重新受阻——
+/// 这是有意的：重启本身就是一次显式的重新开始，不是静默重试）。
+#[derive(Debug, Default, Clone)]
+pub struct AutoBakeLayerRuntime {
+    /// 软线警告已对当前这次越线发过（跌回软线下清零，可再发）。
+    pub soft_fired: bool,
+    /// bake 失败后的受阻原因（Some = 不再自动重试，等手动 bake／recover／改设置清除）。
+    pub blocked: Option<String>,
+    /// 门禁跳过的原因（同原因不再重复报告；原因变化或计数归零后可再报）。
+    pub skip_reason: Option<String>,
+}
+
+/// 每层 auto-bake 运行时态表（键 = 图层 id）。
+#[derive(Debug, Default, Clone)]
+pub struct AutoBakeRuntime {
+    /// 按图层 id 索引的运行时态（不存在的层按 Default 计：未发软线、未受阻、无跳过原因）。
+    pub layers: std::collections::BTreeMap<String, AutoBakeLayerRuntime>,
+}
+
 /// 单个文档的服务端状态。
 pub struct Document {
     id: String,
@@ -483,6 +505,8 @@ pub struct Document {
     /// 从磁盘打开 = `head_seq`（日志本来就在盘上 ✓）⇒ 漏初始化只会**重复追加**（可见 ✗）
     /// 而不是**漏写**（静默 ✗）—— 这个方向是故意选的 ✓。
     journal_watermark: Seq,
+    /// auto-bake 运行时态（bake 二期 item 2）：只在内存，见 `AutoBakeRuntime`。
+    auto_bake_runtime: AutoBakeRuntime,
 }
 
 impl std::fmt::Debug for Document {
@@ -670,6 +694,7 @@ impl Document {
             last_snapshot_at: 0,
             commits: 0,
             journal_watermark: 0,
+            auto_bake_runtime: AutoBakeRuntime::default(),
             settings,
         }
     }
@@ -697,6 +722,16 @@ impl Document {
     /// head seq。
     pub fn head_seq(&self) -> Seq {
         self.log.head_seq()
+    }
+
+    /// auto-bake 运行时态（只读）。
+    pub fn auto_bake_runtime(&self) -> &AutoBakeRuntime {
+        &self.auto_bake_runtime
+    }
+
+    /// auto-bake 运行时态（可写）。
+    pub fn auto_bake_runtime_mut(&mut self) -> &mut AutoBakeRuntime {
+        &mut self.auto_bake_runtime
     }
 
     /// 原子数。
