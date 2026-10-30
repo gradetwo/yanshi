@@ -197,13 +197,20 @@ for (const brush of names) {
     //    不是"两边数学不同" ✗）。
     //   **⇒ 正确的对照**：**把门面输出按 Normal 合成叠到底图上** ✓，再和**画后合成**比 ✓
     //     ⇒ 若逐字节（±1 ulp）相同 ⇒ 门面这一笔与真实渲染**等价** ✓。
+    // **第四轮注（Y26，线性光合成）**：服务端按线性光合成图层（brush_stroke 响应
+    // applied.color_space="linear" 佐证；盒上像素图实测：线性光 Normal 精确命中 893/1155，
+    // 余下全部在 ±1 内、平均 0.08；现行 sRGB 直色平均差 22.52、最大 67；1723 个不透明像素
+    // 两边公式零差 ⇒ 差异只在半透明墨区，不是边缘抗锯齿）。故 compositeOver 的 RGB 通道
+    // 走线性光混合，alpha 通道不动（实测 alpha 零差）。改回 sRGB 直色 ⇒ jitter C⑧ 回红（变红证明）。
+    const srgb2lin = (v) => { const s = v / 255; return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4); };
+    const lin2srgb = (l) => { const s = l <= 0.0031308 ? l * 12.92 : 1.055 * Math.pow(l, 1 / 2.4) - 0.055; return Math.max(0, Math.min(255, Math.round(s * 255))); };
     const compositeOver = (base, layer) => {
       const out = new Uint8Array(base.length);
       for (let i = 0; i < base.length; i += 4) {
         const a = layer[i + 3] / 255;
         const inv = 1 - a;
         for (let k = 0; k < 3; k += 1) {
-          out[i + k] = Math.round(layer[i + k] * a + base[i + k] * inv);
+          out[i + k] = lin2srgb(srgb2lin(layer[i + k]) * a + srgb2lin(base[i + k]) * inv);
         }
         out[i + 3] = Math.round(layer[i + 3] + base[i + 3] * inv);
       }
