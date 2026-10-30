@@ -74,26 +74,38 @@ fn row_stroke(
     )
 }
 
-/// 铺满 256² 的全不透明层：5 道间距 55、笔宽 60，探针 P3 的 512 版同构。
+/// 铺满 256² 的全不透明层：5 条 fill_region 矩形带（与旧 5 色同色）。
+///
+/// **不用油彩笔铺底**（Y26 空基底语义下改）：旧 `paint_opaque` 用 `oil-01-paint`
+///（读画布涂抹笔，`smudge base_value 0.4`）5 道满幅涂抹——旧白底产品下触点
+/// alpha 被强制为 1、层 alpha 恒定；新透明底下触点 alpha＝dab 纹理 alpha
+///（油彩纹理有起伏），层 alpha 起伏，`relief` 的恒定 alpha 警告正确地不触发，
+/// 4 案红。fill_region 矩形在 `opacity=1` 时是 REPLACE 语义，带内像素 alpha
+/// 恒为 255（构造上恒定，不依赖笔触纹理），5 色带又保留 luminance 起伏，
+/// 故 luminance 对照案仍有效果。
+/// **带界必须取整**：探针逐位比对全部有颜料像素的 alpha（`below_objects_alpha_constant`
+/// 要求 min == max）；分数带界会让跨界行在覆盖光栅化下得部分 alpha，警告消失。
 fn paint_opaque(workspace: &mut Workspace, doc: &str) {
-    let colors = [
-        (200, 40, 40),
-        (40, 160, 60),
-        (40, 80, 200),
-        (220, 180, 40),
-        (150, 60, 180),
+    let bands = [
+        (0.0, 52.0, (200, 40, 40)),
+        (52.0, 51.0, (40, 160, 60)),
+        (103.0, 51.0, (40, 80, 200)),
+        (154.0, 51.0, (220, 180, 40)),
+        (205.0, 51.0, (150, 60, 180)),
     ];
-    for (index, y) in [30.0, 85.0, 140.0, 195.0, 250.0].iter().enumerate() {
-        let (r, g, b) = colors[index % colors.len()];
-        let out = row_stroke(
+    for (y, h, (r, g, b)) in bands.iter() {
+        let out = call(
             workspace,
             doc,
-            &format!("stroke_opaque_{index}"),
-            *y,
-            json!({"r": r, "g": g, "b": b, "a": 255}),
-            0.9,
+            "fill_region",
+            json!({
+                "layer_id": "layer_default",
+                "shape": {"kind": "rect", "x": 0.0, "y": y, "w": 256.0, "h": h},
+                "color": {"r": r, "g": g, "b": b, "a": 255},
+                "opacity": 1.0,
+            }),
         );
-        assert_eq!(out["ok"], json!(true), "铺底笔触应成功：{out}");
+        assert_eq!(out["ok"], json!(true), "铺底填充应成功：{out}");
     }
 }
 

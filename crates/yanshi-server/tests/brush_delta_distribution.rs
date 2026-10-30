@@ -2,10 +2,11 @@
 //!
 //! **判据** ✓：
 //! ① 淡色笔（分诊的输入：`[0.98, 0.98, 0.98]`、size 30、oil-06-paint）⇒
-//!    实测 `max_channel_delta == 1`、`delta_median == 1`、`delta_p90 == 1`、
-//!    `delta_p99 == 1`、`changed_pixels > 0`（D4b 后 oil-06 的 smudge 喂底图，delta 按
-//!    canvas_base 算，全是 1，证明直方图真的在数数）。
-//!    注意：分诊报的是 `max == 1`（`painted == 1110`），本输入实测 `max == 1`
+//!    实测 `max_channel_delta == 2`、`delta_median == 2`、`delta_p90 == 2`、
+//!    `delta_p99 == 2`、`changed_pixels > 0`（D4b 后 oil-06 的 smudge 喂底图，delta 按
+//!    canvas_base 算，全是 1，证明直方图真的在数数；Y26 pale_wash 修复后参照改画前
+//!    合成（真白 255，非喂底图读回的量化 254）⇒ 四个数由 1 变 2，档位仍是淡色小差）。
+//!    注意：分诊报的是 `max == 1`（`painted == 1110`），本输入实测 `max == 2`
 //!   （`painted == 8270`，几何不同：240px 长线 vs 分诊的短笔）；数值的档位（淡色小差）
 //!    一致，断言以本轮实测为准。
 //! ② 软笔深色大笔（`100%_Opaque`、黑色、size 60、hardness 0.5）⇒ `max == 255` 而
@@ -70,9 +71,9 @@ fn setup_layer(workspace: &mut Workspace) {
     );
 }
 
-/// **① 淡色笔 ⇒ `max == 1` 且分布全是 1** ✓（分诊复现的原样输入）。
-/// **① 淡色笔 ⇒ `max == 1`、`delta_median == 1`、`delta_p90/p99 == 1** ✓
-/// （D4b 后 canvas_base 口径；实测值见文件头注）。
+/// **① 淡色笔 ⇒ `max == 2` 且分布全是 2** ✓（分诊复现的原样输入）。
+/// **① 淡色笔 ⇒ `max == 2`、`delta_median == 2`、`delta_p90/p99 == 2** ✓
+/// （D4b 后 canvas_base 口径；Y26 后画前合成参照，实测值见文件头注）。
 #[test]
 fn pale_wash_reports_small_uniform_delta() {
     let mut workspace = workspace("pale");
@@ -89,14 +90,17 @@ fn pale_wash_reports_small_uniform_delta() {
     assert_eq!(made["ok"], json!(true), "{made}");
     assert_eq!(
         made["max_channel_delta"],
-        json!(1),
-        "淡色笔只得 1（本轮实测）：{made}"
+        json!(2),
+        "淡色笔只得 2（本轮实测）：{made}"
     );
     // D4b 后：oil-06 的 smudge（base 0 + stroke 曲线输入）翻为 fed_base=true，
     // delta 按 canvas_base 算 ⇒ 四个数全由 2 落到 1（预期后果，不是回归）。
-    assert_eq!(made["delta_median"], json!(1), "{made}");
-    assert_eq!(made["delta_p90"], json!(1), "{made}");
-    assert_eq!(made["delta_p99"], json!(1), "{made}");
+    // Y26 pale_wash：参照改画前合成（真白 255）后四个数由 1 变 2——漆色
+    // sRGB ≈ 253（0.98 linear），对真白差 2；旧 1 是喂底图读回的量化白 254
+    // 与截断合成共同作用的结果，不是另一档位（changed 像素数与均匀性不变）。
+    assert_eq!(made["delta_median"], json!(2), "{made}");
+    assert_eq!(made["delta_p90"], json!(2), "{made}");
+    assert_eq!(made["delta_p99"], json!(2), "{made}");
     let changed = made["changed_pixels"]
         .as_u64()
         .expect("changed_pixels 必须是数值");
