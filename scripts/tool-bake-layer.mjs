@@ -14,9 +14,10 @@
 //      且水位前移（新 blob_hash ≠ 旧）；
 //   ⑦ 缺 Blob 严格报错（常规折叠/渲染不自动重放）+ recover_baked_blobs
 //      显式恢复成功且回执含 replayed_ms / replayed_atom_count / blob_hash；
-//   ⑧ 哈希不一致 strict 拒绝（append_rebake 口径只断“历史原子不动”的
-//      结构：本判据不造哈希不一致——重放位图由同一日志渲染，哈希恒一致；
-//      append_rebake 分支由单测 hash_mismatch_error 覆盖）；
+//   ⑧ 哈希不一致 strict 拒绝；⑧b 真实哈希不一致全链路（改日志造不一致：
+//      bake 后删 Blob、杀服务、改 atoms.jsonl 里一笔颜色、重启同一 root
+//      再 recover——strict 拒绝且不追加原子，append_rebake 追加新 Bake
+//      原子且历史原子逐字节不动）；
 //   ⑨ 导出 frontier 默认不含历史 Bake Blob、all_history 含历史 Bake Blob；
 //   ⑩ Undo 缺历史 Blob 被原子级拦截（MISSING_HISTORICAL_BLOB_ON_UNDO）且状态不变；
 //   ⑪ 导入缺有效 Bake Blob 默认拒绝，replay_and_heal 恢复成功。
@@ -30,7 +31,7 @@ process.on("uncaughtException", (error) => {
   process.exit(3);
 });
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, existsSync, statSync, rmSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, statSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { trackTemp } from "./lib/temp-dirs.mjs";
@@ -226,6 +227,9 @@ try {
   for (const f of mFiles) rmSync(f, { force: true });
   const renderMiss = await call2("render_region", { region: { x: 0, y: 0, w: 128, h: 128 } });
   check(renderMiss.ok === false && /missing_baked_blob|MissingBakedBlob/.test(JSON.stringify(renderMiss)), "⑦b 当前 Bake 缺 Blob 时渲染严格报错（不静默空白）", JSON.stringify(renderMiss).slice(0, 240));
+  // 二期第 3 项口径：报错里的 bake_seq 必须是 Bake 原子 seq（bm.bake_atom_seq），
+  // 不能是水位（doc2 里水位 = bake_atom_seq - 1；旧代码用 up_to_seq 作代理值）。
+  check(new RegExp(`bake_seq=${bm.bake_atom_seq}\\b`).test(JSON.stringify(renderMiss)), "⑦b 缺 Blob 报错里的 bake_seq 是 Bake 原子 seq（非水位）", `bake_atom_seq=${bm.bake_atom_seq} resp=${JSON.stringify(renderMiss).slice(0, 240)}`);
   const rec2 = await must2("recover_baked_blobs", { layer_id: "M1" }, "doc2 显式恢复");
   check((rec2.healed_blobs || []).some((h) => h.blob_hash === bm.blob_hash), "⑦b 恢复后当前 Bake Blob 回到存储", JSON.stringify(rec2.healed_blobs).slice(0, 200));
   const renderOk = await call2("render_region", { region: { x: 0, y: 0, w: 128, h: 128 } });
@@ -282,6 +286,82 @@ try {
   check(impHeal.ok === true, "⑪ replay_and_heal 导入成功", JSON.stringify(impHeal).slice(0, 240));
   check((impHeal.baked_blobs_healed || []).some((h) => h.blob_hash === b1c.blob_hash), "⑪ 自愈回执含当前 Bake blob_hash", JSON.stringify(impHeal.baked_blobs_healed || []).slice(0, 200));
 
+  // ---- ⑧b 真实哈希不一致：改日志造不一致，再走 strict / append_rebake ----
+  // 独立文档（916 轮教训：多 case 共用文档会互相污染）。主服务先杀掉再
+  // 改盘上日志——服务活着时改会被内存态覆盖；重启后沿用同一 token（token
+  // 哈希落盘，重启仍认旧 token；若不认，属判据前提失败 exit(3)，不是产品红）。
+  const doc8 = "bake_doc8";
+  const created8 = await (await fetch(`${base}/api/documents?role=owner`, { method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: doc8, width: 128, height: 128 }) })).json();
+  if (!created8.token) failPre("建 doc8 未返回 token", created8);
+  const call8 = async (tool, args) => (await fetch(base + "/api/tools/" + tool + "?doc=" + doc8 + "&token=" + created8.token, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(args || {}) })).json();
+  const must8 = async (tool, args, what) => {
+    const r = await call8(tool, args);
+    if (r.ok !== true) failPre(`${what}（${tool}）`, r);
+    return r;
+  };
+  await must8("create_layer", { layer_id: "L1", name: "m" }, "建 doc8 L1");
+  await must8("draw_shape", { layer_id: "L1", data: { geometry: { kind: "rect", x: 20, y: 20, w: 60, h: 40 }, color: [200, 40, 30, 255] } }, "doc8 矩形");
+  const b8 = await must8("bake_layer", { layer_id: "L1", allow_rasterize_editable: true }, "bake doc8");
+  const b8Files = findBlobFile(ROOT, b8.blob_hash);
+  check(b8Files.length >= 1, "⑧b 能在 CAS 里找到 doc8 Bake Blob 文件", b8Files.join(","));
+  for (const f of b8Files) rmSync(f, { force: true });
+  // 杀主服务（等健康检查彻底 down 才改盘，否则写锁/内存态会干扰）。
+  try { proc.kill("SIGTERM"); } catch {}
+  for (let i = 0; i < 40; i += 1) { try { await fetch(`${base}/health`); } catch { break; } await sleep(250); }
+  await sleep(500);
+  const atoms8Path = join(ROOT, "docs", doc8, "atoms.jsonl");
+  if (!existsSync(atoms8Path)) failPre("doc8 atoms.jsonl 不在盘上", { path: atoms8Path });
+  const lines8 = readFileSync(atoms8Path, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const shape8 = lines8.find((a) => a.kind === "draw_shape");
+  if (!shape8 || !Array.isArray(shape8.payload?.data?.color)) failPre("doc8 日志里找不到 draw_shape 颜色", lines8.map((a) => a.kind));
+  shape8.payload.data.color[0] = 201;
+  writeFileSync(atoms8Path, lines8.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  for (const f of ["render.png", "render.seq", "preview.png", "preview.seq"]) { try { rmSync(join(ROOT, "docs", doc8, f), { force: true }); } catch {} }
+  // 同一 root、新端口重启（旧端口可能仍在 TIME_WAIT；port2 已占 port+1000，故用 +2000）。
+  const port8 = port + 2000;
+  const base8 = `http://127.0.0.1:${port8}`;
+  const proc8 = spawn(BIN, ["--root", ROOT, "--bind", `127.0.0.1:${port8}`], { stdio: "ignore" });
+  process.on("exit", () => { try { proc8.kill(); } catch { /* 已退出 */ } });
+  for (let i = 0; i < 80; i += 1) { try { if ((await fetch(`${base8}/health`)).ok) break; } catch {} await sleep(250); }
+  const call8b = async (tool, args) => (await fetch(base8 + "/api/tools/" + tool + "?doc=" + doc8 + "&token=" + created8.token, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(args || {}) })).json();
+  const probe8 = await call8b("list_objects", { layer_id: "L1" });
+  if (probe8.ok !== true) failPre("重启后旧 token 不被接受（判据前提不成立）", probe8);
+  // 注意：不能用 export_project 给日志拍照——删 Blob 后导出本身会因“缺本
+  // 体 blob”拒绝（产品行为正确）。直接读盘上 atoms.jsonl：重启已完成、
+  // 服务已打开文档，此后文件只在提交时追加，是日志的权威形态。
+  // 重启后先读一次（atomsA），strict/append 的前后对比都以它为准。
+  const atomsA = readFileSync(atoms8Path, "utf8");
+  // strict：拒绝，且错误里 bake_seq 必须是 Bake 原子 seq（不是水位）。
+  const strict8 = await call8b("recover_baked_blobs", { layer_id: "L1" });
+  check(strict8.ok === false && /哈希不一致|HashMismatch/.test(JSON.stringify(strict8)), "⑧b strict 下哈希不一致被拒绝", JSON.stringify(strict8).slice(0, 240));
+  check(new RegExp(`bake_seq=${b8.bake_atom_seq}\\b`).test(JSON.stringify(strict8)), "⑧b strict 错误里的 bake_seq 是 Bake 原子 seq", `bake_atom_seq=${b8.bake_atom_seq} resp=${JSON.stringify(strict8).slice(0, 240)}`);
+  check(strict8.context?.extra?.bake_seq === b8.bake_atom_seq && strict8.context?.extra?.expected_hash === b8.blob_hash, "⑧b strict 错误 extra 含 bake_seq 与 expected_hash", JSON.stringify(strict8.context?.extra || {}).slice(0, 200));
+  // strict 不追加原子：再读盘上日志，逐字节不变。
+  check(readFileSync(atoms8Path, "utf8") === atomsA, "⑧b strict 后日志逐字节不变（未追加原子）", "");
+  // append_rebake：追加新 Bake 原子，历史原子不动。
+  const app8 = await call8b("recover_baked_blobs", { layer_id: "L1", on_hash_mismatch: "append_rebake" });
+  const healed8 = (app8.healed_blobs || [])[0] || {};
+  check(app8.ok === true, "⑧b append_rebake 成功", JSON.stringify(app8).slice(0, 240));
+  check(healed8.mode === "append_rebake" && healed8.bake_seq === b8.bake_atom_seq && healed8.expected_hash === b8.blob_hash && healed8.actual_hash !== b8.blob_hash && healed8.new_bake_atom_seq > b8.bake_atom_seq, "⑧b append 回执 mode/bake_seq/expected/actual/new_seq 全对", JSON.stringify(healed8).slice(0, 240));
+  const hex8 = (healed8.actual_hash || "").replace(/^sha256:/, "");
+  check(hex8.length === 64 && existsSync(join(ROOT, "blobs/sha256", hex8.slice(0, 2), hex8.slice(2, 4), hex8)), "⑧b 新哈希 Blob 已入库", healed8.actual_hash);
+  // append 的提交落盘可能有极短延迟：轮询盘上日志至多 2 秒等新行出现。
+  let atomsC = readFileSync(atoms8Path, "utf8");
+  for (let i = 0; i < 8 && atomsC.trim().split("\n").length !== atomsA.trim().split("\n").length + 1; i += 1) {
+    await sleep(250);
+    atomsC = readFileSync(atoms8Path, "utf8");
+  }
+  const linesC = atomsC.trim().split("\n");
+  check(atomsC.startsWith(atomsA) && linesC.length === atomsA.trim().split("\n").length + 1, "⑧b append 后历史行全保留、只多一行", `a=${atomsA.trim().split("\n").length} c=${linesC.length}`);
+  const newLine = JSON.parse(linesC[linesC.length - 1]);
+  check(newLine.kind === "bake_layer" && newLine.payload?.replaces_bake_seq === b8.bake_atom_seq && newLine.payload?.blob_hash === healed8.actual_hash, "⑧b 新行是 Bake 原子且 replaces_bake_seq 指旧 Bake", JSON.stringify(newLine.payload || {}).slice(0, 200));
+  const render8 = await call8b("render_region", { region: { x: 0, y: 0, w: 128, h: 128 } });
+  check(render8.ok === true, "⑧b append 后渲染恢复成功", JSON.stringify(render8).slice(0, 160));
+
   console.log(failed === 0 ? "  ✓ tool-bake-layer 全绿" : `  ✗ tool-bake-layer ${failed} 条红`);
   process.exit(failed === 0 ? 0 : 1);
 } catch (error) {
@@ -297,3 +377,6 @@ try {
 //   · frontier 不过滤历史 Bake ⇒ ⑨ frontier 含 b1b 红；
 //   · Undo 拦截去掉 ⇒ ⑩ revert 成功红；
 //   · 导入 error 策略改成放行 ⇒ ⑪ 默认导入成功红。
+//   · append_rebake 分支改成 strict 拒绝 ⇒ ⑧b append 调用红；
+//     append 时改写历史 Bake 原子（而非追加）⇒ ⑧b“历史行全保留、只多
+//     一行”红；strict 改成静默追加 ⇒ ⑧b“strict 后日志逐字节不变”红。

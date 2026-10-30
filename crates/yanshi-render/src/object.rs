@@ -185,7 +185,10 @@ pub enum Primitive {
     /// 压平基底（bake_layer 的产物）：画布 1:1 的单张位图 + 累积仿射。
     ///
     /// `transform` 缺省 IDENTITY；渲染期按累积矩阵**一次采样**，折叠期
-    /// 绝不重采样。`source_up_to_seq` 是该基底的水位（审计用）。
+    /// 绝不重采样。`source_up_to_seq` 是该基底的水位（审计用）；
+    /// `bake_seq` 是产生该基底的 BakeLayer 原子 seq（自愈身份，与
+    /// recover 的 target_bake_seq、append_rebake 的 replaces_bake_seq、
+    /// Undo 拦截的 required_bake_seq 同一口径，绝不用水位代理它）。
     BakedBase {
         /// blob 引用（PNG，直通 RGBA8，与图层离屏缓冲同构直存）。
         blob: BlobHash,
@@ -193,6 +196,8 @@ pub enum Primitive {
         width: u32,
         /// 位图高（画布高）。
         height: u32,
+        /// 产生该基底的 BakeLayer 原子 seq（缺 Blob 严格报错里的 bake_seq）。
+        bake_seq: u64,
         /// 水位：该基底覆盖的原子 seq 上界。
         source_up_to_seq: u64,
         /// 累积仿射（画布原点枢轴）；IDENTITY 时走 1:1 直贴路。
@@ -270,6 +275,19 @@ pub fn parse_object(object: &Object) -> Primitive {
                     .get("height")
                     .and_then(Value::as_u64)
                     .unwrap_or(0) as u32,
+                // 旧基底（本字段落地前压平）无 bake_seq 时回落到水位：
+                // 那是历史兼容，不是口径——新折叠一律写 bake_seq。
+                bake_seq: object
+                    .data
+                    .get("bake_seq")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_else(|| {
+                        object
+                            .data
+                            .get("source_up_to_seq")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)
+                    }),
                 source_up_to_seq: object
                     .data
                     .get("source_up_to_seq")
@@ -1708,18 +1726,38 @@ pub struct AffineSampleDest {
 /// 确定性：逆矩阵用 Q16.16 定点步进，双线性权重用 u64 整数运算，
 /// 越界邻点按 ClampToTransparent 计 0，绝不钳制到边缘像素。
 /// `dest_center(doc) = origin + local * step + step / 2`，LOD 步长同样适用。
+/// 仿射采样输出缓冲用 `try_reserve_exact`（二期第 6 项）：该函数在
+/// 生产路径上只有 BakedBase 渲染一个调用方，失败返回可观测的资源错
+/// 误而不是进程 abort；调用方（render.rs）用 `?` 直接传播。
+/// 尺寸乘积溢出同样走这条资源错误（不 wrap、不 panic）。
 pub fn sample_affine_rgba8(
     src: &[u8],
     src_w: u32,
     src_h: u32,
     transform: yanshi_core::bake::Affine2D,
     dest: AffineSampleDest,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, yanshi_core::YanshiError> {
     let (dest_origin, dest_w, dest_h) = (dest.origin, dest.width, dest.height);
     let step = dest.step.max(1) as i64;
-    let mut out = vec![0u8; (dest_w as usize) * (dest_h as usize) * 4];
+    let len = (dest_w as usize)
+        .checked_mul(dest_h as usize)
+        .and_then(|v| v.checked_mul(4))
+        .ok_or_else(|| {
+            yanshi_core::YanshiError::new(
+                yanshi_core::ErrorCode::ResourceExhausted,
+                yanshi_core::ErrorContext::detail("BakeError::OutOfMemory：仿射采样缓冲尺寸溢出"),
+            )
+        })?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(len).map_err(|_| {
+        yanshi_core::YanshiError::new(
+            yanshi_core::ErrorCode::ResourceExhausted,
+            yanshi_core::ErrorContext::detail("BakeError::OutOfMemory：仿射采样缓冲分配失败"),
+        )
+    })?;
+    out.resize(len, 0);
     let Some(inv) = transform.inverse() else {
-        return out;
+        return Ok(out);
     };
     // 逆矩阵转 Q16.16 定点：inv * (dest_center) - 0.5 得到源像素索引浮点。
     let to_fixed = |v: f64| -> i64 { (v * 65536.0).round() as i64 };
@@ -1773,7 +1811,7 @@ pub fn sample_affine_rgba8(
             }
         }
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1830,6 +1868,56 @@ mod tests {
     }
 
     #[test]
+    fn baked_base_parse_uses_bake_atom_seq_not_waterlevel() {
+        // 口径：bake_seq 是 BakeLayer 原子 seq，水位只是上界，两者不同值时
+        // 不得互相代理；旧基底无 bake_seq 字段时才回落到水位（历史兼容）。
+        let mk = |data: Value| {
+            let object = Object {
+                seq: 1,
+                id: "baked:L1".to_owned(),
+                layer_id: "L1".to_owned(),
+                object_type: ObjectType::RasterPatch,
+                z_index: 0,
+                visible: true,
+                enabled: true,
+                locked: false,
+                metadata: Value::Null,
+                transform: Transform::IDENTITY,
+                style: None,
+                versions: vec![],
+                current_version: None,
+                created_by: "a".to_owned(),
+                deleted_by: None,
+                data,
+                blobs: vec![],
+            };
+            parse_object(&object)
+        };
+        let new = mk(
+            json!({"baked_base": true, "blob_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "width": 4, "height": 3, "bake_seq": 7, "source_up_to_seq": 6}),
+        );
+        assert!(matches!(
+            new,
+            Primitive::BakedBase {
+                bake_seq: 7,
+                source_up_to_seq: 6,
+                ..
+            }
+        ));
+        let legacy = mk(
+            json!({"baked_base": true, "blob_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "width": 4, "height": 3, "source_up_to_seq": 6}),
+        );
+        assert!(matches!(
+            legacy,
+            Primitive::BakedBase {
+                bake_seq: 6,
+                source_up_to_seq: 6,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn affine_sample_identity_is_exact_and_outside_is_transparent() {
         // 2x2 源：红绿 / 蓝白（直通 RGBA）。
         let src: Vec<u8> = vec![
@@ -1846,7 +1934,8 @@ mod tests {
                 height: 4,
                 step: 1,
             },
-        );
+        )
+        .expect("小尺寸采样缓冲分配不应失败");
         // 目标 4x4、源 2x2、IDENTITY、原点 (0,0)：行主序下目标 (0,0)=红、
         // (1,0)=绿、(2,0)=透明、(0,1)=蓝、(1,1)=白，其余全部透明。
         assert_eq!(&out[0..4], &[255, 0, 0, 255]);

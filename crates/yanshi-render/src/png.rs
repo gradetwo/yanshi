@@ -92,15 +92,21 @@ pub fn encode_png(width: u32, height: u32, rgba8: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
 
-    let mut out = Vec::with_capacity(expected / 4 + 128);
+    // 二期第 6 项：编码输出的前置分配转 fallible（签名不变、调用方
+    // 不动；分配失败返回 None 而不是进程 abort）。注意这只覆盖前置
+    // 分配：压缩流在编码中的增量增长仍走 infallible 路径（flate2 的
+    // Vec 写器没有 fallible 预留钩子；见 tools_bake.rs 头注释的清单）。
+    let mut out = Vec::new();
+    out.try_reserve_exact(expected / 4 + 128).ok()?;
     out.extend_from_slice(&SIGNATURE);
     write_chunk(&mut out, b"IHDR", &ihdr(width, height, 6));
     // 流式写入：逐行喂 filter_byte + scanline 给 zlib 编码器，不构建完整 raw。
     // 与 `zlib_compress` 同级别（DEFLATE_LEVEL）、同策略 ⇒ 逐位一致。
     let idat = {
         let reserve = (expected / 4 + 64).min(DEFLATE_RESERVE_MAX);
-        let mut encoder =
-            ZlibEncoder::new(Vec::with_capacity(reserve), Compression::new(DEFLATE_LEVEL));
+        let mut encoder_buf = Vec::new();
+        encoder_buf.try_reserve_exact(reserve).ok()?;
+        let mut encoder = ZlibEncoder::new(encoder_buf, Compression::new(DEFLATE_LEVEL));
         let row_bytes = width as usize * 4;
         let filter_zero: [u8; 1] = [0];
         for row in 0..height as usize {

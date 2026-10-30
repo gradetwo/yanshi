@@ -17,10 +17,18 @@ use super::*;
 use yanshi_core::bake::{is_bake_content_kind, Affine2D};
 use yanshi_core::{Atom, AtomKind, BlobHash};
 
-/// 单次 bake 的 OOM 守卫（第二轮第 11 条）：离屏/PNG 输入缓冲用
+/// 单次 bake 的 OOM 守卫（第二轮第 11 条 + 二期第 6 项）：离屏/PNG
+/// 输入缓冲、仿射采样输出缓冲、PNG 编码输出的前置分配用
 /// `try_reserve_exact`，失败返回可观测的资源错误且原状态不动。
-/// 渲染器内部的 Buffer 与 PNG 编码输出分配仍走既有 infallible 路径
-/// （与 export_png 同口径），此处如实记录为未决缺口，不谎称已覆盖。
+/// 仍走 infallible 路径的（与 export_png 同口径，bake 不单独分叉）：
+/// ① 渲染器内部 `Buffer`（`new_stepped` 的 `vec![0.0; len]`）：渲染
+/// 器全路径共用，改 fallible 要动全部渲染调用方，属渲染器级改动；
+/// ② `decode_png`/`unfilter_png` 的输出缓冲：全图加载共用解码器，
+/// 改 fallible 牵连全部图片加载调用方；
+/// ③ 压缩流编码中的增量增长（flate2 的 Vec 写器无 fallible 预留钩
+/// 子；要覆盖须自写 fallible 写器并重验逐字节一致基线）；
+/// ④ `render_layer_bake_base` 的整份状态克隆：核心 API 级改动。
+/// 以上四处 bake 与 export_png 共用同一实现，bake 不比导出差。
 fn try_reserve_bytes(len: usize) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     buf.try_reserve_exact(len).map_err(|_| {
@@ -146,7 +154,7 @@ fn replay_baked_blob(
     let png = yanshi_render::png::encode_png(w, h, &input).ok_or_else(|| {
         YanshiError::new(
             ErrorCode::InvalidArgument,
-            ErrorContext::detail("重放自愈 PNG 编码失败"),
+            ErrorContext::detail("重放自愈 PNG 编码失败（无效尺寸或输出缓冲分配失败）"),
         )
     })?;
     let hash = BlobHash::from_bytes(&png);
@@ -336,7 +344,9 @@ pub(super) fn write_bake_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
     let png = yanshi_render::png::encode_png(bw, bh, &png_input).ok_or_else(|| {
         YanshiError::new(
             ErrorCode::InvalidArgument,
-            ErrorContext::detail("bake_layer PNG 编码失败：日志未改动，可直接重试"),
+            ErrorContext::detail(
+                "bake_layer PNG 编码失败（无效尺寸或输出缓冲分配失败）：日志未改动，可直接重试",
+            ),
         )
     })?;
     // ---- 写 Blob 并校验（失败则日志零修改）----

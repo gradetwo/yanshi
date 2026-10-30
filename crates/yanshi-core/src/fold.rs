@@ -1642,6 +1642,11 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
             let data = serde_json::json!({
                 "baked_base": true,
                 "blob_hash": blob_hash,
+                // bake_seq 是产生该基底的 BakeLayer 原子 seq（自愈身份）：
+                // recover 的 target_bake_seq、append_rebake 的 replaces_bake_seq、
+                // Undo 拦截的 required_bake_seq 用的都是它；此前渲染缺 Blob
+                // 报错误把水位 source_up_to_seq 当作它（见 render.rs）。
+                "bake_seq": atom.seq,
                 "source_up_to_seq": up_to_seq,
                 "width": state.width,
                 "height": state.height,
