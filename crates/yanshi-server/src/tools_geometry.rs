@@ -120,8 +120,10 @@ fn check_canvas_size(width: u32, height: u32) -> Result<()> {
 
 /// 受限对象标注，按操作类分（`transform_primitive` 的既有缺口，不静默）。
 ///
-/// 旋转/缩放/翻转：文本只平移位置、导入图只平移原点、液化变换不施加，
-/// 三者都标注。裁剪与扩展都是纯平移：文本与导入图精确平移，不标注；液化必须标注，
+/// 旋转/缩放/翻转：文本只平移位置、液化变换不施加，两者标注；
+/// 位图补丁不再受限——非平移仿射复合进图元 `transform`、由渲染期一次采样
+/// （与 BakedBase 同口径），包围盒按变换后四角算。裁剪与扩展都是纯平移：
+/// 文本与导入图精确平移，不标注；液化必须标注，
 /// 因为 `transform_primitive` 对液化是 NO-OP（位移场不跟随平移，液化 bbox
 /// 的点会动、像素不动），平移类操作遇液化不再是“精确”。扩展的仿射是纯平移
 /// （left, top），会复合进对象变换、内容相对画布原点平移，与裁剪情形相同。
@@ -142,9 +144,6 @@ fn limited_objects(state: &DocumentState, kind: yanshi_core::atom::AtomKind) -> 
         let reason = match object.object_type {
             yanshi_core::state::ObjectType::Text if !is_translation => {
                 Some("文本在旋转/缩放/翻转下只平移位置，需要重排与重新栅格化（后续项）")
-            }
-            yanshi_core::state::ObjectType::RasterPatch if !is_translation => {
-                Some("导入图在旋转/缩放/翻转下只平移原点，位图内容不重采样（后续项）")
             }
             yanshi_core::state::ObjectType::Liquify if is_translation => {
                 Some("液化在平移下位移场不跟随（transform_primitive 对液化是 NO-OP：bbox 点会动、像素不动，后续项）")

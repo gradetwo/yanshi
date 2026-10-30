@@ -383,7 +383,15 @@ pub fn region_fingerprint(state: &yanshi_core::DocumentState) -> u64 {
             .objects
             .values()
             .filter(|o| o.layer_id == l.id && o.deleted_by.is_none())
-            .map(|o| format!("{}:{}:{:?}:{}", o.id, o.z_index, o.current_version, o.data))
+            // **★ 对象变换必须进指纹**：几何原子（flip/rotate/scale）只复合
+            // `transform`、不 supersede 对象 ⇒ 版本与 data 都不变；不含变换时
+            // 区域字节缓存会命中变换前的旧块、画面不动（与选区/底色同类坑）。
+            .map(|o| {
+                format!(
+                    "{}:{}:{:?}:{}:{:?}",
+                    o.id, o.z_index, o.current_version, o.data, o.transform.matrix
+                )
+            })
             .collect();
         objs.sort();
         objs.hash(&mut h);
