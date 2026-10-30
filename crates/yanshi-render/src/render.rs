@@ -10200,7 +10200,8 @@ mod tests {
     ///
     /// **实测几何**：陈旧片 (176,361,23,21) 与新片 (181,256,63,5) 分离，
     /// 旧合并给出 68×126 并集、中间 100 行全透明空洞，读侧误判命中致底图发白。
-    /// **变异**：把 `merge_cached_piece` 换回 `merge_by_rows` ⇒ ①③ 红 ✓。
+    /// **变异**：把 `merge_cached_piece` 体换回 `merge_by_rows` ⇒ ①② 红 ✓
+    /// （① 包围盒、② 像素；③ 谓词断言与体无关，变异下仍绿，盒上实测）。
     #[test]
     fn merge_cached_piece_disjoint_pieces_keep_fresh_only() {
         let dark: Vec<f32> = [0.2f32, 0.2, 0.2, 1.0].repeat(23 * 21);
