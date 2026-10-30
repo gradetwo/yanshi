@@ -13381,6 +13381,9 @@ function i18nText(node) {
     //   ⇒ 句式变了 ⇒ **必须另给一条模式词条**（m19 那条 `$` 锚在新句上匹配不到 ✗
     //   漏了它英文模式就留一句中文 ✓ `browser-i18n` 会抓到 ✓）。
     const m40 = /^读取失败（(服务端|本地内核)）：(\S+)$/.exec(zh);
+    // **参考图上传失败的回执** ✓（本轮补齐 ✓）：整句拼了服务端给的错误文 ⇒ 字典按整句匹配不到 ⇒
+    //   必须模式词条（否则英文模式下留着中文 ✓；与 m19/m40 同源：带数据的失败回执都走模式 ✓）。
+    const m41 = /^参考图上传失败：(.+)$/.exec(zh);
     // **范围遮罩的覆盖回执** ✓（本轮新增 ✓）：整句拼了服务端给的像素数、占比、均值 ✗
     //   和图层 id ⇒ 字典按整句匹配不到 ⇒ 必须模式词条（`#rangeMaskInfo` **不在** `#log` 里 ✓
     //   ⇒ 没有词条就会在英文模式下留着中文 ✓）。
@@ -13520,6 +13523,7 @@ function i18nText(node) {
     // **同一个 venue 映射** ✓ 不另发明第二份（`服务端`/`本地内核` 的英文与 m39 逐字一致 ⇒
     // 两处说的话在两种语言下都对得上 ✓）。
     else if (m40) en = "Read failed (" + ({ "服务端": "the server", "本地内核": "the local kernel" }[m40[1]] || "the server") + "): " + m40[2];
+    else if (m41) en = "Reference image upload failed: " + m41[1];
   }
   node.nodeValue = (uiLang === "en" && en) ? original.replace(zh, en) : original;
 }
