@@ -2132,7 +2132,8 @@ mod tests {
             step: 1,
         };
         let lin = sample_affine_linear(&rgb, 2, 2, flip, dest);
-        let byt = sample_affine_rgba8(&rgba8, 2, 2, flip, dest);
+        let byt =
+            sample_affine_rgba8(&rgba8, 2, 2, flip, dest).expect("小尺寸采样缓冲分配不应失败");
         // 顶行：绿 / 红；底行：白 / 蓝。
         assert_eq!(&lin[0..6], &[0.0, 1.0, 0.0, 1.0, 0.0, 0.0]);
         assert_eq!(&lin[6..12], &[1.0, 1.0, 1.0, 0.0, 0.0, 1.0]);
