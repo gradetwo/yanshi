@@ -1366,6 +1366,11 @@ fn below_tiles_bytes(cache: &Option<BelowTiles>) -> usize {
     total
 }
 
+/// 对象指纹缓存的键：`(对象 id, 版本, 变换矩阵按位)`。
+/// 变换必须进键——几何原子只改 transform、不改版本，只用 (id, version)
+/// 作键会在 flip 后命中旧指纹、below 缓存复用旧格。
+type FingerprintCacheKey = (String, String, [u64; 6]);
+
 /// **渲染器** ✓：把图层与对象渲染成像素 ✓，并持有各类**跨帧复用**的缓存 ✓
 ///（图层缓冲池 ✓、位图补丁缓存 ✓、below 缓存 ✓）。
 pub struct Renderer {
@@ -1422,7 +1427,7 @@ pub struct Renderer {
     ///（原子 id 全局唯一）；`Tombstone` 不改版本但改 `deleted_by`，而指纹循环先过滤已删除对象，
     /// 故缓存查不到已删除对象；无版本对象（`None`）不缓存、每次重算。
     /// 上限 65536 条，超限整表清空（正确性不受影响，只多算一次）；渲染器重建时随之丢弃。
-    fp_cache: std::sync::Mutex<std::collections::HashMap<(String, String), String>>,
+    fp_cache: std::sync::Mutex<std::collections::HashMap<FingerprintCacheKey, String>>,
 }
 
 impl Renderer {
@@ -1825,7 +1830,13 @@ impl Renderer {
     /// 锁只盖查与写两段短临界区，序列化本身在锁外（并行 tile 互不阻塞；重复算出同值也无害）。
     fn cached_fingerprint(&self, object: &Object) -> String {
         if let Some(version) = &object.current_version {
-            let key = (object.id.clone(), version.clone());
+            // 键必须含变换矩阵位：几何原子只改 transform、不改版本，
+            // 只用 (id, version) 作键会在 flip 后命中旧指纹、below 缓存复用旧格。
+            let key = (
+                object.id.clone(),
+                version.clone(),
+                object.transform.matrix.map(f64::to_bits),
+            );
             if let Ok(cache) = self.fp_cache.lock() {
                 if let Some(hit) = cache.get(&key) {
                     return hit.clone();
@@ -4745,6 +4756,7 @@ impl Renderer {
                     width,
                     height,
                     offset,
+                    transform,
                     mime_type,
                     tiles, // **分块路下一步接 ✓**（本轮惰性 ✓）
                     raw_develop,
@@ -4777,7 +4789,9 @@ impl Renderer {
                     //   ⇒ 落回**成功**（下面整幅路画出像素）时直接丢掉，不再每图刷 20 条同类警告 ✓
                     //   ⇒ 落回**失败**（下面整幅路也没产出该补丁，`continue` 分支）时仍推进 `track.unsupported` ✓
                     let mut tile_fallback_note: Option<String> = None;
-                    {
+                    // 分块路只覆盖轴对齐矩形：仿射补丁跳过它，走下面的整幅
+                    // 解码 + 一次采样路（分块索引的矩形拼贴表达不了翻转/旋转）。
+                    if transform.is_identity() {
                         let d = layer_buffer.bbox();
                         let x0 = (offset.0 as i64).max(d.x as i64);
                         let y0 = (offset.1 as i64).max(d.y as i64);
@@ -5007,29 +5021,119 @@ impl Renderer {
                         }
                     }
                     let mut t_blit = stage_probe::Stage::start();
-                    // 载荷分派（第二包）：RGBA8 走字节路、线性载荷走 blit_linear
-                    // 直通路——两条路互不换算，线性值不许被量化成字节再贴。
-                    match &*entry {
-                        DecodedPixels::Rgba8(w, h, bytes) => {
-                            layer_buffer.blit_rgba8(
-                                offset.0 as i64,
-                                offset.1 as i64,
-                                *w,
-                                *h,
-                                bytes,
-                                opacity,
-                            );
+                    // 仿射补丁（flip/rotate/scale）：与 BakedBase 同口径，
+                    // 渲染期按 `transform ∘ 平移(offset)` 一次采样；IDENTITY 时
+                    // 走既有直贴路（一字不动）。
+                    if !transform.is_identity() {
+                        let placed = yanshi_core::bake::Affine2D::compose(
+                            transform,
+                            yanshi_core::bake::Affine2D([1.0, 0.0, 0.0, 1.0, offset.0, offset.1]),
+                        );
+                        let (ox, oy) = layer_buffer.origin();
+                        let bw = layer_buffer.width();
+                        let bh = layer_buffer.height();
+                        let step = layer_buffer.step();
+                        let dest = crate::object::AffineSampleDest {
+                            origin: (ox, oy),
+                            width: bw,
+                            height: bh,
+                            step,
+                        };
+                        match &*entry {
+                            DecodedPixels::Rgba8(w, h, bytes) => {
+                                let sampled =
+                                    crate::object::sample_affine_rgba8(bytes, *w, *h, placed, dest);
+                                // 与 BakedBase 分支逐字节同口径：跳 alpha 0、
+                                // 预乘线性化后乘不透明度、source-over 合成。
+                                for ly in 0..bh {
+                                    for lx in 0..bw {
+                                        let idx = ((ly * bw + lx) * 4) as usize;
+                                        let bytes4 = [
+                                            sampled[idx],
+                                            sampled[idx + 1],
+                                            sampled[idx + 2],
+                                            sampled[idx + 3],
+                                        ];
+                                        if bytes4[3] == 0 {
+                                            continue;
+                                        }
+                                        let mut pixel = crate::color::u8x4_to_linear_premul(bytes4);
+                                        for value in pixel.iter_mut() {
+                                            *value *= opacity;
+                                        }
+                                        layer_buffer.blend(lx, ly, pixel);
+                                    }
+                                }
+                            }
+                            #[cfg(feature = "raw")]
+                            DecodedPixels::Linear(w, h, values) => {
+                                let Some(inv) = placed.inverse() else {
+                                    track.unsupported.push(format!(
+                                        "位图补丁 {} 的仿射奇异，无法采样，跳过",
+                                        object.id
+                                    ));
+                                    continue;
+                                };
+                                let sampled = crate::object::sample_affine_linear(
+                                    values, *w, *h, placed, dest,
+                                );
+                                let [ia, ib, ic, id, ie, inf] = inv.0;
+                                let stepf = step.max(1) as f64;
+                                for ly in 0..bh {
+                                    for lx in 0..bw {
+                                        // 足迹外（双线性核与源矩形无交）不写：
+                                        // 线性载荷无 alpha 通道，采样 0 无法区分“区外”
+                                        // 与“源本身就是黑”，必须用几何足迹判定。
+                                        let cx = ox as f64 + lx as f64 * stepf + stepf / 2.0;
+                                        let cy = oy as f64 + ly as f64 * stepf + stepf / 2.0;
+                                        let sx = ia * cx + ic * cy + ie - 0.5;
+                                        let sy = ib * cx + id * cy + inf - 0.5;
+                                        if sx + 1.0 < 0.0
+                                            || sx >= *w as f64
+                                            || sy + 1.0 < 0.0
+                                            || sy >= *h as f64
+                                        {
+                                            continue;
+                                        }
+                                        let idx = ((ly * bw + lx) * 3) as usize;
+                                        // `blit_linear` 口径：RGB 乘不透明度，
+                                        // alpha = 不透明度（线性补丁按不透明处理）。
+                                        let pixel = [
+                                            sampled[idx] * opacity,
+                                            sampled[idx + 1] * opacity,
+                                            sampled[idx + 2] * opacity,
+                                            opacity,
+                                        ];
+                                        layer_buffer.blend(lx, ly, pixel);
+                                    }
+                                }
+                            }
                         }
-                        #[cfg(feature = "raw")]
-                        DecodedPixels::Linear(w, h, values) => {
-                            layer_buffer.blit_linear(
-                                offset.0 as i64,
-                                offset.1 as i64,
-                                *w,
-                                *h,
-                                values,
-                                opacity,
-                            );
+                    } else {
+                        // 载荷分派（第二包）：RGBA8 走字节路、线性载荷走 blit_linear
+                        // 直通路——两条路互不换算，线性值不许被量化成字节再贴。
+                        match &*entry {
+                            DecodedPixels::Rgba8(w, h, bytes) => {
+                                layer_buffer.blit_rgba8(
+                                    offset.0 as i64,
+                                    offset.1 as i64,
+                                    *w,
+                                    *h,
+                                    bytes,
+                                    opacity,
+                                );
+                            }
+                            #[cfg(feature = "raw")]
+                            DecodedPixels::Linear(w, h, values) => {
+                                layer_buffer.blit_linear(
+                                    offset.0 as i64,
+                                    offset.1 as i64,
+                                    *w,
+                                    *h,
+                                    values,
+                                    opacity,
+                                );
+                            }
                         }
                     }
                     {
@@ -7071,17 +7175,21 @@ pub fn object_fingerprint(object: &yanshi_core::Object) -> String {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("-");
             return format!(
-                "{}:{:?}:{blob_hash}:{}:{}:{}:{}",
+                "{}:{:?}:{blob_hash}:{}:{}:{}:{}:{:?}",
                 object.id,
                 object.current_version,
                 num("x"),
                 num("y"),
                 num("w"),
-                num("h")
+                num("h"),
+                object.transform.matrix
             );
         }
     }
-    format!("{}:{:?}:{}", object.id, object.current_version, object.data)
+    format!(
+        "{}:{:?}:{}:{:?}",
+        object.id, object.current_version, object.data, object.transform.matrix
+    )
 }
 
 /// 解析文档背景色（`{"r": 0-255, ...}`）。
@@ -7837,6 +7945,116 @@ mod tests {
             Some([255, 255, 255, 255]),
             "旧位置应恢复白底"
         );
+    }
+
+    /// 仅改对象变换（不改版本、不改 data）时，两份指纹都必须变：
+    /// 否则几何原子（flip/rotate/scale 只复合 transform，不 supersede 对象）
+    /// 之后，区域字节缓存与 below 缓存都会命中旧像素、画面不动。
+    #[test]
+    fn fingerprints_change_when_only_object_transform_changes() {
+        let mut state = white_document();
+        state.objects.insert(
+            "obj_patch".to_owned(),
+            object(
+                "obj_patch",
+                "layer_1",
+                ObjectType::RasterPatch,
+                0,
+                json!({
+                    "bitmap": {"blob_hash": format!("sha256:{}", "b".repeat(64)), "mime_type": "image/x-yanshi-raw"},
+                    "width": 4,
+                    "height": 4,
+                    "region": {"x": 10, "y": 10, "w": 4, "h": 4},
+                }),
+            ),
+        );
+        let before_region = crate::region_block::region_fingerprint(&state);
+        let before_object = object_fingerprint(state.objects.get("obj_patch").unwrap());
+        let flipped = state.objects.get_mut("obj_patch").unwrap();
+        flipped.transform = Transform {
+            matrix: [-1.0, 0.0, 0.0, 1.0, 32.0, 0.0],
+            pivot: [0.0, 0.0],
+        };
+        assert_ne!(
+            crate::region_block::region_fingerprint(&state),
+            before_region,
+            "区域指纹必须含对象变换，否则 flip 后 export 命中旧块"
+        );
+        assert_ne!(
+            object_fingerprint(state.objects.get("obj_patch").unwrap()),
+            before_object,
+            "对象指纹必须含对象变换，否则 below 缓存命中旧格"
+        );
+    }
+
+    /// 翻转后的 RasterPatch 必须按仿射重采样画出镜像像素，
+    /// 而不是只把原点平移到镜像位置（旧行为：像素原样画在 [22,26)，
+    /// 且包围盒误报越界）。
+    #[test]
+    fn raster_patch_flip_renders_mirrored_pixels() {
+        let store = MemoryBlobStore::new();
+        // 4 像素横条：红 / 绿 / 蓝 / 黑（全不透明，与白底可辨）。
+        let pixels: Vec<u8> = vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 0, 0, 0, 255];
+        let blob = stage_blob(&store, &pixels, RAW_RGBA_MIME).unwrap();
+        let mut state = white_document();
+        state.objects.insert(
+            "obj_patch".to_owned(),
+            object(
+                "obj_patch",
+                "layer_1",
+                ObjectType::RasterPatch,
+                0,
+                json!({
+                    "bitmap": blob,
+                    "width": 4,
+                    "height": 1,
+                    "region": {"x": 10, "y": 10, "w": 4, "h": 1},
+                }),
+            ),
+        );
+        let plain = renderer().render_document(&state, &store).unwrap();
+        assert!(
+            plain.pixel(10, 10).unwrap()[0] > 200,
+            "未翻转时 (10,10) 应为红"
+        );
+        assert!(
+            plain.pixel(13, 10).unwrap()[0] < 60,
+            "未翻转时 (13,10) 应为黑"
+        );
+        // 绕画布中心 x=16 的水平翻转：范围 [10,14) 应成像到 [18,22)，
+        // 且像素顺序镜像（黑 / 蓝 / 绿 / 红）。
+        state.objects.get_mut("obj_patch").unwrap().transform = Transform {
+            matrix: [-1.0, 0.0, 0.0, 1.0, 32.0, 0.0],
+            pivot: [0.0, 0.0],
+        };
+        let flipped = renderer().render_document(&state, &store).unwrap();
+        let px = |x: u32| flipped.pixel(x, 10).unwrap();
+        assert!(
+            px(18)[0] < 60 && px(18)[1] < 60 && px(18)[2] < 60,
+            "(18,10) 应为黑（镜像首像素）：{:?}",
+            px(18)
+        );
+        assert!(
+            px(19)[2] > 200 && px(19)[0] < 60,
+            "(19,10) 应为蓝：{:?}",
+            px(19)
+        );
+        assert!(
+            px(20)[1] > 200 && px(20)[0] < 60,
+            "(20,10) 应为绿：{:?}",
+            px(20)
+        );
+        assert!(
+            px(21)[0] > 200 && px(21)[1] < 60,
+            "(21,10) 应为红：{:?}",
+            px(21)
+        );
+        assert_eq!(
+            flipped.pixel(22, 10),
+            Some([255, 255, 255, 255]),
+            "旧平移落点 (22,10) 不应再有像素"
+        );
+        assert!(flipped.stats.unsupported.is_empty());
     }
 
     #[test]
