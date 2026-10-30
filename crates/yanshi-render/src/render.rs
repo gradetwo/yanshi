@@ -616,11 +616,17 @@ fn evict_one_sig_group_with(
 }
 
 /// **两块并集有无未渲染空洞**（层栈异常根因，2026-10-31 ✓）：
-/// **并集包围盒的每个像素都被两块之一覆盖** ⟺ 同 x 范围且 y 区间重叠或相接，
-/// 或同 y 范围且 x 区间重叠或相接；其余情形（分离、双向错位）下并集含空洞。
+/// **并集包围盒的每个像素都被两块之一覆盖** ⟺ 下列任一：
+/// （甲）一块包含另一块（并集＝容器本身，全覆盖）；
+/// （乙）同 x 范围且 y 区间重叠或相接；
+/// （丙）同 y 范围且 x 区间重叠或相接。
+/// 其余情形（分离、双向错位）下并集含空洞。
 /// **实测**：陈旧片 (176,361,23,21) 与新片 (181,256,63,5) 并成 68×126，
 /// 中间 y261..361 共 100 行是 `Buffer::new` 的全透明零值、从未渲染；
 /// 读侧 `covers` 只验包围盒 ⇒ 误判命中 ⇒ 复用后空洞处透出白底（底图发白）。
+/// **v1 教训**（盒上 retention 判据 0/6 实测）：漏了（甲）会致缓存萎缩——
+/// 局部重渲染把整 tile 大片换成小片，后续整区渲染再也命中不了；
+/// 包含合并恒安全（同 sig 下旧像素仍有效，新片赢重叠区），必须放行。
 /// **浮点口径**：片包围盒皆由 `floor`／`ceil` 取整而来，整数值 `==` 可靠；
 /// 非整数输入导致的不等只会保守地判为"有空洞"（丢缓存、下次重算），不撒谎。
 fn bboxes_merge_without_gap(a: &Bbox, b: &Bbox) -> bool {
@@ -628,7 +634,13 @@ fn bboxes_merge_without_gap(a: &Bbox, b: &Bbox) -> bool {
     let same_y = a.y == b.y && a.bottom() == b.bottom();
     let y_overlap_or_touch = a.y <= b.bottom() && b.y <= a.bottom();
     let x_overlap_or_touch = a.x <= b.right() && b.x <= a.right();
-    (same_x && y_overlap_or_touch) || (same_y && x_overlap_or_touch)
+    let a_contains_b =
+        a.x <= b.x && a.right() >= b.right() && a.y <= b.y && a.bottom() >= b.bottom();
+    let b_contains_a =
+        b.x <= a.x && b.right() >= a.right() && b.y <= a.y && b.bottom() >= a.bottom();
+    (a_contains_b || b_contains_a)
+        || (same_x && y_overlap_or_touch)
+        || (same_y && x_overlap_or_touch)
 }
 
 /// **缓存片合并守卫**（层栈异常修复 ✓）：只有并集无空洞时才按行合并；
@@ -10259,6 +10271,27 @@ mod tests {
         let merged = merge_cached_piece(&a, &c);
         assert_eq!(merged.bbox(), Bbox::new(0.0, 0.0, 8.0, 4.0));
         assert_eq!(merged.pixel(4, 0), c.pixel(0, 0));
+        // 包含（v2，retention 回归）：旧含新 ⇒ 并集＝旧框，重叠区取新
+        let big: Vec<f32> = [0.2f32, 0.2, 0.2, 1.0].repeat(10 * 10);
+        let small: Vec<f32> = [0.8f32, 0.8, 0.8, 1.0].repeat(4 * 4);
+        let old_big = crate::buffer::Buffer::from_f32(0, 0, 10, 10, &big).unwrap();
+        let fresh_small = crate::buffer::Buffer::from_f32(2, 2, 4, 4, &small).unwrap();
+        let merged = merge_cached_piece(&old_big, &fresh_small);
+        assert_eq!(merged.bbox(), Bbox::new(0.0, 0.0, 10.0, 10.0));
+        assert_eq!(merged.pixel(0, 0), old_big.pixel(0, 0), "容器独有处取旧");
+        assert_eq!(merged.pixel(2, 2), fresh_small.pixel(0, 0), "重叠区取新");
+        assert!(bboxes_merge_without_gap(
+            &old_big.bbox(),
+            &fresh_small.bbox()
+        ));
+        // 包含反向：新含旧 ⇒ 并集＝新框（新片赢重叠区，即整片取新）
+        let merged = merge_cached_piece(&fresh_small, &old_big);
+        assert_eq!(merged.bbox(), Bbox::new(0.0, 0.0, 10.0, 10.0));
+        assert_eq!(merged.pixel(2, 2), old_big.pixel(2, 2));
+        assert!(bboxes_merge_without_gap(
+            &fresh_small.bbox(),
+            &old_big.bbox()
+        ));
     }
 
     /// **两带对同一 tile 的自有交集互不重叠**（修进程级非确定性 ✓）：
