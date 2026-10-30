@@ -34,7 +34,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（139 个）。
+    /// 核心层：默认注册（140 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -765,7 +765,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，139 个）。
+    /// 核心层（默认注册，140 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -2350,6 +2350,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "texture_background" => write_texture_background(ctx, args),
         "rebackground" => write_rebackground(ctx, args),
         "bake_layer" => write_bake_layer(ctx, args),
+        "bake_document" => write_bake_document(ctx, args),
         "recover_baked_blobs" => write_recover_baked_blobs(ctx, args),
         "get_bake_status" => read_get_bake_status(ctx, args),
         "toned_ground" => write_toned_ground(ctx, args),
@@ -4216,6 +4217,14 @@ fn write_update_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
                 }
                 cursor = state.layers.get(&up).and_then(|l| l.parent_id.clone());
             }
+        }
+    }
+    // 掩膜链接守卫（D11 配套规则）：给 flatten bake 后的层挂掩膜会复活
+    // 已消费的 mask_id、合成二次作用 ⇒ 工具层拒绝，须先 revert 该 Bake。
+    // 只拦挂掩膜（非 null 值）；解挂（null）不复活任何东西，放行。
+    if let Some(value) = patch.get("mask_id") {
+        if !value.is_null() {
+            guard_mask_link_not_flatten_baked(ctx, &layer_id)?;
         }
     }
     // **auto-bake 系键必须是布尔**（bake 二期 item 2）：fold 侧非布尔保持旧值

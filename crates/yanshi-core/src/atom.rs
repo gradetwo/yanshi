@@ -391,6 +391,14 @@ pub enum AtomKind {
     ///（重放自愈须同口径，缺省 false）；`replaces_bake_seq` 仅用于
     /// 哈希不一致显式 append_rebake 的审计元数据，绝不改写历史原子。
     BakeLayer,
+    /// 逐层压平整个文档：对每个在范围内的层各做一次单层压平，
+    /// 但只追加一个文档级原子（单原子、多层条目）。
+    ///
+    /// 载荷：`{document_up_to_seq, layers: [{layer_id, up_to_seq,
+    /// blob_hash, flatten_mask}]}`；`layers` 只含本次 applied 的层，
+    /// no-op 层与跳过层不在其中。折叠时按条目逐层产生与一期
+    /// `baked:{layer}` 完全相同的基底对象与水位屏障。
+    BakeDocument,
     // 历史类
     /// 撤销目标原子。
     Revert,
@@ -452,6 +460,7 @@ impl AtomKind {
             Self::ReorderObjects => "reorder_objects",
             Self::Tombstone => "tombstone",
             Self::BakeLayer => "bake_layer",
+            Self::BakeDocument => "bake_document",
             Self::Revert => "revert",
             Self::Reapply => "reapply",
             Self::Checkpoint => "checkpoint",
@@ -532,6 +541,7 @@ impl AtomKind {
                 | Self::ReorderObjects
                 | Self::Tombstone
                 | Self::BakeLayer
+                | Self::BakeDocument
         )
     }
 
@@ -560,6 +570,7 @@ impl AtomKind {
                 | Self::DeleteMask
                 | Self::CreateSelection
                 | Self::BakeLayer
+                | Self::BakeDocument
         )
     }
 
@@ -584,6 +595,7 @@ impl AtomKind {
                 | Self::CropCanvas
                 | Self::ExtendCanvas
                 | Self::BakeLayer
+                | Self::BakeDocument
         )
     }
 
@@ -593,7 +605,7 @@ impl AtomKind {
     }
 
     /// 全部原子类型，便于穷举测试。
-    pub const ALL: [AtomKind; 41] = [
+    pub const ALL: [AtomKind; 42] = [
         Self::CreateDocument,
         Self::CreateLayer,
         Self::CreateObject,
@@ -626,6 +638,7 @@ impl AtomKind {
         Self::ReorderObjects,
         Self::Tombstone,
         Self::BakeLayer,
+        Self::BakeDocument,
         Self::Revert,
         Self::Reapply,
         Self::Checkpoint,
