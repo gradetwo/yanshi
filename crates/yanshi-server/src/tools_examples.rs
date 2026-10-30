@@ -20,6 +20,7 @@
 /// 其余工具按同一模式补齐（每加一个，测试自动替它把关）。
 pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("bake_layer", r#"{"layer_id":"L1"}"#),
+    ("bake_document", r#"{}"#),
     ("recover_baked_blobs", r#"{"layer_id":"L1"}"#),
     ("smart_glaze", r#"{"shape":{},"color":[],"layer_id":"L1"}"#),
     ("smart_erase_shape", r#"{"layer_id":"L1","shape":{}}"#),

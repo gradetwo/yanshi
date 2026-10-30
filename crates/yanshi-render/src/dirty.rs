@@ -266,6 +266,9 @@ pub fn plan_dirty(
         AtomKind::BakeLayer => {
             DirtySet::whole_document(state, "bake_layer 替换整层图元（基底 Blob 换新）")
         }
+        AtomKind::BakeDocument => {
+            DirtySet::whole_document(state, "bake_document 逐层替换图元（各层基底 Blob 换新）")
+        }
         AtomKind::SetBackground => DirtySet::whole_document(state, "set_background 改变文档底色"),
         kind if GEOMETRY_KINDS.contains(&kind) => {
             if atom.object_id().is_some() {

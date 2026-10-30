@@ -602,6 +602,7 @@ const P2_TOOL_SPECS = {
   apply_preset: [1, [["preset_id","s",1],["layer_id","s",1],["strength","n",0],["knobs","o",0],["include_correction","b",0]]],
   apply_stash: [1, [["stash_id","s",1]]],
   auto_retouch: [1, [["layer_id","s",0],["strength","n",0],["groups","a",0],["dry_run","b",0],["force","b",0]]],
+  bake_document: [1, [["allow_rasterize_editable","b",0],["allow_clip_off_canvas","b",0],["flatten_mask","b",0],["allow_non_uniform_scale","b",0]]],
   bake_layer: [1, [["layer_id","s",1],["allow_rasterize_editable","b",0],["allow_clip_off_canvas","b",0],["flatten_mask","b",0],["allow_non_uniform_scale","b",0]]],
   batch: [1, [["calls","a",1],["preview_every_n_strokes","n",0],["preview_interval_ms","n",0],["preview","b",0],["message","s",0],["silent","b",0],["slim_receipt","b",0],["wait_for_render","b",0]]],
   begin_changeset: [0, []],

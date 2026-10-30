@@ -165,6 +165,7 @@ pub fn atom_needs_previous_state(kind: AtomKind) -> bool {
             | AtomKind::ReorderLayers
             | AtomKind::ReorderObjects
             | AtomKind::BakeLayer
+            | AtomKind::BakeDocument
     )
 }
 
@@ -378,7 +379,8 @@ pub fn fold_atoms_skipping(
     let mut state = base;
     let mut warnings = Vec::new();
     let mut applied = Vec::new();
-    // Fold Horizon（bake）：有效 BakeLayer 原子的 layer -> max up_to_seq。
+    // Fold Horizon（bake）：有效 Bake 原子（BakeLayer 与 BakeDocument 条目）的
+    // layer -> max up_to_seq。
     // 段内预扫描只用本段原子；增量段从已含压平态的 base 续折时，段内
     // 原子 seq 恒大于 base 的水位，不会误剪（base 侧水位由状态自带）。
     let horizon = crate::bake::compute_bake_horizon(atoms, &suppressed);
@@ -394,8 +396,8 @@ pub fn fold_atoms_skipping(
         if suppressed.contains(&atom.id) {
             continue;
         }
-        // Horizon 剪枝（BakeLayer 本身与外壳类原子永不剪枝）。
-        if atom.kind != AtomKind::BakeLayer && !crate::bake::is_bake_shell_kind(atom.kind) {
+        // Horizon 剪枝（Bake 原子本身与外壳类原子永不剪枝）。
+        if !crate::bake::is_bake_kind(atom.kind) && !crate::bake::is_bake_shell_kind(atom.kind) {
             let target = crate::bake::bake_target_layer(atom, |id| object_layer.get(id).cloned());
             if let Some(layer_id) = target {
                 if let Some(water) = horizon.get(&layer_id) {
@@ -1048,6 +1050,64 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
                 ));
             }
         }
+        AtomKind::BakeDocument => {
+            if atom
+                .payload
+                .get("document_up_to_seq")
+                .and_then(Value::as_u64)
+                .is_none()
+            {
+                return Err(err(
+                    ErrorCode::InvalidArgument,
+                    "bake_document 缺少 document_up_to_seq",
+                ));
+            }
+            let Some(layers) = atom.payload.get("layers").and_then(Value::as_array) else {
+                return Err(err(
+                    ErrorCode::InvalidArgument,
+                    "bake_document 缺少 layers 数组",
+                ));
+            };
+            if layers.is_empty() {
+                return Err(err(
+                    ErrorCode::InvalidArgument,
+                    "bake_document 的 layers 数组为空（全 no-op 时不产生原子）",
+                ));
+            }
+            for entry in layers {
+                let Some(layer_id) = entry.get("layer_id").and_then(Value::as_str) else {
+                    return Err(err(
+                        ErrorCode::InvalidArgument,
+                        "bake_document 条目缺少 layer_id",
+                    ));
+                };
+                if !state.layer_alive(layer_id) {
+                    return Err(missing_error(
+                        "图层",
+                        layer_id,
+                        state.layers.keys().filter(|id| state.layer_alive(id)),
+                    ));
+                }
+                let Some(blob_hash) = entry.get("blob_hash").and_then(Value::as_str) else {
+                    return Err(err(
+                        ErrorCode::InvalidArgument,
+                        "bake_document 条目缺少 blob_hash",
+                    ));
+                };
+                if blob_hash.parse::<crate::atom::BlobHash>().is_err() {
+                    return Err(err(
+                        ErrorCode::InvalidArgument,
+                        format!("bake_document blob_hash 非法：{blob_hash}"),
+                    ));
+                }
+                if entry.get("up_to_seq").and_then(Value::as_u64).is_none() {
+                    return Err(err(
+                        ErrorCode::InvalidArgument,
+                        "bake_document 条目缺少 up_to_seq",
+                    ));
+                }
+            }
+        }
         AtomKind::Tag
         | AtomKind::Comment
         | AtomKind::Suggest
@@ -1613,7 +1673,10 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
         AtomKind::BakeLayer => {
             // 折叠期只做状态替换，不渲染、不读存储（存储在渲染/工具层校验）：
             // 清空目标层全部存活对象，写入单个压平基底对象（见 object.rs 的
-            // BakedBase 图元）；图层 ID/名称/混合/不透明度/z 序/掩膜一律不动。
+            // BakedBase 图元）；图层 ID/名称/混合/不透明度/z 序一律不动。
+            // 掩膜例外（D11 定夺）：`flatten_mask=true` 时基底像素已含掩膜，
+            // 折叠期消费掩膜——清层 `mask_id`，否则合成再乘一次成二次作用；
+            // 消费后对该层的掩膜编辑由工具层拒绝（须先 revert 该 Bake）。
             // 压平后追加的 Move/Transform 作用在这个基底对象上（对象变换），
             // 下一次 bake 由工具层按累积变换一次采样后重置为 IDENTITY。
             let layer_id = required(atom, "layer_id")?.to_owned();
@@ -1629,6 +1692,11 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
                     format!("图层 {layer_id} 不存在"),
                 ));
             }
+            let flatten_mask = atom
+                .payload
+                .get("flatten_mask")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let object_ids: Vec<String> = state
                 .objects
                 .values()
@@ -1638,34 +1706,50 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
             for oid in object_ids {
                 state.objects.remove(&oid);
             }
-            let baked_id = format!("baked:{layer_id}");
-            let data = serde_json::json!({
-                "baked_base": true,
-                "blob_hash": blob_hash,
-                "source_up_to_seq": up_to_seq,
-                "width": state.width,
-                "height": state.height,
-            });
-            let object = Object {
-                seq: atom.seq,
-                id: baked_id,
-                layer_id: layer_id.clone(),
-                object_type: ObjectType::RasterPatch,
-                z_index: 0,
-                visible: true,
-                enabled: true,
-                locked: false,
-                metadata: Value::Null,
-                transform: transform_from_payload(&Value::Null),
-                style: None,
-                versions: vec![atom.id.clone()],
-                current_version: Some(atom.id.clone()),
-                created_by: atom.id.clone(),
-                deleted_by: None,
-                data,
-                blobs: blobs.clone(),
-            };
-            state.objects.insert(object.id.clone(), object);
+            if flatten_mask {
+                if let Some(layer) = state.layers.get_mut(&layer_id) {
+                    layer.mask_id = None;
+                }
+            }
+            insert_baked_base_object(state, atom, &layer_id, &blob_hash, up_to_seq, &blobs);
+        }
+        AtomKind::BakeDocument => {
+            // 与 BakeLayer 臂同一形态，按条目逐层处理；先全量校验（层存在、
+            // 哈希可解析）再改写，避免中途报错留下半截状态。
+            let entries = crate::bake::bake_document_entries(atom);
+            let mut checked: Vec<(String, Seq, String, bool, crate::atom::BlobHash)> = Vec::new();
+            for (layer_id, up_to_seq, blob_hash, flatten_mask) in entries {
+                if !state.layers.contains_key(&layer_id) {
+                    return Err(err(
+                        ErrorCode::ReferenceNotFound,
+                        format!("图层 {layer_id} 不存在"),
+                    ));
+                }
+                let Ok(hash) = blob_hash.parse::<crate::atom::BlobHash>() else {
+                    return Err(err(
+                        ErrorCode::InvalidArgument,
+                        format!("bake_document blob_hash 非法：{blob_hash}"),
+                    ));
+                };
+                checked.push((layer_id, up_to_seq, blob_hash, flatten_mask, hash));
+            }
+            for (layer_id, up_to_seq, blob_hash, flatten_mask, hash) in checked {
+                let object_ids: Vec<String> = state
+                    .objects
+                    .values()
+                    .filter(|o| o.layer_id == layer_id && o.is_alive())
+                    .map(|o| o.id.clone())
+                    .collect();
+                for oid in object_ids {
+                    state.objects.remove(&oid);
+                }
+                if flatten_mask {
+                    if let Some(layer) = state.layers.get_mut(&layer_id) {
+                        layer.mask_id = None;
+                    }
+                }
+                insert_baked_base_object(state, atom, &layer_id, &blob_hash, up_to_seq, &[hash]);
+            }
         }
         AtomKind::DeclareHead => {
             state.declare_head = Some(DeclareHead {
@@ -1687,6 +1771,47 @@ pub fn apply(state: &mut DocumentState, atom: &Atom) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// 写入单个压平基底对象（BakeLayer 与 BakeDocument 臂共用）：
+/// 对象 id 为 `baked:{layer}`，形态与一期完全相同；`blobs` 为该基底的
+/// 生命周期引用（单层臂传原子引用集，文档臂按条目只传本层哈希）。
+fn insert_baked_base_object(
+    state: &mut DocumentState,
+    atom: &Atom,
+    layer_id: &str,
+    blob_hash: &str,
+    up_to_seq: Seq,
+    blobs: &[crate::atom::BlobHash],
+) {
+    let baked_id = format!("baked:{layer_id}");
+    let data = serde_json::json!({
+        "baked_base": true,
+        "blob_hash": blob_hash,
+        "source_up_to_seq": up_to_seq,
+        "width": state.width,
+        "height": state.height,
+    });
+    let object = Object {
+        seq: atom.seq,
+        id: baked_id,
+        layer_id: layer_id.to_owned(),
+        object_type: ObjectType::RasterPatch,
+        z_index: 0,
+        visible: true,
+        enabled: true,
+        locked: false,
+        metadata: Value::Null,
+        transform: transform_from_payload(&Value::Null),
+        style: None,
+        versions: vec![atom.id.clone()],
+        current_version: Some(atom.id.clone()),
+        created_by: atom.id.clone(),
+        deleted_by: None,
+        data,
+        blobs: blobs.to_vec(),
+    };
+    state.objects.insert(object.id.clone(), object);
 }
 
 /// 解析 `declare_head` 的 base 引用。
@@ -3868,5 +3993,129 @@ mod tests {
         assert_eq!(result.state, base);
         assert!(result.warnings.is_empty());
         assert!(result.applied.is_empty());
+    }
+
+    #[test]
+    fn bake_document_replaces_each_layer_and_revert_restores() {
+        let h1 = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let h2 = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+        let mut atoms: Vec<Atom> = Vec::new();
+        let mut doc = Atom::new(
+            AtomKind::CreateDocument,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"doc_id": "d1", "width": 16, "height": 16}),
+        );
+        doc.id = "a_doc".to_owned();
+        doc.seq = 1;
+        atoms.push(doc);
+        for (lid, seq) in [("L1", 2), ("L2", 3)] {
+            let mut layer = Atom::new(
+                AtomKind::CreateLayer,
+                "a".to_owned(),
+                "s".to_owned(),
+                serde_json::json!({"layer_id": lid, "name": lid}),
+            );
+            layer.id = format!("a_layer_{lid}");
+            layer.seq = seq;
+            atoms.push(layer);
+        }
+        for (oid, lid, seq) in [("o1", "L1", 4), ("o2", "L1", 5), ("o3", "L2", 6)] {
+            let mut stroke = Atom::new(
+                AtomKind::DrawStroke,
+                "a".to_owned(),
+                "s".to_owned(),
+                serde_json::json!({"object_id": oid, "layer_id": lid}),
+            );
+            stroke.id = format!("a_{oid}");
+            stroke.seq = seq;
+            atoms.push(stroke);
+        }
+        let mut doc_atom = Atom::new(
+            AtomKind::BakeDocument,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"document_up_to_seq": 6, "layers": [
+                {"layer_id": "L1", "up_to_seq": 6, "blob_hash": h1, "flatten_mask": false},
+                {"layer_id": "L2", "up_to_seq": 6, "blob_hash": h2, "flatten_mask": false},
+            ]}),
+        );
+        doc_atom.id = "a_docbake".to_owned();
+        doc_atom.seq = 7;
+        atoms.push(doc_atom);
+        let result = fold_atoms(DocumentState::default(), &atoms);
+        for (lid, h) in [("L1", h1), ("L2", h2)] {
+            let objs = result.state.objects_in_layer(lid);
+            assert_eq!(objs.len(), 1, "压平后 {lid} 层内只剩单个基底对象");
+            assert_eq!(objs[0].id, format!("baked:{lid}"));
+            assert_eq!(
+                objs[0].data.get("blob_hash").and_then(|v| v.as_str()),
+                Some(h)
+            );
+            assert_eq!(
+                objs[0]
+                    .data
+                    .get("source_up_to_seq")
+                    .and_then(|v| v.as_u64()),
+                Some(6)
+            );
+        }
+        assert!(!result.applied.contains(&"a_o1".to_owned()));
+        assert!(result.applied.contains(&"a_docbake".to_owned()));
+        // 撤销文档压平原子：两层笔触恢复，基底消失。
+        let mut atoms2 = atoms.clone();
+        let mut revert = Atom::new(
+            AtomKind::Revert,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"target": "a_docbake"}),
+        );
+        revert.id = "a_revert".to_owned();
+        revert.seq = 8;
+        atoms2.push(revert);
+        let result2 = fold_atoms(DocumentState::default(), &atoms2);
+        assert_eq!(result2.state.objects_in_layer("L1").len(), 2);
+        assert_eq!(result2.state.objects_in_layer("L2").len(), 1);
+    }
+
+    #[test]
+    fn bake_document_flatten_mask_consumes_mask_id() {
+        let mut state = bake_fixture_state();
+        state.layers.get_mut("L1").expect("夹具层 L1 存在").mask_id = Some("m1".to_owned());
+        let mut flat = Atom::new(
+            AtomKind::BakeDocument,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"document_up_to_seq": 4, "layers": [
+                {"layer_id": "L1", "up_to_seq": 4, "blob_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "flatten_mask": true},
+            ]}),
+        );
+        flat.id = "a_flat".to_owned();
+        flat.seq = 5;
+        apply(&mut state, &flat).unwrap();
+        assert_eq!(
+            state.layers.get("L1").and_then(|l| l.mask_id.clone()),
+            None,
+            "flatten_mask=true 时折叠期消费掩膜（清 mask_id），否则合成再乘一次"
+        );
+        assert_eq!(state.objects_in_layer("L1").len(), 1);
+        // flatten_mask=false 时掩膜保留。
+        let mut state2 = bake_fixture_state();
+        state2.layers.get_mut("L1").expect("夹具层 L1 存在").mask_id = Some("m1".to_owned());
+        let mut noflat = Atom::new(
+            AtomKind::BakeDocument,
+            "a".to_owned(),
+            "s".to_owned(),
+            serde_json::json!({"document_up_to_seq": 4, "layers": [
+                {"layer_id": "L1", "up_to_seq": 4, "blob_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "flatten_mask": false},
+            ]}),
+        );
+        noflat.id = "a_noflat".to_owned();
+        noflat.seq = 5;
+        apply(&mut state2, &noflat).unwrap();
+        assert_eq!(
+            state2.layers.get("L1").and_then(|l| l.mask_id.clone()),
+            Some("m1".to_owned())
+        );
     }
 }

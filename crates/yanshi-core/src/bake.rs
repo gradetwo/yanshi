@@ -169,17 +169,63 @@ pub fn is_bake_shell_kind(kind: AtomKind) -> bool {
     )
 }
 
+/// 是否为压平原子（单层 BakeLayer 或文档级 BakeDocument）。
+pub fn is_bake_kind(kind: AtomKind) -> bool {
+    matches!(kind, AtomKind::BakeLayer | AtomKind::BakeDocument)
+}
+
+/// BakeDocument 原子的逐层条目：`(layer_id, up_to_seq, blob_hash, flatten_mask)`。
+///
+/// 条目缺字段时跳过该条（折叠校验臂另行对畸形原子报错；水位计算不因
+/// 一条坏条目静默吞掉整单，见校验臂）。
+pub fn bake_document_entries(atom: &Atom) -> Vec<(LayerId, Seq, String, bool)> {
+    let Some(layers) = atom.payload.get("layers").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in layers {
+        let Some(layer_id) = entry.get("layer_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(up_to_seq) = entry.get("up_to_seq").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let Some(blob_hash) = entry.get("blob_hash").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let flatten_mask = entry
+            .get("flatten_mask")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        out.push((
+            layer_id.to_owned(),
+            up_to_seq,
+            blob_hash.to_owned(),
+            flatten_mask,
+        ));
+    }
+    out
+}
+
 /// 从一段有效原子算 Fold Horizon：`layer_id -> max up_to_seq`。
 ///
-/// 只统计**有效**（不在 `suppressed` 内）的 BakeLayer 原子；被 revert 的
-/// BakeLayer 不产生屏障，这是 Undo 后旧原子恢复的机制保证。
+/// 只统计**有效**（不在 `suppressed` 内）的 Bake 原子（BakeLayer 与
+/// BakeDocument 条目，不分种类取最大值）；被 revert 的 Bake 不产生屏障，
+/// 这是 Undo 后旧原子恢复的机制保证。
 pub fn compute_bake_horizon(
     atoms: &[Atom],
     suppressed: &BTreeSet<String>,
 ) -> BTreeMap<LayerId, Seq> {
     let mut horizon: BTreeMap<LayerId, Seq> = BTreeMap::new();
     for atom in atoms {
-        if atom.kind != AtomKind::BakeLayer || suppressed.contains(&atom.id) {
+        if !is_bake_kind(atom.kind) || suppressed.contains(&atom.id) {
+            continue;
+        }
+        if atom.kind == AtomKind::BakeDocument {
+            for (layer_id, up_to_seq, _, _) in bake_document_entries(atom) {
+                let entry = horizon.entry(layer_id).or_insert(0);
+                *entry = (*entry).max(up_to_seq);
+            }
             continue;
         }
         let Some(layer_id) = atom.payload.get("layer_id").and_then(|v| v.as_str()) else {
@@ -363,5 +409,50 @@ mod tests {
             e.context.extra.get("replay_recoverable"),
             Some(&serde_json::json!(true))
         );
+    }
+
+    #[test]
+    fn horizon_covers_bake_document_entries() {
+        let atoms = vec![
+            atom(
+                AtomKind::BakeLayer,
+                "a_bake",
+                10,
+                json!({"layer_id": "L1", "up_to_seq": 9, "blob_hash": "sha256:00"}),
+            ),
+            atom(
+                AtomKind::BakeDocument,
+                "a_doc",
+                20,
+                json!({"document_up_to_seq": 19, "layers": [
+                    {"layer_id": "L1", "up_to_seq": 19, "blob_hash": "sha256:11", "flatten_mask": false},
+                    {"layer_id": "L2", "up_to_seq": 19, "blob_hash": "sha256:22", "flatten_mask": true},
+                ]}),
+            ),
+        ];
+        let horizon = compute_bake_horizon(&atoms, &BTreeSet::new());
+        assert_eq!(horizon.get("L1"), Some(&19));
+        assert_eq!(horizon.get("L2"), Some(&19));
+        let suppressed: BTreeSet<String> = ["a_doc".to_owned()].into_iter().collect();
+        let horizon2 = compute_bake_horizon(&atoms, &suppressed);
+        assert_eq!(horizon2.get("L1"), Some(&9));
+        assert_eq!(horizon2.get("L2"), None);
+    }
+
+    #[test]
+    fn document_entries_skip_malformed_rows() {
+        let a = atom(
+            AtomKind::BakeDocument,
+            "a_doc",
+            20,
+            json!({"document_up_to_seq": 19, "layers": [
+                {"layer_id": "L1", "up_to_seq": 19, "blob_hash": "sha256:11"},
+                {"layer_id": "L2", "blob_hash": "sha256:22"},
+                {"up_to_seq": 19, "blob_hash": "sha256:33"},
+            ]}),
+        );
+        let entries = bake_document_entries(&a);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "L1");
     }
 }

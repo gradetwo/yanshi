@@ -74,7 +74,7 @@ const IMPORT_IMAGE_PARAMS: &[ParamSpec] = &[
     param!("raw_options", Object, false, "仅当 bitmap 是 RAW 源（mime image/x-yanshi-rawsrc）时可用：展开参数 {wb: as_shot|auto（缺省 as_shot）, demosaic: malvar|bilinear（缺省 malvar）, pre_exposure_ev: -4..4（缺省 0，不 clamp、越界报错）, lens_correction: off|auto（缺省 off，D5 定版；auto = 文件自带校正逐项优先 + Lensfun 库匹配）, lens_override: string|null（手动点名镜头库中的镜头，查无此镜报错）, highlight_recovery: chroma|floor（缺省 chroma 真色度恢复，floor = 第三包保底机制）, tone: off|standard（缺省 standard，显影期基调曲线；off = 现行零调整链）, tone_strength: 0..1（缺省 1.0，越界报错、不 clamp；tone=off 时忽略）}；给到非 RAW blob 报错"),
 ];
 
-/// 核心层 132 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 133 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -2223,17 +2223,18 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("object_id", String, false, "对象 id（缺省自动生成）"),
         ],
     },
-    // **bake_layer / recover_baked_blobs（专家评审定版 + 第二轮 12 条）**：
+    // **bake_layer / bake_document / recover_baked_blobs（专家评审定版 + 第二轮 12 条）**：
     //   单层压平为 1 张画布 1:1 基底 Blob + Fold Horizon 剪枝屏障；
+    //   文档级压平逐层同形态、单原子多层条目；
     //   门禁默认拦截（allow_rasterize_editable / allow_clip_off_canvas 均为 false）；
     //   自愈只走显式 recover_baked_blobs / 导入 missing_blob_policy，常规折叠绝不自动重放。
     ToolSpec {
         name: "bake_layer",
         profile: Profile::Core,
-        summary: "把单个图层压平为 1 张画布 1:1 基底 Blob（锚点 (0,0)，不接受缩放参数），层内画笔/文本/形状/调整/滤镜/液化全部冻结进基底；图层 ID、名称、混合模式、不透明度、Z 轴顺序、图层掩膜全部保留（掩膜默认不压进基底，flatten_mask=true 才压）。纯绘画图层直接一次成功；含文本/矢量且 allow_rasterize_editable=false 时直接报错，含越界图元且 allow_clip_off_canvas=false 时直接报错（绝不只塞进 warnings）。目标层仅有 1 个未改动 BakedBase 时返回 no_op_already_baked，空层返回 no_op_empty_layer，均不生成新 Blob 与新原子。压平后图层可经 transform_primitive 缩放/旋转（旋转仅 90° 倍数，非均匀缩放默认关闭）；再次 bake 时按累积仿射一次采样合成新 Blob，transform 重置 IDENTITY，水位前移。",
+        summary: "把单个图层压平为 1 张画布 1:1 基底 Blob（锚点 (0,0)，不接受缩放参数），层内画笔/文本/形状/调整/滤镜/液化全部冻结进基底；图层 ID、名称、混合模式、不透明度、Z 轴顺序全部保留，图层掩膜默认保留（flatten_mask=true 时掩膜压进基底、不再独立存在，之后掩膜编辑须先 revert 该 Bake）。纯绘画图层直接一次成功；含文本/矢量且 allow_rasterize_editable=false 时直接报错，含越界图元且 allow_clip_off_canvas=false 时直接报错（绝不只塞进 warnings）。目标层仅有 1 个未改动 BakedBase 时返回 no_op_already_baked，空层返回 no_op_empty_layer，均不生成新 Blob 与新原子。压平后图层可经 transform_primitive 缩放/旋转（旋转仅 90° 倍数，非均匀缩放默认关闭）；再次 bake 时按累积仿射一次采样合成新 Blob，transform 重置 IDENTITY，水位前移。",
         mutating: true,
         params: &[
-            param!("layer_id", String, true, "目标图层 ID（单层 scope；选区、文档级压平、auto-bake 不做）"),
+            param!("layer_id", String, true, "目标图层 ID（单层 scope；文档级压平请用 bake_document，选区、auto-bake 不做）"),
             param!("allow_rasterize_editable", Boolean, false, "显式放行栅格化可编辑图元（文本/矢量）：缺省 false，含文本/矢量时直接报错；传 true 后成功回执 warnings 记 TEXT_RASTERIZED / VECTOR_RASTERIZED 审计条目"),
             param!("allow_clip_off_canvas", Boolean, false, "显式放行裁剪越界像素：缺省 false，含越界图元时直接报错；传 true 后成功回执 warnings 记 CLIPPED_OFF_CANVAS_PIXELS 明细与区域坐标"),
             param!("flatten_mask", Boolean, false, "把图层级独立掩膜压进基底：缺省 false（掩膜保留）；传 true 后回执 warnings 记 MASK_FLATTENED"),
@@ -2241,9 +2242,21 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         ],
     },
     ToolSpec {
+        name: "bake_document",
+        profile: Profile::Core,
+        summary: "把整个文档逐层压平：对每个在范围内的层各做一次单层压平，但只追加一个文档级原子（单原子、多层条目）；基底均为画布 1:1（锚点 (0,0)，不接受缩放参数），层结构与层属性全保留，历史原子全保留。范围：层存活、有效可见（父组不可见则子层亦不可见）、层内至少一个存活对象、不是纯调整层（只有 Adjustment 或 Filter 对象）；隐藏层与纯调整层跳过并在回执跳过清单中明列，空层计为 no-op 并并列进跳过清单，无自有对象的组层不是候选，删除层不枚举。门禁与单层压平相同（allow_rasterize_editable 与 allow_clip_off_canvas 默认均为 false，任一待压平层触发即整单报错）；全部层 no-op 时不追加原子、不推进水位。撤销单位为整个文档压平原子；单层回退走整体撤销加其他层重压平两步。",
+        mutating: true,
+        params: &[
+            param!("allow_rasterize_editable", Boolean, false, "显式放行栅格化可编辑图元（文本/矢量）：缺省 false，任一待压平层含文本/矢量时整单直接报错；传 true 后成功回执 warnings 记 TEXT_RASTERIZED / VECTOR_RASTERIZED 审计条目"),
+            param!("allow_clip_off_canvas", Boolean, false, "显式放行裁剪越界像素：缺省 false，任一待压平层含越界图元时整单直接报错；传 true 后成功回执 warnings 记 CLIPPED_OFF_CANVAS_PIXELS 明细与区域坐标"),
+            param!("flatten_mask", Boolean, false, "把各层级独立掩膜压进各自基底：缺省 false（掩膜保留）；传 true 后折叠期消费掩膜（清层 mask_id），回执 warnings 记 MASK_FLATTENED，之后掩膜编辑须先 revert 该 Bake"),
+            param!("allow_non_uniform_scale", Boolean, false, "显式放行非均匀缩放：缺省 false；仅对压平后基底的 transform_primitive 门禁生效，bake 本身不接受缩放参数"),
+        ],
+    },
+    ToolSpec {
         name: "recover_baked_blobs",
         profile: Profile::Core,
-        summary: "显式重放自愈：对有效 BakeLayer 中存储缺失的基底 Blob，用 seq <= up_to_seq 且排除全部 BakeLayer 原子的子集重放渲染并写回存储，SHA-256 一致才接受。常规折叠/渲染缺 Blob 时绝不自动触发（严格报错）。回执挂 replayed_ms、replayed_atom_count 与修复的 blob_hash 列表。哈希不一致缺省 strict 报错；显式 on_hash_mismatch=append_rebake 时按真实哈希入库并在日志末尾追加一条新 BakeLayer 原子（带 replaces_bake_seq 审计元数据），绝不改写历史原子。",
+        summary: "显式重放自愈：对有效 Bake（含单层与文档级条目）中存储缺失的基底 Blob，用 seq <= up_to_seq 且排除目标 Bake 原子本身的子集重放渲染并写回存储，SHA-256 一致才接受。常规折叠/渲染缺 Blob 时绝不自动触发（严格报错）。回执挂 replayed_ms、replayed_atom_count 与修复的 blob_hash 列表。哈希不一致缺省 strict 报错；显式 on_hash_mismatch=append_rebake 时按真实哈希入库并在日志末尾追加一条新 Bake 原子（单层形态，带 replaces_bake_seq 审计元数据），绝不改写历史原子。",
         mutating: true,
         params: &[
             param!("layer_id", String, false, "只修复该图层的有效 Bake 基底；缺省全部层"),
