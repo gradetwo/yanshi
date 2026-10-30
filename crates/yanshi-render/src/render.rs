@@ -615,6 +615,49 @@ fn evict_one_sig_group_with(
     true
 }
 
+/// **两块并集有无未渲染空洞**（层栈异常根因，2026-10-31 ✓）：
+/// **并集包围盒的每个像素都被两块之一覆盖** ⟺ 下列任一：
+/// （甲）一块包含另一块（并集＝容器本身，全覆盖）；
+/// （乙）同 x 范围且 y 区间重叠或相接；
+/// （丙）同 y 范围且 x 区间重叠或相接。
+/// 其余情形（分离、双向错位）下并集含空洞。
+/// **实测**：陈旧片 (176,361,23,21) 与新片 (181,256,63,5) 并成 68×126，
+/// 中间 y261..361 共 100 行是 `Buffer::new` 的全透明零值、从未渲染；
+/// 读侧 `covers` 只验包围盒 ⇒ 误判命中 ⇒ 复用后空洞处透出白底（底图发白）。
+/// **v1 教训**（盒上 retention 判据 0/6 实测）：漏了（甲）会致缓存萎缩——
+/// 局部重渲染把整 tile 大片换成小片，后续整区渲染再也命中不了；
+/// 包含合并恒安全（同 sig 下旧像素仍有效，新片赢重叠区），必须放行。
+/// **浮点口径**：片包围盒皆由 `floor`／`ceil` 取整而来，整数值 `==` 可靠；
+/// 非整数输入导致的不等只会保守地判为"有空洞"（丢缓存、下次重算），不撒谎。
+fn bboxes_merge_without_gap(a: &Bbox, b: &Bbox) -> bool {
+    let same_x = a.x == b.x && a.right() == b.right();
+    let same_y = a.y == b.y && a.bottom() == b.bottom();
+    let y_overlap_or_touch = a.y <= b.bottom() && b.y <= a.bottom();
+    let x_overlap_or_touch = a.x <= b.right() && b.x <= a.right();
+    let a_contains_b =
+        a.x <= b.x && a.right() >= b.right() && a.y <= b.y && a.bottom() >= b.bottom();
+    let b_contains_a =
+        b.x <= a.x && b.right() >= a.right() && b.y <= a.y && b.bottom() >= a.bottom();
+    (a_contains_b || b_contains_a)
+        || (same_x && y_overlap_or_touch)
+        || (same_y && x_overlap_or_touch)
+}
+
+/// **缓存片合并守卫**（层栈异常修复 ✓）：只有并集无空洞时才按行合并；
+/// 否则只保留新片——旧片行丢缓存、下次重算（宁慢勿错 ✓）。
+/// **两处调用点共用**（below 写路径与 above 写路径 ✓）：缓存片包围盒
+/// ＝覆盖声明，存入即承诺"框内像素皆已渲染"，空洞片绝不许入库。
+fn merge_cached_piece(
+    old: &crate::buffer::Buffer,
+    fresh: &crate::buffer::Buffer,
+) -> crate::buffer::Buffer {
+    if bboxes_merge_without_gap(&old.bbox(), &fresh.bbox()) {
+        merge_by_rows(old, fresh)
+    } else {
+        fresh.clone()
+    }
+}
+
 /// **★ 按行合并两块 ✓ ★**（第 509 轮 ✓，**修"半块竞态"✗**）：**并行时相邻两带会各 `crop` 出
 /// **同一 tile 的一部分**✗ ⇒ **∴ "同键整体替换"⇒ **∴ 后写覆盖先写 ⇒ **∴ 只剩一半 ⇒ **∴ 命中后像素错 ✓****。
 /// **∴ 修法** ✓：**取两者 bbox 的**并集**建新缓冲 ✓ ⇒ **先拷 `old` ✓、再用 `new` 覆盖它自己的框 ✓**
@@ -3374,7 +3417,7 @@ impl Renderer {
                             let mut acc = piece;
                             for (_, old_piece) in keep.iter().filter(|(ok, _)| *ok == k) {
                                 if acc.bbox() != old_piece.bbox() {
-                                    acc = merge_by_rows(old_piece, &acc);
+                                    acc = merge_cached_piece(old_piece, &acc);
                                 }
                             }
                             fresh_vec.push((k, acc));
@@ -3590,7 +3633,7 @@ impl Renderer {
                             let mut acc = piece;
                             for (_, old_piece) in keep.iter().filter(|(ok, _)| *ok == k) {
                                 if acc.bbox() != old_piece.bbox() {
-                                    acc = merge_by_rows(old_piece, &acc);
+                                    acc = merge_cached_piece(old_piece, &acc);
                                 }
                             }
                             merged.push((k, acc));
@@ -10163,6 +10206,92 @@ mod tests {
         assert_eq!(merged.pixel(2, 2), fresh.pixel(0, 0), "重叠处应当取 new");
         // ⑤ `old` 独有处取 `old` ✓
         assert_eq!(merged.pixel(0, 0), old.pixel(0, 0), "old 独有处应当取 old");
+    }
+
+    /// **缓存片合并守卫：分离片只留新片**（层栈异常回归，2026-10-31 ✓）
+    ///
+    /// **实测几何**：陈旧片 (176,361,23,21) 与新片 (181,256,63,5) 分离，
+    /// 旧合并给出 68×126 并集、中间 100 行全透明空洞，读侧误判命中致底图发白。
+    /// **变异**：把 `merge_cached_piece` 体换回 `merge_by_rows` ⇒ ①② 红 ✓
+    /// （① 包围盒、② 像素；③ 谓词断言与体无关，变异下仍绿，盒上实测）。
+    #[test]
+    fn merge_cached_piece_disjoint_pieces_keep_fresh_only() {
+        let dark: Vec<f32> = [0.2f32, 0.2, 0.2, 1.0].repeat(23 * 21);
+        let light: Vec<f32> = [0.9f32, 0.9, 0.9, 1.0].repeat(63 * 5);
+        let old = crate::buffer::Buffer::from_f32(176, 361, 23, 21, &dark).unwrap();
+        let fresh = crate::buffer::Buffer::from_f32(181, 256, 63, 5, &light).unwrap();
+        assert_ne!(old.pixel(0, 0), fresh.pixel(0, 0), "前提：两块颜色必须不同");
+        let merged = merge_cached_piece(&old, &fresh);
+        // ① 包围盒 ＝ 新片，不含空洞（旧并集 68×126 在此必须红）
+        assert_eq!(merged.bbox(), fresh.bbox(), "分离片合并不得宣称并集覆盖");
+        assert_eq!(merged.bbox(), Bbox::new(181.0, 256.0, 63.0, 5.0));
+        // ② 像素 ＝ 新片
+        assert_eq!(merged.pixel(0, 0), fresh.pixel(0, 0));
+        assert_eq!(merged.pixel(62, 4), fresh.pixel(62, 4));
+        // ③ 守卫谓词本身也判 false
+        assert!(!bboxes_merge_without_gap(&old.bbox(), &fresh.bbox()));
+    }
+
+    /// **缓存片合并守卫：双向错位片只留新片**（`merge_by_rows` 旧单测的
+    /// 那对 (0,0,4,4)／(2,2,4,4) 在缓存层不得合并：并集含未覆盖角）。
+    #[test]
+    fn merge_cached_piece_offset_in_both_dimensions_keep_fresh_only() {
+        let red: Vec<f32> = [1.0f32, 0.0, 0.0, 1.0].repeat(4 * 4);
+        let green: Vec<f32> = [0.0f32, 1.0, 0.0, 1.0].repeat(4 * 4);
+        let old = crate::buffer::Buffer::from_f32(0, 0, 4, 4, &red).unwrap();
+        let fresh = crate::buffer::Buffer::from_f32(2, 2, 4, 4, &green).unwrap();
+        let merged = merge_cached_piece(&old, &fresh);
+        assert_eq!(merged.bbox(), fresh.bbox(), "双向错位不得并集");
+        assert_eq!(merged.pixel(0, 0), fresh.pixel(0, 0));
+        assert!(!bboxes_merge_without_gap(&old.bbox(), &fresh.bbox()));
+    }
+
+    /// **缓存片合并守卫：安全情形仍合并**（同 x 重叠、同 x 相接、同 y 相接
+    /// 三种并集无空洞；重叠处取新、独有处取旧，与 `merge_by_rows` 一致）。
+    #[test]
+    fn merge_cached_piece_safe_cases_still_merge() {
+        // 同 x 重叠：实测颗粒行生长 (181,208,58,18)＋(181,213,58,18) ⇒ 58×23
+        let red: Vec<f32> = [1.0f32, 0.0, 0.0, 1.0].repeat(58 * 18);
+        let green: Vec<f32> = [0.0f32, 1.0, 0.0, 1.0].repeat(58 * 18);
+        let old = crate::buffer::Buffer::from_f32(181, 208, 58, 18, &red).unwrap();
+        let fresh = crate::buffer::Buffer::from_f32(181, 213, 58, 18, &green).unwrap();
+        let merged = merge_cached_piece(&old, &fresh);
+        assert_eq!(merged.bbox(), Bbox::new(181.0, 208.0, 58.0, 23.0));
+        assert_eq!(merged.pixel(0, 0), old.pixel(0, 0), "旧独有行取旧");
+        assert_eq!(merged.pixel(0, 20), fresh.pixel(0, 15), "重叠行取新");
+        // 同 x 相接：(0,0,4,4)＋(0,4,4,4) ⇒ (0,0,4,8)
+        let a = crate::buffer::Buffer::from_f32(0, 0, 4, 4, &red[..64]).unwrap();
+        let b = crate::buffer::Buffer::from_f32(0, 4, 4, 4, &green[..64]).unwrap();
+        let merged = merge_cached_piece(&a, &b);
+        assert_eq!(merged.bbox(), Bbox::new(0.0, 0.0, 4.0, 8.0));
+        assert_eq!(merged.pixel(0, 0), a.pixel(0, 0));
+        assert_eq!(merged.pixel(0, 4), b.pixel(0, 0));
+        // 同 y 相接：(0,0,4,4)＋(4,0,4,4) ⇒ (0,0,8,4)
+        let c = crate::buffer::Buffer::from_f32(4, 0, 4, 4, &green[..64]).unwrap();
+        let merged = merge_cached_piece(&a, &c);
+        assert_eq!(merged.bbox(), Bbox::new(0.0, 0.0, 8.0, 4.0));
+        assert_eq!(merged.pixel(4, 0), c.pixel(0, 0));
+        // 包含（v2，retention 回归）：旧含新 ⇒ 并集＝旧框，重叠区取新
+        let big: Vec<f32> = [0.2f32, 0.2, 0.2, 1.0].repeat(10 * 10);
+        let small: Vec<f32> = [0.8f32, 0.8, 0.8, 1.0].repeat(4 * 4);
+        let old_big = crate::buffer::Buffer::from_f32(0, 0, 10, 10, &big).unwrap();
+        let fresh_small = crate::buffer::Buffer::from_f32(2, 2, 4, 4, &small).unwrap();
+        let merged = merge_cached_piece(&old_big, &fresh_small);
+        assert_eq!(merged.bbox(), Bbox::new(0.0, 0.0, 10.0, 10.0));
+        assert_eq!(merged.pixel(0, 0), old_big.pixel(0, 0), "容器独有处取旧");
+        assert_eq!(merged.pixel(2, 2), fresh_small.pixel(0, 0), "重叠区取新");
+        assert!(bboxes_merge_without_gap(
+            &old_big.bbox(),
+            &fresh_small.bbox()
+        ));
+        // 包含反向：新含旧 ⇒ 并集＝新框（新片赢重叠区，即整片取新）
+        let merged = merge_cached_piece(&fresh_small, &old_big);
+        assert_eq!(merged.bbox(), Bbox::new(0.0, 0.0, 10.0, 10.0));
+        assert_eq!(merged.pixel(2, 2), old_big.pixel(2, 2));
+        assert!(bboxes_merge_without_gap(
+            &fresh_small.bbox(),
+            &old_big.bbox()
+        ));
     }
 
     /// **两带对同一 tile 的自有交集互不重叠**（修进程级非确定性 ✓）：
