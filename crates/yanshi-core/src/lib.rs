@@ -48,6 +48,7 @@ pub mod changeset;
 pub mod conflict;
 pub mod error;
 pub mod fold;
+pub mod geometry;
 pub mod ids;
 pub mod log;
 pub mod orientation;

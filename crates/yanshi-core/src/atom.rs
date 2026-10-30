@@ -351,6 +351,33 @@ pub enum AtomKind {
     /// （重开即丢的静默退化 ✗）。与新建文档时给底色（`CreateDocument`）互补：
     /// 那个只在建文档那一刻生效，这个只改**已有**文档的底色 ✓。
     SetBackground,
+    /// 几何（路线三）：只改画布尺寸，内容不动。
+    ///
+    /// 载荷：`{affine: {matrix, pivot}, new_width, new_height}`，affine 为单位矩阵。
+    ResizeCanvasBounds,
+    /// 几何（路线三）：绕锚点缩放画布与内容。
+    ///
+    /// 载荷：`{affine, new_width, new_height, anchor, scale_x, scale_y}`；
+    /// 宽高用 `f64::round`（半远离零），下限 1；回执写实际生效比例。
+    ScaleCanvas,
+    /// 几何（路线三）：绕锚点旋转画布与内容，只接受 90° 倍数。
+    ///
+    /// 载荷：`{affine, new_width, new_height, anchor, degrees}`；90°/270° 互换宽高。
+    RotateCanvas,
+    /// 几何（路线三）：沿锚点所在轴线翻转画布与内容。
+    ///
+    /// 载荷：`{affine, new_width, new_height, anchor, direction}`，direction 为
+    /// `horizontal`（左右翻）或 `vertical`（上下翻）。
+    FlipCanvas,
+    /// 几何（路线三）：缩界加平移，绝不删除原子。
+    ///
+    /// 载荷：`{affine, new_width, new_height, region: {x, y, w, h}}`；超界内容
+    /// 渲染时裁剪，撤销即恢复。
+    CropCanvas,
+    /// 几何（路线三）：扩界加平移，新增区露出文档底色，不为揭示区新建原子。
+    ///
+    /// 载荷：`{affine, new_width, new_height, margins: {left, top, right, bottom}}`。
+    ExtendCanvas,
     /// 重排图层（携带完整目标 z 序）。
     ReorderLayers,
     /// 重排同一图层内的对象（携带完整目标 z 序）。
@@ -409,6 +436,12 @@ impl AtomKind {
             Self::SetAnchor => "set_anchor",
             Self::DeleteAnchor => "delete_anchor",
             Self::SetBackground => "set_background",
+            Self::ResizeCanvasBounds => "resize_canvas_bounds",
+            Self::ScaleCanvas => "scale_canvas",
+            Self::RotateCanvas => "rotate_canvas",
+            Self::FlipCanvas => "flip_canvas",
+            Self::CropCanvas => "crop_canvas",
+            Self::ExtendCanvas => "extend_canvas",
             Self::ReorderLayers => "reorder_layers",
             Self::ReorderObjects => "reorder_objects",
             Self::Tombstone => "tombstone",
@@ -482,6 +515,12 @@ impl AtomKind {
                 | Self::Transform
                 | Self::SetProperty
                 | Self::SetBackground
+                | Self::ResizeCanvasBounds
+                | Self::ScaleCanvas
+                | Self::RotateCanvas
+                | Self::FlipCanvas
+                | Self::CropCanvas
+                | Self::ExtendCanvas
                 | Self::ReorderLayers
                 | Self::ReorderObjects
                 | Self::Tombstone
@@ -500,6 +539,12 @@ impl AtomKind {
                 | Self::ReorderLayers
                 | Self::ReorderObjects
                 | Self::SetProperty
+                | Self::ResizeCanvasBounds
+                | Self::ScaleCanvas
+                | Self::RotateCanvas
+                | Self::FlipCanvas
+                | Self::CropCanvas
+                | Self::ExtendCanvas
                 | Self::CreateLayer
                 | Self::CreateObject
                 | Self::CreateMask
@@ -523,6 +568,12 @@ impl AtomKind {
                 | Self::Retouch
                 | Self::Liquify
                 | Self::ImportImage
+                | Self::ResizeCanvasBounds
+                | Self::ScaleCanvas
+                | Self::RotateCanvas
+                | Self::FlipCanvas
+                | Self::CropCanvas
+                | Self::ExtendCanvas
         )
     }
 
@@ -532,7 +583,7 @@ impl AtomKind {
     }
 
     /// 全部原子类型，便于穷举测试。
-    pub const ALL: [AtomKind; 34] = [
+    pub const ALL: [AtomKind; 40] = [
         Self::CreateDocument,
         Self::CreateLayer,
         Self::CreateObject,
@@ -555,6 +606,12 @@ impl AtomKind {
         Self::Transform,
         Self::SetProperty,
         Self::SetBackground,
+        Self::ResizeCanvasBounds,
+        Self::ScaleCanvas,
+        Self::RotateCanvas,
+        Self::FlipCanvas,
+        Self::CropCanvas,
+        Self::ExtendCanvas,
         Self::ReorderLayers,
         Self::ReorderObjects,
         Self::Tombstone,

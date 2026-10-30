@@ -3156,3 +3156,44 @@ fn batch_receipt_carries_ms_per_stroke_avg() {
         "0 笔触时字段取 0.0（不可判）：{no_stroke}"
     );
 }
+
+// ---- 几何（路线三）：位图蒙版重采样纯函数 ----
+use super::tools_geometry::resample_compiled;
+
+#[test]
+fn geometry_resample_identity_returns_same_grid() {
+    let compiled = yanshi_render::selection::CompiledMask {
+        bbox: [0, 0, 3, 2],
+        default_outside: 0.0,
+        grid: vec![10, 20, 30, 40, 50, 60],
+    };
+    let (bbox, grid) = resample_compiled(&compiled, 0, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0], 3, 2);
+    assert_eq!(bbox, [0, 0, 3, 2]);
+    assert_eq!(grid, vec![10, 20, 30, 40, 50, 60]);
+}
+
+#[test]
+fn geometry_resample_flip_horizontal_is_an_exact_permutation() {
+    // 绕中心 (2,1) 左右翻：x' = -x+4；逆矩阵自逆。
+    let compiled = yanshi_render::selection::CompiledMask {
+        bbox: [0, 0, 4, 2],
+        default_outside: 0.0,
+        grid: vec![10, 20, 30, 40, 50, 60, 70, 80],
+    };
+    let (bbox, grid) = resample_compiled(&compiled, 0, &[-1.0, 0.0, 0.0, 1.0, 4.0, 0.0], 4, 2);
+    assert_eq!(bbox, [0, 0, 4, 2]);
+    assert_eq!(grid, vec![40, 30, 20, 10, 80, 70, 60, 50]);
+}
+
+#[test]
+fn geometry_resample_all_default_collapses_to_one_pixel() {
+    // 全默认值网格：紧致裁剪为空 ⇒ 原点 1×1 默认值 patch，语义与全画布默认值等价。
+    let compiled = yanshi_render::selection::CompiledMask {
+        bbox: [0, 0, 2, 2],
+        default_outside: 0.0,
+        grid: vec![0, 0, 0, 0],
+    };
+    let (bbox, grid) = resample_compiled(&compiled, 0, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0], 2, 2);
+    assert_eq!(bbox, [0, 0, 1, 1]);
+    assert_eq!(grid, vec![0]);
+}

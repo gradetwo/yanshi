@@ -34,7 +34,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（130 个）。
+    /// 核心层：默认注册（136 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -765,7 +765,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，130 个）。
+    /// 核心层（默认注册，136 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -2216,6 +2216,12 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "remove_from_group" => write_remove_from_group(ctx, args),
         "set_group_transform" => write_set_group_transform(ctx, args),
         "move_object" => write_move_object(ctx, args),
+        "resize_canvas_bounds" => write_resize_canvas_bounds(ctx, args),
+        "scale_canvas" => write_scale_canvas(ctx, args),
+        "rotate_canvas" => write_rotate_canvas(ctx, args),
+        "flip_canvas" => write_flip_canvas(ctx, args),
+        "crop_canvas" => write_crop_canvas(ctx, args),
+        "extend_canvas" => write_extend_canvas(ctx, args),
         "vector_erase" => write_vector_erase(ctx, args),
         "vector_hit_test" => read_vector_hit_test(ctx, args),
         "delete_object" => write_tombstone(ctx, args, "object_id"),
@@ -23842,6 +23848,11 @@ pub(super) fn delta_note() -> &'static str {
         "本次走纯 CPU 路 ⇒ 没有可比的两条路；逐位一致由判据 tool-gpu-pure-parity.mjs 离线证明"
     }
 }
+
+// **几何（路线三）**：画布几何工具（resize/scale/rotate/flip/crop/extend）。
+#[path = "tools_geometry.rs"]
+mod tools_geometry;
+use tools_geometry::*;
 
 #[cfg(test)]
 #[path = "tools_tests.rs"]

@@ -74,7 +74,7 @@ const IMPORT_IMAGE_PARAMS: &[ParamSpec] = &[
     param!("raw_options", Object, false, "仅当 bitmap 是 RAW 源（mime image/x-yanshi-rawsrc）时可用：展开参数 {wb: as_shot|auto（缺省 as_shot）, demosaic: malvar|bilinear（缺省 malvar）, pre_exposure_ev: -4..4（缺省 0，不 clamp、越界报错）, lens_correction: off|auto（缺省 off，D5 定版；auto = 文件自带校正逐项优先 + Lensfun 库匹配）, lens_override: string|null（手动点名镜头库中的镜头，查无此镜报错）, highlight_recovery: chroma|floor（缺省 chroma 真色度恢复，floor = 第三包保底机制）, tone: off|standard（缺省 standard，显影期基调曲线；off = 现行零调整链）, tone_strength: 0..1（缺省 1.0，越界报错、不 clamp；tone=off 时忽略）}；给到非 RAW blob 报错"),
 ];
 
-/// 核心层 130 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 136 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -1160,6 +1160,75 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("object_id", String, true, "对象 id"),
             param!("delta", Object, false, "{dx,dy} 平移"),
             param!("transform", Object, false, "{matrix,pivot} 仿射变换"),
+        ],
+    },
+    // ---- 画布几何（路线三）----
+    // 锚点是变换枢轴：缩放与旋转绕锚点，锚点画布坐标不动。
+    // 命名锚点换算：center/top_left/top_right/bottom_left/bottom_right/
+    // top_center/bottom_center/left_center/right_center 按当前画布尺寸算；
+    // 其余名字查文档命名锚点表。回执含新尺寸、实际生效比例与受限对象。
+    ToolSpec {
+        name: "resize_canvas_bounds",
+        profile: Profile::Core,
+        summary: "只改画布尺寸，内容不动（画布原点恒为 (0,0)）",
+        mutating: true,
+        params: &[
+            param!("width", Integer, true, "新宽度（≥1，单边 ≤16384，总像素 ≤2^28）"),
+            param!("height", Integer, true, "新高度（≥1，单边 ≤16384，总像素 ≤2^28）"),
+        ],
+    },
+    ToolSpec {
+        name: "scale_canvas",
+        profile: Profile::Core,
+        summary: "按比例缩放画布与全部内容（绕锚点；宽高用 f64::round 取整，下限 1）",
+        mutating: true,
+        params: &[
+            param!("scale", Number, false, "统一缩放比例（>0；与 scale_x/scale_y 二选一）"),
+            param!("scale_x", Number, false, "横向比例（>0；需配 scale_y）"),
+            param!("scale_y", Number, false, "纵向比例（>0；需配 scale_x）"),
+            param!("non_uniform", Boolean, false, "显式开启非均匀缩放（默认关闭，sx != sy 时必传 true）"),
+            param!("anchor", Object, false, "{x,y} 枢轴坐标（与 anchor_name 二选一）"),
+            param!("anchor_name", String, false, "命名锚点（center 等预设或文档命名锚点；缺省 center）"),
+        ],
+    },
+    ToolSpec {
+        name: "rotate_canvas",
+        profile: Profile::Core,
+        summary: "旋转画布与全部内容，只接受 90° 倍数（90/270 交换宽高；绕锚点）",
+        mutating: true,
+        params: &[
+            param!("degrees", Number, true, "旋转角度，只接受 90 的倍数，其他角度显式拒绝"),
+            param!("anchor", Object, false, "{x,y} 枢轴坐标（与 anchor_name 二选一）"),
+            param!("anchor_name", String, false, "命名锚点（center 等预设或文档命名锚点；缺省 center）"),
+        ],
+    },
+    ToolSpec {
+        name: "flip_canvas",
+        profile: Profile::Core,
+        summary: "翻转画布与全部内容（horizontal 左右翻，vertical 上下翻；绕锚点）",
+        mutating: true,
+        params: &[
+            param!("direction", String, true, "horizontal 或 vertical"),
+            param!("anchor", Object, false, "{x,y} 枢轴坐标（与 anchor_name 二选一）"),
+            param!("anchor_name", String, false, "命名锚点（center 等预设或文档命名锚点；缺省 center）"),
+        ],
+    },
+    ToolSpec {
+        name: "crop_canvas",
+        profile: Profile::Core,
+        summary: "裁剪画布（只改 bounds 加平移，不删除原子；越界内容渲染时裁剪，撤销恢复）",
+        mutating: true,
+        params: &[
+            param!("region", Object, true, "{x,y,w,h} 整数像素，必须完全位于画布内"),
+        ],
+    },
+    ToolSpec {
+        name: "extend_canvas",
+        profile: Profile::Core,
+        summary: "扩展画布（只扩 bounds，新区域揭示文档背景色，不为揭示区新建原子）",
+        mutating: true,
+        params: &[
+            param!("margins", Object, true, "{left,top,right,bottom} 非负整数像素，至少一边 > 0"),
         ],
     },
     // ---- 删除 ----
