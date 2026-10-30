@@ -74,7 +74,7 @@ const IMPORT_IMAGE_PARAMS: &[ParamSpec] = &[
     param!("raw_options", Object, false, "仅当 bitmap 是 RAW 源（mime image/x-yanshi-rawsrc）时可用：展开参数 {wb: as_shot|auto（缺省 as_shot）, demosaic: malvar|bilinear（缺省 malvar）, pre_exposure_ev: -4..4（缺省 0，不 clamp、越界报错）, lens_correction: off|auto（缺省 off，D5 定版；auto = 文件自带校正逐项优先 + Lensfun 库匹配）, lens_override: string|null（手动点名镜头库中的镜头，查无此镜报错）, highlight_recovery: chroma|floor（缺省 chroma 真色度恢复，floor = 第三包保底机制）, tone: off|standard（缺省 standard，显影期基调曲线；off = 现行零调整链）, tone_strength: 0..1（缺省 1.0，越界报错、不 clamp；tone=off 时忽略）}；给到非 RAW blob 报错"),
 ];
 
-/// 核心层 133 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 140 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -1161,6 +1161,75 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("object_id", String, true, "对象 id"),
             param!("delta", Object, false, "{dx,dy} 平移"),
             param!("transform", Object, false, "{matrix,pivot} 仿射变换"),
+        ],
+    },
+    // ---- 画布几何（路线三）----
+    // 锚点是变换枢轴：缩放与旋转绕锚点，锚点画布坐标不动。
+    // 命名锚点换算：center/top_left/top_right/bottom_left/bottom_right/
+    // top_center/bottom_center/left_center/right_center 按当前画布尺寸算；
+    // 其余名字查文档命名锚点表。回执含新尺寸、实际生效比例与受限对象。
+    ToolSpec {
+        name: "resize_canvas_bounds",
+        profile: Profile::Core,
+        summary: "只改画布尺寸，内容不动（画布原点恒为 (0,0)）",
+        mutating: true,
+        params: &[
+            param!("width", Integer, true, "新宽度（≥1，单边 ≤16384，总像素 ≤2^28）"),
+            param!("height", Integer, true, "新高度（≥1，单边 ≤16384，总像素 ≤2^28）"),
+        ],
+    },
+    ToolSpec {
+        name: "scale_canvas",
+        profile: Profile::Core,
+        summary: "按比例缩放画布与全部内容（绕锚点；宽高用 f64::round 取整，下限 1）",
+        mutating: true,
+        params: &[
+            param!("scale", Number, false, "统一缩放比例（>0；与 scale_x/scale_y 二选一）"),
+            param!("scale_x", Number, false, "横向比例（>0；需配 scale_y）"),
+            param!("scale_y", Number, false, "纵向比例（>0；需配 scale_x）"),
+            param!("non_uniform", Boolean, false, "显式开启非均匀缩放（默认关闭，sx != sy 时必传 true）"),
+            param!("anchor", Object, false, "{x,y} 枢轴坐标（与 anchor_name 二选一）"),
+            param!("anchor_name", String, false, "命名锚点（center 等预设或文档命名锚点；缺省 center）"),
+        ],
+    },
+    ToolSpec {
+        name: "rotate_canvas",
+        profile: Profile::Core,
+        summary: "旋转画布与全部内容，只接受 90° 倍数（90/270 交换宽高；绕锚点）",
+        mutating: true,
+        params: &[
+            param!("degrees", Number, true, "旋转角度，只接受 90 的倍数，其他角度显式拒绝"),
+            param!("anchor", Object, false, "{x,y} 枢轴坐标（与 anchor_name 二选一）"),
+            param!("anchor_name", String, false, "命名锚点（center 等预设或文档命名锚点；缺省 center）"),
+        ],
+    },
+    ToolSpec {
+        name: "flip_canvas",
+        profile: Profile::Core,
+        summary: "翻转画布与全部内容（horizontal 左右翻，vertical 上下翻；绕锚点）",
+        mutating: true,
+        params: &[
+            param!("direction", String, true, "horizontal 或 vertical"),
+            param!("anchor", Object, false, "{x,y} 枢轴坐标（与 anchor_name 二选一）"),
+            param!("anchor_name", String, false, "命名锚点（center 等预设或文档命名锚点；缺省 center）"),
+        ],
+    },
+    ToolSpec {
+        name: "crop_canvas",
+        profile: Profile::Core,
+        summary: "裁剪画布（只改 bounds 加平移，不删除原子；越界内容渲染时裁剪，撤销恢复）",
+        mutating: true,
+        params: &[
+            param!("region", Any, true, "区域 {x,y,w,h} 或 [x,y,w,h] 整数像素，必须完全位于画布内"),
+        ],
+    },
+    ToolSpec {
+        name: "extend_canvas",
+        profile: Profile::Core,
+        summary: "扩展画布（只扩 bounds，新区域揭示文档背景色，不为揭示区新建原子）",
+        mutating: true,
+        params: &[
+            param!("margins", Object, true, "{left,top,right,bottom} 非负整数像素，至少一边 > 0"),
         ],
     },
     // ---- 删除 ----
@@ -2262,6 +2331,19 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("layer_id", String, false, "只修复该图层的有效 Bake 基底；缺省全部层"),
             param!("up_to_seq", Number, false, "只修复该水位的有效 Bake；缺省按层取最新有效 Bake"),
             param!("on_hash_mismatch", String, false, "哈希不一致口径：strict（默认，报错拒绝写入）或 append_rebake（真实哈希入库 + 追加新 Bake 原子）"),
+        ],
+    },
+    // **get_bake_status（bake 二期 item 2，auto-bake 只读观察口）**：
+    //   查全局开关、硬阈值／软线、文档未 bake 总数与每层状态（开关来源、预授权、
+    //   软线已发、受阻原因、门禁跳过原因、最新有效 Bake 的 seq／哈希／来源／触发）。
+    //   只读，不产生原子；文档级开关 v1 不存在，文档级读全局值。
+    ToolSpec {
+        name: "get_bake_status",
+        profile: Profile::Core,
+        summary: "只读查询自动 bake 状态：全局开关、硬阈值与软线、文档未 bake 内容原子总数，以及每层开关来源、预授权、软线已发、受阻原因、门禁跳过原因与最新有效 Bake 的原子序号、哈希、来源与触发。缺省返回全部存活层；给图层 ID 只返回该层（不存在或已删除则报错）。不产生原子。",
+        mutating: false,
+        params: &[
+            param!("layer_id", String, false, "只查该层；缺省全部存活层"),
         ],
     },
     ToolSpec {

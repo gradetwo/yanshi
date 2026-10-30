@@ -171,6 +171,13 @@ pub enum Primitive {
         height: u32,
         /// 放置位置（文档坐标左上角）。
         offset: (f64, f64),
+        /// 待施加的画布仿射（画布原点枢轴，已折平）。
+        ///
+        /// IDENTITY = 只按 `offset` 放置（既有行为）；非 IDENTITY 时渲染期
+        /// 按 `transform ∘ 平移(offset)` 一次采样（与 BakedBase 同口径），
+        /// 折叠期绝不重采样。纯平移仍直接折进 `offset`（见
+        /// [`transform_primitive`]），不走这条采样路。
+        transform: yanshi_core::bake::Affine2D,
         /// MIME 类型（内核目前只支持 `image/x-yanshi-raw`）。
         mime_type: String,
         /// **分块索引哈希** ✓（第 181 轮 ✓）：有它 ⇒ 渲染**只解覆盖请求区域**的块 ✓
@@ -185,7 +192,10 @@ pub enum Primitive {
     /// 压平基底（bake_layer 的产物）：画布 1:1 的单张位图 + 累积仿射。
     ///
     /// `transform` 缺省 IDENTITY；渲染期按累积矩阵**一次采样**，折叠期
-    /// 绝不重采样。`source_up_to_seq` 是该基底的水位（审计用）。
+    /// 绝不重采样。`source_up_to_seq` 是该基底的水位（审计用）；
+    /// `bake_seq` 是产生该基底的 BakeLayer 原子 seq（自愈身份，与
+    /// recover 的 target_bake_seq、append_rebake 的 replaces_bake_seq、
+    /// Undo 拦截的 required_bake_seq 同一口径，绝不用水位代理它）。
     BakedBase {
         /// blob 引用（PNG，直通 RGBA8，与图层离屏缓冲同构直存）。
         blob: BlobHash,
@@ -193,6 +203,8 @@ pub enum Primitive {
         width: u32,
         /// 位图高（画布高）。
         height: u32,
+        /// 产生该基底的 BakeLayer 原子 seq（缺 Blob 严格报错里的 bake_seq）。
+        bake_seq: u64,
         /// 水位：该基底覆盖的原子 seq 上界。
         source_up_to_seq: u64,
         /// 累积仿射（画布原点枢轴）；IDENTITY 时走 1:1 直贴路。
@@ -250,7 +262,8 @@ pub enum Primitive {
 pub fn parse_object(object: &Object) -> Primitive {
     // BakedBase 优先于 ObjectType：折叠期把压平基底写成 RasterPatch
     // 对象 + `baked_base: true` 标记，渲染图元必须是 BakedBase 而非
-    // 普通 RasterPatch（后者只平移，前者走仿射采样 + 缺 Blob 严格报错）。
+    // 普通 RasterPatch（纯平移时只平移原点，非平移仿射同样走渲染期
+    // 仿射采样；BakedBase 另有缺 Blob 严格报错）。
     if object.data.get("baked_base").and_then(Value::as_bool) == Some(true) {
         let blob = object
             .data
@@ -270,6 +283,19 @@ pub fn parse_object(object: &Object) -> Primitive {
                     .get("height")
                     .and_then(Value::as_u64)
                     .unwrap_or(0) as u32,
+                // 旧基底（本字段落地前压平）无 bake_seq 时回落到水位：
+                // 那是历史兼容，不是口径——新折叠一律写 bake_seq。
+                bake_seq: object
+                    .data
+                    .get("bake_seq")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_else(|| {
+                        object
+                            .data
+                            .get("source_up_to_seq")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)
+                    }),
                 source_up_to_seq: object
                     .data
                     .get("source_up_to_seq")
@@ -1173,6 +1199,7 @@ fn parse_raster_patch(data: &Value) -> Primitive {
         width,
         height,
         offset,
+        transform: yanshi_core::bake::Affine2D::IDENTITY,
         mime_type,
         tiles: data.get("tiles").and_then(Value::as_str).map(str::to_owned),
         raw_develop,
@@ -1195,7 +1222,8 @@ pub fn parse_color(value: &Value) -> LinearRgba {
 /// 这里在解析之后统一施加一次，覆盖所有绘制分支 ✓。
 ///
 /// 纯平移之外的旋转/缩放只对**点集**精确（笔触/形状/修图点列 ✓）；
-/// 位图补丁（`RasterPatch`）目前只支持平移 ✓ —— 旋转/缩放需要重采样 ✓，记为后续项 ✓。
+/// 位图补丁（`RasterPatch`）：纯平移折进原点，其余仿射复合进图元的
+/// `transform`、由渲染期一次采样（与 BakedBase 同口径），折叠期不重采样 ✓。
 /// **实例解析** ✓ —— 设计 9.2 `resolve_object` 的第一步 ✓。
 ///
 /// 返回"master 的图元 + 依次施加的变换" ✓，调用方按 [`transform_primitive`] 逐层施加即可 ✓：
@@ -1464,9 +1492,23 @@ pub fn transform_primitive(mut primitive: Primitive, transform: &Transform) -> P
             let (x, y) = map_point(position.0, position.1);
             *position = (x, y);
         }
-        Primitive::RasterPatch { offset, .. } => {
-            let (x, y) = map_point(offset.0, offset.1);
-            *offset = (x, y);
+        Primitive::RasterPatch {
+            offset, transform, ..
+        } => {
+            // 纯平移且此前无待施加仿射时，沿用既有行为折进原点
+            // （位图路与分块路的坐标口径一字不动）。
+            // 其余仿射（翻转/旋转/缩放，或已有待施加仿射时再复合）：
+            // 不动像素、只把仿射复合进 `transform`，由渲染期一次采样
+            // （与 BakedBase 同口径）；只平移原点会把补丁范围的镜像
+            // 错算成原点镜像（flip 后包围盒误报越界、bake 门误拒）。
+            let m = incoming_flat.0;
+            let is_translation = m[0] == 1.0 && m[1] == 0.0 && m[2] == 0.0 && m[3] == 1.0;
+            if transform.is_identity() && is_translation {
+                let (x, y) = map_point(offset.0, offset.1);
+                *offset = (x, y);
+            } else {
+                *transform = yanshi_core::bake::Affine2D::compose(incoming_flat, *transform);
+            }
         }
         Primitive::BakedBase {
             transform: affine, ..
@@ -1631,8 +1673,37 @@ pub fn object_bbox(object: &Object) -> Option<Bbox> {
             width,
             height,
             offset,
+            transform,
             ..
-        } => Bbox::new(offset.0, offset.1, width as f64, height as f64),
+        } => {
+            if transform.is_identity() {
+                Bbox::new(offset.0, offset.1, width as f64, height as f64)
+            } else {
+                // 变换后实际范围：补丁局部矩形的四个角经
+                // `transform ∘ 平移(offset)` 后的外接矩形（与渲染采样同一矩阵）。
+                let placed = yanshi_core::bake::Affine2D::compose(
+                    transform,
+                    yanshi_core::bake::Affine2D([1.0, 0.0, 0.0, 1.0, offset.0, offset.1]),
+                );
+                let corners = [
+                    placed.apply_point(0.0, 0.0),
+                    placed.apply_point(width as f64, 0.0),
+                    placed.apply_point(0.0, height as f64),
+                    placed.apply_point(width as f64, height as f64),
+                ];
+                let min_x = corners.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+                let min_y = corners.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+                let max_x = corners
+                    .iter()
+                    .map(|p| p.0)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let max_y = corners
+                    .iter()
+                    .map(|p| p.1)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                Bbox::new(min_x, min_y, max_x - min_x, max_y - min_y)
+            }
+        }
         Primitive::BakedBase {
             width,
             height,
@@ -1690,6 +1761,7 @@ pub fn layer_bbox(state: &yanshi_core::DocumentState, layer_id: &str) -> Option<
 
 /// 仿射采样的目标缓冲描述（把 4 个目标参数收成 1 个，避免 clippy
 /// too_many_arguments；与 `sample_affine_rgba8` 的调用点同源）。
+#[derive(Debug, Clone, Copy)]
 pub struct AffineSampleDest {
     /// 目标缓冲在画布中的原点（缓冲像素坐标）。
     pub origin: (i64, i64),
@@ -1708,18 +1780,38 @@ pub struct AffineSampleDest {
 /// 确定性：逆矩阵用 Q16.16 定点步进，双线性权重用 u64 整数运算，
 /// 越界邻点按 ClampToTransparent 计 0，绝不钳制到边缘像素。
 /// `dest_center(doc) = origin + local * step + step / 2`，LOD 步长同样适用。
+/// 仿射采样输出缓冲用 `try_reserve_exact`（二期第 6 项）：该函数在
+/// 生产路径上只有 BakedBase 渲染一个调用方，失败返回可观测的资源错
+/// 误而不是进程 abort；调用方（render.rs）用 `?` 直接传播。
+/// 尺寸乘积溢出同样走这条资源错误（不 wrap、不 panic）。
 pub fn sample_affine_rgba8(
     src: &[u8],
     src_w: u32,
     src_h: u32,
     transform: yanshi_core::bake::Affine2D,
     dest: AffineSampleDest,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, yanshi_core::YanshiError> {
     let (dest_origin, dest_w, dest_h) = (dest.origin, dest.width, dest.height);
     let step = dest.step.max(1) as i64;
-    let mut out = vec![0u8; (dest_w as usize) * (dest_h as usize) * 4];
+    let len = (dest_w as usize)
+        .checked_mul(dest_h as usize)
+        .and_then(|v| v.checked_mul(4))
+        .ok_or_else(|| {
+            yanshi_core::YanshiError::new(
+                yanshi_core::ErrorCode::ResourceExhausted,
+                yanshi_core::ErrorContext::detail("BakeError::OutOfMemory：仿射采样缓冲尺寸溢出"),
+            )
+        })?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(len).map_err(|_| {
+        yanshi_core::YanshiError::new(
+            yanshi_core::ErrorCode::ResourceExhausted,
+            yanshi_core::ErrorContext::detail("BakeError::OutOfMemory：仿射采样缓冲分配失败"),
+        )
+    })?;
+    out.resize(len, 0);
     let Some(inv) = transform.inverse() else {
-        return out;
+        return Ok(out);
     };
     // 逆矩阵转 Q16.16 定点：inv * (dest_center) - 0.5 得到源像素索引浮点。
     let to_fixed = |v: f64| -> i64 { (v * 65536.0).round() as i64 };
@@ -1770,6 +1862,64 @@ pub fn sample_affine_rgba8(
             for c in 0..4 {
                 // 权重和恒为 65536^2；四舍五入到最近整数。
                 out[oi + c] = ((acc[c] + (1 << 31)) >> 32) as u8;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// [`sample_affine_rgba8`] 的线性 f32 版：源是 RGB 三元组（RAW 展开路，
+/// 隐含不透明），与字节版同一逆映射与中心约定（目标像素中心经逆矩阵
+/// 再减半个源像素），边界外邻点权重计 0、分母不重归一（与字节版同口径，
+/// 整数映射时精确、无边缘增亮）。
+///
+/// 输出与目标缓冲同形（`dest_w × dest_h × 3`），调用方按自身不透明度
+/// 规则合成（`blit_linear` 口径：alpha = 不透明度）。
+pub fn sample_affine_linear(
+    src: &[f32],
+    src_w: u32,
+    src_h: u32,
+    transform: yanshi_core::bake::Affine2D,
+    dest: AffineSampleDest,
+) -> Vec<f32> {
+    let (dest_origin, dest_w, dest_h) = (dest.origin, dest.width, dest.height);
+    let step = dest.step.max(1) as f64;
+    let mut out = vec![0.0f32; (dest_w as usize) * (dest_h as usize) * 3];
+    let Some(inv) = transform.inverse() else {
+        return out;
+    };
+    let [ia, ib, ic, id, ie, inf] = inv.0;
+    let sw = src_w as i64;
+    let sh = src_h as i64;
+    for dy in 0..dest_h as i64 {
+        for dx in 0..dest_w as i64 {
+            // 目标像素中心（文档坐标），与字节版同式。
+            let cx = dest_origin.0 as f64 + dx as f64 * step + step / 2.0;
+            let cy = dest_origin.1 as f64 + dy as f64 * step + step / 2.0;
+            let sx = ia * cx + ic * cy + ie - 0.5;
+            let sy = ib * cx + id * cy + inf - 0.5;
+            let x0 = sx.floor() as i64;
+            let y0 = sy.floor() as i64;
+            let fx = sx - x0 as f64;
+            let fy = sy - y0 as f64;
+            let mut acc = [0.0f64; 3];
+            for (nx, ny, w) in [
+                (x0, y0, (1.0 - fx) * (1.0 - fy)),
+                (x0 + 1, y0, fx * (1.0 - fy)),
+                (x0, y0 + 1, (1.0 - fx) * fy),
+                (x0 + 1, y0 + 1, fx * fy),
+            ] {
+                if w == 0.0 || nx < 0 || ny < 0 || nx >= sw || ny >= sh {
+                    continue;
+                }
+                let idx = ((ny * sw + nx) * 3) as usize;
+                for c in 0..3 {
+                    acc[c] += src[idx + c] as f64 * w;
+                }
+            }
+            let oi = ((dy * dest_w as i64 + dx) * 3) as usize;
+            for c in 0..3 {
+                out[oi + c] = acc[c] as f32;
             }
         }
     }
@@ -1830,6 +1980,56 @@ mod tests {
     }
 
     #[test]
+    fn baked_base_parse_uses_bake_atom_seq_not_waterlevel() {
+        // 口径：bake_seq 是 BakeLayer 原子 seq，水位只是上界，两者不同值时
+        // 不得互相代理；旧基底无 bake_seq 字段时才回落到水位（历史兼容）。
+        let mk = |data: Value| {
+            let object = Object {
+                seq: 1,
+                id: "baked:L1".to_owned(),
+                layer_id: "L1".to_owned(),
+                object_type: ObjectType::RasterPatch,
+                z_index: 0,
+                visible: true,
+                enabled: true,
+                locked: false,
+                metadata: Value::Null,
+                transform: Transform::IDENTITY,
+                style: None,
+                versions: vec![],
+                current_version: None,
+                created_by: "a".to_owned(),
+                deleted_by: None,
+                data,
+                blobs: vec![],
+            };
+            parse_object(&object)
+        };
+        let new = mk(
+            json!({"baked_base": true, "blob_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "width": 4, "height": 3, "bake_seq": 7, "source_up_to_seq": 6}),
+        );
+        assert!(matches!(
+            new,
+            Primitive::BakedBase {
+                bake_seq: 7,
+                source_up_to_seq: 6,
+                ..
+            }
+        ));
+        let legacy = mk(
+            json!({"baked_base": true, "blob_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "width": 4, "height": 3, "source_up_to_seq": 6}),
+        );
+        assert!(matches!(
+            legacy,
+            Primitive::BakedBase {
+                bake_seq: 6,
+                source_up_to_seq: 6,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn affine_sample_identity_is_exact_and_outside_is_transparent() {
         // 2x2 源：红绿 / 蓝白（直通 RGBA）。
         let src: Vec<u8> = vec![
@@ -1846,7 +2046,8 @@ mod tests {
                 height: 4,
                 step: 1,
             },
-        );
+        )
+        .expect("小尺寸采样缓冲分配不应失败");
         // 目标 4x4、源 2x2、IDENTITY、原点 (0,0)：行主序下目标 (0,0)=红、
         // (1,0)=绿、(2,0)=透明、(0,1)=蓝、(1,1)=白，其余全部透明。
         assert_eq!(&out[0..4], &[255, 0, 0, 255]);
@@ -1856,6 +2057,89 @@ mod tests {
         assert_eq!(&out[20..24], &[255, 255, 255, 255]);
         assert_eq!(&out[24..28], &[0, 0, 0, 0]);
         assert_eq!(&out[60..64], &[0, 0, 0, 0]);
+    }
+
+    /// 翻转后 RasterPatch 的包围盒必须按变换后四个角的外接矩形算，
+    /// 而不是只平移原点（旧行为：原点 (18,48) 被翻成 (182,48)，
+    /// 包围盒误报 [182,48,246,72] 越界，bake 门误拒）。
+    #[test]
+    fn raster_patch_flip_bbox_uses_transformed_corners() {
+        let mut patch = object(
+            ObjectType::RasterPatch,
+            json!({
+                "bitmap": {"blob_hash": format!("sha256:{}", "a".repeat(64)), "size": 16, "mime_type": "image/x-yanshi-raw"},
+                "width": 64,
+                "height": 24,
+                "region": {"x": 18, "y": 48, "w": 64, "h": 24},
+            }),
+        );
+        // 绕画布中心 x=100 的水平翻转（已折平的画布原点枢轴矩阵）。
+        patch.transform = Transform {
+            matrix: [-1.0, 0.0, 0.0, 1.0, 200.0, 0.0],
+            pivot: [0.0, 0.0],
+        };
+        assert_eq!(
+            object_bbox(&patch).unwrap(),
+            Bbox::new(118.0, 48.0, 64.0, 24.0),
+            "翻转后补丁范围应为原范围的镜像 [118,48,182,72]"
+        );
+    }
+
+    /// 纯平移仍走旧口径：折进原点、transform 保持 IDENTITY
+    ///（平移补丁的位图路与分块路一字不动）。
+    #[test]
+    fn raster_patch_translation_still_folds_into_offset() {
+        let mut patch = object(
+            ObjectType::RasterPatch,
+            json!({
+                "bitmap": {"blob_hash": format!("sha256:{}", "a".repeat(64)), "size": 16, "mime_type": "image/x-yanshi-raw"},
+                "width": 64,
+                "height": 24,
+                "region": {"x": 18, "y": 48, "w": 64, "h": 24},
+            }),
+        );
+        patch.transform = Transform {
+            matrix: [1.0, 0.0, 0.0, 1.0, 10.0, 5.0],
+            pivot: [0.0, 0.0],
+        };
+        assert_eq!(
+            object_bbox(&patch).unwrap(),
+            Bbox::new(28.0, 53.0, 64.0, 24.0)
+        );
+        if let Primitive::RasterPatch { offset, .. } =
+            transform_primitive(parse_object(&patch), &patch.transform)
+        {
+            assert_eq!(offset, (28.0, 53.0));
+        } else {
+            panic!("应为 RasterPatch");
+        }
+    }
+
+    /// 线性采样与字节采样在整数翻转下逐通道一致（源 RGB 取 0/1 极值，
+    /// 双线性权重为 0/1 时无量化差）。
+    #[test]
+    fn affine_sample_linear_flip_matches_rgba8() {
+        let rgb: Vec<f32> = vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+        let rgba8: Vec<u8> = vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ];
+        // 绕 2 宽图像中心 x=1 的水平翻转：局部→目标矩阵 [-1,0,0,1,2,0]。
+        let flip = yanshi_core::bake::Affine2D([-1.0, 0.0, 0.0, 1.0, 2.0, 0.0]);
+        let dest = AffineSampleDest {
+            origin: (0, 0),
+            width: 2,
+            height: 2,
+            step: 1,
+        };
+        let lin = sample_affine_linear(&rgb, 2, 2, flip, dest);
+        let byt = sample_affine_rgba8(&rgba8, 2, 2, flip, dest);
+        // 顶行：绿 / 红；底行：白 / 蓝。
+        assert_eq!(&lin[0..6], &[0.0, 1.0, 0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(&lin[6..12], &[1.0, 1.0, 1.0, 0.0, 0.0, 1.0]);
+        for (i, v) in lin.iter().enumerate() {
+            let b = byt[(i / 3) * 4 + (i % 3)] as f32 / 255.0;
+            assert!((v - b).abs() < 1e-6, "通道 {i} 线性 {v} 与字节 {b} 不一致");
+        }
     }
 
     fn object(object_type: ObjectType, data: Value) -> Object {

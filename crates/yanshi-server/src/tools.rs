@@ -34,7 +34,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（133 个）。
+    /// 核心层：默认注册（140 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -765,7 +765,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，133 个）。
+    /// 核心层（默认注册，140 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -903,10 +903,12 @@ impl ToolRegistry {
 
     /// 调用工具；返回 10.1 或 5.7 形状的 JSON。
     ///
-    /// **这里是三条横切关注点的唯一收口** ✓（本项目的既定纪律：一处生效、全部受益 ✓）：
+    /// **这里是四条横切关注点的唯一收口** ✓（本项目的既定纪律：一处生效、全部受益 ✓）：
     /// * 角色权限（`spec.mutating` ＋ `ctx.role` ✓）；
     /// * **在飞登记**（同文档的第二个变更请求 ⇒ `busy` ✓，外部测试报告 P1 ✓）；
-    /// * **阶段耗时**（`timings` ✓，外部测试报告 P2 ✓）。
+    /// * **阶段耗时**（`timings` ✓，外部测试报告 P2 ✓）；
+    /// * **auto-bake 搭便车评估**（bake 二期 item 2 ✓：触发调用成功提交后评估一次，
+    ///   批量子调用不走这里、整批只在外层看到一次 ✓）。
     pub fn call(&self, ctx: &mut ToolContext<'_>, name: &str, args: &Value) -> Value {
         // **整个工具调用的起表** ✓：`total_ms` 与 `prep_ms` 都由它量 ✓（P2）。
         let call_started = std::time::Instant::now();
@@ -987,7 +989,22 @@ impl ToolRegistry {
         if let Some(op) = guard.as_ref() {
             ctx.inflight = Some(std::sync::Arc::clone(op.op()));
         }
+        // **auto-bake 评估的调用前水位**：触发调用提交前 head；文档未打开则不评估
+        // （新建文档那次调用本身不产生内容原子，跳过正好）。
+        let head_before = ctx
+            .workspace
+            .document(&ctx.doc_id)
+            .map(|document| document.head_seq());
         let outcome = dispatch(spec, ctx, args);
+        // **auto-bake 搭便车评估**（bake 二期 item 2）：触发调用成功提交后、在放开
+        // 在飞登记之前评估一次——bake 提交本身也要落在同一把登记之下（否则并发的
+        // 第二个变更请求会以为文档空闲），且 `timings` 能如实含 bake 耗时。
+        // 评估失败绝不反噬触发调用（失败转成 auto_bake 节里的 failed 状态＋受阻态，
+        // 见 tools_autobake.rs）；批量子调用不走这里，整批只在外层看到一次。
+        let auto_bake_section = match &outcome {
+            Ok(_) => evaluate_auto_bake(ctx, name, head_before),
+            Err(_) => None,
+        };
         ctx.inflight = previous_inflight;
         // 注销在飞登记（`drop` 也可，但显式写出来意图更清楚 ✓）。
         drop(guard);
@@ -1027,6 +1044,19 @@ impl ToolRegistry {
         // **每笔均值重算**（预算字段收缩版）：以最终 `timings` 为准覆盖
         // `dispatch` 里按分段增量算的那份，保证与回执展示的 `total_ms` 对应 ✓。
         attach_ms_per_stroke_avg(&mut response, name);
+        // **auto-bake 节**（bake 二期 item 2）：有评估结果时附上；bake 成功时回执
+        // head 已是 bake 后 head（如实：调用方按 head 继续操作时看到的是真实现状，
+        // 不会把 bake 原子漏掉；回执本来没有 head 键的工具不新造这个键）。
+        if let Some(section) = auto_bake_section {
+            if section.get("status").and_then(Value::as_str) == Some("baked") {
+                if let Some(bake_seq) = section.get("bake_atom_seq").and_then(Value::as_u64) {
+                    if response.get("head").and_then(Value::as_u64).is_some() {
+                        response["head"] = json!(bake_seq);
+                    }
+                }
+            }
+            response["auto_bake"] = section;
+        }
         // **把这次结果记进诊断环** ✓（`collect_diagnostics` 的 `timings.json` 就是它 ✓）：
         // 这是工具结果里**本来就有**的那份 `timings` 与 `warnings` ✓，
         // 采集时不必再猜"上一次慢在哪、有没有告警" ✓。
@@ -2216,6 +2246,12 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "remove_from_group" => write_remove_from_group(ctx, args),
         "set_group_transform" => write_set_group_transform(ctx, args),
         "move_object" => write_move_object(ctx, args),
+        "resize_canvas_bounds" => write_resize_canvas_bounds(ctx, args),
+        "scale_canvas" => write_scale_canvas(ctx, args),
+        "rotate_canvas" => write_rotate_canvas(ctx, args),
+        "flip_canvas" => write_flip_canvas(ctx, args),
+        "crop_canvas" => write_crop_canvas(ctx, args),
+        "extend_canvas" => write_extend_canvas(ctx, args),
         "vector_erase" => write_vector_erase(ctx, args),
         "vector_hit_test" => read_vector_hit_test(ctx, args),
         "delete_object" => write_tombstone(ctx, args, "object_id"),
@@ -2316,6 +2352,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "bake_layer" => write_bake_layer(ctx, args),
         "bake_document" => write_bake_document(ctx, args),
         "recover_baked_blobs" => write_recover_baked_blobs(ctx, args),
+        "get_bake_status" => read_get_bake_status(ctx, args),
         "toned_ground" => write_toned_ground(ctx, args),
         "gradient_fill" => write_gradient_fill(ctx, args),
         "gradient_blend" => write_gradient_blend(ctx, args),
@@ -4060,7 +4097,7 @@ fn write_create_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
 //   ⇒ 只差工具层**放行这一个键** ✗ ⇒ 于是 `update_layer{patch:{z_index:…}}` 落进
 //     「patch 中没有可修改的图层属性」✗，而层级**只能在 `create_layer` 时定一次** ✗（事后不可改）。
 //   **⇒ 判据**：`tests/layer_z_index.rs`（改完顺序真的变了 ⇒ 断结构量 ✓）。
-const LAYER_PATCH_KEYS: [&str; 10] = [
+const LAYER_PATCH_KEYS: [&str; 14] = [
     "name",
     "visible",
     "opacity",
@@ -4069,6 +4106,13 @@ const LAYER_PATCH_KEYS: [&str; 10] = [
     "alpha_lock",
     "clipping_mask",
     "mask_id",
+    // **auto-bake 系键**（bake 二期 item 2）：fold 侧 `other` 臂把未知键并入
+    // `layer.metadata`（非对象元数据先转空对象，插入不丢）⇒ 这里放行即够，
+    // 不必另写读写合并；布尔校验见下面（fold 侧非布尔保持旧值，工具层挡在外面）。
+    META_AUTO_BAKE,
+    META_ALLOW_AUTO_RASTERIZE,
+    META_ALLOW_AUTO_CLIP,
+    META_ALLOW_AUTO_FLATTEN,
     // **层级序号** ✓（内核已支持 ✓；`reorder_layers` 那种"提交全部图层完整序列"太容易错 ✗）
     "z_index",
     // **★ 第 252 轮 ✗**：**把图层移进／移出**图层组** ✓（比建议里"新增 3 个工具"省得多 ✓）
@@ -4183,6 +4227,26 @@ fn write_update_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
             guard_mask_link_not_flatten_baked(ctx, &layer_id)?;
         }
     }
+    // **auto-bake 系键必须是布尔**（bake 二期 item 2）：fold 侧非布尔保持旧值
+    // （静默不生效）⇒ 工具层必须挡在外面，不让非法值进不可变日志（照 blend_mode
+    // 那条先例：接受了却没用是最忌讳的一类）。
+    for key in [
+        META_AUTO_BAKE,
+        META_ALLOW_AUTO_RASTERIZE,
+        META_ALLOW_AUTO_CLIP,
+        META_ALLOW_AUTO_FLATTEN,
+    ] {
+        if let Some(value) = patch.get(key) {
+            if value.as_bool().is_none() {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "{key} 必须是布尔（auto-bake 层开关与预授权只接受 true/false）"
+                    )),
+                ));
+            }
+        }
+    }
     let mut atoms = Vec::new();
     for key in LAYER_PATCH_KEYS {
         if let Some(value) = patch.get(key) {
@@ -4202,6 +4266,19 @@ fn write_update_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     }
     let changeset = Changeset::new_id();
     let results = ctx.commit_changeset(atoms, changeset.clone())?;
+    // auto-bake：改了 auto_bake 系设置 ⇒ 清该层受阻态与跳过原因（设置变了，
+    // 门禁输入变了，下次内容调用重新评估；update_layer 本身不触发评估，见 NEVER_EVAL）。
+    if [
+        META_AUTO_BAKE,
+        META_ALLOW_AUTO_RASTERIZE,
+        META_ALLOW_AUTO_CLIP,
+        META_ALLOW_AUTO_FLATTEN,
+    ]
+    .iter()
+    .any(|key| patch.contains_key(*key))
+    {
+        clear_auto_bake_state_for_settings_change(ctx, &layer_id);
+    }
     let responses: Vec<Value> = results
         .iter()
         .map(|result| commit_response(result, None, None, Vec::new()))
@@ -11472,7 +11549,18 @@ fn write_history_atom(
     }
     let result = ctx.commit(kind, json!({ "target": target }))?;
     let region = region_of(&result);
-    finish_mutation(ctx, &result, region)
+    let mut receipt = finish_mutation(ctx, &result, region)?;
+    // auto-bake 拦截注脚（bake 二期 item 2，设计 §9 决定 12）：目标是被有效 Bake
+    // 剪枝的内容类原子时，只附说明与 Bake seq，不改 revert 语义（undo_last 不走
+    // 这里：被剪枝的手势已计入 ignored，无需再注）。
+    if kind == AtomKind::Revert {
+        if let Some((bake_seq, note)) = bake_fold_note_for_revert(ctx, &target) {
+            receipt["bake_folded"] = json!(true);
+            receipt["bake_atom_seq"] = json!(bake_seq);
+            receipt["bake_note"] = json!(note);
+        }
+    }
+    Ok(receipt)
 }
 
 fn write_cancel_job(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
@@ -23861,6 +23949,10 @@ use tools_vector::*;
 #[path = "tools_bake.rs"]
 mod tools_bake;
 use tools_bake::*;
+// **auto-bake**（bake 二期 item 2）：阈值触发的搭便车压平，见 tools_autobake.rs。
+#[path = "tools_autobake.rs"]
+mod tools_autobake;
+use tools_autobake::*;
 
 // **★ 跨模块的 test 辅助 ⇒ 父模块**（第 1279 轮）：`tools_brush.rs` / `tools_read.rs` 的
 //   `#[cfg(test)]` 段也用它们 ⇒ 所以不能放在 `tools_tests.rs` 里（那会多一层模块）✓
@@ -23896,6 +23988,11 @@ pub(super) fn delta_note() -> &'static str {
         "本次走纯 CPU 路 ⇒ 没有可比的两条路；逐位一致由判据 tool-gpu-pure-parity.mjs 离线证明"
     }
 }
+
+// **几何（路线三）**：画布几何工具（resize/scale/rotate/flip/crop/extend）。
+#[path = "tools_geometry.rs"]
+mod tools_geometry;
+use tools_geometry::*;
 
 #[cfg(test)]
 #[path = "tools_tests.rs"]
