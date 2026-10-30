@@ -5041,8 +5041,9 @@ impl Renderer {
                         };
                         match &*entry {
                             DecodedPixels::Rgba8(w, h, bytes) => {
-                                let sampled =
-                                    crate::object::sample_affine_rgba8(bytes, *w, *h, placed, dest);
+                                let sampled = crate::object::sample_affine_rgba8(
+                                    bytes, *w, *h, placed, dest,
+                                )?;
                                 // 与 BakedBase 分支逐字节同口径：跳 alpha 0、
                                 // 预乘线性化后乘不透明度、source-over 合成。
                                 for ly in 0..bh {
