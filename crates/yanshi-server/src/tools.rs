@@ -5332,9 +5332,22 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         .unwrap_or(1.0)
         .clamp(0.0, 1.0);
     let color = if let Some(object) = color.as_object() {
-        let alpha = object.get("a").and_then(Value::as_f64).unwrap_or(255.0) * opacity;
+        // **缺省 alpha 须按对象的域取** ✓（对象浮点修，与数组分支同型）：
+        //   现分量全 ≤ 1 的对象是线性域 ⇒ 不透明 = 1.0；任一分量 > 1 是字节域 ⇒ 255.0。
+        //   ⇒ 原缺陷 ✗：缺省一律 255.0 ⇒ 给 `{0.5,0.5,0.5}`（线性）补上 255.0 后，
+        //     下游 `parse_spec_color` 见分量 > 1 改走字节分支 ⇒ 0.5→1 近黑 ✗。
+        //   ⇒ 只修解析器不够 ✗：调用点先补的 255.0 会先毒化输入（盒探针实测：
+        //     解析器修后、调用点未修时，对象浮点仍落 (1,1,1)）⇒ 两处须同修 ✓。
+        //   域判定含 `a`（与数组分支含第 4 元同一条）：`{0.5,0.5,0.5,a:200}`
+        //   这种混合域输入走字节分支，与 `[0.5,0.5,0.5,200]` 一致 ✓。
+        let all_linear = ["r", "g", "b", "a"]
+            .iter()
+            .filter_map(|key| object.get(*key).and_then(Value::as_f64))
+            .all(|f| f <= 1.0);
+        let opaque = if all_linear { 1.0 } else { 255.0 };
+        let alpha = object.get("a").and_then(Value::as_f64).unwrap_or(opaque) * opacity;
         let mut copy = object.clone();
-        copy.insert("a".to_string(), json!(alpha.clamp(0.0, 255.0)));
+        copy.insert("a".to_string(), json!(alpha.clamp(0.0, opaque)));
         Value::Object(copy)
     } else if let Some(items) = color.as_array() {
         // **数组形态也要把 `opacity` 乘进 alpha** ✓（第 1410 轮修）

@@ -507,7 +507,7 @@ pub fn parse_spec_color_with_space(
         None => return parse_spec_color(value),
         Some(space) => space,
     };
-    // **对象式 / hex 不受参数影响**：直接走既有解析（恒为字节）。
+    // **对象式 / hex 不受空间参数影响**：直接走既有解析（对象自身有域切换，hex 恒为字节）。
     if !matches!(value, Value::Array(_)) {
         return parse_spec_color(value);
     }
@@ -562,7 +562,8 @@ pub fn parse_spec_color_with_space(
 /// |---|---|
 /// | `[r, g, b]` / `[r, g, b, a]`，所有分量 ≤ 1 | 直通线性（alpha 缺省 1.0） |
 /// | `[r, g, b, a]`，任一分量 > 1 | sRGB 字节 `0-255`（Agent 常写 `[40,120,60,255]`） |
-/// | `{"r": 0-255, "g": …, "b": …, "a": …}` | sRGB 字节（alpha 缺省 255） |
+/// | `{"r": 0-1, "g": …, "b": …, "a": …}`，所有分量 ≤ 1 | 直通线性（alpha 缺省 1.0；与数组分支同一条域切换） |
+/// | `{"r": 0-255, "g": …, "b": …, "a": …}`，任一分量 > 1 | sRGB 字节（alpha 缺省 255；a 恰好 1.0 ⇒ 不透明） |
 /// | `"#RRGGBB"` / `"#RRGGBBAA"` / `"#RGB"` | sRGB 十六进制 |
 ///
 /// 历史事故：`[40, 120, 60, 255]` 曾被当作线性浮点直通，alpha = 255 直接饱和成白色，
@@ -624,25 +625,56 @@ pub fn parse_spec_color(value: &serde_json::Value) -> Option<LinearRgba> {
                     return None;
                 }
             }
-            let channel = |key: &str, default: u8| -> Option<u8> {
+            // **对象分支的域切换**（对象浮点修）：与数组分支同一条规则——
+            // 任一分量 > 1 ⇒ 字节域，否则线性域。修前这里恒走字节：`{0.5,0.5,0.5}`
+            // 被 round 成 (1,1,1) 近黑，且 `a: 1.0` 被当成 1/255 近透明；
+            // 注册表却承诺"任一分量 > 1 即按字节，否则按 0..1 的比例" ⇒ 静默降级。
+            // 非数字的 present 值必须整体拒绝（旧行为）：缺键才取缺省，
+            // 现值不是数字不能当成缺键，否则 `{"r": "red"}` 会静默变成黑色。
+            let raw = |key: &str| -> Option<Option<f64>> {
                 match map.get(key) {
-                    None => Some(default),
-                    Some(Value::Number(number)) => {
-                        let raw = number.as_f64()?;
-                        if !(0.0..=255.0).contains(&raw) {
-                            return None;
-                        }
-                        Some(raw.round() as u8)
-                    }
+                    None => Some(None),
+                    Some(Value::Number(number)) => Some(number.as_f64()),
                     Some(_) => None,
                 }
             };
-            Some(straight_linear_from_bytes([
-                channel("r", 0)?,
-                channel("g", 0)?,
-                channel("b", 0)?,
-                channel("a", 255)?,
-            ]))
+            let (r, g, b, a) = (raw("r")?, raw("g")?, raw("b")?, raw("a")?);
+            let present: Vec<f64> = [r, g, b, a].into_iter().flatten().collect();
+            if present.iter().any(|component| *component > 1.0) {
+                // 字节域：`a` 恰好 1.0 ⇒ 不透明（与数组分支的混合域特例同一条）。
+                let byte = |value: Option<f64>, default: u8| -> Option<u8> {
+                    let raw = value.unwrap_or(default as f64);
+                    if !(0.0..=255.0).contains(&raw) {
+                        return None;
+                    }
+                    Some(raw.round() as u8)
+                };
+                let alpha_raw = a.unwrap_or(255.0);
+                let alpha_byte = if alpha_raw == 1.0 { 255 } else { byte(a, 255)? };
+                Some(straight_linear_from_bytes([
+                    byte(r, 0)?,
+                    byte(g, 0)?,
+                    byte(b, 0)?,
+                    alpha_byte,
+                ]))
+            } else {
+                let channel = |value: Option<f64>, default: f32| -> f32 {
+                    value.unwrap_or(default as f64) as f32
+                };
+                let color = [
+                    channel(r, 0.0),
+                    channel(g, 0.0),
+                    channel(b, 0.0),
+                    channel(a, 1.0),
+                ];
+                if color
+                    .iter()
+                    .any(|component| !component.is_finite() || *component < 0.0)
+                {
+                    return None;
+                }
+                Some(color)
+            }
         }
         Value::String(text) => parse_hex_color(text),
         _ => None,
@@ -688,7 +720,7 @@ pub fn color_error(value: &serde_json::Value) -> Option<String> {
     }
     Some(format!(
         "颜色格式非法：{}；支持 [r,g,b,a]（0-1 线性或 0-255 sRGB 字节）、\
-         {{\"r\":0-255,\"g\":…,\"b\":…,\"a\":…}} 或 \"#RRGGBB\"",
+         {{\"r\":0-255 或 0-1,\"g\":…,\"b\":…,\"a\":…}} 或 \"#RRGGBB\"",
         compact(value)
     ))
 }
@@ -743,6 +775,40 @@ mod spec_color_tests {
         );
         let half = parse_spec_color(&json!("#00000080")).unwrap();
         assert!((half[3] - 128.0 / 255.0).abs() < 1e-3, "{half:?}");
+    }
+
+    /// **对象浮点域切换**（fill_region 对象色修）：对象分支与数组分支同一条规则——
+    /// 全分量 ≤ 1 ⇒ 直通线性，任一分量 > 1 ⇒ sRGB 字节；a 恰好 1.0 ⇒ 不透明。
+    /// 修前红：对象浮点曾被 round 成字节 ⇒ `{0.5,0.5,0.5}` 落 (1,1,1) 近黑。
+    #[test]
+    fn object_float_form_uses_linear_domain() {
+        let mid = parse_spec_color(&json!({"r": 0.5, "g": 0.5, "b": 0.5})).unwrap();
+        assert_eq!(mid, [0.5, 0.5, 0.5, 1.0]);
+        // 与数组写法等价。
+        assert_eq!(
+            mid,
+            parse_spec_color(&json!([0.5, 0.5, 0.5])).unwrap(),
+            "对象浮点与数组浮点必须等价"
+        );
+        // a=1.0 ⇒ 不透明，不是 1/255。
+        let with_alpha =
+            parse_spec_color(&json!({"r": 0.5, "g": 0.25, "b": 0.0, "a": 1.0})).unwrap();
+        assert_eq!(with_alpha, [0.5, 0.25, 0.0, 1.0]);
+        // 字节对象不变（含 a=1.0 的混合域特例，与数组分支同一条）。
+        let bytes = parse_spec_color(&json!({"r": 200, "g": 100, "b": 50, "a": 1.0})).unwrap();
+        assert_eq!(
+            bytes,
+            parse_spec_color(&json!([200, 100, 50, 1])).unwrap(),
+            "对象字节与数组字节必须等价"
+        );
+        assert!((bytes[3] - 1.0).abs() < 1e-6, "a=1.0 ⇒ 不透明：{bytes:?}");
+        // 黑在两域下结果相同（不怕域切换改写既有用例）。
+        assert_eq!(
+            parse_spec_color(&json!({"r": 0, "g": 0, "b": 0})).unwrap(),
+            [0.0, 0.0, 0.0, 1.0]
+        );
+        // 负分量在线性域仍被拒绝。
+        assert!(parse_spec_color(&json!({"r": -0.5, "g": 0.0, "b": 0.0})).is_none());
     }
 
     #[test]
