@@ -4,7 +4,7 @@
 #   文档-only 推送不编（**/*.md 不改二进制 ✓，与 ci.yml 的 paths-ignore 同口径 ✓）。
 # **只编最新** ✓：concurrency 组 nightly、cancel-in-progress true ⇒
 #   正在编时又推上来，取消前面的、只编最新的 ✓（用户要求 ✓）。
-# **绝不半新半旧** ✓：四个平台编完之后，**一个** publish 作业统一更新滚动 Release ⇒
+# **绝不半新半旧** ✓：五个平台编完之后，**一个** publish 作业统一更新滚动 Release ⇒
 #   被取消的 run 永远留不下半更新的 Release ✓。
 # **分支 dispatch 只编不发** ✓：publish 作业 gate 在 `github.ref == 'refs/heads/main'` ⇒
 #   分支上 dispatch 只能验证构建路，绝不会把分支二进制发成 nightly ✓。
@@ -49,6 +49,8 @@ jobs:
           import json
           ALL = [
               {"os": "ubuntu-latest", "label": "linux-x86_64", "target": "x86_64-unknown-linux-gnu"},
+              # linux-arm64 用原生 ARM runner：冒烟要实跑包里的二进制，交叉编的包在 x86 runner 上跑不起来。
+              {"os": "ubuntu-24.04-arm", "label": "linux-arm64", "target": "aarch64-unknown-linux-gnu"},
               {"os": "macos-14", "label": "macos-x86_64", "target": "x86_64-apple-darwin"},
               {"os": "macos-14", "label": "macos-arm64", "target": "aarch64-apple-darwin"},
               {"os": "windows-latest", "label": "windows-x86_64", "target": "x86_64-pc-windows-msvc"},
