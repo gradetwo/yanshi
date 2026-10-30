@@ -385,6 +385,12 @@ pub enum AtomKind {
     // 删除类
     /// 墓碑删除。
     Tombstone,
+    /// 压平一层：把层内图元渲染为一张画布 1:1 基底 Blob。
+    ///
+    /// 载荷：`{layer_id, up_to_seq, blob_hash}`；可选 `flatten_mask`
+    ///（重放自愈须同口径，缺省 false）；`replaces_bake_seq` 仅用于
+    /// 哈希不一致显式 append_rebake 的审计元数据，绝不改写历史原子。
+    BakeLayer,
     // 历史类
     /// 撤销目标原子。
     Revert,
@@ -445,6 +451,7 @@ impl AtomKind {
             Self::ReorderLayers => "reorder_layers",
             Self::ReorderObjects => "reorder_objects",
             Self::Tombstone => "tombstone",
+            Self::BakeLayer => "bake_layer",
             Self::Revert => "revert",
             Self::Reapply => "reapply",
             Self::Checkpoint => "checkpoint",
@@ -524,6 +531,7 @@ impl AtomKind {
                 | Self::ReorderLayers
                 | Self::ReorderObjects
                 | Self::Tombstone
+                | Self::BakeLayer
         )
     }
 
@@ -551,6 +559,7 @@ impl AtomKind {
                 | Self::UpdateMask
                 | Self::DeleteMask
                 | Self::CreateSelection
+                | Self::BakeLayer
         )
     }
 
@@ -574,6 +583,7 @@ impl AtomKind {
                 | Self::FlipCanvas
                 | Self::CropCanvas
                 | Self::ExtendCanvas
+                | Self::BakeLayer
         )
     }
 
@@ -583,7 +593,7 @@ impl AtomKind {
     }
 
     /// 全部原子类型，便于穷举测试。
-    pub const ALL: [AtomKind; 40] = [
+    pub const ALL: [AtomKind; 41] = [
         Self::CreateDocument,
         Self::CreateLayer,
         Self::CreateObject,
@@ -615,6 +625,7 @@ impl AtomKind {
         Self::ReorderLayers,
         Self::ReorderObjects,
         Self::Tombstone,
+        Self::BakeLayer,
         Self::Revert,
         Self::Reapply,
         Self::Checkpoint,

@@ -34,7 +34,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（136 个）。
+    /// 核心层：默认注册（138 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -765,7 +765,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，136 个）。
+    /// 核心层（默认注册，138 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -2319,6 +2319,8 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "stroke_heatmap" => read_stroke_heatmap(ctx, args),
         "texture_background" => write_texture_background(ctx, args),
         "rebackground" => write_rebackground(ctx, args),
+        "bake_layer" => write_bake_layer(ctx, args),
+        "recover_baked_blobs" => write_recover_baked_blobs(ctx, args),
         "toned_ground" => write_toned_ground(ctx, args),
         "gradient_fill" => write_gradient_fill(ctx, args),
         "gradient_blend" => write_gradient_blend(ctx, args),
@@ -8936,10 +8938,39 @@ fn write_transform_object(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
     } else {
         about_anchor
     };
+    // **bake 仿射门禁的显式放行通道**（第二轮第 1 条）：压平基底的非均匀
+    // 缩放默认关闭；调用方显式传 allow_non_uniform_scale=true 时才把该标志
+    // 写进 Move 载荷，折叠期的 baked_base 门禁据此放行（缺省 false）。
+    let allow_non_uniform_scale = optional_bool(args, "allow_non_uniform_scale").unwrap_or(false);
+    // **工具层仿射门禁**（第二轮第 1、3 条；fold 期门禁只是回放兜底）：
+    // fold 的 precondition 失败只产生级联警告、提交仍报 ok ⇒ 真正的拒绝
+    // 必须在提交前做。压平基底的绝对变换走 validate_affine（旋转限 90°
+    // 倍数，非均匀须显式放行）；未压平 Liquify 对象做变换直接拒绝
+    // （transform_primitive 不变换液化网格，提示先 bake 固化）。
+    {
+        let state = document_state(ctx)?;
+        if let Some(object) = state.objects.get(object_id.as_str()) {
+            if object.data.get("baked_base").and_then(Value::as_bool) == Some(true) {
+                yanshi_core::bake::validate_affine(
+                    yanshi_core::bake::Affine2D(final_transform.matrix),
+                    allow_non_uniform_scale,
+                )?;
+            }
+            if object.object_type == yanshi_core::ObjectType::Liquify {
+                return Err(YanshiError::new(
+                    ErrorCode::PreconditionFailed,
+                    ErrorContext::detail(
+                        "液化对象未压平：transform_primitive 不变换液化网格，请先 bake_layer 固化液化后再变换",
+                    ),
+                ));
+            }
+        }
+    }
     let result = ctx.commit(
         AtomKind::Move,
         json!({"object_id": object_id,
-               "transform": {"matrix": final_transform.matrix, "pivot": final_transform.pivot}}),
+               "transform": {"matrix": final_transform.matrix, "pivot": final_transform.pivot},
+               "allow_non_uniform_scale": allow_non_uniform_scale}),
     )?;
     Ok(json!({
         "ok": true,
@@ -11431,6 +11462,11 @@ fn write_history_atom(
     key: &str,
 ) -> Result<Value> {
     let target = require_str(args, key)?;
+    // 跨机 Undo 缺历史 Blob 原子级拦截（第二轮第 10 条）：模拟提交后的
+    // 有效 Bake 集，任一有效基底缺 Blob 就拒绝提交，状态不回退。
+    if kind == AtomKind::Revert {
+        guard_revert_missing_historical_blob(ctx, &target)?;
+    }
     let result = ctx.commit(kind, json!({ "target": target }))?;
     let region = region_of(&result);
     finish_mutation(ctx, &result, region)
@@ -15899,7 +15935,13 @@ fn write_import_project(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value
             ErrorContext::detail(format!("读不到工程包 {path}：{error}")),
         )
     })?;
-    let value = ctx.workspace.import_project(&bytes, doc_id.as_deref())?;
+    let missing_blob_policy =
+        optional_str(args, "missing_blob_policy").unwrap_or_else(|| "error".to_owned());
+    let value = ctx.workspace.import_project_with_policy(
+        &bytes,
+        doc_id.as_deref(),
+        &missing_blob_policy,
+    )?;
     Ok(value)
 }
 
@@ -19153,7 +19195,7 @@ pub(crate) fn payloads_replay_rejection(
 // 后导出的那份会拿到前一份的包 ✓（缺本体的重导入文档会直接命中健康包的缓存，
 // B2 的失败永远到不了调用方 ✓）⇒ 键里必须再加 `doc_id` ✓。
 // **护栏** ✓：`tool-export-idempotent.mjs` 的第⑤条（"改动之后哈希必须改变"）。
-type ExportResultKey = (String, String, u64, bool);
+type ExportResultKey = (String, String, u64, bool, String);
 type ExportResultValue = (Vec<u8>, crate::service::ExportStats);
 type ExportResultMap = std::collections::HashMap<ExportResultKey, ExportResultValue>;
 static EXPORT_RESULT_CACHE: std::sync::OnceLock<std::sync::Mutex<ExportResultMap>> =
@@ -23813,6 +23855,9 @@ use tools_read::*;
 #[path = "tools_vector.rs"]
 mod tools_vector;
 use tools_vector::*;
+#[path = "tools_bake.rs"]
+mod tools_bake;
+use tools_bake::*;
 
 // **★ 跨模块的 test 辅助 ⇒ 父模块**（第 1279 轮）：`tools_brush.rs` / `tools_read.rs` 的
 //   `#[cfg(test)]` 段也用它们 ⇒ 所以不能放在 `tools_tests.rs` 里（那会多一层模块）✓
