@@ -119,7 +119,7 @@ v5 基线：第 3 轮量测（binary 9045faeb）；正文量测更新只 U-1 与
 来源：Yanshi-Brush-Study-20261029，基线 9c3b7d03（工具 208、笔刷 199），199 支逐支色样；未在当前 main 复测，条目为起点口径，正式采用前以目标部位试笔为准。
 
 - 目前没有一支经整幅原作验收的「最佳万能笔」。正式采用须先在目标部位试 5–8 笔，确认体积、边缘、色彩与原作尺度，再分阶段推进。
-- 阶段性起点（非整幅验收）：大块铺色 `oil-06-paint`；方向纹理 `Classic_Paint`（有方楔，不宜大面积）；破边肌理 `oil-01-paint`；细线 `2B_pencil` size2 连续，size14/24 颗粒过粗；精细候选 `rigger_brush_thin`、`soft-dip-pen`。
+- 阶段性起点（非整幅验收）：大块铺色 `oil-06-paint`；方向纹理 `Classic_Paint`（有方楔，不宜大面积）；破边肌理 `oil-01-paint`；细线 `2B_pencil` size2 连续，size14/24 颗粒过粗；精细候选 rigger_brush_thin、`soft-dip-pen`。
 - 参数口径补记：显式传 `size` 会清除笔刷半径动力学，要保留动力学就别传 `size`；`pressure_curve: "auto"` 补的是未给变压时的包络，`points` 已带变压时 auto 不再改写（实测与非 auto 0 像素差异）；`humanize: false` 等于关掉起收笔补偿；`opacity` 是每 dab 墨量，不是整笔不透明度；`glaze` 是 boolean，遍数走 `glaze_passes`（1–8）。
 - 橡皮类笔刷预览零墨不等于落笔失败：199 支中 7 支橡皮类预览零墨，属诊断口径问题（Y26-001，功能本身未解决），以实测落笔为准，不以预览零墨断定笔刷坏了。
 - 智能工具边界：`smart_blend` 在小场景已很慢（512×320 两次约 22/31 秒），整幅 8K 不要默认用；`smart_glaze` 回执 ok 不等于可见效果，调用后必须目视验 ROI；`smart_hatch_follow` 三档均有 failed、部分绘制，先小范围试再决定用不用。
