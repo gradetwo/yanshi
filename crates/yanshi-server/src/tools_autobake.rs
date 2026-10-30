@@ -132,13 +132,18 @@ fn last_bake_for_layer(
     layer_id: &str,
 ) -> Option<(u64, String, String, String, String)> {
     let mut found: Option<(u64, String, String, String, String)> = None;
-    for (lid, bake_seq, _up_to_seq, blob_hash, atom_id) in effective_baked_blobs(atoms) {
-        if lid != layer_id {
+    for candidate in effective_baked_blobs(atoms) {
+        if candidate.layer_id != layer_id {
             continue;
         }
+        let bake_seq = candidate.bake_seq;
         if found.as_ref().map(|(seq, _, _, _, _)| *seq).unwrap_or(0) > bake_seq {
             continue;
         }
+        // 烘焙原子按 seq 找回：BakeLayer 候选对应其 BakeLayer 原子（旧元组
+        // 的 atom_id 即此），BakeDocument 候选对应其 BakeDocument 原子。
+        let bake_atom = atoms.iter().find(|a| a.seq == bake_seq);
+        let atom_id = bake_atom.map(|a| a.id.clone()).unwrap_or_default();
         let origin = atoms
             .iter()
             .find(|a| a.seq == bake_seq && a.kind == AtomKind::BakeLayer)
@@ -155,7 +160,7 @@ fn last_bake_for_layer(
         found = Some((
             bake_seq,
             atom_id,
-            blob_hash,
+            candidate.blob_hash,
             origin.to_owned(),
             trigger.to_owned(),
         ));
