@@ -126,6 +126,14 @@
 }
 ```
 
+## `bake_layer`
+
+```json
+{
+  "layer_id": "L1"
+}
+```
+
 ## `batch`
 
 ```json
@@ -1372,6 +1380,14 @@
     "b": 120,
     "a": 255
   }
+}
+```
+
+## `recover_baked_blobs`
+
+```json
+{
+  "layer_id": "L1"
 }
 ```
 

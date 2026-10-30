@@ -120,7 +120,7 @@ pub fn validate_affine(matrix: Affine2D, allow_non_uniform: bool) -> Result<()> 
             ErrorContext::detail("非均匀缩放默认关闭：请显式传 allow_non_uniform_scale=true 确认"),
         ));
     }
-    let angle = b.atan2(a);
+    let angle = libm::atan2(b, a);
     let quarter = std::f64::consts::FRAC_PI_2;
     let turns = angle / quarter;
     if (turns - turns.round()).abs() > 1e-6 {
@@ -320,10 +320,10 @@ mod tests {
         assert!(validate_affine(Affine2D([1.0, 0.5, 0.0, 1.0, 0.0, 0.0]), false).is_err());
         let deg45 = std::f64::consts::FRAC_PI_4;
         let m = Affine2D([
-            deg45.cos(),
-            deg45.sin(),
-            -deg45.sin(),
-            deg45.cos(),
+            libm::cos(deg45),
+            libm::sin(deg45),
+            -libm::sin(deg45),
+            libm::cos(deg45),
             0.0,
             0.0,
         ]);
