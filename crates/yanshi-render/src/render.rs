@@ -5050,7 +5050,8 @@ impl Renderer {
                     blob,
                     width,
                     height,
-                    source_up_to_seq,
+                    bake_seq,
+                    source_up_to_seq: _,
                     transform,
                 } => {
                     // BakedBase 渲染（第二轮第 1、2、9 条）：
@@ -5058,13 +5059,16 @@ impl Renderer {
                     // 一般 RasterPatch 的缺 Blob 容忍（跳过 + 告警）**不适用于** BakedBase。
                     // PNG 直通 RGBA8 与 bake 基底同构；IDENTITY 走 1:1 直贴，
                     // 非 IDENTITY 走渲染期一次 Q16.16 定点双线性采样。
+                    // 报错里的 bake_seq 是 BakeLayer 原子 seq（自愈身份，可直
+                    // 接作 recover 的 target_bake_seq）；水位 source_up_to_seq
+                    // 只是该 Bake 覆盖的上界，此前误用它作代理值。
                     let bytes = match store.get(&blob) {
                         Ok(bytes) => bytes,
                         Err(_) => {
                             return Err(yanshi_core::bake::missing_baked_blob_error(
                                 &layer.id,
                                 blob.as_str(),
-                                source_up_to_seq,
+                                bake_seq,
                             ));
                         }
                     };
@@ -5103,7 +5107,7 @@ impl Renderer {
                                 height: bh,
                                 step,
                             },
-                        );
+                        )?;
                         for ly in 0..bh {
                             for lx in 0..bw {
                                 let idx = ((ly * bw + lx) * 4) as usize;
