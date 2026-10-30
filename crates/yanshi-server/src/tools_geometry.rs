@@ -118,22 +118,35 @@ fn check_canvas_size(width: u32, height: u32) -> Result<()> {
     Ok(())
 }
 
-/// 受限对象标注（旋转/缩放/翻转下）：文本只平移位置、导入图只平移原点、
+/// 受限对象标注，按操作类分（`transform_primitive` 的既有缺口，不静默）。
 ///
-/// 液化变换不施加 —— 三者都按 `transform_primitive` 的既有缺口标注，不静默。
-/// 平移类操作（crop/extend）与改界对全部类型精确，不标注。
-fn limited_objects(state: &DocumentState) -> Vec<Value> {
+/// 旋转/缩放/翻转：文本只平移位置、导入图只平移原点、液化变换不施加，
+/// 三者都标注。裁剪是纯平移：文本与导入图精确平移，不标注；液化必须标注，
+/// 因为 `transform_primitive` 对液化是 NO-OP（位移场不跟随平移，液化 bbox
+/// 的点会动、像素不动），平移类操作遇液化不再是“精确”。改界是单位仿射、
+/// 内容不动，扩展只扩 bounds、内容不动，两者都不标注。
+fn limited_objects(state: &DocumentState, kind: yanshi_core::atom::AtomKind) -> Vec<Value> {
+    if matches!(
+        kind,
+        yanshi_core::atom::AtomKind::ResizeCanvasBounds | yanshi_core::atom::AtomKind::ExtendCanvas
+    ) {
+        return Vec::new();
+    }
+    let is_crop = kind == yanshi_core::atom::AtomKind::CropCanvas;
     let mut out = Vec::new();
     for object in state.objects.values() {
         if object.is_deleted() {
             continue;
         }
         let reason = match object.object_type {
-            yanshi_core::state::ObjectType::Text => {
+            yanshi_core::state::ObjectType::Text if !is_crop => {
                 Some("文本在旋转/缩放/翻转下只平移位置，需要重排与重新栅格化（后续项）")
             }
-            yanshi_core::state::ObjectType::RasterPatch => {
+            yanshi_core::state::ObjectType::RasterPatch if !is_crop => {
                 Some("导入图在旋转/缩放/翻转下只平移原点，位图内容不重采样（后续项）")
+            }
+            yanshi_core::state::ObjectType::Liquify if is_crop => {
+                Some("液化在平移下位移场不跟随（transform_primitive 对液化是 NO-OP：bbox 点会动、像素不动，后续项）")
             }
             yanshi_core::state::ObjectType::Liquify => {
                 Some("液化在旋转/缩放/翻转下变换不施加（后续项）")
@@ -332,7 +345,7 @@ fn commit_geometry(
         reject_snapshot_instances(&state)?;
     }
     let limited = if moving && geometry_moves_content(kind) {
-        limited_objects(&state)
+        limited_objects(&state, kind)
     } else {
         Vec::new()
     };

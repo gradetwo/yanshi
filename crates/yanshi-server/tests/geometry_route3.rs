@@ -360,3 +360,89 @@ fn geometry_rejections_are_explicit() {
     // 拒绝之后文档尺寸不变（没有静默落原子）。
     assert_eq!(doc_size(&mut ctx), (200, 100));
 }
+
+#[test]
+fn geometry_translation_liquify_is_limited_not_silent() {
+    let mut workspace = Workspace::in_memory(DocumentSettings::default());
+    let _stroke_id = setup(&mut workspace);
+    let mut ctx = context(&mut workspace);
+    ok(
+        &call(
+            &mut ctx,
+            "liquify_twirl",
+            &json!({"layer_id": "L1", "object_id": "lq1",
+                    "points": [[50, 50]], "size": 20}),
+        ),
+        "liquify_twirl",
+    );
+    let limited_ids = |value: &Value| -> Vec<String> {
+        value["limited_objects"]
+            .as_array()
+            .expect("回执应有 limited_objects")
+            .iter()
+            .filter_map(|entry| entry["object_id"].as_str().map(str::to_owned))
+            .collect()
+    };
+    // 裁剪是纯平移：液化必须标注（位移场不跟随），文本精确平移不标注。
+    let cropped = ok(
+        &call(
+            &mut ctx,
+            "crop_canvas",
+            &json!({"region": {"x": 10, "y": 20, "w": 100, "h": 50}}),
+        ),
+        "crop_canvas",
+    );
+    let cropped_limited = limited_ids(&cropped);
+    assert!(
+        cropped_limited.contains(&"lq1".to_owned()),
+        "裁剪遇液化必须标注受限：{cropped}"
+    );
+    assert!(
+        !cropped_limited.contains(&"t1".to_owned()),
+        "裁剪下文本精确平移，不应标注：{cropped}"
+    );
+    let atom_id = cropped["atom_id"]
+        .as_str()
+        .expect("回执应有 atom_id")
+        .to_owned();
+    ok(
+        &call(&mut ctx, "revert", &json!({"atom_id": atom_id})),
+        "revert crop_canvas",
+    );
+    assert_eq!(doc_size(&mut ctx), (200, 100));
+    // 扩展只扩 bounds、内容不动：不标注（即使有液化对象）。
+    let extended = ok(
+        &call(
+            &mut ctx,
+            "extend_canvas",
+            &json!({"margins": {"left": 5, "top": 5, "right": 5, "bottom": 5}}),
+        ),
+        "extend_canvas",
+    );
+    assert!(
+        limited_ids(&extended).is_empty(),
+        "扩展不标注任何对象：{extended}"
+    );
+    let atom_id = extended["atom_id"]
+        .as_str()
+        .expect("回执应有 atom_id")
+        .to_owned();
+    ok(
+        &call(&mut ctx, "revert", &json!({"atom_id": atom_id})),
+        "revert extend_canvas",
+    );
+    assert_eq!(doc_size(&mut ctx), (200, 100));
+    // 缩放与旋转/翻转口径一致：液化仍在受限标注里（不是拒绝）。
+    let scaled = ok(
+        &call(
+            &mut ctx,
+            "scale_canvas",
+            &json!({"scale": 2, "anchor_name": "center"}),
+        ),
+        "scale_canvas",
+    );
+    assert!(
+        limited_ids(&scaled).contains(&"lq1".to_owned()),
+        "缩放遇液化必须标注受限：{scaled}"
+    );
+}
