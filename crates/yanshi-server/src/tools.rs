@@ -5349,7 +5349,7 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         //     下游 `parse_spec_color` 见任一分量 > 1 改走字节分支 ⇒ 0.31→0 全黑 ✗，
         //     且回执 ok=true 无告警（静默降级 ✗）。字节数组行为不变 ✓。
         let mut copy: Vec<Value> = items.clone();
-        let all_linear = copy.iter().all(|v| v.as_f64().map_or(false, |f| f <= 1.0));
+        let all_linear = copy.iter().all(|v| v.as_f64().is_some_and(|f| f <= 1.0));
         let opaque = if all_linear { 1.0 } else { 255.0 };
         let existing = copy.get(3).and_then(Value::as_f64).unwrap_or(opaque);
         let alpha = (existing * opacity).clamp(0.0, opaque);
