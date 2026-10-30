@@ -5342,9 +5342,17 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         //     ⇒ 实测 `fill_region(color=[0,0,0], opacity=0.5)` 的中心仍是 `[0,0,0,255]`
         //       （1.0／0.5／0.2 三者完全相同）⇒ **参数被静默忽略** ✗✗
         //   **⇒ 修法**：`[r,g,b]` 与 `[r,g,b,a]` 都认 ⇒ 乘上 `opacity` 后写回四元数组 ✓
+        // **缺省 alpha 须按数组的域取** ✓（数组色截黑修）：
+        //   全分量 ≤ 1 的数组是线性域（`parse_spec_color` 全 ≤ 1 走线性直通 ✓）⇒
+        //   不透明 = 1.0；任一分量 > 1 是字节域 ⇒ 不透明 = 255.0。
+        //   ⇒ 原缺陷 ✗：缺省一律 255.0 ⇒ 给 `[0.31, 0.36, 0.49]`（线性）补上 255.0 后，
+        //     下游 `parse_spec_color` 见任一分量 > 1 改走字节分支 ⇒ 0.31→0 全黑 ✗，
+        //     且回执 ok=true 无告警（静默降级 ✗）。字节数组行为不变 ✓。
         let mut copy: Vec<Value> = items.clone();
-        let existing = copy.get(3).and_then(Value::as_f64).unwrap_or(255.0);
-        let alpha = (existing * opacity).clamp(0.0, 255.0);
+        let all_linear = copy.iter().all(|v| v.as_f64().is_some_and(|f| f <= 1.0));
+        let opaque = if all_linear { 1.0 } else { 255.0 };
+        let existing = copy.get(3).and_then(Value::as_f64).unwrap_or(opaque);
+        let alpha = (existing * opacity).clamp(0.0, opaque);
         if copy.len() >= 4 {
             copy[3] = json!(alpha);
         } else {
