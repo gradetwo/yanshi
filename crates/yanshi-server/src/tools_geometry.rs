@@ -121,31 +121,32 @@ fn check_canvas_size(width: u32, height: u32) -> Result<()> {
 /// 受限对象标注，按操作类分（`transform_primitive` 的既有缺口，不静默）。
 ///
 /// 旋转/缩放/翻转：文本只平移位置、导入图只平移原点、液化变换不施加，
-/// 三者都标注。裁剪是纯平移：文本与导入图精确平移，不标注；液化必须标注，
+/// 三者都标注。裁剪与扩展都是纯平移：文本与导入图精确平移，不标注；液化必须标注，
 /// 因为 `transform_primitive` 对液化是 NO-OP（位移场不跟随平移，液化 bbox
-/// 的点会动、像素不动），平移类操作遇液化不再是“精确”。改界是单位仿射、
-/// 内容不动，扩展只扩 bounds、内容不动，两者都不标注。
+/// 的点会动、像素不动），平移类操作遇液化不再是“精确”。扩展的仿射是纯平移
+/// （left, top），会复合进对象变换、内容相对画布原点平移，与裁剪情形相同。
+/// 改界是单位仿射、内容不动，不标注。
 fn limited_objects(state: &DocumentState, kind: yanshi_core::atom::AtomKind) -> Vec<Value> {
-    if matches!(
-        kind,
-        yanshi_core::atom::AtomKind::ResizeCanvasBounds | yanshi_core::atom::AtomKind::ExtendCanvas
-    ) {
+    if kind == yanshi_core::atom::AtomKind::ResizeCanvasBounds {
         return Vec::new();
     }
-    let is_crop = kind == yanshi_core::atom::AtomKind::CropCanvas;
+    let is_translation = matches!(
+        kind,
+        yanshi_core::atom::AtomKind::CropCanvas | yanshi_core::atom::AtomKind::ExtendCanvas
+    );
     let mut out = Vec::new();
     for object in state.objects.values() {
         if object.is_deleted() {
             continue;
         }
         let reason = match object.object_type {
-            yanshi_core::state::ObjectType::Text if !is_crop => {
+            yanshi_core::state::ObjectType::Text if !is_translation => {
                 Some("文本在旋转/缩放/翻转下只平移位置，需要重排与重新栅格化（后续项）")
             }
-            yanshi_core::state::ObjectType::RasterPatch if !is_crop => {
+            yanshi_core::state::ObjectType::RasterPatch if !is_translation => {
                 Some("导入图在旋转/缩放/翻转下只平移原点，位图内容不重采样（后续项）")
             }
-            yanshi_core::state::ObjectType::Liquify if is_crop => {
+            yanshi_core::state::ObjectType::Liquify if is_translation => {
                 Some("液化在平移下位移场不跟随（transform_primitive 对液化是 NO-OP：bbox 点会动、像素不动，后续项）")
             }
             yanshi_core::state::ObjectType::Liquify => {

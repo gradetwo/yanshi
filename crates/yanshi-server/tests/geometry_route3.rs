@@ -410,7 +410,8 @@ fn geometry_translation_liquify_is_limited_not_silent() {
         "revert crop_canvas",
     );
     assert_eq!(doc_size(&mut ctx), (200, 100));
-    // 扩展只扩 bounds、内容不动：不标注（即使有液化对象）。
+    // 扩展是纯平移（left, top）：液化必须标注（位移场不跟随，与裁剪同理），
+    // 文本精确平移，不标注。
     let extended = ok(
         &call(
             &mut ctx,
@@ -419,9 +420,14 @@ fn geometry_translation_liquify_is_limited_not_silent() {
         ),
         "extend_canvas",
     );
+    let extended_limited = limited_ids(&extended);
     assert!(
-        limited_ids(&extended).is_empty(),
-        "扩展不标注任何对象：{extended}"
+        extended_limited.contains(&"lq1".to_owned()),
+        "扩展遇液化必须标注受限：{extended}"
+    );
+    assert!(
+        !extended_limited.contains(&"t1".to_owned()),
+        "扩展下文本精确平移，不应标注：{extended}"
     );
     let atom_id = extended["atom_id"]
         .as_str()
