@@ -5345,7 +5345,13 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
             .filter_map(|key| object.get(*key).and_then(Value::as_f64))
             .all(|f| f <= 1.0);
         let opaque = if all_linear { 1.0 } else { 255.0 };
-        let alpha = object.get("a").and_then(Value::as_f64).unwrap_or(opaque) * opacity;
+        // **对象分支与数组分支同一模式** ✓（第九轮第 2 项 HIGH 的同型缺口）：
+        //   字节域 `{200,200,200,a:1}`＋opacity 0.5 若先乘后判，哨兵同样被击穿 ⇒ 先归一再乘 ✓。
+        let mut existing_a = object.get("a").and_then(Value::as_f64).unwrap_or(opaque);
+        if !all_linear && existing_a == 1.0 {
+            existing_a = 255.0;
+        }
+        let alpha = existing_a * opacity;
         let mut copy = object.clone();
         copy.insert("a".to_string(), json!(alpha.clamp(0.0, opaque)));
         Value::Object(copy)
@@ -5364,7 +5370,16 @@ fn write_fill_region(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         let mut copy: Vec<Value> = items.clone();
         let all_linear = copy.iter().all(|v| v.as_f64().is_some_and(|f| f <= 1.0));
         let opaque = if all_linear { 1.0 } else { 255.0 };
-        let existing = copy.get(3).and_then(Value::as_f64).unwrap_or(opaque);
+        let mut existing = copy.get(3).and_then(Value::as_f64).unwrap_or(opaque);
+        // **字节域 `alpha == 1.0` 是“1 即 255”的误写标记** ✓（下游 `parse_spec_color`
+        //   字节分支的哨兵：`alpha_raw == 1.0 → 255`）⇒ 哨兵须在乘 `opacity` 之前识别 ✓：
+        //   若先乘后判，`1.0 × 0.5 = 0.5` 再也看不到哨兵 ⇒ 按字节 alpha ≈1/255 解释，
+        //   整块近全透明 ✗（第九轮第 2 项 HIGH：`[200,200,200,1]`＋opacity 0.5 输出恰为背景色）。
+        //   ⇒ 字节域且既有 alpha 恰为 1.0 时，先归一为 255.0 再乘 opacity ✓（0.5→127.5，正常半透明）。
+        //   线性域的 1.0 本就是不透明 1.0，不动 ✓；opacity=1 时行为不变 ✓（255→255，与哨兵路同值）。
+        if !all_linear && existing == 1.0 {
+            existing = 255.0;
+        }
         let alpha = (existing * opacity).clamp(0.0, opaque);
         if copy.len() >= 4 {
             copy[3] = json!(alpha);
