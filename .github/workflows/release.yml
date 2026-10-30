@@ -36,14 +36,14 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
-      # **★ 只跑哪些平台（2026-10-15 加 ✓）★**：留空 = **全部四个** ✓；
+      # **★ 只跑哪些平台（2026-10-15 加 ✓）★**：留空 = **全部五个** ✓；
       #   写逗号/空格分隔的 label ⇒ **只起那几台 runner** ✓。
       #   **为什么加** ✗：需求文档的实现期我为了验证多平台，反复跑**整个四平台矩阵** ✓
       #   ⇒ 实测账：8 次手动触发里 **6 次被取消** ✗（＝起了 ~24 个平台构建、扔掉 ~18 个 ✗）
       #   ⇒ 想"只验 macOS"以前做不到 ✗（`targets` 输入只会让**四台**都去编同一个目标 ✗）。
       #   **用法** ✓：`platforms: macos-arm64` ⇒ 只起一台 ✓。
       platforms:
-        description: "只跑哪些平台（逗号分隔；留空 = 全部）：linux-x86_64 / macos-x86_64 / macos-arm64 / windows-x86_64"
+        description: "只跑哪些平台（逗号分隔；留空 = 全部）：linux-x86_64 / linux-arm64 / macos-x86_64 / macos-arm64 / windows-x86_64"
         required: false
         default: ""
       targets:
@@ -79,7 +79,7 @@ jobs:
   # **★ 矩阵的唯一来源（2026-10-15 ✓）★**：以前 `package` 里写死一份 `include` ✓，
   #   现在改成这里**算一份 JSON** ✓ ⇒ 既支持"只跑某个平台" ✓，又**不会出现两份清单漂移** ✗。
   #   **用 python3** ✓（`ubuntu-latest` 自带 ✓，不必额外装东西 ✓）。
-  #   **tag 推送时** ✓：`platforms` 输入为空 ⇒ **全部四个** ✓（发布永远是四平台 ✓）。
+  #   **tag 推送时** ✓：`platforms` 输入为空 ⇒ **全部五个** ✓（发布永远是五平台 ✓）。
   prepare:
     name: prepare the matrix
     runs-on: ubuntu-latest
@@ -98,6 +98,8 @@ jobs:
           import json, os
           ALL = [
               {"os": "ubuntu-latest", "label": "linux-x86_64", "target": "x86_64-unknown-linux-gnu"},
+              # linux-arm64 用原生 ARM runner：冒烟要实跑包里的二进制，交叉编的包在 x86 runner 上跑不起来。
+              {"os": "ubuntu-24.04-arm", "label": "linux-arm64", "target": "aarch64-unknown-linux-gnu"},
               {"os": "macos-14", "label": "macos-x86_64", "target": "x86_64-apple-darwin"},
               {"os": "macos-14", "label": "macos-arm64", "target": "aarch64-apple-darwin"},
               {"os": "windows-latest", "label": "windows-x86_64", "target": "x86_64-pc-windows-msvc"},
@@ -316,7 +318,7 @@ jobs:
       # **校验和的汇总挪到下面单独的 `checksums` 作业** ✓ —— 见那里的说明 ✓
       # （原来在这里只附 `linux-x86_64` 那一份 ✗ ⇒ 别的平台用户没法校验 ✗）。
 
-  # **★ 汇总校验和：四个平台各一份 ⇒ 合成一份（2026-10-15 ✓）★**
+  # **★ 汇总校验和：五个平台各一份 ⇒ 合成一份（2026-10-15 ✓）★**
   #
   # **为什么要它** ✗：原来只有 `linux-x86_64` 那一档会把 `dist/SHA256SUMS` 附到 Release 上 ✓
   # ⇒ 实测 v0.2.1 的 `SHA256SUMS` **只有一行**（126 字节 ⇒ 只有 Linux 包 ✓）
