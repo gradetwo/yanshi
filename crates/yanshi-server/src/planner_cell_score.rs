@@ -109,7 +109,7 @@ pub fn cell_scores_p95(diff: &[f32], width: usize, height: usize, size: usize) -
     }
     let n = size * size;
     // Nearest-rank index for p = 0.95: ceil(0.95 * n) - 1, 0-based.
-    let rank = (95 * n + 99) / 100 - 1;
+    let rank = (95 * n).div_ceil(100) - 1;
     let mut scores = Vec::with_capacity(nx * ny);
     for iy in 0..ny {
         for ix in 0..nx {
