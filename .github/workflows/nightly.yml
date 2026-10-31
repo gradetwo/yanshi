@@ -194,7 +194,7 @@ jobs:
             echo "✗ 校验和条目数与归档数不一致 ⇒ 不许发布（宁可红，不发无法校验的包 ✗）" >&2
             exit 1
           fi
-          NOTES="Rolling nightly build from main. Commit: ${GITHUB_SHA}. Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)."
+          NOTES="Rolling nightly build from main."
           if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit nightly --title "nightly" --notes "$NOTES" --repo "$GITHUB_REPOSITORY"
           else
