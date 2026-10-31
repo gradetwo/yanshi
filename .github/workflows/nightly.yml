@@ -207,7 +207,7 @@ jobs:
           gh release upload nightly SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
           echo "== 清理旧归档（只留本次 commit 的包）=="
           short="${GITHUB_SHA:0:7}"
-          kept=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/nightly" --jq --arg s "$short" '[.assets[] | select(.name | contains("-" + $s + "-"))] | length')
+          kept=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/nightly" | jq --arg s "$short" '[.assets[] | select(.name | contains("-" + $s + "-"))] | length')
           if [ "$kept" -ne "$n_archives" ]; then
             echo "✗ 本次归档保留数 $kept ≠ 上传数 $n_archives ⇒ 不删旧包（宁可多留，不错删）" >&2
             exit 1
