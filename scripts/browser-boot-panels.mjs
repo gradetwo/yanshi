@@ -1,5 +1,13 @@
 #!/usr/bin/env node
 // criterion-target: client  ## 运行器据此注入 render=client（测本地内核）
+// **★ 总超时守卫 ✗ ★**（2026-10-31）：**浏览器/CDP 起不来时本判据会**一直等**✗ ⇒
+//   **∴ 超时**报「自己跑不了」并退 3** ✓（**与产品失败区分 ✓**）；`unref()` ⇒ **跑完不被它拖住** ✓。
+const __judgeTimeout = setTimeout(() => {
+  console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（浏览器/CDP 可能没起来）⇒ 退出码 3");
+  process.exit(3);
+}, Number(process.env.YANSHI_JUDGE_TIMEOUT_MS || 300000));
+__judgeTimeout.unref();
+
 // **判据：开机就要把「对象」「批注」两个面板装出来** ✓（第 190 轮 ✓）。
 //
 // **抓的是什么 bug** ✓：带 token 打开一个**有内容**的文档 ⇒

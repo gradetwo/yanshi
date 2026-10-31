@@ -1,4 +1,12 @@
 // criterion-target: self  ## 运行器据此决定是否注入 render=client（自己钉 render 偏好 ⇒ 外面再注入就是第二个真值）
+// **★ 总超时守卫 ✗ ★**（2026-10-31）：**浏览器/CDP 起不来时本判据会**一直等**✗ ⇒
+//   **∴ 超时**报「自己跑不了」并退 3** ✓（**与产品失败区分 ✓**）；`unref()` ⇒ **跑完不被它拖住** ✓。
+const __judgeTimeout = setTimeout(() => {
+  console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（浏览器/CDP 可能没起来）⇒ 退出码 3");
+  process.exit(3);
+}, Number(process.env.YANSHI_JUDGE_TIMEOUT_MS || 300000));
+__judgeTimeout.unref();
+
 //! **★ C/S 渲染开关的**真浏览器**判据 ✗ ★**（第 68 轮 ✓；
 //! **`yanshi-cs-local-render-修复报告` 的**未覆盖项**换来的 ✓**）。
 //!
