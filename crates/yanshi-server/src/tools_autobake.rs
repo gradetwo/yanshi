@@ -256,10 +256,18 @@ pub(crate) fn evaluate_auto_bake(
             return Some(section);
         }
     }
-    // ---- 软线：已启用、未受阻、计数达标且本次越线未报过；同样一次最多一层 ----
+    // ---- 软线：已启用、未受阻、计数在 [软线, 硬线) 且本次越线未报过；同样一次最多一层 ----
+    // 已过硬线的层不归软线管：它的去向由硬线门禁决定（skipped＋原因，或 baked）；
+    // 硬线去重返回 None 时若落进软线，会把「已过硬阈值但被门禁拦下」说成
+    // 「已过软线，硬阈值时自动 bake」⇒ 文案与事实相反。
     let mut soft: Vec<(u64, String)> = Vec::new();
     for row in &layer_rows {
-        if row.enabled && !row.blocked && !row.soft_fired && row.unbaked >= AUTO_BAKE_SOFT_LINE {
+        if row.enabled
+            && !row.blocked
+            && !row.soft_fired
+            && row.unbaked >= AUTO_BAKE_SOFT_LINE
+            && row.unbaked < AUTO_BAKE_HARD_THRESHOLD
+        {
             soft.push((row.unbaked, row.layer_id.clone()));
         }
     }

@@ -6,13 +6,24 @@
 //   ① 传 `dabs_per_radius` ⇒ 报错"相近的有"候选清单里不再含 `dabs_per_radius`
 //      （报错正文会提到被拒的键名本身，那不算候选——只断候选清单部分）；
 //   ② 传任意未知键（如 `nosuch_setting_xyz`，无前缀匹配走兜底）⇒ 候选清单里的每个名字
-//      逐个试传 `brush_params` 都不再报"没有这个规范名"（直接证明候选全真实）；
+//      逐个试传 `brush_params`，或被接受、或以**非名字原因**被拒（直接证明候选全真实）；
 //   ③ `try_stroke` 无 `layer_id` 无 `based_on` ⇒ 报错文案与 schema 文案一致
 //      （都提到 `layer_id` 与 `based_on`）；
 //   ④ tools/list 里 brush_stroke 的 `brush_params` 描述不再出现 `dabs_per_radius`
 //      （且仍提到真实名 `dabs_per_actual_radius`，防整段误删）。
 //
-// **变异**：把 `dabs_per_radius` 加回文案或候选 ⇒ ①②④ 红；把候选换成另一个假名 ⇒ ② 红。
+// **变异**：把 `dabs_per_radius` 加回文案或候选 ⇒ ①②④ 红；把候选换成另一个假名 ⇒ ② 红
+//   （假名试传必报"没有这个规范名"，新判定只放过**不含**该报错的拒因）。
+//
+// **Y26-006 修订第三轮（甲，2026-10-30）**：② 的本意是证“候选名真实”，不是证
+//   “试传笔画一定落下像素”。旧判定 `tried?.ok === true` 在透明底空层上对候选
+//   `smudge` 失效：试传是全新空层 L1、2B_pencil.myb 涂抹笔、size 40 黑色，
+//   传 `smudge: 1.0` 得纯涂抹，在真正空层上无物可抹 ⇒ 服务端以零像素拒
+//   （ok=false，细节“这一笔没落下任何像素”），而旧白底路径因白漆可抹而通过。
+//   服务端校验在执行之前 ⇒ “因零像素被拒”恰证明名字已通过校验。
+//   ⇒ 新判定：`ok === true` **或**（被拒且报错**不含**"没有"+"规范名"）⇒ ② 与底图
+//   彻底脱钩；不得要求试传前铺底（那是备选乙，不采用）。注意：报错为空时不能
+//   断定是非名字原因 ⇒ 判失败，不放过（防空 detail 恒过）。
 //
 // 用法：node scripts/tool-brush-params-copy.mjs <base> <doc> <token>
 const [base, doc, token] = process.argv.slice(2);
@@ -85,6 +96,9 @@ const main = async () => {
   );
 
   // **② 未知键走兜底 ⇒ 候选里的每个名字逐个试传都不再报"没有这个规范名"**。
+  //   接受两种结果：被接受，或以非名字原因被拒（校验在执行之前，拒因不是
+  //   名字问题 ⇒ 名字已真实；空报错不放过，见文件头第三轮注记）。
+  const isNameRejection = (detail) => detail.includes("没有") && detail.includes("规范名");
   const r2 = await stroke({ nosuch_setting_xyz: 1 });
   const d2 = detailOf(r2);
   const c2 = candidatesOf(d2);
@@ -96,9 +110,11 @@ const main = async () => {
     for (const name of c2) {
       const tried = await stroke({ [name]: 1.0 });
       const dt = detailOf(tried);
+      const accepted = tried?.ok === true;
+      const nonNameRejection = tried?.ok !== true && dt.length > 0 && !isNameRejection(dt);
       check(
-        tried?.ok === true,
-        `② 候选 ${name} 试传 brush_params ⇒ 被接受（实测 ${tried?.ok === true ? "ok" : dt.slice(0, 100)}）`,
+        accepted || nonNameRejection,
+        `② 候选 ${name} 试传 brush_params ⇒ 被接受或以非名字原因被拒（实测 ${accepted ? "ok" : nonNameRejection ? `非名字拒：${dt.slice(0, 100)}` : dt.slice(0, 100) || JSON.stringify(tried).slice(0, 100)}）`,
       );
     }
   }

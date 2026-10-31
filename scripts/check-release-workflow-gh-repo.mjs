@@ -7,11 +7,14 @@
 //   ⇒ 于是四个平台的包都打出来了，**用户却拿不到汇总的 SHA256SUMS** ✗
 //
 // **⇒ 判据**：对每个工作流文件、每个作业：
-//   若该作业**没有** `actions/checkout` ⇒ 里面每条含 `gh ` 的命令行**必须**带 `--repo` 或 `-R `
-//   （有 checkout 的作业不强制 ✓ —— 那时 `gh` 能从 `.git` 推断 ✓）
+//   若该作业**没有** `actions/checkout` ⇒ 里面每条含 `gh ` 的命令行**必须**自带仓库上下文：
+//   `--repo`／`-R`，**或者**是 `gh api` 且端点写成完整路径 `repos/<owner>/<repo>/…`
+//   （`gh api` **没有** `--repo` 选项 —— `gh api --help` 的 FLAGS 里没有它；
+//    端点本身带 owner/repo ⇒ 与 `--repo` 同样不需要 `.git`）。
 //
 // **⇒ 变异**（本机可复核 ✓）：把 `release.yml` 的 `checksums` 作业里 `--repo "$GITHUB_REPOSITORY"` 删掉
 //   ⇒ 本判据**红**并点名该作业 ✓
+//   （`--self-test` 也验：`gh api repos/o/r/x` 必须判合规、裸 `gh release upload` 必须判不合规 ✓）
 //
 // **⇒ 它证明什么**（如实 ✓）：只证明**命令形态合规** ✓ 不证明运行时真能上传 ✓
 import { readFileSync, readdirSync } from "node:fs";
@@ -37,7 +40,34 @@ function isGhCommand(line) {
   return /(^|\s)gh\s/.test(line);
 }
 function hasRepoFlag(line) {
-  return /--repo\s|-R\s/.test(line);
+  if (/--repo\s|-R\s/.test(line)) return true;
+  // `gh api` 没有 `--repo` 选项（FLAGS 实测），但端点自带 owner/repo 时
+  // 与 `--repo` 等价：`gh api repos/<owner>/<repo>/…`。
+  return /(^|\s)gh\s+api\s/.test(line) && /["']?\/?repos\//.test(line);
+}
+
+// **⇒ 自测先于扫描** ✅：谓词是自测的对象 ✓；扫描是**用**谓词 ✓
+//   ⇒ 旧版把自测放在扫描之后 ⇒ 仓库里有违规时进程在扫描处 `exit(1)` ⇒
+//     **自测根本没跑**，而 pre-commit 把这次失败报成「自测失败（谓词被改坏了？）」
+//     ⇒ 句柄对不上对象（真因是 nightly.yml 的 `gh api`，不是谓词坏了）。
+if (process.argv.includes("--self-test")) {
+  const cases = [
+    ["带 --repo 的命令", "          gh release upload v1 f --repo o/r", true],
+    ["不带 --repo 的命令", "          gh release upload v1 f", false],
+    ["注释里的 gh", "  #  gh release upload v1 f", true],
+    ["gh api 带完整 repos/ 路径", "          gh api repos/o/r/releases/tags/nightly", true],
+    ['gh api 拼 "repos/${GITHUB_REPOSITORY}/…"', '          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/nightly"', true],
+    ["gh api 只给相对端点", "          gh api releases/tags/nightly", false],
+  ];
+  let pass = 0;
+  for (const [label, line, wantOk] of cases) {
+    const isGh = isGhCommand(line);
+    const ok = !isGh || hasRepoFlag(line);
+    console.log("  " + (ok === wantOk ? "✓" : "✗") + " " + label + "：gh=" + isGh + " ok=" + ok);
+    if (ok === wantOk) pass += 1;
+  }
+  console.log("自测：" + pass + "/" + cases.length + " 通过");
+  process.exit(pass === cases.length ? 0 : 1);
 }
 
 const offenders = [];
@@ -78,23 +108,4 @@ if (offenders.length > 0) {
 }
 console.log(`  扫描 ${files.length} 个工作流｜无 checkout 的作业 ${jobsChecked} 个｜其中「gh」命令 ${ghCommands} 条，全部显式给了 \`--repo\` ✓`);
 console.log("✓ 无 checkout 的作业里，`gh` 命令都显式指定了仓库（结构检查：只证明命令形态）");
-
-// **⇒ 自测** ✅（第 1061 轮）：三段命令行让两个谓词**自己能红** ✓（不必改工作流 ✓）
-//   **⇒ 变异**：把 `hasRepoFlag` 恒返回 `true` ⇒ 中间那段变红 ✓
-if (process.argv.includes("--self-test")) {
-  const cases = [
-    ["带 --repo 的命令", "          gh release upload v1 f --repo o/r", true],
-    ["不带 --repo 的命令", "          gh release upload v1 f", false],
-    ["注释里的 gh", "  #  gh release upload v1 f", true],
-  ];
-  let pass = 0;
-  for (const [label, line, wantOk] of cases) {
-    const isGh = isGhCommand(line);
-    const ok = !isGh || hasRepoFlag(line);
-    console.log("  " + (ok === wantOk ? "✓" : "✗") + " " + label + "：gh=" + isGh + " ok=" + ok);
-    if (ok === wantOk) pass += 1;
-  }
-  console.log("自测：" + pass + "/" + cases.length + " 通过");
-  process.exit(pass === cases.length ? 0 : 1);
-}
 
