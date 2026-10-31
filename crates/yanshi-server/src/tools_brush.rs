@@ -179,6 +179,7 @@ fn paint_and_commit_brush_segment(
         args.get("hardness").and_then(Value::as_f64),
         // **文档里必须喂底图** ✓ —— 涂抹类笔刷靠它工作 ✓。
         true,
+        Some(&layer_id),
         // **★ P0 #4：把调用方给的字段覆盖传进去 ✗ ★**（**∴ 我第一版补成了 `None` ✗ ⇒ ①② 假绿 ✓）★
         seg_brush_params,
         seg_color_mixing,
@@ -855,6 +856,7 @@ fn paint_and_commit_brush_segment(
         max_delta,
         delta_distribution,
         fed_base,
+        short_stroke_hint,
         region_x: x0,
         region_y: y0,
         region_w: width,
@@ -886,6 +888,8 @@ struct BrushSegmentPainted {
     delta_distribution: DeltaDistribution,
     /// 是否吃了底图。
     fed_base: bool,
+    /// 短笔触兜底提示（反馈期 1：路径撑不满 dab 间距时延长落一枚 dab 的诊断事实；无兜底时 `None`）。
+    short_stroke_hint: Option<String>,
     /// 该段提交区域（文档坐标）。
     region_x: i32,
     region_y: i32,
@@ -1322,6 +1326,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         y0,
         width,
         height,
+        short_stroke_hint,
     ) = if let Some(plan) = decide_smudge_split(
         ctx,
         args,
@@ -1479,6 +1484,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             uy0,
             (ux1 - ux0).max(0) as usize,
             (uy1 - uy0).max(0) as usize,
+            all.iter().find_map(|s| s.short_stroke_hint.clone()),
         )
     } else {
         // **单笔路** ✓：与重构前同一段代码（helper 内），回执量直取，无聚合。
@@ -1515,6 +1521,7 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             seg.region_y,
             seg.region_w,
             seg.region_h,
+            seg.short_stroke_hint,
         )
     };
     value["brush"] = json!(name);
@@ -1803,6 +1810,19 @@ pub(super) fn write_brush_stroke(ctx: &mut ToolContext<'_>, args: &Value) -> Res
                 Some(Value::Array(items)) => items.push(json!(note)),
                 _ => value["warnings"] = json!([note]),
             }
+        }
+    }
+    // **报告 5/6 第 6 项：显式 linear 下渐变两端混写 warning**（只加回执字段，不改像素与现有字段）：
+    //   显式 `color_space="linear"` 且 `color`／`color_to` 一端数组、一端对象式／hex 时进已有的
+    //   `warnings` 数组（与上面各条同一形态：已有就 push，没有就建）；不传空间、显式 srgb、
+    //   两端同族、只给一端时判据函数返回 None，不报。判据见 `mixed_color_space_warning`。
+    //   调用点在提交之后：只改回执 `Value`，已落库的像素不受影响。
+    if let Some(note) =
+        mixed_color_space_warning(Some(&color_source), Some(&color_to_source), color_space)
+    {
+        match value.get_mut("warnings") {
+            Some(Value::Array(items)) => items.push(json!(note)),
+            _ => value["warnings"] = json!([note]),
         }
     }
     Ok(value)
@@ -2291,6 +2311,7 @@ pub(super) fn paint_brush(
     // **笔尖硬度** ✓（`0..1`；`None` = 用 `.myb` 自带的 ✓）—— 落到 MyPaint 的 `hardness` ✓。
     hardness: Option<f64>,
     feed_base: bool,
+    read_layer: Option<&str>,
     brush_params: Option<&Value>,
     // **★ P2 #16：`color_to` 渐变的混色模式 ★**（缺省 `Rgb` ⇒ 与今天逐字节相同）
     color_mixing: yanshi_render::color::ColorMixing,
@@ -2512,15 +2533,26 @@ pub(super) fn paint_brush(
     // 涂抹类笔刷每次落笔都要付这份钱 ✓；测试方原先只能从外部猜它占多少 ✓。
     let base_started = std::time::Instant::now();
     if reads_canvas {
-        if let Ok((base_width, base_height, base)) = ctx.workspace.render_region_raw(
-            &ctx.doc_id,
-            yanshi_core::Bbox::new(
-                seed_region.x0 as f64,
-                seed_region.y0 as f64,
-                seed_region.width as f64,
-                seed_region.height as f64,
-            ),
-        ) {
+        let bbox = yanshi_core::Bbox::new(
+            seed_region.x0 as f64,
+            seed_region.y0 as f64,
+            seed_region.width as f64,
+            seed_region.height as f64,
+        );
+        // A paint operation samples its own layer; layerless previews retain
+        // their explicit document-context semantics.
+        // **本层底图必须透明底**（Y26-006 own-layer；第 253 轮 PSD 同款教训）：
+        // `render_region_raw_layer` 叠文档背景 ⇒ 空层取回不透明白底 ⇒ 在白底上落笔
+        // 会把不透明白晕烘进笔触对象（jitter C⑧ 实测：空层红笔 fringe [255,244,242,255]，
+        // 与白底上门面输出逐字节同值；种子区外两者全同、种子区内才分叉）。
+        // `render_region_layer_rgba` 只带本层自身像素（透明底），空层即全零 ⇒ 与门面空底图等价。
+        let base_result = match read_layer {
+            Some(layer_id) => ctx
+                .workspace
+                .render_region_layer_rgba(&ctx.doc_id, bbox, layer_id),
+            None => ctx.workspace.render_region_raw(&ctx.doc_id, bbox),
+        };
+        if let Ok((base_width, base_height, base)) = base_result {
             let base_ok = base_width as usize == seed_region.width
                 && base_height as usize == seed_region.height
                 && base.len() >= seed_region.width * seed_region.height * 4;
@@ -2691,19 +2723,55 @@ pub(super) fn paint_brush(
             })
             .collect()
     };
-    // **Hokusai 的 tile 是 fix15（u16, 0..32767）** ✓ ⇒ 转成我们用的 RGBA8 ✓（`>> 7` 正好 0..255 ✓）。
+    // **Hokusai 的 tile 是 fix15（u16, 0..=32768）** ✓ ⇒ 转成我们用的 RGBA8 ✓（满值 32768 须先 clamp 再 `>> 7`，否则回绕成 0 ✗）。
     // **同一个区域公式** ✓（落笔前喂底图用的就是它 ✓）。
     // **同一份（已裁的）区域** ✓ —— 读回与掩膜都必须与喂底图用的那个完全一致 ✗。
     let region = seed_region;
     // **光栅阶段之三：读回与掩膜** ✓（P2）。
     let read_started = std::time::Instant::now();
     let (mut rgba, mut painted) = read_surface_region(&surface, region);
+    // **只保留"这一笔真的碰到过"的像素** ✗ —— 绝不能把喂进去的底图**原样复制**出来 ✓：
+    // 那会把**笔触的包围矩形**烘成一个新对象 ✗ ⇒ 删掉底下的东西之后，
+    // 画面里会留下一块**直角矩形幽灵** ✓ —— 这正是用户报的「`Flat2#1` 画叶子出矩形 artifact」✓
+    //（实测复现 ✓：半透明绿矩形 + 一条 2B_pencil ✓ ⇒ 删掉绿矩形 ✓ ⇒ 矩形区域里**还剩 1076 个绿像素** ✗）。
+    if reads_canvas {
+        // **把 size 先落成变量** ✓（第 646 轮）：直接写 `size.unwrap_or(20.0)` 会让
+        // `scripts/check-deposit-mask-time-base.mjs` 的 ③ 号检查**匹配不到 `dtimes`**
+        // （它的正则 `brush_deposit_mask\([^)]*\)` 在嵌套括号处就断了 ✗）⇒ CI 红。
+        let paint_size = size.unwrap_or(20.0);
+        let deposit = brush_deposit_mask(&brush, paint_size, points, region, dtimes);
+        let before = before_pixels.as_deref().unwrap_or(&[]);
+        // 引擎在"没碰过的像素"上的量化漂移上限 ✓（见快照处的说明 ✓）。
+        const CANVAS_DRIFT_TOLERANCE: i32 = 3;
+        for index in (0..rgba.len()).step_by(4) {
+            // **留着它** ⟺ 这支笔在这里**落过颜料** ✓，或者这一像素被**明显挪动/覆盖**过 ✓。
+            let deposited = deposit.get(index + 3).copied().unwrap_or(0) > 0;
+            let moved = before.len() >= index + 4
+                && (0..4).any(|channel| {
+                    (i32::from(rgba[index + channel]) - i32::from(before[index + channel])).abs()
+                        > CANVAS_DRIFT_TOLERANCE
+                });
+            if !(deposited || moved) {
+                if rgba[index] != 0
+                    || rgba[index + 1] != 0
+                    || rgba[index + 2] != 0
+                    || rgba[index + 3] != 0
+                {
+                    painted -= 1;
+                }
+                rgba[index] = 0;
+                rgba[index + 1] = 0;
+                rgba[index + 2] = 0;
+                rgba[index + 3] = 0;
+            }
+        }
+    }
     // ★ **`max_channel_delta` ✗**（第 20 轮 ✓；**∴ 用户报的薄涂笔零落笔 ✓**）
     //
     // **∴ 为什么需要它 ✗**：`painted_pixels` 只数"字节变了"✗ ⇒ **∴ 差 1 LSB 也算 ✓**
     //   ⇒ **∴ 实测 `thin_watercolor` 在 size=20 下 `painted_pixels=146` ✗ 而**最大单通道只差 6**✗、
     //      中位差 **1**✗ ⇒ **∴ 肉眼全白 ✗，而 `ok=true` ＋ `painted_pixels>0` ⇒ **∴ 静默失败 ✓**
-    //   ⇒ **∴ 而现在下一行那段 `CANVAS_DRIFT_TOLERANCE = 3` ✗ 的闸门**正好把差 1 的真落墨清零**✗
+    //   ⇒ **∴ 而现在上面那段 `CANVAS_DRIFT_TOLERANCE = 3` ✗ 的闸门**正好把差 1 的真落墨清零**✗
     //      ⇒ **∴ 所以这一项不仅是诊断 ✓，它也是**识别"薄涂笔"**✗ 的依据 ✓**。
     //
     // **∴ 算法 ✓**：**不碰 `rgba` ✗**（**∴ 纯读 ✓**）⇒ **∴ 量的是"导出图上
@@ -2712,14 +2780,43 @@ pub(super) fn paint_brush(
     //   **∴ 旧口径的错**（名画第 3 轮 §7 glazing 项）：喂底图分支曾逐通道
     //   直比（含 alpha、未合成）⇒ 涂抹笔晕边低 alpha 像素报 |a−255| ≈ 244–254，
     //   而导出 RGB 合成后仅差 4 级 ⇒ 回执 254 冒充了导出效果 ✗。
-    //   **∴ 残留**：本遍在落墨掩膜清零之前量 ⇒ 被掩膜清零的像素
-    //   （四通道与底图差均 ≤ `CANVAS_DRIFT_TOLERANCE` = 3）最多贡献 3 级，
-    //   属漂移容差量级，不是另一套口径 ✓。
+    //   **∴ 位置**：本遍在落墨掩膜之后量 ⇒ 被掩膜清零的像素（未触碰／仅漂移）
+    //   是全零 tile，合成到画前合成上差为 0，不进直方图 ✓；这也封住了多层文档下
+    //   “未触碰像素的本层像素 ≠ 画前合成”带来的假差（掩膜前量会误报）✓。
     let (max_delta, delta_distribution) = {
         let mut max_delta: u8 = 0;
         // **差值直方图** ✓（P-15）：同一遍遍历里记，与 `max_delta` 同一个像素、同一个差值 ✓。
         let mut hist = [0u32; 256];
-        let before = before_pixels.as_deref();
+        // **Y26 pale_wash：delta 参照是画前合成，不是绘画底图**（与绘画底图脱钩）：
+        // 喂底图（`before_pixels`）在 6fe383bf 后是本层透明底：空层上近白漆对透明黑
+        // 差 ≈ 218，而白画布上淡色洗染肉眼几乎不变，报 218 会误导（`canvas_base` 的
+        // 长期含义是“对画布（合成后可见画面）的变化量”）。所以喂底图的笔另取参照：
+        // 落笔前整幅合成（`render_region_raw`，含背景与全部图层）裁剪到笔触区。
+        // 本函数内文档尚未提交本笔 ⇒ 此刻渲染即画前合成；尺寸对不上／渲染失败时
+        // 退回旧参照（喂底图），不报凑数的数。非喂底图的笔（`reads_canvas=false`）
+        // 保持旧口径（背景兜底），不动重放／预览等不读画布的路。
+        // 另：本遍移到掩膜之后量 ⇒ 被掩膜清零的漂移像素贡献 0，不再是“残留 ≤3”。
+        let delta_before: Option<Vec<u8>> = if reads_canvas {
+            let bbox = yanshi_core::Bbox::new(
+                region.x0 as f64,
+                region.y0 as f64,
+                region.width as f64,
+                region.height as f64,
+            );
+            match ctx.workspace.render_region_raw(&ctx.doc_id, bbox) {
+                Ok((width, height, pixels))
+                    if width as usize == region.width
+                        && height as usize == region.height
+                        && pixels.len() >= region.width * region.height * 4 =>
+                {
+                    Some(pixels)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let before = delta_before.as_deref().or(before_pixels.as_deref());
         for index in (0..rgba.len()).step_by(4) {
             // ★ **无基准时必须跳过**未触碰的透明像素 ✗** ★**（第 118 轮 ✓；**∴ 外部复测 QY-D03 ✓**）
             //
@@ -2794,42 +2891,7 @@ pub(super) fn paint_brush(
         }
         (max_delta, delta_distribution(&hist))
     };
-    // **只保留"这一笔真的碰到过"的像素** ✗ —— 绝不能把喂进去的底图**原样复制**出来 ✓：
-    // 那会把**笔触的包围矩形**烘成一个新对象 ✗ ⇒ 删掉底下的东西之后，
-    // 画面里会留下一块**直角矩形幽灵** ✓ —— 这正是用户报的「`Flat2#1` 画叶子出矩形 artifact」✓
-    //（实测复现 ✓：半透明绿矩形 + 一条 2B_pencil ✓ ⇒ 删掉绿矩形 ✓ ⇒ 矩形区域里**还剩 1076 个绿像素** ✗）。
-    if reads_canvas {
-        // **把 size 先落成变量** ✓（第 646 轮）：直接写 `size.unwrap_or(20.0)` 会让
-        // `scripts/check-deposit-mask-time-base.mjs` 的 ③ 号检查**匹配不到 `dtimes`**
-        // （它的正则 `brush_deposit_mask\([^)]*\)` 在嵌套括号处就断了 ✗）⇒ CI 红。
-        let paint_size = size.unwrap_or(20.0);
-        let deposit = brush_deposit_mask(&brush, paint_size, points, region, dtimes);
-        let before = before_pixels.unwrap_or_default();
-        // 引擎在"没碰过的像素"上的量化漂移上限 ✓（见快照处的说明 ✓）。
-        const CANVAS_DRIFT_TOLERANCE: i32 = 3;
-        for index in (0..rgba.len()).step_by(4) {
-            // **留着它** ⟺ 这支笔在这里**落过颜料** ✓，或者这一像素被**明显挪动/覆盖**过 ✓。
-            let deposited = deposit.get(index + 3).copied().unwrap_or(0) > 0;
-            let moved = before.len() >= index + 4
-                && (0..4).any(|channel| {
-                    (i32::from(rgba[index + channel]) - i32::from(before[index + channel])).abs()
-                        > CANVAS_DRIFT_TOLERANCE
-                });
-            if !(deposited || moved) {
-                if rgba[index] != 0
-                    || rgba[index + 1] != 0
-                    || rgba[index + 2] != 0
-                    || rgba[index + 3] != 0
-                {
-                    painted -= 1;
-                }
-                rgba[index] = 0;
-                rgba[index + 1] = 0;
-                rgba[index + 2] = 0;
-                rgba[index + 3] = 0;
-            }
-        }
-    }
+
     ctx.time(Phase::Raster, read_started);
     // **反馈期 1 注**：撑不满 dab 间距的短笔触已在上面兜底（延长落一枚 dab），
     // 走到这里的 0 墨是**其它**真 0 墨情形（透明／涂抹／不可见色等），下面的分因诊断仍适用。
@@ -2847,6 +2909,19 @@ pub(super) fn paint_brush(
                      **想要墨** ⇒ 把 `color.a` / `opacity` 设大；**想要的就是透明** ⇒ 这笔不用画 ✓。"
                         .to_owned(),
                 ),
+            ));
+        }
+        // 橡皮在空 surface 上不会增加 alpha；不能由零墨推断路径太短。
+        // 这里修正恢复建议，不冒充已经补齐跨对象的 MyPaint 橡皮合成。
+        if brush.get(hokusai::BrushSetting::Eraser).base_value > 0.0 {
+            return Err(YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!(
+                    "笔刷「{name}」启用了 eraser，但这次没有产生可提交的擦除结果。\
+                     这不能证明路径太短，继续加长路径不是可靠的恢复办法。\
+                     请先确认目标图层已有颜料；若仍无变化，请用专用 erase 工具\
+                     （data.points/size/hardness/opacity）擦除同一图层，并保留本次参数供排查。"
+                )),
             ));
         }
         // **说清原因，并给出路** ✓（"错误里要能照着改" 是本项目的既定规矩 ✓）。

@@ -347,6 +347,12 @@ pub fn region_fingerprint(state: &yanshi_core::DocumentState) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     format!("{:?}", state.color_space).hash(&mut h);
+    // **★ 底色必须进指纹（`rebackground`，与上面选区/重排同型）★**：底色是每块 tile
+    // 复合的基底 ⇒ 它真的改变渲染结果 ✓ ⇒ 而上面的字段一个都不含底色 ✓
+    // ⇒ 于是：改底色后指纹不变 ⇒ 区域字节缓存命中那份「旧底色」的块 ✓
+    // ⇒ **表现**：「改了底色画面却不动」（本工具集成测试当场抓住 ✓）。
+    // **∴ 修法 ✗**：把底色按稳定序（`Value` 的 `Debug`）哈希进来 ✓ —— 与选区那条同款 ✓。
+    format!("{:?}", state.background).hash(&mut h);
     let mut layers: Vec<&yanshi_core::Layer> = state.alive_layers();
     // **★ 必须覆盖**全部层** ✓ ★**（第 474 轮 **C4 判据当场抓住 ✓**）：
     // **∴ 我曾让这里**排除最上层**✗（**为了让"只改当前层"命中 ✓**）⇒ **∴ 而 `region_cache` 存的是
@@ -377,7 +383,15 @@ pub fn region_fingerprint(state: &yanshi_core::DocumentState) -> u64 {
             .objects
             .values()
             .filter(|o| o.layer_id == l.id && o.deleted_by.is_none())
-            .map(|o| format!("{}:{}:{:?}:{}", o.id, o.z_index, o.current_version, o.data))
+            // **★ 对象变换必须进指纹**：几何原子（flip/rotate/scale）只复合
+            // `transform`、不 supersede 对象 ⇒ 版本与 data 都不变；不含变换时
+            // 区域字节缓存会命中变换前的旧块、画面不动（与选区/底色同类坑）。
+            .map(|o| {
+                format!(
+                    "{}:{}:{:?}:{}:{:?}",
+                    o.id, o.z_index, o.current_version, o.data, o.transform.matrix
+                )
+            })
             .collect();
         objs.sort();
         objs.hash(&mut h);
@@ -544,6 +558,57 @@ mod tests {
             region_fingerprint(&after),
             fp_before,
             "只改 z_index 也必须让指纹变（否则缓存命中旧块）"
+        );
+    }
+
+    /// **只改底色，指纹必须变（`rebackground`）**：底色是复合基底 ⇒ 改它不改
+    /// 指纹 ⇒ 区域字节缓存命中旧底色的块 ⇒ 「改了底色画面却不动」。
+    /// （本工具集成测试当场抓住：改底色后中心像素仍是白 ✗。）
+    #[test]
+    fn fingerprint_changes_when_only_background_changes() {
+        use serde_json::json;
+        use yanshi_core::fold::fold_atoms;
+        use yanshi_core::state::DocumentState;
+        use yanshi_core::{Atom, AtomKind};
+
+        fn atom(kind: AtomKind, id: &str, payload: serde_json::Value) -> Atom {
+            Atom::new(kind, "human:1", "session:a", payload).with_id(id)
+        }
+        let mut atoms = Vec::new();
+        let push = |atoms: &mut Vec<Atom>, atom: Atom| {
+            let mut atom = atom;
+            atom.seq = atoms.len() as u64 + 1;
+            atoms.push(atom);
+        };
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::CreateDocument,
+                "a_doc",
+                json!({"doc_id": "doc_1", "width": 16, "height": 16,
+                    "background": {"r": 255, "g": 255, "b": 255, "a": 255}}),
+            ),
+        );
+        let before = fold_atoms(DocumentState::empty(), &atoms).state;
+        let fp_before = region_fingerprint(&before);
+        push(
+            &mut atoms,
+            atom(
+                AtomKind::SetBackground,
+                "a_bg",
+                json!({"background": {"r": 30, "g": 60, "b": 120, "a": 255}}),
+            ),
+        );
+        let after = fold_atoms(DocumentState::empty(), &atoms).state;
+        assert_eq!(
+            after.background,
+            json!({"r": 30, "g": 60, "b": 120, "a": 255}),
+            "前置：底色原子须真的改底色"
+        );
+        assert_ne!(
+            region_fingerprint(&after),
+            fp_before,
+            "只改底色也必须让指纹变（否则缓存命中旧底色的块）"
         );
     }
 

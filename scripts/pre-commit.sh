@@ -117,6 +117,25 @@ if [ -n "$DBG_KB" ] && [ "$DBG_KB" -gt 5242880 ]; then   # > 5 GiB
   echo "     （release 保留；本场实测 9.5 G → 614 M、磁盘 63% → 60%）"
 fi
 
+# ⑦ **工具计数文字**（2026-10-29 加）—— **毫秒级、只读、无条件跑** ✓
+#   **⇒ 为什么加**：rebackground 带入主干后，合入树注册表 209/128，但计数文字只改了指南 ✗
+#     ⇒ 漏了 docs/tools.md、tool-examples.md、tools.rs 两处注释 ⇒ CI 四项红 ✗
+#     ⇒ 教训：带入合入两支各加一工具时，必须按合入树实测总数全处扫一遍 ✗
+#     ⇒ 所以把它**挂到提交前**：注册表或任一计数点变了，提交就被拦 ✓
+#   **⇒ 为什么无条件**：计数文字住在 docs 里，纯 docs 改动不碰注册表文件 ✗
+#     ⇒ 只在注册表变了时才跑，会漏掉纯 docs 漂移 ⇒ 毫秒级只读检查就每次都跑 ✓
+#   **⇒ 为什么只检查不改写**：各处格式不同（英文 prose、中文 prose、代码注释）✗
+#     ⇒ 自动改写有 corrupt prose 的风险 ⇒ 脚本只报 mismatch，改数由人做 ✓
+if node scripts/check-tool-counts.mjs > /tmp/precommit-tool-counts.log 2>&1; then
+  echo "  ⑦ 工具计数文字（注册表实测总数 vs 各处计数点）"
+  echo "     ✓"
+else
+  echo "  ⑦ 工具计数文字（注册表实测总数 vs 各处计数点）"
+  echo "     ✗ 工具计数文字与注册表不符（详见 /tmp/precommit-tool-counts.log）"
+  grep -E "✗" /tmp/precommit-tool-counts.log | head -8 | sed 's/^/       /'
+  fail=1
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "  ⇒ **不许提交**（上面有红）"
   exit 1

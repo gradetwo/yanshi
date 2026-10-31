@@ -52,6 +52,12 @@ const OWNER_ONLY_TOOLS = new Map([
   // **第三方审计 P2-N1 之后**：`document_id` 与**会话文档**不同 ⇒ editor 令牌会被作用域闸
   // 拒掉（`token::ensure_doc_scope` ✓，与 MCP stdio 的 owner 缺省对齐）⇒ 示例要走 owner 令牌。
   ["delete_document", "跨文档删除必须 owner（第三方审计 P2-N1 的作用域闸）"],
+  // **release/reopen 同闸**：两工具 `document_id` 为 require_str 必填（有意设计，与会话
+  // doc_id 分离才能触发“释放不存在文档”反例）⇒ 静态 sample-oil 示例在判据随机文档
+  // 加 editor 令牌下恒撞作用域闸 ⇒ 示例要走 owner 令牌，报 reference_not_found 即
+  // 归入需要前置状态。代价：判据不再验证这两工具的 editor 越界被拒，与 delete_document 口径相同。
+  ["release_document", "跨文档释放必须 owner（document_id 有意 require_str，与 delete_document 同闸）"],
+  ["reopen_document", "跨文档重开必须 owner（document_id 有意 require_str，与 delete_document 同闸）"],
 ]);
 
 // **⇒ 每条示例一个**干净文档** ✓**（第 941 轮；外部实测 `frequency_separation` 被前面的示例污染 ✗）
@@ -112,6 +118,22 @@ for (const tool of withExample) {
     // **⇒ 每条示例前重建**干净文档 ＋ 前置** ✓（第 941 轮：顺序无关 ✓）
     // **owner-only 工具** ⇒ 换 owner 令牌 ✓（理由见 `OWNER_ONLY_TOOLS`）。
     await freshDoc(true, OWNER_ONLY_TOOLS.has(tool.name));
+  }
+  // **smart_glaze 专属前置铺底稿**（判据第四轮，Y26）：glaze 语义是"在已画好的底稿上罩染"
+  // （tools_smart.rs:1149 doc 注释）⇒ 内笔 watercolor_glazing（smudge=0.9 涂抹笔）在空区
+  // 无物可抹 ⇒ 被零像素守卫拒（实测：有种子 20 成／18 败、无种子 38/38 全败，成功的是压到
+  // o1 种子条带的线）。验收前置只有 o1 一条短线，glaze 框 [0,0,100,100] 大部分是空区 ⇒
+  // 只对 smart_glaze 在 glaze 框内铺一层不透明底稿（size 40 三横线盖住 [0,0,100,100]；
+  // 不改其他示例的环境；不改产品守卫）。去掉这段铺底稿 ⇒ smart_glaze 回到被拒（变红证明）。
+  if (tool.name === "smart_glaze") {
+    for (const [i, y] of [10, 50, 90].entries()) {
+      const based = await call("brush_stroke", {
+        layer_id: "L1", object_id: `glaze_base_${i}`, brush: "100%_Opaque", size: 40,
+        color: { r: 180, g: 180, b: 180, a: 255 },
+        points: [[0, y, 1], [100, y, 1]],
+      });
+      console.log(`  铺底稿（glaze 框 y=${y}）：${based.ok ? "成功" : "失败 ⇒ " + ((based.context || {}).detail || "").slice(0, 60)}`);
+    }
   }
   if (tool.name === "create_layer") {
     accepted += 1;

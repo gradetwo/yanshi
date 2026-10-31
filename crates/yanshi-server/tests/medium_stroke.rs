@@ -767,3 +767,65 @@ fn medium_stroke_size_420_is_really_420_wide() {
         "420 宽的带必须真的落墨：{made}"
     );
 }
+
+/// **反馈报告 5 §2**：`medium_stroke` 的 size 超限被夹紧时，顶层 `warnings`
+/// 必须出现一条警告，写明请求值、夹紧后 `size_used` 与上限 512；不夹紧时
+/// 不触发。夹紧行为与 `size_used` 本身不动（500→500、512→512、700→512、
+/// 1024→512，与分诊探针一致）。
+/// **⇒ 变异**：删掉夹紧警告逻辑 ⇒ 700/1024 两臂红；把警告改成无条件 ⇒
+/// 500/512 两臂红。
+#[test]
+fn medium_stroke_warns_on_top_level_when_size_is_clamped() {
+    let mut workspace = workspace();
+    setup(&mut workspace);
+    let stroke = |workspace: &mut Workspace, size: f64| {
+        let mut ctx = context(workspace);
+        registry().call(
+            &mut ctx,
+            "medium_stroke",
+            &json!({
+                "layer_id": "L", "medium": "oil",
+                "points": [[20.0, 20.0, 1.0], [40.0, 30.0, 0.6], [60.0, 44.0, 0.3]],
+                "size": size, "color": {"r": 220, "g": 60, "b": 40, "a": 255},
+            }),
+        )
+    };
+    let clamp_warnings = |result: &serde_json::Value| -> Vec<String> {
+        result["warnings"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|item| item.as_str().map(str::to_owned))
+            .filter(|text| text.contains("夹紧"))
+            .collect()
+    };
+    for (size, expected_used) in [(500.0, 500.0), (512.0, 512.0)] {
+        let made = stroke(&mut workspace, size);
+        assert_eq!(made["ok"], json!(true), "{made}");
+        assert_eq!(made["size_used"], json!(expected_used), "{made}");
+        assert!(
+            made.get("size_clamped").is_none(),
+            "size {size} 在上限内，不许报夹紧：{made}"
+        );
+        assert!(
+            clamp_warnings(&made).is_empty(),
+            "size {size} 未夹紧，不许出现夹紧警告：{made}"
+        );
+    }
+    for size in [700.0, 1024.0] {
+        let made = stroke(&mut workspace, size);
+        assert_eq!(made["ok"], json!(true), "{made}");
+        assert_eq!(made["size_used"], json!(512.0), "{made}");
+        assert_eq!(made["size_clamped"], json!(true), "{made}");
+        let warnings = clamp_warnings(&made);
+        assert_eq!(warnings.len(), 1, "超限一笔只许一条夹紧警告：{made}");
+        let warning = &warnings[0];
+        assert!(
+            warning.contains(&format!("请求 size={size}"))
+                && warning.contains("上限 512")
+                && warning.contains("size_used=512"),
+            "夹紧警告须写明请求值、夹紧后 size_used 与上限 512：{warning}（{made}）"
+        );
+    }
+}

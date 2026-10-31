@@ -65,7 +65,11 @@ const ALLOWLIST = {
   response: new Set([
     "all_ok", "failed_calls", "error", "ok", "landed", "landed_reason",
     "painted_pixels", "painted_pixels_clipped", "painted_pixels_raw",
-    "base_value", "bytes_per_atom_avg", "server_rss_mb", "has_more",
+    "base_value", "bytes_per_atom_avg", "server_rss_mb",
+    // **报告 5/6 §2 #1 跟进**：`describe_canvas` 的回执字段 `estimated_memory_bytes`
+    //   （`tools.rs` 写进回执 JSON；同工具的 `server_rss_mb`／`bytes_per_atom_avg`
+    //   已在 response 集里，同一类 ⇒ 按规则逐个补，不放通配）。
+    "estimated_memory_bytes", "has_more",
     "next_offset", "next_since", "truncated", "thumb_url", "clamped_pixels",
     "effective_margin", "effective_sample_stride", "field_range",
     "field_uniform", "filled_pixels", "mask_bbox", "placed", "residual_ratio",
@@ -80,6 +84,10 @@ const ALLOWLIST = {
     //   （`ink_mass` / `max_channel_delta` 是 `brush_stroke` 回执本来的字段 ✓；
     //    `paint_delta` 是 `medium_stroke` 回执的同义字段 ✓；此前都没进过文案）。
     "stroke_evidence", "ink_mass", "max_channel_delta", "paint_delta",
+    // **P3（paint-r4-p3）**：`get_stroke_log` 的回执字段 ✓（`tools.rs` 的
+    //   `read_get_stroke_log` 回 `"entries"` 当页数组与 `"total"` live 笔数；
+    //   同回执的 `next_offset`/`truncated` 已在本组 ✓；它俩不是任何工具的参数名 ✓）。
+    "total", "entries",
   ]),
   value: new Set([
     "auto", "flat", "hex", "linear", "srgb", "srgb_bytes", "dual",

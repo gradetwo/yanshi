@@ -17,6 +17,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod host_blob;
 pub mod kernel;
 
 mod brush;
@@ -388,6 +389,26 @@ impl WasmKernel {
         self.inner.blob_get(hash).unwrap_or_default()
     }
 
+    /// 宿主 store 里有没有该 blob（`blob_get` 缺失时返回空数组，
+    /// 无法区分“缺失”与“空 blob”，探针走这条；非法哈希返回 `false`）。
+    pub fn blob_has(&self, hash: &str) -> bool {
+        self.inner.blob_exists(hash)
+    }
+
+    /// 宿主 store 信息 JSON：后端名、条数、是否已外部化到宿主。
+    ///
+    /// `externalized_to_host` 只在 `wasm32` 目标下为真（字节在 JS 堆）；
+    /// Native 下后端是进程内测试替身，如实报 `false`，不假装已外部化。
+    pub fn blob_store_info_json(&self) -> String {
+        json!({
+            "ok": true,
+            "backend": self.inner.blob_store_backend_name(),
+            "blobs": self.inner.stats().blobs,
+            "externalized_to_host": cfg!(target_arch = "wasm32"),
+        })
+        .to_string()
+    }
+
     /// 最近一次 dirty 的 tile（JSON 数组）。
     pub fn last_dirty_tiles(&self) -> String {
         serde_json::to_string(self.inner.last_dirty_tiles()).unwrap_or_else(|_| "[]".to_owned())
@@ -535,10 +556,19 @@ mod tests {
             &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
         );
 
-        // blob 往返。
+        // blob 往返（经宿主 store，不再是内核自有 HashMap）。
         let stored: Value = serde_json::from_str(&kernel.blob_put(&[9, 8, 7])).unwrap();
         let hash = stored["blob_hash"].as_str().unwrap().to_owned();
         assert_eq!(kernel.blob_get(&hash), vec![9, 8, 7]);
+        assert!(kernel.blob_has(&hash));
+        assert!(!kernel.blob_has(&format!("sha256:{}", "0".repeat(64))));
+        let info: Value = serde_json::from_str(&kernel.blob_store_info_json()).unwrap();
+        assert_eq!(info["ok"], json!(true));
+        assert!(info["blobs"].as_u64().unwrap() >= 1);
+        assert_eq!(
+            info["externalized_to_host"],
+            json!(cfg!(target_arch = "wasm32"))
+        );
 
         // 统计与水位。
         let stats: Value = serde_json::from_str(&kernel.stats_json()).unwrap();

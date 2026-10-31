@@ -343,6 +343,41 @@ pub enum AtomKind {
     /// **单独一个变体而不是在 `SetAnchor` 里加 `removed` 标志** ✗：删除与写入在**撤销**
     /// 语义上是两件事 ✓ ⇒ 分开才能在日志里各自回退 ✓。
     DeleteAnchor,
+    /// 改已有文档的底色（`rebackground` 工具）。
+    ///
+    /// 载荷：`{background: {r, g, b, a}}`，与 `CreateDocument` 的 `background` 同形 ✓。
+    /// 只改 `DocumentState::background`，不动图层、对象与画布尺寸 ⇒ 折叠、重放、
+    /// 撤销/恢复都与其它状态原子同一条路 ✓；**绝不**走内存改状态不落原子的捷径
+    /// （重开即丢的静默退化 ✗）。与新建文档时给底色（`CreateDocument`）互补：
+    /// 那个只在建文档那一刻生效，这个只改**已有**文档的底色 ✓。
+    SetBackground,
+    /// 几何（路线三）：只改画布尺寸，内容不动。
+    ///
+    /// 载荷：`{affine: {matrix, pivot}, new_width, new_height}`，affine 为单位矩阵。
+    ResizeCanvasBounds,
+    /// 几何（路线三）：绕锚点缩放画布与内容。
+    ///
+    /// 载荷：`{affine, new_width, new_height, anchor, scale_x, scale_y}`；
+    /// 宽高用 `f64::round`（半远离零），下限 1；回执写实际生效比例。
+    ScaleCanvas,
+    /// 几何（路线三）：绕锚点旋转画布与内容，只接受 90° 倍数。
+    ///
+    /// 载荷：`{affine, new_width, new_height, anchor, degrees}`；90°/270° 互换宽高。
+    RotateCanvas,
+    /// 几何（路线三）：沿锚点所在轴线翻转画布与内容。
+    ///
+    /// 载荷：`{affine, new_width, new_height, anchor, direction}`，direction 为
+    /// `horizontal`（左右翻）或 `vertical`（上下翻）。
+    FlipCanvas,
+    /// 几何（路线三）：缩界加平移，绝不删除原子。
+    ///
+    /// 载荷：`{affine, new_width, new_height, region: {x, y, w, h}}`；超界内容
+    /// 渲染时裁剪，撤销即恢复。
+    CropCanvas,
+    /// 几何（路线三）：扩界加平移，新增区露出文档底色，不为揭示区新建原子。
+    ///
+    /// 载荷：`{affine, new_width, new_height, margins: {left, top, right, bottom}}`。
+    ExtendCanvas,
     /// 重排图层（携带完整目标 z 序）。
     ReorderLayers,
     /// 重排同一图层内的对象（携带完整目标 z 序）。
@@ -350,6 +385,20 @@ pub enum AtomKind {
     // 删除类
     /// 墓碑删除。
     Tombstone,
+    /// 压平一层：把层内图元渲染为一张画布 1:1 基底 Blob。
+    ///
+    /// 载荷：`{layer_id, up_to_seq, blob_hash}`；可选 `flatten_mask`
+    ///（重放自愈须同口径，缺省 false）；`replaces_bake_seq` 仅用于
+    /// 哈希不一致显式 append_rebake 的审计元数据，绝不改写历史原子。
+    BakeLayer,
+    /// 逐层压平整个文档：对每个在范围内的层各做一次单层压平，
+    /// 但只追加一个文档级原子（单原子、多层条目）。
+    ///
+    /// 载荷：`{document_up_to_seq, layers: [{layer_id, up_to_seq,
+    /// blob_hash, flatten_mask}]}`；`layers` 只含本次 applied 的层，
+    /// no-op 层与跳过层不在其中。折叠时按条目逐层产生与一期
+    /// `baked:{layer}` 完全相同的基底对象与水位屏障。
+    BakeDocument,
     // 历史类
     /// 撤销目标原子。
     Revert,
@@ -400,9 +449,18 @@ impl AtomKind {
             Self::SetProperty => "set_property",
             Self::SetAnchor => "set_anchor",
             Self::DeleteAnchor => "delete_anchor",
+            Self::SetBackground => "set_background",
+            Self::ResizeCanvasBounds => "resize_canvas_bounds",
+            Self::ScaleCanvas => "scale_canvas",
+            Self::RotateCanvas => "rotate_canvas",
+            Self::FlipCanvas => "flip_canvas",
+            Self::CropCanvas => "crop_canvas",
+            Self::ExtendCanvas => "extend_canvas",
             Self::ReorderLayers => "reorder_layers",
             Self::ReorderObjects => "reorder_objects",
             Self::Tombstone => "tombstone",
+            Self::BakeLayer => "bake_layer",
+            Self::BakeDocument => "bake_document",
             Self::Revert => "revert",
             Self::Reapply => "reapply",
             Self::Checkpoint => "checkpoint",
@@ -472,9 +530,18 @@ impl AtomKind {
                 | Self::Move
                 | Self::Transform
                 | Self::SetProperty
+                | Self::SetBackground
+                | Self::ResizeCanvasBounds
+                | Self::ScaleCanvas
+                | Self::RotateCanvas
+                | Self::FlipCanvas
+                | Self::CropCanvas
+                | Self::ExtendCanvas
                 | Self::ReorderLayers
                 | Self::ReorderObjects
                 | Self::Tombstone
+                | Self::BakeLayer
+                | Self::BakeDocument
         )
     }
 
@@ -490,12 +557,20 @@ impl AtomKind {
                 | Self::ReorderLayers
                 | Self::ReorderObjects
                 | Self::SetProperty
+                | Self::ResizeCanvasBounds
+                | Self::ScaleCanvas
+                | Self::RotateCanvas
+                | Self::FlipCanvas
+                | Self::CropCanvas
+                | Self::ExtendCanvas
                 | Self::CreateLayer
                 | Self::CreateObject
                 | Self::CreateMask
                 | Self::UpdateMask
                 | Self::DeleteMask
                 | Self::CreateSelection
+                | Self::BakeLayer
+                | Self::BakeDocument
         )
     }
 
@@ -513,6 +588,14 @@ impl AtomKind {
                 | Self::Retouch
                 | Self::Liquify
                 | Self::ImportImage
+                | Self::ResizeCanvasBounds
+                | Self::ScaleCanvas
+                | Self::RotateCanvas
+                | Self::FlipCanvas
+                | Self::CropCanvas
+                | Self::ExtendCanvas
+                | Self::BakeLayer
+                | Self::BakeDocument
         )
     }
 
@@ -522,7 +605,7 @@ impl AtomKind {
     }
 
     /// 全部原子类型，便于穷举测试。
-    pub const ALL: [AtomKind; 33] = [
+    pub const ALL: [AtomKind; 42] = [
         Self::CreateDocument,
         Self::CreateLayer,
         Self::CreateObject,
@@ -544,9 +627,18 @@ impl AtomKind {
         Self::Move,
         Self::Transform,
         Self::SetProperty,
+        Self::SetBackground,
+        Self::ResizeCanvasBounds,
+        Self::ScaleCanvas,
+        Self::RotateCanvas,
+        Self::FlipCanvas,
+        Self::CropCanvas,
+        Self::ExtendCanvas,
         Self::ReorderLayers,
         Self::ReorderObjects,
         Self::Tombstone,
+        Self::BakeLayer,
+        Self::BakeDocument,
         Self::Revert,
         Self::Reapply,
         Self::Checkpoint,

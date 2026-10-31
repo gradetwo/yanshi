@@ -748,6 +748,10 @@ pub struct ExportStats {
     /// 与 `missing_derived` 的区别：`missing_derived` 只数其中存储里
     /// 不存在的那部分（存储缺失）；本栏数的是全部按设计未装包的。
     pub derived_not_packaged: usize,
+    /// **bake frontier 口径**（第二轮第 9 条）：`blob_bundle_mode="frontier"`
+    /// 时被剔除的历史 Bake Blob 数（日志中有 Bake 引用——单层或文档级条目——
+    /// 但不在有效集内，且未被任何存活对象引用）；`all_history` 时恒为 0。
+    pub frontier_omitted_historical_blobs: usize,
 }
 
 /// **导出"可重放证明"的进程内缓存** ✓（第 39 轮 ✓）。
@@ -1251,6 +1255,11 @@ impl Workspace {
 
     /// 内存工作区（测试与嵌入式使用）。
     pub fn in_memory(settings: DocumentSettings) -> Self {
+        Self::with_store(Arc::new(MemoryBlobStore::new()), settings)
+    }
+
+    /// 以指定 Blob 存储构造（测试用：注入失败存储，验 bake 失败路径）。
+    pub fn with_store(store: Arc<dyn BlobStore>, settings: DocumentSettings) -> Self {
         Self {
             preview_pending_at: std::collections::BTreeMap::new(),
             doc_last_used: BTreeMap::new(),
@@ -1258,7 +1267,7 @@ impl Workspace {
             doc_evictions: 0,
             doc_evictions_skipped_busy: 0,
             doc_last_eviction: None,
-            store: Arc::new(MemoryBlobStore::new()),
+            store,
             inflight: Arc::new(InflightRegistry::new()),
             documents: BTreeMap::new(),
             persist: None,
@@ -2518,6 +2527,19 @@ impl Workspace {
             .render_region_raw_layer_with_lod(bbox, layer_id, lod)
     }
 
+    /// **只渲染某一层，透明底** ✓（笔刷本层底图用 ✓）—— 语义见 `Document::render_region_layer_rgba` ✓。
+    /// 与 `render_region_raw_layer` 不同：那条叠文档背景，空层会取回不透明白底；
+    /// 笔刷底图要的是本层自身像素，背景必须透明（第 253 轮 PSD 同款教训）。
+    pub fn render_region_layer_rgba(
+        &mut self,
+        doc_id: &str,
+        bbox: Bbox,
+        layer_id: &str,
+    ) -> Result<(u32, u32, Vec<u8>)> {
+        self.document_mut(doc_id)?
+            .render_region_layer_rgba(bbox, layer_id)
+    }
+
     /// **只渲染某一层里的一个对象子集** ✓（一行转调，语义见 `Document` 侧 ✓）。
     pub fn render_layer_objects_subset(
         &mut self,
@@ -2680,7 +2702,181 @@ impl Workspace {
     ///
     /// **列表后面必须空一行** ✓（clippy 的 `doc list item without indentation` 又抓了我一次 ✓ ——
     /// 这条 lint 其实一直在帮我保持文档可读 ✓）。
+    /// 包内 atoms.jsonl 的有效 Bake 集合（导入策略检查用）：按全日志
+    /// compute_suppressed 算有效集，每层取 seq 最大的有效 Bake（不分种类，
+    /// 文档级原子按条目展开）；原子 JSON 损坏行按 Value 保守识别为有效
+    /// （不因解析失败放过一个历史 Blob）。
+    /// 返回 `(layer_id, bake_seq, up_to_seq, blob_hash, flatten_mask)`。
+    fn effective_bake_blobs_in_package(
+        atoms_text: &str,
+    ) -> (Vec<yanshi_core::Atom>, Vec<yanshi_core::bake::BakeBlobRef>) {
+        let mut atoms: Vec<yanshi_core::Atom> = Vec::new();
+        let mut fallback: Vec<yanshi_core::bake::BakeBlobRef> = Vec::new();
+        for line in atoms_text.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<yanshi_core::Atom>(line) {
+                Ok(atom) => atoms.push(atom),
+                Err(_) => {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                        let kind = value.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                        if kind == "bake_document" {
+                            // 文档级原子按条目展开为多行（与正常解析路径同口径）。
+                            let payload = value.get("payload");
+                            let seq = value.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+                            if let Some(layers) = payload
+                                .and_then(|p| p.get("layers"))
+                                .and_then(|v| v.as_array())
+                            {
+                                for entry in layers {
+                                    let layer_id = entry
+                                        .get("layer_id")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_owned();
+                                    let blob_hash = entry
+                                        .get("blob_hash")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_owned();
+                                    let up_to_seq = entry
+                                        .get("up_to_seq")
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(0);
+                                    let flatten_mask = entry
+                                        .get("flatten_mask")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false);
+                                    if !layer_id.is_empty() && !blob_hash.is_empty() {
+                                        fallback.push(yanshi_core::bake::BakeBlobRef {
+                                            layer_id,
+                                            bake_seq: seq,
+                                            up_to_seq,
+                                            blob_hash,
+                                            flatten_mask,
+                                        });
+                                    }
+                                }
+                            }
+                        } else if kind == "bake_layer" {
+                            let payload = value.get("payload");
+                            let layer_id = payload
+                                .and_then(|payload| payload.get("layer_id"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_owned();
+                            let blob_hash = payload
+                                .and_then(|payload| payload.get("blob_hash"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_owned();
+                            let up_to_seq = payload
+                                .and_then(|payload| payload.get("up_to_seq"))
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            let flatten_mask = payload
+                                .and_then(|payload| payload.get("flatten_mask"))
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            let seq = value.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+                            if !layer_id.is_empty() && !blob_hash.is_empty() {
+                                fallback.push(yanshi_core::bake::BakeBlobRef {
+                                    layer_id,
+                                    bake_seq: seq,
+                                    up_to_seq,
+                                    blob_hash,
+                                    flatten_mask,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let suppressed = yanshi_core::fold::compute_suppressed(&atoms);
+        let mut latest: std::collections::BTreeMap<String, (u64, u64, String, bool)> =
+            std::collections::BTreeMap::new();
+        for atom in &atoms {
+            if !yanshi_core::bake::is_bake_kind(atom.kind) || suppressed.contains(&atom.id) {
+                continue;
+            }
+            if atom.kind == yanshi_core::AtomKind::BakeDocument {
+                for (layer_id, up_to_seq, blob_hash, flatten_mask) in
+                    yanshi_core::bake::bake_document_entries(atom)
+                {
+                    let entry = latest
+                        .entry(layer_id)
+                        .or_insert((0, 0, String::new(), false));
+                    if atom.seq >= entry.0 {
+                        *entry = (atom.seq, up_to_seq, blob_hash, flatten_mask);
+                    }
+                }
+                continue;
+            }
+            let Some(layer_id) = atom.payload.get("layer_id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Some(blob_hash) = atom.payload.get("blob_hash").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let up_to_seq = atom
+                .payload
+                .get("up_to_seq")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let flatten_mask = atom
+                .payload
+                .get("flatten_mask")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let entry = latest
+                .entry(layer_id.to_owned())
+                .or_insert((0, 0, String::new(), false));
+            if atom.seq >= entry.0 {
+                *entry = (atom.seq, up_to_seq, blob_hash.to_owned(), flatten_mask);
+            }
+        }
+        let mut out: Vec<yanshi_core::bake::BakeBlobRef> = latest
+            .into_iter()
+            .map(
+                |(layer_id, (bake_seq, up_to_seq, blob_hash, flatten_mask))| {
+                    yanshi_core::bake::BakeBlobRef {
+                        layer_id,
+                        bake_seq,
+                        up_to_seq,
+                        blob_hash,
+                        flatten_mask,
+                    }
+                },
+            )
+            .collect();
+        out.extend(fallback);
+        (atoms, out)
+    }
+
+    /// 导入工程包（默认口径：缺有效压平基底 Blob 时直接拒绝导入；
+    /// 要重放自愈请用 [`Self::import_project_with_policy`] 并传
+    /// `missing_blob_policy="replay_and_heal"`）。
     pub fn import_project(&mut self, bytes: &[u8], requested: Option<&str>) -> Result<Value> {
+        self.import_project_with_policy(bytes, requested, "error")
+    }
+
+    /// 带缺失 Blob 策略的导入（第二轮第 4 条）：`missing_blob_policy` 缺省
+    /// `"error"`；显式 `"replay_and_heal"` 时在打开文档后对缺失的有效 Bake
+    /// 基底做一次日志重放自愈（严格 SHA 校验，不一致直接报错，不顶替）。
+    pub fn import_project_with_policy(
+        &mut self,
+        bytes: &[u8],
+        requested: Option<&str>,
+        missing_blob_policy: &str,
+    ) -> Result<Value> {
+        if !matches!(missing_blob_policy, "error" | "replay_and_heal") {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("missing_blob_policy 只接受 error（默认）或 replay_and_heal"),
+            ));
+        }
         let Some(persist) = self.persist.clone() else {
             return Err(YanshiError::new(
                 ErrorCode::PreconditionFailed,
@@ -2833,6 +3029,95 @@ impl Workspace {
             }
             restored += 1;
         }
+        // **bake 缺失 Blob 策略**（第二轮第 4 条）：在写 atoms.jsonl 与
+        // open_document **之前**检查包内有效 BakeLayer 集合；此时 CAS 已 put
+        // 了包内 blob（无害），但原子日志尚未落盘、文档尚未打开 ⇒ 拒绝导入
+        // 不留半成品文档。`replay_and_heal` 在此先行重放验哈希，失败同样在
+        // 落盘前报错；成功后才继续落盘与打开。
+        let (baked_blobs_healed, replayed_ms, replayed_atom_count) = {
+            let store = self.store();
+            let (all_atoms, effective_bakes) = Self::effective_bake_blobs_in_package(&atoms_text);
+            let mut missing: Vec<yanshi_core::bake::BakeBlobRef> = Vec::new();
+            for bake in &effective_bakes {
+                let hash: yanshi_core::BlobHash = match bake.blob_hash.parse() {
+                    Ok(hash) => hash,
+                    Err(_) => continue,
+                };
+                if !store.exists(&hash) {
+                    missing.push(bake.clone());
+                }
+            }
+            if !missing.is_empty() && missing_blob_policy == "error" {
+                let list = missing
+                    .iter()
+                    .map(|bake| {
+                        format!(
+                            "图层 {} bake_seq {} blob {}",
+                            bake.layer_id, bake.bake_seq, bake.blob_hash
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("；");
+                return Err(YanshiError::new(
+                    ErrorCode::ReferenceNotFound,
+                    ErrorContext::detail(format!(
+                        "工程包缺有效压平基底 Blob ⇒ 拒绝导入（missing_blob_policy=error）：{list} ⇒ 用 missing_blob_policy=replay_and_heal 从原子日志重放自愈，或经 put_blob 上传 Blob 后重试"
+                    )),
+                ));
+            }
+            let mut healed: Vec<serde_json::Value> = Vec::new();
+            let mut replayed_atom_count = 0usize;
+            let started = std::time::Instant::now();
+            if missing_blob_policy == "replay_and_heal" {
+                for bake in &missing {
+                    // 重放子集含更早 Bake（只排除目标 Bake 本身，不分种类）：
+                    // 压平后变换瞄准基底对象，排除全部 Bake 会使变换失 target、
+                    // 哈希恒不一致（与 tools_bake::replay_baked_blob 同一修法，
+                    // 见该处注释）。
+                    let subset: Vec<yanshi_core::Atom> = all_atoms
+                        .iter()
+                        .filter(|atom| {
+                            atom.seq <= bake.up_to_seq
+                                && !(yanshi_core::bake::is_bake_kind(atom.kind)
+                                    && atom.seq == bake.bake_seq)
+                        })
+                        .cloned()
+                        .collect();
+                    replayed_atom_count += subset.len();
+                    let mut temp = crate::document::Document::open(
+                        std::sync::Arc::clone(&store),
+                        format!("__import_heal_{}", bake.layer_id),
+                        subset,
+                        crate::document::DocumentSettings::default(),
+                    )?;
+                    let (w, h, rgba) =
+                        temp.render_layer_bake_base(&bake.layer_id, bake.flatten_mask)?;
+                    let png = yanshi_render::png::encode_png(w, h, &rgba).ok_or_else(|| {
+                        YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail("导入自愈 PNG 编码失败 ⇒ 拒绝导入"),
+                        )
+                    })?;
+                    let actual_hash = yanshi_core::BlobHash::from_bytes(&png);
+                    if actual_hash.to_string() != bake.blob_hash {
+                        return Err(YanshiError::new(
+                            ErrorCode::PreconditionFailed,
+                            ErrorContext::detail(format!(
+                                "导入自愈哈希不一致（strict）：图层 {} bake_seq {} 期望 {}，重建 {} ⇒ 拒绝写入与导入",
+                                bake.layer_id, bake.bake_seq, bake.blob_hash, actual_hash
+                            )),
+                        ));
+                    }
+                    store.put(&png)?;
+                    healed.push(serde_json::json!({
+                        "layer_id": bake.layer_id,
+                        "bake_seq": bake.bake_seq,
+                        "blob_hash": bake.blob_hash,
+                    }));
+                }
+            }
+            (healed, started.elapsed().as_millis(), replayed_atom_count)
+        };
         // **落盘** ✓：原子日志 + 元数据（+ 渲染缓存 ✓）。
         let dir = persist.doc_dir(&doc_id);
         std::fs::create_dir_all(&dir).map_err(|error| {
@@ -2904,6 +3189,10 @@ impl Workspace {
             "blobs": restored,
             "blobs_replayed": replayed,
             "blobs_unreplayable": unreplayable,
+            "missing_blob_policy": missing_blob_policy,
+            "baked_blobs_healed": baked_blobs_healed,
+            "replayed_ms": replayed_ms,
+            "replayed_atom_count": replayed_atom_count,
             "entries": entries.len(),
             "had_render": render.is_some(),
             "layers": restored_layers,
@@ -2933,11 +3222,19 @@ impl Workspace {
     fn materialize_pending_replayable_blobs(&mut self, doc_id: &str) -> Result<(usize, usize)> {
         let store = self.store();
         // **先收齐再落笔** ✗：下面要 `&mut self` 去重放 ✓，不能在遍历日志的同时持有它的借用 ✓。
-        let pending: Vec<(yanshi_core::BlobHash, serde_json::Value)> = {
+        let (pending, mut unreplayable): (Vec<(yanshi_core::BlobHash, serde_json::Value)>, usize) = {
             let Some(document) = self.document(doc_id) else {
                 return Ok((0, 0));
             };
             let mut pending = Vec::new();
+            // **无配方缺失也必须计数**（第 4 轮第 3 期口径簇 · 水彩 P2 反证边界）：
+            // 照片 / 媒体原子根本没有 `source`，读画布笔刷的配方也不可重放 ——
+            // 从前在这里直接 `continue` ⇒ 包里缺了它们的本体，导入回执仍报
+            // `blobs_unreplayable = 0`，丢失是静默的。第 942 轮「补不回来必须计数」
+            // 只堵了有配方那条路；无配方本体缺失同样是真实丢失，必须进
+            // `unreplayable`，不能跳过。计数按引用原子数（与 `replayed` 同口径，
+            // 不是去重后的哈希数 —— `verify_package` 那边才是去重计数）。
+            let mut unreplayable = 0usize;
             for atom in document.log().iter() {
                 let payload = &atom.payload;
                 let Some(hash_text) = payload
@@ -2954,15 +3251,15 @@ impl Workspace {
                 if store.exists(&hash) {
                     continue;
                 }
-                let Some(source) = payload.get("source") else {
-                    continue;
-                };
-                if !crate::tools::brush_source_is_replayable(self, source) {
-                    continue;
+                match payload.get("source") {
+                    Some(source) if crate::tools::brush_source_is_replayable(self, source) => {
+                        pending.push((hash, source.clone()));
+                    }
+                    // 没有重跑路径 ⇒ 直接记补不回来，不静默跳过。
+                    _ => unreplayable += 1,
                 }
-                pending.push((hash, source.clone()));
             }
-            pending
+            (pending, unreplayable)
         };
         let mut replayed = 0usize;
         // **★ "补不回来"必须**计数 ✗ ★**（第 942 轮 ✓；**修静默丢弃 ✓）：
@@ -2974,7 +3271,8 @@ impl Workspace {
         //     ⇒ **∴ 打开一个包**立刻知道**有几笔没补回来 ✓**** ✓✓
         //   **∴ 且**"**不写**"这个行为**不变 ✗**（**对的 ✓：**绝不把**另一张图
         //     塞进那个哈希 ✓）—— **∴ 变的只是"**说出来**" ✓**** ✓✓
-        let mut unreplayable = 0usize;
+        // （`unreplayable` 已在上面的收集段声明：有配方重放失败与无配方缺失
+        // 都进同一个计数，见收集段注释。）
         for (hash, source) in pending {
             match crate::tools::replay_brush_bitmap(self, doc_id, &source) {
                 Ok(bytes) if yanshi_core::BlobHash::from_bytes(&bytes) == hash => {
@@ -3272,7 +3570,16 @@ impl Workspace {
         &mut self,
         doc_id: &str,
         include_bitmaps: bool,
+        blob_bundle_mode: &str,
     ) -> Result<(Vec<u8>, ExportStats)> {
+        if !matches!(blob_bundle_mode, "frontier" | "all_history") {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(
+                    "blob_bundle_mode 只接受 frontier（默认：完整原子日志 + 当前折叠必需的活跃 Blob）或 all_history（连同被新 Bake 或 Undo 遮蔽的历史 Blob 全量打包）",
+                ),
+            ));
+        }
         let Some(persist) = self.persist.clone() else {
             return Err(YanshiError::new(
                 ErrorCode::PreconditionFailed,
@@ -3372,6 +3679,129 @@ impl Workspace {
             }
         }
         _e3("parse_and_collect");
+        // **bake frontier 分流**（第二轮第 9 条）：只剔除“历史 Bake Blob”——
+        // 日志中有 Bake 引用（单层或文档级条目）、但不在有效集内、且未被
+        // 任何存活对象引用的那部分；其余历史 blob（旧笔触位图等）不受本参数
+        // 影响，仍走下面的可重放判定。有效集按全日志 compute_suppressed 算
+        // （与折叠同源）。
+        let mut frontier_omitted_historical_blobs = 0usize;
+        if blob_bundle_mode == "frontier" {
+            let mut all_bake_hashes: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
+            // **全日志原子**（含 revert／reapply ✓）：compute_suppressed 只从
+            // revert／reapply 推出被压制的原子 id ⇒ 只喂 bake 原子时这个集合
+            // 恒空，已撤销的历史 Bake 会被当成有效 ⇒ 被错误保留进包 ✓
+            let mut all_atoms: Vec<yanshi_core::Atom> = Vec::new();
+            for line in atoms_text.lines() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if let Ok(atom) = serde_json::from_str::<yanshi_core::Atom>(line) {
+                    if yanshi_core::bake::is_bake_kind(atom.kind) {
+                        if atom.kind == yanshi_core::AtomKind::BakeLayer {
+                            if let Some(hash) =
+                                atom.payload.get("blob_hash").and_then(|v| v.as_str())
+                            {
+                                all_bake_hashes.insert(hash.to_owned());
+                            }
+                        } else {
+                            for (_, _, hash, _) in yanshi_core::bake::bake_document_entries(&atom) {
+                                all_bake_hashes.insert(hash);
+                            }
+                        }
+                    }
+                    all_atoms.push(atom);
+                } else if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                    // 原子 JSON 损坏时仍按 Value 保守识别（当作有效 Bake 参与检查，
+                    // 不因解析失败就悄悄放过一个历史 Blob）。
+                    let kind = value.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                    if kind == "bake_layer" {
+                        if let Some(hash) = value
+                            .get("payload")
+                            .and_then(|payload| payload.get("blob_hash"))
+                            .and_then(|v| v.as_str())
+                        {
+                            all_bake_hashes.insert(hash.to_owned());
+                        }
+                    } else if kind == "bake_document" {
+                        if let Some(layers) = value
+                            .get("payload")
+                            .and_then(|payload| payload.get("layers"))
+                            .and_then(|v| v.as_array())
+                        {
+                            for entry in layers {
+                                if let Some(hash) = entry.get("blob_hash").and_then(|v| v.as_str())
+                                {
+                                    all_bake_hashes.insert(hash.to_owned());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let suppressed = yanshi_core::fold::compute_suppressed(&all_atoms);
+            let mut effective_bake_hashes: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
+            {
+                let mut latest: std::collections::BTreeMap<String, (u64, String)> =
+                    std::collections::BTreeMap::new();
+                for atom in &all_atoms {
+                    if !yanshi_core::bake::is_bake_kind(atom.kind) || suppressed.contains(&atom.id)
+                    {
+                        continue;
+                    }
+                    if atom.kind == yanshi_core::AtomKind::BakeDocument {
+                        for (layer_id, _, hash, _) in yanshi_core::bake::bake_document_entries(atom)
+                        {
+                            let entry = latest.entry(layer_id).or_insert((0, String::new()));
+                            if atom.seq >= entry.0 {
+                                *entry = (atom.seq, hash);
+                            }
+                        }
+                        continue;
+                    }
+                    let Some(layer_id) = atom.payload.get("layer_id").and_then(|v| v.as_str())
+                    else {
+                        continue;
+                    };
+                    let Some(hash) = atom.payload.get("blob_hash").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    let entry = latest
+                        .entry(layer_id.to_owned())
+                        .or_insert((0, String::new()));
+                    if atom.seq >= entry.0 {
+                        *entry = (atom.seq, hash.to_owned());
+                    }
+                }
+                for (_, (_, hash)) in latest {
+                    effective_bake_hashes.insert(hash);
+                }
+            }
+            let mut live_hashes: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
+            if let Some(document) = self.document(doc_id) {
+                for object in document.state().objects.values() {
+                    for blob in &object.blobs {
+                        live_hashes.insert(blob.to_string());
+                    }
+                    if let Some(hash) = object.data.get("blob_hash").and_then(|v| v.as_str()) {
+                        live_hashes.insert(hash.to_owned());
+                    }
+                }
+            }
+            let mut omitted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            for hash in &all_bake_hashes {
+                if !effective_bake_hashes.contains(hash) && !live_hashes.contains(hash) {
+                    omitted.insert(hash.clone());
+                }
+            }
+            for hash in &omitted {
+                if wanted.remove(hash) {
+                    frontier_omitted_historical_blobs += 1;
+                }
+            }
+        }
         let mut entries = vec![crate::archive::TarEntry {
             path: "atoms.jsonl".to_owned(),
             bytes: atoms_text.into_bytes(),
@@ -3612,6 +4042,8 @@ impl Workspace {
                 "name: yanshi\ndoc_id: {doc_id}\nhead_seq: {head}\nblobs: {blob_count}\n\
                  blobs_omitted_replayable: {omitted}\n\
                  include_bitmaps: {include_bitmaps}\n\
+                 blob_bundle_mode: {blob_bundle_mode}\n\
+                 frontier_omitted_historical_blobs: {frontier_omitted_historical_blobs}\n\
                  {missing_lines}\
                  blobs_kept_no_replayable_recipe: {kept_no_recipe}\n\
                  blobs_kept_no_replayable_recipe_reasons: {reasons_line}\n\
@@ -3619,7 +4051,7 @@ impl Workspace {
                  blob_encoding: {PACKAGE_BLOB_ENCODING}\n\
                  blob_bytes_plain: {plain_bytes}\nblob_bytes_packed: {packed_bytes}\n\
                  unparsable_atom_lines: {broken_lines}\n\
-                 restore: 把本包解开到 <root>/ 之下即可（atoms.jsonl 是唯一权威，渲染可重放）\n"
+                 restore: 把本包解开到 <root>/ 之下即可（atoms.jsonl 是唯一权威，仅 import 重放可恢复省掉的位图，直接读 blob 的消费方仍见缺失）\n"
             )
             .into_bytes(),
         });
@@ -3633,6 +4065,12 @@ Contents:\n  atoms.jsonl      append-only atom log; this is the authority\n\
 Not every blob is here: a patch whose brush recipe provably replays byte-exact is omitted\n\
 (BUILD-INFO blobs_omitted_replayable). Importing replays those from the log; blobs whose\n\
 pixels cannot be proven reproducible (canvas-reading brushes, media strokes) are always kept.\n\
+Boundary (default packages are NOT byte-self-contained): only the import path restores\n\
+an omitted bitmap. A consumer that unpacks blobs/ directly without import replay still\n\
+sees the omitted bitmaps as missing. Judge a package with verify_package (complete=true\n\
+means import-replayable); do not judge self-containment from the export receipt's\n\
+missing_body, which is a storage-side count (0 on every successful export). Counts in\n\
+omitted/missing_body/missing_derived are deduplicated blob hashes, not stroke counts.\n\
 Restore under <root>/ of a yanshi-serve instance (the doc lives under docs/<doc_id>/):\n\
   mkdir -p <root>/docs/<doc_id>\n\
   mv atoms.jsonl meta.json <root>/docs/<doc_id>/\n\
@@ -3658,6 +4096,7 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
                 missing_body,
                 missing_derived,
                 derived_not_packaged,
+                frontier_omitted_historical_blobs,
             },
         ))
     }

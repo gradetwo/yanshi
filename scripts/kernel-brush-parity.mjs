@@ -85,7 +85,7 @@ let missingFlagCount = 0;
 // **整层合成通道**（第 296 轮 ✓，C⑧ ✓）：吃底图的笔刷**也能比了** ✓。
 // 依据（第 295 轮的实测 ✓）：门面（喂非空 base ✓）的输出**就是"base ⊕ 这一笔"的合成结果** ✓ ——
 // 两支 `fed_base=true` 的笔刷实测"最大通道差恰好是 **1**" ✓，而两组对照差 2123／7012 ✓。
-// ⇒ **∴ 比"门面 vs 画后合成"** ✓，容差按**已知的依赖侧 1 ulp 类** ✓（**语义边界**，不是某次观测 ✗）。
+// ⇒ **∴ 比"门面 vs 画后合成"** ✓，容差按**放宽后的经验包络** ✓（Wang 2026-10-29 定放宽 ✗：旧 1 ulp 语义边界已被两条管线的舍入缺口证伪 ✗，依据见判定处注释 ✓）。
 let compositeCompared = 0;
 let compositeSame = 0;
 const docSize = { x: 0, y: 0, w: CANVAS.width, h: CANVAS.height };
@@ -167,9 +167,23 @@ for (const brush of names) {
     const mybC = readFileSync(`assets/brushes/${brush}.myb`, "utf8");
     const kernelC = new module_.WasmKernel("kernel-parity-composite", 256, CANVAS.width, CANVAS.height, 64 * 1024 * 1024);
     // **`Base` 要有三个字段** ✓（`width`/`height`/`rgba` ✓ —— 只传 `rgba` 会被 serde 拒 ⇒ 门面回空 ✗，踩过 ✓）。
+    // **新语义底图（Y26-006，own-layer）**：服务端落笔只采本层自身内容 ⇒
+    //   笔触层是新建空层、这一笔是它上面第一笔 ⇒ 层自身画前内容恒为透明 ⇒
+    //   门面必须喂同一份透明底图（全零），而不是画前整幅合成。
+    //   （旧口径喂整幅合成，两边底图不等价 ⇒ 5 色全超容差、最大通道差约 212。）
+    //   画后合成比对本身不变：门面层像素仍按 Normal 叠到画前合成上，再与画后合成比 ✓。
+    //   若 CI 显示门面拒空底图（输出空），再改走备选：把测试笔直接画在底色层上、
+    //   每对后删层（`delete_layer`），使层内容即合成内容——本轮先不做。
+    //   **第二轮注（2026-10-30，盒上实测钉死，断言未动）**：C⑧ 仍红不是门面底图没换——
+    //   换底图已生效（未合成差 2197→8160），红在服务端一侧：空层底图取回的是**带文档白底**的
+    //   渲染（`render_region_raw_layer` 叠了背景），服务端在白底上落笔 ⇒ 笔触对象带不透明白晕
+    //   （实测：空层红笔 fringe [255,244,242,255]，与白底上门面输出逐字节同值；层外种子区外两者
+    //   全同、种子区内才分叉）。own-layer 语义要求层自身像素（透明底），修产品另立分支，
+    //   本判据不断言改动、只等产品分支落地后复绿。
+    const emptyBase = new Uint8Array(region.w * region.h * 4);
     const outC = kernelC.paint_brush(JSON.stringify({
       myb: mybC, points: pointList, size, color: colour, opacity: null, hardness: null,
-      region, base: { width: region.w, height: region.h, rgba: Array.from(beforeBox) },
+      region, base: { width: region.w, height: region.h, rgba: Array.from(emptyBase) },
     }));
     const facadeC = outC ? Uint8Array.from(outC) : null;
     if (!facadeC || facadeC.length !== want) {
@@ -183,13 +197,20 @@ for (const brush of names) {
     //    不是"两边数学不同" ✗）。
     //   **⇒ 正确的对照**：**把门面输出按 Normal 合成叠到底图上** ✓，再和**画后合成**比 ✓
     //     ⇒ 若逐字节（±1 ulp）相同 ⇒ 门面这一笔与真实渲染**等价** ✓。
+    // **第四轮注（Y26，线性光合成）**：服务端按线性光合成图层（brush_stroke 响应
+    // applied.color_space="linear" 佐证；盒上像素图实测：线性光 Normal 精确命中 893/1155，
+    // 余下全部在 ±1 内、平均 0.08；现行 sRGB 直色平均差 22.52、最大 67；1723 个不透明像素
+    // 两边公式零差 ⇒ 差异只在半透明墨区，不是边缘抗锯齿）。故 compositeOver 的 RGB 通道
+    // 走线性光混合，alpha 通道不动（实测 alpha 零差）。改回 sRGB 直色 ⇒ jitter C⑧ 回红（变红证明）。
+    const srgb2lin = (v) => { const s = v / 255; return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4); };
+    const lin2srgb = (l) => { const s = l <= 0.0031308 ? l * 12.92 : 1.055 * Math.pow(l, 1 / 2.4) - 0.055; return Math.max(0, Math.min(255, Math.round(s * 255))); };
     const compositeOver = (base, layer) => {
       const out = new Uint8Array(base.length);
       for (let i = 0; i < base.length; i += 4) {
         const a = layer[i + 3] / 255;
         const inv = 1 - a;
         for (let k = 0; k < 3; k += 1) {
-          out[i + k] = Math.round(layer[i + k] * a + base[i + k] * inv);
+          out[i + k] = lin2srgb(srgb2lin(layer[i + k]) * a + srgb2lin(base[i + k]) * inv);
         }
         out[i + 3] = Math.round(layer[i + 3] + base[i + 3] * inv);
       }
@@ -206,14 +227,20 @@ for (const brush of names) {
     for (let i = 0; i < want; i += 1) {
       if (afterBox[i] !== facadeC[i]) rawDiff += 1;
     }
-    // **容差 1** ✓ —— 这是**语义边界** ✓（已知的依赖侧 1 ulp 类 ✓），不是"某次实测的数" ✗。
-    const okC = maxC <= 1;
+    // **容差 8（最大通道差）** ✓ —— 这是**经验包络＋margin** ✓（Wang 2026-10-29 定放宽 ✗：旧 1 ulp
+    //   语义边界已被两条管线的舍入缺口证伪 ✗）。依据：D4b 分支实测最大通道差 3（Fountain_SF#1
+    //   红色区 88×48，22 字节差；更早 run 最大也是 3）⇒ 8 = 实测最大 3 的约 2.7 倍，留 5 级 margin；
+    //   仍比真实分歧量级小一个数量级以上（同文件旧比法参考值最大通道差 215；去门面 base 的变异
+    //   最大通道差 255）⇒ 真实笔刷偏差仍会红 ✓。差异字节数只打印、不参与判定（保持原状 ✗：
+    //   新加字节 cap 会是新断言维度，可能让现绿的笔刷新红，不属本次放宽范围 ✗；实测 12～68 字节
+    //   只占区域字节（88×48×4＝16896）的 0.4% 以内，是抖动量级的佐证 ✓）。
+    const okC = maxC <= 8;
     compositeCompared += 1;
     if (okC) compositeSame += 1; else allEqual = false;
     console.log(
       `  ${(brush + "/" + colourName).padEnd(22)} 区域 ${region.w}×${region.h}（整层合成 ✓）｜` +
       `门面⊕底图 vs 画后合成：不同字节 ${diffC}｜最大通道差 ${maxC}｜（未合成时 ${rawDiff}）｜` +
-      (okC ? "**在 1 ulp 容差内** ✓" : "超出 1 ulp 容差 ✗（**这不等于「笔刷不同」** ✗ —— 两侧管线尚未对齐 ✓）"),
+      (okC ? "**在放宽后容差（最大通道差 ≤ 8）内** ✓" : "超出放宽后容差 ✗（**这不等于「笔刷不同」** ✗ —— 两侧管线尚未对齐 ✓）"),
     );
     continue;
   }
@@ -337,7 +364,7 @@ console.log(
     : "结论：存在差异 ✗（**机制未隔离** ✗ —— 不许再写「两边数学实现不同」当结论 ✓："
       + "取证是本机把**两种底图口径**都试过 ⇒ region 裁剪 2652 字节 / 全画布 6564 字节 ✗"
       + " ⇒ 至少不是「底图被裁小了」这一个原因 ✓；下一步要把服务端的**第二遍掩膜落墨**与门面的单遍对齐再比 ✓）") +
-  `｜吃底图的 **已用整层合成比对** ✓：${compositeCompared} 条（其中 ${compositeSame} 条在 1 ulp 容差内 ✓）` +
+  `｜吃底图的 **已用整层合成比对** ✓：${compositeCompared} 条（其中 ${compositeSame} 条在放宽后容差（最大通道差 ≤ 8）内 ✓）` +
   `｜吃底图的**未比对**：${fedBaseCount - compositeCompared} 条` +
   (missingFlagCount > 0 ? `｜服务端未报 fed_base：${missingFlagCount} 条` : "") +
   `｜覆盖 ${names.length}/${total} 支笔（${pct}%｜${sample}）` +

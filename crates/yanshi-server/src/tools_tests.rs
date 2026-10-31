@@ -1546,8 +1546,8 @@ fn landed_reason_precedence_and_boundaries() {
 
 /// `color_space_of` 三臂（A5）：与 `parse_spec_color` 的量级切换**同一条规则** ✓。
 ///
-/// 浮点数组（任一分量都不 > 1）⇒ `linear`；字节数组（任一分量 > 1）／对象式 ⇒ `srgb_bytes`；
-/// hex 字符串 ⇒ `hex`。
+/// 浮点数组／浮点对象（任一分量都不 > 1）⇒ `linear`；字节数组／字节对象（任一分量 > 1）⇒
+/// `srgb_bytes`；hex 字符串 ⇒ `hex`。
 #[test]
 fn color_space_of_three_arms() {
     assert_eq!(
@@ -1568,7 +1568,12 @@ fn color_space_of_three_arms() {
     assert_eq!(
         color_space_of(&json!({"r": 115, "g": 97, "b": 77})),
         "srgb_bytes",
-        "对象式 ⇒ srgb_bytes（恒为字节）"
+        "字节对象式 ⇒ srgb_bytes（任一分量 > 1）"
+    );
+    assert_eq!(
+        color_space_of(&json!({"r": 0.2, "g": 0.4, "b": 0.9})),
+        "linear",
+        "浮点对象式 ⇒ linear（与 parse_spec_color 对象分支的域切换同口径，不能恒报字节）"
     );
     assert_eq!(color_space_of(&json!("#73391F")), "hex", "hex 字符串 ⇒ hex");
 }
@@ -1690,6 +1695,108 @@ fn parse_color_space_arg_accepts_only_srgb_and_linear() {
         color_space_from_value(Some(&json!(null))).unwrap(),
         None,
         "source 里记 null ⇒ None"
+    );
+}
+
+/// 报告 5/6 第 6 项：`mixed_color_space_warning` 只在「显式 linear＋渐变两端异族」时报。
+///
+/// 钉死定义：数组端（显式 linear 下线性直通）与对象式／hex 端（恒为 sRGB 字节）同现一笔。
+/// 与报告 4 P4 分工：P4 要求空间缺省，本判据要求空间显式 linear，两谓词空间不交，合入后
+/// 同一笔永不因这两项得两条 warning。
+///
+/// **变异**：判据恒报 ⇒ 显式 srgb 臂、同族臂、单色臂红；判据恒不报 ⇒ 两触发臂红；
+/// 文案删「混写」或「linear」任一词 ⇒ 文案臂红。
+#[test]
+fn mixed_color_space_warning_only_for_explicit_linear_gradient_mix() {
+    use yanshi_render::color::ColorSpace;
+    let linear = Some(ColorSpace::Linear);
+    let srgb = Some(ColorSpace::Srgb);
+    // 触发：数组端＋对象式端，两个方向都算混写。
+    let note = mixed_color_space_warning(
+        Some(&json!([0.47, 0.353, 0.235])),
+        Some(&json!({"r": 120, "g": 90, "b": 60})),
+        linear,
+    )
+    .expect("显式 linear＋数组／对象式两端必须报 warning");
+    assert!(
+        note.contains("混写") && note.contains("linear"),
+        "文案必须同时说明混写与显式 linear：{note}"
+    );
+    assert!(
+        note.contains("同一写法"),
+        "文案必须给出统一写法的出路：{note}"
+    );
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!({"r": 120, "g": 90, "b": 60})),
+            Some(&json!([0.47, 0.353, 0.235])),
+            linear,
+        )
+        .is_some(),
+        "反向（对象式起点＋数组末端）同样是混写，也应报"
+    );
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!([0.47, 0.353, 0.235])),
+            Some(&json!("#785A3C")),
+            linear,
+        )
+        .is_some(),
+        "数组端＋hex 端同样是混写，也应报"
+    );
+    // 不触发：不传空间——两端口径不同时属 P4（缺省线性）覆盖，本判据不抢报。
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!([120, 90, 60])),
+            Some(&json!([0.5, 0.2, 0.2])),
+            None,
+        )
+        .is_none(),
+        "不传空间时本判据不报（P4 的地盘，合入后不重复）"
+    );
+    // 不触发：显式 srgb 时两端全是 sRGB 字节族，不存在混写。
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!([0.47, 0.353, 0.235])),
+            Some(&json!({"r": 120, "g": 90, "b": 60})),
+            srgb,
+        )
+        .is_none(),
+        "显式 srgb 下数组也被解释为 sRGB 字节，不应触发"
+    );
+    // 不触发：两端同族——数组＋数组（同为线性）、对象式＋hex（同为 sRGB 字节）。
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!([0.47, 0.353, 0.235])),
+            Some(&json!([0.5, 0.2, 0.2])),
+            linear,
+        )
+        .is_none(),
+        "数组＋数组同为线性，不应触发"
+    );
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!({"r": 120, "g": 90, "b": 60})),
+            Some(&json!("#785A3C")),
+            linear,
+        )
+        .is_none(),
+        "对象式＋hex 同为 sRGB 字节族（回显词不同而已），不应触发"
+    );
+    // 不触发：只给一端颜色——单色无“两端混写”（相邻的显式空间被忽略项不在本项范围）。
+    assert!(
+        mixed_color_space_warning(Some(&json!({"r": 120, "g": 90, "b": 60})), None, linear)
+            .is_none(),
+        "单色对象式＋显式 linear 不属本项（回执 applied 已照实报 srgb_bytes）"
+    );
+    assert!(
+        mixed_color_space_warning(
+            Some(&json!([0.47, 0.353, 0.235])),
+            Some(&json!(null)),
+            linear,
+        )
+        .is_none(),
+        "color_to 为 null 视同没给，不应触发"
     );
 }
 
@@ -1827,6 +1934,32 @@ fn batch_rss_limit_defaults_to_4096_and_rejects_bad_values() {
     );
 }
 
+/// **报告 5 第 8 项**：压力档位分档 —— 档位只由 RSS 对静态限额的比值定，
+///   阈值处（50% / 75% / 100%）两侧各一值，档位名取自回执字段 `memory_pressure` 的取值集合 ✓。
+///   变异：任一阈值改动 ⇒ 对应边界断言红；`unknown` 改成 `low` ⇒ 读不到断言红；
+///   分母改成写死 4096 ⇒ 覆盖限额断言红 ✓。
+#[test]
+fn batch_memory_pressure_level_tiers_at_boundaries() {
+    // 读不到 RSS ⇒ 未知档，不编数。
+    assert_eq!(batch_memory_pressure_level(None, 4096), "unknown");
+    // 缺省限额 4096 的阈值处：下侧一档、上侧一档。
+    assert_eq!(batch_memory_pressure_level(Some(0), 4096), "low");
+    assert_eq!(batch_memory_pressure_level(Some(2047), 4096), "low");
+    assert_eq!(batch_memory_pressure_level(Some(2048), 4096), "moderate");
+    assert_eq!(batch_memory_pressure_level(Some(3071), 4096), "moderate");
+    assert_eq!(batch_memory_pressure_level(Some(3072), 4096), "high");
+    assert_eq!(batch_memory_pressure_level(Some(4095), 4096), "high");
+    assert_eq!(batch_memory_pressure_level(Some(4096), 4096), "critical");
+    assert_eq!(batch_memory_pressure_level(Some(5000), 4096), "critical");
+    // 分母是当前限额不是写死值：同一 RSS 在 1000 限额下档位上移。
+    assert_eq!(batch_memory_pressure_level(Some(499), 1000), "low");
+    assert_eq!(batch_memory_pressure_level(Some(500), 1000), "moderate");
+    assert_eq!(batch_memory_pressure_level(Some(750), 1000), "high");
+    assert_eq!(batch_memory_pressure_level(Some(1000), 1000), "critical");
+    // 退化分母不谎报低档。
+    assert_eq!(batch_memory_pressure_level(Some(10), 0), "critical");
+}
+
 /// **A 期**：环境变量覆盖生效 —— 显式水位版谓词：同一 RSS 在旧水位下不触发、在覆盖水位下触发 ✓。
 ///   变异：谓词忽略传入水位、仍用 4096 ⇒ 第二个断言红 ✓。
 #[test]
@@ -1848,6 +1981,32 @@ fn batch_watermark_override_limit_takes_effect() {
         batch_watermark_reason_for_limit(Some(1024), Some(512), 1024),
         None,
         "恰好等于覆盖水位时不应当触发（`>`，不是 `>=`）"
+    );
+}
+
+/// **精简回执参数面（feedback5-feat-slim）**：`batch` 必须声明 `slim_receipt`
+/// 可选布尔参数，否则调用方传它会被参数校验以「不接受参数」拒绝（静默降级
+/// 的反面：声明了却不接受）。本条只钉参数面；参数「真的被读」由盒上
+/// 200 笔实测证明（完整回执与精简回执字符数不同、精简的 calls 为空数组）。
+#[test]
+fn batch_declares_slim_receipt_optional_boolean() {
+    let spec = ALL_TOOLS
+        .iter()
+        .find(|tool| tool.name == "batch")
+        .expect("batch 这个工具应当在清单里");
+    let param = spec
+        .params
+        .iter()
+        .find(|parameter| parameter.name == "slim_receipt")
+        .expect("batch 必须声明 slim_receipt 参数");
+    assert!(
+        !param.required,
+        "slim_receipt 必须是可选的（缺省 false，完整回执不变）"
+    );
+    assert!(
+        matches!(param.kind, ParamKind::Boolean),
+        "slim_receipt 必须是布尔参数，得到 {:?}",
+        param.kind
     );
 }
 
@@ -2397,6 +2556,66 @@ fn delta_distribution_quantiles_follow_the_documented_rule() {
     assert_eq!(dist.changed_pixels, 0);
 }
 
+/// **D-4b 回归：只靠曲线驱动涂抹的笔刷也读画布**。
+///
+/// `wet_round` 的 `smudge`：`base_value = 0`，但 `pressure` 曲线把它推到约 1.0；
+/// 引擎的涂抹门（`stroke.rs` 的 `smudge_mapping_active`）认“`base != 0` 或有输入”，
+/// 服务端旧判定只认 `base_value` ⇒ `fed_base=false`，引擎涂抹只能采本笔自己的墨，
+/// 叠盖的笔触各成扁平胶囊，胶囊轮廓在密集重叠下织成环形网格（干笔软边加抖动不成囊，故无环）。
+#[test]
+fn reads_canvas_counts_curve_driven_smudge() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/brushes/");
+    let wet_text =
+        std::fs::read_to_string(format!("{root}wet_round.myb")).expect("读不到 wet_round.myb");
+    let wet = hokusai::myb::from_str(&wet_text).expect("解析 wet_round.myb 失败");
+    assert_eq!(
+        wet.get(hokusai::BrushSetting::Smudge).base_value,
+        0.0,
+        "本测试的前提是 wet_round 的 smudge 只靠曲线驱动"
+    );
+    assert!(
+        !wet.get(hokusai::BrushSetting::Smudge).inputs.is_empty(),
+        "本测试的前提是 wet_round 的 smudge 带输入曲线"
+    );
+    assert!(
+        super::brush_reads_the_canvas(&wet),
+        "曲线驱动的涂抹也必须喂底图（修前这里是 false，即红）"
+    );
+    let dry_text =
+        std::fs::read_to_string(format!("{root}dry_brush.myb")).expect("读不到 dry_brush.myb");
+    let dry = hokusai::myb::from_str(&dry_text).expect("解析 dry_brush.myb 失败");
+    assert!(
+        !super::brush_reads_the_canvas(&dry),
+        "不涂抹的笔刷仍不读画布"
+    );
+    let knife_text =
+        std::fs::read_to_string(format!("{root}ramon-Knife.myb")).expect("读不到 ramon-Knife.myb");
+    let knife = hokusai::myb::from_str(&knife_text).expect("解析 ramon-Knife.myb 失败");
+    assert!(
+        super::brush_reads_the_canvas(&knife),
+        "base 驱动的涂抹笔刷保持读画布"
+    );
+    // **D-4b 跟进：永不为正的 smudge 曲线不读画布**。
+    //
+    // `Round` 的 `smudge`：`base_value = 0`，但 `pressure` 曲线恒在 [-0.4, 0]，
+    // 钳后永远是 0，从不混画布色；判读画布会把纯红存成与白底合成过的粉色
+    //（半透明单测红）。正值精炼下它必须判 false（旧口径这里是 true，即红）。
+    let round_text = std::fs::read_to_string(format!("{root}Round.myb")).expect("读不到 Round.myb");
+    let round = hokusai::myb::from_str(&round_text).expect("解析 Round.myb 失败");
+    assert_eq!(
+        round.get(hokusai::BrushSetting::Smudge).base_value,
+        0.0,
+        "本测试的前提是 Round 的 smudge 只靠曲线驱动"
+    );
+    assert!(
+        !round.get(hokusai::BrushSetting::Smudge).inputs.is_empty(),
+        "本测试的前提是 Round 的 smudge 带输入曲线"
+    );
+    assert!(
+        !super::brush_reads_the_canvas(&round),
+        "永不为正的 smudge 曲线不读画布（否则纯红存成粉色）"
+    );
+}
 /// **反馈期 1（3.6a）：短路径延长的几何规则** ✓（纯函数，直接测）。
 ///
 /// 口径：触发值是 dab 间距，目标值是 1.5× 间距；等于触发值不延长（正常笔画不动）；
@@ -2524,4 +2743,646 @@ fn short_stroke_extension_lands_at_least_one_dab() {
         painted > 0,
         "延长到 1.5× 间距后至少落一枚 dab ⇒ 像素必须 > 0，实测 {painted}"
     );
+}
+
+/// **反馈 5+6（1pixel 零落墨）：满不透明落墨读回 alpha 必须为 255** ✓
+/// 两层断言，分工不同：
+/// ① 直接换算（担回归）：tile 像素 `[2560, 7680, 23040, 32768]`（直通色 (20,60,180)
+///    满不透明）读回 alpha 必须为 255 且 painted == 1。修前：32768 >> 7 = 256 转 u8 回绕成 0，
+///    读回 alpha 为 0，本层红（变异实测已证）。
+/// ② 落墨实测（端到端 sanity，不单独担回归）：`100%_Opaque` 全不透明硬笔、压力 1.0
+///   满压落墨 ⇒ 笔迹中心像素 (100,100)（dab 盘深内）读回 alpha 必须为 255，且非零像素 > 0。
+///   变异实测：本层修前也绿——盘内 tile alpha 落在 [32640,32767]，未触 32768 回绕阈值；
+///   真正打满 32768 的是 1pixel 硬笔路径（定位探针实测），故回归由 ① 担。
+/// 注意：只断言“存在 alpha == 255 的像素”是不够的——边缘半覆盖像素的 fix15 落在
+/// [32640,32767] 时修前也能读回 255（变异实测：第一版测试修前照样绿，已弃）。
+#[test]
+fn fully_opaque_stroke_reads_back_alpha_255() {
+    // ① 直接换算：手写一块满不透明 tile 像素。
+    use hokusai::TiledSurface;
+    let mut direct = hokusai::tile_mem::MemSurface::new();
+    let tile = direct.tile_request_start(0, 0);
+    tile[10][10] = [2560, 7680, 23040, 32768];
+    direct.tile_request_end(0, 0);
+    let region = super::PaintRegion::from_bounds((0, 0, 64, 64, 64, 64));
+    let (rgba, painted) = super::read_surface_region(&direct, region);
+    let at = (10 * 64 + 10) * 4;
+    // alpha 必须精确为 255（本回归的主题）；RGB 允许 ±1（既有反预乘路径
+    // 用 32767 做乘数，2560×32767÷32768 取整后会丢 1 LSB，实测 (19,59,179)）。
+    assert_eq!(
+        rgba[at + 3],
+        255,
+        "满不透明 tile 像素读回 alpha 必须为 255，实测 {}",
+        rgba[at + 3]
+    );
+    for (channel, expected) in [(0, 20), (1, 60), (2, 180)] {
+        assert!(
+            (rgba[at + channel] as i32 - expected).abs() <= 1,
+            "满不透明 tile 像素读回通道 {channel} 必须为 {expected}±1，实测 {}",
+            rgba[at + channel]
+        );
+    }
+    assert_eq!(
+        painted, 1,
+        "只写了一个像素，painted 必须为 1，实测 {painted}"
+    );
+    // ② 落墨实测：100%_Opaque（opaque 恒 1.0、压力 1.0 时 multiply 为 1.0）。
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/brushes/");
+    let text =
+        std::fs::read_to_string(format!("{root}100%_Opaque.myb")).expect("读不到测试用 .myb");
+    let mut brush = hokusai::myb::from_str(&text).expect("解析 .myb 失败");
+    brush.set(
+        hokusai::BrushSetting::Radius,
+        hokusai::SettingValue::constant(libm::log(50.0) as f32),
+    );
+    brush
+        .get_mut(hokusai::BrushSetting::DabsPerSecond)
+        .base_value = 0.0;
+    // 密点列、压力 1.0：dab 间距约 11px，8px 点距保证 dab 盘重叠；(100,100) 在盘深内。
+    let points: Vec<(f64, f64, f64)> = (0..20)
+        .map(|i| (50.0 + i as f64 * 8.0, 100.0, 1.0))
+        .collect();
+    let mut state = hokusai::BrushState::default();
+    let mut surface = hokusai::tile_mem::MemSurface::new();
+    let mut previous = None;
+    super::stamp_stroke_from(
+        &brush,
+        &mut state,
+        &mut surface,
+        &points,
+        &mut previous,
+        &[],
+        super::tools_brush::BrushSensors::default(),
+        false,
+    );
+    let region = super::PaintRegion::from_bounds((0, 0, 256, 160, 256, 160));
+    let (rgba, _) = super::read_surface_region(&surface, region);
+    let nonzero = rgba
+        .chunks_exact(4)
+        .filter(|px| px.iter().any(|byte| *byte != 0))
+        .count();
+    assert!(nonzero > 0, "满压落墨后非零像素必须 > 0，实测 {nonzero}");
+    let center = (100 * 256 + 100) * 4;
+    assert_eq!(
+        rgba[center + 3],
+        255,
+        "笔迹中心像素 (100,100) 读回 alpha 必须为 255，实测 {}（修前满值回绕成 0 时本条红）",
+        rgba[center + 3]
+    );
+}
+
+/// **release/reopen 薄包装往返**：关闭后 closed 与持久化状态符合服务端语义，
+/// 重开后文档完好（原子数、head_seq、尺寸、渲染哈希一致），且两条反例都响亮：
+/// 放不存在的文档报错、重开不存在的文档报错且绝不新建。
+#[test]
+fn release_and_reopen_document_roundtrip() {
+    let root = std::env::temp_dir().join(format!("yanshi-release-reopen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut workspace =
+        Workspace::with_file_store(&root, crate::document::DocumentSettings::default()).unwrap();
+    workspace
+        .create_document(
+            crate::document::NewDocument::new("doc_rr", 64, 48),
+            "test:1",
+            "s",
+        )
+        .unwrap();
+    {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_create_layer(&mut ctx, &json!({"layer_id": "p", "name": "p"})).unwrap();
+    }
+    let bbox = yanshi_core::Bbox::new(0.0, 0.0, 64.0, 48.0);
+    // 先取标量再渲染：文档借用必须先放下，否则可变借用编不过。
+    let (atoms_before, head_before) = {
+        let document = workspace.document("doc_rr").unwrap();
+        assert_eq!((document.state().width, document.state().height), (64, 48));
+        (document.atom_count(), document.head_seq())
+    };
+    let render_before = workspace.render_region("doc_rr", bbox).unwrap().blob_hash;
+    assert!(atoms_before >= 1, "建层原子必须已落下，实测 {atoms_before}");
+    // 关闭：closed 为真、磁盘上还在、内存里确实没了。
+    let released = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_release_document(&mut ctx, &json!({"document_id": "doc_rr"})).unwrap()
+    };
+    assert_eq!(released["closed"], json!(true));
+    assert_eq!(released["persisted"], json!(true));
+    assert_eq!(released["deleted"], json!(false));
+    assert!(workspace.document("doc_rr").is_none());
+    // 磁盘上还在但内存里没有时再放一次：closed 为假、persisted 仍为真，不报错。
+    let released_again = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_release_document(&mut ctx, &json!({"document_id": "doc_rr"})).unwrap()
+    };
+    assert_eq!(released_again["closed"], json!(false));
+    assert_eq!(released_again["persisted"], json!(true));
+    // 重开：这次真从磁盘装入，内容与关闭前一致。
+    let reopened = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_reopen_document(&mut ctx, &json!({"document_id": "doc_rr"})).unwrap()
+    };
+    assert_eq!(reopened["opened"], json!(true));
+    assert_eq!(reopened["reopened"], json!(true));
+    assert_eq!(reopened["width"], json!(64));
+    assert_eq!(reopened["height"], json!(48));
+    assert_eq!(reopened["atoms"], json!(atoms_before));
+    assert_eq!(reopened["head_seq"], json!(head_before));
+    let preview_after = workspace.render_region("doc_rr", bbox).unwrap();
+    assert_eq!(
+        preview_after.blob_hash, render_before,
+        "重开后整幅渲染哈希必须与关闭前一致（内容寻址，哈希等即 PNG 等）"
+    );
+    // 已在内存里再重开：直接返回，不重复加载。
+    let reopened_again = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_reopen_document(&mut ctx, &json!({"document_id": "doc_rr"})).unwrap()
+    };
+    assert_eq!(reopened_again["reopened"], json!(false));
+    // 反例 1：放不存在的文档报错，不静默成功。
+    let err = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_release_document(&mut ctx, &json!({"document_id": "doc_nope"})).unwrap_err()
+    };
+    assert_eq!(err.code, ErrorCode::ReferenceNotFound);
+    // 反例 2：重开不存在的文档报错，且绝不新建（事后仍不存在）。
+    let err = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_rr", "test:1", "s");
+        write_reopen_document(&mut ctx, &json!({"document_id": "doc_nope"})).unwrap_err()
+    };
+    assert_eq!(err.code, ErrorCode::ReferenceNotFound);
+    assert!(!workspace.document_exists("doc_nope"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// **release/reopen 走真实注册表调用路径**：分发、必填参数校验、viewer 角色闸
+/// 都在 `ToolRegistry::call` 这一处生效（直接调 `write_*` 绕过了这三处）。
+#[test]
+fn release_and_reopen_document_via_registry() {
+    let root =
+        std::env::temp_dir().join(format!("yanshi-release-reopen-reg-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut workspace =
+        Workspace::with_file_store(&root, crate::document::DocumentSettings::default()).unwrap();
+    workspace
+        .create_document(
+            crate::document::NewDocument::new("doc_rg", 32, 32),
+            "test:1",
+            "s",
+        )
+        .unwrap();
+    let registry = ToolRegistry::full();
+    let mut ctx = ToolContext::new(&mut workspace, "doc_rg", "test:1", "s");
+    // 缺必填参数 ⇒ 参数校验在分发前拦下，不进实现。
+    let missing = registry.call(&mut ctx, "release_document", &json!({}));
+    assert_eq!(missing["ok"], json!(false));
+    assert_eq!(missing["error_code"], json!("invalid_argument"));
+    // 正常释放 ⇒ 注册表包的 ok:true 与实现字段一并返回。
+    let released = registry.call(
+        &mut ctx,
+        "release_document",
+        &json!({"document_id": "doc_rg"}),
+    );
+    assert_eq!(released["ok"], json!(true));
+    assert_eq!(released["closed"], json!(true));
+    assert_eq!(released["persisted"], json!(true));
+    // viewer 调变更类工具 ⇒ 角色闸在分发前拦下（与 HTTP 关闭路由的 viewer 禁令同口径）。
+    ctx.role = crate::token::Role::Viewer;
+    let denied = registry.call(
+        &mut ctx,
+        "reopen_document",
+        &json!({"document_id": "doc_rg"}),
+    );
+    assert_eq!(denied["ok"], json!(false));
+    assert_eq!(denied["error_code"], json!("permission_denied"));
+    // owner 重开 ⇒ 回到内存。
+    ctx.role = crate::token::Role::Owner;
+    let reopened = registry.call(
+        &mut ctx,
+        "reopen_document",
+        &json!({"document_id": "doc_rg"}),
+    );
+    assert_eq!(reopened["ok"], json!(true));
+    assert_eq!(reopened["reopened"], json!(true));
+    assert_eq!(reopened["width"], json!(32));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// **报告 5/6 第 1 项：`estimated_memory_bytes` 口径**（旧口径 `存活对象 × 180`
+// 是序列化量级，实测仅为 RSS 的约 1/882；现口径 = `bytes_per_atom_avg × 原子数`）。
+// 两档探针数直接取自分诊 §1/§6（201 原子 800×600 文档、12098 原子 4K 文档），
+// 单位统一用 MiB；分诊“12098 原子差约 5%”是十进制 GB 与 MiB 混算，
+// 同单位下差 < 0.01%，本测试按同单位断言。
+#[test]
+fn estimated_memory_bytes_uses_per_atom_average_not_180() {
+    // 201 原子档：avg = 30 MiB / 201 = 156503（与探针逐字一致）。
+    let avg_small = (30u64 * 1_024 * 1_024) / 201;
+    assert_eq!(avg_small, 156503, "探针 avg 复算必须一致，否则测试前提已变");
+    let est_small = super::estimate_memory_bytes(Some(30), avg_small, 201, 200);
+    assert_eq!(est_small, 156503 * 201, "estimated 必须等于 avg × 原子数");
+    assert_eq!(est_small, 31_457_103);
+    // 旧口径会给 36000（= 180 × 200），新口径必须是内存量级而非序列化量级。
+    assert_ne!(
+        est_small, 36_000,
+        "旧 180 常量口径必须被改掉（变异：改回 180 即红）"
+    );
+    assert!(
+        est_small > 1_000_000,
+        "201 原子文档的内存估计必须上 MB 量级，实测 {est_small}"
+    );
+    // 取整误差界：0 ≤ rss_bytes − estimated < 原子数（floor 的余数性质）。
+    let rss_bytes_small = 30u64 * 1_024 * 1_024;
+    assert!(rss_bytes_small >= est_small);
+    assert!(
+        rss_bytes_small - est_small < 201,
+        "截断误差必须小于原子数，实测 {}",
+        rss_bytes_small - est_small
+    );
+    // 12098 原子档：avg = 2824 MiB / 12098 = 244765（与探针逐字一致）。
+    let avg_large = (2824u64 * 1_024 * 1_024) / 12_098;
+    assert_eq!(avg_large, 244765, "探针 avg 复算必须一致，否则测试前提已变");
+    let est_large = super::estimate_memory_bytes(Some(2824), avg_large, 12_098, 12_097);
+    assert_eq!(est_large, 244765 * 12_098);
+    let rss_bytes_large = 2824u64 * 1_024 * 1_024;
+    assert!(rss_bytes_large >= est_large);
+    assert!(
+        rss_bytes_large - est_large < 12_098,
+        "大档截断误差必须小于原子数，实测 {}",
+        rss_bytes_large - est_large
+    );
+}
+
+#[test]
+fn estimated_memory_bytes_small_doc_falls_back_to_rss_bytes() {
+    // 原子数 < 100 时 avg 报 0 = 不可判：退为进程 RSS 字节数，仍是内存量级，
+    // 而不是旧口径的数百字节（2 原子文档旧口径只给 360）。
+    let est = super::estimate_memory_bytes(Some(11), 0, 2, 2);
+    assert_eq!(est, 11 * 1_024 * 1_024);
+    // `/proc` 读不到时才退为旧量（内容规模、非内存），且仅此一路保留 180。
+    let est_no_proc = super::estimate_memory_bytes(None, 0, 50, 49);
+    assert_eq!(est_no_proc, 49 * 180);
+}
+
+/// **预算字段收缩版**（feedback5-feat-budget-fields）：`ms_per_stroke_avg` 的
+/// 公式与 0 笔行为。分子是同回执 `timings.total_ms`，3 位小数口径与
+/// `timings` 一致；分母为 0 时字段恒为 0.0（不可判），不是缺失键。
+#[test]
+fn ms_per_stroke_avg_formula_and_zero() {
+    assert_eq!(super::ms_per_stroke_avg(10.0, 4), 2.5);
+    assert!(
+        (super::ms_per_stroke_avg(10.0, 3) - 3.333).abs() < 1e-9,
+        "10/3 应 3 位小数舍入为 3.333，实测 {}",
+        super::ms_per_stroke_avg(10.0, 3)
+    );
+    assert_eq!(
+        super::ms_per_stroke_avg(5.0, 0),
+        0.0,
+        "0 笔时字段取 0.0（不可判），不是缺失、不是 NaN"
+    );
+    assert_eq!(super::ms_per_stroke_avg(0.0, 5), 0.0);
+}
+
+/// 预算字段端到端共用脚手架：内存工作区 + 仓库 assets（笔刷可读）+ 空文档。
+fn budget_fields_setup(doc_id: &str) -> super::Workspace {
+    let mut workspace = super::Workspace::in_memory(crate::document::DocumentSettings::default())
+        .with_assets_dir(Some(std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets"
+        ))));
+    workspace
+        .create_document(
+            crate::document::NewDocument::new(doc_id, 300, 300),
+            "test:1",
+            "s",
+        )
+        .expect("建测试文档");
+    workspace
+}
+
+/// `describe_canvas` 顶层回执带字段，且字段值等于公式值（容差内）；
+/// 其他工具（如 `get_document`）的回执不带该字段——证明“只在两处”。
+#[test]
+fn describe_canvas_receipt_carries_ms_per_stroke_avg() {
+    let mut workspace = budget_fields_setup("budget_describe_doc");
+    let registry = super::ToolRegistry::full();
+    let mut ctx = super::ToolContext::new(&mut workspace, "budget_describe_doc", "test:1", "s");
+    let response = registry.call(&mut ctx, "describe_canvas", &json!({}));
+    assert_eq!(response["ok"], json!(true), "describe 应成功：{response}");
+    let total_ms = response["timings"]["total_ms"]
+        .as_f64()
+        .expect("describe 回执须带 timings.total_ms");
+    let atoms = response["counts"]["atoms"]
+        .as_u64()
+        .expect("describe 回执须带 counts.atoms");
+    let avg = response["ms_per_stroke_avg"]
+        .as_f64()
+        .expect("describe 回执须带 ms_per_stroke_avg");
+    if atoms == 0 {
+        assert_eq!(avg, 0.0, "0 原子时字段取 0.0：{response}");
+    } else {
+        assert!(
+            (avg * atoms as f64 - total_ms).abs() <= 0.001 * atoms as f64 + 1e-9,
+            "字段值须等于 total_ms/atoms（3 位小数舍入容差内）：avg={avg} atoms={atoms} total_ms={total_ms}"
+        );
+    }
+    let other = registry.call(&mut ctx, "get_document", &json!({}));
+    assert_eq!(other["ok"], json!(true), "get_document 应成功：{other}");
+    assert!(
+        other.get("ms_per_stroke_avg").is_none(),
+        "非目标工具的回执不许带该字段：{other}"
+    );
+}
+
+/// `batch` 顶层回执带字段：2 笔纯笔触批次里 stroke_calls==2，
+/// 字段值等于 total_ms/2（容差内）；全是非笔触子调用的批次里
+/// stroke_calls==0，字段取 0.0。
+#[test]
+fn batch_receipt_carries_ms_per_stroke_avg() {
+    let mut workspace = budget_fields_setup("budget_batch_doc");
+    let registry = super::ToolRegistry::full();
+    let mut ctx = super::ToolContext::new(&mut workspace, "budget_batch_doc", "test:1", "s");
+    let created = registry.call(
+        &mut ctx,
+        "create_layer",
+        &json!({"layer_id": "L1", "name": "Layer 1"}),
+    );
+    assert_eq!(created["ok"], json!(true), "建层应成功：{created}");
+    let stroke = |x: i64| {
+        json!({
+            "tool": "brush_stroke",
+            "arguments": {
+                "brush": "100%_Opaque", "layer_id": "L1",
+                "points": [[x, 100, 1], [x + 80, 140, 1], [x + 160, 100, 1]],
+                "color": {"r": 255, "g": 0, "b": 0, "a": 255}, "size": 40
+            }
+        })
+    };
+    let batched = registry.call(
+        &mut ctx,
+        "batch",
+        &json!({"calls": [stroke(20), stroke(20)]}),
+    );
+    assert_eq!(batched["ok"], json!(true), "纯笔触批次应全成：{batched}");
+    assert_eq!(
+        batched["stroke_calls"],
+        json!(2),
+        "两笔笔触子调用：{batched}"
+    );
+    let total_ms = batched["timings"]["total_ms"]
+        .as_f64()
+        .expect("batch 回执须带 timings.total_ms");
+    let avg = batched["ms_per_stroke_avg"]
+        .as_f64()
+        .expect("batch 回执须带 ms_per_stroke_avg");
+    assert!(
+        (avg * 2.0 - total_ms).abs() <= 0.002 + 1e-9,
+        "字段值须等于 total_ms/2（3 位小数舍入容差内）：avg={avg} total_ms={total_ms}"
+    );
+    let no_stroke = registry.call(
+        &mut ctx,
+        "batch",
+        &json!({"calls": [
+            {"tool": "create_layer", "arguments": {"layer_id": "L2", "name": "Layer 2"}},
+            {"tool": "create_layer", "arguments": {"layer_id": "L3", "name": "Layer 3"}}
+        ]}),
+    );
+    assert_eq!(
+        no_stroke["ok"],
+        json!(true),
+        "非笔触批次应全成：{no_stroke}"
+    );
+    assert_eq!(
+        no_stroke["stroke_calls"],
+        json!(0),
+        "无笔触子调用：{no_stroke}"
+    );
+    assert_eq!(
+        no_stroke["ms_per_stroke_avg"],
+        json!(0.0),
+        "0 笔触时字段取 0.0（不可判）：{no_stroke}"
+    );
+}
+
+// ---- auto-bake 失败受阻（bake 二期 item 2）----
+//
+// 覆盖：软线首越发一次且不重复报；硬线 bake 失败进 sticky 受阻态（触发调用本身
+// 仍成功，失败只挂在 auto_bake 节里）；受阻后下一次内容调用不再重试；手动 bake
+// 成功清除受阻态。失败用可开关的测试存储注入（bake 走 put；put_cache 恒走内层，
+// 否则落笔路径的预览缓存先失败，测的就不是 bake）。
+//
+// 变异（每条都必须红）：
+//   ① 删 evaluate 里硬线候选的 `!blocked` 条件 ⇒ 第 2048 笔回执重带 failed 节 ⇒ 红；
+//   ② 删手动 bake 成功后的 clear_auto_bake_blocked_for_layer ⇒ 末尾 blocked 仍非空 ⇒ 红；
+//   ③ 删软线候选的 `!soft_fired` 条件 ⇒ 第 1433 笔回执重带 soft_line 节 ⇒ 红。
+
+/// put 可开关失败的 Blob 存储（测试注入）。
+struct ToggleFailBlobStore {
+    inner: yanshi_core::blob::MemoryBlobStore,
+    fail_put: std::sync::atomic::AtomicBool,
+}
+
+impl ToggleFailBlobStore {
+    fn new() -> Self {
+        Self {
+            inner: yanshi_core::blob::MemoryBlobStore::new(),
+            fail_put: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+impl yanshi_core::BlobStore for ToggleFailBlobStore {
+    fn put(&self, bytes: &[u8]) -> yanshi_core::Result<yanshi_core::BlobHash> {
+        if self.fail_put.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(yanshi_core::YanshiError::new(
+                yanshi_core::ErrorCode::Degraded,
+                yanshi_core::ErrorContext::detail("测试注入：Blob 存储 put 失败"),
+            ));
+        }
+        self.inner.put(bytes)
+    }
+    fn put_cache(&self, bytes: &[u8]) -> yanshi_core::Result<yanshi_core::BlobHash> {
+        self.inner.put_cache(bytes)
+    }
+    fn get(&self, hash: &yanshi_core::BlobHash) -> yanshi_core::Result<Vec<u8>> {
+        self.inner.get(hash)
+    }
+    fn exists(&self, hash: &yanshi_core::BlobHash) -> bool {
+        self.inner.exists(hash)
+    }
+    fn size(&self, hash: &yanshi_core::BlobHash) -> Option<u64> {
+        self.inner.size(hash)
+    }
+    fn list(&self) -> yanshi_core::Result<Vec<yanshi_core::BlobEntry>> {
+        self.inner.list()
+    }
+    fn remove(&self, hash: &yanshi_core::BlobHash) -> yanshi_core::Result<bool> {
+        self.inner.remove(hash)
+    }
+}
+
+#[test]
+fn auto_bake_failure_is_sticky_and_manual_bake_clears_it() {
+    let store = std::sync::Arc::new(ToggleFailBlobStore::new());
+    let mut workspace =
+        Workspace::with_store(store.clone(), crate::document::DocumentSettings::default());
+    workspace
+        .create_document(
+            crate::document::NewDocument::new("doc_ab", 64, 64),
+            "test:1",
+            "s",
+        )
+        .unwrap();
+    let registry = ToolRegistry::full();
+    let mut ctx = ToolContext::new(&mut workspace, "doc_ab", "test:1", "s");
+    // 落笔不等待渲染：脏区预览的 put 也会撞上失败存储，测试只注入 bake 的 put。
+    ctx.wait_for_render = false;
+    let created = registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+    assert_eq!(created["ok"], json!(true), "建层失败：{created}");
+    let enabled = registry.call(
+        &mut ctx,
+        "update_layer",
+        &json!({"layer_id": "L", "patch": {"auto_bake": true}}),
+    );
+    assert_eq!(enabled["ok"], json!(true), "开层开关失败：{enabled}");
+    store
+        .fail_put
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    // 计数口径（与手动 bake 水位一致）：update_layer 的 SetProperty 原子本身就是
+    // 内容类原子，占 1 个未 bake 数 ⇒ 软线（1433）在第 1432 笔、硬线（2048）在
+    // 第 2047 笔触发；笔号比阈值小 1 不是产品差一，是测试须把建设置那 1 笔算进去。
+    let mut soft_resp = Value::Null;
+    let mut over_soft_resp = Value::Null;
+    let mut trigger_resp = Value::Null;
+    let mut retry_resp = Value::Null;
+    for i in 1..=2049 {
+        let resp = registry.call(
+            &mut ctx,
+            "draw_stroke",
+            &json!({"layer_id": "L", "data": {"points": [[10, 10], [11, 10]], "size": 2, "color": [20, 20, 20, 255]}}),
+        );
+        assert_eq!(resp["ok"], json!(true), "第 {i} 笔失败：{resp}");
+        match i {
+            1432 => soft_resp = resp,
+            1433 => over_soft_resp = resp,
+            2047 => trigger_resp = resp,
+            2048 => retry_resp = resp,
+            _ => {}
+        }
+    }
+    // 软线：首越发一次，警告码对，且触发调用本身成功。
+    assert_eq!(
+        soft_resp["auto_bake"]["status"],
+        json!("soft_line"),
+        "第 1432 笔应带软线节：{soft_resp}"
+    );
+    assert_eq!(
+        soft_resp["auto_bake"]["warnings"][0]["code"],
+        json!("AUTO_BAKE_SOFT_LINE"),
+        "软线警告码不对：{soft_resp}"
+    );
+    // 软线去重：已发过就不再带节。
+    assert!(
+        over_soft_resp.get("auto_bake").is_none(),
+        "第 1433 笔不应再带 auto_bake 节（软线已发过）：{over_soft_resp}"
+    );
+    // 硬线：bake 失败只挂节里，触发调用本身仍成功；失败原因须来自注入的存储。
+    assert_eq!(
+        trigger_resp["auto_bake"]["status"],
+        json!("failed"),
+        "第 2047 笔应带 failed 节：{trigger_resp}"
+    );
+    assert_eq!(
+        trigger_resp["auto_bake"]["warnings"][0]["code"],
+        json!("AUTO_BAKE_FAILED"),
+        "失败警告码不对：{trigger_resp}"
+    );
+    assert!(
+        trigger_resp["auto_bake"]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("测试注入"),
+        "失败原因须来自注入的存储 put：{trigger_resp}"
+    );
+    // 受阻：下一次内容调用不再重试（无节），不是每次都失败刷屏。
+    assert!(
+        retry_resp.get("auto_bake").is_none(),
+        "第 2048 笔不应再尝试 bake（受阻态）：{retry_resp}"
+    );
+    let status = registry.call(&mut ctx, "get_bake_status", &json!({"layer_id": "L"}));
+    assert_eq!(status["ok"], json!(true), "查状态失败：{status}");
+    assert!(
+        status["layers"][0]["blocked"].is_string(),
+        "受阻态须可见：{status}"
+    );
+    // 末态：建设置 1 笔＋落笔 2049 笔＝2050 个未 bake 内容原子（受阻后计数不重置）。
+    assert_eq!(
+        status["layers"][0]["unbaked"],
+        json!(2050),
+        "受阻后计数不重置：{status}"
+    );
+    // 手动 bake 成功清除受阻态（存储恢复后）。
+    store
+        .fail_put
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let baked = registry.call(&mut ctx, "bake_layer", &json!({"layer_id": "L"}));
+    assert_eq!(baked["ok"], json!(true), "手动 bake 失败：{baked}");
+    assert_eq!(
+        baked["status"],
+        json!("applied"),
+        "手动 bake 未应用：{baked}"
+    );
+    let status = registry.call(&mut ctx, "get_bake_status", &json!({"layer_id": "L"}));
+    assert!(
+        status["layers"][0]["blocked"].is_null(),
+        "手动 bake 成功后受阻态须清除：{status}"
+    );
+    assert_eq!(
+        status["layers"][0]["unbaked"],
+        json!(0),
+        "手动 bake 后未 bake 数须归零：{status}"
+    );
+    assert_eq!(
+        status["layers"][0]["last_bake"]["origin"],
+        json!("manual"),
+        "手动 bake 的来源须读作 manual：{status}"
+    );
+}
+// ---- 几何（路线三）：位图蒙版重采样纯函数 ----
+use super::tools_geometry::resample_compiled;
+
+#[test]
+fn geometry_resample_identity_returns_same_grid() {
+    let compiled = yanshi_render::selection::CompiledMask {
+        bbox: [0, 0, 3, 2],
+        default_outside: 0.0,
+        grid: vec![10, 20, 30, 40, 50, 60],
+    };
+    let (bbox, grid) = resample_compiled(&compiled, 0, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0], 3, 2);
+    assert_eq!(bbox, [0, 0, 3, 2]);
+    assert_eq!(grid, vec![10, 20, 30, 40, 50, 60]);
+}
+
+#[test]
+fn geometry_resample_flip_horizontal_is_an_exact_permutation() {
+    // 绕中心 (2,1) 左右翻：x' = -x+4；逆矩阵自逆。
+    let compiled = yanshi_render::selection::CompiledMask {
+        bbox: [0, 0, 4, 2],
+        default_outside: 0.0,
+        grid: vec![10, 20, 30, 40, 50, 60, 70, 80],
+    };
+    let (bbox, grid) = resample_compiled(&compiled, 0, &[-1.0, 0.0, 0.0, 1.0, 4.0, 0.0], 4, 2);
+    assert_eq!(bbox, [0, 0, 4, 2]);
+    assert_eq!(grid, vec![40, 30, 20, 10, 80, 70, 60, 50]);
+}
+
+#[test]
+fn geometry_resample_all_default_collapses_to_one_pixel() {
+    // 全默认值网格：紧致裁剪为空 ⇒ 原点 1×1 默认值 patch，语义与全画布默认值等价。
+    let compiled = yanshi_render::selection::CompiledMask {
+        bbox: [0, 0, 2, 2],
+        default_outside: 0.0,
+        grid: vec![0, 0, 0, 0],
+    };
+    let (bbox, grid) = resample_compiled(&compiled, 0, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0], 2, 2);
+    assert_eq!(bbox, [0, 0, 1, 1]);
+    assert_eq!(grid, vec![0]);
 }

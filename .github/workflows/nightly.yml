@@ -1,0 +1,225 @@
+# **每夜构建** ✓ —— main 一推就编 nightly 二进制，别人直接下 nightly 就是 main 最新 ✓。
+#
+# **触发** ✓：push 到 main ＋ 手工 dispatch ✓。
+#   文档-only 推送不编（**/*.md 不改二进制 ✓，与 ci.yml 的 paths-ignore 同口径 ✓）。
+# **只编最新** ✓：concurrency 组 nightly、cancel-in-progress true ⇒
+#   正在编时又推上来，取消前面的、只编最新的 ✓（用户要求 ✓）。
+# **绝不半新半旧** ✓：五个平台编完之后，**一个** publish 作业统一更新滚动 Release ⇒
+#   被取消的 run 永远留不下半更新的 Release ✓。
+# **分支 dispatch 只编不发** ✓：publish 作业 gate 在 `github.ref == 'refs/heads/main'` ⇒
+#   分支上 dispatch 只能验证构建路，绝不会把分支二进制发成 nightly ✓。
+#   合入后的第一次证明，是合入后 main 上第一次 push 触发的 run 真正发了 nightly ✓。
+# **构建路复用 release.yml** ✓：`make release` ⇒ `scripts/package-release.sh --out dist` ⇒
+#   归档 ＋ SHA256SUMS ⇒ `scripts/release-verify-archive.sh` 校验 ⇒ 冒烟（/health）✓。
+# **供应链** ✓：建 Release 用 runner 自带的 `gh`，不引入第三方 action（与 release.yml 同规则 ✓）；
+#   产物搬运仍用 actions/download-artifact（release.yml 的 checksums 作业亦如此 ✓）。
+# **只改 CI/CD 配置的提交**：run 只要能启动就可以停掉（见 release.yml 头部规则 ✓）——
+#   但 nightly 的 dispatch 验证例外：它就是为了验证构建路，必须真跑完构建作业 ✓。
+
+name: Nightly
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**/*.md"
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: prepare the matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          ALL = [
+              {"os": "ubuntu-latest", "label": "linux-x86_64", "target": "x86_64-unknown-linux-gnu"},
+              # linux-arm64 用原生 ARM runner：冒烟要实跑包里的二进制，交叉编的包在 x86 runner 上跑不起来。
+              {"os": "ubuntu-24.04-arm", "label": "linux-arm64", "target": "aarch64-unknown-linux-gnu"},
+              {"os": "macos-15", "label": "macos-x86_64", "target": "x86_64-apple-darwin"},
+              {"os": "macos-15", "label": "macos-arm64", "target": "aarch64-apple-darwin"},
+              {"os": "windows-latest", "label": "windows-x86_64", "target": "x86_64-pc-windows-msvc"},
+          ]
+          print("matrix=" + json.dumps({"include": ALL}))
+          PY
+
+  package:
+    name: package (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install lld on macOS (the wasm kernel needs it)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          brew install lld
+          ls -la "$(brew --prefix lld)/bin" || true
+
+      - name: Add the matrix target explicitly
+        run: |
+          set -euo pipefail
+          rustup target add "${{ matrix.target }}"
+          rustup target list --installed | sort
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache wasm-bindgen-cli
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-bindgen
+          key: wasm-bindgen-cli-0.2.129-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install wasm-bindgen-cli (pinned)
+        run: |
+          if ! command -v wasm-bindgen >/dev/null 2>&1; then
+            VER="$(scripts/wasm-bindgen-version.sh)"
+            cargo install wasm-bindgen-cli --version "$VER" --locked
+          fi
+          wasm-bindgen --version
+
+      - name: Build the nightly package
+        run: |
+          set -euo pipefail
+          scripts/package-release.sh --target "${{ matrix.target }}" --out dist
+
+      - name: Verify the package and its checksums
+        run: |
+          set -euo pipefail
+          ls -la dist
+          test -n "$(ls dist/*.tar.gz 2>/dev/null)" || { echo "✗ dist 里没有归档 ⇒ 打包没成功"; exit 1; }
+          test -f dist/SHA256SUMS || { echo "✗ 没有 dist/SHA256SUMS ⇒ 校验和缺失"; exit 1; }
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd dist && sha256sum -c SHA256SUMS)
+          else
+            (cd dist && shasum -a 256 -c SHA256SUMS)
+          fi
+          for f in dist/*.tar.gz; do
+            echo "-- 校验归档：$f"
+            tar -tzf "$f" >/dev/null
+          done
+
+      - name: Smoke-test the package (start it and hit /health)
+        run: |
+          set -euo pipefail
+          archive=$(ls dist/*.tar.gz | head -1)
+          echo "-- 冒烟归档：$archive"
+          work=$(mktemp -d)
+          tar -xzf "$archive" -C "$work"
+          root=$(find "$work" -maxdepth 1 -type d -name 'yanshi-*' | head -1)
+          test -n "$root" || { echo "✗ 解包后找不到 yanshi-* 目录"; exit 1; }
+          port=21987
+          log="$work/serve.log"
+          ( cd "$root" && ./yanshi.sh --bind "127.0.0.1:$port" --root "$work/root" \
+              --doc smoke --width 64 --height 64 ) >"$log" 2>&1 &
+          pid=$!
+          ok=no
+          for _ in $(seq 1 40); do
+            if curl -sf "http://127.0.0.1:$port/health" >/dev/null 2>&1; then ok=yes; break; fi
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.5
+          done
+          if [ "$ok" != yes ]; then
+            echo "✗ 包起来了但 /health 没响应 ⇒ 这个包不能发 ✗"
+            echo "---- 服务日志（最后 40 行）----"
+            tail -40 "$log" || true
+            kill "$pid" 2>/dev/null || true
+            exit 1
+          fi
+          echo "✓ 冒烟通过：包能起服务，/health 有响应 ✓"
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+
+      - name: Upload the package as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yanshi-nightly-${{ matrix.label }}
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    name: publish the rolling nightly release
+    needs: package
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: yanshi-nightly-*
+          path: artifacts
+
+      - name: Merge checksums, self-check and update the nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          find artifacts -name SHA256SUMS -exec cat {} \; > merged.txt
+          sort -k2 merged.txt | uniq > SHA256SUMS
+          echo "== 合并后的校验和 =="
+          cat SHA256SUMS
+          n_entries=$(wc -l < SHA256SUMS)
+          n_archives=$(find artifacts -name '*.tar.gz' | wc -l)
+          echo "条目 $n_entries ｜归档 $n_archives"
+          if [ "$n_entries" -ne "$n_archives" ]; then
+            echo "✗ 校验和条目数与归档数不一致 ⇒ 不许发布（宁可红，不发无法校验的包 ✗）" >&2
+            exit 1
+          fi
+          NOTES="Rolling nightly build from main."
+          if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit nightly --title "nightly" --notes "$NOTES" --target "${GITHUB_SHA}" --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create nightly --title "nightly" --notes "$NOTES" --target "${GITHUB_SHA}" --repo "$GITHUB_REPOSITORY"
+          fi
+          # 同步 tag 到本次 SHA：只 edit 不移 tag 时，Source code 包永远停在创建提交
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly" -f sha="${GITHUB_SHA}" -F force=true --silent
+          shopt -s nullglob
+          for f in $(find artifacts -name '*.tar.gz' | sort); do
+            gh release upload nightly "$f" --clobber --repo "$GITHUB_REPOSITORY"
+          done
+          gh release upload nightly SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
+          echo "== 清理旧归档（只留本次 commit 的包）=="
+          short="${GITHUB_SHA:0:7}"
+          kept=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/nightly" | jq --arg s "$short" '[.assets[] | select(.name | contains("-" + $s + "-"))] | length')
+          if [ "$kept" -ne "$n_archives" ]; then
+            echo "✗ 本次归档保留数 $kept ≠ 上传数 $n_archives ⇒ 不删旧包（宁可多留，不错删）" >&2
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/nightly" --jq '.assets[] | "\(.id) \(.name)"' | while read -r aid aname; do
+            if [ "$aname" = "SHA256SUMS" ]; then continue; fi
+            case "$aname" in
+              *-"$short"-*.tar.gz) echo "保留 $aname" ;;
+              *.tar.gz) echo "删除旧归档 $aname"; gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${aid}" --silent ;;
+              *) echo "跳过非归档 $aname" ;;
+            esac
+          done
+          echo "== 滚动 nightly 已更新 ✓（commit ${GITHUB_SHA}，$n_archives 个平台归档，旧归档已清理）=="

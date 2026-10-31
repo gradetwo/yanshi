@@ -316,6 +316,28 @@ pub struct RenderStatus {
     pub thumb_url: Option<String>,
 }
 
+/// 单层 auto-bake 运行时态（bake 二期 item 2）。
+///
+/// **只在内存**：不进原子日志、不持久化、不随导出包走。重启后清空；
+/// 下一次内容调用重新评估（硬线之上仍会再尝试一次，失败则重新受阻——
+/// 这是有意的：重启本身就是一次显式的重新开始，不是静默重试）。
+#[derive(Debug, Default, Clone)]
+pub struct AutoBakeLayerRuntime {
+    /// 软线警告已对当前这次越线发过（跌回软线下清零，可再发）。
+    pub soft_fired: bool,
+    /// bake 失败后的受阻原因（Some = 不再自动重试，等手动 bake／recover／改设置清除）。
+    pub blocked: Option<String>,
+    /// 门禁跳过的原因（同原因不再重复报告；原因变化或计数归零后可再报）。
+    pub skip_reason: Option<String>,
+}
+
+/// 每层 auto-bake 运行时态表（键 = 图层 id）。
+#[derive(Debug, Default, Clone)]
+pub struct AutoBakeRuntime {
+    /// 按图层 id 索引的运行时态（不存在的层按 Default 计：未发软线、未受阻、无跳过原因）。
+    pub layers: std::collections::BTreeMap<String, AutoBakeLayerRuntime>,
+}
+
 /// 单个文档的服务端状态。
 pub struct Document {
     id: String,
@@ -483,6 +505,8 @@ pub struct Document {
     /// 从磁盘打开 = `head_seq`（日志本来就在盘上 ✓）⇒ 漏初始化只会**重复追加**（可见 ✗）
     /// 而不是**漏写**（静默 ✗）—— 这个方向是故意选的 ✓。
     journal_watermark: Seq,
+    /// auto-bake 运行时态（bake 二期 item 2）：只在内存，见 `AutoBakeRuntime`。
+    auto_bake_runtime: AutoBakeRuntime,
 }
 
 impl std::fmt::Debug for Document {
@@ -670,6 +694,7 @@ impl Document {
             last_snapshot_at: 0,
             commits: 0,
             journal_watermark: 0,
+            auto_bake_runtime: AutoBakeRuntime::default(),
             settings,
         }
     }
@@ -697,6 +722,16 @@ impl Document {
     /// head seq。
     pub fn head_seq(&self) -> Seq {
         self.log.head_seq()
+    }
+
+    /// auto-bake 运行时态（只读）。
+    pub fn auto_bake_runtime(&self) -> &AutoBakeRuntime {
+        &self.auto_bake_runtime
+    }
+
+    /// auto-bake 运行时态（可写）。
+    pub fn auto_bake_runtime_mut(&mut self) -> &mut AutoBakeRuntime {
+        &mut self.auto_bake_runtime
     }
 
     /// 原子数。
@@ -1011,9 +1046,17 @@ impl Document {
             .cloned()
             .ok_or_else(|| internal("刚追加的原子不在日志中"))?;
 
-        // 折叠段（6.6）。
+        // 折叠段（6.6）：追加路径优先（热路径：不克隆整态），不适用时回落通用折叠。
         let fold_started = std::time::Instant::now();
-        let folded: StateAt = self.folder.fold(&self.log, self.log.head_seq())?;
+        let base = std::mem::replace(&mut self.state, DocumentState::empty());
+        let folded: StateAt = match self.folder.fold_append(base, &appended) {
+            yanshi_core::FoldAppend::Applied(folded) => folded,
+            yanshi_core::FoldAppend::NotApplicable(base) => {
+                // 回落前先恢复旧状态：通用折叠出错时文档状态须与现态一致（不受损）。
+                self.state = base;
+                self.folder.fold(&self.log, self.log.head_seq())?
+            }
+        };
         self.state = folded.state;
         if self.state.width > 1 {
             if let Ok(grid) = self.grid_for_state() {
@@ -1670,6 +1713,40 @@ impl Document {
         Ok((rendered.width, rendered.height, rendered.rgba8))
     }
 
+    /// **压平渲染（bake_layer 专用）**：只渲染目标层，返回画布 1:1 的
+    /// 直通 RGBA8（与 `render_region_raw_layer` 同口径的量化输出）。
+    ///
+    /// 与单层导出**不同**的关键点：克隆状态里把目标层的外壳清零
+    /// （`opacity = 1`、`blend_mode = normal`、`clipping_mask = false`，
+    /// 默认 `mask_id = None` 除非 `flatten_mask`），背景置空。
+    /// 否则基底里已乘过一次外壳，之后整幅合成再乘一次 = 双重应用。
+    /// 图层本身的 ID/名称/混合/不透明度/z 序/掩膜在真实状态里一律不动，
+    /// 只影响这次克隆渲染；层内调整/滤镜/液化对象照常进层缓冲（压进基底），
+    /// 位于该层上方的独立调整层不在 only_layer 内（留在压平层之上继续生效）。
+    pub fn render_layer_bake_base(
+        &mut self,
+        layer_id: &str,
+        flatten_mask: bool,
+    ) -> Result<(u32, u32, Vec<u8>)> {
+        let mut filtered = self.state.clone();
+        filtered.background = serde_json::Value::Null;
+        if let Some(layer) = filtered.layers.get_mut(layer_id) {
+            layer.opacity = 1.0;
+            layer.blend_mode = "normal".to_owned();
+            layer.clipping_mask = false;
+            if !flatten_mask {
+                layer.mask_id = None;
+            }
+        }
+        let bbox = yanshi_core::Bbox::new(0.0, 0.0, filtered.width as f64, filtered.height as f64);
+        let previous = self.renderer.set_only_layer(Some(layer_id.to_owned()));
+        let rendered = self.renderer.render_region(&filtered, &*self.store, bbox);
+        self.renderer.set_only_layer(previous);
+        let rendered = rendered?;
+        self.note_render_stats(&rendered.stats);
+        Ok((rendered.width, rendered.height, rendered.rgba8))
+    }
+
     /// **只渲染某一层里的一个对象子集** ✓（SVG 导出的位图回退段用 ✓）。
     ///
     /// 做法与 [`Self::render_region_raw_layer`] 同构 ✓：临时拼一份过滤后的
@@ -1684,6 +1761,21 @@ impl Document {
         layer_id: &str,
         keep: &std::collections::BTreeSet<yanshi_core::ObjectId>,
     ) -> Result<(u32, u32, Vec<u8>)> {
+        let rendered = self.render_layer_objects_subset_rendered(bbox, layer_id, keep)?;
+        self.note_render_stats(&rendered.stats);
+        Ok((rendered.width, rendered.height, rendered.rgba8))
+    }
+
+    /// 子集渲染的共用实现（`render_layer_objects_subset` 与下方 alpha 探针共用）。
+    ///
+    /// 只做渲染、不记账目：记不记“最近一次渲染”的账目由调用方决定 ——
+    /// 探针式调用只是问一句，不应让这次询问变成用户可见的那次渲染。
+    fn render_layer_objects_subset_rendered(
+        &mut self,
+        bbox: Bbox,
+        layer_id: &str,
+        keep: &std::collections::BTreeSet<yanshi_core::ObjectId>,
+    ) -> Result<RegionRender> {
         let mut filtered = self.state.clone();
         // **背景必须置空** ✓（2026-10-20 端到端实测抓到）：`render_region` 会把
         // 结果合成到 `state.background` 上 ⇒ 不置空时子集像素是**白底不透明**的，
@@ -1700,9 +1792,56 @@ impl Document {
         let rendered = self.renderer.render_region(&filtered, &*self.store, bbox);
         // **无论成功失败都要还原** ✓（同单层渲染那条的纪律 ✓）。
         self.renderer.set_only_layer(previous);
-        let rendered = rendered?;
-        self.note_render_stats(&rendered.stats);
-        Ok((rendered.width, rendered.height, rendered.rgba8))
+        rendered
+    }
+
+    /// **目标层里一个对象子集合成后的 alpha 是否恒定**（impasto/relief 警告探针用）。
+    ///
+    /// 做法与 [`Self::render_layer_objects_subset`] 同构：走同一套生产渲染语义
+    /// 画出子集（调用方给 `keep` = 排在该滤镜之前的对象），再扫它的 f32 alpha
+    /// 通道。返回 `Some(c)` 当且仅当：有颜料像素（alpha > 0 —— relief 自身
+    /// 的门与此同值）非空，且全部有颜料像素的 alpha（钳到 0..1，与 relief 的
+    /// `alpha_at` 同口径）逐位相等。此时高度场处处无梯度，`height_source=alpha`
+    /// 的 relief 在数学上必为零效果（`tilt` 恒 0 ⇒ 因子恒 1），不是采样启发式。
+    /// 其余情形（空子集／alpha 有起伏）返回 `None`。f32 缓冲缺失时退到 u8
+    /// alpha 恒定判定（生产渲染路恒为 `Some`，此分支只防未来路径改动）。
+    /// **探针不记账**：不调用 `note_render_stats`，不改动“最近一次渲染”的
+    /// 账目（`last_render_warnings`／`last_below_tiles`）。
+    pub fn below_objects_alpha_constant(
+        &mut self,
+        bbox: Bbox,
+        layer_id: &str,
+        keep: &std::collections::BTreeSet<yanshi_core::ObjectId>,
+    ) -> Result<Option<f32>> {
+        let rendered = self.render_layer_objects_subset_rendered(bbox, layer_id, keep)?;
+        if let Some(buffer) = rendered.buffer.as_ref() {
+            let mut min: Option<f32> = None;
+            let mut max: Option<f32> = None;
+            for pixel in buffer.pixels().chunks_exact(4) {
+                let alpha = pixel[3].clamp(0.0, 1.0);
+                if alpha > 0.0 {
+                    min = Some(min.map_or(alpha, |m: f32| m.min(alpha)));
+                    max = Some(max.map_or(alpha, |m: f32| m.max(alpha)));
+                }
+            }
+            return Ok(match (min, max) {
+                (Some(lo), Some(hi)) if lo == hi => Some(lo),
+                _ => None,
+            });
+        }
+        let mut min: Option<u8> = None;
+        let mut max: Option<u8> = None;
+        for pixel in rendered.rgba8.chunks_exact(4) {
+            let alpha = pixel[3];
+            if alpha > 0 {
+                min = Some(min.map_or(alpha, |m: u8| m.min(alpha)));
+                max = Some(max.map_or(alpha, |m: u8| m.max(alpha)));
+            }
+        }
+        Ok(match (min, max) {
+            (Some(lo), Some(hi)) if lo == hi => Some(lo as f32 / 255.0),
+            _ => None,
+        })
     }
 
     /// **最近一次渲染里被跳过的东西** ✓（裸像素出口的告警通道 ✓，见字段说明 ✓）。

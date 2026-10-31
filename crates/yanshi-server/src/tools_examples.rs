@@ -19,6 +19,10 @@
 /// 形状：`(工具名, 一段可直接粘贴的 JSON 参数)`。**先给日常最常用的三个**，
 /// 其余工具按同一模式补齐（每加一个，测试自动替它把关）。
 pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
+    ("bake_layer", r#"{"layer_id":"L1"}"#),
+    ("bake_document", r#"{}"#),
+    ("recover_baked_blobs", r#"{"layer_id":"L1"}"#),
+    ("get_bake_status", r#"{}"#),
     ("smart_glaze", r#"{"shape":{},"color":[],"layer_id":"L1"}"#),
     ("smart_erase_shape", r#"{"layer_id":"L1","shape":{}}"#),
     (
@@ -408,6 +412,21 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("transform_object", r#"{"object_id":"L1"}"#),
     ("restore_object", r#"{"object_id":"L1"}"#),
     ("move_object", r#"{"object_id":"L1"}"#),
+    ("resize_canvas_bounds", r#"{"width":200,"height":100}"#),
+    ("scale_canvas", r#"{"scale":2,"anchor_name":"center"}"#),
+    ("rotate_canvas", r#"{"degrees":90,"anchor_name":"center"}"#),
+    (
+        "flip_canvas",
+        r#"{"direction":"horizontal","anchor_name":"center"}"#,
+    ),
+    (
+        "crop_canvas",
+        r#"{"region":{"x":10,"y":10,"w":100,"h":50}}"#,
+    ),
+    (
+        "extend_canvas",
+        r#"{"margins":{"left":10,"top":10,"right":10,"bottom":10}}"#,
+    ),
     ("revert", r#"{"atom_id":"atom1"}"#),
     ("reapply", r#"{"atom_id":"atom1"}"#),
     ("revert_to", r#"{"atom_id":"atom1"}"#),
@@ -505,6 +524,16 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     // 取值域来自仓库里的真实文件 `assets/textures/`（Paper001.png ✓ / Cardboard001.png ✓ …）⇒
     // **不是编的** ✓。`mode` 缺省是 tile ✓ ⇒ 只给必填项就成立 ✓。
     ("texture_background", r#"{"texture":"Paper001.png"}"#),
+    // **`rebackground`**：唯一必填参数是目标底色 ✓（与 new_document background 同形 ✓）⇒ 只给必填项就成立 ✓。
+    (
+        "rebackground",
+        r#"{"color":{"r":30,"g":60,"b":120,"a":255}}"#,
+    ),
+    // **`toned_ground`**（反馈 §5.3）：唯一必填参数是颜色 ✓（与 new_document background 同形 ✓）⇒ 只给必填项就成立 ✓。
+    (
+        "toned_ground",
+        r#"{"color":{"r":210,"g":190,"b":160,"a":255}}"#,
+    ),
     // **`set_preferences`**（✓，第 459 轮 ✓）：唯一必填参数是 values（一个键值对对象 ✓，
     // 键是自由的 ✓）；spec 明说「值为 null 表示删除该键」✓、且是**合并**（没提到的键不动 ✓）⇒
     // 这里用一个**有据可查的真键** `reference.blob_hash` ✓（ΔE 写入器读的就是它 ✓，见 tools.rs:3121 ✓），
@@ -561,6 +590,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         // `document_id` 才是要被删掉的那一份。所以这条示例**必须显式写 document_id**。
         r##"{"document_id": "sample-oil"}"##,
     ),
+    // **release/reopen 薄包装**：参数面只有一个必填 document_id，示例照抄即可；
+    // 前置状态是「磁盘上已有这份文档」（先 new_document 建一份，再 release 掉）。
+    ("release_document", r#"{"document_id":"sample-oil"}"#),
+    ("reopen_document", r#"{"document_id":"sample-oil"}"#),
     (
         "export_psd_layers",
         // **★ 分层导出 ✗ ★**（**第 253 轮 ✓）：**把当前文档写成**带图层结构的 PSD**
@@ -581,5 +614,10 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         // 原先写的是占位文本 `sha256:<先上传 PSD 得到的哈希>` ⇒ **形状不合法** ⇒ 抄走必然失败 ✗
         //（2026-10-06 判据实测：`blob_hash` 不是合法哈希 ✓）⇒ 违反「示例要**真的可照抄**」 ✓。
         r##"{"layer_id": "layer_default", "blob_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}"##,
+    ),
+    // **stroke_heatmap**（反馈 5.6）：唯一必填参数是 region（与 render_region 同形）⇒ 只给必填项就成立 ✓。
+    (
+        "stroke_heatmap",
+        r#"{"region":{"x":0,"y":0,"w":400,"h":300}}"#,
     ),
 ];

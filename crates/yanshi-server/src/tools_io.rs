@@ -47,6 +47,10 @@ pub(super) fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> R
         .get("include_bitmaps")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    // **bake 打包模式**（第二轮第 9 条）：frontier（默认）只打包完整原子日志 +
+    // 当前折叠必需的活跃 Blob，历史 Bake Blob 不装；all_history 全量打包。
+    let blob_bundle_mode =
+        optional_str(args, "blob_bundle_mode").unwrap_or_else(|| "frontier".to_owned());
     // **分段探针（第 51 轮 ✓）**：在**调用侧**量 ✓ —— 原因 ✗：构造点 `ExportStats { … }`
     // 位于**表达式位置**（`Ok((…))` ✓），语句插不进去 ✓（我为此失败两次 ✗）。
     // 这里量两段 ✓：① `export_project`（读日志 ＋ 收集 ＋ 组装 tar ✓）② `store.put`（入 CAS ✓）。
@@ -82,11 +86,16 @@ pub(super) fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> R
         doc_id.clone(),
         head_seq,
         include_bitmaps,
+        // **键里必须有 `blob_bundle_mode`** ✓：frontier 与 all_history 的包内容
+        // 不同（历史 Bake Blob 装与不装），同键会撞包 ✓。
+        blob_bundle_mode.clone(),
     );
     let (tar, stats) = match export_result_lookup(&cache_key) {
         Some(hit) => hit,
         None => {
-            let built = ctx.workspace.export_project(&doc_id, include_bitmaps)?;
+            let built =
+                ctx.workspace
+                    .export_project(&doc_id, include_bitmaps, &blob_bundle_mode)?;
             // **只在"存储没有参与"时才记入** ✗ —— 这正是第 82 轮的漏洞所在 ✓。
             if built.1.kept_no_recipe == 0
                 && built.1.kept_mismatch == 0
@@ -261,6 +270,8 @@ pub(super) fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> R
         "doc_id": doc_id,
         "bytes": tar.len(),
         "include_bitmaps": include_bitmaps,
+        "blob_bundle_mode": blob_bundle_mode,
+        "frontier_omitted_historical_blobs": stats.frontier_omitted_historical_blobs,
         "format": "tar (uncompressed)",
         // **位图部分的独立读数** ✓（第 1331 轮 ✓）：整包体积会被**原子日志**主导 ✗
         //（实测：12 次覆盖的差值里 **98.3%** 是日志 ✓）⇒ 所以"位图有没有被回收"必须看这三项 ✓。
@@ -282,8 +293,22 @@ pub(super) fn write_export_project(ctx: &mut ToolContext<'_>, args: &Value) -> R
         "missing": stats.missing,
         // **B2 的两栏** ✓：本体缺（`missing_body`）与派生缺（`missing_derived`）分开数 ✓；
         // 成功回执里 `missing_body` 恒为 0 ✓（`> 0` 时上面已直接失败 ✓）。
+        // **⚠ 这是存储侧口径，不是包内口径**（第 4 轮第 3 期口径簇）：成功回执的
+        // `missing_body == 0` 只说「存储里不缺」，**不能**用来判包自含性 —— 缺省包
+        // （`include_bitmaps: false`）省掉的可重放位图在 `omitted` 里，不在缺失里。
+        // 判包自含性请用 `verify_package`（`complete` 为真 ⇔ import 可重放）。
         "missing_body": stats.missing_body,
         "missing_derived": stats.missing_derived,
+        // **包内自含性**（第 4 轮第 3 期口径簇）：为真 ⇔ 全部被引用的本体位图都
+        // 装进了包（逐字节自含）；为假 ⇔ 包依赖导入重放（`omitted > 0` 的位图只在
+        // import 时从日志重跑出来）—— 不是数据丢失，但**不走 import 重放、直接读
+        // 包内 `blobs/` 的消费方仍会见缺失**。派生 tile 缺失不影响这一项（tile 由
+        // 本体重建，`verify_package` 里 `complete` 为真仍可重放）。
+        "package_self_contained": stats.omitted == 0,
+        // **口径说明**（机读字段在上面；这里只解释，不承载判定）：
+        // `omitted` / `missing_body` / `missing_derived` 计的都是去重后的 blob 哈希数，
+        // 不是笔数（多笔共享同一哈希只计 1）；缺省包不是数据丢失。
+        "caliber_note": "missing_body 是存储侧口径（成功导出时恒为 0），不能用它判包自含性；判包请用 verify_package（complete 为真 ⇔ import 可重放）。omitted/missing_body/missing_derived 计去重后的 blob 哈希数，不是笔数；omitted > 0 的缺省包依赖导入重放，直接读包内 blobs/ 的消费方仍见缺失。",
         // **B 期项 7/8（出口侧口径）**：`missing_derived` 只数存储里缺失的
         // 派生索引；按设计未装包的派生总数另报，不与丢失混在一栏。
         "missing_derived_note": "存储里缺失的派生索引数；按设计未装包的派生（tile 索引由本体位图重建，导出时不装包）另见 derived_not_packaged，不计入本栏",
@@ -399,6 +424,10 @@ pub(super) fn write_export_book_pngs(ctx: &mut ToolContext<'_>, args: &Value) ->
 }
 
 pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    // return_image 统一语义：max_px 传了就在落盘前校验（非法直接报错，
+    // 不产半张文件）；请求回图时缺省 512，不请求时不回图，落盘行为不动。
+    let export_explicit_max_px = explicit_max_px(args)?;
+    let export_wants_image = wants_return_image(args);
     let path = guarded_output_path(&require_str(args, "path")?)?;
     // **导出失败删目标文件**（P2-12）：见 `write_export_project` 的守卫说明。
     let mut delete_on_failure = DeleteTargetOnFailure::new(Some(path.clone()));
@@ -657,7 +686,7 @@ pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         .map(|document| (document.head_seq(), document.render_watermark()))
         .unwrap_or((0, 0));
     delete_on_failure.disarm();
-    Ok(json!({
+    let mut export_value = json!({
         "path": path,
         "width": target_w,
         "height": target_h,
@@ -686,15 +715,55 @@ pub(super) fn write_export_png(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
         //     两张（连导两次）**逐像素相同** ⇒ **图是完整的** ⇒ 那个 `true` 会让人**白跑一遍** ✗
         //   **⇒ 所以**只留两个**如实**的数字（head 与渲染水位），并说清它们**不管**导出的完整性 ✓
         "head_seq": head_seq,
+        // **反馈 5 第 7 项**：`rendered_seq` 在导出回执里是误导名——它量的是预览水位，
+        //   而 `export_png` 是同步重渲、根本不走那条水位 ⇒ 正名 `preview_watermark`。
+        //   ⇒ 旧名只作**已弃用别名**留着（值与新名恒等），不断旧读法：
+        //     `tool-export-reports-staleness.mjs` 与既有调用方仍读 `rendered_seq`，
+        //     新代码一律读 `preview_watermark`；别名删除是后续一行的事，不在本项里偷做。
+        //   ⇒ 只改导出回执：`get_document`／`get_render_status`／`RenderStatus` 的
+        //     `rendered_seq` 不动——在那两处它就是正确的"该原子/文档是否已渲染"语义，
+        //     viewer 与 `browser-status-bar.mjs` 读的正是那两处，改了才是真破坏。
+        "preview_watermark": rendered_seq,
         "rendered_seq": rendered_seq,
-        // **P-3（期 1）**：`rendered_seq` 是**预览水位**（预览/缩略图那条线），不是本次导出的进度 ✓
+        // **P-3（期 1）**：`preview_watermark` 是**预览水位**（预览/缩略图那条线），不是本次导出的进度 ✓
         //   ⇒ 它落后只说明上一次预览停在那里，**与本次导出完整性无关** ✓（`export_png` 总是从原子同步重渲 ✓）
-        //   ⇒ 字段本身留着（调用方可能在读），但回执里**用一句话把语义写死**，不再让人误读成"渲染不完整" ✓
-        "rendered_seq_note": "预览水位（preview/thumbnail 渲染进度），与本次导出完整性无关；export_png 总是从原子同步重渲，导出图完整。",
+        //   ⇒ 回执里**用一句话把语义写死**，不再让人误读成"渲染不完整" ✓；
+        //     旧 note 名同步留作别名，文本与新 note 逐字相同。
+        "preview_watermark_note": "预览水位（preview/thumbnail 渲染进度），与本次导出完整性无关；export_png 总是从原子同步重渲，导出图完整。rendered_seq 是 preview_watermark 的旧名别名，值相同。",
+        "rendered_seq_note": "预览水位（preview/thumbnail 渲染进度），与本次导出完整性无关；export_png 总是从原子同步重渲，导出图完整。rendered_seq 是 preview_watermark 的旧名别名，值相同。",
         // **⇒ 导出完整性**不需要这个字段：`export_png` **总是**从原子同步重渲 ✓
 
         "warnings": render_warnings,
-    }))
+    });
+    // return_image 是落盘之外的附加内嵌图：用本次导出的像素（已按
+    // width/height/max_edge/lod 缩放过）再按 max_px 缩一份；文件本身不动，
+    // deterministic 模式的文件逐像素性也不受影响。
+    if export_wants_image {
+        let cap = export_explicit_max_px.unwrap_or(RETURN_IMAGE_DEFAULT_MAX_PX);
+        match encode_image_capped(&scaled, target_w, target_h, cap) {
+            Some((capped, capped_w, capped_h, capped_scaled)) => {
+                export_value["image"] = json!({
+                    "mime_type": "image/png",
+                    "data": crate::base64::encode(&capped),
+                    "width": capped_w,
+                    "height": capped_h,
+                });
+                if capped_scaled {
+                    export_value["scaled_from"] = json!([target_w, target_h]);
+                    export_value["scaled_note"] = json!(format!(
+                        "导出图 {}×{} 超过 max_px={}，内嵌图已自动缩小到 {}×{}；落盘文件仍是原尺寸",
+                        target_w, target_h, cap, capped_w, capped_h
+                    ));
+                }
+            }
+            None => {
+                export_value["image_omitted"] = json!(true);
+                export_value["image_omitted_reason"] =
+                    json!("内嵌图的缩放或编码失败，未内嵌 base64；落盘文件不受影响");
+            }
+        }
+    }
+    Ok(export_value)
 }
 
 /// XML 文本转义（`<text>` 内容与属性值共用 ✓）：`& < > " '` 都转义、控制字符
@@ -2092,6 +2161,10 @@ pub(super) fn write_export_svg(ctx: &mut ToolContext<'_>, args: &Value) -> Resul
                 | Prim::Liquify { .. }
                 | Prim::Retouch { .. } => {
                     collapse_through!(index);
+                }
+                // 压平基底是位图：SVG 导出走位图段（与 RasterPatch 同口径）。
+                Prim::BakedBase { .. } => {
+                    pending.push(index);
                 }
                 Prim::RasterPatch { .. } => {
                     match classify_text_provenance(&object.data) {
