@@ -82,9 +82,21 @@ impl BakedBlobCandidate {
 /// 随后 Undo 仍被拦截（判据 ⑦ 的红即由此来）。
 pub(crate) fn all_valid_baked_blobs(atoms: &[Atom]) -> Vec<BakedBlobCandidate> {
     let suppressed = yanshi_core::fold::compute_suppressed(atoms);
+    // append_rebake 会追加一条带 `replaces_bake_seq` 的新 Bake；被它取代的旧
+    // Bake 必须退出有效集，否则旧原子的 expected 哈希永远缺失 ⇒ 每次 recover
+    // 都对同一条重放并再追加一条（日志无界增长、strict 永久报错）。
+    let replaced: std::collections::BTreeSet<u64> = atoms
+        .iter()
+        .filter_map(|atom| {
+            atom.payload
+                .get("replaces_bake_seq")
+                .and_then(|value| value.as_u64())
+        })
+        .collect();
     let mut out: Vec<BakedBlobCandidate> = Vec::new();
     for atom in atoms {
-        if !is_bake_kind(atom.kind) || suppressed.contains(&atom.id) {
+        if !is_bake_kind(atom.kind) || suppressed.contains(&atom.id) || replaced.contains(&atom.seq)
+        {
             continue;
         }
         if atom.kind == AtomKind::BakeDocument {
@@ -1197,14 +1209,29 @@ pub(super) fn write_bake_document(ctx: &mut ToolContext<'_>, args: &Value) -> Re
     Ok(value)
 }
 
+/// 可选非负整数 seq 参数：缺省 None，给了但不是非负整数 ⇒ `invalid_argument`。
+fn optional_seq(args: &Value, key: &str) -> Result<Option<u64>> {
+    match args.get(key) {
+        None => Ok(None),
+        Some(value) => value.as_u64().map(Some).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("{key} 必须是非负整数 seq")),
+            )
+        }),
+    }
+}
+
 /// recover_baked_blobs 工具（第二轮第 4、5 条：唯一常规自愈入口）。
 ///
-/// 参数：`layer_id?`（缺省全部层）、`up_to_seq?`（缺省按层取最新有效 Bake）、
+/// 参数：`layer_id?`（缺省全部层）、`up_to_seq?`（按内容水位过滤）、
+/// `target_seq?`（按 Bake 原子 seq 过滤，Undo 拦截文案给的 `recovery_action` 用这个）、
 /// `on_hash_mismatch?`（缺省 `"strict"`；显式 `"append_rebake"` 才追加新 Bake 原子）。
 /// 常规折叠/渲染缺 Blob 时**不**走这里，仍严格报错；成本挂在本调用回执。
 pub(super) fn write_recover_baked_blobs(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_filter = optional_str(args, "layer_id");
-    let target_seq_filter = args.get("up_to_seq").and_then(|v| v.as_u64());
+    let up_to_seq_filter = optional_seq(args, "up_to_seq")?;
+    let target_seq_filter = optional_seq(args, "target_seq")?;
     let on_hash_mismatch =
         optional_str(args, "on_hash_mismatch").unwrap_or_else(|| "strict".to_owned());
     if !matches!(on_hash_mismatch.as_str(), "strict" | "append_rebake") {
@@ -1227,10 +1254,26 @@ pub(super) fn write_recover_baked_blobs(ctx: &mut ToolContext<'_>, args: &Value)
         // 恢复面是全部未被抑制的 Bake（含历史基底），不是只取每层最新。
         let mut candidates = all_valid_baked_blobs(&atoms);
         if let Some(layer_id) = &layer_filter {
+            // 与 get_bake_status 同口径：层不存在/已删除报 404，而不是 ok+recovered:0
+            //（拼错层名时后者会静默清掉全部层的受阻态）。
+            let alive = document
+                .state()
+                .layers
+                .get(layer_id)
+                .is_some_and(|layer| !layer.is_deleted());
+            if !alive {
+                return Err(YanshiError::new(
+                    ErrorCode::ReferenceNotFound,
+                    ErrorContext::detail(format!("图层 {layer_id} 不存在或已删除")),
+                ));
+            }
             candidates.retain(|c| &c.layer_id == layer_id);
         }
-        if let Some(up_to_seq) = target_seq_filter {
+        if let Some(up_to_seq) = up_to_seq_filter {
             candidates.retain(|c| c.up_to_seq == up_to_seq);
+        }
+        if let Some(target_seq) = target_seq_filter {
+            candidates.retain(|c| c.bake_seq == target_seq);
         }
         (atoms, candidates)
     };

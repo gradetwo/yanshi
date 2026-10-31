@@ -103,9 +103,9 @@ try {
   check(t.auto_bake && t.auto_bake.trigger === "layer_waterline", "② T：触发为水位", t.auto_bake ? t.auto_bake.trigger : "无节");
   check(t.head === (t.auto_bake ? t.auto_bake.bake_atom_seq : null), "② T：回执 head 已是 bake 后 head", `head=${t.head}`);
   const st = await call("get_bake_status", { layer_id: "L" });
-  check(st.ok === true && st.layers && st.layers[0].unbaked === 0, "② T：状态里未 bake 数归零", JSON.stringify(st.layers || null).slice(0, 200));
-  check(st.layers && st.layers[0].last_bake && st.layers[0].last_bake.origin === "auto", "② T：最新 Bake 来源为自动", JSON.stringify(st.layers ? st.layers[0].last_bake : null).slice(0, 200));
-  check(st.layers && st.layers[0].last_bake && st.layers[0].last_bake.trigger === "layer_waterline", "② T：最新 Bake 触发为水位", JSON.stringify(st.layers ? st.layers[0].last_bake : null).slice(0, 200));
+  check(st.ok === true && Array.isArray(st.layers) && st.layers.length > 0 && st.layers[0].unbaked === 0, "② T：状态里未 bake 数归零", JSON.stringify(st.layers || null).slice(0, 200));
+  check(st.layers?.[0]?.last_bake?.origin === "auto", "② T：最新 Bake 来源为自动", JSON.stringify(st.layers?.[0]?.last_bake ?? null).slice(0, 200));
+  check(st.layers?.[0]?.last_bake?.trigger === "layer_waterline", "② T：最新 Bake 触发为水位", JSON.stringify(st.layers?.[0]?.last_bake ?? null).slice(0, 200));
   try { on.proc.kill(); } catch {}
 
   // ---- 批量内不评估、整批后一次、一次最多一层 ----
@@ -144,7 +144,7 @@ try {
   const one = await call3("draw_stroke", { layer_id: "OFF", data: { points: [[10, 10], [11, 10]], size: 2, color: [20, 20, 20, 255] } });
   check(one.auto_bake === undefined, "④ 层开关关：过阈值也无 auto_bake 节", JSON.stringify(one.auto_bake || null).slice(0, 160));
   const st3 = await call3("get_bake_status", { layer_id: "OFF" });
-  check(st3.layers && st3.layers[0].enabled === false && st3.layers[0].enabled_source === "layer", "④ 层开关关：状态里开关关、来源为层", JSON.stringify(st3.layers || null).slice(0, 200));
+  check(Array.isArray(st3.layers) && st3.layers.length > 0 && st3.layers[0].enabled === false && st3.layers[0].enabled_source === "layer", "④ 层开关关：状态里开关关、来源为层", JSON.stringify(st3.layers || null).slice(0, 200));
   try { on3.proc.kill(); } catch {}
 
   // ---- 缺省关 + 层开关开时全局关也 bake ----

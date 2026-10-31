@@ -1546,8 +1546,8 @@ fn landed_reason_precedence_and_boundaries() {
 
 /// `color_space_of` 三臂（A5）：与 `parse_spec_color` 的量级切换**同一条规则** ✓。
 ///
-/// 浮点数组（任一分量都不 > 1）⇒ `linear`；字节数组（任一分量 > 1）／对象式 ⇒ `srgb_bytes`；
-/// hex 字符串 ⇒ `hex`。
+/// 浮点数组／浮点对象（任一分量都不 > 1）⇒ `linear`；字节数组／字节对象（任一分量 > 1）⇒
+/// `srgb_bytes`；hex 字符串 ⇒ `hex`。
 #[test]
 fn color_space_of_three_arms() {
     assert_eq!(
@@ -1568,7 +1568,12 @@ fn color_space_of_three_arms() {
     assert_eq!(
         color_space_of(&json!({"r": 115, "g": 97, "b": 77})),
         "srgb_bytes",
-        "对象式 ⇒ srgb_bytes（恒为字节）"
+        "字节对象式 ⇒ srgb_bytes（任一分量 > 1）"
+    );
+    assert_eq!(
+        color_space_of(&json!({"r": 0.2, "g": 0.4, "b": 0.9})),
+        "linear",
+        "浮点对象式 ⇒ linear（与 parse_spec_color 对象分支的域切换同口径，不能恒报字节）"
     );
     assert_eq!(color_space_of(&json!("#73391F")), "hex", "hex 字符串 ⇒ hex");
 }

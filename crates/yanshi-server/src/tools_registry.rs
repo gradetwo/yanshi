@@ -2307,7 +2307,6 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("allow_rasterize_editable", Boolean, false, "显式放行栅格化可编辑图元（文本/矢量）：缺省 false，含文本/矢量时直接报错；传 true 后成功回执 warnings 记 TEXT_RASTERIZED / VECTOR_RASTERIZED 审计条目"),
             param!("allow_clip_off_canvas", Boolean, false, "显式放行裁剪越界像素：缺省 false，含越界图元时直接报错；传 true 后成功回执 warnings 记 CLIPPED_OFF_CANVAS_PIXELS 明细与区域坐标"),
             param!("flatten_mask", Boolean, false, "把图层级独立掩膜压进基底：缺省 false（掩膜保留）；传 true 后回执 warnings 记 MASK_FLATTENED"),
-            param!("allow_non_uniform_scale", Boolean, false, "显式放行非均匀缩放：缺省 false；仅对压平后基底的 transform_primitive 门禁生效，bake 本身不接受缩放参数"),
         ],
     },
     ToolSpec {
@@ -2319,7 +2318,6 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             param!("allow_rasterize_editable", Boolean, false, "显式放行栅格化可编辑图元（文本/矢量）：缺省 false，任一待压平层含文本/矢量时整单直接报错；传 true 后成功回执 warnings 记 TEXT_RASTERIZED / VECTOR_RASTERIZED 审计条目"),
             param!("allow_clip_off_canvas", Boolean, false, "显式放行裁剪越界像素：缺省 false，任一待压平层含越界图元时整单直接报错；传 true 后成功回执 warnings 记 CLIPPED_OFF_CANVAS_PIXELS 明细与区域坐标"),
             param!("flatten_mask", Boolean, false, "把各层级独立掩膜压进各自基底：缺省 false（掩膜保留）；传 true 后折叠期消费掩膜（清层 mask_id），回执 warnings 记 MASK_FLATTENED，之后掩膜编辑须先 revert 该 Bake"),
-            param!("allow_non_uniform_scale", Boolean, false, "显式放行非均匀缩放：缺省 false；仅对压平后基底的 transform_primitive 门禁生效，bake 本身不接受缩放参数"),
         ],
     },
     ToolSpec {
@@ -2330,6 +2328,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
         params: &[
             param!("layer_id", String, false, "只修复该图层的有效 Bake 基底；缺省全部层"),
             param!("up_to_seq", Number, false, "只修复该水位的有效 Bake；缺省按层取最新有效 Bake"),
+            param!("target_seq", Number, false, "只修复 bake 原子 seq 恰为该值的那个 Bake（错误文案 recovery_action 的精确目标）；缺省不按 seq 过滤"),
             param!("on_hash_mismatch", String, false, "哈希不一致口径：strict（默认，报错拒绝写入）或 append_rebake（真实哈希入库 + 追加新 Bake 原子）"),
         ],
     },

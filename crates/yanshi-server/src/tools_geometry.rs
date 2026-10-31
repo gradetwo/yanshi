@@ -313,6 +313,14 @@ fn resample_patched_masks(
         let blob_str = blob_hash.to_string();
         refs.push(blob_str.clone());
         // ReplaceAll 回放忽略 target_u8（见 CompiledMask::build），此处填 255 仅占位。
+        // 选区与蒙版是两张独立的 id 空间（fold 分表回放），同名时同一份 patch 会被
+        // 套给两者 ⇒ 宁可拒绝，也不静默让后写者覆盖前者。
+        if patches_map.contains_key(&selection.id) {
+            return Err(invalid(format!(
+                "选区与蒙版使用了同名 id「{}」⇒ 几何重采样无法区分两张表，请先改名",
+                selection.id
+            )));
+        }
         patches_map.insert(
             selection.id.clone(),
             json!([{
@@ -421,8 +429,11 @@ fn commit_geometry(
 
 pub(super) fn write_resize_canvas_bounds(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     reject_anchor(args, "resize_canvas_bounds")?;
-    let width = uint_param(args, "width")? as u32;
-    let height = uint_param(args, "height")? as u32;
+    // u64→u32 必须先判界：`as u32` 会把 2^32+k 截成 k（实测 2^32+300 变成 300）。
+    let width =
+        u32::try_from(uint_param(args, "width")?).map_err(|_| invalid("width 超出 u32 范围"))?;
+    let height =
+        u32::try_from(uint_param(args, "height")?).map_err(|_| invalid("height 超出 u32 范围"))?;
     check_canvas_size(width, height)?;
     commit_geometry(
         ctx,
@@ -471,9 +482,17 @@ pub(super) fn write_scale_canvas(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         }
         (sx, sy)
     };
-    // 宽高用 f64::round（半远离零），下限 1。
-    let new_width = ((old_width as f64 * sx).round() as i64).max(1) as u32;
-    let new_height = ((old_height as f64 * sy).round() as i64).max(1) as u32;
+    // 宽高用 f64::round（半远离零），下限 1。先按 f64 判界再转 u32：
+    // 直接 `as u32` 会把 2^32+k 折回 k（实测 200×100 × 2.1e7 可折回 104×50）。
+    let width_f = (old_width as f64 * sx).round();
+    let height_f = (old_height as f64 * sy).round();
+    if !(1.0..=u32::MAX as f64).contains(&width_f) || !(1.0..=u32::MAX as f64).contains(&height_f) {
+        return Err(invalid(format!(
+            "缩放后的画布尺寸非法（{width_f}×{height_f}，须在 1..=u32::MAX 内）"
+        )));
+    }
+    let new_width = width_f as u32;
+    let new_height = height_f as u32;
     check_canvas_size(new_width, new_height)?;
     let mut extra = serde_json::Map::new();
     extra.insert("scale_x".to_owned(), json!(sx));
@@ -618,7 +637,17 @@ pub(super) fn write_crop_canvas(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
         Ok(value as i64)
     };
     let (x, y, w, h) = (get_int("x")?, get_int("y")?, get_int("w")?, get_int("h")?);
-    if w < 1 || h < 1 || x < 0 || y < 0 || x + w > old_width as i64 || y + h > old_height as i64 {
+    // 用 checked_add 判界：f64→i64 的 `as` 会饱和（1e19 ⇒ i64::MAX），
+    // 而 release 下 `x + w` 溢出会回绕成负数 ⇒ 越界请求静默通过（实测变成 1×1 裁切）。
+    let right = x.checked_add(w);
+    let bottom = y.checked_add(h);
+    let inside = w >= 1
+        && h >= 1
+        && x >= 0
+        && y >= 0
+        && right.is_some_and(|value| value <= old_width as i64)
+        && bottom.is_some_and(|value| value <= old_height as i64);
+    if !inside {
         return Err(invalid(format!(
             "crop 区域必须完全位于画布内（画布 {old_width}×{old_height}，区域 x={x} y={y} w={w} h={h}）"
         )));
@@ -667,11 +696,23 @@ pub(super) fn write_extend_canvas(ctx: &mut ToolContext<'_>, args: &Value) -> Re
         get_margin("right")?,
         get_margin("bottom")?,
     );
-    if left + top + right + bottom <= 0 {
-        return Err(invalid("extend 至少一边边距 > 0"));
+    let margin_sum = left
+        .checked_add(top)
+        .and_then(|value| value.checked_add(right))
+        .and_then(|value| value.checked_add(bottom));
+    if !margin_sum.is_some_and(|sum| sum > 0) {
+        return Err(invalid("extend 边距必须是非负整数且总和 > 0（不得溢出）"));
     }
-    let new_width = (old_width as i64 + left + right) as u32;
-    let new_height = (old_height as i64 + top + bottom) as u32;
+    let new_width = (old_width as i64)
+        .checked_add(left)
+        .and_then(|value| value.checked_add(right))
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| invalid("extend 后的宽度超出范围"))?;
+    let new_height = (old_height as i64)
+        .checked_add(top)
+        .and_then(|value| value.checked_add(bottom))
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| invalid("extend 后的高度超出范围"))?;
     check_canvas_size(new_width, new_height)?;
     let mut extra = serde_json::Map::new();
     extra.insert(

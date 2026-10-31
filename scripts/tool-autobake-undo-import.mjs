@@ -9,6 +9,8 @@
 //   ③ Undo 拦截（手动 Bake）：同一守卫对期 1 手动 Bake 同样生效（守卫与 kind 无关）；
 //   ④ 跨机导入：自动 Bake 的 origin 与 trigger 随 atoms.jsonl 走，导入后状态里
 //      最新 Bake 来源仍为自动；缺自动 Bake Blob 时默认拒绝、replay_and_heal 恢复。
+//   ⑤ recover_baked_blobs 的过滤参数真的被读：拼错层名报 reference_not_found
+//      （不是 ok+recovered:0），target_seq 非整数报 invalid_argument。
 //
 // 前提失败 exit(3)（判据前提不成立 ≠ 产品失败）；产品失败 exit(1)。
 // 用法：node scripts/tool-autobake-undo-import.mjs
@@ -52,17 +54,34 @@ const failPre = (what, resp) => {
 };
 
 async function startServer(envOn) {
-  const port = 18700 + Math.floor(Math.random() * 120);
-  const ROOT = trackTemp(mkdtempSync(join(tmpdir(), "ab-undo-")));
-  const base = `http://127.0.0.1:${port}`;
   const env = { ...process.env };
   if (envOn) env.YANSHI_AUTO_BAKE_ENABLED = "1";
   else delete env.YANSHI_AUTO_BAKE_ENABLED;
-  const proc = spawn(BIN, ["--root", ROOT, "--bind", `127.0.0.1:${port}`], { stdio: "ignore", env });
-  process.on("exit", () => { try { proc.kill(); } catch { /* 已退出 */ } });
-  for (let i = 0; i < 80; i += 1) { try { if ((await fetch(`${base}/health`)).ok) break; } catch {} await sleep(250); }
-  return { base, proc, ROOT };
+  // **随机端口可能撞上别的进程**（判据被超时/杀掉时本判据自己 spawn 的 serve
+  // 不会被 'exit' 处理器回收）⇒ 撞上时我们 spawn 的进程绑定失败直接退出，而
+  // 那个陌生进程的 /health 照样回 200 ⇒ 后续调用全打到它身上（它的 ROOT 里
+  // 可能已有 ab_imp2）⇒ 假红「文档 ab_imp2 已经存在」。所以两件事都要核对：
+  // ① 我们 spawn 的进程还活着；② 它是刚建的空工作区（文档列表为空）。
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const port = 18700 + Math.floor(Math.random() * 120);
+    const ROOT = trackTemp(mkdtempSync(join(tmpdir(), "ab-undo-")));
+    const base = `http://127.0.0.1:${port}`;
+    const proc = spawn(BIN, ["--root", ROOT, "--bind", `127.0.0.1:${port}`], { stdio: "ignore", env });
+    process.on("exit", () => { try { proc.kill(); } catch { /* 已退出 */ } });
+    let healthy = false;
+    for (let i = 0; i < 80; i += 1) {
+      if (proc.exitCode !== null || proc.signalCode !== null) break;
+      try { if ((await fetch(`${base}/health`)).ok) { healthy = true; break; } } catch {}
+      await sleep(250);
+    }
+    if (!healthy || proc.exitCode !== null) continue;
+    const docs = await (await fetch(`${base}/api/documents`)).json().catch(() => ({}));
+    if (Array.isArray(docs.documents) && docs.documents.length === 0) return { base, proc, ROOT };
+    try { proc.kill(); } catch {}
+  }
+  failPre("起不来全新的 yanshi-serve（8 个随机端口都被占或响应异常）", { port: "见重试" });
 }
+
 async function openDoc(base, doc, w = 256, h = 256) {
   const created = await (await fetch(`${base}/api/documents?role=owner`, { method: "POST",
     headers: { "content-type": "application/json" },
@@ -92,9 +111,11 @@ try {
   if (cu.ok !== true) failPre("建层 U 失败", cu);
   await batchStrokes(call, "U", 2048);
   const stU = await call("get_bake_status", { layer_id: "U" });
-  if (!stU.layers || stU.layers[0].unbaked !== 0) failPre("自动 bake 未发生", stU);
-  const bakeSeqU = stU.layers[0].last_bake.bake_atom_seq;
-  const waterlineU = stU.layers[0].waterline;
+  if (!Array.isArray(stU.layers) || stU.layers.length === 0 || stU.layers[0].unbaked !== 0) failPre("自动 bake 未发生", stU);
+  const bakeSeqU = stU.layers[0]?.last_bake?.bake_atom_seq;
+  if (typeof bakeSeqU !== "number") failPre("自动 bake 状态缺 last_bake.bake_atom_seq", stU);
+  const waterlineU = stU.layers[0]?.waterline;
+  if (typeof waterlineU !== "number") failPre("自动 bake 状态缺 waterline", stU);
   const listed = await call("list_atoms", { limit: 5000, include_non_stroke: true });
   if (listed.ok !== true) failPre("列原子失败", listed);
   const pruned = (listed.atoms || []).find((a) => a.kind === "draw_stroke" && a.seq <= waterlineU);
@@ -121,7 +142,8 @@ try {
   const mb = await call("bake_layer", { layer_id: "M" });
   if (!mb || mb.status !== "applied") failPre("手动 bake 未 applied", mb);
   const stM = await call("get_bake_status", { layer_id: "M" });
-  const waterlineM = stM.layers[0].waterline;
+  const waterlineM = stM.layers?.[0]?.waterline;
+  if (typeof waterlineM !== "number") failPre("手动 bake 状态缺 waterline", stM);
   const listedM = await call("list_atoms", { limit: 5000, include_non_stroke: true });
   const prunedM = (listedM.atoms || []).find((a) => a.kind === "draw_stroke" && a.layer_id === "M" && a.seq <= waterlineM);
   if (!prunedM) failPre("找不到手动 bake 剪枝的原子", { waterline: waterlineM });
@@ -134,7 +156,7 @@ try {
   if (ci.ok !== true) failPre("建层 I 失败", ci);
   await batchStrokes(call, "I", 2048);
   const stI = await call("get_bake_status", { layer_id: "I" });
-  if (!stI.layers || stI.layers[0].unbaked !== 0) failPre("层 I 自动 bake 未发生", stI);
+  if (!Array.isArray(stI.layers) || stI.layers.length === 0 || stI.layers[0].unbaked !== 0) failPre("层 I 自动 bake 未发生", stI);
   const expDir = trackTemp(mkdtempSync(join(tmpdir(), "ab-exp-")));
   const expPath = join(expDir, "ab.yanshi");
   const exp = await call("export_project", { path: expPath, blob_bundle_mode: "frontier" });
@@ -156,7 +178,8 @@ try {
   const expPath2 = join(expDir2, "ab2.yanshi");
   const exp2 = await call("export_project", { path: expPath2, blob_bundle_mode: "all_history" });
   if (exp2.ok !== true) failPre("第二次导出失败", exp2);
-  const bakeHash = stI.layers[0].last_bake.blob_hash;
+  const bakeHash = stI.layers[0]?.last_bake?.blob_hash;
+  if (typeof bakeHash !== "string") failPre("层 I 自动 bake 状态缺 last_bake.blob_hash", stI);
   // 注：blob_hash 带 "sha256:" 前缀，须先剥掉再按 hex 分段（照 bake 判据 blobTarPath）。
   const bakeHex = bakeHash.replace(/^sha256:/, "");
   const blobRel = `blobs/sha256/${bakeHex.slice(0, 2)}/${bakeHex.slice(2, 4)}/${bakeHex}`;
@@ -175,6 +198,13 @@ try {
   check(impDeny.ok === false && /缺有效压平基底|missing_baked_blob|MissingBakedBlob/.test(JSON.stringify(impDeny)), "④ 缺自动 Bake Blob 默认拒绝", JSON.stringify(impDeny).slice(0, 240));
   const impHeal = await sess3.call("import_project", { path: strippedPath, doc_id: "ab_imp2", missing_blob_policy: "replay_and_heal" });
   check(impHeal.ok === true, "④ replay_and_heal 恢复成功", JSON.stringify(impHeal).slice(0, 240));
+
+  // ---- ⑤ recover_baked_blobs 过滤参数确实被读 ----
+  const recBadLayer = await sess3.call("recover_baked_blobs", { layer_id: "NO_SUCH_LAYER" });
+  check(recBadLayer.ok === false && recBadLayer.error_code === "reference_not_found", "⑤ recover 拼错层名报 reference_not_found（不是 ok+recovered:0）", JSON.stringify(recBadLayer).slice(0, 200));
+  const recBadSeq = await sess3.call("recover_baked_blobs", { target_seq: "abc" });
+  check(recBadSeq.ok === false && recBadSeq.error_code === "invalid_argument", "⑤ recover target_seq 非整数报 invalid_argument（证明参数真的被读）", JSON.stringify(recBadSeq).slice(0, 200));
+
   try { srv.proc.kill(); } catch {}
   try { srv2.proc.kill(); } catch {}
   try { srv3.proc.kill(); } catch {}
@@ -190,4 +220,6 @@ try {
 //   · write_history_atom 不附 bake 注脚 ⇒ ①③ 的 bake_folded 断言红；
 //   · 守卫只认手动 Bake（按 origin 过滤）⇒ ① 的自动 Bake 注脚断言红；
 //   · 导入时丢弃 origin／trigger ⇒ ④ 的来源／触发断言红；
-//   · 缺自动 Bake Blob 时豁免 ⇒ ④ 默认拒绝断言红。
+//   · 缺自动 Bake Blob 时豁免 ⇒ ④ 默认拒绝断言红；
+//   · recover 忽略 layer_id（只报 ok+recovered:0）⇒ ⑤ 层名臂红；
+//   · recover 不解析 target_seq（字符串被静默当缺省）⇒ ⑤ 类型臂红。

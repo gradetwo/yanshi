@@ -17966,10 +17966,19 @@ pub(crate) fn color_space_from_value(
     }
 }
 
+/// **对象式颜色落在哪个域** ✓（与 `parse_spec_color` 的对象分支**同一条规则** ✓：
+/// `r`/`g`/`b`/`a` 任一分量 > 1 ⇒ 字节域；全 ≤ 1 ⇒ 线性域）。
+pub(crate) fn object_color_is_byte_domain(map: &serde_json::Map<String, Value>) -> bool {
+    map.iter().any(|(key, value)| {
+        matches!(key.as_str(), "r" | "g" | "b" | "a")
+            && value.as_f64().is_some_and(|number| number > 1.0)
+    })
+}
+
 /// **颜色输入值实际走了哪个解释空间** ✓（A5 回显 `applied.color_space` ✓；C1 的参数在第 6 块加）。
 ///
 /// 与 [`yanshi_render::color::parse_spec_color`] 的量级切换**同一条规则** ✓，不另起口径 ✓：
-/// 浮点数组（任一分量都不 > 1）⇒ `"linear"`；字节数组（任一分量 > 1）／对象式 ⇒ `"srgb_bytes"`；
+/// 浮点数组／浮点对象（任一分量都不 > 1）⇒ `"linear"`；字节数组／字节对象（任一分量 > 1）⇒ `"srgb_bytes"`；
 /// hex 字符串 ⇒ `"hex"`。
 ///
 /// **C1 已落地**：显式 `color_space` 参数来了之后，这里仍是"无参数时的推导" ✓，
@@ -17988,6 +17997,8 @@ pub(crate) fn color_space_of(value: &Value) -> &'static str {
             "srgb_bytes"
         }
         Value::Array(_) => "linear",
+        Value::Object(map) if object_color_is_byte_domain(map) => "srgb_bytes",
+        Value::Object(_) => "linear",
         _ => "srgb_bytes",
     }
 }
@@ -17995,8 +18006,9 @@ pub(crate) fn color_space_of(value: &Value) -> &'static str {
 /// **显式 `color_space` 下实际生效的解释空间**（C1 回显）—— 回显词汇与
 /// [`color_space_of`] 同一套（`"linear"` / `"srgb_bytes"` / `"hex"`）。
 ///
-/// 显式参数只改**数组**的解释：对象式 / hex 恒为字节，不受参数影响 ⇒ 回显也不认领参数
-///（传了 `"linear"` 也照实报 `"srgb_bytes"` / `"hex"`，回显的是**生效值**不是原话）。
+/// 显式参数只改**数组**的解释：对象式 / hex 走 [`yanshi_render::color::parse_spec_color`]
+/// 既有解析（对象按分量域切换、hex 恒为字节），不受参数影响 ⇒ 回显也不认领参数
+///（传了 `"linear"` 也照实报**生效值**而不是原话）。
 pub(crate) fn effective_color_space(
     value: &Value,
     space: Option<yanshi_render::color::ColorSpace>,
@@ -18004,7 +18016,8 @@ pub(crate) fn effective_color_space(
     use yanshi_render::color::ColorSpace;
     match value {
         Value::String(text) if text.starts_with('#') => "hex",
-        Value::Object(_) => "srgb_bytes",
+        Value::Object(map) if object_color_is_byte_domain(map) => "srgb_bytes",
+        Value::Object(_) => "linear",
         Value::Array(_) => match space {
             Some(ColorSpace::Srgb) => "srgb_bytes",
             Some(ColorSpace::Linear) => "linear",
@@ -18019,8 +18032,9 @@ pub(crate) fn effective_color_space(
 /// 钉死的“混写”只有一种（与报告 4 P4 的触发谓词空间不交，见下）：
 /// * `color_space` 显式传了 `"linear"`；
 /// * `color` 与 `color_to` 都给了，且一端是数组（显式 linear 下按线性直通解释），
-///   另一端是对象式／hex（`parse_spec_color_with_space` 里非数组直接走既有解析，
-///   恒为 sRGB 字节，不受显式空间影响）。
+///   另一端是字节写法的对象式／hex（`parse_spec_color_with_space` 里非数组直接走既有解析：
+///   对象按分量域切换、hex 恒为 sRGB 字节，不受显式空间影响）；浮点对象式本身也在线性域，
+///   与数组同族 ⇒ 不触发。
 ///
 /// 于是渐变两端实际按不同空间解码，而回执 `applied.color_space` 只回显 `color` 一端的
 /// 空间，另一端的解释被藏住 —— 这正是要警告的情形。
@@ -18043,12 +18057,13 @@ pub(crate) fn mixed_color_space_warning(
     if !matches!(space, Some(ColorSpace::Linear)) {
         return None;
     }
-    // 显式 linear 下：数组 ⇒ 线性族；对象式／hex ⇒ sRGB 字节族；其余形态（null、
-    // 数字、非 hex 字符串）不是合法颜色，落笔前已报错或不存在，判据不认领。
+    // 显式 linear 下：数组 ⇒ 线性族；对象式按分量域（任一分量 > 1 ⇒ 字节族，否则线性族）；
+    // hex ⇒ sRGB 字节族；其余形态（null、数字、非 hex 字符串）不是合法颜色，落笔前已报错或不存在，判据不认领。
     let family = |value: &Value| -> Option<&'static str> {
         match value {
             Value::Array(_) => Some("linear"),
-            Value::Object(_) => Some("srgb_bytes"),
+            Value::Object(map) if object_color_is_byte_domain(map) => Some("srgb_bytes"),
+            Value::Object(_) => Some("linear"),
             Value::String(text) if text.starts_with('#') => Some("srgb_bytes"),
             _ => None,
         }
@@ -18066,7 +18081,7 @@ pub(crate) fn mixed_color_space_warning(
         return None;
     }
     Some(format!(
-        "显式 color_space=\"linear\" 下渐变两端混写：color 按{from_label}解释、color_to 按{to_label}解释——显式空间只改数组的解释，对象式／hex 恒为 sRGB 字节；两端实际按不同空间解码，缺省与像素未改，如需两端同空间请两端用同一写法（都用浮点数组表线性，或都用字节数组／对象式／hex 表 sRGB）",
+        "显式 color_space=\"linear\" 下渐变两端混写：color 按{from_label}解释、color_to 按{to_label}解释——显式空间只改数组的解释，字节写法对象式／hex 恒为 sRGB 字节；两端实际按不同空间解码，缺省与像素未改，如需两端同空间请两端用同一写法（都用浮点数组／浮点对象式表线性，或都用字节数组／字节对象式／hex 表 sRGB）",
         from_label = label(from),
         to_label = label(to),
     ))
@@ -18086,7 +18101,8 @@ pub(crate) fn mixed_color_space_warning(
 /// 那是笔刷／介质内部的事实，不由回显认领一个空间 ✓（与 `sensors_applied` 同例：传了才出现 ✓）。
 ///
 /// **显式 `color_space` 来了之后**（C1）：`color_space` 参数是**本次调用实际生效的空间**
-///（`effective_color_space`：显式值只改数组的解释，对象式 / hex 照实报 `"srgb_bytes"` / `"hex"`）。
+///（`effective_color_space`：显式值只改数组的解释；对象式按分量域如实报 `"linear"`／`"srgb_bytes"`，
+/// hex 报 `"hex"`）。
 pub(crate) fn applied_echo_values(
     wait_for_render: bool,
     wait_budget_ms: u64,

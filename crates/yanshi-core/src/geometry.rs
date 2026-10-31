@@ -150,6 +150,27 @@ fn map_point_in_array(point: &mut Value, flat: &[f64; 6]) {
 }
 
 fn map_bbox_object(bbox: &mut Value, flat: &[f64; 6]) {
+    // 位图选区：`bbox` 是数组 `[x, y, w, h]`（`selection.rs` 的 bitmap 分支）。
+    // 不认数组 ⇒ smart_select 的选区几何后 bbox 留在旧坐标（像素 patch 却已重采样）。
+    if let Some(arr) = bbox.as_array_mut() {
+        if arr.len() == 4 {
+            let (Some(x), Some(y), Some(w), Some(h)) = (
+                arr[0].as_f64(),
+                arr[1].as_f64(),
+                arr[2].as_f64(),
+                arr[3].as_f64(),
+            ) else {
+                return;
+            };
+            let (x0, y0) = apply_flat(flat, x, y);
+            let (x1, y1) = apply_flat(flat, x + w, y + h);
+            arr[0] = Value::from(x0.min(x1));
+            arr[1] = Value::from(y0.min(y1));
+            arr[2] = Value::from((x1 - x0).abs());
+            arr[3] = Value::from((y1 - y0).abs());
+        }
+        return;
+    }
     let (Some(x), Some(y), Some(w), Some(h)) = (
         bbox.get("x").and_then(Value::as_f64),
         bbox.get("y").and_then(Value::as_f64),
@@ -191,27 +212,31 @@ pub fn transform_shape(shape: &mut Value, flat: &[f64; 6]) {
     if let Some(bbox) = obj.get_mut("bbox") {
         map_bbox_object(bbox, flat);
     }
-    // `{x,y,w,h}` 与 `bbox` 二选一：有 bbox 的形不重复映射 x/y/w/h。
-    if !had_bbox
-        && obj.contains_key("x")
-        && obj.contains_key("y")
-        && obj.contains_key("w")
-        && obj.contains_key("h")
-    {
-        let (Some(x), Some(y), Some(w), Some(h)) = (
-            obj.get("x").and_then(Value::as_f64),
-            obj.get("y").and_then(Value::as_f64),
-            obj.get("w").and_then(Value::as_f64),
-            obj.get("h").and_then(Value::as_f64),
-        ) else {
-            return;
-        };
-        let (x0, y0) = apply_flat(flat, x, y);
-        let (x1, y1) = apply_flat(flat, x + w, y + h);
-        obj["x"] = Value::from(x0.min(x1));
-        obj["y"] = Value::from(y0.min(y1));
-        obj["w"] = Value::from((x1 - x0).abs());
-        obj["h"] = Value::from((y1 - y0).abs());
+    // `{x,y,w,h}`（或 `{x,y,width,height}`）与 `bbox` 二选一：有 bbox 的形不重复映射。
+    let size_keys = if obj.contains_key("w") && obj.contains_key("h") {
+        Some(("w", "h"))
+    } else if obj.contains_key("width") && obj.contains_key("height") {
+        Some(("width", "height"))
+    } else {
+        None
+    };
+    if !had_bbox && obj.contains_key("x") && obj.contains_key("y") {
+        if let Some((width_key, height_key)) = size_keys {
+            let (Some(x), Some(y), Some(w), Some(h)) = (
+                obj.get("x").and_then(Value::as_f64),
+                obj.get("y").and_then(Value::as_f64),
+                obj.get(width_key).and_then(Value::as_f64),
+                obj.get(height_key).and_then(Value::as_f64),
+            ) else {
+                return;
+            };
+            let (x0, y0) = apply_flat(flat, x, y);
+            let (x1, y1) = apply_flat(flat, x + w, y + h);
+            obj["x"] = Value::from(x0.min(x1));
+            obj["y"] = Value::from(y0.min(y1));
+            obj[width_key] = Value::from((x1 - x0).abs());
+            obj[height_key] = Value::from((y1 - y0).abs());
+        }
     }
     if let Some(points) = obj.get_mut("points").and_then(Value::as_array_mut) {
         for point in points.iter_mut() {

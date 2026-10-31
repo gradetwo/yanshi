@@ -98,7 +98,7 @@ try {
   const s1434 = await singleStroke(call, "S");
   check(s1434.auto_bake === undefined, "① 再画一笔无节（软线去重）", JSON.stringify(s1434.auto_bake || null).slice(0, 160));
   const stS = await call("get_bake_status", { layer_id: "S" });
-  check(stS.layers && stS.layers[0].soft_fired === true, "① 状态里软线已发为真", JSON.stringify(stS.layers || null).slice(0, 200));
+  check(Array.isArray(stS.layers) && stS.layers.length > 0 && stS.layers[0].soft_fired === true, "① 状态里软线已发为真", JSON.stringify(stS.layers || null).slice(0, 200));
 
   // ---- ② 门禁跳过（栅格化）----
   const cg = await call("create_layer", { layer_id: "G" });
@@ -110,7 +110,7 @@ try {
   check(gLast.auto_bake && gLast.auto_bake.status === "skipped", "② 含文本层过硬阈值 ⇒ skipped 节", JSON.stringify(gLast.auto_bake || null).slice(0, 240));
   check(gLast.auto_bake && (gLast.auto_bake.warnings || []).some((w) => w.code === "AUTO_BAKE_SKIPPED_GATE"), "② 跳过警告码", JSON.stringify(gLast.auto_bake || null).slice(0, 240));
   const stG1 = await call("get_bake_status", { layer_id: "G" });
-  check(stG1.layers && stG1.layers[0].unbaked === 2048, "② 跳过后计数不重置（仍 2048）", JSON.stringify(stG1.layers || null).slice(0, 200));
+  check(Array.isArray(stG1.layers) && stG1.layers.length > 0 && stG1.layers[0].unbaked === 2048, "② 跳过后计数不重置（仍 2048）", JSON.stringify(stG1.layers || null).slice(0, 200));
   const gAgain = await singleStroke(call, "G");
   check(gAgain.auto_bake === undefined, "② 同原因下一次内容调用无节（跳过去重）", JSON.stringify(gAgain.auto_bake || null).slice(0, 160));
   const pre = await call("update_layer", { layer_id: "G", patch: { allow_auto_rasterize_editable: true } });
@@ -119,7 +119,7 @@ try {
   check(gBaked.auto_bake && gBaked.auto_bake.status === "baked", "② 预授权后下一次内容调用 bake 成功", JSON.stringify(gBaked.auto_bake || null).slice(0, 240));
   check(gBaked.auto_bake && (gBaked.auto_bake.warnings || []).some((w) => w.code === "TEXT_RASTERIZED"), "② bake 回执含文本栅格化审计条目", JSON.stringify(gBaked.auto_bake || null).slice(0, 240));
   const stG2 = await call("get_bake_status", { layer_id: "G" });
-  check(stG2.layers && stG2.layers[0].unbaked === 0, "② bake 后未 bake 数归零", JSON.stringify(stG2.layers || null).slice(0, 200));
+  check(Array.isArray(stG2.layers) && stG2.layers.length > 0 && stG2.layers[0].unbaked === 0, "② bake 后未 bake 数归零", JSON.stringify(stG2.layers || null).slice(0, 200));
 
   // ---- ③ 门禁跳过（越界）----
   const cc = await call("create_layer", { layer_id: "C" });

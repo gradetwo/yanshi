@@ -3688,7 +3688,10 @@ impl Workspace {
         if blob_bundle_mode == "frontier" {
             let mut all_bake_hashes: std::collections::BTreeSet<String> =
                 std::collections::BTreeSet::new();
-            let mut bake_atoms: Vec<yanshi_core::Atom> = Vec::new();
+            // **全日志原子**（含 revert／reapply ✓）：compute_suppressed 只从
+            // revert／reapply 推出被压制的原子 id ⇒ 只喂 bake 原子时这个集合
+            // 恒空，已撤销的历史 Bake 会被当成有效 ⇒ 被错误保留进包 ✓
+            let mut all_atoms: Vec<yanshi_core::Atom> = Vec::new();
             for line in atoms_text.lines() {
                 if line.trim().is_empty() {
                     continue;
@@ -3706,8 +3709,8 @@ impl Workspace {
                                 all_bake_hashes.insert(hash);
                             }
                         }
-                        bake_atoms.push(atom);
                     }
+                    all_atoms.push(atom);
                 } else if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
                     // 原子 JSON 损坏时仍按 Value 保守识别（当作有效 Bake 参与检查，
                     // 不因解析失败就悄悄放过一个历史 Blob）。
@@ -3736,14 +3739,15 @@ impl Workspace {
                     }
                 }
             }
-            let suppressed = yanshi_core::fold::compute_suppressed(&bake_atoms);
+            let suppressed = yanshi_core::fold::compute_suppressed(&all_atoms);
             let mut effective_bake_hashes: std::collections::BTreeSet<String> =
                 std::collections::BTreeSet::new();
             {
                 let mut latest: std::collections::BTreeMap<String, (u64, String)> =
                     std::collections::BTreeMap::new();
-                for atom in &bake_atoms {
-                    if suppressed.contains(&atom.id) {
+                for atom in &all_atoms {
+                    if !yanshi_core::bake::is_bake_kind(atom.kind) || suppressed.contains(&atom.id)
+                    {
                         continue;
                     }
                     if atom.kind == yanshi_core::AtomKind::BakeDocument {
