@@ -3386,3 +3386,51 @@ fn geometry_resample_all_default_collapses_to_one_pixel() {
     assert_eq!(bbox, [0, 0, 1, 1]);
     assert_eq!(grid, vec![0]);
 }
+
+/// **纯橡皮判定**（Y26-001 路线 B）：只有 `eraser` 恒 1、无输入曲线、且三混色臂
+/// 都不拾取画布时才算纯橡皮 —— 此时引擎净效果是纯 alpha 缩放，擦除系数才可算。
+/// 变异：把 `base_value < 1.0` 改成 `<= 1.0` ⇒ 第一断言红；删掉任一混色臂 ⇒ 对应断言红。
+#[test]
+fn pure_eraser_predicate_covers_the_trigger_and_its_exclusions() {
+    use hokusai::{BrushInput, BrushSetting, InputMapping};
+    let mut pure = hokusai::Brush::new();
+    pure.get_mut(BrushSetting::Eraser).base_value = 1.0;
+    assert!(
+        super::brush_is_pure_eraser(&pure),
+        "恒 1 无输入的橡皮必须是纯橡皮"
+    );
+
+    let mut partial = hokusai::Brush::new();
+    partial.get_mut(BrushSetting::Eraser).base_value = 0.5;
+    assert!(
+        !super::brush_is_pure_eraser(&partial),
+        "半擦是带色涂抹，不是纯擦除"
+    );
+
+    let mut modulated = hokusai::Brush::new();
+    modulated.get_mut(BrushSetting::Eraser).base_value = 1.0;
+    modulated
+        .get_mut(BrushSetting::Eraser)
+        .inputs
+        .push(InputMapping::new(BrushInput::Pressure));
+    assert!(
+        !super::brush_is_pure_eraser(&modulated),
+        "压感调制的橡皮（particules_eraser 类）不走擦除路"
+    );
+
+    let mut mixed = hokusai::Brush::new();
+    mixed.get_mut(BrushSetting::Eraser).base_value = 1.0;
+    mixed.get_mut(BrushSetting::Smudge).base_value = 1.0;
+    assert!(
+        !super::brush_is_pure_eraser(&mixed),
+        "smudge 混橡皮（Eraser.myb 类）不走擦除路"
+    );
+
+    let mut colorized = hokusai::Brush::new();
+    colorized.get_mut(BrushSetting::Eraser).base_value = 1.0;
+    colorized.get_mut(BrushSetting::Colorize).base_value = 1.0;
+    assert!(
+        !super::brush_is_pure_eraser(&colorized),
+        "colorize 混橡皮不走擦除路"
+    );
+}

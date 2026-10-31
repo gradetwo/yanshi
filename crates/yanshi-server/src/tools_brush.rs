@@ -201,6 +201,7 @@ fn paint_and_commit_brush_segment(
         delta_distribution,
         fed_base,
         short_stroke_hint,
+        is_erase,
     } = paint;
     // **blob 先行** ✓，与 `medium_stroke` 完全同路 ✓。
     // **选区裁剪**（需求 P0-3）：不在选区内的像素**不许进图层** ⇒ 与"引擎没碰过"同等对待 ✓
@@ -779,7 +780,7 @@ fn paint_and_commit_brush_segment(
     }
     let composite = ctx.workspace.store().put(&rgba)?;
     ctx.time(Phase::Raster, composite_started);
-    let import_args = json!({
+    let mut import_args = json!({
         // **来源参数** ✓（`update_stroke` 靠它重跑 ✓）：**原始控制点** ✓（不是加密后的 ✓）、
         // 当时给的 size / color / smooth ✓ —— 都是**调用方给的原话** ✓，不是我们的中间量 ✓。
         "source": {
@@ -831,6 +832,12 @@ fn paint_and_commit_brush_segment(
         },
         "region": {"x": x0, "y": y0, "w": width, "h": height},
     });
+    // **擦除标记**（Y26-001 路线 B）：纯橡皮段的系数缓冲必须带 `blend: "erase"`，
+    // 否则 fold 侧按 source-over 合成，黑底系数会被当成黑墨贴回去。
+    // `write_import_image` 按 `medium`／`source` 的同例把它写进对象数据。
+    if is_erase {
+        import_args["blend"] = json!("erase");
+    }
     let value = write_import_image(ctx, &import_args)?;
 
     // **墨量与足迹与主函数旧口径同一遍遍历** ✓（原在提交后由 `rgba` 算，现段内算完即带走；
@@ -2766,6 +2773,44 @@ pub(super) fn paint_brush(
             }
         }
     }
+    // **纯橡皮：surface → 擦除系数缓冲**（Y26-001 路线 B）—— 必须在掩膜之后、
+    // `max_delta` 之前：掩膜已把「没碰过的底图」清零，剩下的就是本笔真的擦过的
+    // 像素；`max_delta` 的 source-over 公式对系数缓冲恰好给出擦除幅度
+    //（`current = 0·s + before·(1−s)` ⇒ `diff = before·s`），不用另写口径。
+    // 系数 `s = 1 − surf_a/base_a`（直通 alpha 空间算：补丁 blob 本来就是直通
+    // RGBA8，`read_surface_region` 已反预乘，RGB 不参与）。`base_a = 0` 的像素
+    // 擦无可擦 ⇒ `s = 0`；`surf_a ≥ base_a`（引擎上溢）⇒ `s = 0`，绝不反向加墨。
+    // `painted` 按系数重数：`s > 0` 才算擦到，否则空层上的橡皮仍走下面的 0 墨诊断。
+    let is_erase = reads_canvas && brush_is_pure_eraser(&brush);
+    if is_erase {
+        if let Some(before) = before_pixels.as_deref() {
+            let mut erased = 0usize;
+            for index in (0..rgba.len()).step_by(4) {
+                let base_a = before.get(index + 3).copied().unwrap_or(0) as u32;
+                if base_a == 0 {
+                    rgba[index] = 0;
+                    rgba[index + 1] = 0;
+                    rgba[index + 2] = 0;
+                    rgba[index + 3] = 0;
+                    continue;
+                }
+                let surf_a = u32::from(rgba[index + 3]);
+                let s = if surf_a >= base_a {
+                    0
+                } else {
+                    ((base_a - surf_a) * 255 / base_a) as u8
+                };
+                rgba[index] = 0;
+                rgba[index + 1] = 0;
+                rgba[index + 2] = 0;
+                rgba[index + 3] = s;
+                if s != 0 {
+                    erased += 1;
+                }
+            }
+            painted = erased;
+        }
+    }
     // ★ **`max_channel_delta` ✗**（第 20 轮 ✓；**∴ 用户报的薄涂笔零落笔 ✓**）
     //
     // **∴ 为什么需要它 ✗**：`painted_pixels` 只数"字节变了"✗ ⇒ **∴ 差 1 LSB 也算 ✓**
@@ -3049,6 +3094,7 @@ pub(super) fn paint_brush(
         delta_distribution,
         fed_base: reads_canvas,
         short_stroke_hint,
+        is_erase,
     })
 }
 
