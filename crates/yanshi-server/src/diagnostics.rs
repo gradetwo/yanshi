@@ -6,6 +6,8 @@
 //! 那份最终拿到的复现材料**并没有复现丢失** ✓ ⇒ 谁也无法回答
 //! "当时磁盘上的原子日志是不是本来就缺一截" ✗。更糟的是 MCP stdio 模式
 //! **没有日志文件** ✗ —— 它的 stderr 由客户端丢弃 ✓ ⇒ 事发之后**没有任何东西可查** ✗。
+//! panic 摘要另有可选文件兜底（`YANSHI_PANIC_LOG`，见 [`install_panic_hook`]）：
+//! 设了才追加一行，不设行为不变 ✓。
 //!
 //! 所以这个模块只做一件事：**在事故发生时，把能拿到的证据一次性收齐、压成 zip 交出来** ✓。
 //! 两个面（MCP/工具 与 Web 查看器）**共用本模块的 [`collect`]** ✓
@@ -187,17 +189,48 @@ pub fn clear_logs() {
     }
 }
 
+/// panic 摘要的可选文件兜底：环境变量名 ✓（未设 ⇒ 不写文件，行为不变 ✓）。
+const PANIC_LOG_ENV: &str = "YANSHI_PANIC_LOG";
+
+/// 读 panic 日志文件路径：环境变量未设或空 ⇒ None ✓。
+fn panic_log_path() -> Option<std::path::PathBuf> {
+    std::env::var(PANIC_LOG_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(std::path::PathBuf::from)
+}
+
+/// panic 摘要 best-effort 追加进文件一行 ✓：所有失败静默忽略 ✓（hook 里再出
+/// 错只会添乱 ✗；调用方不得用返回值判成功 ✗）。
+fn append_panic_log(path: &std::path::Path, line: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
 /// 安装 panic hook：把 panic 摘要转进环形缓冲，再交给原来的 hook ✓。
 ///
 /// **为什么要装** ✓：panic 是"进程没了、什么都没留下"的最坏情形 ✓；
 /// 转一份摘要进环 ✓ ⇒ 下一次采集至少能看到"它为什么倒的" ✓。
 /// **幂等** ✓：重复调用只装一次 ✓。
+/// **文件兜底** ✓：设了 `YANSHI_PANIC_LOG` 时，摘要除进环与 stderr 外，再
+/// best-effort 追加进该文件一行 ✓ ⇒ 进程死后仍留一行可查 ✓；未设时不写文件 ✓。
+/// 该文件是操作员本地文件，不进共享诊断包；行里可能含 panic 自带的路径，分享前自行检查 ✓。
 pub fn install_panic_hook() {
     static INSTALLED: std::sync::Once = std::sync::Once::new();
     INSTALLED.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            log_line(format!("PANIC: {info}"));
+            let line = format!("PANIC: {info}");
+            log_line(&line);
+            if let Some(path) = panic_log_path() {
+                append_panic_log(&path, &line);
+            }
             previous(info);
         }));
     });
@@ -1468,5 +1501,33 @@ mod tests {
         assert!(text.ends_with('…'));
         // 还能当字符串用（没有断裂的 UTF-8 ✓）。
         assert_eq!(text.chars().count(), 10);
+    }
+
+    /// **能红**：把 `append_panic_log` 里的 `append(true)` 改成 `truncate(true)` ⇒
+    /// 第二行覆盖第一行 ⇒ 红 ✓。
+    #[test]
+    fn panic_log_appends_lines() {
+        let path =
+            std::env::temp_dir().join(format!("yanshi-panic-log-test-{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        append_panic_log(&path, "PANIC: first");
+        append_panic_log(&path, "PANIC: second");
+        let content = std::fs::read_to_string(&path).expect("panic log written");
+        assert!(content.contains("PANIC: first"), "{content}");
+        assert!(content.contains("PANIC: second"), "{content}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// **能红**：把 `panic_log_path` 的空值过滤去掉 ⇒ 空串变 `Some("")` ⇒ 红 ✓。
+    #[test]
+    fn panic_log_path_empty_env_is_none() {
+        // **只动本进程自己的 yanshi 专属变量 ✓，用完即恢复 ✓**。
+        let prev = std::env::var(PANIC_LOG_ENV).ok();
+        std::env::set_var(PANIC_LOG_ENV, "");
+        assert!(panic_log_path().is_none());
+        match prev {
+            Some(v) => std::env::set_var(PANIC_LOG_ENV, v),
+            None => std::env::remove_var(PANIC_LOG_ENV),
+        }
     }
 }
