@@ -308,7 +308,7 @@ impl HttpOptions {
                               （**缺省关**；增量解析，冲突最后写赢；不监视 blob）\n\
            --width <n>        自动创建文档的宽（缺省 1024）\n\
            --height <n>       自动创建文档的高（缺省 1024）\n\
-           --profile <list>   启用工具组，逗号分隔，可选：all,core,history,changeset,retouch,semantic,conflict,annotation,collab,structure,oil,watercolor,sketch,ink,pastel,photo,svg\n\
+           --profile <list>   启用工具组，逗号分隔，可选：all,core,history,changeset,retouch,semantic,conflict,annotation,collab,structure,oil,watercolor,sketch,ink,pastel,photo,svg,study\n\
                               （all = 全部已实现的组，即除 semantic 外；photo/svg 为白名单工作面预设，单独点名时按白名单收窄）\n\
                               （缺省 = default 常用集：core,history,changeset,retouch,annotation,collab,conflict,structure,photo；semantic 组按既定裁定只预留不开发）\n\
            --wasm-dir <dir>   WASM 计算内核产物目录（缺省 crates/yanshi-wasm/pkg）

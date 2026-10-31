@@ -68,13 +68,16 @@ pub enum Profile {
     /// 矢量插画 workflow 预设：Core + History + Changeset + Structure，
     /// 再按 `SVG_TOOLS` 白名单收窄（正式设计文档 §7 / F 族）。
     Svg,
+    /// 参考图只读分析：`reference_trace_region` 等 study 工具组；
+    /// 须显式 `--profile study` 点名，不进缺省会话。
+    Study,
 }
 
 impl Profile {
     /// 全部 profile —— **ALL 包含系统所有功能和工具**（Wang 2026-10-24 裁定
     /// 「ALL 要包含所有的，所以必须加进去」），Photo/Svg 两个 workflow 预设在内。
     /// `with_profiles(&ALL)` 恒等于注册表全量，任何情况下不收窄。
-    pub const ALL: [Profile; 16] = [
+    pub const ALL: [Profile; 17] = [
         Self::Core,
         Self::History,
         Self::Changeset,
@@ -91,6 +94,7 @@ impl Profile {
         Self::Pastel,
         Self::Photo,
         Self::Svg,
+        Self::Study,
     ];
 
     /// 字符串名（MCP/HTTP/WS 会话的 `profile` 参数取值）。
@@ -112,6 +116,7 @@ impl Profile {
             Self::Pastel => "pastel",
             Self::Photo => "photo",
             Self::Svg => "svg",
+            Self::Study => "study",
         }
     }
 
@@ -134,6 +139,7 @@ impl Profile {
             "pastel" => Self::Pastel,
             "photo" => Self::Photo,
             "svg" => Self::Svg,
+            "study" => Self::Study,
             other => {
                 return Err(YanshiError::new(
                     ErrorCode::InvalidArgument,
@@ -153,7 +159,7 @@ impl Profile {
     /// **注意**：缺省会话组成已按 Wang 2026-10-24 新裁定改用 [`DEFAULT`](Self::DEFAULT)
     /// （常用集，与 ALL 区分）；本常量保留为 `all` 简写的展开与「已实现全集」参照，
     /// 不再是两入口的缺省值。
-    pub const IMPLEMENTED: [Profile; 15] = [
+    pub const IMPLEMENTED: [Profile; 16] = [
         Profile::Core,
         Profile::History,
         Profile::Changeset,
@@ -169,6 +175,7 @@ impl Profile {
         Profile::Pastel,
         Profile::Photo,
         Profile::Svg,
+        Profile::Study,
     ];
 
     /// **缺省会话的常用集**（Wang 2026-10-24 裁定：「增加一个 default 作为和 ALL 区分，
@@ -185,8 +192,8 @@ impl Profile {
     ///   正是「界面做了、工具没放行」的历史教训，守卫来历见 yanshi-http 缺省测试）；
     /// - `Photo`：照片修图 workflow 预设，本项目当前的主线工作面。
     ///
-    /// **不含**：`Semantic`（按既定裁定只预留不开发），也不含 `Svg` 与
-    /// Oil / Watercolor / Sketch / Ink / Pastel 画风预设
+    /// **不含**：`Semantic`（按既定裁定只预留不开发），也不含 `Svg`、
+    /// `Study` 与 Oil / Watercolor / Sketch / Ink / Pastel 画风预设
     /// ——需要时由用户显式 `--profile` 点名。
     ///
     /// **Photo 在此只贡献成员资格**：缺省组成**不触发**白名单收窄（收窄只对最终用户
@@ -2159,6 +2166,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "sample_colors" => read_sample_colors(ctx, args),
         "get_histogram" => read_get_histogram(ctx, args),
         "get_document" => read_get_document(ctx, args),
+        "reference_trace_region" => read_reference_trace_region(ctx, args),
         "set_anchor" => write_set_anchor(ctx, args),
         "get_anchors" => read_get_anchors(ctx, args),
         "delete_anchor" => write_delete_anchor(ctx, args),
@@ -23994,6 +24002,9 @@ use tools_smart::*;
 #[path = "tools_brush.rs"]
 mod tools_brush;
 use tools_brush::*;
+#[path = "tools_study.rs"]
+mod tools_study;
+use tools_study::*;
 #[path = "tools_registry.rs"]
 mod tools_registry;
 // **★ re-export** ✓（第 1268 轮）：外部（）从 `tools::ALL_TOOLS` 用它

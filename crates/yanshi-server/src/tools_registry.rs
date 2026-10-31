@@ -3396,6 +3396,51 @@ CLIP_TO_SELECTION_PARAM,            param!("return_image", Boolean, false, "统�
             ),
         ],
     },
+    // ---- 扩展：study（参考图只读分析；须显式 --profile study 点名）----
+    ToolSpec {
+        name: "reference_trace_region",
+        profile: Profile::Study,
+        summary: "只读参考图分析：给定一幅参考图像 PNG 与一块显式掩膜（掩膜 PNG 或多边形二选一），返回掩膜内最大连通域的中轴直径路径、逐点半径、分层 RDP 中心线（细层＋只作 block-in 的粗层）、结构张量场角度与掩膜内平均色。不接受 doc_id／layer_id，不读不写任何文档。掩膜须由调用方显式给出——工具不做颜色分割；不输出接缝与压感映射（皆未经验证或已证伪）。逐点半径仅量级参考，分叉迂回处噪声大；中轴端点按半径内收；宽平区域骨架端点不稳定。",
+        mutating: false,
+        params: &[
+            param!(
+                "image_path",
+                String,
+                true,
+                "参考图像 PNG 路径（相对 --root；必须落在工作区根目录内；只接受 8 位非交错 RGB/RGBA PNG）"
+            ),
+            param!(
+                "mask_path",
+                String,
+                false,
+                "掩膜 PNG 路径（相对 --root，与 polygon 二选一；尺寸须与 image_path 一致；掩膜像素规则：alpha ≥ 128 且任一 RGB 通道 > 0）"
+            ),
+            param!(
+                "polygon",
+                Array,
+                false,
+                "多边形区域 [[x, y], …]（图像像素坐标，与 mask_path 二选一；内部按像素中心规则填充）"
+            ),
+            param!(
+                "tensor_radius",
+                Integer,
+                false,
+                "结构张量平滑半径（缺省 2）"
+            ),
+            param!(
+                "dp_eps_fine",
+                Number,
+                false,
+                "细层 RDP 容差像素（缺省 2.0；须大于 0）"
+            ),
+            param!(
+                "spur_prune_min_px",
+                Integer,
+                false,
+                "path_count 诊断用的短分支保留阈值像素（缺省 25）；只影响 path_count，不影响直径路径"
+            ),
+        ],
+    },
 ];
 
 // ---------------------------------------------------------------------------
