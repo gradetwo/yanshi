@@ -119,6 +119,22 @@ for (const tool of withExample) {
     // **owner-only 工具** ⇒ 换 owner 令牌 ✓（理由见 `OWNER_ONLY_TOOLS`）。
     await freshDoc(true, OWNER_ONLY_TOOLS.has(tool.name));
   }
+  // **smart_glaze 专属前置铺底稿**（判据第四轮，Y26）：glaze 语义是"在已画好的底稿上罩染"
+  // （tools_smart.rs:1149 doc 注释）⇒ 内笔 watercolor_glazing（smudge=0.9 涂抹笔）在空区
+  // 无物可抹 ⇒ 被零像素守卫拒（实测：有种子 20 成／18 败、无种子 38/38 全败，成功的是压到
+  // o1 种子条带的线）。验收前置只有 o1 一条短线，glaze 框 [0,0,100,100] 大部分是空区 ⇒
+  // 只对 smart_glaze 在 glaze 框内铺一层不透明底稿（size 40 三横线盖住 [0,0,100,100]；
+  // 不改其他示例的环境；不改产品守卫）。去掉这段铺底稿 ⇒ smart_glaze 回到被拒（变红证明）。
+  if (tool.name === "smart_glaze") {
+    for (const [i, y] of [10, 50, 90].entries()) {
+      const based = await call("brush_stroke", {
+        layer_id: "L1", object_id: `glaze_base_${i}`, brush: "100%_Opaque", size: 40,
+        color: { r: 180, g: 180, b: 180, a: 255 },
+        points: [[0, y, 1], [100, y, 1]],
+      });
+      console.log(`  铺底稿（glaze 框 y=${y}）：${based.ok ? "成功" : "失败 ⇒ " + ((based.context || {}).detail || "").slice(0, 60)}`);
+    }
+  }
   if (tool.name === "create_layer") {
     accepted += 1;
     console.log(`  ✓ create_layer：**成功** ✓（就是上面那次前置运行）`);
