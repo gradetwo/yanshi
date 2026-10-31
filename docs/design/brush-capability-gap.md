@@ -24574,3 +24574,45 @@ M7 是「**像素级**」的那种 ⇒ 验容差没把它糊过去 ✓。**其�
 `crates/yanshi-server/src/{tools,document}.rs` 与 `api-local.js`（**只有一句 `update_object` 的提示文案** ✓），
 **没碰本节的任何 hunk** ⇒ rebase 无冲突 ✓；其中「`set_property` 改 `background` 无效时回顶层 `warnings`」
 **正好落在本判据的 `SERVER_ONLY` 白名单里**（`warnings` 已登记 ✓）⇒ **外层多一个键也不会让 §B 变红 ✓**。
+
+## 六百七十七、PWA 本地**选区语义**对齐服务端：`list_selections` 走折叠（幽灵／重复／`update_selection`）＋ `create_selection` 三条前闸（重复 409／墓碑 409／合并如实 501 且不写原子）
+
+**⇒ 起点（实测，不是读码猜的）**：本地 `api-local.js` 的选区两条路都**没有折叠** ✗：
+`list_selections` **逐 `create_selection` 原子直出** ⇒ ① 删过的选区**照样列出来**（幽灵选区 ✓）、
+② 同名多次创建 ⇒ **重复条目** ✓、③ `update_selection`（`transform_selection` 写的那条）改了形状 ⇒ **列表里还是旧的** ✓；
+`create_selection` **直接写原子、从不看已有状态** ⇒ **三条 mode 语义全部静默降级** ✓：
+`mode=new` 撞活选区 **覆盖**（服务端 409 ✓）、`mode!=new` 撞墓碑 **复活**（服务端 409「已删除」✓）、
+`mode!=new` 撞活选区 **只留新形状**（服务端做**位图布尔合并** ✓）。
+
+**⇒ 改成**：
+| 位置 | 现在 |
+|---|---|
+| `list_selections` | 与 `describe_canvas` 共用 `p2DescribeRegions` ✓（`p2StateWindow`／`p2Neutralized`／墓碑／`update_selection`）⇒ 只列未删的、按 id 排序、**9 个字段照 `read_list_selections`** ✓ |
+| `create_selection` `mode=new` 撞活选区 | 409 ＋ **文案逐字**照 `fold.rs`（「要改它请传 mode=add/subtract/intersect」）✓ |
+| `create_selection` `mode!=new` 撞墓碑 | 409 ＋ **文案逐字**照 `tools_selection.rs`（「已删除，无法 mode=…」）✓ |
+| `create_selection` `mode!=new` 撞活选区 | **501 `not_implemented_locally`** ＋ 说清缺光栅化/PNG 编码 ⇒ **一个原子都不写** ✓（静默覆盖比不支持更坏 ✓） |
+| `area`／`area_exact` | `rect`／`ellipse`／`polygon` 解析式精确 ✓；`bitmap` 本地不解 L8 ⇒ `area:0` ＋ **`area_exact:false`** ✓（明说算不出，不让 `0` 冒充「空选区」✓） |
+
+**⇒ 判据**：`tool-pwa-local-write-guards` 新增 **§E（七案）**，同一批请求分别打真服务端与本地 ⇒ 逐字段比：
+① 建；② 重复 `mode=new` ⇒ **两边同一句 409**；③ `mode=add` ⇒ **断分歧本身**（服务端 200＋bitmap／area **2300**，
+本地 501＋**原选区四个坐标都不变**）；④ 删后两边 `list_selections` 都是 0（幽灵）；⑤ `mode=add` 建不存在的 id ⇒ 两边都建；
+⑥ 墓碑后用 `mode=new` 重建 ⇒ **只留一条**（重复条目）；⑦ 再撞一次 ⇒ 409 且条数不变。
+
+**⇒ 三条变异（全部退出码 1，恢复后 0）**：⑪ 去掉「`mode=new` 撞活选区」闸 ⇒ §E②⑥⑦ 红；
+⑫ 把 501 分支条件改成恒假 ⇒ §E③ 红（本地 200＝静默覆盖）；⑬ `p2SelectionList` 退回逐原子直出 ⇒ §E④⑥⑦ 红（幽灵＋重复＋面积缺失）。
+
+**⇒ 本轮我自己的四处算错（如实记）**：
+1. **§E 第一版复用了 `compareErrBoth`** ✗ ⇒ 它绑在**主文档对**上 ⇒ 「重复建 S1」打到了主文档（S1 在那儿**本来就不存在**）
+   ⇒ 两边都 `ok:true` ⇒ **假红 11 条** ✓。修：§E 用 `pairErr` 绑 `openPair` 那一对 ✓（「A 与 B 是不是在同一个文档里测的」✓）。
+2. **变异 ⑫ 第一次写成 `&& "MUTATION_off"`** ✗ ⇒ **非空字符串为真** ⇒ 行为没变 ⇒ **判据仍绿** ✓
+   ⇒ 这本身就是「变异必须证明**行为**变了，不只是代码改了」的现场 ✓；改成 `&& false` 才红 ✓。
+3. **重叠面积算错**：两个 40×40 在 (10,10) 与 (20,20) 的重叠是 **30×30=900** ⇒ 并集 **2300**（我原先写 2800／20×20）✗
+   ⇒ 判据红在 **2300** 上 ⇒ 按实测改期望 ✓（**∴ 期望值要算，别估** ✓）。
+4. **§E③ 的「本地不写原子」只比了 `kind`／`area`** ✗ ⇒ 覆盖成 `rect(20,20,…)` 时**面积同为 1600** ⇒ 抓不到 ✓
+   ⇒ 变异 ⑫ 第一次只红在两条 501 断言上 ⇒ 已改成**比整个 shape**（四个坐标）✓。
+
+**⇒ 边界（不冒充）**：本地 `bitmap` 选区面积仍是 `0/false`（不解 L8）；`create_mask` 的 `mode!=new`
+走的是另一条已有口径（本条没动它）；`transform_selection` 本地仍如实 501（`update_selection` 折叠只在读侧生效 ✓）。
+
+**回归（本机跑过）**：`tool-pwa-local-write-guards` ✓、`tool-pwa-api-behaviour` ✓、`tool-pwa-describe-canvas` ✓、
+`check-pwa-local-params` ✓（66 个「声明未读」不变）、`tool-web-assets-parity` ✓（`api-local.js` 两边逐字节一致）。**没新增已知红** ✓。
