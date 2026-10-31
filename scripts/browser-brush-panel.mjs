@@ -1,5 +1,13 @@
 #!/usr/bin/env node
 // criterion-target: server  ## 运行器据此决定是否注入 render=client（色块来自服务端资产 list_palette_colors（本地没有））
+// **★ 总超时守卫 ✗ ★**（2026-10-31）：**浏览器/CDP 起不来时本判据会**一直等**✗ ⇒
+//   **∴ 超时**报「自己跑不了」并退 3** ✓（**与产品失败区分 ✓**）；`unref()` ⇒ **跑完不被它拖住** ✓。
+const __judgeTimeout = setTimeout(() => {
+  console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（浏览器/CDP 可能没起来）⇒ 退出码 3");
+  process.exit(3);
+}, Number(process.env.YANSHI_JUDGE_TIMEOUT_MS || 300000));
+__judgeTimeout.unref();
+
 // **画笔区可折叠 + 调色板/纹理浮层入口（点击或快捷键）+ 用完即收** ✓ —— 用户第 4 条 ✓。
 //
 // **判据（都能红 ✓）**：

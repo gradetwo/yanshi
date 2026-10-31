@@ -9,7 +9,7 @@
 //   **∴ 连报错文案也比 ✗**（`context.detail` 逐字 ✓）：**同一个拼错参数，PWA 与服务器必须给同一句话 ✓**
 //   —— 否则调用方按服务器文案写的重试逻辑，在离线模式里永远命中不了 ✓（静默降级形态③）。
 //
-// **∴ 三处**已知分歧**也在这里断 ✓**（**∴ 不许当「两边应相等」✗ —— 那会逼本地复制缺陷 ✓**）：
+// **∴ 四处**已知分歧**也在这里断 ✓**（**∴ 不许当「两边应相等」✗ —— 那会逼本地复制缺陷 ✓**）：
 //   ① **死父层建层**：服务端回 200 而图层**根本没进状态**（静默失败 ✗）；本地 404 当场拒绝 ✓
 //      ⇒ 断「服务端 200 ＋ 两边 `list_layers` 都没有它」＋「本地 404 且说清父层」✓。
 //   ② **changeset 半写**：服务端 `{visible:false, layer_id:"NOPE"}` 回 404 而 `visible` **已经落盘** ✗
@@ -18,12 +18,16 @@
 //   ③ **复制图层丢 `type`**：服务端 `create_object` 净荷**不带 `type`**（`tools.rs:3921` ✓）
 //      ⇒ 副本对象被折成 `stroke` ✗（实测：调整对象复制后 `type:"stroke"` ✓）；本地保留原类型 ✓
 //      ⇒ 断「服务端 `stroke`／本地 `adjustment`」＋其余字段（z／visible／locked／enabled）相等 ✓。
-//   **∴ 这三条是**服务端缺陷**（补丁封面写给上游 ✓），不是本地的模仿对象 ✓。
+//   ④ **选区 `mode=add/subtract/intersect`**：服务端做**位图布尔合并**（`merge_selection_shapes` ✓）；
+//      本地**没有光栅器/PNG 编码器** ⇒ 明确 `501 not_implemented_locally` 且**一个原子都不写** ✓
+//      （原来的本地**直接写原子** ⇒ 「合并」被静默降级成「覆盖」✗）。**∴ 这是**能力边界**✗ 不是服务端缺陷 ✓；
+//      断「服务端 200 ＋ bitmap／area 2300」和「本地 501 ＋ 原选区逐坐标不变」✓（§E③）。
+//   **∴ ①②③ 是**服务端缺陷**（补丁封面写给上游 ✓），④ 是**本地能力边界** ✓ —— 都不是本地该模仿的对象 ✓。
 //
 // **∴ 前提 ✗**：需要**活着的服务端**（`run-criteria-local.sh` 起一个并把地址放进 argv[2] ✓）。
 //   **拿不到 ⇒ `exit(3)`（判据前提不成立 ≠ 产品失败 ✓）**。
 //
-// **∴ 变异（四层齐第④层 ✓ 十次实测 ⇒ 全部退出码 1 ⇒ 恢复后 0 ✓，逐条见台账 §658）**：
+// **∴ 变异（四层齐第④层 ✓ 十三次实测 ⇒ 全部退出码 1 ⇒ 恢复后 0 ✓，逐条见台账 §658）**：
 //   ① `__p2Alive` 不看图层级联死 ⇒ §B 的 `list_objects` 条数／顺序红（服务端 2｜本地 3）✓；
 //   ② `update_layer` 去掉 `p2RefGuard` ⇒ 「给已删层写属性」「层不存在」两条红（本地 200）✓；
 //   ③ `create_layer` 去掉 `kind` 校验 ⇒ `kind=foo` 那条红（本地 200）✓；
@@ -38,6 +42,12 @@
 //   ⑩ 兜底 catch 去掉 `__p2Failure` 换装 ⇒ **本地抛异常** ⇒ §C 三条红（状态 0／`local_threw`）✓
 //      （**∴ 这条第一次跑是**退出码 3**✗** ⇒ **∴ 暴露出判据自己的缺口 ✓**：`callLocal` 不接异常 ⇒
 //        「产品抛错」被当成「判据坏了」✓ ⇒ **∴ 已改成**记成状态 0 的失败响应 ✓** ⇒ 现在退出码 1 ✓）。
+//   ⑪ `create_selection` 去掉「`mode=new` 撞活选区」那一闸 ⇒ §E②（409/文案）＋ §E⑥⑦ 红（本地变成覆盖/幽灵）✓；
+//   ⑫ 把 `mode!=new` 撞活选区的 501 分支条件改成恒假 ⇒ §E③ 红（本地 200，静默覆盖）✓
+//      （**∴ 第一次变异写成 `&& "MUTATION_off"` ⇒ 非空字符串**为真**✗ ⇒ 行为没变 ⇒ 判据仍绿 ✓**
+//       ⇒ **∴ 这本身是**「变异必须证明行为变了**✗**」的一次现场 ✓**；改成 `&& false` 才红 ✓）。
+//   ⑬ `p2SelectionList` 退回「逐 `create_selection` 原子直出」⇒ §E④⑥⑦ 红（删除后仍有幽灵、
+//      同名重建出现 2 条、`area/area_exact` 缺失）✓。
 process.on("uncaughtException", (error) => {
   console.error(String(error&&error.stack||error).slice(0,1200));
   process.exit(3);
@@ -606,10 +616,148 @@ await compareErrBoth("§C 锁住的 A1 更新调整（对象锁）", "update_adj
     `§D② 本地必须**整批拒绝**（visible 仍为 true）✗ 实测 ${JSON.stringify(lVis)} —— 本地不许复刻「半写＋报错」✓`);
 }
 
+// **════ §E 选区：mode 语义／墓碑／重复／列表折叠 ════**
+// **★ 为什么单开一对文档 ✓ ★**：§E 里服务端**真的会**合并出一个 bitmap 选区（`create_selection`
+//   `mode=add` ✓）⇒ 两边状态从此不同 ✓ ⇒ 放进主文档对会污染后续 `list_*` 的比对 ✓
+//   （第 916 轮「一个用例造的状态别污染别的用例的观测」✓）。
+// **∴ 三条断言各自防什么 ✗**（**每条都配了变异 ✓，见文件头 ⑪～⑬**）：
+//   ① `mode=new` 撞活选区 ⇒ 两边**同一句 409**（本地原先是**静默覆盖** ✓）；
+//   ② `mode=add` 撞活选区 ⇒ **已知分歧**：服务端位图合并（bitmap／area 2300）／本地
+//      **501 `not_implemented_locally` 且一个原子都不写** ✓（本地没有光栅器 ⇒ 不许把
+//      「合并」静默降级成「覆盖」✗ —— 服务端 `tools_selection.rs:335` 记的外部 §136 原话 ✓）；
+//   ③ `list_selections` 必须**折叠** ⇒ 墓碑不出现（幽灵选区 ✗）、同名多次创建只有一条（重复条目 ✗）✓。
+// **∴ ③ 之后不再比 `seq` ✗**：服务端合并写了 1 条原子、本地 501 没写 ✓ ⇒ 从此两边 seq 差 1 ✓
+//   —— **∴ 那是分歧本身**（`compareError` / 条目字段照比 ✓），不是缺陷 ✓。
+{
+  const P = await openPair("sel");
+  const rect = (x, y, w, h) => ({ kind: "rect", x, y, w, h });
+  const listOf = async (caller) => ((await caller("list_selections", {})).body || {});
+  const entry = (body, id) => ((body.selections || []).find((s) => s.selection_id === id) || null);
+  /** **`compareError` 的**同一对文档**版本 ✓**（判据自己的 `compareErrBoth` 绑在主文档对上 ✗
+   *   —— **∴ 第一版就是这么错的**：§E 的「重复建」打到了主文档 ✓ ⇒ S1 在那儿**本来就不存在**
+   *   ⇒ 服务端/本地都 `ok:true` ⇒ 假红 ✓）。 */
+  const pairErr = async (label, tool, args, code) => {
+    const [srv, loc] = await P.both(tool, args);
+    compareError(label, srv, loc, code);
+    return [srv, loc];
+  };
+  /** **逐字段比一条选区 ✗**（服务端 `read_list_selections` 的 9 个键 ✓）。
+   *   **∴ 两边都按 id 取 ✗**（服务端 `HashMap` 顺序不保证 ✓ ⇒ 断数组下标会假红 ✓）。 */
+  const compareEntry = (label, s, l) => {
+    check(!!s && !!l, `${label}：有一边没有这条选区 ✗（服务端 ${!!s}｜本地 ${!!l}）`);
+    if (!s || !l) return;
+    for (const k of ["selection_id", "shape", "area", "area_exact", "feather", "mode",
+                     "invert", "linked_layer", "refined_edges"]) {
+      check(same(s[k], l[k]), `${label}：字段「${k}」不同 ✗ 服务端 ${JSON.stringify(s[k])}｜本地 ${JSON.stringify(l[k])}`);
+    }
+  };
+
+  // ① 建（缺省 mode=new）
+  const [srv1, loc1] = await P.both("create_selection",
+    { selection_id: "S1", shape: rect(10, 10, 40, 40), feather: 2 });
+  compare("§E① 建 S1", srv1, loc1, ["ok", "seq"],
+    { serverOnly: NOISE, localOnly: ["server", "note", "selection_id"] });
+  {
+    const s = await listOf(P.S), l = await listOf(P.L);
+    check(s.count === 1 && l.count === 1, `§E① 建完两边应各 1 条 ✗ 服务端 ${s.count}｜本地 ${l.count}`);
+    compareEntry("§E① list_selections 的 S1", entry(s, "S1"), entry(l, "S1"));
+  }
+
+  // ② `mode=new` 撞活选区 ⇒ 两边同一句 409（本地原先是**覆盖** ✗）
+  await pairErr("§E② 重复建 S1（mode=new）", "create_selection",
+    { selection_id: "S1", shape: rect(0, 0, 5, 5) }, "precondition_failed");
+  {
+    // **恒等式 ✓**：被拒之后两边状态都不许变（本地原先会把形状换成 0,0,5,5 ✗）。
+    const s = await listOf(P.S), l = await listOf(P.L);
+    check(s.count === 1 && l.count === 1, `§E② 被拒后条数变了 ✗ 服务端 ${s.count}｜本地 ${l.count}`);
+    compareEntry("§E② 被拒后 S1 原样", entry(s, "S1"), entry(l, "S1"));
+  }
+
+  // ③ `mode=add` 撞活选区 ⇒ **已知分歧**（第 ④ 条）：服务端合并／本地明确 501 不写原子
+  const [srv3, loc3] = await P.both("create_selection",
+    { selection_id: "S1", mode: "add", shape: rect(20, 20, 40, 40) });
+  check(srv3.status === 200 && srv3.body && srv3.body.ok === true,
+    `§E③ 服务端的 add 合并不再是 200/ok（实测 ${srv3.status} / ${srv3.body && srv3.body.ok}）✗ ⇒ 上游改了合并语义，这条判据要跟着改（不是改本地）`);
+  check(loc3.status === 501 && loc3.body && loc3.body.error_code === "not_implemented_locally",
+    `§E③ 本地对「合并」必须明确 501 not_implemented_locally ✗ 实测 ${loc3.status} / ${loc3.body && loc3.body.error_code}`
+    + `（静默覆盖比不支持更坏 ⇒ 不许回 200）`);
+  check(!!(loc3.body && loc3.body.context && /合并/.test(loc3.body.context.detail)),
+    "§E③ 本地的 501 必须说清「合并没有本地实现」✗（否则调用方不知道该怎么绕）");
+  {
+    // 服务端：合并成 bitmap，面积 = 1600 + 1600 − 900 = 2300
+    //   （**两个 40×40 重叠 30×30** ✓：x 的 10..50 与 20..60 相交 30；y 同理 ✓）
+    const s = await listOf(P.S), l = await listOf(P.L);
+    const s1 = entry(s, "S1"), l1 = entry(l, "S1");
+    check(s1 && s1.shape && s1.shape.kind === "bitmap",
+      `§E③ 服务端的 add 应产出 bitmap ✗ 实测 ${JSON.stringify(s1 && s1.shape && s1.shape.kind)}`);
+    check(s1 && Math.round(s1.area) === 2300 && s1.area_exact === true,
+      `§E③ 服务端合并后面积应为 2300（1600+1600−900）✗ 实测 ${s1 && s1.area}／exact=${s1 && s1.area_exact}`);
+    // 本地：**一个原子都不许写** ⇒ S1 必须还是建时那个 **4 个坐标都不变**的 rect(10,10,40,40)/1600
+    //   **∴ 必须比整个 shape ✗ 只比 kind/area ✓**（**变异实测 ✓**：覆盖成 rect(20,20,…) 的面积
+    //   同为 1600、kind 同为 rect ⇒ 只比这两个**抓不到**「501 却写了原子」✗）。
+    check(l1 && same(l1.shape, rect(10, 10, 40, 40)) && Math.round(l1.area) === 1600,
+      `§E③ 本地 501 之后必须**原样保留** S1（rect(10,10,40,40)/1600）✗ 实测 ${JSON.stringify(l1 && l1.shape)}／area=${l1 && l1.area}`
+      + ` ⇒ 501 却写了原子 = 既没合并、又把旧选区弄丢了`);
+    check(l.count === 1, `§E③ 本地 501 之后条数应仍为 1 ✗ 实测 ${l.count}`);
+  }
+
+  // ④ `mode=add` 撞墓碑 ⇒ 两边同一句 409（本地原先会**复活** ✗）
+  {
+    // **∴ 这里起不再比 `seq` ✓**（服务端合并多写了 1 条原子 ✓ ⇒ 差异是分歧本身 ✓）。
+    const [srvDel, locDel] = await P.both("delete_selection", { selection_id: "S1" });
+    // **`seq` 进 `divergent` ✓**：服务端合并多写了 1 条原子 ⇒ 差值从 1 起 ✓
+    //   —— **∴ 两边都有这个字段、值空间却不同，是分歧本身 ✓**。
+    compare("§E④ 删 S1", srvDel, locDel, ["ok"],
+      { serverOnly: NOISE, localOnly: ["server", "note", "selection_id"], divergent: ["seq"] });
+    const s = await listOf(P.S), l = await listOf(P.L);
+    check(s.count === 0 && l.count === 0,
+      `§E④ 删除后两边 list_selections 都应为 0 ✗ 服务端 ${s.count}｜本地 ${l.count}`
+      + ` ⇒ 本地非 0 = 幽灵选区（前端会继续画轮廓并拿它去裁）`);
+  }
+  await pairErr("§E④ mode=add 撞墓碑", "create_selection",
+    { selection_id: "S1", mode: "add", shape: rect(0, 0, 5, 5) }, "precondition_failed");
+
+  // ⑤ `mode=add` 对**从未存在**的 id ⇒ 两边都直接创建（服务端也没有可合并的旧选区 ✓）
+  {
+    const [srv5, loc5] = await P.both("create_selection",
+      { selection_id: "S2", mode: "add", shape: rect(0, 0, 9, 8) });
+    compare("§E⑤ add 建不存在的 S2", srv5, loc5, ["ok"],
+      { serverOnly: NOISE, localOnly: ["server", "note", "selection_id"], divergent: ["seq"] });
+    const s = await listOf(P.S), l = await listOf(P.L);
+    check(s.count === 1 && l.count === 1, `§E⑤ 两边应各 1 条 ✗ 服务端 ${s.count}｜本地 ${l.count}`);
+    compareEntry("§E⑤ list_selections 的 S2", entry(s, "S2"), entry(l, "S2"));
+  }
+
+  // ⑥ 墓碑不占 id ⇒ `mode=new` 可以重建 ✓；重建后**只有一条** S1（本地原先会留旧条目＋新条目 ✗）
+  {
+    const [srv6, loc6] = await P.both("create_selection",
+      { selection_id: "S1", shape: rect(5, 5, 20, 20) });
+    compare("§E⑥ 墓碑后用 mode=new 重建 S1", srv6, loc6, ["ok"],
+      { serverOnly: NOISE, localOnly: ["server", "note", "selection_id"], divergent: ["seq"] });
+    const s = await listOf(P.S), l = await listOf(P.L);
+    check(s.count === 2 && l.count === 2,
+      `§E⑥ 重建后两边应各 2 条（S1 重建 ＋ S2）✗ 服务端 ${s.count}｜本地 ${l.count}`
+      + ` ⇒ 本地多出来的是**已删的旧 S1**（幽灵）或**重复条目**`);
+    check((l.selections || []).filter((x) => x.selection_id === "S1").length === 1,
+      `§E⑥ 本地 S1 应只有一条 ✗ 实测 ${(l.selections || []).filter((x) => x.selection_id === "S1").length} 条`);
+    compareEntry("§E⑥ 重建后的 S1", entry(s, "S1"), entry(l, "S1"));
+    compareEntry("§E⑥ 仍在的 S2", entry(s, "S2"), entry(l, "S2"));
+  }
+
+  // ⑦ 再撞一次 `mode=new` ⇒ 两边 409，且本地**不追加**条目（重复条目的另一半 ✗）
+  await pairErr("§E⑦ 重建后再重复建 S1", "create_selection",
+    { selection_id: "S1", shape: rect(1, 1, 2, 2) }, "precondition_failed");
+  {
+    const s = await listOf(P.S), l = await listOf(P.L);
+    check(s.count === 2 && l.count === 2, `§E⑦ 被拒后条数变了 ✗ 服务端 ${s.count}｜本地 ${l.count}`);
+    compareEntry("§E⑦ 被拒后 S1 原样", entry(s, "S1"), entry(l, "S1"));
+  }
+}
+
 if (bad.length) {
   console.log(`✗ PWA 本地写路径与服务端同口径：${bad.length} 条不符`);
   for (const m of bad) console.log("   · " + m);
   process.exit(1);
 }
 console.log("✓ PWA 本地写路径与服务端逐字段同口径（建/复用/改/删图层 13 字段折叠／效果与复活／update_object／级联／"
-  + "三处已知分歧断在分歧本身）");
+  + "选区 mode/墓碑/重复/列表折叠／四处已知分歧断在分歧本身）");
