@@ -8621,52 +8621,67 @@ async function withKernel(doc, fn) {
     if (path === "/api/tools/collect_garbage") {
       const confirm = body.confirm === true;
       const rows = await atomsOf(handle, doc);
-      const refs = p2BlobRefsOfAtoms(rows.map((r) => r.atom));
-      const { tx: txFn, wrap: wrapFn } = await import("./store.js");
-      const all = await wrapFn(txFn(handle, "blobs", "readonly").getAll());
-      const orphans = [];
-      let orphanBytes = 0;
-      for (const b of all || []) {
-        if (!refs.has(b.hash)) {
-          const size = (b.bytes && b.bytes.length) || 0;
-          orphans.push({ hash: b.hash, size });
-          orphanBytes += size;
-        }
-      }
+      const scan = await p2ScanOrphanBlobs(handle, rows.map((r) => r.atom));
       let reclaimed = 0, reclaimedBytes = 0;
       if (confirm) {
-        for (const o of orphans) {
-          await wrapFn(txFn(handle, "blobs", "readwrite").delete(o.hash));
-          reclaimed += 1; reclaimedBytes += o.size;
-        }
+        const done = await p2DeleteOrphanBlobs(handle, scan.orphans);
+        reclaimed = done.removed; reclaimedBytes = done.freed;
       }
       return json({ ok: true, server: false, doc_id: doc,
-                    scanned: (all || []).length, referenced: refs.size,
-                    orphans: orphans.map((o) => o.hash), orphan_count: orphans.length,
-                    orphan_bytes: orphanBytes, dry_run: !confirm,
+                    scanned: scan.blobs.length, referenced: scan.refs.size,
+                    orphans: scan.orphans.map((o) => o.hash), orphan_count: scan.orphans.length,
+                    orphan_bytes: scan.orphanBytes, dry_run: !confirm,
                     reclaimed_blobs: reclaimed, reclaimed_bytes: reclaimedBytes,
                     note: confirm ? "已删除无引用 blob" : "试运行：加 confirm:true 才真删" });
     }
 
-    // **P2c-45 `blob_gc` ✗**：**服务端做冷热分层 ✓** ⇒ **∴ 本地无冷存储 ✗** ⇒ **∴ 如实给
-    //   blob 盘点 ✓**（**总数／引用中／无引用 ✓**）＋ 明确说明不做分层 ✓**。
+    // **P2c-45 `blob_gc` ✗**：服务端做冷热分层 ✓ ⇒ 本地无冷存储 ⇒ cold 恒 0 ✓；
+    //   但**回收语义照服务端** ✓：dry_run 缺省 true；真删要 dry_run:false ＋ confirm:true；
+    //   demote 本地不可用 ⇒ 明确 501（**不拿「回收了 0 个」冒充降冷成功** ✗）。
     if (path === "/api/tools/blob_gc") {
+      const dryRun = body.dry_run === undefined ? true : body.dry_run;
+      if (typeof dryRun !== "boolean") return p2Bad("dry_run 必须是布尔值");
+      const confirm = body.confirm === true;
+      const demote = body.demote === true;
+      const rawTtl = body.ttl_days;
+      let ttlDays = 7;
+      if (rawTtl !== undefined && rawTtl !== null) {
+        const n = Number(rawTtl);
+        if (!Number.isInteger(n) || n < 0) return p2Bad("ttl_days 必须是非负整数");
+        ttlDays = n;
+      }
       const rows = await atomsOf(handle, doc);
-      const refs = p2BlobRefsOfAtoms(rows.map((r) => r.atom));
-      const { tx: txFn, wrap: wrapFn } = await import("./store.js");
-      const all = await wrapFn(txFn(handle, "blobs", "readonly").getAll());
-      let totalBytes = 0, unrefBytes = 0, unref = 0;
-      for (const b of all || []) {
-        const size = (b.bytes && b.bytes.length) || 0;
-        totalBytes += size;
-        if (!refs.has(b.hash)) { unref += 1; unrefBytes += size; }
+      const scan = await p2ScanOrphanBlobs(handle, rows.map((r) => r.atom));
+      if (!dryRun) {
+        if (!confirm) {
+          return p2Bad("回收是不可逆的：需要 dry_run: false 与 confirm: true 同时给");
+        }
+        if (demote) {
+          return p2ToolFailure(501, "not_implemented_locally",
+            "本地无冷存储分层 ⇒ 降冷不可用；这一步没有执行（回收也没有执行）");
+        }
+      }
+      let removed = 0, freedBytes = 0;
+      if (!dryRun) {
+        const done = await p2DeleteOrphanBlobs(handle, scan.orphans);
+        removed = done.removed; freedBytes = done.freed;
       }
       return json({ ok: true, server: false, doc_id: doc,
-                    blobs: (all || []).length, bytes: totalBytes,
-                    referenced: refs.size, unreferenced: unref, unreferenced_bytes: unrefBytes,
+                    dry_run: dryRun, ttl_days: ttlDays, ttl_applied: false,
+                    documents_considered: 1,
+                    active: { blobs: scan.activeCount, bytes: scan.activeBytes },
+                    history: { blobs: 0, bytes: 0 },
+                    orphan: { blobs: scan.orphans.length, bytes: scan.orphanBytes },
+                    collectible: { blobs: scan.orphans.length, bytes: scan.orphanBytes },
                     cold: { blobs: 0, bytes: 0 },
-                    note: "本地无冷存储分层 ⇒ cold 恒为 0；删无引用 blob 请用 collect_garbage{confirm:true}",
-                    derived_from: "atoms" });
+                    blobs: scan.blobs.length, bytes: scan.totalBytes,
+                    referenced: scan.refs.size,
+                    unreferenced: scan.orphans.length, unreferenced_bytes: scan.orphanBytes,
+                    removed, freed_bytes: freedBytes,
+                    derived_from: "atoms",
+                    note: dryRun
+                      ? "试运行：只报告，不删除、不降冷（加 dry_run:false 与 confirm:true 才真删）"
+                      : "已删除无引用 blob；本地无冷存储分层 ⇒ 降冷不可用" });
     }
 
     // **P2c-46 `get_inflight` ✗**：**照 `read_get_inflight` ✓** ⇒ **本地无后台任务注册表 ✗**
@@ -11718,6 +11733,39 @@ function p2BlobRefsOfAtoms(atoms) {
   };
   for (const a of atoms || []) walk(a && a.payload, null);
   return refs;
+}
+
+/**
+ * **★ 本地 blob 库的孤儿盘点（唯一实现 ✓）★**
+ *
+ * `collect_garbage` 与 `blob_gc` 都要「引用闭包 ＋ 全库扫描」⇒ 各写一遍会漂移
+ * （报的数量与真删的数量可能不一致）⇒ 抽到这里，两处共用。
+ * 恒等式：`activeCount + orphans.length === blobs.length`。
+ */
+async function p2ScanOrphanBlobs(handle, atoms) {
+  const refs = p2BlobRefsOfAtoms(atoms);
+  const { tx: txFn, wrap: wrapFn } = await import("./store.js");
+  const blobs = (await wrapFn(txFn(handle, "blobs", "readonly").getAll())) || [];
+  const orphans = [];
+  let orphanBytes = 0, activeCount = 0, activeBytes = 0;
+  for (const b of blobs) {
+    const size = (b.bytes && b.bytes.length) || 0;
+    if (refs.has(b.hash)) { activeCount += 1; activeBytes += size; }
+    else { orphans.push({ hash: b.hash, size }); orphanBytes += size; }
+  }
+  return { refs, blobs, orphans, orphanBytes, activeCount, activeBytes,
+           totalBytes: activeBytes + orphanBytes };
+}
+
+/** **真删孤儿（不可逆）** ⇒ 返回 `{removed, freed}`。 */
+async function p2DeleteOrphanBlobs(handle, orphans) {
+  const { tx: txFn, wrap: wrapFn } = await import("./store.js");
+  let removed = 0, freed = 0;
+  for (const o of orphans) {
+    await wrapFn(txFn(handle, "blobs", "readwrite").delete(o.hash));
+    removed += 1; freed += o.size;
+  }
+  return { removed, freed };
 }
 
 export function installLocalApi(deps) {

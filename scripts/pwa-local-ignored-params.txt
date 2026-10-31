@@ -20,9 +20,8 @@ set_brush_dynamics.curve
 # import_asset 本地只支持「URL/base64 → blob」这一条路径；overwrite 是服务端资产库语义 ✓
 import_asset.overwrite
 
-# ── ② `blob_gc`：本地无冷存储分层 ✓（响应里 cold 恒 0 且 note 说明）──
-blob_gc.ttl_days
-blob_gc.demote
+# ── ② `blob_gc` 的 ttl_days／demote 已于 2026-10-31 被本地读入并显式处理
+#    （ttl_days 校验并回显、demote 明确 501）⇒ 不再登记 ✓
 
 # ── ③ `export_png`：本地只有内核 `render_region_png`（bbox）✓ ──
 #     `lod`／`width`／`height` 的缩放由服务端链路做；`deterministic`／`max_px` 同理。
