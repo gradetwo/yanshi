@@ -482,7 +482,7 @@ fn validate_mask_shape_kind(kind: &str, shape: &Value) -> Result<()> {
             Ok(())
         }
         other => Err(invalid(format!(
-            "未知蒙版形状 kind「{other}」⇒ 可用：rect / ellipse / polygon / path / bitmap / linear_gradient / radial_gradient"
+            "未知蒙版形状 kind「{other}」⇒ 可用：rect / ellipse（circle 同义）/ polygon（lasso 同义）/ path / bitmap / linear_gradient / radial_gradient"
         ))),
     }
 }
@@ -550,18 +550,28 @@ fn validate_mask_rect_ellipse_fields(shape: &Value, kind: &str) -> Result<()> {
             found.join("、")
         )));
     }
-    // 解析器读 bbox 的口径（与 `parse_bbox` 同源）：`bbox` 为对象时只读它，
-    // 否则读顶层。`bbox` 给了非对象值时同样按顶层读——那本身就是错字段，
-    // 在缺失报错里一并点名。
-    let (source, source_name) = match shape.get("bbox").filter(|v| v.is_object()) {
-        Some(bbox) => (bbox, "bbox"),
-        None => (shape, "顶层"),
-    };
+    // 解析器读 bbox 的口径（与 `parse_shape_coverage` 同源）：
+    // `bbox` 对象**四元齐全**时只读它，否则回退顶层（渲染层就是
+    // `Bbox::from_value(bbox).or_else(|| Bbox::from_value(shape))`）。
+    // 只看「是不是对象」会在 bbox 缺字段时误拒一个渲染层本来认得的顶层写法。
     let num = |value: &Value, key: &str| value.get(key).and_then(Value::as_f64);
-    let x = num(source, "x");
-    let y = num(source, "y");
-    let w = num(source, "w").or_else(|| num(source, "width"));
-    let h = num(source, "h").or_else(|| num(source, "height"));
+    let quad = |value: &Value| {
+        (
+            num(value, "x"),
+            num(value, "y"),
+            num(value, "w").or_else(|| num(value, "width")),
+            num(value, "h").or_else(|| num(value, "height")),
+        )
+    };
+    let complete = |q: &(Option<f64>, Option<f64>, Option<f64>, Option<f64>)| {
+        q.0.is_some() && q.1.is_some() && q.2.is_some() && q.3.is_some()
+    };
+    let bbox_value = shape.get("bbox");
+    let bbox_quad = bbox_value.filter(|v| v.is_object()).map(quad);
+    let (source_name, (x, y, w, h)) = match bbox_quad.as_ref() {
+        Some(q) if complete(q) => ("bbox", *q),
+        _ => ("顶层", quad(shape)),
+    };
     match (x, y, w, h) {
         (Some(x), Some(y), Some(w), Some(h)) => {
             if !x.is_finite() || !y.is_finite() || !w.is_finite() || !h.is_finite() {
@@ -594,8 +604,12 @@ fn validate_mask_rect_ellipse_fields(shape: &Value, kind: &str) -> Result<()> {
                 "{kind} 的 shape 缺 {source_name} 几何：缺 {}，须给 bbox{{x, y, w|width, h|height}} 或顶层 x/y/w/h（均为有限数、宽高大于 0）",
                 missing.join("、")
             );
-            if shape.get("bbox").is_some_and(|v| !v.is_object()) {
+            if bbox_value.is_some_and(|v| !v.is_object()) {
                 message.push_str("（bbox 给了非对象值，须为 {x, y, w|width, h|height} 对象）");
+            } else if matches!(&bbox_quad, Some(q) if !complete(q)) {
+                message.push_str(
+                    "（bbox 对象缺字段，已按顶层读；bbox 须给齐 {x, y, w|width, h|height}）",
+                );
             }
             Err(invalid(message))
         }

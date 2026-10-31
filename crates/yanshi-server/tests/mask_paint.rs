@@ -200,3 +200,84 @@ fn delete_mask_restores_full_layer() {
         pixel(&after, 96, 32)
     );
 }
+
+/// `create_mask` 白名单认 `circle`/`lasso`（与选区解析同义）；图层蒙版渲染
+/// 必须按同一口径解析，不许把它们吞成包围盒矩形（名字合法而形状错 = 静默降级）。
+#[test]
+fn circle_and_lasso_masks_render_as_ellipse_and_polygon() {
+    fn scene(shape: serde_json::Value, mask_id: &str) -> Workspace {
+        let mut workspace = workspace();
+        workspace
+            .create_document(
+                NewDocument::new("doc_mask", 128, 64),
+                "human:1",
+                "session:test",
+            )
+            .unwrap();
+        let registry = registry();
+        let mut ctx = context(&mut workspace);
+        let layer = registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
+        assert_eq!(layer["ok"], json!(true), "{layer}");
+        // 整幅铺满黑，蒙版裁到哪里、哪里才没有墨（便于用单个像素判形状）。
+        let drawn = registry.call(
+            &mut ctx,
+            "draw_shape",
+            &json!({
+                "layer_id": "L",
+                "object_id": "fill",
+                "data": {
+                    "geometry": {"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 128, "h": 64}},
+                    "color": {"r": 0, "g": 0, "b": 0, "a": 255}
+                }
+            }),
+        );
+        assert_eq!(drawn["ok"], json!(true), "{drawn}");
+        let created = registry.call(
+            &mut ctx,
+            "create_mask",
+            &json!({"mask_id": mask_id, "shape": shape}),
+        );
+        assert_eq!(created["ok"], json!(true), "{created}");
+        let attached = registry.call(
+            &mut ctx,
+            "set_property",
+            &json!({"layer_id": "L", "key": "mask_id", "value": mask_id}),
+        );
+        assert_eq!(attached["ok"], json!(true), "{attached}");
+        workspace
+    }
+
+    // 圆（bbox 0,0,64,64）：圆心有墨；包围盒角上无墨（矩形回退会让角上也有墨）。
+    let mut circle = scene(
+        json!({"kind": "circle", "bbox": {"x": 0, "y": 0, "w": 64, "h": 64}}),
+        "m_circle",
+    );
+    let data = render(&mut circle);
+    assert!(
+        pixel(&data, 32, 32)[0] < 60,
+        "圆心应是墨：{:?}",
+        pixel(&data, 32, 32)
+    );
+    assert!(
+        pixel(&data, 2, 2)[0] > 200,
+        "圆外（包围盒角）应是背景——被吞成矩形就会是墨：{:?}",
+        pixel(&data, 2, 2)
+    );
+
+    // 套索（三角 (0,0)-(64,0)-(0,64)）：三角内有墨；三角外（包围盒内）无墨。
+    let mut lasso = scene(
+        json!({"kind": "lasso", "points": [[0, 0], [64, 0], [0, 64]]}),
+        "m_lasso",
+    );
+    let data = render(&mut lasso);
+    assert!(
+        pixel(&data, 4, 4)[0] < 60,
+        "套索三角内应是墨：{:?}",
+        pixel(&data, 4, 4)
+    );
+    assert!(
+        pixel(&data, 48, 48)[0] > 200,
+        "套索三角外应是背景——被吞成矩形就会是墨：{:?}",
+        pixel(&data, 48, 48)
+    );
+}

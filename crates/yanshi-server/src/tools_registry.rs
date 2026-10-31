@@ -1670,7 +1670,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
             // **不是必填** ✓（外部第 10 轮 `selection-mask-flat-rect` 实测 ✓）：给了 `from_selection`
             // 时形状从选区克隆 ✓，而这里原来标 `required: true` ✗ ⇒ **派发前的必填校验**直接拦下
             // ⇒ **文档里写的「此时 shape 可省略」一次也用不了** ✗（"描述说支持、schema 拒绝"家族 ✓）。
-            param!("shape", Object, false, "几何 {kind:rect|ellipse|polygon|path/bitmap/linear_gradient/radial_gradient, bbox, points?}；**与 `from_selection` 二选一**（后者会把选区的形状/羽化/反选/位图一并克隆过来）。kind 与 type 互为别名（只有 type 时按 type 走）；kind=path 时三选一：subpaths（内联子路径，与 draw_shape 的 path geometry 同格式）、d（SVG path 字符串，入口转 subpaths）或 object_id（引用已有 path 形状对象），覆盖率走 path 填充同一条路；kind=linear_gradient 时给 start/end（[x,y] 或 {x,y}，start 一侧为 1、end 一侧为 0，过渡带就是 start→end 的距离）；kind=radial_gradient 时给 bbox + falloff（0–1，过渡带占半径比例，0=硬边、1=全程渐变）；渐变 kind 不收 feather（传非零会报错）"),
+            param!("shape", Object, false, "几何 {kind:rect|ellipse|polygon|path/bitmap/linear_gradient/radial_gradient, bbox, points?}（circle 是 ellipse 的同义、lasso 是 polygon 的同义）；**与 `from_selection` 二选一**（后者会把选区的形状/羽化/反选/位图一并克隆过来）。kind 与 type 互为别名（只有 type 时按 type 走）；kind=path 时三选一：subpaths（内联子路径，与 draw_shape 的 path geometry 同格式）、d（SVG path 字符串，入口转 subpaths）或 object_id（引用已有 path 形状对象），覆盖率走 path 填充同一条路；kind=linear_gradient 时给 start/end（[x,y] 或 {x,y}，start 一侧为 1、end 一侧为 0，过渡带就是 start→end 的距离）；kind=radial_gradient 时给 bbox + falloff（0–1，过渡带占半径比例，0=硬边、1=全程渐变）；渐变 kind 不收 feather（传非零会报错）"),
             param!("feather", Number, false, "羽化过渡宽度（像素，缺省 0）"),
             param!("invert", Boolean, false, "反选（缺省 false）"),
             param!("mode", String, false, "缺省 new = 新建（id 已存在则报错）。add/subtract/intersect 现在**只能对一个已存在的 id** 放行，但落盘是**覆盖**旧形状，**不是**布尔合并 ⇒ 结果等于最后那个形状。真正的合并尚未实现（见 docs/design/brush-capability-gap.md 三百二十七节）"),

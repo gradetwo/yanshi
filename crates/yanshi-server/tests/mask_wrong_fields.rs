@@ -263,3 +263,29 @@ fn already_visible_failures_stay_visible() {
         "kind=bbox 必须被白名单拒：{bad_kind}"
     );
 }
+
+/// 渲染层读 bbox 的口径是「对象四元齐全才用它，否则回退顶层」
+/// （`parse_shape_coverage` 的 `Bbox::from_value(bbox).or_else(top-level)`）；
+/// 入口校验必须同口径，否则会误拒一个渲染层本来认得的顶层写法。
+#[test]
+fn incomplete_bbox_object_falls_back_to_flat_fields_like_the_renderer() {
+    let (mut workspace, _) = fresh_with_stroke_and_mask(json!({
+        "kind": "rect",
+        "bbox": {"x": 0, "y": 0, "w": 64},
+        "x": 0,
+        "y": 0,
+        "w": 64,
+        "h": 64
+    }));
+    let data = render(&mut workspace);
+    assert!(
+        pixel(&data, 16, 32)[0] < 120,
+        "顶层几何应生效（蒙版内是深色笔触）：{:?}",
+        pixel(&data, 16, 32)
+    );
+    assert!(
+        pixel(&data, 96, 32)[0] > 200,
+        "顶层几何应生效（蒙版外是背景）：{:?}",
+        pixel(&data, 96, 32)
+    );
+}

@@ -7441,8 +7441,11 @@ fn coverage_from_shape_clipped(shape: &Value, clip: &Bbox) -> Coverage {
 /// 解析蒙版 `shape` 字段为（形状、bbox、顶点）。
 fn parse_shape_coverage(shape: &Value) -> (ShapeKind, Bbox, Vec<(f64, f64)>) {
     let kind = match shape.get("kind").and_then(Value::as_str) {
-        Some("ellipse") => ShapeKind::Ellipse,
-        Some("polygon") => ShapeKind::Polygon,
+        // `circle`/`lasso` 是与选区解析（`selection.rs parse_geom`）同口径的同义词：
+        // 蒙版白名单照认这两个名字（`create_mask` 的 validate_mask_shape_kind），
+        // 这里若把它们吞进下面的 Rect 回退 ⇒ 名字合法而形状错（静默降级）。
+        Some("ellipse") | Some("circle") => ShapeKind::Ellipse,
+        Some("polygon") | Some("lasso") => ShapeKind::Polygon,
         _ => ShapeKind::Rect,
     };
     let bbox = shape
@@ -9084,6 +9087,35 @@ mod tests {
             &json!({"kind": "rect", "bbox": {"x": 0, "y": 0, "w": 40, "h": 40}}),
         );
         assert!(rect.at_doc(30.0, 30.0) > 0.5);
+    }
+
+    /// 蒙版 `circle`/`lasso` 必须按选区解析的同义词渲成椭圆/多边形。
+    ///
+    /// **变异判据** ✓：把这两个分支删回 `_ => Rect` ⇒ 包围盒角上覆盖率变 1 ⇒
+    /// 两条「角上必须零覆盖」断言红 ✓。
+    #[test]
+    fn coverage_from_shape_honours_circle_and_lasso_synonyms() {
+        let circle = coverage_from_shape(
+            &json!({"kind": "circle", "bbox": {"x": 0, "y": 0, "w": 40, "h": 40}}),
+        );
+        assert!(circle.at_doc(20.0, 20.0) > 0.5, "圆中心应有覆盖率");
+        assert_eq!(
+            circle.at_doc(2.0, 2.0),
+            0.0,
+            "圆的包围盒角上必须零覆盖率——被吞成 Rect 就会在这里露馅"
+        );
+        // lasso 与 polygon 同义：顶点包围盒内的三角外像素必须零覆盖。
+        let lasso = coverage_from_shape(&json!({
+            "kind": "lasso",
+            "bbox": {"x": 0, "y": 0, "w": 40, "h": 40},
+            "points": [[0.0, 0.0], [40.0, 0.0], [0.0, 40.0]],
+        }));
+        assert!(lasso.at_doc(5.0, 5.0) > 0.5, "套索三角内应有覆盖率");
+        assert_eq!(
+            lasso.at_doc(30.0, 30.0),
+            0.0,
+            "套索三角外（包围盒内）必须零覆盖率——被吞成 Rect 就会露馅"
+        );
     }
 
     /// 蒙版：范围外应被裁掉、反选应翻转、羽化应产生软边，缺失蒙版必须告警。
