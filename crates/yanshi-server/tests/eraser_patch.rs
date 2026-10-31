@@ -7,9 +7,18 @@ use serde_json::json;
 use yanshi_core::Bbox;
 use yanshi_server::{DocumentSettings, NewDocument, Profile, ToolContext, ToolRegistry, Workspace};
 
+/// **测试结束即删掉临时目录**（`/tmp` 是 1.9 GB 的 tmpfs；判据 check-tests-clean-temp 要求）。
+struct Cleanup(std::path::PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// **落盘工作区 + 仓库里的 `assets/`** —— `brush_stroke` 要从那儿读 `.myb` 笔刷。
 fn workspace(name: &str) -> Workspace {
     let root = std::env::temp_dir().join(format!("yanshi_erase_{name}_{}", std::process::id()));
+    let _cleanup = Cleanup(root.clone());
     let _ = std::fs::remove_dir_all(&root);
     let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
     let mut workspace = Workspace::with_file_store(root, DocumentSettings::default())
