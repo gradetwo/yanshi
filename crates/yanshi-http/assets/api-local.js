@@ -4465,20 +4465,16 @@ async function withKernel(doc, fn) {
                     strokes_examined: strokesExamined, hits, count: hits.length, server: false });
     }
 
-    // **④ `/api/tools/list_selections` ✗**：**没有选区原子 ⇒ **∴ 如实报空表 ✓****
-    //   **∴ 重点 ✗**：**前端**据此**清掉本地轮廓** ✓（**∴ 它**的注释写明：
-    //     **"**服务端说没有选区 ⇒ 本地也必须清掉 ✗**"）⇒ **∴ 所以**：
-    //     **必须**报**真实的空**✗，**而**不是**永远空 ✗**（**∴ 有 `create_selection` 就列出来 ✓）** ✓✓
+    // **④ `/api/tools/list_selections` ✗**：**照服务端 `read_list_selections` ✓**（**折叠 ⇒ 只列活着的 ✓**）。
+    //   **∴ 原缺陷 ✗**（第 1415 轮 ✓）：**逐原子直出 ✗** ⇒ **① 删过的选区照样列出来 ✓**（幽灵选区 ✓）、
+    //     **② 同名多次创建 ⇒ 重复条目 ✓**（`create_selection` 是覆盖语义 ✗ 不是追加 ✓）、
+    //     **③ `update_selection`（`transform_selection` 写的那条）改了形状 ⇒ 列表里还是旧的 ✓**。
+    //     ⇒ **∴ 前端**据此清本地轮廓 ✓ ⇒ **∴ 幽灵选区**会让它继续画着、并拿一个**已不存在**的框去裁 ✓。
+    //   **∴ 现在**：与 `describe_canvas` 共用 `p2DescribeRegions` 一份折叠 ✓（`tombstone{selection_id}` ✓、
+    //     `update_selection` ✓、`p2StateWindow`／`p2Neutralized` ✓）⇒ **∴ 只列未删的、按 id 排序 ✓**。
     if (path === "/api/tools/list_selections") {
       const rows = await atomsOf(handle, doc);
-      const selections = [];
-      for (const r of rows) {
-        const a = (r && r.atom) || {};
-        if (a.kind !== "create_selection") continue;
-        const pl = a.payload || {};
-        selections.push({ selection_id: pl.selection_id ?? pl.id ?? null,
-                          shape: pl.shape ?? null, bbox: pl.bbox ?? null });
-      }
+      const selections = p2SelectionList(rows);
       return json({ ok: true, selections, count: selections.length, server: false,
                     derived_from: "atoms" });
     }
@@ -5101,12 +5097,38 @@ async function withKernel(doc, fn) {
     //   **∴ 读操作**从原子日志推导 ✗**（**∴ 不另存状态 ✓**）；
     //   **∴ 服务端**没有**的端点 ⇒ **明确 501 ＋ 原因 ✗**（**∴ 不硬凑 ✓**）。
 
-    // **① `create_selection` ✗**：**照 `write_create_selection` ✓** ⇒ **`create_selection` 原子 ✓**。
+    // **① `create_selection` ✗**：**照 `write_create_selection` ＋ `fold.rs` 的冲突判定 ✓** ⇒ **`create_selection` 原子 ✓**。
+    //   **∴ 原缺陷 ✗**（第 1415 轮 ✓）：**直接写原子、从不看已有状态 ✗** ⇒ **三条语义全部静默降级 ✓**：
+    //     · `mode=new` 撞活选区 ⇒ 服务端 409（`fold.rs:972`）⇒ 本地**覆盖** ✓
+    //     · `mode!=new` 撞墓碑 ⇒ 服务端 409「已删除」⇒ 本地**复活** ✓
+    //     · `mode!=new` 撞活选区 ⇒ 服务端**位图布尔合并**（`merge_selection_shapes`）⇒ 本地**只留新形状** ✓
+    //       —— 调用方以为「加上了」/「挖掉了」/「取交」而实际是「换掉了」✗（形态 3 ✓）。
+    //   **∴ 现在**：同一份折叠（`p2DescribeRegions` ✓）做前两闸 ✓；**合并没有本地实现**
+    //     （需要光栅化＋PNG 编码，本地未移植 ✓）⇒ **明确 501 ＋ 原因 ✓，一个原子都不写 ✓**
+    //     （**∴ 静默降级比不支持更坏 ✓** —— 这是服务端 `tools_selection.rs:335` 注释里外部 §136 的原话 ✓）。
     if (path === "/api/tools/create_selection") {
       const chk = p2CheckRegionArgs(body, "selection_id");
       if (chk.err) return chk.err;
+      const id = chk.payload.selection_id;
+      const mode = chk.payload.mode;
+      const existing = p2DescribeRegions(await atomsOf(handle, doc)).selections.get(id);
+      if (mode === "new") {
+        if (existing && !existing.deleted) {
+          // **文案逐字照 `fold.rs:977`** ✓（`write-guards` 判据逐字比对 ✓）。
+          return p2Precon("选区 " + id + " 已存在（要改它请传 mode=add/subtract/intersect）");
+        }
+      } else if (existing && existing.deleted) {
+        // **文案逐字照 `tools_selection.rs:352`** ✓。
+        return p2Precon("选区 " + id + " 已删除，无法 mode=" + mode);
+      } else if (existing) {
+        return p2ToolFailure(501, "not_implemented_locally",
+          "选区 " + id + " 的 mode=" + mode + " 需要位图布尔合并（服务端 `merge_selection_shapes`），"
+          + "本地没有光栅化/PNG 编码 ⇒ **没有写入任何原子**（旧选区保持原样）。"
+          + "否则「合并」会被静默降级成「覆盖」。请在联网（服务端）模式下用它，"
+          + "或先 delete_selection 再用 mode=new 重建。");
+      }
       const seq = await putAtom(handle, doc, p2Envelope("create_selection", chk.payload));
-      return json({ ok: true, seq, server: false, selection_id: chk.payload.selection_id,
+      return json({ ok: true, seq, server: false, selection_id: id,
                     note: "已在本地原子日志写入 create_selection" });
     }
 
@@ -6695,6 +6717,9 @@ async function withKernel(doc, fn) {
         feather: typeof pl.feather === "number" ? pl.feather : 0,
         invert: pl.invert === true,
         shape: pl.shape === undefined ? null : pl.shape,
+        // **`list_selections` 要这两个字段 ✗**（**服务端 `parse_selection` ✓**；`update_selection` 不改它们 ✓）。
+        linked_layer: typeof pl.linked_layer === "string" ? pl.linked_layer : null,
+        refined_edges: pl.refined_edges === true,
       });
       const setFields = (cur, pl) => {
         if (pl.shape !== undefined) cur.shape = pl.shape;
@@ -6783,6 +6808,56 @@ async function withKernel(doc, fn) {
         }
       }
       return { selections, masks, objects, styles };
+    }
+    /** **选区面积 ✗**（**照服务端 `selection_area_px` 逐分支 ✓**）：
+     *   `rect`／`ellipse`／`polygon` 用解析式 ⇒ **精确 ✓**；`bitmap` 本地没有 L8 解码器 ⇒
+     *   **`(0, false)`** ✓（**∴ `area_exact:false` 明说「算不出」✗ 不让调用方把 `area:0`
+     *   读成「选区是空的」✓** —— 那是服务端注释点名的同一个静默降级 ✗）。
+     *   **∴ 两种 `bbox` 写法都认 ✓**：`{kind:"rect", bbox:{x,y,w,h}}` 与平铺 `w/h` ✓
+     *   （**服务端 `:405` 同一处写法 ✓**；数组形式 `bbox:[x,y,w,h]` 不算这个分支 ✓ 与服务端一致 ✓）。
+     */
+    function p2ShapeArea(shape) {
+      if (!shape || typeof shape !== "object") return [0, false];
+      const kind = typeof shape.kind === "string" ? shape.kind : "";
+      const src = (shape.bbox && typeof shape.bbox === "object" && !Array.isArray(shape.bbox))
+        ? shape.bbox : shape;
+      const num = (k) => (typeof src[k] === "number" && Number.isFinite(src[k]) ? src[k] : 0);
+      if (kind === "rect") return [num("w") * num("h"), true];
+      if (kind === "ellipse") return [Math.PI * (num("w") / 2) * (num("h") / 2), true];
+      if (kind === "polygon" || kind === "lasso") {
+        const points = Array.isArray(shape.points) ? shape.points : null;
+        if (!points) return [0, false];
+        let area = 0, n = 0, prev = null, first = null;
+        for (const p of points) {
+          if (!Array.isArray(p) || typeof p[0] !== "number" || typeof p[1] !== "number"
+              || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) return [0, false];
+          if (prev) area += prev[0] * p[1] - p[0] * prev[1]; else first = p;
+          prev = p;
+          n += 1;
+        }
+        if (n < 3) return [0, false];
+        area += prev[0] * first[1] - first[0] * prev[1];
+        return [Math.abs(area) / 2, true];
+      }
+      return [0, false];
+    }
+    /** **`list_selections` 的本地等价 ✓**（**照服务端 `read_list_selections` 的 9 个字段 ✓**）：
+     *   折叠走 `p2DescribeRegions` ✓（`create_selection`／`update_selection`／`tombstone` 一份口径 ✓）
+     *   ⇒ **∴ 墓碑不占 id ✗ 也不出现在列表里 ✓**（**服务端 `!is_deleted()` 同一处 ✓**），
+     *   **同名多次创建只留一条 ✓**（服务端 `state.selections` 是 `Map` ⇒ 覆盖 ✓）。
+     */
+    function p2SelectionList(rows) {
+      const fold = p2DescribeRegions(rows);
+      return [...fold.selections.keys()]
+        .filter((id) => !fold.selections.get(id).deleted)
+        .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+        .map((id) => {
+          const s = fold.selections.get(id);
+          const [area, areaExact] = p2ShapeArea(s.shape);
+          return { selection_id: id, shape: s.shape, area, area_exact: areaExact,
+                   feather: s.feather, mode: s.mode, invert: s.invert,
+                   linked_layer: s.linked_layer, refined_edges: s.refined_edges };
+        });
     }
     /** **P2c-绘画通用写入口 ✗**：**`draw_*`／`fill` 照 `write_draw` 的载荷形状 ✓**
      *   （**`{object_id, layer_id, data, type?}` ✓ ⇒ **∴ 折叠层按 `payload.data` 取内容 ✓**）。 */

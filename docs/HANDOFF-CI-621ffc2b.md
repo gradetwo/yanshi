@@ -1457,6 +1457,13 @@ error: 选区 S1 已存在（要改它请传 mode=add/subtract/intersect）
 
 ### bug ③（**仍未修**）：`merge_selection_shapes` 返回 `Ok(None)`
 
+> **⇒ 2026-10-31 更正（本条已解决 ✓，上面的标题与下文留作历史）**：根因是 `shape_json_bbox`
+> 对**没有 `kind` 的旧形状**走了 bitmap 兜底 ⇒ 旧矩形被当成 bitmap ⇒ 两形状不相交 ⇒ `None`。
+> 现 `shape_json_bbox` 已按形状分派 ✓；`write_smart_select` 也不再吞掉 `Err`/`None`
+> （提交 `09b6b99a`：合并失败/空结果**明确报** `invalid_argument`，不再静默覆盖旧选区 ✓）。
+> **∴ 实测**：`scripts/tool-smart-select-add-merges.mjs` 两次 `add` 面积 1600 → 3200（比 2.00）✓；
+> 空交集 `intersect` ⇒ `invalid_argument`（文案含「空选区」）✓；超限 `add` ⇒ `invalid_argument`（含「区域过大」）✓。
+
 **⇒ 现状：`merged_from = None`、`r1 = r2 = 0.0533`（比值 1.00）⇒ 合并**仍未发生**。**
 
 **⇒ 已知的排除项：**
