@@ -196,10 +196,12 @@ jobs:
           fi
           NOTES="Rolling nightly build from main."
           if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit nightly --title "nightly" --notes "$NOTES" --repo "$GITHUB_REPOSITORY"
+            gh release edit nightly --title "nightly" --notes "$NOTES" --target "${GITHUB_SHA}" --repo "$GITHUB_REPOSITORY"
           else
             gh release create nightly --title "nightly" --notes "$NOTES" --target "${GITHUB_SHA}" --repo "$GITHUB_REPOSITORY"
           fi
+          # 同步 tag 到本次 SHA：只 edit 不移 tag 时，Source code 包永远停在创建提交
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly" -f sha="${GITHUB_SHA}" -F force=true --silent
           shopt -s nullglob
           for f in $(find artifacts -name '*.tar.gz' | sort); do
             gh release upload nightly "$f" --clobber --repo "$GITHUB_REPOSITORY"
