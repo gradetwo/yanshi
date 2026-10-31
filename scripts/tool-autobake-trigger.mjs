@@ -101,6 +101,9 @@ try {
   check(t.ok === true, "② T：触发调用本身成功（bake 失败也不反噬，成功更不反噬）", JSON.stringify(t).slice(0, 120));
   check(t.auto_bake && t.auto_bake.status === "baked", "② T：第 2048 笔带 baked 节", JSON.stringify(t.auto_bake || null).slice(0, 200));
   check(t.auto_bake && t.auto_bake.trigger === "layer_waterline", "② T：触发为水位", t.auto_bake ? t.auto_bake.trigger : "无节");
+  // **回执读数是烘焙后的值**：base_section_read 的契约是「调用方不必再查一遍状态」
+  // ⇒ 若传烘焙前的 counts，刚折叠的 2048 笔仍算在 document_unbaked 里（与真相相反）。
+  check(t.auto_bake && t.auto_bake.document_unbaked === 0, "② T：baked 节的 document_unbaked 是烘焙后的值（不必再查状态）", `document_unbaked=${t.auto_bake?.document_unbaked}`);
   check(t.head === (t.auto_bake ? t.auto_bake.bake_atom_seq : null), "② T：回执 head 已是 bake 后 head", `head=${t.head}`);
   const st = await call("get_bake_status", { layer_id: "L" });
   check(st.ok === true && Array.isArray(st.layers) && st.layers.length > 0 && st.layers[0].unbaked === 0, "② T：状态里未 bake 数归零", JSON.stringify(st.layers || null).slice(0, 200));
@@ -174,4 +177,5 @@ try {
 //   · 阈值改成 2047 ⇒ ① T−1 的最后一批带 baked 节 ⇒ 红；
 //   · 批量子调用也走评估 ⇒ ③ 造数批次里出现 baked 节（或混合批 bake 两层）⇒ 红；
 //   · 层开关解析改成只读全局 ⇒ ④ 两处反向 ⇒ 红；
-//   · 回执 head 不更新 ⇒ ② head ≠ bake_atom_seq ⇒ 红。
+//   · 回执 head 不更新 ⇒ ② head ≠ bake_atom_seq ⇒ 红；
+//   · baked 节传烘焙前的 counts（document_unbaked 仍含刚折叠的笔）⇒ ② 回执读数臂红。

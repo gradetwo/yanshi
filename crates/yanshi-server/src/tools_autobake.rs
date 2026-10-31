@@ -410,6 +410,10 @@ fn bake_selected_layer(
     });
     match render_and_commit_bake(ctx, layer_id, false, Some("auto"), Some(trigger)) {
         Ok(performed) => {
+            // **回执读数是烘焙之后的值** ✓：base_section_read 的契约是「调用方不必再查
+            // 一遍状态」⇒ 传烘焙前的 counts 会把刚折叠掉的 2048 笔仍算进
+            // document_unbaked（baked 节里这个数就与真相相反）。
+            let mut counts_after = counts.clone();
             if let Ok(document) = ctx.workspace.document_mut(&ctx.doc_id) {
                 let entry = document
                     .auto_bake_runtime_mut()
@@ -418,6 +422,7 @@ fn bake_selected_layer(
                     .or_default();
                 entry.blocked = None;
                 entry.skip_reason = None;
+                counts_after = unbaked_counts(document);
             }
             let mut warnings: Vec<Value> = Vec::new();
             if census.texts > 0 {
@@ -447,7 +452,7 @@ fn bake_selected_layer(
                     "clipped_regions": census.clipped,
                 }));
             }
-            let mut section = base_section_read(counts);
+            let mut section = base_section_read(&counts_after);
             section["status"] = json!("baked");
             section["scope"] = json!("layer");
             section["layer_id"] = json!(layer_id);
