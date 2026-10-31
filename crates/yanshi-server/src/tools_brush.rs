@@ -520,7 +520,7 @@ fn paint_and_commit_brush_segment(
                         let gh = height.max(1) as u32;
                         let mut data = vec![0.0f32; (gw * gh) as usize];
                         if let Some(sel) = sel {
-                            let failed = yanshi_render::selection::ensure_bitmap_masks_registered(
+                            let report = yanshi_render::selection::ensure_bitmap_masks_registered(
                                 &[&sel.shape],
                                 &|h| {
                                     h.parse::<yanshi_core::BlobHash>()
@@ -529,7 +529,7 @@ fn paint_and_commit_brush_segment(
                                 },
                             );
                             // **解不开就响亮报错** ✓（第 2665 轮：原来静默 ⇒ `ok:true` 而一个像素不落 ✗）
-                            if let Some(blob) = failed.first() {
+                            if let Some(blob) = report.failed.first() {
                                 return Err(YanshiError::new(
                                     ErrorCode::InvalidArgument,
                                     ErrorContext::detail(format!(

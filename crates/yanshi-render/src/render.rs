@@ -1939,6 +1939,8 @@ impl Renderer {
         // 位图选区（`smart_select`）：渲染准备阶段确保 blob 已解码注册。
         // `SelectionShape::from_value` 是纯函数、拿不到存储；这里统一预热一次，
         // fold 重放 / 跨进程重载后也不静默退化为空选区。无位图选区时零开销。
+        // 批量预热可能因 8 条上限淘汰本次请求的掩膜（见下 `stats.unsupported`）。
+        let mut evicted_masks: Vec<String> = Vec::new();
         {
             let shapes: Vec<&serde_json::Value> = state
                 .selections
@@ -1950,12 +1952,14 @@ impl Renderer {
                 .map(|s| &s.shape)
                 .collect();
             if !shapes.is_empty() {
-                // 渲染侧只拿到「解不开的名单」⇒ 只能忽略（渲染不能失败）；响亮报错在裁剪路径 ✓。
-                let _failed = crate::selection::ensure_bitmap_masks_registered(&shapes, &|h| {
+                // 渲染不能失败 ⇒ 解不开的只忽略，响亮报错在裁剪路径 ✓；
+                // 但被淘汰的必须记进 `stats.unsupported`（→ 回执 warnings），不许静默 ✓。
+                let report = crate::selection::ensure_bitmap_masks_registered(&shapes, &|h| {
                     h.parse::<yanshi_core::BlobHash>()
                         .ok()
                         .and_then(|hash| store.get(&hash).ok())
                 });
+                evicted_masks = report.evicted;
             }
         }
         stage_probe::enter((
@@ -2000,6 +2004,13 @@ impl Renderer {
             stats.unsupported.push(format!(
                 "区域外扩被截断：声明 {declared}px，上限 {}px；带界已按声明外扩（与整幅一致），边缘处大半径效果的邻域仍不完整",
                 self.options.max_filter_padding
+            ));
+        }
+        // 批量预热被 8 条上限淘汰的位图选区：随后 `from_value` 绑定不到掩膜、
+        // 覆盖率退化为 0 ⇒ 裁剪到的对象不落笔——必须可观测（→ 回执 warnings），不许静默。
+        for blob in evicted_masks {
+            stats.unsupported.push(format!(
+                "位图选区蒙版因注册表 8 条上限被淘汰：{blob} ⇒ 该选区覆盖率退化为 0，裁剪到的对象不落笔；请把同时存活的位图选区减到 8 条以内（删无用选区）"
             ));
         }
 
@@ -7560,11 +7571,12 @@ fn apply_layer_mask_warn(
                     .ok()
                     .and_then(|hash| store.get(&hash).ok())
             };
-            let failed =
+            let report =
                 crate::selection::ensure_bitmap_masks_registered(&[&mask.shape], &load_blob);
-            if !failed.is_empty() {
+            if !report.failed.is_empty() {
                 warnings.push(format!(
-                    "蒙版 {mask_id} 的位图无法读取或解码（本层不施加蒙版）: {failed:?}"
+                    "蒙版 {mask_id} 的位图无法读取或解码（本层不施加蒙版）: {:?}",
+                    report.failed
                 ));
                 return;
             }

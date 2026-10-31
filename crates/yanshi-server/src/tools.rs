@@ -20058,7 +20058,7 @@ pub fn precompute_clip_mask(
             }
         } else {
             // 纯几何/位图：SelectionShape::from_selection 已含 invert/feather。
-            // 返回值是「解不开的 blob 名单」✓ —— 这里只预热，真正的报错在 `brush_stroke` 的裁剪路径 ✓。
+            // 返回值是预热结果（解不开的 blob 名单＋本次被淘汰的请求 blob）✓ —— 这里只预热，真正的报错在 `brush_stroke` 的裁剪路径 ✓。
             let _ =
                 yanshi_render::selection::ensure_bitmap_masks_registered(&[&sel.shape], &|hh| {
                     hh.parse::<yanshi_core::BlobHash>()

@@ -1374,21 +1374,43 @@ pub fn get_bitmap_mask(blob_hash: &str) -> Option<Arc<DecodedBitmapMask>> {
         .map(Arc::clone)
 }
 
+/// `ensure_bitmap_masks_registered` 的预热结果。
+///
+/// `failed` 是解不开的 blob（取不到字节或解码失败）。
+/// `evicted` 是本次请求但预热后仍未注册的 blob：它们多半因 8 条上限
+/// 在本次预热中被 FIFO 淘汰，随后 `from_value` 会绑定 `mask = None`、
+/// 覆盖率退化为 0——即本次渲染真正会丢像素的那些。
+/// 注意：`evicted` 不含注册表里原有的陈旧条目被淘汰的情况（那不影响
+/// 本次渲染）；也不含 `failed`（解不开的只进 `failed`，不重复报）。
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct BitmapMaskEnsureReport {
+    /// 解不开（取不到字节或解码失败）的 blob。
+    pub failed: Vec<String>,
+    /// 本次请求但预热后仍未注册的 blob（多半因 8 条上限被 FIFO 淘汰）。
+    pub evicted: Vec<String>,
+}
+
 /// 渲染准备阶段：确保给定形状里引用的位图 blob 都已解码注册。
 ///
 /// `load` 只在注册表未命中时调用（通常是 `store.get(&hash)`）。已注册的直接跳过，
 /// 解码失败的也跳过（`from_value` 会把 `mask` 置 `None`，覆盖率退化为 0，
 /// 调用方按「宁可不选、不可错选」处理）。
+///
+/// 返回预热结果 [`BitmapMaskEnsureReport`]：`failed` 是解不开的 blob，
+/// `evicted` 是本次请求但预热后仍未注册的 blob（多半因 8 条上限被
+/// FIFO 淘汰——随后 `from_value` 绑定 `mask = None`、覆盖率退化为 0，
+/// 即本次渲染真正会丢像素的那些；调用方必须把它们报出来，不许静默）。
 pub fn ensure_bitmap_masks_registered(
     shapes: &[&Value],
     load: &dyn Fn(&str) -> Option<Vec<u8>>,
-) -> Vec<String> {
-    // **返回值 = 解不开的 blob** ✓（第 2665 轮；外部 `E1742` 一族）：
+) -> BitmapMaskEnsureReport {
+    // **返回值见 `BitmapMaskEnsureReport`** ✓（第 2665 轮；外部 `E1742` 一族）：
     //   原来它**只认 `decode_png_l8`（8 位灰度 PNG）** ✗ ⇒ 传 **raw RGBA** 或 **RGBA PNG** 的蒙版
     //   ⇒ **静默不注册 ⇒ 覆盖率恒 0 ⇒ `ok:true` 但一个像素都不落** ✗✗
     //   ⇒ **现在**：① 多格式解码（L8 PNG ✓ / RGBA PNG 取 alpha ✓ / raw RGBA 取 alpha ✓ / raw L8 ✓）
     //            ② **解不开就**回报名单** ⇒ 调用方必须**响亮报错** ✓（不许再静默 ✓）
     let mut failed: Vec<String> = Vec::new();
+    let mut requested: Vec<String> = Vec::new();
     for shape in shapes {
         if shape.get("kind").and_then(Value::as_str) != Some("bitmap") {
             continue;
@@ -1407,6 +1429,9 @@ pub fn ensure_bitmap_masks_registered(
         else {
             continue;
         };
+        if !requested.iter().any(|b| b == blob) {
+            requested.push(blob.to_owned());
+        }
         {
             let guard = BITMAP_MASK_REGISTRY.lock().expect("位图选区注册表锁中毒");
             if guard.contains_key(blob) {
@@ -1458,7 +1483,14 @@ pub fn ensure_bitmap_masks_registered(
             None => failed.push(blob.to_owned()),
         }
     }
-    failed
+    // 本次请求但预热后仍未注册的 = 真正会丢像素的：解不开的只进 failed；
+    // 已注册又被本次预热淘汰的（含预热前已在表里、又被后注册者挤掉的）进 evicted。
+    let guard = BITMAP_MASK_REGISTRY.lock().expect("位图选区注册表锁中毒");
+    let evicted: Vec<String> = requested
+        .into_iter()
+        .filter(|blob| !failed.contains(blob) && !guard.contains_key(blob))
+        .collect();
+    BitmapMaskEnsureReport { failed, evicted }
 }
 
 /// 蒙版编译缓存：按 `mask.id` 存 `(指纹, 编译结果)`。
@@ -2758,9 +2790,11 @@ mod bitmap_mask_registry_tests {
     //! 三条断言各抓一种回归 —— 没上限 / 淘汰的不是最旧的 / 显式移除失效。
 
     use super::{
-        get_bitmap_mask, register_bitmap_mask, registered_bitmap_mask_count,
-        unregister_bitmap_mask, DecodedBitmapMask,
+        ensure_bitmap_masks_registered, get_bitmap_mask, register_bitmap_mask,
+        registered_bitmap_mask_count, unregister_bitmap_mask, DecodedBitmapMask, SelectionShape,
+        Value,
     };
+    use serde_json::json;
     use std::sync::Arc;
 
     fn dummy(w: u32) -> Arc<DecodedBitmapMask> {
@@ -2806,6 +2840,72 @@ mod bitmap_mask_registry_tests {
         );
         for i in 0..16 {
             unregister_bitmap_mask(&format!("fifo_{i}"));
+        }
+    }
+
+    /// 复现：一次批量预热 9 条位图选区 ⇒ 最早的一条被 FIFO 淘汰，
+    /// 而预热返回值（解不开的名单）为空——丢像素没有任何信号。
+    ///
+    /// 机制链：`render_region_with_lod` 对全部位图选区调一次
+    /// `ensure_bitmap_masks_registered`；注册表上限 8 条 ⇒ 第 9 条注册时
+    /// 淘汰最旧的一条；随后 `from_value` 对被淘汰的 blob 绑定 `mask = None`
+    /// ⇒ 覆盖率恒 0 ⇒ 该选区裁剪到的对象一个像素不落，而渲染仍返回成功。
+    #[test]
+    fn bulk_ensure_over_capacity_silently_drops_earliest_masks() {
+        let names: Vec<String> = (0..9).map(|i| format!("repro_drop_{i}")).collect();
+        for name in &names {
+            unregister_bitmap_mask(name);
+        }
+        let shapes: Vec<Value> = names
+            .iter()
+            .map(|name| {
+                json!({
+                    "kind": "bitmap",
+                    "bbox": [0, 0, 4, 4],
+                    "blob_hash": name,
+                    "width": 4,
+                    "height": 4,
+                })
+            })
+            .collect();
+        let refs: Vec<&Value> = shapes.iter().collect();
+        // 全部解码成功（4×4 raw L8，全 255）⇒ 解不开的名单为空。
+        let report = ensure_bitmap_masks_registered(&refs, &|_| Some(vec![255u8; 16]));
+        // 修前静默的证据：解码全成功，返回值空——没有任何信号说有选区被淘汰。
+        // 修后：被淘汰的必须进 `evicted`，调用方据此报错或告警，不许静默。
+        assert!(
+            report.failed.is_empty(),
+            "9 条应全部解码成功，解不开的名单应为空，实际 {:?}",
+            report.failed
+        );
+        assert!(
+            report.evicted.contains(&names[0]),
+            "最早的 {} 被 FIFO 淘汰后必须进 evicted，实际 {:?}",
+            names[0],
+            report.evicted
+        );
+        // 最早的一条已被淘汰：查不到，覆盖率 0。
+        assert!(
+            get_bitmap_mask(&names[0]).is_none(),
+            "最早的 {} 应已被 FIFO 淘汰",
+            names[0]
+        );
+        let first = SelectionShape::from_value(&shapes[0]);
+        assert_eq!(
+            first.coverage(1.0, 1.0),
+            0.0,
+            "被淘汰选区的覆盖率应退化为 0（即该选区裁剪到的对象不落笔）"
+        );
+        // 最新的一条还在：覆盖率 1。
+        assert!(
+            get_bitmap_mask(&names[8]).is_some(),
+            "最新的 {} 必须还在",
+            names[8]
+        );
+        let last = SelectionShape::from_value(&shapes[8]);
+        assert_eq!(last.coverage(1.0, 1.0), 1.0);
+        for name in &names {
+            unregister_bitmap_mask(name);
         }
     }
 
