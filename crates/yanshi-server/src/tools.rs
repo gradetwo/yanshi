@@ -203,7 +203,8 @@ impl Profile {
     /// 与全量同数：已注册工具全部落在成员层内——`Semantic` 无工具、其余 workflow
     /// 预设的工具都住在基底层）——DEFAULT 与 ALL 的区别在 **profile 成员资格**
     /// （Semantic / Svg / 画风预设仍不在缺省内，点名 `--profile` 的语义与收窄
-    /// 判据不变），不在工具数。
+    /// 判据不变）；自 Study 组设立起，缺省数 = 全量数减 Study 专属工具数
+    /// （Study 须显式 `--profile study` 点名）。
     pub const DEFAULT: [Profile; 9] = [
         Profile::Core,
         Profile::History,
