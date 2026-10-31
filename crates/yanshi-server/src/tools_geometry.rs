@@ -516,14 +516,30 @@ pub(super) fn write_rotate_canvas(ctx: &mut ToolContext<'_>, args: &Value) -> Re
     check_canvas_size(new_width, new_height)?;
     let mut extra = serde_json::Map::new();
     extra.insert("degrees".to_owned(), json!(degrees));
+    // 默认锚点＋换尺寸旋转（90°／270°）的补偿：不给 anchor／anchor_name 时，
+    // 旧行为绕当前画布中心，往返 90°→270° 合成为 (−(W−H), 0) 平移，非方形画布丢内容。
+    // 补偿枢轴 p 满足 T(p)·M·T(−p) ＝ T(新中心)·M·T(−旧中心)，即旧矩形精确映到新矩形：
+    // 90° → (H/2, H/2)，270° → (W/2, W/2)。显式锚点（含 anchor_name "center"）保持旧语义不动
+    // （锚点 A 锁定语义＋裁剪提示照旧），0°／180° 不换尺寸、枢轴仍为旧中心。
+    let explicit_anchor = args.get("anchor").is_some() || args.get("anchor_name").is_some();
+    let pivot = if !explicit_anchor && swapped {
+        let (w, h) = (old_width as f64, old_height as f64);
+        if normalized as i64 == 90 {
+            [h / 2.0, h / 2.0]
+        } else {
+            [w / 2.0, w / 2.0]
+        }
+    } else {
+        anchor
+    };
     commit_geometry(
         ctx,
         yanshi_core::atom::AtomKind::RotateCanvas,
         "rotate_canvas",
-        affine_json(matrix, anchor),
+        affine_json(matrix, pivot),
         new_width,
         new_height,
-        Some(anchor),
+        Some(pivot),
         extra,
         true,
     )
