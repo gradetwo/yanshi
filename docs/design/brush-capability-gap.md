@@ -24630,3 +24630,39 @@ M7 是「**像素级**」的那种 ⇒ 验容差没把它糊过去 ✓。**其�
 
 **∴ 变异**：把 `object_type_name` 去掉 ⇒ 服务端副本折成 stroke ⇒ §A' 两条 `adjustment` 断言红 ✓。
 **∴ 复跑**：`tool-pwa-local-write-guards` ✓（exit 0）、`cargo check -p yanshi-server` ✓。
+
+## 六百七十九、Y26-001 纯橡皮擦**能力边界**：判定收拢成一把尺子（`yanshi_render`）＋ wasm 门面同源 ＋ 本地落笔如实 501 不写原子（新增判据 `tool-pwa-eraser-boundary`）
+
+**∴ 起点**：服务端 Y26-001 路线 B 给**纯橡皮**开了 destination-out 擦除路 ——
+`tools_brush.rs:2784` `is_erase = reads_canvas && brush_is_pure_eraser` ⇒ 系数缓冲带 `blend:"erase"` 的对象 ✓。
+**本地 wasm 内核没有那套擦除系数缓冲** ✗ ⇒ 若照旧把这一笔写成 `import_image` 原子 ⇒
+「擦除」被**静默降级**成「覆盖」（形态③「被覆盖而不说」✗ 本仓头号对手）。
+
+**∴ 修法（三处，一处一把尺子 ✓）**：
+| 位置 | 现在 |
+|---|---|
+| `yanshi-render/src/brush.rs` | `brush_is_pure_eraser` 的**实现搬进这里**（单一来源 ✓）：`eraser.base ≥ 1` 且无输入、三混色臂都不读画布 |
+| `yanshi-server/src/tools.rs` | 改成 `pub use yanshi_render::brush::brush_is_pure_eraser`（**再导出** ✓ ⇒ 服务端调用点与既有单测一字不动 ✓） |
+| `yanshi-wasm/src/lib.rs` | `WasmKernel::brush_is_pure_eraser(myb)` 信封方法 ⇒ 调**同一个** `yanshi_render::brush::brush_is_pure_eraser` ✓（**本地与服务端不可能判岔 ✓**） |
+| `api-local.js` 落笔分支 | `brush_stroke`／`draw_stroke` 在 `paintWithKernel` **之前**问门面 ⇒ 纯橡皮 ⇒ **501 `not_implemented_locally` 且一个原子都不写**（画布保持原样 ✓，与**第 六百七十七 节** ④ 选区合并同一能力边界模式 ✓） |
+
+**∴ 判据**（新增 `scripts/tool-pwa-eraser-boundary.mjs` ✓，三段各能红 ✓）：
+段① 服务端铺墨后画纯橡皮 ⇒ `200/ok` ＋ 该对象 `get_object.data.blend === "erase"`（真走了擦除路 ✓）；
+段② **真内核**门面 `brush_is_pure_eraser`：`Hard_Eraser` ⇒ `true`、`100%_Opaque` ⇒ `false`、非 `.myb` ⇒ `ok:false`（同源尺子在 wasm 里也对 ✓）；
+段③ 落笔分支里、`paintWithKernel` **之前**必须有「是纯橡皮 ⇒ 501 ⇒ 没有写入任何原子」这道闸（位置＋存在断言 ✓）。
+
+**∴ 为什么不并进 `tool-pwa-local-write-guards`**：那条用**纯 node 桩**（`bootPwaLocalApi`，不需要真内核 ✓）；
+本条要 `bootLocalWithRealKernel` ＋ **内核新鲜度闸**（旧 ⇒ `exit(3)` ✓）。
+**∴ 并进**会把 §A～§E 五条**无关用例**绑死在「wasm 必须重建」上 ✗（一 stale 就整片 `exit(3)` ⇒ 丢覆盖 ✓）⇒ 单独开 ✓。
+
+**⇒ 两面（AGENTS 第 3 条 ✓）**：**收益** = 判定只有一处、本地不静默降级、服务端擦除被实证 ✓；
+**代价** = 段③ 是**位置断言**不是端到端 501 ✗（落笔分支要 `.myb` 光栅 ＋ `fetch /brushes/…` ⇒ node 里跑不到那一步 ⇒
+`pwa-node-kernel.mjs` 只注入 `wasm` 不注入 `brushLocal`）。**∴ 于是**把**决策的输入**交给 段②（门面对纯橡皮**确实**回 `true` ✓）、
+把「读到 `true` 就 501、且写在落笔**之前**」交给 段③ —— 两段合起来 = 「纯橡皮不会在这里被静默画成覆盖」✓。
+
+**∴ 变异（三条都验过能红 ✓）**：① `is_erase` 门变恒假 ⇒ 对象不带 `blend:"erase"` ⇒ 段① 红；
+② 去掉 `brush_is_pure_eraser` 的 eraser 判定 ⇒ 门面对 `Hard_Eraser` 回 `false` ⇒ 段② 红；
+③ 删掉落笔分支里的 501 守卫 ⇒ 「是纯橡皮」串不在「分支→落笔」窗口内 ⇒ 段③ 红。
+
+**∴ 复跑**：本机 `cargo check -p yanshi-wasm` ✓ ＋ `cargo check -p yanshi-server` ✓、`node --check` 判据 ✓、
+`web/api-local.js` 与 `crates/yanshi-http/assets/api-local.js` 逐字节 ✓。**全量判据要新 wasm ⇒ 等 CI**（本机不重建内核 ✓，「重计算交给 CI」）。
