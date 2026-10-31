@@ -17664,6 +17664,10 @@ pub(crate) struct BrushPaint {
     /// 主遍延长落了一枚 dab，诊断事实（原长／间距／size）放在这里；
     /// `None` = 本笔没触发兜底（正常笔画不带这条提示 ✓）。
     short_stroke_hint: Option<String>,
+    /// **这一笔是不是纯橡皮擦除**（Y26-001 路线 B）：`true` ⇒ `rgba` 不是颜色，
+    /// 而是擦除系数缓冲（alpha = s，RGB = 0），提交时对象带 `blend: "erase"`，
+    /// fold 侧按 destination-out 合成。`false` ⇒ 老语义（source-over 颜色补丁）。
+    is_erase: bool,
 }
 
 /// **时间戳 → 每步秒数**（`parse_brush_point_times` 与重放共用 ✓）——
@@ -18895,6 +18899,29 @@ fn brush_pressure_response(brush: &hokusai::Brush) -> (bool, Vec<&'static str>) 
     (!settings.is_empty(), settings)
 }
 
+/// **这支笔刷是不是纯橡皮**（Y26-001 路线 B）：`eraser` 恒为 1 且无输入曲线，
+/// 且 smudge / colorize / posterize 三臂都不拾取画布色 —— 此时引擎对每枚 dab
+/// 的净效果是纯粹的 alpha 缩放（`color_a = 0` ⇒ 两条引擎分支都只乘 `opa_b`），
+/// 落笔 surface 与喂入的底图之间只有 alpha 在变，擦除系数 `s = 1 - surf_a/base_a`
+/// 才可干净地算出来。混色臂一旦活动，surface 就是颜色混合物，s 算不干净 ⇒
+/// 不走擦除路（保持老行为：喂底图、source-over 提交，擦除被稀释但不丢色）。
+/// `particules_eraser`（eraser 0 + pressure 输入）与 `Eraser.myb`（smudge 1.0）都不满足。
+/// lock_alpha 不排除：`color_a = 0` 时引擎跳过 lock_alpha 分支（`brushmodes.rs:282`），
+/// 它对纯橡皮是惰性的。
+pub fn brush_is_pure_eraser(brush: &hokusai::Brush) -> bool {
+    let eraser = brush.get(hokusai::BrushSetting::Eraser);
+    if eraser.base_value < 1.0 || !eraser.inputs.is_empty() {
+        return false;
+    }
+    let reads = |setting: hokusai::BrushSetting| {
+        let value = brush.get(setting);
+        value.base_value > 0.0 || !value.inputs.is_empty()
+    };
+    !reads(hokusai::BrushSetting::Smudge)
+        && !reads(hokusai::BrushSetting::Colorize)
+        && !reads(hokusai::BrushSetting::Posterize)
+}
+
 /// **这支笔刷会不会读画布** ✓（涂抹 / colorize / posterize / lock_alpha ✓）—— 公开出来，
 /// 好让 HTTP 层在发 `.myb` 时**顺带告诉浏览器** ✓（第 68 轮定性：会读画布的笔刷**不能**本地预览 ✓，
 /// 因为门面没有 base 输入 ⇒ 两边起点不同 ✓）。**判定只有这一处** ✗（复制一份必然漂移 ✓）。
@@ -18938,6 +18965,9 @@ pub fn brush_reads_the_canvas(brush: &hokusai::Brush) -> bool {
         || reads(hokusai::BrushSetting::Colorize)
         || reads(hokusai::BrushSetting::Posterize)
         || reads(hokusai::BrushSetting::LockAlpha)
+        // **纯橡皮也读画布**（Y26-001 路线 B）：不喂底图，引擎无物可擦 ⇒
+        // 恒 `painted=0`。混橡皮（smudge 活动）已由 smudge 臂覆盖，不在这里重复。
+        || brush_is_pure_eraser(brush)
 }
 
 /// **落墨掩膜** ✓ —— 用**同一支笔刷、同一条路径**在一块**空 surface** 上再走一遍 ✓，

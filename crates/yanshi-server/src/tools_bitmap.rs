@@ -256,6 +256,14 @@ pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             payload["source"] = source.clone();
         }
     }
+    // **擦除补丁标记**（Y26-001 路线 B）：`blend: "erase"` ⇒ 对象数据带此标记，
+    // fold 侧按 destination-out 合成；不带 ⇒ 老语义 source-over（旧对象、旧工程
+    // 不受影响）。与 `medium`／`source` 同一个规则：顶层放 ⇒ 对象数据 = 净荷。
+    if let Some(blend) = args.get("blend") {
+        if !blend.is_null() {
+            payload["blend"] = blend.clone();
+        }
+    }
     // **RAW 源对象导入（设计 5.6／5.7，RAW 第二包）**：bitmap 声明为 rawsrc 时
     // 先跑导入计划（解码一次、组装 record + raw_meta + warnings），record 写进
     // 净荷落账；`raw_options` 给到非 RAW blob ⇒ 响亮报错（参数被静默忽略是

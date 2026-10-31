@@ -30,7 +30,7 @@ use crate::filter::{apply_adjustment, apply_filter, AdjustmentKind, FilterKind};
 use crate::geometry::{
     ellipse_coverage_clipped, polygon_coverage_clipped, rect_coverage_clipped, Coverage,
 };
-use crate::object::{parse_object, Primitive, ShapeKind};
+use crate::object::{parse_object, PatchBlend, Primitive, ShapeKind};
 use crate::rows::PARALLEL_MIN_PIXELS;
 use crate::tile::{Tile, TileCache, TileGrid, TileKey};
 use serde_json::Value;
@@ -4803,6 +4803,7 @@ impl Renderer {
                     mime_type,
                     tiles, // **分块路下一步接 ✓**（本轮惰性 ✓）
                     raw_develop,
+                    blend,
                 } => {
                     // **按 MIME 分派** ✓（体积专题，第 1056 轮）：
                     // 位图现在可以**存成 PNG** ✓（无损 ⇒ 渲染结果不变 ✓），
@@ -4964,7 +4965,14 @@ impl Renderer {
                                 // **块取不到** ⇒ 落回下面的既有整幅路」✓ —— 原来只覆盖了"**取不到**" ✗，
                                 // **没覆盖"取到了、但是空的"** ✗ ⇒ 这里补上 ✓。
                                 if rgba.chunks_exact(4).any(|pixel| pixel[3] > 0) {
-                                    layer_buffer.blit_rgba8(x0, y0, rw, rh, &rgba, opacity);
+                                    // **擦除补丁走 destination-out**（Y26-001 路线 B）：系数图
+                                    // 的 alpha 就是擦除强度，`any(alpha > 0)` 的门与源语义一致
+                                    //（`s > 0` 才有擦除）。分块路的补丁恒无仿射，步长由缓冲自带。
+                                    if blend == PatchBlend::Erase {
+                                        layer_buffer.erase_rgba8(x0, y0, rw, rh, &rgba, opacity);
+                                    } else {
+                                        layer_buffer.blit_rgba8(x0, y0, rw, rh, &rgba, opacity);
+                                    }
                                     // **★ 采样必须在 blit **之后**（2026-10-15 实测：我第一次插在之前 ✗，
                                     //   于是读到 0 就误判"写不进去" ✗ —— 这是本会话第 2 次栽在同一处 ✓）★**
                                     if std::env::var_os("YANSHI_TRACE_BLIT_JOIN").is_some() {
@@ -5105,7 +5113,14 @@ impl Renderer {
                                         for value in pixel.iter_mut() {
                                             *value *= opacity;
                                         }
-                                        layer_buffer.blend(lx, ly, pixel);
+                                        // **擦除补丁走 destination-out**（Y26-001 路线 B）：系数图
+                                        // 的像素是 `(0,0,0,s)`，预乘后 alpha 通道即 `s·opacity`；
+                                        // `bytes4[3] == 0` 的跳过（上文）恰好是 `s = 0` 不擦。
+                                        if blend == PatchBlend::Erase {
+                                            layer_buffer.erase_at(lx, ly, pixel[3]);
+                                        } else {
+                                            layer_buffer.blend(lx, ly, pixel);
+                                        }
                                     }
                                 }
                             }
@@ -5158,14 +5173,28 @@ impl Renderer {
                         // 直通路——两条路互不换算，线性值不许被量化成字节再贴。
                         match &*entry {
                             DecodedPixels::Rgba8(w, h, bytes) => {
-                                layer_buffer.blit_rgba8(
-                                    offset.0 as i64,
-                                    offset.1 as i64,
-                                    *w,
-                                    *h,
-                                    bytes,
-                                    opacity,
-                                );
+                                // **擦除补丁走 destination-out**（Y26-001 路线 B）。
+                                // 线性载荷路（`raw` 特性）到不了这里：解析期已拒绝
+                                // `erase + raw_develop` 组合，见 `parse_raster_patch`。
+                                if blend == PatchBlend::Erase {
+                                    layer_buffer.erase_rgba8(
+                                        offset.0 as i64,
+                                        offset.1 as i64,
+                                        *w,
+                                        *h,
+                                        bytes,
+                                        opacity,
+                                    );
+                                } else {
+                                    layer_buffer.blit_rgba8(
+                                        offset.0 as i64,
+                                        offset.1 as i64,
+                                        *w,
+                                        *h,
+                                        bytes,
+                                        opacity,
+                                    );
+                                }
                             }
                             #[cfg(feature = "raw")]
                             DecodedPixels::Linear(w, h, values) => {
@@ -7198,6 +7227,9 @@ pub fn object_fingerprint(object: &yanshi_core::Object) -> String {
             "object_id",
             "refs",
             "type",
+            // **擦除标记也进快路**（Y26-001 路线 B）：只加进集合、不进格式串 ⇒
+            // erase 与 source-over 补丁会撞同一个指纹 ⇒ 缓存误复用 ⇒ 必须同步进格式。
+            "blend",
         ];
         let only_known = object
             .data
@@ -7218,8 +7250,13 @@ pub fn object_fingerprint(object: &yanshi_core::Object) -> String {
                 .and_then(|b| b.get("blob_hash"))
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("-");
+            let blend = object
+                .data
+                .get("blend")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("source-over");
             return format!(
-                "{}:{:?}:{blob_hash}:{}:{}:{}:{}:{:?}",
+                "{}:{:?}:{blob_hash}:{}:{}:{}:{}:{:?}:{blend}",
                 object.id,
                 object.current_version,
                 num("x"),
