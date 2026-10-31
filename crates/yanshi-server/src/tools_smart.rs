@@ -5219,33 +5219,50 @@ pub(super) fn commit_bitmap_selection(
                 "blob": blob_str,
                 "feather_baked": feather_baked,
             });
-            if let Ok(Some((mb, mblob, mlen))) =
-                merge_selection_shapes(ctx, &old_json, &new_json, mode)
-            {
-                // 合并成功 ⇒ 用合并后的 bbox/blob 覆盖（`mblob` 是新的 blob hash）
-                let merged_shape = json!({
-                    "kind": "bitmap",
-                    "bbox": mb,
-                    "blob": mblob,
-                    "feather_baked": feather_baked,
-                });
-                let payload = json!({
-                    "selection_id": selection_id,
-                    "shape": merged_shape,
-                    "feather": 0.0,
-                    // **★ 必须是原 mode，不是 "new"** ✓（第 1300 轮实测）
-                    //    的语义是「mode == "new" 且已存在 ⇒ **拒绝**」
-                    //   ⇒ 所以写 "new" 会让**已存在的选区被拒**（precondition_failed）✗
-                    "mode": mode,
-                    "invert": invert,
-                    "refined_edges": refined_edges,
-                    "blobs": [mblob],
-                    "refs": { "blobs": [mblob] },
-                    "merged_from": mode,
-                    "merged_bytes": mlen,
-                });
-                let _result = ctx.commit(AtomKind::CreateSelection, payload)?;
-                return Ok((mb[0], mb[1], mb[2], mb[3], mblob, mlen, _result.seq));
+            // **★ 错误与空结果都必须说出来 ✓**（第 1414 轮；原来写 `if let Ok(Some(…))`）：
+            //   **∴ 原缺陷**：合并报错（例如 N3D-01 的「区域过大」）或被判为空结果时
+            //     ⇒ 分支被静默跳过 ⇒ 落到下面「带 mode 直接覆盖」⇒ **旧的 `add`/`intersect`
+            //     语义被悄悄降级成覆盖**，而调用方看到 `ok:true` ✗（静默降级那条规矩）
+            //   **∴ 现与 `create_selection`（`tools_selection.rs`）同一口径**：
+            //     `?` 把错误原样上抛；空结果明确报 `invalid_argument`，不提交任何原子 ✓
+            match merge_selection_shapes(ctx, &old_json, &new_json, mode)? {
+                Some((mb, mblob, mlen)) => {
+                    // 合并成功 ⇒ 用合并后的 bbox/blob 覆盖（`mblob` 是新的 blob hash）
+                    let merged_shape = json!({
+                        "kind": "bitmap",
+                        "bbox": mb,
+                        "blob": mblob,
+                        "feather_baked": feather_baked,
+                    });
+                    let payload = json!({
+                        "selection_id": selection_id,
+                        "shape": merged_shape,
+                        "feather": 0.0,
+                        // **★ 必须是原 mode，不是 "new"** ✓（第 1300 轮实测）
+                        //    的语义是「mode == "new" 且已存在 ⇒ **拒绝**」
+                        //   ⇒ 所以写 "new" 会让**已存在的选区被拒**（precondition_failed）✗
+                        "mode": mode,
+                        "invert": invert,
+                        "refined_edges": refined_edges,
+                        "blobs": [mblob],
+                        "refs": { "blobs": [mblob] },
+                        "merged_from": mode,
+                        "merged_bytes": mlen,
+                    });
+                    let _result = ctx.commit(AtomKind::CreateSelection, payload)?;
+                    return Ok((mb[0], mb[1], mb[2], mb[3], mblob, mlen, _result.seq));
+                }
+                // 合并结果为空（两个掩膜不相交 / 相减后为空）⇒ **明确报错**，不提交
+                // （与 `create_selection` 同一文案口径；旧选区保持原样 ✓）。
+                None => {
+                    return Err(YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(format!(
+                            "mode={mode} 的合并结果是**空选区**（旧选区与新智能掩膜没有重叠）\
+                         ⇒ 没有可提交的选区。若你要的是清空，请用 delete_selection。"
+                        )),
+                    ))
+                }
             }
         }
     }
