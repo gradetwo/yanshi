@@ -205,4 +205,19 @@ jobs:
             gh release upload nightly "$f" --clobber --repo "$GITHUB_REPOSITORY"
           done
           gh release upload nightly SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
-          echo "== 滚动 nightly 已更新 ✓（commit ${GITHUB_SHA}，$n_archives 个平台归档）=="
+          echo "== 清理旧归档（只留本次 commit 的包）=="
+          short="${GITHUB_SHA:0:7}"
+          kept=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/nightly" --jq --arg s "$short" '[.assets[] | select(.name | contains("-" + $s + "-"))] | length')
+          if [ "$kept" -ne "$n_archives" ]; then
+            echo "✗ 本次归档保留数 $kept ≠ 上传数 $n_archives ⇒ 不删旧包（宁可多留，不错删）" >&2
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/nightly" --jq '.assets[] | "\(.id) \(.name)"' | while read -r aid aname; do
+            if [ "$aname" = "SHA256SUMS" ]; then continue; fi
+            case "$aname" in
+              *-"$short"-*.tar.gz) echo "保留 $aname" ;;
+              *.tar.gz) echo "删除旧归档 $aname"; gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${aid}" --silent ;;
+              *) echo "跳过非归档 $aname" ;;
+            esac
+          done
+          echo "== 滚动 nightly 已更新 ✓（commit ${GITHUB_SHA}，$n_archives 个平台归档，旧归档已清理）=="
