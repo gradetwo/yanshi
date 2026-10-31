@@ -91,6 +91,11 @@ const areaOf = async () => {
   const hit = (r.selections ?? []).find((s) => s.selection_id === "S_add");
   return Number(hit?.area ?? 0);
 };
+const areaOfName = async (name) => {
+  const r = await call("list_selections", {});
+  const hit = (r.selections ?? []).find((s) => s.selection_id === name);
+  return Number(hit?.area ?? 0);
+};
 const r1 = await areaOf();
 
 // 第二次 add：选蓝块（**不相交** ⇒ 正确时应累加）
@@ -108,6 +113,61 @@ check(
   ratio > 1.5,
   `⑤ mode=add 必须**累加**（第二次/第一次 = ${ratio.toFixed(2)}，应 > 1.5；` +
   `若 ≈ 1.0 ⇒ 覆盖 bug 复发）｜area1=${r1} area2=${r2}`,
+);
+
+// **★ 失败路径：合并为空 / 合并报错 ⇒ 必须说出来，不许静默覆盖** ✓（第 1414 轮）
+//   **∴ 原缺陷**：`write_smart_select` 写的是 `if let Ok(Some(…))` ⇒ 合并报错（例如
+//     N3D-01 的「区域过大」）或被判为空结果时**分支被静默跳过** ⇒ 落到下面
+//     「带 mode 直接覆盖」⇒ 调用方看到 `ok:true` 而 `mode` 语义没生效 ✗
+//   **∴ 判据**：① 交集为空 ⇒ `invalid_argument` ＋ 旧选区面积不变
+//             ② 并集超 64 MP ⇒ 明确报「区域过大」＋ 旧选区面积不变
+
+// —— ⑥ 交集为空：S_int 只选红块，再与**不相交**的绿块求交 ⇒ 结果为空
+const green = await call("fill_region", {
+  layer_id: "L_add", shape: { type: "rect", x: 100, y: 10, w: 20, h: 20 },
+  color: "#18c818", opacity: 1.0,
+});
+check(green.ok === true, `⑥a 铺绿块（与红蓝都不相交）⇒ ok=${green.ok}`);
+const intFirst = await call("smart_select", {
+  selection_id: "S_int", mode: "new", seed: [30, 30], tolerance: 0.15, feather: 0,
+});
+check(intFirst.ok === true, `⑥b 建 S_int（红块）⇒ ok=${intFirst.ok}`);
+const intArea1 = await areaOfName("S_int");
+const emptyMerge = await call("smart_select", {
+  selection_id: "S_int", mode: "intersect", seed: [110, 20], tolerance: 0.15, feather: 0,
+});
+check(
+  emptyMerge.ok === false && emptyMerge.error_code === "invalid_argument"
+    && String(emptyMerge.context?.detail ?? "").includes("空选区"),
+  `⑥c mode=intersect 交集为空必须明确报 invalid_argument（实测 ok=${emptyMerge.ok}｜` +
+  `error_code=${emptyMerge.error_code}｜detail=${String(emptyMerge.context?.detail ?? "").slice(0, 80)}）`,
+);
+const intArea2 = await areaOfName("S_int");
+check(
+  intArea1 > 0 && intArea2 === intArea1,
+  `⑥d 空交集不许覆盖旧选区（面积 ${intArea1} → ${intArea2}；变了＝静默覆盖复发）`,
+);
+
+// —— ⑦ 并集超上限：S_big 是画布外的巨大矩形，再 add 一小块 ⇒ 并集 ≈ 200 MP > 64 MP
+const big = await call("create_selection", {
+  selection_id: "S_big", mode: "new",
+  shape: { kind: "rect", x: 100000, y: 0, w: 100000, h: 1000 },
+});
+check(big.ok === true, `⑦a 建超大选区 S_big ⇒ ok=${big.ok}｜${JSON.stringify(big.context?.detail ?? "").slice(0, 80)}`);
+const bigArea1 = await areaOfName("S_big");
+const bigAdd = await call("smart_select", {
+  selection_id: "S_big", mode: "add", seed: [30, 30], tolerance: 0.15, feather: 0,
+});
+check(
+  bigAdd.ok === false && bigAdd.error_code === "invalid_argument"
+    && String(bigAdd.context?.detail ?? "").includes("区域过大"),
+  `⑦b 并集超 64 MP 必须明确报「区域过大」（实测 ok=${bigAdd.ok}｜` +
+  `error_code=${bigAdd.error_code}｜detail=${String(bigAdd.context?.detail ?? "").slice(0, 80)}）`,
+);
+const bigArea2 = await areaOfName("S_big");
+check(
+  bigArea1 > 0 && bigArea2 === bigArea1,
+  `⑦c 合并报错不许覆盖旧选区（面积 ${bigArea1} → ${bigArea2}；变了＝静默覆盖复发）`,
 );
 
 if (fails.length) {
