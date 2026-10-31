@@ -511,6 +511,97 @@ fn shape_point_ok(point: Option<&Value>) -> bool {
     false
 }
 
+/// `create_mask` 的 rect/ellipse/circle 形状字段校验（静默空覆盖修补）。
+///
+/// 渲染层 `parse_geom` 只认两组写法：`bbox` 对象（`{x, y, w|width, h|height}`）
+/// 或顶层 `x/y/w/h`；其余写法一律不被采纳——
+/// - `x0/y0/x1/y1`（角点式）：图层蒙版渲染（`parse_shape_coverage`）读不到
+///   bbox ⇒ 零面积矩形 ⇒ 全 0（字面零覆盖，盒上探针实测）；
+/// - `cx/cy/rx/ry`（SVG 椭圆式）：选区路径会归一成 bbox，但蒙版入口没有归一
+///   ⇒ 图层蒙版渲染同样读不到 bbox ⇒ 全 0；另注意选区/CompiledMask 路径
+///   对同一形状会退化为覆盖全部（两路径口径不一致，入口校验把两门一并关上）；
+/// - 零/负/非有限宽高：`has_area` 为假 ⇒ 以前静默退化为空。
+///   三者都是「`ok=true` 但蒙版不是调用方要的形状」，故在入口具名报错。
+///   只验显式 `shape`：`from_selection` 克隆来的形状是选区路径已认的合法形态
+///   （选区本就接受 `cx/cy/rx/ry`），那条门的归一缺口另案处理，本函数不拦它；
+///   渲染层 `parse_geom` 与选区路径一律不动。
+fn validate_mask_rect_ellipse_fields(shape: &Value, kind: &str) -> Result<()> {
+    let invalid = |message: String| {
+        YanshiError::new(ErrorCode::InvalidArgument, ErrorContext::detail(message))
+    };
+    // “看起来像几何、但解析器不认”的字段：无论 bbox 是否有效，只要出现就说明
+    // 调用方有字段没被采纳，必须点名，不能静默忽略（顶层与 bbox 对象内都查）。
+    const LOOKALIKES: [&str; 10] = ["x0", "y0", "x1", "y1", "x2", "y2", "cx", "cy", "rx", "ry"];
+    let mut found: Vec<&str> = Vec::new();
+    for key in LOOKALIKES {
+        if shape.get(key).is_some()
+            || shape
+                .get("bbox")
+                .and_then(Value::as_object)
+                .is_some_and(|bbox| bbox.contains_key(key))
+        {
+            found.push(key);
+        }
+    }
+    if !found.is_empty() {
+        return Err(invalid(format!(
+            "{kind} 的 shape 带 {}，但解析器只认 bbox{{x, y, w|width, h|height}} 或顶层 x/y/w/h（{} 不被采纳）",
+            found.join("、"),
+            found.join("、")
+        )));
+    }
+    // 解析器读 bbox 的口径（与 `parse_bbox` 同源）：`bbox` 为对象时只读它，
+    // 否则读顶层。`bbox` 给了非对象值时同样按顶层读——那本身就是错字段，
+    // 在缺失报错里一并点名。
+    let (source, source_name) = match shape.get("bbox").filter(|v| v.is_object()) {
+        Some(bbox) => (bbox, "bbox"),
+        None => (shape, "顶层"),
+    };
+    let num = |value: &Value, key: &str| value.get(key).and_then(Value::as_f64);
+    let x = num(source, "x");
+    let y = num(source, "y");
+    let w = num(source, "w").or_else(|| num(source, "width"));
+    let h = num(source, "h").or_else(|| num(source, "height"));
+    match (x, y, w, h) {
+        (Some(x), Some(y), Some(w), Some(h)) => {
+            if !x.is_finite() || !y.is_finite() || !w.is_finite() || !h.is_finite() {
+                return Err(invalid(format!(
+                    "{kind} 的 {source_name} 坐标/宽高必须为有限数，得到 x={x} y={y} w={w} h={h}"
+                )));
+            }
+            if w <= 0.0 || h <= 0.0 {
+                return Err(invalid(format!(
+                    "{kind} 的 {source_name} 宽高必须大于 0（零/负面积不许静默成空），得到 w={w} h={h}"
+                )));
+            }
+            Ok(())
+        }
+        _ => {
+            let mut missing: Vec<&str> = Vec::new();
+            if x.is_none() {
+                missing.push("x");
+            }
+            if y.is_none() {
+                missing.push("y");
+            }
+            if w.is_none() {
+                missing.push("w|width");
+            }
+            if h.is_none() {
+                missing.push("h|height");
+            }
+            let mut message = format!(
+                "{kind} 的 shape 缺 {source_name} 几何：缺 {}，须给 bbox{{x, y, w|width, h|height}} 或顶层 x/y/w/h（均为有限数、宽高大于 0）",
+                missing.join("、")
+            );
+            if shape.get("bbox").is_some_and(|v| !v.is_object()) {
+                message.push_str("（bbox 给了非对象值，须为 {x, y, w|width, h|height} 对象）");
+            }
+            Err(invalid(message))
+        }
+    }
+}
+
 /// 单点坐标（调用方已验 `shape_point_ok`，此处缺失分量按 0 计）。
 fn shape_point_coords(point: &Value) -> (f64, f64) {
     if let Some(pair) = point.as_array() {
@@ -635,6 +726,14 @@ pub(super) fn write_create_mask(ctx: &mut ToolContext<'_>, args: &Value) -> Resu
     }
     // D1-b：kind 白名单 + 渐变形状参数在入口验完（与 kind=path 同例）。
     validate_mask_shape_kind(&effective_kind, &shape)?;
+    // 静默空覆盖修补：rect/ellipse/circle 的显式形状字段在入口验完
+    // （错字段名以前在图层蒙版渲染里静默成全 0）。`from_selection` 克隆来的
+    // 形状不验（选区合法形态，那条门的归一缺口另案处理）。
+    let shape_from_selection =
+        from_sel.is_some() && args.get("shape").and_then(Value::as_object).is_none();
+    if !shape_from_selection && matches!(effective_kind.as_str(), "rect" | "ellipse" | "circle") {
+        validate_mask_rect_ellipse_fields(&shape, &effective_kind)?;
+    }
     if matches!(
         effective_kind.as_str(),
         "linear_gradient" | "radial_gradient"
