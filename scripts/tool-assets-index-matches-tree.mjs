@@ -15,18 +15,22 @@
 //   **∴ 两边都从**仓库**算出来**✗ ⇒ **换机器**✗ 换时间**✗ 结果**同一个 ✓**
 //     （**∴ 所以本判据**不写**「texture 应有 8 个」这种**数**✓**）
 //
-// **∴ 只比**跟踪得到**的两类 ✗**（**∴ 分母规则不同**✓ 别硬套 ✓**）：
-//   · **`palette`／`texture`** ⇒ `web/<目录>`**整目录在 git 里**✓ ⇒ **能比** ✓
-//   · **`brush`／`medium`** ⇒ `web/brushes`／`web/mediums`**不在跟踪里**✓（**发布流水线**建完才有 ✗
+// **∴ 只比**索引里有的**四类 ✗**（**∴ 分母规则不同**✓ 别硬套 ✓**）：
+//   · **`palette`／`texture`** ⇒ 比对基准＝**真源 `assets/<目录>`（在 git 里 ✓）** ⇒ **能比** ✓
+//     （**H-1 第 30 项：`web/<目录>` 不再入库**✗ ⇒ 它是 `pwa-sync` 从 `assets/` 镜像出来的产物 ✓
+//      ⇒ **∴ 于是**基准**从 `web/` 换成 `assets/`**✗——**那才是真源 ＋ 干净签出即可判（不依赖先跑同步）✓**）
+//   · **`brush`／`medium`** ⇒ 索引里有它们**✗ 但 `web/brushes`／`web/mediums`**不在跟踪里**✓（**发布流水线**建完才有 ✗
 //     **∴ 干净签出**时**磁盘上没有**✗ 直接比会在 CI 上**假红** ✓）
 //     ⇒ **∴ 于是**：**这里**明确说出**「不比这一类」✗ 并且断言**「**不许悄悄漏整类**」**✓
 //       （**若哪天** `web/brushes` **被跟踪了**✗ 第 ④ 条**就红**✗ 逼着**把它纳进比对 ✓**）
+//   · **`palette`／`texture` 的 `web/` 拷贝**现在也归进第 ④ 条**✗（**整棵忽略 ⇒ 靠发布流水线建 ✓**）
+//     ⇒ **∴ 于是**：**一旦有人把 `web/palettes`／`web/textures` 又提交回来**✗ 第 ④ 条**就红**✓（**同一个棘轮 ✓**）
 //
 // **∴ 变异（**已逐条实测 ✓**）**：
 //   ①**往索引里加一个不存在的纹理**⇒ 第 ② 类红 ✓ 退出码 1
 //   ②**从索引里删一个真实纹理**⇒ 同一条红（**方向不同 ✗ 文案给出缺的是谁 ✓**）✓
 //   ③**把某项的 `bytes` 改成别的数**⇒ 第 ③ 条红 ✓
-//   ④**让 `UNTRACKED_DIRS` 指向一个**确实被跟踪**的目录**（**把 brush 写成 `web/palettes` ✓）**
+//   ④**让 `UNTRACKED_DIRS` 指向一个**确实被跟踪**的目录**（**把 palette 写成 `assets/palettes` ✓）**
 //     ⇒ 第 ④ 条红 ✓（**∴ 证明**「跟踪状态变了 ⇒ 这里会逼着改比对清单」✗ **不是**恒绿的 ✓**）
 //   ⑤**把 `web/brushes` 改名**（**目录**不存在 ✓）⇒ 第 ④ 条**变成 ⊘ 跳过**✗
 //     **∴ 而不是**记成一条**通过**✓（**「我问了一个不存在的目录」**不是**证据 ✓**）
@@ -39,8 +43,10 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
 const INDEX = "web/assets-index.json";
-// **∴ 比对清单 ✗**：**目录在 git 跟踪里**才进来 ✓（**理由见文件头 ✓**）
-const TRACKED_KINDS = [["palette", "web/palettes"], ["texture", "web/textures"]];
+// **∴ 比对清单 ✗**：**基准是真源 `assets/<目录>`（在 git 跟踪里 ✓）**
+//   （**H-1 第 30 项 ✓**：原来指 `web/<目录>`✗ 而 `web/` 这几棵现在是 `pwa-sync` 产物 ＋ 整棵忽略 ✗
+//    ⇒ 基准**必须**跟着换成真源**✓ 否则 `git ls-files web/palettes` 恒空 ⇒ ② 恒「全 phantom」✓ 而③恒「文件不在」✓）
+const TRACKED_KINDS = [["palette", "assets/palettes"], ["texture", "assets/textures"]];
 // **∴ 明说「这一类为什么不比」**✗（**∴ 而不是**默默少一类 ✓**）
 const UNTRACKED_KINDS = ["brush", "medium"];
 
@@ -58,7 +64,7 @@ let trackedNames;
 try {
   trackedNames = (dir) => execFileSync("git", ["ls-files", dir], { encoding: "utf8" })
     .split("\n").filter(Boolean).map((p) => p.slice(dir.length + 1));
-  trackedNames("web/palettes");
+  trackedNames("assets/palettes");
 } catch (e) {
   console.error(`✗ 取不到 git 跟踪清单 ⇒ 前提不成立（不是产品失败）⇒ 退出码 3（${String(e).slice(0, 120)}）`);
   process.exit(3);
@@ -118,7 +124,11 @@ console.log("④ 不许悄悄漏掉一整类（**跟踪状态变了 ⇒ 这里�
 //     ⇒ **∴ 于是**：**对一个不存在的目录**问「有没有被跟踪」**恒为**「没有」✗
 //       ⇒ **∴ 那条断言**恒绿**✓ ⇒ **「它没红」≠「它守住」**（**内核 1 ✓**）
 //     ⇒ **∴ 修法 ✗**：**路径写进表里**＋**先断言「那个目录确实存在或在跟踪体系里说得清」**✓
-const UNTRACKED_DIRS = { brush: "web/brushes", medium: "web/mediums" };
+const UNTRACKED_DIRS = { brush: "web/brushes", medium: "web/mediums",
+                         // **H-1 第 30 项 ✓**：`web/palettes`／`web/textures` 现在也是 `pwa-sync` 产物 ＋ 整棵忽略 ⇒
+                         //   **∴ 于是**放进这里：干净签出＝不存在 ⇒ ⊘ 跳过 ✓；跑过同步＝在但不被跟踪 ⇒ ✓ 通过 ✓；
+                         //   **∴ 而**若有人**又把 `web/palettes` 提交回来**✗ 这一条**立刻红**✓（**与 brush/medium 同一个棘轮 ✓**）
+                         palette: "web/palettes", texture: "web/textures" };
 let skipped = 0;
 for (const [kind, dir] of Object.entries(UNTRACKED_DIRS)) {
   const nowTracked = trackedNames(dir);

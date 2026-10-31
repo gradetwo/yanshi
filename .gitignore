@@ -65,6 +65,28 @@ web/mediums/
 web/viewer-app.js
 web/viewer.css
 web/service-worker.js
+# **★ `web/` 里那六棵**二进制资产树**也不入库 ✗ ★**（H-1 第 30 项 ✓）：
+#   **∴ 它们与上面 `web/wasm`／`web/brushes`／`web/mediums` 是同一类**✗——
+#   **∴ `pwa-sync-viewer.mjs` 每次都 `rmSync` 整棵再从顶层 `assets/<同名>` 镜像出来 ✓**
+#     （brush-previews／samples／brand／palettes／textures 走 `cpSync` ✓，
+#      fonts 走 `.ttf`／`.woff2` 白名单镜像 ✓ ⇒ **全是**导出产物**✓**）。
+#   **∴ 原来 ✗**：两份都提交 ⇒ **仓库里躺着约 10 MB 重复**✓（web/samples 4.9 ＋ textures 2.4
+#     ＋ brush-previews 1.8 ＋ fonts 1.0 ＋ brand 0.2 ＋ palettes 0.1 ✓）
+#     ＋ **∴ 而 `web/fonts` 已经和 `assets/fonts` 漂移**（1.06 vs 1.34 MB ✓）——**产物入库一定会漂**（内核 ② ✓）。
+#   **∴ 唯一真源 ✗**：顶层 `assets/<同名>`（**服务端从它发 ✓** `server.rs:179 assets_dir="assets"`
+#     ⇒ **∴ 于是** Rust 集成测试读的是 `assets/`✓ 与 `web/` 无关 ⇒ 不入库**不影响 test job ✓**）。
+#   **∴ 部署不受影响 ✓**：criteria job（`ci.yml:519`）与 pwa deploy（`pwa.yml:107`）**都先跑 `pwa-sync`**
+#     ⇒ **∴ 于是**`web/` 在**用它的地方**总是新鲜 ✓（**与 `web/wasm` 同一保证 ✓**）。
+#   **∴ 判据跟进 ✗**：`tool-assets-index-matches-tree.mjs` 的 `palette`／`texture` 比对
+#     **从 `web/<目录>` 改指 `assets/<目录>`**✓（**∴ 那才是真源 ＋ 干净签出即可判 ✓**）。
+#   **∴ 两面 ✗**：**收益**＝仓库瘦约 10 MB ＋ 消掉 fonts 漂移 ＋ 消除「产物入库 ⇒ 永远 dirty」✓；
+#     **代价**＝干净签出后 `web/` 这几棵**要跑一次 `npm run pwa:sync` 才有**✓（CI／部署本来就跑 ✓）。
+web/brush-previews/
+web/samples/
+web/brand/
+web/palettes/
+web/textures/
+web/fonts/
 # **★ 例外：`web/showcase/` **必须入库**✗ ★**（第 1000+ 轮 ✓；**用户报告：README 的 4 张图在 GitHub 上是 404 ✗ ✓**）
 #   **∴ 根因 ✓**：**它被本行忽略了 ✗ ⇒ `git ls-files web/showcase` ＝ 0 ✗ ⇒ 远端也没有 ✓**（**∴ 实测：`origin/main` 里 showcase 数 ＝ 0 ✓**）
 #   **∴ 两面 ✓**：**好处 ＝ README 的 4 张展示图在 GitHub 上能看到 ✓**；**代价 ＝ 仓库多约 880 KB ✗（4 张 PNG：146–298 KB ✓）**
@@ -117,17 +139,13 @@ assets/textures/Paper*.png
 !assets/textures/Paper003.png
 !assets/textures/Paper006.png
 
-# **★ 同一把尺子也要量 `web/textures/` ✗ ★**（第 739 轮 ✓）：**`pwa-sync-viewer.mjs` 的
-# `copyKind` 每次运行都 `rmSync` 整个目录再从 `assets/textures` 重建** ✓ ⇒
-# 那 7 张大图（**Cardboard001–004／CardboardSet001／Paper004／Paper005**，**约 5 MB** ✗）
-# 在 2026-10-09 入库（**早于 10-15 的"大图属于缓存"策略 ✓**）⇒ **此后每次同步都留下
-# 7 条 working-tree 删除**✗，**而它们没有任何消费者**（**全仓 grep 只有注释与抓取脚本 ✓**）。
-# ⇒ **∴ 已 `git rm --cached`**（**2026-10-23 ✓）**；**忽略写在这里** ⇒ 缓存重新抓出来也不会再被误提交 ✗：
-web/textures/Cardboard*.png
-web/textures/Paper*.png
-!web/textures/Paper001.png
-!web/textures/Paper003.png
-!web/textures/Paper006.png
+# **★ `web/textures/` 现在整棵忽略 ✗ ★**（H-1 第 30 项 ✓；**取代第 739 轮那五行 ✓**）：
+#   **∴ 第 739 轮 ✗** 原来逐张分「大图忽略／小瓦片＋Paper001／003／006 保留跟踪」✓
+#     ⇒ **∴ 那是因为** `web/textures` 当时**整棵在库里**✗ 只能挑着忽略 ✓。
+#   **∴ 现在 ✗**：**上面已经把 `web/textures/` 整棵列为 `pwa-sync` 产物 ✓**
+#     ⇒ **∴ 于是**这几张**由同步从 `assets/textures` 镜像出来 ✓** ⇒ **无需**再逐条 `!` 放行 ✓。
+#   **∴ 而**Rust 集成测试读的 `Paper001/003/006` 与 `Tile*128` 在**真源 `assets/textures`** 里仍然入库 ✓
+#     （**见上面那段 `assets/textures` 的 `!` ✓** ⇒ **∴ 所以 test job 不受影响 ✓**）。
 
 # cargo 的本地状态文件（与源码无关，不该进版本控制）
 vendor/**/.cargo-ok
