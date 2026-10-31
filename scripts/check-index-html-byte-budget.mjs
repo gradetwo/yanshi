@@ -23,8 +23,12 @@ import { execFileSync } from "node:child_process";
 // 实测 1,038,359 → 968,345 字节（−69,984，截至 2026-10-29）；
 // 第二步：样式表挪成外链 `/viewer.css` ⇒ 实测 968,345 → 930,816 字节
 // （−37,529，截至 2026-10-29）⇒ 上界取 931,000 ⇒ 本提交落地前对旧 HEAD 会红，属预期）。
+// 第三步（2026-10-31）：入库的 index.html 落后于规范前端（`web/viewer-app.js` 不入库、
+// 只在 pwa-sync 时生成）⇒ 重新导出后 930,815 → 931,329 字节（+514）：
+// 参考图上传改成带 try/catch 的压缩上传、面板接线只做一次、`LOCAL_READ_TOOLS`
+// 补上 `get_bake_status`／`stroke_heatmap` ⇒ 上界抬到 932,000（留 671 字节）。
 // 数它用 `git show HEAD:web/index.html | wc -c`；改这个数必须附理由。
-const CEILING = 931_000;
+const CEILING = 932_000;
 
 const failures = [];
 const check = (ok, label, detail) => {
