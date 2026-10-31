@@ -16139,15 +16139,10 @@ fn write_release_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
         ));
     }
     let closed = ctx.workspace.close_document(&document_id);
-    let persisted = ctx
-        .workspace
-        .list_documents()
-        .map(|documents| {
-            documents
-                .iter()
-                .any(|summary| summary.doc_id == document_id)
-        })
-        .unwrap_or(false);
+    // Closing must not read and fold every unrelated persisted document just
+    // to answer whether this one remains on disk. After close_document the
+    // shared existence predicate checks persistence without loading history.
+    let persisted = ctx.workspace.document_exists(&document_id);
     Ok(json!({
         "document_id": document_id,
         "closed": closed,
