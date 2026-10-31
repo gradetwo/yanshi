@@ -1,0 +1,103 @@
+# **PWA 本地层「声明了却从未被读」的参数白名单**
+#
+# ⇒ 由 `scripts/check-pwa-local-params.mjs` 校验 ✓：
+#   · 生成块（`P2_TOOL_SPECS`，来自服务端 `/api/tools`）里声明了某个参数，
+#     而它在 `web/api-local.js` 生成块之外**全文件 0 次出现** ⇒ 本地层一定没读它 ✓
+#   · 新出现的这种参数不在本文件 ⇒ 判据红（要么本地处理，要么在这里登记理由）；
+#   · 本文件里的条目**现在不再是 0 次**（被读了／工具不再路由）⇒ 判据红（删掉那一行）。
+#
+# ⇒ 条目格式：每行 `工具.参数`；空格后的文字是理由（判据只取第一个 token）✓
+# ⇒ 因此**新增条目必须同时写清理由**，不要只写名字。
+
+# ── ① 本地未实现（501，服务端才有）⇒ 参数无从读起 ✓ ──
+apply_stash.stash_id
+discard_stash.stash_id
+resolve_conflict.resolution
+resolve_conflict.conflict_layer_id
+resolve_conflict.formal_layer_id
+resolve_conflict.opponent_atom_id
+set_brush_dynamics.curve
+# import_asset 本地只支持「URL/base64 → blob」这一条路径；overwrite 是服务端资产库语义 ✓
+import_asset.overwrite
+
+# ── ② `blob_gc`：本地无冷存储分层 ✓（响应里 cold 恒 0 且 note 说明）──
+blob_gc.ttl_days
+blob_gc.demote
+
+# ── ③ `export_png`：本地只有内核 `render_region_png`（bbox）✓ ──
+#     `lod`／`width`／`height` 的缩放由服务端链路做；`deterministic`／`max_px` 同理。
+#     （`width`/`height` 因通用名被别处出现掩盖，因此不在本名单里 —— 这是已知漏报 ✓）
+export_png.lod
+export_png.deterministic
+export_png.return_image
+export_png.max_px
+
+# ── ④ `export_project`：本地打 JSON 包，不嵌「服务端 blob bundle」模式 ✓ ──
+export_project.include_bitmaps
+export_project.blob_bundle_mode
+
+# ── ⑤ 本地返回子集：`preview_size` 是服务端缩略图选项 ✓ ──
+get_document.preview_size
+get_state.preview_size
+
+# ── ⑥ 服务端导入语义（本地只入库 blob／原子）✓ ──
+import_image.text_provenance
+import_project.missing_blob_policy
+
+# ── ⑦ `path_edit`：本地只按 `path_id` 改，不生成新 id ✓ ──
+path_edit.other_id
+path_edit.right_id
+path_edit.result_id
+
+# ── ⑧ `render_region`：本地只接 bbox；其余是服务端落盘／标注选项 ✓ ──
+render_region.output_path
+render_region.show_coords
+render_region.include_image
+render_region.max_px
+render_region.active_layer
+render_region.return_image
+
+# ── ⑨ 其它服务端选项（本地分支未接）✓ ──
+batch.preview_every_n_strokes
+batch.preview_interval_ms
+batch.silent
+batch.slim_receipt
+batch.wait_for_render
+brush_preview.brush_params
+brush_preview.include_image
+brush_preview.output_path
+brush_preview.return_image
+brush_preview.max_px
+collect_diagnostics.include_thumbnail
+collect_diagnostics.max_bytes
+collect_garbage.ttl_seconds
+create_mask.from_selection
+create_selection.from_mask
+scatter_strokes.clip_to_selection
+smudge.deposit
+
+# ── ⑩ `brush_stroke`：本地落笔走内核默认路径，不转发这 22 个笔触参数 ✓ ──
+#     这是**已知缺口**（不是「服务端已读」的证明）：本地画布参数来自笔刷文件与
+#     内核默认合成；这些名字在服务端分支才被读。
+brush_stroke.brush_params
+brush_stroke.hand_tremor
+brush_stroke.color_breath
+brush_stroke.paint_push
+brush_stroke.dry_brush
+brush_stroke.edge_soft
+brush_stroke.tilt_shade
+brush_stroke.scatter_texture
+brush_stroke.edge
+brush_stroke.path_guide
+brush_stroke.wait_for_render
+brush_stroke.sensors
+brush_stroke.anchor_mode
+brush_stroke.grid_spacing
+brush_stroke.humanize
+brush_stroke.pressure_curve
+brush_stroke.dwell
+brush_stroke.tremor
+brush_stroke.tremor_seed
+brush_stroke.glaze
+brush_stroke.glaze_passes
+brush_stroke.clip_to_selection
