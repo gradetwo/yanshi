@@ -4314,6 +4314,7 @@ fn write_delete_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
 /// **边界** ✓：锁定不影响"复制"（复制是**读**操作 ✓，与"改内容"不同 ✓）——
 /// 副本会**保留**锁定状态 ✓（忠实复制 ✓），想编辑再解锁 ✓。
 fn write_duplicate_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    type DupObject = (String, i64, Value, Value, Value, bool, bool, &'static str);
     let layer_id = require_str(args, "layer_id")?;
     let new_layer_id = args
         .get("new_layer_id")
@@ -4335,7 +4336,7 @@ fn write_duplicate_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
             ));
         }
         // 该图层上的**存活对象** ✓，按 (z_index, id) 升序 ✓（与渲染顺序一致 ✓）。
-        let mut objects: Vec<(String, i64, Value, Value, Value, bool, bool)> = state
+        let mut objects: Vec<DupObject> = state
             .objects
             .values()
             .filter(|object| !object.is_deleted() && object.layer_id == layer_id)
@@ -4348,6 +4349,7 @@ fn write_duplicate_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
                     json!(object.transform.pivot.to_vec()),
                     object.visible,
                     object.locked,
+                    object_type_name(object.object_type),
                 )
             })
             .collect();
@@ -4412,11 +4414,12 @@ fn write_duplicate_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
         Err(error) => failure = Some(error),
     }
     if failure.is_none() {
-        for (_, z_index, data, matrix, pivot, visible, locked) in &objects {
+        for (_, z_index, data, matrix, pivot, visible, locked, object_type) in &objects {
             let object_id = format!("obj_{}", yanshi_core::Ulid::new().encode());
             let payload = json!({
                 "object_id": object_id,
                 "layer_id": new_layer_id,
+                "type": object_type,
                 "z_index": z_index,
                 "visible": visible,
                 "locked": locked,

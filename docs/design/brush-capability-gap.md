@@ -24616,3 +24616,17 @@ M7 是「**像素级**」的那种 ⇒ 验容差没把它糊过去 ✓。**其�
 
 **回归（本机跑过）**：`tool-pwa-local-write-guards` ✓、`tool-pwa-api-behaviour` ✓、`tool-pwa-describe-canvas` ✓、
 `check-pwa-local-params` ✓（66 个「声明未读」不变）、`tool-web-assets-parity` ✓（`api-local.js` 两边逐字节一致）。**没新增已知红** ✓。
+
+## 六百七十八、`duplicate_layer` 保留对象 `type`（已知分歧③ 修掉 ⇒ 四处 → 三处）
+
+**∴ 缺陷**：`write_duplicate_layer` 收集源对象时**没拿 `object_type`** ⇒
+`CreateObject` 净荷**不带 `type`** ⇒ `parse_object_type` 兜底 `Stroke` ✗
+⇒ **调整／滤镜对象复制后被当成笔触** ✓（不渲染、`list_objects` 报 `stroke` ✓）。
+本地 `duplicate_layer` 用 `Object.assign` 连净荷一起拷 ⇒ 保留原类型 ✓ ⇒ 两边**能分叉** ✗（判据 §A' 断这条分歧）。
+
+**∴ 修法**：收集元组加 `object_type_name(object.object_type)` ⇒ payload 写 `"type": object_type` ✓；
+判据 §A' 从「服务端 stroke／本地 adjustment」改成**两边都 adjustment** ✓；
+头部已知分歧从**四处**改成**三处**（①死父层、②changeset 半写、③已修、④选区合并边界）。
+
+**∴ 变异**：把 `object_type_name` 去掉 ⇒ 服务端副本折成 stroke ⇒ §A' 两条 `adjustment` 断言红 ✓。
+**∴ 复跑**：`tool-pwa-local-write-guards` ✓（exit 0）、`cargo check -p yanshi-server` ✓。
