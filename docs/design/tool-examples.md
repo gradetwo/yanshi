@@ -1444,6 +1444,32 @@
 {}
 ```
 
+## `reference_trace_region`
+
+```json
+{
+  "image_path": "ref.png",
+  "polygon": [
+    [
+      10,
+      10
+    ],
+    [
+      200,
+      10
+    ],
+    [
+      200,
+      300
+    ],
+    [
+      10,
+      300
+    ]
+  ]
+}
+```
+
 ## `reject_annotation`
 
 ```json
