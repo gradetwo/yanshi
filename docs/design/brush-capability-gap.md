@@ -23053,14 +23053,14 @@ M3 关掉未知名拒绝｜M4 `apply` 的确定性 `object_id` 改随机｜M5 �
 3. `list_objects` 少 `enabled`／`locked`；
 4. **锁一条都没强制** ⇒ 锁住的层照样能画、能删（§C 首次跑出来：服务端 403／本地 200）。
 
-**三处**故意分歧**（服务端缺陷 ⇒ 本地不照抄 ✗ ⇒ 判据断分歧本身 ✓）**：
+**两处**故意分歧**（服务端缺陷 ⇒ 本地不照抄 ✗ ⇒ 判据断分歧本身 ✓）**
+（**∴ 原本三处**，③ 已在第 六百七十八 节修掉 ⇒ 现存两处 ✓）：
 ① **死父层建层**：服务端 200 而图层没进状态（静默失败 ✗）；本地 404 并点名父层 ✓；
 ② **changeset 半写**：`service.rs:2437 commit_changeset_timed` 逐条提交再 `attempt?`
 ⇒ `{visible:false, layer_id:"NOPE"}` 回 404 而 `visible` 已落盘 ✗；本地要么全落要么全不落 ✓
 （**两条**：§D② 坏引用；§C' 锁＋例外混写 ⇒ 服务端 403 但 `visible=false`、本地仍 `true` ✓）；
-③ **复制图层丢 `type`**：服务端 `create_object` 净荷不带 `type`（`tools.rs:3921` ✓）
-⇒ 副本对象折成 `stroke`（实测：调整对象复制后 `type:"stroke"` ✗）；本地保留 `adjustment` ✓，
-其余 z／visible／locked／enabled 两边相等 ✓。
+~~③ **复制图层丢 `type`**~~ **已修（第 六百七十八 节 ✓）**：原服务端 `create_object` 净荷不带 `type`
+⇒ 副本折成 `stroke` ✗；现补 `object_type_name` ⇒ 两边同为 `adjustment` ✓。
 
 **判据自身的错 ✓（三次，全是「我的测量错而不是产品错」）**：
 ① **`every()` 断言在全集上**：`list_objects` 返回整篇文档 ⇒ 原对象仍在源层
