@@ -3500,6 +3500,7 @@ pub(super) fn write_smart_sample(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             "points": points,
             "size": size,
             "color": [color[0], color[1], color[2], color[3]],
+            "color_space": "srgb",
             "hardness": hardness,
             "clip_to_selection": if clip_sel.is_empty() { Value::Null } else { json!(clip_sel) },
             "preview": false,

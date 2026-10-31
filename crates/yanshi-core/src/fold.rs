@@ -979,10 +979,17 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
         AtomKind::CreateMask => {
             let mask_id = required(atom, "mask_id")?;
             // 同 `CreateSelection` ✓：墓碑不占用 id ✓（实测 `delete_mask` 后重建会被拒 ✗）。
-            if state.mask_alive(mask_id) {
+            let mode = payload_str(&atom.payload, "mode").unwrap_or("new");
+            if mode == "new" && state.mask_alive(mask_id) {
                 return Err(err(
                     ErrorCode::PreconditionFailed,
                     format!("蒙版 {mask_id} 已存在"),
+                ));
+            }
+            if mode != "new" && !state.mask_alive(mask_id) {
+                return Err(err(
+                    ErrorCode::ReferenceNotFound,
+                    format!("蒙版 {mask_id} 不存在，mode={mode} 只能修改现有蒙版"),
                 ));
             }
         }

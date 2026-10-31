@@ -167,9 +167,17 @@ for (const brush of names) {
     const mybC = readFileSync(`assets/brushes/${brush}.myb`, "utf8");
     const kernelC = new module_.WasmKernel("kernel-parity-composite", 256, CANVAS.width, CANVAS.height, 64 * 1024 * 1024);
     // **`Base` 要有三个字段** ✓（`width`/`height`/`rgba` ✓ —— 只传 `rgba` 会被 serde 拒 ⇒ 门面回空 ✗，踩过 ✓）。
+    // **新语义底图（Y26-006，own-layer）**：服务端落笔只采本层自身内容 ⇒
+    //   笔触层是新建空层、这一笔是它上面第一笔 ⇒ 层自身画前内容恒为透明 ⇒
+    //   门面必须喂同一份透明底图（全零），而不是画前整幅合成。
+    //   （旧口径喂整幅合成，两边底图不等价 ⇒ 5 色全超容差、最大通道差约 212。）
+    //   画后合成比对本身不变：门面层像素仍按 Normal 叠到画前合成上，再与画后合成比 ✓。
+    //   若 CI 显示门面拒空底图（输出空），再改走备选：把测试笔直接画在底色层上、
+    //   每对后删层（`delete_layer`），使层内容即合成内容——本轮先不做。
+    const emptyBase = new Uint8Array(region.w * region.h * 4);
     const outC = kernelC.paint_brush(JSON.stringify({
       myb: mybC, points: pointList, size, color: colour, opacity: null, hardness: null,
-      region, base: { width: region.w, height: region.h, rgba: Array.from(beforeBox) },
+      region, base: { width: region.w, height: region.h, rgba: Array.from(emptyBase) },
     }));
     const facadeC = outC ? Uint8Array.from(outC) : null;
     if (!facadeC || facadeC.length !== want) {

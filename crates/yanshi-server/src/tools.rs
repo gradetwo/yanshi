@@ -2992,7 +2992,7 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                     // **如实改报 `ready`** ✓（**∴ 我们**刚刚**真的生成了它 ✓**）。
                     preview_state = crate::service::PreviewState::Ready(url);
                 }
-                ctx.time(Phase::Preview, preview_started);
+                // 外层已统计整个 Preview 区间；这里只读生成耗时，避免同一段计两次。
                 preview_gen_ms = preview_started
                     .elapsed()
                     .as_secs_f64()
@@ -19586,6 +19586,7 @@ pub(crate) fn replay_brush_paint(ctx: &mut ToolContext<'_>, source: &Value) -> R
         source.get("hardness").and_then(Value::as_f64),
         // **不喂底图** ✗（见函数头 ✓）。
         false,
+        None,
         brush_params,
         color_mixing,
         dtimes_ref,
@@ -20795,6 +20796,7 @@ fn write_brush_preview(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value>
         args.get("hardness").and_then(Value::as_f64),
         // **`feed_base`：读了底图就对**（外部复测 G02 第三项）
         optional_bool(args, "read_canvas").unwrap_or(false),
+        None,
         // **★ 必须转发 `brush_params`（第 254 轮实测的真 bug）★**：这里原先**硬写 `None`** ✗
         //   => 预览/swatch **无视参数覆盖** ✗ => "改 `brush_params` 前先用 swatch 试"
         //   （新功能问题 5）**根本做不到** ✗（我自己的判据就撞在这上面：传了 `opaque: 0.2`
@@ -22132,8 +22134,9 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
         .and_then(Value::as_bool)
         .unwrap_or(true);
     // **同上** ✓（第 717 轮）：`margin: -8` 原来被静默当成 16 ✓。
-    let margin = optional_count(args, "margin")?.unwrap_or(16) as i64;
-    let _ = layer_id;
+    let margin = optional_count(args, "margin")?
+        .unwrap_or(16)
+        .min(i32::MAX as u64) as i64;
     // **试画与真画同路**：sensors 给了就带上（缺省全 0 ⇒ 老行为 ✓）。
     let sensors = match args.get("sensors") {
         Some(value) if !value.is_null() => brush_sensors_from_value(value)?,
@@ -22149,6 +22152,7 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
         opacity,
         hardness,
         true,
+        Some(&layer_id),
         None,
         yanshi_render::color::ColorMixing::Rgb,
         &[],
@@ -22271,8 +22275,31 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
     // 它本身即「要图」的表示，不必再传 `want_image`。不给 ⇒ 与旧行为逐字一致。
     let output_path = optional_str(args, "output_path");
     if want_image || output_path.is_some() {
+        // The attempt keeps the original patch. Padding affects only its preview.
+        let (canvas_w, canvas_h) = {
+            let doc = ctx.workspace.document_mut(&ctx.doc_id)?;
+            (doc.state().width as i64, doc.state().height as i64)
+        };
+        let x0 = (paint.x0 as i64 - margin).max(0);
+        let y0 = (paint.y0 as i64 - margin).max(0);
+        let x1 = (paint.x0 as i64 + paint.width as i64 + margin).min(canvas_w);
+        let y1 = (paint.y0 as i64 + paint.height as i64 + margin).min(canvas_h);
+        let preview_w = (x1 - x0).max(0) as usize;
+        let preview_h = (y1 - y0).max(0) as usize;
+        let mut preview_rgba = vec![0u8; preview_w * preview_h * 4];
+        let dx = (paint.x0 as i64 - x0) as usize;
+        let dy = (paint.y0 as i64 - y0) as usize;
+        for row in 0..paint.height {
+            let source_start = row * paint.width * 4;
+            let target_start = ((row + dy) * preview_w + dx) * 4;
+            preview_rgba[target_start..target_start + paint.width * 4]
+                .copy_from_slice(&paint.rgba[source_start..source_start + paint.width * 4]);
+        }
+        out["preview_bbox"] = json!([x0, y0, x1, y1]);
+        out["preview_width"] = json!(preview_w);
+        out["preview_height"] = json!(preview_h);
         if let Some(bytes) =
-            yanshi_render::png::encode_png(paint.width as u32, paint.height as u32, &paint.rgba)
+            yanshi_render::png::encode_png(preview_w as u32, preview_h as u32, &preview_rgba)
         {
             match &output_path {
                 Some(raw_path) => {
@@ -22290,8 +22317,8 @@ fn write_try_stroke(ctx: &mut ToolContext<'_>, raw_args: &Value) -> Result<Value
                     out["image_file"] = json!({
                         "path": target.display().to_string(),
                         "bytes": bytes.len(),
-                        "width": paint.width,
-                        "height": paint.height,
+                        "width": preview_w,
+                        "height": preview_h,
                         "mime_type": "image/png",
                         "overwritten": overwritten,
                     });

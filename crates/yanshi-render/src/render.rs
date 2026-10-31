@@ -7541,7 +7541,7 @@ fn apply_layer_mask_warn(
         layer_buffer.height(),
         layer_buffer.step(),
     );
-    // 渐变遮罩（D1-b）：不走下面的 `coverage_from_shape_clipped`——它只认
+    // 渐变与位图遮罩：不走下面的 `coverage_from_shape_clipped`——它只认
     // rect/ellipse/polygon，未知 kind 静默落进 rect 回退（线性无 bbox ⇒
     // 零面积 ⇒ 全 0；径向有 bbox ⇒ 硬矩形 ⇒ 看似能用却是错的形状）。
     // 直接用 `SelectionShape::coverage` 逐像素求值（与 CompiledMask 同口径；
@@ -7549,8 +7549,23 @@ fn apply_layer_mask_warn(
     // `create_mask` 入口已保证渐变 feather 为 0）。
     if matches!(
         mask.shape.get("kind").and_then(Value::as_str),
-        Some("linear_gradient") | Some("radial_gradient")
+        Some("linear_gradient") | Some("radial_gradient") | Some("bitmap")
     ) {
+        if mask.shape.get("kind").and_then(Value::as_str) == Some("bitmap") {
+            let load_blob = |s: &str| {
+                s.parse::<yanshi_core::BlobHash>()
+                    .ok()
+                    .and_then(|hash| store.get(&hash).ok())
+            };
+            let failed =
+                crate::selection::ensure_bitmap_masks_registered(&[&mask.shape], &load_blob);
+            if !failed.is_empty() {
+                warnings.push(format!(
+                    "蒙版 {mask_id} 的位图无法读取或解码（本层不施加蒙版）: {failed:?}"
+                ));
+                return;
+            }
+        }
         let shape = crate::selection::SelectionShape::from_selection(mask);
         let width = layer_buffer.width() as usize;
         let step = layer_buffer.step() as i32;
