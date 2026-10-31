@@ -1,5 +1,13 @@
 #!/usr/bin/env node
 // criterion-target: server  ## 运行器据此决定是否注入 render=client（测服务端工具的 Web 入口；本地是如实 not_implemented_locally）
+// **★ 总超时守卫 ✗ ★**（2026-10-31）：**浏览器/CDP 起不来时本判据会**一直等**✗ ⇒
+//   **∴ 超时**报「自己跑不了」并退 3** ✓（**与产品失败区分 ✓**）；`unref()` ⇒ **跑完不被它拖住** ✓。
+const __judgeTimeout = setTimeout(() => {
+  console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（浏览器/CDP 可能没起来）⇒ 退出码 3");
+  process.exit(3);
+}, Number(process.env.YANSHI_JUDGE_TIMEOUT_MS || 300000));
+__judgeTimeout.unref();
+
 // **★ P0 新入口：图层混合模式下拉 ＋ 笔刷压感三预设（真浏览器点击）★**（**第 254 轮 ✓）
 //
 // **∴ 为什么要这条判据 ✗**：**补丁包自己的 README 写着**"未验证：真机浏览器点击"** ✗
