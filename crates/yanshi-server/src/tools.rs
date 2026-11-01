@@ -19857,8 +19857,24 @@ fn merge_intent_brush_params(args: &Value) -> Result<Option<Value>> {
             map.insert("dabs_per_basic_radius".to_string(), json!(dabs));
             map.insert("dabs_per_actual_radius".to_string(), json!(dabs));
             // 2. 刷毛丝缕：横向随机偏移 + 半径随机 + 椭圆压扁拉长。
-            map.insert("offset_by_random".to_string(), json!(0.45 * v));
-            map.insert("radius_by_random".to_string(), json!(0.55 * v));
+            //   小笔宽绝对像素下限：引擎侧偏移 σ = offset_by_random × base_radius、
+            //   半径抖动 σ_log = radius_by_random；相对量在小笔宽下只有亚像素
+            //   （名义半径 1.5 px 时偏移 σ 不到 0.3 px），光栅化后洗掉 ⇒
+            //   小笔宽的飞白不可见。size 是直径像素（与调用点缺省/下限一致），
+            //   下限取偏移 σ ≥ 1.5 px、半径抖动绝对 σ ≥ 1.0 px；
+            //   大笔宽时相对量已超下限，原行为不变。
+            //   （名义半径是近似：引擎侧 base_radius 是笔刷级常量、逐 dab 半径
+            //   还受压力曲线影响，此处只保证同量级，不写成精确保证。）
+            let size = args
+                .get("size")
+                .and_then(Value::as_f64)
+                .unwrap_or(24.0)
+                .max(1.0);
+            let radius = size / 2.0;
+            let offset = (0.45 * v).max(1.5 / radius);
+            let rad_random = (0.55 * v).max(1.0 / radius);
+            map.insert("offset_by_random".to_string(), json!(offset));
+            map.insert("radius_by_random".to_string(), json!(rad_random));
             map.insert("elliptical_dab_ratio".to_string(), json!(1.0 + 2.5 * v));
             // 3. 单 dab 不透明度：轻擦露底。
             map.insert("opaque_multiply".to_string(), json!(1.0 - 0.55 * v));
