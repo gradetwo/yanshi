@@ -397,6 +397,21 @@ impl Buffer {
         self.pixels[index + 3] = source[3] + self.pixels[index + 3] * inverse;
     }
 
+    /// **单像素 destination-out**（Y26-001 路线 B，仿射采样路）：调用方保证
+    /// 坐标已裁剪在缓冲区内。`strength` 已含 opacity（`s·opacity`），钳到 [0, 1]；
+    /// 全部 4 个通道同乘 `(1 − strength)`（预乘表示下的 destination-out）。
+    pub fn erase_at(&mut self, x: u32, y: u32, strength: f32) {
+        debug_assert!(x < self.width && y < self.height, "erase_at 越界");
+        let keep = 1.0 - strength.clamp(0.0, 1.0);
+        if keep >= 1.0 {
+            return;
+        }
+        let index = ((y * self.width + x) * 4) as usize;
+        for channel in 0..4 {
+            self.pixels[index + channel] *= keep;
+        }
+    }
+
     /// 整体填充。
     pub fn fill(&mut self, pixel: LinearRgba) {
         for chunk in self.pixels.chunks_exact_mut(4) {
@@ -835,6 +850,100 @@ impl Buffer {
                     *value *= factor;
                 }
                 self.blend(lx as u32, ly as u32, pixel);
+            }
+        }
+    }
+
+    /// **destination-out 擦除**（Y26-001 路线 B）：与 [`Buffer::blit_rgba8`] 同口径
+    /// 的遍历（相交裁剪 + `step > 1` 步长分支），但源字节不是颜色，而是擦除系数
+    /// 图：`rgba8` 的 alpha 通道 = 擦除强度 s（0..255），RGB 被忽略。
+    /// 每像素按 `layer *= (1 − s·opacity)` 缩放全部 4 个通道（预乘表示下的
+    /// destination-out）。`s = 0` 的像素不动；越界与长度不足时与 blit 同例
+    /// （跳过／提前返回），绝不写坏邻像素。LOD 步长分支同样擦除（不静默跳过），
+    /// 与 blit 的点采样口径一致。
+    pub fn erase_rgba8(
+        &mut self,
+        x: i64,
+        y: i64,
+        width: u32,
+        height: u32,
+        rgba8: &[u8],
+        opacity: f32,
+    ) {
+        let factor = opacity.clamp(0.0, 1.0);
+        if self.step > 1 {
+            self.erase_rgba8_strided(x, y, width, height, rgba8, factor);
+            return;
+        }
+        let col_start = (self.origin_x - x).max(0);
+        let row_start = (self.origin_y - y).max(0);
+        let col_end = (self.origin_x + self.width as i64 - x).min(width as i64);
+        let row_end = (self.origin_y + self.height as i64 - y).min(height as i64);
+        if col_end <= col_start || row_end <= row_start {
+            return;
+        }
+        for row in row_start..row_end {
+            for col in col_start..col_end {
+                let index = ((row * width as i64 + col) * 4) as usize;
+                if index + 3 >= rgba8.len() {
+                    return;
+                }
+                let strength = (rgba8[index + 3] as f32 / 255.0) * factor;
+                if strength <= 0.0 {
+                    continue;
+                }
+                let keep = 1.0 - strength;
+                let local_x = (x + col - self.origin_x) as u32;
+                let local_y = (y + row - self.origin_y) as u32;
+                let base = ((local_y * self.width + local_x) * 4) as usize;
+                for channel in 0..4 {
+                    self.pixels[base + channel] *= keep;
+                }
+            }
+        }
+    }
+
+    /// `erase_rgba8` 的步长分支（`step > 1` 才调用）：源补丁是全密度的，只采格点。
+    fn erase_rgba8_strided(
+        &mut self,
+        x: i64,
+        y: i64,
+        width: u32,
+        height: u32,
+        rgba8: &[u8],
+        factor: f32,
+    ) {
+        let step = self.step as i64;
+        let ix0 = self.origin_x.max(x);
+        let iy0 = self.origin_y.max(y);
+        let ix1 = (self.origin_x + self.width as i64 * step).min(x + width as i64);
+        let iy1 = (self.origin_y + self.height as i64 * step).min(y + height as i64);
+        if ix1 <= ix0 || iy1 <= iy0 {
+            return;
+        }
+        let first_lx = div_ceil_i64(ix0 - self.origin_x, step);
+        let first_ly = div_ceil_i64(iy0 - self.origin_y, step);
+        let last_lx = (ix1 - 1 - self.origin_x) / step;
+        let last_ly = (iy1 - 1 - self.origin_y) / step;
+        for ly in first_ly..=last_ly {
+            let doc_y = self.origin_y + ly * step;
+            let row = doc_y - y;
+            for lx in first_lx..=last_lx {
+                let doc_x = self.origin_x + lx * step;
+                let col = doc_x - x;
+                let index = ((row * width as i64 + col) * 4) as usize;
+                if index + 3 >= rgba8.len() {
+                    return;
+                }
+                let strength = (rgba8[index + 3] as f32 / 255.0) * factor;
+                if strength <= 0.0 {
+                    continue;
+                }
+                let keep = 1.0 - strength;
+                let base = ((ly as u32 * self.width + lx as u32) * 4) as usize;
+                for channel in 0..4 {
+                    self.pixels[base + channel] *= keep;
+                }
             }
         }
     }
@@ -2461,5 +2570,41 @@ mod copy_region_tests {
         assert_eq!(buffer.doc_width(), u32::MAX);
         assert_eq!(buffer.doc_height(), u32::MAX);
         assert_eq!(buffer.len(), 4, "缓冲像素数不受 step 影响");
+    }
+
+    // **destination-out 擦除**（Y26-001 路线 B）：系数图的 alpha 是擦除强度，
+    // RGB 被忽略；图层像素按 (1 − s·opacity) 缩放；s = 0 不动。
+    #[test]
+    fn erase_rgba8_scales_layer_by_one_minus_strength() {
+        let mut buffer = Buffer::new(0, 0, 2, 2);
+        buffer.set_pixel(0, 0, [0.4, 0.6, 0.8, 1.0]);
+        buffer.set_pixel(1, 0, [0.4, 0.6, 0.8, 1.0]);
+        buffer.set_pixel(0, 1, [0.2, 0.2, 0.2, 0.5]);
+        // RGB 故意写非零：擦除路必须忽略颜色，只读 alpha。
+        let coeffs = [99, 88, 77, 255, 99, 88, 77, 128, 0, 0, 0, 0, 0, 0, 0, 0];
+        buffer.erase_rgba8(0, 0, 2, 2, &coeffs, 1.0);
+        assert_eq!(buffer.pixel(0, 0), [0.0; 4]);
+        let half = buffer.pixel(1, 0);
+        let keep = 127.0 / 255.0;
+        for (got, want) in half.iter().zip([0.4, 0.6, 0.8, 1.0].iter()) {
+            assert!((got - want * keep).abs() < 1e-6, "{got} vs {}", want * keep);
+        }
+        assert_eq!(buffer.pixel(0, 1), [0.2, 0.2, 0.2, 0.5]);
+        assert_eq!(buffer.pixel(1, 1), [0.0; 4]);
+        // opacity 缩放强度：s=255 × opacity 0.5 ⇒ keep 0.5。
+        buffer.set_pixel(1, 1, [0.8, 0.8, 0.8, 0.8]);
+        buffer.erase_rgba8(1, 1, 1, 1, &[0, 0, 0, 255], 0.5);
+        assert_eq!(buffer.pixel(1, 1), [0.4, 0.4, 0.4, 0.4]);
+    }
+
+    #[test]
+    fn erase_at_scales_one_pixel_and_ignores_zero_strength() {
+        let mut buffer = Buffer::new(0, 0, 2, 1);
+        buffer.set_pixel(0, 0, [0.5, 0.5, 0.5, 0.5]);
+        buffer.set_pixel(1, 0, [0.5, 0.5, 0.5, 0.5]);
+        buffer.erase_at(0, 0, 0.25);
+        assert_eq!(buffer.pixel(0, 0), [0.375, 0.375, 0.375, 0.375]);
+        buffer.erase_at(1, 0, 0.0);
+        assert_eq!(buffer.pixel(1, 0), [0.5, 0.5, 0.5, 0.5]);
     }
 }

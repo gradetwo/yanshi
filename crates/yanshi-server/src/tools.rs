@@ -4314,6 +4314,7 @@ fn write_delete_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
 /// **边界** ✓：锁定不影响"复制"（复制是**读**操作 ✓，与"改内容"不同 ✓）——
 /// 副本会**保留**锁定状态 ✓（忠实复制 ✓），想编辑再解锁 ✓。
 fn write_duplicate_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    type DupObject = (String, i64, Value, Value, Value, bool, bool, &'static str);
     let layer_id = require_str(args, "layer_id")?;
     let new_layer_id = args
         .get("new_layer_id")
@@ -4335,7 +4336,7 @@ fn write_duplicate_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
             ));
         }
         // 该图层上的**存活对象** ✓，按 (z_index, id) 升序 ✓（与渲染顺序一致 ✓）。
-        let mut objects: Vec<(String, i64, Value, Value, Value, bool, bool)> = state
+        let mut objects: Vec<DupObject> = state
             .objects
             .values()
             .filter(|object| !object.is_deleted() && object.layer_id == layer_id)
@@ -4348,6 +4349,7 @@ fn write_duplicate_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
                     json!(object.transform.pivot.to_vec()),
                     object.visible,
                     object.locked,
+                    object_type_name(object.object_type),
                 )
             })
             .collect();
@@ -4412,11 +4414,12 @@ fn write_duplicate_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
         Err(error) => failure = Some(error),
     }
     if failure.is_none() {
-        for (_, z_index, data, matrix, pivot, visible, locked) in &objects {
+        for (_, z_index, data, matrix, pivot, visible, locked, object_type) in &objects {
             let object_id = format!("obj_{}", yanshi_core::Ulid::new().encode());
             let payload = json!({
                 "object_id": object_id,
                 "layer_id": new_layer_id,
+                "type": object_type,
                 "z_index": z_index,
                 "visible": visible,
                 "locked": locked,
@@ -16139,15 +16142,10 @@ fn write_release_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Val
         ));
     }
     let closed = ctx.workspace.close_document(&document_id);
-    let persisted = ctx
-        .workspace
-        .list_documents()
-        .map(|documents| {
-            documents
-                .iter()
-                .any(|summary| summary.doc_id == document_id)
-        })
-        .unwrap_or(false);
+    // Closing must not read and fold every unrelated persisted document just
+    // to answer whether this one remains on disk. After close_document the
+    // shared existence predicate checks persistence without loading history.
+    let persisted = ctx.workspace.document_exists(&document_id);
     Ok(json!({
         "document_id": document_id,
         "closed": closed,
@@ -17664,6 +17662,10 @@ pub(crate) struct BrushPaint {
     /// 主遍延长落了一枚 dab，诊断事实（原长／间距／size）放在这里；
     /// `None` = 本笔没触发兜底（正常笔画不带这条提示 ✓）。
     short_stroke_hint: Option<String>,
+    /// **这一笔是不是纯橡皮擦除**（Y26-001 路线 B）：`true` ⇒ `rgba` 不是颜色，
+    /// 而是擦除系数缓冲（alpha = s，RGB = 0），提交时对象带 `blend: "erase"`，
+    /// fold 侧按 destination-out 合成。`false` ⇒ 老语义（source-over 颜色补丁）。
+    is_erase: bool,
 }
 
 /// **时间戳 → 每步秒数**（`parse_brush_point_times` 与重放共用 ✓）——
@@ -18895,6 +18897,11 @@ fn brush_pressure_response(brush: &hokusai::Brush) -> (bool, Vec<&'static str>) 
     (!settings.is_empty(), settings)
 }
 
+/// **这支笔刷是不是纯橡皮**（Y26-001 路线 B）：**判定只有这一处** ✗ —— 实现已收拢进
+/// `yanshi_render::brush::brush_is_pure_eraser`（**∴ 服务端与 wasm 门面共用同一把尺子**✓，
+/// 见那里的文档 ✓）。这里只是**再导出**✓，让 `super::`／本文件调用点与既有单测不动 ✓。
+pub use yanshi_render::brush::brush_is_pure_eraser;
+
 /// **这支笔刷会不会读画布** ✓（涂抹 / colorize / posterize / lock_alpha ✓）—— 公开出来，
 /// 好让 HTTP 层在发 `.myb` 时**顺带告诉浏览器** ✓（第 68 轮定性：会读画布的笔刷**不能**本地预览 ✓，
 /// 因为门面没有 base 输入 ⇒ 两边起点不同 ✓）。**判定只有这一处** ✗（复制一份必然漂移 ✓）。
@@ -18938,6 +18945,9 @@ pub fn brush_reads_the_canvas(brush: &hokusai::Brush) -> bool {
         || reads(hokusai::BrushSetting::Colorize)
         || reads(hokusai::BrushSetting::Posterize)
         || reads(hokusai::BrushSetting::LockAlpha)
+        // **纯橡皮也读画布**（Y26-001 路线 B）：不喂底图，引擎无物可擦 ⇒
+        // 恒 `painted=0`。混橡皮（smudge 活动）已由 smudge 臂覆盖，不在这里重复。
+        || brush_is_pure_eraser(brush)
 }
 
 /// **落墨掩膜** ✓ —— 用**同一支笔刷、同一条路径**在一块**空 surface** 上再走一遍 ✓，

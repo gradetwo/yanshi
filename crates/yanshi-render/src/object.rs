@@ -88,6 +88,21 @@ pub struct ShapeTexture {
     pub jitter: f64,
 }
 
+/// **位图补丁的合成算子**（Y26-001 路线 B）：与 W3C 混合模式（`BlendMode`）
+/// 是两回事 —— 这里是 Porter-Duff 合成算子，只管「补丁怎么进图层」。
+/// `SourceOver` = 老语义（缺省：旧对象、旧工程、无标记对象一律走它）；
+/// `Erase` = destination-out：图层像素按 `(1 − s·opacity)` 缩放，s 是补丁
+/// alpha 通道里的擦除系数（直通空间，与颜色无关）。`Default` 必须是
+/// `SourceOver`，否则旧数据会被重解释。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PatchBlend {
+    /// source-over（缺省，老语义）。
+    #[default]
+    SourceOver,
+    /// destination-out（纯橡皮补丁）。
+    Erase,
+}
+
 /// 渲染图元。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Primitive {
@@ -188,6 +203,10 @@ pub enum Primitive {
         /// （语义归 yanshi-raw，设计 9.3）；取图侧凭它重展开源 blob。
         /// 非 RAW 对象恒 `None`，行为与旧工程逐位一致。
         raw_develop: Option<Value>,
+        /// 合成算子（`data.blend`，Y26-001 路线 B）：缺省 `SourceOver`；
+        /// `"erase"` ⇒ `Erase`（系数缓冲按 destination-out 合成）。
+        /// 未知值在解析时响亮 `Unsupported`，绝不静默当 source-over。
+        blend: PatchBlend,
     },
     /// 压平基底（bake_layer 的产物）：画布 1:1 的单张位图 + 累积仿射。
     ///
@@ -1194,6 +1213,28 @@ fn parse_raster_patch(data: &Value) -> Primitive {
             };
         }
     };
+    // 合成算子（Y26-001 路线 B）：缺省 source-over（旧对象零改动）；`"erase"`
+    // ⇒ destination-out；其它值 ⇒ 响亮 Unsupported（未知算子绝不静默当覆盖）。
+    // 擦除补丁定义为直通系数图，`raw_develop` 的线性展开与它互斥 ⇒ 组合拒绝。
+    let blend = match data.get("blend") {
+        None | Some(Value::Null) => PatchBlend::SourceOver,
+        Some(Value::String(value)) if value == "erase" => PatchBlend::Erase,
+        Some(Value::String(value)) => {
+            return Primitive::Unsupported {
+                reason: format!("raster_patch 的 blend 未知：{value}"),
+            };
+        }
+        Some(_) => {
+            return Primitive::Unsupported {
+                reason: "raster_patch 的 blend 必须是字符串".to_owned(),
+            };
+        }
+    };
+    if blend == PatchBlend::Erase && raw_develop.is_some() {
+        return Primitive::Unsupported {
+            reason: "erase 补丁不能带 raw_develop（系数图只走直通路）".to_owned(),
+        };
+    }
     Primitive::RasterPatch {
         blob,
         width,
@@ -1203,6 +1244,7 @@ fn parse_raster_patch(data: &Value) -> Primitive {
         mime_type,
         tiles: data.get("tiles").and_then(Value::as_str).map(str::to_owned),
         raw_develop,
+        blend,
     }
 }
 
@@ -2658,5 +2700,54 @@ mod tests {
         let ok = parse_shape_texture(&base(json!({ "axis": "y" }))).unwrap();
         let (axis, at_start, at_end) = ok.brightness_ramp.expect("axis 给了就该有 ramp");
         assert_eq!((axis.as_str(), at_start, at_end), ("y", 0.0, 255.0));
+    }
+
+    // **擦除标记解析**（Y26-001 路线 B）：缺省 source-over（旧对象零改动）；
+    // `"erase"` ⇒ Erase；未知值 ⇒ 响亮 Unsupported；erase + raw_develop ⇒ 拒绝。
+    // 变异：缺省改成 Erase ⇒ 第一断言红；未知值落回缺省 ⇒ 第三断言红。
+    #[test]
+    fn raster_patch_blend_marker_parses_and_unknown_is_loud() {
+        let data = |blend: serde_json::Value| {
+            let mut value = json!({
+                "bitmap": {"blob_hash": format!("sha256:{}", "a".repeat(64)), "size": 16, "mime_type": "image/x-yanshi-raw"},
+                "width": 2,
+                "height": 2,
+                "region": {"x": 5, "y": 6, "w": 2, "h": 2},
+            });
+            if !blend.is_null() {
+                value["blend"] = blend;
+            }
+            value
+        };
+        let good = object(ObjectType::RasterPatch, data(serde_json::Value::Null));
+        match parse_object(&good) {
+            Primitive::RasterPatch { blend, .. } => {
+                assert_eq!(blend, PatchBlend::SourceOver, "无标记必须是老语义");
+            }
+            other => panic!("期望 RasterPatch，得到 {other:?}"),
+        }
+        let erased = object(ObjectType::RasterPatch, data(json!("erase")));
+        match parse_object(&erased) {
+            Primitive::RasterPatch { blend, .. } => {
+                assert_eq!(blend, PatchBlend::Erase);
+            }
+            other => panic!("期望 RasterPatch，得到 {other:?}"),
+        }
+        let unknown = object(ObjectType::RasterPatch, data(json!("multiply")));
+        match parse_object(&unknown) {
+            Primitive::Unsupported { reason } => {
+                assert!(reason.contains("blend"), "未知算子必须响亮，实测：{reason}");
+            }
+            other => panic!("未知 blend 应落 Unsupported，得到 {other:?}"),
+        }
+        let mut raw = data(json!("erase"));
+        raw["raw_develop"] = json!({"engine": "test"});
+        let conflict = object(ObjectType::RasterPatch, raw);
+        match parse_object(&conflict) {
+            Primitive::Unsupported { reason } => {
+                assert!(reason.contains("raw_develop"), "实测：{reason}");
+            }
+            other => panic!("erase + raw_develop 应被拒绝，得到 {other:?}"),
+        }
     }
 }

@@ -9,20 +9,19 @@
 //   **∴ 连报错文案也比 ✗**（`context.detail` 逐字 ✓）：**同一个拼错参数，PWA 与服务器必须给同一句话 ✓**
 //   —— 否则调用方按服务器文案写的重试逻辑，在离线模式里永远命中不了 ✓（静默降级形态③）。
 //
-// **∴ 四处**已知分歧**也在这里断 ✓**（**∴ 不许当「两边应相等」✗ —— 那会逼本地复制缺陷 ✓**）：
+// **∴ 三处**已知分歧**也在这里断 ✓**（**∴ ③ 已修** ⇒ 原四处现余三处 ✓）：
 //   ① **死父层建层**：服务端回 200 而图层**根本没进状态**（静默失败 ✗）；本地 404 当场拒绝 ✓
 //      ⇒ 断「服务端 200 ＋ 两边 `list_layers` 都没有它」＋「本地 404 且说清父层」✓。
 //   ② **changeset 半写**：服务端 `{visible:false, layer_id:"NOPE"}` 回 404 而 `visible` **已经落盘** ✗
 //      （实测 `service.rs:2437 commit_changeset_timed` 逐条提交再 `attempt?` ✓）；本地要么全落要么全不落 ✓
 //      ⇒ 断「服务端 false／本地 true」这个**分歧本身** ✓（**两条**：§C' 锁＋例外混写／§D② 坏引用 ✓）。
-//   ③ **复制图层丢 `type`**：服务端 `create_object` 净荷**不带 `type`**（`tools.rs:3921` ✓）
-//      ⇒ 副本对象被折成 `stroke` ✗（实测：调整对象复制后 `type:"stroke"` ✓）；本地保留原类型 ✓
-//      ⇒ 断「服务端 `stroke`／本地 `adjustment`」＋其余字段（z／visible／locked／enabled）相等 ✓。
+//   ③ **已修 ✓**（原「复制图层丢 `type`」：服务端不带 `type` ⇒ `stroke`；本地保留原类型）。
+//      现补上 `object_type_name` ⇒ 两边同为 `adjustment` ✓（§A'）。
 //   ④ **选区 `mode=add/subtract/intersect`**：服务端做**位图布尔合并**（`merge_selection_shapes` ✓）；
 //      本地**没有光栅器/PNG 编码器** ⇒ 明确 `501 not_implemented_locally` 且**一个原子都不写** ✓
 //      （原来的本地**直接写原子** ⇒ 「合并」被静默降级成「覆盖」✗）。**∴ 这是**能力边界**✗ 不是服务端缺陷 ✓；
 //      断「服务端 200 ＋ bitmap／area 2300」和「本地 501 ＋ 原选区逐坐标不变」✓（§E③）。
-//   **∴ ①②③ 是**服务端缺陷**（补丁封面写给上游 ✓），④ 是**本地能力边界** ✓ —— 都不是本地该模仿的对象 ✓。
+//   **∴ ①②是**服务端缺陷**（补丁封面写给上游 ✓），③已修 ✓（第 678 节），④是**本地能力边界** ✓ —— 都不是本地该模仿的对象 ✓。
 //
 // **∴ 前提 ✗**：需要**活着的服务端**（`run-criteria-local.sh` 起一个并把地址放进 argv[2] ✓）。
 //   **拿不到 ⇒ `exit(3)`（判据前提不成立 ≠ 产品失败 ✓）**。
@@ -409,10 +408,11 @@ await compareErrBoth("§A 复制从未有过的层", "duplicate_layer", { layer_
     `§A' 副本层里的对象数与回执 objects 不一致 ✗ 服务端 ${sCopyObjs.length}/${srv.body && srv.body.objects}｜本地 ${lCopyObjs.length}/${loc.body && loc.body.objects}`);
   check(sCopyObjs.length === 1 && lCopyObjs.length === 1,
     `§A' 副本层里应恰好 1 个对象 ✗ 服务端 ${sCopyObjs.length}｜本地 ${lCopyObjs.length}`);
-  // **上游缺陷 ✓：服务端 `create_object` 净荷**不带 `type` ✗**（`tools.rs:3921` ✓）
-  //   ⇒ **∴ 副本被折成 `stroke` ✓**（实测 ✓）⇒ **∴ 本地保留原类型 ✓ 不复刻 ✓**（台账 §658 记这条分歧）。
-  check(sCopyObjs[0] && sCopyObjs[0].type === "stroke",
-    `§A' 服务端的副本对象类型不再是 stroke（实测 ${JSON.stringify(sCopyObjs[0] && sCopyObjs[0].type)}）✗ ⇒ 上游修好「复制丢 type」后这条要跟着改（不是改本地）`);
+  // **已修 ✓：服务端 `create_object` 净荷原先不带 `type` ⇒ 副本折成 `stroke` ✗（`tools.rs:3921` ✓）。
+  //   现已补上 `object_type_name` ⇒ 两边同口径。断言从「服务端 stroke／本地 adjustment」
+  //   改为「两边都 adjustment」（台账 §658 记这条修复）。
+  check(sCopyObjs[0] && sCopyObjs[0].type === "adjustment",
+    `§A' 服务端的副本对象类型不再是 adjustment ✗ 实测 ${JSON.stringify(sCopyObjs[0] && sCopyObjs[0].type)}`);
   check(lCopyObjs[0] && lCopyObjs[0].type === "adjustment",
     `§A' 本地副本必须保留原类型 adjustment ✗ 实测 ${JSON.stringify(lCopyObjs[0] && lCopyObjs[0].type)}`);
   for (const k of ["z_index", "visible", "locked", "enabled"]) {
@@ -760,4 +760,4 @@ if (bad.length) {
   process.exit(1);
 }
 console.log("✓ PWA 本地写路径与服务端逐字段同口径（建/复用/改/删图层 13 字段折叠／效果与复活／update_object／级联／"
-  + "选区 mode/墓碑/重复/列表折叠／四处已知分歧断在分歧本身）");
+  + "选区 mode/墓碑/重复/列表折叠／三处已知分歧断在分歧本身）");
