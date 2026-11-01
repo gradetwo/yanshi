@@ -124,6 +124,10 @@ pub struct CommitResult {
     pub job_id: Option<JobId>,
     /// 是否触发了快照。
     pub snapshotted: bool,
+    /// 会话内存观测（#11 路线 A 采样）：只在工作区采样点上带值，
+    /// 其余提交为 `None`（序列化时省略，旧响应一字不改）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_status: Option<crate::service::SessionMemoryStatus>,
 }
 
 /// **E2**：一段提交里单个原子的结果（`replay_frames` 按段消费，与
@@ -1037,6 +1041,7 @@ impl Document {
                 warnings: Vec::new(),
                 job_id: None,
                 snapshotted: false,
+                memory_status: None,
             });
         }
 
@@ -1142,6 +1147,7 @@ impl Document {
             warnings,
             job_id,
             snapshotted,
+            memory_status: None,
         })
     }
 

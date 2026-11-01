@@ -727,6 +727,7 @@ const P2_TOOL_SPECS = {
   list_textures: [0, []],
   lock_layer: [1, [["layer_id","s",1]]],
   medium_stroke: [1, [["layer_id","s",1],["medium","s",1],["points","a",1],["size","n",0],["color","x",0],["color_to","x",0],["color_space","s",0],["color_mixing","s",0],["smooth","b",0],["symmetry","s",0],["load","n",0],["wetness","n",0],["texture","n",0],["object_id","s",0]]],
+  memory_status: [0, []],
   move_object: [1, [["object_id","s",1],["delta","o",0],["transform","o",0]]],
   new_document: [1, [["doc_id","s",0],["width","i",0],["height","i",0],["background","o",0],["mode","s",0]]],
   paint_mask: [1, [["mask_id","s",1],["points","a",1],["mode","s",0],["mask_value","n",0],["size","n",0],["softness","n",0],["opacity","n",0],["flow","n",0],["humanize","b",0],["preset","s",0]]],
