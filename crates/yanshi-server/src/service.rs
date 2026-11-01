@@ -1709,6 +1709,76 @@ impl Workspace {
         }
     }
 
+    /// **#11 路线 C 硬闸（单条）**：提交**之前**算量度，总量超过
+    /// 硬闸阈值即拒绝——不追加原子、不 journal（拒绝不丢已有工作）。
+    /// 拒绝形态复用 `ResourceExhausted`（与开文档闸、GC 闸同一哲学，
+    /// 不新设错误码）；detail 里给量度、阈值、出路。硬闸默认开启。
+    fn check_session_memory_hard_gate(&self) -> Result<()> {
+        let status = self.session_memory_status();
+        if status.total_bytes > status.hard_bytes {
+            let journal: u64 = status.documents.iter().map(|doc| doc.journal_bytes).sum();
+            let retained: u64 = status.documents.iter().map(|doc| doc.retained_bytes).sum();
+            return Err(YanshiError::new(
+                ErrorCode::ResourceExhausted,
+                ErrorContext::detail(format!(
+                    "会话内存量度 {} MB（磁盘原子日志 {} MB＋渲染保留 {} MB，分 {} 份文档）\
+                     超过硬闸上限 {} MB（YANSHI_SESSION_MEMORY_HARD_MB）⇒ 本次提交已拒绝，\
+                     已有工作不受影响。出路：① 先 close_document 掉不用的文档；\
+                     ② 调高 YANSHI_SESSION_MEMORY_HARD_MB；③ 分段后重试",
+                    status.total_bytes / (1_024 * 1_024),
+                    journal / (1_024 * 1_024),
+                    retained / (1_024 * 1_024),
+                    status.documents.len(),
+                    status.hard_bytes / (1_024 * 1_024),
+                )),
+            ));
+        }
+        Ok(())
+    }
+
+    /// **#11 路线 C 硬闸（整批）**：整批先估算，超阈值整批拒绝，
+    /// 不做批内部分提交。增量口径 = 目标文档实测平均磁盘字节
+    /// （journal_len / 原子数；无原子时为 0）× 批原子数——批量
+    /// 提交的磁盘增长事先可算，不靠原子数 × 100 KiB 的高估口径。
+    fn check_session_memory_hard_gate_for_batch(
+        &self,
+        doc_id: &str,
+        atom_count: usize,
+    ) -> Result<()> {
+        let status = self.session_memory_status();
+        let journal = self
+            .persist
+            .as_ref()
+            .map(|persist| persist.journal_len(doc_id).unwrap_or(0))
+            .unwrap_or(0);
+        let atoms = self
+            .documents
+            .get(doc_id)
+            .map(|document| document.atom_count() as u64)
+            .unwrap_or(0);
+        let avg = journal.checked_div(atoms).unwrap_or(0);
+        let projected = status
+            .total_bytes
+            .saturating_add(avg.saturating_mul(atom_count as u64));
+        if projected > status.hard_bytes {
+            return Err(YanshiError::new(
+                ErrorCode::ResourceExhausted,
+                ErrorContext::detail(format!(
+                    "整批 {} 条原子预估提交后会话内存将达 {} MB（当前 {} MB＋预估增量 {} MB），\
+                     超过硬闸上限 {} MB（YANSHI_SESSION_MEMORY_HARD_MB）⇒ 整批已拒绝，\
+                     一条原子未落盘。出路：① 先 close_document 掉不用的文档；\
+                     ② 调高 YANSHI_SESSION_MEMORY_HARD_MB；③ 拆小批次后重试",
+                    atom_count,
+                    projected / (1_024 * 1_024),
+                    status.total_bytes / (1_024 * 1_024),
+                    projected.saturating_sub(status.total_bytes) / (1_024 * 1_024),
+                    status.hard_bytes / (1_024 * 1_024),
+                )),
+            ));
+        }
+        Ok(())
+    }
+
     /// 文档是否「使用中」：有 inflight 操作、或有打开的
     /// changeset / transaction ⇒ 预算卸载必须跳过（卸掉正在
     /// 编辑的文档等于把用户手里的工作抽走）。
@@ -2623,6 +2693,8 @@ impl Workspace {
         owner: bool,
         phases: &mut CommitPhases,
     ) -> Result<CommitResult> {
+        // **#11 路线 C**：硬闸在提交之前（先算量度再落原子；拒绝不追加原子、不 journal）。
+        self.check_session_memory_hard_gate()?;
         // **提交与落盘解耦** ✓：先拿到提交结果（可能是 Err ✓），**再按水位落盘** ✓ ——
         // 冲突拒绝在返回 Err 之前已把冲突图层原子追加进日志 ✓，
         // 旧写法 `commit_as_timed(...)?` 会**短路掉落盘** ⇒ 那条原子只在内存 ✗ ⇒ 重开就没了 ✓。
@@ -2669,6 +2741,8 @@ impl Workspace {
         changeset_id: ChangesetId,
         phases: &mut CommitPhases,
     ) -> Result<Vec<CommitResult>> {
+        // **#11 路线 C**：整批先估算再落原子，超阈值整批拒绝（不做批内部分提交）。
+        self.check_session_memory_hard_gate_for_batch(doc_id, atoms.len())?;
         let mut results = Vec::with_capacity(atoms.len());
         for atom in atoms {
             // **同 `commit_timed` 的规矩** ✓：先落盘（按水位 ✓）再传播提交结果 ⇒
@@ -5268,6 +5342,12 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// 持锁后先清两档阈值变量：防前一个测试失败泄漏的变量干扰后一个测试。
+    fn session_memory_clear_threshold_vars() {
+        std::env::remove_var("YANSHI_SESSION_MEMORY_WARN_MB");
+        std::env::remove_var("YANSHI_SESSION_MEMORY_HARD_MB");
+    }
+
     fn session_memory_layer_atom(layer_id: &str) -> Atom {
         Atom::new(
             yanshi_core::AtomKind::CreateLayer,
@@ -5283,6 +5363,7 @@ mod tests {
     #[test]
     fn session_memory_status_shape_and_defaults() {
         let _guard = session_memory_env_lock();
+        session_memory_clear_threshold_vars();
         let mut workspace = Workspace::in_memory(DocumentSettings::default());
         workspace
             .create_document(NewDocument::new("mem_doc", 32, 32), "human:1", "session:a")
@@ -5324,6 +5405,7 @@ mod tests {
     #[test]
     fn session_memory_sampling_every_100_commits() {
         let _guard = session_memory_env_lock();
+        session_memory_clear_threshold_vars();
         let mut workspace = Workspace::in_memory(DocumentSettings::default());
         workspace
             .create_document(
@@ -5379,6 +5461,7 @@ mod tests {
     #[test]
     fn session_memory_level_change_attaches() {
         let _guard = session_memory_env_lock();
+        session_memory_clear_threshold_vars();
         let mut workspace = Workspace::in_memory(DocumentSettings::default());
         workspace
             .create_document(
@@ -5429,5 +5512,167 @@ mod tests {
             third.memory_status.is_none(),
             "级别不变且未到采样点时不附加"
         );
+        session_memory_clear_threshold_vars();
+    }
+
+    /// #11 路线 C：超硬闸的单条提交被拒绝（ResourceExhausted），
+    /// head 不推进、文档仍在；阈值恢复后同一笔可续（被拒那笔从未进日志）。
+    #[test]
+    fn session_memory_hard_gate_rejects_and_preserves_work() {
+        let _guard = session_memory_env_lock();
+        session_memory_clear_threshold_vars();
+        let root = temp_root("memgate");
+        let mut workspace = Workspace::with_file_store(&root, DocumentSettings::default()).unwrap();
+        workspace
+            .create_document(NewDocument::new("gate_doc", 32, 32), "human:1", "session:a")
+            .unwrap();
+        workspace
+            .commit(
+                "gate_doc",
+                session_memory_layer_atom("layer_1"),
+                "human:1",
+                false,
+            )
+            .unwrap();
+        let head_before = workspace.document("gate_doc").unwrap().head_seq();
+        let status = workspace.session_memory_status();
+        assert!(
+            status.total_bytes > 0,
+            "落盘后总量必须 >0，否则硬闸测不到：{status:?}"
+        );
+        std::env::set_var("YANSHI_SESSION_MEMORY_HARD_MB", "0");
+        let error = workspace
+            .commit(
+                "gate_doc",
+                session_memory_layer_atom("layer_2"),
+                "human:1",
+                false,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            ErrorCode::ResourceExhausted,
+            "超硬闸须报 ResourceExhausted"
+        );
+        assert_eq!(
+            workspace.document("gate_doc").unwrap().head_seq(),
+            head_before,
+            "被拒提交不得推进 head"
+        );
+        assert!(workspace.document("gate_doc").is_some(), "被拒后文档仍在");
+        session_memory_clear_threshold_vars();
+        workspace
+            .commit(
+                "gate_doc",
+                session_memory_layer_atom("layer_2"),
+                "human:1",
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            workspace.document("gate_doc").unwrap().head_seq(),
+            head_before + 1,
+            "阈值恢复后同一笔可续"
+        );
+    }
+
+    /// #11 路线 C：超硬闸的整批提交整批拒绝（一条原子也不进），
+    /// 阈值恢复后整批可续（两笔全进）。
+    #[test]
+    fn session_memory_hard_gate_batch_rejects_atomically() {
+        let _guard = session_memory_env_lock();
+        session_memory_clear_threshold_vars();
+        let root = temp_root("memgate_batch");
+        let mut workspace = Workspace::with_file_store(&root, DocumentSettings::default()).unwrap();
+        workspace
+            .create_document(
+                NewDocument::new("gate_batch", 32, 32),
+                "human:1",
+                "session:a",
+            )
+            .unwrap();
+        workspace
+            .commit(
+                "gate_batch",
+                session_memory_layer_atom("layer_1"),
+                "human:1",
+                false,
+            )
+            .unwrap();
+        let head_before = workspace.document("gate_batch").unwrap().head_seq();
+        std::env::set_var("YANSHI_SESSION_MEMORY_HARD_MB", "0");
+        let atoms = vec![
+            session_memory_layer_atom("layer_2"),
+            session_memory_layer_atom("layer_3"),
+        ];
+        let error = workspace
+            .commit_changeset(
+                "gate_batch",
+                atoms,
+                "human:1",
+                false,
+                yanshi_core::Changeset::new_id(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            ErrorCode::ResourceExhausted,
+            "整批超硬闸须报 ResourceExhausted"
+        );
+        assert_eq!(
+            workspace.document("gate_batch").unwrap().head_seq(),
+            head_before,
+            "整批被拒时一条原子也不得进"
+        );
+        session_memory_clear_threshold_vars();
+        let atoms = vec![
+            session_memory_layer_atom("layer_2"),
+            session_memory_layer_atom("layer_3"),
+        ];
+        let results = workspace
+            .commit_changeset(
+                "gate_batch",
+                atoms,
+                "human:1",
+                false,
+                yanshi_core::Changeset::new_id(),
+            )
+            .unwrap();
+        assert_eq!(results.len(), 2, "阈值恢复后整批两笔全进");
+        assert_eq!(
+            workspace.document("gate_batch").unwrap().head_seq(),
+            head_before + 2
+        );
+    }
+
+    /// #11 软硬分离：警告级（warn）只报不拒——警告阈值调到 0 MB
+    /// 时提交仍成功，且回执附加 warn 级。
+    #[test]
+    fn session_memory_hard_gate_warn_level_still_passes() {
+        let _guard = session_memory_env_lock();
+        session_memory_clear_threshold_vars();
+        let mut workspace = Workspace::in_memory(DocumentSettings::default());
+        workspace
+            .create_document(
+                NewDocument::new("gate_warn", 32, 32),
+                "human:1",
+                "session:a",
+            )
+            .unwrap();
+        std::env::set_var("YANSHI_SESSION_MEMORY_WARN_MB", "0");
+        let result = workspace
+            .commit(
+                "gate_warn",
+                session_memory_layer_atom("layer_1"),
+                "human:1",
+                false,
+            )
+            .unwrap();
+        let status = result
+            .memory_status
+            .as_ref()
+            .expect("跨进 warn 级须附加回执");
+        assert_eq!(status.level, "warn", "警告级只报不拒");
+        session_memory_clear_threshold_vars();
     }
 }
