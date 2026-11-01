@@ -38,7 +38,7 @@ use serde_json::{json, Value};
 use std::io::{BufReader, Read, Write};
 use yanshi_server::DocumentSettings;
 use yanshi_server::Workspace;
-use yanshi_server::{Profile, ToolContext, ToolRegistry};
+use yanshi_server::{Profile, ToolContext, ToolRegistry, ToolsListQuery};
 
 /// MCP 协议版本（与 MCP 规范 2024-11-05 对齐）。
 pub const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -342,6 +342,14 @@ impl Server {
         ToolRegistry::with_profiles(profiles).tools_list_json()
     }
 
+    /// 工具清单（`tools/list`，带查询）。
+    ///
+    /// 查询参数见 `ToolsListQuery`（`q`／`profile`／`limit`／`offset`，全可选）。
+    /// **全不传时输出与 `tools_list` 逐字节相同**（不加 `total`）——老客户端不受影响。
+    pub fn tools_list_filtered(&self, query: &ToolsListQuery) -> Value {
+        self.registry.tools_list_filtered(query)
+    }
+
     /// 工具清单（`tools/list`）。
     ///
     /// **与 HTTP 的 `GET /api/tools` 是同一份** ✓ —— 两边都调注册表那一个函数 ✗
@@ -384,7 +392,12 @@ impl Server {
                 Ok(result)
             }
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(self.tools_list()),
+            "tools/list" => match ToolsListQuery::from_json(&params) {
+                // **查询参数非法是调用方错误**（不是静默忽略）：按 JSON-RPC 惯例
+                // 报 `INVALID_PARAMS`（-32602）并说清原因。
+                Ok(query) => Ok(self.tools_list_filtered(&query)),
+                Err(message) => Err((error_code::INVALID_PARAMS, message)),
+            },
             "tools/call" => self.tools_call(&params),
             other => Err((error_code::METHOD_NOT_FOUND, format!("未知方法 {other}"))),
         };

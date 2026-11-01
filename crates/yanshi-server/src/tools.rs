@@ -772,6 +772,128 @@ pub struct ToolRegistry {
     tool_allowlist: Option<BTreeSet<&'static str>>,
 }
 
+/// profile 展开规则（`with_profiles` 与查询过滤共用 —— 同一规则只写一处）。
+///
+/// workflow 预设自带分层集（Oil/Pastel ⇒ History + Retouch，等等），
+/// 且 `Core` 恒启用。查询时的 `profile` 参数按同一规则展开后过滤。
+fn expand_profiles(profiles: &[Profile]) -> BTreeSet<Profile> {
+    let mut enabled: BTreeSet<Profile> = BTreeSet::new();
+    for profile in profiles.iter().copied() {
+        enabled.insert(profile);
+        match profile {
+            Profile::Oil | Profile::Pastel => {
+                enabled.insert(Profile::History);
+                enabled.insert(Profile::Retouch);
+            }
+            Profile::Watercolor | Profile::Sketch | Profile::Ink => {
+                enabled.insert(Profile::History);
+            }
+            Profile::Photo => {
+                enabled.insert(Profile::History);
+                enabled.insert(Profile::Changeset);
+                enabled.insert(Profile::Retouch);
+                enabled.insert(Profile::Structure);
+            }
+            Profile::Svg => {
+                enabled.insert(Profile::History);
+                enabled.insert(Profile::Changeset);
+                enabled.insert(Profile::Structure);
+            }
+            _ => {}
+        }
+    }
+    enabled.insert(Profile::Core);
+    enabled
+}
+
+/// `tools/list` 查询参数（全部可选；全不传 = 今天的行为）。
+///
+/// * `q`：子串匹配（名称 + 描述），大小写不敏感。
+/// * `profile`：按 profile 过滤，过滤 = `with_profiles`（含显式子集请求的白名单收窄）；
+///   名字是 `Profile::parse` 接受的小写名（如 `photo`，大小写敏感——与现有解析一致）。
+/// * `limit`／`offset`：分页；`offset` 越界 ⇒ 空页（不报错），`total` 照给。
+/// * 未知字段忽略；已知字段类型不对或 profile 名未知 ⇒ 错（不静默吞掉）。
+pub struct ToolsListQuery {
+    /// 子串（名称 + 描述）。
+    pub q: Option<String>,
+    /// 请求的 profile（展开后过滤）。
+    pub profiles: Option<Vec<Profile>>,
+    /// 每页条数（缺省 = 全部）。
+    pub limit: Option<usize>,
+    /// 起始下标（缺省 = 0）。
+    pub offset: Option<usize>,
+}
+
+impl ToolsListQuery {
+    /// 全不传？
+    pub fn is_empty(&self) -> bool {
+        self.q.is_none() && self.profiles.is_none() && self.limit.is_none() && self.offset.is_none()
+    }
+
+    /// 从 JSON 对象解析（MCP `tools/list` 的 `params`；未知字段忽略）。
+    ///
+    /// 返回 `std::result::Result`：本文件里的 `Result` 是 yanshi 的单泛型别名
+    ///（`YanshiError`），写 `Result<_, String>` 会编不过。
+    pub fn from_json(params: &Value) -> std::result::Result<Self, String> {
+        let object = match params.as_object() {
+            Some(map) => map,
+            None => return Err("tools/list 参数必须是 JSON 对象".to_owned()),
+        };
+        let q = match object.get("q") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(text)) => Some(text.clone()),
+            Some(_) => return Err("tools/list 的 q 必须是字符串".to_owned()),
+        };
+        let profiles = match object.get("profile") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(text)) => Some(vec![parse_profile(text)?]),
+            Some(Value::Array(items)) => {
+                let mut parsed = Vec::new();
+                for item in items {
+                    match item.as_str() {
+                        Some(text) => parsed.push(parse_profile(text)?),
+                        None => {
+                            return Err("tools/list 的 profile 数组元素必须是字符串".to_owned());
+                        }
+                    }
+                }
+                Some(parsed)
+            }
+            Some(_) => return Err("tools/list 的 profile 必须是字符串或字符串数组".to_owned()),
+        };
+        let limit = parse_non_negative(object.get("limit"), "limit")?;
+        let offset = parse_non_negative(object.get("offset"), "offset")?;
+        Ok(Self {
+            q,
+            profiles,
+            limit,
+            offset,
+        })
+    }
+}
+
+/// 解析 profile 名（未知名 ⇒ 错，错里带上名字）。
+fn parse_profile(text: &str) -> std::result::Result<Profile, String> {
+    Profile::parse(text).map_err(|_| format!("tools/list 的 profile 未知：{text}"))
+}
+
+/// 解析非负整数参数（缺省 = 不传；负数／非整数／非数字 ⇒ 错）。
+fn parse_non_negative(
+    value: Option<&Value>,
+    name: &str,
+) -> std::result::Result<Option<usize>, String> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(number)) => match number.as_u64() {
+            Some(n) => usize::try_from(n)
+                .map(Some)
+                .map_err(|_| format!("tools/list 的 {name} 超出范围")),
+            None => Err(format!("tools/list 的 {name} 必须是非负整数")),
+        },
+        Some(_) => Err(format!("tools/list 的 {name} 必须是非负整数")),
+    }
+}
+
 impl ToolRegistry {
     /// 核心层（默认注册，140 个）。
     pub fn core() -> Self {
@@ -789,32 +911,7 @@ impl ToolRegistry {
     /// 组成不触发（判据与裁定出处见 `whitelist_for`）。生效的白名单可经
     /// `tool_allowlist()` 读回。
     pub fn with_profiles(profiles: &[Profile]) -> Self {
-        let mut enabled: BTreeSet<Profile> = BTreeSet::new();
-        for profile in profiles.iter().copied() {
-            enabled.insert(profile);
-            match profile {
-                Profile::Oil | Profile::Pastel => {
-                    enabled.insert(Profile::History);
-                    enabled.insert(Profile::Retouch);
-                }
-                Profile::Watercolor | Profile::Sketch | Profile::Ink => {
-                    enabled.insert(Profile::History);
-                }
-                Profile::Photo => {
-                    enabled.insert(Profile::History);
-                    enabled.insert(Profile::Changeset);
-                    enabled.insert(Profile::Retouch);
-                    enabled.insert(Profile::Structure);
-                }
-                Profile::Svg => {
-                    enabled.insert(Profile::History);
-                    enabled.insert(Profile::Changeset);
-                    enabled.insert(Profile::Structure);
-                }
-                _ => {}
-            }
-        }
-        enabled.insert(Profile::Core);
+        let enabled = expand_profiles(profiles);
         let mut tools: Vec<ToolSpec> = ALL_TOOLS
             .iter()
             .copied()
@@ -870,6 +967,66 @@ impl ToolRegistry {
         self.tools.iter().find(|tool| tool.name == name)
     }
 
+    /// 单个工具的清单条目（`tools_list_json` 与 `tools_list_filtered` 共用）。
+    fn tool_list_value(&self, tool: &ToolSpec) -> Value {
+        let mut value = self
+            .input_schema(tool.name)
+            .unwrap_or_else(|| json!({"name": tool.name}));
+        // **每个工具的可复制调用示例**（目标第 6 条）：直接给成 JSON **对象**
+        //（客户端拿去就能当 `arguments` 用）。来源是 `TOOL_EXAMPLES`，
+        // 而它由测试保证**只使用该工具声明过的参数名**（见本文件末尾的测试）。
+        if let Some((_, example)) = TOOL_EXAMPLES.iter().find(|(name, _)| *name == tool.name) {
+            if let Ok(parsed) = serde_json::from_str::<Value>(example) {
+                value["example"] = parsed;
+            }
+        }
+        value
+    }
+
+    /// **工具清单 JSON（带查询）** —— `tools_list_json` 的过滤版。
+    ///
+    /// 规则：先按 `q`／`profile` 过滤，再按 `limit`／`offset` 切页；
+    /// `total` = 过滤后总数（切页前）。**全不传时输出与 `tools_list_json` 逐字节相同**
+    /// （不加 `total` 字段——老客户端、PWA 工具表生成器、现有判据不受影响）；
+    /// 任一参数出现时才加 `total`。`offset` 越界 ⇒ 空页 + `total`，不报错。
+    pub fn tools_list_filtered(&self, query: &ToolsListQuery) -> Value {
+        let mut tools: Vec<&ToolSpec> = self.tools().iter().collect();
+        if let Some(needle) = &query.q {
+            let needle = needle.to_lowercase();
+            tools.retain(|tool| {
+                tool.name.to_lowercase().contains(&needle)
+                    || tool.summary.to_lowercase().contains(&needle)
+            });
+        }
+        if let Some(profiles) = &query.profiles {
+            // **与 `with_profiles` 同一套过滤**（含 Photo/Svg 显式子集请求的白名单收窄）：
+            // 查询的 profile 语义 = 该 profile 预设服务会给出的清单，不另发明一套。
+            let allowed: BTreeSet<&str> = ToolRegistry::with_profiles(profiles)
+                .tools()
+                .iter()
+                .map(|tool| tool.name)
+                .collect();
+            tools.retain(|tool| allowed.contains(tool.name));
+        }
+        let total = tools.len();
+        let offset = query.offset.unwrap_or(0);
+        let limit = query.limit.unwrap_or(total);
+        let page: Vec<Value> = tools
+            .iter()
+            .skip(offset)
+            .take(limit)
+            .map(|tool| self.tool_list_value(tool))
+            .collect();
+        let mut out = json!({
+            "tools": page,
+            "profiles": self.profiles().iter().map(|profile| profile.as_str()).collect::<Vec<_>>(),
+        });
+        if !query.is_empty() {
+            out["total"] = json!(total);
+        }
+        out
+    }
+
     /// **工具清单 JSON** ✓ —— HTTP 的 `GET /api/tools` 与 MCP 的 `tools/list` **必须逐字相同** ✗。
     ///
     /// **为什么放在这里** ✓：外部绘画 agent 实测报"HTTP 没有工具清单 ⇒ 只能去读 11,834 行 Rust"✗，
@@ -877,25 +1034,11 @@ impl ToolRegistry {
     /// ⇒ 清单只由**注册表**生成一次 ✓，HTTP 与 MCP 都调它 ✓。
     /// **判据**（外部 agent 自己提的 ✓）：两边的工具名集合**逐字相同** ✓（有测试 ✓）。
     pub fn tools_list_json(&self) -> Value {
+        // 条目构造与 `tools_list_filtered` 共用 `tool_list_value`（同一形状只写一处）。
         let tools: Vec<Value> = self
             .tools()
             .iter()
-            .map(|tool| {
-                let mut value = self
-                    .input_schema(tool.name)
-                    .unwrap_or_else(|| json!({"name": tool.name}));
-                // **每个工具的可复制调用示例**（目标第 6 条）：直接给成 JSON **对象**
-                //（客户端拿去就能当 `arguments` 用）。来源是 `TOOL_EXAMPLES`，
-                // 而它由测试保证**只使用该工具声明过的参数名**（见本文件末尾的测试）。
-                if let Some((_, example)) =
-                    TOOL_EXAMPLES.iter().find(|(name, _)| *name == tool.name)
-                {
-                    if let Ok(parsed) = serde_json::from_str::<Value>(example) {
-                        value["example"] = parsed;
-                    }
-                }
-                value
-            })
+            .map(|tool| self.tool_list_value(tool))
             .collect();
         json!({
             "tools": tools,
@@ -1262,6 +1405,16 @@ fn input_schema(tool: &ToolSpec) -> Value {
         properties.insert(param.name.to_owned(), schema);
         if param.required {
             required.push(Value::String(param.name.to_owned()));
+        }
+    }
+    // **描述表只进 `brush_stroke` 的 `brush_params`**（其余两处 `brush_params` 的描述
+    // 已写明“与 `brush_stroke` 同一套”，不重复贴表——同一事实只写一处）。
+    if tool.name == "brush_stroke" {
+        if let Some(Value::Object(param)) = properties.get_mut("brush_params") {
+            if let Some(Value::String(description)) = param.get_mut("description") {
+                description.push_str("\n\n");
+                description.push_str(&brush_params_catalog_text());
+            }
         }
     }
     json!({
@@ -19639,6 +19792,153 @@ pub(crate) fn replay_brush_bitmap(
     let mut ctx = ToolContext::new(workspace, doc_id, "system:replay", "session:replay");
     let paint = replay_brush_paint(&mut ctx, source)?;
     Ok(paint.rgba)
+}
+
+/// `brush_params` 子键描述表：`{规范名: 数值}` 里每个键的一句话语义。
+///
+/// **为什么这张表必须存在**：`brush_params` 是自由 Object（`additionalProperties: true`），
+/// 其子键（`.myb` 规范名）此前只在 `docs/design/brush-params.md` 有名字清单，
+/// 类型、缺省、语义全靠试错。本表把三者钉进 `brush_stroke` 的 schema 描述里。
+///
+/// **生成方式（表本身不手写）**：键集合取 `BrushSetting::ALL`（注册表是唯一来源）；
+/// 缺省值取空笔刷实测值（`hokusai::myb::from_str` 载入空 `.myb` 后的 `base_value`，
+/// 即 libmypaint 缺省）；语义行见 `BRUSH_PARAM_GLOSSES`（一处写、判据盯同步）。
+/// 注册表新增字段而此处未补语义行 ⇒ 描述里出现“语义待补”标记 ⇒ 判据红。
+const BRUSH_PARAM_GLOSSES: &[(&str, &str)] = &[
+    ("opaque", "不透明度（0=透明，1=不透明）"),
+    ("opaque_multiply", "不透明度乘数（缺省随压感 0→1）"),
+    ("opaque_linearize", "不透明度线性化开关（0/1）"),
+    ("radius_logarithmic", "笔尖半径（对数标度）"),
+    ("hardness", "硬度（边缘锐度，0=最软，1=最硬）"),
+    ("anti_aliasing", "抗锯齿量（0/1 开关）"),
+    ("dabs_per_basic_radius", "每单位基础半径的落点数"),
+    ("dabs_per_actual_radius", "每单位实际半径的落点数"),
+    ("dabs_per_second", "每秒落点数"),
+    ("radius_by_random", "半径随机量"),
+    ("speed1_slowness", "速度 1 平滑时间"),
+    ("speed2_slowness", "速度 2 平滑时间"),
+    ("speed1_gamma", "速度 1 响应曲率"),
+    ("speed2_gamma", "速度 2 响应曲率"),
+    ("speed_ink", "速度出墨量"),
+    ("pressure_shape", "压感曲线形态"),
+    ("stroke_taper", "笔触收尾渐细量"),
+    ("offset_by_random", "随机偏移量"),
+    ("offset_by_speed", "速度偏移量"),
+    ("offset_by_speed_slowness", "速度偏移平滑时间"),
+    ("slow_tracking", "慢速跟随量（落点滞后平滑）"),
+    ("slow_tracking_per_dab", "每落点跟随量"),
+    ("tracking_noise", "跟随噪声量"),
+    ("color_h", "笔尖颜色色相基值"),
+    ("color_s", "笔尖颜色饱和度基值"),
+    ("color_v", "笔尖颜色明度基值"),
+    ("restore_color", "向原色恢复量"),
+    ("change_color_h", "颜色色相变化量"),
+    ("change_color_l", "颜色亮度变化量"),
+    ("change_color_hsl_s", "颜色 HSL 饱和度变化量"),
+    ("change_color_v", "颜色明度变化量"),
+    ("change_color_hsv_s", "颜色 HSV 饱和度变化量"),
+    ("smudge", "涂抹量（抹开已有颜色）"),
+    ("smudge_length", "涂抹长度"),
+    ("smudge_length_log", "涂抹长度对数"),
+    ("smudge_radius_log", "涂抹半径对数"),
+    ("eraser", "橡皮擦开关（1=擦除）"),
+    ("stroke_threshold", "起笔阈值（低于此压力不出墨）"),
+    ("stroke_duration_logarithmic", "笔触持续时间（对数）"),
+    ("stroke_holdtime", "按住停留时间"),
+    ("custom_input", "自定义输入值"),
+    ("custom_input_slowness", "自定义输入平滑时间"),
+    ("elliptical_dab_ratio", "椭圆笔尖长短比"),
+    ("elliptical_dab_angle", "椭圆笔尖角度（度）"),
+    ("direction_filter", "笔尖方向平滑量"),
+    ("lock_alpha", "锁定透明通道开关（只改颜色不改 alpha）"),
+    ("colorize", "着色量"),
+    ("snap_to_pixel", "对齐像素开关"),
+    ("pressure_gain_log", "压感增益对数"),
+    ("posterize", "海报化开关（色阶量化）"),
+    ("posterize_num", "海报化程度"),
+    ("paint_mode", "混色模式（0=直接，1=光谱颜料）"),
+    ("smudge_transparency", "涂抹透明度量"),
+    ("offset_y", "落点 Y 偏移"),
+    ("offset_x", "落点 X 偏移"),
+    ("offset_angle", "落点偏移方向角"),
+    ("offset_angle_asc", "偏移角上升量"),
+    ("offset_angle_view", "偏移角视角量"),
+    ("offset_angle_2", "第二偏移方向角"),
+    ("offset_angle_2_asc", "第二偏移角上升量"),
+    ("offset_angle_2_view", "第二偏移角视角量"),
+    ("offset_angle_adj", "偏移角调整量"),
+    ("offset_multiplier", "偏移倍率"),
+    ("gridmap_scale", "网格笔尖缩放"),
+    ("gridmap_scale_x", "网格笔尖 X 缩放"),
+    ("gridmap_scale_y", "网格笔尖 Y 缩放"),
+];
+
+/// 描述表缺失语义行时的占位标记（生产输出里出现它即表示表未同步；判据禁它）。
+const BRUSH_PARAM_GLOSS_PENDING: &str = "（语义待补）";
+
+/// 描述表的一行。
+pub(crate) struct BrushParamCatalogEntry {
+    /// 规范名（`BrushSetting::cname()`）。
+    pub cname: &'static str,
+    /// 空笔刷实测缺省 `base_value`。
+    pub default_base: f32,
+    /// 空笔刷里该设置是否另带输入曲线（如 `opaque_multiply` 的 pressure 曲线）。
+    pub has_inputs: bool,
+    /// 一句话语义；缺失时为占位标记。
+    pub gloss: &'static str,
+}
+
+/// 生成描述表条目（键集合 = `BrushSetting::ALL`，缺省 = 空笔刷实测值）。
+pub(crate) fn brush_params_catalog_entries() -> Vec<BrushParamCatalogEntry> {
+    // 空笔刷：`.myb` 一个设置都不写 ⇒ 载入后各设置的 `base_value` 即 libmypaint 缺省。
+    // 载入失败（静态 JSON 不可能失败）时退回全 0，保证 `tools/list` 不因此中断。
+    let empty = hokusai::myb::from_str("{}").ok();
+    hokusai::BrushSetting::ALL
+        .iter()
+        .map(|setting| {
+            let cname = setting.cname();
+            let (default_base, has_inputs) = match &empty {
+                Some(brush) => {
+                    let value = brush.get(*setting);
+                    (value.base_value, !value.inputs.is_empty())
+                }
+                None => (0.0, false),
+            };
+            let gloss = BRUSH_PARAM_GLOSSES
+                .iter()
+                .find(|(name, _)| *name == cname)
+                .map(|(_, gloss)| *gloss)
+                .unwrap_or(BRUSH_PARAM_GLOSS_PENDING);
+            BrushParamCatalogEntry {
+                cname,
+                default_base,
+                has_inputs,
+                gloss,
+            }
+        })
+        .collect()
+}
+
+/// 描述表渲染文本（接在 `brush_stroke` 的 `brush_params` 描述之后）。
+pub(crate) fn brush_params_catalog_text() -> String {
+    let entries = brush_params_catalog_entries();
+    let mut out = String::new();
+    out.push_str(&format!(
+        "`brush_params` 子键描述表（{} 项，与 `BrushSetting::ALL` 同步生成）：\n",
+        entries.len()
+    ));
+    out.push_str("- 每个值必须是数值，覆盖该设置的 `base_value`（`inputs` 动力学曲线不动）。\n");
+    out.push_str("- schema 不拦未知键（`additionalProperties: true`），但引擎应用时校验规范名：未知键报 `invalid_argument` 并给相近名提示。\n");
+    out.push_str("- 语义别名组（`hand_jitter` 等，见 `docs/design/brush-params.md`）也接受，展开成真名后按本表计。\n");
+    out.push_str("- 缺省列 = 该笔刷 `.myb` 未写该项时生效的 libmypaint 缺省；其余项缺省 0.0。\n");
+    for entry in &entries {
+        out.push_str(&format!("- `{}`（缺省 {}", entry.cname, entry.default_base));
+        if entry.has_inputs {
+            out.push_str("，另带输入曲线");
+        }
+        out.push_str(&format!("）— {}\n", entry.gloss));
+    }
+    out
 }
 
 /// **`.myb` 落笔的唯一实现** ✓ —— 解析笔刷 ✓、按 `size` / `color` 覆盖 ✓、补间 ✓、盖章 ✓、读回 RGBA ✓。
