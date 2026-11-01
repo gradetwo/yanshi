@@ -596,6 +596,12 @@ fn diagnostics_secrets() -> Vec<String> {
 ///
 /// 7.5 的工具返回默认是 URL；当结果里带 `image`（小尺寸预览）时额外发一条
 /// MCP `image` content，避免 Agent 无法 fetch 任意 URL。
+///
+/// 失败信封的结构化回执（报告 #4）：`isError` 为真时（即回执顶层 `ok` 为
+/// false；A6 方案 ①：`ok` 即全成），结果里另带 `structuredContent`，内容与
+/// text 块是同一份回执 JSON。调用方不要只读 `isError` 就丢弃回执：取
+/// `result["structuredContent"]["all_ok"]` / `["failed_calls"]` 即可结构化地
+/// 拿到失败详情；text 块保留不动，老客户端行为不变。成功时不带此字段。
 pub fn tool_result(value: Value, inline_images: bool) -> Value {
     let is_error = value.get("ok").and_then(Value::as_bool) == Some(false);
     let mut content = Vec::new();
@@ -700,7 +706,13 @@ pub fn tool_result(value: Value, inline_images: bool) -> Value {
         }
     }
     content.insert(0, json!({"type": "text", "text": text_value.to_string()}));
-    json!({"content": content, "isError": is_error})
+    let mut result = json!({"content": content, "isError": is_error});
+    if is_error {
+        // 失败信封的结构化回执（报告 #4）：与 text 块同一份回执 JSON，
+        // 供调用方直接取字段，不必解析 text 字符串。成功时不带此字段。
+        result["structuredContent"] = text_value;
+    }
+    result
 }
 
 /// **P-20：父死子死** ✓ —— `serve` 起始拉一个看门线程 ✓。
@@ -1568,5 +1580,78 @@ mod tests {
             json!(5),
             "3 笔 batch 之后日志应有 5 个原子：{log}"
         );
+    }
+
+    #[test]
+    fn failed_batch_carries_structured_receipt() {
+        let mut server = server();
+        tool(&mut server, "create_layer", json!({"layer_id": "layer_1"}));
+        let result = tool(
+            &mut server,
+            "batch",
+            json!({
+                "calls": [
+                    {"tool": "brush_stroke", "arguments": {"layer_id": "layer_1", "brush": "oil-01-paint", "size": 2.0, "color": {"r": 120, "g": 60, "b": 30, "a": 255}, "points": [[14.0, 14.0, 0.8], [16.0, 16.0, 0.95], [18.0, 18.0, 0.9]], "wait_for_render": false}},
+                    {"tool": "brush_stroke", "arguments": {"layer_id": "layer_1", "brush": "oil-01-paint", "size": 2.0, "color": {"r": 120, "g": 60, "b": 30, "a": 255}, "points": [[-402.0, 10.0, 0.8], [-400.0, 10.0, 0.95], [-398.0, 10.0, 0.9]], "wait_for_render": false}},
+                ]
+            }),
+        );
+        // A6 不变：有子调用失败 ⇒ isError 真、顶层 ok 假、text 块保留。
+        assert_eq!(result["isError"], json!(true));
+        assert_eq!(result["content"][0]["type"], json!("text"));
+        let text_receipt = text_of(&result);
+        assert_eq!(text_receipt["ok"], json!(false));
+        assert_eq!(text_receipt["all_ok"], json!(false));
+        assert_eq!(text_receipt["ok_count"], json!(1));
+        assert_eq!(text_receipt["fail_count"], json!(1));
+        assert_eq!(text_receipt["failed_calls"].as_array().unwrap().len(), 1);
+        // 结构化回执：与 text 块同一份 JSON，可直接取字段，不必解析字符串。
+        let structured = &result["structuredContent"];
+        assert!(
+            structured.is_object(),
+            "失败批应带 structuredContent：{result}"
+        );
+        assert_eq!(structured["all_ok"], json!(false));
+        assert_eq!(structured["failed_calls"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            structured, &text_receipt,
+            "structuredContent 应与 text 块同一份回执"
+        );
+        // 其余笔照常落上：好笔的原子在回执里。
+        assert!(
+            !text_receipt["atom_ids"].as_array().unwrap().is_empty(),
+            "好笔应照常落上：{text_receipt}"
+        );
+        // 失败原因应是整条在画布外（不是笔刷找不到之类别的错误）。
+        let failed_entry = serde_json::to_string(&structured["failed_calls"][0]).unwrap();
+        assert!(
+            failed_entry.contains("外面"),
+            "失败原因应是越界：{failed_entry}"
+        );
+    }
+
+    #[test]
+    fn ok_batch_has_no_structured_content() {
+        let mut server = server();
+        tool(&mut server, "create_layer", json!({"layer_id": "layer_1"}));
+        let result = tool(
+            &mut server,
+            "batch",
+            json!({
+                "calls": [
+                    {"tool": "brush_stroke", "arguments": {"layer_id": "layer_1", "brush": "oil-01-paint", "size": 2.0, "color": {"r": 120, "g": 60, "b": 30, "a": 255}, "points": [[14.0, 14.0, 0.8], [16.0, 16.0, 0.95], [18.0, 18.0, 0.9]], "wait_for_render": false}},
+                    {"tool": "brush_stroke", "arguments": {"layer_id": "layer_1", "brush": "oil-01-paint", "size": 2.0, "color": {"r": 120, "g": 60, "b": 30, "a": 255}, "points": [[20.0, 20.0, 0.8], [22.0, 22.0, 0.95], [24.0, 24.0, 0.9]], "wait_for_render": false}},
+                ]
+            }),
+        );
+        assert_eq!(result["isError"], json!(false));
+        assert_eq!(
+            result["structuredContent"],
+            Value::Null,
+            "成功批不应带 structuredContent（行为不变）：{result}"
+        );
+        let receipt = text_of(&result);
+        assert_eq!(receipt["all_ok"], json!(true));
+        assert_eq!(receipt["fail_count"], json!(0));
     }
 }

@@ -1296,6 +1296,59 @@ fn color_lut_path_must_stay_inside_the_workspace_root() {
     std::fs::remove_file(&outside).ok();
 }
 
+/// **dry_brush 小笔宽绝对像素下限**：映射层给偏移与半径抖动加下限
+/// （偏移 σ ≥ 1.5 px、半径抖动 σ ≥ 1.0 px），使 3–6 px 笔的飞白可见；
+/// 大笔宽时相对量已超下限，原值不变。
+/// 变异（去掉下限）⇒ size 3 那格的 offset 回到 0.1575 ⇒ 红 ✓。
+#[test]
+fn dry_brush_small_width_gets_absolute_pixel_floor() {
+    // size 3、v=0.35：相对量 0.1575/0.1925 被下限抬起
+    // （半径 1.5：offset 下限 1.5/1.5、rad 下限 1.0/1.5）。
+    let small = merge_intent_brush_params(&json!({ "dry_brush": 0.35, "size": 3.0 }))
+        .unwrap()
+        .expect("dry_brush 应产出映射");
+    assert!(
+        (small["offset_by_random"].as_f64().unwrap() - 1.5 / 1.5).abs() < 1e-9,
+        "size 3 时 offset 应被下限抬到 1.5/1.5，实测 {}",
+        small["offset_by_random"]
+    );
+    assert!(
+        (small["radius_by_random"].as_f64().unwrap() - 1.0 / 1.5).abs() < 1e-9,
+        "size 3 时 radius 抖动应被下限抬到 1.0/1.5，实测 {}",
+        small["radius_by_random"]
+    );
+    // size 30、v=0.35：相对量 0.1575/0.1925 已超下限，原值不变。
+    let large = merge_intent_brush_params(&json!({ "dry_brush": 0.35, "size": 30.0 }))
+        .unwrap()
+        .expect("dry_brush 应产出映射");
+    assert!(
+        (large["offset_by_random"].as_f64().unwrap() - 0.1575).abs() < 1e-9,
+        "size 30 时 offset 应保持原值 0.1575，实测 {}",
+        large["offset_by_random"]
+    );
+    assert!(
+        (large["radius_by_random"].as_f64().unwrap() - 0.1925).abs() < 1e-9,
+        "size 30 时 radius 抖动应保持原值 0.1925，实测 {}",
+        large["radius_by_random"]
+    );
+    // 不传 size：缺省 24（半径 12），相对量超下限，原值不变。
+    let def = merge_intent_brush_params(&json!({ "dry_brush": 0.35 }))
+        .unwrap()
+        .expect("dry_brush 应产出映射");
+    assert!(
+        (def["offset_by_random"].as_f64().unwrap() - 0.1575).abs() < 1e-9,
+        "缺省 size 时 offset 应保持原值 0.1575，实测 {}",
+        def["offset_by_random"]
+    );
+    // dry_brush=0：不动，映射为空。
+    assert!(
+        merge_intent_brush_params(&json!({ "dry_brush": 0.0, "size": 3.0 }))
+            .unwrap()
+            .is_none(),
+        "dry_brush=0 时不应产出任何映射"
+    );
+}
+
 /// **第 1440 轮审计**：`edge` 曾 `_ => {}` 把拼错的/非字符串的值**静默当 "hard"** ✗
 ///（静默降级形态四）。现在只认 hard/soft/lost，其余**报错并列出可用值** ✓。
 /// 变异（退回 `_ => {}` 吞掉）⇒ 前两段的 `unwrap_err` 拿不到错 ⇒ 红 ✓。
