@@ -3322,12 +3322,113 @@ pub(super) fn read_reference_rgba(
         })
 }
 
+/// Pass 2 目标笔数：随面积缩放（报告问题 #6）。
+///
+/// 一支肌理笔约盖 `len_mult × size²` 像素 ⇒ 盖住 `density` 比例面积约需
+/// `area × density / (len_mult × size²)` 支；钳制到 [40, 3000]：下限保小画布
+/// 仍有肌理，上限防超大画布或极小 size 时笔数爆炸。旧式 `40 + 80×density`
+/// 与面积无关，大画布上必然稀疏（1620×1920、size=26、density=0.55 时仅 84 支）。
+fn pass2_target(area: f64, density: f64, len_mult: f64, size: f64) -> usize {
+    let denom = (len_mult * size * size).max(1e-9);
+    let cover = area * density.clamp(0.0, 1.0) / denom;
+    (cover as usize).clamp(40, 3000)
+}
+
+/// 沿等明度切向双向行走，返回折线点列（中心锚定、每半程固定步数）。
+///
+/// `tangent` 给定点返回单位切向，`None` 表示平坦（回退调用方给的每笔 `fallback` 方向）。
+/// 每步按“与上一步点积 ≥ 0”定向切向，避免折返；出界时截断到边界并停。
+/// 旧行为是整条笔只取中心一点方向 ⇒ 长直笔 ⇒ 粗场与平坦区上成规则竖条；
+/// 行走后每步重取切向，笔触沿等明度线弯曲，竖条即破。
+fn trace_iso_walk(
+    tangent: impl Fn(f64, f64) -> Option<(f64, f64)>,
+    fallback: (f64, f64),
+    center: (f64, f64),
+    init_dir: (f64, f64),
+    half_len: f64,
+    steps_per_half: usize,
+    bbox: (f64, f64, f64, f64),
+) -> Vec<(f64, f64)> {
+    let (bx0, by0, bx1, by1) = bbox;
+    let walk_half = |start: (f64, f64), dir: (f64, f64)| -> Vec<(f64, f64)> {
+        let mut pts = vec![start];
+        if steps_per_half == 0 || half_len <= 0.0 {
+            return pts;
+        }
+        let step = half_len / steps_per_half as f64;
+        let mut cur = start;
+        let mut d = dir;
+        for _ in 0..steps_per_half {
+            let t = tangent(cur.0, cur.1).unwrap_or(fallback);
+            let t = if t.0 * d.0 + t.1 * d.1 < 0.0 {
+                (-t.0, -t.1)
+            } else {
+                t
+            };
+            d = t;
+            let mut nx = cur.0 + d.0 * step;
+            let mut ny = cur.1 + d.1 * step;
+            let hit = nx < bx0 || nx > bx1 || ny < by0 || ny > by1;
+            nx = nx.clamp(bx0, bx1);
+            ny = ny.clamp(by0, by1);
+            pts.push((nx, ny));
+            if hit {
+                break;
+            }
+            cur = (nx, ny);
+        }
+        pts
+    };
+    let mut back = walk_half(center, (-init_dir.0, -init_dir.1));
+    let fwd = walk_half(center, init_dir);
+    back.reverse();
+    back.extend_from_slice(&fwd[1..]);
+    back
+}
+
+/// 单位方向绕原点旋转 `angle` 弧度（Pass 1 平坦回退方向的黄金角旋转用）。
+fn rotate_dir(dir: (f64, f64), angle: f64) -> (f64, f64) {
+    let (s, c) = angle.sin_cos();
+    (dir.0 * c - dir.1 * s, dir.0 * s + dir.1 * c)
+}
+
+/// 在折线点列上按弧长分数取点（u ∈ [0, 1]，两端夹紧）。
+fn polyline_point_at(walk: &[(f64, f64)], u: f64) -> (f64, f64) {
+    if walk.len() < 2 {
+        return walk.first().copied().unwrap_or((0.0, 0.0));
+    }
+    let mut total = 0.0;
+    let mut cum = vec![0.0];
+    for w in walk.windows(2) {
+        total += ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt();
+        cum.push(total);
+    }
+    if total <= 0.0 {
+        return walk[0];
+    }
+    let target = u.clamp(0.0, 1.0) * total;
+    for (i, w) in walk.windows(2).enumerate() {
+        let (a, b) = (cum[i], cum[i + 1]);
+        if target <= b || i + 2 == walk.len() {
+            let f = if b > a { (target - a) / (b - a) } else { 0.0 };
+            return (
+                w[0].0 + (w[1].0 - w[0].0) * f,
+                w[0].1 + (w[1].1 - w[0].1) * f,
+            );
+        }
+    }
+    *walk.last().unwrap()
+}
+
 /// ① `smart_sample`：从参考图/参考图层采样区域内的明暗与色彩分布，
 /// 自动生成顺应等明度线的多尺度笔触。
 ///
-/// 两阶段（总笔数 35~160，拒绝退回 2738 笔手工点画）：
+/// 两阶段（拒绝退回 2738 笔手工点画）：
 /// - Pass 1：大笔软边铺底（约 2S 笔），单笔跨越 ΔL>0.06 时按弧长拆 2~3 段；
-/// - Pass 2：梯度加权特征肌理笔触（40~120 笔），落笔概率 ∝ ‖∇L‖，方向取等明度切向。
+///   每笔沿等明度切向双向行走（每步重取切向），不再是整条笔只取中心一点方向；
+///   平坦区回退方向按黄金角逐笔旋转，不固定长轴（否则底色成竖直亮度带）；
+/// - Pass 2：梯度加权特征肌理笔触，落笔概率 ∝ ‖∇L‖，方向取等明度切向；
+///   目标笔数随面积缩放（`area × density / (len_mult × size²)`，钳制 [40, 3000]）。
 pub(super) fn write_smart_sample(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     // **P2-6**：先验图层（fail-fast，见 `require_smart_layer_alive`）。
@@ -3529,7 +3630,10 @@ pub(super) fn write_smart_sample(ctx: &mut ToolContext<'_>, args: &Value) -> Res
     //
     // **⇒ 现在怎么做**：每个笔触在**自己的中心点**取参考图的**有限差分梯度**（ΔL/Δx、ΔL/Δy）⇒
     //   **等明度切向 = 梯度旋转 90°** ⇒ `(-gy, gx)` ✓
-    //   **⇒ 梯度≈0（平坦区）⇒ 回退到长轴方向**（确定性、可复现 ✓，且平坦区本来就没有"等明度线"可言 ✓）
+    //   **⇒ 梯度≈0（平坦区）⇒ 回退方向按黄金角逐笔旋转**（确定性、可复现 ✓；
+    //   固定长轴回退 + 峰形笔触 + 位置抖动 ⇒ 覆盖数起伏 ⇒ 肉眼可见竖直亮度带 ✗）
+    //   **⇒ 中心点只定初始方向**：随后从中心向两端各行走半程、每步在当前点重取切向
+    //   （按与上一步点积 ≥ 0 定向，防折返），笔触沿等明度线弯曲，不再是长直笔 ✓
     let long_axis_horizontal = sw >= sh;
     let iso_tangent = |cx: f64, cy: f64| -> Option<(f64, f64)> {
         // 1 px 的有限差分（与参考采样同坐标系 = 文档坐标 ✓）
@@ -3562,23 +3666,40 @@ pub(super) fn write_smart_sample(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         } else {
             (bx0 + tc * sw, by0, bx0 + tc * sw, by1)
         };
-        // **有梯度 ⇒ 沿等明度切向**（长度取长轴的 80%，中心不变 ✓）
+        // **有梯度 ⇒ 沿等明度切向行走**（长度取长轴的 80%，中心不变 ✓）
+        //
+        // 旧行为是整条笔只取中心一点方向 ⇒ 长直笔 ⇒ 粗场与平坦区上成规则竖条。
+        // 现改为从中心向两端各行走半程、每步重取切向（定向防折返），笔触沿等明度线
+        // 弯曲。平坦区没有等明度线可言，但回退方向**不许固定长轴**：固定长轴 +
+        // 峰形笔触 + 位置抖动 ⇒ 覆盖数沿短轴起伏 ⇒ 肉眼可见的竖直亮度带（目视实证）。
+        // 故每笔的回退方向按黄金角旋转（确定性、可复现，与旧长轴回退同为确定性），
+        // 32 支笔的方向均匀散开，底色不再有主导朝向。
         let (cx0, cy0) = ((lx0 + lx1) / 2.0, (ly0 + ly1) / 2.0);
-        let (x0s, y0s, x1s, y1s) = match iso_tangent(cx0, cy0) {
-            Some((tx, ty)) => {
-                let half = 0.4 * (sw.max(sh));
-                let (ax, ay) = (cx0 + tx * half, cy0 + ty * half);
-                let (bx_, by_) = (cx0 - tx * half, cy0 - ty * half);
-                // 裁到形状 bbox 内（贴着边缘走时不许把笔甩到外面 ✗）
-                (
-                    ax.clamp(bx0, bx1),
-                    ay.clamp(by0, by1),
-                    bx_.clamp(bx0, bx1),
-                    by_.clamp(by0, by1),
-                )
-            }
-            None => (lx0, ly0, lx1, ly1),
+        let long_dir = if long_axis_horizontal {
+            (1.0, 0.0)
+        } else {
+            (0.0, 1.0)
         };
+        let golden = 2.399_963_229_728_653_5; // 137.508°
+        let flat_dir = rotate_dir(long_dir, i as f64 * golden);
+        let init_dir = iso_tangent(cx0, cy0).unwrap_or(flat_dir);
+        let walk = trace_iso_walk(
+            iso_tangent,
+            flat_dir,
+            (cx0, cy0),
+            init_dir,
+            0.4 * sw.max(sh),
+            8,
+            (bx0, by0, bx1, by1),
+        );
+        // 退化（半程为零或 bbox 过小）时回退到旧直线，避免丢笔。
+        let walk = if walk.len() < 2 {
+            vec![(lx0, ly0), (lx1, ly1)]
+        } else {
+            walk
+        };
+        let (x0s, y0s) = walk[0];
+        let (x1s, y1s) = *walk.last().unwrap();
         // 起止点明度差 → 决定拆段数。
         let (c0, _, _) = sample_ref(x0s, y0s);
         let (c1, _, _) = sample_ref(x1s, y1s);
@@ -3594,8 +3715,7 @@ pub(super) fn write_smart_sample(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             let u0 = s as f64 / nseg as f64;
             let u1 = (s + 1) as f64 / nseg as f64;
             let um = (u0 + u1) / 2.0;
-            let mx = x0s + (x1s - x0s) * um;
-            let my = y0s + (y1s - y0s) * um;
+            let (mx, my) = polyline_point_at(&walk, um);
             // 孔洞内的段直接跳过。
             if !parsed.contains(mx, my) {
                 continue;
@@ -3605,8 +3725,7 @@ pub(super) fn write_smart_sample(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             let mut pts = Vec::with_capacity(npts);
             for k in 0..npts {
                 let u = u0 + (u1 - u0) * k as f64 / (npts - 1) as f64;
-                let px = x0s + (x1s - x0s) * u;
-                let py = y0s + (y1s - y0s) * u;
+                let (px, py) = polyline_point_at(&walk, u);
                 let uu = k as f64 / (npts - 1) as f64;
                 let p = 0.25 + 0.55 * (std::f64::consts::PI * uu).sin();
                 pts.push((px, py, p));
@@ -3624,10 +3743,10 @@ pub(super) fn write_smart_sample(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         }
     }
 
-    // === Pass 2：梯度加权特征肌理笔触（40~120 笔）===
+    // === Pass 2：梯度加权特征肌理笔触（笔数随面积缩放）===
     // 梯度模归一化（取场内最大值）。
     let max_mag = field.grad_mag.iter().fold(0f32, |a, &b| a.max(b)).max(1e-6);
-    let target2 = (40.0 + 80.0 * density) as usize;
+    let target2 = pass2_target(sw * sh, density, profile.len_mult, size);
     let mut made2 = 0usize;
     let mut tries = 0usize;
     // 候选种子：抖动网格（复用 texture 思路的简化版）。
@@ -5810,5 +5929,132 @@ mod tests {
             mask.iter().all(|&v| v == 255),
             "非连通模式下球内像素应全被选中（255），实测 {mask:?}"
         );
+    }
+
+    /// 报告问题 #6：Pass 2 目标笔数随面积缩放（`pass2_target`）。
+    ///
+    /// 报告参数（1620×1920、density=0.55、len_mult=3.5、size=26）下应远大于旧 84；
+    /// 小画布下应与旧量级相近；density=0 时保下限；超大面积或极小 size 时封顶。
+    /// 变异：改回旧式 `40 + 80×density` ⇒ 报告参数断言红。
+    #[test]
+    fn pass2_target_scales_with_area() {
+        // 报告参数：1620×1920 × 0.55 / (3.5 × 26²) ≈ 723。
+        let report = pass2_target(1620.0 * 1920.0, 0.55, 3.5, 26.0);
+        assert!(
+            report > 400,
+            "报告参数下 Pass 2 目标应远大于旧 84，实测 {report}"
+        );
+        // 小画布 400×300、size=15：约 84，与旧量级相近（不破坏小画布行为）。
+        let small = pass2_target(400.0 * 300.0, 0.55, 3.5, 15.0);
+        assert!(
+            (40..=200).contains(&small),
+            "小画布下目标应与旧量级相近，实测 {small}"
+        );
+        assert!(
+            report > 4 * small,
+            "目标应随面积显著增长：报告 {report} vs 小画布 {small}"
+        );
+        assert_eq!(pass2_target(100.0, 0.0, 3.5, 26.0), 40);
+        assert_eq!(pass2_target(1.0e8, 1.0, 3.5, 4.0), 3000);
+    }
+
+    /// 报告问题 #6：等明度行走在环形切向场上应弯曲（锚点偏离首尾弦），而非直线。
+    ///
+    /// 切向场取圆心 (0, 0) 的环向切向 `(-y, x)/r`；从 (50, 0) 出发、半程 60、
+    /// 每半程 8 步。变异：行走退回直线（只取中心方向）⇒ 弦偏离断言红。
+    #[test]
+    fn iso_walk_curves_on_circular_field() {
+        let tangent = |x: f64, y: f64| -> Option<(f64, f64)> {
+            let r = (x * x + y * y).sqrt();
+            if r < 1e-9 {
+                return None;
+            }
+            Some((-y / r, x / r))
+        };
+        let walk = trace_iso_walk(
+            tangent,
+            (1.0, 0.0),
+            (50.0, 0.0),
+            (0.0, 1.0),
+            60.0,
+            8,
+            (-200.0, -200.0, 200.0, 200.0),
+        );
+        assert!(walk.len() >= 10, "行走应有足够点数，实测 {}", walk.len());
+        // 锚点（行走中点）到首尾弦的距离：直线为 0，环向行走应显著偏离。
+        let (ax, ay) = walk[0];
+        let (bx, by) = *walk.last().unwrap();
+        let (px, py) = walk[walk.len() / 2];
+        let chord = ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt();
+        let dev = ((bx - ax) * (py - ay) - (by - ay) * (px - ax)).abs() / chord.max(1e-9);
+        assert!(dev > 5.0, "环向场上行走锚点应偏离首尾弦，实测偏离 {dev}");
+        assert!(
+            walk.iter()
+                .all(|&(x, y)| (-200.0..=200.0).contains(&x) && (-200.0..=200.0).contains(&y)),
+            "行走不应出 bbox"
+        );
+    }
+
+    /// 平坦场（切向恒 None）下行走应退化为沿回退方向的直线、长度精确。
+    #[test]
+    fn iso_walk_flat_field_is_straight() {
+        let walk = trace_iso_walk(
+            |_, _| None,
+            (0.0, 1.0),
+            (0.0, 0.0),
+            (0.0, 1.0),
+            80.0,
+            8,
+            (-200.0, -200.0, 200.0, 200.0),
+        );
+        assert_eq!(walk.len(), 17);
+        assert!((walk[0].0).abs() < 1e-9 && (walk[0].1 + 80.0).abs() < 1e-9);
+        assert!((walk[16].0).abs() < 1e-9 && (walk[16].1 - 80.0).abs() < 1e-9);
+        assert!(walk.iter().all(|&(x, _)| x.abs() < 1e-9));
+    }
+
+    /// 报告问题 #6：平坦回退方向的旋转正确（黄金角散布的前提）。
+    /// 变异：旋转公式符号写反 ⇒ 本测试红。
+    #[test]
+    fn rotate_dir_quarter_turns() {
+        let (x, y) = rotate_dir((1.0, 0.0), std::f64::consts::FRAC_PI_2);
+        assert!((x - 0.0).abs() < 1e-9 && (y - 1.0).abs() < 1e-9);
+        let (x, y) = rotate_dir((0.0, 1.0), std::f64::consts::PI);
+        assert!((x - 0.0).abs() < 1e-9 && (y + 1.0).abs() < 1e-9);
+        // 黄金角 32 笔的方向应散开：最大相邻角隙 < 180°（即不聚成一束）。
+        let mut angs: Vec<f64> = (0..32)
+            .map(|i| (i as f64 * 2.399_963_229_728_653_5) % (2.0 * std::f64::consts::PI))
+            .collect();
+        angs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mut max_gap = 0.0f64;
+        for w in angs.windows(2) {
+            max_gap = max_gap.max(w[1] - w[0]);
+        }
+        max_gap = max_gap.max(angs[0] + 2.0 * std::f64::consts::PI - angs[31]);
+        assert!(
+            max_gap < std::f64::consts::PI,
+            "黄金角 32 笔方向应散开，最大角隙 {max_gap}"
+        );
+    }
+
+    /// `polyline_point_at` 按弧长插值：L 形折线 (0,0)-(10,0)-(10,10) 上，
+    /// u=0.5 应为拐点 (10,0)，u=0.75 应为 (10,5)。
+    #[test]
+    fn polyline_point_at_arc_length() {
+        let walk = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)];
+        let (x, y) = polyline_point_at(&walk, 0.5);
+        assert!(
+            (x - 10.0).abs() < 1e-9 && y.abs() < 1e-9,
+            "u=0.5 应为拐点，实测 ({x},{y})"
+        );
+        let (x, y) = polyline_point_at(&walk, 0.75);
+        assert!(
+            (x - 10.0).abs() < 1e-9 && (y - 5.0).abs() < 1e-9,
+            "u=0.75 应为 (10,5)，实测 ({x},{y})"
+        );
+        let (x, y) = polyline_point_at(&walk, 0.0);
+        assert!(x.abs() < 1e-9 && y.abs() < 1e-9);
+        let (x, y) = polyline_point_at(&walk, 1.0);
+        assert!((x - 10.0).abs() < 1e-9 && (y - 10.0).abs() < 1e-9);
     }
 }
