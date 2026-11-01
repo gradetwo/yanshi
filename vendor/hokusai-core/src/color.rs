@@ -200,16 +200,38 @@ mod tests {
 /// **⇒ 与「把 `base` 转 linear」的区别**（我上一轮的错误做法）：
 ///   那种做法让**整条下游**都变 linear ⇒ 而下游有一处解码 ⇒ **双解码** ⇒ 颜色暗 61–65 级 ✗
 ///
-/// `alpha` 是 `eraser_target_alpha`（alpha 不做 gamma 转换 ⇒ 它在两个空间里都是线性量）。
+/// **⇒ 入参 `smudge` 是预乘桶值，不是直通色**（报告 #7，第二期修正）：
+///   legacy 桶的更新式是 `smudge_ra = smudge_ra*fac + sr*(1-fac)*sa`（`stroke.rs` 桶更新；
+///   采样本身是直通色，见 `get_color_default` 的反预乘），所以桶值 = 直通色 × 桶 alpha。
+///   `alpha` 是 `eraser_target_alpha = (1-amt) + amt*smudge_a`（`stroke.rs:1139`；
+///   alpha 不做 gamma 转换 ⇒ 它在两个空间里都是线性量）。
+///   旧式直接把 gamma 作用在预乘值上再除以 alpha：gamma（预乘值）≠ 预乘后的 linear 值，
+///   涂抹项被压暗，且满涂抹（`amt=1`）回不到采样直通色。
+///   新式：由 `alpha` 与 `amt` 反推桶 alpha（调用方算式的精确逆运算；
+///   调用方保证 `amt>0`、`alpha>0`，见 `stroke.rs:1140` 守门），反预乘回直通色再转 linear，
+///   按预乘权重混合后除以 `alpha` 还原直通色 ⇒ 结果是两输入的凸组合，恒在两者之间、不放大。
+///   不透明地面（`alpha=1` ⇒ 桶 alpha=1）时新旧公式逐位一致，旧测试与旧行为不受影响。
+///
+/// **⇒ 与上游的分歧点**：本函数是 yanshi 本地函数（Phase 1 引入，上游 hokusai 无此函数）；
+///   vendor 目录经 `[patch.crates-io]` 替换 crates.io 的 hokusai-core 0.3.0，是本仓实际生效代码。
+///   本次只改 yanshi 本地的 legacy 涂抹混合语义，不动 spectral 路径与上游代码。
+///   另：本次只修公式正确性；作者报告的粉红（`(129,36,18)→(254,78,91)`）探针 8 组条件未复现，
+///   仍需作者补齐原文档 + 笔参数 + 采样坐标再探，不要把本次写成“已修复作者粉红”。
 #[must_use]
-pub fn mix_smudge_linear(
-    smudge: [f32; 3],
-    brush: [f32; 3],
-    amt: f32,
-    alpha: f32,
-) -> [f32; 3] {
+pub fn mix_smudge_linear(smudge: [f32; 3], brush: [f32; 3], amt: f32, alpha: f32) -> [f32; 3] {
+    if amt <= 0.0 || alpha <= 0.0 {
+        return brush;
+    }
+    // 桶 alpha：调用方算式 alpha = (1-amt) + amt*smudge_a 的逆运算；
+    // 反推误差随 amt 权重进入混合，amt 越小影响越小。
+    let smudge_a = ((alpha - (1.0 - amt)) / amt).clamp(0.0, 1.0);
     let mix = |s: f32, b: f32| {
-        let sl = srgb_to_linear(s);
+        // s 是预乘桶值：先反预乘回直通色再转 linear；桶 alpha 为 0 时涂抹项为 0。
+        let sl = if smudge_a > 0.0 {
+            srgb_to_linear((s / smudge_a).clamp(0.0, 1.0)) * smudge_a
+        } else {
+            0.0
+        };
         let bl = srgb_to_linear(b);
         linear_to_srgb(((amt * sl + (1.0 - amt) * bl) / alpha).clamp(0.0, 1.0))
     };
@@ -354,6 +376,115 @@ mod phase1_smudge_mix {
             let v = mix_smudge_linear([0.9, 0.9, 0.9], [0.1, 0.1, 0.1], k as f32 / 10.0, 1.0)[0];
             assert!(v >= prev - 1e-5, "amt={} 时结果回摆了（{prev} → {v}）", k as f32 / 10.0);
             prev = v;
+        }
+    }
+
+    /// **半透明地面上的满涂抹必须回到采样直通色**（报告 #7 的回归；旧式压暗）。
+    ///
+    /// 桶值是预乘值（直通色 × 桶 alpha）：直通色暗红 `(129,36,18)`、桶 alpha 0.5
+    /// ⇒ 桶值 `(0.253, 0.071, 0.035)`；`amt=1`、`alpha=0.5` 时输出必须是直通色本身。
+    #[test]
+    fn smudge_mix_full_smudge_returns_sampled_straight_color() {
+        let straight = [129.0 / 255.0, 36.0 / 255.0, 18.0 / 255.0];
+        let bucket = [straight[0] * 0.5, straight[1] * 0.5, straight[2] * 0.5];
+        let brush = [0.9, 0.9, 0.9];
+        let out = mix_smudge_linear(bucket, brush, 1.0, 0.5);
+        for i in 0..3 {
+            assert!(
+                (out[i] - straight[i]).abs() < 2e-3,
+                "amt=1 应回到采样直通色（{i}：{:.4} vs {:.4}）",
+                out[i],
+                straight[i]
+            );
+        }
+    }
+
+    /// **同色混合在任何 alpha 下都恒等**（暗红仍是暗红；旧式在半透明地面上压暗）。
+    #[test]
+    fn smudge_mix_same_color_is_identity_for_any_alpha() {
+        let dark_red = [129.0 / 255.0, 36.0 / 255.0, 18.0 / 255.0];
+        let bucket = [dark_red[0] * 0.5, dark_red[1] * 0.5, dark_red[2] * 0.5];
+        let out = mix_smudge_linear(bucket, dark_red, 0.4, 0.8);
+        for i in 0..3 {
+            assert!(
+                (out[i] - dark_red[i]).abs() < 1e-4,
+                "同色混合应恒等（{i}：{:.4} vs {:.4}）",
+                out[i],
+                dark_red[i]
+            );
+        }
+    }
+
+    /// **半透明地面上的混合等于预乘权重的线性凸组合**（报告 #7 的核心回归；旧式压暗）。
+    ///
+    /// 桶值是预乘值：直通色 `S`、桶 alpha `a_s` 时，正确结果是
+    /// `linear_to_srgb((amt*a_s*linear(S) + (1-amt)*linear(B)) / alpha)`，
+    /// 即两输入的凸组合——恒在两者之间，不放大、不顶满。旧式对预乘值直接做 gamma，
+    /// 得到的是 `linear(S*a_s)` 而非 `a_s*linear(S)`，结果偏暗。
+    #[test]
+    fn smudge_mix_premultiplied_weights_convex_combination() {
+        let straight = [129.0 / 255.0, 36.0 / 255.0, 18.0 / 255.0];
+        let smudge_a = 0.2;
+        let bucket = [
+            straight[0] * smudge_a,
+            straight[1] * smudge_a,
+            straight[2] * smudge_a,
+        ];
+        let brush = [0.8, 0.7, 0.6];
+        let amt = 0.9;
+        let alpha = (1.0 - amt) + amt * smudge_a; // 0.28：小 alpha 是旧式偏差最大的情形。
+        let out = mix_smudge_linear(bucket, brush, amt, alpha);
+        for i in 0..3 {
+            let expected = super::linear_to_srgb(
+                (amt * smudge_a * super::srgb_to_linear(straight[i])
+                    + (1.0 - amt) * super::srgb_to_linear(brush[i]))
+                    / alpha,
+            );
+            assert!(
+                (out[i] - expected).abs() < 1e-6,
+                "输出须等于预乘权重凸组合（{i}：{:.6} vs {:.6}）",
+                out[i],
+                expected
+            );
+            let hi = straight[i].max(brush[i]);
+            assert!(
+                out[i] <= hi + 1e-4,
+                "凸组合不得超过两输入（{i}：{:.4} > {:.4}）",
+                out[i],
+                hi
+            );
+        }
+    }
+
+    /// **不透明地面（alpha=1）时与旧公式逐位一致**（旧行为与旧测试不受影响）。
+    #[test]
+    fn smudge_mix_opaque_ground_matches_old_formula() {
+        let smudge = [0.3, 0.6, 0.2];
+        let brush = [0.9, 0.1, 0.5];
+        let amt = 0.4;
+        let out = mix_smudge_linear(smudge, brush, amt, 1.0);
+        for i in 0..3 {
+            let old = super::linear_to_srgb(
+                (amt * super::srgb_to_linear(smudge[i])
+                    + (1.0 - amt) * super::srgb_to_linear(brush[i]))
+                .clamp(0.0, 1.0),
+            );
+            assert!(
+                (out[i] - old).abs() < 1e-6,
+                "alpha=1 时新旧公式须一致（{i}：{:.6} vs {:.6}）",
+                out[i],
+                old
+            );
+        }
+    }
+
+    /// **关（amt=0）即笔色**（调用方在 `stroke.rs:1140` 守门不调本函数；此处是防御分支）。
+    #[test]
+    fn smudge_mix_off_is_brush() {
+        let brush = [0.25, 0.5, 0.75];
+        let out = mix_smudge_linear([0.9, 0.1, 0.4], brush, 0.0, 1.0);
+        for i in 0..3 {
+            assert!((out[i] - brush[i]).abs() < 1e-6, "amt=0 应给笔色（{i}）");
         }
     }
 }
