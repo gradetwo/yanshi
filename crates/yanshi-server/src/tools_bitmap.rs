@@ -150,6 +150,41 @@ fn push_response_warning(object: &mut serde_json::Map<String, Value>, warning: S
 pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let bitmap = require_object(args, "bitmap")?.clone();
+    // **bitmap 严格校验** ✓（报告问题 3）：只认白名单键，未知键与缺 blob_hash
+    // 都必须响亮拒绝 —— 此前缺 blob_hash 只补空串、全程不拒收 ⇒ 回执 ok:true、
+    // blob_decodable:false、导出纯背景，调用方误判"导入底图不可用" ✗。
+    // 白名单与 schema 描述一致：{blob_hash, size, mime_type} + 尺寸 {width, height}；
+    // 全仓内部调用点（tools.rs／tools_brush.rs／tools_bgfield.rs／tools_psd.rs）
+    // 只用前三键 ⇒ 白名单不会误伤 ✓。
+    const BITMAP_KEYS: [&str; 5] = ["blob_hash", "size", "mime_type", "width", "height"];
+    // require_object 已保证 bitmap 是对象 ⇒ as_object 必为 Some（if let 只是不 panic 的写法）。
+    if let Some(obj) = bitmap.as_object() {
+        for key in obj.keys() {
+            if !BITMAP_KEYS.contains(&key.as_str()) {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "bitmap 含未知键 `{key}`（只认 blob_hash/size/mime_type/width/height）⇒ \
+                     未知参数不会被静默忽略，请去掉它或先用 put_blob 入库"
+                    )),
+                ));
+            }
+        }
+    }
+    if !bitmap
+        .get("blob_hash")
+        .and_then(Value::as_str)
+        .is_some_and(|hash| !hash.is_empty())
+    {
+        return Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "bitmap 缺 blob_hash（或为空）⇒ 导入的位图没有可解码的 blob，\
+                 请先用 put_blob 把文件入库，再把返回的 blob_hash 填进 bitmap"
+                    .to_owned(),
+            ),
+        ));
+    }
     let region = parse_bbox(require_object(args, "region")?)?;
     let object_id = optional_str(args, "object_id")
         .unwrap_or_else(|| format!("obj_{}", yanshi_core::Ulid::new().encode()));

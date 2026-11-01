@@ -11,6 +11,8 @@
 //!    带兜底提示，诊断事实（原长／间距／size）保留在提示里）。
 //! ③ **真零墨仍拒绝**（与 ② 同几何、只把 color.a 置 0 ⇒ 有效 opacity 为 0；
 //!    透明笔不兜底 ⇒ “0 像素不许 ok:true”的不变量移到这里）。
+//! ④ **涂抹类判据优先于透明判据**（报告问题 5）：`oil-mop`（opaque=0.0、smudge=1.0）
+//!    在空画布上必须报涂抹类，不能误报“有效 opacity 是 0”；非涂抹笔刷 + 透明仍报透明。
 //!
 //! **变异**：把真零墨改回 `ok:true` ⇒ ③ 红（该拒绝的成了成功）；把兜底提示删掉 ⇒
 //! ② 红（诊断事实丢了）；把透明笔也兜底 ⇒ ③ 红（不该落墨的落了墨）。
@@ -147,5 +149,84 @@ fn a_large_brush_on_a_short_path_paints_and_a_tiny_size_still_explains_itself() 
     assert!(
         !detail.is_empty(),
         "真零墨拒绝必须带原因（失败没有信号不能接受）：{zero}"
+    );
+}
+
+/// **涂抹类判据优先于透明判据** ✓（报告问题 5）：空画布上三支笔的诊断必须各就其位 ✓。
+#[test]
+fn smudge_diagnosis_takes_priority_over_transparency() {
+    let mut workspace = workspace();
+    {
+        let mut ctx = context(&mut workspace);
+        call(
+            &mut ctx,
+            "new_document",
+            &json!({"doc_id": "doc_zero_ink", "width": 200, "height": 200}),
+        );
+    }
+    let mut ctx = context(&mut workspace);
+    // ① oil-mop：opaque=0.0 且 smudge=1.0 ⇒ 必须报涂抹类，不能误报透明。
+    let mop = call(
+        &mut ctx,
+        "brush_stroke",
+        &json!({
+            "layer_id": "layer_default",
+            "brush": "oil-mop",
+            "size": 20,
+            "points": [[40.0, 40.0, 1.0], [80.0, 40.0, 1.0]]
+        }),
+    );
+    assert_eq!(
+        mop.get("ok").and_then(Value::as_bool),
+        Some(false),
+        "空画布上涂抹笔必须拒绝：{mop}"
+    );
+    assert!(
+        detail_of(&mop).contains("涂抹"),
+        "oil-mop 必须报涂抹类诊断：{}",
+        detail_of(&mop)
+    );
+    // ② oil-01-clean：涂抹类（opaque=1.0）⇒ 同样报涂抹类。
+    let clean = call(
+        &mut ctx,
+        "brush_stroke",
+        &json!({
+            "layer_id": "layer_default",
+            "brush": "oil-01-clean",
+            "size": 20,
+            "points": [[40.0, 40.0, 1.0], [80.0, 40.0, 1.0]]
+        }),
+    );
+    assert_eq!(
+        clean.get("ok").and_then(Value::as_bool),
+        Some(false),
+        "空画布上涂抹笔必须拒绝：{clean}"
+    );
+    assert!(
+        detail_of(&clean).contains("涂抹"),
+        "oil-01-clean 必须报涂抹类诊断：{}",
+        detail_of(&clean)
+    );
+    // ③ 2B_pencil（smudge=0）+ color.a=0 ⇒ 仍报透明诊断（P-19 语义保留）。
+    let transparent = call(
+        &mut ctx,
+        "brush_stroke",
+        &json!({
+            "layer_id": "layer_default",
+            "brush": "2B_pencil",
+            "size": 20,
+            "points": [[40.0, 40.0, 1.0], [80.0, 40.0, 1.0]],
+            "color": [0.0, 0.0, 0.0, 0.0]
+        }),
+    );
+    assert_eq!(
+        transparent.get("ok").and_then(Value::as_bool),
+        Some(false),
+        "透明笔必须拒绝：{transparent}"
+    );
+    assert!(
+        detail_of(&transparent).contains("有效 opacity 是 0"),
+        "非涂抹笔刷 + 透明必须报透明诊断：{}",
+        detail_of(&transparent)
     );
 }

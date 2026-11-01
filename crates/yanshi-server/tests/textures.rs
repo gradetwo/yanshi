@@ -265,3 +265,36 @@ fn the_assets_directory_resolves_to_something_real_or_says_what_it_tried() {
         "说明要能读懂：{note}"
     );
 }
+
+/// **显式给出的资产目录本身存在、但缺 brushes/ 与 textures/ 时，必须响亮失败** ✓
+///（报告问题 9 收窄版：旧路径残留但资产已搬走时，静默回退等于悄悄换了一套资产 ✗。
+/// 显式路径根本不存在时仍走旧回退链 —— 上一条测试已覆盖的契约 ✓。）
+#[test]
+fn explicit_existing_assets_dir_without_subdirs_fails_loudly() {
+    use yanshi_server::service::resolve_assets_dir;
+    /// **跑完即删** ✓
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let root = std::env::temp_dir().join(format!("yanshi_assets_empty_{}", std::process::id()));
+    let _cleanup = Cleanup(root.clone());
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("建空资产目录");
+    // 注意：故意不建 brushes/ 与 textures/，模拟旧路径残留但资产已搬走。
+    let (resolved, note) = resolve_assets_dir(Some(root.clone()));
+    assert!(
+        resolved.is_none(),
+        "存在但缺资产子目录的显式路径必须失败，不能回退：{note}"
+    );
+    assert!(
+        note.contains(&root.display().to_string()),
+        "错误里必须写明实际路径：{note}"
+    );
+    assert!(
+        note.contains("brushes"),
+        "错误里必须写明期望结构（brushes/）：{note}"
+    );
+}
