@@ -694,6 +694,33 @@ pub fn feed_base(
     true
 }
 
+/// **这支笔刷是不是纯橡皮**（Y26-001 路线 B）：`eraser` 恒为 1 且无输入曲线，
+/// 且 smudge / colorize / posterize 三臂都不拾取画布色 —— 此时引擎对每枚 dab
+/// 的净效果是纯粹的 alpha 缩放（`color_a = 0` ⇒ 两条引擎分支都只乘 `opa_b`），
+/// 落笔 surface 与喂入的底图之间只有 alpha 在变，擦除系数 `s = 1 - surf_a/base_a`
+/// 才可干净地算出来。混色臂一旦活动，surface 就是颜色混合物，s 算不干净 ⇒
+/// 不走擦除路（保持老行为：喂底图、source-over 提交，擦除被稀释但不丢色）。
+/// `particules_eraser`（eraser 0 + pressure 输入）与 `Eraser.myb`（smudge 1.0）都不满足。
+/// lock_alpha 不排除：`color_a = 0` 时引擎跳过 lock_alpha 分支（`brushmodes.rs:282`），
+/// 它对纯橡皮是惰性的。
+///
+/// **判定只有这一处** ✗（原在 `yanshi-server/src/tools.rs` ✓；**收拢进 `yanshi-render`** ⇒
+/// 服务端与服务端 wasm 门面共用同一把尺子 ✗ —— **∴ 否则本地判「纯橡皮」、服务端判「非纯橡皮」**
+/// 就会分叉 ✓，正是本仓库最反对的「两份实现必然漂移」✓）。
+pub fn brush_is_pure_eraser(brush: &hokusai::Brush) -> bool {
+    let eraser = brush.get(hokusai::BrushSetting::Eraser);
+    if eraser.base_value < 1.0 || !eraser.inputs.is_empty() {
+        return false;
+    }
+    let reads = |setting: hokusai::BrushSetting| {
+        let value = brush.get(setting);
+        value.base_value > 0.0 || !value.inputs.is_empty()
+    };
+    !reads(hokusai::BrushSetting::Smudge)
+        && !reads(hokusai::BrushSetting::Colorize)
+        && !reads(hokusai::BrushSetting::Posterize)
+}
+
 // **★★★ 净室揉合：把"后方"的颜料拖进当前 dab（P0 #1 carried_color）★★★**（第 254 轮）
 //
 // **为什么自己写而不是改内核**（决策与证据都在这）：

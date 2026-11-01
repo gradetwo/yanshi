@@ -386,11 +386,22 @@ pub fn fold_atoms_skipping(
     let horizon = crate::bake::compute_bake_horizon(atoms, &suppressed);
     // 对象 -> 图层映射：先取 base 状态，再随段内创建原子顺序更新。
     // 被剪枝的创建原子也要登记归属，否则其后续 Move/Transform 无法判定剪枝。
-    let mut object_layer: std::collections::BTreeMap<String, String> = state
-        .objects
-        .values()
-        .map(|o| (o.id.clone(), o.layer_id.clone()))
-        .collect();
+    //
+    // **Horizon 为空时不预建映射**（import 回归修法）：映射的唯一消费者是
+    // 下面的剪枝判定，而剪枝要求 `horizon.get(&layer_id)` 命中 —— horizon 为空
+    // 时该分支恒不可达，段内 insert 也无读者。`ladder_fold` 对每个原子调一次
+    // 本函数，预建是 O（base 对象数）／调用，20,000 笔文档上就是 20,000 次
+    // 全量重建（实测约 31s）；跳过它不改变任何状态／警告／applied（映射是
+    // 本地变量，调用结束即丢弃）。Horizon 非空时保持原行为。
+    let mut object_layer: std::collections::BTreeMap<String, String> = if horizon.is_empty() {
+        std::collections::BTreeMap::new()
+    } else {
+        state
+            .objects
+            .values()
+            .map(|o| (o.id.clone(), o.layer_id.clone()))
+            .collect()
+    };
 
     for atom in atoms {
         if suppressed.contains(&atom.id) {

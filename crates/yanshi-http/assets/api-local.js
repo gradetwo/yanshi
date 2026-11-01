@@ -9788,6 +9788,27 @@ async function withKernel(doc, fn) {
         const { fetchBrushText, paintWithKernel } = await import("/brush-local.js");
         const brushName = body.brush || "100%_Opaque.myb";
         const myb = await fetchBrushText(brushName.endsWith(".myb") ? brushName : brushName + ".myb");
+        // **★ 纯橡皮笔刷 ⇒ 如实 501、一个原子都不写 ✗ ★**（Y26-001 能力边界 ✓）：
+        //   **∴ 为什么 ✗**：服务端对纯橡皮走 **destination-out 擦除**（引擎算系数缓冲
+        //     `s = 1 - surf_a/base_a` ⇒ 对象带 `blend:"erase"` ⇒ `render.rs` 按擦除合成 ✓）；
+        //   **∴ 本地内核 ✗**：`yanshi-wasm` 的 `paint_brush` **没有那套系数缓冲**✗
+        //     ⇒ 若照旧写 `import_image` 原子 ⇒ 「擦除」被**静默降级**成「覆盖」✓
+        //       （**本仓库头号对手：静默降级形态③「被覆盖而不说」**✗）。
+        //   **∴ 做法 ✗**：落笔前用**与服务端同一把尺子**（`yanshi_render::brush::brush_is_pure_eraser`
+        //     经内核 `WasmKernel::brush_is_pure_eraser` 暴露 ✓）判一次 ⇒ 纯橡皮 ⇒ `501 not_implemented_locally`
+        //     且**不写原子**（与分歧④「选区 mode 合并」同一能力边界模式 ✓）。
+        let __pureEraser = false;
+        try {
+          const env = JSON.parse(entryK.k.brush_is_pure_eraser(myb));
+          if (env && env.ok === true) __pureEraser = env.pure_eraser === true;
+          // env.ok=false ⇒ .myb 解析失败 ⇒ 后面 paint 会以「没有可落的笔」同因失败 ✓，这里不抢答 ✓。
+        } catch (e) { /* 判不了就按普通笔处理 ⇒ 不新增失败面 ✓（内核没有该方法时也不炸 ✓）。 */ }
+        if (__pureEraser) {
+          return p2ToolFailure(501, "not_implemented_locally",
+            "笔刷 " + brushName + " 是纯橡皮（服务端 `brush_is_pure_eraser`）⇒ 服务端走 destination-out 擦除，"
+            + "本地内核没有擦除系数缓冲／`blend:\"erase\"` 合成 ⇒ **没有写入任何原子**（画布保持原样）。"
+            + "否则「擦除」会被静默降级成「覆盖」。请在联网（服务端）模式下用它。");
+        }
         // **∴ 区域 ＝ 点列包围盒 ＋ 笔刷半径 ＋ 余量 ✗**（**∴ 并裁剪到画布内 ✓**）。
         const pts = Array.isArray(body.points) ? body.points : [];
         if (pts.length === 0) throw new Error("points 为空 ⇒ 没有可落的笔");

@@ -4323,6 +4323,7 @@ fn write_delete_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
 /// **边界** ✓：锁定不影响"复制"（复制是**读**操作 ✓，与"改内容"不同 ✓）——
 /// 副本会**保留**锁定状态 ✓（忠实复制 ✓），想编辑再解锁 ✓。
 fn write_duplicate_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    type DupObject = (String, i64, Value, Value, Value, bool, bool, &'static str);
     let layer_id = require_str(args, "layer_id")?;
     let new_layer_id = args
         .get("new_layer_id")
@@ -4344,7 +4345,7 @@ fn write_duplicate_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
             ));
         }
         // 该图层上的**存活对象** ✓，按 (z_index, id) 升序 ✓（与渲染顺序一致 ✓）。
-        let mut objects: Vec<(String, i64, Value, Value, Value, bool, bool)> = state
+        let mut objects: Vec<DupObject> = state
             .objects
             .values()
             .filter(|object| !object.is_deleted() && object.layer_id == layer_id)
@@ -4357,6 +4358,7 @@ fn write_duplicate_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
                     json!(object.transform.pivot.to_vec()),
                     object.visible,
                     object.locked,
+                    object_type_name(object.object_type),
                 )
             })
             .collect();
@@ -4421,11 +4423,12 @@ fn write_duplicate_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Valu
         Err(error) => failure = Some(error),
     }
     if failure.is_none() {
-        for (_, z_index, data, matrix, pivot, visible, locked) in &objects {
+        for (_, z_index, data, matrix, pivot, visible, locked, object_type) in &objects {
             let object_id = format!("obj_{}", yanshi_core::Ulid::new().encode());
             let payload = json!({
                 "object_id": object_id,
                 "layer_id": new_layer_id,
+                "type": object_type,
                 "z_index": z_index,
                 "visible": visible,
                 "locked": locked,
@@ -18903,28 +18906,10 @@ fn brush_pressure_response(brush: &hokusai::Brush) -> (bool, Vec<&'static str>) 
     (!settings.is_empty(), settings)
 }
 
-/// **这支笔刷是不是纯橡皮**（Y26-001 路线 B）：`eraser` 恒为 1 且无输入曲线，
-/// 且 smudge / colorize / posterize 三臂都不拾取画布色 —— 此时引擎对每枚 dab
-/// 的净效果是纯粹的 alpha 缩放（`color_a = 0` ⇒ 两条引擎分支都只乘 `opa_b`），
-/// 落笔 surface 与喂入的底图之间只有 alpha 在变，擦除系数 `s = 1 - surf_a/base_a`
-/// 才可干净地算出来。混色臂一旦活动，surface 就是颜色混合物，s 算不干净 ⇒
-/// 不走擦除路（保持老行为：喂底图、source-over 提交，擦除被稀释但不丢色）。
-/// `particules_eraser`（eraser 0 + pressure 输入）与 `Eraser.myb`（smudge 1.0）都不满足。
-/// lock_alpha 不排除：`color_a = 0` 时引擎跳过 lock_alpha 分支（`brushmodes.rs:282`），
-/// 它对纯橡皮是惰性的。
-pub fn brush_is_pure_eraser(brush: &hokusai::Brush) -> bool {
-    let eraser = brush.get(hokusai::BrushSetting::Eraser);
-    if eraser.base_value < 1.0 || !eraser.inputs.is_empty() {
-        return false;
-    }
-    let reads = |setting: hokusai::BrushSetting| {
-        let value = brush.get(setting);
-        value.base_value > 0.0 || !value.inputs.is_empty()
-    };
-    !reads(hokusai::BrushSetting::Smudge)
-        && !reads(hokusai::BrushSetting::Colorize)
-        && !reads(hokusai::BrushSetting::Posterize)
-}
+/// **这支笔刷是不是纯橡皮**（Y26-001 路线 B）：**判定只有这一处** ✗ —— 实现已收拢进
+/// `yanshi_render::brush::brush_is_pure_eraser`（**∴ 服务端与 wasm 门面共用同一把尺子**✓，
+/// 见那里的文档 ✓）。这里只是**再导出**✓，让 `super::`／本文件调用点与既有单测不动 ✓。
+pub use yanshi_render::brush::brush_is_pure_eraser;
 
 /// **这支笔刷会不会读画布** ✓（涂抹 / colorize / posterize / lock_alpha ✓）—— 公开出来，
 /// 好让 HTTP 层在发 `.myb` 时**顺带告诉浏览器** ✓（第 68 轮定性：会读画布的笔刷**不能**本地预览 ✓，

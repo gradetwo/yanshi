@@ -109,6 +109,25 @@ impl WasmKernel {
         crate::brush::take_error()
     }
 
+    /// **这支笔刷是不是纯橡皮** ✓（Y26-001 路线 B ⇒ **本地能力边界要能自己判**✓）：
+    /// 收 `.myb` 全文 ⇒ 回 `{"ok":true,"pure_eraser":bool}` ✓、
+    /// 解析失败 ⇒ `{"ok":false,…}`（与内核其余导出同一信封 ✓）。
+    ///
+    /// **∴ 为什么导出它 ✗**：服务端对纯橡皮走 destination-out 擦除（`blend:"erase"` ✓），
+    ///   而本地内核**没有那套系数缓冲**✗ ⇒ 若照旧写 `import_image` 原子 ⇒
+    ///   「擦除」被**静默降级**成「覆盖」✓（本仓库头号对手 ✓）。
+    /// **∴ 本地做法 ✗**：落笔前先问这一句 ⇒ 纯橡皮 ⇒ 明确 `501 not_implemented_locally`
+    ///   且**一个原子都不写**✓（与分歧④「选区合并」同一能力边界模式 ✓）。
+    /// **∴ 判定只有这一处**✗：走 `yanshi_render::brush::brush_is_pure_eraser`✓
+    ///   （**与服务端共用同一把尺子**✓ ⇒ 两边不可能判岔 ✓）。
+    pub fn brush_is_pure_eraser(&self, myb: &str) -> String {
+        envelope(
+            hokusai::myb::from_str(myb)
+                .map(|brush| json!({ "ok": true, "pure_eraser": yanshi_render::brush::brush_is_pure_eraser(&brush) }))
+                .map_err(|error| KernelError::new("invalid_argument", format!("不是能解析的 .myb：{error}"))),
+        )
+    }
+
     /// **可选平滑** ✓ —— 与服务端 `brush_stroke.smooth` **同一条实现** ✓
     ///（`yanshi_render::brush::catmull_rom_smooth` ✓、同一个细分数 ✓）。
     ///
