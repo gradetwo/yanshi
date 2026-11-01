@@ -235,7 +235,7 @@ fn the_assets_directory_resolves_to_something_real_or_says_what_it_tried() {
     use yanshi_server::service::resolve_assets_dir;
 
     let repo_assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
-    let (resolved, note) = resolve_assets_dir(Some(repo_assets.clone()));
+    let (resolved, note) = resolve_assets_dir(Some(repo_assets.clone()), true);
     assert_eq!(
         resolved.as_ref(),
         Some(&repo_assets),
@@ -251,7 +251,7 @@ fn the_assets_directory_resolves_to_something_real_or_says_what_it_tried() {
     // 3. 返回 `None` ✓。
     // **唯一不许发生的** ✓ 是"说找到了、其实不存在" ✗。
     let bogus = std::path::PathBuf::from("/nonexistent/yanshi-assets-does-not-exist");
-    let (fallback, note) = resolve_assets_dir(Some(bogus.clone()));
+    let (fallback, note) = resolve_assets_dir(Some(bogus.clone()), true);
     match fallback {
         Some(dir) => assert!(
             dir.is_dir() || note.contains("未找到"),
@@ -284,7 +284,7 @@ fn explicit_existing_assets_dir_without_subdirs_fails_loudly() {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("建空资产目录");
     // 注意：故意不建 brushes/ 与 textures/，模拟旧路径残留但资产已搬走。
-    let (resolved, note) = resolve_assets_dir(Some(root.clone()));
+    let (resolved, note) = resolve_assets_dir(Some(root.clone()), true);
     assert!(
         resolved.is_none(),
         "存在但缺资产子目录的显式路径必须失败，不能回退：{note}"
@@ -296,5 +296,42 @@ fn explicit_existing_assets_dir_without_subdirs_fails_loudly() {
     assert!(
         note.contains("brushes"),
         "错误里必须写明期望结构（brushes/）：{note}"
+    );
+}
+
+/// **缺省值即使存在但缺 brushes/ 与 textures/，也不触发 loud 分支** ✓
+///（上一条的反面：`explicit=false` ⇒ 走回退链，解析到可执行文件旁布局的真实资产目录 ✓。
+/// 回归对象：`asset_paths_survive_foreign_cwd` —— 在 `crates/yanshi-http/` 这类自带
+/// `assets/`（放 js/css）但无资产子目录的目录里按缺省启动，服务必须起得来 ✓。）
+#[test]
+fn default_assets_dir_without_subdirs_falls_back_instead_of_failing_loudly() {
+    use yanshi_server::service::resolve_assets_dir;
+    /// **跑完即删** ✓
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let root = std::env::temp_dir().join(format!("yanshi_assets_default_{}", std::process::id()));
+    let _cleanup = Cleanup(root.clone());
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("建空资产目录");
+    // 注意：故意不建 brushes/ 与 textures/，模拟缺省 `assets/` 恰好存在但无资产子目录。
+    // `explicit=false`（缺省）⇒ 不得走 loud 分支 ⇒ 必须回退到可执行文件旁的真实资产目录。
+    let (resolved, note) = resolve_assets_dir(Some(root.clone()), false);
+    assert!(
+        !note.contains("不再静默回退"),
+        "缺省值不得触发 loud 分支：{note}"
+    );
+    let resolved = resolved.expect("缺省坏目录必须回退到真实资产目录，不能返回 None");
+    assert_ne!(
+        resolved, root,
+        "回退目标不能是那个缺资产子目录的缺省目录本身：{note}"
+    );
+    assert!(
+        resolved.join("textures").is_dir() || resolved.join("brushes").is_dir(),
+        "回退目标必须真的有资产子目录：{}（{note}）",
+        resolved.display()
     );
 }

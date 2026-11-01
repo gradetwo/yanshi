@@ -282,8 +282,15 @@ pub struct BlobLifecycle {
 /// 但缺 `brushes/` 与 `textures/`** ⇒ 直接返回 `(None, 注记)`，**不再**试默认候选 ✓
 /// （旧路径残留但资产已搬走时，静默回退等于悄悄换了一套资产 ✗）；显式路径**根本不存在**
 /// ⇒ 仍走默认回退链 ✓（开发布局的有意行为，`tests/textures.rs` 已覆盖 ✓）。
+/// **“显式”由调用方确认**：`explicit=true` 表示这条路径是用户真的给过的
+/// （CLI `--assets-dir` 或 `YANSHI_ASSETS_DIR`），不是缺省值；缺省 `"assets"`
+/// （`explicit=false`）即使在当前目录存在但无子目录，也**不**触发上面这条 loud
+/// 分支，而是走回退链 —— 否则在 `crates/yanshi-http/` 这类自带 `assets/`（放
+/// js/css）但无 `brushes/`/`textures/` 的目录里按缺省启动会被误杀
+/// （`asset_paths_survive_foreign_cwd` 的红灯就是这么来的）。
 pub fn resolve_assets_dir(
     configured: Option<std::path::PathBuf>,
+    explicit: bool,
 ) -> (Option<std::path::PathBuf>, String) {
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
     if let Some(dir) = configured.clone() {
@@ -305,21 +312,23 @@ pub fn resolve_assets_dir(
             candidates.push(bin_dir.join("../../../assets"));
         }
     }
-    // **显式路径存在但缺资产子目录 ⇒ 直接失败，不静默回退** ✓（报告问题 9 收窄版）：
+    // **显式路径存在但缺资产子目录 ⇒ 直接失败，不静默回退** ✓（报告问题 9 收窄版；仅 `explicit` 时触发，缺省值不触发、走回退链）：
     // 旧路径还存在、但新布局下已无 brushes//textures/ 时，回退会悄悄用上另一份资产 ✗
     // ⇒ 停下来报错并写明期望结构与实际路径 ✓。显式路径根本不存在时仍走下面的
     // 回退链（开发布局的有意行为，`tests/textures.rs` 已覆盖的契约 ✓）。
-    if let Some(dir) = configured.clone() {
-        if dir.exists() && !dir.join("textures").is_dir() && !dir.join("brushes").is_dir() {
-            return (
-                None,
-                format!(
-                    "显式资产目录 {} 已存在、但其下没有 brushes/ 或 textures/ 子目录 \
-                     （期望结构：<资产目录>/brushes/ 或 <资产目录>/textures/），\
-                     不再静默回退到默认候选，以免用上另一份资产",
-                    dir.display()
-                ),
-            );
+    if explicit {
+        if let Some(dir) = configured.clone() {
+            if dir.exists() && !dir.join("textures").is_dir() && !dir.join("brushes").is_dir() {
+                return (
+                    None,
+                    format!(
+                        "显式资产目录 {} 已存在、但其下没有 brushes/ 或 textures/ 子目录 \
+                         （期望结构：<资产目录>/brushes/ 或 <资产目录>/textures/），\
+                         不再静默回退到默认候选，以免用上另一份资产",
+                        dir.display()
+                    ),
+                );
+            }
         }
     }
     for candidate in &candidates {
