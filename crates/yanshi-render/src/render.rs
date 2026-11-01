@@ -5250,27 +5250,63 @@ impl Renderer {
                     // 报错里的 bake_seq 是 BakeLayer 原子 seq（自愈身份，可直
                     // 接作 recover 的 target_bake_seq）；水位 source_up_to_seq
                     // 只是该 Bake 覆盖的上界，此前误用它作代理值。
-                    let bytes = match store.get(&blob) {
-                        Ok(bytes) => bytes,
-                        Err(_) => {
-                            return Err(yanshi_core::bake::missing_baked_blob_error(
-                                &layer.id,
-                                blob.as_str(),
-                                bake_seq,
-                            ));
+                    // **BakedBase 走位图缓存**（与 RasterPatch 同一条路 ✓）：
+                    // 此前每笔都 `store.get + decode_png`，4K 基底每笔重解
+                    // 约 46–73 ms；现首笔解码进缓存，之后每笔命中 Arc 克隆。
+                    // **严格语义不变**：缺 blob 仍报 MissingBakedBlob（闭包里
+                    // 直接 Err，`get_or_decode` 原样上抛）；RasterPatch 的
+                    // “缺 blob 容忍跳过”不适用于 BakedBase。
+                    // 键沿用 RasterPatch 格式：bake 产物即 PNG，同一 blob +
+                    // 同尺寸 + 同 MIME ⇒ 同一份解码字节，共享无歧义。
+                    let cache_key = format!("{blob}|{width}x{height}|{PNG_MIME}");
+                    let Some(entry) = bitmaps.get_or_decode(&cache_key, || {
+                        let bytes = match store.get(&blob) {
+                            Ok(bytes) => bytes,
+                            Err(_) => {
+                                return Err(yanshi_core::bake::missing_baked_blob_error(
+                                    &layer.id,
+                                    blob.as_str(),
+                                    bake_seq,
+                                ));
+                            }
+                        };
+                        let (dw, dh, rgba8) = crate::png::decode_png(&bytes).ok_or_else(|| {
+                            YanshiError::new(
+                                yanshi_core::ErrorCode::InvalidArgument,
+                                yanshi_core::ErrorContext::detail(format!(
+                                    "压平基底 PNG 解码失败（对象 {}，blob {blob}）",
+                                    object.id
+                                )),
+                            )
+                            .with_object(object.id.clone())
+                            .with_blob(blob.to_string())
+                        })?;
+                        Ok(Some(DecodedPixels::Rgba8(dw, dh, rgba8)))
+                    })?
+                    else {
+                        // 闭包从不返回 None（缺 blob 是 Err 而非 None）；
+                        // 防御性分支：万一将来改动，仍按严格语义报错。
+                        return Err(yanshi_core::bake::missing_baked_blob_error(
+                            &layer.id,
+                            blob.as_str(),
+                            bake_seq,
+                        ));
+                    };
+                    let (dw, dh, rgba8) = match &*entry {
+                        DecodedPixels::Rgba8(w, h, bytes) => (*w, *h, bytes.as_slice()),
+                        #[cfg(feature = "raw")]
+                        DecodedPixels::Linear(..) => {
+                            return Err(YanshiError::new(
+                                yanshi_core::ErrorCode::InvalidArgument,
+                                yanshi_core::ErrorContext::detail(format!(
+                                    "压平基底缓存条目非 RGBA8（对象 {}，blob {blob}）",
+                                    object.id
+                                )),
+                            )
+                            .with_object(object.id.clone())
+                            .with_blob(blob.to_string()));
                         }
                     };
-                    let (dw, dh, rgba8) = crate::png::decode_png(&bytes).ok_or_else(|| {
-                        YanshiError::new(
-                            yanshi_core::ErrorCode::InvalidArgument,
-                            yanshi_core::ErrorContext::detail(format!(
-                                "压平基底 PNG 解码失败（对象 {}，blob {blob}）",
-                                object.id
-                            )),
-                        )
-                        .with_object(object.id.clone())
-                        .with_blob(blob.to_string())
-                    })?;
                     if dw != width || dh != height {
                         track.unsupported.push(format!(
                             "压平基底尺寸与声明不一致（对象 {}，声明 {}x{}，实际 {}x{}）：按实际尺寸渲染",
@@ -5278,14 +5314,14 @@ impl Renderer {
                         ));
                     }
                     if transform.is_identity() {
-                        layer_buffer.blit_rgba8(0, 0, dw, dh, &rgba8, opacity);
+                        layer_buffer.blit_rgba8(0, 0, dw, dh, rgba8, opacity);
                     } else {
                         let (ox, oy) = layer_buffer.origin();
                         let bw = layer_buffer.width();
                         let bh = layer_buffer.height();
                         let step = layer_buffer.step();
                         let sampled = crate::object::sample_affine_rgba8(
-                            &rgba8,
+                            rgba8,
                             dw,
                             dh,
                             transform,
@@ -10613,6 +10649,102 @@ mod tests {
         let stats = cache.stats();
         assert_eq!(stats.misses, 1, "misses 只计真正解码的一次");
         assert_eq!(stats.hits, 7, "其余 7 次都是命中（等候后命中）");
+    }
+
+    /// BakedBase 走位图缓存：首笔解码一次，第二笔命中、不重复解码。
+    /// 断言特意不用“两次相等”（直解路 misses 恒 0 也会相等 ⇒ 安慰剂）：
+    /// 首笔 misses 必须恰为 1、第二笔 hits 必须 ≥1 —— 改回直解路时
+    /// 首笔 misses=0 ⇒ 本测试变红。
+    #[test]
+    fn baked_base_uses_bitmap_cache_across_renders() {
+        // 32×32 纯红 PNG 作压平基底（与 bake 产物同构：PNG 直通 RGBA8）。
+        let mut rgba = vec![0u8; 32 * 32 * 4];
+        for px in rgba.chunks_exact_mut(4) {
+            px[0] = 255;
+            px[3] = 255;
+        }
+        let png = crate::png::encode_png(32, 32, &rgba).unwrap();
+        let store = MemoryBlobStore::new();
+        let staged = stage_blob(&store, &png, "image/png").unwrap();
+        let mut state = white_document();
+        state.objects.insert(
+            "obj_baked".to_owned(),
+            object(
+                "obj_baked",
+                "layer_1",
+                ObjectType::RasterPatch,
+                0,
+                json!({
+                    "baked_base": true,
+                    "blob_hash": staged.blob_hash.to_string(),
+                    "width": 32,
+                    "height": 32,
+                    "bake_seq": 7,
+                    "source_up_to_seq": 7,
+                }),
+            ),
+        );
+        let layer = layer("layer_1", 0);
+        let bitmaps = BitmapCache::default();
+        let r = renderer();
+        let mut buf = Buffer::new(0, 0, 32, 32);
+        let mut track = ObjectTrack::default();
+        r.render_layer_objects(&state, &store, &layer, &mut buf, &mut track, &bitmaps)
+            .unwrap();
+        let stats1 = bitmaps.stats();
+        assert_eq!(stats1.misses, 1, "首笔必须解码一次进缓存：{stats1:?}");
+        assert!(
+            track.unsupported.is_empty(),
+            "基底渲染不应告警：{:?}",
+            track.unsupported
+        );
+        let first_bytes = buf.to_rgba8(None);
+        // 第二笔：同一缓存、同一基底，不得重复解码。
+        let mut buf2 = Buffer::new(0, 0, 32, 32);
+        let mut track2 = ObjectTrack::default();
+        r.render_layer_objects(&state, &store, &layer, &mut buf2, &mut track2, &bitmaps)
+            .unwrap();
+        let stats2 = bitmaps.stats();
+        assert_eq!(stats2.misses, 1, "第二笔不得重复解码：{stats2:?}");
+        assert!(stats2.hits >= 1, "第二笔必须命中缓存：{stats2:?}");
+        assert_eq!(buf2.to_rgba8(None), first_bytes, "缓存复用不得改变像素");
+        assert_eq!(&first_bytes[0..4], &[255, 0, 0, 255], "基底红应画出");
+    }
+
+    /// BakedBase 缺 blob 仍严格报错（缓存化不得把它变成容忍跳过）。
+    #[test]
+    fn baked_base_missing_blob_still_errors() {
+        let mut state = white_document();
+        state.objects.insert(
+            "obj_baked".to_owned(),
+            object(
+                "obj_baked",
+                "layer_1",
+                ObjectType::RasterPatch,
+                0,
+                json!({
+                    "baked_base": true,
+                    "blob_hash": format!("sha256:{}", "c".repeat(64)),
+                    "width": 32,
+                    "height": 32,
+                    "bake_seq": 7,
+                    "source_up_to_seq": 7,
+                }),
+            ),
+        );
+        let store = MemoryBlobStore::new();
+        let layer = layer("layer_1", 0);
+        let bitmaps = BitmapCache::default();
+        let r = renderer();
+        let mut buf = Buffer::new(0, 0, 32, 32);
+        let mut track = ObjectTrack::default();
+        let err = r
+            .render_layer_objects(&state, &store, &layer, &mut buf, &mut track, &bitmaps)
+            .unwrap_err();
+        assert!(
+            format!("{err:?}").contains("MissingBakedBlob"),
+            "缺 blob 必须报 MissingBakedBlob，实得：{err:?}"
+        );
     }
 }
 
