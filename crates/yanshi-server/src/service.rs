@@ -165,6 +165,57 @@ pub struct LoadedDocumentInfo {
     pub last_used_seq: u64,
 }
 
+/// **单份文档的会话内存量度**（#11 路线 A/B）：`SessionMemoryStatus`
+/// 的一行。磁盘量度是原子日志的真实字节（`atoms.jsonl` stat，
+/// O(1)），不是原子数 × 100 KiB 的估算——后者在重位图文档上
+/// 高估约 5 倍；渲染量度是 `renderer_retained_bytes()` 的实测保留字节。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocMemoryStatus {
+    /// 文档 id。
+    pub doc_id: String,
+    /// 磁盘原子日志字节（无持久层时为 0）。
+    pub journal_bytes: u64,
+    /// 渲染侧常驻缓存实测字节。
+    pub retained_bytes: u64,
+    /// 本文档量度合计（journal + retained）。
+    pub total_bytes: u64,
+}
+
+/// **会话内存回执**（#11 路线 A/B）：进程内全部已载入文档量度
+/// 之和（OOM 是进程级事件，单文档口径拦不住多文档累积）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionMemoryStatus {
+    /// 全部已载入文档量度之和。
+    pub total_bytes: u64,
+    /// 警告阈值字节（`YANSHI_SESSION_MEMORY_WARN_MB`，缺省 2048 MB）。
+    pub warn_bytes: u64,
+    /// 硬闸阈值字节（`YANSHI_SESSION_MEMORY_HARD_MB`，缺省 4096 MB）。
+    pub hard_bytes: u64,
+    /// 距硬闸的余量（`hard_bytes` 饱和减 `total_bytes`）。
+    pub headroom_bytes: u64,
+    /// 级别：`ok`（总量 < 警告阈值）、`warn`（警告阈值 ≤ 总量 ≤ 硬闸阈值）、
+    /// `over`（总量 > 硬闸阈值）。
+    pub level: &'static str,
+    /// 分文档量度（按 doc_id 排序）。
+    pub documents: Vec<DocMemoryStatus>,
+    /// 进程 RSS 字节（Linux 下读 `/proc/self/statm`；非 Linux 为 `null`，
+    /// 只作回执参照，不作判定——RSS 无法归因到单个文档）。
+    pub process_rss_bytes: Option<u64>,
+}
+
+impl SessionMemoryStatus {
+    /// 按总量与两档阈值定级别。
+    pub(crate) fn level_for(total: u64, warn: u64, hard: u64) -> &'static str {
+        if total > hard {
+            "over"
+        } else if total >= warn {
+            "warn"
+        } else {
+            "ok"
+        }
+    }
+}
+
 /// **文档卸载观测**（C2，期 2）：预算卸载不许静默——计数与最近
 /// 一次留痕经 `Workspace::doc_eviction_stats` 与诊断响应可见。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -706,6 +757,11 @@ pub struct Workspace {
     doc_evictions_skipped_busy: u64,
     /// **C2 卸载留痕**：最近一次卸载的 (doc_id, 原因)。
     doc_last_eviction: Option<(String, String)>,
+    /// **#11 会话内存采样状态**：成功提交的原子计数（每 100 个
+    /// 一个采样点）与上次附加回执时的级别。
+    session_commits: u64,
+    /// 上次附加回执时的级别（`ok` / `warn` / `over`，初始 `ok`）。
+    session_memory_last_level: &'static str,
 }
 
 impl std::fmt::Debug for Workspace {
@@ -1311,6 +1367,8 @@ impl Workspace {
             stashes: BTreeMap::new(),
             settings,
             created: 0,
+            session_commits: 0,
+            session_memory_last_level: "ok",
         }
     }
 
@@ -1348,6 +1406,8 @@ impl Workspace {
             warned_time_insensitive_brushes: std::collections::HashSet::new(),
             transactions: BTreeMap::new(),
             stashes: BTreeMap::new(),
+            session_commits: 0,
+            session_memory_last_level: "ok",
         })
     }
 
@@ -1542,6 +1602,43 @@ impl Workspace {
             .unwrap_or(64)
     }
 
+    /// **#11 会话内存闸阈值读取**：`YANSHI_SESSION_MEMORY_WARN_MB`
+    /// （缺省 2048 MB）与 `YANSHI_SESSION_MEMORY_HARD_MB`（缺省
+    /// 4096 MB）——沿 C2 预算闸形态：调用时现读、解析失败回退
+    /// 缺省（可调才可测；以 8 GiB 容器为参照，小机器调低）。
+    pub(crate) fn session_memory_warn_bytes() -> u64 {
+        std::env::var("YANSHI_SESSION_MEMORY_WARN_MB")
+            .ok()
+            .and_then(|text| text.trim().parse::<u64>().ok())
+            .map(|mb| mb.saturating_mul(1_024 * 1_024))
+            .unwrap_or(2_048 * 1_024 * 1_024)
+    }
+
+    /// **#11 会话内存闸硬阈值读取**：见 `session_memory_warn_bytes`。
+    pub(crate) fn session_memory_hard_bytes() -> u64 {
+        std::env::var("YANSHI_SESSION_MEMORY_HARD_MB")
+            .ok()
+            .and_then(|text| text.trim().parse::<u64>().ok())
+            .map(|mb| mb.saturating_mul(1_024 * 1_024))
+            .unwrap_or(4_096 * 1_024 * 1_024)
+    }
+
+    /// **进程 RSS 字节**（#11 回执的参照量，不作判定）：Linux 下读
+    /// `/proc/self/statm` 第二字段 × 4096；非 Linux 返回 `None`
+    ///（与 `yanshi-http` 的 RSS 口径同源，方向反了不能复用那边的助手）。
+    fn process_rss_bytes() -> Option<u64> {
+        #[cfg(target_os = "linux")]
+        {
+            let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+            let resident_pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+            Some(resident_pages.saturating_mul(4096))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
+    }
+
     /// 一份已载入文档的估算驻留：原子口径 + 渲染侧常驻缓存**实测**
     /// （原子口径只计日志加状态加折叠；位图-heavy 文档的渲染缓存
     /// 另行叠实测——设计 C2 的硬要求）。
@@ -1556,6 +1653,60 @@ impl Workspace {
         (document.atom_count() as u64)
             .saturating_mul(BYTES_PER_ATOM)
             .saturating_add(document.renderer_retained_bytes() as u64)
+    }
+
+    /// **#11 会话内存量度**（路线 A/B 的同一口径）：进程内全部已载入
+    /// 文档的磁盘原子日志字节（`atoms.jsonl` stat，O(1)）＋渲染侧
+    /// 实测保留字节之和。磁盘量度不用原子数 × 100 KiB（重位图文档
+    /// 高估约 5 倍）；进程 RSS 只作回执参照，不作判定。
+    ///
+    /// **成本口径**（实测）：`renderer_retained_bytes()` 不是纯 O(1)——
+    /// below/above tile 求和与编译蒙版求和遍历的是画布规模的有界
+    /// 集合（tile 数、蒙版数），不随会话原子数增长；其余分量是维护
+    /// 型计数器。提交路径每笔调用的成本与会话长度无关，不引入
+    /// O(N) 会话长度成本；路线 A 的附加仍按采样点，不逐笔放大回执。
+    pub(crate) fn session_memory_status(&self) -> SessionMemoryStatus {
+        let warn = Self::session_memory_warn_bytes();
+        let hard = Self::session_memory_hard_bytes();
+        let mut documents = Vec::new();
+        let mut total = 0u64;
+        for (doc_id, document) in &self.documents {
+            let journal = self
+                .persist
+                .as_ref()
+                .map(|persist| persist.journal_len(doc_id).unwrap_or(0))
+                .unwrap_or(0);
+            let retained = document.renderer_retained_bytes() as u64;
+            let doc_total = journal.saturating_add(retained);
+            total = total.saturating_add(doc_total);
+            documents.push(DocMemoryStatus {
+                doc_id: doc_id.clone(),
+                journal_bytes: journal,
+                retained_bytes: retained,
+                total_bytes: doc_total,
+            });
+        }
+        SessionMemoryStatus {
+            total_bytes: total,
+            warn_bytes: warn,
+            hard_bytes: hard,
+            headroom_bytes: hard.saturating_sub(total),
+            level: SessionMemoryStatus::level_for(total, warn, hard),
+            documents,
+            process_rss_bytes: Self::process_rss_bytes(),
+        }
+    }
+
+    /// **#11 路线 A 采样**：成功提交后调用。量度每笔都算（成本与
+    /// 会话长度无关，见 `session_memory_status`），回执只在采样点
+    /// 附加：每 100 次成功提交，或级别距上次附加变化时。
+    fn attach_session_memory_sample(&mut self, result: &mut CommitResult) {
+        self.session_commits += 1;
+        let status = self.session_memory_status();
+        if self.session_commits % 100 == 0 || status.level != self.session_memory_last_level {
+            self.session_memory_last_level = status.level;
+            result.memory_status = Some(status);
+        }
     }
 
     /// 文档是否「使用中」：有 inflight 操作、或有打开的
@@ -2481,10 +2632,11 @@ impl Workspace {
         };
         let journal_started = std::time::Instant::now();
         self.journal(doc_id)?;
-        let result = attempt?;
+        let mut result = attempt?;
         phases.log_us = phases
             .log_us
             .saturating_add(journal_started.elapsed().as_micros() as u64);
+        self.attach_session_memory_sample(&mut result);
         Ok(result)
     }
 
@@ -2527,10 +2679,11 @@ impl Workspace {
             };
             let journal_started = std::time::Instant::now();
             self.journal(doc_id)?;
-            let result = attempt?;
+            let mut result = attempt?;
             phases.log_us = phases
                 .log_us
                 .saturating_add(journal_started.elapsed().as_micros() as u64);
+            self.attach_session_memory_sample(&mut result);
             results.push(result);
         }
         Ok(results)
@@ -5102,6 +5255,179 @@ mod tests {
         assert!(
             len <= MAX_EXPORT_PROOF_ENTRIES,
             "证明缓存必须有界：实际 {len} 条，上限 {MAX_EXPORT_PROOF_ENTRIES}"
+        );
+    }
+
+    /// #11 回执阈值测试共用锁：环境变量是进程全局的，并行测试
+    /// 改阈值会互相干扰——所有改阈值的测试都持这把锁，改完恢复原值。
+    static SESSION_MEMORY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn session_memory_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        SESSION_MEMORY_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn session_memory_layer_atom(layer_id: &str) -> Atom {
+        Atom::new(
+            yanshi_core::AtomKind::CreateLayer,
+            "human:1",
+            "session:a",
+            json!({"layer_id": layer_id}),
+        )
+    }
+
+    /// #11 路线 B：量度口径与缺省阈值——总量等于分文档之和，
+    /// 警告 2048 MB、硬闸 4096 MB、余量等于硬闸减总量、级别 ok；
+    /// 纯内存工作区没有持久层，磁盘量度为 0。
+    #[test]
+    fn session_memory_status_shape_and_defaults() {
+        let _guard = session_memory_env_lock();
+        let mut workspace = Workspace::in_memory(DocumentSettings::default());
+        workspace
+            .create_document(NewDocument::new("mem_doc", 32, 32), "human:1", "session:a")
+            .unwrap();
+        workspace
+            .commit(
+                "mem_doc",
+                session_memory_layer_atom("layer_1"),
+                "human:1",
+                false,
+            )
+            .unwrap();
+        let status = workspace.session_memory_status();
+        assert_eq!(status.warn_bytes, 2_048 * 1_024 * 1_024, "警告缺省 2048 MB");
+        assert_eq!(status.hard_bytes, 4_096 * 1_024 * 1_024, "硬闸缺省 4096 MB");
+        assert_eq!(status.level, "ok", "小文档应在 ok 级");
+        assert_eq!(status.documents.len(), 1, "只载入一份文档");
+        let doc = &status.documents[0];
+        assert_eq!(doc.doc_id, "mem_doc");
+        assert_eq!(doc.journal_bytes, 0, "纯内存工作区无 atoms.jsonl");
+        assert_eq!(
+            doc.total_bytes, doc.retained_bytes,
+            "总量 = 磁盘 0 + 渲染保留"
+        );
+        assert_eq!(status.total_bytes, doc.total_bytes, "总量等于分文档之和");
+        assert_eq!(
+            status.headroom_bytes,
+            status.hard_bytes - status.total_bytes,
+            "余量等于硬闸减总量"
+        );
+        assert!(
+            status.process_rss_bytes.is_some() || cfg!(not(target_os = "linux")),
+            "Linux 下 RSS 参照必须有值"
+        );
+    }
+
+    /// #11 路线 A：每 100 次成功提交采样——前 99 笔回执不带字段，
+    /// 第 100 笔带，第 101 笔又不带。
+    #[test]
+    fn session_memory_sampling_every_100_commits() {
+        let _guard = session_memory_env_lock();
+        let mut workspace = Workspace::in_memory(DocumentSettings::default());
+        workspace
+            .create_document(
+                NewDocument::new("mem_sample", 32, 32),
+                "human:1",
+                "session:a",
+            )
+            .unwrap();
+        for index in 1..=99 {
+            let result = workspace
+                .commit(
+                    "mem_sample",
+                    session_memory_layer_atom(&format!("layer_{index}")),
+                    "human:1",
+                    false,
+                )
+                .unwrap();
+            assert!(
+                result.memory_status.is_none(),
+                "第 {index} 笔不该带 memory_status（采样点是每 100 笔）"
+            );
+        }
+        let hundredth = workspace
+            .commit(
+                "mem_sample",
+                session_memory_layer_atom("layer_100"),
+                "human:1",
+                false,
+            )
+            .unwrap();
+        let status = hundredth
+            .memory_status
+            .as_ref()
+            .expect("第 100 笔必须带回执");
+        assert_eq!(status.level, "ok", "小文档采样级别应为 ok");
+        let next = workspace
+            .commit(
+                "mem_sample",
+                session_memory_layer_atom("layer_101"),
+                "human:1",
+                false,
+            )
+            .unwrap();
+        assert!(
+            next.memory_status.is_none(),
+            "第 101 笔不该带回执（下个采样点是第 200 笔）"
+        );
+    }
+
+    /// #11 路线 A：级别变化即时附加——警告阈值调到 0 MB 时首笔
+    /// 即跨进 warn 级并附加；阈值恢复缺省后下笔跨回 ok 级再附加；
+    /// 级别不变的下一笔不附加。
+    #[test]
+    fn session_memory_level_change_attaches() {
+        let _guard = session_memory_env_lock();
+        let mut workspace = Workspace::in_memory(DocumentSettings::default());
+        workspace
+            .create_document(
+                NewDocument::new("mem_level", 32, 32),
+                "human:1",
+                "session:a",
+            )
+            .unwrap();
+        std::env::set_var("YANSHI_SESSION_MEMORY_WARN_MB", "0");
+        let first = workspace
+            .commit(
+                "mem_level",
+                session_memory_layer_atom("layer_1"),
+                "human:1",
+                false,
+            )
+            .unwrap();
+        let status = first
+            .memory_status
+            .as_ref()
+            .expect("阈值 0 MB 时首笔即跨进 warn 级，必须附加");
+        assert_eq!(status.level, "warn");
+        assert_eq!(status.warn_bytes, 0);
+        std::env::remove_var("YANSHI_SESSION_MEMORY_WARN_MB");
+        let second = workspace
+            .commit(
+                "mem_level",
+                session_memory_layer_atom("layer_2"),
+                "human:1",
+                false,
+            )
+            .unwrap();
+        let status = second
+            .memory_status
+            .as_ref()
+            .expect("阈值恢复后跨回 ok 级，必须再附加");
+        assert_eq!(status.level, "ok");
+        assert_eq!(status.warn_bytes, 2_048 * 1_024 * 1_024);
+        let third = workspace
+            .commit(
+                "mem_level",
+                session_memory_layer_atom("layer_3"),
+                "human:1",
+                false,
+            )
+            .unwrap();
+        assert!(
+            third.memory_status.is_none(),
+            "级别不变且未到采样点时不附加"
         );
     }
 }
