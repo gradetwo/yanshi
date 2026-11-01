@@ -225,9 +225,13 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
     ("blob_gc", r#"{}"#),
     ("begin_changeset", r#"{}"#),
     ("put_blob", r#"{"path":"/tmp/red8.png"}"#),
+    // **blob 先行**（报告问题 3 收窄后）：`import_image` 的 bitmap 缺 blob_hash 会被
+    // 响亮拒绝 ⇒ 空 bitmap 示例抄走必被拒 ✗ ⇒ 示例必须先 `put_blob` 入库、再把返回的
+    // 哈希填进 bitmap。哈希是第一步那段 base64 的 SHA-256（1×1 红像素 PNG），两步的
+    // 字节逐字节对应 ⇒ `tool-example-acceptance` 的多步机制能原样跑通 ✓。
     (
         "import_image",
-        r#"{"layer_id": "L1", "bitmap": {}, "region": {"x": 0, "y": 0, "w": 32, "h": 32}}"#,
+        r#"[{"tool":"put_blob","arguments":{"data_base64":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==","mime_type":"image/png"}},{"tool":"import_image","arguments":{"layer_id":"L1","bitmap":{"blob_hash":"sha256:4ff6ab670a58c14270e034e2090d9a432caa263a14e0a25785386b0c12f880b5","mime_type":"image/png"},"region":{"x":0,"y":0,"w":32,"h":32}}}]"#,
     ),
     (
         "medium_stroke",

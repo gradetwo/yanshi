@@ -69,6 +69,10 @@ pub struct McpOptions {
     /// 资产目录（`--assets-dir` / `YANSHI_ASSETS_DIR` / 缺省 `"assets"`）——
     /// 启动时由 `resolve_assets_dir` 解析，找遍候选无一命中 ⇒ `Server::new` 失败。
     pub assets_dir: Option<std::path::PathBuf>,
+    /// **这条路径是不是用户真的给过的** ✓（`--assets-dir` / `YANSHI_ASSETS_DIR` ✓，不是缺省 `"assets"` ✓）：
+    /// 缺省值即使在当前目录存在但缺 `brushes/` / `textures/` 子目录，也**不**触发
+    /// `resolve_assets_dir` 的 loud 分支，而是走回退链（与 HTTP 侧同一规则 ✓）。
+    pub assets_dir_explicit: bool,
     /// 默认文档 id（工具参数里的 `doc_id` 优先）。
     pub doc_id: String,
     /// 自动创建文档时的画布尺寸。
@@ -104,6 +108,8 @@ impl Default for McpOptions {
         Self {
             root: None,
             assets_dir: Some(std::path::PathBuf::from("assets")),
+            // 缺省不是用户给过的 ⇒ `false`（`parse_args` 在 CLI / 环境变量给值时才置 `true` ✓）。
+            assets_dir_explicit: false,
             doc_id: "default".to_owned(),
             width: 1024,
             height: 1024,
@@ -142,6 +148,7 @@ impl McpOptions {
                 "--root" => options.root = Some(take_value("--root")?.into()),
                 "--assets-dir" => {
                     options.assets_dir = Some(take_value("--assets-dir")?.into());
+                    options.assets_dir_explicit = true;
                     assets_dir_from_cli = true;
                 }
                 "--doc" => options.doc_id = take_value("--doc")?,
@@ -189,6 +196,7 @@ impl McpOptions {
             if let Ok(env_dir) = std::env::var("YANSHI_ASSETS_DIR") {
                 if !env_dir.is_empty() {
                     options.assets_dir = Some(env_dir.into());
+                    options.assets_dir_explicit = true;
                 }
             }
         }
@@ -270,7 +278,10 @@ impl Server {
         // **与 HTTP 用同一个解析器** ✓（真实用户报告 ✓：相对路径 `assets` 换个工作目录就找不到 ✓）。
         // **找不到 ⇒ 启动失败** ✓（B3 ✓）：`--no-assets` 不存在于 MCP 侧，
         // 资产目录是必需品 ⇒ `None` 没有"显式不要"的合法情形 ✓。
-        .with_assets_dir(match yanshi_server::service::resolve_assets_dir(options.assets_dir.clone())
+        .with_assets_dir(match yanshi_server::service::resolve_assets_dir(
+            options.assets_dir.clone(),
+            options.assets_dir_explicit,
+        )
         {
             (Some(resolved), note) => {
                 yanshi_server::diagnostics::log_line(&note);

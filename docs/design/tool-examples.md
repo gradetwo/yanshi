@@ -1074,16 +1074,31 @@
 ## `import_image`
 
 ```json
-{
-  "layer_id": "L1",
-  "bitmap": {},
-  "region": {
-    "x": 0,
-    "y": 0,
-    "w": 32,
-    "h": 32
+[
+  {
+    "tool": "put_blob",
+    "arguments": {
+      "data_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==",
+      "mime_type": "image/png"
+    }
+  },
+  {
+    "tool": "import_image",
+    "arguments": {
+      "layer_id": "L1",
+      "bitmap": {
+        "blob_hash": "sha256:4ff6ab670a58c14270e034e2090d9a432caa263a14e0a25785386b0c12f880b5",
+        "mime_type": "image/png"
+      },
+      "region": {
+        "x": 0,
+        "y": 0,
+        "w": 32,
+        "h": 32
+      }
+    }
   }
-}
+]
 ```
 
 ## `import_project`

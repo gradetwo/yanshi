@@ -2941,6 +2941,25 @@ pub(super) fn paint_brush(
     // **反馈期 1 注**：撑不满 dab 间距的短笔触已在上面兜底（延长落一枚 dab），
     // 走到这里的 0 墨是**其它**真 0 墨情形（透明／涂抹／不可见色等），下面的分因诊断仍适用。
     if painted == 0 {
+        // **涂抹类判据优先于透明判据** ✓（报告问题 5）：`oil-mop` 的档案是
+        // `opaque = 0.0` 且 `smudge = 1.0` ⇒ 先查 opaque 会误报"有效 opacity 是 0" ✗，
+        // 而它真正的零墨原因是"空画布上没有颜色可抹" ✓ ⇒ smudge > 0 时先报涂抹类，
+        // 不论 opaque 值；非涂抹笔刷且有效 opacity 为 0 时仍走下面的 P-19 透明诊断 ✓。
+        let smudge = brush.get(hokusai::BrushSetting::Smudge).base_value;
+        if smudge > 0.0 {
+            return Err(YanshiError::new(
+                ErrorCode::PreconditionFailed,
+                ErrorContext::detail(format!(
+                    "这一笔没落下任何像素 ⇒ 笔刷「{name}」是**涂抹类**（smudge={smudge}）✓：\
+                     它靠**抹开画布上已有的颜色**工作 ⇒ 这块区域上大概**还没有颜色**可抹 ✓。\
+                     **怎么改（三条，按省事排序）**：\
+                     ① **先铺底色再抹** —— 用一支不透明的笔刷（如 `100%_Opaque`）在这块地方画一笔，\
+                        然后再用这支涂抹笔刷抹 ✓（湿画法里「先铺后揉」就是这个顺序 ✓）；\
+                     ② **用 `swatch_brush_strokes` 试它之前，也先铺一层底色** ✓（swatch 不写文档 ⇒ 铺底色那笔可以随便画 ✓）；\
+                     ③ 换一块**已经有颜色**的区域试，或换一支 **非涂抹**（`smudge = 0`）的笔刷 ✓。"
+                )),
+            ));
+        }
         // **P-19：有效 opacity 是 0 时，零墨是调用方要的透明，不是不够长** ✓ ——
         // `color.a=0` / `opacity: 0` 都会把 `Opaque` 压到 0 ⇒ 一枚 dab 都不会有墨 ✓ ⇒
         // 这时若还报"加长路径"，就是误导（照着改也改不好 ✓）。先说清真正原因 ✓。
@@ -2976,25 +2995,10 @@ pub(super) fn paint_brush(
         // ⇒ **一枚印章都不落** ✗（`dabs_per_actual_radius` 那一套没被用上 ✓）。
         // ⇒ 这类笔刷**在当前引擎下画不出来** ✓ ⇒ 与其只报"没有墨" ✗，不如**指出来** ✓
         //（否则调用方会以为是自己参数给错 ✓ —— 我第一版的消息正是这样误导的 ✗）。
-        // **先看它是不是"涂抹类"** ✓ —— 那类笔刷靠**抹开画布上已有的颜色**工作 ✓
+        // **涂抹类已在上面先判过** ✓（判据优先，见本分支开头）—— 那类笔刷靠**抹开画布上已有的颜色**工作 ✓
         // ⇒ 空白区域上它**本来就该什么都不出** ✓（`ramon-Knife` 正是这一类 ✓：
         // 与能画的 `classic-knife` 逐字段对比 ✓ ⇒ **唯一实质差异是 `smudge = 1.0`** ✓）。
         // **我此前那条"换一支笔刷"是误导** ✗ ⇒ 现在按真实原因分三种说 ✓。
-        let smudge = brush.get(hokusai::BrushSetting::Smudge).base_value;
-        if smudge > 0.0 {
-            return Err(YanshiError::new(
-                ErrorCode::PreconditionFailed,
-                ErrorContext::detail(format!(
-                    "这一笔没落下任何像素 ⇒ 笔刷「{name}」是**涂抹类**（smudge={smudge}）✓：\
-                     它靠**抹开画布上已有的颜色**工作 ⇒ 这块区域上大概**还没有颜色**可抹 ✓。\
-                     **怎么改（三条，按省事排序）**：\
-                     ① **先铺底色再抹** —— 用一支不透明的笔刷（如 `100%_Opaque`）在这块地方画一笔，\
-                        然后再用这支涂抹笔刷抹 ✓（湿画法里「先铺后揉」就是这个顺序 ✓）；\
-                     ② **用 `swatch_brush_strokes` 试它之前，也先铺一层底色** ✓（swatch 不写文档 ⇒ 铺底色那笔可以随便画 ✓）；\
-                     ③ 换一块**已经有颜色**的区域试，或换一支 **非涂抹**（`smudge = 0`）的笔刷 ✓。"
-                )),
-            ));
-        }
         let dabs_basic = brush
             .get(hokusai::BrushSetting::DabsPerBasicRadius)
             .base_value;

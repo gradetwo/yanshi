@@ -119,6 +119,12 @@ pub struct HttpOptions {
     /// **⚠️ 这段注释原先写的是"内置纹理目录"** ✗ —— 字段改名成"资产根目录"之后注释没跟着改 ✓
     /// ⇒ 后来的人会以为这里**只**管纹理 ✓（实际它同时管 `brushes` / `palettes` ✓）。
     pub assets_dir: Option<PathBuf>,
+    /// **这条路径是不是用户真的给过的** ✓（`--assets-dir` / `YANSHI_ASSETS_DIR` ✓，不是缺省 `"assets"` ✓）：
+    /// 缺省值即使在当前目录存在但缺 `brushes/` / `textures/` 子目录，也**不**触发
+    /// `resolve_assets_dir` 的 loud 分支，而是走回退链 —— 否则在 `crates/yanshi-http/` 这类
+    /// 自带 `assets/`（放 js/css）但无资产子目录的目录里按缺省启动会被误杀 ✓
+    ///（`asset_paths_survive_foreign_cwd` 的红灯就是这么来的 ✓）。
+    pub assets_dir_explicit: bool,
     /// **★ 导出静态页 ✓ ★**（第 636 轮 ✓；**部署矩阵 §14.18 ✓**）：**给了路径 ⇒ 把
     /// `viewer::page_with_read_tools()` 生成的那一份 HTML 写进文件并退出 ✗**
     /// ⇒ **∴ 于是**PWA 可以**同步同一份页面 ✗**（**不手写第二份 ⇒ 不分叉 ✓**）。
@@ -177,6 +183,8 @@ impl Default for HttpOptions {
             medium_dir: Some(PathBuf::from("assets/mediums")),
             // 门面是**构建产物** ✓（与 `crates/yanshi-wasm/pkg` 同一性质 ✓）⇒ 缺省指向 target 里那份 ✓。
             assets_dir: Some(PathBuf::from("assets")),
+            // 缺省不是用户给过的 ⇒ `false`（`parse_args` 在 CLI / 环境变量给值时才置 `true` ✓）。
+            assets_dir_explicit: false,
             cache_bust: None,
             export_viewer_html: None,
         }
@@ -208,10 +216,12 @@ impl HttpOptions {
                 "--medium-dir" => options.medium_dir = Some(value_of("--medium-dir")?.into()),
                 "--assets-dir" => {
                     options.assets_dir = Some(value_of("--assets-dir")?.into());
+                    options.assets_dir_explicit = true;
                     assets_dir_from_cli = true;
                 }
                 "--no-assets" => {
                     options.assets_dir = None;
+                    options.assets_dir_explicit = true;
                     assets_dir_from_cli = true;
                 }
                 "--no-mediums" => options.medium_dir = None,
@@ -288,6 +298,7 @@ impl HttpOptions {
             if let Ok(env_dir) = std::env::var("YANSHI_ASSETS_DIR") {
                 if !env_dir.is_empty() {
                     options.assets_dir = Some(env_dir.into());
+                    options.assets_dir_explicit = true;
                 }
             }
         }
@@ -568,8 +579,10 @@ pub fn serve(mut options: HttpOptions) -> std::io::Result<ServerHandle> {
     //     （浏览器只留一行 console，创作者看不出「素材区为什么是空的」⇒ 本库唯一的对手 ✓）。
     // 修法：把解析结果**写回 `options`** ⇒ 两处读同一个绝对路径 ✓（不再两套口径 ✓）；
     // 品牌与介质目录跟着资产根走，**只在仍是缺省值时**替换 ⇒ 不覆盖用户显式 `--brand-dir` ✓。
-    let (assets_resolved, assets_note) =
-        yanshi_server::service::resolve_assets_dir(options.assets_dir.clone());
+    let (assets_resolved, assets_note) = yanshi_server::service::resolve_assets_dir(
+        options.assets_dir.clone(),
+        options.assets_dir_explicit,
+    );
     yanshi_server::diagnostics::log_line(format!("  {assets_note}"));
     // **给了资产路径却找不到 ⇒ 启动失败** ✓（B3，与 MCP 同规则 ✓）；
     // `--no-assets`（`assets_dir` 为 `None`）显式不要资产时允许 `None` ✓。
