@@ -151,10 +151,28 @@ fn default_composition_is_unnarrowed_and_panel_complete() {
             "缺省常用集必须包含 PHOTO_TOOLS 全部工具，缺 {name}"
         );
     }
+    // 缺省集 = 注册表全量 − 显式点名才出现的 profile 工具。Study 是第一个
+    // 不进缺省的 profile（只读研究工具，须显式 --profile study 点名；缺省
+    // 会话不出现）。若将来再有不进缺省的 profile，此处差集随之扩大，不再
+    // 要求缺省与全量同名——旧断言「缺省 = 全量」自 Study 起不再成立。
+    let full_names = names(&full);
+    let opt_in_names: BTreeSet<&'static str> = full
+        .tools()
+        .iter()
+        .filter(|t| t.profile == Profile::Study)
+        .map(|t| t.name)
+        .collect();
+    assert!(
+        !opt_in_names.is_empty(),
+        "差集口径的前提：全量里须有 Study 工具，否则下面 assert_eq 退化回旧语义"
+    );
     assert_eq!(
         default_names,
-        names(&full),
-        "三层加回后缺省工具集应与注册表全量同名（实测同为 205 个）"
+        full_names
+            .difference(&opt_in_names)
+            .copied()
+            .collect::<BTreeSet<&'static str>>(),
+        "缺省工具集应 = 注册表全量 − 显式点名 profile（Study）的工具"
     );
     // 缺省集必须严格大于照片名单本身：若 DEFAULT 被误收窄到 PHOTO_TOOLS，
     // 下面这些「在成员分层内、但不在照片白名单」的工具会整批消失

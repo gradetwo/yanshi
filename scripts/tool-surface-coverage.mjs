@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-// **三个面的覆盖面对账**（第 803 轮）：服务端 `/api/tools`（权威全集）✓、MCP 各 profile ✓、
+// **三个面的覆盖面对账**（第 803 轮）：服务端 `/api/tools`（注意：它反映的是起服时的 profile，
+// CI 里起的是缺省服务 ⇒ 它是**缺省面**，不是全量面；全量面要另取 `--profile all`，见下面全量面注释）✓、
+// MCP 各 profile ✓、
 // 以及查看器实际调用的工具 ✓ —— 各自**实际暴露了什么**，而不是"应该一致"✓。
 //
 // **为什么需要它** ✗（第 802 轮的实测 ✓）：
@@ -62,6 +64,12 @@ const declaredProfiles = (catalog.profiles || []).map(String);
 if (http.size === 0) { console.error("  ✗ /api/tools 没返回任何工具 ⇒ 判据无法运行（不是通过）"); process.exit(1); }
 
 const core = toolsFor(["core"]);
+// **全量面**：`--profile all`（全部已实现组，不含 semantic）✓ —— 指南里「`--profile all` 开启全部组」
+// 那句话说的就是这个面 ⇒ ⑥ 的文档数要跟它对，而不是跟 HTTP 面对。
+// **为什么不能跟 HTTP 面对**（Study 一案实测）：CI 起的是缺省服务 ⇒ `/api/tools` 只给缺省面
+// （222，不含 Study 专属工具），而 `--profile all` 给 223；拿缺省面去卡「全部组」那句话，
+// 两判据就互斥（check-tool-counts 量全量面要 223，本判据量缺省面要 222）⇒ 必须按句子的所指面取数。
+const full = toolsFor(["all"]);
 const perProfile = new Map(declaredProfiles.map((p) => [p, toolsFor([p]).set]));
 
 // ② 每个 profile 单独启用时，必然包含 core 的全部工具 ✓
@@ -124,6 +132,9 @@ if (mentions.length === 0) {
 // 实测过一次：网站的落地页与两份指南都写着「114 个工具（core 46 个）」✗，而真实是 136 / 68 ✓
 //（那是我把过时数字**从 README 一起搬进指南**时发现的 ✗ ⇒ 搬运也会搬运错误 ✓）。
 // ⇒ 找不到那句话就**报错**（不许静默通过 ✗ —— 改写了措辞等于**检查消失了** ✓）。
+// ⇒ **所指面必须对上句子**（Study 一案的教训）：指南那句说的是 `--profile all` ⇒ 它的总数
+// 必须跟**全量面**（`full.set.size`）对；跟 HTTP 面（缺省服务，缺 Study）对就是量错面，
+// 会跟 check-tool-counts（量全量面）互斥 ⇒ 两判据同一句话各要一个数，永远合不拢。
 const docClaims = [
   { file: "docs/guide.md", re: /(\d+) tools against the (\d+) that core alone gives/ },
   // ⚠️ 中文那句里「个工具」与「（」之间夹着 `**`（粗体标记 ✓）⇒ 正则必须容忍它 ✓。
@@ -141,8 +152,8 @@ for (const { file, re } of docClaims) {
   // ⚠️ **局部名不要用 `core`/`all`** ✗：`core` 是外层的 `{ set, raw }` ✓、`all` 是全局 ✓
   // ⇒ 遮蔽过一次，`core.set` 当场变成读一个数字 ⇒ `TypeError` ✓（**跑一次才发现的 ✓**）。
   const [, claimedTotal, claimedCore, sentence] = [m[0], Number(m[1]), Number(m[2]), m[0]];
-  if (claimedTotal !== http.size || claimedCore !== core.set.size) {
-    fail(`${file} 写「${sentence.trim()}」，而实测是 ${http.size} / core ${core.set.size}`);
+  if (claimedTotal !== full.set.size || claimedCore !== core.set.size) {
+    fail(`${file} 写「${sentence.trim()}」，而实测是全量 ${full.set.size} / core ${core.set.size}（HTTP 面缺省服务是 ${http.size}，那是缺省面、不是这句话的面）`);
   }
 }
 
@@ -217,6 +228,7 @@ for (const { file, re } of docClaims) {
 
 // ⑥ 打印覆盖面 ✓（让"绿"带上"覆盖了多少" ✓）
 console.log(`  HTTP 面：${http.size} 个工具｜声明 profile：${declaredProfiles.join("、")}`);
+console.log(`  全量面（--profile all）：${full.set.size} 个工具（指南「全部组」那句话跟这个面对）`);
 console.log(`  MCP 默认（core）：${core.set.size} 个 ⇒ 覆盖 HTTP 的 ${(100 * core.set.size / http.size).toFixed(1)}%`);
 for (const profile of declaredProfiles) {
   if (profile === "core") continue;
