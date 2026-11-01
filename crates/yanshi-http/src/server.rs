@@ -308,7 +308,7 @@ impl HttpOptions {
                               （**缺省关**；增量解析，冲突最后写赢；不监视 blob）\n\
            --width <n>        自动创建文档的宽（缺省 1024）\n\
            --height <n>       自动创建文档的高（缺省 1024）\n\
-           --profile <list>   启用工具组，逗号分隔，可选：all,core,history,changeset,retouch,semantic,conflict,annotation,collab,structure,oil,watercolor,sketch,ink,pastel,photo,svg\n\
+           --profile <list>   启用工具组，逗号分隔，可选：all,core,history,changeset,retouch,semantic,conflict,annotation,collab,structure,oil,watercolor,sketch,ink,pastel,photo,svg,study\n\
                               （all = 全部已实现的组，即除 semantic 外；photo/svg 为白名单工作面预设，单独点名时按白名单收窄）\n\
                               （缺省 = default 常用集：core,history,changeset,retouch,annotation,collab,conflict,structure,photo；semantic 组按既定裁定只预留不开发）\n\
            --wasm-dir <dir>   WASM 计算内核产物目录（缺省 crates/yanshi-wasm/pkg）
@@ -5242,10 +5242,29 @@ mod tests {
                 "缺省常用集必须包含 PHOTO_TOOLS 全部工具，缺 {name}"
             );
         }
+        // 缺省 = 全量减 Study 专属工具：Study 工具须显式 `--profile study` 点名，
+        // 不在缺省内；此前“缺省与全量相等”的旧不变量自 Study 组设立起不再成立。
+        let full = ToolRegistry::full();
+        let study_count = full
+            .tools()
+            .iter()
+            .filter(|tool| tool.profile == Profile::Study)
+            .count();
+        assert!(
+            study_count > 0,
+            "全量里应有 Study 专属工具，否则缺省与全量的差无从解释"
+        );
         assert_eq!(
-            registry.tools().len(),
-            ToolRegistry::full().tools().len(),
-            "三层加回后缺省工具数应与全量相等（实测同为 200；与 ALL 的区别在成员资格）"
+            registry.tools().len() + study_count,
+            full.tools().len(),
+            "缺省工具数 + Study 专属工具数应与全量相等"
+        );
+        assert!(
+            registry
+                .tools()
+                .iter()
+                .all(|tool| tool.profile != Profile::Study),
+            "缺省内不应有 Study 专属工具"
         );
     }
 

@@ -3,7 +3,7 @@
 **这份文件是生成出来的**（`scripts/tool-examples-doc.mjs`）—— 内容取自运行中服务端的 `GET /api/tools`，
 所以它不会与实现漂移；`--check` 模式会在文档过期时失败。
 
-当前共 222 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
+当前共 223 个工具带示例；**这些示例是否真能跑通，由 `scripts/tool-example-acceptance.mjs` 判定**（本文件只保证与工具目录一致）。
 
 ## `abort_changeset`
 
@@ -1442,6 +1442,32 @@
 
 ```json
 {}
+```
+
+## `reference_trace_region`
+
+```json
+{
+  "image_path": "ref.png",
+  "polygon": [
+    [
+      10,
+      10
+    ],
+    [
+      200,
+      10
+    ],
+    [
+      200,
+      300
+    ],
+    [
+      10,
+      300
+    ]
+  ]
+}
 ```
 
 ## `reject_annotation`
