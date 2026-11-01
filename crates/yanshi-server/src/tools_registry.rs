@@ -1494,7 +1494,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                  **批量作画不等渲染** ✓（反馈报告 2 期 1）：顶层 `wait_for_render: false` ⇒ 整批子调用默认不等渲染（完工后用 `export_png` / `render_region` 取图 ✓）；不给 ⇒ 各子调用按自己的值（单笔缺省 `true` ✓）；子调用显式值只对自己那一笔生效 ✓。\
                  **`preview` 与 `wait_for_render` 分工** ✓：`preview` 只管响应里要不要图（编码与回执体积），**不省渲染遍**；`wait_for_render` 才管渲不渲染（wall 时间开关）—— `preview: false` 绝不等于「快」✓。\
                  单笔绘制要省 wall 时间请用 `brush_stroke(wait_for_render: false)` ✓（`brush_stroke` 回执本就不带预览图，`preview` 对它无可见效果 ✓）。\
-                 顶层 `ok` 即全成（与 `all_ok` 一致 ✓，A6 方案 ①）：有子调用失败 ⇒ `ok:false` + `error` 指路 `failed_calls` ✓。失败批的 MCP 信封另带 `structuredContent`（与 text 块同一份回执 JSON）：`isError` 为真时取 `structuredContent.all_ok` / `failed_calls` 即可结构化地拿到失败详情，不必解析 text 字符串。\
+                 顶层 `ok` 即全成（与 `all_ok` 一致 ✓，A6 方案 ①）：有子调用失败 ⇒ `ok:false` + `error` 指路 `failed_calls` ✓。失败批的 MCP 信封另带结构化回执字段 structuredContent（与 text 块同一份回执 JSON）：isError 为真时取 structuredContent 里的 `all_ok` / `failed_calls` 即可结构化地拿到失败详情，不必解析 text 字符串。\
                  每笔另有取证摘要 `stroke_evidence`（与 `calls` 同下标 ✓）：笔触类子调用给 `landed` / `painted_pixels_clipped` / `ink_mass` / `max_channel_delta`（与 `brush_stroke` 回执同字段 ✓；`medium_stroke` 的 `paint_delta` 在此归一为 `max_channel_delta` ✓）；失败的子调用带完整 `error` ✓。\
                  精简回执：传 slim_receipt true 时只砍逐笔调用回执（calls 为空数组，omitted_calls 记被省掉的条数）；计数、失败项（failed_calls 完整保留）、stroke_evidence、atom_ids、head、changeset_id、execution 仍保留；缺省 false，完整回执不变\
                  另带每笔均值字段 ms_per_stroke_avg（毫秒）：整批墙钟除以笔触子调用数，\
