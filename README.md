@@ -168,6 +168,16 @@ The mark is a **slingshot**: a forked frame, two rubber bands and a red pellet. 
 
 What it borrows is the gesture in a joke, **making something usable out of whatever is at hand**, which is the same attitude the project takes: write the construction down, use what works, and say so when it does not.
 
+## What's new in v0.3.2
+
+- Fixed: rotating a non-square canvas 90°→270° lost content (creator round-9 HIGH 1).
+- Fixed: fill alpha:1 sentinel pierced by opacity (creator round-9 HIGH 2).
+- Fixed: mask wrong-field robustness defect.
+- CI/release runners migrated from macos-14 to macos-15.
+- Y26 integration branch fully merged (including the follow-up merge 1ffc5772 that closed 9 commits).
+
+See [docs/releases/v0.3.2.md](docs/releases/v0.3.2.md) for the release note.
+
 ## Documentation
 
 - [Design document](docs/design/yanshi-v1.0-draft4.md) — the specification.
