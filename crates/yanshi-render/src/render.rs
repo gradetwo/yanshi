@@ -30,7 +30,7 @@ use crate::filter::{apply_adjustment, apply_filter, AdjustmentKind, FilterKind};
 use crate::geometry::{
     ellipse_coverage_clipped, polygon_coverage_clipped, rect_coverage_clipped, Coverage,
 };
-use crate::object::{parse_object, PatchBlend, Primitive, ShapeKind};
+use crate::object::{PatchBlend, Primitive, ShapeKind};
 use crate::rows::PARALLEL_MIN_PIXELS;
 use crate::tile::{Tile, TileCache, TileGrid, TileKey};
 use serde_json::Value;
@@ -1471,6 +1471,14 @@ pub struct Renderer {
     /// 故缓存查不到已删除对象；无版本对象（`None`）不缓存、每次重算。
     /// 上限 65536 条，超限整表清空（正确性不受影响，只多算一次）；渲染器重建时随之丢弃。
     fp_cache: std::sync::Mutex<std::collections::HashMap<FingerprintCacheKey, String>>,
+    /// **对象前置工作缓存**（#1 第一期，见 [`crate::prep_cache`]）：解析后图元＋包围盒，
+    /// 键为（对象 id、current_version、变换矩阵＋枢轴位表示），实例另含解析链。
+    /// `Mutex` 与 `below`/`above` 同例；开关见字段 `prep_cache_enabled`。
+    prep_cache: std::sync::Mutex<crate::prep_cache::PrepCache>,
+    /// 前置缓存开关：构造时读 `YANSHI_PREP_CACHE`（`0` ⇒ 关），
+    /// 测试与 A/B 对比可用 [`Self::set_prep_cache_enabled`] 改写；
+    /// 关时不读不写缓存、行为与未接入前一致。
+    prep_cache_enabled: bool,
 }
 
 impl Renderer {
@@ -1626,6 +1634,8 @@ impl Renderer {
             above: std::sync::Mutex::new(None),
             vector_raster: std::sync::Mutex::new(crate::vector::VectorRasterCache::new()),
             fp_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            prep_cache: std::sync::Mutex::new(crate::prep_cache::PrepCache::new()),
+            prep_cache_enabled: crate::prep_cache::prep_cache_enabled_from_env(),
         }
     }
 
@@ -1646,6 +1656,8 @@ impl Renderer {
             above: std::sync::Mutex::new(None),
             vector_raster: std::sync::Mutex::new(crate::vector::VectorRasterCache::new()),
             fp_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            prep_cache: std::sync::Mutex::new(crate::prep_cache::PrepCache::new()),
+            prep_cache_enabled: crate::prep_cache::prep_cache_enabled_from_env(),
         };
 
         // **★ 让并行度可测 ✗ ★**（第 861 轮 ✓；**目标第 8 条 ✓**）：
@@ -1663,6 +1675,60 @@ impl Renderer {
             }
         }
         renderer
+    }
+
+    /// **前置工作缓存读数**（#1 第一期）：命中／未命中／当前条目数。
+    /// 锁中毒时返回零读数（渲染本身不受影响，只是本次不走缓存）。
+    pub fn prep_cache_stats(&self) -> crate::prep_cache::PrepCacheStats {
+        if let Ok(cache) = self.prep_cache.lock() {
+            return cache.stats();
+        }
+        crate::prep_cache::PrepCacheStats {
+            hits: 0,
+            misses: 0,
+            entries: 0,
+        }
+    }
+
+    /// 前置缓存开关读数（构造时读 `YANSHI_PREP_CACHE`，见字段 `prep_cache_enabled`）。
+    pub fn prep_cache_enabled(&self) -> bool {
+        self.prep_cache_enabled
+    }
+
+    /// 改写前置缓存开关（测试与 A/B 对比用；关时不读不写缓存）。
+    pub fn set_prep_cache_enabled(&mut self, enabled: bool) {
+        self.prep_cache_enabled = enabled;
+    }
+
+    /// **取单个对象的预处理结果**（解析后图元＋包围盒，#1 第一期）：
+    /// 命中 ⇒ 直接复用；未命中 ⇒ 按今日循环原样算一次
+    /// （[`crate::prep_cache::compute_prep_entry`]）再存入；开关关或
+    /// 键不可建（无版本对象、解析失败的实例）⇒ 不经缓存直接算。
+    /// 锁只在查／插时持有，计算在锁外；两线程同算一条目时后者覆盖，
+    /// 无害（同键内容必同：键已含版本、变换、data 哈希与类型）。
+    pub fn prep_entry(
+        &self,
+        state: &yanshi_core::DocumentState,
+        object: &yanshi_core::Object,
+    ) -> crate::prep_cache::PrepEntry {
+        if self.prep_cache_enabled {
+            if let Some(key) = crate::prep_cache::prep_key_for(state, object) {
+                let hit = if let Ok(mut cache) = self.prep_cache.lock() {
+                    cache.lookup(&key)
+                } else {
+                    None
+                };
+                if let Some(entry) = hit {
+                    return entry;
+                }
+                let entry = crate::prep_cache::compute_prep_entry(state, object);
+                if let Ok(mut cache) = self.prep_cache.lock() {
+                    cache.insert(key, entry.clone());
+                }
+                return entry;
+            }
+        }
+        crate::prep_cache::compute_prep_entry(state, object)
     }
 
     /// **解码位图缓存的可观测读数** ✓（判据据此断言"同一块补丁没有被重复解码" ✓）。
@@ -4133,20 +4199,8 @@ impl Renderer {
             //   **∴ 而**这里正是**那段**✗（**parse／transform／bbox ✓）**
             //     ⇒ **∴ 加上计时**⇒ **∴ 报告里**直接**看得出**是**哪一步** ✓ ★**** ✓✓
             let mut probe_prep = stage_probe::Stage::start();
-            let primitive = if object.object_type == yanshi_core::ObjectType::Instance {
-                match crate::object::resolve_instance(state, object) {
-                    Some((master_primitive, transform)) => {
-                        crate::object::transform_primitive(master_primitive, &transform)
-                    }
-                    // **master 不可用（不存在/已删/成环）⇒ 什么都不画** ✓，
-                    // 但**不报错** ✓：日志顺序允许先建实例后建 master ✓，补齐后自动恢复 ✓。
-                    None => Primitive::Unsupported {
-                        reason: "实例的 master 当前不可用".to_owned(),
-                    },
-                }
-            } else {
-                crate::object::transform_primitive(parse_object(object), &object.transform)
-            };
+            let entry = self.prep_entry(state, object);
+            let primitive = entry.primitive;
             probe_objects.record("prep:parse+transform", probe_prep.stop());
             let affects_whole_layer = matches!(
                 primitive,
@@ -4158,7 +4212,10 @@ impl Renderer {
             if !affects_whole_layer {
                 // **实例的包围盒必须解析 master** ✓（否则实例会被当成空盒子裁掉 ✗，
                 // 实测："实例应在 local_transform 指定的位置画出 master（实测 0）" ✓）。
-                let intersects = crate::object::object_bbox_in(state, object)
+                // 包围盒来自前置缓存条目：填充时由 `object_bbox_in` 原样算出，
+                // 与今日循环的裁剪口径同一函数、同一输入 ⇒ 行为不变。
+                let intersects = entry
+                    .bbox
                     .map(|bbox| {
                         bbox.w > 0.0 && bbox.h > 0.0 && bbox.intersects(&layer_buffer.bbox())
                     })
@@ -10744,6 +10801,448 @@ mod tests {
         assert!(
             format!("{err:?}").contains("MissingBakedBlob"),
             "缺 blob 必须报 MissingBakedBlob，实得：{err:?}"
+        );
+    }
+
+    /// **前置缓存：二次渲染命中、像素逐字节一致**（#1 第一期）。
+    /// 判据强度：两对象 ⇒ 首渲 `misses=2`、次渲 `hits=2`（精确计数，
+    /// 不是"大于 0"）；像素用整块字节比对；另断言墨点在场（防空缓冲恒等）。
+    #[test]
+    fn prep_cache_second_render_hits_and_pixels_identical() {
+        let mut state = white_document();
+        state.objects.insert(
+            "obj_1".to_owned(),
+            object(
+                "obj_1",
+                "layer_1",
+                ObjectType::Stroke,
+                0,
+                json!({
+                    "points": [[4.0, 4.0], [12.0, 4.0]],
+                    "size": 4.0,
+                    "color": [0.0, 0.0, 0.0, 1.0],
+                }),
+            ),
+        );
+        state.objects.insert(
+            "obj_2".to_owned(),
+            object(
+                "obj_2",
+                "layer_1",
+                ObjectType::Stroke,
+                1,
+                json!({
+                    "points": [[4.0, 20.0], [12.0, 20.0]],
+                    "size": 4.0,
+                    "color": [0.0, 0.0, 0.0, 1.0],
+                }),
+            ),
+        );
+        let store = MemoryBlobStore::new();
+        let layer = layer("layer_1", 0);
+        let bitmaps = BitmapCache::default();
+        let r = renderer();
+        let alpha = |b: &[u8], x: usize, y: usize| b[(y * 32 + x) * 4 + 3];
+        let mut buf = Buffer::new(0, 0, 32, 32);
+        let mut track = ObjectTrack::default();
+        r.render_layer_objects(&state, &store, &layer, &mut buf, &mut track, &bitmaps)
+            .unwrap();
+        let first_bytes = buf.to_rgba8(None);
+        assert_eq!(alpha(&first_bytes, 8, 4), 255, "首渲应在 (8,4) 落墨");
+        assert_eq!(alpha(&first_bytes, 8, 20), 255, "首渲应在 (8,20) 落墨");
+        let stats1 = r.prep_cache_stats();
+        assert_eq!(
+            (stats1.hits, stats1.misses, stats1.entries),
+            (0, 2, 2),
+            "首渲两对象都应未命中进表：{stats1:?}"
+        );
+        let mut buf2 = Buffer::new(0, 0, 32, 32);
+        let mut track2 = ObjectTrack::default();
+        r.render_layer_objects(&state, &store, &layer, &mut buf2, &mut track2, &bitmaps)
+            .unwrap();
+        let second_bytes = buf2.to_rgba8(None);
+        assert_eq!(second_bytes, first_bytes, "缓存复用不得改变像素");
+        let stats2 = r.prep_cache_stats();
+        assert_eq!(
+            (stats2.hits, stats2.misses, stats2.entries),
+            (2, 2, 2),
+            "次渲两对象都应命中：{stats2:?}"
+        );
+    }
+
+    /// **前置缓存关时像素与开时一致、且不产生任何命中／未命中计数**
+    /// （#1 第一期；开关是 `set_prep_cache_enabled`，构造缺省读环境变量）。
+    #[test]
+    fn prep_cache_off_renders_identical_pixels() {
+        let mut state = white_document();
+        state.objects.insert(
+            "obj_1".to_owned(),
+            object(
+                "obj_1",
+                "layer_1",
+                ObjectType::Stroke,
+                0,
+                json!({
+                    "points": [[4.0, 4.0], [12.0, 4.0]],
+                    "size": 4.0,
+                    "color": [0.0, 0.0, 0.0, 1.0],
+                }),
+            ),
+        );
+        let store = MemoryBlobStore::new();
+        let layer = layer("layer_1", 0);
+        let bitmaps = BitmapCache::default();
+        let alpha = |b: &[u8], x: usize, y: usize| b[(y * 32 + x) * 4 + 3];
+        let on = renderer();
+        let mut buf_on = Buffer::new(0, 0, 32, 32);
+        let mut track_on = ObjectTrack::default();
+        on.render_layer_objects(&state, &store, &layer, &mut buf_on, &mut track_on, &bitmaps)
+            .unwrap();
+        let bytes_on = buf_on.to_rgba8(None);
+        assert_eq!(alpha(&bytes_on, 8, 4), 255, "开缓存应在 (8,4) 落墨");
+        let mut off = renderer();
+        off.set_prep_cache_enabled(false);
+        assert!(!off.prep_cache_enabled(), "开关应已关");
+        let mut buf_off = Buffer::new(0, 0, 32, 32);
+        let mut track_off = ObjectTrack::default();
+        off.render_layer_objects(
+            &state,
+            &store,
+            &layer,
+            &mut buf_off,
+            &mut track_off,
+            &bitmaps,
+        )
+        .unwrap();
+        let bytes_off = buf_off.to_rgba8(None);
+        assert_eq!(bytes_off, bytes_on, "关缓存的像素必须与开缓存逐字节一致");
+        let stats = off.prep_cache_stats();
+        assert_eq!(
+            (stats.hits, stats.misses, stats.entries),
+            (0, 0, 0),
+            "关时不读不写缓存：{stats:?}"
+        );
+    }
+
+    /// **普通对象只改变换（不推版本）不得读旧几何**（#1 第一期）：
+    /// 变换是键的一部分，矩阵一变 ⇒ 新键 ⇒ 现算 ⇒ 墨点跟到新位置。
+    #[test]
+    fn prep_cache_plain_transform_change_busts_key() {
+        let mut state = white_document();
+        state.objects.insert(
+            "obj_1".to_owned(),
+            object(
+                "obj_1",
+                "layer_1",
+                ObjectType::Stroke,
+                0,
+                json!({
+                    "points": [[4.0, 4.0], [12.0, 4.0]],
+                    "size": 4.0,
+                    "color": [0.0, 0.0, 0.0, 1.0],
+                }),
+            ),
+        );
+        let store = MemoryBlobStore::new();
+        let layer = layer("layer_1", 0);
+        let bitmaps = BitmapCache::default();
+        let r = renderer();
+        let alpha = |b: &[u8], x: usize, y: usize| b[(y * 32 + x) * 4 + 3];
+        let mut buf = Buffer::new(0, 0, 32, 32);
+        let mut track = ObjectTrack::default();
+        r.render_layer_objects(&state, &store, &layer, &mut buf, &mut track, &bitmaps)
+            .unwrap();
+        let first_bytes = buf.to_rgba8(None);
+        assert_eq!(alpha(&first_bytes, 8, 4), 255, "首渲应在 (8,4) 落墨");
+        // 只改变换，不推版本（组变换／Move 的直接写矩阵路与此同型）。
+        let obj = state.objects.get_mut("obj_1").unwrap();
+        obj.transform.matrix = [1.0, 0.0, 0.0, 1.0, 8.0, 0.0];
+        let mut buf2 = Buffer::new(0, 0, 32, 32);
+        let mut track2 = ObjectTrack::default();
+        r.render_layer_objects(&state, &store, &layer, &mut buf2, &mut track2, &bitmaps)
+            .unwrap();
+        let second_bytes = buf2.to_rgba8(None);
+        assert_ne!(
+            second_bytes, first_bytes,
+            "变换后画面必须变（不得读旧几何）"
+        );
+        assert_eq!(alpha(&second_bytes, 16, 4), 255, "平移后墨点应在 (16,4)");
+        assert_eq!(alpha(&second_bytes, 8, 4), 0, "平移后旧位 (8,4) 应无墨");
+        let stats = r.prep_cache_stats();
+        assert_eq!(
+            (stats.hits, stats.misses),
+            (0, 2),
+            "变换换键 ⇒ 次渲仍是未命中，不得命中旧条目：{stats:?}"
+        );
+    }
+
+    /// **实例：master 内容改（supersede 推新版本）后实例不得用旧几何**
+    /// （#1 第一期）：链上 master 的版本入键，版本一变 ⇒ 实例键变。
+    /// 注：master 用 Shape 矩形——今日 `object_bbox_in` 把 master 数据硬套
+    /// 成 Shape 算盒，非 Shape master 的盒退化为零尺寸、实例恒被裁
+    /// （既有缺陷，另报；本判据在能渲染的路径上验失效）。
+    #[test]
+    fn prep_cache_instance_master_content_change_busts_key() {
+        let mut state = white_document();
+        state.objects.insert(
+            "master_1".to_owned(),
+            object(
+                "master_1",
+                "layer_1",
+                ObjectType::Shape,
+                0,
+                json!({"geometry": {"kind": "rect", "bbox": {"x": 4, "y": 4, "w": 8, "h": 8}},
+                       "color": {"r": 0, "g": 0, "b": 0, "a": 255}}),
+            ),
+        );
+        state.objects.insert(
+            "inst_1".to_owned(),
+            object(
+                "inst_1",
+                "layer_1",
+                ObjectType::Instance,
+                1,
+                json!({"master_ref": {"object_id": "master_1",
+                    "local_transform": {"matrix": [1.0, 0.0, 0.0, 1.0, 0.0, 16.0]}}}),
+            ),
+        );
+        let store = MemoryBlobStore::new();
+        let layer = layer("layer_1", 0);
+        let bitmaps = BitmapCache::default();
+        let r = renderer();
+        let alpha = |b: &[u8], x: usize, y: usize| b[(y * 32 + x) * 4 + 3];
+        let render = |r: &Renderer, state: &DocumentState| -> Vec<u8> {
+            let mut buf = Buffer::new(0, 0, 32, 32);
+            let mut track = ObjectTrack::default();
+            r.render_layer_objects(state, &store, &layer, &mut buf, &mut track, &bitmaps)
+                .unwrap();
+            buf.to_rgba8(None)
+        };
+        let first_bytes = render(&r, &state);
+        assert_eq!(
+            alpha(&first_bytes, 8, 8),
+            255,
+            "首渲 master 矩形应在 (8,8) 落墨"
+        );
+        assert_eq!(
+            alpha(&first_bytes, 8, 24),
+            255,
+            "首渲实例矩形应在 (8,24) 落墨"
+        );
+        // 模拟 supersede：data 与 current_version 一起换。
+        let master = state.objects.get_mut("master_1").unwrap();
+        master.data = json!({"geometry": {"kind": "rect", "bbox": {"x": 16, "y": 4, "w": 8, "h": 8}},
+                             "color": {"r": 0, "g": 0, "b": 0, "a": 255}});
+        master.current_version = Some("a2".to_owned());
+        let second_bytes = render(&r, &state);
+        assert_ne!(second_bytes, first_bytes, "master 内容改后画面必须变");
+        assert_eq!(alpha(&second_bytes, 20, 8), 255, "master 新矩形应在 (20,8)");
+        assert_eq!(alpha(&second_bytes, 20, 24), 255, "实例应跟随到 (20,24)");
+        assert_eq!(alpha(&second_bytes, 8, 8), 0, "旧 master 位 (8,8) 应无墨");
+        assert_eq!(alpha(&second_bytes, 8, 24), 0, "旧实例位 (8,24) 应无墨");
+        let stats = r.prep_cache_stats();
+        assert_eq!(
+            (stats.hits, stats.misses),
+            (0, 4),
+            "master 与实例键都变 ⇒ 次渲不得有命中：{stats:?}"
+        );
+    }
+
+    /// **实例：master 只改变换（不推版本）后实例不得用旧几何**
+    /// （#1 第一期）：链上 master 的变换入键，矩阵一变 ⇒ 实例键变。
+    #[test]
+    fn prep_cache_instance_master_transform_change_busts_key() {
+        let mut state = white_document();
+        state.objects.insert(
+            "master_1".to_owned(),
+            object(
+                "master_1",
+                "layer_1",
+                ObjectType::Shape,
+                0,
+                json!({"geometry": {"kind": "rect", "bbox": {"x": 4, "y": 4, "w": 8, "h": 8}},
+                       "color": {"r": 0, "g": 0, "b": 0, "a": 255}}),
+            ),
+        );
+        state.objects.insert(
+            "inst_1".to_owned(),
+            object(
+                "inst_1",
+                "layer_1",
+                ObjectType::Instance,
+                1,
+                json!({"master_ref": {"object_id": "master_1",
+                    "local_transform": {"matrix": [1.0, 0.0, 0.0, 1.0, 0.0, 16.0]}}}),
+            ),
+        );
+        let store = MemoryBlobStore::new();
+        let layer = layer("layer_1", 0);
+        let bitmaps = BitmapCache::default();
+        let r = renderer();
+        let alpha = |b: &[u8], x: usize, y: usize| b[(y * 32 + x) * 4 + 3];
+        let render = |r: &Renderer, state: &DocumentState| -> Vec<u8> {
+            let mut buf = Buffer::new(0, 0, 32, 32);
+            let mut track = ObjectTrack::default();
+            r.render_layer_objects(state, &store, &layer, &mut buf, &mut track, &bitmaps)
+                .unwrap();
+            buf.to_rgba8(None)
+        };
+        let first_bytes = render(&r, &state);
+        assert_eq!(
+            alpha(&first_bytes, 8, 8),
+            255,
+            "首渲 master 矩形应在 (8,8) 落墨"
+        );
+        assert_eq!(
+            alpha(&first_bytes, 8, 24),
+            255,
+            "首渲实例矩形应在 (8,24) 落墨"
+        );
+        // 只改 master 变换，不推版本。
+        let master = state.objects.get_mut("master_1").unwrap();
+        master.transform.matrix = [1.0, 0.0, 0.0, 1.0, 8.0, 0.0];
+        let second_bytes = render(&r, &state);
+        assert_ne!(second_bytes, first_bytes, "master 变换后画面必须变");
+        assert_eq!(alpha(&second_bytes, 16, 8), 255, "master 平移后应在 (16,8)");
+        assert_eq!(alpha(&second_bytes, 16, 24), 255, "实例应跟随到 (16,24)");
+        assert_eq!(alpha(&second_bytes, 8, 8), 0, "旧 master 位 (8,8) 应无墨");
+        assert_eq!(alpha(&second_bytes, 8, 24), 0, "旧实例位 (8,24) 应无墨");
+        let stats = r.prep_cache_stats();
+        assert_eq!(
+            (stats.hits, stats.misses),
+            (0, 4),
+            "master 与实例键都变 ⇒ 次渲不得有命中：{stats:?}"
+        );
+    }
+
+    /// **实例：master 被删后实例不得画出已删 master 的旧几何**
+    /// （#1 第一期）：链断裂 ⇒ 不建键、不查缓存，实例走 `Unsupported`、不画。
+    /// 对照是"无 master、无实例"的空渲染（不是"像素全零"的单点断言）。
+    #[test]
+    fn prep_cache_instance_master_delete_draws_nothing() {
+        let mut state = white_document();
+        state.objects.insert(
+            "master_1".to_owned(),
+            object(
+                "master_1",
+                "layer_1",
+                ObjectType::Shape,
+                0,
+                json!({"geometry": {"kind": "rect", "bbox": {"x": 4, "y": 4, "w": 8, "h": 8}},
+                       "color": {"r": 0, "g": 0, "b": 0, "a": 255}}),
+            ),
+        );
+        state.objects.insert(
+            "inst_1".to_owned(),
+            object(
+                "inst_1",
+                "layer_1",
+                ObjectType::Instance,
+                1,
+                json!({"master_ref": {"object_id": "master_1",
+                    "local_transform": {"matrix": [1.0, 0.0, 0.0, 1.0, 0.0, 16.0]}}}),
+            ),
+        );
+        let store = MemoryBlobStore::new();
+        let layer = layer("layer_1", 0);
+        let bitmaps = BitmapCache::default();
+        let r = renderer();
+        let alpha = |b: &[u8], x: usize, y: usize| b[(y * 32 + x) * 4 + 3];
+        let render = |r: &Renderer, state: &DocumentState| -> Vec<u8> {
+            let mut buf = Buffer::new(0, 0, 32, 32);
+            let mut track = ObjectTrack::default();
+            r.render_layer_objects(state, &store, &layer, &mut buf, &mut track, &bitmaps)
+                .unwrap();
+            buf.to_rgba8(None)
+        };
+        let first_bytes = render(&r, &state);
+        assert_eq!(
+            alpha(&first_bytes, 8, 24),
+            255,
+            "首渲实例矩形应在 (8,24) 落墨"
+        );
+        let master = state.objects.get_mut("master_1").unwrap();
+        master.deleted_by = Some("a_del".to_owned());
+        let second_bytes = render(&r, &state);
+        let empty_bytes = render(&renderer(), &white_document());
+        assert_eq!(
+            second_bytes, empty_bytes,
+            "master 被删后实例渲染必须等于空渲染（不得画出旧几何）"
+        );
+        assert_ne!(
+            second_bytes, first_bytes,
+            "删 master 前后画面必须不同（防空对照恒等）"
+        );
+    }
+
+    /// **快照实例：master 改动后快照实例不受影响、且命中旧条目**
+    /// （#1 第一期）：快照键只跟实例自身，master 的版本／变换都不入键。
+    #[test]
+    fn prep_cache_snapshot_instance_ignores_master_changes() {
+        let mut state = white_document();
+        state.objects.insert(
+            "master_1".to_owned(),
+            object(
+                "master_1",
+                "layer_1",
+                ObjectType::Shape,
+                0,
+                json!({"geometry": {"kind": "rect", "bbox": {"x": 4, "y": 4, "w": 8, "h": 8}},
+                       "color": {"r": 0, "g": 0, "b": 0, "a": 255}}),
+            ),
+        );
+        // 快照实例的真实形态（fold 产出）：master_ref 仍在，另加 sync_policy
+        // none 与 snapshot；渲染走快照（矩形），不走 master 的矩形。
+        state.objects.insert(
+            "inst_1".to_owned(),
+            object(
+                "inst_1",
+                "layer_1",
+                ObjectType::Instance,
+                1,
+                json!({"master_ref": {"object_id": "master_1"},
+                    "sync_policy": "none",
+                    "snapshot": {"geometry": {"kind": "rect",
+                        "bbox": {"x": 4, "y": 16, "w": 8, "h": 8}},
+                        "color": {"r": 0, "g": 0, "b": 0, "a": 255}}}),
+            ),
+        );
+        let store = MemoryBlobStore::new();
+        let layer = layer("layer_1", 0);
+        let bitmaps = BitmapCache::default();
+        let r = renderer();
+        let alpha = |b: &[u8], x: usize, y: usize| b[(y * 32 + x) * 4 + 3];
+        let render = |r: &Renderer, state: &DocumentState| -> Vec<u8> {
+            let mut buf = Buffer::new(0, 0, 32, 32);
+            let mut track = ObjectTrack::default();
+            r.render_layer_objects(state, &store, &layer, &mut buf, &mut track, &bitmaps)
+                .unwrap();
+            buf.to_rgba8(None)
+        };
+        let first_bytes = render(&r, &state);
+        assert_eq!(
+            alpha(&first_bytes, 8, 8),
+            255,
+            "首渲 master 矩形应在 (8,8) 落墨"
+        );
+        assert_eq!(
+            alpha(&first_bytes, 8, 20),
+            255,
+            "首渲快照矩形应在 (8,20) 落墨"
+        );
+        let master = state.objects.get_mut("master_1").unwrap();
+        master.data = json!({"geometry": {"kind": "rect", "bbox": {"x": 16, "y": 4, "w": 8, "h": 8}},
+                             "color": {"r": 0, "g": 0, "b": 0, "a": 255}});
+        master.current_version = Some("a2".to_owned());
+        let second_bytes = render(&r, &state);
+        assert_eq!(alpha(&second_bytes, 20, 8), 255, "master 新矩形应在 (20,8)");
+        assert_eq!(alpha(&second_bytes, 8, 20), 255, "快照矩形仍应在 (8,20)");
+        assert_eq!(alpha(&second_bytes, 8, 8), 0, "旧 master 位 (8,8) 应无墨");
+        let stats = r.prep_cache_stats();
+        assert_eq!(
+            (stats.hits, stats.misses),
+            (1, 3),
+            "快照实例键未变 ⇒ 次渲应命中一次（master 键变是未命中）：{stats:?}"
         );
     }
 }

@@ -331,18 +331,82 @@ pub fn content_hash(bytes: &[u8]) -> String {
     format!("fnv1a64:{hash:016x}")
 }
 
-/// **★ 区域指纹 ✓ ★**（第 465 轮 ✓）：**把"影响像素的东西"全进哈希 ✓**，用它**代替裸 `head_seq`** ✗。
+/// **★ 区域指纹 ✓ ★**（第 465 轮 ✓，#1 第一期重构为每层子哈希结构）：
+/// **把"影响像素的东西"全进哈希 ✓**，用它**代替裸 `head_seq`** ✗。
 ///
-/// **为什么** ✗（外部黑盒报告 2026-10-09 ✓）：**子区域重复渲染 531 → 426 → 347 ms（~1.5× ✗）**，
+/// **为什么** ✗（外部黑盒报告 2026-10-09 ✓）：**子区域重复渲染 531 → 426 → 347 ms（~1.5× ✗）**
 /// 而**全文档**有 ~350× ✓ —— **∴ 根因**是**本缓存的 `version` 用了**裸 `head_seq()`**✗**
 /// ⇒ **∴ 序号一变（**哪怕只改**最上面那层**✓**）⇒ **该块立即失效 ⇒ 每次重渲 ✗** ✓。
 ///
-/// **为什么这样算** ✓：与 below 缓存**同一套判据**（**层参数 ✓ ＋ 对象 `current_version`／`data` ✓
-/// ＋ 蒙版内容 ✓ ＋ 色彩空间 ✓**）⇒ **∴ 只改最上层 ⇒ 下方指纹不变 ⇒ **缓存有效 ✓****；
-/// **∴ 而内容一变 ⇒ 指纹必变 ⇒ 失效 ✓**（**∴ 不会拿旧图冒充 ✓**）。
+/// **结构（#1 第一期）**：文档指纹＝色彩空间＋底色＋各层子哈希（按层 id 排序组合）
+/// ＋选区集合（Debug 串排序后哈希）；每层子哈希＝层参数＋蒙版结构化指纹＋
+/// 该层各对象的小元组（按对象 id 排序）。**只改 B 层 ⇒ A 层子哈希不变**
+/// （由 [`layer_fingerprint`] 单独可验），文档指纹仍变 ⇒ 旧块不命中。
 ///
-/// **⚠️ 代价**（两面 ✓）：**每次判缓存都要遍历层与对象并格式化 ✗**（**对象数据是哈希与参数 ⇒ 很小 ✓**）
-/// ⇒ **∴ 用 `head_seq` 快速短路**：**序号没变 ⇒ 直接用旧值 ✓**（**省掉重复遍历 ✓**）。
+/// **相对旧函数的两处有意差异**（哈希值本身会变，但区域缓存只在内存内用，
+/// 旧条目顶多一次未命中，不涉及落盘兼容）：
+/// * 去掉每对象的 `data` Debug 格式化：`data` 的一切改动都经 `supersede`
+///   推新 `current_version`（见 `crates/yanshi-core/src/fold.rs`），版本已
+///   覆盖内容；格式化整个 `data` 是每对象 `O(data 字节)` 的成本，正是本期
+///   要消的那一笔。**等价性口径**：旧函数能检出的变化（内容、重排、层参数、
+///   蒙版、选区、底色）新函数全能检出，见本模块测试。
+/// * 补上 `transform.pivot`：旧函数只哈希矩阵，而 `transform_primitive` 会把
+///   枢轴折进矩阵 ⇒ 只改枢轴时旧指纹漏检（画面会变、缓存却命中旧块），
+///   新函数检出（属正确性收紧）。
+///
+/// **诚实限定**：纯函数形态下没有可信的层变化信号（`Layer.updated_by` 只在
+/// 改图层元数据／重排时写，画一笔不写它，不能当层变化信号），故第一期的
+/// 实际收益是把每对象成本从 `O(data 字节)` 降到 `O(1)` 小常数，并建立每层
+/// 可独立校验的结构；真正的"只重算变化层"需要第二期的层索引.
+/// **单层子哈希**（[`region_fingerprint`] 的组成部分）：层参数＋蒙版结构化指纹
+/// ＋该层各对象的小元组（按对象 id 排序，与存储顺序无关）。
+///
+/// 层参数与旧函数同一集合：`id`、`updated_by`、`blend_mode`、`opacity`、
+/// `visible`、`clipping_mask`、`mask_id`、蒙版结构化指纹（`state.masks`）。
+/// 每对象贡献＝`(id, z_index, current_version, transform 矩阵＋枢轴位表示)`：
+/// `z_index` 必须在内（重排只改 `z`、不走 supersede ⇒ 版本不变，Y-08 期 4
+/// R10 的教训）；`data` 不在内（版本已覆盖，见上）。
+pub fn layer_fingerprint(state: &yanshi_core::DocumentState, layer: &yanshi_core::Layer) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    layer.id.hash(&mut h);
+    layer.updated_by.hash(&mut h);
+    layer.blend_mode.hash(&mut h);
+    layer.opacity.to_bits().hash(&mut h);
+    layer.visible.hash(&mut h);
+    layer.clipping_mask.hash(&mut h);
+    layer.mask_id.hash(&mut h);
+    if let Some(mask) = layer.mask_id.as_deref().and_then(|m| state.masks.get(m)) {
+        // 蒙版位图化后 `Debug` 字符串会爆炸 ⇒ 用结构化指纹（与旧函数同口径）。
+        mask.hash_fingerprint(&mut h);
+    }
+    let mut objects: Vec<&yanshi_core::Object> = state
+        .objects
+        .values()
+        .filter(|o| o.layer_id == layer.id && o.deleted_by.is_none())
+        .collect();
+    objects.sort_by(|a, b| a.id.cmp(&b.id));
+    for object in objects {
+        object.id.hash(&mut h);
+        object.z_index.hash(&mut h);
+        object.current_version.hash(&mut h);
+        for m in object.transform.matrix {
+            m.to_bits().hash(&mut h);
+        }
+        for pivot in object.transform.pivot {
+            pivot.to_bits().hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
+/// **文档指纹**：色彩空间＋底色＋各层子哈希（按层 id 排序）＋选区集合。
+/// **★ 必须覆盖**全部层** ✓ ★**（第 474 轮 **C4 判据当场抓住 ✓**）：
+/// **∴ 我曾让这里**排除最上层**✗（**为了让"只改当前层"命中 ✓**）⇒ **∴ 而 `region_cache` 存的是
+/// **整块渲染结果**（**含所有层 ✓**）⇒ **∴ 排除上层 ⇒ 改上层后**返回旧块 ✗ ⇒ **＝ 撒谎 ✓**
+///（**实测**：`h3 == h4` ✗ —— **改最上层后 `raw_url` 哈希没变 ✓**）。
+/// **∴ 正解** ✓：**块指纹**必须覆盖全部层 ✓**；**要"只重画当前层" ⇒ **应当把 **below 缓存
+/// 接进块渲染 ✓**（**分段复用 ✓**），**而**不是**让块指纹忽略上层 ✗**。
 pub fn region_fingerprint(state: &yanshi_core::DocumentState) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -351,50 +415,11 @@ pub fn region_fingerprint(state: &yanshi_core::DocumentState) -> u64 {
     // 复合的基底 ⇒ 它真的改变渲染结果 ✓ ⇒ 而上面的字段一个都不含底色 ✓
     // ⇒ 于是：改底色后指纹不变 ⇒ 区域字节缓存命中那份「旧底色」的块 ✓
     // ⇒ **表现**：「改了底色画面却不动」（本工具集成测试当场抓住 ✓）。
-    // **∴ 修法 ✗**：把底色按稳定序（`Value` 的 `Debug`）哈希进来 ✓ —— 与选区那条同款 ✓。
     format!("{:?}", state.background).hash(&mut h);
     let mut layers: Vec<&yanshi_core::Layer> = state.alive_layers();
-    // **★ 必须覆盖**全部层** ✓ ★**（第 474 轮 **C4 判据当场抓住 ✓**）：
-    // **∴ 我曾让这里**排除最上层**✗（**为了让"只改当前层"命中 ✓**）⇒ **∴ 而 `region_cache` 存的是
-    // **整块渲染结果**（**含所有层 ✓**）⇒ **∴ 排除上层 ⇒ 改上层后**返回旧块 ✗ ⇒ **＝ 撒谎 ✓**
-    //（**实测**：`h3 == h4` ✗ —— **改最上层后 `raw_url` 哈希没变 ✓**）。
-    // **∴ 正解** ✓：**块指纹**必须覆盖全部层 ✓**；**要"只重画当前层" ⇒ **应当把 **below 缓存
-    // 接进块渲染 ✓**（**分段复用 ✓**），**而**不是**让块指纹忽略上层 ✗**。
     layers.sort_by(|a, b| a.id.cmp(&b.id));
-    for l in layers {
-        l.id.hash(&mut h);
-        l.updated_by.hash(&mut h);
-        l.blend_mode.hash(&mut h);
-        l.opacity.to_bits().hash(&mut h);
-        l.visible.hash(&mut h);
-        l.clipping_mask.hash(&mut h);
-        l.mask_id.hash(&mut h);
-        if let Some(mask) = l.mask_id.as_deref().and_then(|m| state.masks.get(m)) {
-            // 蒙版位图化后 `Debug` 字符串会爆炸 ⇒ 用结构化指纹。
-            mask.hash_fingerprint(&mut h);
-        }
-        // **★ `z_index` 必须进指纹（Y-08 期 4，R10）★**：重排（`ReorderObjects`）
-        //   与 `set_property z_index` 只改 `z_index`、不走 supersede
-        //   ⇒ `current_version` 不变 ⇒ 不含 z 的指纹在重排后不变
-        //   ⇒ 区域字节缓存命中旧块 ⇒ "排了但画面不动"。
-        //   （`set_property` 单改因 supersede 推 `current_version` 而
-        //   间接失效；只有重排这条路会漏，故此处只补 `z_index`。）
-        let mut objs: Vec<String> = state
-            .objects
-            .values()
-            .filter(|o| o.layer_id == l.id && o.deleted_by.is_none())
-            // **★ 对象变换必须进指纹**：几何原子（flip/rotate/scale）只复合
-            // `transform`、不 supersede 对象 ⇒ 版本与 data 都不变；不含变换时
-            // 区域字节缓存会命中变换前的旧块、画面不动（与选区/底色同类坑）。
-            .map(|o| {
-                format!(
-                    "{}:{}:{:?}:{}:{:?}",
-                    o.id, o.z_index, o.current_version, o.data, o.transform.matrix
-                )
-            })
-            .collect();
-        objs.sort();
-        objs.hash(&mut h);
+    for layer in layers {
+        layer_fingerprint(state, layer).hash(&mut h);
     }
     // **★ 选区必须进指纹 ✗ ★**（第 934 轮 ✓；**修真缺陷 ✓**）：
     //   **∴ 为什么 ✗**：**选区**在**渲染期**裁剪落笔 ✓（**设计 4.4 路线 A ✓**）
@@ -402,19 +427,9 @@ pub fn region_fingerprint(state: &yanshi_core::DocumentState) -> u64 {
     //       ⇒ **∴ 于是**：**删掉选区后**指纹**不变 ✗**
     //         ⇒ **∴ 区域字节缓存**命中**那份"**裁剪过的**"旧块 ✓**
     //           ⇒ **★ 表现**："**选区外仍无改动 ⇒ **裁剪被错误地烘焙进了像素** ✓" ★**** ✓✓
-    //   **∴ 实测（**四条判据 ✓）**：**`yanshi-server/tests/selection_clip.rs` 的
-    //     `a_selection_clips_new_painting_and_is_reversible` ＋ `_a_fill_` ＋ `_text` ＋ `_liquify`
-    //     **全红 ✗**，**报**"**删除选区后…选区外仍无改动 ✓"**；
-    //     **∴ 而** `_retouch` 与 `without_a_selection_…` **通过 ✓**
-    //       ⇒ **∴ 因为**"**建选区后**那次是**首次渲染 ⇒ **∴ 无缓存 ⇒ **∴ 对 ✓**** ✓✓
     //   **∴ 修法 ✗**：**把选区集合按**稳定序**哈希进来 ✓** —— **∴ 用 `format!("{s:?}")` ✓
     //     ⇒ **∴ 它**含 `deleted_by` ✗**（**∴ 而**删选区**正是**改它 ✓）**；
     //     **∴ 排序 ⇒ **∴ 与 map 的遍历顺序无关 ✓**** ✓✓
-    //   **∴ 两面（**如实 ✓）**：**收益**＝**选区一变**缓存**立即失效 ⇒ **∴ 删选区后**正确重算 ✓**
-    //     （**∴ 且**这**正是**目标第 6 条「**绝不许拿旧图冒充**」 ✓）**；
-    //     **∴ 代价**＝**选区一变**就**丢掉区域缓存**（**重算一次 ✓）——
-    //       **∴ 而**那是**必需的** ✗**（**∴ 因为**选区**真的**改变渲染结果 ✓）**
-    //       ⇒ **∴ 不是**性能退化 ✗，**而是**正确性 ✓**** ✓✓
     let mut selections: Vec<String> = state
         .selections
         .values()
@@ -664,5 +679,191 @@ mod tests {
         assert_eq!(cache.len(), 0);
         cache.clear();
         assert_eq!(cache.bytes(), 0);
+    }
+
+    fn tb_layer(id: &str, z: i64) -> yanshi_core::Layer {
+        yanshi_core::Layer {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            layer_type: yanshi_core::LayerType::Raster,
+            parent_id: None,
+            z_index: z,
+            blend_mode: "normal".to_owned(),
+            opacity: 1.0,
+            visible: true,
+            locked: false,
+            alpha_lock: false,
+            clipping_mask: false,
+            mask_id: None,
+            transform: yanshi_core::Transform::IDENTITY,
+            medium: None,
+            style: None,
+            metadata: serde_json::Value::Null,
+            blobs: Vec::new(),
+            created_by: "a1".to_owned(),
+            updated_by: None,
+            deleted_by: None,
+        }
+    }
+
+    fn tb_object(id: &str, layer_id: &str, z: i64, seq: u64) -> yanshi_core::Object {
+        yanshi_core::Object {
+            seq,
+            id: id.to_owned(),
+            layer_id: layer_id.to_owned(),
+            object_type: yanshi_core::ObjectType::Stroke,
+            z_index: z,
+            visible: true,
+            enabled: true,
+            locked: false,
+            metadata: serde_json::Value::Null,
+            transform: yanshi_core::Transform::IDENTITY,
+            style: None,
+            versions: vec!["a1".to_owned()],
+            current_version: Some("a1".to_owned()),
+            created_by: "a1".to_owned(),
+            deleted_by: None,
+            data: serde_json::json!({"points": [[0.0, 0.0]], "size": 1.0}),
+            blobs: Vec::new(),
+        }
+    }
+
+    fn tb_state() -> yanshi_core::DocumentState {
+        let mut state = yanshi_core::DocumentState::empty();
+        state.width = 32;
+        state.height = 32;
+        state.background = serde_json::json!({"r": 255, "g": 255, "b": 255, "a": 255});
+        state
+            .layers
+            .insert("layer_1".to_owned(), tb_layer("layer_1", 0));
+        state
+            .layers
+            .insert("layer_2".to_owned(), tb_layer("layer_2", 1));
+        state
+            .objects
+            .insert("obj_a".to_owned(), tb_object("obj_a", "layer_1", 0, 0));
+        state
+            .objects
+            .insert("obj_b".to_owned(), tb_object("obj_b", "layer_2", 0, 1));
+        state
+    }
+
+    /// **只改 B 层时 A 层子哈希不变、文档指纹变**（#1 第一期）：
+    /// 每层子哈希独立可验，是"只重算变化层"的结构前提。
+    #[test]
+    fn layer_fingerprint_stable_when_other_layer_changes() {
+        let mut state = tb_state();
+        let layer_1 = state.layers.get("layer_1").unwrap().clone();
+        let fp_a = layer_fingerprint(&state, &layer_1);
+        let fp_doc = region_fingerprint(&state);
+        let obj_b = state.objects.get_mut("obj_b").unwrap();
+        obj_b.data = serde_json::json!({"points": [[1.0, 1.0]], "size": 2.0});
+        obj_b.current_version = Some("a2".to_owned());
+        assert_eq!(
+            layer_fingerprint(&state, &layer_1),
+            fp_a,
+            "B 层对象改了，A 层子哈希必须不变"
+        );
+        assert_ne!(
+            region_fingerprint(&state),
+            fp_doc,
+            "B 层改了，文档指纹必须变（否则缓存命中旧块）"
+        );
+    }
+
+    /// **只改变换（不推版本）指纹必须变**（#1 第一期；旧函数已含矩阵，
+    /// 此条守住回归）。
+    #[test]
+    fn fingerprint_detects_transform_only_change() {
+        let mut state = tb_state();
+        let fp_before = region_fingerprint(&state);
+        let obj = state.objects.get_mut("obj_a").unwrap();
+        obj.transform.matrix = [1.0, 0.0, 0.0, 1.0, 1.0, 0.0];
+        assert_ne!(
+            region_fingerprint(&state),
+            fp_before,
+            "只改矩阵也必须让指纹变（否则缓存命中变换前的旧块）"
+        );
+    }
+
+    /// **只改枢轴指纹必须变**（#1 第一期收紧旧缺口）：旧函数只哈希矩阵，
+    /// 而 `transform_primitive` 会把枢轴折进矩阵 ⇒ 只改枢轴时旧指纹漏检。
+    #[test]
+    fn fingerprint_detects_pivot_only_change() {
+        let mut state = tb_state();
+        let fp_before = region_fingerprint(&state);
+        let obj = state.objects.get_mut("obj_a").unwrap();
+        obj.transform.pivot = [5.0, 5.0];
+        assert_ne!(
+            region_fingerprint(&state),
+            fp_before,
+            "只改枢轴也必须让指纹变（旧函数漏检，属正确性收紧）"
+        );
+    }
+
+    /// **无改动时指纹恒等**（确定性底线：同状态两次哈希必须相等）。
+    #[test]
+    fn fingerprint_unchanged_without_changes() {
+        let state = tb_state();
+        assert_eq!(
+            region_fingerprint(&state),
+            region_fingerprint(&state),
+            "同状态两次文档指纹必须相等"
+        );
+        let layer_1 = state.layers.get("layer_1").unwrap().clone();
+        assert_eq!(
+            layer_fingerprint(&state, &layer_1),
+            layer_fingerprint(&state, &layer_1),
+            "同状态两次层子哈希必须相等"
+        );
+    }
+
+    /// **指纹与对象插入顺序无关**（#1 第一期）：层子哈希按对象 id 排序后
+    /// 组合；去掉排序时两份插入顺序相反的状态（8 对象）极大概率哈希不同。
+    #[test]
+    fn fingerprint_order_independent_of_insertion_order() {
+        let mut state1 = yanshi_core::DocumentState::empty();
+        state1
+            .layers
+            .insert("layer_1".to_owned(), tb_layer("layer_1", 0));
+        let mut state2 = yanshi_core::DocumentState::empty();
+        state2
+            .layers
+            .insert("layer_1".to_owned(), tb_layer("layer_1", 0));
+        for i in 0..8 {
+            let id = format!("obj_{i}");
+            state1
+                .objects
+                .insert(id.clone(), tb_object(&id, "layer_1", 0, 7 - i as u64));
+            state2
+                .objects
+                .insert(id.clone(), tb_object(&id, "layer_1", 0, i as u64));
+        }
+        assert_eq!(
+            region_fingerprint(&state1),
+            region_fingerprint(&state2),
+            "对象插入顺序不同时指纹必须相等（按 id 排序，与存储顺序无关）"
+        );
+    }
+
+    /// **只改层参数指纹必须变**（#1 第一期；旧函数已含层参数，此条守住回归）。
+    #[test]
+    fn fingerprint_detects_layer_param_change() {
+        let mut state = tb_state();
+        let fp_before = region_fingerprint(&state);
+        let layer_1 = state.layers.get("layer_1").unwrap().clone();
+        let fp_layer_before = layer_fingerprint(&state, &layer_1);
+        state.layers.get_mut("layer_1").unwrap().opacity = 0.5;
+        let layer_1_new = state.layers.get("layer_1").unwrap().clone();
+        assert_ne!(
+            layer_fingerprint(&state, &layer_1_new),
+            fp_layer_before,
+            "层 opacity 改了，层子哈希必须变"
+        );
+        assert_ne!(
+            region_fingerprint(&state),
+            fp_before,
+            "层参数改了，文档指纹必须变"
+        );
     }
 }
