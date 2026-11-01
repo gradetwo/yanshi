@@ -19927,8 +19927,8 @@ pub(crate) fn brush_params_catalog_text() -> String {
         "`brush_params` 子键描述表（{} 项，与 `BrushSetting::ALL` 同步生成）：\n",
         entries.len()
     ));
-    out.push_str("- 每个值必须是数值，覆盖该设置的 `base_value`（`inputs` 动力学曲线不动）。\n");
-    out.push_str("- schema 不拦未知键（`additionalProperties: true`），但引擎应用时校验规范名：未知键报 `invalid_argument` 并给相近名提示。\n");
+    out.push_str("- 每个值必须是数值，覆盖该设置的 `base_value`（inputs 动力学曲线不动）。\n");
+    out.push_str("- schema 不拦未知键（`additionalProperties: true`），但引擎应用时校验规范名：未知键报 invalid_argument 并给相近名提示。\n");
     out.push_str("- 语义别名组（`hand_jitter` 等，见 `docs/design/brush-params.md`）也接受，展开成真名后按本表计。\n");
     out.push_str("- 缺省列 = 该笔刷 `.myb` 未写该项时生效的 libmypaint 缺省；其余项缺省 0.0。\n");
     for entry in &entries {
