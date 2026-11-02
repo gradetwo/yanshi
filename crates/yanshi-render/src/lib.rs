@@ -113,6 +113,7 @@ pub mod paint;
 pub mod path;
 pub mod png;
 pub mod polygon;
+pub mod prep_cache;
 pub mod prng;
 pub mod psd;
 pub mod region_block;

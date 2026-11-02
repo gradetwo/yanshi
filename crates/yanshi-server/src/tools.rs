@@ -34,7 +34,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（140 个）。
+    /// 核心层：默认注册（141 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -895,7 +895,7 @@ fn parse_non_negative(
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，140 个）。
+    /// 核心层（默认注册，141 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -1356,7 +1356,7 @@ pub fn commit_response(
     job_status: Option<&str>,
     suggestions: Vec<Value>,
 ) -> Value {
-    json!({
+    let mut response = json!({
         "ok": true,
         "atom_id": result.atom_id,
         "seq": result.seq,
@@ -1372,7 +1372,12 @@ pub fn commit_response(
         "warnings": result.warnings,
         "suggestions": suggestions,
         "snapshotted": result.snapshotted,
-    })
+    });
+    // #11 路线 A：只在采样点上附加（其余提交一字不改，不多一个 null 字段）。
+    if let Some(status) = &result.memory_status {
+        response["memory_status"] = json!(status);
+    }
+    response
 }
 
 fn input_schema(tool: &ToolSpec) -> Value {
@@ -2327,6 +2332,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "calibrate" => write_calibrate(ctx, args),
         "get_state" => read_get_state(ctx, args),
         "list_documents" => read_list_documents(ctx),
+        "memory_status" => read_memory_status(ctx),
         "list_layers" => read_list_layers(ctx),
         "describe_canvas" => read_describe_canvas(ctx),
         "explain_tool" => read_explain_tool(ctx, args),
@@ -3384,6 +3390,15 @@ fn read_list_documents(ctx: &mut ToolContext<'_>) -> Result<Value> {
         })
         .collect();
     Ok(json!({ "documents": documents, "count": documents.len() }))
+}
+
+/// **会话内存观测** ✓（#11 路线 B）：进程内全部已载入文档的量度之和
+/// 与两档阈值、级别、余量、进程 RSS 参照——与提交回执里采样的
+/// `memory_status` 同一口径（`Workspace::session_memory_status`），
+/// 观测与处置不许两套数。只读（`mutating: false`），无参数。
+fn read_memory_status(ctx: &mut ToolContext<'_>) -> Result<Value> {
+    let status = ctx.workspace.session_memory_status();
+    Ok(json!({ "memory_status": status }))
 }
 
 /// **`explain_tool`** ✓ —— 把**一个工具**的签名吐出来（第 1557 轮；外部 `B10` 的建议）

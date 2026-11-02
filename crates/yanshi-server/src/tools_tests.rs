@@ -3666,3 +3666,66 @@ fn tools_list_query_behaviour() {
         "未知字段必须忽略（不报错）"
     );
 }
+
+/// #11 路线 B：`memory_status` 工具——缺省面 Core、只读、无参数；
+/// 调度成功且回执口径与 `Workspace::session_memory_status` 一致。
+#[test]
+fn memory_status_tool_is_core_readonly_and_dispatches() {
+    let spec = super::ALL_TOOLS
+        .iter()
+        .find(|tool| tool.name == "memory_status")
+        .expect("memory_status 必须注册");
+    assert_eq!(spec.profile, super::Profile::Core, "必须进缺省面");
+    assert!(!spec.mutating, "只读工具");
+    assert!(spec.params.is_empty(), "无参数");
+    let mut workspace = budget_fields_setup("mem_tool_doc");
+    let registry = super::ToolRegistry::full();
+    let mut ctx = super::ToolContext::new(&mut workspace, "mem_tool_doc", "test:1", "s");
+    let response = registry.call(&mut ctx, "memory_status", &json!({}));
+    assert_eq!(response["ok"], json!(true), "工具应成功：{response}");
+    let status = &response["memory_status"];
+    assert_eq!(status["warn_bytes"], json!(2_048u64 * 1_024 * 1_024));
+    assert_eq!(status["hard_bytes"], json!(4_096u64 * 1_024 * 1_024));
+    assert_eq!(status["level"], json!("ok"));
+    assert_eq!(status["documents"].as_array().map(Vec::len), Some(1));
+    assert!(
+        status.get("process_rss_bytes").is_some(),
+        "RSS 参照键必须存在（非 Linux 为 null）：{response}"
+    );
+}
+
+/// #11 路线 A：`commit_response` 只在采样点上带 `memory_status`——
+/// 有采样时透传级别与总量，无采样时一字不改（不多 null 字段）。
+#[test]
+fn commit_response_carries_memory_status_only_when_sampled() {
+    let mut workspace = budget_fields_setup("mem_resp_doc");
+    let mut result = workspace
+        .commit(
+            "mem_resp_doc",
+            yanshi_core::Atom::new(
+                yanshi_core::AtomKind::CreateLayer,
+                "test:1",
+                "s",
+                json!({"layer_id": "layer_1"}),
+            ),
+            "test:1",
+            false,
+        )
+        .expect("提交应成功");
+    assert!(
+        result.memory_status.is_none(),
+        "首笔非采样点，回执采样字段应为空"
+    );
+    let plain = super::commit_response(&result, None, None, Vec::new());
+    assert!(
+        plain.get("memory_status").is_none(),
+        "非采样提交的响应不许多出 memory_status 键：{plain}"
+    );
+    result.memory_status = Some(workspace.session_memory_status());
+    let sampled = super::commit_response(&result, None, None, Vec::new());
+    assert_eq!(sampled["memory_status"]["level"], json!("ok"));
+    assert!(
+        sampled["memory_status"]["total_bytes"].is_number(),
+        "采样响应须带总量：{sampled}"
+    );
+}
