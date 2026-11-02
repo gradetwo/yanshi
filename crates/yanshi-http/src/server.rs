@@ -31,7 +31,7 @@ use serde_json::{json, Value};
 use yanshi_core::{Bbox, ErrorCode, ErrorContext, Seq, YanshiError};
 use yanshi_server::broadcast::PushChannel;
 use yanshi_server::token::{Role, TransportKind};
-use yanshi_server::tools::{Profile, ToolContext, ToolRegistry};
+use yanshi_server::tools::{Profile, ToolContext, ToolRegistry, ToolsListQuery};
 use yanshi_server::{DocumentSettings, NewDocument, Workspace};
 
 use crate::http::{Request, Response};
@@ -871,7 +871,11 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
             // ⇒ 这是"Web 与 MCP 不一致"里最贵的一条 ✓。
             // **清单与 MCP 逐字相同** ✓：都调 `ToolRegistry::tools_list_json` ✓（在 yanshi-server 里 ✓）
             // ⇒ **一处定义、两处使用** ✗（各写一份必然漂移 ✓）。
-            "GET" => Response::json(200, &state.registry.tools_list_json()),
+            "GET" => match tools_list_query(request) {
+                // 查询参数非法是调用方错误 ⇒ 400 并说清原因（不静默忽略）。
+                Ok(query) => Response::json(200, &state.registry.tools_list_filtered(&query)),
+                Err(response) => response,
+            },
             "POST" => tool_route(state, request),
             _ => method_not_allowed(request, "GET, POST"),
         };
@@ -3309,6 +3313,41 @@ fn rewrite_blob_urls(
         }
     }
     walk(value, doc_id, token, origin)
+}
+
+/// `GET /api/tools` 的查询参数转 `ToolsListQuery`。
+///
+/// 参数名与 MCP `tools/list` 的 `params` 字段同名（`q`／`profile`／`limit`／`offset`），
+/// 语义也相同；只有 `profile` 多一种写法：HTTP 查询串里用逗号分隔多值
+/// （`?profile=Photo,Svg`）。全不传 ⇒ 空查询 ⇒ 输出与今天逐字节相同。
+/// 非负整数解析失败或 profile 名未知 ⇒ `Err` 400（调用方错误，不静默忽略）。
+fn tools_list_query(request: &Request) -> Result<ToolsListQuery, Response> {
+    let mut params = serde_json::Map::new();
+    if let Some(q) = request.param("q") {
+        params.insert("q".to_owned(), Value::String(q.to_owned()));
+    }
+    if let Some(profile) = request.param("profile") {
+        let names: Vec<Value> = profile
+            .split(',')
+            .map(|name| Value::String(name.trim().to_owned()))
+            .collect();
+        params.insert("profile".to_owned(), Value::Array(names));
+    }
+    for (name, key) in [("limit", "limit"), ("offset", "offset")] {
+        if let Some(raw) = request.param(key) {
+            match raw.parse::<u64>() {
+                Ok(n) => {
+                    params.insert(name.to_owned(), json!(n));
+                }
+                Err(_) => {
+                    return Err(crate::http::bad_request(format!(
+                        "tools/list 的 {name} 必须是非负整数"
+                    )));
+                }
+            }
+        }
+    }
+    ToolsListQuery::from_json(&Value::Object(params)).map_err(crate::http::bad_request)
 }
 
 /// 取 `doc` 参数（缺失或为空都算参数错误）。

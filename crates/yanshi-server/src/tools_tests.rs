@@ -3488,6 +3488,185 @@ fn pure_eraser_predicate_covers_the_trigger_and_its_exclusions() {
     );
 }
 
+/// **#13 第一批：`brush_params` 描述表**（与 `BrushSetting::ALL` 同步生成）。
+///
+/// 断三条（缺一不可）：
+/// ① 键集合 == 注册表集合（注册表新增字段而语义表未同步 ⇒ 行数先对不上）；
+/// ② 每行都有语义（无“语义待补”标记 —— 标记出现即表未同步）；
+/// ③ 缺省值 == 空笔刷实测值（不是手抄数）。
+#[test]
+fn brush_params_catalog_matches_registry() {
+    let entries = brush_params_catalog_entries();
+    let registry: Vec<&str> = hokusai::BrushSetting::ALL
+        .iter()
+        .map(|setting| setting.cname())
+        .collect();
+    let catalog: Vec<&str> = entries.iter().map(|entry| entry.cname).collect();
+    assert_eq!(
+        catalog, registry,
+        "描述表键集合必须 == BrushSetting::ALL（顺序也一致）"
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.gloss != BRUSH_PARAM_GLOSS_PENDING),
+        "描述表里出现“语义待补”标记 ⇒ 注册表新增字段而语义表未同步"
+    );
+    let empty = hokusai::myb::from_str("{}").expect("空笔刷必须能解析");
+    for entry in &entries {
+        let setting = hokusai::BrushSetting::ALL
+            .iter()
+            .find(|setting| setting.cname() == entry.cname)
+            .expect("描述表键必须在注册表里");
+        assert_eq!(
+            entry.default_base,
+            empty.get(*setting).base_value,
+            "键 {} 的缺省值必须 == 空笔刷实测值（不许手抄）",
+            entry.cname
+        );
+    }
+}
+
+/// **#13 第一批：描述表进 schema** —— 渲染后的 `brush_stroke` schema 描述含全部键，
+/// 且不许出现“语义待补”标记（表只进 `brush_stroke` 一处，其余 `brush_params` 站点不动）。
+#[test]
+fn brush_params_catalog_rendered_in_brush_stroke_schema() {
+    let registry = ToolRegistry::full();
+    let schema = registry
+        .input_schema("brush_stroke")
+        .expect("brush_stroke 必须有 input_schema");
+    let description = schema["inputSchema"]["properties"]["brush_params"]["description"]
+        .as_str()
+        .expect("brush_params 必须有描述");
+    for setting in hokusai::BrushSetting::ALL {
+        assert!(
+            description.contains(&format!("`{}`", setting.cname())),
+            "brush_stroke 描述里缺键 {}",
+            setting.cname()
+        );
+    }
+    assert!(
+        !description.contains(BRUSH_PARAM_GLOSS_PENDING),
+        "渲染出的描述里不许出现“语义待补”标记"
+    );
+}
+
+/// **#13 第一批：`tools/list` 查询** —— 空查询逐字节同构；`q` 大小写不敏感；
+/// `profile` 展开规则与 `with_profiles` 一致；`total` = 过滤后总数（切页前）；
+/// `offset` 越界 = 空页不报错；非法参数 = 错；未知字段忽略。
+#[test]
+fn tools_list_query_behaviour() {
+    let registry = ToolRegistry::full();
+
+    // 空查询：逐字节同构，不加 total。
+    let plain = registry.tools_list_json();
+    let empty = ToolsListQuery::from_json(&json!({})).expect("空对象必须能解析");
+    assert!(empty.is_empty());
+    let filtered = registry.tools_list_filtered(&empty);
+    assert_eq!(
+        serde_json::to_string(&filtered).expect("序列化"),
+        serde_json::to_string(&plain).expect("序列化"),
+        "空查询输出必须与今天逐字节相同（不加 total）"
+    );
+    assert!(filtered.get("total").is_none(), "空查询不许加 total 字段");
+
+    // q：大小写不敏感，命中名或描述含子串的工具；total = 全部命中数。
+    let q = ToolsListQuery::from_json(&json!({"q": "BRUSH"})).expect("q 必须能解析");
+    let result = registry.tools_list_filtered(&q);
+    let tools = result["tools"].as_array().expect("tools 必须是数组");
+    assert!(
+        !tools.is_empty(),
+        "q=BRUSH 必须命中工具（空结果即查询未生效）"
+    );
+    for tool in tools {
+        let haystack = format!(
+            "{} {}",
+            tool["name"].as_str().unwrap_or(""),
+            tool["description"].as_str().unwrap_or("")
+        )
+        .to_lowercase();
+        assert!(
+            haystack.contains("brush"),
+            "q 命中的工具名或描述必须含子串：{}",
+            tool["name"].as_str().unwrap_or("?")
+        );
+    }
+    assert_eq!(
+        result["total"].as_u64().expect("有参数时必须有 total") as usize,
+        tools.len(),
+        "无分页时 total 必须 == 返回条数"
+    );
+
+    // profile：查询路径与 with_profiles 路径的工具集合必须一致。
+    let profile_query =
+        ToolsListQuery::from_json(&json!({"profile": "photo"})).expect("profile 必须能解析");
+    let via_query = registry.tools_list_filtered(&profile_query);
+    let via_registry = ToolRegistry::with_profiles(&[Profile::Photo]).tools_list_json();
+    let names_of = |value: &Value| -> Vec<String> {
+        value["tools"]
+            .as_array()
+            .expect("tools 必须是数组")
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("工具必须有 name").to_owned())
+            .collect()
+    };
+    assert_eq!(
+        names_of(&via_query),
+        names_of(&via_registry),
+        "profile 查询的工具集合必须 == with_profiles 的集合"
+    );
+
+    // 分页：limit 切页但 total 不变；offset 越界 = 空页不报错。
+    let full_count = plain["tools"].as_array().expect("tools 必须是数组").len();
+    let page_query = ToolsListQuery::from_json(&json!({"limit": 2})).expect("limit 必须能解析");
+    let page = registry.tools_list_filtered(&page_query);
+    assert_eq!(page["tools"].as_array().expect("tools 必须是数组").len(), 2);
+    assert_eq!(
+        page["total"].as_u64().expect("有参数时必须有 total") as usize,
+        full_count,
+        "total 是过滤后总数（切页前），不是页内条数"
+    );
+    let past_end =
+        ToolsListQuery::from_json(&json!({"offset": 100000})).expect("offset 必须能解析");
+    let past = registry.tools_list_filtered(&past_end);
+    assert_eq!(
+        past["tools"].as_array().expect("tools 必须是数组").len(),
+        0,
+        "offset 越界必须是空页"
+    );
+    assert_eq!(
+        past["total"].as_u64().expect("有参数时必须有 total") as usize,
+        full_count,
+        "offset 越界时 total 照给"
+    );
+
+    // 非法参数必须错（不静默吞掉）；未知字段忽略。
+    assert!(
+        ToolsListQuery::from_json(&json!({"q": 123})).is_err(),
+        "q 非数字符串必须错"
+    );
+    assert!(
+        ToolsListQuery::from_json(&json!({"profile": "NoSuch"})).is_err(),
+        "未知 profile 名必须错"
+    );
+    assert!(
+        ToolsListQuery::from_json(&json!({"limit": -1})).is_err(),
+        "负数 limit 必须错"
+    );
+    assert!(
+        ToolsListQuery::from_json(&json!({"limit": 1.5})).is_err(),
+        "非整数 limit 必须错"
+    );
+    assert!(
+        ToolsListQuery::from_json(&json!([])).is_err(),
+        "非对象 params 必须错"
+    );
+    assert!(
+        ToolsListQuery::from_json(&json!({"zzz": 1})).is_ok(),
+        "未知字段必须忽略（不报错）"
+    );
+}
+
 /// #11 路线 B：`memory_status` 工具——缺省面 Core、只读、无参数；
 /// 调度成功且回执口径与 `Workspace::session_memory_status` 一致。
 #[test]
