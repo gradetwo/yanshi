@@ -2191,17 +2191,9 @@ function drawKernelRegion(x, y, w, h) {
       .then(() => asyncFn.call(state.kernel, x0, y0, cw, ch))
       .then((view) => {
         paintRegionPixels(view, x0, y0, cw, ch, vx, vy, w, h, started);
-        // **★ 画完就结束 ✗ 不要再 requestRepaint ★**（2026-11-05 实测 ✓）
-        //   **∴ 症状 ✗**：`requestRepaint()` → `redrawCanvasFromKernel()` → `drawKernelRegion()`
-        //     → 异步再画一次 → 又 `requestRepaint()` ⇒ **自激循环** ✓
-        //     ⇒ 实测 **1.2 秒 104 次整幅 `putImageData`**（≈87/s ✓，一直烧 CPU ✓）。
-        //   **∴ 更糟的是它把**本地实时笔迹盖掉**✗**：`paintLiveFrame` 画在 `board` 上 ✓，
-        //     而每次内核重绘都会用**内核当前状态**（还没有这一笔 ✗）整块覆盖 ✓
-        //     ⇒ `localBrushFrames=5` 而画布采样 **0** ✓（`browser-live-brush` 的矛盾 ✓）。
-        //   **∴ route 乙 的「回调触发重绘」原意是「异步结果到了 ⇒ 让它上屏」✗
-        //     而这里**上面一行已经在画** ✓ ⇒ 再 repaint 是**重复工作** ✗ 不是语义要求 ✓。
-        //     （判据 `tool-kernel-async-sites` 认的是「异步结果 ＋ 有重绘触发」✓；
-        //       现在重绘就是 `paintRegionPixels` 本身 ✓。）
+        // 画完即上屏；**不要再 requestRepaint** —— 那会形成
+        // drawKernelRegion → 异步 → repaint → drawKernelRegion 的自激循环
+        // （实测 1.2s 71 次整幅 putImageData），并把正在拖的本地笔迹整块盖掉。
       })
       .catch((error) => {
         reportPaintError("异步区域渲染", error);
@@ -9831,11 +9823,7 @@ const LOCK_BLOCKED_TOOLS = new Set([
 ]);
 
 let stageNoticeTimer = null;
-// **★ 重要的那条不许被后来的红日志顶掉 ✗ ★**（缺陷修，2026-11-04 轮 ✓）
-//   **∴ 症状 ✗**：`log(line, "#c33")` 也会调 `stageNotice` ⇒ 浮动提示**每 4 秒被刷新／清空**。
-//     内核装载失败退回服务端渲染时，后面每帧的 `needs_render` 红日志**立刻把这句话顶掉** ✗
-//     ⇒ 实测（CI `browser-layer-lock` ⑫）用户**从来读不到**「已改用服务端渲染」✓ 只剩白布 ✓。
-//   **∴ 做法 ✗**：`sticky` 的那条**不被**非 sticky 的调用覆盖，也**不自动消失**（点一下才关 ✓）。
+// 重要的那条不许被后来的红日志顶掉：sticky 提示不自动消失、也不被普通提示覆盖。
 let stageNoticeSticky = false;
 
 /// **把话说在看得见的那一处** ✓（第六轮 ✗→✓）：`log()` 写进 `#log` ✓ 而它在
@@ -12490,14 +12478,8 @@ window.__appMarks.push("yanshi-object:after");
       if (!primed) { primed = true; lastW = w; lastH = h; return; }
       if (Math.abs(w - lastW) < 2 && Math.abs(h - lastH) < 2) return;
       lastW = w; lastH = h;
-      // **★ 拖动中不许重新适配 ✗ ★**（2026-11-05 实测 ✓）
-      //   **∴ 症状 ✗**：拖动时状态区每帧刷新文字 ⇒ `.stage` 尺寸抖 ≥2px ⇒ 观察者回调
-      //     ⇒ `refitStage()` ⇒ `renderViewport()` ⇒ 整幅内核 `putImageData` ⇒ **把正在拖的
-      //     本地笔迹盖掉** ✗（实测：1.2 秒 71 次整幅重绘，`localBrushFrames=5` 而画布墨 0 ✓）。
-      //   **∴ 两道闸** ✓：
-      //     ① `state.dragging` ⇒ 直接返回 ✓（**拖动中本来就不该重排视图** ✓ — 会让光标下的
-      //        文档点漂移 ✓，`docs` 里那条 36px 漂移就是同族 ✓）；
-      //     ② 用户放大档（`state.zoom > 1`）照旧不动 ✓。
+      // 拖动中不重排视图：状态区每帧改字会让 .stage 抖 ≥2px，refitStage 会整幅
+      // 重绘内核像素、盖掉正在拖的本地笔迹（实测画布墨归零）。
       if (queued || state.dragging || (state.zoom || 1) > 1.0001) return;
       queued = true;
       requestAnimationFrame(() => { queued = false; if (state.dragging) return; refitStage(); });
