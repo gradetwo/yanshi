@@ -1447,6 +1447,12 @@ impl Workspace {
         session: &str,
     ) -> Result<&mut Document> {
         let doc_id = spec.doc_id.clone();
+        // **`doc_id` 是目录名 ⇒ 建之前过白名单** ✓（路径穿越）：
+        //   `new_document` 是此前**唯一**没校验的建文档入口 ✗ —— `try_stroke` 会把
+        //   `attempt_root().join(&doc_id)` 落到 `/tmp/yanshi-attempts` **之外**；
+        //   持久层则会在 `doc_dir` 的 `debug_assert!` 上 panic（debug）或静默改道
+        //   到 `docs/_invalid`（release）✗。放在这里 ⇒ 所有建文档路径共用一份守卫 ✓。
+        crate::persist::FileStore::validate_doc_id(&doc_id)?;
         // **★ 画布尺寸上限** ✓（第 1418 轮；外部 D-12）
         //   **⇒ 原缺陷** ✗：`POST /api/documents` 接受 **100000×100000**（= **10^10 像素**）⇒
         //     实测**真的建成**了（惰性分配，所以当场不炸）⇒ 但**任何一次全幅渲染/导出**

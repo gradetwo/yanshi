@@ -442,3 +442,34 @@ fn in_memory_workspace_reports_in_memory_root_id() {
     };
     assert_eq!(opened["root_id"], json!("in_memory"), "{opened}");
 }
+
+/// **`doc_id` 就是目录名 ⇒ 必须过同一份白名单（路径穿越）**。
+///
+/// **⇒ 缺陷**：`new_document` 是唯一没调用 `FileStore::validate_doc_id` 的建文档入口 ✗
+///   （HTTP 边界、`open_document`、`import_project`、`duplicate_document` 都调了 ✓）。
+///   `try_stroke` 用 `attempt_root().join(&ctx.doc_id)` 落盘 ⇒ `../escape` 能写到
+///   `/tmp/yanshi-attempts` **之外**；持久层则会在 `doc_dir` 的 `debug_assert!` 上**直接 panic**
+///   （debug 构建）或静默改道到 `docs/_invalid`（release）✗。
+/// **⇒ 判据**：非法 id 必须在建文档之前被拒，且不许真的建出文档。
+/// **变异**：删掉 `create_document` 里的那行 `validate_doc_id` ⇒ 本测试红（`ok:true`）。
+#[test]
+fn new_document_rejects_doc_ids_that_escape_the_workspace() {
+    let mut workspace = workspace();
+    let made = {
+        let mut ctx = context(&mut workspace);
+        registry().call(
+            &mut ctx,
+            "new_document",
+            &json!({ "doc_id": "../escape", "width": 32, "height": 32 }),
+        )
+    };
+    assert_eq!(
+        made["ok"],
+        json!(false),
+        "非法 doc_id 被接受 ⇒ 尝试目录会 join 到工作区外 / 持久层 panic：{made}"
+    );
+    assert!(
+        !workspace.document_exists("../escape"),
+        "非法 id 不许真的建出文档"
+    );
+}
