@@ -2147,9 +2147,9 @@ function requestRepaint() {
   }
 }
 
-function drawKernelRegion(x, y, w, h) {
+function drawKernelRegion(x, y, w, h, allowBlank = false) {
   // heavy 文档内核只能给出空白补丁 ⇒ 直接取服务端像素（避免中间一帧白板）。
-  if (needsServerPixels) return queueServerBlit([x, y, w, h]);
+  if (needsServerPixels) return queueServerBlit([x, y, w, h], allowBlank ? { allowBlank: true } : {});
   // 裁剪到视口：视口外像素不渲染也不上传（与设计的数据流过滤一致）。
   const vx = state.viewport.x;
   const vy = state.viewport.y;
@@ -2249,13 +2249,12 @@ function paintRegionPixels(rgbaView, x0, y0, cw, ch, vx, vy, w, h, started) {
 /// 而**画布没人管** ✗ ⇒ "点眼睛/锁 ⇒ 变白 ⇒ 手工刷新才恢复" ✗（真浏览器实测 ✓）。
 /// **收成一个函数** ✓：将来 `resync()` 再加分支 ✓，也只需记得调这一个名字 ✓ ——
 /// 这比"记得同时调预览和画布"可靠 ✓（本项目反复吃过"两条路径漏一条"的亏 ✗）。
-function redrawCanvasFromKernel() {
+function redrawCanvasFromKernel(allowBlank = false) {
   if (!state.kernel || !state.wasm) return;
   const board = $("board");
   if (!board) return;
-  // **把可等待物交出去**（异步内核路）⇒ `resync()` 可以等到**像素真的画上**
-  // （与无内核分支 `await queueServerBlit(null)` 同一条纪律：完成 = 看得见）。
-  return drawKernelRegion(state.viewport.x, state.viewport.y, board.width, board.height);
+  // 返回可等待物 ⇒ resync 能等到像素真的画上；allowBlank 只给"空白即权威"的场合。
+  return drawKernelRegion(state.viewport.x, state.viewport.y, board.width, board.height, allowBlank);
 }
 
 function reportPaintError(where, error) {
@@ -2829,13 +2828,13 @@ async function resync() {
     // ⇒ 所以这**不是**"无内核"的问题 ✓，而是**两条分支都漏了画布** ✗：
     // 增量重放只更新了内核状态 ✓、只刷了预览 ✓ ⇒ **没人把结果画到画布上** ✗。
     await refreshPreview(true);
-    await redrawCanvasFromKernel();
+    await redrawCanvasFromKernel(true);
     return;
   }
   // 增量不可用（或从 0 开始 ✓）⇒ 整条重放 ✓（内核已被上次失败回收 ✓ 或被重建 ✓）。
   if (await loadKernel(0)) {
     await refreshPreview(true);
-    await redrawCanvasFromKernel();
+    await redrawCanvasFromKernel(true);
   }
 }
 
