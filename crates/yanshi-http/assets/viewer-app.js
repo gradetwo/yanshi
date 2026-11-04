@@ -2148,8 +2148,15 @@ function requestRepaint() {
 }
 
 function drawKernelRegion(x, y, w, h, allowBlank = false) {
-  // heavy 文档内核只能给出空白补丁 ⇒ 直接取服务端像素（避免中间一帧白板）。
-  if (needsServerPixels) return queueServerBlit([x, y, w, h], allowBlank ? { allowBlank: true } : {});
+  // heavy 文档内核只给空白补丁 ⇒ 直接取服务端像素；非 heavy 仍走内核。
+  if (needsServerPixels && heavyDocument) {
+    return queueServerBlit([x, y, w, h], allowBlank ? { allowBlank: true } : {});
+  }
+  if (!state.kernel || !state.wasm) {
+    needsServerPixels = true;
+    return queueServerBlit([x, y, w, h], allowBlank ? { allowBlank: true } : {});
+  }
+  if (needsServerPixels) queueServerBlit([x, y, w, h]);
   // 裁剪到视口：视口外像素不渲染也不上传（与设计的数据流过滤一致）。
   const vx = state.viewport.x;
   const vy = state.viewport.y;
@@ -2514,6 +2521,8 @@ async function blitServerBox(bbox) {
   }
   window.yanshiStats.serverBlits = (window.yanshiStats.serverBlits || 0) + 1;
   window.yanshiStats.lastServerBlitArea = w * h;
+  // 服务端补画也算"画过"（heavy 文档只走这条路）。
+  window.yanshiStats.lastArea = w * h;
   window.yanshiStats.lastServerBlitReason = "box " + JSON.stringify([x0, y0, w, h]);
   (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({
     reason: window.yanshiStats.lastServerBlitReason,
@@ -2589,9 +2598,7 @@ function queueServerBlit(bbox = null, options = {}) {
   // ⇒ **∴ 所以**把它**暴露成 promise** ✗ ⇒ **∴ 从而**"**补画完成**"变成**可观察**的事件 ✓
   // ⇒ **∴ 而不是**靠**加长等待**去赌 ✗（**∴ 那**只是把竞态藏起来 ✓，**∴ 与"**少算换速度**✗ 同类 ✗）。
   if (serverBlitBusy) {
-    // 已有补画在途 ⇒ 本次请求合并进「pending 之后再排一次」。
-    // **必须等到那次也画完**：只返回当前 chain 的话，`await queueServerBlit()` 会在
-    // **本次请求还没画**时就返回（实测撤销后画布仍是旧像素：服务端对象 0、画布墨 1247）。
+    // 合并进「pending 后再排一次」；必须等到那次也画完，否则 await 早于本次请求。
     serverBlitPending = true;
     const current = serverBlitChain;
     return current.then(() => serverBlitChain).catch(() => {});
