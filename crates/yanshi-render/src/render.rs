@@ -461,6 +461,50 @@ pub const DEFAULT_BAND_CAP: usize = 2;
 //   ＋ **∴ 已知简化（**不写成"完全等价" ✓）✗**：**子层**逐层乘** ≠ **把组当整体先合成再乘**
 //     ⇒ **∴ 两者只在**子层互不重叠**时严格相等** ✓ ⇒ **∴ 判据就是用"不重叠"构造的 ✓
 //        ＋ **∴ 真正的"组内先合成"是下一步 ✗ 现在先要**行为对得上、可解释** ✓）★★
+/// 「这一层含读画布类笔刷」的标记词（与旧 `format!("{:?}{:?}")` ＋ `contains` 同一集合）。
+const CANVAS_BRUSH_MARKERS: [&str; 6] =
+    ["smudge", "watercolor", "watercolour", "oil", "涂抹", "水彩"];
+
+/// `text` 是否含 `needle`（ASCII 部分大小写不敏感，与旧的 `to_ascii_lowercase()` 同口径）。
+fn contains_marker(text: &str, needle: &str) -> bool {
+    // 非 ASCII 标记（涂抹／水彩）不受 ASCII 小写化影响 ⇒ 原样比较即可；ASCII 标记按
+    // 字节窗口做 `eq_ignore_ascii_case`，与「整串先小写再 contains」等价且**不分配**。
+    if needle.is_ascii() {
+        let needle = needle.as_bytes();
+        text.as_bytes()
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle))
+    } else {
+        text.contains(needle)
+    }
+}
+
+/// JSON 的**键**或**字符串值**里是否出现任一 [`CANVAS_BRUSH_MARKERS`]。
+///
+/// **为什么需要它**（性能）：原实现是 `format!("{:?}{:?}", data, metadata).to_ascii_lowercase()`
+/// 再对整串做 6 次 `contains` —— 每层每对象**每次渲染**都分配两个 `String`（`Debug` 全文 ＋
+/// 小写副本）并把整个 `data` 格式化一遍 ⇒ 现改为只遍历**键**与**字符串值**，**零分配**。
+///
+/// **等价性**：`serde_json::Value` 的 `Debug` 输出里，能承载这些标记词的只有**键**与
+/// **字符串值**（数字／布尔／null 只输出数字与英文关键字，不含这些字母组合；`String(`、
+/// `Map {`、`Array [` 这些装饰同理）。标记词不含任何需要 `Debug` 转义的字符，
+/// 所以「逐键／逐字符串值比较」与「整串小写后 `contains`」结论一致 ⇒ **不放松任何判据**。
+fn value_mentions_canvas_brush(value: &Value) -> bool {
+    match value {
+        Value::String(text) => CANVAS_BRUSH_MARKERS
+            .iter()
+            .any(|marker| contains_marker(text, marker)),
+        Value::Array(items) => items.iter().any(value_mentions_canvas_brush),
+        Value::Object(map) => map.iter().any(|(key, item)| {
+            CANVAS_BRUSH_MARKERS
+                .iter()
+                .any(|marker| contains_marker(key, marker))
+                || value_mentions_canvas_brush(item)
+        }),
+        _ => false,
+    }
+}
+
 fn effective_layer_factors(
     state: &yanshi_core::DocumentState,
     layer: &yanshi_core::Layer,
@@ -2489,20 +2533,21 @@ impl Renderer {
             }
             // **⑤ 读画布类笔刷 ✓**（smudge／watercolor ✓）：**它们**读**下方像素 ⇒ 该层渲染本身就是 below
             // 的函数 ⇒ 缓存会循环依赖 ✗**（目标明文点名 ✓）⇒ **∴ 含此类对象 ⇒ 不缓存 ✓**。
-            // **⚠️ 代价**（两面 ✓）：**每层每对象一次格式化 ✗**（**对象数据是哈希与参数 ⇒ 很小 ✓**）。
+            // **⚠️ 代价**（两面 ✓）：**每层每对象一次遍历**（**不再格式化／不分配 ✓**，
+            // 见 `value_mentions_canvas_brush`；对象数据是哈希与参数 ⇒ 很小 ✓）。
             for obj in state.objects.values() {
                 if obj.layer_id != layer.id || obj.deleted_by.is_some() {
                     continue;
                 }
                 // **位图对象不可能携带涂抹/水彩笔刷** ✓（第 549 轮）：`import_image` 写入的是
                 //   `{bitmap, region, width, height, …}` ✓，没有 `brush`/`tool` 之类的键 ✓
-                //   ⇒ 对它们做一次 `format!("{:?}{:?}")`（整个 JSON 的 Debug 格式化）纯属浪费 ✓
-                //   ⇒ **实测**：一次 16×16 渲染里 `建立` 从 **6.09 ms → 2.9 ms**（100 个位图对象 ✓）。
+                //   ⇒ 对它们逐个键／字符串值遍历纯属浪费 ✓（旧实现里这条早裁把一次 16×16 渲染的
+                //   `建立` 从 **6.09 ms → 2.9 ms**，100 个位图对象 ✓；现实现已不格式化，早裁仍省一次全树遍历 ✓）。
                 if obj.object_type == yanshi_core::ObjectType::RasterPatch {
                     continue;
                 }
-                // **早裁**：区域外对象不必付 `format!("{:?}{:?}") ＋ 小写 ＋ 6 次
-                // `contains` —— 它落不进本次区域，判定跳过它不会改变任何像素（见 `smudge_region`）。
+                // **早裁**：区域外对象不必付一次键／字符串值遍历 —— 它落不进本次区域，
+                // 判定跳过它不会改变任何像素（见 `smudge_region`）。
                 // `early_bbox` 返回 `None`（解析失败／调整层／实例）⇒ **不裁**，走今日路径。
                 let outside = self.early_bbox(state, obj).is_some_and(|bbox| {
                     !(bbox.w > 0.0 && bbox.h > 0.0 && bbox.intersects(&smudge_region))
@@ -2511,10 +2556,11 @@ impl Renderer {
                     continue;
                 }
                 stats.objects_smudge_scanned += 1;
-                let blob = format!("{:?}{:?}", obj.data, obj.metadata).to_ascii_lowercase();
-                if ["smudge", "watercolor", "watercolour", "oil", "涂抹", "水彩"]
-                    .iter()
-                    .any(|m| blob.contains(m))
+                // **不格式化、不分配** ✓：旧写法把 `data`＋`metadata` 的 `Debug` 整串格式化
+                // 再小写比较（每对象每次渲染两个 `String`）⇒ 换成逐键／逐字符串值比较，
+                // 结论与旧写法一致（等价性见 `value_mentions_canvas_brush`）。
+                if value_mentions_canvas_brush(&obj.data)
+                    || value_mentions_canvas_brush(&obj.metadata)
                 {
                     except_seen = true;
                 }
@@ -11720,5 +11766,117 @@ mod quilt_degenerate_tests {
             a.chunks_exact(4).all(|p| p == [255, 0, 0, 255]),
             "20×6 全部在 8×8 源覆盖范围内 ⇒ 不应留透明"
         );
+    }
+}
+
+/// **canvas-brush 判定：新旧实现同结论锁**（`value_mentions_canvas_brush` 的等价性判据）。
+///
+/// 旧实现：`format!("{:?}{:?}", data, metadata).to_ascii_lowercase()` 后对整串做 6 次 `contains`。
+/// 新实现：逐**键**／逐**字符串值**比较（不分配）。本模块把旧表达式当作 oracle 逐例复算。
+///
+/// **变异**：删掉 `CANVAS_BRUSH_MARKERS` 任一项、或让 `contains_marker` 恒 `false`
+/// ⇒ 对应的正例必须红 ✓。
+#[cfg(test)]
+mod canvas_brush_marker_tests {
+    use super::{contains_marker, value_mentions_canvas_brush, CANVAS_BRUSH_MARKERS};
+    use serde_json::{json, Value};
+
+    /// 旧实现的完整判定：整个 `Value` 的 `Debug` 小写后逐个 `contains`。
+    fn legacy_mentions(value: &Value) -> bool {
+        let blob = format!("{value:?}").to_ascii_lowercase();
+        CANVAS_BRUSH_MARKERS.iter().any(|m| blob.contains(m))
+    }
+
+    /// 标记词表本身就是旧实现里那 6 个子串（改表即改语义，必须显式确认）。
+    #[test]
+    fn markers_are_the_legacy_six_substrings() {
+        assert_eq!(
+            CANVAS_BRUSH_MARKERS,
+            ["smudge", "watercolor", "watercolour", "oil", "涂抹", "水彩"]
+        );
+    }
+
+    /// 每个正例／反例都与旧表达式同结论（同时锁住 oracle 自身的期望值）。
+    #[test]
+    fn new_helper_matches_legacy_on_every_case() {
+        let cases: Vec<(&str, Value, bool)> = vec![
+            ("键里的标记", json!({"oil_brush": 1}), true),
+            ("字符串值里的标记", json!({"tool": "smudge"}), true),
+            ("大写标记", json!({"tool": "SMUDGE"}), true),
+            (
+                "混合大小写（watercolour）",
+                json!({"brush": "WaterColour"}),
+                true,
+            ),
+            ("非 ASCII 标记（涂抹）", json!({"tool": "涂抹"}), true),
+            ("非 ASCII 标记（水彩）", json!({"名称": "水彩笔"}), true),
+            (
+                "嵌套对象／数组",
+                json!({"outer": {"inner": ["x", {"brush": "watercolor"}]}}),
+                true,
+            ),
+            ("嵌套数组里的键", json!([{"a": 1}, {"oil": true}]), true),
+            ("对象键大写", json!({"SMUDGE": 1}), true),
+            (
+                "反例：没有标记",
+                json!({"name": "pencil", "size": 4, "ok": true, "none": null}),
+                false,
+            ),
+            (
+                "反例：标记被空格拆开",
+                json!({"text": "water colours"}),
+                false,
+            ),
+            ("反例：空数组", json!({"items": []}), false),
+        ];
+
+        for (label, value, expected) in cases {
+            assert_eq!(
+                legacy_mentions(&value),
+                expected,
+                "oracle 期望值写错了（{label}）：{value:?}"
+            );
+            assert_eq!(
+                value_mentions_canvas_brush(&value),
+                expected,
+                "新实现与旧表达式结论不一致（{label}）：{value:?}"
+            );
+        }
+    }
+
+    /// 调用点把 `data` 与 `metadata` **分别**判一次 ⇒ 与旧实现「两串拼起来再判」等价。
+    ///
+    /// 拼接口不会造出跨界的标记：`Debug` 的结尾必是 `"`／`}`／`]`／数字／
+    /// `true`/`false`/`null`，而开头必是 `"`／`{`／`[`／数字／`t`/`f`/`n`，
+    /// 6 个标记都以字母（`s`/`w`/`o`）或非 ASCII 开头 ⇒ 不存在「前半在 data、后半在 metadata」的匹配。
+    #[test]
+    fn data_and_metadata_are_scanned_independently_like_the_call_site() {
+        let pairs = [
+            (json!({"tool": "smudge"}), Value::Null),
+            (json!({"oil": 1}), json!({"x": 2})),
+            (json!({"x": 2}), json!({"brush": "水彩"})),
+            (json!({"x": 2}), Value::Null),
+        ];
+        for (data, metadata) in pairs {
+            let legacy = legacy_mentions(&Value::Array(vec![data.clone(), metadata.clone()]));
+            let legacy_joined = {
+                let blob = format!("{:?}{:?}", data, metadata).to_ascii_lowercase();
+                CANVAS_BRUSH_MARKERS.iter().any(|m| blob.contains(m))
+            };
+            assert_eq!(legacy, legacy_joined, "拼接与分判的 oracle 应同结论");
+            let new = value_mentions_canvas_brush(&data) || value_mentions_canvas_brush(&metadata);
+            assert_eq!(new, legacy, "data／metadata 分判必须与旧拼接同结论");
+        }
+    }
+
+    /// ASCII 标记逐字节大小写不敏感；非 ASCII 标记原样比较（旧实现的小写化不影响它们）。
+    #[test]
+    fn contains_marker_case_rules_match_ascii_lowercasing() {
+        assert!(contains_marker("OIL", "oil"));
+        assert!(contains_marker("SmudgeLayer", "smudge"));
+        assert!(contains_marker("waterCOLOUR", "watercolour"));
+        assert!(contains_marker("一层涂抹", "涂抹"));
+        assert!(!contains_marker("oi", "oil"));
+        assert!(!contains_marker("crayon", "oil"));
     }
 }
