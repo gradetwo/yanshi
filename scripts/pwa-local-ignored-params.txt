@@ -24,12 +24,13 @@ import_asset.overwrite
 #    （ttl_days 校验并回显、demote 明确 501）⇒ 不再登记 ✓
 
 # ── ③ `export_png`：本地只有内核 `render_region_png`（bbox）✓ ──
-#     `lod`／`width`／`height` 的缩放由服务端链路做；`deterministic`／`max_px` 同理。
+#     `lod`／`width`／`height` 的缩放由服务端链路做；`deterministic` 同理。
 #     （`width`/`height` 因通用名被别处出现掩盖，因此不在本名单里 —— 这是已知漏报 ✓）
+#     **`return_image`／`max_px` 仍未被 `export_png` 读** ✗，但这两个名字现在出现在
+#     `brush_preview` 的分支里（2026-11-04 接的参数）⇒ 本判据按「全文件出现次数」数
+#     ⇒ 它们**已不在死名单**（**静态判据的已知漏报，不是「读了」的证明** ✓）。
 export_png.lod
 export_png.deterministic
-export_png.return_image
-export_png.max_px
 
 # ── ④ `export_project`：本地打 JSON 包，不嵌「服务端 blob bundle」模式 ✓ ──
 export_project.include_bitmaps
@@ -49,31 +50,27 @@ path_edit.right_id
 path_edit.result_id
 
 # ── ⑧ `render_region`：本地只接 bbox；其余是服务端落盘／标注选项 ✓ ──
+#     **`include_image`／`max_px`／`return_image` 仍未被本路由读** ✗（本地这里回**二进制 PNG** ✓，
+#     不是 JSON 回执 ⇒ 这三个内嵌选项没有落点）—— 同上，被 `brush_preview` 的同名出现掩盖 ✓。
 render_region.output_path
 render_region.show_coords
-render_region.include_image
-render_region.max_px
 render_region.active_layer
-render_region.return_image
 
 # ── ⑨ 其它服务端选项（本地分支未接）✓ ──
+#     **已于 2026-11-04 接上的 7 个**（`batch.slim_receipt`／`smudge.deposit`／
+#     `brush_preview.include_image`·`return_image`·`max_px`／`create_mask.from_selection`／
+#     `create_selection.from_mask`）**已从这里删除** ✓ —— 现在被读 ✓，
+#     行为判据是 `scripts/check-pwa-local-param-behaviour.mjs` ✓。
 batch.preview_every_n_strokes
 batch.preview_interval_ms
 batch.silent
-batch.slim_receipt
 batch.wait_for_render
 brush_preview.brush_params
-brush_preview.include_image
 brush_preview.output_path
-brush_preview.return_image
-brush_preview.max_px
 collect_diagnostics.include_thumbnail
 collect_diagnostics.max_bytes
 collect_garbage.ttl_seconds
-create_mask.from_selection
-create_selection.from_mask
 scatter_strokes.clip_to_selection
-smudge.deposit
 
 # ── ⑩ `brush_stroke`：本地落笔走内核默认路径，不转发这 22 个笔触参数 ✓ ──
 #     这是**已知缺口**（不是「服务端已读」的证明）：本地画布参数来自笔刷文件与

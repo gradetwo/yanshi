@@ -51,8 +51,17 @@ const SPEC_END = "// </gen:tool-specs>";
 // 常量只用来**拦住增长**，不是快照。
 // line-parity（同一天）：补 `stroke_heatmap`／`list_fonts`／`memory_status` 三条只读本地路由
 // ⇒ 缺本地路由 59 → 56 ⇒ 上界一并降到 56（缺口只许降）。
+// 同日第二批：本地补读 7 个参数 ⇒ 66 → 54（**∴ 其中 5 个是「同名掩盖」✗，不是真读了**）：
+//   · 真读（行为判据 `check-pwa-local-param-behaviour.mjs` ✓）：`batch.slim_receipt`／
+//     `smudge.deposit`／`brush_preview.include_image`·`return_image`·`max_px`／
+//     `create_mask.from_selection`／`create_selection.from_mask`；
+//   · 顺带掉出死名单（**假的** ✗）：`export_png.return_image`·`max_px` 与
+//     `render_region.include_image`·`max_px`·`return_image` —— 这三个名字现在出现在
+//     `brush_preview` 的分支里，而本判据按**全文件出现次数**数（单向判据的已知漏报 ✓）。
+//   ⇒ **∴ 所以 54 里有 5 个不是覆盖** ✓：要真补它们，得等 `export_png`／`render_region`
+//     自己读（前者会改「总是内嵌 base64」的既有行为，后者本地回的是二进制 PNG）。
 const MISSING_CEILING = 56;
-const DEAD_PARAMS_CEILING = 66;
+const DEAD_PARAMS_CEILING = 54;
 
 const failures = [];
 const check = (ok, label, detail) => {

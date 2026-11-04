@@ -3416,16 +3416,27 @@ async function withKernel(doc, fn) {
    *   **∴ `shape` 必须带 `kind` ✗**；**`feather ∈ [0,512]` ✗**（**缺省 0 ✓**）；
    *   **∴ `mode ∈ new/add/subtract/intersect` ✗**（**缺省 `new` ✓**）。
    */
-  function p2CheckRegionArgs(body, idKey) {
+  /** **选区的形状／蒙版的形状共用校验 ✗**（`create_selection`／`create_mask` ✓）。
+   *
+   *  **`clone` 是 `from_mask`／`from_selection` 的克隆值 ✗**（`{shape, feather, invert}` 或 null ✓）：
+   *    **∴ 服务端口径（`tools_selection.rs:107`／`tools_mask.rs:683` ✓）**：
+   *      显式 `shape`／`feather`／`invert` **优先** ⇒ 没给才用被转换实体的值 ✓。
+   *    **∴ 没传 `clone` 时行为与以前完全一样 ✓**（缺省 feather 0、invert false ✓）。
+   */
+  function p2CheckRegionArgs(body, idKey, clone = null) {
     const id = body[idKey];
     if (typeof id !== "string" || !id) return { err: p2Bad(idKey + " 必填（字符串）") };
-    const shape = body.shape;
+    const shape = (body.shape && typeof body.shape === "object") ? body.shape
+      : (clone && clone.shape && typeof clone.shape === "object") ? clone.shape : body.shape;
     if (!shape || typeof shape !== "object" || typeof shape.kind !== "string") {
-      return { err: p2Bad("shape 必须带 kind（rect/ellipse/polygon）") };
+      return { err: p2Bad("shape 必须带 kind（rect/ellipse/polygon）"
+                          + (clone ? "（或传 from_mask／from_selection 从已有实体克隆）" : "")) };
     }
-    const feather = body.feather !== undefined ? Number(body.feather) : 0;
+    const featherRaw = body.feather !== undefined ? body.feather
+      : (clone && typeof clone.feather === "number" ? clone.feather : 0);
+    const feather = Number(featherRaw);
     if (!Number.isFinite(feather) || feather < 0 || feather > 512) {
-      return { err: p2Bad("feather 必须在 [0, 512] 内，得到 " + body.feather) };
+      return { err: p2Bad("feather 必须在 [0, 512] 内，得到 " + featherRaw) };
     }
     const mode = body.mode !== undefined ? String(body.mode) : "new";
     if (["new", "add", "subtract", "intersect"].indexOf(mode) < 0) {
@@ -3436,7 +3447,8 @@ async function withKernel(doc, fn) {
     payload.shape = shape;
     payload.feather = feather;
     payload.mode = mode;
-    payload.invert = body.invert === true;
+    payload.invert = typeof body.invert === "boolean" ? body.invert
+      : (clone ? clone.invert === true : false);
     if (typeof body.linked_layer === "string") payload.linked_layer = body.linked_layer;
     return { payload };
   }
@@ -5016,6 +5028,36 @@ async function withKernel(doc, fn) {
     //     `yanshi://blob/…` 不同 ✗，**∴ 本部署没有 blob HTTP 服务 ✓，如实给浏览器能用的 ✓**）；
     //   **∴ 同时存进本地 blob 库**（**`blob_hash` 可查 ✓**）。
     if (path === "/api/tools/brush_preview") {
+      // **`return_image`／`include_image`／`max_px` ✓**（`tools.rs:21111` 的 return_image 统一语义 ✓）：
+      //   任一为 true ⇒ 内嵌 `image{mime_type,data,width,height}` ✓（base64 ✓）；
+      //   `max_px` 是**长边上限** ✓ —— 显式给了就**钳到 1..=8192** ✓；**只开 `return_image`
+      //   且不给 max_px 时缺省 512** ✓；**只开旧 `include_image` 时**不设限**✓（旧行为 ✓）。
+      //   超限**自动缩小**（双线性 ✓）而**不报错** ✓ ⇒ 与 `tools.rs:1535` 的 `wants_return_image` 同形 ✓。
+      //   **∴ 校验必须在落笔前 ✗**：非法 `max_px` 不能等画完才报 ✓（`tools.rs:2278` 同一条 ✓）。
+      const boolArg = (key) => {
+        const value = body[key];
+        if (value === undefined || value === null) return { value: false };
+        if (typeof value !== "boolean") {
+          return { err: p2Bad(key + " 必须是布尔值，得到 " + JSON.stringify(value)) };
+        }
+        return { value };
+      };
+      const wantIncludeImage = boolArg("include_image");
+      if (wantIncludeImage.err) return wantIncludeImage.err;
+      const wantReturnImage = boolArg("return_image");
+      if (wantReturnImage.err) return wantReturnImage.err;
+      let maxPx = null;
+      if (body.max_px !== undefined && body.max_px !== null) {
+        const raw = body.max_px;
+        if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0) {
+          return p2Bad("参数 max_px 必须是不小于 0 的整数（长边上限，钳到 1..=8192），得到 "
+                       + JSON.stringify(raw));
+        }
+        maxPx = Math.min(8192, Math.max(1, raw));
+      } else if (wantReturnImage.value) {
+        maxPx = 512;
+      }
+      const wantsImage = wantIncludeImage.value || wantReturnImage.value;
       const brushName = body.brush;
       if (typeof brushName !== "string" || !brushName) {
         return json({ ok: false, error: "missing_brush", error_code: "missing_brush",
@@ -5066,16 +5108,49 @@ async function withKernel(doc, fn) {
         let painted = 0;
         for (let i = 3; i < rgba.length; i += 4) if (rgba[i] > 0) painted++;
         const png = await encodePngRgba(w, h, rgba);
+        // **内嵌图 ✓**（只有请求了才做 ✓ —— `return_image:false` 时回执**不含** base64 ✓，
+        //   与服务端 `wants_return_image` 的缺省一致 ✓）。
+        let imageBlock = null;
+        let imageW = w, imageH = h;
+        if (wantsImage) {
+          let imageBytes = png;
+          if (maxPx !== null && (w > maxPx || h > maxPx)) {
+            const ratio = maxPx / Math.max(w, h);
+            imageW = Math.max(1, Math.round(w * ratio));
+            imageH = Math.max(1, Math.round(h * ratio));
+            const small = p2cResampleBilinear(rgba, w, h, imageW, imageH);
+            if (small) {
+              imageBytes = await encodePngRgba(imageW, imageH, small);
+            } else {
+              // **缩不了就如实回原尺寸** ✓（不谎报 `max_px` 生效 ✓）。
+              imageW = w; imageH = h;
+            }
+          }
+          imageBlock = { mime_type: "image/png", data: p2cB64(imageBytes),
+                         width: imageW, height: imageH };
+        }
         const digest = await crypto.subtle.digest("SHA-256", png);
         const hex = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
         const blobHash = "sha256:" + hex;
         const { putBlob } = await import("./store.js");
         await putBlob(handle, blobHash, Array.from(png));
         const thumbUrl = URL.createObjectURL(new Blob([png], { type: "image/png" }));
-        return json({ ok: true, brush: brushName, width: w, height: h,
-                      painted_pixels: painted, steps: localPts.length,
-                      blob_hash: blobHash, thumb_url: thumbUrl, mime_type: "image/png",
-                      size: png.length, server: false });
+        const preview = { ok: true, brush: brushName, width: w, height: h,
+                          painted_pixels: painted, steps: localPts.length,
+                          blob_hash: blobHash, thumb_url: thumbUrl, mime_type: "image/png",
+                          size: png.length, server: false };
+        if (imageBlock) {
+          preview.image = imageBlock;
+          if (imageW !== w || imageH !== h) {
+            // **缩小必须说出来 ✓**（`tools_read.rs:671` 同形 ✓）：否则调用方会以为拿到的是原尺寸 ✓。
+            preview.scaled_from = [w, h];
+            preview.max_px = maxPx;
+            preview.scaled_note = "原图 " + w + "×" + h + " 超过 max_px=" + maxPx
+              + " ⇒ 已**自动缩小**到 " + imageW + "×" + imageH + " 内嵌；要看原尺寸请传 max_px="
+              + Math.max(w, h);
+          }
+        }
+        return json(preview);
       } catch (err) {
         const reason = String((err && err.message) || err);
         return json({ ok: false, error: "preview_failed", error_code: "preview_failed",
@@ -5227,11 +5302,16 @@ async function withKernel(doc, fn) {
     //     （需要光栅化＋PNG 编码，本地未移植 ✓）⇒ **明确 501 ＋ 原因 ✓，一个原子都不写 ✓**
     //     （**∴ 静默降级比不支持更坏 ✓** —— 这是服务端 `tools_selection.rs:335` 注释里外部 §136 的原话 ✓）。
     if (path === "/api/tools/create_selection") {
-      const chk = p2CheckRegionArgs(body, "selection_id");
+      // **`from_mask` 一键转换 ✓**（`tools_selection.rs:82`）：克隆蒙版的 shape／feather／invert；
+      //   显式传的优先 ✓（见 `p2CheckRegionArgs` 的 `clone` 参数 ✓）。
+      const rows0 = await atomsOf(handle, doc);
+      const fromMask = p2ResolveFromRegion(body, "from_mask", "蒙版", "mask_id", false, rows0);
+      if (fromMask.err) return fromMask.err;
+      const chk = p2CheckRegionArgs(body, "selection_id", fromMask.clone);
       if (chk.err) return chk.err;
       const id = chk.payload.selection_id;
       const mode = chk.payload.mode;
-      const existing = p2DescribeRegions(await atomsOf(handle, doc)).selections.get(id);
+      const existing = p2DescribeRegions(rows0).selections.get(id);
       if (mode === "new") {
         if (existing && !existing.deleted) {
           // **文案逐字照 `fold.rs:977`** ✓（`write-guards` 判据逐字比对 ✓）。
@@ -5264,11 +5344,16 @@ async function withKernel(doc, fn) {
     // **④ `create_mask` ✗**：**照 `write_create_mask` ✓** ⇒ **`create_mask` 原子 ✓**
     //   （**校验与选区同形 ✓**）。
     if (path === "/api/tools/create_mask") {
-      const chk = p2CheckRegionArgs(body, "mask_id");
+      // **`from_selection` 一键转换 ✓**（`tools_mask.rs:638`）：传选区 id 或 `"latest"`
+      //   ⇒ 克隆其 shape／feather／invert ✓；显式传的优先 ✓。
+      const rows = await atomsOf(handle, doc);
+      const fromSelection = p2ResolveFromRegion(body, "from_selection", "选区", "selection_id",
+                                                true, rows);
+      if (fromSelection.err) return fromSelection.err;
+      const chk = p2CheckRegionArgs(body, "mask_id", fromSelection.clone);
       if (chk.err) return chk.err;
       // **∴ 墓碑不占 id ✗**（`fold.rs:870-876` 的 `CreateMask` 分支 ✓）：**活着的同名蒙版 ⇒ 409** ✓
       //   （**文案逐字 `蒙版 {mask_id} 已存在` ✓**）；**已删的可以重建 ✓**。
-      const rows = await atomsOf(handle, doc);
       const existing = p2DescribeRegions(rows).masks.get(chk.payload.mask_id);
       if (existing && !existing.deleted) {
         return p2ToolFailure(409, "precondition_failed",
@@ -6178,6 +6263,36 @@ async function withKernel(doc, fn) {
       }
       return btoa(s);
     }
+    /** **双线性重采样 ✗**（**逐位照 `yanshi-core/src/resample.rs` 的参考实现 ✓**）。
+     *  **∴ 为什么照抄公式 ✗**：`return_image`／`max_px` 的缩放必须与服务端同源 ✓
+     *  （服务端也走 `resample_rgba{filter:Bilinear}` ✓）⇒ **∴ 否则同一请求两边给出不同的缩略图** ✗。
+     *  **∴ 像素中心对齐 ✓**：`(x+0.5)*src/dst-0.5` ✓（直接按比例缩放会让每个像素整体偏移半格 ✓）。
+     */
+    function p2cResampleBilinear(src, srcW, srcH, dstW, dstH) {
+      if (!srcW || !srcH || !dstW || !dstH) return null;
+      if (!src || src.length !== srcW * srcH * 4) return null;
+      const out = new Uint8Array(dstW * dstH * 4);
+      for (let y = 0; y < dstH; y++) {
+        const fy = (y + 0.5) * srcH / dstH - 0.5;
+        const y0 = Math.max(0, Math.floor(fy));
+        const y1 = Math.min(y0 + 1, srcH - 1);
+        const wy = Math.min(1, Math.max(0, fy - Math.floor(fy)));
+        for (let x = 0; x < dstW; x++) {
+          const fx = (x + 0.5) * srcW / dstW - 0.5;
+          const x0 = Math.max(0, Math.floor(fx));
+          const x1 = Math.min(x0 + 1, srcW - 1);
+          const wx = Math.min(1, Math.max(0, fx - Math.floor(fx)));
+          const to = (y * dstW + x) * 4;
+          for (let c = 0; c < 4; c++) {
+            const at = (px, py) => src[(py * srcW + px) * 4 + c];
+            const top = at(x0, y0) * (1 - wx) + at(x1, y0) * wx;
+            const bottom = at(x0, y1) * (1 - wx) + at(x1, y1) * wx;
+            out[to + c] = Math.max(0, Math.min(255, Math.round(top * (1 - wy) + bottom * wy)));
+          }
+        }
+      }
+      return out;
+    }
     /** **PNG 解码 ✗**（**只在浏览器 ✗**：**`createImageBitmap` ＋ canvas ✓**）。 */
     async function p2cDecodePng(u8) {
       const g = typeof globalThis !== "undefined" ? globalThis : {};
@@ -6787,6 +6902,34 @@ async function withKernel(doc, fn) {
                layers: aliveLayers,
                objects, checkpoints: checkpointIds.size };
     }
+  /** **`from_mask`／`from_selection` 的解析 ✗**（**照 `tools_selection.rs:82`／`tools_mask.rs:638` ✓**）。
+   *
+   *  **∴ 返回 `{clone}` 或 `{err}` ✓**：
+   *    · 值是字符串 ⇒ 按 id 取（**墓碑也算存在** ✓ —— 服务端 `state.masks.get` 不看 `is_deleted` ✓）；
+   *    · `"latest"`（**只 `from_selection` 有** ✓）⇒ 取**最后创建且活着**的那个 ✓
+   *      （服务端按 `created_by` 排序取 last ✓；本地日志顺序即创建顺序 ✓）；
+   *    · 不存在 ⇒ **404 `reference_not_found` ＋「选区 X 不存在」** ✓（逐字照服务端 ✓）。
+   */
+  function p2ResolveFromRegion(body, key, kindName, idKey, allowLatest, rows) {
+    const raw = body[key];
+    if (raw === undefined || raw === null) return { clone: null };
+    if (typeof raw !== "string") return { err: p2Bad(key + " 必须是字符串（" + kindName + " id）") };
+    if (!raw) return { err: p2Bad(key + " 不能是空串") };
+    const described = p2DescribeRegions(rows);
+    const table = idKey === "mask_id" ? described.masks : described.selections;
+    let id = raw;
+    if (allowLatest && raw === "latest") {
+      let latest = null;
+      for (const [candidate, region] of table) {
+        if (!region.deleted) latest = candidate;
+      }
+      if (latest === null) return { err: p2Missing("没有可转换的选区") };
+      id = latest;
+    }
+    const region = table.get(id);
+    if (!region) return { err: p2Missing(kindName + " " + id + " 不存在") };
+    return { clone: { shape: region.shape, feather: region.feather, invert: region.invert } };
+  }
     /** **`describe_canvas` 的选区／蒙版／对象折叠 ✗**（**照 `fold.rs` 的五条分支 ✓**）：
      *   **∴ 选区**：`create_selection` 入表 ✓；`update_selection` 只改 `shape/feather/invert` ✓
      *     （`fold.rs:1357` ✓）；`tombstone{selection_id}` 置墓碑 ✓。
@@ -7034,6 +7177,20 @@ async function withKernel(doc, fn) {
         }
         data.smudge_length = len;
         data.direction = [0, 0];
+        // **`deposit` ✓**（`tools.rs:13836`）：抹匀后的**沉积暗化** ⇒ 渲染器按
+        //   `1 - deposit*0.35` 一次乘暗 ✓（`render.rs:1260`）。**缺省 0.0 ✓**；
+        //   服务端**不在工具层钳制**（钳制在渲染器里 ✓）⇒ 本地也不钳制 ✓。
+        //   **∴ 此前本地不写这个字段 ✗** ⇒ 内核回放到 `deposit` 缺省 0 ⇒
+        //     抹得再重也**一点都不暗** ✗（调用方传了 `deposit` 而画面无变化 ✓）。
+        const depRaw = body.deposit;
+        let deposit = 0;
+        if (depRaw !== undefined && depRaw !== null) {
+          deposit = Number(depRaw);
+          if (!Number.isFinite(deposit)) {
+            return p2Bad("deposit 必须是数字（0 = 不沉积，1 = 最重），得到 " + JSON.stringify(depRaw));
+          }
+        }
+        data.deposit = deposit;
       } else {
         const off = body.source_offset;
         if (!Array.isArray(off)) return p2Bad("source_offset 必填（[dx, dy]）");
@@ -9396,6 +9553,14 @@ async function withKernel(doc, fn) {
     if (path === "/api/tools/batch") {
       const calls = body.calls;
       if (!Array.isArray(calls) || calls.length === 0) return p2Bad("batch 至少需要一个调用（calls: [{tool, args}]）");
+      // **`slim_receipt` ✓**（`tools.rs:23591`）：**缺省 false ⇒ 完整回执不变 ✓**；
+      //   **true ⇒ 砍掉逐笔回执**（`calls`／`results` 空数组 ✓，省掉的条数记在 `omitted_calls` ✓，
+      //   失败项仍在 `failed_calls` 里 ✓）。**执行照旧、照常落笔** ✓ —— 只改回执形状 ✓。
+      const slimRaw = body.slim_receipt;
+      if (slimRaw !== undefined && slimRaw !== null && typeof slimRaw !== "boolean") {
+        return p2Bad("slim_receipt 必须是布尔值，得到 " + JSON.stringify(slimRaw));
+      }
+      const slimReceipt = slimRaw === true;
       const results = [];
       for (let i = 0; i < calls.length; i++) {
         const call = calls[i] || {};
@@ -9418,7 +9583,12 @@ async function withKernel(doc, fn) {
           break;
         }
         try {
-          const res = await local(sub);
+          // **★ 子调用必须走 `localDispatch` ✗ ★**（**∴ 这里原来写的是 `local(sub)` ✓**）：
+          //   **∴ `local` 是 `makeLocalApi` **返回**的那个具名函数表达式 ✓** ⇒ **∴ 它的名字
+          //   **只在它自己体内**可见 ✗**（**`localDispatch` 是**兄弟**作用域 ✓**）
+          //   ⇒ **∴ 于是**每个子调用都抛 `local is not defined` ✗ ⇒ **∴ 整批 `subcall_threw`** ✓
+          //   （**实测 ✓：`executed:1`、`results[0].reason:"local is not defined"`**）。**这修的是真 bug ✓**。
+          const res = await localDispatch(sub);
           const ct = (res.headers && res.headers.get && res.headers.get("content-type")) || "";
           const parsed = ct.indexOf("application/json") >= 0
             ? await res.json().catch(() => null)
@@ -9432,9 +9602,18 @@ async function withKernel(doc, fn) {
         }
       }
       const failed = results.find((r) => !r.ok || (r.result && r.result.ok === false));
-      return json({ ok: !failed, server: false, executed: results.length, total: calls.length,
-                    results, failed_index: failed ? failed.index : null,
-                    note: "子调用失败即停；本地无 changeset ⇒ 已执行的不会回滚（与服务端不同，如实说明）" });
+      const response = { ok: !failed, server: false, executed: results.length, total: calls.length,
+                         results, failed_index: failed ? failed.index : null,
+                         note: "子调用失败即停；本地无 changeset ⇒ 已执行的不会回滚（与服务端不同，如实说明）" };
+      if (slimReceipt) {
+        // **`omitted_calls` 必须 = 被砍掉的条数 ✓**（恒等式：`omitted_calls === executed` ✓）。
+        response.calls = [];
+        response.results = [];
+        response.slim_receipt = true;
+        response.omitted_calls = results.length;
+        response.failed_calls = failed ? [failed] : [];
+      }
+      return json(response);
     }
 
     // **P2c-57 `submit_offline` ✗**：**服务端校验离线原子后整批提交 ✓** ⇒ **∴ 本地做
