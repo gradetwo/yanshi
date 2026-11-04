@@ -77,4 +77,24 @@ fn resample_refuses_target_sizes_beyond_the_canvas_limits() {
         text.contains("16384") || text.contains("16_384") || text.contains("上限"),
         "报错里没点出上限 ⇒ 调用方不知道改哪个：{huge}"
     );
+
+    // ② `2^32 + 1` 必须报错，不许按 u32 回绕成 1 ✓（第 1440 轮同类缺陷的 resample 版）
+    //   **⇒ 缺陷**：`width`/`height` 直接 `as u32` ⇒ `4294967297` 变成 **1**
+    //     ⇒ 尺寸检查看到 1×1（完全合法）⇒ 真的把 8×8 缩成 1×1 并返回 `ok: true`
+    //     ⇒ 调用方拿到一张"合法但完全错误"的位图，且没有任何信号 ✗。
+    //   **⇒ 判据**：必须 `ok: false`，且文案点出 `width`。
+    let wrapped = registry.call(
+        &mut ctx,
+        "resample",
+        &json!({"object_id": "img_rs", "width": 4294967297u64, "height": 4294967297u64}),
+    );
+    assert_eq!(
+        wrapped["ok"],
+        json!(false),
+        "2^32+1 被 u32 回绕成 1×1 ⇒ 静默产出一张错误尺寸的位图：{wrapped}"
+    );
+    assert!(
+        wrapped.to_string().contains("width"),
+        "报错里没点出是哪个字段溢出：{wrapped}"
+    );
 }

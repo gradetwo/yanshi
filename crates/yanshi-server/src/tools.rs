@@ -10844,9 +10844,29 @@ fn write_resample(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
         (object.data.clone(), width, height, hash)
     };
     // ② 目标尺寸 ✓：显式宽高优先 ✓，其次 scale ✓ —— 两个都不给就明确报错 ✗（不猜 ✗）。
+    //
+    // **⇒ `width`/`height` 不许 `as u32` 回绕** ✓（第 1440 轮同类缺陷的 resample 版）：
+    //   `4294967297` 用 `as u32` 会变成 **1** ⇒ 下面的尺寸检查看到 1×1（合法）⇒
+    //   **真的缩成 1×1 并返回 `ok: true`** ✗ —— 调用方拿到一张"合法但完全错误"的位图，
+    //   且没有任何信号。所以这里在**取值的瞬间**就用 `try_from` 拒绝。
+    let explicit_dimension = |key: &str| -> Result<Option<u32>> {
+        match args.get(key).and_then(Value::as_u64) {
+            None => Ok(None),
+            Some(raw) => u32::try_from(raw).map(Some).map_err(|_| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!(
+                        "resample 的 {key} 是 {raw}，超过 u32 上限 {} ⇒ 不做\
+                         （按 u32 回绕会得到一个完全不同的尺寸）",
+                        u32::MAX
+                    )),
+                )
+            }),
+        }
+    };
     let scale = args.get("scale").and_then(Value::as_f64);
-    let explicit_w = args.get("width").and_then(Value::as_u64).map(|v| v as u32);
-    let explicit_h = args.get("height").and_then(Value::as_u64).map(|v| v as u32);
+    let explicit_w = explicit_dimension("width")?;
+    let explicit_h = explicit_dimension("height")?;
     let (target_w, target_h) = match (explicit_w, explicit_h, scale) {
         (Some(w), Some(h), _) => (w, h),
         (None, None, Some(factor)) if factor > 0.0 => (
