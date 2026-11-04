@@ -274,7 +274,11 @@ check(
 check(
   localSource === mirrorSource,
   `${LOCAL} 与 ${LOCAL_MIRROR} 逐字节相同`,
-  localSource === mirrorSource ? `${localSource.length} 字节` : "两份已分叉 ⇒ 先镜像再提交",
+  // **∴ `.length` 是 UTF-16 码元数（774745）✗，不是字节 ✗** ⇒ 标成「字节」会误导 ✓
+  //   **∴ 真实 UTF-8 字节用 Buffer.byteLength＝915872 ✓**（与 tool-web-assets-parity 报的 B 一致 ✓）
+  localSource === mirrorSource
+    ? `${Buffer.byteLength(localSource, "utf8")} 字节`
+    : "两份已分叉 ⇒ 先镜像再提交",
 );
 
 // 反向多出：必须为空，或在允许名单里且写了原因。
