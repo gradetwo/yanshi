@@ -4355,6 +4355,11 @@ fn box_blur_2d(data, width, height, radius) -> Vec<f32> {
 （`cur = data.to_vec()` ✗ ＋ `tmp = vec![0.0f32; cur.len()]` ✗；4K 下一块 **268 MB** ✗）；
 现在**按带** ✓（`BAND_ROWS = 64` ✓ ⇒ 两块都只有「**(带高 ＋ 2·radius) × 宽**」✓）。
 
+**⇒ 2026-11-05 更新**：`BAND_ROWS = 64` 现在只是**下限** —— 带高改成 `max(64, 4·radius)`（上限 1024 行）✓。
+**为什么**：固定 64 时每条带要重复算 `4·radius` 行 halo ⇒ `radius 128` 是 **9×** 工作量
+（4K 实测 **1186 ms → 272 ms**）✓；算法与数值不变，只改分带边界 ✓。
+详见 `docs/performance-notes.md` §12.1 ✓。
+
 **三个设计点** ✓（都写进代码注释 ✓）：
   1. **halo ＝ `2·radius`** ✗：本函数跑**两遍**（①横②纵 ✓）⇒ 第二遍的纵向要读
      **第一遍输出**的 `±radius` 行 ✓ ⇒ 合起来 `2·radius` ✓；
