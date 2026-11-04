@@ -28,7 +28,8 @@ import { execFileSync } from "node:child_process";
 // 参考图上传改成带 try/catch 的压缩上传、面板接线只做一次、`LOCAL_READ_TOOLS`
 // 补上 `get_bake_status`／`stroke_heatmap` ⇒ 上界抬到 932,000（留 671 字节）。
 // 数它用 `git show HEAD:web/index.html | wc -c`；改这个数必须附理由。
-const CEILING = 932_000;
+// 2026-11-04：(D) 回执可见性（log 增 forceNotice + stageNotice 兜底防递归 + 4 处导出成功回执）使 index.html 931,493→932,334（+841 B）⇒ 上界 932,000→933,000（留 666 B）。
+const CEILING = 933_000;
 
 const failures = [];
 const check = (ok, label, detail) => {

@@ -3555,12 +3555,16 @@ function backgroundToCss(background) {
   return "rgb(" + channel(background.r) + "," + channel(background.g) + "," + channel(background.b) + ")";
 }
 
-function log(line, cls) {
+function log(line, cls, forceNotice) {
   const el = document.createElement("div");
   el.textContent = line;
   if (cls) el.style.color = cls;
   $("log").prepend(el);
   while ($("log").childElementCount > 200) $("log").lastChild.remove();
+  // 错误级回执（或显式 forceNotice 的重要回执）同时显示在画布浮层：
+  // #log 在 history 卡里默认折叠，创作者看不见 —— 这是「按了没反应」的根因。
+  // 只追加一条可见提示，不改 #log 结构；stageNotice 自身 4 秒自动消失。
+  if (cls === "#c33" || forceNotice === true) stageNotice(line);
 }
 
 function setStatus(patch) {
@@ -12005,8 +12009,18 @@ let stageNoticeTimer = null;
 function stageNotice(text) {
   const el = $("stageNotice");
   if (!el) {
-    // 没有这块 DOM（老模板 / 半套静态页）⇒ 退回日志 ✗ **不许什么都不说** ✓。
-    log(text, "#c33");
+    // 没有这块 DOM（老模板 / 半套静态页）⇒ 退回日志，但**不能再走 log()**：
+    // log() 遇到 #c33 会回调 stageNotice ⇒ 无限递归。这里直接写 #log。
+    const fallback = document.getElementById("log");
+    if (fallback) {
+      const div = document.createElement("div");
+      div.textContent = text;
+      div.style.color = "#c33";
+      fallback.prepend(div);
+      while (fallback.childElementCount > 200) fallback.lastChild.remove();
+    } else {
+      console.error(text);
+    }
     return;
   }
   el.textContent = text;
@@ -12493,7 +12507,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-571c90a8-dirty-1e520a7a")
+      caches.open("yanshi-shell-9ca4b1c9-dirty-8c56f2ca")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));
@@ -15045,7 +15059,7 @@ if (exportPsdBtn) {
     a.href = href;
     a.download = result.filename || (state.docId + ".psd");
     a.click();
-    log("分层 PSD 已导出：" + (result.filename || href));
+    log("分层 PSD 已导出：" + (result.filename || href), undefined, true);
   });
 }
 
@@ -15232,7 +15246,7 @@ $("exportPng").addEventListener("click", async () => {
       bytes: value.bytes, source: "server", ms: Math.round(performance.now() - startedServer),
     };
     log("已导出 PNG（整幅，服务端）：" + value.width + "×" + value.height +
-        "（" + (value.bytes || 0) + " 字节）");
+        "（" + (value.bytes || 0) + " 字节）", undefined, true);
     return;
   }
   // ② 离线兜底：本地整幅合成（尺寸 = 文档 ✓，内容边界见上面的说明 ✓）。
@@ -15248,7 +15262,7 @@ $("exportPng").addEventListener("click", async () => {
       bytes: blob.size, source: "local-full", ms: Math.round(performance.now() - started),
     };
     log("已导出 PNG（整幅，离线本地合成）：" + canvas.width + "×" + canvas.height +
-        "（" + blob.size + " 字节）");
+        "（" + blob.size + " 字节）", undefined, true);
     if (needsServerPixels || tiles === 0) {
       log("⚠ 离线导出：画笔笔触（raster_patch）的像素只有服务端有 ⇒ 这份整幅 PNG 里" +
           "视口之内是画布上已有的真实像素、视口之外是背景；要完整整幅请联网后再导一次", "#c93");
@@ -15280,7 +15294,7 @@ $("exportPngView").addEventListener("click", async () => {
     window.yanshiStats.lastExport = {
       url: href, width: board.width, height: board.height, bytes: blob.size, source: "viewport",
     };
-    log("已导出 PNG（当前视图）：" + board.width + "×" + board.height + "（" + blob.size + " 字节）");
+    log("已导出 PNG（当前视图）：" + board.width + "×" + board.height + "（" + blob.size + " 字节）", undefined, true);
   } catch (error) {
     log("导出当前视图失败：" + (error && error.message ? error.message : String(error)), "#c33");
   }
