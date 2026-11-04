@@ -34,7 +34,10 @@ import { execFileSync } from "node:child_process";
 //   词条 337 B + 说明注释 970 B）⇒ 上界 933,000→934,000（留 359 B）。
 // 2026-11-04：补 I18N 模式词条 m43（`没有 WASM 内核，无法自检` ⇒ `No WASM kernel ⇒ the self-check cannot run`）使
 //   933,641→934,026（+385 B = 句式 64 + 链上一行 71 + 说明注释 250）⇒ 上界 934,000→934,385（+385，留 359 B 不变）。
-const CEILING = 934_385;
+// 2026-11-04：锁定层 toast 的英文去掉 `permission_denied` 术语（创作者不该读 HTTP 词）；状态栏缩放
+//   读数去重（`#zoom` 收进 hidden，仍写 textContent 供判据读）使 934,026→934,423（+397 B：
+//   去术语 −44 B，zoom 说明 +约 230 B，m42 说明改写 +约 210 B）⇒ 上界 934,385→934,782（+397，留 359 B 不变）。
+const CEILING = 934_782;
 
 const failures = [];
 const check = (ok, label, detail) => {

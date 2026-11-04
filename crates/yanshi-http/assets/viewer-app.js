@@ -1280,7 +1280,10 @@ function toCanvas(point) {
 function syncZoomReadout() {
   const percent = Math.round((state.displayScale || 1) * 100);
   const zoomLabel = $("zoom");
-  if (zoomLabel) zoomLabel.textContent = percent + "%";
+  // **∴ 状态栏里**只该有一个百分比**✗**：#zoomInput 自己就显示数值 ✗ 而 #zoom 又写一遍
+  //   ⇒ 实测渲染成「63 % 63%」（creator review ✓）⇒ 把重复的那一份收起来（hidden ✓）；
+  //   仍更新它的 textContent ⇒ browser-zoom-readout 等判据读它（断言不受影响 ✓）。
+  if (zoomLabel) { zoomLabel.hidden = true; zoomLabel.textContent = percent + "%"; }
   // **输入框回填** ✓ —— 但**不打扰正在输入的人** ✗（聚焦时不覆盖 ✓）。
   const zoomInput = $("zoomInput");
   if (zoomInput && document.activeElement !== zoomInput) zoomInput.value = String(percent);
@@ -13411,8 +13414,8 @@ function i18nText(node) {
     //   长句写进同一个浮层** ⇒ 用户最终看见的是**这一句** ✗ ⇒ 它没有词条就等于 m30 白有 ✗
     //  （`browser-layer-lock.mjs` ⑧ 就是这么红的 ✓ 第八章"句式框架漏出汉字"）。
     //   句中 `画布上的一笔`/`移动对象` 是**界面自己写的前缀** ✓ 属于句式框架 ⇒ 必须翻 ✗；
-    //   图层名来自 `list_layers` ✓ 是用户数据 ⇒ 一个字不动 ✓。`permission_denied` 与 `🔓`
-    //   是接口名与图标 ⇒ 原样带过去 ✓。
+    //   图层名来自 `list_layers` ✓ 是用户数据 ⇒ 一个字不动 ✓。中文原句的服务端原因码
+    //   `permission_denied` 不进英文 ✗（创作者不该读 HTTP 词 ✓）；`🔓` 是图标 ⇒ 原样带 ✓。
     const m42 = /^(画布上的一笔|移动对象|这一步)没有发送：「(.+)」是锁定图层（服务端会回 permission_denied）⇒ 在「图层」面板点 🔓 解锁后再试$/.exec(zh);
     // **位精确自检的前提缺失** ✓（本轮新增 ✓）：这句是**静态**短句 ✗ 没有插值 ⇒ 但它是 `#c33` 行 ✓
     //   ⇒ 会写进 `#stageNotice` 浮层 ⇒ 也要词条（整句锚定，不吞别的句子 ✓）。
@@ -13559,7 +13562,7 @@ function i18nText(node) {
     else if (m41) en = "Reference image upload failed: " + m41[1];
     else if (m42) {
       en = ({ "画布上的一笔": "The stroke on the canvas", "移动对象": "The move", "这一步": "This step" }[m42[1]])
-        + " was not sent: \"" + m42[2] + "\" is a locked layer (the server would answer permission_denied)"
+        + " was not sent: \"" + m42[2] + "\" is a locked layer"
         + " ⇒ unlock it with 🔓 in the Layers panel, then try again.";
     }
     else if (m43) en = "No WASM kernel ⇒ the self-check cannot run";
