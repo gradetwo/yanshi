@@ -1067,6 +1067,19 @@ pub fn precondition(state: &DocumentState, atom: &Atom) -> Result<()> {
                     "几何操作的新画布尺寸必须 ≥ 1",
                 ));
             }
+            // **上界也必须在门禁里** ✓：折叠层把尺寸存成 `u32` ⇒ `2^32 + 1` 会被
+            // **截断成 1** ✗（画布悄悄变成 1×1，而门禁只查了 `< 1` ✗）。
+            // 这里拒绝，折叠层的 `try_from` 只是纵深防御。
+            if width > u64::from(u32::MAX) || height > u64::from(u32::MAX) {
+                return Err(err(
+                    ErrorCode::InvalidArgument,
+                    format!(
+                        "几何操作的新画布尺寸 {width}×{height} 超过 u32 上限 {} \
+                         ⇒ 按 u32 截断会得到一个完全不同的尺寸",
+                        u32::MAX
+                    ),
+                ));
+            }
             let matrix = atom
                 .payload
                 .get("affine")
@@ -2176,8 +2189,20 @@ fn apply_geometry(state: &mut DocumentState, atom: &Atom) -> Result<()> {
     use crate::geometry::*;
     let affine = transform_from_affine_payload(&atom.payload);
     let flat = flatten_transform(&affine);
-    let new_width = payload_u64(&atom.payload, "new_width").unwrap_or(0) as u32;
-    let new_height = payload_u64(&atom.payload, "new_height").unwrap_or(0) as u32;
+    let new_width = payload_u64(&atom.payload, "new_width").unwrap_or(0);
+    let new_height = payload_u64(&atom.payload, "new_height").unwrap_or(0);
+    // **不许 `as u32` 回绕** ✓（与 `precondition` 的上界检查配对）：`2^32 + 1` 截断成 1
+    // 会把画布悄悄改成 1×1 —— 比报错糟得多。门禁已先拒；这里是重放期的纵深防御。
+    let (Ok(new_width), Ok(new_height)) = (u32::try_from(new_width), u32::try_from(new_height))
+    else {
+        return Err(err(
+            ErrorCode::InvalidArgument,
+            format!(
+                "几何操作的新画布尺寸 {new_width}×{new_height} 超过 u32 上限 {}",
+                u32::MAX
+            ),
+        ));
+    };
     if new_width < 1 || new_height < 1 {
         return Err(err(
             ErrorCode::InvalidArgument,
@@ -4521,6 +4546,45 @@ mod tests {
         assert_eq!(
             result.state.selections["sel_1"].shape,
             json!({ "kind": "rect", "x": 20, "y": 30, "w": 10, "h": 10 })
+        );
+    }
+
+    /// **几何原子的新尺寸不许按 `u32` 回绕**（第 1440 轮 `create_document` 同类缺陷的几何版）。
+    ///
+    /// **⇒ 缺陷**：`apply_geometry` 用 `payload_u64(...) as u32` 取 `new_width/new_height`，
+    ///   而 `precondition` 只检查 `< 1` ✗ ⇒ `2^32 + 1` 截断成 **1** 后通过检查
+    ///   ⇒ 画布被悄悄改成 **1×1**，没有任何警告（状态看起来完全合法 ✗）。
+    /// **⇒ 判据**：门禁阶段就拒绝，且折叠后画布**保持原尺寸**（原子被跳过而不是改坏状态）。
+    /// **变异**：把 `precondition` 里的上界判断删掉 ⇒ 本测试红（状态变成 1×1）。
+    #[test]
+    fn geometry_new_size_beyond_u32_is_rejected_not_wrapped() {
+        let mut atoms = chain();
+        let bad = atom(
+            AtomKind::ResizeCanvasBounds,
+            "a_resize_wrap",
+            json!({
+                "affine": {"matrix": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], "pivot": [0.0, 0.0]},
+                "new_width": 4294967297u64,
+                "new_height": 4294967297u64,
+            }),
+        );
+        let before = fold(&atoms);
+        assert!(before.is_clean(), "{:?}", before.warnings);
+        assert_eq!((before.state.width, before.state.height), (100, 50));
+        assert!(
+            precondition(&before.state, &bad).is_err(),
+            "2^32+1 必须在门禁阶段被拒绝（否则会被截断成 1×1）"
+        );
+        push(&mut atoms, bad);
+        let after = fold(&atoms);
+        assert_eq!(
+            (after.state.width, after.state.height),
+            (100, 50),
+            "溢出的尺寸原子不许把画布悄悄改成 1×1"
+        );
+        assert!(
+            !after.warnings.is_empty(),
+            "被拒绝的原子必须留下警告，而不是静默改状态"
         );
     }
 
