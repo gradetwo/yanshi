@@ -117,10 +117,50 @@ pub struct PrepCacheStats {
     pub entries: usize,
 }
 
+/// **早裁包围盒条目**（见 `Renderer::early_bbox`）。
+///
+/// **为什么不复用 [`PrepCacheKey`]**：那个键含 `data` 的结构哈希 ⇒ 建键本身
+/// 要遍历整份 `data`。而早裁的意义正是**在建键之前**把不可能相交的对象剔掉，
+/// 所以这张表用一个**便宜**的指纹：
+///
+/// * `current_version` —— `fold` 里一切 `data` 写入（`replace_object_data`、
+///   `set_property`、`Fill`/`Erase`/`Retouch`/`Supersede`…）都先经
+///   `supersede_object`（`crates/yanshi-core/src/fold.rs:2384`）把
+///   `current_version` 推成新原子 id ⇒ **版本变 ⇔ 内容变**是真实原子流的保证；
+/// * `matrix`/`pivot` 位表示 —— 唯一**不**推版本的写入是 `transform`
+///   （`Move`/`Transform` 的组变换直写矩阵）⇒ 必须入键；
+/// * `object_type` —— 类型不在 `data` 里，`parse_object` 按类型分派。
+///
+/// **这与 `Renderer::cached_fingerprint`（`render.rs:1944`）已有的键是同一个假设**
+/// （那里也只用了 `(id, version, matrix bits)`）。
+///
+/// **已知残余（两面）**：手写状态若复用同 id ＋ 同版本而换不同 `data`
+/// （测试 helper `object()` 固定写 `current_version = "a1"`），这里会读到旧盒子
+/// ⇒ 可能多裁。所以调用方只在这个盒子**能证明不相交**时才裁，
+/// 且 `None`（解析失败／退化几何）一律不裁 —— 未实现类型仍能产生告警。
+#[derive(Debug, Clone)]
+struct EarlyBbox {
+    version: String,
+    matrix: [u64; 6],
+    pivot: [u64; 2],
+    object_type: u8,
+    bbox: Option<Bbox>,
+}
+
+/// 指纹是否仍然对得上（对不上 ⇒ 当未命中，现算并覆盖）。
+fn early_bbox_matches(entry: &EarlyBbox, object: &Object) -> bool {
+    Some(entry.version.as_str()) == object.current_version.as_deref()
+        && entry.matrix == object.transform.matrix.map(f64::to_bits)
+        && entry.pivot == object.transform.pivot.map(f64::to_bits)
+        && entry.object_type == object_type_tag(object.object_type)
+}
+
 /// 前置缓存本体（渲染器以 `Mutex` 持有，与 `below`/`above` 同例）。
 #[derive(Debug, Default)]
 pub struct PrepCache {
     map: HashMap<PrepCacheKey, PrepEntry>,
+    /// 早裁包围盒（见 [`EarlyBbox`]）：键＝对象 id。
+    bboxes: HashMap<String, EarlyBbox>,
     hits: u64,
     misses: u64,
 }
@@ -153,6 +193,39 @@ impl PrepCache {
             self.map.clear();
         }
         self.map.insert(key, entry);
+    }
+
+    /// **早裁查表**：命中 ⇒ 返回**同一版本／变换下**算过的盒子
+    /// （`Some(None)` ＝ 那个对象本来就没有盒子 ⇒ 调用方不裁）；
+    /// 未命中／指纹不符 ⇒ `None`（调用方现算后 [`Self::store_bbox`]）。
+    pub fn lookup_bbox(&self, object: &Object) -> Option<Option<Bbox>> {
+        let entry = self.bboxes.get(&object.id)?;
+        if early_bbox_matches(entry, object) {
+            Some(entry.bbox)
+        } else {
+            None
+        }
+    }
+
+    /// **早裁存表**。无版本对象不存（与 [`prep_key_for`] 同例：没有版本就不能
+    /// 断言内容没变）。超限整表清空（与 [`Self::insert`] 同一策略）。
+    pub fn store_bbox(&mut self, object: &Object, bbox: Option<Bbox>) {
+        let Some(version) = object.current_version.clone() else {
+            return;
+        };
+        if self.bboxes.len() >= PREP_CACHE_CAP {
+            self.bboxes.clear();
+        }
+        self.bboxes.insert(
+            object.id.clone(),
+            EarlyBbox {
+                version,
+                matrix: object.transform.matrix.map(f64::to_bits),
+                pivot: object.transform.pivot.map(f64::to_bits),
+                object_type: object_type_tag(object.object_type),
+                bbox,
+            },
+        );
     }
 
     /// 读数。

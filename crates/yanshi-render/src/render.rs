@@ -1700,6 +1700,54 @@ impl Renderer {
         self.prep_cache_enabled = enabled;
     }
 
+    /// **早裁包围盒**（在 [`Self::prep_entry`] **之前**给出与今日裁剪**同一口径**的盒子）。
+    ///
+    /// **为什么需要它**：裁剪原来发生在 `prep_entry` 之后 ⇒ 每个**不可能相交**的对象
+    /// 也照样要付 `hash_data_value(&object.data)`（遍历整份 `data`）、前置缓存
+    /// `entry.clone()`，以及"读画布类笔刷"扫描里的 `format!("{:?}{:?}")`。
+    /// 盒子来自 `object_bbox_in` —— **与 `PrepEntry.bbox` 同一函数、同一输入**
+    /// ⇒ 判定结果与今日逐位相同，只是提前。
+    ///
+    /// **外扩（羽化／模糊／阴影／笔宽）不在这里补**：本函数给的是**原始几何盒**；
+    /// 外扩全部发生在**区域侧**（`padding_for_region`／`global_padding`：蒙版羽化、
+    /// 形状 `geometry.feather`、滤镜邻域、涂抹 `smudge_length`），调用方拿它跟
+    /// **已经外扩过的** `layer_buffer.bbox()` 比 ⇒ 与今日的裁剪测试逐字一致。
+    ///
+    /// **返回 `None` 的四类（一律"不裁"，退回今日路径）**：
+    /// · `Adjustment`／`Filter`：整层作用，几何裁剪本来就不适用；
+    /// · `Instance`：盒子要解析 master 链（成本即 prep 主体，键还要含链上每一环）；
+    /// · `object_bbox_in` 返回 `None`：解析失败／退化几何 —— 未实现类型要靠它产生
+    ///   告警 ⇒ 不许在这里静默丢掉（今日循环对它们走 `affects_whole_layer` 分支）。
+    ///
+    /// **失效**：条目按 `(id, current_version, 变换矩阵位, 枢轴位, 类型)` 校验
+    /// （见 `crate::prep_cache::EarlyBbox`）。`YANSHI_PREP_CACHE=0` 时本函数只现算、不查表。
+    fn early_bbox(
+        &self,
+        state: &yanshi_core::DocumentState,
+        object: &yanshi_core::Object,
+    ) -> Option<Bbox> {
+        use yanshi_core::ObjectType;
+        if matches!(
+            object.object_type,
+            ObjectType::Adjustment | ObjectType::Filter | ObjectType::Instance
+        ) {
+            return None;
+        }
+        if self.prep_cache_enabled {
+            if let Ok(cache) = self.prep_cache.lock() {
+                if let Some(bbox) = cache.lookup_bbox(object) {
+                    return bbox;
+                }
+            }
+            let bbox = crate::object::object_bbox_in(state, object);
+            if let Ok(mut cache) = self.prep_cache.lock() {
+                cache.store_bbox(object, bbox);
+            }
+            return bbox;
+        }
+        crate::object::object_bbox_in(state, object)
+    }
+
     /// **取单个对象的预处理结果**（解析后图元＋包围盒，#1 第一期）：
     /// 命中 ⇒ 直接复用；未命中 ⇒ 按今日循环原样算一次
     /// （[`crate::prep_cache::compute_prep_entry`]）再存入；开关关或
@@ -2376,6 +2424,20 @@ impl Renderer {
         //   ⇒ **∴ 这里**顺手收一份 ✗**（**∴ 与 `visible_layer_ids` 同序 ✓**）。
         let mut visible_opacity: Vec<f64> = Vec::new();
         let mut except_seen = false;
+        // **早裁区域**（给下面「读画布类笔刷」扫描用）：与 `layer_buffer.bbox()` 逐字同口径
+        // （`origin_{x,y}` ＋ `width/height × step`）再向外放 1px（`floor`/`ceil` 取整余量）
+        // ⇒ 只会**多留**对象、不会少留。
+        //
+        // **为什么可以按区域裁**：盒子与它不相交的对象，本次渲染在区域里**一个像素都落不进来**
+        // ⇒ 它是不是涂抹／水彩笔刷，**不改变本次渲染的任何像素**。缓存侧同样安全：
+        // 区域外的对象不会出现在本次写进 below/above 的缓存片里；而含涂抹对象的区域
+        // 仍会走 `except_seen` ⇒ `cacheable = false` ⇒ 既不读也不写缓存（`render.rs:2556`）✓。
+        let smudge_region = Bbox::new(
+            origin_x as f64 - 1.0,
+            origin_y as f64 - 1.0,
+            (width as f64) * (step as f64) + 2.0,
+            (height as f64) * (step as f64) + 2.0,
+        );
         for layer in state.alive_layers() {
             if let Some(only) = self.only_layer.as_deref() {
                 if layer.id != only {
@@ -2437,6 +2499,15 @@ impl Renderer {
                 //   ⇒ 对它们做一次 `format!("{:?}{:?}")`（整个 JSON 的 Debug 格式化）纯属浪费 ✓
                 //   ⇒ **实测**：一次 16×16 渲染里 `建立` 从 **6.09 ms → 2.9 ms**（100 个位图对象 ✓）。
                 if obj.object_type == yanshi_core::ObjectType::RasterPatch {
+                    continue;
+                }
+                // **早裁**：区域外对象不必付 `format!("{:?}{:?}") ＋ 小写 ＋ 6 次
+                // `contains` —— 它落不进本次区域，判定跳过它不会改变任何像素（见 `smudge_region`）。
+                // `early_bbox` 返回 `None`（解析失败／调整层／实例）⇒ **不裁**，走今日路径。
+                let outside = self.early_bbox(state, obj).is_some_and(|bbox| {
+                    !(bbox.w > 0.0 && bbox.h > 0.0 && bbox.intersects(&smudge_region))
+                });
+                if outside {
                     continue;
                 }
                 stats.objects_smudge_scanned += 1;
@@ -4181,6 +4252,20 @@ impl Renderer {
             // G-03 bypass：`enabled: false` 的对象渲染时跳过（与 `visible`
             // 同门——调整/滤镜对象也走这条循环，停用即整项不生效）。
             if !object.visible || !object.enabled {
+                continue;
+            }
+            // **早裁**（在 `prep_entry` **之前**）：盒子与本次缓冲区域不相交的对象，
+            // 下面那一段（`entry.bbox` 判定）本来也会把它裁掉 ⇒ **提前到这里**，
+            // 让它们不再付 `hash_data_value`（遍历整份 `data`）与 `entry.clone()`。
+            // 判定式与下面的 `intersects` **逐字同源**（`w > 0 && h > 0 && intersects`，
+            // 取反）⇒ 行为不变；盒子来自 `object_bbox_in`，与 `PrepEntry.bbox` 同一函数。
+            // 区域外扩（羽化／模糊／阴影／笔宽）已在 `layer_buffer.bbox()` 里
+            // （见 `padding_for_region`）⇒ 这里**不额外加边**，否则判定会与今日不同。
+            let outside = self.early_bbox(state, object).is_some_and(|bbox| {
+                !(bbox.w > 0.0 && bbox.h > 0.0 && bbox.intersects(&layer_buffer.bbox()))
+            });
+            if outside {
+                track.culled.insert(object.id.clone());
                 continue;
             }
             // 几何裁剪：包围盒与渲染区域不相交的对象直接跳过。
