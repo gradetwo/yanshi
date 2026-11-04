@@ -5,12 +5,17 @@
 > **能力级**的结论 ——「同一份能力，人 / Agent / 页面三个面够不够得到」——在 `docs/surface-alignment.md`，那份文档不列逐工具表。
 > 两边**不互相抄数字**：本文只留可现算的工具级计数，能力级判断与缺口登记留在那边（它指向本文，不复制）。
 
-> **日期**：2026-11-04。**所有计数以 `node scripts/check-three-way-alignment.mjs` 现算为准**；
+> **日期**：2026-11-05（§3／§4 的逐行表仍是 2026-11-04 快照）。**所有计数以 `node scripts/check-three-way-alignment.mjs` 现算为准**；
 > 本文的表格是这一天的快照（行数会随工具增减而变），**不要把表里的数字当成新的权威**。
 >
-> **一句话**：服务端注册表 224 个工具，MCP 缺省可见 223 个（Study 组要显式 `--profile study`），
-> PWA 本地有 165 个路由、缺 59 个；本地反向多出已清零；已声明参数里有 66 个本地从不读。
-> 两个缺口各有一把**只许降**的棘轮：缺路由 ≤ 59、参数未读 ≤ 66。
+> **一句话（2026-11-05 现算）**：服务端注册表 224 个工具，MCP 缺省可见 223 个（Study 组要显式 `--profile study`），
+> PWA 本地有 168 个路由、缺 56 个；本地反向多出已清零；已声明参数里有 54 个本地从不读（19 个工具）。
+> 两个缺口各有一把**只许降**的棘轮：缺路由 ≤ 56、参数未读 ≤ 54。
+>
+> **§3／§4 的逐行表是 2026-11-04 的快照（当时 165/59、66）**，之后补了
+> `stroke_heatmap`／`list_fonts`／`memory_status` 三条只读路由，并让一批本地路由真的去读声明参数
+> ⇒ 现算 56／54。**行级清单请用 `node scripts/check-three-way-alignment.mjs --list`**，
+> 表只保留归因与「不做」的理由。
 
 ---
 
@@ -23,7 +28,7 @@
 | **MCP** | `crates/yanshi-mcp/src/lib.rs:307` | `let registry = ToolRegistry::with_profiles(&options.profiles);` ⇒ **MCP 没有第二份名单**，它就是同一张表按 profile 过滤。`lib.rs:341-342` 的 `tools_list_for` 与 `lib.rs:358` 的 `tools_list_json` 都走这张表。 |
 | **PWA 本地** | `crates/yanshi-http/assets/api-local.js:3480` | `async function localDispatch(req)` —— 本地路由的唯一入口。 |
 | **PWA 参数镜像** | `crates/yanshi-http/assets/api-local.js:595` | `const P2_TOOL_SPECS = {` 的 `<gen:tool-specs>` 生成块（223 行；少 `reference_trace_region`）。 |
-| **PWA 声明计数** | `crates/yanshi-http/assets/api-local.js:95` | `const LOCAL_IMPLEMENTED = 177;`（与 `path ===` 分支机械数同口径）。 |
+| **PWA 声明计数** | `crates/yanshi-http/assets/api-local.js:95` | `const LOCAL_IMPLEMENTED = 180;`（与 `path ===` 分支机械数同口径；**数字会变，用 `--list` 或判据现算**）。 |
 | **PWA 镜像** | `web/api-local.js` | 必须与 `crates/yanshi-http/assets/api-local.js` **逐字节相同**。 |
 
 **为什么 MCP 一列几乎全是「✓」**：MCP 与 HTTP 共用 `ALL_TOOLS`。唯一差别是缺省 profile：
@@ -46,15 +51,15 @@ cmp crates/yanshi-http/assets/api-local.js web/api-local.js; echo "CMP=$?"
 
 ```
 注册表工具 224｜MCP 缺省可见 223（Study 专属 1 只需 --profile study）
-本地镜像规格 223 行｜有本地路由 165｜缺本地路由 59
-声明参数本地未读 66（22 个工具）｜本地反向多出 0
+本地镜像规格 223 行｜有本地路由 168｜缺本地路由 56
+声明参数本地未读 54（19 个工具）｜本地反向多出 0
 ```
 
 **棘轮常量**在 `scripts/check-three-way-alignment.mjs:52-53`：
 
 ```js
-const MISSING_CEILING = 59;
-const DEAD_PARAMS_CEILING = 66;
+const MISSING_CEILING = 56;
+const DEAD_PARAMS_CEILING = 54;
 ```
 
 **只许降**。要涨必须像 `check-index-html-byte-budget.mjs` 那样抬常量，并在提交信息里写清
@@ -71,7 +76,7 @@ const DEAD_PARAMS_CEILING = 66;
 - **声明参数本地全读** = 生成块里该工具的参数名，在生成块之外**非 0 次出现**（单向判据：
   0 次 ⇒ 一定没读；> 0 次 **不代表**读了）。`—` = 没有本地路由，参数无从读起。
 
-### A. 缺本地路由（59 个，优先处理）
+### A. 缺本地路由（2026-11-04 快照 59 个；现算 56 —— 已补 `stroke_heatmap`／`list_fonts`／`memory_status`）
 
 | 工具 | 层 | 归因 | 下一步 |
 |---|---|---|---|
@@ -347,7 +352,7 @@ const DEAD_PARAMS_CEILING = 66;
 （`localDispatch` 开头把 `/api/tools/undo` 归一成 `undo_last`，`list_brushes` 归一成
 `/list_brushes`），判据把它们记作别名，不记作新工具。
 
-### 4.2 缺本地路由（59 条）
+### 4.2 缺本地路由（2026-11-04 快照 59 条；现算 56）
 
 **结论：只有 1 条是「本地已有等价能力、只差一个入口」——已经补掉；其余 58 条都不是别名。**
 完整归因见 §3 表 A 的「归因 / 下一步」两列。按大类汇总：
@@ -373,7 +378,7 @@ const DEAD_PARAMS_CEILING = 66;
   浏览器读不到的裸路径／`file://` **明确 400 说清**，不静默降级。
   返回字段照服务端：`{ok, blob_hash, size, mime_type, source}`。
 
-### 4.3 声明参数本地未读（66 条 / 22 个工具）
+### 4.3 声明参数本地未读（2026-11-04 快照 66 条 / 22 个工具；现算 54 条 / 19 个工具）
 
 判据口径：生成块里声明了某参数，而该名字在生成块之外**一次都不出现** ⇒ 本地一定没读
 （该文件没有 `body[k]` 反射循环、没有 `...body` 转发）。**这是单向判据**：出现 > 0 次不代表读了

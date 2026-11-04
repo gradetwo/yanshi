@@ -233,6 +233,20 @@ console.log(`  本地镜像规格 ${specs.size} 行｜有本地路由 ${routed.l
 console.log(`  声明参数本地未读 ${deadParams}（${deadByTool.size} 个工具）｜本地反向多出 ${extras.length}`);
 console.log("");
 
+// **`--list` ⇒ 把缺口逐条打出来**（2026-11-05 加 ✓）：只打印，不改判定 ✓
+//   **∴ 为什么需要** ✗：四个数只能说明「有 56 个」，**看不到是哪些** ⇒ 补哪个全靠猜 ✓。
+if (process.argv.includes("--list")) {
+  console.log("");
+  console.log(`缺本地路由（${missing.length}）：`);
+  for (const tool of missing) console.log(`  - ${tool.name}  [${tool.profile}]`);
+  console.log("");
+  console.log(`声明了但本地从不读的参数（${deadParams}）：`);
+  for (const [tool, params] of [...deadByTool].sort((a, b) => a[0].localeCompare(b[0]))) {
+    console.log(`  - ${tool}: ${params.join(", ")}`);
+  }
+  console.log("");
+}
+
 // ---- 断言 ----
 check(
   registryNames.size === tools.length,

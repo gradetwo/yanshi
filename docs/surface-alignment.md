@@ -638,6 +638,10 @@ Web 调用面（第 8 条复现命令的同一口径）：**94 → 95**（新增
 参数未读    66（分布在 22 个工具）
 ```
 
+> **2026-11-05 现算已变**：168／56／54（补了 `stroke_heatmap`／`list_fonts`／`memory_status`，
+> 并让一批本地路由真的去读声明参数）。上面那段是**当时的快照**，保留是为了让「两笔收敛」有对照；
+> **引用请重跑** `node scripts/check-three-way-alignment.mjs --list`。
+
 **缺口收敛的两笔**（对上一轮读数）：
 
 * **缺本地路由 60 → 59**：补的是 `put_blob`。它**不是新写一条链路** —— 本地内核早就有 `blob_put`（内容寻址）＋ `store.putBlob`（持久化），只差一个入口；`crates/yanshi-http/assets/api-local.js:4016-4021` 的注释就是这条映射的出处。
