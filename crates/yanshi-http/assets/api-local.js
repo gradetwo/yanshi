@@ -92,7 +92,7 @@ export // **★ 声明必须与**实现分支数**一致 ✗ ★**（第 72 轮 
 //   （`update_selection`／`create_object`／`delete_group`／`heal`／`cache_document_preview`／`push` ✓），
 //   **补上** `put_blob`（本地早就有 `blob_put` ＋ `store.putBlob` 链路 ⇒ 只差入口 ✓）
 //   ⇒ **机械重数 182 − 6 ＋ 1 = 177 ✓**。数它不要信这一行（判据读的是代码 ✓）。
-const LOCAL_IMPLEMENTED = 177;
+const LOCAL_IMPLEMENTED = 180;
 //   **★ 同轮 `delete_mask` 由"如实 501"改成真实现（**不新增分支 ✓**）；
 //     `create_mask` 补上重复 409 守卫 ✓**（**与 `create_selection` 的 mode 门不同：蒙版不论 mode 都拒 ✗**）**
 //   **★ 第 六百七十六 轮 `create_range_mask` 落地 ⇒ 新增 1 个分支 ✓ ⇒ 机械重数 182 ✓**
