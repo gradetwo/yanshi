@@ -668,11 +668,55 @@ shard6 通过74｜意外失败0｜已知红0｜跳过2
 
 为什么必须是**模式**词条而不是整句：`stageNotice` 那句本来就被 `m30` 覆盖 ✓，**漏的是 `log(…, "#c33")` 的长句** —— `log()` 在 `cls === "#c33"` 时**会同时写进同一个浮层** ⇒ 用户最终看见的是长句 ⇒ 只有 `m30` 等于白有。`m42` 只翻**句式框架**（`画布上的一笔`／`移动对象`／`这一步` → `The stroke on the canvas`／`The move`／`This step`），**图层名原样保留** —— 它来自 `list_layers`，是用户数据，不是界面文案。
 
-**验证到哪一步**：**模式级已验证** —— 三种 `what` 全匹配、输出 0 汉字、`isLockSentence`（`scripts/browser-layer-lock.mjs:422`，认 `是锁定图层` 或 `is a locked layer`）通过、中文图层名反例也匹配（句式框架不吃掉数据）。**浏览器级未实跑**：本机缺 CDP，且服务端把界面 HTML 在**编译期** `include_str!` 进二进制 ⇒ 旧二进制只会吐旧文案 ⇒ **要等下一次 CI 的 `browser-layer-lock.mjs` 才能确认**。所以记的是**「已修 · 模式级已验 · 浏览器级待 CI」**，不是「已修好」。
+**验证到哪一步**：**模式级已验证** —— 三种 `what` 全匹配、输出 0 汉字、`isLockSentence`（`scripts/browser-layer-lock.mjs:422`，认 `是锁定图层` 或 `is a locked layer`）通过、中文图层名反例也匹配（句式框架不吃掉数据）。**浏览器级已由 CI 确认**：交付提交 `a2c34f98` 的 CI run `41818384088`（`completed`／`success`，13 个 job 全 success，仅 `brush parity (arm64 vs wasm32, 50 sampled brushes)` 为 skipped），`browser-layer-lock.mjs` 为 **✓**，落在 **shard 4**（日志原文 `✓ browser-layer-lock.mjs`，时间 `11:17:48Z`）⇒ 上一版 `12151e16` 那唯一一条**意外失败**已消除 ✓ 所以这一条现在记的是**「已修 · 模式级已验 · 浏览器级已由 CI 确认」**（强度见下「证据边界」）。（本机缺 CDP，且服务端把界面 HTML 在**编译期** `include_str!` 进二进制 ⇒ 旧二进制只会吐旧文案 ⇒ 浏览器级在本机本来就复现不了 ✓ 这正是它只能由 CI 确认的原因。）
+
+**本批六片合计**（提交 `a2c34f98`，run `41818384088`）：
+
+```
+shard1 通过70｜意外失败0｜已知红1｜跳过6
+shard2 通过72｜意外失败0｜已知红0｜跳过6
+shard3 通过70｜意外失败0｜已知红1｜跳过6
+shard4 通过72｜意外失败0｜已知红0｜跳过8
+shard5 通过70｜意外失败0｜已知红2｜跳过5
+shard6 通过75｜意外失败0｜已知红0｜跳过2
+合计   通过=429｜意外失败=0｜已知红=4｜跳过=33
+```
+
+对照上一版（`12151e16`，run `41812601593`）的 `通过=430｜意外失败=1｜已知红=4｜跳过=29`：**意外失败 1 → 0** 就是 `browser-layer-lock.mjs` 这一条 ✓。通过 429、跳过 33 与上一版对不上，**不是**「少跑了几条」，来源有两笔：
+
+* **本批新增两条判据**：`scripts/check-three-way-alignment.mjs`、`scripts/check-i18n-runtime-coverage.mjs` ⇒ **判据总数 458 → 460**（+2）。
+* **分片按文件名排序后取模**（`scripts/run-criteria.sh:137`，`SHARD`／`SHARDS` 由 CI 矩阵传入，`:139-164`）⇒ 插入两个 `check-` 开头的名字会让后面每一条的**下标整体挪位**，各片成员随之移入移出 ⇒ **逐片数字不可比，只有合计可比** ✓。
+
+帐逐片对上一版算得平：shard1 `0`；shard2 `通过+2／跳过−4`；shard3 `通过−2／跳过+2`；shard4 `通过−2／跳过+5`；shard5 `跳过+1`；shard6 `通过+1` ⇒ 合计 **通过 `430+2−2−2+1=429`**、**跳过 `29−4+2+5+1=33`** ✓。shard4 那一格要连本批的 `+3` 一起看（新增两条 `+2` ＋ `browser-layer-lock` 由意外失败转通过 `+1`）⇒ 所以它是「**5 条由通过转为跳过**」，不是判据被删 ✓ 那 5 条仍在该片里跑，只是分片成员换了。
+
+**证据边界（这一条不许省）**：CI 只落**整条判据**的 ✓／✗，**不落判据内部每条断言的读数** ⇒ `browser-layer-lock.mjs` 的 ✓ 证明的是「**整条判据绿**」（⑧ 与它前面七条**一起**过），**不是**「⑧ 的每个子检查都有留痕」。具体说：从 CI 日志**看不到** ⑧ 自己那几项读数（三种 `what` 各 0 汉字／中文图层名反例仍匹配）；那些只有本机模式级实测有 ✓（本机缺 CDP ⇒ 复现的是模式级、不是浏览器级）⇒ 所以这里**不说**「⑧ 已在 CI 上逐条验过」。
+
+**顺带一条**：本批新增的两条判据在 CI 里**也是 ✓**（同在 shard 4）⇒ 说明**棘轮阈值没定高**：它们的三把（上面 `MISSING_CEILING`／`DEAD_PARAMS_CEILING`，与下一节的 `UNCOVERED_CEILING`）都是**当前实测值**，没留余量 ✓ 松阈值会让新缺的本地路由／新漏翻**不报红** ✗。
 
 **连带棘轮**：新增 `scripts/check-i18n-runtime-coverage.mjs`，`UNCOVERED_CEILING = 136`（这一类漏翻的当前总量，只许降）。它仍归入第六轮 ㉚ 那一族（由 JS 写进属性／节点的文案不在 `data-i18n` 覆盖里 ⇒ 原来那两条 i18n 判据看不见）。
 
-**Nightly**：run `41812601595`（同一 sha）completed／**success** —— prepare matrix、五个平台的 package、publish rolling nightly 全过 ⇒ 这一轮的改动没有碰到打包链路。
+**Nightly**：本批 **Nightly 已闭环，红 → 绿靠重跑、不靠改代码** ✓（上一版此处标为「未结」，现作废）：
+
+* 上一版 `12151e16` 的 Nightly run `41812601595`：`completed`／**success** —— prepare matrix、五个平台的 package、publish rolling nightly 全过。
+* 本批 `a2c34f98` 的 Nightly run `41818383885`：**attempt 1 = failure、attempt 2 = success** ✓
+  * attempt 1：只有 `publish the rolling nightly release` 红，其余 **6 个 package/matrix job 全 success**。
+  * `gh run rerun 41818383885 --failed` ⇒ attempt 2：**7/7 job success** —— `prepare the matrix`／`package (linux-x86_64)`／`package (linux-arm64)`／`package (macos-x86_64)`／`package (macos-arm64)`／`package (windows-x86_64)`／`publish the rolling nightly release`（原失败步骤「Merge checksums, self-check and update the nightly release」也 success）。
+
+**第一次为什么红**：`publish` 的第一条真实错误是
+
+```
+HTTP 500 (https://api.github.com/repos/gradetwo/yanshi/releases/429188426)
+```
+
+出现在 `gh release edit nightly` ⇒ **GitHub API 服务端 5xx**，不是本批代码 ✗。**重跑即过**是最直接的反证 ✓，但下面三条才是判据 —— 它们不依赖「重跑碰巧成功」：
+
+1. **产物当时就已通过校验**：五个平台的归档在失败前**已下载并逐个通过 SHA256 校验** ⇒ 打包链的产物是好的 ✓ 若代码有问题，`package` 那 5 个 matrix job 会先红；实际 6/7 全 success。
+2. **脚本死在第一个写操作**：失败时 `release nightly` 仍停在 `target=12151e16`、`updated` 还是上一版成功时刻 ⇒ **一个写都没落地** ⇒ 断点是 API 的写调用，不是算法／参数／平台差异 ✓
+3. **与本批改动无共享面**：`.github/workflows/nightly.yml` 全文**不读** `web/index.html`、**不跑**任何 `check-*.mjs`、**无** `CARGO_TARGET_DIR`（三个 grep 在本文件里均零命中）⇒ 本批改动（`viewer-app.js` 的 `m42`／i18n 词条／两条新判据）不在它的输入里 ✓
+
+**release 已推进**（重跑后实测）：`target` **`12151e16` → `a2c34f98`**，`updated=2026-11-04T11:51:20Z`（落在本次重跑时间窗内），`assets=6`：`SHA256SUMS` **599 B** ＋ 五个平台归档 —— `aarch64-apple-darwin` 18,372,951 B／`aarch64-linux-static` 18,482,272 B／`x86_64-apple-darwin` 19,495,353 B／`x86_64-windows-msvc` 20,249,504 B／`x86_64-linux-static` 19,626,615 B（均 18–20 MB）✓
+
+⇒ **一句话**：这次红 → 绿**一行代码都没改，只重跑** ⇒ 所以这里记的**不是**「修好了」✗，而是**「5xx 先当服务端故障、别当产品缺陷」** ✓ 判据是上面三条（产物完好／死在第一个写操作／无共享面），**不是**「重跑绿了」本身 ✓
 
 **取数提醒**：`gh run watch` **看不到**分片汇总行（它只印 job 级的起止），必须逐条取 job 日志：`gh api repos/<owner>/<repo>/actions/jobs/<jobId>/logs`。上面六个分片就是这么取的 —— 只看 watch 的输出会以为分片里什么都没跑。
 
@@ -889,3 +933,20 @@ cd /home/polar/yanshi && git status --porcelain | awk '{print $2}' | while read 
   cmp -s "/home/polar/yanshi/$f" "/tmp/verify-r7/$f" && echo "= $f" || echo "✗ $f"
 done | grep -c '^='                                      # ⇒ 30（少一个就是有路径没进补丁 ✓ 例如新文件忘了 -N）
 ```
+
+## 交付账（2026-11-04）
+
+| 项 | 结果 |
+|---|---|
+| 交付提交 | `a2c34f98`（`HEAD == origin/main`） |
+| CI | run `41818384088` `completed/success`；六片合计 `通过=429｜意外失败=0｜已知红=4｜跳过=33`；13 job 里 `brush parity` skipped、其余 success |
+| 上一版对照 | `12151e16` 的 run `41812601593`：`通过=430｜意外失败=1｜已知红=4｜跳过=29`，唯一意外失败是 `browser-layer-lock.mjs` |
+| 本批修的那条红 | `browser-layer-lock.mjs` 由 ✗ → **✓**（shard 4） |
+| Nightly | run `41818383885` attempt 1 failure（GitHub API `HTTP 500`）→ attempt 2 **7/7 success**；`release nightly` 的 `target` 由 `12151e16` → `a2c34f98`，6 个产物 |
+| 三方棘轮 | 注册表 224｜MCP 缺省 223｜本地路由 165｜缺 59（≤59）｜参数未读 66（≤66）｜反向多出 0 |
+| i18n 棘轮 | `UNCOVERED_CEILING = 136`（缺口 136，按原因 48/30/18/16/12/7/5） |
+| 判据可靠性 | 22 个 `scripts/*.mjs` 收紧退出码语义；新增 2 条元判据 |
+| pre-commit | `PRECOMMIT_EXIT=0`（fmt／clippy／shell_scripts+script_portability／六条自测／工具计数全绿） |
+| 磁盘 | `df /dev/vda1 30G 26G 4.2G 87%`（提交前实测，可能随后变化） |
+
+> 本轮**未在最终 HEAD 上做 UI 截图复测与性能 A/B 复测**：两者都需要一次 release 构建，而本机可用磁盘仅约 4G，构建会把盘写满。UI 的浏览器级验证已由 CI 的 `browser-layer-lock.mjs` ✓ 覆盖；逐条子断言没有单独留痕。
