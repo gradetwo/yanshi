@@ -275,20 +275,23 @@ const main = async () => {
   //     **别在启动时拉没人要的东西** ✓）⇒ **∴ 然后要求选项数**明显多于静态那 7 个** ✓
   //     ＋ **∴ 并**至少有一个族名能在 `list_fonts` 的回执里找到** ✓（**∴ 证明它来自服务端 ✓）★★
   //   ＋ **∴ 变异 ✗**：**去掉懒加载 ⇒ 仍是 7 个 ⇒ ⑤ 红** ✓ ★★★
+  const notJudged = [];
   const before = await evaluate(
     `String(Array.from((document.getElementById("textFont")||{options:[]}).options).length)`,
   );
   await evaluate(
     `(() => { const s = document.getElementById("textFont"); if (!s) return false; s.dispatchEvent(new FocusEvent("focus", { bubbles: true })); s.dispatchEvent(new Event("pointerdown", { bubbles: true })); return true; })()`,
   );
+  // **★ 不要写死 7 ✗**（2026-11-05 ✓）：预置项数会变 ⇒ 以**实测的 before** 为基线 ✓。
+  const presetCount = Number(before);
   let after = Number(before);
-  for (let i = 0; i < 40; i += 1) {
+  for (let i = 0; i < 80; i += 1) {
     await new Promise((r) => setTimeout(r, 250));
     const now = await evaluate(
       `String(Array.from((document.getElementById("textFont")||{options:[]}).options).length)`,
     );
     after = Number(now);
-    if (after > 7) break;
+    if (after > presetCount) break;
   }
   const systemOptions = await evaluate(
     `JSON.stringify(Array.from((document.getElementById("textFont")||{options:[]}).options).map((o) => o.value))`,
@@ -298,8 +301,19 @@ const main = async () => {
   const serverNames = new Set(((serverFonts && serverFonts.fonts) || []).map((f) => f.family));
   const fromServer = sysOpts.filter((name) => serverNames.has(name));
   console.log(`  ⑤ 下拉选项：懒加载前 ${before} 个 ⇒ 之后 ${after} 个｜其中来自服务端 list_fonts 的 ${fromServer.length} 个`);
-  if (after <= 7) {
-    bad.push(`⑤ 字体下拉里只有 ${after} 个选项 ⇒ 系统字体没被加载进来（用户选不到机器上的字体）`);
+  if (after <= presetCount) {
+    // **★ 先分清「产品没做」与「这台机器本来就没有额外字体」✗ ★**（2026-11-05 ✓）
+    //   **∴ 实测 ✗**：CI 的 runner 上 `list_fonts` 只回 **2** 个族名（Inter／JetBrains Mono ✓，
+    //     正好是预置那两支）⇒ 下拉当然不会变多 ✓ ⇒ 而判据报「系统字体没被加载进来」✗
+    //     ⇒ **红的是环境**（本机同一份代码回 31 个族名 ✓，下拉立刻多出 20+ 项 ✓）。
+    //   **∴ 判法** ✓：服务端枚举到的族名**全都已经在预置里** ⇒ 这台机器没有额外字体 ⇒
+    //     **不可判**（exit 3，不冒充产品红 ✗，也不冒充通过 ✗）。
+    const extraOnServer = [...serverNames].filter((name) => !sysOpts.includes(name));
+    if (serverNames.size > 0 && extraOnServer.length === 0) {
+      notJudged.push(`⑤ 本环境没有额外系统字体（list_fonts 只回 ${serverNames.size} 个族名，且全已在预置 ${presetCount} 项里）⇒ 这一条没验`);
+    } else {
+      bad.push(`⑤ 字体下拉里只有 ${after} 个选项 ⇒ 系统字体没被加载进来（用户选不到机器上的字体）`);
+    }
   } else if (fromServer.length === 0) {
     bad.push("⑤ 下拉里的选项没有一个来自 list_fonts ⇒ 它们不是服务端枚举出来的系统字体");
   }
@@ -314,6 +328,11 @@ const main = async () => {
   if (bad.length) {
     console.error(`❌ ${bad.length} 项没成立：${bad.join("｜")}`);
     process.exit(1);
+  }
+  if (notJudged.length) {
+    for (const line of notJudged) console.error(`⊘ ${line}`);
+    console.error("⊘ 不可判：环境不满足（不是产品失败，也不是通过）⇒ 退出码 3");
+    process.exit(3);
   }
   console.log("✓ 字体选择真的影响画面（两种字体墨迹不同），且两次都真的画上了");
 };

@@ -476,6 +476,22 @@ jobs:
       - name: Put a chromium name on PATH
         # 判据脚本按 `chromium` 找浏览器；这里把装好的 chrome 暴露成这个名字。
         run: sudo ln -sf "$(command -v chrome || command -v google-chrome)" /usr/local/bin/chromium
+      - name: Ensure the runner has system fonts (list_fonts reads the OS)
+        # **★ 为什么需要这一步 ✗ ★**（2026-11-05 实测 ✓）：
+        #   `browser-text-font` ⑤ 要求「服务端 `list_fonts` 枚举到**额外**字体」✓
+        #   而 CI 的 runner 实测只回 **2** 个族名（Inter／JetBrains Mono ⇒ 正好是预置那两支）
+        #   ⇒ 下拉不会变多 ⇒ 判据要么假红 ✗、要么只能报「不可判」✗。
+        #   **∴ 本步在有字体的机器上是 no-op**（`fc-list` 已经有 ≥5 条 ⇒ 一次 apt 都不跑 ✓）。
+        run: |
+          have=$(fc-list 2>/dev/null | wc -l || echo 0)
+          if [ "$have" -lt 5 ]; then
+            echo "::group::installing fonts (fc-list=$have)"
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq fontconfig fonts-dejavu-core
+            echo "::endgroup::"
+            have=$(fc-list 2>/dev/null | wc -l || echo 0)
+          fi
+          echo "system font families: $have"
       - name: Add the wasm32 target
         # `rust-toolchain.toml` 会固定工具链 ⇒ 这里**显式**装目标（与 wasm-smoke job 同一做法 ✓，
         # 第一轮 CI 就是因为漏了这一步而报 `can't find crate for core` ✗）。
