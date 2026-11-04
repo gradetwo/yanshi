@@ -1290,6 +1290,35 @@ export async function makeLocalApi(db) {
         window.yanshiStats.token.length > 0;
     } catch (e) { return false; }
   };
+  /** **C/S 客户端渲染：本地答不了的**只读**端点 ⇒ 代理到服务端** ✓（第 10 轮 ✓；
+   *  这里抽成函数 ⇒ `list_fonts` 也用同一条路 ✓ —— 浏览器枚举不到系统字体时才该问服务端）。
+   *  代理失败（离线／跨源等）⇒ 返回 `null` ✓（**不吞成成功** ✓），调用方自己决定怎么如实说。 */
+  async function __proxyReadToServer(req, body) {
+    try {
+      const url = new URL(req.url);
+      const init = { method: req.method };
+      const ct = (req.headers && req.headers.get && req.headers.get("content-type")) || "";
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        init.headers = { "content-type": ct || "application/json" };
+        init.body = JSON.stringify(body || {});
+      }
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+        init.signal = AbortSignal.timeout(15000);
+      }
+      const res = await fetch(url.pathname + url.search, init);
+      const buf = await res.arrayBuffer();
+      return new Response(buf, {
+        status: res.status,
+        headers: {
+          "content-type": res.headers.get("content-type") || "application/json",
+          "cache-control": "no-store",
+          "x-yanshi-source": "server-proxy",
+        },
+      });
+    } catch (e) {
+      return null;
+    }
+  }
   /** **服务端权威日志 ⇒ `atomsOf` 同形**（`{atom, seq}` ✓）；失败返回 `null` ✓。 */
   async function __serverAtoms(doc) {
     try {
@@ -12346,6 +12375,9 @@ async function withKernel(doc, fn) {
       const families = new Set();
       const sources = [];
       let localFontsError = null;
+      // **∴ 本页真的枚举到系统字体了吗 ✗**：`document.fonts` 只有本页 `@font-face` 注册的那几支 ✓
+      //   ⇒ **∴ 它不是**系统字体**✗ ⇒ **∴ 所以**只有 `queryLocalFonts` 成功才算「枚举到了」✓ ★
+      let enumerated = false;
       try {
         const set = typeof document !== "undefined" ? document.fonts : null;
         if (set) {
@@ -12369,14 +12401,34 @@ async function withKernel(doc, fn) {
             if (name) families.add(name);
           }
           sources.push("queryLocalFonts");
+          enumerated = true;
+        } else {
+          // **∴ 不可用也要**说出来**✗**（`typeof` 不是函数时留痕 ✓ —— 以前这里什么都不写 ✓
+          //   ⇒ **∴ 静默**降级的信号只有 `sources` 少一项 ✓ 太容易漏 ✓）。
+          localFontsError = "not_supported: 本环境没有 navigator.queryLocalFonts"
+            + "（Local Font Access 未暴露，如 headless 浏览器）⇒ 枚举不到系统字体";
         }
       } catch (e) { localFontsError = String((e && e.message) || e); }
+      // **★ C/S 客户端渲染：枚举不到 ⇒ **交给服务端 fontdb** ✗ ★**（缺陷修，2026-11-04 轮 ✓）
+      //   **∴ 症状 ✗**：本地路由 200 但只回 `document.fonts` 那两支预置**✗
+      //     ⇒ **∴ 下拉**停在静态 7 项**✗ ⇒ **∴ 用户**选不到机器上的字体**（判据 `browser-text-font` ⑤ 红 ✓）。
+      //   **∴ 为什么这是本地路由的错 ✗**：C/S 模式下页面**本来**有服务端 ✗ —— 这条路由补上之前
+      //     **它确实**落到下面的代理**✗ ⇒ **∴ 回的是**fontdb 枚举的真列表** ✓
+      //     ＋ **∴ 而**本页的 `document.fonts` 只有自托管的 `@font-face` ✓ ⇒ **∴ 本地**不可能**比它更全** ✓ ★
+      //   **∴ 做法 ✗**：与「未实现端点」走**同一条代理** ✓（不新写一套 ✓）⇒ 回执带
+      //     `x-yanshi-source: server-proxy` ✓（不假装是本地算的 ✓）；代理不可用（PWA／离线 ✓）
+      //     ⇒ **∴ 落到**下面的本地答案**✗ ⇒ **∴ 仍**如实带 `local_fonts_error` ✓ ★
+      if (!enumerated && __csClientMode()) {
+        const proxied = await __proxyReadToServer(req, body);
+        if (proxied) return proxied;
+      }
       const fonts = [...families].sort().map((family) => ({ family }));
       return json({
         ok: true, fonts, count: fonts.length, server: false,
         sources, local_fonts_error: localFontsError,
         note: "浏览器可用的字体族（document.fonts 的 @font-face ＋ Local Font Access 的系统字体）；"
-          + "与服务端一样按族名升序去重。queryLocalFonts 不可用或被拒时只列已注册字体，不编造系统字体。",
+          + "与服务端一样按族名升序去重。queryLocalFonts 不可用或被拒时只列已注册字体，不编造系统字体；"
+          + "C/S 模式（页面有服务端）此时改由服务端 fontdb 枚举（回执带 x-yanshi-source: server-proxy）。",
       });
     }
 
@@ -12451,29 +12503,8 @@ async function withKernel(doc, fn) {
     //   **∴ 只在这个模式**：PWA（`__pwaLocalOnly === true`）仍抛 `endpoint_not_local` ✓ ——
     //     没有服务器可代理 ✓。**写**请求不会走到这里 ✓（C/S 的写工具在 `callTool` 已路由服务端 ✓）。
     if (__csClientMode()) {
-      try {
-        const init = { method: req.method };
-        const ct = (req.headers && req.headers.get && req.headers.get("content-type")) || "";
-        if (req.method !== "GET" && req.method !== "HEAD") {
-          init.headers = { "content-type": ct || "application/json" };
-          init.body = JSON.stringify(body || {});
-        }
-        if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
-          init.signal = AbortSignal.timeout(15000);
-        }
-        const res = await fetch(url.pathname + url.search, init);
-        const buf = await res.arrayBuffer();
-        return new Response(buf, {
-          status: res.status,
-          headers: {
-            "content-type": res.headers.get("content-type") || "application/json",
-            "cache-control": "no-store",
-            "x-yanshi-source": "server-proxy",
-          },
-        });
-      } catch (e) {
-        // 代理失败（离线等）⇒ 落到下面的如实 501 ✓
-      }
+      const proxied = await __proxyReadToServer(req, body);
+      if (proxied) return proxied;
     }
     // **∴ 其余端点**一律抛给上层 ⇒ 上层如实 501 ＋ 原因 ✗**（**∴ 不假装成功 ✓**）。
     throw new Error(`endpoint_not_local: ${url.pathname}`);

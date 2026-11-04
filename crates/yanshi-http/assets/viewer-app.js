@@ -1950,7 +1950,9 @@ function localKernelUnusableNow(why) {
   const firstTime = !localKernelUnusable;
   localKernelUnusable = true;
   log("本地内核装载失败：" + why + " ⇒ 这一页改用服务端渲染", "#c33");
-  if (firstTime) stageNotice("本地内核没能把这份文档装进来 ⇒ 这一页先改用服务端渲染（画面照常，刷新后可再试本地）。");
+  // **sticky** ✓：后面每帧的红日志（`needs_render` 等）会不停调 `stageNotice` ✗
+  //   ⇒ 不加这面旗，这句「画面照常」**活不过一秒** ✓（实测 ⑫ 读到的永远是空串 ✓）。
+  if (firstTime) stageNotice("本地内核没能把这份文档装进来 ⇒ 这一页先改用服务端渲染（画面照常，刷新后可再试本地）。", true);
   const box = $("useServerRender");
   if (box) box.checked = true;
   // 服务端像素取回来之后再重绘 ✓ 顺序反了就把白布留在屏上了 ✗。
@@ -9820,11 +9822,20 @@ const LOCK_BLOCKED_TOOLS = new Set([
 ]);
 
 let stageNoticeTimer = null;
+// **★ 重要的那条不许被后来的红日志顶掉 ✗ ★**（缺陷修，2026-11-04 轮 ✓）
+//   **∴ 症状 ✗**：`log(line, "#c33")` 也会调 `stageNotice` ⇒ 浮动提示**每 4 秒被刷新／清空**。
+//     内核装载失败退回服务端渲染时，后面每帧的 `needs_render` 红日志**立刻把这句话顶掉** ✗
+//     ⇒ 实测（CI `browser-layer-lock` ⑫）用户**从来读不到**「已改用服务端渲染」✓ 只剩白布 ✓。
+//   **∴ 做法 ✗**：`sticky` 的那条**不被**非 sticky 的调用覆盖，也**不自动消失**（点一下才关 ✓）。
+let stageNoticeSticky = false;
 
 /// **把话说在看得见的那一处** ✓（第六轮 ✗→✓）：`log()` 写进 `#log` ✓ 而它在
 /// `data-panel="history"` 那张卡片里 ✓ 默认收起（实测 `logVisible:false`、`scrollHeight:0` ✗）
 /// ⇒ "失败"两个字用户**从来没看见过** ✓。浮层在 `</header>` 之后 ✓ 任何面板组合与全屏画布下都在 ✓。
-function stageNotice(text) {
+///
+/// `sticky=true` ⇒ 这条**必须被读到**（`localKernelUnusableNow` 用 ✓）：
+/// 不自动消失、不被后续红日志覆盖；点它一下才收起 ✓。其余（普通回执）仍是 4 秒。
+function stageNotice(text, sticky) {
   const el = $("stageNotice");
   if (!el) {
     // 没有这块 DOM（老模板 / 半套静态页）⇒ 退回日志，但**不能再走 log()**：
@@ -9841,9 +9852,23 @@ function stageNotice(text) {
     }
     return;
   }
+  // 上一条是"必须被读到"的 ⇒ 后来的普通回执不许把它顶掉 ✗。
+  if (stageNoticeSticky && sticky !== true) return;
   el.textContent = text;
   el.hidden = false;
-  if (stageNoticeTimer) clearTimeout(stageNoticeTimer);
+  if (stageNoticeTimer) { clearTimeout(stageNoticeTimer); stageNoticeTimer = null; }
+  if (sticky === true) {
+    stageNoticeSticky = true;
+    el.style.cursor = "pointer";
+    el.onclick = () => {
+      el.hidden = true;
+      el.textContent = "";
+      el.onclick = null;
+      el.style.cursor = "";
+      stageNoticeSticky = false;
+    };
+    return;
+  }
   stageNoticeTimer = setTimeout(() => {
     el.hidden = true;
     el.textContent = "";
