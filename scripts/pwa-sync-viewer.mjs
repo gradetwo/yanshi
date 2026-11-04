@@ -144,6 +144,25 @@ if (!existsSync(SRC)) {
   console.error(`✗ 找不到现有 viewer 的源 ${SRC} ⇒ **∴ 不许**另造一份 ✗**`);
   process.exit(2);
 }
+// **★ 前置条件先查 ✗ 不许「先改一半再失败」 ★**（2026-11-05 实测 ✓）
+//   **∴ 症状 ✗**：本机没编介质插件 ⇒ 下面 `assets/mediums` 那一段 `exit(1)` ✓
+//     而**前面 7 个文件已经拷过去了** ✗ ⇒ `web/` 留下**半同步**状态 ✓
+//     ⇒ 最刺眼的一处：`web/service-worker.js` 拿到了新内容**却没打戳**（打戳在 exit 之后 ✓）
+//       ⇒ `check-service-worker-roles` 红 ✓ —— 红的是**脚本的副作用**，不是产品 ✗。
+//   **∴ 修法** ✓：需要的东西（介质插件）**在动第一笔之前**验 ✓ ⇒ 缺了就一个文件都不改 ✓。
+const MEDIUM_PRE = "assets/mediums";
+const mediumReady = existsSync(MEDIUM_PRE)
+  ? readdirSync(MEDIUM_PRE).filter((f) => f.endsWith(".wasm")).length
+  : 0;
+if (mediumReady === 0) {
+  console.error("✗ 找不到介质插件产物（" + MEDIUM_PRE + "/*.wasm）⇒ 拒绝开始同步");
+  console.error("  先构建：cargo build --release --target wasm32-unknown-unknown \\");
+  console.error("    -p yanshi-medium-oil -p yanshi-medium-watercolor -p yanshi-medium-marker \\");
+  console.error("    -p yanshi-medium-pencil -p yanshi-medium-pixel -p yanshi-medium-example");
+  console.error("  再跑：node scripts/mediums-sync.mjs");
+  console.error("  ⇒ 现在**一个文件都还没改** ✓（半同步会让 web/ 与源分叉 ✗）");
+  process.exit(1);
+}
 mkdirSync(DST, { recursive: true });
 let copied = 0;
 for (const f of FILES) {

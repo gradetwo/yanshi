@@ -16,6 +16,13 @@
 //  ③ 静态托管那份**没有**占位符、且有 `yanshi-shell-<数字>` 戳 ✓；④ 两份都预缓存内核 wasm ✓。
 // **⇒ 变异**：把 `web/sw.js` 或 `web/sw.js.bak` 加回来 ⇒ ① 红 ✓；让同步不给副本打戳 ⇒ ③ 红 ✓。
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+// **★ 戳的形状只从 `pwa-stamp.mjs` 取 ✗ 不许在这里再写一遍 ★**（2026-11-05 修 ✓）
+//   **∴ 症状 ✗**：这里原来断 `yanshi-shell-(\d+)` ✓ ⇒ 而**当前的戳**是 git 式
+//     `yanshi-shell-79725e9d-dirty-fb9ccad6`（`pwa-stamp.mjs` 定的形状 ✓）
+//     ⇒ **∴ 本机跑 `pwa-sync-viewer` 之后这条判据必红** ✗ —— 红的是**判据**，不是产品 ✓。
+//   **∴ 根因** ✗：**同一个事实**（戳允许哪些字符）在**两处**定义 ✓ ⇒ **∴ 一定漂移** ✓。
+//   **∴ 修法** ✓：引用共享常量 ⇒ 以后戳再变，这里**跟着变** ✓（内核 ② ✓）。
+import { STAMP_TOKEN } from "./pwa-stamp.mjs";
 
 const failures = [];
 const check = (ok, label, detail) => {
@@ -49,8 +56,8 @@ const embedded = readFileSync(EMBEDDED, "utf8");
 const statik = readFileSync(STATIC, "utf8");
 check(embedded.includes("__BUILD_ID__"), "内嵌那份保留 `__BUILD_ID__`（服务端请求时替换）", "丢了 ⇒ 缓存永不失效");
 check(!statik.includes("__BUILD_ID__"), "静态托管那份已打上具体戳（不再有占位符）", "还有占位符 ⇒ 静态托管下缓存永不失效");
-const stamp = statik.match(/yanshi-shell-(\d+)/);
-check(Boolean(stamp), "静态托管那份带 `yanshi-shell-<数字>` 戳", stamp ? stamp[0] : "没找到");
+const stamp = statik.match(new RegExp(`yanshi-shell-${STAMP_TOKEN}`));
+check(Boolean(stamp), "静态托管那份带 `yanshi-shell-<非占位戳>` 戳", stamp ? stamp[0] : "没找到");
 for (const [name, text] of [["内嵌", embedded], ["静态托管", statik]]) {
   check(
     text.includes("/wasm/yanshi_wasm_bg.wasm"),

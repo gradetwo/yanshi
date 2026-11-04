@@ -8,7 +8,12 @@
 const __judgeTimeout = setTimeout(() => {
   console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（CDP 浏览器可能没起来）⇒ 退出码 3");
   process.exit(3);
-}, 90000);
+}, Number(process.env.YANSHI_JUDGE_TIMEOUT_MS || 300000));
+// **★ 总守卫要与 `WAIT_MS` 相容 ✗ ★**（2026-11-05 ✓）：这里原写 **90 秒** ✗，
+//   而下面的 `waitFor` 缺省上限是 **120 秒**（`YANSHI_WAIT_MS` ✓）⇒ **∴ 页面慢时**
+//   守卫**先开火** ⇒ 报「判据自身失败」而**真正的原因是等得不够** ✗（本机实测 ✓）。
+//   ⇒ **∴ 改成**与 `browser-layout.mjs` 同一个口径（`YANSHI_JUDGE_TIMEOUT_MS`，缺省 300 秒 ✓）。
+//
 // **第 53 轮起：按 600ms 节流 + 每帧直接补小块实现** ✓（判据不变 ✓）。
 // ⚠ 第 50–52 轮它记录的是"未做到"✗ ——
 //   服务端那半边**已经通了** ✓（实测：拖动中提交 2 帧 ✓、抬手后对象仍只有 1 个 ✓），
@@ -164,11 +169,26 @@ await send("Page.navigate", { url });
 await send("Page.reload", { ignoreCache: true });
 // **睡眠已删** ✓（第 903 轮 ✓）：下面 waitFor 已在正确地等 ✓，且它**自带 20 秒超时** ✓（等不到会自己失败 ✓）。
 consoleLines.length = 0;
-await waitFor(
+// **★ 这一条等不到 ⇒ **不是产品失败** ✗ ★**（2026-11-05 修，CI 实测 ✓）
+//   **∴ 症状 ✗**：CI `shard 2/6` 报 `⏱ 等待超时：画布尺寸与首帧`，然后**照样往下走** ✓
+//     ⇒ 在一个**没铺好**的画布上落笔 ⇒ 「指针还按着也没有新墨」**判成产品红** ✗
+//     （同一日志里 `本地渲染 调用 5 / 出帧 5 / 报错 0` ⇒ 机制其实跑了 ✓）。
+//   **∴ 根因** ✗：`waitFor` 的返回值**没人接** ✓ ⇒ 前提不成立时判据**冒充产品失败** ✗。
+//   **∴ 修法** ✓：接住返回值 ⇒ `exit(3)`（判不了 ≠ 产品坏 ✓）；上限改成 `WAIT_MS`（CI 慢不是缺陷 ✓）。
+const pageReady = await waitFor(
   "document.getElementById('board').width > 400 && window.yanshi.state().serverBlits > 0",
   "画布尺寸与首帧",
-  20000,
 );
+if (!pageReady) {
+  const seen = await evaluate(`(() => {
+    const b = document.getElementById("board");
+    const s = (window.yanshi && window.yanshi.state) ? window.yanshi.state() : {};
+    return { boardW: b ? b.width : null, boardH: b ? b.height : null, serverBlits: s.serverBlits };
+  })()`).catch(() => null);
+  console.error("⊘ 不可判：页面在 " + WAIT_MS + "ms 内没铺好首帧（" + JSON.stringify(seen) +
+    "）⇒ 后面「拖动中有没有新墨」测不了 ⇒ 不是产品失败（退出码 3）");
+  process.exit(3);
+}
 // **先选中"画笔"工具** ✗ —— 默认工作区预设不是它 ✓（本轮实测：不选它 ⇒ 走的是内核覆盖层那条 ✓
 // 与"拖动期提交"完全无关 ✓，而画布上照样有墨 ✓ ⇒ 差点又被判据骗过 ✓）。
 await evaluate(`(() => {
@@ -178,7 +198,10 @@ await evaluate(`(() => {
 })()`);
 await sleep(400);
 // **先等笔刷列表载入，再设值** ✗ —— 列表没载入时设值是**静默失败** ✓（产品侧也一并修了 ✓）。
-await waitFor("document.querySelectorAll('#brush option').length > 5", "笔刷列表", 20000);
+if (!(await waitFor("document.querySelectorAll('#brush option').length > 5", "笔刷列表"))) {
+  // **不硬失败** ✓：`.myb` 库笔刷本来就不经过这个下拉框 ⇒ 它空着仍可测（下面会核 `#brush` 的值 ✓）。
+  console.log("  （笔刷下拉框没就绪 ⇒ 继续；库笔刷不走它 ✓）");
+}
 // **选一支 .myb 笔刷** ✓（spray 最能体现"实心线 vs 真笔刷"的差别 ✓）。
 const requestedBrush = process.env.BRUSH || "spray";
 // **画笔库的笔刷要走"点行"那条路** ✗ —— 实测：`.myb` 名字在 `#brush` 下拉框里**根本不存在**
@@ -195,7 +218,7 @@ try {
     if (panel && panel.hidden && open) open.click();
     return !!(panel && !panel.hidden);
   })()`);
-  await waitFor(`window.yanshi.brushLibraryState().rows > 20`, "画笔库列表渲染", 20000);
+  await waitFor(`window.yanshi.brushLibraryState().rows > 20`, "画笔库列表渲染");
   pickedFromLibrary = await evaluate(`(() => {
     const wanted = ${JSON.stringify(requestedBrush)};
     const strip = (v) => (v || "").toLowerCase().replace(/\.myb$/, "");
@@ -335,7 +358,7 @@ console.log("  ④h 落笔判定输入：" + JSON.stringify(liveProbe));
 const wysiwygMidDigest = await canvasDigest();
 const wysiwygMidInk = await inkOnCanvas();
 await evaluate(`window.__fire("pointerup", window.__at(0.6, 0.5))`);
-await waitFor("!window.yanshi.state().liveStroke", "实时笔触收尾", 20000);
+await waitFor("!window.yanshi.state().liveStroke", "实时笔触收尾");
 await sleep(1500);
 const wysiwygFinalInk = await inkOnCanvas();
 const finalObjects = (await api("list_objects", {})).count;
@@ -403,7 +426,7 @@ const diff = await evaluate(`(() => {
 await send("Page.reload", { ignoreCache: true });
 // **睡眠已删** ✓（第 903 轮 ✓）：下面 waitFor 已在正确地等 ✓，且它**自带 20 秒超时** ✓（等不到会自己失败 ✓）。
 await waitFor("document.getElementById('board').width > 400 && window.yanshi.state().serverBlits > 0",
-  "重载后首帧", 20000);
+  "重载后首帧");
 await sleep(600);
 const reloadDigest = await stableDigest();
 const reloadInk = await inkOnCanvas();
