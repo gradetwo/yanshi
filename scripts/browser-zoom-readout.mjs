@@ -119,8 +119,12 @@ const main = async () => {
     }
     const { ws, evaluate } = await evaluateAll(target);
     // **∴ 等页面真的把状态建起来 ✗**（`__appMarks` 是应用自己的启动留痕 ✓）★
+    // **★ 上限可配 ✗ 别写死 20 秒 ★**（2026-11-05 ✓）：CI runner 慢时页面 20 秒起不来
+    //   ⇒ 判据报「判不了」⇒ **本次没验** ✓（如实，但**能力等于没被测** ✗）。
+    //   ⇒ 上限走 `YANSHI_WAIT_MS`（缺省 120 秒 ✓）；**正常情况第一轮就 break** ⇒ 不拖慢 ✓。
+    const READY_WAIT_MS = Number(process.env.YANSHI_WAIT_MS || 120000);
     let ready = false;
-    for (let i = 0; i < 80; i++) {
+    for (let i = 0; i < Math.ceil(READY_WAIT_MS / 250); i++) {
       const marks = await evaluate(`JSON.stringify((window.__appMarks||[]).slice(-1))`);
       if (typeof marks === "string" && /fetch-ok|refreshLayers-ok/.test(marks)) {
         ready = true;
