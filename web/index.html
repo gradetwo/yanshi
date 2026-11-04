@@ -2248,6 +2248,8 @@ const blobUrl = (hash) => api("/api/blob/" + hash);
 // 含义 ✓：只在**打开含重内容的文档**或**刚发生 heavy 原子**时为真 ✓ ——
 // 此时服务端像素才是权威（内核表示不了 heavy 内容 ✓）；用户一开始画就清掉 ✓（乐观笔迹归内核 ✓）。
 let needsServerPixels = false;
+// 外部失效（tiles 事件）的防抖重同步计时器；见 WS 的 tiles 分支。
+let externalSyncTimer = null;
 // **★ 下一次"服务端空白"补画是不是**权威结果 ✗ ★**（第 880 轮 ✓；**判据实测 ✓**）：
 //   **∴ 原来 ✗**：**服务端回空白 且 画布有墨 ⇒ 一律跳过** ✗（防"落笔后闪白" ✓）
 //     ⇒ **∴ 而**有些操作**本来就该让画面变空** ✗（隐藏图层 ✓、删除图层 ✓、撤销到底 ✓）
@@ -4359,11 +4361,8 @@ function requestRepaint() {
 }
 
 function drawKernelRegion(x, y, w, h) {
-  // 含 heavy 内容的文档里 ✓，内核那份像素是**空白**的 ✓ ⇒ 内核落笔之后用**服务端像素**补画 ✓
-  //（整块绘制、脏区绘制、缩放重绘都走这里 ✓，WS 的 tiles 事件也不例外 ✓）。
-  // **按"内核刚刚画成空白的那块区域"补画** ✓ —— 用函数自己的 `(x,y,w,h)` ✓：
-  // 这就是脏区协议最直接的用法 ✓（此前一律整视口 ✗）。
-  if (needsServerPixels) queueServerBlit([x, y, w, h]);
+  // heavy 文档内核只能给出空白补丁 ⇒ 直接取服务端像素（避免中间一帧白板）。
+  if (needsServerPixels) return queueServerBlit([x, y, w, h]);
   // 裁剪到视口：视口外像素不渲染也不上传（与设计的数据流过滤一致）。
   const vx = state.viewport.x;
   const vy = state.viewport.y;
@@ -4404,9 +4403,7 @@ function drawKernelRegion(x, y, w, h) {
       .then(() => asyncFn.call(state.kernel, x0, y0, cw, ch))
       .then((view) => {
         paintRegionPixels(view, x0, y0, cw, ch, vx, vy, w, h, started);
-        // 画完即上屏；**不要再 requestRepaint** —— 那会形成
-        // drawKernelRegion → 异步 → repaint → drawKernelRegion 的自激循环
-        // （实测 1.2s 71 次整幅 putImageData），并把正在拖的本地笔迹整块盖掉。
+        // 画完即上屏；再 requestRepaint 会自激循环并盖掉本地笔迹。
       })
       .catch((error) => {
         reportPaintError("异步区域渲染", error);
@@ -4469,7 +4466,9 @@ function redrawCanvasFromKernel() {
   if (!state.kernel || !state.wasm) return;
   const board = $("board");
   if (!board) return;
-  drawKernelRegion(state.viewport.x, state.viewport.y, board.width, board.height);
+  // **把可等待物交出去**（异步内核路）⇒ `resync()` 可以等到**像素真的画上**
+  // （与无内核分支 `await queueServerBlit(null)` 同一条纪律：完成 = 看得见）。
+  return drawKernelRegion(state.viewport.x, state.viewport.y, board.width, board.height);
 }
 
 function reportPaintError(where, error) {
@@ -4804,10 +4803,12 @@ function queueServerBlit(bbox = null, options = {}) {
   // ⇒ **∴ 所以**把它**暴露成 promise** ✗ ⇒ **∴ 从而**"**补画完成**"变成**可观察**的事件 ✓
   // ⇒ **∴ 而不是**靠**加长等待**去赌 ✗（**∴ 那**只是把竞态藏起来 ✓，**∴ 与"**少算换速度**✗ 同类 ✗）。
   if (serverBlitBusy) {
-    // **已有补画在途** ✓ ⇒ **∴ 本次请求会被它合并** ✗ ⇒ **∴ 所以**返回**那一次**的 promise ✓
-    // （**∴ 因为** `.finally` 里会在 pending 时**再排一次** ✗ ⇒ **∴ 等它**即可覆盖本次 ✓）。
+    // 已有补画在途 ⇒ 本次请求合并进「pending 之后再排一次」。
+    // **必须等到那次也画完**：只返回当前 chain 的话，`await queueServerBlit()` 会在
+    // **本次请求还没画**时就返回（实测撤销后画布仍是旧像素：服务端对象 0、画布墨 1247）。
     serverBlitPending = true;
-    return serverBlitChain;
+    const current = serverBlitChain;
+    return current.then(() => serverBlitChain).catch(() => {});
   }
   // **★ 服务端补画也要有**分段计时** ✗ ★**（第 79 轮 ✓；**用户第 8 条 ✓）：
   //   **∴ 原来**只有**本地路径**写 `lastApplyMs`／`lastRenderMs`／`lastPutMs`**✗
@@ -5041,13 +5042,13 @@ async function resync() {
     // ⇒ 所以这**不是**"无内核"的问题 ✓，而是**两条分支都漏了画布** ✗：
     // 增量重放只更新了内核状态 ✓、只刷了预览 ✓ ⇒ **没人把结果画到画布上** ✗。
     await refreshPreview(true);
-    redrawCanvasFromKernel();
+    await redrawCanvasFromKernel();
     return;
   }
   // 增量不可用（或从 0 开始 ✓）⇒ 整条重放 ✓（内核已被上次失败回收 ✓ 或被重建 ✓）。
   if (await loadKernel(0)) {
     await refreshPreview(true);
-    redrawCanvasFromKernel();
+    await redrawCanvasFromKernel();
   }
 }
 
@@ -6761,7 +6762,8 @@ async function refreshAfterHistoryStep() {
   }
   // 画布权威 = 服务端像素 ✓（内核对 heavy 文档只能给出空白补丁 ✗）。
   needsServerPixels = true;
-  await queueServerBlit(null);
+  // 历史步进后「空白」是权威（撤销到空文档就该是白布）⇒ 放行 allowBlank。
+  await queueServerBlit(null, { allowBlank: true });
   await refreshPreview(true); // 缩略图走服务端路径（跳过内核乐观分支 ✓）
   scheduleThumbRefresh();
   void refreshHistory();
@@ -10592,6 +10594,11 @@ function connect() {
       const event = message.event;
       log("atom seq=" + event.seq + " " + event.kind + (event.heavy ? " [heavy]" : ""));
       setStatus({ head: event.seq });
+      // 撤销/重做后服务端像素权威，且空白合法（防闪烁守卫否则会跳过、留下旧笔迹）。
+      if (event.kind === "revert" || event.kind === "reapply") {
+        needsServerPixels = true;
+        void queueServerBlit(null, { allowBlank: true });
+      }
       // **别处的改动也必须把顶栏那三个数字重读一回** ✓（本轮实测的另一半 ✗）：
       // 自己这一端提交原子时 `:2744` 会排一次读 ✓，而**经 WS 到达的原子**（另一个客户端 ✓
       // 或自动化直接打 HTTP ✓）只把 `head` 往上推 ✓ 从此**没有任何人**再读过水位 ✓
@@ -10668,6 +10675,14 @@ function connect() {
       // 降噪：失效 tile 数只更新状态栏，日志最多每 2 秒一条（此前每个事件都写一行）。
       const count = (message.event.keys || []).length;
       setStatus({ dirty: count });
+      // 外部改动（tiles 失效）⇒ 防抖 resync；只重画不够，内核还留着被撤销的原子。
+      if (!state.dragging) {
+        if (externalSyncTimer) clearTimeout(externalSyncTimer);
+        externalSyncTimer = setTimeout(() => {
+          externalSyncTimer = null;
+          if (!state.dragging) void resync();
+        }, 250);
+      }
       const now = performance.now();
       if (now - (window.yanshiStats.lastTileLogMs || 0) > 2000) {
         window.yanshiStats.lastTileLogMs = now;
@@ -12560,7 +12575,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-1174090633725")
+      caches.open("yanshi-shell-4969120224625")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));
