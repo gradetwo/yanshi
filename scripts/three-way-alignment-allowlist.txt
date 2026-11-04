@@ -1,0 +1,21 @@
+# 三方功能对齐：本地反向多出的**允许名单**
+#
+# 由 `scripts/check-three-way-alignment.mjs` 校验。只有「本地有 `path === "/api/tools/X"`
+# 分支、服务端 `tools_registry.rs` 里没有 X」才需要登记 —— 也就是「PWA 多做了服务端没有的
+# 工具」。**默认不该有**：多出来的路由会让离线/在线两套语义漂移。
+#
+# 条目格式（二选一，原因必填，判据只认第一个 token 为工具名）：
+#   tool_name  原因写在后面，不要只写名字
+#   tool_name  # 原因
+#
+# 登记前先问三句：
+#   ① 前端真的会调用它吗？（`grep -rn '<name>' web/viewer-app.js`）
+#   ② 服务端真的没有、且短期不会有吗？
+#   ③ 能不能直接删掉，让通用兜底回 501 `endpoint_not_local`？
+# 只有「确实要保留一个本地专属入口」才登记；否则删掉是更好的答案。
+#
+# ---- 当前状态（2026-11-04）----
+# 0 条。审计时删掉了 6 条服务端注册表里没有的本地反向路由：
+#   update_selection / create_object / delete_group / heal（heal_stamp 的别名）
+#   / cache_document_preview / push
+# 它们都没有前端调用者，且通用兜底已经如实回 501 ⇒ 不需要保留专属分支。

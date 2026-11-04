@@ -100,19 +100,33 @@ for (let attempt = 0; attempt < 150; attempt++) {
   await new Promise((resolve) => setTimeout(resolve, 250));
 }
 if (!out || out.diffPixels === undefined) {
-  // **★ 自检**拒绝作答** ＝ **不适用** ✓，**不是失败 ✗**（第 317 轮 ✓）：
-  // 含 heavy 内容（位图／介质笔画 ✓）的文档上，内核**表示不了**它 ✗ ⇒ 编辑器**正确地**把
-  // `bitExact` 置为 `null` 并显示"不适用" ✓ —— **∴ 判据必须如实转述这一点 ✓**，
-  // 而不是报一个**假失败** ✗（**否则每次跑含 heavy 的作品都会红 ✗**）。
-  console.log("文档 " + (stats?.docId || "(unknown)") + "：**自检不适用**（文档含 heavy 内容 ⇒ 内核表示不了 ⇒ 编辑器拒绝作答 ✓）⇒ **跳过** ✓");
-  process.exit(0);
+  // **★ 自检**拒绝作答** ＝ **本次没验** ✓，**不是通过 ✗**（第 1520 轮 ✓；主理人裁定 ✓）：
+  // 含 heavy 内容（位图／介质笔画 ✓）的文档上，内核**表示不了**它 ✗ ⇒ 编辑器**正确地**拒绝作答 ✓
+  // —— **∴ 判据必须如实说「没验」✗**，**而不是** `exit(0)` **冒充「逐位相同」✗**
+  //   （**∴ 旧代码在这里 `process.exit(0)` ⇒ **∴ 一次没验的跑动看着像绿 ✗**）。
+  console.log("文档 " + (stats?.docId || "(unknown)") + "：**自检不适用**（文档含 heavy 内容 ⇒ 内核表示不了 ⇒ 编辑器拒绝作答 ✓）⇒ **本次未验证**");
+  ws.close();
+  console.error("⊘ 不可判：编辑器没有给出自检结果（window.yanshiStats.diffPixels 缺失）⇒ 本次没有验证逐位相同（换一个内核能表示的文档，或确认自检按钮真的被点到）");
+  process.exit(3);
 }
 const doc = new URL(url).searchParams.get("doc") ?? "(unknown)";
-// **★ 三档 ✓**：`true` ⇒ 通过 ✓｜`null` ⇒ **不适用**（编辑器拒绝作答 ✓）⇒ **跳过** ✓｜`false` ⇒ 不通过 ✗
-const verdict = out.bitExact === null ? "不适用（跳过）" : out.bitExact ? "通过" : "不通过";
+// **★ `null` ≠ `0` ✗ ★**（第 1520 轮 ✓；主理人裁定 ✓）：
+//   **∴ 三档语义**：`true` ⇒ 通过 ✓｜`false` ⇒ 不通过 ✗｜**`null`（内核明确拒绝作答）⇒ 本次没验 ✓**
+//   ⇒ **∴ 所以**只有**布尔**才是「作答」✗ ⇒ **∴ 其余一律 `exit(3)`** ✓
+//   （**∴ 旧代码 `process.exit(out.bitExact ? 0 : 1)` **把 `null` 归进失败**✗，
+//     而上面那条 `!out` 分支又 `exit(0)` **把它当通过**✗ ⇒ **∴ 两个方向都错 ✗**）。
+const answered = typeof out.bitExact === "boolean";
+const verdict = !answered ? "不适用（未作答）" : out.bitExact ? "通过" : "不通过";
 console.log(
   `文档 ${doc}: HEAD ${out.kernelHead}/${out.serverHead} | 差异像素 ${out.diffPixels} | ` +
     `最大通道差 ${out.maxChannelDelta} | 判定 ${verdict}`,
 );
 ws.close();
+if (!answered) {
+  console.error(
+    "⊘ 不可判：内核拒绝作答（bitExact=" + JSON.stringify(out.bitExact) +
+      "）⇒ 本次没有验证逐位相同，既不是通过也不是失败（换一个内核能表示的文档重跑）",
+  );
+  process.exit(3);
+}
 process.exit(out.bitExact ? 0 : 1);

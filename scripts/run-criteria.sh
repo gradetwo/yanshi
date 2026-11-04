@@ -11,6 +11,12 @@ CDP_PORT="${CDP_PORT:-9490}"
 # **必须导出** ✓（第 966 轮）：判据按约定读 process.env.CDP_PORT（:3 ✓），
 # 而普通赋值只对它自己可见 ✗ ⇒ 子进程看不到 ⇒ 判据会去连别的端口（第 964 轮实测：连到了服务端）。
 export CDP_PORT
+# **判据的 cargo 产物不许落在 /tmp**：`/tmp` 是 tmpfs ＋ usrquota（上限实测约 4.6G，
+# 其中 2.6G 属于别的项目）⇒ 构建会撞 EDQUOT（os error 122）⇒ 环境问题被伪装成产品红 ✗，
+# 且会把 /tmp 撑满导致整轮回归中途死亡（实测：跑到 358/447 条被 os error 122 打断）。
+# 落在仓库 `target/` 下（已 gitignore、磁盘充足）⇒ 与开发用的 target/ 也隔开（冷构建判据会 `cargo clean`）。
+# 用 `${VAR:-默认}` ⇒ **外部显式设了就尊重**（CI 可能自己指定）✓。
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target/criteria-cargo}"
 ROOT_DIR="$(mktemp -d)"
 PROFILE="$(mktemp -d)"
 KNOWN="$ROOT/scripts/criteria-known-red.txt"

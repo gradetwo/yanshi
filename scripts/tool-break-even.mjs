@@ -28,8 +28,9 @@ const option = (name, fallback) => {
 
 const TOOL = "scripts/tool-render-cost-accounts.mjs";
 if (!existsSync(TOOL)) {
-  console.error(`  ✗ 找不到 ${TOOL} ⇒ 前置条件错（exit 2）`);
-  process.exit(2);
+  // **∴ 缺依赖脚本 ⇒ 前提不成立**✗ ⇒ **∴ 退 `3`**（`2` 在运行器里**不是**「跳过」语义 ⇒ 会被报成产品红 ✗）
+  console.error(`  ⊘ 不可判：找不到 ${TOOL}（先确认脚本在 scripts/ 下）⇒ 退出码 3`);
+  process.exit(3);
 }
 // **∴ 默认扫的像素数 ✗**：**从 8k 到 4M**✗ ⇒ **∴ 覆盖**核显 1M**与**可能的独显平衡点** ✓ ★
 const defaultSides = "90,128,181,256,362,512,724,1024,1448,2048";

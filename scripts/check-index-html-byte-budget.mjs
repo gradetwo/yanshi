@@ -29,7 +29,10 @@ import { execFileSync } from "node:child_process";
 // 补上 `get_bake_status`／`stroke_heatmap` ⇒ 上界抬到 932,000（留 671 字节）。
 // 数它用 `git show HEAD:web/index.html | wc -c`；改这个数必须附理由。
 // 2026-11-04：(D) 回执可见性（log 增 forceNotice + stageNotice 兜底防递归 + 4 处导出成功回执）使 index.html 931,493→932,334（+841 B）⇒ 上界 932,000→933,000（留 666 B）。
-const CEILING = 933_000;
+// 2026-11-04：锁定层的「没有发送」长句补 I18N 模式词条 m42（`refuseLockedLayer` 的 `log(…,"#c33")`
+//   会覆盖 `stageNotice` ⇒ 用户看见的是长句，缺词条即英文界面漏中文）使 932,334→933,641（+1,307 B：
+//   词条 337 B + 说明注释 970 B）⇒ 上界 933,000→934,000（留 359 B）。
+const CEILING = 934_000;
 
 const failures = [];
 const check = (ok, label, detail) => {

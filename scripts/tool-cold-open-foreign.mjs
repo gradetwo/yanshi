@@ -20,6 +20,16 @@ import { spawn } from "node:child_process";
 // **⇒ ⇒ 现在**：给 URL／没给**都能跑** —— 自己造一个 workspace：起服务 ⇒ 建文档 + 笔画 ⇒ **杀掉**
 //   ⇒ 于是 `docs/<id>/atoms.jsonl` 落在盘上 ⇒ **再起一个全新进程冷开它** ✓
 //   ⇒ 这与"别人给的工程"**同一个考验**（盘上有、本进程没开过）✓
+// **∴ 缺二进制 ⇒ 前提不成立**✗：`spawn` 对不存在的路径会 emit `error` ⇒ **未捕获 ⇒ 退出码 1** ✗
+//   ⇒ **∴ 那会把「没构建」报成「产品坏了」**✗ ⇒ **∴ 先查再 spawn** ✓（退 3 ✓）。
+const serveBin = () => {
+  const path = process.env.YANSHI_SERVE_BIN || "target/release/yanshi-serve";
+  if (!existsSync(path)) {
+    console.error(`❌ 判不了：找不到 ${path}（先 cargo build --release -p yanshi-http）⇒ 退出码 3`);
+    process.exit(3);
+  }
+  return path;
+};
 let root = process.argv[2];
 let minSeq = 1;
 const givenIsDir = root && existsSync(root) && !/^https?:\/\//.test(root);
@@ -31,7 +41,7 @@ if (givenIsDir) {
   const { trackTemp } = await import("./lib/temp-dirs.mjs");
   root = trackTemp(mkdtempSync(join(tmpdir(), "cold-foreign-")));
   mkdirSync(join(root, "docs"), { recursive: true });
-  const bin0 = process.env.YANSHI_SERVE_BIN || "target/release/yanshi-serve";
+  const bin0 = serveBin();
   const p0 = Number(process.env.YANSHI_FOREIGN_BOOT_PORT || 8839);
   const boot = spawn(bin0, ["--bind", `127.0.0.1:${p0}`, "--root", root, "--no-wasm"], { stdio: "ignore" });
   try {
@@ -69,7 +79,7 @@ if (!ids.length) {
   console.error("❌ 判不了：docs/ 下没有含 atoms.jsonl 的工程 ⇒ 退出码 3");
   process.exit(3);
 }
-const bin = process.env.YANSHI_SERVE_BIN || "target/release/yanshi-serve";
+const bin = serveBin();
 const port = Number(process.env.YANSHI_FOREIGN_PORT || 8840);
 const srv = spawn(bin, ["--bind", `127.0.0.1:${port}`, "--root", root, "--no-wasm"], { stdio: "ignore" });
 process.on("exit", () => { try { srv.kill(); } catch { /* 已退出 */ } });

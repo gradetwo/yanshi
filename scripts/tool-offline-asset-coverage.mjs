@@ -62,6 +62,13 @@ const ORIGIN = "http://127.0.0.1:13990";
 const failures = [];
 const notes = [];
 const fail = (message) => failures.push(message);
+// **★ 前提缺失 ≠ 产品坏了 ✗ ★**（第 1520 轮 ✓；主理人裁定 ✓）：
+//   **∴ `assets/mediums/*.wasm` 是 **gitignored 的构建产物**✗**（`.gitignore:51` ✓）
+//   ⇒ **∴ clone 后未构建时该目录里只剩 `README.md`**✗ ⇒ **∴ 判据量不到「介质能否离线」**✓
+//   ⇒ **∴ 登记进 `blocked` ⇒ **∴ 只有其余真断言全绿时**才 `exit(3)` ✓
+//   ⇒ **∴ 而**palettes/samples/showcase/textures 的覆盖、SW 预缓存、按需体量**照常判**✓**。
+const blocked = [];
+const ARTIFACT_KINDS = new Set(["mediums"]);
 
 const read = (path) => {
   try {
@@ -415,12 +422,18 @@ for (const kind of kindsOnDisk) {
     continue;
   }
   const files = filesOf(kind).filter(spec.served);
-  if (files.length === 0) {
-    fail(`assets/${kind} 里一个可下发的文件都没有（白名单/扩展名对不上？）⇒ 该种类没有离线路径`);
-    continue;
-  }
+  // **路由分发是**真断言**✗**（**∴ 它读的是 `server.rs` ✗，与产物在不在无关 ✓）⇒ **∴ 先判它 ✓**
   if (spec.route && !routeDispatched(spec.route)) {
     fail(`assets/${kind} 声明的路由 ${spec.route} 在 server.rs 里没有分发 ⇒ 浏览器根本取不到`);
+  }
+  if (files.length === 0) {
+    if (ARTIFACT_KINDS.has(kind)) {
+      // **∴ 构建产物目录为空 ⇒ 这一次**量不了**✗ ⇒ **∴ 不可判（3）而不是失败（1）✓**
+      blocked.push(`assets/${kind} 是 gitignored 的构建产物目录且当前为空（先构建介质并跑 node scripts/mediums-sync.mjs）`);
+    } else {
+      fail(`assets/${kind} 里一个可下发的文件都没有（白名单/扩展名对不上？）⇒ 该种类没有离线路径`);
+    }
+    continue;
   }
   // **代表文件优先挑"不在 SHELL 里的"** ✓ —— 否则会被"预缓存那几件"遮住 ✓。
   // 同时避开含 `#` 的名字 ✓（那是已登记的独立缺口 ✓，见上面的 note ✓）。
@@ -477,7 +490,12 @@ for (const row of rows) {
   }
 }
 for (const kind of Object.keys(KINDS)) {
-  if (!kindsOnDisk.includes(kind)) fail(`机制表里登记了 assets/${kind}，但磁盘上已经没有这个目录 ⇒ 表在腐化`);
+  if (kindsOnDisk.includes(kind)) continue;
+  if (ARTIFACT_KINDS.has(kind)) {
+    blocked.push(`assets/${kind} 目录不存在（gitignored 的构建产物目录，先构建并跑 node scripts/mediums-sync.mjs）`);
+  } else {
+    fail(`机制表里登记了 assets/${kind}，但磁盘上已经没有这个目录 ⇒ 表在腐化`);
+  }
 }
 
 // ⑥ 换构建 ⇒ 旧缓存整份作废、旧资产不得被新构建离线读到（不脏读 ✓）。
@@ -542,6 +560,12 @@ for (const note of notes) console.log(`  · ${note}`);
 if (failures.length) {
   console.log(`  ✗ 离线资产覆盖不成立：${failures.join("；")}`);
   process.exit(1);
+}
+// **★ 真红优先，其次才是「不可判」✗ ★**（第 1520 轮 ✓）：
+//   **∴ 顺序** `1`（真断言红 ✓）> `3`（只有构建产物缺失 ⇒ 这一次量不了 ✓）> `0`（全绿 ✓）
+if (blocked.length) {
+  console.error(`  ⊘ 不可判：${blocked.join("；")}`);
+  process.exit(3);
 }
 console.log("  ✓ 离线资产覆盖成立：每一类资产都有已接线的离线路径（预缓存 / 用到就存 / 内嵌 / 查看器本地缓存）");
 process.exit(0);

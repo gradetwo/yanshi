@@ -17,6 +17,15 @@ import { execFileSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 
 const bad = [];
+// **★ 前提缺失 ≠ 产品坏了 ✗ ★**（第 1520 轮 ✓；主理人裁定 ✓）：
+//   **∴ `web/wasm/*`／`web/mediums/*`／`assets/mediums/*.wasm` 都是**gitignored 的构建产物**✗**
+//   （`.gitignore:51`／`:62`／`:64` ✓）⇒ **∴ 本机没构建时它们**本来就不在**✗**
+//   ⇒ **∴ 那不是缺陷 ⇒ **∴ 记进 `blocked` ⇒ **∴ 只有真断言全绿时**才 `exit(3)` 报「不可判」✓
+//   ⇒ **∴ 而**真断言一旦红了 ⇒ **∴ 仍然 `exit(1)`** ✓（**∴ 绝不许用 3 盖掉真红 ✗**）。
+const blocked = [];
+const needArtifact = (cond, what, fix) => {
+  if (!cond) blocked.push(`${what}（${fix}）`);
+};
 // **★ 公共：剥离注释后再查代码 ✓ ★**（第 616 轮 ✓）——
 // **∴ 为什么必须剥离 ✗**：**本判据第一版曾在**注释**里命中 `/api/` ✗（**假阳性 ✓**），
 // 又曾在**注释**里命中 `preview_state` ✗（**假阴性 ✗，变异 ⑧ 实测没红 ✓**）
@@ -29,12 +38,12 @@ const check = (cond, msg) => { if (!cond) bad.push(msg); };
 // **① 内核产物 ✓**
 const wasm = "web/wasm/yanshi_wasm_bg.wasm";
 const glue = "web/wasm/yanshi_wasm.js";
-check(existsSync(wasm), `内核 wasm 缺失：${wasm} ✗（跑 node scripts/pwa-sync-wasm.mjs ✓）`);
-check(existsSync(glue), `内核 JS 胶水缺失：${glue} ✗`);
+needArtifact(existsSync(wasm), `内核 wasm 缺失：${wasm}`, "跑 node scripts/pwa-sync-wasm.mjs");
+needArtifact(existsSync(glue), `内核 JS 胶水缺失：${glue}`, "跑 node scripts/pwa-sync-wasm.mjs");
 if (existsSync(wasm)) {
   const size = statSync(wasm).size;
-  check(size > 0, `${wasm} 为空 ✗`);
-  console.log(`  内核 wasm：${(size / 1048576).toFixed(2)} MiB ✓`);
+  needArtifact(size > 0, `${wasm} 为空`, "跑 node scripts/pwa-sync-wasm.mjs 重新生成");
+  if (size > 0) console.log(`  内核 wasm：${(size / 1048576).toFixed(2)} MiB ✓`);
 }
 
 // **②③ wrangler.toml ✓**
@@ -264,8 +273,9 @@ if (brushLib) {
 const MEDIUMS = ["oil.wasm", "watercolor.wasm", "marker.wasm", "pencil.wasm", "pixel.wasm", "example-dab.wasm"];
 const missingMediums = MEDIUMS.filter((f) => !existsSync("assets/mediums/" + f)
   || statSync("assets/mediums/" + f).size === 0);
-check(missingMediums.length === 0,
-  "缺少介质插件产物：" + missingMediums.join(" / ") + " => 先构建并跑 node scripts/mediums-sync.mjs");
+needArtifact(missingMediums.length === 0,
+  "缺少介质插件产物：" + missingMediums.join(" / "),
+  "先构建并跑 node scripts/mediums-sync.mjs");
 if (missingMediums.length === 0) console.log("  介质插件：6 个齐全 ✓（构建产物，已不入库 ✓）");
 // **★ 产物新鲜度 ✗ ★**（第 678 轮 ✓）：**∴ 第 671 轮实测到**库里的介质产物落后于源码**✗**
 //   （**`b9adcff` 修了 dab 钳制，**而**字节仍是旧的 ✓**）⇒ **∴ 那正是**"拿旧图冒充"✗**在产物层的翻版 ✓**
@@ -294,12 +304,14 @@ for (const [wasmName, crateName] of MEDIUM_SRC_MAP) {
 }
 check(stale.length === 0,
   "介质产物落后于源码：" + stale.join(" / ") + " => 重建并跑 node scripts/mediums-sync.mjs");
-if (stale.length === 0) console.log("  介质产物：6 个都不比源码旧 ✓");
+// **∴ 只在**产物齐全**时打印 ✓**（**∴ 否则**“0 个陈旧”是**空集合上的恒真**✗ ⇒ **∴ 那会谎报“6 个都不比源码旧” ✓**）。
+if (missingMediums.length === 0 && stale.length === 0) console.log("  介质产物：6 个都不比源码旧 ✓");
 // **★ PWA 也要有它们 ✗ ★**（第 673 轮 ✓）：**∴ 前端从 `/mediums/` 取 ✗**
 //   ⇒ **∴ 只拷 `assets/` 不够 ⇒ **∴ `web/mediums/` 也得有 ✓****。
 const webMissing = MEDIUMS.filter((f) => !existsSync("web/mediums/" + f));
-check(webMissing.length === 0,
-  "web/mediums 缺少：" + webMissing.join(" / ") + " => 跑 node scripts/pwa-sync-viewer.mjs");
+needArtifact(webMissing.length === 0,
+  "web/mediums 缺少：" + webMissing.join(" / "),
+  "跑 node scripts/pwa-sync-viewer.mjs");
 // **★ 部署可用性：入口页必须**被 git 跟踪** ✗ ★**（第 748 轮 ✓；**用户报告 404 ✓**）：
 //   **∴ 为什么 ✗**：**`wrangler.toml` 的 `[assets] directory = "./web"` ✗**
 //   ⇒ **∴ 若** `web/index.html` **不在版本库里 ⇒ **∴ fresh clone／别的机器部署时**
@@ -333,8 +345,18 @@ if (viewerText !== null) {
   }
 }
 
+// **★ 退出码：真红优先，其次才是「不可判」✗ ★**（第 1520 轮 ✓）：
+//   **∴ 顺序**：`1`（真断言红 ✓）> `3`（只有构建产物缺失 ⇒ 这一次量不了 ✓）> `0`（全绿 ✓）
+//   ⇒ **∴ 所以**上面所有真断言**都照常跑完了**才走到这里 ✓ —— **∴ 不是**遇缺失就早退 ✗**。
 if (bad.length) {
   console.error("❌ " + bad.join("｜"));
+  if (blocked.length) {
+    console.error(`  （另有 ${blocked.length} 项构建产物缺失，但真断言已有红 ⇒ 按真红退 1 ✓）`);
+  }
   process.exit(1);
+}
+if (blocked.length) {
+  console.error("⊘ 不可判：" + blocked.join("｜"));
+  process.exit(3);
 }
 console.log("  ✓ PWA 资源完整：内核在、域名对、预缓存含内核、无服务端依赖 ✓");

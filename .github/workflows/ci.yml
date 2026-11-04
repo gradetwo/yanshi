@@ -439,6 +439,10 @@ jobs:
     name: criteria shard ${{ matrix.shard }}/6
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # 判据脚本会把 CARGO_TARGET_DIR 缺省成「target/criteria-cargo」（本机为了避免 /tmp 配额）；
+    # CI 里显式指回「target」⇒ 复用 rust-cache 已有缓存，避免六个分片各多一次冷编。
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     strategy:
       fail-fast: false
       matrix:

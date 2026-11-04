@@ -13406,6 +13406,14 @@ function i18nText(node) {
     // **参考图上传失败的回执** ✓（本轮补齐 ✓）：整句拼了服务端给的错误文 ⇒ 字典按整句匹配不到 ⇒
     //   必须模式词条（否则英文模式下留着中文 ✓；与 m19/m40 同源：带数据的失败回执都走模式 ✓）。
     const m41 = /^参考图上传失败：(.+)$/.exec(zh);
+    // **锁定层的落笔/移动被拦下那两句** ✓（本轮补齐 ✓）：`refuseLockedLayer()` 先把短句
+    //   交给 `stageNotice`（m30 ✓ 已有），随后 `log(…, "#c33")` 按 `log()` 的既定行为**又把
+    //   长句写进同一个浮层** ⇒ 用户最终看见的是**这一句** ✗ ⇒ 它没有词条就等于 m30 白有 ✗
+    //  （`browser-layer-lock.mjs` ⑧ 就是这么红的 ✓ 第八章"句式框架漏出汉字"）。
+    //   句中 `画布上的一笔`/`移动对象` 是**界面自己写的前缀** ✓ 属于句式框架 ⇒ 必须翻 ✗；
+    //   图层名来自 `list_layers` ✓ 是用户数据 ⇒ 一个字不动 ✓。`permission_denied` 与 `🔓`
+    //   是接口名与图标 ⇒ 原样带过去 ✓。
+    const m42 = /^(画布上的一笔|移动对象|这一步)没有发送：「(.+)」是锁定图层（服务端会回 permission_denied）⇒ 在「图层」面板点 🔓 解锁后再试$/.exec(zh);
     // **范围遮罩的覆盖回执** ✓（本轮新增 ✓）：整句拼了服务端给的像素数、占比、均值 ✗
     //   和图层 id ⇒ 字典按整句匹配不到 ⇒ 必须模式词条（`#rangeMaskInfo` **不在** `#log` 里 ✓
     //   ⇒ 没有词条就会在英文模式下留着中文 ✓）。
@@ -13546,6 +13554,11 @@ function i18nText(node) {
     // 两处说的话在两种语言下都对得上 ✓）。
     else if (m40) en = "Read failed (" + ({ "服务端": "the server", "本地内核": "the local kernel" }[m40[1]] || "the server") + "): " + m40[2];
     else if (m41) en = "Reference image upload failed: " + m41[1];
+    else if (m42) {
+      en = ({ "画布上的一笔": "The stroke on the canvas", "移动对象": "The move", "这一步": "This step" }[m42[1]])
+        + " was not sent: \"" + m42[2] + "\" is a locked layer (the server would answer permission_denied)"
+        + " ⇒ unlock it with 🔓 in the Layers panel, then try again.";
+    }
   }
   node.nodeValue = (uiLang === "en" && en) ? original.replace(zh, en) : original;
 }

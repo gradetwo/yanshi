@@ -1,0 +1,20 @@
+# **运行期可见文案的英文覆盖：允许名单**
+#
+# 由 `scripts/check-i18n-runtime-coverage.mjs` 校验。
+#
+# ⇒ **只登记「确实是开发者可见、不该翻」的条目** ✓：
+#   判据默认认为 `#c33` / `forceNotice` / `stageNotice` 三条通道全部通向 `#stageNotice` 浮层
+#   ⇒ 用户一定看得见 ⇒ 中文就是缺陷 ✓。只有当那句话**用户根本走不到**（只在调试分支、
+#   只在开发者手动触发的诊断里）才登记在这里 ✓。
+#
+# ⇒ 条目格式：`<kind>:<8 位指纹>  <原因>`（原因必填，只写指纹不算 ✓）
+#   `kind` ∈ `c33`（log(…, "#c33")）／`force`（log(…, true)）／`notice`（stageNotice 直调）✓
+#   指纹怎么取：`I18N_COVERAGE_VERBOSE=1 node scripts/check-i18n-runtime-coverage.mjs`
+#   ⇒ 缺口清单里每行开头的 `c33:xxxxxxxx` 就是 ✓（不用行号 ✗：行号会随无关改动漂移 ✓）。
+#
+# ⇒ **过期就红** ✓：条目指向的缺口已经补上词条（或那行被删了）⇒ 判据红并点名
+#   ⇒ 把那一行删掉 ✓（同 `check-pwa-local-ignored-params.txt` 的「无过期条目」✓）。
+#
+# ---- 当前状态（2026-11-04）----
+# 0 条：三条通道的每一处中文在 `lang=en` 下都会出现在浮层上 ⇒ 没有「开发者可见、不该翻」的 ✓。
+# 缺口用棘轮（`UNCOVERED_CEILING`）管 ✓，本文件留给将来真有调试专用文案时用 ✓。

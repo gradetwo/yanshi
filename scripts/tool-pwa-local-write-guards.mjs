@@ -136,9 +136,16 @@ function same(a, b) {
 }
 /** **服务端每个写工具都会多给的字段**（渲染／journal／HTTP 层 ✓）⇒ 一律进 `serverOnly` ✓。
  *   **∴ 这里放**全集**而不是逐条挑 ✗**：服务端哪天在某个工具上多给一个字段，
- *   归入这里**不会假红** ✓；而**`shared` 少给**会由下面的「键集 ⊆ 允许集」抓住 ✓。 */
+ *   归入这里**不会假红** ✓；而**`shared` 少给**会由下面的「键集 ⊆ 允许集」抓住 ✓。
+ *   **★ `memory_status`（2026-11-04 补 ✓）**：它**不是**每条回执都有 ✗ ——
+ *     服务端 `service.rs:1703 attach_session_memory_sample` **只在每 100 次成功提交／级别变化**时附加 ✓
+ *     （全量回归时它恰好落在 `add_filter` 那条回执上 ⇒ 报「§B 建滤镜 F1」✓）。
+ *     语义是**服务端进程级**会话量度：`atoms.jsonl` 字节 ＋ 渲染保留字节 ＋ `/proc` RSS ＋
+ *     `YANSHI_SESSION_MEMORY_*` 阈值 ✓。**∴ 本地没有对应实体 ✗**：PWA 没有进程／磁盘 journal／
+ *     RSS／环境阈值（文档就在 IndexedDB 里）⇒ 算不出真实值，**编一个常量会撒谎** ✓
+ *     ⇒ 归 `serverOnly` ✓（与 `docs/three-way-alignment.md` 把该工具列为「M：明确不做」一致 ✓）。 */
 const NOISE = ["atom_id", "atoms", "changeset_id", "created", "dirty_bbox", "dirty_kind", "dirty_tiles",
-               "duplicate", "head", "job_id", "job_status", "opened", "preview", "seq",
+               "duplicate", "head", "job_id", "job_status", "memory_status", "opened", "preview", "seq",
                "snapshotted", "suggestions", "timings", "warnings", "region", "saved"];
 function compare(label, srv, loc, shared, opts = {}) {
   const serverOnly = opts.serverOnly || [];

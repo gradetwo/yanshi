@@ -11,20 +11,35 @@
 // 多版本并存正是设计"插件 id + version 随对象记录、升级不改写历史"所要求的 ✓，
 // 因此本脚本一次验收**全部**插件 ✓，而不是只测其中一个 ✓。
 
+import { readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
-const paths = process.argv.slice(2).filter((name) => name.endsWith(".wasm"));
+const MEDIUM_DIR = "assets/mediums";
+// **∴ 缺产物时**要报 `exit(3)`**✗ 不是 `1`** ✓（**1 = 真产品红 ✓**）
+// 和**「怎么补」**✗ ⇒ **∴ 否则**「**没构建**」会被读成「**产品坏了**」✓
+const undecidable = (reason) => {
+  console.log(`  ⊘ 不可判：${reason}`);
+  process.exit(3);
+};
+
+// 命令行显式给的 `.wasm` 优先 ✓；否则**列目录**✓ —— 写死文件名既漏掉新插件 ✓，
+// 又会在产物缺失时把「没构建」报成 ENOENT／退出码 1 ✗（**通配符**同理：`fs` 不展开 `*` ✗）。
+let paths = process.argv.slice(2).filter((name) => name.endsWith(".wasm"));
 if (paths.length === 0) {
-  paths.push(
-    "assets/mediums/example-dab.wasm",
-    "assets/mediums/oil.wasm",
-    "assets/mediums/watercolor.wasm",
-    // 设计 11.1 的其余介质 ✓（马克笔 / 铅笔 ✓）—— 与前三者走**同一套**边界检查 ✓：
-    // 零 imports ✓、ABI 版本 ✓、同 seed 一致 / 不同 seed 有别 ✓、配额 ✓、v2 上下文 ✓。
-    "assets/mediums/marker.wasm",
-    "assets/mediums/pencil.wasm",
-    "assets/mediums/pixel.wasm",
-  );
+  let names;
+  try {
+    names = readdirSync(MEDIUM_DIR);
+  } catch (error) {
+    undecidable(`读不到 ${MEDIUM_DIR}/（${error.code}）⇒ 先构建介质插件再跑 node scripts/mediums-sync.mjs`);
+  }
+  paths = names
+    .filter((name) => name.endsWith(".wasm"))
+    .sort()
+    .map((name) => join(MEDIUM_DIR, name));
+}
+if (paths.length === 0) {
+  undecidable(`${MEDIUM_DIR}/ 下没有 .wasm（先构建介质插件，再跑 node scripts/mediums-sync.mjs）`);
 }
 
 let failed = 0;
@@ -38,7 +53,16 @@ if (failed > 0) {
 console.log(`  ✅ ${paths.length} 个介质插件 ABI 契约全部通过`);
 
 async function checkOne(path) {
-  const bytes = await readFile(path);
+  let bytes;
+  try {
+    bytes = await readFile(path);
+  } catch (error) {
+    // **∴ 文件在列目录之后消失／显式参数的路径写错**✗ ⇒ **∴ 仍是**前提不成立**✗ 不是产品失败** ✓
+    if (error.code === "ENOENT") {
+      undecidable(`找不到 ${path} ⇒ 先构建介质插件再跑 node scripts/mediums-sync.mjs`);
+    }
+    throw error;
+  }
   const module = await WebAssembly.compile(bytes);
   const imports = WebAssembly.Module.imports(module);
   const problems = [];

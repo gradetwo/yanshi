@@ -38,8 +38,13 @@ if (PROJECT !== PROJECT_ARG) {
   console.error(`  ⓘ 第二个参数不是已存在的工程文件（运行器的约定是 <base-url> <doc> <token>）⇒ 用默认工程：${DEFAULT_PROJECT}`);
 }
 if (!existsSync(PROJECT)) {
-  console.error(`  ⏭ 跳过：默认工程 ${DEFAULT_PROJECT} 也不存在 ⇒ 本条本次没验（不是判据失败）`);
-  process.exit(0);
+  // **★★★ 缺工程 fixtures ⇒ **必须 exit 3** ✗ ★★★**（**2026-11-04 轮修 ✓）
+  //   **∴ 原来**写 `process.exit(0)`**✗ ⇒ **∴ 于是**「两条断言一条都没跑」**报绿**✗
+  //     ⇒ **∴ 实测**（本机 ✓）：`exports/demo.yanshi` **不存在** ⇒ 这条判据**永远是绿的** ✓
+  //   **∴ 现在**：`⊘ 不可判` ＋ `exit(3)`（**运行器认 3 ＝ 本次没验 ✓）
+  console.error(`  ⊘ 不可判：工程文件不存在（${PROJECT}）⇒ 本次没验，不能报绿`);
+  console.error("     ⇒ 显式传一个存在的 .yanshi，或补上 exports/demo.yanshi");
+  process.exit(3);
 }
 let doc = "", token = "";
 async function call(tool, args) {

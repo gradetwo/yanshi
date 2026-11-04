@@ -55,6 +55,117 @@
 //   例：node scripts/browser-layer-lock.mjs http://127.0.0.1:15900 9490
 import { setTimeout as sleep } from "node:timers/promises";
 
+// ---------- ⑧ 的「框架 vs 数据」口径（`--self-test` 与实跑共用同一条路径）----------
+/** **把「数据段」从英文句子里摘出去** ✓：中英文两种句式分别是 `「名」是锁定图层…` /
+ *  `"name" is a locked layer…` ⇒ 引号里的名字是**服务端数据** ✗ 不参与「框架有没有漏汉字」的判定 ✓。
+ *  **数据在句中也要摘** ✗（本轮修的口径漏洞 ✓）：旧实现只认**句首**那段引号
+ *  （`/^[「"]([^」"]*)[」"]…/` ✔）⇒ 而真实英文句式是
+ *  `The stroke on the canvas was not sent: "lock-target" is a locked layer …` ⇒ 匹配不上 ⇒
+ *  **整句原样当框架** ✗ ⇒ 只要图层名是中文（`"图层 2"`）就被判成「框架漏汉字」
+ *  ⇒ 英文完全正确也报红 ✗（假红 ✓）。现在按**所有**引号段剥 ✓（`「」`／`『』`／`""`）。
+ *  **ASCII 单引号 `'…'` 故意不剥** ✓：英文里的撇号（`isn't`／`don't`）也成对出现 ⇒
+ *  会把夹在中间那一段**框架**汉字一起吞掉 ⇒ 那是**放松判定** ✗（宁可误报也不放过真缺陷 ✓）。
+ *  **没有任何引号段时整句当框架** ✓ 行为与旧实现一致 ✓ 否则会漏掉真红 ✗。 */
+function enFrame(text) {
+  const t = String(text || "");
+  const dataCjk = [];
+  let frame = "";
+  let last = 0;
+  for (const m of t.matchAll(/「([^」]*)」|『([^』]*)』|"([^"]*)"/g)) {
+    frame += t.slice(last, m.index);
+    const inner = m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3];
+    dataCjk.push(...(inner.match(/[\u4e00-\u9fff]/g) || []));
+    last = m.index + m[0].length;
+  }
+  frame += t.slice(last);
+  return { text: frame, dataCjk };
+}
+/** ⑧ 的判定就这一条 ⇒ **自检测的就是实跑走的那条路** ✓（否则自检绿而实跑仍按旧口径 ✗）。 */
+function frameVerdict(text) {
+  const f = enFrame(text);
+  return { frame: f.text, red: /[\u4e00-\u9fff]/.test(f.text), dataCjk: f.dataCjk.length };
+}
+
+// ---------- `--self-test`：本机没有 CDP ⇒ 必须**在连 CDP / 开文档之前**就分流 ----------
+// 放在这里（import 之后、`fetch` 与 `Page.navigate` 之前）⇒ 离线可跑 ✓ 不会卡在连不上 CDP ✗。
+if (process.argv.includes("--self-test")) {
+  console.log("== browser-layer-lock ⑧ 口径自检（离线：不需要 CDP、不需要服务）==");
+  const cases = [
+    {
+      id: 1,
+      why: "原句（中文框架 + 中文数据）⇒ 框架该有汉字 ⇒ 红",
+      text: "画布上的一笔没有发送：「lock-target」是锁定图层（服务端会回 permission_denied）⇒ 在「图层」面板点 🔓 解锁后再试",
+      red: true,
+      dataCjk: 2,
+    },
+    {
+      id: 2,
+      why: "m42 英文输出、ASCII 图层名 ⇒ 框架无汉字 ⇒ 绿",
+      text: 'The stroke on the canvas was not sent: "lock-target" is a locked layer (the server would answer permission_denied) ⇒ unlock it with 🔓 in the Layers panel, then try again.',
+      red: false,
+      dataCjk: 0,
+    },
+    {
+      id: 3,
+      why: "同一句、名字换成中文「图层 2」⇒ 数据被剥掉 ⇒ 绿，且 dataCjk 非空",
+      text: 'The stroke on the canvas was not sent: "图层 2" is a locked layer (the server would answer permission_denied) ⇒ unlock it with 🔓 in the Layers panel, then try again.',
+      red: false,
+      dataCjk: 2,
+      absent: "图层 2",
+    },
+    {
+      id: 4,
+      why: "英文框架中部夹了汉字 ⇒ 框架该有汉字 ⇒ 红",
+      text: 'The stroke on the canvas 没有发送: "lock-target" is a locked layer',
+      red: true,
+      dataCjk: 0,
+    },
+    {
+      id: 5,
+      why: "没有任何引号段的整句中文 ⇒ 整句当框架 ⇒ 红",
+      text: "没有引号的一整句中文",
+      red: true,
+      dataCjk: 0,
+    },
+    {
+      id: 6,
+      why: "空串 ⇒ 不崩、框架为空",
+      text: "",
+      red: false,
+      dataCjk: 0,
+      emptyFrame: true,
+    },
+    {
+      id: 6,
+      why: "null ⇒ 不崩、框架为空",
+      text: null,
+      red: false,
+      dataCjk: 0,
+      emptyFrame: true,
+    },
+  ];
+  let failed = 0;
+  for (const c of cases) {
+    const got = frameVerdict(c.text);
+    const want = [];
+    if (got.red !== c.red) want.push("框架含汉字应为 " + c.red + "，实为 " + got.red);
+    if (got.dataCjk !== c.dataCjk) want.push("dataCjk 应为 " + c.dataCjk + "，实为 " + got.dataCjk);
+    if (c.absent !== undefined && got.frame.includes(c.absent)) want.push("框架里仍留着数据段 " + JSON.stringify(c.absent));
+    if (c.emptyFrame === true && got.frame !== "") want.push("框架应为空，实为 " + JSON.stringify(got.frame));
+    if (want.length === 0) {
+      console.log("✓ " + c.id + " " + c.why + "  [框架汉字=" + got.red + " dataCjk=" + got.dataCjk
+        + " 框架=" + JSON.stringify(got.frame) + "]");
+    } else {
+      failed += 1;
+      console.log("✗ " + c.id + " " + c.why + "  [" + want.join("；") + "]");
+      console.log("    输入=" + JSON.stringify(c.text));
+      console.log("    实得框架=" + JSON.stringify(got.frame) + " dataCjk=" + got.dataCjk);
+    }
+  }
+  console.log((failed === 0 ? "  ✓ " : "  ✗ ") + (cases.length - failed) + "/" + cases.length + " 条通过");
+  process.exit(failed === 0 ? 0 : 1);
+}
+
 const __judgeTimeout = setTimeout(() => {
   console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 判据超时（CDP 浏览器可能没起来）⇒ 退出码 3");
   process.exit(3);
@@ -334,15 +445,9 @@ const NET_HOOK = `(() => {
 })()`;
 const netWrites = () => evaluate(`(window.__netLog || []).filter((n) => !/^(list_|get_|render_)/.test(n))`);
 
-/** **把"图层名"那一段从英文句子里摘出去** ✓：中英文两种句式分别是 `「名」是锁定图层…` /
- *  `"name" is a locked layer…` ⇒ 引号里的名字是**服务端数据** ✗ 不参与"框架有没有漏汉字"的判定 ✓。
+/** **把"图层名"那一段从英文句子里摘出去** ⇒ `enFrame` 在文件开头（`--self-test` 也要用它 ✓
+ *  ⇒ 只有一份 ✓ 不复制）。口径是**所有**引号段都剥 ✓ 不论文档里数据在不在句首 ✓。
  *  摘不到引号段时**整句当框架** ✗ 宁可误报也不放过真缺陷 ✓。 */
-function enFrame(text) {
-  const t = String(text || "");
-  const m = /^[「"]([^」"]*)[」"]([\s\S]*)$/.exec(t);
-  if (!m) return { text: t, dataCjk: [] };
-  return { text: m[2], dataCjk: (m[1].match(/[\u4e00-\u9fff]/g) || []) };
-}
 
 // ---------- 开机（服务端渲染）----------
 await send("Page.navigate", { url: `${base}/?v=${Date.now()}&render=server` });
@@ -533,10 +638,10 @@ if (atomsEn2 !== atomsEn) bad(`⑧ 英文模式下这次**多出了原子**（${
 if (!noticeEn || noticeEn.hidden || !isLockSentence(noticeEn.text)) bad("⑧ 英文模式下浮层没说那句锁定解释", noticeEn);
 // **汉字分两种口径** ✓（与 `browser-fill-region.mjs` 同一条 ✓）：**图层名是服务端数据** ✓
 //（用户自己也能起中文名 ✗）⇒ 不翻 ✓ 只有**句式框架**漏出汉字才是词条缺失 ✗。
-const frame = enFrame(noticeEn && noticeEn.text);
-if (/[\u4e00-\u9fff]/.test(frame.text)) bad("⑧ 英文模式下浮层的**句式框架**漏出汉字 ⇒ I18N 词条缺了 ✗", frame.text);
+const verdictEn = frameVerdict(noticeEn && noticeEn.text);
+if (verdictEn.red) bad("⑧ 英文模式下浮层的**句式框架**漏出汉字 ⇒ I18N 词条缺了 ✗", { 框架: verdictEn.frame, 原句: noticeEn && noticeEn.text });
 else ok("⑧ 英文模式下浮层是整句英文（框架 0 个汉字 ✓）", noticeEn && noticeEn.text);
-if (frame.dataCjk.length > 0) console.log("  （同一句里另有 " + frame.dataCjk.length + " 个汉字属于**服务端数据**（图层名）⇒ 不翻 ✓）");
+if (verdictEn.dataCjk > 0) console.log("  （同一句里另有 " + verdictEn.dataCjk + " 个汉字属于**服务端数据**（图层名）⇒ 不翻 ✓）");
 if (noticeEn && noticeEn.exists && noticeEn.inViewport !== true) bad("⑧ 英文模式下浮层不在视口内（看不见等于没说）", noticeEn);
 await capture("04-en-locked-refused");
 

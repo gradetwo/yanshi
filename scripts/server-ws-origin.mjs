@@ -9,7 +9,11 @@
 import { createConnection } from "node:net";
 import { createHash, randomBytes } from "node:crypto";
 const [host, port] = process.argv.slice(2);
-if (!host || !port) { console.error("用法: node scripts/server-ws-origin.mjs <host> <port>"); process.exit(2); }
+if (!host || !port) {
+  // **∴ 缺参数 ⇒ 用法错**✓ ⇒ **∴ 退 2**（本仓约定：0 通过｜1 产品失败｜2 用法错｜3 判据跑不了）
+  console.error("用法：node scripts/server-ws-origin.mjs <host> <port>");
+  process.exit(2);
+}
 const base = `http://${host}:${port}`;
 const made = await fetch(base + "/api/documents", { method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ doc_id: "wsorigin", width: 120, height: 90 }) }).then((r) => r.json());

@@ -81,7 +81,11 @@ console.log(`  环境：/dev/dri 里有渲染设备 ＝ ${hasRenderNode ? "是 �
 const ROOT = trackTemp(mkdtempSync(join(tmpdir(), "gpuprobe-")));
 const BIN = ["target/release/yanshi-serve", "target/debug/yanshi-serve"]
   .find((p) => existsSync(p));
-if (!BIN) { console.error("  ✗ 找不到 yanshi-serve ⇒ **∴ 本跑没有结论**"); process.exit(2); }
+if (!BIN) {
+  // **∴ 缺二进制 ⇒ 前提不成立**✓ ⇒ **∴ 退 3**✗（`2` 在 `run-criteria.sh` 里落进「产品失败」分支 ✗）
+  console.error("  ⊘ 不可判：找不到 yanshi-serve（先 cargo build --release -p yanshi-http）⇒ 退出码 3");
+  process.exit(3);
+}
 
 const readHealth = async (args) => {
   const port = 19900 + Math.floor(Math.random() * 80);

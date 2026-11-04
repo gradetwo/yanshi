@@ -76,7 +76,11 @@ const failures = [];
 const fact = (b, m) => { console.log(`  ${b ? "✓" : "✗"} ${m}`); if (!b) failures.push(m); };
 
 const BIN = pickBinary();
-if (!BIN) { console.error("✗ 找不到 yanshi-serve ⇒ **∴ 无法起服务** ⇒ **∴ 本跑没有结论**"); process.exit(2); }
+if (!BIN) {
+  // **∴ 缺二进制 ⇒ 前提不成立**✓ ⇒ **∴ 退 3**✗（`2` 在 `run-criteria.sh` 里落进「产品失败」分支 ✗）
+  console.error("  ⊘ 不可判：找不到 yanshi-serve（先 cargo build --release -p yanshi-http）⇒ 退出码 3");
+  process.exit(3);
+}
 console.log(`  二进制：${BIN}（mtime ${statSync(BIN).mtime.toISOString()}）`);
 
 const BASE_PORT = 13100 + Math.floor(Math.random() * 60);
@@ -195,9 +199,10 @@ try {
     }
   }
 } catch (error) {
-  console.error(`  ✗ 本跑没有结论：${String(error && error.message || error).slice(0, 160)}`);
+  // **∴ 「本跑没有结论」**✗ ⇒ **∴ 前提／环境问题**✗ ⇒ **∴ 退 3**（**不是**产品红 ✓）
+  console.error(`  ⊘ 不可判：本跑没有结论（${String(error && error.message || error).slice(0, 160)}）⇒ 退出码 3`);
   for (const s of servers) { try { s.proc.kill("SIGKILL"); } catch { /* 已退出 */ } }
-  process.exit(2);
+  process.exit(3);
 }
 for (const s of servers) { try { s.proc.kill("SIGKILL"); } catch { /* 已退出 */ } }
 

@@ -41,13 +41,13 @@
  *     **∴ 本数只保证 "+29" 这个增量 ✓**（**合并时的最终总数由收尾方按机械口径重数 ✓**）。 */
 /** **★ 计数升到 143 ✗ ★**（P2c：渲染／导出／高级绘画／取色／诊断类新增 66 个 `path ===` 分支 ✓）：
  *   **∴ 其中 60 个真实实现 ✓**（绘画 12：`draw_text`／`draw_shape`／`fill`／`fill_region`／`smudge`／
- *     `clone_stamp`／`heal_stamp`／`heal`（别名）／`gradient_fill`／`texture_background`／`scatter_strokes`／
+ *     `clone_stamp`／`heal_stamp`／`gradient_fill`／`texture_background`／`scatter_strokes`／
  *     `update_stroke` ✓；滤镜调整 4：`add_filter`／`update_filter`／`add_adjustment`／`update_adjustment` ✓；
  *     变换 6：`transform_object`／`convert_to_path`／`convert_to_shape`／`liquify_push`／`liquify_pinch`／
  *     `liquify_twirl` ✓；取色 2：`sample_color`／`analyze_region` ✓；
  *     导出 4：`export_png`／`export_project`／`import_project`／`import_asset`（仅 texture）✓；
  *     文档 10：`new_document`／`delete_document`／`list_documents`／`declare_head`／`get_state`／
- *     `get_resolved_state`／`get_render_status`／`cache_document_preview`／`set_reference`／`clear_reference` ✓；
+ *     `get_resolved_state`／`get_render_status`／`set_reference`／`clear_reference` ✓；
  *     诊断 15：`collect_diagnostics`／`collect_garbage`／`blob_gc`／`get_inflight`／`get_job`／`cancel_job`／
  *     `cancel_operation`／`find_atom`／`get_atom`／`get_ancestors`／`get_descendants`／`get_diff`／
  *     `get_dependency_graph`／`batch`／`submit_offline` ✓；
@@ -88,7 +88,11 @@ export // **★ 声明必须与**实现分支数**一致 ✗ ★**（第 72 轮 
 //   **第 9 批 路径节点编辑 ✓ —— `edit_path` 落地 ⇒ 再 +1 ✓**）：
 //   **∴ 判据口径 `actualImpl`（**机械重数：`(?:url\.pathname|path) === "`**）⇒ 本数与它同步 ✓（非拍脑袋 ✗）**
 //   **∴ 数它用：`node -e 'const a=require("fs").readFileSync("web/api-local.js","utf8");console.log(((a.match(/(?:url\.pathname|path) === "/g)||[]).length))'` ✓**
-const LOCAL_IMPLEMENTED = 182; // `describe_canvas` 落地 ⇒ 机械重数 180 + 1 ✓
+// **★ 2026-11-04 三方对齐审计 ✗**：删掉 6 条服务端注册表里**没有**的本地反向路由
+//   （`update_selection`／`create_object`／`delete_group`／`heal`／`cache_document_preview`／`push` ✓），
+//   **补上** `put_blob`（本地早就有 `blob_put` ＋ `store.putBlob` 链路 ⇒ 只差入口 ✓）
+//   ⇒ **机械重数 182 − 6 ＋ 1 = 177 ✓**。数它不要信这一行（判据读的是代码 ✓）。
+const LOCAL_IMPLEMENTED = 177;
 //   **★ 同轮 `delete_mask` 由"如实 501"改成真实现（**不新增分支 ✓**）；
 //     `create_mask` 补上重复 409 守卫 ✓**（**与 `create_selection` 的 mode 门不同：蒙版不论 mode 都拒 ✗**）**
 //   **★ 第 六百七十六 轮 `create_range_mask` 落地 ⇒ 新增 1 个分支 ✓ ⇒ 机械重数 182 ✓**
@@ -3436,13 +3440,6 @@ async function withKernel(doc, fn) {
     if (typeof body.linked_layer === "string") payload.linked_layer = body.linked_layer;
     return { payload };
   }
-  /** **服务端没有该端点 ⇒ 明确 501 ✗**（**∴ 不硬凑语义 ✓**）。 */
-  function p2NoServerEndpoint(name, why) {
-    return json({ ok: false, error: "not_implemented_locally", endpoint: "/api/tools/" + name,
-                  reason: name + "：服务端工具注册表里没有这个端点（" + why + "），本地不硬凑语义",
-                  server: false }, 501);
-  }
-
   // **★ P2b 共用：变更集／事务的会话级登记 ＋ ULID ＋ 建议作用域 ✓ ★**（协作／历史类 ✗）：
   //   **∴ 服务端把"打开的变更集"记在 `open_changesets[(doc, session)]` ✗**（`service.rs:576` ✓）
   //   ⇒ **∴ 本地同形 ✗**（**内存 Map ✓ —— **∴ 页面重载后"打开中"状态丢失 ✗**，**而**已提交的原子**不受影响** ✓**）。
@@ -4015,6 +4012,59 @@ async function withKernel(doc, fn) {
       await storeMod.putBlob(handle, blobHash, Array.from(bytes));
       return json({ ok: true, blob_hash: blobHash, size: bytes.length,
                     mime_type: "image/x-yanshi-raw", server: false });
+    }
+    // **`put_blob` ✗**：**服务端 `write_put_blob`（`tools_bitmap.rs:59`）的本地对应 ✓** ——
+    //   **∴ 本地早就有同一条链路**（内核 `blob_put` 内容寻址 ＋ `store.putBlob` 持久化 ✓，
+    //   见上面的 `/api/blob` ✓）⇒ **∴ 这里只差一个 `/api/tools/` 入口 ✗**（**不是新能力 ✓**）。
+    //   **∴ 只接 `data_base64` 与 http(s) 的 `path` ✗**：浏览器读不到本地文件路径
+    //   （`file://`／裸路径）⇒ **∴ 明确 400 说清，不静默降级 ✓**。
+    if (path === "/api/tools/put_blob") {
+      const specBad = p2ValidateArgsFor("put_blob", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
+      const hasPath = typeof body["path"] === "string" && body.path.length > 0;
+      const hasB64 = typeof body.data_base64 === "string";
+      if (hasPath && hasB64) {
+        return p2ToolFailure(400, "invalid_argument",
+          "path 与 data_base64 只能给一个（与服务端同一互斥校验）");
+      }
+      let bytes = null;
+      if (hasB64) {
+        try {
+          const binary = atob(body.data_base64);
+          bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        } catch (err) {
+          return p2ToolFailure(400, "invalid_argument", "data_base64 不是合法 base64");
+        }
+      } else if (hasPath) {
+        if (!/^https?:\/\//i.test(body.path)) {
+          return p2ToolFailure(400, "invalid_argument",
+            "PWA 读不到本地文件路径；put_blob 只接受 data_base64 或 http(s) URL");
+        }
+        let fetched = null;
+        try { fetched = await fetch(body.path); }
+        catch (err) {
+          return p2ToolFailure(400, "network_error",
+            "取不到 " + body.path + "：" + String((err && err.message) || err));
+        }
+        if (!fetched.ok) {
+          return p2ToolFailure(400, "network_error",
+            "取 " + body.path + " 失败：HTTP " + fetched.status);
+        }
+        bytes = new Uint8Array(await fetched.arrayBuffer());
+      } else {
+        return p2ToolFailure(400, "invalid_argument",
+          "缺少来源：给 data_base64（或 http(s) 的 path）");
+      }
+      if (bytes.length === 0) return p2ToolFailure(400, "invalid_argument", "blob 为空");
+      let blobHash = null;
+      try { blobHash = await p2cPutCompositeBlob(bytes); }
+      catch (err) { return p2cKernel501(err); }
+      const storeMod = await import("./store.js");
+      await storeMod.putBlob(handle, blobHash, Array.from(bytes));
+      return json({ ok: true, blob_hash: blobHash, size: bytes.length,
+                    mime_type: typeof body.mime_type === "string" ? body.mime_type : "image/png",
+                    source: hasB64 ? "base64" : "url", server: false });
     }
     if (path === "/api/documents") {
       const docId = body.doc_id || `local-${Date.now().toString(36)}`;
@@ -5148,12 +5198,6 @@ async function withKernel(doc, fn) {
                     note: "已在本地原子日志写入 tombstone（选区删除语义）" });
     }
 
-    // **③ `update_selection` ⇒ 明确 501 ✗**：**服务端工具注册表里**没有**它 ✗**
-    //   （**142 个已注册工具逐一核对过 ✓**）⇒ **∴ 没有服务端语义可照抄 ✗** ⇒ **∴ 不硬凑 ✓**。
-    if (path === "/api/tools/update_selection") {
-      return p2NoServerEndpoint("update_selection", "选区没有更新语义");
-    }
-
     // **④ `create_mask` ✗**：**照 `write_create_mask` ✓** ⇒ **`create_mask` 原子 ✓**
     //   （**校验与选区同形 ✓**）。
     if (path === "/api/tools/create_mask") {
@@ -5451,15 +5495,6 @@ async function withKernel(doc, fn) {
                     note: "服务端 set_layer_blend 本体就是 set_property{key:blend_mode}，本地照写同一原子" });
     }
 
-    // **⑨ `create_object` ⇒ 明确 501 ✗**：**服务端**没有**这个端点 ✗**
-    //   （**注册表无 `create_object` ✓**）⇒ **∴ 对象由 `draw_stroke`／`draw_shape`／`import_image`／
-    //   `add_adjustment` 等专用端点创建 `create_object` 原子 ✗** ⇒ **∴ 裸 `create_object`**
-    //   **没有**服务端校验语义可照抄 ✗** ⇒ **∴ 不硬凑 ✓**。
-    if (path === "/api/tools/create_object") {
-      return p2NoServerEndpoint("create_object",
-        "对象经由 draw_*/import_image/add_adjustment 等专用端点创建");
-    }
-
     // **⑩ `delete_object` ✗**：**照 `write_tombstone` ✓** ⇒ **`tombstone{object_id}` ✓**。
     //   **∴ 提交期的两条拒绝也要照抄 ✓**（**`log.rs:1164 check_object_exists` ✓**）：
     //   不存在 ⇒ 404「对象 X 不存在（现有对象：…）」✓；已 tombstone ⇒ 409「对象 X 已被 tombstone，
@@ -5640,13 +5675,6 @@ async function withKernel(doc, fn) {
       }));
       return json({ ok: true, seq, server: false, group_id: groupId, members,
                     note: "已写入 create_object{type:group} 原子" });
-    }
-
-    // **⑱ `delete_group` ⇒ 明确 501 ✗**：**服务端**没有**这个端点 ✗**
-    //   （**注册表无 `delete_group` ✓**）⇒ **∴ 组本质是对象 ✗**（**删除请用 `delete_object` ✓**），
-    //   **∴ 没有专用服务端语义可照抄 ✗** ⇒ **∴ 不硬凑 ✓**。
-    if (path === "/api/tools/delete_group") {
-      return p2NoServerEndpoint("delete_group", "组本质是对象，删除请用 delete_object");
     }
 
     // **⑲ `add_to_group` ✗**：**照 `write_add_to_group` ✓**
@@ -5850,7 +5878,8 @@ async function withKernel(doc, fn) {
     //     `medium_stroke` 的介质插件宿主 ✗／`set_brush_dynamics` 的服务端笔刷文件缓存 ✗）⇒ **∴ 明确 501 ✓**；
     //     **`estimate_dehaze` 已不再是 501 ✓**（第 六百六十二 轮起本地按 f32 逐位移植暗通道 ✓）。
     //   **∴ `archive_base64` 不是端点 ✗**（**它是 `export_png` 响应里的字段 ✓** ⇒ **∴ 本地 `export_png` 照样返回它 ✓**）；
-    //   **∴ `push` 在服务端工具注册表里不存在 ✗**（**∴ 用 `p2NoServerEndpoint` 明确 501 ✓**）。
+    //   **∴ `push` 已从本地删除 ✗**（**2026-11-04 三方对齐：服务端注册表里没有它 ✓** ⇒
+    //     **∴ 通用兜底回 501 `endpoint_not_local` ✓**，不再保留专属分支 ✓）。
     //   **∴ 口径**：**真实映射的分支计入 `LOCAL_IMPLEMENTED` ✗**；**明确 501 的不计入 ✓**。
     const p2cKnownKinds = ["create_document","create_layer","create_object","create_selection",
       "create_mask","create_style","create_checkpoint","import_image","draw_stroke","fill",
@@ -7278,11 +7307,6 @@ async function withKernel(doc, fn) {
       return p2cRetouch("heal");
     }
 
-    // **P2c-08 `heal` ✗**：**`heal_stamp` 的别名 ✓**（**同一处理 ✓，**方便按 `retouch_type` 记忆的调用方 ✓**）。
-    if (path === "/api/tools/heal") {
-      return p2cRetouch("heal");
-    }
-
     // **`patch`**（补漏）：修补工具（`write_patch`），与 clone_stamp/heal 同属修图系。
     //   参数 `{layer_id, source_region:{x,y,w,h}, target:[x,y], opacity?}`。
     if (path === "/api/tools/patch") {
@@ -8626,26 +8650,6 @@ async function withKernel(doc, fn) {
                     note: "本地渲染是按需的；rendered 指已有覆盖该原子的快照" });
     }
 
-    // **P2c-40 `cache_document_preview` ✗**：**服务端渲染并缓存预览 ✓** ⇒ **∴ 本地用内核
-    //   渲染整幅写入快照 ✓**（**∴ 与 `render_region` 同一编码器 ✓**）。
-    if (path === "/api/tools/cache_document_preview") {
-      try {
-        const rows = await atomsOf(handle, doc);
-        const { w, h } = p2cDocSize(rows);
-        const { png } = await p2cRenderPng(0, 0, w, h);
-        // **用被渲染状态的序号盖章 ✓**（第 1440 轮审计：旧版**渲染完再重读 head** ✗
-        // ⇒ 中间落了新原子 ⇒ 旧图盖新号 ⇒ 冒充新状态 ✓；`writeSnapshot` 现在
-        // 单事务 CAS ⇒ 拒绝写时**如实报 `snapshot_written:false`** ✓，不静默 ✓）。
-        const seqRendered = rows.length ? rows[rows.length - 1].seq : 0;
-        const written = await writeSnapshot(handle, doc, seqRendered, { bytes: png });
-        return json({ ok: true, server: false, doc_id: doc, seq: seqRendered,
-                      width: w, height: h, bytes: png.length,
-                      snapshot_written: written,
-                      note: written ? "整幅预览已渲染并写入本地快照"
-                                    : "快照未写：渲染之后又有新原子进来 ⇒ 调用方按最新 head 重算 ✓" });
-      } catch (err) { return p2cKernel501(err); }
-    }
-
     // **P2c-41 `set_reference` ✗**：**服务端记进偏好 ✓** ⇒ **∴ 本地写同一份 `prefs` 表 ✓**
     //   （**`get_preferences` 能读回来 ✓**）。
     if (path === "/api/tools/set_reference") {
@@ -9695,11 +9699,6 @@ async function withKernel(doc, fn) {
         object_id: instanceId, key: "sync_policy", value: policy,
       }));
       return json({ ok: true, server: false, seq, instance_id: instanceId, policy });
-    }
-
-    // **P2c-66 `push` ⇒ 明确 501 ✗**：**服务端工具注册表里没有这个端点 ✓**（**`p2NoServerEndpoint` ✓**）。
-    if (path === "/api/tools/push") {
-      return p2NoServerEndpoint("push", "dispatch 表里没有这一项");
     }
 
     // **④ `/api/tools/get_document`（**从 IndexedDB ＋ 如实报后端 ✓**）**

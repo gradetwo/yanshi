@@ -47,9 +47,13 @@ const DOC = arg("--doc", "art_60301188_4k_monet_sunrise");
 //     ＋ **∴ 并**在**根目录不存在时**明确跳过**✗（**∴ 而不是**报一个 ENOENT ✓）
 const ROOT = arg("--root", process.env.YANSHI_REAL_COLD_ROOT || join(tmpdir(), "yanshi-real-cold"));
 if (!existsSync(ROOT)) {
-  console.error(`  ⏭ 跳过：冷启动夹具目录不存在（${ROOT}）⇒ 本条本次没验（不是判据失败）`);
+  // **★★★ 缺夹具 ⇒ **必须 exit 3** ✗ ★★★**（**2026-11-04 轮修 ✓）
+  //   **∴ 原来**写 `process.exit(0)`**✗ ⇒ **∴ 于是**「一条断言都没跑」**报绿**✗
+  //     ⇒ **∴ 那是**假绿**✗**：CI 里永远绿，**这条判据从没跑过** ✓
+  //   **∴ 现在**：`⊘ 不可判` ＋ `exit(3)`（**运行器认 3 ＝ 本次没验 ✓，不当产品失败 ✓）
+  console.error(`  ⊘ 不可判：冷启动夹具目录不存在（${ROOT}）⇒ 本次没验，不能报绿`);
   console.error("     ⇒ 需要时设 YANSHI_REAL_COLD_ROOT 或传 --root 指向真实夹具");
-  process.exit(0);
+  process.exit(3);
 }
 
 const pickBinary = () => {

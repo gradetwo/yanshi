@@ -75,7 +75,11 @@ const median = (xs) => {
 };
 
 const BIN = pickBinary();
-if (!BIN) { console.error("✗ 找不到 yanshi-serve ⇒ **∴ 本跑没有结论**"); process.exit(2); }
+if (!BIN) {
+  // **∴ 缺二进制 ⇒ 前提不成立**✓ ⇒ **∴ 必须退 3**✗（`2` 在 `run-criteria.sh` 里落进「产品失败」分支 ✗）
+  console.error("  ⊘ 不可判：找不到 yanshi-serve（先 cargo build --release -p yanshi-http）⇒ 退出码 3");
+  process.exit(3);
+}
 console.log(`  二进制：${BIN}（mtime ${statSync(BIN).mtime.toISOString()}）`);
 
 const port = 14300 + Math.floor(Math.random() * 80);
@@ -168,9 +172,10 @@ try {
   console.log(`    ① 墙钟 ${wall.toFixed(1)} ms｜② 进程 CPU ${cpu.toFixed(1)} ms｜③ CPU÷墙钟 ${(cpu / wall).toFixed(2)}×｜④ 峰值 RSS ${(Math.max(...samples.map((s) => s.hwmKb)) / 1024).toFixed(0)} MB`);
   console.log(`    （预热墙钟 ${samples[0].wallMs.toFixed(1)} ms｜全部 ok=${samples.every((s) => s.ok)}）`);
 } catch (error) {
-  console.error(`  ✗ 本跑没有结论：${String(error && error.message || error).slice(0, 200)}`);
+  // **∴ 「本跑没有结论」**✗ ⇒ **∴ 前提／环境问题**✗ ⇒ **∴ 退 3**（**不是**产品红 ✓）
+  console.error(`  ⊘ 不可判：本跑没有结论（${String(error && error.message || error).slice(0, 200)}）⇒ 退出码 3`);
   proc.kill("SIGKILL");
-  process.exit(2);
+  process.exit(3);
 }
 proc.kill("SIGKILL");
 process.exit(0);

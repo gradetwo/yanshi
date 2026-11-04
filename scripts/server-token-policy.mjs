@@ -8,7 +8,8 @@
 import { strict as assert } from "node:assert";
 const [base, mode, key] = process.argv.slice(2);
 if (!base || !["allow", "refuse"].includes(mode)) {
-  console.error("用法: node scripts/server-token-policy.mjs <server-base> <allow|refuse> [key]");
+  // **∴ 缺参数 ⇒ 用法错**✓ ⇒ **∴ 退 2**（本仓约定：0 通过｜1 产品失败｜2 用法错｜3 判据跑不了）
+  console.error("用法：node scripts/server-token-policy.mjs <server-base> <allow|refuse> [key]");
   process.exit(2);
 }
 const url = base + "/api/documents" + (key ? "?key=" + encodeURIComponent(key) : "");

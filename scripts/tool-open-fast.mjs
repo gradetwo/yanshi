@@ -70,7 +70,9 @@ async function start(label) {
   }
   console.error(`✗ 前置不成立：起不来服务端（${BIN}）⇒ ${stderr.slice(0, 300)}`);
   console.error("  ⇒ CI 里请设 YANSHI_SERVE_BIN 指向已构建的服务端二进制 ✓");
-  process.exit(2);
+  // **∴ 服务起不来 = 前提不成立**✗ ⇒ **∴ 退 3**✗（本文件第 26 行的约定就是这么写的 ✓；
+  //   `2` 在 `run-criteria.sh` 里落进「意外失败」分支 ⇒ 会被读成产品红 ✗）
+  process.exit(3);
 }
 async function stop() {
   if (!child) return;

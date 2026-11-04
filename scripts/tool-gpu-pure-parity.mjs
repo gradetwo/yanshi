@@ -343,9 +343,14 @@ async function renderAndHash(base, tag) {
   try {
     sharp = (await import("sharp")).default;
   } catch (error) {
-    console.log(`  ⏭ 跳过：本判据需要 npm 包 sharp（读 PNG），本机／CI 没装 ⇒ 本次没验（不是判据失败）`);
-    console.log(`     ⇒ 要真跑：npm i sharp（或确保 node_modules 里有它）｜错误：${error && error.message}`);
-    process.exit(0);
+    // **★★★ 缺依赖 ⇒ **必须 exit 3** ✗ ★★★**（**第 2026-11-04 轮修 ✓）
+    //   **∴ 原来**写着 `process.exit(0)`**✗ ⇒ **∴ 于是**「一条断言都没跑」**报绿**✗
+    //     ⇒ **∴ 那是**假绿**✗**：CI 里永远绿，**测试从没跑过** ✓
+    //   **∴ 现在**：`⊘ 不可判` ＋ `exit(3)`（**前提不成立 ≠ 通过 ✓）★
+    console.error(`  ⊘ 不可判：缺 sharp（先 npm i sharp）`);
+    console.error(`     ⇒ 本判据要用 sharp 解码 PNG ⇒ 缺它则**一条断言都没执行**，所以不能报绿`);
+    console.error(`     ⇒ 缺的是判据自身的输入（不是产品问题）｜错误：${error && error.message}`);
+    process.exit(3);
   }
   const { data, info } = await sharp(bytes)
     .ensureAlpha()

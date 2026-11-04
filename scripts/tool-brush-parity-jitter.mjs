@@ -41,13 +41,14 @@ if (!base || !doc || !token) {
 }
 
 // 与 `run-criteria.sh` 同一个包路径 ✓（相对仓库根 ✓）。
+// **缺产物 ⇒ 前提不成立 ⇒ `exit(3)`** ✓（原 `exit(2)` ✗：2 是「用法错」的码 ⇒ 会被读成
+// 「我调错了参数」✗ 而不是「没构建 wasm」✗ ⇒ 与产品红同样分不开 ✓）。
 const pkg = "crates/yanshi-wasm/pkg/yanshi_wasm.js";
 if (!existsSync(pkg)) {
   console.error(
-    `✗ 前置不成立：找不到 ${pkg} ⇒ 判据无法运行（不是通过）` +
-    "⇒ 先 `cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release` ＋ `wasm-bindgen` ✓",
+    `  ⊘ 不可判：找不到 ${pkg}（先 \`cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release\` ＋ \`wasm-bindgen\`，或 \`make wasm\`）`,
   );
-  process.exit(2);
+  process.exit(3);
 }
 
 /// 这 5 支：带随机、曾被 `dx`/`dy` 分歧毁掉、现已全部逐字节相同 ✓（见文件头 ✓）。
@@ -77,11 +78,22 @@ for (const line of out.split("\n")) {
     console.log("  " + line.trim());
   }
 }
+// **子判据说「前提不成立」⇒ 本判据也**不可判** ✓（不能把 3 翻译成 1 ✗）：**
+//   子判据的 exit(3) 有明确语义（0 绿｜1 产品红｜3 不可判｜124 超时 ✓）⇒ 透传 ✓。
+//   ⚠️ **必须放在「有没有结论行」之前** ✓：子判据**先**判前提时**不会**打结论行 ✗
+//   ⇒ 若先查结论，这条就永远走不到（死代码 ✗），而 3 会被下面翻成 1 ✗。
+if (child.status === 3) {
+  console.error("  ⊘ 不可判：子判据报了「前提不成立」（退出码 3）⇒ 不是笔刷差异，是前提没成立");
+  process.exit(3);
+}
 const conclusion = out.split("\n").filter((line) => line.includes("结论")).pop();
 if (!conclusion) {
-  console.error("✗ 前置不成立：子判据没打结论行 ⇒ 判据无法运行（不是通过）");
+  // **子判据没打结论 ⇒ 它自己不可判** ⇒ 3 ✓（不是产品红 ✗：`exit(2)` 会被读成「我调错了参数」✗）。
+  console.error(
+    "  ⊘ 不可判：子判据没打结论行（退出码 " + child.status + "）⇒ 判据无法运行，不是笔刷差异",
+  );
   console.error(out.split("\n").slice(-8).join("\n"));
-  process.exit(2);
+  process.exit(3);
 }
 console.log("  子判据结论：" + conclusion.trim());
 

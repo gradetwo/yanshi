@@ -117,10 +117,14 @@ const ABSOLUTE_RSS_BUDGET_MB = 4 * 1024;
 //       ＋ **∴ 这与本会话**另外三处（**`composite_parity`／`sw_shell_consistency`／
 //         **`brush_urls_…` ✓）**是同一个模式**：**判据遇到自己跑不了的环境 ⇒ 说出来 ＋ 放过** ✓ ★
 if (BIN_IS_DEBUG) {
-  console.log("  ⏭ 跳过：本判据要求 **release** 二进制（debug 下「成本比」会被放大 ⇒ 测的不是同一个量）");
-  console.log("     ⇒ 本机只有 target/debug/yanshi-serve ⇒ 本次没验（不是产品失败）");
+  // **★★★ 只有 debug 二进制 ⇒ **必须 exit 3** ✗ ★★★**（**2026-11-04 轮修 ✓）
+  //   **∴ 原来**写 `process.exit(0)`**✗ ⇒ **∴ 于是**「一条断言都没跑」**报绿**✗
+  //     ⇒ **∴ 那条绿**没有任何产品证据 ✓
+  //   **∴ 现在**：`⊘ 不可判` ＋ `exit(3)`（**运行器认 3 ＝ 本次没验 ✓，不当产品失败 ✓）
+  console.log("  ⊘ 不可判：本判据要求 **release** 二进制（debug 下「成本比」会被放大 ⇒ 测的不是同一个量）");
+  console.log("     ⇒ 本机只有 target/debug/yanshi-serve ⇒ 本次没验（不能报绿）");
   console.log("     ⇒ 要真跑：cargo build --release -p yanshi-http --bin yanshi-serve（或设 YANSHI_SERVE_BIN）");
-  process.exit(0);
+  process.exit(3);
 }
 
 const work = trackTemp(mkdtempSync(join(tmpdir(), "yanshi-paint-")));

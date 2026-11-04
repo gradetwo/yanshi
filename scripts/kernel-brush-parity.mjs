@@ -9,13 +9,31 @@
 // 与 `wasm-brush-parity.mjs` 的差别只有一个 ✓：那边用**裸 wasm + C-ABI**（门面 ✓），
 // 这边用**bindgen 包**（`crates/yanshi-wasm/pkg/yanshi_wasm.js` ✓ = 浏览器真正加载的那一份 ✓）。
 // 用法：node scripts/kernel-brush-parity.mjs <server-base> <doc> <token> <pkg/yanshi_wasm.js 路径> [笔刷名...]
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const [base, doc, token, wasmPath, ...brushes] = process.argv.slice(2);
 if (!base || !doc || !token || !wasmPath) {
   console.error("用法: node scripts/wasm-brush-parity.mjs <server-base> <doc> <token> <wasm> [brush...]");
   process.exit(2);
+}
+// **★ 前提守卫必须先于 `await import()` ★**（本机实测：没构建 wasm 时判据被报成产品红 ✗）：
+//   缺 `pkg/yanshi_wasm.js` 时 `await import()` 抛 `ERR_MODULE_NOT_FOUND` ⇒ 顶层 await 的拒绝
+//   ⇒ node **退出码 1** ✗ ⇒ 于是「**没构建 wasm**」与「**笔刷不一致**」**分不开** ✗。
+//   本判据的前提是「两份产物都在」⇒ 不成立 ⇒ `exit(3)`（0 绿｜1 产品红｜3 不可判｜124 超时 ✓）。
+//   ⚠️ 守卫**必须**在 import 之前：**静态** `import` 在**模块解析期**就抛 ⇒ 守卫来不及跑 ✗
+//   ⇒ 本文件用的是**动态** `await import()` ✓ ⇒ 前置 `existsSync` 足够 ✓（**不要改回静态** ✗）。
+const bgPath = wasmPath.replace(/\.js$/, "_bg.wasm");
+if (!existsSync(wasmPath)) {
+  console.error(
+    `  ⊘ 不可判：找不到 ${wasmPath}（先 \`cargo build -p yanshi-wasm --target wasm32-unknown-unknown --release\` ＋ \`wasm-bindgen\`，或 \`make wasm\`）`,
+  );
+  process.exit(3);
+}
+// 同目录的 `_bg.wasm` 是 bindgen 的第二个产物 ⇒ 缺它下面 `readFileSync` 也会抛（同样 exit 1 ✗）。
+if (!existsSync(bgPath)) {
+  console.error(`  ⊘ 不可判：找不到 ${bgPath}（与 ${wasmPath} 同目录的 bindgen 产物；先构建 wasm 包）`);
+  process.exit(3);
 }
 // **覆盖面必须自己说出来** ✓（第 804 轮）：判据默认只测 3 支笔 ✓，而仓库里有 **199 支** ✗ ⇒
 // 一条"绿"如果不说覆盖面，就会被读成"性质成立" ✗（第 800 轮实测：约一半笔刷其实不同 ✗）。
@@ -50,7 +68,7 @@ const colours = [
 const module_ = await import(pathToFileURL(wasmPath).href);
 // **必须先初始化** ✓ —— 与查看器同一句 ✓（`viewer.rs:1536` 的 `await module.default()` ✓）。
 // Node 里没有 fetch 相对路径的语境 ✓ ⇒ 把**同目录的 `_bg.wasm`** 交给它 ✓（bindgen 的标准入参 ✓）。
-const bgPath = wasmPath.replace(/\.js$/, "_bg.wasm");
+// （`bgPath` 已在前置守卫里定义并验过存在性 ✓）
 await module_.default(readFileSync(bgPath));
 // **★ 画布尺寸必须问服务端 ✗ 不许写死 ★**（2641 轮实测 ✓；外部「测量工具要先被测量」✓）
 //   **⇒ 症状**：CI 的 parity job 起的是 **320×240** 的文档 ✓，而本脚本写死 **400×300**
