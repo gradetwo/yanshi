@@ -700,7 +700,7 @@ pub(super) fn write_extend_canvas(ctx: &mut ToolContext<'_>, args: &Value) -> Re
         .checked_add(top)
         .and_then(|value| value.checked_add(right))
         .and_then(|value| value.checked_add(bottom));
-    if !margin_sum.is_some_and(|sum| sum > 0) {
+    if margin_sum.is_none_or(|sum| sum <= 0) {
         return Err(invalid("extend 边距必须是非负整数且总和 > 0（不得溢出）"));
     }
     let new_width = (old_width as i64)

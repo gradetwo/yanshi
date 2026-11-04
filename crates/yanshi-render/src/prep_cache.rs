@@ -168,7 +168,7 @@ impl PrepCache {
 /// 环境开关的缺省值：`YANSHI_PREP_CACHE=0` ⇒ 关，其余（含未设）⇒ 开。
 /// 渲染器构造时读一次（见 `Renderer::new`），不逐对象读环境变量。
 pub fn prep_cache_enabled_from_env() -> bool {
-    !std::env::var_os("YANSHI_PREP_CACHE").is_some_and(|v| v == "0")
+    std::env::var_os("YANSHI_PREP_CACHE").is_none_or(|v| v != "0")
 }
 
 /// `data` 的结构哈希：无分配递归遍历（不经过 `Debug` 格式化字符串，

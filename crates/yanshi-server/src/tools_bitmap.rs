@@ -171,10 +171,10 @@ pub(super) fn write_import_image(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             }
         }
     }
-    if !bitmap
+    if bitmap
         .get("blob_hash")
         .and_then(Value::as_str)
-        .is_some_and(|hash| !hash.is_empty())
+        .is_none_or(|hash| hash.is_empty())
     {
         return Err(YanshiError::new(
             ErrorCode::InvalidArgument,

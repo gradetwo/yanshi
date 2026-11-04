@@ -42,6 +42,10 @@ for (const tool of ["tar"]) {
     process.exit(3);
   }
 }
+if (!existsSync(BIN)) {
+  console.error(`  ⊘ 不可判：没有 ${BIN}（先 cargo build --release -p yanshi-timelapse）（不是产品问题）`);
+  process.exit(3);
+}
 
 const DOC_W = 2048;
 const DOC_H = 1536;

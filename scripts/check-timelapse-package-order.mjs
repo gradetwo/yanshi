@@ -13,7 +13,7 @@
 //
 // **变异**：把扫描改回单遍（或把 `ok_or_else` 改回 `unwrap_or_else`）⇒ ① 或 ② 红 ✓。
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,6 +33,10 @@ for (const tool of ["tar"]) {
     unjudgeable(`本机没有 ${tool}`);
   }
 }
+// **判据前提**：没有二进制就是「不可判」，不是产品失败 ✓（exit(3) ✓）。
+// 原先缺这道闸 ⇒ 本机跑时 `readdirSync(frames)` 抛 ENOENT ⇒ 未捕获异常 ⇒ 退出码 1
+// ⇒ 把「前提不成立」误报成产品红 ✗（内核①「失败要有信号」＋ §336「判据的诚实在退出码」✓）。
+if (!existsSync(BIN)) unjudgeable(`没有 ${BIN}（先 cargo build --release -p yanshi-timelapse）`);
 
 const W = 64;
 const H = 64;
@@ -83,7 +87,11 @@ const failures = [];
   } catch (error) {
     failures.push(`① 跑不起来（${(error.stdout || error.stderr || "").slice(-200)}）`);
   }
-  const files = readdirSync(frames).filter((name) => /^frame-\d+\.rgb$/.test(name)).sort();
+  // **二进制在、但没写出帧目录** ⇒ 也要给「一帧都没写出来」的结论，不能让 readdirSync 抛未捕获异常 ✓
+  //（与 `check-timelapse-shrink.mjs` 同一形态 ✓；前提失败 ≠ 产品失败 ✓）。
+  const files = existsSync(frames)
+    ? readdirSync(frames).filter((name) => /^frame-\d+\.rgb$/.test(name)).sort()
+    : [];
   if (files.length === 0) {
     failures.push("① 一帧都没写出来");
   } else {

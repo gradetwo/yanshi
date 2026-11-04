@@ -15,7 +15,7 @@
 //  ① `web/sw.js*`（含 `.bak` 等变体）**一个都不许存在** ✓；② 内嵌那份**有** `__BUILD_ID__` ✓；
 //  ③ 静态托管那份**没有**占位符、且有 `yanshi-shell-<数字>` 戳 ✓；④ 两份都预缓存内核 wasm ✓。
 // **⇒ 变异**：把 `web/sw.js` 或 `web/sw.js.bak` 加回来 ⇒ ① 红 ✓；让同步不给副本打戳 ⇒ ③ 红 ✓。
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 
 const failures = [];
 const check = (ok, label, detail) => {
@@ -38,6 +38,13 @@ try {
 }
 check(swResidue.length === 0, "没有第二份静态 worker（`web/sw.js*` 全部不许存在）",
   swResidue.length ? `残留：${swResidue.join("、")}` : "");
+// **判据前提**：`web/service-worker.js` 是 `pwa-sync-viewer.mjs` 的**生成物**（CI 上才有 ✓）。
+// 缺它时原先 `readFileSync` 抛 ENOENT ⇒ 未捕获 ⇒ 退出码 1 ⇒ 把「前提不成立」误报成产品红 ✗。
+// ① 不依赖这两份文件 ⇒ 先照常判完，再对缺文件的情况用 exit(3) 诚实跳过其余断言 ✓。
+if (!existsSync(EMBEDDED) || !existsSync(STATIC)) {
+  console.error(`  ⊘ 不可判：${EMBEDDED} 或 ${STATIC} 不存在（静态那份由 pwa-sync-viewer.mjs 生成；不是产品问题）`);
+  process.exit(3);
+}
 const embedded = readFileSync(EMBEDDED, "utf8");
 const statik = readFileSync(STATIC, "utf8");
 check(embedded.includes("__BUILD_ID__"), "内嵌那份保留 `__BUILD_ID__`（服务端请求时替换）", "丢了 ⇒ 缓存永不失效");

@@ -21,7 +21,7 @@
 //
 // **变异**：把 `YANSHI_TIMELAPSE_SHRINK` 的支持去掉（或让 `shrink_atom` 恒返回 `None`）⇒ ① 不成立 ⇒ 红 ✓。
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import zlib from "node:zlib";
@@ -38,6 +38,10 @@ for (const tool of ["tar", "ffmpeg", "ffprobe"]) {
     console.error(`  ⊘ 不可判：本机没有 ${tool}（不是产品问题）`);
     process.exit(3);
   }
+}
+if (!existsSync(BIN)) {
+  console.error(`  ⊘ 不可判：没有 ${BIN}（先 cargo build --release -p yanshi-timelapse）（不是产品问题）`);
+  process.exit(3);
 }
 
 const DOC_W = 4608;
