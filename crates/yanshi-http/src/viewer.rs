@@ -154,12 +154,6 @@ const PAGE_TAIL_A: &str = r##"</head>
   </p>
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">
     <figure style="margin:0">
-      <figcaption style="opacity:.75;font-size:11px;margin-top:4px">排练室的晨光 · 干性粉彩 · 3072×3840</figcaption>
-    </figure>
-    <figure style="margin:0">
-      <figcaption style="opacity:.75;font-size:11px;margin-top:4px">幕边的蓝色舞者 · 干性粉彩 · 3840×3072</figcaption>
-    </figure>
-    <figure style="margin:0">
       <img src="showcase/degas-backstage-oil.png" alt="后台舞者"
            loading="lazy" style="width:100%;height:auto;border-radius:6px;display:block" />
       <figcaption style="opacity:.75;font-size:11px;margin-top:4px">后台舞者 · 油画介质 · 3114×4096</figcaption>

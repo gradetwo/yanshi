@@ -24666,3 +24666,31 @@ M7 是「**像素级**」的那种 ⇒ 验容差没把它糊过去 ✓。**其�
 
 **∴ 复跑**：本机 `cargo check -p yanshi-wasm` ✓ ＋ `cargo check -p yanshi-server` ✓、`node --check` 判据 ✓、
 `web/api-local.js` 与 `crates/yanshi-http/assets/api-local.js` 逐字节 ✓。**全量判据要新 wasm ⇒ 等 CI**（本机不重建内核 ✓，「重计算交给 CI」）。
+
+## 六百八十、**过期的是尺子**：`check-gpu-map-async-errors` 假红出名单 ＋ 四条判据补前提守卫
+
+**⇒ 起因**：本机跑全部静态判据，只剩 `check-gpu-map-async-errors` 报「多处忽略 `map_async` 结果」，
+而它一直以「规格先行、边界内只定位不修」登记在 `criteria-known-red.txt` 里 ⇒ **没人再看它一眼** ✗。
+
+**⇒ 查实**：产品侧早已按审计 P3 #4 把每一处读回都修好了，但用了**好几种形态** ——
+`if let Err(e) = result`（把 Err 存进共享格，下游据此跳过 `get_mapped_range`）、
+`matches!(rx.recv(), Ok(Ok(())))`（含取反写法）、`rx.recv().ok()?.is_err()`；
+而判据的正则**只认最后一种** ⇒ 报的是**假红** ✓，**规格没过期，过期的是量它的尺子** ✓
+（与「测量工具要先被测量」同族 ✓）。
+
+**⇒ 修法与验证**：判据认全这些形态，但**不放宽** —— 回调参数以 `_` 开头、接收端只看通道
+（`recv().is_err()`／`is_ok()`）、以及「既没在回调判、也没把**结果本身**送出去」三种仍不合格
+（旧判据的第三分支恰好会让「只发信号」假绿 ⇒ 一并收紧 ✓）。
+**逐形态做过变异**：把任一处改回坏形态 ⇒ 恰好那一处红 ⇒ 判据不是安慰剂 ✓。
+本机 4/4 绿 ⇒ **从 `criteria-known-red.txt` 移出**（红转绿就是修好的证明 ✓，格式守卫仍绿 ✓）。
+
+**⇒ 同轮补齐判据诚实**：`check-timelapse-package-order`／`-shrink`／`-shrink-scattered` 缺
+`target/release/yanshi-timelapse` 二进制守卫、`check-service-worker-roles` 缺
+`web/service-worker.js`（`pwa-sync-viewer.mjs` 的生成物）守卫 ⇒ 前提缺失时崩溃或报产品红 ✗。
+现在一律 `⊘ 不可判` ＋ `exit(3)`；`package-order` 另补「帧目录不存在」守卫。
+**正向对照**（前提齐备时判据必须真跑断言）：SW 判据前提齐备全绿、两处变异都红；
+三条 timelapse 判据在假二进制＋假 ffmpeg 下都越过守卫继续判 ⇒ 守卫不是静默跳过 ✓。
+本机静态判据：**绿／诚实不可判／假产品红** ⇒ 全部归位 ✓。
+
+**⇒ 顺带**：本机 rustc/clippy 1.96.0 与 CI 的 1.98.1 不同 ⇒ `pre-commit.sh` 报三处
+`nonminimal_bool`；按等价式改成 `is_none_or`（行为不变），提交门全过。**全量 test 与分片判据等 CI**。

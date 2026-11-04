@@ -211,12 +211,6 @@
   </p>
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">
     <figure style="margin:0">
-      <figcaption style="opacity:.75;font-size:11px;margin-top:4px">排练室的晨光 · 干性粉彩 · 3072×3840</figcaption>
-    </figure>
-    <figure style="margin:0">
-      <figcaption style="opacity:.75;font-size:11px;margin-top:4px">幕边的蓝色舞者 · 干性粉彩 · 3840×3072</figcaption>
-    </figure>
-    <figure style="margin:0">
       <img src="showcase/degas-backstage-oil.png" alt="后台舞者"
            loading="lazy" style="width:100%;height:auto;border-radius:6px;display:block" />
       <figcaption style="opacity:.75;font-size:11px;margin-top:4px">后台舞者 · 油画介质 · 3114×4096</figcaption>
@@ -2591,9 +2585,9 @@ const LOCAL_JSON = ["/api/tools/get_document", "/api/tools/list_layers", "/api/a
 // 我第一版把字面量 `api("/api/effects")` 当成了它 ✓ ⇒ 又一次"凭字面量猜"栽了 ✓）。
 /// **从规格生成** ✓（第 176 轮记下的改进 ✓）：仓库里 `ToolSpec.mutating` **本来就是权威清单** ✓
 /// ⇒ 不必再靠"逐条点名"补 ✗（我那样补了 **7 次** ✓，每次都靠一次失败才发现 ✓）。
-/// 服务端发页面时会把 `"get_document", "get_anchors", "sample_color", "sample_colors", "get_histogram", "get_state", "list_documents", "list_layers", "describe_canvas", "explain_tool", "list_objects", "get_object", "get_path", "render_region", "collect_diagnostics", "put_blob", "list_selections", "list_fonts", "get_object_history", "get_stroke_log", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "vector_hit_test", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "list_presets", "get_preset", "preview_preset", "estimate_dehaze", "preview_suggestion", "export_project", "verify_package", "get_bake_status", "save_palette", "analyze_region", "stroke_heatmap", "list_palette_colors", "swatch_brush_strokes", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "export_svg", "export_book_pngs", "export_timelapse", "try_stroke", "list_attempts", "discard_stroke", "try_batch", "list_atoms", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "get_brush_dynamics", "set_brush_curve", "apply_curve_preset", "list_engine_capabilities", "get_brush_settings", "set_brush_setting", "list_brushes"` 换成**所有只读工具名** ✓（见 `page_with_read_tools` ✓）。
+/// 服务端发页面时会把 `"get_document", "get_anchors", "sample_color", "sample_colors", "get_histogram", "get_state", "list_documents", "memory_status", "list_layers", "describe_canvas", "explain_tool", "list_objects", "get_object", "get_path", "render_region", "collect_diagnostics", "put_blob", "list_selections", "list_fonts", "get_object_history", "get_stroke_log", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "vector_hit_test", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "list_presets", "get_preset", "preview_preset", "estimate_dehaze", "preview_suggestion", "export_project", "verify_package", "get_bake_status", "save_palette", "analyze_region", "stroke_heatmap", "list_palette_colors", "swatch_brush_strokes", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "export_svg", "export_book_pngs", "export_timelapse", "try_stroke", "list_attempts", "discard_stroke", "try_batch", "list_atoms", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "get_brush_dynamics", "set_brush_curve", "apply_curve_preset", "list_engine_capabilities", "get_brush_settings", "set_brush_setting", "list_brushes", "reference_trace_region"` 换成**所有只读工具名** ✓（见 `page_with_read_tools` ✓）。
 /// 该 crate 要求常量也有文档注释 ✓（我第一次写成 `//` ✓ ⇒ `clippy -D warnings` 当场红 ✓）。
-const LOCAL_READ_TOOLS = ["get_document", "get_anchors", "sample_color", "sample_colors", "get_histogram", "get_state", "list_documents", "list_layers", "describe_canvas", "explain_tool", "list_objects", "get_object", "get_path", "render_region", "collect_diagnostics", "put_blob", "list_selections", "list_fonts", "get_object_history", "get_stroke_log", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "vector_hit_test", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "list_presets", "get_preset", "preview_preset", "estimate_dehaze", "preview_suggestion", "export_project", "verify_package", "get_bake_status", "save_palette", "analyze_region", "stroke_heatmap", "list_palette_colors", "swatch_brush_strokes", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "export_svg", "export_book_pngs", "export_timelapse", "try_stroke", "list_attempts", "discard_stroke", "try_batch", "list_atoms", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "get_brush_dynamics", "set_brush_curve", "apply_curve_preset", "list_engine_capabilities", "get_brush_settings", "set_brush_setting", "list_brushes"];
+const LOCAL_READ_TOOLS = ["get_document", "get_anchors", "sample_color", "sample_colors", "get_histogram", "get_state", "list_documents", "memory_status", "list_layers", "describe_canvas", "explain_tool", "list_objects", "get_object", "get_path", "render_region", "collect_diagnostics", "put_blob", "list_selections", "list_fonts", "get_object_history", "get_stroke_log", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "vector_hit_test", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "list_presets", "get_preset", "preview_preset", "estimate_dehaze", "preview_suggestion", "export_project", "verify_package", "get_bake_status", "save_palette", "analyze_region", "stroke_heatmap", "list_palette_colors", "swatch_brush_strokes", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "export_svg", "export_book_pngs", "export_timelapse", "try_stroke", "list_attempts", "discard_stroke", "try_batch", "list_atoms", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "get_brush_dynamics", "set_brush_curve", "apply_curve_preset", "list_engine_capabilities", "get_brush_settings", "set_brush_setting", "list_brushes", "reference_trace_region"];
 
 /// **缓存键必须带上请求参数** ✗ —— 实测（第 1130 轮）：`list_assets {kind:"brush"}` 与
 /// `{kind:"texture"}` 是**同一个 URL** ✓（`/api/tools/list_assets` ✓）
@@ -12499,7 +12493,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-8692611539465")
+      caches.open("yanshi-shell-571c90a8-dirty-1e520a7a")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));
@@ -13551,8 +13545,16 @@ function setupPanels() {
     }
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     if (event.key === "Tab") {
-      // **Tab 切换全屏** ✓（与图像软件的直觉一致 ✓）—— 必须 `preventDefault` ✓，
-      // 否则浏览器会去移动焦点 ✓（那会让"按了 Tab 界面乱跳" ✗）。
+      // **Tab 切换全屏** ✓（与图像软件的直觉一致 ✓）—— 但**只在焦点不在可聚焦控件上**时 ✓：
+      // 否则按钮／链接／文本框／「退出全屏」永远 Tab 不到 ⇒ 键盘导航失效 ✗。
+      // 焦点在 body／画布上时照旧切全屏（界面宣传的 Tab 快捷键仍可用 ✓）。
+      const target = event.target;
+      const focusable = target instanceof HTMLElement && (
+        target.isContentEditable
+        || /^(A|BUTTON|TEXTAREA|SELECT|INPUT|SUMMARY)$/.test(target.tagName)
+        || target.tabIndex >= 0
+      );
+      if (focusable) return;
       event.preventDefault();
       panels.zen = !panels.zen;
       applyPanels();

@@ -11332,8 +11332,16 @@ function setupPanels() {
     }
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     if (event.key === "Tab") {
-      // **Tab 切换全屏** ✓（与图像软件的直觉一致 ✓）—— 必须 `preventDefault` ✓，
-      // 否则浏览器会去移动焦点 ✓（那会让"按了 Tab 界面乱跳" ✗）。
+      // **Tab 切换全屏** ✓（与图像软件的直觉一致 ✓）—— 但**只在焦点不在可聚焦控件上**时 ✓：
+      // 否则按钮／链接／文本框／「退出全屏」永远 Tab 不到 ⇒ 键盘导航失效 ✗。
+      // 焦点在 body／画布上时照旧切全屏（界面宣传的 Tab 快捷键仍可用 ✓）。
+      const target = event.target;
+      const focusable = target instanceof HTMLElement && (
+        target.isContentEditable
+        || /^(A|BUTTON|TEXTAREA|SELECT|INPUT|SUMMARY)$/.test(target.tagName)
+        || target.tabIndex >= 0
+      );
+      if (focusable) return;
       event.preventDefault();
       panels.zen = !panels.zen;
       applyPanels();

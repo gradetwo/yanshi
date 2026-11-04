@@ -87,11 +87,35 @@
        ＋ **∴ 所以 ✗**：**断点收窄到**768**（真正的 iPad 竖屏 ✓）⇒ **∴ 800×600 走正常布局** ✓
          ＋ **∴ 记下来 ✗**：**媒体查询的断点要和"CI 视口"错开 ✗ 否则判据红在环境上** ✓ ★★★ */
   @media (max-width: 768px) {
-    main { grid-template-columns: 56px minmax(0, 1fr); }
-    main > aside { position: fixed; right: 12px; top: 60px; z-index: 30;
-                   width: 300px; max-height: calc(100vh - 80px); overflow-y: auto;
-                   background: var(--bg, #fff); border: 1px solid var(--line);
-                   border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.15); }
+    /* **★ 窄屏（390×844 真实 Chromium 实测）改成纵向流式** ✓：原来 `main > aside` 是
+       `position:fixed` 的右栏浮层 ⇒ 整块盖在画布上（画布 w≈296 h≈148 却看不见、
+       `coveredByAside:true`）✗。**∴ 现在**：`main` 用 flex 纵排 ⇒ 工具条在顶、画布在中、
+       **面板在底**，三者都在正常流里 ⇒ 画布默认可见、右栏不再遮挡 ✓。
+       **∴ 为什么用 flex 而不是改 grid 列** ✗：`body.hide-*` 那几条 `grid-template-columns`
+       在 flex 容器上自然失效，而 `display:none` 的开关语义不变 ⇒ 「◨ 面板」照样开合 ✓；
+       桌面（>768px）完全不进这个块 ⇒ 布局不变 ✓。 */
+    main { display: flex; flex-direction: column; align-items: stretch; gap: 8px; padding: 8px; }
+    main > #tools {
+      flex: 0 0 auto; width: 100%; height: auto; max-height: 80px;
+      grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+      border-right: 0; border-bottom: 1px solid var(--line);
+      overflow-x: hidden; overflow-y: auto;
+    }
+    main > #tools button { white-space: nowrap; font-size: 11px; }
+    main > .stage { flex: 1 1 auto; height: auto; max-height: none; min-height: 0; }
+    main > aside {
+      position: static; right: auto; top: auto; z-index: auto;
+      width: auto; height: auto; max-height: 34%; flex: 0 1 auto;
+      overflow-y: auto; background: var(--bg, #fff);
+      border: 1px solid var(--line); border-radius: 8px; box-shadow: none;
+    }
+    body:not(.hide-dockers) > main > aside { animation: none; }
+    /* **工具条标签不被截断** ✓：标签不折行、选项条自身可滚（不再把 main 顶到没高度）；
+       **状态栏不换行** ✓：原来「缩放 %」被挤成 3 行 ⇒ nowrap ＋ 容器内横滚封住 ✓。 */
+    .options { max-height: 30vh; overflow-y: auto; }
+    .options label, .options .tool-name { white-space: nowrap; }
+    .statusbar { flex-wrap: nowrap; white-space: nowrap; overflow-x: auto; }
+    .statusbar > * { flex-shrink: 0; }
   }
   /* 只让舞台按内容收缩（否则右侧留出灰色死区、点击落在 stage 上）；右侧面板保持 320px 列宽，
      不能一起收缩，否则工具按钮会溢出窗口。 */
