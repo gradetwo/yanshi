@@ -4080,11 +4080,32 @@ fn handle_websocket(
             //   前进 ⇒ **重载该文档**（磁盘当真相 ✓）⇒ **照 `document.rs:869` 的用法**
             //   `publish_atom` ✓ ⇒ 下面那段 drain 自然把它发出去 ✓（**不新写发送逻辑** ✗）。
             if let Some(tail) = watch_tail.as_mut() {
-                if let Ok(polled) = tail.poll() {
-                    if !polled.atoms.is_empty() {
-                        if let Ok(mut workspace) = push_state.workspace.lock() {
-                            if workspace.reload_document(&push_doc).is_ok() {
-                                if let Ok(document) = workspace.document_mut(&push_doc) {
+                // **★ 静默丢弃是唯一的对手 ✗**（照 `yanshi-mcp/src/lib.rs` 的同一段循环 ✓）★**
+                //   `poll()` 的 `Err` 以前被 `if let Ok(…)` 吃掉 ✗ ⇒ 跟随器坏了**没有任何痕迹** ✗
+                match tail.poll() {
+                    Err(error) => {
+                        eprintln!(
+                            "yanshi-serve --watch: 轮询 {push_doc}/atoms.jsonl 失败: {error}"
+                        );
+                    }
+                    Ok(polled) => {
+                        // **`skipped > 0` 与 `atoms` 非空同权** ✓（MCP 侧就是 `|| polled.skipped > 0` ✓）：
+                        //   `poll()` **已经推进了 `offset`/`last_seq`** ⇒ 坏行再也拿不回来 ✗
+                        //   ⇒ 只有**重载**（磁盘当真相 ✓）能把内存状态拉回与日志一致 ✓。
+                        if !polled.atoms.is_empty() || polled.skipped > 0 {
+                            if polled.skipped > 0 {
+                                eprintln!(
+                                    "yanshi-serve --watch: 跳过 {} 条坏行（{push_doc}/atoms.jsonl）⇒ 重载文档以对齐磁盘",
+                                    polled.skipped
+                                );
+                            }
+                            if let Ok(mut workspace) = push_state.workspace.lock() {
+                                if let Err(error) = workspace.reload_document(&push_doc) {
+                                    // **失败不静默** ✓（MCP 侧同样 `eprintln!` ✓）：下一拍还会再试 ✓
+                                    eprintln!(
+                                        "yanshi-serve --watch: 重载 {push_doc} 失败: {error}"
+                                    );
+                                } else if let Ok(document) = workspace.document_mut(&push_doc) {
                                     // **重载丢了订阅者** ✗ ⇒ 重新订阅 ✓ 并**更新 id** ✓
                                     //   （用**同一个 `session`** ✓：这样语义上还是"同一条连接" ✓）
                                     let fresh =
@@ -4095,6 +4116,12 @@ fn handle_websocket(
                                     for atom in &polled.atoms {
                                         document.broadcaster_mut().publish_atom(atom);
                                     }
+                                } else {
+                                    // **重载成功却取不到文档** ⇒ 同样要说出来 ✓（否则下一段 drain 直接 `break` ✓
+                                    //   而**没有任何解释** ✗）；控制流不变 ✓。
+                                    eprintln!(
+                                        "yanshi-serve --watch: 重载后取不到文档 {push_doc}（可能已被删除）"
+                                    );
                                 }
                             }
                         }

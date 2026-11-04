@@ -22928,34 +22928,42 @@ fn read_list_atoms(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 continue;
             }
             let bbox = yanshi_core::Bbox::new(rx, ry, rw, rh);
-            if let Ok((w, h, pixels)) = ctx.workspace.render_region_raw(&ctx.doc_id, bbox) {
-                if w > 0 && h > 0 {
-                    // **`thumb_size > 0` 时最近邻缩小**（第 690 轮：前两次都栽在类型与所有权上——
-                    // `w`/`h` 是 `u32`，而缩放循环里要 `usize`；且不能重绑定 `pixels` 的两条分支）。
-                    let (ew, eh, ebytes): (u32, u32, Vec<u8>) =
-                        if thumb_size > 0 && (w > thumb_size || h > thumb_size) {
-                            let (wu, hu) = (w as usize, h as usize);
-                            let long = wu.max(hu);
-                            let nw = (wu * thumb_size as usize / long).max(1);
-                            let nh = (hu * thumb_size as usize / long).max(1);
-                            let mut small = vec![0u8; nw * nh * 4];
-                            for yy in 0..nh {
-                                let sy = (yy * hu / nh).min(hu - 1);
-                                for xx in 0..nw {
-                                    let sx = (xx * wu / nw).min(wu - 1);
-                                    let si = (sy * wu + sx) * 4;
-                                    let di = (yy * nw + xx) * 4;
-                                    small[di..di + 4].copy_from_slice(&pixels[si..si + 4]);
-                                }
+            // **渲染失败也要进 `skipped` ✓**：原来是 `if let Ok(…)` ⇒ `Err` 被静默吃掉 ✗
+            //   ⇒ 「渲染失败」与「根本没要图」**长得一样** ✗（本仓库最恨的静默降级 ✓）
+            //   ⇒ 与上面按大小跳过的那条**同一个形状**（`Vec<String>` 的元素 ✓），但把错误一起带上 ✓。
+            let (w, h, pixels) = match ctx.workspace.render_region_raw(&ctx.doc_id, bbox) {
+                Ok(rendered) => rendered,
+                Err(error) => {
+                    skipped.push(format!("{id}: 渲染失败: {error}"));
+                    continue;
+                }
+            };
+            if w > 0 && h > 0 {
+                // **`thumb_size > 0` 时最近邻缩小**（第 690 轮：前两次都栽在类型与所有权上——
+                // `w`/`h` 是 `u32`，而缩放循环里要 `usize`；且不能重绑定 `pixels` 的两条分支）。
+                let (ew, eh, ebytes): (u32, u32, Vec<u8>) =
+                    if thumb_size > 0 && (w > thumb_size || h > thumb_size) {
+                        let (wu, hu) = (w as usize, h as usize);
+                        let long = wu.max(hu);
+                        let nw = (wu * thumb_size as usize / long).max(1);
+                        let nh = (hu * thumb_size as usize / long).max(1);
+                        let mut small = vec![0u8; nw * nh * 4];
+                        for yy in 0..nh {
+                            let sy = (yy * hu / nh).min(hu - 1);
+                            for xx in 0..nw {
+                                let sx = (xx * wu / nw).min(wu - 1);
+                                let si = (sy * wu + sx) * 4;
+                                let di = (yy * nw + xx) * 4;
+                                small[di..di + 4].copy_from_slice(&pixels[si..si + 4]);
                             }
-                            (nw as u32, nh as u32, small)
-                        } else {
-                            (w, h, pixels.clone())
-                        };
-                    if let Some(png) = yanshi_render::png::encode_png(ew, eh, &ebytes) {
-                        hit["thumbnail"] = json!(base64::encode(&png));
-                        thumbs += 1;
-                    }
+                        }
+                        (nw as u32, nh as u32, small)
+                    } else {
+                        (w, h, pixels.clone())
+                    };
+                if let Some(png) = yanshi_render::png::encode_png(ew, eh, &ebytes) {
+                    hit["thumbnail"] = json!(base64::encode(&png));
+                    thumbs += 1;
                 }
             }
         }

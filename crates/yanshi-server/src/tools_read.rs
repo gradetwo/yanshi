@@ -351,6 +351,10 @@ pub(super) fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Res
         //
         // **实现只碰"导出像素"** ✓：不写文档、不落额外原子 ✓ ⇒ 画面本身与历史都不受影响 ✓。
         let mut pixels = pixels;
+        // **叠层改了多少个像素** ✓：`None` ＝ 没要 `show_coords` ✓；`Some(n)` ＝ 真的叠了 ✓
+        //   ⇒ 调用方/判据能**当场**看见「只动左上那条带」这条约束有没有守住 ✓
+        //   （以前算完就 `let _ = changed;` 扔掉 ✗ ⇒ 那约束在回执里**没有证据** ✗）。
+        let mut overlay_pixels_changed: Option<u32> = None;
         if args
             .get("show_coords")
             .and_then(Value::as_bool)
@@ -406,7 +410,7 @@ pub(super) fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Res
                     }
                 }
             }
-            let _ = changed;
+            overlay_pixels_changed = Some(changed);
         }
         let __t_put = std::time::Instant::now();
         let raw_hash = ctx.workspace.store().put(&pixels)?;
@@ -452,6 +456,9 @@ pub(super) fn read_render_region(ctx: &mut ToolContext<'_>, args: &Value) -> Res
             "region": {"x": actual_x, "y": actual_y, "w": actual_w, "h": actual_h},
             "canvas": {"w": doc_w, "h": doc_h},
             "clipped": clipped,
+            // **叠层实际改动的像素数** ✓（`null` ＝ 没要 `show_coords` ✓）：
+            //   ⇒ `Some(0)` 与 `null` 是**两件事** ✓（要了却一个都没改 vs 根本没要 ✓）。
+            "overlay_pixels_changed": overlay_pixels_changed,
             "raw_url": format!("yanshi://blob/{raw_hash}"),
             "mime_type": yanshi_render::RAW_RGBA_MIME,
             "warnings": ({
