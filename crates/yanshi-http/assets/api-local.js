@@ -11819,6 +11819,300 @@ async function withKernel(doc, fn) {
                     note: "已写入 reorder_objects 原子：order[i] ⇒ z_index=i（照 fold.rs:1311）；撤销经 revert 机器生效 ✓" });
     }
 
+    // **★ 三方对齐（line-parity）：三条只读工具补齐本地路由 ✓ ★**
+    //   **∴ 选择依据 ✗**：**只读、不写原子、不改文档**；数据**都已在本地层**（IndexedDB 原子／
+    //   blob ＋ 浏览器字体表）⇒ **∴ 不需要 GPU／外部二进制 ✓**。
+    //   内部实现分别照 `read_stroke_heatmap`（`tools_read.rs:873`）、`read_list_fonts`
+    //   （`tools.rs:4843`）、`SessionMemoryStatus`（`service.rs:1668`）✓。
+
+    // **P2-parity-① `stroke_heatmap` ✓**（照 `read_stroke_heatmap` 逐条）：
+    //   `region` 认 `{x,y,w,h}` 与 `[x,y,w,h]`；`cell_size` 缺省 64、网格 > 10000 格 ⇒ 400；
+    //   笔／点按 `source.kind ∈ brush|medium|draw` 扫描（无 `source` 的 `draw_stroke`／`erase`
+    //   回落 `payload.data`）；已撤销按「最近一次 revert／reapply」排除；墨量是 tile 的逐像素
+    //   alpha 求和，无 tile 的笔只计笔数与点数并记入 `strokes_without_ink`（不拿 0 冒充）。
+    if (path === "/api/tools/stroke_heatmap") {
+      const specBad = p2ValidateArgsFor("stroke_heatmap", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
+      let region = p2BboxFromValue(body.region);
+      if (!region && Array.isArray(body.region) && body.region.length === 4
+          && body.region.every((v) => typeof v === "number")) {
+        region = { x: body.region[0], y: body.region[1], w: body.region[2], h: body.region[3] };
+      }
+      if (!region) return p2Bad("region 必须是 {x,y,w,h} 或 [x,y,w,h]");
+      if (!Number.isFinite(region.x) || !Number.isFinite(region.y)
+          || !Number.isFinite(region.w) || !Number.isFinite(region.h)
+          || region.w <= 0 || region.h <= 0) {
+        return p2Bad("region 的宽高必须大于 0（且坐标有限）；区域可部分在画布外，但不能是空盒");
+      }
+      let cellSize = 64;
+      if (body.cell_size !== undefined && body.cell_size !== null) {
+        if (typeof body.cell_size !== "number") {
+          return p2Bad("cell_size 必须是数字（画布像素，缺省 64）");
+        }
+        cellSize = body.cell_size;
+      }
+      if (!Number.isFinite(cellSize) || cellSize <= 0) {
+        return p2Bad("cell_size 必须是有限正数（缺省 64）");
+      }
+      const colsF = Math.ceil(region.w / cellSize);
+      const rowsF = Math.ceil(region.h / cellSize);
+      if (colsF * rowsF > 10000) {
+        return p2Bad("网格 " + colsF + "×" + rowsF
+          + " 超过 10000 格上限 ⇒ 请调大 cell_size（当前 " + cellSize + "）");
+      }
+      const cols = colsF, rows = rowsF;
+      const heatRows = await atomsOf(handle, doc);
+      // 最近一次动作胜出（与 `get_stroke_log`／服务端 `last_action` 同规则）。
+      const lastAction = new Map();
+      for (const r of heatRows) {
+        const a = (r && r.atom) || {};
+        if (a.kind !== "revert" && a.kind !== "reapply") continue;
+        const target = a.payload && a.payload.target;
+        if (typeof target === "string") {
+          lastAction.set(target, { seq: Number(r.seq) || 0, revert: a.kind === "revert" });
+        }
+      }
+      const reverted = new Set();
+      for (const [id, act] of lastAction) if (act.revert) reverted.add(id);
+      const cellStrokes = new Array(cols * rows).fill(0);
+      const cellPoints = new Array(cols * rows).fill(0);
+      const cellInk = new Array(cols * rows).fill(0);
+      let totalStrokes = 0, totalPoints = 0, strokesWithoutInk = 0;
+      const colOf = (x) => {
+        if (x < region.x || x >= region.x + region.w) return null;
+        const col = Math.floor((x - region.x) / cellSize);
+        return col >= 0 && col < cols ? col : null;
+      };
+      const rowOf = (y) => {
+        if (y < region.y || y >= region.y + region.h) return null;
+        const row = Math.floor((y - region.y) / cellSize);
+        return row >= 0 && row < rows ? row : null;
+      };
+      const storeMod = await import("./store.js");
+      for (const r of heatRows) {
+        const a = (r && r.atom) || {};
+        const pl = a.payload || {};
+        let source = null;
+        if (pl.source && typeof pl.source === "object" && !Array.isArray(pl.source)) {
+          source = pl.source;
+        } else {
+          if (a.kind !== "draw_stroke" && a.kind !== "erase") continue;
+          const data = pl.data;
+          if (!(data && typeof data === "object" && !Array.isArray(data))) continue;
+          source = { kind: "draw", points: data.points === undefined ? null : data.points };
+        }
+        const sourceKind = typeof source.kind === "string" ? source.kind : "";
+        if (sourceKind !== "brush" && sourceKind !== "medium" && sourceKind !== "draw") continue;
+        if (reverted.has(a.id)) continue;
+        const pointList = Array.isArray(source.points) ? source.points : [];
+        const points = [];
+        for (const item of pointList) {
+          if (!Array.isArray(item)) continue;
+          const px = item[0], py = item[1];
+          if (typeof px !== "number" || !Number.isFinite(px)) continue;
+          if (typeof py !== "number" || !Number.isFinite(py)) continue;
+          points.push([px, py]);
+        }
+        // 可读 tile 才算墨：哈希／取 blob／长度 = w×h×4 任一不成立 ⇒ 跳过（不整单报错）。
+        let tile = null;
+        try {
+          const tileBox = p2BboxFromValue(pl.region);
+          const hash = pl.bitmap && pl.bitmap.blob_hash;
+          if (tileBox && typeof hash === "string" && hash
+              && Number.isInteger(tileBox.w) && Number.isInteger(tileBox.h)
+              && tileBox.w > 0 && tileBox.h > 0) {
+            const bytes = await storeMod.getBlob(handle, hash);
+            if (bytes && bytes.length === tileBox.w * tileBox.h * 4) {
+              tile = { x: tileBox.x, y: tileBox.y, w: tileBox.w, bytes };
+            }
+          }
+        } catch (e) { /* 取不到 ⇒ 按无 tile 处理（计入 strokes_without_ink） */ }
+        const touched = new Set();
+        for (const [px, py] of points) {
+          const col = colOf(px), row = rowOf(py);
+          if (col === null || row === null) continue;
+          const index = row * cols + col;
+          touched.add(index);
+          cellPoints[index] += 1;
+          totalPoints += 1;
+        }
+        if (tile) {
+          for (let i = 0; i < tile.bytes.length; i += 4) {
+            const alpha = Number(tile.bytes[i + 3]) || 0;
+            if (alpha === 0) continue;
+            const pixel = i / 4;
+            const gx = tile.x + (pixel % tile.w);
+            const gy = tile.y + Math.floor(pixel / tile.w);
+            const col = colOf(gx), row = rowOf(gy);
+            if (col === null || row === null) continue;
+            const cell = row * cols + col;
+            touched.add(cell);
+            cellInk[cell] += alpha;
+          }
+        } else {
+          const box = p2BboxFromValue(pl.region);
+          if (box) {
+            for (let row = 0; row < rows; row++) {
+              for (let col = 0; col < cols; col++) {
+                const cx = region.x + col * cellSize;
+                const cy = region.y + row * cellSize;
+                const cell = {
+                  x: cx, y: cy,
+                  w: Math.max(0, Math.min(region.x + region.w - cx, cellSize)),
+                  h: Math.max(0, Math.min(region.y + region.h - cy, cellSize)),
+                };
+                if (p2BboxIntersects(box, cell)) touched.add(row * cols + col);
+              }
+            }
+          }
+        }
+        if (touched.size > 0) {
+          totalStrokes += 1;
+          for (const index of touched) cellStrokes[index] += 1;
+          if (!tile) strokesWithoutInk += 1;
+        }
+      }
+      const cells = [];
+      let totalInkMass = 0;
+      for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+          const index = row * cols + col;
+          const x = region.x + col * cellSize;
+          const y = region.y + row * cellSize;
+          totalInkMass += cellInk[index];
+          cells.push({
+            col, row, x, y,
+            w: Math.max(0, Math.min(region.x + region.w - x, cellSize)),
+            h: Math.max(0, Math.min(region.y + region.h - y, cellSize)),
+            strokes: cellStrokes[index],
+            points: cellPoints[index],
+            ink_mass: cellInk[index],
+          });
+        }
+      }
+      return json({
+        ok: true, server: false,
+        region: { x: region.x, y: region.y, w: region.w, h: region.h },
+        cell_size: cellSize, cols, rows, cells,
+        total_strokes: totalStrokes, total_points: totalPoints,
+        total_ink_mass: totalInkMass, strokes_without_ink: strokesWithoutInk,
+        note: "笔数／点数走与 get_stroke_log 同一日志扫描（已撤销排除）；墨量是烘焙位图 tile 的逐像素 alpha 求和，"
+          + "只覆盖带 tile 的笔（实为笔刷笔）。medium_stroke 的介质笔不在扫描内（无 source 的 ImportImage 原子），"
+          + "draw_stroke 笔只计笔数与点数、墨量不含它们；strokes_without_ink 是对区域有贡献但无可读 tile 的去重笔数。"
+          + "一笔进多格时每格计 1，total_strokes 去重只计 1；total_ink_mass = 各格 ink_mass 之和。",
+      });
+    }
+
+    // **P2-parity-② `list_fonts` ✓**（照 `read_list_fonts` 的回执 `{fonts:[{family}],count}`）：
+    //   **∴ 为什么需要本地实现 ✗**：`viewer-app.js:12943` 的字体选择器**首次聚焦就问它** ✗
+    //   ⇒ **∴ 本地 501 时它只降级成「内置与预置那几支」** ✓（实测回退分支 ✓）。
+    //   **∴ 浏览器没有 fontdb ✗** ⇒ **∴ 用同环境真正可用的两处**：
+    //     `document.fonts`（@font-face 注册的预置／网页字体）＋ `navigator.queryLocalFonts`
+    //     （Local Font Access；无权限／不支持 ⇒ 如实留 `local_fonts_error`，不编造系统字体）。
+    //   **∴ 排序去重照服务端 `fonts::families` ✓**（`names.sort(); names.dedup()`）。
+    if (path === "/api/tools/list_fonts") {
+      const specBad = p2ValidateArgsFor("list_fonts", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
+      const families = new Set();
+      const sources = [];
+      let localFontsError = null;
+      try {
+        const set = typeof document !== "undefined" ? document.fonts : null;
+        if (set) {
+          const add = (face) => {
+            const raw = face && (face.family !== undefined ? face.family : face);
+            if (typeof raw !== "string") return;
+            const name = raw.replace(/^["']|["']$/g, "").trim();
+            if (name) families.add(name);
+          };
+          if (typeof set.forEach === "function") set.forEach(add);
+          else if (typeof set[Symbol.iterator] === "function") for (const face of set) add(face);
+          sources.push("document.fonts");
+        }
+      } catch (e) { localFontsError = String((e && e.message) || e); }
+      try {
+        const query = typeof navigator !== "undefined" ? navigator.queryLocalFonts : null;
+        if (typeof query === "function") {
+          const list = await query.call(navigator);
+          for (const face of list || []) {
+            const name = face && typeof face.family === "string" ? face.family.trim() : "";
+            if (name) families.add(name);
+          }
+          sources.push("queryLocalFonts");
+        }
+      } catch (e) { localFontsError = String((e && e.message) || e); }
+      const fonts = [...families].sort().map((family) => ({ family }));
+      return json({
+        ok: true, fonts, count: fonts.length, server: false,
+        sources, local_fonts_error: localFontsError,
+        note: "浏览器可用的字体族（document.fonts 的 @font-face ＋ Local Font Access 的系统字体）；"
+          + "与服务端一样按族名升序去重。queryLocalFonts 不可用或被拒时只列已注册字体，不编造系统字体。",
+      });
+    }
+
+    // **P2-parity-③ `memory_status` ✓**（照 `Workspace::session_memory_status` 的形状，
+    //   `service.rs:1668`）：`{memory_status:{total_bytes,warn_bytes,hard_bytes,
+    //   headroom_bytes,level,documents[],process_rss_bytes}}`，`level` 判定同
+    //   `level_for`（`> hard ⇒ over`、`>= warn ⇒ warn`、否则 `ok`）。
+    //   **∴ 浏览器没有进程 RSS 与磁盘日志 ✗** ⇒ **∴ 如实换成本环境的两项**：
+    //     `journal_bytes` = IndexedDB 里原子 JSON 的字节数（相当于服务端的
+    //     `journal_len`）；`retained_bytes` = 已加载内核的 `memory_usage()`（未加载为 0）。
+    //     `process_rss_bytes` 恒 `null`（服务端非 Linux 时也是 null ⇒ 不是新形状）。
+    if (path === "/api/tools/memory_status") {
+      const specBad = p2ValidateArgsFor("memory_status", body);
+      if (specBad) return p2ToolFailure(400, specBad.code, specBad.detail);
+      const storeMod = await import("./store.js");
+      const metas = await storeMod.wrap(storeMod.tx(handle, "docs", "readonly").getAll());
+      const encoder = new TextEncoder();
+      const warnBytes = 2048 * 1024 * 1024;
+      const hardBytes = 4096 * 1024 * 1024;
+      const documents = [];
+      let totalBytes = 0;
+      const docIds = (metas || [])
+        .map((meta) => meta && meta.doc)
+        .filter((id) => typeof id === "string" && id)
+        .sort();
+      for (const docId of docIds) {
+        const docRows = await storeMod.atomsOf(handle, docId);
+        let journalBytes = 0;
+        for (const row of docRows || []) {
+          if (!row || !row.atom) continue;
+          try { journalBytes += encoder.encode(JSON.stringify(row.atom)).length + 1; } catch (e) {}
+        }
+        let retainedBytes = 0;
+        const entryK = kernels.get(docId);
+        try {
+          if (entryK && entryK.k && typeof entryK.k.memory_usage === "function") {
+            const measured = Number(entryK.k.memory_usage());
+            if (Number.isFinite(measured) && measured > 0) retainedBytes = Math.floor(measured);
+          }
+        } catch (e) {}
+        const docTotal = journalBytes + retainedBytes;
+        totalBytes += docTotal;
+        documents.push({
+          doc_id: docId,
+          journal_bytes: journalBytes,
+          retained_bytes: retainedBytes,
+          total_bytes: docTotal,
+        });
+      }
+      const status = {
+        total_bytes: totalBytes,
+        warn_bytes: warnBytes,
+        hard_bytes: hardBytes,
+        headroom_bytes: Math.max(0, hardBytes - totalBytes),
+        level: totalBytes > hardBytes ? "over" : totalBytes >= warnBytes ? "warn" : "ok",
+        documents,
+        process_rss_bytes: null,
+      };
+      return json({
+        ok: true, memory_status: status, server: false,
+        note: "浏览器没有进程 RSS 与磁盘日志 ⇒ process_rss_bytes 恒 null；journal_bytes 是 IndexedDB "
+          + "原子 JSON 字节，retained_bytes 是已加载内核的 memory_usage()（未加载为 0）；"
+          + "阈值与 level 判定照服务端的 2048／4096 MiB。",
+      });
+    }
+
     // **★ C/S 客户端渲染：本地没实现的端点 ⇒ **只读代理**到服务端 ✗ ★**（第 10 轮 ✓）
     //   **∴ 为什么 ✗**：`list_effects` 等**只在服务端有**（`get_anchors` 曾在此列 ⇒ **现已本地实现 ✓**）⇒ 本地层原来抛
     //     `endpoint_not_local` ✓ ⇒ 页面初始化／效果面板**每次**打一行红字 ✓（实测日志 ✓），

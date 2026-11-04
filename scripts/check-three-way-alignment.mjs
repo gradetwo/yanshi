@@ -49,7 +49,9 @@ const SPEC_END = "// </gen:tool-specs>";
 // 基线 2026-11-04：缺本地路由 60 → 补 `put_blob` 后 59；参数未读 66（与
 // `check-pwa-local-params.mjs` 的白名单同数）。两个数都由本判据每次现算，
 // 常量只用来**拦住增长**，不是快照。
-const MISSING_CEILING = 59;
+// line-parity（同一天）：补 `stroke_heatmap`／`list_fonts`／`memory_status` 三条只读本地路由
+// ⇒ 缺本地路由 59 → 56 ⇒ 上界一并降到 56（缺口只许降）。
+const MISSING_CEILING = 56;
 const DEAD_PARAMS_CEILING = 66;
 
 const failures = [];
