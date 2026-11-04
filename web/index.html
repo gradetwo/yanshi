@@ -2248,8 +2248,6 @@ const blobUrl = (hash) => api("/api/blob/" + hash);
 // 含义 ✓：只在**打开含重内容的文档**或**刚发生 heavy 原子**时为真 ✓ ——
 // 此时服务端像素才是权威（内核表示不了 heavy 内容 ✓）；用户一开始画就清掉 ✓（乐观笔迹归内核 ✓）。
 let needsServerPixels = false;
-// 外部失效（tiles 事件）的防抖重同步计时器；见 WS 的 tiles 分支。
-let externalSyncTimer = null;
 // **★ 下一次"服务端空白"补画是不是**权威结果 ✗ ★**（第 880 轮 ✓；**判据实测 ✓**）：
 //   **∴ 原来 ✗**：**服务端回空白 且 画布有墨 ⇒ 一律跳过** ✗（防"落笔后闪白" ✓）
 //     ⇒ **∴ 而**有些操作**本来就该让画面变空** ✗（隐藏图层 ✓、删除图层 ✓、撤销到底 ✓）
@@ -10681,14 +10679,9 @@ function connect() {
       // 降噪：失效 tile 数只更新状态栏，日志最多每 2 秒一条（此前每个事件都写一行）。
       const count = (message.event.keys || []).length;
       setStatus({ dirty: count });
-      // 外部改动（tiles 失效）⇒ 防抖 resync；只重画不够，内核还留着被撤销的原子。
-      if (!state.dragging) {
-        if (externalSyncTimer) clearTimeout(externalSyncTimer);
-        externalSyncTimer = setTimeout(() => {
-          externalSyncTimer = null;
-          if (!state.dragging) void resync();
-        }, 250);
-      }
+      // **不在这里 resync**：tiles 事件可能在异步渲染在飞时到达，再进内核会撞
+      // "memory access out of bounds"（CI 实测）。外部撤销/重做由 atom 事件的
+      // revert/reapply 分支处理（服务端像素 + allowBlank）；这里只重画。
       const now = performance.now();
       if (now - (window.yanshiStats.lastTileLogMs || 0) > 2000) {
         window.yanshiStats.lastTileLogMs = now;
@@ -12581,7 +12574,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-4714623590294")
+      caches.open("yanshi-shell-3830425784115")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));

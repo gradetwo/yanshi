@@ -69,19 +69,19 @@ export function historyStepAllowsBlank(source) {
   };
 }
 
-/** **④ tiles 事件必须 resync** */
-export function tilesEventResyncs(source) {
+/** **④ tiles 事件**不得**直接 resync** ✗（会撞 wasm `memory access out of bounds` ✓） */
+export function tilesEventDoesNotResync(source) {
   const block = sliceBetween(source, 'message.event.event === "tiles"', 'message.event.event === "thumbnail"');
   if (block === null) return { ok: false, reason: "找不到 tiles 事件分支（锚点变了）", premise: true };
-  const ok = /resync\s*\(/.test(block);
-  return { ok, reason: ok ? "" : "tiles 只改状态/日志，没有 resync ⇒ 外部改动画布不更新" };
+  const ok = !/resync\s*\(/.test(block);
+  return { ok, reason: ok ? "" : "tiles 分支里调了 resync ⇒ 异步渲染在飞时重入内核，实测 wasm 越界崩溃" };
 }
 
 const CHECKS = [
   ["① 异步回调没有再 requestRepaint（不自激）", asyncCallbackHasNoSelfRepaint],
   ["② heavy 文档直接取服务端像素", heavyPathSkipsKernel],
   ["③ 历史步进／revert 放行空白", historyStepAllowsBlank],
-  ["④ tiles 失效事件触发 resync", tilesEventResyncs],
+  ["④ tiles 分支不直接 resync（避免 wasm 重入崩溃）", tilesEventDoesNotResync],
 ];
 
 const GOOD_SOURCE = [
@@ -97,7 +97,7 @@ const GOOD_SOURCE = [
   "}",
   "async function refreshAfterHistoryStep() { await queueServerBlit(null, { allowBlank: true }); void refreshHistory(); }",
   "socket.onmessage = (event) => {",
-  '  if (message.event.event === "tiles") { setStatus({ dirty: 1 }); void resync(); }',
+  '  if (message.event.event === "tiles") { setStatus({ dirty: 1 }); }',
   '  else if (message.event.event === "thumbnail") {}',
   '  if (event.kind === "revert") { needsServerPixels = true; void queueServerBlit(null, { allowBlank: true }); }',
   "};",
@@ -107,7 +107,7 @@ const BAD_SOURCE = GOOD_SOURCE
   .replace("needsServerPixels && heavyDocument", "needsServerPixels")
   .replace("      paintRegionPixels(view, x0, y0, cw, ch, vx, vy, w, h, started);", "      paintRegionPixels(view, x0, y0, cw, ch, vx, vy, w, h, started); requestRepaint();")
   .replace(", { allowBlank: true }", "")
-  .replace(" void resync();", "");
+  .replace("setStatus({ dirty: 1 });", "setStatus({ dirty: 1 }); void resync();");
 
 if (process.argv.includes("--self-test")) {
   let failures = 0;
