@@ -198,9 +198,16 @@ await evaluate(`(() => {
 })()`);
 await sleep(400);
 // **先等笔刷列表载入，再设值** ✗ —— 列表没载入时设值是**静默失败** ✓（产品侧也一并修了 ✓）。
-if (!(await waitFor("document.querySelectorAll('#brush option').length > 5", "笔刷列表"))) {
-  // **不硬失败** ✓：`.myb` 库笔刷本来就不经过这个下拉框 ⇒ 它空着仍可测（下面会核 `#brush` 的值 ✓）。
-  console.log("  （笔刷下拉框没就绪 ⇒ 继续；库笔刷不走它 ✓）");
+// **★ `#brush` 的选项数**不是**就绪信号 ✗**（2026-11-05 实测 ✓）
+//   **∴ 实测 ✗**：当前界面的 `#brush` 只有 **1** 个选项（「内置画笔」✓）——
+//     库笔刷走 `#brushLibraryList` 的行 ✓，**本来就不进这个下拉框** ✓。
+//   **∴ 所以**：原来等 `#brush option > 5` **永远等不到** ✓ ⇒ 不能拿它当硬前提 ✗；
+//     这里只**记一笔**，真正的就绪由上面的「画布尺寸与首帧」保证 ✓。
+const brushOptions = Number(await evaluate(
+  `String(document.querySelectorAll('#brush option').length)`,
+));
+if (brushOptions <= 5) {
+  console.log("  （`#brush` 只有 " + brushOptions + " 个选项 ⇒ 库笔刷走列表，不经过它 ✓）");
 }
 // **选一支 .myb 笔刷** ✓（spray 最能体现"实心线 vs 真笔刷"的差别 ✓）。
 const requestedBrush = process.env.BRUSH || "spray";
