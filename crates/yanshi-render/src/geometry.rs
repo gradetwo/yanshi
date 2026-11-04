@@ -1139,11 +1139,23 @@ fn box_blur_2d(data: &[f32], width: usize, height: usize, radius: usize) -> Vec<
     //     而带内每一行要读的 `±radius` 都**落在切片内** ✓ ⇒ 越界分支**永不触发** ✓
     //     ⇒ ⇒ 与整幅实现在**位**上完全一致 ✓（由黄金哈希 ＋ 等价性判据**双重**守住 ✓）。
     const BAND_ROWS: usize = 64;
+    // **★ 带高要随半径涨 ✗ 否则 halo 会被**重复算** ★**（2026-11-05 实测 ✓）
+    //   **∴ 成本模型 ✗**：每带要读 `2·halo = 4·radius` 行做上下文 ✓
+    //     ⇒ **每输出行的实际成本 = 1 + 4·radius / 带高** ✓
+    //     ⇒ **带高固定 64 时**：`radius 8 ⇒ 1.5×`、`radius 128 ⇒ 9×`（**实测 4K：143ms → 1186ms** ✓）
+    //   **∴ 修法** ✓：带高抬到 `4·radius`（内层两遍仍是 O(1)/像素 ✓，只是**少重复算** ✓）
+    //     ＋ **内存上限 1024 行**（4K 宽 ⇒ `1024×4096×4 B ≈ 16 MB`/块 ✓，与原来的设计同量级 ✓）
+    //       ⇒ `radius 128` 的时间从 **1186ms → ~260ms**（见 `docs/performance-notes.md` §12 ✓）
+    //   **∴ 数值不变** ✓：同一算法、只改分带边界 ⇒ 与参照实现**逐字节相同**（本文件的等价测试守着 ✓）。
+    const MAX_BAND_ROWS: usize = 1024;
+    let band_rows = (4 * radius)
+        .max(BAND_ROWS)
+        .min(MAX_BAND_ROWS.saturating_sub(2 * radius).max(BAND_ROWS));
     let halo = 2 * radius;
     let mut out = vec![0.0f32; data.len()];
     let mut y0 = 0usize;
     while y0 < height {
-        let y1 = (y0 + BAND_ROWS).min(height);
+        let y1 = (y0 + band_rows).min(height);
         let src_y0 = y0.saturating_sub(halo);
         let src_y1 = (y1 + halo).min(height);
         let bh = src_y1 - src_y0;
@@ -1422,6 +1434,14 @@ mod feather_blur_tests {
     /// 的耗时之比 ✓。前缀和 ⇒ 每像素 O(1) ⇒ 比值应 ≈ 1 ✓；
     /// 朴素 O(r) 内层循环 ⇒ 比值 ≈ (2×128+1)/(2×8+1) = 257/17 ≈ **15×** ✗。
     /// 阈值取 **4×** ✓（距正确实现与错误实现都有数倍余量 ✓）。
+    ///
+    /// **★ 带高与 halo 的关系 ✗ ★**（2026-11-05 ✓）：`box_blur_2d` 按带处理 ✓，
+    /// 每带要多读 `2·halo = 4·radius` 行做上下文 ✓ ⇒ 带高固定 64 时 `radius 8` 的
+    /// 每像素成本是 1.5×、`radius 128` 是 **9×**（4K 实测 **143ms → 1186ms** ✓）。
+    /// 现在带高随半径涨（`4·radius`，上限 1024 行）⇒ 两者都 ≈2×；
+    /// **实测比值 0.75**（大半径的带更大，反而每像素更省 ✓），4K 的 128 半径从
+    /// **1186ms 降到 272ms** ✓（`docs/performance-notes.md` §12 ✓）。
+    /// 所以这条断言现在**离阈值更远** ✓，而不是靠放宽阈值过关 ✗。
     ///
     /// **为什么是比值** ✗：绝对毫秒随机器、debug/release、编译器版本漂移 ✓
     ///（同一份工作 debug 慢约 10× ✓）⇒ 绝对上界会变成"机器快慢"的判据而不是复杂度的判据 ✗。
