@@ -907,6 +907,15 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
             _ => method_not_allowed(request, "GET, POST"),
         };
     }
+    // **`/assets-index.json`：前端 `list_assets` / `list_textures` 读的索引** ✓。
+    // 必须**在服务端生成**：它原来只由 `scripts/pwa-sync-viewer.mjs` 写进 `web/`，
+    // 而 `yanshi-serve` 不托管 `web/` ⇒ 两个端点一直走 501 `index_missing` ✓。
+    if path == "/assets-index.json" {
+        return match method {
+            "GET" => assets_index(state),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
     // **下列资源路由都先做路径段百分号解码**（`decode_asset_segment`）：
     // 它必须在各处理器自己的白名单/穿越守卫**之前**，且只做"还原"、不改守卫。
     if let Some(file) = path.strip_prefix("/wasm/") {
@@ -3694,6 +3703,87 @@ fn medium_asset(state: &ServerState, file: &str) -> Response {
     }
 }
 
+/// `GET /assets-index.json`：**前端 `list_assets` / `list_textures` 读的那份索引** ✓。
+///
+/// **为什么必须在服务端生成** ✗：索引原先**只有** `scripts/pwa-sync-viewer.mjs` 写一份
+/// （`web/assets-index.json` ✓）—— 而 `yanshi-serve` 的托管树里**没有 `web/`** ✓
+/// ⇒ 两个端点 `fetch("/assets-index.json")` 恒 404 ⇒ 恒回 501 `index_missing` ✓
+/// （自 `003f7a1d` 起就如此 ✓）。
+///
+/// **形状照生成器** ✓（`pwa-sync-viewer.mjs:515-538`）：顶层四个键
+/// `palette` / `texture` / `brush` / `medium` ✓，每项 `{name, bytes}` ✓，
+/// `bytes` 就是**文件字节数**（生成器用 `statSync(full).size` ✓），只取**直接子文件** ✓。
+/// **目录缺失 ⇒ 该键空数组** ✓（不是 500 ✓ —— 与生成器「找不到就 WARN 跳过」同义 ✓）。
+///
+/// **四类的根与对应静态路由一致** ✓（各写一套必然漂移 ✓）：
+/// - `brushes` ⇒ `--assets-dir/brushes`（`brush_text_asset` ✓）
+/// - `mediums` ⇒ `--medium-dir`（缺省跟随资产根，`medium_asset` ✓）
+/// - `textures` ⇒ `<root>/textures` 优先、`<assets-dir>/textures` 其次（`texture_asset` ✓）
+/// - `palettes` ⇒ `--assets-dir/palettes`（本服务端暂无 `/palettes/` 路由，但资产根就是这里 ✓）
+///
+/// **只读名字与大小** ✓：不把整支笔刷读进内存 ✓。**不缓存** ✓：目录内容会变
+/// （用户导入笔刷／纹理 ✓）⇒ 冻结列表会让界面显示旧表 ✗。
+fn assets_index(state: &ServerState) -> Response {
+    let assets = state.options.assets_dir.clone();
+    let mut textures: BTreeMap<String, u64> = BTreeMap::new();
+    if let Some(root) = state.options.root.as_ref() {
+        for (name, bytes) in index_entries(Some(&root.join("textures"))) {
+            textures.entry(name).or_insert(bytes);
+        }
+    }
+    if let Some(dir) = assets.as_ref() {
+        for (name, bytes) in index_entries(Some(&dir.join("textures"))) {
+            textures.entry(name).or_insert(bytes);
+        }
+    }
+    let textures: Vec<(String, u64)> = textures.into_iter().collect();
+    let palettes = index_entries(assets.as_ref().map(|dir| dir.join("palettes")).as_deref());
+    let brushes = index_entries(assets.as_ref().map(|dir| dir.join("brushes")).as_deref());
+    let mediums = index_entries(state.options.medium_dir.as_deref());
+    Response::json(
+        200,
+        &json!({
+            "palette": index_json(&palettes),
+            "texture": index_json(&textures),
+            "brush": index_json(&brushes),
+            "medium": index_json(&mediums),
+        }),
+    )
+    // 与 `/api/effects` 同口径：动态目录内容不该被浏览器缓存住 ✓。
+    .with_header("Cache-Control", "no-cache")
+}
+
+/// 读一个资产目录里的**直接子文件**：`(name, 字节数)`，按名字升序 ✓。
+/// 目录不存在／读不了 ⇒ 空表 ✓（缺失不是错误 ✓）；子目录不计入 ✓。
+fn index_entries(dir: Option<&std::path::Path>) -> Vec<(String, u64)> {
+    let Some(dir) = dir else { return Vec::new() };
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, u64)> = read
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let meta = entry.metadata().ok()?;
+            if !meta.is_file() {
+                return None;
+            }
+            Some((entry.file_name().to_string_lossy().into_owned(), meta.len()))
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// `(name, bytes)` ⇒ `[{"name": …, "bytes": …}]`（生成器的每项形状 ✓）。
+fn index_json(entries: &[(String, u64)]) -> Value {
+    Value::Array(
+        entries
+            .iter()
+            .map(|(name, bytes)| json!({ "name": name, "bytes": bytes }))
+            .collect(),
+    )
+}
+
 /// 品牌资源白名单（避免把任意仓库文件暴露出去）。
 const BRAND_FILES: [(&str, &str); 14] = [
     ("svg/favicon.svg", "image/svg+xml"),
@@ -4397,6 +4487,10 @@ pub fn routes() -> BTreeMap<&'static str, &'static str> {
             "完整原子读取（客户端本地折叠，需 token）",
         ),
         ("GET /wasm/{file}", "WASM 计算内核产物（js/wasm）"),
+        (
+            "GET /assets-index.json",
+            "资产索引（palette/texture/brush/medium 的 name+bytes）",
+        ),
         ("GET /brand/{file}", "品牌资源（SVG 与预渲染 PNG）"),
         ("GET /favicon.svg", "站点图标（SVG / PNG / ICO）"),
         ("GET /ws?doc=&token=", "WebSocket 升级与推送（需 token）"),
@@ -4559,6 +4653,69 @@ mod tests {
             blob_roots_cache: Mutex::new(std::collections::HashMap::new()),
             derived_blobs: Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// **`GET /assets-index.json`** ✓：四类键、名字、字节数、排序、缺失目录 ⇒ `[]`。
+    ///
+    /// **这条判据守的缺陷** ✓：路由原本**不存在** ⇒ `list_assets` / `list_textures`
+    /// 的 `fetch("/assets-index.json")` 恒 404 ⇒ 恒回 501 `index_missing` ✓。
+    /// **变异**：把 `assets_index` 里的 `brushes` 换成不存在的子目录 ⇒ 该键红 ✓；
+    /// 把目录缺失改成 404／500 ⇒ 后半段红 ✓。
+    #[test]
+    fn assets_index_lists_the_four_kinds_and_tolerates_missing_dirs() {
+        let base = std::env::temp_dir().join(format!(
+            "yanshi-assets-index-{}-{}",
+            std::process::id(),
+            yanshi_core::now_ms()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        for sub in ["palettes", "textures", "brushes", "mediums"] {
+            std::fs::create_dir_all(base.join(sub)).unwrap();
+        }
+        // `bytes` 是**文件字节数** ✓（生成器用 `statSync(full).size` ✓ ⇒ 不是字符数、不是别的）。
+        let write = |sub: &str, name: &str, len: usize| {
+            std::fs::write(base.join(sub).join(name), vec![b'x'; len]).unwrap();
+        };
+        write("palettes", "b.gpl", 7);
+        write("palettes", "a.gpl", 3);
+        write("textures", "t.png", 11);
+        write("brushes", "b.myb", 5);
+        write("mediums", "m.wasm", 13);
+        // 子目录不算资产 ✓（生成器用 `isFile()` 过滤 ✓）。
+        std::fs::create_dir_all(base.join("palettes").join("nested")).unwrap();
+
+        let mut state = state();
+        state.options.assets_dir = Some(base.clone());
+        state.options.medium_dir = Some(base.join("mediums"));
+        let response = route(&state, &request("GET", "/assets-index.json"));
+        assert_eq!(response.status, 200, "路由必须存在（修复前是 404 ✗）");
+        assert_eq!(response.content_type, "application/json; charset=utf-8");
+        let value = body_json(&response);
+        assert_eq!(
+            value["palette"],
+            json!([{ "name": "a.gpl", "bytes": 3 }, { "name": "b.gpl", "bytes": 7 }]),
+            "palettes 按名字升序、只列直接子文件 ✓"
+        );
+        assert_eq!(value["texture"], json!([{ "name": "t.png", "bytes": 11 }]));
+        assert_eq!(value["brush"], json!([{ "name": "b.myb", "bytes": 5 }]));
+        assert_eq!(value["medium"], json!([{ "name": "m.wasm", "bytes": 13 }]));
+
+        // **缺失目录 ⇒ 空数组** ✓（不是 500、不是整个响应失败 ✓）。
+        state.options.assets_dir = Some(base.join("does-not-exist"));
+        state.options.medium_dir = None;
+        let response = route(&state, &request("GET", "/assets-index.json"));
+        assert_eq!(response.status, 200, "目录缺失不是错误 ✓");
+        let value = body_json(&response);
+        for key in ["palette", "texture", "brush", "medium"] {
+            assert_eq!(value[key], json!([]), "{key} 缺失时必须是空数组 ✓");
+        }
+
+        // 只读 ✓：别的方法不能把它当上传口。
+        assert_eq!(
+            route(&state, &request("POST", "/assets-index.json")).status,
+            405
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// 介质资源名同样只接受裸文件名（审计 L-7：与 `texture_asset` 对齐 ✓）。
