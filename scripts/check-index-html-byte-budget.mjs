@@ -45,7 +45,12 @@ import { execFileSync } from "node:child_process";
 //   CSS 改动只在 viewer.css，不计入本文件；index.html 的增量全部来自 viewer-app.js 的
 //   `refitStage`／`ResizeObserver`／图标替换及其说明注释）⇒ 上界 936,577→941,091
 //   （+4,514，留 359 B 不变）。
-const CEILING = 941_091;
+// 2026-11-04：320×568 短屏修复（画布 43×32→232×174；工具条两行＋露头；状态栏换行；右栏抽屉）
+//   使 940,732→942,077（+1,345 B）。CSS 改动只在 viewer.css（不计入本文件）；index.html 侧的
+//   增量全部来自 viewer-app.js 的 `loadPanels()` 短屏默认（+776 字符：条件常量、
+//   短屏一律先收起、桌面照旧尊重存储）及其说明注释 ⇒ 上界 941,091→942,077
+//   （+986，**不留余量**：这次只抬到实测值，下一次改动必须自己写出余量来）。
+const CEILING = 942_077;
 
 const failures = [];
 const check = (ok, label, detail) => {

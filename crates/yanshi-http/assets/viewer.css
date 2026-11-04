@@ -515,3 +515,50 @@
     .options button, .options select, .options input:not([type="checkbox"]),
     .statusbar button { min-height: 40px; }
   }
+  /* **★ 短屏（≤480 宽 **且** ≤620 高；320×568 实测）★**
+     **∴ 为什么上面那个 480 块不够** ✗：竖向预算里 `header 151.5 ＋ options 113.6 ＋ tools 137
+     ＋ aside 96 ＋ 状态栏 45 ＋ 内边距/间距 32` 已经 **575 > 568** ⇒
+       · `.stage` 只剩 **2px** ⇒ 画布 302×227 从舞台里**溢出去**（15 个采样点 0 个落在 canvas ✗）
+       · 落笔全落在 `#tools`/`aside` 上 ⇒ 画不出来 ✓
+       · 状态栏 `scrollWidth 380 / clientWidth 320` ⇒「画布 1024×768」被裁 ✓
+     **∴ 三条对策**（都不是「把功能藏起来」✓）：
+       ① **顶栏三行 → 两行**：诊断计数（head/rendered/dirty）让位，
+          **连接状态与「已保存」留下**（那两个才决定「敢不敢关页面」✓）；
+       ② **工具条两整行 ＋ 第 3 行露头 20px**：露头就是「下面还有」的信号 ✓
+          —— 比「正好切在行边界、看起来没有第 4 行」诚实 ✓；
+       ③ **右栏改底部抽屉**（`position: fixed` ⇒ 不再吃画布高度 ✓，内部照旧滚 ✓），
+          **首次进入短屏默认收起**（`viewer-app.js` 的 `loadPanels()` ✓）。
+     **∴ 为什么抽屉要 fixed** ✗：留在流里时打开面板会把舞台压到 ~96px ⇒
+       一开图层，画布就重新 fit 成另一个缩放、关上又变回来（缩放跳两下 ✗）。 */
+  @media (max-width: 480px) and (max-height: 620px) {
+    header { padding: 4px 8px; gap: 4px 6px; }
+    header h1 { font-size: 14px; margin-right: 2px; gap: 6px; }
+    header h1 .brand-mark { width: 20px; height: 20px; }
+    #identity { font-size: 11px; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+                white-space: nowrap; flex: 1 1 40px; }
+    /* 连接状态 + 离线写队列状态**必须留**（用户靠它判断「能不能关页面」✓）；
+       `head/rendered/dirty` 是诊断计数 ⇒ 短屏让位 ✓。 */
+    header .status { gap: 4px; font-size: 11px; min-width: 0; overflow: hidden;
+                     flex-wrap: nowrap; white-space: nowrap; flex: 1 1 80px; }
+    header .status > span:not(:first-child):not(#outbox) { display: none; }
+    /* 剩下那两段若仍放不下 ⇒ **以省略号收尾**（硬裁会把「无服务端」切成半句 ✓）。
+       **「已保存 / 离线排队」不许被省略**（它决定用户敢不敢关页面 ✓）⇒ 固定不缩 ✓。 */
+    header .status > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    header .status #outbox { flex: 0 0 auto; }
+    header .panel-toggles { margin-left: 0; gap: 2px; }
+    header .panel-toggles button, #langToggle { padding: 4px 5px; font-size: 11px; }
+    /* 选项条 20vh → 18vh：320×568 下再让 11px 给画布（内容仍是滚动容器 ✓）。 */
+    .options { max-height: 18vh; }
+    /* 两整行 ＋ 第 3 行露头 20px：`40×2 ＋ 间距 4 ＋ 上内边距 8 ＋ 下边框 1 ＋ 露头 20`。 */
+    main > #tools { max-height: calc(40px * 2 + 4px + 9px + 20px); padding-bottom: 0; }
+    /* 底部抽屉：`min-height` 保证卡片按钮不再被切成 12px ✓，超出照旧内部滚 ✓。 */
+    main > aside {
+      position: fixed; left: 0; right: 0; bottom: 0; top: auto;
+      width: auto; height: auto; max-height: min(62vh, 360px); min-height: 160px;
+      z-index: 36; border-radius: 10px 10px 0 0; border-bottom: 0;
+      background: var(--surface-2); box-shadow: 0 -10px 30px rgba(0, 0, 0, .5);
+      animation: none;
+    }
+    /* 状态栏：放不下就**换行**（信息一条不减 ✓），横向绝不溢出 ✓。 */
+    .statusbar { flex-wrap: wrap; overflow-x: hidden; gap: 2px 10px; padding: 6px 8px; }
+  }

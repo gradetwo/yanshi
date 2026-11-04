@@ -12538,7 +12538,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-9ca4b1c9-dirty-8c56f2ca")
+      caches.open("yanshi-shell-9715931605727")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));
@@ -13532,13 +13532,28 @@ renderToolStrip();
 //    （真需要浏览器全屏时用 F11 ✓，两者互不冲突 ✓）。
 const PANEL_STORE = "yanshi.panels";
 const panels = { rail: false, dockers: false, zen: false };
+/// **短屏**（与 `viewer.css` 的 `@media (max-width: 480px) and (max-height: 620px)` 同一个条件 ✓）。
+///
+/// **∴ 为什么需要这个类** ✗：320×568 实测右栏在流内占 96 ＋ 间距 8 ⇒ 画布只剩 2px、
+/// 落笔全落在工具条上 ✓。CSS 已把右栏改成**底部抽屉**（`position: fixed` ⇒ 不吃画布高度 ✓），
+/// 但「默认收不收起来」是**意图**✗，CSS 表达不了 ⇒ 由这里决定 ✓。
+///
+/// **∴ 为什么短屏要**覆盖**存储的「面板开着」✗**：320 下右栏在流内占 96px ⇒ 画布 2px ✓。
+/// 手机上「上次开着」不代表这次要开 ✓；而「开着」的代价是**画不出来** ✗ ⇒
+/// 短屏每次从「画布可用」起步 ✓（面板一次点开 ✓，它现在是底部抽屉、不再吃画布高度 ✓）。
+/// 桌面／平板（>480 宽或 >620 高）照旧尊重存储 ✓。
+const SHORT_SCREEN_MQ = "(max-width: 480px) and (max-height: 620px)";
 function loadPanels() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(PANEL_STORE) || "{}");
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(PANEL_STORE) || "null"); } catch (_) { saved = null; }
+  if (saved && typeof saved === "object") {
     panels.rail = saved.rail === true;
     panels.dockers = saved.dockers === true;
     panels.zen = saved.zen === true;
-  } catch (_) { /* 存储损坏时用默认值 ✓，不影响使用 ✓ */ }
+  }
+  // **短屏一律先收起** ✓（**∴ 覆盖存储** ✗）：手机上「上次开着面板」不代表这次要开 ✓，
+  // 而**开着**在 320 下就是 2px 画布 ✗ ⇒ 每次进入短屏都从「画布可用」起步 ✓（面板一次点开 ✓）。
+  try { if (window.matchMedia(SHORT_SCREEN_MQ).matches) panels.dockers = true; } catch (_) {}
 }
 /// **舞台尺寸变了 ⇒ 重新适配** ✓（面板开合／转屏／选项条伸缩 ✓）。
 ///
@@ -16235,6 +16250,7 @@ for (const [id, divider] of [["toggleRail", 6], ["toggleDockers", 10]]) {
     + ' stroke-width="1.5"/><path d="M' + divider + ' 2.5v11" stroke="currentColor"'
     + ' stroke-width="1.5"/></svg>' + label;
 }
+
 
 </script>
 <!-- **素材浮层** ✓：两张卡搬进来（`appendChild` = 移动节点 ✓，监听器与状态都还在 ✓）⇒
