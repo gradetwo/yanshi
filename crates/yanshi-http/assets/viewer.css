@@ -133,7 +133,14 @@
            overflow: auto; background: #f5f5f5; }
   /* **「文件」菜单** ✓（用户："导入导出之类功能也不适合放在信息面板，按照行业主流软件的习惯来设置分类"✓）
      —— 行业习惯就是**顶栏一个「文件」** ✓，而不是散在右侧信息面板里 ✓。 */
-  #fileMenu { position: fixed; top: 52px; left: 118px; z-index: 42; width: min(340px, 92vw);
+  /* **★ 不许**横向溢出视口 ✗ ★**（2026-11-05 实测，390×844 ✓）：
+     **∴ 症状 ✗**：`left:118px ＋ width:min(340px,92vw)` ⇒ 右边界 **458 > 390**
+       ⇒ 关闭按钮／`#projectPath`／「导出选区」**有一截在屏幕外** ✓
+       而 `body{overflow:hidden}` ＋ `scrollWidth == innerWidth` ⇒ **滚也滚不到** ✗。
+     **∴ 修法** ✓：宽度上限按**左边距**扣（`calc(100vw - 126px)`），并给竖向兜底滚动 ✓
+       （短屏 320×568 时菜单 477px 高 ⇒ 也要能滚 ✓）。 */
+  #fileMenu { position: fixed; top: 52px; left: 118px; z-index: 42;
+    width: min(340px, calc(100vw - 126px)); max-height: calc(100vh - 64px); overflow: auto;
     background: Canvas; color: CanvasText; border: 1px solid rgba(128,128,128,.5);
     border-radius: 8px; padding: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.28); }
   #fileMenu[hidden] { display: none; }
@@ -480,6 +487,9 @@
          · `aside` 上限 96px（原被压缩到 136）              ⇒ −40px
        合计 139px ⇒ `stage` 104 → 244（实测 ✓；文档位图 324×243 @31.6%）。
        三块都仍是**滚动容器** ⇒ 颜色／末端色／一笔多色／强度／羽化 照样够得着 ✓。 */
+    /* **文件菜单在手机上改贴边** ✓：`left:118` 留给桌面（跟着「文件」按钮 ✓）；
+       390 下它会把菜单挤成 264px 宽 ✓ —— 手机上**铺满**更好用 ✓。 */
+    #fileMenu { left: 8px; right: 8px; width: auto; max-height: calc(100vh - 64px); }
     .options {
       flex: 0 0 auto; max-height: 20vh;
       overflow-x: hidden; overflow-y: auto;
