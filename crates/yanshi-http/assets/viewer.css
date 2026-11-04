@@ -449,3 +449,47 @@
   #outboxBar[hidden] { display: none; }
   #outboxBar[data-state="failed"], #outboxBar[data-state="conflict"] { background: #ffe9e6; }
   #outboxBar #outboxText { flex: 1; }
+  /* **★ 手机窄屏（≤480 CSS px；390×844 截图实测 ✓）——桌面与 CI 的 800×600 都不进这个块 ✓**
+
+     **① 选项条被压扁 ⇒ 颜色／末端色／一笔多色／强度／羽化 够不着** ✗
+     `body` 是 100% 高的 flex 列 ✓，而 `.options` 在 768 断点里只写了 `max-height: 30vh` ✗
+     （`flex` 仍是默认的 `0 1 auto`）⇒ 它跟 `main` 一起被压缩 ✓ ⇒ 截图里只剩「画笔」＋「粗细」
+     两行 ✓，其余靠一条 10px 的横滚条 ✗（`overflow-y: auto` 会把 `overflow-x: visible`
+     算成 `auto` ⇒ 溢出就变成横滚 ✓）。
+     ⇒ **∴ 不可压缩**（`flex: 0 0 auto`）＋ **限高、但纵向滚**（滚动条加粗 ✓、方向对 ✓）。
+
+     **② 工具面板第三行被切掉半个图标** ✗ —— **不是画布盖住它** ✓（我核过：切它的是
+     `max-height: 80px` ✓）。行距是 28px 按钮 ＋ 4px 间距 ⇒ 80px 减掉 16px 内边距只剩 64px
+     ⇒ 第三行露出的高度不足一行 ⇒ 断在图标中间 ✗。
+     ⇒ **∴ 把上限改成「整行」的整数倍** ✓：行高钉成 40px（`grid-auto-rows`）⇒ 断点永远落在
+     行边界上 ✓，剩下的整行靠纵向滚（滚动条加粗 ✓）。
+     **∴ 为什么不干脆取消上限** ✗：工具全展开要吃掉整个舞台 ✓ ⇒ 画布会被压得没法用 ✓
+     （那只是把一个缺陷换成另一个 ✓）。
+
+     **③ 粗细那组横向溢出**：`#size` 钉死 190px ＋ `#sizeValue` 58px ⇒ 390 下右边框被裁 ✗
+     ⇒ **∴ 该组占满一整行、滑杆可伸缩** ✓。
+
+     **④ 触摸目标**：28px 对鼠标够、对手指不够 ✓ ⇒ 窄屏抬到 40px ✓。 */
+  @media (max-width: 480px) {
+    .options {
+      flex: 0 0 auto; max-height: 30vh;
+      overflow-x: hidden; overflow-y: auto;
+      scrollbar-width: auto; overscroll-behavior: contain;
+    }
+    .size-control { flex: 1 1 100%; }
+    .size-control input[type="range"] { width: auto; flex: 1 1 60px; min-width: 0; }
+    .size-control #sizeValue { width: 56px; flex: 0 0 auto; }
+    main > #tools {
+      flex: 0 0 auto;
+      grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+      grid-auto-rows: 40px;
+      /* 3 行 ＋ 2 个 4px 间距 ＋ 上下各 8px 内边距 ⇒ 上限正好落在行边界上 ✓ */
+      max-height: calc(40px * 3 + 4px * 2 + 16px);
+      overflow-x: hidden; overflow-y: auto;
+      scrollbar-width: auto; overscroll-behavior: contain;
+    }
+    #tools button { min-height: 40px; }
+    header button,
+    .options button, .options select, .options input:not([type="checkbox"]),
+    .statusbar button { min-height: 40px; }
+  }
