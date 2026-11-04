@@ -13414,6 +13414,9 @@ function i18nText(node) {
     //   图层名来自 `list_layers` ✓ 是用户数据 ⇒ 一个字不动 ✓。`permission_denied` 与 `🔓`
     //   是接口名与图标 ⇒ 原样带过去 ✓。
     const m42 = /^(画布上的一笔|移动对象|这一步)没有发送：「(.+)」是锁定图层（服务端会回 permission_denied）⇒ 在「图层」面板点 🔓 解锁后再试$/.exec(zh);
+    // **位精确自检的前提缺失** ✓（本轮新增 ✓）：这句是**静态**短句 ✗ 没有插值 ⇒ 但它是 `#c33` 行 ✓
+    //   ⇒ 会写进 `#stageNotice` 浮层 ⇒ 也要词条（整句锚定，不吞别的句子 ✓）。
+    const m43 = /^没有 WASM 内核，无法自检$/.exec(zh);
     // **范围遮罩的覆盖回执** ✓（本轮新增 ✓）：整句拼了服务端给的像素数、占比、均值 ✗
     //   和图层 id ⇒ 字典按整句匹配不到 ⇒ 必须模式词条（`#rangeMaskInfo` **不在** `#log` 里 ✓
     //   ⇒ 没有词条就会在英文模式下留着中文 ✓）。
@@ -13559,6 +13562,7 @@ function i18nText(node) {
         + " was not sent: \"" + m42[2] + "\" is a locked layer (the server would answer permission_denied)"
         + " ⇒ unlock it with 🔓 in the Layers panel, then try again.";
     }
+    else if (m43) en = "No WASM kernel ⇒ the self-check cannot run";
   }
   node.nodeValue = (uiLang === "en" && en) ? original.replace(zh, en) : original;
 }

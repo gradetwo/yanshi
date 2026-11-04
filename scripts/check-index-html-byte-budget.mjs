@@ -32,7 +32,9 @@ import { execFileSync } from "node:child_process";
 // 2026-11-04：锁定层的「没有发送」长句补 I18N 模式词条 m42（`refuseLockedLayer` 的 `log(…,"#c33")`
 //   会覆盖 `stageNotice` ⇒ 用户看见的是长句，缺词条即英文界面漏中文）使 932,334→933,641（+1,307 B：
 //   词条 337 B + 说明注释 970 B）⇒ 上界 933,000→934,000（留 359 B）。
-const CEILING = 934_000;
+// 2026-11-04：补 I18N 模式词条 m43（`没有 WASM 内核，无法自检` ⇒ `No WASM kernel ⇒ the self-check cannot run`）使
+//   933,641→934,026（+385 B = 句式 64 + 链上一行 71 + 说明注释 250）⇒ 上界 934,000→934,385（+385，留 359 B 不变）。
+const CEILING = 934_385;
 
 const failures = [];
 const check = (ok, label, detail) => {

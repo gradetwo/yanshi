@@ -52,7 +52,8 @@ const VIEWER = "crates/yanshi-http/assets/viewer-app.js";
 const I18N = "crates/yanshi-http/assets/i18n.js";
 const ALLOWLIST = "scripts/i18n-runtime-allowlist.txt";
 
-// 棘轮上界（基线 2026-11-04：三层合计缺口 **136** 条 = `#c33` 132 ＋ `forceNotice` 4 ＋ `stageNotice` 0）。
+// 棘轮上界（基线 2026-11-04：三层合计缺口 **135** 条 = `#c33` 131 ＋ `forceNotice` 4 ＋ `stageNotice` 0）。
+//   上一次是 136（`#c33` 132）⇒ 补 `m43`（`没有 WASM 内核，无法自检`）后降 1 ✓。
 // ⇒ 这个数**只许降** ✓：每修一批就把 `UNCOVERED_CEILING` 改到新的实测值 ✓。
 // ⇒ **要涨**必须①抬值 ②在提交信息里写清「谁涨了多少、为什么、打算什么时候修」✓
 //   —— 让膨胀**必须被看见** ✓（这就是本判据的全部目的 ✓，同 `check-index-html-byte-budget.mjs` ✓）。
@@ -61,7 +62,7 @@ const ALLOWLIST = "scripts/i18n-runtime-allowlist.txt";
 //   发现「`#c33` / `forceNotice` 都进 `#stageNotice` 浮层」⇒ 把那一类**全部**扫了一遍 ✓。
 //   ⇒ 与「105 行」的关系：那个数是**行**口径（`grep` 一行里同时有 `log(` 与 `#c33`，实测 111 行）；
 //     本条是**调用**口径（多行调用按 1 处算 ✓）⇒ 132 比 111 多出的部分是**跨行**的那几句 ✓。
-const UNCOVERED_CEILING = 136;
+const UNCOVERED_CEILING = 135;
 
 const failures = [];
 const check = (ok, label, detail) => {
