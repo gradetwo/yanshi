@@ -471,11 +471,21 @@
 
      **④ 触摸目标**：28px 对鼠标够、对手指不够 ✓ ⇒ 窄屏抬到 40px ✓。 */
   @media (max-width: 480px) {
+    /* **★ 2026-11-04 实测：390×844 下画布只剩 104px（136×102 的文档）✗ ★**
+       竖向预算（`header 130 ＋ options 253 ＋ tools 144 ＋ stage 104 ＋ aside 136
+       ＋ 状态栏 45 ＋ 间距/内边距`）里，前三块给得太多。现在各让一步：
+         · `header` 内边距 8→6、间距 8→6                    ⇒ −8px
+         · `.options` 上限 30vh→20vh（253→169，仍可滚 ✓）  ⇒ −84px
+         · `#tools` 上限落在**整行**（137px）＋ 去底部内边距  ⇒ −7px
+         · `aside` 上限 96px（原被压缩到 136）              ⇒ −40px
+       合计 139px ⇒ `stage` 104 → 244（实测 ✓；文档位图 324×243 @31.6%）。
+       三块都仍是**滚动容器** ⇒ 颜色／末端色／一笔多色／强度／羽化 照样够得着 ✓。 */
     .options {
-      flex: 0 0 auto; max-height: 30vh;
+      flex: 0 0 auto; max-height: 20vh;
       overflow-x: hidden; overflow-y: auto;
       scrollbar-width: auto; overscroll-behavior: contain;
     }
+    header { padding: 6px 10px; gap: 6px; }
     .size-control { flex: 1 1 100%; }
     .size-control input[type="range"] { width: auto; flex: 1 1 60px; min-width: 0; }
     .size-control #sizeValue { width: 56px; flex: 0 0 auto; }
@@ -483,11 +493,23 @@
       flex: 0 0 auto;
       grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
       grid-auto-rows: 40px;
-      /* 3 行 ＋ 2 个 4px 间距 ＋ 上下各 8px 内边距 ⇒ 上限正好落在行边界上 ✓ */
-      max-height: calc(40px * 3 + 4px * 2 + 16px);
+      /* 3 行 ＋ 2 个 4px 间距 ＋ 上内边距 8 ＋ 下边框 1 ⇒ 137px：
+         **正好落在行边界上**（第 4 行从 136 开始 ⇒ 被裁掉 ✓）。
+         原来用 144px ＋ 上下内边距 8 ⇒ 底部内边距露出第 4 行的 4px 边 ✗。 */
+      max-height: calc(40px * 3 + 4px * 2 + 9px);
+      padding-bottom: 0;
       overflow-x: hidden; overflow-y: auto;
       scrollbar-width: auto; overscroll-behavior: contain;
     }
+    /* **面板不许再被 flex 压成"只剩标题"** ✓：固定 96px、自己滚 ✓。
+       原来 `flex: 0 1 auto` ⇒ 被压到 136px，而画布也只有 104px ✗。 */
+    main > aside { flex: 0 0 auto; max-height: 96px; min-height: 0; }
+    /* **触摸目标** ✓：复选框视觉仍是 16px ✓（`ui-control-heights` 只多一档 16px ✓），
+       但整块 `<label>` 抬到 40px ⇒ 手指点得中 ✓（实测 87×40 / 61×40）。 */
+    .options label:has(input[type="checkbox"]) { min-height: 40px; padding: 0 4px; }
+    /* **状态栏不许裁掉「画布 1024×768」** ✗：390 下 gap 16→4、横向内边距 12→6、
+       字号 12→11 ⇒ 实测 `scrollWidth 466 → 390`（正好等于 clientWidth ✓，不换行 ⇒ 不多占高度）。 */
+    .statusbar { gap: 4px; padding: 8px 6px; font-size: 11px; }
     #tools button { min-height: 40px; }
     header button,
     .options button, .options select, .options input:not([type="checkbox"]),

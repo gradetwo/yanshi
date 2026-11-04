@@ -13540,6 +13540,22 @@ function loadPanels() {
     panels.zen = saved.zen === true;
   } catch (_) { /* 存储损坏时用默认值 ✓，不影响使用 ✓ */ }
 }
+/// **舞台尺寸变了 ⇒ 重新适配** ✓（面板开合／转屏／选项条伸缩 ✓）。
+///
+/// **∴ 为什么需要这个函数** ✗：画布 CSS 尺寸 = `viewport × displayScale` ✓，而
+/// `displayScale` 由 `availableArea()`（读 `main` 与 `.stage` 的**当前**尺寸 ✓）算出 ✓
+/// ⇒ 舞台一变，旧尺寸就过期 ✗。`applyPanels` 原来只 `clampViewport()`（改写视口与读数 ✓）
+/// 而不 `renderViewport()`（只有它才经 `sizeBoards`→`applyDisplaySize` 改画布尺寸 ✓）
+/// ⇒ 收起面板后读数 13%→32% 而画布仍是 136×102 ✗（2026-11-04 实测 ✓）。
+function refitStage() {
+  if (typeof clampViewport !== "function" || typeof renderViewport !== "function") return;
+  if (!state.docSize || !(state.docSize.w > 0) || !(state.docSize.h > 0)) return;
+  clampViewport();
+  renderViewport();
+}
+// **初始那次 `applyPanels()`** 发生在文档装载之前 ✓ ⇒ 那时只 `clampViewport()`（与旧行为一致 ✓）；
+// 之后的开合／快捷键才连带重画 ✓（`panelsReady` 在 `setupPanels()` 末尾置位 ✓）。
+let panelsReady = false;
 function applyPanels() {
   document.body.classList.toggle("hide-rail", panels.rail);
   document.body.classList.toggle("hide-dockers", panels.dockers);
@@ -13553,7 +13569,10 @@ function applyPanels() {
   if (zen) zen.setAttribute("aria-pressed", String(panels.zen));
   try { localStorage.setItem(PANEL_STORE, JSON.stringify(panels)); } catch (_) {}
   // 画布尺寸变了 ✓ ⇒ 重新适配视口 ✓（否则全屏后画布还按旧宽度居中 ✓，看起来"没生效" ✗）。
-  if (typeof clampViewport === "function") clampViewport();
+  // **★ 只 `clampViewport()` 不够** ✗（2026-11-04 实测 ✓）：它只改 `displayScale` 与视口 ✓，
+  // 画布 CSS 尺寸要 `renderViewport()` 才会跟着变 ✗ ⇒ 收起面板后读数 32% 而画布 136×102 ✗。
+  if (panelsReady) refitStage();
+  else if (typeof clampViewport === "function") clampViewport();
 }
 function setupPanels() {
   loadPanels();
@@ -14619,6 +14638,27 @@ window.yanshi = {
   };
 window.__appMarks.push("yanshi-object:after");
   applyPanels();
+  panelsReady = true;
+  // **★ 舞台自己变了 ⇒ 重算适配** ✓（转屏／选项条伸缩／面板动画 ✓）。
+  // **∴ 怎么防"改尺寸 → 又触发观察者"的循环** ✗：
+  //   ① 画布是 `.stage` 的**子元素** ✓ ⇒ 改它的 CSS 宽高**不改**舞台的 clientWidth/Height ✓；
+  //   ② 仍记住上次尺寸 ✓，变化 < 2px 直接返回 ✓（滚动条 10px 会多引一次，但会收敛 ✓）；
+  //   ③ **用户放大（`zoom > 1`）时不自动适配** ✗ —— 那时画布比舞台大 ⇒ 滚动条会因适配
+  //      出现／消失 ✓，最容易来回触发 ✓；适配档画布被夹在可用区里 ⇒ 不会有滚动条 ✓；
+  //   ④ `queued` 把同一帧的多次回调压成一次 ✓。
+  const fitHost = document.querySelector(".stage");
+  if (fitHost && typeof ResizeObserver === "function") {
+    let lastW = fitHost.clientWidth, lastH = fitHost.clientHeight, primed = false, queued = false;
+    new ResizeObserver(() => {
+      const w = fitHost.clientWidth, h = fitHost.clientHeight;
+      if (!primed) { primed = true; lastW = w; lastH = h; return; }
+      if (Math.abs(w - lastW) < 2 && Math.abs(h - lastH) < 2) return;
+      lastW = w; lastH = h;
+      if (queued || (state.zoom || 1) > 1.0001) return;
+      queued = true;
+      requestAnimationFrame(() => { queued = false; refitStage(); });
+    }).observe(fitHost);
+  }
 }
 // **★ 同步初始化**也要**留痕** ✗ ★**（第 158 轮 ✓；**离线入口没跑 ✓）：
 //   **∴ 为什么 ✗**：**本行**是**同步调用**✗
@@ -14634,6 +14674,7 @@ try {
   window.__appMarks.push("setupPanels!" + String(error && error.message || error).slice(0, 50));
   throw error;
 }
+
 
 // 快捷键 ✓：与工具提示一致 ✓ —— 输入框里打字时不受影响 ✓。
 const TOOL_BY_KEY = new Map(TOOL_DEFS.filter((d) => d.key).map((d) => [d.key, d]));
@@ -16173,6 +16214,27 @@ window.yanshiGpuQuantizeCompared = async (pixels) => {
     referenceKind: kernelTruth ? "kernel_truth" : "page_f16_formula",
   };
 };
+
+// **★ 顶栏两个方框图标改成**内联 SVG** ✗ ★**（2026-11-04 ✓；390×844 截图复核 ✓）：
+//   `◧`/`◨`（U+25E7/U+25E8）**不是缺字** ✓ —— Chromium 的 `CSS.getPlatformFontsForNode`
+//   实测由 DejaVu Sans 出图 ✓（`fc-list :charset=25e7` 也命中 ✓）；但它们是**左/右半黑方块** ✓，
+//   在 13px 深色条上半个方块与底色一样黑 ⇒ **看起来就是豆腐块** ✗（截图 ✓）。
+//   ⇒ 改成**不依赖字体**的画框图标 ✓（左/右一栏 ✓）：任何字体、任何字号、中英切换都不变 ✓。
+//
+// **∴ 放在文件末尾是必须的** ✗（不是随手放 ✓）：这里**在 `applyUILanguage()` 之后** ✓
+//   ⇒ `button.textContent` 已经是**当前语言**（`◧ Toolbar` / `◧ 工具栏` ✓）
+//   ⇒ 去掉开头图标即得 `Toolbar` / `工具栏` ✓。若在翻译**之前**替换，文本节点变成「工具栏」，
+//   而词表只有整句 `"◧ 工具栏"`（`i18n.js:501` ✓）⇒ 英文模式必漏翻 ✗（`browser-i18n` 会红 ✓）。
+for (const [id, divider] of [["toggleRail", 6], ["toggleDockers", 10]]) {
+  const button = document.getElementById(id);
+  if (!button) continue;
+  const label = (button.textContent || "").trim().replace(/^\S+\s*/, "");
+  button.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"'
+    + ' focusable="false" style="vertical-align:-2px;margin-right:4px">'
+    + '<rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none" stroke="currentColor"'
+    + ' stroke-width="1.5"/><path d="M' + divider + ' 2.5v11" stroke="currentColor"'
+    + ' stroke-width="1.5"/></svg>' + label;
+}
 
 </script>
 <!-- **素材浮层** ✓：两张卡搬进来（`appendChild` = 移动节点 ✓，监听器与状态都还在 ✓）⇒
