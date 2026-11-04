@@ -78,8 +78,11 @@
 //!   方法不齐的对象会被忽略并只告警一次（绝不半委托，避免“写进一处、
 //!   读在另一处”的静默分裂）。
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Mutex;
 use yanshi_core::blob::{BlobEntry, BlobStore};
 use yanshi_core::error::{ErrorCode, ErrorContext, Result, YanshiError};
 use yanshi_core::BlobHash;

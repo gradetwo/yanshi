@@ -3098,6 +3098,7 @@ fn convolve_horizontal_serial(buffer: &mut Buffer, kernel: &[f32], radius: i32) 
 ///
 /// 每行先快照再写回（与串行版同一读后写顺序）；每输出像素的抽头累加顺序与串行版
 /// 相同 ⇒ 逐位不变。行与行之间无依赖 ⇒ 行带怎么切都不改变任何字节。
+#[cfg(not(target_arch = "wasm32"))]
 fn convolve_horizontal_band(pixels: &mut [f32], width: usize, kernel: &[f32], radius: i32) {
     let row_len = width * 4;
     let rows = pixels.len() / row_len;
@@ -3188,6 +3189,7 @@ fn convolve_vertical_serial(buffer: &mut Buffer, kernel: &[f32], radius: i32) {
 /// 串行版是逐列快照：写列 x′ 不影响读列 x（读/写集不交），且列内快照在写之前取 ⇒
 /// 整幅快照与逐列快照读到的值相同；每输出像素的抽头累加顺序与串行版相同 ⇒ 逐位不变。
 /// 快照是一份整幅 f32 副本（4K 上约 205MB 瞬时，纵向并行换取；横向不需要它）。
+#[cfg(not(target_arch = "wasm32"))]
 fn convolve_vertical_band(
     out_pixels: &mut [f32],
     snapshot: &[f32],
