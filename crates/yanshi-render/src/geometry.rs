@@ -1389,6 +1389,36 @@ mod feather_blur_tests {
         }
     }
 
+    /// **★ 多带 ＋ 大半径** ✗ ★（2026-11-05 ✓）：带高随半径涨之后，**长图会被切成多条带** ✓
+    /// ⇒ 每条带的 `halo` 读法与写回偏移必须与**整幅**等价 ✓。
+    /// **∴ 为什么原来的等价测试抓不到 ✗**：那组只到 `radius 8`、图最大 64 行 ⇒ **永远只有一条带** ✓
+    /// （带高 `max(64, 4r)` ＝ 64 或 32 ⇒ 64 行的图一条带就吃完了 ✓）⇒ 带边界代码**没被测过** ✗。
+    /// **∴ 选了会切 2–4 条的尺寸** ✓（`band_rows` 分别是 80／132／200 ⇒ 200 行切成 3 条 ✓）。
+    #[test]
+    fn multi_band_blur_matches_the_reference() {
+        for (w, h, radius) in [(23usize, 200usize, 20usize), (17, 257, 33), (64, 300, 50)] {
+            let band = (4 * radius)
+                .max(64)
+                .min(1024usize.saturating_sub(2 * radius).max(64));
+            assert!(
+                band < h,
+                "({w}×{h}, radius {radius}) 带高 {band} ≥ 图高 ⇒ 还是只有一条带，测不到边界"
+            );
+            let data = asymmetric_pattern(w, h);
+            let fast = box_blur_2d(&data, w, h, radius);
+            let reference = box_blur_2d_reference(&data, w, h, radius);
+            let worst = fast
+                .iter()
+                .zip(&reference)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0f32, f32::max);
+            assert!(
+                worst < 1e-4,
+                "({w}×{h}, radius {radius}, {band} 行一带) 与朴素参照的最大偏差 {worst} 超容差"
+            );
+        }
+    }
+
     /// **边界半径 1**：窗口只有 3 个样本 ⇒ 任何 off-by-one 都会立刻显现 ✓。
     #[test]
     fn radius_one_matches_the_reference() {
