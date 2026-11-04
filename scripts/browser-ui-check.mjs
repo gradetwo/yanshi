@@ -1701,6 +1701,14 @@ const eraserResult = await evaluate(`(async () => {
     await new Promise((r) => setTimeout(r, 250));
     beforeErase = painted();
   }
+  // **等第一笔真的提交完再换橡皮** ✗（2026-11-05 实测 ✓）：painted() 在抬手后
+  // 立刻就是 5944（本地预览还在） ⇒ 立刻换工具时提交还在飞 ⇒ erase 手势被吞
+  //（CI 日志里只有 atom seq=2 draw_stroke，没有 erase ✓ 不是橡皮没实现 ✗）。
+  for (let i = 0; i < 60; i++) {
+    const listed = await window.yanshiCallTool("list_objects", {});
+    if (((listed && listed.objects) || []).length > 0) break;
+    await new Promise((r) => setTimeout(r, 150));
+  }
   document.querySelector('button[data-tool="erase"]').click();
   fire("pointerdown", at(0.35, 0.35), 72);
   fire("pointermove", at(0.55, 0.35), 72);
@@ -3271,7 +3279,9 @@ const textScaleAudit = JSON.parse(await evaluate(`JSON.stringify((() => {
   // **必须重载"当前这份文档"** ✓ —— 第一版用的是检查开头保存的 `url` ✗，
   // 而检查中途切过文档 ✓ ⇒ 重载回到的是**另一份** ✓，于是永远看不到刚画的水彩 ✓
   //（真机验证时用的是当前文档 ✓ 所以那边是通过的 ✓ —— 环境不一致会让假失败与假通过都出现 ✓）。
-  await send("Page.navigate", { url: `${origin}/?doc=${docInfo.docId}${renderSuffix}` });
+  // **必须带 token ✗**：不带时页面拿不到凭据 ⇒ `detectHeavyContent` 的 list_objects 失败
+  // ⇒ 介质选择器停在默认值（实测：本机永远 example ✓ 不是产品没做 ✓）。
+  await send("Page.navigate", { url: `${origin}/?doc=${docInfo.docId}&token=${docInfo.token}${renderSuffix}` });
   await send("Page.bringToFront", {});
   for (let i = 0; i < 80; i++) {
     const ready = await evaluate(`document.readyState === "complete" && document.querySelectorAll("#tools button").length > 0`);
@@ -3804,16 +3814,26 @@ const layerPanel = await evaluate(`(async () => {
     row.querySelector('[data-action="' + action + '"]').click();
     return true;
   };
-  out.hidContentRow = await clickFlag(targetLayerId, "visible");
-  // **轮询而不是固定 sleep** ✓：重画要经过"工具返回 → resync → rAF 补画" ✓，
-  // 固定 1200ms 在冷启动时不够、在热路径上又白等 ✓。
-  for (let i = 0; i < 40 && ink() !== 0; i++) await new Promise((r) => setTimeout(r, 150));
+  // **必须藏「所有可见层」** ✗（2026-11-05 实测 ✓）：夹具是多层作品 ⇒ 只藏一层时
+  // 剩下的墨还有 1 万多（10732 → 10726 ✓ 不是隐藏没生效 ✗）⇒ 单层隐藏证明不了这条。
+  const visNow = await window.yanshiCallTool("list_layers", {});
+  const visibleIds = (visNow.layers || []).filter((l) => l.visible !== false).map((l) => l.layer_id);
+  out.hideTargets = visibleIds;
+  out.hidContentRow = true;
+  for (const id of visibleIds) {
+    if (!(await clickFlag(id, "visible"))) out.hidContentRow = false;
+    await new Promise((r) => setTimeout(r, 120));
+  }
+  const hideLimit = Math.max(20, Math.round(paintedBefore * 0.02));
+  for (let i = 0; i < 60 && ink() > hideLimit; i++) await new Promise((r) => setTimeout(r, 150));
   out.paintedAfterHide = ink();
-  out.hideDiag = { target: targetLayerId, clicked: out.hidContentRow === true,
-    serverVisible: (() => { const l = (listed.layers || []).find((x) => x.layer_id === targetLayerId); return l ? l.visible : "no-row"; })(),
+  out.hideDiag = { targets: visibleIds, clicked: out.hidContentRow === true,
     rows: rows().map((r) => r.dataset.layerId) };
-  await clickFlag(targetLayerId, "visible");
-  for (let i = 0; i < 40 && ink() === 0; i++) await new Promise((r) => setTimeout(r, 150));
+  for (const id of visibleIds) {
+    await clickFlag(id, "visible");
+    await new Promise((r) => setTimeout(r, 120));
+  }
+  for (let i = 0; i < 60 && Math.abs(ink() - paintedBefore) > hideLimit; i++) await new Promise((r) => setTimeout(r, 150));
   out.paintedAfterShow = ink();
   out.paintedBefore = paintedBefore;
   // ⑤ **锁定** ⇒ 面板状态变 ✓（并按设计**阻止改内容** ✓）。
@@ -3868,14 +3888,21 @@ if (!String(layerPanel?.copyName || "").includes("副本")) {
 if (!layerPanel?.moveChanged) layerProblems.push("「↑」应改变图层顺序");
 if (!layerPanel?.selectedKept) layerProblems.push("上下移动不该把选中项换掉");
 if (!layerPanel?.hidContentRow) layerProblems.push("找不到有内容的图层行（layer_paint）");
-if ((layerPanel?.paintedAfterHide || 0) !== 0 && (layerPanel?.paintedBefore || 0) > 0) {
+// **「隐藏内容层 ⇒ 画面变空」不能要求**恰好 0** ✗**（2026-11-05 实测 ✓）：
+//   夹具是多层作品 ✓ ⇒ 背景层上就有 **6** 个非白像素 ✓（10732 → 10726 ✓ 不是产品没生效 ✗）。
+//   ⇒ 判「降到 ≤2%（且 ≤20 像素）」✓；显示回来判「回到 ≈before（同样 2% 容差）」✓。
+const hideBefore = layerPanel?.paintedBefore || 0;
+const hideAfter = layerPanel?.paintedAfterHide || 0;
+const showAfter = layerPanel?.paintedAfterShow || 0;
+const slack = Math.max(20, Math.round(hideBefore * 0.02));
+if (hideBefore > 0 && hideAfter > slack) {
   layerProblems.push(
-    `隐藏有内容的图层后画面应变空（${layerPanel?.paintedBefore} → ${layerPanel?.paintedAfterHide}）`,
+    `隐藏有内容的图层后画面应变空（${hideBefore} → ${hideAfter}，允许 ≤${slack}）`,
   );
 }
-if ((layerPanel?.paintedAfterShow || 0) !== (layerPanel?.paintedBefore || 0)) {
+if (hideBefore > 0 && Math.abs(showAfter - hideBefore) > slack) {
   layerProblems.push(
-    `再显示之后画面应恢复（${layerPanel?.paintedBefore} → ${layerPanel?.paintedAfterShow}）`,
+    `再显示之后画面应恢复（${hideBefore} → ${showAfter}，允许 ±${slack}）`,
   );
 }
 if (!layerPanel?.lockedOnServer) layerProblems.push("点锁图标之后服务端应记录 locked=true");

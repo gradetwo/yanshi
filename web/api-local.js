@@ -2933,6 +2933,25 @@ async function withKernel(doc, fn) {
                  && v.data.bbox.slice(0, 4).every(num)) {
         bbox = v.data.bbox.slice(0, 4);
       }
+      // **移动过的对象：bbox 要跟着 `transform` 走 ✗**（2026-11-05 实测 ✓）：
+      //   `move_object` 落的是 `move{delta}` 原子 ✓（不是改 `data.region`）⇒ 原来
+      //   `list_objects` 的 bbox **永远停在原位** ✓（UI 实测：日志「已移动 dx=102, dy=51」✓
+      //   而 bbox 102,102,102,102 一动不动 ✗）。服务端返回的是**变换后**的框 ✓。
+      //   按仿射 [a,b,c,d,e,f] ＋ pivot 变换四个角，取外接框（旋转也成立 ✓）。
+      if (bbox && v.transform && Array.isArray(v.transform.matrix) && v.transform.matrix.length === 6) {
+        const [a, b, c, d, e, f] = v.transform.matrix;
+        const [px, py] = Array.isArray(v.transform.pivot) ? v.transform.pivot : [0, 0];
+        const corners = [[bbox[0], bbox[1]], [bbox[0] + bbox[2], bbox[1]],
+                         [bbox[0], bbox[1] + bbox[3]], [bbox[0] + bbox[2], bbox[1] + bbox[3]]]
+          .map(([x, y]) => {
+            const dx = x - px, dy = y - py;
+            return [a * dx + c * dy + e + px, b * dx + d * dy + f + py];
+          });
+        const xs = corners.map((point) => point[0]);
+        const ys = corners.map((point) => point[1]);
+        const minX = Math.min(...xs), minY = Math.min(...ys);
+        bbox = [minX, minY, Math.max(...xs) - minX, Math.max(...ys) - minY];
+      }
       objects.push({
         object_id: id,
         layer_id: v.layer_id ?? null,

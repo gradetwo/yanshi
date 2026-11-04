@@ -507,7 +507,6 @@ tool-bitmap-decode-scope.mjs  # **类型：规格先行（位图未分块存储�
 # **转绿条件** ✓：**位图分块存储** —— **(b1) 导入切块 ＋ tile 索引 ＋ 渲染侧按需取块**
 #   （**兼容自动成立**：旧工程无索引 ⇒ 走原路 ✓）—— 见 `docs/design/implementation-notes.md` 第 451 轮 ✓。
 # **变异** ✗：强制整幅预解 ⇒ 必红 ✓。
-browser-ui-check.mjs  # **类型：断言失败（5 项既有缺陷，与本线无关）** ✗
 # **⇒ 2026-11-05 复验（本机 client 模式已可跑：wasm 自建 + 6 个介质插件）**：**8 项**（旧台账 15 项）✓
 #   **∴ 已修掉的根因 ✗**：`palette_not_found: open-color.json ⇒ HTTP 404` ✓
 #     —— C/S 客户端渲染下 `api-local` 直取 `/palettes/<name>`，而服务端没有这条路由 ✓
@@ -28459,3 +28458,16 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
 #     ⇒ 那条判据量的正是**时间账**（墙钟／TaskDuration／apply／render／put ✓）
 #     ⇒ 重绘风暴会让这些数每跑一次都不一样 ✓ ⇒ **抖动来自产品缺陷，不是判据** ✓。
 #   **∴ 若再抖** ⇒ 先看 `localBrushFrames` 与 `putImageData` 计数 ✓，不要直接登记回来 ✗。
+
+# **★★★ 2026-11-05 移出：`browser-ui-check.mjs`（本机 EXIT=0，全部用例通过）★★★**
+#   **∴ 这轮修掉的 ✗**：
+#     · 移动位移 0：产品侧 `list_objects` 的 bbox **没应用 transform** ⇒ 移动原子落了、
+#       bbox 却停在原位；改为按仿射（含 pivot）变换四个角取外接框 ✓（实测 102,102 → 204,153 ✓）。
+#     · 隐藏/显示图层：夹具是**多层**作品，只藏一层剩 10726 ⇒ 判据改为「藏掉**所有可见层**
+#       ⇒ 降到 ≤2%；再全部显示 ⇒ 回到 ±2%」✓（实测 10732→0→10732 ✓）。
+#     · 橡皮：判据在**第一笔提交还在飞**时就换工具 ⇒ erase 手势被吞（CI 日志只有 draw_stroke）。
+#       改为先用 `list_objects` 等提交落地 ✓。
+#     · 重载后介质选择器：判据 reload 时**丢了 token** ⇒ `detectHeavyContent` 的 list_objects
+#       403 ⇒ 选择器停在 example ✓（不是产品没做 ✓）；补回 token ✓。
+#   **∴ 本机 verdict ✗**：`✅ UI 检查通过（画布非空、几何一致、缩略图自动刷新）` EXIT=0 ✓。
+#   **∴ 若 CI 再红**：先看是否又是时序（这条判据跨 15 个用例）✓，别直接登记回来 ✗。
