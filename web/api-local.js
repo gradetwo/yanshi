@@ -4895,7 +4895,62 @@ async function withKernel(doc, fn) {
       const newLayerId = body.new_layer_id || pl.new_layer_id || ("layer_" + Date.now().toString(36));
       if (layers.has(newLayerId)) return p2Bad("new_layer_id " + newLayerId + " 已存在");
       const name = body.name || pl.name || (src.name + " 副本");
-      let seq = await putAtom(handle, doc, p2Envelope("create_layer", { layer_id: newLayerId, name }));
+      // **★ 忠实复制 = 图层属性也要复制 ✗ ★**（第 1590 轮 ✓）：
+      //   **∴ 旧实现只写 `{layer_id, name}` ✗** ⇒ 副本把 `type`／`parent_id`／`blend_mode`／
+      //     `opacity`／`visible`／`locked`／`alpha_lock`／`clipping_mask`／`mask_id`／
+      //     `transform`／`medium`／`style_id`／`metadata` **全丢了** ✓，而回执仍写「忠实复制」✗
+      //     ⇒ 形态①「输入（源层属性）不被采纳」✓。
+      //   **∴ 净荷形状照服务端 `write_duplicate_layer` ✓**（`tools.rs:4578` 直接拿源层当净荷 ✓）
+      //     ＋ **内核 `CreateLayer` 认识的键 ✓**（`fold.rs:1346-1368` ✓）。
+      //   **∴ 为什么 `transform`／`medium`／`style_id`／`metadata` 必须进净荷 ✗**：内核只从
+      //     **创建净荷**读这四个 ✓；`apply_property_to_layer` **没有**它们的分支 ✗
+      //     ⇒ 写 `set_property{transform}` 会被当**元数据键**塞进 `layer.metadata` ✓
+      //     （`fold.rs:2507-2510` ✓）= 「接受了却用错」✗。
+      //   **∴ 而本地折叠视图不保留这四个 ✗**（`p1LayerOrder` 只折 11 个属性键 ✓）
+      //     ⇒ **∴ 从源层的 `create_layer` 原子净荷里取 ✓**（内核唯一的来源 ✓）。
+      const srcPayload = (() => {
+        for (const r of rows) {
+          const a = (r && r.atom) || {};
+          const apl = (a && a.payload) || {};
+          const id = (typeof apl.layer_id === "string" && apl.layer_id) ||
+                     (typeof a.layer_id === "string" && a.layer_id);
+          if (a.kind === "create_layer" && id === layerId) return apl;
+        }
+        return {};
+      })();
+      const layerPayload = { layer_id: newLayerId, name };
+      // **标量／布尔取折叠后的视图 ✓**（`set_property` 覆盖已折进去 ✓ ⇒ 比创建净荷新 ✓）。
+      for (const key of ["type", "parent_id", "blend_mode", "opacity", "visible",
+                         "alpha_lock", "clipping_mask", "mask_id", "z_index"]) {
+        if (src[key] !== undefined && src[key] !== null) layerPayload[key] = src[key];
+      }
+      // **`metadata` 有两条来源 ✗**：创建净荷 ✓ ＋ `set_property` ✓（`key:"metadata"` 覆盖 ✓；
+      //   折叠层**没列出**的键**并进 `metadata` 对象** ✓ —— `fold.rs:2506-2510` ✓）⇒ 逐条重放 ✓。
+      let metadata = srcPayload.metadata === undefined ? null : srcPayload.metadata;
+      const FOLDED_PROP_KEYS = new Set(["visible", "locked", "alpha_lock", "clipping_mask",
+                                        "opacity", "blend_mode", "z_index", "name",
+                                        "parent_id", "mask_id", "type"]);
+      for (const r of rows) {
+        const a = (r && r.atom) || {};
+        const ap = (a && a.payload) || {};
+        if (a.kind !== "set_property" || ap.object_id || ap.layer_id !== layerId ||
+            typeof ap.key !== "string" || FOLDED_PROP_KEYS.has(ap.key)) continue;
+        if (ap.key === "metadata") metadata = ap.value;
+        else if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+          metadata = Object.assign({}, metadata, { [ap.key]: ap.value });
+        }
+      }
+      if (metadata !== null && metadata !== undefined) layerPayload.metadata = metadata;
+      for (const key of ["transform", "medium", "style_id"]) {
+        if (srcPayload[key] !== undefined && srcPayload[key] !== null) {
+          layerPayload[key] = srcPayload[key];
+        }
+      }
+      // **创建期先不带锁 ✓**（照服务端 `tools.rs:4581-4588` ✓）：本地的锁定闸
+      //   （`p2LockGuard` ✓）会拒绝**往锁层里加对象** ✗ ⇒ 先解锁建 ✓、对象放完 ✓、
+      //   最后补 `set_property{locked:true}` ✓ —— 最终结果一致 ✓，且不必开特例 ✓。
+      const sourceLocked = src.locked === true;
+      let seq = await putAtom(handle, doc, p2Envelope("create_layer", layerPayload));
       let objects = 0;
       for (const r of rows) {
         const a = (r && r.atom) || {};
@@ -4915,12 +4970,20 @@ async function withKernel(doc, fn) {
           objects++;
         }
       }
+      // **最后补上锁 ✓**（照服务端 `tools.rs:4632-4641` ✓；只有源层是锁的才需要 ✓）。
+      if (sourceLocked) {
+        seq = await putAtom(handle, doc, p2Envelope("set_property",
+          { layer_id: newLayerId, key: "locked", value: true }));
+      }
       const target = order.slice();
       target.splice(target.indexOf(layerId) + 1, 0, newLayerId);
       seq = await putAtom(handle, doc, p2Envelope("reorder_layers", { order: target }));
       return json({ ok: true, seq, head: seq, layer_id: newLayerId, from: layerId,
                     name, objects, z_index: target.indexOf(newLayerId), server: false,
-                    note: "忠实复制：create_layer＋逐对象复制（共享 blob）＋完整重排；全部原子内核可识别" });
+                    note: "忠实复制：create_layer 带上源的 type／parent_id／blend_mode／opacity／"
+                      + "visible／alpha_lock／clipping_mask／mask_id／transform／medium／style_id／"
+                      + "metadata（源层锁着就在对象放完后补 set_property{locked}）；"
+                      + "逐对象复制（共享 blob）＋完整重排；全部原子内核可识别" });
     }
 
     // **③ `reorder_layers` ✗**：**照 `write_reorder_layers` ✓**：
