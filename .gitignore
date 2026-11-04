@@ -154,3 +154,6 @@ vendor/**/.cargo_vcs_info.json
 # patch / cargo 的中间产物（第 608 轮：tools.rs.rej 与 .orig 曾残留在 src/ 下）
 *.rej
 *.orig
+
+# 本地 worktree / 会话产物（不应入库）
+.codebuddy/
