@@ -934,6 +934,19 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
             _ => method_not_allowed(request, "GET"),
         };
     }
+    // **★ `/palettes/` 静态路由 ✗ ★**（2026-11-05 实测 ✓）：
+    //   **∴ 症状 ✗**：C/S 客户端渲染时 `api-local.js` 的 `list_palette_colors` 会
+    //     `fetch("/palettes/<name>")` ✓，而服务端**没有这条路由** ✗ ⇒ 404
+    //     ⇒ 日志 `错误 palette_not_found：open-color.json ⇒ HTTP 404` ✓、调色板面板空 ✓
+    //     （`list_palette_colors` 的 API 本身是好的 ✓ —— 只有这条**直取文件**的路缺 ✓）。
+    //   **∴ 与 `/textures/`、`/fonts/`、`/mediums/` 同一形状** ✓（资产根就是 `--assets-dir` ✓）。
+    if let Some(file) = path.strip_prefix("/palettes/") {
+        let file = decode_asset_segment(file);
+        return match method {
+            "GET" => palette_asset(state, &file),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
     if let Some(file) = path.strip_prefix("/textures/") {
         // **纹理缩略图** ✓（目标 (b) ✓）：界面里要显示预览 ✓，
         // 而浏览器不能直接读服务器上的文件 ✓ ⇒ 得像介质那样**由服务端发** ✓。
@@ -3621,6 +3634,40 @@ fn showcase_asset(state: &ServerState, file: &str) -> Response {
 /// **查找顺序与工具层一致** ✓（真实用户要求 ✓）：**工作区缓存优先 ✓、内置其次 ✓** ——
 /// 与 `list_assets` / `resolve_asset` 的优先级**必须相同** ✗
 ///（各判一次必然漂移 ✓：界面显示的是 A ✓、真铺上去的是 B ✗ —— 正是"两边不一样"的那类 bug ✓）。
+/// `GET /palettes/{file}`：`assets/palettes/` 下的调色板文件（`.json` / `.gpl`）✓。
+///
+/// **只接受直接位于目录下的这两种扩展名** ✓（挡 `..`、`/`、`\` ⇒ 不暴露仓库任意文件 ✓）。
+/// **缓存 1 小时** ✓（`check-cache-headers.mjs` 的口径：调色板是原地重写的，不能 immutable ✓）。
+fn palette_asset(state: &ServerState, file: &str) -> Response {
+    let ok_name = !file.is_empty()
+        && !file.contains("..")
+        && !file.contains('/')
+        && !file.contains('\\')
+        && (file.ends_with(".json") || file.ends_with(".gpl"));
+    if !ok_name {
+        return crate::http::bad_request("非法调色板名（只接受调色板目录下的 *.json／*.gpl）");
+    }
+    let content_type = if file.ends_with(".json") {
+        "application/json"
+    } else {
+        "text/plain; charset=utf-8"
+    };
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(root) = state.options.root.as_ref() {
+        candidates.push(root.join("palettes").join(file));
+    }
+    if let Some(assets) = state.options.assets_dir.as_ref() {
+        candidates.push(assets.join("palettes").join(file));
+    }
+    for path in &candidates {
+        if let Ok(bytes) = std::fs::read(path) {
+            return Response::bytes(200, content_type, bytes)
+                .with_header("Cache-Control", "public, max-age=3600");
+        }
+    }
+    crate::http::not_found(format!("调色板不存在：{file}"))
+}
+
 fn texture_asset(state: &ServerState, file: &str) -> Response {
     // **只接受直接位于目录下的 `.png`** ✓（挡 `..`、`/`、其它扩展名 ✓ ⇒ 不会把仓库任意文件暴露出去 ✓）。
     if file.contains("..") || file.contains('/') || file.contains('\\') || !file.ends_with(".png") {

@@ -78,9 +78,22 @@ fn asset_routes_still_serve_when_the_process_starts_elsewhere() {
         "内置纹理 404 ⇒ 纸纹一排全空"
     );
 
+    // ③b 调色板直取（C/S 客户端渲染下 `api-local.js` 的 `list_palette_colors` 会
+    //     `fetch("/palettes/<name>")` ✓ —— 服务端没有这条路由时它 404 ⇒ 调色板面板空 ✓）
+    assert_eq!(
+        200,
+        get(addr, "/palettes/open-color.json"),
+        "调色板 404 ⇒ 客户端渲染下「调色板」面板拿不到色卡"
+    );
+
     // ④ **负对照** ✓：证明上面三条不是「本来就通」——
     // 相对缺省在当前工作目录里**确实**不存在 ⇒ 未解析的代码只能读到不存在的路径 ✗。
-    for relative in ["assets/brand", "assets/brush-previews", "assets/textures"] {
+    for relative in [
+        "assets/brand",
+        "assets/brush-previews",
+        "assets/textures",
+        "assets/palettes",
+    ] {
         assert!(
             !Path::new(relative).is_dir(),
             "{relative} 在当前工作目录里存在 ⇒ ①②③ 不再能区分「解析过」与「没解析」⇒ 这条守卫失去判别力"
