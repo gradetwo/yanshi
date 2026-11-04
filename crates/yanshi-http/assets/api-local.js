@@ -3496,8 +3496,14 @@ async function withKernel(doc, fn) {
     //   是「最自然的写法」（真机报告 P0 #2 ✓），服务端把它们映射到 `undo_last`／`redo_last` ✓。
     //   **∴ 旧本地没有这一层 ✗** ⇒ 前端撤销按钮打 `/api/tools/undo` **落到未实现分支 ⇒ 501** ✓
     //   （**静默家族 ✓：按钮按下去了，画什么都不动 ✓**）。
+    // **★ `/api/tools/list_brushes` 归一到无前缀的 `/list_brushes` ✓ ★**
+    // 服务端把「列笔刷」收在 `/api/tools/` 工具分发里（`tools.rs:2560`），
+    // 本地只实现了无前缀的 `/list_brushes`（约 `:3952`）；前端按服务端前缀调用时
+    // 会落到 `endpoint_not_local` 转成 501 ⇒ 离线列笔刷与服务端不一致。
+    // 现在在分发前归一到已有实现 ⇒ 复用同一处处理，不复制回执。
     const path = p2Norm === "/api/tools/undo" ? "/api/tools/undo_last"
-      : p2Norm === "/api/tools/redo" ? "/api/tools/redo_last" : p2Norm;
+      : p2Norm === "/api/tools/redo" ? "/api/tools/redo_last"
+      : p2Norm === "/api/tools/list_brushes" ? "/list_brushes" : p2Norm;
     const q = url.searchParams;
     const doc = q.get("doc") || "";
     // **★ 只在**确实是 JSON**时才按 JSON 读 body ✗ ★**（第 841 轮 ✓；**已确认的缺陷 ✓**）：
