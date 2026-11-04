@@ -2910,6 +2910,29 @@ async function withKernel(doc, fn) {
       if (typeFilter !== null && v.type !== typeFilter) continue;
       const hidden = (v.visible === false);                          // `null`＝从未设＝可见 ✓
       if (!includeHidden && hidden) continue;
+      // **`medium` 的口径 ✗**（2026-11-05 实测修 ✓）：`medium_stroke` 写在
+      // `data.medium = {id,version}`（**不是** `data.source.medium` ✗）⇒ 原来恒 null
+      // ⇒ 界面「这份画用什么介质画的」永远显示不出 ✓（`browser-ui-check` 实测 ✓）。
+      const medium = (v.data && v.data.medium)
+        || (v.data && v.data.source && v.data.source.medium) || null;
+      // **`bbox` ✓**：服务端 `list_objects` 一直有 ✓（`[x,y,w,h]`），本地原来"如实不补" ✗
+      // ⇒ 客户端 move 工具直接说「本地对象表没有包围盒」✓（离线根本不能移 ✓）。
+      // 位图/笔触类对象都有 `data.region`；没有的（少数矢量？）就不编造 ✓。
+      const region = v.data && v.data.region;
+      // 形状走 `data.geometry.bbox`（`{x,y,w,h}` 或四元数组）；位图/笔触走 `region`。
+      const geomBox = v.data && v.data.geometry ? v.data.geometry.bbox : null;
+      const num = (value) => typeof value === "number" && Number.isFinite(value);
+      let bbox = null;
+      if (region && num(region.x) && num(region.y) && num(region.w) && num(region.h)) {
+        bbox = [region.x, region.y, region.w, region.h];
+      } else if (Array.isArray(geomBox) && geomBox.length >= 4 && geomBox.slice(0, 4).every(num)) {
+        bbox = geomBox.slice(0, 4);
+      } else if (geomBox && num(geomBox.x) && num(geomBox.y) && num(geomBox.w) && num(geomBox.h)) {
+        bbox = [geomBox.x, geomBox.y, geomBox.w, geomBox.h];
+      } else if (Array.isArray(v.data && v.data.bbox) && v.data.bbox.length >= 4
+                 && v.data.bbox.slice(0, 4).every(num)) {
+        bbox = v.data.bbox.slice(0, 4);
+      }
       objects.push({
         object_id: id,
         layer_id: v.layer_id ?? null,
@@ -2918,7 +2941,8 @@ async function withKernel(doc, fn) {
         enabled: v.enabled !== false,
         locked: v.locked === true,
         z_index: v.z_index ?? 0,
-        medium: v.data && v.data.source && v.data.source.medium ? v.data.source.medium : null,
+        medium,
+        ...(bbox ? { bbox } : {}),
       });
     }
     objects.sort((a, b) => cmpId(String(a.layer_id), String(b.layer_id))

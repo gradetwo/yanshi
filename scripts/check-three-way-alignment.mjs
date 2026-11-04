@@ -42,6 +42,9 @@ const LOCAL = "crates/yanshi-http/assets/api-local.js";
 const LOCAL_MIRROR = "web/api-local.js";
 const MCP_LIB = "crates/yanshi-mcp/src/lib.rs";
 const ALLOWLIST = "scripts/three-way-alignment-allowlist.txt";
+// **缺口的**归因账本**：文档表 A 一行一条（类 K/F/N/P/G/M ＋ 不做的理由）。
+// 判据断言它与现算缺口的**集合相等** ⇒ 既不许"缺了归因"，也不许留下已补的行。
+const ALIGN_DOC = "docs/three-way-alignment.md";
 const SPEC_BEGIN = "// <gen:tool-specs>";
 const SPEC_END = "// </gen:tool-specs>";
 
@@ -193,6 +196,16 @@ const localSource = read(LOCAL);
 const mirrorSource = read(LOCAL_MIRROR);
 const mcpSource = read(MCP_LIB);
 const allowlistText = read(ALLOWLIST);
+const alignDoc = read(ALIGN_DOC);
+
+/// 从文档表 A 里取「缺口工具名」；返回 null = 结构找不到（判据前提不成立）。
+function tableAMissingRoutes(source) {
+  const start = source.indexOf("### A. 缺本地路由");
+  const end = source.indexOf("### B. 有本地路由", start);
+  if (start < 0 || end < 0) return null;
+  const section = source.slice(start, end);
+  return [...section.matchAll(/^\|\s*`([a-z0-9_]+)`\s*\|/gm)].map((m) => m[1]);
+}
 
 const tools = parseRegistry(registrySource);
 const registryNames = new Set(tools.map((tool) => tool.name));
@@ -314,6 +327,24 @@ check(
   stale.length === 0,
   `允许名单没有过期条目`,
   stale.length ? `已不再多出：${stale.join("、")}` : "无过期",
+);
+
+// 缺路由的归因账本：与现算缺口**集合相等**。
+const docRows = tableAMissingRoutes(alignDoc);
+if (!docRows) premise(`${ALIGN_DOC} 里找不到「### A. 缺本地路由」到「### B. 有本地路由」这一段`);
+const docRowSet = new Set(docRows);
+const missingNames = new Set(missing.map((tool) => tool.name));
+const unclassified = [...missingNames].filter((name) => !docRowSet.has(name));
+const staleRows = [...docRowSet].filter((name) => !missingNames.has(name));
+check(
+  unclassified.length === 0,
+  `每条缺本地路由都在文档表 A 里有归因（类 ＋ 不做的理由）`,
+  unclassified.length ? `没归因：${unclassified.join("、")}` : `${missingNames.size} 条`,
+);
+check(
+  staleRows.length === 0,
+  `文档表 A 没有已补掉的行（账本不许失真）`,
+  staleRows.length ? `已不是缺口：${staleRows.join("、")}` : "无过期行",
 );
 
 // 两个棘轮：只许降。

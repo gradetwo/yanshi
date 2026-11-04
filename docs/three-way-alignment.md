@@ -78,6 +78,9 @@ const DEAD_PARAMS_CEILING = 52;
 
 ### A. 缺本地路由（2026-11-04 快照 59 个；现算 56 —— 已补 `stroke_heatmap`／`list_fonts`／`memory_status`）
 
+> **本表的每一行 = 一条**当前**缺口**（判据 `check-three-way-alignment.mjs` 断言集合相等：
+> 缺了归因或留下已补的行都会红）。`stroke_heatmap`／`list_fonts`／`memory_status` 已补，不在表里 ✓。
+
 | 工具 | 层 | 归因 | 下一步 |
 |---|---|---|---|
 | `apply_curve_preset` | Core | K | 不做：需 `.myb` 动力学解析，内核未导出 |
@@ -102,8 +105,6 @@ const DEAD_PARAMS_CEILING = 52;
 | `get_brush_settings` | Core | K | 不做：同上 |
 | `import_psd_layers` | Core | P | 排期：移植 PSD 图层树（本地已有单层） |
 | `list_attempts` | Core | N | 排期：需本地试画表 |
-| `list_fonts` | Core | M | 不做：浏览器无法枚举系统字体；服务端清单是**服务端 rasterizer** 的，镜像会让用户选到画不出的族名。前端已在该调用失败时回退（`web/viewer-app.js:12872`） |
-| `memory_status` | Core | M | 不做：服务端进程 RSS/会话量度，PWA 没有对应进程 |
 | `rebackground` | Core | K | 不做：改底色要重渲染 |
 | `recover_baked_blobs` | Core | K | 不做：需 bake 重放 |
 | `release_document` | Core | M | 不做：PWA 没有「内存里放下的文档」这层；文档就在 IndexedDB |
@@ -130,7 +131,6 @@ const DEAD_PARAMS_CEILING = 52;
 | `try_stroke` | Core | N | 排期：需本地试画表 |
 | `vector_erase` | Core | K | 不做：矢量脊线截断 + 渲染 |
 | `verify_package` | Core | P | 排期：纯 JS 的 tar 解析；收益低，暂缓 |
-| `stroke_heatmap` | History | K | 不做：墨量要读烘焙 tile 的 alpha |
 | `apply_adjustments` | Retouch | K | 不做：调整对象 + 渲染 |
 | `auto_retouch` | Retouch | K | 不做：图像统计 + 渲染 |
 | `dodge_burn_setup` | Retouch | K | 不做：烘焙 + 内核笔触 |
