@@ -24,15 +24,16 @@ import_asset.overwrite
 #    （ttl_days 校验并回显、demote 明确 501）⇒ 不再登记 ✓
 
 # ── ③ `export_png`：本地只有内核 `render_region_png`（bbox）✓ ──
-#     `lod`／`width`／`height` 的缩放由服务端链路做；`deterministic` 同理。
+#     `width`／`height`／`max_edge`／`filter` 的**缩放**仍由服务端链路做（本地不做缩放导出）。
 #     （`width`/`height` 因通用名被别处出现掩盖，因此不在本名单里 —— 这是已知漏报 ✓）
-#     **`return_image`／`max_px` 已于 2026-11-04 由 `export_png` 自己读** ✓：
-#     `max_px` 总校验（非法在绘图前 400），`return_image:true` 在既有
-#     `archive_base64` 之外附加 `image{…}`（缺省长边 512、超限缩小并给
-#     `scaled_from`／`scaled_note`）⇒ 行为判据
-#     `scripts/check-pwa-local-param-behaviour.mjs` 第 ⑥ 节 ✓。
-export_png.lod
-export_png.deterministic
+#     **`return_image`／`max_px`** 已于 2026-11-04 由 `export_png` 自己读 ✓。
+#     **`lod`／`deterministic`** 于 2026-11-05 由本地真读 ✓：
+#       · `lod` 0..=3，按 `2^lod` **步进取样**（输出 `ceil(边长/step)`，与服务端
+#         `render_region_with_lod` 同口径 ✓；回执带 `lod` ✓）；
+#       · `deterministic:true` ⇒ **不做缩放**：width／height／max_edge 会改变尺寸就 400 ✓，
+#         且内嵌图缩小时用**最近邻** ✓（与 `tools_io.rs:584` 同一取舍 ✓）。
+#     ⇒ 两行从本名单删除 ✓；行为判据见
+#       `scripts/check-pwa-local-param-behaviour.mjs` 第 ⑥／⑦ 节 ✓。
 
 # ── ④ `export_project`：本地打 JSON 包，不嵌「服务端 blob bundle」模式 ✓ ──
 export_project.include_bitmaps

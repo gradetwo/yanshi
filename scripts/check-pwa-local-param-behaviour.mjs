@@ -452,6 +452,40 @@ for (const [label, patch] of [
     `${bad.status} ${JSON.stringify(bad.body).slice(0, 100)}`);
 }
 
+// ============ ⑦ export_png.lod／deterministic ============
+// **∴ 为什么要这一段 ✗**：UI 的「导出分辨率」下拉就在发 `lod` ✓，而本地原来**收下不读** ✗
+//   ⇒ 用户选 1/2 仍拿到全尺寸 ✓（静默降级 ✓）。这里钉住：**尺寸真的按 2^lod 变** ✓。
+console.log("\n⑦ export_png.lod／deterministic");
+const exLod1 = await jpost(`/api/tools/export_png?doc=${DOC}`, { ...exBase, lod: 1 });
+check(exLod1.body.ok === true && exLod1.body.width === 60 && exLod1.body.height === 45,
+  "lod:1 ⇒ 输出 60×45（按 2 取样）", `${exLod1.body.width}×${exLod1.body.height}`);
+check(exLod1.body.lod === 1, "回执带 lod（说得清这一张是哪一档）", `lod=${exLod1.body.lod}`);
+const exLod3 = await jpost(`/api/tools/export_png?doc=${DOC}`, { ...exBase, lod: 3 });
+check(exLod3.body.width === 15 && exLod3.body.height === 12,
+  "lod:3 ⇒ 15×12（ceil(90/8)=12）", `${exLod3.body.width}×${exLod3.body.height}`);
+
+const exLodImg = await jpost(`/api/tools/export_png?doc=${DOC}`,
+  { ...exBase, lod: 1, return_image: true });
+check(exLodImg.body.image?.width === 60 && exLodImg.body.image?.height === 45,
+  "return_image ＋ lod ⇒ 内嵌图也是 lod 尺寸（先取样再判 max_px）",
+  `${exLodImg.body.image?.width}×${exLodImg.body.image?.height}`);
+
+const detOk = await jpost(`/api/tools/export_png?doc=${DOC}`,
+  { ...exBase, deterministic: true });
+check(detOk.body.ok === true && detOk.body.width === 120 && detOk.body.height === 90,
+  "deterministic 不缩放 ⇒ 正常导出", `${detOk.body.width}×${detOk.body.height}`);
+const detScale = await jpost(`/api/tools/export_png?doc=${DOC}`,
+  { ...exBase, deterministic: true, max_edge: 60 });
+check(isInvalid(detScale),
+  "deterministic ＋ 会改变尺寸的 max_edge ⇒ 400（不做缩放，不静默）",
+  `${detScale.status} ${JSON.stringify(detScale.body).slice(0, 90)}`);
+
+for (const [label, lod] of [["-1", -1], ["4", 4], ["1.5", 1.5], ['"1"', "1"]]) {
+  const bad = await jpost(`/api/tools/export_png?doc=${DOC}`, { ...exBase, lod });
+  check(isInvalid(bad), `非法 lod:${label} ⇒ 400 invalid_argument`,
+    `${bad.status} ${JSON.stringify(bad.body).slice(0, 90)}`);
+}
+
 // ============================ 汇总 ============================
 if (failures.length > 0) {
   console.error(`\n✗ PWA 本地声明参数判据红 ${failures.length} 条`);
@@ -460,4 +494,4 @@ if (failures.length > 0) {
 console.log("\n✓ PWA 本地声明参数行为与恒等式均成立（batch.slim_receipt／smudge.deposit／"
   + "brush_preview.include_image·return_image·max_px／create_mask.from_selection／"
   + "create_selection.from_mask／render_region.include_image·return_image·max_px／"
-  + "export_png.return_image·max_px）");
+  + "export_png.return_image·max_px·lod·deterministic）");

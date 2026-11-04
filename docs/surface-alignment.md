@@ -638,7 +638,7 @@ Web 调用面（第 8 条复现命令的同一口径）：**94 → 95**（新增
 参数未读    66（分布在 22 个工具）
 ```
 
-> **2026-11-05 现算已变**：168／56／54（补了 `stroke_heatmap`／`list_fonts`／`memory_status`，
+> **2026-11-05 现算已变**：168／56／52（补了 `stroke_heatmap`／`list_fonts`／`memory_status`，
 > 并让一批本地路由真的去读声明参数）。上面那段是**当时的快照**，保留是为了让「两笔收敛」有对照；
 > **引用请重跑** `node scripts/check-three-way-alignment.mjs --list`。
 

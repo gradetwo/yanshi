@@ -8440,6 +8440,18 @@ async function withKernel(doc, fn) {
         }
         exMaxPx = Math.min(8192, Math.max(1, raw));
       }
+      // **`lod` ✓**（期 4 取样档位 ✓；UI 的「导出分辨率」下拉就在发它 ✓）：
+      //   服务端 `render_region_with_lod` 的语义是**每 `2^lod` 个像素取一个** ✓（`step` ✓），
+      //   输出尺寸 `ceil(边长 / step)` ✓ ⇒ 本地照同一口径做**步进取样** ✓（不新造重采样 ✓）。
+      let exLod = 0;
+      if (body.lod !== undefined && body.lod !== null) {
+        const raw = body.lod;
+        if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0 || raw > 3) {
+          return p2Bad("lod 必须是 0..=3 的整数（0 = 全分辨率，1/2/3 逐档减半），得到 " + JSON.stringify(raw));
+        }
+        exLod = raw;
+      }
+      const exDeterministic = body.deterministic === true;
       const exWantsImage = exReturn.value;
       if (body.layer_id !== undefined && body.layer_id !== null) {
         return p2Bad("本地内核的 render_region_png 没有图层参数 ⇒ 按层导出本地暂不支持（请先用 get_state 确认要导出的层）");
@@ -8453,38 +8465,105 @@ async function withKernel(doc, fn) {
         rw = Math.max(1, Math.min(cw - rx, Math.floor(Number(body.region.w) || cw)));
         rh = Math.max(1, Math.min(ch - ry, Math.floor(Number(body.region.h) || ch)));
       }
+      // **`deterministic` 的缩放闸 ✓**（照 `tools_io.rs:584`）：只认 `=== true`；
+      //   语义是「**不做缩放**」 ✓ ⇒ 只要 width／height／max_edge 会改变尺寸就 **400** ✓
+      //   （本地不做缩放导出 ✓ ⇒ 更要说清 ✗，不能收下参数再当没看见 ✓）。
+      //   **∴ 位置 ✗**：必须放在 `rw／rh` 算出来**之后** ✓（放前面会 `Cannot access 'rw' before initialization` ✓）。
+      if (exDeterministic) {
+        const wantW = body.width === undefined || body.width === null ? null : Number(body.width);
+        const wantH = body.height === undefined || body.height === null ? null : Number(body.height);
+        const wantEdge = body.max_edge === undefined || body.max_edge === null ? null : Number(body.max_edge);
+        const scalesW = wantW !== null && wantW !== rw;
+        const scalesH = wantH !== null && wantH !== rh;
+        const scalesEdge = wantEdge !== null && wantEdge < Math.max(rw, rh);
+        if (scalesW || scalesH || scalesEdge) {
+          return p2Bad("deterministic 模式不做缩放：源 " + rw + "×" + rh
+            + "，请求会改变尺寸 ⇒ 请去掉 width/height/max_edge（缩放是逐行浮点重采样，是最可能的非确定源）");
+        }
+      }
       try {
-        const { png } = await p2cRenderPng(rx, ry, rw, rh);
+        // **`lod` 的取样 ✓**（步进 1/2/4/8 ✓；与服务端 `render_region_with_lod` 同口径 ✓）：
+        //   输出 `ceil(边长 / step)` ✓；每个输出像素取源图 `(x*step, y*step)` ✓。
+        const step = 1 << exLod;
+        let outW = rw, outH = rh;
+        let png;
+        let lodRgba = null;
+        if (step === 1) {
+          png = (await p2cRenderPng(rx, ry, rw, rh)).png;
+        } else {
+          const { rgba, w: sw, h: sh } = await p2cRenderRgba(rx, ry, rw, rh);
+          outW = Math.ceil(sw / step);
+          outH = Math.ceil(sh / step);
+          const picked = new Uint8Array(outW * outH * 4);
+          for (let y = 0; y < outH; y += 1) {
+            const sy = Math.min(sh - 1, y * step);
+            for (let x = 0; x < outW; x += 1) {
+              const sx = Math.min(sw - 1, x * step);
+              const from = (sy * sw + sx) * 4;
+              const to = (y * outW + x) * 4;
+              picked[to] = rgba[from];
+              picked[to + 1] = rgba[from + 1];
+              picked[to + 2] = rgba[from + 2];
+              picked[to + 3] = rgba[from + 3];
+            }
+          }
+          png = await encodePngRgba(outW, outH, picked);
+          lodRgba = { data: picked, w: outW, h: outH };
+        }
         let url = null;
         try {
           if (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") {
             url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
           }
         } catch (e) { url = null; }
-        const receipt = { ok: true, server: false, width: rw, height: rh, bytes: png.length,
+        const receipt = { ok: true, server: false, width: outW, height: outH, bytes: png.length,
+                          lod: exLod,
                           mime_type: "image/png", url, archive_base64: p2cB64(png),
                           note: "本地无文件系统 ⇒ 不落盘；url 可直接打开/下载，archive_base64 与服务端同名字段" };
         // **附加内嵌图 ✓**（只在 `return_image:true` 时出现 ✓ —— 既有 `archive_base64` 不动 ✓）。
         if (exWantsImage) {
           const cap = exMaxPx === null ? 512 : exMaxPx;
-          if (rw <= cap && rh <= cap) {
+          if (outW <= cap && outH <= cap) {
             receipt.image = { mime_type: "image/png", data: p2cB64(png),
-                              width: rw, height: rh };
+                              width: outW, height: outH };
           } else {
             try {
-              // **超限 ⇒ 用本次导出的同一区域重取 RGBA 再缩 ✓**（`tools_io.rs:742` 同义 ✓）。
-              const { rgba: full, w: srcW, h: srcH } = await p2cRenderRgba(rx, ry, rw, rh);
-              const ratio = cap / Math.max(srcW, srcH);
-              const imageW = Math.max(1, Math.round(srcW * ratio));
-              const imageH = Math.max(1, Math.round(srcH * ratio));
-              const small = p2cResampleBilinear(full, srcW, srcH, imageW, imageH);
-              if (!small) throw new Error("双线性缩放失败");
+              // **超限 ⇒ 用**同一档 lod 的 RGBA**再缩 ✓**（`tools_io.rs:742` 同义 ✓）：
+              //   **∴ 顺序 ✗**：先 lod 取样、再按 max_px 缩 ✓（与服务端 render→scale 一致 ✓）。
+              const src = lodRgba || await (async () => {
+                const { rgba, w, h } = await p2cRenderRgba(rx, ry, rw, rh);
+                return { data: rgba, w, h };
+              })();
+              const ratio = cap / Math.max(src.w, src.h);
+              const imageW = Math.max(1, Math.round(src.w * ratio));
+              const imageH = Math.max(1, Math.round(src.h * ratio));
+              let small;
+              if (exDeterministic) {
+                // **deterministic ⇒ 最近邻** ✓（与 `tools_io.rs:597` 同一取舍 ✓）
+                small = new Uint8Array(imageW * imageH * 4);
+                for (let y = 0; y < imageH; y += 1) {
+                  const sy = Math.min(src.h - 1, Math.floor(y * src.h / imageH));
+                  for (let x = 0; x < imageW; x += 1) {
+                    const sx = Math.min(src.w - 1, Math.floor(x * src.w / imageW));
+                    const from = (sy * src.w + sx) * 4;
+                    const to = (y * imageW + x) * 4;
+                    small[to] = src.data[from];
+                    small[to + 1] = src.data[from + 1];
+                    small[to + 2] = src.data[from + 2];
+                    small[to + 3] = src.data[from + 3];
+                  }
+                }
+              } else {
+                small = p2cResampleBilinear(src.data, src.w, src.h, imageW, imageH);
+              }
+              if (!small) throw new Error("缩放失败");
               const capped = await encodePngRgba(imageW, imageH, small);
               receipt.image = { mime_type: "image/png", data: p2cB64(capped),
                                 width: imageW, height: imageH };
-              receipt.scaled_from = [srcW, srcH];
-              receipt.scaled_note = "导出图 " + srcW + "×" + srcH + " 超过 max_px=" + cap
+              receipt.scaled_from = [src.w, src.h];
+              receipt.scaled_note = "导出图 " + src.w + "×" + src.h + " 超过 max_px=" + cap
                 + "，内嵌图已自动缩小到 " + imageW + "×" + imageH
+                + "（" + (exDeterministic ? "最近邻" : "双线性") + "）"
                 + "；落盘文件仍是原尺寸（本地无文件系统 ⇒ archive_base64／url 不受影响 ✓）";
             } catch (e) {
               receipt.image_omitted = true;

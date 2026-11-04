@@ -61,7 +61,7 @@ const SPEC_END = "// </gen:tool-specs>";
 //   ⇒ **∴ 所以 54 里有 5 个不是覆盖** ✓：要真补它们，得等 `export_png`／`render_region`
 //     自己读（前者会改「总是内嵌 base64」的既有行为，后者本地回的是二进制 PNG）。
 const MISSING_CEILING = 56;
-const DEAD_PARAMS_CEILING = 54;
+const DEAD_PARAMS_CEILING = 52;
 
 const failures = [];
 const check = (ok, label, detail) => {
