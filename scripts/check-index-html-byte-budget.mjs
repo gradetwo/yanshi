@@ -37,7 +37,10 @@ import { execFileSync } from "node:child_process";
 // 2026-11-04：锁定层 toast 的英文去掉 `permission_denied` 术语（创作者不该读 HTTP 词）；状态栏缩放
 //   读数去重（`#zoom` 收进 hidden，仍写 textContent 供判据读）使 934,026→934,423（+397 B：
 //   去术语 −44 B，zoom 说明 +约 230 B，m42 说明改写 +约 210 B）⇒ 上界 934,385→934,782（+397，留 359 B 不变）。
-const CEILING = 934_782;
+// 2026-11-04：`submitAtom` 把「取响应」与「解析 JSON」拆成两步（非 JSON 不再被当成离线 ⇒ 不入队）
+//   ＋ catch 只在 `error.yanshiOffline === true` 时入队，使 934,423→936,218（+1,795 B：
+//   两段说明注释 +约 1,600 B，拆分与状态纠正代码 +约 195 B）⇒ 上界 934,782→936,577（+1,795，留 359 B 不变）。
+const CEILING = 936_577;
 
 const failures = [];
 const check = (ok, label, detail) => {

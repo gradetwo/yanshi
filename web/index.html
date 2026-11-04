@@ -5107,14 +5107,24 @@ async function submitAtom(atom) {
   // **服务端不在时必须被捕获并说清** ✗ —— 用户实测：控制台出现
   // `Uncaught (in promise) TypeError: Failed to fetch` ✓（原来这里没有 try ✗），
   // 而画面上**什么都没说** ✓ ⇒ 用户不知道这一笔到底提交了没有 ✓。
-  let response;
+  let reply;
   try {
-    response = await fetchMutating(api("/api/atoms"), {
+    reply = await fetchMutating(api("/api/atoms"), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(atom),
-    }).then((r) => r.json());
+    });
   } catch (error) {
+    // **只有「网络不可达」才入队 ✗**：`fetchMutating` 给**这一类**错误打了
+    //   `yanshiOffline = true` ✓（已知离线 ✓／fetch 被拒 ✓／有界等待超时 ✓ —— `:790-810` ✓）。
+    //   **∴ 其他异常**（编程错／AbortError ✓）**不能入队** ✗ —— 那会把一个不可重放的失败
+    //   写成「稍后会成功」✓（正是本仓要消灭的静默降级 ✓）。
+    if (error && error.yanshiOffline !== true) {
+      const detail = String((error && (error.stack || error.message)) || error);
+      $("last").textContent = "提交失败（非离线，未入队）：" + detail.slice(0, 600);
+      log("这一步没有成功：" + detail, "#c33");
+      return null;
+    }
     // **这一笔不再丢** ✓：原子的 `id` 是**客户端 ULID** ✓、服务端按 id **幂等** ✓（12.2 ✓）
     // ⇒ 入队重放**不会重复应用** ✓ —— 这是最干净的一条离线写路径 ✓。
     // 本地内核在 `commit_preview` 时已经把墨画上了 ✓ ⇒ 离线时画面**也看得见这一笔** ✓。
@@ -5124,6 +5134,24 @@ async function submitAtom(atom) {
     const outcome = await outboxEnqueue("atom", { atom: atom });
     outboxQueuedResult("原子 " + String((atom && atom.kind) || ""), outcome, error && error.message);
     return null; // 保持原返回形状 ✓（调用方本来就按 `null` 处理 ✓）
+  }
+  let response;
+  try {
+    response = await reply.json();
+  } catch (error) {
+    // **拿到 HTTP 响应 = 网络是通的 ✓** ⇒ 先把连接状态纠正回来 ✓。
+    //   **∴ 旧实现把 `.json()` 放在**同一个 catch** 里 ✗** ⇒ 「代理 502 的 HTML／空响应体／
+    //   响应中途断开」都被当成「服务端连不上」✓ ⇒ 报「已断开」✗ 并把这一笔**默默入队** ✗
+    //   （队列里从此躺着一条**不会成功**的写 ✓，而用户以为只是离线 ✓）。
+    //   **⇒ 非 JSON 不是离线**：如实报 HTTP 状态／content-type ✓、**不入队** ✓。
+    outboxNoteNetwork(true);
+    $("conn").className = "dot on";
+    $("connText").textContent = "已连接";
+    const detail = "服务端回了非 JSON 响应（HTTP " + reply.status + " · content-type "
+      + String(reply.headers.get("content-type") || "无") + "）⇒ 未入队（不是离线）";
+    $("last").textContent = "提交失败：" + detail;
+    log("这一步没有成功：" + detail, "#c33");
+    return null;
   }
   outboxNoteNetwork(true);
   $("last").textContent = JSON.stringify(response).slice(0, 600);
