@@ -4163,7 +4163,9 @@ function localKernelUnusableNow(why) {
   const firstTime = !localKernelUnusable;
   localKernelUnusable = true;
   log("本地内核装载失败：" + why + " ⇒ 这一页改用服务端渲染", "#c33");
-  if (firstTime) stageNotice("本地内核没能把这份文档装进来 ⇒ 这一页先改用服务端渲染（画面照常，刷新后可再试本地）。");
+  // **sticky** ✓：后面每帧的红日志（`needs_render` 等）会不停调 `stageNotice` ✗
+  //   ⇒ 不加这面旗，这句「画面照常」**活不过一秒** ✓（实测 ⑫ 读到的永远是空串 ✓）。
+  if (firstTime) stageNotice("本地内核没能把这份文档装进来 ⇒ 这一页先改用服务端渲染（画面照常，刷新后可再试本地）。", true);
   const box = $("useServerRender");
   if (box) box.checked = true;
   // 服务端像素取回来之后再重绘 ✓ 顺序反了就把白布留在屏上了 ✗。
@@ -4402,8 +4404,17 @@ function drawKernelRegion(x, y, w, h) {
       .then(() => asyncFn.call(state.kernel, x0, y0, cw, ch))
       .then((view) => {
         paintRegionPixels(view, x0, y0, cw, ch, vx, vy, w, h, started);
-        // **∴ 回调触发重绘 ✗**（**route 乙 的第三条 ✓）
-        requestRepaint();
+        // **★ 画完就结束 ✗ 不要再 requestRepaint ★**（2026-11-05 实测 ✓）
+        //   **∴ 症状 ✗**：`requestRepaint()` → `redrawCanvasFromKernel()` → `drawKernelRegion()`
+        //     → 异步再画一次 → 又 `requestRepaint()` ⇒ **自激循环** ✓
+        //     ⇒ 实测 **1.2 秒 104 次整幅 `putImageData`**（≈87/s ✓，一直烧 CPU ✓）。
+        //   **∴ 更糟的是它把**本地实时笔迹盖掉**✗**：`paintLiveFrame` 画在 `board` 上 ✓，
+        //     而每次内核重绘都会用**内核当前状态**（还没有这一笔 ✗）整块覆盖 ✓
+        //     ⇒ `localBrushFrames=5` 而画布采样 **0** ✓（`browser-live-brush` 的矛盾 ✓）。
+        //   **∴ route 乙 的「回调触发重绘」原意是「异步结果到了 ⇒ 让它上屏」✗
+        //     而这里**上面一行已经在画** ✓ ⇒ 再 repaint 是**重复工作** ✗ 不是语义要求 ✓。
+        //     （判据 `tool-kernel-async-sites` 认的是「异步结果 ＋ 有重绘触发」✓；
+        //       现在重绘就是 `paintRegionPixels` 本身 ✓。）
       })
       .catch((error) => {
         reportPaintError("异步区域渲染", error);
@@ -12033,11 +12044,20 @@ const LOCK_BLOCKED_TOOLS = new Set([
 ]);
 
 let stageNoticeTimer = null;
+// **★ 重要的那条不许被后来的红日志顶掉 ✗ ★**（缺陷修，2026-11-04 轮 ✓）
+//   **∴ 症状 ✗**：`log(line, "#c33")` 也会调 `stageNotice` ⇒ 浮动提示**每 4 秒被刷新／清空**。
+//     内核装载失败退回服务端渲染时，后面每帧的 `needs_render` 红日志**立刻把这句话顶掉** ✗
+//     ⇒ 实测（CI `browser-layer-lock` ⑫）用户**从来读不到**「已改用服务端渲染」✓ 只剩白布 ✓。
+//   **∴ 做法 ✗**：`sticky` 的那条**不被**非 sticky 的调用覆盖，也**不自动消失**（点一下才关 ✓）。
+let stageNoticeSticky = false;
 
 /// **把话说在看得见的那一处** ✓（第六轮 ✗→✓）：`log()` 写进 `#log` ✓ 而它在
 /// `data-panel="history"` 那张卡片里 ✓ 默认收起（实测 `logVisible:false`、`scrollHeight:0` ✗）
 /// ⇒ "失败"两个字用户**从来没看见过** ✓。浮层在 `</header>` 之后 ✓ 任何面板组合与全屏画布下都在 ✓。
-function stageNotice(text) {
+///
+/// `sticky=true` ⇒ 这条**必须被读到**（`localKernelUnusableNow` 用 ✓）：
+/// 不自动消失、不被后续红日志覆盖；点它一下才收起 ✓。其余（普通回执）仍是 4 秒。
+function stageNotice(text, sticky) {
   const el = $("stageNotice");
   if (!el) {
     // 没有这块 DOM（老模板 / 半套静态页）⇒ 退回日志，但**不能再走 log()**：
@@ -12054,9 +12074,23 @@ function stageNotice(text) {
     }
     return;
   }
+  // 上一条是"必须被读到"的 ⇒ 后来的普通回执不许把它顶掉 ✗。
+  if (stageNoticeSticky && sticky !== true) return;
   el.textContent = text;
   el.hidden = false;
-  if (stageNoticeTimer) clearTimeout(stageNoticeTimer);
+  if (stageNoticeTimer) { clearTimeout(stageNoticeTimer); stageNoticeTimer = null; }
+  if (sticky === true) {
+    stageNoticeSticky = true;
+    el.style.cursor = "pointer";
+    el.onclick = () => {
+      el.hidden = true;
+      el.textContent = "";
+      el.onclick = null;
+      el.style.cursor = "";
+      stageNoticeSticky = false;
+    };
+    return;
+  }
   stageNoticeTimer = setTimeout(() => {
     el.hidden = true;
     el.textContent = "";
@@ -12538,7 +12572,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-9715931605727")
+      caches.open("yanshi-shell-4239255200179")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));
@@ -14669,9 +14703,17 @@ window.__appMarks.push("yanshi-object:after");
       if (!primed) { primed = true; lastW = w; lastH = h; return; }
       if (Math.abs(w - lastW) < 2 && Math.abs(h - lastH) < 2) return;
       lastW = w; lastH = h;
-      if (queued || (state.zoom || 1) > 1.0001) return;
+      // **★ 拖动中不许重新适配 ✗ ★**（2026-11-05 实测 ✓）
+      //   **∴ 症状 ✗**：拖动时状态区每帧刷新文字 ⇒ `.stage` 尺寸抖 ≥2px ⇒ 观察者回调
+      //     ⇒ `refitStage()` ⇒ `renderViewport()` ⇒ 整幅内核 `putImageData` ⇒ **把正在拖的
+      //     本地笔迹盖掉** ✗（实测：1.2 秒 71 次整幅重绘，`localBrushFrames=5` 而画布墨 0 ✓）。
+      //   **∴ 两道闸** ✓：
+      //     ① `state.dragging` ⇒ 直接返回 ✓（**拖动中本来就不该重排视图** ✓ — 会让光标下的
+      //        文档点漂移 ✓，`docs` 里那条 36px 漂移就是同族 ✓）；
+      //     ② 用户放大档（`state.zoom > 1`）照旧不动 ✓。
+      if (queued || state.dragging || (state.zoom || 1) > 1.0001) return;
       queued = true;
-      requestAnimationFrame(() => { queued = false; refitStage(); });
+      requestAnimationFrame(() => { queued = false; if (state.dragging) return; refitStage(); });
     }).observe(fitHost);
   }
 }
@@ -16250,7 +16292,6 @@ for (const [id, divider] of [["toggleRail", 6], ["toggleDockers", 10]]) {
     + ' stroke-width="1.5"/><path d="M' + divider + ' 2.5v11" stroke="currentColor"'
     + ' stroke-width="1.5"/></svg>' + label;
 }
-
 
 </script>
 <!-- **素材浮层** ✓：两张卡搬进来（`appendChild` = 移动节点 ✓，监听器与状态都还在 ✓）⇒

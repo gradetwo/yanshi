@@ -189,7 +189,6 @@ browser-offline-brush.mjs    # 类型：判据度量（板高随布局变 ⇒ �
 # **已转绿（第 10 轮）**：`browser-brush-preview.mjs`（选中 2B_pencil / 100%_Opaque / 绿图三张真截图，`naturalWidth > 0`；`__deflate` 死锁修好后不再超时）
 # **已移出名单（第 1131 轮）**：`browser-i18n.mjs` 的 `endpoint_not_local` 噪声来自 `render=client`
 #   ⇒ 本机 **server 模式**实测：切英文后整页中文 **0** 条、切回正常 ✓ ⇒ 已加进例外 ✓
-browser-cs-render-switch.mjs  # 类型：待定位（**抖动**：同一份代码在 3 次 run 里红、在 5 次里绿 ⇒ 见文末「第 246 轮（抖动）」一段）
 # **第 10 轮（2026-10-27）两次实跑，复现"抖动"**：
 #   ① 冷跑：模式 A `server +0｜local +10` ⇒ 红；② 紧接着重跑：`server +5｜local +0`、模式 B `local +10｜server +0` ⇒ 绿。
 #   ＋ 独立探针（同一 release 二进制、清空偏好、真鼠标一笔）也得到 `local 0⇒0｜server 15⇒20` ✓
@@ -28426,3 +28425,11 @@ browser-viewport-evict.mjs  # 类型：**待定位（判据的 CDP 管道 ＋ �
 #   ＋ **⇒ 那 2 个可疑项本身**（`size` 写入于 **0** 个函数／字段写入函数数差异 2…5）
 #     仍值得查 ✓ —— 但那是**下一件事**，不该由一条"报告"来阻塞 CI ✓。
 
+# **★★★ 2026-11-05 移出：`browser-cs-render-switch.mjs` ★★★**
+#   **∴ 依据 ✗**：本机 client 模式（wasm 本机构建）**连跑 3 次全部 EXIT=0** ✓
+#     （两种模式都画得上 ✓、两本账齐全 ✓）。
+#   **∴ 为什么以前的「抖动」可能消失 ✗**：同一天查到 `drawKernelRegion` 的异步回调
+#     **自激重绘**（1.2s 71 次整幅 putImageData ✓）＋ 拖动中 `refitStage` 反复重排 ✓
+#     ⇒ 那条判据量的正是**时间账**（墙钟／TaskDuration／apply／render／put ✓）
+#     ⇒ 重绘风暴会让这些数每跑一次都不一样 ✓ ⇒ **抖动来自产品缺陷，不是判据** ✓。
+#   **∴ 若再抖** ⇒ 先看 `localBrushFrames` 与 `putImageData` 计数 ✓，不要直接登记回来 ✗。
