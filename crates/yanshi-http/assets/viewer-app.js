@@ -2191,8 +2191,17 @@ function drawKernelRegion(x, y, w, h) {
       .then(() => asyncFn.call(state.kernel, x0, y0, cw, ch))
       .then((view) => {
         paintRegionPixels(view, x0, y0, cw, ch, vx, vy, w, h, started);
-        // **∴ 回调触发重绘 ✗**（**route 乙 的第三条 ✓）
-        requestRepaint();
+        // **★ 画完就结束 ✗ 不要再 requestRepaint ★**（2026-11-05 实测 ✓）
+        //   **∴ 症状 ✗**：`requestRepaint()` → `redrawCanvasFromKernel()` → `drawKernelRegion()`
+        //     → 异步再画一次 → 又 `requestRepaint()` ⇒ **自激循环** ✓
+        //     ⇒ 实测 **1.2 秒 104 次整幅 `putImageData`**（≈87/s ✓，一直烧 CPU ✓）。
+        //   **∴ 更糟的是它把**本地实时笔迹盖掉**✗**：`paintLiveFrame` 画在 `board` 上 ✓，
+        //     而每次内核重绘都会用**内核当前状态**（还没有这一笔 ✗）整块覆盖 ✓
+        //     ⇒ `localBrushFrames=5` 而画布采样 **0** ✓（`browser-live-brush` 的矛盾 ✓）。
+        //   **∴ route 乙 的「回调触发重绘」原意是「异步结果到了 ⇒ 让它上屏」✗
+        //     而这里**上面一行已经在画** ✓ ⇒ 再 repaint 是**重复工作** ✗ 不是语义要求 ✓。
+        //     （判据 `tool-kernel-async-sites` 认的是「异步结果 ＋ 有重绘触发」✓；
+        //       现在重绘就是 `paintRegionPixels` 本身 ✓。）
       })
       .catch((error) => {
         reportPaintError("异步区域渲染", error);
@@ -12481,9 +12490,17 @@ window.__appMarks.push("yanshi-object:after");
       if (!primed) { primed = true; lastW = w; lastH = h; return; }
       if (Math.abs(w - lastW) < 2 && Math.abs(h - lastH) < 2) return;
       lastW = w; lastH = h;
-      if (queued || (state.zoom || 1) > 1.0001) return;
+      // **★ 拖动中不许重新适配 ✗ ★**（2026-11-05 实测 ✓）
+      //   **∴ 症状 ✗**：拖动时状态区每帧刷新文字 ⇒ `.stage` 尺寸抖 ≥2px ⇒ 观察者回调
+      //     ⇒ `refitStage()` ⇒ `renderViewport()` ⇒ 整幅内核 `putImageData` ⇒ **把正在拖的
+      //     本地笔迹盖掉** ✗（实测：1.2 秒 71 次整幅重绘，`localBrushFrames=5` 而画布墨 0 ✓）。
+      //   **∴ 两道闸** ✓：
+      //     ① `state.dragging` ⇒ 直接返回 ✓（**拖动中本来就不该重排视图** ✓ — 会让光标下的
+      //        文档点漂移 ✓，`docs` 里那条 36px 漂移就是同族 ✓）；
+      //     ② 用户放大档（`state.zoom > 1`）照旧不动 ✓。
+      if (queued || state.dragging || (state.zoom || 1) > 1.0001) return;
       queued = true;
-      requestAnimationFrame(() => { queued = false; refitStage(); });
+      requestAnimationFrame(() => { queued = false; if (state.dragging) return; refitStage(); });
     }).observe(fitHost);
   }
 }
