@@ -52,21 +52,54 @@ const fallbacks = [
       points: [[16, 16, 1], [40, 22, 1], [64, 16, 1]] }) },
   { method: "on_base", run: null },
 ];
-const baseLayer = "Lprev";
+// **★ 每次跑都要一个**新的图层/对象名** ✗ ★**（2026-11-05 实测 ✓）
+//   **∴ 症状 ✗**：`doc` 固定 `bp1` ✓、`baseLayer` 固定 `Lprev` ✓、对象 id 按笔刷名固定 ✓
+//     ⇒ **第二次生成**时这些 id **已存在** ⇒ `brush_stroke` 失败 ⇒ **19 支回退笔刷静默消失** ✗
+//       （实测：179 张 vs 应有 196；`ramon-Knife`／`smudge`／`oil-*` 全被跳过 ✓）
+//     ⇒ 而日志只说「仍无图 21 支」✗ —— 看起来像笔刷本身不行 ✓。
+//   **∴ 修法** ✓：每次用一个新标签 ⇒ id 不撞 ✓；doc 仍复用（不留一堆文档 ✓）。
+const runTag = Date.now().toString(36);
+const baseLayer = "Lprev_" + runTag;
 await call("create_layer", { layer_id: baseLayer, name: "preview base" });
-await call("brush_stroke", { layer_id: baseLayer, object_id: "baseband", brush: "100%_Opaque", size: 48,
-  color: { r: 60, g: 130, b: 200, a: 255 }, points: [[20, 40, 1], [150, 40, 1]] });
-const rawPreview = async (brush) => {
+// **★ 底色要**双色硬边**✗ 单色看不出一支涂抹笔刷在干什么 ★**（2026-11-05 ✓）：
+//   **∴ 实测 ✗**：单色蓝带 ⇒ 回退出来的预览**就是一整条蓝** ✓（Blender／oil-* 全一样 ✗）
+//     ⇒ 笔刷库里三十支笔**长得一模一样** ⇒ 预览失去意义 ✓。
+//   **∴ 做法** ✓：蓝｜橙两段在 x=80 处**硬接** ⇒ 笔刷抹过接缝就能看见混色 ✓。
+const paintBand = (suffix) => Promise.all([
+  call("brush_stroke", { layer_id: baseLayer, object_id: "baseband_a_" + runTag + "_" + suffix, brush: "100%_Opaque", size: 48,
+    color: { r: 60, g: 130, b: 200, a: 255 }, points: [[20, 40, 1], [80, 40, 1]] }),
+  call("brush_stroke", { layer_id: baseLayer, object_id: "baseband_b_" + runTag + "_" + suffix, brush: "100%_Opaque", size: 48,
+    color: { r: 226, g: 138, b: 52, a: 255 }, points: [[80, 40, 1], [150, 40, 1]] }),
+]);
+await paintBand("initial");
+const rawPreview = async (brush, index) => {
   for (const step of fallbacks) {
     if (step.method === "on_base") {
       // **每支笔刷一个唯一的对象 id**（复用同一个 id 从第二支起就会撞"已存在"）
-      const oid = "smudge_" + brush.replace(/[^A-Za-z0-9._-]/g, "_");
+      const oid = "smudge_" + brush.replace(/[^A-Za-z0-9._-]/g, "_") + "_" + runTag;
+      // **★ 每支涂抹笔刷**自己重铺一次底色** ✗ ★**（2026-11-05 实测 ✓）
+      //   **∴ 症状 ✗**：底色只在循环外铺一次 ⇒ 前面几十支涂抹笔刷**把色带抹没了**
+      //     ⇒ 后面的笔刷开始报「这块区域上还没有颜色可抹」⇒ **17 支被静默跳过** ✗
+      //       （实测：179 张 vs 应有 196 ✓）
+      //   **∴ 修法** ✓：落笔前重铺同一条色带 ✓（同一图层、唯一 object id ⇒ 幂等叠加 ✓）。
+      await paintBand(String(index));
       const stroke = await call("brush_stroke", { layer_id: baseLayer, object_id: oid, brush, size: 28,
         points: [[26, 40, 1], [144, 40, 1]] });
       if (!stroke.ok) continue;
       const got = await call("get_object", { object_id: oid });
-      const hash = got && got.data && got.data.bitmap && got.data.bitmap.blob_hash;
-      if (hash) return { png: await fetchPng(hash), method: step.method };
+      // **★ 不能直接拿对象位图当预览 ✗ ★**（2026-11-05 实测 ✓）
+      //   **∴ 症状 ✗**：`data.bitmap` 是 **`image/x-yanshi-raw`**（RGBA 裸字节 ✓）
+      //     ⇒ 原样写成 `.png` ⇒ 浏览器显示**破图** ✗ —— 本仓 **30/185** 张就是这样坏掉的 ✓
+      //     （`file` 说 `data`，开头 64 字节全 0 ✓；大小恰好 `w*h*4` ✓）。
+      //   **∴ 修法** ✓：走 `render_region`（服务端编码器 ✓）拿**真 PNG** ✓。
+      const bbox = got && Array.isArray(got.bbox) ? got.bbox : null;
+      if (bbox && bbox.length === 4) {
+        const region = { x: bbox[0], y: bbox[1], w: bbox[2], h: bbox[3] };
+        const rendered = await call("render_region", { region });
+        if (rendered.ok && rendered.blob_hash) {
+          return { png: await fetchPng(rendered.blob_hash), method: step.method };
+        }
+      }
       continue;
     }
     const preview = await step.run.call(null, brush);
@@ -85,11 +118,19 @@ for (const brush of brushes) {
     png = await fetchPng(preview.blob_hash);
   } else {
     // **服务端拒绝 ⇒ 走回退，出图就算成功**（并记下用了哪一级，便于如实说明）。
-    const viaFallback = await rawPreview(brush);
+    const viaFallback = await rawPreview(brush, made + skipped);
     if (viaFallback) { png = viaFallback.png; method = viaFallback.method; }
   }
   if (!png) {
     index.skipped[brush] = (preview.context || {}).detail || "被拒绝";
+    skipped += 1;
+    continue;
+  }
+  // **★ 落盘前验 PNG magic ✗ ★**：坏字节写成 `.png` 是**静默降级** ✓
+  //   （页面只显示一个破图图标 ✓ 而生成脚本说「生成 N 张 ✓」✗）。
+  //   ⇒ 不是 PNG ⇒ 记进 skipped 并**说清**，绝不写出去 ✓。
+  if (!png.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    index.skipped[brush] = "返回的不是 PNG（" + png.length + " 字节；mime 可能是 image/x-yanshi-raw）⇒ 拒绝写入";
     skipped += 1;
     continue;
   }
