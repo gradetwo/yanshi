@@ -49,7 +49,7 @@ await send("Page.navigate", { url }); await send("Page.reload", { ignoreCache: t
 // **先等文档就绪**（别的探针都有这一步；上一版漏了它 ⇒ 笔刷下拉只有 1 个占位项、一行都渲染不出来）。
 const readyUntil = Date.now() + 20000;
 while (Date.now() < readyUntil) {
-  if (await evaluate('document.getElementById("board").width > 400 && window.yanshi.state().serverBlits > 0')) break;
+  if (await evaluate('document.getElementById("board").width >= 320 && window.yanshi.state().serverBlits > 0')) break;
   await sleep(200);
 }
 // **再点画笔工具**（否则笔刷下拉不会载入 ✓ —— 这正是上次 0 行的原因 ✗）。

@@ -125,7 +125,10 @@ const main = async () => {
     const READY_WAIT_MS = Number(process.env.YANSHI_WAIT_MS || 120000);
     let ready = false;
     for (let i = 0; i < Math.ceil(READY_WAIT_MS / 250); i++) {
-      const marks = await evaluate(`JSON.stringify((window.__appMarks||[]).slice(-1))`);
+      // **★ 看**整串**留痕 ✗ 不要只看最后一条 ★**（2026-11-05 ✓）：
+      //   原来 `slice(-1)` ＋ 正则 ⇒ **后来又有别的留痕压上来**就永远匹配不到 ✓
+      //   ⇒ 页面其实早就就绪，判据却等满上限报「判不了」✗（CI 实测 ✓）。
+      const marks = await evaluate(`JSON.stringify(window.__appMarks||[])`);
       if (typeof marks === "string" && /fetch-ok|refreshLayers-ok/.test(marks)) {
         ready = true;
         break;

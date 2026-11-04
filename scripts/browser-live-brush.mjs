@@ -176,7 +176,7 @@ consoleLines.length = 0;
 //   **∴ 根因** ✗：`waitFor` 的返回值**没人接** ✓ ⇒ 前提不成立时判据**冒充产品失败** ✗。
 //   **∴ 修法** ✓：接住返回值 ⇒ `exit(3)`（判不了 ≠ 产品坏 ✓）；上限改成 `WAIT_MS`（CI 慢不是缺陷 ✓）。
 const pageReady = await waitFor(
-  "document.getElementById('board').width > 400 && window.yanshi.state().serverBlits > 0",
+  "document.getElementById('board').width >= 320 && window.yanshi.state().serverBlits > 0",
   "画布尺寸与首帧",
 );
 if (!pageReady) {
@@ -425,7 +425,7 @@ const diff = await evaluate(`(() => {
 // 用它判定："我量到的最终"到底是**服务端像素** ✓ 还是**本地预览的残留** ✗（这一条决定前面结论的方向 ✓）。
 await send("Page.reload", { ignoreCache: true });
 // **睡眠已删** ✓（第 903 轮 ✓）：下面 waitFor 已在正确地等 ✓，且它**自带 20 秒超时** ✓（等不到会自己失败 ✓）。
-await waitFor("document.getElementById('board').width > 400 && window.yanshi.state().serverBlits > 0",
+await waitFor("document.getElementById('board').width >= 320 && window.yanshi.state().serverBlits > 0",
   "重载后首帧");
 await sleep(600);
 const reloadDigest = await stableDigest();
