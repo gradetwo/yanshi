@@ -6234,6 +6234,27 @@ async function withKernel(doc, fn) {
         return { png: png instanceof Uint8Array ? png : new Uint8Array(png), w: bw, h: bh, fold };
       });
     }
+    /** **内核渲染一块区域为 RGBA ✗**（`export_png` 的 `return_image` 缩图用 ✓）。
+     *  **∴ 与 `p2cRenderPng` 同一条折叠＋裁剪 ✓**（只是出口从 PNG 换成裸像素 ✓）。
+     */
+    async function p2cRenderRgba(x, y, w, h) {
+      const { entry } = await p2cKernelFor();
+      return await withKernel(doc, async () => {
+        const k = entry.k;
+        const atoms = await atomsOf(handle, doc);
+        const fold = String(k.load_atoms_json(JSON.stringify(atoms.map((r) => r.atom))) || "");
+        const bx = Math.max(0, Math.min(Math.floor(x), entry.w));
+        const by = Math.max(0, Math.min(Math.floor(y), entry.h));
+        const bw = Math.max(1, Math.min(Math.ceil(w), entry.w - bx));
+        const bh = Math.max(1, Math.min(Math.ceil(h), entry.h - by));
+        const rgba = k.render_region_rgba(bx, by, bw, bh);
+        if (!rgba || rgba.length < bw * bh * 4) {
+          throw new Error("内核未产出 RGBA 字节（fold=" + fold.slice(0, 200) + "）");
+        }
+        return { rgba: rgba instanceof Uint8Array ? rgba : new Uint8Array(rgba),
+                 w: bw, h: bh, fold };
+      });
+    }
     /** **写 `import_image` 原子 ✗**（**`blob_put` 进内核 ＋ `putBlob` 进 IndexedDB ＋ 原子引用 ✓** —
      **∴ 与 `brush_stroke` 分支同一套路 ✓**）。 */
     async function p2cPutImportImage({ layerId, rgba, w, h, region, source, objectId }) {
@@ -8364,6 +8385,33 @@ async function withKernel(doc, fn) {
     //   ⇒ **∴ 本地无文件系统 ✗** ⇒ **∴ 用内核渲染整幅（**`region` 缺省整幅 ✓**）✗** ⇒
     //   **∴ 返回 `blob:` URL（**可直接下载／预览 ✓**）＋ `archive_base64`（**与服务端同名字段 ✓**）**。
     if (path === "/api/tools/export_png") {
+      // **`return_image`／`max_px` ✓**（照 `tools_io.rs:429` 的 `explicit_max_px` ＋
+      //   `:738` 的内嵌图 ✓）：`max_px` **总是校验** ✓（非法在建图前报 ✓）；
+      //   `return_image:true` ⇒ 在既有 `archive_base64` 之外**再**给 `image{…}` ✓
+      //   （缺省长边 512 ✓，超限缩小并给 `scaled_from`／`scaled_note` ✓）。
+      //   **∴ 缺省一格不动 ✗**：不传时照旧**总是**回 `archive_base64` ✓（本地没有落盘文件 ✓）；
+      //     服务端只在 `return_image` 时回 `image`，本地那个 `archive_base64` 是**既有契约** ✓，
+      //     不属于本参数的行为 ⇒ 不借这次改动删它 ✓。
+      const exBool = (key) => {
+        const value = body[key];
+        if (value === undefined || value === null) return { value: false };
+        if (typeof value !== "boolean") {
+          return { err: p2Bad(key + " 必须是布尔值，得到 " + JSON.stringify(value)) };
+        }
+        return { value };
+      };
+      const exReturn = exBool("return_image");
+      if (exReturn.err) return exReturn.err;
+      let exMaxPx = null;
+      if (body.max_px !== undefined && body.max_px !== null) {
+        const raw = body.max_px;
+        if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0) {
+          return p2Bad("参数 max_px 必须是不小于 0 的整数（长边上限，钳到 1..=8192），得到 "
+                       + JSON.stringify(raw));
+        }
+        exMaxPx = Math.min(8192, Math.max(1, raw));
+      }
+      const exWantsImage = exReturn.value;
       if (body.layer_id !== undefined && body.layer_id !== null) {
         return p2Bad("本地内核的 render_region_png 没有图层参数 ⇒ 按层导出本地暂不支持（请先用 get_state 确认要导出的层）");
       }
@@ -8384,9 +8432,39 @@ async function withKernel(doc, fn) {
             url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
           }
         } catch (e) { url = null; }
-        return json({ ok: true, server: false, width: rw, height: rh, bytes: png.length,
-                      mime_type: "image/png", url, archive_base64: p2cB64(png),
-                      note: "本地无文件系统 ⇒ 不落盘；url 可直接打开/下载，archive_base64 与服务端同名字段" });
+        const receipt = { ok: true, server: false, width: rw, height: rh, bytes: png.length,
+                          mime_type: "image/png", url, archive_base64: p2cB64(png),
+                          note: "本地无文件系统 ⇒ 不落盘；url 可直接打开/下载，archive_base64 与服务端同名字段" };
+        // **附加内嵌图 ✓**（只在 `return_image:true` 时出现 ✓ —— 既有 `archive_base64` 不动 ✓）。
+        if (exWantsImage) {
+          const cap = exMaxPx === null ? 512 : exMaxPx;
+          if (rw <= cap && rh <= cap) {
+            receipt.image = { mime_type: "image/png", data: p2cB64(png),
+                              width: rw, height: rh };
+          } else {
+            try {
+              // **超限 ⇒ 用本次导出的同一区域重取 RGBA 再缩 ✓**（`tools_io.rs:742` 同义 ✓）。
+              const { rgba: full, w: srcW, h: srcH } = await p2cRenderRgba(rx, ry, rw, rh);
+              const ratio = cap / Math.max(srcW, srcH);
+              const imageW = Math.max(1, Math.round(srcW * ratio));
+              const imageH = Math.max(1, Math.round(srcH * ratio));
+              const small = p2cResampleBilinear(full, srcW, srcH, imageW, imageH);
+              if (!small) throw new Error("双线性缩放失败");
+              const capped = await encodePngRgba(imageW, imageH, small);
+              receipt.image = { mime_type: "image/png", data: p2cB64(capped),
+                                width: imageW, height: imageH };
+              receipt.scaled_from = [srcW, srcH];
+              receipt.scaled_note = "导出图 " + srcW + "×" + srcH + " 超过 max_px=" + cap
+                + "，内嵌图已自动缩小到 " + imageW + "×" + imageH
+                + "；落盘文件仍是原尺寸（本地无文件系统 ⇒ archive_base64／url 不受影响 ✓）";
+            } catch (e) {
+              receipt.image_omitted = true;
+              receipt.image_omitted_reason = "内嵌图的缩放或编码失败，未内嵌 base64；"
+                + "导出内容不受影响（" + String((e && e.message) || e) + "）";
+            }
+          }
+        }
+        return json(receipt);
       } catch (err) { return p2cKernel501(err); }
     }
 
@@ -10877,6 +10955,34 @@ async function withKernel(doc, fn) {
     }
 
     if (path === "/api/tools/render_region") {
+      // **`include_image`／`return_image`／`max_px` ✓**（照 `tools_read.rs:521` 的
+      //   `wants_return_image` ＋ `:604` 的 `max_px` 钳制 ✓）：
+      //   任一为 true ⇒ 回 **JSON ＋ 内嵌 `image`**（`tools_read.rs:665`／`:687` ✓）；
+      //   `max_px` 是长边上限（显式给了就校验并钳到 1..=8192 ✓；缺省 512 ✓）；
+      //   **∴ 三个都不传 ⇒ 下面原样回二进制 PNG** ✓（响应字节不变 ✓）。
+      //   **∴ 校验必须在渲染前 ✗**：非法 `max_px` 不能等内核跑完才报 ✓（`tools.rs:2278` 同一条 ✓）。
+      const rrBool = (key) => {
+        const value = body[key];
+        if (value === undefined || value === null) return { value: false };
+        if (typeof value !== "boolean") {
+          return { err: p2Bad(key + " 必须是布尔值，得到 " + JSON.stringify(value)) };
+        }
+        return { value };
+      };
+      const rrInclude = rrBool("include_image");
+      if (rrInclude.err) return rrInclude.err;
+      const rrReturn = rrBool("return_image");
+      if (rrReturn.err) return rrReturn.err;
+      let rrMaxPx = null;
+      if (body.max_px !== undefined && body.max_px !== null) {
+        const raw = body.max_px;
+        if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0) {
+          return p2Bad("参数 max_px 必须是不小于 0 的整数（长边上限，钳到 1..=8192），得到 "
+                       + JSON.stringify(raw));
+        }
+        rrMaxPx = Math.min(8192, Math.max(1, raw));
+      }
+      const rrWantsImage = rrInclude.value || rrReturn.value;
       // **★ C/S 客户端渲染：两类请求必须由**服务端**出图 ✗ ★**（第 10 轮 ✓）：
       //   ① **heavy 文档**（介质笔画 = `import_image`/`raster_patch`、修图、液化…）——
       //      本地内核折叠它只会得到**空白补丁** ✓（`heavyDocument` 那套注释 ✓）；
@@ -10926,7 +11032,8 @@ async function withKernel(doc, fn) {
       // **∴ 诊断：读快照时用的期望序号 ✗**（第 662 轮 ✓）。
       try { window.__expectedSeq = expected; window.__headSeq = head; } catch (e) {}
       const snap = await readSnapshot(handle, doc, expected);
-      if (snap && snap.bytes) {
+      // **∴ 要内嵌图时不能走快照 ✗**：快照只有 PNG 字节、没有 RGBA ⇒ 无法按 max_px 缩放 ✓。
+      if (!rrWantsImage && snap && snap.bytes) {
         return new Response(snap.bytes, {
           status: 200,
           headers: { "content-type": "image/png", "cache-control": "no-store", "x-yanshi-source": "local-snapshot" },
@@ -10980,7 +11087,7 @@ async function withKernel(doc, fn) {
           //   其余调用（缩略图之外的 PNG 用途 ✓）保持原行为 ✓。
           const rawWanted = (body && body.raw === true) ||
                             q.get("raw") === "1" || q.get("raw") === "true";
-          if (rawWanted) {
+          if (rawWanted && !rrWantsImage) {
             const bw = Math.ceil(box.w);
             const bh = Math.ceil(box.h);
             const rgba = k.render_region_rgba(Math.floor(box.x), Math.floor(box.y), bw, bh);
@@ -10997,6 +11104,50 @@ async function withKernel(doc, fn) {
                          "cache-control": "no-store",
                          "x-yanshi-source": "local-kernel-rgba" },
             });
+          }
+          // **要内嵌图 ⇒ 走 `render_region_rgba` ✓**（与 `render_region_png` 同一次折叠 ✓）：
+          //   缩放复用 `p2cResampleBilinear` ✓、编码复用 `encodePngRgba` ✓（**不新增实现 ✓**）。
+          //   缩不了就如实回原尺寸 ✓（不谎报 `max_px` 生效 ✓，与 `brush_preview` 同一条 ✓）。
+          const outX = Math.floor(box.x), outY = Math.floor(box.y);
+          const outW = Math.ceil(box.w), outH = Math.ceil(box.h);
+          if (rrWantsImage) {
+            const rgba = k.render_region_rgba(outX, outY, outW, outH);
+            const need = outW * outH * 4;
+            if (!rgba || rgba.length < need) {
+              return json({ ok: false, error: "needs_render", server: false,
+                            reason: "内核未产出 RGBA 字节", atom_count: atoms.length,
+                            got: rgba ? rgba.length : 0, need });
+            }
+            const full = rgba instanceof Uint8Array ? rgba : new Uint8Array(rgba);
+            let imageBytes = await encodePngRgba(outW, outH, full);
+            let imageW = outW, imageH = outH;
+            // **`max_px` 缺省 512 ✓**（`tools_read.rs:604` 的 `unwrap_or(512)` ✓）。
+            const cap = rrMaxPx === null ? 512 : rrMaxPx;
+            if (outW > cap || outH > cap) {
+              const ratio = cap / Math.max(outW, outH);
+              imageW = Math.max(1, Math.round(outW * ratio));
+              imageH = Math.max(1, Math.round(outH * ratio));
+              const small = p2cResampleBilinear(full, outW, outH, imageW, imageH);
+              if (small) {
+                imageBytes = await encodePngRgba(imageW, imageH, small);
+              } else {
+                imageW = outW; imageH = outH;
+              }
+            }
+            const preview = { ok: true, server: false, region: box,
+                              width: outW, height: outH, mime_type: "image/png",
+                              bytes: imageBytes.length,
+                              image: { mime_type: "image/png", data: p2cB64(imageBytes),
+                                       width: imageW, height: imageH } };
+            if (imageW !== outW || imageH !== outH) {
+              // **缩小必须说出来 ✓**（`tools_read.rs:671` 同形 ✓）。
+              preview.scaled_from = [outW, outH];
+              preview.max_px = cap;
+              preview.scaled_note = "原区域 " + outW + "×" + outH + " 超过 max_px=" + cap
+                + " ⇒ 已**自动缩小**到 " + imageW + "×" + imageH + " 内嵌；要看原尺寸请传 max_px="
+                + Math.max(outW, outH);
+            }
+            return json(preview);
           }
           const png = k.render_region_png(Math.floor(box.x), Math.floor(box.y), Math.ceil(box.w), Math.ceil(box.h));
           // **∴ 诊断：内核渲染元信息 ✗**（第 664 轮 ✓）：**∴ `k` 在此可见 ✓**。

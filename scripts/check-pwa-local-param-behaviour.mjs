@@ -11,7 +11,7 @@
 //     (c) **非法值 ⇒ 400 `invalid_argument` 形状**（`error`／`error_code`／`context.detail` ✓）。
 //   外加**恒等式**（内核 ②：单点断言只对一次输入成立 ✓）。
 //
-// **覆盖的参数**（4 个工具 / 7 个参数 ✓）：
+// **覆盖的参数**（6 个工具 / 12 个参数 ✓）：
 //   · `batch.slim_receipt`                → `tools.rs:23591`
 //   · `smudge.deposit`                    → `tools.rs:13836`
 //   · `brush_preview.include_image`       → `tools.rs:1535`（`wants_return_image`）
@@ -19,6 +19,11 @@
 //   · `brush_preview.max_px`              → `tools.rs:1542`（钳 1..=8192）
 //   · `create_mask.from_selection`        → `tools_mask.rs:638`
 //   · `create_selection.from_mask`        → `tools_selection.rs:82`
+//   · `render_region.include_image`       → `tools_read.rs:521`（`wants_return_image`）
+//   · `render_region.return_image`        → 同上
+//   · `render_region.max_px`              → `tools_read.rs:604`（缺省 512／钳 1..=8192）
+//   · `export_png.return_image`           → `tools_io.rs:429`（`wants_return_image`）
+//   · `export_png.max_px`                 → `tools_io.rs:429`（`explicit_max_px`）
 //
 // **不测什么**：不测像素（`brush_preview` 用注入的假内核 ⇒ 只验「图怎么给、给多大」✓；
 //   抹匀的暗化是共享 Rust 渲染器 `render.rs:1260` 的事，本地只负责把 `deposit` 写进原子 ✓）。
@@ -57,7 +62,25 @@ const { open } = await import(base + "store.js");
 api.__setLocalApiLoadersForTest({
   wasm: async () => ({
     default: async () => {},
-    WasmKernel: class { constructor(doc, tile, w, h) { this.doc = doc; this.w = w; this.h = h; } },
+    // **`brush_preview` 只要一条「画出了 RGBA」的路 ✓；`render_region`／`export_png`
+    //   还要内核的折叠与裸像素出口 ✓**（判据只验「图怎么给、给多大」✓，不验真像素 ✓）。
+    WasmKernel: class {
+      constructor(doc, tile, w, h) { this.doc = doc; this.w = w; this.h = h; }
+      load_atoms_json() { return "{}"; }
+      render_region_png(_x, _y, w, h) {
+        // **非空字节即可 ✓**（本判据不解码 PNG ✓；只断「有没有字节／走哪条出口」✓）。
+        return new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, w & 255, h & 255]);
+      }
+      render_region_rgba(_x, _y, w, h) {
+        const out = new Uint8Array(w * h * 4);
+        for (let i = 0; i < out.length; i += 4) {
+          out[i] = 200; out[i + 1] = 40; out[i + 2] = 10; out[i + 3] = 255;
+        }
+        return out;
+      }
+      render_region_info() { return "{}"; }
+      blob_put() { return "sha256:stub"; }
+    },
   }),
   brushLocal: async () => ({
     fetchBrushText: async () => "#stub myb",
@@ -84,7 +107,13 @@ const post = (path, body) =>
 const get = (path) => local(new Request(`https://x${path}`));
 const jpost = async (path, body) => {
   const res = await post(path, body);
-  return { status: res.status, body: await res.json() };
+  const text = await res.text();
+  // **非 JSON 回执 ⇒ 如实标出来 ✓**（不让 `.json()` 抛成 `exit(3)` —— **那是产品回归 ✓**，
+  //   不是判据自身出错 ✓；下面按 `body.ok` 断言 ⇒ 会红成 `exit(1)` ✓）。
+  let parsed;
+  try { parsed = JSON.parse(text); }
+  catch { parsed = { __non_json: text.slice(0, 80) }; }
+  return { status: res.status, body: parsed };
 };
 const isInvalid = (r) =>
   r.status === 400 && r.body.ok === false && r.body.error === "invalid_argument"
@@ -306,6 +335,123 @@ check(maskAfterTombstone.body.ok === true
   "latest 跳过已删选区（s_from_mask 墓碑后仍取到活着的 s_from_mask_inv 的椭圆）",
   JSON.stringify(mLatest2?.shape));
 
+// ============ ⑤ render_region.include_image／return_image／max_px ============
+console.log("\n⑤ render_region.include_image／return_image／max_px");
+const rrRegion = { x: 0, y: 0, w: 120, h: 90 };
+const rrPlain = await post(`/api/tools/render_region?doc=${DOC}`, { region: rrRegion });
+const rrPlainBytes = new Uint8Array(await rrPlain.arrayBuffer());
+check(rrPlain.status === 200 && rrPlain.headers.get("content-type") === "image/png"
+  && rrPlainBytes.length > 0,
+  "不传 ⇒ 仍是二进制 PNG（响应形状不变）",
+  `${rrPlain.status} ${rrPlain.headers.get("content-type")} ${rrPlainBytes.length}B`);
+
+const rrInc = await jpost(`/api/tools/render_region?doc=${DOC}`,
+  { region: rrRegion, include_image: true });
+check(rrInc.body.ok === true && rrInc.body.image?.mime_type === "image/png"
+  && rrInc.body.image.data.length > 0,
+  "include_image:true ⇒ 内嵌 image{data}", `data=${rrInc.body.image?.data?.length}`);
+check(rrInc.body.image?.width === rrInc.body.width
+  && rrInc.body.image?.height === rrInc.body.height && rrInc.body.scaled_from === undefined,
+  "恒等式：include_image 且未超 512 ⇒ 原尺寸内嵌、无 scaled_from",
+  `${rrInc.body.image?.width}×${rrInc.body.image?.height} vs ${rrInc.body.width}×${rrInc.body.height}`);
+
+const rrRet = await jpost(`/api/tools/render_region?doc=${DOC}`,
+  { region: rrRegion, return_image: true, max_px: 8 });
+const rrRw = rrRet.body.width, rrRh = rrRet.body.height;
+const rrLong = Math.max(rrRw, rrRh);
+const rrExpW = Math.max(1, Math.round(rrRw * 8 / rrLong));
+const rrExpH = Math.max(1, Math.round(rrRh * 8 / rrLong));
+check(rrRet.body.image?.width <= 8 && rrRet.body.image?.height <= 8,
+  "max_px:8 ⇒ 内嵌图长边 ≤ 8", `${rrRet.body.image?.width}×${rrRet.body.image?.height}`);
+check(rrRet.body.image?.width === rrExpW && rrRet.body.image?.height === rrExpH,
+  "恒等式：缩放尺寸 = round(原尺寸 × max_px / 长边)",
+  `期望 ${rrExpW}×${rrExpH} 实测 ${rrRet.body.image?.width}×${rrRet.body.image?.height}`);
+check(JSON.stringify(rrRet.body.scaled_from) === JSON.stringify([rrRw, rrRh])
+  && rrRet.body.max_px === 8 && typeof rrRet.body.scaled_note === "string",
+  "缩小必须说出来：scaled_from 是原尺寸、max_px 回显 8",
+  `${JSON.stringify(rrRet.body.scaled_from)} max_px=${rrRet.body.max_px}`);
+
+// **`max_px` 单独传 ⇒ 只校验、不改出口** ✓（与服务端「max_px 只在回图时生效」同义 ✓）。
+const rrMaxOnly = await post(`/api/tools/render_region?doc=${DOC}`,
+  { region: rrRegion, max_px: 8 });
+const rrMaxOnlyBytes = new Uint8Array(await rrMaxOnly.arrayBuffer());
+check(rrMaxOnly.headers.get("content-type") === "image/png"
+  && rrMaxOnlyBytes.length === rrPlainBytes.length,
+  "只传 max_px ⇒ 仍是原形状的二进制 PNG（max_px 只在回图时生效）",
+  `${rrMaxOnly.headers.get("content-type")} ${rrMaxOnlyBytes.length}B`);
+
+for (const [label, patch] of [
+  ["max_px:-1", { max_px: -1 }],
+  ["max_px:2.5", { max_px: 2.5 }],
+  ["include_image:\"yes\"", { include_image: "yes" }],
+  ["return_image:0", { return_image: 0 }],
+]) {
+  const bad = await jpost(`/api/tools/render_region?doc=${DOC}`,
+    { region: rrRegion, ...patch });
+  check(isInvalid(bad), `非法 ${label} ⇒ 400 invalid_argument`,
+    `${bad.status} ${JSON.stringify(bad.body).slice(0, 100)}`);
+}
+
+// ============ ⑥ export_png.return_image／max_px ============
+console.log("\n⑥ export_png.return_image／max_px");
+const exBase = { path: "local-param.png" };
+const exPlain = await jpost(`/api/tools/export_png?doc=${DOC}`, exBase);
+check(exPlain.body.ok === true && typeof exPlain.body.archive_base64 === "string"
+  && exPlain.body.image === undefined,
+  "不传 ⇒ 照旧总是 archive_base64、无 image（缺省契约不变）",
+  `image=${"image" in exPlain.body} b64=${typeof exPlain.body.archive_base64}`);
+check(exPlain.body.width === 120 && exPlain.body.height === 90,
+  "不传 ⇒ 整幅尺寸不变", `${exPlain.body.width}×${exPlain.body.height}`);
+
+const exRet = await jpost(`/api/tools/export_png?doc=${DOC}`,
+  { ...exBase, return_image: true });
+check(exRet.body.image?.mime_type === "image/png" && exRet.body.image.data.length > 0,
+  "return_image:true ⇒ 附加内嵌 image{data}", `data=${exRet.body.image?.data?.length}`);
+check(exRet.body.image?.width === exRet.body.width
+  && exRet.body.image?.height === exRet.body.height && exRet.body.scaled_from === undefined,
+  "恒等式：未超 512 ⇒ 原尺寸内嵌、无 scaled_from",
+  `${exRet.body.image?.width}×${exRet.body.image?.height}`);
+check(typeof exRet.body.archive_base64 === "string",
+  "return_image 是附加行为：archive_base64 仍在（不推翻既有契约）");
+
+const exBig = await jpost(`/api/tools/export_png?doc=${DOC}`,
+  { ...exBase, return_image: true, max_px: 8 });
+const exRw = exBig.body.width, exRh = exBig.body.height;
+const exLong = Math.max(exRw, exRh);
+const exExpW = Math.max(1, Math.round(exRw * 8 / exLong));
+const exExpH = Math.max(1, Math.round(exRh * 8 / exLong));
+check(exBig.body.image?.width <= 8 && exBig.body.image?.height <= 8,
+  "max_px:8 ⇒ 内嵌图长边 ≤ 8", `${exBig.body.image?.width}×${exBig.body.image?.height}`);
+check(exBig.body.image?.width === exExpW && exBig.body.image?.height === exExpH,
+  "恒等式：缩放尺寸 = round(原尺寸 × max_px / 长边)",
+  `期望 ${exExpW}×${exExpH} 实测 ${exBig.body.image?.width}×${exBig.body.image?.height}`);
+check(JSON.stringify(exBig.body.scaled_from) === JSON.stringify([exRw, exRh])
+  && exBig.body.scaled_from?.[0] === 120 && typeof exBig.body.scaled_note === "string",
+  "缩小必须说出来：scaled_from 是 [120,90]、有 scaled_note",
+  `${JSON.stringify(exBig.body.scaled_from)}`);
+check(exBig.body.bytes === exPlain.body.bytes
+  && exBig.body.width === 120 && exBig.body.height === 90,
+  "内嵌图缩小不影响导出本身：bytes／width／height 与不传时相同",
+  `${exBig.body.bytes} vs ${exPlain.body.bytes}`);
+
+const exMaxOnly = await jpost(`/api/tools/export_png?doc=${DOC}`,
+  { ...exBase, max_px: 8 });
+// **`url` 是 `URL.createObjectURL` 生成的唯一地址 ✓**（node 里每次不同 ✓）⇒ 比较时把它归一 ✓。
+const withoutUrl = (body) => JSON.stringify({ ...body, url: typeof body.url });
+check(withoutUrl(exMaxOnly.body) === withoutUrl(exPlain.body),
+  "只传 max_px ⇒ 回执与不传逐字相同（max_px 只在回图时生效）",
+  `keys=${Object.keys(exMaxOnly.body).sort().join(",")}`);
+
+for (const [label, patch] of [
+  ["max_px:-1", { max_px: -1 }],
+  ["max_px:2.5", { max_px: 2.5 }],
+  ["return_image:\"yes\"", { return_image: "yes" }],
+]) {
+  const bad = await jpost(`/api/tools/export_png?doc=${DOC}`, { ...exBase, ...patch });
+  check(isInvalid(bad), `非法 ${label} ⇒ 400 invalid_argument`,
+    `${bad.status} ${JSON.stringify(bad.body).slice(0, 100)}`);
+}
+
 // ============================ 汇总 ============================
 if (failures.length > 0) {
   console.error(`\n✗ PWA 本地声明参数判据红 ${failures.length} 条`);
@@ -313,4 +459,5 @@ if (failures.length > 0) {
 }
 console.log("\n✓ PWA 本地声明参数行为与恒等式均成立（batch.slim_receipt／smudge.deposit／"
   + "brush_preview.include_image·return_image·max_px／create_mask.from_selection／"
-  + "create_selection.from_mask）");
+  + "create_selection.from_mask／render_region.include_image·return_image·max_px／"
+  + "export_png.return_image·max_px）");
