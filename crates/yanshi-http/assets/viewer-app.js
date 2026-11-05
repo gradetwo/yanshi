@@ -1447,7 +1447,7 @@ async function callToolLocal(name, args, options = {}) {
   if (value.ok) {
     if (value.head !== undefined) window.yanshiStats.serverHead = value.head;
     if (value.head !== undefined) setStatus({ head: value.head, dirty: (value.dirty_tiles || 0) });
-    const trackable = name !== "revert" && name !== "reapply" ? value.atom_id : null;
+    const trackable = name !== "revert" && name !== "reapply" ? responseAtomIdOf(value) : null;
     afterMutation(trackable, {
       skipRefresh: options.refresh === false,
       dirtyBox: value.dirty_bbox || null,
@@ -1542,7 +1542,7 @@ async function callToolServer(name, args, options = {}) {
     if (value.head !== undefined) window.yanshiStats.serverHead = value.head;
     if (value.head !== undefined) setStatus({ head: value.head, dirty: (value.dirty_tiles || 0) });
     // 入栈与"是否刷新"无关：`revert` / `reapply` 自身不入栈（它们由撤销/重做逻辑显式管理栈）。
-    const trackable = name !== "revert" && name !== "reapply" ? value.atom_id : null;
+    const trackable = name !== "revert" && name !== "reapply" ? responseAtomIdOf(value) : null;
     afterMutation(trackable, {
       skipRefresh: options.refresh === false,
       // **把服务端给的脏区带下去** ✓ —— 设计的两层渲染就是按脏区推进的 ✓，
@@ -2896,6 +2896,23 @@ function afterMutation(atomId, options = {}) {
   }
   scheduleThumbRefresh();
   void refreshHistory();
+}
+
+/// **从工具响应里取"这一笔"的原子 id** ✓（2026-11-05 ✓）
+///
+/// 服务端回 `{atom_id}`、本地层回 `{atoms:[{id:…}]}`（静态 PWA 实测）⇒ 只读前者拿
+/// `undefined` ⇒ `afterMutation(null)` ⇒ 撤销栈不涨、也不刷新只读状态
+/// ⇒ **画完一笔界面仍写「可撤销 0 笔」、撤销按钮仍是灰的**（而 `get_undo_status` 明说 2）。
+/// ⇒ 两种形状都认，不逼任何一边改契约。
+function responseAtomIdOf(value) {
+  if (!value || typeof value !== "object") return null;
+  if (typeof value.atom_id === "string" && value.atom_id) return value.atom_id;
+  const first = Array.isArray(value.atoms) ? value.atoms[0] : null;
+  if (first && typeof first === "object") {
+    if (typeof first.id === "string" && first.id) return first.id;
+    if (typeof first.atom_id === "string" && first.atom_id) return first.atom_id;
+  }
+  return null;
 }
 
 async function submitAtom(atom) {
@@ -4508,16 +4525,12 @@ async function warmKernel() {
     setupCheckpointPanel();
     documentPanelsBound = true;
   }
-  // **★ 本地部署：文档原子缺失就补上 ✗ ★**（2026-11-05 ✓）
-  //   **∴ 症状**：PWA 按链接打开**本地还没有的 doc** ⇒ 前端只补图层 ✓、没有 `create_document`
-  //     ⇒ 内核重放后认为文档 **0×0** ⇒ 区域渲染回空字节 ⇒ **画布全白、落笔没有像素** ✓
-  //     （而工具调用全回 `ok` ⇒ 静默 ✓；本机实测 `render_region` 回「与文档 0×0 不相交」✓）。
-  //   **∴ 做法**：`get_document.has_create_document === false` ⇒ 写一条 `create_document` ✓
-  //     （`new_document` 路由幂等：已有会明确拒绝 ✓）。
-  //   **∴ 放在 `warmKernel` 而不在 `loadDocumentData`**：后者里本地层可能尚未接管 `fetch` ✓
-  //     （实测一次都没执行 ✓）⇒ 这里**一定**在本地 JSON 取过之后 ✓。
-  //   **∴ 留信号**：`yanshiStats.docAtomRepair` = created／present／failed:<原因> ✓
-  //     （否则"补没补"只能靠画布有没有像素反推 ✗）。
+  // **★ 本地部署：文档原子缺失就补上**（2026-11-05）
+  //   症状：PWA 打开本地还没有的 doc ⇒ 只补图层、没有 `create_document` ⇒ 内核认为文档
+  //     **0×0** ⇒ 区域渲染回空字节 ⇒ **画布全白、落笔没有像素**，而工具全回 `ok`（静默）。
+  //   做法：`has_create_document === false` ⇒ 写 `create_document`（`new_document` 幂等），
+  //     放在 `warmKernel`（`loadDocumentData` 里本地层可能还没接管 `fetch`，实测没执行）。
+  //   留信号：`yanshiStats.docAtomRepair` = created／present／failed:<原因>。
   if (typeof window !== "undefined" && window.__pwaLocalOnly === true) {
     try {
       const info = await fetchOrLocal(api("/api/tools/get_document"), {
@@ -4681,6 +4694,10 @@ async function refreshUndoStatusFromServer() {
     const n = value.remaining_gestures;
     if (typeof n === "number") {
       state.remainingUndo = n;
+      // **可重做也要一起读**（2026-11-05）：原来只有 undo/redo 的响应才写 `remainingRedo`
+      // ⇒ 没点过重做的页面这一格永远是「—」（两个数其实在同一个响应里）。
+      const r = value.redoable_gestures;
+      if (typeof r === "number") state.remainingRedo = r;
       updateUndoStatus();
     }
   } catch (_) {

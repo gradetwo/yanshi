@@ -1601,6 +1601,12 @@ const selectionResult = await evaluate(`(async () => {
       // **让「画布有没有动」自己说出来** ✓（2026-11-05 ✓）：
       // baseInk = 铺底之后画布上的墨（0 ⇒ 画布整段静止 ✓）；beforeInk／afterInk = 黄色笔前后 ✓。
       baseInk, beforeInk: inkOf(beforeStroke), afterInk: inkOf(after),
+      // **画布到底什么颜色** ✗（2026-11-05 ✓）：CI 实测 baseInk=beforeInk=afterInk=262144
+      // ⇒ 512² 的**每一个像素**都被判成「非白」✓ 而画布又**一动不动** ✓
+      //   ⇒ 只报"没有墨"分不清「黑布」「透明布」与「真的没画」✗ ⇒ 取两个采样点带上 ✓。
+      cornerPx: Array.from(beforeStroke.slice(0, 4)),
+      midPx: Array.from(beforeStroke.slice((Math.floor((board.height / 2) * board.width + board.width / 2)) * 4,
+                                          (Math.floor((board.height / 2) * board.width + board.width / 2)) * 4 + 4)),
       // 视图层记账（只取几项可读的 ✓）：内核起没起来、有没有退回服务端像素、最近几次清屏／贴图 ✓。
       kernelHead: (window.yanshiStats || {}).kernelHead ?? null,
       wasmReady: !!(window.yanshiStats || {}).wasm,
@@ -2645,7 +2651,8 @@ if (!selectionResult || !selectionResult.ok) {
       + ` fallbacks=${JSON.stringify(selectionResult.resyncFallbacks)}`
       + ` drag=${JSON.stringify(selectionResult.dragBeforeStroke)}`
       + ` tool=${JSON.stringify(selectionResult.toolAfterClickBrush)}`
-      + ` blits=${JSON.stringify(selectionResult.blits)}`;
+      + ` blits=${JSON.stringify(selectionResult.blits)}`
+      + ` px=${JSON.stringify([selectionResult.cornerPx, selectionResult.midPx])}`;
     if (outside === 0) {
       // 画布上**根本没有**黄色笔画 ⇒ 是时序/几何前提没立住（不是产品没做裁切）。
       notJudged.push("选区用例没跑起来：笔画没有落下（" + detail + "）");

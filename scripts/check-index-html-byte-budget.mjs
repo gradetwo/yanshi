@@ -63,7 +63,13 @@ import { execFileSync } from "node:child_process";
 //   38 B、补写逻辑约 700 B、说明注释约 1.6 KB —— 已从初稿压到此处）⇒ 上界 945,200→948,000
 //   （+2,800，留 967 B 余量）。**这不是"顺手塞进去"**：修的是「静态 PWA 打开新文档后
 //   画布全白、落笔没有像素」（`browser-offline-reload` 因此转绿 ✓）。
-const CEILING = 948_000;
+// 2026-11-05（同一轮的第二个缺陷）：撤销状态栏在 PWA 里**永远是「可撤销 0 笔」**、撤销按钮
+//   永远灰的 —— `draw_stroke` 的本地响应是 `{atoms:[{id}]}` 而代码只读 `value.atom_id`
+//   ⇒ `afterMutation(null)` ⇒ 不刷新只读状态。补 `responseAtomIdOf` 归一 + 顺带把
+//   `redoable_gestures` 也读进来（原来只有点过重做才写，重做那一格永远是「—」）。
+//   947,033→947,882（+849 B：助手 420 B、注释 250 B、重做两行 180 B；已压过两稿）
+//   ⇒ 上界 948,000→950,000（+2,000，留 2,118 B 余量）。
+const CEILING = 950_000;
 
 const failures = [];
 const check = (ok, label, detail) => {
