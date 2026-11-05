@@ -28569,6 +28569,13 @@ browser-offline-brush.mjs  # 跨架构（x86_64 服务端 vs wasm32 内核）笔
 #     reload 补 token ✓。
 #   **∴ 转绿条件 ✓**：把剩下每一段的前置都按同样方式加**有界等待 + 不可判**（逐段过一遍），
 #     或整体挪到 nightly（完整桌面环境）⇒ 再删本行。
+#   **2026-11-05 再试（两处改进后仍 ⊘）**：① 选区用例改成「落笔前后逐像素比较」判墨
+#     （不再用颜色阈值，排除混色误判）✓；② 落笔前同时等「工具=brush」与「dragging 为空」✓。
+#     结果 CI 仍是 `inside=0 outside=0`（canvas/doc 512，选区 bbox 正确）⇒ 在 CI 上那串
+#     合成 PointerEvent **确实一个像素都没触发**（本机含 6× CPU 节流均为 EXIT=0）✓。
+#   **∴ 归因（未定）✗**：CI 的 Chromium 版本/指针合成差异，或该段之前的某个手势留下了
+#     影响事件分发的状态（`setPointerCapture`）✓。**下一步**：把这一段改成用 CDP
+#     `Input.dispatchMouseEvent`（与其它段一致）而不是页面内合成 PointerEvent ✓。
 browser-ui-check.mjs  # CI 上 ✓/⊘ 交替（本机 5/5 EXIT=0）；15 段判据，2 核 runner 上随机卡前置
 #   **2026-11-05 追加**：加了 `YANSHI_CPU_THROTTLE`（CDP `Emulation.setCPUThrottlingRate`），
 #     本机 **6× 节流下仍然 EXIT=0** ⇒ CI 的 ⊘ **不是单纯的 CPU 慢**（可能与 runner 的内存/
