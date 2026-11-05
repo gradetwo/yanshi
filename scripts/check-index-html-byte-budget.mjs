@@ -80,7 +80,9 @@ import { execFileSync } from "node:child_process";
 //   **∴ 抬的理由**：这条修的是「文档里有这一笔、画布上没有」⇒ `browser-ui-check` 因此转绿 ✓
 // 2026-11-05（诊断之三）：`sizeBoards` 记 `sizeBoardClears`／`lastSizeBoardClear`
 //   （CI 上"落笔后画布不变、两半互换" ⇒ 查是不是这里擦的）⇒ 954,500→955,500（留 981）。
-const CEILING = 955_500;
+// 2026-11-05（修缺陷）：有选区时笔触走 pointerup 内核路径 ⇒ 提交后补一块权威像素
+//   （内核脏区画的是未裁的线）⇒ 955,500→956,500（留 908）。
+const CEILING = 956_500;
 
 const failures = [];
 const check = (ok, label, detail) => {

@@ -10871,6 +10871,13 @@ board.addEventListener("pointerup", async (event) => {
       await resync();
     }
     const response = await submitAtom(atom);
+    // **有选区时这一笔由**文档侧**裁** ✗（2026-11-05 ✓）：内核那块脏区画的是**未裁**的线 ✓
+    //   ⇒ 与真正落盘的那一段**不是同一批像素** ✓ ⇒ 用权威像素把那一块盖回去 ✓
+    //   （`commitShape` 里那条同款守卫**走不到这里** ✓ —— 笔触走的是 `commit_preview` ✓；
+    //    CI 实测：选区那一笔 `seq 8`、盒子 `[6,236,500,40]` 都正常 ✓ 而画布没变 ✓）。
+    if (state.selectionId && committed.report && committed.report.dirty_bbox) {
+      await queueServerBlit(committed.report.dirty_bbox, { allowBlank: true });
+    }
     if (response && response.seq !== undefined && response.seq !== committed.seq) {
       // 服务端把原子排在了别处（并发），以权威日志为准重建。
       await resync();
