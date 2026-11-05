@@ -10843,6 +10843,7 @@ board.addEventListener("pointerup", async (event) => {
     const atom = strokeAtom(pendingStroke, true);
     // **只能用绑定里真有的方法** ✗：`kernel_stats()` 不存在（`viewer.rs` 的判据当场抓到 ✓）
     // ⇒ 用 `stats_json()`（`kernelStats()` 用的就是它 ✓）。
+    let settleBox = null;   // 提交之后要盖成权威像素的那块脏区（见下面注释）
     const headBefore = (() => {
       try { return JSON.parse(state.kernel.stats_json()).head_seq; } catch (e) { return null; }
     })();
@@ -10866,14 +10867,12 @@ board.addEventListener("pointerup", async (event) => {
       if (committed.report && committed.report.dirty_bbox) {
         drawKernelDirty(committed.report);
         window.yanshiStats.commits = (window.yanshiStats.commits || 0) + 1;
-        // **再把那一块盖成权威像素** ✗（2026-11-05 ✓，CI 第三次实测）
-        //   **∴ 为什么** ✗：内核回 `ok`、给了脏区、`head_seq` 也涨了 ✓
-        //     而 `drawKernelDirty` 画到画布上的**仍是旧像素** ✓
-        //     ⇒ 文档里有这一笔、画布上没有 ✓（`landed.yellow=15540` 而 `clearedOutside=0` ✓）。
-        //   **∴ 做法**：脏区就那么大（笔迹包围盒 ✓）⇒ 顺手用权威像素盖一遍 ✓
-        //     —— 与前面"没有脏区盒子"那条**同一个兜底** ✓，只是这次盒子有、内容不可信 ✓。
-        //   **∴ 代价**：每笔多一次**区域**渲染（≈笔迹面积，不是整视口 ✓）。
-        await queueServerBlit(committed.report.dirty_bbox, { allowBlank: true });
+        // **记下这块，等提交之后再盖权威像素** ✗（2026-11-05 ✓）
+        //   **∴ 顺序错了会擦掉刚画的** ✗：先 blit 再 submitAtom ⇒ 那一趟渲染的是**提交前**的文档 ✓
+        //     ⇒ 把刚画上去的笔**盖成空白** ✓（CI 实测：`画完之后画布上没有墨（0 个像素）` ✓，
+        //        而 `可撤销 1 笔` 说明**提交是成功的** ✓ ⇒ 判据点得对 ✓）。
+        //   ⇒ **∴ 必须在 `submitAtom` 之后** ✓（下面那段 ✓）。
+        settleBox = committed.report.dirty_bbox;
       } else {
         // **内核说"提交成功"却**没给脏区** ⇒ 画布不会动** ✗（2026-11-05 ✓）
         //   **∴ 为什么必须补** ✗：`drawKernelDirty` 只按 `report.dirty_bbox` 重绘 ✓
@@ -10887,6 +10886,11 @@ board.addEventListener("pointerup", async (event) => {
       await resync();
     }
     const response = await submitAtom(atom);
+    // **提交之后**再盖那块权威像素 ✓（顺序见上：先盖会擦掉刚画的 ✓）
+    if (settleBox) {
+      await queueServerBlit(settleBox, { allowBlank: true });
+      settleBox = null;
+    }
     if (response && response.seq !== undefined && response.seq !== committed.seq) {
       // 服务端把原子排在了别处（并发），以权威日志为准重建。
       await resync();
