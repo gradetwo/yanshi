@@ -117,6 +117,29 @@ check(!!(await getBlob(db, hashA)), "被 import_image（顶层 blob_hash）引�
 check(!!(await getBlob(db, hashB)), "被 payload.bitmap.blob_hash 引用的 B 必须存活 ✗");
 check((await getBlob(db, hashC)) === null, "无引用的 C 必须被回收 ✗");
 
+// **④b `ttl_seconds` 必须真的按年龄挑** ✓（2026-11-05 ✓）
+//   **∴ 守的是什么**：本地 `collect_garbage` 原来**只认 confirm**（全删孤儿）✓
+//     ⇒ 传 `ttl_seconds` 等于**没传** ✓（声明了却不读 = 静默忽略 ✗）。
+//     现在按 blob 的**写入时刻**（`store.js` 的 `at` ✓）挑 ✓。
+//   **∴ 两条成对断**：新鲜孤儿在 `ttl_seconds:3600` 下**必须活** ✓；
+//     同一只在 `ttl_seconds:0` 下**必须被删** ✓ —— 只断一条会漏掉"根本没看参数" ✗。
+const hashTtl = "sha256:" + "e".repeat(64);
+await putBlob(db, hashTtl, [1, 2, 3]);
+const freshDry = await (await call("/api/tools/collect_garbage", { method: "POST",
+  body: JSON.stringify({ ttl_seconds: 3600 }) })).json();
+check(freshDry.ttl_seconds === 3600,
+  `回执必须原样报回 ttl_seconds ✗（实测 ${JSON.stringify(freshDry.ttl_seconds)}）`);
+check(freshDry.kept_fresh_count >= 1,
+  `新鲜的孤儿必须被 ttl 挡下（kept_fresh_count ≥ 1）✗（实测 ${freshDry.kept_fresh_count}）`);
+const freshGc = await (await call("/api/tools/collect_garbage", { method: "POST",
+  body: JSON.stringify({ confirm: true, ttl_seconds: 3600 }) })).json();
+check(freshGc.reclaimed_blobs === 0 && !!(await getBlob(db, hashTtl)),
+  `ttl_seconds:3600 不得删掉刚写入的孤儿 ✗（reclaimed=${freshGc.reclaimed_blobs}）`);
+const zeroGc = await (await call("/api/tools/collect_garbage", { method: "POST",
+  body: JSON.stringify({ confirm: true, ttl_seconds: 0 }) })).json();
+check(zeroGc.reclaimed_blobs === 1 && (await getBlob(db, hashTtl)) === null,
+  `ttl_seconds:0 必须回收那个孤儿 ✗（reclaimed=${zeroGc.reclaimed_blobs}）`);
+
 // **⑤ blob_gc 盘点同口径**：无引用数恰为 0（删完 C 之后）
 const bg = await (await call("/api/tools/blob_gc", { method: "POST", body: JSON.stringify({}) })).json();
 check(bg.blobs === 2 && bg.referenced === 2 && bg.unreferenced === 0,

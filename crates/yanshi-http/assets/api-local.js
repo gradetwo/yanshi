@@ -9231,19 +9231,51 @@ async function withKernel(doc, fn) {
     //   **`confirm:true` 才真删 ✓**。
     if (path === "/api/tools/collect_garbage") {
       const confirm = body.confirm === true;
+      // **`ttl_seconds`：只回收"够老"的孤儿** ✓（2026-11-05 ✓；照服务端 `read_collect_garbage` ✓）
+      //   **∴ 不传 ⇒ 保持原样**（删**全部**孤儿 ✓）：本地没有"工作区 TTL 设置" ✓
+      //     ＋ 已有判据（`tool-pwa-gc-references` ✓）断的就是"confirm:true 立刻回收" ✓
+      //     ⇒ **∴ 加一个缺省 TTL 会把那条判据变成红** ✗（而它守的是"别删在用的 blob" ✓ 更要紧 ✓）。
+      //   **∴ 传了 ⇒ 只删"年龄 ≥ ttl"的** ✓：`at` 缺失（老记录）按**年龄未知**处理 ✓ ——
+      //     与"不传就全删"一致（**∴ 只会更保守，不会更激进** ✓），并在回执里报数 ✓。
+      let ttlSeconds = null;
+      if (body.ttl_seconds !== undefined && body.ttl_seconds !== null) {
+        const n = Number(body.ttl_seconds);
+        if (!Number.isInteger(n) || n < 0) return p2Bad("ttl_seconds 必须是非负整数");
+        ttlSeconds = n;
+      }
       const rows = await atomsOf(handle, doc);
       const scan = await p2ScanOrphanBlobs(handle, rows.map((r) => r.atom));
+      const now = Date.now();
+      let expired = scan.orphans;
+      let keptFresh = [];
+      let ageUnknown = 0;
+      if (ttlSeconds !== null) {
+        expired = [];
+        for (const orphan of scan.orphans) {
+          if (typeof orphan.at !== "number") { ageUnknown += 1; expired.push(orphan); }
+          else if (now - orphan.at >= ttlSeconds * 1000) expired.push(orphan);
+          else keptFresh.push(orphan);
+        }
+      }
       let reclaimed = 0, reclaimedBytes = 0;
       if (confirm) {
-        const done = await p2DeleteOrphanBlobs(handle, scan.orphans);
+        const done = await p2DeleteOrphanBlobs(handle, expired);
         reclaimed = done.removed; reclaimedBytes = done.freed;
       }
       return json({ ok: true, server: false, doc_id: doc,
                     scanned: scan.blobs.length, referenced: scan.refs.size,
                     orphans: scan.orphans.map((o) => o.hash), orphan_count: scan.orphans.length,
                     orphan_bytes: scan.orphanBytes, dry_run: !confirm,
+                    ttl_seconds: ttlSeconds,
+                    expired_count: expired.length,
+                    kept_fresh_count: keptFresh.length,
+                    age_unknown_count: ageUnknown,
                     reclaimed_blobs: reclaimed, reclaimed_bytes: reclaimedBytes,
-                    note: confirm ? "已删除无引用 blob" : "试运行：加 confirm:true 才真删" });
+                    note: confirm
+                      ? (ttlSeconds === null
+                        ? "已删除无引用 blob（未给 ttl_seconds ⇒ 不按年龄过滤）"
+                        : "已删除无引用且年龄 ≥ " + ttlSeconds + " 秒的 blob")
+                      : "试运行：加 confirm:true 才真删" });
     }
 
     // **P2c-45 `blob_gc` ✗**：服务端做冷热分层 ✓ ⇒ 本地无冷存储 ⇒ cold 恒 0 ✓；
@@ -12784,7 +12816,12 @@ async function p2ScanOrphanBlobs(handle, atoms) {
   for (const b of blobs) {
     const size = (b.bytes && b.bytes.length) || 0;
     if (refs.has(b.hash)) { activeCount += 1; activeBytes += size; }
-    else { orphans.push({ hash: b.hash, size }); orphanBytes += size; }
+    else {
+      // **`at` 一起带出去** ✓（2026-11-05 ✓）：`collect_garbage{ttl_seconds}` 要按年龄挑 ✓
+      // 老记录没有 `at` ⇒ 这里是 `undefined` ⇒ 调用方按"年龄未知"处理 ✓（不猜 ✓）。
+      orphans.push({ hash: b.hash, size, at: b.at });
+      orphanBytes += size;
+    }
   }
   return { refs, blobs, orphans, orphanBytes, activeCount, activeBytes,
            totalBytes: activeBytes + orphanBytes };

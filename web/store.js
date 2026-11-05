@@ -168,9 +168,16 @@ export async function writeSnapshot(db, doc, seq, snapshot) {
   return written;
 }
 
-/** 存 blob（**按内容哈希 ✓**）。 */
+/** 存 blob（**按内容哈希 ✓**）。
+ *
+ *  **`at` 是写入时刻** ✓（2026-11-05 ✓）：`collect_garbage{ttl_seconds}` 要按年龄挑孤儿 ✓
+ *  ⇒ 没有它就只能"全删或全不删" ✓（而服务端是按 TTL 挑的 ✓ ⇒ 两边口径不一致 ✗）。
+ *  **∴ 老记录没有 `at`** ✗：读侧按"年龄未知"处理 ✓（**不替它猜一个时间** ✓）。
+ *  从老库里读出来再写回时**不会**补 `at`（`putBlob` 只在**新写**时打戳 ✓）——
+ *  这正是要的：不确定就是不确定 ✓。
+ */
 export async function putBlob(db, hash, bytes) {
-  await wrap(tx(db, "blobs", "readwrite").put({ hash, bytes }));
+  await wrap(tx(db, "blobs", "readwrite").put({ hash, bytes, at: Date.now() }));
   return hash;
 }
 

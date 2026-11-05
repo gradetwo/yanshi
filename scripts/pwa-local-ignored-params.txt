@@ -74,7 +74,6 @@ brush_preview.brush_params
 brush_preview.output_path
 collect_diagnostics.include_thumbnail
 collect_diagnostics.max_bytes
-collect_garbage.ttl_seconds
 scatter_strokes.clip_to_selection
 
 # ── ⑩ `brush_stroke`：本地落笔走内核默认路径，不转发这 22 个笔触参数 ✓ ──

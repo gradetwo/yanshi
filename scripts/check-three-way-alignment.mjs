@@ -66,7 +66,9 @@ const SPEC_END = "// </gen:tool-specs>";
 // 2026-11-05：`flip_canvas` 落地（F 类第一条：只改日志、不改尺寸 ⇒ 内核本来就会折）
 //   ⇒ 缺本地路由 56 → **55**（棘轮跟着降 ✓）。
 const MISSING_CEILING = 55;
-const DEAD_PARAMS_CEILING = 52;
+// 2026-11-05：本地 `collect_garbage` 开始读 `ttl_seconds`（按 blob 的写入时刻挑孤儿）
+//   ⇒ 未读参数 52 → **51**（棘轮跟着降 ✓）。
+const DEAD_PARAMS_CEILING = 51;
 
 const failures = [];
 const check = (ok, label, detail) => {
