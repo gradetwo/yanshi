@@ -28605,10 +28605,30 @@ browser-offline-brush.mjs  # 跨架构（x86_64 服务端 vs wasm32 内核）笔
 #     ② `dragging` 未清 ⇒ 落笔前等到 null ✓ 仍不触笔；
 #     ③ 布局 rect 在变（笔被映射到选区外）⇒ 落笔前等 rect 连续两次相同 ✓ 仍不触笔。
 #   **∴ 结论 ✗**：CI 上那串**页面内合成** PointerEvent 在该段就是没触发落笔（本机 6× 节流都绿）✓
-#     ⇒ 只能把这一段改成 **CDP `Input.dispatchMouseEvent`**（像 viewport-evict 那样）✓ ——
+#     ⇒ 只能把这一段改成 **CDP `Input.dispatchMouseEvent`**（像 viewport-evict 那样）
+#   **⚠️ 上面这条结论已被 2026-11-05 的证据推翻** ✗：同一段的**建选区**用的是同一套
+#     `fire(...)` ✓ 而 `created=true` ✓ ⇒ 合成事件在这条链上是好的 ✓
+#     ⇒ **∴ 不要再去改 CDP 派事件** ✗（那是白工 ✓）；真因是"提交后画布没重绘" ✓。✓ ——
 #     这是一次**结构性改动**（要把 100 行的单次 evaluate 拆成 页面准备 / Node 派事件 / 页面测量 三段）✓，
 #     本轮不再盲试 ✓。
-# **★★★ 2026-11-05：`browser-ui-check.mjs` 已转绿 ⇒ 从名单移出 ✓ ★★★**
+# **★★★ 2026-11-05 更正：本机转绿、CI **仍红** ⇒ 放回名单（上一次移出是我判断早了）★★★**
+#   **∴ CI 实测（run 42045231844 / shard 2/6，提交 8f210dd6）** ✗：
+#     仍然只有一条：`清除选区后选区外仍看不到笔画色` ✓
+#     而 `resync=null commit=null` ✓ ⇒ **那一笔还是走的 pointerup 内核路径** ✓（`commit_preview` + `submitAtom`）
+#     ＋ `paint.needsServerPixels=false` ⇒ 一次补画都没发 ✓
+#   **∴ 与本机的差别** ✗：同一份代码**本机 `ONLY=ui-check` 通过 1** ✓ 而 CI 红 ✓
+#     ⇒ **∴ 我在"没有 `dirty_bbox` 就补一块"里加的那条 else 在 CI 上没有触发** ✓
+#       （否则至少会有一次补画 ✓）⇒ **∴ 结论：CI 上 `committed.report.dirty_bbox` 是**有的** ✓
+#         而 `drawKernelDirty` 画出来的是**旧像素** ✓（内核里没有这一笔 ⇒ 照旧重画同一块 ✓
+#         ⇒ 画布**逐像素不变** ✓ —— 与 `inside=0 outside=0` 完全吻合 ✓）。
+#   **∴ 下一条要验的**：`commit_preview` 在 CI 上到底把笔放进内核了没有 ✓
+#     （记 `committed.report.dirty_bbox` 与内核 `head_seq` 是否涨 ✓）——
+#     若没进内核 ⇒ 无论怎么补脏区都画不出来 ⇒ **那才是要修的地方** ✓。
+#   **∴ 本机为什么绿** ✗：本机那条 `else` 触发过（`kernelCommitNoBox` 会涨 1 ✓）⇒ 补了权威像素 ✓
+#     ⇒ **∴ 两台机器在同一个调用上走了不同分支** ✓ ⇒ 这才是差异本身 ✓（不是"修好了" ✗）。
+browser-ui-check.mjs  # CI 上仍红（8f210dd6 / shard 2/6：清选区后画布不变；resync=null commit=null）；本机绿
+# ---------- 原条目（本机转绿的依据，保留）----------
+# **★★★ 2026-11-05：`browser-ui-check.mjs` 本机转绿的依据（保留，CI 未复现）★★★**
 #   **∴ 根因（两条，都是"画布没重绘"）✗**：
 #     ① 有选区时提交后没有补画 ✓ ⇒ 已在 `commitShape` 补一块 `render_region` 权威像素 ✓
 #        （CI 失败从「inside=0 outside=0」变成「只剩清完选区那一笔」✓）
@@ -28667,3 +28687,4 @@ browser-offline-brush.mjs  # 跨架构（x86_64 服务端 vs wasm32 内核）笔
 #     本机 **6× 节流下仍然 EXIT=0** ⇒ CI 的 ⊘ **不是单纯的 CPU 慢**（可能与 runner 的内存/
 #     并发/Chromium 版本有关）✓。同时把「不可判原因」并进**尾行**（runner 只回显尾部 6 行），
 #     下一次 CI 就能直接看到是哪一段 ✓。
+
