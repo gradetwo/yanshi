@@ -1447,6 +1447,21 @@ const selectionResult = await evaluate(`(async () => {
     } catch (error) { selAfterCreate = "throw:" + String((error && error.message) || error).slice(0, 40); }
 
     stage = "画笔触";
+    // **落笔前等布局稳定** ✗（2026-11-05 ✓）：建完选区后面板/状态栏会变宽高，
+    // 拖拽换算用的 rect 若在变，笔会被映射到**别的文档坐标**（落在选区外 ⇒ 被裁掉
+    // ⇒ 画面一个像素都不变，但对象确实建出来了 ✓ CI 实测 objects=6）。
+    {
+      let lastKey = null;
+      let stableCount = 0;
+      for (let i = 0; i < 40; i += 1) {
+        const r = board.getBoundingClientRect();
+        const key = Math.round(r.left) + "," + Math.round(r.top) + "," + Math.round(r.width) + "," + Math.round(r.height);
+        if (key === lastKey) stableCount += 1; else stableCount = 0;
+        lastKey = key;
+        if (stableCount >= 2) break;
+        await wait(150);
+      }
+    }
     document.getElementById("color").value = "#ffd166";
     document.querySelector('button[data-tool="brush"]').click();
     // **等工具真的切过去再落笔** ✗（2026-11-05 ✓）：建完选区后工具栏会重建，
