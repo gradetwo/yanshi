@@ -1452,9 +1452,13 @@ const selectionResult = await evaluate(`(async () => {
     // **等工具真的切过去再落笔** ✗（2026-11-05 ✓）：建完选区后工具栏会重建，
     // 点击可能落在旧节点上 ⇒ state.tool 仍是 select_rect ⇒ 黄色笔一根都没落下
     //（CI 实测：选区 bbox 正确 {x:128,w:256,h:256}，而 inside=outside=0）。
-    for (let i = 0; i < 30; i += 1) {
-      const st = (window.yanshi && window.yanshi.state) ? window.yanshi.state().tool : null;
-      if (st === "brush") break;
+    // **工具与「还在拖」都要等** ✗：如果上一段的手势没清掉 dragging，
+    // 画笔的 pointerdown 会被当成"已经有手势在飞"而忽略 ⇒ 一个像素都不落 ✓（CI 实测 ✓）。
+    let dragProbe = null;
+    for (let i = 0; i < 40; i += 1) {
+      const st = (window.yanshi && window.yanshi.state) ? window.yanshi.state() : null;
+      dragProbe = st ? st.dragging : null;
+      if (st && st.tool === "brush" && (dragProbe === null || dragProbe === undefined)) break;
       await wait(100);
     }
     document.getElementById("size").value = "40";
@@ -1570,7 +1574,7 @@ const selectionResult = await evaluate(`(async () => {
       doc: (window.yanshi.state() || {}).docSize || null,
       selectionCount, selAfterCreate, objectsAfterStroke,
       toolAfterClickBrush: (window.yanshi && window.yanshi.state) ? window.yanshi.state().tool : null,
-      selAfterClear,
+      selAfterClear, dragBeforeStroke: dragProbe,
       created: log.includes("已创建选区"),
       cleared: log.includes("已清除选区"),
       // 用「立刻读」的那一份判；同时带上「末尾读」的结果 ⇒ 两者不同即证明是被清掉的。
