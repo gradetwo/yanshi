@@ -3683,7 +3683,15 @@ async function callToolLocal(name, args, options = {}) {
     //   **∴ 做法**：这一族**显式** `resync()` ✓（`loadKernel(0)` 重放日志 ＋ 重画视口 ✓）。
     //     **∴ 只点名这一条** ✗：把它做成"所有非绘制工具都 resync"会把会话里其它路径也拖进来 ✓
     //     （`resync()` 的稳定性问题在本文件里记了多轮 ✓）⇒ **∴ 来一条点一条 ✓**。
-    if (name === "flip_canvas") await resync();
+    // **改尺寸的原子：先让文档尺寸落地，再重建内核** ✗（2026-11-05 ✓）
+    //   `resync()` → `loadKernel(0)` 会按 `state.docSize` 新建内核 ✓
+    //   ⇒ 尺寸没先更新就会**按旧尺寸**建 ✓ ⇒ 画布与文档对不上 ✓。
+    if (name === "resize_canvas_bounds") {
+      await refreshThumb();
+      await resync();
+    } else if (name === "flip_canvas") {
+      await resync();
+    }
   } else {
     const __code = value.error_code || value.error || value.reason || "unknown";
     const __detail =
@@ -12679,7 +12687,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-7305049682128")
+      caches.open("yanshi-shell-5715013110686")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));

@@ -94,7 +94,9 @@ export // **★ 声明必须与**实现分支数**一致 ✗ ★**（第 72 轮 
 //   ⇒ **机械重数 182 − 6 ＋ 1 = 177 ✓**。数它不要信这一行（判据读的是代码 ✓）。
 // **2026-11-05**：`flip_canvas` 落地（F 类第一条：只改日志、不改尺寸 ⇒ 内核本来就会折 ✓）
 //   ⇒ 机械重数 180 ＋ 1 = **181** ✓（数它：上面那条命令 ✓，别信这行注释 ✓）。
-const LOCAL_IMPLEMENTED = 181;
+// **2026-11-05**：`resize_canvas_bounds` 落地（F 类第二条：改尺寸 ⇒ 需要 `p2FoldDocSize` 折）
+//   ⇒ 机械重数 181 ＋ 1 = **182** ✓（数它：上面那条命令 ✓，别信这行注释 ✓）。
+const LOCAL_IMPLEMENTED = 182;
 //   **★ 同轮 `delete_mask` 由"如实 501"改成真实现（**不新增分支 ✓**）；
 //     `create_mask` 补上重复 409 守卫 ✓**（**与 `create_selection` 的 mode 门不同：蒙版不论 mode 都拒 ✗**）**
 //   **★ 第 六百七十六 轮 `create_range_mask` 落地 ⇒ 新增 1 个分支 ✓ ⇒ 机械重数 182 ✓**
@@ -1443,6 +1445,27 @@ async function withKernel(doc, fn) {
     __p2ctr += 1;
     return "01P2" + String(Date.now()).padStart(13, "0") + String(__p2ctr).padStart(4, "0");
   }
+  /** **从原子日志折出画布尺寸** ✓（2026-11-05 ✓）
+   *
+   *  **∴ 为什么需要** ✗：`scale_canvas`／`rotate_canvas`／`crop_canvas`／`resize_canvas_bounds`／
+   *  `flip_canvas` 都会在 `payload` 里带 `new_width`/`new_height` ✓
+   *  ⇒ 本地如果只读 `create_document` 的尺寸 ✓ 改完画布之后**仍按旧尺寸**建内核 ✓
+   *  ⇒ **渲染区域与画布对不上** ✓（这正是"折叠 parity 缺一块"的具体形态 ✓）。
+   *  **∴ 口径**：取**最后一条**带 `new_width/new_height` 的原子 ✓ —— 与 `yanshi-core/fold.rs`
+   *  的 `apply_geometry` 同一顺序 ✓；没有就回 `null`（调用方继续用 `create_document` ✓）。
+   *  **∴ 只认成对的正整数** ✗：`0` 或缺失一律跳过 ✓（服务端那侧本来就拒绝 <1 ✓）。
+   */
+  function p2FoldDocSize(rows) {
+    let folded = null;
+    for (const row of rows) {
+      const payload = ((row && row.atom) || {}).payload || {};
+      if (Number(payload.new_width) > 0 && Number(payload.new_height) > 0) {
+        folded = { w: Math.floor(Number(payload.new_width)), h: Math.floor(Number(payload.new_height)) };
+      }
+    }
+    return folded;
+  }
+
   function p2Envelope(kind, payload, groupId) {
     const atom = {
       actor: "human:web",
@@ -4826,6 +4849,44 @@ async function withKernel(doc, fn) {
       return json(out);
     }
 
+    // **`resize_canvas_bounds`：改画布边界（只改尺寸，不缩放内容）** ✓（2026-11-05 ✓）
+    //   **∴ 与 `scale_canvas` 的区别** ✗：这一条**不动内容** ✓（仿射是恒等 ✓）
+    //     ⇒ 超出新边界的部分**渲染时裁掉** ✓（与服务端 `commit_geometry` 同一语义 ✓）。
+    //   **∴ 它比 flip 多一步**：尺寸变了 ⇒ `p2cDocSize`／`get_document` 必须**折**它 ✓
+    //     （已在 `p2FoldDocSize` 里 ✓）否则内核仍按旧尺寸建 ✓。
+    if (path === "/api/tools/resize_canvas_bounds") {
+      // **不接受锚点** ✓：与服务端 `reject_anchor` 同一句 ✓（不静默忽略 ✓）。
+      if (body.anchor !== undefined && body.anchor !== null) {
+        return p2Bad("resize_canvas_bounds 不接受 anchor（锚点只用于 scale / rotate / flip）");
+      }
+      if (body.anchor_name !== undefined && body.anchor_name !== null) {
+        return p2Bad("resize_canvas_bounds 不接受 anchor（锚点只用于 scale / rotate / flip）");
+      }
+      const width = Math.floor(Number(body.width));
+      const height = Math.floor(Number(body.height));
+      if (!Number.isFinite(width) || !Number.isFinite(height)) return p2Bad("width/height 必须是数值");
+      if (width < 1 || height < 1) return p2Bad("画布尺寸必须 ≥ 1（得到 " + width + "×" + height + "）");
+      const MAX_EDGE = 16384;
+      if (width > MAX_EDGE || height > MAX_EDGE) {
+        return p2Bad("画布单边上限 " + MAX_EDGE + "（请求 " + width + "×" + height + "）");
+      }
+      const rows = await atomsOf(handle, doc);
+      const before = p2cDocSize(rows);
+      const atom = p2Envelope("resize_canvas_bounds", {
+        affine: { matrix: [1, 0, 0, 1, 0, 0], pivot: [0, 0] },
+        new_width: width, new_height: height,
+      });
+      const seq = await putAtom(handle, doc, atom);
+      return json({
+        ok: true, server: false, atom_id: atom.id, seq,
+        operation: "resize_canvas_bounds",
+        previous_width: before.w, previous_height: before.h,
+        width, height,
+        effective_scale_x: 1, effective_scale_y: 1,
+        note: "已在本地原子日志写入 resize_canvas_bounds（内容不缩放；超出新边界的部分渲染时裁掉）",
+      });
+    }
+
     // **`flip_canvas`：整幅左右／上下翻** ✓（2026-11-05；三方对齐 F 类的第一条 ✓）
     //   **∴ 为什么先做它** ✗：它**不改画布尺寸** ✓（`new_width/height` 就是原尺寸 ✓）
     //     ⇒ **∴ 不用动 `p2cDocSize`** ✓（尺寸那套折叠 parity 是 F 类别的活 ✓）
@@ -6194,6 +6255,15 @@ async function withKernel(doc, fn) {
     function p2cDocSize(rows) {
       const c = rows.map((r) => (r && r.atom) || {}).find((a) => a.kind === "create_document");
       const pl = (c && c.payload) || {};
+      const folded = p2FoldDocSize(rows);
+      if (folded) {
+        return { w: folded.w, h: folded.h,
+                 color_space: pl.color_space || "srgb",
+                 background: (pl.background && typeof pl.background === "object")
+                   ? pl.background : { r: 255, g: 255, b: 255, a: 255 },
+                 raw_width: Number(pl.width) || 0,
+                 raw_height: Number(pl.height) || 0 };
+      }
       return { w: Number(pl.width) > 0 ? Number(pl.width) : 1024,
                h: Number(pl.height) > 0 ? Number(pl.height) : 1024,
                color_space: pl.color_space || "srgb",
@@ -10287,13 +10357,17 @@ async function withKernel(doc, fn) {
       const { wrap, tx } = await import("./store.js");
       const meta = (await wrap(tx(handle, "docs", "readonly").get(doc))) || { doc, seq: 0 };
       const backend = await detectBackend();
-      const create = (await atomsOf(handle, doc)).find((r) => r.atom && r.atom.kind === "create_document");
+      const rows0 = await atomsOf(handle, doc);
+      const create = rows0.find((r) => r.atom && r.atom.kind === "create_document");
+      // **改过画布尺寸 ⇒ 报**折过的**那个** ✓（2026-11-05 ✓）：否则前端一直按旧尺寸排版 ✓
+      //   （`refreshThumb` 读的就是这里 ✓ ⇒ 它不报新尺寸 ⇒ 画布板子不会跟着变 ✓）。
+      const folded = p2FoldDocSize(rows0);
       return json({
         ok: true,
         doc_id: doc,
         // **∴ 尺寸在 `payload` 里 ✗**（**第 630 轮 ✓：**原子是 8 字段封套 ✓**）。
-        width: create ? (create.atom.payload?.width ?? create.atom.width ?? 1024) : 1024,
-        height: create ? (create.atom.payload?.height ?? create.atom.height ?? 1024) : 1024,
+        width: folded ? folded.w : (create ? (create.atom.payload?.width ?? create.atom.width ?? 1024) : 1024),
+        height: folded ? folded.h : (create ? (create.atom.payload?.height ?? create.atom.height ?? 1024) : 1024),
         // **★ 把「尺寸是编的」说出来 ✗ ★**（2026-11-05 ✓）：
         //   **∴ 症状 ✗**：PWA 按链接打开一个**本地还没有的 doc** ✓ ⇒ 存储是空的 ✓
         //     ⇒ 这里**没有** `create_document` ⇒ 上面那两个 1024 是**缺省值** ✓
