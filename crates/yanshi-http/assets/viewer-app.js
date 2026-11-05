@@ -1121,6 +1121,11 @@ function sizeBoards(width, height) {
   // ⇒ 只能是**本地清屏** ✓ ✓。
   const changed = board.width !== width || board.height !== height;
   if (changed) {
+    // **清屏要可观测**（2026-11-05）：CI 上「落笔后画布逐像素不变」两半互换 ⇒ 怀疑是这里
+    // 在落笔之后把 backing store 擦了（赋尺寸 ⇒ 浏览器清空 ✓）。记下次数与前后尺寸 ✓。
+    window.yanshiStats.sizeBoardClears = (window.yanshiStats.sizeBoardClears || 0) + 1;
+    window.yanshiStats.lastSizeBoardClear = { at: Math.round(performance.now()),
+      from: [board.width, board.height], to: [width, height] };
     board.width = width;   // reset of the backing store follows
     board.height = height;
     (window.yanshiStats.blitLog = window.yanshiStats.blitLog || []).push({

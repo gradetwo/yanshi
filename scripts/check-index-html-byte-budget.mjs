@@ -78,7 +78,9 @@ import { execFileSync } from "node:child_process";
 // 2026-11-05（修缺陷）：`commit_preview` 回了 ok 却没给 `dirty_bbox` 时补一次权威像素
 //   （否则画布一个像素都不画）⇒ 953,000→954,500（+1,500，留 1,044）。
 //   **∴ 抬的理由**：这条修的是「文档里有这一笔、画布上没有」⇒ `browser-ui-check` 因此转绿 ✓
-const CEILING = 954_500;
+// 2026-11-05（诊断之三）：`sizeBoards` 记 `sizeBoardClears`／`lastSizeBoardClear`
+//   （CI 上"落笔后画布不变、两半互换" ⇒ 查是不是这里擦的）⇒ 954,500→955,500（留 981）。
+const CEILING = 955_500;
 
 const failures = [];
 const check = (ok, label, detail) => {

@@ -1659,6 +1659,8 @@ const selectionResult = await evaluate(`(async () => {
       // **resync 进了哪条分支**（2026-11-05）：没进来／增量 0 条／重放了画不出来
       lastResync: (window.yanshiStats || {}).lastResync || null,
       lastKernelCommit: (window.yanshiStats || {}).lastKernelCommit || null,
+      sizeBoardClears: (window.yanshiStats || {}).sizeBoardClears || 0,
+      lastSizeBoardClear: (window.yanshiStats || {}).lastSizeBoardClear || null,
       commitShapeCalls: (window.yanshiStats || {}).commitShapeCalls || 0,
       // **画布到底什么颜色** ✗（2026-11-05 ✓）：CI 实测 baseInk=beforeInk=afterInk=262144
       // ⇒ 512² 的**每一个像素**都被判成「非白」✓ 而画布又**一动不动** ✓
@@ -4275,6 +4277,7 @@ if (notJudged.length) {
       clearedOutside: selectionResult.clearedOutside, paint: selectionResult.paintAfterCommit,
       resync: selectionResult.lastResync, kcommit: selectionResult.lastKernelCommit,
       commitShapeCalls: selectionResult.commitShapeCalls, stage: selectionResult.stage,
+      clears: selectionResult.sizeBoardClears, lastClear: selectionResult.lastSizeBoardClear,
     }));
   }
   const brief = notJudged.map((line) => String(line).slice(0, 90)).join("；");
