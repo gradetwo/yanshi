@@ -63,7 +63,9 @@ const SPEC_END = "// </gen:tool-specs>";
 //     `brush_preview` 的分支里，而本判据按**全文件出现次数**数（单向判据的已知漏报 ✓）。
 //   ⇒ **∴ 所以 54 里有 5 个不是覆盖** ✓：要真补它们，得等 `export_png`／`render_region`
 //     自己读（前者会改「总是内嵌 base64」的既有行为，后者本地回的是二进制 PNG）。
-const MISSING_CEILING = 56;
+// 2026-11-05：`flip_canvas` 落地（F 类第一条：只改日志、不改尺寸 ⇒ 内核本来就会折）
+//   ⇒ 缺本地路由 56 → **55**（棘轮跟着降 ✓）。
+const MISSING_CEILING = 55;
 const DEAD_PARAMS_CEILING = 52;
 
 const failures = [];

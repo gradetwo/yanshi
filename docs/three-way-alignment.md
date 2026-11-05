@@ -9,12 +9,12 @@
 > 本文的表格是这一天的快照（行数会随工具增减而变），**不要把表里的数字当成新的权威**。
 >
 > **一句话（2026-11-05 现算）**：服务端注册表 224 个工具，MCP 缺省可见 223 个（Study 组要显式 `--profile study`），
-> PWA 本地有 168 个路由、缺 56 个；本地反向多出已清零；已声明参数里有 52 个本地从不读（18 个工具）。
-> 两个缺口各有一把**只许降**的棘轮：缺路由 ≤ 56、参数未读 ≤ 52。
+> PWA 本地有 169 个路由、缺 55 个；本地反向多出已清零；已声明参数里有 52 个本地从不读（18 个工具）。
+> 两个缺口各有一把**只许降**的棘轮：缺路由 ≤ 55、参数未读 ≤ 52。
 >
 > **§3／§4 的逐行表是 2026-11-04 的快照（当时 165/59、66）**，之后补了
 > `stroke_heatmap`／`list_fonts`／`memory_status` 三条只读路由，并让一批本地路由真的去读声明参数
-> > 现算 56／52。**行级清单请用 `node scripts/check-three-way-alignment.mjs --list`**，
+> > 现算 55／52。**行级清单请用 `node scripts/check-three-way-alignment.mjs --list`**，
 > 表只保留归因与「不做」的理由。
 
 ---
@@ -81,7 +81,7 @@ const DEAD_PARAMS_CEILING = 52;
 > **本表的每一行 = 一条**当前**缺口**（判据 `check-three-way-alignment.mjs` 断言集合相等：
 > 缺了归因或留下已补的行都会红）。`stroke_heatmap`／`list_fonts`／`memory_status` 已补，不在表里 ✓。
 
-> **2026-11-05 决策（正式划出范围）**：表 A 的 **56 条本轮不实现**，理由逐条在「下一步」列：
+> **2026-11-05 决策（正式划出范围）**：表 A 的 **55 条本轮不实现**，理由逐条在「下一步」列：
 >   - **K 类（内核/像素/编解码）** 与 **N 类（试画状态机）**：在 JS 重写等于第二套实现 ⇒ 违背单一实现；
 >   - **F 类（画布尺寸）**：`yanshi-core` 有原子但本地 `p2cDocSize` 不读 ⇒ 属"先补折叠 parity"，需单独立项；
 >   - **P 类 / M 类**：收益低于成本，或无浏览器等价物（进程/令牌/PSD 编码）。
@@ -107,7 +107,6 @@ const DEAD_PARAMS_CEILING = 52;
 | `export_timelapse` | Core | K | 不做：服务端走 ffmpeg，浏览器没有等价编码器 |
 | `extend_canvas` | Core | F | 排期：先补 JS 折叠 |
 | `fit_background_field` | Core | K | 不做：多项式拟合 + 像素铺底 |
-| `flip_canvas` | Core | F | 排期：先补 JS 折叠 |
 | `get_bake_status` | Core | K | 不做：状态来自 bake 机制 |
 | `get_brush_dynamics` | Core | K | 不做：需 `.myb` 解析 + 内核导出 |
 | `get_brush_settings` | Core | K | 不做：同上 |

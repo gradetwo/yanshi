@@ -1458,6 +1458,14 @@ async function callToolLocal(name, args, options = {}) {
       skipRefresh: options.refresh === false,
       dirtyBox: value.dirty_bbox || null,
     });
+    // **只改日志、不改像素的本地写路由：必须自己把新原子喂回内核** ✗（2026-11-05 ✓）
+    //   **∴ 为什么 ✗**：`afterMutation` 只在 `needsServerPixels` 时补画 ✓
+    //     ⇒ 纯本地文档（轻量）**没有任何东西**会把新原子重放给 `state.kernel` ✓
+    //       ⇒ **∴ 画布停在操作之前** ✓（`flip_canvas` 是本地第一条这类路由 ✓）。
+    //   **∴ 做法**：这一族**显式** `resync()` ✓（`loadKernel(0)` 重放日志 ＋ 重画视口 ✓）。
+    //     **∴ 只点名这一条** ✗：把它做成"所有非绘制工具都 resync"会把会话里其它路径也拖进来 ✓
+    //     （`resync()` 的稳定性问题在本文件里记了多轮 ✓）⇒ **∴ 来一条点一条 ✓**。
+    if (name === "flip_canvas") await resync();
   } else {
     const __code = value.error_code || value.error || value.reason || "unknown";
     const __detail =

@@ -92,7 +92,9 @@ export // **★ 声明必须与**实现分支数**一致 ✗ ★**（第 72 轮 
 //   （`update_selection`／`create_object`／`delete_group`／`heal`／`cache_document_preview`／`push` ✓），
 //   **补上** `put_blob`（本地早就有 `blob_put` ＋ `store.putBlob` 链路 ⇒ 只差入口 ✓）
 //   ⇒ **机械重数 182 − 6 ＋ 1 = 177 ✓**。数它不要信这一行（判据读的是代码 ✓）。
-const LOCAL_IMPLEMENTED = 180;
+// **2026-11-05**：`flip_canvas` 落地（F 类第一条：只改日志、不改尺寸 ⇒ 内核本来就会折 ✓）
+//   ⇒ 机械重数 180 ＋ 1 = **181** ✓（数它：上面那条命令 ✓，别信这行注释 ✓）。
+const LOCAL_IMPLEMENTED = 181;
 //   **★ 同轮 `delete_mask` 由"如实 501"改成真实现（**不新增分支 ✓**）；
 //     `create_mask` 补上重复 409 守卫 ✓**（**与 `create_selection` 的 mode 门不同：蒙版不论 mode 都拒 ✗**）**
 //   **★ 第 六百七十六 轮 `create_range_mask` 落地 ⇒ 新增 1 个分支 ✓ ⇒ 机械重数 182 ✓**
@@ -4821,6 +4823,80 @@ async function withKernel(doc, fn) {
       const out = { ok: true, seq, server: false, layer_id: layerId, name,
                     layer_type: atom.payload.type || "raster",
                     note: "已在本地原子日志写入 create_layer（内核重放时建层）" };
+      return json(out);
+    }
+
+    // **`flip_canvas`：整幅左右／上下翻** ✓（2026-11-05；三方对齐 F 类的第一条 ✓）
+    //   **∴ 为什么先做它** ✗：它**不改画布尺寸** ✓（`new_width/height` 就是原尺寸 ✓）
+    //     ⇒ **∴ 不用动 `p2cDocSize`** ✓（尺寸那套折叠 parity 是 F 类别的活 ✓）
+    //     ＋ **∴ 内核本来就折 `FlipCanvas`** ✓（`yanshi-core/fold.rs` ✓ 与 wasm 内核同一份 ✓）
+    //     ⇒ **∴ 本地层只需要**照服务端写出同样的原子**✓**（`tools_geometry.rs` 的 `write_flip_canvas` ✓）。
+    //   **∴ 载荷逐字照服务端** ✗：`{affine:{matrix,pivot}, new_width, new_height, anchor, direction}`
+    //     ⇒ 同一份日志在两边**折出同一个结果** ✓（**∴ 不另造格式 ✓**）。
+    //   **∴ 锚点口径照 `resolve_anchor`** ✓：`anchor{x,y}` 与 `anchor_name` 只能给一个 ✓、
+    //     预设名与中心缺省都按服务端 ✓、未知名字**当场说清** ✓（不静默落中心 ✗）。
+    if (path === "/api/tools/flip_canvas") {
+      const direction = body && body.direction;
+      if (direction !== "horizontal" && direction !== "vertical") {
+        return p2Bad("direction 只能是 horizontal（左右翻）或 vertical（上下翻），得到 "
+                     + JSON.stringify(direction));
+      }
+      const rows = await atomsOf(handle, doc);
+      const create = rows.map((r) => (r && r.atom) || {}).find((a) => a.kind === "create_document");
+      const payload0 = (create && create.payload) || {};
+      const width = Number(payload0.width) > 0 ? Math.floor(Number(payload0.width)) : 1024;
+      const height = Number(payload0.height) > 0 ? Math.floor(Number(payload0.height)) : 1024;
+      const hasAnchor = body.anchor !== undefined && body.anchor !== null;
+      const hasName = body.anchor_name !== undefined && body.anchor_name !== null;
+      if (hasAnchor && hasName) return p2Bad("anchor 与 anchor_name 只能给一个");
+      let anchor = [width / 2, height / 2];
+      if (hasAnchor) {
+        const ax = body.anchor && Number(body.anchor.x);
+        const ay = body.anchor && Number(body.anchor.y);
+        if (!Number.isFinite(ax) || !Number.isFinite(ay)) return p2Bad("anchor 需要 {x, y}（两个有限数）");
+        anchor = [ax, ay];
+      } else if (hasName) {
+        const presets = {
+          center: [width / 2, height / 2], top_left: [0, 0], top_right: [width, 0],
+          bottom_left: [0, height], bottom_right: [width, height],
+          top_center: [width / 2, 0], bottom_center: [width / 2, height],
+          left_center: [0, height / 2], right_center: [width, height / 2],
+        };
+        const preset = presets[String(body.anchor_name)];
+        if (!preset) {
+          return p2ToolFailure(404, "reference_not_found",
+            "找不到命名锚点 " + JSON.stringify(body.anchor_name)
+            + "（可用预设：" + Object.keys(presets).join(" / ") + "）", null);
+        }
+        anchor = preset;
+      }
+      const matrix = direction === "horizontal" ? [-1, 0, 0, 1, 0, 0] : [1, 0, 0, -1, 0, 0];
+      const atom = p2Envelope("flip_canvas", {
+        affine: { matrix, pivot: anchor },
+        new_width: width, new_height: height, anchor, direction,
+      });
+      // **越界要如实说** ✓（与 `commit_geometry` 的 `clip_note` 同一条：锚点不在中心时，
+      //   旧画布角点会翻到新画布外 ⇒ 渲染时被裁 ✗ —— 那是**锁定的字面语义** ✓，不是 bug ✓）。
+      const applyMatrix = ([a, b, c, d, e, f], [px, py], x, y) => {
+        const dx = x - px;
+        const dy = y - py;
+        return [a * dx + c * dy + e + px, b * dx + d * dy + f + py];
+      };
+      const corners = [[0, 0], [width, 0], [0, height], [width, height]]
+        .map(([x, y]) => applyMatrix(matrix, anchor, x, y));
+      const outside = corners.some(([x, y]) => x < 0 || y < 0 || x > width || y > height);
+      const seq = await putAtom(handle, doc, atom);
+      const out = {
+        ok: true, server: false, atom_id: atom.id, seq,
+        operation: "flip_canvas", direction,
+        previous_width: width, previous_height: height, width, height, anchor,
+        effective_scale_x: 1, effective_scale_y: 1,
+        note: "已在本地原子日志写入 flip_canvas（内核重放时翻转；画布尺寸不变）",
+      };
+      if (outside) {
+        out.clip_note = "flip_canvas 后部分内容超出新画布范围，渲染时裁剪"
+          + "（锚点不在中心时的已知行为：绕枢轴翻转 ⇒ 旧画布角点会翻到画布外）";
+      }
       return json(out);
     }
 
