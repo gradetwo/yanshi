@@ -340,6 +340,7 @@ for (let i = 0; i < 40; i += 1) {
 }
 const onlineInk = await waitForInk("在线", 24);
 const onlineBoard = await evaluate(BOARD_B64);
+const onlineSize = await evaluate(`(() => { const c = document.getElementById("board"); return { w: c.width, h: c.height }; })()`);
 console.log(`  · 在线落笔后：${JSON.stringify(onlineInk)}｜补画 ${onlineStats && onlineStats.serverBlits} 次｜服务端墨 ${onlineStats && onlineStats.serverInk}`);
 if (!onlineInk || onlineInk.nonBackground <= 0) failures.push(`在线落笔后画布上没有墨 ⇒ 判据前提不成立（${JSON.stringify(onlineInk)}）`);
 
@@ -448,6 +449,7 @@ for (let i = 0; i < 60; i += 1) {
 const offlineInk = await waitForInk("离线", 24);
 const kernelAfter = await evaluate("window.yanshi.kernelStats()");
 const offlineBoard = await evaluate(BOARD_B64);
+const offlineSize = await evaluate(`(() => { const c = document.getElementById("board"); return { w: c.width, h: c.height }; })()`);
 const outbox = await evaluate("window.yanshi.outbox()");
 console.log(`  · 离线落笔后：${JSON.stringify(offlineInk)}｜内核 ${JSON.stringify(kernelAfter)}`);
 console.log(`  · 离线本地落笔次数 = ${offlineStats && offlineStats.offlineBrushPaints}｜内核渲染墨 = ${offlineStats && offlineStats.kernelInk}｜离线期间 brush_stroke 请求数 = ${brushStrokeRequests}｜离线队列 = ${JSON.stringify(outbox && { pending: outbox.pending, state: outbox.state })}`);
@@ -522,10 +524,13 @@ if (!offlineBoard || typeof offlineBoard !== "string" || !onlineBoard || typeof 
 } else {
   const left = Buffer.from(onlineBoard, "base64");
   const right = Buffer.from(offlineBoard, "base64");
+  // **板高会随布局差一行**（已知红台账原话）⇒ 只比**重叠区**，缺的那一行算布局，不算像素差。
+  const sameWidth = onlineSize && offlineSize && onlineSize.w === offlineSize.w;
+  const rows = sameWidth ? Math.min(onlineSize.h, offlineSize.h) : null;
+  const length = rows === null ? Math.min(left.length, right.length) : Math.min(rows * onlineSize.w * 4, left.length, right.length);
   let differing = 0;
   let maxDelta = 0;
   let firstDiff = -1;
-  const length = Math.min(left.length, right.length);
   for (let index = 0; index < length; index += 1) {
     const delta = Math.abs(left[index] - right[index]);
     if (delta !== 0) {
@@ -534,17 +539,22 @@ if (!offlineBoard || typeof offlineBoard !== "string" || !onlineBoard || typeof 
       if (delta > maxDelta) maxDelta = delta;
     }
   }
-  const extra = left.length !== right.length ? Math.abs(left.length - right.length) : 0;
-  console.log(`  · 逐字节比对：在线 ${left.length} 字节 vs 离线 ${right.length} 字节｜不同 ${differing + extra}` +
+  const layoutNote = rows === null
+    ? `尺寸未知 ⇒ 只比前 ${length} 字节`
+    : (onlineSize.h === offlineSize.h ? `同尺寸 ${onlineSize.w}×${onlineSize.h}` :
+      `板高差 ${Math.abs(onlineSize.h - offlineSize.h)} 行（${onlineSize.w}×${onlineSize.h} vs ${offlineSize.w}×${offlineSize.h}）⇒ 只比重叠 ${onlineSize.w}×${rows}`);
+  console.log(`  · 逐字节比对：${layoutNote}｜不同 ${differing}` +
     (firstDiff >= 0 ? `｜首个 @${firstDiff}（像素 ${(firstDiff / 4) | 0}，通道 ${firstDiff % 4}）｜最大通道差 ${maxDelta}` : "") +
-    `｜${differing + extra === 0 ? "**逐字节相同** ✓" : "有差异 ✗"}`);
-  if (differing + extra !== 0) {
-    failures.push(`离线与在线不是逐字节相同：${differing + extra} 个字节不同（首个 @${firstDiff}，最大通道差 ${maxDelta}）`);
+    `｜${differing === 0 ? "**重叠区逐字节相同** ✓" : "有差异 ✗"}`);
+  if (differing !== 0) {
+    failures.push(`离线与在线不是逐字节相同：${differing} 个字节不同（首个 @${firstDiff}，最大通道差 ${maxDelta}；${layoutNote}）`);
   }
   if (reloadBoard && typeof reloadBoard === "string") {
     const reloadBytes = Buffer.from(reloadBoard, "base64");
     let reloadDiff = 0;
-    for (let index = 0; index < Math.min(left.length, reloadBytes.length); index += 1) {
+    const reloadLength = rows === null ? Math.min(left.length, reloadBytes.length)
+      : Math.min(rows * onlineSize.w * 4, left.length, reloadBytes.length);
+    for (let index = 0; index < reloadLength; index += 1) {
       if (left[index] !== reloadBytes[index]) reloadDiff += 1;
     }
     console.log(`  · 断网重载后的画布 vs 在线：不同 ${reloadDiff} 字节｜${reloadDiff === 0 ? "**逐字节相同** ✓" : "有差异 ✗"}`);
