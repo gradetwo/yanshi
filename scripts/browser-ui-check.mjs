@@ -1442,6 +1442,14 @@ const selectionResult = await evaluate(`(async () => {
     stage = "画笔触";
     document.getElementById("color").value = "#ffd166";
     document.querySelector('button[data-tool="brush"]').click();
+    // **等工具真的切过去再落笔** ✗（2026-11-05 ✓）：建完选区后工具栏会重建，
+    // 点击可能落在旧节点上 ⇒ state.tool 仍是 select_rect ⇒ 黄色笔一根都没落下
+    //（CI 实测：选区 bbox 正确 {x:128,w:256,h:256}，而 inside=outside=0）。
+    for (let i = 0; i < 30; i += 1) {
+      const st = (window.yanshi && window.yanshi.state) ? window.yanshi.state().tool : null;
+      if (st === "brush") break;
+      await wait(100);
+    }
     document.getElementById("size").value = "40";
     fire("pointerdown", at(0.05, 0.5), 621);
     fire("pointermove", at(0.5, 0.5), 621);
@@ -1537,6 +1545,7 @@ const selectionResult = await evaluate(`(async () => {
       canvas: { w: board.width, h: board.height },
       doc: (window.yanshi.state() || {}).docSize || null,
       selectionCount, selAfterCreate, objectsAfterStroke,
+      toolAfterClickBrush: (window.yanshi && window.yanshi.state) ? window.yanshi.state().tool : null,
       created: log.includes("已创建选区"),
       cleared: log.includes("已清除选区"),
       // 用「立刻读」的那一份判；同时带上「末尾读」的结果 ⇒ 两者不同即证明是被清掉的。
