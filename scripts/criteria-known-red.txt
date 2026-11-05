@@ -28621,6 +28621,20 @@ browser-ui-check.mjs  # CI 上 ✓/⊘ 交替（本机 5/5 EXIT=0）；15 段判
 #     或直接量 `render_region(128,128,256,256)` 有没有黄色 ✓。
 #   **∴ 别再用"页面内合成 PointerEvent 不生效"解释** ✗：同一段的**建选区**用的就是同一套
 #     `fire(...)` ✓ 而 `created=true` ✓ ⇒ 合成事件在这条链上是好的 ✓。
+# **★★★ 2026-11-05 结论（CI run 42018819693 / shard 2/6 ✓，`landed` 探针给了数 ✓）★★★**：
+#   `landed={"yellow":8176,"total":65536}` ⇒ **选区那一块里确实有 8176 个黄色像素** ✓
+#   ⇒ **∴ 笔提交了、也画进了文档** ✓ ⇒ **∴ 假设 ②（被完全裁掉）排除** ✓ ★
+#   **∴ 剩下的就是 ①**：**画布没有重绘** ✓（`inside=0 outside=0` 说的是**画布没变**，
+#     不是"文档没有" ✓ —— 这两件事以前一直混在一起 ✓）。
+#   **∴ 现场**（同一次运行的 `blits` 尾部 ✓）：`landed 262144/262144` ⇒ `box [0,0,512,512]`
+#     ⇒ `enter sizeBoards` ⇒ `clear octx.clearRect` ✓ —— 那次整幅贴图**是成功落地的** ✓，
+#     之后**再没有任何补画记录** ✓ ⇒ **∴ 黄色笔提交后一次补画都没发** ✓。
+#   **∴ 下一步（有据可查的三条）**：
+#     i. 在 `afterMutation` 里把「这次提交是否被画布看见」变成可观测（`yanshiStats.lastPaintAfterCommit` ✓）；
+#     ii. 若 `needsServerPixels` 为真而 `queueServerBlit` 没跑 ⇒ 是门控写错 ✓（本文件里那一段有长注释）；
+#     iii. 若跑了但被"空白保护"丢掉 ⇒ 看 `blankBlitsSkipped` ✓。
+#   **∴ 为什么本机复现不了** ✗：本机同一条判据 5/5 绿 ✓ ⇒ 只有 CI 的 2 核时序才把它露出来 ✓
+#     （`sizeBoards` 的"清屏 + 补画"竞态正是本仓反复出现过的那一类 ✓）。
 
 #   **2026-11-05 追加**：加了 `YANSHI_CPU_THROTTLE`（CDP `Emulation.setCPUThrottlingRate`），
 #     本机 **6× 节流下仍然 EXIT=0** ⇒ CI 的 ⊘ **不是单纯的 CPU 慢**（可能与 runner 的内存/
