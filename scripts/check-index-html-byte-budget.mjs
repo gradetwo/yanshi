@@ -72,7 +72,13 @@ import { execFileSync } from "node:child_process";
 // 2026-11-05（诊断）：`afterMutation` 记录 `yanshiStats.lastPaintAfterCommit`（门控／补画盒子／
 //   空白丢弃次数）⇒ ui-check 的失败信息能区分「没要求补画」与「补画被丢」⇒ 950,000→951,500。
 //   **∴ 这是临时诊断** ✗：那条 CI-only 重绘缺陷修好后应当删掉，并把上界降回去。
-const CEILING = 951_500;
+// 2026-11-05（诊断之二）：`resync()` 记录 `yanshiStats.lastResync`（分支／from／applied／localSeq）
+//   与 `loadKernel` 的 `lastIncrementalAtoms` ⇒ 951,500→953,000（+1,500，留 771）。
+//   **同样是临时诊断**：那条"提交后画布不动"的缺陷修好后一起删、一起降回去。
+// 2026-11-05（修缺陷）：`commit_preview` 回了 ok 却没给 `dirty_bbox` 时补一次权威像素
+//   （否则画布一个像素都不画）⇒ 953,000→954,500（+1,500，留 1,044）。
+//   **∴ 抬的理由**：这条修的是「文档里有这一笔、画布上没有」⇒ `browser-ui-check` 因此转绿 ✓
+const CEILING = 954_500;
 
 const failures = [];
 const check = (ok, label, detail) => {

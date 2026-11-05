@@ -1656,6 +1656,9 @@ const selectionResult = await evaluate(`(async () => {
       // **提交之后画布有没有被要求重画** ✓（2026-11-05 ✓）：CI 上"文档里有黄像素、画布没变"✓
       // ⇒ 到底是"没要求补画"还是"要求了但被空白保护丢掉"✗ ⇒ 这一格直接回答 ✓。
       paintAfterCommit: (window.yanshiStats || {}).lastPaintAfterCommit || null,
+      // **resync 进了哪条分支**（2026-11-05）：没进来／增量 0 条／重放了画不出来
+      lastResync: (window.yanshiStats || {}).lastResync || null,
+      lastCommit: (window.yanshiStats || {}).lastCommit || null,
       // **画布到底什么颜色** ✗（2026-11-05 ✓）：CI 实测 baseInk=beforeInk=afterInk=262144
       // ⇒ 512² 的**每一个像素**都被判成「非白」✓ 而画布又**一动不动** ✓
       //   ⇒ 只报"没有墨"分不清「黑布」「透明布」与「真的没画」✗ ⇒ 取两个采样点带上 ✓。
@@ -2725,6 +2728,8 @@ if (!selectionResult || !selectionResult.ok) {
       + `｜诊断 clearedOutside=${selectionResult.clearedOutside}`
       + ` landed=${JSON.stringify(selectionResult.clearedLanded)}`
       + ` paint=${JSON.stringify(selectionResult.paintAfterCommit)}`
+      + ` resync=${JSON.stringify(selectionResult.lastResync)}`
+      + ` commit=${JSON.stringify(selectionResult.lastCommit)}`
       + ` canvas=${JSON.stringify(selectionResult.canvas)}`);
   }
   // 第 997 轮：把这两条的量**每次运行都落盘**（runner 只回显头 3/尾 6 行，落盘才看得全）。

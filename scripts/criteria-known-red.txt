@@ -28608,7 +28608,20 @@ browser-offline-brush.mjs  # 跨架构（x86_64 服务端 vs wasm32 内核）笔
 #     ⇒ 只能把这一段改成 **CDP `Input.dispatchMouseEvent`**（像 viewport-evict 那样）✓ ——
 #     这是一次**结构性改动**（要把 100 行的单次 evaluate 拆成 页面准备 / Node 派事件 / 页面测量 三段）✓，
 #     本轮不再盲试 ✓。
-browser-ui-check.mjs  # CI 上 ✓/⊘ 交替（本机 5/5 EXIT=0）；15 段判据，2 核 runner 上随机卡前置
+# **★★★ 2026-11-05：`browser-ui-check.mjs` 已转绿 ⇒ 从名单移出 ✓ ★★★**
+#   **∴ 根因（两条，都是"画布没重绘"）✗**：
+#     ① 有选区时提交后没有补画 ✓ ⇒ 已在 `commitShape` 补一块 `render_region` 权威像素 ✓
+#        （CI 失败从「inside=0 outside=0」变成「只剩清完选区那一笔」✓）
+#     ② **`commit_preview` 返回 ok 却没有 `dirty_bbox`** ✓ ⇒ `drawKernelDirty` 只按盒子重绘 ✓
+#        ⇒ **一个像素都不画** ✓ 而原子已经交给权威日志了 ✓
+#        ⇒ 症状正是「文档里有这一笔、画布上没有」✓（`landed={"yellow":15540}` 证实 ✓）。
+#        **修法**：没有脏区盒子 ⇒ **用权威像素补整视口** ✓（`allowBlank:true` ✓），
+#        并记 `yanshiStats.kernelCommitNoBox` ✓ 供下次一眼看出 ✓。
+#   **∴ 本机实测**：`ONLY=ui-check bash scripts/run-criteria.sh` ⇒ **通过 1｜意外 0｜已知红 0**
+#     （同一条判据在同机上前一步还是「清除选区后选区外仍看不到笔画色」✓ ⇒ 是同一次修复带来的 ✓）。
+#   **∴ 留下的诊断**（下次若再坏，先看这几格）：`lastPaintAfterCommit`／`lastResync`／
+#     `lastCommit`／`kernelCommitNoBox` ✓ —— 都是"它到底进没进那条路"的直接回答 ✓。
+
 # **2026-11-05 新证据（CI run 42005311602 / c1f38f48，shard 6/6）**：
 #   `px=[[31,111,235,255],[31,111,235,255]]` —— 画布**整块就是底带的蓝**（#1f6feb）✓
 #   而 `landed 262144/262144` ⇒ 那次整幅服务端贴图**成功落地** ✓

@@ -4194,6 +4194,8 @@ async function loadKernel(since = 0) {
   if (!state.wasm) return false;
   const { w, h } = state.docSize;
   const atoms = await fetchOrLocal(api("/api/atoms") + "&since=" + since).then((r) => r.json());
+  // **续传到底应用了几条**（2026-11-05）：`since` 已是最新时这里是 0 条。
+  window.yanshiStats.lastIncrementalAtoms = Array.isArray(atoms.atoms) ? atoms.atoms.length : -1;
   if (!atoms.ok) {
     log("读取原子失败：" + JSON.stringify(atoms).slice(0, 160), "#c33");
     return false;
@@ -5022,6 +5024,10 @@ function applyLocal(atom) {
 /// 绝不能静默停在半途 ✓ —— 半途的内核状态既缺原子 ✓ 又可能被下一次续传重复应用 ✗。
 async function resync() {
   window.yanshiStats.resyncs += 1;
+  // **进了哪条分支**（2026-11-05）：没进来／增量 0 条／重放了画不出来，三个字段直说。
+  const __rsFrom = state.localSeq || 0;
+  window.yanshiStats.lastResync = { at: Math.round(performance.now()), branch: "enter",
+                                    from: __rsFrom, applied: -1, localSeq: __rsFrom };
   // **参考图跟着重对齐** ✓（本轮补 ✗）：偏好改动不产生原子 ⇒ WS 不广播 ⇒ 只有页面自己刷新时
   // 才会重新读一次 ✓（见 `window.__refreshReferenceOverlay` 那条注释 ✓）。不 await ✓：
   // 参考图不在关键路径上 ✗ 不能因为它把整幅重绘拖慢 ✓。
@@ -5047,6 +5053,7 @@ async function resync() {
     // ⇒ **∴ 所以**让 `resync()` 的**可见副作用**（**∴ 画面已更新 ✓）成为**可等待的** ✗
     //   ⇒ **∴ 从而**判据**观察的是**完成**✗，**∴ 而不是**6 秒的运气 ✓。
     await queueServerBlit(null);
+    window.yanshiStats.lastResync = { ...window.yanshiStats.lastResync, branch: "server" };
     return;
   }
   const resumeFrom = state.localSeq || 0;
@@ -5061,12 +5068,18 @@ async function resync() {
     // 增量重放只更新了内核状态 ✓、只刷了预览 ✓ ⇒ **没人把结果画到画布上** ✗。
     await refreshPreview(true);
     await redrawCanvasFromKernel(true);
+    window.yanshiStats.lastResync = { ...window.yanshiStats.lastResync, branch: "incremental",
+                                      applied: window.yanshiStats.lastIncrementalAtoms ?? -1,
+                                      localSeq: state.localSeq || 0 };
     return;
   }
   // 增量不可用（或从 0 开始 ✓）⇒ 整条重放 ✓（内核已被上次失败回收 ✓ 或被重建 ✓）。
   if (await loadKernel(0)) {
     await refreshPreview(true);
     await redrawCanvasFromKernel(true);
+    window.yanshiStats.lastResync = { ...window.yanshiStats.lastResync, branch: "full",
+                                      applied: window.yanshiStats.lastIncrementalAtoms ?? -1,
+                                      localSeq: state.localSeq || 0 };
   }
 }
 
@@ -12661,7 +12674,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-0706936872632")
+      caches.open("yanshi-shell-3858888265019")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));
@@ -13032,9 +13045,17 @@ board.addEventListener("pointerup", async (event) => {
     if (committed.ok) {
       state.localSeq = committed.seq;
       window.yanshiStats.kernelHead = committed.seq;
-      if (committed.report) {
+      if (committed.report && committed.report.dirty_bbox) {
         drawKernelDirty(committed.report);
         window.yanshiStats.commits = (window.yanshiStats.commits || 0) + 1;
+      } else {
+        // **内核说"提交成功"却**没给脏区** ⇒ 画布不会动** ✗（2026-11-05 ✓）
+        //   **∴ 为什么必须补** ✗：`drawKernelDirty` 只按 `report.dirty_bbox` 重绘 ✓
+        //     没有盒子 ⇒ **一个像素都不画** ✓ 而原子已经交给权威日志了 ✓
+        //     ⇒ 症状正是「文档里有这一笔、画布上没有」✓（ui-check 的 landed 探针证实 ✓）。
+        //   **∴ 用权威像素补整视口** ✓（`allowBlank` ✓：这时画布本来就该以文档为准 ✓）。
+        window.yanshiStats.kernelCommitNoBox = (window.yanshiStats.kernelCommitNoBox || 0) + 1;
+        await queueServerBlit(null, { allowBlank: true });
       }
     } else {
       await resync();
@@ -13090,6 +13111,14 @@ function strokeAtom(pending, final) {
 }
 
 async function commitShape() {
+  // **这一笔走的是哪条路**（2026-11-05）：`resync=null` 说明它**根本没进过 resync** ⇒
+  // 先记下入口（工具／点数），才知道是哪条分支把收尾跳过了。
+  window.yanshiStats.lastCommit = {
+    at: Math.round(performance.now()), tool: state.tool,
+    points: Array.isArray(state.points) ? state.points.length : -1,
+    brush: ($("brush") || {}).value || "",
+    selection: !!(state.selectionId || state.selectionShape),
+  };
   const color = colorCss();
   const size = Number($("size").value);
   // **平滑开关** ✓（勾上才传 ✓ ⇒ 不勾就是原来的行为 ✓ —— 老用户与老文档一个像素都不变 ✓）。
