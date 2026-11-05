@@ -1458,6 +1458,10 @@ const selectionResult = await evaluate(`(async () => {
       await wait(100);
     }
     document.getElementById("size").value = "40";
+    // **用「像素有没有变」判墨** ✗ 不要用颜色阈值（2026-11-05 ✓）：黄色压在蓝色底带上时
+    // 实际落盘像素会被混色/透明度改掉（CI 实测：对象数 6 ⇒ 笔**提交了**，但 r>200/g>170/b<140
+    // 一个都不满足 ⇒ 被误判成"没落下"）。这里改成「与落笔前相比有变化」✓。
+    const beforeStroke = snapshot();
     fire("pointerdown", at(0.05, 0.5), 621);
     fire("pointermove", at(0.5, 0.5), 621);
     fire("pointermove", at(0.95, 0.5), 621);
@@ -1473,13 +1477,15 @@ const selectionResult = await evaluate(`(async () => {
     stage = "量选区";
     const width = board.width;
     const height = board.height;
-    const strokeColor = (data, index) => data[index] > 200 && data[index + 1] > 170 && data[index + 2] < 140;
     const inSelection = (x, y) =>
       x >= width * 0.25 - 2 && x <= width * 0.75 + 2 && y >= height * 0.25 - 2 && y <= height * 0.75 + 2;
+    const changedAt = (now, before, index) =>
+      Math.abs(now[index] - before[index]) + Math.abs(now[index + 1] - before[index + 1])
+      + Math.abs(now[index + 2] - before[index + 2]) > 12;
     let inside = 0;
     let outside = 0;
     for (let index = 0; index < after.length; index += 4) {
-      if (!strokeColor(after, index)) continue;
+      if (!changedAt(after, beforeStroke, index)) continue;
       const x = (index / 4) % width;
       const y = Math.floor((index / 4) / width);
       if (inSelection(x, y)) inside += 1; else outside += 1;
@@ -1497,6 +1503,7 @@ const selectionResult = await evaluate(`(async () => {
     // **正好是选区下边界** ✗，而 inSelection 的容差是 ±2px ⇒ 笔画像素多数仍算框内 ✗
     // ⇒ clearedOutside 恒为 0 ✗ ⇒ **是判据的几何问题，不是产品** ✓
     //（本机隔离实验：在 y = 0.9 画 ⇒ 非白像素 +790 ✓，说明「清除后能画」是**成立的** ✓）。
+    const beforeCleared = snapshot();
     fire("pointerdown", at(0.05, 0.90), 622);
     fire("pointermove", at(0.5, 0.90), 622);
     fire("pointermove", at(0.95, 0.90), 622);
@@ -1507,7 +1514,7 @@ const selectionResult = await evaluate(`(async () => {
     const cleared = await stable();
     let clearedOutside = 0;
     for (let index = 0; index < cleared.length; index += 4) {
-      if (!strokeColor(cleared, index)) continue;
+      if (!changedAt(cleared, beforeCleared, index)) continue;
       const x = (index / 4) % width;
       const y = Math.floor((index / 4) / width);
       if (!inSelection(x, y)) clearedOutside += 1;
