@@ -55,7 +55,10 @@ import { execFileSync } from "node:child_process";
 //   压到两三行（viewer-app.js −约 2.4 KB、viewer.css −约 0.4 KB）⇒ 实测 **943,528 B**。
 //   仍比旧上界多 1,451 B（差额来自**源码本来就有、只是没入库**的那部分）⇒ 抬到
 //   **944,500**（+1,451 之后留 **972 B** 余量 ⇒ 下一次改动不必先抬棘轮）。
-const CEILING = 944_500;
+// 2026-11-05：平移期间锁死视口尺寸（`pointermove` 里不再调 `clampViewport`）使
+//   944,418→944,670（+252 B，纯代码：尺寸沿用手势起始值 + 越界夹取）⇒ 上界 944,500→945,200
+//   （+700，留约 530 B 余量）。
+const CEILING = 945_200;
 
 const failures = [];
 const check = (ok, label, detail) => {

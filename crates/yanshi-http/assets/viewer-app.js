@@ -10034,7 +10034,13 @@ board.addEventListener("pointermove", (event) => {
     y: panState.originY - (event.clientY - panState.startY) * perPixel + state.viewport.h / 2,
   };
   void scale;
-  clampViewport(center);
+  // 平移中只改位置：clampViewport 会按可用区重算尺寸（状态栏一变就 211→213 宽）。
+  const { w: docW, h: docH } = state.docSize;
+  const viewW = state.viewport.w;
+  const viewH = state.viewport.h;
+  const x = Math.max(0, Math.min(Math.max(0, docW - viewW), Math.round(center.x - viewW / 2)));
+  const y = Math.max(0, Math.min(Math.max(0, docH - viewH), Math.round(center.y - viewH / 2)));
+  state.viewport = { x, y, w: viewW, h: viewH };
   renderViewport();
 });
 board.addEventListener("pointerup", (event) => {
