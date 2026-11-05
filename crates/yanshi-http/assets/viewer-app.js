@@ -10828,7 +10828,15 @@ board.addEventListener("pointerup", async (event) => {
     // （不要假定覆盖层像素已在 tile 里：覆盖层与提交原子落在不同图层时不成立，
     //   那正是「操作后画布空白、刷新才可见」的原因。）
     const atom = strokeAtom(pendingStroke, true);
+    const headBefore = (() => { try { return state.kernel.kernel_stats ? state.kernel.kernel_stats().head_seq : null; } catch (e) { return null; } })();
     const committed = JSON.parse(state.kernel.commit_preview(JSON.stringify(atom)));
+    // **内核到底收没收这一笔**（2026-11-05）：CI 上画布逐像素不变 ⇒ 要么内核没收（head 不涨），
+    // 要么收了但脏区画出来是旧像素。这三格直接回答，不再猜。
+    window.yanshiStats.lastKernelCommit = {
+      at: Math.round(performance.now()), ok: !!committed.ok, seq: committed.seq ?? null,
+      headBefore, hasBox: !!(committed.report && committed.report.dirty_bbox),
+      box: (committed.report && committed.report.dirty_bbox) || null,
+    };
     if (committed.ok) {
       state.localSeq = committed.seq;
       window.yanshiStats.kernelHead = committed.seq;
@@ -10898,14 +10906,8 @@ function strokeAtom(pending, final) {
 }
 
 async function commitShape() {
-  // **这一笔走的是哪条路**（2026-11-05）：`resync=null` 说明它**根本没进过 resync** ⇒
-  // 先记下入口（工具／点数），才知道是哪条分支把收尾跳过了。
-  window.yanshiStats.lastCommit = {
-    at: Math.round(performance.now()), tool: state.tool,
-    points: Array.isArray(state.points) ? state.points.length : -1,
-    brush: ($("brush") || {}).value || "",
-    selection: !!(state.selectionId || state.selectionShape),
-  };
+  // **这一笔走的是哪条路**（2026-11-05）：`commitShapeCalls` 不涨 ⇒ 走的是 pointerup 的内核路径。
+  window.yanshiStats.commitShapeCalls = (window.yanshiStats.commitShapeCalls || 0) + 1;
   const color = colorCss();
   const size = Number($("size").value);
   // **平滑开关** ✓（勾上才传 ✓ ⇒ 不勾就是原来的行为 ✓ —— 老用户与老文档一个像素都不变 ✓）。

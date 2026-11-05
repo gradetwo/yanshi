@@ -1658,7 +1658,8 @@ const selectionResult = await evaluate(`(async () => {
       paintAfterCommit: (window.yanshiStats || {}).lastPaintAfterCommit || null,
       // **resync 进了哪条分支**（2026-11-05）：没进来／增量 0 条／重放了画不出来
       lastResync: (window.yanshiStats || {}).lastResync || null,
-      lastCommit: (window.yanshiStats || {}).lastCommit || null,
+      lastKernelCommit: (window.yanshiStats || {}).lastKernelCommit || null,
+      commitShapeCalls: (window.yanshiStats || {}).commitShapeCalls || 0,
       // **画布到底什么颜色** ✗（2026-11-05 ✓）：CI 实测 baseInk=beforeInk=afterInk=262144
       // ⇒ 512² 的**每一个像素**都被判成「非白」✓ 而画布又**一动不动** ✓
       //   ⇒ 只报"没有墨"分不清「黑布」「透明布」与「真的没画」✗ ⇒ 取两个采样点带上 ✓。
@@ -2729,7 +2730,8 @@ if (!selectionResult || !selectionResult.ok) {
       + ` landed=${JSON.stringify(selectionResult.clearedLanded)}`
       + ` paint=${JSON.stringify(selectionResult.paintAfterCommit)}`
       + ` resync=${JSON.stringify(selectionResult.lastResync)}`
-      + ` commit=${JSON.stringify(selectionResult.lastCommit)}`
+      + ` kcommit=${JSON.stringify(selectionResult.lastKernelCommit)}`
+      + ` commitShapeCalls=${JSON.stringify(selectionResult.commitShapeCalls)}`
       + ` canvas=${JSON.stringify(selectionResult.canvas)}`);
   }
   // 第 997 轮：把这两条的量**每次运行都落盘**（runner 只回显头 3/尾 6 行，落盘才看得全）。
@@ -4271,6 +4273,18 @@ if (notJudged.length) {
   process.exit(3);
 }
 console.log("  ✅ UI 检查通过（画布非空、几何一致、缩略图自动刷新）");
+// **选区段的内部状态**（2026-11-05）：放在**末尾** ✓ —— runner 只回显 out.txt 的尾部 6 行 ✓
+// ⇒ 放中间等于没打 ✓（本机跑一次就白等了 ✓）。只报"画布没变"分不清
+// 「内核没收这一笔」与「收了但脏区画的是旧像素」✓ ⇒ 这几格直接回答 ✓。
+if (selectionResult && selectionResult.ok) {
+  console.log("  选区段状态：" + JSON.stringify({
+    inside: selectionResult.inside, outside: selectionResult.outside,
+    clearedOutside: selectionResult.clearedOutside,
+    landed: selectionResult.strokeLanded, clearedLanded: selectionResult.clearedLanded,
+    paint: selectionResult.paintAfterCommit, resync: selectionResult.lastResync,
+    kcommit: selectionResult.lastKernelCommit, commitShapeCalls: selectionResult.commitShapeCalls,
+  }));
+}
 
 // 显式退出：CDP 的 WebSocket 仍打开时 node 不会自己结束（曾导致脚本挂到超时、退出码 124）。
 ws.close();
