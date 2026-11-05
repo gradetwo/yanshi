@@ -307,6 +307,15 @@ const SHARED_KEYS = ["ok", "seq", "head", "range", "source_layer_id", "coverage_
 const SERVER_ONLY = ["atom_id", "changeset_id", "created", "dirty_bbox", "dirty_kind", "dirty_tiles",
                      "duplicate", "job_id", "job_status", "opened", "preview", "snapshotted",
                      "suggestions", "timings", "warnings"];
+/** **服务端按采样点附加的字段**（**∴ 允许出现、但不要求每案都出现** ✗）（2026-11-05 ✓）
+ *   `memory_status` 由 `service.rs` 的 `attach_session_memory_sample` 附加 ✓：
+ *     **每 100 次成功提交、或级别相比上次变化时**才带 ✓（注释写在那条函数上 ✓）。
+ *   **∴ 它是**采样**✗ ⇒ 放进 `SERVER_ONLY` 会让下面「§B⑥ 服务端确实还在给」偶发红 ✓
+ *     （实测：CI run 42018819693 的 shard 3/6 就是这条红的 ✓ —— 同一份代码本机会绿 ✓）。
+ *   **∴ 单独一张表** ✓：只声明「它不属于本地契约」✓，不要求出现 ✓
+ *     （**哪天真删了**，本判据也不会假装它还在 ✓ —— 那是 `service.rs` 自己的事 ✓）。
+ *   **本地给不出**：PWA 没有"会话内存账本"（那量的是**服务端**磁盘原子日志＋渲染保留 ✓）。 */
+const SERVER_SAMPLED = ["memory_status"];
 /** **`head` 是原子 id ⇒ 两边的 id 空间不同 ✗ 只断「都在」✓**（同 `write-guards` 的 `divergent` 口径 ✓）。 */
 const DIVERGENT_KEYS = ["head"];
 const seenSrvKeys = new Set();
@@ -325,8 +334,8 @@ for (const [label, args] of OK_CASES) {
   const sKeys = Object.keys(srv.body), lKeys = Object.keys(loc.body);
   for (const k of sKeys) seenSrvKeys.add(k);
   for (const k of sKeys) {
-    check(SHARED_KEYS.includes(k) || SERVER_ONLY.includes(k),
-      `§B ${label}：服务端多出一个未登记的键「${k}」✗（值 ${show(srv.body[k])}）⇒ 要么补进本地契约，要么写进 SERVER_ONLY 并说明为什么本地给不出`);
+    check(SHARED_KEYS.includes(k) || SERVER_ONLY.includes(k) || SERVER_SAMPLED.includes(k),
+      `§B ${label}：服务端多出一个未登记的键「${k}」✗（值 ${show(srv.body[k])}）⇒ 要么补进本地契约，要么写进 SERVER_ONLY／SERVER_SAMPLED 并说明为什么本地给不出`);
     // **契约键 ⇒ 本地必须有 ✓**；**外层键 ⇒ 只允许缺 ✓（但下面 §B⑥ 逐条断服务端还在给 ✓）**。
     if (SHARED_KEYS.includes(k)) {
       check(lKeys.includes(k),
