@@ -4267,6 +4267,16 @@ if (notJudged.length) {
   for (const line of notJudged) console.error(`  ⊘ ${line}`);
   // **原因要出现在**同一行** ✗**（2026-11-05 ✓）：runner 只回显 out.txt 的**尾部 6 行**，
   // 分行打印时原因会被截掉 ✓（CI 实测：只看到「有前提没立住」而看不到是哪一段 ✗）。
+  // **⊘ 这条路也要把选区段的内部状态打出来** ✗（2026-11-05）：CI 上一半是 ⊘（前置没立住）
+  // ⇒ 只在 ✅ 路径打印 ⇒ 那几次**一格数据都没拿到** ✓（白等一轮 ✓）。
+  if (selectionResult) {
+    console.log("  选区段状态：" + JSON.stringify({
+      ok: !!selectionResult.ok, inside: selectionResult.inside, outside: selectionResult.outside,
+      clearedOutside: selectionResult.clearedOutside, paint: selectionResult.paintAfterCommit,
+      resync: selectionResult.lastResync, kcommit: selectionResult.lastKernelCommit,
+      commitShapeCalls: selectionResult.commitShapeCalls, stage: selectionResult.stage,
+    }));
+  }
   const brief = notJudged.map((line) => String(line).slice(0, 90)).join("；");
   console.error("  ⊘ 有前提没立住（" + brief.slice(0, 200) + "）⇒ 本次不算绿（退出码 3）");
   ws.close();
