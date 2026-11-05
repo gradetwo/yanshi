@@ -10866,6 +10866,14 @@ board.addEventListener("pointerup", async (event) => {
       if (committed.report && committed.report.dirty_bbox) {
         drawKernelDirty(committed.report);
         window.yanshiStats.commits = (window.yanshiStats.commits || 0) + 1;
+        // **再把那一块盖成权威像素** ✗（2026-11-05 ✓，CI 第三次实测）
+        //   **∴ 为什么** ✗：内核回 `ok`、给了脏区、`head_seq` 也涨了 ✓
+        //     而 `drawKernelDirty` 画到画布上的**仍是旧像素** ✓
+        //     ⇒ 文档里有这一笔、画布上没有 ✓（`landed.yellow=15540` 而 `clearedOutside=0` ✓）。
+        //   **∴ 做法**：脏区就那么大（笔迹包围盒 ✓）⇒ 顺手用权威像素盖一遍 ✓
+        //     —— 与前面"没有脏区盒子"那条**同一个兜底** ✓，只是这次盒子有、内容不可信 ✓。
+        //   **∴ 代价**：每笔多一次**区域**渲染（≈笔迹面积，不是整视口 ✓）。
+        await queueServerBlit(committed.report.dirty_bbox, { allowBlank: true });
       } else {
         // **内核说"提交成功"却**没给脏区** ⇒ 画布不会动** ✗（2026-11-05 ✓）
         //   **∴ 为什么必须补** ✗：`drawKernelDirty` 只按 `report.dirty_bbox` 重绘 ✓
@@ -10879,13 +10887,6 @@ board.addEventListener("pointerup", async (event) => {
       await resync();
     }
     const response = await submitAtom(atom);
-    // **有选区时这一笔由**文档侧**裁** ✗（2026-11-05 ✓）：内核那块脏区画的是**未裁**的线 ✓
-    //   ⇒ 与真正落盘的那一段**不是同一批像素** ✓ ⇒ 用权威像素把那一块盖回去 ✓
-    //   （`commitShape` 里那条同款守卫**走不到这里** ✓ —— 笔触走的是 `commit_preview` ✓；
-    //    CI 实测：选区那一笔 `seq 8`、盒子 `[6,236,500,40]` 都正常 ✓ 而画布没变 ✓）。
-    if (state.selectionId && committed.report && committed.report.dirty_bbox) {
-      await queueServerBlit(committed.report.dirty_bbox, { allowBlank: true });
-    }
     if (response && response.seq !== undefined && response.seq !== committed.seq) {
       // 服务端把原子排在了别处（并发），以权威日志为准重建。
       await resync();
