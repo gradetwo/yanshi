@@ -253,7 +253,24 @@ if (viewBefore.w >= docW && viewBefore.x === 0 && viewBefore.y === 0) {
 //   **放大本身就会改变画面** ✗ ⇒ 拿它当基准 ⇒ 断言②**必然误报**"画面变了" ✗
 //   （台账里那条「**[另一处待修]** …要在**放大之后**再取基准 ✓」说的就是这件事 ✓）。
 //   **正确基准** ✓：**同一缩放状态下、平移之前**的像素和 ✓。
-const baseSum = await evaluate(PIXEL_SUM);
+// **等画面稳定再取基准** ✗（2026-11-05 ✓）：放大后内核/瓦片是**异步**上屏的，
+// 900ms 固定等待在慢机器上会**在渲染中途取基准** ⇒ 之后"移回来"看到的是**更完整**的画面
+// ⇒ 差值被误判成"逐出把还要用的 tile 扔了" ✓（本机实测 295→298、75225→75990）。
+// 判据：连续 3 次采样相同才算稳定（有界：最多 ~12 秒）。
+const settleSum = async () => {
+  let prev = null;
+  let same = 0;
+  for (let i = 0; i < 60; i += 1) {
+    const current = await evaluate(PIXEL_SUM);
+    if (prev && current && current.sum === prev.sum && current.nonZero === prev.nonZero) same += 1;
+    else same = 0;
+    prev = current;
+    if (same >= 3 && i >= 3) return current;
+    await sleep(200);
+  }
+  return prev;
+};
+const baseSum = await settleSum();
 if (!baseSum) voidRun("放大之后读不到画布像素和");
 console.log(
   `  平移前基准（**放大后** ✓）：采样像素和 ${baseSum.sum}｜非零 ${baseSum.nonZero}`,
@@ -344,9 +361,10 @@ await send("Input.dispatchMouseEvent", {
   buttons: 0,
   clickCount: 1,
 });
-await sleep(1200);
+await sleep(600);
 
-const backSum = await evaluate(PIXEL_SUM);
+// 移回来之后同样**等稳定**再比（理由同上 ✓）。
+const backSum = await settleSum();
 if (!backSum) voidRun("移回来之后读不到画布像素");
 console.log(`  移回后：采样像素和 ${backSum.sum}｜非零 ${backSum.nonZero}`);
 
