@@ -28570,3 +28570,7 @@ browser-offline-brush.mjs  # 跨架构（x86_64 服务端 vs wasm32 内核）笔
 #   **∴ 转绿条件 ✓**：把剩下每一段的前置都按同样方式加**有界等待 + 不可判**（逐段过一遍），
 #     或整体挪到 nightly（完整桌面环境）⇒ 再删本行。
 browser-ui-check.mjs  # CI 上 ✓/⊘ 交替（本机 5/5 EXIT=0）；15 段判据，2 核 runner 上随机卡前置
+#   **2026-11-05 追加**：加了 `YANSHI_CPU_THROTTLE`（CDP `Emulation.setCPUThrottlingRate`），
+#     本机 **6× 节流下仍然 EXIT=0** ⇒ CI 的 ⊘ **不是单纯的 CPU 慢**（可能与 runner 的内存/
+#     并发/Chromium 版本有关）✓。同时把「不可判原因」并进**尾行**（runner 只回显尾部 6 行），
+#     下一次 CI 就能直接看到是哪一段 ✓。

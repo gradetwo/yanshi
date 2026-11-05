@@ -256,6 +256,13 @@ const resetPanelState = async () => {
 
 await send("Runtime.enable");
 await send("Page.enable");
+// **可选的 CPU 节流** ✗（2026-11-05 ✓）：CI 的 2 核 runner 比开发机慢 ⇒ 本机复现不了
+// 「卡在某段前置」✓。设 `YANSHI_CPU_THROTTLE=6` 就能在本机**放大**这个问题 ✓。
+const __throttle = Number(process.env.YANSHI_CPU_THROTTLE || 0);
+if (__throttle > 0) {
+  try { await send("Emulation.setCPUThrottlingRate", { rate: __throttle }); } catch (_) { /* 老浏览器不支持 */ }
+  console.log(`  （CPU 节流 ×${__throttle} ⇒ 模拟慢 runner）`);
+}
 // **禁用浏览器缓存** ✓ —— 加这一条的直接原因：调试浏览器缓存了**旧版 HTML** ✗，
 // 于是页面里没有我刚加的折叠代码（点击无反应 ✓）、介质工具还是旧的**单点**逻辑 ✓
 //（"包围盒宽 48" ✓）—— 而服务端与代码都是新的 ✓，症状极难归因 ✓。
@@ -4114,7 +4121,10 @@ if (problems.length) {
 }
 if (notJudged.length) {
   for (const line of notJudged) console.error(`  ⊘ ${line}`);
-  console.error("  ⊘ 有前提没立住 ⇒ 本次不算绿（退出码 3）");
+  // **原因要出现在**同一行** ✗**（2026-11-05 ✓）：runner 只回显 out.txt 的**尾部 6 行**，
+  // 分行打印时原因会被截掉 ✓（CI 实测：只看到「有前提没立住」而看不到是哪一段 ✗）。
+  const brief = notJudged.map((line) => String(line).slice(0, 90)).join("；");
+  console.error("  ⊘ 有前提没立住（" + brief.slice(0, 200) + "）⇒ 本次不算绿（退出码 3）");
   ws.close();
   process.exit(3);
 }
