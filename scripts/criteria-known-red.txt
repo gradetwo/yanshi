@@ -28664,7 +28664,22 @@ tool-bitmap-decode-scope.mjs  # **类型：规格先行（位图未分块存储�
 #     ii. 判据侧把「量之前先等到 `head_seq` 稳定」写进来（现在是等像素稳定 ✓ —— 像素稳定
 #        不等于**渲染完了** ✗：清屏那一刻像素也是"稳定"的 ✓）；
 #     iii. 两条都排除之后再谈产品侧加锁 ✓。
-browser-ui-check.mjs  # CI 上仍红（8f210dd6 / shard 2/6：清选区后画布不变；resync=null commit=null）；本机绿
+# **★★★ 2026-11-05 19:01：`browser-ui-check.mjs` 已在 **CI 转绿** ⇒ 从名单移出 ✓ ★★★**
+#   **∴ 证据（run 42087419089 / shard 2/6，提交 7030fcd9）** ✓：
+#     `✓ browser-ui-check.mjs`｜选区段状态
+#     `{"inside":10024,"outside":0,"clearedOutside":19256,...}` ✓ —— 三条断言同时成立 ✓
+#   **∴ 真因（最后一条，前面几条都是它的一部分）** ✗：有选区时这一笔由**文档侧裁** ✓
+#     而笔触走的是 **pointerup 的内核路径**（`commit_preview` + `submitAtom` ✓），
+#     那条路画的是**未裁**的整条线 ✓ ⇒ 与落盘的那一段不是同一批像素 ✓
+#     ⇒ **∴ 提交后要用权威像素把那个脏区盖回去** ✓（`render_region` ✓，只盖脏区 ✓）。
+#   **∴ 前面几条被排除/修掉的（都在台账里）**：
+#     ① 合成 PointerEvent 不生效 ✗ 排除（建选区用的是同一套 fire ✓）
+#     ② `sizeBoards` 擦画布 ✗ 排除（`clears=1` 只在开机 300×150→512×512 ✓）
+#     ③ 内核没收这一笔 ✗ 排除（`kcommits` 里 seq 8、head 7→8、盒子都正常 ✓）
+#     ④ 没给脏区盒子 ⇒ 补整视口 ✓（`kernelCommitNoBox` 那条，仍在 ✓）
+#   **∴ 留下来的诊断**（下次真坏了先看这几格）：`kcommits`（最近 4 次内核提交）/`landed`
+#     /`paintAfterCommit`/`resync`/`clears`/`commitShapeCalls` ✓。
+
 # ---------- 原条目（本机转绿的依据，保留）----------
 # **★★★ 2026-11-05：`browser-ui-check.mjs` 本机转绿的依据（保留，CI 未复现）★★★**
 #   **∴ 根因（两条，都是"画布没重绘"）✗**：
