@@ -265,7 +265,7 @@ const settleSum = async () => {
     if (prev && current && current.sum === prev.sum && current.nonZero === prev.nonZero) same += 1;
     else same = 0;
     prev = current;
-    if (same >= 3 && i >= 3) return current;
+    if (same >= 6 && i >= 6) return current;
     await sleep(200);
   }
   return prev;
@@ -315,6 +315,13 @@ if (!box) voidRun("拿不到画布的位置");
 //   **∴ 改成** ✓：**0.6 倍画布** ⇒ 一定落在窗口内 ✓，又足够远（0.6 倍视口 ⇒ 必然移动视口 ✓）。
 const DX = -Math.max(24, Math.round((box.w || 400) * 0.6));
 const DY = -Math.max(24, Math.round((box.h || 300) * 0.6));
+
+// **★ 一次手势里「拖出去再拖回来」✗ 不要两次按下 ★**（2026-11-05 ✓）
+//   **∴ 实证 ✗**：两次按下时第二次 pointerdown 会被吞（同一坐标刚释放 ⇒ 双击/捕获状态）
+//     ⇒ 视口**没回来**（本机实测 viewBefore=(407,442) vs viewAfter=(534,526) ✓）
+//     ⇒ ② 比的是两块**不同视口** ✗ 红得没有意义 ✓。
+//   **∴ 做法** ✓：按住 → 拖远（读 viewFar＋逐出计数）→ **同一手势**拖回原点 → 松开
+//     ⇒ 视口必须回到 viewBefore ✓（回不去 = 产品累计取整有问题 ⇒ 判红 ✓）。
 await send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "left", buttons: 1, clickCount: 1 });
 for (let i = 1; i <= 8; i += 1) {
   await send("Input.dispatchMouseEvent", {
@@ -326,28 +333,17 @@ for (let i = 1; i <= 8; i += 1) {
   });
   await sleep(60);
 }
-await send("Input.dispatchMouseEvent", {
-  type: "mouseReleased",
-  x: box.x + DX,
-  y: box.y + DY,
-  button: "left",
-  buttons: 0,
-  clickCount: 1,
-});
-await sleep(1200);
-
+const viewFar = await evaluate("((window.yanshi || {}).state ? window.yanshi.state().viewport : null)");
 const afterPan = await evaluate(
   "(() => { const s = window.yanshiStats || {}; return { ev: s.viewportEvictions || 0, ch: s.viewportChanges || 0 }; })()",
 );
-console.log(`  平移后：视口变更 ${afterPan.ch} 次｜累计逐出 ${afterPan.ev} 块`);
+console.log(`  拖到远处：视口 = (${viewFar ? viewFar.x : "?"}, ${viewFar ? viewFar.y : "?"})｜视口变更 ${afterPan.ch} 次｜累计逐出 ${afterPan.ev} 块`);
 
-// ④ 平移**回来** ✓ ⇒ 画面必须回到原值 ✓（这是"没有抖动"的硬检查 ✓）
-await send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x + DX, y: box.y + DY, button: "left", buttons: 1, clickCount: 1 });
-for (let i = 1; i <= 8; i += 1) {
+for (let i = 7; i >= 0; i -= 1) {
   await send("Input.dispatchMouseEvent", {
     type: "mouseMoved",
-    x: box.x + DX - Math.round((DX * i) / 8),
-    y: box.y + DY - Math.round((DY * i) / 8),
+    x: box.x + Math.round((DX * i) / 8),
+    y: box.y + Math.round((DY * i) / 8),
     button: "left",
     buttons: 1,
   });
@@ -363,7 +359,7 @@ await send("Input.dispatchMouseEvent", {
 });
 await sleep(600);
 
-// 移回来之后同样**等稳定**再比（理由同上 ✓）。
+// 移回来之后**等稳定**再比（异步渲染可能还在上屏）。
 const backSum = await settleSum();
 if (!backSum) voidRun("移回来之后读不到画布像素");
 console.log(`  移回后：采样像素和 ${backSum.sum}｜非零 ${backSum.nonZero}`);
@@ -371,8 +367,15 @@ console.log(`  移回后：采样像素和 ${backSum.sum}｜非零 ${backSum.non
 const fails = [];
 // **★ 视口是否真的动了（读状态，最直接 ✓）★**
 const viewAfter = await evaluate("((window.yanshi || {}).state ? window.yanshi.state().viewport : null)");
-const moved = !!viewAfter && (viewAfter.x !== viewBefore.x || viewAfter.y !== viewBefore.y);
-console.log(`  平移后视口 = (${viewAfter ? viewAfter.x : "?"}, ${viewAfter ? viewAfter.y : "?"})｜动了 = ${moved}`);
+// **「动了」看拖远那一刻**；「回到原位」看松手后 ✓（两件事，别混）。
+const moved = !!viewFar && (viewFar.x !== viewBefore.x || viewFar.y !== viewBefore.y);
+const restored = !!viewAfter && viewAfter.x === viewBefore.x && viewAfter.y === viewBefore.y;
+console.log(`  松手后视口 = (${viewAfter ? viewAfter.x : "?"}, ${viewAfter ? viewAfter.y : "?"})｜拖远时动了 = ${moved}｜回到原位 = ${restored}`);
+
+// **⓪ 手势必须真的往返** ✓：回不去 ⇒ 后面的像素比对没有意义（先修驱动/或判产品累计取整）。
+if (!restored) {
+  fails.push(`拖回后视口没有回到原位（before=(${viewBefore.x},${viewBefore.y}) after=(${viewAfter ? viewAfter.x : "?"},${viewAfter ? viewAfter.y : "?"})）⇒ ② 的像素比对无效`);
+}
 
 // **① 确实逐出** ✓
 if (!moved) {
