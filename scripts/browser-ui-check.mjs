@@ -686,8 +686,15 @@ const effectResult = await evaluate(`(async () => {
     if (fingerprint.opaque === fingerprint.total && fingerprint.sum !== beforeSum) break;
     await new Promise((r) => setTimeout(r, 200));
   }
+  // **效果列表是异步刷新的** ✗（2026-11-05 ✓）：应用后 2.5s 读一次，CI 上偶尔还没刷到
+  // ⇒ 报「应用 invert 后效果列表里没有它」✗（本机 4/4 通过）。这里**有界等**它出现（≤8s）✓。
+  let listText = document.getElementById("effectsList").textContent;
+  for (let i = 0; i < 40 && !String(listText).includes("invert"); i++) {
+    await new Promise((r) => setTimeout(r, 200));
+    listText = document.getElementById("effectsList").textContent;
+  }
   return {
-    list: document.getElementById("effectsList").textContent,
+    list: listText,
     fingerprint,
     selectedLayerId,
     clickLayerId,

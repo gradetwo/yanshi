@@ -506,6 +506,9 @@ tool-bitmap-decode-scope.mjs  # **类型：规格先行（位图未分块存储�
 # **转绿条件** ✓：**位图分块存储** —— **(b1) 导入切块 ＋ tile 索引 ＋ 渲染侧按需取块**
 #   （**兼容自动成立**：旧工程无索引 ⇒ 走原路 ✓）—— 见 `docs/design/implementation-notes.md` 第 451 轮 ✓。
 # **变异** ✗：强制整幅预解 ⇒ 必红 ✓。
+# **2026-11-05 决策**：**不排期**（位图分块存储是一项独立设计：导入切块 + tile 索引 +
+#   渲染侧按需取块 + 旧工程兼容）⇒ 见 `docs/design/implementation-notes.md` 第 451 轮；
+#   在它落地前这条保持已知红，不靠放宽"K=4"预算过关。
 # **⇒ 2026-11-05 复验（本机 client 模式已可跑：wasm 自建 + 6 个介质插件）**：**8 项**（旧台账 15 项）✓
 #   **∴ 已修掉的根因 ✗**：`palette_not_found: open-color.json ⇒ HTTP 404` ✓
 #     —— C/S 客户端渲染下 `api-local` 直取 `/palettes/<name>`，而服务端没有这条路由 ✓
