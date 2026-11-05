@@ -1423,6 +1423,15 @@ const selectionResult = await evaluate(`(async () => {
     fire("pointerup", at(0.75, 0.75), 620);
     await wait(1200);
 
+    // **记下选区真相**（CI 上这句能区分「选区空」与「笔没提交」）。
+    let selAfterCreate = null;
+    try {
+      const listedSel = await window.yanshiCallTool("list_selections", {});
+      selAfterCreate = ((listedSel && listedSel.selections) || []).map((sel) => ({
+        id: sel.selection_id, kind: sel.shape && sel.shape.kind, bbox: sel.bbox || (sel.shape && sel.shape.bbox) || null,
+      }));
+    } catch (error) { selAfterCreate = "throw:" + String((error && error.message) || error).slice(0, 40); }
+
     stage = "画笔触";
     document.getElementById("color").value = "#ffd166";
     document.querySelector('button[data-tool="brush"]').click();
@@ -1433,6 +1442,11 @@ const selectionResult = await evaluate(`(async () => {
     await wait(120);
     fire("pointerup", at(0.95, 0.5), 621);
     const after = await stable();
+    let objectsAfterStroke = null;
+    try {
+      const listedObj = await window.yanshiCallTool("list_objects", {});
+      objectsAfterStroke = ((listedObj && listedObj.objects) || []).length;
+    } catch (error) { objectsAfterStroke = "throw"; }
 
     stage = "量选区";
     const width = board.width;
@@ -1515,7 +1529,7 @@ const selectionResult = await evaluate(`(async () => {
       ok: true, inside, outside, clearedOutside, textChanged,
       canvas: { w: board.width, h: board.height },
       doc: (window.yanshi.state() || {}).docSize || null,
-      selectionCount,
+      selectionCount, selAfterCreate, objectsAfterStroke,
       created: log.includes("已创建选区"),
       cleared: log.includes("已清除选区"),
       // 用「立刻读」的那一份判；同时带上「末尾读」的结果 ⇒ 两者不同即证明是被清掉的。
@@ -2537,7 +2551,9 @@ if (!selectionResult || !selectionResult.ok) {
     const outside = selectionResult.outside || 0;
     const detail = `inside=${selectionResult.inside} outside=${outside} created=${selectionResult.created}`
       + ` cleared=${selectionResult.cleared} canvas=${JSON.stringify(selectionResult.canvas)}`
-      + ` doc=${JSON.stringify(selectionResult.doc)} selections=${JSON.stringify(selectionResult.selectionCount)}`;
+      + ` doc=${JSON.stringify(selectionResult.doc)} selections=${JSON.stringify(selectionResult.selectionCount)}`
+      + ` afterCreate=${JSON.stringify(selectionResult.selAfterCreate)}`
+      + ` objects=${JSON.stringify(selectionResult.objectsAfterStroke)}`;
     if (outside === 0) {
       // 画布上**根本没有**黄色笔画 ⇒ 是时序/几何前提没立住（不是产品没做裁切）。
       notJudged.push("选区用例没跑起来：笔画没有落下（" + detail + "）");
