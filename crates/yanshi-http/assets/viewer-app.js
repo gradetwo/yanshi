@@ -421,6 +421,12 @@ async function fetchOrLocal(url, options) {
       (window.__appMarks = window.__appMarks || []).push("fol:" + name);
     };
     folMark("enter");
+  // **`blob:` / `data:` 是**本地对象** ✗ ⇒ 不该走"未缓存即转发"那条告警** ✓（2026-11-05）
+  //   实测（静态 PWA，落一笔）：**5 条** `未缓存即转发：GET /<uuid>` ✓ 调用点全是
+  //   `blitServerBox` ✓ —— 它拿到的 `raw_url` 就是对象 URL ✓
+  //   ⇒ **∴ 于是**控制台被无意义的告警刷屏 ✓，而"补进白名单"根本无处可补 ✓
+  //   （它们**不上网络** ✓ ⇒ 既不影响离线，也没有可优化的一跳 ✓）。
+  if (/^(blob|data):/i.test(String(url))) return fetch(url, boundedOptions(options));
   const method = (options && options.method) || "GET";
   let cacheable = false;
   let binary = false;
