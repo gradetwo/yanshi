@@ -3225,7 +3225,11 @@ function renderSamples() {
   for (const sample of SAMPLES) {
     const card = document.createElement("button");
     card.type = "button";
-    card.style.cssText = "display:flex;flex-direction:column;gap:2px;padding:8px;text-align:left";
+    // **卡片必须按内容长高** ✗（2026-11-05 截图实证 ✓）：全局 `button { height: var(--control-h) }`
+    //   ⇒ 每张卡只剩 28px ✓ 而里面是「标题 18 ＋ 说明 33」 ✓ ⇒ `overflow` 是 visible ✓
+    //     ⇒ **∴ 说明文字压到下一行卡片上** ✓（真机截图：四张卡片的说明与下一行标题叠在一起 ✓）。
+    //   **∴ 行内 `height:auto`** ✓（行内样式压过那条全局规则 ✓，且只影响这六张卡 ✓）。
+    card.style.cssText = "display:flex;flex-direction:column;gap:2px;padding:8px;text-align:left;height:auto";
     const title = document.createElement("span");
     title.style.cssText = "font-size:12px;font-weight:600";
     title.textContent = sample.label;
