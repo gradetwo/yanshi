@@ -39,7 +39,7 @@ __judgeTimeout.unref();
 // 用法：node scripts/browser-viewport-evict.mjs <viewer-url> [cdpPort]
 //   （与 `browser-*` 那一族一致：端口也接受 `CDP_PORT` 环境变量 ✓）
 
-const url = process.argv[2] || "";
+let url = process.argv[2] || "";
 if (!url) {
   console.error("用法: node scripts/browser-viewport-evict.mjs <viewer-url> [cdpPort]");
   process.exit(2);
@@ -47,23 +47,28 @@ if (!url) {
 const port = process.env.CDP_PORT || "9333";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// **★ 先给这份文档**画上内容** ✗ ★**（2026-11-05 ✓）
-//   **∴ 为什么 ✗**：判据用的是 runner 的空文档 ✓ ⇒ 画布**整块纯白** ✓
-//     ⇒ 「逐出有没有伤到像素」**无从观察**（白对白）✗ ⇒ 之前的 295→298 只是
-//     **字节采样计数的抖动**，不是画面差异 ✓。
-//   **∴ 做法** ✓：导航前用 API 落两笔（跨整个文档）⇒ 放大到 400% 后视口里一定有墨 ✓。
+// **★ 自己建一份够大的文档 ✗ 不要用 runner 的 boot 文档 ★**（2026-11-05 ✓）
+//   **∴ 为什么** ✗：runner 给的是 **320×240** ✓ ⇒ 400% 之后视口几乎铺满 ✓
+//     ⇒ 平移**动不了**、逐出 **0** ✓（CI 实测：`viewportEvictions = 0`、视口变更 0 次 ✗）
+//     ⇒ 判据不是在测逐出，而是在测"文档太小" ✗。
+//   **∴ 做法** ✓：用 API 建 **1024×1024** 并落两笔 ✓ ⇒ 视口有余量、逐出可见 ✓。
 {
   const parsedUrl = new URL(url);
-  const docId = parsedUrl.searchParams.get("doc");
-  const token = parsedUrl.searchParams.get("token");
-  if (docId && token) {
-    const call = (tool, args) => fetch(`${parsedUrl.origin}/api/tools/${tool}?doc=${encodeURIComponent(docId)}&token=${encodeURIComponent(token)}`, {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(args || {}),
-    }).then((r) => r.json()).catch(() => ({}));
-    await call("draw_stroke", { layer_id: "layer_default", data: { points: [[80, 80], [944, 944]], size: 56, color: { r: 200, g: 30, b: 60, a: 255 } } });
-    await call("draw_stroke", { layer_id: "layer_default", data: { points: [[80, 944], [944, 80]], size: 28, color: { r: 30, g: 90, b: 200, a: 255 } } });
-  }
+  const docId = "ve-" + Date.now().toString(36);
+  const created = await fetch(`${parsedUrl.origin}/api/documents`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ doc_id: docId, width: 1024, height: 1024 }),
+  }).then((r) => r.json()).catch(() => ({}));
+  if (!created || !created.token) voidRun("建不了自己的 1024×1024 文档（拿不到 token）");
+  url = `${parsedUrl.origin}/?doc=${docId}&token=${created.token}&render=client`;
+  const call = (tool, args) => fetch(`${parsedUrl.origin}/api/tools/${tool}?doc=${encodeURIComponent(docId)}&token=${encodeURIComponent(created.token)}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(args || {}),
+  }).then((r) => r.json()).catch(() => ({}));
+  await call("draw_stroke", { layer_id: "layer_default", data: { points: [[80, 80], [944, 944]], size: 56, color: { r: 200, g: 30, b: 60, a: 255 } } });
+  await call("draw_stroke", { layer_id: "layer_default", data: { points: [[80, 944], [944, 80]], size: 28, color: { r: 30, g: 90, b: 200, a: 255 } } });
 }
+
+
 
 // **判据自己的坏 ⇒ 退 3**（与"产品红"分开 ✓）
 function voidRun(reason) {
