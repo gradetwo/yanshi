@@ -300,10 +300,16 @@ async function drawStroke() {
   await send("Input.dispatchMouseEvent", {
     type: "mouseReleased", x: x0 + 96, y: y0 + 48, button: "left", buttons: 0, clickCount: 1,
   });
-  await sleep(1500);
+  // **有界等画面变化** ✗（2026-11-05 ✓）：慢 runner 上 1500ms 常常还不够
+  //（CI 实测 `changed=false`，本机 2/2 通过）⇒ 每 250ms 取一次签名，最多 10s；
+  // 真的没变化才算红 ✓（不是放宽 ✓）。
+  let afterSig = await signature();
+  for (let i = 0; i < 40 && afterSig === beforeSig; i += 1) {
+    await sleep(250);
+    afterSig = await signature();
+  }
   const wallMs = Date.now() - t0;
   const task1 = await taskDuration();
-  const afterSig = await signature();
   // **★ 分段端到端延迟 ✗ ★**（第 75 轮 ✓；**用户第 8 条要求"**墙钟 ＋ **端到端延迟 ✓" ✓）：
   //   **∴ 页面**本来就**暴露了**这几段**✗（**∴ 我**不必**新加计时 ✓）
   //     ⇒ **∴ 于是**：**两本账**再多四列**✗ ⇒ **∴ 那**才**是**端到端 ✓**** ✓✓
