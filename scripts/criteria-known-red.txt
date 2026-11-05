@@ -28576,6 +28576,14 @@ browser-offline-brush.mjs  # 跨架构（x86_64 服务端 vs wasm32 内核）笔
 #   **∴ 归因（未定）✗**：CI 的 Chromium 版本/指针合成差异，或该段之前的某个手势留下了
 #     影响事件分发的状态（`setPointerCapture`）✓。**下一步**：把这一段改成用 CDP
 #     `Input.dispatchMouseEvent`（与其它段一致）而不是页面内合成 PointerEvent ✓。
+#   **2026-11-05 三种假设都试过（都排除）**：
+#     ① 颜色阈值误判（混色）⇒ 改成**落笔前后逐像素比较** ✓ 仍 inside=outside=0；
+#     ② `dragging` 未清 ⇒ 落笔前等到 null ✓ 仍不触笔；
+#     ③ 布局 rect 在变（笔被映射到选区外）⇒ 落笔前等 rect 连续两次相同 ✓ 仍不触笔。
+#   **∴ 结论 ✗**：CI 上那串**页面内合成** PointerEvent 在该段就是没触发落笔（本机 6× 节流都绿）✓
+#     ⇒ 只能把这一段改成 **CDP `Input.dispatchMouseEvent`**（像 viewport-evict 那样）✓ ——
+#     这是一次**结构性改动**（要把 100 行的单次 evaluate 拆成 页面准备 / Node 派事件 / 页面测量 三段）✓，
+#     本轮不再盲试 ✓。
 browser-ui-check.mjs  # CI 上 ✓/⊘ 交替（本机 5/5 EXIT=0）；15 段判据，2 核 runner 上随机卡前置
 #   **2026-11-05 追加**：加了 `YANSHI_CPU_THROTTLE`（CDP `Emulation.setCPUThrottlingRate`），
 #     本机 **6× 节流下仍然 EXIT=0** ⇒ CI 的 ⊘ **不是单纯的 CPU 慢**（可能与 runner 的内存/
