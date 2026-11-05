@@ -28635,6 +28635,20 @@ browser-ui-check.mjs  # CI 上 ✓/⊘ 交替（本机 5/5 EXIT=0）；15 段判
 #     iii. 若跑了但被"空白保护"丢掉 ⇒ 看 `blankBlitsSkipped` ✓。
 #   **∴ 为什么本机复现不了** ✗：本机同一条判据 5/5 绿 ✓ ⇒ 只有 CI 的 2 核时序才把它露出来 ✓
 #     （`sizeBoards` 的"清屏 + 补画"竞态正是本仓反复出现过的那一类 ✓）。
+# **★★★ 2026-11-05 后半：第一半已修 ✓，剩下的是「清完选区那一笔」★★★**：
+#   修法（`viewer-app.js` 的 `commitShape`）：**有选区时提交后补一块 `render_region` 权威像素** ✓
+#     ⇒ CI 失败从「选区用例没跑起来（inside=0 outside=0）」变成
+#       **「清除选区后选区外仍看不到笔画色」** ✓ ⇒ **∴ inside>0 已经成立** ✓（主症状消失 ✓）。
+#   **∴ 剩下的那一半**（本机这次复现到了 ✓，诊断在判据里 ✓）：
+#     `clearedOutside=0` ＋ `landed={"yellow":15540,"total":31232}`
+#       ⇒ **文档里确实有那一笔** ✓ 而**画布没变** ✓
+#     ＋ `paint={"needsServerPixels":false,"blitBox":null,...}` ⇒ **仍是一次补画都没发** ✓
+#   ⇒ **∴ 结论收窄到一条**：**这一笔提交后没有任何重绘**（既非"被裁掉"、也非"空白保护丢掉"）✓
+#     —— 剩下的候选只有 `resync()`／`refreshPreview()` 在这条时序上**什么都没画** ✓
+#       （`state.dragging` 未清、`queued` 标志未复位、或内核认为 head 没变 ✓）。
+#   **∴ 下一步（一条一条排除，别再猜）**：在 `resync()` 入口与出口各记一次
+#     `yanshiStats.lastResync = {enter, queued, dragging, localSeq, head, painted}` ✓
+#     ⇒ 下一轮 CI／本机就能看出它到底"没进"还是"进了没画" ✓。
 
 #   **2026-11-05 追加**：加了 `YANSHI_CPU_THROTTLE`（CDP `Emulation.setCPUThrottlingRate`），
 #     本机 **6× 节流下仍然 EXIT=0** ⇒ CI 的 ⊘ **不是单纯的 CPU 慢**（可能与 runner 的内存/

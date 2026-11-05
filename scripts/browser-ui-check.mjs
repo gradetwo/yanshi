@@ -1580,6 +1580,31 @@ const selectionResult = await evaluate(`(async () => {
     await stable();
 
     const cleared = await stable();
+    // **清完选区那一笔到底有没有落进文档** ✗（2026-11-05 ✓）：
+    //   CI 上现在卡在「清除后选区外看不到笔画色」✓ ⇒ 与上一轮同一类问题 ✓
+    //   （画布没重绘／笔被裁掉 ✓）⇒ **∴ 用同一条办法直接问文档** ✓（数黄像素 ✓）。
+    let clearedLanded = null;
+    try {
+      const landed2 = await window.yanshiCallTool("render_region", {
+        region: { x: 0, y: Math.floor(height * 0.84), w: width, h: Math.floor(height * 0.12) },
+        raw: true,
+      }, { refresh: false });
+      const url2 = landed2 && (landed2.raw_url || landed2.thumb_url);
+      if (url2) {
+        const bytes2 = new Uint8Array(await (await fetch(url2)).arrayBuffer());
+        let yellow2 = 0;
+        let total2 = 0;
+        for (let i = 0; i + 3 < bytes2.length; i += 4) {
+          total2 += 1;
+          if (bytes2[i] > 180 && bytes2[i + 1] > 140 && bytes2[i + 2] < 160) yellow2 += 1;
+        }
+        clearedLanded = { yellow: yellow2, total: total2 };
+      } else {
+        clearedLanded = "no-url:" + JSON.stringify(landed2).slice(0, 80);
+      }
+    } catch (error) {
+      clearedLanded = "throw:" + String((error && error.message) || error).slice(0, 60);
+    }
     let clearedOutside = 0;
     for (let index = 0; index < cleared.length; index += 4) {
       if (!changedAt(cleared, beforeCleared, index)) continue;
@@ -1627,7 +1652,7 @@ const selectionResult = await evaluate(`(async () => {
       // **让「画布有没有动」自己说出来** ✓（2026-11-05 ✓）：
       // baseInk = 铺底之后画布上的墨（0 ⇒ 画布整段静止 ✓）；beforeInk／afterInk = 黄色笔前后 ✓。
       baseInk, beforeInk: inkOf(beforeStroke), afterInk: inkOf(after),
-      strokeLanded,
+      strokeLanded, clearedLanded,
       // **提交之后画布有没有被要求重画** ✓（2026-11-05 ✓）：CI 上"文档里有黄像素、画布没变"✓
       // ⇒ 到底是"没要求补画"还是"要求了但被空白保护丢掉"✗ ⇒ 这一格直接回答 ✓。
       paintAfterCommit: (window.yanshiStats || {}).lastPaintAfterCommit || null,
@@ -2696,7 +2721,11 @@ if (!selectionResult || !selectionResult.ok) {
     problems.push(`选区外出现了笔画色：越界 ${selectionResult.outside} 个像素`);
   }
   if (selectionResult.clearedOutside === 0) {
-    problems.push("清除选区后选区外仍看不到笔画色（应恢复为不受约束）");
+    problems.push("清除选区后选区外仍看不到笔画色（应恢复为不受约束）"
+      + `｜诊断 clearedOutside=${selectionResult.clearedOutside}`
+      + ` landed=${JSON.stringify(selectionResult.clearedLanded)}`
+      + ` paint=${JSON.stringify(selectionResult.paintAfterCommit)}`
+      + ` canvas=${JSON.stringify(selectionResult.canvas)}`);
   }
   // 第 997 轮：把这两条的量**每次运行都落盘**（runner 只回显头 3/尾 6 行，落盘才看得全）。
   try { (await import("node:fs")).appendFileSync("/tmp/yanshi-textobs.txt",
