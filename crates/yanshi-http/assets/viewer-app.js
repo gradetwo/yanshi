@@ -10828,7 +10828,11 @@ board.addEventListener("pointerup", async (event) => {
     // （不要假定覆盖层像素已在 tile 里：覆盖层与提交原子落在不同图层时不成立，
     //   那正是「操作后画布空白、刷新才可见」的原因。）
     const atom = strokeAtom(pendingStroke, true);
-    const headBefore = (() => { try { return state.kernel.kernel_stats ? state.kernel.kernel_stats().head_seq : null; } catch (e) { return null; } })();
+    // **只能用绑定里真有的方法** ✗：`kernel_stats()` 不存在（`viewer.rs` 的判据当场抓到 ✓）
+    // ⇒ 用 `stats_json()`（`kernelStats()` 用的就是它 ✓）。
+    const headBefore = (() => {
+      try { return JSON.parse(state.kernel.stats_json()).head_seq; } catch (e) { return null; }
+    })();
     const committed = JSON.parse(state.kernel.commit_preview(JSON.stringify(atom)));
     // **内核到底收没收这一笔**（2026-11-05）：CI 上画布逐像素不变 ⇒ 要么内核没收（head 不涨），
     // 要么收了但脏区画出来是旧像素。这三格直接回答，不再猜。

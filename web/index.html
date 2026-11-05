@@ -12674,7 +12674,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-9685477607097")
+      caches.open("yanshi-shell-2156463178200")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));
@@ -13041,7 +13041,11 @@ board.addEventListener("pointerup", async (event) => {
     // （不要假定覆盖层像素已在 tile 里：覆盖层与提交原子落在不同图层时不成立，
     //   那正是「操作后画布空白、刷新才可见」的原因。）
     const atom = strokeAtom(pendingStroke, true);
-    const headBefore = (() => { try { return state.kernel.kernel_stats ? state.kernel.kernel_stats().head_seq : null; } catch (e) { return null; } })();
+    // **只能用绑定里真有的方法** ✗：`kernel_stats()` 不存在（`viewer.rs` 的判据当场抓到 ✓）
+    // ⇒ 用 `stats_json()`（`kernelStats()` 用的就是它 ✓）。
+    const headBefore = (() => {
+      try { return JSON.parse(state.kernel.stats_json()).head_seq; } catch (e) { return null; }
+    })();
     const committed = JSON.parse(state.kernel.commit_preview(JSON.stringify(atom)));
     // **内核到底收没收这一笔**（2026-11-05）：CI 上画布逐像素不变 ⇒ 要么内核没收（head 不涨），
     // 要么收了但脏区画出来是旧像素。这三格直接回答，不再猜。
