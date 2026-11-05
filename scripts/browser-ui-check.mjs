@@ -1350,6 +1350,18 @@ const selectionResult = await evaluate(`(async () => {
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     const board = document.getElementById("board");
     const snapshot = () => Array.from(board.getContext("2d").getImageData(0, 0, board.width, board.height).data);
+    // **画布上到底有没有墨** ✗（2026-11-05 ✓）：CI 上本例 inside／outside **都是 0** ✓ 而
+    // 「objects=6」✓ ⇒ 说明**笔提交了** ✓、只是**画布没变** ✓。
+    // ⇒ 那只可能是两件事之一：① 铺底就一个像素都没画上（画布整段静止）✓；
+    //   ② 铺底画上了、而黄色笔被**完全裁掉** ✓。两者的修法相反 ⇒ 必须分开量 ✗。
+    // ⇒ 所以每次取快照时**顺带记墨量** ✓，并把它带进失败信息 ✓（不再靠推 ✓）。
+    const inkOf = (data) => {
+      let n = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] > 8 && (data[i] < 245 || data[i + 1] < 245 || data[i + 2] < 245)) n += 1;
+      }
+      return n;
+    };
     const stable = async () => {
       let previous = snapshot();
       let sawChange = false;
@@ -1424,7 +1436,8 @@ const selectionResult = await evaluate(`(async () => {
       fire("pointerup", at(0.98, y), 610 + row);
       await wait(300);
     }
-    await stable();
+    const basePainted = await stable();
+    const baseInk = inkOf(basePainted);
 
     stage = "建选区";
     const selectButton = document.querySelector('button[data-tool="select_rect"]');
@@ -1585,6 +1598,14 @@ const selectionResult = await evaluate(`(async () => {
     } catch (_) { selectionCount = "throw"; }
     return {
       ok: true, inside, outside, clearedOutside, textChanged,
+      // **让「画布有没有动」自己说出来** ✓（2026-11-05 ✓）：
+      // baseInk = 铺底之后画布上的墨（0 ⇒ 画布整段静止 ✓）；beforeInk／afterInk = 黄色笔前后 ✓。
+      baseInk, beforeInk: inkOf(beforeStroke), afterInk: inkOf(after),
+      // 视图层记账（只取几项可读的 ✓）：内核起没起来、有没有退回服务端像素、最近几次清屏／贴图 ✓。
+      kernelHead: (window.yanshiStats || {}).kernelHead ?? null,
+      wasmReady: !!(window.yanshiStats || {}).wasm,
+      resyncFallbacks: (window.yanshiStats || {}).resyncFallbacks || 0,
+      blits: (((window.yanshiStats || {}).blitLog) || []).slice(-8).map((b) => [b.reason, b.area, b.serverInk, b.canvasInk]),
       canvas: { w: board.width, h: board.height },
       doc: (window.yanshi.state() || {}).docSize || null,
       selectionCount, selAfterCreate, objectsAfterStroke,
@@ -2613,7 +2634,18 @@ if (!selectionResult || !selectionResult.ok) {
       + ` cleared=${selectionResult.cleared} canvas=${JSON.stringify(selectionResult.canvas)}`
       + ` doc=${JSON.stringify(selectionResult.doc)} selections=${JSON.stringify(selectionResult.selectionCount)}`
       + ` afterCreate=${JSON.stringify(selectionResult.selAfterCreate)}`
-      + ` objects=${JSON.stringify(selectionResult.objectsAfterStroke)}`;
+      + ` objects=${JSON.stringify(selectionResult.objectsAfterStroke)}`
+      // 2026-11-05：把「画布有没有动」与「视图层走哪条路」一起打出来 ✓
+      // （CI 上 objects=6 而像素不变 ⇒ 只有这两组数能区分「没画上」与「被裁掉」✓）。
+      + ` baseInk=${JSON.stringify(selectionResult.baseInk)}`
+      + ` beforeInk=${JSON.stringify(selectionResult.beforeInk)}`
+      + ` afterInk=${JSON.stringify(selectionResult.afterInk)}`
+      + ` kernelHead=${JSON.stringify(selectionResult.kernelHead)}`
+      + ` wasm=${JSON.stringify(selectionResult.wasmReady)}`
+      + ` fallbacks=${JSON.stringify(selectionResult.resyncFallbacks)}`
+      + ` drag=${JSON.stringify(selectionResult.dragBeforeStroke)}`
+      + ` tool=${JSON.stringify(selectionResult.toolAfterClickBrush)}`
+      + ` blits=${JSON.stringify(selectionResult.blits)}`;
     if (outside === 0) {
       // 画布上**根本没有**黄色笔画 ⇒ 是时序/几何前提没立住（不是产品没做裁切）。
       notJudged.push("选区用例没跑起来：笔画没有落下（" + detail + "）");

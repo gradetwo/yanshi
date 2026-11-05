@@ -10186,6 +10186,16 @@ async function withKernel(doc, fn) {
         // **∴ 尺寸在 `payload` 里 ✗**（**第 630 轮 ✓：**原子是 8 字段封套 ✓**）。
         width: create ? (create.atom.payload?.width ?? create.atom.width ?? 1024) : 1024,
         height: create ? (create.atom.payload?.height ?? create.atom.height ?? 1024) : 1024,
+        // **★ 把「尺寸是编的」说出来 ✗ ★**（2026-11-05 ✓）：
+        //   **∴ 症状 ✗**：PWA 按链接打开一个**本地还没有的 doc** ✓ ⇒ 存储是空的 ✓
+        //     ⇒ 这里**没有** `create_document` ⇒ 上面那两个 1024 是**缺省值** ✓
+        //       ⇒ **∴ 而**内核重放原子时**也**看不到 `create_document` ⇒ **∴ 它认为文档是 0×0** ✓
+        //         ⇒ **∴ 于是**每一块区域渲染都回**空字节** ✓ ⇒ 画布全白、落笔没有像素 ✓
+        //           （本机实测：1024×1024 画布、墨 0、`render_region` 回
+        //            「Bbox {x:0,y:0,w:256,h:256} 与文档 0×0 不相交」✓）。
+        //   **∴ 所以**这里**如实**给一个布尔 ✓ ⇒ 前端据此**补写**文档原子 ✓（`new_document` ✓）
+        //     ⇒ **∴ 而不是**让 1024 这个**编出来的尺寸**冒充事实 ✗（那就是静默降级 ✓）。
+        has_create_document: !!create,
         head_seq: meta.seq ?? 0,
         rendered_seq: meta.seq ?? 0,
         // **∴ 没有服务器 ⇒ 缩略图必须由**本地内核**生成 ✗** ⇒ **∴ 在生成前如实报 pending ✓**

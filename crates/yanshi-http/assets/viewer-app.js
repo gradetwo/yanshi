@@ -4508,6 +4508,43 @@ async function warmKernel() {
     setupCheckpointPanel();
     documentPanelsBound = true;
   }
+  // **★ 本地部署：文档原子缺失就补上 ✗ ★**（2026-11-05 ✓）
+  //   **∴ 症状**：PWA 按链接打开**本地还没有的 doc** ⇒ 前端只补图层 ✓、没有 `create_document`
+  //     ⇒ 内核重放后认为文档 **0×0** ⇒ 区域渲染回空字节 ⇒ **画布全白、落笔没有像素** ✓
+  //     （而工具调用全回 `ok` ⇒ 静默 ✓；本机实测 `render_region` 回「与文档 0×0 不相交」✓）。
+  //   **∴ 做法**：`get_document.has_create_document === false` ⇒ 写一条 `create_document` ✓
+  //     （`new_document` 路由幂等：已有会明确拒绝 ✓）。
+  //   **∴ 放在 `warmKernel` 而不在 `loadDocumentData`**：后者里本地层可能尚未接管 `fetch` ✓
+  //     （实测一次都没执行 ✓）⇒ 这里**一定**在本地 JSON 取过之后 ✓。
+  //   **∴ 留信号**：`yanshiStats.docAtomRepair` = created／present／failed:<原因> ✓
+  //     （否则"补没补"只能靠画布有没有像素反推 ✗）。
+  if (typeof window !== "undefined" && window.__pwaLocalOnly === true) {
+    try {
+      const info = await fetchOrLocal(api("/api/tools/get_document"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }).then((r) => r.json());
+      if (info && info.has_create_document === false) {
+        const made = await callTool("new_document", {
+          doc_id: state.docId,
+          width: info.width || 1024,
+          height: info.height || 1024,
+        }, { refresh: false });
+        const ok = !!(made && made.ok);
+        window.yanshiStats.docAtomRepair = ok ? "created" : "failed:" + JSON.stringify(made).slice(0, 120);
+        // **成功与失败都要留痕** ✗：补不上 ⇒ 后面一定是白画布 ✓ ⇒ 必须能看出来 ✓。
+        log("本地文档没有创建原子 ⇒ " + (ok
+          ? "已补写 " + made.width + "×" + made.height
+          : "补写失败：" + JSON.stringify(made).slice(0, 140)), ok ? "" : "#c33");
+      } else {
+        window.yanshiStats.docAtomRepair = "present";
+      }
+    } catch (error) {
+      window.yanshiStats.docAtomRepair = "failed:" + String((error && error.message) || error).slice(0, 120);
+      log("检查文档原子失败：" + String((error && error.message) || error).slice(0, 120), "#c33");
+    }
+  }
   await initWasm();
   (window.__appMarks = window.__appMarks || []).push("warm:after-initWasm");
   if (!state.wasm) return;

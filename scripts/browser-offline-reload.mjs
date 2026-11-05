@@ -43,48 +43,11 @@ const url = process.env.YANSHI_VIEWER_URL || process.argv[2];
 const port = process.env.CDP_PORT || "9333";
 if (!url) { console.error("用法: node scripts/browser-offline-reload.mjs <viewer-url> [cdpPort]"); process.exit(2); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const parsed = new URL(url);
-// **★★★ API 请求必须发到**服务端**，不是查看器 ✗ ★★★**（**第 779 轮修；**CI 实测 ✓）
-//   **∴ 症状 ✗**（**CI ✓）★**：
-//     `✗ create_layer 的响应不是 JSON｜URL=http://127.0.0.1:14990/api/tools?doc=…
-//      ｜★status=404★｜前 80 字节="not found"`
-//   **∴ 根因 ✗**：**本判据**同时**用两个 URL**✗：
-//     ＋ **∴ ① `YANSHI_VIEWER_URL`（**上文的 `url` ✓）—— **∴ 用来**导航页面** ✓
-//       ＋ **∴ ② `argv[3]`** —— **∴ 运行器给的**服务端 base** ✓（**见上文注释：「argv[3] 是 BASE」✓）
-//         ＋ **∴ 而**旧代码**对 API 请求用了 `parsed.origin`**✗ ⇒ **∴ 那**是**查看器的 origin** ✓
-//           ＋ **∴ 而**有静态 PWA 时**✗ ⇒ **∴ `YANSHI_VIEWER_URL` 指向**静态服务** ✓
-//             ＋ **∴ 于是**：**`/api/tools` **发到了静态服务**✗
-//               ⇒ **∴ 而**静态服务**对未知路径回**明文 `not found`**（**404 ✓）✓ ★★
-//   **∴ 修法 ✗**：**API 用 `serverBase`**✗（**`argv[3]` 优先 ✓）＋ **∴ 页面导航**仍用 `url`** ✓ ★
-//     ＋ **∴ 为什么**回退是安全的 ✗**：**只用 viewer URL 调用时（**无 argv[3] ✓）⇒ **∴ 行为不变** ✓ ★
-const serverBase = process.argv[3] || parsed.origin;
-
-const doc = parsed.searchParams.get("doc"), token = parsed.searchParams.get("token");
-// **★ 诊断先行 ✗ ★**（第 338 轮 ✓；**与 `browser-offline-export.mjs` 同一修法 ✓）：
-//   **∴ CI 报 ✗**：**`SyntaxError: Unexpected token 'o', "not found" is not valid JSON`** ✓
-//     ⇒ **∴ 而** `not found` **是服务端的 404 正文** ✓
-//       ⇒ **∴ 即**：**旧写法**对 404 直接调 `.json()`**✗
-//         ⇒ **∴ 于是**丢掉了 **URL ＋ 状态 ＋ 正文** ✓**** ✓✓
-//   **∴ 修法 ✗**：**先读文本**✗ ⇒ **∴ 不是 JSON ⇒ **打印诊断再抛** ✓ ★**** ✓✓
-const post = async (tool, args) => {
-  const url = `${serverBase}/api/tools?doc=${doc}&token=${token}`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ tool, arguments: args }),
-  });
-  const text = await response.text();
-  try {
-    return JSON.parse(text);
-  } catch (error) {
-    console.error(
-      `  ✗ ${tool} 的响应不是 JSON｜URL=${url}｜status=${response.status}｜` +
-        `前 80 字节=${JSON.stringify(text.slice(0, 80))}`,
-    );
-    throw error;
-  }
-};
-
+// **★ 历史：为什么曾经同时用两个 URL ✗ ★**（第 779 轮 ✓，现已被下面的改法取代 ✓）
+//   **∴ 当时** ✗：落笔用 `POST ${服务端 base}/api/tools/brush_stroke` ✓ 而导航用查看器 URL ✓
+//     ⇒ 无静态 PWA 时两者同源、能跑通 ✓ ⇒ 有静态 PWA 时 `/api/tools` 发到静态服务 ⇒ 明文 404 ✗
+//       ⇒ 那一轮把 API 改成走 `argv[3]`（服务端 base ✓）⇒ **404 消失了** ✓
+//         ⇒ **∴ 而画布仍是 0** ✗ ⇒ 因为**页面打开的根本不是服务端那份文档** ✓（见下 ✓）。
 // 页面里"数深色像素"的取样器 ✓ —— 用**离屏 2D 画布 drawImage** ✓，这样 canvas 是 2D 还是 WebGL 都能量 ✓。
 const SAMPLER = `(() => {
   // **画板可能是 img 也可能是 canvas** ✗ —— 实测：查看器里根本没有 canvas ✓
@@ -135,6 +98,24 @@ async function waitForInk(label, limit = 80, step = 250) {
   console.log(`  · ${label}：轮询 ${limit} 次仍无墨（最后一次 ${JSON.stringify(last)}）`);
   return last;
 }
+// **失败要自己说清"为什么"** ✗（2026-11-05 ✓）：只报"没有墨"会让我再猜三四轮 ✓
+// ⇒ 把**能区分原因**的几项一起打出来 ✓：
+//   · `docAtomRepair` —— 文档原子补没补（`created`／`present`／`failed:…` ✓）
+//   · 原子种类 —— 有没有 `create_document`（没有 ⇒ 内核认为文档 0×0 ⇒ 渲染必空 ✓）
+//   · `kernelHead` —— 落笔到底进没进日志（进了 ⇒ 是**显示**问题，不是**提交**问题 ✓）
+const diagnose = () => evaluate(`(async () => {
+    const s = window.yanshiStats || {};
+    const out = { repair: s.docAtomRepair ?? null, kernelHead: s.kernelHead ?? null,
+                  wasm: !!s.wasm, blits: (s.blitLog || []).slice(-4).map((b) => b.reason),
+                  docId: (window.yanshi && window.yanshi.state) ? window.yanshi.state().docId : null };
+    try {
+      const log = await window.yanshiCallTool("get_log", {});
+      out.atoms = (log.atoms || []).map((a) => a.kind);
+    } catch (e) { out.atoms = "throw:" + String((e && e.message) || e).slice(0, 80); }
+    out.pageLog = (document.getElementById("log") || {}).innerText ? document.getElementById("log").innerText.slice(0, 180) : "";
+    return out;
+  })()`);
+
 // **★ CDP 连接守卫 ✗ ★**（2026-10-16 ✓）：浏览器没起来时这里会抛未捕获异常 ⇒ **退 1 ✗，看着像产品失败** ✗
 
 
@@ -190,20 +171,85 @@ const failures = [];
 if (!blank || blank.error) { console.log("  ✗ 取样器不可用 ⇒ 判据自身前提不成立（不是产品问题）⇒ " + JSON.stringify(blank)); socket.close(); process.exit(3); }
 if (blank.dark > 50) failures.push(`未落笔的画布上就有 ${blank.dark} 个深色像素 ⇒ 量法不可信 ✗`);
 
-// ① 画一笔 ✓
-await post("create_layer", { layer_id: "layer_default", name: "l" });
-const painted = await post("brush_stroke", {
-  layer_id: "layer_default", brush: "classic-brush", size: 26,
-  color: { r: 10, g: 10, b: 10, a: 255 },
-  points: [[60, 60, 0.8], [120, 70, 0.8], [180, 60, 0.8]],
-});
-if (painted.ok !== true) { console.log("  ✗ 落笔失败 ⇒ 判据无效 ⇒ " + JSON.stringify(painted.context || painted.error_code)); socket.close(); process.exit(1); }
+// ① 画一笔 ✓ —— **页面内真实手势** ✓（不是调 API ✓：静态 PWA 的 API 就是它自己的本地实现 ✓，
+// 走 API 只能证明"我把函数调通了"✗，走手势才证明"用户画得上"✓）。
+const PAINT = `(async () => {
+  const board = document.getElementById("board");
+  if (!board) return "no-board";
+  const rect = board.getBoundingClientRect();
+  if (rect.width < 32 || rect.height < 32) return "board-too-small:" + Math.round(rect.width) + "x" + Math.round(rect.height);
+  const at = (fx, fy) => ({ clientX: rect.left + rect.width * fx, clientY: rect.top + rect.height * fy });
+  const fire = (type, fx, fy) => board.dispatchEvent(new PointerEvent(type, {
+    bubbles: true, cancelable: true, pointerId: 71, pointerType: "mouse", isPrimary: true,
+    buttons: type === "pointerup" ? 0 : 1, ...at(fx, fy),
+  }));
+  const color = document.getElementById("color");
+  if (color) color.value = "#101010";
+  const brush = document.querySelector('button[data-tool="brush"]');
+  if (brush) brush.click();
+  const size = document.getElementById("size");
+  if (size) size.value = "24";
+  await new Promise((r) => setTimeout(r, 250));
+  fire("pointerdown", 0.30, 0.50);
+  for (let i = 1; i <= 8; i += 1) {
+    fire("pointermove", 0.30 + 0.05 * i, 0.50);
+    await new Promise((r) => setTimeout(r, 30));
+  }
+  fire("pointerup", 0.70, 0.50);
+  return "dispatched";
+})()`;
+// **内核必须就绪再落笔** ✗（与 `browser-offline-brush` 同一条纪律 ✓）：
+// 静态 PWA 的笔走**本地内核** ✓ ⇒ 内核没起来时手势会被吞掉 ✓（表现为"画了没反应"✓）。
+for (let i = 0; i < 80; i += 1) {
+  if (await evaluate("!!(window.yanshi && window.yanshi.kernelStats && window.yanshi.kernelStats())")) break;
+  await sleep(250);
+}
+// **落笔前先记下日志条数** ✗（2026-11-05 ✓）：下面要等"这一笔真的进了日志" ✓
+// ⇒ 只等"画布上有墨"不够 ✓ —— 上屏是**乐观渲染** ✓，提交是**另一件事** ✓
+// （实测：画完 0.8 秒就重载 ⇒ 画布有墨 ✓、重载后原子退回两条 ✓ ⇒ 提交被导航打断 ✗）。
+const atomsBefore = await evaluate(`(async () => {
+  try { const l = await window.yanshiCallTool("get_log", {}); return (l.atoms || []).length; }
+  catch (e) { return -1; }
+})()`);
+const painted = await evaluate(PAINT);
+console.log("  · 落笔 = " + JSON.stringify(painted));
+if (painted !== "dispatched") {
+  console.log("  ⊘ 不可判：页面里没法落笔（" + JSON.stringify(painted) + "）⇒ 不是产品结论");
+  socket.close();
+  process.exit(3);
+}
+
+// **落笔之后先确认"画上了"** ✗（2026-11-05 ✓）：紧跟着就是一次重载 ✓
+// ⇒ 若此刻还没上屏，重载后为 0 就**分不清**「没画上」与「没存下来」✗ ⇒ 必须先看到墨 ✓。
+// **∴ 这一条是前提** ✗：静态 PWA 里一笔都画不上 ⇒ 后面的"重载还在"没有意义 ✓
+// （但那**确实**是产品缺陷 ✓ ⇒ 归到 failures ✓，不是判据自身不可判 ✓）。
+const drawn = await waitForInk("落笔后");
+if (!drawn || drawn.error || drawn.dark <= 50) {
+  failures.push(`在页面里落笔之后画布上没有墨（${JSON.stringify(drawn)}）⇒ 静态 PWA 的本地落笔没有生效 ✗｜诊断 ${JSON.stringify(await diagnose())}`);
+}
+
+// **等"这一笔进了日志"** ✗（不是等上屏 ✓）：上限 10 秒，超时**如实报**（不静默 ✓）。
+if (atomsBefore >= 0) {
+  let committed = null;
+  for (let i = 0; i < 40; i += 1) {
+    committed = await evaluate(`(async () => {
+      try { const l = await window.yanshiCallTool("get_log", {}); return (l.atoms || []).length; }
+      catch (e) { return -1; }
+    })()`);
+    if (committed > atomsBefore) break;
+    await sleep(250);
+  }
+  console.log(`  · 提交：落笔前 ${atomsBefore} 条 ⇒ 现在 ${committed} 条`);
+  if (!(committed > atomsBefore)) {
+    failures.push(`落笔 10 秒内没有进日志（落笔前 ${atomsBefore} 条、现在 ${committed} 条）⇒ 只有乐观上屏、没有提交 ✗`);
+  }
+}
 
 // ③ 在线时画面必须有墨 ✓
 const online = await reload(false);
 console.log("  在线（已落笔）：" + JSON.stringify(online));
 if (!online || online.error) failures.push("在线时取样失败 ⇒ 判据无效 ✗");
-else if (online.dark <= 50) failures.push(`在线时画布上只有 ${online.dark} 个深色像素 ⇒ 那一笔没渲染出来 ✗`);
+else if (online.dark <= 50) failures.push(`在线时画布上只有 ${online.dark} 个深色像素 ⇒ 那一笔没渲染出来 ✗｜诊断 ${JSON.stringify(await diagnose())}`);
 
 // ④ **断网重载** ✓ —— 这一条就是需求的核心 ✓
 const offline = await reload(true);
@@ -227,7 +273,7 @@ const controlProbe = await evaluate(`(() => new Promise((resolve) => {
 console.log("  · 负对照（未缓存接口必须失败；XHR 绕开 api-local 对 window.fetch 的接管）= " + JSON.stringify(controlProbe));
 console.log("  断网重载后：" + JSON.stringify(offline));
 if (!offline || offline.error) failures.push("断网重载后取样失败（页面可能根本没打开）✗");
-else if (offline.dark <= 50) failures.push(`断网重载后画布上只有 ${offline.dark} 个深色像素 ⇒ 像素没有落到浏览器本地存储 ✗（目标：≥ 在线时的九成）`);
+else if (offline.dark <= 50) failures.push(`断网重载后画布上只有 ${offline.dark} 个深色像素 ⇒ 像素没有落到浏览器本地存储 ✗（目标：≥ 在线时的九成）｜诊断 ${JSON.stringify(await diagnose())}`);
 else if (online && offline.dark < online.dark * 0.9) failures.push(`断网重载后墨量 ${offline.dark} 明显少于在线时的 ${online.dark} ⇒ 本地读回不完整 ✗`);
 // **负对照必须成立** ✗：未缓存的同源请求断网后仍成功 ⇒ 断网模拟没生效 ⇒ 这一跑没有结论。
 if (!(controlProbe && controlProbe.failed)) {

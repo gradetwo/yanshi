@@ -58,7 +58,12 @@ import { execFileSync } from "node:child_process";
 // 2026-11-05：平移期间锁死视口尺寸（`pointermove` 里不再调 `clampViewport`）使
 //   944,418→944,670（+252 B，纯代码：尺寸沿用手势起始值 + 越界夹取）⇒ 上界 944,500→945,200
 //   （+700，留约 530 B 余量）。
-const CEILING = 945_200;
+// 2026-11-05：PWA 本地文档补写 `create_document`（`get_document.has_create_document`
+//   ＋ `warmKernel` 里补写 ＋ `docAtomRepair` 信号）使 944,670→947,033（+2,363 B：路由字段
+//   38 B、补写逻辑约 700 B、说明注释约 1.6 KB —— 已从初稿压到此处）⇒ 上界 945,200→948,000
+//   （+2,800，留 967 B 余量）。**这不是"顺手塞进去"**：修的是「静态 PWA 打开新文档后
+//   画布全白、落笔没有像素」（`browser-offline-reload` 因此转绿 ✓）。
+const CEILING = 948_000;
 
 const failures = [];
 const check = (ok, label, detail) => {
