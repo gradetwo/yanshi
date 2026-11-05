@@ -1523,6 +1523,32 @@ const selectionResult = await evaluate(`(async () => {
       if (inSelection(x, y)) inside += 1; else outside += 1;
     }
 
+    // **那一笔到底有没有落进文档** ✗（2026-11-05 ✓）：CI 上新证据是——画布整块就是底带的蓝 ✓
+    // 且**之后一个像素都不再变** ✓ ⇒ 只剩两种可能（修法完全不同 ✗）：
+    //   ① 文档里**有**黄色、只是**画布没重绘** ✓；
+    //   ② 笔被**完全裁掉**、文档里也**没有** ✓（对象建了、像素为零）。
+    // ⇒ **∴ 直接问文档**（拉选区那一块数"黄"像素 ✓）—— 不靠画布反推 ✓。
+    //   ⚠️ 这一步必须在**清选区之前** ✓（清完就不受约束了，问题会自己消失 ✗）。
+    let strokeLanded = null;
+    try {
+      const landed = await window.yanshiCallTool("render_region", { region: { x: 128, y: 128, w: 256, h: 256 }, raw: true }, { refresh: false });
+      const landedUrl = landed && (landed.raw_url || landed.thumb_url);
+      if (landedUrl) {
+        const bytes = new Uint8Array(await (await fetch(landedUrl)).arrayBuffer());
+        let yellow = 0;
+        let total = 0;
+        for (let i = 0; i + 3 < bytes.length; i += 4) {
+          total += 1;
+          if (bytes[i] > 180 && bytes[i + 1] > 140 && bytes[i + 2] < 160) yellow += 1;
+        }
+        strokeLanded = { yellow, total };
+      } else {
+        strokeLanded = "no-url:" + JSON.stringify(landed).slice(0, 80);
+      }
+    } catch (error) {
+      strokeLanded = "throw:" + String((error && error.message) || error).slice(0, 60);
+    }
+
     stage = "清选区";
     const clearButton = document.getElementById("clearSelection");
     if (!clearButton) throw new Error("工具栏里没有清除选区按钮");
@@ -1601,6 +1627,7 @@ const selectionResult = await evaluate(`(async () => {
       // **让「画布有没有动」自己说出来** ✓（2026-11-05 ✓）：
       // baseInk = 铺底之后画布上的墨（0 ⇒ 画布整段静止 ✓）；beforeInk／afterInk = 黄色笔前后 ✓。
       baseInk, beforeInk: inkOf(beforeStroke), afterInk: inkOf(after),
+      strokeLanded,
       // **画布到底什么颜色** ✗（2026-11-05 ✓）：CI 实测 baseInk=beforeInk=afterInk=262144
       // ⇒ 512² 的**每一个像素**都被判成「非白」✓ 而画布又**一动不动** ✓
       //   ⇒ 只报"没有墨"分不清「黑布」「透明布」与「真的没画」✗ ⇒ 取两个采样点带上 ✓。
@@ -2652,7 +2679,8 @@ if (!selectionResult || !selectionResult.ok) {
       + ` drag=${JSON.stringify(selectionResult.dragBeforeStroke)}`
       + ` tool=${JSON.stringify(selectionResult.toolAfterClickBrush)}`
       + ` blits=${JSON.stringify(selectionResult.blits)}`
-      + ` px=${JSON.stringify([selectionResult.cornerPx, selectionResult.midPx])}`;
+      + ` px=${JSON.stringify([selectionResult.cornerPx, selectionResult.midPx])}`
+      + ` landed=${JSON.stringify(selectionResult.strokeLanded)}`;
     if (outside === 0) {
       // 画布上**根本没有**黄色笔画 ⇒ 是时序/几何前提没立住（不是产品没做裁切）。
       notJudged.push("选区用例没跑起来：笔画没有落下（" + detail + "）");
