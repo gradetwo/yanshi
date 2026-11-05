@@ -433,6 +433,8 @@ const zoomCheck = await evaluate(`(async () => {
 // 曾经它声明在很后面 ✗，于是一旦那些断言真的触发就会抛 "Cannot access 'problems' before initialization" ✓，
 // 把"断言失败"变成"脚本崩溃" ✗ —— 排查代价远高于失败本身 ✓。
 const problems = [];
+// 前提不成立（不是产品红、也不是通过）的条目；收尾时用退出码 3 区分。
+const notJudged = [];
 const parsedUrl = new URL(url);
 // 服务端地址从传入的查看器地址推导：隔离运行时临时实例在别的端口上，不能写死端口。
 const origin = parsedUrl.origin;
@@ -2515,7 +2517,14 @@ if (!selectionResult || !selectionResult.ok) {
     problems.push(`选区创建/清除日志缺失：${JSON.stringify(selectionResult)}`);
   }
   if (selectionResult.inside === 0) {
-    problems.push("选区用例前置条件不成立：选区内没有笔画色");
+    const outside = selectionResult.outside || 0;
+    const detail = `inside=${selectionResult.inside} outside=${outside} created=${selectionResult.created} cleared=${selectionResult.cleared}`;
+    if (outside === 0) {
+      // 画布上**根本没有**黄色笔画 ⇒ 是时序/几何前提没立住（不是产品没做裁切）。
+      notJudged.push("选区用例没跑起来：笔画没有落下（" + detail + "）");
+    } else {
+      problems.push("选区用例前置条件不成立：选区内没有笔画色（" + detail + "）");
+    }
   }
   if (selectionResult.outside > 0) {
     problems.push(`选区外出现了笔画色：越界 ${selectionResult.outside} 个像素`);
@@ -4051,6 +4060,12 @@ if (problems.length) {
   // 而 unref 会连「超时可上报」一起破坏 ✗ ⇒ 这里显式关闭，两条路就都不依赖它 ✓。
   ws.close();
   process.exit(1);
+}
+if (notJudged.length) {
+  for (const line of notJudged) console.error(`  ⊘ ${line}`);
+  console.error("  ⊘ 有前提没立住 ⇒ 本次不算绿（退出码 3）");
+  ws.close();
+  process.exit(3);
 }
 console.log("  ✅ UI 检查通过（画布非空、几何一致、缩略图自动刷新）");
 
