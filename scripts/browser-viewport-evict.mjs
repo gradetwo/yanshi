@@ -47,6 +47,24 @@ if (!url) {
 const port = process.env.CDP_PORT || "9333";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// **★ 先给这份文档**画上内容** ✗ ★**（2026-11-05 ✓）
+//   **∴ 为什么 ✗**：判据用的是 runner 的空文档 ✓ ⇒ 画布**整块纯白** ✓
+//     ⇒ 「逐出有没有伤到像素」**无从观察**（白对白）✗ ⇒ 之前的 295→298 只是
+//     **字节采样计数的抖动**，不是画面差异 ✓。
+//   **∴ 做法** ✓：导航前用 API 落两笔（跨整个文档）⇒ 放大到 400% 后视口里一定有墨 ✓。
+{
+  const parsedUrl = new URL(url);
+  const docId = parsedUrl.searchParams.get("doc");
+  const token = parsedUrl.searchParams.get("token");
+  if (docId && token) {
+    const call = (tool, args) => fetch(`${parsedUrl.origin}/api/tools/${tool}?doc=${encodeURIComponent(docId)}&token=${encodeURIComponent(token)}`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(args || {}),
+    }).then((r) => r.json()).catch(() => ({}));
+    await call("draw_stroke", { layer_id: "layer_default", data: { points: [[80, 80], [944, 944]], size: 56, color: { r: 200, g: 30, b: 60, a: 255 } } });
+    await call("draw_stroke", { layer_id: "layer_default", data: { points: [[80, 944], [944, 80]], size: 28, color: { r: 30, g: 90, b: 200, a: 255 } } });
+  }
+}
+
 // **判据自己的坏 ⇒ 退 3**（与"产品红"分开 ✓）
 function voidRun(reason) {
   console.error(`❌ 判不了：${reason}（这不是产品问题）⇒ 退出码 3`);
@@ -210,14 +228,19 @@ const PIXEL_SUM = `(() => {
   const g = c.getContext("2d");
   if (!g) return null;
   const d = g.getImageData(0, 0, c.width, c.height).data;
-  let sum = 0, nonZero = 0;
-  for (let i = 0; i < d.length; i += 401) { sum += d[i]; if (d[i]) nonZero += 1; }
-  return { sum, nonZero, w: c.width, h: c.height };
+  // **按像素算**（每 4 字节一次）✗ 不要用 401 的步长：那样「非零」数的是**白色字节**
+  // ⇒ 空画布也有 295 个"非零" ✓，尺寸变一行就少/多几个采样 ✓（本轮实测就是这么误报的）。
+  let sum = 0, ink = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    sum += d[i] + d[i + 1] + d[i + 2];
+    if (d[i + 3] > 8 && (d[i] < 245 || d[i + 1] < 245 || d[i + 2] < 245)) ink += 1;
+  }
+  return { sum, ink, w: c.width, h: c.height };
 })()`;
 
 const before = await evaluate(PIXEL_SUM);
 if (!before) voidRun("读不到画布像素（canvas 或 2d 上下文缺失）");
-console.log(`  平移前：画布 ${before.w}×${before.h}｜采样像素和 ${before.sum}｜非零 ${before.nonZero}`);
+console.log(`  平移前：画布 ${before.w}×${before.h}｜采样像素和 ${before.sum}｜墨 ${before.ink}`);
 
 // **★★ 先放大到 400%（2026-10-15 实测修 ✓ —— 这是我漏掉的关键一步 ✗）★★**
 //
@@ -262,7 +285,7 @@ const settleSum = async () => {
   let same = 0;
   for (let i = 0; i < 60; i += 1) {
     const current = await evaluate(PIXEL_SUM);
-    if (prev && current && current.sum === prev.sum && current.nonZero === prev.nonZero) same += 1;
+    if (prev && current && current.sum === prev.sum && current.ink === prev.ink) same += 1;
     else same = 0;
     prev = current;
     if (same >= 6 && i >= 6) return current;
@@ -273,7 +296,7 @@ const settleSum = async () => {
 const baseSum = await settleSum();
 if (!baseSum) voidRun("放大之后读不到画布像素和");
 console.log(
-  `  平移前基准（**放大后** ✓）：采样像素和 ${baseSum.sum}｜非零 ${baseSum.nonZero}`,
+  `  平移前基准（**放大后** ✓）：采样像素和 ${baseSum.sum}｜墨 ${baseSum.ink}`,
 );
 
 // ③ 选中手形工具并平移 ✓
@@ -337,7 +360,7 @@ const viewFar = await evaluate("((window.yanshi || {}).state ? window.yanshi.sta
 const afterPan = await evaluate(
   "(() => { const s = window.yanshiStats || {}; return { ev: s.viewportEvictions || 0, ch: s.viewportChanges || 0 }; })()",
 );
-console.log(`  拖到远处：视口 = (${viewFar ? viewFar.x : "?"}, ${viewFar ? viewFar.y : "?"})｜视口变更 ${afterPan.ch} 次｜累计逐出 ${afterPan.ev} 块`);
+console.log(`  拖到远处：视口 = (${viewFar ? viewFar.x : "?"}, ${viewFar ? viewFar.y : "?"}) ${viewFar ? viewFar.w : "?"}×${viewFar ? viewFar.h : "?"}｜视口变更 ${afterPan.ch} 次｜累计逐出 ${afterPan.ev} 块`);
 
 for (let i = 7; i >= 0; i -= 1) {
   await send("Input.dispatchMouseEvent", {
@@ -362,19 +385,22 @@ await sleep(600);
 // 移回来之后**等稳定**再比（异步渲染可能还在上屏）。
 const backSum = await settleSum();
 if (!backSum) voidRun("移回来之后读不到画布像素");
-console.log(`  移回后：采样像素和 ${backSum.sum}｜非零 ${backSum.nonZero}`);
+console.log(`  移回后：采样像素和 ${backSum.sum}｜墨 ${backSum.ink}`);
 
 const fails = [];
 // **★ 视口是否真的动了（读状态，最直接 ✓）★**
 const viewAfter = await evaluate("((window.yanshi || {}).state ? window.yanshi.state().viewport : null)");
 // **「动了」看拖远那一刻**；「回到原位」看松手后 ✓（两件事，别混）。
 const moved = !!viewFar && (viewFar.x !== viewBefore.x || viewFar.y !== viewBefore.y);
-const restored = !!viewAfter && viewAfter.x === viewBefore.x && viewAfter.y === viewBefore.y;
-console.log(`  松手后视口 = (${viewAfter ? viewAfter.x : "?"}, ${viewAfter ? viewAfter.y : "?"})｜拖远时动了 = ${moved}｜回到原位 = ${restored}`);
+const restored = !!viewAfter && viewAfter.x === viewBefore.x && viewAfter.y === viewBefore.y
+  && viewAfter.w === viewBefore.w && viewAfter.h === viewBefore.h;
+console.log(`  松手后视口 = (${viewAfter ? viewAfter.x : "?"}, ${viewAfter ? viewAfter.y : "?"}) ${viewAfter ? viewAfter.w : "?"}×${viewAfter ? viewAfter.h : "?"}｜拖远时动了 = ${moved}｜回到原位（含尺寸）= ${restored}`);
 
 // **⓪ 手势必须真的往返** ✓：回不去 ⇒ 后面的像素比对没有意义（先修驱动/或判产品累计取整）。
 if (!restored) {
-  fails.push(`拖回后视口没有回到原位（before=(${viewBefore.x},${viewBefore.y}) after=(${viewAfter ? viewAfter.x : "?"},${viewAfter ? viewAfter.y : "?"})）⇒ ② 的像素比对无效`);
+  fails.push(`拖回后视口没有回到原位（before=(${viewBefore.x},${viewBefore.y}) ${viewBefore.w}×${viewBefore.h}`
+    + ` after=(${viewAfter ? viewAfter.x : "?"},${viewAfter ? viewAfter.y : "?"}) ${viewAfter ? viewAfter.w : "?"}×${viewAfter ? viewAfter.h : "?"}）`
+    + `⇒ ② 的像素比对无效（平移不应改变视口尺寸/位置）`);
 }
 
 // **① 确实逐出** ✓
@@ -390,10 +416,12 @@ if (!moved) {
   );
 }
 // **② 回来之后画面一致** ✓
-if (baseSum.sum !== backSum.sum) {
+if (baseSum.w !== backSum.w || baseSum.h !== backSum.h) {
+  fails.push(`平移前后画布尺寸不同（${baseSum.w}×${baseSum.h} → ${backSum.w}×${backSum.h}）⇒ 像素比对无效（判据必须同尺寸）`);
+} else if (baseSum.sum !== backSum.sum) {
   fails.push(
     `② **平移回来之后画面变了** ✗：像素和 ${baseSum.sum} → ${backSum.sum}` +
-      `（非零 ${baseSum.nonZero} → ${backSum.nonZero}）⇒ 逐出把**还要用的** tile 扔了 ✗（抖动）` +
+      `（墨 ${baseSum.ink} → ${backSum.ink}）⇒ 逐出把**还要用的** tile 扔了 ✗（抖动）` +
       `（基准取在**放大之后、平移之前** ✓ —— 放大本身会改变像素和 ✗）`,
   );
 }
