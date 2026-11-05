@@ -2908,6 +2908,15 @@ function afterMutation(atomId, options = {}) {
     // **有脏区就只补脏区** ✓（提交响应本来就给了 ✓，此前丢掉不用 ✗、一律整视口 ✓）。
     queueServerBlit(options.dirtyBox || null);
   }
+  // **「这次提交有没有被画布看见」要可观测**（2026-11-05）：CI 上「文档里有像素、画布没变」
+  // 只能靠猜（猜了四轮）⇒ 记三个事实：门控（要不要服务端像素）、补画用的盒子、
+  // 空白保护丢了几次。只记最后一次（流水在 `blitLog`）。
+  window.yanshiStats.lastPaintAfterCommit = {
+    needsServerPixels: !!needsServerPixels,
+    blitBox: needsServerPixels ? (options.dirtyBox || null) : null,
+    blankSkipped: window.yanshiStats.blankBlitsSkipped || 0,
+    at: Math.round(performance.now()),
+  };
   scheduleThumbRefresh();
   void refreshHistory();
 }

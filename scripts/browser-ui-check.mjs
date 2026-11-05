@@ -1628,6 +1628,9 @@ const selectionResult = await evaluate(`(async () => {
       // baseInk = 铺底之后画布上的墨（0 ⇒ 画布整段静止 ✓）；beforeInk／afterInk = 黄色笔前后 ✓。
       baseInk, beforeInk: inkOf(beforeStroke), afterInk: inkOf(after),
       strokeLanded,
+      // **提交之后画布有没有被要求重画** ✓（2026-11-05 ✓）：CI 上"文档里有黄像素、画布没变"✓
+      // ⇒ 到底是"没要求补画"还是"要求了但被空白保护丢掉"✗ ⇒ 这一格直接回答 ✓。
+      paintAfterCommit: (window.yanshiStats || {}).lastPaintAfterCommit || null,
       // **画布到底什么颜色** ✗（2026-11-05 ✓）：CI 实测 baseInk=beforeInk=afterInk=262144
       // ⇒ 512² 的**每一个像素**都被判成「非白」✓ 而画布又**一动不动** ✓
       //   ⇒ 只报"没有墨"分不清「黑布」「透明布」与「真的没画」✗ ⇒ 取两个采样点带上 ✓。
@@ -2680,7 +2683,8 @@ if (!selectionResult || !selectionResult.ok) {
       + ` tool=${JSON.stringify(selectionResult.toolAfterClickBrush)}`
       + ` blits=${JSON.stringify(selectionResult.blits)}`
       + ` px=${JSON.stringify([selectionResult.cornerPx, selectionResult.midPx])}`
-      + ` landed=${JSON.stringify(selectionResult.strokeLanded)}`;
+      + ` landed=${JSON.stringify(selectionResult.strokeLanded)}`
+      + ` paint=${JSON.stringify(selectionResult.paintAfterCommit)}`;
     if (outside === 0) {
       // 画布上**根本没有**黄色笔画 ⇒ 是时序/几何前提没立住（不是产品没做裁切）。
       notJudged.push("选区用例没跑起来：笔画没有落下（" + detail + "）");

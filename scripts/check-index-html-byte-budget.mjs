@@ -69,7 +69,10 @@ import { execFileSync } from "node:child_process";
 //   `redoable_gestures` 也读进来（原来只有点过重做才写，重做那一格永远是「—」）。
 //   947,033→947,882（+849 B：助手 420 B、注释 250 B、重做两行 180 B；已压过两稿）
 //   ⇒ 上界 948,000→950,000（+2,000，留 2,118 B 余量）。
-const CEILING = 950_000;
+// 2026-11-05（诊断）：`afterMutation` 记录 `yanshiStats.lastPaintAfterCommit`（门控／补画盒子／
+//   空白丢弃次数）⇒ ui-check 的失败信息能区分「没要求补画」与「补画被丢」⇒ 950,000→951,500。
+//   **∴ 这是临时诊断** ✗：那条 CI-only 重绘缺陷修好后应当删掉，并把上界降回去。
+const CEILING = 951_500;
 
 const failures = [];
 const check = (ok, label, detail) => {

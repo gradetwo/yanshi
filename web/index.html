@@ -5121,6 +5121,15 @@ function afterMutation(atomId, options = {}) {
     // **有脏区就只补脏区** ✓（提交响应本来就给了 ✓，此前丢掉不用 ✗、一律整视口 ✓）。
     queueServerBlit(options.dirtyBox || null);
   }
+  // **「这次提交有没有被画布看见」要可观测**（2026-11-05）：CI 上「文档里有像素、画布没变」
+  // 只能靠猜（猜了四轮）⇒ 记三个事实：门控（要不要服务端像素）、补画用的盒子、
+  // 空白保护丢了几次。只记最后一次（流水在 `blitLog`）。
+  window.yanshiStats.lastPaintAfterCommit = {
+    needsServerPixels: !!needsServerPixels,
+    blitBox: needsServerPixels ? (options.dirtyBox || null) : null,
+    blankSkipped: window.yanshiStats.blankBlitsSkipped || 0,
+    at: Math.round(performance.now()),
+  };
   scheduleThumbRefresh();
   void refreshHistory();
 }
@@ -12652,7 +12661,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-2798950087920")
+      caches.open("yanshi-shell-3468734539215")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));
