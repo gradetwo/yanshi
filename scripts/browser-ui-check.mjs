@@ -1660,6 +1660,7 @@ const selectionResult = await evaluate(`(async () => {
       lastResync: (window.yanshiStats || {}).lastResync || null,
       lastKernelCommit: (window.yanshiStats || {}).lastKernelCommit || null,
       sizeBoardClears: (window.yanshiStats || {}).sizeBoardClears || 0,
+      kernelCommitLog: ((window.yanshiStats || {}).kernelCommitLog || []).slice(-4),
       lastSizeBoardClear: (window.yanshiStats || {}).lastSizeBoardClear || null,
       commitShapeCalls: (window.yanshiStats || {}).commitShapeCalls || 0,
       // **画布到底什么颜色** ✗（2026-11-05 ✓）：CI 实测 baseInk=beforeInk=afterInk=262144
@@ -4278,6 +4279,7 @@ if (notJudged.length) {
       resync: selectionResult.lastResync, kcommit: selectionResult.lastKernelCommit,
       commitShapeCalls: selectionResult.commitShapeCalls, stage: selectionResult.stage,
       clears: selectionResult.sizeBoardClears, lastClear: selectionResult.lastSizeBoardClear,
+      kcommits: selectionResult.kernelCommitLog,
     }));
   }
   const brief = notJudged.map((line) => String(line).slice(0, 90)).join("；");

@@ -10841,11 +10841,17 @@ board.addEventListener("pointerup", async (event) => {
     const committed = JSON.parse(state.kernel.commit_preview(JSON.stringify(atom)));
     // **内核到底收没收这一笔**（2026-11-05）：CI 上画布逐像素不变 ⇒ 要么内核没收（head 不涨），
     // 要么收了但脏区画出来是旧像素。这三格直接回答，不再猜。
-    window.yanshiStats.lastKernelCommit = {
+    const __kc = {
       at: Math.round(performance.now()), ok: !!committed.ok, seq: committed.seq ?? null,
       headBefore, hasBox: !!(committed.report && committed.report.dirty_bbox),
       box: (committed.report && committed.report.dirty_bbox) || null,
     };
+    window.yanshiStats.lastKernelCommit = __kc;
+    // **留最近 4 次的流水**（2026-11-05）：只记最后一次时，后一笔会把前一笔盖掉 ✓
+    // ⇒ **∴ 选区那一笔的 kcommit 永远看不到** ✓（CI 两次实测都是这样 ✗）⇒ 记一小段环形缓冲 ✓。
+    const __kcl = (window.yanshiStats.kernelCommitLog = window.yanshiStats.kernelCommitLog || []);
+    __kcl.push(__kc);
+    if (__kcl.length > 4) __kcl.shift();
     if (committed.ok) {
       state.localSeq = committed.seq;
       window.yanshiStats.kernelHead = committed.seq;
