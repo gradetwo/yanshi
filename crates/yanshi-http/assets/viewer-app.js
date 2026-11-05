@@ -11021,6 +11021,14 @@ async function commitShape() {
     //     ⇒ **∴ 判据验证** ✓：第二笔后 sum 立即变化 ✓、resyncs≥1 ✓。
     await refreshPreview();
     await resync();
+    // **★ 有选区时这一笔是文档侧裁的 ⇒ 画布要补一次权威像素**（2026-11-05）
+    //   CI 实测：文档里有 8176 个黄像素、画布没变、且一次补画请求都没发
+    //   ⇒ 本地乐观渲染不带裁切口径（照内核画整条线，落盘的却是裁过的那段）。
+    //   ⇒ 有选区就在提交后补一块（render_region；PWA 里由本地层按原子日志渲染，带裁切）。
+    //   **不改 `needsServerPixels`**：那会把整场会话都推到服务端像素，代价太大。
+    if (state.selectionId || state.selectionShape) {
+      await queueServerBlit(null, { allowBlank: true });
+    }
   } else if (state.tool === "erase") {
     if (state.points.length < 2) return;
     await callToolChecked("erase", {
