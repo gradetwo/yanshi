@@ -1495,7 +1495,17 @@ const selectionResult = await evaluate(`(async () => {
     const clearButton = document.getElementById("clearSelection");
     if (!clearButton) throw new Error("工具栏里没有清除选区按钮");
     clearButton.click();
-    await new Promise((r) => setTimeout(r, 900));
+    // **等「选区真的没了」再画** ✗（2026-11-05 ✓）：清选区是异步的；没清掉就画 y=0.9
+    // ⇒ 仍被选区裁掉 ⇒ clearedOutside 恒 0（本地能过、CI 偶发不过）。
+    let selAfterClear = null;
+    for (let i = 0; i < 40; i += 1) {
+      try {
+        const ls = await window.yanshiCallTool("list_selections", {});
+        selAfterClear = ((ls && ls.selections) || []).length;
+        if (selAfterClear === 0) break;
+      } catch (_) { selAfterClear = null; }
+      await new Promise((r) => setTimeout(r, 150));
+    }
     // **清除之后必须**再画一笔，否则 "clearedOutside" 必然为 0（第 301 轮更正）：
     // 清除选区**不可能**让先前被裁掉的墨"追溯地"出现 —— 那些像素从来没被画上去。
     // 旧版清完就直接测量 ⇒ 断言永远不成立（**判据自己错了**，不是产品）。
@@ -1560,6 +1570,7 @@ const selectionResult = await evaluate(`(async () => {
       doc: (window.yanshi.state() || {}).docSize || null,
       selectionCount, selAfterCreate, objectsAfterStroke,
       toolAfterClickBrush: (window.yanshi && window.yanshi.state) ? window.yanshi.state().tool : null,
+      selAfterClear,
       created: log.includes("已创建选区"),
       cleared: log.includes("已清除选区"),
       // 用「立刻读」的那一份判；同时带上「末尾读」的结果 ⇒ 两者不同即证明是被清掉的。
