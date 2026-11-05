@@ -1387,6 +1387,15 @@ const selectionResult = await evaluate(`(async () => {
     };
     document.getElementById("zoomFit").click();
     await wait(800);
+    // **等画布真有尺寸再建选区/落笔** ✗（2026-11-05 ✓）：CI 上布局比本机慢 ✓，
+    // 若此刻 board 还是 0×0，选区 bbox 会退化成空框 ⇒ **整笔被裁掉**（实测
+    // inside=0 且 outside=0 ✓ 不是产品没裁 ✓）。最多等 10 秒。
+    stage = "等画布尺寸";
+    for (let i = 0; i < 40; i++) {
+      const r = board.getBoundingClientRect();
+      if (board.width >= 64 && board.height >= 64 && r.width >= 32 && r.height >= 32) break;
+      await wait(250);
+    }
 
     stage = "铺底";
     document.getElementById("color").value = "#1f6feb";
@@ -1497,8 +1506,16 @@ const selectionResult = await evaluate(`(async () => {
     document.querySelector('button[data-tool="brush"]').click();
 
     const log = document.getElementById("log").innerText;
+    let selectionCount = null;
+    try {
+      const listedSel = await window.yanshiCallTool("list_selections", {});
+      selectionCount = ((listedSel && listedSel.selections) || []).length;
+    } catch (_) { selectionCount = "throw"; }
     return {
       ok: true, inside, outside, clearedOutside, textChanged,
+      canvas: { w: board.width, h: board.height },
+      doc: (window.yanshi.state() || {}).docSize || null,
+      selectionCount,
       created: log.includes("已创建选区"),
       cleared: log.includes("已清除选区"),
       // 用「立刻读」的那一份判；同时带上「末尾读」的结果 ⇒ 两者不同即证明是被清掉的。
@@ -2518,7 +2535,9 @@ if (!selectionResult || !selectionResult.ok) {
   }
   if (selectionResult.inside === 0) {
     const outside = selectionResult.outside || 0;
-    const detail = `inside=${selectionResult.inside} outside=${outside} created=${selectionResult.created} cleared=${selectionResult.cleared}`;
+    const detail = `inside=${selectionResult.inside} outside=${outside} created=${selectionResult.created}`
+      + ` cleared=${selectionResult.cleared} canvas=${JSON.stringify(selectionResult.canvas)}`
+      + ` doc=${JSON.stringify(selectionResult.doc)} selections=${JSON.stringify(selectionResult.selectionCount)}`;
     if (outside === 0) {
       // 画布上**根本没有**黄色笔画 ⇒ 是时序/几何前提没立住（不是产品没做裁切）。
       notJudged.push("选区用例没跑起来：笔画没有落下（" + detail + "）");
