@@ -11,6 +11,7 @@
 //      doc_id/actor/session ∪ 笔刷规范名（list_brushes 的 canonical_param_names，
 //      动态取）∪ 四组语义别名 hand_jitter/speed_gain/color_variance/smudge_amount
 //      ∪ 工具名 ∪ 判据内显式 allowlist）；任一名字无处可落 ⇒ 红，并报工具名与位置。
+//      （两级帮助：语料取自 `GET /api/tools/{name}` 的完整契约，不是精简清单。）
 //   ② brush_params 全规范名试传：66 个规范名（动态取）+ 4 个语义别名，逐个经
 //      brush_stroke 的 brush_params 试传 ⇒ 都不再报"没有这个规范名"（直接证明
 //      校验接受集与文案口径一致；ok:true 为接受，零墨等其它失败也算接受——
@@ -171,6 +172,20 @@ const main = async () => {
     console.error("❌ 判不了：GET /api/tools 没给工具清单 => 退出码 3");
     process.exit(3);
   }
+  // **两级帮助**：清单只发一句话摘要 + 裁剪版参数面，完整描述走详情路由
+  // `GET /api/tools/{name}`（与 `yanshi_help` 的 `names` 模式同一形状）⇒
+  // 普查语料改从详情逐个取；名字与参数名集合仍从清单取（精简清单里这两样都在）。
+  const details = [];
+  for (const t of tools) {
+    const d = await fetch(`${base}/api/tools/${encodeURIComponent(t.name)}`)
+      .then((r) => r.json())
+      .catch(() => null);
+    if (!d || d.name !== t.name) {
+      console.error(`❌ 判不了：GET /api/tools/${t.name} 没给完整契约 => 退出码 3`);
+      process.exit(3);
+    }
+    details.push(d);
+  }
   const toolNames = new Set(tools.map((t) => t?.name));
   // **全表参数名集合**（他工具参数类）。
   const allParams = new Map();
@@ -211,7 +226,7 @@ const main = async () => {
     if (allow) return `allowlist:${allow}`;
     return null;
   };
-  for (const t of tools) {
+  for (const t of details) {
     const ownParams = new Set(Object.keys(t?.inputSchema?.properties ?? {}));
     const descs = [{ where: "summary", text: String(t?.description ?? "") }];
     collectDescriptions(t?.inputSchema, "inputSchema", descs);
@@ -260,7 +275,7 @@ const main = async () => {
       `③ 期 1 工具 ${name} 在工具清单里`,
     );
     if (stat) {
-      const tool = tools.find((t) => t?.name === name);
+      const tool = details.find((t) => t?.name === name);
       const descLen = String(tool?.description ?? "").length;
       check(
         stat.unclassified.length === 0 && descLen > 0,
@@ -268,7 +283,7 @@ const main = async () => {
       );
     }
   }
-  const brushStroke = tools.find((t) => t?.name === "brush_stroke");
+  const brushStroke = details.find((t) => t?.name === "brush_stroke");
   const bpDesc = String(
     brushStroke?.inputSchema?.properties?.brush_params?.description ?? "",
   );

@@ -867,8 +867,10 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
             //
             // **为什么必须有** ✗：外部绘画 agent 实测——HTTP 侧**没有**任何工具清单 ✓、
             // `docs/tools.md` 是设计散文（没有参数表 ✗）⇒ 它只能去读 **11,834 行** `tools.rs` 拿参数名 ✗；
-            // 而同一个引擎的 MCP `tools/list` **明明有** 58 个工具 + 完整 `inputSchema` ✓
+            // 而同一个引擎的 MCP `tools/list` **明明有**全部工具的清单 ✓
             // ⇒ 这是"Web 与 MCP 不一致"里最贵的一条 ✓。
+            // （两级帮助：清单只发一句话摘要 + 裁剪版参数面，完整契约走 `yanshi_help` 或
+            // `GET /api/tools/{name}`。）
             // **清单与 MCP 逐字相同** ✓：都调 `ToolRegistry::tools_list_json` ✓（在 yanshi-server 里 ✓）
             // ⇒ **一处定义、两处使用** ✗（各写一份必然漂移 ✓）。
             "GET" => match tools_list_query(request) {
@@ -1161,7 +1163,11 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
     if let Some(name) = path.strip_prefix("/api/tools/") {
         return match method {
             "POST" => tool_call(state, request, name),
-            _ => method_not_allowed(request, "POST"),
+            // **两级帮助**：同一路径、按方法分流 —— POST 是工具调用（`?doc=` 定文档），
+            // GET 是工具详情（完整契约，与 `yanshi_help` 的 `names` 模式同一形状；
+            // 不需要 doc/token，与 `GET /api/tools` 清单同口径）。
+            "GET" => tool_detail(state, name),
+            _ => method_not_allowed(request, "POST, GET"),
         };
     }
     if path == "/ws" {
@@ -2871,6 +2877,24 @@ fn tool_route(state: &ServerState, request: &Request) -> Response {
     tool_call_with(state, request, &name, arguments)
 }
 
+/// **工具详情（两级帮助的第二级，HTTP 面）**：`GET /api/tools/{name}`。
+///
+/// 返回该工具的**完整契约**（完整 summary + 完整 inputSchema + 示例），与 MCP
+/// `yanshi_help` 的 `names` 模式同一形状（测试钉死两者逐字一致）。
+/// 与 `POST /api/tools/{name}`（工具调用）同一路径、按方法分流，不冲突；
+/// 与 `GET /api/tools` 清单同口径：不需要 `doc` 与 token（详情与文档无关）。
+/// 未知名字 ⇒ 404 + 最接近的候选（与 `explain_tool` 同一套候选逻辑，不静默 200 空对象）。
+fn tool_detail(state: &ServerState, name: &str) -> Response {
+    let _ = state; // 详情只读注册表，不需要工作区状态
+    match yanshi_server::tools::tool_full_value(name) {
+        Some(value) => Response::json(200, &value),
+        None => crate::http::not_found(format!(
+            "没有工具叫 `{name}` ⇒ 最接近的候选：{} ⇒ 要看全部用 `GET /api/tools` 的精简清单",
+            yanshi_server::tools::nearest_tool_names(name).join("／")
+        )),
+    }
+}
+
 fn tool_call(state: &ServerState, request: &Request, name: &str) -> Response {
     let arguments = match request.json() {
         Ok(value) => value,
@@ -4519,6 +4543,10 @@ pub fn routes() -> BTreeMap<&'static str, &'static str> {
         ("GET /api/documents/{id}", "文档摘要（需 token）"),
         ("DELETE /api/documents/{id}", "关闭文档（需 token）"),
         ("POST /api/tools/{name}?doc=", "工具调用（需 token）"),
+        (
+            "GET /api/tools/{name}",
+            "工具详情（完整参数面与示例，与 yanshi_help 的 names 模式一致）",
+        ),
         ("POST /api/tools", "工具调用（body 里带 tool）"),
         (
             "GET /api/diagnostics?doc=",
@@ -4867,6 +4895,67 @@ mod tests {
         assert!(
             value["profiles"].is_array(),
             "清单里应当带 profiles：{value}"
+        );
+    }
+
+    /// **两级帮助：HTTP 详情与 `yanshi_help` 是同一份完整契约** ✓。
+    ///
+    /// **判据**：① `GET /api/tools/{name}` 回 200，内容 == `tool_full_value(name)`（逐字一致是
+    /// 结构性的：详情与 `yanshi_help` 调同一个函数）；② 详情的 description 是完整 summary、
+    /// 带 example、带长参数描述 —— 与清单里的精简条目（摘要、无 example）逐项不同；
+    /// ③ 未知名字 ⇒ 404 + 最接近的候选（不静默 200 空对象）；④ 详情不需要 doc/token。
+    #[test]
+    fn tool_detail_matches_yanshi_help_full_contract() {
+        let state = state();
+        let detail = route(&state, &request("GET", "/api/tools/brush_stroke"));
+        assert_eq!(detail.status, 200, "GET /api/tools/brush_stroke 必须可用");
+        let body = body_json(&detail);
+        let expected =
+            yanshi_server::tools::tool_full_value("brush_stroke").expect("brush_stroke 有完整契约");
+        assert_eq!(
+            body, expected,
+            "HTTP 详情必须 == tool_full_value（与 yanshi_help 同源）"
+        );
+        assert!(
+            body["description"]
+                .as_str()
+                .unwrap_or("")
+                .contains("MyPaint"),
+            "详情的 description 必须是完整 summary"
+        );
+        assert!(body.get("example").is_some(), "详情必须带 example");
+        assert!(
+            body["inputSchema"]["properties"]["brush_params"]["description"].is_string(),
+            "详情必须带 brush_params 的长描述"
+        );
+        // 同一工具在清单里是精简条目：摘要、更短、无 example。
+        let listed = route(&state, &request("GET", "/api/tools"));
+        let slim = body_json(&listed)["tools"]
+            .as_array()
+            .expect("tools 是数组")
+            .iter()
+            .find(|tool| tool["name"] == "brush_stroke")
+            .expect("清单里有 brush_stroke")
+            .clone();
+        assert!(
+            slim["description"].as_str().unwrap_or("").chars().count() <= 120,
+            "清单条目必须是摘要：{}",
+            slim["description"]
+        );
+        assert!(slim.get("example").is_none(), "清单条目不许带 example");
+        assert!(
+            serde_json::to_string(&slim).expect("序列化").len()
+                < serde_json::to_string(&body).expect("序列化").len(),
+            "清单条目必须严格短于详情"
+        );
+        // 未知名字 ⇒ 404 + 候选。
+        let unknown = route(&state, &request("GET", "/api/tools/frobnicate_canvas"));
+        assert_eq!(unknown.status, 404, "未知工具名必须 404");
+        assert!(
+            serde_json::to_string(&body_json(&unknown))
+                .expect("序列化")
+                .contains("最接近的候选"),
+            "404 正文要列出最接近的候选"
         );
     }
 
@@ -5555,6 +5644,7 @@ mod tests {
     fn routes_table_and_helpers() {
         let table = routes();
         assert!(table.contains_key("GET /ws?doc=&token="));
+        assert!(table.contains_key("GET /api/tools/{name}"));
         assert!(owner_from_role(Role::Owner));
         assert!(!owner_from_role(Role::Editor));
         assert!(HttpOptions::help().contains("yanshi-serve"));

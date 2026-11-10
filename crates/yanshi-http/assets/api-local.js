@@ -821,6 +821,7 @@ const P2_TOOL_SPECS = {
   vector_erase: [1, [["layer_id","s",1],["points","a",1],["radius","n",1]]],
   vector_hit_test: [0, [["layer_id","s",1],["x","n",1],["y","n",1],["tolerance","n",0]]],
   verify_package: [0, [["path","s",1]]],
+  yanshi_help: [0, [["names","a",0],["topic","s",0],["full","b",0]]],
 // </gen:tool-specs>
 };
 /** **测试专用**：返回嵌入的工具表（判据拿它与服务端清单逐项比对 ✓）。 */

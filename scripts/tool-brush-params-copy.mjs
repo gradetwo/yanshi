@@ -133,19 +133,13 @@ const main = async () => {
     r3?.ok !== true && d3.includes("layer_id") && d3.includes("based_on"),
     `③ try_stroke 缺 layer_id ⇒ 报错同时提到 layer_id 与 based_on（实测 ${d3.slice(0, 120)}）`,
   );
-  let listed;
-  try {
-    listed = await (await fetch(`${base}/api/tools`)).json();
-  } catch (error) {
-    console.error(`❌ 判不了：GET /api/tools 失败（${error}）=> 退出码 3`);
-    process.exit(3);
-  }
-  const tools = listed?.tools ?? [];
-  if (!Array.isArray(tools) || tools.length === 0) {
-    console.error("❌ 判不了：GET /api/tools 没给工具清单 => 退出码 3");
-    process.exit(3);
-  }
-  const tryStroke = tools.find((t) => t?.name === "try_stroke");
+  // **两级帮助**：参数描述的完整版走详情路由 `GET /api/tools/{name}`
+  //（精简清单里长描述被裁掉，读清单会拿到空串 ⇒ 误判）。
+  const fetchToolDetail = async (name) =>
+    await fetch(`${base}/api/tools/${name}`)
+      .then((r) => r.json())
+      .catch(() => null);
+  const tryStroke = await fetchToolDetail("try_stroke");
   const layerDesc = String(
     tryStroke?.inputSchema?.properties?.layer_id?.description ?? "",
   );
@@ -154,13 +148,13 @@ const main = async () => {
     `③ schema 里 try_stroke.layer_id 说明提到 based_on（实测 ${layerDesc.slice(0, 120) || "（空）"}）`,
   );
 
-  // **④ tools/list 里 brush_params 描述不再出现 dabs_per_radius**。
-  const brushStroke = tools.find((t) => t?.name === "brush_stroke");
+  // **④ 详情里 brush_params 描述不再出现 dabs_per_radius**。
+  const brushStroke = await fetchToolDetail("brush_stroke");
   const bpDesc = String(
     brushStroke?.inputSchema?.properties?.brush_params?.description ?? "",
   );
   if (!bpDesc) {
-    console.error("❌ 判不了：tools/list 里没找到 brush_stroke.brush_params 描述 => 退出码 3");
+    console.error("❌ 判不了：详情里没找到 brush_stroke.brush_params 描述 => 退出码 3");
     process.exit(3);
   }
   check(

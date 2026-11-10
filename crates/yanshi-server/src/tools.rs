@@ -34,7 +34,7 @@ use crate::timings::{CommitPhases, Phase, ToolTimings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// 核心层：默认注册（141 个）。
+    /// 核心层：默认注册（142 个）。
     Core,
     /// 历史与检查点。
     History,
@@ -895,7 +895,7 @@ fn parse_non_negative(
 }
 
 impl ToolRegistry {
-    /// 核心层（默认注册，141 个）。
+    /// 核心层（默认注册，142 个）。
     pub fn core() -> Self {
         Self::with_profiles(&[Profile::Core])
     }
@@ -968,19 +968,12 @@ impl ToolRegistry {
     }
 
     /// 单个工具的清单条目（`tools_list_json` 与 `tools_list_filtered` 共用）。
+    ///
+    /// **精简发现（两级帮助）**：只给名字 + 一句话摘要 + 裁剪版 inputSchema，
+    /// 不带完整参数面描述、不带 `example`。完整契约走 `yanshi_help`（`names`）
+    /// 或 HTTP `GET /api/tools/{name}`（见 `tool_full_value`）。
     fn tool_list_value(&self, tool: &ToolSpec) -> Value {
-        let mut value = self
-            .input_schema(tool.name)
-            .unwrap_or_else(|| json!({"name": tool.name}));
-        // **每个工具的可复制调用示例**（目标第 6 条）：直接给成 JSON **对象**
-        //（客户端拿去就能当 `arguments` 用）。来源是 `TOOL_EXAMPLES`，
-        // 而它由测试保证**只使用该工具声明过的参数名**（见本文件末尾的测试）。
-        if let Some((_, example)) = TOOL_EXAMPLES.iter().find(|(name, _)| *name == tool.name) {
-            if let Ok(parsed) = serde_json::from_str::<Value>(example) {
-                value["example"] = parsed;
-            }
-        }
-        value
+        slim_tool_value(tool)
     }
 
     /// **工具清单 JSON（带查询）** —— `tools_list_json` 的过滤版。
@@ -1082,7 +1075,8 @@ impl ToolRegistry {
                 ErrorContext::detail(format!(
                     "未知工具 {name} —— 可能是拼错，也可能是它所属的组**没有启用** ✓。\
                      当前启用的组：{}。\
-                     要看**完整清单与参数** ⇒ HTTP `GET /api/tools`，或 MCP `tools/list` ✓；\
+                     要看清单 ⇒ HTTP `GET /api/tools`，或 MCP `tools/list`（精简发现）；\
+                     要某工具的完整参数面与示例 ⇒ `yanshi_help` 或 `GET /api/tools/{{name}}`；\
                      要用上全部已实现的组 ⇒ 启动时给 `--profile all` ✓",
                     self.profiles()
                         .iter()
@@ -1432,6 +1426,79 @@ fn input_schema(tool: &ToolSpec) -> Value {
             "additionalProperties": false,
         }
     })
+}
+
+/// **两级帮助的裁剪口径**（director-desk `conciseSchema` 同款规则）：
+/// 递归删掉 schema 里超过 240 **字符**的 `description`（按 `chars().count()`，
+/// 不是字节 —— JS 的 `.length` 里一个汉字算 1 个字符，Rust 的 `.len()` 会算 3 个字节）。
+/// **只缩短文案，不改校验约束**：`type`／`required`／`additionalProperties` 一位不动。
+fn trim_long_descriptions(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            if let Some(Value::String(description)) = map.get("description") {
+                if description.chars().count() > 240 {
+                    map.remove("description");
+                }
+            }
+            for (_, child) in map.iter_mut() {
+                trim_long_descriptions(child);
+            }
+        }
+        Value::Array(items) => {
+            for child in items.iter_mut() {
+                trim_long_descriptions(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 一句话摘要查表（`TOOL_SHORT_SUMMARIES`）。没有表项时返回 `None`，
+/// 调用方回落到完整 `summary`（不断链；缺表项由测试钉死，不是静默降级）。
+fn short_summary(name: &str) -> Option<&'static str> {
+    TOOL_SHORT_SUMMARIES
+        .iter()
+        .find(|(tool, _)| *tool == name)
+        .map(|(_, summary)| *summary)
+}
+
+/// 单个工具的**精简发现条目**（`tool_list_value` 与 `yanshi_help` 的 `full: false` 共用，
+/// 同一形状只写一处）：名字 + 一句话摘要 + 裁剪版 inputSchema。
+/// inputSchema 里顶层的 `description` 是完整 summary 的复本，精简清单里不要它
+/// （条目级 `description` 已经是那句摘要）。
+fn slim_tool_value(tool: &ToolSpec) -> Value {
+    let mut value = input_schema(tool);
+    value["description"] = json!(short_summary(tool.name).unwrap_or(tool.summary));
+    if let Some(schema) = value.get_mut("inputSchema") {
+        if let Some(object) = schema.as_object_mut() {
+            object.remove("description");
+        }
+        trim_long_descriptions(schema);
+    }
+    value
+}
+
+/// 单个工具的**完整契约**（`yanshi_help` 的 `names` 模式与 HTTP `GET /api/tools/{name}` 共用，
+/// 同一形状只写一处）。
+///
+/// 形状与旧的 `tools/list` 条目**完全相同**（名字 + 完整 summary + 完整 inputSchema + 示例）⇒
+/// 读完整描述的判据改走这里之后，语料与旧清单逐字一致，不必改分类逻辑。
+/// 查的是 `ALL_TOOLS`（与 `explain_tool` 同口径：只读说明，不看会话启用了哪些组；
+/// 能不能调以 `tools/list` 的 `profiles` 字段与调用时的报错为准）。
+pub fn tool_full_value(name: &str) -> Option<Value> {
+    let tool = tools_registry::ALL_TOOLS
+        .iter()
+        .find(|tool| tool.name == name)?;
+    let mut value = input_schema(tool);
+    // **每个工具的可复制调用示例**（目标第 6 条）：直接给成 JSON **对象**
+    //（客户端拿去就能当 `arguments` 用）。来源是 `TOOL_EXAMPLES`，
+    // 而它由测试保证**只使用该工具声明过的参数名**（见本文件末尾的测试）。
+    if let Some((_, example)) = TOOL_EXAMPLES.iter().find(|(n, _)| *n == name) {
+        if let Ok(parsed) = serde_json::from_str::<Value>(example) {
+            value["example"] = parsed;
+        }
+    }
+    Some(value)
 }
 
 // ---------------------------------------------------------------------------
@@ -2336,6 +2403,7 @@ fn dispatch_inner(spec: &ToolSpec, ctx: &mut ToolContext<'_>, args: &Value) -> R
         "list_layers" => read_list_layers(ctx),
         "describe_canvas" => read_describe_canvas(ctx),
         "explain_tool" => read_explain_tool(ctx, args),
+        "yanshi_help" => read_yanshi_help(ctx, args),
         "list_objects" => read_list_objects(ctx, args),
         "get_object" => read_get_object(ctx, args),
         "get_path" => read_get_path(ctx, args),
@@ -3401,6 +3469,29 @@ fn read_memory_status(ctx: &mut ToolContext<'_>) -> Result<Value> {
     Ok(json!({ "memory_status": status }))
 }
 
+/// 给错工具名时列出最接近的 3 个候选（`explain_tool`、`yanshi_help` 与 HTTP 工具详情共用，
+/// 同一逻辑只写一处）：子串/包含/按 `_` 分段命中，命中为空时取注册表前 3 个。
+pub fn nearest_tool_names(name: &str) -> Vec<&'static str> {
+    let specs = tools_registry::ALL_TOOLS;
+    let lowered = name.to_lowercase();
+    let mut near: Vec<&'static str> = specs
+        .iter()
+        .map(|spec| spec.name)
+        .filter(|candidate| {
+            candidate.contains(lowered.as_str())
+                || lowered.contains(*candidate)
+                || candidate
+                    .split('_')
+                    .any(|part| !part.is_empty() && lowered.contains(part))
+        })
+        .take(3)
+        .collect();
+    if near.is_empty() {
+        near = specs.iter().map(|spec| spec.name).take(3).collect();
+    }
+    near
+}
+
 /// **`explain_tool`** ✓ —— 把**一个工具**的签名吐出来（第 1557 轮；外部 `B10` 的建议）
 ///
 /// **⇒ 为什么需要**：他们拼一个 4 参数的签名**撞了 4 次墙**（`stride` 其实是 `sample_stride`、
@@ -3430,27 +3521,13 @@ fn read_explain_tool(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let specs = tools_registry::ALL_TOOLS;
     let Some(spec) = specs.iter().find(|spec| spec.name == name) else {
         // **给错名字要**有用**：列出最接近的 3 个** ✓（**不猜、不说"不存在"就完** ✗）
-        let lowered = name.to_lowercase();
-        let mut near: Vec<&str> = specs
-            .iter()
-            .map(|spec| spec.name)
-            .filter(|candidate| {
-                candidate.contains(lowered.as_str())
-                    || lowered.contains(*candidate)
-                    || candidate
-                        .split('_')
-                        .any(|part| !part.is_empty() && lowered.contains(part))
-            })
-            .take(3)
-            .collect();
-        if near.is_empty() {
-            near = specs.iter().map(|spec| spec.name).take(3).collect();
-        }
+        let near = nearest_tool_names(name);
         return Err(YanshiError::new(
             ErrorCode::ReferenceNotFound,
             ErrorContext::detail(format!(
                 "没有工具叫 `{name}` ⇒ 最接近的候选：{} ⇒ \
-                 **要看全部**用 `GET /api/tools`（HTTP）或 `tools/list`（MCP）",
+                 **要看全部**用 `GET /api/tools`（HTTP）或 `tools/list`（MCP）的精简清单；\
+                 要某工具的完整参数面与示例 ⇒ `yanshi_help` 或 `GET /api/tools/{{name}}`",
                 near.join("／")
             )),
         ));
@@ -3506,6 +3583,201 @@ fn read_explain_tool(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
                 required.join("、")
             )
         },
+    }))
+}
+
+/// **`yanshi_help`** —— 两级帮助的第二级（director-desk 的 `director_help` 同款语义）。
+///
+/// `tools/list` 与 `GET /api/tools` 只发精简发现（名字 + 一句话摘要 + 裁剪版参数面），
+/// 完整契约走这里：
+/// * `names: ["a", "b"]`（1–3 个）⇒ 每个工具的完整契约（完整 summary + 完整 inputSchema + 示例，
+///   与 `GET /api/tools/{name}` 同一形状）；`full: false` 时只给精简条目；
+/// * `topic: "core"` ⇒ 该组的指引（组说明 + 该组工具的名字与一句话摘要 + 去哪取完整契约）。
+///
+/// `names` 与 `topic` 二选一，都不给、或都给，都响亮报错；未知工具名报错并列出最接近的候选
+/// （与 `explain_tool` 同一套候选逻辑）；`full` 只与 `names` 联用。
+/// （显式传 `null` 的可选参数按 `validate_args` 的口径视为未提供。）
+fn read_yanshi_help(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
+    let _ = ctx; // 只读：不需要画布状态；查的是注册表（ALL_TOOLS，与 explain_tool 同口径）
+    let names = args.get("names").filter(|value| !value.is_null());
+    let topic = args.get("topic").and_then(Value::as_str);
+    let full = args.get("full").and_then(Value::as_bool).unwrap_or(true);
+    match (names, topic) {
+        (Some(_), Some(_)) => Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "`names` 与 `topic` 二选一：要么查 1–3 个工具的完整契约（`names`），要么取一组工具的指引（`topic`）"
+                    .to_string(),
+            ),
+        )),
+        (None, None) => Err(YanshiError::new(
+            ErrorCode::InvalidArgument,
+            ErrorContext::detail(
+                "缺少 `names` 或 `topic`：`names: [\"brush_stroke\"]` 查完整契约，`topic: \"core\"` 取一组工具的指引（core／history／changeset／retouch／conflict／annotation／collab／structure／photo）"
+                    .to_string(),
+            ),
+        )),
+        (Some(names), None) => {
+            let list = names.as_array().ok_or_else(|| {
+                YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(
+                        "`names` 必须是工具名数组，如 `[\"brush_stroke\"]`".to_string(),
+                    ),
+                )
+            })?;
+            if list.is_empty() || list.len() > 3 {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(format!("`names` 只能 1–3 个工具，得到 {} 个", list.len())),
+                ));
+            }
+            let mut tools = Vec::new();
+            for name in list {
+                let name = name.as_str().ok_or_else(|| {
+                    YanshiError::new(
+                        ErrorCode::InvalidArgument,
+                        ErrorContext::detail(
+                            "`names` 里的每一项都必须是工具名字符串".to_string(),
+                        ),
+                    )
+                })?;
+                // 未知名字：响亮报错，不静默跳过（与 explain_tool 同一套候选逻辑）。
+                let Some(spec) = tools_registry::ALL_TOOLS
+                    .iter()
+                    .find(|spec| spec.name == name)
+                else {
+                    let near = nearest_tool_names(name);
+                    return Err(YanshiError::new(
+                        ErrorCode::ReferenceNotFound,
+                        ErrorContext::detail(format!(
+                            "没有工具叫 `{name}` ⇒ 最接近的候选：{} ⇒ \
+                             **要看全部**用 `GET /api/tools`（HTTP）或 `tools/list`（MCP）的精简清单",
+                            near.join("／")
+                        )),
+                    ));
+                };
+                if full {
+                    tools.push(tool_full_value(name).expect("刚查到在注册表里"));
+                } else {
+                    tools.push(slim_tool_value(spec));
+                }
+            }
+            Ok(json!({ "ok": true, "tools": tools }))
+        }
+        (None, Some(topic)) => {
+            if args.get("full").filter(|value| !value.is_null()).is_some() {
+                return Err(YanshiError::new(
+                    ErrorCode::InvalidArgument,
+                    ErrorContext::detail(
+                        "`full` 只与 `names` 联用：`topic` 模式下不要给 `full`".to_string(),
+                    ),
+                ));
+            }
+            topic_help(topic)
+        }
+    }
+}
+
+/// `yanshi_help` 的 `topic` 模式：返回该组的指引。
+///
+/// 组说明取自各 `Profile` 的文档语义（个数运行时算，不写死）；工具列只给名字与一句话摘要；
+/// 完整契约的取法写在 `guide` 里。`photo` 组按 `PHOTO_TOOLS` 白名单展开（与
+/// `with_profiles(&[Photo])` 的收窄口径一致）；其余组按 `profile` 过滤。
+fn topic_help(topic: &str) -> Result<Value> {
+    const TOPICS: &str =
+        "core／history／changeset／retouch／conflict／annotation／collab／structure／photo";
+    let (intro, tools): (&str, Vec<&ToolSpec>) = match topic {
+        "core" => (
+            "核心层：默认注册的工具。",
+            tools_registry::ALL_TOOLS
+                .iter()
+                .filter(|tool| tool.profile == Profile::Core)
+                .collect(),
+        ),
+        "history" => (
+            "历史与检查点。",
+            tools_registry::ALL_TOOLS
+                .iter()
+                .filter(|tool| tool.profile == Profile::History)
+                .collect(),
+        ),
+        "changeset" => (
+            "变更集与事务。",
+            tools_registry::ALL_TOOLS
+                .iter()
+                .filter(|tool| tool.profile == Profile::Changeset)
+                .collect(),
+        ),
+        "retouch" => (
+            "修图。",
+            tools_registry::ALL_TOOLS
+                .iter()
+                .filter(|tool| tool.profile == Profile::Retouch)
+                .collect(),
+        ),
+        "conflict" => (
+            "冲突解决。",
+            tools_registry::ALL_TOOLS
+                .iter()
+                .filter(|tool| tool.profile == Profile::Conflict)
+                .collect(),
+        ),
+        "annotation" => (
+            "标注。",
+            tools_registry::ALL_TOOLS
+                .iter()
+                .filter(|tool| tool.profile == Profile::Annotation)
+                .collect(),
+        ),
+        "collab" => (
+            "协作评论与建议。",
+            tools_registry::ALL_TOOLS
+                .iter()
+                .filter(|tool| tool.profile == Profile::Collab)
+                .collect(),
+        ),
+        "structure" => (
+            "结构修改（属性、路径、笔刷）。",
+            tools_registry::ALL_TOOLS
+                .iter()
+                .filter(|tool| tool.profile == Profile::Structure)
+                .collect(),
+        ),
+        "photo" => (
+            "照片修复/精修预设包含的工具（白名单）。",
+            tools_registry::PHOTO_TOOLS
+                .iter()
+                .filter_map(|name| {
+                    tools_registry::ALL_TOOLS
+                        .iter()
+                        .find(|tool| tool.name == *name)
+                })
+                .collect(),
+        ),
+        _ => {
+            return Err(YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail(format!("未知 topic `{topic}` ⇒ 可用的 topic：{TOPICS}")),
+            ));
+        }
+    };
+    Ok(json!({
+        "ok": true,
+        "topic": topic,
+        "guide": format!(
+            "【{topic}】{intro}共 {} 个工具。每个工具只给一句话摘要；\
+             要某工具的完整参数面与示例，用 `yanshi_help` 的 `names` 或 HTTP `GET /api/tools/{{name}}`。\
+             当前会话实际启用的组以 `tools/list` 的 `profiles` 字段为准。",
+            tools.len()
+        ),
+        "tools": tools
+            .iter()
+            .map(|tool| json!({
+                "name": tool.name,
+                "summary": short_summary(tool.name).unwrap_or(tool.summary),
+            }))
+            .collect::<Vec<_>>(),
     }))
 }
 
@@ -24384,6 +24656,10 @@ pub use tools_registry::{ALL_TOOLS, PHOTO_TOOLS, SVG_TOOLS};
 #[path = "tools_examples.rs"]
 mod tools_examples;
 pub use tools_examples::TOOL_EXAMPLES;
+
+#[path = "tools_short_summaries.rs"]
+mod tools_short_summaries;
+pub use tools_short_summaries::TOOL_SHORT_SUMMARIES;
 
 #[path = "tools_effect.rs"]
 mod tools_effect;

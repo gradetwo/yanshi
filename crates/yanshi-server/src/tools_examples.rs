@@ -625,6 +625,8 @@ pub const TOOL_EXAMPLES: &[(&str, &str)] = &[
         "stroke_heatmap",
         r#"{"region":{"x":0,"y":0,"w":400,"h":300}}"#,
     ),
+    // **yanshi_help**（两级帮助）：查一个工具的完整契约。
+    ("yanshi_help", r#"{"names":["brush_stroke"]}"#),
     // **reference_trace_region**（Study 专属，只读参考图分析；须显式 `--profile study` 点名）。
     // 掩膜二选一：这里用 polygon（图像像素坐标）；改用掩膜 PNG 时把 polygon 换成 mask_path。
     // 不读不写任何文档，故示例里没有 doc_id／layer_id。

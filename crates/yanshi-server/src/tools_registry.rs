@@ -74,7 +74,7 @@ const IMPORT_IMAGE_PARAMS: &[ParamSpec] = &[
     param!("raw_options", Object, false, "仅当 bitmap 是 RAW 源（mime image/x-yanshi-rawsrc）时可用：展开参数 {wb: as_shot|auto（缺省 as_shot）, demosaic: malvar|bilinear（缺省 malvar）, pre_exposure_ev: -4..4（缺省 0，不 clamp、越界报错）, lens_correction: off|auto（缺省 off，D5 定版；auto = 文件自带校正逐项优先 + Lensfun 库匹配）, lens_override: string|null（手动点名镜头库中的镜头，查无此镜报错）, highlight_recovery: chroma|floor（缺省 chroma 真色度恢复，floor = 第三包保底机制）, tone: off|standard（缺省 standard，显影期基调曲线；off = 现行零调整链）, tone_strength: 0..1（缺省 1.0，越界报错、不 clamp；tone=off 时忽略）}；给到非 RAW blob 报错"),
 ];
 
-/// 核心层 141 个 + 扩展组中已实现的工具（10.2）。
+/// 核心层 142 个 + 扩展组中已实现的工具（10.2）。
 pub const ALL_TOOLS: &[ToolSpec] = &[
     // ---- 查询 ----
     ToolSpec {
@@ -268,6 +268,36 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 String,
                 false,
                 "`name` 的另一种写法（同义）⇒ 两者都给时以 `name` 为准"
+            ),
+        ],
+    },
+    ToolSpec {
+        // **★ 两级帮助（director-desk 借鉴）★**：`tools/list` 只发精简发现（名字 + 一句话摘要 +
+        // 裁剪版 inputSchema），完整契约走这里 ⇒ 每次广播不再带全部工具的完整参数面与示例。
+        // `names` 取 1–3 个工具的完整契约（参数面 + 示例）；`topic` 取一组工具的指引；
+        // `full: false` 时 names 只给精简条目。两者同给、或都不给，都响亮报错。
+        name: "yanshi_help",
+        profile: Profile::Core,
+        summary: "查工具的完整契约或某组工具的指引：`names` 取 1–3 个工具的完整参数面与示例，`topic` 取一组工具的指引（core／history／changeset／retouch／conflict／annotation／collab／structure／photo）。只读。",
+        mutating: false,
+        params: &[
+            param!(
+                "names",
+                Array,
+                false,
+                "要查完整契约的工具名，1–3 个（如 [`brush_stroke`]）。与 `topic` 二选一；未知名字会报错并列出最接近的候选"
+            ),
+            param!(
+                "topic",
+                String,
+                false,
+                "要指引的组：core／history／changeset／retouch／conflict／annotation／collab／structure／photo。与 `names` 二选一"
+            ),
+            param!(
+                "full",
+                Boolean,
+                false,
+                "只与 `names` 联用：true（缺省）给完整契约，false 只给精简条目（名字 + 一句话摘要 + 裁剪版参数面）"
             ),
         ],
     },
