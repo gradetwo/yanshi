@@ -3629,7 +3629,10 @@ fn tools_list_query_behaviour() {
     );
     assert!(filtered.get("total").is_none(), "空查询不许加 total 字段");
 
-    // q：大小写不敏感，命中名或描述含子串的工具；total = 全部命中数。
+    // q：大小写不敏感，命中名或完整描述含子串的工具；total = 全部命中数。
+    // **注意**：q 是对完整 summary 匹配（不是对清单里的短摘要）—— 清单条目
+    // 的 description 已是摘要，未必含查询子串（例：q=BRUSH 命中 `batch`，因其
+    // 完整描述提到 `brush_stroke`，而短摘要里没有 "brush"）。
     let q = ToolsListQuery::from_json(&json!({"q": "BRUSH"})).expect("q 必须能解析");
     let result = registry.tools_list_filtered(&q);
     let tools = result["tools"].as_array().expect("tools 必须是数组");
@@ -3638,16 +3641,16 @@ fn tools_list_query_behaviour() {
         "q=BRUSH 必须命中工具（空结果即查询未生效）"
     );
     for tool in tools {
-        let haystack = format!(
-            "{} {}",
-            tool["name"].as_str().unwrap_or(""),
-            tool["description"].as_str().unwrap_or("")
-        )
-        .to_lowercase();
+        let name = tool["name"].as_str().unwrap_or("");
+        let full_summary = super::ALL_TOOLS
+            .iter()
+            .find(|spec| spec.name == name)
+            .map(|spec| spec.summary)
+            .unwrap_or("");
+        let haystack = format!("{name} {full_summary}").to_lowercase();
         assert!(
             haystack.contains("brush"),
-            "q 命中的工具名或描述必须含子串：{}",
-            tool["name"].as_str().unwrap_or("?")
+            "q 命中的工具名或完整描述必须含子串：{name}"
         );
     }
     assert_eq!(
@@ -3786,5 +3789,368 @@ fn commit_response_carries_memory_status_only_when_sampled() {
     assert!(
         sampled["memory_status"]["total_bytes"].is_number(),
         "采样响应须带总量：{sampled}"
+    );
+}
+
+/// **两级帮助：每个注册工具恰有一条一句话摘要**（director-desk 借鉴）。
+///
+/// 表缺一项、或多一条孤儿，都会红（不是只在摘要被读到时才暴露）。
+/// 空表恒真被 `表长 == 注册表长` 这一条堵死。
+#[test]
+fn short_summaries_cover_every_registered_tool() {
+    assert_eq!(
+        super::TOOL_SHORT_SUMMARIES.len(),
+        super::ALL_TOOLS.len(),
+        "摘要表长必须 == 注册工具数（空表/缺项/多余项都会红）"
+    );
+    for tool in super::ALL_TOOLS {
+        let hits: Vec<&&str> = super::TOOL_SHORT_SUMMARIES
+            .iter()
+            .filter(|(name, _)| *name == tool.name)
+            .map(|(_, summary)| summary)
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "{} 在摘要表里必须恰有一条（实测 {} 条）",
+            tool.name,
+            hits.len()
+        );
+        let summary = hits[0];
+        assert!(!summary.is_empty(), "{} 的摘要不能为空", tool.name);
+        assert!(!summary.contains('\n'), "{} 的摘要必须是单行", tool.name);
+        assert!(
+            summary.chars().count() <= 120,
+            "{} 的摘要超 120 字（实测 {} 字）：{summary}",
+            tool.name,
+            summary.chars().count()
+        );
+        // 摘要就得比原文短：完整描述本身已是一句话时，摘要与它相同也算过关，
+        // 但绝不许比原文更长（find_atom 曾因此让精简条目比完整契约还大）。
+        assert!(
+            summary.chars().count() <= tool.summary.chars().count(),
+            "{} 的摘要比完整描述还长（摘要 {} 字，完整 {} 字）：{summary}",
+            tool.name,
+            summary.chars().count(),
+            tool.summary.chars().count()
+        );
+        for marker in ["**", "★", "✓", "✗"] {
+            assert!(
+                !summary.contains(marker),
+                "{} 的摘要不许带 {} 标记：{summary}",
+                tool.name,
+                marker
+            );
+        }
+    }
+    for (name, _) in super::TOOL_SHORT_SUMMARIES {
+        assert!(
+            super::ALL_TOOLS.iter().any(|tool| tool.name == *name),
+            "摘要表里有孤儿条目（注册表里没有）：{name}"
+        );
+    }
+}
+
+/// **两级帮助：精简条目处处比完整契约小**（相对断言，不写死字节数）。
+///
+/// 每条精简条目：无 `example`、inputSchema 无顶层 `description`、
+/// 任何一处 `description` 都 ≤240 字；且序列化后严格短于同一工具的完整契约。
+/// **否定对照**：`brush_stroke.brush_params` 的描述在完整契约里有（带参数目录表），
+/// 在精简条目里必须被截短到 ≤240 字（带 `…`）—— 裁剪若是摆设，这条立刻红。
+/// 字段本身必须还在：删掉会让 `mcp-schema-no-any` 这类判据丢关键参数的描述
+///（2026-11-11 两级帮助分支 CI：整删超长描述致 `brush_stroke.color` 消失而红）。
+#[test]
+fn slim_list_entries_are_smaller_than_full_contracts() {
+    fn max_description_len(value: &Value) -> usize {
+        match value {
+            Value::Object(map) => {
+                let own = match map.get("description") {
+                    Some(Value::String(text)) => text.chars().count(),
+                    _ => 0,
+                };
+                map.values().map(max_description_len).fold(own, usize::max)
+            }
+            Value::Array(items) => items.iter().map(max_description_len).fold(0, usize::max),
+            _ => 0,
+        }
+    }
+    let registry = ToolRegistry::full();
+    let list = registry.tools_list_json();
+    let entries = list["tools"].as_array().expect("tools 必须是数组");
+    assert!(!entries.is_empty(), "精简清单不能为空");
+    for entry in entries {
+        let name = entry["name"].as_str().expect("条目必须有 name");
+        assert!(
+            entry.get("example").is_none(),
+            "{name} 的精简条目不许带 example"
+        );
+        assert!(
+            entry["inputSchema"].get("description").is_none(),
+            "{name} 的精简 inputSchema 不许带顶层 description（条目级 description 已是摘要）"
+        );
+        assert!(
+            max_description_len(entry) <= 240,
+            "{name} 的精简条目里还有超 240 字的 description"
+        );
+        assert!(
+            !entry["description"].as_str().unwrap_or("").contains('\n'),
+            "{name} 的精简 description 必须是单行"
+        );
+        let full = super::tool_full_value(name).expect("清单里的工具必须有完整契约");
+        assert!(
+            serde_json::to_string(entry).expect("序列化").len()
+                < serde_json::to_string(&full).expect("序列化").len(),
+            "{name} 的精简条目必须严格短于完整契约"
+        );
+        assert_eq!(
+            full["description"].as_str().unwrap_or(""),
+            super::ALL_TOOLS
+                .iter()
+                .find(|tool| tool.name == name)
+                .expect("注册表里有")
+                .summary,
+            "{name} 的完整契约 description 必须是完整 summary"
+        );
+    }
+    // 否定对照：裁剪真的在工作 —— 长描述被截短到 ≤240 字（带 `…`），而不是原样保留。
+    let full_brush = super::tool_full_value("brush_stroke").expect("brush_stroke 有完整契约");
+    assert!(
+        full_brush["inputSchema"]["properties"]["brush_params"]["description"].is_string(),
+        "完整契约里 brush_stroke.brush_params 必须有描述"
+    );
+    let slim_brush = entries
+        .iter()
+        .find(|entry| entry["name"] == "brush_stroke")
+        .expect("清单里有 brush_stroke");
+    let slim_desc = slim_brush["inputSchema"]["properties"]["brush_params"]
+        .get("description")
+        .and_then(|description| description.as_str())
+        .expect("精简条目里 brush_stroke.brush_params 必须还留着描述（截短不断链）");
+    let full_desc = full_brush["inputSchema"]["properties"]["brush_params"]["description"]
+        .as_str()
+        .expect("完整契约里有描述");
+    assert!(
+        slim_desc.chars().count() <= 240 && slim_desc.len() < full_desc.len(),
+        "精简条目里 brush_stroke.brush_params 的长描述必须被截短（否则裁剪是摆设）"
+    );
+    assert!(slim_desc.ends_with('…'), "截短的描述必须带 `…` 尾标");
+}
+
+/// **两级帮助：`yanshi_help` 的 names/topic/full 语义**（走注册表 `call`，
+/// 与 MCP/HTTP 同一条入口：先过 `validate_args`，再进 handler）。
+#[test]
+fn yanshi_help_names_topic_and_errors() {
+    let mut workspace = Workspace::in_memory(crate::document::DocumentSettings::default());
+    workspace
+        .create_document(
+            crate::document::NewDocument::new("help_doc", 32, 32),
+            "test:1",
+            "s",
+        )
+        .expect("建文档");
+    let mut ctx = ToolContext::new(&mut workspace, "help_doc", "test:1", "s");
+    let registry = ToolRegistry::full();
+    let call = |ctx: &mut ToolContext<'_>, args: &Value| registry.call(ctx, "yanshi_help", args);
+
+    // names：完整契约（完整 summary + 完整 inputSchema + 示例）。
+    let one = call(&mut ctx, &json!({"names": ["brush_stroke"]}));
+    assert_eq!(one["ok"], json!(true), "names 应成功：{one}");
+    assert_eq!(one["tools"][0]["name"], json!("brush_stroke"));
+    assert!(
+        one["tools"][0]["description"]
+            .as_str()
+            .unwrap_or("")
+            .contains("MyPaint"),
+        "完整契约的 description 必须是完整 summary：{one}"
+    );
+    assert!(
+        one["tools"][0]["inputSchema"]["properties"]["brush_params"]["description"].is_string(),
+        "完整契约必须带 brush_params 的长描述：{one}"
+    );
+    assert!(
+        one["tools"][0].get("example").is_some(),
+        "完整契约必须带 example：{one}"
+    );
+    let two = call(
+        &mut ctx,
+        &json!({"names": ["brush_stroke", "get_document"]}),
+    );
+    assert_eq!(two["tools"].as_array().expect("tools 是数组").len(), 2);
+
+    // names + full:false：只给精简条目（无 example、description 是摘要）。
+    let slim = call(&mut ctx, &json!({"names": ["brush_stroke"], "full": false}));
+    assert_eq!(slim["ok"], json!(true), "full:false 应成功：{slim}");
+    assert!(
+        slim["tools"][0].get("example").is_none(),
+        "full:false 不许带 example：{slim}"
+    );
+    assert!(
+        slim["tools"][0]["description"]
+            .as_str()
+            .unwrap_or("")
+            .chars()
+            .count()
+            <= 120,
+        "full:false 的 description 必须是一句话摘要：{slim}"
+    );
+
+    // 响亮报错：空、超 3 个、未知名字，都不许静默跳过。
+    let empty = call(&mut ctx, &json!({"names": []}));
+    assert_eq!(empty["ok"], json!(false), "names 为空必须错：{empty}");
+    assert!(
+        empty["context"]["detail"]
+            .as_str()
+            .unwrap_or("")
+            .contains("1–3"),
+        "空 names 的报错要说清 1–3 上限：{empty}"
+    );
+    let four = call(&mut ctx, &json!({"names": ["a", "b", "c", "d"]}));
+    assert_eq!(four["ok"], json!(false), "names 超 3 个必须错：{four}");
+    let unknown = call(&mut ctx, &json!({"names": ["frobnicate_canvas"]}));
+    assert_eq!(unknown["ok"], json!(false), "未知工具名必须错：{unknown}");
+    assert!(
+        unknown["context"]["detail"]
+            .as_str()
+            .unwrap_or("")
+            .contains("最接近的候选"),
+        "未知工具名的报错要列候选：{unknown}"
+    );
+
+    // topic：指引（组说明 + 该组工具的名字与摘要）。
+    let topic = call(&mut ctx, &json!({"topic": "core"}));
+    assert_eq!(topic["ok"], json!(true), "topic=core 应成功：{topic}");
+    assert_eq!(topic["topic"], json!("core"));
+    assert!(
+        topic["guide"].as_str().unwrap_or("").contains("core"),
+        "指引要提到该组：{topic}"
+    );
+    assert!(
+        !topic["tools"].as_array().expect("tools 是数组").is_empty(),
+        "core 组指引不能为空"
+    );
+    let bad_topic = call(&mut ctx, &json!({"topic": "nope"}));
+    assert_eq!(
+        bad_topic["ok"],
+        json!(false),
+        "未知 topic 必须错：{bad_topic}"
+    );
+
+    // 二选一与联用：names+topic 同给、都不给、topic+full，都错。
+    let both = call(
+        &mut ctx,
+        &json!({"names": ["brush_stroke"], "topic": "core"}),
+    );
+    assert_eq!(both["ok"], json!(false), "names+topic 同给必须错：{both}");
+    let neither = call(&mut ctx, &json!({}));
+    assert_eq!(neither["ok"], json!(false), "都不给必须错：{neither}");
+    let topic_full = call(&mut ctx, &json!({"topic": "core", "full": true}));
+    assert_eq!(
+        topic_full["ok"],
+        json!(false),
+        "topic+full 必须错：{topic_full}"
+    );
+}
+
+/// **两级帮助：9 个 topic 全覆盖**（直接测 `topic_help`）。
+/// photo 组的名字集合必须 == `PHOTO_TOOLS`（白名单漂移会红）；
+/// 其余组的名字集合必须 == 该 profile 的注册工具集合。
+#[test]
+fn topic_help_covers_all_nine_topics() {
+    let names_of = |value: &Value| {
+        value["tools"]
+            .as_array()
+            .expect("tools 是数组")
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("有 name").to_owned())
+            .collect::<Vec<_>>()
+    };
+    for topic in [
+        "core",
+        "history",
+        "changeset",
+        "retouch",
+        "conflict",
+        "annotation",
+        "collab",
+        "structure",
+        "photo",
+    ] {
+        let help = super::topic_help(topic).expect("9 个 topic 都应有指引");
+        assert_eq!(help["topic"], json!(topic));
+        assert!(
+            !help["tools"].as_array().expect("tools 是数组").is_empty(),
+            "{topic} 组的指引不能为空"
+        );
+        for tool in help["tools"].as_array().unwrap() {
+            assert!(
+                super::ALL_TOOLS
+                    .iter()
+                    .any(|spec| spec.name == tool["name"].as_str().unwrap_or("")),
+                "{topic} 指引里有注册表外的工具：{}",
+                tool["name"]
+            );
+        }
+    }
+    assert!(super::topic_help("nope").is_err(), "未知 topic 必须错");
+    let photo: std::collections::BTreeSet<String> =
+        names_of(&super::topic_help("photo").expect("photo 指引"))
+            .into_iter()
+            .collect();
+    let expected: std::collections::BTreeSet<String> = super::PHOTO_TOOLS
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+    assert_eq!(photo, expected, "photo 组必须 == PHOTO_TOOLS 白名单");
+    let core: std::collections::BTreeSet<String> =
+        names_of(&super::topic_help("core").expect("core 指引"))
+            .into_iter()
+            .collect();
+    let expected_core: std::collections::BTreeSet<String> = super::ALL_TOOLS
+        .iter()
+        .filter(|tool| tool.profile == Profile::Core)
+        .map(|tool| tool.name.to_owned())
+        .collect();
+    assert_eq!(
+        core, expected_core,
+        "core 组必须 == profile 为 Core 的注册工具"
+    );
+}
+
+/// **裁剪口径：超 240 字的 `description` 截短到 240 字（239 字 + `…`），其余一位不动**。
+/// 字段本身保留 —— 精简清单也要让人知道这个参数是干什么的
+///（`mcp-schema-no-any` 要求 `brush_stroke.color` 这类关键参数的描述在场；
+/// 2026-11-11 两级帮助分支 CI 曾整删超长描述，致两条判据同轮红）。
+#[test]
+fn trim_long_descriptions_truncates_long_prose() {
+    let mut value = json!({
+        "description": "x".repeat(241),
+        "type": "object",
+        "properties": {
+            "short": {"type": "string", "description": "y".repeat(240)},
+            "long": {"type": "string", "description": "z".repeat(241)},
+        },
+        "required": ["short"],
+    });
+    super::trim_long_descriptions(&mut value);
+    let expected_top = format!("{}…", "x".repeat(239));
+    assert_eq!(
+        value["description"].as_str().unwrap(),
+        expected_top.as_str(),
+        "241 字的顶层 description 必须截短到 240 字（带 `…`）"
+    );
+    assert_eq!(value["type"], json!("object"), "type 不许动");
+    assert_eq!(value["required"], json!(["short"]), "required 不许动");
+    assert_eq!(
+        value["properties"]["short"]["description"]
+            .as_str()
+            .unwrap(),
+        "y".repeat(240),
+        "240 字的描述必须原样保留（边界是 >240 才裁）"
+    );
+    let expected_nested = format!("{}…", "z".repeat(239));
+    assert_eq!(
+        value["properties"]["long"]["description"].as_str().unwrap(),
+        expected_nested.as_str(),
+        "241 字的嵌套描述必须截短到 240 字（带 `…`）"
     );
 }

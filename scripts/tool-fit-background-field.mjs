@@ -497,12 +497,12 @@ if (outsideBefore && outsideAfter && outsideBefore[0] === outsideAfter[0]) {
 
 // ⑬ **响应里每个业务字段都必须在说明里提到**（第 1480 轮；外部 §226 的教训）
 //   **⇒ 为什么** ✗：我两次靠**记忆**补说明（先漏 5 个、后又漏 4 个）⇒ 而**记忆不可靠** ✓
-//   **⇒ ⇒ 所以**这条判据**程序化**地查：取 `/api/tools` 的 `description`，跑一次工具，
+//   **⇒ ⇒ 所以**这条判据**程序化**地查：取详情路由 `GET /api/tools/fit_background_field` 的 `description`（完整契约），跑一次工具，
 //     把响应的业务字段（去掉标准变更字段）逐个在 `description` 里找 ⇒ **有一个找不到就红** ✓
 //   **⇒ ⇒ ⇒ 实测**：之前漏的 4 个（`samples`/`filled_pixels`/`mask_bbox`/`placed`）⇒ 补上后 **0 个漏** ✓
 {
-  const cat = await (await fetch(`${base}/api/tools?doc=${doc}&token=${made.token}`)).json();
-  const spec = (cat?.tools || []).find((t) => t.name === "fit_background_field");
+  // **两级帮助**：完整描述走详情路由（精简清单里的一句话摘要放不下全部业务字段名，读清单会误报漏字段）。
+  const spec = await (await fetch(`${base}/api/tools/fit_background_field`)).json();
   const desc = String(spec?.description ?? "");
   const docD = `bgf_audit_${stamp}`;
   const madeD = await (await fetch(`${base}/api/documents`, {

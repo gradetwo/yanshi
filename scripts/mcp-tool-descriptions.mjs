@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // **工具描述必须与实现一致、且说清"结果长什么样"**判据 ✓ —— 用**MCP 客户端真正的视角** ✓：
-// 直接驱动 `yanshi-mcp` 的 `tools/list` ✓（不是看源码 ✗、也不是看 HTTP 目录 ✗ —— 两者字段并不相同 ✓）。
+// 直接驱动 `yanshi-mcp` 的 `yanshi_help` 取完整契约 ✓（不是看源码 ✗、也不是看 HTTP 目录 ✗）。
+// （两级帮助：`tools/list` 只发精简发现，完整描述不在清单里 ⇒ 判据改走 `yanshi_help`。）
 //
 // 为什么需要它 ✓（三次报告的主因 ✓）：P0-2 的根因是 `new_document` 的描述**写着"会被拒绝"** ✗，
 // 而实现早已是"同 id ⇒ 打开且不清空" ✓ ⇒ 报告作者据此判"无法续画" ✓；
@@ -36,14 +37,16 @@ send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "
 await waitFor(1);
 send({ jsonrpc: "2.0", method: "notifications/initialized", params: {} });
 await new Promise((r) => setTimeout(r, 300));
-send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "yanshi_help", arguments: { names: ["new_document", "brush_preview", "render_region"] } } });
 const reply = await waitFor(2, 20000);
 child.kill();
-const tools = ((reply || {}).result || {}).tools || [];
+const content = (((reply || {}).result || {}).content || [])[0] || {};
+const full = JSON.parse(content.text || "{}");
+const tools = (full.tools || []);
 const by = new Map(tools.map((tool) => [tool.name, tool]));
 const failures = [];
 const check = (ok, label, detail) => { console.log(`  ${ok ? "✓" : "✗"} ${label}${detail ? ` ⇒ ${detail}` : ""}`); if (!ok) failures.push(label); };
-check(tools.length > 0, "MCP tools/list 有工具", `${tools.length} 个`);
+check(tools.length === 3, "yanshi_help 返回了 3 个工具的完整契约", `${tools.length} 个`);
 const doc = by.get("new_document") || {};
 const docText = doc.description || "";
 const paramsOf = (tool) => ((tool.inputSchema || {}).properties || {});

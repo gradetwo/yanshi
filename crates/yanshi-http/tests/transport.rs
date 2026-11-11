@@ -231,8 +231,14 @@ fn http_round_trip_health_viewer_and_errors() {
         status, 400,
         "超过 u32 的宽高必须 400（不许截断回绕）：{body}"
     );
+    // **两级帮助**：`GET /api/tools/{name}` 是工具详情（完整契约，与 `yanshi_help` 同形），
+    // 不再是 405；错误方法仍 405。
+    let (status, body) = client.json("GET", "/api/tools/draw_stroke", None, None);
+    assert_eq!(status, 200);
+    assert_eq!(body["name"], json!("draw_stroke"));
+    assert!(body["inputSchema"].is_object());
     assert_eq!(
-        client.json("GET", "/api/tools/draw_stroke", None, None).0,
+        client.json("PUT", "/api/tools/draw_stroke", None, None).0,
         405
     );
 }

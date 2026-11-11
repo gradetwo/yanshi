@@ -1161,6 +1161,86 @@ mod tests {
     }
 
     #[test]
+    fn yanshi_help_returns_full_contracts_and_topic_guides() {
+        let mut server = server();
+        // names → 完整契约：与 HTTP 详情同一形状（名字 + 完整 summary + 完整 inputSchema + 示例）。
+        let result = text_of(&tool(
+            &mut server,
+            "yanshi_help",
+            json!({"names": ["brush_stroke"]}),
+        ));
+        assert_eq!(result["ok"], json!(true), "names 应成功：{result}");
+        assert_eq!(result["tools"][0]["name"], json!("brush_stroke"));
+        assert!(
+            result["tools"][0]["description"]
+                .as_str()
+                .unwrap_or("")
+                .contains("MyPaint"),
+            "完整契约的 description 必须是完整 summary：{result}"
+        );
+        assert!(
+            result["tools"][0]["inputSchema"]["properties"]["brush_params"]["description"]
+                .is_string(),
+            "完整契约必须带 brush_params 的长描述：{result}"
+        );
+        assert!(
+            result["tools"][0].get("example").is_some(),
+            "完整契约必须带 example：{result}"
+        );
+        // 同一工具在 tools/list 里的精简条目必须更短（无 example、description 是摘要）。
+        let listed = call(&mut server, 2, "tools/list", json!({}));
+        let slim = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "brush_stroke")
+            .expect("清单里有 brush_stroke");
+        assert!(slim.get("example").is_none(), "清单条目不许带 example");
+        assert!(
+            slim["description"].as_str().unwrap_or("").chars().count() <= 120,
+            "清单条目必须是摘要"
+        );
+        assert!(
+            serde_json::to_string(slim).unwrap().len()
+                < serde_json::to_string(&result["tools"][0]).unwrap().len(),
+            "清单条目必须严格短于完整契约"
+        );
+        // topic → 指引。
+        let guide = text_of(&tool(&mut server, "yanshi_help", json!({"topic": "photo"})));
+        assert_eq!(guide["ok"], json!(true), "topic=photo 应成功：{guide}");
+        assert_eq!(guide["topic"], json!("photo"));
+        assert!(
+            !guide["tools"].as_array().unwrap().is_empty(),
+            "photo 组指引不能为空"
+        );
+        // 未知名字 → 工具级错误回执（isError，不静默跳过）。协议层 JSON-RPC
+        // 错误只用于 tools/call 本身的问题（缺 name、arguments 不是对象、调了
+        // 注册表里没有的工具名）；yanshi_help 收到、再对 `names` 里的未知名
+        // 报错，是工具执行错，按 MCP 约定走 isError 回执（回执里带
+        // `reference_not_found` 与最接近的候选）。
+        let response = call(
+            &mut server,
+            3,
+            "tools/call",
+            json!({"name": "yanshi_help", "arguments": {"names": ["frobnicate_canvas"]}}),
+        );
+        assert_eq!(
+            response["result"]["isError"],
+            json!(true),
+            "未知工具名必须报 isError：{response}"
+        );
+        let response_text = serde_json::to_string(&response).unwrap();
+        assert!(
+            response_text.contains("reference_not_found"),
+            "未知工具名的报错必须是 reference_not_found：{response}"
+        );
+        assert!(
+            response_text.contains("最接近的候选"),
+            "未知工具名的报错要列候选：{response}"
+        );
+    }
+
+    #[test]
     fn notifications_and_pings_are_handled() {
         let mut server = server();
         assert!(server

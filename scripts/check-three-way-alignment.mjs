@@ -67,7 +67,9 @@ const SPEC_END = "// </gen:tool-specs>";
 //   ⇒ 缺本地路由 56 → **55**（棘轮跟着降 ✓）。
 // 2026-11-05：`resize_canvas_bounds` 落地（F 类第二条；配 `p2FoldDocSize` 折尺寸）
 //   ⇒ 缺本地路由 55 → **54**（棘轮跟着降 ✓）。
-const MISSING_CEILING = 54;
+// 2026-11-11：新增 `yanshi_help`（MCP 专属完整契约查询，G 类；本地层已内嵌全部工具
+//   规格，暂不单设路由；表 A 已补归因行）⇒ 缺本地路由 54 → **55**（棘轮跟着抬 ✓）。
+const MISSING_CEILING = 55;
 // 2026-11-05：本地 `collect_garbage` 开始读 `ttl_seconds`（按 blob 的写入时刻挑孤儿）
 //   ⇒ 未读参数 52 → **51**（棘轮跟着降 ✓）。
 // 2026-11-11：`batch` 新增 `validate_only`（服务端干跑模式；PWA 本地批量路径未接，
