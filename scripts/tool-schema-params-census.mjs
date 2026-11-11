@@ -92,6 +92,12 @@ const ALLOWLIST = {
     //   `read_get_stroke_log` 回 `"entries"` 当页数组与 `"total"` live 笔数；
     //   同回执的 `next_offset`/`truncated` 已在本组 ✓；它俩不是任何工具的参数名 ✓）。
     "total", "entries",
+    // **P5（报告 3 期 E）**：`get_document` 的回执字段 ✓（`tools.rs` 的
+    //   `read_get_document` 回 `"session_doc_id"` 会话当前文档、
+    //   `"documents"` 全部文档清单与 `"documents_count"` 清单条数；
+    //   `documents` 也是 `list_documents` 回执的同名字段 ✓；三者都不是
+    //   任何工具的参数名 ✓）。
+    "session_doc_id", "documents", "documents_count",
   ]),
   value: new Set([
     "auto", "flat", "hex", "linear", "srgb", "srgb_bytes", "dual",
