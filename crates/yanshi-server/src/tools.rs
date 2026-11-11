@@ -3282,7 +3282,19 @@ fn read_get_document(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     // `documents_summary_json`，同一份映射，不两处各算一套）；清单获取失败时
     // 不阻塞主读（提示字段缺省，旧字段与旧语义原样返回），不把一次成功的读变成报错。
     summary["session_doc_id"] = json!(ctx.doc_id.clone());
-    if let Ok(documents) = documents_summary_json(ctx.workspace) {
+    // **清单的成本也要计时**（CI 实测 ✗ → ✓）：
+    // `documents_summary_json` 对磁盘上未载入的文档要 `load_meta`＋`load_atoms`＋`fold_atoms`
+    // （见 `Workspace::list_documents`）；工作区里这类文档一多（判据分片一台共享服务跑
+    // 几十条判据，超 `YANSHI_DOC_MAX_LOADED`＝64 即被 LRU 卸载到盘），一次 `get_document`
+    // 就要为这份清单付上百毫秒，而此前这段**一个阶段都没记** ✗ ⇒ 全落进残差 `other_ms` ✓
+    // ⇒ `tool-timing-attribution` 在 total ≥ 50 ms 时断 `other ≤ 10%` 变红 ✓。
+    // 归属：这段成本就是**把别份文档的原子日志读回来再折叠**，记进 `Phase::Fold` ✓
+    // （与读路径预览记进 `Phase::Preview` 同一做法，见上面）。
+    // 变异检验：删掉这处 `ctx.time(Phase::Fold, …)` ⇒ `fold_ms` 回 0、`other_ms` 占满 ⇒ 本判据变红 ✓。
+    let documents_started = std::time::Instant::now();
+    let documents_result = documents_summary_json(ctx.workspace);
+    ctx.time(Phase::Fold, documents_started);
+    if let Ok(documents) = documents_result {
         summary["documents_count"] = json!(documents.len());
         summary["documents"] = json!(documents);
     }
@@ -3437,7 +3449,12 @@ fn documents_summary_json(workspace: &Workspace) -> Result<Vec<Value>> {
 /// 但**不知道该打开哪个** ✗ —— 没有列举入口时，调用方只能靠外部记着 doc_id ✓（报告里就是这个困境 ✓）。
 /// 与 `list_layers` 一样是**只读** ✓（`mutating: false` ✓）。
 fn read_list_documents(ctx: &mut ToolContext<'_>) -> Result<Value> {
-    let documents = documents_summary_json(ctx.workspace)?;
+    // 清单本身的成本同上：未载入文档的读日志＋折叠记进 `Phase::Fold`，不让它落进残差
+    // （见 `read_get_document` 里同一段的注释）。
+    let started = std::time::Instant::now();
+    let documents = documents_summary_json(ctx.workspace);
+    ctx.time(Phase::Fold, started);
+    let documents = documents?;
     Ok(json!({ "documents": documents, "count": documents.len() }))
 }
 
