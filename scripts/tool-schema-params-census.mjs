@@ -84,6 +84,10 @@ const ALLOWLIST = {
     //   （`ink_mass` / `max_channel_delta` 是 `brush_stroke` 回执本来的字段 ✓；
     //    `paint_delta` 是 `medium_stroke` 回执的同义字段 ✓；此前都没进过文案）。
     "stroke_evidence", "ink_mass", "max_channel_delta", "paint_delta",
+    // **P5（报告 4）**：`batch` 的顶层失败摘要字段 `failure_summary`
+    //   （`tools.rs` 的 batch 回执 `"failure_summary": failure_summary`；
+    //    同回执的 `stroke_evidence` 已在本组 ✓；它不是任何工具的参数名 ✓）。
+    "failure_summary",
     // **P3（paint-r4-p3）**：`get_stroke_log` 的回执字段 ✓（`tools.rs` 的
     //   `read_get_stroke_log` 回 `"entries"` 当页数组与 `"total"` live 笔数；
     //   同回执的 `next_offset`/`truncated` 已在本组 ✓；它俩不是任何工具的参数名 ✓）。
@@ -94,6 +98,9 @@ const ALLOWLIST = {
     "mix_colors", "pigment", "rgb", "cross_hatch", "relief", "azimuth",
     "elevation", "dehaze", "brightness", "contrast", "brightness_contrast",
     "height_gain", "newest", "oldest", "desc", "false", "true", "image",
+    // **P5（报告 4）**：JSON 字面量 `null`（batch summary 全成时为 `null`；
+    //   同组已有 `false`/`true` ✓，同一类字面量 ⇒ 逐个补，不放通配）。
+    "null",
     // **C 期（#50）**：`relief` 的 `height_source` 只收这两个枚举值 ✓
     //   （`tools_effect.rs:268-280` 校验、非法值报错不静默回落 ✓）
     "alpha", "luminance",
