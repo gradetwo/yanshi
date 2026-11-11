@@ -70,7 +70,9 @@ const SPEC_END = "// </gen:tool-specs>";
 const MISSING_CEILING = 54;
 // 2026-11-05：本地 `collect_garbage` 开始读 `ttl_seconds`（按 blob 的写入时刻挑孤儿）
 //   ⇒ 未读参数 52 → **51**（棘轮跟着降 ✓）。
-const DEAD_PARAMS_CEILING = 51;
+// 2026-11-11：`batch` 新增 `validate_only`（服务端干跑模式；PWA 本地批量路径未接，
+//   已登记进 `scripts/pwa-local-ignored-params.txt` §⑨）⇒ 未读参数 51 → **52**（棘轮跟着涨 ✓）。
+const DEAD_PARAMS_CEILING = 52;
 
 const failures = [];
 const check = (ok, label, detail) => {

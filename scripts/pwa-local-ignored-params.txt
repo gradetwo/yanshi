@@ -70,6 +70,7 @@ batch.preview_every_n_strokes
 batch.preview_interval_ms
 batch.silent
 batch.wait_for_render
+batch.validate_only
 brush_preview.brush_params
 brush_preview.output_path
 collect_diagnostics.include_thumbnail
