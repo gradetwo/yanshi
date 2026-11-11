@@ -39,7 +39,8 @@ fn workspace(tag: &str) -> (Cleanup, Workspace) {
         .with_wait_for_render(true, 4_000);
     let layer = registry.call(&mut ctx, "create_layer", &json!({"layer_id": "L"}));
     assert_eq!(layer["ok"], json!(true), "{layer}");
-    (Cleanup(root), workspace)
+    let cleanup = Cleanup(root);
+    (cleanup, workspace)
 }
 
 fn stroke(
