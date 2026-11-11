@@ -1505,7 +1505,8 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                  每笔另有取证摘要 `stroke_evidence`（与 `calls` 同下标 ✓）：笔触类子调用给 `landed` / `painted_pixels_clipped` / `ink_mass` / `max_channel_delta`（与 `brush_stroke` 回执同字段 ✓；`medium_stroke` 的 `paint_delta` 在此归一为 `max_channel_delta` ✓）；失败的子调用带完整 `error` ✓。\
                  精简回执：传 slim_receipt true 时只砍逐笔调用回执（calls 为空数组，omitted_calls 记被省掉的条数）；计数、失败项（failed_calls 完整保留）、stroke_evidence、atom_ids、head、changeset_id、execution 仍保留；缺省 false，完整回执不变\
                  另带每笔均值字段 ms_per_stroke_avg（毫秒）：整批墙钟除以笔触子调用数，\
-                 0 笔触时为 0；混合批次里是非笔触开销也摊进来的全批成本，纯笔触批次里即纯笔触均值。",
+                 0 笔触时为 0；混合批次里是非笔触开销也摊进来的全批成本，纯笔触批次里即纯笔触均值。\
+                 `validate_only: true` = 干跑（报告 4 小修，opt-in）：先对全部子调用做完整参数校验（工具存在 + 不嵌套 batch + 与正常路径同一套 `validate_args`），任一校验失败则整批 fast-fail、零原子落下、回执 `failed_calls` 列出校验失败项；全部通过则回执报告校验通过（`validated: true`）且不执行、不落原子（`executed: false`）；缺省 `false`，行为不变（仍是逐笔执行、逐笔失败进 `failed_calls`、不回滚）。",
         mutating: true,
         params: &[
             param!("calls", Array, true, "[{tool, arguments}]（一次最多 500 个调用，超了拆成多个 batch；每 100 个一段，段边界做内存水位检查，触发即提前停）"),
@@ -1535,6 +1536,12 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 Boolean,
                 false,
                 "批内子调用未显式指定 wait_for_render 时的缺省（反馈报告 2 期 1）：不给 = 各子调用按自己的值（单笔缺省 true）；给了 = 批量作画一键开关（false = 整批不等渲染，完工后用 export_png / render_region 取图）；子调用显式值只对自己那一笔生效，下一笔回到批值；smart_* 系内层笔触走自己的缺省 false，不受批值改写"
+            ),
+            param!(
+                "validate_only",
+                Boolean,
+                false,
+                "true = 只校验不执行（干跑）：全部子调用先全量预校验，任一失败整批 fast-fail、零原子落下；全过则只报告校验通过；缺省 false，行为不变"
             ),
         ],
     },

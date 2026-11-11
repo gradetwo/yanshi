@@ -126,6 +126,11 @@ const ALLOWLIST = {
   internal: new Set([
     "feed_base", "cp", "YANSHI_EXPORT_DIR", "canvas", "open", "close",
     "supersede",
+    // **P5（报告 4）**：`batch` 干跑文案里的参数校验函数名 `validate_args`
+    //   （`tools.rs` 的 `validate_args`，正常路径与 `validate_only` 干跑
+    //    共用同一套；同组已有 paint_brush 内部变量 `feed_base` ✓，
+    //    同一类引擎内部标识 ⇒ 逐个补，不放通配）。
+    "validate_args",
     // **反馈期 3（P3）**：`describe_canvas` 文案里的单笔光栅缓存上限环境变量 ✓
     //   （`vector.rs` 的 `VECTOR_RASTER_CACHE_ENV_VAR` 常量、文档打开时的缺省来源；
     //   internal 类明文覆盖“环境变量”，先例是 `YANSHI_EXPORT_DIR` ✓）。
