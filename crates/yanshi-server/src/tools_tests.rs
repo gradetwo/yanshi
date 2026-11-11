@@ -3797,7 +3797,9 @@ fn short_summaries_cover_every_registered_tool() {
 /// 每条精简条目：无 `example`、inputSchema 无顶层 `description`、
 /// 任何一处 `description` 都 ≤240 字；且序列化后严格短于同一工具的完整契约。
 /// **否定对照**：`brush_stroke.brush_params` 的描述在完整契约里有（带参数目录表），
-/// 在精简条目里必须没有 —— 裁剪若是摆设，这条立刻红。
+/// 在精简条目里必须被截短到 ≤240 字（带 `…`）—— 裁剪若是摆设，这条立刻红。
+/// 字段本身必须还在：删掉会让 `mcp-schema-no-any` 这类判据丢关键参数的描述
+///（2026-11-11 两级帮助分支 CI：整删超长描述致 `brush_stroke.color` 消失而红）。
 #[test]
 fn slim_list_entries_are_smaller_than_full_contracts() {
     fn max_description_len(value: &Value) -> usize {
@@ -3851,7 +3853,7 @@ fn slim_list_entries_are_smaller_than_full_contracts() {
             "{name} 的完整契约 description 必须是完整 summary"
         );
     }
-    // 否定对照：裁剪真的在工作。
+    // 否定对照：裁剪真的在工作 —— 长描述被截短到 ≤240 字（带 `…`），而不是原样保留。
     let full_brush = super::tool_full_value("brush_stroke").expect("brush_stroke 有完整契约");
     assert!(
         full_brush["inputSchema"]["properties"]["brush_params"]["description"].is_string(),
@@ -3861,12 +3863,18 @@ fn slim_list_entries_are_smaller_than_full_contracts() {
         .iter()
         .find(|entry| entry["name"] == "brush_stroke")
         .expect("清单里有 brush_stroke");
+    let slim_desc = slim_brush["inputSchema"]["properties"]["brush_params"]
+        .get("description")
+        .and_then(|description| description.as_str())
+        .expect("精简条目里 brush_stroke.brush_params 必须还留着描述（截短不断链）");
+    let full_desc = full_brush["inputSchema"]["properties"]["brush_params"]["description"]
+        .as_str()
+        .expect("完整契约里有描述");
     assert!(
-        slim_brush["inputSchema"]["properties"]["brush_params"]
-            .get("description")
-            .is_none(),
-        "精简条目里 brush_stroke.brush_params 的长描述必须被裁掉（否则裁剪是摆设）"
+        slim_desc.chars().count() <= 240 && slim_desc.len() < full_desc.len(),
+        "精简条目里 brush_stroke.brush_params 的长描述必须被截短（否则裁剪是摆设）"
     );
+    assert!(slim_desc.ends_with('…'), "截短的描述必须带 `…` 尾标");
 }
 
 /// **两级帮助：`yanshi_help` 的 names/topic/full 语义**（走注册表 `call`，
@@ -4049,9 +4057,12 @@ fn topic_help_covers_all_nine_topics() {
     );
 }
 
-/// **裁剪口径：只删超 240 字的 `description`，其余一位不动**。
+/// **裁剪口径：超 240 字的 `description` 截短到 240 字（239 字 + `…`），其余一位不动**。
+/// 字段本身保留 —— 精简清单也要让人知道这个参数是干什么的
+///（`mcp-schema-no-any` 要求 `brush_stroke.color` 这类关键参数的描述在场；
+/// 2026-11-11 两级帮助分支 CI 曾整删超长描述，致两条判据同轮红）。
 #[test]
-fn trim_long_descriptions_only_drops_long_prose() {
+fn trim_long_descriptions_truncates_long_prose() {
     let mut value = json!({
         "description": "x".repeat(241),
         "type": "object",
@@ -4062,18 +4073,25 @@ fn trim_long_descriptions_only_drops_long_prose() {
         "required": ["short"],
     });
     super::trim_long_descriptions(&mut value);
-    assert!(
-        value.get("description").is_none(),
-        "241 字的顶层 description 必须被裁掉"
+    let expected_top = format!("{}…", "x".repeat(239));
+    assert_eq!(
+        value["description"].as_str().unwrap(),
+        expected_top.as_str(),
+        "241 字的顶层 description 必须截短到 240 字（带 `…`）"
     );
     assert_eq!(value["type"], json!("object"), "type 不许动");
     assert_eq!(value["required"], json!(["short"]), "required 不许动");
-    assert!(
-        value["properties"]["short"]["description"].is_string(),
-        "240 字的描述必须保留（边界是 >240 才裁）"
+    assert_eq!(
+        value["properties"]["short"]["description"]
+            .as_str()
+            .unwrap(),
+        "y".repeat(240),
+        "240 字的描述必须原样保留（边界是 >240 才裁）"
     );
-    assert!(
-        value["properties"]["long"].get("description").is_none(),
-        "241 字的嵌套描述必须被裁掉"
+    let expected_nested = format!("{}…", "z".repeat(239));
+    assert_eq!(
+        value["properties"]["long"]["description"].as_str().unwrap(),
+        expected_nested.as_str(),
+        "241 字的嵌套描述必须截短到 240 字（带 `…`）"
     );
 }

@@ -1429,15 +1429,20 @@ fn input_schema(tool: &ToolSpec) -> Value {
 }
 
 /// **两级帮助的裁剪口径**（director-desk `conciseSchema` 同款规则）：
-/// 递归删掉 schema 里超过 240 **字符**的 `description`（按 `chars().count()`，
+/// 把 schema 里超过 240 **字符**的 `description` 截短到 240 字（按 `chars().count()`，
 /// 不是字节 —— JS 的 `.length` 里一个汉字算 1 个字符，Rust 的 `.len()` 会算 3 个字节）。
+/// 截断留尾标 `…`（239 字 + `…` = 240 字），字段本身**保留** —— 精简清单也要让人
+/// 知道这个参数是干什么的（`mcp-schema-no-any` 等判据要求关键参数的描述在场；
+/// 2026-11-11 两级帮助分支 CI 曾把超长描述整个删掉，致 `brush_stroke.color` 与
+/// `export_png.path` 的描述在精简清单里消失，两条判据同轮红）。
 /// **只缩短文案，不改校验约束**：`type`／`required`／`additionalProperties` 一位不动。
 fn trim_long_descriptions(value: &mut Value) {
     match value {
         Value::Object(map) => {
-            if let Some(Value::String(description)) = map.get("description") {
+            if let Some(Value::String(description)) = map.get_mut("description") {
                 if description.chars().count() > 240 {
-                    map.remove("description");
+                    let truncated: String = description.chars().take(239).collect();
+                    *description = format!("{truncated}…");
                 }
             }
             for (_, child) in map.iter_mut() {
