@@ -890,14 +890,14 @@ fn push_json_field(out: &mut Vec<u8>, first: &mut bool, name: &str, value_bytes:
 /// 反序列化回来的 `Snapshot` 与原快照相等且 `verify()` 通过 ✓
 /// （本期测试 `snapshot_round_trip_keeps_state_equal` 钉住 ✓）。
 fn assemble_snapshot_bytes(shard_dir: &Path, snapshot: &yanshi_core::Snapshot) -> Result<Vec<u8>> {
-    let to_json = |value: &impl serde::Serialize| {
+    fn to_json<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
         serde_json::to_vec(value).map_err(|error| {
             YanshiError::new(
                 ErrorCode::InvalidArgument,
                 ErrorContext::detail(format!("快照序列化失败: {error}")),
             )
         })
-    };
+    }
     let state = &snapshot.state;
     let mut state_bytes = Vec::new();
     state_bytes.push(b'{');
@@ -1060,34 +1060,34 @@ fn assemble_snapshot_bytes(shard_dir: &Path, snapshot: &yanshi_core::Snapshot) -
 fn fingerprint_value(hasher: &mut Sha256, value: &serde_json::Value) {
     use serde_json::Value;
     match value {
-        Value::Null => hasher.update(&[0]),
+        Value::Null => hasher.update([0]),
         Value::Bool(flag) => {
-            hasher.update(&[1]);
-            hasher.update(&[u8::from(*flag)]);
+            hasher.update([1]);
+            hasher.update([u8::from(*flag)]);
         }
         Value::Number(number) => {
             if let Some(int) = number.as_i64() {
-                hasher.update(&[2]);
-                hasher.update(&int.to_le_bytes());
+                hasher.update([2]);
+                hasher.update(int.to_le_bytes());
             } else if let Some(uint) = number.as_u64() {
-                hasher.update(&[3]);
-                hasher.update(&uint.to_le_bytes());
+                hasher.update([3]);
+                hasher.update(uint.to_le_bytes());
             } else if let Some(float) = number.as_f64() {
-                hasher.update(&[4]);
-                hasher.update(&float.to_bits().to_le_bytes());
+                hasher.update([4]);
+                hasher.update(float.to_bits().to_le_bytes());
             }
         }
         Value::String(text) => fingerprint_str(hasher, 5, text),
         Value::Array(items) => {
-            hasher.update(&[6]);
-            hasher.update(&(items.len() as u64).to_le_bytes());
+            hasher.update([6]);
+            hasher.update((items.len() as u64).to_le_bytes());
             for item in items {
                 fingerprint_value(hasher, item);
             }
         }
         Value::Object(map) => {
-            hasher.update(&[7]);
-            hasher.update(&(map.len() as u64).to_le_bytes());
+            hasher.update([7]);
+            hasher.update((map.len() as u64).to_le_bytes());
             for (key, item) in map {
                 fingerprint_str(hasher, 8, key);
                 fingerprint_value(hasher, item);
@@ -1098,15 +1098,15 @@ fn fingerprint_value(hasher: &mut Sha256, value: &serde_json::Value) {
 
 /// 带标签＋长度前缀的字符串哈希（防 `"ab"+"c"` 与 `"a"+"bc"` 撞 ✓）。
 fn fingerprint_str(hasher: &mut Sha256, tag: u8, text: &str) {
-    hasher.update(&[tag]);
-    hasher.update(&(text.len() as u64).to_le_bytes());
+    hasher.update([tag]);
+    hasher.update((text.len() as u64).to_le_bytes());
     hasher.update(text.as_bytes());
 }
 
 /// 带标签的 `Option<String>` 哈希（`None` 与 `Some("")` 必须区分 ✓）。
 fn fingerprint_opt_str(hasher: &mut Sha256, tag: u8, value: &Option<String>) {
     match value {
-        None => hasher.update(&[0]),
+        None => hasher.update([0]),
         Some(text) => fingerprint_str(hasher, tag, text),
     }
 }
@@ -1123,24 +1123,24 @@ fn fingerprint_opt_str(hasher: &mut Sha256, tag: u8, value: &Option<String>) {
 fn object_shard_fingerprint(object: &yanshi_core::Object) -> String {
     let mut hasher = Sha256::new();
     fingerprint_str(&mut hasher, b'i', &object.id);
-    hasher.update(&object.seq.to_le_bytes());
+    hasher.update(object.seq.to_le_bytes());
     fingerprint_str(&mut hasher, b'l', &object.layer_id);
     if let Ok(text) = serde_json::to_string(&object.object_type) {
         fingerprint_str(&mut hasher, b't', &text);
     }
-    hasher.update(&object.z_index.to_le_bytes());
-    hasher.update(&[
+    hasher.update(object.z_index.to_le_bytes());
+    hasher.update([
         u8::from(object.visible),
         u8::from(object.enabled),
         u8::from(object.locked),
     ]);
     fingerprint_value(&mut hasher, &object.metadata);
     if let Ok(bytes) = serde_json::to_vec(&object.transform) {
-        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update((bytes.len() as u64).to_le_bytes());
         hasher.update(&bytes);
     }
     fingerprint_opt_str(&mut hasher, b's', &object.style);
-    hasher.update(&(object.versions.len() as u64).to_le_bytes());
+    hasher.update((object.versions.len() as u64).to_le_bytes());
     for version in &object.versions {
         fingerprint_str(&mut hasher, b'v', version);
     }
@@ -1148,7 +1148,7 @@ fn object_shard_fingerprint(object: &yanshi_core::Object) -> String {
     fingerprint_str(&mut hasher, b'r', &object.created_by);
     fingerprint_opt_str(&mut hasher, b'd', &object.deleted_by);
     fingerprint_value(&mut hasher, &object.data);
-    hasher.update(&(object.blobs.len() as u64).to_le_bytes());
+    hasher.update((object.blobs.len() as u64).to_le_bytes());
     for blob in &object.blobs {
         fingerprint_str(&mut hasher, b'b', blob.as_str());
     }
@@ -1558,13 +1558,12 @@ mod tests {
         use yanshi_core::{AtomKind, AtomLog};
         let mut log = AtomLog::new();
         {
-            let mut push =
-                |log: &mut AtomLog, kind: AtomKind, id: &str, payload: serde_json::Value| {
-                    log.append(
-                        yanshi_core::Atom::new(kind, "human:1", "session:a", payload).with_id(id),
-                    )
-                    .unwrap();
-                };
+            let push = |log: &mut AtomLog, kind: AtomKind, id: &str, payload: serde_json::Value| {
+                log.append(
+                    yanshi_core::Atom::new(kind, "human:1", "session:a", payload).with_id(id),
+                )
+                .unwrap();
+            };
             push(
                 &mut log,
                 AtomKind::CreateDocument,
