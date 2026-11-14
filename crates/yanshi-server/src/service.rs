@@ -322,8 +322,10 @@ pub struct BlobLifecycle {
 /// 3. `<exe>/assets` ✓ —— 覆盖"可执行文件与资产目录并列"的布局 ✓；
 /// 4. **可执行文件的祖父目录**下的 `assets` ✓：`<exe>/../../assets` ✓ ——
 ///    覆盖"从 `target/release/` 直接跑"这个**开发时最常见**的情形 ✓；
-/// 5. `<exe>/../../../assets` ✓ —— 覆盖测试二进制与 `cargo` 中间产物
-///    再深一级的布局（`target/debug/deps/yanshi_mcp-<hash>` ✓）。
+/// 5. 从可执行文件所在目录的第三级起逐级上跳、每级试 `assets` ✓（5 级）——
+///    覆盖测试二进制的布局：rustc 1.99 放在 `target/debug/deps/`（三级上跳到仓库根 ✓），
+///    rustc 1.100（2026-11-09 发布）改放到 `target/debug/build/<crate>/<hash>/out/`
+///    （六级上跳才到仓库根；写死级数在 2026-11-14 新头 CI 上实测红过 ✓）。
 ///
 /// **一个都找不到就返回 `(None, 注记)`** ✓（调用方据此启动失败 ✓，
 /// 不再悄悄拿一个不存在的目录继续跑 ✓），**而且不管找到没找到都要有一段说明** ✓
@@ -354,13 +356,27 @@ pub fn resolve_assets_dir(
             candidates.push(bin_dir.join("assets"));
             // 开发时：`target/release/yanshi-serve` ⇒ `<repo>/assets` ✓。
             candidates.push(bin_dir.join("../../assets"));
-            // 测试二进制与 `cargo` 的中间产物比可执行文件**再深一级** ✗：
-            // `target/debug/deps/yanshi_mcp-<hash>` ⇒ 需要 `../../../assets` ✓。
+            // 测试二进制所在目录的深度**会变** ✗：rustc 1.99 把它放
+            // `target/debug/deps/` ⇒ `../../../assets` 恰好到仓库根 ✓；
+            // rustc 1.100（2026-11-09 发布）改放到 `target/debug/build/<crate>/<hash>/out/`
+            // ⇒ 同样三级上跳只到 `target/debug/build/assets` ✗
+            // （2026-11-14 新头 CI：`asset_routes_still_serve_when_the_process_starts_elsewhere` 红 ✓）。
+            // **∴ 不再写死级数** ✗：从第三级起逐级上跳、每级试 `assets` ✓，5 级
+            // （`out/` 布局到仓库根要 6 级 ✓，留一级余量）。
             // **∴ 不补这一条 ✗**：`yanshi-mcp` 的端到端测试**找不到资产** ✗
             // ⇒ **∴ `create_layer` 的预览没有缩略图** ⇒ **∴ `thumb_url` 是 `None` ✗**
             // ⇒ **∴ 测试在 `unwrap()` 上崩 ✓**（真实门禁红灯 ✓，实测 ✓）。
             // **∴ 放在最后 ✗**：**不遮蔽**上面四条已文档化的布局 ✓。
-            candidates.push(bin_dir.join("../../../assets"));
+            {
+                let mut dir = bin_dir.join("../../..");
+                for _ in 0..5 {
+                    candidates.push(dir.join("assets"));
+                    match dir.parent() {
+                        Some(p) => dir = p.to_path_buf(),
+                        None => break,
+                    }
+                }
+            }
         }
     }
     // **显式路径存在但缺资产子目录 ⇒ 直接失败，不静默回退** ✓（报告问题 9 收窄版；仅 `explicit` 时触发，缺省值不触发、走回退链）：
