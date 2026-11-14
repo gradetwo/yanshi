@@ -322,10 +322,11 @@ pub struct BlobLifecycle {
 /// 3. `<exe>/assets` ✓ —— 覆盖"可执行文件与资产目录并列"的布局 ✓；
 /// 4. **可执行文件的祖父目录**下的 `assets` ✓：`<exe>/../../assets` ✓ ——
 ///    覆盖"从 `target/release/` 直接跑"这个**开发时最常见**的情形 ✓；
-/// 5. 从可执行文件所在目录的第三级起逐级上跳、每级试 `assets` ✓（5 级）——
+/// 5. 从可执行文件所在目录的祖先起逐级上跳、每级试 `assets` ✓（6 级）——
 ///    覆盖测试二进制的布局：rustc 1.99 放在 `target/debug/deps/`（三级上跳到仓库根 ✓），
 ///    rustc 1.100（2026-11-09 发布）改放到 `target/debug/build/<crate>/<hash>/out/`
-///    （六级上跳才到仓库根；写死级数在 2026-11-14 新头 CI 上实测红过 ✓）。
+///    （六级上跳才到仓库根；写死级数与 d9d9b99a 的 `..` 上跳在 2026-11-14 新头 CI 上
+///    实测红过 ✓，前者只到 `target/debug/build/assets`，后者方向走反、越走越浅 ✓）。
 ///
 /// **一个都找不到就返回 `(None, 注记)`** ✓（调用方据此启动失败 ✓，
 /// 不再悄悄拿一个不存在的目录继续跑 ✓），**而且不管找到没找到都要有一段说明** ✓
@@ -361,21 +362,17 @@ pub fn resolve_assets_dir(
             // rustc 1.100（2026-11-09 发布）改放到 `target/debug/build/<crate>/<hash>/out/`
             // ⇒ 同样三级上跳只到 `target/debug/build/assets` ✗
             // （2026-11-14 新头 CI：`asset_routes_still_serve_when_the_process_starts_elsewhere` 红 ✓）。
-            // **∴ 不再写死级数** ✗：从第三级起逐级上跳、每级试 `assets` ✓，5 级
-            // （`out/` 布局到仓库根要 6 级 ✓，留一级余量）。
+            // **∴ 不再写死级数** ✗：从可执行文件所在目录的祖先起逐级上跳、每级试 `assets` ✓，6 级
+            // （`out/` 布局到仓库根要 6 级 ✓）。
+            // d9d9b99a 的旧写法有方向错 ✗：`dir.parent()` 在含 `..` 的路径上按词法去掉一个 `..`，
+            // 上跳越走越浅（`build/assets` → `yanshi-http/assets` → …），仓库根从未被试到 ✗
+            // （2026-11-14 新头 CI run 43590684527 实测仍红 ✓）。
             // **∴ 不补这一条 ✗**：`yanshi-mcp` 的端到端测试**找不到资产** ✗
             // ⇒ **∴ `create_layer` 的预览没有缩略图** ⇒ **∴ `thumb_url` 是 `None` ✗**
             // ⇒ **∴ 测试在 `unwrap()` 上崩 ✓**（真实门禁红灯 ✓，实测 ✓）。
             // **∴ 放在最后 ✗**：**不遮蔽**上面四条已文档化的布局 ✓。
-            {
-                let mut dir = bin_dir.join("../../..");
-                for _ in 0..5 {
-                    candidates.push(dir.join("assets"));
-                    match dir.parent() {
-                        Some(p) => dir = p.to_path_buf(),
-                        None => break,
-                    }
-                }
+            for ancestor in bin_dir.ancestors().skip(3).take(6) {
+                candidates.push(ancestor.join("assets"));
             }
         }
     }
