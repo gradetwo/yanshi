@@ -22,9 +22,22 @@
 //      同为一个标识（today.wangda.yanshi，与 macOS bundle id 同一个），且图标
 //      按 hicolor 规范出 scalable SVG ＋ 48/64/128/256 PNG——三者不一致时
 //      Wayland 启动器里图标与窗口对不上号，且没有任何构建错误会提示。
+//   ⑥ 三处已实证的校验写法（2026-11-16 三轮同红的复盘，缺一不可）：
+//      a. 两条线的 DEB 校验不许 `dpkg-deb --contents … | grep -q`——grep 匹配后
+//         关管，tar 写 stdout 得 SIGPIPE 退 2，pipefail 下误报「文件缺失」
+//         （包里其实有文件；清单必须先落盘再 grep 文件）；
+//      b. DMG 冒烟后必须先按端口杀掉 yanshi-serve 进程树再卸载——只 kill 子 shell
+//         的话孤儿服务器占着挂载卷，hdiutil detach 报 Resource busy（exit 16）；
+//         且最终卸载必须带重试（detached=yes），不许裸 detach 一次失败就红；
+//      c. 脚本里不许出现非注释行的 `sed -i `（macOS BSD sed 要求 -i 带后缀；
+//         与 crates/yanshi-server/tests/script_portability.rs 同一条规则，
+//         注释行不算——那条测试跳过 `#` 开头的行）。
 //
 // **变异**：把 nightly.yml 里 `package-installer.sh` 的调用删掉 ⇒ ③ 红；
-//           把脚本里 linux 的扩展名改成 zip ⇒ ② 红。
+//           把脚本里 linux 的扩展名改成 zip ⇒ ② 红；
+//           把某条线的 `dpkg-deb --contents … > "$contents"` 改回管道 grep ⇒ ⑥a 红；
+//           删 `pkill -f "yanshi-serve` 行或 detach 重试 ⇒ ⑥b 红；
+//           把脚本里 `sed … > tmp && mv` 改回 `sed -i` ⇒ ⑥c 红。
 // **它证明什么（如实）**：只证明接线与命名契约在，不证明安装包真能装——
 // 那由两条发布线各自的校验步实证（msiexec /a、hdiutil 挂载、dpkg -i 后打 /health）。
 
@@ -75,6 +88,15 @@ if (!existsSync(SCRIPT)) {
   if (!/for size in 48 64 128 256/.test(scriptText)) {
     failures.push("package-installer.sh 的 PNG 图标尺寸档不是 48 64 128 256 ⇒ hicolor 图标集不全");
   }
+
+  // ⑥c sed -i（只查非注释行，与 script_portability.rs 同口径）。
+  const badSed = scriptText
+    .split("\n")
+    .map((line, i) => [i + 1, line])
+    .filter(([_, line]) => !line.trimStart().startsWith("#") && line.includes("sed -i "));
+  for (const [lineno] of badSed) {
+    failures.push(`package-installer.sh:${lineno} 有非注释行的 \`sed -i \` ⇒ macOS BSD sed 不接受无后缀 -i`);
+  }
 }
 
 // ③④ 两条发布线的接线与计数口径。
@@ -95,6 +117,22 @@ for (const wf of [".github/workflows/release.yml", ".github/workflows/nightly.ym
   }
   if (!/n_installers/.test(text)) {
     failures.push(`${wf} 的校验和计数断言没有 n_installers ⇒ 条目数与「归档+安装包」对不上，发布会被自己的断言拦死`);
+  }
+
+  // ⑥a DEB 清单不许走管道 grep（pipefail + SIGPIPE 假红；注释行不算——
+  //    解释文字里会逐字提到这个写法）。
+  const pipedGrep = text
+    .split("\n")
+    .some((line) => !line.trimStart().startsWith("#") && /dpkg-deb --contents[^|]*\|\s*grep/.test(line));
+  if (pipedGrep) {
+    failures.push(`${wf} 的 DEB 校验还在用 \`dpkg-deb --contents … | grep -q\` ⇒ pipefail 下 grep 关管致 tar SIGPIPE 假红，清单须先落盘再 grep 文件`);
+  }
+  // ⑥b DMG 冒烟后先杀服务器进程树再卸载，且卸载带重试。
+  if (!/pkill -f "yanshi-serve/.test(text)) {
+    failures.push(`${wf} 的 DMG 校验没有按端口杀 yanshi-serve 进程树 ⇒ 孤儿服务器占卷，hdiutil detach 报 Resource busy`);
+  }
+  if (!/detached=yes/.test(text)) {
+    failures.push(`${wf} 的 DMG 校验没有卸载重试（detached=yes）⇒ 服务器退出滞后时裸 detach 一次失败就红`);
   }
 }
 

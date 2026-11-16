@@ -252,11 +252,17 @@ jobs:
               deb=$(ls dist/*.deb | head -1)
               echo "-- DEB：$deb"
               dpkg-deb --info "$deb"
-              dpkg-deb --contents "$deb" | grep -q 'usr/lib/yanshi/bin/yanshi-serve' || { echo "✗ .deb 里没有 usr/lib/yanshi/bin/yanshi-serve"; exit 1; }
-              dpkg-deb --contents "$deb" | grep -q 'usr/bin/yanshi-serve' || { echo "✗ .deb 里没有 usr/bin/yanshi-serve"; exit 1; }
-              dpkg-deb --contents "$deb" | grep -q 'usr/share/applications/today.wangda.yanshi.desktop' || { echo "✗ .deb 里没有 .desktop 文件"; exit 1; }
-              dpkg-deb --contents "$deb" | grep -q 'usr/share/icons/hicolor/scalable/apps/today.wangda.yanshi.svg' || { echo "✗ .deb 里没有 hicolor scalable 图标"; exit 1; }
-              dpkg-deb --contents "$deb" | grep -q 'usr/share/icons/hicolor/256x256/apps/today.wangda.yanshi.png' || { echo "✗ .deb 里没有 hicolor 256 PNG 图标"; exit 1; }
+              # 清单先落盘再 grep：dpkg-deb --contents | grep -q 在 pipefail 下
+              # 必假红——grep 匹配后关管，tar 写 stdout 得 SIGPIPE 退 2 ⇒ 流水线
+              # 非零 ⇒ 误报「文件缺失」（文件其实在包里）。落盘也只解一次 tar。
+              contents=$(mktemp)
+              dpkg-deb --contents "$deb" > "$contents"
+              grep -q 'usr/lib/yanshi/bin/yanshi-serve' "$contents" || { echo "✗ .deb 里没有 usr/lib/yanshi/bin/yanshi-serve"; exit 1; }
+              grep -q 'usr/bin/yanshi-serve' "$contents" || { echo "✗ .deb 里没有 usr/bin/yanshi-serve"; exit 1; }
+              grep -q 'usr/share/applications/today.wangda.yanshi.desktop' "$contents" || { echo "✗ .deb 里没有 .desktop 文件"; exit 1; }
+              grep -q 'usr/share/icons/hicolor/scalable/apps/today.wangda.yanshi.svg' "$contents" || { echo "✗ .deb 里没有 hicolor scalable 图标"; exit 1; }
+              grep -q 'usr/share/icons/hicolor/256x256/apps/today.wangda.yanshi.png' "$contents" || { echo "✗ .deb 里没有 hicolor 256 PNG 图标"; exit 1; }
+              rm -f "$contents"
               sudo dpkg -i "$deb"
               work=$(mktemp -d); port=21988; log="$work/serve.log"
               yanshi-serve --bind "127.0.0.1:$port" --root "$work/root" --doc smoke --width 64 --height 64 >"$log" 2>&1 &
@@ -297,6 +303,12 @@ jobs:
                     sleep 0.5
                   done
                   kill "$pid" 2>/dev/null || true
+                  # yanshi.sh 会再派生 yanshi-serve 子进程：只 kill 子 shell 的话，
+                  # 孤儿 yanshi-serve 还占着挂载卷 ⇒ 最后 hdiutil detach 报 Resource
+                  # busy（exit 16）。按监听端口杀掉实际的服务器进程再卸载。
+                  sleep 1
+                  pkill -f "yanshi-serve.*127.0.0.1:$port" 2>/dev/null || true
+                  sleep 1
                   if [ "$ok" != yes ]; then
                     echo "✗ DMG 里的包起服务后 /health 没响应 ⇒ 这个安装包不能发"
                     tail -40 "$log" || true
@@ -309,7 +321,14 @@ jobs:
                   echo "（交叉腿：runner 架构跑不了这个二进制 ⇒ 只验结构与签名，不冒烟）"
                   ;;
               esac
-              hdiutil detach "$mnt" >/dev/null
+              # 卸载重试：服务器进程退出有滞后，第一次 detach 可能仍报 busy；
+              # 重试 5 次还卸不掉才响亮失败（不静默放过）。
+              detached=no
+              for _ in 1 2 3 4 5; do
+                if hdiutil detach "$mnt" >/dev/null 2>&1; then detached=yes; break; fi
+                sleep 2
+              done
+              [ "$detached" = yes ] || { echo "✗ DMG 卸载失败（卷仍被占用）"; exit 1; }
               ;;
             *-pc-windows-msvc)
               msi=$(ls dist/*.msi | head -1)

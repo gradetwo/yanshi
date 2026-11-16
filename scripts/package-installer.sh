@@ -442,8 +442,11 @@ if (-not (Test-Healthy)) {
 Start-Process "http://127.0.0.1:$port/"
 PS1
   # .cmd 必须是 CRLF 行尾（cmd.exe 对 LF-only 的批处理文件解析不可靠）。
+  # 不用 sed -i：macOS 自带 sed 要求 -i 带后缀，GNU 写法在 macOS bash 3.2 上
+  # 直接报错（script_portability 判据钉住）⇒ 一律写临时文件再 mv 回去。
   for f in "${payload}/yanshi.cmd" "${payload}/yanshi-open.cmd"; do
-    sed -i -e 's/\r$//' -e 's/$/\r/' "$f"
+    tmp=$(mktemp)
+    sed -e 's/\r$//' -e 's/$/\r/' "$f" > "$tmp" && mv "$tmp" "$f"
   done
 
   # 路径转换：heat/candle/light 是原生 Windows 程序，Git Bash 的 /tmp/... 路径
