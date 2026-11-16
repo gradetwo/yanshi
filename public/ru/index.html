@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','GTM-5WC4DS5B');</script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yanshi — headless-движок для рисования</title>
+<meta name="description" content="Yanshi — это ИИ-ориентированный headless-движок для рисования: каждое изменение — это атом, добавленный в журнал, а изображение — свёртка этого журнала. Ядро на чистом Rust работает нативно и в браузере через WebAssembly, в комплекте — MCP-сервер и веб-просмотрщик: люди и ИИ-агенты рисуют на одном холсте.">
+<link rel="canonical" href="https://yanshi.wangda.today/ru/">
+<link rel="alternate" hreflang="zh-Hans" href="https://yanshi.wangda.today/">
+<link rel="alternate" hreflang="en" href="https://yanshi.wangda.today/en/">
+<link rel="alternate" hreflang="fr" href="https://yanshi.wangda.today/fr/">
+<link rel="alternate" hreflang="es" href="https://yanshi.wangda.today/es/">
+<link rel="alternate" hreflang="pt-BR" href="https://yanshi.wangda.today/pt/">
+<link rel="alternate" hreflang="ja" href="https://yanshi.wangda.today/ja/">
+<link rel="alternate" hreflang="ko" href="https://yanshi.wangda.today/ko/">
+<link rel="alternate" hreflang="ru" href="https://yanshi.wangda.today/ru/">
+<link rel="alternate" hreflang="de" href="https://yanshi.wangda.today/de/">
+<link rel="alternate" hreflang="x-default" href="https://yanshi.wangda.today/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Yanshi — headless-движок для рисования">
+<meta property="og:description" content="Yanshi — это ИИ-ориентированный headless-движок для рисования: каждое изменение — это атом, добавленный в журнал, а изображение — свёртка этого журнала. Ядро на чистом Rust работает нативно и в браузере через WebAssembly, в комплекте — MCP-сервер и веб-просмотрщик: люди и ИИ-агенты рисуют на одном холсте.">
+<meta property="og:url" content="https://yanshi.wangda.today/ru/">
+<meta property="og:image" content="https://yanshi.wangda.today/assets/showcase/degas-four-dancers-oil.png">
+<meta property="og:locale" content="ru_RU">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Yanshi — headless-движок для рисования">
+<meta name="twitter:description" content="Yanshi — это ИИ-ориентированный headless-движок для рисования: каждое изменение — это атом, добавленный в журнал, а изображение — свёртка этого журнала. Ядро на чистом Rust работает нативно и в браузере через WebAssembly, в комплекте — MCP-сервер и веб-просмотрщик: люди и ИИ-агенты рисуют на одном холсте.">
+<meta name="twitter:image" content="https://yanshi.wangda.today/assets/showcase/degas-four-dancers-oil.png">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f7f5f1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1a1a1f" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/assets/brand/svg/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/assets/brand/png/favicon-180.png">
+<link rel="stylesheet" href="/styles.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Yanshi",
+  "url": "https://yanshi.wangda.today/ru/",
+  "description": "Yanshi — это ИИ-ориентированный headless-движок для рисования: каждое изменение — это атом, добавленный в журнал, а изображение — свёртка этого журнала. Ядро на чистом Rust работает нативно и в браузере через WebAssembly, в комплекте — MCP-сервер и веб-просмотрщик: люди и ИИ-агенты рисуют на одном холсте.",
+  "applicationCategory": "DesignApplication",
+  "operatingSystem": "Linux, macOS, Windows, Web browser",
+  "inLanguage": "ru",
+  "license": "https://opensource.org/licenses/MIT",
+  "codeRepository": "https://github.com/gradetwo/yanshi",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+</head>
+<body>
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-5WC4DS5B" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<div class="wrap">
+<header>
+<a class="brand" href="/ru/" aria-label="Yanshi">
+<img class="for-light" src="/assets/brand/svg/logo-horizontal.svg" alt="Yanshi" width="420" height="160">
+<img class="for-dark" src="/assets/brand/svg/logo-horizontal-dark.svg" alt="Yanshi" width="420" height="160">
+</a>
+<nav class="langs"><details><summary>Русский</summary><ul>
+<li><a href="/" hreflang="zh-Hans" lang="zh-CN">中文</a></li>
+<li><a href="/en/" hreflang="en" lang="en">English</a></li>
+<li><a href="/fr/" hreflang="fr" lang="fr">Français</a></li>
+<li><a href="/es/" hreflang="es" lang="es">Español</a></li>
+<li><a href="/pt/" hreflang="pt-BR" lang="pt-BR">Português</a></li>
+<li><a href="/ja/" hreflang="ja" lang="ja">日本語</a></li>
+<li><a href="/ko/" hreflang="ko" lang="ko">한국어</a></li>
+<li class="current"><span aria-current="page">Русский</span></li>
+<li><a href="/de/" hreflang="de" lang="de">Deutsch</a></li>
+</ul></details></nav>
+</header>
+<main>
+<h1>Yanshi 偃师</h1>
+<p class="lede">ИИ-ориентированный headless-движок для рисования — <strong>холст, на котором люди и ИИ творят вместе</strong>.</p>
+<ul>
+<li><strong>Операции — это атомы.</strong> Каждое изменение — атом, добавленный в журнал, а изображение — свёртка этого журнала; отмена и повтор просто двигают указатель.</li>
+<li><strong>Одно ядро, два хоста.</strong> Одно и то же ядро на Rust работает нативно на сервере и как WebAssembly в браузере, поэтому локальный и серверный рендеринг — одна реализация, а не два приближения.</li>
+<li><strong>Пакет самодостаточен.</strong> Пакет <code>.yanshi</code> содержит журнал атомов и все blob-объекты, на которые он ссылается, и при импорте в другое место воспроизводит ту же картину.</li>
+</ul>
+<p>Поверх этого движка работают <strong>MCP-сервер</strong> и <strong>веб-просмотрщик</strong>, поэтому агент и человек работают с одним документом.</p>
+
+<h2>Установка</h2>
+<p>Готовые бинарные сборки, <strong>тулчейн Rust не нужен</strong> — Linux x86_64 (статическая), macOS Intel и Apple Silicon:</p>
+<pre><code>curl -fsSL https://raw.githubusercontent.com/gradetwo/yanshi/main/scripts/install.sh | sh</code></pre>
+<p>Скрипт определяет релизный артефакт для вашей платформы, <strong>проверяет его SHA256</strong> по официальному <code>SHA256SUMS</code>, распаковывает в <code>~/.local/share/yanshi/&lt;версия&gt;</code> и кладёт тонкие обёртки для <code>yanshi-serve</code> и <code>yanshi-mcp</code> в <code>~/.local/bin</code>. Пакет <strong>самодостаточен</strong>: кисти, превью кистей, материалы, палитры, текстуры и ядро WASM внутри, а бинарники находят их по структуре пакета (<code>bin/…</code> рядом с <code>share/yanshi/…</code>), поэтому всё работает, куда бы вы ни распаковали.</p>
+<pre><code>yanshi-serve --root ~/paint --doc mydoc --bind 127.0.0.1:8080   # затем откройте http://127.0.0.1:8080/
+yanshi-mcp   --root ~/paint --doc mydoc                          # MCP-сервер через stdio, для MCP-клиентов
+yanshi-mcp   --list-tools --profiles core                        # только показать список инструментов</code></pre>
+<p>Настройки: <code>YANSHI_VERSION</code>, <code>YANSHI_PREFIX</code>, <code>YANSHI_BIN_DIR</code>, <code>YANSHI_DRY_RUN=1</code>. <strong>Платформы без готовой сборки</strong> — Linux arm64 и Windows: соберите из исходников (<code>cargo build --release -p yanshi-http -p yanshi-mcp</code> или <code>make release</code>) либо вручную распакуйте пакет для Windows со страницы релизов.</p>
+
+<h2>Быстрый старт</h2>
+<p>Нужны <strong>Rust</strong> (стабильный тулчейн, зафиксированный в <code>rust-toolchain.toml</code>, с <code>rustfmt</code> и <code>clippy</code>) и <strong><code>make</code></strong>. Для <strong>браузерного ядра</strong> (рендеринг на клиенте) добавьте также <code>rustup target add wasm32-unknown-unknown</code> и <code>wasm-bindgen-cli</code> <strong>0.2.129</strong>; <strong>без них сервер всё равно работает</strong>, а просмотрщик рендерит на стороне сервера.</p>
+<pre><code>git clone https://github.com/gradetwo/yanshi.git
+cd yanshi
+make dev        # собирает ядро WASM, если есть тулчейн, собирает и запускает ⇒ http://127.0.0.1:8110/</code></pre>
+<p>Данные по умолчанию лежат в <code>~/.local/share/yanshi/workspace</code>. Чтобы сменить порт или корень данных, передавайте <strong>переменные окружения</strong> (<code>make dev</code> не пробрасывает Make-переменные в рецепт, а <code>make serve</code> явно передаёт <code>--port</code>):</p>
+<pre><code>PORT=9000 make dev
+make serve PORT=9000</code></pre>
+<p>Перед отправкой запускайте <code>make check</code> (формат, линт, тесты); <code>make help</code> перечисляет все цели.</p>
+
+<h2>Текущее состояние</h2>
+<ul>
+<li>Версия <strong>0.3.2</strong>, с <strong>готовыми релизными пакетами для пяти платформ</strong> (одна строка <code>curl</code>, см. выше); исходники на GitHub, а <code>make release</code> по-прежнему позволяет собрать пакет самостоятельно.</li>
+<li>Группа инструментов <code>semantic</code> по решению только зарезервирована и не реализована.</li>
+<li>Браузерное ядро — артефакт сборки, в свежем клоне его нет; без него ничего не ломается, а просмотрщик возвращается к серверному рендерингу.</li>
+</ul>
+
+<h2>Откуда взялось название</h2>
+<p>Яньши — мастер из «Ле-цзы» (глава «Вопросы Тана»), который строит механического артиста, умеющего петь и танцевать. Отрывок в оригинале:</p>
+<blockquote><p>周穆王西巡狩，越昆侖，不至弇山。反還，未及中國，道有獻工人名偃師，穆王薦之，問曰：「若有何能？」偃師曰：「臣唯命所試。然臣已有所造，願王先觀之。」穆王曰：「日以俱來，吾與若俱觀之。」翌日，偃師謁見王。王薦之曰：「若與偕來者何人？」對曰：「臣之所造能倡者。」穆王驚視之，趨步俯仰，信人也。巧夫，顉其頤，則歌合律；捧其手，則舞應節。千變萬化，惟意所適。王以為實人也，與盛姬內御並觀之。技將終，倡者瞬其目而招王之左右侍妾。王大怒，立欲誅偃師。偃師大懾，立剖散倡者以示王，皆傅會革木膠漆白黑丹青之所為。王諦料之，內則肝膽心肺脾腎腸胃，外則筋骨支節皮毛齒髮，皆假物也，而無不畢具者。合會復如初見。王試廢其心，則口不能言；廢其肝，則目不能視；廢其腎，則足不能步。穆王始悅而歎曰：「人之巧乃可與造化者同功乎！」詔貳車載之以歸。夫班輸之雲梯，墨翟之飛鳶，自謂能之極也。弟子東門賈、禽滑釐聞偃師之巧以告二子，二子終身不敢語藝，而時執規矩。</p>
+<p class="muted">По изданию <a href="https://ctext.org/liezi/tang-wen/zhs">Chinese Text Project, «Ле-цзы», «Тан вэнь»</a>; здесь приведено в упрощённых иероглифах.
+<p>Заимствовать стоит не мастерство, а то, что <strong>конструкция и поведение разделимы</strong>: вскрытая фигура, которая поёт и танцует, — это кожа, дерево, клей, лак и пигменты; уберите сердце, печень или почки — и она не сможет говорить, видеть или ходить; <strong>соберите обратно — и она как прежде</strong>.</p>
+<p>Отрывок завершается восхищением царя: мастерство человека может сравниться с самой природой. <strong>Мы на это не претендуем.</strong> Проект записывает, как устроен инструмент, и чего он не умеет — так же честно, как и то, что умеет.</p>
+
+<h2>Logo</h2>
+<p>Знак — это <strong>рогатка</strong>: Y-образная рамка, две резинки и красный шарик. Вдохновлён репликой из фильма <em>Who Cares</em> (《谁说我不在乎》):</p>
+<blockquote><p>抽出裤衩里的猴皮筋，做成弹弓打你们家玻璃。</p><p>(Вытащи резинку из трусов, сделай рогатку и разбей окно в вашем доме.)</p>
+<p class="muted"><a href="https://www.bilibili.com/video/BV1Rw411c7Bx/">Фрагмент</a> на bilibili; права на фильм принадлежат его правообладателям.
+<p>Заимствован жест из шутки — <strong>сделать пригодную вещь из того, что есть под рукой</strong>. Это и есть позиция проекта: записать конструкцию, использовать то, что работает, и честно говорить, когда не работает.</p>
+
+<h2>Контакты и исходники</h2>
+<p>Сообщения об ошибках и сотрудничество: <a href="mailto:yanshi@wangda.today?subject=%5BYanshi%5D%20">yanshi@wangda.today</a>. О проблемах безопасности пишите почтой, а не в публичные issue.</p>
+<ul class="links">
+<li>Репозиторий: <a href="https://github.com/gradetwo/yanshi">github.com/gradetwo/yanshi</a> · скачать исходники (zip): <a href="https://github.com/gradetwo/yanshi/archive/refs/heads/main.zip">main.zip</a></li>
+<li>Документация: <a href="https://github.com/gradetwo/yanshi/blob/main/README.md">README.md</a> · <a href="https://github.com/gradetwo/yanshi/blob/main/docs/guide.md">руководство</a> · проектный документ (авторитетный, на китайском): <a href="https://github.com/gradetwo/yanshi/blob/main/docs/design/yanshi-v1.0-draft4.md">yanshi-v1.0-draft4.md</a></li>
+</ul>
+
+        <section class="showcase" id="showcase"><h2>Работы</h2><div class="rail" tabindex="0"><a class="slide" href="/assets/showcase/degas-backstage-oil.png"><img src="/assets/showcase/degas-backstage-oil.png" alt="Дега: «За кулисами»" loading="lazy"></a><a class="slide" href="/assets/showcase/degas-four-dancers-oil.png"><img src="/assets/showcase/degas-four-dancers-oil.png" alt="Дега: «Четыре танцовщицы»" loading="lazy"></a><a class="slide" href="/assets/showcase/ballet-reference-study-4k.png"><img src="/assets/showcase/ballet-reference-study-4k.png" alt="Балетный референсный этюд (4K)" loading="lazy"></a></div><p class="hint">Листайте вбок, чтобы увидеть ещё; клик открывает оригинал в 4K.</p></section>
+
+      </main>
+<footer>
+<p>Лицензия MIT · © 2026 The Yanshi Authors</p>
+<p><a href="https://github.com/gradetwo/yanshi">GitHub</a> · <a href="mailto:yanshi@wangda.today?subject=%5BYanshi%5D%20">yanshi@wangda.today</a> · <a href="https://github.com/gradetwo/yanshi/archive/refs/heads/main.zip">Скачать исходники</a> · <a href="https://github.com/gradetwo/yanshi/blob/main/docs/design/yanshi-v1.0-draft4.md">Проектный документ</a></p>
+</footer>
+</div>
+</body>
+</html>

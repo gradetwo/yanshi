@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','GTM-5WC4DS5B');</script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yanshi — um motor de pintura headless</title>
+<meta name="description" content="O Yanshi é um motor de pintura headless nativo de IA: cada edição é um átomo anexado a um registro, e a imagem é a dobra desse registro. Um núcleo em Rust puro roda nativamente e no navegador via WebAssembly, com um servidor MCP e um visualizador web — pessoas e agentes de IA pintam na mesma tela.">
+<link rel="canonical" href="https://yanshi.wangda.today/pt/">
+<link rel="alternate" hreflang="zh-Hans" href="https://yanshi.wangda.today/">
+<link rel="alternate" hreflang="en" href="https://yanshi.wangda.today/en/">
+<link rel="alternate" hreflang="fr" href="https://yanshi.wangda.today/fr/">
+<link rel="alternate" hreflang="es" href="https://yanshi.wangda.today/es/">
+<link rel="alternate" hreflang="pt-BR" href="https://yanshi.wangda.today/pt/">
+<link rel="alternate" hreflang="ja" href="https://yanshi.wangda.today/ja/">
+<link rel="alternate" hreflang="ko" href="https://yanshi.wangda.today/ko/">
+<link rel="alternate" hreflang="ru" href="https://yanshi.wangda.today/ru/">
+<link rel="alternate" hreflang="de" href="https://yanshi.wangda.today/de/">
+<link rel="alternate" hreflang="x-default" href="https://yanshi.wangda.today/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Yanshi — um motor de pintura headless">
+<meta property="og:description" content="O Yanshi é um motor de pintura headless nativo de IA: cada edição é um átomo anexado a um registro, e a imagem é a dobra desse registro. Um núcleo em Rust puro roda nativamente e no navegador via WebAssembly, com um servidor MCP e um visualizador web — pessoas e agentes de IA pintam na mesma tela.">
+<meta property="og:url" content="https://yanshi.wangda.today/pt/">
+<meta property="og:image" content="https://yanshi.wangda.today/assets/showcase/degas-four-dancers-oil.png">
+<meta property="og:locale" content="pt_BR">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Yanshi — um motor de pintura headless">
+<meta name="twitter:description" content="O Yanshi é um motor de pintura headless nativo de IA: cada edição é um átomo anexado a um registro, e a imagem é a dobra desse registro. Um núcleo em Rust puro roda nativamente e no navegador via WebAssembly, com um servidor MCP e um visualizador web — pessoas e agentes de IA pintam na mesma tela.">
+<meta name="twitter:image" content="https://yanshi.wangda.today/assets/showcase/degas-four-dancers-oil.png">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f7f5f1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1a1a1f" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/assets/brand/svg/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/assets/brand/png/favicon-180.png">
+<link rel="stylesheet" href="/styles.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Yanshi",
+  "url": "https://yanshi.wangda.today/pt/",
+  "description": "O Yanshi é um motor de pintura headless nativo de IA: cada edição é um átomo anexado a um registro, e a imagem é a dobra desse registro. Um núcleo em Rust puro roda nativamente e no navegador via WebAssembly, com um servidor MCP e um visualizador web — pessoas e agentes de IA pintam na mesma tela.",
+  "applicationCategory": "DesignApplication",
+  "operatingSystem": "Linux, macOS, Windows, Web browser",
+  "inLanguage": "pt-BR",
+  "license": "https://opensource.org/licenses/MIT",
+  "codeRepository": "https://github.com/gradetwo/yanshi",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+</head>
+<body>
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-5WC4DS5B" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<div class="wrap">
+<header>
+<a class="brand" href="/pt/" aria-label="Yanshi">
+<img class="for-light" src="/assets/brand/svg/logo-horizontal.svg" alt="Yanshi" width="420" height="160">
+<img class="for-dark" src="/assets/brand/svg/logo-horizontal-dark.svg" alt="Yanshi" width="420" height="160">
+</a>
+<nav class="langs"><details><summary>Português</summary><ul>
+<li><a href="/" hreflang="zh-Hans" lang="zh-CN">中文</a></li>
+<li><a href="/en/" hreflang="en" lang="en">English</a></li>
+<li><a href="/fr/" hreflang="fr" lang="fr">Français</a></li>
+<li><a href="/es/" hreflang="es" lang="es">Español</a></li>
+<li class="current"><span aria-current="page">Português</span></li>
+<li><a href="/ja/" hreflang="ja" lang="ja">日本語</a></li>
+<li><a href="/ko/" hreflang="ko" lang="ko">한국어</a></li>
+<li><a href="/ru/" hreflang="ru" lang="ru">Русский</a></li>
+<li><a href="/de/" hreflang="de" lang="de">Deutsch</a></li>
+</ul></details></nav>
+</header>
+<main>
+<h1>Yanshi 偃师</h1>
+<p class="lede">Um motor de pintura headless nativo de IA — <strong>uma tela onde pessoas e IA criam juntas</strong>.</p>
+<ul>
+<li><strong>As operações são átomos.</strong> Cada edição é um átomo anexado a um registro, e a imagem é a dobra desse registro; desfazer e refazer movem um ponteiro.</li>
+<li><strong>Um núcleo, dois hospedeiros.</strong> O mesmo núcleo em Rust roda nativamente no servidor e como WebAssembly no navegador, então a renderização local e a do servidor são uma única implementação, não duas aproximações.</li>
+<li><strong>Um pacote autossuficiente.</strong> Um pacote <code>.yanshi</code> carrega o registro de átomos e todos os blobs que ele referencia, e importá-lo em outro lugar reproduz a imagem.</li>
+</ul>
+<p>Sobre esse motor ficam um <strong>servidor MCP</strong> e um <strong>visualizador web</strong>, para que um agente e uma pessoa trabalhem no mesmo documento.</p>
+
+<h2>Instalação</h2>
+<p>Binários pré-compilados, <strong>sem precisar instalar o Rust</strong> — Linux x86_64 (estático), macOS Intel e Apple Silicon:</p>
+<pre><code>curl -fsSL https://raw.githubusercontent.com/gradetwo/yanshi/main/scripts/install.sh | sh</code></pre>
+<p>O script identifica o artefato de lançamento da sua plataforma, <strong>verifica o SHA256</strong> dele com o <code>SHA256SUMS</code> oficial, descompacta em <code>~/.local/share/yanshi/&lt;versão&gt;</code> e coloca lançadores finos de <code>yanshi-serve</code> e <code>yanshi-mcp</code> em <code>~/.local/bin</code>. O pacote é <strong>autossuficiente</strong>: pincéis, pré-visualizações de pincéis, mídias, paletas, texturas e o núcleo WASM estão dentro, e os binários os encontram pelo layout do pacote (<code>bin/…</code> ao lado de <code>share/yanshi/…</code>), então roda em qualquer lugar onde for descompactado.</p>
+<pre><code>yanshi-serve --root ~/paint --doc mydoc --bind 127.0.0.1:8080   # depois abra http://127.0.0.1:8080/
+yanshi-mcp   --root ~/paint --doc mydoc                          # servidor MCP via stdio, para clientes MCP
+yanshi-mcp   --list-tools --profiles core                        # apenas mostrar a superfície de ferramentas</code></pre>
+<p>Ajustes: <code>YANSHI_VERSION</code>, <code>YANSHI_PREFIX</code>, <code>YANSHI_BIN_DIR</code>, <code>YANSHI_DRY_RUN=1</code>. <strong>Plataformas sem pacote pré-compilado</strong> — Linux arm64 e Windows: compile a partir do código-fonte (<code>cargo build --release -p yanshi-http -p yanshi-mcp</code>, ou <code>make release</code>), ou descompacte manualmente o pacote do Windows a partir da página de lançamentos.</p>
+
+<h2>Início rápido</h2>
+<p>Você precisa de <strong>Rust</strong> (a toolchain estável fixada pelo <code>rust-toolchain.toml</code>, com <code>rustfmt</code> e <code>clippy</code>) e de <strong><code>make</code></strong>. Para o <strong>núcleo do navegador</strong> (renderização no cliente), adicione também <code>rustup target add wasm32-unknown-unknown</code> e <code>wasm-bindgen-cli</code> <strong>0.2.129</strong>; <strong>sem eles o servidor roda mesmo assim</strong> e o visualizador renderiza no servidor.</p>
+<pre><code>git clone https://github.com/gradetwo/yanshi.git
+cd yanshi
+make dev        # compila o núcleo WASM se a toolchain estiver presente, compila e serve ⇒ http://127.0.0.1:8110/</code></pre>
+<p>Os dados ficam, por padrão, em <code>~/.local/share/yanshi/workspace</code>. Para mudar a porta ou a raiz de dados, use <strong>variáveis de ambiente</strong> (o <code>make dev</code> não repassa variáveis do Make para a receita, enquanto o <code>make serve</code> passa <code>--port</code> explicitamente):</p>
+<pre><code>PORT=9000 make dev
+make serve PORT=9000</code></pre>
+<p>Rode <code>make check</code> (formatação, lint, testes) antes de enviar; <code>make help</code> lista todos os alvos.</p>
+
+<h2>Estado atual</h2>
+<ul>
+<li>Versão <strong>0.3.2</strong>, com <strong>pacotes de lançamento pré-compilados para cinco plataformas</strong> (uma linha de <code>curl</code>, veja acima); o código está no GitHub e o <code>make release</code> continua permitindo empacotar por conta própria.</li>
+<li>O grupo de ferramentas <code>semantic</code> está reservado por decisão e não foi implementado.</li>
+<li>O núcleo do lado do navegador é um artefato de compilação e um clone novo não o contém; sem ele nada quebra e o visualizador volta a renderizar no servidor.</li>
+</ul>
+
+<h2>De onde vem o nome</h2>
+<p>Yanshi é o artífice do <em>Liezi</em>, em “Perguntas de Tang”, que constrói um autômato capaz de cantar e dançar. A passagem, no original:</p>
+<blockquote><p>周穆王西巡狩，越昆侖，不至弇山。反還，未及中國，道有獻工人名偃師，穆王薦之，問曰：「若有何能？」偃師曰：「臣唯命所試。然臣已有所造，願王先觀之。」穆王曰：「日以俱來，吾與若俱觀之。」翌日，偃師謁見王。王薦之曰：「若與偕來者何人？」對曰：「臣之所造能倡者。」穆王驚視之，趨步俯仰，信人也。巧夫，顉其頤，則歌合律；捧其手，則舞應節。千變萬化，惟意所適。王以為實人也，與盛姬內御並觀之。技將終，倡者瞬其目而招王之左右侍妾。王大怒，立欲誅偃師。偃師大懾，立剖散倡者以示王，皆傅會革木膠漆白黑丹青之所為。王諦料之，內則肝膽心肺脾腎腸胃，外則筋骨支節皮毛齒髮，皆假物也，而無不畢具者。合會復如初見。王試廢其心，則口不能言；廢其肝，則目不能視；廢其腎，則足不能步。穆王始悅而歎曰：「人之巧乃可與造化者同功乎！」詔貳車載之以歸。夫班輸之雲梯，墨翟之飛鳶，自謂能之極也。弟子東門賈、禽滑釐聞偃師之巧以告二子，二子終身不敢語藝，而時執規矩。</p>
+<p class="muted">Conforme o <a href="https://ctext.org/liezi/tang-wen/zhs">Chinese Text Project, <em>Liezi</em>, “Tang Wen”</a>; transcrito aqui em caracteres simplificados.
+<p>O que vale a pena tomar emprestado não é a engenhosidade, mas o fato de que <strong>a construção e o comportamento são separáveis</strong>: aberto, o personagem que canta e dança é couro, madeira, cola, laca e pigmentos; tire-lhe o coração, o fígado ou os rins e ele já não fala, enxerga ou anda; <strong>monte-o de novo e ele volta a ser como era</strong>.</p>
+<p>A passagem termina com o espanto do rei: tamanha arte poderia rivalizar com a natureza. <strong>Nós não afirmamos isso.</strong> O projeto escreve como a ferramenta é construída, e o que ela não consegue fazer tanto quanto o que consegue.</p>
+
+<h2>Logo</h2>
+<p>A marca é um <strong>estilingue</strong>: uma forquilha, dois elásticos e uma bolinha vermelha. Ela se inspira em uma fala do filme <em>Who Cares</em> (《谁说我不在乎》):</p>
+<blockquote><p>抽出裤衩里的猴皮筋，做成弹弓打你们家玻璃。</p><p>(Tire o elástico da cueca e faça um estilingue para quebrar o vidro da sua casa.)</p>
+<p class="muted"><a href="https://www.bilibili.com/video/BV1Rw411c7Bx/">Trecho</a> no bilibili; os direitos do filme pertencem aos seus detentores.
+<p>O que ela toma emprestado é o gesto de uma piada: <strong>fazer algo utilizável com o que estiver à mão</strong>, que é a mesma atitude do projeto: escrever a construção, usar o que funciona e dizer quando não funciona.</p>
+
+<h2>Contato e código-fonte</h2>
+<p>Relatos de bugs e colaboração: <a href="mailto:yanshi@wangda.today?subject=%5BYanshi%5D%20">yanshi@wangda.today</a>. Para questões de segurança, escreva para nós em vez de abrir uma issue pública.</p>
+<ul class="links">
+<li>Repositório: <a href="https://github.com/gradetwo/yanshi">github.com/gradetwo/yanshi</a> · download do código-fonte (zip): <a href="https://github.com/gradetwo/yanshi/archive/refs/heads/main.zip">main.zip</a></li>
+<li>Documentação: <a href="https://github.com/gradetwo/yanshi/blob/main/README.md">README.md</a> · <a href="https://github.com/gradetwo/yanshi/blob/main/docs/guide.md">guia</a> · documento de design (autoritativo, em chinês): <a href="https://github.com/gradetwo/yanshi/blob/main/docs/design/yanshi-v1.0-draft4.md">yanshi-v1.0-draft4.md</a></li>
+</ul>
+
+        <section class="showcase" id="showcase"><h2>Obras</h2><div class="rail" tabindex="0"><a class="slide" href="/assets/showcase/degas-backstage-oil.png"><img src="/assets/showcase/degas-backstage-oil.png" alt="Degas: Bastidores" loading="lazy"></a><a class="slide" href="/assets/showcase/degas-four-dancers-oil.png"><img src="/assets/showcase/degas-four-dancers-oil.png" alt="Degas: Quatro dançarinas" loading="lazy"></a><a class="slide" href="/assets/showcase/ballet-reference-study-4k.png"><img src="/assets/showcase/ballet-reference-study-4k.png" alt="Estudo de referência de balé (4K)" loading="lazy"></a></div><p class="hint">Deslize para os lados para ver mais; clique para o original em 4K.</p></section>
+
+      </main>
+<footer>
+<p>Licença MIT · © 2026 The Yanshi Authors</p>
+<p><a href="https://github.com/gradetwo/yanshi">GitHub</a> · <a href="mailto:yanshi@wangda.today?subject=%5BYanshi%5D%20">yanshi@wangda.today</a> · <a href="https://github.com/gradetwo/yanshi/archive/refs/heads/main.zip">Baixar o código-fonte</a> · <a href="https://github.com/gradetwo/yanshi/blob/main/docs/design/yanshi-v1.0-draft4.md">Documento de design</a></p>
+</footer>
+</div>
+</body>
+</html>

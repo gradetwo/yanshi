@@ -47,6 +47,23 @@ header .brand .for-dark { display: none; }
   header .brand .for-dark { display: block; }
 }
 header nav { font-size: 0.9rem; white-space: nowrap; }
+/* 语言切换：纯 <details> 下拉，零脚本（本站约定）。当前语言在列表里以 ✓ 标出、不可点。 */
+header nav.langs { position: relative; }
+.langs summary { cursor: pointer; list-style: none; color: var(--link); }
+.langs summary::-webkit-details-marker { display: none; }
+.langs summary::after { content: "▾"; margin-left: 0.3em; font-size: 0.8em; }
+.langs details[open ] summary::after { content: "▴"; }
+.langs ul {
+  position: absolute; right: 0; top: calc(100% + 0.4rem); z-index: 20;
+  margin: 0; padding: 0.35rem 0; list-style: none; min-width: 10.5rem;
+  background: var(--bg); border: 1px solid var(--rule); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+}
+.langs li { margin: 0; }
+.langs li a, .langs li span { display: block; padding: 0.32rem 0.9rem; }
+.langs li a:hover { text-decoration: none; background: var(--code-bg); }
+.langs .current span { font-weight: 600; color: var(--fg); }
+.langs .current span::after { content: "✓"; margin-left: 0.45em; color: var(--accent); }
 h1 { font-size: 1.6rem; line-height: 1.3; margin: 2.5rem 0 0.75rem; font-weight: 600; }
 h2 {
   font-size: 1.05rem; font-weight: 600; margin: 2.25rem 0 0.5rem;

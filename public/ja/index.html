@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','GTM-5WC4DS5B');</script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yanshi — ヘッドレス描画エンジン</title>
+<meta name="description" content="Yanshi は AI ネイティブなヘッドレス描画エンジンです。すべての編集はログに追記されるアトム（原子）であり、絵はそのログを折り畳んだ結果です。純粋な Rust カーネルがネイティブ環境とブラウザ（WebAssembly）の両方で動作し、MCP サーバーと Web ビューアを備え、人と AI エージェントが同じキャンバスで描けます。">
+<link rel="canonical" href="https://yanshi.wangda.today/ja/">
+<link rel="alternate" hreflang="zh-Hans" href="https://yanshi.wangda.today/">
+<link rel="alternate" hreflang="en" href="https://yanshi.wangda.today/en/">
+<link rel="alternate" hreflang="fr" href="https://yanshi.wangda.today/fr/">
+<link rel="alternate" hreflang="es" href="https://yanshi.wangda.today/es/">
+<link rel="alternate" hreflang="pt-BR" href="https://yanshi.wangda.today/pt/">
+<link rel="alternate" hreflang="ja" href="https://yanshi.wangda.today/ja/">
+<link rel="alternate" hreflang="ko" href="https://yanshi.wangda.today/ko/">
+<link rel="alternate" hreflang="ru" href="https://yanshi.wangda.today/ru/">
+<link rel="alternate" hreflang="de" href="https://yanshi.wangda.today/de/">
+<link rel="alternate" hreflang="x-default" href="https://yanshi.wangda.today/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Yanshi — ヘッドレス描画エンジン">
+<meta property="og:description" content="Yanshi は AI ネイティブなヘッドレス描画エンジンです。すべての編集はログに追記されるアトム（原子）であり、絵はそのログを折り畳んだ結果です。純粋な Rust カーネルがネイティブ環境とブラウザ（WebAssembly）の両方で動作し、MCP サーバーと Web ビューアを備え、人と AI エージェントが同じキャンバスで描けます。">
+<meta property="og:url" content="https://yanshi.wangda.today/ja/">
+<meta property="og:image" content="https://yanshi.wangda.today/assets/showcase/degas-four-dancers-oil.png">
+<meta property="og:locale" content="ja_JP">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Yanshi — ヘッドレス描画エンジン">
+<meta name="twitter:description" content="Yanshi は AI ネイティブなヘッドレス描画エンジンです。すべての編集はログに追記されるアトム（原子）であり、絵はそのログを折り畳んだ結果です。純粋な Rust カーネルがネイティブ環境とブラウザ（WebAssembly）の両方で動作し、MCP サーバーと Web ビューアを備え、人と AI エージェントが同じキャンバスで描けます。">
+<meta name="twitter:image" content="https://yanshi.wangda.today/assets/showcase/degas-four-dancers-oil.png">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f7f5f1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1a1a1f" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/assets/brand/svg/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/assets/brand/png/favicon-180.png">
+<link rel="stylesheet" href="/styles.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Yanshi",
+  "url": "https://yanshi.wangda.today/ja/",
+  "description": "Yanshi は AI ネイティブなヘッドレス描画エンジンです。すべての編集はログに追記されるアトム（原子）であり、絵はそのログを折り畳んだ結果です。純粋な Rust カーネルがネイティブ環境とブラウザ（WebAssembly）の両方で動作し、MCP サーバーと Web ビューアを備え、人と AI エージェントが同じキャンバスで描けます。",
+  "applicationCategory": "DesignApplication",
+  "operatingSystem": "Linux, macOS, Windows, Web browser",
+  "inLanguage": "ja",
+  "license": "https://opensource.org/licenses/MIT",
+  "codeRepository": "https://github.com/gradetwo/yanshi",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+</head>
+<body>
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-5WC4DS5B" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<div class="wrap">
+<header>
+<a class="brand" href="/ja/" aria-label="Yanshi">
+<img class="for-light" src="/assets/brand/svg/logo-horizontal.svg" alt="Yanshi" width="420" height="160">
+<img class="for-dark" src="/assets/brand/svg/logo-horizontal-dark.svg" alt="Yanshi" width="420" height="160">
+</a>
+<nav class="langs"><details><summary>日本語</summary><ul>
+<li><a href="/" hreflang="zh-Hans" lang="zh-CN">中文</a></li>
+<li><a href="/en/" hreflang="en" lang="en">English</a></li>
+<li><a href="/fr/" hreflang="fr" lang="fr">Français</a></li>
+<li><a href="/es/" hreflang="es" lang="es">Español</a></li>
+<li><a href="/pt/" hreflang="pt-BR" lang="pt-BR">Português</a></li>
+<li class="current"><span aria-current="page">日本語</span></li>
+<li><a href="/ko/" hreflang="ko" lang="ko">한국어</a></li>
+<li><a href="/ru/" hreflang="ru" lang="ru">Русский</a></li>
+<li><a href="/de/" hreflang="de" lang="de">Deutsch</a></li>
+</ul></details></nav>
+</header>
+<main>
+<h1>Yanshi 偃师</h1>
+<p class="lede">AI ネイティブなヘッドレス描画エンジン——<strong>人と AI が同じキャンバスで一緒に創作する</strong>ためのツールです。</p>
+<ul>
+<li><strong>操作はアトムです。</strong>すべての編集はログに追記されるアトムであり、絵はそのログを折り畳んだ結果です。元に戻す／やり直しはポインタを動かすだけです。</li>
+<li><strong>1つのカーネル、2つのホスト。</strong>同じ Rust カーネルがサーバーではネイティブに、ブラウザでは WebAssembly として動作するため、ローカル描画とサーバー描画は2つの近似ではなく、同一の実装です。</li>
+<li><strong>パッケージは自己完結。</strong><code>.yanshi</code> パッケージはアトムのログと、それが参照するすべての blob を内包し、別の場所にインポートすれば同じ絵が再現されます。</li>
+</ul>
+<p>このエンジンの上に <strong>MCP サーバー</strong>と <strong>Web ビューア</strong>があり、エージェントと人が同じドキュメントを操作します。</p>
+
+<h2>インストール</h2>
+<p>プリビルド済みバイナリがあり、<strong>Rust ツールチェーンは不要</strong>です——Linux x86_64（静的）、Intel macOS、Apple Silicon に対応：</p>
+<pre><code>curl -fsSL https://raw.githubusercontent.com/gradetwo/yanshi/main/scripts/install.sh | sh</code></pre>
+<p>スクリプトはあなたのプラットフォーム向けのリリース資産を判別し、公式の <code>SHA256SUMS</code> で <strong>SHA256 を検証</strong>して、<code>~/.local/share/yanshi/&lt;バージョン&gt;</code> に展開し、<code>yanshi-serve</code> と <code>yanshi-mcp</code> の薄いラッパーを <code>~/.local/bin</code> に置きます。パッケージは<strong>自己完結</strong>です：ブラシ、ブラシのプレビュー、メディア、パレット、テクスチャ、WASM カーネルがすべて入り、バイナリはパッケージ内レイアウト（<code>bin/…</code> と <code>share/yanshi/…</code> の並置）で資産を見つけるため、<strong>どこに展開しても動きます</strong>。</p>
+<pre><code>yanshi-serve --root ~/paint --doc mydoc --bind 127.0.0.1:8080   # その後 http://127.0.0.1:8080/ を開く
+yanshi-mcp   --root ~/paint --doc mydoc                          # stdio MCP サーバー（MCP クライアント用）
+yanshi-mcp   --list-tools --profiles core                        # ツール一覧だけを表示</code></pre>
+<p>調整用の変数：<code>YANSHI_VERSION</code>／<code>YANSHI_PREFIX</code>／<code>YANSHI_BIN_DIR</code>／<code>YANSHI_DRY_RUN=1</code>。<strong>プリビルド済みパッケージのないプラットフォーム</strong>（Linux arm64、Windows）は、ソースからビルドするか（<code>cargo build --release -p yanshi-http -p yanshi-mcp</code>、または <code>make release</code>）、リリースページから Windows パッケージを手動で展開してください。</p>
+
+<h2>クイックスタート</h2>
+<p>必要なのは <strong>Rust</strong>（<code>rust-toolchain.toml</code> で固定された stable ツールチェーン、<code>rustfmt</code>／<code>clippy</code> 付き）と <strong><code>make</code></strong> です。<strong>ブラウザカーネル</strong>（クライアント側レンダリング）を使う場合は <code>rustup target add wasm32-unknown-unknown</code> と <code>wasm-bindgen-cli</code> <strong>0.2.129</strong> も追加してください。<strong>なくてもサーバーは動作し</strong>、ビューアはサーバー側でレンダリングします。</p>
+<pre><code>git clone https://github.com/gradetwo/yanshi.git
+cd yanshi
+make dev        # ツールチェーンがあれば WASM カーネルをビルドし、ビルドして起動 ⇒ http://127.0.0.1:8110/</code></pre>
+<p>データは既定で <code>~/.local/share/yanshi/workspace</code> に置かれます。ポートやデータルートを変える場合は<strong>環境変数</strong>で渡してください（<code>make dev</code> は Make 変数をレシピに渡しませんが、<code>make serve</code> は <code>--port</code> を明示的に渡します）：</p>
+<pre><code>PORT=9000 make dev
+make serve PORT=9000</code></pre>
+<p>プッシュ前に <code>make check</code>（フォーマット、リント、テスト）を実行してください。全ターゲットは <code>make help</code> で見られます。</p>
+
+<h2>現在の状態</h2>
+<ul>
+<li>バージョン <strong>0.3.2</strong>。<strong>5つのプラットフォーム向けのプリビルド済みリリースパッケージ</strong>があります（<code>curl</code> 一行、上記参照）。ソースは GitHub にあり、<code>make release</code> で自分でパッケージ化もできます。</li>
+<li><code>semantic</code> ツール群は裁定により予約のみで、未実装です。</li>
+<li>ブラウザ側カーネルはビルド成果物で、新規クローンには含まれません。なくてもエラーにはならず、ビューアはサーバー側レンダリングに戻ります。</li>
+</ul>
+
+<h2>名前の由来</h2>
+<p>偃師（Yanshi）は『列子』「湯問」に登場する工匠で、歌い踊る機械人形を作ります。原文は次の通りです：</p>
+<blockquote><p>周穆王西巡狩，越昆侖，不至弇山。反還，未及中國，道有獻工人名偃師，穆王薦之，問曰：「若有何能？」偃師曰：「臣唯命所試。然臣已有所造，願王先觀之。」穆王曰：「日以俱來，吾與若俱觀之。」翌日，偃師謁見王。王薦之曰：「若與偕來者何人？」對曰：「臣之所造能倡者。」穆王驚視之，趨步俯仰，信人也。巧夫，顉其頤，則歌合律；捧其手，則舞應節。千變萬化，惟意所適。王以為實人也，與盛姬內御並觀之。技將終，倡者瞬其目而招王之左右侍妾。王大怒，立欲誅偃師。偃師大懾，立剖散倡者以示王，皆傅會革木膠漆白黑丹青之所為。王諦料之，內則肝膽心肺脾腎腸胃，外則筋骨支節皮毛齒髮，皆假物也，而無不畢具者。合會復如初見。王試廢其心，則口不能言；廢其肝，則目不能視；廢其腎，則足不能步。穆王始悅而歎曰：「人之巧乃可與造化者同功乎！」詔貳車載之以歸。夫班輸之雲梯，墨翟之飛鳶，自謂能之極也。弟子東門賈、禽滑釐聞偃師之巧以告二子，二子終身不敢語藝，而時執規矩。</p>
+<p class="muted">出典：<a href="https://ctext.org/liezi/tang-wen/zhs">中国哲学書電子化計画『列子』「湯問」</a>。ここでは簡体字で転記しています。
+<p>借りる価値があるのは巧みさではなく、<strong>構造と振る舞いが分離できる</strong>ことです。剖いてみれば、歌い踊る人形は革・木・膠・漆・顔料にすぎません。心・肝・腎を外せば、それぞれ語れず、見えず、歩けなくなります。<strong>そして組み直せば、元通りになります</strong>。</p>
+<p>原文の結びは、人の巧が造化に匹敵するという穆王の感嘆です。<strong>私たちはそう主張しません</strong>。このプロジェクトは、道具の構造を書き記し、できることだけでなく、できないことも書きます。</p>
+
+<h2>Logo</h2>
+<p>マークは<strong>パチンコ（スリングショット）</strong>です。Y字の枠、2本のゴムバンド、赤い弾。映画『Who Cares』（《谁说我不在乎》）の一節に由来します：</p>
+<blockquote><p>抽出裤衩里的猴皮筋，做成弹弓打你们家玻璃。</p><p>（パンツのゴムを抜いてパチンコを作り、お前の家のガラスを割る）</p>
+<p class="muted">bilibili の<a href="https://www.bilibili.com/video/BV1Rw411c7Bx/">クリップ</a>。映画の権利は原権利者に帰属します。
+<p>借りたのは冗談の中のあの動作——<strong>手元にあるもので使えるものを作る</strong>ことです。プロジェクトの態度も同じです：構造を書き記し、使えるものは使い、使えないときはそう言う。</p>
+
+<h2>連絡先とソース</h2>
+<p>不具合の報告と協力のお問い合わせ：<a href="mailto:yanshi@wangda.today?subject=%5BYanshi%5D%20">yanshi@wangda.today</a>。セキュリティ上の問題は公開 issue にせず、メールでお知らせください。</p>
+<ul class="links">
+<li>リポジトリ：<a href="https://github.com/gradetwo/yanshi">github.com/gradetwo/yanshi</a>｜ソースのダウンロード（zip）：<a href="https://github.com/gradetwo/yanshi/archive/refs/heads/main.zip">main.zip</a></li>
+<li>ドキュメント：<a href="https://github.com/gradetwo/yanshi/blob/main/README.md">README.md</a>｜<a href="https://github.com/gradetwo/yanshi/blob/main/docs/guide.md">ガイド</a>｜設計ドキュメント（権威ある規範、中国語）：<a href="https://github.com/gradetwo/yanshi/blob/main/docs/design/yanshi-v1.0-draft4.md">yanshi-v1.0-draft4.md</a></li>
+</ul>
+
+        <section class="showcase" id="showcase"><h2>作品</h2><div class="rail" tabindex="0"><a class="slide" href="/assets/showcase/degas-backstage-oil.png"><img src="/assets/showcase/degas-backstage-oil.png" alt="ドガ《舞台裏》" loading="lazy"></a><a class="slide" href="/assets/showcase/degas-four-dancers-oil.png"><img src="/assets/showcase/degas-four-dancers-oil.png" alt="ドガ《四人の踊り子》" loading="lazy"></a><a class="slide" href="/assets/showcase/ballet-reference-study-4k.png"><img src="/assets/showcase/ballet-reference-study-4k.png" alt="バレエ参考研究（4K 成品）" loading="lazy"></a></div><p class="hint">左右にスワイプで続きが見られます。クリックで 4K 原画を表示。</p></section>
+
+      </main>
+<footer>
+<p>MIT ライセンス · © 2026 The Yanshi Authors</p>
+<p><a href="https://github.com/gradetwo/yanshi">GitHub</a> · <a href="mailto:yanshi@wangda.today?subject=%5BYanshi%5D%20">yanshi@wangda.today</a> · <a href="https://github.com/gradetwo/yanshi/archive/refs/heads/main.zip">ソースのダウンロード</a> · <a href="https://github.com/gradetwo/yanshi/blob/main/docs/design/yanshi-v1.0-draft4.md">設計ドキュメント</a></p>
+</footer>
+</div>
+</body>
+</html>
