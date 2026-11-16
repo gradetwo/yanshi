@@ -149,7 +149,9 @@ jobs:
               dpkg-deb --info "$deb"
               dpkg-deb --contents "$deb" | grep -q 'usr/lib/yanshi/bin/yanshi-serve' || { echo "✗ .deb 里没有 usr/lib/yanshi/bin/yanshi-serve"; exit 1; }
               dpkg-deb --contents "$deb" | grep -q 'usr/bin/yanshi-serve' || { echo "✗ .deb 里没有 usr/bin/yanshi-serve"; exit 1; }
-              dpkg-deb --contents "$deb" | grep -q 'usr/share/applications/yanshi.desktop' || { echo "✗ .deb 里没有 .desktop 文件"; exit 1; }
+              dpkg-deb --contents "$deb" | grep -q 'usr/share/applications/today.wangda.yanshi.desktop' || { echo "✗ .deb 里没有 .desktop 文件"; exit 1; }
+              dpkg-deb --contents "$deb" | grep -q 'usr/share/icons/hicolor/scalable/apps/today.wangda.yanshi.svg' || { echo "✗ .deb 里没有 hicolor scalable 图标"; exit 1; }
+              dpkg-deb --contents "$deb" | grep -q 'usr/share/icons/hicolor/256x256/apps/today.wangda.yanshi.png' || { echo "✗ .deb 里没有 hicolor 256 PNG 图标"; exit 1; }
               sudo dpkg -i "$deb"
               work=$(mktemp -d); port=21988; log="$work/serve.log"
               yanshi-serve --bind "127.0.0.1:$port" --root "$work/root" --doc smoke --width 64 --height 64 >"$log" 2>&1 &

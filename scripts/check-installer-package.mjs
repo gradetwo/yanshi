@@ -18,6 +18,10 @@
 //      .msi/.dmg/.deb 写进了产物上传集合；
 //   ④ 两条线的校验和计数断言都把安装包算进去（文本里有 `n_installers`）——
 //      断言若只数 tar.gz，加了安装包的那天起发布就会被自己的断言拦死。
+//   ⑤ DEB 的桌面身份对齐：脚本里 .desktop 文件名、StartupWMClass 与 Icon 名
+//      同为一个标识（today.wangda.yanshi，与 macOS bundle id 同一个），且图标
+//      按 hicolor 规范出 scalable SVG ＋ 48/64/128/256 PNG——三者不一致时
+//      Wayland 启动器里图标与窗口对不上号，且没有任何构建错误会提示。
 //
 // **变异**：把 nightly.yml 里 `package-installer.sh` 的调用删掉 ⇒ ③ 红；
 //           把脚本里 linux 的扩展名改成 zip ⇒ ② 红。
@@ -55,6 +59,21 @@ if (!existsSync(SCRIPT)) {
       continue;
     }
     if (got !== want) failures.push(`--print-name ${target} 应为 ${want}，实得 ${got} ⇒ 命名契约漂移`);
+  }
+
+  // ⑤ 桌面身份对齐（读脚本原文）。
+  const scriptText = readFileSync(SCRIPT, "utf8");
+  if (!/app_id="today\.wangda\.yanshi"/.test(scriptText)) {
+    failures.push("package-installer.sh 里没有 app_id=\"today.wangda.yanshi\" ⇒ .desktop 身份标识漂移");
+  }
+  if (!/StartupWMClass=\$\{app_id\}/.test(scriptText)) {
+    failures.push("package-installer.sh 的 .desktop 没有 StartupWMClass=${app_id} ⇒ 与文件名/Icon 名对不齐");
+  }
+  if (!/scalable\/apps/.test(scriptText)) {
+    failures.push("package-installer.sh 没有往 hicolor/scalable/apps 装 SVG 图标");
+  }
+  if (!/for size in 48 64 128 256/.test(scriptText)) {
+    failures.push("package-installer.sh 的 PNG 图标尺寸档不是 48 64 128 256 ⇒ hicolor 图标集不全");
   }
 }
 

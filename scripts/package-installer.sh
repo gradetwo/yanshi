@@ -143,14 +143,33 @@ rm -f "${outfile}"
 
 echo "==> 打安装包 ${name}（源：${stage}）"
 
+# resize_png <源> <目标> <边长>：把 PNG 缩成正方形。先 ImageMagick
+# （magick 或 convert），再退 python3 + PIL；都没有 ⇒ 返回非 0（调用方响亮警告，
+# 不静默跳过）。
+resize_png() {
+  if command -v magick >/dev/null 2>&1; then
+    magick "$1" -resize "$3x$3" "$2"
+  elif command -v convert >/dev/null 2>&1; then
+    convert "$1" -resize "$3x$3" "$2"
+  elif python3 -c 'import PIL' >/dev/null 2>&1; then
+    python3 - "$1" "$2" "$3" <<'PYEOF'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1])
+im.resize((int(sys.argv[3]), int(sys.argv[3]))).save(sys.argv[2])
+PYEOF
+  else
+    return 1
+  fi
+}
+
 # ---------------------------------------------------------------- Linux .deb
 build_deb() {
   command -v dpkg-deb >/dev/null 2>&1 || die "缺 dpkg-deb ⇒ 装它：apt-get install -y dpkg-dev（GitHub 的 ubuntu runner 自带）"
   local arch root size_kb
   arch="$(deb_arch "${target}")" || die "目标 ${target} 映射不到 DEB 架构名"
   root="${work}/deb-root"
-  mkdir -p "${root}/DEBIAN" "${root}/usr/bin" "${root}/usr/share/applications" \
-           "${root}/usr/share/icons/hicolor/512x512/apps"
+  mkdir -p "${root}/DEBIAN" "${root}/usr/bin" "${root}/usr/share/applications"
   # 发行树整棵进 /usr/lib/yanshi（布局与 tar.gz 内一致 ⇒ yanshi.sh 的相对路径推导照常成立）。
   mkdir -p "${root}/usr/lib"
   cp -R "${stage}" "${root}/usr/lib/yanshi"
@@ -189,25 +208,56 @@ WRAP
 exec /usr/lib/yanshi/bin/yanshi-mcp "$@"
 WRAP
   chmod 0755 "${root}/usr/bin/yanshi-serve" "${root}/usr/bin/yanshi" "${root}/usr/bin/yanshi-mcp"
-  # 图标：用包内品牌资产（share/yanshi/brand 随发行树一起进来）。
-  if [ -f "${stage}/share/yanshi/brand/png/yanshi-icon-512.png" ]; then
-    install -m 0644 "${stage}/share/yanshi/brand/png/yanshi-icon-512.png" \
-      "${root}/usr/share/icons/hicolor/512x512/apps/yanshi.png"
-  else
-    echo "⚠ 包内没有 brand/png/yanshi-icon-512.png ⇒ .deb 不带图标（.desktop 的 Icon 会落空）" >&2
-  fi
-  cat > "${root}/usr/share/applications/yanshi.desktop" <<'DESKTOP'
+  # .desktop 与图标：三者同名对齐 —— .desktop 文件名、StartupWMClass、Icon 名
+  # 同为一个标识（与 macOS 的 bundle id 同一个反写域名 today.wangda.yanshi）。
+  # Wayland 合成器与启动器按这个标识把窗口、启动项与图标对上号；Icon 用裸名，
+  # 图标文件按 hicolor 规范放 SVG（scalable）＋ PNG 48/64/128/256（512 有就带）。
+  local app_id="today.wangda.yanshi"
+  local brand="${stage}/share/yanshi/brand"
+  local hicolor="${root}/usr/share/icons/hicolor"
+  cat > "${root}/usr/share/applications/${app_id}.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=Yanshi
 Name[zh_CN]=偃师
 Comment=Start the Yanshi painting-engine server and open the web viewer
 Exec=/usr/lib/yanshi/yanshi-open
-Icon=yanshi
+Icon=${app_id}
 Terminal=false
+StartupNotify=true
+StartupWMClass=${app_id}
 Categories=Graphics;Art;
 DESKTOP
-  chmod 0644 "${root}/usr/share/applications/yanshi.desktop"
+  chmod 0644 "${root}/usr/share/applications/${app_id}.desktop"
+  # SVG 源用渲染 PNG 图标的那张（assets/brand/render.sh 以 icon-light.svg 渲染
+  # yanshi-icon-*.png），保证矢量与位图是同一个图。
+  if [ -f "${brand}/svg/icon-light.svg" ]; then
+    mkdir -p "${hicolor}/scalable/apps"
+    install -m 0644 "${brand}/svg/icon-light.svg" "${hicolor}/scalable/apps/${app_id}.svg"
+  else
+    echo "⚠ 包内没有 brand/svg/icon-light.svg ⇒ .deb 不带 scalable 图标" >&2
+  fi
+  # PNG：有同尺寸品牌图就用它（仓库只发 256 与 512 两档），缺的尺寸从 512 缩。
+  local size
+  for size in 48 64 128 256; do
+    mkdir -p "${hicolor}/${size}x${size}/apps"
+    if [ -f "${brand}/png/yanshi-icon-${size}.png" ]; then
+      install -m 0644 "${brand}/png/yanshi-icon-${size}.png" \
+        "${hicolor}/${size}x${size}/apps/${app_id}.png"
+    elif [ -f "${brand}/png/yanshi-icon-512.png" ] && \
+         resize_png "${brand}/png/yanshi-icon-512.png" \
+           "${hicolor}/${size}x${size}/apps/${app_id}.png" "${size}"; then
+      :
+    else
+      echo "⚠ ${size}x${size} 图标生成不了（无同尺寸品牌图、无 512 源或无缩放工具）⇒ 跳过这一档" >&2
+      rmdir "${hicolor}/${size}x${size}/apps" "${hicolor}/${size}x${size}" 2>/dev/null || true
+    fi
+  done
+  if [ -f "${brand}/png/yanshi-icon-512.png" ]; then
+    mkdir -p "${hicolor}/512x512/apps"
+    install -m 0644 "${brand}/png/yanshi-icon-512.png" \
+      "${hicolor}/512x512/apps/${app_id}.png"
+  fi
   size_kb="$(du -sk "${root}/usr" | cut -f1)"
   # control 按「将来进 APT 仓库」的标准写全：仓库索引（reprepro/aptly）会逐字段读它。
   # Depends 只写启动链真的要用的：yanshi.sh 与 yanshi-open 都是 bash、健康检查用 curl；
