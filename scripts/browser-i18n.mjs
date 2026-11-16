@@ -155,14 +155,31 @@ const failures = [];
 //      而「没有偏好时**必须**默认中文」仍由下面的断言判 ✗（第 887 轮那条教训 ✓）。
 // **★ 先把浏览器语言钉到 zh-CN，再断言「默认是中文」✗ ★**（2026-11-17 加 ✓）：
 // 产品加了**首访按 `navigator.language` 自动检测** ✓ ⇒ 「默认语言」从此是**浏览器语言的函数** ✗
-// 不再无条件是中文 ✗。本判据要判的是**中文浏览器下**的默认 ✓ ⇒ 先用 CDP 把这个输入钉死 ✓
+// 不再无条件是中文 ✗。本判据要判的是**中文浏览器下**的默认 ✓ ⇒ 先把这个输入钉死 ✓
 //（与下面擦 `localStorage` 同一条纪律：**先把输入钉住，再断言输出** ✓）。
 // 钉不住 ⇒ 「默认中文」的前提不成立 ⇒ **退出码 3**（判据前提 ✗ 不是产品失败 ✗）。
-const localeResp = await send("Emulation.setLocaleOverride", { locale: "zh-CN" });
-if (localeResp && localeResp.error) {
-  console.error("❌ 判据自身的求值失败（不是产品问题）⇒ Emulation.setLocaleOverride 被拒：" + JSON.stringify(localeResp.error) + " ⇒ 退出码 3");
-  process.exit(3);
-}
+// **钉法**：`Page.addScriptToEvaluateOnNewDocument` 在每个新文档的脚本之前把
+// `Navigator.prototype.language` 的 getter 换成钉死值 ✓（产品读的正是这一个输入 ✓）。
+// 不用 `Emulation.setLocaleOverride` ✗ —— CI 实测（run 43973668122）：命令被接受、无报错，
+// 但 `navigator.language` 仍是 "en-US" ⇒ 钉根本没生效、本判据当场退 3（没验成 ✓）。
+// 注册随会话失效这条老警告（运行器注释 ✓）说的是**跨会话的种子页** ✗；本判据全程握着
+// 自己的会话、每个阶段都是先注册再导航 ⇒ 不受影响 ✓。换语言时先摘旧脚本再挂新的 ✓。
+let langPinScript = null;
+const pinNavigatorLanguage = async (locale) => {
+  if (langPinScript) {
+    await send("Page.removeScriptToEvaluateOnNewDocument", { identifier: langPinScript });
+    langPinScript = null;
+  }
+  const resp = await send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `Object.defineProperty(Navigator.prototype, "language", { configurable: true, get: () => ${JSON.stringify(locale)} });`,
+  });
+  langPinScript = resp && resp.result ? resp.result.identifier : null;
+  if (!langPinScript) {
+    console.error("❌ 判据自身的求值失败（不是产品问题）⇒ Page.addScriptToEvaluateOnNewDocument 没返回脚本标识（实为 " + JSON.stringify(resp) + "）⇒ 退出码 3");
+    process.exit(3);
+  }
+};
+await pinNavigatorLanguage("zh-CN");
 const shellUrl = url.split("?")[0].replace(/\/+$/, "") + "/?v=" + Date.now();
 await send("Page.navigate", { url: shellUrl });
 await sleep(700);
@@ -268,11 +285,7 @@ else if (String(back.toggle).trim() !== "中文") failures.push(`切回后开关
 // 这里守**接线**：把浏览器语言换成 fr-FR、擦掉已存选择、不用 `?lang=` 进页面
 // ⇒ 页面应**自己**以法语打开（没人点过选择器 ✓）。这条红 = 产品接线坏了 ✗ 不是判据问题 ✗；
 // 而钉不住 fr（override 被拒 / `navigator.language` 没变）⇒ 前提不成立 ⇒ 退出码 3 ✓。
-const localeRespFr = await send("Emulation.setLocaleOverride", { locale: "fr-FR" });
-if (localeRespFr && localeRespFr.error) {
-  console.error("❌ 判据自身的求值失败（不是产品问题）⇒ Emulation.setLocaleOverride(fr-FR) 被拒：" + JSON.stringify(localeRespFr.error) + " ⇒ 退出码 3");
-  process.exit(3);
-}
+await pinNavigatorLanguage("fr-FR");
 await send("Page.navigate", { url: shellUrl });
 await sleep(700);
 const wipedFr = await evaluate(`(() => { try { localStorage.removeItem("yanshi.lang"); return localStorage.getItem("yanshi.lang") === null ? "clean" : "STILL-SET"; } catch (_) { return "NO-STORAGE"; } })()`);
