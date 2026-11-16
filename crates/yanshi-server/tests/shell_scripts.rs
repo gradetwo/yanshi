@@ -10,6 +10,10 @@
 //! * 只看**小写**变量名 ✓ —— 全大写按约定当**环境变量** ✓（`YANSHI_*` / `PORT` / `HOME`…… ✓）；
 //! * `local x` / `x=` / `x+=` / `for x in` / `read [-r] x` / `x=$(…)` 都算"赋值" ✓；
 //! * 函数名、位置参数（`$1` ✓）、特殊变量（`$?` `$@` `$#` `$$` `$!` `$-` `$*` ✓）跳过 ✓。
+//! * **带引号的 heredoc 体不扫** ✓ —— `<<'TAG'` 里是字面量，bash 不展开，
+//!   里面的 `$var` 不是 bash 引用（MSI 的 `<<'PS1'` 里 PowerShell 的 `$cmd`／
+//!   `$env`／`$false`／`$here`／`$i`／`$r` 就是这么被误报的 ✓）；不带引号的
+//!   heredoc（`<<EOF`）会展开 ⇒ 继续扫 ✓。
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -55,8 +59,46 @@ fn every_script_variable_is_assigned_somewhere() {
 
     let mut problems = Vec::new();
     for script in &scripts {
-        let text = std::fs::read_to_string(script).expect("脚本应当是 UTF-8");
-        // **先剥掉注释** ✓ —— 注释里出现变量名是正常的 ✓（这次那两处就在注释里 ✓）。
+        let raw = std::fs::read_to_string(script).expect("脚本应当是 UTF-8");
+        // **先剥掉带引号的 heredoc 体** ✓ —— 定界符带引号（`<<'TAG'` / `<<"TAG"` /
+        // `<<-'TAG'`）时体是字面量，bash 不展开，里面的 `$var` 不是 bash 引用。
+        // 不带引号的 heredoc 会展开 ⇒ 保留，继续扫。结束行必须是整行等于定界符。
+        let mut kept: Vec<&str> = Vec::new();
+        let mut heredoc: Option<String> = None;
+        for line in raw.lines() {
+            if let Some(tag) = &heredoc {
+                if line.trim() == tag {
+                    heredoc = None;
+                }
+                continue;
+            }
+            let mut rest = line;
+            let mut found: Option<String> = None;
+            while let Some(at) = rest.find("<<") {
+                let after = rest[at + 2..].strip_prefix('-').unwrap_or(&rest[at + 2..]);
+                let tag = after
+                    .strip_prefix('\'')
+                    .and_then(|t| t.split('\'').next())
+                    .filter(|t| !t.is_empty())
+                    .or_else(|| {
+                        after
+                            .strip_prefix('"')
+                            .and_then(|t| t.split('"').next())
+                            .filter(|t| !t.is_empty())
+                    });
+                if let Some(tag) = tag {
+                    found = Some(tag.to_string());
+                    break;
+                }
+                rest = after;
+            }
+            if let Some(tag) = found {
+                heredoc = Some(tag);
+            }
+            kept.push(line);
+        }
+        let text = kept.join("\n");
+        // **再剥掉注释** ✓ —— 注释里出现变量名是正常的 ✓（这次那两处就在注释里 ✓）。
         let code: String = text
             .lines()
             .map(|line| match line.find('#') {
