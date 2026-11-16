@@ -128,7 +128,12 @@ if (serverBase) {
 
 await send("Runtime.enable");
 await send("Page.enable");
-await send("Page.navigate", { url });
+// **语言前提钉死** ✓（2026-11-17 加）：查看器首访会按**浏览器语言**自动选界面语言
+//（`?lang=` ＞ 已存选择 ＞ 检测 ＞ zh）⇒ 本判据断言的行内动作文字是中文（「打开」／「删除」）
+// ⇒ 导航带上产品自己的 `?lang=zh` 覆盖（读取链最高优先级 ✓），不再赌运行环境的浏览器
+// 语言（与 browser-pwa-undo 同一条纪律 ✓）。CI 实测教训：不钉时英文环境下删除按钮被
+// 译成 Delete ⇒ 「每一行都有明确的「删除」动作」红，而按钮本身一直在 ✗。
+await send("Page.navigate", { url: `${url}${url.includes("?") ? "&" : "?"}lang=zh` });
 await send("Page.reload", { ignoreCache: true });
 consoleLines.length = 0;
 if (!(await waitFor("typeof window.yanshiFileMenu === 'object'", "查看器就绪"))) {
