@@ -22,6 +22,11 @@
   #   代价＝哪天要接外部服务（CDN／上报）必须同步改这里，否则会被浏览器静默拦掉 ✓。
   Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'
 
+# 根路径 / 实际服务的就是 index.html，但 _headers 按请求路径匹配，
+# /index.html 那条覆盖不到 /（2026-11-17 实测：只写 /index.html 时线上 / 的响应头仍无 charset），故单列。
+/
+  Content-Type: text/html; charset=utf-8
+
 /index.html
   Cache-Control: no-cache
   # 传输层加固（2026-11-17）：托管方按扩展名推断的 Content-Type 不带 charset，

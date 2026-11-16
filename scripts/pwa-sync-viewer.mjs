@@ -330,13 +330,36 @@ if (!bin) {
 // 第 829 轮：注入点必须在最前面（原来插在 </body> 之前 => 哨兵落在页面末尾）。
 //   实测：index.html 里哨兵在 10569 行，而第一个脚本在 559 行 => 早期请求全漏过 => 405。
 //   现在插到 <head> 之后 => 哨兵真的最先跑；安装块也提前（它是 defer，语义不变）。
+// 2026-11-17 补：注入点再往后挪一位——插在 <meta charset> 之后，不是 <head> 之后。
+//   原因：浏览器只预扫描文档前 1024 字节找 charset 声明；注入片段 6461 字节
+//   插在 meta 之前会把 meta 推到字节偏移 6511，声明失效，非 UTF-8 回退环境
+//   整页中文按 GBK 解码成乱码（用户实测：偃师显示成鍋冨笀；线上响应头又不带
+//   charset，无从纠正）。meta 不是脚本，哨兵插在它之后仍在一切脚本之前，
+//   第 829 轮的语义不变。导出的页面没有 meta charset 时退回 <head> 之后，
+//   并由下面的合成自检拦下（缺声明不许静默放行）。
+const metaTag = html.match(/<meta\s+charset[^>]*>/i);
 const headTag = html.indexOf("<head>");
-const injected =
-  headTag >= 0
-    ? html.slice(0, headTag + 6) + String.fromCharCode(10) + snippet + html.slice(headTag + 6)
-    : html.replace("</body>", snippet + String.fromCharCode(10) + "</body>");
-if (headTag < 0) {
+let injected;
+if (metaTag) {
+  const at = metaTag.index + metaTag[0].length;
+  injected = html.slice(0, at) + String.fromCharCode(10) + snippet + html.slice(at);
+} else if (headTag >= 0) {
+  injected = html.slice(0, headTag + 6) + String.fromCharCode(10) + snippet + html.slice(headTag + 6);
+} else {
+  injected = html.replace("</body>", snippet + String.fromCharCode(10) + "</body>");
   console.warn("  WARN: page has no <head> tag, sentinel falls back to before </body>");
+}
+// 合成产物自检：写出之前先量合成结果——meta charset 必须落在前 1024 字节内，
+// 否则部署出去的就是乱码页；缺 meta 同样拒绝写出（导出页本应自带声明）。
+const finalMeta = injected.match(/<meta\s+charset[^>]*>/i);
+if (!finalMeta) {
+  console.error("✗ 合成后的 index.html 没有 <meta charset> ⇒ 拒绝写出（编码声明缺失）");
+  process.exit(1);
+}
+const metaByteOffset = Buffer.byteLength(injected.slice(0, finalMeta.index), "utf8");
+if (metaByteOffset >= 1024) {
+  console.error(`✗ 合成后的 index.html 里 <meta charset> 在字节偏移 ${metaByteOffset}，超出预扫描窗口 1024 ⇒ 拒绝写出`);
+  process.exit(1);
 }
   writeFileSync(join(DST, "index.html"), injected);
   console.log(`✓ 已注入本地接管脚本 ⇒ web/index.html（注入 ${snippet.length} 字节 ✓）`);

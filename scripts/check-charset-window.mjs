@@ -11,8 +11,12 @@
 //   本地 `yanshi-serve` 无此问题（http.rs 显式发 `text/html; charset=utf-8`）。
 //
 // **⇒ 修复**：meta 挪到 `<head>` 之后的第一个元素（治本，与托管方无关）；
-//   `web/_headers` 再给 `/index.html` 补 `Content-Type: text/html; charset=utf-8`
-//   （传输层加固）。本判据守治本的那一半。
+//   `web/_headers` 再给 `/` 与 `/index.html` 补 `Content-Type: text/html; charset=utf-8`
+//   （传输层加固；只写 `/index.html` 覆盖不到根路径 `/`，2026-11-17 实测）。
+//   注意线上产物不是仓里这份文件本身：部署时 `scripts/pwa-sync-viewer.mjs`
+//   用服务端导出页重新合成 index.html 并注入 `web/pwa-inject.html`——注入点
+//   原在 meta 之前、把声明推出窗口，那一侧的修法（注入点移到 meta 之后＋
+//   合成自检）在同步脚本里。本判据守仓里这份源文件的同一性质。
 //
 // **⇒ 判什么**（结构量：存在性＋字节偏移，不断像素不断快照）：
 //   ① `web/index.html` 里找得到 `<meta charset`；
