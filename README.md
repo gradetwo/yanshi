@@ -9,15 +9,45 @@
 
 [中文](README.zh-CN.md) | **English**
 
-**Yanshi is an AI native headless painting engine — a canvas where people and AI create together.**
+**Yanshi is an AI-native headless painting engine: every edit is an atom appended to a log, and the picture is the fold of that log.**
 
-- **Operations are atoms.** Every edit is an atom appended to a log, and the picture is the fold of that log.
+**▶ Try it live — [yanshi-online.wangda.today](https://yanshi-online.wangda.today)** — the same Rust kernel
+running as WebAssembly in your browser. No install, nothing to set up.
+
+<p align="center">
+  <a href="https://yanshi-online.wangda.today"><img src="web/showcase/degas-four-dancers-oil.png" alt="Four dancers — painted by an AI agent driving Yanshi's own MCP tools" width="880"></a>
+</p>
+
+<p align="center"><em>Painted by an AI agent driving this engine's own MCP tools. Every stroke is an atom in the log.</em></p>
+
 - **One kernel, two hosts.** The same Rust kernel runs natively on the server and as WebAssembly in the browser,
   so local rendering and server rendering are one implementation, not two approximations.
 - **A package is self-contained.** A `.yanshi` package carries the atom log and every blob it references, and
   importing it elsewhere reproduces the picture.
 
-An MCP server and a web viewer sit on top of that engine, so an agent and a person work on the same document.
+An MCP server and a web viewer sit on top of that engine, so an agent and a person work on the same document — a canvas where people and AI create together.
+
+## Gallery
+
+Paintings made **by an AI agent driving this app's own MCP tools** (no UI scripting, no manual
+retouching). The references — public-domain Degas paintings at the Met and the NGA — were used to
+study style only: **no reference bitmap was imported**, so every pixel is a brush or medium stroke
+recorded as ordinary atoms.
+
+
+<a href="web/showcase/degas-backstage-oil.png"><img src="web/showcase/degas-backstage-oil.png" alt="Backstage" width="260"></a> <a href="web/showcase/degas-four-dancers-oil.png"><img src="web/showcase/degas-four-dancers-oil.png" alt="Four dancers" width="260"></a> <a href="web/showcase/ballet-reference-study-4k.png"><img src="web/showcase/ballet-reference-study-4k.png" alt="Ballet reference study (4K)" width="260"></a>
+
+
+
+
+These paintings were produced by an outside agent driving the same MCP tools; the per-painting numbers (canvas size, layer/anchor counts) come from its own package.
+Its reports also list what it did **not** verify (it did not run this repo's own criteria), so treat
+the pictures as a showcase rather than as acceptance evidence.
+
+How these were painted — and how to paint so that a picture does not read as **filling in a
+colouring book** (large brush first, one stroke = one mass, `smudge`/`classic-knife` to blend the
+seams, thin `glaze` vs thick `impasto`) — is written up in
+[`skills/yanshi-painting/`](skills/yanshi-painting/SKILL.md).
 
 ## Install
 
@@ -97,28 +127,6 @@ make serve      # rebuild -p yanshi-http and serve (run this before verifying to
 make release    # build the release package
 make help       # every target
 ```
-
-## Gallery
-
-Paintings made **by an AI agent driving this app's own MCP tools** (no UI scripting, no manual
-retouching). The references — public-domain Degas paintings at the Met and the NGA — were used to
-study style only: **no reference bitmap was imported**, so every pixel is a brush or medium stroke
-recorded as ordinary atoms.
-
-
-<a href="web/showcase/degas-backstage-oil.png"><img src="web/showcase/degas-backstage-oil.png" alt="Backstage" width="260"></a> <a href="web/showcase/degas-four-dancers-oil.png"><img src="web/showcase/degas-four-dancers-oil.png" alt="Four dancers" width="260"></a> <a href="web/showcase/ballet-reference-study-4k.png"><img src="web/showcase/ballet-reference-study-4k.png" alt="Ballet reference study (4K)" width="260"></a>
-
-
-
-
-These paintings were produced by an outside agent driving the same MCP tools; the per-painting numbers (canvas size, layer/anchor counts) come from its own package.
-Its reports also list what it did **not** verify (it did not run this repo's own criteria), so treat
-the pictures as a showcase rather than as acceptance evidence.
-
-How these were painted — and how to paint so that a picture does not read as **filling in a
-colouring book** (large brush first, one stroke = one mass, `smudge`/`classic-knife` to blend the
-seams, thin `glaze` vs thick `impasto`) — is written up in
-[`skills/yanshi-painting/`](skills/yanshi-painting/SKILL.md).
 
 ## Credits
 
