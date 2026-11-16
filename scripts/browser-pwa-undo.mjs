@@ -72,7 +72,12 @@ await send("Page.enable");
 
 const docId = "pwa-undo-" + Date.now().toString(36);
 const sep = url.includes("?") ? "&" : "?";
-await send("Page.navigate", { url: `${url}${sep}doc=${docId}&token=local&render=client` });
+// **语言前提钉死** ✓（2026-11-17 加）：查看器首访会按**浏览器语言**自动选界面语言
+//（`?lang=` ＞ 已存选择 ＞ 检测 ＞ zh）⇒ 本判据断言的状态栏文案是中文（「可撤销 N 笔」）
+// ⇒ 用产品自己的 `?lang=zh` 覆盖（读取链最高优先级 ✓）把前提写死，不再赌运行环境的
+// 浏览器语言（与 browser-i18n 钉 locale 同一条纪律 ✓）。CI 实测教训：不钉时英文环境下
+// 状态栏是 "0 strokes undoable / 0 redoable" ⇒ 本判据红在文案上，而撤销栈本身完全正常 ✗。
+await send("Page.navigate", { url: `${url}${sep}doc=${docId}&token=local&render=client&lang=zh` });
 for (let i = 0; i < 80; i += 1) {
   await sleep(250);
   try { if (await evaluate('document.readyState === "complete" && !!document.getElementById("board")')) break; } catch (_) { /* 还没就绪 */ }
