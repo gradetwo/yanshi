@@ -9,14 +9,41 @@
 
 **中文** | [English](README.md)
 
-**偃师 Yanshi，AI Native 的 headless 绘画引擎，人与 AI 在同一张画布上协作的创作工具。**
+**偃师是一个 AI 原生的无头（headless）绘画引擎：每一次编辑都是一个原子，追加进日志；画面是这份日志折叠求值的结果。**
 
-- **操作原子化。** 每一次编辑都是一个原子、追加进日志；画面是这份日志折叠求值的结果。
+**▶ 在线试用 — [yanshi-online.wangda.today](https://yanshi-online.wangda.today)** —— 同一套 Rust 内核
+以 WebAssembly 在你的浏览器里运行。免安装，打开即用。
+
+<p align="center">
+  <a href="https://yanshi-online.wangda.today"><img src="web/showcase/degas-four-dancers-oil.png" alt="四位舞者 —— 由 AI agent 驱动偃师自带的 MCP 工具画出" width="880"></a>
+</p>
+
+<p align="center"><em>由 AI agent 驱动本引擎自带的 MCP 工具画出。每一笔都是日志里的一个原子。</em></p>
+
 - **一份内核，两个宿主。** 同一套 Rust 内核在服务端原生编译、在浏览器编译为 WebAssembly
   ⇒ 本地渲染与服务端渲染是**同一份实现**，不是两份近似。
 - **工程包自包含。** 一个 `.yanshi` 包带着原子日志与它引用的全部 blob；导入到别处就能复现同一幅画。
 
 在这套引擎之上是一个 MCP 服务端与一个 Web 查看器 ⇒ **Agent 与人操作的是同一份文档**。
+
+## 作品
+
+下面四幅是**另一个 AI 通过本应用自己的 MCP 工具**画出来的（不是脚本操控界面，也没有人工补笔）。
+参照对象是 Met／NGA 的**公有领域**德加原作，**只用来观察风格**：
+**没有导入任何原作位图**，因此每一个像素都是笔刷或介质的笔触，以普通原子记录在文档里。
+
+
+<a href="web/showcase/degas-backstage-oil.png"><img src="web/showcase/degas-backstage-oil.png" alt="后台舞者" width="260"></a> <a href="web/showcase/degas-four-dancers-oil.png"><img src="web/showcase/degas-four-dancers-oil.png" alt="四位舞者" width="260"></a> <a href="web/showcase/ballet-reference-study-4k.png"><img src="web/showcase/ballet-reference-study-4k.png" alt="芭蕾参考研究（4K 成品）" width="260"></a>
+
+
+
+
+以上数字出自**对方自己的作品包**；它的报告里也写了**它没有**做的事（**没有**跑本仓自带的判据）✗
+⇒ 因此这四幅图这里是**展示**，**不算**本仓的验收证据。
+
+怎么画成这样 —— 以及**怎么画才不会像「填色本」**（大笔起手 ✓、一笔＝一块体积 ✓、
+用 `smudge`／`classic-knife` 揉开接缝 ✓、薄 `glaze` 与厚 `impasto` 并用 ✓）—— 写在
+[`skills/yanshi-painting/`](skills/yanshi-painting/SKILL.md) ✓。
 
 ## 一键安装
 
@@ -84,25 +111,6 @@ make serve      # 重编 -p yanshi-http 并起服务（用 curl 验工具前先�
 make release    # 打出发布包
 make help       # 全部目标
 ```
-
-## 作品
-
-下面四幅是**另一个 AI 通过本应用自己的 MCP 工具**画出来的（不是脚本操控界面，也没有人工补笔）。
-参照对象是 Met／NGA 的**公有领域**德加原作，**只用来观察风格**：
-**没有导入任何原作位图**，因此每一个像素都是笔刷或介质的笔触，以普通原子记录在文档里。
-
-
-<a href="web/showcase/degas-backstage-oil.png"><img src="web/showcase/degas-backstage-oil.png" alt="后台舞者" width="260"></a> <a href="web/showcase/degas-four-dancers-oil.png"><img src="web/showcase/degas-four-dancers-oil.png" alt="四位舞者" width="260"></a> <a href="web/showcase/ballet-reference-study-4k.png"><img src="web/showcase/ballet-reference-study-4k.png" alt="芭蕾参考研究（4K 成品）" width="260"></a>
-
-
-
-
-以上数字出自**对方自己的作品包**；它的报告里也写了**它没有**做的事（**没有**跑本仓自带的判据）✗
-⇒ 因此这四幅图这里是**展示**，**不算**本仓的验收证据。
-
-怎么画成这样 —— 以及**怎么画才不会像「填色本」**（大笔起手 ✓、一笔＝一块体积 ✓、
-用 `smudge`／`classic-knife` 揉开接缝 ✓、薄 `glaze` 与厚 `impasto` 并用 ✓）—— 写在
-[`skills/yanshi-painting/`](skills/yanshi-painting/SKILL.md) ✓。
 
 ## 致谢
 
