@@ -5,6 +5,8 @@ Cloudflare Workers 上。
 
 - 中文页：`/`（`public/index.html`）
 - 英文页：`/en/`（`public/en/index.html`）
+- 其余七语：`/fr/`、`/es/`、`/pt/`（巴西葡萄牙语）、`/ja/`、`/ko/`、`/ru/`、`/de/`
+  （`public/<语言>/index.html`；九语全量对等，页眉下拉切换）
 
 ## 目录
 
@@ -12,6 +14,7 @@ Cloudflare Workers 上。
 public/                 ← wrangler 发布的目录，也是站点根
   index.html            中文页
   en/index.html         英文页
+  fr/ es/ pt/ ja/ ko/ ru/ de/   其余七语页（各一份 index.html）
   styles.css            单一样式表（含深色模式；无外部字体、无 CDN）
   404.html robots.txt sitemap.xml
   favicon.ico
@@ -36,7 +39,7 @@ Add → Custom Domain → `yanshi.wangda.today`**。DNS 由 Cloudflare 接管，
 ## 维护时守住这几条
 
 1. **零脚本**：`public/` 里不放 JavaScript，也不引外部字体或 CDN。页面是纯 HTML + 一份 CSS。
-2. **双语对等**：改中文页就同步改英文页。两页的 `<h2>` 小节数由自检比对。
+2. **九语对等**：改任一语言页就同步改其余八页。九页的 `<h2>` 小节数由自检比对。
 3. **每页都要有联系方式**（自检会拦）。
 4. **品牌图形是副本，源头在 `main` 分支的 `assets/brand/`**。更新方式：
 
@@ -58,8 +61,8 @@ Add → Custom Domain → `yanshi.wangda.today`**。DNS 由 Cloudflare 接管，
    ```
 
    它会检查：每处以 `/` 开头的引用是否真有对应文件（改了文件名、忘了拷资源这类问题最
-   容易悄悄上线成 404）、两页是否互相链接、每页是否有联系方式、双语小节数是否一致、
-   是否混进了 `<script>`。
+   容易悄悄上线成 404）、每页是否有 hreflang 互链、每页是否有联系方式、九语小节数是否
+   一致、是否混进了 `<script>`。
 
 ## 文字口径
 

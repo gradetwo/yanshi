@@ -5,7 +5,10 @@ import { readFileSync, existsSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 
 const PUB = "public";
-const pages = ["public/index.html", "public/en/index.html", "public/404.html"];
+const pages = ["public/index.html", "public/en/index.html", "public/fr/index.html",
+  "public/es/index.html", "public/pt/index.html", "public/ja/index.html",
+  "public/ko/index.html", "public/ru/index.html", "public/de/index.html",
+  "public/404.html"];
 let bad = 0, checked = 0;
 
 for (const page of pages) {
@@ -35,10 +38,15 @@ for (const page of pages) {
 // 4) 404 页存在（wrangler 的 not_found_handling = "404-page" 依赖它）
 if (!existsSync("public/404.html")) { console.error("✗ 缺少 public/404.html"); bad++; }
 
-// 5) 两个语言页的 <h2> 小节数量应一致（双语的粗糙一致性检查）
+// 5) 九个语言页的 <h2> 小节数量应一致（多语的粗糙一致性检查）
 const sections = (p) => (readFileSync(p, "utf8").match(/<h2>/g) || []).length;
-const zh = sections("public/index.html"), en = sections("public/en/index.html");
-if (zh !== en) { console.error(`✗ 双语小节数不一致：zh=${zh} en=${en}`); bad++; }
+const langPages = pages.filter((p) => p !== "public/404.html");
+const counts = langPages.map(sections);
+const zh = counts[0], en = counts[1];
+if (counts.some((c) => c !== zh)) {
+  console.error(`✗ 多语小节数不一致：${langPages.map((p, i) => `${p}=${counts[i]}`).join(" ")}`);
+  bad++;
+}
 
 // 6) 站点里不该有 JS（本站是纯静态、零脚本）——只有两个例外：
 //    其一，Wang 2026-11-16 决定加入的自有 GTM 统计容器 GTM-5WC4DS5B
@@ -63,4 +71,4 @@ for (const page of pages) {
 }
 
 if (bad) { console.error(`\n✗ 自检未通过：${bad} 处问题（共检查 ${checked} 处引用）`); process.exit(1); }
-console.log(`✓ 自检通过：${pages.length} 页、${checked} 处本地引用都存在，双语小节数 ${zh}，无 GTM 容器与 JSON-LD 数据块以外的 <script>`);
+console.log(`✓ 自检通过：${pages.length} 页、${checked} 处本地引用都存在，九语小节数 ${zh}，无 GTM 容器与 JSON-LD 数据块以外的 <script>`);
