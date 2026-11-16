@@ -8,6 +8,9 @@
 #   `make release-all`  ⇒ `scripts/package-release.sh --all-targets --out dist` ✓
 #   ⇒ 写出 `dist/<name>.tar.gz` ＋ `dist/SHA256SUMS` ✓
 #   ⇒ 且每个归档都过 `scripts/release-verify-archive.sh` ✓（包名与包内二进制必须一致 ✓）。
+#   ＋ `scripts/package-installer.sh` ⇒ 每平台再出一份**安装包**（Windows `.msi`／
+#     macOS `.dmg`／Linux `.deb`，名 `yanshi-<版本>-<target>.<ext>`——稳定模板，
+#     不带 commit，供下载方按模板拼 URL）；其校验和**追加**进同一份 `dist/SHA256SUMS` ✓。
 #
 # **供应链取舍** ✓：建 Release 用 runner **自带的 `gh`** ✓，**不引入第三方 action** ✗。
 #   好处：少一个供应链面、少一次审计 ✓。代价：`gh` 的参数需要自己写对 ✓，
@@ -217,6 +220,112 @@ jobs:
             scripts/package-release.sh $FLAGS --out dist
           fi
 
+      # **安装包工具链（只有 Windows 要装）**：WiX v3 走 choco（runner 自带 ✓）；
+      # Linux 的 dpkg-deb、macOS 的 hdiutil/codesign 都是系统自带 ⇒ 不装任何东西 ✓。
+      - name: Install the installer toolchain (Windows only)
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          choco install wixtoolset -y --no-progress
+          ls "/c/Program Files (x86)/WiX Toolset v3.14/bin" 2>/dev/null | head -5 || true
+
+      # **安装包**：把刚打好的发行树再打成 .msi/.dmg/.deb（同一棵树、同一份内容，
+      # 只多平台启动器）。目标与版本由脚本读归档里的 BUILD-INFO，不在这里再写一份 ⇒ 不漂移。
+      - name: Build the platform installer
+        run: |
+          set -euo pipefail
+          for a in dist/*.tar.gz; do
+            scripts/package-installer.sh --archive "$a" --out dist
+          done
+          ls -la dist
+
+      # **安装包自检**：打出来不算数，要证明「装得上、东西在、能跑」✓。
+      #   Linux：dpkg-deb 查清单 ⇒ 实装 ⇒ 用装好的命令起服务打 /health ⇒ 卸载；
+      #   macOS：hdiutil verify ⇒ 挂载查 Yanshi.app 与签名 ⇒ 同架构腿再冒烟
+      #     （macos-15 是 arm64 runner ⇒ x86_64 腿是交叉包，只验结构、不冒烟）；
+      #   Windows：msiexec /a 行政安装到临时目录 ⇒ 断言 exe 与启动器落地 ⇒ 跑 --version。
+      - name: Verify the platform installer
+        run: |
+          set -euo pipefail
+          case "${{ matrix.target }}" in
+            *-unknown-linux-*)
+              deb=$(ls dist/*.deb | head -1)
+              echo "-- DEB：$deb"
+              dpkg-deb --info "$deb"
+              dpkg-deb --contents "$deb" | grep -q 'usr/lib/yanshi/bin/yanshi-serve' || { echo "✗ .deb 里没有 usr/lib/yanshi/bin/yanshi-serve"; exit 1; }
+              dpkg-deb --contents "$deb" | grep -q 'usr/bin/yanshi-serve' || { echo "✗ .deb 里没有 usr/bin/yanshi-serve"; exit 1; }
+              dpkg-deb --contents "$deb" | grep -q 'usr/share/applications/yanshi.desktop' || { echo "✗ .deb 里没有 .desktop 文件"; exit 1; }
+              sudo dpkg -i "$deb"
+              work=$(mktemp -d); port=21988; log="$work/serve.log"
+              yanshi-serve --bind "127.0.0.1:$port" --root "$work/root" --doc smoke --width 64 --height 64 >"$log" 2>&1 &
+              pid=$!
+              ok=no
+              for _ in $(seq 1 40); do
+                if curl -sf "http://127.0.0.1:$port/health" >/dev/null 2>&1; then ok=yes; break; fi
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 0.5
+              done
+              kill "$pid" 2>/dev/null || true
+              sudo dpkg -r yanshi
+              if [ "$ok" != yes ]; then
+                echo "✗ 装好的 .deb 起服务后 /health 没响应 ⇒ 这个安装包不能发"
+                tail -40 "$log" || true
+                exit 1
+              fi
+              echo "✓ .deb 实装冒烟通过（dpkg -i → /health → dpkg -r）"
+              ;;
+            *-apple-darwin)
+              dmg=$(ls dist/*.dmg | head -1)
+              echo "-- DMG：$dmg"
+              hdiutil verify "$dmg"
+              mnt=$(mktemp -d)
+              hdiutil attach "$dmg" -nobrowse -mountpoint "$mnt" >/dev/null
+              test -d "$mnt/Yanshi.app" || { echo "✗ DMG 里没有 Yanshi.app"; hdiutil detach "$mnt" >/dev/null || true; exit 1; }
+              codesign --verify --deep --strict "$mnt/Yanshi.app"
+              echo "✓ DMG 结构与签名通过（Yanshi.app 在内、codesign 可验）"
+              case "$(uname -m):${{ matrix.target }}" in
+                arm64:aarch64-apple-darwin|x86_64:x86_64-apple-darwin)
+                  work=$(mktemp -d); port=21988; log="$work/serve.log"
+                  ( cd "$mnt/Yanshi.app/Contents/Resources/yanshi" && ./yanshi.sh --bind "127.0.0.1:$port" --root "$work/root" --doc smoke --width 64 --height 64 ) >"$log" 2>&1 &
+                  pid=$!
+                  ok=no
+                  for _ in $(seq 1 40); do
+                    if curl -sf "http://127.0.0.1:$port/health" >/dev/null 2>&1; then ok=yes; break; fi
+                    kill -0 "$pid" 2>/dev/null || break
+                    sleep 0.5
+                  done
+                  kill "$pid" 2>/dev/null || true
+                  if [ "$ok" != yes ]; then
+                    echo "✗ DMG 里的包起服务后 /health 没响应 ⇒ 这个安装包不能发"
+                    tail -40 "$log" || true
+                    hdiutil detach "$mnt" >/dev/null || true
+                    exit 1
+                  fi
+                  echo "✓ DMG 内包冒烟通过（/health）"
+                  ;;
+                *)
+                  echo "（交叉腿：runner 架构跑不了这个二进制 ⇒ 只验结构与签名，不冒烟）"
+                  ;;
+              esac
+              hdiutil detach "$mnt" >/dev/null
+              ;;
+            *-pc-windows-msvc)
+              msi=$(ls dist/*.msi | head -1)
+              echo "-- MSI：$msi"
+              admin=$(mktemp -d)
+              MSYS_NO_PATHCONV=1 msiexec /a "$(cygpath -w "$PWD/$msi")" /qn TARGETDIR="$(cygpath -w "$admin")" || { echo "✗ msiexec /a 行政安装失败"; exit 1; }
+              serve_exe=$(find "$admin" -name 'yanshi-serve.exe' | head -1)
+              open_cmd=$(find "$admin" -name 'yanshi-open.cmd' | head -1)
+              test -n "$serve_exe" || { echo "✗ 行政安装后找不到 yanshi-serve.exe"; find "$admin" | head -40; exit 1; }
+              test -n "$open_cmd" || { echo "✗ 行政安装后找不到 yanshi-open.cmd（开始菜单快捷方式指向它）"; exit 1; }
+              "$serve_exe" --version || { echo "✗ 装出来的 yanshi-serve.exe 跑不了 --version"; exit 1; }
+              echo "✓ MSI 行政安装通过（文件落地、--version 可跑）"
+              ;;
+            *)
+              echo "✗ 未知目标 ${{ matrix.target }} ⇒ 没有对应的安装包校验路"; exit 1
+              ;;
+          esac
+
       # **自检** ✓：产物必须存在、校验和必须能验过 ✓ ⇒ 否则这一步就红，别把坏包发出去 ✗。
       - name: Verify the package and its checksums
         run: |
@@ -284,6 +393,9 @@ jobs:
           name: yanshi-release-${{ matrix.label }}
           path: |
             dist/*.tar.gz
+            dist/*.msi
+            dist/*.dmg
+            dist/*.deb
             dist/SHA256SUMS
           if-no-files-found: error
 
@@ -306,7 +418,7 @@ jobs:
             gh release create "$TAG" --title "$TAG" --notes "Automated release package. See dist/SHA256SUMS for checksums." --target "${GITHUB_SHA}"
           # 只传这个平台的文件 ✓ ⇒ 多平台 job 并行时各自补自己的那一份 ✓。
           shopt -s nullglob
-          for f in dist/*.tar.gz dist/SHA256SUMS; do
+          for f in dist/*.tar.gz dist/*.msi dist/*.dmg dist/*.deb dist/SHA256SUMS; do
             # 校验和文件跨平台同名 ⇒ 合并：先取下来再追加，避免互相覆盖 ✓。
             if [ "$(basename "$f")" = "SHA256SUMS" ]; then
               continue
@@ -347,12 +459,13 @@ jobs:
           sort -k2 merged.txt | uniq > SHA256SUMS
           echo "== 合并后的校验和 =="
           cat SHA256SUMS
-          # **自检** ✓：条目数必须等于**归档数** ✓（少一条 ⇒ 某个平台没把校验和带上来 ✗）
+          # **自检** ✓：条目数必须等于**归档数＋安装包数** ✓（少一条 ⇒ 某个平台没把校验和带上来 ✗）
           n_entries=$(wc -l < SHA256SUMS)
           n_archives=$(find artifacts -name '*.tar.gz' | wc -l)
-          echo "条目 $n_entries ｜归档 $n_archives"
-          if [ "$n_entries" -ne "$n_archives" ]; then
-            echo "✗ 校验和条目数与归档数不一致 ⇒ 不许发布（宁可红，不发无法校验的包 ✗）" >&2
+          n_installers=$(find artifacts \( -name '*.msi' -o -name '*.dmg' -o -name '*.deb' \) | wc -l)
+          echo "条目 $n_entries ｜归档 $n_archives ｜安装包 $n_installers"
+          if [ "$n_entries" -ne "$((n_archives + n_installers))" ]; then
+            echo "✗ 校验和条目数与归档数＋安装包数不一致 ⇒ 不许发布（宁可红，不发无法校验的包 ✗）" >&2
             exit 1
           fi
           # **⇒ 必须显式给 `--repo`** ✗（v0.3.0 实测）：本作业**只下载产物、没 checkout** ✓
