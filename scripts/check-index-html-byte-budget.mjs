@@ -82,7 +82,10 @@ import { execFileSync } from "node:child_process";
 //   （CI 上"落笔后画布不变、两半互换" ⇒ 查是不是这里擦的）⇒ 954,500→955,500（留 981）。
 // 2026-11-05（修缺陷）：有选区时笔触走 pointerup 内核路径 ⇒ 提交后补一块权威像素
 //   （内核脏区画的是未裁的线）⇒ 955,500→956,500（留 908）。
-const CEILING = 956_500;
+// 2026-11-16：PWA 接入 Wang 自有 GTM 统计容器（GTM-5WC4DS5B，与 groove／synth／夜半
+//   同一容器，Wang 2026-11-16 决定）⇒ GTM 两段经 web/pwa-inject.html 注入并同步镜像进
+//   web/index.html，使 956,250→957,025（+775 B）⇒ 上界 956,500→957,500（留 475 B）。
+const CEILING = 957_500;
 
 const failures = [];
 const check = (ok, label, detail) => {
