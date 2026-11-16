@@ -2462,6 +2462,12 @@ impl Workspace {
         if let Some(dir) = &dir {
             if persisted {
                 freed_bytes = directory_bytes(dir);
+                // **F1：删目录之前先丢掉该文档缓存的追加句柄** ✓ ——
+                // 否则句柄仍指着已 unlink 的 inode，后续追加会"成功"写进一个谁也读不到的
+                // 空文件（静默丢数据 ✗）。`remove_dir_all` 之后该 id 可被重新建文档复用 ✓。
+                if let Some(persist) = self.persist.as_ref() {
+                    persist.close_journal_handle(doc_id);
+                }
                 // **先删磁盘、再摘内存** ✓：磁盘删失败就**什么都没变** ✓
                 //（反过来的话会留下"内存里没了、磁盘上还在"的半截状态 ✗）。
                 std::fs::remove_dir_all(dir).map_err(|error| {
@@ -3397,6 +3403,10 @@ impl Workspace {
         };
         // **落盘** ✓：原子日志 + 元数据（+ 渲染缓存 ✓）。
         let dir = persist.doc_dir(&doc_id);
+        // **F1：导入会用 `fs::write` 整体改写 `atoms.jsonl`** ✓ —— 先丢掉缓存句柄，
+        // 否则旧句柄还挂在同一 inode 上（truncate 后仍写 EOF，看似无害 ✓）
+        // 但导入失败/重试时会指向一个"半写"的日志 ✓ ⇒ 统一在改写前失效 ✓。
+        persist.close_journal_handle(&doc_id);
         std::fs::create_dir_all(&dir).map_err(|error| {
             YanshiError::new(
                 ErrorCode::PreconditionFailed,
@@ -3857,15 +3867,13 @@ impl Workspace {
                 ),
             ));
         }
-        let Some(persist) = self.persist.clone() else {
-            return Err(YanshiError::new(
-                ErrorCode::PreconditionFailed,
-                ErrorContext::detail(
-                    "工程包导出需要落盘工作区（启动时给 --root）⇒ 纯内存模式没有权威的原子日志文件",
-                ),
-            ));
-        };
-        let dir = persist.doc_dir(doc_id);
+        // **F2：纯内存工作区也能导出工程包** ✓（2026-11-16 实测缺口）。
+        //
+        // 原实现直接 `precondition_failed`（"没有权威的原子日志文件"）⇒ 而**权威日志在内存里
+        // 本来就有一份** ✓（`Document::log()` 就是折叠的唯一来源 ✓）⇒ 拒绝是没有必要的 ✗：
+        // 用内存日志按同样的 JSONL 口径序列化，就是同一个"权威" ✓（`import_project` 读端只认这个格式 ✓）。
+        // 落盘工作区仍以**盘上** `atoms.jsonl` 为权威（可能含别的进程追加的行 ✓）。
+        let dir = self.persist.as_ref().map(|persist| persist.doc_dir(doc_id));
         let _e3_t0 = std::time::Instant::now();
         let _e3 = |tag: &str| {
             if std::env::var_os("YANSHI_TRACE_EXPORT4").is_some() {
@@ -3880,12 +3888,16 @@ impl Workspace {
             }
         };
         _e3("start");
-        let atoms_text = std::fs::read_to_string(dir.join("atoms.jsonl")).map_err(|error| {
-            YanshiError::new(
-                ErrorCode::ReferenceNotFound,
-                ErrorContext::detail(format!("读不到原子日志 {doc_id}: {error}")),
-            )
-        })?;
+        let atoms_text = match &dir {
+            Some(dir) => std::fs::read_to_string(dir.join("atoms.jsonl")).map_err(|error| {
+                YanshiError::new(
+                    ErrorCode::ReferenceNotFound,
+                    ErrorContext::detail(format!("读不到原子日志 {doc_id}: {error}")),
+                )
+            })?,
+            // 纯内存：从内存日志逐条序列化（与盘上同一 `to_string` 口径 ✓）。
+            None => self.in_memory_atoms_jsonl(doc_id)?,
+        };
         // **只收这条日志引用到的 blob** ✓（逐行解析 ✓，坏行跳过但**不静默**：计数后写进包里 ✓）。
         //
         // **同时记下"每个 blob 是被哪些净荷引用的"** ✓ —— 省略位图前必须问"引用它的每一条原子
@@ -4083,7 +4095,14 @@ impl Workspace {
             path: "atoms.jsonl".to_owned(),
             bytes: atoms_text.into_bytes(),
         }];
-        if let Ok(meta) = std::fs::read(dir.join("meta.json")) {
+        let meta_bytes = match &dir {
+            Some(dir) => std::fs::read(dir.join("meta.json")).ok(),
+            // 纯内存没有 `meta.json` ✓ ⇒ **现造一份** ✗（而不是让包里缺它）：
+            // `import_project` 缺 meta 时会把 `0×0` 当尺寸（`persist.rs` 已记的那条坑 ✓）
+            // ⇒ 包能打开但尺寸错 ✓，等于静默错 ✗。
+            None => self.in_memory_meta_json(doc_id),
+        };
+        if let Some(meta) = meta_bytes {
             entries.push(crate::archive::TarEntry {
                 path: "meta.json".to_owned(),
                 bytes: meta,
@@ -4376,6 +4395,62 @@ The first open replays any omitted bitmap into the local CAS; later opens just r
                 frontier_omitted_historical_blobs,
             },
         ))
+    }
+
+    /// **把一张"整幅"PNG 存成渲染缓存** ✓（`render.png` + `render.seq` ✓，"打开即图片" 14.5 ✓）。
+    ///
+    /// **为什么需要它** ✓（真实用户的工程包暴露的 ✓）：缓存原来**只在"整幅渲染"或"文档级缩略图"时刷新** ✓，
+    /// 而 `export_png` 走的是 `render_region_raw` ✓ ⇒ **绕过缓存** ✗
+    /// ⇒ 用户拿 `export_png` 画完整幅画 ✓，磁盘上的 `render.png` **仍停在刚建文档时的空白** ✗ ✓
+    ///（我量了他四个工程包 ✓：缓存 `render.seq` 是 **5–6** ✓，而原子最高 **97–217** ✓ ⇒
+    ///  四个包里的 `render.png` 才会是**同一张空图** ✗）。
+    /// **这里复用调用方刚编好的 PNG** ✓ ⇒ **不多渲染一次** ✓。
+    /// **把内存日志序列化成与盘上同口径的 JSONL** ✓（F2：纯内存导出工程包用）。
+    ///
+    /// 与 `flush_journal` 同一条读取口径（按 `seq` 递增、`by_seq` 取原子 ✓）⇒
+    /// 逐字节与"落盘工作区写出的那份"同格式 ✓（`import_project` 读端不变 ✓）。
+    /// 空洞不静默：跳过的 `seq` 会像落盘路径一样写 stderr ✓（不假装日志连续 ✓）。
+    fn in_memory_atoms_jsonl(&self, doc_id: &str) -> Result<String> {
+        let document = self.documents.get(doc_id).ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::ReferenceNotFound,
+                ErrorContext::detail(format!("文档 {doc_id} 未打开")),
+            )
+        })?;
+        let head = document.log().head_seq();
+        let mut text = String::new();
+        for seq in 1..=head {
+            match document.log().by_seq(seq) {
+                Some(atom) => {
+                    let line = serde_json::to_string(atom).map_err(|error| {
+                        YanshiError::new(
+                            ErrorCode::InvalidArgument,
+                            ErrorContext::detail(format!("原子序列化失败: {error}")),
+                        )
+                    })?;
+                    text.push_str(&line);
+                    text.push('\n');
+                }
+                None => eprintln!("⚠ 内存导出：文档 {doc_id} 的日志里没有 seq {seq} ⇒ 跳过这一条"),
+            }
+        }
+        Ok(text)
+    }
+
+    /// **纯内存工作区现造 `meta.json`** ✓（F2；缺 meta 会被导入端读成 0×0 ✗）。
+    fn in_memory_meta_json(&self, doc_id: &str) -> Option<Vec<u8>> {
+        let document = self.documents.get(doc_id)?;
+        let meta = DocumentMeta {
+            doc_id: doc_id.to_owned(),
+            width: document.state().width,
+            height: document.state().height,
+            created_at: document.created_at(),
+            // 纯内存会话没有持久化的 capability token 记录 ✓ ⇒ 空表 + 已摘要标记
+            // （空表上标记没有语义差别 ✓，但保持"盘上不留明文"的口径 ✓）。
+            tokens: Vec::new(),
+            tokens_hashed: true,
+        };
+        serde_json::to_vec(&meta).ok()
     }
 
     /// **把一张"整幅"PNG 存成渲染缓存** ✓（`render.png` + `render.seq` ✓，"打开即图片" 14.5 ✓）。

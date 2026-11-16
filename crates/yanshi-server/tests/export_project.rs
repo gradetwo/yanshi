@@ -164,9 +164,21 @@ fn a_project_package_contains_the_log_the_blobs_and_a_current_preview() {
     let _ = std::fs::remove_file(&pack);
 }
 
-/// **没有落盘工作区时明确拒绝** ✓（而不是导出一个不完整的包 ✗）。
+/// **纯内存工作区也能导出完整工程包** ✓（补丁 0002 的行为变更）。
+///
+/// 此前这里钉的是「没有落盘工作区时明确拒绝」✗ —— 但权威日志在内存里
+/// 本来就有（`Document::log()` 是折叠的唯一来源），拒绝没有必要：
+/// 内存模式正是最适合跑大画布的路径。补丁改为内存序列化出包，
+/// 本测试随之改钉新行为：导出成功 + 用 `verify_package` 判完整
+/// （`complete` 为真 ⇔ import 可重放，上游自己的判据）。
 #[test]
-fn exporting_from_a_memory_workspace_is_refused_with_a_reason() {
+fn exporting_from_a_memory_workspace_succeeds_with_a_complete_package() {
+    let dir = temp_dir("mem_export");
+    let _cleanup = Cleanup(dir.clone());
+    // temp_dir 只清旧目录、不建目录；内存工作区没有文件存储会顺带建根目录，
+    // 导出路径的父目录须自己先建出来，否则写包一步会报 No such file or directory。
+    std::fs::create_dir_all(&dir).unwrap();
+    let pack = dir.join("mem.yanshi");
     let mut workspace = Workspace::in_memory(DocumentSettings::default());
     workspace
         .create_document(
@@ -175,17 +187,35 @@ fn exporting_from_a_memory_workspace_is_refused_with_a_reason() {
             "session:test",
         )
         .unwrap();
-    let refused = {
+    let exported = {
         let mut ctx = ToolContext::new(&mut workspace, "doc_mem", "human:1", "session:test")
             .with_owner(true)
             .with_wait_for_render(true, 4_000);
         registry().call(
             &mut ctx,
             "export_project",
-            &json!({ "path": &std::env::temp_dir().join("never.yanshi").to_string_lossy() }),
+            &json!({ "path": pack.to_string_lossy() }),
         )
     };
-    assert_eq!(refused["ok"], json!(false), "{refused}");
-    let detail = refused["context"]["detail"].as_str().unwrap_or_default();
-    assert!(detail.contains("--root"), "要说清怎么才能导出：{detail}");
+    assert_eq!(exported["ok"], json!(true), "{exported}");
+    assert_eq!(exported["missing_body"], json!(0), "{exported}");
+    assert!(
+        std::fs::metadata(&pack)
+            .map(|meta| meta.len() > 0)
+            .unwrap_or(false),
+        "包应当已写到 path：{}",
+        pack.display()
+    );
+    let verified = {
+        let mut ctx = ToolContext::new(&mut workspace, "doc_mem", "human:1", "session:test")
+            .with_owner(true)
+            .with_wait_for_render(true, 4_000);
+        registry().call(
+            &mut ctx,
+            "verify_package",
+            &json!({ "path": pack.to_string_lossy() }),
+        )
+    };
+    assert_eq!(verified["ok"], json!(true), "{verified}");
+    assert_eq!(verified["complete"], json!(true), "{verified}");
 }

@@ -39,6 +39,12 @@ pub struct FileStore {
     /// 只为持有：字段本身不读，最后一把句柄 `drop` 时 `WriteLock::drop` 删锁文件 ✓。
     #[allow(dead_code)]
     write_lock: std::sync::Arc<WriteLock>,
+    /// **按文档缓存的 `atoms.jsonl` 追加句柄** ✓（F1）。
+    ///
+    /// `Arc` 是必须的 ✓：`FileStore` 会被 clone（服务端多处持副本 ✓）⇒ 若每个副本
+    /// 各持一份句柄表，同一文档就会有几个 `append` 句柄并存 ✓ —— 追加模式仍写 EOF ✓，
+    /// 但"关掉一处"就管不住另一处 ✗ ⇒ 共享一张表，语义只有一份 ✓。
+    journal_handles: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, fs::File>>>,
 }
 
 /// **同一 root 同一时间只许一个写进程** ✓（paint-fix P-13）。
@@ -241,6 +247,33 @@ fn hash_legacy_tokens(meta: &mut DocumentMeta) {
     meta.tokens_hashed = true;
 }
 
+/// 缓存句柄是否仍指着 `path` 当前命名的那个文件。
+///
+/// 路径不存在（被删）⇒ 否；路径在但句柄文件已被替换 ⇒ Unix 上比对
+/// (dev, ino)，对不上即否。非 Unix 平台只判存在性——删文档/导入改写的
+/// 替换路径已由 `close_journal_handle` 显式失效，这里只兜「整目录被删」。
+fn journal_file_is_current(file: &std::fs::File, path: &std::path::Path) -> bool {
+    let Ok(on_disk) = fs::metadata(path) else {
+        return false;
+    };
+    let Ok(handle_meta) = file.metadata() else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if on_disk.dev() != handle_meta.dev() || on_disk.ino() != handle_meta.ino() {
+            return false;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = on_disk;
+        let _ = handle_meta;
+    }
+    true
+}
+
 impl FileStore {
     /// 打开（或创建）根目录。
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
@@ -257,6 +290,9 @@ impl FileStore {
             root,
             load_atoms_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             write_lock,
+            journal_handles: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
         })
     }
 
@@ -506,15 +542,19 @@ impl FileStore {
     }
 
     /// 追加一个原子（JSONL）。
+    ///
+    /// **句柄按文档缓存**（F1，2026-11-16 实测驱动）：原实现每条原子都走
+    /// `create_dir_all + open + write + flush + close` 五次系统调用 ——
+    /// 4K 批量作画实测**每笔多付约 12 ms**（17.3 ms/笔 落盘 vs 4.5 ms/笔 纯内存，
+    /// `crates/yanshi-server/src/persist.rs::append_atom` 为唯一写者）。
+    /// 缓存 `append(true)` 句柄后每次只剩 `write + flush`：
+    /// 语义不变（每条原子写完即 flush ✓、中途失败靠 `journal_watermark` 断点续写 ✓、
+    /// 追加模式永远写在 EOF ✓ 不会被旧偏移覆盖 ✓）。
+    /// **失效点**：删文档（`delete_document`）与导入改写（`import_project`）都先调
+    /// [`Self::close_journal_handle`] —— 否则句柄会指着一个已被删除/被替换的 inode。
     pub fn append_atom(&self, doc_id: &str, atom: &Atom) -> Result<()> {
-        let dir = self.doc_dir(doc_id);
-        fs::create_dir_all(&dir).map_err(|error| io_error(&dir, error))?;
         let path = self.atoms_path(doc_id);
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|error| io_error(&path, error))?;
+        let mut file = self.journal_handle(doc_id)?;
         let line = serde_json::to_string(atom).map_err(|error| {
             YanshiError::new(
                 ErrorCode::InvalidArgument,
@@ -525,6 +565,57 @@ impl FileStore {
         writeln!(file, "{line}").map_err(|error| io_error(&path, error))?;
         file.flush().map_err(|error| io_error(&path, error))?;
         Ok(())
+    }
+
+    /// 取（必要时建）某文档的追加句柄 ✓（F1）。
+    ///
+    /// 首次调用才付 `create_dir_all + open`；之后复用同一个 `append(true)` 句柄。
+    /// 句柄是 `File`（不是 `BufWriter`）⇒ 仍是"每条 flush 就落进页缓存"的既有语义 ✓，
+    /// 只是省掉 open/close —— 这正是实测里那 ~12 ms/笔的来源 ✓。
+    fn journal_handle(&self, doc_id: &str) -> Result<std::fs::File> {
+        let mut handles = self
+            .journal_handles
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(file) = handles.get(doc_id) {
+            // **复用前先验身份**：缓存句柄打开之后，落盘文件可能被外部删掉/替换
+            // （如工作区目录被整删）⇒ 句柄指着已 unlink 的 inode，append 会"成功"
+            // 写进谁也读不到的地方（静默丢数据）。路径不在了、或 Unix 上
+            // (dev, ino) 对不上 ⇒ 丢掉缓存、走下面的重开路径（create_dir_all + create
+            // 会把目录与文件重新建出来，与不缓存时的按路径追加语义一致）。
+            // 删文档/导入改写的失效仍由 close_journal_handle 显式负责，这里是兜底。
+            if journal_file_is_current(file, &self.atoms_path(doc_id)) {
+                return file
+                    .try_clone()
+                    .map_err(|error| io_error(&self.atoms_path(doc_id), error));
+            }
+            handles.remove(doc_id);
+        }
+        let dir = self.doc_dir(doc_id);
+        fs::create_dir_all(&dir).map_err(|error| io_error(&dir, error))?;
+        let path = self.atoms_path(doc_id);
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|error| io_error(&path, error))?;
+        let cloned = file.try_clone().map_err(|error| io_error(&path, error))?;
+        handles.insert(doc_id.to_owned(), file);
+        Ok(cloned)
+    }
+
+    /// 丢掉某文档缓存的追加句柄 ✓（F1：删文档 / 导入改写之前必须调）。
+    ///
+    /// 不丢的后果是**静默丢数据** ✗：`delete_document` 把目录整个删掉之后，
+    /// 缓存句柄还指着那个已经 unlink 的 inode ⇒ 后续 `append_atom` 会"成功"
+    /// 写进一个谁也读不到的空文件 ✓ —— 正是本仓点名的"静默降级"最坏形态。
+    pub fn close_journal_handle(&self, doc_id: &str) {
+        let mut handles = self
+            .journal_handles
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // `File` 在这里被 drop ⇒ close ✓（已 flush 过，无需再 sync ✓）。
+        handles.remove(doc_id);
     }
 
     /// 读取全部原子（忽略空行与损坏的尾行）。
