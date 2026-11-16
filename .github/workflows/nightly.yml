@@ -16,6 +16,9 @@
 #   合入后的第一次证明，是合入后 main 上第一次 push 触发的 run 真正发了 nightly ✓。
 # **构建路复用 release.yml** ✓：`make release` ⇒ `scripts/package-release.sh --out dist` ⇒
 #   归档 ＋ SHA256SUMS ⇒ `scripts/release-verify-archive.sh` 校验 ⇒ 冒烟（/health）✓。
+#   ＋ `scripts/package-installer.sh` ⇒ 每平台再出一份**安装包**（Windows `.msi`／
+#   macOS `.dmg`／Linux `.deb`，名 `yanshi-<版本>-<target>.<ext>`），校验和追加进
+#   同一份 SHA256SUMS；publish 的计数断言已同步改成「条目 == 归档数 + 安装包数」✓。
 # **供应链** ✓：建 Release 用 runner 自带的 `gh`，不引入第三方 action（与 release.yml 同规则 ✓）；
 #   产物搬运仍用 actions/download-artifact（release.yml 的 checksums 作业亦如此 ✓）。
 # **只改 CI/CD 配置的提交**：run 只要能启动就可以停掉（见 release.yml 头部规则 ✓）——
@@ -115,6 +118,130 @@ jobs:
           set -euo pipefail
           scripts/package-release.sh --target "${{ matrix.target }}" --out dist
 
+      # **安装包工具链（只有 Windows 要装）**：WiX v3 走 choco（runner 自带 ✓）；
+      # Linux 的 dpkg-deb、macOS 的 hdiutil/codesign 都是系统自带 ⇒ 不装任何东西 ✓。
+      - name: Install the installer toolchain (Windows only)
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          choco install wixtoolset -y --no-progress
+          ls "/c/Program Files (x86)/WiX Toolset v3.14/bin" 2>/dev/null | head -5 || true
+
+      # **安装包**：把刚打好的发行树再打成 .msi/.dmg/.deb（与 release.yml 同一条路、
+      # 同一个脚本 ⇒ 两条线不会漂移）。目标与版本由脚本读归档里的 BUILD-INFO。
+      - name: Build the platform installer
+        run: |
+          set -euo pipefail
+          for a in dist/*.tar.gz; do
+            scripts/package-installer.sh --archive "$a" --out dist
+          done
+          ls -la dist
+
+      # **安装包自检**（与 release.yml 同款）：Linux 实装打 /health、macOS 挂载验
+      # 结构与签名（同架构腿再冒烟）、Windows 行政安装验落地与 --version。
+      - name: Verify the platform installer
+        run: |
+          set -euo pipefail
+          case "${{ matrix.target }}" in
+            *-unknown-linux-*)
+              deb=$(ls dist/*.deb | head -1)
+              echo "-- DEB：$deb"
+              dpkg-deb --info "$deb"
+              # 清单先落盘再 grep：dpkg-deb --contents | grep -q 在 pipefail 下
+              # 必假红——grep 匹配后关管，tar 写 stdout 得 SIGPIPE 退 2 ⇒ 流水线
+              # 非零 ⇒ 误报「文件缺失」（文件其实在包里）。落盘也只解一次 tar。
+              contents=$(mktemp)
+              dpkg-deb --contents "$deb" > "$contents"
+              grep -q 'usr/lib/yanshi/bin/yanshi-serve' "$contents" || { echo "✗ .deb 里没有 usr/lib/yanshi/bin/yanshi-serve"; exit 1; }
+              grep -q 'usr/bin/yanshi-serve' "$contents" || { echo "✗ .deb 里没有 usr/bin/yanshi-serve"; exit 1; }
+              grep -q 'usr/share/applications/today.wangda.yanshi.desktop' "$contents" || { echo "✗ .deb 里没有 .desktop 文件"; exit 1; }
+              grep -q 'usr/share/icons/hicolor/scalable/apps/today.wangda.yanshi.svg' "$contents" || { echo "✗ .deb 里没有 hicolor scalable 图标"; exit 1; }
+              grep -q 'usr/share/icons/hicolor/256x256/apps/today.wangda.yanshi.png' "$contents" || { echo "✗ .deb 里没有 hicolor 256 PNG 图标"; exit 1; }
+              rm -f "$contents"
+              sudo dpkg -i "$deb"
+              work=$(mktemp -d); port=21988; log="$work/serve.log"
+              yanshi-serve --bind "127.0.0.1:$port" --root "$work/root" --doc smoke --width 64 --height 64 >"$log" 2>&1 &
+              pid=$!
+              ok=no
+              for _ in $(seq 1 40); do
+                if curl -sf "http://127.0.0.1:$port/health" >/dev/null 2>&1; then ok=yes; break; fi
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 0.5
+              done
+              kill "$pid" 2>/dev/null || true
+              sudo dpkg -r yanshi
+              if [ "$ok" != yes ]; then
+                echo "✗ 装好的 .deb 起服务后 /health 没响应 ⇒ 这个安装包不能发"
+                tail -40 "$log" || true
+                exit 1
+              fi
+              echo "✓ .deb 实装冒烟通过（dpkg -i → /health → dpkg -r）"
+              ;;
+            *-apple-darwin)
+              dmg=$(ls dist/*.dmg | head -1)
+              echo "-- DMG：$dmg"
+              hdiutil verify "$dmg"
+              mnt=$(mktemp -d)
+              hdiutil attach "$dmg" -nobrowse -mountpoint "$mnt" >/dev/null
+              test -d "$mnt/Yanshi.app" || { echo "✗ DMG 里没有 Yanshi.app"; hdiutil detach "$mnt" >/dev/null || true; exit 1; }
+              codesign --verify --deep --strict "$mnt/Yanshi.app"
+              echo "✓ DMG 结构与签名通过（Yanshi.app 在内、codesign 可验）"
+              case "$(uname -m):${{ matrix.target }}" in
+                arm64:aarch64-apple-darwin|x86_64:x86_64-apple-darwin)
+                  work=$(mktemp -d); port=21988; log="$work/serve.log"
+                  ( cd "$mnt/Yanshi.app/Contents/Resources/yanshi" && ./yanshi.sh --bind "127.0.0.1:$port" --root "$work/root" --doc smoke --width 64 --height 64 ) >"$log" 2>&1 &
+                  pid=$!
+                  ok=no
+                  for _ in $(seq 1 40); do
+                    if curl -sf "http://127.0.0.1:$port/health" >/dev/null 2>&1; then ok=yes; break; fi
+                    kill -0 "$pid" 2>/dev/null || break
+                    sleep 0.5
+                  done
+                  kill "$pid" 2>/dev/null || true
+                  # yanshi.sh 会再派生 yanshi-serve 子进程：只 kill 子 shell 的话，
+                  # 孤儿 yanshi-serve 还占着挂载卷 ⇒ 最后 hdiutil detach 报 Resource
+                  # busy（exit 16）。按监听端口杀掉实际的服务器进程再卸载。
+                  sleep 1
+                  pkill -f "yanshi-serve.*127.0.0.1:$port" 2>/dev/null || true
+                  sleep 1
+                  if [ "$ok" != yes ]; then
+                    echo "✗ DMG 里的包起服务后 /health 没响应 ⇒ 这个安装包不能发"
+                    tail -40 "$log" || true
+                    hdiutil detach "$mnt" >/dev/null || true
+                    exit 1
+                  fi
+                  echo "✓ DMG 内包冒烟通过（/health）"
+                  ;;
+                *)
+                  echo "（交叉腿：runner 架构跑不了这个二进制 ⇒ 只验结构与签名，不冒烟）"
+                  ;;
+              esac
+              # 卸载重试：服务器进程退出有滞后，第一次 detach 可能仍报 busy；
+              # 重试 5 次还卸不掉才响亮失败（不静默放过）。
+              detached=no
+              for _ in 1 2 3 4 5; do
+                if hdiutil detach "$mnt" >/dev/null 2>&1; then detached=yes; break; fi
+                sleep 2
+              done
+              [ "$detached" = yes ] || { echo "✗ DMG 卸载失败（卷仍被占用）"; exit 1; }
+              ;;
+            *-pc-windows-msvc)
+              msi=$(ls dist/*.msi | head -1)
+              echo "-- MSI：$msi"
+              admin=$(mktemp -d)
+              MSYS_NO_PATHCONV=1 msiexec /a "$(cygpath -w "$PWD/$msi")" /qn TARGETDIR="$(cygpath -w "$admin")" || { echo "✗ msiexec /a 行政安装失败"; exit 1; }
+              serve_exe=$(find "$admin" -name 'yanshi-serve.exe' | head -1)
+              open_cmd=$(find "$admin" -name 'yanshi-open.cmd' | head -1)
+              test -n "$serve_exe" || { echo "✗ 行政安装后找不到 yanshi-serve.exe"; find "$admin" | head -40; exit 1; }
+              test -n "$open_cmd" || { echo "✗ 行政安装后找不到 yanshi-open.cmd（开始菜单快捷方式指向它）"; exit 1; }
+              "$serve_exe" --version || { echo "✗ 装出来的 yanshi-serve.exe 跑不了 --version"; exit 1; }
+              echo "✓ MSI 行政安装通过（文件落地、--version 可跑）"
+              ;;
+            *)
+              echo "✗ 未知目标 ${{ matrix.target }} ⇒ 没有对应的安装包校验路"; exit 1
+              ;;
+          esac
+
       - name: Verify the package and its checksums
         run: |
           set -euo pipefail
@@ -168,6 +295,9 @@ jobs:
           name: yanshi-nightly-${{ matrix.label }}
           path: |
             dist/*.tar.gz
+            dist/*.msi
+            dist/*.dmg
+            dist/*.deb
             dist/SHA256SUMS
           if-no-files-found: error
 
@@ -194,12 +324,14 @@ jobs:
           cat SHA256SUMS
           n_entries=$(wc -l < SHA256SUMS)
           n_archives=$(find artifacts -name '*.tar.gz' | wc -l)
-          echo "条目 $n_entries ｜归档 $n_archives"
-          if [ "$n_entries" -ne "$n_archives" ]; then
-            echo "✗ 校验和条目数与归档数不一致 ⇒ 不许发布（宁可红，不发无法校验的包 ✗）" >&2
+          n_installers=$(find artifacts \( -name '*.msi' -o -name '*.dmg' -o -name '*.deb' \) | wc -l)
+          echo "条目 $n_entries ｜归档 $n_archives ｜安装包 $n_installers"
+          if [ "$n_entries" -ne "$((n_archives + n_installers))" ]; then
+            echo "✗ 校验和条目数与归档数＋安装包数不一致 ⇒ 不许发布（宁可红，不发无法校验的包 ✗）" >&2
             exit 1
           fi
-          NOTES="Rolling nightly build from main."
+          NOTES="Rolling nightly build from main.
+          Installers: yanshi-<version>-<target>.msi (Windows) / .dmg (macOS) / .deb (Linux). The macOS app is ad-hoc signed and the MSI is unsigned; first launch needs a manual allow."
           # 删后重建（见文件头“删后重建”）：edit 不动 published_at，故先删再建；
           # create 会把 tag 建在本次 SHA，不再需要 tag PATCH。新 Release 里只有本次
           # 归档＋SHA256SUMS，旧归档随 delete 一并消失，无需另行清理。
@@ -208,8 +340,8 @@ jobs:
           fi
           gh release create nightly --title "nightly" --notes "$NOTES" --target "${GITHUB_SHA}" --repo "$GITHUB_REPOSITORY"
           shopt -s nullglob
-          for f in $(find artifacts -name '*.tar.gz' | sort); do
+          for f in $(find artifacts \( -name '*.tar.gz' -o -name '*.msi' -o -name '*.dmg' -o -name '*.deb' \) | sort); do
             gh release upload nightly "$f" --repo "$GITHUB_REPOSITORY"
           done
           gh release upload nightly SHA256SUMS --repo "$GITHUB_REPOSITORY"
-          echo "== 滚动 nightly 已更新 ✓（commit ${GITHUB_SHA}，$n_archives 个平台归档）=="
+          echo "== 滚动 nightly 已更新 ✓（commit ${GITHUB_SHA}，$n_archives 个平台归档＋$n_installers 个安装包）=="
