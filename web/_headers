@@ -24,6 +24,9 @@
 
 /index.html
   Cache-Control: no-cache
+  # 传输层加固（2026-11-17）：托管方按扩展名推断的 Content-Type 不带 charset，
+  # 非 UTF-8 回退区域会整页乱码；文档层 meta 已挪回前 1024 字节（治本），此处再补一层。
+  Content-Type: text/html; charset=utf-8
 
 /manifest.webmanifest
   Cache-Control: no-cache

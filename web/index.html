@@ -1,6 +1,11 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
+<meta charset="utf-8" />
+<!-- ★ 编码声明必须紧跟 <head>、排在一切注释与脚本之前 ★：浏览器只在前 1024 字节内
+     预扫描 meta charset，而静态托管的响应头不带 charset ⇒ 声明一旦被大段注释挤出
+     预扫描窗口，非 UTF-8 回退区域（zh-CN ⇒ GBK、ja ⇒ Shift_JIS）整页乱码
+     （2026-11-17 修复；守护判据 scripts/check-charset-window.mjs）。 -->
 <!-- **★ 早期请求哨兵 ✗ ★**（第 824 轮 ✓；**用户报告 405 ✓**）：
      **∴ 为什么需要它 ✗**：**下面的安装块是 `type="module"` ✗** ⇒ **∴ 默认 defer ✗**
      ⇒ **∴ 它在**所有普通脚本之后**执行 ✗** ⇒ **∴ 而**前面的脚本**早已 fetch `/api/…` ✗**
@@ -98,7 +103,6 @@
   //   `check-service-worker-roles.mjs` ①：`web/sw.js*` 不许再出现）。
 </script>
 
-<meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>偃师 Yanshi 查看器</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
