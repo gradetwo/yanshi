@@ -40,10 +40,20 @@ const sections = (p) => (readFileSync(p, "utf8").match(/<h2>/g) || []).length;
 const zh = sections("public/index.html"), en = sections("public/en/index.html");
 if (zh !== en) { console.error(`✗ 双语小节数不一致：zh=${zh} en=${en}`); bad++; }
 
-// 6) 站点里不该有 JS（本站是纯静态、零脚本）
+// 6) 站点里不该有 JS（本站是纯静态、零脚本）——唯一例外：Wang 2026-11-16 决定加入的
+//    自有 GTM 统计容器 GTM-5WC4DS5B（与 groove／synth／夜半同一容器）。
+//    只豁免「含该容器 ID 且加载官方 gtm.js」的那一个脚本块；其余任何 <script> 仍判红。
 for (const page of pages) {
-  if (/<script/i.test(readFileSync(page, "utf8"))) { console.error(`✗ ${page} 含 <script>（本站约定零脚本）`); bad++; }
+  const html = readFileSync(page, "utf8");
+  const blocks = html.match(/<script\b[\s\S]*?<\/script>/gi) || [];
+  const stray = html.replace(/<script\b[\s\S]*?<\/script>/gi, "");
+  if (/<script/i.test(stray)) { console.error(`✗ ${page} 含未闭合的 <script>（本站约定零脚本，GTM 容器除外）`); bad++; }
+  for (const b of blocks) {
+    if (!(b.includes("GTM-5WC4DS5B") && b.includes("www.googletagmanager.com/gtm.js"))) {
+      console.error(`✗ ${page} 含 GTM 容器以外的 <script>（本站约定零脚本）`); bad++;
+    }
+  }
 }
 
 if (bad) { console.error(`\n✗ 自检未通过：${bad} 处问题（共检查 ${checked} 处引用）`); process.exit(1); }
-console.log(`✓ 自检通过：${pages.length} 页、${checked} 处本地引用都存在，双语小节数 ${zh}，零 <script>`);
+console.log(`✓ 自检通过：${pages.length} 页、${checked} 处本地引用都存在，双语小节数 ${zh}，无 GTM 容器以外的 <script>`);
