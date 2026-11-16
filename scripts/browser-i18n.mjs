@@ -1,5 +1,9 @@
 // criterion-target: static  ## 运行器据此决定是否注入 render=client（测静态文案（本地模式会把 endpoint_not_local 噪声算进中文））
-// **界面双语判据**：默认中文；点顶栏开关切成英文后，**顶栏里不应再有中文**，切回来应恢复中文。
+// **界面语言判据**：默认中文；经顶栏**语言选择器**切成英文后，**顶栏里不应再有中文**，切回来应恢复中文。
+//（2026-11-17：开关从中英两态改成 9 语言选择器 ✓ 本判据走同一条用户路径：点开关开列表、点列表项切换 ✓；
+//  断言口径不变 ✓ 只有"开关文字"那条跟着新语义改：按钮显示**当前**语言的自称名 ✓。
+//  同日续：首访按浏览器语言自动检测 ⇒ 本判据先把浏览器语言钉到 zh-CN 再判「默认中文」✓
+//  末尾另验一条 fr-FR 首访检测 ✓（映射表本身由静态判据 check-i18n-lang-detect.mjs 守 ✓）。）
 
 // **★ 总超时守卫 ✗ ★**（2026-10-16 ✓）：**本判据要连 CDP 浏览器** ✓ ⇒ 浏览器起不来时它可能**一直等**
 //   （实测：CI 的判据分片被这种判据**拖到跑不完** ✗ ⇒ 我这边十几轮拿不到判定 ✓）。
@@ -34,8 +38,8 @@ await send("Runtime.enable"); await send("Page.enable");
 
 const snapshot = `JSON.stringify((() => {
   const header = document.querySelector("header");
-  // **排除语言开关自己**：它按惯例显示"切过去会变成哪个语言"（英文界面下就是"中文"二字），
-  // 那两个字**本来就该是中文**，不算漏翻。
+  // **排除语言选择器自己**：按钮显示的是**当前语言的自称名**（语言名是数据、不是界面文案 ✓），
+  // 列表项同理（且列表只在打开时存在、自带 data-i18n="off" ✓）⇒ 都不算漏翻。
   const collect = (node, out) => {
     if (!node) return out;
     if (node.nodeType === 3) return out + node.nodeValue;
@@ -149,12 +153,46 @@ const failures = [];
 //   ⇒ 口径与 `browser-fill-region` / `browser-layer-lock` 一致 ✓：**先落到壳页擦偏好 ✓ 再进目标 URL** ✓。
 //   ⚠️ **擦的是前置条件 ✗ 不是被判对象**：这里抹掉的是"用户存过的偏好" ✓
 //      而「没有偏好时**必须**默认中文」仍由下面的断言判 ✗（第 887 轮那条教训 ✓）。
+// **★ 先把浏览器语言钉到 zh-CN，再断言「默认是中文」✗ ★**（2026-11-17 加 ✓）：
+// 产品加了**首访按 `navigator.language` 自动检测** ✓ ⇒ 「默认语言」从此是**浏览器语言的函数** ✗
+// 不再无条件是中文 ✗。本判据要判的是**中文浏览器下**的默认 ✓ ⇒ 先把这个输入钉死 ✓
+//（与下面擦 `localStorage` 同一条纪律：**先把输入钉住，再断言输出** ✓）。
+// 钉不住 ⇒ 「默认中文」的前提不成立 ⇒ **退出码 3**（判据前提 ✗ 不是产品失败 ✗）。
+// **钉法**：`Page.addScriptToEvaluateOnNewDocument` 在每个新文档的脚本之前把
+// `Navigator.prototype.language` 的 getter 换成钉死值 ✓（产品读的正是这一个输入 ✓）。
+// 不用 `Emulation.setLocaleOverride` ✗ —— CI 实测（run 43973668122）：命令被接受、无报错，
+// 但 `navigator.language` 仍是 "en-US" ⇒ 钉根本没生效、本判据当场退 3（没验成 ✓）。
+// 注册随会话失效这条老警告（运行器注释 ✓）说的是**跨会话的种子页** ✗；本判据全程握着
+// 自己的会话、每个阶段都是先注册再导航 ⇒ 不受影响 ✓。换语言时先摘旧脚本再挂新的 ✓。
+let langPinScript = null;
+const pinNavigatorLanguage = async (locale) => {
+  if (langPinScript) {
+    await send("Page.removeScriptToEvaluateOnNewDocument", { identifier: langPinScript });
+    langPinScript = null;
+  }
+  const resp = await send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `Object.defineProperty(Navigator.prototype, "language", { configurable: true, get: () => ${JSON.stringify(locale)} });`,
+  });
+  langPinScript = resp && resp.result ? resp.result.identifier : null;
+  if (!langPinScript) {
+    console.error("❌ 判据自身的求值失败（不是产品问题）⇒ Page.addScriptToEvaluateOnNewDocument 没返回脚本标识（实为 " + JSON.stringify(resp) + "）⇒ 退出码 3");
+    process.exit(3);
+  }
+};
+await pinNavigatorLanguage("zh-CN");
 const shellUrl = url.split("?")[0].replace(/\/+$/, "") + "/?v=" + Date.now();
 await send("Page.navigate", { url: shellUrl });
 await sleep(700);
 const wiped = await evaluate(`(() => { try { localStorage.removeItem("yanshi.lang"); return localStorage.getItem("yanshi.lang") === null ? "clean" : "STILL-SET"; } catch (_) { return "NO-STORAGE"; } })()`);
 if (wiped !== "clean") {
   console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 擦不掉 `yanshi.lang`（实为 " + JSON.stringify(wiped) + "）⇒ 「默认中文」这条断言的前提不成立 ⇒ 退出码 3");
+  process.exit(3);
+}
+// 钉完要**验钉** ✓：`navigator.language` 没真的变成 zh 开头 ⇒ 上面那次 override 没生效
+// ⇒ 「默认中文」仍是在没钉住的输入上断言 ⇒ 退出码 3（与擦不掉偏好同一条纪律 ✓）。
+const navLangZh = await evaluate(`navigator.language`);
+if (!String(navLangZh).toLowerCase().startsWith("zh")) {
+  console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 浏览器语言没被钉到 zh（实为 " + JSON.stringify(navLangZh) + "）⇒ 「默认中文」这条断言的前提不成立 ⇒ 退出码 3");
   process.exit(3);
 }
 await send("Page.navigate", { url });
@@ -181,8 +219,10 @@ if (zh.htmlLang !== "zh-CN") failures.push(`默认 html lang 应为 zh-CN，实�
 if (!String(zh.newDoc).includes("新建")) failures.push(`默认「新建」按钮应为中文，实为 ${zh.newDoc}`);
 if (zh.headerChinese === 0) failures.push("默认顶栏里没有中文 ⇒ 前置条件不成立");
 
-// 点开关 ⇒ 页面带 ?lang=en 重载 ⇒ 等到英文生效
-await evaluate(`(() => { document.getElementById("langToggle").click(); return "clicked"; })()`);
+// 点开关 ⇒ 弹出语言选择器 ⇒ 点 English 那一项 ⇒ 页面带 ?lang=en 重载 ⇒ 等到英文生效
+await evaluate(`(() => { document.getElementById("langToggle").click(); return "opened"; })()`);
+const pickedEn = await evaluate(`(() => { const item = document.querySelector('#langMenu button[data-lang="en"]'); if (!item) return "NO-MENU-ITEM"; item.click(); return "clicked"; })()`);
+if (pickedEn !== "clicked") failures.push("点开关后选择器里找不到 English 那一项（实为 " + JSON.stringify(pickedEn) + "）⇒ 选择器没弹出或列表缺项");
 let en = null;
 for (let i = 0; i < 40; i++) {
   await sleep(300);
@@ -194,7 +234,9 @@ if (!en || en.htmlLang !== "en") failures.push("切到英文后 html lang 不是
 else {
   if (String(en.newDoc).trim() !== "New") failures.push(`英文下「新建」应为 New，实为 ${en.newDoc}`);
   if (!String(en.toolbar).includes("Toolbar")) failures.push(`英文下工具栏开关应含 Toolbar，实为 ${en.toolbar}`);
-  if (String(en.toggle).trim() !== "中文") failures.push(`英文下开关应显示「中文」，实为 ${en.toggle}`);
+  // **按钮显示当前语言的自称名**（2026-11-17 新语义 ✓）：英文界面下就是「English」✓
+  //（旧两态开关显示的是"切过去会变成哪个语言" ✗ 9 种语言下那个语义不成立 ✓）。
+  if (String(en.toggle).trim() !== "English") failures.push(`英文下开关应显示当前语言的自称名「English」，实为 ${en.toggle}`);
   // **最强的一条**：顶栏里**一个中文都不该剩**（漏翻立刻红）
   if (en.headerChinese > 0) failures.push(`英文顶栏里仍有中文 ${en.headerChinese} 个：${en.headerChineseText}`);
   // **更强的一条**：英文模式下**整页**（除日志、代码示例、语言开关）**不应再有中文**。
@@ -224,8 +266,10 @@ if (!probe.paletteVisible) console.log("  【调色板祖先链】" + JSON.strin
   }
 }
 
-// 再点一次 ⇒ 回到中文
-await evaluate(`(() => { document.getElementById("langToggle").click(); return "clicked"; })()`);
+// 再开选择器 ⇒ 点「中文」那一项 ⇒ 回到中文
+await evaluate(`(() => { document.getElementById("langToggle").click(); return "opened"; })()`);
+const pickedZh = await evaluate(`(() => { const item = document.querySelector('#langMenu button[data-lang="zh"]'); if (!item) return "NO-MENU-ITEM"; item.click(); return "clicked"; })()`);
+if (pickedZh !== "clicked") failures.push("切回时选择器里找不到「中文」那一项（实为 " + JSON.stringify(pickedZh) + "）");
 let back = null;
 for (let i = 0; i < 40; i++) {
   await sleep(300);
@@ -235,8 +279,40 @@ for (let i = 0; i < 40; i++) {
 console.log("  【切回】" + JSON.stringify(back));
 if (!back || back.htmlLang !== "zh-CN") failures.push("切回中文后 html lang 不是 zh-CN");
 else if (!String(back.newDoc).includes("新建")) failures.push(`切回后「新建」应为中文，实为 ${back.newDoc}`);
+else if (String(back.toggle).trim() !== "中文") failures.push(`切回后开关应显示当前语言的自称名「中文」，实为 ${back.toggle}`);
+
+// **★ 首访检测在真浏览器里验一条 ✗ ★**（2026-11-17 加 ✓）：静态判据守映射表本身 ✓
+// 这里守**接线**：把浏览器语言换成 fr-FR、擦掉已存选择、不用 `?lang=` 进页面
+// ⇒ 页面应**自己**以法语打开（没人点过选择器 ✓）。这条红 = 产品接线坏了 ✗ 不是判据问题 ✗；
+// 而钉不住 fr（override 被拒 / `navigator.language` 没变）⇒ 前提不成立 ⇒ 退出码 3 ✓。
+await pinNavigatorLanguage("fr-FR");
+await send("Page.navigate", { url: shellUrl });
+await sleep(700);
+const wipedFr = await evaluate(`(() => { try { localStorage.removeItem("yanshi.lang"); return localStorage.getItem("yanshi.lang") === null ? "clean" : "STILL-SET"; } catch (_) { return "NO-STORAGE"; } })()`);
+if (wipedFr !== "clean") {
+  console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 检测阶段擦不掉 `yanshi.lang`（实为 " + JSON.stringify(wipedFr) + "）⇒ 退出码 3");
+  process.exit(3);
+}
+const navLangFr = await evaluate(`navigator.language`);
+if (!String(navLangFr).toLowerCase().startsWith("fr")) {
+  console.error("❌ 判据自身的求值失败（不是产品问题）⇒ 浏览器语言没被钉到 fr（实为 " + JSON.stringify(navLangFr) + "）⇒ 退出码 3");
+  process.exit(3);
+}
+await send("Page.navigate", { url });
+let det = null;
+for (let i = 0; i < 40; i++) {
+  await sleep(300);
+  try { det = JSON.parse(await evaluate(snapshot)); } catch (_) { continue; }
+  if (det && det.htmlLang === "fr") break;
+}
+console.log("  【检测】" + JSON.stringify(det));
+if (!det || det.htmlLang !== "fr") failures.push(`法语浏览器首访（无已存选择、无 ?lang=）应自动以法语打开，html lang 实为 ${det && det.htmlLang}`);
+else {
+  if (String(det.toggle).trim() !== "Français") failures.push(`检测为法语后开关应显示「Français」，实为 ${det.toggle}`);
+  if (String(det.newDoc).trim() !== "Nouveau") failures.push(`检测为法语后「新建」应为 Nouveau，实为 ${det.newDoc}`);
+}
 
 socket.close();
-if (failures.length) { console.log("  ✗ 双语切换不合格："); for (const f of failures) console.log("     - " + f); process.exit(1); }
-console.log("  ✓ 双语切换：默认中文、切英文后顶栏无中文、切回中文");
+if (failures.length) { console.log("  ✗ 语言选择器切换不合格："); for (const f of failures) console.log("     - " + f); process.exit(1); }
+console.log("  ✓ 语言选择器：中文浏览器下默认中文、经选择器切英文后顶栏无中文、切回中文、法语浏览器首访自动以法语打开");
 process.exit(0);

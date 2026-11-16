@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// **界面文案的双语覆盖率（静态）**判据。
+// **界面文案的多语言覆盖率（静态）**判据（原为双语 ✓ 2026-11-17 扩到 8 个目标语言 ✓）。
 //
 // 为什么需要它 ✗：`browser-i18n.mjs` 能抓"英文模式下整页仍有中文" ✓，但它要**真浏览器 + 已构建的二进制** ✗
 // ⇒ 没有 chromium 时它只打印「⊘ 跳过」✓ ⇒ **新加界面元素却忘了加词条**这件事可能完全没人守 ✗。
@@ -20,6 +20,10 @@
 //   ⇒ 所以它是 `browser-i18n.mjs` 的**静态影子** ✓，**不是**它的替代 ✓：两条都要留 ✓。
 //
 // 用法：node scripts/ui-i18n-coverage.mjs        # 无参数、不需要服务端/浏览器
+//
+// **2026-11-17 扩展** ✓：目标语言从英文 1 种扩到 8 种（再加 fr/es/pt/ja/ko/ru/de ✓）⇒
+// 文件末段对其余 7 种逐一对账（键集与 EN 精确相等、零空译、白名单双向守 ✓）；
+// 上面各段的英文口径一个字没动 ✓（运行时覆盖判据 check-i18n-runtime-coverage 仍以英文表与 m 模式为锚 ✓）。
 import { readFileSync } from "node:fs";
 
 const VIEWER_RS = "crates/yanshi-http/src/viewer.rs";
@@ -252,14 +256,102 @@ for (const [zh, en] of attrDict) {
   else if (CJK.test(en)) problems.push(`属性词条非法：${JSON.stringify(zh)} ⇒ ${JSON.stringify(en)} 里仍有汉字`);
 }
 
+// ★ **其余 7 种目标语言逐一对账** ✓（2026-11-17 扩 ✓）。
+//
+// **为什么**：上面各段只守英文 ✗ ⇒ 新语言的表完全可能缺条、留空、或整条照抄中文而判据全绿 ✗
+//（与当年"属性文案没人守"是同一个病 ✓）。对账口径与英文一致：
+//   ① **键集与 EN 精确相等**（缺一条 ⇒ 点名报缺哪条 ✓；多一条 ⇒ 点名报多哪条 ✓）；
+//   ② **零空译** ✓；③ 值不得与中文键相同 ✗ —— 除白名单（见下）；
+//   ④ 非日语的值里不得残留汉字 ✓（日语的值本就含汉字 ✗ 此条对它不成立 ⇒ 跳过 ✓；
+//      韩语用谚文、不在汉字区段 ✓ 照常查 ✓）。
+// **白名单**（值与中文键相同也算合法 ✓）只有两种东西：
+//   · `2 1/4` / `3 1/8` 是**语言中立的尺寸记法** ✓ 七种语言的 TEXT 里都原样 ✓；
+//   · 日语与中文**共享汉字词**（下限／上限／色相…）✓ 日语里就是这么写 ✗ 不是没翻 ✓。
+// 白名单**双向守** ✓：实测相同却不在名单里 ⇒ 红 ✓；名单里有、实测已不相同 ⇒ 也红
+//（防清单腐化 ✓ 与上面 DYNAMIC 同一条规矩 ✓）。
+const LANG_TABLES = [
+  { code: "fr", prefix: "FR" },
+  { code: "es", prefix: "ES" },
+  { code: "pt", prefix: "PT" },
+  { code: "ja", prefix: "JA" },
+  { code: "ko", prefix: "KO" },
+  { code: "ru", prefix: "RU" },
+  { code: "de", prefix: "DE" },
+];
+const IDENTICAL_OK_COMMON_TEXT = ["2 1/4", "3 1/8"];
+const IDENTICAL_OK = {
+  TEXT: {
+    fr: IDENTICAL_OK_COMMON_TEXT,
+    es: IDENTICAL_OK_COMMON_TEXT,
+    pt: IDENTICAL_OK_COMMON_TEXT,
+    ko: IDENTICAL_OK_COMMON_TEXT,
+    ru: IDENTICAL_OK_COMMON_TEXT,
+    de: IDENTICAL_OK_COMMON_TEXT,
+    ja: [...IDENTICAL_OK_COMMON_TEXT, "下限", "上限", "色相", "半径", "方法", "形状", "矩形", "中心 x", "中心 y", "角度", "操作", "位置", "水彩（v2）", "名"],
+  },
+  ATTR: { ja: ["矩形"] },
+};
+function parseLangTable(name) {
+  const start = dictJs.indexOf("const " + name);
+  if (start < 0) return null;
+  const end = dictJs.indexOf("\n};", start);
+  if (end < 0) return null;
+  const table = new Map();
+  const re = new RegExp(entryRe.source, "g");
+  let hit;
+  while ((hit = re.exec(dictJs.slice(start, end)))) table.set(decodeKey(hit[1]), hit[2]);
+  return table;
+}
+const langSummary = [];
+for (const { code, prefix } of LANG_TABLES) {
+  for (const [kind, enDict] of [["TEXT", dict], ["ATTR", attrDict]]) {
+    const name = `I18N_${prefix}_${kind}`;
+    const table = parseLangTable(name);
+    if (!table) {
+      problems.push(`缺表：${I18N_JS} 里找不到 ${name}（语言 ${code} 的${kind === "TEXT" ? "文本" : "属性"}词表不存在）`);
+      continue;
+    }
+    if (table.size === 0) {
+      console.error("❌ 多语言覆盖率判据无法运行：" + name + " 一条词条都没解析出来（表被改写了？）");
+      process.exit(2);
+    }
+    for (const key of enDict.keys()) {
+      if (!table.has(key)) problems.push(`${code} ${kind} 缺词条：${JSON.stringify(key)}（EN 有、${code} 没有 ⇒ 该语言下这条文案会落回中文）`);
+    }
+    for (const key of table.keys()) {
+      if (!enDict.has(key)) problems.push(`${code} ${kind} 多词条：${JSON.stringify(key)}（EN 没有、${code} 多出 ⇒ 键集与 EN 不一致）`);
+    }
+    const okIdentical = new Set((IDENTICAL_OK[kind] && IDENTICAL_OK[kind][code]) || []);
+    const seenIdentical = new Set();
+    for (const [zh, value] of table) {
+      if (!value.trim()) {
+        problems.push(`${code} ${kind} 词条非法：${JSON.stringify(zh)} 的译文是空的`);
+        continue;
+      }
+      if (value === zh) {
+        seenIdentical.add(zh);
+        if (!okIdentical.has(zh)) problems.push(`${code} ${kind} 词条非法：${JSON.stringify(zh)} 的译文与中文一模一样（等于没翻 ✓；若属语言中立记法或日语共享汉字词，把它加进 IDENTICAL_OK 并写明理由）`);
+      } else if (code !== "ja" && CJK.test(value)) {
+        problems.push(`${code} ${kind} 词条非法：${JSON.stringify(zh)} ⇒ ${JSON.stringify(value)} 里仍有汉字`);
+      }
+    }
+    for (const key of okIdentical) {
+      if (!seenIdentical.has(key)) problems.push(`白名单过期：IDENTICAL_OK 里 ${code} ${kind} 的 ${JSON.stringify(key)} 已不再是"译文与中文相同" ⇒ 删掉那一条（否则白名单会变成谎话 ✗）`);
+    }
+    if (kind === "TEXT") langSummary.push(`${code} TEXT ${table.size} 条`);
+    else langSummary[langSummary.length - 1] += `｜ATTR ${table.size} 条`;
+  }
+}
+
 console.log(`  模板里会进文本节点的中文文案：${candidates.size} 条｜I18N_EN_TEXT 词条：${dict.size} 条｜运行时会改写的初值：${DYNAMIC.length} 条`);
 console.log(`  模板里的中文属性文案：${attrCandidates.size} 条｜I18N_EN_ATTR 词条：${attrDict.size} 条`);
+console.log(`  其余 7 种语言逐一对账（键集与 EN 精确相等、零空译）：${langSummary.join("；")}`);
 console.log("  ⚠️ 覆盖范围：模板的文本节点 ✓ 与 title/placeholder/aria-label 属性 ✓；**不看** viewer-app.js 运行时拼的文案 ✗（那只有真浏览器能验 ✓）。");
 if (problems.length) {
-  console.log(`  ✗ 界面文案的双语覆盖率不合格（${problems.length} 条）：`);
+  console.log(`  ✗ 界面文案的多语言覆盖率不合格（${problems.length} 条）：`);
   for (const problem of problems.slice(0, 20)) console.log("     - " + problem);
   if (problems.length > 20) console.log(`     … 另有 ${problems.length - 20} 条`);
-  console.log("  结论：新加的界面文案必须在 I18N_EN_TEXT 里有词条 ✗ ⇒ 否则英文模式下会漏出中文 ✓。");
+  console.log("  结论：新加的界面文案必须在每个目标语言的表里都有词条 ✗ ⇒ 否则对应语言下会漏出中文 ✓。");
   process.exit(1);
 }
-console.log("  ✓ 模板里每一条会成为文本节点的中文文案都有英文词条，且词条不是占位");
+console.log("  ✓ 模板里每一条会成为文本节点的中文文案在 8 个目标语言里都有词条，且词条不是占位；7 种新语言的键集与 EN 精确相等、零空译");

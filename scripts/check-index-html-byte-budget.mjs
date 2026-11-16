@@ -85,7 +85,12 @@ import { execFileSync } from "node:child_process";
 // 2026-11-16：PWA 接入 Wang 自有 GTM 统计容器（GTM-5WC4DS5B，与 groove／synth／夜半
 //   同一容器，Wang 2026-11-16 决定）⇒ GTM 两段经 web/pwa-inject.html 注入并同步镜像进
 //   web/index.html，使 956,250→957,025（+775 B）⇒ 上界 956,500→957,500（留 475 B）。
-const CEILING = 957_500;
+// 2026-11-17：界面 i18n 扩到 9 种语言（Wang 令：新增 fr/es/pt/ja/ko/ru/de、顶栏改
+//   语言选择器、首访按浏览器语言自动检测）使 957,432→964,655（+7,223 B：增量全部
+//   来自内联的 viewer-app.js——选择器菜单、UI_LANGS／LANG_BUTTON_TITLES、检测映射表
+//   与 detectUILanguage、预设字段名 9 语言，及各自的说明注释；7 种语言的词表本体在
+//   外链 /i18n.js，不计入本文件）⇒ 上界 957,500→965,500（留 845 B）。
+const CEILING = 965_500;
 
 const failures = [];
 const check = (ok, label, detail) => {

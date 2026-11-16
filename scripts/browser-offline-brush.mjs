@@ -47,7 +47,12 @@ const base = process.argv[3];
 //   **∴ 修法 ✗**：**`base` 是**服务端 base**（**`argv[3]` ✓）✗
 //     ＋ **∴ 所以**：**重新导航也要**显式带上 `render=client`** ✓ ★
 //       ＋ **∴ 而**为什么不能靠 `url` 的查询串 ✗**：** `base` **和** `url` **是两个不同的 URL** ✓ ★
-const VIEWER_RENDER = "render=client";
+// **语言前提也钉死** ✓（2026-11-17 加）：查看器首访会按**浏览器语言**自动选界面语言
+//（`?lang=` ＞ 已存选择 ＞ 检测 ＞ zh）⇒ 英文环境下顶栏变高、舞台少 1px ⇒ 板高
+// 240→239、重放的笔整体上移 1.00px ⇒ 本判据的逐字节比对红（CI 两轮实测 ✓）。
+// 本判据测的是离线重放与语言无关 ⇒ 两处自建导航共用的这串参数里带上 `lang=zh`
+//（产品自己的覆盖、读取链最高优先级 ✓；与 browser-pwa-undo 同一条纪律 ✓）。
+const VIEWER_RENDER = "render=client&lang=zh";
 
 const token = process.argv[4];
 const port = process.env.CDP_PORT || process.argv[5] || "9333";

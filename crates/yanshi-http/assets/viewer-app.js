@@ -7018,17 +7018,32 @@ function renderPresetList() {
     // ⇒ 而面板写死 `name_zh` ⇒ 英文界面下 22 套预设**全是中文** ✓（数据在手边却不用 ✗）。
     // 标签／适合／慎用**服务端只有中文** ✗ ⇒ **值**翻不出英文 ✓（不编造 ✓，那是预设库的内容缺口 ✓）。
     // 但**字段名是界面文案** ✓ ⇒ 英文界面下写英文 ✓（否则 EN 模式下整行看着像漏翻 ✗）。
+    // **字段名是界面文案 ⇒ 按界面语言取** ✓（2026-11-17 扩到 9 种 ✓）：服务端只给得出 `name_en`
+    // 这一个外语名字段 ✗ ⇒ 非英文语言时名字落回 `name_zh`（那是预设库的数据缺口 ✗ 不编造译名 ✓
+    // 与标签/适合/慎用的**值**同为服务端数据、翻不出来同一条 ✓）；字段名本身九种齐全 ✓。
+    const PRESET_FIELD_LABELS = {
+      zh: ["标签 ", "适合 ", "慎用 ", "状态 ", " ｜ "],
+      en: ["Tags ", "Suits ", "Careful ", "Status ", " | "],
+      fr: ["Étiquettes ", "Convient à ", "Prudence ", "État ", " | "],
+      es: ["Etiquetas ", "Apto para ", "Cuidado ", "Estado ", " | "],
+      pt: ["Rótulos ", "Serve para ", "Cuidado ", "Estado ", " | "],
+      ja: ["タグ ", "適する ", "注意 ", "状態 ", " | "],
+      ko: ["태그 ", "적합 ", "주의 ", "상태 ", " | "],
+      ru: ["Метки ", "Подходит ", "Осторожно ", "Статус ", " | "],
+      de: ["Schlagworte ", "Geeignet für ", "Vorsicht ", "Status ", " | "],
+    };
     const en = uiLang === "en";
+    const fieldLabels = PRESET_FIELD_LABELS[uiLang] || PRESET_FIELD_LABELS.zh;
     const label = (en ? preset.name_en : preset.name_zh) || preset.name_zh || preset.preset_id;
     head.textContent = label + " · " + preset.preset_id;
     const body = document.createElement("div");
     body.className = "annotation-body";
     const bits = [];
-    if ((preset.tags || []).length) bits.push((en ? "Tags " : "标签 ") + preset.tags.join("/"));
-    if ((preset.suitable || []).length) bits.push((en ? "Suits " : "适合 ") + preset.suitable.slice(0, 3).join("/"));
-    if ((preset.caution || []).length) bits.push((en ? "Careful " : "慎用 ") + preset.caution.slice(0, 3).join("/"));
-    if (preset.status) bits.push((en ? "Status " : "状态 ") + preset.status);
-    body.textContent = bits.join(en ? " | " : " ｜ ");
+    if ((preset.tags || []).length) bits.push(fieldLabels[0] + preset.tags.join("/"));
+    if ((preset.suitable || []).length) bits.push(fieldLabels[1] + preset.suitable.slice(0, 3).join("/"));
+    if ((preset.caution || []).length) bits.push(fieldLabels[2] + preset.caution.slice(0, 3).join("/"));
+    if (preset.status) bits.push(fieldLabels[3] + preset.status);
+    body.textContent = bits.join(fieldLabels[4]);
     const actions = document.createElement("div");
     actions.className = "annotation-actions";
     const preview = document.createElement("button");
@@ -13599,19 +13614,52 @@ $("importFile").addEventListener("change", (event) => {
   if (button) button.addEventListener("click", toggleAssetDock);
 })();
 
-// **三张双语词表（`I18N_EN_TEXT` / `I18N_EN_ATTR` / `I18N_EN_ATTR_PATTERNS`）已挪成独立资产** ✓
+// **多语言词表（8 个目标语言 × `TEXT` / `ATTR` / `ATTR_PATTERNS`）已挪成独立资产** ✓
 //   ⇒ `crates/yanshi-http/assets/i18n.js`（以 `<script src="/i18n.js">` 先于本脚本加载 ✓
-//     三份 `const` 在共享的全局词法环境 ✓ 本文件下面照常引用 ✓ 同一事实只写一处 ✓）。
+//     各 `const` 在共享的全局词法环境 ✓ 本文件下面照常引用 ✓ 同一事实只写一处 ✓）。
 const LANG_KEY = "yanshi.lang";
+// **界面语言清单** ✓（2026-11-17 扩到 9 种 ✓）：`zh` 是源语言（不查表 ✓ 原文即中文 ✓）；
+// 其余 8 种的词表在 `i18n.js` 的 `I18N_*_BY_LANG` 注册表里 ✓（键集与 EN 精确一致 ✓ 覆盖判据守 ✓）。
+// `name` 是该语言的**自称名** ✓（选择器列表与按钮都显示它 ✓）；`html` 写进 `document.documentElement.lang` ✓。
+const UI_LANGS = [
+  { code: "zh", name: "中文", html: "zh-CN" },
+  { code: "en", name: "English", html: "en" },
+  { code: "fr", name: "Français", html: "fr" },
+  { code: "es", name: "Español", html: "es" },
+  { code: "pt", name: "Português", html: "pt-BR" },
+  { code: "ja", name: "日本語", html: "ja" },
+  { code: "ko", name: "한국어", html: "ko" },
+  { code: "ru", name: "Русский", html: "ru" },
+  { code: "de", name: "Deutsch", html: "de" },
+];
+const UI_LANG_CODES = new Set(UI_LANGS.map((item) => item.code));
+// **浏览器语言 ⇒ 界面语言的映射** ✓（显式表 + 纯函数 ⇒ 判据 `scripts/check-i18n-lang-detect.mjs`
+// 把这两段抽出来逐项断言 ✓）：只认主标签（`-`／`_` 前那段 ✓ `pt-BR` 与 `pt-PT` 都落 `pt` ✓
+// `zh-Hans-CN` 落 `zh` ✓）；映射不到 ⇒ `zh` ✓。表的键集与 `UI_LANGS` 的代码集恒等（判据守 ✓）。
+const UI_LANG_BY_BROWSER_PREFIX = { zh: "zh", en: "en", fr: "fr", es: "es", pt: "pt", ja: "ja", ko: "ko", ru: "ru", de: "de" };
+function detectUILanguage(navLang) {
+  const primary = String(navLang || "").toLowerCase().split(/[-_]/)[0];
+  return UI_LANG_BY_BROWSER_PREFIX[primary] || "zh";
+}
 const uiLang = (() => {
   try {
     const fromUrl = new URL(location.href).searchParams.get("lang");
-    if (fromUrl === "en" || fromUrl === "zh") return fromUrl;
+    if (fromUrl && UI_LANG_CODES.has(fromUrl)) return fromUrl;
     const saved = localStorage.getItem(LANG_KEY);
-    if (saved === "en" || saved === "zh") return saved;
+    if (saved && UI_LANG_CODES.has(saved)) return saved;
+    // **首次访问（没存过选择）⇒ 按浏览器语言自动选** ✓（2026-11-17 Wang 令 ✓）：
+    // 优先级 = `?lang=` ＞ 已存选择 ＞ 浏览器语言检测 ＞ `zh` ✓。
+    // 检测结果**不写回** `localStorage` ✗ ⇒ 没手动选过的人换了浏览器语言还能跟随 ✓；
+    // 只有在选择器里手动选过才落存储（见 `pickUILanguage` ✓）。
+    return detectUILanguage(typeof navigator !== "undefined" ? navigator.language : "");
   } catch (_) { /* 隐私模式等：退回默认 */ }
   return "zh";
 })();
+const uiLangInfo = UI_LANGS.find((item) => item.code === uiLang) || UI_LANGS[0];
+// **当前语言的两张词表与属性句式表** ✓（中文没有表 ⇒ 三个都为 null ⇒ 一切落回原文 ✓）。
+const uiTextTable = uiLang === "zh" ? null : I18N_TEXT_BY_LANG[uiLang];
+const uiAttrTable = uiLang === "zh" ? null : I18N_ATTR_BY_LANG[uiLang];
+const uiAttrPatterns = uiLang === "zh" ? null : I18N_ATTR_PATTERNS_BY_LANG[uiLang];
 const i18nOriginal = new WeakMap();
 const i18nAttrOriginal = new WeakMap();
 // **`alt` 也在其列** ✓（本轮补 ✗）：参考图叠加层是运行时建的 `<img>` ✓ 它的 alt 会**直接画在画布上**
@@ -13648,7 +13696,7 @@ function i18nText(node) {
   if (original === undefined) { i18nOriginal.set(node, node.nodeValue); original = node.nodeValue; }
   const zh = original.trim();
   if (!zh) return;
-  let en = I18N_EN_TEXT[zh];
+  let en = uiTextTable ? uiTextTable[zh] : undefined;
   if (!en && uiLang === "en") {
     // **动态文案**：内容由数据决定，字典匹配不到 ⇒ 用模式翻译（只覆盖少数几种）。
     const m1 = /^图层 (\d+)$/.exec(zh);
@@ -13850,14 +13898,15 @@ function i18nText(node) {
     }
     else if (m43) en = "No WASM kernel ⇒ the self-check cannot run";
   }
-  node.nodeValue = (uiLang === "en" && en) ? original.replace(zh, en) : original;
+  // 非中文语言都走查表 ✓（模式翻译 m1…m43 是英文专属 ⇒ 其他语言在上面不触发 ⇒ 动态文案落回中文原文 ✓ 与查表缺键同一条安全降级 ✓）。
+  node.nodeValue = (uiLang !== "zh" && en) ? original.replace(zh, en) : original;
 }
-function attrEnglish(zh) {
-  const direct = I18N_EN_ATTR[zh];
+function attrLocalized(zh) {
+  const direct = uiAttrTable ? uiAttrTable[zh] : undefined;
   if (direct) return direct;
-  for (const [pattern, toEnglish] of I18N_EN_ATTR_PATTERNS) {
+  for (const [pattern, toLocalized] of uiAttrPatterns || []) {
     const found = pattern.exec(zh);
-    if (found) return toEnglish(found);
+    if (found) return toLocalized(found);
   }
   // **「标签 (快捷键)」这一族** ✓（第六轮实测 ✓）：`renderToolStrip()` 把 21 支笔的 tooltip 写成
   //   `label + " (B)"` ⇒ 整句精确键永远配不上 ✗ 于是英文界面里**整个工具栏**的 tooltip 与
@@ -13865,7 +13914,7 @@ function attrEnglish(zh) {
   //   ⇒ 拆出标签走词典 ✓ 快捷键原样带过去 ✓。
   const withKey = /^(.*) \(([A-Z])\)$/.exec(zh);
   if (withKey) {
-    const head = attrEnglish(withKey[1]);
+    const head = attrLocalized(withKey[1]);
     if (head) return head + " (" + withKey[2] + ")";
   }
   return null;
@@ -13878,8 +13927,8 @@ function i18nAttrs(el) {
     if (!store) { store = {}; i18nAttrOriginal.set(el, store); }
     if (store[name] === undefined) store[name] = current;
     const zh = store[name].trim();
-    const en = attrEnglish(zh);
-    el.setAttribute(name, (uiLang === "en" && en) ? store[name].replace(zh, en) : store[name]);
+    const en = attrLocalized(zh);
+    el.setAttribute(name, (uiLang !== "zh" && en) ? store[name].replace(zh, en) : store[name]);
   }
 }
 function i18nWalk(root) {
@@ -13890,19 +13939,36 @@ function i18nWalk(root) {
   i18nAttrs(root);
   for (const child of root.childNodes) i18nWalk(child);
 }
+// **按钮 title 按当前语言写** ✓：这句要随"当前语言"变 ✗ 进不了"按中文原文查表"那一套
+// （查表的键是中文原文 ⇒ 只有界面已是中文时才查得到 ✓）⇒ 九种语言各一份放在这里 ✓。
+const LANG_BUTTON_TITLES = {
+  zh: "切换界面语言",
+  en: "Switch interface language",
+  fr: "Changer la langue de l'interface",
+  es: "Cambiar el idioma de la interfaz",
+  pt: "Mudar o idioma da interface",
+  ja: "インターフェースの言語を切り替える",
+  ko: "인터페이스 언어 전환",
+  ru: "Сменить язык интерфейса",
+  de: "Oberflächensprache wechseln",
+};
 function updateLangButton() {
   const button = document.getElementById("langToggle");
   if (!button) return;
-  button.textContent = uiLang === "en" ? "中文" : "EN";
-  button.title = uiLang === "en" ? "Switch the interface to Chinese" : "把界面切成英文（English）";
-  button.setAttribute("aria-pressed", uiLang === "en" ? "true" : "false");
+  // **按钮显示当前语言的自称名** ✓（2026-11-17 改 ✓）：9 种语言放不进两态开关 ⇒ 点击弹选择器（见下）✓
+  // 按钮文字回答的是"我现在是什么语言" ✓ 不是"我会变成什么" ✗。
+  button.textContent = uiLangInfo.name;
+  button.title = LANG_BUTTON_TITLES[uiLang] || LANG_BUTTON_TITLES.zh;
+  button.removeAttribute("aria-pressed");
+  button.setAttribute("aria-haspopup", "true");
+  if (!button.hasAttribute("aria-expanded")) button.setAttribute("aria-expanded", "false");
 }
 function applyUILanguage() {
   if (i18nApplying) return;
   i18nApplying = true;
   try {
     if (i18nObserver) i18nObserver.disconnect();
-    document.documentElement.lang = uiLang === "en" ? "en" : "zh-CN";
+    document.documentElement.lang = uiLangInfo.html;
     i18nWalk(document.body);
     updateLangButton();
   } finally {
@@ -13912,18 +13978,61 @@ function applyUILanguage() {
 }
 // 面板会不停重建（图层/对象/历史每次刷新都换节点）⇒ 让新节点也跟上语言。
 if (typeof MutationObserver === "function") {
-  i18nObserver = new MutationObserver(() => { if (uiLang === "en") applyUILanguage(); });
+  i18nObserver = new MutationObserver(() => { if (uiLang !== "zh") applyUILanguage(); });
 }
 applyUILanguage();
-document.addEventListener("click", (event) => {
-  const button = event.target && event.target.closest ? event.target.closest("#langToggle") : null;
-  if (!button) return;
-  const next = uiLang === "en" ? "zh" : "en";
-  try { localStorage.setItem(LANG_KEY, next); } catch (_) { /* 记不住就只在本次会话生效 */ }
+// **语言选择器** ✓（2026-11-17 ✓）：9 种语言放不进两态开关 ⇒ 点 `#langToggle` 弹出列表 ✓ 选中即切换 ✓。
+// 持久化与旧开关**同一套**（`localStorage` 的 `LANG_KEY` ＋ `?lang=` 参数 ＋ 整页重载 ✓
+// ⇒ `uiLang` 的读取逻辑一个字没变 ✓）。列表是点开时才建的 DOM ✓ 平时不在页面里
+// ⇒ "整页不应再有源语言残留"那类判据不会被列表里的「中文」二字绊住 ✓；
+// 列表本身标 `data-i18n="off"` ✓（语言名是数据 ✗ 不是待译文案 ✓ 与 `#langToggle` 同一条豁免 ✓）。
+let langMenuEl = null;
+function closeLangMenu() {
+  if (langMenuEl) { langMenuEl.remove(); langMenuEl = null; }
+  const button = document.getElementById("langToggle");
+  if (button) button.setAttribute("aria-expanded", "false");
+}
+function pickUILanguage(code) {
+  closeLangMenu();
+  if (code === uiLang) return;
+  try { localStorage.setItem(LANG_KEY, code); } catch (_) { /* 记不住就只在本次会话生效 */ }
   const url = new URL(location.href);
-  url.searchParams.set("lang", next);
+  url.searchParams.set("lang", code);
   location.search = url.search;
+}
+function openLangMenu() {
+  const button = document.getElementById("langToggle");
+  if (!button) return;
+  if (langMenuEl) { closeLangMenu(); return; }
+  const menu = document.createElement("div");
+  menu.id = "langMenu";
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("data-i18n", "off");
+  menu.style.cssText = "position:absolute;z-index:9999;background:var(--surface,#fff);color:var(--text,#111);border:1px solid var(--line,#ccc);border-radius:6px;padding:4px;box-shadow:0 4px 16px rgba(0,0,0,.35);min-width:150px;";
+  for (const item of UI_LANGS) {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.textContent = (item.code === uiLang ? "✓ " : "") + item.name;
+    option.setAttribute("data-lang", item.code);
+    option.setAttribute("role", "menuitem");
+    option.style.cssText = "display:block;width:100%;text-align:left;background:none;border:0;color:inherit;padding:4px 8px;cursor:pointer;font:inherit;";
+    option.addEventListener("click", () => pickUILanguage(item.code));
+    menu.appendChild(option);
+  }
+  document.body.appendChild(menu);
+  const rect = button.getBoundingClientRect();
+  menu.style.top = (window.scrollY + rect.bottom + 4) + "px";
+  menu.style.left = (window.scrollX + rect.left) + "px";
+  langMenuEl = menu;
+  button.setAttribute("aria-expanded", "true");
+}
+document.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!target || !target.closest) return;
+  if (target.closest("#langToggle")) { openLangMenu(); return; }
+  if (langMenuEl && !target.closest("#langMenu")) closeLangMenu();
 });
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeLangMenu(); });
 
 
 // **★ 历史行的可读性探针 ✓（**不是临时的 ✗**）** —— **∴ 判据的支撑 ✓**（用户报告 2026-10-09 ✓）：
