@@ -4061,6 +4061,9 @@ fn read_list_layers(ctx: &mut ToolContext<'_>) -> Result<Value> {
         "layers": state.alive_layers().into_iter().map(|layer| json!({
             "layer_id": layer.id,
             "name": layer.name,
+            // **配方类元数据透传** ✓：减淡加深组的命名配方（`name_recipe`）住在这里 ✓
+            // 界面据它按当前语言拼显示名 ✗ 组名本身只存词干（见 tools_retouch）✓。
+            "metadata": layer.metadata,
             "type": layer.layer_type,
             "kind": layer.layer_type,
             "parent_id": layer.parent_id,

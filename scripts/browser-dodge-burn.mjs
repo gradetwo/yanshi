@@ -26,7 +26,9 @@
 // **钉住的九件事**：
 //   ① 卡在位 ✓ 「源图层」下拉的 id 序列与 `list_layers` **逐一等**（顺序也等 ✓）；
 //   ② 「这次会发生什么」那句**预测**（将新建组 `「前缀 · 减淡加深」`、放在源上方）
-//      按下去之后**服务端事实照着它兑现**：组名逐字相同 ✓ 且组的 `z_index` 是**紧贴源之上**的那一档 ✓；
+//      按下去之后**服务端事实照着它兑现**：预测念的是**显示名**（界面按命名配方拼 ✓）
+//      ⇒ 落盘组层名只能是词干 `p2`、`metadata.name_recipe` 配方在位、落盘数据里
+//      **没有**成品名字符串 ✓ 且组的 `z_index` 是**紧贴源之上**的那一档 ✓；
 //   ③ 回执行 `#dodgeBurnInfo` 的**整串**由服务端回执拼出来 ⇒ 判据把同一组参数**再直调一次**
 //      （复用路径 ⇒ 字段与首次一致 ✓）⇒ 逐位对上：组 id、层数与 id、对象数与 id、蒙版角色、中性字节 ✓；
 //   ④ 灰层法建组后 `sample_colors` 的底色**仍是同一个数**（≤1 LSB ✓ 界由 `tool-*` 那条实测给 ✓）
@@ -259,13 +261,18 @@ const layersBefore2 = (await layerRows()).length;
 await run();
 read = await waitForInfo("已建组 ");
 const after2 = await layerRows();
-const group2 = after2.find((l) => l.name === GROUP);
+const group2 = after2.find((l) => l.metadata?.name_recipe?.kind === "dodge_burn" && l.metadata.name_recipe.base === "p2");
 const srcRow = after2.find((l) => l.layer_id === SRC);
 const aboveZ = after2.filter((l) => l.z_index > srcRow.z_index).map((l) => l.z_index).sort((a, b) => a - b);
-if (group2 && group2.kind === "layer_group" && aboveZ[0] === group2.z_index) {
-  ok("点「建组」后服务端真的建出了那个**逐字同名**的组，并且它紧贴源图层之上", { group: group2.name, z: group2.z_index, srcZ: srcRow.z_index });
+if (group2 && group2.name === "p2" && group2.kind === "layer_group" && aboveZ[0] === group2.z_index) {
+  ok("点「建组」后服务端真的建出了那个组：落盘名是词干 p2、配方在 metadata 里（显示名由界面拼），并且它紧贴源图层之上", { group: group2.name, recipe: group2.metadata.name_recipe, z: group2.z_index, srcZ: srcRow.z_index });
 } else {
-  bad("建组的名称或层位与服务端事实不符", { page: read.current, group: group2 && [group2.name, group2.kind, group2.z_index], srcZ: srcRow && srcRow.z_index, aboveZ });
+  bad("建组的落盘形状或层位与服务端事实不符", { page: read.current, group: group2 && [group2.name, group2.kind, group2.z_index, group2.metadata], srcZ: srcRow && srcRow.z_index, aboveZ });
+}
+if (after2.some((l) => l.name === GROUP)) {
+  bad("落盘图层里出现了拼好的成品组名（显示名不许落盘）", { names: after2.map((l) => l.name) });
+} else {
+  ok("落盘数据里没有拼好的成品组名（只有词干 + 配方）");
 }
 if (group2 && after2.filter((l) => l.parent_id === group2.layer_id && l.blend_mode === "soft_light").length === 1) {
   ok("组里那一张灰层是 `soft_light`（界面念的「灰层法」在服务端兑现了）");

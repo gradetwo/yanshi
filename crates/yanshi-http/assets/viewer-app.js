@@ -5298,7 +5298,7 @@ async function refreshHistory() {
   const _layerNames = {};
   for (const _a of atoms) {
     const _p = _a.payload || {};
-    if (_a.kind === "create_layer" && _p.layer_id && _p.name) _layerNames[_p.layer_id] = _p.name;
+    if (_a.kind === "create_layer" && _p.layer_id && _p.name) _layerNames[_p.layer_id] = layerDisplayName(_p);
   }
   for (const atom of atoms) {
     const row = document.createElement("div");
@@ -7272,7 +7272,7 @@ async function refreshLayers() {
   for (const layer of value.layers || []) {
     const option = document.createElement("option");
     option.value = layer.layer_id;
-    option.textContent = layer.name + " (#" + layer.layer_id + ")";
+    option.textContent = layerDisplayName(layer) + " (#" + layer.layer_id + ")";
     // **图层名是用户数据 ✓ 不是界面文案** ✗ ⇒ 标 `data-i18n="off"` ✓（与字体名同一条口径 ✓：
     // `viewer.rs` 里那句"字体名是专有名词 ✗ 不翻译 ✓"）。不标 ✗ 的话 `browser-i18n` 把
     // "图层 R015" 当成漏翻 ✓ ⇒ 真漏翻被数据噪声埋掉 ✗（判据一响就没人看了 ✓）。
@@ -7388,9 +7388,10 @@ function renderLayerPanel(layers) {
     name.dataset.i18n = "off";
     // **同名图层加 ID 后缀区分** ✓：多个图层同名（如 5 个 source-parrot.png）时，
     // 只靠名字分不出 ✓ ⇒ 统计重名，重名的显示短 ID 后缀 ✓
-    const nameCount = layers.filter((l) => l.name === layer.name).length;
+    const displayName = layerDisplayName(layer);
+    const nameCount = layers.filter((l) => layerDisplayName(l) === displayName).length;
     const suffix = nameCount > 1 ? " #" + String(layer.layer_id).slice(-4) : "";
-    name.textContent = layer.name + suffix + (layer.medium ? " · " + layer.medium : "");
+    name.textContent = displayName + suffix + (layer.medium ? " · " + layer.medium : "");
     name.title = layer.layer_id;
     // **混合模式下拉** ✓：MCP 有 `set_layer_blend`，Web 之前沒有入口。
     // 选项来自 `BLEND_MODE_LABELS`（与内核 `blend_modes` 同源 ✓ 见那份清单上的说明 ✓）。
@@ -9503,7 +9504,7 @@ function renderRangeMaskLayers(layers) {
     for (const layer of layers) {
       const option = document.createElement("option");
       option.value = layer.layer_id;
-      option.textContent = layer.name + " (#" + layer.layer_id + ")";
+      option.textContent = layerDisplayName(layer) + " (#" + layer.layer_id + ")";
       // 图层名是**用户数据** ✓ 不参与界面翻译 ✓（与 `#layer`、图层面板同一条口径 ✓）。
       option.dataset.i18n = "off";
       select.appendChild(option);
@@ -9580,7 +9581,7 @@ function renderFreqSepLayers(layers) {
     for (const layer of layers) {
       const option = document.createElement("option");
       option.value = layer.layer_id;
-      option.textContent = layer.name + " (#" + layer.layer_id + ")";
+      option.textContent = layerDisplayName(layer) + " (#" + layer.layer_id + ")";
       // 图层名是**用户数据** ✓ 不参与界面翻译 ✓（与 `#layer`、图层面板同一口径 ✓）。
       option.dataset.i18n = "off";
       select.appendChild(option);
@@ -9659,6 +9660,17 @@ function setupFreqSepPanel() {
   if (source) source.addEventListener("change", renderFreqSepCurrent);
 }
 
+/// **配方组显示名**：词干 + 配方 ⇒ 按语言拼；改名/无配方 ⇒ 原样。
+function layerDisplayName(layer) {
+  const recipe = layer.metadata && layer.metadata.name_recipe;
+  return recipe && recipe.kind === "dodge_burn" && layer.name === recipe.base
+    ? "「" + recipe.base + " · " + dodgeBurnWord() + "」"
+    : layer.name;
+}
+function dodgeBurnWord() {
+  return (uiTextTable && uiTextTable["减淡加深"]) || "减淡加深";
+}
+
 /// **减淡加深卡** ✓（第五轮 ✓）：`dodge_burn_setup` 此前在页面上**零入口** ✗
 ///（实测 `grep -c dodge_burn crates/yanshi-http/` 命中 0 ✓）⇒ 局部提亮/压暗只能靠 Agent ✗。
 /// **界面只转述服务端的诚实字段** ✓：`effective` / `ineffective_reason` / `neutral_gray`
@@ -9676,7 +9688,7 @@ function renderDodgeBurnLayers(layers) {
     for (const layer of layers) {
       const option = document.createElement("option");
       option.value = layer.layer_id;
-      option.textContent = layer.name + " (#" + layer.layer_id + ")";
+      option.textContent = layerDisplayName(layer) + " (#" + layer.layer_id + ")";
       // 图层名是**用户数据** ✓ 不参与界面翻译 ✓（与频率分离卡同一口径 ✓）。
       option.dataset.i18n = "off";
       select.appendChild(option);
@@ -9686,7 +9698,7 @@ function renderDodgeBurnLayers(layers) {
   renderDodgeBurnCurrent();
 }
 
-/// **"这次按下去会发生什么"要写在界面上** ✓：同名组是服务端唯一的复用键 ✓
+/// **"这次按下去会发生什么"要写在界面上** ✓：命名配方是服务端的复用键 ✓
 ///（实测：第二次调用回 `already_exists: true` 且 `layer_ids` 一字不变 ✓ 零原子落账 ✓）
 /// ⇒ 与其让人以为"再点一次会多一套"✗ 不如把服务端会走哪条路先说出来 ✓。
 function renderDodgeBurnCurrent() {
@@ -9696,13 +9708,13 @@ function renderDodgeBurnCurrent() {
   const record = dodgeBurnRecords.find((layer) => layer.layer_id === source);
   if (!record) { out.textContent = "请选择源图层"; return; }
   const prefix = (($("dodgeBurnName") || {}).value || "").trim() || record.name;
-  // **组名按服务端原样念** ✓：服务端把组命名成 `「前缀 · 减淡加深」`（`tools_retouch.rs` 的
-  // `format!` ✓ 带书名号 ✓）⇒ 界面这里必须用同一个字符串去比对 ✗ 自己拼别的形状就永远查不到既有组 ✓。
-  const groupName = "「" + prefix + " · 减淡加深」";
-  const existing = dodgeBurnRecords.find((layer) => layer.name === groupName);
+  // **既有组按配方认**：落盘名是词干，旧工程成品名也认。
+  const groupName = "「" + prefix + " · " + dodgeBurnWord() + "」";
+  const existing = dodgeBurnRecords.find((layer) => layer.name === "「" + prefix + " · 减淡加深」"
+    || (layer.metadata?.name_recipe?.kind === "dodge_burn" && layer.metadata.name_recipe.base === prefix));
   out.textContent = existing
     ? "组名 " + groupName + " 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）"
-    : "将新建组 " + groupName + "（放在「" + record.name + "」上方）";
+    : "将新建组 " + groupName + "（放在「" + layerDisplayName(record) + "」上方）";
 }
 
 async function runDodgeBurnSetup() {
@@ -9807,7 +9819,7 @@ function renderFillRegionLayers(layers) {
   for (const layer of layers) {
     const option = document.createElement("option");
     option.value = layer.layer_id;
-    option.textContent = layer.name + " (#" + layer.layer_id + ")";
+    option.textContent = layerDisplayName(layer) + " (#" + layer.layer_id + ")";
     option.dataset.i18n = "off";
     select.appendChild(option);
   }

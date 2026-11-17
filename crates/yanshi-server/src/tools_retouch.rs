@@ -353,6 +353,32 @@ pub(super) fn require_alive_layer(
     }
 }
 
+/// 减淡加深组的**命名配方**（落组层原子的 `metadata`，随工程持久化）：
+/// 组层落盘名只存词干（用户数据），**显示名不落盘**——界面按配方与当前
+/// 界面语言拼 `「{base} · {减淡加深的当前语言词}」`（见 viewer 的
+/// `layerDisplayName`）。配方同时是服务端**认组的键**：用户改名不影响
+/// 复用（改名后界面原样显示新名，不再拼配方）。
+fn dodge_burn_name_recipe(base_name: &str) -> Value {
+    json!({"name_recipe": {"kind": "dodge_burn", "base": base_name}})
+}
+
+/// 旧格式组名（命名配方上线前落盘的成品名）：旧工程里的组只有这个名字、
+/// 没有配方 ⇒ 认组时两种形状都要认（旧工程不叠第二套）；显示侧不迁移、
+/// 原样显示（界面同口径）。
+fn legacy_dodge_burn_group_name(base_name: &str) -> String {
+    format!("「{base_name} · 减淡加深」")
+}
+
+/// 这一层是不是 `base_name` 的减淡加深组：配方匹配（kind+base）或
+/// 旧格式成品名相等，任一命中即是（新旧工程同口径）。
+fn is_dodge_burn_group(layer: &yanshi_core::Layer, base_name: &str) -> bool {
+    let recipe_hit = layer.metadata.get("name_recipe").is_some_and(|recipe| {
+        recipe.get("kind").and_then(Value::as_str) == Some("dodge_burn")
+            && recipe.get("base").and_then(Value::as_str) == Some(base_name)
+    });
+    recipe_hit || layer.name == legacy_dodge_burn_group_name(base_name)
+}
+
 /// 组名：显式 name 优先，否则用源图层名（D&B 幂等键与 FS 组名共用此规则）。
 fn group_base_name(state: &yanshi_core::DocumentState, args: &Value, layer_id: &str) -> String {
     optional_str(args, "name")
@@ -620,7 +646,9 @@ pub(super) fn write_frequency_separation(ctx: &mut ToolContext<'_>, args: &Value
 }
 
 /// 减淡加深建组：curves 变体建两个带全黑蒙版的曲线层；gray 变体建
-/// 一个 50% 灰 soft_light 层。重复调用同名组 ⇒ already_exists，不叠第二套。
+/// 一个 50% 灰 soft_light 层。重复调用同组（按命名配方认，兼容旧格式
+/// 成品名）⇒ already_exists，不叠第二套。组层落盘只存词干名 + 配方，
+/// 显示名由界面按当前语言拼（见 [`dodge_burn_name_recipe`]）。
 pub(super) fn write_dodge_burn_setup(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> {
     let layer_id = require_str(args, "layer_id")?;
     let mode = optional_str(args, "mode").unwrap_or_else(|| "curves".to_owned());
@@ -650,13 +678,13 @@ pub(super) fn write_dodge_burn_setup(ctx: &mut ToolContext<'_>, args: &Value) ->
     require_alive_layer(&state, &layer_id)?;
     let (canvas_w, canvas_h) = (state.width, state.height);
     let base_name = group_base_name(&state, args, &layer_id);
-    let group_name = format!("「{base_name} · 减淡加深」");
-    // 幂等：同名存活组已存在 ⇒ 返回既有 id，不叠第二套（沿
-    // apply_preset「更新而非叠加」家法；同名是唯一键，见工具说明）。
+    // 幂等：同组存活已存在 ⇒ 返回既有 id，不叠第二套（沿
+    // apply_preset「更新而非叠加」家法；认组键是命名配方，旧工程
+    // 只有成品名 ⇒ 两种形状都认，见 is_dodge_burn_group）。
     if let Some(group_id) = state
         .layers
         .iter()
-        .find(|(_, layer)| layer.name == group_name && state.layer_alive(&layer.id))
+        .find(|(_, layer)| is_dodge_burn_group(layer, &base_name) && state.layer_alive(&layer.id))
         .map(|(id, _)| id)
     {
         let mut layer_ids: Vec<String> = state
@@ -715,14 +743,14 @@ pub(super) fn write_dodge_burn_setup(ctx: &mut ToolContext<'_>, args: &Value) ->
             };
         let mismatch = reused_mode.is_some_and(|actual| actual != mode);
         let mut note =
-            "同名减淡加深组已存在 ⇒ 复用既有组，没有新建（删掉旧组后可重建）。".to_owned();
+            "这个减淡加深组已存在 ⇒ 复用既有组，没有新建（删掉旧组后可重建）。".to_owned();
         if mismatch {
             let actual = reused_mode.unwrap_or("未知");
             note.push_str(&format!(
                 " ⚠ 本次请求的是 mode={mode}，但这个既有的组是按 mode={actual} 建的 ⇒ 用的是它、没有按本次请求重建。"
             ));
         } else if reused_mode.is_none() {
-            note.push_str(" ⚠ 这个同名组里已经没有减淡加深的层了（灰层或那两条曲线层被删过？）⇒ 它不会改变画面，要重做请先删掉这个组再建。");
+            note.push_str(" ⚠ 这个组里已经没有减淡加深的层了（灰层或那两条曲线层被删过？）⇒ 它不会改变画面，要重做请先删掉这个组再建。");
         }
         return Ok(json!({
             "ok": true,
@@ -740,7 +768,7 @@ pub(super) fn write_dodge_burn_setup(ctx: &mut ToolContext<'_>, args: &Value) ->
             "mode": reused_mode,
             "effective": reused_mode.is_some(),
             "ineffective_reason": if reused_mode.is_none() {
-                Value::String("这个同名组里已经没有减淡加深的图层了（灰层/曲线层被删过？）⇒ 它不会改变画面；要重做请先删掉这个组再建。".to_owned())
+                Value::String("这个组里已经没有减淡加深的图层了（灰层/曲线层被删过？）⇒ 它不会改变画面；要重做请先删掉这个组再建。".to_owned())
             } else {
                 Value::Null
             },
@@ -749,14 +777,13 @@ pub(super) fn write_dodge_burn_setup(ctx: &mut ToolContext<'_>, args: &Value) ->
         }));
     }
     let group_id = format!("layer_{}", yanshi_core::Ulid::new().encode());
-    let mut atoms = vec![create_layer_atom(
-        ctx,
-        &group_id,
-        &group_name,
-        Some("layer_group"),
-        None,
-        None,
-    )];
+    // **组层落盘只存词干名 + 命名配方** ✓：显示名（`「{base} · 减淡加深」`
+    // 与各语译文）由界面按当前语言拼 ✗ 不落盘 ⇒ 界面换语言时组名跟着换，
+    // 而不是把中文成品名写死在工程里（旧工程的成品名只在认组时兼容）。
+    let mut group_atom =
+        create_layer_atom(ctx, &group_id, &base_name, Some("layer_group"), None, None);
+    group_atom.payload["metadata"] = dodge_burn_name_recipe(&base_name);
+    let mut atoms = vec![group_atom];
     let (layer_ids, object_ids, mask_ids, note) = match mode.as_str() {
         "gray" => {
             // 中性灰烘焙层（fill_region 在本仓同样落位图快照，见工具说明）+
