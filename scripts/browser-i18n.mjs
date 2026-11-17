@@ -273,7 +273,21 @@ if (pickedZh !== "clicked") failures.push("切回时选择器里找不到「中�
 let back = null;
 for (let i = 0; i < 40; i++) {
   await sleep(300);
-  try { back = JSON.parse(await evaluate(snapshot)); } catch (_) { continue; }
+  try {
+    // **★ 先等脚本跑完，再读语言状态 ✗ ★**（2026-11-17 主干 run 43982432577 实测红 ✓）：
+    // `<html lang="zh-CN">` 与「新建」都是静态 HTML 里就有的 ⇒ 重载后内联脚本还没跑到
+    // `applyUILanguage()`（`web/index.html:16205`）时这两个条件已经成立 ⇒ 旧循环第一轮就
+    // break ⇒ 快照读到的是静态 fallback（开关 "EN"、工具栏 "◧ 工具栏"）⇒ 看着像切回失败 ✗。
+    // 同树在分支上绿、在主干上红 ⇒ 时序竞态 ✓ 不是产品 bug ✓。
+    // 本机探针实测：重载后约 429ms 处条件已成立而脚本未完（toggle 仍为 "EN"），约 875ms
+    // 脚本才跑完（toggle "中文"、工具栏 "工具栏"）⇒ 300ms 一轮的旧循环正好能踩进这个窗口 ✓。
+    // ⇒ 等一个**与断言无关的就绪信号**：页面内联脚本跑到末尾才会给 `#toggleRail` 换上内联 SVG
+    // （`web/index.html:16560`，在 `applyUILanguage()` 之后 ✓）⇒ 它在 ⇒ 翻译已跑完 ✓；
+    // 「开关是不是中文」仍只由下面的断言判 ✓（不拿被判条件当等待条件 ✓ 第 887 轮那条纪律）。
+    const scriptDone = await evaluate(`document.readyState === "complete" && !!document.querySelector("#toggleRail svg")`);
+    if (!scriptDone) continue;
+    back = JSON.parse(await evaluate(snapshot));
+  } catch (_) { continue; }
   if (back && back.htmlLang === "zh-CN" && String(back.newDoc).includes("新建")) break;
 }
 console.log("  【切回】" + JSON.stringify(back));
