@@ -101,7 +101,12 @@ import { execFileSync } from "node:child_process";
 //   只有 9,865 B，已在 web/index.html 与 crates/yanshi-http/assets 两份副本同步瘦身
 //   （共省 6,857 B，已计入 978,255），注释这条路到不了 972,000 ⇒ Wang 2026-11-17 定
 //   上界 970,000→979,000（留 745 B）。
-const CEILING = 979_000;
+// 2026-11-17：补丁包 v3 增量 0018–0019（减淡加深整句本地化、图层不透明度入口）
+//   使 978,255→980,840 B（+2,585 B：0019 图层不透明度入口真实功能代码约 1.9 KB
+//   ＋ m44 词条 394 B）；补丁带入的长注释已在两份副本全部瘦身（共省 7,667 B），
+//   注释这条路补不出缺口 1,840 B ⇒ Wang 2026-11-17 定上界 979,000→981,500
+//   （留 660 B）。
+const CEILING = 981_500;
 
 const failures = [];
 const check = (ok, label, detail) => {
