@@ -1785,7 +1785,12 @@ async function initWasm() {
       if (health && !health.wasm) throw new Error("服务端未启用（--no-wasm 或产物缺失）");
     // 动态 import：不需要打包器，直接吃 wasm-bindgen --target web 的输出。
     const module = await import("/wasm/yanshi_wasm.js");
-    await module.default();
+    // **★ wasm 初始化只跑一次 ✗ ★**（见 `api-local.js:ensureWasmInit` ✓）：
+    //   **∴ `module.default()` 并发调用会建出两个 wasm 实例 ✗ ⇒
+    //     先建实例上的内核句柄失效、`load_atoms_json` 报递归借用 ✓
+    //     ⇒ **∴ 与本地层共用同一个初始化 Promise ✓。
+    const { ensureWasmInit } = await import("/api-local.js");
+    await ensureWasmInit(module);
     state.wasm = module;
     window.yanshiStats.wasm = true;
     // **★ 离线内核的 GPU 探测 ✗ ★**（**第 483 轮 ✓；**目标第 6 条 ✓）
