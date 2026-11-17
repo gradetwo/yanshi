@@ -8212,6 +8212,26 @@ async function setupAssetPanels() {
         const previous = button.textContent;
         button.textContent = "取消导出";
         try {
+          // **★ 内核不存在时不许裸取 `state.wasm.WasmKernel` ★**
+          //   实测（2026-11-17，真实 Chromium）：默认入口是**服务端渲染** ✓
+          //   ⇒ `state.wasm` 在预热完成前是 `null` ✓ ⇒ 原来这里直接写
+          //   `WasmKernel: state.wasm.WasmKernel` ✗ ⇒ 抛
+          //   「Cannot read properties of null (reading 'WasmKernel')」✗
+          //   ⇒ 面板只说「导出失败：Cannot read properties of null …」✓
+          //   —— 一句**程序员语言**，用户既不知道"为什么导不了"、也不知道"该怎么办"✓
+          //   （而这条导出其实**完全可用**：等内核预热完再点一次就行 ✓）。
+          //   同文件里 `loadKernel()` 开头就有 `if (!state.wasm) return false;` ✓
+          //   ⇒ 这是同一道闸**只拦了一条路** ✗ 的又一次重犯 ✓。
+          //   这里改成：先判在不在，不在就说清"为什么"和"怎么办"，**不把 TypeError 当回执** ✓。
+          if (!state.wasm || !state.wasm.WasmKernel) {
+            say(
+              "过程视频要在本地内核里逐帧重放 ⇒ 本地内核还没就绪（这一页当前用服务端渲染）。"
+              + "等内核预热完成后再点一次；或取消勾选「用服务端渲染」后刷新本页。",
+              "#c33",
+            );
+            log("过程视频导出跳过：本地内核未就绪（当前为服务端渲染）", "#c33");
+            return;
+          }
           const { w, h } = state.docSize;
           const all = await fetchOrLocal(api("/api/atoms") + "&since=0").then((r) => r.json());
           if (!all || !all.ok || !Array.isArray(all.atoms) || all.atoms.length === 0) {

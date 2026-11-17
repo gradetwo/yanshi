@@ -10431,6 +10431,19 @@ async function setupAssetPanels() {
         const previous = button.textContent;
         button.textContent = "取消导出";
         try {
+          // **★ 内核不存在时不许裸取 `state.wasm.WasmKernel` ★**（2026-11-17）：
+          //   默认入口是服务端渲染 ⇒ 预热完成前 `state.wasm` 是 `null` ✗
+          //   ⇒ 原来直接取 `.WasmKernel` 抛 TypeError，面板回执只剩一句程序员语言 ✓
+          //   ⇒ 改成先判在不在，不在就说"为什么导不了 / 该怎么办"（`loadKernel()` 早就这么做了 ✓）。
+          if (!state.wasm || !state.wasm.WasmKernel) {
+            say(
+              "过程视频要在本地内核里逐帧重放 ⇒ 本地内核还没就绪（这一页当前用服务端渲染）。"
+              + "等内核预热完成后再点一次；或取消勾选「用服务端渲染」后刷新本页。",
+              "#c33",
+            );
+            log("过程视频导出跳过：本地内核未就绪（当前为服务端渲染）", "#c33");
+            return;
+          }
           const { w, h } = state.docSize;
           const all = await fetchOrLocal(api("/api/atoms") + "&since=0").then((r) => r.json());
           if (!all || !all.ok || !Array.isArray(all.atoms) || all.atoms.length === 0) {
