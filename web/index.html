@@ -10655,7 +10655,7 @@ async function setupLayerPanel() {
     //   新建出来的层仍叫「图层 3」✓，而图层名是**用户数据**（行/下拉都标了 `data-i18n="off"` ✓）
     //   ⇒ i18n 那一层**永远不会**替它翻译 ✗ ⇒ 英文模式里中文残留在**名字**上（实测抓到 ✓）。
     //   名是"我们给的缺省"而不是用户输入 ⇒ 生成那一刻就该用当前语言 ✓。
-    const made = await callTool("create_layer", { name: (uiLang === "en" ? "Layer " : "图层 ") + (layers.length + 1) });
+    const made = await callTool("create_layer", { name: defaultLayerName(layers.length + 1) });
     // **新建之后必须选中它** ✗（真实用户报告 ✓）—— 严格照**下面 `duplicate` 已有的模式** ✓。
     //
     // **为什么这是真 bug** ✓：新图层建在**最上面** ✓ 而**选中仍停在旧图层** ✗
