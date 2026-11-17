@@ -256,7 +256,6 @@ const I18N_EN_TEXT = {
   "导出当前视图": "Export current view",
   "文件": "File",
   "图层": "Layers",
-  "图层 {n}": "Layer {n}",
   "角度": "Angle",
   "只作用于选区": "Only inside the selection",
   "调色板": "Palette",
@@ -600,7 +599,12 @@ const I18N_EN_TEXT = {
   "笔刷库": "Brush library",
   "素材": "Assets",
   "搜笔刷": "Search brushes",
-  "★ 收藏": "★ Favourites"
+  "★ 收藏": "★ Favourites",
+  "图层 {n}": "Layer {n}",
+  "可撤销 {undo} 笔 / 可重做 {redo} 笔": "{undo} strokes undoable / {redo} redoable",
+  "组名 {group} 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）": "Group {group} already exists ⇒ this run reuses it instead of creating a new one (delete it first to redo)",
+  "将新建组 {group}（放在「{src}」上方）": "Will create group {group} (above “{src}”)",
+  "撤销 0 / 重做 0": "Undo 0 / Redo 0",
 };
 const I18N_EN_ATTR = {
   // **效果卡那句"为什么"从可见长句改成 `title=`** ✓（第七轮 `ui-text-density` 红出来的 ✓ 见 docs ㊴）
@@ -1098,7 +1102,6 @@ const I18N_FR_TEXT = {
   "导出当前视图": "Exporter la vue courante",
   "文件": "Fichier",
   "图层": "Calques",
-  "图层 {n}": "Calque {n}",
   "角度": "Angle",
   "只作用于选区": "Uniquement dans la sélection",
   "调色板": "Palette",
@@ -1364,6 +1367,11 @@ const I18N_FR_TEXT = {
   "素材": "Actifs",
   "搜笔刷": "Chercher un pinceau",
   "★ 收藏": "★ Favoris",
+  "图层 {n}": "Calque {n}",
+  "可撤销 {undo} 笔 / 可重做 {redo} 笔": "{undo} coups annulables / {redo} rétablissables",
+  "组名 {group} 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）": "Le groupe {group} existe déjà ⇒ cette exécution le réutilise au lieu d'en créer un (supprimez-le pour refaire)",
+  "将新建组 {group}（放在「{src}」上方）": "Va créer le groupe {group} (au-dessus de « {src} »)",
+  "撤销 0 / 重做 0": "Annuler 0 / Rétablir 0",
 };
 const I18N_FR_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Les paramètres par défaut n'ont souvent aucun effet ; un nom de paramètre mal orthographié est aussi accepté tel quel (le noyau ne valide que les clés qu'il connaît).",
@@ -1745,7 +1753,6 @@ const I18N_ES_TEXT = {
   "导出当前视图": "Exportar la vista actual",
   "文件": "Archivo",
   "图层": "Capas",
-  "图层 {n}": "Capa {n}",
   "角度": "Ángulo",
   "只作用于选区": "Solo dentro de la selección",
   "调色板": "Paleta",
@@ -2011,6 +2018,11 @@ const I18N_ES_TEXT = {
   "素材": "Recursos",
   "搜笔刷": "Buscar pinceles",
   "★ 收藏": "★ Favoritos",
+  "图层 {n}": "Capa {n}",
+  "可撤销 {undo} 笔 / 可重做 {redo} 笔": "{undo} trazos deshacibles / {redo} rehacibles",
+  "组名 {group} 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）": "El grupo {group} ya existe ⇒ esta ejecución lo reutiliza en vez de crear uno nuevo (bórralo para rehacer)",
+  "将新建组 {group}（放在「{src}」上方）": "Creará el grupo {group} (encima de «{src}»)",
+  "撤销 0 / 重做 0": "Deshacer 0 / Rehacer 0",
 };
 const I18N_ES_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Los parámetros por defecto a menudo no tienen ningún efecto, y un nombre de parámetro mal escrito se guarda tal cual (el núcleo solo valida las claves que reconoce).",
@@ -2392,7 +2404,6 @@ const I18N_PT_TEXT = {
   "导出当前视图": "Exportar a vista atual",
   "文件": "Arquivo",
   "图层": "Camadas",
-  "图层 {n}": "Camada {n}",
   "角度": "Ângulo",
   "只作用于选区": "Somente dentro da seleção",
   "调色板": "Paleta",
@@ -2658,6 +2669,11 @@ const I18N_PT_TEXT = {
   "素材": "Ativos",
   "搜笔刷": "Buscar pincéis",
   "★ 收藏": "★ Favoritos",
+  "图层 {n}": "Camada {n}",
+  "可撤销 {undo} 笔 / 可重做 {redo} 笔": "{undo} traços desfazíveis / {redo} refazíveis",
+  "组名 {group} 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）": "O grupo {group} já existe ⇒ esta execução o reaproveita em vez de criar outro (exclua-o para refazer)",
+  "将新建组 {group}（放在「{src}」上方）": "Vai criar o grupo {group} (acima de «{src}»)",
+  "撤销 0 / 重做 0": "Desfazer 0 / Refazer 0",
 };
 const I18N_PT_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Parâmetros padrão muitas vezes não têm efeito nenhum, e um nome de parâmetro com erro de digitação é guardado como está (o núcleo só valida as chaves que conhece).",
@@ -3039,7 +3055,6 @@ const I18N_JA_TEXT = {
   "导出当前视图": "現在のビューをエクスポート",
   "文件": "ファイル",
   "图层": "レイヤー",
-  "图层 {n}": "レイヤー {n}",
   "角度": "角度",
   "只作用于选区": "選択範囲内のみ",
   "调色板": "パレット",
@@ -3305,6 +3320,11 @@ const I18N_JA_TEXT = {
   "素材": "アセット",
   "搜笔刷": "ブラシを検索",
   "★ 收藏": "★ お気に入り",
+  "图层 {n}": "レイヤー {n}",
+  "可撤销 {undo} 笔 / 可重做 {redo} 笔": "取り消し可 {undo} 筆 / やり直し可 {redo} 筆",
+  "组名 {group} 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）": "グループ {group} は既にあります ⇒ 今回は既存グループを使い、新規作成はしません（やり直すなら先に削除してください）",
+  "将新建组 {group}（放在「{src}」上方）": "グループ {group} を新規作成します（「{src}」の上）",
+  "撤销 0 / 重做 0": "取り消し 0 / やり直し 0",
 };
 const I18N_JA_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "既定のパラメータはもともと効果がないことが多く、パラメータ名のタイプミスもそのまま受け付けられます（カーネルは知っているキーだけを検証します）。",
@@ -3686,7 +3706,6 @@ const I18N_KO_TEXT = {
   "导出当前视图": "현재 보기 내보내기",
   "文件": "파일",
   "图层": "레이어",
-  "图层 {n}": "레이어 {n}",
   "角度": "각도",
   "只作用于选区": "선택 영역 안에서만",
   "调色板": "팔레트",
@@ -3952,6 +3971,11 @@ const I18N_KO_TEXT = {
   "素材": "에셋",
   "搜笔刷": "브러시 검색",
   "★ 收藏": "★ 즐겨찾기",
+  "图层 {n}": "레이어 {n}",
+  "可撤销 {undo} 笔 / 可重做 {redo} 笔": "실행 취소 가능 {undo}획 / 다시 실행 가능 {redo}획",
+  "组名 {group} 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）": "그룹 {group}이(가) 이미 있습니다 ⇒ 이번에는 기존 그룹을 다시 쓰고 새로 만들지 않습니다(다시 하려면 먼저 삭제하세요)",
+  "将新建组 {group}（放在「{src}」上方）": "그룹 {group}을(를) 새로 만듭니다(「{src}」 위)",
+  "撤销 0 / 重做 0": "실행 취소 0 / 다시 실행 0",
 };
 const I18N_KO_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "기본 매개변수는 원래 효과가 없는 경우가 많고, 매개변수 이름의 오타도 그대로 받아들여집니다(커널은 아는 키만 검증합니다).",
@@ -4333,7 +4357,6 @@ const I18N_RU_TEXT = {
   "导出当前视图": "Экспорт текущего вида",
   "文件": "Файл",
   "图层": "Слои",
-  "图层 {n}": "Слой {n}",
   "角度": "Угол",
   "只作用于选区": "Только внутри выделения",
   "调色板": "Палитра",
@@ -4599,6 +4622,11 @@ const I18N_RU_TEXT = {
   "素材": "Активы",
   "搜笔刷": "Искать кисти",
   "★ 收藏": "★ Избранное",
+  "图层 {n}": "Слой {n}",
+  "可撤销 {undo} 笔 / 可重做 {redo} 笔": "можно отменить {undo} штрихов / повторить {redo}",
+  "组名 {group} 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）": "Группа {group} уже существует ⇒ этот запуск переиспользует её, а не создаст новую (чтобы повторить, сначала удалите её)",
+  "将新建组 {group}（放在「{src}」上方）": "Будет создана группа {group} (над «{src}»)",
+  "撤销 0 / 重做 0": "Отменить 0 / Повторить 0",
 };
 const I18N_RU_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Параметры по умолчанию часто вообще не дают эффекта, а имя параметра с опечаткой просто сохраняется как есть (ядро проверяет только те ключи, которые знает).",
@@ -4980,7 +5008,6 @@ const I18N_DE_TEXT = {
   "导出当前视图": "Aktuelle Ansicht exportieren",
   "文件": "Datei",
   "图层": "Ebenen",
-  "图层 {n}": "Ebene {n}",
   "角度": "Winkel",
   "只作用于选区": "Nur innerhalb der Auswahl",
   "调色板": "Palette",
@@ -5246,6 +5273,11 @@ const I18N_DE_TEXT = {
   "素材": "Assets",
   "搜笔刷": "Pinsel suchen",
   "★ 收藏": "★ Favoriten",
+  "图层 {n}": "Ebene {n}",
+  "可撤销 {undo} 笔 / 可重做 {redo} 笔": "{undo} Striche rückgängig / {redo} wiederholbar",
+  "组名 {group} 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）": "Gruppe {group} existiert bereits ⇒ dieser Lauf verwendet sie weiter, statt eine neue anzulegen (zum Wiederholen zuerst löschen)",
+  "将新建组 {group}（放在「{src}」上方）": "Gruppe {group} wird neu angelegt (über „{src}“)",
+  "撤销 0 / 重做 0": "Rückgängig 0 / Wiederholen 0",
 };
 const I18N_DE_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Standardparameter haben oft überhaupt keine Wirkung, und ein falsch geschriebener Parametername wird einfach so gespeichert (der Kern prüft nur die Schlüssel, die er kennt).",

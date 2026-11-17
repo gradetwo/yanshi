@@ -4499,6 +4499,17 @@ async function loadDocumentData() {
   $("identity").textContent = state.docId + " · " + state.token.slice(0, 8) + "…";
   window.dispatchEvent(new Event("yanshi:document-ready"));
   void refreshUndoStatusFromServer();
+  // **首屏那句也要跟着语言** ✓（0010）：`viewer.rs` 的占位句是写死的中文
+  // `撤销 0 / 重做 0` ✓ ⇒ 服务端回执还没到的那几百毫秒里，英文界面**露一句中文** ✗
+  // （实测：`?lang=en` 首屏读到 `撤销 0 / 重做 0` ✓）。这里先按"0 笔"渲染一次 ✓，
+  // 回执到了再被 `refreshUndoStatusFromServer` 覆盖成真实计数 ✓（同一条 `updateUndoStatus` ✓）。
+  // **必须推迟到本脚本跑完** ✓：`uiTextTable` 是脚本靠后声明的一张表 ✓
+  // ⇒ 在这里同步调会撞 **TDZ** ✗（实测 `Cannot access 'uiTextTable' before initialization` ✓
+  //   页面直接抛错 ✓ 而且那句中文永远留在界面上 ✗）。延迟一个宏任务再写 ✓，
+  // 那时全脚本的 `const` 都已初始化 ✓。
+  if (typeof state.remainingUndo !== "number") state.remainingUndo = 0;
+  if (typeof state.remainingRedo !== "number") state.remainingRedo = 0;
+  setTimeout(() => { try { updateUndoStatus(); } catch (_) { /* 只影响一行读数 ✓ */ } }, 0);
   await refreshLayers();
   await refreshThumb();
   // 6.2「打开即图片」：先用服务端渲染（含 HEAD 渲染缓存）出像素，
@@ -4779,9 +4790,10 @@ function updateUndoStatus() {
   const undoCount = typeof state.remainingUndo === "number" ? state.remainingUndo : null;
   const redoCount = typeof state.remainingRedo === "number" ? state.remainingRedo : null;
   if (label) {
-    label.textContent =
-      "可撤销 " + (undoCount === null ? "—" : undoCount) +
-      " 笔 / 可重做 " + (redoCount === null ? "—" : redoCount) + " 笔";
+    label.textContent = uiTemplate("可撤销 {undo} 笔 / 可重做 {redo} 笔", {
+      undo: undoCount === null ? "—" : undoCount,
+      redo: redoCount === null ? "—" : redoCount,
+    });
   }
   const undo = document.querySelector('button[data-tool="undo"]');
   const redo = document.querySelector('button[data-tool="redo"]');
@@ -9753,8 +9765,8 @@ function renderDodgeBurnCurrent() {
   const existing = dodgeBurnRecords.find((layer) => layer.name === "「" + prefix + " · 减淡加深」"
     || (layer.metadata?.name_recipe?.kind === "dodge_burn" && layer.metadata.name_recipe.base === prefix));
   out.textContent = existing
-    ? "组名 " + groupName + " 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）"
-    : "将新建组 " + groupName + "（放在「" + layerDisplayName(record) + "」上方）";
+    ? uiTemplate("组名 {group} 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）", { group: groupName })
+    : uiTemplate("将新建组 {group}（放在「{src}」上方）", { group: groupName, src: layerDisplayName(record) });
 }
 
 async function runDodgeBurnSetup() {
@@ -13832,6 +13844,21 @@ const uiLang = (() => {
 const uiLangInfo = UI_LANGS.find((item) => item.code === uiLang) || UI_LANGS[0];
 // **当前语言的两张词表与属性句式表** ✓（中文没有表 ⇒ 三个都为 null ⇒ 一切落回原文 ✓）。
 const uiTextTable = uiLang === "zh" ? null : I18N_TEXT_BY_LANG[uiLang];
+/// **带变量的动态文案也要随语言** ✓（0009）——词表是**精确匹配**原文 ✓
+/// ⇒ "可撤销 3 笔 / 可重做 1 笔" 这种**运行时拼出来的句子**永远查不到词条 ✗
+/// （实测：英文/德文界面里 `#undoDepth`、`#dodgeBurnCurrent` 仍是整句中文 ✓）。
+/// 口径：给**带占位的源句**也登记词条（`"可撤销 {undo} 笔 / 可重做 {redo} 笔"` ✓），
+/// 运行到这里把变量填进去 ✓；没有词条 ⇒ 原样返回中文 ✓（和 `i18nText` 同一条降级 ✓）。
+function uiTemplate(zhSource, vars) {
+  // **词表可能还没初始化**（脚本靠后的 `const` ✓ ⇒ 早期调用撞 TDZ ✓）：
+  // 取不到就先用中文 ✓，绝不把整段调用连累成异常 ✗（`defaultLayerName` 同一条口径 ✓）。
+  let template = zhSource;
+  try { if (uiTextTable && uiTextTable[zhSource]) template = uiTextTable[zhSource]; } catch (_) { /* TDZ ⇒ 中文 */ }
+  return template.replace(/\{([a-z_]+)\}/g, (match, key) => (
+    vars && Object.prototype.hasOwnProperty.call(vars, key) ? String(vars[key]) : match
+  ));
+}
+
 
 /// **缺省图层名要随界面语言生成** ✓（0007 的 9 语言版）——
 /// 图层名本身是**用户数据** ✓（`data-i18n="off"` ✓ 建好就不再翻译 ✓），
