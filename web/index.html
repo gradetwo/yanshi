@@ -5253,7 +5253,13 @@ async function submitAtom(atom) {
 }
 
 async function checkBitExact() {
-  if (!kernelReady()) { log("没有 WASM 内核，无法自检", "#c33"); return; }
+  if (!kernelReady()) {
+    // **“做不了”要写进状态栏 #bitExact** ✓（0017）：只写日志人看不见 ⇒ 把原因直接写在读数位置（8 语言词条）。
+    const box0 = $("bitExact");
+    if (box0) box0.textContent = uiTemplate("不适用（没有 WASM 内核：逐字节比对需要本地这一侧的像素）");
+    log("没有 WASM 内核，无法自检", "#c33");
+    return;
+  }
   // 以**服务端返回的尺寸**为准：`state.docSize` 可能因刷新时序而滞后，
   // 那样会出现「尺寸不一致」的误报（实测遇到）。
   const { w, h } = state.docSize;
@@ -6719,6 +6725,10 @@ async function loadDocumentData() {
   $("identity").textContent = state.docId + " · " + state.token.slice(0, 8) + "…";
   window.dispatchEvent(new Event("yanshi:document-ready"));
   void refreshUndoStatusFromServer();
+  // **首屏那句也要跟着语言** ✓（0010）：viewer.rs 占位句写死中文 ⇒ 首屏先按当前语言渲染、回执到再覆盖；渲染推迟到脚本跑完（uiTextTable 是靠后的 const，同步调撞 TDZ）。
+  if (typeof state.remainingUndo !== "number") state.remainingUndo = 0;
+  if (typeof state.remainingRedo !== "number") state.remainingRedo = 0;
+  setTimeout(() => { try { updateUndoStatus(); } catch (_) { /* 只影响一行读数 ✓ */ } }, 0);
   await refreshLayers();
   await refreshThumb();
   // 6.2「打开即图片」：先用服务端渲染（含 HEAD 渲染缓存）出像素，
@@ -6768,6 +6778,13 @@ async function loadDocumentData() {
     bootMark("before-refreshPreview");
     await refreshPreview();
     bootMark("refreshPreview-ok");
+    // **效果目录（「调整／滤镜」下拉）必须在这条启动路上装** ✓（0004）：首次进入走 loadDocumentData 时漏挂 loadEffectCatalog ⇒ 整卡不可用。
+    bootMark("before-loadEffectCatalog");
+    try { await loadEffectCatalog(); bootMark("loadEffectCatalog-ok"); }
+    catch (error) { bootMark("loadEffectCatalog!" + String((error && error.message) || error).slice(0, 40)); }
+    bootMark("before-refreshEffects");
+    try { await refreshEffects(); bootMark("refreshEffects-ok"); }
+    catch (error) { bootMark("refreshEffects!" + String((error && error.message) || error).slice(0, 40)); }
     const bootFirstPaint = $("firstPaint");
     if (bootFirstPaint) bootFirstPaint.textContent = "…";
     connect();
@@ -6983,9 +7000,10 @@ function updateUndoStatus() {
   const undoCount = typeof state.remainingUndo === "number" ? state.remainingUndo : null;
   const redoCount = typeof state.remainingRedo === "number" ? state.remainingRedo : null;
   if (label) {
-    label.textContent =
-      "可撤销 " + (undoCount === null ? "—" : undoCount) +
-      " 笔 / 可重做 " + (redoCount === null ? "—" : redoCount) + " 笔";
+    label.textContent = uiTemplate("可撤销 {undo} 笔 / 可重做 {redo} 笔", {
+      undo: undoCount === null ? "—" : undoCount,
+      redo: redoCount === null ? "—" : redoCount,
+    });
   }
   const undo = document.querySelector('button[data-tool="undo"]');
   const redo = document.querySelector('button[data-tool="redo"]');
@@ -7526,6 +7544,18 @@ async function refreshHistory() {
     const seq = document.createElement("span");
     seq.className = "seq";
     seq.textContent = "#" + atom.seq;
+    // **历史行首加时间列** ✓（0016）：只有序号看不出何时发生 ⇒ HH:MM:SS（title 给完整时间），取不到时间戳就不加（宁缺勿假）。
+    const rawStamp = atom.timestamp || atom.ts || null;
+    if (rawStamp) {
+      const when = new Date(rawStamp);
+      if (!Number.isNaN(when.getTime())) {
+        const timeLabel = document.createElement("span");
+        timeLabel.className = "time";
+        timeLabel.textContent = when.toLocaleTimeString(undefined, { hour12: false });
+        timeLabel.title = when.toLocaleString(undefined, { hour12: false });
+        row.appendChild(timeLabel);
+      }
+    }
     const kindLabel = document.createElement("span");
     kindLabel.className = "kind";
     // **语义显示** ✓：喷枪/介质笔触在内核是 `import_image` 原子（位图块 + blob），
@@ -7830,13 +7860,16 @@ function renderCheckpointList() {
     row.className = "annotation-row";
     const head = document.createElement("div");
     head.className = "annotation-head";
-    head.textContent = (item.name || item.checkpoint_id || "").slice(0, 28) +
+    // **存档名是服务端落盘的持久数据** ✓（0012）：只翻显示前缀（认出「存档 HH:MM:SS」形状才换），不许改数据本人。
+    const rawName = (item.name || item.checkpoint_id || "").slice(0, 28);
+    const stamp = /^存档\s+(\d{1,2}:\d{2}:\d{2})$/.exec(rawName);
+    head.textContent = (stamp ? uiTemplate("存档 {time}", { time: stamp[1] }) : rawName) +
       (item.anchor_seq !== undefined ? "  ·  seq " + item.anchor_seq : "");
     const actions = document.createElement("div");
     actions.className = "toolbar";
     const back = document.createElement("button");
     back.type = "button";
-    back.textContent = "回到这里";
+    back.textContent = uiTemplate("回到这里");
     back.addEventListener("click", async () => {
       const id = item.checkpoint_id || item.id;
       const done = await callToolChecked("restore_checkpoint", { checkpoint_id: id }, "回到存档点");
@@ -9643,7 +9676,43 @@ function renderLayerPanel(layers) {
     });
     // 點下拉不觸發行選中
     blend.addEventListener("click", (e) => e.stopPropagation());
-    row.append(thumb, eye, lock, blend, name);
+        // **图层不透明度** ✓（0019）：此前没有入口（服务端 update_layer {opacity} 一直可用、面板没接）⇒ 每行补 0–100 输入，落盘 0–1、越界夹紧回填、非数字不发请求。
+    const opacity = document.createElement("input");
+    opacity.type = "number";
+    opacity.className = "layer-opacity";
+    opacity.min = "0";
+    opacity.max = "100";
+    opacity.step = "1";
+    opacity.title = "图层不透明度（0–100）";
+    opacity.value = String(Math.round((typeof layer.opacity === "number" ? layer.opacity : 1) * 100));
+    opacity.addEventListener("click", (e) => e.stopPropagation());
+    opacity.addEventListener("keydown", (e) => e.stopPropagation());
+    opacity.addEventListener("change", async (e) => {
+      e.stopPropagation();
+      const raw = Number(opacity.value);
+      if (!Number.isFinite(raw)) {
+        // **别把 NaN 发出去** ✓：服务端只会回 `invalid_argument` ✓ 而人看不出自己错在哪 ✗
+        opacity.value = String(Math.round((typeof layer.opacity === "number" ? layer.opacity : 1) * 100));
+        stageNotice(uiTemplate("不透明度要填 0 到 100 之间的数字 ⇒ 这次没有发送请求、没有改动任何东西"));
+        return;
+      }
+      const clamped = Math.max(0, Math.min(100, raw));
+      if (clamped !== raw) {
+        // **夹紧之后要回填** ✓（0006 那条"数值框不许说假数字"同一口径 ✓）
+        opacity.value = String(clamped);
+        stageNotice(uiTemplate("不透明度只能取 0 到 100 ⇒ 已改成 {value}", { value: clamped }));
+      }
+      const done = await callTool("update_layer", { layer_id: layer.layer_id, patch: { opacity: clamped / 100 } }, { refresh: false });
+      if (!done || !done.ok) {
+        log("设置图层不透明度失败：" + ((done && done.error_code) || "unknown"), "#c33");
+        await refreshLayers();
+        return;
+      }
+      await refreshLayers();
+      await resync();
+      log("图层「" + (layer.name || "") + "」不透明度改成 " + clamped + "% ✓");
+    });
+    row.append(thumb, eye, lock, blend, opacity, name);
     list.appendChild(row);
   }
   // 面板重画后按需补缩略图 ✓（去抖：连续刷新只跑最后一次 ✓）。
@@ -10416,6 +10485,16 @@ async function setupAssetPanels() {
         const previous = button.textContent;
         button.textContent = "取消导出";
         try {
+          // **内核不存在时不许裸取 state.wasm.WasmKernel** ✓（0005）：服务端渲染下 wasm 为 null ⇒ 过程视频导出只回 TypeError。
+          if (!state.wasm || !state.wasm.WasmKernel) {
+            say(
+              "过程视频要在本地内核里逐帧重放 ⇒ 本地内核还没就绪（这一页当前用服务端渲染）。"
+              + "等内核预热完成后再点一次；或取消勾选「用服务端渲染」后刷新本页。",
+              "#c33",
+            );
+            log("过程视频导出跳过：本地内核未就绪（当前为服务端渲染）", "#c33");
+            return;
+          }
           const { w, h } = state.docSize;
           const all = await fetchOrLocal(api("/api/atoms") + "&since=0").then((r) => r.json());
           if (!all || !all.ok || !Array.isArray(all.atoms) || all.atoms.length === 0) {
@@ -10570,6 +10649,8 @@ async function setupLayerPanel() {
   list.addEventListener("click", async (event) => {
     const row = event.target.closest(".layer-row");
     if (!row) return;
+    // **双击的第二下不许再走“选中”** ✓（0015）：click 里重画整表会冲掉刚插入的改名输入框 ⇒ event.detail > 1 时放行给 dblclick。
+    if (event.detail > 1) return;
     const layerId = row.dataset.layerId;
     const action = event.target.dataset ? event.target.dataset.action : null;
     if (action === "visible" || action === "locked") {
@@ -10595,6 +10676,46 @@ async function setupLayerPanel() {
     const select = $("layer");
     if (select) { select.value = layerId; select.onchange(); }
   });
+  // **双击图层名 = 就地改名** ✓（0015）：此前无此入口；双击换成输入框，回车/失焦提交（update_layer），Esc 取消。
+  list.addEventListener("dblclick", async (event) => {
+    const nameEl = event.target.closest(".layer-name");
+    if (!nameEl) return;
+    const row = nameEl.closest(".layer-row");
+    const layerId = row && row.dataset.layerId;
+    if (!layerId || row.querySelector(".layer-name-input")) return;
+    const layers = await listLayers().catch(() => null);
+    const layer = (layers || []).find((item) => item.layer_id === layerId);
+    if (!layer) return;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "layer-name-input";
+    input.value = layer.name;
+    input.maxLength = 64;
+    input.title = "回车保存 · Esc 取消";
+    nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+    let done = false;
+    const finish = async (commit) => {
+      if (done) return;
+      done = true;
+      const value = input.value.trim();
+      if (commit && value && value !== layer.name) {
+        await callToolChecked("update_layer", { layer_id: layerId, patch: { name: value } }, "重命名图层");
+        await refreshLayers();
+        log("图层已改名为「" + value + "」✓");
+      } else {
+        await refreshLayers();
+      }
+    };
+    input.addEventListener("keydown", (event2) => {
+      // 改名输入框里打字须 stopPropagation：'b'/'m'/'n' 是单键工具快捷键，打名字不能换工具。
+      event2.stopPropagation();
+      if (event2.key === "Enter") { event2.preventDefault(); void finish(true); }
+      else if (event2.key === "Escape") { event2.preventDefault(); void finish(false); }
+    });
+    input.addEventListener("blur", () => void finish(true));
+  });
   // **上下移动** ✓：屏幕向上 = z 序 +1 ✓（`list_layers` 是自下而上 ✓）。
   const move = async (delta) => {
     const layers = await listLayers();
@@ -10611,7 +10732,8 @@ async function setupLayerPanel() {
   const add = $("layerAdd");
   if (add) add.onclick = async () => {
     const layers = await listLayers();
-    const made = await callTool("create_layer", { name: "图层 " + (layers.length + 1) });
+    // **默认图层名跟着界面语言** ✓（0007）：原来写死 “图层 ” + n ⇒ 英文界面下仍是中文名。
+    const made = await callTool("create_layer", { name: defaultLayerName(layers.length + 1) });
     // **新建之后必须选中它** ✗（真实用户报告 ✓）—— 严格照**下面 `duplicate` 已有的模式** ✓。
     //
     // **为什么这是真 bug** ✓：新图层建在**最上面** ✓ 而**选中仍停在旧图层** ✗
@@ -11292,12 +11414,16 @@ async function refreshSelectionHint() {
     }
     void drawSelectionOutline();
     if (Array.isArray(bbox)) {
-      hint.textContent = `选区 ${selections.length} 个（${Math.round(bbox[2])}×${Math.round(bbox[3])} @ ${Math.round(bbox[0])},${Math.round(bbox[1])}）｜约束之后的绘制`;
+      // 动态句 ⇒ 走 `uiTemplate` ✓（2026-11-17 英文实测：这句原本在 en 界面里是中文 ✓）
+      hint.textContent = uiTemplate("选区 {n} 个（{w}×{h} @ {x},{y}）｜约束之后的绘制", {
+        n: selections.length, w: Math.round(bbox[2]), h: Math.round(bbox[3]),
+        x: Math.round(bbox[0]), y: Math.round(bbox[1]),
+      });
     } else {
-      hint.textContent = `选区 ${selections.length} 个｜约束之后的绘制`;
+      hint.textContent = uiTemplate("选区 {n} 个｜约束之后的绘制", { n: selections.length });
     }
   } catch (error) {
-    hint.textContent = "选区状态未知";
+    hint.textContent = uiTemplate("选区状态未知");
   }
 }
 
@@ -11929,12 +12055,17 @@ function renderDodgeBurnCurrent() {
   if (!record) { out.textContent = "请选择源图层"; return; }
   const prefix = (($("dodgeBurnName") || {}).value || "").trim() || record.name;
   // **既有组按配方认**：落盘名是词干，旧工程成品名也认。
-  const groupName = "「" + prefix + " · " + dodgeBurnWord() + "」";
+  // **组名引号随语言** ✓：中文（及其余语言）用「」✓；英文的复用预测句被判据钉成
+  // `Group name "…"` 式样 ⇒ 英文必须用 ASCII 双引号 ✗ 带「」会被判「没翻到位」（browser-dodge-burn ⑨ ✓）。
+  const groupName = uiLang === "en"
+    ? "\"" + prefix + " · " + dodgeBurnWord() + "\""
+    : "「" + prefix + " · " + dodgeBurnWord() + "」";
   const existing = dodgeBurnRecords.find((layer) => layer.name === "「" + prefix + " · 减淡加深」"
     || (layer.metadata?.name_recipe?.kind === "dodge_burn" && layer.metadata.name_recipe.base === prefix));
   out.textContent = existing
-    ? "组名 " + groupName + " 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）"
-    : "将新建组 " + groupName + "（放在「" + layerDisplayName(record) + "」上方）";
+    // **这两句必须走 uiTemplate** ✓（0018）：运行时拼句整句查表必落空、模式词条那套只在 en 下跑 ⇒ 其余七语整句留中文；词表八语齐备，拼句直接查带占位的条。
+    ? uiTemplate("组名 {group} 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）", { group: groupName })
+    : uiTemplate("将新建组 {group}（放在「{src}」上方）", { group: groupName, src: layerDisplayName(record) });
 }
 
 async function runDodgeBurnSetup() {
@@ -12152,6 +12283,13 @@ async function runFillRegion() {
   if (sampleOut) sampleOut.textContent = "";
   if (!built || !built.ok) {
     const code = (built && built.error_code) || "unknown";
+    // **reference_not_found 当“清单过期”处理** ✓（0013）：缓存清单与图层表有窗口 ⇒ 先真的重取清单，再给人能照着做的话，不甩 ULID。
+    if (code === "reference_not_found") {
+      await refreshLayers().catch(() => {});
+      say(uiTemplate("那一层刚被删掉了 ⇒ 已刷新图层清单，请重选一层再填充（这次没有改动任何东西）"), true);
+      log("区域填充失败：图层已不存在（已刷新清单，未写入任何改动）", "#c33");
+      return;
+    }
     log("区域填充失败：" + code + " " + ((built && built.context && built.context.detail) || ""), "#c33");
     say(code === "endpoint_not_local"
         ? "未填充：本地内核没有这个端点（这次请求没到服务端）⇒ 勾回「服务器渲染」再试。"
@@ -12561,6 +12699,16 @@ window.addEventListener("keydown", (event) => {
   renderViewport();
 });
 
+// **Ctrl/Cmd+S 必须被吃掉** ✓（0008）：原先无人接管 ⇒ 浏览器弹「保存网页」；这里 preventDefault 并提示每一笔都已落盘。
+window.addEventListener("keydown", (event) => {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+  if (event.key !== "s" && event.key !== "S") return;
+  const target = event.target;
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
+  event.preventDefault();
+  stageNotice("不用手动保存：每一笔都已经落盘了（顶栏「已保存」是同一份记录）", false);
+});
+
 board.addEventListener("pointerdown", (event) => {
   // **手形（或中键、空格）时不许落笔** ✗ —— 用户实测："小手会像画笔一样画上去" ✓；
   // 与平移那条**共用同一个判定** ✓（详见 `wantsPanEvent` 的说明 ✓）。
@@ -12650,7 +12798,8 @@ board.addEventListener("pointerdown", (event) => {
     return;
   }
   // **标注** ✓（设计 4.6 / 13.4 ✓）：点一下就**在该处**新建一条 ✓，不落笔 ✗。
-  if (state.tool === "annotate" && kernelReady()) {
+  // **不许拿 kernelReady() 当闸** ✗（0011）：标注是纯服务端 create_annotation、与本地内核无关；加闸会让服务端渲染页整条分支被跳过。
+  if (state.tool === "annotate") {
     const point = localPoint(event);
     void createAnnotationAt(point.x, point.y);
     event.preventDefault();
@@ -15718,6 +15867,9 @@ const applyZoomInput = () => {
   const percent = Number(box.value);
   if (!(percent >= 5 && percent <= 1600)) {
     renderViewport(); // 非法输入 ⇒ 回填成事实值 ✓（不静默留着假数字 ✗）。
+    // **回车/失焦提交的非法值必须真的回填** ✓（0006）：提交时纠正越界值；被 activeElement 护栏挡掉的回填要绕开。
+    syncZoomReadout();
+    if (box) box.value = String(Math.round((state.displayScale || 1) * 100));
     return;
   }
   const available = availableArea();
@@ -15805,6 +15957,12 @@ $("sizeValue").addEventListener("input", () => {
   const raw = Number($("sizeValue").value);
   if (!Number.isFinite(raw) || raw <= 0) return;
   setBrushSize(raw);
+});
+// **提交（回车/失焦）时把框拉回事实值** ✓（0006）：input 阶段故意放过非法值，提交时必须纠正。
+$("sizeValue").addEventListener("change", () => {
+  const raw = Number($("sizeValue").value);
+  if (Number.isFinite(raw) && raw > 0) setBrushSize(raw);
+  syncSizeControls();
 });
 $("sizeDown").addEventListener("click", () => setBrushSize(Number($("size").value) - 1));
 $("sizeUp").addEventListener("click", () => setBrushSize(Number($("size").value) + 1));
@@ -15974,6 +16132,22 @@ const uiLang = (() => {
 const uiLangInfo = UI_LANGS.find((item) => item.code === uiLang) || UI_LANGS[0];
 // **当前语言的两张词表与属性句式表** ✓（中文没有表 ⇒ 三个都为 null ⇒ 一切落回原文 ✓）。
 const uiTextTable = uiLang === "zh" ? null : I18N_TEXT_BY_LANG[uiLang];
+/// **带变量的动态文案也要随语言** ✓（0009）：词表精确匹配查不到运行时拼的句子 ⇒ 带占位的源句也登记词条、运行时填变量。
+function uiTemplate(zhSource, vars) {
+  // 词表是靠后的 const：早期调用会撞 TDZ ⇒ 推迟到脚本跑完并 try/catch 降级。
+  let template = zhSource;
+  try { if (uiTextTable && uiTextTable[zhSource]) template = uiTextTable[zhSource]; } catch (_) { /* TDZ ⇒ 中文 */ }
+  return template.replace(/\{([a-z_]+)\}/g, (match, key) => (
+    vars && Object.prototype.hasOwnProperty.call(vars, key) ? String(vars[key]) : match
+  ));
+}
+
+
+/// **缺省图层名随界面语言生成** ✓（0007 的 9 语言版）：写死中文 ⇒ 非中文界面新建图层仍叫「图层 N」。
+function defaultLayerName(n) {
+  const template = (uiTextTable && uiTextTable["图层 {n}"]) || "图层 {n}";
+  return template.replace("{n}", String(n));
+}
 const uiAttrTable = uiLang === "zh" ? null : I18N_ATTR_BY_LANG[uiLang];
 const uiAttrPatterns = uiLang === "zh" ? null : I18N_ATTR_PATTERNS_BY_LANG[uiLang];
 const i18nOriginal = new WeakMap();
@@ -16056,6 +16230,8 @@ function i18nText(node) {
     // **参考图上传失败的回执** ✓（本轮补齐 ✓）：整句拼了服务端给的错误文 ⇒ 字典按整句匹配不到 ⇒
     //   必须模式词条（否则英文模式下留着中文 ✓；与 m19/m40 同源：带数据的失败回执都走模式 ✓）。
     const m41 = /^参考图上传失败：(.+)$/.exec(zh);
+    // **设置图层不透明度失败的回执** ✓（0019 的 #c33 行）：拼了错误码 ⇒ 走模式词条（与 m19 同源）。
+    const m44 = /^设置图层不透明度失败：(\S+)$/.exec(zh);
     // **锁定层的落笔/移动被拦下那两句** ✓（本轮补齐 ✓）：`refuseLockedLayer()` 先把短句
     //   交给 `stageNotice`（m30 ✓ 已有），随后 `log(…, "#c33")` 按 `log()` 的既定行为**又把
     //   长句写进同一个浮层** ⇒ 用户最终看见的是**这一句** ✗ ⇒ 它没有词条就等于 m30 白有 ✗
@@ -16207,6 +16383,7 @@ function i18nText(node) {
     // 两处说的话在两种语言下都对得上 ✓）。
     else if (m40) en = "Read failed (" + ({ "服务端": "the server", "本地内核": "the local kernel" }[m40[1]] || "the server") + "): " + m40[2];
     else if (m41) en = "Reference image upload failed: " + m41[1];
+    else if (m44) en = "Failed to set the layer opacity: " + m44[1];
     else if (m42) {
       en = ({ "画布上的一笔": "The stroke on the canvas", "移动对象": "The move", "这一步": "This step" }[m42[1]])
         + " was not sent: \"" + m42[2] + "\" is a locked layer"
@@ -16214,7 +16391,7 @@ function i18nText(node) {
     }
     else if (m43) en = "No WASM kernel ⇒ the self-check cannot run";
   }
-  // 非中文语言都走查表 ✓（模式翻译 m1…m43 是英文专属 ⇒ 其他语言在上面不触发 ⇒ 动态文案落回中文原文 ✓ 与查表缺键同一条安全降级 ✓）。
+  // 非中文语言都走查表 ✓（模式翻译 m1…m44 是英文专属 ⇒ 其他语言在上面不触发 ⇒ 动态文案落回中文原文 ✓ 与查表缺键同一条安全降级 ✓）。
   node.nodeValue = (uiLang !== "zh" && en) ? original.replace(zh, en) : original;
 }
 function attrLocalized(zh) {
