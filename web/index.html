@@ -15746,6 +15746,12 @@ const applyZoomInput = () => {
   const percent = Number(box.value);
   if (!(percent >= 5 && percent <= 1600)) {
     renderViewport(); // 非法输入 ⇒ 回填成事实值 ✓（不静默留着假数字 ✗）。
+    // **★ 回车/失焦提交的非法值必须真的回填 ★**（2026-11-17 实测）：`syncZoomReadout()`
+    //   的回填带 `document.activeElement !== zoomInput` 护栏 ✗（那是给"正在打字"用的 ✓），
+    //   而回车/失焦正是"打完字"那一刻 ⇒ 唯一那次回填被挡掉 ⇒ 框里留着 9999 而画面没动 ✗
+    //   （实测 9999 / 0 / -5 都不回填，只有 5–1600 生效）⇒ 读数在说谎 ✓。
+    syncZoomReadout();
+    if (box) box.value = String(Math.round((state.displayScale || 1) * 100));
     return;
   }
   const available = availableArea();
@@ -15833,6 +15839,14 @@ $("sizeValue").addEventListener("input", () => {
   const raw = Number($("sizeValue").value);
   if (!Number.isFinite(raw) || raw <= 0) return;
   setBrushSize(raw);
+});
+// **★ 提交（回车/失焦）时把框拉回事实值 ★**（2026-11-17 实测）：`input` 那条故意放过非法值 ✓
+// （为了不打断"删空重打" ✓），但**没有东西**在提交那刻纠正 ✗ ⇒ 填 `-3` 后框里留着 `-3`、
+// 实际笔号还是上一次的 ✓（9 999 会被夹到 512 并回填，`-3` 不会 ⇒ 一条诚实一条说谎 ✓）。
+$("sizeValue").addEventListener("change", () => {
+  const raw = Number($("sizeValue").value);
+  if (Number.isFinite(raw) && raw > 0) setBrushSize(raw);
+  syncSizeControls();
 });
 $("sizeDown").addEventListener("click", () => setBrushSize(Number($("size").value) - 1));
 $("sizeUp").addEventListener("click", () => setBrushSize(Number($("size").value) + 1));

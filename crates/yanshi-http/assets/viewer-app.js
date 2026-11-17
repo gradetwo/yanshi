@@ -13534,6 +13534,15 @@ const applyZoomInput = () => {
   const percent = Number(box.value);
   if (!(percent >= 5 && percent <= 1600)) {
     renderViewport(); // 非法输入 ⇒ 回填成事实值 ✓（不静默留着假数字 ✗）。
+    // **★ 回车提交的非法值必须真的回填 ★**（2026-11-17 实测）：
+    //   `syncZoomReadout()` 里那条回填带 `document.activeElement !== zoomInput` 的护栏 ✗
+    //   —— 那个护栏是给"用户正在打字"用的 ✓，可**回车/失焦就是"打完字"那一刻** ✓
+    //   ⇒ 护栏把唯一的回填也挡掉 ⇒ 输入框留着 `9999` 而画面一动没动 ✗
+    //   （实测：填 9999 / 0 / -5 回车后框里仍是那个数 ✓，只有 5–1600 才生效 ✓）
+    //   ⇒ 这就是"读数在说谎"✓：它显示的比例不是当前比例 ✓。
+    //   修法：**先按正常口径回填一次** ✓，再把框**强制**写回事实值（不受聚焦护栏影响 ✓）。
+    syncZoomReadout();
+    if (box) box.value = String(Math.round((state.displayScale || 1) * 100));
     return;
   }
   const available = availableArea();
@@ -13621,6 +13630,19 @@ $("sizeValue").addEventListener("input", () => {
   const raw = Number($("sizeValue").value);
   if (!Number.isFinite(raw) || raw <= 0) return;
   setBrushSize(raw);
+});
+// **★ 提交（回车/失焦）时把框拉回事实值 ★**（2026-11-17 实测）：
+//   `input` 那条**故意**对非法值提前 return ✓（为了不打断"删空重打" ✓），
+//   但**没有任何东西**在提交那一刻把框纠正回来 ✗ ⇒ 填 `-3` 后失焦，
+//   框里留着 `-3`、而实际笔号还是上一次的值 ✓（实测：9 999 会被夹到 512 并回填 ✓，
+//   而 `-3` **不会**回填 ✓ —— 两条路一条诚实一条说谎 ✓）。
+//   ⇒ 用户照读数以为"我现在是 -3 号笔"✗，画出来却完全不是 ✓。
+//   修法：`change`（回车/失焦都触发 ✓）里**无论如何**都 `syncSizeControls()` ✓，
+//   合法值先经 `setBrushSize` 走同一条夹紧路径 ✓。
+$("sizeValue").addEventListener("change", () => {
+  const raw = Number($("sizeValue").value);
+  if (Number.isFinite(raw) && raw > 0) setBrushSize(raw);
+  syncSizeControls();
 });
 $("sizeDown").addEventListener("click", () => setBrushSize(Number($("size").value) - 1));
 $("sizeUp").addEventListener("click", () => setBrushSize(Number($("size").value) + 1));
