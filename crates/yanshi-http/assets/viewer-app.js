@@ -3034,10 +3034,7 @@ async function submitAtom(atom) {
 
 async function checkBitExact() {
   if (!kernelReady()) {
-    // **"做不了"要写在它该在的位置上** ✓（0017 ✓ 2026-11-17 实测 ✓）：
-    // 这句此前**只进日志** ✗ ⇒ 状态栏那个 `bit-exact —` 一直挂着"没测过"的样子 ✓
-    // 人会以为"这功能没实现" ✗ 而不是"这条路做不了、原因是什么" ✓。
-    // ⇒ 把原因直接写进 `#bitExact` ✓（与下面 heavy 那条同一个位置 ✓ 同一条口径 ✓）。
+    // **“做不了”要写进状态栏 #bitExact** ✓（0017）：只写日志人看不见 ⇒ 把原因直接写在读数位置（8 语言词条）。
     const box0 = $("bitExact");
     if (box0) box0.textContent = uiTemplate("不适用（没有 WASM 内核：逐字节比对需要本地这一侧的像素）");
     log("没有 WASM 内核，无法自检", "#c33");
@@ -4508,14 +4505,7 @@ async function loadDocumentData() {
   $("identity").textContent = state.docId + " · " + state.token.slice(0, 8) + "…";
   window.dispatchEvent(new Event("yanshi:document-ready"));
   void refreshUndoStatusFromServer();
-  // **首屏那句也要跟着语言** ✓（0010）：`viewer.rs` 的占位句是写死的中文
-  // `撤销 0 / 重做 0` ✓ ⇒ 服务端回执还没到的那几百毫秒里，英文界面**露一句中文** ✗
-  // （实测：`?lang=en` 首屏读到 `撤销 0 / 重做 0` ✓）。这里先按"0 笔"渲染一次 ✓，
-  // 回执到了再被 `refreshUndoStatusFromServer` 覆盖成真实计数 ✓（同一条 `updateUndoStatus` ✓）。
-  // **必须推迟到本脚本跑完** ✓：`uiTextTable` 是脚本靠后声明的一张表 ✓
-  // ⇒ 在这里同步调会撞 **TDZ** ✗（实测 `Cannot access 'uiTextTable' before initialization` ✓
-  //   页面直接抛错 ✓ 而且那句中文永远留在界面上 ✗）。延迟一个宏任务再写 ✓，
-  // 那时全脚本的 `const` 都已初始化 ✓。
+  // **首屏那句也要跟着语言** ✓（0010）：viewer.rs 占位句写死中文 ⇒ 首屏先按当前语言渲染、回执到再覆盖；渲染推迟到脚本跑完（uiTextTable 是靠后的 const，同步调撞 TDZ）。
   if (typeof state.remainingUndo !== "number") state.remainingUndo = 0;
   if (typeof state.remainingRedo !== "number") state.remainingRedo = 0;
   setTimeout(() => { try { updateUndoStatus(); } catch (_) { /* 只影响一行读数 ✓ */ } }, 0);
@@ -4568,16 +4558,7 @@ async function loadDocumentData() {
     bootMark("before-refreshPreview");
     await refreshPreview();
     bootMark("refreshPreview-ok");
-    // **★ 效果目录（「调整／滤镜」的效果名下拉）必须在这条启动路上装 ★**
-    //   实测（2026-11-17，真实 Chromium + Playwright）：从 `/` 首次进入时走的是**这条**
-    //   `loadDocumentData()` ⇒ `__appMarks` 里**一次都没有** `boot:before-loadEffectCatalog` ✗
-    //   ⇒ `/api/effects` **零请求** ✗ ⇒ `effectCatalog` 恒为 `{adjustment:[], filter:[]}`
-    //   ⇒ `#effectName` **0 项** ⇒ `applyEffect()` 首行 `if (!name) return` 直接返回 ✗
-    //   ⇒ **整张「调整／滤镜」卡对人不可用**：下拉空、点「应用」无反应、且不报任何错 ✓。
-    //   注意缺陷只在**默认入口**上：带 token 重载走的另一条分支（`!state.token` 之外的
-    //   `boot:before-loadEffectCatalog` 那一段）本来就挂了这两步 ✓
-    //   ⇒ 谁从带 token 的链接回来都是好的 ✓ —— 这正是它长期没被发现的原因 ✓。
-    //   两步各自 `try/catch`：可选数据取不到不许中断 boot ✓（与 `refreshObjects` 同一原则 ✓）。
+    // **效果目录（「调整／滤镜」下拉）必须在这条启动路上装** ✓（0004）：首次进入走 loadDocumentData 时漏挂 loadEffectCatalog ⇒ 整卡不可用。
     bootMark("before-loadEffectCatalog");
     try { await loadEffectCatalog(); bootMark("loadEffectCatalog-ok"); }
     catch (error) { bootMark("loadEffectCatalog!" + String((error && error.message) || error).slice(0, 40)); }
@@ -5343,11 +5324,7 @@ async function refreshHistory() {
     const seq = document.createElement("span");
     seq.className = "seq";
     seq.textContent = "#" + atom.seq;
-    // **这一条是什么时候发生的** ✓（0016 ✓ 2026-11-17 实测 ✓）：
-    // 行里原有 序号 / 类型 / 图层 / 尺寸 / 操作者 ✓ **唯独没有时间** ✗
-    // ⇒ 看到「#137 draw_stroke」根本不知道是刚才那笔还是十分钟前那笔 ✓
-    //（日志区有 `ts=` ✓ 但那是滚动文本、不能按行看 ✓）。
-    // 紧凑到 `HH:MM:SS` ✓、完整时间放 `title` ✓；取不到就不加 ✓（宁缺勿假 ✓）。
+    // **历史行首加时间列** ✓（0016）：只有序号看不出何时发生 ⇒ HH:MM:SS（title 给完整时间），取不到时间戳就不加（宁缺勿假）。
     const rawStamp = atom.timestamp || atom.ts || null;
     if (rawStamp) {
       const when = new Date(rawStamp);
@@ -5663,9 +5640,7 @@ function renderCheckpointList() {
     row.className = "annotation-row";
     const head = document.createElement("div");
     head.className = "annotation-head";
-    // **名字是服务端落下的持久数据** ✓（`存档 14:44:17` ✓）—— 不能为了界面语言去改数据本人 ✓，
-    // 否则同一个存档点在不同语言的会话里名字不一致 ✓（找不回、也对不上日志 ✓）。
-    // ⇒ 只翻**显示前缀** ✓：认出 `存档 <时间>` 这个形状就换成本地话 ✓，认不出就原样念 ✓。
+    // **存档名是服务端落盘的持久数据** ✓（0012）：只翻显示前缀（认出「存档 HH:MM:SS」形状才换），不许改数据本人。
     const rawName = (item.name || item.checkpoint_id || "").slice(0, 28);
     const stamp = /^存档\s+(\d{1,2}:\d{2}:\d{2})$/.exec(rawName);
     head.textContent = (stamp ? uiTemplate("存档 {time}", { time: stamp[1] }) : rawName) +
@@ -8294,17 +8269,7 @@ async function setupAssetPanels() {
         const previous = button.textContent;
         button.textContent = "取消导出";
         try {
-          // **★ 内核不存在时不许裸取 `state.wasm.WasmKernel` ★**
-          //   实测（2026-11-17，真实 Chromium）：默认入口是**服务端渲染** ✓
-          //   ⇒ `state.wasm` 在预热完成前是 `null` ✓ ⇒ 原来这里直接写
-          //   `WasmKernel: state.wasm.WasmKernel` ✗ ⇒ 抛
-          //   「Cannot read properties of null (reading 'WasmKernel')」✗
-          //   ⇒ 面板只说「导出失败：Cannot read properties of null …」✓
-          //   —— 一句**程序员语言**，用户既不知道"为什么导不了"、也不知道"该怎么办"✓
-          //   （而这条导出其实**完全可用**：等内核预热完再点一次就行 ✓）。
-          //   同文件里 `loadKernel()` 开头就有 `if (!state.wasm) return false;` ✓
-          //   ⇒ 这是同一道闸**只拦了一条路** ✗ 的又一次重犯 ✓。
-          //   这里改成：先判在不在，不在就说清"为什么"和"怎么办"，**不把 TypeError 当回执** ✓。
+          // **内核不存在时不许裸取 state.wasm.WasmKernel** ✓（0005）：服务端渲染下 wasm 为 null ⇒ 过程视频导出只回 TypeError。
           if (!state.wasm || !state.wasm.WasmKernel) {
             say(
               "过程视频要在本地内核里逐帧重放 ⇒ 本地内核还没就绪（这一页当前用服务端渲染）。"
@@ -8468,11 +8433,7 @@ async function setupLayerPanel() {
   list.addEventListener("click", async (event) => {
     const row = event.target.closest(".layer-row");
     if (!row) return;
-    // **双击的第二下不许再走"选中"** ✓（0015 实测 ✓ 第一版就栽在这 ✓）：
-    // `dblclick` 之前浏览器会先发**两次** `click` ✓ ⇒ 每次 click 都 `select.onchange()`
-    // ⇒ `renderLayerPanel` **重画整表** ✓ ⇒ 双击监听刚插进去的输入框**当场被冲掉** ✗
-    // （探针表现为"等不到 `.layer-name-input`" ✓ 用户表现为"双击没反应" ✓ 一模一样 ✗）。
-    // ⇒ `detail > 1` 就是"这是第二下" ✓ 直接放行给 `dblclick` ✓。
+    // **双击的第二下不许再走“选中”** ✓（0015）：click 里重画整表会冲掉刚插入的改名输入框 ⇒ event.detail > 1 时放行给 dblclick。
     if (event.detail > 1) return;
     const layerId = row.dataset.layerId;
     const action = event.target.dataset ? event.target.dataset.action : null;
@@ -8499,12 +8460,7 @@ async function setupLayerPanel() {
     const select = $("layer");
     if (select) { select.value = layerId; select.onchange(); }
   });
-  // **双击图层名 = 就地改名** ✓（0015 ✓ 2026-11-17 实测 ✓：这条**此前根本不存在** ✗）
-  // —— 服务端 `update_layer` 早就支持 `{name}` ✓、MCP 侧也够得到 ✓，
-  // 而这个面板只接了"显示/锁定"两路 ✗ ⇒ 人在界面上**没法给图层起名字** ✗
-  // （偏偏图层名是唯一能区分"这一层是什么"的东西 ✓ 图层一多就只能靠 ULID 尾部四位 ✓）。
-  // 做法：把名字 `<span>` 换成输入框 ✓（**不弹 prompt** ✗ —— 弹窗会遮住画布，
-  // 改个名不该让人离开画面 ✓）；回车提交 ✓、Esc 取消 ✓、失焦等同提交 ✓（防"改了没按回车"丢改动 ✓）。
+  // **双击图层名 = 就地改名** ✓（0015）：此前无此入口；双击换成输入框，回车/失焦提交（update_layer），Esc 取消。
   list.addEventListener("dblclick", async (event) => {
     const nameEl = event.target.closest(".layer-name");
     if (!nameEl) return;
@@ -8537,8 +8493,7 @@ async function setupLayerPanel() {
       }
     };
     input.addEventListener("keydown", (event2) => {
-      // **单键快捷键必须在这里停住** ✓：'b' / 'm' / 'n' 是工具切换 ✓
-      // 不 `stopPropagation` 的话，打个名字就把工具换掉了 ✓（用户完全猜不到为什么 ✓）。
+      // 改名输入框里打字须 stopPropagation：'b'/'m'/'n' 是单键工具快捷键，打名字不能换工具。
       event2.stopPropagation();
       if (event2.key === "Enter") { event2.preventDefault(); void finish(true); }
       else if (event2.key === "Escape") { event2.preventDefault(); void finish(false); }
@@ -8561,10 +8516,7 @@ async function setupLayerPanel() {
   const add = $("layerAdd");
   if (add) add.onclick = async () => {
     const layers = await listLayers();
-    // **默认图层名跟着界面语言** ✓（2026-11-17）：原来写死 `"图层 " + n` ✗ ⇒ 英文界面上
-    //   新建的层仍叫「图层 3」，而图层名是**用户数据**（行与下拉都标了 `data-i18n="off"`）
-    //   ⇒ i18n 那一层**永远不会**替它翻译 ✗ ⇒ 英文模式里中文残留在"名字"上（实测抓到 ✓）。
-    //   它是"我们给的缺省名"而不是用户输入 ⇒ 生成那一刻就该用当前语言 ✓。
+    // **默认图层名跟着界面语言** ✓（0007）：原来写死 “图层 ” + n ⇒ 英文界面下仍是中文名。
     const made = await callTool("create_layer", { name: defaultLayerName(layers.length + 1) });
     // **新建之后必须选中它** ✗（真实用户报告 ✓）—— 严格照**下面 `duplicate` 已有的模式** ✓。
     //
@@ -10116,11 +10068,7 @@ async function runFillRegion() {
   if (sampleOut) sampleOut.textContent = "";
   if (!built || !built.ok) {
     const code = (built && built.error_code) || "unknown";
-    // **`reference_not_found` 要当"清单过期"处理** ✓（0013 ✓ 2026-11-17 实测 ✓）：
-    // 缓存 `fillRegionRecords` 与实际图层表之间存在**窗口** ✓（刚删完一层、列表还没回来 ✓
-    // 这时点填充 ⇒ 本地预检放行 ✓ 服务端 404 ✓）⇒ 旧码会把**服务端原文**整段念出来 ✓
-    // （`图层 layer_01M7… 不存在（现有图层：layer_01M7…）` ✓ 一串 ULID ✗ 人看不出怎么办 ✗）。
-    // ⇒ 先把清单**真的取一次** ✓ 再给人一句能照着做的 ✓ 并说清"这次什么都没改" ✓。
+    // **reference_not_found 当“清单过期”处理** ✓（0013）：缓存清单与图层表有窗口 ⇒ 先真的重取清单，再给人能照着做的话，不甩 ULID。
     if (code === "reference_not_found") {
       await refreshLayers().catch(() => {});
       say(uiTemplate("那一层刚被删掉了 ⇒ 已刷新图层清单，请重选一层再填充（这次没有改动任何东西）"), true);
@@ -10536,13 +10484,7 @@ window.addEventListener("keydown", (event) => {
   renderViewport();
 });
 
-// **★ Ctrl/Cmd+S 必须被吃掉 ★**（2026-11-17 实测：原来**没有任何**处理器接管它 ✓
-//   ⇒ 画到一半顺手按 Ctrl+S ⇒ 浏览器弹出"保存网页"对话框 ✗ —— 这不是"少个功能" ✗，
-//   而是**把用户从画布里踢出去** ✓（而这个应用每笔都已落盘 ✓）。
-//   **为什么只 preventDefault + 一句提示** ✓：这里不存在"手动保存"这回事 ✓
-//   （每笔都经原子日志落盘 ✓，顶栏「已保存」读的就是它 ✓）⇒ 若真去做一次"保存" ✓
-//   反而造出**第二个真相** ✗（同一份文档两条保存路径 ✓）。
-//   **输入框/文本域里放行** ✓：浏览器自己"保存表单值"在那里有意义 ✓，也不打断打字 ✓。
+// **Ctrl/Cmd+S 必须被吃掉** ✓（0008）：原先无人接管 ⇒ 浏览器弹「保存网页」；这里 preventDefault 并提示每一笔都已落盘。
 window.addEventListener("keydown", (event) => {
   if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
   if (event.key !== "s" && event.key !== "S") return;
@@ -10640,13 +10582,7 @@ board.addEventListener("pointerdown", (event) => {
     event.preventDefault();
     return;
   }
-  // **标注** ✓（设计 4.6 / 13.4 ✓）：点一下就**在该处**新建一条 ✓，不落笔 ✗。
-  // **不许拿 `kernelReady()` 当闸** ✗（0011 ✓ 2026-11-17 实测）：标注是一次**纯服务端**
-  // `create_annotation` ✓（见 `createAnnotationAt` ✓ 它连 `layer_id` 都不吃 ✓），
-  // 与本地内核**毫无关系** ✓ ⇒ 之前那句 `&& kernelReady()` 只有一个后果：
-  // **服务端渲染的页面（移动端、内核预热中、本地内核装不下这份文档时）点标注完全没反应** ✓
-  // 且**一个字都不报** ✗（用户看到的就是"标注工具坏了" ✓）。
-  // ⇒ 去掉这道闸 ✓，与下面「锚点」那条同一条口径 ✓（锚点也只吃 `localPoint` ✓ 从不判内核 ✓）。
+  // **不许拿 kernelReady() 当闸** ✗（0011）：标注是纯服务端 create_annotation、与本地内核无关；加闸会让服务端渲染页整条分支被跳过。
   if (state.tool === "annotate") {
     const point = localPoint(event);
     void createAnnotationAt(point.x, point.y);
@@ -13715,13 +13651,7 @@ const applyZoomInput = () => {
   const percent = Number(box.value);
   if (!(percent >= 5 && percent <= 1600)) {
     renderViewport(); // 非法输入 ⇒ 回填成事实值 ✓（不静默留着假数字 ✗）。
-    // **★ 回车提交的非法值必须真的回填 ★**（2026-11-17 实测）：
-    //   `syncZoomReadout()` 里那条回填带 `document.activeElement !== zoomInput` 的护栏 ✗
-    //   —— 那个护栏是给"用户正在打字"用的 ✓，可**回车/失焦就是"打完字"那一刻** ✓
-    //   ⇒ 护栏把唯一的回填也挡掉 ⇒ 输入框留着 `9999` 而画面一动没动 ✗
-    //   （实测：填 9999 / 0 / -5 回车后框里仍是那个数 ✓，只有 5–1600 才生效 ✓）
-    //   ⇒ 这就是"读数在说谎"✓：它显示的比例不是当前比例 ✓。
-    //   修法：**先按正常口径回填一次** ✓，再把框**强制**写回事实值（不受聚焦护栏影响 ✓）。
+    // **回车/失焦提交的非法值必须真的回填** ✓（0006）：提交时纠正越界值；被 activeElement 护栏挡掉的回填要绕开。
     syncZoomReadout();
     if (box) box.value = String(Math.round((state.displayScale || 1) * 100));
     return;
@@ -13812,14 +13742,7 @@ $("sizeValue").addEventListener("input", () => {
   if (!Number.isFinite(raw) || raw <= 0) return;
   setBrushSize(raw);
 });
-// **★ 提交（回车/失焦）时把框拉回事实值 ★**（2026-11-17 实测）：
-//   `input` 那条**故意**对非法值提前 return ✓（为了不打断"删空重打" ✓），
-//   但**没有任何东西**在提交那一刻把框纠正回来 ✗ ⇒ 填 `-3` 后失焦，
-//   框里留着 `-3`、而实际笔号还是上一次的值 ✓（实测：9 999 会被夹到 512 并回填 ✓，
-//   而 `-3` **不会**回填 ✓ —— 两条路一条诚实一条说谎 ✓）。
-//   ⇒ 用户照读数以为"我现在是 -3 号笔"✗，画出来却完全不是 ✓。
-//   修法：`change`（回车/失焦都触发 ✓）里**无论如何**都 `syncSizeControls()` ✓，
-//   合法值先经 `setBrushSize` 走同一条夹紧路径 ✓。
+// **提交（回车/失焦）时把框拉回事实值** ✓（0006）：input 阶段故意放过非法值，提交时必须纠正。
 $("sizeValue").addEventListener("change", () => {
   const raw = Number($("sizeValue").value);
   if (Number.isFinite(raw) && raw > 0) setBrushSize(raw);
@@ -13993,14 +13916,9 @@ const uiLang = (() => {
 const uiLangInfo = UI_LANGS.find((item) => item.code === uiLang) || UI_LANGS[0];
 // **当前语言的两张词表与属性句式表** ✓（中文没有表 ⇒ 三个都为 null ⇒ 一切落回原文 ✓）。
 const uiTextTable = uiLang === "zh" ? null : I18N_TEXT_BY_LANG[uiLang];
-/// **带变量的动态文案也要随语言** ✓（0009）——词表是**精确匹配**原文 ✓
-/// ⇒ "可撤销 3 笔 / 可重做 1 笔" 这种**运行时拼出来的句子**永远查不到词条 ✗
-/// （实测：英文/德文界面里 `#undoDepth`、`#dodgeBurnCurrent` 仍是整句中文 ✓）。
-/// 口径：给**带占位的源句**也登记词条（`"可撤销 {undo} 笔 / 可重做 {redo} 笔"` ✓），
-/// 运行到这里把变量填进去 ✓；没有词条 ⇒ 原样返回中文 ✓（和 `i18nText` 同一条降级 ✓）。
+/// **带变量的动态文案也要随语言** ✓（0009）：词表精确匹配查不到运行时拼的句子 ⇒ 带占位的源句也登记词条、运行时填变量。
 function uiTemplate(zhSource, vars) {
-  // **词表可能还没初始化**（脚本靠后的 `const` ✓ ⇒ 早期调用撞 TDZ ✓）：
-  // 取不到就先用中文 ✓，绝不把整段调用连累成异常 ✗（`defaultLayerName` 同一条口径 ✓）。
+  // 词表是靠后的 const：早期调用会撞 TDZ ⇒ 推迟到脚本跑完并 try/catch 降级。
   let template = zhSource;
   try { if (uiTextTable && uiTextTable[zhSource]) template = uiTextTable[zhSource]; } catch (_) { /* TDZ ⇒ 中文 */ }
   return template.replace(/\{([a-z_]+)\}/g, (match, key) => (
@@ -14009,11 +13927,7 @@ function uiTemplate(zhSource, vars) {
 }
 
 
-/// **缺省图层名要随界面语言生成** ✓（0007 的 9 语言版）——
-/// 图层名本身是**用户数据** ✓（`data-i18n="off"` ✓ 建好就不再翻译 ✓），
-/// 但**自动取的名字**不是数据 ✓ 它由界面生成 ✓ ⇒ 界面是日语就该叫「レイヤー 3」✗ 不该叫「图层 3」✓。
-/// 词表按**精确中文原文**查 ✓ ⇒ 这里用一条**带占位**的键 `"图层 {n}"` ✓（不参与 DOM 匹配 ✓
-/// 只被本函数取用 ✓），九种语言各有一条 ✓；缺词条时回退中文 ✓（`i18nText` 同一条降级口径 ✓）。
+/// **缺省图层名随界面语言生成** ✓（0007 的 9 语言版）：写死中文 ⇒ 非中文界面新建图层仍叫「图层 N」。
 function defaultLayerName(n) {
   const template = (uiTextTable && uiTextTable["图层 {n}"]) || "图层 {n}";
   return template.replace("{n}", String(n));
