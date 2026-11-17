@@ -819,3 +819,133 @@ fn dodge_burn_setup_masks_label_roles() {
         "gray 组没有 burn 蒙版：{gray}"
     );
 }
+
+/// **命名配方：组层落盘只存词干名 + `metadata.name_recipe`**（2026-11-17）
+///
+/// **⇒ 缺陷**：旧实现把组名拼成「{base} · 减淡加深」成品名落进工程 ⇒
+///   界面语言换了组名还是中文（写死在数据里 ✗）。
+/// **⇒ 判据**：① 组层 `name` == 词干（源图层名）✓；② `metadata` ==
+///   `{"name_recipe": {"kind": "dodge_burn", "base": 词干}}` ✓；
+///   ③ `list_layers` 把 metadata 透传出来 ✓（界面拼显示名的数据通路 ✓）；
+///   ④ 落盘 `atoms.jsonl` 里**没有**成品名字符串、有配方 ✓。
+/// **⇒ 变异**：组名改回拼成品名 ⇒ ①④ 红 ✓；不写 metadata ⇒ ②③ 红 ✓。
+#[test]
+fn dodge_burn_group_stores_name_recipe_not_composed_name() {
+    let root = temp_dir("db_recipe");
+    let _cleanup = TempCleanup(root.clone());
+    let doc = "doc_db_recipe";
+    let mut workspace = workspace(&root, doc, 32, 32);
+    let src = setup_source(&mut workspace, doc, 32, 32);
+    let built = call(
+        &mut workspace,
+        doc,
+        "dodge_burn_setup",
+        json!({"layer_id": src, "mode": "gray"}),
+    );
+    assert_eq!(built["ok"], json!(true), "{built}");
+    let group_id = built["group_id"].as_str().unwrap().to_owned();
+    let state = workspace.document(doc).unwrap().state().clone();
+    let group = state.layers.get(&group_id).expect("组层必须在状态里");
+    assert_eq!(
+        group.name, "源图",
+        "组层落盘名只能是词干（源图层名），不是拼好的成品名"
+    );
+    assert_eq!(
+        group.metadata,
+        json!({"name_recipe": {"kind": "dodge_burn", "base": "源图"}}),
+        "组层 metadata 必须带命名配方"
+    );
+    // ③ list_layers 透传（界面拼显示名靠这一格）。
+    let listed = call(&mut workspace, doc, "list_layers", json!({}));
+    let row = listed["layers"]
+        .as_array()
+        .expect("layers 数组")
+        .iter()
+        .find(|layer| layer["layer_id"] == json!(group_id))
+        .expect("组层必须在 list_layers 里");
+    assert_eq!(
+        row["metadata"],
+        json!({"name_recipe": {"kind": "dodge_burn", "base": "源图"}}),
+        "list_layers 必须透传组层 metadata"
+    );
+    assert_eq!(
+        row["name"],
+        json!("源图"),
+        "list_layers 的 name 仍是词干（显示名由界面拼）"
+    );
+    // ④ 落盘实证：原子日志里有配方、无成品名（append_atom 每条 flush ✓ 可直接读）。
+    let journal = std::fs::read_to_string(root.join("docs").join(doc).join("atoms.jsonl"))
+        .expect("落盘工作区必须有 atoms.jsonl");
+    assert!(
+        journal.contains("\"name_recipe\""),
+        "落盘原子里必须有命名配方"
+    );
+    assert!(
+        !journal.contains("「源图 · 减淡加深」"),
+        "落盘数据里不许再有拼好的中文成品组名"
+    );
+}
+
+/// **旧格式工程复用：只有成品名、没有配方的组也要认出来**（2026-11-17）
+///
+/// **⇒ 背景**：命名配方上线前建的组，落盘名是「{base} · 减淡加深」成品名、
+///   没有 metadata 配方。若认组只认配方 ⇒ 旧工程再调一次就叠第二套 ✗。
+/// **⇒ 判据**：手工按旧格式建组（成品名 + 一个「减淡 · Dodge」孩子）⇒
+///   再调 `dodge_burn_setup` ⇒ `already_exists=true`、回旧组 id、零原子
+///   落账 ✓；且旧组的名字与 metadata **不被改写**（不迁移 ✓）。
+/// **⇒ 变异**：认组只查配方 ⇒ 本条红（会新建第二套）✓。
+#[test]
+fn dodge_burn_setup_reuses_legacy_composed_name_group() {
+    let root = temp_dir("db_legacy");
+    let _cleanup = TempCleanup(root.clone());
+    let doc = "doc_db_legacy";
+    let mut workspace = workspace(&root, doc, 32, 32);
+    let src = setup_source(&mut workspace, doc, 32, 32);
+    // 按旧格式手工建组：成品名、无配方；孩子按复用路径认角色的口径放一个。
+    let group = call(
+        &mut workspace,
+        doc,
+        "create_layer",
+        json!({"layer_id": "legacy_group", "name": "「源图 · 减淡加深」", "type": "layer_group"}),
+    );
+    assert_eq!(group["ok"], json!(true), "{group}");
+    let kid = call(
+        &mut workspace,
+        doc,
+        "create_layer",
+        json!({"layer_id": "legacy_dodge", "name": "减淡 · Dodge", "parent_id": "legacy_group"}),
+    );
+    assert_eq!(kid["ok"], json!(true), "{kid}");
+    let head_before = workspace.document(doc).unwrap().state().head_seq;
+    let reused = call(
+        &mut workspace,
+        doc,
+        "dodge_burn_setup",
+        json!({"layer_id": src, "mode": "curves"}),
+    );
+    assert_eq!(reused["ok"], json!(true), "{reused}");
+    assert_eq!(
+        reused["already_exists"],
+        json!(true),
+        "旧格式组必须被认出并复用：{reused}"
+    );
+    assert_eq!(
+        reused["group_id"],
+        json!("legacy_group"),
+        "复用的必须是旧组本身"
+    );
+    assert_eq!(
+        reused["mode"],
+        json!("curves"),
+        "旧组里有「减淡 · Dodge」孩子 ⇒ 复用回执按孩子认出 curves"
+    );
+    assert_eq!(
+        workspace.document(doc).unwrap().state().head_seq,
+        head_before,
+        "复用旧组零原子落账（不叠第二套、也不迁移改写）"
+    );
+    let state = workspace.document(doc).unwrap().state().clone();
+    let legacy = state.layers.get("legacy_group").expect("旧组必须还在");
+    assert_eq!(legacy.name, "「源图 · 减淡加深」", "旧组名不被改写");
+    assert_eq!(legacy.metadata, json!(null), "旧组不被补写配方（不迁移）");
+}

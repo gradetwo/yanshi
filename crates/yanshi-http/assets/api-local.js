@@ -265,7 +265,7 @@ export function p1LayerOrder(rows) {
       //   ⇒ **∴ 与初始状态对齐**：名字／z／默认值照 `fold.rs` 的 `Layer` ✓。
       if (!layers.has("layer_default")) {
         layers.set("layer_default", {
-          layer_id: "layer_default", name: "图层 1",
+          layer_id: "layer_default", name: "图层 1", metadata: null,
           type: "raster", kind: "raster", parent_id: null, z_index: -1,
           visible: true, opacity: 1, blend_mode: "normal", locked: false,
           alpha_lock: false, clipping_mask: false, mask_id: null, objects: 0,
@@ -293,6 +293,9 @@ export function p1LayerOrder(rows) {
       const type = typeof pl.type === "string" && pl.type ? pl.type : "raster";
       layers.set(id, {
         layer_id: id, name: pl.name ?? a.name ?? id,
+        // **配方元数据同源** ✓：服务端 `read_list_layers` 透传 `layer.metadata` ⇒
+        //   本地推导也要带（减淡加深组靠它拼显示名 ✗ 缺了离线模式只剩词干名 ✓）。
+        metadata: pl.metadata ?? null,
         type, kind: type,
         parent_id: typeof pl.parent_id === "string" ? pl.parent_id : null,
         z_index: Number.isFinite(zRaw) ? zRaw : zDefault,

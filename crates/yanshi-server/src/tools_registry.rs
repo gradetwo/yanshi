@@ -1923,7 +1923,7 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "dodge_burn_setup",
         profile: Profile::Retouch,
-        summary: "减淡加深建组（期 4 D1）：gray 变体建一个柔光中性灰（字节 188 = 线性 0.5 ⇒ 建组后画面逐点不变）的烘焙层，用黑/白低流量笔触涂抹即减淡/加深；curves 变体建两个带全黑蒙版的曲线层，涂开蒙版即让那两条曲线作用于**下方内容**（自 `302d414d`「纯调整层用下方内容播种」起成立 ✓ 实测 128 底色：dodge 涂白 159 / burn 涂白 98 / 端点 0 与 255 不动 ✓ 两条臂都回 effective=true）。两臂的取舍是留痕方式：curves 留两条可调曲线对象、gray 把效果烘焙进一层。重复调用同名组返回 already_exists，不叠第二套。回执另给 masks: {dodge, burn}（按角色标注蒙版，mask_ids 数组本身保留；gray 组两格为 null）与 neutral_gray（灰层中性字节）",
+        summary: "减淡加深建组（期 4 D1）：gray 变体建一个柔光中性灰（字节 188 = 线性 0.5 ⇒ 建组后画面逐点不变）的烘焙层，用黑/白低流量笔触涂抹即减淡/加深；curves 变体建两个带全黑蒙版的曲线层，涂开蒙版即让那两条曲线作用于**下方内容**（自 `302d414d`「纯调整层用下方内容播种」起成立 ✓ 实测 128 底色：dodge 涂白 159 / burn 涂白 98 / 端点 0 与 255 不动 ✓ 两条臂都回 effective=true）。两臂的取舍是留痕方式：curves 留两条可调曲线对象、gray 把效果烘焙进一层。组层落盘只存词干名 + 命名配方（metadata.name_recipe），显示名由界面按当前语言拼；重复调用按配方（兼容旧格式成品名）认出既有组返回 already_exists，不叠第二套。回执另给 masks: {dodge, burn}（按角色标注蒙版，mask_ids 数组本身保留；gray 组两格为 null）与 neutral_gray（灰层中性字节）",
         mutating: true,
         params: &[
             param!("layer_id", String, true, "目标图层 id（必填；新组落在它上方，组名缺省取它的名字）"),
