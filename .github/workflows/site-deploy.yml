@@ -1,0 +1,82 @@
+# 偃师官网 (yanshi.wangda.today) —— 静态契约校验与 Cloudflare Workers 部署
+#
+# 站点源码住在专用分支 `site`(orphan 分支, 根目录即站点)。
+# push 到 site 时自动校验并部署; 也可在 Actions 界面手动触发。
+#
+# 部署凭据 (由仓库管理员配置, 未配置时部署步骤优雅跳过而不是报红):
+#   - secrets.CLOUDFLARE_API_TOKEN
+#   - secrets.CLOUDFLARE_ACCOUNT_ID (可选; 缺省时 wrangler 按 token 自动识别账号)
+
+name: Site (yanshi.wangda.today)
+
+on:
+  push:
+    branches:
+      - site
+    paths:
+      - "public/**"
+      - "scripts/**"
+      - "wrangler.toml"
+      - ".github/workflows/site-deploy.yml"
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "校验通过后是否真的部署"
+        type: boolean
+        default: true
+
+concurrency:
+  group: site-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check (站点契约)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 站点静态契约检查
+        run: node scripts/check.mjs
+
+  deploy:
+    name: deploy (wrangler)
+    needs: check
+    if: github.event_name == 'push' || inputs.deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 部署到 Cloudflare Workers
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
+            {
+              echo "### 已跳过部署 (缺少 Cloudflare 凭据)"
+              echo ""
+              echo "请在仓库 Settings → Secrets and variables → Actions 配置:"
+              echo "- \`CLOUDFLARE_API_TOKEN\` (权限: Workers Scripts:Edit, Account Settings:Read)"
+              echo "- \`CLOUDFLARE_ACCOUNT_ID\` (可选)"
+              echo ""
+              echo "配置完成后重跑本 workflow 即可发布到 yanshi.wangda.today。"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::缺少 Cloudflare 凭据, 跳过部署"
+            exit 0
+          fi
+          npx --yes wrangler@4 deploy
