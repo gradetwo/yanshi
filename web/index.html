@@ -9676,11 +9676,7 @@ function renderLayerPanel(layers) {
     });
     // 點下拉不觸發行選中
     blend.addEventListener("click", (e) => e.stopPropagation());
-    // **图层不透明度** ✓（0019 ✓ 2026-11-17 实测 ✓：这条**此前没有入口** ✗）：
-    // 服务端 `update_layer` 的 `opacity` 与 `name` / `visible` / `locked` / `blend_mode` 同一套 ✓
-    // 而面板只接了显示/锁定/混合模式 ✗ ⇒ 「把这一层调淡一点」在 Web 上做不到 ✓
-    // （MCP 侧 `update_layer {opacity}` 一直可用 ✓）。
-    // 取值 0–100（人话）✓ 落盘是 0–1 ✓；**越界就地夹紧** ✓ 不发注定被拒的请求 ✓。
+        // **图层不透明度** ✓（0019）：此前没有入口（服务端 update_layer {opacity} 一直可用、面板没接）⇒ 每行补 0–100 输入，落盘 0–1、越界夹紧回填、非数字不发请求。
     const opacity = document.createElement("input");
     opacity.type = "number";
     opacity.className = "layer-opacity";
@@ -12063,12 +12059,7 @@ function renderDodgeBurnCurrent() {
   const existing = dodgeBurnRecords.find((layer) => layer.name === "「" + prefix + " · 减淡加深」"
     || (layer.metadata?.name_recipe?.kind === "dodge_burn" && layer.metadata.name_recipe.base === prefix));
   out.textContent = existing
-    // **这两句必须走 `uiTemplate`** ✓（0018 ✓ 2026-11-17 实测 ✓）：
-    // 句子是**运行时拼**的 ✓ ⇒ 字典按"整句"永远匹配不到 ✓；
-    // 而模式词条那套（见 `m33`）**只在 `uiLang === "en"` 时跑** ✗
-    // ⇒ 实测 fr / ja / de / ru / ko / es / pt 七个语言下**整句留在中文** ✗
-    // （只有组名那半截被 `dodgeBurnWord()` 翻成了本地话 ✓ ⇒ 读起来是"中文句 + 外语组名"✗更怪）。
-    // 词表里这两条**八语都齐** ✓ ⇒ 拼句时直接查带占位的那条 ✓ 中文回退成源句 ✓ 一字不差 ✓。
+    // **这两句必须走 uiTemplate** ✓（0018）：运行时拼句整句查表必落空、模式词条那套只在 en 下跑 ⇒ 其余七语整句留中文；词表八语齐备，拼句直接查带占位的条。
     ? uiTemplate("组名 {group} 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）", { group: groupName })
     : uiTemplate("将新建组 {group}（放在「{src}」上方）", { group: groupName, src: layerDisplayName(record) });
 }
@@ -16235,8 +16226,7 @@ function i18nText(node) {
     // **参考图上传失败的回执** ✓（本轮补齐 ✓）：整句拼了服务端给的错误文 ⇒ 字典按整句匹配不到 ⇒
     //   必须模式词条（否则英文模式下留着中文 ✓；与 m19/m40 同源：带数据的失败回执都走模式 ✓）。
     const m41 = /^参考图上传失败：(.+)$/.exec(zh);
-    // **设置图层不透明度失败的回执** ✓（0019 新增的 `#c33` 行 ✓）：整句拼了服务端错误码
-    //   ⇒ 字典按整句匹配不到 ⇒ 必须模式词条（与 m19 同源：带错误码的失败回执都走模式 ✓）。
+    // **设置图层不透明度失败的回执** ✓（0019 的 #c33 行）：拼了错误码 ⇒ 走模式词条（与 m19 同源）。
     const m44 = /^设置图层不透明度失败：(\S+)$/.exec(zh);
     // **锁定层的落笔/移动被拦下那两句** ✓（本轮补齐 ✓）：`refuseLockedLayer()` 先把短句
     //   交给 `stageNotice`（m30 ✓ 已有），随后 `log(…, "#c33")` 按 `log()` 的既定行为**又把
