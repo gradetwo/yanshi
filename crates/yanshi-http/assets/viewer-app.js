@@ -4548,6 +4548,22 @@ async function loadDocumentData() {
     bootMark("before-refreshPreview");
     await refreshPreview();
     bootMark("refreshPreview-ok");
+    // **★ 效果目录（「调整／滤镜」的效果名下拉）必须在这条启动路上装 ★**
+    //   实测（2026-11-17，真实 Chromium + Playwright）：从 `/` 首次进入时走的是**这条**
+    //   `loadDocumentData()` ⇒ `__appMarks` 里**一次都没有** `boot:before-loadEffectCatalog` ✗
+    //   ⇒ `/api/effects` **零请求** ✗ ⇒ `effectCatalog` 恒为 `{adjustment:[], filter:[]}`
+    //   ⇒ `#effectName` **0 项** ⇒ `applyEffect()` 首行 `if (!name) return` 直接返回 ✗
+    //   ⇒ **整张「调整／滤镜」卡对人不可用**：下拉空、点「应用」无反应、且不报任何错 ✓。
+    //   注意缺陷只在**默认入口**上：带 token 重载走的另一条分支（`!state.token` 之外的
+    //   `boot:before-loadEffectCatalog` 那一段）本来就挂了这两步 ✓
+    //   ⇒ 谁从带 token 的链接回来都是好的 ✓ —— 这正是它长期没被发现的原因 ✓。
+    //   两步各自 `try/catch`：可选数据取不到不许中断 boot ✓（与 `refreshObjects` 同一原则 ✓）。
+    bootMark("before-loadEffectCatalog");
+    try { await loadEffectCatalog(); bootMark("loadEffectCatalog-ok"); }
+    catch (error) { bootMark("loadEffectCatalog!" + String((error && error.message) || error).slice(0, 40)); }
+    bootMark("before-refreshEffects");
+    try { await refreshEffects(); bootMark("refreshEffects-ok"); }
+    catch (error) { bootMark("refreshEffects!" + String((error && error.message) || error).slice(0, 40)); }
     const bootFirstPaint = $("firstPaint");
     if (bootFirstPaint) bootFirstPaint.textContent = "…";
     connect();
