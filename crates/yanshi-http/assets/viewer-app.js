@@ -7561,6 +7561,7 @@ function setupAssetDock() {
       areaToggle.setAttribute("aria-pressed", String(!!collapsed));
       areaToggle.textContent = collapsed ? "画笔 ▸" : "画笔 ▾";
     }
+    noteLayoutBrush(collapsed);
     return !!collapsed;
   };
   if (areaToggle) areaToggle.addEventListener("click", () => setCollapsed(!document.body.classList.contains("brush-area-collapsed")));
@@ -7618,6 +7619,86 @@ function setupAssetDock() {
     homes: () => homes.map((home) => ({ id: home.node.id, parent: home.parent && home.parent.id })),
     where: () => homes.map((home) => home.node.parentNode && home.node.parentNode.id),
   };
+}
+
+/// **布局状态（右栏标签页 + 画笔区折叠）** ✓ —— 与 `yanshi.lang` 同命名空间的新键 `yanshi.layout` ✓。
+///
+/// **∴ 为什么另开一个键** ✗：面板显隐（`yanshi.panels`）、卡片折叠（`yanshi.dockers`）、
+/// 工作区预设（`yanshi.workspace`）早已各自持久化 ✓ ⇒ 本键只装**此前没存**的两个量 ✗，
+/// 不迁移旧键（迁移要动三处已判据化的读写路径 ✗ 收益为零 ✓）。
+/// **形状**：`{v:1, tab:"paint", brush:false}` ✓ —— `v` 是形状版本 ✗ 对不上就整份丢弃回默认 ✓；
+/// 读坏（解析失败／字段类型不对／tab 不在已知集合）⇒ **安全降级到默认** ✓ 不许白屏 ✗。
+const LAYOUT_STORE = "yanshi.layout";
+const LAYOUT_TABS = ["paint", "history", "assets", "file", "diag"];
+const layoutState = { tab: "paint", brushCollapsed: false };
+function loadLayoutState() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(LAYOUT_STORE) || "null"); } catch (_) { saved = null; }
+  if (saved && typeof saved === "object" && saved.v === 1) {
+    if (LAYOUT_TABS.includes(saved.tab)) layoutState.tab = saved.tab;
+    layoutState.brushCollapsed = saved.brush === true;
+  }
+}
+function saveLayoutState() {
+  try {
+    localStorage.setItem(LAYOUT_STORE, JSON.stringify(
+      { v: 1, tab: layoutState.tab, brush: layoutState.brushCollapsed }));
+  } catch (_) { /* 隐私模式下忽略 ✓ */ }
+}
+/// **标签页切换的落盘钩子** ✓（`showTab` 每次调用都经这里 ✗ ⇒ 点按与程序切换同口径 ✓）。
+function noteLayoutTab(key) {
+  if (!LAYOUT_TABS.includes(key)) return;
+  layoutState.tab = key;
+  saveLayoutState();
+}
+/// **画笔区折叠的落盘钩子** ✓（`setCollapsed` 每次调用都经这里 ✓）。
+function noteLayoutBrush(collapsed) {
+  layoutState.brushCollapsed = !!collapsed;
+  saveLayoutState();
+}
+/// **恢复默认布局** ✓（顶栏 `#resetLayout` ✓）：清掉**全部**布局存储 ✗
+/// （`yanshi.panels`／`yanshi.dockers`／`yanshi.workspace`／`yanshi.layout` ✓；
+/// 语言与渲染偏好**不在**此列 ✗），再按**首次启动的同一条路径**把默认应用上 ✓：
+/// 面板全显＋非全屏（`applyPanels` ✓）、工作区回「绘画」预设（`applyWorkspace("paint")` ✓
+/// —— 与 `initDockers` 的无存储回退**同一分支** ✗ ⇒ 历史卡照开机口径强制展开 ✓）、
+/// 标签页回「绘制」、画笔区展开 ✓。
+/// **∴ 应用路径会把默认值写回** panels／dockers／workspace 三键 ✓
+/// —— 那正是首次启动后的状态本身 ✓；`yanshi.layout` 在写回后**再删一次** ✗
+/// ⇒ 它保持缺省（= 默认）直到下一次改动 ✓。
+function resetLayoutToDefaults() {
+  const keys = [PANEL_STORE, DOCKER_STORE, WORKSPACE_STORE, LAYOUT_STORE];
+  for (const key of keys) { try { localStorage.removeItem(key); } catch (_) {} }
+  panels.rail = false;
+  panels.dockers = false;
+  panels.zen = false;
+  applyPanels();
+  applyWorkspace("paint");
+  for (const card of document.querySelectorAll('[data-panel="history"]')) {
+    card.classList.remove("collapsed");
+  }
+  for (const card of dockerCards()) {
+    if (/历史/.test(cardTitle(card))) card.classList.remove("collapsed");
+  }
+  layoutState.tab = "paint";
+  layoutState.brushCollapsed = false;
+  if (window.yanshiRightTabs) window.yanshiRightTabs.show("paint");
+  if (window.yanshiBrushArea) window.yanshiBrushArea.setCollapsed(false);
+  try { localStorage.removeItem(LAYOUT_STORE); } catch (_) {}
+}
+/// **开机恢复 + 恢复默认按钮接线** ✓ —— 必须在 `setupRightTabs()`／`setupAssetDock()` **之后**调 ✗
+/// （标签页与画笔区的钩子那时才存在 ✓ ⇒ 由 `setupAssetPanels()` 在两者之后调本函数 ✓）。
+function setupLayoutState() {
+  loadLayoutState();
+  if (layoutState.tab !== "paint" && window.yanshiRightTabs) {
+    const button = document.querySelector('#rightTabs button[data-tab="' + layoutState.tab + '"]');
+    // **那个 tab 已被自动隐藏**（没卡的 tab 会藏 ✓ 如「文件」✓）⇒ 不恢复 ✗ 留在默认「绘制」✓。
+    if (button && !button.hidden) window.yanshiRightTabs.show(layoutState.tab);
+  }
+  if (layoutState.brushCollapsed && window.yanshiBrushArea) {
+    window.yanshiBrushArea.setCollapsed(true);
+  }
+  const reset = document.getElementById("resetLayout");
+  if (reset) reset.addEventListener("click", resetLayoutToDefaults);
 }
 
 /// **右栏分 tab** ✓（用户："右边信息面板超级长，适合面板内部有小 tab 切换不同信息"✓）。
@@ -7679,6 +7760,7 @@ function setupRightTabs() {
     for (const button of bar.querySelectorAll("button")) {
       button.setAttribute("aria-pressed", String(button.dataset.tab === key));
     }
+    noteLayoutTab(key);
     return key;
   };
   aside.dataset.tabsReady = "1";
@@ -7851,6 +7933,8 @@ async function setupAssetPanels() {
   setupClippedTitles();
   // **然后把浮层挂上** ✓ —— 与卡片内容的装载互不依赖 ✓（搬的是节点本身 ✓）。
   setupAssetDock();
+  // **布局状态恢复 + 「恢复默认布局」接线** ✓ —— 标签页与画笔区的钩子这时才都在 ✓（见 `setupLayoutState` ✓）。
+  setupLayoutState();
   // **`setupBrushLibrary` 不在这儿调** ✗ —— 它的定义在**另一段 `<script>`** 里 ✓，
   // 从这里调只会 `ReferenceError` ✓（本轮实测：面板永远打不开 ✓、`open=false` ✗）。
   // 它改成在**定义那一侧**自初始化 ✓（见那个函数上面 ✓）——这是同一个坑的第 N 次 ✓，

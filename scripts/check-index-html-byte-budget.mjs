@@ -90,7 +90,12 @@ import { execFileSync } from "node:child_process";
 //   来自内联的 viewer-app.js——选择器菜单、UI_LANGS／LANG_BUTTON_TITLES、检测映射表
 //   与 detectUILanguage、预设字段名 9 语言，及各自的说明注释；7 种语言的词表本体在
 //   外链 /i18n.js，不计入本文件）⇒ 上界 957,500→965,500（留 845 B）。
-const CEILING = 965_500;
+// 2026-11-17：窗口布局持久化补齐（Wang 令：布局须能恢复、菜单带「恢复默认布局」）
+//   使 964,655→969,376（+4,721 B：viewer-app.js 新增布局状态一节 +4,739 B——
+//   `yanshi.layout` 键的存/恢复/降级、标签页与画笔区落盘钩子、恢复默认与接线；
+//   viewer.rs 顶栏「恢复默认布局」按钮 +359 B；两处差额为戳位归一）⇒
+//   上界 965,500→970,000（留 624 B）。
+const CEILING = 970_000;
 
 const failures = [];
 const check = (ok, label, detail) => {
