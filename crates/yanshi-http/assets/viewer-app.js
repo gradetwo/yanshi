@@ -10381,6 +10381,22 @@ window.addEventListener("keydown", (event) => {
   renderViewport();
 });
 
+// **★ Ctrl/Cmd+S 必须被吃掉 ★**（2026-11-17 实测：原来**没有任何**处理器接管它 ✓
+//   ⇒ 画到一半顺手按 Ctrl+S ⇒ 浏览器弹出"保存网页"对话框 ✗ —— 这不是"少个功能" ✗，
+//   而是**把用户从画布里踢出去** ✓（而这个应用每笔都已落盘 ✓）。
+//   **为什么只 preventDefault + 一句提示** ✓：这里不存在"手动保存"这回事 ✓
+//   （每笔都经原子日志落盘 ✓，顶栏「已保存」读的就是它 ✓）⇒ 若真去做一次"保存" ✓
+//   反而造出**第二个真相** ✗（同一份文档两条保存路径 ✓）。
+//   **输入框/文本域里放行** ✓：浏览器自己"保存表单值"在那里有意义 ✓，也不打断打字 ✓。
+window.addEventListener("keydown", (event) => {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+  if (event.key !== "s" && event.key !== "S") return;
+  const target = event.target;
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
+  event.preventDefault();
+  stageNotice("不用手动保存：每一笔都已经落盘了（顶栏「已保存」是同一份记录）", false);
+});
+
 board.addEventListener("pointerdown", (event) => {
   // **手形（或中键、空格）时不许落笔** ✗ —— 用户实测："小手会像画笔一样画上去" ✓；
   // 与平移那条**共用同一个判定** ✓（详见 `wantsPanEvent` 的说明 ✓）。
