@@ -300,12 +300,18 @@
                font-size: 12px; cursor: pointer; }
   .layer-row:hover { background: rgba(128, 128, 128, .12); }
   .layer-row.selected { background: var(--accent, #2b6cb0); color: #fff; }
-  .layer-row .layer-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 名字要给足：这一行现在有 缩略图/眼睛/锁/混合模式/不透明度 五件东西 ✓
+     1440 实测名字只剩 65px（几乎必然被截断 ✗）⇒ 名字给 80px 下限 ✓ 其余各收几像素 ✓。 */
+  .layer-row .layer-name { flex: 1 1 auto; min-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 图层不透明度（0019）：窄到 42px，够放下三位数 ✓ 不抢名字的位置 ✓ */
+  .layer-row .layer-opacity { width: 38px; flex: none; font-size: 11px; padding: 1px 2px; text-align: right; }
+  /* 改名用的就地输入框（0015）：宽度跟着名字走 ✓ 不许把整行撑出横向滚动 ✗ */
+  .layer-row .layer-name-input { flex: 1 1 auto; min-width: 0; font: inherit; padding: 2px 4px; border-radius: 4px; }
   .layer-row .layer-flag { padding: 0 4px; font-size: 12px; line-height: 1.5; background: transparent;
                            border: 1px solid transparent; border-radius: 3px; cursor: pointer; }
   .layer-row .layer-flag:hover { border-color: currentColor; }
   .layer-row .layer-flag.off { opacity: .35; }
-  .layer-row .layer-blend { font-size: 11px; padding: 1px 2px; border-radius: 3px;
+  .layer-row .layer-blend { width: 64px; flex: none; font-size: 11px; padding: 1px 2px; border-radius: 3px;
                             background: transparent; border: 1px solid transparent; cursor: pointer;
                             max-width: 70px; }
   .layer-row .layer-blend:hover { border-color: currentColor; }
@@ -431,12 +437,21 @@
   #history .row { display: flex; gap: 6px; align-items: center; padding: 4px 0; min-height: 24px; }
   #history .row button { padding: 0 6px; font-size: 11px; flex: none; white-space: nowrap; }
   #history .seq { opacity: .6; min-width: 34px; }
-  #history .kind { min-width: 86px; }
+  /* 时间列（0016）：等宽、淡一点 ✓ 不抢类型与图层那两格的位置 ✓ */
+  #history .time { opacity: .55; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+  /* **类型与操作者两列不再"钉死宽度"** ✓（0016 实测 ✓）：加了时间列之后
+     1440 下 `#history` 要横向滚 144px ✗ 主因就是这两列的下限宽度 ✗。
+     ⇒ 改成"可以缩、缩了打省略号" ✓ 完整内容本来就在 `title` 里 ✓（两格都有 ✓）。 */
+  /* **类型列不许被挤成一条缝** ✗（0016 实测第二轮 ✓）：`min-width:0` 会把它压到 18px ✗
+     —— 那恰恰是最该看的一列 ✓ ⇒ 保下限 72px ✓，超长打省略号 ✓（完整 kind 在 `title` ✓）。 */
+  #history .kind { min-width: 72px; max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
   /* **图层缩略图** ✓（PWA 实测 P1 ✓）：40px 方块 ✓，等比 contain ✓，取不到时隐藏 ✓ */
   #layerList .layer-thumb { width: 40px; height: 40px; flex: none; object-fit: contain;
     border: 1px solid var(--line); border-radius: 4px; background:
     repeating-conic-gradient(#8882 0% 25%, transparent 0% 50%) 0 0 / 12px 12px; }
-  #history .actor { opacity: .75; }
+  /* 操作者列保 44px 下限 ✓：压到 0 宽 = 看不见是谁改的 ✗（0016 第二轮实测 ✓）。 */
+  #history .actor { opacity: .75; min-width: 44px; max-width: 56px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
   .card { border: 1px solid var(--line); border-radius: 6px; padding: 8px 8px; }
   .card h2 { font-size: 12px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; }
   button { font: inherit; padding: 4px 8px; border-radius: 5px; border: 1px solid var(--line); background: transparent; cursor: pointer; }
@@ -526,6 +541,22 @@
     header button,
     .options button, .options select, .options input:not([type="checkbox"]),
     .statusbar button { min-height: 40px; }
+    /* **窄屏让出时间列** ✓（0016 实测 ✓）：加了 `HH:MM:SS` 之后 1440 下 `#history`
+       横向要滚 144px ✓ 390 下更挤 ✗ ⇒ 480 以内**只在 `title` 里留完整时间** ✓
+       （宽屏看时间 ✓、窄屏先保住"序号/类型/图层/按钮"这几格 ✓）。 */
+    #history .time { display: none; }
+    /* **图层行那三个小按钮也要抬到手指能点** ✓（0014 ✓ 2026-11-17 实测 ✓）：
+       这个 480 块已经把 `#tools button`、`.options button`、`.statusbar button` 都抬到 40px ✓
+       但**漏了图层行** ✗ ⇒ 390×844 实测 `👁 22×28`、`🔓 25×28`、`#layerDuplicate 27×28` ✓
+       （宽度 22px 的按钮在触屏上基本点不准 ✓ 眼睛、锁、复制是每层都要点的 ✓）。
+       取 32 而不是 40：一行三个 40 ⇒ 图层名被挤到认不出 ✗ 且 96px 的面板只剩 2 行 ✓
+       （32 ⇒ 行高约 36，面板仍能看见 2 行半并且照旧可滚 ✓，名字给 `min-width` 兜底 ✓）。 */
+    .layer-row .layer-flag, .layer-row button { min-width: 32px; min-height: 32px; }
+    .layer-row .layer-name { min-width: 64px; }
+    /* **一条兜底胜过逐个点** ✓（0014 实测第二轮 ✓）：`#layerDuplicate` 在
+       `.layers-actions` 里 ✓ 上一版那条 `.layer-row button` 根本够不着它 ✗（仍 27×28 ✗）。
+       面板里每个按钮都是"要点"的东西 ✓ ⇒ 统一给 32×32 下限 ✓ 谁都不用再点名 ✓。 */
+    aside button { min-width: 32px; min-height: 32px; }
   }
   /* **★ 短屏（≤480 宽 **且** ≤620 高；320×568 实测）★**
      **∴ 为什么上面那个 480 块不够** ✗：竖向预算里 `header 151.5 ＋ options 113.6 ＋ tools 137

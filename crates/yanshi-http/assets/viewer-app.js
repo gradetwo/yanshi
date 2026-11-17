@@ -3033,7 +3033,16 @@ async function submitAtom(atom) {
 }
 
 async function checkBitExact() {
-  if (!kernelReady()) { log("没有 WASM 内核，无法自检", "#c33"); return; }
+  if (!kernelReady()) {
+    // **"做不了"要写在它该在的位置上** ✓（0017 ✓ 2026-11-17 实测 ✓）：
+    // 这句此前**只进日志** ✗ ⇒ 状态栏那个 `bit-exact —` 一直挂着"没测过"的样子 ✓
+    // 人会以为"这功能没实现" ✗ 而不是"这条路做不了、原因是什么" ✓。
+    // ⇒ 把原因直接写进 `#bitExact` ✓（与下面 heavy 那条同一个位置 ✓ 同一条口径 ✓）。
+    const box0 = $("bitExact");
+    if (box0) box0.textContent = uiTemplate("不适用（没有 WASM 内核：逐字节比对需要本地这一侧的像素）");
+    log("没有 WASM 内核，无法自检", "#c33");
+    return;
+  }
   // 以**服务端返回的尺寸**为准：`state.docSize` 可能因刷新时序而滞后，
   // 那样会出现「尺寸不一致」的误报（实测遇到）。
   const { w, h } = state.docSize;
@@ -5334,6 +5343,22 @@ async function refreshHistory() {
     const seq = document.createElement("span");
     seq.className = "seq";
     seq.textContent = "#" + atom.seq;
+    // **这一条是什么时候发生的** ✓（0016 ✓ 2026-11-17 实测 ✓）：
+    // 行里原有 序号 / 类型 / 图层 / 尺寸 / 操作者 ✓ **唯独没有时间** ✗
+    // ⇒ 看到「#137 draw_stroke」根本不知道是刚才那笔还是十分钟前那笔 ✓
+    //（日志区有 `ts=` ✓ 但那是滚动文本、不能按行看 ✓）。
+    // 紧凑到 `HH:MM:SS` ✓、完整时间放 `title` ✓；取不到就不加 ✓（宁缺勿假 ✓）。
+    const rawStamp = atom.timestamp || atom.ts || null;
+    if (rawStamp) {
+      const when = new Date(rawStamp);
+      if (!Number.isNaN(when.getTime())) {
+        const timeLabel = document.createElement("span");
+        timeLabel.className = "time";
+        timeLabel.textContent = when.toLocaleTimeString(undefined, { hour12: false });
+        timeLabel.title = when.toLocaleString(undefined, { hour12: false });
+        row.appendChild(timeLabel);
+      }
+    }
     const kindLabel = document.createElement("span");
     kindLabel.className = "kind";
     // **语义显示** ✓：喷枪/介质笔触在内核是 `import_image` 原子（位图块 + blob），
@@ -5638,13 +5663,18 @@ function renderCheckpointList() {
     row.className = "annotation-row";
     const head = document.createElement("div");
     head.className = "annotation-head";
-    head.textContent = (item.name || item.checkpoint_id || "").slice(0, 28) +
+    // **名字是服务端落下的持久数据** ✓（`存档 14:44:17` ✓）—— 不能为了界面语言去改数据本人 ✓，
+    // 否则同一个存档点在不同语言的会话里名字不一致 ✓（找不回、也对不上日志 ✓）。
+    // ⇒ 只翻**显示前缀** ✓：认出 `存档 <时间>` 这个形状就换成本地话 ✓，认不出就原样念 ✓。
+    const rawName = (item.name || item.checkpoint_id || "").slice(0, 28);
+    const stamp = /^存档\s+(\d{1,2}:\d{2}:\d{2})$/.exec(rawName);
+    head.textContent = (stamp ? uiTemplate("存档 {time}", { time: stamp[1] }) : rawName) +
       (item.anchor_seq !== undefined ? "  ·  seq " + item.anchor_seq : "");
     const actions = document.createElement("div");
     actions.className = "toolbar";
     const back = document.createElement("button");
     back.type = "button";
-    back.textContent = "回到这里";
+    back.textContent = uiTemplate("回到这里");
     back.addEventListener("click", async () => {
       const id = item.checkpoint_id || item.id;
       const done = await callToolChecked("restore_checkpoint", { checkpoint_id: id }, "回到存档点");
@@ -7451,7 +7481,47 @@ function renderLayerPanel(layers) {
     });
     // 點下拉不觸發行選中
     blend.addEventListener("click", (e) => e.stopPropagation());
-    row.append(thumb, eye, lock, blend, name);
+    // **图层不透明度** ✓（0019 ✓ 2026-11-17 实测 ✓：这条**此前没有入口** ✗）：
+    // 服务端 `update_layer` 的 `opacity` 与 `name` / `visible` / `locked` / `blend_mode` 同一套 ✓
+    // 而面板只接了显示/锁定/混合模式 ✗ ⇒ 「把这一层调淡一点」在 Web 上做不到 ✓
+    // （MCP 侧 `update_layer {opacity}` 一直可用 ✓）。
+    // 取值 0–100（人话）✓ 落盘是 0–1 ✓；**越界就地夹紧** ✓ 不发注定被拒的请求 ✓。
+    const opacity = document.createElement("input");
+    opacity.type = "number";
+    opacity.className = "layer-opacity";
+    opacity.min = "0";
+    opacity.max = "100";
+    opacity.step = "1";
+    opacity.title = "图层不透明度（0–100）";
+    opacity.value = String(Math.round((typeof layer.opacity === "number" ? layer.opacity : 1) * 100));
+    opacity.addEventListener("click", (e) => e.stopPropagation());
+    opacity.addEventListener("keydown", (e) => e.stopPropagation());
+    opacity.addEventListener("change", async (e) => {
+      e.stopPropagation();
+      const raw = Number(opacity.value);
+      if (!Number.isFinite(raw)) {
+        // **别把 NaN 发出去** ✓：服务端只会回 `invalid_argument` ✓ 而人看不出自己错在哪 ✗
+        opacity.value = String(Math.round((typeof layer.opacity === "number" ? layer.opacity : 1) * 100));
+        stageNotice(uiTemplate("不透明度要填 0 到 100 之间的数字 ⇒ 这次没有发送请求、没有改动任何东西"));
+        return;
+      }
+      const clamped = Math.max(0, Math.min(100, raw));
+      if (clamped !== raw) {
+        // **夹紧之后要回填** ✓（0006 那条"数值框不许说假数字"同一口径 ✓）
+        opacity.value = String(clamped);
+        stageNotice(uiTemplate("不透明度只能取 0 到 100 ⇒ 已改成 {value}", { value: clamped }));
+      }
+      const done = await callTool("update_layer", { layer_id: layer.layer_id, patch: { opacity: clamped / 100 } }, { refresh: false });
+      if (!done || !done.ok) {
+        log("设置图层不透明度失败：" + ((done && done.error_code) || "unknown"), "#c33");
+        await refreshLayers();
+        return;
+      }
+      await refreshLayers();
+      await resync();
+      log("图层「" + (layer.name || "") + "」不透明度改成 " + clamped + "% ✓");
+    });
+    row.append(thumb, eye, lock, blend, opacity, name);
     list.appendChild(row);
   }
   // 面板重画后按需补缩略图 ✓（去抖：连续刷新只跑最后一次 ✓）。
@@ -8398,6 +8468,12 @@ async function setupLayerPanel() {
   list.addEventListener("click", async (event) => {
     const row = event.target.closest(".layer-row");
     if (!row) return;
+    // **双击的第二下不许再走"选中"** ✓（0015 实测 ✓ 第一版就栽在这 ✓）：
+    // `dblclick` 之前浏览器会先发**两次** `click` ✓ ⇒ 每次 click 都 `select.onchange()`
+    // ⇒ `renderLayerPanel` **重画整表** ✓ ⇒ 双击监听刚插进去的输入框**当场被冲掉** ✗
+    // （探针表现为"等不到 `.layer-name-input`" ✓ 用户表现为"双击没反应" ✓ 一模一样 ✗）。
+    // ⇒ `detail > 1` 就是"这是第二下" ✓ 直接放行给 `dblclick` ✓。
+    if (event.detail > 1) return;
     const layerId = row.dataset.layerId;
     const action = event.target.dataset ? event.target.dataset.action : null;
     if (action === "visible" || action === "locked") {
@@ -8422,6 +8498,52 @@ async function setupLayerPanel() {
     // 点名字/行 = **选中** ✓（写回 `#layer` 与 `state.layerId` ✓ ⇒ 全查看器跟着切换 ✓）。
     const select = $("layer");
     if (select) { select.value = layerId; select.onchange(); }
+  });
+  // **双击图层名 = 就地改名** ✓（0015 ✓ 2026-11-17 实测 ✓：这条**此前根本不存在** ✗）
+  // —— 服务端 `update_layer` 早就支持 `{name}` ✓、MCP 侧也够得到 ✓，
+  // 而这个面板只接了"显示/锁定"两路 ✗ ⇒ 人在界面上**没法给图层起名字** ✗
+  // （偏偏图层名是唯一能区分"这一层是什么"的东西 ✓ 图层一多就只能靠 ULID 尾部四位 ✓）。
+  // 做法：把名字 `<span>` 换成输入框 ✓（**不弹 prompt** ✗ —— 弹窗会遮住画布，
+  // 改个名不该让人离开画面 ✓）；回车提交 ✓、Esc 取消 ✓、失焦等同提交 ✓（防"改了没按回车"丢改动 ✓）。
+  list.addEventListener("dblclick", async (event) => {
+    const nameEl = event.target.closest(".layer-name");
+    if (!nameEl) return;
+    const row = nameEl.closest(".layer-row");
+    const layerId = row && row.dataset.layerId;
+    if (!layerId || row.querySelector(".layer-name-input")) return;
+    const layers = await listLayers().catch(() => null);
+    const layer = (layers || []).find((item) => item.layer_id === layerId);
+    if (!layer) return;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "layer-name-input";
+    input.value = layer.name;
+    input.maxLength = 64;
+    input.title = "回车保存 · Esc 取消";
+    nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+    let done = false;
+    const finish = async (commit) => {
+      if (done) return;
+      done = true;
+      const value = input.value.trim();
+      if (commit && value && value !== layer.name) {
+        await callToolChecked("update_layer", { layer_id: layerId, patch: { name: value } }, "重命名图层");
+        await refreshLayers();
+        log("图层已改名为「" + value + "」✓");
+      } else {
+        await refreshLayers();
+      }
+    };
+    input.addEventListener("keydown", (event2) => {
+      // **单键快捷键必须在这里停住** ✓：'b' / 'm' / 'n' 是工具切换 ✓
+      // 不 `stopPropagation` 的话，打个名字就把工具换掉了 ✓（用户完全猜不到为什么 ✓）。
+      event2.stopPropagation();
+      if (event2.key === "Enter") { event2.preventDefault(); void finish(true); }
+      else if (event2.key === "Escape") { event2.preventDefault(); void finish(false); }
+    });
+    input.addEventListener("blur", () => void finish(true));
   });
   // **上下移动** ✓：屏幕向上 = z 序 +1 ✓（`list_layers` 是自下而上 ✓）。
   const move = async (delta) => {
@@ -9124,12 +9246,16 @@ async function refreshSelectionHint() {
     }
     void drawSelectionOutline();
     if (Array.isArray(bbox)) {
-      hint.textContent = `选区 ${selections.length} 个（${Math.round(bbox[2])}×${Math.round(bbox[3])} @ ${Math.round(bbox[0])},${Math.round(bbox[1])}）｜约束之后的绘制`;
+      // 动态句 ⇒ 走 `uiTemplate` ✓（2026-11-17 英文实测：这句原本在 en 界面里是中文 ✓）
+      hint.textContent = uiTemplate("选区 {n} 个（{w}×{h} @ {x},{y}）｜约束之后的绘制", {
+        n: selections.length, w: Math.round(bbox[2]), h: Math.round(bbox[3]),
+        x: Math.round(bbox[0]), y: Math.round(bbox[1]),
+      });
     } else {
-      hint.textContent = `选区 ${selections.length} 个｜约束之后的绘制`;
+      hint.textContent = uiTemplate("选区 {n} 个｜约束之后的绘制", { n: selections.length });
     }
   } catch (error) {
-    hint.textContent = "选区状态未知";
+    hint.textContent = uiTemplate("选区状态未知");
   }
 }
 
@@ -9765,6 +9891,12 @@ function renderDodgeBurnCurrent() {
   const existing = dodgeBurnRecords.find((layer) => layer.name === "「" + prefix + " · 减淡加深」"
     || (layer.metadata?.name_recipe?.kind === "dodge_burn" && layer.metadata.name_recipe.base === prefix));
   out.textContent = existing
+    // **这两句必须走 `uiTemplate`** ✓（0018 ✓ 2026-11-17 实测 ✓）：
+    // 句子是**运行时拼**的 ✓ ⇒ 字典按"整句"永远匹配不到 ✓；
+    // 而模式词条那套（见 `m33`）**只在 `uiLang === "en"` 时跑** ✗
+    // ⇒ 实测 fr / ja / de / ru / ko / es / pt 七个语言下**整句留在中文** ✗
+    // （只有组名那半截被 `dodgeBurnWord()` 翻成了本地话 ✓ ⇒ 读起来是"中文句 + 外语组名"✗更怪）。
+    // 词表里这两条**八语都齐** ✓ ⇒ 拼句时直接查带占位的那条 ✓ 中文回退成源句 ✓ 一字不差 ✓。
     ? uiTemplate("组名 {group} 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）", { group: groupName })
     : uiTemplate("将新建组 {group}（放在「{src}」上方）", { group: groupName, src: layerDisplayName(record) });
 }
@@ -9984,6 +10116,17 @@ async function runFillRegion() {
   if (sampleOut) sampleOut.textContent = "";
   if (!built || !built.ok) {
     const code = (built && built.error_code) || "unknown";
+    // **`reference_not_found` 要当"清单过期"处理** ✓（0013 ✓ 2026-11-17 实测 ✓）：
+    // 缓存 `fillRegionRecords` 与实际图层表之间存在**窗口** ✓（刚删完一层、列表还没回来 ✓
+    // 这时点填充 ⇒ 本地预检放行 ✓ 服务端 404 ✓）⇒ 旧码会把**服务端原文**整段念出来 ✓
+    // （`图层 layer_01M7… 不存在（现有图层：layer_01M7…）` ✓ 一串 ULID ✗ 人看不出怎么办 ✗）。
+    // ⇒ 先把清单**真的取一次** ✓ 再给人一句能照着做的 ✓ 并说清"这次什么都没改" ✓。
+    if (code === "reference_not_found") {
+      await refreshLayers().catch(() => {});
+      say(uiTemplate("那一层刚被删掉了 ⇒ 已刷新图层清单，请重选一层再填充（这次没有改动任何东西）"), true);
+      log("区域填充失败：图层已不存在（已刷新清单，未写入任何改动）", "#c33");
+      return;
+    }
     log("区域填充失败：" + code + " " + ((built && built.context && built.context.detail) || ""), "#c33");
     say(code === "endpoint_not_local"
         ? "未填充：本地内核没有这个端点（这次请求没到服务端）⇒ 勾回「服务器渲染」再试。"
