@@ -2,10 +2,6 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
-<!-- ★ 编码声明必须紧跟 <head>、排在一切注释与脚本之前 ★：浏览器只在前 1024 字节内
-     预扫描 meta charset，而静态托管的响应头不带 charset ⇒ 声明一旦被大段注释挤出
-     预扫描窗口，非 UTF-8 回退区域（zh-CN ⇒ GBK、ja ⇒ Shift_JIS）整页乱码
-     （2026-11-17 修复；守护判据 scripts/check-charset-window.mjs）。 -->
 <!-- **★ 早期请求哨兵 ✗ ★**（第 824 轮 ✓；**用户报告 405 ✓**）：
      **∴ 为什么需要它 ✗**：**下面的安装块是 `type="module"` ✗** ⇒ **∴ 默认 defer ✗**
      ⇒ **∴ 它在**所有普通脚本之后**执行 ✗** ⇒ **∴ 而**前面的脚本**早已 fetch `/api/…` ✗**
@@ -137,6 +133,8 @@
     <button id="toggleRail" type="button" aria-pressed="false" title="隐藏 / 显示左侧工具栏（快捷键 [ ）">◧ 工具栏</button>
     <button id="toggleDockers" type="button" aria-pressed="false" title="隐藏 / 显示右侧面板（快捷键 ] ）">◨ 面板</button>
     <button id="toggleZen" type="button" aria-pressed="false" title="全屏画布（快捷键 Tab，Esc 退出）">⛶ 全屏</button>
+    <!-- **恢复默认布局** ✓：布局（面板显隐／卡片折叠／右栏标签页／画笔区）的存储与恢复在 viewer-app.js 的布局状态一节 ✓ -->
+    <button id="resetLayout" type="button" title="把面板、卡片折叠、右栏标签页与画笔区恢复到默认布局，并清掉已存的布局">↺ 恢复默认布局</button>
   </span>
 <button id="langToggle" type="button" data-i18n="off" aria-pressed="false" title="把界面切成英文（English）">EN</button>
 </header>
@@ -2594,9 +2592,9 @@ const LOCAL_JSON = ["/api/tools/get_document", "/api/tools/list_layers", "/api/a
 // 我第一版把字面量 `api("/api/effects")` 当成了它 ✓ ⇒ 又一次"凭字面量猜"栽了 ✓）。
 /// **从规格生成** ✓（第 176 轮记下的改进 ✓）：仓库里 `ToolSpec.mutating` **本来就是权威清单** ✓
 /// ⇒ 不必再靠"逐条点名"补 ✗（我那样补了 **7 次** ✓，每次都靠一次失败才发现 ✓）。
-/// 服务端发页面时会把 `"get_document", "get_anchors", "sample_color", "sample_colors", "get_histogram", "get_state", "list_documents", "memory_status", "list_layers", "describe_canvas", "explain_tool", "list_objects", "get_object", "get_path", "render_region", "collect_diagnostics", "put_blob", "list_selections", "list_fonts", "get_object_history", "get_stroke_log", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "vector_hit_test", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "list_presets", "get_preset", "preview_preset", "estimate_dehaze", "preview_suggestion", "export_project", "verify_package", "get_bake_status", "save_palette", "analyze_region", "stroke_heatmap", "list_palette_colors", "swatch_brush_strokes", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "export_svg", "export_book_pngs", "export_timelapse", "try_stroke", "list_attempts", "discard_stroke", "try_batch", "list_atoms", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "get_brush_dynamics", "set_brush_curve", "apply_curve_preset", "list_engine_capabilities", "get_brush_settings", "set_brush_setting", "list_brushes", "reference_trace_region"` 换成**所有只读工具名** ✓（见 `page_with_read_tools` ✓）。
+/// 服务端发页面时会把 `"get_document", "get_anchors", "sample_color", "sample_colors", "get_histogram", "get_state", "list_documents", "memory_status", "list_layers", "describe_canvas", "explain_tool", "yanshi_help", "list_objects", "get_object", "get_path", "render_region", "collect_diagnostics", "put_blob", "list_selections", "list_fonts", "get_object_history", "get_stroke_log", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "vector_hit_test", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "list_presets", "get_preset", "preview_preset", "estimate_dehaze", "preview_suggestion", "export_project", "verify_package", "get_bake_status", "save_palette", "analyze_region", "stroke_heatmap", "list_palette_colors", "swatch_brush_strokes", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "export_svg", "export_book_pngs", "export_timelapse", "try_stroke", "list_attempts", "discard_stroke", "try_batch", "list_atoms", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "get_brush_dynamics", "set_brush_curve", "apply_curve_preset", "list_engine_capabilities", "get_brush_settings", "set_brush_setting", "list_brushes", "reference_trace_region"` 换成**所有只读工具名** ✓（见 `page_with_read_tools` ✓）。
 /// 该 crate 要求常量也有文档注释 ✓（我第一次写成 `//` ✓ ⇒ `clippy -D warnings` 当场红 ✓）。
-const LOCAL_READ_TOOLS = ["get_document", "get_anchors", "sample_color", "sample_colors", "get_histogram", "get_state", "list_documents", "memory_status", "list_layers", "describe_canvas", "explain_tool", "list_objects", "get_object", "get_path", "render_region", "collect_diagnostics", "put_blob", "list_selections", "list_fonts", "get_object_history", "get_stroke_log", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "vector_hit_test", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "list_presets", "get_preset", "preview_preset", "estimate_dehaze", "preview_suggestion", "export_project", "verify_package", "get_bake_status", "save_palette", "analyze_region", "stroke_heatmap", "list_palette_colors", "swatch_brush_strokes", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "export_svg", "export_book_pngs", "export_timelapse", "try_stroke", "list_attempts", "discard_stroke", "try_batch", "list_atoms", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "get_brush_dynamics", "set_brush_curve", "apply_curve_preset", "list_engine_capabilities", "get_brush_settings", "set_brush_setting", "list_brushes", "reference_trace_region"];
+const LOCAL_READ_TOOLS = ["get_document", "get_anchors", "sample_color", "sample_colors", "get_histogram", "get_state", "list_documents", "memory_status", "list_layers", "describe_canvas", "explain_tool", "yanshi_help", "list_objects", "get_object", "get_path", "render_region", "collect_diagnostics", "put_blob", "list_selections", "list_fonts", "get_object_history", "get_stroke_log", "find_atom", "get_diff", "get_ancestors", "get_descendants", "list_stashes", "export_psd_layers", "begin_transaction", "commit_transaction", "begin_changeset", "commit_changeset", "get_changesets", "get_dependency_graph", "get_resolved_state", "vector_hit_test", "get_undo_status", "set_reference", "clear_reference", "get_preferences", "get_log", "get_job", "collect_garbage", "get_render_status", "cancel_job", "get_inflight", "cancel_operation", "get_checkpoints", "create_annotation", "update_annotation", "delete_annotation", "list_annotations", "get_annotation", "resolve_annotation", "reject_annotation", "list_effects", "list_presets", "get_preset", "preview_preset", "estimate_dehaze", "preview_suggestion", "export_project", "verify_package", "get_bake_status", "save_palette", "analyze_region", "stroke_heatmap", "list_palette_colors", "swatch_brush_strokes", "brush_preview", "list_assets", "import_asset", "list_textures", "export_png", "export_svg", "export_book_pngs", "export_timelapse", "try_stroke", "list_attempts", "discard_stroke", "try_batch", "list_atoms", "get_atom", "list_comments", "list_suggestions", "set_brush_dynamics", "get_brush_dynamics", "set_brush_curve", "apply_curve_preset", "list_engine_capabilities", "get_brush_settings", "set_brush_setting", "list_brushes", "reference_trace_region"];
 
 /// **缓存键必须带上请求参数** ✗ —— 实测（第 1130 轮）：`list_assets {kind:"brush"}` 与
 /// `{kind:"texture"}` 是**同一个 URL** ✓（`/api/tools/list_assets` ✓）
@@ -9783,6 +9781,7 @@ function setupAssetDock() {
       areaToggle.setAttribute("aria-pressed", String(!!collapsed));
       areaToggle.textContent = collapsed ? "画笔 ▸" : "画笔 ▾";
     }
+    noteLayoutBrush(collapsed);
     return !!collapsed;
   };
   if (areaToggle) areaToggle.addEventListener("click", () => setCollapsed(!document.body.classList.contains("brush-area-collapsed")));
@@ -9840,6 +9839,86 @@ function setupAssetDock() {
     homes: () => homes.map((home) => ({ id: home.node.id, parent: home.parent && home.parent.id })),
     where: () => homes.map((home) => home.node.parentNode && home.node.parentNode.id),
   };
+}
+
+/// **布局状态（右栏标签页 + 画笔区折叠）** ✓ —— 与 `yanshi.lang` 同命名空间的新键 `yanshi.layout` ✓。
+///
+/// **∴ 为什么另开一个键** ✗：面板显隐（`yanshi.panels`）、卡片折叠（`yanshi.dockers`）、
+/// 工作区预设（`yanshi.workspace`）早已各自持久化 ✓ ⇒ 本键只装**此前没存**的两个量 ✗，
+/// 不迁移旧键（迁移要动三处已判据化的读写路径 ✗ 收益为零 ✓）。
+/// **形状**：`{v:1, tab:"paint", brush:false}` ✓ —— `v` 是形状版本 ✗ 对不上就整份丢弃回默认 ✓；
+/// 读坏（解析失败／字段类型不对／tab 不在已知集合）⇒ **安全降级到默认** ✓ 不许白屏 ✗。
+const LAYOUT_STORE = "yanshi.layout";
+const LAYOUT_TABS = ["paint", "history", "assets", "file", "diag"];
+const layoutState = { tab: "paint", brushCollapsed: false };
+function loadLayoutState() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(LAYOUT_STORE) || "null"); } catch (_) { saved = null; }
+  if (saved && typeof saved === "object" && saved.v === 1) {
+    if (LAYOUT_TABS.includes(saved.tab)) layoutState.tab = saved.tab;
+    layoutState.brushCollapsed = saved.brush === true;
+  }
+}
+function saveLayoutState() {
+  try {
+    localStorage.setItem(LAYOUT_STORE, JSON.stringify(
+      { v: 1, tab: layoutState.tab, brush: layoutState.brushCollapsed }));
+  } catch (_) { /* 隐私模式下忽略 ✓ */ }
+}
+/// **标签页切换的落盘钩子** ✓（`showTab` 每次调用都经这里 ✗ ⇒ 点按与程序切换同口径 ✓）。
+function noteLayoutTab(key) {
+  if (!LAYOUT_TABS.includes(key)) return;
+  layoutState.tab = key;
+  saveLayoutState();
+}
+/// **画笔区折叠的落盘钩子** ✓（`setCollapsed` 每次调用都经这里 ✓）。
+function noteLayoutBrush(collapsed) {
+  layoutState.brushCollapsed = !!collapsed;
+  saveLayoutState();
+}
+/// **恢复默认布局** ✓（顶栏 `#resetLayout` ✓）：清掉**全部**布局存储 ✗
+/// （`yanshi.panels`／`yanshi.dockers`／`yanshi.workspace`／`yanshi.layout` ✓；
+/// 语言与渲染偏好**不在**此列 ✗），再按**首次启动的同一条路径**把默认应用上 ✓：
+/// 面板全显＋非全屏（`applyPanels` ✓）、工作区回「绘画」预设（`applyWorkspace("paint")` ✓
+/// —— 与 `initDockers` 的无存储回退**同一分支** ✗ ⇒ 历史卡照开机口径强制展开 ✓）、
+/// 标签页回「绘制」、画笔区展开 ✓。
+/// **∴ 应用路径会把默认值写回** panels／dockers／workspace 三键 ✓
+/// —— 那正是首次启动后的状态本身 ✓；`yanshi.layout` 在写回后**再删一次** ✗
+/// ⇒ 它保持缺省（= 默认）直到下一次改动 ✓。
+function resetLayoutToDefaults() {
+  const keys = [PANEL_STORE, DOCKER_STORE, WORKSPACE_STORE, LAYOUT_STORE];
+  for (const key of keys) { try { localStorage.removeItem(key); } catch (_) {} }
+  panels.rail = false;
+  panels.dockers = false;
+  panels.zen = false;
+  applyPanels();
+  applyWorkspace("paint");
+  for (const card of document.querySelectorAll('[data-panel="history"]')) {
+    card.classList.remove("collapsed");
+  }
+  for (const card of dockerCards()) {
+    if (/历史/.test(cardTitle(card))) card.classList.remove("collapsed");
+  }
+  layoutState.tab = "paint";
+  layoutState.brushCollapsed = false;
+  if (window.yanshiRightTabs) window.yanshiRightTabs.show("paint");
+  if (window.yanshiBrushArea) window.yanshiBrushArea.setCollapsed(false);
+  try { localStorage.removeItem(LAYOUT_STORE); } catch (_) {}
+}
+/// **开机恢复 + 恢复默认按钮接线** ✓ —— 必须在 `setupRightTabs()`／`setupAssetDock()` **之后**调 ✗
+/// （标签页与画笔区的钩子那时才存在 ✓ ⇒ 由 `setupAssetPanels()` 在两者之后调本函数 ✓）。
+function setupLayoutState() {
+  loadLayoutState();
+  if (layoutState.tab !== "paint" && window.yanshiRightTabs) {
+    const button = document.querySelector('#rightTabs button[data-tab="' + layoutState.tab + '"]');
+    // **那个 tab 已被自动隐藏**（没卡的 tab 会藏 ✓ 如「文件」✓）⇒ 不恢复 ✗ 留在默认「绘制」✓。
+    if (button && !button.hidden) window.yanshiRightTabs.show(layoutState.tab);
+  }
+  if (layoutState.brushCollapsed && window.yanshiBrushArea) {
+    window.yanshiBrushArea.setCollapsed(true);
+  }
+  const reset = document.getElementById("resetLayout");
+  if (reset) reset.addEventListener("click", resetLayoutToDefaults);
 }
 
 /// **右栏分 tab** ✓（用户："右边信息面板超级长，适合面板内部有小 tab 切换不同信息"✓）。
@@ -9901,6 +9980,7 @@ function setupRightTabs() {
     for (const button of bar.querySelectorAll("button")) {
       button.setAttribute("aria-pressed", String(button.dataset.tab === key));
     }
+    noteLayoutTab(key);
     return key;
   };
   aside.dataset.tabsReady = "1";
@@ -10073,6 +10153,8 @@ async function setupAssetPanels() {
   setupClippedTitles();
   // **然后把浮层挂上** ✓ —— 与卡片内容的装载互不依赖 ✓（搬的是节点本身 ✓）。
   setupAssetDock();
+  // **布局状态恢复 + 「恢复默认布局」接线** ✓ —— 标签页与画笔区的钩子这时才都在 ✓（见 `setupLayoutState` ✓）。
+  setupLayoutState();
   // **`setupBrushLibrary` 不在这儿调** ✗ —— 它的定义在**另一段 `<script>`** 里 ✓，
   // 从这里调只会 `ReferenceError` ✓（本轮实测：面板永远打不开 ✓、`open=false` ✗）。
   // 它改成在**定义那一侧**自初始化 ✓（见那个函数上面 ✓）——这是同一个坑的第 N 次 ✓，
@@ -12711,7 +12793,7 @@ async function loadLocalBrushText(name) {
   try {
     if (window.caches) {
       // **∴ 缓存键必须用**真正命中的那个 URL**✗**（**∴ 否则离线回退按 `request.url` 查不到 ✓）★
-      caches.open("yanshi-shell-2727720272546")
+      caches.open("yanshi-shell-5240274296492")
         .then((cache) => cache.put(hitUrl,
           new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } })))
         .catch((error) => console.warn("写缓存失败 " + hitUrl + "（离线将没有本地预览）：" + error));

@@ -71,6 +71,8 @@ const PAGE_TAIL_A: &str = r##"</head>
     <button id="toggleRail" type="button" aria-pressed="false" title="隐藏 / 显示左侧工具栏（快捷键 [ ）">◧ 工具栏</button>
     <button id="toggleDockers" type="button" aria-pressed="false" title="隐藏 / 显示右侧面板（快捷键 ] ）">◨ 面板</button>
     <button id="toggleZen" type="button" aria-pressed="false" title="全屏画布（快捷键 Tab，Esc 退出）">⛶ 全屏</button>
+    <!-- **恢复默认布局** ✓：布局（面板显隐／卡片折叠／右栏标签页／画笔区）的存储与恢复在 viewer-app.js 的布局状态一节 ✓ -->
+    <button id="resetLayout" type="button" title="把面板、卡片折叠、右栏标签页与画笔区恢复到默认布局，并清掉已存的布局">↺ 恢复默认布局</button>
   </span>
 <button id="langToggle" type="button" data-i18n="off" aria-pressed="false" title="把界面切成英文（English）">EN</button>
 </header>
