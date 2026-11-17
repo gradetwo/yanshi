@@ -134,6 +134,35 @@ export function __setLocalApiLoadersForTest(loaders) {
   Object.assign(__loaders, loaders || {});
 }
 
+/** **★ wasm 初始化必须只跑一次 ✗ ★**（**本轮定位 ✓**）：
+ *   **∴ 根因 ✗**：`wasm-bindgen` 的异步 `__wbg_init`（即 `mod.default()`）
+ *     只防**先后**调用、不防**并发**调用 ——
+ *     `if (wasm !== undefined) return wasm;` 在第一个 `await` 之前 ✓ ⇒
+ *     两个并发调用都会通过守卫、各建一个 wasm 实例 ✓ ⇒
+ *     后完成的 `__wbg_finalize_init` 覆盖 glue 的 `wasm` ✓ ⇒
+ *     先建实例上创建的内核句柄随即指向另一个实例的内存 ✓ ⇒
+ *     此后它上面任何方法都读到错内存、`load_atoms_json` 首当其冲报
+ *     `recursive use of an object ...` ✓（**实测**：页面重载后 viewer 启动与
+ *     判据首次渲染并发初始化时约 1/4 概率复现；`__kernelTrace` 显示两次调用
+ *     相隔 4–7ms、失败恒在 `load_atoms_json` ✓）。
+ *   **∴ 做法 ✗**：模块级缓存**同一个初始化 Promise**，所有调用点共用它 ⇒
+ *     每页最多一次 `__wbg_init` ✓；初始化失败时清掉缓存、允许之后重试 ✓。
+ *   **∴ 调用点 ✗**：本文件三处 `await mod.default()` ＋
+ *     `viewer-app.js:initWasm` 的 `await module.default()` 全部改走它 ✓。
+ */
+let __wasmInitMod = null;
+let __wasmInitPromise = null;
+export async function ensureWasmInit(mod) {
+  if (!mod || typeof mod.default !== "function") return mod;
+  if (__wasmInitPromise && __wasmInitMod === mod) return __wasmInitPromise;
+  __wasmInitMod = mod;
+  __wasmInitPromise = mod.default();
+  __wasmInitPromise.catch(() => {
+    if (__wasmInitMod === mod) { __wasmInitMod = null; __wasmInitPromise = null; }
+  });
+  return __wasmInitPromise;
+}
+
 /** **state@seq 求值窗口 ✗**（**照 `yanshi-core/src/seq.rs` 的 `state_at` ✓**，设计 5.5 ✓）：
  *   **∴ `state@seq_n := fold(A_n, base_state(H_n))` ✗**：
  *     `H_n` = `seq ≤ n` 中**最近一次** `declare_head`；`A_n` = `(H_n.seq, n]`；
@@ -5287,7 +5316,7 @@ async function withKernel(doc, fn) {
       }
       try {
         const mod = await __loaders.wasm();
-        if (typeof mod.default === "function") await mod.default();
+        await ensureWasmInit(mod);
         const { fetchBrushText, paintWithKernel } = await __loaders.brushLocal();
         // **∴ 自定义笔迹或默认 S 形 ✗**（**与服务端"**不给 points 就用固定缓 S 形**"一致 ✓**）。
         let pts;
@@ -6287,7 +6316,7 @@ async function withKernel(doc, fn) {
         //   **∴ 此前这里**绕过接缝**直接 import ✗** ⇒ **∴ 于是**注入假内核或预初始化的真内核
         //   （`initSync`）**都到不了这条路 ✗** ⇒ node 判据里**每个要像素的端点都只能 501** ✗。
         mod = await __loaders.wasm();
-        if (typeof mod.default === "function") await mod.default();
+        await ensureWasmInit(mod);
       } catch (err) {
         throw new Error("kernel_unavailable: /wasm/yanshi_wasm.js 未加载（" +
                         String((err && err.message) || err) + "）");
@@ -10446,7 +10475,7 @@ async function withKernel(doc, fn) {
         // ⇒ **∴ 加回 ✓**（**∴ 这正是"失败必须说出原因"的价值 ✓**）。
         const layerId = body.layer_id || (body.payload && body.payload.layer_id) || "L0";
         const mod = await import("/wasm/yanshi_wasm.js");
-        if (typeof mod.default === "function") await mod.default();
+        await ensureWasmInit(mod);
         // **★ 没有内核就**自己建**✗ ★**（第 655 轮 ✓ —— **∴ 修掉第 654 轮那个错 ✓**）：
         //   **∴ 落笔**不该依赖"先渲染过"✗** ⇒ **∴ 与 `render_region` 用**同一套参数**✗**
         //   （**`tile 256` ＋ 从创建原子取 `w`/`h` ＋ **限额 256 MiB** ✓**）。
