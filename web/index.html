@@ -12055,7 +12055,11 @@ function renderDodgeBurnCurrent() {
   if (!record) { out.textContent = "请选择源图层"; return; }
   const prefix = (($("dodgeBurnName") || {}).value || "").trim() || record.name;
   // **既有组按配方认**：落盘名是词干，旧工程成品名也认。
-  const groupName = "「" + prefix + " · " + dodgeBurnWord() + "」";
+  // **组名引号随语言** ✓：中文（及其余语言）用「」✓；英文的复用预测句被判据钉成
+  // `Group name "…"` 式样 ⇒ 英文必须用 ASCII 双引号 ✗ 带「」会被判「没翻到位」（browser-dodge-burn ⑨ ✓）。
+  const groupName = uiLang === "en"
+    ? "\"" + prefix + " · " + dodgeBurnWord() + "\""
+    : "「" + prefix + " · " + dodgeBurnWord() + "」";
   const existing = dodgeBurnRecords.find((layer) => layer.name === "「" + prefix + " · 减淡加深」"
     || (layer.metadata?.name_recipe?.kind === "dodge_burn" && layer.metadata.name_recipe.base === prefix));
   out.textContent = existing

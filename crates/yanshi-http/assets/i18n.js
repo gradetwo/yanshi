@@ -602,7 +602,7 @@ const I18N_EN_TEXT = {
   "★ 收藏": "★ Favourites",
   "图层 {n}": "Layer {n}",
   "可撤销 {undo} 笔 / 可重做 {redo} 笔": "{undo} strokes undoable / {redo} redoable",
-  "组名 {group} 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）": "Group {group} already exists ⇒ this run reuses it instead of creating a new one (delete it first to redo)",
+  "组名 {group} 已存在 ⇒ 这次会复用既有组、不新建（要重做请先删掉它）": "Group name {group} already exists ⇒ this run reuses it instead of creating a new one (delete it first to redo)",
   "将新建组 {group}（放在「{src}」上方）": "Will create group {group} (above “{src}”)",
   "撤销 0 / 重做 0": "Undo 0 / Redo 0",
   "选区 {n} 个｜约束之后的绘制": "{n} selection(s) | drawing is constrained",
