@@ -10639,7 +10639,11 @@ async function setupLayerPanel() {
   const add = $("layerAdd");
   if (add) add.onclick = async () => {
     const layers = await listLayers();
-    const made = await callTool("create_layer", { name: "图层 " + (layers.length + 1) });
+    // **默认图层名跟着界面语言** ✓（2026-11-17）：原来写死 `"图层 " + n` ✗ ⇒ 英文界面下
+    //   新建出来的层仍叫「图层 3」✓，而图层名是**用户数据**（行/下拉都标了 `data-i18n="off"` ✓）
+    //   ⇒ i18n 那一层**永远不会**替它翻译 ✗ ⇒ 英文模式里中文残留在**名字**上（实测抓到 ✓）。
+    //   名是"我们给的缺省"而不是用户输入 ⇒ 生成那一刻就该用当前语言 ✓。
+    const made = await callTool("create_layer", { name: (uiLang === "en" ? "Layer " : "图层 ") + (layers.length + 1) });
     // **新建之后必须选中它** ✗（真实用户报告 ✓）—— 严格照**下面 `duplicate` 已有的模式** ✓。
     //
     // **为什么这是真 bug** ✓：新图层建在**最上面** ✓ 而**选中仍停在旧图层** ✗
@@ -16016,6 +16020,16 @@ const uiLang = (() => {
 const uiLangInfo = UI_LANGS.find((item) => item.code === uiLang) || UI_LANGS[0];
 // **当前语言的两张词表与属性句式表** ✓（中文没有表 ⇒ 三个都为 null ⇒ 一切落回原文 ✓）。
 const uiTextTable = uiLang === "zh" ? null : I18N_TEXT_BY_LANG[uiLang];
+
+/// **缺省图层名要随界面语言生成** ✓（0007 的 9 语言版）——
+/// 图层名本身是**用户数据** ✓（`data-i18n="off"` ✓ 建好就不再翻译 ✓），
+/// 但**自动取的名字**不是数据 ✓ 它由界面生成 ✓ ⇒ 界面是日语就该叫「レイヤー 3」✗ 不该叫「图层 3」✓。
+/// 词表按**精确中文原文**查 ✓ ⇒ 这里用一条**带占位**的键 `"图层 {n}"` ✓（不参与 DOM 匹配 ✓
+/// 只被本函数取用 ✓），九种语言各有一条 ✓；缺词条时回退中文 ✓（`i18nText` 同一条降级口径 ✓）。
+function defaultLayerName(n) {
+  const template = (uiTextTable && uiTextTable["图层 {n}"]) || "图层 {n}";
+  return template.replace("{n}", String(n));
+}
 const uiAttrTable = uiLang === "zh" ? null : I18N_ATTR_BY_LANG[uiLang];
 const uiAttrPatterns = uiLang === "zh" ? null : I18N_ATTR_PATTERNS_BY_LANG[uiLang];
 const i18nOriginal = new WeakMap();
