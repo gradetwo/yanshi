@@ -12710,7 +12710,13 @@ board.addEventListener("pointerdown", (event) => {
     return;
   }
   // **标注** ✓（设计 4.6 / 13.4 ✓）：点一下就**在该处**新建一条 ✓，不落笔 ✗。
-  if (state.tool === "annotate" && kernelReady()) {
+  // **不许拿 `kernelReady()` 当闸** ✗（0011 ✓ 2026-11-17 实测）：标注是一次**纯服务端**
+  // `create_annotation` ✓（见 `createAnnotationAt` ✓ 它连 `layer_id` 都不吃 ✓），
+  // 与本地内核**毫无关系** ✓ ⇒ 之前那句 `&& kernelReady()` 只有一个后果：
+  // **服务端渲染的页面（移动端、内核预热中、本地内核装不下这份文档时）点标注完全没反应** ✓
+  // 且**一个字都不报** ✗（用户看到的就是"标注工具坏了" ✓）。
+  // ⇒ 去掉这道闸 ✓，与下面「锚点」那条同一条口径 ✓（锚点也只吃 `localPoint` ✓ 从不判内核 ✓）。
+  if (state.tool === "annotate") {
     const point = localPoint(event);
     void createAnnotationAt(point.x, point.y);
     event.preventDefault();
