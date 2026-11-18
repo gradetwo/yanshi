@@ -7878,6 +7878,13 @@ function setupRightTabs() {
 /// 修法只做一件最小的事 ✓：`change` 时按声明夹紧 ✓；清空则回退到上一个合法值 ✓（不塞 0 ✗）。
 function setupNumericGuards() {
   for (const el of document.querySelectorAll("input[type=number]")) {
+    // **不夹带自校验的框** ✓（0041 的跟进修；CI run 44279530061 两条红的根因）：
+    // 区域填充与减淡加深两张卡对非法值做「先拦后送」——处理器自己读值、越界就地拒绝、
+    // 不发请求（宽 0 ⇒「尺寸要大于 0」；中点 1.5 ⇒「要在 0.05–0.95 之间」）。
+    // 若这里先把 0 夹成 1、把 1.5 夹成 0.95，处理器读到的就是合法值 ⇒ 拒绝永不发生、
+    // 请求照发（实测：宽 0 落下脏区 24,24,1,80；中点 1.5 建出组、原子 6→15）。
+    // ⇒ 带 `data-numeric-guard="off"` 的框跳过夹紧，原值原样交给处理器的自校验。
+    if (el.dataset.numericGuard === "off") continue;
     const lo = el.min === "" ? null : Number(el.min);
     const hi = el.max === "" ? null : Number(el.max);
     if (lo === null && hi === null) continue;
