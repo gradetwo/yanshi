@@ -5692,7 +5692,15 @@ async function createCheckpoint() {
   const created = await callToolChecked("checkpoint", { name, message: "来自编辑器的存档点" }, "打存档点");
   if (created && created.ok) {
     // **整句模板** ✓（0046）：实测英文界面里这条仍是中文 ✗
-    log(uiTemplate("已打存档点「{name}」✓", { name }));
+    // **回执要显示名，不是数据名** ✓（0047）：数据名固定是「存档 HH:MM:SS」形状 ✓（要跨语言稳定 ✓），
+    // 显示层本来就有 `存档 {time}` 的九语词条 ✓；但回执直接拿 `name`（数据名）⇒ 非中文界面照样中文 ✗。
+    // ⇒ 这里只做一件小事：把规范形状换成显示名再进模板 ✓（数据本身不动 ✓）。
+    // **默认存档只报时刻** ✓（0048）：改成"显示名"后 ja/de 出现重复词
+    //（セーブポイント「セーブポイント …」／Sicherungspunkt „Speicherpunkt …“）✗
+    // ⇒ 默认形状回执只给时刻 ✓（列表里仍是完整名字 ✓），用户自命名的照旧显示原话 ✓。
+    const stamp = /^存档\s+(\d{2}:\d{2}:\d{2})$/.exec(name);
+    const label = stamp ? stamp[1] : name;
+    log(uiTemplate("已打存档点「{name}」✓", { name: label }));
     await refreshCheckpoints();
   }
 }
