@@ -20,6 +20,7 @@
     --line: #2b313b;        /* 分隔线 */
     --text: #e7eaef;        /* 正文（对 --bg 约 14.6:1 ✓） */
     --muted: #a3adbb;       /* 次要文字（对 --bg 约 7.8:1 ✓） */
+    --faint: #8b95a3;       /* 三级弱文字：只在"不常看的长说明"上用 ✓（0039 收令牌） */
     --accent: #3d6bb3;      /* 强调 / 选中 / 焦点环 */
     --accent-soft: #2b4a7d; /* 选中态的柔化底色 */
     /* **控件统一高度** ✓（真浏览器实测过：同一排按钮曾出现 26 / 27 / 28 三档并存 ✗ ⇒
@@ -755,7 +756,7 @@
   /* **长说明的默认态** ✓（0022）：小一号、更淡、单行省略 —— 不抢主视线 ✓ */
   .hint-clipped {
     display: block; max-width: calc(100% - 24px); white-space: nowrap; overflow: hidden;
-    text-overflow: ellipsis; font-size: 10px; line-height: 1.5; color: #8b95a3; opacity: .9;
+    text-overflow: ellipsis; font-size: 10px; line-height: 1.5; color: var(--faint); opacity: .9;
   }
   /* 展开态：原地换行显示全文，仍是小号弱色（不是"变成正文"✓） */
   .hint-clipped.hint-expanded {
@@ -766,10 +767,15 @@
   .hint-toggle {
     width: 20px; min-width: 20px; height: 28px; padding: 0; margin-left: 2px;
     font-size: 12px; line-height: 1; border-radius: 4px;
-    background: transparent; border: 1px solid transparent; color: #8b95a3;
+    background: transparent; border: 1px solid transparent; color: var(--faint);
     cursor: pointer; vertical-align: middle;
   }
   .hint-toggle:hover { border-color: var(--hairline); color: var(--text); }
+  /* **触控下限** ✓（0038）：窄屏上 ＋ 只有 20px 宽、点不准（实测 390×844：20×40）。
+     指头的最小可靠目标 ≈32px ⇒ 只在窄屏把宽度/高度补到 32 ✓ 桌面仍 20（不占视觉重量 ✓）。 */
+  @media (max-width: 480px) {
+    .hint-toggle { width: 32px; min-width: 32px; height: 32px; }
+  }
   /* 纯图标按钮（0022）：撤销/重做/刷新/自检只剩符号，语义在 aria-label ✓ */
   .toolbar button[data-tool="undo"], .toolbar button[data-tool="redo"],
   .toolbar button[data-tool="refresh"], .toolbar button[data-tool="check"] {
