@@ -14754,16 +14754,31 @@ function clipHintText(el) {
   toggle.textContent = "＋";
   toggle.setAttribute("aria-expanded", "false");
   toggle.setAttribute("aria-label", "展开说明");
-  toggle.addEventListener("click", (event) => {
-    event.stopPropagation();
-    const open = !el.classList.contains("hint-expanded");
+  // **展开态也要记住** ✓（0037）：卡片折叠记在 `yanshi.fold`，说明展开却没记 ⇒
+  // 用户展开过、一刷新又收回去，两套同类交互的规矩不一致（实测：刷新后 hintOpen=false）。
+  // key 用「所属卡片的 id（没有就用 body）+ 说明首句」⇒ 刷新后文案不变就能对上 ✓。
+  const hintKey = (el.closest("[id]") || document.body).id + ":" + head.slice(0, 24);
+  const applyHint = (open) => {
     el.classList.toggle("hint-expanded", open);
     el.textContent = open ? el.dataset.full : head + "…";
     toggle.textContent = open ? "－" : "＋";
     toggle.setAttribute("aria-expanded", open ? "true" : "false");
     toggle.setAttribute("aria-label", open ? "收起说明" : "展开说明");
+    try {
+      const hints = JSON.parse(localStorage.getItem("yanshi.hints") || "{}") || {};
+      if (open) hints[hintKey] = true; else delete hints[hintKey];
+      localStorage.setItem("yanshi.hints", JSON.stringify(hints));
+    } catch (error) { /* 存不了只影响下次 ✓ */ }
+  };
+  toggle.addEventListener("click", (event) => {
+    event.stopPropagation();
+    applyHint(!el.classList.contains("hint-expanded"));
   });
   el.after(toggle);
+  // 刷新后恢复：只有明确记录过展开才展开 ✓（与卡片折叠同一条口径 ✓）
+  let hintSaved = {};
+  try { hintSaved = JSON.parse(localStorage.getItem("yanshi.hints") || "{}") || {}; } catch (error) { hintSaved = {}; }
+  if (hintSaved[hintKey] === true) applyHint(true);
 }
 function clipAllHints() {
   for (const el of document.querySelectorAll(".hint, .note, aside small")) clipHintText(el);
