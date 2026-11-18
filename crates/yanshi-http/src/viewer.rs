@@ -1239,7 +1239,7 @@ const PAGE_TAIL_B: &str = r##"</script>
 /// ⚠️ 这里**必须用拼接、不能用 `format!`** ✗ —— JS 里全是花括号 ✗，格式化会把它们当占位符 ✓
 /// （真正的占位符只有 `__READ_TOOLS__` / `__BUILD_ID__` ✓，用 `.replace` 替换 ✓）。
 fn page_template() -> String {
-    [
+    let raw = [
         PAGE_HEAD,
         PAGE_TAIL_A,
         // **主脚本** ✓ —— `PAGE_TAIL_A` 尾部已把三份过程视频资产以 `<script src=>`
@@ -1248,7 +1248,50 @@ fn page_template() -> String {
         include_str!("../assets/viewer-app.js"),
         PAGE_TAIL_B,
     ]
-    .concat()
+    .concat();
+    strip_html_comments(&raw)
+}
+
+/// **合成时剥离 HTML 注释** ✓（本轮瘦身）—— 标记常量里的说明注释是**给读源码的人看的文档**，
+/// 随页面出厂只占字节（实测三段常量里 77 段、约 38 KB）。源头一个字不动，只剥**发出形态**：
+/// 逐段扫描，`<script>…</script>` 区块**原样保留**（脚本内容不是标记，里面的 `<!--` 形
+/// 字符串不许碰 ✓）；区块外遇 `<!--` 就删到最近的 `-->`；**扫不到收尾就把余下原文照抄**
+/// （失败方向是「没瘦下来」，不是「把页面删坏」✓）。
+/// 行为不变的依据：HTML 注释不产生 DOM 节点、不影响渲染与脚本执行；剥离不增删任何空白
+/// （注释两侧原有的换行/缩进原样保留 ⇒ 行内布局不变 ✓）。
+fn strip_html_comments(template: &str) -> String {
+    let bytes = template.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"<script") {
+            // 脚本区块：连同收尾标签整段照抄；找不到收尾就照抄到结尾（同上，失败方向安全 ✓）。
+            let end = find_subslice(&bytes[i..], b"</script>")
+                .map(|at| i + at + b"</script>".len())
+                .unwrap_or(bytes.len());
+            out.extend_from_slice(&bytes[i..end]);
+            i = end;
+        } else if bytes[i..].starts_with(b"<!--") {
+            match find_subslice(&bytes[i + 4..], b"-->") {
+                Some(at) => i += 4 + at + 3,
+                None => {
+                    out.extend_from_slice(&bytes[i..]);
+                    break;
+                }
+            }
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("剥注释只删 ASCII 定界符，不会切坏 UTF-8")
+}
+
+/// 在 `haystack` 里找 `needle` 的首个字节偏移（剥注释扫描用；找不到 ⇒ `None`）。
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 /// 页面长度（测试与可观测性）。
@@ -1372,6 +1415,36 @@ mod tests {
             );
             previous_at = at;
         }
+    }
+
+    /// **合成时剥 HTML 注释** ✓（本轮瘦身）—— 断言 ① 标记里的注释被剥、标记本体不动 ✓；
+    /// ② `<script>` 区块内的 `<!--` 形文字**不许动**（那是脚本内容，不是标记注释 ✓）；
+    /// ③ 没收尾的注释把原文照抄（失败方向是「没瘦下来」，不是「删坏页面」✓）；
+    /// ④ 整页层面：源头注释里的独有句子不在发出页里、它描述的标记还在 ✓
+    /// （**变异：去掉 `page_template` 里的剥离调用 ⇒ ④ 红 ✓；剥离器误伤脚本 ⇒ ② 红 ✓**）。
+    #[test]
+    fn html_comments_are_stripped_at_composition_time() {
+        assert_eq!(
+            strip_html_comments("<p>a</p><!-- 说明 --><p>b</p>"),
+            "<p>a</p><p>b</p>"
+        );
+        assert_eq!(
+            strip_html_comments("<script>var s = '<!--x-->';</script><!-- 外 -->"),
+            "<script>var s = '<!--x-->';</script>"
+        );
+        assert_eq!(
+            strip_html_comments("<p>a</p><!-- 没收尾"),
+            "<p>a</p><!-- 没收尾"
+        );
+        let page = page_template();
+        assert!(
+            !page.contains("两张卡搬进来"),
+            "PAGE_TAIL_B 注释里的独有句子不该出现在发出页里（合成时剥注释 ✓）"
+        );
+        assert!(
+            page.contains("<div id=\"fileMenu\" hidden>"),
+            "注释描述的标记本体必须原样保留 ✓"
+        );
     }
 
     /// **(A)①＋NEW-H1 第二步：CSS 是独立可打包资产，且页面以 `<link>` 引用它** ✓ ——
