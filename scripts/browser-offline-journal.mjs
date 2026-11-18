@@ -623,7 +623,8 @@ const waitForPrecache = async (path, timeoutMs = Number(process.env.YANSHI_WAIT_
   check((badEntries || []).length === 1, "被拒的条目**还在队列里**（实际 " + (badEntries || []).length + " 条）");
   check(!!badEntries[0] && badEntries[0].state === "failed", "它的 state = failed（实际 " + (badEntries[0] && badEntries[0].state) + "）");
   check(badUi.state === "failed", "界面 data-state = failed（实际 " + badUi.state + "）");
-  check(!!badUi.banner && badUi.banner.indexOf("被服务端拒绝") >= 0, "界面上写着被拒、且仍在队列（实际「" + badUi.banner + "」）");
+  // 横幅已走 uiTemplate 本地化（§⑥ 遗留修复）：断言随页面语言前提取词，与 ⑦ 的 bannerHas 同口径。
+  check(bannerHas(badUi.banner, "被服务端拒绝", "rejected by the server"), "界面上写着被拒、且仍在队列（实际「" + badUi.banner + "」）");
   await evaluate("window.yanshi.discardOutbox()");
   await evaluate("window.yanshi.refreshOutbox()");
 
