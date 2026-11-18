@@ -655,6 +655,13 @@ const I18N_EN_TEXT = {
   "读取失败（服务端）：": "Read failed (the server): ",
   "读取失败（本地内核）：": "Read failed (the local kernel): ",
   "粗细要在 1..512 之间才能预览（当前 ": "size must be 1..512 to preview (currently ",
+  "离线排队 {n} 条": "{n} queued offline",
+  "服务端这份文档已变化，已暂停补交（{n} 条）": "server-side document changed — replay paused ({n})",
+  "队列已满，刚才那一步没有记录（{n} 条已排队）": "queue full — last step not recorded ({n} queued)",
+  "离线排队 {n} 条，联网后自动按序补交": "{n} queued offline — replayed in order once online",
+  "区域要四个值填齐（x, y, w, h）才生效；当前只填了 {n} 个": "all four values (x, y, w, h) required; only {n} given",
+  "参考图已就位（{w}×{h}）": "reference ready ({w}×{h})",
+  " · 本浏览器未缓存原图，刷新后可能需要重传": " · the original is not cached here; re-upload after a refresh",
 };
 const I18N_EN_ATTR = {
   // **效果卡那句"为什么"从可见长句改成 `title=`** ✓（第七轮 `ui-text-density` 红出来的 ✓ 见 docs ㊴）
@@ -1479,6 +1486,13 @@ const I18N_FR_TEXT = {
   "读取失败（服务端）：": "échec de lecture (le serveur) : ",
   "读取失败（本地内核）：": "échec de lecture (le noyau local) : ",
   "粗细要在 1..512 之间才能预览（当前 ": "la taille doit être 1..512 pour l'aperçu (actuellement ",
+  "离线排队 {n} 条": "{n} en file hors-ligne",
+  "服务端这份文档已变化，已暂停补交（{n} 条）": "document côté serveur modifié — reprise en pause ({n})",
+  "队列已满，刚才那一步没有记录（{n} 条已排队）": "file pleine — dernière étape non enregistrée ({n} en file)",
+  "离线排队 {n} 条，联网后自动按序补交": "{n} en file hors-ligne — rejoués dans l'ordre au retour du réseau",
+  "区域要四个值填齐（x, y, w, h）才生效；当前只填了 {n} 个": "les quatre valeurs (x, y, w, h) requises ; seulement {n}",
+  "参考图已就位（{w}×{h}）": "référence en place ({w}×{h})",
+  " · 本浏览器未缓存原图，刷新后可能需要重传": " · l'original n'est pas en cache ; réenvoyer après actualisation",
 };
 const I18N_FR_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Les paramètres par défaut n'ont souvent aucun effet ; un nom de paramètre mal orthographié est aussi accepté tel quel (le noyau ne valide que les clés qu'il connaît).",
@@ -2187,6 +2201,13 @@ const I18N_ES_TEXT = {
   "读取失败（服务端）：": "error de lectura (el servidor): ",
   "读取失败（本地内核）：": "error de lectura (el núcleo local): ",
   "粗细要在 1..512 之间才能预览（当前 ": "el grosor debe ir de 1 a 512 para previsualizar (ahora ",
+  "离线排队 {n} 条": "{n} en cola offline",
+  "服务端这份文档已变化，已暂停补交（{n} 条）": "documento del servidor cambió — reenvío en pausa ({n})",
+  "队列已满，刚才那一步没有记录（{n} 条已排队）": "cola llena — último paso no registrado ({n} en cola)",
+  "离线排队 {n} 条，联网后自动按序补交": "{n} en cola offline — se reenvían en orden al reconectar",
+  "区域要四个值填齐（x, y, w, h）才生效；当前只填了 {n} 个": "hacen falta los cuatro valores (x, y, w, h); solo {n}",
+  "参考图已就位（{w}×{h}）": "referencia lista ({w}×{h})",
+  " · 本浏览器未缓存原图，刷新后可能需要重传": " · el original no está en caché; puede hacer falta resubir",
 };
 const I18N_ES_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Los parámetros por defecto a menudo no tienen ningún efecto, y un nombre de parámetro mal escrito se guarda tal cual (el núcleo solo valida las claves que reconoce).",
@@ -2895,6 +2916,13 @@ const I18N_PT_TEXT = {
   "读取失败（服务端）：": "falha de leitura (o servidor): ",
   "读取失败（本地内核）：": "falha de leitura (o núcleo local): ",
   "粗细要在 1..512 之间才能预览（当前 ": "o tamanho precisa ficar em 1..512 para a prévia (agora ",
+  "离线排队 {n} 条": "{n} na fila offline",
+  "服务端这份文档已变化，已暂停补交（{n} 条）": "documento no servidor mudou — reenvio pausado ({n})",
+  "队列已满，刚才那一步没有记录（{n} 条已排队）": "fila cheia — último passo não registrado ({n} na fila)",
+  "离线排队 {n} 条，联网后自动按序补交": "{n} na fila offline — reenviados em ordem ao reconectar",
+  "区域要四个值填齐（x, y, w, h）才生效；当前只填了 {n} 个": "os quatro valores (x, y, w, h) são necessários; só {n}",
+  "参考图已就位（{w}×{h}）": "referência pronta ({w}×{h})",
+  " · 本浏览器未缓存原图，刷新后可能需要重传": " · original não está em cache; reenvie se precisar",
 };
 const I18N_PT_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Parâmetros padrão muitas vezes não têm efeito nenhum, e um nome de parâmetro com erro de digitação é guardado como está (o núcleo só valida as chaves que conhece).",
@@ -3603,6 +3631,13 @@ const I18N_JA_TEXT = {
   "读取失败（服务端）：": "読み取りに失敗しました（サーバー）：",
   "读取失败（本地内核）：": "読み取りに失敗しました（ローカルカーネル）：",
   "粗细要在 1..512 之间才能预览（当前 ": "プレビューには太さ 1〜512 が必要です（現在 ",
+  "离线排队 {n} 条": "{n} 件をオフラインでキューに追加",
+  "服务端这份文档已变化，已暂停补交（{n} 条）": "サーバー側のドキュメントが変わったため再送を保留（{n} 件）",
+  "队列已满，刚才那一步没有记录（{n} 条已排队）": "キューが満杯で直前の操作は記録されていません（{n} 件待機中）",
+  "离线排队 {n} 条，联网后自动按序补交": "{n} 件をオフラインでキューに追加、再接続後に順に再送します",
+  "区域要四个值填齐（x, y, w, h）才生效；当前只填了 {n} 个": "x, y, w, h の四つを埋めないと効きません。今は {n} 個",
+  "参考图已就位（{w}×{h}）": "参考画像を配置しました（{w}×{h}）",
+  " · 本浏览器未缓存原图，刷新后可能需要重传": " · このブラウザに原画のキャッシュはありません。再読み込み後の再送が必要かもしれません",
 };
 const I18N_JA_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "既定のパラメータはもともと効果がないことが多く、パラメータ名のタイプミスもそのまま受け付けられます（カーネルは知っているキーだけを検証します）。",
@@ -4311,6 +4346,13 @@ const I18N_KO_TEXT = {
   "读取失败（服务端）：": "읽기 실패(서버): ",
   "读取失败（本地内核）：": "읽기 실패(로컬 커널): ",
   "粗细要在 1..512 之间才能预览（当前 ": "미리보려면 굵기가 1~512 여야 합니다(현재 ",
+  "离线排队 {n} 条": "오프라인 대기열 {n}건",
+  "服务端这份文档已变化，已暂停补交（{n} 条）": "서버 문서가 바뀌어 재전송 보류({n}건)",
+  "队列已满，刚才那一步没有记录（{n} 条已排队）": "대기열이 가득 차 마지막 작업이 기록되지 않았습니다({n}건 대기)",
+  "离线排队 {n} 条，联网后自动按序补交": "오프라인 대기열 {n}건, 연결되면 순서대로 재전송합니다",
+  "区域要四个值填齐（x, y, w, h）才生效；当前只填了 {n} 个": "x, y, w, h 네 값을 모두 채워야 합니다. 지금은 {n}개",
+  "参考图已就位（{w}×{h}）": "참조 이미지 준비됨({w}×{h})",
+  " · 本浏览器未缓存原图，刷新后可能需要重传": " · 이 브라우저에 원본 캐시가 없습니다. 새로고침 후 다시 올려야 할 수 있습니다",
 };
 const I18N_KO_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "기본 매개변수는 원래 효과가 없는 경우가 많고, 매개변수 이름의 오타도 그대로 받아들여집니다(커널은 아는 키만 검증합니다).",
@@ -5019,6 +5061,13 @@ const I18N_RU_TEXT = {
   "读取失败（服务端）：": "ошибка чтения (сервер): ",
   "读取失败（本地内核）：": "ошибка чтения (локальное ядро): ",
   "粗细要在 1..512 之间才能预览（当前 ": "для предпросмотра размер 1..512 (сейчас ",
+  "离线排队 {n} 条": "{n} в офлайн-очереди",
+  "服务端这份文档已变化，已暂停补交（{n} 条）": "документ на сервере изменился — досылка паузирована ({n})",
+  "队列已满，刚才那一步没有记录（{n} 条已排队）": "очередь полна — последний шаг не записан ({n} в очереди)",
+  "离线排队 {n} 条，联网后自动按序补交": "{n} в офлайн-очереди — при подключении уйдут по порядку",
+  "区域要四个值填齐（x, y, w, h）才生效；当前只填了 {n} 个": "нужны все четыре значения (x, y, w, h); задано {n}",
+  "参考图已就位（{w}×{h}）": "референс на месте ({w}×{h})",
+  " · 本浏览器未缓存原图，刷新后可能需要重传": " · оригинал не кэширован; после перезагрузки нужна повторная загрузка",
 };
 const I18N_RU_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Параметры по умолчанию часто вообще не дают эффекта, а имя параметра с опечаткой просто сохраняется как есть (ядро проверяет только те ключи, которые знает).",
@@ -5727,6 +5776,13 @@ const I18N_DE_TEXT = {
   "读取失败（服务端）：": "Lesen fehlgeschlagen (der Server): ",
   "读取失败（本地内核）：": "Lesen fehlgeschlagen (der lokale Kernel): ",
   "粗细要在 1..512 之间才能预览（当前 ": "für die Vorschau Größe 1..512 (aktuell ",
+  "离线排队 {n} 条": "{n} offline eingereiht",
+  "服务端这份文档已变化，已暂停补交（{n} 条）": "serverseitiges Dokument geändert — Nachsenden pausiert ({n})",
+  "队列已满，刚才那一步没有记录（{n} 条已排队）": "Warteschlange voll — letzter Schritt nicht erfasst ({n} eingereiht)",
+  "离线排队 {n} 条，联网后自动按序补交": "{n} offline eingereiht — bei Verbindung der Reihe nach nachgesendet",
+  "区域要四个值填齐（x, y, w, h）才生效；当前只填了 {n} 个": "alle vier Werte (x, y, w, h) nötig; bisher {n}",
+  "参考图已就位（{w}×{h}）": "Referenz liegt vor ({w}×{h})",
+  " · 本浏览器未缓存原图，刷新后可能需要重传": " · das Original ist nicht zwischengespeichert; nach Neuladen erneut hochladen",
 };
 const I18N_DE_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Standardparameter haben oft überhaupt keine Wirkung, und ein falsch geschriebener Parametername wird einfach so gespeichert (der Kern prüft nur die Schlüssel, die er kennt).",
