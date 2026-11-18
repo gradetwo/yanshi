@@ -771,8 +771,8 @@ const PAGE_TAIL_A: &str = r##"</head>
           <option value="gray">灰层法（涂就见效）</option>
           <option value="curves">曲线法（曲线可回改）</option>
         </select></label>
-        <label>减淡中点 <input id="dodgeBurnDodge" type="number" min="0.05" max="0.95" step="0.01" value="0.62" style="width:68px" title="曲线法的减淡强度（显示空间 0.05–0.95，0.5 = 无效果）；只对曲线法有意义" /></label>
-        <label>加深中点 <input id="dodgeBurnBurn" type="number" min="0.05" max="0.95" step="0.01" value="0.38" style="width:68px" title="曲线法的加深强度（显示空间 0.05–0.95，0.5 = 无效果）；只对曲线法有意义" /></label>
+        <label>减淡中点 <input id="dodgeBurnDodge" type="number" data-numeric-guard="off" min="0.05" max="0.95" step="0.01" value="0.62" style="width:68px" title="曲线法的减淡强度（显示空间 0.05–0.95，0.5 = 无效果）；只对曲线法有意义" /></label>
+        <label>加深中点 <input id="dodgeBurnBurn" type="number" data-numeric-guard="off" min="0.05" max="0.95" step="0.01" value="0.38" style="width:68px" title="曲线法的加深强度（显示空间 0.05–0.95，0.5 = 无效果）；只对曲线法有意义" /></label>
         <label>组名前缀 <input id="dodgeBurnName" type="text" placeholder="缺省用源图层名" style="width:150px" title="建出「前缀 · 减淡加深」组；同名组已存在时复用而不叠第二套" /></label>
         <button id="dodgeBurnRun" type="button" title="建组；中点越界时不发送请求、不写入任何改动">建组</button>
       </div>
@@ -813,14 +813,14 @@ const PAGE_TAIL_A: &str = r##"</head>
       <div class="toolbar" id="fillRegionRectRow" style="gap:8px;flex-wrap:wrap">
         <label>x <input id="fillRegionX" type="number" step="1" value="24" style="width:64px" title="左上角 x（文档像素）" /></label>
         <label>y <input id="fillRegionY" type="number" step="1" value="24" style="width:64px" title="左上角 y（文档像素）" /></label>
-        <label>宽 <input id="fillRegionW" type="number" min="1" step="1" value="120" style="width:64px" title="宽度（像素，要大于 0）" /></label>
-        <label>高 <input id="fillRegionH" type="number" min="1" step="1" value="80" style="width:64px" title="高度（像素，要大于 0）" /></label>
+        <label>宽 <input id="fillRegionW" type="number" data-numeric-guard="off" min="1" step="1" value="120" style="width:64px" title="宽度（像素，要大于 0）" /></label>
+        <label>高 <input id="fillRegionH" type="number" data-numeric-guard="off" min="1" step="1" value="80" style="width:64px" title="高度（像素，要大于 0）" /></label>
       </div>
       <div class="toolbar" id="fillRegionEllipseRow" style="gap:8px;flex-wrap:wrap;display:none">
         <label>中心 x <input id="fillRegionCx" type="number" step="1" value="84" style="width:64px" title="椭圆中心 x" /></label>
         <label>中心 y <input id="fillRegionCy" type="number" step="1" value="64" style="width:64px" title="椭圆中心 y" /></label>
-        <label>rx <input id="fillRegionRx" type="number" min="1" step="1" value="60" style="width:64px" title="横向半径（要大于 0）" /></label>
-        <label>ry <input id="fillRegionRy" type="number" min="1" step="1" value="40" style="width:64px" title="纵向半径（要大于 0）" /></label>
+        <label>rx <input id="fillRegionRx" type="number" data-numeric-guard="off" min="1" step="1" value="60" style="width:64px" title="横向半径（要大于 0）" /></label>
+        <label>ry <input id="fillRegionRy" type="number" data-numeric-guard="off" min="1" step="1" value="40" style="width:64px" title="纵向半径（要大于 0）" /></label>
       </div>
       <div class="toolbar" id="fillRegionPolygonRow" style="gap:8px;flex-wrap:wrap;display:none">
         <label>顶点 <input id="fillRegionPoints" type="text" placeholder="x,y 空格或分号分隔，至少 3 个" style="width:280px" title="多边形顶点，至少 3 个（开放路径按隐式闭合填充）" /></label>
@@ -834,8 +834,8 @@ const PAGE_TAIL_A: &str = r##"</head>
       </div>
       <div class="toolbar" style="gap:8px;flex-wrap:wrap">
         <label>颜色 <input id="fillRegionColor" type="color" value="#dc2828" title="填充色：送出的是 {r,g,b} 对象，服务端再把不透明度乘进 alpha" /></label>
-        <label>不透明 <input id="fillRegionOpacity" type="number" min="0" max="1" step="0.05" value="1" style="width:64px" title="0–1：服务端把它乘进颜色的 alpha" /></label>
-        <label>羽化 <input id="fillRegionFeather" type="number" min="0" max="128" step="1" value="0" style="width:64px" title="边缘过渡半径（文档像素，0 = 硬边）" /></label>
+        <label>不透明 <input id="fillRegionOpacity" type="number" data-numeric-guard="off" min="0" max="1" step="0.05" value="1" style="width:64px" title="0–1：服务端把它乘进颜色的 alpha" /></label>
+        <label>羽化 <input id="fillRegionFeather" type="number" data-numeric-guard="off" min="0" max="128" step="1" value="0" style="width:64px" title="边缘过渡半径（文档像素，0 = 硬边）" /></label>
         <label>填什么 <select id="fillRegionMode" title="纯色，或把画面另一块的像素当纹理铺进来">
           <option value="color">纯色</option>
           <option value="region">取画面这块</option>
@@ -844,8 +844,8 @@ const PAGE_TAIL_A: &str = r##"</head>
       <div class="toolbar" id="fillRegionSrcRow" style="gap:8px;flex-wrap:wrap;display:none">
         <label>源 x <input id="fillRegionSrcX" type="number" step="1" value="0" style="width:64px" title="取纹理那块矩形的左上角 x" /></label>
         <label>源 y <input id="fillRegionSrcY" type="number" step="1" value="0" style="width:64px" title="取纹理那块矩形的左上角 y" /></label>
-        <label>源宽 <input id="fillRegionSrcW" type="number" min="1" step="1" value="40" style="width:64px" title="取纹理那块矩形的宽（要大于 0）" /></label>
-        <label>源高 <input id="fillRegionSrcH" type="number" min="1" step="1" value="40" style="width:64px" title="取纹理那块矩形的高（要大于 0）" /></label>
+        <label>源宽 <input id="fillRegionSrcW" type="number" data-numeric-guard="off" min="1" step="1" value="40" style="width:64px" title="取纹理那块矩形的宽（要大于 0）" /></label>
+        <label>源高 <input id="fillRegionSrcH" type="number" data-numeric-guard="off" min="1" step="1" value="40" style="width:64px" title="取纹理那块矩形的高（要大于 0）" /></label>
       </div>
       <div class="toolbar" style="gap:8px">
         <button id="fillRegionRun" type="button" title="落笔：形状尺寸不合法时不发送请求、不写入任何改动">填充</button>

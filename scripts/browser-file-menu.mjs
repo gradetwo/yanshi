@@ -21,7 +21,12 @@ __judgeTimeout.unref();
 //   ⑤ 零控制台错误 ✓。
 //
 // 用法：node scripts/browser-file-menu.mjs "http://127.0.0.1:<port>/?doc=<id>&token=<token>"
-const url = process.argv[2];
+// **语言前提钉死中文** ✓（CI run 44279530061 shard 2/6 实测）：本判据第 ③ 条等日志里的
+// 「已导出 PNG：W×H」✓ ⇒ 而 4079af17 起导出回执走 `uiTemplate`、跟界面语言走 ✓ ⇒
+// CI 的无头 Chromium 是英文界面 ⇒ 日志是英文 ⇒ 等待超时（导出本身照常落文件 ✗）。
+// 语言是前提不是被测项，照 `browser-fill-region`（`lang=zh`）的先例钉死；重载保留查询串 ✓。
+let url = process.argv[2];
+if (url && !/[?&]lang=/.test(url)) url += (url.includes("?") ? "&" : "?") + "lang=zh";
 const debugPort = process.env.CDP_PORT || "9333";
 const shotsDir = process.env.SHOT_DIR || "/tmp/yanshi-file-menu";
 if (!url) {

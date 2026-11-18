@@ -260,7 +260,15 @@ await send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: dir
 fs.rmSync(dir, { recursive: true, force: true });
 fs.mkdirSync(dir, { recursive: true });
 
-const viewerUrl = `${base}/?doc=${DOC}&token=${token}`;
+// **★★★ 两次导航都要带 `lang=zh` ✗ ★★★**（CI run 44279530061 shard 1/6 实测）：
+//   **∴ 为什么** ✗：本判据断言日志里的中文原句（「已导出 PNG」「当前视图」「整幅」）✓
+//     ＋ **∴ 而** 4079af17 起导出回执走 `uiTemplate`、跟界面语言走 ✓
+//     ⇒ **∴ CI 的无头 Chromium 语言是英文** ⇒ 日志是英文 ⇒ 三处中文断言全落空 ✗
+//       （文件照落、尺寸照对，只日志里没有那几个中文字 ✗）
+//   **∴ 语言是判据的前提**，不是被测项 ⇒ 照 `browser-fill-region`（`lang=zh`）与
+//     `browser-dodge-burn`（`gotoLang`）的先例钉死中文；英文那面的回执由 `browser-i18n`
+//     与 `ui-i18n-coverage` 守 ✓。离线那次导航同理（重载会保留查询串 ✓）。
+const viewerUrl = `${base}/?doc=${DOC}&token=${token}&lang=zh`;
 await send("Page.navigate", { url: viewerUrl });
 if (!(await waitFor(`document.readyState === "complete" && !!document.getElementById("exportPng") && !!window.yanshi`, "查看器就绪", 40000))) {
   console.error("❌ 查看器没就绪 ⇒ 判据无效");
@@ -501,7 +509,7 @@ if (!strokeOff || strokeOff.ok === false) {
 // **★★★ 离线阶段重新导航也必须带 `render=client` ✗ ★★★**（**第 782 轮 ✓）
 //   **∴ 同上 ✗**：** `base` **是**服务端 base**✗ ⇒ **∴ 只写 `base/?doc=…` **会丢掉** `render=client`** ✓
 //     ＋ **∴ 于是**：**离线阶段**内核不加载**✗ ⇒ **∴ 本判据的离线断言**拿不到内核** ✓ ★
-await send("Page.navigate", { url: `${base}/?doc=${DOC_OFF}&token=${createdOff.token}&render=client` });
+await send("Page.navigate", { url: `${base}/?doc=${DOC_OFF}&token=${createdOff.token}&lang=zh&render=client` });
 if (!(await waitFor(`document.readyState === "complete" && !!document.getElementById("exportPng") && window.yanshiStats.docId === "${DOC_OFF}"`, "离线阶段文档就绪", 40000))) {
   console.error("❌ 离线阶段文档没就绪 ⇒ 判据无效");
   process.exit(3);
