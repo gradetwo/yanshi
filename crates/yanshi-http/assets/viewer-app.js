@@ -973,8 +973,8 @@ async function refreshOutboxBadge() {
   let stateName = "saved";
   let label = "已保存";
   // **优先级**：冲突 > 被拒 > 队列满 > 排队 > 离线 > 已保存 ✓（越靠前越需要人处理 ✓）。
-  if (conflict > 0) { stateName = "conflict"; label = "冲突待处理 " + conflict; }
-  else if (failed > 0) { stateName = "failed"; label = "被拒 " + failed + " 条"; }
+  if (conflict > 0) { stateName = "conflict"; label = uiTemplate("冲突待处理 {n}", { n: conflict }); }
+  else if (failed > 0) { stateName = "failed"; label = uiTemplate("被拒 {n} 条", { n: failed }); }
   else if (refused > 0) { stateName = "full"; label = "队列已满"; }
   else if (mine.length > 0) { stateName = "queued"; label = uiTemplate("离线排队 {n} 条", { n: mine.length }); }
   else if (state.outboxOffline === true || navigator.onLine === false) { stateName = "offline"; label = "离线"; }
@@ -992,7 +992,7 @@ async function refreshOutboxBadge() {
     bar.dataset.state = stateName;
     if (text && show) {
       if (conflict > 0) text.textContent = uiTemplate("服务端这份文档已变化，已暂停补交（{n} 条）", { n: mine.length });
-      else if (failed > 0) text.textContent = failed + " 条被服务端拒绝，仍留在队列";
+      else if (failed > 0) text.textContent = uiTemplate("{n} 条被服务端拒绝，仍留在队列", { n: failed });
       else if (refused > 0) text.textContent = uiTemplate("队列已满，刚才那一步没有记录（{n} 条已排队）", { n: mine.length });
       else text.textContent = uiTemplate("离线排队 {n} 条，联网后自动按序补交", { n: mine.length });
     }
@@ -8540,7 +8540,7 @@ async function setupLayerPanel() {
     input.className = "layer-name-input";
     input.value = layer.name;
     input.maxLength = 64;
-    input.title = "回车保存 · Esc 取消";
+    input.title = uiText("回车保存 · Esc 取消");
     nameEl.replaceWith(input);
     input.focus();
     input.select();
@@ -9728,7 +9728,7 @@ function renderRangeMaskCurrent() {
   if (!out) return;
   const target = ($("rangeMaskTarget") || {}).value;
   const record = rangeMaskRecords.find((layer) => layer.layer_id === target);
-  out.textContent = record && record.mask_id ? "该层当前蒙版 " + record.mask_id : "该层当前没有蒙版";
+  out.textContent = record && record.mask_id ? uiTemplate("该层当前蒙版 {id}", { id: record.mask_id }) : "该层当前没有蒙版";
 }
 
 /// 取下"挂到"那一层的蒙版 ✓。**送的是 JSON `null`** ✓（实测 ✓）：
@@ -12135,7 +12135,7 @@ async function refreshBrushOptions() {
       addGroup("★ 收藏", favorites);
       const hint = $("brushFavoriteHint");
       if (hint) {
-        hint.textContent = "★ " + favorites.filter((name) => known.has(name)).length + " 支";
+        hint.textContent = uiTemplate("★ {n} 支", { n: favorites.filter((name) => known.has(name)).length });
       }
     } catch (_) {
       // **偏好读不到不影响选择笔刷** ✓（这是"方便" ✓，不是"必需" ✗ —— 与偏好文件坏掉时的取舍一致 ✓）。
@@ -12242,7 +12242,7 @@ function renderBrushLibrary() {
     list.appendChild(row);
   }
   const hint = $("brushLibraryHint");
-  if (hint) hint.textContent = entries.length + " 支 · 滚到哪画到哪 ✓";
+  if (hint) hint.textContent = uiTemplate("{n} 支 · 滚到哪画到哪 ✓", { n: entries.length });
   observeBrushLibraryRows();
 }
 

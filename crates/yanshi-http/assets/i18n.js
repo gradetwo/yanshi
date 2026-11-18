@@ -676,12 +676,33 @@ const I18N_EN_TEXT = {
   "读取失败（本地内核）：": "Read failed (the local kernel): ",
   "粗细要在 1..512 之间才能预览（当前 ": "size must be 1..512 to preview (currently ",
   "离线排队 {n} 条": "{n} queued offline",
+  // **离线队列状态条与横幅的「被拒／冲突」句** ✓（本轮补 ✗：此前只有英文模式有 m6/m7 模式兜底、
+  //   其余 7 种语言落回中文；横幅那句是拼串 ⇒ 任何语言都翻不了 ⇒ 改走 uiTemplate 并登记模板键 ✓）。
+  "冲突待处理 {n}": "{n} conflict(s) pending",
+  "被拒 {n} 条": "{n} rejected",
+  "{n} 条被服务端拒绝，仍留在队列": "{n} rejected by the server — still queued",
   "服务端这份文档已变化，已暂停补交（{n} 条）": "server-side document changed — replay paused ({n})",
   "队列已满，刚才那一步没有记录（{n} 条已排队）": "queue full — last step not recorded ({n} queued)",
   "离线排队 {n} 条，联网后自动按序补交": "{n} queued offline — replayed in order once online",
   "区域要四个值填齐（x, y, w, h）才生效；当前只填了 {n} 个": "all four values (x, y, w, h) required; only {n} given",
   "参考图已就位（{w}×{h}）": "reference ready ({w}×{h})",
   " · 本浏览器未缓存原图，刷新后可能需要重传": " · the original is not cached here; re-upload after a refresh",
+  // **运行时文案补登** ✓（本轮：改名输入框 title 走 uiText、范围遮罩卡「当前蒙版」与笔刷库两个
+  //   计数提示改走 uiTemplate，及一批纯字面量漏条——湿度／解决／重新打开等 ⇒ 词条齐了观察者才翻得动 ✓）。
+  "回车保存 · Esc 取消": "Enter to save · Esc to cancel",
+  "该层当前蒙版 {id}": "This layer's current mask: {id}",
+  "★ {n} 支": "★ {n} brushes",
+  "{n} 支 · 滚到哪画到哪 ✓": "{n} brushes · painted as you scroll ✓",
+  "湿度": "Wetness",
+  "（无类型信息 ✓）": "(no type info ✓)",
+  "重新打开": "Reopen",
+  "解决": "Resolve",
+  "（空评论 ✓）": "(empty comment ✓)",
+  "（没有说明 ✓）": "(no description ✓)",
+  "隐藏已解决": "Hide resolved",
+  "素材（已浮出）": "Assets (popped out)",
+  "画笔 ▸": "Brush ▸",
+
 };
 const I18N_EN_ATTR = {
   // **效果卡那句"为什么"从可见长句改成 `title=`** ✓（第七轮 `ui-text-density` 红出来的 ✓ 见 docs ㊴）
@@ -1527,12 +1548,33 @@ const I18N_FR_TEXT = {
   "读取失败（本地内核）：": "échec de lecture (le noyau local) : ",
   "粗细要在 1..512 之间才能预览（当前 ": "la taille doit être 1..512 pour l'aperçu (actuellement ",
   "离线排队 {n} 条": "{n} en file hors-ligne",
+  // **离线队列状态条与横幅的「被拒／冲突」句** ✓（本轮补 ✗：此前只有英文模式有 m6/m7 模式兜底、
+  //   其余 7 种语言落回中文；横幅那句是拼串 ⇒ 任何语言都翻不了 ⇒ 改走 uiTemplate 并登记模板键 ✓）。
+  "冲突待处理 {n}": "{n} conflit(s) en attente",
+  "被拒 {n} 条": "{n} rejeté(s)",
+  "{n} 条被服务端拒绝，仍留在队列": "{n} rejetés par le serveur — toujours en file",
   "服务端这份文档已变化，已暂停补交（{n} 条）": "document côté serveur modifié — reprise en pause ({n})",
   "队列已满，刚才那一步没有记录（{n} 条已排队）": "file pleine — dernière étape non enregistrée ({n} en file)",
   "离线排队 {n} 条，联网后自动按序补交": "{n} en file hors-ligne — rejoués dans l'ordre au retour du réseau",
   "区域要四个值填齐（x, y, w, h）才生效；当前只填了 {n} 个": "les quatre valeurs (x, y, w, h) requises ; seulement {n}",
   "参考图已就位（{w}×{h}）": "référence en place ({w}×{h})",
   " · 本浏览器未缓存原图，刷新后可能需要重传": " · l'original n'est pas en cache ; réenvoyer après actualisation",
+  // **运行时文案补登** ✓（本轮：改名输入框 title 走 uiText、范围遮罩卡「当前蒙版」与笔刷库两个
+  //   计数提示改走 uiTemplate，及一批纯字面量漏条——湿度／解决／重新打开等 ⇒ 词条齐了观察者才翻得动 ✓）。
+  "回车保存 · Esc 取消": "Entrée pour enregistrer · Échap pour annuler",
+  "该层当前蒙版 {id}": "Masque actuel de ce calque : {id}",
+  "★ {n} 支": "★ {n} pinceaux",
+  "{n} 支 · 滚到哪画到哪 ✓": "{n} pinceaux · peints au fil du défilement ✓",
+  "湿度": "Humidité",
+  "（无类型信息 ✓）": "(aucune info de type ✓)",
+  "重新打开": "Rouvrir",
+  "解决": "Résoudre",
+  "（空评论 ✓）": "(commentaire vide ✓)",
+  "（没有说明 ✓）": "(pas de description ✓)",
+  "隐藏已解决": "Masquer les résolues",
+  "素材（已浮出）": "Actifs (détachés)",
+  "画笔 ▸": "Pinceau ▸",
+
 };
 const I18N_FR_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Les paramètres par défaut n'ont souvent aucun effet ; un nom de paramètre mal orthographié est aussi accepté tel quel (le noyau ne valide que les clés qu'il connaît).",
@@ -2262,12 +2304,33 @@ const I18N_ES_TEXT = {
   "读取失败（本地内核）：": "error de lectura (el núcleo local): ",
   "粗细要在 1..512 之间才能预览（当前 ": "el grosor debe ir de 1 a 512 para previsualizar (ahora ",
   "离线排队 {n} 条": "{n} en cola offline",
+  // **离线队列状态条与横幅的「被拒／冲突」句** ✓（本轮补 ✗：此前只有英文模式有 m6/m7 模式兜底、
+  //   其余 7 种语言落回中文；横幅那句是拼串 ⇒ 任何语言都翻不了 ⇒ 改走 uiTemplate 并登记模板键 ✓）。
+  "冲突待处理 {n}": "{n} conflicto(s) en espera",
+  "被拒 {n} 条": "{n} rechazado(s)",
+  "{n} 条被服务端拒绝，仍留在队列": "{n} rechazados por el servidor — siguen en cola",
   "服务端这份文档已变化，已暂停补交（{n} 条）": "documento del servidor cambió — reenvío en pausa ({n})",
   "队列已满，刚才那一步没有记录（{n} 条已排队）": "cola llena — último paso no registrado ({n} en cola)",
   "离线排队 {n} 条，联网后自动按序补交": "{n} en cola offline — se reenvían en orden al reconectar",
   "区域要四个值填齐（x, y, w, h）才生效；当前只填了 {n} 个": "hacen falta los cuatro valores (x, y, w, h); solo {n}",
   "参考图已就位（{w}×{h}）": "referencia lista ({w}×{h})",
   " · 本浏览器未缓存原图，刷新后可能需要重传": " · el original no está en caché; puede hacer falta resubir",
+  // **运行时文案补登** ✓（本轮：改名输入框 title 走 uiText、范围遮罩卡「当前蒙版」与笔刷库两个
+  //   计数提示改走 uiTemplate，及一批纯字面量漏条——湿度／解决／重新打开等 ⇒ 词条齐了观察者才翻得动 ✓）。
+  "回车保存 · Esc 取消": "Intro para guardar · Esc para cancelar",
+  "该层当前蒙版 {id}": "Máscara actual de esta capa: {id}",
+  "★ {n} 支": "★ {n} pinceles",
+  "{n} 支 · 滚到哪画到哪 ✓": "{n} pinceles · se pintan al desplazar ✓",
+  "湿度": "Humedad",
+  "（无类型信息 ✓）": "(sin datos de tipo ✓)",
+  "重新打开": "Reabrir",
+  "解决": "Resolver",
+  "（空评论 ✓）": "(comentario vacío ✓)",
+  "（没有说明 ✓）": "(sin descripción ✓)",
+  "隐藏已解决": "Ocultar resueltas",
+  "素材（已浮出）": "Recursos (desacoplados)",
+  "画笔 ▸": "Pincel ▸",
+
 };
 const I18N_ES_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Los parámetros por defecto a menudo no tienen ningún efecto, y un nombre de parámetro mal escrito se guarda tal cual (el núcleo solo valida las claves que reconoce).",
@@ -2997,12 +3060,33 @@ const I18N_PT_TEXT = {
   "读取失败（本地内核）：": "falha de leitura (o núcleo local): ",
   "粗细要在 1..512 之间才能预览（当前 ": "o tamanho precisa ficar em 1..512 para a prévia (agora ",
   "离线排队 {n} 条": "{n} na fila offline",
+  // **离线队列状态条与横幅的「被拒／冲突」句** ✓（本轮补 ✗：此前只有英文模式有 m6/m7 模式兜底、
+  //   其余 7 种语言落回中文；横幅那句是拼串 ⇒ 任何语言都翻不了 ⇒ 改走 uiTemplate 并登记模板键 ✓）。
+  "冲突待处理 {n}": "{n} conflito(s) pendente(s)",
+  "被拒 {n} 条": "{n} rejeitado(s)",
+  "{n} 条被服务端拒绝，仍留在队列": "{n} rejeitados pelo servidor — continuam na fila",
   "服务端这份文档已变化，已暂停补交（{n} 条）": "documento no servidor mudou — reenvio pausado ({n})",
   "队列已满，刚才那一步没有记录（{n} 条已排队）": "fila cheia — último passo não registrado ({n} na fila)",
   "离线排队 {n} 条，联网后自动按序补交": "{n} na fila offline — reenviados em ordem ao reconectar",
   "区域要四个值填齐（x, y, w, h）才生效；当前只填了 {n} 个": "os quatro valores (x, y, w, h) são necessários; só {n}",
   "参考图已就位（{w}×{h}）": "referência pronta ({w}×{h})",
   " · 本浏览器未缓存原图，刷新后可能需要重传": " · original não está em cache; reenvie se precisar",
+  // **运行时文案补登** ✓（本轮：改名输入框 title 走 uiText、范围遮罩卡「当前蒙版」与笔刷库两个
+  //   计数提示改走 uiTemplate，及一批纯字面量漏条——湿度／解决／重新打开等 ⇒ 词条齐了观察者才翻得动 ✓）。
+  "回车保存 · Esc 取消": "Enter para salvar · Esc para cancelar",
+  "该层当前蒙版 {id}": "Máscara atual desta camada: {id}",
+  "★ {n} 支": "★ {n} pincéis",
+  "{n} 支 · 滚到哪画到哪 ✓": "{n} pincéis · pintados ao rolar ✓",
+  "湿度": "Umidade",
+  "（无类型信息 ✓）": "(sem dados de tipo ✓)",
+  "重新打开": "Reabrir",
+  "解决": "Resolver",
+  "（空评论 ✓）": "(comentário vazio ✓)",
+  "（没有说明 ✓）": "(sem descrição ✓)",
+  "隐藏已解决": "Ocultar resolvidas",
+  "素材（已浮出）": "Ativos (desacoplados)",
+  "画笔 ▸": "Pincel ▸",
+
 };
 const I18N_PT_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Parâmetros padrão muitas vezes não têm efeito nenhum, e um nome de parâmetro com erro de digitação é guardado como está (o núcleo só valida as chaves que conhece).",
@@ -3732,12 +3816,33 @@ const I18N_JA_TEXT = {
   "读取失败（本地内核）：": "読み取りに失敗しました（ローカルカーネル）：",
   "粗细要在 1..512 之间才能预览（当前 ": "プレビューには太さ 1〜512 が必要です（現在 ",
   "离线排队 {n} 条": "{n} 件をオフラインでキューに追加",
+  // **离线队列状态条与横幅的「被拒／冲突」句** ✓（本轮补 ✗：此前只有英文模式有 m6/m7 模式兜底、
+  //   其余 7 种语言落回中文；横幅那句是拼串 ⇒ 任何语言都翻不了 ⇒ 改走 uiTemplate 并登记模板键 ✓）。
+  "冲突待处理 {n}": "競合 {n} 件が処理待ち",
+  "被拒 {n} 条": "拒否 {n} 件",
+  "{n} 条被服务端拒绝，仍留在队列": "{n} 件がサーバーに拒否され、キューに残っています",
   "服务端这份文档已变化，已暂停补交（{n} 条）": "サーバー側のドキュメントが変わったため再送を保留（{n} 件）",
   "队列已满，刚才那一步没有记录（{n} 条已排队）": "キューが満杯で直前の操作は記録されていません（{n} 件待機中）",
   "离线排队 {n} 条，联网后自动按序补交": "{n} 件をオフラインでキューに追加、再接続後に順に再送します",
   "区域要四个值填齐（x, y, w, h）才生效；当前只填了 {n} 个": "x, y, w, h の四つを埋めないと効きません。今は {n} 個",
   "参考图已就位（{w}×{h}）": "参考画像を配置しました（{w}×{h}）",
   " · 本浏览器未缓存原图，刷新后可能需要重传": " · このブラウザに原画のキャッシュはありません。再読み込み後の再送が必要かもしれません",
+  // **运行时文案补登** ✓（本轮：改名输入框 title 走 uiText、范围遮罩卡「当前蒙版」与笔刷库两个
+  //   计数提示改走 uiTemplate，及一批纯字面量漏条——湿度／解决／重新打开等 ⇒ 词条齐了观察者才翻得动 ✓）。
+  "回车保存 · Esc 取消": "Enterで保存 · Escでキャンセル",
+  "该层当前蒙版 {id}": "このレイヤーの現在のマスク: {id}",
+  "★ {n} 支": "★ {n} 本",
+  "{n} 支 · 滚到哪画到哪 ✓": "{n} 本 · スクロールした分だけ描画 ✓",
+  "湿度": "湿り具合",
+  "（无类型信息 ✓）": "（タイプ情報なし ✓）",
+  "重新打开": "再び開く",
+  "解决": "解決済みにする",
+  "（空评论 ✓）": "（空のコメント ✓）",
+  "（没有说明 ✓）": "（説明なし ✓）",
+  "隐藏已解决": "解決済みを隠す",
+  "素材（已浮出）": "アセット（切り離し中）",
+  "画笔 ▸": "ブラシ ▸",
+
 };
 const I18N_JA_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "既定のパラメータはもともと効果がないことが多く、パラメータ名のタイプミスもそのまま受け付けられます（カーネルは知っているキーだけを検証します）。",
@@ -4467,12 +4572,33 @@ const I18N_KO_TEXT = {
   "读取失败（本地内核）：": "읽기 실패(로컬 커널): ",
   "粗细要在 1..512 之间才能预览（当前 ": "미리보려면 굵기가 1~512 여야 합니다(현재 ",
   "离线排队 {n} 条": "오프라인 대기열 {n}건",
+  // **离线队列状态条与横幅的「被拒／冲突」句** ✓（本轮补 ✗：此前只有英文模式有 m6/m7 模式兜底、
+  //   其余 7 种语言落回中文；横幅那句是拼串 ⇒ 任何语言都翻不了 ⇒ 改走 uiTemplate 并登记模板键 ✓）。
+  "冲突待处理 {n}": "처리 대기 중인 충돌 {n}건",
+  "被拒 {n} 条": "거부 {n}건",
+  "{n} 条被服务端拒绝，仍留在队列": "서버가 거부한 {n}건, 대기열에 남아 있습니다",
   "服务端这份文档已变化，已暂停补交（{n} 条）": "서버 문서가 바뀌어 재전송 보류({n}건)",
   "队列已满，刚才那一步没有记录（{n} 条已排队）": "대기열이 가득 차 마지막 작업이 기록되지 않았습니다({n}건 대기)",
   "离线排队 {n} 条，联网后自动按序补交": "오프라인 대기열 {n}건, 연결되면 순서대로 재전송합니다",
   "区域要四个值填齐（x, y, w, h）才生效；当前只填了 {n} 个": "x, y, w, h 네 값을 모두 채워야 합니다. 지금은 {n}개",
   "参考图已就位（{w}×{h}）": "참조 이미지 준비됨({w}×{h})",
   " · 本浏览器未缓存原图，刷新后可能需要重传": " · 이 브라우저에 원본 캐시가 없습니다. 새로고침 후 다시 올려야 할 수 있습니다",
+  // **运行时文案补登** ✓（本轮：改名输入框 title 走 uiText、范围遮罩卡「当前蒙版」与笔刷库两个
+  //   计数提示改走 uiTemplate，及一批纯字面量漏条——湿度／解决／重新打开等 ⇒ 词条齐了观察者才翻得动 ✓）。
+  "回车保存 · Esc 取消": "Enter 저장 · Esc 취소",
+  "该层当前蒙版 {id}": "이 레이어의 현재 마스크 {id}",
+  "★ {n} 支": "★ {n}개",
+  "{n} 支 · 滚到哪画到哪 ✓": "{n}개 · 스크롤한 만큼 그려짐 ✓",
+  "湿度": "습도",
+  "（无类型信息 ✓）": "(유형 정보 없음 ✓)",
+  "重新打开": "다시 열기",
+  "解决": "해결로 표시",
+  "（空评论 ✓）": "(빈 댓글 ✓)",
+  "（没有说明 ✓）": "(설명 없음 ✓)",
+  "隐藏已解决": "해결된 것 숨기기",
+  "素材（已浮出）": "에셋(떠 있음)",
+  "画笔 ▸": "브러시 ▸",
+
 };
 const I18N_KO_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "기본 매개변수는 원래 효과가 없는 경우가 많고, 매개변수 이름의 오타도 그대로 받아들여집니다(커널은 아는 키만 검증합니다).",
@@ -5202,12 +5328,33 @@ const I18N_RU_TEXT = {
   "读取失败（本地内核）：": "ошибка чтения (локальное ядро): ",
   "粗细要在 1..512 之间才能预览（当前 ": "для предпросмотра размер 1..512 (сейчас ",
   "离线排队 {n} 条": "{n} в офлайн-очереди",
+  // **离线队列状态条与横幅的「被拒／冲突」句** ✓（本轮补 ✗：此前只有英文模式有 m6/m7 模式兜底、
+  //   其余 7 种语言落回中文；横幅那句是拼串 ⇒ 任何语言都翻不了 ⇒ 改走 uiTemplate 并登记模板键 ✓）。
+  "冲突待处理 {n}": "Конфликтов в ожидании: {n}",
+  "被拒 {n} 条": "Отклонено: {n}",
+  "{n} 条被服务端拒绝，仍留在队列": "{n} отклонено сервером — остаются в очереди",
   "服务端这份文档已变化，已暂停补交（{n} 条）": "документ на сервере изменился — досылка паузирована ({n})",
   "队列已满，刚才那一步没有记录（{n} 条已排队）": "очередь полна — последний шаг не записан ({n} в очереди)",
   "离线排队 {n} 条，联网后自动按序补交": "{n} в офлайн-очереди — при подключении уйдут по порядку",
   "区域要四个值填齐（x, y, w, h）才生效；当前只填了 {n} 个": "нужны все четыре значения (x, y, w, h); задано {n}",
   "参考图已就位（{w}×{h}）": "референс на месте ({w}×{h})",
   " · 本浏览器未缓存原图，刷新后可能需要重传": " · оригинал не кэширован; после перезагрузки нужна повторная загрузка",
+  // **运行时文案补登** ✓（本轮：改名输入框 title 走 uiText、范围遮罩卡「当前蒙版」与笔刷库两个
+  //   计数提示改走 uiTemplate，及一批纯字面量漏条——湿度／解决／重新打开等 ⇒ 词条齐了观察者才翻得动 ✓）。
+  "回车保存 · Esc 取消": "Enter — сохранить · Esc — отменить",
+  "该层当前蒙版 {id}": "Текущая маска этого слоя: {id}",
+  "★ {n} 支": "★ {n} кистей",
+  "{n} 支 · 滚到哪画到哪 ✓": "{n} кистей · отрисовка по мере прокрутки ✓",
+  "湿度": "Влажность",
+  "（无类型信息 ✓）": "(нет данных о типе ✓)",
+  "重新打开": "Снова открыть",
+  "解决": "Пометить решённой",
+  "（空评论 ✓）": "(пустой комментарий ✓)",
+  "（没有说明 ✓）": "(без описания ✓)",
+  "隐藏已解决": "Скрывать решённые",
+  "素材（已浮出）": "Активы (всплывшие)",
+  "画笔 ▸": "Кисть ▸",
+
 };
 const I18N_RU_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Параметры по умолчанию часто вообще не дают эффекта, а имя параметра с опечаткой просто сохраняется как есть (ядро проверяет только те ключи, которые знает).",
@@ -5937,12 +6084,33 @@ const I18N_DE_TEXT = {
   "读取失败（本地内核）：": "Lesen fehlgeschlagen (der lokale Kernel): ",
   "粗细要在 1..512 之间才能预览（当前 ": "für die Vorschau Größe 1..512 (aktuell ",
   "离线排队 {n} 条": "{n} offline eingereiht",
+  // **离线队列状态条与横幅的「被拒／冲突」句** ✓（本轮补 ✗：此前只有英文模式有 m6/m7 模式兜底、
+  //   其余 7 种语言落回中文；横幅那句是拼串 ⇒ 任何语言都翻不了 ⇒ 改走 uiTemplate 并登记模板键 ✓）。
+  "冲突待处理 {n}": "{n} Konflikt(e) ausstehend",
+  "被拒 {n} 条": "{n} abgelehnt",
+  "{n} 条被服务端拒绝，仍留在队列": "{n} vom Server abgelehnt — bleiben eingereiht",
   "服务端这份文档已变化，已暂停补交（{n} 条）": "serverseitiges Dokument geändert — Nachsenden pausiert ({n})",
   "队列已满，刚才那一步没有记录（{n} 条已排队）": "Warteschlange voll — letzter Schritt nicht erfasst ({n} eingereiht)",
   "离线排队 {n} 条，联网后自动按序补交": "{n} offline eingereiht — bei Verbindung der Reihe nach nachgesendet",
   "区域要四个值填齐（x, y, w, h）才生效；当前只填了 {n} 个": "alle vier Werte (x, y, w, h) nötig; bisher {n}",
   "参考图已就位（{w}×{h}）": "Referenz liegt vor ({w}×{h})",
   " · 本浏览器未缓存原图，刷新后可能需要重传": " · das Original ist nicht zwischengespeichert; nach Neuladen erneut hochladen",
+  // **运行时文案补登** ✓（本轮：改名输入框 title 走 uiText、范围遮罩卡「当前蒙版」与笔刷库两个
+  //   计数提示改走 uiTemplate，及一批纯字面量漏条——湿度／解决／重新打开等 ⇒ 词条齐了观察者才翻得动 ✓）。
+  "回车保存 · Esc 取消": "Enter zum Speichern · Esc zum Abbrechen",
+  "该层当前蒙版 {id}": "Aktuelle Maske dieser Ebene: {id}",
+  "★ {n} 支": "★ {n} Pinsel",
+  "{n} 支 · 滚到哪画到哪 ✓": "{n} Pinsel · beim Scrollen gezeichnet ✓",
+  "湿度": "Nässe",
+  "（无类型信息 ✓）": "(keine Typangaben ✓)",
+  "重新打开": "Erneut öffnen",
+  "解决": "Als gelöst markieren",
+  "（空评论 ✓）": "(leerer Kommentar ✓)",
+  "（没有说明 ✓）": "(keine Beschreibung ✓)",
+  "隐藏已解决": "Gelöste ausblenden",
+  "素材（已浮出）": "Assets (abgelöst)",
+  "画笔 ▸": "Pinsel ▸",
+
 };
 const I18N_DE_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Standardparameter haben oft überhaupt keine Wirkung, und ein falsch geschriebener Parametername wird einfach so gespeichert (der Kern prüft nur die Schlüssel, die er kennt).",
