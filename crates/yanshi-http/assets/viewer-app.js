@@ -3095,7 +3095,7 @@ async function checkBitExact() {
     // 内核没产出像素（未就绪 / 文档尺寸不符 / 内核处于错误状态）：明确报出来，
     // 不要伪装成「尺寸不一致」，否则会误导排查方向。
     window.yanshiStats.bitExact = false;
-    $("bitExact").textContent = "内核无输出";
+    $("bitExact").textContent = uiTemplate("内核无输出");
     log(
       `自检失败：本地内核未产出像素（请求 ${width}×${height}）；` +
       `内核 HEAD ${window.yanshiStats.kernelHead}，文档尺寸 ${state.docSize.w}×${state.docSize.h}`,
@@ -3452,7 +3452,7 @@ async function confirmDeleteDocument() {
     pendingDelete = "";
     await refreshDocumentList();
   } catch (failure) {
-    if (error) error.textContent = "删除失败：" + String(failure).slice(0, 120);
+    if (error) error.textContent = uiTemplate("删除失败：{why}", { why: String(failure).slice(0, 120) });
   }
 }
 
@@ -8372,7 +8372,7 @@ async function setupAssetPanels() {
     textureApply.addEventListener("click", async () => {
       const texture = texturePick ? texturePick.value : "";
       if (!texture) {
-        if (textureInfo) textureInfo.textContent = "先选一张纹理 ✓";
+        if (textureInfo) textureInfo.textContent = uiTemplate("先选一张纹理 ✓");
         return;
       }
       const mode = textureMode ? textureMode.value : "tile";
@@ -13010,7 +13010,12 @@ function normalizeTitle(text) {
 
 function cardTitle(card) {
   const h2 = card.querySelector("h2");
-  return normalizeTitle(h2 ? h2.textContent : "");
+  if (h2) return normalizeTitle(h2.textContent);
+  // 0021 的折叠卡把标题搬进了 `.fold-head` 的按钮里，`h2` 不存在
+  // ⇒ 旧实现恒返空串，`yanshi.dockers` 通路的折叠/展开全部失灵（本轮修）。
+  const label = card.querySelector(".fold-head .fold-title") || card.querySelector(".fold-head");
+  if (!label) return "";
+  return normalizeTitle(label.textContent.replace(/[▸▾▴▾▲▼◂◃]/g, "").replace(/\s*\d+\s*$/, ""));
 }
 
 function saveDockers() {
@@ -13933,6 +13938,22 @@ const uiLangInfo = UI_LANGS.find((item) => item.code === uiLang) || UI_LANGS[0];
 // **当前语言的两张词表与属性句式表** ✓（中文没有表 ⇒ 三个都为 null ⇒ 一切落回原文 ✓）。
 const uiTextTable = uiLang === "zh" ? null : I18N_TEXT_BY_LANG[uiLang];
 /// **带变量的动态文案也要随语言** ✓（0009）：词表精确匹配查不到运行时拼的句子 ⇒ 带占位的源句也登记词条、运行时填变量。
+function uiText(src) {
+  // 0018 的教训：运行时拼出来的句子（"提交失败：" + 错误码）整句查表必然落空，
+  // 于是非中文界面直接显示中文。这里补"最长前缀"兜底：前缀翻好、余量原样接回。
+  if (!uiTextTable || !src) return src;
+  const whole = uiTextTable[src];
+  if (whole) return whole;
+  let best = null;
+  for (const key of Object.keys(uiTextTable)) {
+    if (key.length < 4 || src.length <= key.length) continue;
+    if (!(key.endsWith("：") || key.endsWith("（") || key.endsWith(" "))) continue;
+    if (!src.startsWith(key)) continue;
+    if (!best || key.length > best.length) best = key;
+    if (best.length > 40) break;
+  }
+  return best ? uiTextTable[best] + src.slice(best.length) : src;
+}
 function uiTemplate(zhSource, vars) {
   // 词表是靠后的 const：早期调用会撞 TDZ ⇒ 推迟到脚本跑完并 try/catch 降级。
   let template = zhSource;
