@@ -1185,6 +1185,9 @@ const PAGE_TAIL_A: &str = r##"</head>
   <span>画布 <b id="canvasSize">—</b></span>
 </footer>
 <script src="/i18n.js"></script>
+<script src="/mp4-lite.js"></script>
+<script src="/webm-lite.js"></script>
+<script src="/timelapse-local.js"></script>
 <script>"##;
 
 /// **主脚本之后的收尾** ✓（`</script> … </html>` ✓）。
@@ -1226,35 +1229,69 @@ const PAGE_TAIL_B: &str = r##"</script>
 </html>
 "##;
 
-/// **整页模板** ✓ —— **NEW-H1 瘦身后**：CSS 与双语词表都走**同源外链**（`/viewer.css`／`/i18n.js`，
-/// 均由本二进制 `include_str!` 发 ✓）；**JS 三段仍内联** ✗（页面没有模块加载器 ⇒ 加载顺序
-/// 就是依赖顺序，与 (A)① 的旧理由一致 ✓）。
+/// **整页模板** ✓ —— **瘦身后**：CSS、双语词表与三份过程视频资产都走**同源外链**
+/// （`/viewer.css`／`/i18n.js`／`/mp4-lite.js`／`/webm-lite.js`／`/timelapse-local.js`，
+/// 均由本二进制 `include_str!` 发 ✓，引用写在 `PAGE_TAIL_A` 尾部 ✓）；
+/// **主脚本仍内联**（(A)① 守卫钉住：页面里须有一块逐字节等于 `viewer-app.js` ✓）。
+/// 外链是**传统脚本**、按文档顺序执行 ⇒ 加载顺序仍是依赖顺序
+/// （`mp4-lite` 先、`timelapse-local` 后、主脚本最后 ✓），运行时语义不变 ✓。
 ///
 /// ⚠️ 这里**必须用拼接、不能用 `format!`** ✗ —— JS 里全是花括号 ✗，格式化会把它们当占位符 ✓
 /// （真正的占位符只有 `__READ_TOOLS__` / `__BUILD_ID__` ✓，用 `.replace` 替换 ✓）。
 fn page_template() -> String {
-    [
+    let raw = [
         PAGE_HEAD,
         PAGE_TAIL_A,
-        // **★★★ 两份新资产 ✗ 各自一段 `<script>`** ✓（**第 249 轮 ✓）★★★
-        //   ＋ **∴ 为什么不能 `import` ✗**：**页面没有模块加载器**✗（**全是内联传统脚本 ✓）
-        //     ⇒ **∴ 于是**：**按**加载顺序**排 ✗ `mp4-lite` 先 ✗ `timelapse-local` 后**
-        //       ✗ 最后才是主脚本 ✓（**∴ 主脚本**用得上它们 ✓）★
-        //   ＋ **∴ 而**主脚本那一段**必须仍然逐字节等于 `viewer-app.js`**✗
-        //     ⇒ **∴ 所以**：**这里**显式补 `</script><script>`**✗ 而不是把三份拼成一块** ✓
-        //       （**∴ 有测试盯着这一条 ✓）★★
-        include_str!("../assets/mp4-lite.js"),
-        "</script><script>",
-        // **∴ 第 250 轮 ✗**：**WebM 封装器**（**∴ 没有 H.264 编码器时走它 ✓
-        //   ＋ **∴ CI 的 Chrome for Testing 正是那种机器 ✓）★★
-        include_str!("../assets/webm-lite.js"),
-        "</script><script>",
-        include_str!("../assets/timelapse-local.js"),
-        "</script><script>",
+        // **主脚本** ✓ —— `PAGE_TAIL_A` 尾部已把三份过程视频资产以 `<script src=>`
+        // 外链排在前面、并留下一个开着的 `<script>` ✓ ⇒ 这里直接拼主脚本本体 ✓
+        // （**逐字节等于 `viewer-app.js`**，(A)① 有测试盯着 ✓）★★
         include_str!("../assets/viewer-app.js"),
         PAGE_TAIL_B,
     ]
-    .concat()
+    .concat();
+    strip_html_comments(&raw)
+}
+
+/// **合成时剥离 HTML 注释** ✓（本轮瘦身）—— 标记常量里的说明注释是**给读源码的人看的文档**，
+/// 随页面出厂只占字节（实测三段常量里 77 段、约 38 KB）。源头一个字不动，只剥**发出形态**：
+/// 逐段扫描，`<script>…</script>` 区块**原样保留**（脚本内容不是标记，里面的 `<!--` 形
+/// 字符串不许碰 ✓）；区块外遇 `<!--` 就删到最近的 `-->`；**扫不到收尾就把余下原文照抄**
+/// （失败方向是「没瘦下来」，不是「把页面删坏」✓）。
+/// 行为不变的依据：HTML 注释不产生 DOM 节点、不影响渲染与脚本执行；剥离不增删任何空白
+/// （注释两侧原有的换行/缩进原样保留 ⇒ 行内布局不变 ✓）。
+fn strip_html_comments(template: &str) -> String {
+    let bytes = template.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"<script") {
+            // 脚本区块：连同收尾标签整段照抄；找不到收尾就照抄到结尾（同上，失败方向安全 ✓）。
+            let end = find_subslice(&bytes[i..], b"</script>")
+                .map(|at| i + at + b"</script>".len())
+                .unwrap_or(bytes.len());
+            out.extend_from_slice(&bytes[i..end]);
+            i = end;
+        } else if bytes[i..].starts_with(b"<!--") {
+            match find_subslice(&bytes[i + 4..], b"-->") {
+                Some(at) => i += 4 + at + 3,
+                None => {
+                    out.extend_from_slice(&bytes[i..]);
+                    break;
+                }
+            }
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("剥注释只删 ASCII 定界符，不会切坏 UTF-8")
+}
+
+/// 在 `haystack` 里找 `needle` 的首个字节偏移（剥注释扫描用；找不到 ⇒ `None`）。
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 /// 页面长度（测试与可观测性）。
@@ -1290,7 +1327,7 @@ pub fn timelapse_script() -> &'static str {
 ///   从主脚本挪出来 ⇒ **以**传统脚本**外链**先于主脚本加载 ✓
 ///   ⇒ **∴ 三份 `const` 落在**共享的全局词法环境**✓ 主脚本照常引用 ✗ **运行时语义不变** ✓
 ///   ＋ **∴ 为什么单独立一条 `pub fn`**：**同一个二进制**用 `include_str!` 发 ✓（`server.rs` 的
-///     `/i18n.js` 路由 ✓）⇒ **单二进制部署**照样自包含 ✗ 页面里唯一的 `<script src=` 是**同源绝对路径** ✓
+///     `/i18n.js` 路由 ✓）⇒ **单二进制部署**照样自包含 ✓（页面的 `<script src=` 都是**同源绝对路径** ✓）
 pub fn i18n_script() -> &'static str {
     include_str!("../assets/i18n.js")
 }
@@ -1331,45 +1368,83 @@ mod tests {
         );
     }
 
-    /// **★★★ 过程视频的两份资产也必须**独立成块**内联** ✗ ★★★**（**第 249 轮 ✓）
+    /// **★★★ 过程视频的三份资产是**外链**资产 ✗ ★★★**（第 249 轮立的是「独立成块内联」；
+    /// 本轮瘦身改外链，形态照 NEW-H1 的 CSS／词表 ✓）
     ///
-    /// **∴ 为什么要单独立一条 ✗**：**它们不是主脚本**✗ 但**同样得在页面里** ✓
-    ///   ＋ **∴ 而**本仓页面**没有模块加载器**✗（**全是内联传统脚本 ✓）
-    ///     ⇒ **∴ 一旦有人**忘了拼接／把它们挪出 `<script>`**✗
-    ///       ⇒ **∴ 症状**不是报错 ✗ 而是**点下按钮才说"模块没加载"** ✓
-    ///         ⇒ **∴ 所以**要有一条**静态就能红**的判据 ✓
-    ///           （**变异 ✗ 删掉 `page_template` 里任一条 `include_str!` ⇒ 本测试红** ✓）★★
+    /// **∴ 为什么要单独立一条 ✗**：**它们不是主脚本**✗ 但主脚本**依赖它们的加载顺序** ✓
+    ///   ＋ **∴ 而**传统脚本按文档顺序执行 ✓ ⇒ **引用在、顺序对**，运行时语义就与内联时一致 ✓
+    ///     ⇒ **∴ 症状**若引用丢了／顺序错了**不是报错** ✗ 而是**点下按钮才说"模块没加载"** ✓
+    ///       ⇒ **∴ 所以**要有一条**静态就能红**的判据 ✓
+    ///         （**变异 ✗ 删掉任一 `<script src=>` 引用、或把引用挪到主脚本之后 ⇒ 本测试红** ✓）★★
     #[test]
-    fn the_timelapse_assets_are_inlined_as_their_own_script_blocks() {
-        for (path, asset, name) in [
-            ("assets/mp4-lite.js", mp4_script(), "MP4 封装器"),
-            ("assets/webm-lite.js", webm_script(), "WebM 封装器"),
+    fn the_timelapse_assets_are_external_assets_loaded_before_the_main_script() {
+        let page = page_template();
+        let main_at = page
+            .find(app_script().lines().next().expect("主脚本首行"))
+            .expect("页面应内联主脚本 ✓");
+        let mut previous_at = 0usize;
+        for (path, asset, src, name) in [
+            (
+                "assets/mp4-lite.js",
+                mp4_script(),
+                "/mp4-lite.js",
+                "MP4 封装器",
+            ),
+            (
+                "assets/webm-lite.js",
+                webm_script(),
+                "/webm-lite.js",
+                "WebM 封装器",
+            ),
             (
                 "assets/timelapse-local.js",
                 timelapse_script(),
+                "/timelapse-local.js",
                 "过程视频模块",
             ),
         ] {
             let on_disk = std::fs::read_to_string(path).expect("应能读取 JS 资产");
             assert_eq!(on_disk, asset, "(A)①：{name} 应是**独立资产文件** ✓");
-            let page = page_template();
-            let mut rest = page.as_str();
-            let mut found = false;
-            while let Some((_, after_open)) = rest.split_once("<script>") {
-                let Some((block, after_close)) = after_open.split_once("</script>") else {
-                    break;
-                };
-                if block.trim() == asset.trim() {
-                    found = true;
-                    break;
-                }
-                rest = after_close;
-            }
+            let tag = format!("<script src=\"{src}\"></script>");
+            let at = page
+                .find(&tag)
+                .unwrap_or_else(|| panic!("页面必须引用 {src}（瘦身外链 ✓）"));
             assert!(
-                found,
-                "{name} 必须在页面里有一个 <script> 块**逐字节等于**它 ✓（挪出去或漏拼 ⇒ 红 ✓）"
+                at > previous_at && at < main_at,
+                "{name} 的引用必须在主脚本之前、且三份保持 mp4→webm→timelapse 顺序 ✓"
             );
+            previous_at = at;
         }
+    }
+
+    /// **合成时剥 HTML 注释** ✓（本轮瘦身）—— 断言 ① 标记里的注释被剥、标记本体不动 ✓；
+    /// ② `<script>` 区块内的 `<!--` 形文字**不许动**（那是脚本内容，不是标记注释 ✓）；
+    /// ③ 没收尾的注释把原文照抄（失败方向是「没瘦下来」，不是「删坏页面」✓）；
+    /// ④ 整页层面：源头注释里的独有句子不在发出页里、它描述的标记还在 ✓
+    /// （**变异：去掉 `page_template` 里的剥离调用 ⇒ ④ 红 ✓；剥离器误伤脚本 ⇒ ② 红 ✓**）。
+    #[test]
+    fn html_comments_are_stripped_at_composition_time() {
+        assert_eq!(
+            strip_html_comments("<p>a</p><!-- 说明 --><p>b</p>"),
+            "<p>a</p><p>b</p>"
+        );
+        assert_eq!(
+            strip_html_comments("<script>var s = '<!--x-->';</script><!-- 外 -->"),
+            "<script>var s = '<!--x-->';</script>"
+        );
+        assert_eq!(
+            strip_html_comments("<p>a</p><!-- 没收尾"),
+            "<p>a</p><!-- 没收尾"
+        );
+        let page = page_template();
+        assert!(
+            !page.contains("两张卡搬进来"),
+            "PAGE_TAIL_B 注释里的独有句子不该出现在发出页里（合成时剥注释 ✓）"
+        );
+        assert!(
+            page.contains("<div id=\"fileMenu\" hidden>"),
+            "注释描述的标记本体必须原样保留 ✓"
+        );
     }
 
     /// **(A)①＋NEW-H1 第二步：CSS 是独立可打包资产，且页面以 `<link>` 引用它** ✓ ——
@@ -1464,14 +1539,23 @@ mod tests {
         // 无外部依赖（不加载 CDN 脚本或字体）。
         assert!(!page_template().contains("http://cdn"));
         assert!(!page_template().contains("https://cdn"));
-        // **`<script src=` 的口径**（05 复审 NEW-H1 起 ✓）：这条守卫的本意是**不加载外部主机**✗，
-        // 而 `/i18n.js` 是**同源绝对路径**✓ 且由**同一个二进制**用 `include_str!` 发✓（`server.rs` 路由 ✓）
-        // ⇒ 自包含性不变 ✓。**除此以外的任何 `src` 仍然一律禁止** ✗（变异：给路由外主机加脚本 ⇒ 红 ✓）。
+        // **`<script src=` 的口径**（05 复审 NEW-H1 起 ✓；本轮瘦身白名单扩到四条）：
+        // 这条守卫的本意是**不加载外部主机**✗，而白名单里的路径都是**同源绝对路径**✓
+        // 且由**同一个二进制**用 `include_str!` 发✓（`server.rs` 路由 ✓）
+        // ⇒ 自包含性不变 ✓。**白名单以外的任何 `src` 仍然一律禁止** ✗（变异：给路由外主机加脚本 ⇒ 红 ✓）。
         assert!(!page_template().contains("<script src=\"http"));
+        const ALLOWED_SCRIPT_SRCS: [&str; 4] = [
+            "<script src=\"/i18n.js\"",
+            "<script src=\"/mp4-lite.js\"",
+            "<script src=\"/webm-lite.js\"",
+            "<script src=\"/timelapse-local.js\"",
+        ];
         for atom in page_template().match_indices("<script src=") {
             assert!(
-                page_template()[atom.0..].starts_with("<script src=\"/i18n.js\""),
-                "页面里唯一的 script src 必须是 /i18n.js（同二进制内嵌路由 ✓），实际：{}",
+                ALLOWED_SCRIPT_SRCS
+                    .iter()
+                    .any(|src| page_template()[atom.0..].starts_with(src)),
+                "页面的 script src 必须在同源白名单内（同二进制内嵌路由 ✓），实际：{}",
                 &page_template()[atom.0..atom.0 + 60.min(page_template().len() - atom.0)]
             );
         }

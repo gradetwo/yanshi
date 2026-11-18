@@ -1053,13 +1053,46 @@ pub fn route(state: &ServerState, request: &Request) -> Response {
         };
     }
     // **★ `/i18n.js`（NEW-H1 瘦身的双语词表）**：与 `/viewer-app.js` 同一口径 ✓
-    //   —— **由同一个二进制内嵌发**（`include_str!` ✓）⇒ 页面里唯一的 script src 仍是自包含 ✓。
+    //   —— **由同一个二进制内嵌发**（`include_str!` ✓）⇒ 页面的 script src 都是同源自包含 ✓。
     if path == "/i18n.js" {
         return match method {
             "GET" => Response::bytes(
                 200,
                 "text/javascript; charset=utf-8",
                 viewer::i18n_script().as_bytes().to_vec(),
+            ),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
+    // **★ 过程视频三份资产（本轮瘦身外链）**：与 `/i18n.js` 同一口径 ✓
+    //   —— 页面以 `<script src=>` 按 mp4→webm→timelapse 顺序引用它们（传统脚本、文档序执行 ✓），
+    //   SW 把它们列进外壳预缓存 ⇒ 服务端与离线两种部署都拿得到 ✓。
+    if path == "/mp4-lite.js" {
+        return match method {
+            "GET" => Response::bytes(
+                200,
+                "text/javascript; charset=utf-8",
+                viewer::mp4_script().as_bytes().to_vec(),
+            ),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
+    if path == "/webm-lite.js" {
+        return match method {
+            "GET" => Response::bytes(
+                200,
+                "text/javascript; charset=utf-8",
+                viewer::webm_script().as_bytes().to_vec(),
+            ),
+            _ => method_not_allowed(request, "GET"),
+        };
+    }
+    if path == "/timelapse-local.js" {
+        return match method {
+            "GET" => Response::bytes(
+                200,
+                "text/javascript; charset=utf-8",
+                viewer::timelapse_script().as_bytes().to_vec(),
             ),
             _ => method_not_allowed(request, "GET"),
         };
