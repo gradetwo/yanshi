@@ -285,6 +285,14 @@ const waitForPrecache = async (path, timeoutMs = Number(process.env.YANSHI_WAIT_
   // **④ 在 ③ 之后单独切到 `render=client`**✓（**见下 ✓）**。
   await bootViewer(serverUrl);
 
+  // **英文模式**（本判据不带 `lang=` 参数 ⇒ 按浏览器语言走英文 ✓）：
+  //   v16 把横幅改成前缀翻译、0035 又整句模板化 ⇒ 英文横幅里不再有中文子串 ✓
+  //   ⇒ 三处横幅断言按页面语言取子串 ✓（`被服务端拒绝`那条未包 `uiText` ⇒ 仍是中文 ✓ 不分支 ✓）。
+  const pageLang = await evaluate("document.documentElement.lang");
+  const pageLangEn = String(pageLang || "zh").toLowerCase().startsWith("en");
+  console.log("  页面语言 = " + pageLang + "（英文断言：" + pageLangEn + "）");
+  const bannerHas = (banner, zh, en) => !!banner && banner.indexOf(pageLangEn ? en : zh) >= 0;
+
   // ——— 参照文档：**同样的动作在线做一遍** ✓（③要拿它做等价比对 ✓）———
   const refDoc = doc + "_ref";
   const refToken = (await httpJson("/api/documents", { doc_id: refDoc, width: 320, height: 240 })).token;
@@ -401,7 +409,7 @@ const waitForPrecache = async (path, timeoutMs = Number(process.env.YANSHI_WAIT_
   check(!!first && Number(first.base_head) > 0, "入队时记下了服务端 HEAD 作为基线（冲突判定要用）");
   check(ui1.state === "queued", "界面 data-state = queued（实际 " + ui1.state + "）");
   check(ui1.text !== "已保存", "界面不谎称「已保存」（实际「" + ui1.text + "」）");
-  check(!!ui1.banner && ui1.banner.indexOf("补交") >= 0, "有可见的操作条，且说清会自动补交（实际「" + ui1.banner + "」）");
+  check(bannerHas(ui1.banner, "补交", "queued offline"), "有可见的操作条，且说清会自动补交（实际「" + ui1.banner + "」）");
   check(queued && queued.ok === false && queued.queued === true, "调用方拿到的是「已排队」而不是「已落库」（ok=false, queued=true）");
 
   // ② 顺序 = 入队顺序
@@ -563,7 +571,7 @@ const waitForPrecache = async (path, timeoutMs = Number(process.env.YANSHI_WAIT_
   check(bound.refusedAt === bound.max, "第 " + bound.max + " 条之后开始拒绝（实际 refusedAt=" + bound.refusedAt + "）");
   check(bound.pending === bound.max, "被拒时队列**没有变短**（" + bound.pending + " 条）⇒ 没有悄悄丢最旧的");
   check(bound.state === "full", "界面 data-state = full（实际 " + bound.state + "）");
-  check(!!bound.banner && bound.banner.indexOf("没有记录") >= 0, "界面明说「刚才那一步没有记录」（实际「" + bound.banner + "」）");
+  check(bannerHas(bound.banner, "没有记录", "not recorded"), "界面明说「刚才那一步没有记录」（实际「" + bound.banner + "」）");
   // **清理必须在**断网时**做** ✗ —— 第一版先联网再清 ✓ ⇒ 4 秒轮询/WS 重连的**自动补交**
   // 抢在清理之前把 200 条第几条补交上去了 ✓ ⇒ HEAD 前进 ✓ ⇒ ⑥ 的入队基线失效 ✓
   // ⇒ ⑥ 被误判成"冲突"而不是"被拒" ✓（判据自己把这条时序暴露了出来 ✓）。
@@ -643,7 +651,7 @@ const waitForPrecache = async (path, timeoutMs = Number(process.env.YANSHI_WAIT_
   check(flushConflict && flushConflict.ok === false && flushConflict.conflict === true, "补交报告冲突（ok=false, conflict=true）");
   check(applied.length === 0, "**没有**把离线那一笔覆盖上去（obj_conflict 原子 " + applied.length + " 条）");
   check(conflictUi.state === "conflict", "界面 data-state = conflict（实际 " + conflictUi.state + "）");
-  check(!!conflictUi.banner && conflictUi.banner.indexOf("暂停补交") >= 0, "界面说清「已暂停补交」（实际「" + conflictUi.banner + "」）");
+  check(bannerHas(conflictUi.banner, "暂停补交", "replay paused"), "界面说清「已暂停补交」（实际「" + conflictUi.banner + "」）");
   const conflictEntries = await evaluate("window.yanshi.outboxEntries()");
   check((conflictEntries || []).length === 1 && conflictEntries[0].state === "conflict", "冲突的条目仍然留在队列里（可重试 / 可放弃）");
   check(afterConflict.length > beforeConflict, "服务端那边的改动仍在（HEAD 前进：" + beforeConflict + " ⇒ " + afterConflict.length + "）——我们没回滚别人");
