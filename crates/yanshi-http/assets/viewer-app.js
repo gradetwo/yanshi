@@ -1690,7 +1690,7 @@ async function refreshThumb() {
     // `TypeError: Failed to fetch` ✓ —— 那是控制台红字 ✓，而用户只看到"缩略图不动了"✗）。
     // 缩略图是**附属信息** ✓ ⇒ 失败记一行即可 ✓，不打断主流程 ✓、也不刷红字 ✓。
     window.yanshiStats.thumbErrors = (window.yanshiStats.thumbErrors || 0) + 1;
-    log("缩略图刷新失败（不影响画布）：" + String(error).slice(0, 60), "#c93");
+    log(uiTemplate("缩略图刷新失败（不影响画布）：{why}", { why: String(error).slice(0, 60) }), "#c93");
   } finally { thumbInFlight = false; }
 }
 
@@ -1841,11 +1841,11 @@ async function initWasm() {
     // `GET /api/health 404` ✓）⇒ 这里一直 404 ✓，于是**那行"服务端构建："永远打不出来** ✗，
     // 而它正是"这一版是哪一版"的排查入口 ✓ ⇒ 改对路径 ✓。
     const health = await fetch("/health").then((response) => response.json());
-    if (health && health.build) log("服务端构建：" + health.build);
+    if (health && health.build) log(uiTemplate("服务端构建：{build}", { build: health.build }));
   } catch (_) { /* 拿不到就算了 ✓，不影响使用 ✓ */ }
   } catch (error) {
     setWasmState("不可用", "#c33");
-    log("WASM 内核不可用，退化为服务端渲染：" + error.message, "#c33");
+    log(uiTemplate("WASM 内核不可用，退化为服务端渲染：{why}", { why: error.message }), "#c33");
     // **没有内核 ⇒ 画布的唯一来源就是服务端** ✓ —— 这一条是用户实测逼出来的 ✓：
     // 此前只有 `drawKernelRegion()` 会触发服务端补画 ✓，而它**只在有内核时才被调用** ✗
     // ⇒ 没装 wasm-bindgen 的机器（`make run` 的常见情形 ✓）打开任何**含 heavy 内容**的文档
@@ -1981,7 +1981,7 @@ function localKernelUnusableNow(why) {
   window.yanshiStats.kernelLoadFailures = (window.yanshiStats.kernelLoadFailures || 0) + 1;
   const firstTime = !localKernelUnusable;
   localKernelUnusable = true;
-  log("本地内核装载失败：" + why + " ⇒ 这一页改用服务端渲染", "#c33");
+  log(uiTemplate("本地内核装载失败：{why} ⇒ 这一页改用服务端渲染", { why }), "#c33");
   // **sticky** ✓：后面每帧的红日志（`needs_render` 等）会不停调 `stageNotice` ✗
   //   ⇒ 不加这面旗，这句「画面照常」**活不过一秒** ✓（实测 ⑫ 读到的永远是空串 ✓）。
   if (firstTime) stageNotice("本地内核没能把这份文档装进来 ⇒ 这一页先改用服务端渲染（画面照常，刷新后可再试本地）。", true);
@@ -2002,7 +2002,7 @@ async function loadKernel(since = 0) {
   // **续传到底应用了几条**（2026-11-05）：`since` 已是最新时这里是 0 条。
   window.yanshiStats.lastIncrementalAtoms = Array.isArray(atoms.atoms) ? atoms.atoms.length : -1;
   if (!atoms.ok) {
-    log("读取原子失败：" + JSON.stringify(atoms).slice(0, 160), "#c33");
+    log(uiTemplate("读取原子失败：{body}", { body: JSON.stringify(atoms).slice(0, 160) }), "#c33");
     return false;
   }
   // **刚建出来的内核才需要重放"离线落笔"** ✗ —— 增量续传（`since > 0`）时本地日志里已经有了 ✓。
@@ -2725,7 +2725,7 @@ async function updatePreviewOverlay(pending) {
 
 async function updatePreviewOverlayInner(pending, started) {
   const response = JSON.parse(state.kernel.extend_preview_stroke(JSON.stringify(previewObject(pending))));
-  if (!response.ok) { log("覆盖层应用失败：" + JSON.stringify(response).slice(0, 160), "#c33"); return; }
+  if (!response.ok) { log(uiTemplate("覆盖层应用失败：{body}", { body: JSON.stringify(response).slice(0, 160) }), "#c33"); return; }
   window.yanshiStats.previewApplies = (window.yanshiStats.previewApplies || 0) + 1;
   if (window.yanshiStats.tracePaints) log("盖章返回 dirty_bbox=" + JSON.stringify(response.dirty_bbox) + " keys=" + Object.keys(response).join(","));
   drawKernelBoxDirect(response.dirty_bbox);
