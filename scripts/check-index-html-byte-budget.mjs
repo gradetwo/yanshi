@@ -106,7 +106,11 @@ import { execFileSync } from "node:child_process";
 //   ＋ m44 词条 394 B）；补丁带入的长注释已在两份副本全部瘦身（共省 7,667 B），
 //   注释这条路补不出缺口 1,840 B ⇒ Wang 2026-11-17 定上界 979,000→981,500
 //   （留 660 B）。
-const CEILING = 981_500;
+// 2026-11-18：补丁包 v8 增量 0020–0023（create_layer 的 metadata 名配方接线、
+//   长说明收行与展开、图标标签进八语属性词表的根修）使 981,472→988,306 B
+//   （+6,834 B，增量全部是真实功能代码）⇒ Wang 2026-11-18 定上界 981,500→990,000
+//   （留 1,694 B）。
+const CEILING = 990_000;
 
 const failures = [];
 const check = (ok, label, detail) => {
