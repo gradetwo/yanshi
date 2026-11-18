@@ -282,8 +282,13 @@ const setField = (id, value) => evaluate(`(() => {
 const openCard = () => evaluate(`(() => {
   const card = document.getElementById("cardEffects");
   if (!card) return JSON.stringify({ missing: true });
-  const wasCollapsed = card.classList.contains("collapsed");
-  if (wasCollapsed) card.querySelector("h2").click();
+  // **v8 起折叠卡有两套折叠** ✓：docker 的 collapsed（工作区预设在开机时按标题折，
+  //   那时 h2 还在）＋渐进披露的 is-folded（h2 已被 .fold-head 取代 ✗ 点 h2 必然抛错）。
+  //   collapsed 对折叠卡**没有点击路径可解**（.fold-head 自己也被 collapsed 的 CSS 藏掉）
+  //   ⇒ 照 browser-ui-check 的先例直接清类；is-folded 走真实路径（点 .fold-head）。
+  const wasCollapsed = card.classList.contains("is-folded") || card.classList.contains("collapsed");
+  if (card.classList.contains("collapsed")) card.classList.remove("collapsed");
+  if (card.classList.contains("is-folded")) { const head = card.querySelector(".fold-head"); if (head) head.click(); }
   const info = document.getElementById("effectInfo");
   const apply = document.getElementById("effectApply");
   const visible = (el) => !!el && el.offsetParent !== null;
