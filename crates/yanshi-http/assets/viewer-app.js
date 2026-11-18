@@ -991,10 +991,10 @@ async function refreshOutboxBadge() {
     bar.hidden = !show;
     bar.dataset.state = stateName;
     if (text && show) {
-      if (conflict > 0) text.textContent = "服务端这份文档已变化，已暂停补交（" + mine.length + " 条）";
+      if (conflict > 0) text.textContent = uiText("服务端这份文档已变化，已暂停补交（" + mine.length + " 条）");
       else if (failed > 0) text.textContent = failed + " 条被服务端拒绝，仍留在队列";
-      else if (refused > 0) text.textContent = "队列已满，刚才那一步没有记录（" + mine.length + " 条已排队）";
-      else text.textContent = "离线排队 " + mine.length + " 条，联网后自动按序补交";
+      else if (refused > 0) text.textContent = uiText("队列已满，刚才那一步没有记录（" + mine.length + " 条已排队）");
+      else text.textContent = uiText("离线排队 " + mine.length + " 条，联网后自动按序补交");
     }
   }
   window.yanshiStats.outboxPending = mine.length;
@@ -2987,7 +2987,7 @@ async function submitAtom(atom) {
     //   写成「稍后会成功」✓（正是本仓要消灭的静默降级 ✓）。
     if (error && error.yanshiOffline !== true) {
       const detail = String((error && (error.stack || error.message)) || error);
-      $("last").textContent = "提交失败（非离线，未入队）：" + detail.slice(0, 600);
+      $("last").textContent = uiText("提交失败（非离线，未入队）：" + detail.slice(0, 600));
       log("这一步没有成功：" + detail, "#c33");
       return null;
     }
@@ -2995,7 +2995,7 @@ async function submitAtom(atom) {
     // ⇒ 入队重放**不会重复应用** ✓ —— 这是最干净的一条离线写路径 ✓。
     // 本地内核在 `commit_preview` 时已经把墨画上了 ✓ ⇒ 离线时画面**也看得见这一笔** ✓。
     $("conn").className = "dot";
-    $("connText").textContent = "已断开";
+    $("connText").textContent = uiText("已断开");
     state.outboxOffline = true;
     const outcome = await outboxEnqueue("atom", { atom: atom });
     outboxQueuedResult("原子 " + String((atom && atom.kind) || ""), outcome, error && error.message);
@@ -3012,10 +3012,10 @@ async function submitAtom(atom) {
     //   **⇒ 非 JSON 不是离线**：如实报 HTTP 状态／content-type ✓、**不入队** ✓。
     outboxNoteNetwork(true);
     $("conn").className = "dot on";
-    $("connText").textContent = "已连接";
+    $("connText").textContent = uiText("已连接");
     const detail = "服务端回了非 JSON 响应（HTTP " + reply.status + " · content-type "
       + String(reply.headers.get("content-type") || "无") + "）⇒ 未入队（不是离线）";
-    $("last").textContent = "提交失败：" + detail;
+    $("last").textContent = uiText("提交失败：" + detail);
     log("这一步没有成功：" + detail, "#c33");
     return null;
   }
@@ -3063,7 +3063,7 @@ async function checkBitExact() {
   if (heavyDocument) {
     window.yanshiStats.bitExact = null;   // **未知** ✓（不是 false ✗）
     const box = $("bitExact");
-    if (box) box.textContent = "不适用（文档含 heavy 内容：内核表示不了位图／介质笔画）";
+    if (box) box.textContent = uiText("不适用（文档含 heavy 内容：内核表示不了位图／介质笔画）");
     return;
   }
   if (!server.raw_url) { log("服务端未返回原始像素，无法自检", "#c33"); return; }
@@ -3105,7 +3105,7 @@ async function checkBitExact() {
   }
   if (localPixels.length !== serverPixels.length) {
     window.yanshiStats.bitExact = false;
-    $("bitExact").textContent = "尺寸不一致";
+    $("bitExact").textContent = uiText("尺寸不一致");
     log(`自检失败：本地 ${localPixels.length} 字节 vs 服务端 ${serverPixels.length} 字节`, "#c33");
     return;
   }
@@ -3194,7 +3194,7 @@ function updateNewSizeHint() {
   if (!hint) return;
   const size = readNewSize();
   if (!size) {
-    hint.textContent = "宽度与高度都要是 1..8192 之间的整数";
+    hint.textContent = uiText("宽度与高度都要是 1..8192 之间的整数");
     return;
   }
   const mega = (size.w * size.h / 1e6).toFixed(2);
@@ -3205,22 +3205,22 @@ async function createNamedDocument() {
   const name = ($("newName").value || "").trim();
   const hint = $("newHint");
   if (!name) {
-    hint.textContent = "请输入名称";
+    hint.textContent = uiText("请输入名称");
     return;
   }
   if (!/^[A-Za-z0-9._-]+$/.test(name)) {
-    hint.textContent = "名称只能用字母、数字、点、下划线与连字符（它会进入 URL 与文件路径）";
+    hint.textContent = uiText("名称只能用字母、数字、点、下划线与连字符（它会进入 URL 与文件路径）");
     return;
   }
   const size = readNewSize();
   if (!size) {
-    hint.textContent = "宽度与高度都要是 1..8192 之间的整数";
+    hint.textContent = uiText("宽度与高度都要是 1..8192 之间的整数");
     return;
   }
   try {
     const listed = await fetch("/api/documents").then((response) => response.json());
     if ((listed.documents || []).some((info) => info.doc_id === name)) {
-      hint.textContent = "已存在同名文档，请换一个名字，或用「打开…」";
+      hint.textContent = uiText("已存在同名文档，请换一个名字，或用「打开…」");
       return;
     }
   } catch (_) {
@@ -3338,7 +3338,7 @@ async function refreshDocumentList() {
     }
     list.dataset.state = "ready";
     list.dataset.message = "";
-    if (count) count.textContent = "共 " + documents.length + " 份";
+    if (count) count.textContent = uiText("共 " + documents.length + " 份");
     for (const info of documents) list.appendChild(documentRow(info));
   } catch (error) {
     list.dataset.state = "error";
@@ -3375,13 +3375,13 @@ function documentRow(info) {
   if (info.doc_id === state.docId) {
     const current = document.createElement("span");
     current.className = "doc-meta";
-    current.textContent = "当前";
+    current.textContent = uiText("当前");
     actions.appendChild(current);
   }
   const open = document.createElement("button");
   open.type = "button";
   open.dataset.action = "open";
-  open.textContent = "打开";
+  open.textContent = uiText("打开");
   open.addEventListener("click", async () => {
     closeOpenDialog();
     await switchDocument(info.doc_id);
@@ -3393,7 +3393,7 @@ function documentRow(info) {
   const remove = document.createElement("button");
   remove.type = "button";
   remove.dataset.action = "delete";
-  remove.textContent = "删除";
+  remove.textContent = uiText("删除");
   remove.addEventListener("click", () => askDeleteDocument(info.doc_id));
   actions.appendChild(remove);
   row.append(text, actions);
@@ -3411,7 +3411,7 @@ let pendingDelete = "";
 function askDeleteDocument(docId) {
   pendingDelete = docId;
   const dialog = $("deleteDialog");
-  if ($("deleteWhat")) $("deleteWhat").textContent = "要删掉的是：" + docId;
+  if ($("deleteWhat")) $("deleteWhat").textContent = uiText("要删掉的是：" + docId);
   if ($("deleteError")) $("deleteError").textContent = "";
   if (typeof dialog.showModal === "function") dialog.showModal();
   else dialog.setAttribute("open", "");
@@ -5107,7 +5107,7 @@ let editingEffectId = null;
 function clearEffectEditing() {
   editingEffectId = null;
   const button = $("effectApply");
-  if (button) button.textContent = "应用";
+  if (button) button.textContent = uiText("应用");
 }
 
 /// 列出当前文档的调整/滤镜对象（含**实际生效的参数**与顺序）。
@@ -5120,13 +5120,13 @@ async function refreshEffects() {
     // 「读取失败：endpoint_not_local」⇒ 一个裸码 ✗ 人只能猜是"服务端读不到我的效果"还是"本机没这端点"✓
     // 同一张卡上同一件事 ✗ 一句说责任一句不说 ⇒ 走 ㉟ 那一对 `refusalVenue()`／`failureCode()`
     // （责任与码**同源** ✓ 英文那侧走 m40 模式词条 ✓ 两个 venue 词与 m39 用同一本映射 ✗ 不另发明）。
-    list.textContent = "读取失败（" + refusalVenue() + "）：" + failureCode(value);
+    list.textContent = uiText("读取失败（" + refusalVenue() + "）：" + failureCode(value));
     return;
   }
   const effects = value.effects || [];
   list.innerHTML = "";
   if (effects.length === 0) {
-    list.textContent = "（当前文档没有调整/滤镜）";
+    list.textContent = uiText("（当前文档没有调整/滤镜）");
     return;
   }
   for (const effect of effects) {
@@ -5149,14 +5149,14 @@ async function refreshEffects() {
       const kindBox = $("effectKind");
       if (kindBox) kindBox.value = (effect.adjustment_type || effect.type === "adjustment") ? "adjustment" : "filter";
       const button = $("effectApply");
-      if (button) button.textContent = "更新这个";
+      if (button) button.textContent = uiText("更新这个");
       log("正在编辑「" + name + "」✓ —— 改好参数后点「更新这个」✓");
       renderEffectsRowHighlight();
     });
     // **每行一个出口** ✓（`delete_object` ✓ 实测能删效果对象并让画面复原 ✓）。
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.textContent = "删";
+    remove.textContent = uiText("删");
     remove.title = "删掉这个效果对象（服务端落一条原子，可以再用撤销退回来）";
     remove.style.cssText = "margin-left:6px;font-size:11px;padding:0 6px";
     remove.addEventListener("click", (event) => {
@@ -5191,7 +5191,7 @@ function renderChangesetList() {
   if (changesetCache.length === 0) {
     const empty = document.createElement("div");
     empty.className = "hint";
-    empty.textContent = "还没有变更集 ✓（点「开始变更集」再画 ✓）";
+    empty.textContent = uiText("还没有变更集 ✓（点「开始变更集」再画 ✓）");
     list.appendChild(empty);
     return;
   }
@@ -5210,7 +5210,7 @@ function renderChangesetList() {
     actions.className = "toolbar";
     const undo = document.createElement("button");
     undo.type = "button";
-    undo.textContent = "整体撤销";
+    undo.textContent = uiText("整体撤销");
     undo.addEventListener("click", async () => {
       const done = await callToolChecked("revert_changeset",
         { changeset_id: item.changeset_id }, "整体撤销变更集");
@@ -5272,7 +5272,7 @@ async function showAtomDetail(atomId) {
   if (!value || !value.ok) {
     const reason = (value && value.context && value.context.detail) || "读取失败";
     box.textContent = "✗ " + reason;
-    if (hint) hint.textContent = "读取失败 ✓";
+    if (hint) hint.textContent = uiText("读取失败 ✓");
     return;
   }
   if (hint) hint.textContent = "#" + value.seq + " " + value.kind + " · " + value.actor +
@@ -5304,7 +5304,7 @@ async function refreshHistory() {
     // 本地那一臂的码在 `error` 里 ⇒ 历史卡会念成裸码／`unknown` ✗；
     // 而"哪条路"（服务端／本地内核）此前**根本没说** ✗ ⇒ 读的人得自己猜去哪翻日志 ✓。
     // 整句走 `m40` 词条（`viewer-app.js` 的 `i18nText` ✓）⇒ 英文模式不新增翻译 ✓。
-    list.textContent = "读取失败（" + refusalVenue() + "）：" + failureCode(value);
+    list.textContent = uiText("读取失败（" + refusalVenue() + "）：" + failureCode(value));
     return;
   }
   // **从新到旧** ✓（用户要求 ✓／PWA 实测 P2 ✓）：`get_log` 按 seq 升序返回 ✓ ⇒ 这里反转 ✓。
@@ -5386,10 +5386,10 @@ async function refreshHistory() {
     // **详情** ✓（本轮补 ✓）：`get_atom` 把这一条的**净荷**取回来 ✓ ⇒ 才知道它改了什么 ✓。
     const detail = document.createElement("button");
     detail.type = "button";
-    detail.textContent = "详情";
+    detail.textContent = uiText("详情");
     detail.addEventListener("click", () => { void showAtomDetail(atomIdOf(atom)); });
     const jump = document.createElement("button");
-    jump.textContent = "回到此处";
+    jump.textContent = uiText("回到此处");
     jump.addEventListener("click", async () => {
       // `revert_to` 通过 declare_head 回到该时刻；它本身也是一个原子，所以可被撤销。
       // **"跳转前的头"必须在跳转之前取** ✓（第 496 轮 ✓）：原先它在 `revert_to` **之后**才读 ✗
@@ -5425,7 +5425,7 @@ async function refreshHistory() {
     row.append(seq, kindLabel, actorLabel, detail, jump);
     list.appendChild(row);
   }
-  if (atoms.length === 0) list.textContent = "（没有匹配的原子）";
+  if (atoms.length === 0) list.textContent = uiText("（没有匹配的原子）");
   fillHistoryFilters(atoms);
 }
 
@@ -5560,7 +5560,7 @@ function renderAnnotationList() {
   if (shown.length === 0) {
     const empty = document.createElement("div");
     empty.className = "hint";
-    empty.textContent = "还没有标注 ✓";
+    empty.textContent = uiText("还没有标注 ✓");
     list.appendChild(empty);
     positionAnnotationPins();
     return;
@@ -5599,7 +5599,7 @@ function renderAnnotationList() {
     });
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.textContent = "删除";
+    remove.textContent = uiText("删除");
     remove.addEventListener("click", async () => {
       await callToolChecked("delete_annotation", { annotation_id: item.id }, "删除标注");
       await refreshAnnotations();
@@ -5608,7 +5608,7 @@ function renderAnnotationList() {
     // 解决表示"认可并处理了" ✓、拒绝表示"这条不成立" ✓，两者都会从待处理里消失 ✓。
     const reject = document.createElement("button");
     reject.type = "button";
-    reject.textContent = "拒绝";
+    reject.textContent = uiText("拒绝");
     reject.disabled = annotationResolved(item);
     reject.addEventListener("click", async () => {
       await callToolChecked("reject_annotation", { annotation_id: item.id }, "拒绝标注");
@@ -5635,7 +5635,7 @@ function renderCheckpointList() {
   if (checkpointCache.length === 0) {
     const empty = document.createElement("div");
     empty.className = "hint";
-    empty.textContent = "还没有存档点 ✓（上面那个按钮可以打一个 ✓）";
+    empty.textContent = uiText("还没有存档点 ✓（上面那个按钮可以打一个 ✓）");
     list.appendChild(empty);
     return;
   }
@@ -5720,7 +5720,7 @@ function renderObjectList() {
   if (objectCache.length === 0) {
     const empty = document.createElement("div");
     empty.className = "hint";
-    empty.textContent = "当前图层还没有对象 ✓";
+    empty.textContent = uiText("当前图层还没有对象 ✓");
     list.appendChild(empty);
     return;
   }
@@ -5743,7 +5743,7 @@ function renderObjectList() {
     actions.className = "toolbar";
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.textContent = "删除";
+    remove.textContent = uiText("删除");
     remove.addEventListener("click", async () => {
       await callToolChecked("delete_object", { object_id: item.object_id }, "删除对象");
       await refreshObjects();
@@ -5991,7 +5991,7 @@ async function setReferenceImage() {
   try {
     const built = referenceDisplayArgs();
     if (built.error) throw new Error(built.error);
-    if (info) info.textContent = "正在上传参考图…";
+    if (info) info.textContent = uiText("正在上传参考图…");
     const dataUrl = await new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(String(reader.result));
@@ -6027,8 +6027,8 @@ async function setReferenceImage() {
     if (!set || !set.ok) throw new Error("参考图已上传，但保存参考设置失败");
     state.referenceLocal = { hash: String(upload.blob_hash), url: dataUrl };
     const cached = upload.encoded_original || window.__rememberReferenceBlob(String(upload.blob_hash), dataUrl);
-    if (info) info.textContent = "参考图已就位（" + width + "×" + height + "）"
-      + (cached ? "" : " · 本浏览器未缓存原图，刷新后可能需要重传");
+    if (info) info.textContent = uiText("参考图已就位（" + width + "×" + height + "）"
+      + (cached ? "" : " · 本浏览器未缓存原图，刷新后可能需要重传"));
     window.dispatchEvent(new Event("resize"));
   } catch (error) {
     const message = "参考图上传失败：" + String(error?.message || error);
@@ -6044,7 +6044,7 @@ async function clearReferenceImage() {
   if (done && done.ok) {
     delete state.referenceLocal;
     const info = $("referenceInfo");
-    if (info) info.textContent = "已清除参考图";
+    if (info) info.textContent = uiText("已清除参考图");
     window.dispatchEvent(new Event("resize"));
   }
 }
@@ -6075,9 +6075,9 @@ async function refreshHistogram() {
   const lum = (data.summary || {}).luma || {};
   const num = (v) => (typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(1)) : "?");
   if (info) {
-    info.textContent = "像素 " + (data.pixels || 0) + " · 作用域 " + (HISTOGRAM_SCOPE_ZH[data.scope] || data.scope || "?")
+    info.textContent = uiText("像素 " + (data.pixels || 0) + " · 作用域 " + (HISTOGRAM_SCOPE_ZH[data.scope] || data.scope || "?")
       + " · 亮度 均值 " + num(lum.mean) + " 中位 " + num(lum.median)
-      + " p5 " + num(lum.p5) + " p95 " + num(lum.p95);
+      + " p5 " + num(lum.p5) + " p95 " + num(lum.p95));
   }
 }
 
@@ -6145,10 +6145,10 @@ async function importAssetFile() {
   const done = await callToolChecked("import_asset", { kind, name, data_base64: btoa(bin) }, "导入资产");
   const info = $("assetInfo");
   if (done && done.ok) {
-    if (info) info.textContent = "已导入 " + kind + "：" + name;
+    if (info) info.textContent = uiText("已导入 " + kind + "：" + name);
     log("资产已导入（" + kind + " · " + name + "）");
   } else if (info) {
-    info.textContent = "导入失败：" + String((done && (done.error_code || done.reason)) || "unknown");
+    info.textContent = uiText("导入失败：" + String((done && (done.error_code || done.reason)) || "unknown"));
   }
   if (input) input.value = "";
 }
@@ -6174,13 +6174,13 @@ async function serverExportPng() {
   if (given === 4) {
     if (!(rw > 0) || !(rh > 0)) {
       const infoBad = $("exportServerInfo");
-      if (infoBad) infoBad.textContent = "区域宽/高必须大于 0";
+      if (infoBad) infoBad.textContent = uiText("区域宽/高必须大于 0");
       return;
     }
     args.region = { x: rx, y: ry, w: rw, h: rh };
   } else if (given > 0) {
     const infoBad = $("exportServerInfo");
-    if (infoBad) infoBad.textContent = "区域要四个值填齐（x, y, w, h）才生效；当前只填了 " + given + " 个";
+    if (infoBad) infoBad.textContent = uiText("区域要四个值填齐（x, y, w, h）才生效；当前只填了 " + given + " 个");
     return;
   }
   const lodSel = ($("exportLod") || {}).value;
@@ -6190,7 +6190,7 @@ async function serverExportPng() {
   if (layerOnly) {
     if (!state.layerId) {
       const infoBad = $("exportServerInfo");
-      if (infoBad) infoBad.textContent = "没有当前图层 ⇒ 先选中一层再勾「只导当前层」";
+      if (infoBad) infoBad.textContent = uiText("没有当前图层 ⇒ 先选中一层再勾「只导当前层」");
       return;
     }
     args.layer_id = state.layerId;
@@ -6205,18 +6205,18 @@ async function serverExportPng() {
     const isZip = bytes.length > 1 && bytes[0] === 0x50 && bytes[1] === 0x4b;
     const href = URL.createObjectURL(new Blob([bytes], { type: isZip ? "application/zip" : "image/png" }));
     triggerPngDownload(href, state.docId, true);
-    if (info) info.textContent = "已导出并下载 " + (value.width || "?") + "×" + (value.height || "?");
+    if (info) info.textContent = uiText("已导出并下载 " + (value.width || "?") + "×" + (value.height || "?"));
     return;
   }
   if (value.url) {
     triggerPngDownload(value.url, state.docId, String(value.url).startsWith("blob:"));
-    if (info) info.textContent = "已导出并下载 " + (value.width || "?") + "×" + (value.height || "?");
+    if (info) info.textContent = uiText("已导出并下载 " + (value.width || "?") + "×" + (value.height || "?"));
     return;
   }
   if (info) {
-    info.textContent = "服务端已落盘：" + String(value.path || "") +
+    info.textContent = uiText("服务端已落盘：" + String(value.path || "") +
       "（" + (value.width || "?") + "×" + (value.height || "?") +
-      "，" + (value.bytes || 0) + " 字节）";
+      "，" + (value.bytes || 0) + " 字节）");
   }
 }
 
@@ -6265,7 +6265,7 @@ async function refreshComments() {
   if (atoms.length === 0) {
     const empty = document.createElement("div");
     empty.className = "hint";
-    empty.textContent = "还没有评论 ✓";
+    empty.textContent = uiText("还没有评论 ✓");
     list.appendChild(empty);
     return;
   }
@@ -6330,7 +6330,7 @@ function renderSuggestionList() {
   if (suggestionCache.length === 0) {
     const empty = document.createElement("div");
     empty.className = "hint";
-    empty.textContent = "还没有建议 ✓（AI 或代理可以用 suggest 提出 ✓）";
+    empty.textContent = uiText("还没有建议 ✓（AI 或代理可以用 suggest 提出 ✓）");
     list.appendChild(empty);
     return;
   }
@@ -6364,7 +6364,7 @@ function renderSuggestionList() {
     // 比"点了接受才知道对不对"安全得多 ✓（接受会**按序重放**补丁 ✓）。
     const preview = document.createElement("button");
     preview.type = "button";
-    preview.textContent = "预览";
+    preview.textContent = uiText("预览");
     preview.addEventListener("click", async () => {
       const value = await callToolChecked("preview_suggestion",
         { suggestion_id: item.suggestion_id || item.id }, "预览建议");
@@ -6382,7 +6382,7 @@ function renderSuggestionList() {
     });
     const accept = document.createElement("button");
     accept.type = "button";
-    accept.textContent = "接受";
+    accept.textContent = uiText("接受");
     accept.disabled = item.status === "accepted";
     accept.addEventListener("click", async () => {
       const done = await callToolChecked("accept_suggestion",
@@ -6396,7 +6396,7 @@ function renderSuggestionList() {
     });
     const reject = document.createElement("button");
     reject.type = "button";
-    reject.textContent = "拒绝";
+    reject.textContent = uiText("拒绝");
     reject.disabled = item.status === "rejected";
     reject.addEventListener("click", async () => {
       // **理由必须是用户写的** ✓（第五轮：`suggestionReason` 此前是悬空引用 ✗
@@ -6548,7 +6548,7 @@ function setupDiagnosticsPanel() {
   if (!button) return;
   button.addEventListener("click", () => {
     const info = $("diagnosticsInfo");
-    if (info) info.textContent = "正在收集…（画布很大时可能要几秒）";
+    if (info) info.textContent = uiText("正在收集…（画布很大时可能要几秒）");
     const link = document.createElement("a");
     link.href = api("/api/diagnostics");
     link.download = "yanshi-diagnostics-" + state.docId + ".zip";
@@ -6556,7 +6556,7 @@ function setupDiagnosticsPanel() {
     link.click();
     link.remove();
     log("诊断包开始下载 ✓（zip：README / build / config / document / atoms / warnings / timings / stderr / thumbnail）");
-    if (info) info.textContent = "已发起下载 ✓ 包内先读 README.txt";
+    if (info) info.textContent = uiText("已发起下载 ✓ 包内先读 README.txt");
   });
 }
 
@@ -6813,12 +6813,12 @@ function setupObjectPanel() {
     const shape = state.selectionShape;
     const bbox = shape && shape.bbox;
     if (!bbox || !(bbox.w > 0) || !(bbox.h > 0)) {
-      if (info) info.textContent = "当前没有可用选区 ⇒ 先用选区工具拖一个（或清除选区后手填四个框）";
+      if (info) info.textContent = uiText("当前没有可用选区 ⇒ 先用选区工具拖一个（或清除选区后手填四个框）");
       return;
     }
     const set = (id, v) => { const el = $(id); if (el) el.value = String(Math.round(v)); };
     set("exportRegionX", bbox.x); set("exportRegionY", bbox.y); set("exportRegionW", bbox.w); set("exportRegionH", bbox.h);
-    if (info) info.textContent = "区域已按选区填充：x=" + Math.round(bbox.x) + " y=" + Math.round(bbox.y) + " w=" + Math.round(bbox.w) + " h=" + Math.round(bbox.h);
+    if (info) info.textContent = uiText("区域已按选区填充：x=" + Math.round(bbox.x) + " y=" + Math.round(bbox.y) + " w=" + Math.round(bbox.w) + " h=" + Math.round(bbox.h));
   });
 }
 
@@ -6883,7 +6883,7 @@ function renderAnchorList() {
   if (names.length === 0) {
     const empty = document.createElement("div");
     empty.className = "hint";
-    empty.textContent = "还没有锚点 ✓（填好名字与坐标点「钉住」，或开着「锚点」工具在画布上点一下 ✓）";
+    empty.textContent = uiText("还没有锚点 ✓（填好名字与坐标点「钉住」，或开着「锚点」工具在画布上点一下 ✓）");
     list.appendChild(empty);
     return;
   }
@@ -6907,7 +6907,7 @@ function renderAnchorList() {
     actions.className = "toolbar";
     const fill = document.createElement("button");
     fill.type = "button";
-    fill.textContent = "填入";
+    fill.textContent = uiText("填入");
     fill.title = "把这条锚点的名字与坐标填回上面的框（改坐标时不必重新目测 ✓）";
     fill.addEventListener("click", () => {
       const nameBox = $("anchorName");
@@ -6920,7 +6920,7 @@ function renderAnchorList() {
     });
     const drop = document.createElement("button");
     drop.type = "button";
-    drop.textContent = "删除";
+    drop.textContent = uiText("删除");
     drop.title = "删掉这个锚点（delete_anchor；不存在会报错，不会静默成功 ✓）";
     drop.addEventListener("click", async () => {
       const done = await callToolChecked("delete_anchor", { name }, "删除锚点");
@@ -7086,12 +7086,12 @@ function renderPresetList() {
     actions.className = "annotation-actions";
     const preview = document.createElement("button");
     preview.type = "button";
-    preview.textContent = "预览";
+    preview.textContent = uiText("预览");
     preview.title = "不落原文档，先看代理图（preview_preset + render，用当前图层）";
     preview.addEventListener("click", () => { void previewPresetFromPanel(preset); });
     const use = document.createElement("button");
     use.type = "button";
-    use.textContent = "应用";
+    use.textContent = uiText("应用");
     use.title = "把这套预设落到当前图层（apply_preset）；强度与旋钮按上面的值";
     use.addEventListener("click", () => { void applyPresetFromPanel(preset); });
     actions.appendChild(preview);
@@ -8033,7 +8033,7 @@ async function setupAssetPanels() {
       if (palettePick) palettePick.appendChild(option);
     }
   } catch (error) {
-    if (paletteInfo) paletteInfo.textContent = "调色板列表没拉到：" + String(error).slice(0, 90);
+    if (paletteInfo) paletteInfo.textContent = uiText("调色板列表没拉到：" + String(error).slice(0, 90));
   }
   try {
     const textures = await callTool("list_assets", { kind: "texture" }, { refresh: false });
@@ -8070,7 +8070,7 @@ async function setupAssetPanels() {
           if (texturePick) texturePick.value = asset.name;
           for (const other of thumbs.children) other.style.borderColor = "transparent";
           image.style.borderColor = "#4c6ef5";
-          if (textureInfo) textureInfo.textContent = "已选中 " + asset.name + " ✓";
+          if (textureInfo) textureInfo.textContent = uiText("已选中 " + asset.name + " ✓");
         });
         thumbs.appendChild(image);
       }
@@ -8081,7 +8081,7 @@ async function setupAssetPanels() {
       if (first) first.style.borderColor = "#4c6ef5";
     }
   } catch (error) {
-    if (textureInfo) textureInfo.textContent = "纹理列表没拉到：" + String(error).slice(0, 90);
+    if (textureInfo) textureInfo.textContent = uiText("纹理列表没拉到：" + String(error).slice(0, 90));
   }
 
   // **读一个调色板并铺成色块** ✓。截断也照实说 ✓（"给了 500 却不说"会让人以为板就那么大 ✗）。
@@ -8096,7 +8096,7 @@ async function setupAssetPanels() {
       { refresh: false },
     );
     if (!listed || listed.ok === false) {
-      if (paletteInfo) paletteInfo.textContent = "读不了这个调色板：" + JSON.stringify(listed).slice(0, 120);
+      if (paletteInfo) paletteInfo.textContent = uiText("读不了这个调色板：" + JSON.stringify(listed).slice(0, 120));
       return;
     }
     for (const color of listed.colors || []) {
@@ -8181,7 +8181,7 @@ async function setupAssetPanels() {
         }
         if (!href && value.blob_hash) href = api("/api/blob/" + value.blob_hash);
         if (!href) {
-          if (info) info.textContent = "导出回执里没有可下载的地址 ⇒ 这次导出拿不到包";
+          if (info) info.textContent = uiText("导出回执里没有可下载的地址 ⇒ 这次导出拿不到包");
           return;
         }
         const filename = typeof value.filename === "string" && value.filename
@@ -8210,7 +8210,7 @@ async function setupAssetPanels() {
           if (typeof value.bytes === "number") parts.push(value.bytes + " 字节");
           if (value.format) parts.push(String(value.format));
           if (path) parts.push("服务器另存 " + path);
-          info.textContent = "已下载 " + filename + (parts.length ? "（" + parts.join("，") + "）" : "") + " ✓";
+          info.textContent = uiText("已下载 " + filename + (parts.length ? "（" + parts.join("，") + "）" : "") + " ✓");
         }
       });
       // **就绪信号** ✓：这个处理器挂在**异步的** `setupAssetPanels()` 里 ✓
@@ -8224,7 +8224,7 @@ async function setupAssetPanels() {
       // 所以按钮把这个动作转给它 ✓（用户看到的是一个动作 ✓，不是两个 ✓）。
       importButton.addEventListener("click", () => {
         if (fileInput) fileInput.click();
-        else if (info) info.textContent = "这个构建里没有文件选择控件";
+        else if (info) info.textContent = uiText("这个构建里没有文件选择控件");
       });
       if (fileInput) {
         fileInput.addEventListener("change", async () => {
@@ -8268,7 +8268,7 @@ async function setupAssetPanels() {
         }
         controller = new AbortController();
         const previous = button.textContent;
-        button.textContent = "取消导出";
+        button.textContent = uiText("取消导出");
         try {
           // **内核不存在时不许裸取 state.wasm.WasmKernel** ✓（0005）：服务端渲染下 wasm 为 null ⇒ 过程视频导出只回 TypeError。
           if (!state.wasm || !state.wasm.WasmKernel) {
@@ -8385,7 +8385,7 @@ async function setupAssetPanels() {
       // 实测时序 ✓：点完 **1 秒**时画布仍是 0 个非白像素 ✗、**6 秒**后才变成 38400 ✓
       // ⇒ 服务端要渲染整幅纹理再合成 ✓、再加上一次预览往返 ✓ ⇒ 界面**看起来像没反应** ✗。
       // ⇒ **不是靠加长等待** ✗，而是**当场把状态说出来** ✓（"看起来没反应"本身就是缺陷 ✓）。
-      if (textureInfo) textureInfo.textContent = "正在铺 " + texture + "（" + mode + "）…";
+      if (textureInfo) textureInfo.textContent = uiText("正在铺 " + texture + "（" + mode + "）…");
       const textureArgs = { texture: texture, mode: mode };
       if (picked.region) textureArgs.region = picked.region;
       // **先把上一次那张纹理层删掉** ✗（用户实测：点五次就多出五层"背景（纹理）" ✗ ✓）——
@@ -8686,7 +8686,7 @@ function connect() {
     const dot = $("conn");
     if (dot) dot.className = "dot";
     const text = $("connText");
-    if (text) text.textContent = "本地内核（无服务端）";
+    if (text) text.textContent = uiText("本地内核（无服务端）");
     return;
   }
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
@@ -8694,7 +8694,7 @@ function connect() {
   state.socket = socket;
   socket.onopen = () => {
     $("conn").className = "dot on";
-    $("connText").textContent = "已连接";
+    $("connText").textContent = uiText("已连接");
     // **连上了就把重试计数清零** ✓（否则一次短暂断开会让"上限"永久少一格 ✓）。
     state.reconnectAttempts = 0;
     subscribeViewport();
@@ -8708,7 +8708,7 @@ function connect() {
     if (state.socket !== socket) return;
     state.socket = null;
     $("conn").className = "dot";
-    $("connText").textContent = "已断开";
+    $("connText").textContent = uiText("已断开");
     // **重连必须有界、且退避** ✗ —— 用户实测：服务端不在时控制台被
     // `WebSocket connection … failed` **刷满** ✓，因为原来是"每 1.5 秒无限重连" ✗。
     // **为什么这会变成真问题** ✓：控制台噪音会**盖住真正的报错** ✓（用户这次贴来的日志里 ✓
@@ -8716,7 +8716,7 @@ function connect() {
     // ⇒ 1.5s → 3s → 6s → 12s（封顶 ✓），**最多 8 次** ✓；再失败就**停下并说清** ✓。
     state.reconnectAttempts = (state.reconnectAttempts || 0) + 1;
     if (state.reconnectAttempts > 8) {
-      $("connText").textContent = "已断开（不再重连）";
+      $("connText").textContent = uiText("已断开（不再重连）");
       log("连不上服务端（已重试 8 次）⇒ 停止重连 ✗ —— 服务端可能已经退出 ✓；把它起回来之后**刷新页面** ✓", "#c33");
       return;
     }
@@ -9182,7 +9182,7 @@ async function refreshSelectionHint() {
     const listed = await callTool("list_selections", {}, { refresh: false });
     const selections = (listed && listed.selections) || [];
     if (selections.length === 0) {
-      hint.textContent = "无选区";
+      hint.textContent = uiText("无选区");
       // **服务端说没有选区 ⇒ 本地也必须清掉** ✗（否则轮廓会继续画着 ✓、而"只作用于选区"会
       // 拿一个**已经不存在**的框去裁 ✓ —— 那正是"界面与事实不一致"的经典后果 ✓）。
       state.selectionShape = null;
@@ -9676,17 +9676,17 @@ async function detachRangeMask() {
   const current = record ? record.mask_id : null;
   if (!current) {
     // 本来就没有 ⇒ **一个原子都不写** ✓（"点了没变化"和"点了写了一条空改动"是两回事 ✓）。
-    if (info) info.textContent = "那一层本来就没有蒙版 ⇒ 没有可取下的东西（没有写入任何改动）。";
+    if (info) info.textContent = uiText("那一层本来就没有蒙版 ⇒ 没有可取下的东西（没有写入任何改动）。");
     return;
   }
   const done = await callTool("set_property", { layer_id: target, key: "mask_id", value: null }, { refresh: false });
   if (!done.ok) {
     log("取下蒙版失败：" + (done.error_code || "unknown") + " " +
         ((done.context && done.context.detail) || ""), "#c33");
-    if (info) info.textContent = "没取下：那一步失败了（原因见下方日志）。";
+    if (info) info.textContent = uiText("没取下：那一步失败了（原因见下方日志）。");
     return;
   }
-  if (info) info.textContent = "已取下 " + current + "（蒙版本体仍在历史里，只是这一层不再受它限定）。";
+  if (info) info.textContent = uiText("已取下 " + current + "（蒙版本体仍在历史里，只是这一层不再受它限定）。");
   await refreshLayers();
   await resync();
 }
@@ -9740,7 +9740,7 @@ function renderFreqSepCurrent() {
   if (!out) return;
   const source = ($("freqSepSource") || {}).value;
   const record = freqSepRecords.find((layer) => layer.layer_id === source);
-  if (!record) { out.textContent = "请选择要分离的图层"; return; }
+  if (!record) { out.textContent = uiText("请选择要分离的图层"); return; }
   const count = Number(record.objects || 0);
   out.textContent = count > 0
     ? "该层有 " + count + " 个对象 ⇒ 可以分离"
@@ -9853,7 +9853,7 @@ function renderDodgeBurnCurrent() {
   if (!out) return;
   const source = ($("dodgeBurnSource") || {}).value;
   const record = dodgeBurnRecords.find((layer) => layer.layer_id === source);
-  if (!record) { out.textContent = "请选择源图层"; return; }
+  if (!record) { out.textContent = uiText("请选择源图层"); return; }
   const prefix = (($("dodgeBurnName") || {}).value || "").trim() || record.name;
   // **既有组按配方认**：落盘名是词干，旧工程成品名也认。
   // **组名引号随语言** ✓：中文（及其余语言）用「」✓；英文的复用预测句被判据钉成
@@ -10149,9 +10149,9 @@ async function runFillRegion() {
                                   { refresh: false });
     const s = probed && Array.isArray(probed.samples) ? probed.samples[0] : null;
     if (s && s.outside !== true && Array.isArray(s.rgba)) {
-      if (sampleOut) sampleOut.textContent = "实测 (" + s.x + "," + s.y + ") = [" + s.rgba.join(",") + "]（服务端合成读数）";
+      if (sampleOut) sampleOut.textContent = uiText("实测 (" + s.x + "," + s.y + ") = [" + s.rgba.join(",") + "]（服务端合成读数）");
     } else if (sampleOut) {
-      sampleOut.textContent = "该点不在画布内 ⇒ 没有实测读数";
+      sampleOut.textContent = uiText("该点不在画布内 ⇒ 没有实测读数");
     }
   }
   await resync();
@@ -12428,9 +12428,9 @@ function referenceOverlayState() {
   const info = $("referenceInfo");
   if (!overlay || !info) return;
   if (overlay.dataset.decode === "failed") {
-    info.textContent = "参考图叠不上去：存储里那份是裸像素（本浏览器没有它的原图）⇒ 已收起画布上的这一层，重新上传一次就能一直显示";
+    info.textContent = uiText("参考图叠不上去：存储里那份是裸像素（本浏览器没有它的原图）⇒ 已收起画布上的这一层，重新上传一次就能一直显示");
   } else if (overlay.dataset.decode === "ok" && overlay.dataset.source === "blob") {
-    info.textContent = "参考图已就位（从服务端读取原图）";
+    info.textContent = uiText("参考图已就位（从服务端读取原图）");
   }
 }
 void refreshReferenceOverlay();
@@ -12479,7 +12479,7 @@ function scheduleBrushPreview() {
     // 控制台里那是一条**红字** ✓，而用户看到的是"预览悄悄不动了" ✗）。
     refreshBrushPreview().catch((error) => {
       const hint = $("brushPreviewHint");
-      if (hint) hint.textContent = "预览没拉到：" + String(error).slice(0, 60);
+      if (hint) hint.textContent = uiText("预览没拉到：" + String(error).slice(0, 60));
     });
   }, 400);
 }
@@ -12499,7 +12499,7 @@ async function refreshBrushPreview() {
     return await refreshBrushPreviewInner();
   } catch (error) {
     const hint = $("brushPreviewHint");
-    if (hint) hint.textContent = "预览没拉到：" + String(error).slice(0, 60);
+    if (hint) hint.textContent = uiText("预览没拉到：" + String(error).slice(0, 60));
     return false;
   }
 }
@@ -12522,7 +12522,7 @@ async function refreshBrushPreviewInner() {
   // 直接把它当错误抛出去会变成控制台红字 ✓（用户看不懂 ✓），这里**说人话** ✓。
   if (!(size > 0) || size > 512) {
     img.style.display = "none";
-    if (hint) hint.textContent = "粗细要在 1..512 之间才能预览（当前 " + size + "）";
+    if (hint) hint.textContent = uiText("粗细要在 1..512 之间才能预览（当前 " + size + "）");
     return;
   }
   // **去重的键要含"颜色 / 粗细"** ✗ —— 只看笔刷名会让"换了颜色再预览"被**静默跳过** ✓
@@ -12564,7 +12564,7 @@ function reportServerUnreachable(detail) {
   const conn = $("conn");
   if (conn) conn.className = "dot";
   const text = $("connText");
-  if (text) text.textContent = "已断开";
+  if (text) text.textContent = uiText("已断开");
   log("**连不上服务端** ✗ ⇒ 你刚才那一步**没有完成** ✓（服务端可能已经退出 ✓）：" +
       String(detail || "").slice(0, 120) +
       " —— 把服务端起回来（`make dev` ✓）之后**刷新页面** ✓；页面里已画的内容可能需要重新画 ✓", "#c33");
@@ -12617,12 +12617,12 @@ if (outboxDiscardButton) outboxDiscardButton.addEventListener("click", async () 
   const now = Date.now();
   if (now - outboxDiscardArmed > 5000) {
     outboxDiscardArmed = now;
-    button.textContent = "确认放弃";
-    setTimeout(() => { if (Date.now() - outboxDiscardArmed >= 5000) button.textContent = "放弃"; }, 5200);
+    button.textContent = uiText("确认放弃");
+    setTimeout(() => { if (Date.now() - outboxDiscardArmed >= 5000) button.textContent = uiText("放弃"); }, 5200);
     return;
   }
   outboxDiscardArmed = 0;
-  button.textContent = "放弃";
+  button.textContent = uiText("放弃");
   await outboxDiscardDoc(state.docId);
 });
 
@@ -13382,7 +13382,7 @@ function setupGapsEntries() {
         size,
         steps: 10,
       }, "渐变混合");
-      if ($("gradInfo")) $("gradInfo").textContent = "已生成渐变混合笔触：" + fromHex + " → " + toHex;
+      if ($("gradInfo")) $("gradInfo").textContent = uiText("已生成渐变混合笔触：" + fromHex + " → " + toHex);
       void result;
       await resync();
     });
