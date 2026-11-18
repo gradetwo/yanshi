@@ -1712,7 +1712,7 @@ const dockerAudit = JSON.parse(await evaluate(`JSON.stringify((() => {
   };
   // 点标题 ⇒ 状态应**翻转** ✓（默认"绘画"工作区里它本来是折叠的 ✓，
   // 所以这一下是**展开** ✓ —— 第一版我写死了"应当折叠" ✗，方向反了 ✓）。
-  if (effects) effects.querySelector("h2").click();
+  if (effects) { const head = effects.querySelector("h2") || effects.querySelector(".fold-head"); if (head) head.click(); }
   const afterCollapse = {
     collapsed: collapsed(effects),
     effectsHeight: height(effects),
