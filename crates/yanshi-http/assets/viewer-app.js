@@ -976,7 +976,7 @@ async function refreshOutboxBadge() {
   if (conflict > 0) { stateName = "conflict"; label = "冲突待处理 " + conflict; }
   else if (failed > 0) { stateName = "failed"; label = "被拒 " + failed + " 条"; }
   else if (refused > 0) { stateName = "full"; label = "队列已满"; }
-  else if (mine.length > 0) { stateName = "queued"; label = "离线排队 " + mine.length + " 条"; }
+  else if (mine.length > 0) { stateName = "queued"; label = uiTemplate("离线排队 {n} 条", { n: mine.length }); }
   else if (state.outboxOffline === true || navigator.onLine === false) { stateName = "offline"; label = "离线"; }
   if (node) {
     node.dataset.state = stateName;
@@ -991,10 +991,10 @@ async function refreshOutboxBadge() {
     bar.hidden = !show;
     bar.dataset.state = stateName;
     if (text && show) {
-      if (conflict > 0) text.textContent = uiText("服务端这份文档已变化，已暂停补交（" + mine.length + " 条）");
+      if (conflict > 0) text.textContent = uiTemplate("服务端这份文档已变化，已暂停补交（{n} 条）", { n: mine.length });
       else if (failed > 0) text.textContent = failed + " 条被服务端拒绝，仍留在队列";
-      else if (refused > 0) text.textContent = uiText("队列已满，刚才那一步没有记录（" + mine.length + " 条已排队）");
-      else text.textContent = uiText("离线排队 " + mine.length + " 条，联网后自动按序补交");
+      else if (refused > 0) text.textContent = uiTemplate("队列已满，刚才那一步没有记录（{n} 条已排队）", { n: mine.length });
+      else text.textContent = uiTemplate("离线排队 {n} 条，联网后自动按序补交", { n: mine.length });
     }
   }
   window.yanshiStats.outboxPending = mine.length;
@@ -6027,8 +6027,8 @@ async function setReferenceImage() {
     if (!set || !set.ok) throw new Error("参考图已上传，但保存参考设置失败");
     state.referenceLocal = { hash: String(upload.blob_hash), url: dataUrl };
     const cached = upload.encoded_original || window.__rememberReferenceBlob(String(upload.blob_hash), dataUrl);
-    if (info) info.textContent = uiText("参考图已就位（" + width + "×" + height + "）"
-      + (cached ? "" : " · 本浏览器未缓存原图，刷新后可能需要重传"));
+    if (info) info.textContent = uiTemplate("参考图已就位（{w}×{h}）", { w: width, h: height })
+      + (cached ? "" : uiText(" · 本浏览器未缓存原图，刷新后可能需要重传"));
     window.dispatchEvent(new Event("resize"));
   } catch (error) {
     const message = "参考图上传失败：" + String(error?.message || error);
@@ -6180,7 +6180,7 @@ async function serverExportPng() {
     args.region = { x: rx, y: ry, w: rw, h: rh };
   } else if (given > 0) {
     const infoBad = $("exportServerInfo");
-    if (infoBad) infoBad.textContent = uiText("区域要四个值填齐（x, y, w, h）才生效；当前只填了 " + given + " 个");
+    if (infoBad) infoBad.textContent = uiTemplate("区域要四个值填齐（x, y, w, h）才生效；当前只填了 {n} 个", { n: given });
     return;
   }
   const lodSel = ($("exportLod") || {}).value;
