@@ -617,6 +617,7 @@ const I18N_EN_TEXT = {
   "不适用（没有 WASM 内核：逐字节比对需要本地这一侧的像素）": "Not applicable (no WASM kernel: byte-exact comparison needs the local side's pixels)",
   "不透明度要填 0 到 100 之间的数字 ⇒ 这次没有发送请求、没有改动任何东西": "Opacity must be a number between 0 and 100. Nothing was sent and nothing changed.",
   "不透明度只能取 0 到 100 ⇒ 已改成 {value}": "Opacity only goes from 0 to 100, so it was set to {value}.",
+  "技术指标": "Technical indicators",
 };
 const I18N_EN_ATTR = {
   // **效果卡那句"为什么"从可见长句改成 `title=`** ✓（第七轮 `ui-text-density` 红出来的 ✓ 见 docs ㊴）
@@ -919,6 +920,8 @@ const I18N_EN_ATTR = {
   "重做": "Redo",
   "刷新": "Refresh",
   "一致性自检": "Consistency check",
+  "展开说明": "Show explanation",
+  "收起说明": "Hide explanation",
 };
 /** **属性的参数化句式** ✓（第六轮 ✓）：`I18N_EN_ATTR` 是**整句精确匹配** ✓
  *  而下面这几条 tooltip 形如「**数据 + 后缀**」✓（资产名／色号／预设名是**服务端数据** ✗ 不翻 ✓）
@@ -1401,6 +1404,7 @@ const I18N_FR_TEXT = {
   "不适用（没有 WASM 内核：逐字节比对需要本地这一侧的像素）": "Non applicable (pas de noyau WASM : la comparaison octet par octet exige les pixels côté local)",
   "不透明度要填 0 到 100 之间的数字 ⇒ 这次没有发送请求、没有改动任何东西": "L'opacité doit être un nombre entre 0 et 100. Rien n'a été envoyé ni modifié.",
   "不透明度只能取 0 到 100 ⇒ 已改成 {value}": "L'opacité va seulement de 0 à 100 : réglée sur {value}.",
+  "技术指标": "Indicateurs techniques",
 };
 const I18N_FR_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Les paramètres par défaut n'ont souvent aucun effet ; un nom de paramètre mal orthographié est aussi accepté tel quel (le noyau ne valide que les clés qu'il connaît).",
@@ -1606,6 +1610,8 @@ const I18N_FR_ATTR = {
   "重做": "Rétablir",
   "刷新": "Actualiser",
   "一致性自检": "Contrôle de cohérence",
+  "展开说明": "Afficher l'explication",
+  "收起说明": "Masquer l'explication",
 };
 const I18N_FR_ATTR_PATTERNS = [
   [/^(.*)（点击选中 ✓）$/, (m) => m[1] + " (cliquer pour sélectionner ✓)"],
@@ -2069,6 +2075,7 @@ const I18N_ES_TEXT = {
   "不适用（没有 WASM 内核：逐字节比对需要本地这一侧的像素）": "No aplicable (sin núcleo WASM: la comparación byte a byte necesita los píxeles del lado local)",
   "不透明度要填 0 到 100 之间的数字 ⇒ 这次没有发送请求、没有改动任何东西": "La opacidad debe ser un número entre 0 y 100. No se envió nada ni se cambió nada.",
   "不透明度只能取 0 到 100 ⇒ 已改成 {value}": "La opacidad solo va de 0 a 100, así que se ajustó a {value}.",
+  "技术指标": "Indicadores técnicos",
 };
 const I18N_ES_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Los parámetros por defecto a menudo no tienen ningún efecto, y un nombre de parámetro mal escrito se guarda tal cual (el núcleo solo valida las claves que reconoce).",
@@ -2274,6 +2281,8 @@ const I18N_ES_ATTR = {
   "重做": "Rehacer",
   "刷新": "Actualizar",
   "一致性自检": "Comprobación de coherencia",
+  "展开说明": "Mostrar explicación",
+  "收起说明": "Ocultar explicación",
 };
 const I18N_ES_ATTR_PATTERNS = [
   [/^(.*)（点击选中 ✓）$/, (m) => m[1] + " (clic para seleccionar ✓)"],
@@ -2737,6 +2746,7 @@ const I18N_PT_TEXT = {
   "不适用（没有 WASM 内核：逐字节比对需要本地这一侧的像素）": "Não aplicável (sem kernel WASM: a comparação byte a byte precisa dos pixels do lado local)",
   "不透明度要填 0 到 100 之间的数字 ⇒ 这次没有发送请求、没有改动任何东西": "A opacidade deve ser um número entre 0 e 100. Nada foi enviado nem alterado.",
   "不透明度只能取 0 到 100 ⇒ 已改成 {value}": "A opacidade vai apenas de 0 a 100, então foi ajustada para {value}.",
+  "技术指标": "Indicadores técnicos",
 };
 const I18N_PT_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Parâmetros padrão muitas vezes não têm efeito nenhum, e um nome de parâmetro com erro de digitação é guardado como está (o núcleo só valida as chaves que conhece).",
@@ -2942,6 +2952,8 @@ const I18N_PT_ATTR = {
   "重做": "Refazer",
   "刷新": "Atualizar",
   "一致性自检": "Verificação de consistência",
+  "展开说明": "Mostrar explicação",
+  "收起说明": "Ocultar explicação",
 };
 const I18N_PT_ATTR_PATTERNS = [
   [/^(.*)（点击选中 ✓）$/, (m) => m[1] + " (clique para selecionar ✓)"],
@@ -3405,6 +3417,7 @@ const I18N_JA_TEXT = {
   "不适用（没有 WASM 内核：逐字节比对需要本地这一侧的像素）": "適用外（WASM カーネルが無い：バイト一致の比較にはローカル側のピクセルが要る）",
   "不透明度要填 0 到 100 之间的数字 ⇒ 这次没有发送请求、没有改动任何东西": "不透明度は 0〜100 の数値で入力してください。何も送信・変更していません。",
   "不透明度只能取 0 到 100 ⇒ 已改成 {value}": "不透明度は 0〜100 のみです ⇒ {value} に直しました。",
+  "技术指标": "技術指標",
 };
 const I18N_JA_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "既定のパラメータはもともと効果がないことが多く、パラメータ名のタイプミスもそのまま受け付けられます（カーネルは知っているキーだけを検証します）。",
@@ -3610,6 +3623,8 @@ const I18N_JA_ATTR = {
   "重做": "やり直す",
   "刷新": "更新",
   "一致性自检": "整合性セルフチェック",
+  "展开说明": "説明を表示",
+  "收起说明": "説明を隠す",
 };
 const I18N_JA_ATTR_PATTERNS = [
   [/^(.*)（点击选中 ✓）$/, (m) => m[1] + "（クリックで選択 ✓）"],
@@ -4073,6 +4088,7 @@ const I18N_KO_TEXT = {
   "不适用（没有 WASM 内核：逐字节比对需要本地这一侧的像素）": "해당 없음(WASM 커널 없음: 바이트 단위 비교에는 로컬 쪽 픽셀이 필요)",
   "不透明度要填 0 到 100 之间的数字 ⇒ 这次没有发送请求、没有改动任何东西": "불투명도는 0~100 사이의 숫자여야 합니다. 아무것도 보내지 않았고 변경하지 않았습니다.",
   "不透明度只能取 0 到 100 ⇒ 已改成 {value}": "불투명도는 0~100만 가능합니다 ⇒ {value}(으)로 맞췄습니다.",
+  "技术指标": "기술 지표",
 };
 const I18N_KO_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "기본 매개변수는 원래 효과가 없는 경우가 많고, 매개변수 이름의 오타도 그대로 받아들여집니다(커널은 아는 키만 검증합니다).",
@@ -4278,6 +4294,8 @@ const I18N_KO_ATTR = {
   "重做": "다시 실행",
   "刷新": "새로 고침",
   "一致性自检": "일관성 검사",
+  "展开说明": "설명 표시",
+  "收起说明": "설명 숨기기",
 };
 const I18N_KO_ATTR_PATTERNS = [
   [/^(.*)（点击选中 ✓）$/, (m) => m[1] + " (클릭하여 선택 ✓)"],
@@ -4741,6 +4759,7 @@ const I18N_RU_TEXT = {
   "不适用（没有 WASM 内核：逐字节比对需要本地这一侧的像素）": "Неприменимо (нет ядра WASM: побайтовое сравнение требует пикселей с локальной стороны)",
   "不透明度要填 0 到 100 之间的数字 ⇒ 这次没有发送请求、没有改动任何东西": "Непрозрачность должна быть числом от 0 до 100. Ничего не отправлено и не изменено.",
   "不透明度只能取 0 到 100 ⇒ 已改成 {value}": "Непрозрачность — только 0–100, поэтому поставлено {value}.",
+  "技术指标": "Технические показатели",
 };
 const I18N_RU_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Параметры по умолчанию часто вообще не дают эффекта, а имя параметра с опечаткой просто сохраняется как есть (ядро проверяет только те ключи, которые знает).",
@@ -4946,6 +4965,8 @@ const I18N_RU_ATTR = {
   "重做": "Повторить",
   "刷新": "Обновить",
   "一致性自检": "Проверка целостности",
+  "展开说明": "Показать пояснение",
+  "收起说明": "Скрыть пояснение",
 };
 const I18N_RU_ATTR_PATTERNS = [
   [/^(.*)（点击选中 ✓）$/, (m) => m[1] + " (щёлкните, чтобы выбрать ✓)"],
@@ -5409,6 +5430,7 @@ const I18N_DE_TEXT = {
   "不适用（没有 WASM 内核：逐字节比对需要本地这一侧的像素）": "Nicht anwendbar (kein WASM-Kernel: byte-genauer Vergleich braucht die Pixel der lokalen Seite)",
   "不透明度要填 0 到 100 之间的数字 ⇒ 这次没有发送请求、没有改动任何东西": "Deckkraft muss eine Zahl zwischen 0 und 100 sein. Es wurde nichts gesendet und nichts geändert.",
   "不透明度只能取 0 到 100 ⇒ 已改成 {value}": "Deckkraft geht nur von 0 bis 100, daher auf {value} gesetzt.",
+  "技术指标": "Technische Kennzahlen",
 };
 const I18N_DE_ATTR = {
   "缺省参数常常本就无效果；参数名拼错也会被照单收下（内核只校验它认识的键）。": "Standardparameter haben oft überhaupt keine Wirkung, und ein falsch geschriebener Parametername wird einfach so gespeichert (der Kern prüft nur die Schlüssel, die er kennt).",
@@ -5614,6 +5636,8 @@ const I18N_DE_ATTR = {
   "重做": "Wiederholen",
   "刷新": "Aktualisieren",
   "一致性自检": "Selbstprüfung der Konsistenz",
+  "展开说明": "Erläuterung anzeigen",
+  "收起说明": "Erläuterung ausblenden",
 };
 const I18N_DE_ATTR_PATTERNS = [
   [/^(.*)（点击选中 ✓）$/, (m) => m[1] + " (zum Auswählen klicken ✓)"],
