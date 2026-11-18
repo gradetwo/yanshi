@@ -669,7 +669,7 @@ const P2_TOOL_SPECS = {
   create_annotation: [0, [["type","s",1],["intent","s",1],["target","o",1],["content","s",0],["suggestion_id","s",0]]],
   create_group: [1, [["group_id","s",1],["layer_id","s",1],["members","a",0]]],
   create_instance: [1, [["instance_id","s",1],["layer_id","s",1],["master_id","s",1],["local_transform","o",0]]],
-  create_layer: [1, [["layer_id","s",0],["name","s",0],["type","s",0],["kind","s",0],["parent_id","s",0],["z_index","i",0],["if_exists","s",0]]],
+  create_layer: [1, [["layer_id","s",0],["name","s",0],["type","s",0],["kind","s",0],["parent_id","s",0],["z_index","i",0],["if_exists","s",0],["metadata","o",0]]],
   create_mask: [1, [["mask_id","s",1],["shape","o",0],["feather","n",0],["invert","b",0],["mode","s",0],["linked_layer","s",0],["from_selection","s",0]]],
   create_range_mask: [1, [["mask_id","s",1],["layer_id","s",1],["range","s",0],["low","n",0],["high","n",0],["hue","n",0],["hue_width","n",0],["smoothness","n",0],["invert","b",0]]],
   create_selection: [1, [["selection_id","s",1],["shape","o",0],["feather","n",0],["invert","b",0],["mode","s",0],["linked_layer","s",0],["from_mask","s",0]]],

@@ -457,6 +457,15 @@ pub const ALL_TOOLS: &[ToolSpec] = &[
                 false,
                 "重名时的行为：缺省 error（返回 precondition_failed）；**reuse** = 已存在就复用、不报错也不新建（返回 reused: true）"
             ),
+            // **框架层的参数白名单** ✓（0020 ✓）：不给它登记，客户端传 `metadata` 会被
+            // 当场拒成 `invalid_argument`（"create_layer 不接受参数 metadata（拼写错误？）"）
+            // ⇒ 于是"名字按配方拼"这件事只能留在客户端内存里 ✗ 一刷新就退回字面名 ✗。
+            param!(
+                "metadata",
+                Object,
+                false,
+                "图层元数据（对象）。`name_recipe` 是显示名配方：{kind: \"default\", n, base} = 缺省层名按当前语言重拼（名字仍等于 base 时才生效，用户改名后自动失效）；{kind: \"dodge_burn\", base} 由 dodge_burn_setup 写入"
+            ),
         ],
     },
     ToolSpec {

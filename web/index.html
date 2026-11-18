@@ -10738,7 +10738,17 @@ async function setupLayerPanel() {
   if (add) add.onclick = async () => {
     const layers = await listLayers();
     // **默认图层名跟着界面语言** ✓（0007）：原来写死 “图层 ” + n ⇒ 英文界面下仍是中文名。
-    const made = await callTool("create_layer", { name: defaultLayerName(layers.length + 1) });
+    // **缺省名要"存配方、按语言拼"** ✓（0020 ✓ 2026-11-18 ✓）：
+    // 此前只在**建层那一刻**按当前语言拼一次 ✗ ⇒ 中文会话建的层，切到英文**仍是中文** ✗
+    // ⇒ 同一个文档在两台不同语言的机器上打开，图层列表就是两半不同语言 ✗。
+    // 改法与上游"减淡加深组名"同一套 ✓：`name` 照写（老客户端与导出仍看得懂 ✓）
+    // 另加 `metadata.name_recipe {kind:"default", n, base}` ✓ ⇒ 显示时按当前语言重拼 ✓
+    // `base` 是**当初写下的那一串** ✓ ⇒ 显示前先验"名字还等于它" ✓ 用户一改名配方即失效 ✓。
+    const nextName = defaultLayerName(layers.length + 1);
+    const made = await callTool("create_layer", {
+      name: nextName,
+      metadata: { name_recipe: { kind: "default", n: layers.length + 1, base: nextName } },
+    });
     // **新建之后必须选中它** ✗（真实用户报告 ✓）—— 严格照**下面 `duplicate` 已有的模式** ✓。
     //
     // **为什么这是真 bug** ✓：新图层建在**最上面** ✓ 而**选中仍停在旧图层** ✗
@@ -12014,7 +12024,13 @@ function setupFreqSepPanel() {
 /// **配方组显示名**：词干 + 配方 ⇒ 按语言拼；改名/无配方 ⇒ 原样。
 function layerDisplayName(layer) {
   const recipe = layer.metadata && layer.metadata.name_recipe;
-  return recipe && recipe.kind === "dodge_burn" && layer.name === recipe.base
+  if (!recipe) return layer.name;
+  // **缺省图层名** ✓（0020）：名字仍是当初写下的那一串 ⇒ 按**当前**语言重拼 ✓
+  // （用户改过名 ⇒ 下面这条护栏不成立 ⇒ 一律显示他自己写的 ✓ 绝不覆盖 ✗）
+  if (recipe.kind === "default" && Number.isFinite(recipe.n) && layer.name === recipe.base) {
+    return defaultLayerName(recipe.n);
+  }
+  return recipe.kind === "dodge_burn" && layer.name === recipe.base
     ? "「" + recipe.base + " · " + dodgeBurnWord() + "」"
     : layer.name;
 }
@@ -16879,3 +16895,112 @@ for (const [id, divider] of [["toggleRail", 6], ["toggleDockers", 10]]) {
 </div>
 </body>
 </html>
+
+/// **渐进披露 v2** ✓（0021 修订 ✓ 2026-11-18 ✓）：卡片**原地折叠** ✓ ——
+/// **不搬 DOM** ✓。
+///
+/// **为什么推翻了第一版** ✗（实测 ✓）：第一版把卡片包进 `<details>` ✓
+/// ⇒ 而页签分发是按 `.card` 在 `aside` 里搬来搬去的 ✓ ⇒ 折叠后卡片被搬进了**「诊断」页签**
+/// ⇒ 实测「诊断」里冒出 **211 个控件 / 4845 字** ✗（比治理前更乱 ✓）——
+/// 效果 / 填充 / 纹理 跑到诊断页签底下 ✗，用户根本找不到 ✓。
+///
+/// **∴ 规矩：只改"显示/不显示"，不动"谁是谁的孩子"** ✓。
+/// 卡片留在原位 ✓、页签分发照旧 ✓、只在自己的卡上加一个折叠头 ✓ 并把身体藏起来 ✓。
+///
+/// **哪些折** ✓：**操作 / 图层 / 画笔** 每次都要看 ⇒ 永远展开 ✓；
+/// 其余偶尔用 ⇒ 折 ✓（判据是使用频次 ✓，不是重要性 ✓）。
+/// 展开状态记在 `localStorage.yanshi.fold` ✓；收起时控件**仍在 DOM 里** ✓（只是不渲染 ✓）
+/// ⇒ 快捷键与程序调用照旧 ✓。
+const FOLD_CARD_IDS = [
+  "cardEffects", "cardFreqSep", "cardGradientMask", "cardRangeMask", "cardTexture",
+  "cardPalette", "cardHistogram", "cardDodgeBurn", "cardFillRegion",
+];
+function setupProgressiveDisclosure() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem("yanshi.fold") || "{}") || {}; } catch (error) { saved = {}; }
+  for (const id of FOLD_CARD_IDS) {
+    const card = document.getElementById(id);
+    if (!card || card.dataset.folded === "1") continue;
+    card.dataset.folded = "1";
+    const title = ((card.querySelector("h2") || {}).textContent || id).trim();
+    // ★ **卡片留在原位** ✓：头是卡自己的第一个孩子 ✓ 不新建父节点 ✓
+    const head = document.createElement("button");
+    head.type = "button";
+    head.className = "fold-head";
+    head.setAttribute("aria-expanded", saved[id] === true ? "true" : "false");
+    const label = document.createElement("span");
+    label.textContent = title;
+    const chevron = document.createElement("span");
+    chevron.className = "fold-chevron";
+    chevron.textContent = "▸";
+    const count = card.querySelectorAll("button,input,select").length;
+    const badge = document.createElement("span");
+    badge.className = "fold-count";
+    badge.textContent = count > 0 ? String(count) : "";
+    head.append(chevron, label, badge);
+    const h2 = card.querySelector("h2");
+    if (h2) h2.remove();
+    card.insertBefore(head, card.firstChild);
+    const apply = (open) => {
+      card.classList.toggle("is-folded", !open);
+      head.setAttribute("aria-expanded", open ? "true" : "false");
+    };
+    // **缺省是收起** ✓（0021 修订）：`saved` 里没有这条 ⇒ 收起 ✓
+    // 第一版写成 `saved[id] !== false` ⇒ 没记录时 **open=true** ⇒ 一张都没折 ✓
+    // 实测「绘制」154 个控件 / 3991 字 ✓（比治理前还多 ✓）—— 就是这条反了 ✗。
+    apply(saved[id] === true);
+    head.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const open = card.classList.contains("is-folded");
+      apply(open);
+      saved[id] = open;
+      try { localStorage.setItem("yanshi.fold", JSON.stringify(saved)); } catch (error) { /* 存不了只影响下次 ✓ */ }
+    });
+  }
+}
+setupProgressiveDisclosure();
+
+
+/// **长说明：一行 + 「+」展开** ✓（0022 ✓ 2026-11-18 ✓）
+///
+/// 用户原话：「有些比较长的文字又是必要内容，但看的时间少，可以更小的字号、更淡的字体
+/// 颜色、默认折叠成一行，点击＋号展开 —— 这样视觉上就不会太分散注意力」✓。
+///
+/// 所以这里**不删信息** ✓，只给它一个**恰当的位置** ✓：
+/// 默认 = **一行 + 小一号 + 弱色** ✓（一眼扫过不抢主意 ✓）；
+/// 点「＋」= **原地展开全文** ✓（不跳页、不弹窗 ✓ 想细看的人就在原地看完 ✓）。
+/// 只对**超过 18 字**的 `.hint / .note / aside small` 生效 ✓ —— 短说明不动 ✓（动了反而碎 ✗）。
+const SHORT_HINT_MAX = 18;
+function clipHintText(el) {
+  if (!el || el.dataset.clipped === "1") return;
+  const full = (el.textContent || "").trim();
+  if (full.length <= SHORT_HINT_MAX) return;
+  el.dataset.clipped = "1";
+  el.dataset.full = full;
+  // **首句** ✓：这些说明多是「现象 ⇒ 原因」结构 ✓ 首句通常就够 ✓
+  const head = full.split(/⇒|。|；/)[0].trim() || full.slice(0, SHORT_HINT_MAX);
+  el.textContent = head + "…";
+  el.title = full;
+  el.classList.add("hint-clipped");
+  // 「＋」是**卡里最小的可点目标** ✓：14×14 太难点 ⇒ 20×20 起 ✓（触控仍按 32 兜底 ✓）
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "hint-toggle";
+  toggle.textContent = "＋";
+  toggle.setAttribute("aria-expanded", "false");
+  toggle.setAttribute("aria-label", "展开说明");
+  toggle.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const open = !el.classList.contains("hint-expanded");
+    el.classList.toggle("hint-expanded", open);
+    el.textContent = open ? el.dataset.full : head + "…";
+    toggle.textContent = open ? "－" : "＋";
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    toggle.setAttribute("aria-label", open ? "收起说明" : "展开说明");
+  });
+  el.after(toggle);
+}
+function clipAllHints() {
+  for (const el of document.querySelectorAll(".hint, .note, aside small")) clipHintText(el);
+}
+clipAllHints();

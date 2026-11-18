@@ -915,6 +915,10 @@ const I18N_EN_ATTR = {
   "后台舞者": "Dancers backstage",
   "四位舞者": "Four dancers",
 
+  "撤销": "Undo",
+  "重做": "Redo",
+  "刷新": "Refresh",
+  "一致性自检": "Consistency check",
 };
 /** **属性的参数化句式** ✓（第六轮 ✓）：`I18N_EN_ATTR` 是**整句精确匹配** ✓
  *  而下面这几条 tooltip 形如「**数据 + 后缀**」✓（资产名／色号／预设名是**服务端数据** ✗ 不翻 ✓）
@@ -1598,6 +1602,10 @@ const I18N_FR_ATTR = {
   "缩略图": "Miniature",
   "后台舞者": "Danseuses en coulisses",
   "四位舞者": "Quatre danseuses",
+  "撤销": "Annuler",
+  "重做": "Rétablir",
+  "刷新": "Actualiser",
+  "一致性自检": "Contrôle de cohérence",
 };
 const I18N_FR_ATTR_PATTERNS = [
   [/^(.*)（点击选中 ✓）$/, (m) => m[1] + " (cliquer pour sélectionner ✓)"],
@@ -2262,6 +2270,10 @@ const I18N_ES_ATTR = {
   "缩略图": "Miniatura",
   "后台舞者": "Bailarinas entre bastidores",
   "四位舞者": "Cuatro bailarinas",
+  "撤销": "Deshacer",
+  "重做": "Rehacer",
+  "刷新": "Actualizar",
+  "一致性自检": "Comprobación de coherencia",
 };
 const I18N_ES_ATTR_PATTERNS = [
   [/^(.*)（点击选中 ✓）$/, (m) => m[1] + " (clic para seleccionar ✓)"],
@@ -2926,6 +2938,10 @@ const I18N_PT_ATTR = {
   "缩略图": "Miniatura",
   "后台舞者": "Dançarinas nos bastidores",
   "四位舞者": "Quatro dançarinas",
+  "撤销": "Desfazer",
+  "重做": "Refazer",
+  "刷新": "Atualizar",
+  "一致性自检": "Verificação de consistência",
 };
 const I18N_PT_ATTR_PATTERNS = [
   [/^(.*)（点击选中 ✓）$/, (m) => m[1] + " (clique para selecionar ✓)"],
@@ -3590,6 +3606,10 @@ const I18N_JA_ATTR = {
   "缩略图": "サムネイル",
   "后台舞者": "舞台裏の踊り子たち",
   "四位舞者": "4人の踊り子",
+  "撤销": "元に戻す",
+  "重做": "やり直す",
+  "刷新": "更新",
+  "一致性自检": "整合性セルフチェック",
 };
 const I18N_JA_ATTR_PATTERNS = [
   [/^(.*)（点击选中 ✓）$/, (m) => m[1] + "（クリックで選択 ✓）"],
@@ -4254,6 +4274,10 @@ const I18N_KO_ATTR = {
   "缩略图": "썸네일",
   "后台舞者": "무대 뒤의 무용수들",
   "四位舞者": "네 명의 무용수",
+  "撤销": "되돌리기",
+  "重做": "다시 실행",
+  "刷新": "새로 고침",
+  "一致性自检": "일관성 검사",
 };
 const I18N_KO_ATTR_PATTERNS = [
   [/^(.*)（点击选中 ✓）$/, (m) => m[1] + " (클릭하여 선택 ✓)"],
@@ -4918,6 +4942,10 @@ const I18N_RU_ATTR = {
   "缩略图": "Миниатюра",
   "后台舞者": "Танцовщицы за кулисами",
   "四位舞者": "Четыре танцовщицы",
+  "撤销": "Отменить",
+  "重做": "Повторить",
+  "刷新": "Обновить",
+  "一致性自检": "Проверка целостности",
 };
 const I18N_RU_ATTR_PATTERNS = [
   [/^(.*)（点击选中 ✓）$/, (m) => m[1] + " (щёлкните, чтобы выбрать ✓)"],
@@ -5582,6 +5610,10 @@ const I18N_DE_ATTR = {
   "缩略图": "Miniatur",
   "后台舞者": "Tänzerinnen hinter den Kulissen",
   "四位舞者": "Vier Tänzerinnen",
+  "撤销": "Rückgängig",
+  "重做": "Wiederholen",
+  "刷新": "Aktualisieren",
+  "一致性自检": "Selbstprüfung der Konsistenz",
 };
 const I18N_DE_ATTR_PATTERNS = [
   [/^(.*)（点击选中 ✓）$/, (m) => m[1] + " (zum Auswählen klicken ✓)"],

@@ -4546,6 +4546,28 @@ fn write_create_layer(ctx: &mut ToolContext<'_>, args: &Value) -> Result<Value> 
     if let Some(z_index) = args.get("z_index").and_then(Value::as_i64) {
         payload["z_index"] = json!(z_index);
     }
+    // ★ **`metadata` 透传** ✓（0020 ✓ 2026-11-18 ✓）★
+    //   `create_layer` 此前**只认名字/类型/父层/z 序** ✗ ⇒ 客户端**没有**任何办法把
+    //   "这一层的名字是**按配方拼**的"这件事一起落盘 ✗。
+    //   ⇒ 于是中文会话里建的缺省层，名字是**字面**的中文 ✓ ⇒ 切到英文**仍是中文** ✗
+    //   （同一个文档在两台不同语言的机器上打开，图层列表就是**两半不同语言** ✗）。
+    //
+    //   **为什么走 metadata 而不是改 `name` 的形状** ✓：`name` 是**用户数据** ✓
+    //   用户改过名之后必须原样保留 ✓ ⇒ 配方只能**另有其位** ✓，且**显示时要先验"
+    //   名字还等于当初写下的那一串"** ✓（同 `dodge_burn` 那条 `layer.name === recipe.base` 的护栏 ✓）
+    //   ⇒ 用户一改名，配方自然失效 ✓ **不会**把用户起的名盖掉 ✗。
+    //
+    //   **只收对象** ✓：`metadata` 是字典 ✓ 传字符串/数组一律报错 ✗
+    //   （本项目最忌"接受了却没用"✗ ⇒ 与其静默丢掉，不如当场说清楚 ✓）。
+    if let Some(value) = args.get("metadata") {
+        let object = value.as_object().ok_or_else(|| {
+            YanshiError::new(
+                ErrorCode::InvalidArgument,
+                ErrorContext::detail("metadata 必须是对象（例如 {\"name_recipe\": {...}}）"),
+            )
+        })?;
+        payload["metadata"] = Value::Object(object.clone());
+    }
     // ★ **`if_exists` ✗ ★**（报告 §31① ✓）
     //   ⇒ **∴ 他们的场景 ✓**：每次启动都 `create_layer("subject_paint")` ✓ 且用 `try/except: pass` 吞掉失败 ✓
     //     ⇒ **∴ 于是 stderr 每次都打印 `precondition_failed`✗** ⇒ **∴ 而它**与"真失败"✗ 无法区分 ✓

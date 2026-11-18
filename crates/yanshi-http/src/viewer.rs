@@ -394,10 +394,10 @@ const PAGE_TAIL_A: &str = r##"</head>
       <div class="toolbar">
   <!-- 初始即禁用 ✓：子 agent 报"没有撤销栈时按钮仍可点" ✗（点了只会打印一句提示 ✓，
        看起来像坏了 ✓）。真实状态由 `updateUndoStatus()` 同步 ✓。 -->
-  <button data-tool="undo" disabled>撤销</button>
-  <button data-tool="redo" disabled>重做</button>
-  <button data-tool="refresh">刷新</button>
-  <button data-tool="check">一致性自检</button>
+  <button data-tool="undo" disabled aria-label="撤销" title="撤销">↶</button>
+  <button data-tool="redo" disabled aria-label="重做" title="重做">↷</button>
+  <button data-tool="refresh" aria-label="刷新" title="刷新">⟳</button>
+  <button data-tool="check" aria-label="一致性自检" title="一致性自检">✓⌁</button>
   <button id="exportPng">导出 PNG</button>
   <button id="exportPsdLayers" type="button" title="导出成分层 PSD（图层/组/不透明度/可见性/混合模式都带出去）">导出分层 PSD</button>
   <!-- **显式的"当前视图"导出** ✓：默认那颗导**整幅文档** ✓（P0：旧默认导的是视口 ✗）；
@@ -460,6 +460,13 @@ const PAGE_TAIL_A: &str = r##"</head>
     </div>
     <div class="card" data-panel="diag">
       <h2>WASM 计算内核</h2>
+      <!-- **技术指标默认折起** ✓（0021 ✓ 2026-11-18 ✓ 信息过载治理 ✓）：
+           这一卡里有 6 个数字（wasm 状态 / 首笔 / 首帧 / 预热 / bit-exact / 内核）
+           ⇒ 它们**只在排查时有用** ✗，平时占着整卡的视线 ✓
+           ⇒ 收进一个 `<details>` ✓：卡头仍是"WASM 计算内核"一句 ✓，
+             想看**点一下**就全展开 ✓（`<details>` 是原生语义 ✓ 键盘可达 ✓ 不额外写脚本 ✓）。 -->
+      <details class="fold">
+        <summary>技术指标</summary>
       <div class="status">
         <span>本地乐观渲染 <b id="wasmState">检测中…</b></span>
         <span>首笔 <b id="firstStroke">—</b></span>
@@ -467,6 +474,7 @@ const PAGE_TAIL_A: &str = r##"</head>
         <span>内核预热 <b id="kernelWarm">—</b></span>
         <span>bit-exact <b id="bitExact">—</b></span>
       </div>
+      </details>
     </div>
     <!-- **调整 / 滤镜** ✓（第七轮把这张卡"说的"与"发生的"对齐 ✓）：效果名列表本来就来自服务端
          `/api/effects` ✓ 因此不会与内核漂移 ✓ —— 但**"已应用"这句是界面自己下的结论** ✗
