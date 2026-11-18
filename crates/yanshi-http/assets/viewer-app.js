@@ -3564,9 +3564,12 @@ async function importProjectFile(file) {
       say("导入被拒绝：" + describeFailure(done) + "（可在「导入为」里写一个新 id 再试）");
       return;
     }
-    const atoms = typeof done.atoms === "number" ? done.atoms + " 条原子" : "已还原";
-    const blobs = typeof done.blobs === "number" ? "，" + done.blobs + " 个 blob" : "";
-    log("已导入工程包：" + done.doc_id + " ✓（" + atoms + blobs + "）", "#2a2");
+    // **整句模板** ✓（0045）：工程包回执与它的两个从属短语都曾被拼成中文 ⇒ 非中文界面露中文 ✗
+    const atoms = typeof done.atoms === "number" ? uiTemplate("{n} 条原子", { n: done.atoms }) : uiTemplate("已还原");
+    const blobs = typeof done.blobs === "number" ? uiTemplate("，{n} 个 blob", { n: done.blobs }) : "";
+    log(uiTemplate("已导入工程包：{doc} ✓（{atoms}{blobs}）", {
+      doc: done.doc_id, atoms, blobs,
+    }), "#2a2");
     if (window.yanshiFileMenu) window.yanshiFileMenu.close();
     closeOpenDialog();
     await switchDocument(done.doc_id, done.token);
@@ -5688,7 +5691,8 @@ async function createCheckpoint() {
     String(now.getMinutes()).padStart(2, "0") + ":" + String(now.getSeconds()).padStart(2, "0");
   const created = await callToolChecked("checkpoint", { name, message: "来自编辑器的存档点" }, "打存档点");
   if (created && created.ok) {
-    log("已打存档点「" + name + "」✓");
+    // **整句模板** ✓（0046）：实测英文界面里这条仍是中文 ✗
+    log(uiTemplate("已打存档点「{name}」✓", { name }));
     await refreshCheckpoints();
   }
 }
@@ -7859,6 +7863,28 @@ function setupRightTabs() {
 /// **为什么是"搬"** ✓：这些控件各自带着监听器、id 与既有检查（`#exportPng` 等 ✓）——
 /// 复制一份 ✗ 必然与原来那份漂移 ✓（本项目的老病 ✓）。搬完之后：
 /// **id 不变 ✓、行为不变 ✓、只是位置变了 ✓**，而且"信息面板里不再有它"这件事可以直接判 ✓。
+/// **数字框的声明与实际对齐** ✓（0041）：`<input type=number>` 上的 `min`/`max` 只影响
+/// 上下箭头与浏览器校验气泡 ⇒ **手输/粘贴进来的超范围值原样留在框里** ✓
+/// （实测：`feather` 声明 0..256，填 25600 / -5000 都留下；`strokeOpacity` 声明 0..1，填 100 也留下 ✗）。
+/// 用户随后一点按钮，非法值就进了下游 ⇒ **声明与实际不一致** ✓。
+/// 修法只做一件最小的事 ✓：`change` 时按声明夹紧 ✓；清空则回退到上一个合法值 ✓（不塞 0 ✗）。
+function setupNumericGuards() {
+  for (const el of document.querySelectorAll("input[type=number]")) {
+    const lo = el.min === "" ? null : Number(el.min);
+    const hi = el.max === "" ? null : Number(el.max);
+    if (lo === null && hi === null) continue;
+    let last = el.value;
+    el.addEventListener("change", () => {
+      const raw = Number(el.value);
+      if (el.value.trim() === "" || !Number.isFinite(raw)) { el.value = last; return; }
+      let v = raw;
+      if (lo !== null && v < lo) v = lo;
+      if (hi !== null && v > hi) v = hi;
+      el.value = String(v);
+      last = el.value;
+    });
+  }
+}
 function setupFileMenu() {
   const menu = $("fileMenu");
   const body = $("fileMenuBody");
@@ -7945,9 +7971,21 @@ const exportPngView = $("exportPngView");
   const card = document.querySelector('aside .card[data-panel="file"]');
   if (card) body.appendChild(card);
   body.appendChild(exportWrap);
-  const setOpen = (open) => {
+  // **焦点管理** ✓（0040）：菜单原先只做显隐 ⇒ 实测 Tab 一次就跑到背后的 `#toggleRail` ✓
+  // （连按 8 次 Tab，8 次全在菜单外 ✗）⇒ 键盘用户等于"开了菜单却摸不到它" ✓。
+  // 修法按对话框惯例：开 ⇒ 焦点进菜单第一项 ✓；Tab/Shift+Tab 在菜单内循环 ✓；关 ⇒ 焦点回按钮 ✓。
+  const focusables = () => [...menu.querySelectorAll("button, input:not([type=hidden]), select, textarea, [tabindex]:not([tabindex='-1'])")]
+    .filter((el) => !el.disabled && el.offsetParent !== null);
+  const setOpen = (open, restoreFocus = true) => {
+    const wasOpen = !menu.hidden;
     menu.hidden = !open;
     button.setAttribute("aria-pressed", String(open));
+    if (open && !wasOpen) {
+      const [first] = focusables();
+      if (first) first.focus();
+    } else if (!open && wasOpen && restoreFocus) {
+      button.focus();
+    }
   };
   button.addEventListener("click", () => setOpen(menu.hidden));
   if (close) close.addEventListener("click", () => setOpen(false));
@@ -7957,7 +7995,16 @@ const exportPngView = $("exportPngView");
     setOpen(false);
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !menu.hidden) setOpen(false);
+    if (event.key === "Escape" && !menu.hidden) { event.stopPropagation(); setOpen(false); return; }
+    // Tab 循环 ✓：在菜单内从末项按 Tab 回到首项、从首项按 Shift+Tab 到末项 ✓
+    if (event.key !== "Tab" || menu.hidden) return;
+    const list = focusables();
+    if (!list.length) return;
+    const first = list[0], last = list[list.length - 1];
+    const active = document.activeElement;
+    if (!menu.contains(active)) { event.preventDefault(); first.focus(); return; }
+    if (event.shiftKey && active === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && active === last) { event.preventDefault(); first.focus(); }
   });
   window.yanshiFileMenu = {
     open: () => setOpen(true),
@@ -8001,6 +8048,7 @@ async function setupAssetPanels() {
   // **先把"文件"那几样搬进顶栏菜单** ✓（要在分 tab 之前 ✓ —— 搬走之后「文件」这个 tab 就空了 ✓，
   // 分 tab 时它会因为**没有卡**而自动隐藏 ✓，不会留一个点进去什么都没有的空 tab ✗）。
   setupFileMenu();
+  setupNumericGuards();
   // **再把右栏分好 tab** ✓，**然后**把浮层挂上 ✓ —— 顺序不能反 ✗（浮层记的"原位"就是窗格 ✓）。
   setupRightTabs();
   // **省略号列统一补 title** ✓（要在分 tab 之后 ✓：卡片被搬进窗格 ✓，观察器挂在 `aside` 上 ✓，
@@ -8385,7 +8433,7 @@ async function setupAssetPanels() {
       // 实测时序 ✓：点完 **1 秒**时画布仍是 0 个非白像素 ✗、**6 秒**后才变成 38400 ✓
       // ⇒ 服务端要渲染整幅纹理再合成 ✓、再加上一次预览往返 ✓ ⇒ 界面**看起来像没反应** ✗。
       // ⇒ **不是靠加长等待** ✗，而是**当场把状态说出来** ✓（"看起来没反应"本身就是缺陷 ✓）。
-      if (textureInfo) textureInfo.textContent = uiText("正在铺 " + texture + "（" + mode + "）…");
+      if (textureInfo) textureInfo.textContent = uiTemplate("正在铺 {texture}（{mode}）…", { texture, mode });
       const textureArgs = { texture: texture, mode: mode };
       if (picked.region) textureArgs.region = picked.region;
       // **先把上一次那张纹理层删掉** ✗（用户实测：点五次就多出五层"背景（纹理）" ✗ ✓）——
@@ -8405,12 +8453,13 @@ async function setupAssetPanels() {
       if (result && result.created_layer) state.textureLayerId = result.created_layer;
       // **警告要显示出来** ✗（工具会在"指定了非空图层"时给警告 ✓
       // ⇒ 界面若把它吞掉 ✓，用户就只剩困惑 ✓）。
-      let text =
-        "已铺 " + texture + "（" + mode + "）" +
-        (picked.region
-          ? "，**只在那块选区**（" + picked.region.w + "×" + picked.region.h + " @ " +
-            picked.region.x + "," + picked.region.y + "）✓"
-          : "，铺满整幅 ✓");
+      // **两条整句模板** ✓（0046）：原来拼中文 ⇒ 非中文界面露中文 ✗
+      let text = picked.region
+        ? uiTemplate("已铺 {texture}（{mode}），只在那块选区（{w}×{h} @ {x},{y}）✓", {
+            texture, mode, w: picked.region.w, h: picked.region.h,
+            x: picked.region.x, y: picked.region.y,
+          })
+        : uiTemplate("已铺 {texture}（{mode}），铺满整幅 ✓", { texture, mode });
       if (result && result.warning) text += "　⚠️ " + result.warning;
       if (textureInfo) textureInfo.textContent = text;
       // **铺完纹理之后，必须让画布整体改用"服务端像素"** ✗ —— 用户实测（macOS ✓）：
@@ -8488,7 +8537,8 @@ async function setupLayerPanel() {
       if (commit && value && value !== layer.name) {
         await callToolChecked("update_layer", { layer_id: layerId, patch: { name: value } }, "重命名图层");
         await refreshLayers();
-        log("图层已改名为「" + value + "」✓");
+        // **整句模板** ✓（0044）：与导出回执同一类病 —— 中文前缀 + 拼变量 ⇒ 非中文界面照样是中文 ✗
+        log(uiTemplate("图层已改名为「{name}」✓", { name: value }));
       } else {
         await refreshLayers();
       }
@@ -9254,7 +9304,7 @@ async function commitSelection() {
   }
   state.selectionId = selectionId;
   state.selectionShape = { kind: "rect", bbox };
-  log("已创建选区 " + selectionId + "（其后的落笔只在选区内生效）");
+  log(uiTemplate("已创建选区 {id}（其后的落笔只在选区内生效）", { id: selectionId }));
   await refreshPreview();
 }
 
@@ -13460,7 +13510,7 @@ function setupTextFontPicker() {
       added += 1;
     }
     if (added > 0) select.append(group);
-    log("已载入系统字体 " + added + " 支");
+    log(uiTemplate("已载入系统字体 {n} 支", { n: added }));
   };
   // **∴ focus 与 pointerdown 都挂 ✗**：**鼠标点开与键盘聚焦是两条路 ✓（**哪条先来都行 ✓）★
   select.addEventListener("focus", () => { void load(); });
@@ -13603,8 +13653,11 @@ $("exportPng").addEventListener("click", async () => {
       url: value.thumb_url, width: value.width, height: value.height,
       bytes: value.bytes, source: "server", ms: Math.round(performance.now() - startedServer),
     };
-    log("已导出 PNG（整幅，服务端）：" + value.width + "×" + value.height +
-        "（" + (value.bytes || 0) + " 字节）", undefined, true);
+    // **整句模板** ✓（0042）：原来是"中文前缀 + 拼数字" ⇒ 非中文界面这条回执仍是中文 ✗
+    // （实测 EN 界面导出后仍显示「已导出 PNG（整幅，服务端）：1024×1024（6493 字节）」）。
+    log(uiTemplate("已导出 PNG（整幅，服务端）：{w}×{h}（{bytes} 字节）", {
+      w: value.width, h: value.height, bytes: value.bytes || 0,
+    }), undefined, true);
     return;
   }
   // ② 离线兜底：本地整幅合成（尺寸 = 文档 ✓，内容边界见上面的说明 ✓）。
@@ -13619,8 +13672,9 @@ $("exportPng").addEventListener("click", async () => {
       url: href, width: canvas.width, height: canvas.height,
       bytes: blob.size, source: "local-full", ms: Math.round(performance.now() - started),
     };
-    log("已导出 PNG（整幅，离线本地合成）：" + canvas.width + "×" + canvas.height +
-        "（" + blob.size + " 字节）", undefined, true);
+    log(uiTemplate("已导出 PNG（整幅，离线本地合成）：{w}×{h}（{bytes} 字节）", {
+      w: canvas.width, h: canvas.height, bytes: blob.size,
+    }), undefined, true);
     if (needsServerPixels || tiles === 0) {
       log("⚠ 离线导出：画笔笔触（raster_patch）的像素只有服务端有 ⇒ 这份整幅 PNG 里" +
           "视口之内是画布上已有的真实像素、视口之外是背景；要完整整幅请联网后再导一次", "#c93");
@@ -13652,7 +13706,9 @@ $("exportPngView").addEventListener("click", async () => {
     window.yanshiStats.lastExport = {
       url: href, width: board.width, height: board.height, bytes: blob.size, source: "viewport",
     };
-    log("已导出 PNG（当前视图）：" + board.width + "×" + board.height + "（" + blob.size + " 字节）", undefined, true);
+    log(uiTemplate("已导出 PNG（当前视图）：{w}×{h}（{bytes} 字节）", {
+      w: board.width, h: board.height, bytes: blob.size,
+    }), undefined, true);
   } catch (error) {
     log("导出当前视图失败：" + (error && error.message ? error.message : String(error)), "#c33");
   }
