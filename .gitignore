@@ -65,6 +65,11 @@ web/mediums/
 web/viewer-app.js
 web/viewer.css
 web/service-worker.js
+# **本轮瘦身外链的三份过程视频资产**：与 `web/viewer.css` 同类（`pwa-sync-viewer.mjs` 从
+# `crates/yanshi-http/assets/` 同步的生成物）⇒ 同样不入库，部署时由同步生成 ✓。
+web/mp4-lite.js
+web/webm-lite.js
+web/timelapse-local.js
 # **★ `web/` 里那六棵**二进制资产树**也不入库 ✗ ★**（H-1 第 30 项 ✓）：
 #   **∴ 它们与上面 `web/wasm`／`web/brushes`／`web/mediums` 是同一类**✗——
 #   **∴ `pwa-sync-viewer.mjs` 每次都 `rmSync` 整棵再从顶层 `assets/<同名>` 镜像出来 ✓**
