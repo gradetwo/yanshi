@@ -59,7 +59,7 @@ allsorts = { version = "0.17", default-features = false, features = ["flate2_rus
 # **诊断包的 zip 容器** —— 取舍见 `src/diagnostics.rs` 头部：
 # 只开 `deflate-flate2-zlib-rs`（纯 Rust 的 zlib-rs 后端 ✓）⇒ **不引** zopfli / bzip2 /
 # zstd / lzma / aes 那一整套默认特性（默认特性会把它们与七八种压缩后端全拉进来）。
-zip = { version = "7", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # **预览渲染的 JPEG 编码器**（期 4 D2-1）：本仓此前只有 JPEG 解码
 # （`jpeg-decoder` 在 render 侧）、无编码器；`preview_preset` 的默认
 # 渲染格式是 jpeg（base64 体积约为 PNG 的十分之一，工具响应不宜
