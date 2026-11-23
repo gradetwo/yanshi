@@ -11,6 +11,6 @@
     "pwa:check-wrangler": "node scripts/pwa-check-wrangler.mjs"
   },
   "devDependencies": {
-    "wrangler": "^4.42.0"
+    "wrangler": "^4.166.0"
   }
 }
